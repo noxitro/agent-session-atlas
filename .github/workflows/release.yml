@@ -1,0 +1,47 @@
+# v* タグを push すると、CI と同じ検査を通したうえで配布用 zip を GitHub Release に添付する。
+# zip はソース一式(git archive)にビルド済みのレポートテンプレートを足したもの。
+# 展開して atlas.bat をダブルクリックすれば、初回に npm install してから集計する。
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build:report
+      - name: Package
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          name="agent-session-atlas-${TAG}"
+          git archive --format=tar --prefix="${name}/" HEAD | tar -x -C "$RUNNER_TEMP"
+          # テンプレートはソースより新しい mtime で入れる(atlas build が作り直さずに使う)
+          mkdir -p "$RUNNER_TEMP/${name}/packages/report/dist"
+          cp packages/report/dist/template.html "$RUNNER_TEMP/${name}/packages/report/dist/"
+          touch "$RUNNER_TEMP/${name}/packages/report/dist/template.html"
+          (cd "$RUNNER_TEMP" && zip -qr "${GITHUB_WORKSPACE}/${name}.zip" "${name}")
+          echo "ZIP=${name}.zip" >> "$GITHUB_ENV"
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" "$ZIP" --title "$TAG" --generate-notes --verify-tag

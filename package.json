@@ -1,0 +1,25 @@
+{
+  "name": "agent-session-atlas",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "atlas": "node packages/cli/src/main.ts",
+    "atlas:judge": "node packages/cli/src/judge-flow.ts",
+    "build:report": "npm run build -w @atlas/report",
+    "typecheck": "tsc -p tsconfig.json && npm run check -w @atlas/report",
+    "test": "vitest run --project unit",
+    "e2e": "vitest run --project e2e",
+    "fixtures": "node scripts/synthetic-fixtures.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  }
+}

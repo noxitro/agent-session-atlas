@@ -1,0 +1,7 @@
+node_modules/
+dist/
+out/
+# テスト時に生成する fixture(架空の値だけ。サンプルデータはリポジトリに置かない)
+.fixtures/
+*.log
+.claude/launch.json

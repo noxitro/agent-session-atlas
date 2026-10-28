@@ -1,0 +1,17 @@
+{
+  "name": "@atlas/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "atlas": "./src/main.ts"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@atlas/core": "*",
+    "@atlas/report": "*",
+    "@atlas/judge": "*"
+  }
+}

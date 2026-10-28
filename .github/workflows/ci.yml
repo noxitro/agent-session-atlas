@@ -1,0 +1,41 @@
+# push / PR ごとに型検査・単体テスト・レポートのビルド・E2E(テスト時に生成する架空の fixture のみ)を回す。
+# fixture は e2e の globalSetup(e2e/global-setup.ts)が作るので、ここに生成の手順は要らない。
+# 実データ(ATLAS_LIVE)と実 LLM 判定は CI では動かさない。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  # release.yml から呼び出して、タグの中身でも同じ検査を通す
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: check (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # 想定利用環境は Windows(atlas.bat)。パス処理の取りこぼしを見るため Linux でも回す
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build:report
+      - run: npm run e2e

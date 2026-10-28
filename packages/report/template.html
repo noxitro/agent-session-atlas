@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#f3f5f3" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0e1110" media="(prefers-color-scheme: dark)" />
+    <title>Copilot Session Atlas</title>
+    <script>
+      try {
+        var t = localStorage.getItem('atlas-theme');
+        if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <noscript>このレポートの表示には JavaScript が必要です。</noscript>
+    <div id="app"></div>
+    <script type="application/json" id="atlas-data">__ATLAS_DATA__</script>
+    <script type="module" src="/src/app/main.ts"></script>
+  </body>
+</html>

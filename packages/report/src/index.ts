@@ -1,0 +1,18 @@
+// @atlas/report の Node 側エントリ(CLI の build コマンドが使う)
+export { buildReport, ensureTemplate, anonymizeMetrics, TEMPLATE_PATH, REPORT_ROOT } from './build.ts';
+export type { BuildInput, BuildResult } from './build.ts';
+export { renderDetailHtml, esc } from './detail.ts';
+export { createAnonymizer, identityAnonymizer, shortProjectLabel } from './lib/anonymize.ts';
+export type { Anonymizer } from './lib/anonymize.ts';
+export { embedData, extractEmbedded, serializeForScript, DATA_PLACEHOLDER } from './lib/embed.ts';
+export { parseJudgments } from './lib/judgments.ts';
+export type { JudgmentsIndex } from './lib/judgments.ts';
+export { matchesBase, applyFilter, emptyFilter } from './lib/filter.ts';
+export type { Filterable, FilterState } from './lib/filter.ts';
+export { aggregate } from './lib/aggregate.ts';
+export { summarize, detailHref, detailFileName } from './lib/summarize.ts';
+export * from './lib/types.ts';
+export { execAggregate, quantilesOf } from './lib/exec.ts';
+export type { ExecAggregate } from './lib/exec.ts';
+export { highlights } from './lib/highlights.ts';
+export type { HighlightGroup, HighlightItem } from './lib/highlights.ts';

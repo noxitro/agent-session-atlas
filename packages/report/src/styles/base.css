@@ -1,0 +1,377 @@
+/* atlas の基本トークンと「様式」の部品。atlas.html(Vite が取り込む)と詳細ページ(build が読み込んで埋め込む)で共用する。 */
+
+:root {
+  color-scheme: light;
+  --page: #f3f5f3;
+  --surface: #ffffff;
+  --ink: #141816;
+  --ink-2: #464e4a;
+  --ink-3: #636b67;
+  --rule: #c5d4cc;
+  --rule-strong: #86a898;
+  --form: #1b6549;
+  --form-wash: #e8f2ec;
+  --select: rgba(27, 101, 73, 0.14);
+  --warn: #8a4b00;
+  --warn-wash: #fbf1e3;
+  /* dataviz 既定パレット(ライト) */
+  --s1: #2a78d6;
+  --s2: #eb6834;
+  --s3: #1baf7a;
+  --s4: #eda100;
+  --missing: #b9bcb8;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --font: 'Segoe UI', 'Yu Gothic UI', 'Hiragino Sans', 'Noto Sans JP', Meiryo, system-ui, sans-serif;
+  --mono: 'Cascadia Mono', Consolas, 'BIZ UDGothic', ui-monospace, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+    --page: #0e1110;
+    --surface: #161a18;
+    --ink: #e8ece9;
+    --ink-2: #bcc4c0;
+    --ink-3: #939c97;
+    --rule: #2b3832;
+    --rule-strong: #4a6156;
+    --form: #7cc3a3;
+    --form-wash: #1b2822;
+    --select: rgba(124, 195, 163, 0.16);
+    --warn: #f0b25c;
+    --warn-wash: #2a2116;
+    --s1: #3987e5;
+    --s2: #d95926;
+    --s3: #199e70;
+    --s4: #c98500;
+    --missing: #4b504d;
+    --grid: #2c2c2a;
+    --axis: #383835;
+  }
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --page: #0e1110;
+  --surface: #161a18;
+  --ink: #e8ece9;
+  --ink-2: #bcc4c0;
+  --ink-3: #939c97;
+  --rule: #2b3832;
+  --rule-strong: #4a6156;
+  --form: #7cc3a3;
+  --form-wash: #1b2822;
+  --select: rgba(124, 195, 163, 0.16);
+  --warn: #f0b25c;
+  --warn-wash: #2a2116;
+  --s1: #3987e5;
+  --s2: #d95926;
+  --s3: #199e70;
+  --s4: #c98500;
+  --missing: #4b504d;
+  --grid: #2c2c2a;
+  --axis: #383835;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+::selection {
+  background: var(--form);
+  color: var(--surface);
+}
+
+a {
+  color: var(--form);
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+}
+a:hover {
+  text-decoration-thickness: 2px;
+}
+
+:focus-visible {
+  outline: 2px solid var(--form);
+  outline-offset: 2px;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
+  font-weight: 600;
+  line-height: 1.3;
+  text-wrap: balance;
+}
+h1 {
+  font-size: 1.25rem;
+}
+h2 {
+  font-size: 1.0625rem;
+}
+h3 {
+  font-size: 0.9375rem;
+}
+
+.wrap {
+  max-width: 1360px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+/* 様式の欄: 罫で仕切られた記入欄。左上に小さな項目名 */
+.fields {
+  display: grid;
+  grid-template-columns: repeat(var(--cols, 4), minmax(0, 1fr));
+  border-top: 1px solid var(--rule-strong);
+  border-left: 1px solid var(--rule);
+  background: var(--surface);
+}
+.field {
+  border-right: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+  padding: 8px 12px 10px;
+  min-width: 0;
+}
+.field > .k {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--form);
+  letter-spacing: 0.02em;
+}
+.field > .v {
+  display: block;
+  font-size: 1.375rem;
+  font-weight: 600;
+  line-height: 1.25;
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+}
+.field > .n {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--ink-3);
+  margin-top: 2px;
+}
+
+/* 罫線の表 */
+table.ledger {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--surface);
+  font-size: 0.8125rem;
+}
+table.ledger th,
+table.ledger td {
+  border: 1px solid var(--rule);
+  padding: 5px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+table.ledger thead th {
+  background: var(--form-wash);
+  color: var(--form);
+  font-weight: 600;
+  font-size: 0.75rem;
+  white-space: nowrap;
+  border-bottom-color: var(--rule-strong);
+}
+table.ledger td.num,
+table.ledger th.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+table.ledger .muted,
+.muted {
+  color: var(--ink-3);
+}
+.missing-value {
+  color: var(--ink-3);
+  font-style: normal;
+  font-size: 0.75rem;
+}
+
+.section {
+  margin-top: 28px;
+}
+.section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-bottom: 6px;
+  margin-bottom: 0;
+  border-bottom: 2px solid var(--form);
+}
+.section-head p {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 0.8125rem;
+}
+.note {
+  font-size: 0.8125rem;
+  color: var(--ink-2);
+  margin: 8px 0 0;
+  max-width: 75ch;
+}
+
+.tag {
+  display: inline-block;
+  border: 1px solid var(--rule-strong);
+  padding: 0 6px;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.tag.warn {
+  border-color: var(--warn);
+  color: var(--warn);
+  background: var(--warn-wash);
+}
+
+dl.glossary {
+  display: grid;
+  grid-template-columns: minmax(10em, 16em) 1fr;
+  margin: 0;
+  background: var(--surface);
+  border-top: 1px solid var(--rule-strong);
+  border-left: 1px solid var(--rule);
+}
+dl.glossary dt,
+dl.glossary dd {
+  margin: 0;
+  padding: 8px 12px;
+  border-right: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+}
+dl.glossary dt {
+  color: var(--form);
+  font-weight: 600;
+  font-size: 0.8125rem;
+}
+dl.glossary dd {
+  font-size: 0.8125rem;
+  max-width: none;
+}
+
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--rule-strong);
+  border: 2px solid var(--page);
+}
+::-webkit-scrollbar-track {
+  background: var(--page);
+}
+
+@media (max-width: 720px) {
+  .wrap {
+    padding: 0 12px;
+  }
+  .fields {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .field > .v {
+    font-size: 1.125rem;
+  }
+  dl.glossary {
+    grid-template-columns: 1fr;
+  }
+  dl.glossary dt {
+    border-bottom: 0;
+    padding-bottom: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+/* 切り替えボタン群(配色・グラフの値) */
+.seg {
+  display: inline-flex;
+  flex-wrap: wrap;
+  border: 1px solid var(--rule-strong);
+}
+.seg button {
+  font: inherit;
+  font-size: 0.75rem;
+  padding: 3px 10px;
+  border: 0;
+  border-left: 1px solid var(--rule);
+  background: var(--surface);
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.seg button:first-child {
+  border-left: 0;
+}
+.seg button:hover {
+  background: var(--form-wash);
+}
+.seg button[aria-pressed='true'] {
+  background: var(--form);
+  color: var(--surface);
+}
+
+/* グラフの表ビュー */
+details.tableview {
+  margin-top: 8px;
+}
+details.tableview > summary {
+  cursor: pointer;
+  font-size: 0.8125rem;
+  color: var(--form);
+  padding: 4px 0;
+}
+
+/* タッチ操作でダブルタップ拡大の待ちを入れない */
+a,
+button,
+select,
+input,
+summary {
+  touch-action: manipulation;
+}
+
+/* フィルタ行が固定表示される幅では、ページ内リンクの飛び先をその高さ分下げる(--filterbar-h は FilterBar が設定) */
+@media (min-width: 900px) {
+  .section {
+    scroll-margin-top: calc(var(--filterbar-h, 0px) + 12px);
+  }
+  /* キーボードで移ったリンクやボタンが固定表示のフィルタ行の下に隠れないように */
+  html {
+    scroll-padding-top: calc(var(--filterbar-h, 0px) + 12px);
+  }
+}
