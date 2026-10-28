@@ -14,29 +14,29 @@ GitHub Copilot(デスクトップ autopilot / CLI / SDK / VS Code)のセッシ�
 
 を**LLMなしで**抽出・集計し、単一HTMLで可視化する。さらに「各タスクを人手でやった場合の工数」を **LLM に推定させる**ための評価バンドルを出力し、外部 LLM(M365 Copilot 等)でもツール内バックエンド(`copilot -p` 等)でも同じ形式の判定結果 `judgments.json` を戻してレポートに合成する。
 
-## データソース(2026-10-27 実測)
+## データソース(2026-10-27 時点の形式)
 
 ルートは `%USERPROFILE%\.copilot`。**読む前に必ずスクラッチへコピーする**。SQLite は `-wal` / `-shm` を同梱コピーするか、`node:sqlite` の読み取り専用接続から `VACUUM INTO` で複製する(実ファイルで動作確認済み。出力は journal_mode=delete の単一ファイルになる)。
 
-| ソース | 内容 | 実測 |
+| ソース | 内容 | 備考 |
 |---|---|---|
-| `session-state/<id>/workspace.yaml` | id, cwd, git_root, repository, branch, name, client_name, created/updated | 628 ディレクトリ |
-| `session-state/<id>/events.jsonl` | 全イベント(JSONL、1行1イベント、`type`/`data`/`id`/`timestamp`/`parentId`) | 182 本、合計 512MB、最大 72MB |
-| `session-state/<id>/session.db` | todos / todo_deps / inbox_entries | 119 個、WAL なし。優先度低 |
-| `session-state/<id>/checkpoints/*.md` | 要約チェックポイント | 多数。`session-state` 全体で 1.4GB |
-| `session-store.db`(ルート、schema_version 8) | `sessions`(505) `turns`(580) `checkpoints`(37) `session_files`(53) `assistant_usage_events`(1950) `search_index`(FTS5, 802) `forge_skill_proposals`(0) | 本体 6.2MB + WAL 4.2MB |
-| `data.db`(ルート、デスクトップアプリ) | `projects` `workspaces` `sessions`(30) `session_context_usage`(1262) 等 | 本体 1.9MB + WAL 4.1MB。補助ソース、後回し |
+| `session-state/<id>/workspace.yaml` | id, cwd, git_root, repository, branch, name, client_name, created/updated | セッションごとに 1 つ |
+| `session-state/<id>/events.jsonl` | 全イベント(JSONL、1行1イベント、`type`/`data`/`id`/`timestamp`/`parentId`) | 1 本で数十 MB になることがある |
+| `session-state/<id>/session.db` | todos / todo_deps / inbox_entries | WAL なし。優先度低 |
+| `session-state/<id>/checkpoints/*.md` | 要約チェックポイント | 多数。`session-state` 全体は GB 単位になりうる |
+| `session-store.db`(ルート、schema_version 8) | `sessions` `turns` `checkpoints` `session_files` `assistant_usage_events` `search_index`(FTS5) `forge_skill_proposals` | 本体 + WAL |
+| `data.db`(ルート、デスクトップアプリ) | `projects` `workspaces` `sessions` `session_context_usage` 等 | 本体 + WAL。補助ソース、後回し |
 
 ### 索引の正典
 
-`session-store.db.sessions`(505)と `session-state/` ディレクトリ(628)は重なりが 368 件で、どちらも他方を包含しない。**両者の和集合**をセッション一覧とし、出所(`sources: ["db","dir"]`)を記録する。
+`session-store.db.sessions` と `session-state/` ディレクトリは一部だけが重なり、どちらも他方を包含しない。**両者の和集合**をセッション一覧とし、出所(`sources: ["db","dir"]`)を記録する。
 
 ### トークンの正典
 
-- `assistant_usage_events`(68 セッション、2026-07-08 以降): input/output/cache_read/cache_write/reasoning、`total_nano_aiu`、`request_multiplier`、`agent_id`、`parent_tool_call_id`、model、latency、`reasoning_effort`、`finish_reason`。
-- `events.jsonl` の `session.usage_record`(39 セッション、Copilot 1.0.95 以降): ほぼ同内容 + `cost`(premium request)、`apiCallId`、`initiator`。
-- 重なりは 32 セッション。**和集合 75 セッション**が「入力トークンあり」。両方ある場合は `assistant_usage_events` を優先し、`usage_record` は欠けた分を補う(同一リクエストの重複は timestamp と model と output_tokens の一致で除去)。
-- それ以前のセッションでも、`session.shutdown.data.modelMetrics` にモデル別の累計(input/output/cache/reasoning)が残っているものが 53 件ある。DB と両方あるセッション 63 件中 62 件で完全一致したため(Phase 1 レビューで実測)、DB も usage_record も無いときは **`shutdown` を第 3 の出所**として採用する(和集合で約 128 セッションが入力トークンあり)。
+- `assistant_usage_events`(2026-07-08 以降): input/output/cache_read/cache_write/reasoning、`total_nano_aiu`、`request_multiplier`、`agent_id`、`parent_tool_call_id`、model、latency、`reasoning_effort`、`finish_reason`。
+- `events.jsonl` の `session.usage_record`(Copilot 1.0.95 以降): ほぼ同内容 + `cost`(premium request)、`apiCallId`、`initiator`。
+- 両者は一部だけが重なるので、**和集合**を「入力トークンあり」とする。両方ある場合は `assistant_usage_events` を優先し、`usage_record` は欠けた分を補う(同一リクエストの重複は timestamp と model と output_tokens の一致で除去)。
+- それ以前のセッションでも、`session.shutdown.data.modelMetrics` にモデル別の累計(input/output/cache/reasoning)が残っているものがある。DB と両方あるセッションでほぼすべて完全一致したため(Phase 1 レビューで実測)、DB も usage_record も無いときは **`shutdown` を第 3 の出所**として採用する。
 - それも無いセッションは `assistant.message.data.outputTokens` と `session.compaction_complete.preCompactionTokens`、`subagent.completed.totalTokens` しか無い。入力トークンは `null`(`source: partial`)とし、UI で「推計不可」を明示する。
 
 ### イベント種別(実データ由来)
@@ -45,22 +45,22 @@ GitHub Copilot(デスクトップ autopilot / CLI / SDK / VS Code)のセッシ�
 
 よって **実データで観測した種別名の一覧** をコード(`packages/core/src/event-types.ts`。件数などのデータは持たない)に持って正典とし、公式スキーマは `vendor/` に型の参考として置くだけにする。未知種別は捨てずに `unknown` として件数を数え、警告を出す。
 
-分析に使う主な種別(括弧は全セッション合計件数):
+分析に使う主な種別:
 
-- トークン: `session.usage_record`(1096) `session.usage_checkpoint`(138) `assistant.message`(19139、`outputTokens`) `session.compaction_start/complete`(100/98)
-- ツール: `tool.execution_start/complete`(33181/33171、`toolName` `arguments` `turnId` `model`)
-- skills: `tool.execution_start` の `toolName:"skill"`(27、`arguments.skill`)および `skill.invoked`(15) `skill.invoked_ref`(1) `skill.context_delivered_ref`(7)。**両方の形を受ける**
-- agents: `subagent.started/completed/failed/selected/configured`(329/297/30/36/27、`agentName` `totalTokens`)
-- hooks: `hook.start/end`(15304 each、`hookType` `input.toolName`)
-- 指示ファイル: `system.message` 本文に AGENTS.md(436 件で言及)/ CLAUDE.md(182)/ copilot-instructions.md(4)が埋め込まれる。本文中の見出しやパスから「どのファイルが何文字注入されたか」を切り出す
-- wiki: ツール引数に `global-llm-wiki` を含むセッション 19(system.message での言及も含めた全行では 44)。`view` で index.md → 個別ページの順に読んだか、`skill` の wiki-ingest/query 呼び出しかを区別する
-- 摩擦: `abort`(44) `session.error`(32) `permission.requested/completed`(88) `ask_user` ツール(219) `session.mode_changed`(204) `session.model_change`(173)
-- 構造: `user.message`(1082) `assistant.turn_start/end` `session.task_complete`(191) `session.plan_changed`(186) `session.resume`(71) `session.shutdown`(172)
+- トークン: `session.usage_record` `session.usage_checkpoint` `assistant.message`(`outputTokens`) `session.compaction_start/complete`
+- ツール: `tool.execution_start/complete`(`toolName` `arguments` `turnId` `model`)
+- skills: `tool.execution_start` の `toolName:"skill"`(`arguments.skill`)および `skill.invoked` `skill.invoked_ref` `skill.context_delivered_ref`。**両方の形を受ける**
+- agents: `subagent.started/completed/failed/selected/configured`(`agentName` `totalTokens`)
+- hooks: `hook.start/end`(`hookType` `input.toolName`)
+- 指示ファイル: `system.message` 本文に AGENTS.md / CLAUDE.md / copilot-instructions.md が埋め込まれる。本文中の見出しやパスから「どのファイルが何文字注入されたか」を切り出す
+- wiki: ツール引数に `global-llm-wiki` を含むセッションと、system.message での言及がある。`view` で index.md → 個別ページの順に読んだか、`skill` の wiki-ingest/query 呼び出しかを区別する
+- 摩擦: `abort` `session.error` `permission.requested/completed` `ask_user` ツール `session.mode_changed` `session.model_change`
+- 構造: `user.message` `assistant.turn_start/end` `session.task_complete` `session.plan_changed` `session.resume` `session.shutdown`
 
 ## 方針決定(ユーザー確認済み)
 
 1. 削減量は **LLM 推定**。外部 LLM(M365 Copilot など)向けにバンドルを出力し、ツール内でも `copilot -p`(Luna 等)で回せるようにする。
-2. **全クライアント**(github/autopilot 378、github/cli 96、sdk 15、vscode-agent-host 1)を対象にし、CLI と HTML の両方でフィルタできるようにする。
+2. **全クライアント**(github/autopilot、github/cli、sdk、vscode-agent-host など)を対象にし、CLI と HTML の両方でフィルタできるようにする。
 3. UI は **impeccable** を適用(`/impeccable init` 後に実装、`/impeccable audit` + web-design-guidelines をレビューゲートに含める)。データ可視化は dataviz skill の規約に従う。
 4. **TypeScript / Node 24 / ESM**。SQLite は `node:sqlite`(ExperimentalWarning だけ `process.on('warning')` で抑制。FTS5 は動作確認済み)。問題が出たら better-sqlite3 に切替。
 5. 実装は Opus のエージェント、レビューは Fable(オーケストレータ)。**各フェーズは E2E テスト合格をゲートに次へ進む**。
@@ -187,7 +187,7 @@ Phase 3 での追加(互換): `items[].judge = {backend, model, ranAt}`(項目�
 
 ## 改善フェーズ(2026-10-28 のレビュー反映)
 
-実データ 756 セッションのレポートをレビューした結果(2026-10-28)、(1) 空セッションのノイズ、(2) 「何を使ったか」の内訳が無い、(3) 新しいログ形式への追従漏れ、の 3 点で振り返りツールとしての価値が落ちていた。以下の 3 フェーズで直す。進め方は Phase 1〜4 と同じ(Opus 実装 → Fable レビュー + E2E 合格で次へ)。各フェーズで README の該当箇所も同じ変更で更新する。
+実データのレポートをレビューした結果(2026-10-28)、(1) 空セッションのノイズ、(2) 「何を使ったか」の内訳が無い、(3) 新しいログ形式への追従漏れ、の 3 点で振り返りツールとしての価値が落ちていた。以下の 3 フェーズで直す。進め方は Phase 1〜4 と同じ(Opus 実装 → Fable レビュー + E2E 合格で次へ)。各フェーズで README の該当箇所も同じ変更で更新する。
 
 共通の制約: 元の `~/.copilot` は書かない(mtime 不変の E2E を維持)。HTML は 5MB 未満・外部参照なし。`--anonymize` で新しく出す固有名(MCP サーバー名を除くパス・リポジトリ名・ファイル名)も伏せる。fixture に新しい記録形式を足すときは生成器に架空の値で足す(実データ・匿名化した実データは使わない)。
 
@@ -195,17 +195,17 @@ Phase 3 での追加(互換): `items[].judge = {backend, model, ranAt}`(項目�
 
 実測した問題と直し方:
 
-1. **空セッション**(依頼 0・ツール 0・応答 0)が 576/756(76%)。レコードに `empty: boolean` を持たせ、レポートの絞り込みに「空のセッションを含める」(既定オフ、URL の `#` に残す)を足す。既定の集計・一覧・プロジェクト表・中央値はすべて空を除いた値にし、全体サマリに「空のセッション N 件を除外」と出す。`metrics.json` は空を除いた集計と、空の件数を持つ。
+1. **空セッション**(依頼 0・ツール 0・応答 0)が全体の大半を占める。レコードに `empty: boolean` を持たせ、レポートの絞り込みに「空のセッションを含める」(既定オフ、URL の `#` に残す)を足す。既定の集計・一覧・プロジェクト表・中央値はすべて空を除いた値にし、全体サマリに「空のセッション N 件を除外」と出す。`metrics.json` は空を除いた集計と、空の件数を持つ。
 2. **モデル名の表記揺れ**: `claude-haiku-5-5` と `claude-haiku-5.5` などが別モデルになる。`claude-<family>-<major>-<minor>`(minor が 1 桁、末尾に日付等が続かない)を `<major>.<minor>` に正規化し、`models` を重複除去する。usage_record の `modelDisplayName` 由来の `<UUID>/` 接頭辞も外す(同一リクエストに `model` と両方残るのを実測、Phase 5 で追加)。正規化前の名前は捨てる(どの出所も同じモデルを指すため)。
-3. **内部ツールの混入**: `report_intent`(2,683 件)がツール数に入る。内部ツールの一覧を定数で持ち(少なくとも `report_intent`)、`tools.byName` / `total` から外して `tools.internal` に別計上する。
-4. **摩擦の「エラー」表記**: 全体サマリの「エラー 777」はツール失敗 742 + session.error 35。「ツール失敗」と「エラー」を分けて表示する。
+3. **内部ツールの混入**: `report_intent` がツール数に入る。内部ツールの一覧を定数で持ち(少なくとも `report_intent`)、`tools.byName` / `total` から外して `tools.internal` に別計上する。
+4. **摩擦の「エラー」表記**: 全体サマリの「エラー」はツール失敗と session.error の合計になっている。「ツール失敗」と「エラー」を分けて表示する。
 5. **変更ファイルの二重計上**: 相対パスと絶対パスで同じファイルが 2 回載る。cwd 基準で絶対パスに解決し、Windows では大文字小文字を無視して重複除去する。`~/.copilot/session-state/` 配下(plan.md 等)は変更ファイルから外し、件数だけ別に持つ。
 6. **新形式への追従**(実データで確認):
    - `session.workspace_file_changed` は 2026-07-09 以降出ない。`tool.execution_complete.data.fileEdits[]`(`path`, `kind`: edit/create/delete)を読み、`files.deleted` を新設する。両方ある場合は重複除去。
    - `user.message` の `isAutopilotContinuation: true` はユーザーのターンに数えず、`autopilotContinuations` に別計上する。
-   - subagent の `assistant.message` で `data.parentToolCallId` が無くトップレベルの `agentId` だけを持つもの(34 件)を本体の応答として数えない(`assistantMessages` と `lastAssistantMessage`)。
+   - subagent の `assistant.message` で `data.parentToolCallId` が無くトップレベルの `agentId` だけを持つものを本体の応答として数えない(`assistantMessages` と `lastAssistantMessage`)。
    - `assistant.message.outputTokens` は 2026-08-31 以降出ない。出力トークンの出所ごとの件数を月別に数え、DB・usage_record・shutdown・outputTokens のいずれも無い非空セッションの件数を `metrics.json` と全体サマリの「入力トークン記録の内訳」に出す(黙って 0 にしない)。
-7. **クライアント不明 262 件**: 原因(workspace.yaml の無い DB だけのセッション等)を調べ、`session-store.db.sessions.host_type` 等から決められるなら埋める。決められないものは「不明」のまま理由を README に書く。
+7. **クライアント不明のセッション**: 原因(workspace.yaml の無い DB だけのセッション等)を調べ、`session-store.db.sessions.host_type` 等から決められるなら埋める。決められないものは「不明」のまま理由を README に書く。
 
 E2E(`e2e/phase5.test.ts`): fixture に上の各形式(空セッション、`-5-5` 形式のモデル名、`report_intent`、相対・絶対の重複パス、`fileEdits[]` の削除、`isAutopilotContinuation`、agentId だけの subagent 応答)を合成して足し、件数が手計算値と一致する。既存の phase1〜3 の E2E が通る(期待値の変更は理由を添えて)。`ATLAS_LIVE=1` で実データの空セッション数・正規化後のモデル数・除去した内部ツール件数をログに出す。
 
@@ -239,4 +239,4 @@ E2E(`e2e/phase7.test.ts`): fixture で各集計が手計算と一致し、todo �
 - 索引・トークンとも「正典を一つに決める」のではなく和集合+出所記録にした(実測で包含関係が無いため)。
 - 公式スキーマを CI の正典にしない(1.0.18 のもので実データと乖離)。
 - 採らなかった案: Python 標準ライブラリ構成、ローカルサーバ型ダッシュボード、生イベントの HTML 埋め込み、`--add-dir` によるバンドル受け渡し。
-- `data.db`(デスクトップアプリ)は改善フェーズでも読まない。対象はアプリのセッション 30 件だけで(CLI のセッションは載らない)、モード・推論強度・文脈の内訳は events.jsonl と session-store.db で代替でき、`accounts.access_token` などの資格情報列を含むため。
+- `data.db`(デスクトップアプリ)は改善フェーズでも読まない。対象はアプリのセッションだけで(CLI のセッションは載らない)、モード・推論強度・文脈の内訳は events.jsonl と session-store.db で代替でき、`accounts.access_token` などの資格情報列を含むため。

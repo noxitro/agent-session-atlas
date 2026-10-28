@@ -37,7 +37,7 @@ TypeScript / Node 24 / npm workspaces。レポートは Vite + Svelte 5 を単�
 
 ## Capabilities and Constraints
 
-- 実データの規模(2026-10-28): セッション 756、events.jsonl 合計 512MB、session-state 全体 1.4GB。入力トークンが分かるのは 128 セッション、出力のみ 46、無し 582。この欠測を UI で隠さない。
+- 実データは数百セッション・数百 MB 規模になりうる。入力トークンが分かるのは一部のセッションだけで、出力のみ・記録なしのセッションが多い。この欠測を UI で隠さない。
 - HTML に生イベントは埋め込まない(サイズ上限の目安 5MB)。`file://` で動くため fetch は使えない。
 - フィルタ軸: プロジェクト、期間、クライアント、モデル、ブランチ、タスク分類(judgments があれば)、入力トークン記録の有無。
 - 用語: nano AIU(AI クレジットの内部単位)、compaction(文脈圧縮)、skill / agent / hook(Copilot の拡張機構)、指示ファイル(AGENTS.md / CLAUDE.md / copilot-instructions.md)、llm-wiki(作者の個人ナレッジ vault)。

@@ -83,7 +83,7 @@ npm run atlas -- --help                    # 使い方
   - リクエストの起点: API リクエストを誰が起こしたか(`initiator`: 利用者の依頼 / エージェント / サブエージェント / compaction / 記録なし)。リクエスト単位の明細があるセッションだけです。
   - 文脈の内訳(ツール定義): 毎リクエストの文脈に入るツール定義のトークン(セッションの最後の値。`session.shutdown` か `session.compaction_complete` の `toolDefinitionsTokens`、無ければ usage_record の `toolTokenCount`)の平均・中央値と、文脈(system・会話・ツール定義)に占める割合、使えるツールの数、プロジェクト別の平均。
   - モデル別の待ち時間: 最初のトークンまで(`time_to_first_token_ms` / `timeToFirstTokenMs`)とリクエスト全体(`duration_ms` / `duration`)の中央値と p90(遅い方から 1 割の境目)。
-  - ツールの所要時間: 開始から完了まで(`toolCallId` で対応)。5 回以上記録のあるツールを p90 の長い順に出し、「全件を表で見る」で全ツールを見られます。**1 時間を超えたもの(放置や利用者の返答待ち。実データで 23 時間超があった)は外れ値として中央値・p90 から除き、件数だけ出します。**
+  - ツールの所要時間: 開始から完了まで(`toolCallId` で対応)。5 回以上記録のあるツールを p90 の長い順に出し、「全件を表で見る」で全ツールを見られます。**1 時間を超えたもの(放置や利用者の返答待ち。1 日近いものもある)は外れ値として中央値・p90 から除き、件数だけ出します。**
   - 摩擦の詳細: 権限の確認の結果(承認 = `approved` / `approved-for-location`、拒否 = `denied…`)、エラーの種別(`session.error` の `errorType`: quota / rate_limit など)、サブエージェント失敗の理由(`subagent.failed` の `error` を 利用上限(402)/ 回数制限(429)/ 中断 / 応答なし / その他 に分類。詳細ページには本文を短く出します)、compaction 自体が使ったトークンと compaction で減ったトークン。
   - todo: `session.db` の todo の状態別件数(完了 / 進行中 / 未着手 / 保留)、完了率(完了 ÷ 全件。セッション終了時点)、依存関係の数。
 - **プロジェクト別**: プロジェクトごとの集計表。列見出しで並べ替え、プロジェクト名を押すとそのプロジェクトに絞り込みます。入力トークンの下の小さな「5/30」は、記録のあるセッション数 / 全セッション数です。「変更行」は追加行数(下に削除行数)です。
@@ -155,7 +155,7 @@ npm run atlas -- judge run --model <モデル名>      # 判定に使うモデ�
 | バックエンド | 中身 | 費用 |
 |---|---|---|
 | `copilot-cli`(既定) | `copilot -p` を空の作業フォルダで起動し、パケットをプロンプトに埋め込んで渡す | GitHub Copilot のサブスクリプション内で AI クレジット(旧課金では premium request)を消費します(1 セッション 1 回以上) |
-| `opencode` | `opencode run --format json` | 選んだモデル次第(無料モデルなら無料)。`--model openrouter/nvidia/nemotron-3-ultra-550b-a55b:free` で実走を確認済み(1 件 20〜30 秒、入力約 19,000 トークン)。opencode の既定モデルがカタログから消えていると `UnknownError` になるので、その場合は `opencode models` で残っている無料モデルを `--model` に指定してください |
+| `opencode` | `opencode run --format json` | 選んだモデル次第(無料モデルなら無料)。`--model openrouter/nvidia/nemotron-3-ultra-550b-a55b:free` で実走を確認済み(1 件 20〜30 秒)。opencode の既定モデルがカタログから消えていると `UnknownError` になるので、その場合は `opencode models` で残っている無料モデルを `--model` に指定してください |
 | `anthropic` | Anthropic Messages API を直接呼ぶ(既定モデル `claude-sonnet-5-5`、環境変数 `ANTHROPIC_API_KEY` が必要) | **従量課金**です。明示的に `--backend anthropic` を指定したときだけ使います |
 
 - `copilot-cli` は `--add-dir` を使いません(そのフォルダの `.github/skills` / `agents` を信頼設定として読むため、他セッションの本文を含むバンドルが指示の注入口になりうるからです)。ユーザーの AGENTS.md 等も読ませません(`--no-custom-instructions`)。`--allow-all-tools` は既定で付けます(付けたくないときは `--no-allow-tools`)。
