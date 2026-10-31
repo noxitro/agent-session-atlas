@@ -1,5 +1,5 @@
 // @atlas/report の Node 側エントリ(CLI の build コマンドが使う)
-export { buildReport, ensureTemplate, anonymizeMetrics, TEMPLATE_PATH, REPORT_ROOT } from './build.ts';
+export { buildReport, ensureTemplate, anonymizeMetrics, TEMPLATE_PATH, REPORT_ROOT, HTML_SIZE_LIMIT } from './build.ts';
 export type { BuildInput, BuildResult } from './build.ts';
 export { renderDetailHtml, esc } from './detail.ts';
 export { createAnonymizer, identityAnonymizer, shortProjectLabel } from './lib/anonymize.ts';

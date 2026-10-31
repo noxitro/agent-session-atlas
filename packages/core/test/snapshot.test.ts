@@ -53,6 +53,21 @@ describe('snapshot', () => {
     }
   });
 
+  it('data.db(資格情報列を含む)は複製せず、以前のバージョンが残した複製は消す', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'atlas-snap-'));
+    const src = join(base, 'src');
+    const dest = join(base, 'dest');
+    await mkdir(join(src, 'session-state'), { recursive: true });
+    await mkdir(dest, { recursive: true });
+    await writeFile(join(src, 'data.db'), 'not read');
+    await writeFile(join(dest, 'data.db'), 'stale copy');
+    const before = await mtimes(src);
+    const m = await snapshot(src, dest);
+    expect(await mtimes(src)).toEqual(before);
+    expect(existsSync(join(dest, 'data.db'))).toBe(false);
+    expect(Object.keys(m.databases)).not.toContain('data.db');
+  });
+
   it('元ディレクトリが無ければ例外', async () => {
     await expect(snapshot(join(tmpdir(), 'atlas-no-such-dir-xyz'), join(tmpdir(), 'atlas-x'))).rejects.toThrow(/元ディレクトリが無い/);
   });

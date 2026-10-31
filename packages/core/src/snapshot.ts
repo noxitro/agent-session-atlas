@@ -4,7 +4,10 @@ import { basename, dirname, join } from 'node:path';
 import { openWritable, sqlString } from './sqlite.ts';
 import type { InstalledInventory } from './types.ts';
 
-export const SNAPSHOT_DBS = ['session-store.db', 'data.db'] as const;
+/** 複製する SQLite(ルート直下)。data.db(デスクトップアプリ)は資格情報列を含み、どこからも読まないので複製しない */
+export const SNAPSHOT_DBS = ['session-store.db'] as const;
+/** 以前のバージョンが複製していたが今は読まないファイル。snapshot 時に残っていれば消す */
+export const SNAPSHOT_STALE_FILES = ['data.db'] as const;
 export const SNAPSHOT_SESSION_FILES = ['workspace.yaml', 'events.jsonl'] as const;
 /** セッションごとの SQLite(todos / todo_deps)。Phase 7 から VACUUM INTO で複製する */
 export const SNAPSHOT_SESSION_DB = 'session.db';
@@ -49,6 +52,8 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
     databases: {},
     sessions: { dirs: 0, copiedFiles: 0, reusedFiles: 0, skippedBySince: 0, bytes: 0, dbCopied: 0, dbReused: 0 },
   };
+
+  for (const name of SNAPSHOT_STALE_FILES) await rm(join(dest, name), { force: true });
 
   for (const name of SNAPSHOT_DBS) {
     const from = join(src, name);

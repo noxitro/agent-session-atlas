@@ -60,9 +60,14 @@ export interface BuildInput {
   templatePath?: string;
 }
 
+/** atlas.html の大きさの上限(docs/PLAN.md「HTML の方針」。超えても出力はするが、CLI が注意を出す) */
+export const HTML_SIZE_LIMIT = 5 * 1024 * 1024;
+
 export interface BuildResult {
   htmlPath: string;
   htmlBytes: number;
+  /** htmlBytes が HTML_SIZE_LIMIT 以上 */
+  oversized: boolean;
   embeddedBytes: number;
   detailDir: string;
   detailPages: number;
@@ -140,6 +145,7 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
   return {
     htmlPath,
     htmlBytes: Buffer.byteLength(html),
+    oversized: Buffer.byteLength(html) >= HTML_SIZE_LIMIT,
     embeddedBytes: Buffer.byteLength(html) - Buffer.byteLength(template),
     detailDir,
     detailPages: input.sessions.length,

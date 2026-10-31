@@ -43,7 +43,7 @@ npm run atlas -- --help                    # 使い方
 | `--since <date>` | この日時以降に更新されたセッションだけ |
 | `--project <key>` | プロジェクトで絞る(完全一致、無ければ部分一致) |
 | `--client <name>` / `--model <name>` / `--branch <name>` | クライアント・モデル・ブランチで絞る |
-| `--anonymize` | プロジェクト名・パス・リポジトリ名(git の origin から決めたものを含む)・ブランチを `project-01` などの仮名にし、依頼本文・セッション名・ファイルパスを出さない。「(ホーム)」「(一時フォルダ)」「(atlas の判定)」は固有名を含まないのでそのまま、MCP サーバー名・skill 名・ツール名・agent 名(カスタム agent を含む)・hook の種別も出ます |
+| `--anonymize` | プロジェクト名・パス・リポジトリ名(git の origin から決めたものを含む)・ブランチを `project-01` などの仮名にし、依頼本文・セッション名・ファイルパス・自由記述(タスク完了の要約、中断の理由、エラーやサブエージェント失敗のメッセージ本文。`rate_limit` のような種別名だけは出る)を出さない。「(ホーム)」「(一時フォルダ)」「(atlas の判定)」は固有名を含まないのでそのまま、MCP サーバー名・skill 名・ツール名・agent 名(カスタム agent を含む)・hook の種別も出ます |
 | `--judgments <file>` | LLM の判定結果 `judgments.json` の場所(既定: `out/judgments.json` があれば使う) |
 | `--bundle <dir>` | 評価バンドルの場所(既定: `out/bundle/`) |
 | `--include-empty` | `bundle` で、依頼の記録が無いセッションもパケットにする |
@@ -57,7 +57,7 @@ npm run atlas -- --help                    # 使い方
 
 `extract` は、repository の記録が無いセッションについて、作業フォルダ(`gitRoot`。無ければ `cwd` から上へ探した `.git`)の `.git/config` の `[remote "origin"]` を**読むだけ**で(git コマンドは使いません)、URL から「所有者/リポジトリ」を取り出してプロジェクトにします。worktree(`.git` がファイル)は `gitdir` → `commondir` を辿って共有の設定を読みます。origin が無い・読めないときはパスのままです。上へ探すときは、ホームディレクトリと一時フォルダより上には上りません。
 
-`out/atlas.html` は 1 ファイルで完結しており(外部への通信なし)、サーバ無しにブラウザで開けます。詳細ページを含めて共有するときは `out/atlas.html` と `out/sessions/` フォルダを一緒に渡してください。
+`out/atlas.html` は 1 ファイルで完結しており(外部への通信なし)、サーバ無しにブラウザで開けます。5 MB 以上になると `build` が注意を出します(出力はします)。そのときは `--since` で期間を、`--project` などで対象を絞って作り直してください。詳細ページを含めて共有するときは `out/atlas.html` と `out/sessions/` フォルダを一緒に渡してください。
 
 ## 画面の見方
 
@@ -158,7 +158,7 @@ npm run atlas -- judge run --model <モデル名>      # 判定に使うモデ�
 | `opencode` | `opencode run --format json` | 選んだモデル次第(無料モデルなら無料)。`--model openrouter/nvidia/nemotron-3-ultra-550b-a55b:free` で実走を確認済み(1 件 20〜30 秒)。opencode の既定モデルがカタログから消えていると `UnknownError` になるので、その場合は `opencode models` で残っている無料モデルを `--model` に指定してください |
 | `anthropic` | Anthropic Messages API を直接呼ぶ(既定モデル `claude-sonnet-5-5`、環境変数 `ANTHROPIC_API_KEY` が必要) | **従量課金**です。明示的に `--backend anthropic` を指定したときだけ使います |
 
-- `copilot-cli` は `--add-dir` を使いません(そのフォルダの `.github/skills` / `agents` を信頼設定として読むため、他セッションの本文を含むバンドルが指示の注入口になりうるからです)。ユーザーの AGENTS.md 等も読ませません(`--no-custom-instructions`)。`--allow-all-tools` は既定で付けます(付けたくないときは `--no-allow-tools`)。
+- `copilot-cli` は `--add-dir` を使いません(そのフォルダの `.github/skills` / `agents` を信頼設定として読むため、他セッションの本文を含むバンドルが指示の注入口になりうるからです)。ユーザーの AGENTS.md 等も読ませません(`--no-custom-instructions`)。`--allow-all-tools` は既定で付けます(付けたくないときは `--no-allow-tools`)が、判定にツールは要らないので、シェル・ファイルの作成と変更・URL アクセス(`shell` / `write` / `url`)は常に `--deny-tool` で拒否します(`copilot help permissions` によれば拒否は `--allow-all-tools` より優先されます。パケット本文に「コマンドを実行せよ」のような文が含まれていても動かないようにするためです。実走での確認はクレジット超過のためまだです)。プロンプト中のパケットの境界には依頼ごとの乱数を付け、本文側で境界を偽装できないようにしています。
 - 判定自体の使用量は `copilot` の `--usage-output-file` から集計し、`judgments.json` の `judge.usage` に残します。
 - `copilot` の場所は環境変数 `ATLAS_COPILOT_BIN` で指定できます(テストでは偽の copilot `fixtures/fake-copilot.mjs` に差し替えています)。
 - 月間の AI クレジット(旧課金では premium request)を使い切っていると、どのモデルを指定しても `quota_exceeded HTTP 402` で失敗します(消費はありません)。`judgments.json` の `failures` に残るので、翌月や別のバックエンドで `judge run` を再実行すれば再試行されます。
@@ -202,7 +202,7 @@ git push origin v0.1.0
 
 ### 元データを書き換えないための仕組み
 
-- `session-store.db` / `data.db` と各セッションの `session.db` は SQLite です(前の 2 つは WAL 付き)。元を直接開くと読み取り専用でも `-shm` が書き換わる(mtime が変わる)ため、本体と `-wal` をバイト列のままコピーし、コピー側から `VACUUM INTO` で単一ファイルにします。コピー中に元が更新されたら取り直します。
+- `session-store.db` と各セッションの `session.db` は SQLite です(前者は WAL 付き)。デスクトップアプリの `data.db` は資格情報の列(`accounts.access_token` など)を含み、集計にも使わないので複製しません(以前のバージョンが `out/snapshot/` に残した複製は次の `snapshot` で消します)。元を直接開くと読み取り専用でも `-shm` が書き換わる(mtime が変わる)ため、本体と `-wal` をバイト列のままコピーし、コピー側から `VACUUM INTO` で単一ファイルにします。コピー中に元が更新されたら取り直します。
 - `events.jsonl` / `workspace.yaml` はコピーしてから読みます。2 回目以降はサイズと更新時刻が同じファイルを再利用します。
 
 ### fixtures

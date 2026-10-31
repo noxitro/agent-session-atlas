@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import { dirname, join, posix, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { computeMetrics, extract, METRICS_SCHEMA_VERSION, snapshot, type MetricsFile, type SessionRecord, type SessionsFile, type SnapshotManifest } from '../../core/src/index.ts';
-import { buildReport, ensureTemplate, matchesBase, parseJudgments, type BuildResult, type JudgmentsIndex } from '../../report/src/index.ts';
+import { buildReport, ensureTemplate, HTML_SIZE_LIMIT, matchesBase, parseJudgments, type BuildResult, type JudgmentsIndex } from '../../report/src/index.ts';
 import {
   anthropicBackend,
   buildBundle,
@@ -218,6 +218,10 @@ export async function runBuild(p: Paths, o: BuildOptions, log: Log): Promise<Bui
   log(
     `build: ${r.htmlPath}(${mb(r.htmlBytes)}、うち埋め込みデータ ${mb(r.embeddedBytes)})、詳細ページ ${r.detailPages} 件(計 ${mb(r.detailBytes)})${o.anonymize ? '、伏せ字モード' : ''}、${ms(r.ms)}`,
   );
+  if (r.oversized)
+    log(
+      `build: 注意 atlas.html が上限 ${mb(HTML_SIZE_LIMIT)} 以上です(${mb(r.htmlBytes)})。ブラウザで開くのが遅くなります。--since で期間を、--project などで対象を絞って作り直してください`,
+    );
   return r;
 }
 

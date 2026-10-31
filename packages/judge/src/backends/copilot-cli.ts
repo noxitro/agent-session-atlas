@@ -2,6 +2,9 @@
 // - 空の作業ディレクトリで起動し、パケットと指示はプロンプト本文に埋め込む(--add-dir は使わない:
 //   そのディレクトリの .github/skills / agents を信頼設定として読むため、他セッションの本文を含むバンドルが注入の入口になる)
 // - --no-custom-instructions でユーザーの AGENTS.md 等を読ませない(判定がそれに引きずられないように)
+// - 判定はツールを使わない作業なので、--allow-all-tools(非対話モードで必須)を付けても、シェル・ファイル書き込み・URL アクセスは
+//   --deny-tool で拒否する(`copilot help permissions`: 拒否は --allow-all-tools より優先される)。パケット本文からの指示注入で
+//   ツールが動くのを防ぐため
 // - 判定自体のトークン消費は --usage-output-file で受け取る
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -20,9 +23,13 @@ export interface CopilotCliOptions {
   timeoutMs?: number;
 }
 
+/** 判定では使わせないツールの種類(`copilot help permissions` の kind)。shell = シェル、write = ファイルの作成・変更、url = shell / web-fetch の URL アクセス */
+export const JUDGE_DENIED_TOOL_KINDS = ['shell', 'write', 'url'] as const;
+
 export function copilotArgs(prompt: string, usageFile: string, o: CopilotCliOptions): string[] {
   const args = ['-p', prompt, '--output-format', 'json', '--stream', 'off', '--no-ask-user', '-s', '--no-custom-instructions'];
   if (o.allowTools ?? true) args.push('--allow-all-tools');
+  for (const kind of JUDGE_DENIED_TOOL_KINDS) args.push('--deny-tool', kind);
   args.push('--usage-output-file', usageFile);
   if (o.model) args.push('--model', o.model);
   return args;

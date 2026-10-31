@@ -191,6 +191,30 @@ describe('anonymize', () => {
     expect(anon.scrub('domain main')).toBe('domain branch-02');
   });
 
+  it('詳細ページの時系列: 伏せ字モードでは要約・中断理由・エラー本文・サブエージェント失敗の本文を出さず、種別名だけ出す', async () => {
+    const t = '2026-10-01T00:00:00Z';
+    const r = await normalizeSession({
+      id: 'e',
+      workspace: { cwd: 'C:\work\secret-proj', repository: 'acme/secret-proj', created_at: t },
+      events: [
+        { type: 'user.message', data: { content: '依頼 e' }, timestamp: t },
+        { type: 'subagent.started', data: { agentName: 'helper', toolCallId: 'c1' }, timestamp: t },
+        { type: 'subagent.failed', data: { agentName: 'helper', toolCallId: 'c1', error: 'ENOENT: notes/todo.md が無い' }, timestamp: t },
+        { type: 'session.task_complete', data: { summary: 'README.md と normalize.ts を更新した' }, timestamp: t },
+        { type: 'abort', data: { reason: 'user stopped while editing secret-notes.md' }, timestamp: t },
+        { type: 'session.error', data: { errorType: 'rate_limit' }, timestamp: t },
+        { type: 'session.error', data: { message: 'failed to read secret-notes.md' }, timestamp: t },
+      ],
+    });
+    const anon = createAnonymizer([...(await fixture()), r]);
+    const html = renderDetailHtml(r, { anon, css: '', judgment: null, generatedAt: '2026-10-28T00:00:00Z' });
+    for (const secret of ['README.md', 'normalize.ts', 'secret-notes.md', 'todo.md', 'user stopped', 'failed to read']) expect(html).not.toContain(secret);
+    // 種別名(識別子)は出る
+    expect(html).toContain('rate_limit');
+    const plain = renderDetailHtml(r, { anon: identityAnonymizer(), css: '', judgment: null, generatedAt: '2026-10-28T00:00:00Z' });
+    for (const text of ['README.md と normalize.ts を更新した', 'user stopped while editing secret-notes.md', 'failed to read secret-notes.md', 'notes/todo.md が無い']) expect(plain).toContain(text);
+  });
+
   it('詳細ページも伏せ字(パス・本文・ブランチが出ない)', async () => {
     const rs = await fixture();
     const anon = createAnonymizer(rs);

@@ -55,6 +55,14 @@ const KIND_LABEL: Record<TimelineEntry['kind'], string> = {
 };
 
 const missing = (text = '記録なし'): string => `<span class="missing-value">${esc(text)}</span>`;
+
+/** 種別名のような短い識別子(quota / rate_limit など)だけが入る欄(エラー種別・サブエージェント失敗の理由)。
+ *  実際には自由記述のメッセージが入っていることもあるので、伏せ字モードでは識別子の形のときだけ出す */
+const IDENTIFIER_RE = /^[\w.:-]{1,64}$/;
+function identifierOrHidden(text: string, anon: Anonymizer): string {
+  if (!anon.enabled) return esc(truncate(text, 400));
+  return IDENTIFIER_RE.test(text) ? esc(text) : missing('伏せ字モードのため本文を表示しません');
+}
 const n = (v: number | null | undefined): string => (v == null ? missing() : esc(int(v)));
 const field = (k: string, v: string, note = ''): string =>
   `<div class="field"><span class="k">${esc(k)}</span><span class="v">${v}</span>${note ? `<span class="n">${note}</span>` : ''}</div>`;
@@ -111,6 +119,12 @@ function timelineRow(e: TimelineEntry, anon: Anonymizer): string {
       .map(([k, v]) => `${k} ×${v}`)
       .join('、');
     label = `${esc(int(e.count ?? 0))} 回: ${esc(tools)}`;
+  } else if (e.kind === 'task_complete' || e.kind === 'abort') {
+    // 要約・中断理由は自由記述(相対パスやファイル名を含みうる)。伏せ字モードでは出さない
+    const t = anon.freeText(e.label);
+    label = t == null ? missing('伏せ字モードのため本文を表示しません') : esc(truncate(t, 400));
+  } else if (e.kind === 'error') {
+    label = identifierOrHidden(e.label, anon);
   } else {
     label = esc(anon.scrub(truncate(e.label, 400)));
   }
@@ -250,10 +264,10 @@ function execSection(r: SessionRecord, anon: Anonymizer): string {
       }</p>`
     : '';
 
-  // 失敗したサブエージェントの理由(本文は短く、伏せ字モードではパスなどを伏せる)
+  // 失敗したサブエージェントの理由(本文は短く。伏せ字モードでは種別のような識別子のときだけ出す)
   const failed = r.agents.filter((a) => a.status === 'failed' && a.error);
   const reasons = failed.length
-    ? `<h3>失敗したサブエージェント</h3><ul class="note">${failed.map((a) => `<li>${esc(a.name)}: ${esc(anon.scrub(truncate(a.error ?? '', 160)))}</li>`).join('')}</ul>`
+    ? `<h3>失敗したサブエージェント</h3><ul class="note">${failed.map((a) => `<li>${esc(a.name)}: ${anon.enabled ? identifierOrHidden(a.error ?? '', anon) : esc(truncate(a.error ?? '', 160))}</li>`).join('')}</ul>`
     : '';
 
   return section(
