@@ -14,7 +14,6 @@
   import MonthlyChart from './components/MonthlyChart.svelte';
   import ModelChart from './components/ModelChart.svelte';
   import SessionTable from './components/SessionTable.svelte';
-  import Glossary from './components/Glossary.svelte';
   import { applyTheme, loadTheme, type ThemeChoice } from './theme.ts';
 
   let { data, error }: { data: ReportData | null; error: string | null } = $props();
@@ -146,7 +145,7 @@
       <a href="#monthly">月別推移</a>
       <a href="#models">モデル別</a>
       <a href="#sessions">セッション一覧</a>
-      <a href="#glossary">用語の説明</a>
+      <a href="glossary.html">用語の説明</a>
     </nav>
   </header>
 
@@ -179,7 +178,6 @@
     <MonthlyChart months={agg.byMonth} />
     <ModelChart rows={agg.byModel} />
     <SessionTable sessions={filtered} {judged} anonymized={data.anonymized} />
-    <Glossary />
 
     <footer class="foot">
       <p>

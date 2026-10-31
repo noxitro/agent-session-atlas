@@ -1,4 +1,4 @@
-// 共有読者向けの用語説明。atlas.html の「用語」欄と詳細ページの末尾で同じ文面を使う。
+// 共有読者向けの用語説明。out/glossary.html(別ページ)に載せ、atlas.html と詳細ページからリンクする。
 
 export interface Term {
   id: string;

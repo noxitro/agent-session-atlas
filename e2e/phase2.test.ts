@@ -1,6 +1,7 @@
 // Phase 2 E2E(docs/PLAN.md「Phase 2: cli + report」)
 //  a. fixtures から `atlas all` で out/atlas.html を作り、5MB 未満で外部参照(http:// https:// fetch()が無い
 //  g. `atlas export` で各セッションの記録(Markdown)ができ、詳細ページからリンクされる。素の build では作らない
+//  h. 用語の説明は out/glossary.html の 1 枚だけで、atlas.html と詳細ページには本文を載せずリンクする
 //  b. 埋め込み JSON のセッション数が fixtures の件数(DB ∪ ディレクトリ)と一致し、詳細ページが揃う
 //  c. --anonymize で fixture の cwd / git_root / repository / branch の文字列が HTML に出ない
 //  d. ATLAS_LIVE=1 のとき実データで HTML を作り、サイズとプロジェクト数をログに出して 5MB 未満
@@ -15,6 +16,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { parse as parseYaml } from 'yaml';
 import type { SessionsFile } from '../packages/core/src/index.ts';
 import { buildReport, extractEmbedded, type ReportData } from '../packages/report/src/index.ts';
+import { GLOSSARY } from '../packages/report/src/lib/glossary.ts';
 import { computeMetrics, GROUPED_PROJECTS } from '../packages/core/src/index.ts';
 import { buildFixtureHome, FIXTURES, readFixtureStore, ROOT } from './fixture-home.ts';
 
@@ -126,6 +128,20 @@ describe('Phase 2 E2E: fixtures', () => {
     expect((await readdir(join(out, 'sessions'))).some((f) => f.endsWith('.md'))).toBe(false);
     const page = await readFile(join(out, 'sessions', `${data.sessions[0].id}.html`), 'utf8');
     expect(page).not.toContain('セッション記録(Markdown)');
+  });
+
+  it('h. 用語の説明は glossary.html の 1 枚だけ。atlas.html と詳細ページは本文を持たずリンクする', async () => {
+    const g = await readFile(join(out, 'glossary.html'), 'utf8');
+    expect(externalRefs(g)).toEqual([]);
+    expect(g.match(/<dt id="/g)?.length).toBe(GLOSSARY.length);
+    for (const t of GLOSSARY) expect(g).toContain(`id="${t.id}"`);
+    // 本文の一文はトップページと詳細ページに無い(埋め込み JSON を除いた HTML 本文で見る)
+    const sample = GLOSSARY[0].body.slice(0, 40);
+    expect(html.replace(/<script type="application\/json"[\s\S]*?<\/script>/g, '')).not.toContain(sample);
+    expect(html).toContain('href="glossary.html"');
+    const page = await readFile(join(out, 'sessions', `${data.sessions[0].id}.html`), 'utf8');
+    expect(page).not.toContain(sample);
+    expect(page).toContain('href="../glossary.html"');
   });
 
   it('a. atlas.html は 5MB 未満で、外部参照(http:// https:// fetch( / link / src / url())を含まない', async () => {

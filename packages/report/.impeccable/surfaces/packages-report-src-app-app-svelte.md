@@ -2,7 +2,7 @@
 version: 1
 slug: "packages-report-src-app-app-svelte"
 primary_target: "packages/report/src/app/App.svelte"
-related_targets: ["packages/report/src/detail.ts"]
+related_targets: ["packages/report/src/detail.ts", "packages/report/src/glossary-page.ts"]
 ---
 
 # Surface brief: atlas レポート(out/atlas.html と out/sessions/<id>.html)

@@ -260,7 +260,7 @@ describe('Phase 6 E2E: fixtures', () => {
     return gitFiles(repos).then((after) => expect(after).toEqual(gitBefore));
   });
 
-  it('6. 全体サマリと月別推移に premium request と AIU、HTML に新しい欄が出る、5MB 未満', () => {
+  it('6. 全体サマリと月別推移に premium request と AIU、HTML に新しい欄が出る、5MB 未満', async () => {
     const agg = aggregate(applyFilter(data.sessions, emptyFilter()));
     expect(agg.overall.tokens.premiumRequests).toBe(m.overall.tokens.premiumRequests);
     expect(agg.overall.tokens.nanoAiu).toBe(m.overall.tokens.nanoAiu);
@@ -276,9 +276,10 @@ describe('Phase 6 E2E: fixtures', () => {
       '変更行数',
       'premium request',
       'AI 使用量(AIU)',
-      'プロジェクトのまとめ方',
     ])
       expect(html).toContain(t);
+    // 用語の説明は別ページ(glossary.html)にある
+    expect(await readFile(join(out, 'glossary.html'), 'utf8')).toContain('プロジェクトのまとめ方');
     expect(Buffer.byteLength(html)).toBeLessThan(LIMIT);
   });
 

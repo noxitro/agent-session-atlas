@@ -18,3 +18,4 @@ export { highlights } from './lib/highlights.ts';
 export type { HighlightGroup, HighlightItem } from './lib/highlights.ts';
 export { renderTranscript, transcriptFileName, transcriptHref, redactSecrets, summarizeArgs, DEFAULT_TRANSCRIPT_OPTIONS, TOOL_OUTPUT_MODES, SECRET_PATTERNS } from './transcript.ts';
 export type { TranscriptOptions, TranscriptResult, ToolOutputMode } from './transcript.ts';
+export { renderGlossaryHtml, GLOSSARY_FILE } from './glossary-page.ts';

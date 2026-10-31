@@ -6,7 +6,6 @@ import { frictionTotal } from './lib/aggregate.ts';
 import { dateTime, dec, duration, int, modelLabel, msLabel, percent, truncate } from './lib/format.ts';
 import { EFFORT_ORDER, INITIATOR_ORDER, MODE_ORDER, quantilesOf, UNKNOWN_KEY } from './lib/exec.ts';
 import { effortLabel, errorTypeLabel, initiatorLabel, modeLabel, subagentFailureLabel, TODO_STATUS_ORDER, todoStatusLabel } from './lib/exec-labels.ts';
-import { GLOSSARY } from './lib/glossary.ts';
 import { backendLabel, categoryLabel, confidenceLabel, effectLabel } from './lib/judgment-labels.ts';
 import type { JudgmentSummary } from './lib/types.ts';
 
@@ -501,13 +500,6 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
     ),
   );
 
-  parts.push(
-    section(
-      '用語',
-      `<dl class="glossary">${GLOSSARY.map((g) => `<dt id="${esc(g.id)}">${esc(g.term)}</dt><dd>${esc(g.body)}</dd>`).join('')}</dl>`,
-    ),
-  );
-
   return `<!doctype html>
 <html lang="ja">
 <head>
@@ -521,11 +513,9 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
 <style>${o.css}${DETAIL_CSS}</style>
 </head>
 <body>
-<header class="top"><div class="wrap"><a class="crumb" href="../atlas.html">← セッション一覧に戻る</a><span class="id">${esc(r.id)}</span>${
-    o.transcriptHref
-      ? `<span class="crumb"><a href="${esc(o.transcriptHref)}">セッション記録(Markdown)を開く</a> · <a href="${esc(o.transcriptHref)}" download>保存</a></span>`
-      : ''
-  }</div></header>
+<header class="top"><div class="wrap"><a class="crumb" href="../atlas.html">← セッション一覧に戻る</a><span class="id">${esc(r.id)}</span><span class="crumb">${
+    o.transcriptHref ? `<a href="${esc(o.transcriptHref)}">セッション記録(Markdown)を開く</a> · <a href="${esc(o.transcriptHref)}" download>保存</a> · ` : ''
+  }<a href="../glossary.html">用語の説明</a></span></div></header>
 <main class="wrap">
 <div class="title"><h1>${esc(title)}</h1><div class="meta">${meta}</div></div>
 ${parts.join('\n')}

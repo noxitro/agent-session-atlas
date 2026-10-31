@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import type { InstalledInventory, MetricsBucket, MetricsFile, SessionRecord } from '../../core/src/types.ts';
 import { createAnonymizer, identityAnonymizer, type Anonymizer } from './lib/anonymize.ts';
 import { renderDetailHtml } from './detail.ts';
+import { GLOSSARY_FILE, renderGlossaryHtml } from './glossary-page.ts';
 import { embedData } from './lib/embed.ts';
 import type { JudgmentsIndex } from './lib/judgments.ts';
 import { detailFileName, summarize } from './lib/summarize.ts';
@@ -133,6 +134,8 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
   const html = embedData(template, data);
   const htmlPath = join(input.outDir, 'atlas.html');
   await writeFile(htmlPath, html);
+  // 用語の説明は 1 枚だけ別ページ(atlas.html と詳細ページからリンク)
+  await writeFile(join(input.outDir, GLOSSARY_FILE), renderGlossaryHtml({ css, generatedAt }));
 
   // 詳細ページ: 前回の生成物を消してから書く(フィルタで減ったセッションのページを残さない)
   const detailDir = join(input.outDir, 'sessions');

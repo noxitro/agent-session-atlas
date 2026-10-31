@@ -382,8 +382,10 @@ describe('Phase 7 E2E: fixtures', () => {
   });
 
   it('HTML と詳細ページに新しい欄が出る、5MB 未満', async () => {
-    for (const t of ['要点', '実行の性質', 'モード別の依頼', '推論強度別', 'リクエストの起点', '文脈の内訳(ツール定義)', 'モデル別の待ち時間', 'ツールの所要時間', '摩擦の詳細', '完了率', '推論強度(reasoningEffort)'])
+    for (const t of ['要点', '実行の性質', 'モード別の依頼', '推論強度別', 'リクエストの起点', '文脈の内訳(ツール定義)', 'モデル別の待ち時間', 'ツールの所要時間', '摩擦の詳細', '完了率'])
       expect(html).toContain(t);
+    // 用語の説明は別ページ(glossary.html)にある
+    expect(await readFile(join(out, 'glossary.html'), 'utf8')).toContain('推論強度(reasoningEffort)');
     expect(Buffer.byteLength(html)).toBeLessThan(LIMIT);
     const detail = await readFile(join(out, 'sessions', `${id(14)}.html`), 'utf8');
     for (const t of ['実行の性質', 'モード別の依頼', '対話(interactive) 1・計画(plan) 1・autopilot 1', 'ツール定義のトークン', '9,800', 'モデル別の待ち時間', 'ツールの所要時間', '1 時間を超えた 1 回は外れ値', '権限の確認の結果', '利用上限(402・quota) 1', '5 件(完了率 40%)', '失敗したサブエージェント'])
