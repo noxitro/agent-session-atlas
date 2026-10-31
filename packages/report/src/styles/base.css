@@ -9,6 +9,8 @@
   --ink-3: #636b67;
   --rule: #c5d4cc;
   --rule-strong: #86a898;
+  /* 入力部品(select・date・chip・seg・tag)の枝。罫より濃く、白地で 3:1 以上(WCAG 1.4.11) */
+  --control: #6f7f77;
   --form: #1b6549;
   --form-wash: #e8f2ec;
   --select: rgba(27, 101, 73, 0.14);
@@ -22,6 +24,7 @@
   --missing: #b9bcb8;
   --grid: #e1e0d9;
   --axis: #c3c2b7;
+  --scroll-shade: rgba(20, 24, 22, 0.14);
   --font: 'Segoe UI', 'Yu Gothic UI', 'Hiragino Sans', 'Noto Sans JP', Meiryo, system-ui, sans-serif;
   --mono: 'Cascadia Mono', Consolas, 'BIZ UDGothic', ui-monospace, monospace;
 }
@@ -34,8 +37,9 @@
     --ink: #e8ece9;
     --ink-2: #bcc4c0;
     --ink-3: #939c97;
-    --rule: #2b3832;
-    --rule-strong: #4a6156;
+    --rule: #34423b;
+    --rule-strong: #5c7568;
+    --control: #7a8c84;
     --form: #7cc3a3;
     --form-wash: #1b2822;
     --select: rgba(124, 195, 163, 0.16);
@@ -48,6 +52,7 @@
     --missing: #4b504d;
     --grid: #2c2c2a;
     --axis: #383835;
+    --scroll-shade: rgba(0, 0, 0, 0.55);
   }
 }
 
@@ -58,8 +63,9 @@
   --ink: #e8ece9;
   --ink-2: #bcc4c0;
   --ink-3: #939c97;
-  --rule: #2b3832;
-  --rule-strong: #4a6156;
+  --rule: #34423b;
+  --rule-strong: #5c7568;
+  --control: #7a8c84;
   --form: #7cc3a3;
   --form-wash: #1b2822;
   --select: rgba(124, 195, 163, 0.16);
@@ -72,6 +78,7 @@
   --missing: #4b504d;
   --grid: #2c2c2a;
   --axis: #383835;
+  --scroll-shade: rgba(0, 0, 0, 0.55);
 }
 
 *,
@@ -90,7 +97,7 @@ body {
   background: var(--page);
   color: var(--ink);
   font-family: var(--font);
-  font-size: 14px;
+  font-size: 0.875rem;
   line-height: 1.55;
 }
 
@@ -141,13 +148,15 @@ h3 {
 .fields {
   display: grid;
   grid-template-columns: repeat(var(--cols, 4), minmax(0, 1fr));
-  border-top: 1px solid var(--rule-strong);
-  border-left: 1px solid var(--rule);
+  border: 1px solid var(--rule);
+  border-top-color: var(--rule-strong);
   background: var(--surface);
 }
+/* 欄の右・下の罫は枠線に 1px 重ねる。最終行が埋まらなくても余白欄として枠が閉じる */
 .field {
   border-right: 1px solid var(--rule);
   border-bottom: 1px solid var(--rule);
+  margin: 0 -1px -1px 0;
   padding: 8px 12px 10px;
   min-width: 0;
 }
@@ -227,6 +236,7 @@ table.ledger .muted,
   margin: 0;
   color: var(--ink-2);
   font-size: 0.8125rem;
+  max-width: 70ch;
 }
 .note {
   font-size: 0.8125rem;
@@ -237,7 +247,7 @@ table.ledger .muted,
 
 .tag {
   display: inline-block;
-  border: 1px solid var(--rule-strong);
+  border: 1px solid var(--control);
   padding: 0 6px;
   font-size: 0.75rem;
   line-height: 1.5;
@@ -278,6 +288,16 @@ dl.glossary dd {
 .table-scroll {
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
+  /* 横に続きがあるときだけ端に影を出す(背景を局所スクロールさせる手法。表の背景は透過にする) */
+  background:
+    linear-gradient(90deg, var(--surface) 30%, transparent) left / 40px 100% no-repeat local,
+    linear-gradient(270deg, var(--surface) 30%, transparent) right / 40px 100% no-repeat local,
+    linear-gradient(90deg, var(--scroll-shade), transparent) left / 12px 100% no-repeat scroll,
+    linear-gradient(270deg, var(--scroll-shade), transparent) right / 12px 100% no-repeat scroll,
+    var(--surface);
+}
+.table-scroll > table.ledger {
+  background: transparent;
 }
 
 ::-webkit-scrollbar {
@@ -322,7 +342,7 @@ dl.glossary dd {
 .seg {
   display: inline-flex;
   flex-wrap: wrap;
-  border: 1px solid var(--rule-strong);
+  border: 1px solid var(--control);
 }
 .seg button {
   font: inherit;
@@ -354,6 +374,101 @@ details.tableview > summary {
   font-size: 0.8125rem;
   color: var(--form);
   padding: 4px 0;
+}
+
+/* 視覚的に隠してスクリーンリーダーにだけ読ませる */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* 様式の中の押しボタン(解除・ページ送り・もっと見る) */
+.btn {
+  font: inherit;
+  font-size: 0.8125rem;
+  padding: 4px 12px;
+  border: 1px solid var(--form);
+  background: var(--surface);
+  color: var(--form);
+  cursor: pointer;
+}
+.btn:hover {
+  background: var(--form-wash);
+}
+.btn:disabled {
+  border-color: var(--rule);
+  color: var(--ink-3);
+  cursor: not-allowed;
+  background: var(--surface);
+}
+
+/* 欠測・該当なしの語の凡例(全体サマリの内訳帯の下と、用語ページ) */
+.missing-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 18px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.75rem;
+  color: var(--ink-2);
+}
+.missing-legend li {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+.missing-legend b {
+  font-weight: 600;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+/* 静的ページ(詳細・用語)の上部と表題 */
+.top {
+  background: var(--surface);
+  border-bottom: 1px solid var(--rule-strong);
+}
+.top .wrap {
+  display: flex;
+  gap: 8px 20px;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 10px;
+  padding-bottom: 10px;
+  flex-wrap: wrap;
+}
+.crumb {
+  font-size: 0.8125rem;
+}
+.top-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.8125rem;
+}
+.top-links a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+}
+.title {
+  padding: 20px 0 4px;
+}
+.title h1 {
+  overflow-wrap: anywhere;
+}
+.page-foot {
+  margin: 40px auto 32px;
+  color: var(--ink-3);
+  font-size: 0.75rem;
 }
 
 /* タッチ操作でダブルタップ拡大の待ちを入れない */

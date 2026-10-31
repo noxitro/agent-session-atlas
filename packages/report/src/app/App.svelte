@@ -122,7 +122,8 @@
       <div class="mast-title">
         <h1>Copilot Session Atlas</h1>
         <p class="mast-sub">
-          GitHub Copilot のセッションログの集計。生成 {dateTime(data.generatedAt)}・記録期間 {date(all.overall.firstAt)}〜{date(all.overall.lastAt)}・全 {int(sessions.length)} セッション(うち空のセッション {int(emptyCount)} 件)
+          GitHub Copilot のセッションログの集計(LLM は使っていません)。生成 {dateTime(data.generatedAt)}・記録期間 {date(all.overall.firstAt)}〜{date(all.overall.lastAt)}。
+          {#if filter.empty === '1'}記録 {int(sessions.length)} 件すべてを集計対象にしています(うち空のセッション {int(emptyCount)} 件)。{:else}記録 {int(sessions.length)} 件のうち {int(scoped.length)} 件を集計対象にしています(空のセッション {int(emptyCount)} 件を除外)。{/if}
         </p>
       </div>
       <div class="mast-tools">
@@ -162,12 +163,12 @@
   />
 
   <main class="wrap" id="main" tabindex="-1">
-    {#if filtered.length === 0}
-      <div class="empty" role="status">
+    <div class="empty" class:show={filtered.length === 0} role="status">
+      {#if filtered.length === 0}
         <p>この条件に合うセッションはありません。</p>
         <button type="button" class="btn" onclick={reset}>絞り込みを解除</button>
-      </div>
-    {/if}
+      {/if}
+    </div>
 
     <Overview {agg} {judged} anonymized={data.anonymized} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} />
     <Highlights groups={points} />
@@ -178,16 +179,15 @@
     <MonthlyChart months={agg.byMonth} />
     <ModelChart rows={agg.byModel} />
     <SessionTable sessions={filtered} {judged} anonymized={data.anonymized} />
-
-    <footer class="foot">
-      <p>
-        このレポートはローカルのログ(~/.copilot)を複製して集計したもので、LLM は使っていません。入力トークン・AI 使用量(AIU)・premium request・変更行数は記録が残っているセッションだけの合計です。
-        {#if data.warnings.unknownEventTypes > 0 || data.warnings.badLines > 0}
-          読み取り時の注意: 未知のイベント種別 {int(data.warnings.unknownEventTypes)} 件、読めなかった行 {int(data.warnings.badLines)} 行。
-        {/if}
-      </p>
-    </footer>
   </main>
+  <footer class="wrap foot">
+    <p>
+      このレポートはローカルのログ(~/.copilot)を複製して集計したもので、LLM は使っていません。入力トークン・AI 使用量(AIU)・premium request・変更行数は記録が残っているセッションだけの合計です。
+      {#if data.warnings.unknownEventTypes > 0 || data.warnings.badLines > 0}
+        読み取り時の注意: 未知のイベント種別 {int(data.warnings.unknownEventTypes)} 件、読めなかった行 {int(data.warnings.badLines)} 行。
+      {/if}
+    </p>
+  </footer>
 {/if}
 
 <style>
@@ -208,6 +208,7 @@
     margin: 2px 0 0;
     color: var(--ink-2);
     font-size: 0.8125rem;
+    max-width: 80ch;
   }
   .mast-tools {
     display: flex;
@@ -249,6 +250,9 @@
     outline: none;
   }
   .empty {
+    display: none;
+  }
+  .empty.show {
     margin-top: 20px;
     padding: 16px;
     background: var(--warn-wash);
@@ -272,27 +276,15 @@
     max-width: 75ch;
   }
   .foot {
-    margin: 40px 0 32px;
+    margin: 40px auto 32px;
     color: var(--ink-3);
     font-size: 0.75rem;
+  }
+  .foot p {
     max-width: 90ch;
+    margin: 0;
   }
-  :global(.btn) {
-    font: inherit;
-    font-size: 0.8125rem;
-    padding: 4px 12px;
-    border: 1px solid var(--form);
-    background: var(--surface);
-    color: var(--form);
-    cursor: pointer;
-  }
-  :global(.btn:hover) {
-    background: var(--form-wash);
-  }
-  :global(.btn:disabled) {
-    border-color: var(--rule);
-    color: var(--ink-3);
-    cursor: not-allowed;
-    background: var(--surface);
+  .mast-tools .seg button {
+    padding: 2px 8px;
   }
 </style>

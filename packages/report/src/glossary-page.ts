@@ -13,17 +13,12 @@ export interface GlossaryPageOptions {
 export const GLOSSARY_FILE = 'glossary.html';
 
 const GLOSSARY_CSS = `
-.top{background:var(--surface);border-bottom:1px solid var(--rule-strong)}
-.top .wrap{display:flex;gap:16px;align-items:center;justify-content:space-between;padding-top:10px;padding-bottom:10px;flex-wrap:wrap}
-.crumb{font-size:.8125rem}
-.title{padding:20px 0 4px}
 .toc{display:flex;flex-wrap:wrap;gap:4px 12px;margin:12px 0 20px;padding:0;list-style:none;font-size:.8125rem}
 .toc li{margin:0}
 dl.glossary dt{scroll-margin-top:56px}
 dl.glossary dt a{color:inherit;text-decoration:none}
 dl.glossary dt a:hover,dl.glossary dt a:focus-visible{text-decoration:underline}
 dl.glossary dt:target,dl.glossary dt:target+dd{background:var(--form-wash)}
-footer{margin:40px 0 32px;color:var(--ink-3);font-size:.75rem}
 `;
 
 export function renderGlossaryHtml(o: GlossaryPageOptions): string {
@@ -42,13 +37,20 @@ export function renderGlossaryHtml(o: GlossaryPageOptions): string {
 <style>${o.css}${GLOSSARY_CSS}</style>
 </head>
 <body>
-<header class="top"><div class="wrap"><a class="crumb" href="atlas.html">← レポートに戻る</a></div></header>
+<header class="top"><nav class="wrap" aria-label="ページの移動"><a class="crumb" href="atlas.html">← レポートに戻る</a></nav></header>
 <main class="wrap">
 <div class="title"><h1>用語の説明</h1><p class="note">このレポートを初めて読む人向けです。レポートの各欄の数値がどの記録から来ていて、何を含み何を含まないかを書いています。</p></div>
+<ul class="missing-legend" aria-label="欠測の語の使い分け">
+  <li><b>記録なし</b><span>ログにその項目の記録が無い</span></li>
+  <li><b>推計不可</b><span>出力トークンだけ記録があり、入力は求められない</span></li>
+  <li><b>未判定</b><span>LLM による工数判定をまだ実行していない</span></li>
+  <li><b>不明</b><span>記録はあるが分類できない(クライアント・モデルなど)</span></li>
+  <li><b>—</b><span>該当なし(0 件、または求める元の値が無い)</span></li>
+</ul>
 <nav aria-label="用語の一覧"><ul class="toc">${toc}</ul></nav>
 <section class="section" aria-label="用語"><dl class="glossary">${body}</dl></section>
-<footer>Copilot Session Atlas が ${esc(dateTime(o.generatedAt))} に生成。</footer>
 </main>
+<footer class="wrap page-foot">Copilot Session Atlas が ${esc(dateTime(o.generatedAt))} に生成。</footer>
 </body>
 </html>
 `;

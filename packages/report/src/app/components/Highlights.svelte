@@ -53,7 +53,7 @@
   }
   .basis {
     margin: 2px 0 0;
-    font-size: 0.6875rem;
+    font-size: 0.75rem;
     color: var(--ink-3);
   }
   ol {

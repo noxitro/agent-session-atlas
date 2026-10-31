@@ -66,8 +66,10 @@ const n = (v: number | null | undefined): string => (v == null ? missing() : esc
 const field = (k: string, v: string, note = ''): string =>
   `<div class="field"><span class="k">${esc(k)}</span><span class="v">${v}</span>${note ? `<span class="n">${note}</span>` : ''}</div>`;
 
+let sectionSeq = 0;
 function section(title: string, body: string, lead = ''): string {
-  return `<section class="section"><div class="section-head"><h2>${esc(title)}</h2>${lead ? `<p>${lead}</p>` : ''}</div>${body}</section>`;
+  const id = `sec-${++sectionSeq}`;
+  return `<section class="section" aria-labelledby="${id}"><div class="section-head"><h2 id="${id}">${esc(title)}</h2>${lead ? `<p>${lead}</p>` : ''}</div>${body}</section>`;
 }
 
 function countTable(rows: [string, number][], keyLabel: string, valueLabel: string, empty: string): string {
@@ -286,30 +288,25 @@ export interface DetailOptions {
 }
 
 const DETAIL_CSS = `
-.top{background:var(--surface);border-bottom:1px solid var(--rule-strong)}
-.top .wrap{display:flex;gap:16px;align-items:center;justify-content:space-between;padding-top:10px;padding-bottom:10px;flex-wrap:wrap}
-.crumb{font-size:.8125rem}
-.title{padding:20px 0 4px}
-.title h1{overflow-wrap:anywhere}
 .meta{display:flex;flex-wrap:wrap;gap:6px 8px;margin-top:8px}
 section h3{margin:14px 0 6px}
+h3.gap{margin-top:16px}
 .field .small{font-size:.875rem;font-weight:600;line-height:1.4}
-.id{font-family:var(--mono);font-size:.75rem;color:var(--ink-3)}
+.tag.id{font-family:var(--mono);border-color:var(--rule);color:var(--ink-3)}
 .barcol{width:40%;min-width:80px}
-.bar{display:block;height:10px;background:var(--s1);border-radius:0 3px 3px 0;min-width:2px}
+.bar{display:block;height:10px;background:var(--s1);min-width:2px}
 .kind{font-size:.75rem;color:var(--form);white-space:nowrap}
 tr.k-user td{background:var(--form-wash)}
 tr.k-error td,tr.k-abort td{background:var(--warn-wash)}
 blockquote.msg{margin:8px 0 0;padding:10px 12px;background:var(--surface);border:1px solid var(--rule);white-space:pre-wrap;overflow-wrap:anywhere;font-size:.8125rem;max-height:24em;overflow:auto}
-.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 .two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}
 .three{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:24px}
 .three ul{overflow-wrap:anywhere}
 @media (max-width:720px){.two,.three{grid-template-columns:1fr}}
-footer{margin:40px 0 32px;color:var(--ink-3);font-size:.75rem}
 `;
 
 export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
+  sectionSeq = 0;
   const { anon } = o;
   const t = r.tokens;
   const lines = r.lines ?? { added: 0, removed: 0, source: 'none' as const };
@@ -326,21 +323,21 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
     `<span class="tag">出所: ${esc(r.sources.join(' + '))}</span>`,
     t.input == null ? `<span class="tag warn">入力トークン記録なし</span>` : '',
     r.empty ? `<span class="tag">空のセッション(依頼・ツール・応答なし)</span>` : '',
+    `<span class="tag id"><span class="sr-only">セッション ID </span>${esc(r.id)}</span>`,
   ].join('');
 
   const overview = `<div class="fields" style="--cols:4">${[
     field('開始', esc(dateTime(r.createdAt))),
     field('所要時間', esc(duration(r.durationMs)), `実働 ${esc(duration(r.activeMs))}`),
-    field(
-      '依頼(ターン)',
-      esc(int(r.turns)),
-      `応答 ${esc(int(r.assistantMessages))} 件${r.autopilotContinuations ? `・autopilot の自動継続 ${esc(int(r.autopilotContinuations))} 回(依頼に含めない)` : ''}`,
-    ),
+    field('依頼(ターン)', esc(int(r.turns)), r.autopilotContinuations ? `autopilot の自動継続 ${esc(int(r.autopilotContinuations))} 回は含めない` : ''),
+    field('応答', esc(int(r.assistantMessages)), 'サブエージェントの応答は含めない'),
     field('モデル', r.models.length ? `<span class="small" title="${esc(r.models.join('、'))}">${esc(r.models.map(modelLabel).join('、'))}</span>` : missing('不明')),
     field('入力トークン', t.input == null ? missing('推計不可') : esc(int(t.input)), esc(SOURCE_LABEL[t.source])),
-    field('出力トークン', esc(int(t.output)), t.reasoning != null ? `うち推論 ${esc(int(t.reasoning))}` : ''),
+    field('出力トークン', esc(int(t.output)), esc(SOURCE_LABEL[t.source])),
+    field('うち推論トークン', n(t.reasoning)),
     field('キャッシュ読取', n(t.cacheRead), t.cacheWrite != null ? `書込 ${esc(int(t.cacheWrite))}` : ''),
     field('AI 使用量(AIU)', t.nanoAiu == null ? missing() : esc(dec(t.nanoAiu / 1e9)), t.nanoAiu != null ? `nano AIU ${esc(int(t.nanoAiu))}` : ''),
+    field('API リクエスト', n(t.requests), 'リクエスト単位の明細があるときだけ'),
     field('ツール呼び出し', esc(int(r.tools.total)), r.tools.internal?.total ? `内部ツール ${esc(int(r.tools.internal.total))} 回は除外` : ''),
     field(
       '変更行数',
@@ -378,7 +375,7 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
   parts.push(
     section(
       'トークン内訳',
-      `${models.length ? tokenTable(models.map(([k, v]) => [modelLabel(k), v]), 'モデル') : `<p class="note">モデル別の記録はありません。</p>`}${agentsTok.length > 1 ? `<h3 style="margin-top:16px">エージェント別</h3>${tokenTable(agentsTok, 'エージェント(main は親)')}` : ''}`,
+      `${models.length ? tokenTable(models.map(([k, v]) => [modelLabel(k), v]), 'モデル') : `<p class="note">モデル別の記録はありません。</p>`}${agentsTok.length > 1 ? `<h3 class="gap">エージェント別</h3>${tokenTable(agentsTok, 'エージェント(main は親)')}` : ''}`,
       esc(SOURCE_LABEL[t.source]),
     ),
   );
@@ -395,12 +392,12 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
   );
 
   const skills = r.skills.length
-    ? `<table class="ledger"><thead><tr><th scope="col">skill</th><th scope="col">時刻</th><th scope="col">呼んだ側</th><th scope="col">記録の形</th></tr></thead><tbody>${r.skills
+    ? `<div class="table-scroll"><table class="ledger"><thead><tr><th scope="col">skill</th><th scope="col">時刻</th><th scope="col">呼んだ側</th><th scope="col">記録の形</th></tr></thead><tbody>${r.skills
         .map(
           (s) =>
             `<tr><td>${esc(s.name)}</td><td class="num">${esc(dateTime(s.at))}</td><td>${esc(s.trigger === 'user' ? '利用者' : s.trigger === 'agent' ? 'エージェント' : '不明')}</td><td>${esc(s.via === 'both' ? 'ツール + イベント' : s.via === 'tool' ? 'ツール' : 'イベント')}</td></tr>`,
         )
-        .join('')}</tbody></table>`
+        .join('')}</tbody></table></div>`
     : `<p class="note">skill の呼び出しはありません。</p>`;
   const agents = r.agents.length
     ? `<div class="table-scroll"><table class="ledger"><thead><tr><th scope="col">agent</th><th scope="col">状態</th><th scope="col">開始</th><th scope="col" class="num">トークン</th><th scope="col" class="num">ツール</th></tr></thead><tbody>${r.agents
@@ -418,7 +415,7 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
   );
   parts.push(execSection(r, anon));
 
-  parts.push(section('skills / agents / hooks', `<div class="two"><div><h3>skills</h3>${skills}</div><div><h3>agents</h3>${agents}</div></div><h3 style="margin-top:16px">hooks</h3>${hooks}`));
+  parts.push(section('skills / agents / hooks', `<div class="two"><div><h3>skills</h3>${skills}</div><div><h3>agents</h3>${agents}</div></div><h3 class="gap">hooks</h3>${hooks}`));
 
   const inst = r.instructions.length
     ? `<div class="table-scroll"><table class="ledger"><thead><tr><th scope="col">ファイル</th><th scope="col">範囲</th><th scope="col" class="num">文字数</th><th scope="col" class="num">注入回数</th><th scope="col">初出</th>${anon.enabled ? '' : '<th scope="col">先頭の見出し</th>'}</tr></thead><tbody>${r.instructions
@@ -452,7 +449,7 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
   parts.push(
     section(
       '摩擦',
-      `<div class="fields" style="--cols:5">${[
+      `<div class="fields" style="--cols:3">${[
         field('compaction', esc(int(f.compactions))),
         field('中断(abort)', esc(int(f.aborts))),
         field('エラー', esc(int(f.errors)), 'session.error(ツール失敗は別)'),
@@ -513,14 +510,16 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
 <style>${o.css}${DETAIL_CSS}</style>
 </head>
 <body>
-<header class="top"><div class="wrap"><a class="crumb" href="../atlas.html">← セッション一覧に戻る</a><span class="id">${esc(r.id)}</span><span class="crumb">${
-    o.transcriptHref ? `<a href="${esc(o.transcriptHref)}">セッション記録(Markdown)を開く</a> · <a href="${esc(o.transcriptHref)}" download>保存</a> · ` : ''
-  }<a href="../glossary.html">用語の説明</a></span></div></header>
+<header class="top"><nav class="wrap" aria-label="ページの移動"><a class="crumb" href="../atlas.html">← レポート(セッション一覧)に戻る</a><ul class="top-links">${
+    o.transcriptHref
+      ? `<li><a href="${esc(o.transcriptHref)}">セッション記録(Markdown)を開く</a></li><li><a href="${esc(o.transcriptHref)}" download>記録を .md で保存</a></li>`
+      : ''
+  }<li><a href="../glossary.html">用語の説明</a></li></ul></nav></header>
 <main class="wrap">
 <div class="title"><h1>${esc(title)}</h1><div class="meta">${meta}</div></div>
 ${parts.join('\n')}
-<footer>Copilot Session Atlas が ${esc(dateTime(o.generatedAt))} に生成。${anon.enabled ? '伏せ字モード(プロジェクト・パス・ブランチ・本文を伏せています)。' : ''}</footer>
 </main>
+<footer class="wrap page-foot">Copilot Session Atlas が ${esc(dateTime(o.generatedAt))} に生成。${anon.enabled ? '伏せ字モード(プロジェクト・パス・ブランチ・本文を伏せています)。' : ''}</footer>
 </body>
 </html>
 `;

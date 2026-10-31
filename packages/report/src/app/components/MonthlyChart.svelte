@@ -29,6 +29,10 @@
     },
   ];
   let metric = $state<Metric>('sessions');
+  $effect(() => {
+    metric;
+    pinned = null;
+  });
   const m = $derived(metrics.find((x) => x.key === metric)!);
   const fmt = (v: number): string => (metric === 'aiu' || metric === 'premium' ? dec(v) : int(v));
 
@@ -51,15 +55,20 @@
   const labelEvery = $derived(Math.max(1, Math.ceil(56 / band)));
 
   let active = $state<number | null>(null);
-  const tip = $derived(active != null && data[active] ? data[active] : null);
-
-  /** データ端を 4px 角丸、基線側は四角にした縦棒のパス */
-  function barPath(x: number, top: number, w: number, bottom: number): string {
-    const h = bottom - top;
-    if (h <= 0) return '';
-    const r = Math.min(4, w / 2, h);
-    return `M${x},${bottom}V${top + r}Q${x},${top} ${x + r},${top}H${x + w - r}Q${x + w},${top} ${x + w},${top + r}V${bottom}Z`;
+  /** 押して固定した棒(キーボードやタッチで値を留めて読むため。もう一度押すと外れる) */
+  let pinned = $state<number | null>(null);
+  const shownIdx = $derived(active ?? pinned);
+  const tip = $derived(shownIdx != null && data[shownIdx] ? data[shownIdx] : null);
+  function toggle(i: number): void {
+    pinned = pinned === i ? null : i;
   }
+  function onKey(e: KeyboardEvent, i: number): void {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      toggle(i);
+    }
+  }
+
 </script>
 
 <section class="section" id="monthly" aria-labelledby="monthly-h">
@@ -86,17 +95,20 @@
           {@const x = LEFT + band * i + (band - barW) / 2}
           <g
             class="col"
-            class:active={active === i}
+            class:active={shownIdx === i}
             role="button"
             tabindex="0"
-            aria-label="{month(b.key)}: {m.label} {fmt(v)}{m.partial ? `(${m.partial(b)})` : ''}"
+            aria-pressed={pinned === i}
+            aria-label="{month(b.key)}: {m.label} {fmt(v)}{m.partial ? `(${m.partial(b)})` : ''}。押すと値の表示を固定"
             onpointerenter={() => (active = i)}
             onpointerleave={() => (active = null)}
             onfocus={() => (active = i)}
             onblur={() => (active = null)}
+            onclick={() => toggle(i)}
+            onkeydown={(e) => onKey(e, i)}
           >
             <rect class="hit" x={LEFT + band * i} y={TOP} width={band} height={H - TOP} />
-            <path d={barPath(x, y(v), barW, y(0))} class="bar" />
+            {#if v > 0}<rect class="bar" {x} y={y(v)} width={barW} height={Math.max(0, y(0) - y(v))} />{/if}
           </g>
           {#if i % labelEvery === 0}
             <text x={LEFT + band * i + band / 2} y={H + 18} text-anchor="middle" class="tick">{b.key}</text>
@@ -107,8 +119,8 @@
           <text x={LEFT + band * last + band / 2} y={y(values[last]) - 6} text-anchor="middle" class="endlabel">{compact(values[last])}</text>
         {/if}
       </svg>
-      {#if tip && active != null}
-        <div class="tip" style="left:{Math.min(width - 200, Math.max(0, LEFT + band * active + band / 2 - 100))}px">
+      {#if tip && shownIdx != null}
+        <div class="tip" style="left:{Math.min(width - 200, Math.max(0, LEFT + band * shownIdx + band / 2 - 100))}px">
           <strong>{fmt(m.get(tip))}</strong>
           <span>{month(tip.key)}・{m.label}</span>
           {#if m.partial}<span class="muted">{m.partial(tip)}</span>{/if}
@@ -216,8 +228,7 @@
     top: 4px;
     width: 200px;
     background: var(--surface);
-    border: 1px solid var(--rule-strong);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+    border: 1px solid var(--form);
     padding: 6px 10px;
     font-size: 0.75rem;
     display: flex;

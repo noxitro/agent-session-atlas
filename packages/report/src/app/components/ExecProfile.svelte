@@ -273,7 +273,7 @@
   }
   .foot {
     margin: 6px 0 0;
-    font-size: 0.6875rem;
+    font-size: 0.75rem;
     color: var(--ink-3);
   }
   .bars {
@@ -307,7 +307,6 @@
     height: 12px;
     min-width: 2px;
     background: var(--s1);
-    border-radius: 0 3px 3px 0;
   }
   .bar.dim {
     background: var(--missing);
@@ -340,14 +339,6 @@
   }
   th.grp {
     text-align: center;
-  }
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    white-space: nowrap;
   }
   @media (max-width: 720px) {
     .kv div {

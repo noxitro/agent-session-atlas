@@ -58,7 +58,7 @@
   <div class="fields" style="--cols:4">
     <div class="field">
       <span class="k">セッション</span><span class="v">{int(o.sessions)}</span>
-      <span class="n">依頼 {int(o.turns)} 回{#if o.autopilotContinuations > 0}(ほかに autopilot の自動継続 {int(o.autopilotContinuations)} 回){/if}{#if includeEmpty}・うち空 {int(o.emptySessions)}{/if}</span>
+      <span class="n">依頼 {int(o.turns)} 回{#if o.autopilotContinuations > 0}・autopilot の自動継続 {int(o.autopilotContinuations)} 回は別{/if}{#if includeEmpty}・うち空 {int(o.emptySessions)}{/if}</span>
     </div>
     <div class="field">
       <span class="k">期間(開始日)</span><span class="v period">{o.firstAt ? `${date(o.firstAt)} 〜 ${date(o.lastAt)}` : '—'}</span>
@@ -69,9 +69,9 @@
     <div class="field">
       <span class="k">推定人手工数</span>
       {#if judged && o.judgedSessions > 0}
-        <span class="v">{dec(o.humanHours)} 時間</span><span class="n">判定済み {int(o.judgedSessions)} セッションの合計(LLM による推定、幅 {dec(o.humanLow)}〜{dec(o.humanHigh)} 時間・平均{confidenceLabel(o.judgedConfidence)})</span>
+        <span class="v">{dec(o.humanHours)} 時間</span><span class="n">LLM の推定。判定済み {int(o.judgedSessions)} セッション、幅 {dec(o.humanLow)}〜{dec(o.humanHigh)} 時間</span>
       {:else}
-        <span class="v missing">未判定</span><span class="n">LLM による工数判定はまだ実行されていません</span>
+        <span class="v missing">未判定</span><span class="n">LLM による工数判定はまだ実行していません</span>
       {/if}
     </div>
 
@@ -79,44 +79,54 @@
       <span class="k">入力トークン</span><span class="v">{int(o.tokens.input)}</span>
       <span class="n">記録あり {int(o.sessionsWithInput)} / {int(o.sessions)} セッション({percent(o.sessionsWithInput, o.sessions)})</span>
     </div>
-    <div class="field"><span class="k">出力トークン</span><span class="v">{int(o.tokens.output)}</span><span class="n">うち推論 {int(o.tokens.reasoning)}{#if c.none > 0}・記録なし(欠測){int(c.none)} セッションは含まない{/if}</span></div>
+    <div class="field">
+      <span class="k">出力トークン</span><span class="v">{int(o.tokens.output)}</span>
+      <span class="n">{#if c.none > 0}記録なし(欠測){int(c.none)} セッションは含まない{:else}記録のあるセッションの合計{/if}</span>
+    </div>
+    <div class="field">
+      <span class="k">うち推論トークン</span><span class="v">{int(o.tokens.reasoning)}</span>
+      <span class="n">出力トークンに対して {percent(o.tokens.reasoning, o.tokens.output)}</span>
+    </div>
     <div class="field">
       <span class="k">キャッシュ読取トークン</span><span class="v">{int(o.tokens.cacheRead)}</span>
       <span class="n">入力に対して {percent(o.tokens.cacheRead, o.tokens.input)}</span>
     </div>
+
     <div class="field">
       <span class="k">AI 使用量(AIU)</span>
       {#if o.sessionsWithNanoAiu > 0}<span class="v">{dec(o.tokens.nanoAiu / 1e9)}</span>{:else}<span class="v missing">記録なし</span>{/if}
-      <span class="n">記録あり {int(o.sessionsWithNanoAiu)} / {int(o.sessions)} セッション({percent(o.sessionsWithNanoAiu, o.sessions)})・nano AIU {int(o.tokens.nanoAiu)}</span>
+      <span class="n">記録あり {int(o.sessionsWithNanoAiu)} / {int(o.sessions)} セッション({percent(o.sessionsWithNanoAiu, o.sessions)})</span>
     </div>
-
     <div class="field">
       <span class="k">premium request</span>
       {#if o.sessionsWithPremium > 0}<span class="v">{dec(o.tokens.premiumRequests)}</span>{:else}<span class="v missing">記録なし</span>{/if}
-      <span class="n">記録あり {int(o.sessionsWithPremium)} / {int(o.sessions)} セッションだけの合計({percent(o.sessionsWithPremium, o.sessions)})</span>
+      <span class="n">記録あり {int(o.sessionsWithPremium)} / {int(o.sessions)} セッション({percent(o.sessionsWithPremium, o.sessions)})</span>
+    </div>
+    <div class="field">
+      <span class="k">API リクエスト</span><span class="v">{int(o.tokens.requests)}</span>
+      <span class="n">リクエスト単位の明細があるセッションの合計</span>
     </div>
     <div class="field">
       <span class="k">ツール呼び出し</span><span class="v">{int(o.tools)}</span>
-      <span class="n"
-        >失敗率 {toolResults.completed ? percent(toolResults.failure + toolResults.denied, toolResults.completed) : '—'}(失敗 {int(toolResults.failure)}・拒否 {int(toolResults.denied)})・API リクエスト {int(o.tokens.requests)}・内部ツール(report_intent){int(o.toolsInternal)} 回は除外</span
-      >
+      <span class="n">失敗率 {toolResults.completed ? percent(toolResults.failure + toolResults.denied, toolResults.completed) : '—'}(失敗 {int(toolResults.failure)}・拒否 {int(toolResults.denied)}){#if o.toolsInternal > 0}・内部ツール(report_intent){int(o.toolsInternal)} 回は除外{/if}</span>
     </div>
+
     <div class="field" data-testid="lines-field">
       <span class="k">変更行数</span>
       {#if o.sessionsWithLines > 0}<span class="v">+{int(o.linesAdded)} / −{int(o.linesRemoved)}</span>{:else}<span class="v missing">記録なし</span>{/if}
-      <span class="n">追加 / 削除。記録あり {int(o.sessionsWithLines)} / {int(o.sessions)} セッション(終了時の累計、無ければツールごとの合計)</span>
+      <span class="n">追加 / 削除。記録あり {int(o.sessionsWithLines)} / {int(o.sessions)} セッション</span>
     </div>
     <div class="field">
       <span class="k">skill / agent / hook</span><span class="v">{int(o.skills)} / {int(o.agents)} / {int(o.hooks)}</span>
-      <span class="n">agent の失敗 {int(o.agentFailures)}</span>
+      <span class="n">呼び出し回数。agent の失敗 {int(o.agentFailures)}</span>
     </div>
     <div class="field">
-      <span class="k">指示ファイル・llm-wiki</span><span class="v">{int(o.sessionsWithInstructions)} / {int(o.sessionsWithWiki)}</span>
-      <span class="n">指示ファイルが注入された / wiki を参照したセッション数</span>
+      <span class="k">指示ファイル / llm-wiki</span><span class="v">{int(o.sessionsWithInstructions)} / {int(o.sessionsWithWiki)}</span>
+      <span class="n">注入された / 参照したセッション数</span>
     </div>
     <div class="field">
       <span class="k">摩擦</span><span class="v">{int(o.friction)}</span>
-      <span class="n">ツール失敗 {int(o.frictionDetail.toolFailures)}・エラー(session.error){int(o.frictionDetail.errors)}・compaction {int(o.frictionDetail.compactions)}・中断 {int(o.frictionDetail.aborts)}・ask_user {int(o.frictionDetail.askUser)}・権限の確認 {int(o.frictionDetail.permissionRequests)}・agent 失敗 {int(o.frictionDetail.subagentFailures)}</span>
+      <span class="n">ツール失敗 {int(o.frictionDetail.toolFailures)}・エラー(session.error){int(o.frictionDetail.errors)}・compaction {int(o.frictionDetail.compactions)}・中断 {int(o.frictionDetail.aborts)}・ほか {int(o.friction - o.frictionDetail.toolFailures - o.frictionDetail.errors - o.frictionDetail.compactions - o.frictionDetail.aborts)}(<a href="#exec">内訳は実行の性質</a>)</span>
     </div>
   </div>
 
@@ -132,7 +142,8 @@
             <span
               class="piece"
               class:dim={hover && hover !== s.key}
-              style="flex-grow:{s.n};background:{s.color}"
+              class:hatch={s.key === 'none'}
+              style="flex-grow:{s.n};background-color:{s.color}"
               title="{s.label}: {int(s.n)} セッション({percent(s.n, totalN)})"
             ></span>
           {/if}
@@ -142,13 +153,20 @@
     <ul class="legend" id="cov-legend">
       {#each segments as s (s.key)}
         <li onpointerenter={() => (hover = s.key)} onpointerleave={() => (hover = null)}>
-          <span class="sw" style="background:{s.color}" aria-hidden="true"></span>
+          <span class="sw" class:hatch={s.key === 'none'} style="background-color:{s.color}" aria-hidden="true"></span>
           <span class="lab">{s.label}</span>
           <strong>{int(s.n)}</strong>
           <span class="muted">({percent(s.n, totalN)})</span>
           <span class="src muted">{s.note}</span>
         </li>
       {/each}
+    </ul>
+    <ul class="missing-legend" aria-label="欠測の語の使い分け">
+      <li><b>記録なし</b><span>ログにその項目の記録が無い</span></li>
+      <li><b>推計不可</b><span>出力トークンだけ記録があり、入力は求められない</span></li>
+      <li><b>未判定</b><span>LLM による工数判定をまだ実行していない</span></li>
+      <li><b>不明</b><span>記録はあるが分類できない(クライアント・モデルなど)</span></li>
+      <li><b>—</b><span>該当なし(0 件、または求める元の値が無い)</span></li>
     </ul>
   </div>
 
@@ -171,6 +189,13 @@
   }
   .missing {
     color: var(--ink-3);
+  }
+  .field > .n a {
+    color: inherit;
+    text-decoration-color: var(--rule-strong);
+  }
+  .field > .n a:hover {
+    color: var(--form);
   }
   .coverage {
     background: var(--surface);
@@ -201,14 +226,12 @@
     flex-basis: 0;
     transition: opacity 150ms ease-out;
   }
-  .piece:first-child {
-    border-radius: 3px 0 0 3px;
-  }
-  .piece:last-child {
-    border-radius: 0 3px 3px 0;
-  }
   .piece.dim {
     opacity: 0.35;
+  }
+  /* 欠測は色だけでなく斜線でも区別する */
+  .hatch {
+    background-image: repeating-linear-gradient(135deg, transparent 0 3px, var(--surface) 3px 4px);
   }
   .legend {
     list-style: none;
@@ -230,11 +253,10 @@
     height: 10px;
     flex: none;
     align-self: center;
-    border-radius: 2px;
   }
   .src {
     flex-basis: 100%;
     padding-left: 16px;
-    font-size: 0.6875rem;
+    font-size: 0.75rem;
   }
 </style>

@@ -114,7 +114,6 @@
     height: 14px;
     min-width: 2px;
     background: var(--s1);
-    border-radius: 0 4px 4px 0;
   }
   .val {
     font-size: 0.75rem;

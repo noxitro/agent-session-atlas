@@ -375,7 +375,7 @@
     margin-right: 6px;
     padding: 0 4px;
     border: 1px solid var(--rule-strong);
-    font-size: 0.6875rem;
+    font-size: 0.75rem;
     line-height: 1.4;
     color: var(--form);
     vertical-align: 1px;
@@ -391,7 +391,6 @@
     height: 14px;
     min-width: 2px;
     background: var(--s1);
-    border-radius: 0 4px 4px 0;
   }
   .bar.rate {
     background: var(--s2);
@@ -404,7 +403,7 @@
   }
   .sub {
     grid-column: 2;
-    font-size: 0.6875rem;
+    font-size: 0.75rem;
     color: var(--ink-3);
     font-variant-numeric: tabular-nums;
   }
@@ -438,7 +437,7 @@
   }
   .off {
     margin-left: 6px;
-    font-size: 0.6875rem;
+    font-size: 0.75rem;
     color: var(--ink-3);
   }
   @media (max-width: 720px) {

@@ -58,7 +58,7 @@
   <div class="section-head">
     <h2 id="sessions-h">セッション一覧</h2>
     <p>
-      {int(sessions.length)} セッション。名前を押すと詳細(時系列・ツール内訳・指示ファイル・摩擦)を開きます。
+      {int(sessions.length)} セッション。名前を押すと詳細(時系列・ツール内訳・指示ファイル・摩擦)を開きます。表は横にスクロールできます。
       {#if !judged}推定人手工数は未判定です(LLM による判定を実行すると表示されます)。{/if}
     </p>
   </div>
@@ -164,10 +164,13 @@
   .models {
     max-width: 14em;
     font-size: 0.75rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .sub {
     display: block;
-    font-size: 0.6875rem;
+    font-size: 0.75rem;
     color: var(--ink-3);
   }
   .pager {

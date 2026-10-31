@@ -67,13 +67,40 @@
     { key: 'active', label: '実働(中央値)' },
   ];
   const ariaSort = (k: Key): 'ascending' | 'descending' | 'none' => (sortKey === k ? (asc ? 'ascending' : 'descending') : 'none');
+
+  /** そのプロジェクトだけに絞った状態の URL(新しいタブでも開ける)。クリックは親に任せて他の条件を保つ */
+  const projectHref = (key: string): string => `#project=${encodeURIComponent(key)}`;
+  function pick(e: MouseEvent, key: string): void {
+    if (e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0) return;
+    e.preventDefault();
+    onpick(current === key ? '' : key);
+  }
+  /** 摩擦の内訳のうち多い順 3 つ(title だけに持たせるとキーボード・タッチで読めない) */
+  function frictionNote(b: Bucket): string {
+    const d = b.frictionDetail;
+    const items: [string, number][] = [
+      ['ツール失敗', d.toolFailures],
+      ['compaction', d.compactions],
+      ['中断', d.aborts],
+      ['エラー', d.errors],
+      ['権限確認', d.permissionRequests],
+      ['ask_user', d.askUser],
+      ['agent 失敗', d.subagentFailures],
+    ];
+    return items
+      .filter(([, n]) => n > 0)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([k, n]) => `${k} ${int(n)}`)
+      .join('・');
+  }
 </script>
 
 <section class="section" id="projects" aria-labelledby="projects-h">
   <div class="section-head">
     <h2 id="projects-h">プロジェクト別</h2>
     <p>
-      {int(rows.length)} プロジェクト。名前を押すとそのプロジェクトに絞り込みます。列見出しで並べ替え。repository の記録が無いものは git の origin(owner/repo)で束ね、ホームディレクトリ・一時フォルダ・atlas の判定実行はそれぞれ 1 つにまとめています。
+      {int(rows.length)} プロジェクト。名前を押すとそのプロジェクトに絞り込みます(列見出しで並べ替え)。指示・wiki の列は「該当セッション数 / セッション数」。repository の記録が無いものは git の origin(owner/repo)で束ね、ホーム・一時フォルダ・atlas の判定実行はそれぞれ 1 つにまとめています。
     </p>
   </div>
   {#if rows.length === 0}
@@ -102,7 +129,8 @@
           {#each visible as b (b.key)}
             <tr class:current={current === b.key}>
               <th scope="row" class="proj">
-                <button type="button" class="link" title={b.key} aria-pressed={current === b.key} onclick={() => onpick(current === b.key ? '' : b.key)}>{b.label}</button>
+                <a class="link" href={projectHref(b.key)} aria-current={current === b.key ? 'true' : undefined} onclick={(e) => pick(e, b.key)}>{b.label}</a>
+                {#if current === b.key}<span class="part">絞り込み中(もう一度押すと解除)</span>{/if}
               </th>
               <td class="num">{int(b.sessions)}</td>
               <td class="num">
@@ -116,9 +144,9 @@
               <td class="num">{int(b.skills)}</td>
               <td class="num">{int(b.agents)}{#if b.agentFailures}<span class="part" title="失敗">失敗{b.agentFailures}</span>{/if}</td>
               <td class="num">{int(b.hooks)}</td>
-              <td class="num">{b.sessionsWithInstructions ? `${b.sessionsWithInstructions}/${b.sessions}` : 'なし'}</td>
-              <td class="num">{b.sessionsWithWiki ? `${b.sessionsWithWiki}/${b.sessions}` : 'なし'}</td>
-              <td class="num" title="compaction {b.frictionDetail.compactions}・中断 {b.frictionDetail.aborts}・エラー {b.frictionDetail.errors}・権限確認 {b.frictionDetail.permissionRequests}・ask_user {b.frictionDetail.askUser}・ツール失敗 {b.frictionDetail.toolFailures}・agent 失敗 {b.frictionDetail.subagentFailures}">{int(b.friction)}</td>
+              <td class="num">{int(b.sessionsWithInstructions)}/{int(b.sessions)}</td>
+              <td class="num">{int(b.sessionsWithWiki)}/{int(b.sessions)}</td>
+              <td class="num">{int(b.friction)}{#if b.friction > 0}<span class="part">{frictionNote(b)}</span>{/if}</td>
               <td class="num">{duration(b.activeMedianMs, '—')}</td>
               {#if judged}
                 <td class="num" title={b.judgedSessions ? `LLM による推定。判定済み ${b.judgedSessions} / ${b.sessions} セッション、幅 ${dec(b.humanLow)}〜${dec(b.humanHigh)} 時間` : ''}>
@@ -165,17 +193,11 @@
     display: inline-block;
     min-height: 24px;
     padding: 2px 0;
-    font: inherit;
-    background: none;
-    border: 0;
-    padding: 0;
     color: var(--form);
-    cursor: pointer;
-    text-align: left;
     overflow-wrap: anywhere;
-    text-decoration: underline;
-    text-decoration-thickness: 1px;
-    text-underline-offset: 3px;
+  }
+  tr.current .link {
+    font-weight: 600;
   }
   tr.current th,
   tr.current td {
@@ -183,7 +205,7 @@
   }
   .part {
     display: block;
-    font-size: 0.6875rem;
+    font-size: 0.75rem;
     color: var(--ink-3);
   }
   .more {

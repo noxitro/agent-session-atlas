@@ -5,3 +5,6 @@ out/
 .fixtures/
 *.log
 .claude/launch.json
+
+# impeccable critique のスナップショット(実データの件数を含むのでコミットしない)
+.impeccable/critique/
