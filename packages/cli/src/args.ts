@@ -1,7 +1,7 @@
 // atlas コマンドの引数解釈(純関数)
 import { parseArgs } from 'node:util';
 
-export const COMMANDS = ['snapshot', 'extract', 'metrics', 'build', 'all', 'bundle', 'judge'] as const;
+export const COMMANDS = ['snapshot', 'extract', 'metrics', 'build', 'export', 'all', 'bundle', 'judge'] as const;
 export type Command = (typeof COMMANDS)[number];
 
 export const JUDGE_ACTIONS = ['run', 'import'] as const;
@@ -48,6 +48,10 @@ export interface CliOptions {
   includeEmpty: boolean;
   /** extract: 一時フォルダとみなすフォルダ(指定すると既定の一時フォルダの判定を置き換える)。未指定は null */
   tempDirs: string[] | null;
+  /** export: セッション記録にツールの結果を入れる条件 */
+  toolOutput: 'fail' | 'all' | 'none';
+  /** export: 本文 1 件の上限(文字)。null は既定 */
+  maxChars: number | null;
   judge: JudgeCliOptions | null;
   help: boolean;
 }
@@ -59,6 +63,7 @@ export const USAGE = `使い方: atlas <コマンド> [オプション]
   extract    スナップショットから <out>/sessions.json を作る
   metrics    sessions.json から <out>/metrics.json を作る
   build      <out>/atlas.html と <out>/sessions/<id>.html を作る
+  export     build に加えて、各セッションの記録(経過・消費)を <out>/sessions/<id>.md に書く(共有・LLM 分析用)
   all        snapshot → extract → metrics → build を通しで実行する(コマンド省略時の既定)
   bundle     LLM に工数を判定させる評価バンドルを <out>/bundle に作る(LLM は呼ばない)
   judge run  バンドルの各セッションを LLM で判定し <out>/judgments.json に追記する(クレジットを消費します)
@@ -80,6 +85,10 @@ export const USAGE = `使い方: atlas <コマンド> [オプション]
   --temp-dir <dir>   extract: このフォルダ配下を「(一時フォルダ)」にまとめる(複数指定可)。指定すると既定の判定
                      (%TEMP% と AppData\\Local\\Temp・/tmp のパターン)を使わない
   -h, --help         この説明を出す
+
+export のオプション:
+  --tool-output <v>  ツールの結果を記録に入れる条件: fail(既定、失敗したときだけ)/ all / none
+  --max-chars <n>    依頼・応答・要約 1 件の上限(文字、既定 20000)。超えた分は中略して字数を書く
 
 judge run のオプション:
   --backend <name>   copilot-cli(既定、copilot -p)/ opencode / anthropic(従量課金、ANTHROPIC_API_KEY が必要)
@@ -122,6 +131,8 @@ export function parseCli(argv: string[]): CliOptions {
         bundle: { type: 'string' },
         'include-empty': { type: 'boolean', default: false },
         'temp-dir': { type: 'string', multiple: true },
+        'tool-output': { type: 'string' },
+        'max-chars': { type: 'string' },
         backend: { type: 'string' },
         limit: { type: 'string' },
         only: { type: 'string' },
@@ -169,6 +180,9 @@ export function parseCli(argv: string[]): CliOptions {
     for (const k of ['backend', 'limit', 'only', 'concurrency', 'timeout'] as const) if (values[k] != null) throw new UsageError(`--${k} は judge run でだけ使えます`);
     if (values.force) throw new UsageError('--force は judge run でだけ使えます');
   }
+  const toolOutput = values['tool-output'] ?? 'fail';
+  if (!['fail', 'all', 'none'].includes(toolOutput)) throw new UsageError(`--tool-output は fail / all / none のどれかです: ${toolOutput}`);
+  if ((values['tool-output'] != null || values['max-chars'] != null) && cmd !== 'export') throw new UsageError('--tool-output と --max-chars は export でだけ使えます');
   if (values.since != null && Number.isNaN(Date.parse(values.since))) throw new UsageError(`--since の日時を解釈できません: ${values.since}`);
   return {
     command: cmd as Command,
@@ -184,6 +198,8 @@ export function parseCli(argv: string[]): CliOptions {
     bundle: values.bundle ?? null,
     includeEmpty: values['include-empty'] ?? false,
     tempDirs: values['temp-dir'] && values['temp-dir'].length ? values['temp-dir'] : null,
+    toolOutput: toolOutput as 'fail' | 'all' | 'none',
+    maxChars: posInt(values['max-chars'], '--max-chars', 200),
     judge,
     help: values.help ?? false,
   };

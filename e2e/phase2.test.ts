@@ -1,5 +1,6 @@
 // Phase 2 E2E(docs/PLAN.md「Phase 2: cli + report」)
 //  a. fixtures から `atlas all` で out/atlas.html を作り、5MB 未満で外部参照(http:// https:// fetch()が無い
+//  g. `atlas export` で各セッションの記録(Markdown)ができ、詳細ページからリンクされる。素の build では作らない
 //  b. 埋め込み JSON のセッション数が fixtures の件数(DB ∪ ディレクトリ)と一致し、詳細ページが揃う
 //  c. --anonymize で fixture の cwd / git_root / repository / branch の文字列が HTML に出ない
 //  d. ATLAS_LIVE=1 のとき実データで HTML を作り、サイズとプロジェクト数をログに出して 5MB 未満
@@ -82,6 +83,50 @@ describe('Phase 2 E2E: fixtures', () => {
     data = extractEmbedded<ReportData>(html);
   });
   afterAll(async () => close?.());
+
+  it('g. atlas export: セッション記録(Markdown)が各セッションにでき、詳細ページからリンクされる。素の build では作らず、リンクも消える', async () => {
+    const outExp = join(WORK, 'out-export');
+    // export は build を含む(snapshot と sessions.json は out/ のものを使うため、--out は同じにして export → build の順で確かめる)
+    const r = atlas(['export', '--home', home, '--out', out, '--tool-output', 'none']);
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).toMatch(/export: セッション記録 \d+ 件/);
+    const mds = (await readdir(join(out, 'sessions'))).filter((f) => f.endsWith('.md'));
+    expect(mds.length).toBe(data.sessions.length);
+    for (const s of data.sessions) {
+      const md = await readFile(join(out, 'sessions', `${s.id}.md`), 'utf8');
+      expect(md).toContain('# セッション記録');
+      expect(md).toContain('## 経過');
+      expect(md).toContain('## 分析の観点');
+      const page = await readFile(join(out, 'sessions', `${s.id}.html`), 'utf8');
+      expect(page).toContain(`href="${s.id}.md"`);
+    }
+    // 003: 本体とサブエージェント(explore)の役 × モデルの表、ツール行、依頼ごとの消費
+    const md3 = await readFile(join(out, 'sessions', '00000000-0000-4000-8000-000000000003.md'), 'utf8');
+    expect(md3).toMatch(/\| 本体 \| gpt-5\.5 \| 2 \|/);
+    expect(md3).toMatch(/\| explore \| gpt-5\.6-terra \| 2 \|/);
+    expect(md3).toContain('[agent:explore] ✔ `powershell`');
+    expect(md3).toMatch(/_依頼 1 の本体の消費: リクエスト 2、/);
+    // --tool-output none なので結果の囲みは無い
+    expect(md3).not.toMatch(/\n```\n/);
+    // 伏せ字版: 固有の文字列が出ない
+    const ra = atlas(['export', '--home', home, '--out', outExp, '--anonymize']);
+    // outExp には sessions.json が無いので失敗する(export は build と同じ前提)
+    expect(ra.status).not.toBe(0);
+    const ra2 = atlas(['export', '--home', home, '--out', out, '--anonymize']);
+    expect(ra2.status, ra2.stderr).toBe(0);
+    const secrets = await fixtureSecrets();
+    for (const f of mds) {
+      const md = await readFile(join(out, 'sessions', f), 'utf8');
+      for (const sec of secrets) if (sec.length >= 3) expect({ f, sec, leaked: md.includes(sec) }).toEqual({ f, sec, leaked: false });
+      expect(md).toContain('伏せ字モード');
+    }
+    // 素の build に戻すと .md は消え、リンクも無い
+    const rb = atlas(['build', '--home', home, '--out', out]);
+    expect(rb.status, rb.stderr).toBe(0);
+    expect((await readdir(join(out, 'sessions'))).some((f) => f.endsWith('.md'))).toBe(false);
+    const page = await readFile(join(out, 'sessions', `${data.sessions[0].id}.html`), 'utf8');
+    expect(page).not.toContain('セッション記録(Markdown)');
+  });
 
   it('a. atlas.html は 5MB 未満で、外部参照(http:// https:// fetch( / link / src / url())を含まない', async () => {
     console.log(`[fixtures] atlas all ${all.ms.toFixed(0)}ms, atlas.html ${html.length} bytes\n${all.stdout}`);

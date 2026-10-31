@@ -25,6 +25,14 @@ describe('parseCli', () => {
     expect(() => parseCli(['build', 'extra'])).toThrow(/1 つだけ/);
   });
 
+  it('export と --tool-output / --max-chars を読む(export 以外では UsageError)', () => {
+    expect(parseCli(['export'])).toMatchObject({ command: 'export', toolOutput: 'fail', maxChars: null });
+    expect(parseCli(['export', '--tool-output', 'all', '--max-chars', '500', '--anonymize'])).toMatchObject({ command: 'export', toolOutput: 'all', maxChars: 500, anonymize: true });
+    expect(() => parseCli(['export', '--tool-output', 'maybe'])).toThrow(/tool-output/);
+    expect(() => parseCli(['export', '--max-chars', '10'])).toThrow(/max-chars/);
+    expect(() => parseCli(['build', '--tool-output', 'all'])).toThrow(/export でだけ/);
+  });
+
   it('bundle と judge run / import を読む', () => {
     expect(parseCli(['bundle', '--client', 'github/cli', '--include-empty'])).toMatchObject({ command: 'bundle', client: 'github/cli', includeEmpty: true, judge: null });
     expect(parseCli(['judge', 'run'])).toMatchObject({

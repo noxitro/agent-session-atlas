@@ -282,6 +282,8 @@ export interface DetailOptions {
   css: string;
   judgment: JudgmentSummary | null;
   generatedAt: string;
+  /** セッション記録(Markdown)のファイル名(同じフォルダ)。atlas export で作ったときだけ */
+  transcriptHref?: string | null;
 }
 
 const DETAIL_CSS = `
@@ -519,7 +521,11 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
 <style>${o.css}${DETAIL_CSS}</style>
 </head>
 <body>
-<header class="top"><div class="wrap"><a class="crumb" href="../atlas.html">← セッション一覧に戻る</a><span class="id">${esc(r.id)}</span></div></header>
+<header class="top"><div class="wrap"><a class="crumb" href="../atlas.html">← セッション一覧に戻る</a><span class="id">${esc(r.id)}</span>${
+    o.transcriptHref
+      ? `<span class="crumb"><a href="${esc(o.transcriptHref)}">セッション記録(Markdown)を開く</a> · <a href="${esc(o.transcriptHref)}" download>保存</a></span>`
+      : ''
+  }</div></header>
 <main class="wrap">
 <div class="title"><h1>${esc(title)}</h1><div class="meta">${meta}</div></div>
 ${parts.join('\n')}

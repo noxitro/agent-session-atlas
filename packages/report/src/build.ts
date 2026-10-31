@@ -9,6 +9,8 @@ import { renderDetailHtml } from './detail.ts';
 import { embedData } from './lib/embed.ts';
 import type { JudgmentsIndex } from './lib/judgments.ts';
 import { detailFileName, summarize } from './lib/summarize.ts';
+import { renderTranscript, transcriptFileName, type TranscriptOptions } from './transcript.ts';
+import { loadStore, type StoreData } from '../../core/src/index.ts';
 import { REPORT_DATA_VERSION, type ReportData } from './lib/types.ts';
 
 export const REPORT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -58,6 +60,8 @@ export interface BuildInput {
   scope?: Partial<ReportData['scope']>;
   /** テンプレートのパス(省略時は ensureTemplate の結果) */
   templatePath?: string;
+  /** セッション記録(Markdown)も書く(atlas export)。snapshotDir の events.jsonl と session-store.db から本文と明細を読む */
+  transcripts?: Omit<TranscriptOptions, 'anon' | 'generatedAt'> & { snapshotDir: string; store?: StoreData };
 }
 
 /** atlas.html の大きさの上限(docs/PLAN.md「HTML の方針」。超えても出力はするが、CLI が注意を出す) */
@@ -72,6 +76,8 @@ export interface BuildResult {
   detailDir: string;
   detailPages: number;
   detailBytes: number;
+  /** セッション記録(Markdown)を書いたときの集計 */
+  transcripts: { files: number; bytes: number; secretHits: number; truncated: number; fromRecordOnly: number } | null;
   ms: number;
 }
 
@@ -133,11 +139,27 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
   await rm(detailDir, { recursive: true, force: true });
   await mkdir(detailDir, { recursive: true });
   let detailBytes = 0;
+  const tr = input.transcripts;
+  const store = tr ? (tr.store ?? (await loadStore(join(tr.snapshotDir, 'session-store.db')))) : null;
+  const trStat = tr ? { files: 0, bytes: 0, secretHits: 0, truncated: 0, fromRecordOnly: 0 } : null;
   for (const r of input.sessions) {
     const full = j?.bySession.get(r.id) ?? null;
     // 詳細ページには根拠も出す(伏せ字モードでは自由記述を出さない)
     const judgment = full ? { ...full, taskSummary: anon.freeText(full.taskSummary), rationale: anon.freeText(full.rationale) } : null;
-    const page = renderDetailHtml(r, { anon, css, judgment, generatedAt });
+    let transcriptHref: string | null = null;
+    if (tr && store && trStat) {
+      const eventsPath = join(tr.snapshotDir, 'session-state', r.id, 'events.jsonl');
+      const t = await renderTranscript(r, eventsPath, store.usage.get(r.id) ?? [], { ...tr, anon, generatedAt });
+      const file = transcriptFileName(r.id);
+      await writeFile(join(detailDir, file), t.markdown);
+      transcriptHref = file;
+      trStat.files++;
+      trStat.bytes += Buffer.byteLength(t.markdown);
+      trStat.secretHits += t.secretHits;
+      trStat.truncated += t.truncated;
+      if (t.source === 'record') trStat.fromRecordOnly++;
+    }
+    const page = renderDetailHtml(r, { anon, css, judgment, generatedAt, transcriptHref });
     detailBytes += Buffer.byteLength(page);
     await writeFile(join(detailDir, detailFileName(r.id)), page);
   }
@@ -150,6 +172,7 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
     detailDir,
     detailPages: input.sessions.length,
     detailBytes,
+    transcripts: trStat,
     ms: performance.now() - t0,
   };
 }

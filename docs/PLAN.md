@@ -1,6 +1,6 @@
 # agent-session-atlas 実装計画
 
-最終更新: 2026-10-28(fixtures をテスト時の合成生成に変更)
+最終更新: 2026-10-31(Phase 8: セッション記録の Markdown 出力)
 
 ## 目的
 
@@ -71,16 +71,15 @@ GitHub Copilot(デスクトップ autopilot / CLI / SDK / VS Code)のセッシ�
 agent-session-atlas/
   package.json              npm workspaces, scripts: atlas / atlas:judge / test / e2e
   packages/core/            抽出(snapshot → parse → normalize)と集計(metrics)
-  packages/cli/             atlas コマンド: snapshot | extract | metrics | bundle | judge | build | all
-  packages/report/          Vite + Svelte 5 → dist/atlas.html(単一ファイル、集計+要約のみ埋め込み)
+  packages/cli/             atlas コマンド: snapshot | extract | metrics | bundle | judge | build | export | all
+  packages/report/          Vite + Svelte 5 → dist/atlas.html(単一ファイル、集計+要約のみ埋め込み)、詳細ページ、セッション記録(transcript.ts)
   packages/judge/           評価バンドル生成、judgments.json スキーマ、バックエンド(copilot-cli / opencode / anthropic)
   fixtures/                 テスト用のコード(偽の copilot)だけ。サンプルデータは置かない
   scripts/                  fixture の生成器(架空の値だけ。テスト時に .fixtures/ へ書く。git 管理外)
-  vendor/                   公式スキーマ 1.0.18(参考)
   e2e/                      フェーズごとの E2E テスト(vitest)
-  docs/                     PLAN.md、judgments スキーマ説明
-  out/                      生成物(git 管理外): snapshot/ sessions.json metrics.json bundle/ judgments.json atlas.html sessions/<id>.html
-  atlas.bat / atlas-judge.bat
+  docs/                     PLAN.md
+  out/                      生成物(git 管理外): snapshot/ sessions.json metrics.json bundle/ judgments.json atlas.html sessions/<id>.html sessions/<id>.md
+  atlas.bat / atlas-judge.bat / atlas-export.bat
   README.md(日本語)
 ```
 
@@ -232,6 +231,25 @@ E2E(`e2e/phase6.test.ts`): fixture でランキング・成功率・行数・未
 8. **要点欄**: 上の集計から機械的に出す短い一覧(コストの大きいセッション上位、失敗率の高いツール、compaction の多いセッション、未使用の skill)。各項目は根拠のセッション / 絞り込みへのリンクを持つ。LLM は使わない。
 
 E2E(`e2e/phase7.test.ts`): fixture で各集計が手計算と一致し、todo が snapshot から読める。元ファイルの mtime 不変。HTML 5MB 未満。`/impeccable audit` と web-design-guidelines で重大な指摘が無い(Phase 5〜7 の UI 変更をまとめて)。
+
+### Phase 8: セッション記録の Markdown 出力(2026-10-31)
+
+動機: (1) レポートからセッションの経過そのものを読みたい、(2) セッション画面から `.md` を出して他の人に共有したい(agent-toolkit の `/export-usage` と同じ用途)、(3) ボトルネック分析に必要な情報を 1 ファイルにして LLM に渡したい。
+
+調べた結果、分析に必要な情報は events.jsonl(依頼・応答・ツールの引数と結果・時刻・compaction・権限・エラー・サブエージェント)と session-store.db(リクエスト単位のトークン・AIU・待ち時間・役)で揃っており、atlas は既に両方を読んでいる。足りないのは出力の形だけ。記録に無いのは、モデルの推論過程の多く(opaque)と Copilot の外で人がしていたこと。
+
+実装:
+
+1. `packages/report/src/transcript.ts`: 1 セッション → Markdown。概要、役 × モデルの消費(mergeUsage の明細から、TTFT と全体の中央値 / p90)、ツールの内訳、経過(相対時刻、依頼・応答・ツール 1 行・サブエージェント `[agent:名前]`・compaction・権限・エラー・中断・モード / モデル変更・終了、5 分以上の空白は「待ち」、依頼ごとの本体の消費 1 行)、変更ファイル、秘密情報の検査、分析の観点(定型)。
+2. `atlas export`(= `build` + 記録)。`--tool-output fail|all|none`(既定 fail)、`--max-chars`。`build` の `sessions/` 削除に乗るので、素の `build` では `.md` も詳細ページのリンクも消える(古い記録を残さない)。
+3. 詳細ページの上部に「セッション記録(Markdown)を開く / 保存」(`.md` があるときだけ)。
+4. 秘密情報は形式(GitHub / OpenAI・Anthropic / AWS / Slack / Google のキー、秘密鍵、JWT、Bearer)で見つけて `[伏せました: 種類]` に置き換え、件数を出す(元の記録は書き換えない)。
+5. 伏せ字モードでは本文に scrub(仮名・`<path>`)を掛け、ファイル一覧を出さず、先頭に「自由記述の固有名は機械的に保証できない」注意を書く。
+6. `atlas-export.bat`。
+
+決めたこと: HTML に本文を埋め込まない(5MB と file:// の制約。実データの events.jsonl は 202 本で 538MB)。`.md` の生成は `build` の既定にしない(容量と時間が増えるため別コマンド)。ブラウザ側でのファイル生成はしない(埋め込みが要るため)。
+
+E2E(`e2e/phase2.test.ts` g): fixture で全セッションに `.md` ができ、詳細ページからリンクされ、本体とサブエージェントの役 × モデルの表と依頼ごとの消費が出る。`--tool-output none` で結果の囲みが無い。`--anonymize` で fixture の固有名が出ない。素の `build` で `.md` とリンクが消える。単体(`packages/report/test/transcript.test.ts`): 架空のイベント列で経過・消費・待ち・秘密情報の伏せ字・内部ツールの除外・上限の中略・抜粋のみの形。
 
 ## 決めたこと・採らなかった案
 

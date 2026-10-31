@@ -16,3 +16,5 @@ export { execAggregate, quantilesOf } from './lib/exec.ts';
 export type { ExecAggregate } from './lib/exec.ts';
 export { highlights } from './lib/highlights.ts';
 export type { HighlightGroup, HighlightItem } from './lib/highlights.ts';
+export { renderTranscript, transcriptFileName, transcriptHref, redactSecrets, summarizeArgs, DEFAULT_TRANSCRIPT_OPTIONS, TOOL_OUTPUT_MODES, SECRET_PATTERNS } from './transcript.ts';
+export type { TranscriptOptions, TranscriptResult, ToolOutputMode } from './transcript.ts';

@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import { dirname, join, posix, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { computeMetrics, extract, METRICS_SCHEMA_VERSION, snapshot, type MetricsFile, type SessionRecord, type SessionsFile, type SnapshotManifest } from '../../core/src/index.ts';
-import { buildReport, ensureTemplate, HTML_SIZE_LIMIT, matchesBase, parseJudgments, type BuildResult, type JudgmentsIndex } from '../../report/src/index.ts';
+import { buildReport, DEFAULT_TRANSCRIPT_OPTIONS, ensureTemplate, HTML_SIZE_LIMIT, matchesBase, parseJudgments, type BuildResult, type JudgmentsIndex, type ToolOutputMode } from '../../report/src/index.ts';
 import {
   anthropicBackend,
   buildBundle,
@@ -175,6 +175,8 @@ export async function runMetrics(p: Paths, f: SessionFilter, log: Log): Promise<
 
 export interface BuildOptions extends SessionFilter {
   anonymize: boolean;
+  /** export: セッション記録(Markdown)も書く */
+  transcripts?: { toolOutput: ToolOutputMode; maxChars: number | null } | null;
 }
 
 export async function runBuild(p: Paths, o: BuildOptions, log: Log): Promise<BuildResult> {
@@ -214,7 +216,18 @@ export async function runBuild(p: Paths, o: BuildOptions, log: Log): Promise<Bui
     outDir: p.out,
     anonymize: o.anonymize,
     scope: { since: o.since, project: o.project, client: o.client, model: o.model, branch: o.branch },
+    transcripts: o.transcripts
+      ? { ...DEFAULT_TRANSCRIPT_OPTIONS, toolOutput: o.transcripts.toolOutput, maxTextChars: o.transcripts.maxChars ?? DEFAULT_TRANSCRIPT_OPTIONS.maxTextChars, snapshotDir: p.snapshot }
+      : undefined,
   });
+  if (r.transcripts) {
+    const t = r.transcripts;
+    log(
+      `export: セッション記録 ${t.files} 件(計 ${mb(t.bytes)})→ ${join(r.detailDir, '<id>.md')}${t.fromRecordOnly ? `、うちスナップショットに本文が無く抜粋のみ ${t.fromRecordOnly} 件` : ''}${t.truncated ? `、中略した本文 ${t.truncated} 件` : ''}`,
+    );
+    if (t.secretHits) log(`export: 注意 API キーやトークンらしい文字列を ${t.secretHits} 件伏せました。本物なら元の記録にも残っているので鍵を作り直してください`);
+    if (o.anonymize) log('export: 注意 伏せ字モードの記録は自由記述を機械的に置き換えただけです。共有する前に中身を確認してください');
+  }
   log(
     `build: ${r.htmlPath}(${mb(r.htmlBytes)}、うち埋め込みデータ ${mb(r.embeddedBytes)})、詳細ページ ${r.detailPages} 件(計 ${mb(r.detailBytes)})${o.anonymize ? '、伏せ字モード' : ''}、${ms(r.ms)}`,
   );
@@ -306,6 +319,8 @@ export async function run(o: CliOptions, log: Log): Promise<{ paths: Paths; buil
       return { paths: p };
     case 'build':
       return { paths: p, build: await runBuild(p, { ...f, anonymize: o.anonymize }, log) };
+    case 'export':
+      return { paths: p, build: await runBuild(p, { ...f, anonymize: o.anonymize, transcripts: { toolOutput: o.toolOutput, maxChars: o.maxChars } }, log) };
     case 'bundle':
       await runBundle(p, f, { includeEmpty: o.includeEmpty }, log);
       return { paths: p };
