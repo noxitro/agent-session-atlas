@@ -291,6 +291,14 @@ describe('Phase 2 E2E: fixtures', () => {
     expect(d.groups).toEqual([]);
     expect(d.warnings.notes).toHaveLength(1);
     expect(d.warnings.notes[0]).toMatch(/JSON として読めない/);
+    expect(d.warnings.notes[0]).toContain(notes); // 通常版は場所が分かるよう絶対パスを含む
+    // 伏せ字版では警告文の絶対パスも <path> にする(ホームのパスを共有用 HTML に残さない)
+    const brokenAnon = atlas(['build', '--out', outAnon, '--notes-dir', notes, '--anonymize']);
+    expect(brokenAnon.status, brokenAnon.stderr).toBe(0);
+    const dan = extractEmbedded<ReportData>(await readFile(join(outAnon, 'atlas.html'), 'utf8'));
+    expect(dan.warnings.notes).toHaveLength(1);
+    expect(dan.warnings.notes[0]).not.toContain(notes);
+    expect(dan.warnings.notes[0]).toContain('<path>');
     await writeFile(join(notes, 'groups.json'), JSON.stringify({ version: 1, groups: [{ name: 'ok', ids: [ids[0]] }, { name: 'ok', ids: [] }, { name: 'x', ids: 'bad' }] }));
     const partial = atlas(['build', '--out', out, '--notes-dir', notes]);
     expect(partial.status, partial.stderr).toBe(0);

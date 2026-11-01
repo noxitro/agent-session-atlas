@@ -143,7 +143,8 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
       : null,
     // 伏せ字モードではグループ名と note(自由記述)は出さず、ファイルの順で「グループ 1, 2, …」にする。ids は不透明なのでそのまま
     groups: (input.groups ?? []).map((g, i) => (anon.enabled ? { name: `グループ ${i + 1}`, note: '', ids: [...g.ids] } : { name: g.name, note: g.note, ids: [...g.ids] })),
-    warnings: { unknownEventTypes: input.warnings.unknownEventTypes, badLines: input.warnings.badLines, notes: input.warnings.notes ?? [] },
+    // 警告文には groups.json の絶対パスが入るので、伏せ字モードでは <path> に置き換える(scrub)
+    warnings: { unknownEventTypes: input.warnings.unknownEventTypes, badLines: input.warnings.badLines, notes: (input.warnings.notes ?? []).map((n) => anon.scrub(n)) },
   };
 
   await mkdir(input.outDir, { recursive: true });
