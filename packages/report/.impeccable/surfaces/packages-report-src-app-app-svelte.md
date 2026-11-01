@@ -7,10 +7,9 @@ related_targets: ["packages/report/src/detail.ts", "packages/report/src/glossary
 
 # Surface brief: atlas レポート(out/atlas.html と out/sessions/<id>.html)
 
-- モード: Operate(ダッシュボード)。主読者は作者本人、二次読者は共有相手(文脈なし)。PC ブラウザ主、モバイルは崩れなければよい。
+- モード: Operate(ダッシュボード)。主読者は利用者本人、二次読者は共有相手(文脈なし)。PC ブラウザ主、モバイルは崩れなければよい。
 - 仕事: 全体 → 絞り込み → 根拠のセッション、の順に辿る。欠測(入力トークン記録なし)を隠さない。
 - 制約: file:// 単一 HTML(共有用。閲覧のみ)、外部参照なし(同一オリジンの相対パス api/… への fetch だけは許す。atlas serve の API)、システムフォント、ライト/ダーク、色だけに頼らない、キーボードでフィルタ操作。
-- 進め方の注記: サブエージェント(非対話)で実行したため、方向決定の問い合わせは行わず、concept-seed の割り当てに従って自分で決めた。
 
 ## Direction contract
 

@@ -356,7 +356,8 @@ describe('Phase 2 E2E: fixtures', () => {
     expect(JSON.parse(await readFile(join(notes2, 'groups.json'), 'utf8'))).toEqual({ version: 1, groups: [] });
 
     // 後片付け: out/ を絞り込み無しに戻す(後のテストは out/ の全件を前提にする)
-    const back = atlas(['build', '--out', out]);
+    // --notes-dir を渡し、リポジトリ直下の atlas-notes/(利用者の手元のデータ)を読まない
+    const back = atlas(['build', '--out', out, '--notes-dir', notes2]);
     expect(back.status, back.stderr).toBe(0);
     expect((await read()).groups).toEqual([]);
   });

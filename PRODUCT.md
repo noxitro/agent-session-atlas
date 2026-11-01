@@ -12,8 +12,8 @@ TypeScript / Node 24 / npm workspaces。レポートは Vite + Svelte 5 を単�
 
 ## Users
 
-- 主利用者: 作者本人(個人開発者)。GitHub Copilot(デスクトップ autopilot / CLI / SDK)を主軸に複数プロジェクトを開発しており、自分の AI 活用を定量的に振り返りたい。
-- 二次読者: 作者がレポートを共有する相手(チームや発表の聴衆)。元セッションを知らないため、文脈なしで読める説明が要る。プロジェクト名や経路を伏せて共有する場合がある。
+- 主利用者: GitHub Copilot(デスクトップ autopilot / CLI / SDK)を主軸に複数プロジェクトを開発しており、自分の AI 活用を定量的に振り返りたい開発者。
+- 二次読者: 利用者がレポートを共有する相手(チームや発表の聴衆)。元セッションを知らないため、文脈なしで読める説明が要る。プロジェクト名や経路を伏せて共有する場合がある。
 - 閲覧環境は PC ブラウザが主。モバイルは崩れなければよい。
 
 ## Product Purpose
@@ -30,7 +30,7 @@ TypeScript / Node 24 / npm workspaces。レポートは Vite + Svelte 5 を単�
 
 ## Operating Context
 
-- 入力: `%USERPROFILE%\.copilot`(Windows)。Copilot が並行して書いている可能性がある。
+- 入力: `~/.copilot`(Windows では `%USERPROFILE%\.copilot`)。Copilot が並行して書いている可能性がある。
 - 実行: `atlas.bat` または `npm run atlas` で snapshot → extract → metrics → build。判定は別コマンド。
 - 出力: `out/atlas.html`(単一ファイル、集計と要約のみ埋め込み)、`out/sessions/<id>.html`(詳細)、`out/sessions.json` / `metrics.json` / `bundle/` / `judgments.json`。
 - 共有: HTML をそのまま相手に渡す。共有時はプロジェクト名・パスを伏せ字にするオプションを使う。
