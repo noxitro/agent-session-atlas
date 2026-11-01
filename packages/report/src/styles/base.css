@@ -487,13 +487,11 @@ summary {
   touch-action: manipulation;
 }
 
-/* フィルタ行が固定表示される幅では、ページ内リンクの飛び先をその高さ分下げる(--filterbar-h は FilterBar が設定) */
-@media (min-width: 900px) {
-  .section {
-    scroll-margin-top: calc(var(--filterbar-h, 0px) + 12px);
-  }
-  /* キーボードで移ったリンクやボタンが固定表示のフィルタ行の下に隠れないように */
-  html {
-    scroll-padding-top: calc(var(--filterbar-h, 0px) + 12px);
-  }
+/* 上部に目次と件数の帯が固定される幅(1280px 未満)では、ページ内リンクの飛び先とキーボードで移った部品をその高さ分下げる(--topbar-h は App が設定。サイドバーの幅では 0)。
+   飛び先の余白は scroll-margin-top(要素側)で足す。両方に帯の高さを入れると二重に下がる */
+html {
+  scroll-padding-top: var(--topbar-h, 0px);
+}
+.section {
+  scroll-margin-top: 12px;
 }

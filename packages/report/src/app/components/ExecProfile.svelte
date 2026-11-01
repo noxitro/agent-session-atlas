@@ -280,7 +280,7 @@
     margin: 0 0 6px;
     font-size: 0.8125rem;
     color: var(--form);
-    scroll-margin-top: calc(var(--filterbar-h, 0px) + 12px);
+    scroll-margin-top: 12px;
   }
   /* 8 つの小見出しが並ぶだけだと探せないので、節の頭に内訳の目次を置く */
   .subnav {

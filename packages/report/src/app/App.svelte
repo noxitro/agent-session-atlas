@@ -97,6 +97,112 @@
     filter = emptyFilter();
   }
 
+  /** 効いている絞り込みの条件の数(期間は開始・終了で 1 つ) */
+  const activeConditions = $derived.by(() => {
+    let n = filter.from || filter.to ? 1 : 0;
+    for (const k of ['project', 'client', 'model', 'branch', 'coverage', 'taskCategory', 'tool'] as const) if (filter[k]) n++;
+    if (filter.empty === '1') n++;
+    return n;
+  });
+
+  /** 目次の 1 項目。id はページ内の節、href は別ページ */
+  type TocItem = { id: string; label: string; href?: undefined } | { href: string; label: string; id?: undefined };
+  /** 節の目次。広い画面(1280px 以上)では左のサイドバー、狭い画面では上部の固定した 1 行。群で区切る(別ページは href) */
+  const tocGroups = $derived.by((): { title: string; items: TocItem[] }[] => [
+    {
+      title: '概況',
+      items: [
+        { id: 'overview', label: '全体' },
+        { id: 'highlights', label: '要点' },
+        { id: 'detail', label: '集計明細' },
+        ...(judged ? [{ id: 'judgments', label: 'AI 投入量 vs 推定人手工数' }] : []),
+      ],
+    },
+    {
+      title: '内訳',
+      items: [
+        { id: 'usage', label: '利用ランキング' },
+        { id: 'exec', label: '実行の性質' },
+        { id: 'projects', label: 'プロジェクト別' },
+        { id: 'monthly', label: '月別推移' },
+        { id: 'models', label: 'モデル別' },
+      ],
+    },
+    { title: '一覧', items: [{ id: 'sessions', label: 'セッション一覧' }] },
+    { title: '付録', items: [{ href: 'glossary.html', label: '用語の説明' }] },
+  ]);
+
+  /** 読んでいる節(目次の現在地の印)。見出しが画面上部 1/3(固定行の下)を越えた最後の節 */
+  let current = $state('overview');
+  /** 目次と件数の帯の高さ。狭い画面では上部に固定するので、ページ内リンクの飛び先をこの分だけ下げる(--topbar-h) */
+  let railHeight = $state(0);
+  let topbarPx = 0;
+  let railEl = $state<HTMLElement | null>(null);
+  $effect(() => {
+    const wide = matchMedia('(min-width: 1280px)');
+    const h = railHeight;
+    const apply = (): void => {
+      topbarPx = wide.matches ? 0 : h;
+      document.documentElement.style.setProperty('--topbar-h', `${topbarPx}px`);
+    };
+    apply();
+    wide.addEventListener('change', apply);
+    return () => wide.removeEventListener('change', apply);
+  });
+  $effect(() => {
+    const ids = tocGroups.flatMap((g) => g.items).map((i) => i.id).filter((id): id is string => !!id);
+    let tick = false;
+    const mark = (): void => {
+      tick = false;
+      const line = topbarPx + Math.min(160, window.innerHeight / 3);
+      let cur = ids[0];
+      for (const id of ids) {
+        const el = document.getElementById(id);
+        if (el && el.getBoundingClientRect().top <= line) cur = id;
+      }
+      if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2) cur = ids[ids.length - 1];
+      current = cur;
+    };
+    const onScroll = (): void => {
+      if (!tick) {
+        tick = true;
+        requestAnimationFrame(mark);
+      }
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('resize', onScroll);
+    mark();
+    return () => {
+      window.removeEventListener('scroll', onScroll);
+      window.removeEventListener('resize', onScroll);
+    };
+  });
+  // 狭い画面の目次行は横に流れるので、現在地の項目が見える位置まで行をずらす(ページは動かさない)
+  $effect(() => {
+    void current;
+    const a = railEl?.querySelector<HTMLElement>('.toc a[aria-current]');
+    const ol = a?.closest<HTMLElement>('.toc');
+    if (!a || !ol || ol.scrollWidth <= ol.clientWidth) return;
+    const l = a.offsetLeft;
+    const r = l + a.offsetWidth;
+    if (l < ol.scrollLeft) ol.scrollLeft = l - 12;
+    else if (r > ol.scrollLeft + ol.clientWidth) ol.scrollLeft = r - ol.clientWidth + 12;
+  });
+  // 詳細・用語ページの「← 戻る」が history.back() で絞り込みを保てるよう、このページから別ページへ移るときに印を残す(file:// では referrer が無い)
+  $effect(() => {
+    const onClick = (e: MouseEvent): void => {
+      const a = (e.target as Element | null)?.closest?.('a[href]');
+      if (!a || a.getAttribute('href')?.startsWith('#')) return;
+      try {
+        sessionStorage.setItem('atlas-return', '1');
+      } catch {
+        /* 保存できない環境では普通のリンクとして戻る */
+      }
+    };
+    document.addEventListener('click', onClick, true);
+    return () => document.removeEventListener('click', onClick, true);
+  });
+
   const scopeNotes = $derived.by(() => {
     if (!data) return [];
     const s = data.scope;
@@ -136,61 +242,68 @@
         </div>
       </div>
     </div>
-    <nav class="wrap toc" aria-label="ページ内の移動">
-      <a href="#overview">全体</a>
-      <a href="#highlights">要点</a>
-      <a href="#detail">集計明細</a>
-      {#if judged}<a href="#judgments">AI 投入量 vs 推定人手工数</a>{/if}
-      <a href="#usage">利用ランキング</a>
-      <a href="#exec">実行の性質</a>
-      <a href="#projects">プロジェクト別</a>
-      <a href="#monthly">月別推移</a>
-      <a href="#models">モデル別</a>
-      <a href="#sessions">セッション一覧</a>
-      <a href="glossary.html">用語の説明</a>
-    </nav>
   </header>
 
-  <FilterBar
-    {filter}
-    {options}
-    {judged}
-    shown={filtered.length}
-    total={scoped.length}
-    {emptyCount}
-    lastDay={all.overall.lastAt ? date(all.overall.lastAt) : null}
-    onchange={setFilter}
-    onreset={reset}
-  />
-
-  <main class="wrap" id="main" tabindex="-1">
-    <div class="empty" class:show={filtered.length === 0} role="status">
-      {#if filtered.length === 0}
-        <p>この条件に合うセッションはありません。</p>
-        <button type="button" class="btn" onclick={reset}>絞り込みを解除</button>
-      {/if}
+  <div class="shell">
+    <div class="rail" bind:this={railEl} bind:offsetHeight={railHeight}>
+      <div class="rail-in wrap">
+        <nav class="toc" aria-label="ページ内の移動">
+          {#each tocGroups as g (g.title)}
+            <div class="toc-group" role="group" aria-label={g.title}>
+              <span class="toc-title" aria-hidden="true">{g.title}</span>
+              <ol>
+                {#each g.items as it (it.label)}
+                  <li><a href={it.href ?? `#${it.id}`} aria-current={it.id && current === it.id ? 'true' : undefined}>{it.label}</a></li>
+                {/each}
+              </ol>
+            </div>
+          {/each}
+        </nav>
+        <div class="status">
+          <p class="count" aria-live="polite" aria-atomic="true">
+            <span class="w">表示中</span> <strong data-testid="shown-count">{int(filtered.length)}</strong> / <span class="w">集計対象</span> {int(scoped.length)} <span class="w">セッション</span><span class="u" aria-hidden="true">件</span>
+          </p>
+          <p class="active" class:on={activeConditions > 0}>
+            {#if activeConditions > 0}<span class="badge">{activeConditions}</span> <span class="w">条件で絞り込み中</span><span class="sr-only">条件で絞り込み中</span>{/if}
+          </p>
+          <button type="button" class="btn" disabled={isEmptyFilter(filter)} onclick={reset}>解除</button>
+        </div>
+      </div>
     </div>
 
-    <!-- 帳票の順: 表紙(規模の 4 欄)→ 摘要(要点)→ 明細 -->
-    <Overview part="cover" {agg} {judged} anonymized={data.anonymized} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} />
-    <Highlights groups={points} />
-    <Overview part="detail" {agg} {judged} anonymized={data.anonymized} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} />
-    {#if judged}<JudgmentPanel {agg} meta={data.judgments} />{/if}
-    <UsageRanking usage={agg.usage} installed={data.installed ?? null} bind:tab={usageTab} />
-    <ExecProfile exec={agg.exec} sessions={filtered.length} />
-    <ProjectTable rows={agg.byProject} {judged} current={filter.project} onpick={(p) => setFilter({ project: p })} />
-    <MonthlyChart months={agg.byMonth} />
-    <ModelChart rows={agg.byModel} />
-    <SessionTable sessions={filtered} {judged} anonymized={data.anonymized} />
-  </main>
-  <footer class="wrap foot">
-    <p>
-      このレポートはローカルのログ(~/.copilot)を複製して集計したもので、LLM は使っていません。入力トークン・AI 使用量(AIU)・premium request・変更行数は記録が残っているセッションだけの合計です。
-      {#if data.warnings.unknownEventTypes > 0 || data.warnings.badLines > 0}
-        読み取り時の注意: 未知のイベント種別 {int(data.warnings.unknownEventTypes)} 件、読めなかった行 {int(data.warnings.badLines)} 行。
-      {/if}
-    </p>
-  </footer>
+    <div class="content">
+      <FilterBar {filter} {options} {judged} {emptyCount} lastDay={all.overall.lastAt ? date(all.overall.lastAt) : null} onchange={setFilter} />
+
+      <main class="wrap" id="main" tabindex="-1">
+        <div class="empty" class:show={filtered.length === 0} role="status">
+          {#if filtered.length === 0}
+            <p>この条件に合うセッションはありません。</p>
+            <button type="button" class="btn" onclick={reset}>絞り込みを解除</button>
+          {/if}
+        </div>
+
+        <!-- 帳票の順: 表紙(規模の 4 欄)→ 摘要(要点)→ 明細 -->
+        <Overview part="cover" {agg} {judged} anonymized={data.anonymized} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} />
+        <Highlights groups={points} />
+        <Overview part="detail" {agg} {judged} anonymized={data.anonymized} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} />
+        {#if judged}<JudgmentPanel {agg} meta={data.judgments} />{/if}
+        <UsageRanking usage={agg.usage} installed={data.installed ?? null} bind:tab={usageTab} />
+        <ExecProfile exec={agg.exec} sessions={filtered.length} />
+        <ProjectTable rows={agg.byProject} {judged} current={filter.project} onpick={(p) => setFilter({ project: p })} />
+        <MonthlyChart months={agg.byMonth} />
+        <ModelChart rows={agg.byModel} />
+        <SessionTable sessions={filtered} {judged} anonymized={data.anonymized} />
+      </main>
+      <footer class="wrap foot">
+        <p>
+          このレポートはローカルのログ(~/.copilot)を複製して集計したもので、LLM は使っていません。入力トークン・AI 使用量(AIU)・premium request・変更行数は記録が残っているセッションだけの合計です。
+          {#if data.warnings.unknownEventTypes > 0 || data.warnings.badLines > 0}
+            読み取り時の注意: 未知のイベント種別 {int(data.warnings.unknownEventTypes)} 件、読めなかった行 {int(data.warnings.badLines)} 行。
+          {/if}
+        </p>
+      </footer>
+    </div>
+  </div>
 {/if}
 
 <style>
@@ -219,23 +332,225 @@
     align-items: center;
     flex-wrap: wrap;
   }
-  .toc {
+  /* 目次と件数の帯(.rail)。1280px 未満は上部に固定した細い 1 行(目次は横に流れる)、1280px 以上は左のサイドバー */
+  .rail {
+    position: sticky;
+    top: 0;
+    z-index: 6;
+    background: var(--surface);
+    border-bottom: 1px solid var(--rule-strong);
+  }
+  .rail-in {
     display: flex;
-    gap: 4px 18px;
-    flex-wrap: wrap;
-    padding-bottom: 8px;
+    align-items: center;
+    gap: 8px 16px;
+  }
+  .toc {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    overflow-x: auto;
+    scrollbar-width: none;
     font-size: 0.8125rem;
+    /* 横に続きがあるときだけ端に影を出す(表の横スクロールと同じ手法) */
+    background:
+      linear-gradient(90deg, var(--surface) 30%, transparent) left / 32px 100% no-repeat local,
+      linear-gradient(270deg, var(--surface) 30%, transparent) right / 32px 100% no-repeat local,
+      linear-gradient(90deg, var(--scroll-shade), transparent) left / 10px 100% no-repeat scroll,
+      linear-gradient(270deg, var(--scroll-shade), transparent) right / 10px 100% no-repeat scroll,
+      var(--surface);
+  }
+  .toc::-webkit-scrollbar {
+    display: none;
+  }
+  .toc-group {
+    display: flex;
+    align-items: center;
+    flex: 0 0 auto;
+  }
+  .toc-group + .toc-group {
+    margin-left: 10px;
+    padding-left: 10px;
+    border-left: 1px solid var(--rule);
+  }
+  .toc-title {
+    display: none;
+  }
+  .toc ol {
+    display: flex;
+    gap: 14px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .toc li {
+    flex: 0 0 auto;
   }
   .toc a {
     display: inline-flex;
     align-items: center;
-    min-height: 24px;
+    min-height: 36px;
+    white-space: nowrap;
     text-decoration: none;
     color: var(--ink-2);
+    border-bottom: 2px solid transparent;
   }
   .toc a:hover {
     color: var(--form);
     text-decoration: underline;
+  }
+  .toc a[aria-current] {
+    color: var(--form);
+    font-weight: 600;
+    border-bottom-color: var(--form);
+  }
+  .status {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-left: auto;
+  }
+  .status p {
+    margin: 0;
+    font-size: 0.8125rem;
+    color: var(--ink-2);
+    white-space: nowrap;
+  }
+  .status strong {
+    font-size: 1.0625rem;
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+  }
+  .status .active {
+    display: none;
+  }
+  .status .active.on {
+    display: block;
+  }
+  .status .badge {
+    display: inline-block;
+    padding: 0 5px;
+    background: var(--form);
+    color: var(--surface);
+    font-size: 0.6875rem;
+    line-height: 1.5;
+  }
+  .status .btn {
+    padding: 2px 10px;
+  }
+  .status .u {
+    display: none;
+  }
+  @media (max-width: 720px) {
+    .status .w {
+      display: none;
+    }
+    .status .u {
+      display: inline;
+    }
+  }
+  @media (min-width: 1280px) {
+    /* サイドバーの幅はコンテンツから取らず、ページの最大幅を広げて確保する(表の列幅を 1280px 未満と同じに保つ) */
+    .mast-row {
+      max-width: calc(1360px + 13em + 32px);
+    }
+    .shell {
+      max-width: calc(1360px + 13em + 32px);
+      margin: 0 auto;
+      padding: 0 24px;
+      display: grid;
+      grid-template-columns: 13em minmax(0, 1fr);
+      gap: 0 32px;
+      align-items: start;
+    }
+    .content {
+      min-width: 0;
+    }
+    .content :global(.wrap) {
+      max-width: none;
+      padding-left: 0;
+      padding-right: 0;
+    }
+    .rail {
+      position: sticky;
+      top: 0;
+      max-height: 100vh;
+      overflow-y: auto;
+      background: transparent;
+      border-bottom: 0;
+      padding: 16px 0;
+    }
+    .rail-in {
+      display: block;
+      padding: 0;
+    }
+    .toc {
+      display: block;
+      overflow: visible;
+      background: none;
+    }
+    .toc-group {
+      display: block;
+      margin-top: 14px;
+    }
+    .toc-group:first-child {
+      margin-top: 0;
+    }
+    .toc-group + .toc-group {
+      margin-left: 0;
+      padding-left: 0;
+      border-left: 0;
+    }
+    .toc-title {
+      display: block;
+      font-size: 0.6875rem;
+      color: var(--form);
+      letter-spacing: 0.04em;
+      padding-bottom: 2px;
+      border-bottom: 1px solid var(--rule-strong);
+    }
+    .toc ol {
+      display: block;
+    }
+    .toc a {
+      display: flex;
+      min-height: 30px;
+      padding: 0 10px;
+      white-space: normal;
+      border-bottom: 1px solid var(--rule);
+      border-left: 3px solid transparent;
+    }
+    .toc a:hover {
+      background: var(--form-wash);
+      text-decoration: none;
+    }
+    .toc a[aria-current] {
+      background: var(--form-wash);
+      border-left-color: var(--form);
+      border-bottom-color: var(--rule);
+    }
+    .status {
+      display: block;
+      margin: 20px 0 0;
+      padding-top: 10px;
+      border-top: 1px solid var(--rule-strong);
+    }
+    .status p {
+      white-space: normal;
+    }
+    .status strong {
+      display: block;
+      font-size: 1.375rem;
+      line-height: 1.25;
+    }
+    .status .active.on {
+      margin-top: 6px;
+    }
+    .status .btn {
+      margin-top: 10px;
+      padding: 4px 12px;
+    }
   }
   .skip {
     position: absolute;

@@ -4,7 +4,7 @@
 // 本文は 5 つの分類(h2、id は g-<分類>)で区切り、目次は分類だけを載せる。広い画面では左に固定した側面目次、狭い画面では分類の行だけ。
 import { dateTime } from './lib/format.ts';
 import { GLOSSARY, GLOSSARY_GROUPS, termsByGroup } from './lib/glossary.ts';
-import { esc } from './detail.ts';
+import { BACK_JS, esc } from './detail.ts';
 
 export interface GlossaryPageOptions {
   css: string;
@@ -87,6 +87,7 @@ export function renderGlossaryHtml(o: GlossaryPageOptions): string {
 </main>
 <footer class="wrap page-foot">Copilot Session Atlas が ${esc(dateTime(o.generatedAt))} に生成。</footer>
 <script>${GLOSSARY_JS}</script>
+<script>${BACK_JS}</script>
 </body>
 </html>
 `;

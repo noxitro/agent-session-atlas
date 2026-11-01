@@ -143,7 +143,8 @@ describe('Phase 2 E2E: fixtures', () => {
     // 本文の一文はトップページと詳細ページに無い(埋め込み JSON を除いた HTML 本文で見る)
     const sample = GLOSSARY[0].body.slice(0, 40);
     expect(html.replace(/<script type="application\/json"[\s\S]*?<\/script>/g, '')).not.toContain(sample);
-    expect(html).toContain('href="glossary.html"');
+    // 目次(サイドバー / 上部の固定行)は Svelte がデータから描くので、リンク先の文字列が埋め込みスクリプトに入っていることを見る
+    expect(html).toMatch(/href:\s*["']glossary\.html["']/);
     const page = await readFile(join(out, 'sessions', `${data.sessions[0].id}.html`), 'utf8');
     expect(page).not.toContain(sample);
     expect(page).toContain('href="../glossary.html"');

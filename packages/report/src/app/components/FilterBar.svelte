@@ -1,41 +1,29 @@
 <script lang="ts">
   import { categoryLabel } from '../../lib/judgment-labels.ts';
-  import { isEmptyFilter, NO_JUDGMENT, UNKNOWN, type FilterState, type Option } from '../../lib/filter.ts';
+  import { NO_JUDGMENT, UNKNOWN, type FilterState, type Option } from '../../lib/filter.ts';
   import { int, modelLabel } from '../../lib/format.ts';
 
   let {
     filter,
     options,
     judged,
-    shown,
-    total,
     emptyCount,
     lastDay,
     onchange,
-    onreset,
   }: {
     filter: FilterState;
     options: { project: Option[]; client: Option[]; model: Option[]; branch: Option[]; taskCategory: Option[] };
     judged: boolean;
-    shown: number;
-    total: number;
     /** 空のセッション(依頼 0・ツール 0・応答 0)の件数 */
     emptyCount: number;
     /** 最終記録日(YYYY-MM-DD、ローカル)。期間の簡易指定の基準 */
     lastDay: string | null;
     onchange: (patch: Partial<FilterState>) => void;
-    onreset: () => void;
   } = $props();
 
   const label = (v: string): string => (v === UNKNOWN ? '不明' : v === NO_JUDGMENT ? '未判定' : categoryLabel(v));
   /** ツールの絞り込みの表示名(mcp:<サーバー> は「MCP <サーバー>」) */
   const toolLabel = (t: string): string => (t.startsWith('mcp:') ? `MCP ${t.slice(4)}` : t);
-
-  // 固定表示のフィルタ行の高さを CSS 変数に出す(ページ内リンクの飛び先が隠れないよう scroll-margin-top に使う)
-  let barHeight = $state(0);
-  $effect(() => {
-    document.documentElement.style.setProperty('--filterbar-h', `${barHeight}px`);
-  });
 
   function shift(day: string, days: number): string {
     const [y, m, d] = day.split('-').map(Number);
@@ -67,7 +55,8 @@
     </label>
   {/snippet}
 
-<div class="filterbar" role="search" aria-label="セッションの絞り込み" bind:offsetHeight={barHeight}>
+<!-- 絞り込み行は通常の流れに置く(固定するのは目次と「表示中の件数」の帯だけ。件数と解除はそちらにある) -->
+<div class="filterbar" role="search" aria-label="セッションの絞り込み">
   <div class="wrap row">
     <fieldset class="period">
       <legend>期間</legend>
@@ -120,13 +109,6 @@
     >
       {showMore ? 'その他の条件を閉じる' : 'その他の条件'}{#if moreCount > 0}<span class="badge" aria-label="{moreCount} 件が有効">{moreCount}</span>{/if}
     </button>
-
-    <div class="count">
-      <p aria-live="polite" aria-atomic="true">
-        表示中 <strong data-testid="shown-count">{int(shown)}</strong> / 集計対象 {int(total)} セッション
-      </p>
-      <button type="button" class="btn" disabled={isEmptyFilter(filter)} onclick={onreset}>解除</button>
-    </div>
   </div>
 
   <div class="wrap row more" id="filter-more" hidden={!showMore}>
@@ -166,13 +148,6 @@
   .filterbar {
     background: var(--surface);
     border-bottom: 1px solid var(--rule-strong);
-    z-index: 5;
-  }
-  @media (min-width: 900px) {
-    .filterbar {
-      position: sticky;
-      top: 0;
-    }
   }
   .row {
     display: flex;
@@ -299,22 +274,6 @@
     color: var(--ink-3);
     max-width: 32em;
   }
-  .count {
-    margin-left: auto;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-  .count p {
-    margin: 0;
-    font-size: 0.8125rem;
-    color: var(--ink-2);
-    white-space: nowrap;
-  }
-  .count strong {
-    font-size: 1.0625rem;
-    color: var(--ink);
-  }
   @media (max-width: 720px) {
     .sel,
     select {
@@ -324,11 +283,6 @@
     }
     .more-toggle {
       flex: 1 1 100%;
-    }
-    .count {
-      margin-left: 0;
-      width: 100%;
-      justify-content: space-between;
     }
   }
 </style>

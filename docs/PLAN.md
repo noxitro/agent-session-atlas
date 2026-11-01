@@ -325,13 +325,47 @@ ui-ux-pro-max(`~/.agents/skills/ui-ux-pro-max`、`scripts/search.py --domain ux`
 
 | 案 | 推奨 | 理由 |
 |---|---|---|
-| 絞り込み行の固定表示を外し、表示中の件数(と解除)だけを固定する | 推奨する | 第一画面の 2 行分が本文に戻る。条件の変更はページ上部に戻れば済み、件数の印は残る |
-| 詳細ページから戻るときに絞り込みを保つ | 推奨する(小) | `file://` では referrer が無いので、詳細ページの「戻る」を `history.length > 1` なら `history.back()` にする小さなスクリプトで足せる。直接開いたときは今のリンクのまま |
+| 絞り込み行の固定表示を外し、表示中の件数(と解除)だけを固定する | 実施(2026-11-01 夕、下の追記) | 第一画面の 2 行分が本文に戻る。条件の変更はページ上部に戻れば済み、件数の印は残る |
+| 詳細ページから戻るときに絞り込みを保つ | 実施(2026-11-01 夕、下の追記) | `file://` では referrer が無いので、atlas.html が別ページへ移るときに sessionStorage に印を残し、詳細・用語ページの「戻る」が印を見て `history.back()` にする。直接開いたときは今のリンクのまま |
+| atlas.html の節の目次を広い画面ではサイドバーにする | 実施(2026-11-01 夕、下の追記) | 10 項目を 1 行に並べると主従が無く、表題帯が消えると欄の移動に先頭へ戻る必要があり、現在地の印も無かった |
 | 伏せ字の仮名をセッション数順に振る(project-01 が最大) | 推奨しない(保留) | 単体テスト 5 箇所と README の記述が変わる割に、伏せ字版を見せる相手には順序が無くても困らない |
 | 伏せ字ビルドの要点を「規模の分布」の文に変える | 推奨しない | 要点は根拠のセッションへのリンクが価値で、伏せ字でも project-NN で辿れる |
 | `.seg` の押下状態を帳票らしい印(✓ や下線)に替える | 推奨しない | 緑ベタの方が識別しやすく、契約の「色だけに頼らない」は `aria-pressed` + 文字で満たしている |
 | 用語ページの分類目次を atlas.html のマストヘッドにも出す(用語へ直接飛ぶ) | 推奨しない | マストヘッドの目次が 11 → 16 項目になり第一画面を圧迫する |
 | 日付入力の Tab 3 打(`<input type="date">` の仕様) | 推奨しない | 置き換えは契約外で、ブラウザ標準の方がキーボード・読み上げに強い |
+
+#### 追記(2026-11-01 夕): 節の目次をサイドバーにし、保留だった 2 件を実施(契約変更)
+
+ユーザーの指摘: 表題帯の下の 10 節のリンクは 1 行に並べるには多く主従の差が無い、表題帯はスクロールで消えるので欄の移動に先頭へ戻る必要がある(固定は絞り込み行だけ)、現在地の印が無い、大画面のデモでは左に目次があると構成が伝わる。「広い画面はサイドバー、狭い画面は固定した上部の行、どちらも現在地の印付き」で承認。
+
+直したこと(surface brief の FIRST VIEWPORT と SUBPAGES を同じコミットで変更):
+
+17. **サイドバー(1280px 以上)**: 表題帯の下を「目次 + 本文」の 2 段にした(`App.svelte` の `.shell` グリッド、左 13em、sticky)。10 節を 概況 / 内訳 / 一覧 / 付録 の 4 群に縦に並べ、群名は欄の項目名と同じ小さな緑の字。スクロールに合わせて読んでいる節に `aria-current` の印(左の 3px 罫 + 緑の地。用語ページの GLOSSARY_JS と同じ判定を Svelte の `$effect` で: 見出しが画面上部 1/3 を越えた最後の節、末尾では最後の節)。下に「表示中 N / 集計対象 M セッション」、絞り込みが効いていれば「K 条件で絞り込み中」の印(期間は開始・終了で 1 条件)と「解除」。サイドバーの幅はコンテンツから取らず、ページの最大幅を 1360px + 13em + 32px に広げた(1920px で本文 1312px、サイドバー導入前と同じ)。
+18. **上部の固定行(1280px 未満)**: 目次を上部に固定した 36px の 1 行にし、横に流れる(端の影が続きの手掛かり。現在地の項目が見える位置まで行をずらす)。右端に件数と解除(720px 未満は「N / M 件」に縮める)。固定するのはこの行だけ。飛び先の余白は `html { scroll-padding-top: var(--topbar-h) }` + `.section { scroll-margin-top: 12px }` に整理した(以前は両方に固定行の高さを入れていて二重に下がっていた)。
+19. **絞り込み行の固定解除**(保留の推奨案): `FilterBar` を通常の流れに戻し、件数と解除を目次の帯(サイドバー / 固定行)へ移した。
+20. **詳細から戻るときの絞り込み保持**(保留の推奨案): atlas.html が別ページへのリンクを押したときに `sessionStorage` に印を残し、詳細・用語ページの「← 戻る」は印があり `history.length > 1` なら `history.back()`(URL の # の絞り込みがそのまま残る)。印は読んだら消す(次に直接開いたときに誤って戻らない)。修飾キー付きクリック・直接開いたとき・新しいタブでは普通のリンク。`detail.ts` の `BACK_JS`(外部参照なし、`file://` で動く)。
+
+表の幅の扱い: 1280px 未満でサイドバーを出さないのは、13 列のセッション一覧(1360px)と 9 列のプロジェクト別が本文 1008px ではさらに窮屈になるため(brief に明記)。1280〜1440px では本文 1008〜1168px で、セッション一覧は横スクロール(`.table-scroll` の両端の影が手掛かり)、プロジェクト別も 1280px では僅かに横スクロールする。列幅は変えていない(1280px 未満の見え方と同じに保つ)。
+
+確認: 1920 / 1440 / 1280 / 1024 / 375px、ライト / ダーク、伏せ字版。typecheck 0、unit・E2E 通過。
+
+ui-ux-pro-max の照合(前回と同じ要領。`--domain ux` を 7 観点、`--stack svelte` を 2 観点):
+
+| 観点(検索語) | 該当した規則(Category / Issue) | 採否 |
+|---|---|---|
+| 固定ナビ(sticky navigation header) | Navigation / Sticky Navigation(固定要素が本文を隠さない) | 採用: 固定行の高さを `--topbar-h` に出し `scroll-padding-top` で補正。サイドバーの幅では 0 |
+| 同上 | Accessibility / Keyboard Navigation(Tab 順と見た目の順を揃える) | 採用済み: DOM 順は 目次 → 件数・解除 → 絞り込み行 → 本文で、見た目の順と同じ |
+| 同上 | Navigation / Breadcrumbs | 採らない(前回と同じ。2 階層) |
+| 現在地(scrollspy active section) | Navigation / Active State(現在の節を示す) | 採用: `aria-current` + 左罫・緑の地(サイドバー)/ 下線(固定行)。色だけに頼らず太字も |
+| 同上 | Interaction / Active States(押した反応) | 採用済み: `:hover` と `:focus-visible` |
+| 同上 | Navigation / Smooth Scroll | 採用済み(前回) |
+| サイドバーの幅(sidebar navigation width) | Layout / Container Width(本文の行長) | 採用: サイドバーは本文の幅を削らず、ページの最大幅を広げて確保。本文の `.note` は 75ch のまま |
+| 戻る(back button history) | Navigation / Back Button(履歴を壊さない。`pushState` を使い `location.replace` を避ける) | 採用: `history.back()` で戻る(履歴を増やさない)。絞り込みは `replaceState` で同じ履歴項目に残しているので、戻った先にそのまま残る |
+| タップ領域(touch target size) | Touch / Touch Target Size、Accessibility / Target Size (Minimum) | 採用: 固定行のリンクは 36px 高(Web の最小 24px 以上)、サイドバーは 30px。横の間隔 14px(Touch Spacing の 8px 以上) |
+| 表の横スクロール(horizontal scroll table) | Responsive / Table Handling、Responsive / Horizontal Scroll | 採用済み: スクロールは表の箱の中だけ。ページ全体は横に広がらない(375px で scrollWidth = 375 を確認) |
+| 横に流れる目次(mobile navigation tabs scroll) | (Smooth Scroll / Back Button / Sticky Navigation の再掲のみ) | 新規なし |
+| `--stack svelte`(sticky sidebar navigation) | Accessibility / Use semantic elements | 採用済み: `nav` `ol` `button` |
+| `--stack svelte`(scroll position history) | 0 件 | — |
 
 ## 決めたこと・採らなかった案
 

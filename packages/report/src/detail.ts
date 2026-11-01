@@ -290,6 +290,13 @@ export interface DetailOptions {
   transcriptHref?: string | null;
 }
 
+/**
+ * 「← レポートに戻る」の挙動。atlas.html から来たとき(atlas.html がリンクを押した時に sessionStorage に印を残す。http では referrer でも分かる)は
+ * history.back() で戻り、URL の # に残っている絞り込みを保つ。直接開いたときや新しいタブでは普通のリンク。印は読んだら消す(次に直接開いたときに誤って戻らないように)。
+ * 外部参照なし・file:// で動く。
+ */
+export const BACK_JS = `(function(){var a=document.querySelector('a.crumb');if(!a)return;var mark=false;try{mark=sessionStorage.getItem('atlas-return')==='1';sessionStorage.removeItem('atlas-return')}catch(e){}a.addEventListener('click',function(e){if(e.button!==0||e.metaKey||e.ctrlKey||e.shiftKey||e.altKey)return;var ok=false;try{ok=history.length>1&&(mark||/atlas\\.html/.test(document.referrer))}catch(err){}if(ok){e.preventDefault();history.back()}})})();`;
+
 const DETAIL_CSS = `
 .meta{display:flex;flex-wrap:wrap;gap:6px 8px;margin-top:8px}
 .sec-toc{display:flex;flex-wrap:wrap;gap:4px 18px;margin-top:12px;padding-bottom:8px;border-bottom:1px solid var(--rule);font-size:.8125rem}
@@ -529,6 +536,7 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
 ${parts.join('\n')}
 </main>
 <footer class="wrap page-foot">Copilot Session Atlas が ${esc(dateTime(o.generatedAt))} に生成。${anon.enabled ? '伏せ字モード(プロジェクト・パス・ブランチ・本文を伏せています)。' : ''}</footer>
+<script>${BACK_JS}</script>
 </body>
 </html>
 `;

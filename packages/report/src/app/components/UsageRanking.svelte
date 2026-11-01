@@ -414,8 +414,8 @@
     padding: 10px 12px 12px;
   }
   .unused {
-    /* 要点欄のリンクで飛んできたとき、固定表示のフィルタ行の下に隠れないように */
-    scroll-margin-top: calc(var(--filterbar-h, 0px) + 12px);
+    /* 要点欄のリンクで飛んできたときの余白(固定表示の帯の分は html の scroll-padding-top が持つ) */
+    scroll-margin-top: 12px;
   }
   .unused:focus {
     outline: none;
