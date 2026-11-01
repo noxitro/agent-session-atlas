@@ -12,7 +12,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { SessionsFile, SnapshotManifest } from '../packages/core/src/index.ts';
 import type { CoverageFile } from '../packages/report/src/coverage.ts';
 import { extractEmbedded, type ReportData } from '../packages/report/src/index.ts';
-import { buildFixtureHome, FAKE_SECRETS, P11_SESSION, ROOT } from './fixture-home.ts';
+import { buildFixtureHome, FAKE_SECRETS, P11_SESSION, ROOT, UNLISTED_VALUES } from './fixture-home.ts';
+const LEAK_VALUES = [...Object.values(FAKE_SECRETS), ...Object.values(UNLISTED_VALUES), 'failure-event-json-FAKE-2b3c', 'activity-metadata-json-FAKE-3c4d', 'workspace-bootstrap-config-FAKE-6f7a'];
 
 const WORK = join(ROOT, 'out', 'e2e-phase11');
 const CLI = join(ROOT, 'packages', 'cli', 'src', 'main.ts');
@@ -69,6 +70,11 @@ describe('Phase 11 E2E: fixtures', () => {
     expect(skipped['chats(*.md 以外)']).toMatchObject({ bytes: 100 });
     expect(x.topLevel.plans.files).toBe(1);
     expect(x.desktop).toMatchObject({ written: true, sessions: 1, warnings: [] });
+    // ジャンクションは辿らず skipped に残る(作れた環境だけ)
+    if (existsSync(join(home, 'session-state', P11_SESSION, 'linked'))) {
+      expect(skipped[`session-state/${P11_SESSION}/linked`]?.reason).toMatch(/リンク/);
+      expect(existsSync(join(sdir, 'linked'))).toBe(false);
+    }
     // 元は書き換えない(mtime 不変、data.db の -shm / -wal を作らない)
     expect(await mtimes(home)).toEqual(before);
     expect(existsSync(join(home, 'data.db-shm'))).toBe(false);
@@ -76,7 +82,16 @@ describe('Phase 11 E2E: fixtures', () => {
     // 2 回目は再利用(写さなかったものは同じ)
     const r2 = atlas(['snapshot', '--home', home, '--out', out]);
     expect(r2.status, r2.stderr).toBe(0);
-    expect(r2.stdout).toMatch(/写さなかったもの 5 件/);
+    expect(r2.stdout).toMatch(/写さなかったもの [56] 件/);
+    // 元から消えたファイルは複製先からも消える(削除の同期)
+    const { rm: rmf, writeFile: wf } = await import('node:fs/promises');
+    await wf(join(home, 'session-state', P11_SESSION, 'files', 'gone.txt'), 'x');
+    expect(atlas(['snapshot', '--home', home, '--out', out]).status).toBe(0);
+    expect(existsSync(join(sdir, 'files', 'gone.txt'))).toBe(true);
+    await rmf(join(home, 'session-state', P11_SESSION, 'files', 'gone.txt'));
+    expect(atlas(['snapshot', '--home', home, '--out', out]).status).toBe(0);
+    expect(existsSync(join(sdir, 'files', 'gone.txt'))).toBe(false);
+    before = await mtimes(home);
     // --snapshot-all で rewind-snapshots・fake-solution・logs/ を写す(repos は写さない)
     const ra = atlas(['snapshot', '--home', home, '--out', out, '--snapshot-all']);
     expect(ra.status, ra.stderr).toBe(0);
@@ -86,7 +101,7 @@ describe('Phase 11 E2E: fixtures', () => {
     expect(existsSync(join(out, 'snapshot', 'repos'))).toBe(false);
     const ma = JSON.parse(await readFile(join(out, 'snapshot', 'snapshot-manifest.json'), 'utf8')) as SnapshotManifest;
     expect(ma.extras!.all).toBe(true);
-    expect(ma.extras!.skipped.map((s) => s.path).sort()).toEqual(['chats(*.md 以外)', 'repos']);
+    expect(ma.extras!.skipped.map((s) => s.path).filter((p) => !/linked$/.test(p)).sort()).toEqual(['chats(*.md 以外)', 'repos']);
     expect(await mtimes(home)).toEqual(before);
     // 既定に戻す(logs/ の合成トークンが out/ に残らないよう消す)
     const { rm } = await import('node:fs/promises');
@@ -114,10 +129,10 @@ describe('Phase 11 E2E: fixtures', () => {
     const page = await readFile(join(out, 'sessions', `${P11_SESSION}.html`), 'utf8');
     expect(page).toContain('デスクトップアプリの記録(data.db)');
     expect(page).toContain('feature/p11');
-    // 資格情報の合成値は out/ のどこにも無い(snapshot・sessions.json・HTML・この後の全文記録も含めて c. の後にもう一度見る)
+    // 資格情報の合成値(トークンの形でないものも)と許可外の列の値は out/ のどこにも無い(c. の後にもう一度見る)
     for (const f of await allFiles(out)) {
       const t = await readFile(f, 'utf8').catch(() => '');
-      for (const v of Object.values(FAKE_SECRETS)) expect({ f, v, leaked: t.includes(v) }).toEqual({ f, v, leaked: false });
+      for (const v of LEAK_VALUES) expect({ f, v, leaked: t.includes(v) }).toEqual({ f, v, leaked: false });
     }
   });
 
@@ -185,10 +200,10 @@ describe('Phase 11 E2E: fixtures', () => {
     // 詳細ページから全文記録へのリンク
     const page = await readFile(join(out, 'sessions', `${P11_SESSION}.html`), 'utf8');
     expect(page).toContain(`href="../full/${P11_SESSION}.md"`);
-    // 資格情報の合成値は全文記録にも無い
+    // 資格情報の合成値と許可外の列の値は全文記録にも無い
     for (const f of await allFiles(out)) {
       const t = await readFile(f, 'utf8').catch(() => '');
-      for (const v of Object.values(FAKE_SECRETS)) expect({ f, v, leaked: t.includes(v) }).toEqual({ f, v, leaked: false });
+      for (const v of LEAK_VALUES) expect({ f, v, leaked: t.includes(v) }).toEqual({ f, v, leaked: false });
     }
     expect(await mtimes(home)).toEqual(before);
   });
@@ -220,9 +235,20 @@ describe('Phase 11 E2E: fixtures', () => {
     expect(existsSync(join(anonOut, 'library'))).toBe(false);
     expect(existsSync(join(anonOut, 'full'))).toBe(false);
     expect(extractEmbedded<ReportData>(await readFile(join(anonOut, 'atlas.html'), 'utf8')).library).toBe(false);
+    // 素の build は前回の生成物(instructions.html / full / coverage.json)を消さず、残っていることをログに出す
     const rb = atlas(['build', '--home', home, '--out', out]);
     expect(rb.status, rb.stderr).toBe(0);
+    expect(existsSync(join(out, 'instructions.html'))).toBe(true);
+    expect(existsSync(join(out, 'full'))).toBe(true);
+    expect(existsSync(join(out, 'coverage.json'))).toBe(true);
+    expect(rb.stdout).toMatch(/前回の --full の出力/);
+    expect(rb.stdout).toMatch(/前回の export の閲覧ページ/);
+    expect(extractEmbedded<ReportData>(await readFile(join(out, 'atlas.html'), 'utf8')).library).toBe(false);
+    // 伏せ字版で作ると消える
+    const rc = atlas(['build', '--home', home, '--out', out, '--anonymize']);
+    expect(rc.status, rc.stderr).toBe(0);
     expect(existsSync(join(out, 'instructions.html'))).toBe(false);
     expect(existsSync(join(out, 'full'))).toBe(false);
+    expect(existsSync(join(out, 'coverage.json'))).toBe(false);
   });
 });

@@ -172,47 +172,89 @@ const KNOWN_SESSION_ENTRIES = new Set<string>([
 ]);
 const isLock = (name: string): boolean => /^inuse\.\d+\.(lock|hold)$/.test(name) || name.endsWith('.lock');
 
-/** フォルダの容量(再帰) */
+const LINK_REASON = 'シンボリックリンク / ジャンクション(辿らない)';
+
+/** フォルダを歩く(シンボリックリンク・ジャンクションは辿らず、リンクの一覧に返す)。相対パスは / 区切り */
+async function walk(dir: string): Promise<{ files: { rel: string; abs: string }[]; links: string[] }> {
+  const files: { rel: string; abs: string }[] = [];
+  const links: string[] = [];
+  const rec = async (d: string, rel: string): Promise<void> => {
+    for (const e of await readdir(d, { withFileTypes: true })) {
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isSymbolicLink()) links.push(r);
+      else if (e.isDirectory()) await rec(join(d, e.name), r);
+      else if (e.isFile()) files.push({ rel: r, abs: join(d, e.name) });
+    }
+  };
+  await rec(dir, '');
+  return { files, links };
+}
+
+/** フォルダの容量(再帰。リンクは辿らない) */
 async function dirBytes(dir: string): Promise<number> {
   let n = 0;
-  for (const e of await readdir(dir, { withFileTypes: true, recursive: true })) if (e.isFile()) n += (await stat(join(e.parentPath, e.name))).size;
+  for (const f of (await walk(dir)).files) n += (await stat(f.abs)).size;
   return n;
 }
 
-/** フォルダを再帰的に写す(サイズと mtime が同じファイルは再利用)。写した件数とバイト数 */
-async function copyTree(from: string, to: string): Promise<{ files: number; bytes: number }> {
+/**
+ * フォルダを再帰的に写す(サイズと mtime が同じファイルは再利用)。元に無いファイルは複製先から消す(現存しないものを残さない)。
+ * 1 ファイルの失敗(EBUSY / EPERM 等)は全体を止めず skipped に理由を積む。リンクは辿らず skipped に残す
+ */
+async function copyTree(from: string, to: string, skipped: SkippedEntry[], relBase: string): Promise<{ files: number; bytes: number }> {
   let files = 0;
   let bytes = 0;
   await mkdir(to, { recursive: true });
-  for (const e of await readdir(from, { withFileTypes: true, recursive: true })) {
-    if (!e.isFile()) continue;
-    const rel = relative(from, join(e.parentPath, e.name));
-    const dst = join(to, rel);
-    await mkdir(dirname(dst), { recursive: true });
-    const r = await copyIfChanged(join(e.parentPath, e.name), dst);
-    files++;
-    bytes += r.bytes;
+  const src = await walk(from);
+  for (const l of src.links) skipped.push({ path: `${relBase}/${l}`, bytes: 0, reason: LINK_REASON });
+  const keep = new Set(src.files.map((f) => f.rel));
+  for (const f of src.files) {
+    const dst = join(to, ...f.rel.split('/'));
+    try {
+      await mkdir(dirname(dst), { recursive: true });
+      const r = await copyIfChanged(f.abs, dst);
+      files++;
+      bytes += r.bytes;
+    } catch (e) {
+      const err = e as NodeJS.ErrnoException;
+      skipped.push({ path: `${relBase}/${f.rel}`, bytes: 0, reason: `複製できなかった (${err.code ?? err.message})` });
+    }
   }
+  if (existsSync(to)) for (const f of (await walk(to)).files) if (!keep.has(f.rel)) await rm(f.abs, { force: true });
   return { files, bytes };
 }
 
 async function copySessionExtras(dirSrc: string, dirDest: string, root: string, all: boolean, extras: NonNullable<SnapshotManifest['extras']>): Promise<void> {
   const relPath = (p: string): string => relative(root, p).replace(/\\/g, '/');
+  const copyOne = async (from: string, to: string): Promise<void> => {
+    try {
+      const r = await copyIfChanged(from, to);
+      extras.sessionFiles++;
+      extras.sessionBytes += r.bytes;
+    } catch (e) {
+      const err = e as NodeJS.ErrnoException;
+      extras.skipped.push({ path: relPath(from), bytes: 0, reason: `複製できなかった (${err.code ?? err.message})` });
+    }
+  };
   for (const f of SNAPSHOT_SESSION_EXTRA_FILES) {
     const p = join(dirSrc, f);
-    if (!existsSync(p)) continue;
-    const r = await copyIfChanged(p, join(dirDest, f));
-    extras.sessionFiles++;
-    extras.sessionBytes += r.bytes;
+    if (existsSync(p)) await copyOne(p, join(dirDest, f));
+    else await rm(join(dirDest, f), { force: true }); // 元から消えたものは複製先からも消す
   }
+  const present = new Set<string>();
   for (const ent of await readdir(dirSrc, { withFileTypes: true })) {
     const name = ent.name;
     const p = join(dirSrc, name);
+    if (ent.isSymbolicLink()) {
+      extras.skipped.push({ path: relPath(p), bytes: 0, reason: LINK_REASON });
+      continue;
+    }
     if (ent.isDirectory()) {
       const heavy = (SNAPSHOT_SESSION_HEAVY_DIRS as readonly string[]).includes(name);
       const known = (SNAPSHOT_SESSION_EXTRA_DIRS as readonly string[]).includes(name);
       if (known || ((heavy || !KNOWN_SESSION_ENTRIES.has(name)) && all)) {
-        const r = await copyTree(p, join(dirDest, name));
+        present.add(name);
+        const r = await copyTree(p, join(dirDest, name), extras.skipped, relPath(p));
         extras.sessionFiles += r.files;
         extras.sessionBytes += r.bytes;
       } else if (heavy || !KNOWN_SESSION_ENTRIES.has(name)) {
@@ -220,10 +262,18 @@ async function copySessionExtras(dirSrc: string, dirDest: string, root: string, 
       }
     } else if (ent.isFile() && !KNOWN_SESSION_ENTRIES.has(name) && !isLock(name)) {
       if (all) {
-        const r = await copyIfChanged(p, join(dirDest, name));
-        extras.sessionFiles++;
-        extras.sessionBytes += r.bytes;
+        present.add(name);
+        await copyOne(p, join(dirDest, name));
       } else extras.skipped.push({ path: relPath(p), bytes: (await stat(p)).size, reason: '一覧に無い名前(--snapshot-all で写す)' });
+    }
+  }
+  // 複製先に残っている追加のフォルダ・ファイルで、今回写さなかったものは消す(元から消えたもの、--snapshot-all を外したもの)
+  if (existsSync(dirDest)) {
+    for (const ent of await readdir(dirDest, { withFileTypes: true })) {
+      const name = ent.name;
+      if (KNOWN_SESSION_ENTRIES.has(name) && !(SNAPSHOT_SESSION_EXTRA_DIRS as readonly string[]).includes(name) && !(SNAPSHOT_SESSION_HEAVY_DIRS as readonly string[]).includes(name)) continue;
+      if (name === SESSION_DB_FINGERPRINT || present.has(name)) continue;
+      await rm(join(dirDest, name), { recursive: true, force: true });
     }
   }
 }
@@ -231,39 +281,51 @@ async function copySessionExtras(dirSrc: string, dirDest: string, root: string, 
 async function copyTopLevel(src: string, dest: string, all: boolean, extras: NonNullable<SnapshotManifest['extras']>): Promise<void> {
   for (const name of SNAPSHOT_TOP_DIRS) {
     const p = join(src, name);
-    if (!existsSync(p)) continue;
-    extras.topLevel[name] = await copyTree(p, join(dest, name));
+    if (!existsSync(p)) {
+      await rm(join(dest, name), { recursive: true, force: true });
+      continue;
+    }
+    extras.topLevel[name] = await copyTree(p, join(dest, name), extras.skipped, name);
   }
   for (const [name, reason] of Object.entries(SNAPSHOT_TOP_HEAVY_DIRS)) {
     const p = join(src, name);
+    if (!existsSync(p) || !all) await rm(join(dest, name), { recursive: true, force: true });
     if (!existsSync(p)) continue;
-    if (all) extras.topLevel[name] = await copyTree(p, join(dest, name));
+    if (all) extras.topLevel[name] = await copyTree(p, join(dest, name), extras.skipped, name);
     else extras.skipped.push({ path: name, bytes: await dirBytes(p), reason: `${reason}(--snapshot-all で写す)` });
   }
-  // chats/: *.md(ユーザーが書き出したセッション記録)だけ写し、他は名前と容量だけ
+  // chats/: *.md(ユーザーが書き出したセッション記録)だけ写し、他は名前と容量だけ。元に無い .md は複製先から消す
   const chats = join(src, 'chats');
   if (existsSync(chats)) {
     let files = 0;
     let bytes = 0;
     let otherBytes = 0;
     let otherFiles = 0;
-    for (const e of await readdir(chats, { withFileTypes: true, recursive: true })) {
-      if (!e.isFile()) continue;
-      const from = join(e.parentPath, e.name);
-      if (e.name.toLowerCase().endsWith('.md')) {
-        const to = join(dest, 'chats', relative(chats, from));
-        await mkdir(dirname(to), { recursive: true });
-        const r = await copyIfChanged(from, to);
-        files++;
-        bytes += r.bytes;
+    const w = await walk(chats);
+    for (const l of w.links) extras.skipped.push({ path: `chats/${l}`, bytes: 0, reason: LINK_REASON });
+    const keep = new Set<string>();
+    for (const f of w.files) {
+      if (f.rel.toLowerCase().endsWith('.md')) {
+        keep.add(f.rel);
+        const to = join(dest, 'chats', ...f.rel.split('/'));
+        try {
+          await mkdir(dirname(to), { recursive: true });
+          const r = await copyIfChanged(f.abs, to);
+          files++;
+          bytes += r.bytes;
+        } catch (e) {
+          const err = e as NodeJS.ErrnoException;
+          extras.skipped.push({ path: `chats/${f.rel}`, bytes: 0, reason: `複製できなかった (${err.code ?? err.message})` });
+        }
       } else {
         otherFiles++;
-        otherBytes += (await stat(from)).size;
+        otherBytes += (await stat(f.abs)).size;
       }
     }
+    if (existsSync(join(dest, 'chats'))) for (const f of (await walk(join(dest, 'chats'))).files) if (!keep.has(f.rel)) await rm(f.abs, { force: true });
     extras.topLevel.chats = { files, bytes };
     if (otherFiles) extras.skipped.push({ path: 'chats(*.md 以外)', bytes: otherBytes, reason: `${SNAPSHOT_TOP_SKIP_DIRS.chats}(${otherFiles} ファイル)` });
-  }
+  } else await rm(join(dest, 'chats'), { recursive: true, force: true });
   const repos = join(src, 'repos');
   if (existsSync(repos)) extras.skipped.push({ path: 'repos', bytes: await dirBytes(repos), reason: SNAPSHOT_TOP_SKIP_DIRS.repos });
 }

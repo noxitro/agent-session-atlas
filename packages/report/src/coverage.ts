@@ -2,7 +2,8 @@
 // 件数・バイト数の集計(out/coverage.json)。表に無いキーは「未分類」として数え、export のログと全文記録の末尾に出す。
 // data.db の列は core の desktop.ts の許可リストで同じ扱いにする(許可 = full、許可外 = unclassified、開かない表 = excluded)。
 
-export type Treatment = 'full' | 'ref' | 'excluded';
+/** partial: 全文に出すが、その中の不透明な値(base64 らしい文字列)だけ除外する(reasoningBlocks) */
+export type Treatment = 'full' | 'ref' | 'excluded' | 'partial';
 
 export interface Rule {
   treatment: Treatment;
@@ -47,7 +48,7 @@ export const COVERAGE_RULES: Record<string, Record<string, Rule>> = {
   'assistant.message': {
     content: full,
     reasoningText: full,
-    reasoningBlocks: full,
+    reasoningBlocks: { treatment: 'partial', reason: '要素の中の base64 らしい値(不透明データ)だけ除外し、読める値は出す' },
     toolRequests: full,
     encryptedContent: ENC,
     reasoningOpaque: ENC,
@@ -172,6 +173,9 @@ export interface CoverageEntry {
   bytes: number;
   treatment: Treatment | 'unclassified';
   reason?: string;
+  /** partial で実際に除外した箇所の数とバイト数(全文記録が数える) */
+  excludedN?: number;
+  excludedBytes?: number;
 }
 
 /** 集計器。1 イベントずつ add する(値は数えるだけ) */
@@ -201,6 +205,14 @@ export class CoverageCounter {
     }
     e.n++;
     e.bytes += bytes;
+  }
+
+  /** 全文記録が partial のキーの中で除外した箇所を数える */
+  addExcluded(type: string, key: string, bytes: number): void {
+    const e = this.map.get(`${type}|${key}`);
+    if (!e) return;
+    e.excludedN = (e.excludedN ?? 0) + 1;
+    e.excludedBytes = (e.excludedBytes ?? 0) + bytes;
   }
 
   entries(): CoverageEntry[] {
@@ -244,7 +256,7 @@ export interface CoverageFile {
 
 export function coverageFile(counter: CoverageCounter, sessions: number, desktop: DesktopColumnCoverage[] | null, generatedAt: string): CoverageFile {
   const keys = counter.entries();
-  const summary: CoverageFile['summary'] = { full: { keys: 0, n: 0, bytes: 0 }, ref: { keys: 0, n: 0, bytes: 0 }, excluded: { keys: 0, n: 0, bytes: 0 }, unclassified: { keys: 0, n: 0, bytes: 0 } };
+  const summary: CoverageFile['summary'] = { full: { keys: 0, n: 0, bytes: 0 }, ref: { keys: 0, n: 0, bytes: 0 }, excluded: { keys: 0, n: 0, bytes: 0 }, partial: { keys: 0, n: 0, bytes: 0 }, unclassified: { keys: 0, n: 0, bytes: 0 } };
   for (const e of keys) {
     const s = summary[e.treatment];
     s.keys++;

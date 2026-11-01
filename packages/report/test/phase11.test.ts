@@ -14,14 +14,19 @@ import { KNOWN_EVENT_TYPES } from '../../core/src/event-types.ts';
 const T = '2026-10-01T00:00:00.000Z';
 const OPAQUE = 'A'.repeat(60) + 'b'.repeat(60) + '==';
 const SECRET = ['ghp', 'FULLFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE02'].join('_'); // トークンの形をソースに直書きしない
+/** 100 字以上の英数字列(16 進ダンプのようなもの)。reasoningBlocks の外では除外しない */
+const LONG_ALNUM = 'deadbeef0123456789'.repeat(8);
 const ev = (type: string, data: Record<string, unknown>, extra: Record<string, unknown> = {}): CopilotEvent => ({ type, data, timestamp: T, id: `id-${type}`, parentId: null, ...extra });
 const EVENTS: CopilotEvent[] = [
   ev('session.start', { sessionId: 's', copilotVersion: '1.0.0', context: { cwd: 'X:\\p' } }),
   ev('system.message', { role: 'system', content: '<custom_instruction>\n# AGENTS.md\n\nルール 1\n</custom_instruction>' }),
   ev('user.message', { content: '依頼の本文 UNIQUE-REQUEST-TEXT', transformedContent: '依頼の本文 UNIQUE-REQUEST-TEXT', supportedNativeDocumentMimeTypes: ['a', 'b'] }),
   ev('assistant.message', { content: '応答の本文', reasoningText: '考えた内容 UNIQUE-REASONING', reasoningBlocks: [{ type: 'text', text: '読める推論' }, { type: 'enc', data: OPAQUE }], encryptedContent: OPAQUE, reasoningOpaque: OPAQUE, toolRequests: [{ toolCallId: 'c1', name: 'bash', arguments: { command: 'ls' } }], outputTokens: 10 }),
-  ev('tool.execution_start', { toolName: 'bash', toolCallId: 'c1', arguments: { command: 'ls' } }),
-  ev('tool.execution_complete', { toolCallId: 'c1', success: true, result: { content: `結果の本文 UNIQUE-RESULT ${SECRET}` }, toolTelemetry: { ms: 5 } }),
+  ev('tool.execution_start', { toolName: 'bash', toolCallId: 'c1', arguments: { command: 'ls', hexdump: LONG_ALNUM } }),
+  ev('tool.execution_complete', { toolCallId: 'c1', success: true, result: { content: `結果の本文 UNIQUE-RESULT ${SECRET}`, detailedContent: `詳細の本文 UNIQUE-DETAILED ${LONG_ALNUM}` }, toolTelemetry: { ms: 5 } }),
+  ev('tool.execution_start', { toolName: 'view', toolCallId: 'c2', arguments: { path: 'x' } }),
+  ev('tool.execution_complete', { toolCallId: 'c2', success: true, result: { content: '同じ本文 UNIQUE-SAME', detailedContent: '同じ本文 UNIQUE-SAME' } }),
+  ev('assistant.message', { content: ['配列の content', { nested: 'UNIQUE-NONSTRING' }], reasoningText: 42, toolRequests: [] }),
   ev('hook.start', { hookType: 'postToolUse', hookInvocationId: 'h1', input: { sessionId: 's', toolName: 'bash', toolResult: { textResultForLlm: `結果の本文 UNIQUE-RESULT ${SECRET}`, resultType: 'text' } } }),
   ev('hook.end', { hookType: 'postToolUse', hookInvocationId: 'h1', success: true }),
   ev('skill.invoked', { name: 'my-skill', path: 'skills/my-skill/SKILL.md', content: '# my-skill\n\nskill の本文 UNIQUE-SKILL', trigger: 'user-invoked' }),
@@ -35,6 +40,7 @@ describe('coverage', () => {
   it('既知の全イベント種別に扱いの表があり、トップレベルのキーと未知のキーの扱いが決まる', () => {
     for (const t of KNOWN_EVENT_TYPES) expect({ t, has: t in COVERAGE_RULES }).toEqual({ t, has: true });
     expect(ruleFor('assistant.message', 'encryptedContent')?.treatment).toBe('excluded');
+    expect(ruleFor('assistant.message', 'reasoningBlocks')?.treatment).toBe('partial');
     expect(ruleFor('assistant.message', '^id')?.treatment).toBe('ref');
     expect(ruleFor('session.start', 'anything')?.treatment).toBe('full');
     expect(ruleFor('assistant.message', 'brandNewKey')).toBeNull();
@@ -65,6 +71,22 @@ describe('renderFull', () => {
     const r = await renderFull(rec, EVENTS, [], { generatedAt: T, assetsDir: join(dir, 'assets'), assetsHref: 'assets', sessionDir: null, sessionDirHref: null, coverage: c, walNote: 'WAL の注意' });
     const md = r.markdown;
     for (const s of ['UNIQUE-REQUEST-TEXT', '応答の本文', 'UNIQUE-REASONING', '読める推論', 'UNIQUE-RESULT', 'UNIQUE-SUMMARY', 'UNIQUE-SKILL', '"command": "ls"', 'postToolUse', 'brand.new_type']) expect(md).toContain(s);
+    // 引数や結果の中の 100 字以上の英数字列は除外しない(不透明データの判定は reasoningBlocks の配下だけ)
+    expect(md.split(LONG_ALNUM).length - 1).toBe(2);
+    // result の content と detailedContent は両方出す(同じなら 1 回)
+    expect(md).toContain('result.content:');
+    expect(md).toContain('result.detailedContent:');
+    expect(md).toContain('UNIQUE-DETAILED');
+    expect(md).toContain('result(content と detailedContent は同一):');
+    expect(md.split('UNIQUE-SAME').length - 1).toBe(1);
+    // 文字列でない content / reasoningText も落とさない(JSON で出す)
+    expect(md).toContain('UNIQUE-NONSTRING');
+    expect(md).toContain('reasoningText:');
+    // reasoningBlocks の不透明な値は coverage に「一部除外」として数える
+    const rb = c.entries().find((k) => k.type === 'assistant.message' && k.key === 'reasoningBlocks')!;
+    expect(rb.treatment).toBe('partial');
+    expect(rb.excludedN).toBe(1);
+    expect(rb.excludedBytes).toBe(OPAQUE.length);
     expect(md).not.toContain(OPAQUE);
     expect(md).toContain('除外: encryptedContent');
     expect(md).toContain('除外: reasoningOpaque');

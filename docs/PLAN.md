@@ -565,6 +565,20 @@ ui-ux-pro-max の照合(`--domain ux`、検索語「sidebar saved views labels�
 
 検査: typecheck 0 / 0、単体 113 通過(19 ファイル)(desktop の許可リストと資格情報の非出力・-shm を作らない、coverage の表と未分類、renderFull の出力と除外と秘密情報、library の束ねと差分とページ)、E2E 54 通過 / 8 skipped(7 ファイル。phase1 / phase2 のスキーマ版の期待値を 5 / 6 に更新)(phase11: スナップショットの拡張と --snapshot-all と元の不変、desktop.json と sessions.json と詳細ページ、export --full の文字列の出現と除外キーの非出現と coverage と assets と --anonymize との併用エラー、instructions.html と library と伏せ字版での非生成)。fixture の資格情報の合成値(accounts / settings / app_state / model_providers / logs)が out/ のどこにも出ないことを E2E で見る。実データで `export --full` を流し、~/.copilot の data.db-shm / -wal の mtime が変わらないことを確認。画面(instructions.html)は Playwright で 1440 ライト / 1024 ダーク(目次 30 項目、版 55、横あふれ 0、エラー 0)。impeccable の検出器(静的)は em-dash の advisory 1 件だけ(指示文の本文に由来)。設計契約 + web-design-guidelines の照合(読み取り専用のサブエージェント): 初回 FAIL(P0: 差分に秘密情報が伏せられずに出る。P1: summary の中のリンク、差分と本文を色だけで区別、見出しだけで束ねるので別リポジトリの同名ファイルが 1 つの系列になる、等幅フォントの直書き、1440px の証跡が .md を撮っていた)→ 全て直した(差分も伏せた本文で計算、リンクは details の中の行に、差分と本文に見出し、項目は見出し + 出所のパス、最後に使われた版に印と説明、`var(--mono)`、撮り直し)。P2 も直した: 目次の件数は「版」、項目名から # と HTML コメントの印を外して省略記号、差分の印を欄に分ける、pre に tabindex、skill の id にハッシュ、セッションの区切り。残した P2: 「ファイル不明」の項目(注入の形から特定できないもの。説明を添えた)。
 
+#### 見直し(2026-11-02、Phase 11 のレビュー: P1 2 件・P2 7 件を直した)
+
+1. **P1 不透明データの判定が全ての JSON 値に掛かっていた**: ツールの引数やファイルの内容にある 100 字以上の英数字列(16 進ダンプ、区切り線)が除外されていた。`looksOpaque` は reasoningBlocks の配下だけに掛け、他は秘密情報の形式検査だけにした。coverage に扱い `partial`(reasoningBlocks: 要素の中の base64 らしい値だけ除外)を足し、全文記録が実際に除外した箇所を `excludedN` / `excludedBytes` に数える(`CoverageCounter.addExcluded`)。
+2. **P1 result の content と detailedContent の両方があると content が落ちていた**: 両方あって異なれば `result.content:` と `result.detailedContent:` を別々に、同じなら 1 回だけ書いて「同一」と記す。
+3. **P2 文字列でない本文が黙って落ちる**: content / reasoningText / system.message.content / skill の content / summaryContent が文字列でなければ JSON の囲みに出す(`block`)。`used.add` は出力した分岐の中だけ。
+4. **P2 シンボリックリンク・ジャンクション**: `walk` で辿らず、`extras.skipped` に「シンボリックリンク / ジャンクション(辿らない)」で残す(fixture のジャンクションで検査)。
+5. **P2 削除の同期**: 元に無いファイルは複製先から消す(`copyTree` と追加のファイル、直下のフォルダ、chats の `*.md`。session.db と同じ作法)。`--snapshot-all` を外したときも写さなくなったものを消す。
+6. **P2 ファイル単位の失敗**: `copyTree` / 追加のファイル / chats は 1 ファイルずつ catch し、`複製できなかった (EBUSY 等)` で skipped に積む(全体は止めない)。
+7. **P2 生成物を黙って消さない**: `out/full/`・`coverage.json`・`instructions.html`・`library/` は、作り直すときと伏せ字モードのときだけ消す。素の build や --full なしの export では残し、「前回の … が残っています(生成日時)」をログに出す(`BuildResult.stale`)。README に古い全文記録が残る点を書いた。E2E d. を改めた。
+8. **P2 テストの穴**: fixture の資格情報にトークンの形でない値(accounts / settings / model_providers / logs)を足し、許可外の列の値(remote_connect_target、empty_execution_failure_event_json、activity_items.metadata_json、projects.setup_script / instructions、workspaces.session_bootstrap_config)も out/ に出ないことを E2E で見る。
+9. **P2 メモリ**: events.jsonl は `parseEvents`(1 行ずつ)で 1 回だけ走査し、閲覧ページの収集と全文記録の書き出しを同じ走査で行う。全文記録は `renderFullTo` が 64KB ごとに sink へ渡し、build は `createWriteStream` の `write` の戻り値で drain を待つ(backpressure)。`JSON.stringify` は値 1 つ単位(最大はツール結果 1 件)。出力の形は変えていない(明細の件数は末尾の「明細」の節に移した)。
+
+測り直し(実データ 800 セッション): 全文記録 376MB(309MB → 365MB の書き出し。引数と結果の長い英数字列を除外しなくなった分が増えた)、除外 27,714 箇所 114.9MB(excluded 3 キー 91.4MB + partial の reasoningBlocks 4,158 箇所 23.5MB。reasoningBlocks 24.6MB のうち読めるのは約 1MB)、未分類 0、秘密情報の形式検査 11 件。~/.copilot の data.db-shm / -wal の mtime は不変。
+
 ## 決めたこと・採らなかった案
 
 - Svelte 5 を採用(理由は開発体験。単一 HTML のサイズ差はデータ量に比べて誤差)。

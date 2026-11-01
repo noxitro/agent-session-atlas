@@ -1,12 +1,12 @@
 // Node 側: テンプレート(dist/template.html)にデータを埋め込んで out/atlas.html と out/sessions/<id>.html を書く。
-import { existsSync } from 'node:fs';
+import { createWriteStream, existsSync } from 'node:fs';
 import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { CopilotEvent, InstalledInventory, MetricsBucket, MetricsFile, SessionRecord } from '../../core/src/types.ts';
-import { contentHash, readEvents } from '../../core/src/index.ts';
+import { contentHash, parseEvents } from '../../core/src/index.ts';
 import { CoverageCounter, coverageFile, desktopCoverage } from './coverage.ts';
-import { fullFileName, renderFull } from './full.ts';
+import { fullFileName, renderFullTo } from './full.ts';
 import { INSTRUCTIONS_FILE, LIBRARY_DIR, LibraryCollector, renderInstructionsHtml, writeLibrary } from './library.ts';
 import { createAnonymizer, identityAnonymizer, type Anonymizer } from './lib/anonymize.ts';
 import { renderDetailHtml } from './detail.ts';
@@ -106,6 +106,8 @@ export interface BuildResult {
   full: { files: number; bytes: number; assets: { files: number; bytes: number }; secretHits: number; excluded: { n: number; bytes: number }; unclassified: string[]; coveragePath: string; events: number } | null;
   /** Phase 11: 閲覧ページの集計 */
   library: { groups: number; versions: number; files: number; bytes: number; secretHits: number; path: string } | null;
+  /** Phase 11: 今回は作らなかったが前回の出力が残っているもの(生成日時)。伏せ字モードでは消す */
+  stale: { full: string | null; library: string | null };
   ms: number;
 }
 
@@ -182,10 +184,18 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
   if (wantFull && anon.enabled) throw new Error('--full(全文記録)は --anonymize と併用できません(解析用の完全出力は共有しない前提のため)');
   const wantLibrary = data.library;
   const fullDir = join(input.outDir, 'full');
-  await rm(fullDir, { recursive: true, force: true });
-  await rm(join(input.outDir, LIBRARY_DIR), { recursive: true, force: true });
-  await rm(join(input.outDir, INSTRUCTIONS_FILE), { force: true });
-  await rm(join(input.outDir, 'coverage.json'), { force: true });
+  const coveragePath = join(input.outDir, 'coverage.json');
+  const instructionsPath = join(input.outDir, INSTRUCTIONS_FILE);
+  // ユーザーの生成物を黙って消さない: 作り直すときと伏せ字モード(共有用の out/ に残さない)だけ消す。それ以外は残して日時を返す
+  const stale: BuildResult['stale'] = { full: null, library: null };
+  if (wantFull || anon.enabled) {
+    await rm(fullDir, { recursive: true, force: true });
+    await rm(coveragePath, { force: true });
+  } else if (existsSync(coveragePath)) stale.full = (await stat(coveragePath)).mtime.toISOString();
+  if (wantLibrary || anon.enabled) {
+    await rm(join(input.outDir, LIBRARY_DIR), { recursive: true, force: true });
+    await rm(instructionsPath, { force: true });
+  } else if (existsSync(instructionsPath)) stale.library = (await stat(instructionsPath)).mtime.toISOString();
   if (wantFull) await mkdir(fullDir, { recursive: true });
   const coverage = new CoverageCounter();
   const fullStat = wantFull ? { files: 0, bytes: 0, assets: { files: 0, bytes: 0 }, secretHits: 0, excluded: { n: 0, bytes: 0 }, unclassified: new Set<string>(), events: 0 } : null;
@@ -211,17 +221,31 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
     if (tr && store && (wantFull || lib)) {
       const sessionDir = join(tr.snapshotDir, 'session-state', r.id);
       const eventsPath = join(sessionDir, 'events.jsonl');
-      const events: CopilotEvent[] = existsSync(eventsPath) ? (await readEvents(eventsPath)).events : [];
-      if (lib) {
-        for (const e of events) {
-          const d = (e.data ?? {}) as Record<string, unknown>;
-          if (e.type === 'system.message' && typeof d.content === 'string') lib.addSystemMessage(r.id, d.content, e.timestamp ?? null);
-          if (e.type === 'skill.invoked' && typeof d.content === 'string' && typeof d.name === 'string') lib.addSkill(r.id, d.name, d.content, contentHash(d.content), e.timestamp ?? null, typeof d.path === 'string' ? d.path : null);
+      // events.jsonl は 1 行ずつ読み、閲覧ページの収集と全文記録の書き出しを 1 回の走査で済ませる(セッション全体をメモリに載せない)
+      const source: AsyncIterable<CopilotEvent> | CopilotEvent[] = existsSync(eventsPath) ? parseEvents(eventsPath) : [];
+      async function* tee(): AsyncGenerator<CopilotEvent> {
+        for await (const e of source) {
+          if (lib) {
+            const d = (e.data ?? {}) as Record<string, unknown>;
+            if (e.type === 'system.message' && typeof d.content === 'string') lib.addSystemMessage(r.id, d.content, e.timestamp ?? null);
+            if (e.type === 'skill.invoked' && typeof d.content === 'string' && typeof d.name === 'string') lib.addSkill(r.id, d.name, d.content, contentHash(d.content), e.timestamp ?? null, typeof d.path === 'string' ? d.path : null);
+          }
+          yield e;
         }
       }
       if (wantFull && fullStat) {
         const file = fullFileName(r.id);
-        const res = await renderFull(r, events, store.usage.get(r.id) ?? [], {
+        const path = join(fullDir, file);
+        const ws = createWriteStream(path, { encoding: 'utf8' });
+        const sink = {
+          write: (chunk: string): Promise<void> =>
+            new Promise<void>((resolve, reject) => {
+              ws.once('error', reject);
+              if (ws.write(chunk)) resolve();
+              else ws.once('drain', () => resolve());
+            }),
+        };
+        const res = await renderFullTo(r, tee(), store.usage.get(r.id) ?? [], {
           generatedAt,
           assetsDir: join(fullDir, 'assets', r.id.replace(/[^A-Za-z0-9._-]/g, '_')),
           assetsHref: `assets/${r.id.replace(/[^A-Za-z0-9._-]/g, '_')}`,
@@ -229,11 +253,11 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
           sessionDirHref: existsSync(sessionDir) ? `../snapshot/session-state/${encodeURIComponent(r.id)}` : null,
           coverage,
           walNote: input.desktopMeta?.wal?.note ?? null,
-        });
-        await writeFile(join(fullDir, file), res.markdown);
+        }, sink);
+        await new Promise<void>((resolve, reject) => ws.end((err?: Error | null) => (err ? reject(err) : resolve())));
         fullHref = `../full/${file}`;
         fullStat.files++;
-        fullStat.bytes += Buffer.byteLength(res.markdown);
+        fullStat.bytes += (await stat(path)).size;
         fullStat.assets.files += res.assets.files;
         fullStat.assets.bytes += res.assets.bytes;
         fullStat.secretHits += res.secretHits;
@@ -241,6 +265,10 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
         fullStat.excluded.bytes += res.excluded.bytes;
         fullStat.events += res.events;
         for (const k of res.unclassified) fullStat.unclassified.add(k);
+      } else {
+        for await (const _e of tee()) {
+          /* 閲覧ページの収集だけ */
+        }
       }
     }
     const page = renderDetailHtml(r, { anon, css, judgment, generatedAt, transcriptHref, libraryHref: data.library ? `../${INSTRUCTIONS_FILE}` : null, fullHref });
@@ -250,7 +278,6 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
 
   let fullOut: BuildResult['full'] = null;
   if (wantFull && fullStat) {
-    const coveragePath = join(input.outDir, 'coverage.json');
     await writeFile(coveragePath, JSON.stringify(coverageFile(coverage, input.sessions.length, input.desktopMeta ? desktopCoverage((input.desktopMeta as { coverage?: Parameters<typeof desktopCoverage>[0] }).coverage) : null, generatedAt), null, 1));
     fullOut = { ...fullStat, unclassified: [...fullStat.unclassified].sort(), coveragePath };
   }
@@ -274,6 +301,7 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
     transcripts: trStat,
     full: fullOut,
     library: libOut,
+    stale,
     ms: performance.now() - t0,
   };
 }

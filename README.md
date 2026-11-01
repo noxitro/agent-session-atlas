@@ -171,6 +171,8 @@ npm run atlas -- snapshot --snapshot-all         # rewind-snapshots / 一覧に�
 | `out/coverage.json` | 網羅の検査。元データの event type × data のキーごとに件数・バイト数・扱い(`full` = 全文に出した / `ref` = 参照にした / `excluded` = 理由付きで除外)。扱いの表(`packages/report/src/coverage.ts`)に無いキーは `unclassified` として数え、`export` のログと全文記録の末尾にも出す(0 件なら欠損なし)。`data.db` の列も同じ表で(許可 = `full`、許可外 = `unclassified`、開かない表 = `excluded`) |
 | `out/instructions.html` と `out/library/` | 指示文(AGENTS.md / CLAUDE.md / copilot-instructions.md 等の注入)と skill の本文を、重複なしで版(内容のハッシュ)ごとに置いたもの。見出しごとの版一覧、本文、使われたセッション、初回と最終の利用日、前の版との差分。詳細ページの指示ファイルの行と skill からリンクし、サイドバーの付録にも入る。`--full` でなくても `export` で作る。伏せ字版では作らない |
 
+`--full` を付けない `export` や素の `build` は、前回の `out/full/` と `out/coverage.json`(と `instructions.html` / `out/library/`)を消しません(ユーザーの生成物を黙って消さないため。残っているときはログに生成日時を出します)。古い全文記録が残っている点に注意し、消したいときはフォルダを手で消すか、`--anonymize` で作ります(伏せ字版の `out/` には残しません)。
+
 **data.db(デスクトップアプリ)**: 以前は資格情報の列を含むため読んでいませんでしたが、Phase 11 から次の形で読みます。ファイルは複製せず、`file:///…/data.db?immutable=1` の読み取り専用で開きます(`-shm` / `-wal` に触れません)。読むのは名前で固定した許可リストの列だけで(`sessions` の非資格情報の列、`session_context_usage`、`session_checkpoints`、`activity_items`、`projects` と `workspaces` の非資格情報の列)、`select *` はせず、`accounts` / `settings` / `app_state` / `model_providers` / `remote_environments` は開きません。許可リストに無い列は名前だけ数えます(値は読みません)。immutable で開くため `-wal` の未反映分は読めず、最近の更新が欠けることがあります(`desktop.json` と全文記録に WAL の大きさと更新日時を書きます)。結果は `sessions.json` の `desktop` 欄、全文記録、詳細ページの「デスクトップアプリの記録(data.db)」に出ます。
 
 ## 判定の回し方(推定人手工数)

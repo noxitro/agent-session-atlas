@@ -3,7 +3,7 @@
 // session-store.db は別プロセスの書き手が WAL モード(自動チェックポイント無効)で作る。
 // → 実環境と同じく本体 + -wal + -shm が並び、行は WAL にだけある状態になる。
 import { spawn } from 'node:child_process';
-import { appendFile, cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { appendFile, cp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openWritable, type Database } from '../packages/core/src/sqlite.ts';
@@ -110,10 +110,24 @@ export async function buildFixtureHome(
 const tok = (prefix: string, body: string): string => `${prefix}_${body}`;
 export const FAKE_SECRETS = {
   accessToken: tok('ghp', 'FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE0001'),
+  /** トークンの形でない値(redactSecrets で伏せられず、出れば必ず検出できる) */
+  accessTokenPlain: 'plain-access-token-value-FAKE-71c0',
   settingsToken: tok('gho', 'SETTINGSFAKEFAKEFAKEFAKEFAKEFAKEFAKE2'),
+  settingsInstructions: 'settings-instructions-text-FAKE-3b9a',
   providerKey: ['sk', 'ant', 'FAKEPROVIDERKEY0000000000000000000000'].join('-'),
+  providerName: 'provider-settings-name-FAKE-5e2d',
   appStateValue: 'app-state-secret-value-FAKE-9f8e7d',
   logToken: tok('ghp', 'LOGFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE0003'),
+  logPlain: 'log-plain-line-FAKE-8d4c',
+} as const;
+/** 許可リストに無い列の値(読まないので out/ のどこにも出ない) */
+export const UNLISTED_VALUES = {
+  remoteConnectTarget: 'unlisted-remote-connect-target-FAKE-1a2b',
+  failureEventJson: '{"unlisted":"failure-event-json-FAKE-2b3c"}',
+  activityMetadata: '{"meta":"activity-metadata-json-FAKE-3c4d"}',
+  setupScript: 'unlisted-setup-script-FAKE-4d5e',
+  projectInstructions: 'unlisted-project-instructions-FAKE-5e6f',
+  bootstrapConfig: '{"bootstrap":"workspace-bootstrap-config-FAKE-6f7a"}',
 } as const;
 export const P11_SESSION = fakeIdP11(1);
 export const P11_SESSION_HEAVY = fakeIdP11(5);
@@ -145,22 +159,22 @@ CREATE TABLE workspaces (id TEXT PRIMARY KEY, project_id TEXT, branch TEXT, name
   const run = (sql: string, ...args: (string | number | null)[]): void => {
     db.prepare(sql).run(...(args as never[]));
   };
-  run('INSERT INTO accounts VALUES (?,?,?,?)', 'acc-1', 'someone', FAKE_SECRETS.accessToken, 'github.com');
-  run('INSERT INTO settings VALUES (?,?,?)', 1, FAKE_SECRETS.settingsToken, 'user instructions text');
+  run('INSERT INTO accounts VALUES (?,?,?,?)', 'acc-1', 'someone', `${FAKE_SECRETS.accessToken} ${FAKE_SECRETS.accessTokenPlain}`, 'github.com');
+  run('INSERT INTO settings VALUES (?,?,?)', 1, FAKE_SECRETS.settingsToken, FAKE_SECRETS.settingsInstructions);
   run('INSERT INTO app_state VALUES (?,?,?)', 'secret-key', FAKE_SECRETS.appStateValue, '2026-10-01T00:00:00Z');
-  run('INSERT INTO model_providers VALUES (?,?,?)', 'prov-1', 'anthropic', JSON.stringify({ apiKey: FAKE_SECRETS.providerKey }));
+  run('INSERT INTO model_providers VALUES (?,?,?)', 'prov-1', FAKE_SECRETS.providerName, JSON.stringify({ apiKey: FAKE_SECRETS.providerKey }));
   run(
     'INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
     P11_SESSION, 'デスクトップのセッション', 'interactive', 'claude-opus-5.5', 'high', '2026-10-01T00:00:00Z', '2026-10-01T01:00:00Z',
     1, 'auto', 0, '["exp-a"]', null, 1234, 567, 4321, 'standard', 'default',
-    'ssh://unlisted-column-value', '{"unlisted":"json"}',
+    UNLISTED_VALUES.remoteConnectTarget, UNLISTED_VALUES.failureEventJson,
   );
   run('INSERT INTO session_context_usage VALUES (?,?,?,?,?)', 1, P11_SESSION, 1760000000000, 4000, 200000);
   run('INSERT INTO session_context_usage VALUES (?,?,?,?,?)', 2, P11_SESSION, 1760000060000, 8000, 200000);
   run('INSERT INTO session_checkpoints VALUES (?,?,?,?)', P11_SESSION, 'ev-1', 'abc123def456', '2026-10-01T00:30:00Z');
-  run('INSERT INTO activity_items VALUES (?,?,?,?,?,?,?,?,?)', 'act-1', 'ws-1', P11_SESSION, 'pr_created', 'PR を作成', 0, '2026-10-01T00:40:00Z', '2026-10-01T00:40:00Z', '{"meta":"unlisted"}');
-  run('INSERT INTO projects VALUES (?,?,?,?,?,?,?,?,?)', 'proj-1', 'synthetic-project', 'X:\\synthetic', 'main', 'someone', 'synthetic', '2026-09-01T00:00:00Z', 'npm install', 'project instructions');
-  run('INSERT INTO workspaces VALUES (?,?,?,?,?,?,?,?)', 'ws-1', 'proj-1', 'feature/p11', 'ws-p11', '2026-10-01T00:00:00Z', P11_SESSION, 'https://example.invalid/pr/1', '{"bootstrap":true}');
+  run('INSERT INTO activity_items VALUES (?,?,?,?,?,?,?,?,?)', 'act-1', 'ws-1', P11_SESSION, 'pr_created', 'PR を作成', 0, '2026-10-01T00:40:00Z', '2026-10-01T00:40:00Z', UNLISTED_VALUES.activityMetadata);
+  run('INSERT INTO projects VALUES (?,?,?,?,?,?,?,?,?)', 'proj-1', 'synthetic-project', 'X:\\synthetic', 'main', 'someone', 'synthetic', '2026-09-01T00:00:00Z', UNLISTED_VALUES.setupScript, UNLISTED_VALUES.projectInstructions);
+  run('INSERT INTO workspaces VALUES (?,?,?,?,?,?,?,?)', 'ws-1', 'proj-1', 'feature/p11', 'ws-p11', '2026-10-01T00:00:00Z', P11_SESSION, 'https://example.invalid/pr/1', UNLISTED_VALUES.bootstrapConfig);
   db.close();
 
   // セッションフォルダの付随物と、暗号化データ・画像を含むイベント(全文記録の除外の検査用)
@@ -194,7 +208,13 @@ CREATE TABLE workspaces (id TEXT PRIMARY KEY, project_id TEXT, branch TEXT, name
   await writeFile(join(home, 'chats', '2026-10-01', 'x', 'copilot-session-x.md'), '# Copilot CLI Session\n');
   await writeFile(join(home, 'chats', '2026-10-01', 'x', 'junk.exe'), Buffer.alloc(100, 2));
   await mkdir(join(home, 'logs'), { recursive: true });
-  await writeFile(join(home, 'logs', 'github-app.1.log'), `INFO started token=${FAKE_SECRETS.logToken}\n`);
+  await writeFile(join(home, 'logs', 'github-app.1.log'), `INFO started token=${FAKE_SECRETS.logToken} ${FAKE_SECRETS.logPlain}\n`);
+  // ジャンクション(Windows では権限なしで作れる。作れない環境では飛ばす): 辿らずに skipped に残ることの検査用
+  try {
+    await symlink(join(sdir, 'files'), join(sdir, 'linked'), 'junction');
+  } catch {
+    /* リンクを作れない環境 */
+  }
   await mkdir(join(home, 'repos', 'copilot-worktrees', 'x'), { recursive: true });
   await writeFile(join(home, 'repos', 'copilot-worktrees', 'x', 'README.md'), '# repo\n');
 }

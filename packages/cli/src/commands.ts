@@ -317,6 +317,8 @@ export async function runBuild(p: Paths, o: BuildOptions, log: Log): Promise<Bui
     full: !!o.transcripts?.full,
     desktopMeta: s.desktop ?? null,
   });
+  if (r.stale.full) log(`build: 前回の --full の出力(out/full/ と coverage.json、生成 ${r.stale.full})が残っています。消すには --anonymize で作るか、フォルダを手で消してください`);
+  if (r.stale.library) log(`build: 前回の export の閲覧ページ(instructions.html と library/、生成 ${r.stale.library})が残っています`);
   if (r.library) log(`export: 指示文と skill の閲覧ページ ${r.library.path}(${r.library.groups} 項目・${r.library.versions} 版、本文 ${r.library.files} ファイル ${mb(r.library.bytes)})`);
   if (r.full) {
     const f = r.full;
