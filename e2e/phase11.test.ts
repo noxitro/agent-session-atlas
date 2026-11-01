@@ -91,6 +91,26 @@ describe('Phase 11 E2E: fixtures', () => {
     await rmf(join(home, 'session-state', P11_SESSION, 'files', 'gone.txt'));
     expect(atlas(['snapshot', '--home', home, '--out', out]).status).toBe(0);
     expect(existsSync(join(sdir, 'files', 'gone.txt'))).toBe(false);
+    // 大文字小文字だけの改名(Windows): 写したばかりの複製を消さない
+    const { rename } = await import('node:fs/promises');
+    await rename(join(home, 'session-state', P11_SESSION, 'files', 'note.txt'), join(home, 'session-state', P11_SESSION, 'files', 'Note.txt'));
+    expect(atlas(['snapshot', '--home', home, '--out', out]).status).toBe(0);
+    const noteFiles = (await readdir(join(sdir, 'files'))).filter((f) => f.toLowerCase() === 'note.txt');
+    expect(noteFiles).toHaveLength(1);
+    expect(await readFile(join(sdir, 'files', noteFiles[0]), 'utf8')).toContain('合成ファイル');
+    await rename(join(home, 'session-state', P11_SESSION, 'files', 'Note.txt'), join(home, 'session-state', P11_SESSION, 'files', 'note.txt'));
+    // ファイル単位の失敗: 複製先に同名のフォルダを置いて複製できなくしても全体は止まらず、skipped に理由が残る
+    const { mkdir: mkd } = await import('node:fs/promises');
+    await wf(join(home, 'session-state', P11_SESSION, 'files', 'blocked.txt'), 'x');
+    await rmf(join(sdir, 'files', 'blocked.txt'), { force: true });
+    await mkd(join(sdir, 'files', 'blocked.txt'), { recursive: true });
+    const rb = atlas(['snapshot', '--home', home, '--out', out]);
+    expect(rb.status, rb.stderr).toBe(0);
+    const mb = JSON.parse(await readFile(join(out, 'snapshot', 'snapshot-manifest.json'), 'utf8')) as SnapshotManifest;
+    expect(mb.extras!.skipped.find((s) => s.path.endsWith('files/blocked.txt'))?.reason).toMatch(/複製できなかった/);
+    await rmf(join(sdir, 'files', 'blocked.txt'), { recursive: true, force: true });
+    await rmf(join(home, 'session-state', P11_SESSION, 'files', 'blocked.txt'));
+    expect(atlas(['snapshot', '--home', home, '--out', out]).status).toBe(0);
     before = await mtimes(home);
     // --snapshot-all で rewind-snapshots・fake-solution・logs/ を写す(repos は写さない)
     const ra = atlas(['snapshot', '--home', home, '--out', out, '--snapshot-all']);
@@ -103,11 +123,22 @@ describe('Phase 11 E2E: fixtures', () => {
     expect(ma.extras!.all).toBe(true);
     expect(ma.extras!.skipped.map((s) => s.path).filter((p) => !/linked$/.test(p)).sort()).toEqual(['chats(*.md 以外)', 'repos']);
     expect(await mtimes(home)).toEqual(before);
-    // 既定に戻す(logs/ の合成トークンが out/ に残らないよう消す)
-    const { rm } = await import('node:fs/promises');
-    await rm(join(out, 'snapshot', 'logs'), { recursive: true, force: true });
-    await rm(join(sdir, 'rewind-snapshots'), { recursive: true, force: true });
-    await rm(join(sdir, 'fake-solution'), { recursive: true, force: true });
+    // 通常の snapshot に戻しても、--snapshot-all で写したものは黙って消さない(manifest の leftover とログ)。--snapshot-prune で消す
+    const rk = atlas(['snapshot', '--home', home, '--out', out]);
+    expect(rk.status, rk.stderr).toBe(0);
+    expect(existsSync(join(sdir, 'rewind-snapshots', 'backups', 'big.bin'))).toBe(true);
+    expect(existsSync(join(out, 'snapshot', 'logs', 'github-app.1.log'))).toBe(true);
+    expect(rk.stdout).toMatch(/前回 --snapshot-all で写したもの \d+ 件が残っています/);
+    const mk = JSON.parse(await readFile(join(out, 'snapshot', 'snapshot-manifest.json'), 'utf8')) as SnapshotManifest;
+    expect(mk.extras!.leftover.map((l) => l.path).sort()).toEqual([`session-state/${P11_SESSION}/fake-solution`, `session-state/${P11_SESSION}/rewind-snapshots`, 'logs'].sort());
+    const rp = atlas(['snapshot', '--home', home, '--out', out, '--snapshot-prune']);
+    expect(rp.status, rp.stderr).toBe(0);
+    expect(existsSync(join(sdir, 'rewind-snapshots'))).toBe(false);
+    expect(existsSync(join(sdir, 'fake-solution'))).toBe(false);
+    expect(existsSync(join(out, 'snapshot', 'logs'))).toBe(false);
+    const mp = JSON.parse(await readFile(join(out, 'snapshot', 'snapshot-manifest.json'), 'utf8')) as SnapshotManifest;
+    expect(mp.extras!.leftover).toEqual([]);
+    expect(await mtimes(home)).toEqual(before);
   });
 
   it('b. data.db: 許可リストの列だけが desktop.json と sessions.json の desktop 欄に入り、資格情報の合成値は out/ のどこにも出ない', async () => {

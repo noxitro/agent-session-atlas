@@ -75,6 +75,8 @@ export interface CliOptions {
   full: boolean;
   /** Phase 11 snapshot: 既定で写さない大きなもの(rewind-snapshots、一覧に無いもの、logs/)も写す */
   snapshotAll: boolean;
+  /** snapshot: 前回 --snapshot-all で写したが今回は写さないものを消す(既定は残す) */
+  snapshotPrune: boolean;
   judge: JudgeCliOptions | null;
   groupCmd: GroupCliOptions | null;
   /** serve: 固定するポート(null は空きポート) */
@@ -119,6 +121,7 @@ export const USAGE = `使い方: atlas <コマンド> [オプション]
   --temp-dir <dir>   extract: このフォルダ配下を「(一時フォルダ)」にまとめる(複数指定可)。指定すると既定の判定
                      (%TEMP% と AppData\\Local\\Temp・/tmp のパターン)を使わない
   --snapshot-all     snapshot: 既定で写さない大きなもの(rewind-snapshots、一覧に無い名前のもの、logs/)も写す
+  --snapshot-prune   snapshot: 前回 --snapshot-all で写したが今回は写さないものを消す(既定は残して manifest に日時を出す)
   -h, --help         この説明を出す
 
 export のオプション:
@@ -179,6 +182,7 @@ export function parseCli(argv: string[]): CliOptions {
         'tool-output': { type: 'string' },
         full: { type: 'boolean', default: false },
         'snapshot-all': { type: 'boolean', default: false },
+        'snapshot-prune': { type: 'boolean', default: false },
         'max-chars': { type: 'string' },
         backend: { type: 'string' },
         limit: { type: 'string' },
@@ -249,7 +253,7 @@ export function parseCli(argv: string[]): CliOptions {
   if ((values['tool-output'] != null || values['max-chars'] != null) && cmd !== 'export') throw new UsageError('--tool-output と --max-chars は export でだけ使えます');
   if (values.full && cmd !== 'export') throw new UsageError('--full は export でだけ使えます');
   if (values.full && values.anonymize) throw new UsageError('--full(解析用の全文記録)は --anonymize と併用できません');
-  if (values['snapshot-all'] && !['snapshot', 'all', 'export'].includes(cmd)) throw new UsageError('--snapshot-all は snapshot / all / export で使えます');
+  if ((values['snapshot-all'] || values['snapshot-prune']) && !['snapshot', 'all', 'export'].includes(cmd)) throw new UsageError('--snapshot-all と --snapshot-prune は snapshot / all / export で使えます');
   if (values.since != null && Number.isNaN(Date.parse(values.since))) throw new UsageError(`--since の日時を解釈できません: ${values.since}`);
   if ((values.port != null || values.open === false) && cmd !== 'serve') throw new UsageError('--port と --no-open は serve でだけ使えます');
   const port = posInt(values.port, '--port', 0);
@@ -278,6 +282,7 @@ export function parseCli(argv: string[]): CliOptions {
     maxChars: posInt(values['max-chars'], '--max-chars', 200),
     full: values.full ?? false,
     snapshotAll: values['snapshot-all'] ?? false,
+    snapshotPrune: values['snapshot-prune'] ?? false,
     judge,
     groupCmd,
     port,

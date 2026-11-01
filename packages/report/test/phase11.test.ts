@@ -7,7 +7,7 @@ import { normalizeSession } from '../../core/src/normalize.ts';
 import type { CopilotEvent, SessionRecord } from '../../core/src/types.ts';
 import { contentHash } from '../../core/src/instructions.ts';
 import { COVERAGE_RULES, CoverageCounter, coverageFile, desktopCoverage, ruleFor } from '../src/coverage.ts';
-import { looksOpaque, renderFull } from '../src/full.ts';
+import { createFileSink, looksOpaque, renderFull } from '../src/full.ts';
 import { LibraryCollector, lineDiff, renderInstructionsHtml, skillAnchor, writeLibrary } from '../src/library.ts';
 import { KNOWN_EVENT_TYPES } from '../../core/src/event-types.ts';
 
@@ -106,6 +106,35 @@ describe('renderFull', () => {
     expect(r.excluded.n).toBeGreaterThanOrEqual(4);
     expect(looksOpaque(OPAQUE)).toBe(true);
     expect(looksOpaque('短い')).toBe(false);
+  });
+});
+
+describe('createFileSink', () => {
+  it('tmp に書いて finish で rename し、abort で tmp を消す。開けない場所では write が失敗して永久に待たない', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'atlas-sink-'));
+    try {
+      const path = join(dir, 'a.md');
+      const s = createFileSink(path);
+      // 64KB を超える書き込みで drain 待ちの経路を通す
+      for (let i = 0; i < 40; i++) await s.write('x'.repeat(16 * 1024) + '\n');
+      await s.finish();
+      expect((await readFile(path, 'utf8')).length).toBe(40 * (16 * 1024 + 1));
+      const { existsSync } = await import('node:fs');
+      expect(existsSync(`${path}.tmp`)).toBe(false);
+      // abort: tmp を消して本体を作らない
+      const s2 = createFileSink(join(dir, 'b.md'));
+      await s2.write('partial');
+      await s2.abort();
+      expect(existsSync(join(dir, 'b.md.tmp'))).toBe(false);
+      expect(existsSync(join(dir, 'b.md'))).toBe(false);
+      // 開けない場所(存在しないフォルダ): error を 1 回だけ受けて以後の write / finish が失敗する(待ち続けない)
+      const s3 = createFileSink(join(dir, 'no-such-dir', 'c.md'));
+      await expect(Promise.race([s3.finish(), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 5000))])).rejects.toThrow(/ENOENT/);
+      await expect(s3.write('x')).rejects.toThrow(/ENOENT/);
+      await s3.abort();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 

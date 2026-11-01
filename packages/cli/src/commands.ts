@@ -139,11 +139,11 @@ const PROJECT_SOURCE_LABEL: Record<string, string> = {
 };
 const mb = (b: number): string => `${(b / 1024 / 1024).toFixed(2)} MB`;
 
-export async function runSnapshot(p: Paths, since: string | null, log: Log, all = false): Promise<SnapshotManifest> {
+export async function runSnapshot(p: Paths, since: string | null, log: Log, all = false, prune = false): Promise<SnapshotManifest> {
   if (!existsSync(p.home)) throw new Error(`Copilot のデータが見つかりません: ${p.home}(--home で場所を指定できます)`);
   const t = performance.now();
-  log(`snapshot: ${p.home} → ${p.snapshot}${all ? '(--snapshot-all)' : ''}`);
-  const m = await snapshot(p.home, p.snapshot, { ...(since ? { since } : {}), all });
+  log(`snapshot: ${p.home} → ${p.snapshot}${all ? '(--snapshot-all)' : ''}${prune ? '(--snapshot-prune)' : ''}`);
+  const m = await snapshot(p.home, p.snapshot, { ...(since ? { since } : {}), all, prune });
   log(
     `snapshot: セッションディレクトリ ${m.sessions.dirs}(複製 ${m.sessions.copiedFiles} / 再利用 ${m.sessions.reusedFiles} ファイル、${mb(m.sessions.bytes)}、session.db 複製 ${m.sessions.dbCopied ?? 0} / 再利用 ${m.sessions.dbReused ?? 0})、${ms(performance.now() - t)}`,
   );
@@ -153,6 +153,7 @@ export async function runSnapshot(p: Paths, since: string | null, log: Log, all 
     const top = Object.entries(x.topLevel).map(([k, v]) => `${k} ${v.files}`).join(' / ');
     log(`snapshot: 付随物 セッションフォルダ ${x.sessionFiles} ファイル(${mb(x.sessionBytes)})${top ? `、直下 ${top}` : ''}、写さなかったもの ${x.skipped.length} 件(${mb(x.skipped.reduce((a, s) => a + s.bytes, 0))}。manifest の extras.skipped)`);
     if (x.desktop) log(`snapshot: data.db → desktop.json(許可リストの列だけ、${x.desktop.sessions} セッション${x.desktop.warnings.length ? `、注意 ${x.desktop.warnings.join(' / ')}` : ''})`);
+    if (x.leftover.length) log(`snapshot: 前回 --snapshot-all で写したもの ${x.leftover.length} 件が残っています(最新 ${x.leftover.map((l) => l.mtime).sort().at(-1)}。消すには --snapshot-prune。manifest の extras.leftover)`);
   }
   return m;
 }
@@ -486,7 +487,7 @@ export async function run(o: CliOptions, log: Log): Promise<{ paths: Paths; buil
   const t = performance.now();
   switch (o.command) {
     case 'snapshot':
-      await runSnapshot(p, o.since, log, o.snapshotAll);
+      await runSnapshot(p, o.since, log, o.snapshotAll, o.snapshotPrune);
       return { paths: p };
     case 'extract':
       await runExtract(p, o.since, log, o.tempDirs);
@@ -510,7 +511,7 @@ export async function run(o: CliOptions, log: Log): Promise<{ paths: Paths; buil
       await runServe(p, { port: o.port, open: o.open }, log);
       return { paths: p };
     case 'all': {
-      await runSnapshot(p, o.since, log, o.snapshotAll);
+      await runSnapshot(p, o.since, log, o.snapshotAll, o.snapshotPrune);
       await runExtract(p, o.since, log, o.tempDirs);
       await runMetrics(p, f, log);
       const build = await runBuild(p, { ...f, anonymize: o.anonymize }, log);

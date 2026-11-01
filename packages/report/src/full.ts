@@ -6,8 +6,8 @@
 // - 秘密情報の形式検査(redactSecrets)を全ての文字列に掛け、件数を末尾に出す。伏せ字(--anonymize)とは併用しない
 // - チェックポイントと plan.md(スナップショットのセッションフォルダ)、data.db の許可列(desktop)も節として出す
 // - イベントは AsyncIterable で受け取り、出力は sink に逐次書く(セッション全体をメモリに載せない。backpressure は sink 側)
-import { existsSync } from 'node:fs';
-import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { createWriteStream, existsSync } from 'node:fs';
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { extname, join } from 'node:path';
 import { isUserTurn, mergeUsage, type CopilotEvent, type DbUsageRow, type SessionRecord } from '../../core/src/index.ts';
@@ -48,6 +48,75 @@ export interface FullSink {
 
 export function fullFileName(id: string): string {
   return `${id.replace(/[^A-Za-z0-9._-]/g, '_')}.md`;
+}
+
+export interface FileSink extends FullSink {
+  /** 書き終えて <path>.tmp を <path> に rename する */
+  finish(): Promise<void>;
+  /** 途中で失敗したときに stream を壊して tmp を消す(壊れた記録を残さない) */
+  abort(): Promise<void>;
+}
+
+/**
+ * <path>.tmp に逐次書き、成功時に rename する sink。
+ * stream の error は生成時に 1 回だけ受けて保持し、write のたびに検査する(write ごとに once('error') を積まない。
+ * drain 待ちの間に error が起きても永久に待たない)
+ */
+export function createFileSink(path: string): FileSink {
+  const tmp = `${path}.tmp`;
+  const ws = createWriteStream(tmp, { encoding: 'utf8' });
+  let error: Error | null = null;
+  let errorWaiters: ((e: Error) => void)[] = [];
+  ws.once('error', (e) => {
+    error = e;
+    for (const w of errorWaiters) w(e);
+    errorWaiters = [];
+  });
+  const check = (): void => {
+    if (error) throw error;
+  };
+  return {
+    async write(chunk: string): Promise<void> {
+      check();
+      if (ws.write(chunk)) {
+        check();
+        return;
+      }
+      await new Promise<void>((resolve, reject) => {
+        const onDrain = (): void => {
+          errorWaiters = errorWaiters.filter((w) => w !== onError);
+          resolve();
+        };
+        const onError = (e: Error): void => {
+          ws.off('drain', onDrain);
+          reject(e);
+        };
+        if (error) {
+          reject(error);
+          return;
+        }
+        errorWaiters.push(onError);
+        ws.once('drain', onDrain);
+      });
+    },
+    async finish(): Promise<void> {
+      check();
+      await new Promise<void>((resolve, reject) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        errorWaiters.push(reject);
+        ws.end(() => resolve());
+      });
+      check();
+      await rename(tmp, path);
+    },
+    async abort(): Promise<void> {
+      ws.destroy();
+      await rm(tmp, { force: true }).catch(() => {});
+    },
+  };
 }
 
 const ms = (iso: unknown): number | null => {

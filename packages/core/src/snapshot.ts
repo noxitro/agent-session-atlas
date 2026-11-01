@@ -34,6 +34,8 @@ export interface SnapshotOptions {
   since?: string | Date;
   /** Phase 11: 既定で写さない大きなもの(rewind-snapshots、一覧に無い名前のもの、logs/)も写す */
   all?: boolean;
+  /** 前回 --snapshot-all で写したが今回は写さないものを消す(既定は残して manifest の extras.leftover に日時を出す) */
+  prune?: boolean;
 }
 
 /** 写さなかったもの(名前と容量) */
@@ -63,6 +65,8 @@ export interface SnapshotManifest {
     skipped: SkippedEntry[];
     /** data.db(許可リストの列だけ)を desktop.json に書いたか。無ければ false。読めなければ理由 */
     desktop: { written: boolean; sessions: number; warnings: string[] } | null;
+    /** 前回 --snapshot-all で写したが今回は写さなかったもの(残してある。--snapshot-prune で消す) */
+    leftover: { path: string; mtime: string }[];
   };
 }
 
@@ -76,7 +80,8 @@ export interface SnapshotManifest {
 export async function snapshot(src: string, dest: string, opts: SnapshotOptions = {}): Promise<SnapshotManifest> {
   const since = opts.since ? new Date(opts.since) : null;
   const all = !!opts.all;
-  const extras: NonNullable<SnapshotManifest['extras']> = { all, sessionFiles: 0, sessionBytes: 0, topLevel: {}, skipped: [], desktop: null };
+  const prune = !!opts.prune;
+  const extras: NonNullable<SnapshotManifest['extras']> = { all, sessionFiles: 0, sessionBytes: 0, topLevel: {}, skipped: [], desktop: null, leftover: [] };
   if (since && Number.isNaN(since.getTime())) throw new Error(`since が日時として解釈できない: ${String(opts.since)}`);
   if (!existsSync(src)) throw new Error(`元ディレクトリが無い: ${src}`);
   await mkdir(dest, { recursive: true });
@@ -134,12 +139,12 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
         }
       } else await rm(join(dirDest, SNAPSHOT_SESSION_DB), { force: true }); // 元から消えたものは複製側も消す
       // Phase 11: plan.md・checkpoints/・files/ などを写す。大きいもの・一覧に無いものは --snapshot-all のときだけ
-      await copySessionExtras(dirSrc, dirDest, src, all, extras);
+      await copySessionExtras(dirSrc, dirDest, src, all, prune, extras);
     }
   }
 
   // Phase 11: ~/.copilot 直下の plans/・attachments/(と chats/ の *.md)。logs/ は --snapshot-all、repos/ は写さない
-  await copyTopLevel(src, dest, all, extras);
+  await copyTopLevel(src, dest, all, prune, extras);
   // Phase 11: data.db は複製せず、許可リストの列だけを desktop.json に書く(immutable で開く。元には触れない)
   try {
     const d = await readDesktopDb(join(src, 'data.db'));
@@ -174,12 +179,24 @@ const isLock = (name: string): boolean => /^inuse\.\d+\.(lock|hold)$/.test(name)
 
 const LINK_REASON = 'シンボリックリンク / ジャンクション(辿らない)';
 
-/** フォルダを歩く(シンボリックリンク・ジャンクションは辿らず、リンクの一覧に返す)。相対パスは / 区切り */
-async function walk(dir: string): Promise<{ files: { rel: string; abs: string }[]; links: string[] }> {
+/**
+ * フォルダを歩く(シンボリックリンク・ジャンクションは辿らず、リンクの一覧に返す)。相対パスは / 区切り。
+ * 読めないフォルダ(EPERM / EACCES 等)は全体を止めず errors に返す
+ */
+async function walk(dir: string): Promise<{ files: { rel: string; abs: string }[]; links: string[]; errors: { rel: string; code: string }[] }> {
   const files: { rel: string; abs: string }[] = [];
   const links: string[] = [];
+  const errors: { rel: string; code: string }[] = [];
   const rec = async (d: string, rel: string): Promise<void> => {
-    for (const e of await readdir(d, { withFileTypes: true })) {
+    let ents;
+    try {
+      ents = await readdir(d, { withFileTypes: true });
+    } catch (e) {
+      const err = e as NodeJS.ErrnoException;
+      errors.push({ rel, code: err.code ?? err.message });
+      return;
+    }
+    for (const e of ents) {
       const r = rel ? `${rel}/${e.name}` : e.name;
       if (e.isSymbolicLink()) links.push(r);
       else if (e.isDirectory()) await rec(join(d, e.name), r);
@@ -187,19 +204,26 @@ async function walk(dir: string): Promise<{ files: { rel: string; abs: string }[
     }
   };
   await rec(dir, '');
-  return { files, links };
+  return { files, links, errors };
 }
 
-/** フォルダの容量(再帰。リンクは辿らない) */
+/** フォルダの容量(再帰。リンクは辿らず、読めないフォルダは数えない) */
 async function dirBytes(dir: string): Promise<number> {
   let n = 0;
-  for (const f of (await walk(dir)).files) n += (await stat(f.abs)).size;
+  for (const f of (await walk(dir)).files) {
+    try {
+      n += (await stat(f.abs)).size;
+    } catch {
+      /* 消えた・読めないファイルは数えない */
+    }
+  }
   return n;
 }
 
 /**
  * フォルダを再帰的に写す(サイズと mtime が同じファイルは再利用)。元に無いファイルは複製先から消す(現存しないものを残さない)。
- * 1 ファイルの失敗(EBUSY / EPERM 等)は全体を止めず skipped に理由を積む。リンクは辿らず skipped に残す
+ * 削除の前に元の実在を確かめる(Windows で大文字小文字だけ変えた改名で、写したばかりの複製を消さない)。削除で空になったフォルダも消す。
+ * 1 ファイルの失敗(EBUSY / EPERM 等)や読めないフォルダは全体を止めず skipped に理由を積む。リンクは辿らず skipped に残す
  */
 async function copyTree(from: string, to: string, skipped: SkippedEntry[], relBase: string): Promise<{ files: number; bytes: number }> {
   let files = 0;
@@ -207,6 +231,7 @@ async function copyTree(from: string, to: string, skipped: SkippedEntry[], relBa
   await mkdir(to, { recursive: true });
   const src = await walk(from);
   for (const l of src.links) skipped.push({ path: `${relBase}/${l}`, bytes: 0, reason: LINK_REASON });
+  for (const e of src.errors) skipped.push({ path: e.rel ? `${relBase}/${e.rel}` : relBase, bytes: 0, reason: `読めなかった (${e.code})` });
   const keep = new Set(src.files.map((f) => f.rel));
   for (const f of src.files) {
     const dst = join(to, ...f.rel.split('/'));
@@ -220,11 +245,34 @@ async function copyTree(from: string, to: string, skipped: SkippedEntry[], relBa
       skipped.push({ path: `${relBase}/${f.rel}`, bytes: 0, reason: `複製できなかった (${err.code ?? err.message})` });
     }
   }
-  if (existsSync(to)) for (const f of (await walk(to)).files) if (!keep.has(f.rel)) await rm(f.abs, { force: true });
+  await pruneTree(from, to, keep);
   return { files, bytes };
 }
 
-async function copySessionExtras(dirSrc: string, dirDest: string, root: string, all: boolean, extras: NonNullable<SnapshotManifest['extras']>): Promise<void> {
+/** 複製先にあって元に無いファイルを消し、空になったフォルダも消す。元の実在は大文字小文字を区別しないファイルシステムでも確かめる */
+async function pruneTree(from: string, to: string, keep: Set<string>): Promise<void> {
+  if (!existsSync(to)) return;
+  const dst = await walk(to);
+  const dirs = new Set<string>();
+  for (const f of dst.files) {
+    if (keep.has(f.rel)) continue;
+    // 名前の大文字小文字だけが違う改名: 元に(大文字小文字を無視して)あるなら消さない
+    if (existsSync(join(from, ...f.rel.split('/')))) continue;
+    await rm(f.abs, { force: true });
+    const parts = f.rel.split('/');
+    for (let i = parts.length - 1; i >= 1; i--) dirs.add(parts.slice(0, i).join('/'));
+  }
+  for (const d of [...dirs].sort((a, b) => b.length - a.length)) {
+    const p = join(to, ...d.split('/'));
+    try {
+      if ((await readdir(p)).length === 0) await rm(p, { recursive: true, force: true });
+    } catch {
+      /* 既に無い */
+    }
+  }
+}
+
+async function copySessionExtras(dirSrc: string, dirDest: string, root: string, all: boolean, prune: boolean, extras: NonNullable<SnapshotManifest['extras']>): Promise<void> {
   const relPath = (p: string): string => relative(root, p).replace(/\\/g, '/');
   const copyOne = async (from: string, to: string): Promise<void> => {
     try {
@@ -242,7 +290,15 @@ async function copySessionExtras(dirSrc: string, dirDest: string, root: string, 
     else await rm(join(dirDest, f), { force: true }); // 元から消えたものは複製先からも消す
   }
   const present = new Set<string>();
-  for (const ent of await readdir(dirSrc, { withFileTypes: true })) {
+  let ents: import('node:fs').Dirent[];
+  try {
+    ents = await readdir(dirSrc, { withFileTypes: true });
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException;
+    extras.skipped.push({ path: relPath(dirSrc), bytes: 0, reason: `読めなかった (${err.code ?? err.message})` });
+    return;
+  }
+  for (const ent of ents) {
     const name = ent.name;
     const p = join(dirSrc, name);
     if (ent.isSymbolicLink()) {
@@ -267,18 +323,21 @@ async function copySessionExtras(dirSrc: string, dirDest: string, root: string, 
       } else extras.skipped.push({ path: relPath(p), bytes: (await stat(p)).size, reason: '一覧に無い名前(--snapshot-all で写す)' });
     }
   }
-  // 複製先に残っている追加のフォルダ・ファイルで、今回写さなかったものは消す(元から消えたもの、--snapshot-all を外したもの)
+  // 複製先に残っている追加のフォルダ・ファイルで今回写さなかったもの: 元から消えたものは消す。
+  // 前回 --snapshot-all で写したもの(元にはまだある)は、生成物を黙って消さない方針で残し、manifest の leftover に日時を出す(--snapshot-prune で消す)
   if (existsSync(dirDest)) {
     for (const ent of await readdir(dirDest, { withFileTypes: true })) {
       const name = ent.name;
       if (KNOWN_SESSION_ENTRIES.has(name) && !(SNAPSHOT_SESSION_EXTRA_DIRS as readonly string[]).includes(name) && !(SNAPSHOT_SESSION_HEAVY_DIRS as readonly string[]).includes(name)) continue;
       if (name === SESSION_DB_FINGERPRINT || present.has(name)) continue;
-      await rm(join(dirDest, name), { recursive: true, force: true });
+      const p = join(dirDest, name);
+      if (!existsSync(join(dirSrc, name)) || prune) await rm(p, { recursive: true, force: true });
+      else extras.leftover.push({ path: relPath(join(dirSrc, name)), mtime: (await stat(p)).mtime.toISOString() });
     }
   }
 }
 
-async function copyTopLevel(src: string, dest: string, all: boolean, extras: NonNullable<SnapshotManifest['extras']>): Promise<void> {
+async function copyTopLevel(src: string, dest: string, all: boolean, prune: boolean, extras: NonNullable<SnapshotManifest['extras']>): Promise<void> {
   for (const name of SNAPSHOT_TOP_DIRS) {
     const p = join(src, name);
     if (!existsSync(p)) {
@@ -289,10 +348,19 @@ async function copyTopLevel(src: string, dest: string, all: boolean, extras: Non
   }
   for (const [name, reason] of Object.entries(SNAPSHOT_TOP_HEAVY_DIRS)) {
     const p = join(src, name);
-    if (!existsSync(p) || !all) await rm(join(dest, name), { recursive: true, force: true });
-    if (!existsSync(p)) continue;
-    if (all) extras.topLevel[name] = await copyTree(p, join(dest, name), extras.skipped, name);
-    else extras.skipped.push({ path: name, bytes: await dirBytes(p), reason: `${reason}(--snapshot-all で写す)` });
+    const d = join(dest, name);
+    if (!existsSync(p)) {
+      await rm(d, { recursive: true, force: true });
+      continue;
+    }
+    if (all) extras.topLevel[name] = await copyTree(p, d, extras.skipped, name);
+    else {
+      extras.skipped.push({ path: name, bytes: await dirBytes(p), reason: `${reason}(--snapshot-all で写す)` });
+      if (existsSync(d)) {
+        if (prune) await rm(d, { recursive: true, force: true });
+        else extras.leftover.push({ path: name, mtime: (await stat(d)).mtime.toISOString() });
+      }
+    }
   }
   // chats/: *.md(ユーザーが書き出したセッション記録)だけ写し、他は名前と容量だけ。元に無い .md は複製先から消す
   const chats = join(src, 'chats');

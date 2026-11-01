@@ -1,12 +1,12 @@
 // Node 側: テンプレート(dist/template.html)にデータを埋め込んで out/atlas.html と out/sessions/<id>.html を書く。
-import { createWriteStream, existsSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { CopilotEvent, InstalledInventory, MetricsBucket, MetricsFile, SessionRecord } from '../../core/src/types.ts';
 import { contentHash, parseEvents } from '../../core/src/index.ts';
 import { CoverageCounter, coverageFile, desktopCoverage } from './coverage.ts';
-import { fullFileName, renderFullTo } from './full.ts';
+import { createFileSink, fullFileName, renderFullTo } from './full.ts';
 import { INSTRUCTIONS_FILE, LIBRARY_DIR, LibraryCollector, renderInstructionsHtml, writeLibrary } from './library.ts';
 import { createAnonymizer, identityAnonymizer, type Anonymizer } from './lib/anonymize.ts';
 import { renderDetailHtml } from './detail.ts';
@@ -192,6 +192,7 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
     await rm(fullDir, { recursive: true, force: true });
     await rm(coveragePath, { force: true });
   } else if (existsSync(coveragePath)) stale.full = (await stat(coveragePath)).mtime.toISOString();
+  else if (existsSync(fullDir)) stale.full = (await stat(fullDir)).mtime.toISOString(); // coverage.json が無くても full/ が残っていれば報告する
   if (wantLibrary || anon.enabled) {
     await rm(join(input.outDir, LIBRARY_DIR), { recursive: true, force: true });
     await rm(instructionsPath, { force: true });
@@ -236,25 +237,24 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
       if (wantFull && fullStat) {
         const file = fullFileName(r.id);
         const path = join(fullDir, file);
-        const ws = createWriteStream(path, { encoding: 'utf8' });
-        const sink = {
-          write: (chunk: string): Promise<void> =>
-            new Promise<void>((resolve, reject) => {
-              ws.once('error', reject);
-              if (ws.write(chunk)) resolve();
-              else ws.once('drain', () => resolve());
-            }),
-        };
-        const res = await renderFullTo(r, tee(), store.usage.get(r.id) ?? [], {
-          generatedAt,
-          assetsDir: join(fullDir, 'assets', r.id.replace(/[^A-Za-z0-9._-]/g, '_')),
-          assetsHref: `assets/${r.id.replace(/[^A-Za-z0-9._-]/g, '_')}`,
-          sessionDir: existsSync(sessionDir) ? sessionDir : null,
-          sessionDirHref: existsSync(sessionDir) ? `../snapshot/session-state/${encodeURIComponent(r.id)}` : null,
-          coverage,
-          walNote: input.desktopMeta?.wal?.note ?? null,
-        }, sink);
-        await new Promise<void>((resolve, reject) => ws.end((err?: Error | null) => (err ? reject(err) : resolve())));
+        // <id>.md.tmp に書いて成功時に rename する(途中で失敗した壊れた記録を残さない)
+        const sink = createFileSink(path);
+        let res;
+        try {
+          res = await renderFullTo(r, tee(), store.usage.get(r.id) ?? [], {
+            generatedAt,
+            assetsDir: join(fullDir, 'assets', r.id.replace(/[^A-Za-z0-9._-]/g, '_')),
+            assetsHref: `assets/${r.id.replace(/[^A-Za-z0-9._-]/g, '_')}`,
+            sessionDir: existsSync(sessionDir) ? sessionDir : null,
+            sessionDirHref: existsSync(sessionDir) ? `../snapshot/session-state/${encodeURIComponent(r.id)}` : null,
+            coverage,
+            walNote: input.desktopMeta?.wal?.note ?? null,
+          }, sink);
+          await sink.finish();
+        } catch (e) {
+          await sink.abort();
+          throw new Error(`全文記録を書けませんでした (${r.id}): ${(e as Error).message}`);
+        }
         fullHref = `../full/${file}`;
         fullStat.files++;
         fullStat.bytes += (await stat(path)).size;

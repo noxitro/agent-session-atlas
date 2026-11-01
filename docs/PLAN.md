@@ -579,6 +579,15 @@ ui-ux-pro-max の照合(`--domain ux`、検索語「sidebar saved views labels�
 
 測り直し(実データ 800 セッション): 全文記録 376MB(309MB → 365MB の書き出し。引数と結果の長い英数字列を除外しなくなった分が増えた)、除外 27,714 箇所 114.9MB(excluded 3 キー 91.4MB + partial の reasoningBlocks 4,158 箇所 23.5MB。reasoningBlocks 24.6MB のうち読めるのは約 1MB)、未分類 0、秘密情報の形式検査 11 件。~/.copilot の data.db-shm / -wal の mtime は不変。
 
+#### 見直し 2(2026-11-02、Phase 11 の残り P2 を直した)
+
+- **sink の error**(P2-A / B): `createFileSink`(full.ts)が stream の error を生成時に 1 回だけ受けて保持し、write / finish のたびに検査する。drain 待ちは error でも解ける(永久に待たない)。write ごとに `once('error')` を積まない。
+- **壊れた記録**(P2-C): `<id>.md.tmp` に書いて成功時に rename。失敗時は destroy と tmp の削除をして、build を失敗にする(黙って残さない)。stale の判定は coverage.json が無くても `full/` の存在で見る。
+- **大文字小文字だけの改名**(P2-D): `pruneTree` が削除の前に元の実在を確かめ(大文字小文字を区別しないファイルシステムでは残る)、削除で空になったフォルダも消す。
+- **--snapshot-all の残り**(P2-E): 通常の snapshot では前回 `--snapshot-all` で写したもの(元にまだあるもの)を消さず、manifest の `extras.leftover`(パスと日時)とログに出す。`--snapshot-prune` で消す。元から消えたものは従来どおり消す。
+- **walk の失敗**: 読めないフォルダ(EPERM / EACCES)はフォルダ単位で catch して skipped に「読めなかった」で積む。セッションフォルダ自体が読めないときも同じ。
+- テスト: sink の正常系(drain 待ち)・abort・開けない場所(ENOENT で待たない)、ファイル単位の失敗(複製先に同名フォルダ)、大文字小文字だけの改名、leftover の残存と `--snapshot-prune`。
+
 ## 決めたこと・採らなかった案
 
 - Svelte 5 を採用(理由は開発体験。単一 HTML のサイズ差はデータ量に比べて誤差)。
