@@ -15,6 +15,8 @@
   import ModelChart from './components/ModelChart.svelte';
   import SessionTable from './components/SessionTable.svelte';
   import { applyTheme, loadTheme, type ThemeChoice } from './theme.ts';
+  import { api, serveToken, startHeartbeat } from './api.ts';
+  import type { ReportGroup } from '../lib/types.ts';
 
   let { data, error }: { data: ReportData | null; error: string | null } = $props();
 
@@ -115,13 +117,60 @@
     selected = new Set();
     if (filter.ids) setFilter({ ids: '' });
   }
+  // --- 編集モード(atlas serve から開いたとき)。画面と保存の境界は api.ts の小さな API だけ ---
+  /** serve が meta に入れた token(file:// や共有用の 1 ファイルでは null) */
+  const token = serveToken();
+  /** http(s) で開かれ、token があり、GET api/state が成功し、伏せ字版でない */
+  let editable = $state(false);
+  /** API から読んだグループ(編集モードではこちらを使う。CLI で足したものも再読み込みで出る) */
+  let liveGroups = $state<ReportGroup[] | null>(null);
+  /** heartbeat が失敗した(サーバが止まった)。閲覧はそのまま、編集だけ無効 */
+  let serverDown = $state(false);
+  $effect(() => {
+    if (!token) return;
+    const stop = startHeartbeat(token, () => {
+      serverDown = true;
+      editable = false;
+    });
+    if (!data?.anonymized) {
+      // 1 回だけ試す。失敗しても(古い serve、伏せ字版の 403 など)黙って閲覧専用にする
+      api
+        .state()
+        .then((s) => {
+          liveGroups = s.groups;
+          editable = true;
+        })
+        .catch(() => {});
+    }
+    return stop;
+  });
   /** 名前付きグループ(記録にある id とその件数つき) */
   const groupOptions = $derived.by(() =>
-    (data?.groups ?? []).map((g) => {
+    (liveGroups ?? data?.groups ?? []).map((g) => {
       const presentIds = g.ids.filter((id) => knownIds.has(id));
       return { ...g, presentIds, present: presentIds.length };
     }),
   );
+  const idsForFilter = (g: ReportGroup): string => {
+    const present = g.ids.filter((id) => knownIds.has(id));
+    return joinIds(present.length ? present : g.ids);
+  };
+  /** 選んだセッションで新しいグループを作り、そのグループで絞り込む(失敗は呼び元が入力欄の下に出す) */
+  async function createGroup(name: string, note: string): Promise<void> {
+    const ids = sessions.filter((s) => selected.has(s.id)).map((s) => s.id);
+    const r = await api.create(token!, { name, note, ids });
+    liveGroups = r.groups;
+    setFilter({ ids: idsForFilter(r.group) });
+  }
+  async function renameGroup(oldName: string, name: string): Promise<void> {
+    const r = await api.update(token!, oldName, { name });
+    liveGroups = r.groups;
+  }
+  async function deleteGroup(name: string): Promise<void> {
+    const r = await api.remove(token!, name);
+    liveGroups = r.groups;
+    setFilter({ ids: '' });
+  }
 
   /** 効いている絞り込みの条件の数(期間は開始・終了で 1 つ、セッションの選択は 1 つ) */
   const activeConditions = $derived.by(() => {
@@ -298,7 +347,10 @@
     </div>
 
     <div class="content">
-      <FilterBar {filter} {options} {judged} {emptyCount} groups={groupOptions} lastDay={all.overall.lastAt ? date(all.overall.lastAt) : null} onchange={setFilter} />
+      {#if serverDown}
+        <div class="down-band" role="alert">サーバが止まっています。atlas.bat を実行し直してください(閲覧はそのままできます)。</div>
+      {/if}
+      <FilterBar {filter} {options} {judged} {emptyCount} groups={groupOptions} {editable} lastDay={all.overall.lastAt ? date(all.overall.lastAt) : null} onchange={setFilter} onrename={renameGroup} ondelete={deleteGroup} />
 
       <main class="wrap" id="main" tabindex="-1">
         <div class="empty" class:show={filtered.length === 0} role="status">
@@ -318,7 +370,7 @@
         <ProjectTable rows={agg.byProject} {judged} current={filter.project} onpick={(p) => setFilter({ project: p })} />
         <MonthlyChart months={agg.byMonth} />
         <ModelChart rows={agg.byModel} />
-        <SessionTable sessions={filtered} {judged} anonymized={data.anonymized} {selected} idsActive={filter.ids !== ''} onselect={(s) => (selected = s)} onapply={applySelection} onclear={clearSelection} />
+        <SessionTable sessions={filtered} {judged} anonymized={data.anonymized} {selected} idsActive={filter.ids !== ''} {editable} onselect={(s) => (selected = s)} onapply={applySelection} onclear={clearSelection} oncreate={createGroup} />
       </main>
       <footer class="wrap foot">
         <p>

@@ -71,6 +71,8 @@ export function renderRail(o: PageNavOptions): string {
  * - 読んでいる節に aria-current の印(見出しが画面上部 1/3 を越えた最後の節。末尾では最後の節)。狭い画面では現在地が見える位置まで目次行をずらす
  * - 「← 戻る」: atlas.html から来たとき(atlas.html が別ページへ移るときに sessionStorage に残す印。http では referrer でも分かる)は history.back() で戻り、
  *   URL の # に残る絞り込みを保つ。直接開いたとき・新しいタブ・修飾キー付きのクリックでは普通のリンク。印は読んだら消す
+ * - heartbeat: atlas serve から開かれたとき(http(s) で、meta の token がプレースホルダでない)だけ 3 秒ごとに POST する。
+ *   失敗したら止めて「サーバが止まっています」の帯を出す。宛先は同一オリジンの相対パス(詳細ページは ../api/、用語ページは api/)
  */
 export const NAV_JS = `(function(){var d=document,root=d.documentElement,W=matchMedia('(min-width:1280px)'),KEY='atlas-theme';
 var segs=d.querySelectorAll('[data-theme-seg] button');function paint(t){segs.forEach(function(b){b.setAttribute('aria-pressed',b.dataset.theme===t?'true':'false')})}
@@ -85,4 +87,9 @@ if(!W.matches){var a=links[i],ol=a.closest('.toc');if(ol&&ol.scrollWidth>ol.clie
 function onS(){if(!tick){tick=true;requestAnimationFrame(mark)}}addEventListener('scroll',onS,{passive:true});addEventListener('resize',onS);mark();
 var m=false;try{m=sessionStorage.getItem('atlas-return')==='1';sessionStorage.removeItem('atlas-return')}catch(e){}
 d.querySelectorAll('a.crumb').forEach(function(a){a.addEventListener('click',function(e){if(e.button!==0||e.metaKey||e.ctrlKey||e.shiftKey||e.altKey)return;var ok=false;try{ok=history.length>1&&(m||/atlas\\.html/.test(d.referrer))}catch(err){}if(ok){e.preventDefault();history.back()}})});
+(function(){var mt=d.querySelector('meta[name="atlas-token"]'),t=mt?mt.content:'';if(!/^https?:$/.test(location.protocol)||!t||/^__/.test(t))return;
+var c=d.querySelector('a.crumb'),up=!!c&&/^\\.\\.\\//.test(c.getAttribute('href')||''),o={method:'POST',headers:{'X-Atlas-Token':t},keepalive:true},iv=null;
+function down(){if(iv)clearInterval(iv);iv=null;var b=d.createElement('div');b.className='down-band';b.setAttribute('role','alert');b.textContent='サーバが止まっています。atlas.bat を実行し直してください(閲覧はそのままできます)。';d.body.insertBefore(b,d.body.firstChild)}
+function beat(){try{(up?fetch('../api/heartbeat',o):fetch('api/heartbeat',o)).then(function(r){if(!r.ok)down()}).catch(down)}catch(e){down()}}
+iv=setInterval(beat,3000);beat()})();
 })();`;

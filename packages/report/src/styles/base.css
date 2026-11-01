@@ -393,6 +393,18 @@ details.tableview > summary {
   white-space: nowrap;
 }
 
+/* サーバ(atlas serve)が止まったときの帯(3 画面共通。閲覧はそのままできる。スクロールしても見えるよう上に貼る) */
+.down-band {
+  position: sticky;
+  top: 0;
+  z-index: 7;
+  background: var(--warn-wash);
+  border-bottom: 1px solid var(--warn);
+  color: var(--ink);
+  padding: 6px 16px;
+  font-size: 0.8125rem;
+}
+
 /* 様式の中の押しボタン(解除・ページ送り・もっと見る) */
 .btn {
   font: inherit;

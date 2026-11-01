@@ -55,6 +55,7 @@ export function renderGlossaryHtml(o: GlossaryPageOptions): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
+<meta name="atlas-token" content="__ATLAS_TOKEN__">
 <meta name="theme-color" content="#f3f5f3" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0e1110" media="(prefers-color-scheme: dark)">
 <title>用語の説明 | Copilot Session Atlas</title>

@@ -438,6 +438,57 @@ ui-ux-pro-max の照合(`--domain ux`、検索語「selection bulk actions filte
 
 残したこと(第 2 段以降): セッションごとのメモ(Markdown + 画像)とその表示。グループの編集(名前の変更・並べ替え)は CLI の add / remove と手書きで足りるとみて付けていない。クリップボードは `file://` の Chrome では書けるが、Playwright の既定では権限が無く fallback の文になる(実ブラウザでの確認は組み込みブラウザの http で行った)。
 
+### Phase 10 第 2 段: ローカルサーバ経由で画面からグループを作る(2026-11-01)
+
+動機(ユーザーの判断): 第 1 段の「グループとして保存」が JSON をコピーして貼る形なのは一般的でなく分かりづらい。技術的な事情(HTML からファイルを書けない)をユーザーに負わせない。ダイアログを毎回出すのも嫌。Gmail / VS Code / Obsidian のように「作成を押したら保存される」形にする。そのために atlas.bat がローカルサーバを立ててブラウザを開き、画面を閉じたらサーバも止まる運用に変える。アプリ化(Electron)は後回しにし、画面と保存の境界を小さな HTTP API にして後で差し替えられるようにする。第 1 段の契約 6(JSON 片をコピー)はこれで置き換える。
+
+契約:
+
+1. **`atlas serve [--port <n>] [--no-open]`**: 127.0.0.1 だけに bind(既定は空きポートを自動取得)。out/ を静的に配信(atlas.html、glossary.html、sessions/)。ディレクトリ一覧は出さず(`/` は atlas.html へ)、out/ の外は読めない(パスの正規化で検査)。起動したら既定のブラウザで `http://127.0.0.1:<port>/atlas.html` を開き、標準出力に URL と「ブラウザを閉じるか、この窓を閉じると終了します」を出す。
+2. **API**(JSON、同一オリジンのみ):
+   - `GET /api/state` → `{ groups, notesDir, warnings, version }`。groups はその時点の groups.json(`groups-io.loadGroups`)。
+   - `POST /api/groups` `{ name, note, ids }` → 作成(同名があれば 409)。`PUT /api/groups/<name>` `{ name?, note?, ids? }` → 改名・更新(改名先が既にあれば 409)。`DELETE /api/groups/<name>` → 削除(無ければ 404)。書き込みは groups-io(`loadGroupsForWrite` / `saveGroups`)を通し、壊れたファイルは上書きしない(409 と理由)。書ける先は notes-dir 配下の groups.json だけ。
+   - `POST /api/heartbeat` → 204。
+   - `/api/*` の全てで `Sec-Fetch-Site` が same-origin / none 以外なら 403、`Origin` があれば自分のオリジンと一致しなければ 403。書き込み系(POST / PUT / DELETE。heartbeat も含む)は起動ごとのランダムな token を `X-Atlas-Token` に要求する(無ければ 403)。token は serve が HTML を配信するときに `<meta name="atlas-token" content="__ATLAS_TOKEN__">` のプレースホルダを置き換えて渡す(build 時の HTML はプレースホルダのまま = file:// では空扱い。詳細・用語ページにも同じ meta を入れ、heartbeat に使う)。
+3. **終了の規則**: 3 画面(atlas.html・詳細・用語)は http(s) で開かれているときだけ 3 秒ごとに heartbeat を送る(page-nav.ts の NAV_JS にも入れる)。サーバは「最初の heartbeat を受けてから、最後の heartbeat から 8 秒」経ったら終了する。最初の heartbeat が 60 秒来なければ終了する(ブラウザが開かなかったとき)。詳細ページへ移っている間も heartbeat は続く。サーバが止まった後の画面は heartbeat の失敗を検知して「サーバが止まっています。atlas.bat を実行し直してください」の帯を出し、編集の操作を無効にする(閲覧はそのまま。失敗したら以後は送らない)。
+4. **二重起動**: serve は起動時に `out/.serve.json`(port、pid。token は書かない)を見て、既に動いているサーバがあれば(`GET /api/state` が `X-Atlas-Serve` 付きで応える)ブラウザを開くだけで終了する。自分が終了するときに消す。
+5. **画面の編集モード**: 読み込み時に http(s) かつ token があり `GET /api/state` が成功したら編集モード。グループの一覧は埋め込みではなく API の結果を使う(CLI で足したグループも再読み込みで出る。埋め込みの groups は file:// 用に残す)。
+   - セッション一覧の操作列: 「選んだ N 件だけ集計」「選択を解除」はそのまま。「グループを作成」を押すと名前と一文の入力欄がインラインで開き(ダイアログにしない)、「作成」で POST → 成功したら絞り込み行の「グループ」に即座に出て、そのグループで絞り込んだ状態にする。失敗は入力欄の下に理由を出す。
+   - 絞り込み行の「グループ」で選択中のグループに「名前の変更」(インライン編集)と「削除」(確認は 1 回、インライン)を付ける。
+   - 編集モードでないとき: 「グループを作成」の代わりに「グループの作成は atlas.bat から開いたときにできます」の 1 行(伏せ字版では何も出さない)。第 1 段の JSON 片の textarea・クリップボード・コマンド例は全部外す(CSS・テスト・README・surface brief も)。
+6. **bat**: atlas.bat / atlas-export.bat / atlas-judge.bat は最後の `start out\atlas.html` をやめ、`atlas serve` で終える(窓はサーバが終わるまで残る。失敗時の pause は従来どおり)。
+7. **設計契約の文言**: 「サーバ無しで開ける 1 ファイル」は共有用の out/atlas.html として維持(閲覧のみ)。「外部参照なし」の検査(e2e の externalRefs)は、同一オリジンの相対パス `api/…`(詳細ページからは `../api/…`)への fetch だけ許し、http(s) の参照は従来どおり禁止、に改める。file:// で開いたときに fetch の失敗で console にエラーを出さない(try/catch、1 回だけ試す)。
+8. **伏せ字版**(--anonymize)では編集モードにしない(serve されていても編集の操作を出さず、`/api/state` と groups の API は 403。heartbeat だけ受ける)。共有用なので。
+
+検査: 単体(サーバを port 0 で起動して API: token の有無、409、パスの正規化、Sec-Fetch-Site、heartbeat による終了と .serve.json の削除)。E2E(build → serve → /api/state → POST → groups.json が書かれる → GET に出る → PUT → DELETE。静的な atlas.html は改定後の外部参照の検査を通る)。ブラウザ(Playwright、http://127.0.0.1、1440 / 1024): 「グループを作成」→ 名前入力 → 作成 → 絞り込み行に出る・絞り込まれる → 名前の変更 → 削除 → ブラウザを閉じて約 10 秒でプロセスが終わる、をスクリーンショット付きで。impeccable critique / audit、web-design-guidelines、ui-ux-pro-max(「inline create form feedback」で 1 回)は従来どおり。surface brief の SELECTION を更新。README の「起動方法」(bat がサーバを立ててブラウザを開く、閉じれば止まる、共有は out/atlas.html)、`serve` と `--port`、グループの節を書き換える。
+
+#### 実施(2026-11-01 夜、第 2 段)
+
+作ったもの・直したこと:
+
+1. **サーバ** `packages/cli/src/serve.ts`(`startServe` / `findRunningServer` / `openInBrowser`)。node:http だけで、127.0.0.1 に bind。静的配信は `resolve(out, '.' + path)` が out/ 配下か(と `.serve.json` でないか)を見て、ディレクトリと外は 404、`/` は atlas.html へ 302。HTML は配信時に `__ATLAS_TOKEN__` を起動ごとの token(24 バイトの base64url)に置き換える。API は `/api/state`(GET)、`/api/groups`(POST)、`/api/groups/<name>`(PUT / DELETE)、`/api/heartbeat`(POST)。`/api/*` は `Sec-Fetch-Site`(same-origin / none 以外は 403)と `Origin`(自分のオリジン以外は 403)を見て、書き込み系(heartbeat も)は `X-Atlas-Token` を要求する。伏せ字版(atlas.html の埋め込みデータの `anonymized`。mtime が変わるまで覚える)では heartbeat 以外の API を 403。終了は「最初の heartbeat から、最後の heartbeat の 8 秒後」か「最初の heartbeat が 60 秒来ない」で、`.serve.json` を消してから閉じる。
+2. **CLI**: `serve [--port <n>] [--no-open]`(`--port` / `--no-open` は serve 以外で UsageError)。`runServe` は atlas.html が無ければエラー、`.serve.json` のサーバが `X-Atlas-Serve` 付きで応えればブラウザを開くだけ、そうでなければ起動して `done` を待つ(SIGINT / SIGTERM で閉じる)。atlas.bat / atlas-export.bat / atlas-judge.bat は末尾の `start out\atlas.html` を `node packages\cli\src\main.ts serve` にした(atlas.bat の追加引数は `all` にだけ渡す)。
+3. **画面**: `packages/report/src/app/api.ts`(`serveToken` / `api.state|create|update|remove` / `startHeartbeat`。fetch の宛先は相対パス `api/…` の文字列だけ。接続できないときは「サーバに接続できません」の日本語に変える)。`App.svelte` は token があれば heartbeat を始め、伏せ字版でなければ `api/state` を 1 回だけ試して成功したら編集モード(`liveGroups` を使う)。`createGroup` / `renameGroup` / `deleteGroup` は API の返す groups で差し替え、作成後はそのグループで絞り込み、削除後は `ids` を外す。heartbeat が失敗したら `serverDown`(帯 `.down-band` を sticky で上に貼り、編集を消す)。`SessionTable` の「グループを作成」は入力欄をインラインで開く(名前 / 一文 / 作成 / 取消。空の名前でも送れて理由を下に出す。送信中は `readonly` + `aria-busy`。成功で「グループを作成」に、失敗で名前の欄にフォーカスを戻す。`editable` が外れたら閉じる)。`FilterBar` の「グループ」の欄と操作(名前の変更・削除)は 1 つの固まり `.group-field`(折り返しても離れない)。削除の確認は初期フォーカスを「取消」に置く(Enter の連打で消さない)。成功したら「グループ」の select に、失敗したら入力欄に戻す。編集できないときの 1 行は「このファイルは閲覧用です。グループの作成は atlas.bat から開いたときにできます」(伏せ字版では出さない)。
+4. **静的ページ**: template.html・詳細・用語の head に `<meta name="atlas-token" content="__ATLAS_TOKEN__">`。`page-nav.ts` の NAV_JS に heartbeat(http(s) で token がプレースホルダでないときだけ。詳細は `../api/heartbeat`、用語は `api/heartbeat`。失敗したら帯を出して止める)。
+5. **撤去**: 第 1 段の JSON 片(`groupSnippet`・textarea・クリップボード・コマンド例・その CSS と単体テスト・README・brief の記述)。
+6. **検査の改定**: e2e の `externalRefs` は `fetch(` の直後が `"api/` か `"../api/` の文字列のときだけ許す(それ以外の `fetch(` と http(s) は従来どおり不可)。
+
+自分で決めたこと(戻し方は git): heartbeat にも token を要求した(書き込み系の規則をそのまま適用。静的ページにも meta を入れたので困らない)。`.serve.json` のサーバ確認は `X-Atlas-Serve` ヘッダで見分ける(伏せ字版は `/api/state` が 403 でも生きている)。`--no-open` を足した(テストと、既にブラウザを開いているとき用)。`PUT` の改名先が既にあれば 409。サーバが止まった帯は 3 画面とも同じ文言と見た目にし、詳細・用語ページでも出す。削除の確認の初期フォーカスは「取消」。
+
+容量: atlas.html は伏せ字版の同じデータで 1,683,786 → 1,691,558 バイト(+7.8KB。作成の入力欄・操作・API の script)。詳細ページは meta と heartbeat の script で 1 件 +0.9KB、797 件で 20.12MB → 20.88MB。
+
+ui-ux-pro-max の照合(`--domain ux`、検索語「inline create form feedback」、1 回):
+
+| 該当した規則(Category / Issue) | 採否 |
+|---|---|
+| Forms / Submit Feedback(送信中 → 成功 / 失敗を見せる) | 採用: 送信中はボタンを「作成中…」「保存中…」「削除中…」にして `aria-busy`、成功は欄が閉じて「グループ」に出る(絞り込みも変わる)、失敗は欄の下に理由(role=alert) |
+| Accessibility / Form Labels(label で包む、placeholder だけにしない) | 採用: 名前・一文・新しい名前はすべて label で包み、placeholder は例だけ |
+| Forms / Inline Validation(blur で検証) | 一部採用: 空の名前は送信時にその場で理由を出す(blur では出さない。名前以外に検証する項目が無く、同名の重複はサーバしか分からないため) |
+
+検査: typecheck 0 / 0、単体 105 通過(17 ファイル)(`serve.test.ts` 4 件を追加: 配信・token の差し込み・パスの正規化・API の作成 / 改名 / 削除・409・壊れたファイル・Sec-Fetch-Site と Origin・伏せ字版の 403・heartbeat による終了と .serve.json の削除)、E2E 50 通過 / 8 skipped(6 ファイル)(phase2 に j. を追加: build の HTML がプレースホルダのまま、serve の API で groups.json が書かれる、`--group` が同じファイルを読む、二重起動)。impeccable の検出器(静的)0 件。設計契約 + web-design-guidelines の照合(読み取り専用のサブエージェント)は初回 FAIL(停止の帯の証跡が無い、brief 未更新、停止後も作成欄が送れる、処理後にフォーカスが落ちる、1440px で削除の確認が欄から離れる)→ 全て直して撮り直した。残した P2: 同じ id 集合のグループが 2 つあると後の方は名前の変更・削除ができない(`currentGroup` を ids の一致で決めているため。同じ集合を 2 つ作る動機が薄いので保留)。ブラウザ(Playwright、実データ、1440 ライト / 1024 ダーク): 「グループを作成」→ 名前と一文 → 作成(groups.json に書かれ、絞り込み行に「画面の調査(3 件)」、表示中 3、フォーカスは「グループを作成」に戻る)→ 同名で 409 の理由が欄の下に出る → 名前の変更(「改名した調査」)→ 削除(確認 1 回 → groups.json が空、表示中 200)→ 詳細ページに移って 9 秒後もサーバが生きている → ブラウザを閉じて 5.2 秒で終了し `.serve.json` が消える。サーバを止めると約 5 秒で帯が出て「グループを作成」が消える。file:// では作成の操作が無く案内の 1 行だけで、console にエラーは出ない。スクリーンショットは `.impeccable/critique/phase10-serve/`(コミットしない)。
+
+未実施: atlas.bat をダブルクリックして通す確認(ブラウザを開いて窓が残るため、非対話では確認できない。bat の変更は末尾の 1 行だけ)。impeccable の URL スキャンは puppeteer が無く未実施。
+
 ## 決めたこと・採らなかった案
 
 - Svelte 5 を採用(理由は開発体験。単一 HTML のサイズ差はデータ量に比べて誤差)。

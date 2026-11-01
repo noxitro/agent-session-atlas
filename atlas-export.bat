@@ -29,7 +29,7 @@ if errorlevel 1 goto :fail
 node packages\cli\src\main.ts export %*
 if errorlevel 1 goto :fail
 
-start "" "%~dp0out\atlas.html"
+node packages\cli\src\main.ts serve
 exit /b 0
 
 :fail

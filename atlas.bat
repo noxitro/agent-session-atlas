@@ -1,5 +1,6 @@
 @echo off
-rem Copilot Session Atlas: ~/.copilot を集計して out\atlas.html を作り、ブラウザで開く
+rem Copilot Session Atlas: ~/.copilot を集計して out\atlas.html を作り、ローカルサーバ(127.0.0.1)で開く
+rem この窓はブラウザを閉じるまで残ります(閉じるとサーバも止まります)。共有するときは out\atlas.html をそのまま渡せます
 rem 元データは書き換えません(out\snapshot に複製してから読みます)
 chcp 65001 >nul
 cd /d "%~dp0"
@@ -29,4 +30,4 @@ if errorlevel 1 (
   exit /b 1
 )
 
-start "" "%~dp0out\atlas.html"
+node packages\cli\src\main.ts serve %*

@@ -43,4 +43,4 @@ if errorlevel 1 (
   pause
 )
 
-if exist "%~dp0out\atlas.html" start "" "%~dp0out\atlas.html"
+if exist "%~dp0out\atlas.html" node packages\cli\src\main.ts serve

@@ -77,11 +77,6 @@ export function serializeGroups(groups: SessionGroup[]): string {
   return `${JSON.stringify(file, null, 2)}\n`;
 }
 
-/** 画面の「グループとして保存」が出す 1 件分の JSON 片(groups.json の groups に貼る形) */
-export function groupSnippet(ids: string[], name = '', note = ''): string {
-  return JSON.stringify({ name, note, ids: uniqueIds(ids) }, null, 2);
-}
-
 /**
  * 先頭一致で id を解決する。完全一致があればそれ、無ければ先頭一致が 1 つだけならそれ。
  * 複数に当たれば曖昧、どれにも当たらなければ未知としてエラーにする(黙って無視しない)。

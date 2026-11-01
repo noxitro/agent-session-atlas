@@ -36,6 +36,7 @@ import {
   type RunSummary,
 } from '../../judge/src/index.ts';
 import type { CliOptions, GroupCliOptions, JudgeCliOptions } from './args.ts';
+import { findRunningServer, openInBrowser, startServe } from './serve.ts';
 
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
@@ -438,6 +439,29 @@ export async function runGroup(p: Paths, g: GroupCliOptions, log: Log): Promise<
   }
 }
 
+/**
+ * atlas serve: 既に動いているサーバがあればブラウザを開くだけ。無ければ起動し、画面の heartbeat が途切れる(ブラウザを閉じる)まで待つ。
+ */
+export async function runServe(p: Paths, o: { port: number | null; open: boolean }, log: Log): Promise<string> {
+  if (!existsSync(p.html)) throw new Error(`${p.html} がありません。先に atlas build(または atlas all)を実行してください。`);
+  const running = await findRunningServer(p.out);
+  if (running) {
+    const url = `http://127.0.0.1:${running.port}/atlas.html`;
+    log(`serve: 既に動いているサーバがあります(${url})。ブラウザで開くだけにします`);
+    if (o.open) openInBrowser(url, log);
+    return '既存のサーバを使用';
+  }
+  const h = await startServe({ outDir: p.out, notesDir: p.notes, groupsPath: p.groups, port: o.port ?? 0, open: o.open, log });
+  const onSignal = (): void => void h.close('中断');
+  process.once('SIGINT', onSignal);
+  process.once('SIGTERM', onSignal);
+  const reason = await h.done;
+  process.off('SIGINT', onSignal);
+  process.off('SIGTERM', onSignal);
+  log(`serve: 終了(${reason})`);
+  return reason;
+}
+
 export async function run(o: CliOptions, log: Log): Promise<{ paths: Paths; build?: BuildResult; judge?: RunSummary | null }> {
   const p = resolvePaths(o);
   const f: SessionFilter = { since: o.since, project: o.project, client: o.client, model: o.model, branch: o.branch, group: o.group, sessions: o.sessions };
@@ -463,6 +487,9 @@ export async function run(o: CliOptions, log: Log): Promise<{ paths: Paths; buil
       return { paths: p, judge: await runJudgeCommand(p, o.judge!, log) };
     case 'group':
       await runGroup(p, o.groupCmd!, log);
+      return { paths: p };
+    case 'serve':
+      await runServe(p, { port: o.port, open: o.open }, log);
       return { paths: p };
     case 'all': {
       await runSnapshot(p, o.since, log);

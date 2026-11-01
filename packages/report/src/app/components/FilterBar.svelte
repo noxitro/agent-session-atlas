@@ -11,7 +11,10 @@
     emptyCount,
     lastDay,
     groups,
+    editable,
     onchange,
+    onrename,
+    ondelete,
   }: {
     filter: FilterState;
     options: { project: Option[]; client: Option[]; model: Option[]; branch: Option[]; taskCategory: Option[] };
@@ -22,7 +25,11 @@
     emptyCount: number;
     /** 最終記録日(YYYY-MM-DD、ローカル)。期間の簡易指定の基準 */
     lastDay: string | null;
+    /** atlas serve から開いていて、グループを書き換えられる */
+    editable: boolean;
     onchange: (patch: Partial<FilterState>) => void;
+    onrename: (oldName: string, name: string) => Promise<void>;
+    ondelete: (name: string) => Promise<void>;
   } = $props();
 
   type Group = ReportGroup & { presentIds: string[]; present: number };
@@ -62,6 +69,68 @@
       if (g) onchange({ ids: idsOf(g) });
     }
   }
+
+  // 選択中のグループの「名前の変更」(インライン編集)と「削除」(確認は 1 回、インライン)。ダイアログは出さない
+  let mode = $state<'none' | 'rename' | 'delete'>('none');
+  let newName = $state('');
+  let groupError = $state('');
+  let busy = $state(false);
+  let renameEl = $state<HTMLInputElement | null>(null);
+  let toolsEl = $state<HTMLElement | null>(null);
+  let groupSelectEl = $state<HTMLSelectElement | null>(null);
+  function openRename(): void {
+    newName = currentGroup?.name ?? '';
+    groupError = '';
+    mode = 'rename';
+    requestAnimationFrame(() => renameEl?.select());
+  }
+  function openDelete(): void {
+    groupError = '';
+    mode = 'delete';
+    // 初期フォーカスは「取消」(Enter の連打で消さない)。「削除する」は 1 つ右
+    requestAnimationFrame(() => toolsEl?.querySelector<HTMLButtonElement>('button[data-cancel]')?.focus());
+  }
+  function cancel(): void {
+    mode = 'none';
+    groupError = '';
+    requestAnimationFrame(() => toolsEl?.querySelector<HTMLButtonElement>('button')?.focus());
+  }
+  async function run(action: () => Promise<void>): Promise<void> {
+    if (busy) return;
+    busy = true;
+    groupError = '';
+    try {
+      await action();
+      mode = 'none';
+      // 済んだら「グループ」の欄へ(削除で欄ごと消えたときは絞り込み行の先頭へ)
+      requestAnimationFrame(() => (groupSelectEl ?? document.querySelector<HTMLElement>('.filterbar select'))?.focus());
+    } catch (e) {
+      groupError = (e as Error).message;
+      requestAnimationFrame(() => (renameEl ?? toolsEl?.querySelector<HTMLButtonElement>('button'))?.focus());
+    } finally {
+      busy = false;
+    }
+  }
+  function submitRename(e: SubmitEvent): void {
+    e.preventDefault();
+    const name = newName.trim();
+    if (!name) {
+      groupError = '名前を入れてください';
+      renameEl?.focus();
+      return;
+    }
+    if (name === currentGroup?.name) {
+      cancel();
+      return;
+    }
+    void run(() => onrename(currentGroup!.name, name));
+  }
+  // 別のグループに切り替えたら編集中の状態は捨てる
+  $effect(() => {
+    void currentGroup?.name;
+    mode = 'none';
+    groupError = '';
+  });
 </script>
 
   {#snippet select(key: 'project' | 'client' | 'model' | 'branch', title: string, opts: Option[], show: (v: string) => string = label)}
@@ -107,9 +176,11 @@
     {@render select('model', 'モデル', options.model, modelLabel)}
 
     {#if groups.length > 0 || filter.ids}
+      <!-- 欄と操作(名前の変更・削除)は 1 つの固まり(折り返しても離れない) -->
+      <div class="group-field">
       <label class="sel">
         <span class="k">グループ</span>
-        <select data-testid="group-select" value={currentGroup?.name ?? (filter.ids ? SELECTED : '')} onchange={(e) => pickGroup(e.currentTarget.value)}>
+        <select data-testid="group-select" bind:this={groupSelectEl} value={currentGroup?.name ?? (filter.ids ? SELECTED : '')} onchange={(e) => pickGroup(e.currentTarget.value)}>
           <option value="">すべて</option>
           {#if filter.ids && !currentGroup}<option value={SELECTED}>選んだ {int(selectedCount)} 件</option>{/if}
           {#each groups as g (g.name)}
@@ -118,6 +189,26 @@
         </select>
         {#if currentGroup}<span class="why">{int(currentGroup.ids.length)} 件{#if currentGroup.present !== currentGroup.ids.length}(うち記録にあるのは {int(currentGroup.present)} 件){/if}{#if currentGroup.note}。{currentGroup.note}{/if}</span>{/if}
       </label>
+      {#if currentGroup && editable}
+        <div class="group-tools" bind:this={toolsEl} data-testid="group-tools" aria-busy={busy}>
+          {#if mode === 'none'}
+            <button type="button" class="chip" onclick={openRename}>名前の変更</button>
+            <button type="button" class="chip" onclick={openDelete}>削除</button>
+          {:else if mode === 'rename'}
+            <form class="inline-form" onsubmit={submitRename}>
+              <label class="sel"><span class="k">新しい名前</span><input type="text" bind:this={renameEl} bind:value={newName} maxlength="100" readonly={busy} aria-invalid={groupError ? 'true' : undefined} aria-describedby={groupError ? 'group-error' : undefined} /></label>
+              <button type="submit" class="btn" aria-disabled={busy}>{busy ? '保存中…' : '保存'}</button>
+              <button type="button" class="btn" onclick={cancel} aria-disabled={busy}>取消</button>
+            </form>
+          {:else}
+            <span class="confirm">「{currentGroup.name}」を削除しますか(セッションは消えません)。</span>
+            <button type="button" class="btn" data-cancel onclick={cancel} aria-disabled={busy}>取消</button>
+            <button type="button" class="btn danger" data-confirm onclick={() => void run(() => ondelete(currentGroup!.name))} aria-disabled={busy}>{busy ? '削除中…' : '削除する'}</button>
+          {/if}
+          {#if groupError}<span class="err" id="group-error" role="alert">{groupError}</span>{/if}
+        </div>
+      {/if}
+      </div>
     {/if}
 
     {#if filter.tool}
@@ -308,6 +399,61 @@
     font-size: 0.6875rem;
     color: var(--ink-3);
     max-width: 32em;
+  }
+  /* グループの欄と操作(名前の変更・削除)は 1 つの固まり。操作は select の右に並び、編集中は入力欄に変わる */
+  .group-field {
+    display: flex;
+    align-items: flex-end;
+    gap: 6px 10px;
+    flex-wrap: wrap;
+    padding: 0 8px 0 0;
+    border-right: 1px solid var(--rule);
+  }
+  .group-tools {
+    display: flex;
+    align-items: flex-end;
+    gap: 6px;
+    flex-wrap: wrap;
+    align-self: flex-end;
+    padding-bottom: 1px;
+  }
+  .inline-form {
+    display: flex;
+    align-items: flex-end;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .inline-form input[type='text'] {
+    font: inherit;
+    font-size: 0.8125rem;
+    color: var(--ink);
+    background: var(--surface);
+    border: 1px solid var(--control);
+    border-radius: 0;
+    padding: 3px 6px;
+    height: 30px;
+    width: 14em;
+  }
+  .group-tools .btn {
+    padding: 3px 10px;
+    height: 30px;
+  }
+  .group-tools .btn.danger {
+    border-color: var(--warn);
+    color: var(--warn);
+  }
+  .group-tools .btn.danger:hover {
+    background: var(--warn-wash);
+  }
+  .confirm {
+    font-size: 0.8125rem;
+    color: var(--ink-2);
+    align-self: center;
+  }
+  .err {
+    flex: 1 1 100%;
+    font-size: 0.75rem;
+    color: var(--warn);
   }
   @media (max-width: 720px) {
     .sel,

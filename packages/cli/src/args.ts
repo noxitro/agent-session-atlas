@@ -1,7 +1,7 @@
 // atlas コマンドの引数解釈(純関数)
 import { parseArgs } from 'node:util';
 
-export const COMMANDS = ['snapshot', 'extract', 'metrics', 'build', 'export', 'all', 'bundle', 'judge', 'group'] as const;
+export const COMMANDS = ['snapshot', 'extract', 'metrics', 'build', 'export', 'all', 'bundle', 'judge', 'group', 'serve'] as const;
 export type Command = (typeof COMMANDS)[number];
 
 export const JUDGE_ACTIONS = ['run', 'import'] as const;
@@ -73,6 +73,10 @@ export interface CliOptions {
   maxChars: number | null;
   judge: JudgeCliOptions | null;
   groupCmd: GroupCliOptions | null;
+  /** serve: 固定するポート(null は空きポート) */
+  port: number | null;
+  /** serve: 起動後にブラウザを開く(--no-open で開かない) */
+  open: boolean;
   help: boolean;
 }
 
@@ -91,6 +95,7 @@ export const USAGE = `使い方: atlas <コマンド> [オプション]
              外部の LLM で作った判定(JSON か、JSON を含む Markdown)を検証して judgments.json に取り込む
   group list / group add <名前> <id...> [--note <一文>] / group remove <名前>
              名前付きグループ(<notes-dir>/groups.json)を一覧・追加(既存名なら id を追記)・削除する
+  serve      out/ を 127.0.0.1 だけに配信してブラウザで開く(画面からグループを作れる)。ブラウザを閉じると止まる
 
 オプション:
   --home <dir>       Copilot のデータの場所(既定: 環境変数 ATLAS_COPILOT_HOME、無ければ ~/.copilot)
@@ -114,6 +119,10 @@ export const USAGE = `使い方: atlas <コマンド> [オプション]
 export のオプション:
   --tool-output <v>  ツールの結果を記録に入れる条件: fail(既定、失敗したときだけ)/ all / none
   --max-chars <n>    依頼・応答・要約 1 件の上限(文字、既定 20000)。超えた分は中略して字数を書く
+
+serve のオプション:
+  --port <n>         ポートを固定する(既定は空きポートを自動で取る)
+  --no-open          起動後にブラウザを開かない
 
 judge run のオプション:
   --backend <name>   copilot-cli(既定、copilot -p)/ opencode / anthropic(従量課金、ANTHROPIC_API_KEY が必要)
@@ -169,6 +178,8 @@ export function parseCli(argv: string[]): CliOptions {
         force: { type: 'boolean', default: false },
         'allow-tools': { type: 'boolean', default: true },
         timeout: { type: 'string' },
+        port: { type: 'string' },
+        open: { type: 'boolean', default: true },
         help: { type: 'boolean', short: 'h', default: false },
       },
     });
@@ -228,6 +239,9 @@ export function parseCli(argv: string[]): CliOptions {
   if (!['fail', 'all', 'none'].includes(toolOutput)) throw new UsageError(`--tool-output は fail / all / none のどれかです: ${toolOutput}`);
   if ((values['tool-output'] != null || values['max-chars'] != null) && cmd !== 'export') throw new UsageError('--tool-output と --max-chars は export でだけ使えます');
   if (values.since != null && Number.isNaN(Date.parse(values.since))) throw new UsageError(`--since の日時を解釈できません: ${values.since}`);
+  if ((values.port != null || values.open === false) && cmd !== 'serve') throw new UsageError('--port と --no-open は serve でだけ使えます');
+  const port = posInt(values.port, '--port', 0);
+  if (port != null && port > 65535) throw new UsageError(`--port は 65535 以下です: ${port}`);
   const sessions = values.session ? values.session.flatMap((s) => s.split(',')).map((s) => s.trim()).filter(Boolean) : null;
   if (values.session != null && (!sessions || sessions.length === 0)) throw new UsageError('--session にセッション id を指定してください');
   if (values.group != null && !values.group.trim()) throw new UsageError('--group にグループ名を指定してください');
@@ -252,6 +266,8 @@ export function parseCli(argv: string[]): CliOptions {
     maxChars: posInt(values['max-chars'], '--max-chars', 200),
     judge,
     groupCmd,
+    port,
+    open: values.open ?? true,
     help: values.help ?? false,
   };
 }

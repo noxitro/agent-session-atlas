@@ -6,7 +6,7 @@ import { aggregate, coverageBreakdown, monthRange } from '../src/lib/aggregate.t
 import { createAnonymizer, identityAnonymizer, shortProjectLabel } from '../src/lib/anonymize.ts';
 import { embedData, extractEmbedded, serializeForScript } from '../src/lib/embed.ts';
 import { applyFilter, decodeFilter, emptyFilter, encodeFilter, filterOptions, isEmptyFilter, joinIds, NO_JUDGMENT, sameIds, splitIds, UNKNOWN } from '../src/lib/filter.ts';
-import { groupSnippet, parseGroups, resolveIdPrefixes, serializeGroups } from '../src/lib/groups.ts';
+import { parseGroups, resolveIdPrefixes, serializeGroups } from '../src/lib/groups.ts';
 import { parseJudgments } from '../src/lib/judgments.ts';
 import { niceTicks } from '../src/lib/scale.ts';
 import { modelLabel } from '../src/lib/format.ts';
@@ -202,7 +202,6 @@ describe('groups(atlas-notes/groups.json)', () => {
       { name: '空', note: '', ids: [] },
     ]);
     expect(serializeGroups(r.groups)).toBe(`${JSON.stringify({ version: 1, groups: r.groups }, null, 2)}\n`);
-    expect(JSON.parse(groupSnippet(['b', 'a', 'b']))).toEqual({ name: '', note: '', ids: ['b', 'a'] });
   });
 
   it('壊れた形はエラーにせず、読めた分だけ返して理由を残す(全体 / 1 件 / 重複名)', () => {

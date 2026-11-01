@@ -7,9 +7,11 @@
 //  d. ATLAS_LIVE=1 のとき実データで HTML を作り、サイズとプロジェクト数をログに出して 5MB 未満
 //  i. Phase 10: groups.json(--notes-dir)の --group / --session で件数が変わり、埋め込みデータにグループが入り、--anonymize で仮名になる。
 //     壊れたファイルは警告して無視する。atlas group add / list / remove でファイルを作って直せる
+//  j. Phase 10 第 2 段: atlas serve が out/ を配信し、API でグループを作成・改名・削除すると groups.json が書かれる。
+//     build 時の HTML は token のプレースホルダのままで、改定後の外部参照の検査(相対パス api/ への fetch だけ許す)を通る
 // ブラウザでのフィルタ操作はオーケストレータが組み込みブラウザで確認する(ここでは静的検証のみ。
 // フィルタのロジックは packages/report/test の単体テストで検証している)。
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, readdirSync } from 'node:fs';
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -33,10 +35,14 @@ function atlas(args: string[]): { status: number | null; stdout: string; stderr:
   return { status: r.status, stdout: r.stdout, stderr: r.stderr, ms: performance.now() - t };
 }
 
-/** 外部参照の静的検査 */
+/**
+ * 外部参照の静的検査。Phase 10 第 2 段から、同一オリジンの相対パス api/…(詳細ページは ../api/…)への fetch だけは許す
+ * (atlas serve の API。file:// では token が無いので呼ばれない)。http(s) への参照は従来どおり禁止
+ */
 function externalRefs(html: string): string[] {
   const found: string[] = [];
-  for (const needle of ['http://', 'https://', 'fetch(']) if (html.includes(needle)) found.push(needle);
+  for (const needle of ['http://', 'https://']) if (html.includes(needle)) found.push(needle);
+  for (const m of html.matchAll(/fetch\(/g)) if (!/^fetch\(\s*["'`](?:\.\.\/)?api\//.test(html.slice(m.index, m.index + 40))) found.push(`fetch( at ${m.index}`);
   // 念のため構造的にも: 外部の src / href / @import / url() が無い
   if (/<link\b/i.test(html)) found.push('<link>');
   if (/\bsrc=["'](?!data:)[^"']+["']/i.test(html.replace(/<script type="application\/json"[\s\S]*?<\/script>/g, ''))) found.push('src=');
@@ -333,6 +339,66 @@ describe('Phase 2 E2E: fixtures', () => {
     const back = atlas(['build', '--out', out]);
     expect(back.status, back.stderr).toBe(0);
     expect((await read()).groups).toEqual([]);
+  });
+
+  it('j. Phase 10 第 2 段: atlas serve の API でグループを作成・改名・削除でき、groups.json に書かれる。静的 HTML は token のプレースホルダのまま', async () => {
+    // build 時の HTML: 3 画面とも token のプレースホルダ付きの meta を持ち、fetch は相対パス api/ だけ(externalRefs は a. で全ページを見ている)
+    expect(html).toContain('<meta name="atlas-token" content="__ATLAS_TOKEN__"');
+    expect(await readFile(join(out, 'glossary.html'), 'utf8')).toContain('content="__ATLAS_TOKEN__"');
+    expect(await readFile(join(out, 'sessions', `${data.sessions[0].id}.html`), 'utf8')).toContain('content="__ATLAS_TOKEN__"');
+    expect(html).toMatch(/fetch\("api\/heartbeat"/);
+
+    const notes = join(WORK, 'notes-serve');
+    await rm(notes, { recursive: true, force: true });
+    const child = spawn(process.execPath, [CLI, 'serve', '--out', out, '--notes-dir', notes, '--no-open'], { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    child.stdout.on('data', (d) => (stdout += String(d)));
+    let stderr = '';
+    child.stderr.on('data', (d) => (stderr += String(d)));
+    const url = await new Promise<string>((ok, ng) => {
+      const t = setTimeout(() => ng(new Error(`serve が起動しない: ${stdout}\n${stderr}`)), 30_000);
+      const tick = (): void => {
+        const m = /serve: (http:\/\/127\.0\.0\.1:\d+\/atlas\.html)/.exec(stdout);
+        if (m) {
+          clearTimeout(t);
+          ok(m[1]);
+        } else setTimeout(tick, 50);
+      };
+      tick();
+    });
+    const base = url.replace(/\/atlas\.html$/, '');
+    try {
+      // 配信された atlas.html には token が入り、.serve.json がある
+      const served = await (await fetch(url)).text();
+      const token = /<meta name="atlas-token" content="([^"]+)"/.exec(served)![1];
+      expect(token).not.toBe('__ATLAS_TOKEN__');
+      expect(JSON.parse(await readFile(join(out, '.serve.json'), 'utf8'))).toMatchObject({ pid: child.pid });
+      const jf = async (path: string, init: RequestInit = {}): Promise<{ status: number; body: any }> => {
+        const r = await fetch(base + path, { ...init, headers: { 'content-type': 'application/json', 'x-atlas-token': token, ...(init.headers ?? {}) } });
+        const t = await r.text();
+        return { status: r.status, body: t ? JSON.parse(t) : null };
+      };
+      expect((await jf('/api/state')).body).toMatchObject({ groups: [], exists: false });
+      const ids = data.sessions.slice(0, 2).map((s) => s.id);
+      const c = await jf('/api/groups', { method: 'POST', body: JSON.stringify({ name: '画面から', note: 'serve 経由', ids }) });
+      expect(c.status).toBe(201);
+      expect(JSON.parse(await readFile(join(notes, 'groups.json'), 'utf8'))).toEqual({ version: 1, groups: [{ name: '画面から', note: 'serve 経由', ids }] });
+      expect((await jf('/api/state')).body.groups).toEqual([{ name: '画面から', note: 'serve 経由', ids }]);
+      expect((await jf('/api/groups/' + encodeURIComponent('画面から'), { method: 'PUT', body: JSON.stringify({ name: '改名' }) })).status).toBe(200);
+      expect((await jf('/api/groups/' + encodeURIComponent('改名'), { method: 'DELETE' })).status).toBe(200);
+      expect(JSON.parse(await readFile(join(notes, 'groups.json'), 'utf8'))).toEqual({ version: 1, groups: [] });
+      // CLI の --group も同じファイルを読む(無い名前はエラー)
+      expect(atlas(['build', '--out', out, '--notes-dir', notes, '--group', '改名']).status).toBe(1);
+      // 二重起動: 既に動いていればブラウザを開くだけで終わる
+      const again = atlas(['serve', '--out', out, '--notes-dir', notes, '--no-open']);
+      expect(again.status, again.stderr).toBe(0);
+      expect(again.stdout).toMatch(/既に動いているサーバがあります/);
+    } finally {
+      child.kill();
+      await new Promise((r) => child.once('exit', r));
+    }
+    await rm(join(out, '.serve.json'), { force: true });
+    // out/ を元に戻す(最後の build は --group でエラーになったので out は変わっていない)
   });
 
   it('judgments.json があれば推定工数が埋め込まれる(Phase 3 の口)', async () => {

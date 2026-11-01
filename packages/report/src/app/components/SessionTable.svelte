@@ -2,7 +2,6 @@
   import { frictionTotal } from '../../lib/aggregate.ts';
   import { sessionTime } from '../../lib/filter.ts';
   import { dateTime, dec, duration, int, modelLabel, truncate } from '../../lib/format.ts';
-  import { groupSnippet } from '../../lib/groups.ts';
   import type { SessionSummary } from '../../lib/types.ts';
   import SortMark from './SortMark.svelte';
   import { categoryLabel, confidenceLabel } from '../../lib/judgment-labels.ts';
@@ -13,9 +12,11 @@
     anonymized,
     selected,
     idsActive,
+    editable,
     onselect,
     onapply,
     onclear,
+    oncreate,
   }: {
     sessions: SessionSummary[];
     judged: boolean;
@@ -29,6 +30,10 @@
     onapply: () => void;
     /** 選択を外す(集計中ならその条件も外す) */
     onclear: () => void;
+    /** atlas serve から開いていて、グループを作れる */
+    editable: boolean;
+    /** 選んだセッションでグループを作る(失敗は例外。理由を入力欄の下に出す) */
+    oncreate: (name: string, note: string) => Promise<void>;
   } = $props();
 
   type Key = 'time' | 'turns' | 'input' | 'output' | 'tools' | 'lines' | 'friction' | 'active' | 'human';
@@ -93,31 +98,53 @@
     onselect(next);
   }
 
-  // --- 「グループとして保存」: HTML からファイルは書けないので、groups.json に貼る JSON 片を渡す ---
-  let saveOpen = $state(false);
-  let saveNote = $state('');
-  let snippetEl = $state<HTMLTextAreaElement | null>(null);
-  let saveBtn = $state<HTMLButtonElement | null>(null);
-  const selectedIds = $derived(sessions.filter((s) => selected.has(s.id)).map((s) => s.id).concat([...selected].filter((id) => !sessions.some((s) => s.id === id))));
-  /** 貼る JSON(開いている間にチェックを変えても今の選択に追従する) */
-  const snippet = $derived(groupSnippet(selectedIds));
-  /** コマンドの例(省略せず全 id。README の起動方法と同じ npm run atlas -- の形) */
-  const exampleCmd = $derived(`npm run atlas -- group add <名前> ${selectedIds.join(' ')}`);
-  async function save(): Promise<void> {
-    saveOpen = true;
-    try {
-      if (!navigator.clipboard) throw new Error('clipboard API なし');
-      await navigator.clipboard.writeText(snippet);
-      saveNote = `${int(selectedIds.length)} 件の id をクリップボードにコピーしました。下の欄にも同じものを出しています。`;
-    } catch {
-      saveNote = 'この環境ではクリップボードに書けないため、下の欄から選んでコピーしてください。';
+  // --- 「グループを作成」: 名前と一文の入力欄をインラインで開き、作成を押すと API で保存される(ダイアログは出さない) ---
+  let createOpen = $state(false);
+  let newName = $state('');
+  let newNote = $state('');
+  let createError = $state('');
+  let busy = $state(false);
+  let nameEl = $state<HTMLInputElement | null>(null);
+  let createBtn = $state<HTMLButtonElement | null>(null);
+  function openCreate(): void {
+    createError = '';
+    createOpen = true;
+    requestAnimationFrame(() => nameEl?.focus());
+  }
+  function cancelCreate(): void {
+    createOpen = false;
+    createError = '';
+    requestAnimationFrame(() => createBtn?.focus());
+  }
+  async function submitCreate(e: SubmitEvent): Promise<void> {
+    e.preventDefault();
+    if (busy) return;
+    const name = newName.trim();
+    if (!name) {
+      // 空でも送れる(無効にしない)。理由を入力欄の下に出して戻す
+      createError = '名前を入れてください';
+      nameEl?.focus();
+      return;
     }
-    requestAnimationFrame(() => snippetEl?.focus());
+    busy = true;
+    createError = '';
+    try {
+      await oncreate(name, newNote.trim());
+      createOpen = false;
+      newName = '';
+      newNote = '';
+      requestAnimationFrame(() => createBtn?.focus());
+    } catch (err) {
+      createError = (err as Error).message;
+      requestAnimationFrame(() => nameEl?.focus());
+    } finally {
+      busy = false;
+    }
   }
-  function closeSave(): void {
-    saveOpen = false;
-    requestAnimationFrame(() => saveBtn?.focus());
-  }
+  // サーバが止まったら(editable が外れたら)開いていた入力欄も閉じる
+  $effect(() => {
+    if (!editable) createOpen = false;
+  });
 </script>
 
 <section class="section" id="sessions" aria-labelledby="sessions-h">
@@ -133,29 +160,30 @@
   <div class="select-bar" role="group" aria-label="セッションの選択">
     <p class="sel-count">
       <span aria-live="polite" aria-atomic="true"><strong data-testid="selected-count">{int(selected.size)}</strong> 件を選択中</span>{#if idsActive}<span class="tag on">この選択で集計中</span>{/if}
-      {#if selected.size === 0}<span class="why">左端の欄にチェックを付けると、そのセッションだけで集計し直したり、名前付きグループとして保存できます。</span>{/if}
+      {#if selected.size === 0}<span class="why">左端の欄にチェックを付けると、そのセッションだけで集計し直したり、名前付きグループにできます。</span>{/if}
     </p>
     <div class="sel-actions">
       <button type="button" class="btn" data-testid="apply-selection" disabled={selected.size === 0} onclick={onapply}>選んだ {int(selected.size)} 件だけ集計</button>
       <!-- 選択で集計中は 0 件でも押せる(記録に無い id だけのグループを選んだときに条件を外す手段を残す) -->
       <button type="button" class="btn" disabled={selected.size === 0 && !idsActive} onclick={onclear}>選択を解除</button>
-      <button type="button" class="btn" data-testid="save-group" bind:this={saveBtn} disabled={selected.size === 0} onclick={save}>グループとして保存</button>
+      {#if editable}
+        <button type="button" class="btn" data-testid="create-group" bind:this={createBtn} disabled={selected.size === 0 || createOpen} onclick={openCreate}>グループを作成</button>
+      {:else if !anonymized}
+        <span class="how">このファイルは閲覧用です。グループの作成は atlas.bat から開いたときにできます</span>
+      {/if}
     </div>
   </div>
-  {#if saveOpen}
-    <div class="save-box" id="group-snippet" role="region" aria-label="グループの保存">
-      <p class="save-note" role="status">{saveNote}</p>
-      <label class="snippet-field">
-        <span class="k">groups.json に貼る JSON({int(selectedIds.length)} 件。チェックを変えると追従します)</span>
-        <textarea class="snippet" readonly rows={Math.min(16, selectedIds.length + 6)} bind:this={snippetEl} onfocus={(e) => e.currentTarget.select()}>{snippet}</textarea>
-      </label>
-      <p class="save-how">
-        <code>atlas-notes/groups.json</code> の <code>"groups"</code> の配列に貼り(既にグループがあれば、前の要素の後ろに <code>,</code> を付けて続けます)、<code>"name"</code> に名前を入れてください。ファイルが無ければ
-        <code>{'{ "version": 1, "groups": [ … ] }'}</code> の形で作ります。コマンドなら、このリポジトリで <code>{exampleCmd}</code> を実行します(既にある名前なら id を追記します)。保存したグループは次の
-        <code>npm run atlas -- build</code> で絞り込み行の「グループ」に出ます。
-      </p>
-      <button type="button" class="btn" onclick={closeSave}>閉じる</button>
-    </div>
+  {#if createOpen && editable}
+    <form class="create-box" data-testid="create-form" aria-label="グループの作成" aria-busy={busy} onsubmit={submitCreate}>
+      <p class="create-lead">選んだ {int(selected.size)} 件を名前付きグループにします(atlas-notes/groups.json に保存され、絞り込み行の「グループ」から選べます)。</p>
+      <div class="create-row">
+        <label class="fld"><span class="k">名前</span><input type="text" bind:this={nameEl} bind:value={newName} maxlength="100" readonly={busy} aria-invalid={createError ? 'true' : undefined} aria-describedby={createError ? 'create-error' : undefined} placeholder="例: 11 月の調査" /></label>
+        <label class="fld wide"><span class="k">一文(任意)</span><input type="text" bind:value={newNote} maxlength="200" readonly={busy} placeholder="何のグループか" /></label>
+        <button type="submit" class="btn" aria-disabled={busy}>{busy ? '作成中…' : '作成'}</button>
+        <button type="button" class="btn" onclick={cancelCreate} aria-disabled={busy}>取消</button>
+      </div>
+      {#if createError}<p class="err" id="create-error" role="alert">{createError}</p>{/if}
+    </form>
   {/if}
 
   {#if sessions.length > 0}
@@ -358,51 +386,61 @@
     background: var(--form-wash);
   }
 
-  /* グループとして保存: 貼る JSON と手順 */
-  .save-box {
+  .how {
+    font-size: 0.75rem;
+    color: var(--ink-3);
+    align-self: center;
+  }
+
+  /* グループを作成: 名前と一文をインラインで(帳票の記入欄と同じ 1px の枠) */
+  .create-box {
     margin-top: 8px;
     padding: 10px 12px;
     border: 1px solid var(--form);
     background: var(--surface);
-    display: grid;
-    gap: 8px;
-    justify-items: start;
   }
-  .save-note {
-    margin: 0;
+  .create-lead {
+    margin: 0 0 8px;
     font-size: 0.8125rem;
-    color: var(--ink);
+    color: var(--ink-2);
   }
-  .snippet-field {
+  .create-row {
+    display: flex;
+    align-items: flex-end;
+    gap: 6px 12px;
+    flex-wrap: wrap;
+  }
+  .fld {
     display: block;
-    width: 100%;
-    max-width: 64ch;
   }
-  .snippet-field .k {
+  .fld .k {
     display: block;
     font-size: 0.6875rem;
     color: var(--form);
     margin-bottom: 2px;
   }
-  .snippet {
-    width: 100%;
-    font: 0.75rem/1.5 ui-monospace, Consolas, 'Courier New', monospace;
+  .fld input {
+    font: inherit;
+    font-size: 0.8125rem;
     color: var(--ink);
-    background: var(--form-wash);
+    background: var(--surface);
     border: 1px solid var(--control);
     border-radius: 0;
-    padding: 6px 8px;
-    resize: vertical;
+    padding: 3px 6px;
+    height: 30px;
+    width: 16em;
+    max-width: 100%;
   }
-  .save-how {
-    margin: 0;
-    font-size: 0.8125rem;
-    color: var(--ink-2);
-    max-width: 90ch;
+  .fld.wide input {
+    width: 28em;
   }
-  .save-how code {
+  .create-row .btn {
+    height: 30px;
+    padding: 3px 12px;
+  }
+  .err {
+    margin: 6px 0 0;
     font-size: 0.75rem;
-    background: var(--form-wash);
-    padding: 0 3px;
+    color: var(--warn);
   }
 </style>
