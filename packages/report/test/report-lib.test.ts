@@ -5,7 +5,7 @@ import type { SessionRecord } from '../../core/src/types.ts';
 import { aggregate, coverageBreakdown, monthRange } from '../src/lib/aggregate.ts';
 import { createAnonymizer, identityAnonymizer, shortProjectLabel } from '../src/lib/anonymize.ts';
 import { embedData, extractEmbedded, serializeForScript } from '../src/lib/embed.ts';
-import { applyFilter, decodeFilter, effectiveIds, emptyFilter, encodeFilter, filterOptions, groupIds, isEmptyFilter, joinIds, NO_JUDGMENT, NO_SESSION, sameIds, splitIds, UNKNOWN } from '../src/lib/filter.ts';
+import { applyFilter, currentGroupName, decodeFilter, effectiveIds, emptyFilter, encodeFilter, filterOptions, groupIds, isEmptyFilter, joinIds, knownSelection, NO_JUDGMENT, NO_SESSION, sameIds, splitIds, UNKNOWN } from '../src/lib/filter.ts';
 import { addIds, parseGroups, removeIds, resolveIdPrefixes, serializeGroups } from '../src/lib/groups.ts';
 import { parseJudgments } from '../src/lib/judgments.ts';
 import { niceTicks } from '../src/lib/scale.ts';
@@ -215,6 +215,39 @@ describe('filter', () => {
     expect(groupIds(groups[2], known)).toBe('zzz');
     expect(applyFilter(s, { ...emptyFilter(), ids: NO_SESSION })).toEqual([]);
     expect(applyFilter(s, { ...emptyFilter(), group: '空', ids: effectiveIds({ ids: '', group: '空' }, groups, known).ids })).toEqual([]);
+  });
+
+  it('Phase 10 第 3 段(見直し): 記号を含む名前の往復、NO_SESSION を含む ids、現在のグループ名の fallback、記録にある選択', async () => {
+    const s = summaries(await fixture());
+    const known = new Set(s.map((x) => x.id));
+    for (const name of ['a&b', 'x=y', '100%', '#1', 'p,q', 'c+d', '& = % # , +']) {
+      const f = { ...emptyFilter(), group: name, ids: 'a' };
+      const h = encodeFilter(f);
+      expect(decodeFilter(`#${h}`)).toEqual(f);
+      // 他のキーを壊さない(& と = はエスケープされる)
+      expect(decodeFilter(`#${h}&project=p`)).toEqual({ ...f, project: 'p' });
+    }
+    // 受け取った ids に NO_SESSION や未知の id が混じっても壊れず、一覧の選択には写さない
+    expect(decodeFilter(`#ids=a,${NO_SESSION},zzz`).ids).toBe(`a,${NO_SESSION},zzz`);
+    expect(applyFilter(s, { ...emptyFilter(), ids: `a,${NO_SESSION},zzz` }).map((x) => x.id)).toEqual(['a']);
+    expect([...knownSelection(`a,${NO_SESSION},zzz,b`, known)]).toEqual(['a', 'b']);
+    expect(knownSelection('', known).size).toBe(0);
+    // 現在のグループ名: 名前 → ids の一致 → 0 件(NO_SESSION)や同じ集合が複数のときは null
+    const groups = [
+      { name: 'A', ids: [] },
+      { name: 'B', ids: [] },
+      { name: 'C', ids: ['a', 'b'] },
+      { name: 'D', ids: ['b', 'a', 'zzz'] },
+      { name: 'E', ids: ['c'] },
+    ];
+    expect(currentGroupName({ ids: 'c', group: 'E' }, groups, known)).toBe('E');
+    expect(currentGroupName({ ids: 'c', group: '' }, groups, known)).toBe('E');
+    expect(currentGroupName({ ids: 'c', group: '相手に無い' }, groups, known)).toBe('E');
+    expect(currentGroupName({ ids: NO_SESSION, group: '' }, groups, known)).toBeNull();
+    expect(currentGroupName({ ids: NO_SESSION, group: 'B' }, groups, known)).toBe('B');
+    expect(currentGroupName({ ids: 'a,b', group: '' }, groups, known)).toBeNull();
+    expect(currentGroupName({ ids: 'a,b', group: 'D' }, groups, known)).toBe('D');
+    expect(currentGroupName({ ids: '', group: '' }, groups, known)).toBeNull();
   });
 });
 

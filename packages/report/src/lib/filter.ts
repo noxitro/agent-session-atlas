@@ -51,6 +51,23 @@ export function effectiveIds<G extends { name: string; ids: string[] }>(f: Pick<
   return { group: g, ids: groupIds(g, known) };
 }
 
+/**
+ * 現在のグループ名。名前で決まればそれ。決まらないとき(伏せ字版は名前を hash に出さない、相手に無い名前)は ids の一致で探すが、
+ * NO_SESSION(0 件のグループは全て同じ ids になる)や、同じ集合のグループが 2 つ以上あるときは決めない(null)
+ */
+export function currentGroupName<G extends { name: string; ids: string[] }>(f: Pick<FilterState, 'ids' | 'group'>, groups: G[], known: Set<string>): string | null {
+  const e = effectiveIds(f, groups, known);
+  if (e.group) return e.group.name;
+  if (!f.ids || f.ids === NO_SESSION) return null;
+  const hits = groups.filter((g) => sameIds(f.ids, groupIds(g, known)));
+  return hits.length === 1 ? hits[0].name : null;
+}
+
+/** 一覧のチェックに写す選択: ids のうち記録にあるものだけ(共有された URL の未知の id や NO_SESSION は入れない) */
+export function knownSelection(ids: string, known: Set<string>): Set<string> {
+  return new Set(splitIds(ids).filter((id) => known.has(id)));
+}
+
 /** どのセッションにも当たらない id(0 件のグループを「制限なし」('')と区別する) */
 export const NO_SESSION = '(none)';
 /** グループの絞り込みに使う ids: 記録にある id、無ければ元の ids、それも無ければ NO_SESSION(= 0 件) */

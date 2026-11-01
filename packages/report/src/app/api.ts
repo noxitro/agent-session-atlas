@@ -44,7 +44,12 @@ export const api = {
   create(token: string, g: ReportGroup): Promise<{ group: ReportGroup; groups: ReportGroup[] }> {
     return connect(fetch('api/groups', { method: 'POST', headers: headers(token), body: JSON.stringify(g) }), (r) => parse(r));
   },
-  update(token: string, name: string, patch: Partial<ReportGroup>): Promise<{ group: ReportGroup; groups: ReportGroup[] }> {
+  /** patch は name / note / ids の全置換か、add / remove の差分(サーバが最新の ids に適用する。ids とは同時に使えない) */
+  update(
+    token: string,
+    name: string,
+    patch: Partial<ReportGroup> & { add?: string[]; remove?: string[] },
+  ): Promise<{ group: ReportGroup; groups: ReportGroup[]; added: number; dup: number; removed: number }> {
     return connect(fetch('api/groups/' + encodeURIComponent(name), { method: 'PUT', headers: headers(token), body: JSON.stringify(patch) }), (r) => parse(r));
   },
   remove(token: string, name: string): Promise<{ groups: ReportGroup[] }> {

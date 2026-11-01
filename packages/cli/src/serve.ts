@@ -7,7 +7,7 @@ import { readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { extname, join, resolve, sep } from 'node:path';
 import { spawn } from 'node:child_process';
-import { extractEmbedded, loadGroups, loadGroupsForWrite, saveGroups, uniqueIds, type ReportData, type SessionGroup } from '../../report/src/index.ts';
+import { addIds, extractEmbedded, loadGroups, loadGroupsForWrite, removeIds, saveGroups, uniqueIds, type ReportData, type SessionGroup } from '../../report/src/index.ts';
 
 export const TOKEN_PLACEHOLDER = '__ATLAS_TOKEN__';
 export const SERVE_STATE_FILE = '.serve.json';
@@ -82,6 +82,21 @@ async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknow
   } catch (e) {
     throw new HttpError(400, `JSON を読めません: ${(e as Error).message}`);
   }
+}
+
+const idList = (v: unknown, key: string): string[] => {
+  if (!Array.isArray(v) || !v.every((x) => typeof x === 'string')) throw new HttpError(400, `${key} は文字列の配列です`);
+  return uniqueIds(v as string[]);
+};
+
+/**
+ * PUT の差分: { add, remove }。ids(全置換)と同時には使えない(400)。
+ * 画面は差分だけを送り、サーバが読み直した最新の ids に適用する(画面を開いたまま CLI で足した id が消えない)
+ */
+function deltaInput(body: Record<string, unknown>): { add: string[]; remove: string[] } | null {
+  if (body.add === undefined && body.remove === undefined) return null;
+  if (body.ids !== undefined) throw new HttpError(400, 'ids と add / remove は同時に指定できません');
+  return { add: body.add === undefined ? [] : idList(body.add, 'add'), remove: body.remove === undefined ? [] : idList(body.remove, 'remove') };
 }
 
 function groupInput(body: Record<string, unknown>, partial: boolean): Partial<SessionGroup> {
@@ -227,14 +242,27 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     }
     if (method === 'PUT' && target != null) {
       checkToken(req);
-      const input = groupInput(await readJsonBody(req), true);
+      const body = await readJsonBody(req);
+      const delta = deltaInput(body);
+      const input = groupInput(body, true);
       const groups = await loadForWrite();
       const cur = groups.find((g) => g.name === target);
       if (!cur) throw new HttpError(404, `グループ「${target}」はありません`);
       if (input.name != null && input.name !== cur.name && groups.some((g) => g.name === input.name)) throw new HttpError(409, `グループ「${input.name}」は既にあります`);
       Object.assign(cur, input);
+      let added = 0;
+      let dup = 0;
+      let removed = 0;
+      if (delta) {
+        const a = addIds(cur, delta.add);
+        added = a.added;
+        dup = a.dup;
+        const r = removeIds(a.group, delta.remove);
+        removed = r.removed;
+        cur.ids = r.group.ids;
+      }
       await saveGroups(groupsPath, groups);
-      sendJson(res, 200, { group: cur, groups });
+      sendJson(res, 200, { group: cur, groups, added, dup, removed });
       return;
     }
     if (method === 'DELETE' && target != null) {

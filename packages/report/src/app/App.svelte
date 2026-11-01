@@ -1,7 +1,6 @@
 <script lang="ts">
   import { aggregate } from '../lib/aggregate.ts';
-  import { applyFilter, decodeFilter, decodeView, effectiveIds, emptyFilter, encodeFilter, filterOptions, groupIds, inScope, isEmptyFilter, isStateHash, joinIds, sameIds, splitIds, type FilterState } from '../lib/filter.ts';
-  import { addIds, removeIds } from '../lib/groups.ts';
+  import { applyFilter, currentGroupName, decodeFilter, decodeView, effectiveIds, emptyFilter, encodeFilter, filterOptions, groupIds, inScope, isEmptyFilter, isStateHash, joinIds, knownSelection, type FilterState } from '../lib/filter.ts';
   import GroupRail from './components/GroupRail.svelte';
   import { highlights } from '../lib/highlights.ts';
   import { date, dateTime, int } from '../lib/format.ts';
@@ -106,10 +105,12 @@
   // filter.ids が変わったとき(「集計」、グループの選択、ハッシュから開いた、戻る)は選択を ids に揃える = 絞り込み中の一覧は全てチェック済みで出る
   let selected = $state<Set<string>>(new Set());
   const knownIds = $derived(new Set(sessions.map((s) => s.id)));
+  // 依存は ids の文字列だけ(eff はグループの一覧が変わるたびに新しいオブジェクトになるが、文字列が同じなら走らない = 外したチェックが戻らない)
+  const effIds = $derived.by(() => eff.ids);
   $effect(() => {
-    const ids = eff.ids;
+    const ids = effIds;
     // 記録に無い id(共有された URL やグループの ids に混じるもの)は選択に入れない(件数を記録どおりにする)
-    if (ids) selected = new Set(splitIds(ids).filter((id) => knownIds.has(id)));
+    if (ids) selected = knownSelection(ids, knownIds);
   });
   /** チェックしたものだけで集計する(他の条件と AND)。グループの選択は外れる(名前の一致で現在のグループになることはある) */
   function applySelection(): void {
@@ -156,11 +157,16 @@
   );
   /** group(名前)→ 今のグループの ids、無ければ ids(共有した相手にその名前が無くても壊れない) */
   const eff = $derived(effectiveIds(filter, groupOptions, knownIds));
-  /** 現在のグループ名。名前で決まらないとき(伏せ字版は名前を hash に出さない、相手に無い名前)は ids の一致で探す */
-  const currentName = $derived.by(() => {
-    if (eff.group) return eff.group.name;
-    if (!filter.ids) return null;
-    return groupOptions.find((g) => sameIds(filter.ids, groupIds(g, knownIds)))?.name ?? null;
+  /** 現在のグループ名(名前で決まらないときは ids の一致。0 件のグループや同じ集合が複数あるときは決めない) */
+  const currentName = $derived(currentGroupName(filter, groupOptions, knownIds));
+  /** 一覧のチェックから集計しているときの件数(記録にある id だけ。グループで絞り込み中は 0) */
+  const adhocCount = $derived(currentName ? 0 : knownSelection(eff.ids, knownIds).size);
+  const groupKey = (name: string): string => (data?.anonymized ? '' : name);
+  // #group=X だけが残ったとき(手で編集した hash、相手に無い名前): あればその ids を補い、無ければ(グループの一覧が揃ってから)捨てる
+  $effect(() => {
+    if (!filter.group || filter.ids) return;
+    if (eff.group) setFilter({ ids: groupIds(eff.group, knownIds) });
+    else if (liveGroups !== null || !token) setFilter({ group: '' });
   });
   /** グループを選ぶ(null で「すべて」)。名前と、その時点の ids の両方を hash に書く。伏せ字版では名前を出さない */
   function pickGroup(name: string | null): void {
@@ -169,14 +175,14 @@
       return;
     }
     const g = groupOptions.find((x) => x.name === name);
-    if (g) setFilter({ ids: groupIds(g, knownIds), group: data?.anonymized ? '' : name });
+    if (g) setFilter({ ids: groupIds(g, knownIds), group: groupKey(name) });
   }
   const selectedKnown = (): string[] => sessions.filter((s) => selected.has(s.id)).map((s) => s.id);
   /** 選んだセッションで新しいグループを作り、そのグループで絞り込む(失敗は呼び元が入力欄の下に出す) */
   async function createGroup(name: string, note: string): Promise<void> {
     const r = await api.create(token!, { name, note, ids: selectedKnown() });
     liveGroups = r.groups;
-    setFilter({ ids: groupIds(r.group, knownIds), group: name });
+    setFilter({ ids: groupIds(r.group, knownIds), group: groupKey(name) });
   }
   async function renameGroup(oldName: string, name: string): Promise<void> {
     const r = await api.update(token!, oldName, { name });
@@ -192,31 +198,24 @@
     liveGroups = r.groups;
     if (currentName === name) setFilter({ ids: '', group: '' });
   }
-  /** 選んだセッションを既存のグループに足す(重複は足さない)。絞り込みは変えず、結果の一文を返す */
+  /**
+   * 選んだセッションを既存のグループに足す。差分(add)だけを送り、サーバが最新の ids に適用する(画面を開いたまま CLI で足した id が消えない)。
+   * 件数とグループの一覧はサーバの応答から。絞り込みは変えない(現在のグループに足したときだけ ids を追従させる)
+   */
   async function addToGroup(name: string): Promise<string> {
-    const g = (liveGroups ?? []).find((x) => x.name === name);
-    if (!g) throw new Error(`グループ「${name}」はありません(再読み込みしてください)`);
-    const picked = selectedKnown();
-    const r = addIds(g, picked);
-    if (r.added > 0) {
-      const res = await api.update(token!, name, { ids: r.group.ids });
-      liveGroups = res.groups;
-      if (currentName === name) setFilter({ ids: groupIds(res.group, knownIds) });
-    }
-    return `${int(r.added)} 件を「${name}」に追加しました${r.dup ? `(既に入っていた ${int(r.dup)} 件を除く)` : ''}`;
+    const res = await api.update(token!, name, { add: selectedKnown() });
+    liveGroups = res.groups;
+    if (currentName === name) setFilter({ ids: groupIds(res.group, knownIds), group: groupKey(name) });
+    return `${int(res.added)} 件を「${name}」に追加しました${res.dup ? `(既に入っていた ${int(res.dup)} 件を除く)` : ''}`;
   }
-  /** 選んだセッションを現在のグループから外す(0 件になっても消さない) */
+  /** 選んだセッションを現在のグループから外す(差分 remove を送る。0 件になっても消さない) */
   async function removeFromGroup(): Promise<string> {
     const name = currentName;
-    const g = name ? (liveGroups ?? []).find((x) => x.name === name) : null;
-    if (!g) throw new Error('グループで絞り込んでいるときだけ外せます');
-    const r = removeIds(g, selectedKnown());
-    if (r.removed > 0) {
-      const res = await api.update(token!, g.name, { ids: r.group.ids });
-      liveGroups = res.groups;
-      setFilter({ ids: groupIds(res.group, knownIds) });
-    }
-    return `${int(r.removed)} 件を「${g.name}」から外しました${r.group.ids.length === 0 ? '(グループは 0 件のまま残ります)' : ''}`;
+    if (!name) throw new Error('グループで絞り込んでいるときだけ外せます');
+    const res = await api.update(token!, name, { remove: selectedKnown() });
+    liveGroups = res.groups;
+    setFilter({ ids: groupIds(res.group, knownIds), group: groupKey(name) });
+    return `${int(res.removed)} 件を「${name}」から外しました${res.group.ids.length === 0 ? '(グループは 0 件のまま残ります)' : ''}`;
   }
   // 狭い幅(1280px 未満)では目次行の「グループ」から一覧を開く。外を押す / Esc で閉じ、焦点はボタンに戻す
   let groupsOpen = $state(false);
@@ -423,11 +422,11 @@
         <!-- サイドバー(1280px 以上)の「グループ」の群。狭い幅では目次行の「グループ」から同じ中身を開く -->
         <div class="rail-groups" role="group" aria-label="グループ">
           <span class="toc-title" aria-hidden="true">グループ</span>
-          <GroupRail groups={groupOptions} current={currentName} selectedCount={currentName ? 0 : splitIds(filter.ids).length} {editable} anonymized={data.anonymized} onpick={pickGroup} onrename={renameGroup} onnote={noteGroup} ondelete={deleteGroup} uid="rail" />
+          <GroupRail groups={groupOptions} current={currentName} selectedCount={adhocCount} {editable} anonymized={data.anonymized} onpick={pickGroup} onrename={renameGroup} onnote={noteGroup} ondelete={deleteGroup} uid="rail" />
         </div>
         {#if groupsOpen}
           <div class="group-pop" id="group-pop" role="region" bind:this={groupsPop} tabindex="-1" aria-label="グループ" data-testid="group-pop" onfocusout={(e) => { const t = e.relatedTarget as Node | null; if (t && !groupsPop?.contains(t) && !groupsBtn?.contains(t)) closeGroups(false); }}>
-            <GroupRail groups={groupOptions} current={currentName} selectedCount={currentName ? 0 : splitIds(filter.ids).length} {editable} anonymized={data.anonymized} onpick={(n) => { pickGroup(n); closeGroups(); }} onrename={renameGroup} onnote={noteGroup} ondelete={deleteGroup} uid="pop" />
+            <GroupRail groups={groupOptions} current={currentName} selectedCount={adhocCount} {editable} anonymized={data.anonymized} onpick={(n) => { pickGroup(n); closeGroups(); }} onrename={renameGroup} onnote={noteGroup} ondelete={deleteGroup} uid="pop" />
           </div>
         {/if}
         <div class="status">

@@ -90,6 +90,19 @@ describe('serve', () => {
     expect(u3.status).toBe(200);
     expect(u3.body.group).toEqual({ name: 'A', note: 'nn', ids: [] });
     expect((await json(`/api/groups/A`, { method: 'PUT', body: JSON.stringify({ ids: ['1', '2'] }) })).status).toBe(200);
+    // 差分(add / remove)はサーバが読み直した最新の ids に適用する: 画面を開いたまま CLI で足した x が、画面からの add で消えない
+    await writeFile(join(notes, 'groups.json'), JSON.stringify({ version: 1, groups: [{ name: 'A', note: 'nn', ids: ['1', '2', 'x'] }, { name: 'b', note: '', ids: ['3'] }] }));
+    const d1 = await json(`/api/groups/A`, { method: 'PUT', body: JSON.stringify({ add: ['y', '2', 'y'] }) });
+    expect(d1.status).toBe(200);
+    expect(d1.body).toMatchObject({ added: 1, dup: 1, removed: 0, group: { name: 'A', ids: ['1', '2', 'x', 'y'] } });
+    await writeFile(join(notes, 'groups.json'), JSON.stringify({ version: 1, groups: [{ name: 'A', note: 'nn', ids: ['1', '2', 'x', 'y', 'z'] }, { name: 'b', note: '', ids: ['3'] }] }));
+    const d2 = await json(`/api/groups/A`, { method: 'PUT', body: JSON.stringify({ remove: ['y', 'nope'] }) });
+    expect(d2.body).toMatchObject({ added: 0, dup: 0, removed: 1, group: { name: 'A', ids: ['1', '2', 'x', 'z'] } });
+    expect(JSON.parse(await readFile(join(notes, 'groups.json'), 'utf8')).groups[0].ids).toEqual(['1', '2', 'x', 'z']);
+    expect((await json(`/api/groups/A`, { method: 'PUT', body: JSON.stringify({ add: ['q'], ids: ['1'] }) })).status).toBe(400);
+    expect((await json(`/api/groups/A`, { method: 'PUT', body: JSON.stringify({ add: 'q' }) })).status).toBe(400);
+    // 全置換に戻す(以降の検査の前提)
+    expect((await json(`/api/groups/A`, { method: 'PUT', body: JSON.stringify({ ids: ['1', '2'] }) })).status).toBe(200);
     expect((await json('/api/groups/zzz', { method: 'PUT', body: JSON.stringify({ note: '' }) })).status).toBe(404);
     expect((await json('/api/groups/zzz', { method: 'DELETE' })).status).toBe(404);
     const d = await json('/api/groups/b', { method: 'DELETE' });
