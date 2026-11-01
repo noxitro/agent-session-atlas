@@ -1,7 +1,7 @@
 // atlas コマンドの引数解釈(純関数)
 import { parseArgs } from 'node:util';
 
-export const COMMANDS = ['snapshot', 'extract', 'metrics', 'build', 'export', 'all', 'bundle', 'judge'] as const;
+export const COMMANDS = ['snapshot', 'extract', 'metrics', 'build', 'export', 'all', 'bundle', 'judge', 'group'] as const;
 export type Command = (typeof COMMANDS)[number];
 
 export const JUDGE_ACTIONS = ['run', 'import'] as const;
@@ -27,6 +27,19 @@ export interface JudgeCliOptions {
   timeoutSec: number;
 }
 
+export const GROUP_ACTIONS = ['list', 'add', 'remove'] as const;
+export type GroupAction = (typeof GROUP_ACTIONS)[number];
+
+export interface GroupCliOptions {
+  action: GroupAction;
+  /** add / remove の対象のグループ名 */
+  name: string | null;
+  /** add に渡したセッション id(先頭一致で解決する前の文字列) */
+  ids: string[];
+  /** add の --note */
+  note: string | null;
+}
+
 export interface CliOptions {
   command: Command;
   /** ~/.copilot の場所 */
@@ -39,6 +52,12 @@ export interface CliOptions {
   /** 絞り込みのモデル(judge では判定に使うモデル) */
   model: string | null;
   branch: string | null;
+  /** 名前付きグループ(atlas-notes/groups.json)で絞る */
+  group: string | null;
+  /** 特定のセッションだけ(id。先頭一致で解決する前の文字列。カンマ区切り・複数回指定を平らにしたもの) */
+  sessions: string[] | null;
+  /** atlas-notes/ の場所(既定はリポジトリ直下の atlas-notes/) */
+  notesDir: string | null;
   anonymize: boolean;
   /** judgments.json の場所(既定は <out>/judgments.json があれば使う) */
   judgments: string | null;
@@ -53,6 +72,7 @@ export interface CliOptions {
   /** export: 本文 1 件の上限(文字)。null は既定 */
   maxChars: number | null;
   judge: JudgeCliOptions | null;
+  groupCmd: GroupCliOptions | null;
   help: boolean;
 }
 
@@ -69,6 +89,8 @@ export const USAGE = `使い方: atlas <コマンド> [オプション]
   judge run  バンドルの各セッションを LLM で判定し <out>/judgments.json に追記する(クレジットを消費します)
   judge import <ファイル>
              外部の LLM で作った判定(JSON か、JSON を含む Markdown)を検証して judgments.json に取り込む
+  group list / group add <名前> <id...> [--note <一文>] / group remove <名前>
+             名前付きグループ(<notes-dir>/groups.json)を一覧・追加(既存名なら id を追記)・削除する
 
 オプション:
   --home <dir>       Copilot のデータの場所(既定: 環境変数 ATLAS_COPILOT_HOME、無ければ ~/.copilot)
@@ -78,6 +100,9 @@ export const USAGE = `使い方: atlas <コマンド> [オプション]
   --client <name>    クライアントで絞る(例: github/cli, github/autopilot)
   --model <name>     そのモデルを使ったセッションだけ(judge run では判定に使うモデル)
   --branch <name>    ブランチで絞る
+  --group <名前>     名前付きグループ(<notes-dir>/groups.json)のセッションだけ(他の絞り込みと AND)
+  --session <id,...> 特定のセッションだけ(カンマ区切り、複数回指定可。id は先頭一致で解決、曖昧ならエラー)
+  --notes-dir <dir>  メモとグループの置き場(既定: リポジトリ直下の atlas-notes/)
   --anonymize        プロジェクト名・パス・リポジトリ名・ブランチを伏せ字にして HTML を出す(共有用)
   --judgments <file> 判定結果 judgments.json の場所(既定: <out>/judgments.json)
   --bundle <dir>     評価バンドルの場所(既定: <out>/bundle)
@@ -126,6 +151,10 @@ export function parseCli(argv: string[]): CliOptions {
         client: { type: 'string' },
         model: { type: 'string' },
         branch: { type: 'string' },
+        group: { type: 'string' },
+        session: { type: 'string', multiple: true },
+        'notes-dir': { type: 'string' },
+        note: { type: 'string' },
         anonymize: { type: 'boolean', default: false },
         judgments: { type: 'string' },
         bundle: { type: 'string' },
@@ -175,7 +204,22 @@ export function parseCli(argv: string[]): CliOptions {
       allowTools: values['allow-tools'] ?? true,
       timeoutSec: posInt(values.timeout, '--timeout', 1) ?? 600,
     };
-  } else {
+  }
+  let groupCmd: GroupCliOptions | null = null;
+  if (cmd === 'group') {
+    const action = positionals[1];
+    if (!action) throw new UsageError('group の後に list / add / remove を指定してください');
+    if (!(GROUP_ACTIONS as readonly string[]).includes(action)) throw new UsageError(`group の不明な操作です: ${action}(list / add / remove)`);
+    const name = positionals[2] ?? null;
+    const ids = positionals.slice(3).flatMap((s) => s.split(',')).map((s) => s.trim()).filter(Boolean);
+    if (action === 'list' && positionals.length > 2) throw new UsageError(`余分な引数があります: ${positionals.slice(2).join(' ')}`);
+    if (action !== 'list' && !name) throw new UsageError(`group ${action} にはグループ名を指定してください`);
+    if (action === 'add' && ids.length === 0) throw new UsageError('group add にはセッション id を 1 つ以上指定してください');
+    if (action === 'remove' && positionals.length > 3) throw new UsageError(`余分な引数があります: ${positionals.slice(3).join(' ')}`);
+    if (values.note != null && action !== 'add') throw new UsageError('--note は group add でだけ使えます');
+    groupCmd = { action: action as GroupAction, name, ids, note: values.note ?? null };
+  } else if (values.note != null) throw new UsageError('--note は group add でだけ使えます');
+  if (cmd !== 'judge' && cmd !== 'group') {
     if (positionals.length > 1) throw new UsageError(`コマンドは 1 つだけ指定してください: ${positionals.join(' ')}`);
     for (const k of ['backend', 'limit', 'only', 'concurrency', 'timeout'] as const) if (values[k] != null) throw new UsageError(`--${k} は judge run でだけ使えます`);
     if (values.force) throw new UsageError('--force は judge run でだけ使えます');
@@ -184,6 +228,9 @@ export function parseCli(argv: string[]): CliOptions {
   if (!['fail', 'all', 'none'].includes(toolOutput)) throw new UsageError(`--tool-output は fail / all / none のどれかです: ${toolOutput}`);
   if ((values['tool-output'] != null || values['max-chars'] != null) && cmd !== 'export') throw new UsageError('--tool-output と --max-chars は export でだけ使えます');
   if (values.since != null && Number.isNaN(Date.parse(values.since))) throw new UsageError(`--since の日時を解釈できません: ${values.since}`);
+  const sessions = values.session ? values.session.flatMap((s) => s.split(',')).map((s) => s.trim()).filter(Boolean) : null;
+  if (values.session != null && (!sessions || sessions.length === 0)) throw new UsageError('--session にセッション id を指定してください');
+  if (values.group != null && !values.group.trim()) throw new UsageError('--group にグループ名を指定してください');
   return {
     command: cmd as Command,
     home: values.home ?? null,
@@ -193,6 +240,9 @@ export function parseCli(argv: string[]): CliOptions {
     client: values.client ?? null,
     model: values.model ?? null,
     branch: values.branch ?? null,
+    group: values.group?.trim() ?? null,
+    sessions,
+    notesDir: values['notes-dir'] ?? null,
     anonymize: values.anonymize ?? false,
     judgments: values.judgments ?? null,
     bundle: values.bundle ?? null,
@@ -201,6 +251,7 @@ export function parseCli(argv: string[]): CliOptions {
     toolOutput: toolOutput as 'fail' | 'all' | 'none',
     maxChars: posInt(values['max-chars'], '--max-chars', 200),
     judge,
+    groupCmd,
     help: values.help ?? false,
   };
 }

@@ -1,7 +1,8 @@
 <script lang="ts">
   import { categoryLabel } from '../../lib/judgment-labels.ts';
-  import { NO_JUDGMENT, UNKNOWN, type FilterState, type Option } from '../../lib/filter.ts';
+  import { joinIds, NO_JUDGMENT, sameIds, splitIds, UNKNOWN, type FilterState, type Option } from '../../lib/filter.ts';
   import { int, modelLabel } from '../../lib/format.ts';
+  import type { ReportGroup } from '../../lib/types.ts';
 
   let {
     filter,
@@ -9,11 +10,14 @@
     judged,
     emptyCount,
     lastDay,
+    groups,
     onchange,
   }: {
     filter: FilterState;
     options: { project: Option[]; client: Option[]; model: Option[]; branch: Option[]; taskCategory: Option[] };
     judged: boolean;
+    /** 名前付きグループ(atlas-notes/groups.json)。presentIds は ids のうち記録にあるもの、present はその件数 */
+    groups: Group[];
     /** 空のセッション(依頼 0・ツール 0・応答 0)の件数 */
     emptyCount: number;
     /** 最終記録日(YYYY-MM-DD、ローカル)。期間の簡易指定の基準 */
@@ -21,6 +25,7 @@
     onchange: (patch: Partial<FilterState>) => void;
   } = $props();
 
+  type Group = ReportGroup & { presentIds: string[]; present: number };
   const label = (v: string): string => (v === UNKNOWN ? '不明' : v === NO_JUDGMENT ? '未判定' : categoryLabel(v));
   /** ツールの絞り込みの表示名(mcp:<サーバー> は「MCP <サーバー>」) */
   const toolLabel = (t: string): string => (t.startsWith('mcp:') ? `MCP ${t.slice(4)}` : t);
@@ -41,6 +46,22 @@
   let moreOpen = $state(false);
   const showMore = $derived(moreOpen || moreActive);
   const moreCount = $derived([filter.branch !== '', filter.coverage !== '', filter.taskCategory !== '', filter.empty === '1'].filter(Boolean).length);
+
+  // セッションの選択(filter.ids)。グループを選ぶと記録にある id だけが ids に入る(記録に無い id は件数で知らせるだけ。
+  // 1 件も無いグループは元の ids をそのまま入れて 0 件にする = 「すべて」と区別する)。
+  // ids がどのグループの記録にある id とも同じ集合ならそのグループ名、違えば「選んだ N 件」
+  const SELECTED = '(selected)';
+  const idsOf = (g: Group): string => joinIds(g.presentIds.length ? g.presentIds : g.ids);
+  const currentGroup = $derived(filter.ids ? groups.find((g) => sameIds(filter.ids, idsOf(g))) ?? null : null);
+  const selectedCount = $derived(splitIds(filter.ids).length);
+  const groupLabel = (g: Group): string => `${g.name}(${int(g.ids.length)} 件${g.present !== g.ids.length ? `、うち記録にあるのは ${int(g.present)} 件` : ''})`;
+  function pickGroup(v: string): void {
+    if (v === '') onchange({ ids: '' });
+    else if (v !== SELECTED) {
+      const g = groups.find((x) => x.name === v);
+      if (g) onchange({ ids: idsOf(g) });
+    }
+  }
 </script>
 
   {#snippet select(key: 'project' | 'client' | 'model' | 'branch', title: string, opts: Option[], show: (v: string) => string = label)}
@@ -84,6 +105,20 @@
     {@render select('project', 'プロジェクト', options.project)}
     {@render select('client', 'クライアント', options.client)}
     {@render select('model', 'モデル', options.model, modelLabel)}
+
+    {#if groups.length > 0 || filter.ids}
+      <label class="sel">
+        <span class="k">グループ</span>
+        <select data-testid="group-select" value={currentGroup?.name ?? (filter.ids ? SELECTED : '')} onchange={(e) => pickGroup(e.currentTarget.value)}>
+          <option value="">すべて</option>
+          {#if filter.ids && !currentGroup}<option value={SELECTED}>選んだ {int(selectedCount)} 件</option>{/if}
+          {#each groups as g (g.name)}
+            <option value={g.name}>{groupLabel(g)}</option>
+          {/each}
+        </select>
+        {#if currentGroup}<span class="why">{int(currentGroup.ids.length)} 件{#if currentGroup.present !== currentGroup.ids.length}(うち記録にあるのは {int(currentGroup.present)} 件){/if}{#if currentGroup.note}。{currentGroup.note}{/if}</span>{/if}
+      </label>
+    {/if}
 
     {#if filter.tool}
       <div class="sel">

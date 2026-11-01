@@ -5,7 +5,8 @@ import type { SessionRecord } from '../../core/src/types.ts';
 import { aggregate, coverageBreakdown, monthRange } from '../src/lib/aggregate.ts';
 import { createAnonymizer, identityAnonymizer, shortProjectLabel } from '../src/lib/anonymize.ts';
 import { embedData, extractEmbedded, serializeForScript } from '../src/lib/embed.ts';
-import { applyFilter, decodeFilter, emptyFilter, encodeFilter, filterOptions, isEmptyFilter, NO_JUDGMENT, UNKNOWN } from '../src/lib/filter.ts';
+import { applyFilter, decodeFilter, emptyFilter, encodeFilter, filterOptions, isEmptyFilter, joinIds, NO_JUDGMENT, sameIds, splitIds, UNKNOWN } from '../src/lib/filter.ts';
+import { groupSnippet, parseGroups, resolveIdPrefixes, serializeGroups } from '../src/lib/groups.ts';
 import { parseJudgments } from '../src/lib/judgments.ts';
 import { niceTicks } from '../src/lib/scale.ts';
 import { modelLabel } from '../src/lib/format.ts';
@@ -169,6 +170,64 @@ describe('filter', () => {
     expect(decodeFilter(`#${encodeFilter(f)}`)).toEqual(f);
     expect(isEmptyFilter(decodeFilter('#coverage=bogus&unknown=1&project=%E0%A4'))).toBe(true);
     expect(encodeFilter(emptyFilter())).toBe('');
+  });
+
+  it('Phase 10: セッションの選択(ids)は含まれるものだけにし、他の軸と AND。ハッシュではカンマをそのまま書き、往復で重複と空を落とす', async () => {
+    const s = summaries(await fixture());
+    const f = { ...emptyFilter(), ids: 'a,c,zzz' };
+    expect(applyFilter(s, f).map((x) => x.id)).toEqual(['a', 'c']);
+    expect(applyFilter(s, { ...f, coverage: 'input' }).map((x) => x.id)).toEqual(['a']);
+    expect(applyFilter(s, { ...emptyFilter(), ids: 'zzz' })).toEqual([]);
+    expect(isEmptyFilter(f)).toBe(false);
+    expect(encodeFilter(f)).toBe('ids=a,c,zzz');
+    expect(decodeFilter('#ids=a,c,zzz')).toEqual(f);
+    expect(decodeFilter('#ids=c,%20a,,c&project=p').ids).toBe('c,a');
+    expect(decodeFilter(`#${encodeFilter(f)}`)).toEqual(f);
+    // 200 件の UUID でも 8KB 以内(file:// でも問題ない長さ)
+    const many = Array.from({ length: 200 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`);
+    const h = encodeFilter({ ...emptyFilter(), ids: joinIds(many) });
+    expect(h.length).toBeLessThan(8 * 1024);
+    expect(splitIds(decodeFilter(`#${h}`).ids)).toEqual(many);
+    expect(sameIds('a,b', 'b,a')).toBe(true);
+    expect(sameIds('a,b', 'a')).toBe(false);
+  });
+});
+
+describe('groups(atlas-notes/groups.json)', () => {
+  it('正常な形を読み、重複した id を除く。書き出しはキーの順を固定して雛形になる', () => {
+    const r = parseGroups({ version: 1, groups: [{ name: ' 調査 ', note: 'x', ids: ['a', 'b', 'a', ' '] }, { name: '空', ids: [] }] });
+    expect(r.warnings).toEqual([]);
+    expect(r.groups).toEqual([
+      { name: '調査', note: 'x', ids: ['a', 'b'] },
+      { name: '空', note: '', ids: [] },
+    ]);
+    expect(serializeGroups(r.groups)).toBe(`${JSON.stringify({ version: 1, groups: r.groups }, null, 2)}\n`);
+    expect(JSON.parse(groupSnippet(['b', 'a', 'b']))).toEqual({ name: '', note: '', ids: ['b', 'a'] });
+  });
+
+  it('壊れた形はエラーにせず、読めた分だけ返して理由を残す(全体 / 1 件 / 重複名)', () => {
+    expect(parseGroups(null).groups).toEqual([]);
+    expect(parseGroups(null).warnings[0]).toMatch(/オブジェクトではない/);
+    expect(parseGroups({ version: 2, groups: [] }).warnings[0]).toMatch(/version/);
+    expect(parseGroups({ version: 1, groups: {} }).warnings[0]).toMatch(/配列ではない/);
+    const r = parseGroups({
+      version: 1,
+      groups: [{ name: 'ok', ids: ['a'] }, 'junk', { name: '', ids: [] }, { name: 'bad', ids: 'a' }, { name: 'ok', ids: ['b'] }, { name: 'n', ids: ['c'], note: 3 }],
+    });
+    expect(r.groups.map((g) => g.name)).toEqual(['ok', 'n']);
+    expect(r.groups[0].ids).toEqual(['a']);
+    expect(r.groups[1].note).toBe('');
+    expect(r.warnings).toHaveLength(5);
+    expect(r.warnings.find((w) => w.includes('重複'))).toMatch(/「ok」/);
+    expect(r.warnings.find((w) => w.includes('note'))).toMatch(/\(n\)/);
+  });
+
+  it('id の先頭一致: 完全一致を優先し、1 つに決まれば採り、曖昧・未知はエラー', () => {
+    const known = ['abc-1', 'abc-2', 'abd-1', 'abc'];
+    expect(resolveIdPrefixes(known, ['abc'])).toEqual(['abc']);
+    expect(resolveIdPrefixes(known, ['abd', 'abc-2', 'abd'])).toEqual(['abd-1', 'abc-2']);
+    expect(() => resolveIdPrefixes(known, ['abc-'])).toThrow(/曖昧/);
+    expect(() => resolveIdPrefixes(known, ['zzz'])).toThrow(/記録にありません/);
   });
 });
 

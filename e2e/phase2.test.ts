@@ -5,11 +5,13 @@
 //  b. 埋め込み JSON のセッション数が fixtures の件数(DB ∪ ディレクトリ)と一致し、詳細ページが揃う
 //  c. --anonymize で fixture の cwd / git_root / repository / branch の文字列が HTML に出ない
 //  d. ATLAS_LIVE=1 のとき実データで HTML を作り、サイズとプロジェクト数をログに出して 5MB 未満
+//  i. Phase 10: groups.json(--notes-dir)の --group / --session で件数が変わり、埋め込みデータにグループが入り、--anonymize で仮名になる。
+//     壊れたファイルは警告して無視する。atlas group add / list / remove でファイルを作って直せる
 // ブラウザでのフィルタ操作はオーケストレータが組み込みブラウザで確認する(ここでは静的検証のみ。
 // フィルタのロジックは packages/report/test の単体テストで検証している)。
 import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync } from 'node:fs';
-import { readFile, readdir } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -219,6 +221,110 @@ describe('Phase 2 E2E: fixtures', () => {
     expect(d.metrics.overall.sessions).toBe(data.sessions.filter((s) => s.client === 'github/cli' && !s.empty).length);
     expect(d.scope.client).toBe('github/cli');
     expect((await readdir(join(out, 'sessions'))).length).toBe(expected);
+  });
+
+  it('i. Phase 10: groups.json の --group / --session で絞れ、埋め込みデータにグループが入り、伏せ字では仮名になる。壊れたファイルは警告して無視する', async () => {
+    const notes = join(WORK, 'notes');
+    const notes2 = join(WORK, 'notes2');
+    await rm(notes, { recursive: true, force: true });
+    await rm(notes2, { recursive: true, force: true });
+    await mkdir(notes, { recursive: true });
+    const ids = data.sessions.filter((s) => !s.empty).map((s) => s.id).sort();
+    const g1 = ids.slice(0, 3);
+    const ghost = '99999999-0000-4000-8000-000000000000';
+    const groupsJson = { version: 1, groups: [{ name: '甲の調べ', note: '甲の覚え書き', ids: [...g1, ghost] }, { name: '乙の一件', ids: [ids[3]] }] };
+    await writeFile(join(notes, 'groups.json'), JSON.stringify(groupsJson));
+    const read = async (dir = out): Promise<ReportData> => extractEmbedded<ReportData>(await readFile(join(dir, 'atlas.html'), 'utf8'));
+
+    // --group: 名前で絞れ、記録に無い id は件数だけ知らせる。埋め込みデータにはグループ全部(記録に無い id も)が入る
+    const r = atlas(['build', '--out', out, '--notes-dir', notes, '--group', '甲の調べ']);
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).toMatch(/build: 絞り込み group=甲の調べ\(3 \/ 4 件が記録にある\) → 3 \/ \d+ セッション/);
+    let d = await read();
+    expect(d.sessions.map((s) => s.id).sort()).toEqual(g1);
+    expect((await readdir(join(out, 'sessions'))).length).toBe(3);
+    expect(d.groups).toEqual([{ name: '甲の調べ', note: '甲の覚え書き', ids: [...g1, ghost] }, { name: '乙の一件', note: '', ids: [ids[3]] }]);
+    expect(d.warnings.notes).toEqual([]);
+    expect(d.version).toBe(5);
+    // 他の条件と AND
+    const client = data.sessions.find((s) => g1.includes(s.id))!.client!;
+    const r1 = atlas(['build', '--out', out, '--notes-dir', notes, '--group', '甲の調べ', '--client', client]);
+    expect(r1.status, r1.stderr).toBe(0);
+    expect((await read()).sessions.every((s) => g1.includes(s.id) && s.client === client)).toBe(true);
+    // 無い名前はエラー(黙って 0 件にしない)
+    const nope = atlas(['build', '--out', out, '--notes-dir', notes, '--group', 'nope']);
+    expect(nope.status).toBe(1);
+    expect(nope.stderr).toMatch(/「nope」.*あるのは: 甲の調べ, 乙の一件/);
+
+    // --session: 完全一致と先頭一致。曖昧ならエラー。bundle にも効く
+    const r2 = atlas(['build', '--out', out, '--notes-dir', notes, '--session', `${ids[0]},${ids[1]}`]);
+    expect(r2.status, r2.stderr).toBe(0);
+    expect(r2.stdout).toMatch(/session=2 件/);
+    expect((await read()).sessions.map((s) => s.id).sort()).toEqual([ids[0], ids[1]]);
+    const id99 = data.sessions.find((s) => s.id.endsWith('099'))!.id;
+    const r3 = atlas(['build', '--out', out, '--session', id99.slice(0, -1)]);
+    expect(r3.status, r3.stderr).toBe(0);
+    expect((await read()).sessions.map((s) => s.id)).toEqual([id99]);
+    const amb = atlas(['build', '--out', out, '--session', ids[0].slice(0, -1)]);
+    expect(amb.status).toBe(1);
+    expect(amb.stderr).toMatch(/曖昧/);
+    const rb = atlas(['bundle', '--out', out, '--notes-dir', notes, '--group', '乙の一件', '--include-empty']);
+    expect(rb.status, rb.stderr).toBe(0);
+    expect(rb.stdout).toMatch(/bundle: 絞り込み group=乙の一件\(1 \/ 1 件が記録にある\) → 1 \/ \d+ セッション/);
+    expect(rb.stdout).toMatch(/パケット 1 件/);
+
+    // --anonymize: グループ名と note は出さず「グループ 1, 2」、ids はそのまま
+    const ra = atlas(['build', '--out', outAnon, '--notes-dir', notes, '--anonymize']);
+    expect(ra.status, ra.stderr).toBe(0);
+    const anonHtml = await readFile(join(outAnon, 'atlas.html'), 'utf8');
+    const da = extractEmbedded<ReportData>(anonHtml);
+    expect(da.groups).toEqual([{ name: 'グループ 1', note: '', ids: [...g1, ghost] }, { name: 'グループ 2', note: '', ids: [ids[3]] }]);
+    expect(anonHtml).not.toContain('甲の調べ');
+    expect(anonHtml).not.toContain('甲の覚え書き');
+
+    // 壊れたファイル: build は成功し、警告が標準出力と埋め込みデータ(warnings.notes)に出る。1 件だけ壊れていればその 1 件を飛ばす
+    await writeFile(join(notes, 'groups.json'), '{ "version": 1, "groups": [ oops');
+    const broken = atlas(['build', '--out', out, '--notes-dir', notes]);
+    expect(broken.status, broken.stderr).toBe(0);
+    expect(broken.stdout).toMatch(/build: 注意 .*groups\.json: JSON として読めないため無視しました/);
+    d = await read();
+    expect(d.groups).toEqual([]);
+    expect(d.warnings.notes).toHaveLength(1);
+    expect(d.warnings.notes[0]).toMatch(/JSON として読めない/);
+    await writeFile(join(notes, 'groups.json'), JSON.stringify({ version: 1, groups: [{ name: 'ok', ids: [ids[0]] }, { name: 'ok', ids: [] }, { name: 'x', ids: 'bad' }] }));
+    const partial = atlas(['build', '--out', out, '--notes-dir', notes]);
+    expect(partial.status, partial.stderr).toBe(0);
+    d = await read();
+    expect(d.groups.map((g) => g.name)).toEqual(['ok']);
+    expect(d.warnings.notes).toHaveLength(2);
+    // 壊れたファイルは group add / remove で上書きしない
+    const noWrite = atlas(['group', 'add', 'ok', ids[1], '--out', out, '--notes-dir', notes]);
+    expect(noWrite.status).toBe(1);
+    expect(noWrite.stderr).toMatch(/書き換えません/);
+
+    // atlas group add / list / remove: 無いファイルを作り、id は先頭一致で解決し、既存名には追記(重複は除く)
+    const g = (...a: string[]) => atlas(['group', ...a, '--out', out, '--notes-dir', notes2]);
+    expect(g('list').stdout).toMatch(/まだありません/);
+    const add = g('add', '甲の調べ', ids[0], id99.slice(0, -1), '--note', '最初の 2 件');
+    expect(add.status, add.stderr).toBe(0);
+    expect(add.stdout).toMatch(/「甲の調べ」を作りました\(2 件\)/);
+    const add2 = g('add', '甲の調べ', ids[0], ids[1]);
+    expect(add2.status, add2.stderr).toBe(0);
+    expect(add2.stdout).toMatch(/1 件を追記しました\(重複 1 件を除く、計 3 件\)/);
+    expect(g('add', 'ambig', ids[0].slice(0, -1)).stderr).toMatch(/曖昧/);
+    expect(g('add', 'unknown', 'zzz').stderr).toMatch(/記録にありません/);
+    expect(JSON.parse(await readFile(join(notes2, 'groups.json'), 'utf8'))).toEqual({ version: 1, groups: [{ name: '甲の調べ', note: '最初の 2 件', ids: [ids[0], id99, ids[1]] }] });
+    const list = g('list');
+    expect(list.stdout).toMatch(/1 グループ/);
+    expect(list.stdout).toMatch(/甲の調べ: 3 件 — 最初の 2 件/);
+    expect(g('remove', 'nope').stderr).toMatch(/「nope」.*あるのは: 甲の調べ/);
+    expect(g('remove', '甲の調べ').stdout).toMatch(/削除しました/);
+    expect(JSON.parse(await readFile(join(notes2, 'groups.json'), 'utf8'))).toEqual({ version: 1, groups: [] });
+
+    // 後片付け: out/ を絞り込み無しに戻す(後のテストは out/ の全件を前提にする)
+    const back = atlas(['build', '--out', out]);
+    expect(back.status, back.stderr).toBe(0);
+    expect((await read()).groups).toEqual([]);
   });
 
   it('judgments.json があれば推定工数が埋め込まれる(Phase 3 の口)', async () => {

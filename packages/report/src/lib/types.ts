@@ -6,7 +6,8 @@ import type { LineChanges, MetricsFile, ProjectSource, TodoSummary, TokenSource 
 // 3: Phase 6(tools.mcp・issues / skills を trigger 別に / agents.byName に失敗とトークン / hooks.byType /
 //    lines / projectSource / installed)
 // 4: Phase 7(exec / tools.durations・outliers / frictionDetail / todos)
-export const REPORT_DATA_VERSION = 4;
+// 5: Phase 10(groups / warnings.notes)
+export const REPORT_DATA_VERSION = 5;
 
 /** 推論強度別の [リクエスト, 入力, 出力, nano AIU] */
 export type EffortTuple = [requests: number, input: number, output: number, nanoAiu: number];
@@ -179,5 +180,15 @@ export interface ReportData {
   judgments: { available: boolean; backend: string | null; model: string | null; ranAt: string | null; items: number };
   /** インストール済みの skill(snapshot で名前だけ記録)。記録が無ければ null */
   installed: { skills: string[]; disabled: string[] } | null;
-  warnings: { unknownEventTypes: number; badLines: number };
+  /** 名前付きグループ(atlas-notes/groups.json)。無ければ空。伏せ字モードでは name は「グループ 1」など、note は '' */
+  groups: ReportGroup[];
+  /** notes: atlas-notes/ の読み取りで無視した箇所(groups.json が壊れている等。無ければ空) */
+  warnings: { unknownEventTypes: number; badLines: number; notes: string[] };
+}
+
+export interface ReportGroup {
+  name: string;
+  note: string;
+  /** 記録に無い id も含む(そのまま) */
+  ids: string[];
 }

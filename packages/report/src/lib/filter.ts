@@ -29,12 +29,28 @@ export interface FilterState {
   empty: '' | '1';
   /** そのツールを呼んだセッションだけ(ツール名、MCP サーバーは mcp:<サーバー>)。要点欄のリンクから設定する */
   tool: string;
+  /** セッションの選択(id をカンマ区切り。'' は制限なし)。一覧のチェックからの「集計」か、グループの選択で入る */
+  ids: string;
 }
 
 export const NO_JUDGMENT = '(none)';
 
 export function emptyFilter(): FilterState {
-  return { from: '', to: '', project: ALL, client: ALL, model: ALL, branch: ALL, coverage: '', taskCategory: ALL, empty: '', tool: ALL };
+  return { from: '', to: '', project: ALL, client: ALL, model: ALL, branch: ALL, coverage: '', taskCategory: ALL, empty: '', tool: ALL, ids: '' };
+}
+
+/** ids(カンマ区切り)を配列に(空要素と重複は除く) */
+export function splitIds(ids: string): string[] {
+  return [...new Set(ids.split(',').map((s) => s.trim()).filter(Boolean))];
+}
+export function joinIds(ids: Iterable<string>): string {
+  return [...new Set([...ids].map((s) => s.trim()).filter(Boolean))].join(',');
+}
+/** 2 つの ids が同じ集合か(順序は無視) */
+export function sameIds(a: string, b: string): boolean {
+  const x = splitIds(a);
+  const y = new Set(splitIds(b));
+  return x.length === y.size && x.every((id) => y.has(id));
 }
 
 export function isEmptyFilter(f: FilterState): boolean {
@@ -90,8 +106,9 @@ export function usedTool(s: Pick<SessionSummary, 'tools'>, tool: string): boolea
   return (s.tools.byName[tool] ?? 0) > 0;
 }
 
-export function matches(s: SessionSummary, f: FilterState): boolean {
+export function matches(s: SessionSummary, f: FilterState, ids: Set<string> | null = f.ids ? new Set(splitIds(f.ids)) : null): boolean {
   if (!inScope(s, f)) return false;
+  if (ids && !ids.has(s.id)) return false;
   if (!matchesBase(s, f)) return false;
   if (f.tool && !usedTool(s, f.tool)) return false;
   if (f.coverage && s.coverage !== f.coverage) return false;
@@ -103,7 +120,8 @@ export function matches(s: SessionSummary, f: FilterState): boolean {
 }
 
 export function applyFilter(sessions: SessionSummary[], f: FilterState): SessionSummary[] {
-  return sessions.filter((s) => matches(s, f));
+  const ids = f.ids ? new Set(splitIds(f.ids)) : null;
+  return sessions.filter((s) => matches(s, f, ids));
 }
 
 export interface Option {
@@ -152,7 +170,8 @@ export function coverageOf(t: { input: number | null; output: number; source: st
 export function encodeFilter(f: FilterState): string {
   const e = emptyFilter();
   const parts: string[] = [];
-  for (const k of Object.keys(e) as (keyof FilterState)[]) if (f[k] !== e[k]) parts.push(`${k}=${encodeURIComponent(f[k])}`);
+  // ids のカンマはハッシュの中でそのまま使える文字なので符号化しない(200 件で 7KB 程度に収める)
+  for (const k of Object.keys(e) as (keyof FilterState)[]) if (f[k] !== e[k]) parts.push(`${k}=${k === 'ids' ? encodeURIComponent(f[k]).replace(/%2C/g, ',') : encodeURIComponent(f[k])}`);
   return parts.join('&');
 }
 
@@ -195,6 +214,7 @@ export function decodeFilter(s: string): FilterState {
     }
     if (k === 'coverage' && !['', 'input', 'output-only', 'none'].includes(v)) continue;
     if (k === 'empty' && !['', '1'].includes(v)) continue;
+    if (k === 'ids') v = joinIds(splitIds(v));
     (f as unknown as Record<string, string>)[k] = v;
   }
   return f;

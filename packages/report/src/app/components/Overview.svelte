@@ -16,7 +16,7 @@
     agg: Aggregate;
     judged: boolean;
     anonymized: boolean;
-    warnings: { unknownEventTypes: number; badLines: number };
+    warnings: { unknownEventTypes: number; badLines: number; notes: string[] };
     filtered: boolean;
     /** 空のセッションを含めているか */
     includeEmpty: boolean;
@@ -189,6 +189,9 @@
   {#if warnings.unknownEventTypes > 0}
     <p class="note">ログに未知のイベント種別が {int(warnings.unknownEventTypes)} 件ありました(集計からは除外し、件数だけ数えています)。</p>
   {/if}
+  {#each warnings.notes as n (n)}
+    <p class="note">メモとグループの読み取りの注意: {n}</p>
+  {/each}
 </section>
 {/if}
 

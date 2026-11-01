@@ -1,6 +1,6 @@
 <script lang="ts">
   import { aggregate } from '../lib/aggregate.ts';
-  import { applyFilter, decodeFilter, decodeView, emptyFilter, encodeFilter, filterOptions, inScope, isEmptyFilter, isStateHash, type FilterState } from '../lib/filter.ts';
+  import { applyFilter, decodeFilter, decodeView, emptyFilter, encodeFilter, filterOptions, inScope, isEmptyFilter, isStateHash, joinIds, splitIds, type FilterState } from '../lib/filter.ts';
   import { highlights } from '../lib/highlights.ts';
   import { date, dateTime, int } from '../lib/format.ts';
   import type { ReportData } from '../lib/types.ts';
@@ -97,10 +97,36 @@
     filter = emptyFilter();
   }
 
-  /** 効いている絞り込みの条件の数(期間は開始・終了で 1 つ) */
+  // セッションの選択(一覧のチェック欄)。状態は画面内だけ(保存しない)。
+  // filter.ids が変わったとき(「集計」、グループの選択、ハッシュから開いた、戻る)は選択を ids に揃える = 絞り込み中の一覧は全てチェック済みで出る
+  let selected = $state<Set<string>>(new Set());
+  const knownIds = $derived(new Set(sessions.map((s) => s.id)));
+  $effect(() => {
+    const ids = filter.ids;
+    // 記録に無い id(共有された URL やグループの ids に混じるもの)は選択に入れない(件数と保存の JSON を記録どおりにする)
+    if (ids) selected = new Set(splitIds(ids).filter((id) => knownIds.has(id)));
+  });
+  /** チェックしたものだけで集計する(他の条件と AND) */
+  function applySelection(): void {
+    if (selected.size) setFilter({ ids: joinIds(selected) });
+  }
+  /** 選択を外す。選択で集計中ならその条件も外す(チェックが無いのに「選んだ N 件」で絞られたままにしない) */
+  function clearSelection(): void {
+    selected = new Set();
+    if (filter.ids) setFilter({ ids: '' });
+  }
+  /** 名前付きグループ(記録にある id とその件数つき) */
+  const groupOptions = $derived.by(() =>
+    (data?.groups ?? []).map((g) => {
+      const presentIds = g.ids.filter((id) => knownIds.has(id));
+      return { ...g, presentIds, present: presentIds.length };
+    }),
+  );
+
+  /** 効いている絞り込みの条件の数(期間は開始・終了で 1 つ、セッションの選択は 1 つ) */
   const activeConditions = $derived.by(() => {
     let n = filter.from || filter.to ? 1 : 0;
-    for (const k of ['project', 'client', 'model', 'branch', 'coverage', 'taskCategory', 'tool'] as const) if (filter[k]) n++;
+    for (const k of ['project', 'client', 'model', 'branch', 'coverage', 'taskCategory', 'tool', 'ids'] as const) if (filter[k]) n++;
     if (filter.empty === '1') n++;
     return n;
   });
@@ -272,7 +298,7 @@
     </div>
 
     <div class="content">
-      <FilterBar {filter} {options} {judged} {emptyCount} lastDay={all.overall.lastAt ? date(all.overall.lastAt) : null} onchange={setFilter} />
+      <FilterBar {filter} {options} {judged} {emptyCount} groups={groupOptions} lastDay={all.overall.lastAt ? date(all.overall.lastAt) : null} onchange={setFilter} />
 
       <main class="wrap" id="main" tabindex="-1">
         <div class="empty" class:show={filtered.length === 0} role="status">
@@ -292,13 +318,16 @@
         <ProjectTable rows={agg.byProject} {judged} current={filter.project} onpick={(p) => setFilter({ project: p })} />
         <MonthlyChart months={agg.byMonth} />
         <ModelChart rows={agg.byModel} />
-        <SessionTable sessions={filtered} {judged} anonymized={data.anonymized} />
+        <SessionTable sessions={filtered} {judged} anonymized={data.anonymized} {selected} idsActive={filter.ids !== ''} onselect={(s) => (selected = s)} onapply={applySelection} onclear={clearSelection} />
       </main>
       <footer class="wrap foot">
         <p>
           このレポートはローカルのログ(~/.copilot)を複製して集計したもので、LLM は使っていません。入力トークン・AI 使用量(AIU)・premium request・変更行数は記録が残っているセッションだけの合計です。
           {#if data.warnings.unknownEventTypes > 0 || data.warnings.badLines > 0}
             読み取り時の注意: 未知のイベント種別 {int(data.warnings.unknownEventTypes)} 件、読めなかった行 {int(data.warnings.badLines)} 行。
+          {/if}
+          {#if data.warnings.notes?.length}
+            メモとグループ(atlas-notes)の読み取りで無視した箇所 {int(data.warnings.notes.length)} 件(全体サマリの集計明細に理由)。
           {/if}
         </p>
       </footer>

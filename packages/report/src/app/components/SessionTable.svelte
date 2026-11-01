@@ -2,11 +2,34 @@
   import { frictionTotal } from '../../lib/aggregate.ts';
   import { sessionTime } from '../../lib/filter.ts';
   import { dateTime, dec, duration, int, modelLabel, truncate } from '../../lib/format.ts';
+  import { groupSnippet } from '../../lib/groups.ts';
   import type { SessionSummary } from '../../lib/types.ts';
   import SortMark from './SortMark.svelte';
   import { categoryLabel, confidenceLabel } from '../../lib/judgment-labels.ts';
 
-  let { sessions, judged, anonymized }: { sessions: SessionSummary[]; judged: boolean; anonymized: boolean } = $props();
+  let {
+    sessions,
+    judged,
+    anonymized,
+    selected,
+    idsActive,
+    onselect,
+    onapply,
+    onclear,
+  }: {
+    sessions: SessionSummary[];
+    judged: boolean;
+    anonymized: boolean;
+    /** チェックしたセッション id(画面内だけ。保存しない) */
+    selected: Set<string>;
+    /** 「選んだセッションだけ集計」が効いているか(filter.ids) */
+    idsActive: boolean;
+    onselect: (ids: Set<string>) => void;
+    /** 選んだものだけで集計する(filter.ids に入れる) */
+    onapply: () => void;
+    /** 選択を外す(集計中ならその条件も外す) */
+    onclear: () => void;
+  } = $props();
 
   type Key = 'time' | 'turns' | 'input' | 'output' | 'tools' | 'lines' | 'friction' | 'active' | 'human';
   const value: Record<Key, (s: SessionSummary) => number> = {
@@ -52,6 +75,49 @@
     if (anonymized) return `セッション ${s.id.slice(0, 8)}`;
     return truncate(s.name || s.firstUserMessage || `(名前なし) ${s.id.slice(0, 8)}`, 80);
   }
+
+  // --- 選択(チェック欄)。状態は親(App)が持ち、ここは表示と操作だけ ---
+  const visibleChecked = $derived(visible.filter((s) => selected.has(s.id)).length);
+  const allVisible = $derived(visible.length > 0 && visibleChecked === visible.length);
+  function toggle(id: string, on: boolean): void {
+    const next = new Set(selected);
+    if (on) next.add(id);
+    else next.delete(id);
+    onselect(next);
+  }
+  /** 見出し行のチェック: このページの行をまとめて選ぶ / 外す */
+  function toggleVisible(on: boolean): void {
+    const next = new Set(selected);
+    for (const s of visible) if (on) next.add(s.id);
+    else next.delete(s.id);
+    onselect(next);
+  }
+
+  // --- 「グループとして保存」: HTML からファイルは書けないので、groups.json に貼る JSON 片を渡す ---
+  let saveOpen = $state(false);
+  let saveNote = $state('');
+  let snippetEl = $state<HTMLTextAreaElement | null>(null);
+  let saveBtn = $state<HTMLButtonElement | null>(null);
+  const selectedIds = $derived(sessions.filter((s) => selected.has(s.id)).map((s) => s.id).concat([...selected].filter((id) => !sessions.some((s) => s.id === id))));
+  /** 貼る JSON(開いている間にチェックを変えても今の選択に追従する) */
+  const snippet = $derived(groupSnippet(selectedIds));
+  /** コマンドの例(省略せず全 id。README の起動方法と同じ npm run atlas -- の形) */
+  const exampleCmd = $derived(`npm run atlas -- group add <名前> ${selectedIds.join(' ')}`);
+  async function save(): Promise<void> {
+    saveOpen = true;
+    try {
+      if (!navigator.clipboard) throw new Error('clipboard API なし');
+      await navigator.clipboard.writeText(snippet);
+      saveNote = `${int(selectedIds.length)} 件の id をクリップボードにコピーしました。下の欄にも同じものを出しています。`;
+    } catch {
+      saveNote = 'この環境ではクリップボードに書けないため、下の欄から選んでコピーしてください。';
+    }
+    requestAnimationFrame(() => snippetEl?.focus());
+  }
+  function closeSave(): void {
+    saveOpen = false;
+    requestAnimationFrame(() => saveBtn?.focus());
+  }
 </script>
 
 <section class="section" id="sessions" aria-labelledby="sessions-h">
@@ -62,6 +128,36 @@
       {#if !judged}推定人手工数は未判定です(LLM による判定を実行すると表示されます)。{/if}
     </p>
   </div>
+
+  <!-- 選択の操作列: チェックした件数と、その件数だけで集計 / 解除 / グループとして保存 -->
+  <div class="select-bar" role="group" aria-label="セッションの選択">
+    <p class="sel-count">
+      <span aria-live="polite" aria-atomic="true"><strong data-testid="selected-count">{int(selected.size)}</strong> 件を選択中</span>{#if idsActive}<span class="tag on">この選択で集計中</span>{/if}
+      {#if selected.size === 0}<span class="why">左端の欄にチェックを付けると、そのセッションだけで集計し直したり、名前付きグループとして保存できます。</span>{/if}
+    </p>
+    <div class="sel-actions">
+      <button type="button" class="btn" data-testid="apply-selection" disabled={selected.size === 0} onclick={onapply}>選んだ {int(selected.size)} 件だけ集計</button>
+      <!-- 選択で集計中は 0 件でも押せる(記録に無い id だけのグループを選んだときに条件を外す手段を残す) -->
+      <button type="button" class="btn" disabled={selected.size === 0 && !idsActive} onclick={onclear}>選択を解除</button>
+      <button type="button" class="btn" data-testid="save-group" bind:this={saveBtn} disabled={selected.size === 0} onclick={save}>グループとして保存</button>
+    </div>
+  </div>
+  {#if saveOpen}
+    <div class="save-box" id="group-snippet" role="region" aria-label="グループの保存">
+      <p class="save-note" role="status">{saveNote}</p>
+      <label class="snippet-field">
+        <span class="k">groups.json に貼る JSON({int(selectedIds.length)} 件。チェックを変えると追従します)</span>
+        <textarea class="snippet" readonly rows={Math.min(16, selectedIds.length + 6)} bind:this={snippetEl} onfocus={(e) => e.currentTarget.select()}>{snippet}</textarea>
+      </label>
+      <p class="save-how">
+        <code>atlas-notes/groups.json</code> の <code>"groups"</code> の配列に貼り(既にグループがあれば、前の要素の後ろに <code>,</code> を付けて続けます)、<code>"name"</code> に名前を入れてください。ファイルが無ければ
+        <code>{'{ "version": 1, "groups": [ … ] }'}</code> の形で作ります。コマンドなら、このリポジトリで <code>{exampleCmd}</code> を実行します(既にある名前なら id を追記します)。保存したグループは次の
+        <code>npm run atlas -- build</code> で絞り込み行の「グループ」に出ます。
+      </p>
+      <button type="button" class="btn" onclick={closeSave}>閉じる</button>
+    </div>
+  {/if}
+
   {#if sessions.length > 0}
     <div class="table-scroll">
       <table class="ledger">
@@ -72,6 +168,17 @@
                 <button type="button" class="sort" onclick={() => sortBy(k)}>{label}<SortMark state={st(k)} /></button>
               </th>
             {/snippet}
+            <th scope="col" class="chk">
+              <label>
+                <input
+                  type="checkbox"
+                  aria-label="このページの {int(visible.length)} 件を選択"
+                  checked={allVisible}
+                  indeterminate={visibleChecked > 0 && !allVisible}
+                  onchange={(e) => toggleVisible(e.currentTarget.checked)}
+                />
+              </label>
+            </th>
             {@render head('time', '開始', false)}
             <th scope="col">プロジェクト</th>
             <th scope="col">セッション</th>
@@ -89,7 +196,8 @@
         </thead>
         <tbody>
           {#each visible as s (s.id)}
-            <tr>
+            <tr class:picked={selected.has(s.id)}>
+              <td class="chk"><label><input type="checkbox" aria-label="{title(s)} を選択" checked={selected.has(s.id)} onchange={(e) => toggle(s.id, e.currentTarget.checked)} /></label></td>
               <td class="num when">{dateTime(s.createdAt ?? s.updatedAt)}</td>
               <td class="proj" title={s.project}>{s.projectLabel}{#if s.branch}<span class="sub">{s.branch}</span>{/if}</td>
               <td class="name"><a href={s.href}>{title(s)}</a>{#if s.empty}<span class="tag" title="依頼・ツール呼び出し・応答がどれも無いセッション">空</span>{/if}</td>
@@ -180,5 +288,121 @@
     flex-wrap: wrap;
     margin-top: 8px;
     font-size: 0.8125rem;
+  }
+
+  /* 選択の操作列(表の見出しの直下、1 行。狭い画面では折り返す) */
+  .select-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px 16px;
+    flex-wrap: wrap;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--rule);
+    font-size: 0.8125rem;
+  }
+  .sel-count {
+    margin: 0;
+    color: var(--ink-2);
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .sel-count strong {
+    font-size: 1.0625rem;
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+  }
+  .sel-count .tag.on {
+    border-color: var(--form);
+    color: var(--form);
+    background: var(--form-wash);
+  }
+  .sel-count .why {
+    font-size: 0.75rem;
+    color: var(--ink-3);
+  }
+  .sel-actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .sel-actions .btn {
+    padding: 3px 10px;
+  }
+  /* チェック欄(表の左端。行全体をクリックの的にはしない: 名前はリンクで、誤って開くのを避ける) */
+  .chk {
+    width: 28px;
+    padding: 0 2px 0 4px;
+    text-align: center;
+    vertical-align: top;
+  }
+  /* 押せる範囲は label で 28 × 28px 以上(印そのものは 16px のまま) */
+  .chk label {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 28px;
+    min-height: 32px;
+    cursor: pointer;
+  }
+  .chk input {
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    accent-color: var(--form);
+    cursor: pointer;
+  }
+  tr.picked td {
+    background: var(--form-wash);
+  }
+
+  /* グループとして保存: 貼る JSON と手順 */
+  .save-box {
+    margin-top: 8px;
+    padding: 10px 12px;
+    border: 1px solid var(--form);
+    background: var(--surface);
+    display: grid;
+    gap: 8px;
+    justify-items: start;
+  }
+  .save-note {
+    margin: 0;
+    font-size: 0.8125rem;
+    color: var(--ink);
+  }
+  .snippet-field {
+    display: block;
+    width: 100%;
+    max-width: 64ch;
+  }
+  .snippet-field .k {
+    display: block;
+    font-size: 0.6875rem;
+    color: var(--form);
+    margin-bottom: 2px;
+  }
+  .snippet {
+    width: 100%;
+    font: 0.75rem/1.5 ui-monospace, Consolas, 'Courier New', monospace;
+    color: var(--ink);
+    background: var(--form-wash);
+    border: 1px solid var(--control);
+    border-radius: 0;
+    padding: 6px 8px;
+    resize: vertical;
+  }
+  .save-how {
+    margin: 0;
+    font-size: 0.8125rem;
+    color: var(--ink-2);
+    max-width: 90ch;
+  }
+  .save-how code {
+    font-size: 0.75rem;
+    background: var(--form-wash);
+    padding: 0 3px;
   }
 </style>

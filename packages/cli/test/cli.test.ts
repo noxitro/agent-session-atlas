@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { normalizeSession } from '../../core/src/normalize.ts';
 import { parseCli, UsageError } from '../src/args.ts';
-import { filterSessions, hasFilter, resolvePaths } from '../src/commands.ts';
+import { filterSessions, hasFilter, resolveIdFilter, resolvePaths } from '../src/commands.ts';
 
 describe('parseCli', () => {
   it('コマンド省略時は all、オプションを読む', () => {
@@ -55,6 +55,33 @@ describe('parseCli', () => {
     expect(p.html.endsWith('atlas.html')).toBe(true);
     expect(p.judgments.endsWith('judgments.json')).toBe(true);
     expect(p.snapshot.endsWith('snapshot')).toBe(true);
+    // Phase 10: グループは out/ ではなくリポジトリ直下の atlas-notes/(--notes-dir で変更)
+    expect(p.groups.replace(/\\/g, '/').endsWith('/atlas-notes/groups.json')).toBe(true);
+    expect(p.groups.replace(/\\/g, '/')).not.toContain('/o/');
+    expect(resolvePaths({ home: 'h', out: 'o', judgments: null, notesDir: 'n' }).groups.replace(/\\/g, '/').endsWith('/n/groups.json')).toBe(true);
+  });
+
+  it('Phase 10: --group / --session / --notes-dir と group list / add / remove を読む', () => {
+    expect(parseCli(['build', '--group', ' 調査 ', '--session', 'a, b', '--session', 'c', '--notes-dir', 'n'])).toMatchObject({
+      command: 'build',
+      group: '調査',
+      sessions: ['a', 'b', 'c'],
+      notesDir: 'n',
+      groupCmd: null,
+    });
+    expect(parseCli(['bundle', '--group', 'g'])).toMatchObject({ command: 'bundle', group: 'g', sessions: null });
+    expect(parseCli(['group', 'list'])).toMatchObject({ command: 'group', groupCmd: { action: 'list', name: null, ids: [], note: null } });
+    expect(parseCli(['group', 'add', 'g', 'a,b', 'c', '--note', 'メモ']).groupCmd).toEqual({ action: 'add', name: 'g', ids: ['a', 'b', 'c'], note: 'メモ' });
+    expect(parseCli(['group', 'remove', 'g']).groupCmd).toMatchObject({ action: 'remove', name: 'g' });
+    expect(() => parseCli(['group'])).toThrow(/list \/ add \/ remove/);
+    expect(() => parseCli(['group', 'rename', 'g'])).toThrow(/不明な操作/);
+    expect(() => parseCli(['group', 'add', 'g'])).toThrow(/id を 1 つ以上/);
+    expect(() => parseCli(['group', 'remove'])).toThrow(/グループ名/);
+    expect(() => parseCli(['group', 'remove', 'g', 'x'])).toThrow(/余分/);
+    expect(() => parseCli(['group', 'list', 'x'])).toThrow(/余分/);
+    expect(() => parseCli(['build', '--note', 'x'])).toThrow(/group add/);
+    expect(() => parseCli(['build', '--session', ' , '])).toThrow(/--session/);
+    expect(() => parseCli(['build', '--group', ' '])).toThrow(/--group/);
   });
 });
 
@@ -65,6 +92,22 @@ describe('filterSessions', () => {
     const rs = [await mk('1', 'acme/app', 'github/cli', '2026-07-01T00:00:00Z'), await mk('2', 'acme/app-docs', 'github/autopilot', '2026-09-01T00:00:00Z'), await mk('3', 'other/x', 'github/cli', '2026-10-01T00:00:00Z')];
     const none = { since: null, project: null, client: null, model: null, branch: null };
     expect(hasFilter(none)).toBe(false);
+    expect(hasFilter({ ...none, group: 'g' })).toBe(true);
+    expect(hasFilter({ ...none, sessions: ['1'] })).toBe(true);
+    expect(hasFilter({ ...none, sessions: [] })).toBe(false);
+    // Phase 10: 解決済みの id の集合は他の条件と AND
+    expect(filterSessions(rs, { ...none, client: 'github/cli' }, new Set(['1', '2'])).sessions.map((s) => s.id)).toEqual(['1']);
+    // --group は groups.json の名前で解決し、記録に無い id は件数だけ知らせる。無い名前はエラー。--session は先頭一致で、両方あれば AND
+    const groups = { path: 'g.json', exists: true, groups: [{ name: 'g', note: '', ids: ['1', '3', 'x'] }], warnings: [] };
+    const r = resolveIdFilter(rs, { ...none, group: 'g' }, groups)!;
+    expect([...r.set].sort()).toEqual(['1', '3', 'x']);
+    expect(r).toMatchObject({ groupTotal: 3, groupKnown: 2 });
+    expect(filterSessions(rs, { ...none, group: 'g' }, r.set).sessions.map((s) => s.id)).toEqual(['1', '3']);
+    expect(() => resolveIdFilter(rs, { ...none, group: 'nope' }, groups)).toThrow(/「nope」.*あるのは: g/);
+    expect(() => resolveIdFilter(rs, { ...none, group: 'g' }, { ...groups, exists: false, groups: [] })).toThrow(/がありません/);
+    expect([...resolveIdFilter(rs, { ...none, sessions: ['2'] }, groups)!.set]).toEqual(['2']);
+    expect([...resolveIdFilter(rs, { ...none, group: 'g', sessions: ['1', '2'] }, groups)!.set]).toEqual(['1']);
+    expect(resolveIdFilter(rs, none, groups)).toBeNull();
     expect(filterSessions(rs, { ...none, project: 'acme/app' }).sessions.map((s) => s.id)).toEqual(['1']);
     const partial = filterSessions(rs, { ...none, project: 'ACME' });
     expect(partial.sessions.map((s) => s.id)).toEqual(['1', '2']);

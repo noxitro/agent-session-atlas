@@ -5,7 +5,25 @@ import { homedir } from 'node:os';
 import { dirname, join, posix, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { computeMetrics, extract, METRICS_SCHEMA_VERSION, snapshot, type MetricsFile, type SessionRecord, type SessionsFile, type SnapshotManifest } from '../../core/src/index.ts';
-import { buildReport, DEFAULT_TRANSCRIPT_OPTIONS, ensureTemplate, HTML_SIZE_LIMIT, matchesBase, parseJudgments, type BuildResult, type JudgmentsIndex, type ToolOutputMode } from '../../report/src/index.ts';
+import {
+  buildReport,
+  DEFAULT_TRANSCRIPT_OPTIONS,
+  ensureTemplate,
+  GROUPS_FILE_NAME,
+  HTML_SIZE_LIMIT,
+  loadGroups,
+  loadGroupsForWrite,
+  matchesBase,
+  NOTES_DIR_NAME,
+  parseJudgments,
+  resolveIdPrefixes,
+  saveGroups,
+  uniqueIds,
+  type BuildResult,
+  type JudgmentsIndex,
+  type LoadedGroups,
+  type ToolOutputMode,
+} from '../../report/src/index.ts';
 import {
   anthropicBackend,
   buildBundle,
@@ -17,7 +35,7 @@ import {
   type JudgeBackend,
   type RunSummary,
 } from '../../judge/src/index.ts';
-import type { CliOptions, JudgeCliOptions } from './args.ts';
+import type { CliOptions, GroupCliOptions, JudgeCliOptions } from './args.ts';
 
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
@@ -32,11 +50,15 @@ export interface Paths {
   judgments: string;
   bundle: string;
   html: string;
+  /** メモとグループの置き場(既定はリポジトリ直下の atlas-notes/。out/ ではなくユーザーが管理するもの) */
+  notes: string;
+  groups: string;
 }
 
-export function resolvePaths(o: Pick<CliOptions, 'home' | 'out' | 'judgments'> & { bundle?: string | null }): Paths {
+export function resolvePaths(o: Pick<CliOptions, 'home' | 'out' | 'judgments'> & { bundle?: string | null; notesDir?: string | null }): Paths {
   const home = resolve(o.home ?? process.env.ATLAS_COPILOT_HOME ?? join(homedir(), '.copilot'));
   const out = resolve(o.out ?? join(REPO_ROOT, 'out'));
+  const notes = resolve(o.notesDir ?? join(REPO_ROOT, NOTES_DIR_NAME));
   return {
     home,
     out,
@@ -46,6 +68,8 @@ export function resolvePaths(o: Pick<CliOptions, 'home' | 'out' | 'judgments'> &
     judgments: o.judgments ? resolve(o.judgments) : join(out, 'judgments.json'),
     bundle: o.bundle ? resolve(o.bundle) : join(out, 'bundle'),
     html: join(out, 'atlas.html'),
+    notes,
+    groups: join(notes, GROUPS_FILE_NAME),
   };
 }
 
@@ -55,17 +79,22 @@ export interface SessionFilter {
   client: string | null;
   model: string | null;
   branch: string | null;
+  /** 名前付きグループ(groups.json)の名前 */
+  group?: string | null;
+  /** 特定のセッション(id の先頭一致。解決前) */
+  sessions?: string[] | null;
 }
 
 export function hasFilter(f: SessionFilter): boolean {
-  return !!(f.since || f.project || f.client || f.model || f.branch);
+  return !!(f.since || f.project || f.client || f.model || f.branch || f.group || f.sessions?.length);
 }
 
 /**
  * CLI のフィルタ。--project は完全一致するキーがあればそれだけ、無ければ部分一致(大文字小文字を区別しない)。
  * --since は core の snapshot と同じく「その時刻以降に更新された」セッション。
+ * ids は --group / --session を解決した後のセッション id の集合(null なら制限なし)。他の条件と AND。
  */
-export function filterSessions(sessions: SessionRecord[], f: SessionFilter): { sessions: SessionRecord[]; projects: string[] } {
+export function filterSessions(sessions: SessionRecord[], f: SessionFilter, ids: Set<string> | null = null): { sessions: SessionRecord[]; projects: string[] } {
   let projects: string[] = [];
   if (f.project) {
     const keys = [...new Set(sessions.map((s) => s.project))];
@@ -75,6 +104,7 @@ export function filterSessions(sessions: SessionRecord[], f: SessionFilter): { s
   const pset = new Set(projects);
   const sinceMs = f.since ? Date.parse(f.since) : null;
   const out = sessions.filter((s) => {
+    if (ids && !ids.has(s.id)) return false;
     if (f.project && !pset.has(s.project)) return false;
     if (!matchesBase(s, { from: '', to: '', project: '', client: f.client ?? '', model: f.model ?? '', branch: f.branch ?? '' })) return false;
     if (sinceMs != null) {
@@ -150,20 +180,79 @@ export async function runExtract(p: Paths, since: string | null, log: Log, tempD
   return s;
 }
 
-function describeFilter(f: SessionFilter, projects: string[]): string {
+function describeFilter(f: SessionFilter, projects: string[], ids: ResolvedIds | null): string {
   const parts: string[] = [];
   if (f.since) parts.push(`since=${f.since}`);
   if (f.project) parts.push(`project=${f.project}(該当 ${projects.length} プロジェクト)`);
   if (f.client) parts.push(`client=${f.client}`);
   if (f.model) parts.push(`model=${f.model}`);
   if (f.branch) parts.push(`branch=${f.branch}`);
+  if (f.group && ids) parts.push(`group=${f.group}(${ids.groupKnown} / ${ids.groupTotal} 件が記録にある)`);
+  if (f.sessions?.length && ids) parts.push(`session=${ids.sessionIds.length} 件`);
   return parts.join(', ');
 }
 
+export interface ResolvedIds {
+  /** 他の条件と AND する id の集合 */
+  set: Set<string>;
+  groupTotal: number;
+  groupKnown: number;
+  sessionIds: string[];
+}
+
+/**
+ * --group と --session をセッション id の集合に解決する(どちらも無ければ null)。
+ * グループが無い名前・曖昧な id・記録に無い id はエラー(黙って 0 件にしない)。グループの ids に記録に無い id があるのは許す(件数だけ知らせる)。
+ */
+export function resolveIdFilter(all: SessionRecord[], f: SessionFilter, groups: LoadedGroups): ResolvedIds | null {
+  if (!f.group && !f.sessions?.length) return null;
+  const known = all.map((s) => s.id);
+  const knownSet = new Set(known);
+  let set: Set<string> | null = null;
+  let groupTotal = 0;
+  let groupKnown = 0;
+  if (f.group) {
+    const g = groups.groups.find((x) => x.name === f.group);
+    if (!g) {
+      const names = groups.groups.map((x) => x.name);
+      throw new Error(
+        groups.exists
+          ? `グループ「${f.group}」は ${groups.path} にありません${names.length ? `(あるのは: ${names.join(', ')})` : ''}${groups.warnings.length ? `。読めなかった箇所: ${groups.warnings.join(' / ')}` : ''}`
+          : `グループ「${f.group}」を探す ${groups.path} がありません(atlas group add で作れます。場所は --notes-dir で変えられます)`,
+      );
+    }
+    set = new Set(g.ids);
+    groupTotal = g.ids.length;
+    groupKnown = g.ids.filter((id) => knownSet.has(id)).length;
+  }
+  let sessionIds: string[] = [];
+  if (f.sessions?.length) {
+    sessionIds = resolveIdPrefixes(known, f.sessions);
+    const s = new Set(sessionIds);
+    set = set ? new Set([...set].filter((id) => s.has(id))) : s;
+  }
+  return { set: set!, groupTotal, groupKnown, sessionIds };
+}
+
+interface Selected {
+  file: SessionsFile;
+  sessions: SessionRecord[];
+  groups: LoadedGroups;
+}
+
+/** sessions.json を読み、groups.json を読み(無ければ空)、CLI の絞り込みを掛ける。共通のログも出す */
+async function selectSessions(p: Paths, f: SessionFilter, cmd: string, hint: string, log: Log): Promise<Selected> {
+  const file = await readJson<SessionsFile>(p.sessions, hint);
+  const groups = await loadGroups(p.groups);
+  for (const w of groups.warnings) log(`${cmd}: 注意 ${w}`);
+  const ids = resolveIdFilter(file.sessions, f, groups);
+  const { sessions, projects } = filterSessions(file.sessions, f, ids?.set ?? null);
+  if (hasFilter(f)) log(`${cmd}: 絞り込み ${describeFilter(f, projects, ids)} → ${sessions.length} / ${file.sessions.length} セッション`);
+  return { file, sessions, groups };
+}
+
 export async function runMetrics(p: Paths, f: SessionFilter, log: Log): Promise<MetricsFile> {
-  const s = await readJson<SessionsFile>(p.sessions, '先に atlas extract を実行してください。');
-  const { sessions, projects } = filterSessions(s.sessions, f);
-  if (hasFilter(f)) log(`metrics: 絞り込み ${describeFilter(f, projects)} → ${sessions.length} / ${s.sessions.length} セッション`);
+  const { file: s, sessions } = await selectSessions(p, f, 'metrics', '先に atlas extract を実行してください。', log);
   const m = computeMetrics(sessions, { installed: s.installed });
   await writeFile(p.metrics, JSON.stringify(m, null, 2));
   log(
@@ -180,9 +269,7 @@ export interface BuildOptions extends SessionFilter {
 }
 
 export async function runBuild(p: Paths, o: BuildOptions, log: Log): Promise<BuildResult> {
-  const s = await readJson<SessionsFile>(p.sessions, '先に atlas extract を実行してください。');
-  const { sessions, projects } = filterSessions(s.sessions, o);
-  if (hasFilter(o)) log(`build: 絞り込み ${describeFilter(o, projects)} → ${sessions.length} / ${s.sessions.length} セッション`);
+  const { file: s, sessions, groups } = await selectSessions(p, o, o.transcripts ? 'export' : 'build', '先に atlas extract を実行してください。', log);
   if (sessions.length === 0) log('build: 注意 条件に合うセッションが 0 件です(空のレポートを出します)');
 
   // metrics.json が同じセッション集合のものなら使い、違えば(フィルタ違い・古い)作り直す
@@ -211,8 +298,9 @@ export async function runBuild(p: Paths, o: BuildOptions, log: Log): Promise<Bui
     metrics,
     installed: s.installed ?? null,
     totalSessionsInSource: s.sessions.length,
-    warnings: { unknownEventTypes: unknown, badLines: s.warnings.badLines },
+    warnings: { unknownEventTypes: unknown, badLines: s.warnings.badLines, notes: groups.warnings },
     judgments,
+    groups: groups.groups,
     outDir: p.out,
     anonymize: o.anonymize,
     scope: { since: o.since, project: o.project, client: o.client, model: o.model, branch: o.branch },
@@ -241,15 +329,13 @@ export async function runBuild(p: Paths, o: BuildOptions, log: Log): Promise<Bui
 const kb = (b: number): string => `${(b / 1024).toFixed(1)} KB`;
 
 export async function runBundle(p: Paths, f: SessionFilter, o: { includeEmpty: boolean }, log: Log): Promise<BundleManifest> {
-  const s = await readJson<SessionsFile>(p.sessions, '先に atlas extract(または atlas all)を実行してください。');
-  const { sessions, projects } = filterSessions(s.sessions, f);
-  if (hasFilter(f)) log(`bundle: 絞り込み ${describeFilter(f, projects)} → ${sessions.length} / ${s.sessions.length} セッション`);
+  const { sessions } = await selectSessions(p, f, 'bundle', '先に atlas extract(または atlas all)を実行してください。', log);
   const t = performance.now();
   const m = await buildBundle(sessions, {
     bundleDir: p.bundle,
     snapshotDir: p.snapshot,
     includeEmpty: o.includeEmpty,
-    scope: { since: f.since, project: f.project, client: f.client, model: f.model, branch: f.branch },
+    scope: { since: f.since, project: f.project, client: f.client, model: f.model, branch: f.branch, group: f.group ?? null, session: f.sessions?.length ? f.sessions.join(',') : null },
     log,
   });
   const excerpt = m.sessions.filter((e) => e.textSource === 'excerpt').length;
@@ -303,9 +389,58 @@ export async function runJudgeCommand(p: Paths, j: JudgeCliOptions, log: Log, ba
   return s;
 }
 
+/**
+ * atlas group list / add / remove。add の id は sessions.json があれば先頭一致で解決する(無ければそのまま書く)。
+ * 壊れた groups.json は上書きしない(loadGroupsForWrite がエラーにする)。
+ */
+export async function runGroup(p: Paths, g: GroupCliOptions, log: Log): Promise<void> {
+  if (g.action === 'list') {
+    const loaded = await loadGroups(p.groups);
+    for (const w of loaded.warnings) log(`group: 注意 ${w}`);
+    if (!loaded.exists) {
+      log(`group: ${p.groups} はまだありません(atlas group add <名前> <id...> で作れます)`);
+      return;
+    }
+    const known = existsSync(p.sessions) ? new Set((await readJson<SessionsFile>(p.sessions, '')).sessions.map((s) => s.id)) : null;
+    log(`group: ${loaded.groups.length} グループ(${p.groups})`);
+    for (const x of loaded.groups) {
+      const k = known ? x.ids.filter((id) => known.has(id)).length : null;
+      log(`  ${x.name}: ${x.ids.length} 件${k != null && k !== x.ids.length ? `(うち記録にあるのは ${k} 件)` : ''}${x.note ? ` — ${x.note}` : ''}`);
+    }
+    return;
+  }
+  const groups = await loadGroupsForWrite(p.groups);
+  const name = g.name!;
+  if (g.action === 'remove') {
+    const i = groups.findIndex((x) => x.name === name);
+    if (i < 0) throw new Error(`グループ「${name}」は ${p.groups} にありません${groups.length ? `(あるのは: ${groups.map((x) => x.name).join(', ')})` : ''}`);
+    groups.splice(i, 1);
+    await saveGroups(p.groups, groups);
+    log(`group: 「${name}」を削除しました → ${p.groups}(残り ${groups.length} グループ)`);
+    return;
+  }
+  let ids = uniqueIds(g.ids);
+  if (existsSync(p.sessions)) {
+    const known = (await readJson<SessionsFile>(p.sessions, '')).sessions.map((s) => s.id);
+    ids = resolveIdPrefixes(known, ids);
+  } else log(`group: 注意 ${p.sessions} が無いため id を先頭一致で解決せず、そのまま書きます`);
+  const cur = groups.find((x) => x.name === name);
+  if (cur) {
+    const before = cur.ids.length;
+    cur.ids = uniqueIds([...cur.ids, ...ids]);
+    if (g.note != null) cur.note = g.note;
+    await saveGroups(p.groups, groups);
+    log(`group: 「${name}」に ${cur.ids.length - before} 件を追記しました(重複 ${ids.length - (cur.ids.length - before)} 件を除く、計 ${cur.ids.length} 件)→ ${p.groups}`);
+  } else {
+    groups.push({ name, note: g.note ?? '', ids });
+    await saveGroups(p.groups, groups);
+    log(`group: 「${name}」を作りました(${ids.length} 件)→ ${p.groups}`);
+  }
+}
+
 export async function run(o: CliOptions, log: Log): Promise<{ paths: Paths; build?: BuildResult; judge?: RunSummary | null }> {
   const p = resolvePaths(o);
-  const f: SessionFilter = { since: o.since, project: o.project, client: o.client, model: o.model, branch: o.branch };
+  const f: SessionFilter = { since: o.since, project: o.project, client: o.client, model: o.model, branch: o.branch, group: o.group, sessions: o.sessions };
   const t = performance.now();
   switch (o.command) {
     case 'snapshot':
@@ -326,6 +461,9 @@ export async function run(o: CliOptions, log: Log): Promise<{ paths: Paths; buil
       return { paths: p };
     case 'judge':
       return { paths: p, judge: await runJudgeCommand(p, o.judge!, log) };
+    case 'group':
+      await runGroup(p, o.groupCmd!, log);
+      return { paths: p };
     case 'all': {
       await runSnapshot(p, o.since, log);
       await runExtract(p, o.since, log, o.tempDirs);

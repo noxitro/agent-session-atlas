@@ -393,6 +393,51 @@ ui-ux-pro-max の照合(`--domain ux` 4 観点、`--stack svelte` 1 観点):
 | 配色の切り替え(theme toggle dark mode) | 0 件 | — |
 | `--stack svelte`(consistent component navigation) | Use semantic elements、Use scoped styles by default | 採用 / 一部採らない: 目次の帯の CSS は 3 画面で共用するため scoped ではなく base.css(global)に置いた。App 固有の件数の帯(`.status`)は scoped のまま |
 
+### Phase 10: セッションの選択とグループ(2026-11-01)
+
+動機(ユーザーの言葉): 「ユーザーはすべてのセッション、または特定のセッション、または特定の複数セッション単位で分析がしたい」。Phase 9 まではリポジトリなどの属性でしか絞れなかった。将来はセッションごとのメモ(Markdown + 画像)を足す予定で、その置き場 `atlas-notes/` の最初の住人として「名前付きグループ」のファイルを作る。第 1 段は「グループ絞り込み」まで。
+
+契約(第 1 段):
+
+1. **選択の軸**: 画面の絞り込みに「セッションの選択」の軸を足す。`FilterState` に `ids: string`(セッション id をカンマ区切り。`''` は制限なし)を追加し、`matches` は `ids` に含まれるものだけにする。既存の軸と AND。URL ハッシュへの encode / decode にも載せ、再読み込み・戻る・共有で保てるようにする(200 件 × 36 文字で 7KB 程度。`file://` でも問題ない。カンマはそのまま書く)。
+2. **一覧のチェック欄**: セッション一覧(`SessionTable`)にチェック欄を足し、選んだ件数と「選んだ N 件だけ集計」「選択を解除」「グループとして保存」のボタンを一覧の見出し近くに置く(選択が 0 件のときは無効)。見出し行のチェックでそのページの行をまとめて選べる。「集計」を押すと `filter.ids` に入り、レポート全体(概況・内訳・実行の性質・一覧)が再計算される。絞り込み行とサイドバーの「絞り込み中」の印・件数・解除は既存の作法に従い、`ids` の絞り込みも 1 条件として数える。チェック状態そのものは画面内だけ(保存しない)。`ids` の絞り込み中は一覧にその id のセッションだけが出るので、チェックは全てオンで表示する(`ids` が変わるたびに選択を `ids` に揃える。ハッシュから開いたときも同じ)。「解除」で `ids` を外しても選択は残す(もう一度「集計」で戻せる)。
+3. **名前付きグループのファイル** `atlas-notes/groups.json`(リポジトリ直下。`--notes-dir <dir>` で変更可。無ければ無いものとして動く。`.gitignore` には入れない = ユーザーが管理するかを決める)。形式:
+   `{ "version": 1, "groups": [ { "name": "<名前>", "note": "<任意の一文>", "ids": ["<session id>", ...] } ] }`
+   名前は一意。壊れていれば build / export / judge はエラーにせず警告して無視する(ファイル全体が読めなければ全部、1 件だけ形が違えばその 1 件。重複名は後の方を無視)。警告は `data.warnings.notes[]` として埋め込み、全体サマリの注記と脚注に出す(既存の `warnings` の経路)。
+4. **CLI**: `--group <名前>` を既存の絞り込み(`--since` / `--project` / …)と同列に追加(build / export / metrics / bundle に効く。AND。無い名前はエラー)。`--session <id>`(カンマ区切り、複数回指定可)で特定のセッションだけ。id は先頭一致で解決してよいが、曖昧なら(複数に当たれば)エラー、どれにも当たらなければエラー。さらに `atlas group list`、`atlas group add <名前> <id...> [--note <一文>]`(既存名なら ids を追記、重複は除く)、`atlas group remove <名前>` を足す。add / remove は壊れた `groups.json` を上書きしない(エラーにして直してもらう)。
+5. **埋め込みデータ**: `ReportData.groups[]`(name, note, ids)を入れ(`REPORT_DATA_VERSION` 5)、絞り込み行に「グループ」の選択肢を足す。選ぶと `filter.ids` にそのグループの ids が入る(表示上はグループ名と「n 件」、記録に無い id があれば「n 件(うち記録にあるのは m 件)」。壊れない)。手でチェックを変えて集計すると、`ids` の集合がどのグループとも一致しなくなるのでグループ名の表示は外れて「選んだ N 件」になる。グループが 1 つも無く `ids` も空のときはこの選択肢は出さない。
+6. **画面から保存**: 選択中に「グループとして保存」を押すと、`{ "name": "", "note": "", "ids": [...] }` の JSON 片をクリップボードにコピーし(`file://` でクリップボードが使えないときに備えて同じ内容を読み取り専用の textarea にも出す)、`atlas-notes/groups.json` の `groups` に貼る旨と `atlas group add` の例を添える。HTML からファイルは書けないのでこれが上限。
+7. **伏せ字**: `--anonymize` ではグループ名と note を出さず「グループ 1, 2, …」にする(自由記述のため。番号はファイルの順)。ids は不透明な id なのでそのまま。
+8. **容量**: atlas.html の増分は小さい(チェック欄と埋め込みグループ)。5MB 制約・外部参照なしは従来どおり。
+
+検査: 単体(filter の `ids` の encode / decode 往復と `matches`、`groups.json` の読み取りの正常・壊れた形・重複名、CLI の `--group` / `--session` / `group add` の解釈と先頭一致の解決)。E2E(phase2 系: fixture に `groups.json` を置いて `--group` で件数が変わる、`--session` で 1〜2 件になる、埋め込みデータにグループがある、`--anonymize` で名前が仮名になる、壊れたファイルで警告が出て build は成功する)。impeccable critique / audit と web-design-guidelines は従来どおりゲート。surface brief に「選択」の軸と「グループ」の選択肢を追記。ui-ux-pro-max の照合は「選択 / 一括操作 / フィルタ」の語で 1 回。ブラウザで 1024 と 1440 の幅で チェック → 集計 → サイドバーの件数と印 → 解除 → グループの選択 → 保存の textarea を一通り確認してスクリーンショットを残す(`.impeccable/critique/` 配下。コミットしない)。README の絞り込みの節に「選んだセッションだけ集計」「グループ(groups.json、--group、atlas group)」「--session」を追記。atlas.bat 系は変更不要。
+
+#### 実施(2026-11-01 夜、第 1 段)
+
+直したこと・作ったもの:
+
+1. **純関数と読み書き**: `packages/report/src/lib/groups.ts`(`parseGroups` / `serializeGroups` / `groupSnippet` / `resolveIdPrefixes`。ブラウザと Node の両方から使う)と `packages/report/src/groups-io.ts`(`loadGroups` / `loadGroupsForWrite` / `saveGroups`。Node だけ)。`filter.ts` に `ids` と `splitIds` / `joinIds` / `sameIds`。`matches` / `applyFilter` は ids の集合を 1 回だけ作る。
+2. **CLI**: `args.ts` に `--group` / `--session`(複数回・カンマ区切り)/ `--notes-dir` / `--note` と `group list | add | remove`。`commands.ts` は sessions.json と groups.json を読んで絞り込む共通の `selectSessions`(metrics / build / export / bundle が使う)と `resolveIdFilter`、`runGroup`。`Paths` に `notes` / `groups`。bundle の manifest の scope にも `group` / `session` を入れる。
+3. **埋め込みと画面**: `ReportData.groups` と `warnings.notes`(`REPORT_DATA_VERSION` 5)。`FilterBar` の「グループ」(グループがあるか ids が効いているときだけ出る。選ぶと記録にある id だけを ids に入れ、記録に無い id は「うち記録にあるのは m 件」で知らせる。1 件も記録に無いグループは元の ids を入れて 0 件にする = 「すべて」と区別)。`SessionTable` のチェック欄(見出し行で 50 件まとめて、`indeterminate` も出す)と操作列、`groupSnippet` の textarea(焦点を当てると全選択)。`App` が選択の集合を持ち、`filter.ids` が変わるたびに記録にある id に揃える。「選択を解除」は選択で集計中ならその条件も外す(チェックが無いのに「選んだ N 件」で絞られたままにしない)。
+4. **伏せ字**: `build.ts` で name を「グループ N」(ファイルの順)、note を '' にする。E2E で名前と note が HTML に出ないことを見る。
+5. **警告の経路**: `warnings.notes[]` を全体サマリ(集計明細の注記)と脚注に出す。CLI の標準出力にも「注意」で出す。
+
+自分で決めたこと(戻し方は git): 見出し行のチェックで「このページの 50 件」をまとめて選べるようにした(ui-ux-pro-max の Bulk Actions の「Checkbox column + Action bar」に沿う。全件選択は、絞り込み自体が全件を表すので付けていない)。`group add` に `--note` を足した(形式に note があるのに CLI から書けないのは半端なため)。「グループとして保存」の JSON は記録にある id だけを出す(記録に無い id を引き継がない)。クリップボードに書けたかどうかを文で知らせ、書けなくても同じ内容を textarea に出す(Feedback / Confirmation Messages)。
+
+容量: atlas.html は伏せ字版の同じデータで 1,673,895 → 1,683,786 バイト(+9.9KB、+0.6%。うち埋め込みのグループは 2 件で 424 バイト、残りはチェック欄・操作列・保存欄・グループの選択肢の markup と script)。実データ 200 件(空を除く)の 1.68MB で 5MB 制約に遠く、外部参照の検査も通る。
+
+ui-ux-pro-max の照合(`--domain ux`、検索語「selection bulk actions filter」、1 回):
+
+| 該当した規則(Category / Issue) | 採否 |
+|---|---|
+| Data Entry / Bulk Actions(Checkbox column + Action bar) | 採用: 左端のチェック欄と一覧の見出し直下の操作列。見出し行のチェックでページ単位にまとめて選ぶ |
+| Layout / Chip Collection Reflow(折り返しを許す) | 採用済み: 操作列と絞り込み行は flex-wrap で折り返し、1024px では 2 行になる(切り詰めない) |
+| Feedback / Confirmation Messages(成功を短く知らせる) | 採用: 「グループとして保存」のあとに「N 件の id をクリップボードにコピーしました」/「この環境では書けないため下の欄から」を role=status で出す |
+
+検査: typecheck 0 / 0、単体 101 通過(16 ファイル)、E2E 49 通過 / 8 skipped(6 ファイル。phase2 に i. を追加)。impeccable の検出器(`detect.mjs`、静的)は変更 3 ファイルで 0 件(URL スキャンは puppeteer が無く未実施)。設計契約と web-design-guidelines の照合はサブエージェント(読み取り専用)で実施: 契約違反なし(PASS)。P1 3 件(コマンドの例が `atlas …` で省略付きだった → `npm run atlas -- group add <名前> <全 id>` に、チェックの的が 16px → label で 28 × 32px に、「閉じる」で焦点が消える → 「グループとして保存」に戻す)と P2 6 件(textarea の行数、開いている間に JSON が古いまま → 選択に追従、グループ名が select で切れる → 件数と note を欄の下に、記録に無い id だけのグループで「選択を解除」が押せない → 集計中は 0 件でも押せる、aria-live の範囲を件数だけに、aria-expanded の誤用を外す、textarea に見える項目名)を直した。残した P2: 「選んだ N 件だけ集計」の N は他の条件で隠れた行も含むので、AND の結果の件数と一致しないことがある(件数は「表示中」で分かるため、そのまま)。ブラウザ(Playwright、実データ 200 件)で 1440px ライトと 1024px ダークの両方で チェック 3 件 → 集計(表示中 3、サイドバー / 固定行に「1 条件で絞り込み中」、グループの選択肢は「選んだ 3 件」、URL に `#ids=…`)→ 解除(表示中 200、選択は 3 件のまま)→ グループ「直近の調査」(表示中 5、note が欄の下に出る、一覧の 5 行が全てチェック済み)→ 1 件外して集計(「選んだ 4 件」)→ 再読み込み(表示中 4、選択 4)→ 保存(textarea に id 4 件の JSON、焦点が移る)→ 選択を解除(表示中 200、URL の # が消える)を通した。スクリーンショットは `.impeccable/critique/phase10-groups/`(コミットしない)。
+
+残したこと(第 2 段以降): セッションごとのメモ(Markdown + 画像)とその表示。グループの編集(名前の変更・並べ替え)は CLI の add / remove と手書きで足りるとみて付けていない。クリップボードは `file://` の Chrome では書けるが、Playwright の既定では権限が無く fallback の文になる(実ブラウザでの確認は組み込みブラウザの http で行った)。
+
 ## 決めたこと・採らなかった案
 
 - Svelte 5 を採用(理由は開発体験。単一 HTML のサイズ差はデータ量に比べて誤差)。

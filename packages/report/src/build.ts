@@ -9,6 +9,7 @@ import { renderDetailHtml } from './detail.ts';
 import { GLOSSARY_FILE, renderGlossaryHtml } from './glossary-page.ts';
 import { embedData } from './lib/embed.ts';
 import type { JudgmentsIndex } from './lib/judgments.ts';
+import type { SessionGroup } from './lib/groups.ts';
 import { detailFileName, summarize } from './lib/summarize.ts';
 import { renderTranscript, transcriptFileName, type TranscriptOptions } from './transcript.ts';
 import { loadStore, type StoreData } from '../../core/src/index.ts';
@@ -64,8 +65,10 @@ export interface BuildInput {
   installed?: InstalledInventory | null;
   /** sessions.json の総件数(フィルタ前) */
   totalSessionsInSource: number;
-  warnings: { unknownEventTypes: number; badLines: number };
+  warnings: { unknownEventTypes: number; badLines: number; notes?: string[] };
   judgments: JudgmentsIndex | null;
+  /** 名前付きグループ(atlas-notes/groups.json)。無ければ省略 */
+  groups?: SessionGroup[];
   outDir: string;
   anonymize: boolean;
   scope?: Partial<ReportData['scope']>;
@@ -138,7 +141,9 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
           disabled: [...(input.installed.disabledSkills ?? [])].sort(),
         }
       : null,
-    warnings: input.warnings,
+    // 伏せ字モードではグループ名と note(自由記述)は出さず、ファイルの順で「グループ 1, 2, …」にする。ids は不透明なのでそのまま
+    groups: (input.groups ?? []).map((g, i) => (anon.enabled ? { name: `グループ ${i + 1}`, note: '', ids: [...g.ids] } : { name: g.name, note: g.note, ids: [...g.ids] })),
+    warnings: { unknownEventTypes: input.warnings.unknownEventTypes, badLines: input.warnings.badLines, notes: input.warnings.notes ?? [] },
   };
 
   await mkdir(input.outDir, { recursive: true });
