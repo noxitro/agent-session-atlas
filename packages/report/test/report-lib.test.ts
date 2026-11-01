@@ -293,8 +293,12 @@ describe('glossary', () => {
     const html = renderGlossaryHtml({ css: '', generatedAt: '2026-11-01T00:00:00Z' });
     for (const g of GLOSSARY_GROUPS) expect(html).toContain(`<h2 id="h-${g.id}">${g.title}</h2>`);
     for (const t of GLOSSARY) expect(html).toContain(`<dt id="${t.id}">`);
-    const toc = html.match(/<nav class="gtoc"[\s\S]*?<\/nav>/)?.[0] ?? '';
+    const toc = html.match(/<nav class="toc"[\s\S]*?<\/nav>/)?.[0] ?? '';
     expect(toc.match(/<li>/g)?.length).toBe(GLOSSARY_GROUPS.length);
+    // 目次の帯は詳細ページと同じ作法(戻る → 目次 → 配色)で、上部の帯にも戻るがある
+    expect(html).toContain('<a class="crumb rail-crumb" href="atlas.html">');
+    expect(html).toContain('<header class="top">');
+    expect(html.match(/<div class="seg" role="group" aria-label="配色" data-theme-seg>/g)?.length).toBe(2);
     // 欠測の語の凡例は「記録の由来と欠測」の冒頭にある
     expect(html.indexOf('<ul class="missing-legend"')).toBeGreaterThan(html.indexOf('id="g-records"'));
     expect(html.indexOf('<ul class="missing-legend"')).toBeLessThan(html.indexOf('id="g-mechanics"'));

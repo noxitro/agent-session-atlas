@@ -435,7 +435,7 @@ details.tableview > summary {
   white-space: nowrap;
 }
 
-/* 静的ページ(詳細・用語)の上部と表題 */
+/* 静的ページ(詳細・用語)の上部(戻る・別ページへのリンク・配色。1280px 以上ではサイドバーに同じ物を出すので隠す)と表題 */
 .top {
   background: var(--surface);
   border-bottom: 1px solid var(--rule-strong);
@@ -447,6 +447,12 @@ details.tableview > summary {
   justify-content: space-between;
   padding-top: 10px;
   padding-bottom: 10px;
+  flex-wrap: wrap;
+}
+.top-right {
+  display: flex;
+  align-items: center;
+  gap: 8px 16px;
   flex-wrap: wrap;
 }
 .crumb {
@@ -487,11 +493,222 @@ summary {
   touch-action: manipulation;
 }
 
-/* 上部に目次と件数の帯が固定される幅(1280px 未満)では、ページ内リンクの飛び先とキーボードで移った部品をその高さ分下げる(--topbar-h は App が設定。サイドバーの幅では 0)。
+/* 上部に目次の帯が固定される幅(1280px 未満)では、ページ内リンクの飛び先とキーボードで移った部品をその高さ分下げる(--topbar-h は App / NAV_JS が設定。サイドバーの幅では 0)。
    飛び先の余白は scroll-margin-top(要素側)で足す。両方に帯の高さを入れると二重に下がる */
 html {
   scroll-padding-top: var(--topbar-h, 0px);
 }
 .section {
   scroll-margin-top: 12px;
+}
+
+/* 目次の帯(.rail)。atlas.html・詳細・用語ページで共用。
+   1280px 未満: 上部に固定した細い 1 行。目次は横に流れ、端の影が続きの手掛かり。戻る・リンク・配色は出さない(.top か atlas のマストヘッドにある)
+   1280px 以上: 左のサイドバー(sticky)。戻る → 目次(群の題つき)→ 別ページへのリンク → 配色。幅は本文から取らず .shell の最大幅を広げて確保 */
+.rail {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  background: var(--surface);
+  border-bottom: 1px solid var(--rule-strong);
+}
+.rail-in {
+  display: flex;
+  align-items: center;
+  gap: 8px 16px;
+}
+.rail-crumb,
+.rail-links,
+.rail-tools {
+  display: none;
+}
+.toc {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  overflow-x: auto;
+  scrollbar-width: none;
+  font-size: 0.8125rem;
+  background:
+    linear-gradient(90deg, var(--surface) 30%, transparent) left / 32px 100% no-repeat local,
+    linear-gradient(270deg, var(--surface) 30%, transparent) right / 32px 100% no-repeat local,
+    linear-gradient(90deg, var(--scroll-shade), transparent) left / 10px 100% no-repeat scroll,
+    linear-gradient(270deg, var(--scroll-shade), transparent) right / 10px 100% no-repeat scroll,
+    var(--surface);
+}
+.toc::-webkit-scrollbar {
+  display: none;
+}
+.toc-group {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+.toc-group + .toc-group {
+  margin-left: 10px;
+  padding-left: 10px;
+  border-left: 1px solid var(--rule);
+}
+.toc-title {
+  display: none;
+}
+.toc ol {
+  display: flex;
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.toc li {
+  flex: 0 0 auto;
+}
+.toc a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  white-space: nowrap;
+  text-decoration: none;
+  color: var(--ink-2);
+  border-bottom: 2px solid transparent;
+}
+.toc a:hover {
+  color: var(--form);
+  text-decoration: underline;
+}
+.toc a[aria-current] {
+  color: var(--form);
+  font-weight: 600;
+  border-bottom-color: var(--form);
+}
+.toc .cnt {
+  margin-left: 6px;
+  color: var(--ink-3);
+  font-size: 0.75rem;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+.toc .lead {
+  display: none;
+}
+@media (min-width: 1280px) {
+  .shell {
+    max-width: calc(1360px + 13em + 32px);
+    margin: 0 auto;
+    padding: 0 24px;
+    display: grid;
+    grid-template-columns: 13em minmax(0, 1fr);
+    gap: 0 32px;
+    align-items: start;
+  }
+  .content {
+    min-width: 0;
+  }
+  .content .wrap {
+    max-width: none;
+    padding-left: 0;
+    padding-right: 0;
+  }
+  .top {
+    display: none;
+  }
+  .rail {
+    max-height: 100vh;
+    overflow-y: auto;
+    background: transparent;
+    border-bottom: 0;
+    padding: 16px 0;
+  }
+  .rail-in {
+    display: block;
+    padding: 0;
+  }
+  .rail-crumb {
+    display: block;
+    padding-bottom: 10px;
+    margin-bottom: 12px;
+    border-bottom: 1px solid var(--rule-strong);
+  }
+  .toc {
+    display: block;
+    overflow: visible;
+    background: none;
+  }
+  .toc-group {
+    display: block;
+    margin-top: 14px;
+  }
+  .toc-group:first-child {
+    margin-top: 0;
+  }
+  .toc-group + .toc-group {
+    margin-left: 0;
+    padding-left: 0;
+    border-left: 0;
+  }
+  .toc-title {
+    display: block;
+    font-size: 0.6875rem;
+    color: var(--form);
+    letter-spacing: 0.04em;
+    padding-bottom: 2px;
+    border-bottom: 1px solid var(--rule-strong);
+  }
+  .toc ol {
+    display: block;
+  }
+  .toc a {
+    display: flex;
+    flex-wrap: wrap;
+    min-height: 30px;
+    padding: 4px 10px;
+    white-space: normal;
+    border-bottom: 1px solid var(--rule);
+    border-left: 3px solid transparent;
+  }
+  .toc a:hover {
+    background: var(--form-wash);
+    text-decoration: none;
+  }
+  .toc a[aria-current] {
+    background: var(--form-wash);
+    border-left-color: var(--form);
+    border-bottom-color: var(--rule);
+  }
+  .toc .lead {
+    display: block;
+    flex-basis: 100%;
+    font-size: 0.75rem;
+    color: var(--ink-3);
+    font-weight: 400;
+  }
+  .toc a[aria-current] .lead {
+    color: var(--ink-2);
+  }
+  .rail-links {
+    display: block;
+    margin-top: 20px;
+    padding-top: 10px;
+    border-top: 1px solid var(--rule-strong);
+  }
+  .rail-links ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    font-size: 0.8125rem;
+  }
+  .rail-links a {
+    display: flex;
+    align-items: center;
+    min-height: 30px;
+    padding: 0 10px;
+    text-decoration: none;
+    border-bottom: 1px solid var(--rule);
+  }
+  .rail-links a:hover {
+    background: var(--form-wash);
+  }
+  .rail-tools {
+    display: block;
+    margin-top: 12px;
+  }
 }

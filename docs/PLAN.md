@@ -367,6 +367,32 @@ ui-ux-pro-max の照合(前回と同じ要領。`--domain ux` を 7 観点、`--
 | `--stack svelte`(sticky sidebar navigation) | Accessibility / Use semantic elements | 採用済み: `nav` `ol` `button` |
 | `--stack svelte`(scroll position history) | 0 件 | — |
 
+#### 追記(2026-11-01 夜): 詳細ページもサイドバーにし、3 画面のナビの作法を揃える
+
+ユーザーの指摘: 詳細ページを開いたら節の目次が上部のままで「この画面はタブが上部のまま?」。前の追記で「詳細ページの節目次は 1 ページ内のスクロールだけなので上部で足りる」としたが、トップをサイドバーにした今は詳細だけ上部で固定も現在地の印も無いのは一貫せず、時系列の節は長いセッションで数百行になるので上部の目次は読んでいる途中で使えない。判断を改めて揃えた。
+
+直したこと(surface brief の SUBPAGES を同じコミットで変更):
+
+21. **共通の目次の帯**: 目次の帯の見た目(`.rail` / `.toc` / `.shell` / `.top`)を `App.svelte` から `base.css` に移し、3 画面で 1 つにした。静的ページの上部と帯の描画と動き(配色の切り替え・固定行の高さ `--topbar-h`・現在地の印・狭い画面での目次行の送り・「← 戻る」の `history.back()`)は新しい `page-nav.ts`(`renderTop` / `renderRail` / `NAV_JS`)に寄せ、詳細ページと用語ページが同じものを使う。
+22. **詳細ページ**: 1280px 以上は左に 13em のサイドバー(上から 戻る → 12 節の目次(現在地の印)→ セッション記録 (Markdown) を開く / .md で保存(記録があるときだけ)→ 用語の説明 → 配色)。1280px 未満は上部の帯(戻る・リンク・配色。固定しない)と、その下に固定した 36px の目次行(横に流れ、現在地に印)。表題・メタ欄・ID は本文側のまま。
+23. **用語ページ**: 切り替え幅を 960px から 1280px にして 3 画面で統一し、サイドバーに「← レポートに戻る」と配色を入れて詳細と同じ構成にした。狭い画面の分類の目次は 44px の枠の折り返しから、他と同じ横に流れる 36px の行に変えた(固定行が 2〜3 行分になるのを避ける)。理由は brief に書いた: 用語ページは表が無いので 960px でも成立するが、「どの画面でも同じ幅で同じ場所に目次がある」ことを優先した。
+24. **配色の切り替え**: 詳細・用語ページには無かったので足した(atlas.html と同じ `localStorage` の鍵。1280px 以上はサイドバーの末尾、未満は上部の帯の右端)。
+25. **統一点検**: 戻るリンクの位置(サイドバーの先頭 / 上部の帯の左端)と文言(詳細「← レポート(セッション一覧)に戻る」、用語「← レポートに戻る」)、固定行の高さ(3 画面とも 37px、飛び先の余白は `scroll-padding-top: var(--topbar-h)` + `scroll-margin-top: 12px`)、ページ下部のフッタ(`.page-foot` / `.foot`、同じ余白と字の大きさ)、ダークのサイドバーの罫線(`--rule` / `--rule-strong`、atlas と同じ変数)、Tab 順(戻る → 目次 → リンク → 配色 → 本文。`:focus-visible` の 2px 枠は base.css)、375px の固定行(37px)を確認した。
+
+容量: 詳細ページ 1 件あたり +2.4KB(目次の帯の markup +1.6KB、共通スクリプト +1.7KB、CSS −0.4KB)。合計は 797 件で 18.3MB → 20.1MB(+1.9MB、+10%。`atlas export` 後は 20.4MB)。静的ページに埋め込む base.css からコメントと空白を落とすようにした(`build.ts` の `compactCss`)ので、サイドバーの CSS 分(+6KB/件)はこれで吸収している。これをしなければ +4.5MB だった。
+
+ui-ux-pro-max の照合(`--domain ux` 4 観点、`--stack svelte` 1 観点):
+
+| 観点(検索語) | 該当した規則(Category / Issue) | 採否 |
+|---|---|---|
+| 一貫性(consistency navigation patterns) | Navigation / Sticky Navigation、Accessibility / Keyboard Navigation、Navigation / Breadcrumbs | 採用済み(前回と同じ)。「一貫性」そのものの規則はデータベースに無い。設計契約(同じ幅で同じ場所)で判断 |
+| 固定サイドバー(sticky sidebar) | Navigation / Sticky Navigation(固定要素が本文を隠さない) | 採用済み: サイドバーは本文と別の列。固定行は `--topbar-h` で補正 |
+| 焦点(focus visible keyboard) | Interaction / Focus States | 採用済み: `:focus-visible` の 2px 枠(base.css、3 画面共通) |
+| 同上 | Accessibility / Focus Not Obscured (Minimum)(固定 UI は scroll-padding で避ける) | 採用: `html { scroll-padding-top: var(--topbar-h) }` で、Tab で移った部品が固定行の下に隠れない |
+| 同上 | Accessibility / Focus Not Obscured (Enhanced)(AAA) | 採用済み: 固定行は 37px で、焦点の枠(2px + offset 2px)まで含めて隠れない |
+| 配色の切り替え(theme toggle dark mode) | 0 件 | — |
+| `--stack svelte`(consistent component navigation) | Use semantic elements、Use scoped styles by default | 採用 / 一部採らない: 目次の帯の CSS は 3 画面で共用するため scoped ではなく base.css(global)に置いた。App 固有の件数の帯(`.status`)は scoped のまま |
+
 ## 決めたこと・採らなかった案
 
 - Svelte 5 を採用(理由は開発体験。単一 HTML のサイズ差はデータ量に比べて誤差)。

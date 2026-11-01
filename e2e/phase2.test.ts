@@ -137,7 +137,7 @@ describe('Phase 2 E2E: fixtures', () => {
     for (const t of GLOSSARY) expect(g).toContain(`id="${t.id}"`);
     // 分類ごとの見出し(h2、id は g-<分類>)があり、目次は分類だけを載せる(用語 1 つずつは載せない)
     for (const grp of GLOSSARY_GROUPS) expect(g).toContain(`<section class="section group" id="g-${grp.id}"`);
-    const toc = g.match(/<nav class="gtoc"[\s\S]*?<\/nav>/)?.[0] ?? '';
+    const toc = g.match(/<nav class="toc"[\s\S]*?<\/nav>/)?.[0] ?? '';
     expect(toc.match(/<a href="#g-/g)?.length).toBe(GLOSSARY_GROUPS.length);
     expect(toc).not.toContain(`href="#${GLOSSARY[0].id}"`);
     // 本文の一文はトップページと詳細ページに無い(埋め込み JSON を除いた HTML 本文で見る)

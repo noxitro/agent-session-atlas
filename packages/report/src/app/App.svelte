@@ -332,78 +332,7 @@
     align-items: center;
     flex-wrap: wrap;
   }
-  /* 目次と件数の帯(.rail)。1280px 未満は上部に固定した細い 1 行(目次は横に流れる)、1280px 以上は左のサイドバー */
-  .rail {
-    position: sticky;
-    top: 0;
-    z-index: 6;
-    background: var(--surface);
-    border-bottom: 1px solid var(--rule-strong);
-  }
-  .rail-in {
-    display: flex;
-    align-items: center;
-    gap: 8px 16px;
-  }
-  .toc {
-    flex: 1 1 auto;
-    min-width: 0;
-    display: flex;
-    overflow-x: auto;
-    scrollbar-width: none;
-    font-size: 0.8125rem;
-    /* 横に続きがあるときだけ端に影を出す(表の横スクロールと同じ手法) */
-    background:
-      linear-gradient(90deg, var(--surface) 30%, transparent) left / 32px 100% no-repeat local,
-      linear-gradient(270deg, var(--surface) 30%, transparent) right / 32px 100% no-repeat local,
-      linear-gradient(90deg, var(--scroll-shade), transparent) left / 10px 100% no-repeat scroll,
-      linear-gradient(270deg, var(--scroll-shade), transparent) right / 10px 100% no-repeat scroll,
-      var(--surface);
-  }
-  .toc::-webkit-scrollbar {
-    display: none;
-  }
-  .toc-group {
-    display: flex;
-    align-items: center;
-    flex: 0 0 auto;
-  }
-  .toc-group + .toc-group {
-    margin-left: 10px;
-    padding-left: 10px;
-    border-left: 1px solid var(--rule);
-  }
-  .toc-title {
-    display: none;
-  }
-  .toc ol {
-    display: flex;
-    gap: 14px;
-    margin: 0;
-    padding: 0;
-    list-style: none;
-  }
-  .toc li {
-    flex: 0 0 auto;
-  }
-  .toc a {
-    display: inline-flex;
-    align-items: center;
-    min-height: 36px;
-    white-space: nowrap;
-    text-decoration: none;
-    color: var(--ink-2);
-    border-bottom: 2px solid transparent;
-  }
-  .toc a:hover {
-    color: var(--form);
-    text-decoration: underline;
-  }
-  .toc a[aria-current] {
-    color: var(--form);
-    font-weight: 600;
-    border-bottom-color: var(--form);
-  }
+  /* 件数と解除(目次の帯の中。帯そのものの見た目は base.css の .rail / .toc) */
   .status {
     flex: 0 0 auto;
     display: flex;
@@ -451,84 +380,9 @@
     }
   }
   @media (min-width: 1280px) {
-    /* サイドバーの幅はコンテンツから取らず、ページの最大幅を広げて確保する(表の列幅を 1280px 未満と同じに保つ) */
+    /* マストヘッドの幅をサイドバー + 本文(.shell)に揃える */
     .mast-row {
       max-width: calc(1360px + 13em + 32px);
-    }
-    .shell {
-      max-width: calc(1360px + 13em + 32px);
-      margin: 0 auto;
-      padding: 0 24px;
-      display: grid;
-      grid-template-columns: 13em minmax(0, 1fr);
-      gap: 0 32px;
-      align-items: start;
-    }
-    .content {
-      min-width: 0;
-    }
-    .content :global(.wrap) {
-      max-width: none;
-      padding-left: 0;
-      padding-right: 0;
-    }
-    .rail {
-      position: sticky;
-      top: 0;
-      max-height: 100vh;
-      overflow-y: auto;
-      background: transparent;
-      border-bottom: 0;
-      padding: 16px 0;
-    }
-    .rail-in {
-      display: block;
-      padding: 0;
-    }
-    .toc {
-      display: block;
-      overflow: visible;
-      background: none;
-    }
-    .toc-group {
-      display: block;
-      margin-top: 14px;
-    }
-    .toc-group:first-child {
-      margin-top: 0;
-    }
-    .toc-group + .toc-group {
-      margin-left: 0;
-      padding-left: 0;
-      border-left: 0;
-    }
-    .toc-title {
-      display: block;
-      font-size: 0.6875rem;
-      color: var(--form);
-      letter-spacing: 0.04em;
-      padding-bottom: 2px;
-      border-bottom: 1px solid var(--rule-strong);
-    }
-    .toc ol {
-      display: block;
-    }
-    .toc a {
-      display: flex;
-      min-height: 30px;
-      padding: 0 10px;
-      white-space: normal;
-      border-bottom: 1px solid var(--rule);
-      border-left: 3px solid transparent;
-    }
-    .toc a:hover {
-      background: var(--form-wash);
-      text-decoration: none;
-    }
-    .toc a[aria-current] {
-      background: var(--form-wash);
-      border-left-color: var(--form);
-      border-bottom-color: var(--rule);
     }
     .status {
       display: block;

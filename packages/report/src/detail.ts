@@ -3,6 +3,7 @@
 import type { ProjectSource, SessionRecord, TimelineEntry, TokenCounts, TokenSource } from '../../core/src/types.ts';
 import type { Anonymizer } from './lib/anonymize.ts';
 import { frictionTotal } from './lib/aggregate.ts';
+import { NAV_JS, renderRail, renderTop } from './page-nav.ts';
 import { dateTime, dec, duration, int, modelLabel, msLabel, percent, truncate } from './lib/format.ts';
 import { EFFORT_ORDER, INITIATOR_ORDER, MODE_ORDER, quantilesOf, UNKNOWN_KEY } from './lib/exec.ts';
 import { effortLabel, errorTypeLabel, initiatorLabel, modeLabel, subagentFailureLabel, TODO_STATUS_ORDER, todoStatusLabel } from './lib/exec-labels.ts';
@@ -290,19 +291,8 @@ export interface DetailOptions {
   transcriptHref?: string | null;
 }
 
-/**
- * 「← レポートに戻る」の挙動。atlas.html から来たとき(atlas.html がリンクを押した時に sessionStorage に印を残す。http では referrer でも分かる)は
- * history.back() で戻り、URL の # に残っている絞り込みを保つ。直接開いたときや新しいタブでは普通のリンク。印は読んだら消す(次に直接開いたときに誤って戻らないように)。
- * 外部参照なし・file:// で動く。
- */
-export const BACK_JS = `(function(){var a=document.querySelector('a.crumb');if(!a)return;var mark=false;try{mark=sessionStorage.getItem('atlas-return')==='1';sessionStorage.removeItem('atlas-return')}catch(e){}a.addEventListener('click',function(e){if(e.button!==0||e.metaKey||e.ctrlKey||e.shiftKey||e.altKey)return;var ok=false;try{ok=history.length>1&&(mark||/atlas\\.html/.test(document.referrer))}catch(err){}if(ok){e.preventDefault();history.back()}})})();`;
-
 const DETAIL_CSS = `
 .meta{display:flex;flex-wrap:wrap;gap:6px 8px;margin-top:8px}
-.sec-toc{display:flex;flex-wrap:wrap;gap:4px 18px;margin-top:12px;padding-bottom:8px;border-bottom:1px solid var(--rule);font-size:.8125rem}
-.sec-toc a{display:inline-flex;align-items:center;min-height:24px;color:var(--ink-2);text-decoration:none}
-.sec-toc a:hover{color:var(--form);text-decoration:underline}
-.section{scroll-margin-top:12px}
 section h3{margin:14px 0 6px}
 h3.gap{margin-top:16px}
 .field .small{font-size:.875rem;font-weight:600;line-height:1.4}
@@ -512,6 +502,22 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
     ),
   );
 
+  // 目次の帯(1280px 以上はサイドバー、未満は上部の固定行)。節は parts を描いた後に揃う
+  const nav = {
+    crumbHref: '../atlas.html',
+    crumbLabel: '← レポート(セッション一覧)に戻る',
+    tocLabel: 'ページ内の移動',
+    groups: [{ items: sectionIndex.map((sec) => ({ href: `#${sec.id}`, label: sec.title })) }],
+    links: [
+      ...(o.transcriptHref
+        ? [
+            { href: o.transcriptHref, label: 'セッション記録(Markdown)を開く' },
+            { href: o.transcriptHref, label: '記録を .md で保存', download: true },
+          ]
+        : []),
+      { href: '../glossary.html', label: '用語の説明' },
+    ],
+  };
   return `<!doctype html>
 <html lang="ja">
 <head>
@@ -525,18 +531,18 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
 <style>${o.css}${DETAIL_CSS}</style>
 </head>
 <body>
-<header class="top"><nav class="wrap" aria-label="ページの移動"><a class="crumb" href="../atlas.html">← レポート(セッション一覧)に戻る</a><ul class="top-links">${
-    o.transcriptHref
-      ? `<li><a href="${esc(o.transcriptHref)}">セッション記録(Markdown)を開く</a></li><li><a href="${esc(o.transcriptHref)}" download>記録を .md で保存</a></li>`
-      : ''
-  }<li><a href="../glossary.html">用語の説明</a></li></ul></nav></header>
+${renderTop(nav)}
+<div class="shell">
+${renderRail(nav)}
+<div class="content">
 <main class="wrap">
 <div class="title"><h1>${esc(title)}</h1><div class="meta">${meta}</div></div>
-<nav class="sec-toc" aria-label="ページ内の移動">${sectionIndex.map((s) => `<a href="#${s.id}">${esc(s.title)}</a>`).join('')}</nav>
 ${parts.join('\n')}
 </main>
 <footer class="wrap page-foot">Copilot Session Atlas が ${esc(dateTime(o.generatedAt))} に生成。${anon.enabled ? '伏せ字モード(プロジェクト・パス・ブランチ・本文を伏せています)。' : ''}</footer>
-<script>${BACK_JS}</script>
+</div>
+</div>
+<script>${NAV_JS}</script>
 </body>
 </html>
 `;

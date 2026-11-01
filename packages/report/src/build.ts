@@ -18,6 +18,16 @@ export const REPORT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..'
 export const TEMPLATE_PATH = join(REPORT_ROOT, 'dist', 'template.html');
 const BASE_CSS_PATH = join(REPORT_ROOT, 'src', 'styles', 'base.css');
 
+/** 静的ページ(詳細 797 件・用語)に埋め込む CSS からコメントと余分な空白を落とす(1 件あたり約 4KB の節約。atlas.html は Vite が同じことをする) */
+export function compactCss(css: string): string {
+  return css
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\s+/g, ' ')
+    .replace(/\s*([{};:,>])\s*/g, '$1')
+    .replace(/;}/g, '}')
+    .trim();
+}
+
 async function newestMtime(paths: string[]): Promise<number> {
   let max = 0;
   for (const p of paths) {
@@ -94,7 +104,8 @@ export function anonymizeMetrics(m: MetricsFile, anon: Anonymizer): MetricsFile 
 export async function buildReport(input: BuildInput): Promise<BuildResult> {
   const t0 = performance.now();
   const templatePath = input.templatePath ?? (await ensureTemplate());
-  const [template, css] = await Promise.all([readFile(templatePath, 'utf8'), readFile(BASE_CSS_PATH, 'utf8')]);
+  const [template, rawCss] = await Promise.all([readFile(templatePath, 'utf8'), readFile(BASE_CSS_PATH, 'utf8')]);
+  const css = compactCss(rawCss);
   const anon = input.anonymize ? createAnonymizer(input.sessions) : identityAnonymizer();
   const generatedAt = new Date().toISOString();
   const j = input.judgments;
