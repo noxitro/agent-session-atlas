@@ -1,6 +1,8 @@
 <script lang="ts">
   import { aggregate } from '../lib/aggregate.ts';
-  import { applyFilter, decodeFilter, decodeView, emptyFilter, encodeFilter, filterOptions, inScope, isEmptyFilter, isStateHash, joinIds, splitIds, type FilterState } from '../lib/filter.ts';
+  import { applyFilter, decodeFilter, decodeView, effectiveIds, emptyFilter, encodeFilter, filterOptions, groupIds, inScope, isEmptyFilter, isStateHash, joinIds, sameIds, splitIds, type FilterState } from '../lib/filter.ts';
+  import { addIds, removeIds } from '../lib/groups.ts';
+  import GroupRail from './components/GroupRail.svelte';
   import { highlights } from '../lib/highlights.ts';
   import { date, dateTime, int } from '../lib/format.ts';
   import type { ReportData } from '../lib/types.ts';
@@ -44,7 +46,8 @@
   // 空のセッションを含めるかどうかで母集団が変わる(選択肢の件数・「全 N セッション」もこの範囲で数える)
   const scoped = $derived(sessions.filter((s) => inScope(s, filter)));
   const options = $derived(filterOptions(scoped));
-  const filtered = $derived(applyFilter(sessions, filter));
+  // 集計に使う id は「group の名前が今のグループにあればその ids、無ければ ids」(effectiveIds。宣言は下だが評価は描画時)
+  const filtered = $derived.by(() => applyFilter(sessions, { ...filter, ids: eff.ids }));
   const agg = $derived(aggregate(filtered));
   const all = $derived(aggregate(sessions));
   const points = $derived(highlights(filtered, agg.usage, { filter, anonymized: !!data?.anonymized, installed: data?.installed ?? null }));
@@ -104,18 +107,18 @@
   let selected = $state<Set<string>>(new Set());
   const knownIds = $derived(new Set(sessions.map((s) => s.id)));
   $effect(() => {
-    const ids = filter.ids;
-    // 記録に無い id(共有された URL やグループの ids に混じるもの)は選択に入れない(件数と保存の JSON を記録どおりにする)
+    const ids = eff.ids;
+    // 記録に無い id(共有された URL やグループの ids に混じるもの)は選択に入れない(件数を記録どおりにする)
     if (ids) selected = new Set(splitIds(ids).filter((id) => knownIds.has(id)));
   });
-  /** チェックしたものだけで集計する(他の条件と AND) */
+  /** チェックしたものだけで集計する(他の条件と AND)。グループの選択は外れる(名前の一致で現在のグループになることはある) */
   function applySelection(): void {
-    if (selected.size) setFilter({ ids: joinIds(selected) });
+    if (selected.size) setFilter({ ids: joinIds(selected), group: '' });
   }
   /** 選択を外す。選択で集計中ならその条件も外す(チェックが無いのに「選んだ N 件」で絞られたままにしない) */
   function clearSelection(): void {
     selected = new Set();
-    if (filter.ids) setFilter({ ids: '' });
+    if (filter.ids || filter.group) setFilter({ ids: '', group: '' });
   }
   // --- 編集モード(atlas serve から開いたとき)。画面と保存の境界は api.ts の小さな API だけ ---
   /** serve が meta に入れた token(file:// や共有用の 1 ファイルでは null) */
@@ -151,26 +154,100 @@
       return { ...g, presentIds, present: presentIds.length };
     }),
   );
-  const idsForFilter = (g: ReportGroup): string => {
-    const present = g.ids.filter((id) => knownIds.has(id));
-    return joinIds(present.length ? present : g.ids);
-  };
+  /** group(名前)→ 今のグループの ids、無ければ ids(共有した相手にその名前が無くても壊れない) */
+  const eff = $derived(effectiveIds(filter, groupOptions, knownIds));
+  /** 現在のグループ名。名前で決まらないとき(伏せ字版は名前を hash に出さない、相手に無い名前)は ids の一致で探す */
+  const currentName = $derived.by(() => {
+    if (eff.group) return eff.group.name;
+    if (!filter.ids) return null;
+    return groupOptions.find((g) => sameIds(filter.ids, groupIds(g, knownIds)))?.name ?? null;
+  });
+  /** グループを選ぶ(null で「すべて」)。名前と、その時点の ids の両方を hash に書く。伏せ字版では名前を出さない */
+  function pickGroup(name: string | null): void {
+    if (!name) {
+      setFilter({ ids: '', group: '' });
+      return;
+    }
+    const g = groupOptions.find((x) => x.name === name);
+    if (g) setFilter({ ids: groupIds(g, knownIds), group: data?.anonymized ? '' : name });
+  }
+  const selectedKnown = (): string[] => sessions.filter((s) => selected.has(s.id)).map((s) => s.id);
   /** 選んだセッションで新しいグループを作り、そのグループで絞り込む(失敗は呼び元が入力欄の下に出す) */
   async function createGroup(name: string, note: string): Promise<void> {
-    const ids = sessions.filter((s) => selected.has(s.id)).map((s) => s.id);
-    const r = await api.create(token!, { name, note, ids });
+    const r = await api.create(token!, { name, note, ids: selectedKnown() });
     liveGroups = r.groups;
-    setFilter({ ids: idsForFilter(r.group) });
+    setFilter({ ids: groupIds(r.group, knownIds), group: name });
   }
   async function renameGroup(oldName: string, name: string): Promise<void> {
     const r = await api.update(token!, oldName, { name });
+    liveGroups = r.groups;
+    if (filter.group === oldName) setFilter({ group: name });
+  }
+  async function noteGroup(name: string, note: string): Promise<void> {
+    const r = await api.update(token!, name, { note });
     liveGroups = r.groups;
   }
   async function deleteGroup(name: string): Promise<void> {
     const r = await api.remove(token!, name);
     liveGroups = r.groups;
-    setFilter({ ids: '' });
+    if (currentName === name) setFilter({ ids: '', group: '' });
   }
+  /** 選んだセッションを既存のグループに足す(重複は足さない)。絞り込みは変えず、結果の一文を返す */
+  async function addToGroup(name: string): Promise<string> {
+    const g = (liveGroups ?? []).find((x) => x.name === name);
+    if (!g) throw new Error(`グループ「${name}」はありません(再読み込みしてください)`);
+    const picked = selectedKnown();
+    const r = addIds(g, picked);
+    if (r.added > 0) {
+      const res = await api.update(token!, name, { ids: r.group.ids });
+      liveGroups = res.groups;
+      if (currentName === name) setFilter({ ids: groupIds(res.group, knownIds) });
+    }
+    return `${int(r.added)} 件を「${name}」に追加しました${r.dup ? `(既に入っていた ${int(r.dup)} 件を除く)` : ''}`;
+  }
+  /** 選んだセッションを現在のグループから外す(0 件になっても消さない) */
+  async function removeFromGroup(): Promise<string> {
+    const name = currentName;
+    const g = name ? (liveGroups ?? []).find((x) => x.name === name) : null;
+    if (!g) throw new Error('グループで絞り込んでいるときだけ外せます');
+    const r = removeIds(g, selectedKnown());
+    if (r.removed > 0) {
+      const res = await api.update(token!, g.name, { ids: r.group.ids });
+      liveGroups = res.groups;
+      setFilter({ ids: groupIds(res.group, knownIds) });
+    }
+    return `${int(r.removed)} 件を「${g.name}」から外しました${r.group.ids.length === 0 ? '(グループは 0 件のまま残ります)' : ''}`;
+  }
+  // 狭い幅(1280px 未満)では目次行の「グループ」から一覧を開く。外を押す / Esc で閉じ、焦点はボタンに戻す
+  let groupsOpen = $state(false);
+  let groupsBtn = $state<HTMLButtonElement | null>(null);
+  let groupsPop = $state<HTMLElement | null>(null);
+  function toggleGroups(): void {
+    groupsOpen = !groupsOpen;
+    if (groupsOpen) requestAnimationFrame(() => groupsPop?.focus());
+  }
+  function closeGroups(back = true): void {
+    if (!groupsOpen) return;
+    groupsOpen = false;
+    if (back) groupsBtn?.focus();
+  }
+  $effect(() => {
+    if (!groupsOpen) return;
+    const onDown = (e: MouseEvent): void => {
+      const t = e.target as Node;
+      if (groupsPop?.contains(t) || groupsBtn?.contains(t)) return;
+      closeGroups(false);
+    };
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') closeGroups();
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  });
 
   /** 効いている絞り込みの条件の数(期間は開始・終了で 1 つ、セッションの選択は 1 つ) */
   const activeConditions = $derived.by(() => {
@@ -333,7 +410,26 @@
               </ol>
             </div>
           {/each}
+          <div class="toc-group groups-toggle" role="group" aria-label="グループ">
+            <ol>
+              <li>
+                <button type="button" class="toc-btn" bind:this={groupsBtn} aria-expanded={groupsOpen} aria-controls="group-pop" data-testid="groups-toggle" onclick={toggleGroups}>
+                  グループ<span class="cnt">{int(groupOptions.length)}</span>
+                </button>
+              </li>
+            </ol>
+          </div>
         </nav>
+        <!-- サイドバー(1280px 以上)の「グループ」の群。狭い幅では目次行の「グループ」から同じ中身を開く -->
+        <div class="rail-groups" role="group" aria-label="グループ">
+          <span class="toc-title" aria-hidden="true">グループ</span>
+          <GroupRail groups={groupOptions} current={currentName} selectedCount={currentName ? 0 : splitIds(filter.ids).length} {editable} anonymized={data.anonymized} onpick={pickGroup} onrename={renameGroup} onnote={noteGroup} ondelete={deleteGroup} uid="rail" />
+        </div>
+        {#if groupsOpen}
+          <div class="group-pop" id="group-pop" role="region" bind:this={groupsPop} tabindex="-1" aria-label="グループ" data-testid="group-pop" onfocusout={(e) => { const t = e.relatedTarget as Node | null; if (t && !groupsPop?.contains(t) && !groupsBtn?.contains(t)) closeGroups(false); }}>
+            <GroupRail groups={groupOptions} current={currentName} selectedCount={currentName ? 0 : splitIds(filter.ids).length} {editable} anonymized={data.anonymized} onpick={(n) => { pickGroup(n); closeGroups(); }} onrename={renameGroup} onnote={noteGroup} ondelete={deleteGroup} uid="pop" />
+          </div>
+        {/if}
         <div class="status">
           <p class="count" aria-live="polite" aria-atomic="true">
             <span class="w">表示中</span> <strong data-testid="shown-count">{int(filtered.length)}</strong> / <span class="w">集計対象</span> {int(scoped.length)} <span class="w">セッション</span><span class="u" aria-hidden="true">件</span>
@@ -350,7 +446,7 @@
       {#if serverDown}
         <div class="down-band" role="alert">サーバが止まっています。atlas.bat を実行し直してください(閲覧はそのままできます)。</div>
       {/if}
-      <FilterBar {filter} {options} {judged} {emptyCount} groups={groupOptions} {editable} lastDay={all.overall.lastAt ? date(all.overall.lastAt) : null} onchange={setFilter} onrename={renameGroup} ondelete={deleteGroup} />
+      <FilterBar {filter} {options} {judged} {emptyCount} lastDay={all.overall.lastAt ? date(all.overall.lastAt) : null} onchange={setFilter} />
 
       <main class="wrap" id="main" tabindex="-1">
         <div class="empty" class:show={filtered.length === 0} role="status">
@@ -370,7 +466,22 @@
         <ProjectTable rows={agg.byProject} {judged} current={filter.project} onpick={(p) => setFilter({ project: p })} />
         <MonthlyChart months={agg.byMonth} />
         <ModelChart rows={agg.byModel} />
-        <SessionTable sessions={filtered} {judged} anonymized={data.anonymized} {selected} idsActive={filter.ids !== ''} {editable} onselect={(s) => (selected = s)} onapply={applySelection} onclear={clearSelection} oncreate={createGroup} />
+        <SessionTable
+          sessions={filtered}
+          {judged}
+          anonymized={data.anonymized}
+          {selected}
+          idsActive={eff.ids !== ''}
+          {editable}
+          groups={groupOptions}
+          currentGroup={currentName}
+          onselect={(s) => (selected = s)}
+          onapply={applySelection}
+          onclear={clearSelection}
+          oncreate={createGroup}
+          onadd={addToGroup}
+          onremove={removeFromGroup}
+        />
       </main>
       <footer class="wrap foot">
         <p>
@@ -539,5 +650,84 @@
   }
   .mast-tools .seg button {
     padding: 2px 8px;
+  }
+  /* グループの群: 狭い幅では目次行の「グループ」ボタンから開く一覧(.group-pop)、1280px 以上ではサイドバーの群(.rail-groups) */
+  .rail-groups {
+    display: none;
+  }
+  .toc-btn {
+    display: inline-flex;
+    align-items: center;
+    min-height: 36px;
+    padding: 0;
+    font: inherit;
+    white-space: nowrap;
+    color: var(--ink-2);
+    background: none;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+  }
+  .toc-btn:hover {
+    color: var(--form);
+    text-decoration: underline;
+  }
+  .toc-btn[aria-expanded='true'] {
+    color: var(--form);
+    font-weight: 600;
+    border-bottom-color: var(--form);
+  }
+  .toc-btn .cnt {
+    margin-left: 6px;
+    color: var(--ink-3);
+    font-size: 0.75rem;
+    font-weight: 400;
+    font-variant-numeric: tabular-nums;
+  }
+  .group-pop {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 100%;
+    max-width: 36em;
+    margin: 0 auto;
+    padding: 6px 0 8px;
+    background: var(--surface);
+    border: 1px solid var(--rule-strong);
+    border-top: 0;
+    box-shadow: 0 1px 0 var(--rule-strong);
+    z-index: 7;
+  }
+  .group-pop:focus-visible {
+    outline: 2px solid var(--form);
+    outline-offset: -2px;
+  }
+  /* 狭い幅では目次行の先頭に置く(右端に隠れて気づけないのを避ける) */
+  .groups-toggle {
+    order: -1;
+    margin-left: 0;
+    padding-left: 0;
+    border-left: 0;
+    margin-right: 10px;
+    padding-right: 10px;
+    border-right: 1px solid var(--rule);
+  }
+  @media (min-width: 1280px) {
+    .groups-toggle,
+    .group-pop {
+      display: none;
+    }
+    .rail-groups {
+      display: block;
+      margin-top: 14px;
+    }
+    .rail-groups .toc-title {
+      display: block;
+      font-size: 0.6875rem;
+      color: var(--form);
+      letter-spacing: 0.04em;
+      padding-bottom: 2px;
+      border-bottom: 1px solid var(--rule-strong);
+    }
   }
 </style>

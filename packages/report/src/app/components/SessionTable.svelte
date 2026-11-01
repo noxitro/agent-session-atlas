@@ -2,7 +2,7 @@
   import { frictionTotal } from '../../lib/aggregate.ts';
   import { sessionTime } from '../../lib/filter.ts';
   import { dateTime, dec, duration, int, modelLabel, truncate } from '../../lib/format.ts';
-  import type { SessionSummary } from '../../lib/types.ts';
+  import type { ReportGroup, SessionSummary } from '../../lib/types.ts';
   import SortMark from './SortMark.svelte';
   import { categoryLabel, confidenceLabel } from '../../lib/judgment-labels.ts';
 
@@ -13,10 +13,14 @@
     selected,
     idsActive,
     editable,
+    groups,
+    currentGroup,
     onselect,
     onapply,
     onclear,
     oncreate,
+    onadd,
+    onremove,
   }: {
     sessions: SessionSummary[];
     judged: boolean;
@@ -34,6 +38,14 @@
     editable: boolean;
     /** 選んだセッションでグループを作る(失敗は例外。理由を入力欄の下に出す) */
     oncreate: (name: string, note: string) => Promise<void>;
+    /** 既存のグループ(「グループに追加」の一覧) */
+    groups: (ReportGroup & { present: number })[];
+    /** 現在のグループ名(グループで絞り込み中。「このグループから外す」が出る) */
+    currentGroup: string | null;
+    /** 選んだセッションを既存のグループに足す。結果の一文を返す */
+    onadd: (name: string) => Promise<string>;
+    /** 選んだセッションを現在のグループから外す。結果の一文を返す */
+    onremove: () => Promise<string>;
   } = $props();
 
   type Key = 'time' | 'turns' | 'input' | 'output' | 'tools' | 'lines' | 'friction' | 'active' | 'human';
@@ -143,8 +155,74 @@
   }
   // サーバが止まったら(editable が外れたら)開いていた入力欄も閉じる
   $effect(() => {
-    if (!editable) createOpen = false;
+    if (!editable) {
+      createOpen = false;
+      menuOpen = false;
+    }
   });
+
+  // --- 「グループに追加 ▾」: 既存グループの一覧(末尾に「新しいグループ…」)。1 回で追加し、絞り込みは変えず結果を短く出す ---
+  let menuOpen = $state(false);
+  let menuBtn = $state<HTMLButtonElement | null>(null);
+  let menuEl = $state<HTMLElement | null>(null);
+  let status = $state('');
+  let statusError = $state(false);
+  let working = $state(false);
+  function toggleMenu(): void {
+    menuOpen = !menuOpen;
+    if (menuOpen) requestAnimationFrame(() => menuEl?.querySelector<HTMLButtonElement>('button')?.focus());
+  }
+  function closeMenu(back = true): void {
+    if (!menuOpen) return;
+    menuOpen = false;
+    if (back) menuBtn?.focus();
+  }
+  $effect(() => {
+    if (!menuOpen) return;
+    const onDown = (e: MouseEvent): void => {
+      const t = e.target as Node;
+      if (menuEl?.contains(t) || menuBtn?.contains(t)) return;
+      closeMenu(false);
+    };
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') closeMenu();
+      else if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && menuEl) {
+        const items = [...menuEl.querySelectorAll<HTMLButtonElement>('button')];
+        const i = items.indexOf(document.activeElement as HTMLButtonElement);
+        const n = (i + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+        items[n]?.focus();
+        e.preventDefault();
+      }
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  });
+  async function report(action: () => Promise<string>): Promise<void> {
+    if (working) return;
+    working = true;
+    status = '';
+    try {
+      status = await action();
+      statusError = false;
+    } catch (e) {
+      status = (e as Error).message;
+      statusError = true;
+    } finally {
+      working = false;
+    }
+  }
+  function pickAdd(name: string): void {
+    closeMenu();
+    void report(() => onadd(name));
+  }
+  function pickNew(): void {
+    closeMenu(false);
+    openCreate();
+  }
 </script>
 
 <section class="section" id="sessions" aria-labelledby="sessions-h">
@@ -167,12 +245,29 @@
       <!-- 選択で集計中は 0 件でも押せる(記録に無い id だけのグループを選んだときに条件を外す手段を残す) -->
       <button type="button" class="btn" disabled={selected.size === 0 && !idsActive} onclick={onclear}>選択を解除</button>
       {#if editable}
-        <button type="button" class="btn" data-testid="create-group" bind:this={createBtn} disabled={selected.size === 0 || createOpen} onclick={openCreate}>グループを作成</button>
+        <span class="menu-wrap">
+          <button type="button" class="btn" data-testid="add-to-group" bind:this={menuBtn} disabled={selected.size === 0 || createOpen} aria-expanded={menuOpen} aria-controls="add-menu" onclick={toggleMenu}>グループに追加 <span aria-hidden="true">▾</span></button>
+          {#if menuOpen}
+            <div class="menu" id="add-menu" bind:this={menuEl} role="group" aria-label="追加先のグループ" data-testid="add-menu" onfocusout={(e) => { const t = e.relatedTarget as Node | null; if (t && !menuEl?.contains(t) && !menuBtn?.contains(t)) closeMenu(false); }}>
+              {#each groups as g (g.name)}
+                <button type="button" class="item" onclick={() => pickAdd(g.name)}>{g.name}<span class="cnt" aria-hidden="true">{g.present === g.ids.length ? int(g.ids.length) : `${int(g.present)} / ${int(g.ids.length)}`}</span><span class="sr-only">{int(g.present)} 件</span></button>
+              {/each}
+              <button type="button" class="item new" data-testid="create-group" onclick={pickNew}>新しいグループ…</button>
+            </div>
+          {/if}
+        </span>
+        {#if currentGroup}
+          <button type="button" class="btn" data-testid="remove-from-group" disabled={selected.size === 0} onclick={() => void report(onremove)}>このグループから外す</button>
+        {/if}
       {:else if !anonymized}
-        <span class="how">このファイルは閲覧用です。グループの作成は atlas.bat から開いたときにできます</span>
+        <span class="how">このファイルは閲覧用です。グループの作成や追加は atlas.bat から開いたときにできます</span>
       {/if}
     </div>
   </div>
+  {#if editable}
+    <!-- live 領域は常に置いておき、文だけ差し替える(後から挿入すると読み上げられない)。高さも確保して表を押し下げない -->
+    <p class="status-line" class:bad={statusError} role="status" data-testid="group-status">{status}</p>
+  {/if}
   {#if createOpen && editable}
     <form class="create-box" data-testid="create-form" aria-label="グループの作成" aria-busy={busy} onsubmit={submitCreate}>
       <p class="create-lead">選んだ {int(selected.size)} 件を名前付きグループにします(atlas-notes/groups.json に保存され、絞り込み行の「グループ」から選べます)。</p>
@@ -390,6 +485,64 @@
     font-size: 0.75rem;
     color: var(--ink-3);
     align-self: center;
+  }
+  /* 「グループに追加 ▾」の一覧(ボタンの下に開く。外を押す / Esc で閉じる) */
+  .menu-wrap {
+    position: relative;
+    display: inline-block;
+  }
+  .menu {
+    position: absolute;
+    left: 0;
+    top: 100%;
+    z-index: 5;
+    min-width: 16em;
+    max-width: 28em;
+    max-height: 40vh;
+    overflow-y: auto;
+    margin-top: 2px;
+    background: var(--surface);
+    border: 1px solid var(--form);
+    display: flex;
+    flex-direction: column;
+  }
+  .item {
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+    width: 100%;
+    min-height: 30px;
+    padding: 4px 10px;
+    font: inherit;
+    font-size: 0.8125rem;
+    text-align: left;
+    color: var(--ink);
+    background: none;
+    border: 0;
+    border-bottom: 1px solid var(--rule);
+    cursor: pointer;
+  }
+  .item:hover {
+    background: var(--form-wash);
+  }
+  .item .cnt {
+    margin-left: auto;
+    color: var(--ink-3);
+    font-size: 0.75rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .item.new {
+    color: var(--form);
+    border-bottom: 0;
+  }
+  .status-line {
+    margin: 4px 0 0;
+    min-height: 1.25rem;
+    font-size: 0.8125rem;
+    color: var(--form);
+  }
+  .status-line.bad {
+    color: var(--warn);
   }
 
   /* グループを作成: 名前と一文をインラインで(帳票の記入欄と同じ 1px の枠) */

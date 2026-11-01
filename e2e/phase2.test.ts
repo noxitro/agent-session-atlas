@@ -385,6 +385,15 @@ describe('Phase 2 E2E: fixtures', () => {
       expect(JSON.parse(await readFile(join(notes, 'groups.json'), 'utf8'))).toEqual({ version: 1, groups: [{ name: '画面から', note: 'serve 経由', ids }] });
       expect((await jf('/api/state')).body.groups).toEqual([{ name: '画面から', note: 'serve 経由', ids }]);
       expect((await jf('/api/groups/' + encodeURIComponent('画面から'), { method: 'PUT', body: JSON.stringify({ name: '改名' }) })).status).toBe(200);
+      // 第 3 段: 追加(ids の PUT)が groups.json に反映され、外して 0 件になっても残る
+      const more = data.sessions.slice(2, 4).map((s) => s.id);
+      const add = await jf('/api/groups/' + encodeURIComponent('改名'), { method: 'PUT', body: JSON.stringify({ ids: [...ids, ...more, ids[0]] }) });
+      expect(add.status).toBe(200);
+      expect(JSON.parse(await readFile(join(notes, 'groups.json'), 'utf8')).groups[0]).toEqual({ name: '改名', note: 'serve 経由', ids: [...ids, ...more] });
+      const empty = await jf('/api/groups/' + encodeURIComponent('改名'), { method: 'PUT', body: JSON.stringify({ ids: [] }) });
+      expect(empty.status).toBe(200);
+      expect(JSON.parse(await readFile(join(notes, 'groups.json'), 'utf8')).groups).toEqual([{ name: '改名', note: 'serve 経由', ids: [] }]);
+      expect((await jf('/api/state')).body.groups).toHaveLength(1);
       expect((await jf('/api/groups/' + encodeURIComponent('改名'), { method: 'DELETE' })).status).toBe(200);
       expect(JSON.parse(await readFile(join(notes, 'groups.json'), 'utf8'))).toEqual({ version: 1, groups: [] });
       // CLI の --group も同じファイルを読む(無い名前はエラー)

@@ -83,6 +83,13 @@ describe('serve', () => {
     const u = await json(`/api/groups/${encodeURIComponent('a')}`, { method: 'PUT', body: JSON.stringify({ name: 'A', note: 'nn' }) });
     expect(u.status).toBe(200);
     expect(u.body.group).toEqual({ name: 'A', note: 'nn', ids: ['1', '2'] });
+    // ids だけの更新(追加・除外は画面側の純関数で決めて PUT する)。空にしても消えない
+    const u2 = await json(`/api/groups/A`, { method: 'PUT', body: JSON.stringify({ ids: ['1', '2', '9', '9'] }) });
+    expect(u2.body.group).toEqual({ name: 'A', note: 'nn', ids: ['1', '2', '9'] });
+    const u3 = await json(`/api/groups/A`, { method: 'PUT', body: JSON.stringify({ ids: [] }) });
+    expect(u3.status).toBe(200);
+    expect(u3.body.group).toEqual({ name: 'A', note: 'nn', ids: [] });
+    expect((await json(`/api/groups/A`, { method: 'PUT', body: JSON.stringify({ ids: ['1', '2'] }) })).status).toBe(200);
     expect((await json('/api/groups/zzz', { method: 'PUT', body: JSON.stringify({ note: '' }) })).status).toBe(404);
     expect((await json('/api/groups/zzz', { method: 'DELETE' })).status).toBe(404);
     const d = await json('/api/groups/b', { method: 'DELETE' });

@@ -77,6 +77,30 @@ export function serializeGroups(groups: SessionGroup[]): string {
   return `${JSON.stringify(file, null, 2)}\n`;
 }
 
+/** グループに id を足す(重複は足さない、順序は元のまま + 足した順)。added は実際に増えた数、dup は既に入っていた数 */
+export function addIds(group: SessionGroup, ids: Iterable<string>): { group: SessionGroup; added: number; dup: number } {
+  const have = new Set(group.ids);
+  const next = [...group.ids];
+  let added = 0;
+  let dup = 0;
+  for (const id of uniqueIds(ids)) {
+    if (have.has(id)) dup++;
+    else {
+      have.add(id);
+      next.push(id);
+      added++;
+    }
+  }
+  return { group: { ...group, ids: next }, added, dup };
+}
+
+/** グループから id を外す(0 件になっても消さない)。removed は実際に減った数 */
+export function removeIds(group: SessionGroup, ids: Iterable<string>): { group: SessionGroup; removed: number } {
+  const drop = new Set(uniqueIds(ids));
+  const next = group.ids.filter((id) => !drop.has(id));
+  return { group: { ...group, ids: next }, removed: group.ids.length - next.length };
+}
+
 /**
  * 先頭一致で id を解決する。完全一致があればそれ、無ければ先頭一致が 1 つだけならそれ。
  * 複数に当たれば曖昧、どれにも当たらなければ未知としてエラーにする(黙って無視しない)。

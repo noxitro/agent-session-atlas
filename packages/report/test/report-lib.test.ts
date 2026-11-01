@@ -5,8 +5,8 @@ import type { SessionRecord } from '../../core/src/types.ts';
 import { aggregate, coverageBreakdown, monthRange } from '../src/lib/aggregate.ts';
 import { createAnonymizer, identityAnonymizer, shortProjectLabel } from '../src/lib/anonymize.ts';
 import { embedData, extractEmbedded, serializeForScript } from '../src/lib/embed.ts';
-import { applyFilter, decodeFilter, emptyFilter, encodeFilter, filterOptions, isEmptyFilter, joinIds, NO_JUDGMENT, sameIds, splitIds, UNKNOWN } from '../src/lib/filter.ts';
-import { parseGroups, resolveIdPrefixes, serializeGroups } from '../src/lib/groups.ts';
+import { applyFilter, decodeFilter, effectiveIds, emptyFilter, encodeFilter, filterOptions, groupIds, isEmptyFilter, joinIds, NO_JUDGMENT, NO_SESSION, sameIds, splitIds, UNKNOWN } from '../src/lib/filter.ts';
+import { addIds, parseGroups, removeIds, resolveIdPrefixes, serializeGroups } from '../src/lib/groups.ts';
 import { parseJudgments } from '../src/lib/judgments.ts';
 import { niceTicks } from '../src/lib/scale.ts';
 import { modelLabel } from '../src/lib/format.ts';
@@ -190,6 +190,45 @@ describe('filter', () => {
     expect(splitIds(decodeFilter(`#${h}`).ids)).toEqual(many);
     expect(sameIds('a,b', 'b,a')).toBe(true);
     expect(sameIds('a,b', 'a')).toBe(false);
+  });
+
+  it('Phase 10 第 3 段: group(名前)は hash と往復し、名前が今のグループにあればその ids、無ければ ids に落ちる。0 件のグループは何にも当たらない', async () => {
+    const s = summaries(await fixture());
+    const known = new Set(s.map((x) => x.id));
+    const f = { ...emptyFilter(), group: '調査 1', ids: 'a,b' };
+    expect(encodeFilter(f)).toBe('ids=a,b&group=%E8%AA%BF%E6%9F%BB%201');
+    expect(decodeFilter(`#${encodeFilter(f)}`)).toEqual(f);
+    expect(decodeFilter('#group=%20x%20').group).toBe('x');
+    const groups = [
+      { name: '調査 1', ids: ['c', 'zzz'] },
+      { name: '空', ids: [] },
+      { name: '無い', ids: ['zzz'] },
+    ];
+    // 名前があれば今の ids(記録にあるもの)。hash の ids(a,b)は古い値として無視される
+    expect(effectiveIds(f, groups, known)).toEqual({ group: groups[0], ids: 'c' });
+    expect(applyFilter(s, { ...f, ids: effectiveIds(f, groups, known).ids }).map((x) => x.id)).toEqual(['c']);
+    // 相手に無い名前は ids に落ちる(壊れない)
+    expect(effectiveIds({ ...f, group: '相手に無い' }, groups, known)).toEqual({ group: null, ids: 'a,b' });
+    expect(effectiveIds({ ids: '', group: '' }, groups, known)).toEqual({ group: null, ids: '' });
+    // 0 件のグループ・記録に無い id だけのグループは「すべて」にならない
+    expect(groupIds(groups[1], known)).toBe(NO_SESSION);
+    expect(groupIds(groups[2], known)).toBe('zzz');
+    expect(applyFilter(s, { ...emptyFilter(), ids: NO_SESSION })).toEqual([]);
+    expect(applyFilter(s, { ...emptyFilter(), group: '空', ids: effectiveIds({ ids: '', group: '空' }, groups, known).ids })).toEqual([]);
+  });
+});
+
+describe('groups: 追加と除外(純関数)', () => {
+  it('addIds は重複を足さず順序を保ち、removeIds は 0 件になっても消さない', () => {
+    const g = { name: 'g', note: '', ids: ['a', 'b'] };
+    const r = addIds(g, ['b', 'c', 'c', ' ', 'a']);
+    expect(r).toEqual({ group: { name: 'g', note: '', ids: ['a', 'b', 'c'] }, added: 1, dup: 2 });
+    expect(g.ids).toEqual(['a', 'b']);
+    expect(addIds(g, [])).toEqual({ group: { name: 'g', note: '', ids: ['a', 'b'] }, added: 0, dup: 0 });
+    const d = removeIds(g, ['a', 'zzz']);
+    expect(d).toEqual({ group: { name: 'g', note: '', ids: ['b'] }, removed: 1 });
+    expect(removeIds(d.group, ['b'])).toEqual({ group: { name: 'g', note: '', ids: [] }, removed: 1 });
+    expect(removeIds({ ...g, ids: [] }, ['a'])).toEqual({ group: { name: 'g', note: '', ids: [] }, removed: 0 });
   });
 });
 
