@@ -14,6 +14,8 @@ export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const FIXTURES = FIXTURES_DIR;
 /** テスト用のコード(偽の copilot)。データは置かない */
 export const FIXTURE_CODE = join(ROOT, 'fixtures');
+/** fixture の vault(架空)の指定 */
+export const FIXTURE_WIKIS = [{ path: 'synthetic-wiki', pages: ['wiki'], skills: ['wiki-query'] }];
 
 const SCHEMA = `
 CREATE TABLE schema_version (version INTEGER NOT NULL);

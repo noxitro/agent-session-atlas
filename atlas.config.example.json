@@ -1,6 +1,6 @@
 {
   "wikis": [
-    "global-llm-wiki",
+    "my-wiki",
     {
       "path": "my-notes",
       "index": ["README.md", "00-home.md"],

@@ -104,7 +104,7 @@ describe('Phase 2 E2E: fixtures', () => {
       const s = JSON.parse(await readFile(join(outCfg, 'sessions.json'), 'utf8')) as { sessions: { id: string; wiki: unknown }[] };
       return s.sessions.find((x) => x.id.endsWith('004'))!.wiki;
     };
-    await writeFile(config, JSON.stringify({ wikis: [{ path: 'synthetic-home/global-llm-wiki', index: ['log.md'], pages: ['wiki/topics'], skills: [] }] }));
+    await writeFile(config, JSON.stringify({ wikis: [{ path: 'synthetic-home/synthetic-wiki', index: ['log.md'], pages: ['wiki/topics'], skills: [] }] }));
     expect(await wikiOf()).toEqual({ indexReads: 1, pageReads: ['wiki/topics/synthetic-page-a.md', 'wiki/topics/synthetic-page-b.md'], skillCalls: [], writes: 0, otherCalls: 1 });
     await writeFile(config, JSON.stringify({ wikis: [] }));
     expect(await wikiOf()).toEqual({ indexReads: 0, pageReads: [], skillCalls: [], writes: 0, otherCalls: 0 });

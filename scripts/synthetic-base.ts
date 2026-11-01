@@ -400,7 +400,7 @@ function newDbEvents(): Ev[] {
 // ---------------------------------------------------------------------------------------------
 const SKILL_CWD = 'X:\\synthetic-skill\\repo';
 const SKILL_START = '2026-08-20T03:00:00.000Z';
-const WIKI = 'X:\\synthetic-home\\global-llm-wiki';
+const WIKI = 'X:\\synthetic-home\\synthetic-wiki';
 /** 004 の DB の明細(usage_record は無い。initiator の記録が無い古い形) */
 const SKILL_DB = [
   { input: 20_000, output: 300, cacheRead: 15_000, reasoning: 100, nanoAiu: 700_000_000, ttft: 2_500, duration: 2_700, at: '2026-08-20 03:00:06' },

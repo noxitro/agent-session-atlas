@@ -1,7 +1,7 @@
 // ナレッジ vault(llm-wiki)参照の分類。どの vault をどの形式で数えるかは WikiSpec で指定する
 import type { WikiUsage } from './types.ts';
 
-/** 参照を数える vault 1 つの指定。path 以外は省略すると DEFAULT_WIKI と同じ */
+/** 参照を数える vault 1 つの指定。index / pages / extensions の省略時は DEFAULT_FORMAT */
 export interface WikiSpec {
   /** vault のフォルダ名か、その末尾を含むパス(例: my-notes、D:/notes/my-notes) */
   path: string;
@@ -11,18 +11,12 @@ export interface WikiSpec {
   pages?: string[];
   /** 個別ページの拡張子 */
   extensions?: string[];
-  /** wiki の skill 名 */
+  /** wiki の skill 名。省略すると名前では数えない */
   skills?: string[];
 }
 
-/** 設定が無いときに数える vault(llm-wiki の標準の形式) */
-export const DEFAULT_WIKI: Required<WikiSpec> = {
-  path: 'global-llm-wiki',
-  index: ['index.md'],
-  pages: ['wiki'],
-  extensions: ['.md'],
-  skills: ['wiki-ingest', 'wiki-query', 'wiki-lint'],
-};
+/** 形式を省略したときの値(特定の vault の構成を前提にしない) */
+const DEFAULT_FORMAT = { index: ['index.md'], pages: ['.'], extensions: ['.md'] };
 
 const WRITE_TOOLS = new Set(['edit', 'create', 'apply_patch', 'write', 'str_replace_editor']);
 /** パスの名前に使われる文字。vault 名の前後がこれだと別のフォルダとみなす(my-notes-app を my-notes に数えない) */
@@ -56,9 +50,9 @@ function argText(args: unknown): string {
 function compile(spec: WikiSpec): CompiledWiki {
   const path = trimPath(spec.path);
   const vault = `(?<!${NAME_CHAR}|\\.)${escapeRe(path)}(?!${NAME_CHAR}|\\.[\\p{L}\\p{N}])`;
-  const index = (spec.index ?? DEFAULT_WIKI.index).map((f) => escapeRe(trimPath(f)));
-  const dirs = (spec.pages ?? DEFAULT_WIKI.pages).map(trimPath);
-  const exts = (spec.extensions ?? DEFAULT_WIKI.extensions).map((e) => escapeRe(e.replace(/^\./, '')));
+  const index = (spec.index ?? DEFAULT_FORMAT.index).map((f) => escapeRe(trimPath(f)));
+  const dirs = (spec.pages ?? DEFAULT_FORMAT.pages).map(trimPath);
+  const exts = (spec.extensions ?? DEFAULT_FORMAT.extensions).map((e) => escapeRe(e.replace(/^\./, '')));
   const prefix = dirs.some((d) => d === '' || d === '.') ? '' : `(?:${dirs.map((d) => `${escapeRe(d)}/`).join('|')})`;
   return {
     label: path.split('/').pop() ?? path,
@@ -68,14 +62,14 @@ function compile(spec: WikiSpec): CompiledWiki {
   };
 }
 
-/** 指定の vault に対してツール呼び出しと skill を分類する */
+/** 指定の vault に対してツール呼び出しと skill を分類する。指定が無ければ何も数えない */
 export class WikiClassifier {
   private readonly wikis: CompiledWiki[];
   private readonly skills: Set<string>;
 
-  constructor(specs: WikiSpec[] = [DEFAULT_WIKI]) {
+  constructor(specs: WikiSpec[] = []) {
     this.wikis = specs.map(compile);
-    this.skills = new Set(specs.flatMap((s) => s.skills ?? DEFAULT_WIKI.skills));
+    this.skills = new Set(specs.flatMap((s) => s.skills ?? []));
   }
 
   /** 名前か、skill のファイルの場所から wiki の skill か判定する */

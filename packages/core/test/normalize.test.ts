@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { mergeUsage, normalizeSession, normalizeTime, projectKey } from '../src/normalize.ts';
 import type { CopilotEvent, DbUsageRow } from '../src/types.ts';
+import { WikiClassifier } from '../src/wiki.ts';
 
 let n = 0;
 const ev = (type: string, data: unknown, timestamp: string, extra: Partial<CopilotEvent> = {}): CopilotEvent => ({
@@ -80,7 +81,7 @@ describe('normalizeSession', () => {
       ev('tool.execution_start', { toolName: 'skill', toolCallId: 't1', arguments: { skill: 'wiki-query' } }, '2026-10-01T00:00:01.000Z'),
       ev('skill.invoked', { name: 'wiki-query' }, '2026-10-01T00:00:01.100Z'),
       ev('skill.invoked', { name: 'impeccable' }, '2026-10-01T00:00:01.200Z'),
-      ev('tool.execution_start', { toolName: 'view', toolCallId: 't2', arguments: { path: 'D:\\global-llm-wiki\\index.md' } }, '2026-10-01T00:00:01.300Z'),
+      ev('tool.execution_start', { toolName: 'view', toolCallId: 't2', arguments: { path: 'D:\\my-wiki\\index.md' } }, '2026-10-01T00:00:01.300Z'),
       ev('tool.execution_complete', { toolCallId: 't2', success: false }, '2026-10-01T00:00:01.400Z'),
       ev('tool.execution_start', { toolName: 'ask_user', toolCallId: 't3', arguments: {} }, '2026-10-01T00:00:01.500Z'),
       ev('tool.execution_start', { toolName: 'create', toolCallId: 't4', arguments: { path: 'C:\\r\\new.txt' } }, '2026-10-01T00:00:01.550Z'),
@@ -101,6 +102,7 @@ describe('normalizeSession', () => {
     const r = await normalizeSession({
       id: 's',
       hasDir: true,
+      wikiClassifier: new WikiClassifier([{ path: 'my-wiki', skills: ['wiki-query'] }]),
       workspace: { client_name: 'github/cli', created_at: '2026-10-01T00:00:00.000Z', updated_at: '2026-10-01T00:20:00.000Z' },
       db: {
         session: { id: 's', cwd: 'C:\\r', repository: 'o/r', host_type: 'github', branch: 'main', summary: 'sum', created_at: '2026-10-01 00:00:00', updated_at: '2026-10-01 00:20:00' },

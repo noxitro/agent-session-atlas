@@ -10,7 +10,7 @@ export const CONFIG_FILE = 'atlas.config.json';
 export interface AtlasConfig {
   /** 読んだ設定ファイル。使っていなければ null */
   path: string | null;
-  /** 参照を数える vault。設定に無ければ null(core の既定) */
+  /** 参照を数える vault。設定に無ければ null(wiki は数えない) */
   wikis: WikiSpec[] | null;
 }
 

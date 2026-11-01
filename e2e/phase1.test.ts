@@ -9,7 +9,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { openReadOnly, runPipeline, type PipelineResult, type SessionRecord, type SessionsFile } from '../packages/core/src/index.ts';
-import { buildFixtureHome, readFixtureStore, ROOT } from './fixture-home.ts';
+import { buildFixtureHome, FIXTURE_WIKIS, readFixtureStore, ROOT } from './fixture-home.ts';
 
 const LIVE = process.env.ATLAS_LIVE === '1';
 const WORK = join(ROOT, 'out', 'e2e-phase1');
@@ -109,7 +109,7 @@ describe('Phase 1 E2E: fixtures', () => {
     ({ home, close } = await buildFixtureHome(join(WORK, 'home')));
     before = await mtimes(home);
     // 実環境と同じく、書き手が開いたまま(行は WAL にだけある)で走らせる
-    result = await runPipeline(home, join(WORK, 'out'));
+    result = await runPipeline(home, join(WORK, 'out'), { wikis: FIXTURE_WIKIS });
     after = await mtimes(home);
   });
   afterAll(async () => close?.());

@@ -80,12 +80,12 @@ npm run atlas -- --help                    # 使い方
 
 ## wiki の指定
 
-llm-wiki の参照は、ツール呼び出しの引数に vault の場所が現れたものを数えます。**設定が無いときは `global-llm-wiki` という名前のフォルダだけ**が対象なので、別の名前や形式の vault を使っているときは、リポジトリ直下に `atlas.config.json` を置いてください(雛形は `atlas.config.example.json`。`atlas.bat` と `atlas-export.bat` もこの設定を読みます)。
+llm-wiki の参照は、ツール呼び出しの引数に vault の場所が現れたものを数えます。**vault を指定しないと wiki は集計せず、レポートの件数は 0 のままです。** 集計するときは、リポジトリ直下に `atlas.config.json` を置いて vault を指定してください(雛形は `atlas.config.example.json`。`atlas.bat` と `atlas-export.bat` もこの設定を読みます)。
 
 ```json
 {
   "wikis": [
-    "global-llm-wiki",
+    "my-wiki",
     {
       "path": "my-notes",
       "index": ["README.md", "00-home.md"],
@@ -101,19 +101,20 @@ llm-wiki の参照は、ツール呼び出しの引数に vault の場所が現�
 |---|---|---|
 | `path` | vault のフォルダ名か、その末尾を含むパス(必須)。大文字小文字は区別せず、区切りは `\` と `/` のどちらでも構いません | — |
 | `index` | 索引のファイル。vault からの相対パス | `["index.md"]` |
-| `pages` | 個別ページを置くフォルダ。vault からの相対パス。`"."` なら vault 全体(フォルダ分けしていない vault 向け) | `["wiki"]` |
+| `pages` | 個別ページを置くフォルダ。vault からの相対パス。`"."` は vault 全体 | `["."]` |
 | `extensions` | 個別ページの拡張子 | `[".md"]` |
-| `skills` | wiki の skill として数える名前(完全一致)。`[]` なら名前では数えない | `["wiki-ingest", "wiki-query", "wiki-lint"]` |
+| `skills` | wiki の skill として数える名前(完全一致) | なし(名前では数えない) |
 
 - `wikis` の要素は文字列でも書けます。`path` だけの指定で、ほかは省略時の値です。
-- 設定に `wikis` があると、既定の `global-llm-wiki` は対象から外れます。続けて数えるなら上の例のように一緒に挙げてください。`"wikis": []` なら wiki の集計をしません。
+- `index` と `pages` は別々に判定し、索引に当たるものは索引として数えます。`pages` の配下にも索引にも当たらないファイルは「その他」です。
+- vault の中に置いた skill は、`skills` に書かなくても skill のファイルの場所から判定します。
 - vault を複数挙げると、レポートの「個別ページ」の一覧には `my-notes/notes/a.md` のように vault 名が先頭に付きます。件数は全 vault の合計で、vault 別には分けていません。
 - **`path` はフォルダ名だけの指定が確実です。** フルパスにすると、エージェントが別の書き方(bash の `/e/notes`、`~/notes` など)で触った分は数えられません。逆にフォルダ名が短くて他と紛らわしいときは、`work/notes` のように親フォルダまで含めてください。`my-notes-app` や `notes.md` は `notes` とは別物として扱います。
 - `~/` で始まる `path` はホームフォルダに展開します(展開後はフルパスの扱いです)。
 - 相対パスだけで触った呼び出し(vault の中で作業していて `wiki/a.md` とだけ書いた場合など)は vault の場所が現れないので数えません。
 - 項目の書き間違いは、件数が 0 になって気付きにくいのでエラーで止めます。
 
-判定は `extract` で行うので、設定を変えたら `extract` からやり直してください(`atlas.bat` や `npm run atlas` なら毎回行います)。`extract` のログに対象の vault と参照のあったセッション数が出ます。0 件のときは、まず `path` が合っているか確かめてください。
+判定は `extract` で行うので、設定を変えたら `extract` からやり直してください(`atlas.bat` や `npm run atlas` なら毎回行います)。`extract` のログに対象の vault と参照のあったセッション数が出ます(未設定のときはその旨が出ます)。0 件のときは、まず `path` が合っているか確かめてください。
 
 ## 画面の見方
 

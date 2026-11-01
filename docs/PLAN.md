@@ -9,7 +9,7 @@ GitHub Copilot(デスクトップ autopilot / CLI / SDK / VS Code)のセッシ�
 1. トークン使用量・コスト(premium request、nano AIU)
 2. skills / agents / hooks の利用状況
 3. 指示ファイル(AGENTS.md / CLAUDE.md / copilot-instructions.md)の注入状況
-4. llm-wiki(`global-llm-wiki`)の参照状況
+4. llm-wiki(設定で指定した vault)の参照状況
 5. 摩擦指標(compaction、abort、ask_user、permission、error)
 
 を**LLMなしで**抽出・集計し、単一HTMLで可視化する。さらに「各タスクを人手でやった場合の工数」を **LLM に推定させる**ための評価バンドルを出力し、外部 LLM(M365 Copilot 等)でもツール内バックエンド(`copilot -p` 等)でも同じ形式の判定結果 `judgments.json` を戻してレポートに合成する。
@@ -53,7 +53,7 @@ GitHub Copilot(デスクトップ autopilot / CLI / SDK / VS Code)のセッシ�
 - agents: `subagent.started/completed/failed/selected/configured`(`agentName` `totalTokens`)
 - hooks: `hook.start/end`(`hookType` `input.toolName`)
 - 指示ファイル: `system.message` 本文に AGENTS.md / CLAUDE.md / copilot-instructions.md が埋め込まれる。本文中の見出しやパスから「どのファイルが何文字注入されたか」を切り出す
-- wiki: ツール引数に `global-llm-wiki` を含むセッションと、system.message での言及がある。`view` で index.md → 個別ページの順に読んだか、`skill` の wiki-ingest/query 呼び出しかを区別する
+- wiki: ツール引数に vault のパスを含むセッションと、system.message での言及がある。`view` で索引 → 個別ページの順に読んだか、`skill` の呼び出しかを区別する
 - 摩擦: `abort` `session.error` `permission.requested/completed` `ask_user` ツール `session.mode_changed` `session.model_change`
 - 構造: `user.message` `assistant.turn_start/end` `session.task_complete` `session.plan_changed` `session.resume` `session.shutdown`
 

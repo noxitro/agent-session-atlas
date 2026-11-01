@@ -123,7 +123,7 @@ export interface ExtractOptions {
    * 既定はこのマシンのホーム・一時フォルダと、スナップショット元が <home>/.copilot ならその <home>。
    */
   projects?: ProjectResolverOptions | false;
-  /** 参照を数える wiki の vault。未指定は DEFAULT_WIKI、空なら数えない */
+  /** 参照を数える wiki の vault。未指定か空なら数えない */
   wikis?: WikiSpec[];
 }
 

@@ -4,7 +4,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, posix, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { computeMetrics, DEFAULT_WIKI, extract, METRICS_SCHEMA_VERSION, snapshot, type MetricsFile, type SessionRecord, type SessionsFile, type SnapshotManifest } from '../../core/src/index.ts';
+import { computeMetrics, extract, METRICS_SCHEMA_VERSION, snapshot, type MetricsFile, type SessionRecord, type SessionsFile, type SnapshotManifest } from '../../core/src/index.ts';
 import {
   buildReport,
   DEFAULT_TRANSCRIPT_OPTIONS,
@@ -190,12 +190,10 @@ export async function runExtract(p: Paths, since: string | null, log: Log, tempD
     const skills = new Set([...s.installed.skills, ...s.installed.plugins.flatMap((x) => x.skills)]).size;
     log(`extract: インストール済み skill ${skills} 件・プラグイン ${s.installed.plugins.length} 件を記録(名前だけ)${s.installed.warnings.length ? `、注意 ${s.installed.warnings.join(' / ')}` : ''}`);
   }
-  const wikiNames = (cfg.wikis ?? [DEFAULT_WIKI]).map((w) => w.path).join('、');
-  if (wikiNames === '') log(`extract: wiki の集計はしません(${cfg.path} の wikis が空)`);
-  else {
+  if (cfg.wikis?.length) {
     const used = s.sessions.filter(({ wiki: w }) => w.indexReads + w.pageReads.length + w.skillCalls.length + w.writes + w.otherCalls > 0).length;
-    log(`extract: wiki の対象 ${wikiNames}(${cfg.wikis ? cfg.path : `既定。${CONFIG_FILE} で変更可`})、参照のあったセッション ${used} 件`);
-  }
+    log(`extract: wiki の対象 ${cfg.wikis.map((w) => w.path).join('、')}(${cfg.path})、参照のあったセッション ${used} 件`);
+  } else log(`extract: wiki は未設定のため集計しません(${CONFIG_FILE} の wikis で vault を指定できます)`);
   if (unknown > 0 || s.warnings.badLines > 0) log(`extract: 注意 未知のイベント種別 ${unknown} 件、読めなかった行 ${s.warnings.badLines} 行`);
   return s;
 }

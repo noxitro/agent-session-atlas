@@ -40,7 +40,7 @@ export interface NormalizeInput {
   events?: AsyncIterable<CopilotEvent> | Iterable<CopilotEvent> | null;
   /** parseEvents に渡した stats(badLines を記録に載せる) */
   eventStats?: ParseStats;
-  /** wiki 参照の分類(既定は DEFAULT_WIKI) */
+  /** wiki 参照の分類(未指定なら数えない) */
   wikiClassifier?: WikiClassifier;
 }
 

@@ -46,7 +46,7 @@ export function naiveCount(lines: string[]) {
     }
     if (e.type === 'user.message' && e.data?.source == null) c.userTurns++;
     if (e.type === 'hook.start') c.hookTypes[e.data.hookType] = (c.hookTypes[e.data.hookType] ?? 0) + 1;
-    if (e.type === 'tool.execution_start' && e.data.toolName !== 'skill' && JSON.stringify(e.data.arguments ?? {}).includes('global-llm-wiki')) c.wikiToolCalls++;
+    if (e.type === 'tool.execution_start' && e.data.toolName !== 'skill' && JSON.stringify(e.data.arguments ?? {}).includes('synthetic-wiki')) c.wikiToolCalls++;
   }
   return c;
 }
