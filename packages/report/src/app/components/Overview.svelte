@@ -11,6 +11,7 @@
     filtered,
     includeEmpty,
     emptyCount,
+    part = 'cover',
   }: {
     agg: Aggregate;
     judged: boolean;
@@ -21,6 +22,8 @@
     includeEmpty: boolean;
     /** 全データ中の空のセッション数 */
     emptyCount: number;
+    /** 表紙(規模の 4 欄。要点の前に置く)か、集計明細(残りの 12 欄と入力トークン記録の内訳。要点の後に置く)か */
+    part?: 'cover' | 'detail';
   } = $props();
 
   const o = $derived(agg.overall);
@@ -46,13 +49,14 @@
   let hover = $state<string | null>(null);
 </script>
 
+{#if part === 'cover'}
 <section class="section" id="overview" aria-labelledby="overview-h">
   <div class="section-head">
     <h2 id="overview-h">全体サマリ</h2>
-    <p>{filtered ? '絞り込み後の値' : '全セッションの値'}。入力トークン・AI 使用量(AIU)・premium request・変更行数は記録のあるセッションだけの合計です。</p>
+    <p>{filtered ? '絞り込み後の値' : '全セッションの値'}。規模の 4 欄。トークンやツールなどの明細は要点の下の「集計明細」にあります。</p>
   </div>
   {#if !includeEmpty && emptyCount > 0}
-    <p class="excluded" data-testid="empty-excluded">空のセッション {int(emptyCount)} 件を除外(依頼・ツール呼び出し・応答がどれも無いもの。上の「空のセッションを含める」で含められます)</p>
+    <p class="excluded" data-testid="empty-excluded">空のセッション {int(emptyCount)} 件を除外(依頼・ツール呼び出し・応答がどれも無いもの。絞り込みの「その他の条件」の「空のセッションを含める」で含められます)</p>
   {/if}
 
   <div class="fields" style="--cols:4">
@@ -74,7 +78,16 @@
         <span class="v missing">未判定</span><span class="n">LLM による工数判定はまだ実行していません</span>
       {/if}
     </div>
+  </div>
+</section>
+{:else}
+<section class="section" id="detail" aria-labelledby="detail-h">
+  <div class="section-head">
+    <h2 id="detail-h">集計明細</h2>
+    <p>{filtered ? '絞り込み後の値' : '全セッションの値'}。入力トークン・AI 使用量(AIU)・premium request・変更行数は記録のあるセッションだけの合計です。</p>
+  </div>
 
+  <div class="fields" style="--cols:4">
     <div class="field">
       <span class="k">入力トークン</span><span class="v">{int(o.tokens.input)}</span>
       <span class="n">記録あり {int(o.sessionsWithInput)} / {int(o.sessions)} セッション({percent(o.sessionsWithInput, o.sessions)})</span>
@@ -177,6 +190,7 @@
     <p class="note">ログに未知のイベント種別が {int(warnings.unknownEventTypes)} 件ありました(集計からは除外し、件数だけ数えています)。</p>
   {/if}
 </section>
+{/if}
 
 <style>
   .period {

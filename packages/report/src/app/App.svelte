@@ -138,8 +138,9 @@
     </div>
     <nav class="wrap toc" aria-label="ページ内の移動">
       <a href="#overview">全体</a>
-      {#if judged}<a href="#judgments">AI 投入量 vs 推定人手工数</a>{/if}
       <a href="#highlights">要点</a>
+      <a href="#detail">集計明細</a>
+      {#if judged}<a href="#judgments">AI 投入量 vs 推定人手工数</a>{/if}
       <a href="#usage">利用ランキング</a>
       <a href="#exec">実行の性質</a>
       <a href="#projects">プロジェクト別</a>
@@ -170,8 +171,10 @@
       {/if}
     </div>
 
-    <Overview {agg} {judged} anonymized={data.anonymized} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} />
+    <!-- 帳票の順: 表紙(規模の 4 欄)→ 摘要(要点)→ 明細 -->
+    <Overview part="cover" {agg} {judged} anonymized={data.anonymized} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} />
     <Highlights groups={points} />
+    <Overview part="detail" {agg} {judged} anonymized={data.anonymized} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} />
     {#if judged}<JudgmentPanel {agg} meta={data.judgments} />{/if}
     <UsageRanking usage={agg.usage} installed={data.installed ?? null} bind:tab={usageTab} />
     <ExecProfile exec={agg.exec} sessions={filtered.length} />
