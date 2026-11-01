@@ -281,6 +281,58 @@ E2E(`e2e/phase2.test.ts` g): fixture で全セッションに `.md` ができ、
 
 残した P2 以下: `.seg` が `role="group"` + `aria-pressed` で「何番目か」を伝えない(tablist 化は未実施)、モバイルのセッション一覧は 13 列の横スクロールのまま(モデル列を 1 行に省略)、theme-color が手動のダーク切り替えに追従しない、`blockquote.msg` のスクロール領域が Safari でフォーカスできない。
 
+#### 追記(2026-11-01 午後): 用語ページの目次と「並べているだけで探せない」箇所の再点検
+
+ユーザーの指摘: 用語ページの目次が 33 項目のリンクの塊(3 行)で、分類も走査の起点も無く、本文が 1 画面に 4 件しか見えないのに目次が上部を占めていた。
+
+直したこと(契約内):
+
+13. **用語の分類**: `glossary.ts` の各項目に `group` を足し、5 分類(消費の単位 6 / 時間と待ち 3 / 記録の由来と欠測 6 / 動かし方と拡張の仕組み 11 / 工数と判定 7)にした。`GLOSSARY_GROUPS` に分類の題と 1 行の説明を持つ。用語ページは分類ごとの `section.group`(h2、id は `g-<分類>`)で区切り、目次は分類 5 項目だけ。960px 以上では左に固定(sticky)した側面目次 + 右に本文の 2 段で、読んでいる分類に `aria-current` の印(短いインラインスクリプト。スクロールごとに rAF で 1 回、見出しが画面上部 1/3 を越えた最後の節)。狭い画面では分類の行(44px の枠)だけ。欠測の語の凡例は「記録の由来と欠測」の冒頭に寄せた(先頭に置くと目次より前に 5 行を占めるため)。用語ごとの id(`glossary.html#<id>`)は変えていない。
+14. **詳細ページの節の目次**: 11〜12 の節が並ぶだけだったので、表題の下に「ページ内の移動」(atlas.html と同じ形)を付けた。`section()` が描いた節の見出しを集めて描く。
+15. **「実行の性質」の内訳の目次**: 8 つの小見出し(モード別・推論強度別・起点・文脈の内訳・待ち時間・所要時間・摩擦の詳細・todo)が並ぶだけだったので、節の頭に内訳のリンク行を置き、h3 に id を付けた。
+16. 細部: ページ内リンクを滑らかにした(`scroll-behavior: smooth`、動きを減らす設定では即時)。詳細ページの長いパスの印(`.tag`)が狭い画面で枠からはみ出していたのを折り返すようにした。
+
+見直したが直さなかった箇所: 集計明細の 12 欄は 4 × 3 の行がそれぞれトークン / 課金と呼び出し / 作業の量で揃っており、行の見出しを足すほどの密度差は無い。利用ランキングは切り替えで分かれている。マストヘッドの目次 11 項目は 1 行に収まる。
+
+ui-ux-pro-max(`~/.agents/skills/ui-ux-pro-max`、`scripts/search.py --domain ux`、出典 `data/ux-guidelines.csv`。`--stack svelte` は `data/stacks/svelte.csv`)で照合した規則。設計契約(impeccable の surface brief)を優先し、この skill は汎用規則のチェックリストとしてだけ使った(`--design-system` と `--persist` は使っていない):
+
+| 観点(検索語) | 該当した規則(Category / Issue) | 採否 |
+|---|---|---|
+| 用語ページの目次(table of contents navigation grouping / sticky sidebar navigation anchor links) | Navigation / Smooth Scroll | 採用: `html { scroll-behavior: smooth }`(reduced-motion では無効) |
+| 同上 | Navigation / Sticky Navigation(固定要素が本文を隠さない) | 採用済み: 用語ページは固定ヘッダーが無く `scroll-margin-top: 12px`。atlas.html はフィルタ行の高さを `--filterbar-h` で補正済み |
+| 同上 | Accessibility / Keyboard Navigation、Skip Links | 採用済み: 目次は普通のリンク、atlas.html に「本文へ移動」。用語・詳細ページは上部のリンクが 1〜4 個なので skip link は足していない |
+| 同上 | Navigation / Breadcrumbs(3 階層以上で使う) | 採らない: 2 階層(レポート → 詳細 / 用語)なので「← 戻る」の 1 リンクのまま |
+| 同上 | Navigation / Active State(現在位置を示す) | 採用: 側面目次に `aria-current` の印(左の 3px 罫 + 太字) |
+| 詳細ページの nav(breadcrumb back link page header navigation) | Navigation / Back Button(履歴を壊さない) | 採用済み: 「← レポートに戻る」は普通の `<a>`。絞り込みの保持は契約変更の項(下)に残す |
+| 同上 | Navigation / Active State | 採用: 詳細ページには該当しない(節の目次は印なし。1 ページ内のスクロールだけなので) |
+| フィルタ行(filter bar controls sticky) | Navigation / Sticky Navigation | 採用済み(`--filterbar-h`) |
+| 同上 | Layout / Chip Collection Reflow(chip は折り返す、隠すなら +n の開閉) | 採用済み: 「その他の条件」は件数の印付きの開閉ボタンで、効いている条件は隠さない |
+| 同上 | Interaction / Focus States | 採用済み: `:focus-visible` の 2px 枠 |
+| 表の横スクロール(table horizontal scroll overflow mobile) | Responsive / Table Handling(横スクロールかカード) | 採用済み: `.table-scroll` + 影の手掛かり |
+| 同上 | Responsive / Horizontal Scroll(ページ全体の横スクロールを避ける) | 採用済み: スクロールは表の箱の中だけ |
+| 同上 | Layout / Long Token Wrapping(識別子で横にはみ出さない) | 採用: `.tag` の `nowrap` を外し `overflow-wrap: anywhere` に(詳細ページのプロジェクトのパス) |
+| ダーク配色(dark mode contrast color) | Accessibility / Color Contrast(4.5:1) | 採用済み: ダークの `--ink-3` #939c97 は #161a18 上で 5.9:1 |
+| 同上 | Accessibility / Color Only | 採用済み: 欠測の帯片は斜線、失敗は文字と印 |
+| 同上 | Accessibility / Focus Appearance(AAA の 2px・3:1) | 採用済み: 2px の `--form` 枠 |
+| タップ領域(touch target size 44px) | Touch / Touch Target Size、Accessibility / Target Size (Minimum)(Web は 24px、ネイティブは 44pt / 48dp) | 採用: 用語ページの分類の目次は 44px 高(狭い画面はタップ前提)。他のリンクは 24px 以上のまま(Web の最小値) |
+| 同上 | Touch / Touch Spacing(8px の間隔) | 採用: 分類の目次の枠の間隔 6〜8px |
+| 長い一覧の走査(long list scanning categories) | Typography / Line Length(65〜75 字) | 採用済み: `.note` `.section-head p` に max-width |
+| 同上 | Content / Truncation | 採らない: 用語の本文は全文を見せる(省略すると定義が読めない) |
+| `--stack svelte`(navigation sidebar sticky) | Accessibility / Use semantic elements | 採用済み: `nav` `button` `section` |
+| `--stack svelte`(table scroll、dark mode) | 0 件(データベースに該当なし) | — |
+
+契約変更が要る判断待ち(推奨付き):
+
+| 案 | 推奨 | 理由 |
+|---|---|---|
+| 絞り込み行の固定表示を外し、表示中の件数(と解除)だけを固定する | 推奨する | 第一画面の 2 行分が本文に戻る。条件の変更はページ上部に戻れば済み、件数の印は残る |
+| 詳細ページから戻るときに絞り込みを保つ | 推奨する(小) | `file://` では referrer が無いので、詳細ページの「戻る」を `history.length > 1` なら `history.back()` にする小さなスクリプトで足せる。直接開いたときは今のリンクのまま |
+| 伏せ字の仮名をセッション数順に振る(project-01 が最大) | 推奨しない(保留) | 単体テスト 5 箇所と README の記述が変わる割に、伏せ字版を見せる相手には順序が無くても困らない |
+| 伏せ字ビルドの要点を「規模の分布」の文に変える | 推奨しない | 要点は根拠のセッションへのリンクが価値で、伏せ字でも project-NN で辿れる |
+| `.seg` の押下状態を帳票らしい印(✓ や下線)に替える | 推奨しない | 緑ベタの方が識別しやすく、契約の「色だけに頼らない」は `aria-pressed` + 文字で満たしている |
+| 用語ページの分類目次を atlas.html のマストヘッドにも出す(用語へ直接飛ぶ) | 推奨しない | マストヘッドの目次が 11 → 16 項目になり第一画面を圧迫する |
+| 日付入力の Tab 3 打(`<input type="date">` の仕様) | 推奨しない | 置き換えは契約外で、ブラウザ標準の方がキーボード・読み上げに強い |
+
 ## 決めたこと・採らなかった案
 
 - Svelte 5 を採用(理由は開発体験。単一 HTML のサイズ差はデータ量に比べて誤差)。

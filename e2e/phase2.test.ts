@@ -16,7 +16,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { parse as parseYaml } from 'yaml';
 import type { SessionsFile } from '../packages/core/src/index.ts';
 import { buildReport, extractEmbedded, type ReportData } from '../packages/report/src/index.ts';
-import { GLOSSARY } from '../packages/report/src/lib/glossary.ts';
+import { GLOSSARY, GLOSSARY_GROUPS } from '../packages/report/src/lib/glossary.ts';
 import { computeMetrics, GROUPED_PROJECTS } from '../packages/core/src/index.ts';
 import { buildFixtureHome, FIXTURES, readFixtureStore, ROOT } from './fixture-home.ts';
 
@@ -135,6 +135,11 @@ describe('Phase 2 E2E: fixtures', () => {
     expect(externalRefs(g)).toEqual([]);
     expect(g.match(/<dt id="/g)?.length).toBe(GLOSSARY.length);
     for (const t of GLOSSARY) expect(g).toContain(`id="${t.id}"`);
+    // 分類ごとの見出し(h2、id は g-<分類>)があり、目次は分類だけを載せる(用語 1 つずつは載せない)
+    for (const grp of GLOSSARY_GROUPS) expect(g).toContain(`<section class="section group" id="g-${grp.id}"`);
+    const toc = g.match(/<nav class="gtoc"[\s\S]*?<\/nav>/)?.[0] ?? '';
+    expect(toc.match(/<a href="#g-/g)?.length).toBe(GLOSSARY_GROUPS.length);
+    expect(toc).not.toContain(`href="#${GLOSSARY[0].id}"`);
     // 本文の一文はトップページと詳細ページに無い(埋め込み JSON を除いた HTML 本文で見る)
     const sample = GLOSSARY[0].body.slice(0, 40);
     expect(html.replace(/<script type="application\/json"[\s\S]*?<\/script>/g, '')).not.toContain(sample);

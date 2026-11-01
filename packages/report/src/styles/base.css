@@ -252,7 +252,9 @@ table.ledger .muted,
   font-size: 0.75rem;
   line-height: 1.5;
   color: var(--ink-2);
-  white-space: nowrap;
+  /* 長いパスの印(詳細ページのプロジェクト)が狭い画面で枠からはみ出さないよう、折り返しを許す */
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 .tag.warn {
   border-color: var(--warn);
@@ -335,6 +337,11 @@ dl.glossary dd {
   * {
     transition: none !important;
     animation: none !important;
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
   }
 }
 

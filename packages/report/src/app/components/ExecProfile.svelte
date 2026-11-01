@@ -20,10 +20,20 @@
     <h2 id="exec-h">実行の性質</h2>
     <p>絞り込み後 {int(sessions)} セッションの、どう動かしたか(モード・推論強度・起点)と、どこで時間と文脈を使ったか。値は記録のあるものだけの集計です。</p>
   </div>
+  <nav class="subnav" aria-label="実行の性質の内訳">
+    <a href="#exec-modes-h">モード別の依頼</a>
+    <a href="#exec-efforts-h">推論強度別</a>
+    <a href="#exec-initiators-h">リクエストの起点</a>
+    <a href="#exec-context-h">文脈の内訳(ツール定義)</a>
+    <a href="#exec-latency-h">モデル別の待ち時間</a>
+    <a href="#exec-tools-h">ツールの所要時間</a>
+    <a href="#exec-friction-h">摩擦の詳細</a>
+    <a href="#exec-todo-h">todo</a>
+  </nav>
 
   <div class="panels">
     <div class="panel" data-testid="exec-modes">
-      <h3>モード別の依頼</h3>
+      <h3 id="exec-modes-h">モード別の依頼</h3>
       {#if exec.modes.total === 0}
         <p class="note">依頼の記録がありません。</p>
       {:else}
@@ -42,7 +52,7 @@
     </div>
 
     <div class="panel" data-testid="exec-efforts">
-      <h3>推論強度別</h3>
+      <h3 id="exec-efforts-h">推論強度別</h3>
       {#if exec.efforts.length === 0}
         <p class="note">リクエストの記録がありません。</p>
       {:else}
@@ -69,7 +79,7 @@
     </div>
 
     <div class="panel" data-testid="exec-initiators">
-      <h3>リクエストの起点</h3>
+      <h3 id="exec-initiators-h">リクエストの起点</h3>
       {#if exec.initiators.total === 0}
         <p class="note">リクエスト単位の記録がありません。</p>
       {:else}
@@ -86,7 +96,7 @@
     </div>
 
     <div class="panel" data-testid="exec-context">
-      <h3>文脈の内訳(ツール定義)</h3>
+      <h3 id="exec-context-h">文脈の内訳(ツール定義)</h3>
       {#if exec.context.sessions === 0}
         <p class="note">文脈の内訳の記録がありません。</p>
       {:else}
@@ -131,7 +141,7 @@
     </div>
 
     <div class="panel" data-testid="exec-latency">
-      <h3>モデル別の待ち時間</h3>
+      <h3 id="exec-latency-h">モデル別の待ち時間</h3>
       {#if exec.latency.length === 0}
         <p class="note">待ち時間の記録がありません。</p>
       {:else}
@@ -164,7 +174,7 @@
     </div>
 
     <div class="panel" data-testid="exec-tool-durations">
-      <h3>ツールの所要時間</h3>
+      <h3 id="exec-tools-h">ツールの所要時間</h3>
       {#if exec.toolDurations.measured === 0 && exec.toolDurations.outliers === 0}
         <p class="note">ツールの開始と完了が対応する記録がありません。</p>
       {:else}
@@ -202,7 +212,7 @@
     </div>
 
     <div class="panel" data-testid="exec-friction">
-      <h3>摩擦の詳細</h3>
+      <h3 id="exec-friction-h">摩擦の詳細</h3>
       <dl class="kv">
         <div>
           <dt>権限の確認の結果</dt>
@@ -234,7 +244,7 @@
     </div>
 
     <div class="panel" data-testid="exec-todos">
-      <h3>todo</h3>
+      <h3 id="exec-todo-h">todo</h3>
       {#if exec.todos.sessionsWithDb === 0}
         <p class="note">session.db(todo の記録)のあるセッションがありません。</p>
       {:else if exec.todos.total === 0}
@@ -270,6 +280,26 @@
     margin: 0 0 6px;
     font-size: 0.8125rem;
     color: var(--form);
+    scroll-margin-top: calc(var(--filterbar-h, 0px) + 12px);
+  }
+  /* 8 つの小見出しが並ぶだけだと探せないので、節の頭に内訳の目次を置く */
+  .subnav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 16px;
+    padding: 6px 0 8px;
+    font-size: 0.75rem;
+  }
+  .subnav a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 24px;
+    color: var(--ink-2);
+    text-decoration: none;
+  }
+  .subnav a:hover {
+    color: var(--form);
+    text-decoration: underline;
   }
   .foot {
     margin: 6px 0 0;

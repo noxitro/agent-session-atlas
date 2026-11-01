@@ -67,9 +67,12 @@ const field = (k: string, v: string, note = ''): string =>
   `<div class="field"><span class="k">${esc(k)}</span><span class="v">${v}</span>${note ? `<span class="n">${note}</span>` : ''}</div>`;
 
 let sectionSeq = 0;
+/** 描いた節の見出し(表題の下の「ページ内の移動」に使う。renderDetailHtml ごとに空にする) */
+let sectionIndex: { id: string; title: string }[] = [];
 function section(title: string, body: string, lead = ''): string {
   const id = `sec-${++sectionSeq}`;
-  return `<section class="section" aria-labelledby="${id}"><div class="section-head"><h2 id="${id}">${esc(title)}</h2>${lead ? `<p>${lead}</p>` : ''}</div>${body}</section>`;
+  sectionIndex.push({ id, title });
+  return `<section class="section" id="${id}" aria-labelledby="${id}-h"><div class="section-head"><h2 id="${id}-h">${esc(title)}</h2>${lead ? `<p>${lead}</p>` : ''}</div>${body}</section>`;
 }
 
 function countTable(rows: [string, number][], keyLabel: string, valueLabel: string, empty: string): string {
@@ -289,6 +292,10 @@ export interface DetailOptions {
 
 const DETAIL_CSS = `
 .meta{display:flex;flex-wrap:wrap;gap:6px 8px;margin-top:8px}
+.sec-toc{display:flex;flex-wrap:wrap;gap:4px 18px;margin-top:12px;padding-bottom:8px;border-bottom:1px solid var(--rule);font-size:.8125rem}
+.sec-toc a{display:inline-flex;align-items:center;min-height:24px;color:var(--ink-2);text-decoration:none}
+.sec-toc a:hover{color:var(--form);text-decoration:underline}
+.section{scroll-margin-top:12px}
 section h3{margin:14px 0 6px}
 h3.gap{margin-top:16px}
 .field .small{font-size:.875rem;font-weight:600;line-height:1.4}
@@ -307,6 +314,7 @@ blockquote.msg{margin:8px 0 0;padding:10px 12px;background:var(--surface);border
 
 export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
   sectionSeq = 0;
+  sectionIndex = [];
   const { anon } = o;
   const t = r.tokens;
   const lines = r.lines ?? { added: 0, removed: 0, source: 'none' as const };
@@ -517,6 +525,7 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
   }<li><a href="../glossary.html">用語の説明</a></li></ul></nav></header>
 <main class="wrap">
 <div class="title"><h1>${esc(title)}</h1><div class="meta">${meta}</div></div>
+<nav class="sec-toc" aria-label="ページ内の移動">${sectionIndex.map((s) => `<a href="#${s.id}">${esc(s.title)}</a>`).join('')}</nav>
 ${parts.join('\n')}
 </main>
 <footer class="wrap page-foot">Copilot Session Atlas が ${esc(dateTime(o.generatedAt))} に生成。${anon.enabled ? '伏せ字モード(プロジェクト・パス・ブランチ・本文を伏せています)。' : ''}</footer>

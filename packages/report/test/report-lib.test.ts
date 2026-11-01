@@ -30,6 +30,8 @@ function judgment(p: Partial<JudgmentSummary>): JudgmentSummary {
   };
 }
 import { esc, renderDetailHtml } from '../src/detail.ts';
+import { GLOSSARY, GLOSSARY_GROUPS, termsByGroup } from '../src/lib/glossary.ts';
+import { renderGlossaryHtml } from '../src/glossary-page.ts';
 
 /** usage_record 付き(入力トークンあり) */
 async function withInput(id: string, ws: Record<string, unknown>, model: string, input: number, output: number): Promise<SessionRecord> {
@@ -275,6 +277,27 @@ describe('judgments', () => {
     expect(() => parseJudgments({ schemaVersion: 1, items: [{ sessionId: 'x', humanEffort: {} }] })).toThrow(/hours/);
     expect(() => parseJudgments({ schemaVersion: 2, items: [] })).toThrow(/schemaVersion/);
     expect(() => parseJudgments({ schemaVersion: 1, items: [{}] })).toThrow(/sessionId/);
+  });
+});
+
+describe('glossary', () => {
+  it('全用語が 5 分類のどれかに入り、空の分類が無く、id が重複しない', () => {
+    const groupIds = new Set(GLOSSARY_GROUPS.map((g) => g.id));
+    for (const t of GLOSSARY) expect(groupIds.has(t.group), t.id).toBe(true);
+    for (const g of GLOSSARY_GROUPS) expect(termsByGroup(g.id).length, g.id).toBeGreaterThan(0);
+    expect(new Set(GLOSSARY.map((t) => t.id)).size).toBe(GLOSSARY.length);
+    expect(GLOSSARY_GROUPS.reduce((n, g) => n + termsByGroup(g.id).length, 0)).toBe(GLOSSARY.length);
+  });
+
+  it('用語ページは分類ごとの h2 と分類だけの目次を持ち、各用語の id(glossary.html#<id>)は変わらない', () => {
+    const html = renderGlossaryHtml({ css: '', generatedAt: '2026-11-01T00:00:00Z' });
+    for (const g of GLOSSARY_GROUPS) expect(html).toContain(`<h2 id="h-${g.id}">${g.title}</h2>`);
+    for (const t of GLOSSARY) expect(html).toContain(`<dt id="${t.id}">`);
+    const toc = html.match(/<nav class="gtoc"[\s\S]*?<\/nav>/)?.[0] ?? '';
+    expect(toc.match(/<li>/g)?.length).toBe(GLOSSARY_GROUPS.length);
+    // 欠測の語の凡例は「記録の由来と欠測」の冒頭にある
+    expect(html.indexOf('<ul class="missing-legend"')).toBeGreaterThan(html.indexOf('id="g-records"'));
+    expect(html.indexOf('<ul class="missing-legend"')).toBeLessThan(html.indexOf('id="g-mechanics"'));
   });
 });
 
