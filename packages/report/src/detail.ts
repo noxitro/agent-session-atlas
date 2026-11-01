@@ -4,6 +4,7 @@ import type { ProjectSource, SessionRecord, TimelineEntry, TokenCounts, TokenSou
 import type { Anonymizer } from './lib/anonymize.ts';
 import { frictionTotal } from './lib/aggregate.ts';
 import { NAV_JS, renderRail, renderTop } from './page-nav.ts';
+import { skillAnchor } from './library.ts';
 import { dateTime, dec, duration, int, modelLabel, msLabel, percent, truncate } from './lib/format.ts';
 import { EFFORT_ORDER, INITIATOR_ORDER, MODE_ORDER, quantilesOf, UNKNOWN_KEY } from './lib/exec.ts';
 import { effortLabel, errorTypeLabel, initiatorLabel, modeLabel, subagentFailureLabel, TODO_STATUS_ORDER, todoStatusLabel } from './lib/exec-labels.ts';
@@ -289,6 +290,10 @@ export interface DetailOptions {
   generatedAt: string;
   /** セッション記録(Markdown)のファイル名(同じフォルダ)。atlas export で作ったときだけ */
   transcriptHref?: string | null;
+  /** Phase 11: 指示文・skill の閲覧ページ(../instructions.html)を作ったときだけ。指示文の行と skill からリンクする */
+  libraryHref?: string | null;
+  /** Phase 11: 全文記録(../full/<id>.md)を作ったときだけ */
+  fullHref?: string | null;
 }
 
 const DETAIL_CSS = `
@@ -400,7 +405,7 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
     ? `<div class="table-scroll"><table class="ledger"><thead><tr><th scope="col">skill</th><th scope="col">時刻</th><th scope="col">呼んだ側</th><th scope="col">記録の形</th></tr></thead><tbody>${r.skills
         .map(
           (s) =>
-            `<tr><td>${esc(s.name)}</td><td class="num">${esc(dateTime(s.at))}</td><td>${esc(s.trigger === 'user' ? '利用者' : s.trigger === 'agent' ? 'エージェント' : '不明')}</td><td>${esc(s.via === 'both' ? 'ツール + イベント' : s.via === 'tool' ? 'ツール' : 'イベント')}</td></tr>`,
+            `<tr><td>${o.libraryHref && !anon.enabled ? `<a href="${esc(o.libraryHref)}#${esc(skillAnchor(s.name))}">${esc(s.name)}</a>` : esc(s.name)}</td><td class="num">${esc(dateTime(s.at))}</td><td>${esc(s.trigger === 'user' ? '利用者' : s.trigger === 'agent' ? 'エージェント' : '不明')}</td><td>${esc(s.via === 'both' ? 'ツール + イベント' : s.via === 'tool' ? 'ツール' : 'イベント')}</td></tr>`,
         )
         .join('')}</tbody></table></div>`
     : `<p class="note">skill の呼び出しはありません。</p>`;
@@ -426,11 +431,35 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
     ? `<div class="table-scroll"><table class="ledger"><thead><tr><th scope="col">ファイル</th><th scope="col">範囲</th><th scope="col" class="num">文字数</th><th scope="col" class="num">注入回数</th><th scope="col">初出</th>${anon.enabled ? '' : '<th scope="col">先頭の見出し</th>'}</tr></thead><tbody>${r.instructions
         .map(
           (i) =>
-            `<tr><td>${esc(i.file === 'unknown' ? '不明(特定できず)' : i.file)}</td><td>${esc(i.scope === 'repo' ? 'リポジトリ' : i.scope === 'user' ? 'ユーザー' : '不明')}</td><td class="num">${esc(int(i.chars))}</td><td class="num">${esc(int(i.injections))}</td><td class="num">${esc(dateTime(i.firstSeenAt))}</td>${anon.enabled ? '' : `<td>${esc(truncate(i.heading, 80))}</td>`}</tr>`,
+            `<tr><td>${esc(i.file === 'unknown' ? '不明(特定できず)' : i.file)}</td><td>${esc(i.scope === 'repo' ? 'リポジトリ' : i.scope === 'user' ? 'ユーザー' : '不明')}</td><td class="num">${esc(int(i.chars))}</td><td class="num">${esc(int(i.injections))}</td><td class="num">${esc(dateTime(i.firstSeenAt))}</td>${anon.enabled ? '' : `<td>${o.libraryHref ? `<a href="${esc(o.libraryHref)}#v-${esc(i.contentHash)}">${esc(truncate(i.heading, 80) || '(見出しなし)')}</a>` : esc(truncate(i.heading, 80))}</td>`}</tr>`,
         )
         .join('')}</tbody></table></div>`
     : `<p class="note">指示ファイルの注入は見つかりませんでした。</p>`;
-  parts.push(section('指示ファイル', inst));
+  parts.push(section('指示ファイル', inst, o.libraryHref && !anon.enabled ? `見出しを押すと本文と版の一覧(<a href="${esc(o.libraryHref)}">指示文と skill</a>)を開きます。` : ''));
+
+  // Phase 11: data.db(デスクトップアプリ)の許可リストの列
+  const dk = r.desktop;
+  if (dk && (dk.session || dk.workspace)) {
+    const s = dk.session ?? {};
+    const w = dk.workspace ?? {};
+    const v = (x: unknown): string => (x == null || x === '' ? '—' : esc(String(x)));
+    parts.push(
+      section(
+        'デスクトップアプリの記録(data.db)',
+        `<div class="fields" style="--cols:4">${[
+          field('モード / エージェント', v(s.mode), v(s.agent)),
+          field('モデル / 推論強度', v(s.model), v(s.reasoning_effort)),
+          field('文脈の層 / 現在のトークン', v(s.context_tier), s.context_current_tokens == null ? '' : esc(int(Number(s.context_current_tokens)))),
+          field('権限 / 自動承認 / sandbox', v(s.permission_mode), `自動承認 ${v(s.auto_approve)}・sandbox ${v(s.sandbox_enabled)}`),
+          field('入力 / 出力トークン(アプリの累計)', s.total_input_tokens == null ? '—' : esc(int(Number(s.total_input_tokens))), s.total_output_tokens == null ? '' : `出力 ${esc(int(Number(s.total_output_tokens)))}`),
+          field('fork 元', v(s.forked_from_session_id)),
+          field('workspace / ブランチ', anon.enabled ? '(伏せ字)' : v(w.name), anon.enabled ? '' : v(w.branch)),
+          field('コミット(checkpoints)/ 文脈の計測点', esc(int(dk.checkpoints.length)), `文脈 ${esc(int(dk.contextUsage.length))} 点・activity ${esc(int(dk.activity.length))}`),
+        ].join('')}</div>`,
+        'デスクトップアプリ(data.db)から許可リストの列だけを読んだもの。資格情報の列と表は開いていません。-wal の未反映分は読めないので、最近の更新は欠けることがあります。',
+      ),
+    );
+  }
 
   const w = r.wiki;
   const wikiUsed = w.indexReads + w.pageReads.length + w.skillCalls.length + w.writes + w.otherCalls > 0;
@@ -515,6 +544,8 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
             { href: o.transcriptHref, label: '記録を .md で保存', download: true },
           ]
         : []),
+      ...(o.fullHref ? [{ href: o.fullHref, label: '全文記録(解析用)を開く' }] : []),
+      ...(o.libraryHref && !anon.enabled ? [{ href: o.libraryHref, label: '指示文と skill' }] : []),
       { href: '../glossary.html', label: '用語の説明' },
     ],
   };

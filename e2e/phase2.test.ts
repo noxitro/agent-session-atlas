@@ -251,7 +251,7 @@ describe('Phase 2 E2E: fixtures', () => {
     expect((await readdir(join(out, 'sessions'))).length).toBe(3);
     expect(d.groups).toEqual([{ name: '甲の調べ', note: '甲の覚え書き', ids: [...g1, ghost] }, { name: '乙の一件', note: '', ids: [ids[3]] }]);
     expect(d.warnings.notes).toEqual([]);
-    expect(d.version).toBe(5);
+    expect(d.version).toBe(6);
     // 他の条件と AND
     const client = data.sessions.find((s) => g1.includes(s.id))!.client!;
     const r1 = atlas(['build', '--out', out, '--notes-dir', notes, '--group', '甲の調べ', '--client', client]);

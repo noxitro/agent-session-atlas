@@ -17,7 +17,9 @@ GitHub Copilot のセッションログ(`%USERPROFILE%\.copilot`)から、トー
 
 サーバ経由で開いたときだけ、画面からグループの作成・名前の変更・削除ができます(下記「絞り込み」)。共有するときは `out\atlas.html`(と `out\glossary.html`、`out\sessions\`)をそのまま渡せます。サーバ無しで開いた画面は閲覧だけで、グループの操作は出ません。
 
-`atlas-export.bat` は、同じ集計に加えて各セッションの記録(Markdown)も作ります(「[セッション記録(Markdown)](#セッション記録markdown)」)。
+`atlas-export.bat` は、同じ集計に加えて各セッションの記録(Markdown)も作ります(「[セッション記録(Markdown)](#セッション記録markdown)」)。`atlas-export-full.bat` はさらに解析用の全文記録(上限なし)と網羅の検査、指示文と skill の閲覧ページも作ります(「[解析用の完全出力](#解析用の完全出力)」)。
+
+> **`out/` は共有しないでください。** スナップショット(原本の複製)と、全文記録・セッション記録には依頼文・応答・ツールの結果・ファイルのパスがそのまま入り、秘密情報が混じることがあります。共有するときは伏せ字版(`--anonymize` で作った `out/atlas.html` と `out/sessions/`)だけを、中身を確認してから渡してください。
 
 ### コマンドで(npm run atlas)
 
@@ -31,11 +33,11 @@ npm run atlas -- --help                    # 使い方
 
 | コマンド | すること |
 |---|---|
-| `snapshot` | `~/.copilot` の必要部分(`session-store.db`、各セッションの `workspace.yaml` / `events.jsonl` / `session.db`)を `out/snapshot/` へ複製する。インストール済みの skill・プラグインは**名前だけ**を `snapshot-manifest.json` に記録する(下記) |
+| `snapshot` | `~/.copilot` の必要部分(`session-store.db`、各セッションの `workspace.yaml` / `events.jsonl` / `session.db` / `plan.md` / `checkpoints/` / `files/` / `rewind-file-snapshots/` / `policies/`、直下の `plans/` / `attachments/` / `chats/` の `*.md`)を `out/snapshot/` へ複製する。`data.db`(デスクトップアプリ)は複製せず、許可リストの列だけを `desktop.json` に書く(下記)。大きいもの(`rewind-snapshots/`、一覧に無い名前のフォルダ、`logs/`)は既定で写さず名前と容量を `snapshot-manifest.json` に残す(`--snapshot-all` で写す)。インストール済みの skill・プラグインは**名前だけ**を記録する(下記) |
 | `extract` | スナップショットから `out/sessions.json` を作る。repository の記録が無いセッションは、作業フォルダの git の設定を読んでプロジェクトを束ねる(下記) |
 | `metrics` | `out/metrics.json`(全体・プロジェクト・クライアント・月・モデル別の集計。空のセッションは除き、件数を `emptySessions` に、トークンの出所別・欠測の件数を各集計の `tokenSources` / `sessionsMissingTokens` に、ツールの成否を `tools.results`、MCP サーバー別を `tools.mcp`、skill の呼んだ側を `skills.byTrigger`、agent の失敗とトークンを `agents.byNameDetail`、変更行数を `lines`、インストール済みで未使用の skill を `installedSkills`、モード・推論強度・リクエストの起点・ツール定義のトークンを `exec`、権限の結果・エラーの種別・サブエージェント失敗の理由・compaction 自体のトークンを `frictionDetail`、todo を `todos`、モデル別の待ち時間を `latency`、ツール別の所要時間を `toolDurations` に持つ)を作る |
 | `build` | `out/atlas.html` と `out/sessions/<id>.html`(セッション詳細)を作る |
-| `export` | `build` に加えて、各セッションの記録(経過・消費)を `out/sessions/<id>.md` に書く。共有や LLM での振り返り用(下記「[セッション記録(Markdown)](#セッション記録markdown)」)。LLM は呼ばない |
+| `export` | `build` に加えて、各セッションの記録(経過・消費)を `out/sessions/<id>.md` に書く。共有や LLM での振り返り用(下記「[セッション記録(Markdown)](#セッション記録markdown)」)。指示文と skill の閲覧ページ `out/instructions.html` も作る。`--full` で解析用の全文記録(下記)。LLM は呼ばない |
 | `all` | 上の 4 つを順に実行する(コマンド省略時の既定) |
 | `bundle` | LLM に工数を判定させる評価バンドル `out/bundle/` を作る(LLM は呼ばない) |
 | `judge run` | バンドルの各セッションを LLM で判定し `out/judgments.json` に追記する(**クレジットを消費します**) |
@@ -60,6 +62,8 @@ npm run atlas -- --help                    # 使い方
 | `--include-empty` | `bundle` で、依頼の記録が無いセッションもパケットにする |
 | `--tool-output <v>` | `export` で、ツールの結果を記録に入れる条件。`fail`(既定。失敗したときだけ)/ `all` / `none` |
 | `--max-chars <n>` | `export` で、依頼・応答・要約 1 件の上限(文字、既定 20000)。超えた分は中略して字数を書く |
+| `--full` | `export` で、解析用の全文記録 `out/full/<id>.md`(上限なし)と `out/coverage.json`(網羅の検査)も書く。`--anonymize` とは併用できない |
+| `--snapshot-all` | `snapshot` / `all` / `export` で、既定で写さない大きなもの(`rewind-snapshots/`、一覧に無い名前のフォルダ、`logs/`)も写す |
 | `--temp-dir <dir>` | `extract` で、このフォルダ配下を「(一時フォルダ)」にまとめる(複数指定可)。指定すると既定の判定(`%TEMP%` と `AppData\Local\Temp`・`/tmp` のパターン)を使わず、挙げたフォルダだけを一時フォルダとみなす。このリポジトリ自体を一時フォルダ配下に置いて試すときや、別のマシンのデータを読むとき用 |
 
 `judge run` 専用のオプション(`--backend` `--limit` `--only` `--concurrency` `--force` `--no-allow-tools` `--timeout`)は「判定の回し方」を見てください。`judge run` では `--model` は判定に使うモデルの指定になります。
@@ -148,6 +152,26 @@ npm run atlas -- export --anonymize              # 伏せ字版(下の注意を�
 - スナップショットに `events.jsonl` が無いセッション(`session-store.db` にだけあるもの、`--since` で複製対象外だったもの)は、`sessions.json` に残る最初の依頼と最後の応答だけの記録になり、その旨を書きます。
 - `export` は `build` を含むので、レポートと詳細ページも作り直されます。逆に素の `build` を実行すると `.md` は消え、詳細ページのリンクも消えます(フィルタで減ったセッションの古い記録を残さないため)。
 - 同じ目的の既存ツールとの関係: agent-toolkit の `copilot-session-export`(アプリの中から `/export` `/export-usage` でその場で書き出す)と `copilot-usage-export`(PowerShell だけで動く日次バッチ)は、1 セッションをその場で・自動で書き出すためのものです。atlas の `export` は、集計と同じ絞り込みと伏せ字でまとめて出すためのもので、節の構成は揃えていますが同じファイルにはなりません。
+
+## 解析用の完全出力
+
+出力データだけでローカルと同等の解析ができるようにするための出力です(Phase 11)。**外部に出さない前提**で、原本の文字列をそのまま含みます。
+
+```
+npm run atlas -- export --full                   # snapshot / extract 済みの状態から、全文記録と coverage.json を書く
+atlas-export-full.bat                            # snapshot → extract → export --full を通しで(引数は snapshot と export に渡る)
+npm run atlas -- snapshot --snapshot-all         # rewind-snapshots / 一覧に無いフォルダ / logs/ も写す
+```
+
+| 出力 | 中身 |
+|---|---|
+| `out/snapshot/` | 原本の複製(スナップショット)。セッションフォルダの `plan.md` / `checkpoints/` / `files/` / `rewind-file-snapshots/` / `policies/`、直下の `plans/` / `attachments/` / `chats/` の `*.md` も写す。写さなかったもの(`rewind-snapshots/` は 1 セッションで数十 MB、一覧に無い名前のフォルダ、`logs/`、`repos/`、`chats/` の `*.md` 以外)は `snapshot-manifest.json` の `extras.skipped` に名前と容量を残し、`--snapshot-all` で写す(`repos/` と `chats/` の `*.md` 以外は写さない) |
+| `out/snapshot/desktop.json` | デスクトップアプリの `data.db` から、名前で固定した許可リストの列だけを読んだもの(下記) |
+| `out/full/<id>.md` | 全文記録。依頼、応答、reasoningText、ツールの引数と結果(成功含む)、hook の入出力、system.message、compaction の要約、skill の本文、plan.md、チェックポイント、`files/` などの一覧、data.db の列を時系列で、上限なしで書く。除くのは暗号化・不透明データ(`encryptedContent`、`reasoningOpaque`、`reasoningBlocks` の中の base64 らしい値)と base64 の本体(画像などは `out/full/assets/<id>/` に書き出してリンク)だけで、除いた箇所に種別とバイト数を書く。hook の入力に入っているツールの結果がツールの結果と同一なら参照にする。API キーらしい文字列は形式検査で伏せて件数を末尾に書く |
+| `out/coverage.json` | 網羅の検査。元データの event type × data のキーごとに件数・バイト数・扱い(`full` = 全文に出した / `ref` = 参照にした / `excluded` = 理由付きで除外)。扱いの表(`packages/report/src/coverage.ts`)に無いキーは `unclassified` として数え、`export` のログと全文記録の末尾にも出す(0 件なら欠損なし)。`data.db` の列も同じ表で(許可 = `full`、許可外 = `unclassified`、開かない表 = `excluded`) |
+| `out/instructions.html` と `out/library/` | 指示文(AGENTS.md / CLAUDE.md / copilot-instructions.md 等の注入)と skill の本文を、重複なしで版(内容のハッシュ)ごとに置いたもの。見出しごとの版一覧、本文、使われたセッション、初回と最終の利用日、前の版との差分。詳細ページの指示ファイルの行と skill からリンクし、サイドバーの付録にも入る。`--full` でなくても `export` で作る。伏せ字版では作らない |
+
+**data.db(デスクトップアプリ)**: 以前は資格情報の列を含むため読んでいませんでしたが、Phase 11 から次の形で読みます。ファイルは複製せず、`file:///…/data.db?immutable=1` の読み取り専用で開きます(`-shm` / `-wal` に触れません)。読むのは名前で固定した許可リストの列だけで(`sessions` の非資格情報の列、`session_context_usage`、`session_checkpoints`、`activity_items`、`projects` と `workspaces` の非資格情報の列)、`select *` はせず、`accounts` / `settings` / `app_state` / `model_providers` / `remote_environments` は開きません。許可リストに無い列は名前だけ数えます(値は読みません)。immutable で開くため `-wal` の未反映分は読めず、最近の更新が欠けることがあります(`desktop.json` と全文記録に WAL の大きさと更新日時を書きます)。結果は `sessions.json` の `desktop` 欄、全文記録、詳細ページの「デスクトップアプリの記録(data.db)」に出ます。
 
 ## 判定の回し方(推定人手工数)
 

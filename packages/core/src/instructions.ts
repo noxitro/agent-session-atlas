@@ -11,6 +11,8 @@ export interface InstructionBlock {
   heading: string;
   contentHash: string;
   sourcePath?: string;
+  /** 本文(Phase 11 の閲覧ページ用。sessions.json には入れない) */
+  body: string;
 }
 
 const CUSTOM_RE = /<custom_instruction>\n?([\s\S]*?)\n?<\/custom_instruction>/g;
@@ -76,12 +78,13 @@ export function extractInstructionBlocks(content: string): InstructionBlock[] {
         heading: firstHeading(inner),
         contentHash: contentHash(inner),
         sourcePath: im[1],
+        body: inner,
       });
       outer = outer.replace(im[0], '');
     }
     if (outer.trim() === '') continue;
     const c = classifyByContent(outer);
-    out.push({ file: c.file, method: c.method, chars: charCount(outer), heading: firstHeading(outer), contentHash: contentHash(outer) });
+    out.push({ file: c.file, method: c.method, chars: charCount(outer), heading: firstHeading(outer), contentHash: contentHash(outer), body: outer });
   }
   return out;
 }

@@ -1,3 +1,4 @@
+import type { DesktopData, DesktopSessionInfo } from './desktop-types.ts';
 // sessions.json / metrics.json のスキーマ。後続フェーズ(cli / report / judge)はここだけを参照する。
 
 // 2: Phase 5(empty / autopilotContinuations / tools.internal / files.deleted・sessionState、
@@ -6,7 +7,8 @@
 //    metrics は tools.results・mcp / skills.byTrigger / agents.byNameDetail / lines / installedSkills)
 // 4: Phase 7(exec: モード・推論強度・起点・文脈の内訳・待ち時間 / tools.durations・durationOutliers /
 //    frictionDetail / todos / agents[].error、metrics は exec / frictionDetail / todos と latency / toolDurations)
-export const SESSIONS_SCHEMA_VERSION = 4;
+// 5: Phase 11(desktop / desktop.json)
+export const SESSIONS_SCHEMA_VERSION = 5;
 export const METRICS_SCHEMA_VERSION = 4;
 
 // ---------- 入力(生データ) ----------
@@ -394,6 +396,11 @@ export interface SessionRecord {
   frictionDetail: FrictionDetail;
   /** todo(session.db が無ければ null) */
   todos: TodoSummary | null;
+  /**
+   * Phase 11: デスクトップアプリの data.db から許可リストの列だけを読んだもの(desktop.json)。
+   * アプリで開いていないセッション・data.db が無いときは null
+   */
+  desktop?: DesktopSessionInfo | null;
   /** 変更行数(追加 / 削除) */
   lines: LineChanges;
   skills: SkillUse[];
@@ -416,6 +423,8 @@ export interface SessionsFile {
   schemaVersion: number;
   generatedAt: string;
   source: { root: string | null; snapshotDir: string; since: string | null };
+  /** Phase 11: data.db の読み取りの状態(WAL の注意、表ごとの列の扱い)。無ければ null */
+  desktop?: { readAt: string; wal: DesktopData['wal']; coverage: DesktopData['coverage']; warnings: string[]; sessions: number } | null;
   /** empty: 依頼 0・ツール 0・応答 0 のセッション数(sessions には含む) */
   counts: { sessions: number; dbOnly: number; dirOnly: number; both: number; empty: number };
   /** インストール済みの skill / プラグイン(snapshot の記録。古いスナップショットでは null) */

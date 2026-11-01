@@ -7,7 +7,8 @@ import { newParseStats, parseEvents } from './events.ts';
 import { resolveInstructions } from './instructions.ts';
 import { normalizeSession } from './normalize.ts';
 import { ProjectResolver, type ProjectResolverOptions } from './project.ts';
-import { readSnapshotManifest, SNAPSHOT_SESSION_DB } from './snapshot.ts';
+import { DESKTOP_JSON, readSnapshotManifest, SNAPSHOT_SESSION_DB } from './snapshot.ts';
+import { desktopForSession, type DesktopData } from './desktop.ts';
 import { openReadOnly } from './sqlite.ts';
 import {
   SESSIONS_SCHEMA_VERSION,
@@ -132,6 +133,16 @@ export async function extract(snapshotDir: string, opts: ExtractOptions = {}): P
   const since = opts.since !== undefined ? opts.since : (manifest?.since ?? null);
   const sinceMs = since ? Date.parse(since) : null;
   const store = await loadStore(join(snapshotDir, 'session-store.db'));
+  // Phase 11: data.db の許可リストの列(snapshot が desktop.json に書いたもの)。無ければ null
+  let desktop: DesktopData | null = null;
+  const desktopPath = join(snapshotDir, DESKTOP_JSON);
+  if (existsSync(desktopPath)) {
+    try {
+      desktop = JSON.parse(await readFile(desktopPath, 'utf8')) as DesktopData;
+    } catch (e) {
+      desktop = null;
+    }
+  }
   const stateDir = join(snapshotDir, 'session-state');
   const dirs = new Set(await listSessionDirs(stateDir));
 
@@ -176,6 +187,7 @@ export async function extract(snapshotDir: string, opts: ExtractOptions = {}): P
       rec.project = p.project;
       rec.projectSource = p.source;
     }
+    rec.desktop = desktop ? desktopForSession(desktop, id) : null;
     done++;
     opts.onProgress?.(done, ids.length, id);
     if (sinceMs != null) {
@@ -196,10 +208,12 @@ export async function extract(snapshotDir: string, opts: ExtractOptions = {}): P
 
   const both = sessions.filter((s) => s.sources.length === 2).length;
   const dbOnly = sessions.filter((s) => s.sources.length === 1 && s.sources[0] === 'db').length;
+  if (desktop) for (const w of desktop.warnings) messages.push(`data.db: ${w}`);
   return {
     schemaVersion: SESSIONS_SCHEMA_VERSION,
     generatedAt: new Date().toISOString(),
     source: { root: manifest?.sourceRoot ?? null, snapshotDir, since },
+    desktop: desktop ? { readAt: desktop.readAt, wal: desktop.wal, coverage: desktop.coverage, warnings: desktop.warnings, sessions: desktop.tables.sessions?.length ?? 0 } : null,
     counts: { sessions: sessions.length, dbOnly, dirOnly: sessions.length - both - dbOnly, both, empty: sessions.filter((s) => s.empty).length },
     installed,
     warnings: { unknownEventTypes: unknownAll, badLines, messages },

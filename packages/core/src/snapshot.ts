@@ -1,14 +1,28 @@
 import { copyFile, mkdir, readdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, relative } from 'node:path';
+import { readDesktopDb } from './desktop.ts';
 import { openWritable, sqlString } from './sqlite.ts';
 import type { InstalledInventory } from './types.ts';
 
-/** 複製する SQLite(ルート直下)。data.db(デスクトップアプリ)は資格情報列を含み、どこからも読まないので複製しない */
+/** 複製する SQLite(ルート直下)。data.db(デスクトップアプリ)は資格情報列を含むので複製せず、Phase 11 から許可リストの列だけを desktop.json に書く */
 export const SNAPSHOT_DBS = ['session-store.db'] as const;
-/** 以前のバージョンが複製していたが今は読まないファイル。snapshot 時に残っていれば消す */
+/** 以前のバージョンが複製していたが今は複製しないファイル。snapshot 時に残っていれば消す */
 export const SNAPSHOT_STALE_FILES = ['data.db'] as const;
 export const SNAPSHOT_SESSION_FILES = ['workspace.yaml', 'events.jsonl'] as const;
+/** Phase 11: セッションフォルダの追加のファイル(あれば写す) */
+export const SNAPSHOT_SESSION_EXTRA_FILES = ['plan.md', 'vscode.metadata.json'] as const;
+/** Phase 11: セッションフォルダの追加のサブフォルダ(あれば再帰的に写す) */
+export const SNAPSHOT_SESSION_EXTRA_DIRS = ['checkpoints', 'files', 'rewind-file-snapshots', 'policies', 'research', 'sandbox-denials'] as const;
+/** Phase 11: 既定では写さず --snapshot-all で写すサブフォルダ(大きい。rewind-snapshots は 1 セッションで数十 MB) */
+export const SNAPSHOT_SESSION_HEAVY_DIRS = ['rewind-snapshots'] as const;
+/** Phase 11: ~/.copilot 直下で写すフォルダ */
+export const SNAPSHOT_TOP_DIRS = ['plans', 'attachments'] as const;
+/** Phase 11: ~/.copilot 直下で既定では写さないフォルダ(--snapshot-all で写す)と理由 */
+export const SNAPSHOT_TOP_HEAVY_DIRS: Record<string, string> = { logs: 'アプリのログ(資格情報を含みうる。セッションの解析には使わない)' };
+/** Phase 11: 写さないフォルダ(名前と容量だけ残す)と理由 */
+export const SNAPSHOT_TOP_SKIP_DIRS: Record<string, string> = { repos: 'ソースのチェックアウト(記録ではない)', chats: 'ユーザーが書き出した Markdown(*.md)だけ写し、他は無関係なファイル' };
+export const DESKTOP_JSON = 'desktop.json';
 /** セッションごとの SQLite(todos / todo_deps)。Phase 7 から VACUUM INTO で複製する */
 export const SNAPSHOT_SESSION_DB = 'session.db';
 /** 複製した session.db の元の指紋(サイズと mtime)。同じなら次回は複製し直さない */
@@ -18,6 +32,16 @@ export const SNAPSHOT_MANIFEST = 'snapshot-manifest.json';
 export interface SnapshotOptions {
   /** この時刻以降に更新されたセッションだけを複製する(ISO 文字列か Date) */
   since?: string | Date;
+  /** Phase 11: 既定で写さない大きなもの(rewind-snapshots、一覧に無い名前のもの、logs/)も写す */
+  all?: boolean;
+}
+
+/** 写さなかったもの(名前と容量) */
+export interface SkippedEntry {
+  /** 元のルートからの相対パス(/ 区切り) */
+  path: string;
+  bytes: number;
+  reason: string;
 }
 
 export interface SnapshotManifest {
@@ -30,6 +54,16 @@ export interface SnapshotManifest {
   sessionDbErrors?: string[];
   /** インストール済みの skill / プラグインの名前(Phase 6。古いマニフェストには無い) */
   installed?: InstalledInventory;
+  /** Phase 11: 追加で写したもの(セッションフォルダの中身と ~/.copilot 直下)と、写さなかったもの */
+  extras?: {
+    all: boolean;
+    sessionFiles: number;
+    sessionBytes: number;
+    topLevel: Record<string, { files: number; bytes: number }>;
+    skipped: SkippedEntry[];
+    /** data.db(許可リストの列だけ)を desktop.json に書いたか。無ければ false。読めなければ理由 */
+    desktop: { written: boolean; sessions: number; warnings: string[] } | null;
+  };
 }
 
 /**
@@ -41,6 +75,8 @@ export interface SnapshotManifest {
  */
 export async function snapshot(src: string, dest: string, opts: SnapshotOptions = {}): Promise<SnapshotManifest> {
   const since = opts.since ? new Date(opts.since) : null;
+  const all = !!opts.all;
+  const extras: NonNullable<SnapshotManifest['extras']> = { all, sessionFiles: 0, sessionBytes: 0, topLevel: {}, skipped: [], desktop: null };
   if (since && Number.isNaN(since.getTime())) throw new Error(`since が日時として解釈できない: ${String(opts.since)}`);
   if (!existsSync(src)) throw new Error(`元ディレクトリが無い: ${src}`);
   await mkdir(dest, { recursive: true });
@@ -97,13 +133,139 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
           (manifest.sessionDbErrors ??= []).push(`${ent.name}: ${(e as Error).message}`);
         }
       } else await rm(join(dirDest, SNAPSHOT_SESSION_DB), { force: true }); // 元から消えたものは複製側も消す
+      // Phase 11: plan.md・checkpoints/・files/ などを写す。大きいもの・一覧に無いものは --snapshot-all のときだけ
+      await copySessionExtras(dirSrc, dirDest, src, all, extras);
     }
   }
+
+  // Phase 11: ~/.copilot 直下の plans/・attachments/(と chats/ の *.md)。logs/ は --snapshot-all、repos/ は写さない
+  await copyTopLevel(src, dest, all, extras);
+  // Phase 11: data.db は複製せず、許可リストの列だけを desktop.json に書く(immutable で開く。元には触れない)
+  try {
+    const d = await readDesktopDb(join(src, 'data.db'));
+    if (d) {
+      await writeFile(join(dest, DESKTOP_JSON), JSON.stringify(d));
+      extras.desktop = { written: true, sessions: d.tables.sessions?.length ?? 0, warnings: d.warnings };
+    } else {
+      await rm(join(dest, DESKTOP_JSON), { force: true });
+      extras.desktop = null;
+    }
+  } catch (e) {
+    extras.desktop = { written: false, sessions: 0, warnings: [`data.db を読めない (${(e as Error).message})`] };
+  }
+  manifest.extras = extras;
 
   manifest.installed = await readInventory(src);
 
   await writeFile(join(dest, SNAPSHOT_MANIFEST), JSON.stringify(manifest, null, 2));
   return manifest;
+}
+
+const KNOWN_SESSION_ENTRIES = new Set<string>([
+  ...SNAPSHOT_SESSION_FILES,
+  SNAPSHOT_SESSION_DB,
+  `${SNAPSHOT_SESSION_DB}-wal`,
+  `${SNAPSHOT_SESSION_DB}-shm`,
+  ...SNAPSHOT_SESSION_EXTRA_FILES,
+  ...SNAPSHOT_SESSION_EXTRA_DIRS,
+  ...SNAPSHOT_SESSION_HEAVY_DIRS,
+]);
+const isLock = (name: string): boolean => /^inuse\.\d+\.(lock|hold)$/.test(name) || name.endsWith('.lock');
+
+/** フォルダの容量(再帰) */
+async function dirBytes(dir: string): Promise<number> {
+  let n = 0;
+  for (const e of await readdir(dir, { withFileTypes: true, recursive: true })) if (e.isFile()) n += (await stat(join(e.parentPath, e.name))).size;
+  return n;
+}
+
+/** フォルダを再帰的に写す(サイズと mtime が同じファイルは再利用)。写した件数とバイト数 */
+async function copyTree(from: string, to: string): Promise<{ files: number; bytes: number }> {
+  let files = 0;
+  let bytes = 0;
+  await mkdir(to, { recursive: true });
+  for (const e of await readdir(from, { withFileTypes: true, recursive: true })) {
+    if (!e.isFile()) continue;
+    const rel = relative(from, join(e.parentPath, e.name));
+    const dst = join(to, rel);
+    await mkdir(dirname(dst), { recursive: true });
+    const r = await copyIfChanged(join(e.parentPath, e.name), dst);
+    files++;
+    bytes += r.bytes;
+  }
+  return { files, bytes };
+}
+
+async function copySessionExtras(dirSrc: string, dirDest: string, root: string, all: boolean, extras: NonNullable<SnapshotManifest['extras']>): Promise<void> {
+  const relPath = (p: string): string => relative(root, p).replace(/\\/g, '/');
+  for (const f of SNAPSHOT_SESSION_EXTRA_FILES) {
+    const p = join(dirSrc, f);
+    if (!existsSync(p)) continue;
+    const r = await copyIfChanged(p, join(dirDest, f));
+    extras.sessionFiles++;
+    extras.sessionBytes += r.bytes;
+  }
+  for (const ent of await readdir(dirSrc, { withFileTypes: true })) {
+    const name = ent.name;
+    const p = join(dirSrc, name);
+    if (ent.isDirectory()) {
+      const heavy = (SNAPSHOT_SESSION_HEAVY_DIRS as readonly string[]).includes(name);
+      const known = (SNAPSHOT_SESSION_EXTRA_DIRS as readonly string[]).includes(name);
+      if (known || ((heavy || !KNOWN_SESSION_ENTRIES.has(name)) && all)) {
+        const r = await copyTree(p, join(dirDest, name));
+        extras.sessionFiles += r.files;
+        extras.sessionBytes += r.bytes;
+      } else if (heavy || !KNOWN_SESSION_ENTRIES.has(name)) {
+        extras.skipped.push({ path: relPath(p), bytes: await dirBytes(p), reason: heavy ? '大きい(--snapshot-all で写す)' : '一覧に無い名前(--snapshot-all で写す)' });
+      }
+    } else if (ent.isFile() && !KNOWN_SESSION_ENTRIES.has(name) && !isLock(name)) {
+      if (all) {
+        const r = await copyIfChanged(p, join(dirDest, name));
+        extras.sessionFiles++;
+        extras.sessionBytes += r.bytes;
+      } else extras.skipped.push({ path: relPath(p), bytes: (await stat(p)).size, reason: '一覧に無い名前(--snapshot-all で写す)' });
+    }
+  }
+}
+
+async function copyTopLevel(src: string, dest: string, all: boolean, extras: NonNullable<SnapshotManifest['extras']>): Promise<void> {
+  for (const name of SNAPSHOT_TOP_DIRS) {
+    const p = join(src, name);
+    if (!existsSync(p)) continue;
+    extras.topLevel[name] = await copyTree(p, join(dest, name));
+  }
+  for (const [name, reason] of Object.entries(SNAPSHOT_TOP_HEAVY_DIRS)) {
+    const p = join(src, name);
+    if (!existsSync(p)) continue;
+    if (all) extras.topLevel[name] = await copyTree(p, join(dest, name));
+    else extras.skipped.push({ path: name, bytes: await dirBytes(p), reason: `${reason}(--snapshot-all で写す)` });
+  }
+  // chats/: *.md(ユーザーが書き出したセッション記録)だけ写し、他は名前と容量だけ
+  const chats = join(src, 'chats');
+  if (existsSync(chats)) {
+    let files = 0;
+    let bytes = 0;
+    let otherBytes = 0;
+    let otherFiles = 0;
+    for (const e of await readdir(chats, { withFileTypes: true, recursive: true })) {
+      if (!e.isFile()) continue;
+      const from = join(e.parentPath, e.name);
+      if (e.name.toLowerCase().endsWith('.md')) {
+        const to = join(dest, 'chats', relative(chats, from));
+        await mkdir(dirname(to), { recursive: true });
+        const r = await copyIfChanged(from, to);
+        files++;
+        bytes += r.bytes;
+      } else {
+        otherFiles++;
+        otherBytes += (await stat(from)).size;
+      }
+    }
+    extras.topLevel.chats = { files, bytes };
+    if (otherFiles) extras.skipped.push({ path: 'chats(*.md 以外)', bytes: otherBytes, reason: `${SNAPSHOT_TOP_SKIP_DIRS.chats}(${otherFiles} ファイル)` });
+  }
+  const repos = join(src, 'repos');
+  if (existsSync(repos)) extras.skipped.push({ path: 'repos', bytes: await dirBytes(repos), reason: SNAPSHOT_TOP_SKIP_DIRS.repos });
 }
 
 /** ディレクトリ(とそれを指すシンボリックリンク・ジャンクション)の名前。無ければ空 */

@@ -3,7 +3,11 @@ import { existsSync } from 'node:fs';
 import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { InstalledInventory, MetricsBucket, MetricsFile, SessionRecord } from '../../core/src/types.ts';
+import type { CopilotEvent, InstalledInventory, MetricsBucket, MetricsFile, SessionRecord } from '../../core/src/types.ts';
+import { contentHash, readEvents } from '../../core/src/index.ts';
+import { CoverageCounter, coverageFile, desktopCoverage } from './coverage.ts';
+import { fullFileName, renderFull } from './full.ts';
+import { INSTRUCTIONS_FILE, LIBRARY_DIR, LibraryCollector, renderInstructionsHtml, writeLibrary } from './library.ts';
 import { createAnonymizer, identityAnonymizer, type Anonymizer } from './lib/anonymize.ts';
 import { renderDetailHtml } from './detail.ts';
 import { GLOSSARY_FILE, renderGlossaryHtml } from './glossary-page.ts';
@@ -76,6 +80,12 @@ export interface BuildInput {
   templatePath?: string;
   /** セッション記録(Markdown)も書く(atlas export)。snapshotDir の events.jsonl と session-store.db から本文と明細を読む */
   transcripts?: Omit<TranscriptOptions, 'anon' | 'generatedAt'> & { snapshotDir: string; store?: StoreData };
+  /** Phase 11: 全文記録(out/full/)と coverage.json も書く(atlas export --full。伏せ字とは併用しない) */
+  full?: boolean;
+  /** Phase 11: 指示文・skill の閲覧ページ(out/library/ と instructions.html)。transcripts のときの既定は true(伏せ字版では作らない) */
+  library?: boolean;
+  /** sessions.json の desktop(data.db の読み取りの状態。WAL の注意を全文記録に書く) */
+  desktopMeta?: { wal: { note: string } | null } | null;
 }
 
 /** atlas.html の大きさの上限(docs/PLAN.md「HTML の方針」。超えても出力はするが、CLI が注意を出す) */
@@ -92,6 +102,10 @@ export interface BuildResult {
   detailBytes: number;
   /** セッション記録(Markdown)を書いたときの集計 */
   transcripts: { files: number; bytes: number; secretHits: number; truncated: number; fromRecordOnly: number } | null;
+  /** Phase 11: 全文記録の集計 */
+  full: { files: number; bytes: number; assets: { files: number; bytes: number }; secretHits: number; excluded: { n: number; bytes: number }; unclassified: string[]; coveragePath: string; events: number } | null;
+  /** Phase 11: 閲覧ページの集計 */
+  library: { groups: number; versions: number; files: number; bytes: number; secretHits: number; path: string } | null;
   ms: number;
 }
 
@@ -143,6 +157,7 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
       : null,
     // 伏せ字モードではグループ名と note(自由記述)は出さず、ファイルの順で「グループ 1, 2, …」にする。ids は不透明なのでそのまま
     groups: (input.groups ?? []).map((g, i) => (anon.enabled ? { name: `グループ ${i + 1}`, note: '', ids: [...g.ids] } : { name: g.name, note: g.note, ids: [...g.ids] })),
+    library: !!(input.transcripts && (input.library ?? true) && !anon.enabled),
     // 警告文には groups.json の絶対パスが入るので、伏せ字モードでは <path> に置き換える(scrub)
     warnings: { unknownEventTypes: input.warnings.unknownEventTypes, badLines: input.warnings.badLines, notes: (input.warnings.notes ?? []).map((n) => anon.scrub(n)) },
   };
@@ -162,6 +177,19 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
   const tr = input.transcripts;
   const store = tr ? (tr.store ?? (await loadStore(join(tr.snapshotDir, 'session-store.db')))) : null;
   const trStat = tr ? { files: 0, bytes: 0, secretHits: 0, truncated: 0, fromRecordOnly: 0 } : null;
+  // Phase 11: 全文記録と閲覧ページ(どちらも events.jsonl を読み直す)
+  const wantFull = !!(tr && input.full);
+  if (wantFull && anon.enabled) throw new Error('--full(全文記録)は --anonymize と併用できません(解析用の完全出力は共有しない前提のため)');
+  const wantLibrary = data.library;
+  const fullDir = join(input.outDir, 'full');
+  await rm(fullDir, { recursive: true, force: true });
+  await rm(join(input.outDir, LIBRARY_DIR), { recursive: true, force: true });
+  await rm(join(input.outDir, INSTRUCTIONS_FILE), { force: true });
+  await rm(join(input.outDir, 'coverage.json'), { force: true });
+  if (wantFull) await mkdir(fullDir, { recursive: true });
+  const coverage = new CoverageCounter();
+  const fullStat = wantFull ? { files: 0, bytes: 0, assets: { files: 0, bytes: 0 }, secretHits: 0, excluded: { n: 0, bytes: 0 }, unclassified: new Set<string>(), events: 0 } : null;
+  const lib = wantLibrary ? new LibraryCollector() : null;
   for (const r of input.sessions) {
     const full = j?.bySession.get(r.id) ?? null;
     // 詳細ページには根拠も出す(伏せ字モードでは自由記述を出さない)
@@ -179,9 +207,60 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
       trStat.truncated += t.truncated;
       if (t.source === 'record') trStat.fromRecordOnly++;
     }
-    const page = renderDetailHtml(r, { anon, css, judgment, generatedAt, transcriptHref });
+    let fullHref: string | null = null;
+    if (tr && store && (wantFull || lib)) {
+      const sessionDir = join(tr.snapshotDir, 'session-state', r.id);
+      const eventsPath = join(sessionDir, 'events.jsonl');
+      const events: CopilotEvent[] = existsSync(eventsPath) ? (await readEvents(eventsPath)).events : [];
+      if (lib) {
+        for (const e of events) {
+          const d = (e.data ?? {}) as Record<string, unknown>;
+          if (e.type === 'system.message' && typeof d.content === 'string') lib.addSystemMessage(r.id, d.content, e.timestamp ?? null);
+          if (e.type === 'skill.invoked' && typeof d.content === 'string' && typeof d.name === 'string') lib.addSkill(r.id, d.name, d.content, contentHash(d.content), e.timestamp ?? null, typeof d.path === 'string' ? d.path : null);
+        }
+      }
+      if (wantFull && fullStat) {
+        const file = fullFileName(r.id);
+        const res = await renderFull(r, events, store.usage.get(r.id) ?? [], {
+          generatedAt,
+          assetsDir: join(fullDir, 'assets', r.id.replace(/[^A-Za-z0-9._-]/g, '_')),
+          assetsHref: `assets/${r.id.replace(/[^A-Za-z0-9._-]/g, '_')}`,
+          sessionDir: existsSync(sessionDir) ? sessionDir : null,
+          sessionDirHref: existsSync(sessionDir) ? `../snapshot/session-state/${encodeURIComponent(r.id)}` : null,
+          coverage,
+          walNote: input.desktopMeta?.wal?.note ?? null,
+        });
+        await writeFile(join(fullDir, file), res.markdown);
+        fullHref = `../full/${file}`;
+        fullStat.files++;
+        fullStat.bytes += Buffer.byteLength(res.markdown);
+        fullStat.assets.files += res.assets.files;
+        fullStat.assets.bytes += res.assets.bytes;
+        fullStat.secretHits += res.secretHits;
+        fullStat.excluded.n += res.excluded.n;
+        fullStat.excluded.bytes += res.excluded.bytes;
+        fullStat.events += res.events;
+        for (const k of res.unclassified) fullStat.unclassified.add(k);
+      }
+    }
+    const page = renderDetailHtml(r, { anon, css, judgment, generatedAt, transcriptHref, libraryHref: data.library ? `../${INSTRUCTIONS_FILE}` : null, fullHref });
     detailBytes += Buffer.byteLength(page);
     await writeFile(join(detailDir, detailFileName(r.id)), page);
+  }
+
+  let fullOut: BuildResult['full'] = null;
+  if (wantFull && fullStat) {
+    const coveragePath = join(input.outDir, 'coverage.json');
+    await writeFile(coveragePath, JSON.stringify(coverageFile(coverage, input.sessions.length, input.desktopMeta ? desktopCoverage((input.desktopMeta as { coverage?: Parameters<typeof desktopCoverage>[0] }).coverage) : null, generatedAt), null, 1));
+    fullOut = { ...fullStat, unclassified: [...fullStat.unclassified].sort(), coveragePath };
+  }
+  let libOut: BuildResult['library'] = null;
+  if (lib) {
+    const groups = lib.result();
+    const w = await writeLibrary(join(input.outDir, LIBRARY_DIR), groups);
+    const names = new Map(sessions.map((s) => [s.id, s.name || s.firstUserMessage || s.id.slice(0, 8)]));
+    await writeFile(join(input.outDir, INSTRUCTIONS_FILE), renderInstructionsHtml({ css, generatedAt, groups, sessionName: (id) => (names.get(id) ?? id).replace(/\s+/g, ' ').slice(0, 60) }));
+    libOut = { groups: groups.length, versions: groups.reduce((n, g) => n + g.versions.length, 0), files: w.files, bytes: w.bytes, secretHits: w.secretHits, path: join(input.outDir, INSTRUCTIONS_FILE) };
   }
 
   return {
@@ -193,6 +272,8 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
     detailPages: input.sessions.length,
     detailBytes,
     transcripts: trStat,
+    full: fullOut,
+    library: libOut,
     ms: performance.now() - t0,
   };
 }

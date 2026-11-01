@@ -71,6 +71,10 @@ export interface CliOptions {
   toolOutput: 'fail' | 'all' | 'none';
   /** export: 本文 1 件の上限(文字)。null は既定 */
   maxChars: number | null;
+  /** Phase 11 export: 全文記録(out/full/)と coverage.json も書く */
+  full: boolean;
+  /** Phase 11 snapshot: 既定で写さない大きなもの(rewind-snapshots、一覧に無いもの、logs/)も写す */
+  snapshotAll: boolean;
   judge: JudgeCliOptions | null;
   groupCmd: GroupCliOptions | null;
   /** serve: 固定するポート(null は空きポート) */
@@ -114,11 +118,14 @@ export const USAGE = `使い方: atlas <コマンド> [オプション]
   --include-empty    bundle: 依頼の記録が無いセッションもパケットにする
   --temp-dir <dir>   extract: このフォルダ配下を「(一時フォルダ)」にまとめる(複数指定可)。指定すると既定の判定
                      (%TEMP% と AppData\\Local\\Temp・/tmp のパターン)を使わない
+  --snapshot-all     snapshot: 既定で写さない大きなもの(rewind-snapshots、一覧に無い名前のもの、logs/)も写す
   -h, --help         この説明を出す
 
 export のオプション:
   --tool-output <v>  ツールの結果を記録に入れる条件: fail(既定、失敗したときだけ)/ all / none
   --max-chars <n>    依頼・応答・要約 1 件の上限(文字、既定 20000)。超えた分は中略して字数を書く
+  --full             解析用の全文記録(out/full/<id>.md、上限なし。暗号化データと base64 本体だけ除外)と
+                     out/coverage.json(網羅の検査)も書く。--anonymize とは併用できない。共有しないこと
 
 serve のオプション:
   --port <n>         ポートを固定する(既定は空きポートを自動で取る)
@@ -170,6 +177,8 @@ export function parseCli(argv: string[]): CliOptions {
         'include-empty': { type: 'boolean', default: false },
         'temp-dir': { type: 'string', multiple: true },
         'tool-output': { type: 'string' },
+        full: { type: 'boolean', default: false },
+        'snapshot-all': { type: 'boolean', default: false },
         'max-chars': { type: 'string' },
         backend: { type: 'string' },
         limit: { type: 'string' },
@@ -238,6 +247,9 @@ export function parseCli(argv: string[]): CliOptions {
   const toolOutput = values['tool-output'] ?? 'fail';
   if (!['fail', 'all', 'none'].includes(toolOutput)) throw new UsageError(`--tool-output は fail / all / none のどれかです: ${toolOutput}`);
   if ((values['tool-output'] != null || values['max-chars'] != null) && cmd !== 'export') throw new UsageError('--tool-output と --max-chars は export でだけ使えます');
+  if (values.full && cmd !== 'export') throw new UsageError('--full は export でだけ使えます');
+  if (values.full && values.anonymize) throw new UsageError('--full(解析用の全文記録)は --anonymize と併用できません');
+  if (values['snapshot-all'] && !['snapshot', 'all', 'export'].includes(cmd)) throw new UsageError('--snapshot-all は snapshot / all / export で使えます');
   if (values.since != null && Number.isNaN(Date.parse(values.since))) throw new UsageError(`--since の日時を解釈できません: ${values.since}`);
   if ((values.port != null || values.open === false) && cmd !== 'serve') throw new UsageError('--port と --no-open は serve でだけ使えます');
   const port = posInt(values.port, '--port', 0);
@@ -264,6 +276,8 @@ export function parseCli(argv: string[]): CliOptions {
     tempDirs: values['temp-dir'] && values['temp-dir'].length ? values['temp-dir'] : null,
     toolOutput: toolOutput as 'fail' | 'all' | 'none',
     maxChars: posInt(values['max-chars'], '--max-chars', 200),
+    full: values.full ?? false,
+    snapshotAll: values['snapshot-all'] ?? false,
     judge,
     groupCmd,
     port,

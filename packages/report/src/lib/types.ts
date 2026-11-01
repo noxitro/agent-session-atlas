@@ -7,7 +7,8 @@ import type { LineChanges, MetricsFile, ProjectSource, TodoSummary, TokenSource 
 //    lines / projectSource / installed)
 // 4: Phase 7(exec / tools.durations・outliers / frictionDetail / todos)
 // 5: Phase 10(groups / warnings.notes)
-export const REPORT_DATA_VERSION = 5;
+// 6: Phase 11(library)
+export const REPORT_DATA_VERSION = 6;
 
 /** 推論強度別の [リクエスト, 入力, 出力, nano AIU] */
 export type EffortTuple = [requests: number, input: number, output: number, nanoAiu: number];
@@ -182,6 +183,8 @@ export interface ReportData {
   installed: { skills: string[]; disabled: string[] } | null;
   /** 名前付きグループ(atlas-notes/groups.json)。無ければ空。伏せ字モードでは name は「グループ 1」など、note は '' */
   groups: ReportGroup[];
+  /** Phase 11: 指示文と skill の閲覧ページ(instructions.html)を作ったか(export のとき。伏せ字版では false) */
+  library: boolean;
   /** notes: atlas-notes/ の読み取りで無視した箇所(groups.json が壊れている等。無ければ空) */
   warnings: { unknownEventTypes: number; badLines: number; notes: string[] };
 }

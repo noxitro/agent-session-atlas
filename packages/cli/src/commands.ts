@@ -139,15 +139,21 @@ const PROJECT_SOURCE_LABEL: Record<string, string> = {
 };
 const mb = (b: number): string => `${(b / 1024 / 1024).toFixed(2)} MB`;
 
-export async function runSnapshot(p: Paths, since: string | null, log: Log): Promise<SnapshotManifest> {
+export async function runSnapshot(p: Paths, since: string | null, log: Log, all = false): Promise<SnapshotManifest> {
   if (!existsSync(p.home)) throw new Error(`Copilot のデータが見つかりません: ${p.home}(--home で場所を指定できます)`);
   const t = performance.now();
-  log(`snapshot: ${p.home} → ${p.snapshot}`);
-  const m = await snapshot(p.home, p.snapshot, since ? { since } : {});
+  log(`snapshot: ${p.home} → ${p.snapshot}${all ? '(--snapshot-all)' : ''}`);
+  const m = await snapshot(p.home, p.snapshot, { ...(since ? { since } : {}), all });
   log(
     `snapshot: セッションディレクトリ ${m.sessions.dirs}(複製 ${m.sessions.copiedFiles} / 再利用 ${m.sessions.reusedFiles} ファイル、${mb(m.sessions.bytes)}、session.db 複製 ${m.sessions.dbCopied ?? 0} / 再利用 ${m.sessions.dbReused ?? 0})、${ms(performance.now() - t)}`,
   );
   if (m.sessionDbErrors?.length) log(`snapshot: 注意 session.db を複製できなかったセッション ${m.sessionDbErrors.length} 件(${m.sessionDbErrors.slice(0, 3).join(' / ')})`);
+  const x = m.extras;
+  if (x) {
+    const top = Object.entries(x.topLevel).map(([k, v]) => `${k} ${v.files}`).join(' / ');
+    log(`snapshot: 付随物 セッションフォルダ ${x.sessionFiles} ファイル(${mb(x.sessionBytes)})${top ? `、直下 ${top}` : ''}、写さなかったもの ${x.skipped.length} 件(${mb(x.skipped.reduce((a, s) => a + s.bytes, 0))}。manifest の extras.skipped)`);
+    if (x.desktop) log(`snapshot: data.db → desktop.json(許可リストの列だけ、${x.desktop.sessions} セッション${x.desktop.warnings.length ? `、注意 ${x.desktop.warnings.join(' / ')}` : ''})`);
+  }
   return m;
 }
 
@@ -266,7 +272,7 @@ export async function runMetrics(p: Paths, f: SessionFilter, log: Log): Promise<
 export interface BuildOptions extends SessionFilter {
   anonymize: boolean;
   /** export: セッション記録(Markdown)も書く */
-  transcripts?: { toolOutput: ToolOutputMode; maxChars: number | null } | null;
+  transcripts?: { toolOutput: ToolOutputMode; maxChars: number | null; full?: boolean } | null;
 }
 
 export async function runBuild(p: Paths, o: BuildOptions, log: Log): Promise<BuildResult> {
@@ -308,7 +314,17 @@ export async function runBuild(p: Paths, o: BuildOptions, log: Log): Promise<Bui
     transcripts: o.transcripts
       ? { ...DEFAULT_TRANSCRIPT_OPTIONS, toolOutput: o.transcripts.toolOutput, maxTextChars: o.transcripts.maxChars ?? DEFAULT_TRANSCRIPT_OPTIONS.maxTextChars, snapshotDir: p.snapshot }
       : undefined,
+    full: !!o.transcripts?.full,
+    desktopMeta: s.desktop ?? null,
   });
+  if (r.library) log(`export: 指示文と skill の閲覧ページ ${r.library.path}(${r.library.groups} 項目・${r.library.versions} 版、本文 ${r.library.files} ファイル ${mb(r.library.bytes)})`);
+  if (r.full) {
+    const f = r.full;
+    log(`export: 全文記録 ${f.files} 件(計 ${mb(f.bytes)}、イベント ${f.events} 件、画像など ${f.assets.files} ファイル ${mb(f.assets.bytes)}、除外 ${f.excluded.n} 箇所 ${mb(f.excluded.bytes)})→ ${join(p.out, 'full', '<id>.md')}`);
+    log(`export: 網羅の検査 → ${f.coveragePath}。未分類のキー ${f.unclassified.length} 件${f.unclassified.length ? `: ${f.unclassified.slice(0, 10).join(', ')}${f.unclassified.length > 10 ? ' …' : ''}` : ''}`);
+    if (f.secretHits) log(`export: 注意 全文記録で API キーやトークンらしい文字列を ${f.secretHits} 件伏せました`);
+    log('export: 注意 全文記録(out/full/)は原本の文字列をそのまま含みます。共有しないでください');
+  }
   if (r.transcripts) {
     const t = r.transcripts;
     log(
@@ -468,7 +484,7 @@ export async function run(o: CliOptions, log: Log): Promise<{ paths: Paths; buil
   const t = performance.now();
   switch (o.command) {
     case 'snapshot':
-      await runSnapshot(p, o.since, log);
+      await runSnapshot(p, o.since, log, o.snapshotAll);
       return { paths: p };
     case 'extract':
       await runExtract(p, o.since, log, o.tempDirs);
@@ -479,7 +495,7 @@ export async function run(o: CliOptions, log: Log): Promise<{ paths: Paths; buil
     case 'build':
       return { paths: p, build: await runBuild(p, { ...f, anonymize: o.anonymize }, log) };
     case 'export':
-      return { paths: p, build: await runBuild(p, { ...f, anonymize: o.anonymize, transcripts: { toolOutput: o.toolOutput, maxChars: o.maxChars } }, log) };
+      return { paths: p, build: await runBuild(p, { ...f, anonymize: o.anonymize, transcripts: { toolOutput: o.toolOutput, maxChars: o.maxChars, full: o.full } }, log) };
     case 'bundle':
       await runBundle(p, f, { includeEmpty: o.includeEmpty }, log);
       return { paths: p };
@@ -492,7 +508,7 @@ export async function run(o: CliOptions, log: Log): Promise<{ paths: Paths; buil
       await runServe(p, { port: o.port, open: o.open }, log);
       return { paths: p };
     case 'all': {
-      await runSnapshot(p, o.since, log);
+      await runSnapshot(p, o.since, log, o.snapshotAll);
       await runExtract(p, o.since, log, o.tempDirs);
       await runMetrics(p, f, log);
       const build = await runBuild(p, { ...f, anonymize: o.anonymize }, log);

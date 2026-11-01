@@ -1,0 +1,130 @@
+// Phase 11: 全文記録(除外と網羅)、網羅の表、指示文・skill の閲覧ページ
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { normalizeSession } from '../../core/src/normalize.ts';
+import type { CopilotEvent, SessionRecord } from '../../core/src/types.ts';
+import { contentHash } from '../../core/src/instructions.ts';
+import { COVERAGE_RULES, CoverageCounter, coverageFile, desktopCoverage, ruleFor } from '../src/coverage.ts';
+import { looksOpaque, renderFull } from '../src/full.ts';
+import { LibraryCollector, lineDiff, renderInstructionsHtml, skillAnchor, writeLibrary } from '../src/library.ts';
+import { KNOWN_EVENT_TYPES } from '../../core/src/event-types.ts';
+
+const T = '2026-10-01T00:00:00.000Z';
+const OPAQUE = 'A'.repeat(60) + 'b'.repeat(60) + '==';
+const SECRET = ['ghp', 'FULLFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE02'].join('_'); // トークンの形をソースに直書きしない
+const ev = (type: string, data: Record<string, unknown>, extra: Record<string, unknown> = {}): CopilotEvent => ({ type, data, timestamp: T, id: `id-${type}`, parentId: null, ...extra });
+const EVENTS: CopilotEvent[] = [
+  ev('session.start', { sessionId: 's', copilotVersion: '1.0.0', context: { cwd: 'X:\\p' } }),
+  ev('system.message', { role: 'system', content: '<custom_instruction>\n# AGENTS.md\n\nルール 1\n</custom_instruction>' }),
+  ev('user.message', { content: '依頼の本文 UNIQUE-REQUEST-TEXT', transformedContent: '依頼の本文 UNIQUE-REQUEST-TEXT', supportedNativeDocumentMimeTypes: ['a', 'b'] }),
+  ev('assistant.message', { content: '応答の本文', reasoningText: '考えた内容 UNIQUE-REASONING', reasoningBlocks: [{ type: 'text', text: '読める推論' }, { type: 'enc', data: OPAQUE }], encryptedContent: OPAQUE, reasoningOpaque: OPAQUE, toolRequests: [{ toolCallId: 'c1', name: 'bash', arguments: { command: 'ls' } }], outputTokens: 10 }),
+  ev('tool.execution_start', { toolName: 'bash', toolCallId: 'c1', arguments: { command: 'ls' } }),
+  ev('tool.execution_complete', { toolCallId: 'c1', success: true, result: { content: `結果の本文 UNIQUE-RESULT ${SECRET}` }, toolTelemetry: { ms: 5 } }),
+  ev('hook.start', { hookType: 'postToolUse', hookInvocationId: 'h1', input: { sessionId: 's', toolName: 'bash', toolResult: { textResultForLlm: `結果の本文 UNIQUE-RESULT ${SECRET}`, resultType: 'text' } } }),
+  ev('hook.end', { hookType: 'postToolUse', hookInvocationId: 'h1', success: true }),
+  ev('skill.invoked', { name: 'my-skill', path: 'skills/my-skill/SKILL.md', content: '# my-skill\n\nskill の本文 UNIQUE-SKILL', trigger: 'user-invoked' }),
+  ev('session.binary_asset', { assetId: 'asset-1', type: 'image', mimeType: 'image/png', byteLength: 8, data: Buffer.from('89504e470d0a1a0a', 'hex').toString('base64'), description: '画像' }),
+  ev('session.compaction_complete', { success: true, summaryContent: '要約 UNIQUE-SUMMARY', checkpointNumber: 1, checkpointPath: 'X:\\cp\\001.md' }),
+  ev('session.shutdown', { shutdownType: 'exit', currentTokens: 1 }),
+  ev('brand.new_type', { mystery: 'x' }),
+];
+
+describe('coverage', () => {
+  it('既知の全イベント種別に扱いの表があり、トップレベルのキーと未知のキーの扱いが決まる', () => {
+    for (const t of KNOWN_EVENT_TYPES) expect({ t, has: t in COVERAGE_RULES }).toEqual({ t, has: true });
+    expect(ruleFor('assistant.message', 'encryptedContent')?.treatment).toBe('excluded');
+    expect(ruleFor('assistant.message', '^id')?.treatment).toBe('ref');
+    expect(ruleFor('session.start', 'anything')?.treatment).toBe('full');
+    expect(ruleFor('assistant.message', 'brandNewKey')).toBeNull();
+    expect(ruleFor('brand.new_type', 'mystery')).toBeNull();
+    const c = new CoverageCounter();
+    for (const e of EVENTS) c.add(e as never);
+    const f = coverageFile(c, 1, desktopCoverage({ tables: { sessions: { allowed: ['id'], unlisted: ['secret_col'], rows: 1 } }, forbidden: { accounts: 'token' }, otherTables: ['other'] }), T);
+    expect(f.events).toBe(EVENTS.length);
+    expect(f.keys.find((k) => k.type === 'assistant.message' && k.key === 'encryptedContent')).toMatchObject({ treatment: 'excluded', n: 1, bytes: OPAQUE.length + 2 });
+    expect(c.unclassified().map((k) => `${k.type}|${k.key}`)).toEqual(['brand.new_type|mystery']);
+    expect(f.summary.unclassified.keys).toBe(1);
+    expect(f.desktop).toMatchObject({ unclassified: 1 });
+    expect(f.desktop!.columns).toContainEqual({ table: 'accounts', column: '*', treatment: 'excluded', reason: 'token' });
+  });
+});
+
+describe('renderFull', () => {
+  let dir: string;
+  let rec: SessionRecord;
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'atlas-full-'));
+    rec = await normalizeSession({ id: 'full-1', workspace: { cwd: 'X:\\p', created_at: T }, events: EVENTS });
+  });
+  afterAll(async () => rm(dir, { recursive: true, force: true }));
+
+  it('本文・推論・引数・結果・hook・要約・skill を上限なしで出し、暗号化データと base64 本体だけ除外し、秘密情報は伏せ、未分類を末尾に出す', async () => {
+    const c = new CoverageCounter();
+    const r = await renderFull(rec, EVENTS, [], { generatedAt: T, assetsDir: join(dir, 'assets'), assetsHref: 'assets', sessionDir: null, sessionDirHref: null, coverage: c, walNote: 'WAL の注意' });
+    const md = r.markdown;
+    for (const s of ['UNIQUE-REQUEST-TEXT', '応答の本文', 'UNIQUE-REASONING', '読める推論', 'UNIQUE-RESULT', 'UNIQUE-SUMMARY', 'UNIQUE-SKILL', '"command": "ls"', 'postToolUse', 'brand.new_type']) expect(md).toContain(s);
+    expect(md).not.toContain(OPAQUE);
+    expect(md).toContain('除外: encryptedContent');
+    expect(md).toContain('除外: reasoningOpaque');
+    expect(md).toContain('不透明データ');
+    expect(md).not.toContain(SECRET);
+    expect(md).toContain('[伏せました: GitHub トークン]');
+    expect(r.secretHits).toBe(1); // ツール結果で 1 回。hook の入力は同一なので参照に置き換わり、重ねて数えない
+    expect(md).toContain('ツールの結果と同一');
+    expect(md).toContain('transformedContent は content と同じ');
+    expect(md).toContain('supportedNativeDocumentMimeTypes: 2 種');
+    // 画像は assets に書き出してリンク
+    expect(r.assets.files).toBe(1);
+    expect(md).toContain('](assets/asset-1.png)');
+    expect(await readFile(join(dir, 'assets', 'asset-1.png'))).toEqual(Buffer.from('89504e470d0a1a0a', 'hex'));
+    expect(r.unclassified).toEqual(['brand.new_type|mystery']);
+    expect(md).toContain('`brand.new_type|mystery`');
+    expect(r.excluded.n).toBeGreaterThanOrEqual(4);
+    expect(looksOpaque(OPAQUE)).toBe(true);
+    expect(looksOpaque('短い')).toBe(false);
+  });
+});
+
+describe('library', () => {
+  it('指示文は見出しごとに版を束ね、skill は名前ごと。本文を library/<hash>.md に書き、ページに差分とセッションを出す', async () => {
+    const lib = new LibraryCollector();
+    const v1 = '# AGENTS.md\n\nルール 1\n';
+    const v2 = '# AGENTS.md\n\nルール 1\nルール 2\n';
+    lib.addSystemMessage('s1', `<custom_instruction>\n${v1}</custom_instruction>`, '2026-10-01T00:00:00Z');
+    lib.addSystemMessage('s2', `<custom_instruction>\n${v2}</custom_instruction>`, '2026-10-02T00:00:00Z');
+    lib.addSystemMessage('s3', `<custom_instruction>\n${v2}</custom_instruction>`, '2026-10-03T00:00:00Z');
+    lib.addSkill('s1', 'my-skill', '# my-skill\n\n本文', contentHash('# my-skill\n\n本文'), '2026-10-01T00:00:00Z', 'skills/my-skill/SKILL.md');
+    const groups = lib.result();
+    expect(groups.map((g) => [g.kind, g.key, g.versions.length])).toEqual([
+      ['instruction', 'AGENTS.md', 2],
+      ['skill', 'my-skill', 1],
+    ]);
+    const [ins] = groups;
+    expect(ins.versions[0].sessions.size).toBe(1);
+    expect(ins.versions[1].sessions.size).toBe(2);
+    expect(ins.versions[1]).toMatchObject({ firstAt: '2026-10-02T00:00:00Z', lastAt: '2026-10-03T00:00:00Z', injections: 2 });
+    const diff = lineDiff(v1, v2);
+    expect(diff).toContain('+ルール 2');
+    expect(diff.filter((l) => l.startsWith('-'))).toEqual([]);
+    const dir = await mkdtemp(join(tmpdir(), 'atlas-lib-'));
+    try {
+      const w = await writeLibrary(dir, groups);
+      expect(w.files).toBe(3);
+      expect(await readFile(join(dir, `${ins.versions[1].hash}.md`), 'utf8')).toContain('ルール 2');
+      const html = renderInstructionsHtml({ css: '', generatedAt: '2026-10-03T00:00:00Z', groups, sessionName: (id) => `name of ${id}` });
+      expect(html).toContain(`id="v-${ins.versions[1].hash}"`);
+      expect(html).toContain(`id="${skillAnchor('my-skill')}"`);
+    expect(skillAnchor('日本語')).not.toBe(skillAnchor('日本語 2'));
+      expect(html).toContain('<span class="add"><span class="sign">+</span>ルール 2</span>');
+      expect(html).toContain('sessions/s2.html');
+      expect(html).toContain('name of s3');
+      expect(html).toContain('<nav class="toc"');
+      expect(html).toContain('content="__ATLAS_TOKEN__"');
+      expect(html).not.toMatch(/https?:\/\//);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});

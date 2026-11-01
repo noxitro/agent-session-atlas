@@ -280,7 +280,7 @@
       ],
     },
     { title: '一覧', items: [{ id: 'sessions', label: 'セッション一覧' }] },
-    { title: '付録', items: [{ href: 'glossary.html', label: '用語の説明' }] },
+    { title: '付録', items: [...(data?.library ? [{ href: 'instructions.html', label: '指示文と skill' }] : []), { href: 'glossary.html', label: '用語の説明' }] },
   ]);
 
   /** 読んでいる節(目次の現在地の印)。見出しが画面上部 1/3(固定行の下)を越えた最後の節 */
