@@ -30,4 +30,4 @@ if errorlevel 1 (
   exit /b 1
 )
 
-node packages\cli\src\main.ts serve %*
+node packages\cli\src\main.ts serve
