@@ -94,6 +94,26 @@ describe('Phase 2 E2E: fixtures', () => {
   });
   afterAll(async () => close?.());
 
+  it('--config: 別の名前・形式の vault として数え直せる。空なら数えず、壊れた設定は失敗する', async () => {
+    const outCfg = join(WORK, 'out-config');
+    await mkdir(outCfg, { recursive: true });
+    const config = join(outCfg, 'atlas.config.json');
+    const wikiOf = async (): Promise<unknown> => {
+      const r = atlas(['all', '--home', home, '--out', outCfg, '--config', config]);
+      expect(r.status, r.stderr).toBe(0);
+      const s = JSON.parse(await readFile(join(outCfg, 'sessions.json'), 'utf8')) as { sessions: { id: string; wiki: unknown }[] };
+      return s.sessions.find((x) => x.id.endsWith('004'))!.wiki;
+    };
+    await writeFile(config, JSON.stringify({ wikis: [{ path: 'synthetic-home/global-llm-wiki', index: ['log.md'], pages: ['wiki/topics'], skills: [] }] }));
+    expect(await wikiOf()).toEqual({ indexReads: 1, pageReads: ['wiki/topics/synthetic-page-a.md', 'wiki/topics/synthetic-page-b.md'], skillCalls: [], writes: 0, otherCalls: 1 });
+    await writeFile(config, JSON.stringify({ wikis: [] }));
+    expect(await wikiOf()).toEqual({ indexReads: 0, pageReads: [], skillCalls: [], writes: 0, otherCalls: 0 });
+    await writeFile(config, JSON.stringify({ wikis: [{ path: 'x', typo: 1 }] }));
+    const bad = atlas(['all', '--home', home, '--out', outCfg, '--config', config]);
+    expect(bad.status).toBe(1);
+    expect(bad.stderr).toContain('不明な項目です: typo');
+  });
+
   it('g. atlas export: セッション記録(Markdown)が各セッションにでき、詳細ページからリンクされる。素の build では作らず、リンクも消える', async () => {
     const outExp = join(WORK, 'out-export');
     // export は build を含む(snapshot と sessions.json は out/ のものを使うため、--out は同じにして export → build の順で確かめる)

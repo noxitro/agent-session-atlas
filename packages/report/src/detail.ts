@@ -469,7 +469,7 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
       'llm-wiki の参照',
       wikiUsed
         ? `<div class="fields" style="--cols:5">${[
-            field('索引(index.md)', esc(int(w.indexReads))),
+            field('索引', esc(int(w.indexReads))),
             field('個別ページ', esc(int(w.pageReads.length))),
             field('wiki skill', esc(int(w.skillCalls.length)), esc(w.skillCalls.join('、'))),
             field('書き込み', esc(int(w.writes))),

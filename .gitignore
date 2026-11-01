@@ -1,6 +1,8 @@
 node_modules/
 dist/
 out/
+# 利用者ごとの設定(手元のパスを含む。雛形は atlas.config.example.json)
+atlas.config.json
 # テスト時に生成する fixture(架空の値だけ。サンプルデータはリポジトリに置かない)
 .fixtures/
 *.log

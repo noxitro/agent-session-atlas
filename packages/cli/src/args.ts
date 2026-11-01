@@ -67,6 +67,8 @@ export interface CliOptions {
   includeEmpty: boolean;
   /** extract: 一時フォルダとみなすフォルダ(指定すると既定の一時フォルダの判定を置き換える)。未指定は null */
   tempDirs: string[] | null;
+  /** extract: 設定ファイルの場所。未指定は null(環境変数 ATLAS_CONFIG、無ければリポジトリ直下の atlas.config.json) */
+  config: string | null;
   /** export: セッション記録にツールの結果を入れる条件 */
   toolOutput: 'fail' | 'all' | 'none';
   /** export: 本文 1 件の上限(文字)。null は既定 */
@@ -127,6 +129,8 @@ export const USAGE = `使い方: atlas <コマンド> [オプション]
                      (%TEMP% と AppData\\Local\\Temp・/tmp のパターン)を使わない
   --snapshot-all     snapshot: 既定で写さない大きなもの(rewind-snapshots、一覧に無い名前のもの、logs/)も写す
   --snapshot-prune   snapshot: 前回 --snapshot-all で写したが今回は写さないものを消す(既定は残して manifest に日時を出す)
+  --config <file>    extract: 設定ファイル(wiki の vault の指定)の場所
+                     (既定: 環境変数 ATLAS_CONFIG、無ければリポジトリ直下の atlas.config.json)
   -h, --help         この説明を出す
 
 export のオプション:
@@ -184,6 +188,7 @@ export function parseCli(argv: string[]): CliOptions {
         bundle: { type: 'string' },
         'include-empty': { type: 'boolean', default: false },
         'temp-dir': { type: 'string', multiple: true },
+        config: { type: 'string' },
         'tool-output': { type: 'string' },
         full: { type: 'boolean', default: false },
         'snapshot-all': { type: 'boolean', default: false },
@@ -270,6 +275,7 @@ export function parseCli(argv: string[]): CliOptions {
   if (values.full && cmd !== 'export') throw new UsageError('--full は export でだけ使えます');
   if (values.full && values.anonymize) throw new UsageError('--full(解析用の全文記録)は --anonymize と併用できません');
   if ((values['snapshot-all'] || values['snapshot-prune']) && !['snapshot', 'all', 'export'].includes(cmd)) throw new UsageError('--snapshot-all と --snapshot-prune は snapshot / all / export で使えます');
+  if (values.config != null && cmd !== 'extract' && cmd !== 'all') throw new UsageError('--config は extract と all でだけ使えます');
   if (values.since != null && Number.isNaN(Date.parse(values.since))) throw new UsageError(`--since の日時を解釈できません: ${values.since}`);
   if ((values.port != null || values.open === false) && cmd !== 'serve') throw new UsageError('--port と --no-open は serve でだけ使えます');
   const port = posInt(values.port, '--port', 0);
@@ -294,6 +300,7 @@ export function parseCli(argv: string[]): CliOptions {
     bundle: values.bundle ?? null,
     includeEmpty: values['include-empty'] ?? false,
     tempDirs: values['temp-dir'] && values['temp-dir'].length ? values['temp-dir'] : null,
+    config: values.config ?? null,
     toolOutput: toolOutput as 'fail' | 'all' | 'none',
     maxChars: posInt(values['max-chars'], '--max-chars', 200),
     full: values.full ?? false,

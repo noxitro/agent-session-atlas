@@ -125,7 +125,7 @@ export const GLOSSARY: Term[] = [
     id: 'llm-wiki',
     group: 'mechanics',
     term: 'llm-wiki',
-    body: '作者がエージェントと共同で維持している個人のナレッジ集(Markdown の vault)。索引(index.md)を読んでから個別ページを読む使い方を想定しており、その参照回数を数えています。',
+    body: 'エージェントと共同で維持する個人のナレッジ集(vault)。索引を読んでから個別ページを読む使い方を想定しており、その参照回数を数えています。対象の vault と形式は atlas.config.json で指定します(既定は global-llm-wiki という名前のフォルダ)。',
   },
   {
     id: 'friction',

@@ -1,17 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { classifyWikiToolCall, emptyWiki } from '../src/wiki.ts';
+import { emptyWiki, WikiClassifier } from '../src/wiki.ts';
 
-describe('classifyWikiToolCall', () => {
-  it('index 読み・ページ読み・skill・書き込み・その他を分ける', () => {
+describe('WikiClassifier', () => {
+  it('index 読み・ページ読み・skill・書き込み・その他を分ける(既定の vault)', () => {
+    const c = new WikiClassifier();
     const w = emptyWiki();
-    expect(classifyWikiToolCall(w, 'view', { path: 'E:\\v\\global-llm-wiki\\index.md' })).toBe(true);
-    expect(classifyWikiToolCall(w, 'view', { path: 'E:\\v\\global-llm-wiki\\wiki\\tech\\ページ.md' })).toBe(true);
-    expect(classifyWikiToolCall(w, 'powershell', { command: "Get-Content 'E:/v/global-llm-wiki/wiki/meta/a b.md'" })).toBe(true);
-    expect(classifyWikiToolCall(w, 'glob', { pattern: 'wiki*/**', paths: ['E:\\v\\global-llm-wiki'] })).toBe(true);
-    expect(classifyWikiToolCall(w, 'edit', { path: 'E:\\v\\global-llm-wiki\\log.md' })).toBe(true);
-    expect(classifyWikiToolCall(w, 'skill', { skill: 'wiki-query' })).toBe(true);
-    expect(classifyWikiToolCall(w, 'skill', { skill: 'impeccable' })).toBe(false);
-    expect(classifyWikiToolCall(w, 'view', { path: 'E:\\other\\index.md' })).toBe(false);
+    expect(c.classify(w, 'view', { path: 'E:\\v\\global-llm-wiki\\index.md' })).toBe(true);
+    expect(c.classify(w, 'view', { path: 'E:\\v\\global-llm-wiki\\wiki\\tech\\ページ.md' })).toBe(true);
+    expect(c.classify(w, 'powershell', { command: "Get-Content 'E:/v/global-llm-wiki/wiki/meta/a b.md'" })).toBe(true);
+    expect(c.classify(w, 'glob', { pattern: 'wiki*/**', paths: ['E:\\v\\global-llm-wiki'] })).toBe(true);
+    expect(c.classify(w, 'edit', { path: 'E:\\v\\global-llm-wiki\\log.md' })).toBe(true);
+    expect(c.classify(w, 'skill', { skill: 'wiki-query' })).toBe(true);
+    expect(c.classify(w, 'skill', { skill: 'impeccable' })).toBe(false);
+    expect(c.classify(w, 'view', { path: 'E:\\other\\index.md' })).toBe(false);
     expect(w).toEqual({
       indexReads: 1,
       pageReads: ['wiki/tech/ページ.md', 'wiki/meta/a b.md'],
@@ -19,5 +20,74 @@ describe('classifyWikiToolCall', () => {
       writes: 1,
       otherCalls: 1,
     });
+  });
+
+  it('名前も形式も違う vault を指定できる', () => {
+    const c = new WikiClassifier([{ path: 'second-brain', index: ['README.md', '00-home.md'], pages: ['notes', 'areas/work'], extensions: ['.md', '.mdx'], skills: ['brain-search'] }]);
+    const w = emptyWiki();
+    c.classify(w, 'view', { path: 'D:\\vaults\\second-brain\\README.md' });
+    c.classify(w, 'view', { path: 'D:/vaults/second-brain/00-home.md' });
+    c.classify(w, 'view', { path: 'D:/vaults/second-brain/notes/a.mdx' });
+    c.classify(w, 'view', { path: 'D:/vaults/second-brain/areas/work/b.md' });
+    c.classify(w, 'view', { path: 'D:/vaults/second-brain/inbox/c.md' });
+    c.classify(w, 'skill', { skill: 'brain-search' });
+    expect(c.classify(w, 'skill', { skill: 'wiki-query' })).toBe(false);
+    expect(c.classify(w, 'view', { path: 'E:\\v\\global-llm-wiki\\index.md' })).toBe(false);
+    expect(w).toEqual({ indexReads: 2, pageReads: ['notes/a.mdx', 'areas/work/b.md'], skillCalls: ['brain-search'], writes: 0, otherCalls: 1 });
+  });
+
+  it("pages: ['.'] は vault 全体をページとして数え、索引は索引のまま", () => {
+    const c = new WikiClassifier([{ path: 'notes', pages: ['.'] }]);
+    const w = emptyWiki();
+    c.classify(w, 'view', { path: 'D:/notes/index.md' });
+    c.classify(w, 'view', { path: 'D:/notes/日記/2026.md' });
+    c.classify(w, 'view', { path: 'D:/notes/top.md' });
+    expect(w).toMatchObject({ indexReads: 1, pageReads: ['日記/2026.md', 'top.md'], otherCalls: 0 });
+  });
+
+  it('vault 名は区切りまで一致したものだけ。大文字小文字は区別しない', () => {
+    const c = new WikiClassifier([{ path: 'notes' }]);
+    const w = emptyWiki();
+    expect(c.classify(w, 'view', { path: 'D:/my-notes/index.md' })).toBe(false);
+    expect(c.classify(w, 'view', { path: 'D:/notes-app/index.md' })).toBe(false);
+    expect(c.classify(w, 'view', { path: 'D:/x/notes.md' })).toBe(false);
+    expect(c.classify(w, 'powershell', { command: 'cd D:\\x\nnotes-tool run' })).toBe(false);
+    expect(c.classify(w, 'view', { path: 'D:/NOTES/index.md' })).toBe(true);
+    expect(w.indexReads).toBe(1);
+  });
+
+  it('パスでの指定は区切りの違いと末尾の / を吸収する', () => {
+    const c = new WikiClassifier([{ path: 'D:\\vaults\\notes\\' }]);
+    const w = emptyWiki();
+    expect(c.classify(w, 'view', { path: 'D:/vaults/notes/index.md' })).toBe(true);
+    expect(c.classify(w, 'view', { path: 'E:\\vaults\\notes\\index.md' })).toBe(false);
+  });
+
+  it('改行をまたいでページ名を伸ばさない', () => {
+    const c = new WikiClassifier();
+    const w = emptyWiki();
+    c.classify(w, 'powershell', { command: 'cat E:/v/global-llm-wiki/wiki/a.md\ncat E:/v/global-llm-wiki/wiki/b.md' });
+    expect(w.pageReads).toEqual(['wiki/a.md', 'wiki/b.md']);
+  });
+
+  it('vault が複数なら、ページの先頭に vault 名を付けて区別する', () => {
+    const c = new WikiClassifier([{ path: 'alpha' }, { path: 'D:/x/beta', pages: ['docs'], index: ['HOME.md'] }]);
+    const w = emptyWiki();
+    c.classify(w, 'view', { path: 'D:/alpha/wiki/a.md' });
+    c.classify(w, 'view', { path: 'D:/x/beta/docs/a.md' });
+    c.classify(w, 'view', { path: 'D:/x/beta/HOME.md' });
+    expect(w).toMatchObject({ indexReads: 1, pageReads: ['alpha/wiki/a.md', 'beta/docs/a.md'] });
+  });
+
+  it('空の指定なら何も数えない。skill のファイルの場所でも判定する', () => {
+    const none = new WikiClassifier([]);
+    const w = emptyWiki();
+    expect(none.classify(w, 'view', { path: 'E:/v/global-llm-wiki/index.md' })).toBe(false);
+    expect(none.classify(w, 'skill', { skill: 'wiki-query' })).toBe(false);
+    expect(none.isSkill('wiki-query')).toBe(false);
+    const c = new WikiClassifier([{ path: 'notes', skills: [] }]);
+    expect(c.isSkill('wiki-query')).toBe(false);
+    expect(c.isSkill('custom', 'D:\\notes\\skills\\custom\\SKILL.md')).toBe(true);
+    expect(c.isSkill('custom', 'D:\\other\\SKILL.md')).toBe(false);
   });
 });

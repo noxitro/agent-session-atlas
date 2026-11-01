@@ -4,6 +4,7 @@ import { extract } from './extract.ts';
 import { computeMetrics } from './metrics.ts';
 import { snapshot, type SnapshotManifest } from './snapshot.ts';
 import type { MetricsFile, SessionsFile } from './types.ts';
+import type { WikiSpec } from './wiki.ts';
 
 export interface PipelineResult {
   manifest: SnapshotManifest;
@@ -14,14 +15,14 @@ export interface PipelineResult {
 }
 
 /** snapshot → extract → metrics を通しで実行し、outDir に sessions.json / metrics.json を書く */
-export async function runPipeline(src: string, outDir: string, opts: { since?: string } = {}): Promise<PipelineResult> {
+export async function runPipeline(src: string, outDir: string, opts: { since?: string; wikis?: WikiSpec[] } = {}): Promise<PipelineResult> {
   await mkdir(outDir, { recursive: true });
   const snapDir = join(outDir, 'snapshot');
   let t = performance.now();
   const manifest = await snapshot(src, snapDir, opts.since ? { since: opts.since } : {});
   const tSnap = performance.now() - t;
   t = performance.now();
-  const sessions = await extract(snapDir);
+  const sessions = await extract(snapDir, opts.wikis ? { wikis: opts.wikis } : {});
   const tExt = performance.now() - t;
   t = performance.now();
   const metrics = computeMetrics(sessions.sessions);

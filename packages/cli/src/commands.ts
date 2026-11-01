@@ -4,7 +4,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, posix, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { computeMetrics, extract, METRICS_SCHEMA_VERSION, snapshot, type MetricsFile, type SessionRecord, type SessionsFile, type SnapshotManifest } from '../../core/src/index.ts';
+import { computeMetrics, DEFAULT_WIKI, extract, METRICS_SCHEMA_VERSION, snapshot, type MetricsFile, type SessionRecord, type SessionsFile, type SnapshotManifest } from '../../core/src/index.ts';
 import {
   buildReport,
   DEFAULT_TRANSCRIPT_OPTIONS,
@@ -39,6 +39,7 @@ import {
 } from '../../judge/src/index.ts';
 import type { CliOptions, GroupCliOptions, JudgeCliOptions } from './args.ts';
 import { findRunningServer, openInBrowser, startServe } from './serve.ts';
+import { CONFIG_FILE, loadConfig } from './config.ts';
 
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
@@ -160,11 +161,14 @@ export async function runSnapshot(p: Paths, since: string | null, log: Log, all 
   return m;
 }
 
-export async function runExtract(p: Paths, since: string | null, log: Log, tempDirs: string[] | null = null): Promise<SessionsFile> {
+export async function runExtract(p: Paths, since: string | null, log: Log, tempDirs: string[] | null = null, config: string | null = null): Promise<SessionsFile> {
   if (!existsSync(p.snapshot)) throw new Error(`スナップショットがありません: ${p.snapshot}。先に atlas snapshot を実行してください。`);
   const t = performance.now();
+  const configPath = config ?? process.env.ATLAS_CONFIG ?? null;
+  const cfg = await loadConfig(configPath ? resolve(configPath) : join(REPO_ROOT, CONFIG_FILE), configPath != null);
   const s = await extract(p.snapshot, {
     ...(since ? { since } : {}),
+    ...(cfg.wikis ? { wikis: cfg.wikis } : {}),
     // --temp-dir: 挙げたフォルダだけを一時フォルダとみなす(既定のパターンは使わない)
     // (Windows 形式の絶対パスは POSIX でもそのまま。ログの記録は元のマシンのパスのため)
     ...(tempDirs ? { projects: { temps: tempDirs.map((d) => (win32.isAbsolute(d) || posix.isAbsolute(d) ? d : resolve(d))), tempPatterns: false } } : {}),
@@ -185,6 +189,12 @@ export async function runExtract(p: Paths, since: string | null, log: Log, tempD
   if (s.installed) {
     const skills = new Set([...s.installed.skills, ...s.installed.plugins.flatMap((x) => x.skills)]).size;
     log(`extract: インストール済み skill ${skills} 件・プラグイン ${s.installed.plugins.length} 件を記録(名前だけ)${s.installed.warnings.length ? `、注意 ${s.installed.warnings.join(' / ')}` : ''}`);
+  }
+  const wikiNames = (cfg.wikis ?? [DEFAULT_WIKI]).map((w) => w.path).join('、');
+  if (wikiNames === '') log(`extract: wiki の集計はしません(${cfg.path} の wikis が空)`);
+  else {
+    const used = s.sessions.filter(({ wiki: w }) => w.indexReads + w.pageReads.length + w.skillCalls.length + w.writes + w.otherCalls > 0).length;
+    log(`extract: wiki の対象 ${wikiNames}(${cfg.wikis ? cfg.path : `既定。${CONFIG_FILE} で変更可`})、参照のあったセッション ${used} 件`);
   }
   if (unknown > 0 || s.warnings.badLines > 0) log(`extract: 注意 未知のイベント種別 ${unknown} 件、読めなかった行 ${s.warnings.badLines} 行`);
   return s;
@@ -511,7 +521,7 @@ export async function run(o: CliOptions, log: Log): Promise<{ paths: Paths; buil
       await runSnapshot(p, o.since, log, o.snapshotAll, o.snapshotPrune);
       return { paths: p };
     case 'extract':
-      await runExtract(p, o.since, log, o.tempDirs);
+      await runExtract(p, o.since, log, o.tempDirs, o.config);
       return { paths: p };
     case 'metrics':
       await runMetrics(p, f, log);
@@ -536,7 +546,7 @@ export async function run(o: CliOptions, log: Log): Promise<{ paths: Paths; buil
       return { paths: p };
     case 'all': {
       await runSnapshot(p, o.since, log, o.snapshotAll, o.snapshotPrune);
-      await runExtract(p, o.since, log, o.tempDirs);
+      await runExtract(p, o.since, log, o.tempDirs, o.config);
       await runMetrics(p, f, log);
       const build = await runBuild(p, { ...f, anonymize: o.anonymize }, log);
       log(`all: 完了 ${ms(performance.now() - t)}`);

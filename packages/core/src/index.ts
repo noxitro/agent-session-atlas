@@ -22,7 +22,8 @@ export { extract, loadStore, listSessionDirs, readWorkspaceYaml, readTodos } fro
 export type { ExtractOptions, StoreData } from './extract.ts';
 export { computeMetrics, bucketOf, distribution, quantiles, latencyByModel, toolDurationStats, monthKey, isEmptySession, installedSkillNames, unusedInstalledSkills } from './metrics.ts';
 export { extractInstructionBlocks, resolveInstructions, charCount, fileFromPath, contentHash } from './instructions.ts';
-export { classifyWikiToolCall, emptyWiki, WIKI_MARKER } from './wiki.ts';
+export { DEFAULT_WIKI, emptyWiki, WikiClassifier } from './wiki.ts';
+export type { WikiSpec } from './wiki.ts';
 export { loadSqlite, openReadOnly, openWritable } from './sqlite.ts';
 export type { Database } from './sqlite.ts';
 export { runPipeline } from './pipeline.ts';

@@ -1,7 +1,7 @@
 import { FileTracker, isAutopilotContinuation, isInternalTool, isMainAssistantMessage, isUserTurn, normalizeModel, type FileOp } from './classify.ts';
 import { KNOWN_EVENT_TYPES } from './event-types.ts';
 import { InstructionCollector } from './instructions.ts';
-import { classifyWikiToolCall, emptyWiki, isWikiSkill, WIKI_MARKER } from './wiki.ts';
+import { emptyWiki, WikiClassifier } from './wiki.ts';
 import type {
   AgentRun,
   CopilotEvent,
@@ -40,6 +40,8 @@ export interface NormalizeInput {
   events?: AsyncIterable<CopilotEvent> | Iterable<CopilotEvent> | null;
   /** parseEvents に渡した stats(badLines を記録に載せる) */
   eventStats?: ParseStats;
+  /** wiki 参照の分類(既定は DEFAULT_WIKI) */
+  wikiClassifier?: WikiClassifier;
 }
 
 const TEXT_LIMIT = 2000;
@@ -386,6 +388,7 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
   let hooksTotal = 0;
   const instr = new InstructionCollector();
   const wiki = emptyWiki();
+  const wikiClassifier = input.wikiClassifier ?? new WikiClassifier();
   const friction = emptyFriction();
   const files = new FileTracker();
   let shutdownFiles: string[] = [];
@@ -544,7 +547,7 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
             } else pushTimeline({ at: at ?? '', kind: 'tools', label: 'tools', count: 1, tools: { [name]: 1 } });
           }
           if (name === 'ask_user') friction.askUser++;
-          classifyWikiToolCall(wiki, name, args);
+          wikiClassifier.classify(wiki, name, args);
           if (name === 'create' && typeof args?.path === 'string') files.add('create', args.path, curCwd());
           if ((name === 'edit' || name === 'str_replace_editor') && typeof args?.path === 'string') {
             files.add('edit', args.path, curCwd());
@@ -613,7 +616,7 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
           } else {
             skills.push({ name, at, via: 'event', trigger, chars });
             pushTimeline({ at: at ?? '', kind: 'skill', label: name });
-            if (isWikiSkill(name) || String(d.path ?? '').includes(WIKI_MARKER)) wiki.skillCalls.push(name);
+            if (wikiClassifier.isSkill(name, d.path)) wiki.skillCalls.push(name);
           }
           break;
         }

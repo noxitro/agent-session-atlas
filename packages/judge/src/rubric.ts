@@ -17,7 +17,7 @@ export const AXES = `### 評価軸
    - 根拠には、変更ファイル数、依頼の難しさ、調査範囲、AI の所要時間(参考。人の工数とは別物)を使い、rationale に書く。
    - AI が完了できなかったタスクは、実際に得られた成果分だけを見積もる。
 4. **aiOutcome**: completed(依頼が達成されたか)、quality(1〜5、成果物の質)、rework(0〜5、やり直し・手戻りの多さ。摩擦指標と依頼の言い直しを参考に)、rationale。
-5. **instructionsEffect** / **wikiEffect** / **skillsAgentsEffect**: 指示ファイル(AGENTS.md 等)、llm-wiki(作者の個人ナレッジ)、skill・サブエージェントがこのセッションの成果に与えた影響を -2〜+2 の整数で。
+5. **instructionsEffect** / **wikiEffect** / **skillsAgentsEffect**: 指示ファイル(AGENTS.md 等)、llm-wiki(利用者の個人ナレッジ)、skill・サブエージェントがこのセッションの成果に与えた影響を -2〜+2 の整数で。
    - -2: 明確に悪影響 / -1: やや悪影響 / 0: 影響なし・使われていない / +1: やや役立った / +2: 明確に役立った
    - 使われていない(パケットに「参照なし」「なし」)なら score 0、evidence に「参照なし」。
    - evidence にはパケット内の根拠(どの依頼・応答・ツール記録から判断したか)を短く書く。

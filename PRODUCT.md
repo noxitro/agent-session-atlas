@@ -40,7 +40,7 @@ TypeScript / Node 24 / npm workspaces。レポートは Vite + Svelte 5 を単�
 - 実データは数百セッション・数百 MB 規模になりうる。入力トークンが分かるのは一部のセッションだけで、出力のみ・記録なしのセッションが多い。この欠測を UI で隠さない。
 - HTML に生イベントは埋め込まない(サイズ上限の目安 5MB)。`file://` で動くため fetch は使えない。
 - フィルタ軸: プロジェクト、期間、クライアント、モデル、ブランチ、タスク分類(judgments があれば)、入力トークン記録の有無。
-- 用語: nano AIU(AI クレジットの内部単位)、compaction(文脈圧縮)、skill / agent / hook(Copilot の拡張機構)、指示ファイル(AGENTS.md / CLAUDE.md / copilot-instructions.md)、llm-wiki(作者の個人ナレッジ vault)。
+- 用語: nano AIU(AI クレジットの内部単位)、compaction(文脈圧縮)、skill / agent / hook(Copilot の拡張機構)、指示ファイル(AGENTS.md / CLAUDE.md / copilot-instructions.md)、llm-wiki(利用者の個人ナレッジ vault。名前と形式は設定で指定する)。
 - 判定バックエンドは既存サブスク内(`copilot -p`、opencode 無料モデル)を既定にし、従量課金は明示指定のみ。
 - 未決: 判定結果の品質をどう検証するか(人手評価との突合せ)は Phase 3 以降で決める。
 

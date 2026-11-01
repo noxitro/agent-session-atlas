@@ -1,0 +1,12 @@
+{
+  "wikis": [
+    "global-llm-wiki",
+    {
+      "path": "my-notes",
+      "index": ["README.md", "00-home.md"],
+      "pages": ["notes", "areas/work"],
+      "extensions": [".md", ".mdx"],
+      "skills": ["notes-search"]
+    }
+  ]
+}

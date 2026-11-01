@@ -10,6 +10,7 @@ import { ProjectResolver, type ProjectResolverOptions } from './project.ts';
 import { DESKTOP_JSON, readSnapshotManifest, SNAPSHOT_SESSION_DB } from './snapshot.ts';
 import { desktopForSession, type DesktopData } from './desktop.ts';
 import { openReadOnly } from './sqlite.ts';
+import { WikiClassifier, type WikiSpec } from './wiki.ts';
 import {
   SESSIONS_SCHEMA_VERSION,
   type DbFileRow,
@@ -122,6 +123,8 @@ export interface ExtractOptions {
    * 既定はこのマシンのホーム・一時フォルダと、スナップショット元が <home>/.copilot ならその <home>。
    */
   projects?: ProjectResolverOptions | false;
+  /** 参照を数える wiki の vault。未指定は DEFAULT_WIKI、空なら数えない */
+  wikis?: WikiSpec[];
 }
 
 /**
@@ -148,6 +151,7 @@ export async function extract(snapshotDir: string, opts: ExtractOptions = {}): P
 
   const ids = [...new Set([...store.sessions.keys(), ...dirs])].sort();
   const resolver = opts.projects === false ? null : new ProjectResolver(withSourceHome(opts.projects ?? {}, manifest?.sourceRoot ?? null));
+  const wikiClassifier = new WikiClassifier(opts.wikis);
   const sessions: SessionRecord[] = [];
   const messages: string[] = [];
   const unknownAll: Record<string, number> = {};
@@ -173,6 +177,7 @@ export async function extract(snapshotDir: string, opts: ExtractOptions = {}): P
       db: { session: store.sessions.get(id) ?? null, turns: store.turns.get(id), usage: store.usage.get(id), files: store.files.get(id) },
       events: hasDir && existsSync(eventsPath) ? parseEvents(eventsPath, stats) : null,
       eventStats: stats,
+      wikiClassifier,
     });
     rec.events.badLines = stats.badLines;
     if (hasDir) {

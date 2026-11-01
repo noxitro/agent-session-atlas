@@ -286,7 +286,7 @@ function renderOnce(s: SessionRecord, t: SessionTexts, L: PacketLimits): { md: s
   const w = s.wiki;
   if (w.indexReads + w.pageReads.length + w.skillCalls.length + w.writes + w.otherCalls === 0) lines.push('- llm-wiki: 参照なし');
   else {
-    lines.push(`- llm-wiki: index.md の読み取り ${w.indexReads} 回 / ページ読み取り ${w.pageReads.length} 件 / wiki skill ${w.skillCalls.length} 回 / 書き込み ${w.writes} 回`);
+    lines.push(`- llm-wiki: 索引の読み取り ${w.indexReads} 回 / ページ読み取り ${w.pageReads.length} 件 / wiki skill ${w.skillCalls.length} 回 / 書き込み ${w.writes} 回`);
     if (w.pageReads.length) lines.push(list(w.pageReads.map((p) => `読んだページ: ${p}`), Math.min(15, L.listItems), ''));
     if (w.skillCalls.length) lines.push(`- wiki skill: ${w.skillCalls.join('、')}`);
   }
