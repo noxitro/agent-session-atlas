@@ -214,7 +214,7 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
         sessions: sessions.length,
         versions,
         meta: anon.enabled ? {} : insightMeta,
-        findings: instructionFindings(versions, insightMeta),
+        findings: instructionFindings(versions, insightMeta, sessions.length),
         skills: skillStats(sessions, data.installed?.skills ?? null),
         stuck: stuckSessions(sessions),
         candidates,

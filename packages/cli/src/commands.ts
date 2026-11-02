@@ -28,7 +28,7 @@ import {
   anthropicBackend,
   buildBundle,
   copilotCliBackend,
-  draftSkillWithCopilot,
+  draftSkill,
   type DraftCandidate,
   importJudgments,
   opencodeBackend,
@@ -498,8 +498,8 @@ export async function runSkillDraft(p: Paths, o: NonNullable<CliOptions['skillDr
   if (j.anonymized) throw new Error('伏せ字版の out/ には候補の本文が無いので下書きを作れません(通常の build で作り直してください)');
   const c = j.candidates[o.index - 1];
   if (!c) throw new Error(`候補 ${o.index} はありません(候補は ${j.candidates.length} 件)`);
-  log(`skill-draft: 候補 ${o.index}(${c.kind === 'tools' ? c.key : (c.representative ?? c.key).slice(0, 60)})を copilot -p で下書きします(クレジットを消費します)`);
-  const r = await draftSkillWithCopilot(c, o.index, { model: o.model, timeoutMs: o.timeoutSec * 1000 });
+  log(`skill-draft: 候補 ${o.index}(${c.kind === 'tools' ? c.key : (c.representative ?? c.key).slice(0, 60)})を ${o.backend} で下書きします${o.backend === 'anthropic' ? '(Anthropic API の従量課金です)' : '(クレジットを消費する場合があります)'}`);
+  const r = await draftSkill(c, o.index, { backend: o.backend, model: o.model, timeoutMs: o.timeoutSec * 1000 });
   const dir = join(p.out, 'skill-drafts');
   await mkdir(dir, { recursive: true });
   const slug = (c.tools ? c.tools.join('-') : (c.representative ?? c.key)).replace(/[^A-Za-z0-9\u3040-\u30ff\u3400-\u9fff_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'draft';

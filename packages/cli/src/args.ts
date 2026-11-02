@@ -108,7 +108,7 @@ export const USAGE = `使い方: atlas <コマンド> [オプション]
   serve      out/ を 127.0.0.1 だけに配信してブラウザで開く(画面からグループを作れる)。ブラウザを閉じると止まる
   skill-draft <番号>
              改善点の「スキル化の候補」(out/insights.json の番号)から SKILL.md の下書きを LLM に作らせ、
-             out/skill-drafts/ に書く(クレジットを消費します。明示したときだけ動く。--backend は copilot-cli だけ)
+             out/skill-drafts/ に書く(クレジットや従量課金を消費しうる。明示したときだけ動く。--backend は judge と同じ)
 
 オプション:
   --home <dir>       Copilot のデータの場所(既定: 環境変数 ATLAS_COPILOT_HOME、無ければ ~/.copilot)
@@ -247,8 +247,8 @@ export function parseCli(argv: string[]): CliOptions {
     if (!Number.isInteger(index) || index < 1) throw new UsageError(`候補の番号は 1 以上の整数です: ${n}`);
     if (positionals.length > 2) throw new UsageError(`余分な引数があります: ${positionals.slice(2).join(' ')}`);
     const backend = values.backend ?? 'copilot-cli';
-    if (backend !== 'copilot-cli') throw new UsageError(`skill-draft のバックエンドは copilot-cli だけです: ${backend}`);
-    skillDraft = { index, backend, model: values.model ?? null, timeoutSec: posInt(values.timeout, '--timeout', 1) ?? 600 };
+    if (!(BACKEND_NAMES as readonly string[]).includes(backend)) throw new UsageError(`不明なバックエンドです: ${backend}(${BACKEND_NAMES.join(' / ')})`);
+    skillDraft = { index, backend: backend as BackendChoice, model: values.model ?? null, timeoutSec: posInt(values.timeout, '--timeout', 1) ?? 600 };
   }
   let groupCmd: GroupCliOptions | null = null;
   if (cmd === 'group') {

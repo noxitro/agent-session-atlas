@@ -115,7 +115,11 @@ export interface InstructionFindings {
   comparedInsufficient: number;
 }
 
-export function instructionFindings(stats: VersionStat[], meta: Record<string, VersionMeta>): InstructionFindings {
+/**
+ * totalSessions は stats の集計元のセッション数。「注入が少ない」は十分な母集団に対する希少さなので、
+ * MIN_SESSIONS 未満では longRare を出さない。
+ */
+export function instructionFindings(stats: VersionStat[], meta: Record<string, VersionMeta>, totalSessions: number): InstructionFindings {
   const chars = stats.map((v) => v.chars).sort((a, b) => a - b);
   const q75 = chars.length ? chars[Math.min(chars.length - 1, Math.floor(chars.length * 0.75))] : 0;
   // 同じ見出しの版が並ぶと冗長なので、見出しごとに最新の版(order が最大)だけ挙げる
@@ -127,7 +131,7 @@ ${m.heading}` : v.hash;
     const cur = latestOfHeading.get(k);
     if (!cur || (meta[cur.hash]?.order ?? 0) < (m?.order ?? 0)) latestOfHeading.set(k, v);
   }
-  const longRare = [...latestOfHeading.values()].filter((v) => chars.length >= 4 && v.chars >= q75 && v.chars > 0 && v.sessions < THRESHOLDS.RARE_SESSIONS).sort((a, b) => b.chars - a.chars);
+  const longRare = [...latestOfHeading.values()].filter((v) => totalSessions >= THRESHOLDS.MIN_SESSIONS && chars.length >= 4 && v.chars >= q75 && v.chars > 0 && v.sessions < THRESHOLDS.RARE_SESSIONS).sort((a, b) => b.chars - a.chars);
   const byHeading = new Map<string, VersionStat[]>();
   for (const v of stats) {
     const m = meta[v.hash];

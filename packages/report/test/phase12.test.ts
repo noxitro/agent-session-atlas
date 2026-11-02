@@ -75,7 +75,7 @@ describe('指示文の版', () => {
     expect(h2.failureRate).toBeCloseTo(12 / 50);
     expect(h3).toMatchObject({ sessions: 1, enough: false, injectionsPerSession: 2 });
     const meta = { h1: { heading: '# A', file: 'AGENTS.md', order: 0, firstAt: '2026-10-01' }, h2: { heading: '# A', file: 'AGENTS.md', order: 1, firstAt: '2026-10-02' }, h3: { heading: '# A', file: 'AGENTS.md', order: 2, firstAt: '2026-10-03' } };
-    const f = instructionFindings(stats, meta);
+    const f = instructionFindings(stats, meta, 100);
     expect(f.worsened).toHaveLength(1);
     expect(f.worsened[0]).toMatchObject({ heading: '# A', before: { hash: 'h1' }, after: { hash: 'h2' } });
     expect(f.worsened[0].failureDelta).toBeCloseTo(24);
@@ -83,10 +83,13 @@ describe('指示文の版', () => {
     // 9 ポイントの悪化は挙げない
     const v2b = Array.from({ length: 10 }, (_, i) => (i < 1 ? failing(`d${i}`, { instructionVersions: [['h2', 520, 1]] }) : sess({ id: `d${i}`, instructionVersions: [['h2', 520, 1]] })));
     const s2 = instructionVersions([...v1, ...v2b]);
-    expect(instructionFindings(s2, meta).worsened).toHaveLength(0);
+    expect(instructionFindings(s2, meta, 100).worsened).toHaveLength(0);
     // 長いのに注入が少ない: 上位 25% の字数で RARE_SESSIONS 未満(版が 4 つ以上あるとき)
     const many = [...v1, ...v2, ...v3, sess({ id: 'e0', instructionVersions: [['h4', 100, 1]] })];
-    const lr = instructionFindings(instructionVersions(many), { ...meta, h4: { heading: '# B', file: 'AGENTS.md', order: 0, firstAt: null } }).longRare;
+    const allMeta = { ...meta, h4: { heading: '# B', file: 'AGENTS.md', order: 0, firstAt: null } };
+    const lr = instructionFindings(instructionVersions(many), allMeta, many.length).longRare;
+    // 母集団が MIN_SESSIONS 未満(絞り込みなど)では「注入が少ない」と結論しない
+    expect(instructionFindings(instructionVersions(many), allMeta, THRESHOLDS.MIN_SESSIONS - 1).longRare).toEqual([]);
     expect(lr.map((v) => v.hash)).toEqual(['h3']);
   });
 });

@@ -1,5 +1,6 @@
 <script lang="ts">
-  // Phase 12: 改善点(LLM を呼ばない規則の集計)。指示文・skill・時間の使われ方は絞り込みに従って再計算し、
+  // Phase 12: 改善点(LLM を呼ばない規則の集計)。指示文・skill・時間の使われ方は絞り込みに従って再計算する。
+  // ただし「長いのに注入が少ない」は全体での希少さの話なので allSessions で計算する。
   // スキル化の候補は build 時に全セッションで計算したもの(埋め込み)を出す。全件は insights.html
   import { shortProjectLabel } from '../../lib/anonymize.ts';
   import { dec, duration, int } from '../../lib/format.ts';
@@ -8,6 +9,7 @@
 
   let {
     sessions,
+    allSessions,
     installed,
     meta,
     candidates,
@@ -17,6 +19,8 @@
     libraryHref,
   }: {
     sessions: SessionSummary[];
+    /** 絞り込み前の全セッション */
+    allSessions: SessionSummary[];
     installed: string[] | null;
     /** 指示文の版の見出し等(伏せ字版では空) */
     meta: Record<string, VersionMeta>;
@@ -29,7 +33,8 @@
   } = $props();
 
   const versions = $derived(instructionVersions(sessions));
-  const findings = $derived(instructionFindings(versions, meta));
+  const findings = $derived(instructionFindings(versions, meta, sessions.length));
+  const longRare = $derived(instructionFindings(instructionVersions(allSessions), meta, allSessions.length).longRare);
   const skills = $derived(skillStats(sessions, installed));
   const stuck = $derived(stuckSessions(sessions));
   const byProject = $derived(stuckByProject(stuck, sessions));
@@ -57,12 +62,12 @@
   <div class="grid">
     <div class="box" data-testid="insights-instructions">
       <h3>指示文の傾向</h3>
-      {#if findings.longRare.length === 0 && findings.worsened.length === 0}
+      {#if longRare.length === 0 && findings.worsened.length === 0}
         <p class="basis">挙げる傾向はありません(版 {int(versions.length)}、前後比較ができなかった見出し {int(findings.comparedInsufficient)})。</p>
       {:else}
         <ol>
-          {#each findings.longRare.slice(0, TOP) as v (v.hash)}
-            <li>長いのに注入が少ない: {#if vhref(v.hash)}<a href={vhref(v.hash)}>{vname(v.hash)}</a>{:else}{vname(v.hash)}{/if}({int(v.chars)} 字、{int(v.sessions)} セッション)</li>
+          {#each longRare.slice(0, TOP) as v (v.hash)}
+            <li>長いのに注入が少ない(全セッション基準): {#if vhref(v.hash)}<a href={vhref(v.hash)}>{vname(v.hash)}</a>{:else}{vname(v.hash)}{/if}({int(v.chars)} 字、{int(v.sessions)} セッション)</li>
           {/each}
           {#each findings.worsened.slice(0, TOP) as w (w.after.hash)}
             <li>

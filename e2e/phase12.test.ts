@@ -126,8 +126,10 @@ describe('Phase 12 E2E: fixtures', () => {
     expect(md).toContain('atlas skill-draft: 候補 1');
     expect(md.length).toBeGreaterThan(100);
     // 偽の copilot に渡したプロンプトに候補の内容が入り、ツールは shell / write / url を拒否している
-    const calls = (await readFile(log, 'utf8')).trim().split('\n').map((l) => JSON.parse(l) as { argv: string[] });
+    const calls = (await readFile(log, 'utf8')).trim().split('\n').map((l) => JSON.parse(l) as { argv: string[]; cwd: string });
     expect(calls).toHaveLength(1);
+    // 次回の extract で「(atlas の判定)」に分類される作業フォルダ
+    expect(calls[0].cwd).toMatch(/atlas-judge-cwd-[^\\/]+$/);
     const argv = calls[0].argv;
     const prompt = argv[argv.indexOf('-p') + 1];
     expect(prompt).toContain('候補 1');
@@ -138,7 +140,15 @@ describe('Phase 12 E2E: fixtures', () => {
     expect(atlas(['skill-draft', '999', '--out', out], env).stderr).toMatch(/候補 999 はありません/);
     expect(atlas(['skill-draft', '1', '--out', outAnon], env).stderr).toMatch(/伏せ字版/);
     expect(atlas(['skill-draft'], env).status).toBe(2);
-    expect(atlas(['skill-draft', '1', '--backend', 'opencode'], env).stderr).toMatch(/copilot-cli だけ/);
+    expect(atlas(['skill-draft', '1', '--backend', 'nope'], env).stderr).toMatch(/不明なバックエンド/);
+    // opencode も同じ作業フォルダの規則で動く(偽の CLI。本物は呼ばない)
+    await rm(log, { force: true });
+    const oc = atlas(['skill-draft', '2', '--backend', 'opencode', '--out', out], { ATLAS_OPENCODE_BIN: env.ATLAS_COPILOT_BIN, FAKE_COPILOT_LOG: log });
+    expect(oc.status, oc.stderr).toBe(0);
+    const ocCall = JSON.parse((await readFile(log, 'utf8')).trim()) as { argv: string[]; cwd: string };
+    expect(ocCall.argv[0]).toBe('run');
+    expect(ocCall.argv.at(-1)).toContain('候補 2');
+    expect(ocCall.cwd).toMatch(/atlas-judge-cwd-[^\\/]+$/);
     expect(existsSync(join(outAnon, 'skill-drafts'))).toBe(false);
   });
 });

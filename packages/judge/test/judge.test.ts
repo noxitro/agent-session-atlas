@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { normalizeSession } from '../../core/src/normalize.ts';
+import { draftSkill } from '../src/skill-draft.ts';
 import { parseJudgments } from '../../report/src/lib/judgments.ts';
 import {
   addUsage,
@@ -261,5 +262,29 @@ describe('backends', () => {
     expect(body).not.toHaveProperty('temperature');
     const refuse = anthropicBackend({ apiKey: 'k', fetchImpl: (async () => new Response(JSON.stringify({ content: [], stop_reason: 'refusal', stop_details: { category: 'cyber' } }))) as unknown as typeof fetch });
     await expect(refuse.judge({ sessionId: 's', markdown: '' })).rejects.toThrow(/拒否/);
+  });
+});
+
+describe('skill-draft のバックエンド', () => {
+  const candidate = { kind: 'request' as const, key: 'k', count: 3, sessions: ['a', 'b', 'c'], medianMs: 1000, representative: '代表の依頼', examples: [], tools: null };
+
+  it('anthropic は差し替えた fetch で本文を返し、キーが無ければ呼ばない', async () => {
+    let sent = '';
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      sent = String(init.body);
+      return new Response(JSON.stringify({ content: [{ type: 'text', text: '---\nname: x\n---' }], usage: { input_tokens: 1 } }));
+    }) as unknown as typeof fetch;
+    const r = await draftSkill(candidate, 1, { backend: 'anthropic', anthropic: { apiKey: 'test-key', fetchImpl } });
+    expect(r.markdown).toContain('name: x');
+    expect(JSON.parse(sent).messages[0].content).toContain('代表の依頼');
+    const empty = (async () => new Response(JSON.stringify({ content: [] }))) as unknown as typeof fetch;
+    await expect(draftSkill(candidate, 1, { backend: 'anthropic', anthropic: { apiKey: 'k', fetchImpl: empty } })).rejects.toThrow(/本文がありません/);
+    const saved = process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    try {
+      await expect(draftSkill(candidate, 1, { backend: 'anthropic', anthropic: { fetchImpl } })).rejects.toThrow(/ANTHROPIC_API_KEY/);
+    } finally {
+      if (saved != null) process.env.ANTHROPIC_API_KEY = saved;
+    }
   });
 });
