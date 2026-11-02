@@ -58,9 +58,12 @@ export function summarize(r: SessionRecord, anon: Anonymizer, judgment: Judgment
     byModel[m] = { input: t.input, output: t.output, cacheRead: t.cacheRead, premiumRequests: t.premiumRequests, requests: t.requests };
   }
   const skills: Record<string, SkillTriggers> = {};
+  const skillChars: Record<string, number | null> = {};
   for (const s of r.skills) {
     const t = (skills[s.name] ??= [0, 0, 0]);
     t[s.trigger === 'user' ? 0 : s.trigger === 'agent' ? 1 : 2]++;
+    if (s.chars != null) skillChars[s.name] = Math.max(skillChars[s.name] ?? 0, s.chars);
+    else skillChars[s.name] ??= null;
   }
   const agentsByName: Record<string, AgentStat> = {};
   for (const a of r.agents) {
@@ -133,6 +136,14 @@ export function summarize(r: SessionRecord, anon: Anonymizer, judgment: Judgment
     lines: r.lines ?? { added: 0, removed: 0, source: 'none' },
     wiki: { indexReads: r.wiki.indexReads, pageReads: r.wiki.pageReads.length, skillCalls: r.wiki.skillCalls.length, writes: r.wiki.writes },
     friction: { ...r.friction },
+    skillChars,
+    instructionVersions: r.instructions.map((i) => [i.contentHash, i.chars, i.injections]),
+    analysis: {
+      filesReedited: r.analysis?.filesReedited ?? 0,
+      extraEdits: r.analysis?.extraEdits ?? 0,
+      maxConsecutiveFailures: r.analysis?.maxConsecutiveFailures ?? 0,
+      turns: r.analysis?.turnTools.length ?? 0,
+    },
     files: { changed: r.files.changed.length, created: r.files.created.length, deleted: r.files.deleted?.length ?? 0, sessionState: r.files.sessionState ?? 0 },
     href: detailHref(r.id),
     // 根拠の自由記述は HTML 本体に埋め込まない(詳細ページだけ)。伏せ字モードでは要約も出さない

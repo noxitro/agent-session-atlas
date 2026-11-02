@@ -28,4 +28,7 @@ export type { FullOptions, FullResult } from './full.ts';
 export { COVERAGE_RULES, ruleFor, CoverageCounter, coverageFile, desktopCoverage } from './coverage.ts';
 export type { CoverageEntry, CoverageFile, Treatment } from './coverage.ts';
 export { LibraryCollector, lineDiff, writeLibrary, renderInstructionsHtml, INSTRUCTIONS_FILE, LIBRARY_DIR, skillAnchor } from './library.ts';
+export { THRESHOLDS, instructionVersions, instructionFindings, skillStats, stuckSessions, stuckByProject, normalizeRequest, trigrams, jaccard, requestCandidates, toolSequenceCandidates, skillCandidates, TRIVIAL_REQUEST } from './lib/insights.ts';
+export type { Candidate, VersionStat, VersionMeta, SkillStat, StuckSession, InstructionFindings } from './lib/insights.ts';
+export { renderInsightsHtml, INSIGHTS_FILE, INSIGHTS_JSON } from './insights-page.ts';
 export type { LibraryGroup, LibraryVersion } from './library.ts';

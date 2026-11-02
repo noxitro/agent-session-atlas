@@ -8,6 +8,8 @@ import { contentHash, parseEvents } from '../../core/src/index.ts';
 import { CoverageCounter, coverageFile, desktopCoverage } from './coverage.ts';
 import { createFileSink, fullFileName, renderFullTo } from './full.ts';
 import { INSTRUCTIONS_FILE, LIBRARY_DIR, LibraryCollector, renderInstructionsHtml, writeLibrary } from './library.ts';
+import { instructionFindings, instructionVersions, skillCandidates, skillStats, stuckSessions, type VersionMeta } from './lib/insights.ts';
+import { INSIGHTS_FILE, INSIGHTS_JSON, renderInsightsHtml } from './insights-page.ts';
 import { createAnonymizer, identityAnonymizer, type Anonymizer } from './lib/anonymize.ts';
 import { renderDetailHtml } from './detail.ts';
 import { GLOSSARY_FILE, renderGlossaryHtml } from './glossary-page.ts';
@@ -160,8 +162,37 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
     // 伏せ字モードではグループ名と note(自由記述)は出さず、ファイルの順で「グループ 1, 2, …」にする。ids は不透明なのでそのまま
     groups: (input.groups ?? []).map((g, i) => (anon.enabled ? { name: `グループ ${i + 1}`, note: '', ids: [...g.ids] } : { name: g.name, note: g.note, ids: [...g.ids] })),
     library: !!(input.transcripts && (input.library ?? true) && !anon.enabled),
+    insights: { meta: {}, candidates: [], computedOver: input.sessions.length },
     // 警告文には groups.json の絶対パスが入るので、伏せ字モードでは <path> に置き換える(scrub)
     warnings: { unknownEventTypes: input.warnings.unknownEventTypes, badLines: input.warnings.badLines, notes: (input.warnings.notes ?? []).map((n) => anon.scrub(n)) },
+  };
+
+  // Phase 12: 改善点。候補は本文(依頼文・ツールの列)から build 時に求め、結果だけ埋め込む(上位 30 件、例は 3 件まで)
+  const insightMeta: Record<string, VersionMeta> = {};
+  {
+    const byHeading = new Map<string, { hash: string; firstAt: string | null }[]>();
+    for (const r of input.sessions)
+      for (const i of r.instructions) {
+        const key = `${i.file}\u0000${i.heading}`;
+        const list = byHeading.get(key) ?? byHeading.set(key, []).get(key)!;
+        const cur = list.find((x) => x.hash === i.contentHash);
+        if (cur) cur.firstAt = cur.firstAt && i.firstSeenAt ? (cur.firstAt < i.firstSeenAt ? cur.firstAt : i.firstSeenAt) : (cur.firstAt ?? i.firstSeenAt);
+        else list.push({ hash: i.contentHash, firstAt: i.firstSeenAt });
+      }
+    for (const [key, list] of byHeading) {
+      const [file, heading] = key.split('\u0000');
+      list.sort((a, b) => (a.firstAt ?? '').localeCompare(b.firstAt ?? '') || a.hash.localeCompare(b.hash));
+      list.forEach((v, order) => (insightMeta[v.hash] = { heading: anon.enabled ? '' : heading, file, order, firstAt: v.firstAt }));
+    }
+  }
+  const candidates = skillCandidates(
+    input.sessions.map((r) => ({ id: r.id, project: r.project, analysis: r.analysis ?? { requests: [], turnTools: [], turnMs: [] } })),
+    anon.enabled,
+  );
+  data.insights = {
+    meta: anon.enabled ? {} : insightMeta,
+    candidates: candidates.slice(0, 30).map((c) => ({ ...c, representative: c.representative?.slice(0, 300) ?? null, examples: c.examples.slice(0, 3).map((e) => e.slice(0, 300)) })),
+    computedOver: input.sessions.length,
   };
 
   await mkdir(input.outDir, { recursive: true });
@@ -170,6 +201,29 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
   await writeFile(htmlPath, html);
   // 用語の説明は 1 枚だけ別ページ(atlas.html と詳細ページからリンク)
   await writeFile(join(input.outDir, GLOSSARY_FILE), renderGlossaryHtml({ css, generatedAt }));
+  // Phase 12: 改善点の全件(insights.html)と候補の JSON(skill-draft が読む)
+  {
+    const versions = instructionVersions(sessions);
+    const names = new Map(sessions.map((s) => [s.id, anon.enabled ? `セッション ${s.id.slice(0, 8)}` : (s.name || s.firstUserMessage || s.id.slice(0, 8)).replace(/\s+/g, ' ').slice(0, 60)]));
+    await writeFile(
+      join(input.outDir, INSIGHTS_FILE),
+      renderInsightsHtml({
+        css,
+        generatedAt,
+        anonymized: anon.enabled,
+        sessions: sessions.length,
+        versions,
+        meta: anon.enabled ? {} : insightMeta,
+        findings: instructionFindings(versions, insightMeta),
+        skills: skillStats(sessions, data.installed?.skills ?? null),
+        stuck: stuckSessions(sessions),
+        candidates,
+        sessionName: (id) => names.get(id) ?? id,
+        libraryHref: data.library ? INSTRUCTIONS_FILE : null,
+      }),
+    );
+    await writeFile(join(input.outDir, INSIGHTS_JSON), JSON.stringify({ version: 1, generatedAt, anonymized: anon.enabled, sessions: sessions.length, candidates }, null, 1));
+  }
 
   // 詳細ページ: 前回の生成物を消してから書く(フィルタで減ったセッションのページを残さない)
   const detailDir = join(input.outDir, 'sessions');

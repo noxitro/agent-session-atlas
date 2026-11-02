@@ -125,7 +125,7 @@ describe('Phase 1 E2E: fixtures', () => {
     // Phase 5 でレコードの形(empty・tools.internal・files.deleted など)が変わったため 2、
     // Phase 6 で tools.mcp・results / skills[].trigger / lines / projectSource / installed を足したため 3、
     // Phase 7 で exec / tools.durations / frictionDetail / todos / agents[].error を足したため 4
-    expect(s.schemaVersion).toBe(5);
+    expect(s.schemaVersion).toBe(6);
     expect(s.sessions.length).toBe(result.sessions.sessions.length);
     const m = JSON.parse(await readFile(result.paths.metrics, 'utf8'));
     // Phase 5: metrics は空のセッションを除いた集計 + 空の件数(006 / 007 / 010 の 3 件)
@@ -166,7 +166,7 @@ describe('Phase 1 E2E: fixtures', () => {
       }).toEqual(e);
     }
     // Phase 6: skill.invoked の trigger(fixture 004 は agent-invoked)
-    expect(rec(4).skills).toEqual([{ name: 'wiki-query', at: expect.any(String), via: 'both', trigger: 'agent' }]);
+    expect(rec(4).skills).toEqual([{ name: 'wiki-query', at: expect.any(String), via: 'both', trigger: 'agent', chars: 14 }]);
     // metrics の全体値は各セッションの和
     const sum = (f: (e: (typeof EXPECTED)[string]) => number): number => Object.values(EXPECTED).reduce((a, e) => a + f(e), 0);
     expect(result.metrics.overall.tools.total).toBe(sum((e) => e.toolTotal));

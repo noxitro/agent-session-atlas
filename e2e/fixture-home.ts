@@ -73,12 +73,13 @@ export async function populateStore(dbPath: string): Promise<Database> {
  */
 export async function buildFixtureHome(
   dest: string,
-  opts: { writer?: 'crashed' | 'alive'; phase11?: boolean } = {},
+  opts: { writer?: 'crashed' | 'alive'; phase11?: boolean; phase12?: boolean } = {},
 ): Promise<{ home: string; close: () => Promise<void> }> {
   await rm(dest, { recursive: true, force: true });
   await mkdir(dest, { recursive: true });
   await cp(join(FIXTURES, 'copilot-home', 'session-state'), join(dest, 'session-state'), { recursive: true });
   if (opts.phase11) await addPhase11Fixtures(dest);
+  if (opts.phase12) await addPhase12Fixtures(dest);
   const child = spawn(process.execPath, [THIS_FILE, '--writer', join(dest, 'session-store.db')], { stdio: ['pipe', 'pipe', 'inherit'] });
   const exited = new Promise<number | null>((r) => child.on('exit', (code) => r(code)));
   await new Promise<void>((resolveReady, reject) => {
@@ -217,6 +218,42 @@ CREATE TABLE workspaces (id TEXT PRIMARY KEY, project_id TEXT, branch TEXT, name
   }
   await mkdir(join(home, 'repos', 'copilot-worktrees', 'x'), { recursive: true });
   await writeFile(join(home, 'repos', 'copilot-worktrees', 'x', 'README.md'), '# repo\n');
+}
+
+/** Phase 12 の fixture: 似た依頼文の繰り返し(3 セッション)と、同じツールの並び(view → apply_patch → powershell → apply_patch → powershell)の繰り返し */
+export const P12_SESSIONS = [1, 2, 3].map((n) => `00000000-0000-4000-8000-0000000012000${n}`);
+const P12_REQUESTS = [
+  'リポジトリの README を更新してください。章立ては変えないでください',
+  'リポジトリの README を更新して下さい。章立ては変えないでください。',
+  'リポジトリの README を更新してください。章立ては変えないで',
+];
+export async function addPhase12Fixtures(home: string): Promise<void> {
+  const tools = ['view', 'apply_patch', 'powershell', 'apply_patch', 'powershell'];
+  for (const [i, id] of P12_SESSIONS.entries()) {
+    const dir = join(home, 'session-state', id);
+    await mkdir(dir, { recursive: true });
+    const t0 = Date.parse('2026-08-01T09:00:00.000Z') + i * 3_600_000;
+    const ts = (k: number): string => new Date(t0 + k * 1000).toISOString();
+    const ev: object[] = [{ type: 'session.start', id: `${id}-s`, parentId: null, timestamp: ts(0), data: { sessionId: id, version: 1, copilotVersion: '1.0.50', selectedModel: 'gpt-5.5-mini', context: { cwd: 'X:\\synthetic-p12', gitRoot: 'X:\\synthetic-p12' } } }];
+    let k = 1;
+    // 2 ターン: 1 つ目が繰り返しの依頼文、2 つ目は相づち(候補にしない)。どちらも同じツールの並び
+    for (const [turn, req] of [P12_REQUESTS[i], 'OK'].entries()) {
+      ev.push({ type: 'user.message', id: `${id}-u${turn}`, parentId: null, timestamp: ts(k++), data: { content: req } });
+      ev.push({ type: 'assistant.turn_start', id: `${id}-ts${turn}`, parentId: null, timestamp: ts(k++), data: { turnId: `t${turn}` } });
+      for (const [j, name] of tools.entries()) {
+        const call = `call_p12_${i}_${turn}_${j}`;
+        ev.push({ type: 'tool.execution_start', id: `${id}-a${turn}${j}`, parentId: null, timestamp: ts(k++), data: { toolCallId: call, toolName: name, arguments: {} } });
+        ev.push({ type: 'tool.execution_complete', id: `${id}-b${turn}${j}`, parentId: null, timestamp: ts((k += 60) - 1), data: { toolCallId: call, success: true, result: { content: '(合成の結果)' } } });
+      }
+      ev.push({ type: 'assistant.message', id: `${id}-m${turn}`, parentId: null, timestamp: ts(k++), data: { messageId: `${id}-mm${turn}`, content: '終わりました。', toolRequests: [], outputTokens: 5 } });
+      ev.push({ type: 'assistant.turn_end', id: `${id}-te${turn}`, parentId: null, timestamp: ts(k++), data: { turnId: `t${turn}` } });
+    }
+    await writeFile(join(dir, 'events.jsonl'), ev.map((e) => JSON.stringify(e)).join('\n') + '\n');
+    await writeFile(
+      join(dir, 'workspace.yaml'),
+      [`id: ${id}`, 'cwd: X:\\synthetic-p12', 'git_root: X:\\synthetic-p12', 'repository: zz-owner/zz-p12', 'host_type: github', 'branch: main', 'client_name: github/cli', `name: "合成 P12 ${i + 1}"`, 'user_named: false', `created_at: ${ts(0)}`, `updated_at: ${ts(k)}`, ''].join('\n'),
+    );
+  }
 }
 
 const THIS_FILE = fileURLToPath(import.meta.url);

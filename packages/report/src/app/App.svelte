@@ -11,6 +11,7 @@
   import ProjectTable from './components/ProjectTable.svelte';
   import UsageRanking from './components/UsageRanking.svelte';
   import Highlights from './components/Highlights.svelte';
+  import Insights from './components/Insights.svelte';
   import ExecProfile from './components/ExecProfile.svelte';
   import MonthlyChart from './components/MonthlyChart.svelte';
   import ModelChart from './components/ModelChart.svelte';
@@ -265,6 +266,7 @@
       items: [
         { id: 'overview', label: '全体' },
         { id: 'highlights', label: '要点' },
+        { id: 'insights', label: '改善点' },
         { id: 'detail', label: '集計明細' },
         ...(judged ? [{ id: 'judgments', label: 'AI 投入量 vs 推定人手工数' }] : []),
       ],
@@ -458,6 +460,7 @@
         <!-- 帳票の順: 表紙(規模の 4 欄)→ 摘要(要点)→ 明細 -->
         <Overview part="cover" {agg} {judged} anonymized={data.anonymized} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} />
         <Highlights groups={points} />
+        <Insights sessions={filtered} installed={data.installed?.skills ?? null} meta={data.insights?.meta ?? {}} candidates={data.insights?.candidates ?? []} computedOver={data.insights?.computedOver ?? sessions.length} anonymized={data.anonymized} hasPage={true} libraryHref={data.library ? 'instructions.html' : null} />
         <Overview part="detail" {agg} {judged} anonymized={data.anonymized} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} />
         {#if judged}<JudgmentPanel {agg} meta={data.judgments} />{/if}
         <UsageRanking usage={agg.usage} installed={data.installed ?? null} bind:tab={usageTab} />

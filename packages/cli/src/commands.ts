@@ -28,6 +28,8 @@ import {
   anthropicBackend,
   buildBundle,
   copilotCliBackend,
+  draftSkillWithCopilot,
+  type DraftCandidate,
   importJudgments,
   opencodeBackend,
   runJudge,
@@ -481,6 +483,25 @@ export async function runServe(p: Paths, o: { port: number | null; open: boolean
   return reason;
 }
 
+/** skill-draft: out/insights.json の候補(番号)から SKILL.md の下書きを copilot -p で作る(クレジットを消費。明示したときだけ) */
+export async function runSkillDraft(p: Paths, o: NonNullable<CliOptions['skillDraft']>, log: Log): Promise<string> {
+  const path = join(p.out, 'insights.json');
+  const j = await readJson<{ anonymized: boolean; candidates: DraftCandidate[] }>(path, '先に atlas build(または export)を実行してください。');
+  if (j.anonymized) throw new Error('伏せ字版の out/ には候補の本文が無いので下書きを作れません(通常の build で作り直してください)');
+  const c = j.candidates[o.index - 1];
+  if (!c) throw new Error(`候補 ${o.index} はありません(候補は ${j.candidates.length} 件)`);
+  log(`skill-draft: 候補 ${o.index}(${c.kind === 'tools' ? c.key : (c.representative ?? c.key).slice(0, 60)})を copilot -p で下書きします(クレジットを消費します)`);
+  const r = await draftSkillWithCopilot(c, o.index, { model: o.model, timeoutMs: o.timeoutSec * 1000 });
+  const dir = join(p.out, 'skill-drafts');
+  await mkdir(dir, { recursive: true });
+  const slug = (c.tools ? c.tools.join('-') : (c.representative ?? c.key)).replace(/[^A-Za-z0-9\u3040-\u30ff\u3400-\u9fff_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'draft';
+  const file = join(dir, `${String(o.index).padStart(3, '0')}-${slug}.md`);
+  const head = `<!-- atlas skill-draft: 候補 ${o.index}(${c.kind}、${c.count} 回、${c.sessions.length} セッション)。LLM の下書きなので内容を確かめてから skills/ に置くこと -->\n`;
+  await writeFile(file, head + r.markdown + (r.markdown.endsWith('\n') ? '' : '\n'));
+  log(`skill-draft: ${file}(${Buffer.byteLength(r.markdown)} バイト)${r.notes.length ? `、補足 ${r.notes.join(' / ')}` : ''}`);
+  return file;
+}
+
 export async function run(o: CliOptions, log: Log): Promise<{ paths: Paths; build?: BuildResult; judge?: RunSummary | null }> {
   const p = resolvePaths(o);
   const f: SessionFilter = { since: o.since, project: o.project, client: o.client, model: o.model, branch: o.branch, group: o.group, sessions: o.sessions };
@@ -509,6 +530,9 @@ export async function run(o: CliOptions, log: Log): Promise<{ paths: Paths; buil
       return { paths: p };
     case 'serve':
       await runServe(p, { port: o.port, open: o.open }, log);
+      return { paths: p };
+    case 'skill-draft':
+      await runSkillDraft(p, o.skillDraft!, log);
       return { paths: p };
     case 'all': {
       await runSnapshot(p, o.since, log, o.snapshotAll, o.snapshotPrune);

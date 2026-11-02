@@ -1,7 +1,7 @@
 // atlas コマンドの引数解釈(純関数)
 import { parseArgs } from 'node:util';
 
-export const COMMANDS = ['snapshot', 'extract', 'metrics', 'build', 'export', 'all', 'bundle', 'judge', 'group', 'serve'] as const;
+export const COMMANDS = ['snapshot', 'extract', 'metrics', 'build', 'export', 'all', 'bundle', 'judge', 'group', 'serve', 'skill-draft'] as const;
 export type Command = (typeof COMMANDS)[number];
 
 export const JUDGE_ACTIONS = ['run', 'import'] as const;
@@ -83,6 +83,8 @@ export interface CliOptions {
   port: number | null;
   /** serve: 起動後にブラウザを開く(--no-open で開かない) */
   open: boolean;
+  /** skill-draft: 候補の番号(insights.json の順)と、使うバックエンド */
+  skillDraft: { index: number; backend: BackendChoice; model: string | null; timeoutSec: number } | null;
   help: boolean;
 }
 
@@ -102,6 +104,9 @@ export const USAGE = `使い方: atlas <コマンド> [オプション]
   group list / group add <名前> <id...> [--note <一文>] / group remove <名前>
              名前付きグループ(<notes-dir>/groups.json)を一覧・追加(既存名なら id を追記)・削除する
   serve      out/ を 127.0.0.1 だけに配信してブラウザで開く(画面からグループを作れる)。ブラウザを閉じると止まる
+  skill-draft <番号>
+             改善点の「スキル化の候補」(out/insights.json の番号)から SKILL.md の下書きを LLM に作らせ、
+             out/skill-drafts/ に書く(クレジットを消費します。明示したときだけ動く。--backend は copilot-cli だけ)
 
 オプション:
   --home <dir>       Copilot のデータの場所(既定: 環境変数 ATLAS_COPILOT_HOME、無ければ ~/.copilot)
@@ -229,6 +234,17 @@ export function parseCli(argv: string[]): CliOptions {
       timeoutSec: posInt(values.timeout, '--timeout', 1) ?? 600,
     };
   }
+  let skillDraft: CliOptions['skillDraft'] = null;
+  if (cmd === 'skill-draft') {
+    const n = positionals[1];
+    if (!n) throw new UsageError('skill-draft には候補の番号(out/insights.json の順、1 から)を指定してください');
+    const index = Number(n);
+    if (!Number.isInteger(index) || index < 1) throw new UsageError(`候補の番号は 1 以上の整数です: ${n}`);
+    if (positionals.length > 2) throw new UsageError(`余分な引数があります: ${positionals.slice(2).join(' ')}`);
+    const backend = values.backend ?? 'copilot-cli';
+    if (backend !== 'copilot-cli') throw new UsageError(`skill-draft のバックエンドは copilot-cli だけです: ${backend}`);
+    skillDraft = { index, backend, model: values.model ?? null, timeoutSec: posInt(values.timeout, '--timeout', 1) ?? 600 };
+  }
   let groupCmd: GroupCliOptions | null = null;
   if (cmd === 'group') {
     const action = positionals[1];
@@ -243,7 +259,7 @@ export function parseCli(argv: string[]): CliOptions {
     if (values.note != null && action !== 'add') throw new UsageError('--note は group add でだけ使えます');
     groupCmd = { action: action as GroupAction, name, ids, note: values.note ?? null };
   } else if (values.note != null) throw new UsageError('--note は group add でだけ使えます');
-  if (cmd !== 'judge' && cmd !== 'group') {
+  if (cmd !== 'judge' && cmd !== 'group' && cmd !== 'skill-draft') {
     if (positionals.length > 1) throw new UsageError(`コマンドは 1 つだけ指定してください: ${positionals.join(' ')}`);
     for (const k of ['backend', 'limit', 'only', 'concurrency', 'timeout'] as const) if (values[k] != null) throw new UsageError(`--${k} は judge run でだけ使えます`);
     if (values.force) throw new UsageError('--force は judge run でだけ使えます');
@@ -287,6 +303,7 @@ export function parseCli(argv: string[]): CliOptions {
     groupCmd,
     port,
     open: values.open ?? true,
+    skillDraft,
     help: values.help ?? false,
   };
 }

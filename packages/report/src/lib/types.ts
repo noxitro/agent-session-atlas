@@ -8,7 +8,8 @@ import type { LineChanges, MetricsFile, ProjectSource, TodoSummary, TokenSource 
 // 4: Phase 7(exec / tools.durations・outliers / frictionDetail / todos)
 // 5: Phase 10(groups / warnings.notes)
 // 6: Phase 11(library)
-export const REPORT_DATA_VERSION = 6;
+// 7: Phase 12(skillChars / instructionVersions / analysis / insights)
+export const REPORT_DATA_VERSION = 7;
 
 /** 推論強度別の [リクエスト, 入力, 出力, nano AIU] */
 export type EffortTuple = [requests: number, input: number, output: number, nanoAiu: number];
@@ -143,6 +144,12 @@ export interface SessionSummary {
   todos: TodoSummary | null;
   /** skill 名 → 呼んだ側別の回数 */
   skills: Record<string, SkillTriggers>;
+  /** Phase 12: skill 名 → 本文の文字数(記録が無ければ null) */
+  skillChars: Record<string, number | null>;
+  /** Phase 12: 注入された指示文の版 [contentHash, 文字数, 注入回数] */
+  instructionVersions: [hash: string, chars: number, injections: number][];
+  /** Phase 12: 手戻り・失敗の連続(改善点の分析。ターンごとの列と依頼文は埋め込まない) */
+  analysis: { filesReedited: number; extraEdits: number; maxConsecutiveFailures: number; turns: number };
   agents: { total: number; failed: number; byName: Record<string, AgentStat> };
   hooks: { total: number; byType: Record<string, number> };
   /** 注入された指示ファイル(ファイル種別ごとの文字数。ユーザー単位のものは「AGENTS.md (user)」) */
@@ -185,8 +192,27 @@ export interface ReportData {
   groups: ReportGroup[];
   /** Phase 11: 指示文と skill の閲覧ページ(instructions.html)を作ったか(export のとき。伏せ字版では false) */
   library: boolean;
+  /** Phase 12: 改善点(build 時に全セッションで計算したもの)。meta は伏せ字版では空 */
+  insights: {
+    meta: Record<string, { heading: string; file: string; order: number; firstAt: string | null }>;
+    candidates: InsightCandidate[];
+    computedOver: number;
+  };
   /** notes: atlas-notes/ の読み取りで無視した箇所(groups.json が壊れている等。無ければ空) */
   warnings: { unknownEventTypes: number; badLines: number; notes: string[] };
+}
+
+/** Phase 12: スキル化の候補(埋め込み用。lib/insights.ts の Candidate と同じ形) */
+export interface InsightCandidate {
+  kind: 'request' | 'tools';
+  key: string;
+  count: number;
+  sessions: string[];
+  medianMs: number | null;
+  score: number;
+  representative: string | null;
+  examples: string[];
+  tools: string[] | null;
 }
 
 export interface ReportGroup {

@@ -392,6 +392,22 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
   /** その時点の cwd(相対パスの解決に使う) */
   const curCwd = (): string | null => ctx.cwd ?? ws?.cwd ?? dbs?.cwd ?? null;
   const timeline: TimelineEntry[] = [];
+  // Phase 12: 手戻り(同じファイルの再編集)・失敗の連続・ターンごとのツールの列と所要・依頼文
+  const editCounts = new Map<string, number>();
+  let consecutiveFailures = 0;
+  let maxConsecutiveFailures = 0;
+  const turnTools: string[][] = [];
+  const turnStartMs: (number | null)[] = [];
+  /** ターンの最後のイベントの時刻(次の依頼までの放置時間を所要に含めない) */
+  const turnLastMs: (number | null)[] = [];
+  const requests: string[] = [];
+  const ANALYSIS_TURNS = 200;
+  const ANALYSIS_TOOLS_PER_TURN = 40;
+  const noteEdit = (path: unknown): void => {
+    if (typeof path !== 'string' || path.trim() === '') return;
+    const key = path.replace(/\\/g, '/').toLowerCase();
+    editCounts.set(key, (editCounts.get(key) ?? 0) + 1);
+  };
 
   const pushTimeline = (e: TimelineEntry): void => {
     if (timeline.length < TIMELINE_LIMIT) timeline.push(e);
@@ -437,6 +453,7 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
       }
       const d = e.data ?? {};
 
+      if (t != null && turnLastMs.length && (e.type !== 'user.message' || e.agentId)) turnLastMs[turnLastMs.length - 1] = t;
       switch (e.type) {
         case 'session.start':
           copilotVersion ??= d.copilotVersion ?? null;
@@ -463,6 +480,12 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
             else modePending++;
             if (firstUserMessage == null && typeof d.content === 'string') firstUserMessage = head(d.content);
             pushTimeline({ at: at ?? '', kind: 'user', label: head(String(d.content ?? ''), 120) });
+            if (!e.agentId && turnTools.length < ANALYSIS_TURNS) {
+              turnTools.push([]);
+              turnStartMs.push(t ?? null);
+              turnLastMs.push(t ?? null);
+              requests.push(typeof d.content === 'string' ? head(d.content, 300) : '');
+            }
           }
           break;
         case 'assistant.message':
@@ -502,6 +525,10 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
             toolNameByCall.set(d.toolCallId, name);
             if (t != null) toolStartMs.set(d.toolCallId, t);
           }
+          if (!e.agentId && turnTools.length) {
+            const cur = turnTools[turnTools.length - 1];
+            if (cur.length < ANALYSIS_TOOLS_PER_TURN) cur.push(name);
+          }
           if (typeof d.mcpServerName === 'string' && d.mcpServerName !== '') inc((mcp[d.mcpServerName] ??= {}), name);
           const args = argsOf(e);
           if (name === 'skill') {
@@ -519,15 +546,26 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
           if (name === 'ask_user') friction.askUser++;
           classifyWikiToolCall(wiki, name, args);
           if (name === 'create' && typeof args?.path === 'string') files.add('create', args.path, curCwd());
-          if ((name === 'edit' || name === 'str_replace_editor') && typeof args?.path === 'string') files.add('edit', args.path, curCwd());
+          if ((name === 'edit' || name === 'str_replace_editor') && typeof args?.path === 'string') {
+            files.add('edit', args.path, curCwd());
+            noteEdit(args.path);
+          }
           if (name === 'apply_patch') {
             const p = typeof args === 'string' ? args : typeof args?.input === 'string' ? args.input : typeof args?.patch === 'string' ? args.patch : '';
-            for (const f of patchFiles(p)) files.add(f.op, f.path, curCwd());
+            for (const f of patchFiles(p)) {
+              files.add(f.op, f.path, curCwd());
+              if (f.op === 'edit') noteEdit(f.path);
+            }
           }
           break;
         }
         case 'tool.execution_complete': {
-          if (d.success === false && !(typeof d.toolCallId === 'string' && internalCalls.has(d.toolCallId))) friction.toolFailures++;
+          const isInternalCall = typeof d.toolCallId === 'string' && internalCalls.has(d.toolCallId);
+          if (d.success === false && !isInternalCall) friction.toolFailures++;
+          if (!isInternalCall && typeof d.success === 'boolean') {
+            consecutiveFailures = d.success ? 0 : consecutiveFailures + 1;
+            if (consecutiveFailures > maxConsecutiveFailures) maxConsecutiveFailures = consecutiveFailures;
+          }
           const callName = typeof d.toolCallId === 'string' ? toolNameByCall.get(d.toolCallId) : undefined;
           if (callName != null && typeof d.success === 'boolean') {
             const r = (results[callName] ??= { success: 0, failure: 0, denied: 0 });
@@ -567,11 +605,13 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
             .reverse()
             .find((s) => s.via === 'tool' && s.name === name && t != null && ms(s.at) != null && t - (ms(s.at) as number) <= SKILL_PAIR_WINDOW_MS && t >= (ms(s.at) as number));
           const trigger = skillTrigger(d.trigger);
+          const chars = typeof d.content === 'string' ? d.content.length : typeof d.contentLength === 'number' ? d.contentLength : null;
           if (pair) {
             pair.via = 'both';
             if (trigger) pair.trigger = trigger;
+            if (chars != null) pair.chars = chars;
           } else {
-            skills.push({ name, at, via: 'event', trigger });
+            skills.push({ name, at, via: 'event', trigger, chars });
             pushTimeline({ at: at ?? '', kind: 'skill', label: name });
             if (isWikiSkill(name) || String(d.path ?? '').includes(WIKI_MARKER)) wiki.skillCalls.push(name);
           }
@@ -777,6 +817,17 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
     friction,
     files: files.result(),
     timeline,
+    analysis: {
+      filesReedited: [...editCounts.values()].filter((n) => n >= 2).length,
+      extraEdits: [...editCounts.values()].reduce((a, n) => a + Math.max(0, n - 1), 0),
+      maxConsecutiveFailures,
+      turnTools,
+      turnMs: turnStartMs.map((st, i) => {
+        const end = turnLastMs[i];
+        return st != null && end != null && end >= st ? end - st : null;
+      }),
+      requests,
+    },
     unknownEventTypes: unknown,
     events: { total, badLines: input.eventStats?.badLines ?? 0, byType },
   };

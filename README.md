@@ -5,7 +5,7 @@ Local-first analytics for GitHub Copilot session logs — visualize skills, agen
 
 GitHub Copilot のセッションログ(`%USERPROFILE%\.copilot`)から、トークン・skills / agents / hooks・指示ファイルの注入・llm-wiki の参照・摩擦指標を LLM なしで集計するツールです。計画は [docs/PLAN.md](docs/PLAN.md) にあります。
 
-> 現在は Phase 8(集計ライブラリ `@atlas/core`、コマンド `atlas`、HTML レポート、LLM による工数判定 `@atlas/judge`、空のセッション・表記揺れ・新しいログ形式への対応、利用ランキング・変更行数・プロジェクトの統合、モード・推論強度・文脈の内訳・待ち時間・todo・要点欄、セッション記録の Markdown 出力)まで。判定の回し方は「[判定の回し方(推定人手工数)](#判定の回し方推定人手工数)」を見てください。
+> 現在は Phase 8(集計ライブラリ `@atlas/core`、コマンド `atlas`、HTML レポート、LLM による工数判定 `@atlas/judge`、空のセッション・表記揺れ・新しいログ形式への対応、利用ランキング・変更行数・プロジェクトの統合、モード・推論強度・文脈の内訳・待ち時間・todo・要点欄、セッション記録の Markdown 出力、解析用の完全出力、改善点の分析)まで。判定の回し方は「[判定の回し方(推定人手工数)](#判定の回し方推定人手工数)」を見てください。
 
 ## 起動方法
 
@@ -175,6 +175,27 @@ npm run atlas -- snapshot --snapshot-all         # rewind-snapshots / 一覧に�
 `--full` を付けない `export` や素の `build` は、前回の `out/full/` と `out/coverage.json`(と `instructions.html` / `out/library/`)を消しません(ユーザーの生成物を黙って消さないため。残っているときはログに生成日時を出します)。古い全文記録が残っている点に注意し、消したいときはフォルダを手で消すか、`--anonymize` で作ります(伏せ字版の `out/` には残しません)。
 
 **data.db(デスクトップアプリ)**: 以前は資格情報の列を含むため読んでいませんでしたが、Phase 11 から次の形で読みます。ファイルは複製せず、`file:///…/data.db?immutable=1` の読み取り専用で開きます(`-shm` / `-wal` に触れません)。読むのは名前で固定した許可リストの列だけで(`sessions` の非資格情報の列、`session_context_usage`、`session_checkpoints`、`activity_items`、`projects` と `workspaces` の非資格情報の列)、`select *` はせず、`accounts` / `settings` / `app_state` / `model_providers` / `remote_environments` は開きません。許可リストに無い列は名前だけ数えます(値は読みません)。immutable で開くため `-wal` の未反映分は読めず、最近の更新が欠けることがあります(`desktop.json` と全文記録に WAL の大きさと更新日時を書きます)。結果は `sessions.json` の `desktop` 欄、全文記録、詳細ページの「デスクトップアプリの記録(data.db)」に出ます。
+
+## 改善点(規則による分析)
+
+レポートの「改善点」の節(目次「概況」の「要点」の次)と、全件のページ `out/insights.html`、機械可読の `out/insights.json` です(Phase 12)。LLM は使わず、決まった規則で集計します。**分かるのは相関まで**なので画面でも「傾向」と書いています。指示文の効果は直接は測れません(同じ版でも依頼が違う)。率は 5 セッション以上のものだけ出し、未満は「—」です(セッション数の列で分かります)。閾値は `packages/report/src/lib/insights.ts` の `THRESHOLDS` にまとめ、根拠は `docs/PLAN.md` の Phase 12 にあります。
+
+| 箱 | 中身 | 計算の場所 |
+|---|---|---|
+| 指示文の傾向 | 指示文(AGENTS.md / CLAUDE.md 等)の版(内容のハッシュ)ごとの字数・注入セッション数・ツールの失敗率・手戻り率(同じファイルを 2 回以上編集したセッションの割合)・compaction と出力トークン / セッション。「長いのに注入が少ない」(字数が上位 25% で注入 3 セッション未満。見出しごとに最新の版だけ)と「版を変えた前後で悪化」(前後とも 5 セッション以上で失敗率か手戻り率が 10 ポイント以上悪化)を挙げる。版の名前から `instructions.html` の版へ移動できる(`export` 後) | レポート内で絞り込みに従って再計算 |
+| skill の傾向 | skill ごとの呼び出し(利用者 / エージェント)、本文の字数、呼んだセッションと呼ばなかったセッションの失敗率、インストール済みで未使用 | 同上 |
+| 止まっている箇所 | 待ち時間(TTFT の中央値 20 秒以上)、失敗の連続(3 回以上)、同じファイルの再編集(余分な編集 3 回以上)、権限確認の多さ(10 件以上)、compaction(3 回以上)のどれかに当たるセッションと、プロジェクト別の該当数 | 同上 |
+| スキル化の候補 | (a) 似た依頼文の繰り返し: 依頼文を正規化(小文字、パス・URL・数字・id を印に)して文字 3-gram の Jaccard 類似度 0.6 以上を束ねる。(b) 同じツールの並びの繰り返し: 本体のターンごとのツール列から長さ 3〜6 の部分列(連続の重複は潰し、閲覧系以外のツールが 2 種類以上、周期的な繰り返しは除く)。どちらも 3 回以上・2 セッション以上。スコア = 回数 × 1 回の所要の中央値(分、2 時間で頭打ち)。相づち(OK / 続けて)と動作確認の定型文(行頭の reply with 等)、20 字未満は除く | `build` / `export` 時に全セッションで計算し、上位 30 件を埋め込む(全件は `insights.html`) |
+
+伏せ字版(`--anonymize`)では依頼文の本文・指示文の見出し・代表文を出さず、件数とスコアだけになります(`insights.json` も同じ)。
+
+### スキルの下書き(`atlas skill-draft`、任意)
+
+```
+npm run atlas -- skill-draft <番号>            # out/insights.json の候補の番号。--backend copilot-cli(既定、唯一)、--model、--timeout
+```
+
+候補の繰り返し回数・代表の依頼文・ツールの並びを LLM に渡し、SKILL.md の形の下書きを `out/skill-drafts/<番号>-<名前>.md` に書きます。**明示したときだけ動き、`build` / `export` / `all` では呼びません**。費用は 1 回の実行で判定 1 件と同じ(copilot-cli のモデル 1 リクエスト相当。AI クレジットを消費)。判定と同じ安全策(`--no-custom-instructions`、`shell` / `write` / `url` の拒否、`--add-dir` なし)で、テストは偽の copilot(`ATLAS_COPILOT_BIN`)で行い本物は呼びません。伏せ字版の `out/` では拒否します(本文が無いため)。下書きは案なので、使う前に読んで直してください。
 
 ## 判定の回し方(推定人手工数)
 

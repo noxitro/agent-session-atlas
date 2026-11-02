@@ -8,7 +8,8 @@ import type { DesktopData, DesktopSessionInfo } from './desktop-types.ts';
 // 4: Phase 7(exec: モード・推論強度・起点・文脈の内訳・待ち時間 / tools.durations・durationOutliers /
 //    frictionDetail / todos / agents[].error、metrics は exec / frictionDetail / todos と latency / toolDurations)
 // 5: Phase 11(desktop / desktop.json)
-export const SESSIONS_SCHEMA_VERSION = 5;
+// 6: Phase 12(analysis / skills[].chars)
+export const SESSIONS_SCHEMA_VERSION = 6;
 export const METRICS_SCHEMA_VERSION = 4;
 
 // ---------- 入力(生データ) ----------
@@ -160,6 +161,24 @@ export interface SkillUse {
    * null: trigger を持たない古い skill.invoked だけで、どちらか分からない
    */
   trigger: SkillTrigger | null;
+  /** Phase 12: 本文の文字数(skill.invoked の content。無ければ null) */
+  chars?: number | null;
+}
+
+/** Phase 12: 改善点の分析に使う、セッション内の並びから求める量 */
+export interface SessionAnalysis {
+  /** 同じファイルを 2 回以上編集したファイル数(edit / str_replace_editor / apply_patch / fileEdits の edit で数える) */
+  filesReedited: number;
+  /** 2 回目以降の編集の回数の合計(手戻りの大きさ) */
+  extraEdits: number;
+  /** ツール失敗の最長の連続回数(内部ツールを除く) */
+  maxConsecutiveFailures: number;
+  /** 本体のユーザーのターンごとのツール名の列(先頭 200 ターン、各 40 件まで。サブエージェントのツールは含めない) */
+  turnTools: string[][];
+  /** ターンごとの所要(ms。次のターンまたは最後のイベントまで。分からなければ null) */
+  turnMs: (number | null)[];
+  /** 依頼文の先頭 300 字(ターンごと、先頭 200 件。伏せ字版の HTML には埋め込まない) */
+  requests: string[];
 }
 
 export type SkillTrigger = 'user' | 'agent';
@@ -403,6 +422,8 @@ export interface SessionRecord {
   desktop?: DesktopSessionInfo | null;
   /** 変更行数(追加 / 削除) */
   lines: LineChanges;
+  /** Phase 12: 改善点の分析用(手戻り・失敗の連続・ターンごとのツールの列・依頼文) */
+  analysis: SessionAnalysis;
   skills: SkillUse[];
   agents: AgentRun[];
   hooks: { byType: Record<string, number>; total: number };
