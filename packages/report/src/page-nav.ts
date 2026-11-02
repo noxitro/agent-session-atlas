@@ -75,6 +75,7 @@ export function renderRail(o: PageNavOptions): string {
  *   URL の # に残る絞り込みを保つ。直接開いたとき・新しいタブ・修飾キー付きのクリックでは普通のリンク。印は読んだら消す
  * - heartbeat: atlas serve から開かれたとき(http(s) で、meta の token がプレースホルダでない)だけ 3 秒ごとに POST する。
  *   失敗したら止めて「サーバが止まっています」の帯を出す。宛先は同一オリジンの相対パス(詳細ページは ../api/、用語ページは api/)
+ * - メモの編集: atlas serve のときだけ、メモの節(#memo)があるページに編集の script を読み込む。止まったら atlas-down を知らせる
  */
 export const NAV_JS = `(function(){var d=document,root=d.documentElement,W=matchMedia('(min-width:1280px)'),KEY='atlas-theme';
 var segs=d.querySelectorAll('[data-theme-seg] button');function paint(t){segs.forEach(function(b){b.setAttribute('aria-pressed',b.dataset.theme===t?'true':'false')})}
@@ -91,7 +92,8 @@ var m=false;try{m=sessionStorage.getItem('atlas-return')==='1';sessionStorage.re
 d.querySelectorAll('a.crumb').forEach(function(a){a.addEventListener('click',function(e){if(e.button!==0||e.metaKey||e.ctrlKey||e.shiftKey||e.altKey)return;var ok=false;try{ok=history.length>1&&(m||/atlas\\.html/.test(d.referrer))}catch(err){}if(ok){e.preventDefault();history.back()}})});
 (function(){var mt=d.querySelector('meta[name="atlas-token"]'),t=mt?mt.content:'';if(!/^https?:$/.test(location.protocol)||!t||/^__/.test(t))return;
 var c=d.querySelector('a.crumb'),up=!!c&&/^\\.\\.\\//.test(c.getAttribute('href')||''),o={method:'POST',headers:{'X-Atlas-Token':t},keepalive:true},iv=null;
-function down(){if(iv)clearInterval(iv);iv=null;var b=d.createElement('div');b.className='down-band';b.setAttribute('role','alert');b.textContent='サーバが止まっています。atlas.bat を実行し直してください(閲覧はそのままできます)。';d.body.insertBefore(b,d.body.firstChild)}
+function down(){if(iv)clearInterval(iv);iv=null;var b=d.createElement('div');b.className='down-band';b.setAttribute('role','alert');b.textContent='サーバが止まっています。atlas.bat を実行し直してください(閲覧はそのままできます)。';d.body.insertBefore(b,d.body.firstChild);d.dispatchEvent(new Event('atlas-down'))}
 function beat(){try{(up?fetch('../api/heartbeat',o):fetch('api/heartbeat',o)).then(function(r){if(!r.ok)down()}).catch(down)}catch(e){down()}}
-iv=setInterval(beat,3000);beat()})();
+iv=setInterval(beat,3000);beat();
+if(up&&d.getElementById('memo')){var s=d.createElement('script'),p='../api/memo-editor.js';s.src=p;d.body.appendChild(s)}})();
 })();`;

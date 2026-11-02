@@ -2,6 +2,7 @@
 // sessions.json の SessionRecord から生イベント・timeline・長文を落とした要約だけを持つ。
 // ここはブラウザ側(Svelte)と Node 側(build)の両方から読むので、DOM や node: に依存しない。
 import type { LineChanges, MetricsFile, ProjectSource, TodoSummary, TokenSource } from '../../../core/src/types.ts';
+import type { MemoSummary } from './memo.ts';
 
 // 3: Phase 6(tools.mcp・issues / skills を trigger 別に / agents.byName に失敗とトークン / hooks.byType /
 //    lines / projectSource / installed)
@@ -9,7 +10,8 @@ import type { LineChanges, MetricsFile, ProjectSource, TodoSummary, TokenSource 
 // 5: Phase 10(groups / warnings.notes)
 // 6: Phase 11(library)
 // 7: Phase 12(skillChars / instructionVersions / analysis / insights)
-export const REPORT_DATA_VERSION = 7;
+// 8: Phase 13(memo)
+export const REPORT_DATA_VERSION = 8;
 
 /** 推論強度別の [リクエスト, 入力, 出力, nano AIU] */
 export type EffortTuple = [requests: number, input: number, output: number, nanoAiu: number];
@@ -97,6 +99,8 @@ export interface JudgmentSummary {
 
 export interface SessionSummary {
   id: string;
+  /** Phase 13: メモの概要(全文は埋め込まない)。無ければ省略。伏せ字版では常に無し */
+  memo?: MemoSummary | null;
   client: string | null;
   /** 集計キー(伏せ字モードでは project-01 など) */
   project: string;

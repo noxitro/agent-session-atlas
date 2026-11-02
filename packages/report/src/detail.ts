@@ -3,6 +3,7 @@
 import type { ProjectSource, SessionRecord, TimelineEntry, TokenCounts, TokenSource } from '../../core/src/types.ts';
 import type { Anonymizer } from './lib/anonymize.ts';
 import { frictionTotal } from './lib/aggregate.ts';
+import { MEMO_CSS } from './memo-render.ts';
 import { NAV_JS, renderRail, renderTop } from './page-nav.ts';
 import { skillAnchor } from './library.ts';
 import { dateTime, dec, duration, int, modelLabel, msLabel, percent, truncate } from './lib/format.ts';
@@ -294,6 +295,8 @@ export interface DetailOptions {
   libraryHref?: string | null;
   /** Phase 11: 全文記録(../full/<id>.md)を作ったときだけ */
   fullHref?: string | null;
+  /** Phase 13: メモ(描画済みの HTML と更新日時)。無ければ省略 */
+  memo?: { html: string; updatedAt: string } | null;
 }
 
 const DETAIL_CSS = `
@@ -313,6 +316,13 @@ blockquote.msg{margin:8px 0 0;padding:10px 12px;background:var(--surface);border
 .three ul{overflow-wrap:anywhere}
 @media (max-width:720px){.two,.three{grid-template-columns:1fr}}
 `;
+
+/** Phase 13: メモの節。無ければ hidden の空の節を置く(atlas serve では編集の script がここに描く)。伏せ字版では節ごと出さない */
+function memoSection(id: string, memo: DetailOptions['memo']): string {
+  const body = memo ? `<div class="memo-body">${memo.html}</div>` : '';
+  const when = memo ? `<p>更新 ${esc(dateTime(memo.updatedAt))}</p>` : '';
+  return `<section class="section" id="memo" aria-labelledby="memo-h" data-session="${esc(id)}"${memo ? '' : ' hidden'}><div class="section-head"><h2 id="memo-h">メモ</h2>${when}</div>${body}</section>`;
+}
 
 export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
   sectionSeq = 0;
@@ -366,6 +376,10 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
   ].join('')}</div>`;
 
   const parts: string[] = [];
+  if (!anon.enabled) {
+    parts.push(memoSection(r.id, o.memo));
+    if (o.memo) sectionIndex.push({ id: 'memo', title: 'メモ' });
+  }
   parts.push(section('概要', overview));
   if (o.judgment) parts.push(judgmentSection(o.judgment, r.activeMs));
 
@@ -560,7 +574,7 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
 <meta name="theme-color" content="#0e1110" media="(prefers-color-scheme: dark)">
 <title>${esc(truncate(title, 60))} | Copilot Session Atlas</title>
 <script>try{var t=localStorage.getItem('atlas-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t}catch(e){}</script>
-<style>${o.css}${DETAIL_CSS}</style>
+<style>${o.css}${DETAIL_CSS}${o.memo && !anon.enabled ? MEMO_CSS : ''}</style>
 </head>
 <body>
 ${renderTop(nav)}

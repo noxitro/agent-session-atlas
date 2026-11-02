@@ -33,12 +33,14 @@ export interface FilterState {
   ids: string;
   /** 選んだグループの名前('' は無し)。名前が今のグループにあればその ids で集計し、無ければ ids に落ちる(共有した相手に無い名前でも壊れない) */
   group: string;
+  /** '1' ならメモのあるセッションだけ */
+  memo: '' | '1';
 }
 
 export const NO_JUDGMENT = '(none)';
 
 export function emptyFilter(): FilterState {
-  return { from: '', to: '', project: ALL, client: ALL, model: ALL, branch: ALL, coverage: '', taskCategory: ALL, empty: '', tool: ALL, ids: '', group: '' };
+  return { from: '', to: '', project: ALL, client: ALL, model: ALL, branch: ALL, coverage: '', taskCategory: ALL, empty: '', tool: ALL, ids: '', group: '', memo: '' };
 }
 
 /**
@@ -149,6 +151,7 @@ export function matches(s: SessionSummary, f: FilterState, ids: Set<string> | nu
   if (!matchesBase(s, f)) return false;
   if (f.tool && !usedTool(s, f.tool)) return false;
   if (f.coverage && s.coverage !== f.coverage) return false;
+  if (f.memo && !s.memo) return false;
   if (f.taskCategory) {
     const c = s.judgment?.taskCategory ?? NO_JUDGMENT;
     if (c !== f.taskCategory) return false;
@@ -250,7 +253,7 @@ export function decodeFilter(s: string): FilterState {
       continue;
     }
     if (k === 'coverage' && !['', 'input', 'output-only', 'none'].includes(v)) continue;
-    if (k === 'empty' && !['', '1'].includes(v)) continue;
+    if ((k === 'empty' || k === 'memo') && !['', '1'].includes(v)) continue;
     if (k === 'ids') v = joinIds(splitIds(v));
     if (k === 'group') v = v.trim();
     (f as unknown as Record<string, string>)[k] = v;

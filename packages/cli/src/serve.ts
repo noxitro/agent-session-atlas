@@ -1,4 +1,4 @@
-// atlas serve: out/ を 127.0.0.1 だけに配信し、画面からグループ(atlas-notes/groups.json)を作る小さな API を持つ。
+// atlas serve: out/ を 127.0.0.1 だけに配信し、画面からグループ(atlas-notes/groups.json)とメモ(atlas-notes/memos/)を書く小さな API を持つ。
 // 画面(3 画面)が 3 秒ごとに送る heartbeat が途切れたら自分で終了する(ブラウザを閉じれば止まる)。
 // 画面と保存の境界はこの API だけ(後でアプリ化するときに差し替える)。
 import { randomBytes } from 'node:crypto';
@@ -7,7 +7,29 @@ import { readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { extname, join, resolve, sep } from 'node:path';
 import { spawn } from 'node:child_process';
-import { addIds, extractEmbedded, loadGroups, loadGroupsForWrite, removeIds, saveGroups, uniqueIds, type ReportData, type SessionGroup } from '../../report/src/index.ts';
+import {
+  addIds,
+  extractEmbedded,
+  imageExt,
+  isSafeMemoId,
+  loadGroups,
+  loadGroupsForWrite,
+  loadMemoIndex,
+  MEMO_EDITOR_JS,
+  MEMO_IMAGE_LIMIT,
+  memosDir,
+  memoSummary,
+  readMemo,
+  removeIds,
+  renderMemo,
+  saveGroups,
+  saveMemo,
+  saveMemoImage,
+  uniqueIds,
+  type MemoFile,
+  type ReportData,
+  type SessionGroup,
+} from '../../report/src/index.ts';
 
 export const TOKEN_PLACEHOLDER = '__ATLAS_TOKEN__';
 export const SERVE_STATE_FILE = '.serve.json';
@@ -30,6 +52,8 @@ export interface ServeOptions {
   idleMs?: number;
   /** 最初の heartbeat をこの時間待つ */
   firstHeartbeatMs?: number;
+  /** メモの画像 1 枚の上限(バイト)。既定は MEMO_IMAGE_LIMIT */
+  memoImageLimit?: number;
 }
 
 export interface ServeHandle {
@@ -66,17 +90,23 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(text);
 }
 
-async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+/** 上限を超えても最後まで読み捨ててから 413 にする(途中で打ち切ると送信中の相手が応答を受け取れず止まる) */
+async function readBody(req: IncomingMessage, limit: number): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const c of req) {
     size += (c as Buffer).length;
-    if (size > 1024 * 1024) throw new HttpError(413, '本文が大きすぎます');
-    chunks.push(c as Buffer);
+    if (size <= limit) chunks.push(c as Buffer);
   }
-  if (!chunks.length) return {};
+  if (size > limit) throw new HttpError(413, '本文が大きすぎます');
+  return Buffer.concat(chunks);
+}
+
+async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+  const buf = await readBody(req, 1024 * 1024);
+  if (!buf.length) return {};
   try {
-    const v = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    const v = JSON.parse(buf.toString('utf8'));
     if (typeof v !== 'object' || v === null || Array.isArray(v)) throw new Error('オブジェクトではない');
     return v as Record<string, unknown>;
   } catch (e) {
@@ -151,6 +181,7 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
   const log = o.log ?? (() => {});
   const outDir = resolve(o.outDir);
   const groupsPath = resolve(o.groupsPath);
+  const memoDir = memosDir(resolve(o.notesDir));
   const token = randomBytes(24).toString('base64url');
   const idleMs = o.idleMs ?? DEFAULT_IDLE_MS;
   const firstMs = o.firstHeartbeatMs ?? DEFAULT_FIRST_HEARTBEAT_MS;
@@ -201,6 +232,11 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     idleTimer = setTimeout(() => void close('画面が閉じられた(heartbeat が途切れた)'), idleMs);
   }
 
+  /** DNS rebinding を防ぐ: Host が自分でなければ同一オリジンに見えても応えない */
+  function checkHost(req: IncomingMessage): void {
+    const host = req.headers.host;
+    if (host !== `127.0.0.1:${port}` && host !== `localhost:${port}`) throw new HttpError(403, '127.0.0.1 と localhost 以外の名前では開けません');
+  }
   function checkOrigin(req: IncomingMessage): void {
     const site = req.headers['sec-fetch-site'];
     if (site && site !== 'same-origin' && site !== 'none') throw new HttpError(403, '同一オリジン以外からの要求は受け付けません');
@@ -224,7 +260,18 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     if (await isAnonymized()) throw new HttpError(403, '伏せ字版では編集できません');
     if (path === '/api/state' && method === 'GET') {
       const g = await loadGroups(groupsPath);
-      sendJson(res, 200, { version: 1, groups: g.groups, notesDir: o.notesDir, groupsPath, exists: g.exists, warnings: g.warnings });
+      const memos = Object.fromEntries([...(await loadMemoIndex(memoDir))].map(([id, x]) => [id, memoSummary(x.text, x.updatedAt)]));
+      sendJson(res, 200, { version: 1, groups: g.groups, memos, notesDir: o.notesDir, groupsPath, exists: g.exists, warnings: g.warnings });
+      return;
+    }
+    if (path === '/api/memo-editor.js' && method === 'GET') {
+      res.writeHead(200, { 'content-type': MIME['.js'], 'cache-control': 'no-store', 'x-atlas-serve': '1' });
+      res.end(MEMO_EDITOR_JS);
+      return;
+    }
+    const memo = /^\/api\/memos\/([^/]+)(\/images)?$/.exec(path);
+    if (memo) {
+      await memoApi(req, res, method, memo[1], !!memo[2]);
       return;
     }
     const m = /^\/api\/groups(?:\/(.+))?$/.exec(path);
@@ -277,6 +324,46 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     }
     throw new HttpError(405, 'この方法では使えません');
   }
+  const memoLocks = new Map<string, Promise<unknown>>();
+  function withMemoLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
+    const next = (memoLocks.get(id) ?? Promise.resolve()).then(fn);
+    memoLocks.set(id, next.catch(() => {}));
+    return next;
+  }
+  function memoBody(id: string, x: MemoFile | null): Record<string, unknown> {
+    return x ? { text: x.text, rev: x.rev, html: renderMemo(memoDir, id, x.text), updatedAt: x.updatedAt } : { text: '', rev: '', html: '', updatedAt: null };
+  }
+  /** GET / PUT /api/memos/<id>、POST /api/memos/<id>/images。PUT の rev が今の本文と違えば書かずに 409(Obsidian や CLI と同時に触っても黙って消さない) */
+  async function memoApi(req: IncomingMessage, res: ServerResponse, method: string, rawId: string, images: boolean): Promise<void> {
+    let id: string;
+    try {
+      id = decodeURIComponent(rawId);
+    } catch {
+      throw new HttpError(400, 'セッション id を読めません');
+    }
+    if (!isSafeMemoId(id)) throw new HttpError(400, 'メモに使えないセッション id です');
+    if (images) {
+      if (method !== 'POST') throw new HttpError(405, 'この方法では使えません');
+      checkToken(req);
+      const data = await readBody(req, o.memoImageLimit ?? MEMO_IMAGE_LIMIT);
+      if (!imageExt(data)) throw new HttpError(415, 'png / jpeg / gif / webp の画像だけ追加できます');
+      sendJson(res, 201, await saveMemoImage(memoDir, id, data));
+      return;
+    }
+    if (method === 'GET') {
+      sendJson(res, 200, memoBody(id, await readMemo(memoDir, id)));
+      return;
+    }
+    if (method !== 'PUT') throw new HttpError(405, 'この方法では使えません');
+    checkToken(req);
+    const body = await readJsonBody(req);
+    if (typeof body.text !== 'string') throw new HttpError(400, 'text は文字列です');
+    if (typeof body.rev !== 'string') throw new HttpError(400, 'rev は文字列です');
+    // 確認と書き込みの間に別の PUT が入らないよう、同じ id の保存は順番に行う(2 つのタブで同じ rev を送っても片方は 409 になる)
+    const r = await withMemoLock(id, () => saveMemo(memoDir, id, body.text as string, body.rev as string));
+    if (r.conflict) sendJson(res, 409, { error: 'メモが別の場所で更新されました', rev: r.conflict.rev });
+    else sendJson(res, 200, memoBody(id, r.memo));
+  }
   async function loadForWrite(): Promise<SessionGroup[]> {
     try {
       return await loadGroupsForWrite(groupsPath);
@@ -320,7 +407,11 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
   server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
     const path = url.pathname;
-    (path.startsWith('/api/') ? api(req, res, path) : serveStatic(req, res, path)).catch((e: unknown) => {
+    const handle = async (): Promise<void> => {
+      checkHost(req);
+      await (path.startsWith('/api/') ? api(req, res, path) : serveStatic(req, res, path));
+    };
+    handle().catch((e: unknown) => {
       const status = e instanceof HttpError ? e.status : 500;
       const message = e instanceof HttpError ? e.message : `サーバの内部エラー: ${(e as Error).message}`;
       if (path.startsWith('/api/')) sendJson(res, status, { error: message });

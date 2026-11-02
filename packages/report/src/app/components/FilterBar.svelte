@@ -8,6 +8,7 @@
     options,
     judged,
     emptyCount,
+    memoCount,
     lastDay,
     onchange,
   }: {
@@ -16,6 +17,8 @@
     judged: boolean;
     /** 空のセッション(依頼 0・ツール 0・応答 0)の件数 */
     emptyCount: number;
+    /** メモのあるセッションの件数(0 件なら絞り込みを出さない) */
+    memoCount: number;
     /** 最終記録日(YYYY-MM-DD、ローカル)。期間の簡易指定の基準 */
     lastDay: string | null;
     onchange: (patch: Partial<FilterState>) => void;
@@ -37,10 +40,10 @@
 
   // 使う頻度の低い条件(ブランチ・入力トークン記録・タスク分類・空のセッション)は 2 行目に畳む。
   // どれかが効いているときは畳めない(効いている条件を隠さない)
-  const moreActive = $derived(filter.branch !== '' || filter.coverage !== '' || filter.taskCategory !== '' || filter.empty === '1');
+  const moreActive = $derived(filter.branch !== '' || filter.coverage !== '' || filter.taskCategory !== '' || filter.empty === '1' || filter.memo === '1');
   let moreOpen = $state(false);
   const showMore = $derived(moreOpen || moreActive);
-  const moreCount = $derived([filter.branch !== '', filter.coverage !== '', filter.taskCategory !== '', filter.empty === '1'].filter(Boolean).length);
+  const moreCount = $derived([filter.branch !== '', filter.coverage !== '', filter.taskCategory !== '', filter.empty === '1', filter.memo === '1'].filter(Boolean).length);
 
 </script>
 
@@ -143,6 +146,13 @@
       <input type="checkbox" checked={filter.empty === '1'} onchange={(e) => onchange({ empty: e.currentTarget.checked ? '1' : '' })} />
       <span>空のセッションを含める({int(emptyCount)})<span class="why">依頼・ツール呼び出し・応答がどれも無い、開いただけのセッション</span></span>
     </label>
+
+    {#if memoCount > 0 || filter.memo === '1'}
+      <label class="check">
+        <input type="checkbox" data-testid="memo-filter" checked={filter.memo === '1'} onchange={(e) => onchange({ memo: e.currentTarget.checked ? '1' : '' })} />
+        <span>メモのあるセッションだけ({int(memoCount)})</span>
+      </label>
+    {/if}
   </div>
 </div>
 

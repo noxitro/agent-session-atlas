@@ -16,6 +16,8 @@ import { GLOSSARY_FILE, renderGlossaryHtml } from './glossary-page.ts';
 import { embedData } from './lib/embed.ts';
 import type { JudgmentsIndex } from './lib/judgments.ts';
 import type { SessionGroup } from './lib/groups.ts';
+import { memoSummary } from './lib/memo.ts';
+import { loadMemoIndex, renderMemo, type MemoFile } from './memo-io.ts';
 import { detailFileName, summarize } from './lib/summarize.ts';
 import { renderTranscript, transcriptFileName, type TranscriptOptions } from './transcript.ts';
 import { loadStore, type StoreData } from '../../core/src/index.ts';
@@ -75,6 +77,8 @@ export interface BuildInput {
   judgments: JudgmentsIndex | null;
   /** 名前付きグループ(atlas-notes/groups.json)。無ければ省略 */
   groups?: SessionGroup[];
+  /** Phase 13: メモの置き場(<notes-dir>/memos)。無ければメモなし */
+  memosDir?: string;
   outDir: string;
   anonymize: boolean;
   scope?: Partial<ReportData['scope']>;
@@ -131,7 +135,13 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
   const generatedAt = new Date().toISOString();
   const j = input.judgments;
 
-  const sessions = input.sessions.map((r) => summarize(r, anon, j?.bySession.get(r.id) ?? null));
+  // 伏せ字版にはメモを一切出さない(自由記述のため。抜粋も件数も持たない)
+  const memos = input.memosDir && !anon.enabled ? await loadMemoIndex(input.memosDir) : new Map<string, MemoFile>();
+  const sessions = input.sessions.map((r) => {
+    const s = summarize(r, anon, j?.bySession.get(r.id) ?? null);
+    const m = memos.get(r.id);
+    return m ? { ...s, memo: memoSummary(m.text, m.updatedAt) } : s;
+  });
   const data: ReportData = {
     version: REPORT_DATA_VERSION,
     generatedAt,
@@ -325,7 +335,9 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
         }
       }
     }
-    const page = renderDetailHtml(r, { anon, css, judgment, generatedAt, transcriptHref, libraryHref: data.library ? `../${INSTRUCTIONS_FILE}` : null, fullHref });
+    const m = memos.get(r.id);
+    const memo = m ? { html: renderMemo(input.memosDir!, r.id, m.text), updatedAt: m.updatedAt } : null;
+    const page = renderDetailHtml(r, { anon, css, judgment, generatedAt, transcriptHref, libraryHref: data.library ? `../${INSTRUCTIONS_FILE}` : null, fullHref, memo });
     detailBytes += Buffer.byteLength(page);
     await writeFile(join(detailDir, detailFileName(r.id)), page);
   }

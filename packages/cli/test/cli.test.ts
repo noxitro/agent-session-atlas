@@ -1,7 +1,36 @@
+import { spawnSync } from 'node:child_process';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { normalizeSession } from '../../core/src/normalize.ts';
 import { parseCli, UsageError } from '../src/args.ts';
-import { filterSessions, hasFilter, resolveIdFilter, resolvePaths } from '../src/commands.ts';
+import { filterSessions, hasFilter, REPO_ROOT as REPO, resolveIdFilter, resolvePaths } from '../src/commands.ts';
+
+describe('deps-fresh(bat が npm install するかの判定)', () => {
+  const run = (root: string): number | null => spawnSync(process.execPath, [join(REPO, 'scripts', 'deps-fresh.mjs'), root]).status;
+  const lock = (packages: object): string => JSON.stringify({ packages });
+  it('lock と node_modules が揃っていれば 0、足りない・版が違えば 1。optional と link は見ない', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'atlas-deps-'));
+    try {
+      expect(run(root)).toBe(1);
+      await mkdir(join(root, 'node_modules'));
+      await writeFile(join(root, 'package-lock.json'), lock({ '': {}, 'node_modules/a': { version: '1.0.0' }, 'node_modules/b': { version: '1.0.0', optional: true }, 'node_modules/@x/y': { resolved: 'packages/y', link: true } }));
+      expect(run(root)).toBe(1); // node_modules/.package-lock.json が無い
+      await writeFile(join(root, 'node_modules', '.package-lock.json'), lock({ 'node_modules/a': { version: '1.0.0' } }));
+      expect(run(root)).toBe(0);
+      await writeFile(join(root, 'node_modules', '.package-lock.json'), lock({ 'node_modules/a': { version: '0.9.0' } }));
+      expect(run(root)).toBe(1);
+      await writeFile(join(root, 'node_modules', '.package-lock.json'), lock({}));
+      expect(run(root)).toBe(1); // 依存を足した直後(既存の node_modules に無い)
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+  it('このリポジトリの node_modules は揃っている', () => {
+    expect(run(REPO)).toBe(0);
+  });
+});
 
 describe('parseCli', () => {
   it('コマンド省略時は all、オプションを読む', () => {
@@ -68,8 +97,19 @@ describe('parseCli', () => {
       sessions: ['a', 'b', 'c'],
       notesDir: 'n',
       groupCmd: null,
+      memoCmd: null,
     });
     expect(parseCli(['bundle', '--group', 'g'])).toMatchObject({ command: 'bundle', group: 'g', sessions: null });
+    expect(parseCli(['memo', 'list']).memoCmd).toEqual({ action: 'list', id: null, text: null, file: null });
+    expect(parseCli(['memo', 'set', 'abc', '本文', 'の続き']).memoCmd).toEqual({ action: 'set', id: 'abc', text: '本文 の続き', file: null });
+    expect(parseCli(['memo', 'set', 'abc', '--file', 'a.md']).memoCmd).toEqual({ action: 'set', id: 'abc', text: null, file: 'a.md' });
+    expect(() => parseCli(['memo'])).toThrow('list / show / set / remove');
+    expect(() => parseCli(['memo', 'edit'])).toThrow('不明な操作');
+    expect(() => parseCli(['memo', 'show'])).toThrow('セッション id');
+    expect(() => parseCli(['memo', 'set', 'abc'])).toThrow('--file');
+    expect(() => parseCli(['memo', 'set', 'abc', 'x', '--file', 'a.md'])).toThrow('同時に');
+    expect(() => parseCli(['memo', 'remove', 'abc', 'x'])).toThrow('余分な引数');
+    expect(() => parseCli(['build', '--file', 'a.md'])).toThrow('--file は memo set');
     expect(parseCli(['group', 'list'])).toMatchObject({ command: 'group', groupCmd: { action: 'list', name: null, ids: [], note: null } });
     expect(parseCli(['group', 'add', 'g', 'a,b', 'c', '--note', 'メモ']).groupCmd).toEqual({ action: 'add', name: 'g', ids: ['a', 'b', 'c'], note: 'メモ' });
     expect(parseCli(['group', 'remove', 'g']).groupCmd).toMatchObject({ action: 'remove', name: 'g' });

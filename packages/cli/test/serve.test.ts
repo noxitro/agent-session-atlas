@@ -1,6 +1,7 @@
 // atlas serve(Phase 10 第 2 段): 静的配信・API・token・パスの正規化・heartbeat による終了
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -60,6 +61,91 @@ describe('serve', () => {
     expect(st).toMatchObject({ port: h!.port, pid: process.pid });
     expect(JSON.stringify(st)).not.toContain(h!.token);
     expect(await findRunningServer(out)).toEqual({ port: h!.port, pid: process.pid });
+  });
+
+  it('メモの API: 読みは token 無し、書きは token が要る。rev の競合は 409 で書かない。/api/state に概要が出る', async () => {
+    await start();
+    const put = (id: string, text: string, rev: string, token: string | null = h!.token) => json(`/api/memos/${id}`, { method: 'PUT', body: JSON.stringify({ text, rev }) }, token);
+    expect((await json('/api/memos/s1', {}, null)).body).toEqual({ text: '', rev: '', html: '', updatedAt: null });
+    expect((await put('s1', '# 見出し', '', null)).status).toBe(403);
+    const saved = await put('s1', '# 見出し', '');
+    expect(saved.status).toBe(200);
+    expect(saved.body).toMatchObject({ text: '# 見出し', html: expect.stringContaining('<h3>見出し</h3>') });
+    expect(await readFile(join(notes, 'memos', 's1.md'), 'utf8')).toBe('# 見出し');
+    expect((await json('/api/state', {}, null)).body.memos.s1).toMatchObject({ excerpt: '見出し', images: 0 });
+
+    await writeFile(join(notes, 'memos', 's1.md'), '手で更新');
+    const stale = await put('s1', '上書き', saved.body.rev);
+    expect(stale.status).toBe(409);
+    expect(await readFile(join(notes, 'memos', 's1.md'), 'utf8')).toBe('手で更新');
+    expect((await put('s1', '上書き', stale.body.rev)).status).toBe(200);
+
+    const del = await put('s1', '', (await json('/api/memos/s1')).body.rev);
+    expect(del.body).toEqual({ text: '', rev: '', html: '', updatedAt: null });
+    expect(existsSync(join(notes, 'memos', 's1.md'))).toBe(false);
+    expect((await json('/api/memos/s1', { method: 'PUT', body: JSON.stringify({ text: 1, rev: '' }) })).status).toBe(400);
+    expect((await json('/api/memos/s1', { method: 'DELETE' })).status).toBe(405);
+  });
+
+  it('メモの API: 同じ rev の同時保存は片方だけ通り、もう片方は 409(後の書き込みが前を消さない)', async () => {
+    await start();
+    const first = await json('/api/memos/s1', { method: 'PUT', body: JSON.stringify({ text: '元', rev: '' }) });
+    const put = (text: string) => json('/api/memos/s1', { method: 'PUT', body: JSON.stringify({ text, rev: first.body.rev }) });
+    const rs = await Promise.all(['A', 'B', 'C', 'D'].map(put));
+    expect(rs.map((r) => r.status).sort()).toEqual([200, 409, 409, 409]);
+    const won = rs.find((r) => r.status === 200)!;
+    expect(await readFile(join(notes, 'memos', 's1.md'), 'utf8')).toBe(won.body.text);
+    expect(await readdir(join(notes, 'memos'))).toEqual(['s1.md']);
+  });
+
+  it('Host が自分でない要求には静的ページも API も応えない(DNS rebinding)', async () => {
+    await start();
+    const status = (path: string, host: string): Promise<number> =>
+      new Promise((ok, ng) => {
+        const r = request({ port: h!.port, host: '127.0.0.1', path, headers: { host } }, (res) => {
+          res.resume();
+          ok(res.statusCode ?? 0);
+        });
+        r.on('error', ng);
+        r.end();
+      });
+    expect(await status('/atlas.html', 'evil.example')).toBe(403);
+    expect(await status('/api/memos/s1', `evil.example:${h!.port}`)).toBe(403);
+    expect(await status('/api/memos/s1', `localhost:${h!.port}`)).toBe(200);
+    expect(await status('/atlas.html', `127.0.0.1:${h!.port}`)).toBe(200);
+  });
+
+  it('メモの API: 置き場の外に出る id は 400。画像は token・形式・上限を見る', async () => {
+    // 同じプロセスの fetch で数 MB を送ると Windows で止まるので、上限を小さくして境界だけ見る(実際の 10MB は別プロセスで実測、docs/PLAN.md)
+    await start({ memoImageLimit: 64 });
+    // .. と %2e%2e は URL の正規化で /api/ になる(404)。どちらでも置き場の外には出ない
+    for (const id of ['..', '%2e%2e']) expect({ id, status: (await json(`/api/memos/${id}`)).status }).toEqual({ id, status: 404 });
+    for (const id of ['..%2Fsecret', 'a%2Fb', '%E0%A4%A', '.hidden']) expect({ id, status: (await json(`/api/memos/${id}`)).status }).toEqual({ id, status: 400 });
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0]);
+    const post = (body: Buffer, token: string | null = h!.token) => fetch(`${base()}/api/memos/s1/images`, { method: 'POST', body, headers: { 'content-type': 'image/png', ...(token ? { 'x-atlas-token': token } : {}) } });
+    expect((await post(png, null)).status).toBe(403);
+    expect((await post(Buffer.from('<svg/>'))).status).toBe(415);
+    expect((await post(Buffer.alloc(65))).status).toBe(413);
+    const ok = await post(png);
+    expect(ok.status).toBe(201);
+    const { name, markdown } = (await ok.json()) as { name: string; markdown: string };
+    expect(markdown).toBe(`![画像](s1/${name})`);
+    const saved = await json('/api/memos/s1', { method: 'PUT', body: JSON.stringify({ text: markdown, rev: '' }) });
+    expect(saved.body.html).toContain('src="data:image/png;base64,');
+  });
+
+  it('編集の script は serve だけが配り、伏せ字版ではメモの API も script も 403', async () => {
+    await start();
+    const js = await fetch(`${base()}/api/memo-editor.js`);
+    expect(js.status).toBe(200);
+    expect(js.headers.get('content-type')).toContain('javascript');
+    expect(await js.text()).toContain('../api/memos/');
+    await h!.close();
+    await writeFile(join(out, 'atlas.html'), ATLAS(true));
+    await start();
+    expect((await fetch(`${base()}/api/memo-editor.js`)).status).toBe(403);
+    expect((await json('/api/memos/s1')).status).toBe(403);
+    expect((await json('/api/memos/s1', { method: 'PUT', body: JSON.stringify({ text: 'x', rev: '' }) })).status).toBe(403);
   });
 
   it('API: 読みは token 無しで可、書きは token が要る。作成 / 改名 / 削除が groups.json に反映され、同名は 409、壊れたファイルは上書きしない', async () => {

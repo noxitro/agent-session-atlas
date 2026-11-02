@@ -66,7 +66,7 @@ describe('Phase 12 E2E: fixtures', () => {
     expect(withTurns.analysis.requests.length).toBe(withTurns.analysis.turnTools.length);
     expect(withTurns.analysis.turnMs.length).toBe(withTurns.analysis.turnTools.length);
     expect(s.schemaVersion).toBe(6);
-    expect(data.version).toBe(7);
+    expect(data.version).toBe(8);
     expect(Buffer.byteLength(await readFile(join(out, 'atlas.html'), 'utf8'))).toBeLessThan(LIMIT);
     // 詳細ページから改善点のページへは不要(atlas.html の節から)。atlas.html の目次に「改善点」
     expect(await readFile(join(out, 'atlas.html'), 'utf8')).toMatch(/改善点/);

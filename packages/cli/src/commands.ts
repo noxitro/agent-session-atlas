@@ -13,11 +13,16 @@ import {
   HTML_SIZE_LIMIT,
   loadGroups,
   loadGroupsForWrite,
+  loadMemoIndex,
   matchesBase,
+  memosDir,
+  memoSummary,
   NOTES_DIR_NAME,
   parseJudgments,
+  readMemo,
   resolveIdPrefixes,
   saveGroups,
+  saveMemo,
   uniqueIds,
   type BuildResult,
   type JudgmentsIndex,
@@ -37,7 +42,7 @@ import {
   type JudgeBackend,
   type RunSummary,
 } from '../../judge/src/index.ts';
-import type { CliOptions, GroupCliOptions, JudgeCliOptions } from './args.ts';
+import type { CliOptions, GroupCliOptions, JudgeCliOptions, MemoCliOptions } from './args.ts';
 import { findRunningServer, openInBrowser, startServe } from './serve.ts';
 import { CONFIG_FILE, loadConfig } from './config.ts';
 
@@ -319,6 +324,7 @@ export async function runBuild(p: Paths, o: BuildOptions, log: Log): Promise<Bui
     warnings: { unknownEventTypes: unknown, badLines: s.warnings.badLines, notes: groups.warnings },
     judgments,
     groups: groups.groups,
+    memosDir: memosDir(p.notes),
     outDir: p.out,
     anonymize: o.anonymize,
     scope: { since: o.since, project: o.project, client: o.client, model: o.model, branch: o.branch },
@@ -468,6 +474,38 @@ export async function runGroup(p: Paths, g: GroupCliOptions, log: Log): Promise<
   }
 }
 
+/** atlas memo list / show / set / remove。id は sessions.json があれば先頭一致で解決する(無ければそのまま使う) */
+export async function runMemo(p: Paths, m: MemoCliOptions, log: Log): Promise<void> {
+  const dir = memosDir(p.notes);
+  const known = existsSync(p.sessions) ? (await readJson<SessionsFile>(p.sessions, '')).sessions.map((s) => s.id) : null;
+  if (m.action === 'list') {
+    const index = await loadMemoIndex(dir);
+    log(`memo: ${index.size} 件(${dir})`);
+    for (const [id, x] of index) {
+      const s = memoSummary(x.text, x.updatedAt);
+      log(`  ${id}: ${s.excerpt || '(本文なし)'}${s.images ? `(画像 ${s.images} 枚)` : ''}${known && !known.includes(id) ? '(記録に無いセッション)' : ''}`);
+    }
+    return;
+  }
+  const id = known ? resolveIdPrefixes([...new Set([...known, ...(await loadMemoIndex(dir)).keys()])], [m.id!])[0] : m.id!;
+  if (m.action === 'show') {
+    const x = await readMemo(dir, id);
+    if (!x) throw new Error(`セッション ${id} のメモはありません`);
+    log(x.text);
+    return;
+  }
+  if (m.action === 'remove') {
+    if (!(await readMemo(dir, id))) throw new Error(`セッション ${id} のメモはありません`);
+    await saveMemo(dir, id, '', null);
+    log(`memo: ${id} のメモを削除しました(画像は ${join(dir, id)} に残ります)`);
+    return;
+  }
+  const text = m.file != null ? await readFile(m.file, 'utf8') : (m.text ?? '');
+  if (!text.trim()) throw new Error('本文が空です(削除は atlas memo remove で行います)');
+  const r = await saveMemo(dir, id, text, null);
+  log(`memo: ${id} のメモを保存しました(${r.memo!.text.length} 文字)→ ${join(dir, `${id}.md`)}`);
+}
+
 /**
  * atlas serve: 既に動いているサーバがあればブラウザを開くだけ。無ければ起動し、画面の heartbeat が途切れる(ブラウザを閉じる)まで待つ。
  */
@@ -535,6 +573,9 @@ export async function run(o: CliOptions, log: Log): Promise<{ paths: Paths; buil
       return { paths: p, judge: await runJudgeCommand(p, o.judge!, log) };
     case 'group':
       await runGroup(p, o.groupCmd!, log);
+      return { paths: p };
+    case 'memo':
+      await runMemo(p, o.memoCmd!, log);
       return { paths: p };
     case 'serve':
       await runServe(p, { port: o.port, open: o.open }, log);

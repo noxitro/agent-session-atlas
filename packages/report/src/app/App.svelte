@@ -18,11 +18,19 @@
   import SessionTable from './components/SessionTable.svelte';
   import { applyTheme, loadTheme, type ThemeChoice } from './theme.ts';
   import { api, serveToken, startHeartbeat } from './api.ts';
+  import type { MemoSummary } from '../lib/memo.ts';
   import type { ReportGroup } from '../lib/types.ts';
 
   let { data, error }: { data: ReportData | null; error: string | null } = $props();
 
-  const sessions = $derived(data?.sessions ?? []);
+  /** API から読んだメモ(編集モードではこちらを使う。ビルド後に書いたメモも一覧に出る) */
+  let liveMemos = $state<Record<string, MemoSummary> | null>(null);
+  const sessions = $derived.by(() => {
+    const list = data?.sessions ?? [];
+    const memos = liveMemos;
+    return memos ? list.map((s) => ({ ...s, memo: memos[s.id] ?? null })) : list;
+  });
+  const memoCount = $derived(sessions.filter((s) => s.memo).length);
   const emptyCount = $derived(sessions.filter((s) => s.empty).length);
   const judged = $derived(!!data?.judgments.available);
 
@@ -78,6 +86,11 @@
     window.addEventListener('hashchange', onHash);
     if (initialView) showView(initialView);
     return () => window.removeEventListener('hashchange', onHash);
+  });
+
+  // 伏せ字版にはメモが無いので、共有された #memo=1 で 0 件にしない
+  $effect(() => {
+    if (data?.anonymized && filter.memo) setFilter({ memo: '' });
   });
 
   $effect(() => {
@@ -143,6 +156,7 @@
         .state()
         .then((s) => {
           liveGroups = s.groups;
+          liveMemos = s.memos ?? null; // 古い serve には無い(埋め込みの抜粋を残す)
           editable = true;
         })
         .catch(() => {});
@@ -252,7 +266,7 @@
   /** 効いている絞り込みの条件の数(期間は開始・終了で 1 つ、セッションの選択は 1 つ) */
   const activeConditions = $derived.by(() => {
     let n = filter.from || filter.to ? 1 : 0;
-    for (const k of ['project', 'client', 'model', 'branch', 'coverage', 'taskCategory', 'tool', 'ids'] as const) if (filter[k]) n++;
+    for (const k of ['project', 'client', 'model', 'branch', 'coverage', 'taskCategory', 'tool', 'ids', 'memo'] as const) if (filter[k]) n++;
     if (filter.empty === '1') n++;
     return n;
   });
@@ -447,7 +461,7 @@
       {#if serverDown}
         <div class="down-band" role="alert">サーバが止まっています。atlas.bat を実行し直してください(閲覧はそのままできます)。</div>
       {/if}
-      <FilterBar {filter} {options} {judged} {emptyCount} lastDay={all.overall.lastAt ? date(all.overall.lastAt) : null} onchange={setFilter} />
+      <FilterBar {filter} {options} {judged} {emptyCount} {memoCount} lastDay={all.overall.lastAt ? date(all.overall.lastAt) : null} onchange={setFilter} />
 
       <main class="wrap" id="main" tabindex="-1">
         <div class="empty" class:show={filtered.length === 0} role="status">

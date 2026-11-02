@@ -1,11 +1,14 @@
 // atlas serve の API(画面と保存の境界)。http(s) で開かれ、serve が meta に token を入れたときだけ使える。
 // file:// で開いたときは token がプレースホルダのままなので何も呼ばない(console にエラーを出さない)。
 // fetch の宛先は同一オリジンの相対パス 'api/…' だけ(E2E の外部参照の検査はこの形だけを許す)。
+import type { MemoSummary } from '../lib/memo.ts';
 import type { ReportGroup } from '../lib/types.ts';
 
 export interface ApiState {
   version: number;
   groups: ReportGroup[];
+  /** セッション id → メモの概要(メモの API より古い serve には無い) */
+  memos?: Record<string, MemoSummary>;
   notesDir: string;
   groupsPath: string;
   exists: boolean;

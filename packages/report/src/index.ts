@@ -11,6 +11,12 @@ export { matchesBase, applyFilter, emptyFilter, splitIds, joinIds } from './lib/
 export { parseGroups, serializeGroups, resolveIdPrefixes, uniqueIds, addIds, removeIds, GROUPS_VERSION, GROUPS_FILE_NAME, NOTES_DIR_NAME } from './lib/groups.ts';
 export type { SessionGroup, GroupsFile, ParsedGroups } from './lib/groups.ts';
 export { loadGroups, loadGroupsForWrite, saveGroups } from './groups-io.ts';
+export { isSafeFileName, isSafeMemoId, memoExcerpt, memoSummary, MEMOS_DIR_NAME } from './lib/memo.ts';
+export type { MemoSummary } from './lib/memo.ts';
+export { imageExt, loadMemoIndex, MEMO_IMAGE_LIMIT, memoRev, memosDir, readMemo, renderMemo, saveMemo, saveMemoImage } from './memo-io.ts';
+export type { MemoFile } from './memo-io.ts';
+export { renderMemoHtml, MEMO_CSS } from './memo-render.ts';
+export { MEMO_EDITOR_JS } from './memo-editor.ts';
 export type { LoadedGroups } from './groups-io.ts';
 export type { Filterable, FilterState } from './lib/filter.ts';
 export { aggregate } from './lib/aggregate.ts';

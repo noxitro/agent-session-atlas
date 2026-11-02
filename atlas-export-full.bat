@@ -13,8 +13,9 @@ if errorlevel 1 (
   exit /b 1
 )
 
-if not exist node_modules (
-  echo 初回セットアップ: npm install を実行します...
+node scripts\deps-fresh.mjs
+if errorlevel 1 (
+  echo 依存を入れます: npm install を実行します...
   call npm install
   if errorlevel 1 (
     echo npm install に失敗しました。

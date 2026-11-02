@@ -1,7 +1,7 @@
 // atlas コマンドの引数解釈(純関数)
 import { parseArgs } from 'node:util';
 
-export const COMMANDS = ['snapshot', 'extract', 'metrics', 'build', 'export', 'all', 'bundle', 'judge', 'group', 'serve', 'skill-draft'] as const;
+export const COMMANDS = ['snapshot', 'extract', 'metrics', 'build', 'export', 'all', 'bundle', 'judge', 'group', 'memo', 'serve', 'skill-draft'] as const;
 export type Command = (typeof COMMANDS)[number];
 
 export const JUDGE_ACTIONS = ['run', 'import'] as const;
@@ -38,6 +38,19 @@ export interface GroupCliOptions {
   ids: string[];
   /** add の --note */
   note: string | null;
+}
+
+export const MEMO_ACTIONS = ['list', 'show', 'set', 'remove'] as const;
+export type MemoAction = (typeof MEMO_ACTIONS)[number];
+
+export interface MemoCliOptions {
+  action: MemoAction;
+  /** show / set / remove の対象のセッション id(先頭一致で解決する前の文字列) */
+  id: string | null;
+  /** set の本文(コマンドラインの残りを空白でつないだもの) */
+  text: string | null;
+  /** set の --file */
+  file: string | null;
 }
 
 export interface CliOptions {
@@ -81,6 +94,7 @@ export interface CliOptions {
   snapshotPrune: boolean;
   judge: JudgeCliOptions | null;
   groupCmd: GroupCliOptions | null;
+  memoCmd: MemoCliOptions | null;
   /** serve: 固定するポート(null は空きポート) */
   port: number | null;
   /** serve: 起動後にブラウザを開く(--no-open で開かない) */
@@ -105,7 +119,9 @@ export const USAGE = `使い方: atlas <コマンド> [オプション]
              外部の LLM で作った判定(JSON か、JSON を含む Markdown)を検証して judgments.json に取り込む
   group list / group add <名前> <id...> [--note <一文>] / group remove <名前>
              名前付きグループ(<notes-dir>/groups.json)を一覧・追加(既存名なら id を追記)・削除する
-  serve      out/ を 127.0.0.1 だけに配信してブラウザで開く(画面からグループを作れる)。ブラウザを閉じると止まる
+  memo list / memo show <id> / memo set <id> <本文...> / memo set <id> --file <path> / memo remove <id>
+             セッションごとのメモ(<notes-dir>/memos/<id>.md)を一覧・表示・保存・削除する(remove は画像を残す)
+  serve      out/ を 127.0.0.1 だけに配信してブラウザで開く(画面からグループとメモを書ける)。ブラウザを閉じると止まる
   skill-draft <番号>
              改善点の「スキル化の候補」(out/insights.json の番号)から SKILL.md の下書きを LLM に作らせ、
              out/skill-drafts/ に書く(クレジットや従量課金を消費しうる。明示したときだけ動く。--backend は judge と同じ)
@@ -121,7 +137,8 @@ export const USAGE = `使い方: atlas <コマンド> [オプション]
   --group <名前>     名前付きグループ(<notes-dir>/groups.json)のセッションだけ(他の絞り込みと AND)
   --session <id,...> 特定のセッションだけ(カンマ区切り、複数回指定可。id は先頭一致で解決、曖昧ならエラー)
   --notes-dir <dir>  メモとグループの置き場(既定: リポジトリ直下の atlas-notes/)
-  --anonymize        プロジェクト名・パス・リポジトリ名・ブランチを伏せ字にして HTML を出す(共有用)
+  --file <path>      memo set: 本文をこのファイルから読む
+  --anonymize        プロジェクト名・パス・リポジトリ名・ブランチを伏せ字にして HTML を出す(共有用。メモは出さない)
   --judgments <file> 判定結果 judgments.json の場所(既定: <out>/judgments.json)
   --bundle <dir>     評価バンドルの場所(既定: <out>/bundle)
   --include-empty    bundle: 依頼の記録が無いセッションもパケットにする
@@ -183,6 +200,7 @@ export function parseCli(argv: string[]): CliOptions {
         session: { type: 'string', multiple: true },
         'notes-dir': { type: 'string' },
         note: { type: 'string' },
+        file: { type: 'string' },
         anonymize: { type: 'boolean', default: false },
         judgments: { type: 'string' },
         bundle: { type: 'string' },
@@ -264,7 +282,22 @@ export function parseCli(argv: string[]): CliOptions {
     if (values.note != null && action !== 'add') throw new UsageError('--note は group add でだけ使えます');
     groupCmd = { action: action as GroupAction, name, ids, note: values.note ?? null };
   } else if (values.note != null) throw new UsageError('--note は group add でだけ使えます');
-  if (cmd !== 'judge' && cmd !== 'group' && cmd !== 'skill-draft') {
+  let memoCmd: MemoCliOptions | null = null;
+  if (cmd === 'memo') {
+    const action = positionals[1];
+    if (!action) throw new UsageError('memo の後に list / show / set / remove を指定してください');
+    if (!(MEMO_ACTIONS as readonly string[]).includes(action)) throw new UsageError(`memo の不明な操作です: ${action}(list / show / set / remove)`);
+    const id = positionals[2] ?? null;
+    const rest = positionals.slice(3);
+    if (action === 'list' && positionals.length > 2) throw new UsageError(`余分な引数があります: ${positionals.slice(2).join(' ')}`);
+    if (action !== 'list' && !id) throw new UsageError(`memo ${action} にはセッション id を指定してください`);
+    if (action !== 'set' && rest.length) throw new UsageError(`余分な引数があります: ${rest.join(' ')}`);
+    if (action === 'set' && rest.length === 0 && values.file == null) throw new UsageError('memo set には本文か --file を指定してください');
+    if (action === 'set' && rest.length > 0 && values.file != null) throw new UsageError('memo set の本文と --file は同時に指定できません');
+    memoCmd = { action: action as MemoAction, id, text: rest.length ? rest.join(' ') : null, file: values.file ?? null };
+  }
+  if (values.file != null && memoCmd?.action !== 'set') throw new UsageError('--file は memo set でだけ使えます');
+  if (cmd !== 'judge' && cmd !== 'group' && cmd !== 'memo' && cmd !== 'skill-draft') {
     if (positionals.length > 1) throw new UsageError(`コマンドは 1 つだけ指定してください: ${positionals.join(' ')}`);
     for (const k of ['backend', 'limit', 'only', 'concurrency', 'timeout'] as const) if (values[k] != null) throw new UsageError(`--${k} は judge run でだけ使えます`);
     if (values.force) throw new UsageError('--force は judge run でだけ使えます');
@@ -308,6 +341,7 @@ export function parseCli(argv: string[]): CliOptions {
     snapshotPrune: values['snapshot-prune'] ?? false,
     judge,
     groupCmd,
+    memoCmd,
     port,
     open: values.open ?? true,
     skillDraft,
