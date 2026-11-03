@@ -1,6 +1,6 @@
 @echo off
 rem Copilot Session Atlas: LLM による工数判定(推定人手工数)を回してレポートを作り直す
-rem 集計(all)→ 評価バンドル(bundle)→ 判定(judge run、既定は copilot -p)→ レポート(build)
+rem 集計(all)→ 評価バンドル(bundle)→ 判定(judge run、既定は copilot -p)→ レポート(export。記録も作り直す)
 rem 判定は GitHub Copilot の AI クレジットを消費します。元データは書き換えません
 rem 追加の引数は judge run にそのまま渡します(例: atlas-judge.bat --limit 5)
 chcp 65001 >nul

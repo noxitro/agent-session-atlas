@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// atlas-judge.bat / npm run atlas:judge の入口: bundle → judge run → build を通しで実行する。
+// atlas-judge.bat / npm run atlas:judge の入口: bundle → judge run → export(伏せ字版は build)を通しで実行する。
 //   node packages/cli/src/judge-flow.ts [judge run のオプション]
 // 判定に失敗したセッションがあってもレポートは作り直す(判定済みの分は反映する)。終了コードは 1 にする。
 import { parseCli, USAGE, UsageError } from './args.ts';
@@ -17,7 +17,7 @@ async function main(argv: string[]): Promise<number> {
     throw e;
   }
   if (judgeOpts.help) {
-    process.stdout.write(`使い方: atlas-judge [judge run のオプション]\nbundle → judge run → build を順に実行します。\n\n${USAGE}`);
+    process.stdout.write(`使い方: atlas-judge [judge run のオプション]\nbundle → judge run → export(伏せ字版は build)を順に実行します。\n\n${USAGE}`);
     return 0;
   }
   const log = (msg: string): void => {
@@ -35,7 +35,8 @@ async function main(argv: string[]): Promise<number> {
       process.stderr.write(`atlas-judge: 判定を実行できませんでした: ${(e as Error).message}\n`);
       return 1;
     }
-    const b = await run({ ...common, command: 'build' }, log);
+    // 直前の all が作ったセッション記録を消さないよう、伏せ字版でなければ export で作り直す
+    const b = await run({ ...common, command: common.anonymize ? 'build' : 'export' }, log);
     if (b.build) log(`\nレポート: ${b.build.htmlPath}`);
     if (failed > 0) {
       process.stderr.write(`atlas-judge: 判定に失敗したセッションが ${failed} 件あります(judgments.json の failures に記録しました。もう一度実行すると再試行します)\n`);

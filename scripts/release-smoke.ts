@@ -45,6 +45,7 @@ if (r.status !== 0) fail(`atlas all が終了コード ${r.status} で失敗し�
 for (const f of ['atlas.html', 'insights.html', 'glossary.html']) {
   if (!existsSync(join(out, f)) || statSync(join(out, f)).size === 0) fail(`${f} ができていません`);
 }
+if (!readdirSync(join(out, 'sessions')).some((f) => f.endsWith('.md'))) fail('セッション記録(sessions/*.md)ができていません');
 if (statSync(template).mtimeMs !== before) fail('同梱のテンプレートを作り直しました(mtime がソースより新しくなっていない)');
 
 console.log(`release-smoke: 通過(${bats.length} 本の *.bat、npm install、atlas all)`);

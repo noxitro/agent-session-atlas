@@ -13,11 +13,11 @@ GitHub Copilot のセッションログ(`%USERPROFILE%\.copilot`)から、トー
 
 ### ダブルクリックで(atlas.bat)
 
-リポジトリ直下の `atlas.bat` をダブルクリックすると、依存が足りないときだけ `npm install` を実行したあと、`~/.copilot` を集計して `out\atlas.html` を作り、ローカルサーバ(`127.0.0.1` だけに公開。ポートは空いているものを自動で取ります)で既定のブラウザに開きます。黒い窓はブラウザを閉じるまで残り、閉じるとサーバも止まります(画面からの操作が 3 秒ごとに届かなくなってから約 8 秒。窓を閉じても止まります)。もう一度 `atlas.bat` を実行すると集計し直し、サーバが動いていればブラウザを開くだけにします。元のファイルは書き換えません(`out\snapshot` に複製してから読みます)。2 回目以降は変わっていないファイルの複製を省くので数秒で終わります。
+リポジトリ直下の `atlas.bat` をダブルクリックすると、依存が足りないときだけ `npm install` を実行したあと、`~/.copilot` を集計して `out\atlas.html` と各セッションの記録(`out\sessions\<id>.md`。詳細ページからリンク)を作り、ローカルサーバ(`127.0.0.1` だけに公開。ポートは空いているものを自動で取ります)で既定のブラウザに開きます。黒い窓はブラウザを閉じるまで残り、閉じるとサーバも止まります(画面からの操作が 3 秒ごとに届かなくなってから約 8 秒。窓を閉じても止まります)。もう一度 `atlas.bat` を実行すると集計し直し、サーバが動いていればブラウザを開くだけにします。元のファイルは書き換えません(`out\snapshot` に複製してから読みます)。2 回目以降は変わっていないファイルの複製を省くので数秒で終わります。
 
-サーバ経由で開いたときだけ、画面からグループの作成・名前の変更・削除と、セッションのメモの編集ができます(下記「絞り込み」「セッションのメモ」)。共有するときは `out\atlas.html`(と `out\glossary.html`、`out\sessions\`)をそのまま渡せます。サーバ無しで開いた画面は閲覧だけで、グループとメモの操作は出ません。
+サーバ経由で開いたときだけ、画面からグループの作成・名前の変更・削除と、セッションのメモの編集ができます(下記「絞り込み」「セッションのメモ」)。共有するときは `out\atlas.html`(と `out\glossary.html`、`out\sessions\` の `.html`)をそのまま渡せます。`out\sessions\` の `.md`(セッション記録)には依頼文や応答がそのまま入るので渡さないでください。サーバ無しで開いた画面は閲覧だけで、グループとメモの操作は出ません。
 
-`atlas-export.bat` は、同じ集計に加えて各セッションの記録(Markdown)も作ります(「[セッション記録(Markdown)](#セッション記録markdown)」)。`atlas-export-full.bat` はさらに解析用の全文記録(上限なし)と網羅の検査、指示文と skill の閲覧ページも作ります(「[解析用の完全出力](#解析用の完全出力)」)。
+`atlas-export.bat` も同じもの(集計と各セッションの記録)を作ります。違いは追加の引数を `export` に渡せることで、記録の中身の調整(`--tool-output all` など)や伏せ字版の記録(`--anonymize`)に使います(「[セッション記録(Markdown)](#セッション記録markdown)」)。`atlas-export-full.bat` はさらに解析用の全文記録(上限なし)と網羅の検査、指示文と skill の閲覧ページも作ります(「[解析用の完全出力](#解析用の完全出力)」)。
 
 > **`out/` は共有しないでください。** スナップショット(原本の複製)と、全文記録・セッション記録には依頼文・応答・ツールの結果・ファイルのパスがそのまま入り、秘密情報が混じることがあります。共有するときは伏せ字版(`--anonymize` で作った `out/atlas.html` と `out/sessions/`)だけを、中身を確認してから渡してください。
 
@@ -25,7 +25,7 @@ GitHub Copilot のセッションログ(`%USERPROFILE%\.copilot`)から、トー
 
 ```
 npm install
-npm run atlas                              # all と同じ: snapshot → extract → metrics → build
+npm run atlas                              # all と同じ: snapshot → extract → metrics → export(記録つき)
 npm run atlas -- build --anonymize         # 伏せ字版の HTML を作り直す(共有用)
 npm run atlas -- all --since 2026-07-01    # 7 月以降に更新されたセッションだけ
 npm run atlas -- --help                    # 使い方
@@ -38,7 +38,7 @@ npm run atlas -- --help                    # 使い方
 | `metrics` | `out/metrics.json`(全体・プロジェクト・クライアント・月・モデル別の集計。空のセッションは除き、件数を `emptySessions` に、トークンの出所別・欠測の件数を各集計の `tokenSources` / `sessionsMissingTokens` に、ツールの成否を `tools.results`、MCP サーバー別を `tools.mcp`、skill の呼んだ側を `skills.byTrigger`、agent の失敗とトークンを `agents.byNameDetail`、変更行数を `lines`、インストール済みで未使用の skill を `installedSkills`、モード・推論強度・リクエストの起点・ツール定義のトークンを `exec`、権限の結果・エラーの種別・サブエージェント失敗の理由・compaction 自体のトークンを `frictionDetail`、todo を `todos`、モデル別の待ち時間を `latency`、ツール別の所要時間を `toolDurations` に持つ)を作る |
 | `build` | `out/atlas.html` と `out/sessions/<id>.html`(セッション詳細)を作る |
 | `export` | `build` に加えて、各セッションの記録(経過・消費)を `out/sessions/<id>.md` に書く。共有や LLM での振り返り用(下記「[セッション記録(Markdown)](#セッション記録markdown)」)。指示文と skill の閲覧ページ `out/instructions.html` も作る。`--full` で解析用の全文記録(下記)。LLM は呼ばない |
-| `all` | 上の 4 つを順に実行する(コマンド省略時の既定) |
+| `all` | `snapshot` → `extract` → `metrics` → `export` を順に実行する(コマンド省略時の既定)。`--anonymize` のときは記録を作らず `build` にする(記録の伏せ字は HTML より弱いため) |
 | `bundle` | LLM に工数を判定させる評価バンドル `out/bundle/` を作る(LLM は呼ばない) |
 | `judge run` | バンドルの各セッションを LLM で判定し `out/judgments.json` に追記する(**クレジットを消費します**) |
 | `judge import <ファイル>` | 外部の LLM で作った判定(JSON か、JSON を含む Markdown)を検証して `out/judgments.json` に取り込む |
@@ -77,7 +77,7 @@ npm run atlas -- --help                    # 使い方
 
 `extract` は、repository の記録が無いセッションについて、作業フォルダ(`gitRoot`。無ければ `cwd` から上へ探した `.git`)の `.git/config` の `[remote "origin"]` を**読むだけ**で(git コマンドは使いません)、URL から「所有者/リポジトリ」を取り出してプロジェクトにします。worktree(`.git` がファイル)は `gitdir` → `commondir` を辿って共有の設定を読みます。origin が無い・読めないときはパスのままです。上へ探すときは、ホームディレクトリと一時フォルダより上には上りません。
 
-`out/atlas.html` は 1 ファイルで完結しており(外部への通信なし)、サーバ無しにブラウザで開けます。共有するときは `out/atlas.html` と、用語の説明 `out/glossary.html`、詳細ページとセッション記録(`.md`)の入った `out/sessions/` フォルダを一緒に渡してください。5 MB 以上になると `build` が注意を出します(出力はします)。そのときは `--since` で期間を、`--project` などで対象を絞って作り直してください。
+`out/atlas.html` は 1 ファイルで完結しており(外部への通信なし)、サーバ無しにブラウザで開けます。共有するときは `out/atlas.html` と、用語の説明 `out/glossary.html`、詳細ページの入った `out/sessions/` フォルダを一緒に渡してください(セッション記録の `.md` は外すか、伏せ字版で作り直してから)。5 MB 以上になると `build` が注意を出します(出力はします)。そのときは `--since` で期間を、`--project` などで対象を絞って作り直してください。
 
 ## wiki の指定
 
@@ -212,7 +212,7 @@ npm run atlas -- export --anonymize              # 伏せ字版(下の注意を�
 - **秘密情報**: API キーやトークンらしい文字列(GitHub / OpenAI・Anthropic / AWS / Slack / Google のキー、秘密鍵、JWT、Bearer)は形式で見つけて `[伏せました: 種類]` に置き換え、件数を記録の末尾と `export` のログに出します。形式で探しているだけなので偽陽性・見逃しがあります。本物が見つかったら元の記録(`~/.copilot`)にも残っているので鍵を作り直してください。共有する前に中身は必ず確認してください。
 - **伏せ字モード(`--anonymize`)の記録**は、プロジェクト名・パス・リポジトリ名・ブランチを仮名に、絶対パスを `<path>` に置き換え、ファイル一覧を出しません。ただし依頼文や応答などの自由記述は機械的に置き換えるだけなので、本文中の相対パス・ファイル名・人名などは残りえます。HTML の伏せ字版(本文を出さない)より弱い保証です。記録の先頭にもその注意を書きます。
 - スナップショットに `events.jsonl` が無いセッション(`session-store.db` にだけあるもの、`--since` で複製対象外だったもの)は、`sessions.json` に残る最初の依頼と最後の応答だけの記録になり、その旨を書きます。
-- `export` は `build` を含むので、レポートと詳細ページも作り直されます。逆に素の `build` を実行すると `.md` は消え、詳細ページのリンクも消えます(フィルタで減ったセッションの古い記録を残さないため)。
+- `export` は `build` を含むので、レポートと詳細ページも作り直されます。逆に素の `build` を実行すると `.md` は消え、詳細ページのリンクも消えます(フィルタで減ったセッションの古い記録を残さないため)。`all`(`atlas.bat`・`npm run atlas`)と `atlas-judge.bat` は記録も作るので消えません。伏せ字版(`--anonymize`)の `all` は記録を作りません。
 - 同じ目的の既存ツールとの関係: agent-toolkit の `copilot-session-export`(アプリの中から `/export` `/export-usage` でその場で書き出す)と `copilot-usage-export`(PowerShell だけで動く日次バッチ)は、1 セッションをその場で・自動で書き出すためのものです。atlas の `export` は、集計と同じ絞り込みと伏せ字でまとめて出すためのもので、節の構成は揃えていますが同じファイルにはなりません。
 
 ## 解析用の完全出力
@@ -302,7 +302,7 @@ npm run atlas -- build                    # レポートに合成
 `atlas-judge.bat` をダブルクリックすると、バンドルを作り直し、既定のバックエンド(`copilot -p`)で未判定のセッションを判定して、レポートを作り直して開きます。コマンドでは次のとおりです。
 
 ```
-npm run atlas:judge                               # bundle → judge run → build(atlas-judge.bat と同じ)
+npm run atlas:judge                               # bundle → judge run → export(atlas-judge.bat と同じ。伏せ字版は build)
 npm run atlas -- judge run --limit 5              # まず 5 件だけ試す
 npm run atlas -- judge run --only <id>,<id>       # 指定したセッションだけ
 npm run atlas -- judge run --force                # 判定済みも判定し直す
@@ -351,7 +351,7 @@ ATLAS_LIVE=1 npm run e2e
 ### CI / リリース(GitHub Actions)
 
 - **CI**(`.github/workflows/ci.yml`): `main` への push と PR ごとに、Windows と Linux × Node.js 24 と 26 の 4 通りで `npm ci` → `typecheck` → `test` → `build:report` → `e2e` → 配布物の動作確認を実行します。E2E はテスト時に生成する架空の fixture だけを使い(追加の手順は不要)、実データ(`ATLAS_LIVE`)や実際の LLM 判定は動かしません。Actions タブから手動でも実行できます。
-  - 配布物の動作確認: リリースと同じ中身(`scripts/pack-release.ts`)を作り、`atlas.bat` と同じ順で動かします(`scripts/release-smoke.ts`。`*.bat` が CRLF か → 依存の判定 → `npm install` → 架空の fixture で `atlas all` → 同梱テンプレートを作り直していないか)。手元では `npm run build:report` のあと次のように試せます(コミット済みの内容だけが入ります)。
+  - 配布物の動作確認: リリースと同じ中身(`scripts/pack-release.ts`)を作り、`atlas.bat` と同じ順で動かします(`scripts/release-smoke.ts`。`*.bat` が CRLF か → 依存の判定 → `npm install` → 架空の fixture で `atlas all`(セッション記録ができるか)→ 同梱テンプレートを作り直していないか)。手元では `npm run build:report` のあと次のように試せます(コミット済みの内容だけが入ります)。
 
     ```
     node scripts/pack-release.ts agent-session-atlas-smoke <作業用フォルダ>

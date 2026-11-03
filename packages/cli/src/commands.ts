@@ -587,7 +587,10 @@ export async function run(o: CliOptions, log: Log): Promise<{ paths: Paths; buil
       await runSnapshot(p, o.since, log, o.snapshotAll, o.snapshotPrune);
       await runExtract(p, o.since, log, o.tempDirs, o.config);
       await runMetrics(p, f, log);
-      const build = await runBuild(p, { ...f, anonymize: o.anonymize }, log);
+      // セッション記録(.md)も作る(build と export で作るものが違うと、どちらで作ったかで経過が見えたり消えたりするため)。
+      // 伏せ字版は作らない: 記録の伏せ字は自由記述を機械的に置き換えるだけで、共有する sessions/ に HTML より弱い保証のものが混ざる
+      const build = await runBuild(p, { ...f, anonymize: o.anonymize, transcripts: o.anonymize ? null : { toolOutput: o.toolOutput, maxChars: o.maxChars } }, log);
+      if (o.anonymize) log('all: 伏せ字版なのでセッション記録(.md)は作りません(必要なら atlas export --anonymize)');
       log(`all: 完了 ${ms(performance.now() - t)}`);
       return { paths: p, build };
     }

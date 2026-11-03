@@ -1,6 +1,6 @@
 @echo off
-rem Copilot Session Atlas: ~/.copilot を集計して out\atlas.html を作り、ローカルサーバ(127.0.0.1)で開く
-rem この窓はブラウザを閉じるまで残ります(閉じるとサーバも止まります)。共有するときは out\atlas.html をそのまま渡せます
+rem Copilot Session Atlas: ~/.copilot を集計して out\atlas.html と各セッションの記録(out\sessions\<id>.md)を作り、ローカルサーバ(127.0.0.1)で開く
+rem この窓はブラウザを閉じるまで残ります(閉じるとサーバも止まります)。共有するときは out\atlas.html をそのまま渡せます(記録の .md は渡さない)
 rem 元データは書き換えません(out\snapshot に複製してから読みます)
 chcp 65001 >nul
 cd /d "%~dp0"

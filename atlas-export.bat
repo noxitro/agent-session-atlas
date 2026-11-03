@@ -1,5 +1,6 @@
 @echo off
-rem Copilot Session Atlas: 集計(all)に加えて、各セッションの記録(Markdown)を out\sessions\<id>.md に書き、レポートを開く
+rem Copilot Session Atlas: atlas.bat と同じく集計と各セッションの記録(out\sessions\<id>.md)を作り、レポートを開く。
+rem 違いは、追加の引数を export に渡せること(記録の中身の調整や、伏せ字版の記録 --anonymize)
 rem 記録は共有や LLM での振り返りに使う。元データは書き換えません。LLM は呼びません
 rem 追加の引数は export にそのまま渡します(例: atlas-export.bat --since 2026-10-01 --tool-output all)
 chcp 65001 >nul

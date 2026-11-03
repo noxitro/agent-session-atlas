@@ -115,6 +115,10 @@ describe('Phase 2 E2E: fixtures', () => {
   });
 
   it('g. atlas export: セッション記録(Markdown)が各セッションにでき、詳細ページからリンクされる。素の build では作らず、リンクも消える', async () => {
+    // all(atlas.bat)も記録を作る。どの bat で作ったかで経過が見えたり消えたりしないように
+    expect(all.stdout).toMatch(/export: セッション記録 \d+ 件/);
+    expect((await readdir(join(out, 'sessions'))).filter((f) => f.endsWith('.md')).length).toBe(data.sessions.length);
+    expect(await readFile(join(out, 'sessions', `${data.sessions[0].id}.html`), 'utf8')).toContain(`href="${data.sessions[0].id}.md"`);
     const outExp = join(WORK, 'out-export');
     // export は build を含む(snapshot と sessions.json は out/ のものを使うため、--out は同じにして export → build の順で確かめる)
     const r = atlas(['export', '--home', home, '--out', out, '--tool-output', 'none']);
@@ -208,7 +212,7 @@ describe('Phase 2 E2E: fixtures', () => {
     }
     // 詳細ページ: 一覧からの相対リンク先が存在する
     for (const s of data.sessions) expect(existsSync(join(out, s.href))).toBe(true);
-    expect((await readdir(join(out, 'sessions'))).length).toBe(ids.size);
+    expect((await readdir(join(out, 'sessions'))).filter((f) => f.endsWith('.html')).length).toBe(ids.size);
     // 入力トークン記録の有無が欠測込みで入っている
     expect(data.sessions.filter((s) => s.coverage === 'input').length).toBe(data.metrics.overall.sessionsWithInputTokens);
   });
@@ -216,6 +220,9 @@ describe('Phase 2 E2E: fixtures', () => {
   it('c. --anonymize で fixture の cwd / git_root / repository / branch の文字列が HTML に出ない', async () => {
     const r = atlas(['all', '--home', home, '--out', outAnon, '--anonymize']);
     expect(r.status, r.stderr).toBe(0);
+    // 伏せ字版の all は記録(自由記述を機械的に伏せるだけで HTML より弱い)を作らない
+    expect(r.stdout).toContain('伏せ字版なのでセッション記録(.md)は作りません');
+    expect((await readdir(join(outAnon, 'sessions'))).some((f) => f.endsWith('.md'))).toBe(false);
     const secrets = await fixtureSecrets();
     expect(secrets.length).toBeGreaterThan(5);
     // 伏せ字なしの HTML には実際に出ている(検査が空振りしていないことの確認)
@@ -472,7 +479,7 @@ describe.skipIf(!LIVE)('Phase 2 E2E: 実データ(ATLAS_LIVE=1)', () => {
   it('d. 実データの atlas.html が 5MB 未満で、プロジェクト別の集計が入る', async () => {
     const bytes = Buffer.byteLength(html);
     const projects = Object.keys(data.metrics.byProject).length;
-    const details = (await readdir(join(out, 'sessions'))).length;
+    const details = (await readdir(join(out, 'sessions'))).filter((f) => f.endsWith('.html')).length;
     console.log(
       `[live] atlas all ${r.ms.toFixed(0)}ms, atlas.html ${(bytes / 1024 / 1024).toFixed(2)}MB, sessions=${data.sessions.length}, projects=${projects}, detailPages=${details}\n${r.stdout}`,
     );
