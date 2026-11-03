@@ -118,7 +118,7 @@
     onselect(next);
   }
 
-  // --- 「グループを作成」: 名前と一文の入力欄をインラインで開き、作成を押すと API で保存される(ダイアログは出さない) ---
+  // --- 「グループを作成」: 名前と説明の入力欄をインラインで開き、作成を押すと API で保存される(ダイアログは出さない) ---
   let createOpen = $state(false);
   let newName = $state('');
   let newNote = $state('');
@@ -281,7 +281,7 @@
       <p class="create-lead">選んだ {int(selected.size)} 件を名前付きグループにします(atlas-notes/groups.json に保存され、左の「グループ」(狭い画面では目次の行の「グループ」)から選べます)。</p>
       <div class="create-row">
         <label class="fld"><span class="k">名前</span><input type="text" bind:this={nameEl} bind:value={newName} maxlength="100" readonly={busy} aria-invalid={createError ? 'true' : undefined} aria-describedby={createError ? 'create-error' : undefined} placeholder="例: 11 月の調査" /></label>
-        <label class="fld wide"><span class="k">一文(任意)</span><input type="text" bind:value={newNote} maxlength="200" readonly={busy} placeholder="何のグループか" /></label>
+        <label class="fld wide"><span class="k">説明(任意)</span><input type="text" bind:value={newNote} maxlength="200" readonly={busy} placeholder="何のグループか" /></label>
         <button type="submit" class="btn" aria-disabled={busy}>{busy ? '作成中…' : '作成'}</button>
         <button type="button" class="btn" onclick={cancelCreate} aria-disabled={busy}>取消</button>
       </div>
@@ -559,7 +559,7 @@
     color: var(--warn);
   }
 
-  /* グループを作成: 名前と一文をインラインで(帳票の記入欄と同じ 1px の枠) */
+  /* グループを作成: 名前と説明をインラインで(帳票の記入欄と同じ 1px の枠) */
   .create-box {
     margin-top: 8px;
     padding: 10px 12px;

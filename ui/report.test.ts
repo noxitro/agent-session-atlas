@@ -73,7 +73,7 @@ describe('画面の操作', () => {
     await expect.poll(() => page.getByTestId('selected-count').innerText()).toBe('0');
   });
 
-  it('b. グループを作成して選ぶと絞り込まれ、削除すると groups.json からも消える', async () => {
+  it('b. グループを作成して選ぶと絞り込まれ、本文の見出しで名前と説明を直せて、削除すると groups.json からも消える', async () => {
     await page.goto(server.url);
     await rowChecks().nth(0).check();
     await rowChecks().nth(2).check();
@@ -92,13 +92,45 @@ describe('画面の操作', () => {
       await expect.poll(shown).toBeGreaterThan(2);
       return shown();
     })();
+    // サイドバーは切り替えだけ(選んでも行の間に操作が差し込まれず、下の行の位置が変わらない)
+    const below = async (): Promise<number> => (await rail().boundingBox())!.height;
+    const y0 = await below();
+    await rail().getByRole('button', { name: /画面のテスト/ }).click();
+    await expect.poll(shown).toBe(2);
+    expect(await below()).toBe(y0);
+    expect(await rail().getByRole('button', { name: /削除|改名|編集/ }).count()).toBe(0);
+    // 現在のグループを押し直しても外れない(外すのは本文の見出しの「絞り込みを外す」か「すべて」)
     await rail().getByRole('button', { name: /画面のテスト/ }).click();
     await expect.poll(shown).toBe(2);
 
-    const tools = rail().getByTestId('group-tools');
-    await tools.getByRole('button', { name: '削除', exact: true }).click();
-    await tools.getByRole('button', { name: '削除する' }).click();
+    // 管理は本文の見出しで: 名前と説明を 1 回で直す → 削除は編集欄の奥で確認つき
+    const head = page.getByTestId('group-head');
+    expect(await head.getByRole('heading').innerText()).toMatch(/画面のテスト\s*2 件/);
+    await head.getByTestId('group-edit').click();
+    await head.getByLabel('名前').fill('画面のテスト2');
+    await head.getByLabel('説明(任意)').fill('見出しから直した');
+    await head.getByRole('button', { name: '保存' }).click();
+    await expect.poll(async () => (await readGroups()).map((g) => [g.name, (g as { note?: string }).note])).toEqual([['画面のテスト2', '見出しから直した']]);
+    await expect.poll(() => head.getByRole('heading').innerText()).toMatch(/画面のテスト2/);
+    expect(new URL(page.url()).hash).toContain('group=' + encodeURIComponent('画面のテスト2'));
+    expect(await shown()).toBe(2);
+    // Esc は 1 段ずつ戻る(確認 → 編集 → 表示)。削除せずに戻れる
+    await head.getByTestId('group-edit').click();
+    await head.getByTestId('group-delete').click();
+    // 確認では焦点が「やめる」にある(Enter で消さない)
+    const focused = (): Promise<string | null> => page.evaluate<string | null>("document.activeElement?.getAttribute('data-testid') ?? document.activeElement?.textContent ?? null");
+    await expect.poll(focused).toBe('やめる');
+    await page.keyboard.press('Escape');
+    await expect.poll(focused).toBe('group-delete');
+    await page.keyboard.press('Escape');
+    await expect.poll(focused).toBe('group-edit');
+    expect((await readGroups()).length).toBe(1);
+
+    await head.getByTestId('group-edit').click();
+    await head.getByTestId('group-delete').click();
+    await head.getByRole('button', { name: '削除する' }).click();
     await expect.poll(readGroups).toEqual([]);
+    await expect.poll(() => head.count()).toBe(0);
     await expect.poll(() => rail().getByRole('button', { name: /画面のテスト/ }).count()).toBe(0);
     await expect.poll(shown).toBe(all);
   });
@@ -163,9 +195,10 @@ describe('画面の操作', () => {
     for (const name of ['甲', '乙']) {
       await page.goto(server.url);
       await rail().getByRole('button', { name: new RegExp(name) }).click();
-      const tools = rail().getByTestId('group-tools');
-      await tools.getByRole('button', { name: '削除', exact: true }).click();
-      await tools.getByRole('button', { name: '削除する' }).click();
+      const head = page.getByTestId('group-head');
+      await head.getByTestId('group-edit').click();
+      await head.getByTestId('group-delete').click();
+      await head.getByRole('button', { name: '削除する' }).click();
       await expect.poll(async () => (await readGroups()).some((g) => g.name === name)).toBe(false);
     }
   });

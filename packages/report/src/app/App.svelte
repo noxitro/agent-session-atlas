@@ -2,6 +2,7 @@
   import { aggregate } from '../lib/aggregate.ts';
   import { applyFilter, currentGroupName, decodeFilter, decodeView, effectiveIds, emptyFilter, encodeFilter, filterOptions, groupIds, inScope, isEmptyFilter, isStateHash, joinIds, knownSelection, type FilterState } from '../lib/filter.ts';
   import GroupRail from './components/GroupRail.svelte';
+  import GroupHead from './components/GroupHead.svelte';
   import { highlights } from '../lib/highlights.ts';
   import { date, dateTime, int } from '../lib/format.ts';
   import type { ReportData } from '../lib/types.ts';
@@ -189,6 +190,7 @@
   const eff = $derived(effectiveIds(filter, groupOptions, knownIds));
   /** 現在のグループ名(名前で決まらないときは ids の一致。0 件のグループや同じ集合が複数あるときは決めない) */
   const currentName = $derived(currentGroupName(filter, groupOptions, knownIds));
+  const currentGroup = $derived(currentName ? (groupOptions.find((g) => g.name === currentName) ?? null) : null);
   /** 一覧のチェックから集計しているときの件数(記録にある id だけ。グループで絞り込み中は 0) */
   const adhocCount = $derived(currentName ? 0 : knownSelection(eff.ids, knownIds).size);
   const groupKey = (name: string): string => (data?.anonymized ? '' : name);
@@ -214,14 +216,11 @@
     liveGroups = r.groups;
     setFilter({ ids: groupIds(r.group, knownIds), group: groupKey(name) });
   }
-  async function renameGroup(oldName: string, name: string): Promise<void> {
-    const r = await api.update(token!, oldName, { name });
+  /** 名前と説明を 1 回で直す(本文の見出しの「編集」)。改名したら hash の名前も追従させる */
+  async function saveGroup(oldName: string, patch: { name?: string; note?: string }): Promise<void> {
+    const r = await api.update(token!, oldName, patch);
     liveGroups = r.groups;
-    if (filter.group === oldName) setFilter({ group: name });
-  }
-  async function noteGroup(name: string, note: string): Promise<void> {
-    const r = await api.update(token!, name, { note });
-    liveGroups = r.groups;
+    if (patch.name && filter.group === oldName) setFilter({ group: patch.name });
   }
   async function deleteGroup(name: string): Promise<void> {
     // currentName は groups から求めるので、一覧を差し替える前に覚える(後で見ると消したグループはもう無く、絞り込みが残る)
@@ -465,11 +464,11 @@
         <!-- サイドバー(1280px 以上)の「グループ」の群。狭い幅では目次行の「グループ」から同じ中身を開く -->
         <div class="rail-groups" role="group" aria-label="グループ">
           <span class="toc-title" aria-hidden="true">グループ</span>
-          <GroupRail groups={groupOptions} current={currentName} selectedCount={adhocCount} {editable} anonymized={data.anonymized} onpick={pickGroup} onrename={renameGroup} onnote={noteGroup} ondelete={deleteGroup} uid="rail" />
+          <GroupRail groups={groupOptions} current={currentName} selectedCount={adhocCount} {editable} anonymized={data.anonymized} onpick={pickGroup} />
         </div>
         {#if groupsOpen}
           <div class="group-pop" id="group-pop" role="region" bind:this={groupsPop} tabindex="-1" aria-label="グループ" data-testid="group-pop" onfocusout={(e) => { const t = e.relatedTarget as Node | null; if (t && !groupsPop?.contains(t) && !groupsBtn?.contains(t)) closeGroups(false); }}>
-            <GroupRail groups={groupOptions} current={currentName} selectedCount={adhocCount} {editable} anonymized={data.anonymized} onpick={(n) => { pickGroup(n); closeGroups(); }} onrename={renameGroup} onnote={noteGroup} ondelete={deleteGroup} uid="pop" />
+            <GroupRail groups={groupOptions} current={currentName} selectedCount={adhocCount} {editable} anonymized={data.anonymized} onpick={(n) => { pickGroup(n); closeGroups(); }} />
           </div>
         {/if}
         <div class="status">
@@ -492,6 +491,9 @@
       <FilterBar {filter} {options} {judged} {emptyCount} {memoCount} lastDay={all.overall.lastAt ? date(all.overall.lastAt) : null} onchange={setFilter} />
 
       <main class="wrap" id="main" tabindex="-1">
+        {#if currentGroup}
+          <GroupHead group={currentGroup} {editable} onclear={() => pickGroup(null)} onsave={saveGroup} ondelete={deleteGroup} />
+        {/if}
         <div class="empty" class:show={filtered.length === 0} role="status">
           {#if filtered.length === 0}
             <p>この条件に合うセッションはありません。</p>
