@@ -323,6 +323,20 @@ describe('anonymize', () => {
     expect(anon.scrub('domain main')).toBe('domain branch-02');
   });
 
+  it('scrub: 空白を含むフォルダ名・大文字小文字の違い・~ や /root の下も伏せる', async () => {
+    const cwd = 'E:\\Work\\Acme Corp';
+    const anon = createAnonymizer([...(await fixture()), { project: 'acme-corp-app', cwd, gitRoot: null, repository: null, branch: null }]);
+    expect(anon.scrub('read D:\\Profiles\\John Smith\\OneDrive - Acme Corp\\notes.txt failed')).toBe('read <path> failed');
+    // 作業フォルダの最後の名前に空白があっても、その下を含めて伏せる(大文字小文字は問わない)
+    expect(anon.scrub(`in ${cwd} now`)).toBe('in <path> now');
+    expect(anon.scrub('in e:\\work\\acme corp\\src\\a.ts now')).toBe('in <path> now');
+    const p = anon.project('acme/secret-proj');
+    expect(anon.scrub('Secret-Proj and SECRET-PROJ')).toBe(`${p} and ${p}`);
+    for (const s of ['~/projects/secret-x/a.md', '/root/secret-x/a', '/workspaces/secret-x/a', 'C:/Profiles/John Smith/a.txt']) expect(anon.scrub(`at ${s} end`)).toBe('at <path> end');
+    // \ のパスの後の文中の / は呑まない
+    expect(anon.scrub('C:\\a\\b.ts on topic/x')).toBe('<path> on topic/x');
+  });
+
   it('詳細ページの時系列: 伏せ字モードでは要約・中断理由・エラー本文・サブエージェント失敗の本文を出さず、種別名だけ出す', async () => {
     const t = '2026-10-01T00:00:00Z';
     const r = await normalizeSession({

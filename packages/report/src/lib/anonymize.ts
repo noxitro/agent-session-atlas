@@ -28,8 +28,19 @@ export interface Anonymizer {
 
 const pad = (n: number, width: number): string => String(n).padStart(width, '0');
 
-/** パスらしい文字列(Windows のドライブ付き、UNC、/Users /home 以下) */
-const PATH_RE = /(?:[A-Za-z]:[\\/]|\\\\)[^\s"'<>|]*|\/(?:Users|home|mnt|tmp|var|opt)\/[^\s"'<>|]*/g;
+/**
+ * パスらしい文字列(Windows のドライブ付き、UNC、~ と /Users /home などの下)。
+ * 途中のフォルダ名は空白を含んでよい(`C:\Users\<名前 姓>\OneDrive - <会社名>\…` の利用者名・会社名を残さないため)。
+ * 区切りはパスの書き始めと同じ向きに限る: `\` のパスの後の文中の `/`(ブランチ名など)まで呑まないように。
+ * 最後の名前は空白で止める(文中のどこまでがパスかは決められないので、伏せすぎる側に倒すのは途中のフォルダだけ)
+ */
+const PATH_RE = new RegExp(
+  [
+    String.raw`(?:[A-Za-z]:\\|\\\\)(?:[^\\/\r\n"'<>|]*\\)*[^\s"'<>|]*`,
+    String.raw`(?:[A-Za-z]:/|~/|/(?:Users|home|mnt|tmp|var|opt|root|workspaces)/)(?:[^\\/\r\n"'<>|]*/)*[^\s"'<>|]*`,
+  ].join('|'),
+  'g',
+);
 
 function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -84,8 +95,19 @@ export function createAnonymizer(sessions: AnonSource[]): Anonymizer {
     for (const path of [s.cwd, s.gitRoot]) if (path) add(lastSegment(path), p);
     if (s.branch) add(s.branch, branchMap.get(s.branch)!);
   }
+  // 作業フォルダの絶対パスは、その下を含めて先に <path> にする(最後のフォルダ名が空白を含むと PATH_RE では途中で止まるため)。
+  // Windows のパスは大文字小文字を区別しないので、既知の固有名とあわせて大文字小文字を無視して比べる
+  const dirs = [...new Set(sessions.flatMap((s) => [s.cwd, s.gitRoot]).filter((d): d is string => !!d && /[\\/]/.test(d)))]
+    .map((d) => d.split(/[\\/]+/).filter(Boolean))
+    .filter((parts) => parts.length >= 2)
+    .sort((a, b) => b.join('/').length - a.join('/').length);
+  const dirRe = dirs.length
+    ? new RegExp(`(?<![\\w.-])(?:${dirs.map((parts) => parts.map(escapeRe).join('[\\\\/]+')).join('|')})(?![\\w.-])(?:[\\\\/][^\\s"'<>|]*)?`, 'gi')
+    : null;
+  const replLower = new Map<string, string>();
+  for (const [k, v] of repl) if (!replLower.has(k.toLowerCase())) replLower.set(k.toLowerCase(), v);
   const keys = [...repl.keys()].sort((a, b) => b.length - a.length);
-  const re = keys.length ? new RegExp(`(?<![\\w.-])(?:${keys.map(escapeRe).join('|')})(?![\\w-])`, 'g') : null;
+  const re = keys.length ? new RegExp(`(?<![\\w.-])(?:${keys.map(escapeRe).join('|')})(?![\\w-])`, 'gi') : null;
 
   return {
     enabled: true,
@@ -94,8 +116,9 @@ export function createAnonymizer(sessions: AnonSource[]): Anonymizer {
     branch: (b) => (b == null ? null : (branchMap.get(b) ?? 'branch-??')),
     freeText: () => null,
     scrub: (s) => {
-      let out = s.replace(PATH_RE, '<path>');
-      if (re) out = out.replace(re, (m) => repl.get(m) ?? m);
+      let out = dirRe ? s.replace(dirRe, '<path>') : s;
+      out = out.replace(PATH_RE, '<path>');
+      if (re) out = out.replace(re, (m) => replLower.get(m.toLowerCase()) ?? m);
       return out;
     },
     path: () => null,
