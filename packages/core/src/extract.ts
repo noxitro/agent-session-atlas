@@ -208,6 +208,7 @@ export async function extract(snapshotDir: string, opts: ExtractOptions = {}): P
   for (const t of Object.keys(unknownAll)) messages.push(`未知のイベント種別: ${t} (${unknownAll[t]} 件)`);
   if (resolver) messages.push(...resolver.warnings);
   for (const e of manifest?.sessionDbErrors ?? []) messages.push(`session.db を複製できなかった: ${e}`);
+  for (const [name, d] of Object.entries(manifest?.databases ?? {})) if (!d.copied && d.error) messages.push(`${name} を今回は複製できなかった(${d.bytes ? '前回の複製を使用' : '前回の複製も無いため、このファイルの内容は使っていない'}): ${d.error}`);
   const installed = manifest?.installed ?? null;
   if (installed) for (const w of installed.warnings) messages.push(`インストール済みの記録: ${w}`);
 

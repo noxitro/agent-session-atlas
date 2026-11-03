@@ -68,6 +68,29 @@ describe('snapshot', () => {
     expect(Object.keys(m.databases)).not.toContain('data.db');
   });
 
+  it('session-store.db を複製できなくても全体は止めず、前回の複製を残して理由を manifest に書く', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'atlas-snap-'));
+    const src = join(base, 'src');
+    const dest = join(base, 'dest');
+    await mkdir(join(src, 'session-state', 's1'), { recursive: true });
+    await writeFile(join(src, 'session-state', 's1', 'events.jsonl'), '{"type":"x"}\n');
+    const w = await openWritable(join(src, 'session-store.db'));
+    w.exec("CREATE TABLE sessions(id TEXT); INSERT INTO sessions VALUES ('a');");
+    w.close();
+    expect((await snapshot(src, dest)).databases['session-store.db']).toMatchObject({ copied: true });
+    // 元が SQLite として読めなくなった(書きかけ・壊れた)
+    await writeFile(join(src, 'session-store.db'), 'x'.repeat(4096));
+    const m = await snapshot(src, dest);
+    expect(m.databases['session-store.db']).toMatchObject({ copied: false });
+    expect(m.databases['session-store.db'].error).toBeTruthy();
+    expect(m.databases['session-store.db'].bytes).toBeGreaterThan(0);
+    expect(m.sessions.dirs).toBe(1);
+    const r = await openReadOnly(join(dest, 'session-store.db'));
+    expect((r.prepare('SELECT count(*) AS n FROM sessions').get() as { n: number }).n).toBe(1);
+    r.close();
+    expect(existsSync(join(dest, '.tmp-sqlite'))).toBe(false);
+  });
+
   it('元ディレクトリが無ければ例外', async () => {
     await expect(snapshot(join(tmpdir(), 'atlas-no-such-dir-xyz'), join(tmpdir(), 'atlas-x'))).rejects.toThrow(/元ディレクトリが無い/);
   });

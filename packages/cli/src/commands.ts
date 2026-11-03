@@ -156,6 +156,7 @@ export async function runSnapshot(p: Paths, since: string | null, log: Log, all 
   log(
     `snapshot: セッションディレクトリ ${m.sessions.dirs}(複製 ${m.sessions.copiedFiles} / 再利用 ${m.sessions.reusedFiles} ファイル、${mb(m.sessions.bytes)}、session.db 複製 ${m.sessions.dbCopied ?? 0} / 再利用 ${m.sessions.dbReused ?? 0})、${ms(performance.now() - t)}`,
   );
+  for (const [name, d] of Object.entries(m.databases)) if (!d.copied && d.error) log(`snapshot: 注意 ${name} を今回は複製できませんでした(${d.bytes ? '前回の複製を使います' : '前回の複製も無いので、このファイルの内容は使いません'}): ${d.error}`);
   if (m.sessionDbErrors?.length) log(`snapshot: 注意 session.db を複製できなかったセッション ${m.sessionDbErrors.length} 件(${m.sessionDbErrors.slice(0, 3).join(' / ')})`);
   const x = m.extras;
   if (x) {

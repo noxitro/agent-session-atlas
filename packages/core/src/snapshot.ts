@@ -1,4 +1,4 @@
-import { copyFile, mkdir, readdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readdir, readFile, rename, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { basename, dirname, join, relative } from 'node:path';
 import { readDesktopDb } from './desktop.ts';
@@ -50,7 +50,8 @@ export interface SnapshotManifest {
   createdAt: string;
   sourceRoot: string;
   since: string | null;
-  databases: Record<string, { copied: boolean; bytes: number; attempts: number }>;
+  /** copied が false なら今回は複製できず、前回の複製(bytes が 0 なら無し)を使っている。理由は error */
+  databases: Record<string, { copied: boolean; bytes: number; attempts: number; error?: string }>;
   sessions: { dirs: number; copiedFiles: number; reusedFiles: number; skippedBySince: number; bytes: number; dbCopied?: number; dbReused?: number };
   /** session.db を複製できなかったセッションと理由(Phase 7) */
   sessionDbErrors?: string[];
@@ -94,14 +95,57 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
     sessions: { dirs: 0, copiedFiles: 0, reusedFiles: 0, skippedBySince: 0, bytes: 0, dbCopied: 0, dbReused: 0 },
   };
 
+  /** 1 セッション分を写す(workspace.yaml / events.jsonl・session.db・追加のファイル) */
+  async function snapshotSession(name: string, dirSrc: string, present: readonly string[]): Promise<void> {
+    if (since && !(await isUpdatedSince(dirSrc, present, since))) {
+      manifest.sessions.skippedBySince++;
+      return;
+    }
+    manifest.sessions.dirs++;
+    const dirDest = join(stateDest, name);
+    await mkdir(dirDest, { recursive: true });
+    for (const f of present) {
+      let r: { copied: boolean; bytes: number };
+      try {
+        r = await copyIfChanged(join(dirSrc, f), join(dirDest, f));
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'ENOENT' || existsSync(join(dirSrc, f))) throw e;
+        continue; // 一覧の後に消えたファイル
+      }
+      manifest.sessions.bytes += r.bytes;
+      if (r.copied) manifest.sessions.copiedFiles++;
+      else manifest.sessions.reusedFiles++;
+    }
+    const dbSrc = join(dirSrc, SNAPSHOT_SESSION_DB);
+    if (existsSync(dbSrc)) {
+      try {
+        const copied = await copySessionDb(dbSrc, join(dirDest, SNAPSHOT_SESSION_DB), join(dest, '.tmp-sqlite'));
+        if (copied) manifest.sessions.dbCopied!++;
+        else manifest.sessions.dbReused!++;
+      } catch (e) {
+        // 1 セッションの session.db が壊れていてもスナップショット全体は止めない(理由は manifest に残し、extract が警告に出す)
+        await rm(join(dirDest, SNAPSHOT_SESSION_DB), { force: true });
+        (manifest.sessionDbErrors ??= []).push(`${name}: ${(e as Error).message}`);
+      }
+    } else await rm(join(dirDest, SNAPSHOT_SESSION_DB), { force: true }); // 元から消えたものは複製側も消す
+    // Phase 11: plan.md・checkpoints/・files/ などを写す。大きいもの・一覧に無いものは --snapshot-all のときだけ
+    await copySessionExtras(dirSrc, dirDest, src, all, prune, extras);
+  }
+
   for (const name of SNAPSHOT_STALE_FILES) await rm(join(dest, name), { force: true });
 
   for (const name of SNAPSHOT_DBS) {
     const from = join(src, name);
     if (!existsSync(from)) continue;
     const to = join(dest, name);
-    const r = await copySqlite(from, to, join(dest, '.tmp-sqlite'));
-    manifest.databases[name] = { copied: true, bytes: (await stat(to)).size, attempts: r.attempts };
+    try {
+      const r = await copySqlite(from, to, join(dest, '.tmp-sqlite'));
+      manifest.databases[name] = { copied: true, bytes: (await stat(to)).size, attempts: r.attempts };
+    } catch (e) {
+      // Copilot が書き続けていて一貫した複製が取れなくても、スナップショット全体は止めない。
+      // 前回の複製があればそのまま使い(古い)、理由は manifest に残して extract が警告に出す
+      manifest.databases[name] = { copied: false, bytes: existsSync(to) ? (await stat(to)).size : 0, attempts: SQLITE_COPY_ATTEMPTS, error: (e as Error).message };
+    }
   }
 
   const stateSrc = join(src, 'session-state');
@@ -112,34 +156,13 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
       const dirSrc = join(stateSrc, ent.name);
       const present = SNAPSHOT_SESSION_FILES.filter((f) => existsSync(join(dirSrc, f)));
       if (present.length === 0) continue; // optimistic-chat-* など中身の無いディレクトリ
-
-      if (since && !(await isUpdatedSince(dirSrc, present, since))) {
-        manifest.sessions.skippedBySince++;
-        continue;
+      try {
+        await snapshotSession(ent.name, dirSrc, present);
+      } catch (e) {
+        // 走査中にセッションが消された(Copilot の削除・一時セッションの片付け)なら飛ばす。それ以外は止める
+        if ((e as NodeJS.ErrnoException).code === 'ENOENT' && !existsSync(dirSrc)) continue;
+        throw e;
       }
-      manifest.sessions.dirs++;
-      const dirDest = join(stateDest, ent.name);
-      await mkdir(dirDest, { recursive: true });
-      for (const f of present) {
-        const r = await copyIfChanged(join(dirSrc, f), join(dirDest, f));
-        manifest.sessions.bytes += r.bytes;
-        if (r.copied) manifest.sessions.copiedFiles++;
-        else manifest.sessions.reusedFiles++;
-      }
-      const dbSrc = join(dirSrc, SNAPSHOT_SESSION_DB);
-      if (existsSync(dbSrc)) {
-        try {
-          const copied = await copySessionDb(dbSrc, join(dirDest, SNAPSHOT_SESSION_DB), join(dest, '.tmp-sqlite'));
-          if (copied) manifest.sessions.dbCopied!++;
-          else manifest.sessions.dbReused!++;
-        } catch (e) {
-          // 1 セッションの session.db が壊れていてもスナップショット全体は止めない(理由は manifest に残し、extract が警告に出す)
-          await rm(join(dirDest, SNAPSHOT_SESSION_DB), { force: true });
-          (manifest.sessionDbErrors ??= []).push(`${ent.name}: ${(e as Error).message}`);
-        }
-      } else await rm(join(dirDest, SNAPSHOT_SESSION_DB), { force: true }); // 元から消えたものは複製側も消す
-      // Phase 11: plan.md・checkpoints/・files/ などを写す。大きいもの・一覧に無いものは --snapshot-all のときだけ
-      await copySessionExtras(dirSrc, dirDest, src, all, prune, extras);
     }
   }
 
@@ -320,7 +343,7 @@ async function copySessionExtras(dirSrc: string, dirDest: string, root: string, 
       if (all) {
         present.add(name);
         await copyOne(p, join(dirDest, name));
-      } else extras.skipped.push({ path: relPath(p), bytes: (await stat(p)).size, reason: '一覧に無い名前(--snapshot-all で写す)' });
+      } else extras.skipped.push({ path: relPath(p), bytes: await sizeOr0(p), reason: '一覧に無い名前(--snapshot-all で写す)' });
     }
   }
   // 複製先に残っている追加のフォルダ・ファイルで今回写さなかったもの: 元から消えたものは消す。
@@ -387,7 +410,7 @@ async function copyTopLevel(src: string, dest: string, all: boolean, prune: bool
         }
       } else {
         otherFiles++;
-        otherBytes += (await stat(f.abs)).size;
+        otherBytes += await sizeOr0(f.abs);
       }
     }
     if (existsSync(join(dest, 'chats'))) for (const f of (await walk(join(dest, 'chats'))).files) if (!keep.has(f.rel)) await rm(f.abs, { force: true });
@@ -457,49 +480,69 @@ export async function readSnapshotManifest(dir: string): Promise<SnapshotManifes
   return JSON.parse(await readFile(p, 'utf8')) as SnapshotManifest;
 }
 
-const SQLITE_COPY_ATTEMPTS = 5;
+const SQLITE_COPY_ATTEMPTS = 8;
 
 /**
  * WAL 付き SQLite を元に触れずに複製する。
  * 元を直接開くと、読み取り専用接続でも -shm(WAL インデックス)に読み取りマークを書くため
  * -shm の mtime が変わる(2026-10-28 実測)。そこで本体と -wal をバイト列のままコピーし、
  * コピー側を開いて VACUUM INTO で単一ファイルにする。
- * コピー中に元が書かれた(サイズか mtime が変わった)ら取り直し、quick_check が通らなければ失敗にする。
+ * コピー中に元が書かれた(サイズか mtime が変わった)・-wal が消えた(チェックポイント)・quick_check が通らないときは、間を空けて取り直す。
+ * 複製先は一時ファイルに作ってから置き換えるので、取り直しきれなくても前回の複製は残る。
  */
 async function copySqlite(from: string, to: string, tmpDir: string): Promise<{ attempts: number }> {
   const name = basename(from);
   const parts = [`${from}-wal`, from]; // -wal を先に取る(後から取る本体は同じかより新しいページを持つ)
   let lastProblem = '';
-  for (let attempt = 1; attempt <= SQLITE_COPY_ATTEMPTS; attempt++) {
-    await rm(tmpDir, { recursive: true, force: true });
-    await mkdir(tmpDir, { recursive: true });
-    const present = parts.filter((p) => existsSync(p));
-    const before = await Promise.all(present.map(fingerprint));
-    for (const p of present) await copyFile(p, join(tmpDir, basename(p)));
-    const after = await Promise.all(present.map(fingerprint));
-    if (before.join('|') !== after.join('|')) {
-      lastProblem = 'コピー中に元が更新された';
-      await sleep(200 * attempt);
-      continue;
-    }
-    const copy = join(tmpDir, name);
-    const db = await openWritable(copy); // 複製側なので書けてよい(-shm は複製側に作られる)
-    try {
-      const qc = db.prepare('PRAGMA quick_check').all() as { quick_check: string }[];
-      if (qc.length !== 1 || qc[0].quick_check !== 'ok') {
-        lastProblem = `quick_check: ${qc.map((r) => r.quick_check).join('; ').slice(0, 200)}`;
+  // 途中で例外になっても一時フォルダを残さない
+  try {
+    for (let attempt = 1; attempt <= SQLITE_COPY_ATTEMPTS; attempt++) {
+      await rm(tmpDir, { recursive: true, force: true });
+      await mkdir(tmpDir, { recursive: true });
+      const present = parts.filter((p) => existsSync(p));
+      let changed: boolean;
+      try {
+        const before = await Promise.all(present.map(fingerprint));
+        for (const p of present) await copyFile(p, join(tmpDir, basename(p)));
+        const after = await Promise.all(present.map(fingerprint));
+        changed = before.join('|') !== after.join('|');
+        if (changed) lastProblem = 'コピー中に元が更新された';
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+        changed = true;
+        lastProblem = 'コピー中に元のファイルが消えた';
+      }
+      if (changed) {
+        await sleep(200 * attempt);
         continue;
       }
-      await rm(to, { force: true });
-      db.exec(`VACUUM INTO ${sqlString(to)}`);
-    } finally {
-      db.close();
+      const copy = join(tmpDir, name);
+      const fresh = join(tmpDir, `${name}.vacuum`);
+      let broken = false;
+      const db = await openWritable(copy); // 複製側なので書けてよい(-shm は複製側に作られる)
+      try {
+        const qc = db.prepare('PRAGMA quick_check').all() as { quick_check: string }[];
+        if (qc.length !== 1 || qc[0].quick_check !== 'ok') {
+          lastProblem = `quick_check: ${qc.map((r) => r.quick_check).join('; ').slice(0, 200)}`;
+          broken = true;
+        } else {
+          await rm(fresh, { force: true });
+          db.exec(`VACUUM INTO ${sqlString(fresh)}`);
+        }
+      } finally {
+        db.close();
+      }
+      if (broken) {
+        await sleep(200 * attempt);
+        continue;
+      }
+      await rename(fresh, to);
+      return { attempts: attempt };
     }
+    throw new Error(`${from} を一貫した状態で複製できなかった(${SQLITE_COPY_ATTEMPTS} 回): ${lastProblem}`);
+  } finally {
     await rm(tmpDir, { recursive: true, force: true });
-    return { attempts: attempt };
   }
-  await rm(tmpDir, { recursive: true, force: true });
-  throw new Error(`${from} を一貫した状態で複製できなかった(${SQLITE_COPY_ATTEMPTS} 回): ${lastProblem}`);
 }
 
 /**
@@ -526,9 +569,22 @@ function sleep(ms: number): Promise<void> {
 
 async function isUpdatedSince(dir: string, files: readonly string[], since: Date): Promise<boolean> {
   for (const f of files) {
-    if ((await stat(join(dir, f))).mtime >= since) return true;
+    try {
+      if ((await stat(join(dir, f))).mtime >= since) return true;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+    }
   }
   return false;
+}
+
+/** ファイルの大きさ。一覧の後に消えた・読めないものは 0 */
+async function sizeOr0(p: string): Promise<number> {
+  try {
+    return (await stat(p)).size;
+  } catch {
+    return 0;
+  }
 }
 
 async function copyIfChanged(from: string, to: string): Promise<{ copied: boolean; bytes: number }> {
