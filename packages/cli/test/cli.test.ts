@@ -67,6 +67,10 @@ describe('parseCli', () => {
     expect(parseCli(['bundle', '--per-part', '3'])).toMatchObject({ command: 'bundle', perPart: 3 });
     expect(() => parseCli(['bundle', '--per-part', '0'])).toThrow(/per-part/);
     expect(() => parseCli(['export', '--per-part', '3'])).toThrow(/bundle でだけ/);
+    // 伏せ字に対応しないコマンドでは黙って無視せずエラー(評価バンドルを伏せたつもりで外部へ渡さないように)
+    for (const argv of [['bundle'], ['judge', 'run'], ['judge', 'import', 'x.json'], ['serve'], ['skill-draft', '1']]) expect(() => parseCli([...argv, '--anonymize'])).toThrow(/build \/ export \/ all でだけ/);
+    expect(parseCli(['all', '--anonymize'])).toMatchObject({ command: 'all', anonymize: true });
+    expect(parseCli(['--anonymize'])).toMatchObject({ command: 'all', anonymize: true });
     expect(parseCli(['judge', 'run'])).toMatchObject({
       command: 'judge',
       judge: { action: 'run', backend: 'copilot-cli', model: null, limit: null, only: null, concurrency: 1, force: false, allowTools: true, timeoutSec: 600 },

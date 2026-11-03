@@ -8,8 +8,10 @@ import { run } from './commands.ts';
 
 async function main(argv: string[]): Promise<number> {
   let judgeOpts;
+  // --anonymize は最後に作り直すレポートだけに効く(judge run 自体は伏せ字に対応しないので、judge run の解析には渡さない)
+  const anonymize = argv.includes('--anonymize');
   try {
-    judgeOpts = parseCli(['judge', 'run', ...argv]);
+    judgeOpts = parseCli(['judge', 'run', ...argv.filter((a) => a !== '--anonymize')]);
   } catch (e) {
     if (e instanceof UsageError) {
       process.stderr.write(`atlas:judge: ${e.message}\n\n${USAGE}`);
@@ -37,7 +39,7 @@ async function main(argv: string[]): Promise<number> {
       return 1;
     }
     // 直前の all が作ったセッション記録を消さないよう、伏せ字版でなければ export で作り直す
-    const b = await run({ ...common, command: common.anonymize ? 'build' : 'export' }, log);
+    const b = await run({ ...common, anonymize, command: anonymize ? 'build' : 'export' }, log);
     if (b.build) log(`\nレポート: ${b.build.htmlPath}`);
     if (failed > 0) {
       process.stderr.write(`atlas:judge: 判定に失敗したセッションが ${failed} 件あります(judgments.json の failures に記録しました。もう一度実行すると再試行します)\n`);
