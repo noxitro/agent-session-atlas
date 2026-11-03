@@ -11,6 +11,7 @@ import {
   buildJudgePrompt,
   clip,
   copilotArgs,
+  opencodeEnv,
   JUDGE_DENIED_TOOL_KINDS,
   DEFAULT_LIMITS,
   emptyJudgments,
@@ -231,6 +232,19 @@ describe('backends', () => {
     const b = copilotArgs('P', 'u', { allowTools: false });
     expect(b).not.toContain('--allow-all-tools');
     expect(denied(b)).toEqual([...JUDGE_DENIED_TOOL_KINDS]);
+    // MCP は shell / write / url に当たらないので、見せるツールを絞り、組み込みと各サーバーを止めて拒否する
+    expect(a).toEqual(expect.arrayContaining(['--available-tools=view', '--disable-builtin-mcps']));
+    const c = copilotArgs('P', 'u', {}, ['srv-a', 'srv-b']);
+    expect(denied(c)).toEqual([...JUDGE_DENIED_TOOL_KINDS, 'srv-a', 'srv-b']);
+    expect(c.flatMap((x, i) => (x === '--disable-mcp-server' ? [c[i + 1]] : []))).toEqual(['srv-a', 'srv-b']);
+  });
+
+  it('opencode は設定の上書き(OPENCODE_CONFIG_CONTENT)で全ツールを拒否して起動する', () => {
+    const env = opencodeEnv({ PATH: 'x', OPENCODE_CONFIG_CONTENT: '{"permission":"allow"}' });
+    expect(env.PATH).toBe('x');
+    const cfg = JSON.parse(env.OPENCODE_CONFIG_CONTENT!) as { permission: Record<string, string> };
+    expect(cfg.permission['*']).toBe('deny');
+    expect(Object.values(cfg.permission).every((v) => v === 'deny')).toBe(true);
   });
 
   it('npm の .cmd シムから node + JS / .exe を解決する', async () => {

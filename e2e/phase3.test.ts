@@ -222,6 +222,9 @@ describe('Phase 3 E2E: fixtures', () => {
       expect(c.argv).toEqual(expect.arrayContaining(['--output-format', 'json', '--stream', 'off', '--no-ask-user', '-s', '--allow-all-tools', '--usage-output-file', '--model', 'fake-model']));
       // ツールは使わせない(shell / write / url を拒否。拒否は --allow-all-tools より優先される)
       for (const kind of ['shell', 'write', 'url']) expect(c.argv.indexOf('--deny-tool', c.argv.indexOf(kind) - 1)).toBe(c.argv.indexOf(kind) - 1);
+      // MCP も使わせない(見せるツールを view に絞り、組み込みと `copilot mcp list --json` で得たサーバーを止めて拒否する)
+      expect(c.argv).toEqual(expect.arrayContaining(['--available-tools=view', '--disable-builtin-mcps']));
+      expect(c.argv.join(' ')).toContain('--disable-mcp-server fake-mcp --deny-tool fake-mcp');
       // 空の作業ディレクトリ(リポジトリでもバンドルでもない)
       expect(c.cwdEntries).toEqual([]);
       expect(resolve(c.cwd).startsWith(ROOT)).toBe(false);

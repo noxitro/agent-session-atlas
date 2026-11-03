@@ -1,5 +1,8 @@
 // opencode run を子プロセスで起動する判定バックエンド(実走未確認の薄い実装)。
 // copilot-cli と同じく空の作業ディレクトリで起動し、パケットはメッセージ本文に埋め込む。
+// opencode のツールは既定で許可なので(https://opencode.ai/docs/permissions/ 「Most permissions default to "allow"」)、
+// 設定の中で後から効く OPENCODE_CONFIG_CONTENT(https://opencode.ai/docs/config/ の Inline config)で全ツールを拒否する。
+// 利用者の設定の規則より後ろに足され、後に一致した規則が勝つので、`opencode debug agent build` で全ツールが false になるのを確かめた(1.19.3)
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,6 +17,15 @@ export interface OpencodeOptions {
   /** provider/model 形式。省略時は opencode の既定 */
   model?: string | null;
   timeoutMs?: number;
+}
+
+/** 判定で渡す opencode の設定。"*" で全ツールを拒否し、名前のある主なものも明示する(利用者の設定で同じ名前が許可されていても上書きされる) */
+export const OPENCODE_JUDGE_CONFIG = {
+  permission: { '*': 'deny', bash: 'deny', edit: 'deny', webfetch: 'deny', websearch: 'deny', task: 'deny', skill: 'deny', external_directory: 'deny' },
+} as const;
+
+export function opencodeEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return { ...base, OPENCODE_CONFIG_CONTENT: JSON.stringify(OPENCODE_JUDGE_CONFIG) };
 }
 
 export function opencodeArgs(prompt: string, o: OpencodeOptions): string[] {
@@ -36,7 +48,7 @@ export function opencodeBackend(o: OpencodeOptions = {}): JudgeBackend {
       if (process.platform === 'win32' && len > MAX_COMMAND_LINE) throw new Error(`プロンプトが長すぎてコマンドラインに収まりません(${len} 字)`);
       const work = await mkdtemp(join(tmpdir(), 'atlas-judge-cwd-'));
       try {
-        const r = await runProcess(cmd, args, { cwd: work, timeoutMs: o.timeoutMs ?? 600_000 });
+        const r = await runProcess(cmd, args, { cwd: work, timeoutMs: o.timeoutMs ?? 600_000, env: opencodeEnv() });
         if (r.timedOut) throw new Error('opencode が時間内に終わりませんでした');
         if (r.code !== 0) throw new Error(`opencode が終了コード ${r.code} で失敗しました: ${tail(r.stderr || r.stdout)}`);
         const out = parseAgentJsonl(r.stdout);

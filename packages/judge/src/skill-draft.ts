@@ -1,13 +1,13 @@
 // Phase 12: スキル化の候補から SKILL.md の下書きを LLM に作らせる(任意。明示したときだけ動く)。
 // 判定と同じバックエンド(copilot-cli / opencode / anthropic)の経路を使う。copilot-cli は空の作業ディレクトリ、
-// --no-custom-instructions、shell / write / url の拒否まで判定と同じ。
+// --no-custom-instructions、shell / write / url と MCP の拒否まで判定と同じ。opencode も判定と同じく全ツールを拒否する。
 // クレジットや従量課金を消費しうるので既定の処理では呼ばず、テストは偽の CLI と fetch の差し替えで行う。
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { anthropicMessage, type AnthropicOptions } from './backends/anthropic.ts';
-import { copilotArgs } from './backends/copilot-cli.ts';
-import { opencodeArgs } from './backends/opencode.ts';
+import { copilotArgs, copilotMcpServers } from './backends/copilot-cli.ts';
+import { opencodeArgs, opencodeEnv } from './backends/opencode.ts';
 import { parseAgentJsonl } from './backends/output.ts';
 import { commandLineLength, MAX_COMMAND_LINE, resolveCommand, runProcess, tail, type ResolvedCommand } from './backends/proc.ts';
 
@@ -78,13 +78,14 @@ async function draftWithCopilot(prompt: string, o: SkillDraftOptions): Promise<S
   const usageDir = await mkdtemp(join(tmpdir(), 'atlas-draft-usage-'));
   const usageFile = join(usageDir, 'usage.json');
   try {
-    const args = copilotArgs(prompt, usageFile, { model: o.model, timeoutMs: o.timeoutMs });
+    const mcp = await copilotMcpServers(cmd, work);
+    const args = copilotArgs(prompt, usageFile, { model: o.model, timeoutMs: o.timeoutMs }, mcp.servers);
     checkLength(cmd, args);
     const r = await runProcess(cmd, args, { cwd: work, timeoutMs: o.timeoutMs ?? 600_000 });
     if (r.timedOut) throw new Error('copilot が時間内に終わりませんでした');
     const out = parseAgentJsonl(r.stdout);
     if (r.code !== 0) throw new Error(`copilot が終了コード ${r.code} で失敗しました: ${out.errors.length ? out.errors.join(' / ') : tail(r.stderr || r.stdout)}`);
-    const notes: string[] = [];
+    const notes: string[] = mcp.note ? [mcp.note] : [];
     let usage: unknown = null;
     try {
       usage = JSON.parse(await readFile(usageFile, 'utf8'));
@@ -104,7 +105,7 @@ async function draftWithOpencode(prompt: string, o: SkillDraftOptions): Promise<
   checkLength(cmd, args);
   const work = await mkdtemp(join(tmpdir(), WORK_DIR_PREFIX));
   try {
-    const r = await runProcess(cmd, args, { cwd: work, timeoutMs: o.timeoutMs ?? 600_000 });
+    const r = await runProcess(cmd, args, { cwd: work, timeoutMs: o.timeoutMs ?? 600_000, env: opencodeEnv() });
     if (r.timedOut) throw new Error('opencode が時間内に終わりませんでした');
     if (r.code !== 0) throw new Error(`opencode が終了コード ${r.code} で失敗しました: ${tail(r.stderr || r.stdout)}`);
     const out = parseAgentJsonl(r.stdout);

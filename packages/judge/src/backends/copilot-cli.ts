@@ -5,6 +5,11 @@
 // - 判定はツールを使わない作業なので、--allow-all-tools(非対話モードで必須)を付けても、シェル・ファイル書き込み・URL アクセスは
 //   --deny-tool で拒否する(`copilot help permissions`: 拒否は --allow-all-tools より優先される)。パケット本文からの指示注入で
 //   ツールが動くのを防ぐため
+// - MCP のツールは shell / write / url のどれにも当たらない(`copilot help permissions` の kind は <mcp-server-name>(tool) で別)ので、
+//   --allow-all-tools だけだと組み込みの github-mcp-server や利用者・プラグインの MCP サーバーが許可されてしまう。
+//   そこで (1) --available-tools でモデルに見せるツールを view だけにし(作業ディレクトリは空で、copilot は既定でその外のパスを拒否する)、
+//   (2) --disable-builtin-mcps で組み込みの MCP を止め、(3) `copilot mcp list --json` で得た各サーバーを
+//   --disable-mcp-server と --deny-tool <サーバー名> で止める
 // - 判定自体のトークン消費は --usage-output-file で受け取る
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -26,17 +31,39 @@ export interface CopilotCliOptions {
 /** 判定では使わせないツールの種類(`copilot help permissions` の kind)。shell = シェル、write = ファイルの作成・変更、url = shell / web-fetch の URL アクセス */
 export const JUDGE_DENIED_TOOL_KINDS = ['shell', 'write', 'url'] as const;
 
-export function copilotArgs(prompt: string, usageFile: string, o: CopilotCliOptions): string[] {
+/** 判定でモデルに見せるツール(--available-tools)。空の作業ディレクトリの外は既定で読めないので、view が残っても読めるものは無い */
+export const JUDGE_AVAILABLE_TOOLS = ['view'] as const;
+
+/** mcpServers: `copilot mcp list --json` で得た MCP サーバー名(それぞれ止めて拒否する) */
+export function copilotArgs(prompt: string, usageFile: string, o: CopilotCliOptions, mcpServers: readonly string[] = []): string[] {
   const args = ['-p', prompt, '--output-format', 'json', '--stream', 'off', '--no-ask-user', '-s', '--no-custom-instructions'];
   if (o.allowTools ?? true) args.push('--allow-all-tools');
+  args.push(`--available-tools=${JUDGE_AVAILABLE_TOOLS.join(',')}`, '--disable-builtin-mcps');
   for (const kind of JUDGE_DENIED_TOOL_KINDS) args.push('--deny-tool', kind);
+  for (const server of mcpServers) args.push('--disable-mcp-server', server, '--deny-tool', server);
   args.push('--usage-output-file', usageFile);
   if (o.model) args.push('--model', o.model);
   return args;
 }
 
+/**
+ * 設定されている MCP サーバー名(利用者・ワークスペース・プラグイン・組み込み)。LLM は呼ばない。
+ * 取れなかったときは空にして理由を返す(--available-tools と --disable-builtin-mcps の制限は残る)
+ */
+export async function copilotMcpServers(cmd: ResolvedCommand, cwd: string): Promise<{ servers: string[]; note: string | null }> {
+  try {
+    const r = await runProcess(cmd, ['mcp', 'list', '--json'], { cwd, timeoutMs: 60_000 });
+    if (r.timedOut || r.code !== 0) throw new Error(r.timedOut ? '時間切れ' : `終了コード ${r.code}: ${tail(r.stderr || r.stdout, 200)}`);
+    const servers = (JSON.parse(r.stdout) as { mcpServers?: unknown }).mcpServers;
+    return { servers: servers && typeof servers === 'object' ? Object.keys(servers) : [], note: null };
+  } catch (e) {
+    return { servers: [], note: `MCP サーバーの一覧(copilot mcp list --json)を取れなかったため、サーバーごとの拒否は付けていません(${(e as Error).message})` };
+  }
+}
+
 export function copilotCliBackend(o: CopilotCliOptions = {}): JudgeBackend {
   let cmd: ResolvedCommand | null = null;
+  let mcp: Promise<{ servers: string[]; note: string | null }> | null = null;
   const bin = o.bin ?? process.env.ATLAS_COPILOT_BIN ?? 'copilot';
   const timeoutMs = o.timeoutMs ?? 600_000;
   return {
@@ -49,7 +76,9 @@ export function copilotCliBackend(o: CopilotCliOptions = {}): JudgeBackend {
       const usageDir = await mkdtemp(join(tmpdir(), 'atlas-judge-usage-'));
       const usageFile = join(usageDir, 'usage.json');
       try {
-        const args = copilotArgs(prompt, usageFile, o);
+        mcp ??= copilotMcpServers(cmd, work);
+        const { servers, note: mcpNote } = await mcp;
+        const args = copilotArgs(prompt, usageFile, o, servers);
         const len = commandLineLength(cmd, args);
         if (process.platform === 'win32' && len > MAX_COMMAND_LINE)
           throw new Error(`プロンプトが長すぎてコマンドラインに収まりません(${len} 字 > ${MAX_COMMAND_LINE})。atlas bundle を小さい上限で作り直してください。`);
@@ -70,7 +99,7 @@ export function copilotCliBackend(o: CopilotCliOptions = {}): JudgeBackend {
           throw new Error(`copilot が終了コード ${r.code} で失敗しました: ${err}`);
         }
         const item = itemFromTexts(out.texts, packet.sessionId);
-        const notes: string[] = [];
+        const notes: string[] = mcpNote ? [mcpNote] : [];
         let usage: unknown = null;
         try {
           usage = JSON.parse(await readFile(usageFile, 'utf8'));

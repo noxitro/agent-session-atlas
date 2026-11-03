@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // テスト用の「偽の copilot」。LLM は呼ばない。
-// - 受け取った引数・作業ディレクトリを環境変数 FAKE_COPILOT_LOG のファイルに 1 行 JSON で追記する
+// - 受け取った引数・作業ディレクトリ・環境変数 OPENCODE_CONFIG_CONTENT(偽の opencode としても使う)を
+//   環境変数 FAKE_COPILOT_LOG のファイルに 1 行 JSON で追記する
 // - プロンプト(-p の値)から sessionId を読み、その sessionId の固定の判定(このファイル内に持つ)を標準出力に流す
 // - --usage-output-file があれば、そこに使用量の JSON を書く
 // - 環境変数 FAKE_COPILOT_FAIL_ID のセッションは終了コード 3 で失敗する
@@ -8,6 +9,12 @@
 import { appendFileSync, readdirSync, writeFileSync } from 'node:fs';
 
 const argv = process.argv.slice(2);
+
+// `copilot mcp list --json`(判定の前に MCP サーバー名を取る)には架空のサーバーを 1 つ返す。呼び出しの記録には入れない
+if (argv[0] === 'mcp' && argv[1] === 'list') {
+  process.stdout.write(`${JSON.stringify({ mcpServers: { 'fake-mcp': { type: 'http', source: 'user' } } })}\n`);
+  process.exit(0);
+}
 const valueOf = (flag) => {
   const i = argv.indexOf(flag);
   return i >= 0 ? argv[i + 1] : undefined;
@@ -17,7 +24,8 @@ const m = /sessionId は "([^"]+)"/.exec(prompt);
 const sessionId = m ? m[1] : 'unknown';
 
 if (process.env.FAKE_COPILOT_LOG) {
-  appendFileSync(process.env.FAKE_COPILOT_LOG, `${JSON.stringify({ argv, cwd: process.cwd(), cwdEntries: readdirSync(process.cwd()), sessionId })}\n`);
+  const opencodeConfig = process.env.OPENCODE_CONFIG_CONTENT ?? null;
+  appendFileSync(process.env.FAKE_COPILOT_LOG, `${JSON.stringify({ argv, cwd: process.cwd(), cwdEntries: readdirSync(process.cwd()), sessionId, opencodeConfig })}\n`);
 }
 
 if (process.env.FAKE_COPILOT_DELAY_MS) await new Promise((r) => setTimeout(r, Number(process.env.FAKE_COPILOT_DELAY_MS)));

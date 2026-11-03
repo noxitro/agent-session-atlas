@@ -136,6 +136,8 @@ describe('Phase 12 E2E: fixtures', () => {
     expect(prompt).toContain(j.candidates[0].kind === 'tools' ? j.candidates[0].key : 'の繰り返し');
     expect(argv).toContain('--no-custom-instructions');
     for (const k of ['shell', 'write', 'url']) expect(argv.join(' ')).toContain(`--deny-tool ${k}`);
+    expect(argv).toEqual(expect.arrayContaining(['--available-tools=view', '--disable-builtin-mcps']));
+    expect(argv.join(' ')).toContain('--disable-mcp-server fake-mcp --deny-tool fake-mcp');
     // 番号が無い / 伏せ字版
     expect(atlas(['skill-draft', '999', '--out', out], env).stderr).toMatch(/候補 999 はありません/);
     expect(atlas(['skill-draft', '1', '--out', outAnon], env).stderr).toMatch(/伏せ字版/);
@@ -145,8 +147,10 @@ describe('Phase 12 E2E: fixtures', () => {
     await rm(log, { force: true });
     const oc = atlas(['skill-draft', '2', '--backend', 'opencode', '--out', out], { ATLAS_OPENCODE_BIN: env.ATLAS_COPILOT_BIN, FAKE_COPILOT_LOG: log });
     expect(oc.status, oc.stderr).toBe(0);
-    const ocCall = JSON.parse((await readFile(log, 'utf8')).trim()) as { argv: string[]; cwd: string };
+    const ocCall = JSON.parse((await readFile(log, 'utf8')).trim()) as { argv: string[]; cwd: string; opencodeConfig: string | null };
     expect(ocCall.argv[0]).toBe('run');
+    // opencode のツールは既定で許可なので、設定の上書きで全ツールを拒否して起動する
+    expect(JSON.parse(ocCall.opencodeConfig ?? '{}').permission?.['*']).toBe('deny');
     expect(ocCall.argv.at(-1)).toContain('候補 2');
     expect(ocCall.cwd).toMatch(/atlas-judge-cwd-[^\\/]+$/);
     expect(existsSync(join(outAnon, 'skill-drafts'))).toBe(false);
