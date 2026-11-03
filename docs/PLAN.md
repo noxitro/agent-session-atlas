@@ -710,7 +710,8 @@ ui-ux-pro-max の照合(`--domain ux`、検索語「sidebar saved views labels�
 
 - 単体(serve.test): jobs の 409(同時実行)・403(token なし・他オリジン・別の Host)・引数の検証(不正な id・limit・backend・kind)・`/view/` の描画(script が文字のまま、外部画像なし、相対画像だけ)・上限超えの扱い。子プロセスは差し替え可能にして速く回す。
 - E2E(fixture): serve を起動して refresh のジョブを流し、終わるまで待って atlas.html が作り直されること、ジョブ中に heartbeat を止めてもサーバが止まらないこと、full のジョブで out/full/<id>.md だけができ atlas.html と他の全文が変わらないこと、偽 copilot で judge のジョブ(phase3 と同じ)と確認なしでは走らないこと(API は件数を明示した要求だけ受ける)、cancel。
-- 画面: Claude の組み込みブラウザで、ジョブの帯(実行中・完了・失敗)・確認ダイアログ・記録の表示を 1440 ライト / 800 ダークで確認。impeccable の検出器と web-design-guidelines の照合(Phase 13 と同じ扱い)、surface brief の更新。
+- 画面の操作(ui/ の Playwright、`npm run ui`。2e47ba8 で入った仕組みに足す): 「集計し直す」→ 帯が実行中から完了に変わり「再読み込み」で新しい集計が出る、判定の確認ダイアログで「やめる」なら API を呼ばず「実行」なら偽 copilot で判定が増える、詳細ページの「記録を読む」「全文を作って読む」で本文が描かれ script が実行されない。どの画面でも pageerror と console.error が無いこと。
+- 画面の見た目: Claude の組み込みブラウザで、ジョブの帯(実行中・完了・失敗)・確認ダイアログ・記録の表示を 1440 ライト / 800 ダークで確認。impeccable の検出器と web-design-guidelines の照合(Phase 13 と同じ扱い)、surface brief の更新。
 - 実データ: 一時の out / notes-dir で refresh・full(大きいセッション 1 件)を流し、所要時間を確かめる。判定は実行しない(クレジットを消費するため。利用者の確認がある場合だけ)。
 
 #### 決めたこと(2026-11-03、利用者の判断)
