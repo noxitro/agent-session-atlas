@@ -9,6 +9,10 @@ updates:
     groups:
       npm-minor-and-patch:
         update-types: [minor, patch]
+    ignore:
+      # svelte-check(4.7.8 時点)は TypeScript 7 単体に未対応(peer は ^5 || ^6)。対応したらこの指定を外す
+      - dependency-name: typescript
+        versions: ['>=7']
   - package-ecosystem: github-actions
     directory: /
     schedule:
