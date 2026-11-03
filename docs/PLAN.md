@@ -672,6 +672,57 @@ ui-ux-pro-max の照合(`--domain ux`、検索語「sidebar saved views labels�
 
 採らなかった案: 詳細ページを開いたときに serve がその場で記録を作る(起動は速いままだが file:// で使えず、作りも複雑)。記録が無いときの案内だけを足す(つまずく場面が残る)。
 
+### Phase 14(設計): 画面からの操作 — 起動は atlas.bat 1 つ(2026-11-03、設計のみ・未実装)
+
+動機: 起動用の bat が 4 つあり(`atlas` / `atlas-export` / `atlas-export-full` / `atlas-judge`)、「何をしたいか」を起動前に bat の名前で選ばせている。serve の画面でできるのは閲覧・グループ・メモだけで、集計し直す・全文を見る・判定する・共有用に書き出すには、画面を閉じて別の bat を起動し直す必要がある。serve(Phase 10〜13)で、token と Origin / Host の検査を持つ書き込みの土台はすでにある。当初の「ローカルサーバ型ダッシュボードは採らない」(下の「採らなかった案」)は、HTML 単体で file:// でも共有でも読めることが理由で、その性質はこの設計でも変えない(サーバは操作のためだけに使い、生成物は今どおり静的ファイル)。
+
+**目標**: 利用者が起動するのは `atlas.bat` だけ。起動後の操作はすべて画面から。CLI(`npm run atlas -- <コマンド>`)は今のまま残す(自動化と細かい指定はこちら)。
+
+**調べた前提**(コードで確認): serve の API は `heartbeat` / `state` / `groups` / `memos` / `memo-editor.js` だけ(`packages/cli/src/serve.ts`)。書き込みは token(`X-Atlas-Token`)・`Sec-Fetch-Site` / `Origin`・`Host` を検査し、伏せ字版の out/ では 403。記録は `renderTranscript`、全文は `renderFullTo` がセッション 1 件ずつ呼べる(`packages/report/src/transcript.ts`・`full.ts`。ただし今は `buildReport` の中からしか呼んでいない)。判定は 1 件ごとに judgments.json を一時ファイル + rename で確定する(`judge/src/run.ts`・`judgments-io.ts`)ので、途中で止めても判定済みの分は残る。`export --session <id>` は atlas.html もそのセッションだけで作り直すので、1 件の全文を作る用途には使えない。
+
+#### 契約
+
+1. **画面の操作と実体**
+
+| 画面の操作 | 置き場所 | API | 実体 |
+|---|---|---|---|
+| 集計し直す | atlas.html の上部(ジョブの帯) | `POST /api/jobs {kind:"refresh"}` | 子プロセス `main.ts all --out <out> --notes-dir <notes>` |
+| 記録を読む | 詳細ページ(serve のときだけ) | `GET /view/<id>?kind=transcript` | out/sessions/<id>.md を安全に HTML にして返す(下記 4) |
+| 全文を作って読む | 詳細ページ(serve のときだけ) | `POST /api/jobs {kind:"full", id}` → 終わったら `GET /view/<id>?kind=full` | サーバ内で 1 件だけ `renderFullTo` を呼び out/full/<id>.md を書く(新しい関数。atlas.html・coverage.json は触らない) |
+| 工数を判定する | atlas.html(確認ダイアログ付き) | `POST /api/jobs {kind:"judge", limit, backend}` | 子プロセス `judge-flow.ts --limit <n> --backend <b>`(bundle → judge run → export) |
+| 共有用に書き出す | atlas.html | `POST /api/jobs {kind:"share"}` → `POST /api/open-folder {which:"share"}` | 新しい CLI `atlas share`: out/ の sessions.json と metrics から伏せ字版を `<out>/share/` に build する(スナップショットは複製しない。記録・全文・library は作らない)。終わったら Explorer で share/ を開く |
+
+2. **ジョブ**: 同時に 1 つだけ(実行中に別の POST は 409)。`GET /api/jobs/current` → `{ id, kind, state: "running" | "done" | "failed" | "canceled", startedAt, endedAt, exitCode, log }`(log は子プロセスの stdout / stderr の末尾 200 行)。`POST /api/jobs/current/cancel` は判定と集計で子プロセスを止める(判定は 1 件ずつ確定済みなので途中までの結果が残る。集計は中断した旨を出し、次の集計で作り直す)。ジョブの実行中は heartbeat が途切れてもサーバを止めない(画面を閉じてもジョブは最後まで走り、終わってから idle の判定を再開する)。atlas.bat の窓にもジョブのログを流す。
+
+3. **再集計の後の画面**: 自動では再読み込みしない(メモの入力中を守る)。帯に「新しい集計ができました」と「再読み込み」を出す。集計中は build が `out/sessions/` を消してから書くので、その間に詳細ページを開くと 404 になりうる。帯に「集計中(詳細ページは終わるまで開けないことがあります)」と出し、serve の 404 は「集計中です」の文面にする(書き出しを一時フォルダ経由の入れ替えにする案は、Windows で開いているファイルがあると rename が失敗するので採らない)。
+
+4. **記録と全文の表示**(`GET /view/<id>?kind=transcript|full`): サーバが .md を HTML に描いて返す。描き方はメモと同じ規則(`memo-render.ts`: 生の HTML は文字のまま、リンクは http / https / mailto だけ、外部の画像は読まない)。全文の画像は out/full/assets/<id>/ への相対参照だけを通す。上限(全文 20MB)を超えるものは描かず、.md を直接開くリンクと大きさを出す。file:// で開いた詳細ページには出さない(今の「セッション記録(Markdown)を開く」リンクは残す)。
+
+5. **安全**
+   - 実行系の API(jobs・open-folder)はすべて token・Origin / Sec-Fetch-Site・Host を検査する(既存の書き込みと同じ)。GET の `/api/jobs/current` と `/view/` も token を要求する(ログと本文に生の文字列が入るため)。
+   - 子プロセスの引数はサーバが固定の配列で組み立て、`shell: false` で `process.execPath` を起動する。画面からの文字列をコマンドラインに入れない。`id` は `isSafeMemoId` と sessions.json にあることを確かめる。`limit` は 0〜500 の整数、`backend` は `copilot-cli` / `opencode` の列挙。open-folder は `share` だけ(任意のパスは受けない)。
+   - 伏せ字版の out/ を配信しているときは、実行系も 403(既存の規則のまま)。
+   - share/ は静的配信しない(token 入りの HTML として配らない、伏せ字版の画面に操作を出さない)。
+
+6. **費用**: 判定は GitHub Copilot の AI クレジット(既存サブスクの範囲)を消費する。opencode は利用者の opencode の既定のモデル。画面の確認ダイアログに対象の件数(未判定のうち limit まで)・バックエンド・「AI クレジットを消費します」を出し、既定の limit は 10。従量課金の anthropic は画面に出さない(CLI の `--backend anthropic` だけ)。
+
+7. **bat**(要確認): `atlas.bat` だけを残し、`atlas-export.bat` / `atlas-export-full.bat` / `atlas-judge.bat` は消す。README・release-smoke(bat の数)・launchers.test を直す。CLI のコマンドはすべて残す。全件の全文と coverage.json(解析用の一括出力)は `npm run atlas -- export --full` で作る。
+
+#### ゲート
+
+- 単体(serve.test): jobs の 409(同時実行)・403(token なし・他オリジン・別の Host)・引数の検証(不正な id・limit・backend・kind)・open-folder の拒否・`/view/` の描画(script が文字のまま、外部画像なし、相対画像だけ)・上限超えの扱い。子プロセスは差し替え可能にして速く回す。
+- E2E(fixture): serve を起動して refresh のジョブを流し、終わるまで待って atlas.html が作り直されること、ジョブ中に heartbeat を止めてもサーバが止まらないこと、full のジョブで out/full/<id>.md だけができ atlas.html と他の全文が変わらないこと、偽 copilot で judge のジョブ(phase3 と同じ)、share のジョブで share/ に伏せ字版ができ固有の文字列と .md が無いこと、cancel。
+- 画面: Claude の組み込みブラウザで、ジョブの帯(実行中・完了・失敗)・確認ダイアログ・記録の表示を 1440 ライト / 800 ダークで確認。impeccable の検出器と web-design-guidelines の照合(Phase 13 と同じ扱い)、surface brief の更新。
+- 実データ: 一時の out / notes-dir で refresh・full(大きいセッション 1 件)・share を流し、所要時間と share/ の中身を確かめる。判定は実行しない(クレジットを消費するため。利用者の確認がある場合だけ)。
+
+#### 未決(実装の前に利用者に確認する)
+
+- bat を `atlas.bat` 1 つにするか(上の 7)。
+- 判定を画面から実行できるようにするか(クレジットを消費するボタンを置くか)。
+- 共有用の書き出し先を `out/share/` に固定するか、場所を選ばせるか。
+
+後回しにした案: atlas.bat を「前回の out/ があれば先に画面を開き、集計は画面の中で走らせる」形にする(起動直後から見られるが、古い集計を見せる時間ができ、画面の状態が増える。上の契約が動いてから検討する)。採らなかった案: 記録を開くたびにサーバがその場で作る(Phase 13 の後の計測で、全件を先に作っても +5 秒・+13MB と小さかった。.md は LLM に渡す用途にも要る)。
+
 ## 決めたこと・採らなかった案
 
 - Svelte 5 を採用(理由は開発体験。単一 HTML のサイズ差はデータ量に比べて誤差)。
