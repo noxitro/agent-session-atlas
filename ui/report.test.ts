@@ -103,6 +103,73 @@ describe('画面の操作', () => {
     await expect.poll(shown).toBe(all);
   });
 
+  it('b2. 作成・追加の後と「すべて」に戻った後はチェックが外れ、次のグループに前の分が混ざらない。所属は一覧と詳細ページに出る', async () => {
+    await page.goto(server.url);
+    const idOf = async (i: number): Promise<string> => /sessions\/([^/]+)\.html$/.exec((await page.locator('table.ledger tbody td.name a').nth(i).getAttribute('href'))!)![1];
+    const [id0, id1, id2] = [await idOf(0), await idOf(1), await idOf(2)];
+    const create = async (name: string): Promise<void> => {
+      await page.getByTestId('add-to-group').click();
+      await page.getByTestId('create-group').click();
+      const form = page.getByTestId('create-form');
+      await form.getByPlaceholder('例: 11 月の調査').fill(name);
+      await form.getByRole('button', { name: '作成' }).click();
+      await expect.poll(async () => (await readGroups()).some((g) => g.name === name)).toBe(true);
+    };
+    const toAll = async (): Promise<void> => {
+      await rail().getByRole('button', { name: 'すべて', exact: true }).click();
+      await expect.poll(() => page.getByTestId('selected-count').innerText()).toBe('0');
+    };
+    await rowChecks().nth(0).check();
+    await rowChecks().nth(1).check();
+    await create('甲');
+    await toAll();
+    // 「すべて」に戻った後に 1 件だけ選んで作ると、その 1 件だけが入る(前の 2 件が混ざらない)
+    await rowChecks().nth(2).check();
+    await create('乙');
+    // ids の順はグループに入れた順(一覧の並びとは限らない)なので、並べ替えて比べる
+    const sorted = async (): Promise<Record<string, string[]>> => Object.fromEntries((await readGroups()).map((g) => [g.name, [...g.ids].sort()]));
+    expect(await sorted()).toEqual({ 甲: [id0, id1].sort(), 乙: [id2] });
+    await toAll();
+
+    // 既存のグループに足すと、絞り込みは変えずにチェックを外す
+    await rowChecks().nth(2).check();
+    await page.getByTestId('add-to-group').click();
+    const menu = page.getByTestId('add-menu');
+    // メニューは画面の右にはみ出さない(ページが横に流れない)
+    const box = (await menu.boundingBox())!;
+    const vw = await page.evaluate<number>('innerWidth');
+    expect(box.x + box.width).toBeLessThanOrEqual(vw);
+    expect(await page.evaluate<number>('document.documentElement.scrollWidth')).toBeLessThanOrEqual(vw);
+    await menu.getByRole('button', { name: /甲/ }).click();
+    await expect.poll(() => page.getByTestId('group-status').innerText()).toContain('チェックは外しました');
+    expect(await page.getByTestId('selected-count').innerText()).toBe('0');
+    expect((await sorted())['甲']).toEqual([id0, id1, id2].sort());
+
+    // 一覧の行に所属が出る
+    const groupsLine = (i: number) => page.locator('#sessions table.ledger tbody tr').nth(i).getByTestId('session-groups');
+    await expect.poll(() => groupsLine(2).innerText()).toBe('グループ: 甲、乙');
+    expect(await groupsLine(0).innerText()).toBe('グループ: 甲');
+
+    // 詳細ページにも所属が出て、名前からそのグループで絞り込んだレポートに移れる
+    await page.goto(new URL(`sessions/${id2}.html`, server.url).href);
+    const line = page.getByTestId('detail-groups');
+    await line.waitFor({ state: 'visible' });
+    expect(await line.innerText()).toMatch(/グループ\s*甲、乙/);
+    await line.getByRole('link', { name: '乙' }).click();
+    await page.waitForURL('**/atlas.html#group=*');
+    await expect.poll(shown).toBe(1);
+
+    // 後片付け(後のテストに残さない)
+    for (const name of ['甲', '乙']) {
+      await page.goto(server.url);
+      await rail().getByRole('button', { name: new RegExp(name) }).click();
+      const tools = rail().getByTestId('group-tools');
+      await tools.getByRole('button', { name: '削除', exact: true }).click();
+      await tools.getByRole('button', { name: '削除する' }).click();
+      await expect.poll(async () => (await readGroups()).some((g) => g.name === name)).toBe(false);
+    }
+  });
+
   it('c. 詳細ページでメモを書いて保存すると memos に書かれ、再読み込みしても表示される', async () => {
     await page.goto(server.url);
     const link = page.locator('table.ledger tbody td.name a').first();

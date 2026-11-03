@@ -93,6 +93,14 @@
     return truncate(s.name || s.firstUserMessage || `(名前なし) ${s.id.slice(0, 8)}`, 80);
   }
 
+  /** セッション id → 入っているグループの名前(行の下に「グループ: …」と出す。伏せ字版では出さない) */
+  const groupsOf = $derived.by(() => {
+    const m = new Map<string, string[]>();
+    if (anonymized) return m;
+    for (const g of groups) for (const id of g.ids) m.set(id, [...(m.get(id) ?? []), g.name]);
+    return m;
+  });
+
   // --- 選択(チェック欄)。状態は親(App)が持ち、ここは表示と操作だけ ---
   const visibleChecked = $derived(visible.filter((s) => selected.has(s.id)).length);
   const allVisible = $derived(visible.length > 0 && visibleChecked === visible.length);
@@ -270,7 +278,7 @@
   {/if}
   {#if createOpen && editable}
     <form class="create-box" data-testid="create-form" aria-label="グループの作成" aria-busy={busy} onsubmit={submitCreate}>
-      <p class="create-lead">選んだ {int(selected.size)} 件を名前付きグループにします(atlas-notes/groups.json に保存され、絞り込み行の「グループ」から選べます)。</p>
+      <p class="create-lead">選んだ {int(selected.size)} 件を名前付きグループにします(atlas-notes/groups.json に保存され、左の「グループ」(狭い画面では目次の行の「グループ」)から選べます)。</p>
       <div class="create-row">
         <label class="fld"><span class="k">名前</span><input type="text" bind:this={nameEl} bind:value={newName} maxlength="100" readonly={busy} aria-invalid={createError ? 'true' : undefined} aria-describedby={createError ? 'create-error' : undefined} placeholder="例: 11 月の調査" /></label>
         <label class="fld wide"><span class="k">一文(任意)</span><input type="text" bind:value={newNote} maxlength="200" readonly={busy} placeholder="何のグループか" /></label>
@@ -323,7 +331,7 @@
               <td class="chk"><label><input type="checkbox" aria-label="{title(s)} を選択" checked={selected.has(s.id)} onchange={(e) => toggle(s.id, e.currentTarget.checked)} /></label></td>
               <td class="num when">{dateTime(s.createdAt ?? s.updatedAt)}</td>
               <td class="proj" title={s.project}>{#each pathParts(s.projectLabel) as seg, i (i)}{#if i}<wbr />{/if}{seg}{/each}{#if s.branch}<span class="sub">{s.branch}</span>{/if}</td>
-              <td class="name"><a href={s.href} title={title(s)}>{title(s)}</a>{#if s.empty}<span class="tag" title="依頼・ツール呼び出し・応答がどれも無いセッション">空</span>{/if}{#if s.memo}<span class="sub" data-testid="memo-excerpt">メモ: {s.memo.excerpt || '(本文なし)'}</span>{/if}</td>
+              <td class="name"><a href={s.href} title={title(s)}>{title(s)}</a>{#if s.empty}<span class="tag" title="依頼・ツール呼び出し・応答がどれも無いセッション">空</span>{/if}{#if s.memo}<span class="sub" data-testid="memo-excerpt">メモ: {s.memo.excerpt || '(本文なし)'}</span>{/if}{#if groupsOf.has(s.id)}<span class="sub in-groups" data-testid="session-groups">グループ: {groupsOf.get(s.id)?.join('、')}</span>{/if}</td>
               <td class="nowrap">{s.client ?? '不明'}</td>
               <td class="models" title={s.models.join('、')}>{s.models.length ? s.models.map(modelLabel).join('、') : '不明'}</td>
               <td class="num">{int(s.turns)}</td>
@@ -496,9 +504,10 @@
     position: relative;
     display: inline-block;
   }
+  /* ボタンは操作列の右端にあるので、メニューは右端を揃えて左へ開く(左揃えだと画面の右にはみ出してページが横に流れる) */
   .menu {
     position: absolute;
-    left: 0;
+    right: 0;
     top: 100%;
     z-index: 5;
     min-width: 16em;

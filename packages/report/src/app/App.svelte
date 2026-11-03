@@ -124,10 +124,15 @@
   const knownIds = $derived(new Set(sessions.map((s) => s.id)));
   // 依存は ids の文字列だけ(eff はグループの一覧が変わるたびに新しいオブジェクトになるが、文字列が同じなら走らない = 外したチェックが戻らない)
   const effIds = $derived.by(() => eff.ids);
+  // 絞り込み(グループ・選んだ N 件)を外したときはチェックも外す。残すと、「すべて」に戻った後に次のグループを作ったり足したりしたとき、
+  // 前のグループのセッションが(別のページにあって見えないまま)黙って混ざる
+  let prevIds = '';
   $effect(() => {
     const ids = effIds;
     // 記録に無い id(共有された URL やグループの ids に混じるもの)は選択に入れない(件数を記録どおりにする)
     if (ids) selected = knownSelection(ids, knownIds);
+    else if (prevIds) selected = new Set();
+    prevIds = ids;
   });
   /** チェックしたものだけで集計する(他の条件と AND)。グループの選択は外れる(名前の一致で現在のグループになることはある) */
   function applySelection(): void {
@@ -232,8 +237,17 @@
   async function addToGroup(name: string): Promise<string> {
     const res = await api.update(token!, name, { add: selectedKnown() });
     liveGroups = res.groups;
-    if (currentName === name) setFilter({ ids: groupIds(res.group, knownIds), group: groupKey(name) });
-    return `${int(res.added)} 件を「${name}」に追加しました${res.dup ? `(既に入っていた ${int(res.dup)} 件を除く)` : ''}`;
+    const msg = `${int(res.added)} 件を「${name}」に追加しました${res.dup ? `(既に入っていた ${int(res.dup)} 件を除く)` : ''}`;
+    if (currentName === name) {
+      setFilter({ ids: groupIds(res.group, knownIds), group: groupKey(name) });
+      return msg;
+    }
+    // 足し終えたチェックは外す(続けて別のグループに足すときに前の分が混ざらないように)。選んだ N 件で集計中なら条件は残す
+    if (!filter.ids) {
+      selected = new Set();
+      return `${msg}。チェックは外しました`;
+    }
+    return msg;
   }
   /** 選んだセッションを現在のグループから外す(差分 remove を送る。0 件になっても消さない) */
   async function removeFromGroup(): Promise<string> {

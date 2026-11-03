@@ -5,6 +5,7 @@
 // どちらも別のウィンドウで開き、詳細ページは残す。全文は作り終わるまで待つので、押した時点で空のウィンドウを開いておき
 // (押した直後でないとポップアップとして止められる)、できたらそこへ移す。開けなかったとき・再読み込みで続きから待ったときは
 // 状態の行に「全文記録を開く」のリンクを出す。
+// あわせて、このセッションが入っているグループを GET /api/state から出す(静的ページは作った時点の情報で古くなるので、serve のときだけ)。
 
 const TOOLS_CSS = `
 .session-ops{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;margin-top:12px}
@@ -12,6 +13,10 @@ const TOOLS_CSS = `
 .session-ops .btn{display:inline-flex;align-items:center;min-height:30px;text-decoration:none}
 .session-ops .ops-status{margin:0;font-size:.8125rem;color:var(--ink-2);min-height:1.5em}
 .session-ops .ops-status a{display:inline-flex;align-items:center;min-height:24px;margin-left:.5em}
+.ops-groups{margin:10px 0 0;font-size:.8125rem;color:var(--ink-2)}
+.ops-groups[hidden]{display:none}
+.ops-groups .k{color:var(--form);font-size:.75rem;margin-right:.75em}
+.ops-groups .none{color:var(--ink-3)}
 .session-ops .ops-err{flex-basis:100%;margin:2px 0 0;font-size:.8125rem;color:var(--ink);background:var(--warn-wash);border:1px solid var(--warn);padding:4px 8px;max-width:75ch}
 `;
 
@@ -29,6 +34,16 @@ var full=el('button','btn');label(full,'全文を作って読む');full.type='bu
 var status=el('p','ops-status');status.id='ops-status';status.setAttribute('role','status');box.appendChild(status);
 var err=el('p','ops-err');err.setAttribute('role','alert');err.hidden=true;box.appendChild(err);
 title.appendChild(box);
+// 入っているグループ(atlas serve の最新。名前を押すとレポートをそのグループで絞り込む)
+var gl=el('p','ops-groups');gl.setAttribute('data-testid','detail-groups');gl.hidden=true;title.insertBefore(gl,box);
+call('state',{headers:H,cache:'no-store'}).then(function(r){
+  if(!r.ok||!r.body||!Array.isArray(r.body.groups))return;
+  var names=r.body.groups.filter(function(g){return Array.isArray(g.ids)&&g.ids.indexOf(id)>=0}).map(function(g){return g.name});
+  gl.appendChild(el('span','k','グループ'));
+  if(!names.length)gl.appendChild(el('span','none','なし(レポートの一覧でチェックして「グループに追加」)'));
+  names.forEach(function(n,i){if(i)gl.appendChild(d.createTextNode('、'));var a=el('a',null,n);a.href='../atlas.html#group='+encodeURIComponent(n);gl.appendChild(a)});
+  gl.hidden=false;
+}).catch(function(){});
 var busy=false,down=false,t0=0,win=null,fullUrl=new URL(view+'?kind=full',location.href).href;
 function shut(){if(win&&!win.closed){try{win.close()}catch(e){}}win=null}
 function reset(){busy=false;full.disabled=down;label(full,'全文を作って読む')}
