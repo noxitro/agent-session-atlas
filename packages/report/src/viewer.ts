@@ -147,7 +147,7 @@ export function renderViewerShell(o: ViewerShellOptions): string {
     tocLabel: `${label}の見出し`,
     groups: [],
     links: [
-      { href: o.mdHref, label: '.md を開く' },
+      { href: o.mdHref, label: '.md を開く', newWindow: true },
       { href: '../glossary.html', label: '用語の説明' },
     ],
   };

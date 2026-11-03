@@ -70,6 +70,14 @@ export function truncate(s: string | null | undefined, n: number): string {
 }
 
 /**
+ * パスを区切り(\ と /)の直後で分けた断片。表示では断片の間に <wbr> を入れ、狭い欄でも区切りの位置で折り返す
+ * (「C:\work\my_projec / t」のように名前の途中で切れないように)。つなげると元の文字列に戻る
+ */
+export function pathParts(s: string): string[] {
+  return s.split(/(?<=[\\/])/);
+}
+
+/**
  * 表示用のモデル名。「<UUID>/claude-haiku-5.5」のようなプレフィックス付きの ID は最後の「/」以降に短縮する
  * (集計キーは変えない。元の ID は title 属性で見せる)。'(unknown)' は「不明」
  */

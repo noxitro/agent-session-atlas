@@ -259,9 +259,11 @@
     gap: 6px 20px;
     font-size: 0.8125rem;
   }
+  /* 行の高さは一番長い凡例に揃うので、中身は上に詰める(詰めないと色の印が行の中ほどに下がる) */
   .legend li {
     display: flex;
     flex-wrap: wrap;
+    align-content: flex-start;
     align-items: baseline;
     gap: 0 6px;
   }

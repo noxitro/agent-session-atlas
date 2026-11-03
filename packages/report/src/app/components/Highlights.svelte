@@ -33,9 +33,10 @@
 </section>
 
 <style>
+  /* 折り返した最後の行の枠は横に伸ばす(4 枠を 3 列に並べたときに空欄が残らないように) */
   .groups {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr));
+    display: flex;
+    flex-wrap: wrap;
     border-top: 1px solid var(--rule-strong);
     border-left: 1px solid var(--rule);
     background: var(--surface);
@@ -44,6 +45,7 @@
     border-right: 1px solid var(--rule);
     border-bottom: 1px solid var(--rule);
     padding: 8px 12px 10px;
+    flex: 1 1 380px;
     min-width: 0;
   }
   h3 {

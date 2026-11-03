@@ -22,6 +22,8 @@ export interface NavLink {
   href: string;
   label: string;
   download?: boolean;
+  /** 別のウィンドウ(タブ)で開く。記録の .md など、今のページを残したまま読むもの */
+  newWindow?: boolean;
 }
 export interface PageNavOptions {
   crumbHref: string;
@@ -33,8 +35,16 @@ export interface PageNavOptions {
 
 const THEME_SEG = `<div class="seg" role="group" aria-label="配色" data-theme-seg><button type="button" data-theme="auto" aria-pressed="true">自動</button><button type="button" data-theme="light" aria-pressed="false">ライト</button><button type="button" data-theme="dark" aria-pressed="false">ダーク</button></div>`;
 
+/** 別ウィンドウで開くリンクの印(見た目は ↗、読み上げは文で) */
+export const NEW_WINDOW_MARK = `<span class="ext" aria-hidden="true">↗</span><span class="sr-only">(別のウィンドウで開きます)</span>`;
+
 function links(ls: NavLink[]): string {
-  return ls.map((l) => `<li><a href="${esc(l.href)}"${l.download ? ' download' : ''}>${esc(l.label)}</a></li>`).join('');
+  return ls
+    .map(
+      (l) =>
+        `<li><a href="${esc(l.href)}"${l.download ? ' download' : ''}${l.newWindow ? ` target="_blank" rel="noopener">${esc(l.label)}${NEW_WINDOW_MARK}` : `>${esc(l.label)}`}</a></li>`,
+    )
+    .join('');
 }
 
 function toc(o: PageNavOptions): string {

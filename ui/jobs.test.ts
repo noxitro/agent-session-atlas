@@ -131,27 +131,47 @@ describe('画面からの操作(Phase 14)', () => {
     await link.click();
     await page.waitForURL(`**/${href}`);
 
-    await page.getByRole('link', { name: '記録を読む' }).click();
-    await page.waitForURL(`**/view/${id}?kind=transcript`);
-    const body = page.locator('#view-body');
+    // 記録は別のウィンドウで開き、詳細ページは残る(.md を直接開くリンクも同じ。保存のリンクはそのまま)
+    expect(await page.locator('.rail-links a[href$=".md"]:not([download])').first().getAttribute('target')).toBe('_blank');
+    expect(await page.locator('.rail-links a[download]').getAttribute('target')).toBeNull();
+    const watch = (p: Page): Page => {
+      p.on('pageerror', (e) => problems.push(`pageerror(別ウィンドウ): ${e.message}`));
+      p.on('console', (m) => {
+        if (m.type() === 'error') problems.push(`console(別ウィンドウ): ${m.text()}`);
+      });
+      return p;
+    };
+    const [view] = await Promise.all([page.waitForEvent('popup'), page.getByRole('link', { name: '記録を読む' }).click()]);
+    watch(view);
+    await view.waitForURL(`**/view/${id}?kind=transcript`);
+    const body = view.locator('#view-body');
     await body.waitFor({ state: 'visible' });
-    expect(await page.locator('h1').innerText()).toMatch(/^セッション記録/);
+    expect(await view.locator('h1').innerText()).toMatch(/^セッション記録/);
     expect(await body.innerText()).toContain('<script>window.__pwned = 1</script>');
     expect(await body.locator('script, img').count()).toBe(0);
     expect(await body.locator('a[href^="javascript"]').count()).toBe(0);
-    expect(await page.locator('.rail .toc a').count()).toBeGreaterThan(1);
-    expect(await page.evaluate<number | undefined>('window.__pwned')).toBeUndefined();
+    expect(await view.locator('.rail .toc a').count()).toBeGreaterThan(1);
+    expect(await view.evaluate<number | undefined>('window.__pwned')).toBeUndefined();
+    expect(await view.evaluate<boolean>('window.opener === null')).toBe(true);
+    expect(page.url()).toContain(href);
+    await view.close();
 
-    await page.goBack();
-    await page.waitForURL(`**/${href}`);
-    await page.getByRole('button', { name: '全文を作って読む' }).click();
-    await page.waitForURL(`**/view/${id}?kind=full`, { timeout: 60_000 });
-    await body.waitFor({ state: 'visible' });
-    expect(await page.locator('h1').innerText()).toMatch(/全文記録/);
-    expect(await body.locator('script').count()).toBe(0);
+    // 全文: 押した時点で開いた空のウィンドウが、作り終わると全文記録の表示に移る
+    const [fullView] = await Promise.all([page.waitForEvent('popup'), page.getByRole('button', { name: '全文を作って読む' }).click()]);
+    watch(fullView);
+    await fullView.waitForURL(`**/view/${id}?kind=full`, { timeout: 60_000 });
+    const fullBody = fullView.locator('#view-body');
+    await fullBody.waitFor({ state: 'visible' });
+    expect(await fullView.locator('h1').innerText()).toMatch(/全文記録/);
+    expect(await fullBody.locator('script').count()).toBe(0);
+    expect(await fullView.evaluate<boolean>('window.opener === null')).toBe(true);
     expect(existsSync(join(out, 'full', `${id}.md`))).toBe(true);
     expect(existsSync(join(out, 'coverage.json'))).toBe(false);
-    expect(await page.evaluate<number | undefined>('window.__pwned')).toBeUndefined();
+    expect(await fullView.evaluate<number | undefined>('window.__pwned')).toBeUndefined();
+    // 元の詳細ページはそのままで、もう一度開くためのリンクが出る
+    expect(page.url()).toContain(href);
+    expect(await page.getByRole('link', { name: '全文記録を開く' }).getAttribute('target')).toBe('_blank');
+    await fullView.close();
   });
 
   it('h. file:// で開いた atlas.html と詳細ページには操作が出ない', async () => {

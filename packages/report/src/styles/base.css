@@ -128,6 +128,13 @@ h3 {
   line-height: 1.3;
   text-wrap: balance;
 }
+/* 見出しと説明文は日本語の文節で折り返す(「ありま / す。」のような泣き別れを避ける。対応しないブラウザは従来どおり) */
+h1,
+h2,
+h3,
+p {
+  word-break: auto-phrase;
+}
 h1 {
   font-size: 1.25rem;
 }
@@ -391,6 +398,13 @@ details.tableview > summary {
   overflow: hidden;
   clip: rect(0 0 0 0);
   white-space: nowrap;
+}
+/* 別のウィンドウで開くリンクの印(↗)。文字があるので色に頼らない */
+.ext {
+  margin-left: 0.25em;
+  font-size: 0.85em;
+  text-decoration: none;
+  display: inline-block;
 }
 
 /* サーバ(atlas serve)が止まったときの帯(3 画面共通。閲覧はそのままできる。スクロールしても見えるよう上に貼る) */

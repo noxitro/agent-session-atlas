@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Bucket } from '../../lib/aggregate.ts';
-  import { dec, duration, int } from '../../lib/format.ts';
+  import { dec, duration, int, pathParts } from '../../lib/format.ts';
   import { confidenceLabel } from '../../lib/judgment-labels.ts';
   import SortMark from './SortMark.svelte';
 
@@ -129,7 +129,7 @@
           {#each visible as b (b.key)}
             <tr class:current={current === b.key}>
               <th scope="row" class="proj">
-                <a class="link" href={projectHref(b.key)} aria-current={current === b.key ? 'true' : undefined} onclick={(e) => pick(e, b.key)}>{b.label}</a>
+                <a class="link" href={projectHref(b.key)} aria-current={current === b.key ? 'true' : undefined} onclick={(e) => pick(e, b.key)}>{#each pathParts(b.label) as seg, i (i)}{#if i}<wbr />{/if}{seg}{/each}</a>
                 {#if current === b.key}<span class="part">絞り込み中(もう一度押すと解除)</span>{/if}
               </th>
               <td class="num">{int(b.sessions)}</td>
@@ -186,7 +186,7 @@
   }
   .proj {
     font-weight: normal;
-    min-width: 11em;
+    min-width: 13em;
     max-width: 28em;
   }
   .link {

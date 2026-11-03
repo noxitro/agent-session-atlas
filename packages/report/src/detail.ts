@@ -554,11 +554,11 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
     links: [
       ...(o.transcriptHref
         ? [
-            { href: o.transcriptHref, label: 'セッション記録(Markdown)を開く' },
+            { href: o.transcriptHref, label: '記録(Markdown)を開く', newWindow: true },
             { href: o.transcriptHref, label: '記録を .md で保存', download: true },
           ]
         : []),
-      ...(o.fullHref ? [{ href: o.fullHref, label: '全文記録(解析用)を開く' }] : []),
+      ...(o.fullHref ? [{ href: o.fullHref, label: '全文記録(解析用)を開く', newWindow: true }] : []),
       ...(o.libraryHref && !anon.enabled ? [{ href: o.libraryHref, label: '指示文と skill' }] : []),
       { href: '../glossary.html', label: '用語の説明' },
     ],

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { frictionTotal } from '../../lib/aggregate.ts';
   import { sessionTime } from '../../lib/filter.ts';
-  import { dateTime, dec, duration, int, modelLabel, truncate } from '../../lib/format.ts';
+  import { dateTime, dec, duration, int, modelLabel, pathParts, truncate } from '../../lib/format.ts';
   import type { ReportGroup, SessionSummary } from '../../lib/types.ts';
   import SortMark from './SortMark.svelte';
   import { categoryLabel, confidenceLabel } from '../../lib/judgment-labels.ts';
@@ -322,8 +322,8 @@
             <tr class:picked={selected.has(s.id)}>
               <td class="chk"><label><input type="checkbox" aria-label="{title(s)} を選択" checked={selected.has(s.id)} onchange={(e) => toggle(s.id, e.currentTarget.checked)} /></label></td>
               <td class="num when">{dateTime(s.createdAt ?? s.updatedAt)}</td>
-              <td class="proj" title={s.project}>{s.projectLabel}{#if s.branch}<span class="sub">{s.branch}</span>{/if}</td>
-              <td class="name"><a href={s.href}>{title(s)}</a>{#if s.empty}<span class="tag" title="依頼・ツール呼び出し・応答がどれも無いセッション">空</span>{/if}{#if s.memo}<span class="sub" data-testid="memo-excerpt">メモ: {s.memo.excerpt || '(本文なし)'}</span>{/if}</td>
+              <td class="proj" title={s.project}>{#each pathParts(s.projectLabel) as seg, i (i)}{#if i}<wbr />{/if}{seg}{/each}{#if s.branch}<span class="sub">{s.branch}</span>{/if}</td>
+              <td class="name"><a href={s.href} title={title(s)}>{title(s)}</a>{#if s.empty}<span class="tag" title="依頼・ツール呼び出し・応答がどれも無いセッション">空</span>{/if}{#if s.memo}<span class="sub" data-testid="memo-excerpt">メモ: {s.memo.excerpt || '(本文なし)'}</span>{/if}</td>
               <td class="nowrap">{s.client ?? '不明'}</td>
               <td class="models" title={s.models.join('、')}>{s.models.length ? s.models.map(modelLabel).join('、') : '不明'}</td>
               <td class="num">{int(s.turns)}</td>
@@ -383,13 +383,18 @@
     overflow-wrap: anywhere;
     font-size: 0.75rem;
   }
+  /* 題名(多くは依頼文の先頭)は 2 行で切る。全文は title とセッションの詳細で読める。行の高さを揃えて一覧を見渡せるようにする */
   .name a {
-    display: inline-block;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
     min-height: 24px;
     padding: 2px 0;
   }
   .name {
-    min-width: 14em;
+    min-width: 18em;
     max-width: 32em;
   }
   .models {

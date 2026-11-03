@@ -407,7 +407,7 @@
       <div class="mast-title">
         <h1>Copilot Session Atlas</h1>
         <p class="mast-sub">
-          GitHub Copilot のセッションログの集計(LLM は使っていません)。生成 {dateTime(data.generatedAt)}・記録期間 {date(all.overall.firstAt)}〜{date(all.overall.lastAt)}。
+          GitHub Copilot のセッションログの集計(LLM は使っていません)。生成 <span class="nw">{dateTime(data.generatedAt)}</span>・記録期間 <span class="nw">{date(all.overall.firstAt)}〜{date(all.overall.lastAt)}</span>。
           {#if filter.empty === '1'}記録 {int(sessions.length)} 件すべてを集計対象にしています(うち空のセッション {int(emptyCount)} 件)。{:else}記録 {int(sessions.length)} 件のうち {int(scoped.length)} 件を集計対象にしています(空のセッション {int(emptyCount)} 件を除外)。{/if}
         </p>
       </div>
@@ -546,7 +546,10 @@
     margin: 2px 0 0;
     color: var(--ink-2);
     font-size: 0.8125rem;
-    max-width: 80ch;
+    max-width: 100ch;
+  }
+  .mast-sub .nw {
+    white-space: nowrap;
   }
   .mast-tools {
     display: flex;
