@@ -111,16 +111,21 @@ function inc(map: Record<string, number>, key: string, by = 1): void {
  * 閉じタグが無い(途中で切れた)ときは、そこまでの項目を取る
  */
 export function availableSkillsOf(content: string): AvailableSkill[] | null {
-  const start = content.indexOf('<available_skills>');
+  let start = content.indexOf('<available_skills>');
   if (start < 0) return null;
-  const end = content.indexOf('</available_skills>', start);
-  const block = content.slice(start, end < 0 ? undefined : end);
   const out: AvailableSkill[] = [];
-  for (const m of block.matchAll(/<skill>([\s\S]*?)<\/skill>/g)) {
-    const name = /<name>([\s\S]*?)<\/name>/.exec(m[1])?.[1].trim();
-    if (!name) continue;
-    const location = /<location>([\s\S]*?)<\/location>/.exec(m[1])?.[1].trim() || null;
-    out.push({ name, location });
+  // 1 つのメッセージに一覧が複数あれば、すべて読む(和集合にするのは呼び出し側)
+  while (start >= 0) {
+    const end = content.indexOf('</available_skills>', start);
+    const block = content.slice(start, end < 0 ? undefined : end);
+    for (const m of block.matchAll(/<skill>([\s\S]*?)<\/skill>/g)) {
+      const name = /<name>([\s\S]*?)<\/name>/.exec(m[1])?.[1].trim();
+      if (!name) continue;
+      const location = /<location>([\s\S]*?)<\/location>/.exec(m[1])?.[1].trim() || null;
+      out.push({ name, location });
+    }
+    if (end < 0) break;
+    start = content.indexOf('<available_skills>', end);
   }
   return out;
 }

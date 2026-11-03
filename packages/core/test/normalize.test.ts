@@ -211,6 +211,15 @@ ${list(['wiki-query', 'user'], ['github-pr-media', 'builtin'], ['no-loc', null])
     expect(availableSkillsOf('<custom_instruction># x</custom_instruction> a skilled engineer')).toBeNull();
     const cut = list(['a', 'project'], ['b', 'custom']).replace(/<\/available_skills>[\s\S]*$/, '').slice(0, -20);
     expect(availableSkillsOf(cut)).toEqual([{ name: 'a', location: 'project' }]);
+    // 一覧が複数あればすべて読む(最後の一覧が切れていても、そこまでは取る)
+    expect(availableSkillsOf(`${list(['a', 'user'])}
+間の文
+${list(['b', 'builtin'])}
+${cut}`)).toEqual([
+      { name: 'a', location: 'user' },
+      { name: 'b', location: 'builtin' },
+      { name: 'a', location: 'project' },
+    ]);
   });
 
   it('セッションでは複数のシステムメッセージの和集合(初めて出た順)。一覧を 1 度も見なければ null', async () => {
