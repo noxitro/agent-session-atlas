@@ -224,10 +224,12 @@
   }
   async function deleteGroup(name: string): Promise<void> {
     // currentName は groups から求めるので、一覧を差し替える前に覚える(後で見ると消したグループはもう無く、絞り込みが残る)
+    // 通信中に別のグループへ移っていたら(ids が変わっていたら)移った先の絞り込みは残す
     const wasCurrent = currentName === name;
+    const idsBefore = filter.ids;
     const r = await api.remove(token!, name);
     liveGroups = r.groups;
-    if (wasCurrent) setFilter({ ids: '', group: '' });
+    if (wasCurrent && filter.ids === idsBefore) setFilter({ ids: '', group: '' });
   }
   /**
    * 選んだセッションを既存のグループに足す。差分(add)だけを送り、サーバが最新の ids に適用する(画面を開いたまま CLI で足した id が消えない)。

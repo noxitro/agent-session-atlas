@@ -57,7 +57,7 @@ describe('画面の操作', () => {
   const rowChecks = () => page.locator('table.ledger tbody input[type="checkbox"]');
   // グループの一覧はサイドバーと狭い幅の一覧の 2 か所にあるので、見えている方を使う
   const rail = () => page.locator('[data-testid="group-rail"]:visible');
-  const readGroups = async (): Promise<{ name: string; ids: string[] }[]> => (existsSync(groupsPath) ? JSON.parse(await readFile(groupsPath, 'utf8')).groups : []);
+  const readGroups = async (): Promise<{ name: string; note?: string; ids: string[] }[]> => (existsSync(groupsPath) ? JSON.parse(await readFile(groupsPath, 'utf8')).groups : []);
 
   it('a. 一覧でチェックした件数だけで集計し、解除すると元に戻る', async () => {
     await page.goto(server.url);
@@ -196,6 +196,64 @@ describe('画面の操作', () => {
       await page.goto(server.url);
       await rail().getByRole('button', { name: new RegExp(name) }).click();
       const head = page.getByTestId('group-head');
+      await head.getByTestId('group-edit').click();
+      await head.getByTestId('group-delete').click();
+      await head.getByRole('button', { name: '削除する' }).click();
+      await expect.poll(async () => (await readGroups()).some((g) => g.name === name)).toBe(false);
+    }
+  });
+
+  it('b3. 見出しの編集: 一覧からの追加で打ちかけが消えない・同名への改名は理由を出して名前を変えない・説明だけ空にできる・外すと焦点は本文へ', async () => {
+    await page.goto(server.url);
+    const create = async (rows: number[], name: string): Promise<void> => {
+      for (const i of rows) await rowChecks().nth(i).check();
+      await page.getByTestId('add-to-group').click();
+      await page.getByTestId('create-group').click();
+      const form = page.getByTestId('create-form');
+      await form.getByPlaceholder('例: 11 月の調査').fill(name);
+      await form.getByLabel('説明(任意)').fill(`${name}の説明`);
+      await form.getByRole('button', { name: '作成' }).click();
+      await expect.poll(async () => (await readGroups()).some((g) => g.name === name)).toBe(true);
+    };
+    await create([0], '丙');
+    await rail().getByRole('button', { name: 'すべて', exact: true }).click();
+    await create([1], '丁');
+    const head = page.getByTestId('group-head');
+
+    // 編集を開いたまま一覧から別のグループに足しても(グループの一覧が作り直されても)、打ちかけた名前は残る
+    await head.getByTestId('group-edit').click();
+    await head.getByLabel('名前').fill('打ちかけ');
+    await page.getByTestId('add-to-group').click();
+    await page.getByTestId('add-menu').getByRole('button', { name: /丙/ }).click();
+    await expect.poll(async () => (await readGroups()).find((g) => g.name === '丙')?.ids.length).toBe(2);
+    expect(await head.getByLabel('名前').inputValue()).toBe('打ちかけ');
+
+    // 既にある名前への改名は 409 の理由を出し、名前も URL も変えない
+    await head.getByLabel('名前').fill('丙');
+    await head.getByRole('button', { name: '保存' }).click();
+    await expect.poll(() => head.getByRole('alert').count()).toBe(1);
+    expect((await readGroups()).map((g) => g.name).sort()).toEqual(['丙', '丁'].sort());
+    // 409 の応答はブラウザが「Failed to load resource」をコンソールに出す(画面は理由を表示して扱えている)。この 1 件だけ想定どおりとして外す
+    const conflict = problems.findIndex((p) => p.includes('status of 409'));
+    expect(conflict).toBeGreaterThanOrEqual(0);
+    problems.splice(conflict, 1);
+    expect(new URL(page.url()).hash).toContain('group=' + encodeURIComponent('丁'));
+
+    // 説明だけを空にできる
+    await head.getByLabel('名前').fill('丁');
+    await head.getByLabel('説明(任意)').fill('');
+    await head.getByRole('button', { name: '保存' }).click();
+    await expect.poll(async () => (await readGroups()).find((g) => g.name === '丁')?.note).toBe('');
+    await expect.poll(() => head.getByText('説明はまだありません').count()).toBe(1);
+
+    // 「絞り込みを外す」で見出しが消えても、焦点は body に落ちず本文の先頭へ
+    await head.getByRole('button', { name: '絞り込みを外す' }).click();
+    await expect.poll(() => head.count()).toBe(0);
+    await expect.poll(() => page.evaluate<string | undefined>('document.activeElement?.id')).toBe('main');
+
+    // 後片付け
+    for (const name of ['丙', '丁']) {
+      await rail().getByRole('button', { name: new RegExp(name) }).click();
       await head.getByTestId('group-edit').click();
       await head.getByTestId('group-delete').click();
       await head.getByRole('button', { name: '削除する' }).click();

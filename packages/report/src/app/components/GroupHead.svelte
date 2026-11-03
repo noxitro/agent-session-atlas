@@ -2,6 +2,7 @@
   // グループで絞り込んでいるときの見出し(本文の先頭)。名前・件数・説明と、「絞り込みを外す」。
   // 編集できるとき(atlas serve)は「編集」で名前と説明を 1 つの欄で直す。削除は編集欄の奥に置き、確認を 1 回挟む。
   // サイドバーのグループの一覧は切り替えだけにする(選ぶたびに操作の行が差し込まれて下の行がずれ、削除が改名と同じ重さで並んでいたため)
+  import { untrack } from 'svelte';
   import { int } from '../../lib/format.ts';
   import type { ReportGroup } from '../../lib/types.ts';
 
@@ -90,12 +91,19 @@
     mode = 'delete';
     requestAnimationFrame(() => rootEl?.querySelector<HTMLButtonElement>('button[data-cancel]')?.focus());
   }
-  // 消し終えたら見出しごと無くなるので、焦点は本文の先頭へ
-  const deleted = (): void => void requestAnimationFrame(() => document.getElementById('main')?.focus());
-  // 別のグループに移ったら、またはサーバが止まって編集できなくなったら、編集中の状態は捨てる
+  // 外す・消すと見出しごと無くなるので、焦点は本文の先頭へ(押したボタンが消えて body に落ちないように)
+  const focusMain = (): void => void requestAnimationFrame(() => document.getElementById('main')?.focus());
+  function clear(): void {
+    onclear();
+    focusMain();
+  }
+  // 別のグループに移ったら、またはサーバが止まって編集できなくなったら、編集中の状態は捨てる。
+  // 名前は文字列の derived で見る(group は一覧の追加・外しのたびに新しいオブジェクトになり、同じグループでも打ちかけの入力が消えるため)
+  const groupName = $derived(group.name);
   $effect(() => {
-    void group.name;
-    void editable;
+    void groupName;
+    // mode と rootEl は依存に入れない(入れると「編集」を押した直後にこの effect が走って表示に戻ってしまう)
+    if (!editable) untrack(() => mode !== 'view' && rootEl?.contains(document.activeElement) && focusMain());
     mode = 'view';
     error = '';
   });
@@ -108,12 +116,12 @@
     <div class="line">
       <div class="what">
         <p class="k">グループで絞り込み中</p>
-        <h2 id="group-head-h"><span class="name">{group.name}</span><span class="cnt" title={group.present === group.ids.length ? undefined : '記録にあるのは左の件数だけ'}>{count}</span></h2>
+        <h2 id="group-head-h"><span class="name">{group.name}</span><span class="cnt" aria-hidden="true" title={group.present === group.ids.length ? undefined : '記録にあるのは左の件数だけ'}>{count}</span><span class="sr-only">{group.present === group.ids.length ? `${int(group.ids.length)} 件` : `${int(group.ids.length)} 件のうち記録にあるのは ${int(group.present)} 件`}</span></h2>
         {#if group.note}<p class="desc">{group.note}</p>{:else if editable}<p class="desc none">説明はまだありません</p>{/if}
       </div>
       <div class="acts">
         {#if editable}<button type="button" class="btn" bind:this={editBtn} data-testid="group-edit" onclick={begin}>編集</button>{/if}
-        <button type="button" class="btn" onclick={onclear}>絞り込みを外す</button>
+        <button type="button" class="btn" onclick={clear}>絞り込みを外す</button>
       </div>
     </div>
   {:else if mode === 'edit'}
@@ -137,7 +145,7 @@
       <p class="desc">グループだけが消え、セッションと記録はそのまま残ります。</p>
       <div class="edit-acts">
         <button type="button" class="btn" data-cancel onclick={backToEdit} disabled={busy}>やめる</button>
-        <button type="button" class="btn danger" data-confirm onclick={() => void run(() => ondelete(group.name), deleted)} aria-disabled={busy}>{busy ? '削除中…' : '削除する'}</button>
+        <button type="button" class="btn danger" data-confirm onclick={() => void run(() => ondelete(group.name), focusMain)} aria-disabled={busy}>{busy ? '削除中…' : '削除する'}</button>
       </div>
     </div>
   {/if}
