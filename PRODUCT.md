@@ -31,7 +31,7 @@ TypeScript / Node 24 / npm workspaces。レポートは Vite + Svelte 5 を単�
 ## Operating Context
 
 - 入力: `~/.copilot`(Windows では `%USERPROFILE%\.copilot`)。Copilot が並行して書いている可能性がある。
-- 実行: `atlas.bat` または `npm run atlas` で snapshot → extract → metrics → build。判定は別コマンド。
+- 実行: `atlas.bat` または `npm run atlas` で snapshot → extract → metrics → export(セッション記録つき。伏せ字版は build)。判定は別コマンド。
 - 出力: `out/atlas.html`(単一ファイル、集計と要約のみ埋め込み)、`out/sessions/<id>.html`(詳細)、`out/sessions.json` / `metrics.json` / `bundle/` / `judgments.json`。
 - 共有: HTML をそのまま相手に渡す。共有時はプロジェクト名・パスを伏せ字にするオプションを使う。
 

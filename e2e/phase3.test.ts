@@ -20,6 +20,7 @@ const LIVE = process.env.ATLAS_LIVE === '1';
 const WORK = join(ROOT, 'out', 'e2e-phase3');
 const CLI = join(ROOT, 'packages', 'cli', 'src', 'main.ts');
 const FAKE = join(FIXTURE_CODE, 'fake-copilot.mjs');
+const FLOW = join(ROOT, 'packages', 'cli', 'src', 'judge-flow.ts');
 /** 手書きの judgments サンプル(架空の判定。globalSetup が scripts/synthetic-base.ts の judgmentsSample() から書く) */
 const SAMPLE = join(FIXTURES, 'judgments-sample.json');
 
@@ -233,6 +234,26 @@ describe('Phase 3 E2E: fixtures', () => {
     const r4 = atlas(['judge', 'run', '--out', out, '--judgments', jpath, '--only', 'no-such-id'], env);
     expect(r4.status).toBe(1);
     expect(r4.stderr).toMatch(/バンドルに無い/);
+  });
+
+  it('c2. atlas-judge の入口(judge-flow): 最後は export で、直前の all が作ったセッション記録を消さない。伏せ字版は build で記録を残さない', async () => {
+    const flowOut = join(WORK, 'out-flow');
+    const env = { ATLAS_COPILOT_BIN: FAKE, FAKE_COPILOT_LOG: join(WORK, 'fake-copilot-flow.log') };
+    const flow = (args: string[]): ReturnType<typeof atlas> => {
+      const t = performance.now();
+      const r = spawnSync(process.execPath, [FLOW, ...args], { encoding: 'utf8', cwd: ROOT, timeout: 600_000, env: { ...process.env, ...env } });
+      return { status: r.status, stdout: r.stdout, stderr: r.stderr, ms: performance.now() - t };
+    };
+    const mds = async (): Promise<number> => (await readdir(join(flowOut, 'sessions'))).filter((f) => f.endsWith('.md')).length;
+    expect(atlas(['all', '--home', home, '--out', flowOut]).status).toBe(0);
+    const r = flow(['--out', flowOut, '--limit', '1']);
+    expect(r.status, `${r.stderr}\n${r.stdout}`).toBe(0);
+    expect(r.stdout).toMatch(/export: セッション記録 \d+ 件/);
+    expect(await mds()).toBe(sessions.sessions.length);
+    // 同じ out/ で伏せ字版: 生の記録が残らない
+    const ra = flow(['--out', flowOut, '--limit', '0', '--anonymize']);
+    expect(ra.status, `${ra.stderr}\n${ra.stdout}`).toBe(0);
+    expect(await mds()).toBe(0);
   });
 });
 

@@ -218,6 +218,9 @@ describe('Phase 2 E2E: fixtures', () => {
   });
 
   it('c. --anonymize で fixture の cwd / git_root / repository / branch の文字列が HTML に出ない', async () => {
+    // 同じ out/ に通常版の記録がある状態から作り直す(伏せ字版で生の記録が残らないこと)
+    expect(atlas(['all', '--home', home, '--out', outAnon]).status).toBe(0);
+    expect((await readdir(join(outAnon, 'sessions'))).some((f) => f.endsWith('.md'))).toBe(true);
     const r = atlas(['all', '--home', home, '--out', outAnon, '--anonymize']);
     expect(r.status, r.stderr).toBe(0);
     // 伏せ字版の all は記録(自由記述を機械的に伏せるだけで HTML より弱い)を作らない

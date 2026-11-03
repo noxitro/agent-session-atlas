@@ -111,7 +111,7 @@ export const USAGE = `使い方: atlas <コマンド> [オプション]
   extract    スナップショットから <out>/sessions.json を作る
   metrics    sessions.json から <out>/metrics.json を作る
   build      <out>/atlas.html と <out>/sessions/<id>.html を作る
-  export     build に加えて、各セッションの記録(経過・消費)を <out>/sessions/<id>.md に書く(共有・LLM 分析用)
+  export     build に加えて、各セッションの記録(経過・消費)を <out>/sessions/<id>.md に書く(LLM での振り返り用。共有するなら --anonymize)
   all        snapshot → extract → metrics → export(セッション記録つき)を通しで実行する(コマンド省略時の既定)。
              --anonymize のときは記録を作らず build にする
   bundle     LLM に工数を判定させる評価バンドルを <out>/bundle に作る(LLM は呼ばない)
