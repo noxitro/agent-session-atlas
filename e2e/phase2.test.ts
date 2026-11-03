@@ -172,7 +172,8 @@ describe('Phase 2 E2E: fixtures', () => {
     const sample = GLOSSARY[0].body.slice(0, 40);
     expect(html.replace(/<script type="application\/json"[\s\S]*?<\/script>/g, '')).not.toContain(sample);
     // 目次(サイドバー / 上部の固定行)は Svelte がデータから描くので、リンク先の文字列が埋め込みスクリプトに入っていることを見る
-    expect(html).toMatch(/href:\s*["']glossary\.html["']/);
+    // 引用符は minifier 次第(Vite 8 はテンプレートリテラルで出す)なので 3 種とも受ける
+    expect(html).toMatch(/href:\s*["'`]glossary\.html["'`]/);
     const page = await readFile(join(out, 'sessions', `${data.sessions[0].id}.html`), 'utf8');
     expect(page).not.toContain(sample);
     expect(page).toContain('href="../glossary.html"');
@@ -367,7 +368,7 @@ describe('Phase 2 E2E: fixtures', () => {
     expect(html).toContain('<meta name="atlas-token" content="__ATLAS_TOKEN__"');
     expect(await readFile(join(out, 'glossary.html'), 'utf8')).toContain('content="__ATLAS_TOKEN__"');
     expect(await readFile(join(out, 'sessions', `${data.sessions[0].id}.html`), 'utf8')).toContain('content="__ATLAS_TOKEN__"');
-    expect(html).toMatch(/fetch\("api\/heartbeat"/);
+    expect(html).toMatch(/fetch\(["'`]api\/heartbeat["'`]/);
 
     const notes = join(WORK, 'notes-serve');
     await rm(notes, { recursive: true, force: true });

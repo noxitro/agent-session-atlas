@@ -14,7 +14,7 @@ export default defineConfig({
           globalSetup: ['e2e/global-setup.ts'],
           testTimeout: 600_000,
           hookTimeout: 600_000,
-          poolOptions: { forks: { singleFork: true } },
+          maxWorkers: 1,
         },
       },
     ],
