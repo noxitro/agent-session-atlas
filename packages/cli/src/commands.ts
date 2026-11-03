@@ -44,7 +44,7 @@ import {
 } from '../../judge/src/index.ts';
 import type { CliOptions, GroupCliOptions, JudgeCliOptions, MemoCliOptions } from './args.ts';
 import { findRunningServer, openInBrowser, startServe } from './serve.ts';
-import { JOB_LOCK_FILE, runningJobIn } from './jobs.ts';
+import { acquireOutLock } from './jobs.ts';
 import { CONFIG_FILE, loadConfig } from './config.ts';
 
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
@@ -554,8 +554,22 @@ export async function runSkillDraft(p: Paths, o: NonNullable<CliOptions['skillDr
   return file;
 }
 
-export async function run(o: CliOptions, log: Log): Promise<{ paths: Paths; build?: BuildResult; judge?: RunSummary | null }> {
+/** out/ に書くコマンド。実行中は out/.job.json に印を置き、他のプロセス(画面のジョブ・別の atlas)と並行して書かない */
+const WRITES_OUT: ReadonlySet<CliOptions['command']> = new Set(['snapshot', 'extract', 'metrics', 'build', 'export', 'bundle', 'judge', 'skill-draft', 'all']);
+
+type RunResult = { paths: Paths; build?: BuildResult; judge?: RunSummary | null };
+
+export async function run(o: CliOptions, log: Log): Promise<RunResult> {
   const p = resolvePaths(o);
+  const release = WRITES_OUT.has(o.command) ? acquireOutLock(p.out, o.command, 'cli') : () => {};
+  try {
+    return await runCommand(o, p, log);
+  } finally {
+    release();
+  }
+}
+
+async function runCommand(o: CliOptions, p: Paths, log: Log): Promise<RunResult> {
   const f: SessionFilter = { since: o.since, project: o.project, client: o.client, model: o.model, branch: o.branch, group: o.group, sessions: o.sessions };
   const t = performance.now();
   switch (o.command) {
@@ -590,9 +604,6 @@ export async function run(o: CliOptions, log: Log): Promise<{ paths: Paths; buil
       await runSkillDraft(p, o.skillDraft!, log);
       return { paths: p };
     case 'all': {
-      // 画面のジョブ(集計し直す・判定)が同じ out/ に書いている最中なら並行して書かない(atlas.bat の再実行など)
-      const busy = runningJobIn(p.out);
-      if (busy) throw new Error(`画面から実行した処理(${busy})が ${p.out} で動いています。終わってから実行してください(画面の帯で進み具合を見られます。画面もサーバも閉じたのにこの表示が続くときは ${join(p.out, JOB_LOCK_FILE)} を消してください)`);
       await runSnapshot(p, o.since, log, o.snapshotAll, o.snapshotPrune);
       await runExtract(p, o.since, log, o.tempDirs, o.config);
       await runMetrics(p, f, log);

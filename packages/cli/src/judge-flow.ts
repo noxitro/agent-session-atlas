@@ -4,7 +4,8 @@
 //   node packages/cli/src/judge-flow.ts [judge run のオプション]
 // 判定に失敗したセッションがあってもレポートは作り直す(判定済みの分は反映する)。終了コードは 1 にする。
 import { parseCli, USAGE, UsageError } from './args.ts';
-import { run } from './commands.ts';
+import { resolvePaths, run } from './commands.ts';
+import { acquireOutLock } from './jobs.ts';
 
 async function main(argv: string[]): Promise<number> {
   let judgeOpts;
@@ -28,7 +29,10 @@ async function main(argv: string[]): Promise<number> {
   };
   // 判定の --model は判定モデルなので、bundle / build の絞り込みには使わない
   const common = { ...judgeOpts, model: null, judge: null };
+  let release = (): void => {};
   try {
+    // bundle → judge run → export の間ずっと印を持つ(切れ目に画面の判定や atlas.bat の all が入らないように。中の run は同じプロセスなので止まらない)
+    release = acquireOutLock(resolvePaths(judgeOpts).out, 'judge', 'cli');
     await run({ ...common, command: 'bundle' }, log);
     let failed = 0;
     try {
@@ -50,6 +54,8 @@ async function main(argv: string[]): Promise<number> {
     process.stderr.write(`atlas:judge: 失敗しました: ${(e as Error).message}\n`);
     if (process.env.ATLAS_DEBUG) process.stderr.write(`${(e as Error).stack}\n`);
     return 1;
+  } finally {
+    release();
   }
 }
 

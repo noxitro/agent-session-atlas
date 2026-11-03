@@ -9,7 +9,7 @@ import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parseCli } from '../src/args.ts';
 import { run } from '../src/commands.ts';
-import { JOB_ENV, JOB_LOCK_FILE, JUDGE_FLOW_TS, MAIN_TS, parseJobRequest, runningJobIn, type ChildLike, type RunFullFn } from '../src/jobs.ts';
+import { acquireOutLock, JOB_ENV, JOB_LOCK_FILE, JUDGE_FLOW_TS, MAIN_TS, OutBusyError, parseJobRequest, runningJobIn, type ChildLike, type RunFullFn } from '../src/jobs.ts';
 import { startServe, TOKEN_PLACEHOLDER, type ServeHandle } from '../src/serve.ts';
 
 const ATLAS = (anonymized: boolean): string =>
@@ -155,6 +155,33 @@ describe('serve の jobs と記録の表示(Phase 14)', () => {
     expect(runningJobIn(out)).toBeNull();
     await writeFile(lock, JSON.stringify({ pid: 2 ** 22 + 12345, kind: 'judge' }));
     expect(runningJobIn(out)).toBeNull();
+  });
+
+  it('実行中の印は CLI の書き込むコマンドも置く: 別の atlas が持っていれば画面のジョブは 409、CLI も止まる。終われば外し、古い印は取り直す', async () => {
+    const lock = join(out, JOB_LOCK_FILE);
+    // 別のプロセス(ここでは親プロセスの pid)の CLI が持っている
+    await writeFile(lock, JSON.stringify({ pid: process.ppid, kind: 'judge', by: 'cli' }));
+    expect(() => acquireOutLock(out, 'all', 'cli')).toThrow(/別の atlas の処理\(judge\)/);
+    await expect(run(parseCli(['bundle', '--out', out, '--notes-dir', notes]), () => {})).rejects.toThrow(/別の atlas の処理\(judge\)/);
+    await start();
+    const r = await post({ kind: 'refresh' });
+    expect(r.status).toBe(409);
+    expect(r.body.error).toMatch(/別の atlas の処理\(judge\)/);
+    expect(calls).toHaveLength(0);
+    // 読めない印は、書いた直後なら書きかけとみなして止まる
+    await writeFile(lock, '');
+    expect(() => acquireOutLock(out, 'all', 'cli')).toThrow(OutBusyError);
+    // プロセスが無い古い印は消して取り、外すと消える。同じプロセスの入れ子は何もしない
+    await writeFile(lock, JSON.stringify({ pid: 2 ** 22 + 12345, kind: 'judge', by: 'cli' }));
+    const release = acquireOutLock(out, 'judge', 'cli');
+    expect(JSON.parse(await readFile(lock, 'utf8'))).toMatchObject({ pid: process.pid, kind: 'judge', by: 'cli' });
+    acquireOutLock(out, 'bundle', 'cli')();
+    expect(existsSync(lock)).toBe(true);
+    release();
+    expect(existsSync(lock)).toBe(false);
+    // CLI のコマンドは終われば(失敗しても)印を外す
+    await expect(run(parseCli(['judge', 'import', join(dir, 'missing.json'), '--out', out, '--notes-dir', notes]), () => {})).rejects.toThrow();
+    expect(existsSync(lock)).toBe(false);
   });
 
   it('ログは末尾 200 行だけ残す', async () => {

@@ -5,7 +5,7 @@
 // 子プロセスの引数はここで固定の配列に組み立て、process.execPath を shell なしで起動する(画面からの文字列をコマンドラインに入れない)。
 // 起動の仕方(spawn)と全文の書き出し(runFull)は差し替えられる(単体テストを速く回すため)。
 import { spawn as nodeSpawn } from 'node:child_process';
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isSafeMemoId } from '../../report/src/index.ts';
@@ -19,24 +19,103 @@ export const JOB_LIMIT_MAX = 500;
 /** 残すログの行数(子プロセスの stdout / stderr の末尾) */
 export const JOB_LOG_LINES = 200;
 /**
- * ジョブの実行中だけ out/ に置く印({ pid, kind, startedAt })。atlas.bat をもう一度実行したときの all が見て、
- * 同じ out/ に並行して書かないよう止まる。ジョブの子プロセスには JOB_ENV を渡し、自分の印では止まらないようにする
+ * out/ に書く処理の実行中だけ置く印({ pid, kind, by, startedAt })。serve のジョブも CLI の書き込むコマンド(all・judge・build など)も置き、
+ * 他のプロセスの印があれば始めずに止まる(atlas.bat の再実行や npm run atlas:judge と画面の判定が、同じ out/ に並行して書かないように)。
+ * ジョブの子プロセスには JOB_ENV を渡し、親(serve)の印では止まらないようにする
  */
 export const JOB_LOCK_FILE = '.job.json';
 export const JOB_ENV = 'ATLAS_SERVE_JOB';
+/** 中身を読めない印を、まだ書きかけとみなす時間(作った直後に別のプロセスが読むと空のことがある) */
+const LOCK_WRITE_GRACE_MS = 10_000;
 
-/** 他のプロセス(serve)のジョブが out/ で動いていれば、その種類を返す。印が古い(プロセスが無い)なら null */
-export function runningJobIn(outDir: string): string | null {
-  if (process.env[JOB_ENV]) return null;
-  const p = join(outDir, JOB_LOCK_FILE);
-  if (!existsSync(p)) return null;
+interface LockInfo {
+  pid?: number;
+  kind?: string;
+  /** 印を置いたのは serve(画面のジョブ)か CLI か */
+  by?: 'serve' | 'cli';
+}
+
+function alive(pid: number): boolean {
   try {
-    const j = JSON.parse(readFileSync(p, 'utf8')) as { pid?: number; kind?: string };
-    if (!j.pid || j.pid === process.pid) return null;
-    process.kill(j.pid, 0);
-    return j.kind ?? 'job';
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    // EPERM はプロセスがあるが触れない(別の利用者など)
+    return (e as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+function readLock(p: string): LockInfo | null {
+  try {
+    return JSON.parse(readFileSync(p, 'utf8')) as LockInfo;
   } catch {
     return null;
+  }
+}
+
+function writtenWithin(p: string, ms: number): boolean {
+  try {
+    return Date.now() - statSync(p).mtimeMs < ms;
+  } catch {
+    return false;
+  }
+}
+
+/** 他のプロセスの処理が out/ で動いていれば、その種類を返す。印が古い(プロセスが無い)・自分の印・ジョブの子プロセスなら null */
+export function runningJobIn(outDir: string): string | null {
+  if (process.env[JOB_ENV]) return null;
+  const j = readLock(join(outDir, JOB_LOCK_FILE));
+  if (!j?.pid || j.pid === process.pid || !alive(j.pid)) return null;
+  return j.kind ?? 'job';
+}
+
+export class OutBusyError extends Error {
+  constructor(outDir: string, j: LockInfo) {
+    const what = j.by === 'cli' ? `別の atlas の処理(${j.kind ?? '不明'})` : `画面から実行した処理(${j.kind ?? '不明'})`;
+    const hint = j.by === 'cli' ? '' : '画面の帯で進み具合を見られます。';
+    super(`${what}が ${outDir} で動いています。終わってから実行してください(${hint}処理がもう動いていないのにこの表示が続くときは ${join(outDir, JOB_LOCK_FILE)} を消してください)`);
+  }
+}
+
+/**
+ * out/ の印を取り、外す関数を返す。他のプロセスが持っていれば OutBusyError。
+ * 印は排他的に作る(wx)ので、2 つが同時に取りに来ても片方だけが取れる。次のときは何もしない関数を返す:
+ * 同じプロセスが持っている(atlas:judge の bundle → judge → export の入れ子)・ジョブの子プロセス・印が書けない(並行実行を止められないだけで、処理は動かす)
+ */
+export function acquireOutLock(outDir: string, kind: string, by: 'serve' | 'cli'): () => void {
+  const none = (): void => {};
+  if (process.env[JOB_ENV]) return none;
+  const p = join(outDir, JOB_LOCK_FILE);
+  const body = `${JSON.stringify({ pid: process.pid, kind, by, startedAt: new Date().toISOString() })}\n`;
+  try {
+    mkdirSync(outDir, { recursive: true });
+  } catch {
+    return none;
+  }
+  for (let i = 0; i < 2; i++) {
+    try {
+      writeFileSync(p, body, { flag: 'wx' });
+      return () => releaseOutLock(outDir);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') return none;
+    }
+    const cur = readLock(p);
+    if (cur?.pid === process.pid) return none;
+    if (cur?.pid ? alive(cur.pid) : writtenWithin(p, LOCK_WRITE_GRACE_MS)) throw new OutBusyError(outDir, cur ?? {});
+    // 古い印(プロセスが無い・壊れたまま時間が経った)は消して取り直す
+    rmSync(p, { force: true });
+  }
+  throw new OutBusyError(outDir, readLock(p) ?? {});
+}
+
+/** 自分の印だけを消す(消せなくても止めない。次に取りに来た側はプロセスの有無で古い印を無視する) */
+export function releaseOutLock(outDir: string): void {
+  try {
+    const p = join(outDir, JOB_LOCK_FILE);
+    if (!existsSync(p)) return;
+    if (readLock(p)?.pid === process.pid) rmSync(p, { force: true });
+  } catch {
+    /* ウイルス対策ソフトが握っている等 */
   }
 }
 
@@ -180,6 +259,13 @@ export class JobRunner {
 
   start(req: JobRequest): JobSnapshot {
     if (this.running()) throw new JobError(409, `ほかの処理(${LABEL[this.job!.kind]})が動いています。終わってから実行してください`);
+    // CLI(atlas.bat の再実行・npm run atlas:judge)が同じ out/ に書いている最中なら始めない
+    try {
+      acquireOutLock(this.o.outDir, req.kind, 'serve');
+    } catch (e) {
+      if (e instanceof OutBusyError) throw new JobError(409, e.message);
+      throw e;
+    }
     this.canceling = false;
     this.job = {
       id: `${Date.now().toString(36)}-${++this.seq}`,
@@ -192,11 +278,6 @@ export class JobRunner {
       target: req.kind === 'judge' ? { limit: req.limit, backend: req.backend } : req.kind === 'full' ? { id: req.id } : {},
     };
     this.o.log?.(`[${LABEL[req.kind]}] 開始${req.kind === 'judge' ? `(最大 ${req.limit} 件、${req.backend})` : req.kind === 'full' ? `(${req.id})` : ''}`);
-    try {
-      writeFileSync(join(this.o.outDir, JOB_LOCK_FILE), `${JSON.stringify({ pid: process.pid, kind: req.kind, startedAt: this.job.startedAt })}\n`);
-    } catch {
-      /* 印が書けなくてもジョブは動かす(並行実行の検知ができないだけ) */
-    }
     const args = jobArgs(req, this.o);
     if (args) this.startChild(args);
     else this.startFull((req as { id: string }).id);
@@ -252,14 +333,7 @@ export class JobRunner {
 
   /** 実行中の印を消す(ジョブの終わりと serve の終了時。消せなくても serve は止めない) */
   dropLock(): void {
-    try {
-      const p = join(this.o.outDir, JOB_LOCK_FILE);
-      if (!existsSync(p)) return;
-      const j = JSON.parse(readFileSync(p, 'utf8')) as { pid?: number };
-      if (j.pid === process.pid) rmSync(p, { force: true });
-    } catch {
-      /* 壊れた印・ウイルス対策ソフトが握っている等。次の all の判定はプロセスの有無で古い印を無視する */
-    }
+    releaseOutLock(this.o.outDir);
   }
 
   cancel(): JobSnapshot {
