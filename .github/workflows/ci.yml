@@ -40,7 +40,8 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
-      # 配布物が利用者の手元で読み込む依存(dependencies)だけを見る。devDependencies の警告は Dependabot の PR で追う
+      # package.json の dependencies だけを見る(集計で毎回読み込むもの)。atlas.bat の npm install は devDependencies も入れ、
+      # テンプレートが古いときは vite も動くが、devDependencies の警告はここでは止めず Dependabot の PR で追う
       - if: matrix.os == 'ubuntu-latest' && matrix.node == 24
         run: npm audit --omit=dev --audit-level=high
       - run: npm run typecheck

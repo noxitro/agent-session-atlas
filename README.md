@@ -358,7 +358,7 @@ ATLAS_LIVE=1 npm run e2e
     node scripts/release-smoke.ts <作業用フォルダ>/agent-session-atlas-smoke
     ```
 
-  - 依存の脆弱性: 利用者の手元で読み込まれる依存(`dependencies`)に high 以上の警告があると止まります(`npm audit --omit=dev`)。開発用の依存は止めず、Dependabot の PR で追います。
+  - 依存の脆弱性: `package.json` の `dependencies`(集計で毎回読み込むもの)に high 以上の警告があると止まります(`npm audit --omit=dev`)。`devDependencies` は止めず、Dependabot の PR で追います(`atlas.bat` の `npm install` は `devDependencies` も入れ、テンプレートが古いときは手元で Vite が動きます)。
 - **依存の更新**(`.github/dependabot.yml`): npm と GitHub Actions の更新を週 1 回 PR で出します。npm の minor / patch は 1 本にまとめ、major は個別の PR になります。どの PR も CI が通ってから取り込みます。
 - **リリース**(`.github/workflows/release.yml`): `v` で始まるタグを push すると、同じ CI を通したあと、ソース一式にビルド済みのレポートテンプレートを足した `agent-session-atlas-<タグ>.zip` を GitHub Release に添付します(リリースノートは自動生成)。zip を展開して `atlas.bat` をダブルクリックすれば、初回の `npm install` のあとそのまま集計できます。zip を作るジョブと Release を作るジョブを分け、書き込み権限は後者だけに渡しています。
 

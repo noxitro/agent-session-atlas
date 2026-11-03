@@ -2,7 +2,7 @@
 // LF だけの改行だと cmd が goto のラベルを読めずに失敗する(a3527a5 で atlas-export.bat に実際に起きた)。
 // BOM があると先頭の @echo off がコマンド名として読まれる。.gitattributes の eol=crlf が外れたらここで止める。
 import { execFileSync } from 'node:child_process';
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -22,7 +22,8 @@ describe('*.bat', () => {
     expect(text.match(/(^|[^\r])\n/g)).toBeNull();
   });
 
-  it.each(BATS)('%s は .gitattributes で eol=crlf が効いている', (f) => {
+  // 配布 zip を展開した先(.git が無い)では git check-attr が使えないので見ない
+  it.skipIf(!existsSync(join(ROOT, '.git'))).each(BATS)('%s は .gitattributes で eol=crlf が効いている', (f) => {
     expect(execFileSync('git', ['check-attr', 'eol', '--', f], { cwd: ROOT, encoding: 'utf8' }).trim()).toBe(`${f}: eol: crlf`);
   });
 });

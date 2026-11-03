@@ -24,6 +24,8 @@ if (!bats.length) fail('*.bat が入っていません');
 for (const f of bats) {
   if (/(^|[^\r])\n/.test(readFileSync(join(pkg, f), 'utf8'))) fail(`${f} に CRLF でない改行があります(.gitattributes の eol を確認)`);
 }
+// *.bat 以外はリポジトリのまま LF(手元の core.autocrlf で変わっていない = Linux で作るリリースと同じ中身)
+if (readFileSync(join(pkg, 'package.json'), 'utf8').includes('\r')) fail('package.json が CRLF になっています(core.autocrlf の影響)');
 
 if (depsFresh(pkg)) fail('node_modules が無いのに deps-fresh が「揃っている」と判定しました');
 execSync('npm install --no-audit --no-fund', { cwd: pkg, stdio: 'inherit' });

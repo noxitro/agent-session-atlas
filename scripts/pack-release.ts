@@ -22,7 +22,8 @@ export async function packRelease(name: string, dest: string): Promise<string> {
   if (existsSync(dir)) throw new Error(`${dir} はすでにあります(前回の残りを混ぜないため、消してから実行してください)`);
   mkdirSync(dest, { recursive: true });
 
-  const git = spawn('git', ['archive', '--format=tar', `--prefix=${name}/`, 'HEAD'], { cwd: ROOT, stdio: ['ignore', 'pipe', 'inherit'] });
+  // core.autocrlf=true の環境(Windows の Git の既定)だと全ファイルが CRLF になり、Linux で作るリリースと中身が変わるので切る
+  const git = spawn('git', ['-c', 'core.autocrlf=false', 'archive', '--format=tar', `--prefix=${name}/`, 'HEAD'], { cwd: ROOT, stdio: ['ignore', 'pipe', 'inherit'] });
   const tar = spawn('tar', ['-x', '-f', '-'], { cwd: dest, stdio: ['pipe', 'inherit', 'inherit'] });
   git.stdout.pipe(tar.stdin);
   await Promise.all([waitExit(git, 'git archive'), waitExit(tar, 'tar')]);
