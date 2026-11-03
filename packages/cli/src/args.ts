@@ -78,6 +78,8 @@ export interface CliOptions {
   bundle: string | null;
   /** bundle: 依頼の記録が無いセッションも含める */
   includeEmpty: boolean;
+  /** bundle: 1 つの分割ファイル(parts/)に入れるパケットの数。未指定は null(既定 5) */
+  perPart: number | null;
   /** extract: 一時フォルダとみなすフォルダ(指定すると既定の一時フォルダの判定を置き換える)。未指定は null */
   tempDirs: string[] | null;
   /** extract: 設定ファイルの場所。未指定は null(環境変数 ATLAS_CONFIG、無ければリポジトリ直下の atlas.config.json) */
@@ -114,7 +116,8 @@ export const USAGE = `使い方: atlas <コマンド> [オプション]
   export     build に加えて、各セッションの記録(経過・消費)を <out>/sessions/<id>.md に書く(LLM での振り返り用。共有するなら --anonymize)
   all        snapshot → extract → metrics → export(セッション記録つき)を通しで実行する(コマンド省略時の既定)。
              --anonymize のときは記録を作らず build にする
-  bundle     LLM に工数を判定させる評価バンドルを <out>/bundle に作る(LLM は呼ばない)
+  bundle     LLM に工数を判定させる評価バンドルを <out>/bundle に作る(LLM は呼ばない)。ZIP を渡せない相手用に、
+             指示とパケット数件を 1 ファイルにまとめた <out>/bundle/parts/part-<番号>.md も書く
   judge run  バンドルの各セッションを LLM で判定し <out>/judgments.json に追記する(クレジットを消費します)
   judge import <ファイル>
              外部の LLM で作った判定(JSON か、JSON を含む Markdown)を検証して judgments.json に取り込む
@@ -144,6 +147,7 @@ export const USAGE = `使い方: atlas <コマンド> [オプション]
   --judgments <file> 判定結果 judgments.json の場所(既定: <out>/judgments.json)
   --bundle <dir>     評価バンドルの場所(既定: <out>/bundle)
   --include-empty    bundle: 依頼の記録が無いセッションもパケットにする
+  --per-part <n>     bundle: parts/ の 1 ファイルに入れるパケットの数(既定 5)
   --temp-dir <dir>   extract: このフォルダ配下を「(一時フォルダ)」にまとめる(複数指定可)。指定すると既定の判定
                      (%TEMP% と AppData\\Local\\Temp・/tmp のパターン)を使わない
   --snapshot-all     snapshot: 既定で写さない大きなもの(rewind-snapshots、一覧に無い名前のもの、logs/)も写す
@@ -207,6 +211,7 @@ export function parseCli(argv: string[]): CliOptions {
         judgments: { type: 'string' },
         bundle: { type: 'string' },
         'include-empty': { type: 'boolean', default: false },
+        'per-part': { type: 'string' },
         'temp-dir': { type: 'string', multiple: true },
         config: { type: 'string' },
         'tool-output': { type: 'string' },
@@ -307,6 +312,7 @@ export function parseCli(argv: string[]): CliOptions {
   const toolOutput = values['tool-output'] ?? 'fail';
   if (!['fail', 'all', 'none'].includes(toolOutput)) throw new UsageError(`--tool-output は fail / all / none のどれかです: ${toolOutput}`);
   if ((values['tool-output'] != null || values['max-chars'] != null) && cmd !== 'export') throw new UsageError('--tool-output と --max-chars は export でだけ使えます');
+  if (values['per-part'] != null && cmd !== 'bundle') throw new UsageError('--per-part は bundle でだけ使えます');
   if (values.full && cmd !== 'export') throw new UsageError('--full は export でだけ使えます');
   if (values.full && values.anonymize) throw new UsageError('--full(解析用の全文記録)は --anonymize と併用できません');
   if ((values['snapshot-all'] || values['snapshot-prune']) && !['snapshot', 'all', 'export'].includes(cmd)) throw new UsageError('--snapshot-all と --snapshot-prune は snapshot / all / export で使えます');
@@ -334,6 +340,7 @@ export function parseCli(argv: string[]): CliOptions {
     judgments: values.judgments ?? null,
     bundle: values.bundle ?? null,
     includeEmpty: values['include-empty'] ?? false,
+    perPart: posInt(values['per-part'], '--per-part', 1),
     tempDirs: values['temp-dir'] && values['temp-dir'].length ? values['temp-dir'] : null,
     config: values.config ?? null,
     toolOutput: toolOutput as 'fail' | 'all' | 'none',

@@ -63,7 +63,10 @@ describe('parseCli', () => {
   });
 
   it('bundle と judge run / import を読む', () => {
-    expect(parseCli(['bundle', '--client', 'github/cli', '--include-empty'])).toMatchObject({ command: 'bundle', client: 'github/cli', includeEmpty: true, judge: null });
+    expect(parseCli(['bundle', '--client', 'github/cli', '--include-empty'])).toMatchObject({ command: 'bundle', client: 'github/cli', includeEmpty: true, perPart: null, judge: null });
+    expect(parseCli(['bundle', '--per-part', '3'])).toMatchObject({ command: 'bundle', perPart: 3 });
+    expect(() => parseCli(['bundle', '--per-part', '0'])).toThrow(/per-part/);
+    expect(() => parseCli(['export', '--per-part', '3'])).toThrow(/bundle でだけ/);
     expect(parseCli(['judge', 'run'])).toMatchObject({
       command: 'judge',
       judge: { action: 'run', backend: 'copilot-cli', model: null, limit: null, only: null, concurrency: 1, force: false, allowTools: true, timeoutSec: 600 },

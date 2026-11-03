@@ -1,11 +1,12 @@
-// 評価バンドルの生成: <bundleDir>/sessions/<id>.md + manifest.json + INSTRUCTIONS.md + schema.json
-// ZIP は作らない(Node 標準で作れず、依存を増やさないため)。フォルダごと ZIP にして外部 LLM に渡す。
+// 評価バンドルの生成: <bundleDir>/sessions/<id>.md + manifest.json + INSTRUCTIONS.md + schema.json + parts/part-<番号>.md
+// ZIP は作らない(Node 標準で作れず、依存を増やさないため)。フォルダごと ZIP にして外部 LLM に渡すか、
+// ZIP を渡せない相手(M365 Copilot のようにテキストの添付だけ)には parts/ のファイルを 1 つずつ渡す。
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { SessionRecord } from '../../core/src/index.ts';
 import { collectTexts, DEFAULT_LIMITS, excerptTexts, hasRequest, renderPacket, type PacketLimits, type SessionTexts } from './packet.ts';
-import { renderInstructions } from './rubric.ts';
+import { packetBoundary, renderInstructions, renderPartInstructions } from './rubric.ts';
 import { JUDGMENTS_JSON_SCHEMA } from './schema.ts';
 
 export const BUNDLE_MANIFEST_VERSION = 1;
@@ -39,6 +40,10 @@ export interface BundleManifest {
   sessions: BundleEntry[];
   /** 依頼が無くて対象外にしたセッション */
   skipped: { id: string; reason: string }[];
+  /** 1 つの分割ファイル(parts/)に入れるパケットの数。古い manifest には無い */
+  perPart?: number;
+  /** 指示とパケットを数件ずつまとめた分割ファイル。並びは sessions と同じ。古い manifest には無い */
+  parts?: { path: string; sessions: string[]; bytes: number }[];
 }
 
 export interface BundleOptions {
@@ -49,10 +54,17 @@ export interface BundleOptions {
   limits?: PacketLimits;
   /** 依頼の無いセッションも含める */
   includeEmpty?: boolean;
+  /** 1 つの分割ファイルに入れるパケットの数(既定 DEFAULT_PER_PART) */
+  perPart?: number;
+  /** テスト用: 分割ファイルの境界の文字列を作る */
+  boundary?: () => string;
   scope?: Record<string, string | null>;
   log?: (msg: string) => void;
   now?: () => Date;
 }
+
+/** 1 つの分割ファイルに入れるパケットの既定の数。1 パケットは最大 24,000 字なので、1 ファイル最大 12 万字ほど */
+export const DEFAULT_PER_PART = 5;
 
 export function packetFileName(id: string): string {
   return `${id.replace(/[^A-Za-z0-9._-]/g, '_')}.md`;
@@ -74,8 +86,10 @@ export async function buildBundle(sessions: SessionRecord[], opts: BundleOptions
   // 前回の生成物を消す(絞り込みで減ったパケットを残さない)
   await rm(join(dir, 'sessions'), { recursive: true, force: true });
   await mkdir(join(dir, 'sessions'), { recursive: true });
+  await rm(join(dir, 'parts'), { recursive: true, force: true });
 
   const entries: BundleEntry[] = [];
+  const markdowns = new Map<string, string>();
   const skipped: BundleManifest['skipped'] = [];
   for (const s of sessions) {
     const t = texts.get(s.id) ?? excerptTexts(s);
@@ -87,6 +101,7 @@ export async function buildBundle(sessions: SessionRecord[], opts: BundleOptions
     const file = packetFileName(s.id);
     const bytes = Buffer.byteLength(p.markdown);
     await writeFile(join(dir, 'sessions', file), p.markdown);
+    markdowns.set(s.id, p.markdown);
     entries.push({
       id: s.id,
       path: `sessions/${file}`,
@@ -103,6 +118,24 @@ export async function buildBundle(sessions: SessionRecord[], opts: BundleOptions
   }
   entries.sort((a, b) => (a.createdAt ?? '').localeCompare(b.createdAt ?? '') || a.id.localeCompare(b.id));
 
+  const perPart = opts.perPart ?? DEFAULT_PER_PART;
+  if (!Number.isInteger(perPart) || perPart < 1) throw new Error(`perPart は 1 以上の整数です: ${perPart}`);
+  const schemaJson = `${JSON.stringify(JUDGMENTS_JSON_SCHEMA, null, 2)}\n`;
+  const parts: NonNullable<BundleManifest['parts']> = [];
+  const partCount = Math.ceil(entries.length / perPart);
+  if (partCount > 0) await mkdir(join(dir, 'parts'), { recursive: true });
+  const width = Math.max(2, String(partCount).length);
+  for (let i = 0; i < partCount; i++) {
+    const chunk = entries.slice(i * perPart, (i + 1) * perPart);
+    const boundary = (opts.boundary ?? packetBoundary)();
+    const head = renderPartInstructions({ part: i + 1, parts: partCount, ids: chunk.map((e) => e.id), total: entries.length, generatedAt, boundary, schemaJson });
+    const body = chunk.map((e) => `\n<<<PACKET_BEGIN ${boundary}\n${markdowns.get(e.id)!.trimEnd()}\nPACKET_END ${boundary}>>>\n`).join('');
+    const md = head + body;
+    const path = `parts/part-${String(i + 1).padStart(width, '0')}.md`;
+    await writeFile(join(dir, path), md);
+    parts.push({ path, sessions: chunk.map((e) => e.id), bytes: Buffer.byteLength(md) });
+  }
+
   const manifest: BundleManifest = {
     version: BUNDLE_MANIFEST_VERSION,
     generatedAt,
@@ -114,9 +147,11 @@ export async function buildBundle(sessions: SessionRecord[], opts: BundleOptions
     files: { instructions: 'INSTRUCTIONS.md', schema: 'schema.json' },
     sessions: entries,
     skipped,
+    perPart,
+    parts,
   };
   await writeFile(join(dir, 'INSTRUCTIONS.md'), renderInstructions({ count: entries.length, generatedAt }));
-  await writeFile(join(dir, 'schema.json'), `${JSON.stringify(JUDGMENTS_JSON_SCHEMA, null, 2)}\n`);
+  await writeFile(join(dir, 'schema.json'), schemaJson);
   await writeFile(join(dir, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
   return manifest;
 }

@@ -1,12 +1,12 @@
 // @atlas/judge: 評価バンドル生成、judgments.json のスキーマと検証、判定バックエンド
 export * from './schema.ts';
-export { buildBundle, readBundleManifest, packetFileName, BUNDLE_MANIFEST_VERSION } from './bundle.ts';
+export { buildBundle, readBundleManifest, packetFileName, BUNDLE_MANIFEST_VERSION, DEFAULT_PER_PART } from './bundle.ts';
 export { buildSkillDraftPrompt, draftSkill } from './skill-draft.ts';
 export type { DraftCandidate, SkillDraftResult } from './skill-draft.ts';
 export type { BundleManifest, BundleEntry, BundleOptions } from './bundle.ts';
 export { renderPacket, collectTexts, excerptTexts, missingSections, packetSessionId, clip, fenced, PACKET_SECTIONS, DEFAULT_LIMITS } from './packet.ts';
 export type { PacketLimits, SessionTexts, RenderedPacket } from './packet.ts';
-export { buildJudgePrompt, packetBoundary, renderInstructions } from './rubric.ts';
+export { buildJudgePrompt, packetBoundary, renderInstructions, renderPartInstructions } from './rubric.ts';
 export { readJudgments, writeJudgments, importJudgments } from './judgments-io.ts';
 export type { ImportResult } from './judgments-io.ts';
 export { runJudge } from './run.ts';

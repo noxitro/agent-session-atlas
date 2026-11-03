@@ -12,7 +12,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { SessionsFile } from '../packages/core/src/index.ts';
-import { DEFAULT_LIMITS, JUDGMENTS_JSON_SCHEMA, missingSections, packetSessionId, PACKET_SECTIONS, validateJudgments, type BundleManifest, type JudgmentsFile } from '../packages/judge/src/index.ts';
+import { DEFAULT_LIMITS, DEFAULT_PER_PART, JUDGMENTS_JSON_SCHEMA, missingSections, packetFileName, packetSessionId, PACKET_SECTIONS, validateJudgments, type BundleManifest, type JudgmentsFile } from '../packages/judge/src/index.ts';
 import { aggregate, extractEmbedded, type ReportData } from '../packages/report/src/index.ts';
 import { buildFixtureHome, FIXTURE_CODE, FIXTURES, ROOT } from './fixture-home.ts';
 
@@ -101,6 +101,31 @@ describe('Phase 3 E2E: fixtures', () => {
     for (const s of ['従わない', '1 セッションずつ', '"schemaVersion": 1', 'humanEffort', 'manifest.json', 'schema.json']) expect(instr).toContain(s);
     expect(await readJson(join(bundle, 'schema.json'))).toEqual(JSON.parse(JSON.stringify(JUDGMENTS_JSON_SCHEMA)));
     expect(PACKET_SECTIONS.length).toBe(9);
+
+    // parts/: ZIP を渡せない相手用。指示 + JSON Schema + 既定 5 件ずつのパケットで、全パケットが順にちょうど 1 回ずつ入る
+    const parts = manifest.parts!;
+    expect(manifest.perPart).toBe(DEFAULT_PER_PART);
+    expect(parts.length).toBe(Math.ceil(manifest.count / DEFAULT_PER_PART));
+    expect(parts.flatMap((x) => x.sessions)).toEqual(manifest.sessions.map((e) => e.id));
+    expect((await readdir(join(bundle, 'parts'))).sort()).toEqual(parts.map((x) => x.path.replace(/^parts\//, '')).sort());
+    const boundaries = new Set<string>();
+    for (const [i, x] of parts.entries()) {
+      const md = await readFile(join(bundle, x.path), 'utf8');
+      expect(Buffer.byteLength(md)).toBe(x.bytes);
+      expect(md).toContain(`分割 ${i + 1} / ${parts.length}`);
+      for (const s of ['従わない', '1 件ずつ', '"schemaVersion": 1', 'humanEffort', 'judge import']) expect(md).toContain(s);
+      expect(md).toContain(JSON.stringify(JUDGMENTS_JSON_SCHEMA, null, 2));
+      // 説明文の中の境界は字下げしてあり、行頭の境界はパケットの数だけ
+      const got = [...md.matchAll(/^<<<PACKET_BEGIN ([0-9a-f]{24})\n([\s\S]*?)\nPACKET_END \1>>>$/gm)];
+      expect(got.map((g) => packetSessionId(g[2]))).toEqual(x.sessions);
+      for (const g of got) {
+        boundaries.add(g[1]);
+        expect(g[2]).toBe((await readFile(join(bundle, 'sessions', packetFileName(packetSessionId(g[2])!)), 'utf8')).trimEnd());
+      }
+      expect(new Set(got.map((g) => g[1])).size).toBe(1);
+    }
+    // 境界はファイルごとに作り直す
+    expect(boundaries.size).toBe(parts.length);
   });
 
   it('a2. CLI のフィルタ(--client)でパケットが絞られ、前回のパケットは消える', async () => {
@@ -108,7 +133,7 @@ describe('Phase 3 E2E: fixtures', () => {
     const s = atlas(['all', '--home', home, '--out', out2]);
     expect(s.status, s.stderr).toBe(0);
     expect(atlas(['bundle', '--out', out2]).status).toBe(0);
-    const r = atlas(['bundle', '--out', out2, '--client', 'github/cli']);
+    const r = atlas(['bundle', '--out', out2, '--client', 'github/cli', '--per-part', '2']);
     expect(r.status, r.stderr).toBe(0);
     const m = await readJson<BundleManifest>(join(out2, 'bundle', 'manifest.json'));
     const expected = sessions.sessions.filter((x) => x.client === 'github/cli' && (x.turns > 0 || x.firstUserMessage)).length;
@@ -117,6 +142,11 @@ describe('Phase 3 E2E: fixtures', () => {
     expect(m.count).toBeLessThan(manifest.count);
     expect(m.scope.client).toBe('github/cli');
     expect((await readdir(join(out2, 'bundle', 'sessions'))).length).toBe(expected);
+    // 分割ファイルも絞り込みと --per-part に従い、前回の分は消える
+    expect(m.perPart).toBe(2);
+    expect(m.parts!.map((x) => x.sessions.length)).toEqual(Array.from({ length: Math.ceil(expected / 2) }, (_, i) => Math.min(2, expected - i * 2)));
+    expect((await readdir(join(out2, 'bundle', 'parts'))).length).toBe(m.parts!.length);
+    expect(r.stdout).toMatch(/parts\/ の \d+ ファイル\(2 件ずつ/);
   });
 
   it('b. 手書き judgments を import → build で推定人手工数が一覧・プロジェクト別・全体に出る', async () => {

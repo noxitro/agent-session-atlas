@@ -365,13 +365,14 @@ export async function runBuild(p: Paths, o: BuildOptions, log: Log): Promise<Bui
 
 const kb = (b: number): string => `${(b / 1024).toFixed(1)} KB`;
 
-export async function runBundle(p: Paths, f: SessionFilter, o: { includeEmpty: boolean }, log: Log): Promise<BundleManifest> {
+export async function runBundle(p: Paths, f: SessionFilter, o: { includeEmpty: boolean; perPart?: number | null }, log: Log): Promise<BundleManifest> {
   const { sessions } = await selectSessions(p, f, 'bundle', '先に atlas extract(または atlas all)を実行してください。', log);
   const t = performance.now();
   const m = await buildBundle(sessions, {
     bundleDir: p.bundle,
     snapshotDir: p.snapshot,
     includeEmpty: o.includeEmpty,
+    perPart: o.perPart ?? undefined,
     scope: { since: f.since, project: f.project, client: f.client, model: f.model, branch: f.branch, group: f.group ?? null, session: f.sessions?.length ? f.sessions.join(',') : null },
     log,
   });
@@ -381,6 +382,10 @@ export async function runBundle(p: Paths, f: SessionFilter, o: { includeEmpty: b
     `bundle: パケット ${m.count} 件(依頼の記録が無く対象外 ${m.skipped.length} 件)、合計 ${mb(m.totalBytes)}、最大 ${kb(m.maxBytes)}、本文を中略したもの ${truncated} 件${excerpt ? `、抜粋のみ ${excerpt} 件` : ''} → ${p.bundle}、${ms(performance.now() - t)}`,
   );
   log('bundle: 外部の LLM に渡すときは bundle フォルダごと ZIP にして、INSTRUCTIONS.md を最初に読ませてください');
+  if (m.parts?.length) {
+    const maxPart = m.parts.reduce((a, x) => Math.max(a, x.bytes), 0);
+    log(`bundle: ZIP を渡せないときは parts/ の ${m.parts.length} ファイル(${m.perPart} 件ずつ、最大 ${kb(maxPart)})を 1 つずつ添付してください(指示と JSON Schema も中に入っています)`);
+  }
   return m;
 }
 
@@ -568,7 +573,7 @@ export async function run(o: CliOptions, log: Log): Promise<{ paths: Paths; buil
     case 'export':
       return { paths: p, build: await runBuild(p, { ...f, anonymize: o.anonymize, transcripts: { toolOutput: o.toolOutput, maxChars: o.maxChars, full: o.full } }, log) };
     case 'bundle':
-      await runBundle(p, f, { includeEmpty: o.includeEmpty }, log);
+      await runBundle(p, f, { includeEmpty: o.includeEmpty, perPart: o.perPart }, log);
       return { paths: p };
     case 'judge':
       return { paths: p, judge: await runJudgeCommand(p, o.judge!, log) };

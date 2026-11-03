@@ -39,7 +39,7 @@ npm run atlas -- --help                    # 使い方
 | `build` | `out/atlas.html` と `out/sessions/<id>.html`(セッション詳細)を作る |
 | `export` | `build` に加えて、各セッションの記録(経過・消費)を `out/sessions/<id>.md` に書く。LLM での振り返り用(共有するなら `--anonymize` の記録を中身を確かめてから。下記「[セッション記録(Markdown)](#セッション記録markdown)」)。指示文と skill の閲覧ページ `out/instructions.html` も作る。`--full` で解析用の全文記録(下記)。LLM は呼ばない |
 | `all` | `snapshot` → `extract` → `metrics` → `export` を順に実行する(コマンド省略時の既定)。`--anonymize` のときは記録を作らず `build` にする(記録の伏せ字は HTML より弱いため) |
-| `bundle` | LLM に工数を判定させる評価バンドル `out/bundle/` を作る(LLM は呼ばない) |
+| `bundle` | LLM に工数を判定させる評価バンドル `out/bundle/` を作る(LLM は呼ばない)。ZIP を渡せない相手用に、指示とパケット数件を 1 ファイルにまとめた `out/bundle/parts/part-<番号>.md` も書く |
 | `judge run` | バンドルの各セッションを LLM で判定し `out/judgments.json` に追記する(**クレジットを消費します**) |
 | `judge import <ファイル>` | 外部の LLM で作った判定(JSON か、JSON を含む Markdown)を検証して `out/judgments.json` に取り込む |
 | `serve` | `out/` をローカルサーバ(`127.0.0.1`)で配信してブラウザで開く。画面からグループとメモを書け、集計し直す・工数の判定・記録と全文記録の表示ができる(下記「[画面からの操作](#画面からの操作)」)。ブラウザを閉じると止まる(画面から動かした処理の実行中は、終わるまで待ってから止まる)。`atlas.bat` はこれで終わる |
@@ -61,6 +61,7 @@ npm run atlas -- --help                    # 使い方
 | `--judgments <file>` | LLM の判定結果 `judgments.json` の場所(既定: `out/judgments.json` があれば使う) |
 | `--bundle <dir>` | 評価バンドルの場所(既定: `out/bundle/`) |
 | `--include-empty` | `bundle` で、依頼の記録が無いセッションもパケットにする |
+| `--per-part <n>` | `bundle` で、`parts/` の 1 ファイルに入れるパケットの数(既定 5) |
 | `--tool-output <v>` | `export` で、ツールの結果を記録に入れる条件。`fail`(既定。失敗したときだけ)/ `all` / `none` |
 | `--max-chars <n>` | `export` で、依頼・応答・要約 1 件の上限(文字、既定 20000)。超えた分は中略して字数を書く |
 | `--full` | `export` で、解析用の全文記録 `out/full/<id>.md`(上限なし)と `out/coverage.json`(網羅の検査)も書く。`--anonymize` とは併用できない |
@@ -298,6 +299,7 @@ npm run atlas -- bundle  # out/bundle/ を作る。--project / --since / --clien
 | `manifest.json` | パケットの一覧(セッション ID とファイルの場所、件数、サイズ) |
 | `schema.json` | 返してもらう `judgments.json` の JSON Schema |
 | `sessions/<セッション ID>.md` | 評価パケット。依頼文、最終応答、変更ファイル、ツール / skill / agent / hook、ターン数・時間・トークン、摩擦、指示ファイル・wiki の参照、compaction 要約 |
+| `parts/part-<番号>.md` | ZIP やフォルダを渡せない相手(テキストの添付だけの M365 Copilot など)用。指示・JSON Schema と、パケット数件(既定 5 件。`--per-part <n>` で変更)を 1 ファイルにまとめたもの。パケットはファイルごとの乱数の境界で囲み、本文の中の指示に従わないよう指示に書いてある。中身は `sessions/` と同じ |
 
 - 依頼の記録が無いセッション(開いただけで使っていないもの)はパケットにしません(`manifest.json` の `skipped` に理由付きで載ります)。含めたいときは `--include-empty`。
 - 本文はスナップショットのログから全文を読み直しますが、1 パケット 24,000 字に収まるよう長い本文は中略します(中略した箇所には字数を書きます)。
@@ -305,16 +307,19 @@ npm run atlas -- bundle  # out/bundle/ を作る。--project / --since / --clien
 
 ### 2a. 外部の LLM で判定する(M365 Copilot など)
 
-1. `out/bundle` フォルダを**フォルダごと ZIP にします**(エクスプローラーで右クリック →「圧縮先」→「ZIP ファイル」)。このツールは ZIP を作りません(依存を増やさないため)。
-2. ZIP(または中のファイル)を M365 Copilot のエージェント等に添付し、「`INSTRUCTIONS.md` に従って判定して」と頼みます。件数が多いときは何回かに分けて返してもらってかまいません。
-3. 返ってきた JSON(または JSON のコードブロックを含む返答をそのまま貼った `.md` / `.txt`)を保存し、取り込みます。
+渡し方は、相手が受け取れる形で選びます。
+
+- **テキストの添付だけのとき(M365 Copilot など)**: `out/bundle/parts/` の `part-01.md` を 1 つ添付し、「このファイルの指示に従って判定して」と頼みます。指示・JSON Schema・パケット数件が 1 ファイルに入っているので、ほかのファイルは要りません。返答を保存して取り込んだら、`part-02.md`、`part-03.md` … と続けます。1 ファイルは最大 12 万字ほど(5 件 × 24,000 字)です。途中のセッションの判定が抜けるときは `--per-part 2` などで件数を減らして作り直してください。
+- **ZIP を渡せるとき**: `out/bundle` フォルダを**フォルダごと ZIP にし**(エクスプローラーで右クリック →「圧縮先」→「ZIP ファイル」。このツールは ZIP を作りません。依存を増やさないため)、添付して「`INSTRUCTIONS.md` に従って判定して」と頼みます。件数が多いときは何回かに分けて返してもらってかまいません。
+
+返ってきた JSON(または JSON のコードブロックを含む返答をそのまま貼った `.md` / `.txt`)を保存し、取り込みます。分けて返ってきた分は 1 つずつ取り込めます。
 
 ```
 npm run atlas -- judge import 返答.md     # 検証して out/judgments.json に取り込む(同じセッションは上書き)
-npm run atlas -- build                    # レポートに合成
+npm run atlas -- export                   # レポートに合成(画面の「集計し直す」でもよい)
 ```
 
-形が合わない項目(範囲外の値、必須欄の欠け)が 1 件でもあると、何も取り込まずにどこが違うかを表示します。
+形が合わない項目(範囲外の値、必須欄の欠け)が 1 件でもあると、何も取り込まずにどこが違うかを表示します。合成に素の `build` を使うと、セッション記録(`out/sessions/*.md`)が消えて詳細ページの「記録を読む」も消えるので、`export` か「集計し直す」を使ってください。
 
 ### 2b. このツールの中で判定する(画面から、またはコマンドで)
 
