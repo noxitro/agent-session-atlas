@@ -1,0 +1,272 @@
+// Phase 14: atlas serve の画面から動かす処理(ジョブ)。同時に 1 つだけ。
+// - refresh: 子プロセス `main.ts all --out <out> --notes-dir <notes>`(集計し直す)
+// - judge:   子プロセス `judge-flow.ts --limit <n> --backend <b> --out <out> --notes-dir <notes>`(bundle → judge run → export)
+// - full:    サーバ内で 1 件だけ全文記録を書く(writeFullRecord。atlas.html・coverage.json・他のセッションは触らない)
+// 子プロセスの引数はここで固定の配列に組み立て、process.execPath を shell なしで起動する(画面からの文字列をコマンドラインに入れない)。
+// 起動の仕方(spawn)と全文の書き出し(runFull)は差し替えられる(単体テストを速く回すため)。
+import { spawn as nodeSpawn } from 'node:child_process';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { isSafeMemoId } from '../../report/src/index.ts';
+
+export const JOB_KINDS = ['refresh', 'judge', 'full'] as const;
+export type JobKind = (typeof JOB_KINDS)[number];
+/** 画面から選べる判定のバックエンド(従量課金の anthropic は CLI だけ) */
+export const JOB_BACKENDS = ['copilot-cli', 'opencode'] as const;
+export type JobBackend = (typeof JOB_BACKENDS)[number];
+export const JOB_LIMIT_MAX = 500;
+/** 残すログの行数(子プロセスの stdout / stderr の末尾) */
+export const JOB_LOG_LINES = 200;
+/**
+ * ジョブの実行中だけ out/ に置く印({ pid, kind, startedAt })。atlas.bat をもう一度実行したときの all が見て、
+ * 同じ out/ に並行して書かないよう止まる。ジョブの子プロセスには JOB_ENV を渡し、自分の印では止まらないようにする
+ */
+export const JOB_LOCK_FILE = '.job.json';
+export const JOB_ENV = 'ATLAS_SERVE_JOB';
+
+/** 他のプロセス(serve)のジョブが out/ で動いていれば、その種類を返す。印が古い(プロセスが無い)なら null */
+export function runningJobIn(outDir: string): string | null {
+  if (process.env[JOB_ENV]) return null;
+  const p = join(outDir, JOB_LOCK_FILE);
+  if (!existsSync(p)) return null;
+  try {
+    const j = JSON.parse(readFileSync(p, 'utf8')) as { pid?: number; kind?: string };
+    if (!j.pid || j.pid === process.pid) return null;
+    process.kill(j.pid, 0);
+    return j.kind ?? 'job';
+  } catch {
+    return null;
+  }
+}
+
+export type JobRequest = { kind: 'refresh' } | { kind: 'judge'; limit: number; backend: JobBackend } | { kind: 'full'; id: string };
+export type JobState = 'running' | 'done' | 'failed' | 'canceled';
+
+export interface JobSnapshot {
+  id: string;
+  kind: JobKind;
+  state: JobState;
+  startedAt: string;
+  endedAt: string | null;
+  exitCode: number | null;
+  /** 子プロセスの stdout / stderr(full はサーバ内の進み具合)の末尾 JOB_LOG_LINES 行 */
+  log: string[];
+  /** 要求の中身(判定の件数とバックエンド、全文のセッション id) */
+  target: { limit?: number; backend?: JobBackend; id?: string };
+}
+
+export class JobError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
+const KEYS: Record<JobKind, string[]> = { refresh: ['kind'], judge: ['kind', 'limit', 'backend'], full: ['kind', 'id'] };
+
+/**
+ * POST /api/jobs の本文を検証する(純関数)。kind は列挙、limit は 0〜500 の整数(数値で必須。画面の確認で決めた件数だけ受ける)、
+ * backend は copilot-cli / opencode、id はファイル名に使える形で、knownId(sessions.json にあるか)を満たすこと。知らないキーは 400
+ */
+export function parseJobRequest(body: Record<string, unknown>, knownId: (id: string) => boolean): JobRequest {
+  const kind = body.kind;
+  if (typeof kind !== 'string' || !(JOB_KINDS as readonly string[]).includes(kind)) throw new JobError(400, `kind は ${JOB_KINDS.join(' / ')} のどれかです`);
+  const extra = Object.keys(body).filter((k) => !KEYS[kind as JobKind].includes(k));
+  if (extra.length) throw new JobError(400, `${kind} では使えない項目です: ${extra.join(', ')}`);
+  if (kind === 'refresh') return { kind: 'refresh' };
+  if (kind === 'judge') {
+    const { limit, backend } = body;
+    if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 0 || limit > JOB_LIMIT_MAX) throw new JobError(400, `limit には 0〜${JOB_LIMIT_MAX} の整数を指定してください(判定する件数の上限)`);
+    if (typeof backend !== 'string' || !(JOB_BACKENDS as readonly string[]).includes(backend)) throw new JobError(400, `backend は ${JOB_BACKENDS.join(' / ')} のどちらかです(従量課金の anthropic は CLI からだけ使えます)`);
+    return { kind: 'judge', limit, backend: backend as JobBackend };
+  }
+  const id = body.id;
+  if (typeof id !== 'string' || !isSafeMemoId(id)) throw new JobError(400, 'セッション id の形が正しくありません');
+  if (!knownId(id)) throw new JobError(404, `セッション ${id} は sessions.json にありません(集計し直すと出ることがあります)`);
+  return { kind: 'full', id };
+}
+
+const CLI_DIR = fileURLToPath(new URL('.', import.meta.url));
+export const MAIN_TS = join(CLI_DIR, 'main.ts');
+export const JUDGE_FLOW_TS = join(CLI_DIR, 'judge-flow.ts');
+
+/** 子プロセスの引数(process.execPath の後ろ)。サーバが固定の形で組み立てる。full はサーバ内なので null */
+export function jobArgs(req: JobRequest, p: { outDir: string; notesDir: string; main?: string; judgeFlow?: string }): string[] | null {
+  const common = ['--out', p.outDir, '--notes-dir', p.notesDir];
+  if (req.kind === 'refresh') return [p.main ?? MAIN_TS, 'all', ...common];
+  if (req.kind === 'judge') return [p.judgeFlow ?? JUDGE_FLOW_TS, '--limit', String(req.limit), '--backend', req.backend, ...common];
+  return null;
+}
+
+/** spawn の差し替え口。stdout / stderr を読み、close(終了コード)と error を受け、kill で止める */
+export interface ChildLike {
+  stdout: NodeJS.ReadableStream | null;
+  stderr: NodeJS.ReadableStream | null;
+  on(event: 'close', cb: (code: number | null) => void): unknown;
+  on(event: 'error', cb: (e: Error) => void): unknown;
+  kill(): void;
+}
+export type SpawnFn = (args: string[], env: NodeJS.ProcessEnv) => ChildLike;
+
+/** 既定の起動: process.execPath を shell なしで。止めるときは Windows では子孫ごと(judge-flow が起動した copilot を残さない) */
+export const defaultSpawn: SpawnFn = (args, env) => {
+  const c = nodeSpawn(process.execPath, args, { shell: false, windowsHide: true, env, stdio: ['ignore', 'pipe', 'pipe'] });
+  return {
+    stdout: c.stdout,
+    stderr: c.stderr,
+    on: (event: 'close' | 'error', cb: (...args: any[]) => void) => c.on(event, cb),
+    kill() {
+      if (process.platform === 'win32' && c.pid) {
+        const tk = nodeSpawn(join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'taskkill.exe'), ['/PID', String(c.pid), '/T', '/F'], { shell: false, windowsHide: true, stdio: 'ignore' });
+        tk.on('error', () => c.kill());
+      } else c.kill('SIGTERM');
+    },
+  } as ChildLike;
+};
+
+export type RunFullFn = (id: string, ctx: { log: (line: string) => void; signal: AbortSignal }) => Promise<void>;
+
+export interface JobRunnerOptions {
+  outDir: string;
+  notesDir: string;
+  spawn?: SpawnFn;
+  env?: NodeJS.ProcessEnv;
+  runFull: RunFullFn;
+  /** serve の窓に流す(atlas.bat の窓にもジョブのログが出る) */
+  log?: (msg: string) => void;
+  /** ジョブが終わったとき(serve が idle の判定を再開する) */
+  onEnd?: (job: JobSnapshot) => void;
+}
+
+const LABEL: Record<JobKind, string> = { refresh: '集計し直す', judge: '工数を判定する', full: '全文を作る' };
+
+export class JobRunner {
+  private job: JobSnapshot | null = null;
+  private stop: (() => void) | null = null;
+  private canceling = false;
+  private seq = 0;
+  private readonly o: JobRunnerOptions;
+  constructor(o: JobRunnerOptions) {
+    this.o = o;
+  }
+
+  current(): JobSnapshot | null {
+    return this.job ? { ...this.job, log: [...this.job.log], target: { ...this.job.target } } : null;
+  }
+  running(): boolean {
+    return this.job?.state === 'running';
+  }
+
+  private push(line: string): void {
+    const j = this.job!;
+    j.log.push(line);
+    if (j.log.length > JOB_LOG_LINES) j.log.splice(0, j.log.length - JOB_LOG_LINES);
+    this.o.log?.(`[${LABEL[j.kind]}] ${line}`);
+  }
+
+  private finish(state: JobState, exitCode: number | null): void {
+    const j = this.job!;
+    if (j.state !== 'running') return;
+    j.state = this.canceling ? 'canceled' : state;
+    j.exitCode = exitCode;
+    j.endedAt = new Date().toISOString();
+    this.stop = null;
+    this.dropLock();
+    this.o.log?.(`[${LABEL[j.kind]}] ${j.state === 'done' ? '完了' : j.state === 'canceled' ? '止めました' : `失敗${exitCode != null ? `(終了コード ${exitCode})` : ''}`}`);
+    this.o.onEnd?.(this.current()!);
+  }
+
+  start(req: JobRequest): JobSnapshot {
+    if (this.running()) throw new JobError(409, `ほかの処理(${LABEL[this.job!.kind]})が動いています。終わってから実行してください`);
+    this.canceling = false;
+    this.job = {
+      id: `${Date.now().toString(36)}-${++this.seq}`,
+      kind: req.kind,
+      state: 'running',
+      startedAt: new Date().toISOString(),
+      endedAt: null,
+      exitCode: null,
+      log: [],
+      target: req.kind === 'judge' ? { limit: req.limit, backend: req.backend } : req.kind === 'full' ? { id: req.id } : {},
+    };
+    this.o.log?.(`[${LABEL[req.kind]}] 開始${req.kind === 'judge' ? `(最大 ${req.limit} 件、${req.backend})` : req.kind === 'full' ? `(${req.id})` : ''}`);
+    try {
+      writeFileSync(join(this.o.outDir, JOB_LOCK_FILE), `${JSON.stringify({ pid: process.pid, kind: req.kind, startedAt: this.job.startedAt })}\n`);
+    } catch {
+      /* 印が書けなくてもジョブは動かす(並行実行の検知ができないだけ) */
+    }
+    const args = jobArgs(req, this.o);
+    if (args) this.startChild(args);
+    else this.startFull((req as { id: string }).id);
+    return this.current()!;
+  }
+
+  private startChild(args: string[]): void {
+    let child: ChildLike;
+    try {
+      child = (this.o.spawn ?? defaultSpawn)(args, { ...process.env, ...this.o.env, [JOB_ENV]: '1' });
+    } catch (e) {
+      this.push(`起動できませんでした: ${(e as Error).message}`);
+      this.finish('failed', null);
+      return;
+    }
+    const lines = (stream: NodeJS.ReadableStream | null): void => {
+      if (!stream) return;
+      let rest = '';
+      stream.setEncoding?.('utf8');
+      stream.on('data', (chunk: string | Buffer) => {
+        const parts = (rest + String(chunk)).split(/\r?\n/);
+        rest = parts.pop() ?? '';
+        for (const l of parts) this.push(l);
+      });
+      stream.on('end', () => {
+        if (rest) this.push(rest);
+        rest = '';
+      });
+    };
+    lines(child.stdout);
+    lines(child.stderr);
+    child.on('error', (e) => {
+      this.push(`起動できませんでした: ${e.message}`);
+      this.finish('failed', null);
+    });
+    child.on('close', (code) => this.finish(code === 0 ? 'done' : 'failed', code));
+    this.stop = () => child.kill();
+  }
+
+  private startFull(id: string): void {
+    const ac = new AbortController();
+    this.stop = () => ac.abort();
+    this.o
+      .runFull(id, { log: (l) => this.push(l), signal: ac.signal })
+      .then(
+        () => this.finish('done', 0),
+        (e: unknown) => {
+          this.push(`失敗しました: ${(e as Error).message}`);
+          this.finish('failed', 1);
+        },
+      );
+  }
+
+  /** 実行中の印を消す(ジョブの終わりと serve の終了時。消せなくても serve は止めない) */
+  dropLock(): void {
+    try {
+      const p = join(this.o.outDir, JOB_LOCK_FILE);
+      if (!existsSync(p)) return;
+      const j = JSON.parse(readFileSync(p, 'utf8')) as { pid?: number };
+      if (j.pid === process.pid) rmSync(p, { force: true });
+    } catch {
+      /* 壊れた印・ウイルス対策ソフトが握っている等。次の all の判定はプロセスの有無で古い印を無視する */
+    }
+  }
+
+  cancel(): JobSnapshot {
+    if (!this.running()) throw new JobError(409, '動いている処理はありません');
+    this.canceling = true;
+    this.push('止めています…');
+    this.stop?.();
+    return this.current()!;
+  }
+}

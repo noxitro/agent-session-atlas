@@ -46,7 +46,8 @@ function externalRefs(html: string): string[] {
   // 念のため構造的にも: 外部の src / href / @import / url() が無い
   if (/<link\b/i.test(html)) found.push('<link>');
   if (/\bsrc=["'](?!data:)[^"']+["']/i.test(html.replace(/<script type="application\/json"[\s\S]*?<\/script>/g, ''))) found.push('src=');
-  if (/@import|url\((?!["']?data:)/i.test(html)) found.push('@import/url()');
+  // `new URL(` は JS の URL の組み立て(Svelte の実行時が src の比較に使う)で、読み込みではないので除く
+  if (/@import|(?<!new )url\((?!["']?data:)/i.test(html)) found.push('@import/url()');
   return found;
 }
 

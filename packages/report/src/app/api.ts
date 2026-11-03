@@ -60,6 +60,38 @@ export const api = {
   },
 };
 
+/** Phase 14: 画面から動かす処理(serve の jobs.ts と同じ形) */
+export type JobKind = 'refresh' | 'judge' | 'full';
+export type JobBackend = 'copilot-cli' | 'opencode';
+export interface JobInfo {
+  id: string;
+  kind: JobKind;
+  state: 'running' | 'done' | 'failed' | 'canceled';
+  startedAt: string;
+  endedAt: string | null;
+  exitCode: number | null;
+  log: string[];
+  target: { limit?: number; backend?: JobBackend; id?: string };
+}
+export type JobRequest = { kind: 'refresh' } | { kind: 'judge'; limit: number; backend: JobBackend };
+
+export const jobsApi = {
+  /** 最後のジョブ(まだ無ければ null) */
+  current(token: string): Promise<JobInfo | null> {
+    return connect(fetch('api/jobs/current', { cache: 'no-store', headers: headers(token) }), (r) => parse<JobInfo | null>(r));
+  },
+  start(token: string, req: JobRequest): Promise<JobInfo> {
+    return connect(fetch('api/jobs', { method: 'POST', headers: headers(token), body: JSON.stringify(req) }), (r) => parse<JobInfo>(r));
+  },
+  cancel(token: string): Promise<JobInfo> {
+    return connect(fetch('api/jobs/current/cancel', { method: 'POST', headers: headers(token) }), (r) => parse<JobInfo>(r));
+  },
+  /** 判定の確認ダイアログの件数(依頼の記録があるセッションのうち未判定のもの) */
+  judgePreview(token: string): Promise<{ eligible: number; judged: number; pending: number }> {
+    return connect(fetch('api/jobs/judge-preview', { cache: 'no-store', headers: headers(token) }), (r) => parse(r));
+  },
+};
+
 /** 3 秒ごとに heartbeat を送る。失敗したら onDown を 1 回呼んで止める。戻り値で止められる */
 export function startHeartbeat(token: string, onDown: () => void, intervalMs = 3000): () => void {
   let timer: ReturnType<typeof setInterval> | null = null;

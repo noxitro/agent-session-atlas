@@ -122,7 +122,8 @@ export const USAGE = `使い方: atlas <コマンド> [オプション]
              名前付きグループ(<notes-dir>/groups.json)を一覧・追加(既存名なら id を追記)・削除する
   memo list / memo show <id> / memo set <id> <本文...> / memo set <id> --file <path> / memo remove <id>
              セッションごとのメモ(<notes-dir>/memos/<id>.md)を一覧・表示・保存・削除する(remove は画像を残す)
-  serve      out/ を 127.0.0.1 だけに配信してブラウザで開く(画面からグループとメモを書ける)。ブラウザを閉じると止まる
+  serve      out/ を 127.0.0.1 だけに配信してブラウザで開く(画面からグループとメモを書け、集計し直す・工数の判定・
+             記録と全文記録の表示ができる)。ブラウザを閉じると止まる(画面から動かした処理の実行中は終わるまで待つ)
   skill-draft <番号>
              改善点の「スキル化の候補」(out/insights.json の番号)から SKILL.md の下書きを LLM に作らせ、
              out/skill-drafts/ に書く(クレジットや従量課金を消費しうる。明示したときだけ動く。--backend は judge と同じ)

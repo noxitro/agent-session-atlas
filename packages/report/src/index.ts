@@ -1,5 +1,5 @@
 // @atlas/report の Node 側エントリ(CLI の build コマンドが使う)
-export { buildReport, ensureTemplate, anonymizeMetrics, TEMPLATE_PATH, REPORT_ROOT, HTML_SIZE_LIMIT } from './build.ts';
+export { buildReport, ensureTemplate, anonymizeMetrics, readPageCss, TEMPLATE_PATH, REPORT_ROOT, HTML_SIZE_LIMIT } from './build.ts';
 export type { BuildInput, BuildResult } from './build.ts';
 export { renderDetailHtml, esc } from './detail.ts';
 export { createAnonymizer, identityAnonymizer, shortProjectLabel } from './lib/anonymize.ts';
@@ -15,7 +15,11 @@ export { isSafeFileName, isSafeMemoId, memoExcerpt, memoSummary, MEMOS_DIR_NAME 
 export type { MemoSummary } from './lib/memo.ts';
 export { imageExt, loadMemoIndex, MEMO_IMAGE_LIMIT, memoRev, memosDir, readMemo, renderMemo, saveMemo, saveMemoImage } from './memo-io.ts';
 export type { MemoFile } from './memo-io.ts';
-export { renderMemoHtml, MEMO_CSS } from './memo-render.ts';
+export { renderMemoHtml, renderSafeMarkdown, MEMO_CSS } from './memo-render.ts';
+export type { SafeMarkdown, SafeMarkdownOptions } from './memo-render.ts';
+export { renderViewDocument, renderViewerShell, VIEW_CSS, VIEW_KINDS, VIEW_LABEL, VIEW_LIMIT, assetFolder } from './viewer.ts';
+export type { ViewKind } from './viewer.ts';
+export { SESSION_TOOLS_JS } from './session-tools.ts';
 export { MEMO_EDITOR_JS } from './memo-editor.ts';
 export type { LoadedGroups } from './groups-io.ts';
 export type { Filterable, FilterState } from './lib/filter.ts';
@@ -29,8 +33,8 @@ export type { HighlightGroup, HighlightItem } from './lib/highlights.ts';
 export { renderTranscript, transcriptFileName, transcriptHref, redactSecrets, summarizeArgs, DEFAULT_TRANSCRIPT_OPTIONS, TOOL_OUTPUT_MODES, SECRET_PATTERNS } from './transcript.ts';
 export type { TranscriptOptions, TranscriptResult, ToolOutputMode } from './transcript.ts';
 export { renderGlossaryHtml, GLOSSARY_FILE } from './glossary-page.ts';
-export { renderFull, fullFileName, looksOpaque } from './full.ts';
-export type { FullOptions, FullResult } from './full.ts';
+export { renderFull, fullFileName, looksOpaque, writeFullRecord } from './full.ts';
+export type { FullOptions, FullResult, FullRecordInput } from './full.ts';
 export { COVERAGE_RULES, ruleFor, CoverageCounter, coverageFile, desktopCoverage } from './coverage.ts';
 export type { CoverageEntry, CoverageFile, Treatment } from './coverage.ts';
 export { LibraryCollector, lineDiff, writeLibrary, renderInstructionsHtml, INSTRUCTIONS_FILE, LIBRARY_DIR, skillAnchor } from './library.ts';

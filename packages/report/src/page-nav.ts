@@ -76,6 +76,7 @@ export function renderRail(o: PageNavOptions): string {
  * - heartbeat: atlas serve から開かれたとき(http(s) で、meta の token がプレースホルダでない)だけ 3 秒ごとに POST する。
  *   失敗したら止めて「サーバが止まっています」の帯を出す。宛先は同一オリジンの相対パス(詳細ページは ../api/、用語ページは api/)
  * - メモの編集: atlas serve のときだけ、メモの節(#memo)があるページに編集の script を読み込む。止まったら atlas-down を知らせる
+ * - Phase 14: 同じ条件で「記録を読む」「全文を作って読む」の script(api/session-tools.js)も読み込む(伏せ字版には #memo が無いので出ない)
  */
 export const NAV_JS = `(function(){var d=document,root=d.documentElement,W=matchMedia('(min-width:1280px)'),KEY='atlas-theme';
 var segs=d.querySelectorAll('[data-theme-seg] button');function paint(t){segs.forEach(function(b){b.setAttribute('aria-pressed',b.dataset.theme===t?'true':'false')})}
@@ -95,5 +96,5 @@ var c=d.querySelector('a.crumb'),up=!!c&&/^\\.\\.\\//.test(c.getAttribute('href'
 function down(){if(iv)clearInterval(iv);iv=null;var b=d.createElement('div');b.className='down-band';b.setAttribute('role','alert');b.textContent='サーバが止まっています。atlas.bat を実行し直してください(閲覧はそのままできます)。';d.body.insertBefore(b,d.body.firstChild);d.dispatchEvent(new Event('atlas-down'))}
 function beat(){try{(up?fetch('../api/heartbeat',o):fetch('api/heartbeat',o)).then(function(r){if(!r.ok)down()}).catch(down)}catch(e){down()}}
 iv=setInterval(beat,3000);beat();
-if(up&&d.getElementById('memo')){var s=d.createElement('script'),p='../api/memo-editor.js';s.src=p;d.body.appendChild(s)}})();
+if(up&&d.getElementById('memo')){['../api/memo-editor.js','../api/session-tools.js'].forEach(function(p){var s=d.createElement('script');s.src=p;d.body.appendChild(s)})}})();
 })();`;

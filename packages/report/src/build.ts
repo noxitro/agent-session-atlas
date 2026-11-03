@@ -37,6 +37,11 @@ export function compactCss(css: string): string {
     .trim();
 }
 
+/** 静的ページ(詳細・用語・Phase 14 の記録の表示)に埋め込む CSS(base.css を詰めたもの) */
+export async function readPageCss(): Promise<string> {
+  return compactCss(await readFile(BASE_CSS_PATH, 'utf8'));
+}
+
 async function newestMtime(paths: string[]): Promise<number> {
   let max = 0;
   for (const p of paths) {

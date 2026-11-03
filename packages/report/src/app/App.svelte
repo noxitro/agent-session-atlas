@@ -18,6 +18,9 @@
   import SessionTable from './components/SessionTable.svelte';
   import { applyTheme, loadTheme, type ThemeChoice } from './theme.ts';
   import { api, serveToken, startHeartbeat } from './api.ts';
+  import { JobStore } from './jobs.svelte.ts';
+  import JobActions from './components/JobActions.svelte';
+  import JobBand from './components/JobBand.svelte';
   import type { MemoSummary } from '../lib/memo.ts';
   import type { ReportGroup } from '../lib/types.ts';
 
@@ -162,6 +165,13 @@
         .catch(() => {});
     }
     return stop;
+  });
+  // Phase 14: 画面からの操作(集計し直す・工数を判定する)。編集できるとき(serve から開いた通常版)だけ。サーバが止まったら読むのもやめる
+  const jobStore = token ? new JobStore(token) : null;
+  $effect(() => {
+    if (!jobStore || !editable || serverDown) return;
+    jobStore.startPolling();
+    return () => jobStore.stopPolling();
   });
   /** 名前付きグループ(記録にある id とその件数つき) */
   const groupOptions = $derived.by(() =>
@@ -402,6 +412,7 @@
         </p>
       </div>
       <div class="mast-tools">
+        {#if editable && jobStore}<JobActions jobs={jobStore} disabled={serverDown} />{/if}
         {#if data.anonymized}<span class="tag">伏せ字モード</span>{/if}
         {#if scopeNotes.length}<span class="tag" title="atlas build の実行時に絞り込んだ条件">出力時の絞り込み: {scopeNotes.join('、')}</span>{/if}
         <div class="seg" role="group" aria-label="配色">
@@ -463,6 +474,7 @@
       {#if serverDown}
         <div class="down-band" role="alert">サーバが止まっています。atlas.bat を実行し直してください(閲覧はそのままできます)。</div>
       {/if}
+      {#if editable && jobStore}<JobBand jobs={jobStore} generatedAt={data.generatedAt} />{/if}
       <FilterBar {filter} {options} {judged} {emptyCount} {memoCount} lastDay={all.overall.lastAt ? date(all.overall.lastAt) : null} onchange={setFilter} />
 
       <main class="wrap" id="main" tabindex="-1">

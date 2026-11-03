@@ -20,7 +20,8 @@ const pkg = process.argv[2] ? resolve(process.argv[2]) : fail('使い方: node s
 if (!existsSync(join(pkg, 'package.json'))) fail(`${pkg} に package.json がありません`);
 
 const bats = readdirSync(pkg).filter((f) => f.endsWith('.bat'));
-if (!bats.length) fail('*.bat が入っていません');
+// Phase 14: 利用者が起動するのは atlas.bat だけ(他の操作は画面とコマンドから)
+if (bats.join(',') !== 'atlas.bat') fail(`*.bat は atlas.bat だけのはずです(入っているもの: ${bats.join(', ') || 'なし'})`);
 for (const f of bats) {
   if (/(^|[^\r])\n/.test(readFileSync(join(pkg, f), 'utf8'))) fail(`${f} に CRLF でない改行があります(.gitattributes の eol を確認)`);
 }

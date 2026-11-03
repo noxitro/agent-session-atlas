@@ -79,7 +79,7 @@ agent-session-atlas/
   e2e/                      フェーズごとの E2E テスト(vitest)
   docs/                     PLAN.md
   out/                      生成物(git 管理外): snapshot/ sessions.json metrics.json bundle/ judgments.json atlas.html sessions/<id>.html sessions/<id>.md
-  atlas.bat / atlas-judge.bat / atlas-export.bat
+  atlas.bat(Phase 14 から起動用の bat はこれ 1 つ。他の操作は serve の画面とコマンド)
   README.md(日本語)
 ```
 
@@ -672,7 +672,7 @@ ui-ux-pro-max の照合(`--domain ux`、検索語「sidebar saved views labels�
 
 採らなかった案: 詳細ページを開いたときに serve がその場で記録を作る(起動は速いままだが file:// で使えず、作りも複雑)。記録が無いときの案内だけを足す(つまずく場面が残る)。
 
-### Phase 14(設計): 画面からの操作 — 起動は atlas.bat 1 つ(2026-11-03、設計のみ・未実装)
+### Phase 14(設計): 画面からの操作 — 起動は atlas.bat 1 つ(2026-11-03、設計 → 実装。実施は節の末尾)
 
 動機: 起動用の bat が 4 つあり(`atlas` / `atlas-export` / `atlas-export-full` / `atlas-judge`)、「何をしたいか」を起動前に bat の名前で選ばせている。serve の画面でできるのは閲覧・グループ・メモだけで、集計し直す・全文を見る・判定するには、画面を閉じて別の bat を起動し直す必要がある。serve(Phase 10〜13)で、token と Origin / Host の検査を持つ書き込みの土台はすでにある。当初の「ローカルサーバ型ダッシュボードは採らない」(下の「採らなかった案」)は、HTML 単体で file:// でも共有でも読めることが理由で、その性質はこの設計でも変えない(サーバは操作のためだけに使い、生成物は今どおり静的ファイル)。
 
@@ -721,6 +721,65 @@ ui-ux-pro-max の照合(`--domain ux`、検索語「sidebar saved views labels�
 - 共有用の伏せ字版を画面から書き出す機能は作らない(不要)。CLI の `--anonymize` は今のまま残す。
 
 後回しにした案: atlas.bat を「前回の out/ があれば先に画面を開き、集計は画面の中で走らせる」形にする(起動直後から見られるが、古い集計を見せる時間ができ、画面の状態が増える。上の契約が動いてから検討する)。採らなかった案: 記録を開くたびにサーバがその場で作る(Phase 13 の後の計測で、全件を先に作っても +5 秒・+13MB と小さかった。.md は LLM に渡す用途にも要る)。
+
+#### 実施(2026-11-03)
+
+作ったもの:
+
+1. **ジョブ**(`packages/cli/src/jobs.ts`、serve から使う): `JobRunner`(同時に 1 つ。2 つ目は 409)、`parseJobRequest`(kind の列挙、知らないキーは 400、judge は `limit` が 0〜500 の整数で必須・`backend` は `copilot-cli` / `opencode` で必須、full は `isSafeMemoId` と sessions.json にあること(無ければ 404))、`jobArgs`(固定の配列: `main.ts all --out <out> --notes-dir <notes>` / `judge-flow.ts --limit <n> --backend <b> --out <out> --notes-dir <notes>`)。既定の起動は `spawn(process.execPath, args, { shell: false, windowsHide: true })`。止めるときは Windows では `%SystemRoot%\System32\taskkill.exe /PID <pid> /T /F`(judge-flow が起動した copilot を残さない)、他は SIGTERM。stdout / stderr は行に分けて末尾 200 行を残し、serve の窓(atlas.bat の窓)にも `[集計し直す] …` の形で流す。起動(`spawn`)・環境変数の追加(`env`)・全文の書き出し(`runFull`)は `ServeOptions.jobs` で差し替えられる。
+2. **API**(`serve.ts`): `POST /api/jobs`(202 でジョブを返す)、`GET /api/jobs/current`(最後のジョブ。まだ無ければ `null`)、`POST /api/jobs/current/cancel`(動いていなければ 409)、`GET /api/jobs/judge-preview`(確認ダイアログの件数)。どれも token・Origin / Sec-Fetch-Site・Host を検査し、伏せ字版では 403。heartbeat が途切れてもジョブの実行中は止めず(`expire` が待つ。最初の heartbeat の待ちも同じ)、ジョブが終わってから猶予(idleMs)を測り直す。集計し直している間の 404(静的ページと記録の表示)は「集計し直している最中です…」の文面。
+3. **全文 1 件**(`report/src/full.ts` の `writeFullRecord`): export --full と同じ `renderFullTo` / `createFileSink` で `out/full/<id>.md` と `out/full/assets/<id>/` だけを書く。網羅の集計はこの 1 件の中で数えて捨てる(`coverage.json` は書かない)。止めるときは AbortSignal をイベントの間で見て tmp を消す。
+4. **記録の表示**(`report/src/viewer.ts`): `GET /view/<id>?kind=transcript|full` は殻(本文なし)、本文は `GET /api/view/<id>?kind=…`(token)が JSON で返す(下の「契約からのずれ」1)。描き方は `memo-render.ts` を `renderSafeMarkdown` に一般化して共用(メモの出力は変えない)。生の HTML は文字のまま、リンクは http / https / mailto だけ、外部の画像は読まない、全文記録だけ `assets/<id>/<名前>` の実在するファイル(画像は img、他はリンク)を `../full/assets/<id>/<名前>` で通す。先頭の `# 表題` はページの h1、`##` を h2 にして id を付け目次に(読んでいる節に印)。20MB を超えたら描かず大きさと「.md を開く」。見た目は詳細ページと同じ(page-nav、base.css、`.doc`)。
+5. **画面**: atlas.html のマストヘッドに「集計し直す」「工数を判定する…」(`JobActions.svelte`)、本文の上に帯(`JobBand.svelte`、状態は `jobs.svelte.ts` の `JobStore` で共有。実行中は 1 秒、それ以外は 5 秒ごとに `api/jobs/current` を読む)。完了で「新しい集計ができました」+「再読み込み」(自動では読み直さない)。この画面のデータ(埋め込みの generatedAt)より後に始まった処理だけを出す。判定は `<dialog>`(件数の上限 既定 10、copilot -p / opencode、件数の行、「AI クレジットを消費します」、初期フォーカスは「やめる」、Esc・「やめる」では API を呼ばない)。詳細ページは NAV_JS が serve のときだけ `api/session-tools.js` を読み込み、表題の下に「記録を読む」「全文を作って読む」(`session-tools.ts`)。file:// と伏せ字版には何も出ない(静的な生成物は NAV_JS の読み込み先が 1 つ増えただけ)。
+6. **bat と文書**: `atlas-export.bat` / `atlas-export-full.bat` / `atlas-judge.bat` を消した。`launchers.test.ts` は「直下の bat は atlas.bat だけ」、`release-smoke.ts` も同じ検査に。README(起動方法・新しい節「画面からの操作」・記録 / 完全出力 / 判定の節の bat の記述)、PRODUCT.md、CLI の USAGE(serve)、judge-flow の説明、atlas.bat の注記、surface brief(OPERATIONS)を直した。
+
+契約からのずれ(どれも最小限。理由つき):
+
+1. **`/view/<id>` は本文を持たない殻を返し、本文は token の要る `GET /api/view/<id>` から取る**。ページへの移動(リンク)には `X-Atlas-Token` ヘッダを付けられず、URL に token を載せると履歴と Referer に残り、cookie はポートを区別しないため。殻自体も Host・Origin / Sec-Fetch-Site・伏せ字版を検査する(他サイトからの移動は 403)。表題(セッション名)も API から取る。
+2. **API を 2 つ足した**: `GET /api/jobs/judge-preview`(確認ダイアログに「未判定 N 件のうち M 件」を出すため。sessions.json の「依頼の記録がある」セッション(`turns > 0 || firstUserMessage`、bundle の hasRequest の近似)と judgments.json から数える)と `GET /api/session-tools.js`(詳細ページの操作の script。memo-editor.js と同じ配り方)。
+3. **記録の表示で、属性の無い `<small>` `<details>` `<summary>` だけはタグとして描く**。atlas 自身が記録(compaction の要約の折りたたみ)と全文記録(各イベントの id の行)に書くもので、文字のままだと全文記録の全行に `<small>…</small>` が見えて読めないため。esc した後で `&lt;small&gt;` の形そのものだけを戻すので、属性・イベント・大文字の変形は入らない(単体で確認)。メモの描画は変えていない。
+4. **見出しの段**: メモは 2 段下げだが、表示は先頭の `# 表題` をページの h1 に回し `##` を h2 にした(ページの h1 と本文の h1 が重ならないように)。
+5. **judge の子プロセスにも `--out` / `--notes-dir` を渡す**(契約の表は `--limit` と `--backend` だけだが、「同じ out / notes」の意図どおりにするため)。
+6. **`GET /api/jobs/current` に `target`(件数・バックエンド・id)を足し、ジョブが無いときは `null`(200)**。404 にするとブラウザのコンソールに毎回エラーが出るため。
+7. **cancel は全文(サーバ内)にも効く**(AbortSignal。tmp を消す)。
+8. **帯は実行中と完了だけ上に貼る(sticky)**。失敗・中止はログ(末尾 200 行)を開くので、貼ると本文を覆うため。実行中はログの代わりに最後の 1 行を出す。
+9. 画面の「集計し直す」は atlas.bat に渡した引数(`--since` など)を引き継がない(契約どおり固定の `all --out --notes-dir`。README に明記)。
+
+検査(このワークツリーで実行):
+
+- `npm run typecheck`: tsc 0 件、svelte-check 0 errors / 0 warnings(121 files)。
+- `npm test`(単体): 24 ファイル 179 件通過。Phase 14 の `packages/cli/test/jobs.test.ts` は 13 件(固定の引数と 409・ログの行分けと 200 行、引数の検証 17 通り(何も起動しない)、403(token なし・違う token・他オリジン・Sec-Fetch-Site・別の Host・伏せ字版)、cancel(子プロセスと全文)、full の成功と失敗、judge-preview、ジョブ中は idle で止まらない、集計中の 404 の文面、殻に本文が無いこと、記録の描画(script・イベント属性・javascript: リンク・相対リンク・外部画像・コードの中)、全文の assets(他のセッション・`..`・無いファイル)と許可したタグ、上限超え)。`launchers.test.ts` は bat が 1 つになったので 8 件 → 2 件(差し引きで総数は 185 → 179)。
+- `npm run e2e`: 10 ファイル 69 件通過 / 8 skipped。新しい `e2e/phase14.test.ts` 5 件(本物の子プロセスで refresh → atlas.html の generatedAt が新しくなり記録がある / full で `out/full/<id>.md` と assets だけができ、他のファイル(サイズ・mtime・sha1)は全て不変、coverage.json なし、表示の API で描ける / judge は件数なし・anthropic を 400、偽 copilot で 2 件だけ判定され atlas.html に反映 / cancel で canceled、次を受け付ける / 判定 1 件に 2.5 秒かかる偽 copilot で、猶予 300ms の serve がジョブ中に止まらず終わってから止まる)。偽 copilot に `FAKE_COPILOT_DELAY_MS` を足した。
+- `npm run ui`(Playwright): 2 ファイル 8 件通過。新しい `ui/jobs.test.ts` 4 件(「集計し直す」→ 帯が完了 →「再読み込み」で generatedAt が新しくなり帯が消える / 判定のダイアログで「やめる」と Esc は POST 0 回・judgments.json なし、上限 2 で実行すると POST の本文が `{kind:"judge",limit:2,backend:"copilot-cli"}` で 2 件判定 / 詳細ページの「記録を読む」で記録に混ぜた script・img onerror・javascript: リンクが実行されず文字のまま、「全文を作って読む」で全文を表示、coverage.json は作らない / file:// の atlas.html と詳細ページには操作が出ない)。全画面で pageerror と console.error が 0。
+- 陽性コントロール(壊して落ちることを確かめ、戻した): (a) `renderSafeMarkdown` の html を esc しないと単体 3 件(メモ 1・記録の表示 2)が落ちる。(b) `expire` のジョブ中の待ちを外すと「ジョブの実行中は heartbeat が途切れても止まらず…」が落ちる。(c) 判定ダイアログの「やめる」が API を呼ぶようにすると ui の f. が落ちる。
+- 見た目(Playwright の Chromium、架空の fixture、1440 ライト / 800 ダーク、`out/visual/shots/`): マストヘッドの操作、判定ダイアログ、帯(実行中・スクロール時・完了・失敗)、詳細ページの操作、記録と全文の表示、上限超え。横はみ出し 0、pageerror / console.error 0。見て直したもの: 失敗の帯が sticky でログが本文を覆う → 貼らない、実行中の帯が毎秒読み上げられる → 読み上げは状態の変化の 1 文だけ、全文記録の `<small>` が文字で出る → ずれ 3、0.00 MB の表示 → KB、上限超えの案内の「上の」(1440 では左)と空の目次の罫。
+- impeccable の検出器(`detect.mjs`、静的): 変更した UI ファイル(JobActions / JobBand / App.svelte / viewer.ts / session-tools.ts / memo-render.ts / page-nav.ts)と生成した表示の殻・詳細ページで 0 件。ただし HTML は「DEGRADED(HTML パーサが無く正規表現だけ)」と出たので、計算されたコントラスト等は見ていない。web-design-guidelines の自己照合: 数値入力に name と autocomplete="off" を足した。残した P3: 上に貼った帯がキーボードで移った部品を覆う場合がある(scroll-padding は目次行の高さだけ)、表示の画像に width / height が無い(大きさが分からないため)。
+
+実測(架空のデータと合成の .md。実データでは測っていない): fixture(14 セッション)で refresh 0.5 秒、全文 1 件 0.13 秒(22 KB)。合成した 20.0MB の全文記録の描画(サーバ)0.44〜0.49 秒(HTML 22.9MB、3 回)。19.5MB をブラウザで開いて描き終わるまで 2.69 秒(1440、1 回)。
+
+未検証: 実データでの refresh・full の所要時間(この作業では実データを読まない指示のため)、`atlas.bat` のダブルクリックでの通し、本物の `copilot -p` / `opencode` での判定(クレジットを消費するため)、Windows の taskkill で judge-flow の孫プロセス(本物の copilot)が止まること(偽 copilot は node の子で、e2e の cancel は refresh で確かめた)。
+
+#### 見直し(2026-11-03、reviewer の審査: FAIL。P1 1 件と P2 3 件、P3 の一部を直した)
+
+1. **P1 全文記録の表示の svg**: 全文記録の assets を「画像なら img、他はリンク」で通していたので、セッション由来の svg(`session.binary_asset` の `image/svg+xml`)がサーバのオリジンのリンクになり、押すと中の script が `127.0.0.1:<port>` で動いて token を読めた(確認ダイアログを通さない判定、メモの書き換え、記録の読み出しが可能)。二重に塞いだ: (a) 表示がリンクにする形式を、開いても script が動かないもの(画像・txt・log・json・csv・pdf・bin)に限る(`viewer.ts` の `PASSIVE_EXT`。svg・html・xml は名前だけ)。(b) serve の静的配信の HTML 以外に `Content-Security-Policy: sandbox` と `X-Content-Type-Options: nosniff`、HTML(token 入り)に `X-Frame-Options: DENY` と `frame-ancestors 'none'`(費用のかかる判定のボタンをクリックジャッキングで押させない。審査の P3-1)。単体に svg・html の assets と応答のヘッダの検査を足した。陽性対照: (a) を外すと単体が落ちる。
+   - 手元の環境の注意(実測): この PC の AdGuard は 127.0.0.1 への応答にも割り込み、CSP を `sandbox allow-scripts; script-src local.adguard.org` に書き換える(node の fetch でも同じ)。`allow-scripts` が足されても `allow-same-origin` は無いので、開いた svg はオリジンを持たない扱いになり token を読めない(再審査で Playwright により実測: 判定のジョブは起動されない)。テストは CSP の先頭が `sandbox` であることだけを見る。
+2. **P2 `createFileSink.abort` の競合**(Phase 11 から): ファイルを開き終える前に `destroy` → `rm` すると、rm の後で tmp ができていた(審査の再現で 50 回中 47 個残る。phase11 の「flaky」とされていた単体の失敗はこれ)。`close` を待ってから消すようにして、同じ再現で 0 個。
+3. **P2 atlas.bat の再実行とジョブの並行**: ジョブの実行中だけ `out/.job.json`(serve の pid・種類)を置き、`all` は他のプロセスの印があれば「画面から実行した処理(…)が動いています」で止まる(古い印=プロセスが無いもの・自分の印・ジョブの子プロセス(環境変数 `ATLAS_SERVE_JOB`)では止まらない)。実データの一時の out で、画面の集計し直しの最中に all を実行して止まることを確かめた。
+4. **P2 cancel の e2e が止める処理の故障を検出しなかった**: fixture の集計は 0.5 秒で終わるので、kill が効かなくても canceled になっていた。1 件 30 秒かかる偽 copilot の判定を止め、10 秒以内に canceled になり判定が増えないことを見る e2e(phase14 d2)を足した。陽性対照: kill を何もしない形にすると d2 が落ちる。
+5. **P3 で直したもの**: 判定の失敗の帯の文面(export の前に終わった場合に「反映しています」と言わない)、judge-flow の使い方とエラーの接頭辞(`atlas-judge` → `npm run atlas:judge`)。
+6. **残した P3**: 許可タグ(details / summary)が対になっていない本文で表示が段落の中で崩れる(安全上の問題は無い)、1 件の全文記録の見出しが `atlas export --full` のまま・作った後の集計で「前回の --full の出力が残っています」のログが出る・既にある全文を作り直さずに読む入口が無い、`/sessions/<id>.md` は token なしで配信される(他のオリジンからは読めない。以前からの設計)。e2e/phase2 の外部参照の検査は `new URL(`(Svelte の実行時が src の比較に使う)を除く形にした(実装の途中のテンプレートで誤検出した。今のテンプレートには無いが、`http://` の検査は別にあるので緩めても外部参照は見逃さない)。
+7. **検査**: typecheck 0 / 0、単体 180 件(2 回)、E2E 70 件 / 8 skipped、ui 8 件。実データ(一時の out / notes-dir、820 セッション): 画面の「集計し直す」11 秒、最大のセッション(元ログ 71MB)の「全文を作って読む」0.9 秒で 55MB(20MB を超えるので描かず「.md を開く」の案内)、記録の表示(156KB)0.3 秒で描画・目次 5・横はみ出しなし、判定のダイアログは「やめる」でジョブを起動しない(serve のログで確認)。判定そのものは実行していない(クレジットを消費するため)。
+
+#### 再審査(2026-11-03、PASS)と追加の修正
+
+再審査は PASS(前回の指摘は直っている。単体 180 件を 3 回、E2E 70 件、ui 8 件、svg を開いても判定のジョブが起動されないことをブラウザで実測、ヘッダで既存の 6 画面が壊れないこと、印がすべての終わり方で消えること)。参考の指摘のうち次を直した。
+
+1. **R-1 out/ の下のどの .html も atlas の画面として配っていた**(P1 と同じ種類。アプリのリンクからは行けないが、URL を直接開くと `snapshot/` の写しの .html の script が token を読み、ジョブを起動できた(再審査で 202 を実測))。token の差し込みとフレーム禁止は atlas 自身の画面(直下の atlas / glossary / insights / instructions.html と `sessions/<id>.html`。`serve.ts` の `isAppPage`)だけにし、他の .html は token を入れず sandbox の静的ファイルとして返す。単体に写しの .html と atlas.html のヘッダの検査を足した(R-5)。陽性対照: `isAppPage` を常に真にすると単体が落ちる。
+2. **R-2 serve が止まっても印が残る**: serve の終了時に自分の印を消す(`dropLock`)。`all` が止まったときの文面に、印のファイルを消せば抜けられることを書いた(pid が再利用されて古い印を生きているとみなす場合の抜け道)。
+3. **R-3 印を消すときの例外で serve が落ちうる**: try / catch で包んだ(消せなくても止めない。次の all はプロセスの有無で古い印を無視する)。
+4. **R-6** 判定の失敗の帯の文面を「ログに『export: セッション記録』があるときだけ」に直した。
+5. 残したもの: R-4(atlas.bat の all の実行中に画面の「集計し直す」を押すことは防げない。印は serve 側だけ)。
+
 
 ## 決めたこと・採らなかった案
 

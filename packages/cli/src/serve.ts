@@ -1,11 +1,12 @@
 // atlas serve: out/ を 127.0.0.1 だけに配信し、画面からグループ(atlas-notes/groups.json)とメモ(atlas-notes/memos/)を書く小さな API を持つ。
-// 画面(3 画面)が 3 秒ごとに送る heartbeat が途切れたら自分で終了する(ブラウザを閉じれば止まる)。
+// Phase 14: 画面からの操作(集計し直す・工数を判定する・全文を作る。jobs.ts)と、記録・全文記録の表示(/view/<id>)も持つ。
+// 画面(3 画面)が 3 秒ごとに送る heartbeat が途切れたら自分で終了する(ブラウザを閉じれば止まる)。ジョブの実行中は止めず、終わってから判定を再開する。
 // 画面と保存の境界はこの API だけ(後でアプリ化するときに差し替える)。
 import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { extname, join, resolve, sep } from 'node:path';
+import { extname, join, relative, resolve, sep } from 'node:path';
 import { spawn } from 'node:child_process';
 import {
   addIds,
@@ -17,6 +18,18 @@ import {
   loadMemoIndex,
   MEMO_EDITOR_JS,
   MEMO_IMAGE_LIMIT,
+  readPageCss,
+  renderViewDocument,
+  renderViewerShell,
+  SESSION_TOOLS_JS,
+  transcriptFileName,
+  fullFileName,
+  VIEW_KINDS,
+  VIEW_LABEL,
+  VIEW_LIMIT,
+  writeFullRecord,
+  detailFileName,
+  type ViewKind,
   memosDir,
   memoSummary,
   readMemo,
@@ -30,6 +43,8 @@ import {
   type ReportData,
   type SessionGroup,
 } from '../../report/src/index.ts';
+import type { SessionRecord, SessionsFile } from '../../core/src/index.ts';
+import { JobError, JobRunner, parseJobRequest, type RunFullFn, type SpawnFn } from './jobs.ts';
 
 export const TOKEN_PLACEHOLDER = '__ATLAS_TOKEN__';
 export const SERVE_STATE_FILE = '.serve.json';
@@ -54,6 +69,10 @@ export interface ServeOptions {
   firstHeartbeatMs?: number;
   /** メモの画像 1 枚の上限(バイト)。既定は MEMO_IMAGE_LIMIT */
   memoImageLimit?: number;
+  /** Phase 14: ジョブの子プロセスの起動(既定は process.execPath を shell なしで)と環境変数の追加、全文の書き出し(既定は writeFullRecord)。テストで差し替える */
+  jobs?: { spawn?: SpawnFn; env?: NodeJS.ProcessEnv; runFull?: RunFullFn };
+  /** Phase 14: 記録の表示で描く .md の上限(バイト)。既定は VIEW_LIMIT(20MB) */
+  viewLimit?: number;
 }
 
 export interface ServeHandle {
@@ -72,9 +91,32 @@ const MIME: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
   '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
   '.svg': 'image/svg+xml',
   '.txt': 'text/plain; charset=utf-8',
 };
+
+/** 応答の種類を取り違えさせない(どの応答にも付ける) */
+const NOSNIFF = { 'x-content-type-options': 'nosniff' } as const;
+/** HTML(token 入り)は他のサイトの枠に入れさせない(費用のかかる操作のボタンを押させるクリックジャッキングを防ぐ) */
+const HTML_HEADERS = { ...NOSNIFF, 'x-frame-options': 'DENY', 'content-security-policy': "frame-ancestors 'none'" } as const;
+/**
+ * HTML 以外の静的ファイル(.md・全文記録の assets・snapshot の写しなど、セッション由来の内容)は、直接開かれても
+ * script を動かさない(svg などがサーバのオリジンで動くと token を読めてしまう)
+ */
+const FILE_HEADERS = { ...NOSNIFF, 'content-security-policy': 'sandbox' } as const;
+/** atlas 自身が作る HTML(token を差し込み、操作を出す)。out/ の直下のこれらと sessions/<id>.html だけ */
+const APP_PAGES = new Set(['atlas.html', 'glossary.html', 'insights.html', 'instructions.html']);
+/**
+ * out/ からの相対パス(/ 区切り)が atlas の画面か。snapshot/(原本の files/ などの写し)・full/・library/ の下の .html は
+ * セッション由来でありうるので、token を入れず静的ファイルとして(sandbox で)返す
+ */
+export function isAppPage(rel: string): boolean {
+  return APP_PAGES.has(rel) || /^sessions\/[^/]+\.html$/.test(rel);
+}
 
 class HttpError extends Error {
   status: number;
@@ -86,7 +128,7 @@ class HttpError extends Error {
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   const text = JSON.stringify(body);
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-atlas-serve': '1' });
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-atlas-serve': '1', ...NOSNIFF });
   res.end(text);
 }
 
@@ -204,12 +246,63 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     return anonCache.anonymized;
   }
 
+  // Phase 14: sessions.json の id → 表題と判定の対象か(mtime が変わるまで覚える。本文は持たない)
+  let sessionsCache: { mtime: number; ids: Map<string, { title: string; eligible: boolean }> } | null = null;
+  async function sessionIndex(): Promise<Map<string, { title: string; eligible: boolean }> | null> {
+    const p = join(outDir, 'sessions.json');
+    if (!existsSync(p)) return null;
+    const m = (await stat(p)).mtimeMs;
+    if (!sessionsCache || sessionsCache.mtime !== m) {
+      let file: SessionsFile;
+      try {
+        file = JSON.parse(await readFile(p, 'utf8')) as SessionsFile;
+      } catch (e) {
+        throw new HttpError(503, `sessions.json を読めません(集計の途中かもしれません): ${(e as Error).message}`);
+      }
+      // 判定の対象は bundle と同じ「依頼の記録がある」セッション(judge/src/packet.ts の hasRequest の近似。本文は sessions.json の範囲で見る)
+      sessionsCache = { mtime: m, ids: new Map(file.sessions.map((r) => [r.id, { title: r.name?.trim() || '(名前なし)', eligible: r.turns > 0 || !!r.firstUserMessage }])) };
+    }
+    return sessionsCache.ids;
+  }
+
+  /** 1 件の全文記録を書く(サーバ内。atlas.html・coverage.json・他のセッションの全文は触らない) */
+  const runFullDefault: RunFullFn = async (id, ctx) => {
+    const t = performance.now();
+    const file = JSON.parse(await readFile(join(outDir, 'sessions.json'), 'utf8')) as SessionsFile;
+    const record: SessionRecord | undefined = file.sessions.find((r) => r.id === id);
+    if (!record) throw new Error(`セッション ${id} は sessions.json にありません`);
+    ctx.log(`全文記録を書いています: ${id}`);
+    const r = await writeFullRecord({ record, snapshotDir: join(outDir, 'snapshot'), outDir, walNote: file.desktop?.wal?.note ?? null, signal: ctx.signal });
+    ctx.log(`全文記録 ${r.path}(${(r.bytes / 1024 / 1024).toFixed(2)} MB、イベント ${r.events} 件、画像など ${r.assets.files} ファイル、${((performance.now() - t) / 1000).toFixed(1)} 秒)`);
+  };
+  const jobs = new JobRunner({
+    outDir,
+    notesDir: resolve(o.notesDir),
+    spawn: o.jobs?.spawn,
+    env: o.jobs?.env,
+    runFull: o.jobs?.runFull ?? runFullDefault,
+    log,
+    onEnd: () => {
+      // 画面が閉じられた後もジョブは最後まで走らせ、終わってから idle の判定を再開する
+      if (idlePending) {
+        idlePending = null;
+        armIdle();
+      }
+    },
+  });
+  const refreshing = (): boolean => jobs.running() && jobs.current()?.kind === 'refresh';
+  const REFRESHING = '集計し直している最中です(詳細ページと記録は作り直しの途中です)。集計が終わってから開き直してください。';
+  let cssCache: string | null = null;
+  const pageCss = async (): Promise<string> => (cssCache ??= await readPageCss());
+
   let resolveDone!: (reason: string) => void;
   const done = new Promise<string>((r) => (resolveDone = r));
   let server!: Server;
   let closed = false;
   let firstTimer: NodeJS.Timeout | null = null;
   let idleTimer: NodeJS.Timeout | null = null;
+  /** heartbeat が途切れたがジョブの実行中なので待っている(理由) */
+  let idlePending: string | null = null;
   let port = 0;
 
   async function close(reason = '停止'): Promise<void> {
@@ -218,18 +311,36 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     if (firstTimer) clearTimeout(firstTimer);
     if (idleTimer) clearTimeout(idleTimer);
     await rm(join(outDir, SERVE_STATE_FILE), { force: true }).catch(() => {});
+    jobs.dropLock();
     await new Promise<void>((r) => server.close(() => r()));
     server.closeAllConnections?.();
     resolveDone(reason);
   }
 
+  /** 猶予が切れた。ジョブの実行中は止めずに待ち、終わってから(onEnd)猶予を測り直す */
+  function expire(reason: string): void {
+    if (jobs.running()) {
+      if (!idlePending) log(`serve: ${reason}。処理が終わるまで止めずに待ちます`);
+      idlePending = reason;
+      return;
+    }
+    void close(reason);
+  }
+  function armIdle(): void {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => expire('画面が閉じられた(heartbeat が途切れた)'), idleMs);
+  }
   function heartbeat(): void {
     if (firstTimer) {
       clearTimeout(firstTimer);
       firstTimer = null;
     }
-    if (idleTimer) clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => void close('画面が閉じられた(heartbeat が途切れた)'), idleMs);
+    idlePending = null;
+    armIdle();
+  }
+  /** 重い同期処理(大きな記録の描画)の直後に猶予を測り直す(止まっていた間に溜まった heartbeat より先に期限切れで閉じないため) */
+  function touchIdle(): void {
+    if (idleTimer && !idlePending) armIdle();
   }
 
   /** DNS rebinding を防ぐ: Host が自分でなければ同一オリジンに見えても応えない */
@@ -247,7 +358,7 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     if (req.headers['x-atlas-token'] !== token) throw new HttpError(403, 'token が無いか違います(atlas serve から開いた画面だけが書けます)');
   }
 
-  async function api(req: IncomingMessage, res: ServerResponse, path: string): Promise<void> {
+  async function api(req: IncomingMessage, res: ServerResponse, path: string, url: URL): Promise<void> {
     checkOrigin(req);
     const method = req.method ?? 'GET';
     if (path === '/api/heartbeat' && method === 'POST') {
@@ -265,8 +376,22 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
       return;
     }
     if (path === '/api/memo-editor.js' && method === 'GET') {
-      res.writeHead(200, { 'content-type': MIME['.js'], 'cache-control': 'no-store', 'x-atlas-serve': '1' });
+      res.writeHead(200, { 'content-type': MIME['.js'], 'cache-control': 'no-store', 'x-atlas-serve': '1', ...NOSNIFF });
       res.end(MEMO_EDITOR_JS);
+      return;
+    }
+    if (path === '/api/session-tools.js' && method === 'GET') {
+      res.writeHead(200, { 'content-type': MIME['.js'], 'cache-control': 'no-store', 'x-atlas-serve': '1', ...NOSNIFF });
+      res.end(SESSION_TOOLS_JS);
+      return;
+    }
+    if (path === '/api/jobs' || path.startsWith('/api/jobs/')) {
+      await jobsApi(req, res, method, path);
+      return;
+    }
+    const view = /^\/api\/view\/([^/]+)$/.exec(path);
+    if (view) {
+      await viewApi(req, res, method, view[1], url);
       return;
     }
     const memo = /^\/api\/memos\/([^/]+)(\/images)?$/.exec(path);
@@ -324,6 +449,109 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     }
     throw new HttpError(405, 'この方法では使えません');
   }
+  /** Phase 14: ジョブ。読みも書きも token が要る(ログに生の文字列が入るため) */
+  async function jobsApi(req: IncomingMessage, res: ServerResponse, method: string, path: string): Promise<void> {
+    checkToken(req);
+    try {
+      if (path === '/api/jobs' && method === 'POST') {
+        const body = await readJsonBody(req);
+        const ids = body.kind === 'full' ? await sessionIndex() : null;
+        const r = parseJobRequest(body, (id) => !!ids?.has(id));
+        sendJson(res, 202, jobs.start(r));
+        return;
+      }
+      if (path === '/api/jobs/current' && method === 'GET') {
+        sendJson(res, 200, jobs.current());
+        return;
+      }
+      if (path === '/api/jobs/current/cancel' && method === 'POST') {
+        sendJson(res, 200, jobs.cancel());
+        return;
+      }
+      if (path === '/api/jobs/judge-preview' && method === 'GET') {
+        sendJson(res, 200, await judgePreview());
+        return;
+      }
+    } catch (e) {
+      if (e instanceof JobError) throw new HttpError(e.status, e.message);
+      throw e;
+    }
+    if (['/api/jobs', '/api/jobs/current', '/api/jobs/current/cancel', '/api/jobs/judge-preview'].includes(path)) throw new HttpError(405, 'この方法では使えません');
+    throw new HttpError(404, '無い API です');
+  }
+  /** 判定の確認ダイアログの件数: 依頼の記録があるセッションのうち judgments.json に無いもの */
+  async function judgePreview(): Promise<{ eligible: number; judged: number; pending: number }> {
+    const ids = await sessionIndex();
+    if (!ids) return { eligible: 0, judged: 0, pending: 0 };
+    const judged = new Set<string>();
+    const jp = join(outDir, 'judgments.json');
+    if (existsSync(jp)) {
+      try {
+        const j = JSON.parse(await readFile(jp, 'utf8')) as { items?: { sessionId?: unknown }[] };
+        for (const it of j.items ?? []) if (typeof it?.sessionId === 'string') judged.add(it.sessionId);
+      } catch (e) {
+        throw new HttpError(409, `judgments.json を読めません: ${(e as Error).message}`);
+      }
+    }
+    let eligible = 0;
+    let done = 0;
+    for (const [id, x] of ids) {
+      if (!x.eligible) continue;
+      eligible++;
+      if (judged.has(id)) done++;
+    }
+    return { eligible, judged: done, pending: eligible - done };
+  }
+  function viewTarget(rawId: string, kindParam: string | null): { id: string; kind: ViewKind; file: string; mdHref: string } {
+    let id: string;
+    try {
+      id = decodeURIComponent(rawId);
+    } catch {
+      throw new HttpError(400, 'セッション id を読めません');
+    }
+    if (!isSafeMemoId(id)) throw new HttpError(400, 'セッション id の形が正しくありません');
+    const kind = (kindParam ?? 'transcript') as ViewKind;
+    if (!VIEW_KINDS.includes(kind)) throw new HttpError(400, `kind は ${VIEW_KINDS.join(' / ')} のどちらかです`);
+    const name = kind === 'transcript' ? transcriptFileName(id) : fullFileName(id);
+    const dir = kind === 'transcript' ? 'sessions' : 'full';
+    return { id, kind, file: join(outDir, dir, name), mdHref: `../${dir}/${encodeURIComponent(name)}` };
+  }
+  /** GET /api/view/<id>?kind=transcript|full: .md をメモと同じ規則で HTML にして返す(上限を超えたら描かない) */
+  async function viewApi(req: IncomingMessage, res: ServerResponse, method: string, rawId: string, url: URL): Promise<void> {
+    checkToken(req);
+    if (method !== 'GET') throw new HttpError(405, 'この方法では使えません');
+    const t = viewTarget(rawId, url.searchParams.get('kind'));
+    const ids = await sessionIndex();
+    if (!ids?.has(t.id)) throw new HttpError(404, refreshing() ? REFRESHING : `セッション ${t.id} は sessions.json にありません`);
+    if (!existsSync(t.file))
+      throw new HttpError(
+        404,
+        refreshing()
+          ? REFRESHING
+          : t.kind === 'full'
+            ? '全文記録はまだありません。詳細ページの「全文を作って読む」で作ってください。'
+            : 'セッション記録(.md)がありません。atlas.html の「集計し直す」で作られます。',
+      );
+    const st = await stat(t.file);
+    const limit = o.viewLimit ?? VIEW_LIMIT;
+    const base = { id: t.id, kind: t.kind, label: VIEW_LABEL[t.kind], title: ids.get(t.id)!.title, size: st.size, limit, updatedAt: st.mtime.toISOString(), mdHref: t.mdHref };
+    if (st.size > limit) {
+      sendJson(res, 200, { ...base, tooLarge: true });
+      return;
+    }
+    const doc = renderViewDocument(await readFile(t.file, 'utf8'), { kind: t.kind, id: t.id, fullDir: join(outDir, 'full') });
+    touchIdle();
+    sendJson(res, 200, { ...base, tooLarge: false, docTitle: doc.title, html: doc.html, headings: doc.headings });
+  }
+  /** GET /view/<id>?kind=…: 表示の殻(本文は持たない。token は HTML の meta で渡し、本文は殻の script が API から取る) */
+  async function viewShell(req: IncomingMessage, res: ServerResponse, rawId: string, url: URL): Promise<void> {
+    checkOrigin(req);
+    if (await isAnonymized()) throw new HttpError(403, '伏せ字版では記録を表示しません');
+    const t = viewTarget(rawId, url.searchParams.get('kind'));
+    const html = renderViewerShell({ css: await pageCss(), id: t.id, kind: t.kind, detailHref: `../sessions/${encodeURIComponent(detailFileName(t.id))}`, mdHref: t.mdHref }).replace(TOKEN_PLACEHOLDER, token);
+    res.writeHead(200, { 'content-type': MIME['.html'], 'cache-control': 'no-store', 'x-atlas-serve': '1', ...HTML_HEADERS });
+    res.end(req.method === 'HEAD' ? undefined : html);
+  }
   const memoLocks = new Map<string, Promise<unknown>>();
   function withMemoLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
     const next = (memoLocks.get(id) ?? Promise.resolve()).then(fn);
@@ -372,7 +600,12 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     }
   }
 
-  async function serveStatic(req: IncomingMessage, res: ServerResponse, path: string): Promise<void> {
+  async function serveStatic(req: IncomingMessage, res: ServerResponse, path: string, url: URL): Promise<void> {
+    const view = /^\/view\/([^/]+)$/.exec(path);
+    if (view) {
+      await viewShell(req, res, view[1], url);
+      return;
+    }
     if (path === '/') {
       res.writeHead(302, { location: '/atlas.html' });
       res.end();
@@ -389,18 +622,19 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     const file = resolve(outDir, `.${decoded}`);
     if (file !== outDir && !file.startsWith(outDir + sep)) throw new HttpError(404, 'ありません');
     if (file === join(outDir, SERVE_STATE_FILE)) throw new HttpError(404, 'ありません');
-    if (!existsSync(file)) throw new HttpError(404, 'ありません');
+    // 集計し直している間は build が sessions/ を消してから書くので、詳細ページが一時的に無いことがある
+    if (!existsSync(file)) throw new HttpError(404, refreshing() ? REFRESHING : 'ありません');
     const st = await stat(file);
     if (st.isDirectory()) throw new HttpError(404, 'ありません');
     const type = MIME[extname(file).toLowerCase()] ?? 'application/octet-stream';
-    if (extname(file).toLowerCase() === '.html') {
+    if (extname(file).toLowerCase() === '.html' && isAppPage(relative(outDir, file).split(sep).join('/'))) {
       // token は HTML の meta のプレースホルダを置き換えて渡す(file:// で開いたときはプレースホルダのまま = 空扱い)
       const html = (await readFile(file, 'utf8')).replace(TOKEN_PLACEHOLDER, token);
-      res.writeHead(200, { 'content-type': type, 'cache-control': 'no-store' });
+      res.writeHead(200, { 'content-type': type, 'cache-control': 'no-store', ...HTML_HEADERS });
       res.end(req.method === 'HEAD' ? undefined : html);
       return;
     }
-    res.writeHead(200, { 'content-type': type, 'content-length': st.size, 'cache-control': 'no-store' });
+    res.writeHead(200, { 'content-type': type, 'content-length': st.size, 'cache-control': 'no-store', ...FILE_HEADERS });
     res.end(req.method === 'HEAD' ? undefined : await readFile(file));
   }
 
@@ -409,7 +643,7 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     const path = url.pathname;
     const handle = async (): Promise<void> => {
       checkHost(req);
-      await (path.startsWith('/api/') ? api(req, res, path) : serveStatic(req, res, path));
+      await (path.startsWith('/api/') ? api(req, res, path, url) : serveStatic(req, res, path, url));
     };
     handle().catch((e: unknown) => {
       const status = e instanceof HttpError ? e.status : 500;
@@ -429,7 +663,7 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
   port = typeof addr === 'object' && addr ? addr.port : 0;
   const url = `http://127.0.0.1:${port}/atlas.html`;
   await writeFile(join(outDir, SERVE_STATE_FILE), `${JSON.stringify({ port, pid: process.pid, startedAt: new Date().toISOString() })}\n`);
-  firstTimer = setTimeout(() => void close('ブラウザから最初の heartbeat が届かなかった'), firstMs);
+  firstTimer = setTimeout(() => expire('ブラウザから最初の heartbeat が届かなかった'), firstMs);
   log(`serve: ${url}(127.0.0.1 だけに公開。ブラウザを閉じるか、この窓を閉じると終了します)`);
   if (o.open !== false) openInBrowser(url, log);
   return { port, url, token, done, close };

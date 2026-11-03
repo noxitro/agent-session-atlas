@@ -4,6 +4,7 @@
 // - プロンプト(-p の値)から sessionId を読み、その sessionId の固定の判定(このファイル内に持つ)を標準出力に流す
 // - --usage-output-file があれば、そこに使用量の JSON を書く
 // - 環境変数 FAKE_COPILOT_FAIL_ID のセッションは終了コード 3 で失敗する
+// - 環境変数 FAKE_COPILOT_DELAY_MS があれば、その時間だけ待ってから応える(画面からの判定の実行中の状態を見るため)
 import { appendFileSync, readdirSync, writeFileSync } from 'node:fs';
 
 const argv = process.argv.slice(2);
@@ -18,6 +19,8 @@ const sessionId = m ? m[1] : 'unknown';
 if (process.env.FAKE_COPILOT_LOG) {
   appendFileSync(process.env.FAKE_COPILOT_LOG, `${JSON.stringify({ argv, cwd: process.cwd(), cwdEntries: readdirSync(process.cwd()), sessionId })}\n`);
 }
+
+if (process.env.FAKE_COPILOT_DELAY_MS) await new Promise((r) => setTimeout(r, Number(process.env.FAKE_COPILOT_DELAY_MS)));
 
 if (process.env.FAKE_COPILOT_FAIL_ID && process.env.FAKE_COPILOT_FAIL_ID === sessionId) {
   process.stderr.write(`fake copilot: 意図的な失敗 (${sessionId})\n`);

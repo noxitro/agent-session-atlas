@@ -10,7 +10,7 @@ import { createWriteStream, existsSync } from 'node:fs';
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { extname, join } from 'node:path';
-import { isUserTurn, mergeUsage, type CopilotEvent, type DbUsageRow, type SessionRecord } from '../../core/src/index.ts';
+import { isUserTurn, loadStore, mergeUsage, parseEvents, type CopilotEvent, type DbUsageRow, type SessionRecord } from '../../core/src/index.ts';
 import { CoverageCounter, ruleFor, type CoverageEntry } from './coverage.ts';
 import { dateTime, int } from './lib/format.ts';
 import { redactSecrets, rel } from './transcript.ts';
@@ -113,7 +113,13 @@ export function createFileSink(path: string): FileSink {
       await rename(tmp, path);
     },
     async abort(): Promise<void> {
-      ws.destroy();
+      // ファイルを開き終える前に消すと、消した後で tmp ができてしまう。閉じ終わるのを待ってから消す
+      if (!ws.closed) {
+        await new Promise<void>((resolve) => {
+          ws.once('close', () => resolve());
+          ws.destroy();
+        });
+      }
       await rm(tmp, { force: true }).catch(() => {});
     },
   };
@@ -550,6 +556,69 @@ export async function renderFullTo(r: SessionRecord, events: Iterable<CopilotEve
   await flush();
 
   return { events: eventCount, secretHits, assets, unclassified: uc, excluded };
+}
+
+export interface FullRecordInput {
+  record: SessionRecord;
+  /** out/snapshot(session-state/<id>/ と session-store.db) */
+  snapshotDir: string;
+  /** out/(書くのは out/full/<id>.md と out/full/assets/<id>/ だけ) */
+  outDir: string;
+  /** sessions.json の desktop.wal.note */
+  walNote?: string | null;
+  /** 止める(イベントの間で確かめ、tmp を消して例外にする) */
+  signal?: AbortSignal;
+  generatedAt?: string;
+}
+
+/**
+ * Phase 14: 1 件だけ全文記録を書く(atlas serve の「全文を作って読む」)。
+ * export --full と同じ renderFullTo / createFileSink を使うが、atlas.html・詳細ページ・coverage.json・他のセッションの全文は触らない
+ * (網羅の集計はこの 1 件の中だけで数えて捨てる。coverage.json は全件の export --full だけが書く)
+ */
+export async function writeFullRecord(o: FullRecordInput): Promise<FullResult & { path: string; bytes: number }> {
+  const r = o.record;
+  const fullDir = join(o.outDir, 'full');
+  const folder = r.id.replace(/[^A-Za-z0-9._-]/g, '_');
+  const sessionDir = join(o.snapshotDir, 'session-state', r.id);
+  const eventsPath = join(sessionDir, 'events.jsonl');
+  const store = await loadStore(join(o.snapshotDir, 'session-store.db'));
+  await mkdir(fullDir, { recursive: true });
+  const path = join(fullDir, fullFileName(r.id));
+  const signal = o.signal;
+  const source: AsyncIterable<CopilotEvent> | CopilotEvent[] = existsSync(eventsPath) ? parseEvents(eventsPath) : [];
+  async function* guarded(): AsyncGenerator<CopilotEvent> {
+    for await (const e of source) {
+      if (signal?.aborted) throw new Error('取り消しました');
+      yield e;
+    }
+  }
+  if (signal?.aborted) throw new Error('取り消しました');
+  const sink = createFileSink(path);
+  let res: FullResult;
+  try {
+    res = await renderFullTo(
+      r,
+      guarded(),
+      store.usage.get(r.id) ?? [],
+      {
+        generatedAt: o.generatedAt ?? new Date().toISOString(),
+        assetsDir: join(fullDir, 'assets', folder),
+        assetsHref: `assets/${folder}`,
+        sessionDir: existsSync(sessionDir) ? sessionDir : null,
+        sessionDirHref: existsSync(sessionDir) ? `../snapshot/session-state/${encodeURIComponent(r.id)}` : null,
+        coverage: new CoverageCounter(),
+        walNote: o.walNote ?? null,
+      },
+      sink,
+    );
+    if (signal?.aborted) throw new Error('取り消しました');
+    await sink.finish();
+  } catch (e) {
+    await sink.abort();
+    throw e;
+  }
+  return { ...res, path, bytes: (await stat(path)).size };
 }
 
 export type { CoverageEntry };
