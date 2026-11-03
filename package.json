@@ -15,10 +15,12 @@
     "typecheck": "tsc -p tsconfig.json && npm run check -w @atlas/report",
     "test": "vitest run --project unit",
     "e2e": "vitest run --project e2e",
-    "fixtures": "node scripts/synthetic-fixtures.ts"
+    "fixtures": "node scripts/synthetic-fixtures.ts",
+    "ui": "vitest run --project ui"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
+    "playwright": "^1.64.1",
     "typescript": "^6.0.3",
     "vitest": "^5.1.0"
   }

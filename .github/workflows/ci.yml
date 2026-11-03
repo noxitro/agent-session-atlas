@@ -48,6 +48,12 @@ jobs:
       - run: npm test
       - run: npm run build:report
       - run: npm run e2e
+      # 画面の操作(Playwright の Chromium、ui/)。ブラウザは OS ごとに見れば足りるので Node 24 だけで回す。
+      # Linux はブラウザが使う共有ライブラリも入れる(--with-deps)
+      - if: matrix.node == 24
+        run: npx playwright install ${{ runner.os == 'Linux' && '--with-deps' || '' }} chromium
+      - if: matrix.node == 24
+        run: npm run ui
       - name: 配布物の動作確認
         shell: bash
         run: |

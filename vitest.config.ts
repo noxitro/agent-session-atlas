@@ -17,6 +17,18 @@ export default defineConfig({
           maxWorkers: 1,
         },
       },
+      // 画面の操作(Playwright の Chromium)。atlas serve を架空の fixture で立て、実際に押して確かめる。
+      // ブラウザが要るので e2e とは分ける(npx playwright install chromium のあと npm run ui)
+      {
+        test: {
+          name: 'ui',
+          include: ['ui/**/*.test.ts'],
+          globalSetup: ['e2e/global-setup.ts'],
+          testTimeout: 120_000,
+          hookTimeout: 120_000,
+          maxWorkers: 1,
+        },
+      },
     ],
   },
 });

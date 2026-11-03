@@ -15,6 +15,6 @@
     "noUncheckedIndexedAccess": false,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["packages/*/src/**/*.ts", "packages/*/test/**/*.ts", "e2e/**/*.ts", "scripts/**/*.ts", "vitest.config.ts"],
+  "include": ["packages/*/src/**/*.ts", "packages/*/test/**/*.ts", "e2e/**/*.ts", "ui/**/*.ts", "scripts/**/*.ts", "vitest.config.ts"],
   "exclude": ["packages/report/src/app/**"]
 }
