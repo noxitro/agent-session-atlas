@@ -206,6 +206,21 @@ describe('serve', () => {
     expect((await json('/api/groups', { method: 'PATCH' })).status).toBe(405);
   });
 
+  it('API: 同時に来た変更は順番に適用し、どれも消えない(一時ファイルも残さない)', async () => {
+    await start();
+    expect((await json('/api/groups', { method: 'POST', body: JSON.stringify({ name: 'g', ids: [] }) })).status).toBe(201);
+    const ids = Array.from({ length: 12 }, (_, i) => `s${i}`);
+    const rs = await Promise.all([
+      ...ids.map((id) => json('/api/groups/g', { method: 'PUT', body: JSON.stringify({ add: [id] }) })),
+      ...['h1', 'h2', 'h3'].map((name) => json('/api/groups', { method: 'POST', body: JSON.stringify({ name, ids: [] }) })),
+    ]);
+    expect(rs.map((r) => r.status)).toEqual([...ids.map(() => 200), 201, 201, 201]);
+    const saved = JSON.parse(await readFile(join(notes, 'groups.json'), 'utf8')).groups as { name: string; ids: string[] }[];
+    expect(saved.map((g) => g.name).sort()).toEqual(['g', 'h1', 'h2', 'h3']);
+    expect([...saved.find((g) => g.name === 'g')!.ids].sort()).toEqual([...ids].sort());
+    expect((await readdir(notes)).filter((f) => f.endsWith('.tmp'))).toEqual([]);
+  });
+
   it('同一オリジン以外(Sec-Fetch-Site / Origin)は 403。伏せ字版では heartbeat 以外の API が 403', async () => {
     await start();
     expect((await json('/api/state', { headers: { 'sec-fetch-site': 'cross-site' } }, null)).status).toBe(403);

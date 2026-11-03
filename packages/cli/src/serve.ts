@@ -405,11 +405,13 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     if (method === 'POST' && target == null) {
       checkToken(req);
       const input = groupInput(await readJsonBody(req), false) as SessionGroup;
-      const groups = await loadForWrite();
-      if (groups.some((g) => g.name === input.name)) throw new HttpError(409, `グループ「${input.name}」は既にあります`);
-      groups.push(input);
-      await saveGroups(groupsPath, groups);
-      sendJson(res, 201, { group: input, groups });
+      await withGroupsLock(async () => {
+        const groups = await loadForWrite();
+        if (groups.some((g) => g.name === input.name)) throw new HttpError(409, `グループ「${input.name}」は既にあります`);
+        groups.push(input);
+        await saveGroups(groupsPath, groups);
+        sendJson(res, 201, { group: input, groups });
+      });
       return;
     }
     if (method === 'PUT' && target != null) {
@@ -417,34 +419,38 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
       const body = await readJsonBody(req);
       const delta = deltaInput(body);
       const input = groupInput(body, true);
-      const groups = await loadForWrite();
-      const cur = groups.find((g) => g.name === target);
-      if (!cur) throw new HttpError(404, `グループ「${target}」はありません`);
-      if (input.name != null && input.name !== cur.name && groups.some((g) => g.name === input.name)) throw new HttpError(409, `グループ「${input.name}」は既にあります`);
-      Object.assign(cur, input);
-      let added = 0;
-      let dup = 0;
-      let removed = 0;
-      if (delta) {
-        const a = addIds(cur, delta.add);
-        added = a.added;
-        dup = a.dup;
-        const r = removeIds(a.group, delta.remove);
-        removed = r.removed;
-        cur.ids = r.group.ids;
-      }
-      await saveGroups(groupsPath, groups);
-      sendJson(res, 200, { group: cur, groups, added, dup, removed });
+      await withGroupsLock(async () => {
+        const groups = await loadForWrite();
+        const cur = groups.find((g) => g.name === target);
+        if (!cur) throw new HttpError(404, `グループ「${target}」はありません`);
+        if (input.name != null && input.name !== cur.name && groups.some((g) => g.name === input.name)) throw new HttpError(409, `グループ「${input.name}」は既にあります`);
+        Object.assign(cur, input);
+        let added = 0;
+        let dup = 0;
+        let removed = 0;
+        if (delta) {
+          const a = addIds(cur, delta.add);
+          added = a.added;
+          dup = a.dup;
+          const r = removeIds(a.group, delta.remove);
+          removed = r.removed;
+          cur.ids = r.group.ids;
+        }
+        await saveGroups(groupsPath, groups);
+        sendJson(res, 200, { group: cur, groups, added, dup, removed });
+      });
       return;
     }
     if (method === 'DELETE' && target != null) {
       checkToken(req);
-      const groups = await loadForWrite();
-      const i = groups.findIndex((g) => g.name === target);
-      if (i < 0) throw new HttpError(404, `グループ「${target}」はありません`);
-      groups.splice(i, 1);
-      await saveGroups(groupsPath, groups);
-      sendJson(res, 200, { groups });
+      await withGroupsLock(async () => {
+        const groups = await loadForWrite();
+        const i = groups.findIndex((g) => g.name === target);
+        if (i < 0) throw new HttpError(404, `グループ「${target}」はありません`);
+        groups.splice(i, 1);
+        await saveGroups(groupsPath, groups);
+        sendJson(res, 200, { groups });
+      });
       return;
     }
     throw new HttpError(405, 'この方法では使えません');
@@ -551,6 +557,13 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     const html = renderViewerShell({ css: await pageCss(), id: t.id, kind: t.kind, detailHref: `../sessions/${encodeURIComponent(detailFileName(t.id))}`, mdHref: t.mdHref }).replace(TOKEN_PLACEHOLDER, token);
     res.writeHead(200, { 'content-type': MIME['.html'], 'cache-control': 'no-store', 'x-atlas-serve': '1', ...HTML_HEADERS });
     res.end(req.method === 'HEAD' ? undefined : html);
+  }
+  // groups.json の読み・変更・書き込みは順番に行う(2 つの要求が同じ内容を読み、後の書き込みが先の変更を消さないように)
+  let groupsLock: Promise<unknown> = Promise.resolve();
+  function withGroupsLock<T>(fn: () => Promise<T>): Promise<T> {
+    const next = groupsLock.then(fn);
+    groupsLock = next.catch(() => {});
+    return next;
   }
   const memoLocks = new Map<string, Promise<unknown>>();
   function withMemoLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
