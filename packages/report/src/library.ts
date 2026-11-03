@@ -160,7 +160,28 @@ const LIB_CSS = `
 .ver .uses li{display:inline}
 .ver .uses li+li::before{content:' · ';color:var(--ink-3)}
 .lib-note{font-size:.8125rem;color:var(--ink-2);margin:8px 0 0;max-width:80ch}
+.lib-filter{margin-top:14px;padding:8px 12px;border:1px solid var(--rule);border-top:2px solid var(--form);background:var(--surface);font-size:.8125rem;color:var(--ink-2)}
+.lib-filter b{color:var(--ink)}
+.lib-filter a{margin-left:10px}
+.lib-group[hidden],.ver[hidden],.rail li[hidden],.toc li[hidden]{display:none}
 `;
+
+/**
+ * #session=<id> で開いたとき、そのセッションで使われた版だけを残す(詳細ページの「このセッションの指示文と skill」から来る)。
+ * 版の data-sessions に使ったセッションの id を空白区切りで持たせ、項目と目次も空になったものを隠す。#session= が外れたら元に戻す
+ */
+const FILTER_JS = `(function(){var d=document,box=d.getElementById('lib-filter'),names={};try{names=JSON.parse(d.getElementById('lib-sessions').textContent)}catch(e){}
+function el(t,c,x){var e=d.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e}
+function apply(){var m=/^#session=([^&]+)/.exec(location.hash),id='';if(m){try{id=decodeURIComponent(m[1])}catch(e){}}var ni=0,ns=0;
+d.querySelectorAll('.lib-group').forEach(function(sec){var any=false;sec.querySelectorAll('.ver').forEach(function(v){var on=!id||(' '+v.getAttribute('data-sessions')+' ').indexOf(' '+id+' ')>=0;v.hidden=!on;v.open=id?on:v.hasAttribute('data-latest');if(id&&on)any=true});
+sec.hidden=!!id&&!any;if(id&&any){if(sec.getAttribute('data-kind')==='skill')ns++;else ni++}
+d.querySelectorAll('a[href="#'+sec.id+'"]').forEach(function(a){var li=a.closest('li');if(li)li.hidden=sec.hidden})});
+box.textContent='';box.hidden=!id;if(!id)return;var s=names[id];
+box.appendChild(d.createTextNode('セッション「'));box.appendChild(el('b',null,s?s[0]:id.slice(0,8)));
+box.appendChild(d.createTextNode('」で使われた指示文 '+ni+' 件・skill '+ns+' 件だけを表示しています(skill は本文が記録に残った呼び出しだけ。使えただけの skill は詳細ページの表にあります)。'));
+var all=el('a',null,'すべて表示');all.href='#';all.addEventListener('click',function(e){e.preventDefault();history.replaceState(null,'',location.pathname+location.search);apply()});box.appendChild(all);
+if(s){var back=el('a',null,'セッションの詳細に戻る');back.href='sessions/'+s[1];box.appendChild(back)}}
+addEventListener('hashchange',apply);apply()})()`;
 
 export interface InstructionsPageOptions {
   css: string;
@@ -205,14 +226,18 @@ export function renderInstructionsHtml(o: InstructionsPageOptions): string {
           .map((id) => `<li><a href="sessions/${esc(detailFileName(id))}">${esc(o.sessionName(id))}</a></li>`)
           .join('');
         const isLatest = v === latest;
-        return `<details class="ver" id="v-${esc(v.hash)}"${isLatest ? ' open' : ''}><summary><b>版 ${k + 1}</b> <span>${esc(v.hash)}</span> <span>${esc(int(v.chars))} 字</span> <span>${esc(int(v.sessions.size))} セッション</span> <span>初回 ${esc(dateTime(v.firstAt))}</span> <span>最終 ${esc(dateTime(v.lastAt))}</span>${isLatest && g.versions.length > 1 ? ' <span class="tag">最後に使われた版</span>' : ''}</summary>${
+        for (const id of ids) seen.add(id);
+        return `<details class="ver" id="v-${esc(v.hash)}" data-sessions="${esc(ids.join(' '))}"${isLatest ? ' open data-latest' : ''}><summary><b>版 ${k + 1}</b> <span>${esc(v.hash)}</span> <span>${esc(int(v.chars))} 字</span> <span>${esc(int(v.sessions.size))} セッション</span> <span>初回 ${esc(dateTime(v.firstAt))}</span> <span>最終 ${esc(dateTime(v.lastAt))}</span>${isLatest && g.versions.length > 1 ? ' <span class="tag">最後に使われた版</span>' : ''}</summary>${
           prev ? `<p class="cap">版 ${k} → 版 ${k + 1} の差分(初回日の順で 1 つ前の版との行の比較。並行して使われた版どうしのこともあります)</p><pre class="body diff" tabindex="0">${diff}</pre>` : ''
         }<p class="cap">版 ${k + 1} の本文</p><pre class="body" tabindex="0">${esc(body)}</pre><div class="links"><a href="${LIBRARY_DIR}/${esc(v.hash)}.md">本文 (.md) を開く</a>${v.sourcePath ? ` · 出所 <code>${esc(v.sourcePath)}</code>` : ''}</div><div class="uses">使われたセッション(${esc(int(ids.length))}): <ul>${uses}</ul>${ids.length > 50 ? ` …他 ${esc(int(ids.length - 50))} 件` : ''}</div></details>`;
       })
       .join('');
-    return `<section class="section lib-group" id="${gid(g, i)}" aria-labelledby="h-${gid(g, i)}"><div class="section-head"><h2 id="h-${gid(g, i)}">${esc(cleanHeading(g.key, 120))}</h2><p>${esc(g.kind === 'skill' ? 'skill' : g.file === 'unknown' ? '指示文(ファイル不明: 注入の形から特定できなかった)' : g.file)} · 版 ${esc(int(g.versions.length))} · ${esc(int(total))} セッションで使用</p></div><div class="versions">${rows}</div></section>`;
+    return `<section class="section lib-group" data-kind="${g.kind}" id="${gid(g, i)}" aria-labelledby="h-${gid(g, i)}"><div class="section-head"><h2 id="h-${gid(g, i)}">${esc(cleanHeading(g.key, 120))}</h2><p>${esc(g.kind === 'skill' ? 'skill' : g.file === 'unknown' ? '指示文(ファイル不明: 注入の形から特定できなかった)' : g.file)} · 版 ${esc(int(g.versions.length))} · ${esc(int(total))} セッションで使用</p></div><div class="versions">${rows}</div></section>`;
   };
+  const seen = new Set<string>();
   const body = [...inst, ...skills].map((g, i) => sec(g, i)).join('');
+  // #session= の絞り込みで出す名前と詳細ページ(</script> で閉じないよう < を逃がす)
+  const sessionsJson = JSON.stringify(Object.fromEntries([...seen].sort().map((id) => [id, [o.sessionName(id), detailFileName(id)]]))).replace(/</g, '\\u003c');
   return `<!doctype html>
 <html lang="ja">
 <head>
@@ -234,13 +259,15 @@ ${renderRail(nav)}
 <main class="wrap">
 <div class="title"><h1>指示文と skill</h1><p class="lib-note">セッションに注入された指示文(AGENTS.md / CLAUDE.md / copilot-instructions.md 等)と、呼ばれた skill の本文を、重複なしで版ごとに置いたものです。版は内容のハッシュで区別し、見出し(と出所のパス)が同じものを 1 つの項目にまとめています。版は初回の利用日の順で、差分は 1 つ前の版との行単位の比較です。開いた状態にしてあるのは最後に使われた版です。生成 ${esc(dateTime(o.generatedAt))}。${
     o.groups.length ? '' : '指示文も skill の本文も記録にありませんでした。'
-  }</p></div>
+  }</p><div class="lib-filter" id="lib-filter" role="status" data-testid="lib-filter" hidden></div></div>
 ${body}
 </main>
 <footer class="wrap page-foot"><p>本文は <code>${LIBRARY_DIR}/&lt;版&gt;.md</code> にも置いてあります。秘密情報の形式検査で伏せた箇所は <code>[伏せました: 種類]</code> です。</p></footer>
 </div>
 </div>
+<script type="application/json" id="lib-sessions">${sessionsJson}</script>
 <script>${NAV_JS}</script>
+<script>${FILTER_JS}</script>
 </body>
 </html>
 `;

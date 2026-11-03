@@ -357,6 +357,41 @@ describe('anonymize', () => {
     expect(plain).toContain('secret-proj');
   });
 
+  it('詳細ページの「指示文と skill」: 使えた skill に呼んだ回数を添え(呼んだものが先)、一覧に無い呼び出しも出す。一覧が無い版はその旨。伏せ字では使えた skill の名前を出さない', async () => {
+    const t = '2026-10-01T00:00:00Z';
+    const sys = '<skill>\n<available_skills>\n<skill>\n<name>alpha</name>\n<location>user</location>\n</skill>\n<skill>\n<name>private-proj-skill</name>\n<location>project</location>\n</skill>\n</available_skills>\n</skill>';
+    const r = await normalizeSession({
+      id: 'sk',
+      events: [
+        { type: 'system.message', data: { role: 'system', content: sys }, timestamp: t },
+        { type: 'skill.invoked', data: { name: 'alpha', content: 'a', trigger: 'agent-invoked' }, timestamp: t },
+        { type: 'skill.invoked', data: { name: 'alpha', content: 'a', trigger: 'agent-invoked' }, timestamp: '2026-10-01T00:05:00Z' },
+        { type: 'skill.invoked', data: { name: 'outside', content: 'o', trigger: 'user-invoked' }, timestamp: t },
+      ],
+    });
+    const plain = renderDetailHtml(r, { anon: identityAnonymizer(), css: '', judgment: null, generatedAt: t, libraryHref: '../instructions.html' });
+    const table = /data-testid="session-skills"[\s\S]*?<\/table>/.exec(plain)![0];
+    const rows = [...table.matchAll(/<tr( class="called")?><td>(?:<a [^>]*>)?([^<]+)(?:<\/a>)?<\/td><td>([^<]+)<\/td><td class="num">([\s\S]*?)<\/td><\/tr>/g)].map((m) => [m[2], m[3], m[4].replace(/<[^>]+>/g, '')]);
+    expect(rows).toEqual([
+      ['alpha', 'ユーザー', '2'],
+      ['outside', '一覧に無し', '1'],
+      ['private-proj-skill', 'プロジェクト', '—'],
+    ]);
+    expect(plain).toContain('使えた skill 2 件(システムメッセージの一覧)、うち呼んだもの 1 件。一覧に無い skill を 1 件呼んでいます。');
+    // このセッションの分だけを開くリンク(上部の帯・サイドバーの目次と、節の見出しの横)
+    expect(plain.match(/\.\.\/instructions\.html#session=sk"/g)?.length).toBe(3);
+
+    const old = await normalizeSession({ id: 'old', events: [{ type: 'skill.invoked', data: { name: 'alpha', content: 'a' }, timestamp: t }] });
+    expect(old.availableSkills).toBeNull();
+    expect(renderDetailHtml(old, { anon: identityAnonymizer(), css: '', judgment: null, generatedAt: t })).toContain('使えた skill の一覧はこのセッションの記録にありません');
+
+    const anon = createAnonymizer([...(await fixture()), r]);
+    const hidden = renderDetailHtml(r, { anon, css: '', judgment: null, generatedAt: t, libraryHref: '../instructions.html' });
+    expect(hidden).not.toContain('private-proj-skill');
+    expect(hidden).not.toContain('#session=');
+    expect(hidden).toContain('使えた skill 2 件');
+  });
+
   it('ホームディレクトリは ~ に短縮して表示する', () => {
     // Windows 形式(C:\Users\<name>)は実データの E2E(ATLAS_LIVE)で検証する。ここでは POSIX 形式で ~ 短縮を確かめる
     expect(shortProjectLabel('/home/me/.copilot/chats/c1')).toBe('~/.copilot/chats/c1');

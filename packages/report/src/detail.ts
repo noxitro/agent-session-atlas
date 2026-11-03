@@ -78,6 +78,33 @@ function section(title: string, body: string, lead = ''): string {
   return `<section class="section" id="${id}" aria-labelledby="${id}-h"><div class="section-head"><h2 id="${id}-h">${esc(title)}</h2>${lead ? `<p>${lead}</p>` : ''}</div>${body}</section>`;
 }
 
+const SKILL_LOCATION: Record<string, string> = { user: 'ユーザー', project: 'プロジェクト', builtin: '組み込み' };
+/**
+ * このセッションの skill の表: 使えたもの(<available_skills>)と、一覧に無いが呼んだもの。呼んだものを先に、回数の多い順。
+ * 一覧が記録に無い版では呼んだものだけ。伏せ字版では使えた skill の名前を出さず件数だけ(呼ばなかったプロジェクトの skill 名も含むため)
+ */
+function skillsInSession(r: SessionRecord, anon: Anonymizer, libraryHref: string | null): string {
+  const calls = new Map<string, number>();
+  for (const s of r.skills) calls.set(s.name, (calls.get(s.name) ?? 0) + 1);
+  const avail = r.availableSkills ?? null;
+  const listed = new Set((avail ?? []).map((s) => s.name));
+  const rows = [
+    ...(avail ?? []).map((s) => ({ name: s.name, where: s.location ? (SKILL_LOCATION[s.location] ?? s.location) : '不明', n: calls.get(s.name) ?? 0 })),
+    ...[...calls].filter(([name]) => !listed.has(name)).map(([name, n]) => ({ name, where: avail ? '一覧に無し' : '—', n })),
+  ].sort((a, b) => b.n - a.n);
+  const used = (avail ?? []).filter((s) => calls.has(s.name)).length;
+  const outside = [...calls.keys()].filter((name) => !listed.has(name)).length;
+  const head = avail
+    ? `<p class="note">使えた skill ${esc(int(avail.length))} 件(システムメッセージの一覧)、うち呼んだもの ${esc(int(used))} 件。${outside ? `一覧に無い skill を ${esc(int(outside))} 件呼んでいます。` : ''}</p>`
+    : `<p class="note">使えた skill の一覧はこのセッションの記録にありません(Copilot CLI 1.0.77 より前の版や copilot -p では残りません)。${calls.size ? '呼んだ skill だけを載せます。' : 'skill の呼び出しもありません。'}</p>`;
+  if (!rows.length) return head;
+  if (anon.enabled) return head;
+  const link = (name: string, n: number): string => (libraryHref && n > 0 ? `<a href="${esc(libraryHref)}#${esc(skillAnchor(name))}">${esc(name)}</a>` : esc(name));
+  return `${head}<div class="table-scroll"><table class="ledger" data-testid="session-skills"><thead><tr><th scope="col">skill</th><th scope="col">置き場所</th><th scope="col" class="num">呼んだ回数</th></tr></thead><tbody>${rows
+    .map((x) => `<tr${x.n > 0 ? ' class="called"' : ''}><td>${link(x.name, x.n)}</td><td>${esc(x.where)}</td><td class="num">${x.n > 0 ? esc(int(x.n)) : '<span class="missing-value">—</span>'}</td></tr>`)
+    .join('')}</tbody></table></div>`;
+}
+
 function countTable(rows: [string, number][], keyLabel: string, valueLabel: string, empty: string): string {
   if (rows.length === 0) return `<p class="note">${esc(empty)}</p>`;
   const max = Math.max(...rows.map((r) => r[1]), 1);
@@ -300,6 +327,8 @@ export interface DetailOptions {
 }
 
 const DETAIL_CSS = `
+/* このセッションの skill の表: 呼んだ行の名前を太く(使えただけの行と見分ける) */
+.ledger tr.called td:first-child{font-weight:600}
 .meta{display:flex;flex-wrap:wrap;gap:6px 8px;margin-top:8px}
 section h3{margin:14px 0 6px}
 h3.gap{margin-top:16px}
@@ -449,7 +478,15 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
         )
         .join('')}</tbody></table></div>`
     : `<p class="note">指示ファイルの注入は見つかりませんでした。</p>`;
-  parts.push(section('指示ファイル', inst, o.libraryHref && !anon.enabled ? `見出しを押すと本文と版の一覧(<a href="${esc(o.libraryHref)}">指示文と skill</a>)を開きます。` : ''));
+  // このセッションの指示文と skill を 1 か所に: 指示文は注入されたもの、skill は使えたもの(<available_skills>)に呼んだ回数を添える
+  const libSession = o.libraryHref && !anon.enabled ? `${o.libraryHref}#session=${encodeURIComponent(r.id)}` : null;
+  parts.push(
+    section(
+      '指示文と skill',
+      `<h3>指示文</h3>${inst}<h3 class="gap">skill</h3>${skillsInSession(r, anon, o.libraryHref ?? null)}`,
+      libSession ? `<a href="${esc(libSession)}">このセッションの分だけを「指示文と skill」のページで開く</a>(本文と版の差分)` : '',
+    ),
+  );
 
   // Phase 11: data.db(デスクトップアプリ)の許可リストの列
   const dk = r.desktop;
@@ -559,7 +596,7 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
           ]
         : []),
       ...(o.fullHref ? [{ href: o.fullHref, label: '全文記録(解析用)を開く', newWindow: true }] : []),
-      ...(o.libraryHref && !anon.enabled ? [{ href: o.libraryHref, label: '指示文と skill' }] : []),
+      ...(o.libraryHref && !anon.enabled ? [{ href: `${o.libraryHref}#session=${encodeURIComponent(r.id)}`, label: 'このセッションの指示文と skill' }] : []),
       { href: '../glossary.html', label: '用語の説明' },
     ],
   };

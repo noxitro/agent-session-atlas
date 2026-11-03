@@ -9,7 +9,8 @@ import type { DesktopData, DesktopSessionInfo } from './desktop-types.ts';
 //    frictionDetail / todos / agents[].error、metrics は exec / frictionDetail / todos と latency / toolDurations)
 // 5: Phase 11(desktop / desktop.json)
 // 6: Phase 12(analysis / skills[].chars)
-export const SESSIONS_SCHEMA_VERSION = 6;
+// 7: availableSkills(システムメッセージの <available_skills> に並んだ、そのセッションで使えた skill)
+export const SESSIONS_SCHEMA_VERSION = 7;
 export const METRICS_SCHEMA_VERSION = 4;
 
 // ---------- 入力(生データ) ----------
@@ -163,6 +164,15 @@ export interface SkillUse {
   trigger: SkillTrigger | null;
   /** Phase 12: 本文の文字数(skill.invoked の content。無ければ null) */
   chars?: number | null;
+}
+
+/**
+ * そのセッションで使えた skill(システムメッセージの <available_skills> の 1 項目)。
+ * location はログのまま(実データでは user / project / custom / builtin)
+ */
+export interface AvailableSkill {
+  name: string;
+  location: string | null;
 }
 
 /** Phase 12: 改善点の分析に使う、セッション内の並びから求める量 */
@@ -425,6 +435,11 @@ export interface SessionRecord {
   /** Phase 12: 改善点の分析用(手戻り・失敗の連続・ターンごとのツールの列・依頼文) */
   analysis: SessionAnalysis;
   skills: SkillUse[];
+  /**
+   * 使えた skill(<available_skills> の和集合、初めて出た順)。一覧がシステムメッセージに無いセッションは null
+   * (Copilot CLI 1.0.77 より前の版、copilot -p など)。古い sessions.json には無い
+   */
+  availableSkills?: AvailableSkill[] | null;
   agents: AgentRun[];
   hooks: { byType: Record<string, number>; total: number };
   instructions: InstructionInjection[];

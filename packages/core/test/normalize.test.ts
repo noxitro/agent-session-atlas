@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mergeUsage, normalizeSession, normalizeTime, projectKey } from '../src/normalize.ts';
+import { availableSkillsOf, mergeUsage, normalizeSession, normalizeTime, projectKey } from '../src/normalize.ts';
 import type { CopilotEvent, DbUsageRow } from '../src/types.ts';
 import { WikiClassifier } from '../src/wiki.ts';
 
@@ -191,6 +191,43 @@ describe('normalizeSession', () => {
     expect(dbOnly.createdAt).toBe('2026-01-01T00:00:00Z');
     expect(dbOnly.durationMs).toBe(600_000);
     expect(dbOnly.project).toBe('C:\\x');
+  });
+});
+
+describe('availableSkills', () => {
+  // 実データ(Copilot CLI 1.0.77 以降)のシステムメッセージと同じ形: <skill><available_skills><skill><name/><description/><location/></skill>…
+  const item = ([n, l]: [string, string | null]): string =>
+    ['<skill>', `  <name>${n}</name>`, `  <description>説明 &quot;${n}&quot;</description>`, ...(l ? [`  <location>${l}</location>`] : []), '</skill>'].join('\n');
+  const list = (...xs: [string, string | null][]): string => ['<skill>', '<available_skills>', ...xs.map(item), '</available_skills>', '</skill>'].join('\n');
+
+  it('名前と置き場所を取り出す。一覧が無ければ null、途中で切れた一覧はそこまで', () => {
+    expect(availableSkillsOf(`前置き
+${list(['wiki-query', 'user'], ['github-pr-media', 'builtin'], ['no-loc', null])}
+<sql>…</sql>`)).toEqual([
+      { name: 'wiki-query', location: 'user' },
+      { name: 'github-pr-media', location: 'builtin' },
+      { name: 'no-loc', location: null },
+    ]);
+    expect(availableSkillsOf('<custom_instruction># x</custom_instruction> a skilled engineer')).toBeNull();
+    const cut = list(['a', 'project'], ['b', 'custom']).replace(/<\/available_skills>[\s\S]*$/, '').slice(0, -20);
+    expect(availableSkillsOf(cut)).toEqual([{ name: 'a', location: 'project' }]);
+  });
+
+  it('セッションでは複数のシステムメッセージの和集合(初めて出た順)。一覧を 1 度も見なければ null', async () => {
+    const r = await normalizeSession({
+      id: 'av',
+      events: [
+        ev('system.message', { role: 'system', content: list(['a', 'user'], ['b', 'project']) }, '2026-10-01T00:00:00Z'),
+        ev('system.message', { role: 'system', content: list(['b', 'project'], ['c', 'builtin']) }, '2026-10-01T00:01:00Z'),
+      ],
+    });
+    expect(r.availableSkills).toEqual([
+      { name: 'a', location: 'user' },
+      { name: 'b', location: 'project' },
+      { name: 'c', location: 'builtin' },
+    ]);
+    const none = await normalizeSession({ id: 'nv', events: [ev('system.message', { role: 'system', content: 'You are a skilled engineer.' }, '2026-10-01T00:00:00Z')] });
+    expect(none.availableSkills).toBeNull();
   });
 });
 

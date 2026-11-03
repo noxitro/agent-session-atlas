@@ -148,6 +148,28 @@ function phaseSessions(): SyntheticSession[] {
       events: lines(
         [
           { type: 'session.start', data: { sessionId: usage, version: 1, copilotVersion: '1.0.103', selectedModel: 'gpt-5.5', context: { cwd: cwdUsage } } },
+          // 指示文の注入と、使えた skill の一覧(Copilot CLI 1.0.77 以降の <available_skills>)。unused-skill は使えたが呼ばない
+          {
+            type: 'system.message',
+            data: {
+              role: 'system',
+              content: [
+                '<custom_instruction>',
+                '# Synthetic Instructions',
+                'use the synthetic rules',
+                '</custom_instruction>',
+                '<skill>',
+                '<available_skills>',
+                ...[
+                  ['wiki-query', 'user'],
+                  ['impeccable', 'user'],
+                  ['unused-skill', 'project'],
+                ].flatMap(([name, location]) => ['<skill>', `<name>${name}</name>`, '<description>d</description>', `<location>${location}</location>`, '</skill>']),
+                '</available_skills>',
+                '</skill>',
+              ].join('\n'),
+            },
+          },
           { type: 'user.message', data: { content: 'improve the synthetic project' } },
           { type: 'hook.start', data: { hookType: 'preToolUse', input: { toolName: 'github-mcp-server-search_code' } } },
           // MCP ツール: toolName は <サーバー>-<ツール>、mcpServerName でサーバーが分かる
@@ -204,6 +226,8 @@ function phaseSessions(): SyntheticSession[] {
       events: lines(
         [
           { type: 'session.start', data: { sessionId: temp, version: 1, copilotVersion: '1.0.103', context: { cwd: cwdTemp, gitRoot: cwdTemp } } },
+          // 同じ見出しの指示文の別の版(指示文のページで版ごとに絞れることを見る)。使えた skill の一覧は無い
+          { type: 'system.message', data: { role: 'system', content: ['<custom_instruction>', '# Synthetic Instructions', 'use the synthetic rules', 'and one more rule', '</custom_instruction>'].join('\n') } },
           { type: 'user.message', data: { content: 'probe' } },
           { type: 'tool.execution_start', data: { toolCallId: 't1', toolName: 'edit', arguments: { path: 'a.txt' } } },
           { type: 'tool.execution_complete', data: { toolCallId: 't1', success: true, toolTelemetry: { metrics: { linesAdded: 3, linesRemoved: 1 } } } },

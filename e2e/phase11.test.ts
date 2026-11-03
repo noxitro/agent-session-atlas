@@ -252,7 +252,13 @@ describe('Phase 11 E2E: fixtures', () => {
     const withInst = s.sessions.find((x) => x.instructions.length > 0)!;
     const page = await readFile(join(out, 'sessions', `${withInst.id}.html`), 'utf8');
     expect(page).toContain(`href="../instructions.html#v-${withInst.instructions[0].contentHash}"`);
-    expect(page).toContain('href="../instructions.html"');
+    // 使えた skill(<available_skills>)は一覧のあるセッションだけ。詳細ページの表では呼んだもの(回数)が先
+    const withAvail = s.sessions.filter((x) => x.availableSkills);
+    expect(withAvail.map((x) => x.availableSkills!.map((k) => `${k.name}@${k.location}`))).toEqual([['wiki-query@user', 'impeccable@user', 'unused-skill@project']]);
+    const availPage = await readFile(join(out, 'sessions', `${withAvail[0].id}.html`), 'utf8');
+    expect(availPage).toContain('使えた skill 3 件(システムメッセージの一覧)、うち呼んだもの 2 件。一覧に無い skill を 1 件呼んでいます。');
+    // 目次と節の見出しからは、このセッションの分だけに絞ったページを開く
+    expect(page).toContain(`href="../instructions.html#session=${withInst.id}"`);
     // atlas.html のサイドバー(付録)にも入る
     const data = extractEmbedded<ReportData>(await readFile(join(out, 'atlas.html'), 'utf8'));
     expect(data.library).toBe(true);

@@ -289,4 +289,36 @@ describe('画面の操作', () => {
     await page.waitForURL('**/atlas.html');
     await page.getByTestId('shown-count').waitFor({ state: 'visible' });
   });
+
+  it('e. 詳細ページの「このセッションの指示文と skill」から、そのセッションで使われた版だけに絞った指示文のページを開き、「すべて表示」で戻せる', async () => {
+    const s = JSON.parse(await readFile(join(out, 'sessions.json'), 'utf8')) as { sessions: { id: string; instructions: unknown[]; availableSkills?: unknown[] | null }[] };
+    const id = s.sessions.find((x) => x.instructions.length > 0 && x.availableSkills)!.id;
+    await page.goto(new URL(`sessions/${id}.html`, server.url).href);
+    // 使えた skill の表(呼んでいない unused-skill も出る)
+    expect(await page.getByTestId('session-skills').innerText()).toContain('unused-skill');
+    await page.locator('a:visible', { hasText: 'このセッションの指示文と skill' }).first().click();
+    await page.waitForURL(`**/instructions.html#session=${id}`);
+    const banner = page.getByTestId('lib-filter');
+    await expect.poll(() => banner.isVisible()).toBe(true);
+    const visible = (): Promise<number> => page.locator('.lib-group:visible').count();
+    const all = await page.locator('.lib-group').count();
+    const shown = await visible();
+    expect(shown).toBeGreaterThan(0);
+    // 他のセッションだけで使われた版(fixture の他の指示文・skill)は隠れる
+    expect(shown).toBeLessThan(all);
+    for (const v of await page.locator('details.ver:visible').all()) expect((await v.getAttribute('data-sessions'))!.split(' ')).toContain(id);
+    // 同じ項目の中でも、このセッションが使っていない版は隠れる(fixture の「Synthetic Instructions」は 2 版、このセッションは 1 版目だけ)
+    const synth = page.locator('.lib-group', { has: page.getByRole('heading', { name: 'Synthetic Instructions' }) });
+    expect(await synth.locator('details.ver').count()).toBe(2);
+    expect(await synth.locator('details.ver:visible').count()).toBe(1);
+    expect(await banner.innerText()).toContain('だけを表示しています');
+    await banner.getByRole('link', { name: 'すべて表示' }).click();
+    await expect.poll(visible).toBe(all);
+    expect(await banner.isVisible()).toBe(false);
+    expect(new URL(page.url()).hash).toBe('');
+    // 戻る先の詳細ページへのリンク
+    await page.goto(new URL(`instructions.html#session=${id}`, server.url).href);
+    await banner.getByRole('link', { name: 'セッションの詳細に戻る' }).click();
+    await page.waitForURL(`**/sessions/${id}.html`);
+  });
 });

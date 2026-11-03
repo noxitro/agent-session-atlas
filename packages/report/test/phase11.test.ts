@@ -171,6 +171,12 @@ describe('library', () => {
       expect(html).toContain('<span class="add"><span class="sign">+</span>ルール 2</span>');
       expect(html).toContain('sessions/s2.html');
       expect(html).toContain('name of s3');
+      // #session= の絞り込み: 版に使ったセッションの id、名前と詳細ページの表、絞り込みの帯と script
+      expect(html).toContain(`id="v-${ins.versions[1].hash}" data-sessions="s2 s3" open data-latest`);
+      expect(html).toContain(`id="v-${ins.versions[0].hash}" data-sessions="s1">`);
+      expect(JSON.parse(/id="lib-sessions">([^<]*)<\/script>/.exec(html)![1])).toEqual({ s1: ['name of s1', 's1.html'], s2: ['name of s2', 's2.html'], s3: ['name of s3', 's3.html'] });
+      expect(html).toContain('data-testid="lib-filter" hidden');
+      expect(html).toContain("addEventListener('hashchange',apply)");
       expect(html).toContain('<nav class="toc"');
       expect(html).toContain('content="__ATLAS_TOKEN__"');
       expect(html).not.toMatch(/https?:\/\//);

@@ -19,6 +19,7 @@ import type {
   ShutdownTotals,
   SkillTrigger,
   SkillUse,
+  AvailableSkill,
   TimelineEntry,
   TokenCounts,
   TokenSource,
@@ -103,6 +104,25 @@ function emptyFriction(): Friction {
 
 function inc(map: Record<string, number>, key: string, by = 1): void {
   map[key] = (map[key] ?? 0) + by;
+}
+
+/**
+ * システムメッセージの <available_skills> から skill の名前と置き場所を取り出す(無ければ null)。
+ * 閉じタグが無い(途中で切れた)ときは、そこまでの項目を取る
+ */
+export function availableSkillsOf(content: string): AvailableSkill[] | null {
+  const start = content.indexOf('<available_skills>');
+  if (start < 0) return null;
+  const end = content.indexOf('</available_skills>', start);
+  const block = content.slice(start, end < 0 ? undefined : end);
+  const out: AvailableSkill[] = [];
+  for (const m of block.matchAll(/<skill>([\s\S]*?)<\/skill>/g)) {
+    const name = /<name>([\s\S]*?)<\/name>/.exec(m[1])?.[1].trim();
+    if (!name) continue;
+    const location = /<location>([\s\S]*?)<\/location>/.exec(m[1])?.[1].trim() || null;
+    out.push({ name, location });
+  }
+  return out;
 }
 
 function head(s: string, n = TEXT_LIMIT): string {
@@ -382,6 +402,8 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
     return s == null && c == null && t == null ? null : { systemTokens: s, conversationTokens: c, toolDefinitionsTokens: t, source };
   };
   const skills: SkillUse[] = [];
+  /** 使えた skill(名前で重複を除き、初めて出た順)。<available_skills> を 1 度も見なければ null のまま */
+  let availableSkills: Map<string, AvailableSkill> | null = null;
   const agents = new Map<string, AgentRun>();
   const agentNameById = new Map<string, string>();
   const hooks: Record<string, number> = {};
@@ -650,7 +672,14 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
           hooksTotal++;
           break;
         case 'system.message':
-          if (typeof d.content === 'string') instr.add(d.content, at);
+          if (typeof d.content === 'string') {
+            instr.add(d.content, at);
+            const avail = availableSkillsOf(d.content);
+            if (avail) {
+              availableSkills ??= new Map();
+              for (const s of avail) if (!availableSkills.has(s.name)) availableSkills.set(s.name, s);
+            }
+          }
           break;
         case 'session.compaction_complete':
           friction.compactions++;
@@ -813,6 +842,7 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
     todos: null,
     lines,
     skills,
+    availableSkills: availableSkills ? [...availableSkills.values()] : null,
     agents: [...agents.values()],
     hooks: { byType: hooks, total: hooksTotal },
     instructions: instr.result(),
