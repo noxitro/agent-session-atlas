@@ -350,8 +350,17 @@ ATLAS_LIVE=1 npm run e2e
 
 ### CI / リリース(GitHub Actions)
 
-- **CI**(`.github/workflows/ci.yml`): `main` への push と PR ごとに、Windows と Linux で `npm ci` → `typecheck` → `test` → `build:report` → `e2e` を実行します。E2E はテスト時に生成する架空の fixture だけを使い(追加の手順は不要)、実データ(`ATLAS_LIVE`)や実際の LLM 判定は動かしません。Actions タブから手動でも実行できます。
-- **リリース**(`.github/workflows/release.yml`): `v` で始まるタグを push すると、同じ CI を通したあと、ソース一式にビルド済みのレポートテンプレートを足した `agent-session-atlas-<タグ>.zip` を GitHub Release に添付します(リリースノートは自動生成)。zip を展開して `atlas.bat` をダブルクリックすれば、初回の `npm install` のあとそのまま集計できます。
+- **CI**(`.github/workflows/ci.yml`): `main` への push と PR ごとに、Windows と Linux × Node.js 24 と 26 の 4 通りで `npm ci` → `typecheck` → `test` → `build:report` → `e2e` → 配布物の動作確認を実行します。E2E はテスト時に生成する架空の fixture だけを使い(追加の手順は不要)、実データ(`ATLAS_LIVE`)や実際の LLM 判定は動かしません。Actions タブから手動でも実行できます。
+  - 配布物の動作確認: リリースと同じ中身(`scripts/pack-release.ts`)を作り、`atlas.bat` と同じ順で動かします(`scripts/release-smoke.ts`。`*.bat` が CRLF か → 依存の判定 → `npm install` → 架空の fixture で `atlas all` → 同梱テンプレートを作り直していないか)。手元では `npm run build:report` のあと次のように試せます(コミット済みの内容だけが入ります)。
+
+    ```
+    node scripts/pack-release.ts agent-session-atlas-smoke <作業用フォルダ>
+    node scripts/release-smoke.ts <作業用フォルダ>/agent-session-atlas-smoke
+    ```
+
+  - 依存の脆弱性: 利用者の手元で読み込まれる依存(`dependencies`)に high 以上の警告があると止まります(`npm audit --omit=dev`)。開発用の依存は止めず、Dependabot の PR で追います。
+- **依存の更新**(`.github/dependabot.yml`): npm と GitHub Actions の更新を週 1 回 PR で出します。npm の minor / patch は 1 本にまとめ、major は個別の PR になります。どの PR も CI が通ってから取り込みます。
+- **リリース**(`.github/workflows/release.yml`): `v` で始まるタグを push すると、同じ CI を通したあと、ソース一式にビルド済みのレポートテンプレートを足した `agent-session-atlas-<タグ>.zip` を GitHub Release に添付します(リリースノートは自動生成)。zip を展開して `atlas.bat` をダブルクリックすれば、初回の `npm install` のあとそのまま集計できます。zip を作るジョブと Release を作るジョブを分け、書き込み権限は後者だけに渡しています。
 
 ```
 git tag v0.1.0

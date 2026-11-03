@@ -1,0 +1,15 @@
+# 依存の更新を週 1 回 PR で出す。PR ごとに CI(ci.yml)が回るので、通ったものだけ取り込む。
+# npm は minor / patch をまとめて 1 本にし、major(vitest 3 → 5 など)は個別の PR にする。
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

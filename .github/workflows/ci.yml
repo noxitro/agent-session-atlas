@@ -1,4 +1,5 @@
-# push / PR ごとに型検査・単体テスト・レポートのビルド・E2E(テスト時に生成する架空の fixture のみ)を回す。
+# push / PR ごとに型検査・単体テスト・レポートのビルド・E2E(テスト時に生成する架空の fixture のみ)を回し、
+# 最後に配布用 zip と同じ中身を作って atlas.bat と同じ順で動かす(scripts/pack-release.ts → scripts/release-smoke.ts)。
 # fixture は e2e の globalSetup(e2e/global-setup.ts)が作るので、ここに生成の手順は要らない。
 # 実データ(ATLAS_LIVE)と実 LLM 判定は CI では動かさない。
 name: CI
@@ -20,22 +21,34 @@ concurrency:
 
 jobs:
   check:
-    name: check (${{ matrix.os }})
+    name: check (${{ matrix.os }}, node ${{ matrix.node }})
     strategy:
       fail-fast: false
       matrix:
         # 想定利用環境は Windows(atlas.bat)。パス処理の取りこぼしを見るため Linux でも回す
         os: [windows-latest, ubuntu-latest]
+        # engines は >=24。下限の 24 と、新しく入れる人が選ぶ現行 LTS の 26(node:sqlite は実験的 API なので版で変わりうる)
+        node: [24, 26]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
+      # 配布物が利用者の手元で読み込む依存(dependencies)だけを見る。devDependencies の警告は Dependabot の PR で追う
+      - if: matrix.os == 'ubuntu-latest' && matrix.node == 24
+        run: npm audit --omit=dev --audit-level=high
       - run: npm run typecheck
       - run: npm test
       - run: npm run build:report
       - run: npm run e2e
+      - name: 配布物の動作確認
+        shell: bash
+        run: |
+          node scripts/pack-release.ts agent-session-atlas-smoke "$RUNNER_TEMP/pkg"
+          node scripts/release-smoke.ts "$RUNNER_TEMP/pkg/agent-session-atlas-smoke"
