@@ -71,6 +71,11 @@ export class LibraryCollector {
     }
   }
 
+  /** その skill の本文をもう集めたか(詳細ページは集めた後に書くので、そのセッションの分を含む。本文の無い呼び出しだけの skill は false) */
+  hasSkill(name: string): boolean {
+    return this.groups.has(`skill\u0000${name}`);
+  }
+
   /** skill.invoked の本文 */
   addSkill(sessionId: string, name: string, content: string, hash: string, at: string | null, path: string | null): void {
     this.version('skill', name, 'skill', hash, content, sessionId, at, path);
@@ -159,7 +164,7 @@ const LIB_CSS = `
 .ver .diff{background:var(--form-wash)}
 .ver .diff .sign{display:inline-block;width:1.4em;color:var(--ink-3)}
 .ver .diff .add .sign,.ver .diff .add{color:var(--form)}.ver .diff .del .sign,.ver .diff .del{color:var(--warn)}
-.ver .links{padding:6px 10px;border-top:1px solid var(--rule);font-size:.75rem}
+.ver .links{padding:6px 10px;border-top:1px solid var(--rule);font-size:.75rem;overflow-wrap:anywhere}
 .ver .uses{padding:6px 10px;border-top:1px solid var(--rule);font-size:.75rem;color:var(--ink-2)}
 .ver .uses ul{display:inline;margin:0;padding:0;list-style:none}
 .ver .uses li{display:inline}

@@ -361,6 +361,8 @@ dl.glossary dd {
 .seg button {
   font: inherit;
   font-size: 0.75rem;
+  /* 押す的は 24px 以上(WCAG 2.5.8) */
+  min-height: 24px;
   padding: 3px 10px;
   border: 0;
   border-left: 1px solid var(--rule);
@@ -482,6 +484,9 @@ details.tableview > summary {
   flex-wrap: wrap;
 }
 .crumb {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
   font-size: 0.8125rem;
 }
 .top-links {

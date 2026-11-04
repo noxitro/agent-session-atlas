@@ -2,6 +2,7 @@
 // 1280px 以上は左に固定したサイドバー(戻る → 目次 → 別ページへのリンク → 配色)、1280px 未満は上部に固定した細い目次行(横に流れる)と、
 // その上の帯(戻る・リンク・配色)。見た目は base.css の .rail / .toc / .top が持ち、動きは NAV_JS(外部参照なし、file:// で動く)。
 import { esc } from './detail.ts';
+import { SCROLLERS } from './lib/scroll-focus.ts';
 
 export interface NavItem {
   href: string;
@@ -79,6 +80,7 @@ export function renderRail(o: PageNavOptions): string {
 /**
  * 静的ページの動き(1 本にまとめて各ページに埋め込む):
  * - 配色の切り替え(localStorage の atlas-theme。atlas.html と同じ鍵)
+ * - あふれてスクロールする枠(SCROLLERS)に、あふれているときだけ tabindex="0"(lib/scroll-focus.ts と同じ。開閉と幅の変化で付け直す)
  * - 1280px 未満で上部に固定した目次行の高さを --topbar-h に出す(飛び先の余白とキーボード移動の補正に使う)
  * - 読んでいる節に aria-current の印(見出しが画面上部 1/3 を越えた最後の節。末尾では最後の節)。狭い画面では現在地が見える位置まで目次行をずらす
  * - 「← 戻る」: atlas.html から来たとき(atlas.html が別ページへ移るときに sessionStorage に残す印。http では referrer でも分かる)は history.back() で戻り、
@@ -88,7 +90,7 @@ export function renderRail(o: PageNavOptions): string {
  * - メモの編集: atlas serve のときだけ、メモの節(#memo)があるページに編集の script を読み込む。止まったら atlas-down を知らせる
  * - Phase 14: 同じ条件で「記録を読む」「全文を作って読む」の script(api/session-tools.js)も読み込む(伏せ字版には #memo が無いので出ない)
  */
-export const NAV_JS = `(function(){var d=document,root=d.documentElement,W=matchMedia('(min-width:1280px)'),KEY='atlas-theme';
+export const NAV_JS = `(function(){var SCROLLERS=${JSON.stringify(SCROLLERS)};var d=document,root=d.documentElement,W=matchMedia('(min-width:1280px)'),KEY='atlas-theme';
 var segs=d.querySelectorAll('[data-theme-seg] button');function paint(t){segs.forEach(function(b){b.setAttribute('aria-pressed',b.dataset.theme===t?'true':'false')})}
 segs.forEach(function(b){b.addEventListener('click',function(){var t=b.dataset.theme;if(t==='auto')delete root.dataset.theme;else root.dataset.theme=t;try{if(t==='auto')localStorage.removeItem(KEY);else localStorage.setItem(KEY,t)}catch(e){}paint(t)})});
 (function(){var t='auto';try{var v=localStorage.getItem(KEY);if(v==='light'||v==='dark')t=v}catch(e){}paint(t)})();
@@ -99,6 +101,8 @@ var line=top+Math.min(160,innerHeight/3),i=0,k;for(k=0;k<secs.length;k++){if(sec
 for(k=0;k<links.length;k++){if(k===i)links[k].setAttribute('aria-current','true');else links[k].removeAttribute('aria-current')}
 if(!W.matches){var a=links[i],ol=a.closest('.toc');if(ol&&ol.scrollWidth>ol.clientWidth){var l=a.getBoundingClientRect().left-ol.getBoundingClientRect().left+ol.scrollLeft,r=l+a.offsetWidth;if(l<ol.scrollLeft)ol.scrollLeft=l-12;else if(r>ol.scrollLeft+ol.clientWidth)ol.scrollLeft=r-ol.clientWidth+12}}}
 function onS(){if(!tick){tick=true;requestAnimationFrame(mark)}}addEventListener('scroll',onS,{passive:true});addEventListener('resize',onS);mark();
+function sf(){d.querySelectorAll(SCROLLERS).forEach(function(el){var o=el.scrollWidth>el.clientWidth+1||el.scrollHeight>el.clientHeight+1;if(o&&!el.hasAttribute('tabindex')){el.tabIndex=0;el.setAttribute('data-scroll-focus','')}else if(!o&&el.hasAttribute('data-scroll-focus')){el.removeAttribute('tabindex');el.removeAttribute('data-scroll-focus')}})}
+sf();addEventListener('resize',sf);d.addEventListener('toggle',sf,true);
 var m=false;try{m=sessionStorage.getItem('atlas-return')==='1';sessionStorage.removeItem('atlas-return')}catch(e){}
 d.querySelectorAll('a.crumb').forEach(function(a){a.addEventListener('click',function(e){if(e.button!==0||e.metaKey||e.ctrlKey||e.shiftKey||e.altKey)return;var ok=false;try{ok=history.length>1&&(m||/atlas\\.html/.test(d.referrer))}catch(err){}if(ok){e.preventDefault();history.back()}})});
 (function(){var mt=d.querySelector('meta[name="atlas-token"]'),t=mt?mt.content:'';if(!/^https?:$/.test(location.protocol)||!t||/^__/.test(t))return;

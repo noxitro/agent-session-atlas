@@ -18,6 +18,7 @@
   import ModelChart from './components/ModelChart.svelte';
   import SessionTable from './components/SessionTable.svelte';
   import { applyTheme, loadTheme, type ThemeChoice } from './theme.ts';
+  import { watchScrollFocus } from './scroll-focus.ts';
   import { api, serveToken, startHeartbeat } from './api.ts';
   import { JobStore } from './jobs.svelte.ts';
   import JobActions from './components/JobActions.svelte';
@@ -91,6 +92,9 @@
     if (initialView) showView(initialView);
     return () => window.removeEventListener('hashchange', onHash);
   });
+
+  // あふれてスクロールする表の枠にキーボードで届くようにする(描画が変わるたびに付け直す)
+  $effect(() => watchScrollFocus(document.body));
 
   // 伏せ字版にはメモが無いので、共有された #memo=1 で 0 件にしない
   $effect(() => {

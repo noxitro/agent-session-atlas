@@ -6,6 +6,7 @@ import { frictionTotal } from './lib/aggregate.ts';
 import { MEMO_CSS } from './memo-render.ts';
 import { NAV_JS, renderRail, renderTop } from './page-nav.ts';
 import { skillAnchor } from './library.ts';
+import { cleanHeading } from './lib/insights.ts';
 import { dateTime, dec, duration, int, modelLabel, msLabel, percent, truncate } from './lib/format.ts';
 import { EFFORT_ORDER, INITIATOR_ORDER, MODE_ORDER, quantilesOf, UNKNOWN_KEY } from './lib/exec.ts';
 import { effortLabel, errorTypeLabel, initiatorLabel, modeLabel, subagentFailureLabel, TODO_STATUS_ORDER, todoStatusLabel } from './lib/exec-labels.ts';
@@ -83,7 +84,7 @@ const SKILL_LOCATION: Record<string, string> = { user: 'ユーザー', project: 
  * このセッションの skill の表: 使えたもの(<available_skills>)と、一覧に無いが呼んだもの。呼んだものを先に、回数の多い順。
  * 一覧が記録に無い版では呼んだものだけ。伏せ字版では使えた skill の名前を出さず件数だけ(呼ばなかったプロジェクトの skill 名も含むため)
  */
-function skillsInSession(r: SessionRecord, anon: Anonymizer, libraryHref: string | null): string {
+function skillsInSession(r: SessionRecord, anon: Anonymizer, libraryHref: string | null, hasPage: (name: string) => boolean): string {
   const calls = new Map<string, number>();
   for (const s of r.skills) calls.set(s.name, (calls.get(s.name) ?? 0) + 1);
   const avail = r.availableSkills ?? null;
@@ -99,7 +100,7 @@ function skillsInSession(r: SessionRecord, anon: Anonymizer, libraryHref: string
     : `<p class="note">使えた skill の一覧はこのセッションの記録にありません(Copilot CLI 1.0.77 より前の版や copilot -p では残りません)。${calls.size ? '呼んだ skill だけを載せます。' : 'skill の呼び出しもありません。'}</p>`;
   if (!rows.length) return head;
   if (anon.enabled) return head;
-  const link = (name: string, n: number): string => (libraryHref && n > 0 ? `<a href="${esc(libraryHref)}#${esc(skillAnchor(name))}">${esc(name)}</a>` : esc(name));
+  const link = (name: string, n: number): string => (libraryHref && n > 0 && hasPage(name) ? `<a href="${esc(libraryHref)}#${esc(skillAnchor(name))}">${esc(name)}</a>` : esc(name));
   return `${head}<div class="table-scroll"><table class="ledger" data-testid="session-skills"><thead><tr><th scope="col">skill</th><th scope="col">置き場所</th><th scope="col" class="num">呼んだ回数</th></tr></thead><tbody>${rows
     .map((x) => `<tr${x.n > 0 ? ' class="called"' : ''}><td>${link(x.name, x.n)}</td><td>${esc(x.where)}</td><td class="num">${x.n > 0 ? esc(int(x.n)) : '<span class="missing-value">—</span>'}</td></tr>`)
     .join('')}</tbody></table></div>`;
@@ -320,6 +321,8 @@ export interface DetailOptions {
   transcriptHref?: string | null;
   /** Phase 11: 指示文・skill の閲覧ページ(../instructions.html)を作ったときだけ。指示文の行と skill からリンクする */
   libraryHref?: string | null;
+  /** 指示文と skill のページにその skill の節(本文)があるか。本文が記録に残らなかった skill にリンクを張らない(省略時はすべてある扱い) */
+  skillHasPage?: (name: string) => boolean;
   /** Phase 11: 全文記録(../full/<id>.md)を作ったときだけ */
   fullHref?: string | null;
   /** Phase 13: メモ(描画済みの HTML と更新日時)。無ければ省略 */
@@ -357,6 +360,7 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
   sectionSeq = 0;
   sectionIndex = [];
   const { anon } = o;
+  const hasPage = o.skillHasPage ?? ((): boolean => true);
   const t = r.tokens;
   const lines = r.lines ?? { added: 0, removed: 0, source: 'none' as const };
   const name = anon.freeText(r.name);
@@ -448,7 +452,7 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
     ? `<div class="table-scroll"><table class="ledger"><thead><tr><th scope="col">skill</th><th scope="col">時刻</th><th scope="col">呼んだ側</th><th scope="col">記録の形</th></tr></thead><tbody>${r.skills
         .map(
           (s) =>
-            `<tr><td>${o.libraryHref && !anon.enabled ? `<a href="${esc(o.libraryHref)}#${esc(skillAnchor(s.name))}">${esc(s.name)}</a>` : esc(s.name)}</td><td class="num">${esc(dateTime(s.at))}</td><td>${esc(s.trigger === 'user' ? '利用者' : s.trigger === 'agent' ? 'エージェント' : '不明')}</td><td>${esc(s.via === 'both' ? 'ツール + イベント' : s.via === 'tool' ? 'ツール' : 'イベント')}</td></tr>`,
+            `<tr><td>${o.libraryHref && !anon.enabled && hasPage(s.name) ? `<a href="${esc(o.libraryHref)}#${esc(skillAnchor(s.name))}">${esc(s.name)}</a>` : esc(s.name)}</td><td class="num">${esc(dateTime(s.at))}</td><td>${esc(s.trigger === 'user' ? '利用者' : s.trigger === 'agent' ? 'エージェント' : '不明')}</td><td>${esc(s.via === 'both' ? 'ツール + イベント' : s.via === 'tool' ? 'ツール' : 'イベント')}</td></tr>`,
         )
         .join('')}</tbody></table></div>`
     : `<p class="note">skill の呼び出しはありません。</p>`;
@@ -474,7 +478,7 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
     ? `<div class="table-scroll"><table class="ledger"><thead><tr><th scope="col">ファイル</th><th scope="col">範囲</th><th scope="col" class="num">文字数</th><th scope="col" class="num">注入回数</th><th scope="col">初出</th>${anon.enabled ? '' : '<th scope="col">先頭の見出し</th>'}</tr></thead><tbody>${r.instructions
         .map(
           (i) =>
-            `<tr><td>${esc(i.file === 'unknown' ? '不明(特定できず)' : i.file)}</td><td>${esc(i.scope === 'repo' ? 'リポジトリ' : i.scope === 'user' ? 'ユーザー' : '不明')}</td><td class="num">${esc(int(i.chars))}</td><td class="num">${esc(int(i.injections))}</td><td class="num">${esc(dateTime(i.firstSeenAt))}</td>${anon.enabled ? '' : `<td>${o.libraryHref ? `<a href="${esc(o.libraryHref)}#v-${esc(i.contentHash)}">${esc(truncate(i.heading, 80) || '(見出しなし)')}</a>` : esc(truncate(i.heading, 80))}</td>`}</tr>`,
+            `<tr><td>${esc(i.file === 'unknown' ? '不明(特定できず)' : i.file)}</td><td>${esc(i.scope === 'repo' ? 'リポジトリ' : i.scope === 'user' ? 'ユーザー' : '不明')}</td><td class="num">${esc(int(i.chars))}</td><td class="num">${esc(int(i.injections))}</td><td class="num">${esc(dateTime(i.firstSeenAt))}</td>${anon.enabled ? '' : `<td>${o.libraryHref ? `<a href="${esc(o.libraryHref)}#v-${esc(i.contentHash)}">${esc(cleanHeading(i.heading, 80) || '(見出しなし)')}</a>` : esc(cleanHeading(i.heading, 80) || '(見出しなし)')}</td>`}</tr>`,
         )
         .join('')}</tbody></table></div>`
     : `<p class="note">指示ファイルの注入は見つかりませんでした。</p>`;
@@ -483,7 +487,7 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
   parts.push(
     section(
       '指示文と skill',
-      `<h3>指示文</h3>${inst}<h3 class="gap">skill</h3>${skillsInSession(r, anon, o.libraryHref ?? null)}`,
+      `<h3>指示文</h3>${inst}<h3 class="gap">skill</h3>${skillsInSession(r, anon, o.libraryHref ?? null, hasPage)}`,
       libSession ? `<a href="${esc(libSession)}">このセッションの分だけを「指示文と skill」のページで開く</a>(本文と版の差分)` : '',
     ),
   );

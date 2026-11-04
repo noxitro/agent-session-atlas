@@ -16,7 +16,8 @@
     "test": "vitest run --project unit",
     "e2e": "vitest run --project e2e",
     "fixtures": "node scripts/synthetic-fixtures.ts",
-    "ui": "vitest run --project ui"
+    "ui": "vitest run --project ui",
+    "audit:ui": "node scripts/ui-audit.ts"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",

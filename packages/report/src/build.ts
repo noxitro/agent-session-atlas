@@ -344,7 +344,7 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
     }
     const m = memos.get(r.id);
     const memo = m ? { html: renderMemo(input.memosDir!, r.id, m.text), updatedAt: m.updatedAt } : null;
-    const page = renderDetailHtml(r, { anon, css, judgment, generatedAt, transcriptHref, libraryHref: data.library ? `../${INSTRUCTIONS_FILE}` : null, fullHref, memo });
+    const page = renderDetailHtml(r, { anon, css, judgment, generatedAt, transcriptHref, libraryHref: data.library ? `../${INSTRUCTIONS_FILE}` : null, skillHasPage: (name) => !!lib?.hasSkill(name), fullHref, memo });
     detailBytes += Buffer.byteLength(page);
     await writeFile(join(detailDir, detailFileName(r.id)), page);
   }
