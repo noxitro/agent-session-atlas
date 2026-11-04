@@ -98,9 +98,13 @@ export function instructionVersions(sessions: SessionSummary[]): VersionStat[] {
     .sort((a, b) => b.sessions - a.sessions || b.chars - a.chars);
 }
 
-/** 指示文の見出しの表示名: 先頭の # や HTML コメントの印を外し、長ければ省略記号を付ける */
+/** 指示文の見出しの表示名: 先頭の # や HTML コメントの印を外し、Markdown のリンクは文言だけにし、長ければ省略記号を付ける */
 export function cleanHeading(h: string, max = 60): string {
-  const t = h.replace(/^#+\s*/, '').replace(/^<!--\s*|\s*-->$/g, '').trim();
+  const raw = h.replace(/^#+\s*/, '').replace(/^<!--\s*|\s*-->$/g, '').trim();
+  // 見出しは記録の時点で 80 字に切られている(core の firstHeading)。切られたものには省略記号を付ける(既に付いていれば足さない)
+  const cut = (h.trim().length >= 80 || raw.length >= 79) && !raw.endsWith('…');
+  // [文言](URL) は文言だけ。80 字で切れて閉じていないリンク([文言](http…)も同じ
+  const t = raw.replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/!?\[([^\]]*)\]\([^)]*$/, '$1') + (cut ? '…' : '');
   return t.length > max ? `${t.slice(0, max - 1)}…` : t;
 }
 

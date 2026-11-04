@@ -173,8 +173,8 @@ describe('library', () => {
       expect(html).toContain('sessions/s2.html');
       expect(html).toContain('name of s3');
       // #session= の絞り込み: 版に使ったセッションの id、名前と詳細ページの表、絞り込みの帯と script
-      expect(html).toContain(`id="v-${ins.versions[1].hash}" data-sessions="s2 s3" open data-latest`);
-      expect(html).toContain(`id="v-${ins.versions[0].hash}" data-sessions="s1">`);
+      expect(html).toContain(`id="v-${ins.versions[1].hash}" data-n="2" data-sessions="s2 s3" open data-latest`);
+      expect(html).toContain(`id="v-${ins.versions[0].hash}" data-n="1" data-sessions="s1">`);
       expect(JSON.parse(/id="lib-sessions">([^<]*)<\/script>/.exec(html)![1])).toEqual({ s1: ['name of s1', 's1.html'], s2: ['name of s2', 's2.html'], s3: ['name of s3', 's3.html'] });
       expect(html).toContain('data-testid="lib-filter" hidden');
       expect(html).toContain("addEventListener('hashchange',apply)");
@@ -216,7 +216,7 @@ describe('library', () => {
     expect(one).toContain(`最後に使われた版: <a href="#v-${v2.hash}">版 2</a>`);
     expect(v1.sessions.size).toBe(2);
     // 版 3(A)の差分は、初回日の順で直前の版 2(B)ではなく、同じプロジェクトの版 1 と比べる
-    expect(html).toContain('版 1 → 版 3 の差分(同じプロジェクトで前に使われた版との行の比較)');
+    expect(html).toContain('版 1 → 版 3 の差分(repo-a で前に使われた版 1 との行の比較)');
     expect(html).not.toContain('版 2 → 版 3 の差分');
     // 版 2(B)は同じプロジェクトの前の版が無いので、1 つ前の版(A)と比べ、そう書く
     expect(html).toContain('版 1 → 版 2 の差分(初回日の順で 1 つ前の版との行の比較。同じプロジェクトで前に使われた版が無いので、別のプロジェクトの版と比べています)');
@@ -229,6 +229,131 @@ describe('library', () => {
     expect(cleanHeading('## 共通ルール')).toBe('共通ルール');
     expect(seriesKey('<!-- llm-wiki:begin -->', 'unknown')).toBe(seriesKey('llm-wiki:begin', 'AGENTS.md'));
     expect(seriesKey('', 'CLAUDE.md')).toBe('(見出しなし: CLAUDE.md)');
-    expect(seriesKey('x'.repeat(100), 'unknown')).toHaveLength(100);
+    // Markdown のリンクは文言だけ(80 字で切れて閉じていないリンクも)
+    expect(cleanHeading('# [Atlas](https://example.test/a) の規約')).toBe('Atlas の規約');
+    expect(cleanHeading('![図](x.png) と [途中](https://exa', Infinity)).toBe('図 と 途中');
+    // 80 字で切られた見出し(# 付きは整えると 78 字)に省略記号。既に付いていれば足さない。短い見出しは変えない
+    expect(cleanHeading(`# ${'y'.repeat(78)}`, Infinity)).toBe(`${'y'.repeat(78)}…`);
+    expect(cleanHeading(`${'z'.repeat(79)}…`, Infinity)).toBe(`${'z'.repeat(79)}…`);
+    expect(cleanHeading(`# ${'w'.repeat(70)}`, Infinity)).toBe('w'.repeat(70));
+    expect(cleanHeading('y'.repeat(100), 40)).toBe(`${'y'.repeat(39)}…`);
+  });
+
+  it('使用期間・並行・最後の版は、各セッションで最初に読み込んだ日時で決める(長いセッションの読み込み直しで古い版を新しく見せない)', () => {
+    const lib = new LibraryCollector();
+    const v1 = '# 長いセッション\n\n古い版\n';
+    const v2 = '# 長いセッション\n\n新しい版\n';
+    // long は 04-19 に v1 で始まり、05-14 まで v1 を読み込み直し続ける。new は 05-01 に v2 で始まる
+    lib.addSystemMessage('long', `<custom_instruction>\n${v1}</custom_instruction>`, '2026-04-19T12:00:00Z');
+    lib.addSystemMessage('new', `<custom_instruction>\n${v2}</custom_instruction>`, '2026-05-01T12:00:00Z');
+    lib.addSystemMessage('long', `<custom_instruction>\n${v1}</custom_instruction>`, '2026-05-14T12:00:00Z');
+    const groups = lib.result();
+    const [a, b] = groups[0].versions;
+    expect(a.firstBySession.get('long')).toBe('2026-04-19T12:00:00Z');
+    // .md の見出し用の最終日時は注入の最後のまま
+    expect(a.lastAt).toBe('2026-05-14T12:00:00Z');
+    const html = renderInstructionsHtml({ css: '', generatedAt: '2026-05-15T00:00:00Z', groups, sessionName: (id) => id, sessionProject: () => 'X:\\repo-a' });
+    expect(html).toContain(`最後に使われた版: <a href="#v-${b.hash}">版 2</a>`);
+    expect(html).toContain(`id="v-${b.hash}" data-n="2" data-sessions="new" open data-latest`);
+    expect(html).not.toContain('並行して使用</span>');
+    // 1 セッションだけの版は期間が 1 点(同じ分なら「X 〜 X」にしない)
+    expect(html).toMatch(/<b>版 1<\/b> <span>使用 2026-04-\d\d \d\d:\d\d<\/span>/);
+    expect(html).toContain('期間は、各セッションでその版を最初に読み込んだ日時');
+  });
+
+  it('同じ分に丸まる期間は 1 つだけ出し、字数は CRLF を LF にして数える', () => {
+    const lib = new LibraryCollector();
+    const body = '# 改行\r\n\r\nあ\r\n';
+    lib.addSystemMessage('s1', `<custom_instruction>\n${body}</custom_instruction>`, '2026-10-01T10:00:10Z');
+    lib.addSystemMessage('s2', `<custom_instruction>\n${body}</custom_instruction>`, '2026-10-01T10:00:40Z');
+    const groups = lib.result();
+    const v = groups[0].versions[0];
+    expect(v.chars).toBe([...body.replace(/\r\n/g, '\n')].length);
+    const html = renderInstructionsHtml({ css: '', generatedAt: T, groups, sessionName: (id) => id });
+    const summary = /<summary><b>版 1<\/b>[\s\S]*?<\/summary>/.exec(html)![0];
+    expect(summary).not.toContain('〜');
+    expect(summary).toContain(`<span>${v.chars} 字</span>`);
+  });
+
+  it('全セッションで特定したファイルと範囲を項目に出し、ユーザー単位ならプロジェクトごとの最後の版を出さない。項目の件数と、複数の版を使ったセッション', () => {
+    const lib = new LibraryCollector();
+    const u1 = 'ユーザーの規約\n\n1\n';
+    const u2 = 'ユーザーの規約\n\n1\n2\n';
+    lib.addSystemMessage('a-1', `<custom_instruction>\n${u1}</custom_instruction>`, '2026-10-01T12:00:00Z');
+    lib.addSystemMessage('b-1', `<custom_instruction>\n${u2}</custom_instruction>`, '2026-10-02T12:00:00Z');
+    // a-2 は版 2 を読み込んだ後に版 1 も読み込む(repo-a の最後は版 1、repo-b は版 2)
+    lib.addSystemMessage('a-2', `<custom_instruction>\n${u2}</custom_instruction>`, '2026-10-03T12:00:00Z');
+    lib.addSystemMessage('a-2', `<custom_instruction>\n${u1}</custom_instruction>`, '2026-10-03T13:00:00Z');
+    const groups = lib.result();
+    expect(groups[0].file).toBe('unknown');
+    const project = (id: string): string => (id.startsWith('a-') ? 'X:\\repo-a' : 'X:\\repo-b');
+    const base = { css: '', generatedAt: T, groups, sessionName: (id: string) => id, sessionProject: project };
+    // 解決が無ければ、抜き出した時点の不明のまま。プロジェクトごとの最後の版を出す
+    const plain = renderInstructionsHtml(base);
+    expect(plain).toContain('指示文(ファイル不明');
+    expect(plain).toContain('プロジェクトごとの最後の版');
+    // 版の数は「N つの版」(目次も単位を見せる)。和集合 3 セッション、版ごとの合計 4(a-2 が 2 つの版を使った)
+    expect(plain).toContain(' · 2 つの版 · 3 セッションで使用(うち 1 セッションは 2 つ以上の版を使用)</p>');
+    expect(plain).toContain('<span class="cnt">2 つの版</span>');
+    const user = renderInstructionsHtml({ ...base, resolveInstruction: () => ({ file: 'copilot-instructions.md', scope: 'user' }) });
+    expect(user).toContain('<p>copilot-instructions.md(ユーザー) · 2 つの版');
+    expect(user).not.toContain('プロジェクトごとの最後の版');
+    expect(user).not.toContain('プロジェクトのすべてで');
+    expect(user).toContain(`最後に使われた版: <a href="#v-${groups[0].versions[0].hash}">版 1</a>`);
+    const repo = renderInstructionsHtml({ ...base, resolveInstruction: () => ({ file: 'AGENTS.md', scope: 'repo' }) });
+    expect(repo).toContain('<p>AGENTS.md(リポジトリ) · 2 つの版');
+    // 絞り込みで使った版を入れる行(2 版以上の項目だけ。中身は JS が入れる)
+    expect(repo).toContain('<p class="latest in-session" hidden></p>');
+  });
+
+  it('使われたセッションは、その版を最初に読み込んだ日時の新しい順に日付を添えて並べる。50 件を超えた分は件数だけ', () => {
+    const lib = new LibraryCollector();
+    const body = '# 多い\n\n本文\n';
+    for (let n = 0; n < 52; n++) lib.addSystemMessage(`s${String(n).padStart(2, '0')}`, `<custom_instruction>\n${body}</custom_instruction>`, `2026-08-${String(1 + (n % 28)).padStart(2, '0')}T12:00:00Z`);
+    const groups = lib.result();
+    const html = renderInstructionsHtml({ css: '', generatedAt: T, groups, sessionName: (id) => `名前 ${id}` });
+    const items = [...html.matchAll(/<li>(\d{4}-\d\d-\d\d) <a href="sessions\/(s\d\d)\.html">/g)].map((m) => [m[1], m[2]]);
+    expect(items).toHaveLength(50);
+    // 新しい順(28 日 → 1 日)。同じ日は id 順
+    expect(items.slice(0, 2)).toEqual([
+      ['2026-08-28', 's27'],
+      ['2026-08-27', 's26'],
+    ]);
+    expect(items.map((x) => x[0])).toEqual([...items.map((x) => x[0])].sort().reverse());
+    expect(html).toContain('使われたセッション(52)');
+    expect(html).toContain(' …他 2 件');
+  });
+
+  it('差分の元の「同じプロジェクト」にホームと一時フォルダを数えず、見出しにプロジェクト名を書く', () => {
+    const lib = new LibraryCollector();
+    const x1 = '# 共通\n\n1\n';
+    const x2 = '# 共通\n\n1\n2\n';
+    const x3 = '# 共通\n\n1\n2\n3\n';
+    lib.addSystemMessage('nox-1', `<custom_instruction>\n${x1}</custom_instruction>`, '2026-10-01T12:00:00Z');
+    lib.addSystemMessage('home-1', `<custom_instruction>\n${x1}</custom_instruction>`, '2026-10-01T13:00:00Z');
+    lib.addSystemMessage('home-2', `<custom_instruction>\n${x2}</custom_instruction>`, '2026-10-02T12:00:00Z');
+    lib.addSystemMessage('tmp-1', `<custom_instruction>\n${x2}</custom_instruction>`, '2026-10-02T13:00:00Z');
+    lib.addSystemMessage('tmp-2', `<custom_instruction>\n${x3}</custom_instruction>`, '2026-10-03T12:00:00Z');
+    lib.addSystemMessage('nox-2', `<custom_instruction>\n${x3}</custom_instruction>`, '2026-10-03T13:00:00Z');
+    const groups = lib.result();
+    const project = (id: string): string => (id.startsWith('nox') ? 'X:\\work\\Nox' : id.startsWith('home') ? '(ホーム)' : '(一時フォルダ)');
+    const html = renderInstructionsHtml({ css: '', generatedAt: T, groups, sessionName: (id) => id, sessionProject: project });
+    // 版 2 は版 1 と(ホーム)だけが重なる → 同じプロジェクトに数えない
+    expect(html).toContain('版 1 → 版 2 の差分(初回日の順で 1 つ前の版との行の比較。同じプロジェクトで前に使われた版が無いので');
+    // 版 3 は(一時フォルダ)で版 2 と重なるが数えず、Nox で使われた版 1 と比べる
+    expect(html).toContain('<p class="cap" title="X:\\work\\Nox">版 1 → 版 3 の差分(Nox で前に使われた版 1 との行の比較)</p>');
+  });
+
+  it('hasSession: 指示文か skill の本文を集めたセッションだけ true(詳細ページの絞り込みへのリンクに使う)', () => {
+    const lib = new LibraryCollector();
+    lib.addSystemMessage('with-inst', '<custom_instruction>\n# A\n</custom_instruction>', T);
+    lib.addSystemMessage('no-inst', 'ただのシステムメッセージ', T);
+    lib.addSkill('with-skill', 'k', 'body', contentHash('body'), T, null);
+    expect(lib.hasSession('with-inst')).toBe(true);
+    expect(lib.hasSession('with-skill')).toBe(true);
+    expect(lib.hasSession('no-inst')).toBe(false);
+    expect(lib.hasSession('never')).toBe(false);
+    // 記録の時点で 80 字に切られた見出しには省略記号を付ける(系列の鍵にも付くので、両方のページで同じ鍵のまま)
+    expect(seriesKey('x'.repeat(100), 'unknown')).toBe(`${'x'.repeat(100)}…`);
   });
 });

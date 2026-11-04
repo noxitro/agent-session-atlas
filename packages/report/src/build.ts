@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { CopilotEvent, InstalledInventory, MetricsBucket, MetricsFile, SessionRecord } from '../../core/src/types.ts';
+import type { CopilotEvent, InstalledInventory, InstructionFile, InstructionInjection, MetricsBucket, MetricsFile, SessionRecord } from '../../core/src/types.ts';
 import { contentHash, parseEvents } from '../../core/src/index.ts';
 import { CoverageCounter, coverageFile, desktopCoverage } from './coverage.ts';
 import { createFileSink, fullFileName, renderFullTo } from './full.ts';
@@ -350,7 +350,7 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
     }
     const m = memos.get(r.id);
     const memo = m ? { html: renderMemo(input.memosDir!, r.id, m.text), updatedAt: m.updatedAt } : null;
-    const page = renderDetailHtml(r, { anon, css, judgment, generatedAt, transcriptHref, libraryHref: data.library ? `../${INSTRUCTIONS_FILE}` : null, skillHasPage: (name) => !!lib?.hasSkill(name), fullHref, memo });
+    const page = renderDetailHtml(r, { anon, css, judgment, generatedAt, transcriptHref, libraryHref: data.library ? `../${INSTRUCTIONS_FILE}` : null, skillHasPage: (name) => !!lib?.hasSkill(name), libraryHasSession: !!lib?.hasSession(r.id), fullHref, memo });
     detailBytes += Buffer.byteLength(page);
     await writeFile(join(detailDir, detailFileName(r.id)), page);
   }
@@ -366,7 +366,25 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
     const w = await writeLibrary(join(input.outDir, LIBRARY_DIR), groups);
     const names = new Map(sessions.map((s) => [s.id, s.name || s.firstUserMessage || s.id.slice(0, 8)]));
     const projects = new Map(sessions.map((s) => [s.id, s.projectLabel]));
-    await writeFile(join(input.outDir, INSTRUCTIONS_FILE), renderInstructionsHtml({ css, generatedAt, groups, sessionName: (id) => (names.get(id) ?? id).replace(/\s+/g, ' ').slice(0, 60), sessionProject: (id) => projects.get(id) ?? null }));
+    // 版ごとのファイルと範囲は、全セッションを見て特定した値(resolveInstructions の結果。詳細ページの表と同じ)を多い順に採る
+    const votes = new Map<string, Map<string, { file: InstructionFile; scope: InstructionInjection['scope']; n: number }>>();
+    for (const r of input.sessions)
+      for (const i of r.instructions) {
+        if (i.file === 'unknown') continue;
+        const m = votes.get(i.contentHash) ?? votes.set(i.contentHash, new Map()).get(i.contentHash)!;
+        const k = `${i.file}|${i.scope}`;
+        const cur = m.get(k);
+        if (cur) cur.n++;
+        else m.set(k, { file: i.file, scope: i.scope, n: 1 });
+      }
+    const resolveInstruction = (hash: string): { file: InstructionFile; scope: InstructionInjection['scope'] } | null => {
+      const best = [...(votes.get(hash)?.values() ?? [])].sort((a, b) => b.n - a.n)[0];
+      return best ? { file: best.file, scope: best.scope } : null;
+    };
+    await writeFile(
+      join(input.outDir, INSTRUCTIONS_FILE),
+      renderInstructionsHtml({ css, generatedAt, groups, sessionName: (id) => (names.get(id) ?? id).replace(/\s+/g, ' ').slice(0, 60), sessionProject: (id) => projects.get(id) ?? null, resolveInstruction }),
+    );
     libOut = { groups: groups.length, versions: groups.reduce((n, g) => n + g.versions.length, 0), files: w.files, bytes: w.bytes, secretHits: w.secretHits, path: join(input.outDir, INSTRUCTIONS_FILE) };
   }
 

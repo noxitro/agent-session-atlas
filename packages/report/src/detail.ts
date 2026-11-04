@@ -323,6 +323,8 @@ export interface DetailOptions {
   libraryHref?: string | null;
   /** 指示文と skill のページにその skill の節(本文)があるか。本文が記録に残らなかった skill にリンクを張らない(省略時はすべてある扱い) */
   skillHasPage?: (name: string) => boolean;
+  /** 指示文と skill のページにこのセッションの版(指示文か skill の本文)が 1 つでもあるか。無ければ絞り込んだページが空になるのでリンクしない(省略時はある扱い) */
+  libraryHasSession?: boolean;
   /** Phase 11: 全文記録(../full/<id>.md)を作ったときだけ */
   fullHref?: string | null;
   /** Phase 13: メモ(描画済みの HTML と更新日時)。無ければ省略 */
@@ -483,7 +485,7 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
         .join('')}</tbody></table></div>`
     : `<p class="note">指示ファイルの注入は見つかりませんでした。</p>`;
   // このセッションの指示文と skill を 1 か所に: 指示文は注入されたもの、skill は使えたもの(<available_skills>)に呼んだ回数を添える
-  const libSession = o.libraryHref && !anon.enabled ? `${o.libraryHref}#session=${encodeURIComponent(r.id)}` : null;
+  const libSession = o.libraryHref && !anon.enabled && o.libraryHasSession !== false ? `${o.libraryHref}#session=${encodeURIComponent(r.id)}` : null;
   parts.push(
     section(
       '指示文と skill',
@@ -600,7 +602,7 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
           ]
         : []),
       ...(o.fullHref ? [{ href: o.fullHref, label: '全文記録(解析用)を開く', newWindow: true }] : []),
-      ...(o.libraryHref && !anon.enabled ? [{ href: `${o.libraryHref}#session=${encodeURIComponent(r.id)}`, label: 'このセッションの指示文と skill' }] : []),
+      ...(libSession ? [{ href: libSession, label: 'このセッションの指示文と skill' }] : []),
       { href: '../glossary.html', label: '用語の説明' },
     ],
   };

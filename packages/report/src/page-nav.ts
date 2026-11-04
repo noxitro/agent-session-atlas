@@ -11,6 +11,8 @@ export interface NavItem {
   count?: number;
   /** 件数の読み上げの単位(既定は「項目」) */
   countLabel?: string;
+  /** 単位を数字の後ろに見せる(数字だけだと番号に読めるもの。既定は読み上げだけ) */
+  showCountLabel?: boolean;
   /** 1 行の説明(サイドバーでだけ出す) */
   lead?: string;
 }
@@ -55,7 +57,7 @@ function toc(o: PageNavOptions): string {
         `<div class="toc-group"${g.title ? ` role="group" aria-label="${esc(g.title)}"` : ''}>${g.title ? `<span class="toc-title" aria-hidden="true">${esc(g.title)}</span>` : ''}<ol>${g.items
           .map(
             (it) =>
-              `<li><a href="${esc(it.href)}">${esc(it.label)}${it.count != null ? `<span class="cnt" aria-label="${it.count} ${esc(it.countLabel ?? '項目')}">${it.count}</span>` : ''}${it.lead ? `<span class="lead">${esc(it.lead)}</span>` : ''}</a></li>`,
+              `<li><a href="${esc(it.href)}">${esc(it.label)}${it.count != null ? (it.showCountLabel ? `<span class="cnt">${it.count} ${esc(it.countLabel ?? '項目')}</span>` : `<span class="cnt" aria-label="${it.count} ${esc(it.countLabel ?? '項目')}">${it.count}</span>`) : ''}${it.lead ? `<span class="lead">${esc(it.lead)}</span>` : ''}</a></li>`,
           )
           .join('')}</ol></div>`,
     )

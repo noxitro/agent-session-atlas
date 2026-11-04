@@ -321,4 +321,39 @@ describe('画面の操作', () => {
     await banner.getByRole('link', { name: 'セッションの詳細に戻る' }).click();
     await page.waitForURL(`**/sessions/${id}.html`);
   });
+
+  it('f. 絞り込み中に隠れた版へのリンクを押すと、絞り込みを外してその版を開いて見せる。版の無いセッションにはリンクを出さず、開いても説明を出す', async () => {
+    const s = JSON.parse(await readFile(join(out, 'sessions.json'), 'utf8')) as { sessions: { id: string; instructions: unknown[]; availableSkills?: unknown[] | null }[] };
+    const id = s.sessions.find((x) => x.instructions.length > 0 && x.availableSkills)!.id;
+    await page.goto(new URL(`instructions.html#session=${id}`, server.url).href);
+    const banner = page.getByTestId('lib-filter');
+    await expect.poll(() => banner.isVisible()).toBe(true);
+    const synth = page.locator('.lib-group', { has: page.getByRole('heading', { name: 'Synthetic Instructions' }) });
+    // 絞り込み中だけ、このセッションで使った版を見出しに出す(このセッションは 1 版目だけ)
+    expect(await synth.locator('.in-session').innerText()).toBe('このセッションで使った版: 版 1');
+    // 隠れている版 2 へ: 見出しの「最後の版」の行にリンクがあれば押し、無ければページ内のリンクと同じく hash を変える
+    const hidden = synth.locator('details.ver[hidden]');
+    expect(await hidden.count()).toBe(1);
+    const target = (await hidden.getAttribute('id'))!;
+    const link = synth.locator(`.latest a[href="#${target}"]`);
+    if (await link.count()) await link.first().click();
+    else await page.evaluate(`location.hash = ${JSON.stringify(`#${target}`)}`);
+    await expect.poll(() => banner.isVisible()).toBe(false);
+    // tsconfig に DOM の型が無いので、ブラウザ側の式は文字列で渡す
+    await expect.poll(() => page.evaluate(`(() => { const e = document.getElementById(${JSON.stringify(target)}); return e.open && !e.hidden; })()`)).toBe(true);
+    await expect.poll(() => page.evaluate(`(() => { const r = document.getElementById(${JSON.stringify(target)}).getBoundingClientRect(); return r.top >= 0 && r.top < innerHeight; })()`)).toBe(true);
+    expect(await synth.locator('.in-session').isVisible()).toBe(false);
+
+    // 指示文も skill の本文も無いセッション: 詳細ページに絞り込みのリンクを出さず、直接開いても説明を出す
+    const names = JSON.parse((await page.locator('#lib-sessions').textContent())!) as Record<string, unknown>;
+    const none = s.sessions.find((x) => !(x.id in names));
+    expect(none, 'fixture に指示文も skill の本文も無いセッションがある').toBeTruthy();
+    await page.goto(new URL(`sessions/${none!.id}.html`, server.url).href);
+    expect(await page.locator(`a[href*="#session="]`).count()).toBe(0);
+    await page.goto(new URL(`instructions.html#session=${none!.id}`, server.url).href);
+    await expect.poll(() => banner.innerText()).toContain('表示するものがありません');
+    expect(await page.locator('.lib-group:visible').count()).toBe(0);
+    await banner.getByRole('link', { name: 'セッションの詳細に戻る' }).click();
+    await page.waitForURL(`**/sessions/${none!.id}.html`);
+  });
 });
