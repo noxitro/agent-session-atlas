@@ -96,7 +96,7 @@ export const GLOSSARY: Term[] = [
     id: 'lines',
     group: 'records',
     term: '変更行数',
-    body: 'エージェントがファイルに加えた変更の行数(追加 / 削除)。セッション終了時の累計(session.shutdown の codeChanges)を優先し、無ければツールごとの行数(toolTelemetry)を合計します。どちらも無いセッションは「記録なし」で、合計には含めません。',
+    body: 'エージェントがファイルに加えた変更の行数(追加 / 削除)。セッション終了時の累計(session.shutdown の codeChanges)を優先し、無ければツールごとの行数(toolTelemetry)を合計します。どちらも無いセッションは「記録なし」で、合計には含めません。終了時の codeChanges が 0 行・0 件なのにファイルの変更があるときは、ツールごとの行数で数えます。サブエージェントが行った編集は行数が残らないため「記録なし(サブエージェントの変更は数えられない)」です。',
   },
   {
     id: 'project-merge',
@@ -132,7 +132,7 @@ export const GLOSSARY: Term[] = [
     id: 'friction',
     group: 'effort',
     term: '摩擦',
-    body: '作業が滞った兆候の件数の合計: compaction、中断(abort)、エラー、権限の確認、ユーザーへの質問(ask_user)、ツール失敗、サブエージェント失敗。「エラー」はセッション全体のエラー(session.error。利用上限・通信エラーなど)で、個々のツール呼び出しの失敗は「ツール失敗」として別に数えます。少ないほど良いとは限らず、確認を求めるのは正しい振る舞いのこともあります。',
+    body: '作業が滞った兆候の件数の合計: compaction、中断(abort)、エラー、権限の確認、ユーザーへの質問(ask_user)、ツール失敗、サブエージェント失敗。「エラー」はセッション全体のエラー(session.error。利用上限・通信エラーなど)で、個々のツール呼び出しの失敗は「ツール失敗」として別に数えます。少ないほど良いとは限らず、確認を求めるのは正しい振る舞いのこともあります。サブエージェントの失敗で session.error と subagent.failed が対になって記録されたときは「agent 失敗」だけに数え、続けて記録された中断(2 秒以内)は 1 回の中断として数えます。',
   },
   {
     id: 'highlights',
@@ -162,7 +162,7 @@ export const GLOSSARY: Term[] = [
     id: 'context-breakdown',
     group: 'units',
     term: '文脈の内訳(ツール定義)',
-    body: 'モデルに渡す文脈を、system(指示など)・会話・ツール定義に分けたトークン数(session.shutdown / compaction_complete の記録)。ツール定義は使えるツール(MCP を含む)の説明で、毎リクエストの文脈に常に入る固定費です。ツールを増やすほど大きくなります。',
+    body: 'モデルに渡す文脈を、system(指示など)・会話・ツール定義に分けたトークン数(session.shutdown / compaction_complete の記録)。ツール定義は使えるツール(MCP を含む)の説明で、毎リクエストの文脈に常に入る固定費です。ツールを増やすほど大きくなります。system・会話がともに 0 の空の終了記録では、ツール定義の割合は出しません。',
   },
   {
     id: 'latency',
@@ -252,7 +252,7 @@ export const GLOSSARY: Term[] = [
     id: 'model-change',
     group: 'effort',
     term: 'モデル変更',
-    body: 'セッションの途中で使うモデルが切り替わった回数(session.model_change)。摩擦の合計には含めず、参考として件数だけ示します。',
+    body: 'セッションの途中で利用者や本体のエージェントが使うモデルを切り替えた回数(session.model_change)。サブエージェントの起動に伴う切り替え(source: agent)は含めず、別に件数を添えます。摩擦の合計には含めません。',
   },
   {
     id: 'available-skills',
@@ -313,5 +313,23 @@ export const GLOSSARY: Term[] = [
     group: 'insights',
     term: '長いのに注入が少ない / 版の前後で悪化',
     body: '「長いのに注入が少ない」は、字数が全版の上位 25% で、注入されたセッションが 3 未満の今の版。「版の前後で悪化」は、同じ項目の版を変えた前後で失敗率か手戻り率が 10 ポイント以上上がったもの(前後とも 5 セッション以上のときだけ判定)。どちらも相関で、指示文が原因とは限りません。',
+  },
+  {
+    id: 'api-requests',
+    group: 'units',
+    term: 'API リクエスト',
+    body: 'モデルへの要求の回数。リクエスト単位の明細(session-store.db / usage_record)があればその件数、無ければ終了時の累計(session.shutdown)の件数で、どちらも無ければ「記録なし」です。',
+  },
+  {
+    id: 'no-result',
+    group: 'records',
+    term: '結果なし(ツール内訳)/ 終了(shutdown)/(本文なし)',
+    body: '「結果なし」は、ツール呼び出しの開始はあるが成功・失敗・拒否の記録が無いもの(中断など)。時系列の「終了(shutdown)」は所要時間の終わりになった session.shutdown で、最後の行より後にあるときだけ出します。「(本文なし)」は本文が空のまま送られた依頼です。',
+  },
+  {
+    id: 'compaction-removed',
+    group: 'mechanics',
+    term: 'compaction で減ったトークン',
+    body: 'compaction の記録の tokensRemoved の合計。この値を記録しない版のログでは 0 ではなく「記録なし」と出します。compaction 自体に使ったトークンは、新旧どちらの記録の形(input / inputTokens)も読みます。',
   },
 ];
