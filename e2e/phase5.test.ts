@@ -128,7 +128,7 @@ describe('Phase 5 E2E: fixtures', () => {
     expect(html).toContain('エラー(session.error)');
     expect(html).not.toMatch(/frictionDetail\.errors\s*\+\s*\w+\.frictionDetail\.toolFailures/);
     const detail = await readFile(join(out, 'sessions', `${id(8)}.html`), 'utf8');
-    expect(detail).toContain('session.error(ツール失敗は別)');
+    expect(detail).toContain('session.error(ツール失敗・サブエージェントの失敗は別)');
   });
 
   it('5. 変更ファイルを絶対パスにそろえて重複除去し、session-state 配下は件数だけ持つ', async () => {

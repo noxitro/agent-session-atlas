@@ -48,6 +48,13 @@
     onremove: () => Promise<string>;
   } = $props();
 
+  /** 変更行の欄の title(出所と、記録が欠けている理由) */
+  function linesTitle(l: SessionSummary['lines']): string {
+    const why = l.note === 'subagent-edits' ? 'サブエージェントの変更は数えられない' : l.note === 'empty-shutdown' ? '終了時の codeChanges が空' : '';
+    const src = l.source === 'shutdown' ? '終了時の累計(codeChanges)' : l.source === 'tools' ? 'ツールごとの行数の合計' : '';
+    return src && why ? `${src}(${why})` : src || why;
+  }
+
   type Key = 'time' | 'turns' | 'input' | 'output' | 'tools' | 'lines' | 'friction' | 'active' | 'human';
   const value: Record<Key, (s: SessionSummary) => number> = {
     time: (s) => sessionTime(s) ?? -Infinity,
@@ -340,8 +347,9 @@
               </td>
               <td class="num">{#if s.coverage === 'none'}<span class="missing-value">記録なし</span>{:else}{int(s.tokens.output)}{/if}</td>
               <td class="num">{int(s.tools.total)}</td>
-              <td class="num" title={s.lines.source === 'shutdown' ? '終了時の累計(codeChanges)' : s.lines.source === 'tools' ? 'ツールごとの行数の合計' : ''}>
-                {#if s.lines.source === 'none'}<span class="missing-value">—</span>{:else}+{int(s.lines.added)}<span class="sub">−{int(s.lines.removed)}</span>{/if}
+              <td class="num" title={linesTitle(s.lines)}>
+                <!-- 記録が無いときは「—」(該当なし・0 件)ではなく記録なし。詳細ページと同じ -->
+                {#if s.lines.source === 'none'}<span class="missing-value">記録なし</span>{:else}+{int(s.lines.added)}<span class="sub">−{int(s.lines.removed)}</span>{/if}
               </td>
               <td class="num">{int(frictionTotal(s.friction))}</td>
               <td class="num">{duration(s.activeMs, '—')}</td>

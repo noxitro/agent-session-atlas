@@ -1,8 +1,9 @@
 // セッション詳細ページ(out/sessions/<id>.html)。軽量な静的 HTML(スクリプトは配色の選択を読む数行だけ)。
 // atlas.html と同じ base.css を埋め込み、同じ「様式」の見た目にする。
-import type { ProjectSource, SessionRecord, TimelineEntry, TokenCounts, TokenSource } from '../../core/src/types.ts';
+import type { InstructionInjection, LineChanges, ProjectSource, SessionRecord, SessionTokens, TimelineEntry, TokenCounts, TokenSource } from '../../core/src/types.ts';
 import type { Anonymizer } from './lib/anonymize.ts';
 import { frictionTotal } from './lib/aggregate.ts';
+import { coverageOf } from './lib/filter.ts';
 import { MEMO_CSS } from './memo-render.ts';
 import { NAV_JS, renderRail, renderTop } from './page-nav.ts';
 import { skillAnchor } from './library.ts';
@@ -45,6 +46,12 @@ export const PROJECT_SOURCE_LABEL: Record<ProjectSource, string> = {
 };
 
 const LINES_SOURCE_LABEL = { shutdown: '終了時の累計(codeChanges)', tools: 'ツールごとの行数の合計', none: '記録なし' } as const;
+/** 変更行数の欄の注記(出所と、記録が欠けている理由 lines.note) */
+export function linesNoteText(lines: LineChanges): string {
+  if (lines.note === 'subagent-edits') return lines.source === 'none' ? 'サブエージェントの変更は数えられない' : `${LINES_SOURCE_LABEL[lines.source]}(サブエージェントの変更は数えられない)`;
+  if (lines.note === 'empty-shutdown') return lines.source === 'none' ? '終了時の codeChanges が空(0 行・ファイル 0 件)で、ツールの行数も無い' : `${LINES_SOURCE_LABEL[lines.source]}(終了時の codeChanges が空のため)`;
+  return lines.source === 'none' ? 'codeChanges もツールの行数も無い' : LINES_SOURCE_LABEL[lines.source];
+}
 
 const KIND_LABEL: Record<TimelineEntry['kind'], string> = {
   user: '依頼',
@@ -55,6 +62,7 @@ const KIND_LABEL: Record<TimelineEntry['kind'], string> = {
   abort: '中断',
   error: 'エラー',
   task_complete: '完了',
+  shutdown: '終了(shutdown)',
 };
 
 const missing = (text = '記録なし'): string => `<span class="missing-value">${esc(text)}</span>`;
@@ -124,13 +132,63 @@ function toolTable(r: SessionRecord): string {
   const serverOf = new Map<string, string>();
   for (const [server, byTool] of Object.entries(r.tools.mcp ?? {})) for (const tool of Object.keys(byTool)) serverOf.set(tool, server);
   const max = Math.max(...rows.map((x) => x[1]), 1);
-  return `<div class="table-scroll"><table class="ledger"><thead><tr><th scope="col">ツール</th><th scope="col" class="num">回数</th><th scope="col" class="num">成功</th><th scope="col" class="num">失敗</th><th scope="col" class="num">拒否</th><th scope="col" class="barcol"><span class="sr-only">割合</span></th></tr></thead><tbody>${rows
+  // 結果(complete)が対応しなかった呼び出し。中断などで実際に起きる(実データで task 111 回のうち 1 回)。どれかにあるときだけ列を出す
+  const noResult = (k: string, calls: number): number => {
+    const res = r.tools.results?.[k];
+    return res ? Math.max(0, calls - res.success - res.failure - res.denied) : 0;
+  };
+  const anyNoResult = rows.some(([k, v]) => noResult(k, v) > 0);
+  return `<div class="table-scroll"><table class="ledger"><thead><tr><th scope="col">ツール</th><th scope="col" class="num">回数</th><th scope="col" class="num">成功</th><th scope="col" class="num">失敗</th><th scope="col" class="num">拒否</th>${anyNoResult ? '<th scope="col" class="num">結果なし</th>' : ''}<th scope="col" class="barcol"><span class="sr-only">割合</span></th></tr></thead><tbody>${rows
     .map(([k, v]) => {
       const res = r.tools.results?.[k];
       const server = serverOf.get(k);
-      return `<tr><th scope="row">${esc(k)}${server ? ` <span class="tag">MCP: ${esc(server)}</span>` : ''}</th><td class="num">${esc(int(v))}</td><td class="num">${res ? esc(int(res.success)) : missing('—')}</td><td class="num">${res ? esc(int(res.failure)) : missing('—')}</td><td class="num">${res ? esc(int(res.denied)) : missing('—')}</td><td class="barcol"><span class="bar" style="width:${((v / max) * 100).toFixed(1)}%"></span></td></tr>`;
+      const nr = noResult(k, v);
+      return `<tr><th scope="row">${esc(k)}${server ? ` <span class="tag">MCP: ${esc(server)}</span>` : ''}</th><td class="num">${esc(int(v))}</td><td class="num">${res ? esc(int(res.success)) : missing('—')}</td><td class="num">${res ? esc(int(res.failure)) : missing('—')}</td><td class="num">${res ? esc(int(res.denied)) : missing('—')}</td>${anyNoResult ? `<td class="num">${nr ? esc(int(nr)) : missing('—')}</td>` : ''}<td class="barcol"><span class="bar" style="width:${((v / max) * 100).toFixed(1)}%"></span></td></tr>`;
     })
-    .join('')}</tbody></table></div>`;
+    .join('')}</tbody></table></div>${anyNoResult ? '<p class="note">結果なし: 呼び出しの開始はあるが、終わり(成功・失敗・拒否)の記録が無いもの(中断など)。</p>' : ''}`;
+}
+
+
+/** 明細のある出所(リクエスト単位の記録) */
+const PER_REQUEST_SOURCES: readonly TokenSource[] = ['db', 'events', 'db+events'];
+
+/** API リクエストの値。明細も終了時の累計の件数も無ければ 0 ではなく記録なし */
+function requestsValue(t: SessionTokens): string {
+  if (t.requests == null || !(PER_REQUEST_SOURCES.includes(t.source) || t.source === 'shutdown')) return missing();
+  return esc(int(t.requests));
+}
+
+/** API リクエストの出所(明細 / 終了時の累計 / 無し) */
+export function requestsNote(t: SessionTokens): string {
+  if (PER_REQUEST_SOURCES.includes(t.source)) return 'リクエスト単位の明細の件数';
+  if (t.source === 'shutdown') return t.requests == null ? '終了時の累計(shutdown)に件数が無い' : '終了時の累計(shutdown)の件数';
+  return 'リクエスト単位の明細も終了時の累計も無い';
+}
+
+/** premium request の出所。明細の行に 1 つも値が無ければ終了時の累計で補っている(normalize の buildTokens) */
+function premiumNote(t: SessionTokens): string {
+  const fromRows = PER_REQUEST_SOURCES.includes(t.source) && Object.values(t.byModel).some((m) => m.premiumRequests != null);
+  return fromRows ? 'ユーザー起点のリクエストの倍率の和(明細)' : '終了時の累計(shutdown)';
+}
+
+/** 同じ内容(contentHash)の指示文を 1 行にまとめる。検出の仕方が 2 通りあると同じファイルが 2 行になるため
+ *  (ソースのパスがある行 > ファイルを特定できた行 > 先の行 を残し、注入回数は足し、初出は早い方) */
+export function mergeInstructionRows(rows: InstructionInjection[]): InstructionInjection[] {
+  const rank = (i: InstructionInjection): number => (i.sourcePath ? 2 : i.file !== 'unknown' ? 1 : 0);
+  const byHash = new Map<string, InstructionInjection>();
+  for (const i of rows) {
+    const cur = byHash.get(i.contentHash);
+    if (!cur) {
+      byHash.set(i.contentHash, { ...i });
+      continue;
+    }
+    const keep = rank(i) > rank(cur) ? { ...i } : cur;
+    keep.injections = cur.injections + i.injections;
+    const firsts = [cur.firstSeenAt, i.firstSeenAt].filter((x): x is string => x != null).sort((a, b) => Date.parse(a) - Date.parse(b));
+    keep.firstSeenAt = firsts[0] ?? null;
+    byHash.set(i.contentHash, keep);
+  }
+  return [...byHash.values()];
 }
 
 function tokenRow(label: string, t: TokenCounts): string {
@@ -145,7 +203,10 @@ function tokenTable(rows: [string, TokenCounts][], keyLabel: string): string {
 
 function timelineRow(e: TimelineEntry, anon: Anonymizer): string {
   let label: string;
-  if (e.kind === 'user') {
+  if (e.kind === 'user' && e.label.trim() === '') {
+    // 本文が空の依頼(content: "" のものが実データにある)
+    label = missing('(本文なし)');
+  } else if (e.kind === 'user') {
     const t = anon.freeText(e.label);
     label = t == null ? missing('伏せ字モードのため本文を表示しません') : esc(truncate(t, 400));
   } else if (e.kind === 'tools') {
@@ -209,10 +270,15 @@ function execSection(r: SessionRecord, anon: Anonymizer): string {
   const initTotal = initKeys.reduce((a, k) => a + e.initiators[k], 0);
   const initText = initKeys.map((k) => `${initiatorLabel(k)} ${int(e.initiators[k])}(${percent(e.initiators[k], initTotal)})`).join('・');
   const c = e.context;
-  const ctxSum = c.systemTokens != null && c.conversationTokens != null && c.toolDefinitionsTokens != null ? c.systemTokens + c.conversationTokens + c.toolDefinitionsTokens : null;
+  // system・会話がともに 0 なのは空の終了記録(古い sessions.json に残っているもの)。割合が 100% にならないよう記録なしとみなす
+  const ctxEmpty = c.systemTokens === 0 && c.conversationTokens === 0;
+  const sysTok = ctxEmpty ? null : c.systemTokens;
+  const convTok = ctxEmpty ? null : c.conversationTokens;
+  const ctxSum = sysTok != null && convTok != null && c.toolDefinitionsTokens != null ? sysTok + convTok + c.toolDefinitionsTokens : null;
   const ctxNote = [
-    c.systemTokens != null ? `system ${int(c.systemTokens)}` : '',
-    c.conversationTokens != null ? `会話 ${int(c.conversationTokens)}` : '',
+    sysTok != null ? `system ${int(sysTok)}` : '',
+    convTok != null ? `会話 ${int(convTok)}` : '',
+    c.toolDefinitionsTokens != null && !ctxSum ? '文脈に占める割合は出せない(system・会話の記録なし)' : '',
     c.availableToolCount != null ? `使えるツール ${int(c.availableToolCount)} 個` : '',
     c.source ? `出所: ${c.source === 'shutdown' ? '終了時' : c.source === 'compaction' ? 'compaction' : 'usage_record の toolTokenCount'}` : '',
   ]
@@ -279,7 +345,10 @@ function execSection(r: SessionRecord, anon: Anonymizer): string {
             ? `<span class="small">入力 ${esc(int(f.compaction.input))}・出力 ${esc(int(f.compaction.output))}</span>`
             : missing(r.friction.compactions ? '記録なし' : 'なし'),
           f.compaction.recorded
-            ? `${f.compaction.nanoAiu ? `${esc(dec(f.compaction.nanoAiu / 1e9))} AIU・` : ''}減ったトークン ${esc(int(f.compaction.tokensRemoved))}`
+            ? `${f.compaction.nanoAiu ? `${esc(dec(f.compaction.nanoAiu / 1e9))} AIU・` : ''}減ったトークン ${
+                // tokensRemoved を持つ compaction が無ければ 0 ではなく記録なし(古い記録は removedRecorded が無いので値で判断)
+                (f.compaction.removedRecorded ?? (f.compaction.tokensRemoved > 0 ? 1 : 0)) > 0 ? esc(int(f.compaction.tokensRemoved)) : '記録なし'
+              }`
             : '',
         ),
       ].join('')}</div>`
@@ -300,9 +369,19 @@ function execSection(r: SessionRecord, anon: Anonymizer): string {
     : '';
 
   // 失敗したサブエージェントの理由(本文は短く。伏せ字モードでは種別のような識別子のときだけ出す)
-  const failed = r.agents.filter((a) => a.status === 'failed' && a.error);
-  const reasons = failed.length
-    ? `<h3>失敗したサブエージェント</h3><ul class="note">${failed.map((a) => `<li>${esc(a.name)}: ${anon.enabled ? identifierOrHidden(a.error ?? '', anon) : esc(truncate(a.error ?? '', 160))}</li>`).join('')}</ul>`
+  // 同じ名前・同じ理由は 1 行にまとめて ×N を添える(実データで同じ 402 / 429 の行が 9〜15 行並んだ)
+  const failedGroups = new Map<string, { name: string; error: string; count: number }>();
+  for (const a of r.agents) {
+    if (a.status !== 'failed' || !a.error) continue;
+    const key = JSON.stringify([a.name, a.error]);
+    const g = failedGroups.get(key);
+    if (g) g.count++;
+    else failedGroups.set(key, { name: a.name, error: a.error, count: 1 });
+  }
+  const reasons = failedGroups.size
+    ? `<h3>失敗したサブエージェント</h3><ul class="note">${[...failedGroups.values()]
+        .map((g) => `<li>${esc(g.name)}: ${anon.enabled ? identifierOrHidden(g.error, anon) : esc(truncate(g.error, 160))}${g.count > 1 ? ` <span class="tag">×${esc(int(g.count))}</span>` : ''}</li>`)
+        .join('')}</ul>`
     : '';
 
   return section(
@@ -387,18 +466,16 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
     field('依頼(ターン)', esc(int(r.turns)), r.autopilotContinuations ? `autopilot の自動継続 ${esc(int(r.autopilotContinuations))} 回は含めない` : ''),
     field('応答', esc(int(r.assistantMessages)), 'サブエージェントの応答は含めない'),
     field('モデル', r.models.length ? `<span class="small" title="${esc(r.models.join('、'))}">${esc(r.models.map(modelLabel).join('、'))}</span>` : missing('不明')),
-    field('入力トークン', t.input == null ? missing('推計不可') : esc(int(t.input)), esc(SOURCE_LABEL[t.source])),
-    field('出力トークン', esc(int(t.output)), esc(SOURCE_LABEL[t.source])),
+    // トークンの記録が何も無いセッションは入力・出力とも「記録なし」(atlas.html の一覧と同じ。推計不可は出力だけ記録があるとき)
+    field('入力トークン', t.input == null ? missing(coverageOf(t) === 'none' ? '記録なし' : '推計不可') : esc(int(t.input)), esc(SOURCE_LABEL[t.source])),
+    field('出力トークン', coverageOf(t) === 'none' ? missing() : esc(int(t.output)), esc(SOURCE_LABEL[t.source])),
     field('うち推論トークン', n(t.reasoning)),
     field('キャッシュ読取', n(t.cacheRead), t.cacheWrite != null ? `書込 ${esc(int(t.cacheWrite))}` : ''),
     field('AI 使用量(AIU)', t.nanoAiu == null ? missing() : esc(dec(t.nanoAiu / 1e9)), t.nanoAiu != null ? `nano AIU ${esc(int(t.nanoAiu))}` : ''),
-    field('API リクエスト', n(t.requests), 'リクエスト単位の明細があるときだけ'),
+    field('premium request', t.premiumRequests == null ? missing() : esc(dec(t.premiumRequests)), t.premiumRequests == null ? '' : esc(premiumNote(t))),
+    field('API リクエスト', requestsValue(t), esc(requestsNote(t))),
     field('ツール呼び出し', esc(int(r.tools.total)), r.tools.internal?.total ? `内部ツール ${esc(int(r.tools.internal.total))} 回は除外` : ''),
-    field(
-      '変更行数',
-      lines.source === 'none' ? missing() : `+${esc(int(lines.added))} / −${esc(int(lines.removed))}`,
-      esc(lines.source === 'none' ? 'codeChanges もツールの行数も無い' : LINES_SOURCE_LABEL[lines.source]),
-    ),
+    field('変更行数', lines.source === 'none' ? missing() : `+${esc(int(lines.added))} / −${esc(int(lines.removed))}`, esc(linesNoteText(lines))),
     field('skill / agent / hook', `${esc(int(r.skills.length))} / ${esc(int(r.agents.length))} / ${esc(int(r.hooks.total))}`),
     field('摩擦', esc(int(frictionTotal(r.friction)))),
     field(
@@ -476,8 +553,9 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
 
   parts.push(section('skills / agents / hooks', `<div class="two"><div><h3>skills</h3>${skills}</div><div><h3>agents</h3>${agents}</div></div><h3 class="gap">hooks</h3>${hooks}`));
 
-  const inst = r.instructions.length
-    ? `<div class="table-scroll"><table class="ledger"><thead><tr><th scope="col">ファイル</th><th scope="col">範囲</th><th scope="col" class="num">文字数</th><th scope="col" class="num">注入回数</th><th scope="col">初出</th>${anon.enabled ? '' : '<th scope="col">先頭の見出し</th>'}</tr></thead><tbody>${r.instructions
+  const instRows = mergeInstructionRows(r.instructions);
+  const inst = instRows.length
+    ? `<div class="table-scroll"><table class="ledger"><thead><tr><th scope="col">ファイル</th><th scope="col">範囲</th><th scope="col" class="num">文字数</th><th scope="col" class="num">注入回数</th><th scope="col">初出</th>${anon.enabled ? '' : '<th scope="col">先頭の見出し</th>'}</tr></thead><tbody>${instRows
         .map(
           (i) =>
             `<tr><td>${esc(i.file === 'unknown' ? '不明(特定できず)' : i.file)}</td><td>${esc(i.scope === 'repo' ? 'リポジトリ' : i.scope === 'user' ? 'ユーザー' : '不明')}</td><td class="num">${esc(int(i.chars))}</td><td class="num">${esc(int(i.injections))}</td><td class="num">${esc(dateTime(i.firstSeenAt))}</td>${anon.enabled ? '' : `<td>${o.libraryHref ? `<a href="${esc(o.libraryHref)}#v-${esc(i.contentHash)}">${esc(cleanHeading(i.heading, 80) || '(見出しなし)')}</a>` : esc(cleanHeading(i.heading, 80) || '(見出しなし)')}</td>`}</tr>`,
@@ -520,14 +598,20 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
 
   const w = r.wiki;
   const wikiUsed = w.indexReads + w.pageReads.length + w.skillCalls.length + w.writes + w.otherCalls > 0;
-  const pages = !anon.enabled && w.pageReads.length ? `<ul class="note">${w.pageReads.map((p) => `<li>${esc(p)}</li>`).join('')}</ul>` : '';
+  // 同じページを何度も読むことがあるので、1 行にまとめて ×N を添える(読んだ順)
+  const pageCounts = new Map<string, number>();
+  for (const p of w.pageReads) pageCounts.set(p, (pageCounts.get(p) ?? 0) + 1);
+  const pages =
+    !anon.enabled && pageCounts.size
+      ? `<ul class="note">${[...pageCounts].map(([p, c]) => `<li>${esc(p)}${c > 1 ? ` <span class="tag">×${esc(int(c))}</span>` : ''}</li>`).join('')}</ul>`
+      : '';
   parts.push(
     section(
       'llm-wiki の参照',
       wikiUsed
         ? `<div class="fields" style="--cols:5">${[
             field('索引', esc(int(w.indexReads))),
-            field('個別ページ', esc(int(w.pageReads.length))),
+            field('個別ページ', esc(int(w.pageReads.length)), pageCounts.size !== w.pageReads.length ? `${esc(int(pageCounts.size))} ページ` : ''),
             field('wiki skill', esc(int(w.skillCalls.length)), esc(w.skillCalls.join('、'))),
             field('書き込み', esc(int(w.writes))),
             field('その他', esc(int(w.otherCalls))),
@@ -543,12 +627,16 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
       `<div class="fields" style="--cols:3">${[
         field('compaction', esc(int(f.compactions))),
         field('中断(abort)', esc(int(f.aborts))),
-        field('エラー', esc(int(f.errors)), 'session.error(ツール失敗は別)'),
+        field('エラー', esc(int(f.errors)), 'session.error(ツール失敗・サブエージェントの失敗は別)'),
         field('権限の確認', esc(int(f.permissionRequests))),
         field('ask_user', esc(int(f.askUser))),
         field('ツール失敗', esc(int(f.toolFailures))),
         field('agent 失敗', esc(int(f.subagentFailures))),
-        field('モデル変更', esc(int(f.modelChanges)), '摩擦の合計には含めない'),
+        field(
+          'モデル変更',
+          esc(int(f.modelChanges)),
+          `摩擦の合計には含めない${r.frictionDetail?.agentModelChanges ? `。サブエージェントの起動に伴う切り替え ${esc(int(r.frictionDetail.agentModelChanges))} 回は含めない` : ''}`,
+        ),
         field('モード変更', esc(int(f.modeChanges)), '摩擦の合計には含めない'),
       ].join('')}</div>`,
     ),
