@@ -2,7 +2,8 @@
 // 書き込み(atlas group add / remove)は、壊れたファイルを上書きしない(直してもらう)。
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { renameReplacing } from '../../core/src/index.ts';
 import { dirname } from 'node:path';
 import { parseGroups, serializeGroups, type SessionGroup } from './lib/groups.ts';
 
@@ -39,7 +40,7 @@ export async function saveGroups(path: string, groups: SessionGroup[]): Promise<
   const tmp = `${path}.${randomUUID()}.tmp`;
   await writeFile(tmp, serializeGroups(groups));
   try {
-    await rename(tmp, path);
+    await renameReplacing(tmp, path);
   } catch (e) {
     await rm(tmp, { force: true });
     throw e;

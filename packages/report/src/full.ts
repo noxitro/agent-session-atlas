@@ -7,10 +7,10 @@
 // - チェックポイントと plan.md(スナップショットのセッションフォルダ)、data.db の許可列(desktop)も節として出す
 // - イベントは AsyncIterable で受け取り、出力は sink に逐次書く(セッション全体をメモリに載せない。backpressure は sink 側)
 import { createWriteStream, existsSync } from 'node:fs';
-import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { extname, join } from 'node:path';
-import { isUserTurn, loadStore, mergeUsage, parseEvents, type CopilotEvent, type DbUsageRow, type SessionRecord } from '../../core/src/index.ts';
+import { isUserTurn, loadStore, mergeUsage, parseEvents, renameReplacing, type CopilotEvent, type DbUsageRow, type SessionRecord } from '../../core/src/index.ts';
 import { CoverageCounter, ruleFor, type CoverageEntry } from './coverage.ts';
 import { dateTime, int } from './lib/format.ts';
 import { redactSecrets, rel } from './transcript.ts';
@@ -110,7 +110,7 @@ export function createFileSink(path: string): FileSink {
         ws.end(() => resolve());
       });
       check();
-      await rename(tmp, path);
+      await renameReplacing(tmp, path);
     },
     async abort(): Promise<void> {
       // ファイルを開き終える前に消すと、消した後で tmp ができてしまう。閉じ終わるのを待ってから消す

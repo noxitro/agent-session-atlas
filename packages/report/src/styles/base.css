@@ -295,6 +295,8 @@ dl.glossary dd {
 }
 
 .table-scroll {
+  /* 中の絶対配置(見出しの .sr-only など)の基準をこの枠にする。外が基準だと、表が枠より広いときに枠で切られずページ幅を広げる */
+  position: relative;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
   /* 横に続きがあるときだけ端に影を出す(背景を局所スクロールさせる手法。表の背景は透過にする) */
@@ -332,7 +334,7 @@ dl.glossary dd {
     font-size: 1.125rem;
   }
   dl.glossary {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
   dl.glossary dt {
     border-bottom: 0;

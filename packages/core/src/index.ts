@@ -25,6 +25,7 @@ export { extractInstructionBlocks, resolveInstructions, charCount, fileFromPath,
 export { emptyWiki, WikiClassifier } from './wiki.ts';
 export type { WikiSpec } from './wiki.ts';
 export { loadSqlite, openReadOnly, openWritable } from './sqlite.ts';
+export { renameReplacing } from './fs-retry.ts';
 export type { Database } from './sqlite.ts';
 export { runPipeline } from './pipeline.ts';
 export type { PipelineResult } from './pipeline.ts';

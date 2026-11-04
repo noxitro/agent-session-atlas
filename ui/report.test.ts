@@ -43,6 +43,10 @@ describe('画面の操作', () => {
     page.on('console', (m) => {
       if (m.type() === 'error') problems.push(`console: ${m.text()}`);
     });
+    // サーバの内部エラーは本文(原因の文言)も残す。console の「500」だけでは何が失敗したか分からない
+    page.on('response', async (r) => {
+      if (r.status() >= 500) problems.push(`${r.request().method()} ${new URL(r.url()).pathname} → ${r.status()}: ${await r.text().catch(() => '(本文を読めず)')}`);
+    });
   });
   afterAll(async () => {
     await browser?.close();
@@ -50,7 +54,8 @@ describe('画面の操作', () => {
     await close?.();
   });
   afterEach(() => {
-    expect(problems).toEqual([]);
+    // 次のテストに持ち越さない(1 件の失敗で後のテストがすべて落ちて、どこで起きたか分からなくならないように)
+    expect(problems.splice(0)).toEqual([]);
   });
 
   const shown = async (): Promise<number> => Number((await page.getByTestId('shown-count').innerText()).replace(/,/g, ''));

@@ -427,7 +427,7 @@ blockquote.msg{margin:8px 0 0;padding:10px 12px;background:var(--surface);border
 .two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}
 .three{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:24px}
 .three ul{overflow-wrap:anywhere}
-@media (max-width:720px){.two,.three{grid-template-columns:1fr}}
+@media (max-width:720px){.two,.three{grid-template-columns:minmax(0,1fr)}}
 `;
 
 /** Phase 13: メモの節。無ければ hidden の空の節を置く(atlas serve では編集の script がここに描く)。伏せ字版では節ごと出さない */

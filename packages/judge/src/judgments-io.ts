@@ -1,7 +1,8 @@
 // judgments.json の読み書き・外部判定の取り込み
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { renameReplacing } from '../../core/src/index.ts';
 import {
   emptyJudgments,
   itemProblems,
@@ -36,7 +37,7 @@ export async function writeJudgments(path: string, j: JudgmentsFile): Promise<vo
   await mkdir(dirname(path), { recursive: true });
   const tmp = `${path}.${process.pid}.tmp`;
   await writeFile(tmp, `${JSON.stringify(j, null, 2)}\n`);
-  await rename(tmp, path);
+  await renameReplacing(tmp, path);
 }
 
 export interface ImportResult {

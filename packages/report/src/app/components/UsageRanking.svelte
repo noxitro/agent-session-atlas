@@ -442,7 +442,7 @@
   }
   @media (max-width: 720px) {
     .bars li {
-      grid-template-columns: 1fr;
+      grid-template-columns: minmax(0, 1fr);
       gap: 2px;
     }
     .sub {

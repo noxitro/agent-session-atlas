@@ -91,15 +91,17 @@
         </ol>
       {/if}
       {#if versions.length}
-        <table class="ledger small">
-          <caption class="cap">注入されたセッションの多い版(上位 {Math.min(TOP, versions.length)} / 全 {int(versions.length)} 版)</caption>
-          <thead><tr><th scope="col">版</th><th scope="col" class="num">字数</th><th scope="col" class="num">セッション</th><th scope="col" class="num">失敗率</th><th scope="col" class="num">手戻り率</th></tr></thead>
-          <tbody>
-            {#each versions.slice(0, TOP) as v (v.hash)}
-              <tr><td>{#if vhref(v.hash)}<a href={vhref(v.hash)}>{vname(v.hash)}</a>{:else}{vname(v.hash)}{/if}</td><td class="num">{int(v.chars)}</td><td class="num">{int(v.sessions)}</td><td class="num">{v.enough ? pct(v.failureRate) : '—'}</td><td class="num">{v.enough ? pct(v.reworkRate) : '—'}</td></tr>
-            {/each}
-          </tbody>
-        </table>
+        <div class="table-scroll">
+          <table class="ledger small">
+            <caption class="cap">注入されたセッションの多い版(上位 {Math.min(TOP, versions.length)} / 全 {int(versions.length)} 版)</caption>
+            <thead><tr><th scope="col">版</th><th scope="col" class="num">字数</th><th scope="col" class="num">セッション</th><th scope="col" class="num">失敗率</th><th scope="col" class="num">手戻り率</th></tr></thead>
+            <tbody>
+              {#each versions.slice(0, TOP) as v (v.hash)}
+                <tr><td>{#if vhref(v.hash)}<a href={vhref(v.hash)}>{vname(v.hash)}</a>{:else}{vname(v.hash)}{/if}</td><td class="num">{int(v.chars)}</td><td class="num">{int(v.sessions)}</td><td class="num">{v.enough ? pct(v.failureRate) : '—'}</td><td class="num">{v.enough ? pct(v.reworkRate) : '—'}</td></tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
         <p class="basis">失敗率: ツールの失敗・拒否 / 呼び出し。手戻り率: 同じファイルを 2 回以上編集したセッションの割合。— は {THRESHOLDS.MIN_SESSIONS} セッション未満。</p>
       {/if}
     </div>
@@ -109,15 +111,17 @@
       {#if skills.stats.length === 0}
         <p class="basis">skill の呼び出しはありません。</p>
       {:else}
-        <table class="ledger small">
-          <caption class="cap">呼び出しの多い skill(上位 {Math.min(TOP, skills.stats.length)} / 全 {int(skills.stats.length)} 件)</caption>
-          <thead><tr><th scope="col">skill</th><th scope="col" class="num">呼び出し</th><th scope="col" class="num">字数</th>{#if skillRates}<th scope="col" class="num">失敗率(呼んだ / 呼ばない)</th>{/if}</tr></thead>
-          <tbody>
-            {#each skills.stats.slice(0, TOP) as s (s.name)}
-              <tr><td>{s.name}</td><td class="num">{int(s.calls)}</td><td class="num">{s.chars == null ? '記録なし' : int(s.chars)}</td>{#if skillRates}<td class="num">{pct(s.failureWith)} / {pct(s.failureWithout)}</td>{/if}</tr>
-            {/each}
-          </tbody>
-        </table>
+        <div class="table-scroll">
+          <table class="ledger small">
+            <caption class="cap">呼び出しの多い skill(上位 {Math.min(TOP, skills.stats.length)} / 全 {int(skills.stats.length)} 件)</caption>
+            <thead><tr><th scope="col">skill</th><th scope="col" class="num">呼び出し</th><th scope="col" class="num">字数</th>{#if skillRates}<th scope="col" class="num">失敗率(呼んだ / 呼ばない)</th>{/if}</tr></thead>
+            <tbody>
+              {#each skills.stats.slice(0, TOP) as s (s.name)}
+                <tr><td>{s.name}</td><td class="num">{int(s.calls)}</td><td class="num">{s.chars == null ? '記録なし' : int(s.chars)}</td>{#if skillRates}<td class="num">{pct(s.failureWith)} / {pct(s.failureWithout)}</td>{/if}</tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
         {#if !skillRates}<p class="basis">{THRESHOLDS.MIN_SESSIONS} セッション以上で呼ばれた skill が無いので、呼んだときと呼ばないときの失敗率は比べられません。</p>{/if}
       {/if}
       {#if skills.unused.length}<p class="basis">インストール済みで未使用: {skills.unused.map((n) => (disabledSet.has(n.toLowerCase()) ? `${n}(無効)` : n)).join('、')}</p>{/if}

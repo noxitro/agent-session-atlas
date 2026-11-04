@@ -12,7 +12,8 @@
 //  - アクセシビリティの基本(全ページ): lang / 名前の無いリンクとボタン / alt の無い画像 / ラベルの無い入力欄 / 見出しの段の飛び(warn)
 //  - 実行時(全ページ): ページ内の例外とコンソールのエラー
 //  - レイアウト(主要ページと詳細ページの見本、375 / 1024 / 1440px × ライト / ダーク): 横のはみ出し / 文字のコントラスト不足 /
-//    切れた文字(warn)/ キーボードで届かないスクロール領域(warn)/ 375px での小さすぎる押す的(warn)
+//    切れた文字(warn)/ キーボードで届かないスクロール領域(warn)/ 375px での小さすぎる押す的(warn)/
+//    375px で字間を広げた状態(字幅の広いフォントの代わり)での横のはみ出し
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join, relative, resolve, dirname, sep } from 'node:path';
@@ -47,6 +48,8 @@ const VIEWPORTS = [
   { name: '1440', width: 1440, height: 900 },
 ] as const;
 const SCHEMES = ['light', 'dark'] as const;
+/** 字幅の広いフォントの代わりに足す字間。CI(Linux)で 375px の詳細ページが 7〜17px はみ出したときの差を、手元(Windows)で再現できる強さ */
+const WIDE_TEXT_SPACING = '.1em';
 
 /** 生成物のうち検査する HTML(トップの *.html と sessions/*.html) */
 export function listPages(outDir: string): string[] {
@@ -365,6 +368,13 @@ export async function audit(outDir: string, o: AuditOptions = {}): Promise<Audit
           };
           await run('');
           if (rel === 'atlas.html') await eachTab(page, (label) => run(` タブ「${label}」`));
+          // 字の幅は OS のフォントで変わる(Linux の Noto は Windows の游ゴシックより広く、CI でだけはみ出した)。
+          // 375px では字間を広げた状態でも横のはみ出しだけを確かめ、手元のフォントで収まっていても見逃さないようにする
+          if (vp.width < 768 && scheme === 'light') {
+            await page.addStyleTag({ content: `body{letter-spacing:${WIDE_TEXT_SPACING}}` });
+            const res = (await page.evaluate(`${LAYOUT_CHECK}(true)`)) as { severity: 'error' | 'warn'; kind: string; detail: string }[];
+            for (const f of res) if (f.kind === '横にはみ出している') findings.push({ page: rel, ...f, kind: '横にはみ出している(字幅の広いフォント)', where });
+          }
           if (o.shotsDir && !rel.startsWith('sessions/')) await page.screenshot({ path: join(o.shotsDir, `${rel.replace(/[\\/]/g, '_')}-${vp.name}-${scheme}.png`), fullPage: true });
           for (const e of errors) findings.push({ page: rel, severity: 'error', kind: '実行時のエラー', detail: e, where });
           await page.close();

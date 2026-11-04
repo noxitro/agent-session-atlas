@@ -372,7 +372,7 @@
   }
   @media (max-width: 720px) {
     .kv div {
-      grid-template-columns: 1fr;
+      grid-template-columns: minmax(0, 1fr);
       gap: 0;
     }
   }

@@ -2,7 +2,8 @@
 // 画像は <id>/ の下に内容のハッシュの名前で置き、本文からは相対パスで参照する(他の Markdown ビューアでもそのまま読める)。
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { renameReplacing } from '../../core/src/index.ts';
 import { extname, join } from 'node:path';
 import { isSafeFileName, isSafeMemoId, MEMOS_DIR_NAME } from './lib/memo.ts';
 import { renderMemoHtml } from './memo-render.ts';
@@ -71,7 +72,7 @@ export async function saveMemo(dir: string, id: string, text: string, baseRev: s
   const tmp = `${path}.${randomUUID()}.tmp`;
   await writeFile(tmp, text);
   try {
-    await rename(tmp, path);
+    await renameReplacing(tmp, path);
   } catch (e) {
     await rm(tmp, { force: true });
     throw e;

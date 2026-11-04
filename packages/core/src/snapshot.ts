@@ -1,8 +1,9 @@
-import { copyFile, mkdir, readdir, readFile, rename, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { basename, dirname, join, relative } from 'node:path';
 import { readDesktopDb } from './desktop.ts';
 import { openWritable, sqlString } from './sqlite.ts';
+import { renameReplacing } from './fs-retry.ts';
 import type { InstalledInventory } from './types.ts';
 
 /** 複製する SQLite(ルート直下)。data.db(デスクトップアプリ)は資格情報列を含むので複製せず、Phase 11 から許可リストの列だけを desktop.json に書く */
@@ -536,7 +537,7 @@ async function copySqlite(from: string, to: string, tmpDir: string): Promise<{ a
         await sleep(200 * attempt);
         continue;
       }
-      await rename(fresh, to);
+      await renameReplacing(fresh, to);
       return { attempts: attempt };
     }
     throw new Error(`${from} を一貫した状態で複製できなかった(${SQLITE_COPY_ATTEMPTS} 回): ${lastProblem}`);
