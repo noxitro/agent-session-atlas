@@ -9,7 +9,7 @@ import { applyFilter, currentGroupName, decodeFilter, effectiveIds, emptyFilter,
 import { addIds, parseGroups, removeIds, resolveIdPrefixes, serializeGroups } from '../src/lib/groups.ts';
 import { parseJudgments } from '../src/lib/judgments.ts';
 import { niceTicks } from '../src/lib/scale.ts';
-import { modelLabel } from '../src/lib/format.ts';
+import { modelLabel, sharedLeads, splitLead } from '../src/lib/format.ts';
 import { summarize } from '../src/lib/summarize.ts';
 import type { JudgmentSummary, SessionSummary } from '../src/lib/types.ts';
 
@@ -498,5 +498,42 @@ describe('modelLabel', () => {
     expect(modelLabel('gpt-5.5')).toBe('gpt-5.5');
     expect(modelLabel('(unknown)')).toBe('不明');
     expect(modelLabel('odd/')).toBe('odd/');
+  });
+});
+
+describe('一覧の題名の見分け(sharedLeads)', () => {
+  it('20 字以上同じ書き出しは、直前の区切りから違いを見せる。まったく同じ題名は件数だけ', () => {
+    const a = 'HARNESS.md の Phase 1 の節。実装役の報告: ビルド成功';
+    const b = 'HARNESS.md の Phase 1 の節。実装役の報告は次のとおり';
+    const r = sharedLeads([a, b, '短い依頼', 'OK と返して', 'OK と返して']);
+    // 違いは「実装役の報告」の後から始まるが、直前の区切り(。)まで戻す
+    expect([...a].slice(r[0].cut).join('')).toBe('実装役の報告: ビルド成功');
+    expect([...b].slice(r[1].cut).join('')).toBe('実装役の報告は次のとおり');
+    expect(r[2]).toEqual({ cut: 0, same: 1 });
+    // 書き出しの一致が 20 字未満なら縮めない。まったく同じ題名は縮めず件数を返す
+    expect(r[3]).toEqual({ cut: 0, same: 2 });
+  });
+
+  it('まったく同じ題名が複数あっても、別の題名との違いの位置で縮める', () => {
+    const head = 'このフォルダは C++ のゲームエンジンのソースです。';
+    const r = sharedLeads([`${head}Reset を呼ぶ箇所`, `${head}Reset を呼ぶ箇所`, `${head}Read を呼ぶ箇所`]);
+    expect([...`${head}Reset を呼ぶ箇所`].slice(r[0].cut).join('')).toBe('Reset を呼ぶ箇所');
+    expect(r[0].same).toBe(2);
+    expect(r[2]).toMatchObject({ same: 1 });
+    expect(r[2].cut).toBe(r[0].cut);
+  });
+
+  it('違いの位置は英数の記号(:: や .)では切らず、和文の句読点か空白まで戻す。残す書き出しも区切りで切る', () => {
+    const head = 'このフォルダは C++ のゲームエンジンのソースです。';
+    const a = `${head}\`nox::io::File::Read\` を呼ぶ箇所`;
+    const b = `${head}\`nox::JobSystem::Initialize\` を呼ぶ箇所`;
+    const [ra] = sharedLeads([a, b]);
+    expect(splitLead(a, ra.cut, 70)).toEqual({ lead: 'このフォルダは…', rest: '`nox::io::File::Read` を呼ぶ箇所' });
+  });
+
+  it('空白の違いは同じとみなし、短い一致は縮めない', () => {
+    const r = sharedLeads(['リポジトリの README を  更新して。章立ては変えない', 'リポジトリの README を 更新して。章立ては変える', 'リポジトリの別の話']);
+    expect(r[0].cut).toBeGreaterThan(0);
+    expect(r[2]).toEqual({ cut: 0, same: 1 });
   });
 });

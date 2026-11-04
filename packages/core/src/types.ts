@@ -12,7 +12,8 @@ import type { DesktopData, DesktopSessionInfo } from './desktop-types.ts';
 // 7: availableSkills(システムメッセージの <available_skills> に並んだ、そのセッションで使えた skill)
 // 8: 実データとの突き合わせの修正(lines.note / frictionDetail.compaction.removedRecorded・agentModelChanges /
 //    timeline の shutdown 行。abort の 2 件目・サブエージェント失敗と対の session.error・source: agent のモデル切り替えは数えない)
-export const SESSIONS_SCHEMA_VERSION = 8;
+// 9: analysis.turnActiveMs(ターンごとの実働。スキル化の候補のスコアに使う)
+export const SESSIONS_SCHEMA_VERSION = 9;
 export const METRICS_SCHEMA_VERSION = 4;
 
 // ---------- 入力(生データ) ----------
@@ -189,6 +190,8 @@ export interface SessionAnalysis {
   turnTools: string[][];
   /** ターンごとの所要(ms。次のターンまたは最後のイベントまで。分からなければ null) */
   turnMs: (number | null)[];
+  /** ターンごとの実働(ms。ターンの中で 5 分を超えてイベントが無かった区間を除く。返答待ちや放置を含めない。分からなければ null) */
+  turnActiveMs: (number | null)[];
   /** 依頼文の先頭 300 字(ターンごと、先頭 200 件。伏せ字版の HTML には埋め込まない) */
   requests: string[];
 }

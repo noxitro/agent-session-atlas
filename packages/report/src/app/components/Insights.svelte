@@ -1,7 +1,8 @@
 <script lang="ts">
-  // Phase 12: 改善点(LLM を呼ばない規則の集計)。指示文・skill・時間の使われ方は絞り込みに従って再計算する。
-  // ただし「長いのに注入が少ない」は全体での希少さの話なので allSessions で計算する。
-  // スキル化の候補は build 時に全セッションで計算したもの(埋め込み)を出す。全件は insights.html
+  // Phase 12: 改善点(LLM を呼ばない規則の集計)。カードは計算の対象で 2 つの群に分け、1 枚のカードに対象を混ぜない。
+  // 絞り込みに従う群: 指示文の傾向・skill の傾向・止まっている箇所(sessions で再計算)。
+  // 全記録の群: 「長いのに注入が少ない」(全体での希少さの話なので allSessions)と、スキル化の候補
+  // (依頼文の本文が要るので build 時に全セッションで計算して埋め込んだもの。全件は insights.html)
   import { shortProjectLabel } from '../../lib/anonymize.ts';
   import { date, dec, duration, int } from '../../lib/format.ts';
   import { cleanHeading, instructionFindings, instructionVersions, skillStats, stuckByProject, stuckSessions, THRESHOLDS, type Candidate, type VersionMeta } from '../../lib/insights.ts';
@@ -14,6 +15,7 @@
     disabled = [],
     meta,
     candidates,
+    candidateTotal,
     computedOver,
     anonymized,
     hasPage,
@@ -27,7 +29,10 @@
     disabled?: string[];
     /** 指示文の版の見出し等(伏せ字版では空) */
     meta: Record<string, VersionMeta>;
+    /** 上位 30 件(埋め込み) */
     candidates: Candidate[];
+    /** 候補の全件数 */
+    candidateTotal: number;
     computedOver: number;
     anonymized: boolean;
     /** insights.html を作ったか(export / build どちらでも作る) */
@@ -69,17 +74,15 @@
       LLM を呼ばない規則の集計。分かるのは相関までで、「傾向」として読んでください。指示文の効果は直接測れません(同じ版でも依頼が違う)。率は {THRESHOLDS.MIN_SESSIONS} セッション以上のものだけ。{#if hasPage}全件は <a href="insights.html">改善点のページ</a>。{/if}
     </p>
   </div>
-  <div class="grid">
+  <p class="group" id="insights-g-filtered">絞り込みに従う: 上の絞り込みの {int(sessions.length)} セッションで計算します。</p>
+  <div class="grid" role="group" aria-labelledby="insights-g-filtered">
     <div class="box" data-testid="insights-instructions">
       <h3>指示文の傾向</h3>
       <p class="basis">
         版を変えた前後の比較: {int(findings.compared)} 組を判定、悪化 {int(findings.worsened.length)}{#if findings.comparedInsufficient}。{int(findings.comparedInsufficient)} 組はどちらかが {THRESHOLDS.MIN_SESSIONS} セッション未満で判定できません{/if}。
       </p>
-      {#if longRare.length || findings.worsened.length}
+      {#if findings.worsened.length}
         <ol>
-          {#each longRare.slice(0, TOP) as v (v.hash)}
-            <li>長いのに注入が少ない(絞り込みの対象外。字数が全版の上位 25%({int(longRareChars)} 字以上)で、注入 {THRESHOLDS.RARE_SESSIONS} セッション未満): {#if vhref(v.hash)}<a href={vhref(v.hash)}>{vname(v.hash)}</a>{:else}{vname(v.hash)}{/if}({int(v.chars)} 字、{int(v.sessions)} セッション{#if meta[v.hash]?.lastAt}、最後に読み込んだのは {date(meta[v.hash].lastAt ?? null)}{/if})</li>
-          {/each}
           {#each findings.worsened.slice(0, TOP) as w (w.after.hash)}
             <li>
               版を変えた前後で悪化: {#if vhref(w.after.hash)}<a href={vhref(w.after.hash)}>{vname(w.after.hash)}</a>{:else}{vname(w.after.hash)}{/if}(失敗率 {w.failureDelta == null ? '—' : `${w.failureDelta >= 0 ? '+' : ''}${dec(w.failureDelta)} pt`}、手戻り率 {w.reworkDelta >= 0 ? '+' : ''}{dec(w.reworkDelta)} pt、{int(w.before.sessions)} → {int(w.after.sessions)} セッション)
@@ -137,9 +140,27 @@
       {/if}
     </div>
 
+  </div>
+
+  <p class="group" id="insights-g-all">全記録で計算: 絞り込みに関係なく、すべての記録で計算します。絞り込んでも変わりません。</p>
+  <div class="grid" role="group" aria-labelledby="insights-g-all">
+    <div class="box" data-testid="insights-long-rare">
+      <h3>長いのに注入が少ない指示文</h3>
+      <p class="basis">全 {int(allSessions.length)} セッションで計算。字数が全版の上位 25%({int(longRareChars)} 字以上)で、注入されたのが {THRESHOLDS.RARE_SESSIONS} セッション未満の版。読み込まれる場面が少ないのに長い指示文は、分けるか短くする候補です。{#if longRare.length}上位 {Math.min(TOP, longRare.length)} / 全 {int(longRare.length)} 版。{/if}</p>
+      {#if longRare.length === 0}
+        <p class="basis">該当する版はありません。</p>
+      {:else}
+        <ol>
+          {#each longRare.slice(0, TOP) as v (v.hash)}
+            <li>{#if vhref(v.hash)}<a href={vhref(v.hash)}>{vname(v.hash)}</a>{:else}{vname(v.hash)}{/if}({int(v.chars)} 字、{int(v.sessions)} セッション{#if meta[v.hash]?.lastAt}、最後に読み込んだのは {date(meta[v.hash].lastAt ?? null)}{/if})</li>
+          {/each}
+        </ol>
+      {/if}
+    </div>
+
     <div class="box" data-testid="insights-candidates">
       <h3>スキル化の候補</h3>
-      <p class="basis">全記録({int(computedOver)} 件、空のセッションを含む。絞り込みの対象外)で計算。似た依頼文の繰り返しと同じツールの並びの繰り返し({THRESHOLDS.MIN_REPEAT} 回以上)。スコアは回数 × 所要の中央値(分。1 分未満は 1 分、2 時間で頭打ち)。所要はターンの開始から最後の出来事までの時間で、返答待ちや放置も含みます。上位 {Math.min(TOP, candidates.length)} / 全 {int(candidates.length)} 件。</p>
+      <p class="basis">全記録({int(computedOver)} 件、空のセッションを含む)で計算。似た依頼文の繰り返しと同じツールの並びの繰り返し({THRESHOLDS.MIN_REPEAT} 回以上)。スコアは回数 × 実働の中央値(分。1 分未満は 1 分、2 時間で頭打ち)。実働はターンの中で 5 分を超えて出来事が無かった区間(返答待ちや放置)を除いた時間です。上位 {Math.min(TOP, candidates.length)} / 全 {int(candidateTotal)} 件。</p>
       {#if candidates.length === 0}
         <p class="basis">候補はありません。</p>
       {:else}
@@ -158,6 +179,15 @@
 </section>
 
 <style>
+  .group {
+    margin: 14px 0 6px;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--ink-2);
+  }
+  .group:first-of-type {
+    margin-top: 0;
+  }
   .grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(min(100%, 480px), 1fr));

@@ -199,7 +199,10 @@ export interface ReportData {
   /** Phase 12: 改善点(build 時に全セッションで計算したもの)。meta は伏せ字版では空 */
   insights: {
     meta: Record<string, { heading: string; file: string; series: string; order: number; firstAt: string | null; lastAt?: string | null }>;
+    /** 上位 30 件(全件は insights.html と insights.json) */
     candidates: InsightCandidate[];
+    /** 候補の全件数(埋め込みは上位 30 件だけ。古いデータには無い) */
+    candidateTotal?: number;
     computedOver: number;
   };
   /** notes: atlas-notes/ の読み取りで無視した箇所(groups.json が壊れている等。無ければ空) */

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { frictionTotal } from '../../lib/aggregate.ts';
   import { sessionTime } from '../../lib/filter.ts';
-  import { dateTime, dec, duration, int, modelLabel, pathParts, truncate } from '../../lib/format.ts';
+  import { dateTime, dec, duration, int, modelLabel, pathParts, sharedLeads, splitLead, truncate } from '../../lib/format.ts';
   import type { ReportGroup, SessionSummary } from '../../lib/types.ts';
   import SortMark from './SortMark.svelte';
   import { categoryLabel, confidenceLabel } from '../../lib/judgment-labels.ts';
@@ -95,10 +95,26 @@
   const st = (k: Key): 'asc' | 'desc' | 'none' => (sortKey === k ? (asc ? 'asc' : 'desc') : 'none');
   const ariaSort = (k: Key): 'ascending' | 'descending' | 'none' => (sortKey === k ? (asc ? 'ascending' : 'descending') : 'none');
 
+  const rawTitle = (s: SessionSummary): string => s.name || s.firstUserMessage || `(名前なし) ${s.id.slice(0, 8)}`;
   function title(s: SessionSummary): string {
     if (anonymized) return `セッション ${s.id.slice(0, 8)}`;
-    return truncate(s.name || s.firstUserMessage || `(名前なし) ${s.id.slice(0, 8)}`, 80);
+    return truncate(rawTitle(s), 80);
   }
+
+  /**
+   * 書き出しが同じ行の見分け(一覧の全行で比べる。ページをめくっても変わらない)。
+   * 共通の書き出しは先頭だけ残して「…」に縮め、違いが始まるところから見せる。題名がまったく同じ行には件数の印を付ける
+   */
+  const leads = $derived.by(() => {
+    const m = new Map<string, { lead: string | null; rest: string; same: number }>();
+    if (anonymized) return m;
+    const texts = sessions.map(rawTitle);
+    sharedLeads(texts).forEach((x, i) => {
+      if (x.cut === 0 && x.same < 2) return;
+      m.set(sessions[i].id, x.cut > 0 ? { ...splitLead(texts[i], x.cut, 70), same: x.same } : { lead: null, rest: title(sessions[i]), same: x.same });
+    });
+    return m;
+  });
 
   /** セッション id → 入っているグループの名前(行の下に「グループ: …」と出す。伏せ字版では出さない) */
   const groupsOf = $derived.by(() => {
@@ -338,7 +354,7 @@
               <td class="chk"><label><input type="checkbox" aria-label="{title(s)} を選択" checked={selected.has(s.id)} onchange={(e) => toggle(s.id, e.currentTarget.checked)} /></label></td>
               <td class="num when">{dateTime(s.createdAt ?? s.updatedAt)}</td>
               <td class="proj" title={s.project}>{#each pathParts(s.projectLabel) as seg, i (i)}{#if i}<wbr />{/if}{seg}{/each}{#if s.branch}<span class="sub">{s.branch}</span>{/if}</td>
-              <td class="name"><a href={s.href} title={title(s)}>{title(s)}</a>{#if s.empty}<span class="tag" title="依頼・ツール呼び出し・応答がどれも無いセッション">空</span>{/if}{#if s.memo}<span class="sub" data-testid="memo-excerpt">メモ: {s.memo.excerpt || '(本文なし)'}</span>{/if}{#if groupsOf.has(s.id)}<span class="sub in-groups" data-testid="session-groups">グループ: {groupsOf.get(s.id)?.join('、')}</span>{/if}</td>
+              <td class="name"><a href={s.href} title={title(s)}>{#if leads.get(s.id)?.lead}<span class="lead" title="ほかの行と同じ書き出し(縮めて表示)">{leads.get(s.id)?.lead}</span>{leads.get(s.id)?.rest}{:else}{title(s)}{/if}</a>{#if (leads.get(s.id)?.same ?? 1) > 1}<span class="tag" title="一覧の中に題名がまったく同じセッションが {leads.get(s.id)?.same} 件あります。開始時刻やプロジェクトで見分けてください">同じ題名 ×{leads.get(s.id)?.same}</span>{/if}{#if s.empty}<span class="tag" title="依頼・ツール呼び出し・応答がどれも無いセッション">空</span>{/if}{#if s.memo}<span class="sub" data-testid="memo-excerpt">メモ: {s.memo.excerpt || '(本文なし)'}</span>{/if}{#if groupsOf.has(s.id)}<span class="sub in-groups" data-testid="session-groups">グループ: {groupsOf.get(s.id)?.join('、')}</span>{/if}</td>
               <td class="nowrap">{s.client ?? '不明'}</td>
               <td class="models" title={s.models.join('、')}>{s.models.length ? s.models.map(modelLabel).join('、') : '不明'}</td>
               <td class="num">{int(s.turns)}</td>
@@ -408,6 +424,9 @@
     overflow: hidden;
     min-height: 24px;
     padding: 2px 0;
+  }
+  .name .lead {
+    color: var(--ink-3);
   }
   .name {
     min-width: 18em;

@@ -206,12 +206,13 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
     }
   }
   const candidates = skillCandidates(
-    input.sessions.map((r) => ({ id: r.id, project: r.project, analysis: r.analysis ?? { requests: [], turnTools: [], turnMs: [] } })),
+    input.sessions.map((r) => ({ id: r.id, project: r.project, analysis: r.analysis ?? { requests: [], turnTools: [], turnActiveMs: [] } })),
     anon.enabled,
   );
   data.insights = {
     meta: anon.enabled ? {} : insightMeta,
     candidates: candidates.slice(0, 30).map((c) => ({ ...c, representative: c.representative?.slice(0, 300) ?? null, examples: c.examples.slice(0, 3).map((e) => e.slice(0, 300)) })),
+    candidateTotal: candidates.length,
     computedOver: input.sessions.length,
   };
 

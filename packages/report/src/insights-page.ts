@@ -136,13 +136,13 @@ export function renderInsightsHtml(o: InsightsPageOptions): string {
       const body = anon
         ? ''
         : `${c.representative ? `<p class="cap">${c.kind === 'tools' ? 'この並びが最初に出たターンの依頼文(例)' : '代表の依頼文'}</p><pre class="body" tabindex="0">${esc(c.representative)}</pre>` : ''}${c.examples.length ? `<p class="cap">他の例(${c.examples.length})</p><pre class="body" tabindex="0">${esc(c.examples.join('\n— — —\n'))}</pre>` : ''}`;
-      return `<details class="cand" id="c-${i + 1}"${i < 3 ? ' open' : ''}><summary><b>${i + 1}.</b> ${head} <span>${c.kind === 'tools' ? 'ツールの並び' : '似た依頼文'}</span> <span>${esc(int(c.count))} 回</span> <span>${esc(int(c.sessions.length))} セッション</span> <span>所要 中央値 ${ms(c.medianMs)}</span> <span>スコア ${esc(dec(c.score))}</span></summary>${body}<div class="uses">関係セッション: <ul>${c.sessions
+      return `<details class="cand" id="c-${i + 1}"${i < 3 ? ' open' : ''}><summary><b>${i + 1}.</b> ${head} <span>${c.kind === 'tools' ? 'ツールの並び' : '似た依頼文'}</span> <span>${esc(int(c.count))} 回</span> <span>${esc(int(c.sessions.length))} セッション</span> <span>実働 中央値 ${ms(c.medianMs)}</span> <span>スコア ${esc(dec(c.score))}</span></summary>${body}<div class="uses">関係セッション: <ul>${c.sessions
         .slice(0, 30)
         .map((id) => `<li>${sess(id)}</li>`)
         .join('')}</ul>${c.sessions.length > 30 ? ` …他 ${esc(int(c.sessions.length - 30))}` : ''}</div></details>`;
     })
     .join('');
-  const candidates = `<section class="section ins" id="i-candidates" aria-labelledby="h-i-candidates"><div class="section-head"><h2 id="h-i-candidates">スキル化の候補</h2><p>似た依頼文の繰り返し(正規化した文の 3-gram の Jaccard 類似度 ${THRESHOLDS.SIMILARITY} 以上)と、同じツールの並びの繰り返し(本体のターンごとの列から長さ ${THRESHOLDS.SEQ_MIN}〜${THRESHOLDS.SEQ_MAX})。${THRESHOLDS.MIN_REPEAT} 回以上・2 セッション以上のもの。スコアは回数 × 1 回の所要の中央値(分。1 分未満は 1 分、2 時間で頭打ち)。所要はターンの開始から最後の出来事までの時間で、返答待ちや放置も含みます。全記録(絞り込み前、空のセッションを含む)で計算。LLM は使っていない。下書きは <code>npm run atlas -- skill-draft &lt;番号&gt;</code>(クレジットを消費。明示したときだけ)。</p></div>${
+  const candidates = `<section class="section ins" id="i-candidates" aria-labelledby="h-i-candidates"><div class="section-head"><h2 id="h-i-candidates">スキル化の候補</h2><p>似た依頼文の繰り返し(正規化した文の 3-gram の Jaccard 類似度 ${THRESHOLDS.SIMILARITY} 以上)と、同じツールの並びの繰り返し(本体のターンごとの列から長さ ${THRESHOLDS.SEQ_MIN}〜${THRESHOLDS.SEQ_MAX})。${THRESHOLDS.MIN_REPEAT} 回以上・2 セッション以上のもの。スコアは回数 × 1 回の実働の中央値(分。1 分未満は 1 分、2 時間で頭打ち)。実働はターンの中で 5 分を超えて出来事が無かった区間(返答待ちや放置)を除いた時間です。全記録(絞り込み前、空のセッションを含む)で計算。LLM は使っていない。下書きは <code>npm run atlas -- skill-draft &lt;番号&gt;</code>(クレジットを消費。明示したときだけ)。</p></div>${
     cands || '<p class="note">候補はありません(繰り返しが閾値に届かない)。</p>'
   }</section>`;
 

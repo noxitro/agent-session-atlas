@@ -370,9 +370,9 @@ export interface Candidate {
   key: string;
   count: number;
   sessions: string[];
-  /** 1 回あたりの所要の中央値(ms)。分からなければ null */
+  /** 1 回あたりの実働の中央値(ms。ターンの中の 5 分を超える空白を除く)。分からなければ null */
   medianMs: number | null;
-  /** 回数 × 所要の中央値(分)。所要が無ければ回数 × 1 */
+  /** 回数 × 実働の中央値(分)。実働が無ければ回数 × 1 */
   score: number;
   /** 代表の依頼文(原文の先頭 300 字)。伏せ字版では null */
   representative: string | null;
@@ -385,10 +385,10 @@ export interface Candidate {
 export interface CandidateSource {
   id: string;
   project: string;
-  analysis: Pick<SessionAnalysis, 'requests' | 'turnTools' | 'turnMs'>;
+  analysis: Pick<SessionAnalysis, 'requests' | 'turnTools' | 'turnActiveMs'>;
 }
 
-/** スコアに使う所要の上限(2 時間。放置を含む外れ値で順位が決まらないように) */
+/** スコアに使う実働の上限(2 時間。autopilot で何時間も続いた 1 回で順位が決まらないように) */
 export const SCORE_MS_CAP = 2 * 3_600_000;
 const scoreOf = (count: number, medianMs: number | null): number => count * (medianMs != null ? Math.max(1, Math.min(medianMs, SCORE_MS_CAP) / 60_000) : 1);
 
@@ -421,7 +421,7 @@ export function requestCandidates(sources: CandidateSource[], anonymized: boolea
       if (!text || TRIVIAL_REQUEST.test(text.trim()) || PROBE_REQUEST.test(text.trim())) return;
       const norm = normalizeRequest(text);
       if (norm.length < THRESHOLDS.MIN_REQUEST_CHARS) return;
-      items.push({ id: s.id, text, norm, grams: trigrams(norm), ms: s.analysis.turnMs[i] ?? null });
+      items.push({ id: s.id, text, norm, grams: trigrams(norm), ms: s.analysis.turnActiveMs?.[i] ?? null });
     });
   }
   const clusters: { rep: Item; members: Item[] }[] = [];
@@ -457,7 +457,7 @@ export function requestCandidates(sources: CandidateSource[], anonymized: boolea
 export function toolSequenceCandidates(sources: CandidateSource[], anonymized: boolean): Candidate[] {
   type Occ = { id: string; turn: number; start: number; ms: number | null; request: string };
   const turns: { id: string; tools: string[]; ms: number | null; request: string }[] = [];
-  for (const s of sources) s.analysis.turnTools.forEach((tools, i) => turns.push({ id: s.id, tools: collapseRuns(tools), ms: s.analysis.turnMs[i] ?? null, request: s.analysis.requests[i] ?? '' }));
+  for (const s of sources) s.analysis.turnTools.forEach((tools, i) => turns.push({ id: s.id, tools: collapseRuns(tools), ms: s.analysis.turnActiveMs?.[i] ?? null, request: s.analysis.requests[i] ?? '' }));
   const covered = new Set<string>(); // `${turnIndex}:${pos}`
   const out: Candidate[] = [];
   for (let L = THRESHOLDS.SEQ_MAX; L >= THRESHOLDS.SEQ_MIN; L--) {

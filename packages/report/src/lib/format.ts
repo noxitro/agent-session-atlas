@@ -94,3 +94,60 @@ export function msLabel(v: number | null | undefined, missing = '—'): string {
   if (v < 60_000) return `${decFmt.format(Math.round(v / 100) / 10)}秒`;
   return duration(v, missing);
 }
+
+/** 共通の書き出しとみなす最短の長さ(文字)。これより短い一致は省かない */
+const SHARED_LEAD_MIN = 20;
+/** 省いたあとに残す書き出しの長さ(文字。何の依頼かの手掛かりとして先頭だけ残す) */
+const SHARED_LEAD_KEEP = 10;
+/** 区切りとみなす文字(空白・和文の句読点と閉じ括弧・パスの区切り)。英数の記号は `nox::io` のように語の中に出るので含めない */
+const LEAD_BREAK = /[\s、。，．：；！？）」』/\\]/u;
+
+/**
+ * 一覧の題名を見分けるための情報。書き出しが他の行と SHARED_LEAD_MIN 字以上同じなら、違いが始まる位置(cut。
+ * 直前の区切りまで最大 12 字戻す)を返し、表示では splitLead で先頭の手掛かりと「…」のあとに cut から先を出す。
+ * same は同じ題名(空白の違いを除いてまったく同じ)の件数。まったく同じ題名どうしは縮めても見分けられないので、件数の印で知らせる
+ */
+export function sharedLeads(texts: readonly string[]): { cut: number; same: number }[] {
+  const cps = texts.map((t) => [...t.replace(/\s+/g, ' ').trim()]);
+  const keys = cps.map((c) => c.join(''));
+  const count = new Map<string, number>();
+  for (const k of keys) count.set(k, (count.get(k) ?? 0) + 1);
+  // 違う題名どうしで比べる(まったく同じ題名どうしの一致は全文に及び、違いの位置が分からなくなる)
+  const uniq = [...count.keys()].sort().map((k) => [...k]);
+  const lcp = (a: string[], b: string[]): number => {
+    let i = 0;
+    while (i < a.length && i < b.length && a[i] === b[i]) i++;
+    return i;
+  };
+  const shared = new Map<string, number>();
+  uniq.forEach((c, k) => shared.set(c.join(''), Math.max(k > 0 ? lcp(c, uniq[k - 1]) : 0, k < uniq.length - 1 ? lcp(c, uniq[k + 1]) : 0)));
+  return cps.map((c, i) => {
+    const same = count.get(keys[i]) ?? 1;
+    const n = shared.get(keys[i]) ?? 0;
+    if (n < SHARED_LEAD_MIN || n >= c.length) return { cut: 0, same };
+    let cut = n;
+    for (let k = n; k > n - 12 && k > SHARED_LEAD_KEEP; k--) {
+      if (LEAD_BREAK.test(c[k - 1])) {
+        cut = k;
+        break;
+      }
+    }
+    return { cut, same };
+  });
+}
+
+/** sharedLeads の cut で題名を分ける。lead は先頭 SHARED_LEAD_KEEP 字まで(区切りがあればそこまで)に「…」を付けたもの、rest は cut から先を n 字で切ったもの */
+export function splitLead(text: string, cut: number, n: number): { lead: string; rest: string } {
+  const c = [...text.replace(/\s+/g, ' ').trim()];
+  let keep = Math.min(SHARED_LEAD_KEEP, cut);
+  for (let k = keep; k >= 4; k--) {
+    if (LEAD_BREAK.test(c[k - 1] ?? '')) {
+      keep = k;
+      break;
+    }
+  }
+  // 区切りまで戻れず句読点から始まるとき(「…ください」と「…ください。」の違い)は句読点を飛ばす
+  let from = cut;
+  while (from < c.length - 1 && LEAD_BREAK.test(c[from])) from++;
+  return { lead: `${c.slice(0, keep).join('').trimEnd()}…`, rest: truncate(c.slice(from).join(''), n) };
+}

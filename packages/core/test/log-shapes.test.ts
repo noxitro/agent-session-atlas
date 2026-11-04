@@ -129,3 +129,21 @@ describe('時系列の終了の行(12)', () => {
     expect(r.timeline.map((x) => x.kind)).toEqual(['user', 'user']);
   });
 });
+
+describe('ターンの実働(スキル化の候補のスコア)', () => {
+  it('ターンの中の 5 分を超える空白(返答待ち・放置)を除き、次の依頼までの空白はどのターンにも入れない', async () => {
+    const r = await run([
+      ev('user.message', { content: '一つ目' }, T(0)),
+      ev('assistant.message', { content: 'a' }, T(60)),
+      // 権限の返事を 10 分待った(実働に入れない)
+      ev('permission.requested', {}, T(120)),
+      ev('permission.completed', {}, T(720)),
+      ev('assistant.message', { content: 'b' }, T(780)),
+      // 次の依頼まで 3 分(どちらのターンにも入れない)
+      ev('user.message', { content: '二つ目' }, T(960)),
+      ev('assistant.message', { content: 'c' }, T(990)),
+    ]);
+    expect(r.analysis.turnMs).toEqual([780_000, 30_000]);
+    expect(r.analysis.turnActiveMs).toEqual([180_000, 30_000]);
+  });
+});

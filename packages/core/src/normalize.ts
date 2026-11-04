@@ -447,6 +447,10 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
   const turnStartMs: (number | null)[] = [];
   /** ターンの最後のイベントの時刻(次の依頼までの放置時間を所要に含めない) */
   const turnLastMs: (number | null)[] = [];
+  /** ターンの実働(セッションの実働と同じく、5 分を超える空白を除いて足す) */
+  const turnActive: number[] = [];
+  /** いま進んでいる分析対象のターン(先頭 200 ターンを超えたら null。以降の出来事を 200 ターン目に足さない) */
+  let curTurn: number | null = null;
   const requests: string[] = [];
   const ANALYSIS_TURNS = 200;
   const ANALYSIS_TOOLS_PER_TURN = 40;
@@ -490,17 +494,22 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
       if (!KNOWN_EVENT_TYPES.has(e.type)) inc(unknown, e.type);
       const t = ms(e.timestamp);
       const at = e.timestamp ?? null;
+      const d = e.data ?? {};
+      // 新しいユーザーのターンの始まり(その前の空白はどのターンにも入れない)
+      const startsTurn = e.type === 'user.message' && !e.agentId && !isAutopilotContinuation(d) && isUserTurn(d);
       if (t != null) {
         if (lastTs != null && t > lastTs) {
           const gap = t - lastTs;
-          if (gap <= IDLE_GAP_MS) activeMs += gap;
+          if (gap <= IDLE_GAP_MS) {
+            activeMs += gap;
+            if (curTurn != null && !startsTurn) turnActive[curTurn] += gap;
+          }
         }
         if (firstTs == null || t < firstTs) firstTs = t;
         if (lastTs == null || t > lastTs) lastTs = t;
       }
-      const d = e.data ?? {};
 
-      if (t != null && turnLastMs.length && (e.type !== 'user.message' || e.agentId)) turnLastMs[turnLastMs.length - 1] = t;
+      if (t != null && curTurn != null && !startsTurn) turnLastMs[curTurn] = t;
       switch (e.type) {
         case 'session.start':
           copilotVersion ??= d.copilotVersion ?? null;
@@ -531,8 +540,10 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
               turnTools.push([]);
               turnStartMs.push(t ?? null);
               turnLastMs.push(t ?? null);
+              turnActive.push(0);
+              curTurn = turnTools.length - 1;
               requests.push(typeof d.content === 'string' ? head(d.content, 300) : '');
-            }
+            } else if (!e.agentId) curTurn = null;
           }
           break;
         case 'assistant.message':
@@ -931,6 +942,7 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
         const end = turnLastMs[i];
         return st != null && end != null && end >= st ? end - st : null;
       }),
+      turnActiveMs: turnStartMs.map((st, i) => (st != null ? turnActive[i] : null)),
       requests,
     },
     unknownEventTypes: unknown,

@@ -149,10 +149,10 @@ describe('スキル化の候補', () => {
 
   it('似た依頼文は MIN_REPEAT 回以上・2 セッション以上で候補になり、定型文と短い文は除く。代表は中央のもの', () => {
     const src: CandidateSource[] = [
-      { id: 's1', project: 'p', analysis: { requests: ['リポジトリの README を更新してください。章立ては変えない', 'OK', 'Reply with exactly: OK'], turnTools: [[], [], []], turnMs: [60_000, 1000, 1000] } },
-      { id: 's2', project: 'p', analysis: { requests: ['リポジトリの README を更新してください。章立ては変えないで'], turnTools: [[]], turnMs: [120_000] } },
-      { id: 's3', project: 'p', analysis: { requests: ['リポジトリの README を更新して下さい。章立ては変えない', '短い'], turnTools: [[], []], turnMs: [180_000, null] } },
-      { id: 's4', project: 'p', analysis: { requests: ['OK', 'OK', 'OK'], turnTools: [[], [], []], turnMs: [1, 1, 1] } },
+      { id: 's1', project: 'p', analysis: { requests: ['リポジトリの README を更新してください。章立ては変えない', 'OK', 'Reply with exactly: OK'], turnTools: [[], [], []], turnActiveMs: [60_000, 1000, 1000] } },
+      { id: 's2', project: 'p', analysis: { requests: ['リポジトリの README を更新してください。章立ては変えないで'], turnTools: [[]], turnActiveMs: [120_000] } },
+      { id: 's3', project: 'p', analysis: { requests: ['リポジトリの README を更新して下さい。章立ては変えない', '短い'], turnTools: [[], []], turnActiveMs: [180_000, null] } },
+      { id: 's4', project: 'p', analysis: { requests: ['OK', 'OK', 'OK'], turnTools: [[], [], []], turnActiveMs: [1, 1, 1] } },
     ];
     const r = requestCandidates(src, false);
     expect(r).toHaveLength(1);
@@ -160,7 +160,7 @@ describe('スキル化の候補', () => {
     expect(r[0].representative).toContain('README');
     expect(r[0].examples).toHaveLength(2);
     // 1 セッションだけの繰り返しは候補にしない
-    const one: CandidateSource[] = [{ id: 'x', project: 'p', analysis: { requests: Array(4).fill('リポジトリの README を更新してください。章立ては変えない'), turnTools: [[], [], [], []], turnMs: [1, 1, 1, 1] } }];
+    const one: CandidateSource[] = [{ id: 'x', project: 'p', analysis: { requests: Array(4).fill('リポジトリの README を更新してください。章立ては変えない'), turnTools: [[], [], [], []], turnActiveMs: [1, 1, 1, 1] } }];
     expect(requestCandidates(one, false)).toHaveLength(0);
     // 伏せ字では本文を出さない
     const an = requestCandidates(src, true)[0];
@@ -174,10 +174,10 @@ describe('スキル化の候補', () => {
     expect(isPeriodic(['rg', 'view', 'powershell'])).toBe(false);
     const seq = ['view', 'apply_patch', 'powershell', 'apply_patch', 'powershell'];
     const src: CandidateSource[] = [
-      { id: 'a', project: 'p', analysis: { requests: ['依頼 A の本文です(十分な長さ)'], turnTools: [seq], turnMs: [300_000] } },
-      { id: 'b', project: 'p', analysis: { requests: ['依頼 B の本文です(十分な長さ)'], turnTools: [seq], turnMs: [600_000] } },
-      { id: 'c', project: 'p', analysis: { requests: ['依頼 C の本文です(十分な長さ)'], turnTools: [[...seq, 'rg', 'view', 'rg', 'view']], turnMs: [900_000] } },
-      { id: 'd', project: 'p', analysis: { requests: ['閲覧だけ'], turnTools: [['view', 'rg', 'view', 'glob', 'rg', 'view', 'rg', 'view', 'glob']], turnMs: [100] } },
+      { id: 'a', project: 'p', analysis: { requests: ['依頼 A の本文です(十分な長さ)'], turnTools: [seq], turnActiveMs: [300_000] } },
+      { id: 'b', project: 'p', analysis: { requests: ['依頼 B の本文です(十分な長さ)'], turnTools: [seq], turnActiveMs: [600_000] } },
+      { id: 'c', project: 'p', analysis: { requests: ['依頼 C の本文です(十分な長さ)'], turnTools: [[...seq, 'rg', 'view', 'rg', 'view']], turnActiveMs: [900_000] } },
+      { id: 'd', project: 'p', analysis: { requests: ['閲覧だけ'], turnTools: [['view', 'rg', 'view', 'glob', 'rg', 'view', 'rg', 'view', 'glob']], turnActiveMs: [100] } },
     ];
     const r = toolSequenceCandidates(src, false);
     expect(r[0]).toMatchObject({ kind: 'tools', key: seq.join(' → '), count: 3, sessions: ['a', 'b', 'c'], medianMs: 600_000, score: 30 });
@@ -185,7 +185,7 @@ describe('スキル化の候補', () => {
     expect(r.filter((x) => x.key.includes('apply_patch'))).toHaveLength(1);
     expect(r.every((x) => x.tools!.some((t) => !['view', 'rg', 'glob'].includes(t)))).toBe(true);
     // 全体はスコア順。判定セッションは除く
-    const all = skillCandidates([...src, { id: 'j', project: '(atlas の判定)', analysis: { requests: Array(5).fill('判定の依頼文です。十分な長さ'), turnTools: [[], [], [], [], []], turnMs: [1, 1, 1, 1, 1] } }], false);
+    const all = skillCandidates([...src, { id: 'j', project: '(atlas の判定)', analysis: { requests: Array(5).fill('判定の依頼文です。十分な長さ'), turnTools: [[], [], [], [], []], turnActiveMs: [1, 1, 1, 1, 1] } }], false);
     expect(all.map((c) => c.score)).toEqual([...all.map((c) => c.score)].sort((x, y) => y - x));
     expect(all.some((c) => c.representative?.includes('判定の依頼文'))).toBe(false);
   });

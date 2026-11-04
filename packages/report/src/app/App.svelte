@@ -512,7 +512,7 @@
         <!-- 帳票の順: 表紙(規模の 4 欄)→ 摘要(要点)→ 明細 -->
         <Overview part="cover" {agg} {judged} anonymized={data.anonymized} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} {emptyInFilter} />
         <Highlights groups={points} />
-        <Insights sessions={filtered} allSessions={data.sessions} installed={data.installed?.skills ?? null} disabled={data.installed?.disabled ?? []} meta={data.insights?.meta ?? {}} candidates={data.insights?.candidates ?? []} computedOver={data.insights?.computedOver ?? sessions.length} anonymized={data.anonymized} hasPage={true} libraryHref={data.library ? 'instructions.html' : null} />
+        <Insights sessions={filtered} allSessions={data.sessions} installed={data.installed?.skills ?? null} disabled={data.installed?.disabled ?? []} meta={data.insights?.meta ?? {}} candidates={data.insights?.candidates ?? []} candidateTotal={data.insights?.candidateTotal ?? data.insights?.candidates.length ?? 0} computedOver={data.insights?.computedOver ?? sessions.length} anonymized={data.anonymized} hasPage={true} libraryHref={data.library ? 'instructions.html' : null} />
         <Overview part="detail" {agg} {judged} anonymized={data.anonymized} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} {emptyInFilter} />
         {#if judged}<JudgmentPanel {agg} meta={data.judgments} />{/if}
         <UsageRanking usage={agg.usage} installed={data.installed ?? null} bind:tab={usageTab} />
