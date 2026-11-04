@@ -8,7 +8,8 @@ import type { CopilotEvent, SessionRecord } from '../../core/src/types.ts';
 import { contentHash } from '../../core/src/instructions.ts';
 import { COVERAGE_RULES, CoverageCounter, coverageFile, desktopCoverage, ruleFor } from '../src/coverage.ts';
 import { createFileSink, looksOpaque, renderFull } from '../src/full.ts';
-import { LibraryCollector, lineDiff, renderInstructionsHtml, skillAnchor, writeLibrary } from '../src/library.ts';
+import { cleanHeading, LibraryCollector, lineDiff, renderInstructionsHtml, skillAnchor, writeLibrary } from '../src/library.ts';
+import { seriesKey } from '../src/lib/insights.ts';
 import { KNOWN_EVENT_TYPES } from '../../core/src/event-types.ts';
 
 const T = '2026-10-01T00:00:00.000Z';
@@ -183,5 +184,51 @@ describe('library', () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+
+  it('パス付きとパス無しの同じ見出しは 1 項目にまとめ、並行して使われた版・プロジェクトごとの最後の版・同じプロジェクトの差分を示す', () => {
+    const lib = new LibraryCollector();
+    const a1 = '# 共通ルール\n\nA の 1\n';
+    const b1 = '# 共通ルール\n\nB の 1\n';
+    const a2 = '# 共通ルール\n\nA の 1\nA の 2\n';
+    // プロジェクト A: a1 → a2。プロジェクト B: b1 を a1 と同じ時期に並行して使い、b1 はパス付きの注入でも現れる
+    lib.addSystemMessage('a-1', `<custom_instruction>\n${a1}</custom_instruction>`, '2026-10-01T00:00:00Z');
+    lib.addSystemMessage('b-1', `<custom_instruction>\n${b1}</custom_instruction>`, '2026-10-02T00:00:00Z');
+    lib.addSystemMessage('b-2', `<custom_instruction>\n<imported_custom_instruction source="X:\\b\\AGENTS.md">\n${b1}</imported_custom_instruction>\n</custom_instruction>`, '2026-10-06T00:00:00Z');
+    lib.addSystemMessage('a-2', `<custom_instruction>\n${a1}</custom_instruction>`, '2026-10-03T00:00:00Z');
+    lib.addSystemMessage('a-3', `<custom_instruction>\n${a2}</custom_instruction>`, '2026-10-05T00:00:00Z');
+    const groups = lib.result();
+    expect(groups.map((g) => [g.key, g.file, g.versions.length])).toEqual([['共通ルール', 'AGENTS.md', 3]]);
+    expect(groups[0].versions[1].sourcePaths).toEqual(['X:\\b\\AGENTS.md']);
+    const project = (id: string): string => (id.startsWith('a-') ? 'X:\\repo-a' : 'X:\\repo-b');
+    const html = renderInstructionsHtml({ css: '', generatedAt: '2026-10-06T00:00:00Z', groups, sessionName: (id) => id, sessionProject: project });
+    // 同じ版の id は 1 回だけ
+    const ids = [...html.matchAll(/ id="(v-[0-9a-f]+)"/g)].map((m) => m[1]);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids).toHaveLength(3);
+    // 版 1(A)と版 2(B)は期間が重なる。最後に使われたのは版 2(B、10/06)
+    expect(html).toMatch(/<b>版 1<\/b> <span class="tag">版 2 と並行して使用<\/span>/);
+    expect(html).toMatch(/<b>版 2<\/b> <span class="tag latest">最後に使われた版<\/span> <span class="tag">版 1・3 と並行して使用<\/span>/);
+    const [v1, v2, v3] = groups[0].versions;
+    expect(html).toContain(`プロジェクトごとの最後の版: <a href="#v-${v2.hash}">版 2</a> は <span title="X:\\repo-b">repo-b</span>、<a href="#v-${v3.hash}">版 3</a> は <span title="X:\\repo-a">repo-a</span>`);
+    // 全プロジェクトで同じ版が最後なら 1 行
+    const one = renderInstructionsHtml({ css: '', generatedAt: '2026-10-06T00:00:00Z', groups, sessionName: (id) => id, sessionProject: () => 'X:\\repo-a' });
+    expect(one).toContain(`最後に使われた版: <a href="#v-${v2.hash}">版 2</a>`);
+    expect(v1.sessions.size).toBe(2);
+    // 版 3(A)の差分は、初回日の順で直前の版 2(B)ではなく、同じプロジェクトの版 1 と比べる
+    expect(html).toContain('版 1 → 版 3 の差分(同じプロジェクトで前に使われた版との行の比較)');
+    expect(html).not.toContain('版 2 → 版 3 の差分');
+    // 版 2(B)は同じプロジェクトの前の版が無いので、1 つ前の版(A)と比べ、そう書く
+    expect(html).toContain('版 1 → 版 2 の差分(初回日の順で 1 つ前の版との行の比較。同じプロジェクトで前に使われた版が無いので、別のプロジェクトの版と比べています)');
+    expect(html).toContain('出所 <code>X:\\b\\AGENTS.md</code>');
+    expect(html).toContain(`<span class="hash" title="内容のハッシュ">${groups[0].versions[0].hash}</span>`);
+  });
+
+  it('見出しの整形と系列の鍵: # や HTML コメントの印を外し、改善点と指示文のページで同じ鍵にする', () => {
+    expect(cleanHeading('<!-- llm-wiki:begin -->')).toBe('llm-wiki:begin');
+    expect(cleanHeading('## 共通ルール')).toBe('共通ルール');
+    expect(seriesKey('<!-- llm-wiki:begin -->', 'unknown')).toBe(seriesKey('llm-wiki:begin', 'AGENTS.md'));
+    expect(seriesKey('', 'CLAUDE.md')).toBe('(見出しなし: CLAUDE.md)');
+    expect(seriesKey('x'.repeat(100), 'unknown')).toHaveLength(100);
   });
 });

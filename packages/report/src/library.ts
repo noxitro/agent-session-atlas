@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { charCount, contentHash, extractInstructionBlocks, type InstructionFile } from '../../core/src/index.ts';
 import { esc } from './detail.ts';
 import { dateTime, int } from './lib/format.ts';
+import { cleanHeading, seriesKey } from './lib/insights.ts';
 import { detailFileName } from './lib/summarize.ts';
 import { NAV_JS, renderRail, renderTop, type NavGroup } from './page-nav.ts';
 import { redactSecrets } from './transcript.ts';
@@ -14,11 +15,7 @@ export const INSTRUCTIONS_FILE = 'instructions.html';
 export const LIBRARY_DIR = 'library';
 /** skill の節の id(詳細ページから instructions.html#s-… で飛ぶ)。英数字以外を置き換えたうえで短いハッシュを付け、日本語名どうしが重ならないようにする */
 export const skillAnchor = (name: string): string => `s-${name.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 40)}-${contentHash(name).slice(0, 6)}`;
-/** 項目名: 先頭の # や HTML コメントの印を外し、長ければ省略記号を付ける */
-export function cleanHeading(h: string, max = 60): string {
-  const t = h.replace(/^#+\s*/, '').replace(/^<!--\s*|\s*-->$/g, '').trim();
-  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
-}
+export { cleanHeading };
 
 export interface LibraryVersion {
   hash: string;
@@ -29,7 +26,10 @@ export interface LibraryVersion {
   lastAt: string | null;
   /** system.message に現れた回数(全セッションの合計) */
   injections: number;
-  sourcePath: string | null;
+  /** 出所のパス(imported_custom_instruction の source。分かったものだけ、重複なし) */
+  sourcePaths: string[];
+  /** セッションごとの最後の利用日時(プロジェクトごとの「最後に使われた版」を求める) */
+  lastBySession: Map<string, string | null>;
 }
 
 export interface LibraryGroup {
@@ -50,9 +50,13 @@ export class LibraryCollector {
     const gk = `${kind}\u0000${key}`;
     let g = this.groups.get(gk);
     if (!g) this.groups.set(gk, (g = { kind, key, file, versions: [] }));
+    // 同じ見出しでもファイルの種別が推定できなかった注入がある。分かったものを項目の種別にする
+    if (g.file === 'unknown' && file !== 'unknown') g.file = file;
     let v = g.versions.find((x) => x.hash === hash);
-    if (!v) g.versions.push((v = { hash, body, chars: charCount(body), sessions: new Set(), firstAt: null, lastAt: null, injections: 0, sourcePath }));
+    if (!v) g.versions.push((v = { hash, body, chars: charCount(body), sessions: new Set(), firstAt: null, lastAt: null, injections: 0, sourcePaths: [], lastBySession: new Map() }));
+    if (sourcePath && !v.sourcePaths.includes(sourcePath)) v.sourcePaths.push(sourcePath);
     v.sessions.add(sessionId);
+    v.lastBySession.set(sessionId, later(v.lastBySession.get(sessionId) ?? null, at));
     v.injections++;
     v.firstAt = earlier(v.firstAt, at);
     v.lastAt = later(v.lastAt, at);
@@ -61,10 +65,9 @@ export class LibraryCollector {
   /** system.message の本文から指示ブロックを取り出して版に束ねる */
   addSystemMessage(sessionId: string, content: string, at: string | null): void {
     for (const b of extractInstructionBlocks(content)) {
-      // 項目は「見出し(無ければ本文の先頭行)+ 出所のパス」。同じ見出しでも出所が違えば別の項目(別リポジトリの同名ファイルを 1 つの系列にしない)
-      const head = cleanHeading(b.heading) || `(見出しなし: ${b.file})`;
-      const key = b.sourcePath ? `${head} — ${b.sourcePath}` : head;
-      this.version('instruction', key, b.file, b.contentHash, b.body, sessionId, at, b.sourcePath ?? null);
+      // 項目は整えた見出しだけで決める(seriesKey。改善点の「版 N」と揃える)。同じ本文がパス付きとパス無しの両方で注入されるので、
+      // パスで分けると同じ版が 2 つの項目に載る。別リポジトリの同名ファイルは同じ項目に入るが、版ごとにプロジェクトと並行使用を示す
+      this.version('instruction', seriesKey(b.heading, b.file), b.file, b.contentHash, b.body, sessionId, at, b.sourcePath ?? null);
     }
   }
 
@@ -147,7 +150,9 @@ const LIB_CSS = `
 .ver{margin-top:14px;border:1px solid var(--rule-strong);background:var(--surface)}
 .ver>summary{cursor:pointer;padding:6px 10px;font-size:.8125rem;color:var(--form);display:flex;flex-wrap:wrap;gap:4px 14px;align-items:baseline}
 .ver>summary b{color:var(--ink)}
-.ver>summary .tag{margin-left:auto}
+.ver>summary .tag.latest{border-color:var(--form);color:var(--form)}
+.ver>summary .hash{margin-left:auto;font:.6875rem var(--mono);color:var(--ink-3)}
+.lib-group .section-head .latest{flex-basis:100%;margin:4px 0 0;max-width:none}
 .ver .cap{margin:0;padding:6px 10px 0;border-top:1px solid var(--rule);font-size:.6875rem;color:var(--form);letter-spacing:.04em}
 .ver .body{margin:0;padding:6px 10px 10px;font:.75rem/1.5 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;max-height:60vh;overflow:auto}
 .ver .body:focus-visible{outline:2px solid var(--form);outline-offset:-2px}
@@ -189,6 +194,21 @@ export interface InstructionsPageOptions {
   groups: LibraryGroup[];
   /** セッション名(詳細ページへのリンクの文言) */
   sessionName: (id: string) => string;
+  /** セッションのプロジェクト名。版ごとに使ったプロジェクトを示し、並行して使われた版を見分けるのに使う */
+  sessionProject?: (id: string) => string | null;
+}
+
+/** プロジェクトの短い名前(パスの最後の部分。長い名前は 24 字で切る)。全体は title に出す */
+function shortName(p: string): string {
+  const s = p.split(/[\\/]+/).filter(Boolean).pop() ?? p;
+  return s.length > 24 ? `${s.slice(0, 23)}…` : s;
+}
+/** プロジェクト名を最大 max 件並べ、残りは「他 N」 */
+const projectList = (names: readonly string[], max: number): string => `${names.slice(0, max).map(shortName).join('・')}${names.length > max ? ` 他 ${int(names.length - max)}` : ''}`;
+
+/** 使われた期間が重なる(並行して使われた)か */
+function overlaps(a: LibraryVersion, b: LibraryVersion): boolean {
+  return !!(a.firstAt && a.lastAt && b.firstAt && b.lastAt && a.firstAt <= b.lastAt && b.firstAt <= a.lastAt);
 }
 
 export function renderInstructionsHtml(o: InstructionsPageOptions): string {
@@ -200,13 +220,58 @@ export function renderInstructionsHtml(o: InstructionsPageOptions): string {
     { title: 'skill', items: skills.map((g, i) => ({ href: `#${gid(g, inst.length + i)}`, label: cleanHeading(g.key, 40), count: g.versions.length, countLabel: '版' })) },
   ].filter((g) => g.items.length);
   const nav = { crumbHref: 'atlas.html', crumbLabel: '← レポートに戻る', tocLabel: '指示文と skill', groups: navGroups, links: [{ href: 'glossary.html', label: '用語の説明' }] };
+  const projectOf = (id: string): string | null => o.sessionProject?.(id) || null;
   const sec = (g: LibraryGroup, i: number): string => {
     const total = new Set(g.versions.flatMap((v) => [...v.sessions])).size;
-    // 版は初回日の順。最後に使われた版(最終が最新のもの)に印を付け、それを開いた状態にする(初回が最新の版とは限らない)
+    // 版は初回日の順の通し番号(改善点の「版 N」と同じ)。番号が大きいほど新しいとは限らない(別のリポジトリで並行して使われる)ので、
+    // 最後に使われた版(最終が最新のもの)に印を付けて開いた状態にし、プロジェクトごとの最後の版を項目の見出しに出す
     const latest = g.versions.reduce((a, v) => ((v.lastAt ?? '') > (a.lastAt ?? '') ? v : a), g.versions[0]);
+    // 版ごとの、使ったプロジェクトとセッション数(多い順)
+    const projects = g.versions.map((v) => {
+      const m = new Map<string, number>();
+      for (const id of v.sessions) {
+        const p = projectOf(id);
+        if (p) m.set(p, (m.get(p) ?? 0) + 1);
+      }
+      return new Map([...m].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])));
+    });
+    // プロジェクトごとの最後の版(そのプロジェクトのセッションで最後に注入された版)
+    const lastByProject = new Map<string, { k: number; at: string }>();
+    g.versions.forEach((v, k) => {
+      for (const [id, at] of v.lastBySession) {
+        const p = projectOf(id);
+        if (!p || !at) continue;
+        const cur = lastByProject.get(p);
+        if (!cur || at > cur.at) lastByProject.set(p, { k, at });
+      }
+    });
+    // 最後の版ごとにプロジェクトを束ねる(全プロジェクトが同じ版なら 1 行で済む)。最後に使われた時期の新しい順
+    const byLast = new Map<number, { names: string[]; at: string }>();
+    for (const [p, l] of lastByProject) {
+      const cur = byLast.get(l.k) ?? byLast.set(l.k, { names: [], at: l.at }).get(l.k)!;
+      cur.names.push(p);
+      if (l.at > cur.at) cur.at = l.at;
+    }
+    const verLink = (k: number): string => `<a href="#v-${esc(g.versions[k].hash)}">版 ${k + 1}</a>`;
+    const latestLine =
+      g.versions.length < 2
+        ? ''
+        : byLast.size > 1
+          ? `<p class="latest">プロジェクトごとの最後の版: ${[...byLast]
+              .sort((a, b) => b[1].at.localeCompare(a[1].at))
+              .map(([k, x]) => `${verLink(k)} は <span title="${esc(x.names.join('\n'))}">${esc(projectList(x.names, 3))}</span>`)
+              .join('、')}</p>`
+          : `<p class="latest">最後に使われた版: ${verLink(g.versions.indexOf(latest))}(${esc(dateTime(latest.lastAt))}${lastByProject.size > 1 ? `。使った ${esc(int(lastByProject.size))} プロジェクトのすべてで、この版が最後` : ''})</p>`;
     const rows = g.versions
       .map((v, k) => {
-        const prev = k > 0 ? g.versions[k - 1] : null;
+        // 差分の元: 同じプロジェクトで前に使われた版(初回日の順で直前のもの)。無ければ初回日の順で 1 つ前の版
+        let base = -1;
+        for (let j = k - 1; j >= 0 && base < 0; j--) if ([...projects[j].keys()].some((p) => projects[k].has(p))) base = j;
+        const sameProject = base >= 0;
+        if (!sameProject && k > 0) base = k - 1;
+        const prev = base >= 0 ? g.versions[base] : null;
+        const parallel = g.versions.map((w, j) => (j !== k && overlaps(v, w) ? j + 1 : 0)).filter((n) => n > 0);
+        const names = [...projects[k].keys()];
         const body = redactSecrets(v.body).text;
         const diff = prev
           ? lineDiff(redactSecrets(prev.body).text, body)
@@ -227,12 +292,24 @@ export function renderInstructionsHtml(o: InstructionsPageOptions): string {
           .join('');
         const isLatest = v === latest;
         for (const id of ids) seen.add(id);
-        return `<details class="ver" id="v-${esc(v.hash)}" data-sessions="${esc(ids.join(' '))}"${isLatest ? ' open data-latest' : ''}><summary><b>版 ${k + 1}</b> <span>${esc(v.hash)}</span> <span>${esc(int(v.chars))} 字</span> <span>${esc(int(v.sessions.size))} セッション</span> <span>初回 ${esc(dateTime(v.firstAt))}</span> <span>最終 ${esc(dateTime(v.lastAt))}</span>${isLatest && g.versions.length > 1 ? ' <span class="tag">最後に使われた版</span>' : ''}</summary>${
-          prev ? `<p class="cap">版 ${k} → 版 ${k + 1} の差分(初回日の順で 1 つ前の版との行の比較。並行して使われた版どうしのこともあります)</p><pre class="body diff" tabindex="0">${diff}</pre>` : ''
-        }<p class="cap">版 ${k + 1} の本文</p><pre class="body" tabindex="0">${esc(body)}</pre><div class="links"><a href="${LIBRARY_DIR}/${esc(v.hash)}.md">本文 (.md) を開く</a>${v.sourcePath ? ` · 出所 <code>${esc(v.sourcePath)}</code>` : ''}</div><div class="uses">使われたセッション(${esc(int(ids.length))}): <ul>${uses}</ul>${ids.length > 50 ? ` …他 ${esc(int(ids.length - 50))} 件` : ''}</div></details>`;
+        const period = v.firstAt === v.lastAt ? dateTime(v.firstAt) : `${dateTime(v.firstAt)} 〜 ${dateTime(v.lastAt)}`;
+        const cap = !prev
+          ? ''
+          : sameProject
+            ? `版 ${base + 1} → 版 ${k + 1} の差分(同じプロジェクトで前に使われた版との行の比較)`
+            : `版 ${base + 1} → 版 ${k + 1} の差分(初回日の順で 1 つ前の版との行の比較${names.length && projects[base].size ? '。同じプロジェクトで前に使われた版が無いので、別のプロジェクトの版と比べています' : ''})`;
+        return `<details class="ver" id="v-${esc(v.hash)}" data-sessions="${esc(ids.join(' '))}"${isLatest ? ' open data-latest' : ''}><summary><b>版 ${k + 1}</b>${
+          isLatest && g.versions.length > 1 ? ' <span class="tag latest">最後に使われた版</span>' : ''
+        }${parallel.length ? ` <span class="tag">版 ${parallel.join('・')} と並行して使用</span>` : ''} <span>使用 ${esc(period)}</span> <span>${esc(int(v.sessions.size))} セッション</span> <span>${esc(int(v.chars))} 字</span>${
+          names.length ? ` <span title="${esc(names.join('\n'))}">${esc(projectList(names, 3))}</span>` : ''
+        } <span class="hash" title="内容のハッシュ">${esc(v.hash)}</span></summary>${
+          prev ? `<p class="cap">${cap}</p><pre class="body diff" tabindex="0">${diff}</pre>` : ''
+        }<p class="cap">版 ${k + 1} の本文</p><pre class="body" tabindex="0">${esc(body)}</pre><div class="links"><a href="${LIBRARY_DIR}/${esc(v.hash)}.md">本文 (.md) を開く</a>${
+          v.sourcePaths.length ? ` · 出所 ${v.sourcePaths.map((sp) => `<code>${esc(sp)}</code>`).join('、')}` : ''
+        }</div><div class="uses">使われたセッション(${esc(int(ids.length))}): <ul>${uses}</ul>${ids.length > 50 ? ` …他 ${esc(int(ids.length - 50))} 件` : ''}</div></details>`;
       })
       .join('');
-    return `<section class="section lib-group" data-kind="${g.kind}" id="${gid(g, i)}" aria-labelledby="h-${gid(g, i)}"><div class="section-head"><h2 id="h-${gid(g, i)}">${esc(cleanHeading(g.key, 120))}</h2><p>${esc(g.kind === 'skill' ? 'skill' : g.file === 'unknown' ? '指示文(ファイル不明: 注入の形から特定できなかった)' : g.file)} · 版 ${esc(int(g.versions.length))} · ${esc(int(total))} セッションで使用</p></div><div class="versions">${rows}</div></section>`;
+    return `<section class="section lib-group" data-kind="${g.kind}" id="${gid(g, i)}" aria-labelledby="h-${gid(g, i)}"><div class="section-head"><h2 id="h-${gid(g, i)}">${esc(cleanHeading(g.key, 120))}</h2><p>${esc(g.kind === 'skill' ? 'skill' : g.file === 'unknown' ? '指示文(ファイル不明: 注入の形から特定できなかった)' : g.file)} · 版 ${esc(int(g.versions.length))} · ${esc(int(total))} セッションで使用</p>${latestLine}</div><div class="versions">${rows}</div></section>`;
   };
   const seen = new Set<string>();
   const body = [...inst, ...skills].map((g, i) => sec(g, i)).join('');
@@ -257,7 +334,7 @@ ${renderTop(nav)}
 ${renderRail(nav)}
 <div class="content">
 <main class="wrap">
-<div class="title"><h1>指示文と skill</h1><p class="lib-note">セッションに注入された指示文(AGENTS.md / CLAUDE.md / copilot-instructions.md 等)と、呼ばれた skill の本文を、重複なしで版ごとに置いたものです。版は内容のハッシュで区別し、見出し(と出所のパス)が同じものを 1 つの項目にまとめています。版は初回の利用日の順で、差分は 1 つ前の版との行単位の比較です。開いた状態にしてあるのは最後に使われた版です。生成 ${esc(dateTime(o.generatedAt))}。${
+<div class="title"><h1>指示文と skill</h1><p class="lib-note">セッションに注入された指示文(AGENTS.md / CLAUDE.md / copilot-instructions.md 等)と、呼ばれた skill の本文を、重複なしで版ごとに置いたものです。版は内容のハッシュで区別し、見出しが同じものを 1 つの項目にまとめています。「版 N」は初回の利用日の順の通し番号で、別のリポジトリの同じ見出しのファイルも同じ項目に入るため、番号が大きい版が今の版とは限りません。最後に使われた版に印を付けて開いた状態にし、使われた期間が重なる版には「並行して使用」と付けています。差分は、同じプロジェクトで前に使われた版との行単位の比較です。生成 ${esc(dateTime(o.generatedAt))}。${
     o.groups.length ? '' : '指示文も skill の本文も記録にありませんでした。'
   }</p><div class="lib-filter" id="lib-filter" role="status" data-testid="lib-filter" hidden></div></div>
 ${body}

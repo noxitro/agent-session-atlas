@@ -4,7 +4,7 @@
   // スキル化の候補は build 時に全セッションで計算したもの(埋め込み)を出す。全件は insights.html
   import { shortProjectLabel } from '../../lib/anonymize.ts';
   import { dec, duration, int } from '../../lib/format.ts';
-  import { instructionFindings, instructionVersions, skillStats, stuckByProject, stuckSessions, THRESHOLDS, type Candidate, type VersionMeta } from '../../lib/insights.ts';
+  import { cleanHeading, instructionFindings, instructionVersions, skillStats, stuckByProject, stuckSessions, THRESHOLDS, type Candidate, type VersionMeta } from '../../lib/insights.ts';
   import type { SessionSummary } from '../../lib/types.ts';
 
   let {
@@ -42,7 +42,7 @@
   const pct = (v: number | null): string => (v == null ? '—' : `${dec(v * 100)}%`);
   const vname = (hash: string): string => {
     const m = meta[hash];
-    return m && !anonymized ? `${m.heading.replace(/^#+\s*/, '').slice(0, 40)} 版 ${m.order + 1}` : hash;
+    return m && !anonymized ? `${cleanHeading(m.heading, 40) || '(見出しなし)'} 版 ${m.order + 1}` : hash;
   };
   const vhref = (hash: string): string | null => (libraryHref && !anonymized ? `${libraryHref}#v-${hash}` : null);
   const sessionLabel = (id: string): string => {

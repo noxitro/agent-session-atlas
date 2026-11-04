@@ -98,10 +98,26 @@ export function instructionVersions(sessions: SessionSummary[]): VersionStat[] {
     .sort((a, b) => b.sessions - a.sessions || b.chars - a.chars);
 }
 
+/** 指示文の見出しの表示名: 先頭の # や HTML コメントの印を外し、長ければ省略記号を付ける */
+export function cleanHeading(h: string, max = 60): string {
+  const t = h.replace(/^#+\s*/, '').replace(/^<!--\s*|\s*-->$/g, '').trim();
+  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+}
+
+/**
+ * 版の系列(1 つの項目にまとめる指示文)の鍵。整えた見出しだけで決め、ファイルの種別や出所のパスは見ない
+ * (同じ本文がパス付きとパス無しの両方で注入されるため)。指示文のページと改善点で同じ番号を振るよう、両方でこれを使う
+ */
+export function seriesKey(heading: string, file: string): string {
+  return cleanHeading(heading, Infinity) || `(見出しなし: ${file})`;
+}
+
 export interface VersionMeta {
   heading: string;
   file: string;
-  /** 同じ見出しの中での順(初回の利用日の順) */
+  /** 系列の識別子(伏せ字版でも見出しを漏らさない不透明な値)。同じ系列の版どうしで前後を比べる */
+  series: string;
+  /** 同じ系列の中での順(初回の利用日の順)。指示文のページの「版 N」と同じ */
   order: number;
   firstAt: string | null;
 }
@@ -122,12 +138,11 @@ export interface InstructionFindings {
 export function instructionFindings(stats: VersionStat[], meta: Record<string, VersionMeta>, totalSessions: number): InstructionFindings {
   const chars = stats.map((v) => v.chars).sort((a, b) => a - b);
   const q75 = chars.length ? chars[Math.min(chars.length - 1, Math.floor(chars.length * 0.75))] : 0;
-  // 同じ見出しの版が並ぶと冗長なので、見出しごとに最新の版(order が最大)だけ挙げる
+  // 同じ系列の版が並ぶと冗長なので、系列ごとに最新の版(order が最大)だけ挙げる
   const latestOfHeading = new Map<string, VersionStat>();
   for (const v of stats) {
     const m = meta[v.hash];
-    const k = m ? `${m.file}
-${m.heading}` : v.hash;
+    const k = m ? m.series : v.hash;
     const cur = latestOfHeading.get(k);
     if (!cur || (meta[cur.hash]?.order ?? 0) < (m?.order ?? 0)) latestOfHeading.set(k, v);
   }
@@ -136,12 +151,11 @@ ${m.heading}` : v.hash;
   for (const v of stats) {
     const m = meta[v.hash];
     if (!m) continue;
-    const key = `${m.file}\u0000${m.heading}`;
-    (byHeading.get(key) ?? byHeading.set(key, []).get(key)!).push(v);
+    (byHeading.get(m.series) ?? byHeading.set(m.series, []).get(m.series)!).push(v);
   }
   const worsened: InstructionFindings['worsened'] = [];
   let comparedInsufficient = 0;
-  for (const [key, vs] of byHeading) {
+  for (const vs of byHeading.values()) {
     if (vs.length < 2) continue;
     vs.sort((a, b) => meta[a.hash].order - meta[b.hash].order);
     for (let i = 1; i < vs.length; i++) {
@@ -153,7 +167,7 @@ ${m.heading}` : v.hash;
       }
       const failureDelta = before.failureRate != null && after.failureRate != null ? (after.failureRate - before.failureRate) * 100 : null;
       const reworkDelta = (after.reworkRate - before.reworkRate) * 100;
-      if ((failureDelta != null && failureDelta >= THRESHOLDS.WORSE_POINTS) || reworkDelta >= THRESHOLDS.WORSE_POINTS) worsened.push({ heading: key.split('\u0000')[1], before, after, failureDelta, reworkDelta });
+      if ((failureDelta != null && failureDelta >= THRESHOLDS.WORSE_POINTS) || reworkDelta >= THRESHOLDS.WORSE_POINTS) worsened.push({ heading: meta[after.hash].heading, before, after, failureDelta, reworkDelta });
     }
   }
   return { longRare, worsened, comparedInsufficient };

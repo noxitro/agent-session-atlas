@@ -2,7 +2,7 @@
 // スキル化の候補の全文)を、用語ページと同じ作法で置く。本文は atlas.html に埋め込まない。伏せ字版では依頼文と見出しを出さない。
 import { esc } from './detail.ts';
 import { dateTime, dec, duration, int } from './lib/format.ts';
-import { THRESHOLDS, type Candidate, type InstructionFindings, type SkillStat, type StuckSession, type VersionMeta, type VersionStat } from './lib/insights.ts';
+import { cleanHeading, THRESHOLDS, type Candidate, type InstructionFindings, type SkillStat, type StuckSession, type VersionMeta, type VersionStat } from './lib/insights.ts';
 import { NAV_JS, renderRail, renderTop } from './page-nav.ts';
 
 export const INSIGHTS_FILE = 'insights.html';
@@ -66,7 +66,7 @@ export function renderInsightsHtml(o: InsightsPageOptions): string {
   const sess = (id: string): string => `<a href="sessions/${esc(id.replace(/[^A-Za-z0-9._-]/g, '_'))}.html">${esc(o.sessionName(id))}</a>`;
   const vlabel = (v: VersionStat): string => {
     const m = o.meta[v.hash];
-    const name = anon || !m ? esc(v.hash) : `${esc(m.heading.replace(/^#+\s*/, '').slice(0, 60) || '(見出しなし)')} <span class="weak">版 ${m.order + 1}</span>`;
+    const name = anon || !m ? esc(v.hash) : `${esc(cleanHeading(m.heading, 60) || '(見出しなし)')} <span class="weak">版 ${m.order + 1}</span>`;
     return o.libraryHref && !anon ? `<a href="${esc(o.libraryHref)}#v-${esc(v.hash)}">${name}</a>` : name;
   };
 
@@ -81,7 +81,7 @@ export function renderInsightsHtml(o: InsightsPageOptions): string {
     ...o.findings.longRare.map((v) => `<li>長いのに注入が少ない: ${vlabel(v)}(${esc(int(v.chars))} 字、${esc(int(v.sessions))} セッション)</li>`),
     ...o.findings.worsened.map(
       (w) =>
-        `<li>版を変えた前後で悪化: ${anon ? w.after.hash : esc(w.heading.replace(/^#+\s*/, '').slice(0, 60))}(${vlabel(w.before)} → ${vlabel(w.after)}。失敗率 ${w.failureDelta == null ? '—' : `${w.failureDelta >= 0 ? '+' : ''}${esc(dec(w.failureDelta))} pt`}、手戻り率 ${w.reworkDelta >= 0 ? '+' : ''}${esc(dec(w.reworkDelta))} pt)</li>`,
+        `<li>版を変えた前後で悪化: ${anon ? w.after.hash : esc(cleanHeading(w.heading, 60) || '(見出しなし)')}(${vlabel(w.before)} → ${vlabel(w.after)}。失敗率 ${w.failureDelta == null ? '—' : `${w.failureDelta >= 0 ? '+' : ''}${esc(dec(w.failureDelta))} pt`}、手戻り率 ${w.reworkDelta >= 0 ? '+' : ''}${esc(dec(w.reworkDelta))} pt)</li>`,
     ),
   ];
   const instructions = `<section class="section ins" id="i-instructions" aria-labelledby="h-i-instructions"><div class="section-head"><h2 id="h-i-instructions">指示文の傾向</h2><p>版(内容のハッシュ)ごとの、注入されたセッションでの傾向。指示文の効果は直接測れない(同じ版でも依頼が違う)ので、相関として読む。率は ${THRESHOLDS.MIN_SESSIONS} セッション以上のものだけ結論に使う。</p></div>${

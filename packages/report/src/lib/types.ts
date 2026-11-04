@@ -198,7 +198,7 @@ export interface ReportData {
   library: boolean;
   /** Phase 12: 改善点(build 時に全セッションで計算したもの)。meta は伏せ字版では空 */
   insights: {
-    meta: Record<string, { heading: string; file: string; order: number; firstAt: string | null }>;
+    meta: Record<string, { heading: string; file: string; series: string; order: number; firstAt: string | null }>;
     candidates: InsightCandidate[];
     computedOver: number;
   };

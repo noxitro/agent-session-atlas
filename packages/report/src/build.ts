@@ -8,7 +8,7 @@ import { contentHash, parseEvents } from '../../core/src/index.ts';
 import { CoverageCounter, coverageFile, desktopCoverage } from './coverage.ts';
 import { createFileSink, fullFileName, renderFullTo } from './full.ts';
 import { INSTRUCTIONS_FILE, LIBRARY_DIR, LibraryCollector, renderInstructionsHtml, writeLibrary } from './library.ts';
-import { instructionFindings, instructionVersions, skillCandidates, skillStats, stuckSessions, type VersionMeta } from './lib/insights.ts';
+import { instructionFindings, instructionVersions, seriesKey, skillCandidates, skillStats, stuckSessions, type VersionMeta } from './lib/insights.ts';
 import { INSIGHTS_FILE, INSIGHTS_JSON, renderInsightsHtml } from './insights-page.ts';
 import { createAnonymizer, identityAnonymizer, type Anonymizer } from './lib/anonymize.ts';
 import { renderDetailHtml } from './detail.ts';
@@ -185,19 +185,21 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
   // Phase 12: 改善点。候補は本文(依頼文・ツールの列)から build 時に求め、結果だけ埋め込む(上位 30 件、例は 3 件まで)
   const insightMeta: Record<string, VersionMeta> = {};
   {
-    const byHeading = new Map<string, { hash: string; firstAt: string | null }[]>();
+    const byHeading = new Map<string, { hash: string; heading: string; file: string; firstAt: string | null }[]>();
     for (const r of input.sessions)
       for (const i of r.instructions) {
-        const key = `${i.file}\u0000${i.heading}`;
+        // 系列は指示文のページ(library.ts)と同じ鍵で束ね、同じ「版 N」になるようにする
+        const key = seriesKey(i.heading, i.file);
         const list = byHeading.get(key) ?? byHeading.set(key, []).get(key)!;
         const cur = list.find((x) => x.hash === i.contentHash);
         if (cur) cur.firstAt = cur.firstAt && i.firstSeenAt ? (cur.firstAt < i.firstSeenAt ? cur.firstAt : i.firstSeenAt) : (cur.firstAt ?? i.firstSeenAt);
-        else list.push({ hash: i.contentHash, firstAt: i.firstSeenAt });
+        else list.push({ hash: i.contentHash, heading: i.heading, file: i.file, firstAt: i.firstSeenAt });
       }
-    for (const [key, list] of byHeading) {
-      const [file, heading] = key.split('\u0000');
+    let n = 0;
+    for (const list of byHeading.values()) {
+      const series = `s${n++}`;
       list.sort((a, b) => (a.firstAt ?? '').localeCompare(b.firstAt ?? '') || a.hash.localeCompare(b.hash));
-      list.forEach((v, order) => (insightMeta[v.hash] = { heading: anon.enabled ? '' : heading, file, order, firstAt: v.firstAt }));
+      list.forEach((v, order) => (insightMeta[v.hash] = { heading: anon.enabled ? '' : v.heading, file: v.file, series, order, firstAt: v.firstAt }));
     }
   }
   const candidates = skillCandidates(
@@ -357,7 +359,8 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
     const groups = lib.result();
     const w = await writeLibrary(join(input.outDir, LIBRARY_DIR), groups);
     const names = new Map(sessions.map((s) => [s.id, s.name || s.firstUserMessage || s.id.slice(0, 8)]));
-    await writeFile(join(input.outDir, INSTRUCTIONS_FILE), renderInstructionsHtml({ css, generatedAt, groups, sessionName: (id) => (names.get(id) ?? id).replace(/\s+/g, ' ').slice(0, 60) }));
+    const projects = new Map(sessions.map((s) => [s.id, s.projectLabel]));
+    await writeFile(join(input.outDir, INSTRUCTIONS_FILE), renderInstructionsHtml({ css, generatedAt, groups, sessionName: (id) => (names.get(id) ?? id).replace(/\s+/g, ' ').slice(0, 60), sessionProject: (id) => projects.get(id) ?? null }));
     libOut = { groups: groups.length, versions: groups.reduce((n, g) => n + g.versions.length, 0), files: w.files, bytes: w.bytes, secretHits: w.secretHits, path: join(input.outDir, INSTRUCTIONS_FILE) };
   }
 
