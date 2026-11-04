@@ -3,7 +3,7 @@
   // ただし「長いのに注入が少ない」は全体での希少さの話なので allSessions で計算する。
   // スキル化の候補は build 時に全セッションで計算したもの(埋め込み)を出す。全件は insights.html
   import { shortProjectLabel } from '../../lib/anonymize.ts';
-  import { dec, duration, int } from '../../lib/format.ts';
+  import { date, dec, duration, int } from '../../lib/format.ts';
   import { cleanHeading, instructionFindings, instructionVersions, skillStats, stuckByProject, stuckSessions, THRESHOLDS, type Candidate, type VersionMeta } from '../../lib/insights.ts';
   import type { SessionSummary } from '../../lib/types.ts';
 
@@ -11,6 +11,7 @@
     sessions,
     allSessions,
     installed,
+    disabled = [],
     meta,
     candidates,
     computedOver,
@@ -22,6 +23,8 @@
     /** 絞り込み前の全セッション */
     allSessions: SessionSummary[];
     installed: string[] | null;
+    /** 設定で無効にしてある skill(settings.json の disabledSkills。今の設定) */
+    disabled?: string[];
     /** 指示文の版の見出し等(伏せ字版では空) */
     meta: Record<string, VersionMeta>;
     candidates: Candidate[];
@@ -34,12 +37,19 @@
 
   const versions = $derived(instructionVersions(sessions));
   const findings = $derived(instructionFindings(versions, meta, sessions.length));
-  const longRare = $derived(instructionFindings(instructionVersions(allSessions), meta, allSessions.length).longRare);
+  const allFindings = $derived(instructionFindings(instructionVersions(allSessions), meta, allSessions.length));
+  const longRare = $derived(allFindings.longRare);
+  const longRareChars = $derived(allFindings.longChars);
   const skills = $derived(skillStats(sessions, installed));
+  const disabledSet = $derived(new Set(disabled.map((n) => n.toLowerCase())));
+  /** 呼んだときの失敗率が出せる skill があるか(無ければ失敗率の列を出さない) */
+  const skillRates = $derived(skills.stats.some((s) => s.failureWith != null));
   const stuck = $derived(stuckSessions(sessions));
   const byProject = $derived(stuckByProject(stuck, sessions));
   const TOP = 5;
-  const pct = (v: number | null): string => (v == null ? '—' : `${dec(v * 100)}%`);
+  // 率は小数 1 桁にそろえる(2.41% と 2.4% が並ぶと別の値に見える)
+  const pct = (v: number | null): string => (v == null ? '—' : `${(v * 100).toFixed(1)}%`);
+  const clip = (t: string, n: number): string => (t.length > n ? `${t.slice(0, n - 1)}…` : t);
   const vname = (hash: string): string => {
     const m = meta[hash];
     return m && !anonymized ? `${cleanHeading(m.heading, 40) || '(見出しなし)'} 版 ${m.order + 1}` : hash;
@@ -62,12 +72,13 @@
   <div class="grid">
     <div class="box" data-testid="insights-instructions">
       <h3>指示文の傾向</h3>
-      {#if longRare.length === 0 && findings.worsened.length === 0}
-        <p class="basis">挙げる傾向はありません(版 {int(versions.length)}、前後比較ができなかった見出し {int(findings.comparedInsufficient)})。</p>
-      {:else}
+      <p class="basis">
+        版を変えた前後の比較: {int(findings.compared)} 組を判定、悪化 {int(findings.worsened.length)}{#if findings.comparedInsufficient}。{int(findings.comparedInsufficient)} 組はどちらかが {THRESHOLDS.MIN_SESSIONS} セッション未満で判定できません{/if}。
+      </p>
+      {#if longRare.length || findings.worsened.length}
         <ol>
           {#each longRare.slice(0, TOP) as v (v.hash)}
-            <li>長いのに注入が少ない(全セッション基準): {#if vhref(v.hash)}<a href={vhref(v.hash)}>{vname(v.hash)}</a>{:else}{vname(v.hash)}{/if}({int(v.chars)} 字、{int(v.sessions)} セッション)</li>
+            <li>長いのに注入が少ない(絞り込みの対象外。字数が全版の上位 25%({int(longRareChars)} 字以上)で、注入 {THRESHOLDS.RARE_SESSIONS} セッション未満): {#if vhref(v.hash)}<a href={vhref(v.hash)}>{vname(v.hash)}</a>{:else}{vname(v.hash)}{/if}({int(v.chars)} 字、{int(v.sessions)} セッション{#if meta[v.hash]?.lastAt}、最後に読み込んだのは {date(meta[v.hash].lastAt ?? null)}{/if})</li>
           {/each}
           {#each findings.worsened.slice(0, TOP) as w (w.after.hash)}
             <li>
@@ -78,6 +89,7 @@
       {/if}
       {#if versions.length}
         <table class="ledger small">
+          <caption class="cap">注入されたセッションの多い版(上位 {Math.min(TOP, versions.length)} / 全 {int(versions.length)} 版)</caption>
           <thead><tr><th scope="col">版</th><th scope="col" class="num">字数</th><th scope="col" class="num">セッション</th><th scope="col" class="num">失敗率</th><th scope="col" class="num">手戻り率</th></tr></thead>
           <tbody>
             {#each versions.slice(0, TOP) as v (v.hash)}
@@ -85,6 +97,7 @@
             {/each}
           </tbody>
         </table>
+        <p class="basis">失敗率: ツールの失敗・拒否 / 呼び出し。手戻り率: 同じファイルを 2 回以上編集したセッションの割合。— は {THRESHOLDS.MIN_SESSIONS} セッション未満。</p>
       {/if}
     </div>
 
@@ -94,15 +107,17 @@
         <p class="basis">skill の呼び出しはありません。</p>
       {:else}
         <table class="ledger small">
-          <thead><tr><th scope="col">skill</th><th scope="col" class="num">呼び出し</th><th scope="col" class="num">字数</th><th scope="col" class="num">失敗率(呼んだ / 呼ばない)</th></tr></thead>
+          <caption class="cap">呼び出しの多い skill(上位 {Math.min(TOP, skills.stats.length)} / 全 {int(skills.stats.length)} 件)</caption>
+          <thead><tr><th scope="col">skill</th><th scope="col" class="num">呼び出し</th><th scope="col" class="num">字数</th>{#if skillRates}<th scope="col" class="num">失敗率(呼んだ / 呼ばない)</th>{/if}</tr></thead>
           <tbody>
             {#each skills.stats.slice(0, TOP) as s (s.name)}
-              <tr><td>{s.name}</td><td class="num">{int(s.calls)}</td><td class="num">{s.chars == null ? '—' : int(s.chars)}</td><td class="num">{pct(s.failureWith)} / {pct(s.failureWithout)}</td></tr>
+              <tr><td>{s.name}</td><td class="num">{int(s.calls)}</td><td class="num">{s.chars == null ? '記録なし' : int(s.chars)}</td>{#if skillRates}<td class="num">{pct(s.failureWith)} / {pct(s.failureWithout)}</td>{/if}</tr>
             {/each}
           </tbody>
         </table>
+        {#if !skillRates}<p class="basis">{THRESHOLDS.MIN_SESSIONS} セッション以上で呼ばれた skill が無いので、呼んだときと呼ばないときの失敗率は比べられません。</p>{/if}
       {/if}
-      {#if skills.unused.length}<p class="basis">インストール済みで未使用: {skills.unused.join('、')}</p>{/if}
+      {#if skills.unused.length}<p class="basis">インストール済みで未使用: {skills.unused.map((n) => (disabledSet.has(n.toLowerCase()) ? `${n}(無効)` : n)).join('、')}</p>{/if}
     </div>
 
     <div class="box" data-testid="insights-stuck">
@@ -110,28 +125,28 @@
       {#if stuck.length === 0}
         <p class="basis">閾値を超えたセッションはありません。</p>
       {:else}
-        <p class="basis">{int(stuck.length)} セッションが閾値(待ち {duration(THRESHOLDS.STUCK.ttftMs)} 以上、失敗の連続 {THRESHOLDS.STUCK.consecutiveFailures} 回以上、再編集 {THRESHOLDS.STUCK.extraEdits} 回以上、権限確認 {THRESHOLDS.STUCK.permissions} 件以上、compaction {THRESHOLDS.STUCK.compactions} 回以上)を超えています。</p>
+        <p class="basis">{int(stuck.length)} セッションが閾値(最初のトークンまでの待ちの中央値 {duration(THRESHOLDS.STUCK.ttftMs)} 以上、ツールの失敗の連続 {THRESHOLDS.STUCK.consecutiveFailures} 回以上、余分な編集(同じファイルの 2 回目以降の編集の全ファイルの合計){THRESHOLDS.STUCK.extraEdits} 回以上、権限確認 {THRESHOLDS.STUCK.permissions} 件以上、compaction {THRESHOLDS.STUCK.compactions} 回以上)を超えています。理由の多い順に上位 {Math.min(TOP, stuck.length)} 件。</p>
         <ol>
           {#each stuck.slice(0, TOP) as x (x.id)}
-            <li><a href={x.href}>{sessionLabel(x.id)}</a>: {x.reasons.join('、')}{#if x.ttftMedian != null}(TTFT 中央値 {duration(x.ttftMedian)}){/if}</li>
+            <li><a href={x.href}>{sessionLabel(x.id)}</a>: {x.reasons.join('、')}{#if x.reasons.includes('待ち時間') && x.ttftMedian != null}(待ちの中央値 {duration(x.ttftMedian)}){/if}</li>
           {/each}
         </ol>
         {#if byProject.length}
-          <p class="basis">プロジェクト別({THRESHOLDS.MIN_SESSIONS} セッション以上のもの): {byProject.slice(0, TOP).map((p) => `${anonymized ? p.project : shortProjectLabel(p.projectLabel)} ${int(p.stuck)} / ${int(p.total)}`).join('、')}</p>
+          <p class="basis">プロジェクト別(該当 / 全セッション。{THRESHOLDS.MIN_SESSIONS} セッション以上のもの): {byProject.slice(0, TOP).map((p) => `${anonymized ? p.project : shortProjectLabel(p.projectLabel)} ${int(p.stuck)} / ${int(p.total)}`).join('、')}</p>
         {/if}
       {/if}
     </div>
 
     <div class="box" data-testid="insights-candidates">
       <h3>スキル化の候補</h3>
-      <p class="basis">全セッション({int(computedOver)} 件、絞り込み前)で計算。似た依頼文の繰り返しと同じツールの並びの繰り返し({THRESHOLDS.MIN_REPEAT} 回以上)。スコアは回数 × 所要の中央値(分、2 時間で頭打ち)。</p>
+      <p class="basis">全記録({int(computedOver)} 件、空のセッションを含む。絞り込みの対象外)で計算。似た依頼文の繰り返しと同じツールの並びの繰り返し({THRESHOLDS.MIN_REPEAT} 回以上)。スコアは回数 × 所要の中央値(分。1 分未満は 1 分、2 時間で頭打ち)。所要はターンの開始から最後の出来事までの時間で、返答待ちや放置も含みます。上位 {Math.min(TOP, candidates.length)} / 全 {int(candidates.length)} 件。</p>
       {#if candidates.length === 0}
         <p class="basis">候補はありません。</p>
       {:else}
         <ol>
           {#each candidates.slice(0, TOP) as c, i (c.key)}
             <li>
-              {#if c.kind === 'tools'}<span class="seq">{c.key}</span>{:else if anonymized}依頼文の繰り返し{:else}{(c.representative ?? c.key).replace(/\s+/g, ' ').slice(0, 70)}{/if}
+              {#if c.kind === 'tools'}<span class="seq">{c.key}</span>{:else if anonymized}依頼文の繰り返し{:else}{clip((c.representative ?? c.key).replace(/\s+/g, ' '), 70)}{/if}
               <span class="meta">{int(c.count)} 回 · {int(c.sessions.length)} セッション · スコア {dec(c.score)}</span>
               {#if hasPage}<a class="go" href="insights.html#c-{i + 1}" aria-label="候補 {i + 1} を詳しく">詳しく →</a>{/if}
             </li>
@@ -191,5 +206,11 @@
   table.small {
     margin-top: 6px;
     font-size: 0.75rem;
+  }
+  caption.cap {
+    caption-side: top;
+    text-align: left;
+    padding: 0 0 2px;
+    color: var(--ink-2);
   }
 </style>

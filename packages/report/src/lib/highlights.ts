@@ -119,14 +119,18 @@ export function highlights(
       opts.installed.skills,
       usage.skills.map((s) => s.name),
     );
+    // 設定で無効にしてあるもの(settings.json の disabledSkills。今の設定)は、入れたのに使っていないのではないので印を付ける
+    const off = new Set(opts.installed.disabled.map((n) => n.toLowerCase()));
+    const label = (n: string): string => (off.has(n.toLowerCase()) ? `${n}(無効)` : n);
+    const nOff = unused.filter((n) => off.has(n.toLowerCase())).length;
     if (unused.length)
       out.push({
         kind: 'unused-skill',
         title: 'インストール済みで未使用の skill',
-        basis: 'この条件のセッションで一度も呼ばれなかったもの',
+        basis: `この条件のセッションで一度も呼ばれなかったもの${nOff ? `。うち ${int(nOff)} 件は今の設定で無効` : ''}`,
         items: [
           {
-            text: `${int(unused.length)} / ${int(opts.installed.skills.length)} 件: ${unused.slice(0, 6).join('、')}${unused.length > 6 ? ` ほか ${int(unused.length - 6)} 件` : ''}`,
+            text: `${int(unused.length)} / ${int(opts.installed.skills.length)} 件: ${unused.slice(0, 6).map(label).join('、')}${unused.length > 6 ? ` ほか ${int(unused.length - 6)} 件` : ''}`,
             href: filterHref(opts.filter, 'unused-skills'),
             linkLabel: '未使用の skill の一覧',
           },

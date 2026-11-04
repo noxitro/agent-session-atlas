@@ -91,6 +91,20 @@ describe('指示文の版', () => {
     // 母集団が MIN_SESSIONS 未満(絞り込みなど)では「注入が少ない」と結論しない
     expect(instructionFindings(instructionVersions(many), allMeta, THRESHOLDS.MIN_SESSIONS - 1).longRare).toEqual([]);
     expect(lr.map((v) => v.hash)).toEqual(['h3']);
+    // 判定できた組の数と、字数の下限を返す(画面に「N 組を判定」「M 字以上」と出す)
+    expect(f.compared).toBe(1);
+    expect(instructionFindings(instructionVersions(many), allMeta, many.length).longChars).toBeGreaterThan(0);
+    // 今の版は番号が最大の版ではなく、最後に読み込まれた版(別のリポジトリで古い番号の版を使い続けている)
+    const byLast = { ...allMeta, h1: { ...meta.h1, lastAt: '2026-10-09' }, h2: { ...meta.h2, lastAt: '2026-10-02' }, h3: { ...meta.h3, lastAt: '2026-10-03' } };
+    const lr2 = instructionFindings(instructionVersions(many), byLast, many.length).longRare;
+    expect(lr2.map((v) => v.hash)).toEqual([]); // 今の版 h1 は 5 セッションで「少ない」に当たらない
+  });
+
+  it('止まっている箇所は理由の数が同じなら余分な編集・失敗の連続の多い順(待ち時間の記録の有無で順位を決めない)', () => {
+    const T = THRESHOLDS.STUCK;
+    const withTtft = sess({ id: 'w', exec: { modes: {}, modesInferred: 0, efforts: {}, initiators: {}, context: null, latency: { m: [[5_000], [9_000]] } }, analysis: { filesReedited: 1, extraEdits: T.extraEdits, maxConsecutiveFailures: 0, turns: 1 } });
+    const manyEdits = sess({ id: 'e', analysis: { filesReedited: 5, extraEdits: T.extraEdits * 40, maxConsecutiveFailures: 0, turns: 1 } });
+    expect(stuckSessions([withTtft, manyEdits]).map((x) => x.id)).toEqual(['e', 'w']);
   });
 });
 
@@ -112,12 +126,12 @@ describe('skill と止まっている箇所', () => {
     const c = sess({ id: 'c', friction: { compactions: T.compactions, aborts: 0, errors: 0, permissionRequests: 0, askUser: 0, modelChanges: 0, modeChanges: 0, toolFailures: 0, subagentFailures: 0 } });
     const st = stuckSessions([a, b, c]);
     expect(st.map((x) => x.id)).toEqual(['a', 'c']);
-    expect(st[0].reasons).toEqual(['待ち時間', '失敗の連続', '同じファイルの再編集']);
+    expect(st[0].reasons).toEqual(['待ち時間', '失敗の連続', '余分な編集の多さ']);
     expect(st[1].reasons).toEqual(['compaction']);
     // 総数が MIN_SESSIONS 未満のプロジェクトは出さない(1 / 1 が結論に見えるため)
     expect(stuckByProject(st, [a, b, c])).toEqual([]);
     const fill = Array.from({ length: THRESHOLDS.MIN_SESSIONS - 2 }, (_, i) => sess({ id: `f${i}` }));
-    expect(stuckByProject(st, [a, b, c, ...fill])).toEqual([{ project: 'p', projectLabel: 'p', stuck: 2, total: THRESHOLDS.MIN_SESSIONS, reasons: { 待ち時間: 1, 失敗の連続: 1, 同じファイルの再編集: 1, compaction: 1 } }]);
+    expect(stuckByProject(st, [a, b, c, ...fill])).toEqual([{ project: 'p', projectLabel: 'p', stuck: 2, total: THRESHOLDS.MIN_SESSIONS, reasons: { 待ち時間: 1, 失敗の連続: 1, 余分な編集の多さ: 1, compaction: 1 } }]);
   });
 });
 

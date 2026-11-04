@@ -8,7 +8,7 @@ import { contentHash, parseEvents } from '../../core/src/index.ts';
 import { CoverageCounter, coverageFile, desktopCoverage } from './coverage.ts';
 import { createFileSink, fullFileName, renderFullTo } from './full.ts';
 import { INSTRUCTIONS_FILE, LIBRARY_DIR, LibraryCollector, renderInstructionsHtml, writeLibrary } from './library.ts';
-import { instructionFindings, instructionVersions, seriesKey, skillCandidates, skillStats, stuckSessions, type VersionMeta } from './lib/insights.ts';
+import { instructionFindings, instructionVersions, seriesKey, skillCandidates, skillStats, stuckByProject, stuckSessions, type VersionMeta } from './lib/insights.ts';
 import { INSIGHTS_FILE, INSIGHTS_JSON, renderInsightsHtml } from './insights-page.ts';
 import { createAnonymizer, identityAnonymizer, type Anonymizer } from './lib/anonymize.ts';
 import { renderDetailHtml } from './detail.ts';
@@ -185,21 +185,24 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
   // Phase 12: 改善点。候補は本文(依頼文・ツールの列)から build 時に求め、結果だけ埋め込む(上位 30 件、例は 3 件まで)
   const insightMeta: Record<string, VersionMeta> = {};
   {
-    const byHeading = new Map<string, { hash: string; heading: string; file: string; firstAt: string | null }[]>();
+    const byHeading = new Map<string, { hash: string; heading: string; file: string; firstAt: string | null; lastAt: string | null }[]>();
     for (const r of input.sessions)
       for (const i of r.instructions) {
         // 系列は指示文のページ(library.ts)と同じ鍵で束ね、同じ「版 N」になるようにする
         const key = seriesKey(i.heading, i.file);
         const list = byHeading.get(key) ?? byHeading.set(key, []).get(key)!;
         const cur = list.find((x) => x.hash === i.contentHash);
-        if (cur) cur.firstAt = cur.firstAt && i.firstSeenAt ? (cur.firstAt < i.firstSeenAt ? cur.firstAt : i.firstSeenAt) : (cur.firstAt ?? i.firstSeenAt);
-        else list.push({ hash: i.contentHash, heading: i.heading, file: i.file, firstAt: i.firstSeenAt });
+        if (cur) {
+          cur.firstAt = cur.firstAt && i.firstSeenAt ? (cur.firstAt < i.firstSeenAt ? cur.firstAt : i.firstSeenAt) : (cur.firstAt ?? i.firstSeenAt);
+          // firstSeenAt はセッションごとの初回の注入。その最大が「最後にこの版を読み込んだ」日時
+          cur.lastAt = cur.lastAt && i.firstSeenAt ? (cur.lastAt > i.firstSeenAt ? cur.lastAt : i.firstSeenAt) : (cur.lastAt ?? i.firstSeenAt);
+        } else list.push({ hash: i.contentHash, heading: i.heading, file: i.file, firstAt: i.firstSeenAt, lastAt: i.firstSeenAt });
       }
     let n = 0;
     for (const list of byHeading.values()) {
       const series = `s${n++}`;
       list.sort((a, b) => (a.firstAt ?? '').localeCompare(b.firstAt ?? '') || a.hash.localeCompare(b.hash));
-      list.forEach((v, order) => (insightMeta[v.hash] = { heading: anon.enabled ? '' : v.heading, file: v.file, series, order, firstAt: v.firstAt }));
+      list.forEach((v, order) => (insightMeta[v.hash] = { heading: anon.enabled ? '' : v.heading, file: v.file, series, order, firstAt: v.firstAt, lastAt: v.lastAt }));
     }
   }
   const candidates = skillCandidates(
@@ -229,11 +232,14 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
         generatedAt,
         anonymized: anon.enabled,
         sessions: sessions.length,
+        emptySessions: sessions.filter((s) => s.empty).length,
         versions,
         meta: anon.enabled ? {} : insightMeta,
         findings: instructionFindings(versions, anon.enabled ? {} : insightMeta, sessions.length),
         skills: skillStats(sessions, data.installed?.skills ?? null),
+        disabledSkills: data.installed?.disabled ?? [],
         stuck: stuckSessions(sessions),
+        stuckProjects: stuckByProject(stuckSessions(sessions), sessions),
         candidates,
         sessionName: (id) => names.get(id) ?? id,
         libraryHref: data.library ? INSTRUCTIONS_FILE : null,

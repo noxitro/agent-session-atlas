@@ -66,7 +66,7 @@
           name: t.label,
           tag: t.mcpServer ? 'MCP' : undefined,
           value: toolOrder === 'rate' ? (failureRate(t) ?? 0) : t.calls,
-          valueText: toolOrder === 'rate' ? pct(t.failure + t.denied, t.completed) : compact(t.calls),
+          valueText: toolOrder === 'rate' ? pct(t.failure + t.denied, t.completed) : int(t.calls),
           note: toolOrder === 'rate' ? `${int(t.calls)} 回・失敗 ${int(t.failure)}・拒否 ${int(t.denied)}` : rateText(t),
         }));
       }
@@ -75,7 +75,7 @@
           key: m.server,
           name: m.server,
           value: m.calls,
-          valueText: compact(m.calls),
+          valueText: int(m.calls),
           note: `ツール ${m.tools.length} 種(${m.tools
             .slice(0, 3)
             .map((t) => `${mcpToolLabel(m.server, t.name)} ${int(t.calls)}`)
@@ -86,7 +86,7 @@
           key: s.name,
           name: s.name,
           value: s.uses,
-          valueText: compact(s.uses),
+          valueText: int(s.uses),
           note: `利用者が呼んだ ${int(s.user)}・エージェントが呼んだ ${int(s.agent)}${s.unknown ? `・不明 ${int(s.unknown)}` : ''}・${int(s.sessions)} セッション`,
         }));
       case 'agents':
@@ -94,11 +94,11 @@
           key: a.name,
           name: a.name,
           value: a.runs,
-          valueText: compact(a.runs),
+          valueText: int(a.runs),
           note: `失敗 ${int(a.failed)}(${pct(a.failed, a.runs)})・トークン ${compact(a.tokens)}・${int(a.sessions)} セッション`,
         }));
       case 'hooks':
-        return usage.hooks.map((h) => ({ key: h.name, name: h.name, value: h.count, valueText: compact(h.count), note: `${int(h.sessions)} セッション` }));
+        return usage.hooks.map((h) => ({ key: h.name, name: h.name, value: h.count, valueText: int(h.count), note: `${int(h.sessions)} セッション` }));
       case 'instructions':
         return usage.instructions.map((i) => ({
           key: i.name,

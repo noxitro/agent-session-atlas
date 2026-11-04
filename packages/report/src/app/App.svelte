@@ -192,6 +192,8 @@
   );
   /** group(名前)→ 今のグループの ids、無ければ ids(共有した相手にその名前が無くても壊れない) */
   const eff = $derived(effectiveIds(filter, groupOptions, knownIds));
+  // 今の絞り込み(空を含めるかの条件を除く)に当てはまる空のセッション数。表紙の「除外」の件数に使う
+  const emptyInFilter = $derived(applyFilter(sessions, { ...filter, empty: '1', ids: eff.ids }).filter((s) => s.empty).length);
   /** 現在のグループ名(名前で決まらないときは ids の一致。0 件のグループや同じ集合が複数あるときは決めない) */
   const currentName = $derived(currentGroupName(filter, groupOptions, knownIds));
   const currentGroup = $derived(currentName ? (groupOptions.find((g) => g.name === currentName) ?? null) : null);
@@ -508,15 +510,15 @@
         </div>
 
         <!-- 帳票の順: 表紙(規模の 4 欄)→ 摘要(要点)→ 明細 -->
-        <Overview part="cover" {agg} {judged} anonymized={data.anonymized} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} />
+        <Overview part="cover" {agg} {judged} anonymized={data.anonymized} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} {emptyInFilter} />
         <Highlights groups={points} />
-        <Insights sessions={filtered} allSessions={data.sessions} installed={data.installed?.skills ?? null} meta={data.insights?.meta ?? {}} candidates={data.insights?.candidates ?? []} computedOver={data.insights?.computedOver ?? sessions.length} anonymized={data.anonymized} hasPage={true} libraryHref={data.library ? 'instructions.html' : null} />
-        <Overview part="detail" {agg} {judged} anonymized={data.anonymized} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} />
+        <Insights sessions={filtered} allSessions={data.sessions} installed={data.installed?.skills ?? null} disabled={data.installed?.disabled ?? []} meta={data.insights?.meta ?? {}} candidates={data.insights?.candidates ?? []} computedOver={data.insights?.computedOver ?? sessions.length} anonymized={data.anonymized} hasPage={true} libraryHref={data.library ? 'instructions.html' : null} />
+        <Overview part="detail" {agg} {judged} anonymized={data.anonymized} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} {emptyInFilter} />
         {#if judged}<JudgmentPanel {agg} meta={data.judgments} />{/if}
         <UsageRanking usage={agg.usage} installed={data.installed ?? null} bind:tab={usageTab} />
         <ExecProfile exec={agg.exec} sessions={filtered.length} />
         <ProjectTable rows={agg.byProject} {judged} current={filter.project} onpick={(p) => setFilter({ project: p })} />
-        <MonthlyChart months={agg.byMonth} />
+        <MonthlyChart months={agg.byMonth} lastAt={all.overall.lastAt} />
         <ModelChart rows={agg.byModel} />
         <SessionTable
           sessions={filtered}

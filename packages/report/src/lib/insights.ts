@@ -120,6 +120,8 @@ export interface VersionMeta {
   /** 同じ系列の中での順(初回の利用日の順)。指示文のページの「版 N」と同じ */
   order: number;
   firstAt: string | null;
+  /** その版を読み込んだセッションのうち、最後に読み込んだ日時(セッションごとの初回の注入の最大)。系列の「今の版」を決める */
+  lastAt?: string | null;
 }
 
 export interface InstructionFindings {
@@ -127,8 +129,12 @@ export interface InstructionFindings {
   longRare: VersionStat[];
   /** 版を変えた前後で悪化(失敗率か手戻り率が WORSE_POINTS 以上上がった) */
   worsened: { heading: string; before: VersionStat; after: VersionStat; failureDelta: number | null; reworkDelta: number }[];
-  /** 前後比較ができなかった見出し(どちらかが MIN_SESSIONS 未満)の数 */
+  /** 前後比較ができなかった組(どちらかが MIN_SESSIONS 未満)の数 */
   comparedInsufficient: number;
+  /** 前後比較を判定できた組の数 */
+  compared: number;
+  /** 長いのに注入が少ないとみなした字数(全版の上位 25% の下限) */
+  longChars: number;
 }
 
 /**
@@ -138,13 +144,19 @@ export interface InstructionFindings {
 export function instructionFindings(stats: VersionStat[], meta: Record<string, VersionMeta>, totalSessions: number): InstructionFindings {
   const chars = stats.map((v) => v.chars).sort((a, b) => a - b);
   const q75 = chars.length ? chars[Math.min(chars.length - 1, Math.floor(chars.length * 0.75))] : 0;
-  // 同じ系列の版が並ぶと冗長なので、系列ごとに最新の版(order が最大)だけ挙げる
+  // 同じ系列の版が並ぶと冗長なので、系列ごとに今の版だけ挙げる。今の版は最後に読み込まれた版(指示文のページの「最後に使われた版」と同じ)。
+  // 番号(order)が最大の版とは限らない(別のリポジトリで並行して使われる)。lastAt が無い古いデータは order で決める
+  const newer = (a: VersionMeta | undefined, b: VersionMeta | undefined): boolean => {
+    const la = a?.lastAt ?? null;
+    const lb = b?.lastAt ?? null;
+    return la != null && lb != null && la !== lb ? la > lb : (a?.order ?? 0) > (b?.order ?? 0);
+  };
   const latestOfHeading = new Map<string, VersionStat>();
   for (const v of stats) {
     const m = meta[v.hash];
     const k = m ? m.series : v.hash;
     const cur = latestOfHeading.get(k);
-    if (!cur || (meta[cur.hash]?.order ?? 0) < (m?.order ?? 0)) latestOfHeading.set(k, v);
+    if (!cur || newer(m, meta[cur.hash])) latestOfHeading.set(k, v);
   }
   const longRare = [...latestOfHeading.values()].filter((v) => totalSessions >= THRESHOLDS.MIN_SESSIONS && chars.length >= 4 && v.chars >= q75 && v.chars > 0 && v.sessions < THRESHOLDS.RARE_SESSIONS).sort((a, b) => b.chars - a.chars);
   const byHeading = new Map<string, VersionStat[]>();
@@ -155,6 +167,7 @@ export function instructionFindings(stats: VersionStat[], meta: Record<string, V
   }
   const worsened: InstructionFindings['worsened'] = [];
   let comparedInsufficient = 0;
+  let compared = 0;
   for (const vs of byHeading.values()) {
     if (vs.length < 2) continue;
     vs.sort((a, b) => meta[a.hash].order - meta[b.hash].order);
@@ -165,12 +178,13 @@ export function instructionFindings(stats: VersionStat[], meta: Record<string, V
         comparedInsufficient++;
         continue;
       }
+      compared++;
       const failureDelta = before.failureRate != null && after.failureRate != null ? (after.failureRate - before.failureRate) * 100 : null;
       const reworkDelta = (after.reworkRate - before.reworkRate) * 100;
       if ((failureDelta != null && failureDelta >= THRESHOLDS.WORSE_POINTS) || reworkDelta >= THRESHOLDS.WORSE_POINTS) worsened.push({ heading: meta[after.hash].heading, before, after, failureDelta, reworkDelta });
     }
   }
-  return { longRare, worsened, comparedInsufficient };
+  return { longRare, worsened, comparedInsufficient, compared, longChars: q75 };
 }
 
 // ---------- skill ----------
@@ -269,7 +283,8 @@ export function stuckSessions(sessions: SessionSummary[]): StuckSession[] {
     const reasons: string[] = [];
     if (l.ttft != null && l.ttft >= T.ttftMs) reasons.push('待ち時間');
     if (s.analysis.maxConsecutiveFailures >= T.consecutiveFailures) reasons.push('失敗の連続');
-    if (s.analysis.extraEdits >= T.extraEdits) reasons.push('同じファイルの再編集');
+    // extraEdits は全ファイルの「同じファイルの 2 回目以降の編集」の合計(1 つのファイルを 3 回直したという意味ではない)
+    if (s.analysis.extraEdits >= T.extraEdits) reasons.push('余分な編集の多さ');
     if (s.friction.permissionRequests >= T.permissions) reasons.push('権限確認の多さ');
     if (s.friction.compactions >= T.compactions) reasons.push('compaction');
     out.push({
@@ -286,7 +301,8 @@ export function stuckSessions(sessions: SessionSummary[]): StuckSession[] {
       reasons,
     });
   }
-  return out.filter((x) => x.reasons.length).sort((a, b) => b.reasons.length - a.reasons.length || (b.ttftMedian ?? 0) - (a.ttftMedian ?? 0) || b.extraEdits - a.extraEdits);
+  // 理由の数の多い順。同数なら閾値に効いた量の大きい順(待ち時間の記録は新しいログにしか無いので、それで並べると記録の有無で順位が決まる)
+  return out.filter((x) => x.reasons.length).sort((a, b) => b.reasons.length - a.reasons.length || b.extraEdits - a.extraEdits || b.consecutiveFailures - a.consecutiveFailures || (b.ttftMedian ?? 0) - (a.ttftMedian ?? 0));
 }
 
 export function stuckByProject(stuck: StuckSession[], sessions: SessionSummary[]): { project: string; projectLabel: string; stuck: number; total: number; reasons: Record<string, number> }[] {

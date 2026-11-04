@@ -195,7 +195,8 @@ export function execAggregate(sessions: SessionSummary[]): ExecAggregate {
   const initRows = [...initiators].map(([key, requests]) => ({ key, requests })).sort((a, b) => orderBy(INITIATOR_ORDER)(a.key, b.key));
   const latencyRows = [...latency]
     .map(([model, l]) => ({ model, ttft: quantilesOf(l.ttft), duration: quantilesOf(l.duration) }))
-    .sort((a, b) => Math.max(b.ttft.n, b.duration.n) - Math.max(a.ttft.n, a.duration.n) || a.model.localeCompare(b.model));
+    // 表に出す件数(最初のトークンまでの件数)の多い順。全体の件数で並べると、表の件数と順が食い違う
+    .sort((a, b) => b.ttft.n - a.ttft.n || b.duration.n - a.duration.n || a.model.localeCompare(b.model));
   const tools = new Set([...durations.keys(), ...outliers.keys()]);
   const durationRows = [...tools]
     .map((tool) => ({ tool, ...quantilesOf(durations.get(tool) ?? []), outliers: outliers.get(tool) ?? 0 }))

@@ -1,6 +1,6 @@
 // 共有読者向けの用語説明。out/glossary.html(別ページ)に載せ、atlas.html と詳細ページからリンクする。
 
-export type GroupId = 'units' | 'time' | 'records' | 'mechanics' | 'effort';
+export type GroupId = 'units' | 'time' | 'records' | 'mechanics' | 'effort' | 'insights';
 
 export interface TermGroup {
   id: GroupId;
@@ -9,13 +9,14 @@ export interface TermGroup {
   lead: string;
 }
 
-/** 用語の分類。用語ページでは各分類が h2(id は g-<id>)になり、目次はこの 5 つだけを載せる。並びは読む順(消費 → 時間 → 記録 → 仕組み → 工数) */
+/** 用語の分類。用語ページでは各分類が h2(id は g-<id>)になり、目次はこの 6 つだけを載せる。並びは読む順(消費 → 時間 → 記録 → 仕組み → 工数 → 改善点) */
 export const GLOSSARY_GROUPS: TermGroup[] = [
   { id: 'units', title: '消費の単位', lead: 'AI 使用量・トークン・リクエストなど、「どれだけ使ったか」を数える単位。' },
   { id: 'time', title: '時間と待ち', lead: '所要時間・実働時間・待ち時間など、「どれだけ掛かったか」の測り方。' },
   { id: 'records', title: '記録の由来と欠測', lead: '数値がどの記録から来ているか、無いときに何と表示するか、どうまとめているか。' },
   { id: 'mechanics', title: '動かし方と拡張の仕組み', lead: 'モード・推論強度・compaction と、skill / MCP / agent / hook / 指示ファイル / llm-wiki。' },
   { id: 'effort', title: '工数と判定', lead: '推定人手工数・摩擦・権限の確認・todo・要点など、「うまく進んだか」を見る欄。' },
+  { id: 'insights', title: '改善点の指標', lead: '改善点の節とページ(insights.html)で使う、LLM を呼ばない規則の指標と閾値。' },
 ];
 
 export interface Term {
@@ -228,5 +229,89 @@ export const GLOSSARY: Term[] = [
     group: 'effort',
     term: '推定人手工数 ÷ AI の実働',
     body: '判定済みのセッションについて、推定人手工数の合計を AI の実働時間(5 分を超える空白を除いた時間)の合計で割った値。人が付き添った時間や確認の手間は AI の実働に含まれないため、削減量そのものではなく目安です。',
+  },
+  {
+    id: 'reasoning-tokens',
+    group: 'units',
+    term: '推論トークン',
+    body: '出力トークンのうち、モデルが答える前の推論(思考)に使った分として記録されたもの(reasoning_tokens)。記録のあるリクエストだけの合計で、集計明細では出力トークンに対する割合を添えます。',
+  },
+  {
+    id: 'session-source',
+    group: 'records',
+    term: '出所(db / dir)',
+    body: 'セッションの記録がどこにあったか。db は session-store.db(リクエスト単位の消費の表など)に行があること、dir は session-state/<セッション ID>/ のフォルダ(events.jsonl など)があること。db + dir は両方あるもので、最も多くの欄が埋まります。',
+  },
+  {
+    id: 'autopilot-continuation',
+    group: 'mechanics',
+    term: '自動継続(autopilot)',
+    body: 'autopilot のモードで、利用者の依頼なしにエージェントが自分で次のターンを続けたもの(user.message の isAutopilotContinuation)。依頼の回数には数えず、別に件数を示します。',
+  },
+  {
+    id: 'model-change',
+    group: 'effort',
+    term: 'モデル変更',
+    body: 'セッションの途中で使うモデルが切り替わった回数(session.model_change)。摩擦の合計には含めず、参考として件数だけ示します。',
+  },
+  {
+    id: 'available-skills',
+    group: 'mechanics',
+    term: '使えた skill',
+    body: 'そのセッションのシステムメッセージに一覧(<available_skills>)として載っていた skill。呼んだかどうかに関係なく、エージェントが選べた候補です。Copilot CLI 1.0.77 より前の版や copilot -p では一覧が記録に残らないため、呼んだ skill だけを示します。',
+  },
+  {
+    id: 'injections',
+    group: 'mechanics',
+    term: '注入回数',
+    body: '指示ファイルの本文がシステムメッセージに入れられた回数。セッションの始めのほか、compaction の後などに入れ直されるため、1 セッションで 2 回以上になることがあります。',
+  },
+  {
+    id: 'instruction-version',
+    group: 'mechanics',
+    term: '版(指示文・skill)',
+    body: '指示ファイルや skill の本文を内容のハッシュで区別したもの。見出しが同じものを 1 つの項目にまとめ、「版 N」は最初に使われた日時の順の通し番号です。別のリポジトリの同じ見出しのファイルも同じ項目に入るため、番号が大きい版が今の版とは限りません。',
+  },
+  {
+    id: 'latest-version',
+    group: 'mechanics',
+    term: '最後に使われた版 / 並行して使用',
+    body: '「最後に使われた版」は、その項目でいちばん最近にセッションが読み込んだ版。「並行して使用」は、使われた期間が他の版と重なっていること(別のリポジトリ・別のブランチで違う版が同時に使われていたなど)を示します。期間は、各セッションでその版を最初に読み込んだ日時から求めます。',
+  },
+  {
+    id: 'rework-rate',
+    group: 'insights',
+    term: '手戻り率',
+    body: '同じファイルを 2 回以上編集したセッションの割合。改善点の「指示文の傾向」で、版ごとに比べるのに使います。',
+  },
+  {
+    id: 'extra-edits',
+    group: 'insights',
+    term: '余分な編集',
+    body: '同じファイルの 2 回目以降の編集を、全ファイルで合計した回数(2 つのファイルを 2 回ずつ直すと 2)。1 つのファイルを何回直したかではありません。改善点の「止まっている箇所」の理由の 1 つです。',
+  },
+  {
+    id: 'consecutive-failures',
+    group: 'insights',
+    term: '失敗の連続',
+    body: 'ツールの失敗・拒否が途切れずに続いた最長の回数。改善点の「止まっている箇所」の理由の 1 つです。',
+  },
+  {
+    id: 'ttft',
+    group: 'time',
+    term: 'TTFT(最初のトークンまでの待ち)',
+    body: 'Time To First Token。リクエストを送ってから応答が出始めるまでの時間で、「待ち時間(最初のトークンまで)」と同じものです。改善点の「止まっている箇所」では、セッション内の中央値が閾値以上なら「待ち時間」を理由にします。リクエスト単位の記録が無いセッションでは判定できません。',
+  },
+  {
+    id: 'skill-candidate',
+    group: 'insights',
+    term: 'スキル化の候補 / スコア / ツールの並び',
+    body: '似た依頼文の繰り返しと、ターンの中で同じ順に呼ばれたツールの並びの繰り返しを、skill にまとめる候補として挙げたもの。スコアは回数 × 1 回の所要の中央値(分。1 分未満は 1 分、2 時間で頭打ち)で、所要はターンの開始から最後の出来事までの時間(返答待ちや放置を含む)です。',
+  },
+  {
+    id: 'long-rare',
+    group: 'insights',
+    term: '長いのに注入が少ない / 版の前後で悪化',
+    body: '「長いのに注入が少ない」は、字数が全版の上位 25% で、注入されたセッションが 3 未満の今の版。「版の前後で悪化」は、同じ項目の版を変えた前後で失敗率か手戻り率が 10 ポイント以上上がったもの(前後とも 5 セッション以上のときだけ判定)。どちらも相関で、指示文が原因とは限りません。',
   },
 ];

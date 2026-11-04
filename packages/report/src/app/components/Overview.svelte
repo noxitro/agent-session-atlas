@@ -11,6 +11,7 @@
     filtered,
     includeEmpty,
     emptyCount,
+    emptyInFilter,
     part = 'cover',
   }: {
     agg: Aggregate;
@@ -22,6 +23,8 @@
     includeEmpty: boolean;
     /** 全データ中の空のセッション数 */
     emptyCount: number;
+    /** 今の絞り込み(空を含めるかを除く)に当てはまる空のセッション数 */
+    emptyInFilter: number;
     /** 表紙(規模の 4 欄。要点の前に置く)か、集計明細(残りの 12 欄と入力トークン記録の内訳。要点の後に置く)か */
     part?: 'cover' | 'detail';
   } = $props();
@@ -56,7 +59,7 @@
     <p>{filtered ? '絞り込み後の値' : '全セッションの値'}。規模の 4 欄。トークンやツールなどの明細は要点の下の「集計明細」にあります。</p>
   </div>
   {#if !includeEmpty && emptyCount > 0}
-    <p class="excluded" data-testid="empty-excluded">空のセッション {int(emptyCount)} 件を除外(依頼・ツール呼び出し・応答がどれも無いもの。絞り込みの「その他の条件」の「空のセッションを含める」で含められます)</p>
+    <p class="excluded" data-testid="empty-excluded">{#if filtered}この条件の空のセッション {int(emptyInFilter)} 件を除外(全体では {int(emptyCount)} 件。{:else}空のセッション {int(emptyCount)} 件を除外({/if}依頼・ツール呼び出し・応答がどれも無いもの。絞り込みの「その他の条件」の「空のセッションを含める」で含められます)</p>
   {/if}
 
   <div class="fields" style="--cols:4">
@@ -117,7 +120,7 @@
     </div>
     <div class="field">
       <span class="k">API リクエスト</span><span class="v">{int(o.tokens.requests)}</span>
-      <span class="n">リクエスト単位の明細があるセッションの合計</span>
+      <span class="n">終了時の累計とリクエスト単位の明細の合計(明細があるのは {int(c.detailed)} セッション)</span>
     </div>
     <div class="field">
       <span class="k">ツール呼び出し</span><span class="v">{int(o.tools)}</span>
@@ -139,7 +142,7 @@
     </div>
     <div class="field">
       <span class="k">摩擦</span><span class="v">{int(o.friction)}</span>
-      <span class="n">ツール失敗 {int(o.frictionDetail.toolFailures)}・エラー(session.error){int(o.frictionDetail.errors)}・compaction {int(o.frictionDetail.compactions)}・中断 {int(o.frictionDetail.aborts)}・ほか {int(o.friction - o.frictionDetail.toolFailures - o.frictionDetail.errors - o.frictionDetail.compactions - o.frictionDetail.aborts)}(<a href="#exec">内訳は実行の性質</a>)</span>
+      <span class="n">ツールの失敗・拒否 {int(o.frictionDetail.toolFailures)}・エラー(session.error){int(o.frictionDetail.errors)}・compaction {int(o.frictionDetail.compactions)}・中断 {int(o.frictionDetail.aborts)}・権限確認 {int(o.frictionDetail.permissionRequests)}・ask_user {int(o.frictionDetail.askUser)}・サブエージェントの失敗 {int(o.frictionDetail.subagentFailures)}(<a href="#exec">詳細は実行の性質</a>)</span>
     </div>
   </div>
 

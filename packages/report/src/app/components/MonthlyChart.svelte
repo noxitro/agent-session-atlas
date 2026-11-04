@@ -3,7 +3,7 @@
   import { compact, dec, int, month, percent } from '../../lib/format.ts';
   import { niceTicks } from '../../lib/scale.ts';
 
-  let { months }: { months: Bucket[] } = $props();
+  let { months, lastAt = null }: { months: Bucket[]; /** 記録の最後のセッションの開始日時(途中までの月を示す) */ lastAt?: string | null } = $props();
 
   type Metric = 'sessions' | 'output' | 'input' | 'aiu' | 'premium';
   const metrics: { key: Metric; label: string; get: (b: Bucket) => number; partial?: (b: Bucket) => string }[] = [
@@ -44,6 +44,14 @@
   const TOP = 14;
 
   const data = $derived(months.filter((b) => b.key !== '(unknown)'));
+  // 最後の月が記録の途中までなら、その旨を添える(月は UTC で区切っている)
+  const partialMonth = $derived.by(() => {
+    if (!lastAt || !data.length) return null;
+    const d = new Date(lastAt);
+    const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+    const days = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
+    return data[data.length - 1].key === key && d.getUTCDate() < days ? { key, day: d.getUTCDate() } : null;
+  });
   const values = $derived(data.map((b) => m.get(b)));
   const ticks = $derived(niceTicks(Math.max(0, ...values)));
   const max = $derived(ticks[ticks.length - 1] || 1);
@@ -128,9 +136,9 @@
         </div>
       {/if}
     </div>
-    {#if m.partial}
-      <p class="note">{m.label}は記録のあるセッションだけの合計です。記録が始まる前の月は実際より少なく見えます(月ごとの記録率は表を参照)。</p>
-    {/if}
+    <p class="note">
+      月はセッションの開始日時を UTC で区切っています(一覧の日時は手元の時刻なので、月末・月初のセッションは隣の月に入ることがあります)。{#if partialMonth}{month(partialMonth.key)} は {partialMonth.day} 日までの途中の値です。{/if}{#if m.partial}{m.label}は記録のあるセッションだけの合計で、記録が始まる前の月は実際より少なく見えます(月ごとの記録率は表を参照)。{/if}
+    </p>
     <details class="tableview">
       <summary>表で見る</summary>
       <div class="table-scroll">
@@ -144,7 +152,9 @@
               <th scope="col" class="num">入力の記録率</th>
               <th scope="col" class="num">出力トークン</th>
               <th scope="col" class="num">AIU</th>
+              <th scope="col" class="num">AIU の記録率</th>
               <th scope="col" class="num">premium request</th>
+              <th scope="col" class="num">premium request の記録率</th>
               <th scope="col" class="num">変更行(+/−)</th>
               <th scope="col" class="num">ツール</th>
               <th scope="col" class="num">摩擦</th>
@@ -160,7 +170,9 @@
                 <td class="num">{percent(b.sessionsWithInput, b.sessions)}</td>
                 <td class="num">{int(b.tokens.output)}</td>
                 <td class="num">{b.sessionsWithNanoAiu ? dec(b.tokens.nanoAiu / 1e9) : '記録なし'}</td>
+                <td class="num">{percent(b.sessionsWithNanoAiu, b.sessions)}</td>
                 <td class="num">{b.sessionsWithPremium ? dec(b.tokens.premiumRequests) : '記録なし'}</td>
+                <td class="num">{percent(b.sessionsWithPremium, b.sessions)}</td>
                 <td class="num">{b.sessionsWithLines ? `+${int(b.linesAdded)} / −${int(b.linesRemoved)}` : '記録なし'}</td>
                 <td class="num">{int(b.tools)}</td>
                 <td class="num">{int(b.friction)}</td>

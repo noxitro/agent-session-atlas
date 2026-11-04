@@ -9,7 +9,7 @@
     { key: 'output', label: '出力トークン' },
     { key: 'input', label: '入力トークン' },
     { key: 'requests', label: 'リクエスト数' },
-    { key: 'sessions', label: '使用セッション数' },
+    { key: 'sessions', label: 'トークン記録のあるセッション数' },
   ];
   let metric = $state<Metric>('output');
   const label = $derived(metrics.find((x) => x.key === metric)!.label);
@@ -35,7 +35,7 @@
   {:else}
     <ol class="bars" aria-label="モデル別の{label}(上位 {shown.length})">
       {#each shown as r (r.model)}
-        <li title="{r.model}: {label} {fmt(r[metric])}・使用セッション {r.sessions}">
+        <li title="{r.model}: {label} {fmt(r[metric])}・トークン記録のあるセッション {r.sessions}">
           <span class="name">{name(r.model)}</span>
           <span class="track">
             <span class="bar" style="width:calc((100% - 5em) * {r[metric] / max})"></span>
@@ -45,7 +45,7 @@
       {/each}
     </ol>
     <p class="note">
-      トークンはモデル別の記録があるセッションだけの合計です。1 セッションで複数のモデルを使うことがあるため、使用セッション数の合計は全体のセッション数と一致しません。{#if ranked.length > TOP_N}上位 {TOP_N} モデルを表示(全 {ranked.length} モデルは表を参照)。{/if}
+      トークンはモデル別の記録があるセッションだけの合計です。セッション数はそのモデルにトークンが記録されたセッションの数で、モデルの絞り込み(使ったモデルで数える)の件数とは一致しません。モデル別の内訳が無いトークン(出力だけの記録など)は「不明」に入ります。1 セッションで複数のモデルを使うことがあるため、合計は全体のセッション数と一致しません。{#if ranked.length > TOP_N}上位 {TOP_N} モデルを表示(全 {ranked.length} モデルは表を参照)。{/if}
     </p>
     <details class="tableview">
       <summary>表で見る</summary>
@@ -54,7 +54,7 @@
           <thead>
             <tr>
               <th scope="col">モデル</th>
-              <th scope="col" class="num">使用セッション</th>
+              <th scope="col" class="num">トークン記録のあるセッション</th>
               <th scope="col" class="num">リクエスト</th>
               <th scope="col" class="num">入力トークン</th>
               <th scope="col" class="num">出力トークン</th>
