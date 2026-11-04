@@ -73,7 +73,7 @@ export function bucketOf(sessions: SessionRecord[]): MetricsBucket {
       initiators: {},
       context: { sessions: 0, toolDefinitionsTokens: { total: 0, median: null, p90: null, mean: null }, availableToolCount: { sessions: 0, mean: null } },
     },
-    frictionDetail: { permissions: {}, errorTypes: {}, subagentFailures: {}, compaction: { recorded: 0, input: 0, output: 0, nanoAiu: 0, tokensRemoved: 0 } },
+    frictionDetail: { permissions: {}, errorTypes: {}, subagentFailures: {}, compaction: { recorded: 0, input: 0, output: 0, nanoAiu: 0, tokensRemoved: 0, removedRecorded: 0 } },
     todos: { sessionsWithDb: 0, sessionsWithTodos: 0, total: 0, byStatus: {}, deps: 0, completionRate: null },
   };
   const durations: number[] = [];
@@ -172,7 +172,7 @@ export function bucketOf(sessions: SessionRecord[]): MetricsBucket {
       addTo(b.frictionDetail.permissions, fd.permissions);
       addTo(b.frictionDetail.errorTypes, fd.errorTypes);
       addTo(b.frictionDetail.subagentFailures, fd.subagentFailures);
-      for (const k of Object.keys(b.frictionDetail.compaction) as (keyof typeof fd.compaction)[]) b.frictionDetail.compaction[k] += fd.compaction[k];
+      for (const k of Object.keys(b.frictionDetail.compaction) as (keyof typeof fd.compaction)[]) b.frictionDetail.compaction[k] = (b.frictionDetail.compaction[k] ?? 0) + (fd.compaction[k] ?? 0);
     }
     if (s.todos) {
       b.todos.sessionsWithDb++;

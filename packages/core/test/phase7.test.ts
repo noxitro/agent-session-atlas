@@ -73,7 +73,7 @@ describe('Phase 7: normalizeSession の実行の性質', () => {
     // compaction の内訳(ツール定義 300)が usage の toolTokenCount(4000)より優先。使えるツールの数は usage の値
     expect(r.exec.context).toEqual({ systemTokens: 100, conversationTokens: 200, toolDefinitionsTokens: 300, availableToolCount: 12, source: 'compaction' });
     expect(r.tools.durations).toEqual({ view: [250] });
-    expect(r.frictionDetail).toEqual({ permissions: { approved: 1 }, errorTypes: { '(unknown)': 1 }, subagentFailures: {}, compaction: { recorded: 0, input: 0, output: 0, nanoAiu: 0, tokensRemoved: 0 } });
+    expect(r.frictionDetail).toEqual({ permissions: { approved: 1 }, errorTypes: { '(unknown)': 1 }, subagentFailures: {}, compaction: { recorded: 0, input: 0, output: 0, nanoAiu: 0, tokensRemoved: 0, removedRecorded: 0 }, agentModelChanges: 0 });
     expect(r.todos).toBeNull();
   });
 

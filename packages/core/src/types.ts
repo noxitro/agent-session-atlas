@@ -10,7 +10,9 @@ import type { DesktopData, DesktopSessionInfo } from './desktop-types.ts';
 // 5: Phase 11(desktop / desktop.json)
 // 6: Phase 12(analysis / skills[].chars)
 // 7: availableSkills(システムメッセージの <available_skills> に並んだ、そのセッションで使えた skill)
-export const SESSIONS_SCHEMA_VERSION = 7;
+// 8: 実データとの突き合わせの修正(lines.note / frictionDetail.compaction.removedRecorded・agentModelChanges /
+//    timeline の shutdown 行。abort の 2 件目・サブエージェント失敗と対の session.error・source: agent のモデル切り替えは数えない)
+export const SESSIONS_SCHEMA_VERSION = 8;
 export const METRICS_SCHEMA_VERSION = 4;
 
 // ---------- 入力(生データ) ----------
@@ -210,6 +212,12 @@ export interface LineChanges {
   added: number;
   removed: number;
   source: 'shutdown' | 'tools' | 'none';
+  /**
+   * ファイルの変更が記録されているのに行数が欠けている・足りない理由(出所が tools / none のときだけ)。
+   * subagent-edits: サブエージェントの編集に行数の記録が無い(数えられない)/
+   * empty-shutdown: 終了時の codeChanges が 0 行・ファイル 0 件で当てにならない(再開の直前の空の shutdown など)
+   */
+  note?: 'subagent-edits' | 'empty-shutdown';
 }
 
 /**
@@ -289,10 +297,13 @@ export interface WikiUsage {
 
 export interface Friction {
   compactions: number;
+  /** 中断(abort)。続けて出る 2 件目(parentId が直前の abort、2 秒以内)は数えない */
   aborts: number;
+  /** session.error。サブエージェントの失敗と対になるもの(直後の subagent.failed の parentId)は subagentFailures だけに数える */
   errors: number;
   permissionRequests: number;
   askUser: number;
+  /** 利用者・本体のモデル変更(session.model_change のうち source: agent を除く) */
   modelChanges: number;
   modeChanges: number;
   toolFailures: number;
@@ -351,8 +362,13 @@ export interface FrictionDetail {
   errorTypes: Record<string, number>;
   /** subagent.failed の理由の分類(quota / rate_limit / aborted / no_response / other)別の件数 */
   subagentFailures: Record<string, number>;
-  /** compaction 自体が使ったトークン(compactionTokensUsed の和)と、compaction で減ったトークン(tokensRemoved の和) */
-  compaction: { recorded: number; input: number; output: number; nanoAiu: number; tokensRemoved: number };
+  /**
+   * compaction 自体が使ったトークン(compactionTokensUsed の和。新旧 2 つの形を読む)と、compaction で減ったトークン(tokensRemoved の和)。
+   * removedRecorded: tokensRemoved を持つ compaction の数(0 なら減ったトークンは記録なし。古い記録には無い)
+   */
+  compaction: { recorded: number; input: number; output: number; nanoAiu: number; tokensRemoved: number; removedRecorded?: number };
+  /** session.model_change のうち source: agent(サブエージェントの起動に伴う切り替え)の数。friction.modelChanges には含めない。古い記録には無い */
+  agentModelChanges?: number;
 }
 
 export type TodoStatus = 'pending' | 'in_progress' | 'done' | 'blocked';
@@ -366,7 +382,8 @@ export interface TodoSummary {
 
 export interface TimelineEntry {
   at: string;
-  kind: 'user' | 'tools' | 'agent' | 'skill' | 'compaction' | 'abort' | 'error' | 'task_complete';
+  /** shutdown: 所要時間の終わりになった session.shutdown(最後の行より後にあるときだけ、末尾に 1 行) */
+  kind: 'user' | 'tools' | 'agent' | 'skill' | 'compaction' | 'abort' | 'error' | 'task_complete' | 'shutdown';
   label: string;
   count?: number;
   tools?: Record<string, number>;

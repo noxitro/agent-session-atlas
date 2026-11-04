@@ -322,7 +322,8 @@ describe('Phase 7 E2E: fixtures', () => {
       permissions: { approved: 1, 'denied-no-approval-rule-and-could-not-request-from-user': 1, 'approved-for-location': 1 },
       errorTypes: { quota: 1, rate_limit: 1 },
       subagentFailures: { quota: 1, rate_limit: 1, aborted: 1 },
-      compaction: { recorded: 1, input: 40000, output: 2000, nanoAiu: 300_000_000, tokensRemoved: 20000 },
+      compaction: { recorded: 1, input: 40000, output: 2000, nanoAiu: 300_000_000, tokensRemoved: 20000, removedRecorded: 1 },
+      agentModelChanges: 0,
     });
     expect(rec(14).agents.filter((a) => a.status === 'failed').map((a) => a.error)).toEqual([
       '402 You have exceeded your monthly quota',

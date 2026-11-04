@@ -12,6 +12,7 @@ import type {
   EffortStat,
   ExecProfile,
   Friction,
+  LineChanges,
   ParseStats,
   SessionRecord,
   SessionSource,
@@ -50,6 +51,10 @@ const TIMELINE_LIMIT = 400;
 const IDLE_GAP_MS = 5 * 60 * 1000;
 const DEDUPE_WINDOW_MS = 5000;
 const SKILL_PAIR_WINDOW_MS = 120_000;
+/** 続けて出る abort を 1 回の中断とみなす時間差(実データの組は 1〜4 ms と、間にイベントの無い約 1.1 秒) */
+const ABORT_PAIR_WINDOW_MS = 2000;
+/** ファイルを書き換えるツール(変更行数の手掛かり) */
+const FILE_EDIT_TOOLS = new Set(['create', 'edit', 'str_replace_editor', 'apply_patch']);
 
 /** SQLite の datetime('now') 形式(UTC、タイムゾーン無し)を ISO に揃える */
 export function normalizeTime(t: string | null | undefined): string | null {
@@ -398,12 +403,24 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
   const permissions: Record<string, number> = {};
   const errorTypes: Record<string, number> = {};
   const subagentFailures: Record<string, number> = {};
-  const compaction = { recorded: 0, input: 0, output: 0, nanoAiu: 0, tokensRemoved: 0 };
+  /** サブエージェント(agentId 付き)の session.error の id → 種別(直後の subagent.failed と対にするため) */
+  const agentErrors = new Map<string, { agentId: string; errorType: string }>();
+  /** abort の id → 時刻(続けて出る 2 件目を見分けるため) */
+  const abortMs = new Map<string, number | null>();
+  /** 結果待ちのファイルを変更するツールの呼び出し(toolCallId → 本体 / サブエージェント) */
+  const fileEditCalls = new Map<string, 'main' | 'sub'>();
+  /** 成功したファイルの変更のうち、complete に行数(toolTelemetry.metrics)が無かった呼び出しの数 */
+  const editsWithoutLines = { main: 0, sub: 0 };
+  const compaction = { recorded: 0, input: 0, output: 0, nanoAiu: 0, tokensRemoved: 0, removedRecorded: 0 };
+  /** session.model_change のうち source: agent(サブエージェントの起動に伴う切り替え) */
+  let agentModelChanges = 0;
   const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
   const ctxOf = (x: any, source: 'shutdown' | 'compaction'): typeof lastCtx => {
-    const s = num(x?.systemTokens);
-    const c = num(x?.conversationTokens);
+    let s = num(x?.systemTokens);
+    let c = num(x?.conversationTokens);
     const t = num(x?.toolDefinitionsTokens);
+    // 再開の直前などに出る空の shutdown は system・会話とも 0(実データで 5 件)。0 のままだと割合が 100% になるので記録なしとみなす
+    if (s === 0 && c === 0) s = c = null;
     return s == null && c == null && t == null ? null : { systemTokens: s, conversationTokens: c, toolDefinitionsTokens: t, source };
   };
   const skills: SkillUse[] = [];
@@ -554,6 +571,7 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
           if (typeof d.toolCallId === 'string') {
             toolNameByCall.set(d.toolCallId, name);
             if (t != null) toolStartMs.set(d.toolCallId, t);
+            if (FILE_EDIT_TOOLS.has(name)) fileEditCalls.set(d.toolCallId, e.agentId ? 'sub' : 'main');
           }
           if (!e.agentId && turnTools.length) {
             const cur = turnTools[turnTools.length - 1];
@@ -613,10 +631,16 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
             }
           }
           const lm = d.toolTelemetry?.metrics;
-          if (lm && (typeof lm.linesAdded === 'number' || typeof lm.linesRemoved === 'number')) {
+          const hasLines = !!lm && (typeof lm.linesAdded === 'number' || typeof lm.linesRemoved === 'number');
+          if (hasLines) {
             toolLinesSeen = true;
             toolLinesAdded += lineMetric(lm.linesAdded);
             toolLinesRemoved += lineMetric(lm.linesRemoved);
+          }
+          const editBy = typeof d.toolCallId === 'string' ? fileEditCalls.get(d.toolCallId) : undefined;
+          if (editBy) {
+            fileEditCalls.delete(d.toolCallId);
+            if (!hasLines && d.success !== false) editsWithoutLines[editBy]++;
           }
           // 2026-10 以降の形式: 変更したファイルを fileEdits[] に持つ(workspace_file_changed の後継)
           if (Array.isArray(d.fileEdits)) {
@@ -666,6 +690,15 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
           }
           if (typeof d.totalToolCalls === 'number') a.totalToolCalls = d.totalToolCalls;
           if (e.type === 'subagent.failed') {
+            // サブエージェントの失敗は、同じ agentId の session.error の直後(parentId がその error)にも出る。
+            // 1 回の失敗を二重に数えないよう、対になる error は「エラー」から外して「agent 失敗」だけに数える(時系列の行は残す)
+            const pairErr = typeof e.parentId === 'string' ? agentErrors.get(e.parentId) : undefined;
+            if (pairErr && pairErr.agentId === e.agentId) {
+              agentErrors.delete(e.parentId as string);
+              friction.errors--;
+              errorTypes[pairErr.errorType]--;
+              if (errorTypes[pairErr.errorType] <= 0) delete errorTypes[pairErr.errorType];
+            }
             friction.subagentFailures++;
             inc(subagentFailures, subagentFailureReason(d.error));
             if (d.error != null) a.error = head(typeof d.error === 'string' ? d.error : JSON.stringify(d.error), 200);
@@ -691,24 +724,36 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
           if (typeof d.preCompactionTokens === 'number') maxPreCompaction = Math.max(maxPreCompaction ?? 0, d.preCompactionTokens);
           lastCtx = ctxOf(d, 'compaction') ?? lastCtx;
           if (d.compactionTokensUsed && typeof d.compactionTokensUsed === 'object') {
+            // 新しい形式は { inputTokens, outputTokens, ... }、古い形式(CLI 1.0.32 / 1.0.34 で確認)は { input, output, cachedInput }
             const cu = d.compactionTokensUsed;
             compaction.recorded++;
-            compaction.input += num(cu.inputTokens) ?? 0;
-            compaction.output += num(cu.outputTokens) ?? 0;
+            compaction.input += num(cu.inputTokens) ?? num(cu.input) ?? 0;
+            compaction.output += num(cu.outputTokens) ?? num(cu.output) ?? 0;
             compaction.nanoAiu += num(cu.copilotUsage?.totalNanoAiu) ?? num(cu.totalNanoAiu) ?? 0;
           }
-          if (num(d.tokensRemoved) != null) compaction.tokensRemoved += d.tokensRemoved;
+          if (num(d.tokensRemoved) != null) {
+            compaction.tokensRemoved += d.tokensRemoved;
+            compaction.removedRecorded++;
+          }
           pushTimeline({ at: at ?? '', kind: 'compaction', label: String(d.outcome ?? (d.success === false ? 'failed' : 'applied')) });
           break;
-        case 'abort':
+        case 'abort': {
+          // 1 回の中断で abort が 2 件続くことがある(2 件目の parentId が 1 件目、数 ms 差。実データで 13 組)。2 件目は数えない
+          const prev = typeof e.parentId === 'string' ? abortMs.get(e.parentId) : undefined;
+          if (typeof e.id === 'string') abortMs.set(e.id, t);
+          if (prev !== undefined && (prev == null || t == null || Math.abs(t - prev) <= ABORT_PAIR_WINDOW_MS)) break;
           friction.aborts++;
           pushTimeline({ at: at ?? '', kind: 'abort', label: String(d.reason ?? '') });
           break;
-        case 'session.error':
+        }
+        case 'session.error': {
           friction.errors++;
-          inc(errorTypes, typeof d.errorType === 'string' && d.errorType !== '' ? d.errorType : '(unknown)');
+          const errorType = typeof d.errorType === 'string' && d.errorType !== '' ? d.errorType : '(unknown)';
+          inc(errorTypes, errorType);
+          if (e.agentId && typeof e.id === 'string') agentErrors.set(e.id, { agentId: e.agentId, errorType });
           pushTimeline({ at: at ?? '', kind: 'error', label: String(d.errorType ?? d.message ?? '').slice(0, 120) });
           break;
+        }
         case 'permission.requested':
           friction.permissionRequests++;
           break;
@@ -718,8 +763,14 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
           break;
         }
         case 'session.model_change': {
-          friction.modelChanges++;
           if (d.newModel) models.add(normalizeModel(d.newModel));
+          // source: agent はサブエージェントの起動に伴う切り替え(利用者・本体のモデル変更ではない)。
+          // モデル変更にも、本体の推論強度の設定の変化にも数えない
+          if (d.source === 'agent') {
+            agentModelChanges++;
+            break;
+          }
+          friction.modelChanges++;
           const eff = normalizeEffort(d.reasoningEffort);
           if (eff) effortChanges.push({ at: t, effort: eff, from: 'change' });
           break;
@@ -740,17 +791,16 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
       }
     }
   }
+  // 所要時間の終わりが最後の時系列の行より後の session.shutdown なら、終了の行を足す(所要時間と時系列の食い違いを読めるように)
+  {
+    const shutMs = ms(lastShutdown?.timestamp);
+    const lastRowMs = ms(timeline[timeline.length - 1]?.at);
+    if (lastShutdown?.timestamp && shutMs != null && shutMs === lastTs && lastRowMs != null && shutMs > lastRowMs) {
+      pushTimeline({ at: lastShutdown.timestamp, kind: 'shutdown', label: typeof lastShutdown.data?.shutdownType === 'string' ? lastShutdown.data.shutdownType : '' });
+    }
+  }
   // filesModified は順序の無い要約なので、セッション中の操作で載ったパス(途中で削除したものなど)は上書きしない
   for (const f of shutdownFiles) if (typeof f === 'string') files.addSummary(f, curCwd());
-
-  // 変更行数: session.shutdown.codeChanges(最後の値 = セッション全体の累計)を優先し、無ければツール側の合計
-  const cc = lastCodeChanges;
-  const lines =
-    cc && (typeof cc.linesAdded === 'number' || typeof cc.linesRemoved === 'number')
-      ? { added: lineMetric(cc.linesAdded), removed: lineMetric(cc.linesRemoved), source: 'shutdown' as const }
-      : toolLinesSeen
-        ? { added: toolLinesAdded, removed: toolLinesRemoved, source: 'tools' as const }
-        : { added: 0, removed: 0, source: 'none' as const };
 
   // DB しか無いセッションは turns テーブルから補う
   if (total === 0 && dbTurns.length > 0) {
@@ -764,6 +814,23 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
   if (files.size === 0) {
     for (const f of dbFiles) files.add(f.tool_name === 'create' ? 'create' : 'edit', f.file_path, curCwd());
   }
+
+  // 変更行数: session.shutdown.codeChanges(最後の値 = セッション全体の累計)を優先し、無ければツール側の合計。
+  // ただし codeChanges が 0 行・ファイル 0 件なのにファイルの変更が記録されているときは、codeChanges を当てにしない
+  // (再開の直前に出る空の shutdown や、サブエージェントだけが編集したセッションで実際に起きる)
+  const cc = lastCodeChanges;
+  const filesResult = files.result();
+  const anyFiles = filesResult.changed.length + filesResult.created.length + filesResult.deleted.length > 0;
+  const ccHasLines = cc && (typeof cc.linesAdded === 'number' || typeof cc.linesRemoved === 'number');
+  const ccEmpty = ccHasLines && lineMetric(cc.linesAdded) === 0 && lineMetric(cc.linesRemoved) === 0 && !(Array.isArray(cc.filesModified) && cc.filesModified.length > 0);
+  /** 行数の記録が欠けている理由(ファイルの変更があるのに行数が無い・足りないとき) */
+  const linesNote: LineChanges['note'] = !anyFiles ? undefined : editsWithoutLines.sub > 0 ? 'subagent-edits' : ccEmpty ? 'empty-shutdown' : undefined;
+  const lines: LineChanges =
+    ccHasLines && !(ccEmpty && anyFiles)
+      ? { added: lineMetric(cc.linesAdded), removed: lineMetric(cc.linesRemoved), source: 'shutdown' }
+      : toolLinesSeen
+        ? { added: toolLinesAdded, removed: toolLinesRemoved, source: 'tools', ...(linesNote ? { note: linesNote } : {}) }
+        : { added: 0, removed: 0, source: 'none', ...(linesNote ? { note: linesNote } : {}) };
 
   // ---- トークン ----
   for (const a of agents.values()) if (a.id) agentNameById.set(a.id, a.name);
@@ -843,7 +910,7 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
       durationOutliers: toolDurationOutliers,
     },
     exec,
-    frictionDetail: { permissions, errorTypes, subagentFailures, compaction },
+    frictionDetail: { permissions, errorTypes, subagentFailures, compaction, agentModelChanges },
     todos: null,
     lines,
     skills,
@@ -853,7 +920,7 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
     instructions: instr.result(),
     wiki,
     friction,
-    files: files.result(),
+    files: filesResult,
     timeline,
     analysis: {
       filesReedited: [...editCounts.values()].filter((n) => n >= 2).length,
