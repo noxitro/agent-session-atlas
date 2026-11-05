@@ -26,6 +26,8 @@ export default defineConfig({
           globalSetup: ['e2e/global-setup.ts'],
           testTimeout: 120_000,
           hookTimeout: 120_000,
+          // expect.poll の既定の待ちは 1 秒。CI の遅い機械では画面の更新やスクロールがそれを超えて落ちる(CPU を 20 倍遅くすると手元でも再現する)
+          expect: { poll: { timeout: 10_000 } },
           maxWorkers: 1,
         },
       },
