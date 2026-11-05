@@ -35,7 +35,9 @@
   /** 初期フォーカス: このツールからなら「やめる」(Enter の押し間違いで費用のかかる処理を始めない)、チャットなら「閉じる」 */
   async function focusInitial(): Promise<void> {
     await tick();
-    dlg?.querySelector<HTMLElement>('[data-autofocus]')?.focus();
+    // 「閉じる」はチャットの手順の下にあるので、フォーカスで送らずに表題から見せる
+    dlg?.querySelector<HTMLElement>('[data-autofocus]')?.focus({ preventScroll: true });
+    if (dlg) dlg.scrollTop = 0;
   }
   let preview = $state<{ eligible: number; judged: number; pending: number } | null>(null);
   let previewError = $state('');

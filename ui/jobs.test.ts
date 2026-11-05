@@ -194,6 +194,8 @@ describe('画面からの操作(Phase 14)', () => {
     await page.getByTestId('job-judge').click();
     await page.getByTestId('chat-judge').waitFor({ state: 'visible' });
     expect(await page.evaluate<string | undefined>('document.activeElement?.dataset.testid')).toBe('chat-close');
+    // 「閉じる」は下にあるが、開いたときは表題から見える(フォーカスで送らない)
+    expect(await dialog.evaluate((d) => d.scrollTop)).toBe(0);
     await page.getByTestId('chat-close').click();
     await dialog.waitFor({ state: 'hidden' });
   });
