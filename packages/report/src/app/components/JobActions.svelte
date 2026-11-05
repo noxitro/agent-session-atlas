@@ -62,7 +62,7 @@
     dlg?.querySelector<HTMLElement>('[data-autofocus]')?.focus({ preventScroll: true });
     if (dlg) dlg.scrollTop = 0;
   }
-  let preview = $state<{ eligible: number; judged: number; pending: number } | null>(null);
+  let preview = $state<{ eligible: number; judged: number; pending: number; withoutTurns?: number } | null>(null);
   let previewError = $state('');
   let runError = $state('');
   let limit = $state<number | null>(LIMIT_DEFAULT[readTarget()]);
@@ -159,6 +159,7 @@
         {:else if !preview}未判定の件数を数えています…
         {:else if preview.pending === 0}未判定の{unit}はありません(判定済み {int(preview.judged)} 件)。
         {:else}未判定 {int(preview.pending)} 件のうち <strong>{int(count)} 件</strong>を判定します(判定済み {int(preview.judged)} 件は判定し直しません)。{/if}
+        {#if target === 'turns' && preview?.withoutTurns}<br />依頼ごとの記録が無いセッションが {int(preview.withoutTurns)} 件あります(古い集計)。先に「集計し直す」を押すと、その依頼も判定できます。{/if}
       </p>
       <p class="cost" id="judge-cost">
         <strong>AI クレジットを消費します。</strong>

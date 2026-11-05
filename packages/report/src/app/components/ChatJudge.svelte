@@ -23,6 +23,8 @@
 
   let info = $state<ChatParts | null>(null);
   let pending = $state<number | null>(null);
+  /** 依頼ごとの記録が無いセッション(依頼の判定のとき。古い集計) */
+  let withoutTurns = $state(0);
   let loadError = $state('');
   let reply = $state('');
   let importing = $state(false);
@@ -45,6 +47,7 @@
       const [p, pre] = await Promise.all([chatJudgeApi.parts(jobs.token, target), jobsApi.judgePreview(jobs.token, target)]);
       info = p;
       pending = pre.pending;
+      withoutTurns = pre.withoutTurns ?? 0;
     } catch (e) {
       loadError = (e as Error).message;
     }
@@ -144,6 +147,7 @@
                 ? `作り直す(未判定 ${int(pending)} 件。ファイルの番号が振り直されます)`
                 : `未判定 ${int(pending)} 件で作る`}
       </button>
+      {#if target === 'turns' && withoutTurns > 0}<p class="state" data-testid="chat-without-turns">依頼ごとの記録が無いセッションが {int(withoutTurns)} 件あります(古い集計)。先に「集計し直す」を押すと、その依頼も入ります。</p>{/if}
       {#if jobs.error && !bundling}<p class="err" role="alert">{jobs.error}</p>{/if}
     </li>
 

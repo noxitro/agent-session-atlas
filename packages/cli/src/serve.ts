@@ -556,23 +556,26 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     }
   }
   /** 依頼ごとの判定の件数(依頼ごとの記録がある依頼のうち、turn-judgments.json に無いもの) */
-  async function turnPreview(): Promise<{ eligible: number; judged: number; pending: number }> {
+  async function turnPreview(): Promise<{ eligible: number; judged: number; pending: number; withoutTurns: number }> {
     const ids = await sessionIndex();
-    if (!ids) return { eligible: 0, judged: 0, pending: 0 };
+    if (!ids) return { eligible: 0, judged: 0, pending: 0, withoutTurns: 0 };
     const judged = await judgedTurns();
     let eligible = 0;
     let done = 0;
+    // 依頼があるのに依頼ごとの記録が無いセッション(古い集計)。「集計し直す」で入る
+    let withoutTurns = 0;
     for (const [id, x] of ids) {
+      if (x.eligible && x.turns === 0) withoutTurns++;
       for (let t = 1; t <= x.turns; t++) {
         eligible++;
         if (judged.has(`${id}#${t}`)) done++;
       }
     }
-    return { eligible, judged: done, pending: eligible - done };
+    return { eligible, judged: done, pending: eligible - done, withoutTurns };
   }
   /**
    * チャットでの判定。読みも書きも token が要る(進み具合にセッション id が入るため)。
-   * target=turns(?target=turns / 本文の target)は依頼ごとの判定(turn-bundle/・turn-judgments.json)、それ以外は工数の判定。
+   * ?target=turns は依頼ごとの判定(turn-bundle/・turn-judgments.json)、それ以外は工数の判定。
    * GET  /api/judge/parts:  bundle/parts/ の各ファイルと、その中のセッションのうち判定済みの数(bundle が無ければ exists: false)
    * GET  /api/judge/parts/<名前>: そのファイルの本文 { text }(画面の「本文をコピー」。manifest にある名前だけ)
    * POST /api/judge/import: { text } 貼った返答を検証して judgments.json に取り込む(1 件でも形が合わなければ何も書かない)。

@@ -98,6 +98,11 @@ export function renderTurnChunk(s: SessionRecord, texts: TurnTexts, rows: TurnRo
   if (s.name) L.push(`- 題名: ${clip(s.name, 120).text}`);
   L.push(`- プロジェクト: ${s.project}`);
   L.push(`- 判定する依頼: ${from}〜${to}(このセッションの依頼は全 ${rows.length} 件${s.turns > rows.length ? `。先頭 ${rows.length} 件まで` : ''})`, '');
+  // 塊の先頭の依頼が「直し」か「新しい作業」かを読めるよう、前の依頼文を短く添える
+  if (from > 1) {
+    const pv = clip(texts.requests[from - 2] ?? '', 400);
+    L.push(`## 依頼 ${from - 1}(判定しない。依頼 ${from} が何への反応かを読むための参考)`, '', fenced(pv.text || '(本文なし)'), '');
+  }
   for (let n = from; n <= to; n++) {
     const r = rows[n - 1];
     const req = clip(texts.requests[n - 1] ?? '', limits.requestChars);
@@ -110,11 +115,12 @@ export function renderTurnChunk(s: SessionRecord, texts: TurnTexts, rows: TurnRo
       L.push('### AI の最後の応答(この依頼の間)', '', fenced(c.text), '');
     } else L.push('### AI の最後の応答(この依頼の間)', '', '(応答の記録なし)', '');
   }
+  // 次の依頼の文はスナップショットにあれば添える(sessions.json が古くても、ログに次の依頼があれば材料になる)
   const next = to + 1;
-  if (next <= rows.length) {
+  if (next <= texts.requests.length) {
     const nx = clip(texts.requests[next - 1] ?? '', limits.requestChars);
     L.push(`## 依頼 ${next}(判定しない。依頼 ${to} の成果の扱いを読むための参考)`, '', fenced(nx.text || '(本文なし)'), '');
-  } else L.push(`## 依頼 ${to} の後`, '', '次の依頼はありません(セッションの最後)。依頼 ' + to + ' の成果の扱いは、拒否・中断が無ければ unknown(判定不能)にしてください。', '');
+  } else L.push(`## 依頼 ${to} の後`, '', `次の依頼はありません(セッションの最後)。依頼 ${to} の outcome は unknown(判定不能)にしてください。`, '');
   return L.filter((l, i, a) => !(l === '' && a[i - 1] === '')).join('\n');
 }
 
@@ -155,9 +161,11 @@ export function turnRubric(phases: readonly string[]): string {
 
 - **kind**(依頼の種類): ${ol(REQUEST_KINDS, (k) => REQUEST_KIND_LABEL[k as keyof typeof REQUEST_KIND_LABEL])}
   - task = 新しい作業・変更の依頼。question = 情報・説明・可否を聞く依頼。fix = 直前の AI の成果を直させる依頼。revert = 直前の成果を戻させる・やめさせる依頼。continue = 「進めて」「はい」や選択肢の返事など、方針を変えずに続けさせる短い依頼
-- **outcome**(この依頼で AI が出した成果が、利用者にどう扱われたか)。**次の依頼**と、この依頼の間の拒否・中断から決めます
+- **outcome**(この依頼で AI が出した成果が、利用者にどう扱われたか)。**依頼 n の成果の扱いは、パケットの中の依頼 n+1 の依頼文で決めます**。この依頼の間の拒否・中断の回数は、次の依頼の文の裏付けとしてだけ使い、回数だけで rejected にしないでください(拒否の後に AI が別の手で続け、成果が採用されることもあります)
+  - AI が成果物を出さず、確認や選択肢を返しただけで、次の依頼がその返事(「2」「はい」など)のときは unknown にします(まだ扱う成果が無いため)
+  - 次の依頼が成果についての確認の質問(「〜という理解で合っていますか」)のときは、取り違えが読み取れれば fix_content、読み取れなければ unknown にして confidence を下げます
   - kind が question 以外: ${ol(WORK_OUTCOMES, (k) => OUTCOME_LABEL[k as keyof typeof OUTCOME_LABEL])}
-    - as_is = 次の依頼が別の作業・続行・承認で、直しを求めていない。fix_content = 次の依頼が成果の中身(動き・内容・設計)の直しを求めた。fix_style = 中身は合っていて、表記・言い回し・体裁・書式だけの直しを求めた。rejected = 戻させた・やめさせた・別のやり方でやり直させた、またはこの依頼の間に操作を拒否・中断して方向を変えた。unknown = 次の依頼が無く、拒否・中断も無い、または判断できない
+    - as_is = 次の依頼が別の作業・続行・承認で、直しを求めていない。fix_content = 次の依頼が成果の中身(動き・内容・設計)の直しを求めた。fix_style = 中身は合っていて、表記・言い回し・体裁・書式だけの直しを求めた。rejected = 次の依頼が、戻させた・やめさせた・別のやり方でやり直させた。unknown = 次の依頼が無い(セッションの最後)、成果がまだ無い、または判断できない
   - kind が question: ${ol(QUESTION_OUTCOMES, (k) => OUTCOME_LABEL[k as keyof typeof OUTCOME_LABEL])}
     - helpful = 次の依頼が別の話題・作業へ進んだ。follow_up = 同じ話を掘り下げた・補足を求めた。off_target = 「そうじゃない」と聞き直した、答えが質問とずれていた。unknown = 次の依頼が無い、または判断できない
 - **mismatch**(合わなかった点。outcome が fix_content / fix_style / rejected / off_target のときだけ。それ以外は null): ${ol(MISMATCHES, (k) => MISMATCH_LABEL[k as keyof typeof MISMATCH_LABEL])}
@@ -226,7 +234,7 @@ export function buildTurnPrompt(chunk: TurnChunk, phases: readonly string[], bou
 ## 守ること
 
 ${TURN_SAFETY_RULES}
-- ツールは使わないでください。
+- 依頼 n の成果の扱いは、パケットの中の依頼 n+1 の依頼文で判断します。次の依頼の文が無いのは、セッションの最後の依頼だけです。
 
 ${turnRubric(phases)}
 

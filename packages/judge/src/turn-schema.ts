@@ -50,8 +50,11 @@ export interface TurnJudgmentsFile {
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 const key = (sessionId: string, turn: number): string => `${sessionId}#${turn}`;
 
-/** 1 項目の問題点(空なら妥当)。phases は判定の指示に載せた工程名 */
-export function turnItemProblems(v: unknown, path: string, phases: readonly string[]): string[] {
+/**
+ * 1 項目の問題点(空なら妥当)。phases は判定の指示に載せた工程名。
+ * null なら工程名は「空でない文字列」かだけを見る(保存済みのファイルを読むとき。工程名の設定を変えた後も前の判定を読めるように)
+ */
+export function turnItemProblems(v: unknown, path: string, phases: readonly string[] | null): string[] {
   if (!isObj(v)) return [`${path}が無いか、{ … } の形ではありません`];
   const p: string[] = [];
   const at = (field: string): string => `${path}の ${field}`;
@@ -67,7 +70,8 @@ export function turnItemProblems(v: unknown, path: string, phases: readonly stri
   const needs = (NEEDS_MISMATCH as readonly unknown[]).includes(v.outcome);
   if (needs && !(MISMATCHES as readonly unknown[]).includes(v.mismatch)) p.push(`${at('mismatch')} は outcome が ${String(v.outcome)} のとき ${MISMATCHES.join(' / ')} のどれかです(${JSON.stringify(v.mismatch)})`);
   if (!needs && v.mismatch != null) p.push(`${at('mismatch')} は outcome が ${String(v.outcome)} のときは null です(${JSON.stringify(v.mismatch)})`);
-  if (typeof v.phase !== 'string' || !phases.includes(v.phase)) p.push(`${at('phase')} は ${phases.join(' / ')} のどれかです(${JSON.stringify(v.phase)})`);
+  if (phases ? typeof v.phase !== 'string' || !phases.includes(v.phase) : typeof v.phase !== 'string' || v.phase.trim() === '')
+    p.push(phases ? `${at('phase')} は ${phases.join(' / ')} のどれかです(${JSON.stringify(v.phase)})` : `${at('phase')} がありません`);
   if (typeof v.confidence !== 'number' || !Number.isFinite(v.confidence) || v.confidence < 0 || v.confidence > 1) p.push(`${at('confidence')} は 0〜1 の数値です(${JSON.stringify(v.confidence)})`);
   if (v.note != null && typeof v.note !== 'string') p.push(`${at('note')} は文字列です`);
   return p;
@@ -96,7 +100,7 @@ export function validateTurnJudgments(v: unknown): TurnJudgmentsFile {
   if (!Array.isArray(v.phases) || !v.phases.every((x) => typeof x === 'string' && x !== '')) throw new Error('turn-judgments の phases は文字列の配列です');
   const phases = v.phases as string[];
   const items = Array.isArray(v.items) ? v.items : [];
-  const problems = items.flatMap((it, i) => turnItemProblems(it, `項目 ${i + 1}`, phases));
+  const problems = items.flatMap((it, i) => turnItemProblems(it, `項目 ${i + 1}`, null));
   if (problems.length) throw new JudgmentValidationError(problems, 'turn-judgments の形が正しくありません');
   const j = isObj(v.judge) ? v.judge : {};
   return {
@@ -130,14 +134,19 @@ export async function writeTurnJudgments(path: string, j: TurnJudgmentsFile): Pr
   await renameReplacing(tmp, path);
 }
 
-/** 判定を足す(同じセッション・依頼番号は新しいもので置き換える)。工程名の一覧は今の設定に合わせる */
+/**
+ * 判定を足す(同じセッション・依頼番号は新しいもので置き換える)。工程名の一覧は今の設定を先に、前の一覧にしか無い名前を後ろに足す
+ * (工程名を変えた後も、前の名前の判定を読めて、レポートの行にも出るように)
+ */
 export function mergeTurnJudgments(base: TurnJudgmentsFile, items: TurnJudgment[], phases: readonly string[], judge: TurnJudgmentsFile['judge']): TurnJudgmentsFile {
   const by = new Map(base.items.map((i) => [key(i.sessionId, i.turn), i]));
   for (const i of items) by.set(key(i.sessionId, i.turn), i);
   const done = new Set(items.map((i) => key(i.sessionId, i.turn)));
   const failures = base.failures.filter((f) => !f.turns.every((t) => done.has(key(f.sessionId, t))));
   const merged = [...by.values()].sort((a, b) => a.sessionId.localeCompare(b.sessionId) || a.turn - b.turn);
-  return { schemaVersion: TURN_JUDGMENTS_VERSION, phases: [...phases], judge, items: merged, failures };
+  const names = [...phases, ...base.phases.filter((x) => !phases.includes(x))];
+  for (const i of merged) if (!names.includes(i.phase)) names.push(i.phase);
+  return { schemaVersion: TURN_JUDGMENTS_VERSION, phases: names, judge, items: merged, failures };
 }
 
 export interface TurnImportResult {

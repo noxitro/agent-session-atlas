@@ -346,7 +346,11 @@ export async function runBuild(p: Paths, o: BuildOptions, log: Log): Promise<Bui
   }
   let verdicts: VerdictIndex | null = null;
   if (existsSync(p.turnJudgments)) {
-    verdicts = parseVerdicts(await readJson(p.turnJudgments, ''));
+    try {
+      verdicts = parseVerdicts(await readJson(p.turnJudgments, ''));
+    } catch (e) {
+      log(`build: 注意 ${p.turnJudgments} を読めないため、依頼ごとの判定は合成しません(${(e as Error).message})`);
+    }
     if (verdicts) log(`build: 依頼ごとの判定 ${[...verdicts.bySession.values()].reduce((a, m) => a + m.size, 0)} 件を合成(${p.turnJudgments})`);
   }
 

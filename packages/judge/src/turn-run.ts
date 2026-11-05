@@ -97,7 +97,8 @@ export async function runTurnJudge(o: TurnRunOptions): Promise<TurnRunSummary> {
     const label = `${c.sessionId}-${c.turns[0]}`;
     try {
       const r = await o.backend.ask(buildTurnPrompt({ sessionId: c.sessionId, turns: c.turns, markdown: md }, m.phases), label);
-      const items = turnItemsFromTexts(r.texts, c.sessionId, c.turns, m.phases);
+      // 塊の中で判定済みの依頼は判定し直さない(画面の「判定済みは判定し直しません」と揃える)
+      const items = turnItemsFromTexts(r.texts, c.sessionId, c.turns, m.phases).filter((i) => !done.has(`${i.sessionId}#${i.turn}`));
       const judge = { backend: o.backend.name, model: o.backend.model, ranAt: now() };
       file = mergeTurnJudgments(file, items.map((i) => ({ ...i, judge })), m.phases, judge);
       await writeTurnJudgments(o.path, file);

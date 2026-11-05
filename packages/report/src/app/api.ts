@@ -109,7 +109,7 @@ export const jobsApi = {
     return connect(fetch('api/jobs/current/cancel', { method: 'POST', headers: headers(token) }), (r) => parse<JobInfo>(r));
   },
   /** 判定の確認ダイアログの件数(工数: 依頼の記録があるセッション / 依頼: 依頼ごとの記録がある依頼。そのうち未判定のもの) */
-  judgePreview(token: string, target: JudgeTarget = 'effort'): Promise<{ eligible: number; judged: number; pending: number }> {
+  judgePreview(token: string, target: JudgeTarget = 'effort'): Promise<{ eligible: number; judged: number; pending: number; withoutTurns?: number }> {
     return connect(fetch('api/jobs/judge-preview' + (target === 'turns' ? '?target=turns' : ''), { cache: 'no-store', headers: headers(token) }), (r) => parse(r));
   },
 };

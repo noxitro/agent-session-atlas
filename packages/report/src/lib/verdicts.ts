@@ -99,10 +99,15 @@ export interface VerdictAggregate {
   byRulePhase: Record<Phase, OutcomeCounts>;
 }
 
+/** 一覧に無い工程名の判定をまとめる行の名前 */
+export const UNLISTED_PHASE = '(一覧に無い工程)';
+
 /** 絞り込み後のセッションの判定を集計する(規則の行と同じ依頼番号で結ぶ) */
 export function verdictAggregate(sessions: { turnRows?: TurnTuple[]; turnVerdicts?: VerdictTuple[] }[], phases: readonly string[]): VerdictAggregate {
   const total = emptyCounts();
-  const byPhase = phases.map(() => emptyCounts());
+  // 一覧に無い工程名(番号 -1。手で直したファイルなど)も、合計と行が食い違わないよう 1 行にまとめる
+  const names = [...phases, UNLISTED_PHASE];
+  const byPhase = names.map(() => emptyCounts());
   const byRulePhase = Object.fromEntries(PHASES.map((p) => [p, emptyCounts()])) as Record<Phase, OutcomeCounts>;
   let judged = 0;
   let withAny = 0;
@@ -124,11 +129,11 @@ export function verdictAggregate(sessions: { turnRows?: TurnTuple[]; turnVerdict
       };
       judged++;
       add(total);
-      if (v[4] >= 0 && byPhase[v[4]]) add(byPhase[v[4]]);
+      add(byPhase[v[4] >= 0 && v[4] < phases.length ? v[4] : phases.length]);
       if (facts) add(byRulePhase[facts.phase]);
     }
   }
-  return { judged, sessions: withAny, phases: [...phases], total, byPhase, byRulePhase };
+  return { judged, sessions: withAny, phases: names, total, byPhase, byRulePhase };
 }
 
 /** 作業の依頼のうち判定できたもの(判定不能・質問の扱いを除く)と、そのまま採用の割合の分母 */

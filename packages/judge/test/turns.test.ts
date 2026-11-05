@@ -48,6 +48,14 @@ describe('依頼の判定の形', () => {
       expect(j.items.find((i) => i.turn === 2)).toMatchObject({ outcome: 'fix_style', mismatch: 'quality', judge: { backend: 'external' } });
       expect(j.items.find((i) => i.turn === 1)?.judge?.model).toBe('m365');
       expect(j.phases).toEqual(PHASES);
+      // 工程名の設定を変えて取り込んでも、前の名前の判定を読める(一覧は今の名前を先に、前の名前を後ろに残す)
+      const next = ['調査', '開発', '検証'];
+      await importTurnJudgmentsText('```json\n' + JSON.stringify([item(5, { phase: '開発' })]) + '\n```', path, { phases: next });
+      const k = (await readTurnJudgments(path))!;
+      expect(k.phases).toEqual(['調査', '開発', '検証', '要件定義', '設計', '実装', 'テスト']);
+      expect(k.items.map((i) => i.phase)).toEqual(['実装', '実装', '開発', '実装']);
+      // 返答の検証は今の一覧で
+      await expect(importTurnJudgmentsText('```json\n' + JSON.stringify([item(6)]) + '\n```', path, { phases: next })).rejects.toThrow(/何も取り込んでいません/);
     } finally {
       await rm(d, { recursive: true, force: true });
     }
@@ -85,7 +93,10 @@ describe('判定に渡すファイル', () => {
       [7, 8],
     ]);
     expect(chunks[0].markdown).toContain('## 依頼 7(判定しない。依頼 6 の成果の扱いを読むための参考)');
-    expect(chunks[1].markdown).toContain('次の依頼はありません(セッションの最後)');
+    expect(chunks[1].markdown).toContain('次の依頼はありません(セッションの最後)。依頼 8 の outcome は unknown(判定不能)にしてください。');
+    // 塊の先頭の依頼が何への反応かを読めるよう、前の依頼文を参考に添える
+    expect(chunks[1].markdown).toContain('## 依頼 6(判定しない。依頼 7 が何への反応かを読むための参考)');
+    expect(chunks[0].markdown).not.toContain('何への反応か');
     // 未判定だけ: 続いた番号ごとに区切る
     expect(chunksOf(s, t, new Set([2, 3, 6])).map((c) => c.turns)).toEqual([[2, 3], [6]]);
     // プロンプトに判定する依頼番号と sessionId を書く(偽 copilot もここを読む)
@@ -133,6 +144,17 @@ describe('判定に渡すファイル', () => {
     const again = await runTurnJudge({ bundleDir: join(d, 'tb'), path, backend, limit: 1 });
     expect(again.attempted).toBe(1);
     expect(prompts).toHaveLength(3);
+
+    // 塊の中で判定済みの依頼は判定し直さない: 依頼 1 の判定を書き換えておき、塊 1〜6 を判定し直させても残る
+    const j2 = (await readTurnJudgments(path))!;
+    j2.items[0] = { ...j2.items[0], note: '前の判定' };
+    j2.items.splice(5, 1); // 依頼 6 を未判定に戻す → 塊 1〜6 がもう一度対象になる
+    await writeFile(path, JSON.stringify(j2));
+    const third = await runTurnJudge({ bundleDir: join(d, 'tb'), path, backend, limit: 1 });
+    expect(third.turns).toBe(1);
+    const j3 = (await readTurnJudgments(path))!;
+    expect(j3.items.find((i) => i.turn === 1)?.note).toBe('前の判定');
+    expect(j3.items.find((i) => i.turn === 6)).toBeDefined();
   });
 
   it('応答の読み取り: sessionId は補い、別のセッションや欠けは理由を出す', () => {

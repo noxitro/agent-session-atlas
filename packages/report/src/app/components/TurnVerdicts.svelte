@@ -17,7 +17,7 @@
   <td class="num">{int(c.byOutcome.fix_content)}</td>
   <td class="num">{int(c.byOutcome.fix_style)}</td>
   <td class="num">{int(c.byOutcome.rejected)}</td>
-  <td class="num strong">{pct(c.byOutcome.as_is, workDecided(c))}<span class="part">{int(c.byOutcome.as_is)} / {int(workDecided(c))}</span></td>
+  <td class="num strong">{pct(c.byOutcome.as_is, workDecided(c))}<span class="part"><span class="sr-only">、</span>{int(c.byOutcome.as_is)} / {int(workDecided(c))}</span></td>
   <td class="num">{int(c.byOutcome.helpful)}</td>
   <td class="num">{int(c.byOutcome.follow_up)}</td>
   <td class="num">{int(c.byOutcome.off_target)}</td>
@@ -32,10 +32,10 @@
   </p>
 {:else}
   <p class="note">
-    {int(agg.judged)} 依頼({int(agg.sessions)} セッション)を、次の依頼の文と拒否・中断から LLM が判定したものです(推定)。{model ? `モデル ${model}、` : ''}{ranAt ? `${dateTime(ranAt)} 判定。` : ''}採用率は、判定できた作業の依頼のうち「そのまま採用」の割合です。
+    {int(agg.judged)} 依頼({int(agg.sessions)} セッション)を、次の依頼の文と拒否・中断から LLM が判定したものです(推定)。{model || ranAt ? `最後の判定: ${model ? `モデル ${model}、` : ''}${ranAt ? dateTime(ranAt) : ''}。` : ''}採用率は、判定できた作業の依頼のうち「そのまま採用」の割合です。
   </p>
   <div class="table-scroll">
-    <table class="ledger small" data-testid="verdict-table">
+    <table class="ledger small" data-testid="verdict-table" aria-labelledby="verdicts-h">
       <thead>
         <tr>
           <th scope="col" rowspan="2">工程(普段)</th>
@@ -67,9 +67,9 @@
     </table>
   </div>
 
-  <h3 class="sub">合わなかった点 × 工程(普段)</h3>
+  <h3 class="sub" id="mismatch-h">合わなかった点 × 工程(普段)</h3>
   <div class="table-scroll">
-    <table class="ledger small" data-testid="mismatch-table">
+    <table class="ledger small" data-testid="mismatch-table" aria-labelledby="mismatch-h">
       <thead>
         <tr>
           <th scope="col">合わなかった点</th>
