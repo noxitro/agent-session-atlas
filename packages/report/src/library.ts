@@ -284,7 +284,7 @@ export function renderInstructionsHtml(o: InstructionsPageOptions): string {
     // ユーザー単位の 1 ファイルなら、プロジェクトごとに分けても意味が無い(全体の最後の版だけ出す)
     const userOnly = scopes.size === 1 && scopes.has('user');
     const scopeLabel = scopes.size === 2 ? 'リポジトリとユーザー' : userOnly ? 'ユーザー' : scopes.has('repo') ? 'リポジトリ' : '';
-    const kindLabel = g.kind === 'skill' ? 'skill' : file === 'unknown' ? '指示文(ファイル不明: 注入の形から特定できなかった)' : `${file}${scopeLabel ? `(${scopeLabel})` : ''}`;
+    const kindLabel = g.kind === 'skill' ? 'skill' : file === 'unknown' ? '指示文(ファイル不明: どのファイルから入ったか特定できなかったもの)' : `${file}${scopeLabel ? `(${scopeLabel})` : ''}`;
     // 版ごとの、使ったプロジェクトとセッション数(多い順)
     const projects = g.versions.map((v) => {
       const m = new Map<string, number>();

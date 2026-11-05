@@ -91,7 +91,11 @@ export async function importJudgmentsText(
   raw.forEach((it, i) => {
     const x = it && typeof it === 'object' ? { ...(it as Record<string, unknown>) } : it;
     if (x && typeof x === 'object') delete (x as Record<string, unknown>).judge;
-    problems.push(...itemProblems(x, `項目 ${i + 1}`));
+    // 何件目かとセッション ID を添える(どの判定を直せばよいか、チャットに伝えられるように)
+    const id = x && typeof x === 'object' ? (x as Record<string, unknown>).sessionId : undefined;
+    const head = `${i + 1} 件目${typeof id === 'string' && id ? `(セッション ${id})` : ''}`;
+    // itemProblems の「<path>.humanEffort …」「<path> が…」を「1 件目(…)の humanEffort …」「1 件目(…)が…」にする
+    problems.push(...itemProblems(x, head).map((p) => p.replace(`${head}.`, `${head}の `).replace(`${head} が`, `${head}が`)));
   });
   if (problems.length) throw new JudgmentValidationError(problems, `${file} の判定が judgments のスキーマに合いません(何も取り込んでいません)`);
 

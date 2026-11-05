@@ -56,7 +56,7 @@
 <section class="section" id="overview" aria-labelledby="overview-h">
   <div class="section-head">
     <h2 id="overview-h">全体サマリ</h2>
-    <p>{filtered ? '絞り込み後の値' : '全セッションの値'}。規模の 4 欄。トークンやツールなどの明細は要点の下の「集計明細」にあります。</p>
+    <p>{filtered ? '絞り込み後の値' : '全セッションの値'}。セッション数・期間・実働時間・推定人手工数の 4 つです。トークンやツールなどの明細は要点の下の「集計明細」にあります。</p>
   </div>
   {#if !includeEmpty && emptyCount > 0}
     <p class="excluded" data-testid="empty-excluded">{#if filtered}この条件の空のセッション {int(emptyInFilter)} 件を除外(全体では {int(emptyCount)} 件。{:else}空のセッション {int(emptyCount)} 件を除外({/if}依頼・ツール呼び出し・応答がどれも無いもの。絞り込みの「その他の条件」の「空のセッションを含める」で含められます)</p>
@@ -65,7 +65,7 @@
   <div class="fields" style="--cols:4">
     <div class="field">
       <span class="k">セッション</span><span class="v">{int(o.sessions)}</span>
-      <span class="n">依頼 {int(o.turns)} 回{#if o.autopilotContinuations > 0}・autopilot の自動継続 {int(o.autopilotContinuations)} 回は別{/if}{#if includeEmpty}・うち空 {int(o.emptySessions)}{/if}</span>
+      <span class="n">依頼 {int(o.turns)} 回{#if o.autopilotContinuations > 0}(autopilot が自分で続けた {int(o.autopilotContinuations)} 回は含めません){/if}{#if includeEmpty}・うち空 {int(o.emptySessions)}{/if}</span>
     </div>
     <div class="field">
       <span class="k">期間(開始日)</span><span class="v period">{o.firstAt ? `${date(o.firstAt)} 〜 ${date(o.lastAt)}` : '—'}</span>
@@ -78,7 +78,7 @@
       {#if judged && o.judgedSessions > 0}
         <span class="v">{dec(o.humanHours)} 時間</span><span class="n">LLM の推定。判定済み {int(o.judgedSessions)} セッション、幅 {dec(o.humanLow)}〜{dec(o.humanHigh)} 時間</span>
       {:else}
-        <span class="v missing">未判定</span><span class="n">LLM による工数判定はまだ実行していません</span>
+        <span class="v missing">未判定</span><span class="n">LLM による推定はまだありません。右上の「工数を判定する…」から実行できます(Copilot の AI クレジットを使う方法と、M365 Copilot などのチャットに貼る方法があります)</span>
       {/if}
     </div>
   </div>

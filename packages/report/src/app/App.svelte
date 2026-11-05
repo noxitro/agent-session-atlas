@@ -484,7 +484,7 @@
             <span class="w">表示中</span> <strong data-testid="shown-count">{int(filtered.length)}</strong> / <span class="w">集計対象</span> {int(scoped.length)} <span class="w">セッション</span><span class="u" aria-hidden="true">件</span>
           </p>
           <p class="active" class:on={activeConditions > 0}>
-            {#if activeConditions > 0}<span class="badge">{activeConditions}</span> <span class="w">条件で絞り込み中</span><span class="sr-only">条件で絞り込み中</span>{/if}
+            {#if activeConditions > 0}<span class="badge">{activeConditions}</span> <span class="w">条件で絞り込み中</span><span class="u" aria-hidden="true">条件</span><span class="sr-only">条件で絞り込み中</span>{/if}
           </p>
           <button type="button" class="btn" disabled={isEmptyFilter(filter)} onclick={reset}>解除</button>
         </div>

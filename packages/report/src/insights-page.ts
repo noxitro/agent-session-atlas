@@ -165,7 +165,7 @@ ${renderTop(nav)}
 ${renderRail(nav)}
 <div class="content">
 <main class="wrap">
-<div class="title"><h1>改善点(全件)</h1><p class="lead">LLM を呼ばない規則の集計。分かるのは相関までで、「傾向」として読む。全記録 ${esc(int(o.sessions))} 件(絞り込み前。空のセッション ${esc(int(o.emptySessions))} 件を含みますが、空のセッションは結果に影響しません)で計算。生成 ${esc(dateTime(o.generatedAt))}。${anon ? '伏せ字版: 依頼文の本文と指示文の見出しは出さず、件数とスコアだけ。' : ''}</p></div>
+<div class="title"><h1>改善点(全件)</h1><p class="lead">LLM を呼ばない規則の集計。分かるのは相関までで、「傾向」として読んでください。全記録 ${esc(int(o.sessions))} 件(絞り込み前。空のセッション ${esc(int(o.emptySessions))} 件を含みますが、空のセッションは結果に影響しません)で計算。生成 ${esc(dateTime(o.generatedAt))}。${anon ? '伏せ字版: 依頼文の本文と指示文の見出しは出さず、件数とスコアだけ。' : ''}</p></div>
 ${instructions}
 ${skills}
 ${stuck}

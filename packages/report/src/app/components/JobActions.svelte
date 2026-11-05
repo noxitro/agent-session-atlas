@@ -32,7 +32,7 @@
       /* 覚えられなくても選んだ方法では動く */
     }
   }
-  /** 初期フォーカス: このツールからなら「やめる」(Enter の押し間違いで費用のかかる処理を始めない)、チャットなら「閉じる」 */
+  /** 初期フォーカス: このツールからなら「やめる」(Enter の押し間違いで費用のかかる処理を始めない)、チャットなら表題の横の「閉じる」 */
   async function focusInitial(): Promise<void> {
     await tick();
     // 「閉じる」はチャットの手順の下にあるので、フォーカスで送らずに表題から見せる
@@ -87,23 +87,27 @@
     opener?.focus();
   }}
 >
-  <h2 id="judge-h">工数を判定する</h2>
+  <div class="head">
+    <h2 id="judge-h">工数を判定する</h2>
+    <!-- 手順の長いチャット側では一番下の「閉じる」が画面の外になる(スマホには Esc が無い)ので、表題の横にも置く -->
+    <button type="button" class="btn close" data-autofocus={method === 'chat' ? '' : undefined} data-testid="judge-close" onclick={() => dlg?.close()}>閉じる</button>
+  </div>
   <fieldset class="fld method">
     <legend class="k">判定の方法</legend>
-    <label class="opt"><input type="radio" name="judge-method" value="tool" checked={method === 'tool'} onchange={() => setMethod('tool')} data-testid="judge-method-tool" />このツールから(copilot -p / opencode)</label>
-    <label class="opt"><input type="radio" name="judge-method" value="chat" checked={method === 'chat'} onchange={() => setMethod('chat')} data-testid="judge-method-chat" />チャットに貼る(M365 Copilot など)</label>
+    <label class="opt"><input type="radio" name="judge-method" value="tool" checked={method === 'tool'} onchange={() => setMethod('tool')} data-testid="judge-method-tool" />このツールが判定する(GitHub Copilot CLI か opencode を手元で動かす)</label>
+    <label class="opt"><input type="radio" name="judge-method" value="chat" checked={method === 'chat'} onchange={() => setMethod('chat')} data-testid="judge-method-chat" />チャットに貼って判定する(M365 Copilot など。添付と貼り付けだけで使える)</label>
   </fieldset>
   {#if method === 'chat'}
     {#if open}<ChatJudge {jobs} onclose={() => dlg?.close()} />{/if}
   {:else}
     <form onsubmit={runJudge} aria-busy={jobs.busy}>
-      <p class="lead">未判定のセッションを LLM に判定させ、推定人手工数をレポートに足します。評価バンドルを作り直し、判定し、記録つきでレポートを作り直します。</p>
+      <p class="lead">未判定のセッションを LLM に判定させ、推定人手工数をレポートに足します。判定用のファイルを作り直す → 判定する → レポートを作り直す、の順に自動で進みます。</p>
       <div class="row">
         <label class="fld"><span class="k">件数の上限</span><input type="number" name="judge-limit" autocomplete="off" min="1" max={LIMIT_MAX} step="1" inputmode="numeric" bind:value={limit} aria-invalid={limitOk ? undefined : 'true'} aria-describedby="judge-count" data-testid="judge-limit" /></label>
         <fieldset class="fld">
-          <legend class="k">バックエンド</legend>
-          <label class="opt"><input type="radio" name="judge-backend" value="copilot-cli" bind:group={backend} />copilot -p(既定)</label>
-          <label class="opt"><input type="radio" name="judge-backend" value="opencode" bind:group={backend} />opencode</label>
+          <legend class="k">判定に使うもの</legend>
+          <label class="opt"><input type="radio" name="judge-backend" value="copilot-cli" bind:group={backend} />GitHub Copilot CLI(copilot -p。既定)</label>
+          <label class="opt"><input type="radio" name="judge-backend" value="opencode" bind:group={backend} />opencode(別にインストールが必要)</label>
         </fieldset>
       </div>
       <p class="count" id="judge-count" role="status" data-testid="judge-count">
@@ -115,8 +119,7 @@
       </p>
       <p class="cost" id="judge-cost">
         <strong>AI クレジットを消費します。</strong>
-        {#if backend === 'copilot-cli'}GitHub Copilot の AI クレジットを、1 件につき 1 回以上の copilot -p の分だけ使います。{:else}opencode の既定のモデルで判定します。そのモデルの提供元のクレジットや利用料を、1 件につき 1 回以上使います。{/if}
-        従量課金の Anthropic API は画面からは使えません(CLI の --backend anthropic)。
+        {#if backend === 'copilot-cli'}GitHub Copilot の AI クレジットを、1 件につき 1 回以上の判定の分だけ使います。{:else}opencode に設定してある既定のモデルで判定します。そのモデルの提供元のクレジットや利用料を、1 件につき 1 回以上使います。無料のモデルには、送った内容を学習に使うものがあります(モデルの選び方は docs/judge.md)。{/if}
       </p>
       {#if runError}<p class="err" role="alert">{runError}</p>{/if}
       <div class="actions">
@@ -155,10 +158,20 @@
   .judge-dialog::backdrop {
     background: rgba(14, 17, 16, 0.45);
   }
-  .judge-dialog h2 {
-    font-size: 1.0625rem;
+  .head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
     padding-bottom: 6px;
     border-bottom: 1px solid var(--rule);
+  }
+  .judge-dialog h2 {
+    font-size: 1.0625rem;
+  }
+  .head .close {
+    flex: none;
+    min-height: 32px;
   }
   .lead {
     margin: 10px 0 0;

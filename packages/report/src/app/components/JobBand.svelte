@@ -13,7 +13,8 @@
     const j = job;
     if (!j || jobs.dismissed === j.id) return null;
     if (j.state === 'running') return j;
-    if (j.kind === 'full') return null;
+    // 全文記録の作成(詳細ページから)と添付ファイルの作成(判定ダイアログの中から)は、終わったことを始めた画面が示すので帯には出さない
+    if (j.kind === 'full' || j.kind === 'bundle') return null;
     return Date.parse(j.startedAt) >= Date.parse(generatedAt) ? j : null;
   });
   function elapsed(j: JobInfo, now: number): string {
@@ -29,7 +30,7 @@
     const j = shown;
     if (!j) return '';
     if (j.state === 'running') return `${LABEL[j.kind]}を始めました。`;
-    if (j.state === 'done') return j.kind === 'bundle' ? '添付ファイルを作りました。' : '新しい集計ができました。再読み込みすると反映されます。';
+    if (j.state === 'done') return '新しい集計ができました。再読み込みすると反映されます。';
     if (j.state === 'failed') return `${LABEL[j.kind]}に失敗しました。`;
     return `${LABEL[j.kind]}を止めました。`;
   });
@@ -44,18 +45,16 @@
       <p class="msg">
         {#if shown.state === 'running'}
           <strong>{LABEL[shown.kind]}をしています</strong>(経過 {elapsed(shown, jobs.now)}{target(shown) ? `、${target(shown)}` : ''})。{#if shown.kind === 'refresh'}終わるまで詳細ページと記録は開けないことがあります。{:else if shown.kind === 'judge'}画面を閉じても最後まで続きます。{/if}
-        {:else if shown.state === 'done' && shown.kind === 'bundle'}
-          <strong>添付ファイルを作りました</strong>({elapsed(shown, jobs.now)})。「工数を判定する…」の「チャットに貼る」で続けてください。
         {:else if shown.state === 'done'}
           <strong>新しい集計ができました</strong>({LABEL[shown.kind]}、{elapsed(shown, jobs.now)})。再読み込みすると反映されます。
         {:else if shown.state === 'failed'}
           {#if shown.kind === 'judge'}
-            <strong>判定に失敗したセッションがあるか、判定を実行できませんでした</strong>(終了コード {shown.exitCode ?? '—'})。判定できた分は judgments.json に残っています(レポートへの反映は下のログに「export: セッション記録」があるときだけ。無ければ「集計し直す」で反映されます)。下のログで理由を確かめてください。
+            <strong>判定に失敗したセッションがあるか、判定を実行できませんでした</strong>(終了コード {shown.exitCode ?? '—'})。判定できた分は保存されています。「再読み込み」で反映されていなければ「集計し直す」を押してください。理由は下のログにあります。
           {:else}
             <strong>{LABEL[shown.kind]}に失敗しました</strong>(終了コード {shown.exitCode ?? '—'})。下のログで理由を確かめてください。
           {/if}
         {:else if shown.kind === 'judge'}
-          <strong>判定を止めました</strong>。判定済みの分は judgments.json に残り、次の「集計し直す」でレポートに出ます。
+          <strong>判定を止めました</strong>。判定できた分は保存されていて、次の「集計し直す」でレポートに出ます。
         {:else}
           <strong>{LABEL[shown.kind]}を止めました</strong>。レポートは作り直しの途中かもしれません。もう一度「集計し直す」を押してください。
         {/if}
@@ -64,7 +63,7 @@
         {#if shown.state === 'running'}
           <button type="button" class="btn" data-testid="job-cancel" onclick={() => void jobs.cancel()}>止める</button>
         {:else}
-          {#if (shown.state === 'done' && shown.kind !== 'bundle') || (shown.state === 'failed' && shown.kind === 'judge')}
+          {#if shown.state === 'done' || (shown.state === 'failed' && shown.kind === 'judge')}
             <button type="button" class="btn primary" data-testid="job-reload" onclick={() => location.reload()}>再読み込み</button>
           {/if}
           <button type="button" class="btn" onclick={dismiss}>閉じる</button>

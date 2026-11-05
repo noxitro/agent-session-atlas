@@ -45,6 +45,9 @@ export const PROJECT_SOURCE_LABEL: Record<ProjectSource, string> = {
   unknown: '手掛かりなし',
 };
 
+/** セッションの記録の出所(r.sources。db: session-store.db、dir: session-state/<id>/ のログ) */
+const RECORD_SOURCE_LABEL: Record<string, string> = { db: 'データベース', dir: 'ログのフォルダ' };
+
 const LINES_SOURCE_LABEL = { shutdown: '終了時の累計(codeChanges)', tools: 'ツールごとの行数の合計', none: '記録なし' } as const;
 /** 変更行数の欄の注記(出所と、記録が欠けている理由 lines.note) */
 export function linesNoteText(lines: LineChanges): string {
@@ -280,7 +283,7 @@ function execSection(r: SessionRecord, anon: Anonymizer): string {
     convTok != null ? `会話 ${int(convTok)}` : '',
     c.toolDefinitionsTokens != null && !ctxSum ? '文脈に占める割合は出せない(system・会話の記録なし)' : '',
     c.availableToolCount != null ? `使えるツール ${int(c.availableToolCount)} 個` : '',
-    c.source ? `出所: ${c.source === 'shutdown' ? '終了時' : c.source === 'compaction' ? 'compaction' : 'usage_record の toolTokenCount'}` : '',
+    c.source ? `出所: ${c.source === 'shutdown' ? '終了時' : c.source === 'compaction' ? 'compaction' : 'リクエストごとの利用記録'}` : '',
   ]
     .filter(Boolean)
     .join('・');
@@ -454,7 +457,7 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
     `<span class="tag">クライアント: ${esc(r.client ?? '不明')}</span>`,
     branch ? `<span class="tag">ブランチ: ${esc(branch)}</span>` : '',
     r.copilotVersion ? `<span class="tag">Copilot ${esc(r.copilotVersion)}</span>` : '',
-    `<span class="tag">出所: ${esc(r.sources.join(' + '))}</span>`,
+    `<span class="tag" title="${esc(`読んだ記録: ${r.sources.join(' + ')}`)}">記録の出所: ${esc(r.sources.map((x) => RECORD_SOURCE_LABEL[x] ?? x).join(' + '))}</span>`,
     t.input == null ? `<span class="tag warn">入力トークン記録なし</span>` : '',
     r.empty ? `<span class="tag">空のセッション(依頼・ツール・応答なし)</span>` : '',
     `<span class="tag id"><span class="sr-only">セッション ID </span>${esc(r.id)}</span>`,
@@ -685,7 +688,7 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
     links: [
       ...(o.transcriptHref
         ? [
-            { href: o.transcriptHref, label: '記録(Markdown)を開く', newWindow: true },
+            { href: o.transcriptHref, label: '記録の .md をそのまま開く', newWindow: true },
             { href: o.transcriptHref, label: '記録を .md で保存', download: true },
           ]
         : []),

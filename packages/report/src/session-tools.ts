@@ -11,6 +11,7 @@ const TOOLS_CSS = `
 .session-ops{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;margin-top:12px}
 .session-ops[hidden]{display:none}
 .session-ops .btn{display:inline-flex;align-items:center;min-height:30px;text-decoration:none}
+.session-ops .ops-help{flex-basis:100%;margin:0;font-size:.75rem;color:var(--ink-2)}
 .session-ops .ops-status{margin:0;font-size:.8125rem;color:var(--ink-2);min-height:1.5em}
 .session-ops .ops-status a{display:inline-flex;align-items:center;min-height:24px;margin-left:.5em}
 .ops-groups{margin:10px 0 0;font-size:.8125rem;color:var(--ink-2)}
@@ -31,6 +32,8 @@ function label(e,t){e.textContent=t;var m=el('span','ext','↗');m.setAttribute(
 var md=d.querySelector('.rail-links a[href$=".md"]:not([download]):not([href^="../full/"])');
 if(md){var read=el('a','btn');label(read,'記録を読む');read.href=view+'?kind=transcript';read.target='_blank';read.rel='noopener';box.appendChild(read)}
 var full=el('button','btn');label(full,'全文を作って読む');full.type='button';full.setAttribute('aria-describedby','ops-status');box.appendChild(full);
+// 2 つの記録の違い(初めての人が「記録」と「全文」の違いで迷わないように)
+box.appendChild(el('p','ops-help',(md?'記録を読む: 依頼・応答・ツールの経過をまとめたもの。':'')+'全文を作って読む: ログのイベントを省かずに書き出した解析用のもの(初回は作るのに時間がかかります)。'));
 var status=el('p','ops-status');status.id='ops-status';status.setAttribute('role','status');box.appendChild(status);
 var err=el('p','ops-err');err.setAttribute('role','alert');err.hidden=true;box.appendChild(err);
 title.appendChild(box);

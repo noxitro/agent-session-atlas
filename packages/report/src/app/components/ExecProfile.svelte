@@ -240,13 +240,13 @@
           <div><dt>compaction で減ったトークン</dt><dd>{int(exec.friction.compaction.tokensRemoved)}</dd></div>
         {/if}
       </dl>
-      <p class="foot">権限の確認は permission.completed の結果、エラーは session.error の errorType、サブエージェントの失敗は subagent.failed の error を分類したもの。</p>
+      <p class="foot">権限の確認・エラー・サブエージェントの失敗は、ログに残った結果を種類ごとに分けたものです(<a href="glossary.html">用語の説明</a>)。</p>
     </div>
 
     <div class="panel" data-testid="exec-todos">
       <h3 id="exec-todo-h">todo</h3>
       {#if exec.todos.sessionsWithDb === 0}
-        <p class="note">session.db(todo の記録)のあるセッションがありません。</p>
+        <p class="note">todo の記録があるセッションがありません。</p>
       {:else if exec.todos.total === 0}
         <p class="note">session.db のある {int(exec.todos.sessionsWithDb)} セッションに todo はありません。</p>
       {:else}

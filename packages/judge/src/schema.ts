@@ -77,7 +77,7 @@ const isStr = (v: unknown): v is string => typeof v === 'string';
 
 function checkEffect(v: unknown, path: string, p: string[]): void {
   if (!isObj(v)) {
-    p.push(`${path} がオブジェクトではありません`);
+    p.push(`${path} が無いか、{ … } の形ではありません`);
     return;
   }
   if (!isNum(v.score) || !Number.isInteger(v.score) || v.score < -2 || v.score > 2) p.push(`${path}.score は -2〜2 の整数です(${JSON.stringify(v.score)})`);
@@ -87,13 +87,13 @@ function checkEffect(v: unknown, path: string, p: string[]): void {
 /** 1 項目を検証して問題点を返す(空なら妥当) */
 export function itemProblems(v: unknown, path = 'item'): string[] {
   const p: string[] = [];
-  if (!isObj(v)) return [`${path} がオブジェクトではありません`];
+  if (!isObj(v)) return [`${path} が無いか、{ … } の形ではありません`];
   if (!isStr(v.sessionId) || v.sessionId.trim() === '') p.push(`${path}.sessionId がありません`);
   if (!(TASK_CATEGORIES as readonly unknown[]).includes(v.taskCategory)) p.push(`${path}.taskCategory は ${TASK_CATEGORIES.join(' / ')} のいずれかです(${JSON.stringify(v.taskCategory)})`);
   if (!isStr(v.taskSummary) || v.taskSummary.trim() === '') p.push(`${path}.taskSummary がありません`);
 
   const h = v.humanEffort;
-  if (!isObj(h)) p.push(`${path}.humanEffort がオブジェクトではありません`);
+  if (!isObj(h)) p.push(`${path}.humanEffort が無いか、{ … } の形ではありません`);
   else {
     for (const k of ['hours', 'low', 'high'] as const) if (!isNum(h[k]) || h[k] < 0) p.push(`${path}.humanEffort.${k} は 0 以上の数値です(${JSON.stringify(h[k])})`);
     if (isNum(h.hours) && isNum(h.low) && isNum(h.high) && !(h.low <= h.hours && h.hours <= h.high)) p.push(`${path}.humanEffort は low ≤ hours ≤ high を満たす必要があります(${h.low} / ${h.hours} / ${h.high})`);
@@ -102,7 +102,7 @@ export function itemProblems(v: unknown, path = 'item'): string[] {
   }
 
   const a = v.aiOutcome;
-  if (!isObj(a)) p.push(`${path}.aiOutcome がオブジェクトではありません`);
+  if (!isObj(a)) p.push(`${path}.aiOutcome が無いか、{ … } の形ではありません`);
   else {
     if (typeof a.completed !== 'boolean') p.push(`${path}.aiOutcome.completed は true / false です`);
     if (!isNum(a.quality) || !Number.isInteger(a.quality) || a.quality < 1 || a.quality > 5) p.push(`${path}.aiOutcome.quality は 1〜5 の整数です(${JSON.stringify(a.quality)})`);

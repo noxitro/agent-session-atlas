@@ -136,12 +136,13 @@ describe('画面からの操作(Phase 14)', () => {
     await page.getByTestId('chat-judge').waitFor({ state: 'visible' });
     // チャットではクレジットの注意を出さない
     expect(await dialog.innerText()).not.toContain('AI クレジットを消費します');
-    await expect.poll(() => page.getByTestId('chat-bundle').innerText()).toMatch(/^未判定 \d+ 件で(作る|作り直す)$/);
+    // f. の判定で全件の添付ファイルができているので「作り直す」になる
+    await expect.poll(() => page.getByTestId('chat-bundle').innerText()).toMatch(/^作り直す\(未判定 \d+ 件。ファイルの番号が振り直されます\)$/);
     await page.getByTestId('chat-bundle').click();
     await expect.poll(() => page.getByTestId('chat-bundle-state').innerText(), { timeout: 60_000 }).toMatch(/未判定だけ、\d+ ファイル/);
     expect(jobPosts.map((b) => JSON.parse(b))).toEqual([{ kind: 'bundle' }]);
-    // 帯は「再読み込み」を出さない(レポートは変わっていない)
-    await expect.poll(() => band().innerText()).toContain('添付ファイルを作りました');
+    // 終わったことはダイアログの手順 1 が示すので、裏の帯には出さない(レポートは変わっていないので「再読み込み」も出さない)
+    await expect.poll(() => band().getAttribute('data-state')).toBe('');
     expect(await page.getByTestId('job-reload').count()).toBe(0);
 
     const save = page.getByTestId('chat-save');
@@ -160,7 +161,8 @@ describe('画面からの操作(Phase 14)', () => {
     await reply.fill('```json\n{"items":[{"sessionId":"' + ids[0] + '","taskCategory":"nope"}]}\n```');
     await page.getByTestId('chat-import').click();
     await expect.poll(() => page.getByTestId('chat-import-error').innerText()).toContain('何も取り込んでいません');
-    expect(await page.getByTestId('chat-import-error').locator('li').count()).toBeGreaterThan(0);
+    // 何件目のどのセッションの、どの欄かを出す
+    expect(await page.getByTestId('chat-import-error').locator('li').first().innerText()).toContain(`1 件目(セッション ${ids[0]})の `);
     expect(await reply.getAttribute('aria-invalid')).toBe('true');
     // 取り込めなかった要求(400)はブラウザがコンソールに出す。想定どおりの 1 件だけ除く
     const expected = problems.findIndex((p) => /status of 400/.test(p));
@@ -181,6 +183,8 @@ describe('画面からの操作(Phase 14)', () => {
     await page.getByTestId('chat-import').click();
     await expect.poll(() => page.getByTestId('chat-import-result').innerText()).toBe(`${ids.length} 件を取り込みました。`);
     expect(await reply.inputValue()).toBe('');
+    // 送信ボタンが無効になっても焦点は消えず、結果の文に移る
+    expect(await page.evaluate<string | undefined>('document.activeElement?.dataset.testid')).toBe('chat-import-result');
     await expect.poll(() => page.getByTestId('chat-bundle-state').innerText()).toMatch(/取り込み済み 1 \//);
 
     await page.getByTestId('chat-reflect').click();
@@ -193,8 +197,8 @@ describe('画面からの操作(Phase 14)', () => {
     // 選んだ方法はこのブラウザに覚える
     await page.getByTestId('job-judge').click();
     await page.getByTestId('chat-judge').waitFor({ state: 'visible' });
-    expect(await page.evaluate<string | undefined>('document.activeElement?.dataset.testid')).toBe('chat-close');
-    // 「閉じる」は下にあるが、開いたときは表題から見える(フォーカスで送らない)
+    // 初期フォーカスは表題の横の「閉じる」で、開いたときは表題から見える
+    expect(await page.evaluate<string | undefined>('document.activeElement?.dataset.testid')).toBe('judge-close');
     expect(await dialog.evaluate((d) => d.scrollTop)).toBe(0);
     await page.getByTestId('chat-close').click();
     await dialog.waitFor({ state: 'hidden' });

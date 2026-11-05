@@ -5,6 +5,7 @@
   // 3. 返答をまるごと貼って取り込む(judgments.json。形が合わなければ何も書かず、どこが違うかを出す)
   // 4. レポートに反映する(export のジョブ)
   // どの手順も AI クレジットを使わない(判定するのはチャットの側)。
+  import { tick } from 'svelte';
   import { chatJudgeApi, ChatImportError, jobsApi, type ChatPart, type ChatParts } from '../api.ts';
   import type { JobStore } from '../jobs.svelte.ts';
   import { dateTime, int } from '../../lib/format.ts';
@@ -26,6 +27,7 @@
   let imported = $state(0);
   let copied = $state('');
   let copyError = $state('');
+  let resultEl = $state<HTMLParagraphElement | null>(null);
 
   const parts = $derived(info?.parts ?? []);
   const doneParts = $derived(parts.filter((p) => p.judged >= p.sessions).length);
@@ -96,12 +98,18 @@
       reply = '';
       const extra = [r.overwritten ? `判定し直し ${int(r.overwritten)} 件` : '', r.unknownIds.length ? `集計に無いセッション ${int(r.unknownIds.length)} 件(レポートには出ません)` : ''].filter(Boolean).join('、');
       result = `${int(r.imported)} 件を取り込みました${extra ? `(${extra})` : ''}。`;
+      // 送信ボタンが無効になって焦点が消えるので、結果の文へ移す(続けて Tab で次の手順へ進める)
+      await tick();
+      resultEl?.focus();
     } catch (err) {
       importError = { message: (err as Error).message, problems: err instanceof ChatImportError ? err.problems : [] };
     } finally {
       importing = false;
     }
   }
+
+  /** 取り込めなかった理由を 1 行ずつ(チャットに貼って直してもらう) */
+  const copyProblems = (): string => (importError?.problems ?? []).map((p) => `- ${p}`).join(String.fromCharCode(10));
 
   async function reflect(): Promise<void> {
     if (await jobs.run({ kind: 'export' })) onclose();
@@ -119,10 +127,18 @@
         {#if loadError}読み込めませんでした: {loadError}
         {:else if !info}読み込んでいます…
         {:else if !info.exists || parts.length === 0}まだ作っていません。
-        {:else}{dateTime(info.generatedAt)} に作成({info.unjudgedOnly ? '未判定だけ' : '全件'}、{int(parts.length)} ファイル)。取り込み済み <strong>{int(doneParts)}</strong> / {int(parts.length)} ファイル。{/if}
+        {:else}<strong>作成済み</strong>: {dateTime(info.generatedAt)}({info.unjudgedOnly ? '未判定だけ' : '全件'}、{int(parts.length)} ファイル)。取り込み済み <strong>{int(doneParts)}</strong> / {int(parts.length)} ファイル。次の手順 2 へ進んでください。{/if}
       </p>
       <button type="button" class="btn" disabled={off || pending === 0} data-testid="chat-bundle" onclick={makeBundle}>
-        {bundling ? '作っています…' : pending == null ? '未判定のセッションで作る' : pending === 0 ? '未判定のセッションはありません' : `未判定 ${int(pending)} 件で${info?.exists ? '作り直す' : '作る'}`}
+        {bundling
+          ? '作っています…'
+          : pending == null
+            ? '未判定のセッションで作る'
+            : pending === 0
+              ? '未判定のセッションはありません'
+              : info?.exists && parts.length
+                ? `作り直す(未判定 ${int(pending)} 件。ファイルの番号が振り直されます)`
+                : `未判定 ${int(pending)} 件で作る`}
       </button>
       {#if jobs.error && !bundling}<p class="err" role="alert">{jobs.error}</p>{/if}
     </li>
@@ -130,11 +146,12 @@
     <li>
       <h3>チャットに渡す</h3>
       {#if next}
-        <p class="next" data-testid="chat-next">次は <strong>{stem(next)}</strong>({int(next.sessions)} 件、{kb(next.bytes)})。保存したファイルを添付し、下の依頼文を送ります。添付できないときは本文をコピーして貼り付けます。</p>
+        <p class="next" data-testid="chat-next">次は <strong>{stem(next)}</strong>({int(next.sessions)} 件、{kb(next.bytes)})。ダウンロードしたファイルをチャットに添付し、下の依頼文を送ります。添付できないときは本文をコピーして貼り付けます。</p>
         <div class="acts">
-          <a class="btn primary" href={next.path} download={saveName(next)} data-testid="chat-save">{saveName(next)} を保存</a>
+          <a class="btn primary" href={next.path} download={saveName(next)} data-testid="chat-save">{saveName(next)} をダウンロード</a>
           <button type="button" class="btn" onclick={() => void copyPart(next)}>本文をコピー</button>
         </div>
+        <p class="hint">ファイルはブラウザの保存先(ふつうは「ダウンロード」フォルダー)に入ります。チャットの添付でそのファイルを選びます。</p>
       {:else if parts.length}
         <p class="next" data-testid="chat-next">すべてのファイルを取り込みました。</p>
       {:else}
@@ -158,7 +175,7 @@
                     <td>{stem(p)}</td>
                     <td class="num">{int(p.sessions)}</td>
                     <td>{partState(p)}</td>
-                    <td class="row-acts"><a href={p.path} download={saveName(p)}>保存</a><button type="button" class="link" onclick={() => void copyPart(p)}>コピー</button></td>
+                    <td class="row-acts"><a href={p.path} download={saveName(p)}>ダウンロード</a><button type="button" class="link" onclick={() => void copyPart(p)}>コピー</button></td>
                   </tr>
                 {/each}
               </tbody>
@@ -178,7 +195,7 @@
         </div>
       </form>
       <div id="chat-import-msg">
-        {#if result}<p class="ok" role="status" data-testid="chat-import-result">{result}</p>{/if}
+        {#if result}<p class="ok" role="status" tabindex="-1" bind:this={resultEl} data-testid="chat-import-result">{result}</p>{/if}
         {#if importError}
           <div class="err" role="alert" data-testid="chat-import-error">
             <p>{importError.message}</p>
@@ -188,7 +205,8 @@
               </ul>
               {#if importError.problems.length > PROBLEMS_MAX}<p>ほか {int(importError.problems.length - PROBLEMS_MAX)} 件。</p>{/if}
             {/if}
-            <p>チャットに「JSON Schema に合わせて直して」と頼むか、そのファイルをもう一度判定させてください。</p>
+            <p>貼った返答は欄に残っています。{#if importError.problems.length}「直す点をコピー」でこの一覧を写してチャットに貼り、「この点を直した JSON をもう一度返してください」と頼むか、{:else}チャットに{/if}同じファイルをもう一度判定させてください。</p>
+            {#if importError.problems.length}<button type="button" class="btn" onclick={() => void copy('直す点', () => copyProblems())}>直す点をコピー</button>{/if}
           </div>
         {/if}
       </div>
@@ -202,7 +220,7 @@
   </ol>
 
   <div class="footer">
-    <button type="button" class="btn" data-autofocus data-testid="chat-close" onclick={onclose}>閉じる</button>
+    <button type="button" class="btn" data-testid="chat-close" onclick={onclose}>閉じる</button>
   </div>
 </div>
 
@@ -299,6 +317,18 @@
     font-size: 0.8125rem;
     overflow-wrap: anywhere;
   }
+  .hint {
+    margin: 6px 0 0;
+    font-size: 0.75rem;
+    color: var(--ink-2);
+  }
+  .ok:focus {
+    outline: none;
+  }
+  .ok:focus-visible {
+    outline: 2px solid var(--form);
+    outline-offset: 2px;
+  }
   .copied {
     margin: 4px 0 0;
     min-height: 1.2em;
@@ -351,7 +381,8 @@
   .row-acts a,
   .row-acts .link {
     display: inline-block;
-    min-height: 24px;
+    min-height: 32px;
+    line-height: 26px;
     padding: 2px 4px;
     font: inherit;
     color: var(--form);

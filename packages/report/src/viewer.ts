@@ -115,8 +115,11 @@ if(!/^https?:$/.test(location.protocol)||!token||/^__/.test(token)){fail('atlas 
 say('読み込んでいます…');
 fetch('../api/view/'+encodeURIComponent(id)+'?kind='+encodeURIComponent(kind),{headers:{'x-atlas-token':token},cache:'no-store'}).then(function(r){return r.json().catch(function(){return{}}).then(function(b){return{ok:r.ok,status:r.status,body:b}})},function(){throw new Error('サーバに接続できません(atlas.bat を実行し直してください)')}).then(function(r){
   if(!r.ok)throw new Error(r.body.error||('サーバの応答 '+r.status));
-  var b=r.body,t=b.docTitle||(b.label+': '+b.title);h1.textContent=t;d.title=t.slice(0,80)+' | Copilot Session Atlas';
-  var when=b.updatedAt?'、更新 '+new Date(b.updatedAt).toLocaleString('ja-JP'):'';
+  // 表題は「セッション記録 — 題名」(題名自体に「:」が入ることがあるので、区切りはダッシュにする)
+  var b=r.body,t=b.docTitle?b.docTitle.replace(/^(セッション記録|全文記録): /,'$1 — '):(b.label+' — '+b.title);h1.textContent=t;d.title=t.slice(0,80)+' | Copilot Session Atlas';
+  // 日時はレポートと同じ「2026-11-05 13:15」の形(lib/format.ts の dateTime)
+  function dt(iso){var x=new Date(iso),p=function(n){return String(n).padStart(2,'0')};return x.getFullYear()+'-'+p(x.getMonth()+1)+'-'+p(x.getDate())+' '+p(x.getHours())+':'+p(x.getMinutes())}
+  var when=b.updatedAt?'、更新 '+dt(b.updatedAt):'';
   if(b.tooLarge){say('');fail(b.label+'は '+mb(b.size)+' あり、画面に描く上限('+mb(b.limit)+')を超えています。「.md を開く」から直接開いてください。');return}
   body.innerHTML=b.html;body.hidden=false;say(b.label+'(Markdown '+mb(b.size)+when+')');
   var toc=d.querySelector('.rail .toc'),ol=d.createElement('ol'),links=[],secs=[];
