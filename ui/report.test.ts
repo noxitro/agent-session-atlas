@@ -4,6 +4,7 @@
 //  b. グループを作成 → groups.json に書かれる → サイドバーで選ぶと絞り込まれる → 削除で消える
 //  c. 詳細ページでメモを書いて保存 → atlas-notes/memos に書かれ、再読み込みしても表示される
 //  d. 用語ページへのリンクで移動でき、パンくずで戻れる
+//  (a・b の中で)「工程と詰まり」は絞り込みに合わせて集計し直す。グループの「書き出す」で out/groups/<名前>/ に表ができる
 // どの画面でもページ内の例外とコンソールのエラーが無いこと。
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -68,13 +69,19 @@ describe('画面の操作', () => {
     await page.goto(server.url);
     const all = await shown();
     expect(all).toBeGreaterThan(2);
+    // 「工程と詰まり」の合計の依頼数(絞り込みに合わせて集計し直す)
+    const turnsTotal = async (): Promise<number> => Number((await page.getByTestId('phase-table').locator('tfoot td').first().innerText()).replace(/[^0-9]/g, ''));
+    const turnsAll = await turnsTotal();
+    expect(turnsAll).toBeGreaterThan(0);
     await rowChecks().nth(0).check();
     await rowChecks().nth(1).check();
     await expect.poll(() => page.getByTestId('selected-count').innerText()).toBe('2');
     await page.getByTestId('apply-selection').click();
     await expect.poll(shown).toBe(2);
+    await expect.poll(turnsTotal).toBeLessThan(turnsAll);
     await page.getByRole('button', { name: '選択を解除' }).click();
     await expect.poll(shown).toBe(all);
+    await expect.poll(turnsTotal).toBe(turnsAll);
     await expect.poll(() => page.getByTestId('selected-count').innerText()).toBe('0');
   });
 
@@ -119,6 +126,11 @@ describe('画面の操作', () => {
     await expect.poll(() => head.getByRole('heading').innerText()).toMatch(/画面のテスト2/);
     expect(new URL(page.url()).hash).toContain('group=' + encodeURIComponent('画面のテスト2'));
     expect(await shown()).toBe(2);
+    // 書き出す: そのグループの表・集計・記録が out/groups/<名前>/ にでき、場所が出る
+    await head.getByTestId('group-export').click();
+    await expect.poll(() => head.getByTestId('group-exported').innerText()).toMatch(/2 セッション・\d+ 依頼/);
+    expect(existsSync(join(out, 'groups', '画面のテスト2', 'turns.csv'))).toBe(true);
+    expect(await head.getByTestId('group-exported').locator('code').innerText()).toBe(join(out, 'groups', '画面のテスト2'));
     // Esc は 1 段ずつ戻る(確認 → 編集 → 表示)。削除せずに戻れる
     await head.getByTestId('group-edit').click();
     await head.getByTestId('group-delete').click();

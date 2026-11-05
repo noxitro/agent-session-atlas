@@ -3,6 +3,7 @@ import type { SessionRecord } from '../../../core/src/types.ts';
 import type { Anonymizer } from './anonymize.ts';
 import { coverageOf } from './filter.ts';
 import { truncate } from './format.ts';
+import { turnTuples } from './turns.ts';
 import type { AgentStat, EffortTuple, ExecSummary, FrictionDetailSummary, JudgmentSummary, ModelTokenSummary, SessionSummary, SkillTriggers, ToolIssue } from './types.ts';
 
 /** permission.completed の result.kind を承認・拒否・その他にまとめる(approved-for-location などは承認) */
@@ -144,6 +145,7 @@ export function summarize(r: SessionRecord, anon: Anonymizer, judgment: Judgment
       maxConsecutiveFailures: r.analysis?.maxConsecutiveFailures ?? 0,
       turns: r.analysis?.turnTools.length ?? 0,
     },
+    ...(r.analysis?.turnStats?.length ? { turnRows: turnTuples(r) } : {}),
     files: { changed: r.files.changed.length, created: r.files.created.length, deleted: r.files.deleted?.length ?? 0, sessionState: r.files.sessionState ?? 0 },
     href: detailHref(r.id),
     // 根拠の自由記述は HTML 本体に埋め込まない(詳細ページだけ)。伏せ字モードでは要約も出さない

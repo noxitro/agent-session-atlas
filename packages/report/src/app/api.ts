@@ -40,6 +40,16 @@ const connect = <T>(p: Promise<Response>, parseBody: (r: Response) => Promise<T>
     throw new Error('サーバに接続できません(atlas.bat を実行し直してください)');
   });
 
+/** グループの書き出しの結果(serve の group-export.ts と同じ形) */
+export interface GroupExport {
+  name: string;
+  dir: string;
+  sessions: number;
+  turns: number;
+  records: number;
+  missing: number;
+}
+
 export const api = {
   state(): Promise<ApiState> {
     return connect(fetch('api/state', { cache: 'no-store' }), (r) => parse<ApiState>(r));
@@ -57,6 +67,10 @@ export const api = {
   },
   remove(token: string, name: string): Promise<{ groups: ReportGroup[] }> {
     return connect(fetch('api/groups/' + encodeURIComponent(name), { method: 'DELETE', headers: headers(token) }), (r) => parse(r));
+  },
+  /** グループの表(CSV)・集計・記録を out/groups/<名前>/ に書き出す */
+  exportGroup(token: string, name: string): Promise<GroupExport> {
+    return connect(fetch('api/groups/' + encodeURIComponent(name) + '/export', { method: 'POST', headers: headers(token) }), (r) => parse<GroupExport>(r));
   },
 };
 

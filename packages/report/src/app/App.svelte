@@ -1,5 +1,6 @@
 <script lang="ts">
   import { aggregate } from '../lib/aggregate.ts';
+  import { turnAggregate } from '../lib/turns.ts';
   import { applyFilter, currentGroupName, decodeFilter, decodeView, effectiveIds, emptyFilter, encodeFilter, filterOptions, groupIds, inScope, isEmptyFilter, isStateHash, joinIds, knownSelection, type FilterState } from '../lib/filter.ts';
   import GroupRail from './components/GroupRail.svelte';
   import GroupHead from './components/GroupHead.svelte';
@@ -14,12 +15,13 @@
   import Highlights from './components/Highlights.svelte';
   import Insights from './components/Insights.svelte';
   import ExecProfile from './components/ExecProfile.svelte';
+  import TurnPhases from './components/TurnPhases.svelte';
   import MonthlyChart from './components/MonthlyChart.svelte';
   import ModelChart from './components/ModelChart.svelte';
   import SessionTable from './components/SessionTable.svelte';
   import { applyTheme, loadTheme, type ThemeChoice } from './theme.ts';
   import { watchScrollFocus } from './scroll-focus.ts';
-  import { api, serveToken, startHeartbeat } from './api.ts';
+  import { api, serveToken, startHeartbeat, type GroupExport } from './api.ts';
   import { JobStore } from './jobs.svelte.ts';
   import JobActions from './components/JobActions.svelte';
   import JobBand from './components/JobBand.svelte';
@@ -62,6 +64,7 @@
   // 集計に使う id は「group の名前が今のグループにあればその ids、無ければ ids」(effectiveIds。宣言は下だが評価は描画時)
   const filtered = $derived.by(() => applyFilter(sessions, { ...filter, ids: eff.ids }));
   const agg = $derived(aggregate(filtered));
+  const turnAgg = $derived(turnAggregate(filtered));
   const all = $derived(aggregate(sessions));
   const points = $derived(highlights(filtered, agg.usage, { filter, anonymized: !!data?.anonymized, installed: data?.installed ?? null }));
   /** 利用ランキングの表示中の種類(要点欄の「未使用の skill」から skill に切り替える) */
@@ -228,6 +231,9 @@
     liveGroups = r.groups;
     if (patch.name && filter.group === oldName) setFilter({ group: patch.name });
   }
+  function exportGroup(name: string): Promise<GroupExport> {
+    return api.exportGroup(token!, name);
+  }
   async function deleteGroup(name: string): Promise<void> {
     // currentName は groups から求めるので、一覧を差し替える前に覚える(後で見ると消したグループはもう無く、絞り込みが残る)
     // 通信中に別のグループへ移っていたら(ids が変わっていたら)移った先の絞り込みは残す
@@ -314,6 +320,7 @@
         { id: 'overview', label: '全体' },
         { id: 'highlights', label: '要点' },
         { id: 'insights', label: '改善点' },
+        { id: 'phases', label: '工程と詰まり' },
         { id: 'detail', label: '集計明細' },
         ...(judged ? [{ id: 'judgments', label: 'AI 投入量 vs 推定人手工数' }] : []),
       ],
@@ -500,7 +507,7 @@
 
       <main class="wrap" id="main" tabindex="-1">
         {#if currentGroup}
-          <GroupHead group={currentGroup} {editable} onclear={() => pickGroup(null)} onsave={saveGroup} ondelete={deleteGroup} />
+          <GroupHead group={currentGroup} {editable} onclear={() => pickGroup(null)} onsave={saveGroup} ondelete={deleteGroup} onexport={exportGroup} />
         {/if}
         <div class="empty" class:show={filtered.length === 0} role="status">
           {#if filtered.length === 0}
@@ -513,6 +520,7 @@
         <Overview part="cover" {agg} {judged} anonymized={data.anonymized} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} {emptyInFilter} />
         <Highlights groups={points} />
         <Insights sessions={filtered} allSessions={data.sessions} installed={data.installed?.skills ?? null} disabled={data.installed?.disabled ?? []} meta={data.insights?.meta ?? {}} candidates={data.insights?.candidates ?? []} candidateTotal={data.insights?.candidateTotal ?? data.insights?.candidates.length ?? 0} computedOver={data.insights?.computedOver ?? sessions.length} anonymized={data.anonymized} hasPage={true} libraryHref={data.library ? 'instructions.html' : null} />
+        <TurnPhases agg={turnAgg} />
         <Overview part="detail" {agg} {judged} anonymized={data.anonymized} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} {emptyInFilter} />
         {#if judged}<JudgmentPanel {agg} meta={data.judgments} />{/if}
         <UsageRanking usage={agg.usage} installed={data.installed ?? null} bind:tab={usageTab} />

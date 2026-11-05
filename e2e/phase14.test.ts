@@ -86,6 +86,15 @@ describe('Phase 14 E2E: 画面からの操作(jobs)', () => {
   };
   const embedded = async (): Promise<ReportData> => extractEmbedded<ReportData>(await readFile(join(out, 'atlas.html'), 'utf8'));
 
+  it('0. atlas all は表計算ソフトで開く表(out/tables/ の turns.csv・sessions.csv)も書く', async () => {
+    const lines = async (name: string): Promise<string[]> => (await readFile(join(out, 'tables', name), 'utf8')).trimEnd().split('\r\n');
+    const m = JSON.parse(await readFile(join(out, 'metrics.json'), 'utf8')) as { overall: { sessions: number }; turns: { turns: number } };
+    const turns = await lines('turns.csv');
+    expect(turns[0].startsWith(`${String.fromCharCode(0xfeff)}セッションID,`)).toBe(true);
+    expect(turns.length - 1).toBe(m.turns.turns);
+    expect((await lines('sessions.csv')).length - 1).toBe(m.overall.sessions);
+  });
+
   it('a. refresh: 集計し直すと atlas.html が作り直され、記録(.md)もある', async () => {
     const before = (await embedded()).generatedAt;
     const t = performance.now();

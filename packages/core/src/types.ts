@@ -1,4 +1,5 @@
 import type { DesktopData, DesktopSessionInfo } from './desktop-types.ts';
+import type { TurnMetrics } from './turns.ts';
 // sessions.json / metrics.json のスキーマ。後続フェーズ(cli / report / judge)はここだけを参照する。
 
 // 2: Phase 5(empty / autopilotContinuations / tools.internal / files.deleted・sessionState、
@@ -13,8 +14,10 @@ import type { DesktopData, DesktopSessionInfo } from './desktop-types.ts';
 // 8: 実データとの突き合わせの修正(lines.note / frictionDetail.compaction.removedRecorded・agentModelChanges /
 //    timeline の shutdown 行。abort の 2 件目・サブエージェント失敗と対の session.error・source: agent のモデル切り替えは数えない)
 // 9: analysis.turnActiveMs(ターンごとの実働。スキル化の候補のスコアに使う)
-export const SESSIONS_SCHEMA_VERSION = 9;
-export const METRICS_SCHEMA_VERSION = 4;
+// 10: analysis.turnStats(依頼単位の分析の段階 1: ターンごとのツールの種類・失敗・拒否・中断・再編集・使用量)
+export const SESSIONS_SCHEMA_VERSION = 10;
+// 5: turns(依頼単位の工程 × 詰まり・依頼の種類の集計)
+export const METRICS_SCHEMA_VERSION = 5;
 
 // ---------- 入力(生データ) ----------
 
@@ -194,6 +197,47 @@ export interface SessionAnalysis {
   turnActiveMs: (number | null)[];
   /** 依頼文の先頭 300 字(ターンごと、先頭 200 件。伏せ字版の HTML には埋め込まない) */
   requests: string[];
+  /**
+   * 段階 1(依頼単位の分析): ターンごとの出来事(turnTools と同じ並び・同じ件数)。
+   * ターンの始まりから次の依頼までに起きたもの(サブエージェントの分も含む)。古い sessions.json には無い
+   */
+  turnStats?: TurnStats[];
+}
+
+/** ツールの種類(依頼単位の工程の推定に使う。turns.ts の toolKind) */
+export const TOOL_KINDS = ['read', 'edit', 'verify', 'git', 'shell', 'plan', 'web', 'delegate', 'other'] as const;
+export type ToolKind = (typeof TOOL_KINDS)[number];
+
+/** 1 ターン(利用者の 1 回の依頼から次の依頼の直前まで)の出来事 */
+export interface TurnStats {
+  startedAt: string | null;
+  /** 作業のツール呼び出しの種類別の回数(内部ツールを除く。サブエージェントの分も含む) */
+  kinds: Partial<Record<ToolKind, number>>;
+  /** 作業のツール呼び出しの数(kinds の合計) */
+  tools: number;
+  /** 失敗(拒否を除く) */
+  toolFailures: number;
+  /** 拒否(error.code: denied) */
+  denied: number;
+  /** このターンの中での失敗の最長の連続 */
+  maxConsecutiveFailures: number;
+  /** ファイルの編集の回数 */
+  edits: number;
+  /** それより前(同じセッション)に編集したファイルの再編集の回数 */
+  reEdits: number;
+  /** 中断(続けて出る 2 件目は数えない) */
+  aborts: number;
+  /** session.error(サブエージェントの失敗と対になるものは除く) */
+  errors: number;
+  /** errors のうち利用上限・速度制限(quota / rate_limit) */
+  externalErrors: number;
+  subagentFailures: number;
+  compactions: number;
+  askUser: number;
+  /** このターンの間に始まったリクエストの使用量(リクエストの時刻で振り分け。記録が無ければ null) */
+  input: number | null;
+  output: number | null;
+  nanoAiu: number | null;
 }
 
 export type SkillTrigger = 'user' | 'agent';
@@ -596,4 +640,6 @@ export interface MetricsFile {
   latency: Record<string, { ttft: Quantiles; duration: Quantiles }>;
   /** Phase 7: ツール別の所要時間(ミリ秒。1 時間超は外れ値として除き outliers に数える) */
   toolDurations: Record<string, Quantiles & { outliers: number }>;
+  /** 依頼(ターン)単位の工程別・依頼の種類別の集計(段階 1)。古い metrics.json には無い */
+  turns?: TurnMetrics;
 }

@@ -4,7 +4,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, posix, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { computeMetrics, extract, METRICS_SCHEMA_VERSION, snapshot, type MetricsFile, type SessionRecord, type SessionsFile, type SnapshotManifest } from '../../core/src/index.ts';
+import { computeMetrics, extract, METRICS_SCHEMA_VERSION, sessionsCsv, snapshot, turnsCsv, type MetricsFile, type SessionRecord, type SessionsFile, type SnapshotManifest } from '../../core/src/index.ts';
 import {
   buildReport,
   DEFAULT_TRANSCRIPT_OPTIONS,
@@ -46,6 +46,7 @@ import {
 import type { CliOptions, GroupCliOptions, JudgeCliOptions, MemoCliOptions } from './args.ts';
 import { findRunningServer, openInBrowser, startServe } from './serve.ts';
 import { acquireOutLock } from './jobs.ts';
+import { exportGroup } from './group-export.ts';
 import { CONFIG_FILE, loadConfig } from './config.ts';
 
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
@@ -285,6 +286,13 @@ export async function runMetrics(p: Paths, f: SessionFilter, log: Log): Promise<
     `metrics: ${m.overall.sessions} セッション(空のセッション ${m.emptySessions} 件を除外)、${Object.keys(m.byProject).length} プロジェクト、${Object.keys(m.byModel).length} モデル、トークン記録なし(欠測)${m.overall.sessionsMissingTokens} セッション → ${p.metrics}`,
   );
   if (m.installedSkills) log(`metrics: インストール済みで未使用の skill ${m.installedSkills.unused.length} / ${m.installedSkills.installed.length} 件`);
+  // 表計算ソフトで開く表(依頼ごと・セッションごと)。metrics.json と同じ絞り込みのセッション
+  const tables = join(p.out, 'tables');
+  await mkdir(tables, { recursive: true });
+  const j = await readJudgments(p.judgments).catch(() => null);
+  await writeFile(join(tables, 'turns.csv'), turnsCsv(sessions));
+  await writeFile(join(tables, 'sessions.csv'), sessionsCsv(sessions, new Map((j?.items ?? []).map((i) => [i.sessionId, i.humanEffort.hours]))));
+  log(`metrics: 表 → ${join(tables, 'turns.csv')}(依頼 ${m.turns?.turns ?? 0} 件)・sessions.csv`);
   return m;
 }
 
@@ -457,6 +465,10 @@ export async function runGroup(p: Paths, g: GroupCliOptions, log: Log): Promise<
       const k = known ? x.ids.filter((id) => known.has(id)).length : null;
       log(`  ${x.name}: ${x.ids.length} 件${k != null && k !== x.ids.length ? `(うち記録にあるのは ${k} 件)` : ''}${x.note ? ` — ${x.note}` : ''}`);
     }
+    return;
+  }
+  if (g.action === 'export') {
+    await exportGroup(p, g.name!, log);
     return;
   }
   const groups = await loadGroupsForWrite(p.groups);

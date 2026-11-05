@@ -5,6 +5,7 @@
   import { untrack } from 'svelte';
   import { int } from '../../lib/format.ts';
   import type { ReportGroup } from '../../lib/types.ts';
+  import type { GroupExport } from '../api.ts';
 
   let {
     group,
@@ -12,6 +13,7 @@
     onclear,
     onsave,
     ondelete,
+    onexport,
   }: {
     group: ReportGroup & { present: number };
     editable: boolean;
@@ -20,7 +22,28 @@
     /** 名前・説明の変わった分だけを送る(失敗は例外。理由を欄の下に出す) */
     onsave: (oldName: string, patch: { name?: string; note?: string }) => Promise<void>;
     ondelete: (name: string) => Promise<void>;
+    /** そのグループの表(CSV)・集計・記録をフォルダに書き出す(atlas serve のときだけ) */
+    onexport?: (name: string) => Promise<GroupExport>;
   } = $props();
+  let exported = $state<GroupExport | null>(null);
+  let pathCopied = $state(false);
+  function doExport(): void {
+    if (!onexport) return;
+    exported = null;
+    pathCopied = false;
+    void run(async () => {
+      exported = await onexport(group.name);
+    }, () => {});
+  }
+  async function copyPath(): Promise<void> {
+    if (!exported) return;
+    try {
+      await navigator.clipboard.writeText(exported.dir);
+      pathCopied = true;
+    } catch (e) {
+      error = `コピーできませんでした(${(e as Error).message})`;
+    }
+  }
 
   let mode = $state<'view' | 'edit' | 'delete'>('view');
   let name = $state('');
@@ -102,6 +125,7 @@
   const groupName = $derived(group.name);
   $effect(() => {
     void groupName;
+    exported = null;
     // mode と rootEl は依存に入れない(入れると「編集」を押した直後にこの effect が走って表示に戻ってしまう)
     if (!editable) untrack(() => mode !== 'view' && rootEl?.contains(document.activeElement) && focusMain());
     mode = 'view';
@@ -120,6 +144,7 @@
         {#if group.note}<p class="desc">{group.note}</p>{:else if editable}<p class="desc none">説明はまだありません</p>{/if}
       </div>
       <div class="acts">
+        {#if editable && onexport}<button type="button" class="btn" data-testid="group-export" title="このグループの表(CSV)・集計・記録を 1 つのフォルダに書き出します" onclick={doExport} aria-disabled={busy}>{busy && mode === 'view' ? '書き出し中…' : '書き出す'}</button>{/if}
         {#if editable}<button type="button" class="btn" bind:this={editBtn} data-testid="group-edit" onclick={begin}>編集</button>{/if}
         <button type="button" class="btn" onclick={clear}>絞り込みを外す</button>
       </div>
@@ -149,10 +174,34 @@
       </div>
     </div>
   {/if}
+  {#if exported && mode === 'view'}
+    <div class="exported" role="status" data-testid="group-exported">
+      <p>書き出しました({int(exported.sessions)} セッション・{int(exported.turns)} 依頼・記録 {int(exported.records)} 件{exported.missing ? `。集計に無い ${int(exported.missing)} 件は入っていません` : ''})。依頼ごとの表は turns.csv、セッションごとの表は sessions.csv です(Excel で開けます)。</p>
+      <p class="path"><code>{exported.dir}</code> <button type="button" class="link" onclick={() => void copyPath()}>{pathCopied ? '場所をコピーしました' : '場所をコピー'}</button></p>
+    </div>
+  {/if}
   {#if error}<p class="err" id="group-head-error" role="alert">{error}</p>{/if}
 </section>
 
 <style>
+  .exported {
+    margin-top: 10px;
+    padding: 8px 10px;
+    font-size: 0.8125rem;
+    background: var(--form-wash);
+    border: 1px solid var(--rule);
+  }
+  .exported p {
+    margin: 0;
+  }
+  .exported .path {
+    margin-top: 4px;
+    overflow-wrap: anywhere;
+  }
+  .exported code {
+    font-family: var(--mono);
+    font-size: 0.75rem;
+  }
   .group-head {
     margin-top: 16px;
     padding: 10px 14px 12px;

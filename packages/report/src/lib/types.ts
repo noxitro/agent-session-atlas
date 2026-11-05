@@ -3,6 +3,7 @@
 // ここはブラウザ側(Svelte)と Node 側(build)の両方から読むので、DOM や node: に依存しない。
 import type { LineChanges, MetricsFile, ProjectSource, TodoSummary, TokenSource } from '../../../core/src/types.ts';
 import type { MemoSummary } from './memo.ts';
+import type { TurnTuple } from './turns.ts';
 
 // 3: Phase 6(tools.mcp・issues / skills を trigger 別に / agents.byName に失敗とトークン / hooks.byType /
 //    lines / projectSource / installed)
@@ -11,7 +12,8 @@ import type { MemoSummary } from './memo.ts';
 // 6: Phase 11(library)
 // 7: Phase 12(skillChars / instructionVersions / analysis / insights)
 // 8: Phase 13(memo)
-export const REPORT_DATA_VERSION = 8;
+// 9: turnRows(依頼単位の分析の段階 1)
+export const REPORT_DATA_VERSION = 9;
 
 /** 推論強度別の [リクエスト, 入力, 出力, nano AIU] */
 export type EffortTuple = [requests: number, input: number, output: number, nanoAiu: number];
@@ -154,6 +156,8 @@ export interface SessionSummary {
   instructionVersions: [hash: string, chars: number, injections: number][];
   /** Phase 12: 手戻り・失敗の連続(改善点の分析。ターンごとの列と依頼文は埋め込まない) */
   analysis: { filesReedited: number; extraEdits: number; maxConsecutiveFailures: number; turns: number };
+  /** 依頼(ターン)ごとの工程・種類・詰まり(lib/turns.ts の TurnTuple)。ターンの記録が無いセッション・古い埋め込みには無い */
+  turnRows?: TurnTuple[];
   agents: { total: number; failed: number; byName: Record<string, AgentStat> };
   hooks: { total: number; byType: Record<string, number> };
   /** 注入された指示ファイル(ファイル種別ごとの文字数。ユーザー単位のものは「AGENTS.md (user)」) */

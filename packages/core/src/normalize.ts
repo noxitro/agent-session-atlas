@@ -1,6 +1,7 @@
 import { FileTracker, isAutopilotContinuation, isInternalTool, isMainAssistantMessage, isUserTurn, normalizeModel, type FileOp } from './classify.ts';
 import { KNOWN_EVENT_TYPES } from './event-types.ts';
 import { InstructionCollector } from './instructions.ts';
+import { toolKind } from './turns.ts';
 import { emptyWiki, WikiClassifier } from './wiki.ts';
 import type {
   AgentRun,
@@ -24,6 +25,7 @@ import type {
   TimelineEntry,
   TokenCounts,
   TokenSource,
+  TurnStats,
   ToolResult,
   WorkspaceInfo,
 } from './types.ts';
@@ -404,7 +406,7 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
   const errorTypes: Record<string, number> = {};
   const subagentFailures: Record<string, number> = {};
   /** サブエージェント(agentId 付き)の session.error の id → 種別(直後の subagent.failed と対にするため) */
-  const agentErrors = new Map<string, { agentId: string; errorType: string }>();
+  const agentErrors = new Map<string, { agentId: string; errorType: string; turn: number | null }>();
   /** abort の id → 時刻(続けて出る 2 件目を見分けるため) */
   const abortMs = new Map<string, number | null>();
   /** 結果待ちのファイルを変更するツールの呼び出し(toolCallId → 本体 / サブエージェント) */
@@ -452,12 +454,22 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
   /** いま進んでいる分析対象のターン(先頭 200 ターンを超えたら null。以降の出来事を 200 ターン目に足さない) */
   let curTurn: number | null = null;
   const requests: string[] = [];
+  /** 段階 1: ターンごとの出来事(turnTools と同じ並び) */
+  const turnStats: TurnStats[] = [];
+  /** ターンの中での失敗の連続 */
+  let turnConsecutive = 0;
+  /** 分析の対象外になった最初のターン(201 ターン目)の始まり。これ以降の使用量はどのターンにも振り分けない */
+  let overflowMs: number | null = null;
+  const cur = (): TurnStats | null => (curTurn != null ? (turnStats[curTurn] ?? null) : null);
   const ANALYSIS_TURNS = 200;
   const ANALYSIS_TOOLS_PER_TURN = 40;
   const noteEdit = (path: unknown): void => {
     if (typeof path !== 'string' || path.trim() === '') return;
     const key = path.replace(/\\/g, '/').toLowerCase();
-    editCounts.set(key, (editCounts.get(key) ?? 0) + 1);
+    const before = editCounts.get(key) ?? 0;
+    editCounts.set(key, before + 1);
+    const ts = cur();
+    if (ts && before > 0) ts.reEdits++;
   };
 
   const pushTimeline = (e: TimelineEntry): void => {
@@ -543,7 +555,12 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
               turnActive.push(0);
               curTurn = turnTools.length - 1;
               requests.push(typeof d.content === 'string' ? head(d.content, 300) : '');
-            } else if (!e.agentId) curTurn = null;
+              turnStats.push(emptyTurnStats(at));
+              turnConsecutive = 0;
+            } else if (!e.agentId) {
+              curTurn = null;
+              overflowMs ??= t ?? null;
+            }
           }
           break;
         case 'assistant.message':
@@ -585,11 +602,20 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
             if (FILE_EDIT_TOOLS.has(name)) fileEditCalls.set(d.toolCallId, e.agentId ? 'sub' : 'main');
           }
           if (!e.agentId && turnTools.length) {
-            const cur = turnTools[turnTools.length - 1];
-            if (cur.length < ANALYSIS_TOOLS_PER_TURN) cur.push(name);
+            const tt = turnTools[turnTools.length - 1];
+            if (tt.length < ANALYSIS_TOOLS_PER_TURN) tt.push(name);
           }
           if (typeof d.mcpServerName === 'string' && d.mcpServerName !== '') inc((mcp[d.mcpServerName] ??= {}), name);
           const args = argsOf(e);
+          {
+            const ts = cur();
+            const k = ts ? toolKind(name, args) : null;
+            if (ts && k) {
+              ts.kinds[k] = (ts.kinds[k] ?? 0) + 1;
+              ts.tools++;
+              if (FILE_EDIT_TOOLS.has(name)) ts.edits++;
+            }
+          }
           if (name === 'skill') {
             const skill = typeof args?.skill === 'string' ? args.skill : '(unknown)';
             // skill ツールはモデルが呼ぶもの。skill.invoked と対になれば、その trigger で上書きする
@@ -602,7 +628,11 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
               inc(last.tools, name);
             } else pushTimeline({ at: at ?? '', kind: 'tools', label: 'tools', count: 1, tools: { [name]: 1 } });
           }
-          if (name === 'ask_user') friction.askUser++;
+          if (name === 'ask_user') {
+            friction.askUser++;
+            const ts = cur();
+            if (ts) ts.askUser++;
+          }
           wikiClassifier.classify(wiki, name, args);
           if (name === 'create' && typeof args?.path === 'string') files.add('create', args.path, curCwd());
           if ((name === 'edit' || name === 'str_replace_editor') && typeof args?.path === 'string') {
@@ -624,6 +654,16 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
           if (!isInternalCall && typeof d.success === 'boolean') {
             consecutiveFailures = d.success ? 0 : consecutiveFailures + 1;
             if (consecutiveFailures > maxConsecutiveFailures) maxConsecutiveFailures = consecutiveFailures;
+            const ts = cur();
+            if (ts) {
+              if (d.success) turnConsecutive = 0;
+              else {
+                if (d.error?.code === 'denied') ts.denied++;
+                else ts.toolFailures++;
+                turnConsecutive++;
+                if (turnConsecutive > ts.maxConsecutiveFailures) ts.maxConsecutiveFailures = turnConsecutive;
+              }
+            }
           }
           const callName = typeof d.toolCallId === 'string' ? toolNameByCall.get(d.toolCallId) : undefined;
           if (callName != null && typeof d.success === 'boolean') {
@@ -709,8 +749,17 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
               friction.errors--;
               errorTypes[pairErr.errorType]--;
               if (errorTypes[pairErr.errorType] <= 0) delete errorTypes[pairErr.errorType];
+              const pt = pairErr.turn != null ? turnStats[pairErr.turn] : undefined;
+              if (pt) {
+                pt.errors--;
+                if (isExternalError(pairErr.errorType)) pt.externalErrors--;
+              }
             }
             friction.subagentFailures++;
+            {
+              const ts = cur();
+              if (ts) ts.subagentFailures++;
+            }
             inc(subagentFailures, subagentFailureReason(d.error));
             if (d.error != null) a.error = head(typeof d.error === 'string' ? d.error : JSON.stringify(d.error), 200);
           }
@@ -730,8 +779,10 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
             }
           }
           break;
-        case 'session.compaction_complete':
+        case 'session.compaction_complete': {
           friction.compactions++;
+          const ts = cur();
+          if (ts) ts.compactions++;
           if (typeof d.preCompactionTokens === 'number') maxPreCompaction = Math.max(maxPreCompaction ?? 0, d.preCompactionTokens);
           lastCtx = ctxOf(d, 'compaction') ?? lastCtx;
           if (d.compactionTokensUsed && typeof d.compactionTokensUsed === 'object') {
@@ -748,12 +799,17 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
           }
           pushTimeline({ at: at ?? '', kind: 'compaction', label: String(d.outcome ?? (d.success === false ? 'failed' : 'applied')) });
           break;
+        }
         case 'abort': {
           // 1 回の中断で abort が 2 件続くことがある(2 件目の parentId が 1 件目、数 ms 差。実データで 13 組)。2 件目は数えない
           const prev = typeof e.parentId === 'string' ? abortMs.get(e.parentId) : undefined;
           if (typeof e.id === 'string') abortMs.set(e.id, t);
           if (prev !== undefined && (prev == null || t == null || Math.abs(t - prev) <= ABORT_PAIR_WINDOW_MS)) break;
           friction.aborts++;
+          {
+            const ts = cur();
+            if (ts) ts.aborts++;
+          }
           pushTimeline({ at: at ?? '', kind: 'abort', label: String(d.reason ?? '') });
           break;
         }
@@ -761,7 +817,14 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
           friction.errors++;
           const errorType = typeof d.errorType === 'string' && d.errorType !== '' ? d.errorType : '(unknown)';
           inc(errorTypes, errorType);
-          if (e.agentId && typeof e.id === 'string') agentErrors.set(e.id, { agentId: e.agentId, errorType });
+          if (e.agentId && typeof e.id === 'string') agentErrors.set(e.id, { agentId: e.agentId, errorType, turn: curTurn });
+          {
+            const ts = cur();
+            if (ts) {
+              ts.errors++;
+              if (isExternalError(errorType)) ts.externalErrors++;
+            }
+          }
           pushTimeline({ at: at ?? '', kind: 'error', label: String(d.errorType ?? d.message ?? '').slice(0, 120) });
           break;
         }
@@ -848,6 +911,7 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
   const { items, duplicates } = mergeUsage(dbUsage, usageRecords);
   const tokens = buildTokens(items, duplicates, legacyOutput, legacyOutputByModel, agentNameById, lastShutdown);
   tokens.subagentTotalTokens = subagentTotalTokens;
+  attributeUsage(items, turnStartMs, overflowMs, turnStats);
   tokens.maxPreCompactionTokens = maxPreCompaction;
   for (const u of items) models.add(u.model);
   for (const m of Object.keys(tokens.byModel)) if (m !== '(unknown)') models.add(m);
@@ -944,10 +1008,58 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
       }),
       turnActiveMs: turnStartMs.map((st, i) => (st != null ? turnActive[i] : null)),
       requests,
+      turnStats,
     },
     unknownEventTypes: unknown,
     events: { total, badLines: input.eventStats?.badLines ?? 0, byType },
   };
+}
+
+function emptyTurnStats(at: string | null): TurnStats {
+  return {
+    startedAt: at,
+    kinds: {},
+    tools: 0,
+    toolFailures: 0,
+    denied: 0,
+    maxConsecutiveFailures: 0,
+    edits: 0,
+    reEdits: 0,
+    aborts: 0,
+    errors: 0,
+    externalErrors: 0,
+    subagentFailures: 0,
+    compactions: 0,
+    askUser: 0,
+    input: null,
+    output: null,
+    nanoAiu: null,
+  };
+}
+
+/** 利用上限・速度制限(利用者や AI の作業ではなく、外の事情で止まったもの) */
+const isExternalError = (errorType: string): boolean => /quota|rate[_-]?limit/i.test(errorType);
+
+/**
+ * リクエストの使用量を、始まった時刻でターンに振り分ける(最初の依頼より前・分析の対象外のターン以降・時刻の無いものは振り分けない)。
+ * サブエージェントのリクエストも、そのときのターンに入れる
+ */
+function attributeUsage(items: UsageItem[], starts: (number | null)[], overflowMs: number | null, stats: TurnStats[]): void {
+  if (!stats.length) return;
+  for (const u of items) {
+    if (u.at == null || (overflowMs != null && u.at >= overflowMs)) continue;
+    let idx = -1;
+    for (let i = 0; i < starts.length; i++) {
+      const st = starts[i];
+      if (st != null && st <= u.at) idx = i;
+      else if (st != null && st > u.at) break;
+    }
+    const ts = idx >= 0 ? stats[idx] : undefined;
+    if (!ts) continue;
+    ts.input = (ts.input ?? 0) + u.input;
+    ts.output = (ts.output ?? 0) + u.output;
+    if (u.nanoAiu != null) ts.nanoAiu = (ts.nanoAiu ?? 0) + u.nanoAiu;
+  }
 }
 
 /**

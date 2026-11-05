@@ -9,6 +9,7 @@ import {
   type SessionRecord,
   type TokenSource,
 } from './types.ts';
+import { turnMetrics } from './turns.ts';
 
 const TOKEN_SOURCES: TokenSource[] = ['db', 'events', 'db+events', 'shutdown', 'partial', 'none'];
 
@@ -312,5 +313,6 @@ export function computeMetrics(all: SessionRecord[], opts: { installed?: Install
       : null,
     latency: latencyByModel(sessions),
     toolDurations: toolDurationStats(sessions),
+    turns: turnMetrics(sessions),
   };
 }

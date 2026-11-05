@@ -47,6 +47,7 @@ import {
 import type { SessionRecord, SessionsFile } from '../../core/src/index.ts';
 import { importJudgmentsText, JudgmentValidationError, readBundleManifest } from '../../judge/src/index.ts';
 import { JobError, JobRunner, parseJobRequest, runningJobIn, type RunFullFn, type SpawnFn } from './jobs.ts';
+import { exportGroup } from './group-export.ts';
 
 export const TOKEN_PLACEHOLDER = '__ATLAS_TOKEN__';
 export const SERVE_STATE_FILE = '.serve.json';
@@ -403,6 +404,24 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     const memo = /^\/api\/memos\/([^/]+)(\/images)?$/.exec(path);
     if (memo) {
       await memoApi(req, res, method, memo[1], !!memo[2]);
+      return;
+    }
+    const ge = /^\/api\/groups\/([^/]+)\/export$/.exec(path);
+    if (ge) {
+      if (method !== 'POST') throw new HttpError(405, 'この方法では使えません');
+      checkToken(req);
+      let name: string;
+      try {
+        name = decodeURIComponent(ge[1]);
+      } catch {
+        throw new HttpError(400, 'グループ名を読めません');
+      }
+      if (jobs.running() && jobs.current()?.kind === 'refresh') throw new HttpError(409, REFRESHING);
+      try {
+        sendJson(res, 200, await exportGroup({ out: outDir, sessions: join(outDir, 'sessions.json'), judgments: join(outDir, 'judgments.json'), groups: groupsPath }, name, log));
+      } catch (e) {
+        throw new HttpError(/はありません/.test((e as Error).message) ? 404 : 409, (e as Error).message);
+      }
       return;
     }
     const m = /^\/api\/groups(?:\/(.+))?$/.exec(path);

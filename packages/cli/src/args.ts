@@ -27,7 +27,7 @@ export interface JudgeCliOptions {
   timeoutSec: number;
 }
 
-export const GROUP_ACTIONS = ['list', 'add', 'remove'] as const;
+export const GROUP_ACTIONS = ['list', 'add', 'remove', 'export'] as const;
 export type GroupAction = (typeof GROUP_ACTIONS)[number];
 
 export interface GroupCliOptions {
@@ -123,8 +123,9 @@ export const USAGE = `使い方: atlas <コマンド> [オプション]
   judge run  バンドルの各セッションを LLM で判定し <out>/judgments.json に追記する(クレジットを消費します)
   judge import <ファイル>
              外部の LLM で作った判定(JSON か、JSON を含む Markdown)を検証して judgments.json に取り込む
-  group list / group add <名前> <id...> [--note <一文>] / group remove <名前>
-             名前付きグループ(<notes-dir>/groups.json)を一覧・追加(既存名なら id を追記)・削除する
+  group list / group add <名前> <id...> [--note <一文>] / group remove <名前> / group export <名前>
+             名前付きグループ(<notes-dir>/groups.json)を一覧・追加(既存名なら id を追記)・削除する。
+             export はそのグループの表(CSV)・集計・記録を <out>/groups/<名前>/ に書き出す
   memo list / memo show <id> / memo set <id> <本文...> / memo set <id> --file <path> / memo remove <id>
              セッションごとのメモ(<notes-dir>/memos/<id>.md)を一覧・表示・保存・削除する(remove は画像を残す)
   serve      out/ を 127.0.0.1 だけに配信してブラウザで開く(画面からグループとメモを書け、集計し直す・工数の判定・
@@ -282,14 +283,14 @@ export function parseCli(argv: string[]): CliOptions {
   let groupCmd: GroupCliOptions | null = null;
   if (cmd === 'group') {
     const action = positionals[1];
-    if (!action) throw new UsageError('group の後に list / add / remove を指定してください');
-    if (!(GROUP_ACTIONS as readonly string[]).includes(action)) throw new UsageError(`group の不明な操作です: ${action}(list / add / remove)`);
+    if (!action) throw new UsageError('group の後に list / add / remove / export を指定してください');
+    if (!(GROUP_ACTIONS as readonly string[]).includes(action)) throw new UsageError(`group の不明な操作です: ${action}(list / add / remove / export)`);
     const name = positionals[2] ?? null;
     const ids = positionals.slice(3).flatMap((s) => s.split(',')).map((s) => s.trim()).filter(Boolean);
     if (action === 'list' && positionals.length > 2) throw new UsageError(`余分な引数があります: ${positionals.slice(2).join(' ')}`);
     if (action !== 'list' && !name) throw new UsageError(`group ${action} にはグループ名を指定してください`);
     if (action === 'add' && ids.length === 0) throw new UsageError('group add にはセッション id を 1 つ以上指定してください');
-    if (action === 'remove' && positionals.length > 3) throw new UsageError(`余分な引数があります: ${positionals.slice(3).join(' ')}`);
+    if ((action === 'remove' || action === 'export') && positionals.length > 3) throw new UsageError(`余分な引数があります: ${positionals.slice(3).join(' ')}`);
     if (values.note != null && action !== 'add') throw new UsageError('--note は group add でだけ使えます');
     groupCmd = { action: action as GroupAction, name, ids, note: values.note ?? null };
   } else if (values.note != null) throw new UsageError('--note は group add でだけ使えます');
