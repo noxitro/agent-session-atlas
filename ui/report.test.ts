@@ -345,8 +345,9 @@ describe('画面の操作', () => {
     else await page.evaluate(`location.hash = ${JSON.stringify(`#${target}`)}`);
     await expect.poll(() => banner.isVisible()).toBe(false);
     // tsconfig に DOM の型が無いので、ブラウザ側の式は文字列で渡す
+    // 画面内かは 1px の余裕を持たせる(動きを減らす設定ではすぐに飛び、上端が -0.08px のような端数になる。CI の Windows がそれ)
     await expect.poll(() => page.evaluate(`(() => { const e = document.getElementById(${JSON.stringify(target)}); return e.open && !e.hidden; })()`)).toBe(true);
-    await expect.poll(() => page.evaluate(`(() => { const r = document.getElementById(${JSON.stringify(target)}).getBoundingClientRect(); return r.top >= 0 && r.top < innerHeight; })()`)).toBe(true);
+    await expect.poll(() => page.evaluate(`(() => { const r = document.getElementById(${JSON.stringify(target)}).getBoundingClientRect(); return r.top >= -1 && r.top < innerHeight; })()`)).toBe(true);
     expect(await synth.locator('.in-session').isVisible()).toBe(false);
 
     // 指示文も skill の本文も無いセッション: 詳細ページに絞り込みのリンクを出さず、直接開いても説明を出す
