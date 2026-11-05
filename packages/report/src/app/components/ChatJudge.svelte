@@ -5,12 +5,16 @@
   // 3. 返答をまるごと貼って取り込む(judgments.json。形が合わなければ何も書かず、どこが違うかを出す)
   // 4. レポートに反映する(export のジョブ)
   // どの手順も AI クレジットを使わない(判定するのはチャットの側)。
+  // target が turns なら依頼ごとの判定(turn-bundle/・turn-judgments.json。件数は依頼の数)。
   import { tick } from 'svelte';
-  import { chatJudgeApi, ChatImportError, jobsApi, type ChatPart, type ChatParts } from '../api.ts';
+  import { chatJudgeApi, ChatImportError, jobsApi, type ChatPart, type ChatParts, type JudgeTarget } from '../api.ts';
   import type { JobStore } from '../jobs.svelte.ts';
   import { dateTime, int } from '../../lib/format.ts';
 
-  let { jobs, onclose }: { jobs: JobStore; onclose: () => void } = $props();
+  let { jobs, onclose, target = 'effort' }: { jobs: JobStore; onclose: () => void; target?: JudgeTarget } = $props();
+  /** 数える単位(工数はセッション、依頼ごとの判定は依頼) */
+  const unit = $derived(target === 'turns' ? '依頼' : 'セッション');
+  const bundleKind = $derived(target === 'turns' ? 'turn-bundle' : 'bundle');
 
   /** チャットに添付ファイルと一緒に送る依頼文 */
   const REQUEST = '添付したファイルの指示に従って判定し、JSON を返してください。';
@@ -32,13 +36,13 @@
   const parts = $derived(info?.parts ?? []);
   const doneParts = $derived(parts.filter((p) => p.judged >= p.sessions).length);
   const next = $derived(parts.find((p) => p.judged < p.sessions) ?? null);
-  const bundling = $derived(jobs.running && jobs.job?.kind === 'bundle');
+  const bundling = $derived(jobs.running && jobs.job?.kind === bundleKind);
   const off = $derived(jobs.running || jobs.busy);
 
   async function load(): Promise<void> {
     loadError = '';
     try {
-      const [p, pre] = await Promise.all([chatJudgeApi.parts(jobs.token), jobsApi.judgePreview(jobs.token)]);
+      const [p, pre] = await Promise.all([chatJudgeApi.parts(jobs.token, target), jobsApi.judgePreview(jobs.token, target)]);
       info = p;
       pending = pre.pending;
     } catch (e) {
@@ -51,7 +55,7 @@
   let seen: string | null = null;
   $effect(() => {
     const j = jobs.job;
-    const key = j && j.kind === 'bundle' && j.state !== 'running' ? `${j.id}:${j.state}` : '';
+    const key = j && j.kind === bundleKind && j.state !== 'running' ? `${j.id}:${j.state}` : '';
     if (seen === null || seen === key) {
       seen = key;
       return;
@@ -63,7 +67,7 @@
   async function makeBundle(): Promise<void> {
     result = '';
     importError = null;
-    await jobs.run({ kind: 'bundle' });
+    await jobs.run({ kind: bundleKind });
   }
 
   async function copy(what: string, text: () => Promise<string> | string): Promise<void> {
@@ -76,9 +80,9 @@
       copyError = `コピーできませんでした(${(e as Error).message})。ファイルを保存して添付してください。`;
     }
   }
-  const copyPart = (p: ChatPart): Promise<void> => copy(`${stem(p)} の本文`, () => chatJudgeApi.partText(jobs.token, p.name));
+  const copyPart = (p: ChatPart): Promise<void> => copy(`${stem(p)} の本文`, () => chatJudgeApi.partText(jobs.token, p.name, target));
   /** 保存するときの名前(相手のチャットが .md を添付として受け付けるか分からないので、受け付けられやすい .txt にする。中身は同じ) */
-  const saveName = (p: ChatPart): string => p.name.replace(/\.md$/, '.txt');
+  const saveName = (p: ChatPart): string => `${target === 'turns' ? 'turns-' : ''}${p.name.replace(/\.md$/, '.txt')}`;
   /** 表示の名前(保存するときの拡張子と食い違わないよう、拡張子を付けない) */
   const stem = (p: ChatPart): string => p.name.replace(/\.md$/, '');
   const kb = (b: number): string => `${Math.max(1, Math.round(b / 1024))} KB`;
@@ -91,12 +95,12 @@
     result = '';
     importError = null;
     try {
-      const r = await chatJudgeApi.importText(jobs.token, reply);
+      const r = await chatJudgeApi.importText(jobs.token, reply, target);
       info = r.parts;
       imported += r.imported;
       if (pending != null) pending = Math.max(0, pending - (r.imported - r.overwritten));
       reply = '';
-      const extra = [r.overwritten ? `判定し直し ${int(r.overwritten)} 件` : '', r.unknownIds.length ? `集計に無いセッション ${int(r.unknownIds.length)} 件(レポートには出ません)` : ''].filter(Boolean).join('、');
+      const extra = [r.overwritten ? `判定し直し ${int(r.overwritten)} 件` : '', r.unknownIds.length ? `集計に無い${unit} ${int(r.unknownIds.length)} 件(レポートには出ません)` : ''].filter(Boolean).join('、');
       result = `${int(r.imported)} 件を取り込みました${extra ? `(${extra})` : ''}。`;
       // 送信ボタンが無効になって焦点が消えるので、結果の文へ移す(続けて Tab で次の手順へ進める)
       await tick();
@@ -133,9 +137,9 @@
         {bundling
           ? '作っています…'
           : pending == null
-            ? '未判定のセッションで作る'
+            ? `未判定の${unit}で作る`
             : pending === 0
-              ? '未判定のセッションはありません'
+              ? `未判定の${unit}はありません`
               : info?.exists && parts.length
                 ? `作り直す(未判定 ${int(pending)} 件。ファイルの番号が振り直されます)`
                 : `未判定 ${int(pending)} 件で作る`}

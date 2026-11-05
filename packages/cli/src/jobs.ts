@@ -4,6 +4,8 @@
 // - full:    サーバ内で 1 件だけ全文記録を書く(writeFullRecord。atlas.html・coverage.json・他のセッションは触らない)
 // - bundle:  子プロセス `main.ts bundle --unjudged …`(チャットに添付する評価バンドルを未判定のセッションだけで作る。LLM は呼ばない)
 // - export:  子プロセス `main.ts export …`(チャットの返答を取り込んだ後、判定をレポートに反映する)
+// - turn-bundle: 子プロセス `main.ts turns bundle --unjudged …`(依頼ごとの判定でチャットに添付するファイルを作る。LLM は呼ばない)
+// - turn-judge:  子プロセス `judge-flow.ts --turns --limit <n> …`(依頼ごとの判定を GitHub Copilot CLI で回し、レポートを作り直す)
 // 子プロセスの引数はここで固定の配列に組み立て、process.execPath を shell なしで起動する(画面からの文字列をコマンドラインに入れない)。
 // 起動の仕方(spawn)と全文の書き出し(runFull)は差し替えられる(単体テストを速く回すため)。
 import { spawn as nodeSpawn } from 'node:child_process';
@@ -12,12 +14,14 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isSafeMemoId } from '../../report/src/index.ts';
 
-export const JOB_KINDS = ['refresh', 'judge', 'full', 'bundle', 'export'] as const;
+export const JOB_KINDS = ['refresh', 'judge', 'full', 'bundle', 'export', 'turn-bundle', 'turn-judge'] as const;
 export type JobKind = (typeof JOB_KINDS)[number];
 /** 画面から選べる判定のバックエンド(従量課金の anthropic は CLI だけ) */
 export const JOB_BACKENDS = ['copilot-cli', 'opencode'] as const;
 export type JobBackend = (typeof JOB_BACKENDS)[number];
 export const JOB_LIMIT_MAX = 500;
+/** 依頼ごとの判定の件数の上限(1 セッション 200 依頼 × 数十セッション) */
+export const TURN_LIMIT_MAX = 5000;
 /** 残すログの行数(子プロセスの stdout / stderr の末尾) */
 export const JOB_LOG_LINES = 200;
 /**
@@ -121,7 +125,14 @@ export function releaseOutLock(outDir: string): void {
   }
 }
 
-export type JobRequest = { kind: 'refresh' } | { kind: 'judge'; limit: number; backend: JobBackend } | { kind: 'full'; id: string } | { kind: 'bundle' } | { kind: 'export' };
+export type JobRequest =
+  | { kind: 'refresh' }
+  | { kind: 'judge'; limit: number; backend: JobBackend }
+  | { kind: 'full'; id: string }
+  | { kind: 'bundle' }
+  | { kind: 'export' }
+  | { kind: 'turn-bundle' }
+  | { kind: 'turn-judge'; limit: number };
 export type JobState = 'running' | 'done' | 'failed' | 'canceled';
 
 export interface JobSnapshot {
@@ -145,7 +156,15 @@ export class JobError extends Error {
   }
 }
 
-const KEYS: Record<JobKind, string[]> = { refresh: ['kind'], judge: ['kind', 'limit', 'backend'], full: ['kind', 'id'], bundle: ['kind'], export: ['kind'] };
+const KEYS: Record<JobKind, string[]> = {
+  refresh: ['kind'],
+  judge: ['kind', 'limit', 'backend'],
+  full: ['kind', 'id'],
+  bundle: ['kind'],
+  export: ['kind'],
+  'turn-bundle': ['kind'],
+  'turn-judge': ['kind', 'limit'],
+};
 
 /**
  * POST /api/jobs の本文を検証する(純関数)。kind は列挙、limit は 0〜500 の整数(数値で必須。画面の確認で決めた件数だけ受ける)、
@@ -156,7 +175,12 @@ export function parseJobRequest(body: Record<string, unknown>, knownId: (id: str
   if (typeof kind !== 'string' || !(JOB_KINDS as readonly string[]).includes(kind)) throw new JobError(400, `kind は ${JOB_KINDS.join(' / ')} のどれかです`);
   const extra = Object.keys(body).filter((k) => !KEYS[kind as JobKind].includes(k));
   if (extra.length) throw new JobError(400, `${kind} では使えない項目です: ${extra.join(', ')}`);
-  if (kind === 'refresh' || kind === 'bundle' || kind === 'export') return { kind };
+  if (kind === 'refresh' || kind === 'bundle' || kind === 'export' || kind === 'turn-bundle') return { kind };
+  if (kind === 'turn-judge') {
+    const { limit } = body;
+    if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 0 || limit > TURN_LIMIT_MAX) throw new JobError(400, `limit には 0〜${TURN_LIMIT_MAX} の整数を指定してください(判定する依頼の数の上限)`);
+    return { kind: 'turn-judge', limit };
+  }
   if (kind === 'judge') {
     const { limit, backend } = body;
     if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 0 || limit > JOB_LIMIT_MAX) throw new JobError(400, `limit には 0〜${JOB_LIMIT_MAX} の整数を指定してください(判定する件数の上限)`);
@@ -180,6 +204,8 @@ export function jobArgs(req: JobRequest, p: { outDir: string; notesDir: string; 
   if (req.kind === 'judge') return [p.judgeFlow ?? JUDGE_FLOW_TS, '--limit', String(req.limit), '--backend', req.backend, ...common];
   if (req.kind === 'bundle') return [p.main ?? MAIN_TS, 'bundle', '--unjudged', ...common];
   if (req.kind === 'export') return [p.main ?? MAIN_TS, 'export', ...common];
+  if (req.kind === 'turn-bundle') return [p.main ?? MAIN_TS, 'turns', 'bundle', '--unjudged', ...common];
+  if (req.kind === 'turn-judge') return [p.judgeFlow ?? JUDGE_FLOW_TS, '--turns', '--limit', String(req.limit), ...common];
   return null;
 }
 
@@ -223,7 +249,15 @@ export interface JobRunnerOptions {
   onEnd?: (job: JobSnapshot) => void;
 }
 
-const LABEL: Record<JobKind, string> = { refresh: '集計し直す', judge: '工数を判定する', full: '全文を作る', bundle: '添付ファイルを作る', export: 'レポートに反映する' };
+const LABEL: Record<JobKind, string> = {
+  refresh: '集計し直す',
+  judge: '工数を判定する',
+  full: '全文を作る',
+  bundle: '添付ファイルを作る',
+  export: 'レポートに反映する',
+  'turn-bundle': '依頼の判定の添付ファイルを作る',
+  'turn-judge': '依頼を判定する',
+};
 
 export class JobRunner {
   private job: JobSnapshot | null = null;
@@ -279,9 +313,9 @@ export class JobRunner {
       endedAt: null,
       exitCode: null,
       log: [],
-      target: req.kind === 'judge' ? { limit: req.limit, backend: req.backend } : req.kind === 'full' ? { id: req.id } : {},
+      target: req.kind === 'judge' ? { limit: req.limit, backend: req.backend } : req.kind === 'turn-judge' ? { limit: req.limit } : req.kind === 'full' ? { id: req.id } : {},
     };
-    this.o.log?.(`[${LABEL[req.kind]}] 開始${req.kind === 'judge' ? `(最大 ${req.limit} 件、${req.backend})` : req.kind === 'full' ? `(${req.id})` : ''}`);
+    this.o.log?.(`[${LABEL[req.kind]}] 開始${req.kind === 'judge' ? `(最大 ${req.limit} 件、${req.backend})` : req.kind === 'turn-judge' ? `(最大 ${req.limit} 依頼)` : req.kind === 'full' ? `(${req.id})` : ''}`);
     const args = jobArgs(req, this.o);
     if (args) this.startChild(args);
     else this.startFull((req as { kind: 'full'; id: string }).id);

@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { normalizeSession } from '../src/normalize.ts';
 import { computeMetrics } from '../src/metrics.ts';
 import { csvCell, sessionsCsv, turnsCsv } from '../src/tables.ts';
-import { phaseOf, requestKindOf, sessionTurns, toolKind } from '../src/turns.ts';
+import { commandKind, phaseOf, requestKindOf, sessionTurns, toolKind } from '../src/turns.ts';
 import type { CopilotEvent } from '../src/types.ts';
 
 const T0 = Date.parse('2026-11-06T00:00:00.000Z');
@@ -30,6 +30,25 @@ describe('ツールの種類と工程の規則', () => {
     expect(toolKind('something_new', {})).toBe('other');
   });
 
+  it('シェルは段ごとの先頭で判定する(cd・環境変数は読み飛ばす、引用符の中の語は見ない、git のオプションを許す)', () => {
+    expect(commandKind('cd E:\\dev\\x; cmake --build build --config Debug')).toBe('verify');
+    expect(commandKind('.\\build\\Debug\\game.exe --smoke')).toBe('verify');
+    expect(commandKind('Set-Location X:\\p; git --no-pager diff --stat')).toBe('read');
+    expect(commandKind('git -C repo status --short && git log -1')).toBe('read');
+    expect(commandKind('git worktree list; git branch --list; git status')).toBe('read');
+    expect(commandKind('git commit -m "make the build pass; deploy"')).toBe('git');
+    expect(commandKind('cat docs/deploy.md')).toBe('read');
+    expect(commandKind('gh pr view 12 --json state')).toBe('read');
+    expect(commandKind('gh pr create --fill')).toBe('git');
+    expect(commandKind('git status; npm test')).toBe('verify');
+    expect(commandKind('node scripts/x.mjs | Select-Object -Last 5')).toBe('shell');
+    expect(commandKind('$env:CI = 1; npx vitest run')).toBe('verify');
+    expect(commandKind('& "E:\\dev\\out\\build\\Debug\\runtime.exe" --headless')).toBe('verify');
+    expect(commandKind('cmd /c "call vcvars64.bat && cmake --build build"')).toBe('verify');
+    expect(commandKind('$vswhere = "C:\\vswhere.exe"; $ErrorActionPreference = "Stop"; Get-ChildItem src')).toBe('read');
+    expect(commandKind('# 確認\nGet-Content a.txt')).toBe('read');
+  });
+
   it('工程: 編集 > 検証 > 運用 > 計画だけ > 回答のみ > 調査', () => {
     expect(phaseOf({ kinds: {} })).toBe('answer');
     expect(phaseOf({ kinds: { read: 3, edit: 1, verify: 2 } })).toBe('implement');
@@ -51,6 +70,11 @@ describe('ツールの種類と工程の規則', () => {
     expect(requestKindOf('なぜ 2 回呼ばれるのか教えて')).toBe('question');
     expect(requestKindOf('設定画面を作って')).toBe('task');
     expect(requestKindOf('')).toBe('task');
+    // 問いは最後の文で見る。「〜してもらえますか」は依頼、「X ではなく Y」だけでは修正にしない
+    expect(requestKindOf('下記アドバイスに基づいて設定してもらえますか？')).toBe('task');
+    expect(requestKindOf('テーマ設定は適用されていますか？ また、手順を README に追記して')).toBe('task');
+    expect(requestKindOf('白飛びしています。テーマ設定は適用されていますか？')).toBe('question');
+    expect(requestKindOf('grep ではなく LSP を使って、次を調べて')).toBe('task');
   });
 });
 
@@ -91,7 +115,8 @@ describe('normalizeSession のターンごとの出来事', () => {
     });
     const ts = r.analysis.turnStats!;
     expect(ts).toHaveLength(3);
-    expect(ts[0]).toMatchObject({ tools: 5, kinds: { read: 1, edit: 2, verify: 2 }, toolFailures: 2, denied: 0, maxConsecutiveFailures: 2, edits: 2, reEdits: 1, compactions: 1, aborts: 0, errors: 0 });
+    // 同じ依頼の中の 2 回目の編集は重ね編集(詰まりには数えない)
+    expect(ts[0]).toMatchObject({ tools: 5, kinds: { read: 1, edit: 2, verify: 2 }, toolFailures: 2, denied: 0, maxConsecutiveFailures: 2, edits: 2, reEdits: 0, repeatEdits: 1, compactions: 1, aborts: 0, errors: 0 });
     expect(ts[1]).toMatchObject({ tools: 1, kinds: { git: 1 }, toolFailures: 0, denied: 1, aborts: 1, errors: 1, externalErrors: 1, edits: 0 });
     expect(ts[2]).toMatchObject({ tools: 0, kinds: {}, input: null });
     // 使用量はリクエストの時刻で振り分ける
@@ -107,7 +132,7 @@ describe('normalizeSession のターンごとの出来事', () => {
 
     const m = computeMetrics([r]);
     expect(m.turns).toMatchObject({ turns: 3, sessions: 1, sessionsWithoutTurns: 0, truncatedSessions: 0 });
-    expect(m.turns!.byPhase.implement).toMatchObject({ turns: 1, stuck: 1, toolFailures: 2, reEdits: 1, followedByFix: 1, withNext: 1, kinds: { task: 1 } });
+    expect(m.turns!.byPhase.implement).toMatchObject({ turns: 1, stuck: 1, toolFailures: 2, reEdits: 0, followedByFix: 1, withNext: 1, kinds: { task: 1 } });
     expect(m.turns!.byPhase.answer).toMatchObject({ turns: 1, stuck: 0, withNext: 0 });
     expect(m.turns!.byKind.fix).toMatchObject({ turns: 1, denied: 1, aborts: 1 });
 
@@ -122,6 +147,25 @@ describe('normalizeSession のターンごとの出来事', () => {
     const scsv = sessionsCsv([r], new Map([['s', 2.5]])).trimEnd().split('\r\n');
     expect(scsv).toHaveLength(2);
     expect(scsv[1]).toContain(',2.5,');
+  });
+
+  it('前の依頼で編集したファイルをもう一度編集したら再編集(詰まり)、同じ依頼の中なら重ね編集', async () => {
+    const r = await normalizeSession({
+      id: 's',
+      events: [
+        ev(0, 'user.message', { content: '作って' }),
+        tool(100, 'a', 'edit', { path: 'X:\\p\\a.ts' }),
+        tool(200, 'b', 'edit', { path: 'X:\\p\\a.ts' }),
+        ev(1000, 'user.message', { content: '右に寄せて' }),
+        tool(1100, 'c', 'edit', { path: 'X:\\p\\a.ts' }),
+        tool(1200, 'd', 'create', { path: 'X:\\p\\b.ts' }),
+      ],
+    });
+    expect(r.analysis.turnStats!.map((t) => [t.edits, t.reEdits, t.repeatEdits])).toEqual([
+      [2, 0, 1],
+      [2, 1, 0],
+    ]);
+    expect(sessionTurns(r).map((t) => t.kind)).toEqual(['task', 'task']);
   });
 
   it('201 ターン目以降は分析しない(使用量も振り分けない)', async () => {
@@ -143,5 +187,10 @@ describe('CSV のセル', () => {
     expect(csvCell('1\n2')).toBe('"1\n2"');
     expect(csvCell(null)).toBe('');
     expect(csvCell(true)).toBe('1');
+    // 表計算ソフトが式として読まないよう、= + - @ 始まりの文字列には ' を足す(数値はそのまま)
+    expect(csvCell('@plan.md を見て')).toBe("'@plan.md を見て");
+    expect(csvCell('--foo=bar は?')).toBe("'--foo=bar は?");
+    expect(csvCell('=1+1,2')).toBe('"\'=1+1,2"');
+    expect(csvCell(-3)).toBe('-3');
   });
 });

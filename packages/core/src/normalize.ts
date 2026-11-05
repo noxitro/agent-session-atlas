@@ -458,6 +458,8 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
   const turnStats: TurnStats[] = [];
   /** ターンの中での失敗の連続 */
   let turnConsecutive = 0;
+  /** このターンで編集したファイル(再編集と重ね編集を分ける) */
+  const turnEdited = new Set<string>();
   /** 分析の対象外になった最初のターン(201 ターン目)の始まり。これ以降の使用量はどのターンにも振り分けない */
   let overflowMs: number | null = null;
   const cur = (): TurnStats | null => (curTurn != null ? (turnStats[curTurn] ?? null) : null);
@@ -469,7 +471,12 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
     const before = editCounts.get(key) ?? 0;
     editCounts.set(key, before + 1);
     const ts = cur();
-    if (ts && before > 0) ts.reEdits++;
+    if (ts && before > 0) {
+      // 同じ依頼の中で 2 回目以降なら重ね編集、前の依頼で触ったファイルなら再編集
+      if (turnEdited.has(key)) ts.repeatEdits = (ts.repeatEdits ?? 0) + 1;
+      else ts.reEdits++;
+    }
+    turnEdited.add(key);
   };
 
   const pushTimeline = (e: TimelineEntry): void => {
@@ -557,6 +564,7 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
               requests.push(typeof d.content === 'string' ? head(d.content, 300) : '');
               turnStats.push(emptyTurnStats(at));
               turnConsecutive = 0;
+              turnEdited.clear();
             } else if (!e.agentId) {
               curTurn = null;
               overflowMs ??= t ?? null;
@@ -613,7 +621,7 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
             if (ts && k) {
               ts.kinds[k] = (ts.kinds[k] ?? 0) + 1;
               ts.tools++;
-              if (FILE_EDIT_TOOLS.has(name)) ts.edits++;
+              if (k === 'edit') ts.edits++;
             }
           }
           if (name === 'skill') {
@@ -1025,6 +1033,7 @@ function emptyTurnStats(at: string | null): TurnStats {
     maxConsecutiveFailures: 0,
     edits: 0,
     reEdits: 0,
+    repeatEdits: 0,
     aborts: 0,
     errors: 0,
     externalErrors: 0,

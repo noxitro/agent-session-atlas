@@ -75,7 +75,9 @@ export const api = {
 };
 
 /** Phase 14: 画面から動かす処理(serve の jobs.ts と同じ形) */
-export type JobKind = 'refresh' | 'judge' | 'full' | 'bundle' | 'export';
+export type JobKind = 'refresh' | 'judge' | 'full' | 'bundle' | 'export' | 'turn-bundle' | 'turn-judge';
+/** 何を判定するか: 工数(セッションごと)/ 依頼ごとの採用・種類・工程 */
+export type JudgeTarget = 'effort' | 'turns';
 export type JobBackend = 'copilot-cli' | 'opencode';
 export interface JobInfo {
   id: string;
@@ -87,7 +89,13 @@ export interface JobInfo {
   log: string[];
   target: { limit?: number; backend?: JobBackend; id?: string };
 }
-export type JobRequest = { kind: 'refresh' } | { kind: 'judge'; limit: number; backend: JobBackend } | { kind: 'bundle' } | { kind: 'export' };
+export type JobRequest =
+  | { kind: 'refresh' }
+  | { kind: 'judge'; limit: number; backend: JobBackend }
+  | { kind: 'bundle' }
+  | { kind: 'export' }
+  | { kind: 'turn-bundle' }
+  | { kind: 'turn-judge'; limit: number };
 
 export const jobsApi = {
   /** 最後のジョブ(まだ無ければ null) */
@@ -100,9 +108,9 @@ export const jobsApi = {
   cancel(token: string): Promise<JobInfo> {
     return connect(fetch('api/jobs/current/cancel', { method: 'POST', headers: headers(token) }), (r) => parse<JobInfo>(r));
   },
-  /** 判定の確認ダイアログの件数(依頼の記録があるセッションのうち未判定のもの) */
-  judgePreview(token: string): Promise<{ eligible: number; judged: number; pending: number }> {
-    return connect(fetch('api/jobs/judge-preview', { cache: 'no-store', headers: headers(token) }), (r) => parse(r));
+  /** 判定の確認ダイアログの件数(工数: 依頼の記録があるセッション / 依頼: 依頼ごとの記録がある依頼。そのうち未判定のもの) */
+  judgePreview(token: string, target: JudgeTarget = 'effort'): Promise<{ eligible: number; judged: number; pending: number }> {
+    return connect(fetch('api/jobs/judge-preview' + (target === 'turns' ? '?target=turns' : ''), { cache: 'no-store', headers: headers(token) }), (r) => parse(r));
   },
 };
 
@@ -139,16 +147,19 @@ export class ChatImportError extends Error {
   }
 }
 
+const q = (target: JudgeTarget): string => (target === 'turns' ? '?target=turns' : '');
+
+/** チャットでの判定。target が turns なら依頼ごとの判定(sessions / judged は依頼の数) */
 export const chatJudgeApi = {
-  parts(token: string): Promise<ChatParts> {
-    return connect(fetch('api/judge/parts', { cache: 'no-store', headers: headers(token) }), (r) => parse<ChatParts>(r));
+  parts(token: string, target: JudgeTarget = 'effort'): Promise<ChatParts> {
+    return connect(fetch('api/judge/parts' + q(target), { cache: 'no-store', headers: headers(token) }), (r) => parse<ChatParts>(r));
   },
   /** 添付ファイルの本文(「本文をコピー」) */
-  partText(token: string, name: string): Promise<string> {
-    return connect(fetch('api/judge/parts/' + encodeURIComponent(name), { cache: 'no-store', headers: headers(token) }), async (r) => (await parse<{ text: string }>(r)).text);
+  partText(token: string, name: string, target: JudgeTarget = 'effort'): Promise<string> {
+    return connect(fetch('api/judge/parts/' + encodeURIComponent(name) + q(target), { cache: 'no-store', headers: headers(token) }), async (r) => (await parse<{ text: string }>(r)).text);
   },
-  importText(token: string, text: string): Promise<ChatImportResult> {
-    return connect(fetch('api/judge/import', { method: 'POST', headers: headers(token), body: JSON.stringify({ text }) }), async (r) => {
+  importText(token: string, text: string, target: JudgeTarget = 'effort'): Promise<ChatImportResult> {
+    return connect(fetch('api/judge/import' + q(target), { method: 'POST', headers: headers(token), body: JSON.stringify({ text }) }), async (r) => {
       if (r.ok) return (await r.json()) as ChatImportResult;
       let body: { error?: string; problems?: string[] } | null = null;
       try {

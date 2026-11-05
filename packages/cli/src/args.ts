@@ -1,7 +1,7 @@
 // atlas コマンドの引数解釈(純関数)
 import { parseArgs } from 'node:util';
 
-export const COMMANDS = ['snapshot', 'extract', 'metrics', 'build', 'export', 'all', 'bundle', 'judge', 'group', 'memo', 'serve', 'skill-draft'] as const;
+export const COMMANDS = ['snapshot', 'extract', 'metrics', 'build', 'export', 'all', 'bundle', 'judge', 'turns', 'group', 'memo', 'serve', 'skill-draft'] as const;
 export type Command = (typeof COMMANDS)[number];
 
 export const JUDGE_ACTIONS = ['run', 'import'] as const;
@@ -24,6 +24,24 @@ export interface JudgeCliOptions {
   /** copilot-cli に --allow-all-tools を付けるか */
   allowTools: boolean;
   /** 1 件あたりの制限時間(秒) */
+  timeoutSec: number;
+}
+
+export const TURNS_ACTIONS = ['bundle', 'run', 'import'] as const;
+export type TurnsAction = (typeof TURNS_ACTIONS)[number];
+
+/** 依頼ごとの判定(段階 2)。run は GitHub Copilot CLI だけ(従量課金・opencode は使わない) */
+export interface TurnsCliOptions {
+  action: TurnsAction;
+  /** import するファイル */
+  file: string | null;
+  /** run: 判定する依頼の数の上限 */
+  limit: number | null;
+  /** run: 判定に使うモデル */
+  model: string | null;
+  /** bundle: 判定済みの依頼を入れない */
+  unjudged: boolean;
+  /** run: 1 回あたりの制限時間(秒) */
   timeoutSec: number;
 }
 
@@ -97,6 +115,8 @@ export interface CliOptions {
   /** snapshot: 前回 --snapshot-all で写したが今回は写さないものを消す(既定は残す) */
   snapshotPrune: boolean;
   judge: JudgeCliOptions | null;
+  /** turns のときだけ */
+  turns: TurnsCliOptions | null;
   groupCmd: GroupCliOptions | null;
   memoCmd: MemoCliOptions | null;
   /** serve: 固定するポート(null は空きポート) */
@@ -123,6 +143,10 @@ export const USAGE = `使い方: atlas <コマンド> [オプション]
   judge run  バンドルの各セッションを LLM で判定し <out>/judgments.json に追記する(クレジットを消費します)
   judge import <ファイル>
              外部の LLM で作った判定(JSON か、JSON を含む Markdown)を検証して judgments.json に取り込む
+  turns bundle [--unjudged] / turns run [--limit <n>] [--model <名前>] / turns import <ファイル>
+             依頼ごとの判定(採用・依頼の種類・合わなかった点・普段の工程名)。bundle は M365 Copilot などに添付する
+             <out>/turn-bundle/parts/ を作る(LLM は呼ばない)。run は GitHub Copilot CLI で判定する(AI クレジットを消費します)。
+             import はチャットの返答を <out>/turn-judgments.json に取り込む
   group list / group add <名前> <id...> [--note <一文>] / group remove <名前> / group export <名前>
              名前付きグループ(<notes-dir>/groups.json)を一覧・追加(既存名なら id を追記)・削除する。
              export はそのグループの表(CSV)・集計・記録を <out>/groups/<名前>/ に書き出す
@@ -280,6 +304,29 @@ export function parseCli(argv: string[]): CliOptions {
     if (!(BACKEND_NAMES as readonly string[]).includes(backend)) throw new UsageError(`不明なバックエンドです: ${backend}(${BACKEND_NAMES.join(' / ')})`);
     skillDraft = { index, backend: backend as BackendChoice, model: values.model ?? null, timeoutSec: posInt(values.timeout, '--timeout', 1) ?? 600 };
   }
+  let turns: TurnsCliOptions | null = null;
+  if (cmd === 'turns') {
+    const action = positionals[1];
+    if (!action) throw new UsageError('turns の後に bundle / run / import を指定してください');
+    if (!(TURNS_ACTIONS as readonly string[]).includes(action)) throw new UsageError(`turns の不明な操作です: ${action}(bundle / run / import)`);
+    const file = positionals[2] ?? null;
+    if (action === 'import' && !file) throw new UsageError('turns import には取り込むファイルを指定してください');
+    const maxPos = action === 'import' ? 3 : 2;
+    if (positionals.length > maxPos) throw new UsageError(`余分な引数があります: ${positionals.slice(maxPos).join(' ')}`);
+    if (values.backend != null && values.backend !== 'copilot-cli') throw new UsageError('turns run は GitHub Copilot CLI(copilot-cli)でだけ回せます(ほかはチャットに貼る方法を使ってください)');
+    for (const k of ['only', 'concurrency'] as const) if (values[k] != null) throw new UsageError(`--${k} は turns では使えません`);
+    if (values.force) throw new UsageError('--force は turns では使えません');
+    if (action !== 'run') for (const k of ['limit', 'model', 'timeout'] as const) if (values[k] != null) throw new UsageError(`--${k} は turns run でだけ使えます`);
+    if (values.unjudged && action !== 'bundle') throw new UsageError('--unjudged は bundle と turns bundle でだけ使えます');
+    turns = {
+      action: action as TurnsAction,
+      file,
+      limit: posInt(values.limit, '--limit', 0),
+      model: values.model ?? null,
+      unjudged: values.unjudged ?? false,
+      timeoutSec: posInt(values.timeout, '--timeout', 1) ?? 600,
+    };
+  }
   let groupCmd: GroupCliOptions | null = null;
   if (cmd === 'group') {
     const action = positionals[1];
@@ -309,7 +356,7 @@ export function parseCli(argv: string[]): CliOptions {
     memoCmd = { action: action as MemoAction, id, text: rest.length ? rest.join(' ') : null, file: values.file ?? null };
   }
   if (values.file != null && memoCmd?.action !== 'set') throw new UsageError('--file は memo set でだけ使えます');
-  if (cmd !== 'judge' && cmd !== 'group' && cmd !== 'memo' && cmd !== 'skill-draft') {
+  if (cmd !== 'judge' && cmd !== 'turns' && cmd !== 'group' && cmd !== 'memo' && cmd !== 'skill-draft') {
     if (positionals.length > 1) throw new UsageError(`コマンドは 1 つだけ指定してください: ${positionals.join(' ')}`);
     for (const k of ['backend', 'limit', 'only', 'concurrency', 'timeout'] as const) if (values[k] != null) throw new UsageError(`--${k} は judge run でだけ使えます`);
     if (values.force) throw new UsageError('--force は judge run でだけ使えます');
@@ -318,7 +365,7 @@ export function parseCli(argv: string[]): CliOptions {
   if (!['fail', 'all', 'none'].includes(toolOutput)) throw new UsageError(`--tool-output は fail / all / none のどれかです: ${toolOutput}`);
   if ((values['tool-output'] != null || values['max-chars'] != null) && cmd !== 'export') throw new UsageError('--tool-output と --max-chars は export でだけ使えます');
   if (values['per-part'] != null && cmd !== 'bundle') throw new UsageError('--per-part は bundle でだけ使えます');
-  if (values.unjudged && cmd !== 'bundle') throw new UsageError('--unjudged は bundle でだけ使えます');
+  if (values.unjudged && cmd !== 'bundle' && cmd !== 'turns') throw new UsageError('--unjudged は bundle と turns bundle でだけ使えます');
   if (values.full && cmd !== 'export') throw new UsageError('--full は export でだけ使えます');
   if (values.full && values.anonymize) throw new UsageError('--full(解析用の全文記録)は --anonymize と併用できません');
   // 伏せ字に対応していないコマンドで黙って無視すると、伏せたつもりの評価バンドル(依頼文の全文・パス入り)を外部へ渡してしまう
@@ -359,6 +406,7 @@ export function parseCli(argv: string[]): CliOptions {
     snapshotAll: values['snapshot-all'] ?? false,
     snapshotPrune: values['snapshot-prune'] ?? false,
     judge,
+    turns,
     groupCmd,
     memoCmd,
     port,

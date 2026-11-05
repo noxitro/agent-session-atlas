@@ -19,6 +19,8 @@ import {
   memoSummary,
   NOTES_DIR_NAME,
   parseJudgments,
+  parseVerdicts,
+  type VerdictIndex,
   readMemo,
   resolveIdPrefixes,
   saveGroups,
@@ -38,16 +40,20 @@ import {
   importJudgments,
   opencodeBackend,
   readJudgments,
+  buildTurnBundle,
+  importTurnJudgmentsText,
+  readTurnJudgments,
+  runTurnJudge,
   runJudge,
   type BundleManifest,
   type JudgeBackend,
   type RunSummary,
 } from '../../judge/src/index.ts';
-import type { CliOptions, GroupCliOptions, JudgeCliOptions, MemoCliOptions } from './args.ts';
+import type { CliOptions, GroupCliOptions, JudgeCliOptions, MemoCliOptions, TurnsCliOptions } from './args.ts';
 import { findRunningServer, openInBrowser, startServe } from './serve.ts';
 import { acquireOutLock } from './jobs.ts';
 import { exportGroup } from './group-export.ts';
-import { CONFIG_FILE, loadConfig } from './config.ts';
+import { CONFIG_FILE, loadConfig, phaseNames } from './config.ts';
 
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
@@ -61,6 +67,9 @@ export interface Paths {
   metrics: string;
   judgments: string;
   bundle: string;
+  /** 依頼ごとの判定(段階 2)の結果と、判定に渡すファイル */
+  turnJudgments: string;
+  turnBundle: string;
   html: string;
   /** メモとグループの置き場(既定はリポジトリ直下の atlas-notes/。out/ ではなくユーザーが管理するもの) */
   notes: string;
@@ -79,6 +88,8 @@ export function resolvePaths(o: Pick<CliOptions, 'home' | 'out' | 'judgments'> &
     metrics: join(out, 'metrics.json'),
     judgments: o.judgments ? resolve(o.judgments) : join(out, 'judgments.json'),
     bundle: o.bundle ? resolve(o.bundle) : join(out, 'bundle'),
+    turnJudgments: join(out, 'turn-judgments.json'),
+    turnBundle: join(out, 'turn-bundle'),
     html: join(out, 'atlas.html'),
     notes,
     groups: join(notes, GROUPS_FILE_NAME),
@@ -286,14 +297,23 @@ export async function runMetrics(p: Paths, f: SessionFilter, log: Log): Promise<
     `metrics: ${m.overall.sessions} セッション(空のセッション ${m.emptySessions} 件を除外)、${Object.keys(m.byProject).length} プロジェクト、${Object.keys(m.byModel).length} モデル、トークン記録なし(欠測)${m.overall.sessionsMissingTokens} セッション → ${p.metrics}`,
   );
   if (m.installedSkills) log(`metrics: インストール済みで未使用の skill ${m.installedSkills.unused.length} / ${m.installedSkills.installed.length} 件`);
-  // 表計算ソフトで開く表(依頼ごと・セッションごと)。metrics.json と同じ絞り込みのセッション
+  await writeTables(p, sessions, 'metrics', log);
+  return m;
+}
+
+/**
+ * 表計算ソフトで開く表(依頼ごと・セッションごと)を out/tables/ に書く。metrics・build・export が、それぞれの絞り込みのセッションで書く
+ * (判定を取り込んだ後の export でも、判定の列が表に入るように)
+ */
+async function writeTables(p: Paths, sessions: SessionRecord[], cmd: string, log: Log): Promise<void> {
   const tables = join(p.out, 'tables');
   await mkdir(tables, { recursive: true });
   const j = await readJudgments(p.judgments).catch(() => null);
-  await writeFile(join(tables, 'turns.csv'), turnsCsv(sessions));
+  const verdicts = existsSync(p.turnJudgments) ? parseVerdicts(await readJson(p.turnJudgments, '').catch(() => null)) : null;
+  const turns = turnsCsv(sessions, verdicts?.bySession ?? null);
+  await writeFile(join(tables, 'turns.csv'), turns);
   await writeFile(join(tables, 'sessions.csv'), sessionsCsv(sessions, new Map((j?.items ?? []).map((i) => [i.sessionId, i.humanEffort.hours]))));
-  log(`metrics: 表 → ${join(tables, 'turns.csv')}(依頼 ${m.turns?.turns ?? 0} 件)・sessions.csv`);
-  return m;
+  log(`${cmd}: 表 → ${join(tables, 'turns.csv')}・sessions.csv${verdicts ? '(依頼ごとの判定の列つき)' : ''}`);
 }
 
 export interface BuildOptions extends SessionFilter {
@@ -324,6 +344,14 @@ export async function runBuild(p: Paths, o: BuildOptions, log: Log): Promise<Bui
     judgments = parseJudgments(await readJson(p.judgments, ''));
     log(`build: judgments ${judgments.bySession.size} 件を合成(${p.judgments})`);
   }
+  let verdicts: VerdictIndex | null = null;
+  if (existsSync(p.turnJudgments)) {
+    verdicts = parseVerdicts(await readJson(p.turnJudgments, ''));
+    if (verdicts) log(`build: 依頼ごとの判定 ${[...verdicts.bySession.values()].reduce((a, m) => a + m.size, 0)} 件を合成(${p.turnJudgments})`);
+  }
+
+  // 伏せ字版では表を書かない(依頼文とパスがそのまま入るため)
+  if (!o.anonymize) await writeTables(p, sessions, o.transcripts ? 'export' : 'build', log);
 
   await ensureTemplate(log);
   const unknown = Object.values(s.warnings.unknownEventTypes).reduce((a, n) => a + n, 0);
@@ -334,6 +362,7 @@ export async function runBuild(p: Paths, o: BuildOptions, log: Log): Promise<Bui
     totalSessionsInSource: s.sessions.length,
     warnings: { unknownEventTypes: unknown, badLines: s.warnings.badLines, notes: groups.warnings },
     judgments,
+    verdicts,
     groups: groups.groups,
     memosDir: memosDir(p.notes),
     outDir: p.out,
@@ -405,6 +434,38 @@ export async function runBundle(p: Paths, f: SessionFilter, o: { includeEmpty: b
   return m;
 }
 
+/** 依頼ごとの判定(段階 2): bundle / run(GitHub Copilot CLI)/ import */
+export async function runTurns(p: Paths, f: SessionFilter, t: TurnsCliOptions, log: Log): Promise<void> {
+  const phases = await phaseNames();
+  if (t.action === 'bundle') {
+    const { sessions } = await selectSessions(p, f, 'turns', '先に atlas extract(または atlas all)を実行してください。', log);
+    const existing = t.unjudged ? await readTurnJudgments(p.turnJudgments) : null;
+    const judged = existing ? new Map<string, Set<number>>() : null;
+    for (const i of existing?.items ?? []) {
+      let s = judged!.get(i.sessionId);
+      if (!s) judged!.set(i.sessionId, (s = new Set()));
+      s.add(i.turn);
+    }
+    const m = await buildTurnBundle(sessions, { bundleDir: p.turnBundle, snapshotDir: p.snapshot, phases, judged });
+    log(
+      `turns bundle: 依頼 ${m.count} 件${t.unjudged ? '(判定済みを除く)' : ''}を、M365 Copilot などに添付する ${m.parts.length} ファイル(parts/)と、GitHub Copilot CLI で 1 回ずつ渡す ${m.chunks.length} 個の塊にしました → ${p.turnBundle}${m.skipped.length ? `。本文が読めず外したセッション ${m.skipped.length} 件` : ''}`,
+    );
+    log(`turns bundle: 工程名 ${phases.join(' / ')}(atlas.config.json の phases で変えられます)`);
+    return;
+  }
+  if (t.action === 'run') {
+    const backend = copilotCliBackend({ model: t.model, timeoutMs: t.timeoutSec * 1000 });
+    const r = await runTurnJudge({ bundleDir: p.turnBundle, path: p.turnJudgments, backend, limit: t.limit, log });
+    if (r.failed.length) throw new Error(`判定できなかった塊が ${r.failed.length} 個あります(${p.turnJudgments} の failures。もう一度実行すると再試行します)`);
+    return;
+  }
+  const known = existsSync(p.sessions) ? (await readJson<SessionsFile>(p.sessions, '')).sessions : [];
+  const turnsBySession = new Map(known.map((s) => [s.id, s.analysis?.turnStats?.length ?? 0]));
+  const r = await importTurnJudgmentsText(await readFile(resolve(t.file!), 'utf8'), p.turnJudgments, { phases, turnsBySession });
+  log(`turns import: ${r.imported} 件を取り込みました(既存の上書き ${r.overwritten} 件)→ ${p.turnJudgments}(計 ${r.total} 件)`);
+  if (r.unknown.length) log(`turns import: 注意 集計に無い依頼が ${r.unknown.length} 件あります(レポートには出ません): ${r.unknown.slice(0, 5).join(', ')}${r.unknown.length > 5 ? ' …' : ''}`);
+}
+
 export function makeBackend(j: JudgeCliOptions): JudgeBackend {
   const timeoutMs = j.timeoutSec * 1000;
   switch (j.backend) {
@@ -468,7 +529,13 @@ export async function runGroup(p: Paths, g: GroupCliOptions, log: Log): Promise<
     return;
   }
   if (g.action === 'export') {
-    await exportGroup(p, g.name!, log);
+    // 書き出しは out/ を読む(と out/groups/ に書く)ので、集計の途中と重ならないよう印を取る
+    const release = acquireOutLock(p.out, 'group export', 'cli');
+    try {
+      await exportGroup(p, g.name!, log);
+    } finally {
+      release();
+    }
     return;
   }
   const groups = await loadGroupsForWrite(p.groups);
@@ -575,7 +642,7 @@ export async function runSkillDraft(p: Paths, o: NonNullable<CliOptions['skillDr
 }
 
 /** out/ に書くコマンド。実行中は out/.job.json に印を置き、他のプロセス(画面のジョブ・別の atlas)と並行して書かない */
-const WRITES_OUT: ReadonlySet<CliOptions['command']> = new Set(['snapshot', 'extract', 'metrics', 'build', 'export', 'bundle', 'judge', 'skill-draft', 'all']);
+const WRITES_OUT: ReadonlySet<CliOptions['command']> = new Set(['snapshot', 'extract', 'metrics', 'build', 'export', 'bundle', 'judge', 'turns', 'skill-draft', 'all']);
 
 type RunResult = { paths: Paths; build?: BuildResult; judge?: RunSummary | null };
 
@@ -608,6 +675,9 @@ async function runCommand(o: CliOptions, p: Paths, log: Log): Promise<RunResult>
       return { paths: p, build: await runBuild(p, { ...f, anonymize: o.anonymize, transcripts: { toolOutput: o.toolOutput, maxChars: o.maxChars, full: o.full } }, log) };
     case 'bundle':
       await runBundle(p, f, { includeEmpty: o.includeEmpty, perPart: o.perPart, unjudged: o.unjudged }, log);
+      return { paths: p };
+    case 'turns':
+      await runTurns(p, { ...f, model: null }, o.turns!, log);
       return { paths: p };
     case 'judge':
       return { paths: p, judge: await runJudgeCommand(p, o.judge!, log) };

@@ -16,8 +16,18 @@ export interface JudgeResult {
   notes: string[];
 }
 
+/** プロンプトを 1 回渡して返った本文(依頼ごとの判定など、セッションの判定以外に使う) */
+export interface AskResult {
+  /** assistant の本文(出現順) */
+  texts: string[];
+  usage: unknown | null;
+  notes: string[];
+}
+
 export interface JudgeBackend {
   name: BackendName;
   model: string | null;
   judge(packet: JudgePacket): Promise<JudgeResult>;
+  /** プロンプトをそのまま渡す(label は生の出力を残すときのファイル名)。copilot-cli だけが持つ */
+  ask?(prompt: string, label: string): Promise<AskResult>;
 }

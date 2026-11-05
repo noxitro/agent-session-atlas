@@ -1,16 +1,39 @@
 <script lang="ts">
-  // Phase 14: マストヘッドの操作「集計し直す」「工数を判定する…」(atlas serve から開いたときだけ)。
+  // Phase 14: マストヘッドの操作「集計し直す」「判定する…」(atlas serve から開いたときだけ)。
   // 判定は AI クレジットを消費するので、必ず確認ダイアログ(件数・バックエンド・費用)を通す。「やめる」では API を呼ばない。
-  // ダイアログでは判定の方法を選べる: このツールから(copilot -p / opencode)か、チャットに貼る(M365 Copilot など。ChatJudge)。選んだ方法はこのブラウザに覚える。
+  // ダイアログでは判定するもの(工数 = セッションごと / 依頼ごとの採用)と、判定の方法を選べる:
+  // このツールから(工数は copilot -p / opencode、依頼は copilot -p だけ)か、チャットに貼る(M365 Copilot など。ChatJudge)。選んだものはこのブラウザに覚える。
   import { tick } from 'svelte';
-  import { jobsApi, type JobBackend } from '../api.ts';
+  import { jobsApi, type JobBackend, type JudgeTarget } from '../api.ts';
   import type { JobStore } from '../jobs.svelte.ts';
   import { int } from '../../lib/format.ts';
   import ChatJudge from './ChatJudge.svelte';
 
   let { jobs, disabled }: { jobs: JobStore; disabled: boolean } = $props();
 
-  const LIMIT_MAX = 500;
+  /** 件数の上限の最大(工数はセッション、依頼ごとの判定は依頼の数) */
+  const LIMIT_MAX: Record<JudgeTarget, number> = { effort: 500, turns: 5000 };
+  const LIMIT_DEFAULT: Record<JudgeTarget, number> = { effort: 10, turns: 60 };
+  const TARGET_KEY = 'atlas.judge-target';
+  let target = $state<JudgeTarget>(readTarget());
+  function readTarget(): JudgeTarget {
+    try {
+      return localStorage.getItem(TARGET_KEY) === 'turns' ? 'turns' : 'effort';
+    } catch {
+      return 'effort';
+    }
+  }
+  function setTarget(t: JudgeTarget): void {
+    target = t;
+    limit = LIMIT_DEFAULT[t];
+    try {
+      localStorage.setItem(TARGET_KEY, t);
+    } catch {
+      /* 覚えられなくても選んだものでは動く */
+    }
+    void loadPreview();
+  }
+  const unit = $derived(target === 'turns' ? '依頼' : 'セッション');
   let dlg = $state<HTMLDialogElement | null>(null);
   let opener = $state<HTMLButtonElement | null>(null);
   let open = $state(false);
@@ -42,10 +65,10 @@
   let preview = $state<{ eligible: number; judged: number; pending: number } | null>(null);
   let previewError = $state('');
   let runError = $state('');
-  let limit = $state<number | null>(10);
+  let limit = $state<number | null>(LIMIT_DEFAULT[readTarget()]);
   let backend = $state<JobBackend>('copilot-cli');
   const off = $derived(disabled || jobs.running || jobs.busy);
-  const limitOk = $derived(typeof limit === 'number' && Number.isInteger(limit) && limit >= 1 && limit <= LIMIT_MAX);
+  const limitOk = $derived(typeof limit === 'number' && Number.isInteger(limit) && limit >= 1 && limit <= LIMIT_MAX[target]);
   /** 実際に判定する件数(未判定のうち上限まで) */
   const count = $derived(preview && limitOk ? Math.min(preview.pending, limit as number) : 0);
 
@@ -56,23 +79,31 @@
     open = true;
     dlg?.showModal();
     await focusInitial();
+    await loadPreview();
+  }
+  async function loadPreview(): Promise<void> {
+    preview = null;
+    previewError = '';
+    const t = target;
     try {
-      preview = await jobsApi.judgePreview(jobs.token);
+      const p = await jobsApi.judgePreview(jobs.token, t);
+      if (t === target) preview = p;
     } catch (e) {
-      previewError = (e as Error).message;
+      if (t === target) previewError = (e as Error).message;
     }
   }
   async function runJudge(e: SubmitEvent): Promise<void> {
     e.preventDefault();
     if (!limitOk || count < 1 || jobs.busy) return;
-    if (await jobs.run({ kind: 'judge', limit: limit as number, backend })) dlg?.close();
+    const req = target === 'turns' ? { kind: 'turn-judge' as const, limit: limit as number } : { kind: 'judge' as const, limit: limit as number, backend };
+    if (await jobs.run(req)) dlg?.close();
     else runError = jobs.error;
   }
 </script>
 
 <div class="job-actions" role="group" aria-label="集計と判定">
   <button type="button" class="btn" disabled={off} data-testid="job-refresh" onclick={() => void jobs.run({ kind: 'refresh' })}>集計し直す</button>
-  <button type="button" class="btn" disabled={off} bind:this={opener} data-testid="job-judge" aria-haspopup="dialog" onclick={openJudge}>工数を判定する…</button>
+  <button type="button" class="btn" disabled={off} bind:this={opener} data-testid="job-judge" aria-haspopup="dialog" onclick={openJudge}>判定する…</button>
 </div>
 
 <dialog
@@ -88,38 +119,50 @@
   }}
 >
   <div class="head">
-    <h2 id="judge-h">工数を判定する</h2>
+    <h2 id="judge-h">LLM で判定する</h2>
     <!-- 手順の長いチャット側では一番下の「閉じる」が画面の外になる(スマホには Esc が無い)ので、表題の横にも置く -->
     <button type="button" class="btn close" data-autofocus={method === 'chat' ? '' : undefined} data-testid="judge-close" onclick={() => dlg?.close()}>閉じる</button>
   </div>
   <fieldset class="fld method">
+    <legend class="k">判定するもの</legend>
+    <label class="opt"><input type="radio" name="judge-target" value="effort" checked={target === 'effort'} onchange={() => setTarget('effort')} data-testid="judge-target-effort" />工数(セッションごとの推定人手工数)</label>
+    <label class="opt"><input type="radio" name="judge-target" value="turns" checked={target === 'turns'} onchange={() => setTarget('turns')} data-testid="judge-target-turns" />依頼ごとの採用(そのまま・修正・不採用、合わなかった点、工程)</label>
+  </fieldset>
+  <fieldset class="fld method">
     <legend class="k">判定の方法</legend>
-    <label class="opt"><input type="radio" name="judge-method" value="tool" checked={method === 'tool'} onchange={() => setMethod('tool')} data-testid="judge-method-tool" />このツールが判定する(GitHub Copilot CLI か opencode を手元で動かす)</label>
+    <label class="opt"><input type="radio" name="judge-method" value="tool" checked={method === 'tool'} onchange={() => setMethod('tool')} data-testid="judge-method-tool" />このツールが判定する(GitHub Copilot CLI{target === 'effort' ? ' か opencode' : ''} を手元で動かす)</label>
     <label class="opt"><input type="radio" name="judge-method" value="chat" checked={method === 'chat'} onchange={() => setMethod('chat')} data-testid="judge-method-chat" />チャットに貼って判定する(M365 Copilot など。添付と貼り付けだけで使える)</label>
   </fieldset>
   {#if method === 'chat'}
-    {#if open}<ChatJudge {jobs} onclose={() => dlg?.close()} />{/if}
+    {#if open}{#key target}<ChatJudge {jobs} {target} onclose={() => dlg?.close()} />{/key}{/if}
   {:else}
     <form onsubmit={runJudge} aria-busy={jobs.busy}>
-      <p class="lead">未判定のセッションを LLM に判定させ、推定人手工数をレポートに足します。判定用のファイルを作り直す → 判定する → レポートを作り直す、の順に自動で進みます。</p>
+      <p class="lead">
+        {#if target === 'turns'}未判定の依頼を LLM に判定させ、採用されたか・合わなかった点・工程をレポートに足します。依頼数件をまとめて 1 回で判定します。判定用のファイルを作り直す → 判定する → レポートを作り直す、の順に自動で進みます。
+        {:else}未判定のセッションを LLM に判定させ、推定人手工数をレポートに足します。判定用のファイルを作り直す → 判定する → レポートを作り直す、の順に自動で進みます。{/if}
+      </p>
       <div class="row">
-        <label class="fld"><span class="k">件数の上限</span><input type="number" name="judge-limit" autocomplete="off" min="1" max={LIMIT_MAX} step="1" inputmode="numeric" bind:value={limit} aria-invalid={limitOk ? undefined : 'true'} aria-describedby="judge-count" data-testid="judge-limit" /></label>
-        <fieldset class="fld">
-          <legend class="k">判定に使うもの</legend>
-          <label class="opt"><input type="radio" name="judge-backend" value="copilot-cli" bind:group={backend} />GitHub Copilot CLI(copilot -p。既定)</label>
-          <label class="opt"><input type="radio" name="judge-backend" value="opencode" bind:group={backend} />opencode(別にインストールが必要)</label>
-        </fieldset>
+        <label class="fld"><span class="k">件数({unit})の上限</span><input type="number" name="judge-limit" autocomplete="off" min="1" max={LIMIT_MAX[target]} step="1" inputmode="numeric" bind:value={limit} aria-invalid={limitOk ? undefined : 'true'} aria-describedby="judge-count" data-testid="judge-limit" /></label>
+        {#if target === 'turns'}
+          <p class="fld only">判定に使うもの: GitHub Copilot CLI(copilot -p)</p>
+        {:else}
+          <fieldset class="fld">
+            <legend class="k">判定に使うもの</legend>
+            <label class="opt"><input type="radio" name="judge-backend" value="copilot-cli" bind:group={backend} />GitHub Copilot CLI(copilot -p。既定)</label>
+            <label class="opt"><input type="radio" name="judge-backend" value="opencode" bind:group={backend} />opencode(別にインストールが必要)</label>
+          </fieldset>
+        {/if}
       </div>
       <p class="count" id="judge-count" role="status" data-testid="judge-count">
-        {#if !limitOk}件数の上限は 1〜{LIMIT_MAX} の整数で指定してください。
+        {#if !limitOk}件数の上限は 1〜{LIMIT_MAX[target]} の整数で指定してください。
         {:else if previewError}未判定の件数を数えられませんでした: {previewError}
         {:else if !preview}未判定の件数を数えています…
-        {:else if preview.pending === 0}未判定のセッションはありません(判定済み {int(preview.judged)} 件)。
+        {:else if preview.pending === 0}未判定の{unit}はありません(判定済み {int(preview.judged)} 件)。
         {:else}未判定 {int(preview.pending)} 件のうち <strong>{int(count)} 件</strong>を判定します(判定済み {int(preview.judged)} 件は判定し直しません)。{/if}
       </p>
       <p class="cost" id="judge-cost">
         <strong>AI クレジットを消費します。</strong>
-        {#if backend === 'copilot-cli'}GitHub Copilot の AI クレジットを、1 件につき 1 回以上の判定の分だけ使います。{:else}opencode に設定してある既定のモデルで判定します。そのモデルの提供元のクレジットや利用料を、1 件につき 1 回以上使います。無料のモデルには、送った内容を学習に使うものがあります(モデルの選び方は docs/judge.md)。{/if}
+        {#if target === 'turns'}GitHub Copilot の AI クレジットを、依頼数件(最大 6 件)ごとに 1 回の判定の分だけ使います。{:else if backend === 'copilot-cli'}GitHub Copilot の AI クレジットを、1 件につき 1 回以上の判定の分だけ使います。{:else}opencode に設定してある既定のモデルで判定します。そのモデルの提供元のクレジットや利用料を、1 件につき 1 回以上使います。無料のモデルには、送った内容を学習に使うものがあります(モデルの選び方は docs/judge.md)。{/if}
       </p>
       {#if runError}<p class="err" role="alert">{runError}</p>{/if}
       <div class="actions">
@@ -154,6 +197,12 @@
   }
   .method {
     margin-top: 10px;
+  }
+  .only {
+    min-height: 30px;
+    display: flex;
+    align-items: center;
+    font-size: 0.8125rem;
   }
   .judge-dialog::backdrop {
     background: rgba(14, 17, 16, 0.45);

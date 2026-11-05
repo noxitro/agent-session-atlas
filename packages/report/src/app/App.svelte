@@ -1,6 +1,7 @@
 <script lang="ts">
   import { aggregate } from '../lib/aggregate.ts';
   import { turnAggregate } from '../lib/turns.ts';
+  import { verdictAggregate } from '../lib/verdicts.ts';
   import { applyFilter, currentGroupName, decodeFilter, decodeView, effectiveIds, emptyFilter, encodeFilter, filterOptions, groupIds, inScope, isEmptyFilter, isStateHash, joinIds, knownSelection, type FilterState } from '../lib/filter.ts';
   import GroupRail from './components/GroupRail.svelte';
   import GroupHead from './components/GroupHead.svelte';
@@ -65,6 +66,7 @@
   const filtered = $derived.by(() => applyFilter(sessions, { ...filter, ids: eff.ids }));
   const agg = $derived(aggregate(filtered));
   const turnAgg = $derived(turnAggregate(filtered));
+  const verdictAgg = $derived(data?.turnJudgments?.available ? verdictAggregate(filtered, data.turnJudgments.phases) : null);
   const all = $derived(aggregate(sessions));
   const points = $derived(highlights(filtered, agg.usage, { filter, anonymized: !!data?.anonymized, installed: data?.installed ?? null }));
   /** 利用ランキングの表示中の種類(要点欄の「未使用の skill」から skill に切り替える) */
@@ -520,7 +522,7 @@
         <Overview part="cover" {agg} {judged} anonymized={data.anonymized} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} {emptyInFilter} />
         <Highlights groups={points} />
         <Insights sessions={filtered} allSessions={data.sessions} installed={data.installed?.skills ?? null} disabled={data.installed?.disabled ?? []} meta={data.insights?.meta ?? {}} candidates={data.insights?.candidates ?? []} candidateTotal={data.insights?.candidateTotal ?? data.insights?.candidates.length ?? 0} computedOver={data.insights?.computedOver ?? sessions.length} anonymized={data.anonymized} hasPage={true} libraryHref={data.library ? 'instructions.html' : null} />
-        <TurnPhases agg={turnAgg} />
+        <TurnPhases agg={turnAgg} verdicts={verdictAgg} verdictModel={data.turnJudgments?.model ?? null} verdictRanAt={data.turnJudgments?.ranAt ?? null} />
         <Overview part="detail" {agg} {judged} anonymized={data.anonymized} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} {emptyInFilter} />
         {#if judged}<JudgmentPanel {agg} meta={data.judgments} />{/if}
         <UsageRanking usage={agg.usage} installed={data.installed ?? null} bind:tab={usageTab} />

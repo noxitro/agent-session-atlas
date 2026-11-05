@@ -9,12 +9,20 @@ describe('parseConfig', () => {
   it('文字列は path だけの指定、オブジェクトは形式も読む', () => {
     expect(parseConfig({ wikis: ['my-notes', { path: 'D:/brain', index: ['README.md'], pages: ['.'], extensions: ['.org'], skills: [] }] })).toEqual({
       wikis: [{ path: 'my-notes' }, { path: 'D:/brain', index: ['README.md'], pages: ['.'], extensions: ['.org'], skills: [] }],
+      phases: null,
     });
   });
 
+  it('phases: 依頼ごとの判定の普段の工程名(2 つ以上、重複なし、前後の空白は除く)', () => {
+    expect(parseConfig({ phases: [' 要件定義', '実装 ', 'テスト'] })).toEqual({ wikis: null, phases: ['要件定義', '実装', 'テスト'] });
+    expect(() => parseConfig({ phases: ['実装'] })).toThrow(/2 つ以上/);
+    expect(() => parseConfig({ phases: ['実装', '実装'] })).toThrow(/同じ名前/);
+    expect(() => parseConfig({ phases: '実装' })).toThrow(/phases/);
+  });
+
   it('wikis が無ければ null、空配列は集計なしとしてそのまま', () => {
-    expect(parseConfig({})).toEqual({ wikis: null });
-    expect(parseConfig({ wikis: [] })).toEqual({ wikis: [] });
+    expect(parseConfig({})).toEqual({ wikis: null, phases: null });
+    expect(parseConfig({ wikis: [] })).toEqual({ wikis: [], phases: null });
   });
 
   it('~/ はホームに展開する', () => {
@@ -39,14 +47,14 @@ describe('loadConfig', () => {
 
   it('既定の場所に無ければ設定なし、明示したのに無ければ失敗', async () => {
     const missing = join(dir, 'none.json');
-    await expect(loadConfig(missing, false)).resolves.toEqual({ path: null, wikis: null });
+    await expect(loadConfig(missing, false)).resolves.toEqual({ path: null, wikis: null, phases: null });
     await expect(loadConfig(missing, true)).rejects.toThrow(/ありません/);
   });
 
   it('BOM 付きを読み、壊れた JSON はファイル名付きで失敗する', async () => {
     const ok = join(dir, 'ok.json');
     writeFileSync(ok, '\uFEFF{"wikis":["notes"]}');
-    await expect(loadConfig(ok, true)).resolves.toEqual({ path: ok, wikis: [{ path: 'notes' }] });
+    await expect(loadConfig(ok, true)).resolves.toEqual({ path: ok, wikis: [{ path: 'notes' }], phases: null });
     const bad = join(dir, 'bad.json');
     writeFileSync(bad, '{');
     await expect(loadConfig(bad, false)).rejects.toThrow(/bad\.json/);

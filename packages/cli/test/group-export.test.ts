@@ -85,6 +85,15 @@ describe('グループの書き出し', () => {
     expect((await post('無い')).status).toBe(404);
   });
 
+  it('同じフォルダ名になる別のグループ(「A/B」と「A_B」)は、名前の短いハッシュを足して分ける', async () => {
+    await writeFile(join(notes, 'groups.json'), JSON.stringify({ version: 1, groups: [{ name: 'A/B', note: '', ids: ['s1'] }, { name: 'A_B', note: '', ids: ['s2'] }] }));
+    const x = await exportGroup(paths(), 'A/B');
+    const y = await exportGroup(paths(), 'A_B');
+    expect(x.dir).not.toBe(y.dir);
+    expect(x.dir).toMatch(/A_B-[0-9a-f]{6}$/);
+    expect(existsSync(join(x.dir, 'turns.csv')) && existsSync(join(y.dir, 'turns.csv'))).toBe(true);
+  });
+
   it('フォルダ名に使えない文字と予約名を避ける', () => {
     expect(safeDirName('a/b\\c:d*e?')).toBe('a_b_c_d_e_');
     expect(safeDirName('con')).toBe('_con');

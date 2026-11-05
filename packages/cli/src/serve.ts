@@ -45,7 +45,8 @@ import {
   type SessionGroup,
 } from '../../report/src/index.ts';
 import type { SessionRecord, SessionsFile } from '../../core/src/index.ts';
-import { importJudgmentsText, JudgmentValidationError, readBundleManifest } from '../../judge/src/index.ts';
+import { importJudgmentsText, importTurnJudgmentsText, JudgmentValidationError, readBundleManifest, readTurnBundleManifest, readTurnJudgments } from '../../judge/src/index.ts';
+import { phaseNames } from './config.ts';
 import { JobError, JobRunner, parseJobRequest, runningJobIn, type RunFullFn, type SpawnFn } from './jobs.ts';
 import { exportGroup } from './group-export.ts';
 
@@ -250,8 +251,8 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
   }
 
   // Phase 14: sessions.json の id → 表題と判定の対象か(mtime が変わるまで覚える。本文は持たない)
-  let sessionsCache: { mtime: number; ids: Map<string, { title: string; eligible: boolean }> } | null = null;
-  async function sessionIndex(): Promise<Map<string, { title: string; eligible: boolean }> | null> {
+  let sessionsCache: { mtime: number; ids: Map<string, { title: string; eligible: boolean; turns: number }> } | null = null;
+  async function sessionIndex(): Promise<Map<string, { title: string; eligible: boolean; turns: number }> | null> {
     const p = join(outDir, 'sessions.json');
     if (!existsSync(p)) return null;
     const m = (await stat(p)).mtimeMs;
@@ -263,7 +264,11 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
         throw new HttpError(503, `sessions.json を読めません(集計の途中かもしれません): ${(e as Error).message}`);
       }
       // 判定の対象は bundle と同じ「依頼の記録がある」セッション(judge/src/packet.ts の hasRequest の近似。本文は sessions.json の範囲で見る)
-      sessionsCache = { mtime: m, ids: new Map(file.sessions.map((r) => [r.id, { title: r.name?.trim() || '(名前なし)', eligible: r.turns > 0 || !!r.firstUserMessage }])) };
+      // turns は依頼ごとの記録(turnStats)の数。依頼ごとの判定の対象
+      sessionsCache = {
+        mtime: m,
+        ids: new Map(file.sessions.map((r) => [r.id, { title: r.name?.trim() || '(名前なし)', eligible: r.turns > 0 || !!r.firstUserMessage, turns: r.analysis?.turnStats?.length ?? 0 }])),
+      };
     }
     return sessionsCache.ids;
   }
@@ -389,11 +394,11 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
       return;
     }
     if (path === '/api/jobs' || path.startsWith('/api/jobs/')) {
-      await jobsApi(req, res, method, path);
+      await jobsApi(req, res, method, path, url);
       return;
     }
     if (path.startsWith('/api/judge/')) {
-      await chatJudgeApi(req, res, method, path);
+      await chatJudgeApi(req, res, method, path, url.searchParams.get('target') === 'turns' ? 'turns' : 'effort');
       return;
     }
     const view = /^\/api\/view\/([^/]+)$/.exec(path);
@@ -416,7 +421,10 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
       } catch {
         throw new HttpError(400, 'グループ名を読めません');
       }
-      if (jobs.running() && jobs.current()?.kind === 'refresh') throw new HttpError(409, REFRESHING);
+      // 集計・記録の書き出し中は sessions.json や記録が書きかけのことがあるので待ってもらう
+      if (jobs.running()) throw new HttpError(409, jobs.current()?.kind === 'refresh' ? REFRESHING : 'ほかの処理が動いています。終わってから書き出してください');
+      const other = runningJobIn(outDir);
+      if (other) throw new HttpError(409, `別の atlas の処理(${other})が動いています。終わってから書き出してください`);
       try {
         sendJson(res, 200, await exportGroup({ out: outDir, sessions: join(outDir, 'sessions.json'), judgments: join(outDir, 'judgments.json'), groups: groupsPath }, name, log));
       } catch (e) {
@@ -481,7 +489,7 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     throw new HttpError(405, 'この方法では使えません');
   }
   /** Phase 14: ジョブ。読みも書きも token が要る(ログに生の文字列が入るため) */
-  async function jobsApi(req: IncomingMessage, res: ServerResponse, method: string, path: string): Promise<void> {
+  async function jobsApi(req: IncomingMessage, res: ServerResponse, method: string, path: string, url: URL): Promise<void> {
     checkToken(req);
     try {
       if (path === '/api/jobs' && method === 'POST') {
@@ -500,7 +508,7 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
         return;
       }
       if (path === '/api/jobs/judge-preview' && method === 'GET') {
-        sendJson(res, 200, await judgePreview());
+        sendJson(res, 200, url.searchParams.get('target') === 'turns' ? await turnPreview() : await judgePreview());
         return;
       }
     } catch (e) {
@@ -538,18 +546,44 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     }
     return { eligible, judged: done, pending: eligible - done };
   }
+  /** turn-judgments.json の判定済みの依頼(セッション ID#依頼番号) */
+  async function judgedTurns(): Promise<Set<string>> {
+    try {
+      const j = await readTurnJudgments(join(outDir, 'turn-judgments.json'));
+      return new Set((j?.items ?? []).map((i) => `${i.sessionId}#${i.turn}`));
+    } catch (e) {
+      throw new HttpError(409, `turn-judgments.json を読めません: ${(e as Error).message}`);
+    }
+  }
+  /** 依頼ごとの判定の件数(依頼ごとの記録がある依頼のうち、turn-judgments.json に無いもの) */
+  async function turnPreview(): Promise<{ eligible: number; judged: number; pending: number }> {
+    const ids = await sessionIndex();
+    if (!ids) return { eligible: 0, judged: 0, pending: 0 };
+    const judged = await judgedTurns();
+    let eligible = 0;
+    let done = 0;
+    for (const [id, x] of ids) {
+      for (let t = 1; t <= x.turns; t++) {
+        eligible++;
+        if (judged.has(`${id}#${t}`)) done++;
+      }
+    }
+    return { eligible, judged: done, pending: eligible - done };
+  }
   /**
    * チャットでの判定。読みも書きも token が要る(進み具合にセッション id が入るため)。
+   * target=turns(?target=turns / 本文の target)は依頼ごとの判定(turn-bundle/・turn-judgments.json)、それ以外は工数の判定。
    * GET  /api/judge/parts:  bundle/parts/ の各ファイルと、その中のセッションのうち判定済みの数(bundle が無ければ exists: false)
    * GET  /api/judge/parts/<名前>: そのファイルの本文 { text }(画面の「本文をコピー」。manifest にある名前だけ)
    * POST /api/judge/import: { text } 貼った返答を検証して judgments.json に取り込む(1 件でも形が合わなければ何も書かない)。
    *      レポートへの反映は別(export のジョブ)。判定・集計のジョブや CLI が out/ に書いている間は 409
    */
-  async function chatJudgeApi(req: IncomingMessage, res: ServerResponse, method: string, path: string): Promise<void> {
+  async function chatJudgeApi(req: IncomingMessage, res: ServerResponse, method: string, path: string, target: 'effort' | 'turns'): Promise<void> {
     checkToken(req);
+    const partsOf = () => (target === 'turns' ? turnParts() : chatParts());
     if (path === '/api/judge/parts') {
       if (method !== 'GET') throw new HttpError(405, 'この方法では使えません');
-      sendJson(res, 200, await chatParts());
+      sendJson(res, 200, await partsOf());
       return;
     }
     const one = /^\/api\/judge\/parts\/([^/]+)$/.exec(path);
@@ -561,7 +595,7 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
       } catch {
         throw new HttpError(400, 'ファイル名を読めません');
       }
-      const part = (await chatParts()).parts?.find((p) => p.name === name);
+      const part = (await partsOf()).parts?.find((p) => p.name === name);
       if (!part) throw new HttpError(404, `添付ファイル ${name} はありません(作り直すと番号が変わります)`);
       sendJson(res, 200, { name, text: await readFile(join(outDir, ...part.path.split('/')), 'utf8') });
       return;
@@ -576,7 +610,10 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
       const ids = await sessionIndex();
       let r;
       try {
-        r = await importJudgmentsText(body.text, join(outDir, 'judgments.json'), { knownIds: ids ? new Set(ids.keys()) : undefined });
+        r =
+          target === 'turns'
+            ? await importTurnJudgmentsText(body.text, join(outDir, 'turn-judgments.json'), { phases: await phaseNames(), turnsBySession: ids ? new Map([...ids].map(([id, x]) => [id, x.turns])) : undefined })
+            : await importJudgmentsText(body.text, join(outDir, 'judgments.json'), { knownIds: ids ? new Set(ids.keys()) : undefined });
       } catch (e) {
         if (e instanceof JudgmentValidationError) {
           sendJson(res, 400, { error: '返答の形が判定の形式に合いません(何も取り込んでいません)', problems: e.problems });
@@ -584,8 +621,9 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
         }
         throw new HttpError(400, (e as Error).message);
       }
-      log(`judge import(画面): ${r.imported} 件を取り込みました(既存の上書き ${r.overwritten} 件)`);
-      sendJson(res, 200, { ...r, parts: await chatParts() });
+      log(`${target === 'turns' ? 'turns import' : 'judge import'}(画面): ${r.imported} 件を取り込みました(既存の上書き ${r.overwritten} 件)`);
+      const unknownIds = 'unknownIds' in r ? r.unknownIds : r.unknown;
+      sendJson(res, 200, { imported: r.imported, overwritten: r.overwritten, duplicates: 'duplicates' in r ? r.duplicates : 0, unknownIds, total: r.total, parts: await partsOf() });
       return;
     }
     throw new HttpError(404, '無い API です');
@@ -610,6 +648,28 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
       .filter((p) => existsSync(join(dir, ...p.path.split('/'))))
       .map((p) => ({ path: `bundle/${p.path}`, name: p.path.split('/').pop()!, sessions: p.sessions.length, judged: p.sessions.filter((id) => judged.has(id)).length, bytes: p.bytes }));
     return { exists: true, generatedAt: m.generatedAt, unjudgedOnly: m.scope?.unjudged === 'yes', count: m.count, parts };
+  }
+  /** 依頼ごとの判定の添付ファイル(turn-bundle/parts/)。sessions / judged は依頼の数 */
+  async function turnParts(): Promise<Awaited<ReturnType<typeof chatParts>>> {
+    const dir = join(outDir, 'turn-bundle');
+    if (!existsSync(join(dir, 'manifest.json'))) return { exists: false };
+    let m;
+    try {
+      m = await readTurnBundleManifest(dir);
+    } catch (e) {
+      throw new HttpError(409, (e as Error).message);
+    }
+    const judged = await judgedTurns();
+    const parts = m.parts
+      .filter((p) => existsSync(join(dir, ...p.path.split('/'))))
+      .map((p) => ({
+        path: `turn-bundle/${p.path}`,
+        name: p.path.split('/').pop()!,
+        sessions: p.turns,
+        judged: p.chunks.reduce((a, c) => a + c.turns.filter((t) => judged.has(`${c.sessionId}#${t}`)).length, 0),
+        bytes: p.bytes,
+      }));
+    return { exists: true, generatedAt: m.generatedAt, unjudgedOnly: m.unjudgedOnly, count: m.count, parts };
   }
   function viewTarget(rawId: string, kindParam: string | null): { id: string; kind: ViewKind; file: string; mdHref: string } {
     let id: string;

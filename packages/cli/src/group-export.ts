@@ -5,18 +5,21 @@
 //                             README.md     何をいつ書き出したか・列の読み方
 //                             records/      セッション記録(.md。out/sessions/ にあるものだけ写す)
 // いつものレポート(atlas.html・metrics.json)は書き換えない。atlas group export と、atlas serve の画面の「書き出す」が使う。
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { computeMetrics, sessionsCsv, turnsCsv, type SessionRecord, type SessionsFile } from '../../core/src/index.ts';
 import { readJudgments } from '../../judge/src/index.ts';
-import { loadGroups, transcriptFileName } from '../../report/src/index.ts';
+import { loadGroups, parseVerdicts, transcriptFileName } from '../../report/src/index.ts';
 
 export interface GroupExportPaths {
   out: string;
   sessions: string;
   judgments: string;
   groups: string;
+  /** 段階 2 の依頼ごとの判定(turn-judgments.json)。省略時は out/ の直下 */
+  turnJudgments?: string;
 }
 
 export interface GroupExportResult {
@@ -50,11 +53,16 @@ export async function exportGroup(p: GroupExportPaths, name: string, log: (m: st
   const file = JSON.parse(await readFile(p.sessions, 'utf8')) as SessionsFile;
   const ids = new Set(g.ids);
   const sessions: SessionRecord[] = file.sessions.filter((s) => ids.has(s.id));
-  const dir = join(p.out, 'groups', safeDirName(name));
+  // 別のグループと同じフォルダ名になるとき(「a/b」と「a_b」、大文字小文字だけ違う名前)は、名前の短いハッシュを足して分ける
+  const safe = safeDirName(name);
+  const clash = loaded.groups.some((x) => x.name !== name && safeDirName(x.name).toLowerCase() === safe.toLowerCase());
+  const dir = join(p.out, 'groups', clash ? `${safe}-${createHash('sha1').update(name).digest('hex').slice(0, 6)}` : safe);
   // 前回の書き出しを消してから書く(グループから外したセッションの記録を残さない)
   await rm(dir, { recursive: true, force: true });
   await mkdir(join(dir, 'records'), { recursive: true });
-  const turns = turnsCsv(sessions);
+  const tj = p.turnJudgments ?? join(p.out, 'turn-judgments.json');
+  const verdicts = existsSync(tj) ? parseVerdicts(JSON.parse(await readFile(tj, 'utf8'))) : null;
+  const turns = turnsCsv(sessions, verdicts?.bySession ?? null);
   await writeFile(join(dir, 'turns.csv'), turns);
   await writeFile(join(dir, 'sessions.csv'), sessionsCsv(sessions, await humanHoursOf(p.judgments)));
   const m = computeMetrics(sessions, { installed: file.installed });
@@ -83,7 +91,7 @@ export async function exportGroup(p: GroupExportPaths, name: string, log: (m: st
       '',
       '| ファイル | 中身 |',
       '|---|---|',
-      '| turns.csv | 依頼ごとの表。工程・依頼の種類・詰まり(ツールの失敗・拒否・中断・エラー・再編集・文脈圧縮)・使用量 |',
+      '| turns.csv | 依頼ごとの表。工程・依頼の種類・詰まり(ツールの失敗・拒否・中断・エラー・再編集・文脈圧縮)・使用量。依頼ごとの LLM 判定があれば「判定:」の列(扱い・合わなかった点・普段の工程・確信度・理由) |',
       '| sessions.csv | セッションごとの表。規模・使用量・摩擦・推定人手工数(判定済みのものだけ) |',
       '| metrics.json | 集計(atlas metrics と同じ形。turns に工程別・依頼の種類別の集計) |',
       '| records/ | セッション記録(Markdown) |',

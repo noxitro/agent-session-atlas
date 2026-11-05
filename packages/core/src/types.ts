@@ -223,8 +223,10 @@ export interface TurnStats {
   maxConsecutiveFailures: number;
   /** ファイルの編集の回数 */
   edits: number;
-  /** それより前(同じセッション)に編集したファイルの再編集の回数 */
+  /** 前の依頼(同じセッション)で編集したファイルを、この依頼でもう一度編集した回数(手戻りの兆し) */
   reEdits: number;
+  /** この依頼の中で同じファイルを重ねて編集した回数(普通の進め方。詰まりには数えない)。古い記録には無い */
+  repeatEdits?: number;
   /** 中断(続けて出る 2 件目は数えない) */
   aborts: number;
   /** session.error(サブエージェントの失敗と対になるものは除く) */

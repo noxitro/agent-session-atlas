@@ -49,11 +49,29 @@ const judgment = {
   wikiEffect: { score: 0, evidence: '参照なし' },
   skillsAgentsEffect: { score: 0, evidence: '参照なし' },
 };
+// 依頼ごとの判定(段階 2)のプロンプトなら、指定された依頼番号ぶんの判定を返す。
+// 偶数の依頼は「中身を修正して採用(要件の取り違え)」、奇数は「そのまま採用」。工程は一覧の「実装」(無ければ先頭)
+const turnList = /items には依頼 ([\d, ]+) の/.exec(prompt);
+let answer = judgment;
+if (turnList) {
+  const phaseLine = prompt.split('\n').find((l) => l.startsWith('- **phase**')) ?? '';
+  const phases = [...phaseLine.matchAll(/`([^`]+)`/g)].map((x) => x[1]);
+  const phase = phases.includes('実装') ? '実装' : (phases[0] ?? '実装');
+  const items = turnList[1]
+    .split(',')
+    .map((s) => Number(s.trim()))
+    .map((turn) =>
+      turn % 2 === 0
+        ? { sessionId, turn, kind: 'task', outcome: 'fix_content', mismatch: 'requirement', phase, confidence: 0.6, note: '偽 copilot(テスト用)' }
+        : { sessionId, turn, kind: 'task', outcome: 'as_is', mismatch: null, phase, confidence: 0.8, note: '偽 copilot(テスト用)' },
+    );
+  answer = { items };
+}
 const events = [
   { type: 'session.start', data: { sessionId: 'fake', copilotVersion: '0.0.0-fake' } },
   { type: 'assistant.turn_start', data: { turnId: '0' } },
   { type: 'assistant.message', data: { messageId: 'm1', content: '判定します。' } },
-  { type: 'assistant.message', data: { messageId: 'm2', content: '```json\n' + JSON.stringify(judgment, null, 2) + '\n```' } },
+  { type: 'assistant.message', data: { messageId: 'm2', content: '```json\n' + JSON.stringify(answer, null, 2) + '\n```' } },
   { type: 'assistant.turn_end', data: { turnId: '0' } },
 ];
 process.stdout.write(events.map((e) => JSON.stringify(e)).join('\n') + '\n');

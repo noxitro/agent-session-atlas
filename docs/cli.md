@@ -25,6 +25,7 @@ npm run atlas -- --help                    # 使い方
 | `judge import <ファイル>` | 外部の LLM で作った判定(JSON か、JSON を含む Markdown)を検証して `out/judgments.json` に取り込む |
 | `serve` | `out/` をローカルサーバ(`127.0.0.1`)で配信してブラウザで開く。画面からグループとメモを書け、集計し直す・工数の判定・記録と全文記録の表示ができる([screen.md の「画面からの操作」](screen.md#画面からの操作))。ブラウザを閉じると止まる(画面から動かした処理の実行中は、終わるまで待ってから止まる)。`atlas.bat` はこれで終わる |
 | `memo list` / `memo show <id>` / `memo set <id> <本文...>` / `memo set <id> --file <path>` / `memo remove <id>` | セッションごとのメモ(`atlas-notes/memos/<id>.md`)を一覧・表示・保存・削除する。id は先頭の数文字でよい。`remove` は画像を残す([screen.md の「セッションのメモ」](screen.md#セッションのメモ)) |
+| `turns bundle [--unjudged]` / `turns run [--limit <n>] [--model <名前>]` / `turns import <ファイル>` | 依頼ごとの採用の判定(段階 2。[judge.md の 3](judge.md#3-依頼ごとの採用段階-2))。`bundle` は M365 Copilot などに添付する `<out>/turn-bundle/parts/` と、GitHub Copilot CLI に渡す塊を作る(LLM は呼ばない)。`run` は GitHub Copilot CLI で判定する(AI クレジットを消費。opencode と従量課金の API は使わない)。`import` はチャットの返答を `<out>/turn-judgments.json` に取り込む |
 | `group list` / `group add <名前> <id...> [--note <一文>]` / `group remove <名前>` / `group export <名前>` | 名前付きグループ(`atlas-notes/groups.json`)を一覧・追加・削除する。`export` はそのグループの表(CSV)・集計・記録を `<out>/groups/<名前>/` に書き出す([outputs.md の「表(CSV)」](outputs.md#表csv))。`add` は既存の名前なら id を追記(重複は除く)。id は先頭の数文字でよい(1 つに決まらなければエラー)。壊れたファイルは上書きしない([screen.md の「グループとセッションの選択」](screen.md#グループとセッションの選択)) |
 
 ## オプション

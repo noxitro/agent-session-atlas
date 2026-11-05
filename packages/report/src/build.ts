@@ -15,6 +15,7 @@ import { renderDetailHtml } from './detail.ts';
 import { GLOSSARY_FILE, renderGlossaryHtml } from './glossary-page.ts';
 import { embedData } from './lib/embed.ts';
 import type { JudgmentsIndex } from './lib/judgments.ts';
+import { verdictTuples, type VerdictIndex } from './lib/verdicts.ts';
 import type { SessionGroup } from './lib/groups.ts';
 import { memoSummary } from './lib/memo.ts';
 import { loadMemoIndex, renderMemo, type MemoFile } from './memo-io.ts';
@@ -80,6 +81,8 @@ export interface BuildInput {
   totalSessionsInSource: number;
   warnings: { unknownEventTypes: number; badLines: number; notes?: string[] };
   judgments: JudgmentsIndex | null;
+  /** 段階 2: 依頼ごとの LLM 判定(turn-judgments.json)。無ければ null / 省略 */
+  verdicts?: VerdictIndex | null;
   /** 名前付きグループ(atlas-notes/groups.json)。無ければ省略 */
   groups?: SessionGroup[];
   /** Phase 13: メモの置き場(<notes-dir>/memos)。無ければメモなし */
@@ -142,8 +145,11 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
 
   // 伏せ字版にはメモを一切出さない(自由記述のため。抜粋も件数も持たない)
   const memos = input.memosDir && !anon.enabled ? await loadMemoIndex(input.memosDir) : new Map<string, MemoFile>();
+  const vx = input.verdicts ?? null;
   const sessions = input.sessions.map((r) => {
-    const s = summarize(r, anon, j?.bySession.get(r.id) ?? null);
+    const base = summarize(r, anon, j?.bySession.get(r.id) ?? null);
+    const vt = vx ? verdictTuples(vx.bySession.get(r.id), vx.phases) : [];
+    const s = vt.length ? { ...base, turnVerdicts: vt } : base;
     const m = memos.get(r.id);
     return m ? { ...s, memo: memoSummary(m.text, m.updatedAt) } : s;
   });
@@ -167,6 +173,13 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
       model: j?.model ?? null,
       ranAt: j?.ranAt ?? null,
       items: j ? input.sessions.filter((s) => j.bySession.has(s.id)).length : 0,
+    },
+    turnJudgments: {
+      available: !!vx,
+      model: vx?.model ?? null,
+      ranAt: vx?.ranAt ?? null,
+      items: vx ? input.sessions.reduce((a, s) => a + (vx.bySession.get(s.id)?.size ?? 0), 0) : 0,
+      phases: vx?.phases ?? [],
     },
     installed: input.installed
       ? {
@@ -351,7 +364,7 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
     }
     const m = memos.get(r.id);
     const memo = m ? { html: renderMemo(input.memosDir!, r.id, m.text), updatedAt: m.updatedAt } : null;
-    const page = renderDetailHtml(r, { anon, css, judgment, generatedAt, transcriptHref, libraryHref: data.library ? `../${INSTRUCTIONS_FILE}` : null, skillHasPage: (name) => !!lib?.hasSkill(name), libraryHasSession: !!lib?.hasSession(r.id), fullHref, memo });
+    const page = renderDetailHtml(r, { anon, css, judgment, verdicts: vx?.bySession.get(r.id) ?? null, generatedAt, transcriptHref, libraryHref: data.library ? `../${INSTRUCTIONS_FILE}` : null, skillHasPage: (name) => !!lib?.hasSkill(name), libraryHasSession: !!lib?.hasSession(r.id), fullHref, memo });
     detailBytes += Buffer.byteLength(page);
     await writeFile(join(detailDir, detailFileName(r.id)), page);
   }

@@ -31,6 +31,17 @@ export { runPipeline } from './pipeline.ts';
 export type { PipelineResult } from './pipeline.ts';
 export { normalizeModel, INTERNAL_TOOLS, isInternalTool, isUserTurn, isAutopilotContinuation, isMainAssistantMessage, resolveFilePath, filePathKey, isSessionStatePath, FileTracker } from './classify.ts';
 export type { FileOp } from './classify.ts';
-export { toolKind, phaseOf, requestKindOf, sessionTurns, followedByFix, isStuck, addTurn, emptyTurnBucket, turnMetrics, PHASES, PHASE_LABEL, REQUEST_KINDS, REQUEST_KIND_LABEL } from './turns.ts';
-export type { Phase, RequestKind, TurnRow, TurnBucket, TurnMetrics, TurnFacts } from './turns.ts';
+export {
+  WORK_OUTCOMES,
+  QUESTION_OUTCOMES,
+  OUTCOMES,
+  OUTCOME_LABEL,
+  MISMATCHES,
+  MISMATCH_LABEL,
+  NEEDS_MISMATCH,
+  DEFAULT_PHASE_NAMES,
+} from './turns.ts';
+export { commandKind, toolKind, phaseOf, requestKindOf, sessionTurns, followedByFix, isStuck, addTurn, emptyTurnBucket, turnMetrics, PHASES, PHASE_LABEL, REQUEST_KINDS, REQUEST_KIND_LABEL } from './turns.ts';
+export type { Phase, RequestKind, TurnRow, TurnBucket, TurnMetrics, TurnFacts, Outcome, Mismatch } from './turns.ts';
 export { turnsCsv, sessionsCsv, toCsv, csvCell } from './tables.ts';
+export type { TurnVerdictLike, VerdictMap } from './tables.ts';

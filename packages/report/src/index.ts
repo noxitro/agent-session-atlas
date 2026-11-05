@@ -6,6 +6,8 @@ export { createAnonymizer, identityAnonymizer, shortProjectLabel } from './lib/a
 export type { Anonymizer } from './lib/anonymize.ts';
 export { embedData, extractEmbedded, serializeForScript, DATA_PLACEHOLDER } from './lib/embed.ts';
 export { parseJudgments } from './lib/judgments.ts';
+export { parseVerdicts, verdictAggregate, verdictTuples } from './lib/verdicts.ts';
+export type { TurnVerdict, VerdictIndex, VerdictTuple } from './lib/verdicts.ts';
 export type { JudgmentsIndex } from './lib/judgments.ts';
 export { matchesBase, applyFilter, emptyFilter, splitIds, joinIds } from './lib/filter.ts';
 export { parseGroups, serializeGroups, resolveIdPrefixes, uniqueIds, addIds, removeIds, GROUPS_VERSION, GROUPS_FILE_NAME, NOTES_DIR_NAME } from './lib/groups.ts';

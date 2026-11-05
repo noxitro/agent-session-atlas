@@ -14,7 +14,8 @@ export type RequestKind = (typeof REQUEST_KINDS)[number];
 export const REQUEST_KIND_LABEL: Record<RequestKind, string> = { task: '作業', question: '質問', fix: '修正', revert: '差し戻し', continue: '続行' };
 
 const READ_TOOLS = new Set(['view', 'rg', 'glob', 'grep', 'lsp', 'read', 'get_changes_overview', 'ide-get_diagnostics']);
-const EDIT_TOOLS = new Set(['edit', 'create', 'str_replace_editor', 'apply_patch', 'write']);
+/** ファイルを書く・作るツール(normalize の FILE_EDIT_TOOLS と同じ。編集の回数もこれで数える) */
+const EDIT_TOOLS = new Set(['edit', 'create', 'str_replace_editor', 'apply_patch']);
 const SHELL_TOOLS = new Set(['powershell', 'bash', 'shell', 'write_powershell', 'write_bash']);
 /** 計画・確認(todo は session.db を sql ツールで書く) */
 const PLAN_TOOLS = new Set(['ask_user', 'sql', 'update_todo', 'exit_plan_mode', 'todo_write']);
@@ -23,13 +24,58 @@ const DELEGATE_TOOLS = new Set(['task', 'read_agent', 'list_agents', 'run_dynami
 /** 工程を決めるのに数えない(シェルの出力を読む・止める、セッションの名前、記憶、完了の報告) */
 const NEUTRAL_TOOLS = new Set(['read_powershell', 'read_bash', 'stop_powershell', 'stop_bash', 'list_powershell', 'list_bash', 'rename_session', 'store_memory', 'vote_memory', 'task_complete', 'skill']);
 
-/** テスト・ビルド・型検査・lint の実行 */
-const VERIFY_COMMAND =
-  /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|build|lint|typecheck|check|e2e|ui)\b|\bnpx\s+(?:vitest|jest|tsc|eslint|playwright)\b|\b(?:vitest|jest|pytest|tsc|eslint|ctest)\b|\bgo\s+(?:test|build|vet)\b|\bcargo\s+(?:test|build|check|clippy)\b|\bdotnet\s+(?:test|build)\b|\bgradlew?\b|\bmvn\b|\bmsbuild\b|\bmake\b/i;
-/** 変更を残す・配る操作(git の書き込み、PR、デプロイ) */
-const GIT_COMMAND = /\bgit\s+(?:commit|push|merge|rebase|tag|cherry-pick|reset|revert|checkout|switch|pull|stash|worktree)\b|\bgh\s+(?:pr|release|workflow)\b|\bdocker\s+(?:build|push|compose)\b|\bkubectl\b|\bdeploy\b/i;
-/** 読むだけのシェル(git の参照、一覧・内容の表示、検索) */
-const READ_COMMAND = /^\s*(?:git\s+(?:status|diff|log|show|blame|branch|remote)|gh\s+(?:run\s+(?:list|view)|pr\s+(?:view|list|checks))|ls|dir|cat|type|head|tail|Get-ChildItem|Get-Content|Select-String|rg|grep|find|tree|wc)\b/i;
+// シェルのコマンドは ; && || | 改行で段に分け、各段の先頭で判定する(引用符の中は消してから。コミットメッセージや検索語の中の語で誤判定しないため)。
+// 段の先頭の cd / Set-Location / pushd・環境変数の設定は読み飛ばす。1 つのコマンドの種類は 検証 > git > その他のシェル > 読む の順に強いものを取る
+/** テスト・ビルド・型検査・lint の実行、ビルドしたプログラムの起動(動作確認) */
+const VERIFY_SEGMENT =
+  /^(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|build|lint|typecheck|check|e2e|ui)\b|npx\s+(?:vitest|jest|tsc|eslint|playwright)\b|(?:vitest|jest|pytest|tsc|eslint|ctest|ninja|msbuild|make|cmake)\b|go\s+(?:test|build|vet)\b|cargo\s+(?:test|build|check|clippy|run)\b|dotnet\s+(?:test|build|run)\b|\.?[\\/]?gradlew?\b|mvn\b|[^\s]+\.exe\b|\.{1,2}[\\/]\S+)/i;
+/** git のオプション(-C <dir> / --no-pager など)を許した、git の副コマンド */
+const GIT = String.raw`git(?:\s+(?:-C\s+\S+|-c\s+\S+|--?[\w-]+(?:=\S+)?))*\s+`;
+/** 変更を残す・配る操作(git の書き込み、PR の作成・取り込み、リリース、デプロイ) */
+const GIT_SEGMENT = new RegExp(String.raw`^(?:${GIT}(?:commit|push|merge|rebase|tag|cherry-pick|reset|revert|checkout|switch|pull|stash|am|apply)\b|gh\s+(?:pr\s+(?:create|merge|close|edit|ready)|release\s+create|workflow\s+run)\b|docker\s+(?:build|push|compose)\b|kubectl\s+(?:apply|rollout|delete)\b)`, 'i');
+/** 読むだけ(git の参照、一覧・内容の表示、検索) */
+const READ_SEGMENT = new RegExp(
+  String.raw`^(?:${GIT}(?:status|diff|log|show|blame|branch|remote|ls-files|ls-tree|rev-parse|grep|describe|shortlog|reflog|cat-file|for-each-ref|config\s+--get|worktree\s+list|stash\s+list)\b|gh\s+(?:run\s+(?:list|view)|pr\s+(?:view|list|checks|diff)|issue\s+(?:view|list))\b|(?:ls|dir|cat|type|head|tail|Get-ChildItem|Get-Content|Get-Item|Select-String|Select-Object|Measure-Object|Test-Path|Resolve-Path|Get-Process|rg|grep|find|tree|wc|where|which|echo|Write-Output|Write-Host)\b)`,
+  'i',
+);
+/** 段の先頭で読み飛ばすもの(作業フォルダの移動・変数と環境変数の設定・コメント) */
+const PREFIX = /^(?:(?:cd|Set-Location|pushd|popd|chdir)(?:\s+\S+)?\s*$|\$[\w:]+\s*=|export\s+\w+=|set\s+\w+=|#)/i;
+/** 環境を整えるだけの段(Visual Studio の vcvars など) */
+const SETUP = /^(?:vcvars\w*|vsdevcmd|chcp|Import-Module|Add-Type)\b/i;
+/** cmd /c(中身は commandKind で別に見る) */
+const CMD_C = /^cmd(?:\.exe)?\s+\/[ck]\b/i;
+/** 段の先頭が引用符で囲んだプログラムのパス("C:\…\cmake.exe" --build …)。名前だけにして判定する */
+const QUOTED_PROGRAM = /^(["'])(?:[^"']*[\\/])?([^\\/"']+?)(\.(?:exe|bat|cmd))?\1(.*)$/i;
+
+type CommandKind = 'verify' | 'git' | 'shell' | 'read';
+const RANK: Record<CommandKind, number> = { read: 0, shell: 1, git: 2, verify: 3 };
+
+/**
+ * シェルのコマンド 1 つの種類。; && || | 改行で段に分け、段ごとに先頭で判定して、いちばん強いもの(検証 > git > その他 > 読む)を取る。
+ * cmd /c "…" は中身を同じ規則で見る。PowerShell の & やパスを引用符で囲んだ .exe の起動は、ビルドしたものの動作確認として検証に数える
+ */
+export function commandKind(cmd: string, depth = 0): CommandKind {
+  let kind: CommandKind = 'read';
+  const raise = (k: CommandKind): void => {
+    if (RANK[k] > RANK[kind]) kind = k;
+  };
+  if (depth < 2) for (const m of cmd.matchAll(/\bcmd(?:\.exe)?\s+\/[ck]\s+(.+)$/gim)) raise(commandKind(m[1].trim().replace(/^"|"$/g, '').replace(/""/g, '"'), depth + 1));
+  for (const raw of cmd.split(/\r?\n|;|&&|\|\||\|/)) {
+    let seg = raw.trim().replace(/^(?:&|call\b)\s*/i, '');
+    if (seg === '' || CMD_C.test(seg) || PREFIX.test(seg) || /^[{}()]+$/.test(seg)) continue;
+    let program = false;
+    const q = QUOTED_PROGRAM.exec(seg);
+    if (q) {
+      seg = `${q[2]}${q[4]}`;
+      program = q[3]?.toLowerCase() === '.exe';
+    }
+    if (SETUP.test(seg)) continue;
+    const bare = seg.replace(/"(?:[^"\\]|\\.)*"|'[^']*'/g, '""');
+    const k: CommandKind = VERIFY_SEGMENT.test(bare) ? 'verify' : GIT_SEGMENT.test(bare) ? 'git' : READ_SEGMENT.test(bare) ? 'read' : 'shell';
+    raise(k === 'shell' && program ? 'verify' : k);
+  }
+  return kind;
+}
 
 /** ツール呼び出し 1 回の種類。null は工程の判定に数えないもの */
 export function toolKind(name: string, args: unknown): ToolKind | null {
@@ -42,10 +88,7 @@ export function toolKind(name: string, args: unknown): ToolKind | null {
   if (SHELL_TOOLS.has(name)) {
     const a = args as { command?: unknown; input?: unknown } | string | null | undefined;
     const cmd = typeof a === 'string' ? a : typeof a?.command === 'string' ? a.command : typeof a?.input === 'string' ? a.input : '';
-    if (VERIFY_COMMAND.test(cmd)) return 'verify';
-    if (GIT_COMMAND.test(cmd)) return 'git';
-    if (READ_COMMAND.test(cmd)) return 'read';
-    return 'shell';
+    return commandKind(cmd);
   }
   // MCP の読み取り(github-mcp-server-get_file_contents / search_code など)
   if (/(?:^|[-_])(?:get|search|list|read)[-_]/.test(name)) return 'read';
@@ -69,18 +112,25 @@ export function phaseOf(t: Pick<TurnStats, 'kinds'>): Phase {
 }
 
 const REVERT = /元に戻|戻して|もどして|取り消|取消し|やめて|中止して|revert|ロールバック|なかったことに|消して元/i;
-const FIX = /違う|ちがう|直して|なおして|修正して|じゃなくて|ではなく|おかしい|間違|まちが|動かない|うまくいかない|エラーが出|失敗して|崩れ|足りない|抜けて|漏れて/;
-const QUESTION = /[？?]\s*$|[？?]\s*\n|教えて|とは$|とは[？?]|なぜ|どうして|どうやって|どうすれば|ですか|ますか|でしょうか|わかる$/;
+/** 直前の成果の直し(「X ではなく Y」だけでは新しい指示のことが多いので含めない) */
+const FIX = /違う|ちがう|そうじゃな|直して|なおして|修正して|おかしい|間違|まちが|動かない|うまくいかない|エラーが出|失敗して|崩れ|足りない|抜けて|漏れて/;
+/** 問いの言い方(最後の文で見る) */
+const QUESTION = /[？?]$|教えて|とは$|なぜ|どうして|どうやって|どうすれば|ですか$|ますか$|でしょうか$|ある$|できる$|わかる$/;
+/** 「〜してもらえますか」など、問いの形をした依頼 */
+const POLITE_REQUEST = /(?:て|で)(?:もらえ|くれ|いただけ)(?:ます|ません|る|ない)か|お願いでき(?:ます|ません)か|してほしい/;
+/** 短い返事(選択肢の記号 1 文字を含む) */
 const CONTINUE = /^(?:はい|うん|ok|okay|yes|お願い(?:します)?|進めて|続けて|続き|それで|いいよ|いいです|やって|して|する|始める|go|lgtm|大丈夫|了解|[a-z0-9])[。.!！]?$/i;
 
-/** 依頼の種類(依頼文の語による粗い分類) */
+/** 依頼の種類(依頼文の語による粗い分類。質問かどうかは最後の文で決める) */
 export function requestKindOf(text: string): RequestKind {
   const s = text.trim();
   if (s === '') return 'task';
   if (s.length <= 12 && CONTINUE.test(s)) return 'continue';
   if (REVERT.test(s)) return 'revert';
   if (FIX.test(s)) return 'fix';
-  if (QUESTION.test(s)) return 'question';
+  const sentences = s.split(/[。\n!！]+/).map((x) => x.trim()).filter(Boolean);
+  const last = (sentences[sentences.length - 1] ?? s).replace(/[)）」』\s]+$/, '');
+  if (QUESTION.test(last) && !POLITE_REQUEST.test(last)) return 'question';
   return 'task';
 }
 
@@ -186,7 +236,7 @@ export function emptyTurnBucket(): TurnBucket {
   };
 }
 
-/** 詰まりのあったターンか */
+/** 詰まりのあったターンか(同じ依頼の中で同じファイルを重ねて編集するのは普通の進め方なので数えない。前の依頼で編集したファイルの再編集は数える) */
 export const isStuck = (t: Pick<TurnStats, 'toolFailures' | 'denied' | 'aborts' | 'errors' | 'reEdits' | 'compactions'>): boolean =>
   t.toolFailures + t.denied + t.aborts + t.errors + t.reEdits + t.compactions > 0;
 
@@ -245,3 +295,37 @@ export function turnMetrics(sessions: Pick<SessionRecord, 'id' | 'analysis' | 't
   }
   return { turns, sessions: withTurns, sessionsWithoutTurns: without, truncatedSessions: truncated, byPhase, byKind };
 }
+
+// ---------- 段階 2: LLM による依頼ごとの判定(judge/src/turn-*.ts が作り、report と CSV が読む) ----------
+
+/** 作業の依頼の成果の扱い(次の依頼と拒否・中断から LLM が決める) */
+export const WORK_OUTCOMES = ['as_is', 'fix_content', 'fix_style', 'rejected', 'unknown'] as const;
+/** 質問の依頼の回答の扱い */
+export const QUESTION_OUTCOMES = ['helpful', 'follow_up', 'off_target', 'unknown'] as const;
+export const OUTCOMES = ['as_is', 'fix_content', 'fix_style', 'rejected', 'helpful', 'follow_up', 'off_target', 'unknown'] as const;
+export type Outcome = (typeof OUTCOMES)[number];
+export const OUTCOME_LABEL: Record<Outcome, string> = {
+  as_is: 'そのまま採用',
+  fix_content: '中身を修正して採用',
+  fix_style: '体裁を修正して採用',
+  rejected: '不採用',
+  helpful: '役に立った',
+  follow_up: '追加で聞いた',
+  off_target: '的外れ',
+  unknown: '判定不能',
+};
+/** 合わなかった点(修正・不採用・的外れのときだけ) */
+export const MISMATCHES = ['requirement', 'defect', 'quality', 'scope', 'environment', 'other'] as const;
+export type Mismatch = (typeof MISMATCHES)[number];
+export const MISMATCH_LABEL: Record<Mismatch, string> = {
+  requirement: '意図・要件の取り違え',
+  defect: '誤り・不具合',
+  quality: '品質・体裁・決まりごと',
+  scope: 'やり過ぎ・足りない',
+  environment: '環境・ツール・権限',
+  other: 'その他',
+};
+/** 合わなかった点を必ず付ける扱い */
+export const NEEDS_MISMATCH: readonly Outcome[] = ['fix_content', 'fix_style', 'rejected', 'off_target'];
+/** 普段の工程名の既定(atlas.config.json の phases で置き換えられる) */
+export const DEFAULT_PHASE_NAMES = ['要件定義', '設計', '実装', 'テスト', 'レビュー', '調査', '運用', 'その他'] as const;

@@ -78,7 +78,7 @@
       {#if judged && o.judgedSessions > 0}
         <span class="v">{dec(o.humanHours)} 時間</span><span class="n">LLM の推定。判定済み {int(o.judgedSessions)} セッション、幅 {dec(o.humanLow)}〜{dec(o.humanHigh)} 時間</span>
       {:else}
-        <span class="v missing">未判定</span><span class="n">LLM による推定はまだありません。右上の「工数を判定する…」から実行できます(Copilot の AI クレジットを使う方法と、M365 Copilot などのチャットに貼る方法があります)</span>
+        <span class="v missing">未判定</span><span class="n">LLM による推定はまだありません。右上の「判定する…」から実行できます(Copilot の AI クレジットを使う方法と、M365 Copilot などのチャットに貼る方法があります)</span>
       {/if}
     </div>
   </div>

@@ -4,6 +4,7 @@
 import type { LineChanges, MetricsFile, ProjectSource, TodoSummary, TokenSource } from '../../../core/src/types.ts';
 import type { MemoSummary } from './memo.ts';
 import type { TurnTuple } from './turns.ts';
+import type { VerdictTuple } from './verdicts.ts';
 
 // 3: Phase 6(tools.mcp・issues / skills を trigger 別に / agents.byName に失敗とトークン / hooks.byType /
 //    lines / projectSource / installed)
@@ -158,6 +159,8 @@ export interface SessionSummary {
   analysis: { filesReedited: number; extraEdits: number; maxConsecutiveFailures: number; turns: number };
   /** 依頼(ターン)ごとの工程・種類・詰まり(lib/turns.ts の TurnTuple)。ターンの記録が無いセッション・古い埋め込みには無い */
   turnRows?: TurnTuple[];
+  /** 段階 2: 依頼ごとの LLM 判定(lib/verdicts.ts の VerdictTuple)。判定済みの依頼があるセッションだけ */
+  turnVerdicts?: VerdictTuple[];
   agents: { total: number; failed: number; byName: Record<string, AgentStat> };
   hooks: { total: number; byType: Record<string, number> };
   /** 注入された指示ファイル(ファイル種別ごとの文字数。ユーザー単位のものは「AGENTS.md (user)」) */
@@ -194,6 +197,8 @@ export interface ReportData {
   metrics: MetricsFile;
   sessions: SessionSummary[];
   judgments: { available: boolean; backend: string | null; model: string | null; ranAt: string | null; items: number };
+  /** 段階 2: 依頼ごとの LLM 判定(turn-judgments.json)。phases は判定に使った普段の工程名(VerdictTuple の工程の番号の先)。古い埋め込みには無い */
+  turnJudgments?: { available: boolean; model: string | null; ranAt: string | null; items: number; phases: string[] };
   /** インストール済みの skill(snapshot で名前だけ記録)。記録が無ければ null */
   installed: { skills: string[]; disabled: string[] } | null;
   /** 名前付きグループ(atlas-notes/groups.json)。無ければ空。伏せ字モードでは name は「グループ 1」など、note は '' */

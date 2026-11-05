@@ -17,7 +17,7 @@ import { join } from 'node:path';
 import { buildJudgePrompt } from '../rubric.ts';
 import { commandLineLength, MAX_COMMAND_LINE, resolveCommand, runProcess, tail, type ResolvedCommand } from './proc.ts';
 import { itemFromTexts, parseAgentJsonl } from './output.ts';
-import type { JudgeBackend, JudgePacket, JudgeResult } from './types.ts';
+import type { AskResult, JudgeBackend, JudgePacket, JudgeResult } from './types.ts';
 
 export interface CopilotCliOptions {
   /** 実行ファイル(既定: 環境変数 ATLAS_COPILOT_BIN、無ければ PATH の copilot) */
@@ -66,12 +66,9 @@ export function copilotCliBackend(o: CopilotCliOptions = {}): JudgeBackend {
   let mcp: Promise<{ servers: string[]; note: string | null }> | null = null;
   const bin = o.bin ?? process.env.ATLAS_COPILOT_BIN ?? 'copilot';
   const timeoutMs = o.timeoutMs ?? 600_000;
-  return {
-    name: 'copilot-cli',
-    model: o.model ?? null,
-    async judge(packet: JudgePacket): Promise<JudgeResult> {
+  /** プロンプトを 1 回渡して、本文と使用量を受け取る(判定の検証は呼ぶ側) */
+  async function ask(prompt: string, label: string): Promise<AskResult> {
       cmd ??= resolveCommand(bin);
-      const prompt = buildJudgePrompt(packet.markdown, packet.sessionId);
       const work = await mkdtemp(join(tmpdir(), 'atlas-judge-cwd-'));
       const usageDir = await mkdtemp(join(tmpdir(), 'atlas-judge-usage-'));
       const usageFile = join(usageDir, 'usage.json');
@@ -87,9 +84,9 @@ export function copilotCliBackend(o: CopilotCliOptions = {}): JudgeBackend {
         const rawDir = process.env.ATLAS_JUDGE_RAW_DIR;
         if (rawDir) {
           await mkdir(rawDir, { recursive: true });
-          await writeFile(join(rawDir, `${packet.sessionId}.stdout.jsonl`), r.stdout, 'utf8');
-          await writeFile(join(rawDir, `${packet.sessionId}.stderr.txt`), r.stderr, 'utf8');
-          await writeFile(join(rawDir, `${packet.sessionId}.usage.json`), await readFile(usageFile, 'utf8').catch((e: Error) => `(読めません: ${e.message})`), 'utf8');
+          await writeFile(join(rawDir, `${label}.stdout.jsonl`), r.stdout, 'utf8');
+          await writeFile(join(rawDir, `${label}.stderr.txt`), r.stderr, 'utf8');
+          await writeFile(join(rawDir, `${label}.usage.json`), await readFile(usageFile, 'utf8').catch((e: Error) => `(読めません: ${e.message})`), 'utf8');
         }
         if (r.timedOut) throw new Error(`copilot が ${Math.round(timeoutMs / 1000)} 秒以内に終わりませんでした`);
         const out = parseAgentJsonl(r.stdout);
@@ -98,7 +95,6 @@ export function copilotCliBackend(o: CopilotCliOptions = {}): JudgeBackend {
           const err = out.errors.length ? out.errors.join(' / ') : tail(r.stderr || r.stdout);
           throw new Error(`copilot が終了コード ${r.code} で失敗しました: ${err}`);
         }
-        const item = itemFromTexts(out.texts, packet.sessionId);
         const notes: string[] = mcpNote ? [mcpNote] : [];
         let usage: unknown = null;
         try {
@@ -106,11 +102,19 @@ export function copilotCliBackend(o: CopilotCliOptions = {}): JudgeBackend {
         } catch (e) {
           notes.push(`usage-output-file を読めませんでした(${(e as Error).message})`);
         }
-        return { item, usage, notes };
+        return { texts: out.texts, usage, notes };
       } finally {
         await rm(work, { recursive: true, force: true });
         await rm(usageDir, { recursive: true, force: true });
       }
+  }
+  return {
+    name: 'copilot-cli',
+    model: o.model ?? null,
+    ask,
+    async judge(packet: JudgePacket): Promise<JudgeResult> {
+      const r = await ask(buildJudgePrompt(packet.markdown, packet.sessionId), packet.sessionId);
+      return { item: itemFromTexts(r.texts, packet.sessionId), usage: r.usage, notes: r.notes };
     },
   };
 }

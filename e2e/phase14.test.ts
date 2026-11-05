@@ -200,6 +200,49 @@ describe('Phase 14 E2E: 画面からの操作(jobs)', () => {
     expect(existsSync(join(out, 'sessions', `${ids[0]}.md`))).toBe(true);
   });
 
+  it('c3. 依頼ごとの判定: GitHub Copilot CLI(偽)で判定してレポートに出し、チャットの返答も依頼単位で取り込める', async () => {
+    const pre = (await api('/api/jobs/judge-preview?target=turns')).body;
+    expect(pre.judged).toBe(0);
+    expect(pre.pending).toBeGreaterThan(2);
+    // copilot -p 以外・件数の無い要求は受けない
+    expect((await startJob({ kind: 'turn-judge' })).status).toBe(400);
+    expect((await startJob({ kind: 'turn-judge', limit: 3, backend: 'opencode' })).status).toBe(400);
+    expect((await startJob({ kind: 'turn-judge', limit: 3 })).status).toBe(202);
+    const j = await waitJob();
+    expect(j.state, j.log.join('\n')).toBe('done');
+    const tj = JSON.parse(await readFile(join(out, 'turn-judgments.json'), 'utf8')) as { phases: string[]; items: { sessionId: string; turn: number; outcome: string }[] };
+    expect(tj.phases).toContain('実装');
+    expect(tj.items.length).toBeGreaterThanOrEqual(3);
+    const e = await embedded();
+    expect(e.turnJudgments).toMatchObject({ available: true, items: tj.items.length });
+    expect(e.sessions.some((x) => (x.turnVerdicts?.length ?? 0) > 0)).toBe(true);
+    // 表にも判定の列が付く
+    expect((await readFile(join(out, 'tables', 'turns.csv'), 'utf8')).split('\r\n')[0]).toContain('判定:扱い');
+
+    // チャット: 未判定の依頼だけで添付ファイルを作り、返答を依頼単位で取り込む
+    expect((await startJob({ kind: 'turn-bundle' })).status).toBe(202);
+    expect((await waitJob()).state).toBe('done');
+    const parts = (await api('/api/judge/parts?target=turns')).body;
+    expect(parts).toMatchObject({ exists: true, unjudgedOnly: true });
+    const first = parts.parts[0];
+    const text = (await api(`/api/judge/parts/${first.name}?target=turns`)).body.text as string;
+    const want = [...text.matchAll(/^- セッション (\S+) の依頼 (\d+)(?:〜(\d+))?$/gm)].flatMap((m) => {
+      const a = Number(m[2]);
+      const b = m[3] ? Number(m[3]) : a;
+      return Array.from({ length: b - a + 1 }, (_, i) => ({ sessionId: m[1], turn: a + i }));
+    });
+    expect(want.length).toBe(first.sessions);
+    const items = want.map((w) => ({ ...w, kind: 'question', outcome: 'follow_up', mismatch: null, phase: '調査', confidence: 0.5, note: 'チャット(テスト用)' }));
+    const bad = await api('/api/judge/import?target=turns', { method: 'POST', body: JSON.stringify({ text: '```json\n' + JSON.stringify({ items: [{ ...items[0], outcome: 'as_is' }] }) + '\n```' }) });
+    expect(bad.status).toBe(400);
+    expect(bad.body.problems.join()).toMatch(/kind が question のとき/);
+    const ok = await api('/api/judge/import?target=turns', { method: 'POST', body: JSON.stringify({ text: '```json\n' + JSON.stringify({ items }) + '\n```' }) });
+    expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+    expect(ok.body).toMatchObject({ imported: items.length, overwritten: 0 });
+    expect(ok.body.parts.parts[0]).toMatchObject({ name: first.name, judged: first.sessions });
+    expect((await api('/api/jobs/judge-preview?target=turns')).body.judged).toBe(tj.items.length + items.length);
+  });
+
   it('d. cancel: 実行中の集計を止めると canceled になり、次の要求を受け付ける', async () => {
     expect((await startJob({ kind: 'refresh' })).status).toBe(202);
     // 集計は fixture では 0.5 秒ほどで終わるので、待たずに止める

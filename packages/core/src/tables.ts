@@ -1,7 +1,7 @@
 // 表計算ソフトで開く CSV(依頼ごと・セッションごと)。Excel が UTF-8 と判断できるよう先頭に BOM を付け、行末は CRLF。
 // 列の並びと見出しはここだけで決める(atlas metrics の out/tables/ と、グループの書き出しが同じものを使う)。
 import { isEmptySession } from './metrics.ts';
-import { followedByFix, isStuck, PHASE_LABEL, REQUEST_KIND_LABEL, sessionTurns } from './turns.ts';
+import { followedByFix, isStuck, MISMATCH_LABEL, OUTCOME_LABEL, PHASE_LABEL, REQUEST_KIND_LABEL, sessionTurns, type Mismatch, type Outcome, type RequestKind } from './turns.ts';
 import { TOOL_KINDS, type SessionRecord, type ToolKind } from './types.ts';
 
 const TOOL_KIND_LABEL: Record<ToolKind, string> = { read: '読む', edit: '編集', verify: '検証', git: 'git', shell: 'シェル', plan: '計画', web: 'Web', delegate: '委任', other: 'その他' };
@@ -11,10 +11,25 @@ const BOM = String.fromCharCode(0xfeff);
 
 type Cell = string | number | boolean | null | undefined;
 
-/** CSV の 1 セル(, " 改行を含むものは "" で囲む。null / undefined は空) */
+/** 段階 2 の依頼ごとの判定(turn-judgments.json の 1 項目のうち CSV に載せるもの) */
+export interface TurnVerdictLike {
+  kind: RequestKind;
+  outcome: Outcome;
+  mismatch: Mismatch | null;
+  phase: string;
+  confidence: number;
+  note: string;
+}
+/** セッション ID → 依頼番号 → 判定 */
+export type VerdictMap = Map<string, Map<number, TurnVerdictLike>>;
+
+/**
+ * CSV の 1 セル(, " 改行を含むものは "" で囲む。null / undefined は空)。
+ * 文字列が = + - @ タブ・改行で始まるときは先頭に ' を足す(表計算ソフトが式として解釈しないように。OWASP の CSV Injection)
+ */
 export function csvCell(v: Cell): string {
   if (v == null) return '';
-  const s = typeof v === 'boolean' ? (v ? '1' : '0') : String(v);
+  const s = typeof v === 'boolean' ? (v ? '1' : '0') : typeof v === 'string' && /^[=+\-@\t\r]/.test(v) ? `'${v}` : String(v);
   return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
@@ -30,8 +45,8 @@ const oneLine = (s: string, n = 200): string => {
   return [...t].length > n ? `${[...t].slice(0, n).join('')}…` : t;
 };
 
-/** 依頼(ターン)ごとの CSV。空のセッションは除く */
-export function turnsCsv(sessions: SessionRecord[]): string {
+/** 依頼(ターン)ごとの CSV。空のセッションは除く。verdicts があれば LLM の判定の列を足す(判定の無い依頼は空) */
+export function turnsCsv(sessions: SessionRecord[], verdicts: VerdictMap | null = null): string {
   const header = [
     'セッションID',
     'セッション名',
@@ -51,7 +66,8 @@ export function turnsCsv(sessions: SessionRecord[]): string {
     '拒否',
     '失敗の連続(最長)',
     '編集',
-    '再編集',
+    '再編集(前の依頼で編集したファイル)',
+    '重ね編集(同じ依頼の中)',
     '中断',
     'エラー',
     'うち利用上限',
@@ -62,11 +78,14 @@ export function turnsCsv(sessions: SessionRecord[]): string {
     '出力トークン',
     'AIU',
     '依頼文(先頭)',
+    ...(verdicts ? ['判定:依頼の種類', '判定:扱い', '判定:合わなかった点', '判定:工程', '判定:確信度', '判定:理由'] : []),
   ];
   const rows: Cell[][] = [];
   for (const s of sessions) {
     if (isEmptySession(s)) continue;
+    const vs = verdicts?.get(s.id);
     for (const t of sessionTurns(s)) {
+      const v = vs?.get(t.index);
       rows.push([
         s.id,
         s.name ?? '',
@@ -87,6 +106,7 @@ export function turnsCsv(sessions: SessionRecord[]): string {
         t.maxConsecutiveFailures,
         t.edits,
         t.reEdits,
+        t.repeatEdits ?? 0,
         t.aborts,
         t.errors,
         t.externalErrors,
@@ -97,6 +117,7 @@ export function turnsCsv(sessions: SessionRecord[]): string {
         t.output,
         aiu(t.nanoAiu),
         oneLine(t.text),
+        ...(verdicts ? (v ? [REQUEST_KIND_LABEL[v.kind], OUTCOME_LABEL[v.outcome], v.mismatch ? MISMATCH_LABEL[v.mismatch] : '', v.phase, Math.round(v.confidence * 100) / 100, oneLine(v.note)] : ['', '', '', '', null, '']) : []),
       ]);
     }
   }

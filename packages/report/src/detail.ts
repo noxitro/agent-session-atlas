@@ -12,8 +12,9 @@ import { dateTime, dec, duration, int, modelLabel, msLabel, percent, truncate } 
 import { EFFORT_ORDER, INITIATOR_ORDER, MODE_ORDER, quantilesOf, UNKNOWN_KEY } from './lib/exec.ts';
 import { effortLabel, errorTypeLabel, initiatorLabel, modeLabel, subagentFailureLabel, TODO_STATUS_ORDER, todoStatusLabel } from './lib/exec-labels.ts';
 import { backendLabel, categoryLabel, confidenceLabel, effectLabel } from './lib/judgment-labels.ts';
-import { followedByFix, isStuck, PHASE_LABEL, REQUEST_KIND_LABEL, sessionTurns } from '../../core/src/turns.ts';
+import { followedByFix, isStuck, MISMATCH_LABEL, OUTCOME_LABEL, PHASE_LABEL, REQUEST_KIND_LABEL, sessionTurns } from '../../core/src/turns.ts';
 import type { JudgmentSummary } from './lib/types.ts';
+import type { TurnVerdict } from './lib/verdicts.ts';
 
 /** HTML エスケープ。外部参照の静的検査(http:// / fetch( の不在)を本文中の文字列で誤検出しないよう、:// と fetch( も実体参照にする */
 export function esc(s: unknown): string {
@@ -206,15 +207,26 @@ function tokenTable(rows: [string, TokenCounts][], keyLabel: string): string {
 }
 
 /** 依頼ごとの経過の説明(工程・依頼の種類の決め方と、200 依頼を超えたときの断り) */
-function turnLead(r: SessionRecord): string {
+function turnLead(r: SessionRecord, judged: boolean): string {
   const n = r.analysis?.turnStats?.length ?? 0;
   const cut = n > 0 && r.turns > n ? `先頭 ${esc(int(n))} 依頼だけを載せています(全 ${esc(int(r.turns))} 依頼)。` : '';
-  return `${cut}工程はその依頼で使ったツール、依頼の種類は依頼文の語からの推定です(レポートの「工程と詰まり」と同じ規則)。詰まりのあった依頼に印を付けています`;
+  const llm = judged ? '「採用」「合わなかった点」「工程(普段)」は LLM の判定で、次の依頼の文から決めたものです(推定)。' : '';
+  return `${cut}工程はその依頼で使ったツール、依頼の種類は依頼文の語からの推定です(レポートの「工程と詰まり」と同じ規則)。${llm}詰まりのあった依頼に印を付けています`;
 }
 
 /** 依頼(ターン)ごとの工程・種類・詰まり・使用量の表 */
-function turnTable(r: SessionRecord, anon: Anonymizer): string {
+function turnTable(r: SessionRecord, anon: Anonymizer, verdicts: Map<number, TurnVerdict> | null): string {
   const rows = sessionTurns(r);
+  const judged = !!verdicts?.size;
+  const day0 = rows[0]?.startedAt ? dateTime(rows[0].startedAt).slice(0, 10) : '';
+  const verdictCells = (n: number): string => {
+    if (!judged) return '';
+    const v = verdicts!.get(n);
+    if (!v) return `<td>${missing('未判定')}</td><td></td><td></td>`;
+    const note = anon.freeText(v.note);
+    const why = note ? ` <span class="why" title="${esc(note)}">${esc(truncate(note, 60))}</span>` : '';
+    return `<td><span class="tag${v.outcome === 'rejected' || v.outcome === 'off_target' ? ' warn' : ''}">${esc(OUTCOME_LABEL[v.outcome])}</span>${why}</td><td>${v.mismatch ? esc(MISMATCH_LABEL[v.mismatch]) : ''}</td><td>${esc(v.phase)}</td>`;
+  };
   if (!rows.length) return `<p class="note">依頼ごとの記録がありません(イベントログが無いか、古い集計です。「集計し直す」で入ります)。</p>`;
   const body = rows
     .map((t) => {
@@ -222,12 +234,14 @@ function turnTable(r: SessionRecord, anon: Anonymizer): string {
       const req = t.text.trim() === '' ? missing('(本文なし)') : text == null ? missing('伏せ字') : esc(truncate(text, 80));
       const stuck = isStuck(t);
       const next = followedByFix(t) ? ` <span class="tag warn">次で${esc(REQUEST_KIND_LABEL[t.nextKind!])}</span>` : '';
-      const time = t.startedAt ? esc(dateTime(t.startedAt).slice(11)) : missing('—');
+      // 時刻だけ(最初の依頼と日付が違うときは月日も)
+      const dt = t.startedAt ? dateTime(t.startedAt) : '';
+      const time = dt ? esc(dt.slice(0, 10) === day0 ? dt.slice(11) : dt.slice(5)) : missing('—');
       const num = (v: number): string => (v ? esc(int(v)) : '<span class="zero">0</span>');
-      return `<tr${stuck ? ' class="stuck"' : ''}><td class="num">${esc(String(t.index))}</td><td>${time}</td><td class="req">${req}${next}</td><td>${esc(REQUEST_KIND_LABEL[t.kind])}</td><td>${esc(PHASE_LABEL[t.phase])}${stuck ? ' <span class="tag warn">詰まり</span>' : ''}</td><td class="num">${t.activeMs == null ? missing('—') : esc(duration(t.activeMs))}</td><td class="num">${num(t.tools)}</td><td class="num">${num(t.toolFailures)}</td><td class="num">${num(t.denied)}</td><td class="num">${num(t.aborts)}</td><td class="num">${num(t.errors)}</td><td class="num">${num(t.reEdits)}</td><td class="num">${num(t.compactions)}</td><td class="num">${t.nanoAiu ? esc(dec(t.nanoAiu / 1e9)) : missing('—')}</td></tr>`;
+      return `<tr${stuck ? ' class="stuck"' : ''}><td class="num">${esc(String(t.index))}</td><td>${time}</td><td class="req">${req}${next}</td><td>${esc(REQUEST_KIND_LABEL[t.kind])}</td><td>${esc(PHASE_LABEL[t.phase])}${stuck ? ' <span class="tag warn">詰まり</span>' : ''}</td><td class="num">${t.activeMs == null ? missing('—') : esc(duration(t.activeMs))}</td><td class="num">${num(t.tools)}</td><td class="num">${num(t.toolFailures)}</td><td class="num">${num(t.denied)}</td><td class="num">${num(t.aborts)}</td><td class="num">${num(t.errors)}</td><td class="num">${num(t.reEdits)}</td><td class="num">${num(t.compactions)}</td><td class="num">${t.nanoAiu ? esc(dec(t.nanoAiu / 1e9)) : missing('—')}</td>${verdictCells(t.index)}</tr>`;
     })
     .join('');
-  return `<div class="table-scroll"><table class="ledger small turns"><thead><tr><th scope="col" class="num">#</th><th scope="col">開始</th><th scope="col">依頼</th><th scope="col">種類</th><th scope="col">工程</th><th scope="col" class="num">実働</th><th scope="col" class="num">ツール</th><th scope="col" class="num">失敗</th><th scope="col" class="num">拒否</th><th scope="col" class="num">中断</th><th scope="col" class="num">エラー</th><th scope="col" class="num">再編集</th><th scope="col" class="num">文脈圧縮</th><th scope="col" class="num">AIU</th></tr></thead><tbody>${body}</tbody></table></div>`;
+  return `<div class="table-scroll"><table class="ledger small turns"><thead><tr><th scope="col" class="num">#</th><th scope="col">開始</th><th scope="col">依頼</th><th scope="col">種類</th><th scope="col">工程</th><th scope="col" class="num">実働</th><th scope="col" class="num">ツール</th><th scope="col" class="num">失敗</th><th scope="col" class="num">拒否</th><th scope="col" class="num">中断</th><th scope="col" class="num">エラー</th><th scope="col" class="num">再編集</th><th scope="col" class="num">文脈圧縮</th><th scope="col" class="num">AIU</th>${judged ? '<th scope="col">採用(LLM)</th><th scope="col">合わなかった点</th><th scope="col">工程(普段)</th>' : ''}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
 function timelineRow(e: TimelineEntry, anon: Anonymizer): string {
@@ -424,6 +438,8 @@ export interface DetailOptions {
   anon: Anonymizer;
   css: string;
   judgment: JudgmentSummary | null;
+  /** 段階 2: このセッションの依頼ごとの LLM 判定(依頼番号 → 判定)。無ければ null */
+  verdicts?: Map<number, TurnVerdict> | null;
   generatedAt: string;
   /** セッション記録(Markdown)のファイル名(同じフォルダ)。atlas export で作ったときだけ */
   transcriptHref?: string | null;
@@ -444,6 +460,7 @@ const DETAIL_CSS = `
 .ledger.turns tr.stuck td:first-child{box-shadow:inset 3px 0 0 var(--warn)}
 .ledger.turns .zero{color:var(--ink-3)}
 .ledger.turns td.req{min-width:16em;max-width:32em;white-space:normal;overflow-wrap:anywhere}
+.ledger.turns .why{display:block;font-size:.6875rem;color:var(--ink-2);white-space:normal;min-width:12em}
 /* このセッションの skill の表: 呼んだ行の名前を太く(使えただけの行と見分ける) */
 .ledger tr.called td:first-child{font-weight:600}
 .meta{display:flex;flex-wrap:wrap;gap:6px 8px;margin-top:8px}
@@ -653,7 +670,7 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
     ),
   );
 
-  parts.push(section('依頼ごとの経過', turnTable(r, anon), turnLead(r)));
+  parts.push(section('依頼ごとの経過', turnTable(r, anon, o.verdicts ?? null), turnLead(r, !!o.verdicts?.size)));
 
   const f = r.friction;
   parts.push(

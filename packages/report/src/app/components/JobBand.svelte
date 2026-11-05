@@ -7,14 +7,22 @@
 
   let { jobs, generatedAt }: { jobs: JobStore; generatedAt: string } = $props();
 
-  const LABEL: Record<JobInfo['kind'], string> = { refresh: '集計し直し', judge: '工数の判定', full: '全文記録の作成', bundle: '添付ファイルの作成', export: 'レポートへの反映' };
+  const LABEL: Record<JobInfo['kind'], string> = {
+    refresh: '集計し直し',
+    judge: '工数の判定',
+    full: '全文記録の作成',
+    bundle: '添付ファイルの作成',
+    export: 'レポートへの反映',
+    'turn-bundle': '依頼の判定の添付ファイルの作成',
+    'turn-judge': '依頼の判定',
+  };
   const job = $derived(jobs.job);
   const shown = $derived.by(() => {
     const j = job;
     if (!j || jobs.dismissed === j.id) return null;
     if (j.state === 'running') return j;
     // 全文記録の作成(詳細ページから)と添付ファイルの作成(判定ダイアログの中から)は、終わったことを始めた画面が示すので帯には出さない
-    if (j.kind === 'full' || j.kind === 'bundle') return null;
+    if (j.kind === 'full' || j.kind === 'bundle' || j.kind === 'turn-bundle') return null;
     return Date.parse(j.startedAt) >= Date.parse(generatedAt) ? j : null;
   });
   function elapsed(j: JobInfo, now: number): string {
@@ -34,7 +42,8 @@
     if (j.state === 'failed') return `${LABEL[j.kind]}に失敗しました。`;
     return `${LABEL[j.kind]}を止めました。`;
   });
-  const target = (j: JobInfo): string => (j.kind === 'judge' ? `最大 ${j.target.limit} 件、${j.target.backend === 'opencode' ? 'opencode' : 'copilot -p'}` : '');
+  const target = (j: JobInfo): string =>
+    j.kind === 'judge' ? `最大 ${j.target.limit} 件、${j.target.backend === 'opencode' ? 'opencode' : 'copilot -p'}` : j.kind === 'turn-judge' ? `最大 ${j.target.limit} 依頼、copilot -p` : '';
 </script>
 
 <!-- 読み上げは状態が変わったときの 1 文だけ(経過の秒は毎秒変わるので live 領域に入れない)。live 領域は常に置き、文だけ差し替える -->
@@ -44,16 +53,16 @@
     <div class="wrap band-in">
       <p class="msg">
         {#if shown.state === 'running'}
-          <strong>{LABEL[shown.kind]}をしています</strong>(経過 {elapsed(shown, jobs.now)}{target(shown) ? `、${target(shown)}` : ''})。{#if shown.kind === 'refresh'}終わるまで詳細ページと記録は開けないことがあります。{:else if shown.kind === 'judge'}画面を閉じても最後まで続きます。{/if}
+          <strong>{LABEL[shown.kind]}をしています</strong>(経過 {elapsed(shown, jobs.now)}{target(shown) ? `、${target(shown)}` : ''})。{#if shown.kind === 'refresh'}終わるまで詳細ページと記録は開けないことがあります。{:else if shown.kind === 'judge' || shown.kind === 'turn-judge'}画面を閉じても最後まで続きます。{/if}
         {:else if shown.state === 'done'}
           <strong>新しい集計ができました</strong>({LABEL[shown.kind]}、{elapsed(shown, jobs.now)})。再読み込みすると反映されます。
         {:else if shown.state === 'failed'}
-          {#if shown.kind === 'judge'}
-            <strong>判定に失敗したセッションがあるか、判定を実行できませんでした</strong>(終了コード {shown.exitCode ?? '—'})。判定できた分は保存されています。「再読み込み」で反映されていなければ「集計し直す」を押してください。理由は下のログにあります。
+          {#if shown.kind === 'judge' || shown.kind === 'turn-judge'}
+            <strong>判定に失敗した{shown.kind === 'judge' ? 'セッション' : '依頼'}があるか、判定を実行できませんでした</strong>(終了コード {shown.exitCode ?? '—'})。判定できた分は保存されています。「再読み込み」で反映されていなければ「集計し直す」を押してください。理由は下のログにあります。
           {:else}
             <strong>{LABEL[shown.kind]}に失敗しました</strong>(終了コード {shown.exitCode ?? '—'})。下のログで理由を確かめてください。
           {/if}
-        {:else if shown.kind === 'judge'}
+        {:else if shown.kind === 'judge' || shown.kind === 'turn-judge'}
           <strong>判定を止めました</strong>。判定できた分は保存されていて、次の「集計し直す」でレポートに出ます。
         {:else}
           <strong>{LABEL[shown.kind]}を止めました</strong>。レポートは作り直しの途中かもしれません。もう一度「集計し直す」を押してください。
@@ -63,7 +72,7 @@
         {#if shown.state === 'running'}
           <button type="button" class="btn" data-testid="job-cancel" onclick={() => void jobs.cancel()}>止める</button>
         {:else}
-          {#if shown.state === 'done' || (shown.state === 'failed' && shown.kind === 'judge')}
+          {#if shown.state === 'done' || (shown.state === 'failed' && (shown.kind === 'judge' || shown.kind === 'turn-judge'))}
             <button type="button" class="btn primary" data-testid="job-reload" onclick={() => location.reload()}>再読み込み</button>
           {/if}
           <button type="button" class="btn" onclick={dismiss}>閉じる</button>

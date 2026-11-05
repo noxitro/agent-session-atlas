@@ -139,7 +139,7 @@
           {/each}
         {/if}
       </select>
-      {#if !judged}<span class="why" id="task-category-why">工数の判定をまだ実行していないため選べません(右上の「工数を判定する…」)</span>{/if}
+      {#if !judged}<span class="why" id="task-category-why">工数の判定をまだ実行していないため選べません(右上の「判定する…」)</span>{/if}
     </label>
 
     <label class="check">
