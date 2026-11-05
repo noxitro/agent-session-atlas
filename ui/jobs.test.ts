@@ -1,6 +1,7 @@
 // Phase 14 の画面の操作(Playwright の Chromium)。架空の fixture で atlas all → atlas serve(port 0)を立て、実際に押して確かめる。
 //  e. 「集計し直す」→ 帯が実行中から完了に変わり、「再読み込み」で新しい集計(埋め込みの生成日時)が出て帯は消える
 //  f. 「工数を判定する…」の確認ダイアログ: 「やめる」なら API を呼ばない。件数を決めて実行すると偽 copilot で判定が増える
+//  f2. 「チャットに貼る」: 添付ファイルを作り、保存のリンクと本文のコピーが働き、形の違う返答は理由を出して取り込まず、正しい返答を取り込んで反映できる
 //  g. 詳細ページの「記録を読む」「全文を作って読む」で本文が描かれ、記録に混ぜた script やイベント属性は実行されない
 //  h. file:// で開いた atlas.html と詳細ページには操作が出ない
 // どの画面でもページ内の例外とコンソールのエラーが無いこと。
@@ -62,7 +63,8 @@ describe('画面からの操作(Phase 14)', () => {
     await close?.();
   });
   afterEach(() => {
-    expect(problems).toEqual([]);
+    // 次のテストに持ち越さない(1 つの失敗が後のテストを全部落とさないように)
+    expect(problems.splice(0)).toEqual([]);
   });
 
   const generatedAt = (): Promise<string> => page.evaluate<string>("JSON.parse(document.getElementById('atlas-data').textContent).generatedAt");
@@ -120,6 +122,80 @@ describe('画面からの操作(Phase 14)', () => {
     await page.getByTestId('job-reload').click();
     await page.waitForLoadState('load');
     await expect.poll(() => page.evaluate<number>("JSON.parse(document.getElementById('atlas-data').textContent).judgments.items")).toBe(2);
+  });
+
+  it('f2. 「チャットに貼る」: 添付ファイルを作り、返答を貼って取り込み、レポートに反映する', async () => {
+    jobPosts.length = 0;
+    await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin: new URL(server.url).origin });
+    await page.goto(server.url);
+    const judgedBefore = await page.evaluate<number>("JSON.parse(document.getElementById('atlas-data').textContent).judgments.items");
+    const dialog = page.getByTestId('judge-dialog');
+    await page.getByTestId('job-judge').click();
+    await dialog.waitFor({ state: 'visible' });
+    await page.getByTestId('judge-method-chat').check();
+    await page.getByTestId('chat-judge').waitFor({ state: 'visible' });
+    // チャットではクレジットの注意を出さない
+    expect(await dialog.innerText()).not.toContain('AI クレジットを消費します');
+    await expect.poll(() => page.getByTestId('chat-bundle').innerText()).toMatch(/^未判定 \d+ 件で(作る|作り直す)$/);
+    await page.getByTestId('chat-bundle').click();
+    await expect.poll(() => page.getByTestId('chat-bundle-state').innerText(), { timeout: 60_000 }).toMatch(/未判定だけ、\d+ ファイル/);
+    expect(jobPosts.map((b) => JSON.parse(b))).toEqual([{ kind: 'bundle' }]);
+    // 帯は「再読み込み」を出さない(レポートは変わっていない)
+    await expect.poll(() => band().innerText()).toContain('添付ファイルを作りました');
+    expect(await page.getByTestId('job-reload').count()).toBe(0);
+
+    const save = page.getByTestId('chat-save');
+    expect(await save.getAttribute('download')).toBe('part-01.txt');
+    expect(await save.getAttribute('href')).toBe('bundle/parts/part-01.md');
+    const [download] = await Promise.all([page.waitForEvent('download'), save.click()]);
+    expect(download.suggestedFilename()).toBe('part-01.txt');
+    await page.getByRole('button', { name: '本文をコピー' }).click();
+    await expect.poll(() => page.getByText('part-01 の本文をコピーしました。').count()).toBe(1);
+    const text = await page.evaluate<string>('navigator.clipboard.readText()');
+    const ids = [...text.matchAll(/^# 評価パケット: セッション (\S+)$/gm)].map((m) => m[1]);
+    expect(ids.length).toBeGreaterThan(0);
+
+    // 形の違う返答は何も取り込まず、どこが違うかを出す
+    const reply = page.getByTestId('chat-reply');
+    await reply.fill('```json\n{"items":[{"sessionId":"' + ids[0] + '","taskCategory":"nope"}]}\n```');
+    await page.getByTestId('chat-import').click();
+    await expect.poll(() => page.getByTestId('chat-import-error').innerText()).toContain('何も取り込んでいません');
+    expect(await page.getByTestId('chat-import-error').locator('li').count()).toBeGreaterThan(0);
+    expect(await reply.getAttribute('aria-invalid')).toBe('true');
+    // 取り込めなかった要求(400)はブラウザがコンソールに出す。想定どおりの 1 件だけ除く
+    const expected = problems.findIndex((p) => /status of 400/.test(p));
+    expect(expected).toBeGreaterThanOrEqual(0);
+    problems.splice(expected, 1);
+
+    const item = (id: string) => ({
+      sessionId: id,
+      taskCategory: 'bugfix',
+      taskSummary: 'チャットで判定',
+      humanEffort: { hours: 1.5, low: 1, high: 3, confidence: 0.4, rationale: '根拠' },
+      aiOutcome: { completed: true, quality: 3, rework: 1, rationale: '成果' },
+      instructionsEffect: { score: 0, evidence: '参照なし' },
+      wikiEffect: { score: 0, evidence: '参照なし' },
+      skillsAgentsEffect: { score: 0, evidence: '参照なし' },
+    });
+    await reply.fill(`判定しました。\n\`\`\`json\n${JSON.stringify({ schemaVersion: 1, judge: { backend: 'external', model: null, ranAt: null }, items: ids.map(item) })}\n\`\`\``);
+    await page.getByTestId('chat-import').click();
+    await expect.poll(() => page.getByTestId('chat-import-result').innerText()).toBe(`${ids.length} 件を取り込みました。`);
+    expect(await reply.inputValue()).toBe('');
+    await expect.poll(() => page.getByTestId('chat-bundle-state').innerText()).toMatch(/取り込み済み 1 \//);
+
+    await page.getByTestId('chat-reflect').click();
+    await dialog.waitFor({ state: 'hidden' });
+    expect(jobPosts.map((b) => JSON.parse(b))).toEqual([{ kind: 'bundle' }, { kind: 'export' }]);
+    await page.getByTestId('job-reload').waitFor({ state: 'visible', timeout: 60_000 });
+    await page.getByTestId('job-reload').click();
+    await page.waitForLoadState('load');
+    await expect.poll(() => page.evaluate<number>("JSON.parse(document.getElementById('atlas-data').textContent).judgments.items")).toBe(judgedBefore + ids.length);
+    // 選んだ方法はこのブラウザに覚える
+    await page.getByTestId('job-judge').click();
+    await page.getByTestId('chat-judge').waitFor({ state: 'visible' });
+    expect(await page.evaluate<string | undefined>('document.activeElement?.dataset.testid')).toBe('chat-close');
+    await page.getByTestId('chat-close').click();
+    await dialog.waitFor({ state: 'hidden' });
   });
 
   it('g. 詳細ページの「記録を読む」「全文を作って読む」で本文が描かれ、記録に混ぜた script は実行されない', async () => {

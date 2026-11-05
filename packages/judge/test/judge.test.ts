@@ -17,6 +17,7 @@ import {
   emptyJudgments,
   fenced,
   importJudgments,
+  importJudgmentsText,
   itemFromTexts,
   jsonCandidates,
   JudgmentValidationError,
@@ -218,6 +219,9 @@ describe('import', () => {
     await expect(importJudgments(bad, jp)).rejects.toThrow(/何も取り込んでいません/);
     expect(await readFile(jp, 'utf8')).toBe(before);
     await expect(importJudgments(join(d, 'none.json'), jp)).rejects.toThrow(/ありません/);
+    // 本文版(画面に貼った返答): 先頭の BOM を許し、エラーは取り込み元を「貼り付けた返答」と呼ぶ
+    expect(await importJudgmentsText(String.fromCharCode(0xfeff) + JSON.stringify([item('c')]), jp)).toMatchObject({ imported: 1, total: 3 });
+    await expect(importJudgmentsText('説明だけ', jp)).rejects.toThrow(/^貼り付けた返答 から JSON を取り出せません/);
   });
 });
 

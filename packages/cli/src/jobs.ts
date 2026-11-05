@@ -2,6 +2,8 @@
 // - refresh: 子プロセス `main.ts all --out <out> --notes-dir <notes>`(集計し直す)
 // - judge:   子プロセス `judge-flow.ts --limit <n> --backend <b> --out <out> --notes-dir <notes>`(bundle → judge run → export)
 // - full:    サーバ内で 1 件だけ全文記録を書く(writeFullRecord。atlas.html・coverage.json・他のセッションは触らない)
+// - bundle:  子プロセス `main.ts bundle --unjudged …`(チャットに添付する評価バンドルを未判定のセッションだけで作る。LLM は呼ばない)
+// - export:  子プロセス `main.ts export …`(チャットの返答を取り込んだ後、判定をレポートに反映する)
 // 子プロセスの引数はここで固定の配列に組み立て、process.execPath を shell なしで起動する(画面からの文字列をコマンドラインに入れない)。
 // 起動の仕方(spawn)と全文の書き出し(runFull)は差し替えられる(単体テストを速く回すため)。
 import { spawn as nodeSpawn } from 'node:child_process';
@@ -10,7 +12,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isSafeMemoId } from '../../report/src/index.ts';
 
-export const JOB_KINDS = ['refresh', 'judge', 'full'] as const;
+export const JOB_KINDS = ['refresh', 'judge', 'full', 'bundle', 'export'] as const;
 export type JobKind = (typeof JOB_KINDS)[number];
 /** 画面から選べる判定のバックエンド(従量課金の anthropic は CLI だけ) */
 export const JOB_BACKENDS = ['copilot-cli', 'opencode'] as const;
@@ -119,7 +121,7 @@ export function releaseOutLock(outDir: string): void {
   }
 }
 
-export type JobRequest = { kind: 'refresh' } | { kind: 'judge'; limit: number; backend: JobBackend } | { kind: 'full'; id: string };
+export type JobRequest = { kind: 'refresh' } | { kind: 'judge'; limit: number; backend: JobBackend } | { kind: 'full'; id: string } | { kind: 'bundle' } | { kind: 'export' };
 export type JobState = 'running' | 'done' | 'failed' | 'canceled';
 
 export interface JobSnapshot {
@@ -143,7 +145,7 @@ export class JobError extends Error {
   }
 }
 
-const KEYS: Record<JobKind, string[]> = { refresh: ['kind'], judge: ['kind', 'limit', 'backend'], full: ['kind', 'id'] };
+const KEYS: Record<JobKind, string[]> = { refresh: ['kind'], judge: ['kind', 'limit', 'backend'], full: ['kind', 'id'], bundle: ['kind'], export: ['kind'] };
 
 /**
  * POST /api/jobs の本文を検証する(純関数)。kind は列挙、limit は 0〜500 の整数(数値で必須。画面の確認で決めた件数だけ受ける)、
@@ -154,7 +156,7 @@ export function parseJobRequest(body: Record<string, unknown>, knownId: (id: str
   if (typeof kind !== 'string' || !(JOB_KINDS as readonly string[]).includes(kind)) throw new JobError(400, `kind は ${JOB_KINDS.join(' / ')} のどれかです`);
   const extra = Object.keys(body).filter((k) => !KEYS[kind as JobKind].includes(k));
   if (extra.length) throw new JobError(400, `${kind} では使えない項目です: ${extra.join(', ')}`);
-  if (kind === 'refresh') return { kind: 'refresh' };
+  if (kind === 'refresh' || kind === 'bundle' || kind === 'export') return { kind };
   if (kind === 'judge') {
     const { limit, backend } = body;
     if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 0 || limit > JOB_LIMIT_MAX) throw new JobError(400, `limit には 0〜${JOB_LIMIT_MAX} の整数を指定してください(判定する件数の上限)`);
@@ -176,6 +178,8 @@ export function jobArgs(req: JobRequest, p: { outDir: string; notesDir: string; 
   const common = ['--out', p.outDir, '--notes-dir', p.notesDir];
   if (req.kind === 'refresh') return [p.main ?? MAIN_TS, 'all', ...common];
   if (req.kind === 'judge') return [p.judgeFlow ?? JUDGE_FLOW_TS, '--limit', String(req.limit), '--backend', req.backend, ...common];
+  if (req.kind === 'bundle') return [p.main ?? MAIN_TS, 'bundle', '--unjudged', ...common];
+  if (req.kind === 'export') return [p.main ?? MAIN_TS, 'export', ...common];
   return null;
 }
 
@@ -219,7 +223,7 @@ export interface JobRunnerOptions {
   onEnd?: (job: JobSnapshot) => void;
 }
 
-const LABEL: Record<JobKind, string> = { refresh: '集計し直す', judge: '工数を判定する', full: '全文を作る' };
+const LABEL: Record<JobKind, string> = { refresh: '集計し直す', judge: '工数を判定する', full: '全文を作る', bundle: '添付ファイルを作る', export: 'レポートに反映する' };
 
 export class JobRunner {
   private job: JobSnapshot | null = null;
@@ -280,7 +284,7 @@ export class JobRunner {
     this.o.log?.(`[${LABEL[req.kind]}] 開始${req.kind === 'judge' ? `(最大 ${req.limit} 件、${req.backend})` : req.kind === 'full' ? `(${req.id})` : ''}`);
     const args = jobArgs(req, this.o);
     if (args) this.startChild(args);
-    else this.startFull((req as { id: string }).id);
+    else this.startFull((req as { kind: 'full'; id: string }).id);
     return this.current()!;
   }
 

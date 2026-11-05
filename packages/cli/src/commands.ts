@@ -37,6 +37,7 @@ import {
   type DraftCandidate,
   importJudgments,
   opencodeBackend,
+  readJudgments,
   runJudge,
   type BundleManifest,
   type JudgeBackend,
@@ -366,15 +367,21 @@ export async function runBuild(p: Paths, o: BuildOptions, log: Log): Promise<Bui
 
 const kb = (b: number): string => `${(b / 1024).toFixed(1)} KB`;
 
-export async function runBundle(p: Paths, f: SessionFilter, o: { includeEmpty: boolean; perPart?: number | null }, log: Log): Promise<BundleManifest> {
-  const { sessions } = await selectSessions(p, f, 'bundle', '先に atlas extract(または atlas all)を実行してください。', log);
+export async function runBundle(p: Paths, f: SessionFilter, o: { includeEmpty: boolean; perPart?: number | null; unjudged?: boolean }, log: Log): Promise<BundleManifest> {
+  let { sessions } = await selectSessions(p, f, 'bundle', '先に atlas extract(または atlas all)を実行してください。', log);
+  if (o.unjudged) {
+    const judged = new Set((await readJudgments(p.judgments))?.items.map((i) => i.sessionId) ?? []);
+    const before = sessions.length;
+    sessions = sessions.filter((s) => !judged.has(s.id));
+    log(`bundle: 判定済みの ${before - sessions.length} 件を除きました(--unjudged)`);
+  }
   const t = performance.now();
   const m = await buildBundle(sessions, {
     bundleDir: p.bundle,
     snapshotDir: p.snapshot,
     includeEmpty: o.includeEmpty,
     perPart: o.perPart ?? undefined,
-    scope: { since: f.since, project: f.project, client: f.client, model: f.model, branch: f.branch, group: f.group ?? null, session: f.sessions?.length ? f.sessions.join(',') : null },
+    scope: { since: f.since, project: f.project, client: f.client, model: f.model, branch: f.branch, group: f.group ?? null, session: f.sessions?.length ? f.sessions.join(',') : null, unjudged: o.unjudged ? 'yes' : null },
     log,
   });
   const excerpt = m.sessions.filter((e) => e.textSource === 'excerpt').length;
@@ -588,7 +595,7 @@ async function runCommand(o: CliOptions, p: Paths, log: Log): Promise<RunResult>
     case 'export':
       return { paths: p, build: await runBuild(p, { ...f, anonymize: o.anonymize, transcripts: { toolOutput: o.toolOutput, maxChars: o.maxChars, full: o.full } }, log) };
     case 'bundle':
-      await runBundle(p, f, { includeEmpty: o.includeEmpty, perPart: o.perPart }, log);
+      await runBundle(p, f, { includeEmpty: o.includeEmpty, perPart: o.perPart, unjudged: o.unjudged }, log);
       return { paths: p };
     case 'judge':
       return { paths: p, judge: await runJudgeCommand(p, o.judge!, log) };

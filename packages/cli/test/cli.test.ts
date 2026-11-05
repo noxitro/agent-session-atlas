@@ -64,7 +64,9 @@ describe('parseCli', () => {
 
   it('bundle と judge run / import を読む', () => {
     expect(parseCli(['bundle', '--client', 'github/cli', '--include-empty'])).toMatchObject({ command: 'bundle', client: 'github/cli', includeEmpty: true, perPart: null, judge: null });
-    expect(parseCli(['bundle', '--per-part', '3'])).toMatchObject({ command: 'bundle', perPart: 3 });
+    expect(parseCli(['bundle', '--per-part', '3'])).toMatchObject({ command: 'bundle', perPart: 3, unjudged: false });
+    expect(parseCli(['bundle', '--unjudged'])).toMatchObject({ command: 'bundle', unjudged: true });
+    expect(() => parseCli(['export', '--unjudged'])).toThrow(/bundle でだけ/);
     expect(() => parseCli(['bundle', '--per-part', '0'])).toThrow(/per-part/);
     expect(() => parseCli(['export', '--per-part', '3'])).toThrow(/bundle でだけ/);
     // 伏せ字に対応しないコマンドでは黙って無視せずエラー(評価バンドルを伏せたつもりで外部へ渡さないように)

@@ -3,6 +3,7 @@
 //  a. refresh: 集計し直すと atlas.html が作り直され(埋め込みの生成日時が変わる)、記録(.md)もある
 //  b. full: out/full/<id>.md(と assets/)だけができ、atlas.html・詳細ページ・他のファイルは 1 バイトも変わらず、coverage.json も作らない。表示の API で描ける
 //  c. judge: 件数の無い要求は 400(確認なしでは走らない)。偽 copilot で上限の件数だけ判定され、レポートに反映される
+//  c2. チャットでの判定: 添付ファイルを未判定のセッションだけで作り(bundle --unjudged)、貼った返答を取り込み、export でレポートに反映する
 //  d. cancel: 実行中の集計を止めると canceled になり、次の要求を受け付ける
 //  e. ジョブの実行中は heartbeat が途切れてもサーバが止まらず、終わってから止まる(判定 1 件に 2.5 秒かかる偽 copilot で)
 import { spawnSync } from 'node:child_process';
@@ -146,6 +147,48 @@ describe('Phase 14 E2E: 画面からの操作(jobs)', () => {
     expect((await readFile(fakeLog, 'utf8')).trim().split('\n')).toHaveLength(2);
     expect((await embedded()).judgments).toMatchObject({ available: true, items: 2 });
     expect((await api('/api/jobs/judge-preview')).body).toMatchObject({ judged: 2, pending: preview.pending - 2 });
+  });
+
+  it('c2. チャットでの判定: 未判定だけの添付ファイル → 返答の取り込み → 反映', async () => {
+    const before = (await api('/api/jobs/judge-preview')).body;
+    expect(before.judged).toBe(2);
+    expect((await startJob({ kind: 'bundle' })).status).toBe(202);
+    const b = await waitJob();
+    expect(b.state, b.log.join('\n')).toBe('done');
+    const list = (await api('/api/judge/parts')).body;
+    expect(list).toMatchObject({ exists: true, unjudgedOnly: true, count: before.pending });
+    // 判定済みの 2 件は入らない
+    const judged = new Set((JSON.parse(await readFile(join(out, 'judgments.json'), 'utf8')) as { items: { sessionId: string }[] }).items.map((i) => i.sessionId));
+    const first = list.parts[0];
+    expect(first).toMatchObject({ name: 'part-01.md', judged: 0 });
+    const text = (await api(`/api/judge/parts/${first.name}`)).body.text as string;
+    const ids = [...text.matchAll(/^# 評価パケット: セッション (\S+)$/gm)].map((m) => m[1]);
+    expect(ids).toHaveLength(first.sessions);
+    expect(ids.some((id) => judged.has(id))).toBe(false);
+
+    // チャットの返答のつもりで、そのファイルの全セッションの判定を書いて貼る
+    const item = (id: string) => ({
+      sessionId: id,
+      taskCategory: 'feature',
+      taskSummary: 'チャットで判定',
+      humanEffort: { hours: 3, low: 2, high: 5, confidence: 0.5, rationale: '根拠' },
+      aiOutcome: { completed: true, quality: 4, rework: 0, rationale: '成果' },
+      instructionsEffect: { score: 0, evidence: '参照なし' },
+      wikiEffect: { score: 0, evidence: '参照なし' },
+      skillsAgentsEffect: { score: 0, evidence: '参照なし' },
+    });
+    const reply = `判定結果です。\n\n\`\`\`json\n${JSON.stringify({ schemaVersion: 1, judge: { backend: 'external', model: 'm365-copilot', ranAt: null }, items: ids.map(item) })}\n\`\`\`\n`;
+    const r = await api('/api/judge/import', { method: 'POST', body: JSON.stringify({ text: reply }) });
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body).toMatchObject({ imported: ids.length, overwritten: 0, unknownIds: [] });
+    expect(r.body.parts.parts[0]).toMatchObject({ name: 'part-01.md', judged: ids.length });
+
+    expect((await startJob({ kind: 'export' })).status).toBe(202);
+    const e = await waitJob();
+    expect(e.state, e.log.join('\n')).toBe('done');
+    expect((await embedded()).judgments).toMatchObject({ available: true, items: 2 + ids.length });
+    // export なので記録(.md)は消えない
+    expect(existsSync(join(out, 'sessions', `${ids[0]}.md`))).toBe(true);
   });
 
   it('d. cancel: 実行中の集計を止めると canceled になり、次の要求を受け付ける', async () => {

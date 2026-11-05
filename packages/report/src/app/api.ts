@@ -61,7 +61,7 @@ export const api = {
 };
 
 /** Phase 14: 画面から動かす処理(serve の jobs.ts と同じ形) */
-export type JobKind = 'refresh' | 'judge' | 'full';
+export type JobKind = 'refresh' | 'judge' | 'full' | 'bundle' | 'export';
 export type JobBackend = 'copilot-cli' | 'opencode';
 export interface JobInfo {
   id: string;
@@ -73,7 +73,7 @@ export interface JobInfo {
   log: string[];
   target: { limit?: number; backend?: JobBackend; id?: string };
 }
-export type JobRequest = { kind: 'refresh' } | { kind: 'judge'; limit: number; backend: JobBackend };
+export type JobRequest = { kind: 'refresh' } | { kind: 'judge'; limit: number; backend: JobBackend } | { kind: 'bundle' } | { kind: 'export' };
 
 export const jobsApi = {
   /** 最後のジョブ(まだ無ければ null) */
@@ -89,6 +89,61 @@ export const jobsApi = {
   /** 判定の確認ダイアログの件数(依頼の記録があるセッションのうち未判定のもの) */
   judgePreview(token: string): Promise<{ eligible: number; judged: number; pending: number }> {
     return connect(fetch('api/jobs/judge-preview', { cache: 'no-store', headers: headers(token) }), (r) => parse(r));
+  },
+};
+
+/** チャットでの判定の添付ファイル(bundle/parts/)。path は atlas.html からの相対パス */
+export interface ChatPart {
+  path: string;
+  name: string;
+  sessions: number;
+  judged: number;
+  bytes: number;
+}
+export interface ChatParts {
+  exists: boolean;
+  generatedAt?: string;
+  /** 未判定のセッションだけで作ったか(CLI の bundle で全件から作ったものは false) */
+  unjudgedOnly?: boolean;
+  count?: number;
+  parts?: ChatPart[];
+}
+export interface ChatImportResult {
+  imported: number;
+  overwritten: number;
+  duplicates: number;
+  unknownIds: string[];
+  total: number;
+  parts: ChatParts;
+}
+/** 取り込みの失敗。problems は形が合わない項目の一覧(返答のどこが違うか) */
+export class ChatImportError extends Error {
+  problems: string[];
+  constructor(message: string, problems: string[]) {
+    super(message);
+    this.problems = problems;
+  }
+}
+
+export const chatJudgeApi = {
+  parts(token: string): Promise<ChatParts> {
+    return connect(fetch('api/judge/parts', { cache: 'no-store', headers: headers(token) }), (r) => parse<ChatParts>(r));
+  },
+  /** 添付ファイルの本文(「本文をコピー」) */
+  partText(token: string, name: string): Promise<string> {
+    return connect(fetch('api/judge/parts/' + encodeURIComponent(name), { cache: 'no-store', headers: headers(token) }), async (r) => (await parse<{ text: string }>(r)).text);
+  },
+  importText(token: string, text: string): Promise<ChatImportResult> {
+    return connect(fetch('api/judge/import', { method: 'POST', headers: headers(token), body: JSON.stringify({ text }) }), async (r) => {
+      if (r.ok) return (await r.json()) as ChatImportResult;
+      let body: { error?: string; problems?: string[] } | null = null;
+      try {
+        body = await r.json();
+      } catch {
+        /* 本文が JSON でなければ状態コードだけ */
+      }
+      throw new ChatImportError(body?.error ?? `サーバの応答 ${r.status}`, body?.problems ?? []);
+    });
   },
 };
 

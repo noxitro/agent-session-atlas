@@ -1,5 +1,6 @@
 // atlas serve: out/ を 127.0.0.1 だけに配信し、画面からグループ(atlas-notes/groups.json)とメモ(atlas-notes/memos/)を書く小さな API を持つ。
 // Phase 14: 画面からの操作(集計し直す・工数を判定する・全文を作る。jobs.ts)と、記録・全文記録の表示(/view/<id>)も持つ。
+// チャットでの判定(M365 Copilot など): 添付ファイル(bundle/parts/)の一覧と進み具合(/api/judge/parts)、貼った返答の取り込み(/api/judge/import)。
 // 画面(3 画面)が 3 秒ごとに送る heartbeat が途切れたら自分で終了する(ブラウザを閉じれば止まる)。ジョブの実行中は止めず、終わってから判定を再開する。
 // 画面と保存の境界はこの API だけ(後でアプリ化するときに差し替える)。
 import { randomBytes } from 'node:crypto';
@@ -44,7 +45,8 @@ import {
   type SessionGroup,
 } from '../../report/src/index.ts';
 import type { SessionRecord, SessionsFile } from '../../core/src/index.ts';
-import { JobError, JobRunner, parseJobRequest, type RunFullFn, type SpawnFn } from './jobs.ts';
+import { importJudgmentsText, JudgmentValidationError, readBundleManifest } from '../../judge/src/index.ts';
+import { JobError, JobRunner, parseJobRequest, runningJobIn, type RunFullFn, type SpawnFn } from './jobs.ts';
 
 export const TOKEN_PLACEHOLDER = '__ATLAS_TOKEN__';
 export const SERVE_STATE_FILE = '.serve.json';
@@ -144,8 +146,8 @@ async function readBody(req: IncomingMessage, limit: number): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
-async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
-  const buf = await readBody(req, 1024 * 1024);
+async function readJsonBody(req: IncomingMessage, limit = 1024 * 1024): Promise<Record<string, unknown>> {
+  const buf = await readBody(req, limit);
   if (!buf.length) return {};
   try {
     const v = JSON.parse(buf.toString('utf8'));
@@ -389,6 +391,10 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
       await jobsApi(req, res, method, path);
       return;
     }
+    if (path.startsWith('/api/judge/')) {
+      await chatJudgeApi(req, res, method, path);
+      return;
+    }
     const view = /^\/api\/view\/([^/]+)$/.exec(path);
     if (view) {
       await viewApi(req, res, method, view[1], url);
@@ -485,10 +491,8 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     if (['/api/jobs', '/api/jobs/current', '/api/jobs/current/cancel', '/api/jobs/judge-preview'].includes(path)) throw new HttpError(405, 'この方法では使えません');
     throw new HttpError(404, '無い API です');
   }
-  /** 判定の確認ダイアログの件数: 依頼の記録があるセッションのうち judgments.json に無いもの */
-  async function judgePreview(): Promise<{ eligible: number; judged: number; pending: number }> {
-    const ids = await sessionIndex();
-    if (!ids) return { eligible: 0, judged: 0, pending: 0 };
+  /** judgments.json にあるセッション id(無ければ空) */
+  async function judgedIds(): Promise<Set<string>> {
     const judged = new Set<string>();
     const jp = join(outDir, 'judgments.json');
     if (existsSync(jp)) {
@@ -499,6 +503,13 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
         throw new HttpError(409, `judgments.json を読めません: ${(e as Error).message}`);
       }
     }
+    return judged;
+  }
+  /** 判定の確認ダイアログの件数: 依頼の記録があるセッションのうち judgments.json に無いもの */
+  async function judgePreview(): Promise<{ eligible: number; judged: number; pending: number }> {
+    const ids = await sessionIndex();
+    if (!ids) return { eligible: 0, judged: 0, pending: 0 };
+    const judged = await judgedIds();
     let eligible = 0;
     let done = 0;
     for (const [id, x] of ids) {
@@ -507,6 +518,79 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
       if (judged.has(id)) done++;
     }
     return { eligible, judged: done, pending: eligible - done };
+  }
+  /**
+   * チャットでの判定。読みも書きも token が要る(進み具合にセッション id が入るため)。
+   * GET  /api/judge/parts:  bundle/parts/ の各ファイルと、その中のセッションのうち判定済みの数(bundle が無ければ exists: false)
+   * GET  /api/judge/parts/<名前>: そのファイルの本文 { text }(画面の「本文をコピー」。manifest にある名前だけ)
+   * POST /api/judge/import: { text } 貼った返答を検証して judgments.json に取り込む(1 件でも形が合わなければ何も書かない)。
+   *      レポートへの反映は別(export のジョブ)。判定・集計のジョブや CLI が out/ に書いている間は 409
+   */
+  async function chatJudgeApi(req: IncomingMessage, res: ServerResponse, method: string, path: string): Promise<void> {
+    checkToken(req);
+    if (path === '/api/judge/parts') {
+      if (method !== 'GET') throw new HttpError(405, 'この方法では使えません');
+      sendJson(res, 200, await chatParts());
+      return;
+    }
+    const one = /^\/api\/judge\/parts\/([^/]+)$/.exec(path);
+    if (one) {
+      if (method !== 'GET') throw new HttpError(405, 'この方法では使えません');
+      let name: string;
+      try {
+        name = decodeURIComponent(one[1]);
+      } catch {
+        throw new HttpError(400, 'ファイル名を読めません');
+      }
+      const part = (await chatParts()).parts?.find((p) => p.name === name);
+      if (!part) throw new HttpError(404, `添付ファイル ${name} はありません(作り直すと番号が変わります)`);
+      sendJson(res, 200, { name, text: await readFile(join(outDir, ...part.path.split('/')), 'utf8') });
+      return;
+    }
+    if (path === '/api/judge/import') {
+      if (method !== 'POST') throw new HttpError(405, 'この方法では使えません');
+      const body = await readJsonBody(req, 4 * 1024 * 1024);
+      if (typeof body.text !== 'string' || !body.text.trim()) throw new HttpError(400, '返答を貼り付けてください');
+      if (jobs.running()) throw new HttpError(409, `ほかの処理が動いています。終わってから取り込んでください`);
+      const other = runningJobIn(outDir);
+      if (other) throw new HttpError(409, `別の atlas の処理(${other})が動いています。終わってから取り込んでください`);
+      const ids = await sessionIndex();
+      let r;
+      try {
+        r = await importJudgmentsText(body.text, join(outDir, 'judgments.json'), { knownIds: ids ? new Set(ids.keys()) : undefined });
+      } catch (e) {
+        if (e instanceof JudgmentValidationError) {
+          sendJson(res, 400, { error: '返答の形が判定の形式に合いません(何も取り込んでいません)', problems: e.problems });
+          return;
+        }
+        throw new HttpError(400, (e as Error).message);
+      }
+      log(`judge import(画面): ${r.imported} 件を取り込みました(既存の上書き ${r.overwritten} 件)`);
+      sendJson(res, 200, { ...r, parts: await chatParts() });
+      return;
+    }
+    throw new HttpError(404, '無い API です');
+  }
+  async function chatParts(): Promise<{
+    exists: boolean;
+    generatedAt?: string;
+    unjudgedOnly?: boolean;
+    count?: number;
+    parts?: { path: string; name: string; sessions: number; judged: number; bytes: number }[];
+  }> {
+    const dir = join(outDir, 'bundle');
+    if (!existsSync(join(dir, 'manifest.json'))) return { exists: false };
+    let m;
+    try {
+      m = await readBundleManifest(dir);
+    } catch (e) {
+      throw new HttpError(409, (e as Error).message);
+    }
+    const judged = await judgedIds();
+    const parts = (m.parts ?? [])
+      .filter((p) => existsSync(join(dir, ...p.path.split('/'))))
+      .map((p) => ({ path: `bundle/${p.path}`, name: p.path.split('/').pop()!, sessions: p.sessions.length, judged: p.sessions.filter((id) => judged.has(id)).length, bytes: p.bytes }));
+    return { exists: true, generatedAt: m.generatedAt, unjudgedOnly: m.scope?.unjudged === 'yes', count: m.count, parts };
   }
   function viewTarget(rawId: string, kindParam: string | null): { id: string; kind: ViewKind; file: string; mdHref: string } {
     let id: string;

@@ -61,7 +61,17 @@ export async function importJudgments(
   o: { knownIds?: Set<string>; now?: () => Date } = {},
 ): Promise<ImportResult> {
   if (!existsSync(file)) throw new Error(`取り込むファイルがありません: ${file}`);
-  const text = (await readFile(file, 'utf8')).replace(/^﻿/, '');
+  return importJudgmentsText(await readFile(file, 'utf8'), judgmentsPath, { ...o, label: file });
+}
+
+/** importJudgments の本文版(atlas serve の画面に貼った返答)。label はエラーで取り込み元を指す名前 */
+export async function importJudgmentsText(
+  input: string,
+  judgmentsPath: string,
+  o: { knownIds?: Set<string>; now?: () => Date; label?: string } = {},
+): Promise<ImportResult> {
+  const file = o.label ?? '貼り付けた返答';
+  const text = input.replace(/^﻿/, '');
   const cands = jsonCandidates(text);
   if (cands.length === 0) throw new Error(`${file} から JSON を取り出せません(JSON ファイルか、\`\`\`json のコードブロックを含む Markdown を指定してください)`);
   const raw = itemsFromCandidates(cands);

@@ -45,6 +45,7 @@ npm run atlas -- --help                    # 使い方
 | `--bundle <dir>` | 評価バンドルの場所(既定: `out/bundle/`) |
 | `--include-empty` | `bundle` で、依頼の記録が無いセッションもパケットにする |
 | `--per-part <n>` | `bundle` で、`parts/` の 1 ファイルに入れるパケットの数(既定 5) |
+| `--unjudged` | `bundle` で、判定済み(`judgments.json` にある)セッションを入れない(画面の「チャットに貼る」の「添付ファイルを作る」はこれを付ける) |
 | `--tool-output <v>` | `export` で、ツールの結果を記録に入れる条件。`fail`(既定。失敗したときだけ)/ `all` / `none` |
 | `--max-chars <n>` | `export` で、依頼・応答・要約 1 件の上限(文字、既定 20000)。超えた分は中略して字数を書く |
 | `--full` | `export` で、解析用の全文記録 `out/full/<id>.md`(上限なし)と `out/coverage.json`(網羅の検査)も書く。`--anonymize` とは併用できない |

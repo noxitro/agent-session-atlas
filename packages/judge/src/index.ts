@@ -7,7 +7,7 @@ export type { BundleManifest, BundleEntry, BundleOptions } from './bundle.ts';
 export { renderPacket, collectTexts, excerptTexts, missingSections, packetSessionId, clip, fenced, PACKET_SECTIONS, DEFAULT_LIMITS } from './packet.ts';
 export type { PacketLimits, SessionTexts, RenderedPacket } from './packet.ts';
 export { buildJudgePrompt, packetBoundary, renderInstructions, renderPartInstructions } from './rubric.ts';
-export { readJudgments, writeJudgments, importJudgments } from './judgments-io.ts';
+export { readJudgments, writeJudgments, importJudgments, importJudgmentsText } from './judgments-io.ts';
 export type { ImportResult } from './judgments-io.ts';
 export { runJudge } from './run.ts';
 export type { RunOptions, RunSummary } from './run.ts';

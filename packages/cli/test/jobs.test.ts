@@ -212,6 +212,8 @@ describe('serve の jobs と記録の表示(Phase 14)', () => {
       [{ kind: 'judge', limit: 10, backend: 'copilot-cli; calc' }, 400],
       [{ kind: 'judge', limit: 10, backend: 'copilot-cli', only: 's1' }, 400],
       [{ kind: 'full' }, 400],
+      [{ kind: 'bundle', perPart: 2 }, 400],
+      [{ kind: 'export', id: 's1' }, 400],
       [{ kind: 'full', id: '..' }, 400],
       [{ kind: 'full', id: 'a/b' }, 400],
       [{ kind: 'full', id: 's1 & calc' }, 400],
@@ -224,6 +226,66 @@ describe('serve の jobs と記録の表示(Phase 14)', () => {
     // 0 件(画面から 0 は送らないが、CLI の --limit 0 と同じく受ける)と上限ちょうど
     expect(parseJobRequest({ kind: 'judge', limit: 0, backend: 'copilot-cli' }, () => true)).toEqual({ kind: 'judge', limit: 0, backend: 'copilot-cli' });
     expect(parseJobRequest({ kind: 'judge', limit: 500, backend: 'opencode' }, () => true)).toEqual({ kind: 'judge', limit: 500, backend: 'opencode' });
+  });
+
+  it('チャットでの判定: 添付ファイルの作成と反映は固定の引数で起動し、一覧・本文・取り込みは manifest と judgments.json に従う', async () => {
+    await start();
+    expect((await post({ kind: 'bundle' })).status).toBe(202);
+    expect(calls[0].args).toEqual([MAIN_TS, 'bundle', '--unjudged', '--out', out, '--notes-dir', notes]);
+    // 実行中は取り込めない(judgments.json に書くので)
+    expect((await json('/api/judge/import', { method: 'POST', body: JSON.stringify({ text: 'x' }) })).status).toBe(409);
+    children[0].exit(0);
+    await until(async () => (await current()).state !== 'running');
+    expect((await post({ kind: 'export' })).status).toBe(202);
+    expect(calls[1].args).toEqual([MAIN_TS, 'export', '--out', out, '--notes-dir', notes]);
+    children[1].exit(0);
+    await until(async () => (await current()).state !== 'running');
+
+    expect((await json('/api/judge/parts')).body).toEqual({ exists: false });
+    await mkdir(join(out, 'bundle', 'parts'), { recursive: true });
+    await writeFile(join(out, 'bundle', 'parts', 'part-01.md'), '# 指示\nパケット s1 s2');
+    await writeFile(join(out, 'bundle', 'secret.md'), '出さない');
+    await writeFile(
+      join(out, 'bundle', 'manifest.json'),
+      JSON.stringify({ version: 1, generatedAt: '2026-11-05T00:00:00.000Z', scope: { unjudged: 'yes' }, count: 2, sessions: [], parts: [{ path: 'parts/part-01.md', sessions: ['s1', 's2'], bytes: 30 }, { path: 'parts/part-02.md', sessions: ['s3'], bytes: 9 }] }),
+    );
+    // 消えたファイル(part-02)は一覧に出さない
+    expect((await json('/api/judge/parts')).body).toEqual({
+      exists: true,
+      generatedAt: '2026-11-05T00:00:00.000Z',
+      unjudgedOnly: true,
+      count: 2,
+      parts: [{ path: 'bundle/parts/part-01.md', name: 'part-01.md', sessions: 2, judged: 0, bytes: 30 }],
+    });
+    expect((await json('/api/judge/parts/part-01.md')).body).toEqual({ name: 'part-01.md', text: '# 指示\nパケット s1 s2' });
+    for (const bad of ['part-02.md', '..%2Fsecret.md', 'secret.md']) expect({ bad, status: (await json(`/api/judge/parts/${bad}`)).status }).toEqual({ bad, status: 404 });
+
+    const importText = (text: unknown, token: string | null = h!.token) => json('/api/judge/import', { method: 'POST', body: JSON.stringify({ text }) }, token);
+    expect((await importText('')).status).toBe(400);
+    expect((await importText('JSON の無い返答')).body.error).toMatch(/JSON を取り出せません/);
+    const bad = await importText('```json\n{"items":[{"sessionId":"s1"}]}\n```');
+    expect(bad.status).toBe(400);
+    expect(bad.body.problems.length).toBeGreaterThan(0);
+    expect(existsSync(join(out, 'judgments.json'))).toBe(false);
+
+    const item = {
+      sessionId: 's1',
+      taskCategory: 'feature',
+      taskSummary: '要約',
+      humanEffort: { hours: 2, low: 1, high: 4, confidence: 0.5, rationale: '根拠' },
+      aiOutcome: { completed: true, quality: 4, rework: 1, rationale: '成果' },
+      instructionsEffect: { score: 1, evidence: 'e' },
+      wikiEffect: { score: 0, evidence: '参照なし' },
+      skillsAgentsEffect: { score: 0, evidence: '参照なし' },
+    };
+    const reply = `判定しました。\n\`\`\`json\n${JSON.stringify({ schemaVersion: 1, judge: { backend: 'external', model: 'm365', ranAt: null }, items: [item, { ...item, sessionId: 'zz' }] })}\n\`\`\``;
+    expect((await importText(reply, null)).status).toBe(403);
+    const ok = await importText(reply);
+    expect(ok.status).toBe(200);
+    expect(ok.body).toMatchObject({ imported: 2, overwritten: 0, unknownIds: ['zz'], total: 2 });
+    expect(ok.body.parts.parts[0]).toMatchObject({ name: 'part-01.md', judged: 1 });
+    expect((await json('/api/jobs/judge-preview')).body).toEqual({ eligible: 2, judged: 1, pending: 1 });
+    expect((await json('/api/judge/parts', {}, null)).status).toBe(403);
   });
 
   it('403: token なし・違う token・他オリジン・別の Host。伏せ字版では jobs も表示も 403', async () => {

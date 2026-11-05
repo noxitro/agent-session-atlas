@@ -7,7 +7,7 @@
 
   let { jobs, generatedAt }: { jobs: JobStore; generatedAt: string } = $props();
 
-  const LABEL: Record<JobInfo['kind'], string> = { refresh: '集計し直し', judge: '工数の判定', full: '全文記録の作成' };
+  const LABEL: Record<JobInfo['kind'], string> = { refresh: '集計し直し', judge: '工数の判定', full: '全文記録の作成', bundle: '添付ファイルの作成', export: 'レポートへの反映' };
   const job = $derived(jobs.job);
   const shown = $derived.by(() => {
     const j = job;
@@ -29,7 +29,7 @@
     const j = shown;
     if (!j) return '';
     if (j.state === 'running') return `${LABEL[j.kind]}を始めました。`;
-    if (j.state === 'done') return '新しい集計ができました。再読み込みすると反映されます。';
+    if (j.state === 'done') return j.kind === 'bundle' ? '添付ファイルを作りました。' : '新しい集計ができました。再読み込みすると反映されます。';
     if (j.state === 'failed') return `${LABEL[j.kind]}に失敗しました。`;
     return `${LABEL[j.kind]}を止めました。`;
   });
@@ -44,6 +44,8 @@
       <p class="msg">
         {#if shown.state === 'running'}
           <strong>{LABEL[shown.kind]}をしています</strong>(経過 {elapsed(shown, jobs.now)}{target(shown) ? `、${target(shown)}` : ''})。{#if shown.kind === 'refresh'}終わるまで詳細ページと記録は開けないことがあります。{:else if shown.kind === 'judge'}画面を閉じても最後まで続きます。{/if}
+        {:else if shown.state === 'done' && shown.kind === 'bundle'}
+          <strong>添付ファイルを作りました</strong>({elapsed(shown, jobs.now)})。「工数を判定する…」の「チャットに貼る」で続けてください。
         {:else if shown.state === 'done'}
           <strong>新しい集計ができました</strong>({LABEL[shown.kind]}、{elapsed(shown, jobs.now)})。再読み込みすると反映されます。
         {:else if shown.state === 'failed'}
@@ -62,7 +64,7 @@
         {#if shown.state === 'running'}
           <button type="button" class="btn" data-testid="job-cancel" onclick={() => void jobs.cancel()}>止める</button>
         {:else}
-          {#if shown.state === 'done' || (shown.state === 'failed' && shown.kind === 'judge')}
+          {#if (shown.state === 'done' && shown.kind !== 'bundle') || (shown.state === 'failed' && shown.kind === 'judge')}
             <button type="button" class="btn primary" data-testid="job-reload" onclick={() => location.reload()}>再読み込み</button>
           {/if}
           <button type="button" class="btn" onclick={dismiss}>閉じる</button>
