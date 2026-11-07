@@ -1,6 +1,6 @@
 // atlas の各コマンド。元データ(~/.copilot)は core の snapshot 経由でだけ読む(コピーしてから開く)。
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, posix, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -44,6 +44,7 @@ import {
   importTurnJudgmentsText,
   readTurnJudgments,
   runTurnJudge,
+  turnImportPhases,
   runJudge,
   type BundleManifest,
   type JudgeBackend,
@@ -289,7 +290,8 @@ async function selectSessions(p: Paths, f: SessionFilter, cmd: string, hint: str
   return { file, sessions, groups };
 }
 
-export async function runMetrics(p: Paths, f: SessionFilter, log: Log): Promise<MetricsFile> {
+/** tables: out/tables/ に表も書く(伏せ字版の all では書かない。依頼文とパスがそのまま入るため) */
+export async function runMetrics(p: Paths, f: SessionFilter, log: Log, o: { tables?: boolean } = {}): Promise<MetricsFile> {
   const { file: s, sessions } = await selectSessions(p, f, 'metrics', '先に atlas extract を実行してください。', log);
   const m = computeMetrics(sessions, { installed: s.installed });
   await writeFile(p.metrics, JSON.stringify(m, null, 2));
@@ -297,7 +299,7 @@ export async function runMetrics(p: Paths, f: SessionFilter, log: Log): Promise<
     `metrics: ${m.overall.sessions} セッション(空のセッション ${m.emptySessions} 件を除外)、${Object.keys(m.byProject).length} プロジェクト、${Object.keys(m.byModel).length} モデル、トークン記録なし(欠測)${m.overall.sessionsMissingTokens} セッション → ${p.metrics}`,
   );
   if (m.installedSkills) log(`metrics: インストール済みで未使用の skill ${m.installedSkills.unused.length} / ${m.installedSkills.installed.length} 件`);
-  await writeTables(p, sessions, 'metrics', log);
+  if (o.tables ?? true) await writeTables(p, sessions, 'metrics', log);
   return m;
 }
 
@@ -354,8 +356,12 @@ export async function runBuild(p: Paths, o: BuildOptions, log: Log): Promise<Bui
     if (verdicts) log(`build: 依頼ごとの判定 ${[...verdicts.bySession.values()].reduce((a, m) => a + m.size, 0)} 件を合成(${p.turnJudgments})`);
   }
 
-  // 伏せ字版では表を書かない(依頼文とパスがそのまま入るため)
+  // 伏せ字版では表を書かない(依頼文とパスがそのまま入るため)。前に書いた表も、共有用の out/ に残さないよう消す(out/full/ と同じ扱い)
   if (!o.anonymize) await writeTables(p, sessions, o.transcripts ? 'export' : 'build', log);
+  else if (existsSync(join(p.out, 'tables'))) {
+    await rm(join(p.out, 'tables'), { recursive: true, force: true });
+    log('build: 伏せ字版なので、依頼文の入った表(out/tables/)を消しました');
+  }
 
   await ensureTemplate(log);
   const unknown = Object.values(s.warnings.unknownEventTypes).reduce((a, n) => a + n, 0);
@@ -465,7 +471,7 @@ export async function runTurns(p: Paths, f: SessionFilter, t: TurnsCliOptions, l
   }
   const known = existsSync(p.sessions) ? (await readJson<SessionsFile>(p.sessions, '')).sessions : [];
   const turnsBySession = new Map(known.map((s) => [s.id, s.analysis?.turnStats?.length ?? 0]));
-  const r = await importTurnJudgmentsText(await readFile(resolve(t.file!), 'utf8'), p.turnJudgments, { phases, turnsBySession });
+  const r = await importTurnJudgmentsText(await readFile(resolve(t.file!), 'utf8'), p.turnJudgments, { phases: await turnImportPhases(p.turnBundle, phases), turnsBySession });
   log(`turns import: ${r.imported} 件を取り込みました(既存の上書き ${r.overwritten} 件)→ ${p.turnJudgments}(計 ${r.total} 件)`);
   if (r.unknown.length) log(`turns import: 注意 集計に無い依頼が ${r.unknown.length} 件あります(レポートには出ません): ${r.unknown.slice(0, 5).join(', ')}${r.unknown.length > 5 ? ' …' : ''}`);
 }
@@ -700,7 +706,7 @@ async function runCommand(o: CliOptions, p: Paths, log: Log): Promise<RunResult>
     case 'all': {
       await runSnapshot(p, o.since, log, o.snapshotAll, o.snapshotPrune);
       await runExtract(p, o.since, log, o.tempDirs, o.config);
-      await runMetrics(p, f, log);
+      await runMetrics(p, f, log, { tables: !o.anonymize });
       // セッション記録(.md)も作る(build と export で作るものが違うと、どちらで作ったかで経過が見えたり消えたりするため)。
       // 伏せ字版は作らない: 記録の伏せ字は自由記述を機械的に置き換えるだけで、共有する sessions/ に HTML より弱い保証のものが混ざる
       const build = await runBuild(p, { ...f, anonymize: o.anonymize, transcripts: o.anonymize ? null : { toolOutput: o.toolOutput, maxChars: o.maxChars } }, log);

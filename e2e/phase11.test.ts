@@ -271,6 +271,8 @@ describe('Phase 11 E2E: fixtures', () => {
     expect(existsSync(join(anonOut, 'instructions.html'))).toBe(false);
     expect(existsSync(join(anonOut, 'library'))).toBe(false);
     expect(existsSync(join(anonOut, 'full'))).toBe(false);
+    // 依頼文の入った表(out/tables/)も、伏せ字版の all では書かない
+    expect(existsSync(join(anonOut, 'tables'))).toBe(false);
     expect(extractEmbedded<ReportData>(await readFile(join(anonOut, 'atlas.html'), 'utf8')).library).toBe(false);
     // 素の build は前回の生成物(instructions.html / full / coverage.json)を消さず、残っていることをログに出す
     const rb = atlas(['build', '--home', home, '--out', out]);
@@ -278,6 +280,7 @@ describe('Phase 11 E2E: fixtures', () => {
     expect(existsSync(join(out, 'instructions.html'))).toBe(true);
     expect(existsSync(join(out, 'full'))).toBe(true);
     expect(existsSync(join(out, 'coverage.json'))).toBe(true);
+    expect(existsSync(join(out, 'tables', 'turns.csv'))).toBe(true);
     expect(rb.stdout).toMatch(/前回の --full の出力/);
     expect(rb.stdout).toMatch(/前回の export の閲覧ページ/);
     expect(extractEmbedded<ReportData>(await readFile(join(out, 'atlas.html'), 'utf8')).library).toBe(false);
@@ -287,5 +290,7 @@ describe('Phase 11 E2E: fixtures', () => {
     expect(existsSync(join(out, 'instructions.html'))).toBe(false);
     expect(existsSync(join(out, 'full'))).toBe(false);
     expect(existsSync(join(out, 'coverage.json'))).toBe(false);
+    expect(existsSync(join(out, 'tables'))).toBe(false);
+    expect(rc.stdout).toMatch(/依頼文の入った表\(out\/tables\/\)を消しました/);
   });
 });

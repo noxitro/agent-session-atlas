@@ -7,7 +7,7 @@ import { normalizeSession } from '../../core/src/normalize.ts';
 import type { CopilotEvent, SessionRecord } from '../../core/src/types.ts';
 import type { JudgeBackend } from '../src/backends/types.ts';
 import { buildTurnBundle, buildTurnPrompt, chunksOf, collectTurnTexts, DEFAULT_TURN_LIMITS } from '../src/turn-bundle.ts';
-import { runTurnJudge, turnItemsFromTexts } from '../src/turn-run.ts';
+import { runTurnJudge, turnImportPhases, turnItemsFromTexts } from '../src/turn-run.ts';
 import { importTurnJudgmentsText, readTurnJudgments, turnItemProblems } from '../src/turn-schema.ts';
 
 const PHASES = ['要件定義', '設計', '実装', 'テスト'];
@@ -101,6 +101,31 @@ describe('判定に渡すファイル', () => {
     expect(chunksOf(s, t, new Set([2, 3, 6])).map((c) => c.turns)).toEqual([[2, 3], [6]]);
     // プロンプトに判定する依頼番号と sessionId を書く(偽 copilot もここを読む)
     expect(buildTurnPrompt(chunks[1], PHASES)).toContain('items には依頼 7, 8 の 2 件をすべて入れ、sessionId は "s1" にしてください');
+  });
+
+  it('依頼が上限(200 件)を超えるセッションは、200 件目に 201 件目の文を参考に添える(セッションの最後とは書かない)', async () => {
+    const events: CopilotEvent[] = [ev(0, 'session.start', { context: { cwd: 'X:\\p' } })];
+    for (let i = 1; i <= 203; i++) {
+      events.push(ev(i * 1000, 'user.message', { content: `依頼 ${i} の本文` }));
+      events.push(ev(i * 1000 + 100, 'assistant.message', { content: `応答 ${i}` }));
+    }
+    const big = await normalizeSession({ id: 's2', events });
+    await mkdir(join(d, 'snapshot', 'session-state', 's2'), { recursive: true });
+    await writeFile(join(d, 'snapshot', 'session-state', 's2', 'events.jsonl'), events.map((e) => JSON.stringify(e)).join('\n'));
+    const t = (await collectTurnTexts(join(d, 'snapshot'), 's2'))!;
+    expect(t.requests).toHaveLength(201);
+    expect(t.responses[200]).toBeNull();
+    const chunks = chunksOf(big, t, null);
+    expect(chunks.flatMap((c) => c.turns)).toHaveLength(200);
+    const last = chunks[chunks.length - 1].markdown;
+    expect(last).toContain('## 依頼 201(判定しない。依頼 200 の成果の扱いを読むための参考)');
+    expect(last).not.toContain('次の依頼はありません');
+  });
+
+  it('返答の取り込みでは、添付を作ったときの工程名と今の設定の工程名の両方を認める', async () => {
+    await buildTurnBundle([s], { bundleDir: join(d, 'tb'), snapshotDir: join(d, 'snapshot'), phases: PHASES });
+    expect(await turnImportPhases(join(d, 'tb'), ['調査', '実装'])).toEqual([...PHASES, '調査']);
+    expect(await turnImportPhases(join(d, 'none'), ['調査', '実装'])).toEqual(['調査', '実装']);
   });
 
   it('分割ファイルと塊を書き、判定済みを除ける', async () => {

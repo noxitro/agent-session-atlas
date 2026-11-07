@@ -47,11 +47,54 @@ const CMD_C = /^cmd(?:\.exe)?\s+\/[ck]\b/i;
 /** 段の先頭が引用符で囲んだプログラムのパス("C:\…\cmake.exe" --build …)。名前だけにして判定する */
 const QUOTED_PROGRAM = /^(["'])(?:[^"']*[\\/])?([^\\/"']+?)(\.(?:exe|bat|cmd))?\1(.*)$/i;
 
+/**
+ * ; && || | 改行で段に分ける。引用符("…" '…')の中では分けない(git commit -m "fix; npm test" を 1 段にする)。
+ * 引用符が閉じないとき(don't など)は、引用符を見ずに分け直す
+ */
+function segments(cmd: string): string[] {
+  const out: string[] = [];
+  let cur = '';
+  let quote: string | null = null;
+  for (let i = 0; i < cmd.length; i++) {
+    const c = cmd[i];
+    if (quote) {
+      if (c === '\\' && quote === '"' && i + 1 < cmd.length) {
+        cur += c + cmd[++i];
+        continue;
+      }
+      if (c === quote) quote = null;
+      cur += c;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      quote = c;
+      cur += c;
+      continue;
+    }
+    const two = cmd.slice(i, i + 2);
+    if (two === '&&' || two === '||' || two === '\r\n') {
+      out.push(cur);
+      cur = '';
+      i++;
+      continue;
+    }
+    if (c === ';' || c === '|' || c === '\n') {
+      out.push(cur);
+      cur = '';
+      continue;
+    }
+    cur += c;
+  }
+  if (quote) return cmd.split(/\r?\n|;|&&|\|\||\|/);
+  out.push(cur);
+  return out;
+}
+
 type CommandKind = 'verify' | 'git' | 'shell' | 'read';
 const RANK: Record<CommandKind, number> = { read: 0, shell: 1, git: 2, verify: 3 };
 
 /**
- * シェルのコマンド 1 つの種類。; && || | 改行で段に分け、段ごとに先頭で判定して、いちばん強いもの(検証 > git > その他 > 読む)を取る。
+ * シェルのコマンド 1 つの種類。引用符の外の ; && || | 改行で段に分け、段ごとに先頭で判定して、いちばん強いもの(検証 > git > その他 > 読む)を取る。
  * cmd /c "…" は中身を同じ規則で見る。PowerShell の & やパスを引用符で囲んだ .exe の起動は、ビルドしたものの動作確認として検証に数える
  */
 export function commandKind(cmd: string, depth = 0): CommandKind {
@@ -60,7 +103,7 @@ export function commandKind(cmd: string, depth = 0): CommandKind {
     if (RANK[k] > RANK[kind]) kind = k;
   };
   if (depth < 2) for (const m of cmd.matchAll(/\bcmd(?:\.exe)?\s+\/[ck]\s+(.+)$/gim)) raise(commandKind(m[1].trim().replace(/^"|"$/g, '').replace(/""/g, '"'), depth + 1));
-  for (const raw of cmd.split(/\r?\n|;|&&|\|\||\|/)) {
+  for (const raw of segments(cmd)) {
     let seg = raw.trim().replace(/^(?:&|call\b)\s*/i, '');
     if (seg === '' || CMD_C.test(seg) || PREFIX.test(seg) || /^[{}()]+$/.test(seg)) continue;
     let program = false;
@@ -114,6 +157,10 @@ export function phaseOf(t: Pick<TurnStats, 'kinds'>): Phase {
 const REVERT = /元に戻|戻して|もどして|取り消|取消し|やめて|中止して|revert|ロールバック|なかったことに|消して元/i;
 /** 直前の成果の直し(「X ではなく Y」だけでは新しい指示のことが多いので含めない) */
 const FIX = /違う|ちがう|そうじゃな|直して|なおして|修正して|おかしい|間違|まちが|動かない|うまくいかない|エラーが出|失敗して|崩れ|足りない|抜けて|漏れて/;
+/** 直しをはっきり頼む言い方(これがあれば、問いの形でも修正) */
+const FIX_IMPERATIVE = /直して|なおして|修正して/;
+/** 原因・理由を尋ねる語(「なぜ動かないの？」は不具合の報告より原因の質問) */
+const WHY = /なぜ|どうして|原因|理由|何が|どこが/;
 /** 問いの言い方(最後の文で見る) */
 const QUESTION = /[？?]$|教えて|とは$|なぜ|どうして|どうやって|どうすれば|ですか$|ますか$|でしょうか$|ある$|できる$|わかる$/;
 /** 「〜してもらえますか」など、問いの形をした依頼 */
@@ -127,11 +174,12 @@ export function requestKindOf(text: string): RequestKind {
   if (s === '') return 'task';
   if (s.length <= 12 && CONTINUE.test(s)) return 'continue';
   if (REVERT.test(s)) return 'revert';
-  if (FIX.test(s)) return 'fix';
   const sentences = s.split(/[。\n!！]+/).map((x) => x.trim()).filter(Boolean);
   const last = (sentences[sentences.length - 1] ?? s).replace(/[)）」』\s]+$/, '');
-  if (QUESTION.test(last) && !POLITE_REQUEST.test(last)) return 'question';
-  return 'task';
+  const asks = QUESTION.test(last) && !POLITE_REQUEST.test(last);
+  // 「CI が失敗してる？」は不具合の報告なので修正。「なぜ動かないの？」のように原因を尋ねるだけなら質問
+  if (FIX.test(s) && !(asks && WHY.test(last) && !FIX_IMPERATIVE.test(s))) return 'fix';
+  return asks ? 'question' : 'task';
 }
 
 /** 1 ターン 1 行(CSV・集計・画面で使う)。text は依頼文の先頭(伏せ字版では使わない) */

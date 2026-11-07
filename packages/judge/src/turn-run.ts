@@ -37,6 +37,21 @@ export async function readTurnBundleManifest(bundleDir: string): Promise<TurnBun
   return m;
 }
 
+/**
+ * 返答を取り込むときに認める工程名。添付を作った時点の工程名(manifest.json)を先に、今の設定の工程名を後ろに足す
+ * (添付を作った後に atlas.config.json の phases を変えても、その添付への返答を取り込めるように)
+ */
+export async function turnImportPhases(bundleDir: string, configured: readonly string[]): Promise<string[]> {
+  let fromBundle: string[] = [];
+  try {
+    const m = await readTurnBundleManifest(bundleDir);
+    if (Array.isArray(m.phases)) fromBundle = m.phases.filter((x): x is string => typeof x === 'string' && x !== '');
+  } catch {
+    // 添付がまだ無い・読めないときは設定の工程名だけ
+  }
+  return [...new Set([...fromBundle, ...configured])];
+}
+
 /** 返った本文から、塊の依頼の判定を取り出して検証する(全部そろっていなければエラー) */
 export function turnItemsFromTexts(texts: string[], sessionId: string, turns: number[], phases: readonly string[]): TurnJudgment[] {
   const problems: string[] = [];

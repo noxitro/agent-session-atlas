@@ -45,7 +45,7 @@ import {
   type SessionGroup,
 } from '../../report/src/index.ts';
 import type { SessionRecord, SessionsFile } from '../../core/src/index.ts';
-import { importJudgmentsText, importTurnJudgmentsText, JudgmentValidationError, readBundleManifest, readTurnBundleManifest, readTurnJudgments } from '../../judge/src/index.ts';
+import { importJudgmentsText, importTurnJudgmentsText, JudgmentValidationError, readBundleManifest, readTurnBundleManifest, readTurnJudgments, turnImportPhases } from '../../judge/src/index.ts';
 import { phaseNames } from './config.ts';
 import { JobError, JobRunner, parseJobRequest, runningJobIn, type RunFullFn, type SpawnFn } from './jobs.ts';
 import { exportGroup } from './group-export.ts';
@@ -615,7 +615,7 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
       try {
         r =
           target === 'turns'
-            ? await importTurnJudgmentsText(body.text, join(outDir, 'turn-judgments.json'), { phases: await phaseNames(), turnsBySession: ids ? new Map([...ids].map(([id, x]) => [id, x.turns])) : undefined })
+            ? await importTurnJudgmentsText(body.text, join(outDir, 'turn-judgments.json'), { phases: await turnImportPhases(join(outDir, 'turn-bundle'), await phaseNames()), turnsBySession: ids ? new Map([...ids].map(([id, x]) => [id, x.turns])) : undefined })
             : await importJudgmentsText(body.text, join(outDir, 'judgments.json'), { knownIds: ids ? new Set(ids.keys()) : undefined });
       } catch (e) {
         if (e instanceof JudgmentValidationError) {

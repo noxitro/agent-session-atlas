@@ -32,6 +32,7 @@ export const TURN_BUNDLE_VERSION = 1;
 const MAX_TURNS = 200;
 
 export interface TurnTexts {
+  /** 依頼文(上限 MAX_TURNS 件。上限を超えるセッションは、次の 1 件を参考として足して MAX_TURNS + 1 件) */
   requests: string[];
   /** その依頼の間の本体の最後の応答(無ければ null) */
   responses: (string | null)[];
@@ -47,6 +48,11 @@ export async function collectTurnTexts(snapshotDir: string, id: string): Promise
     const d = e.data ?? {};
     if (e.type === 'user.message' && !e.agentId && !isAutopilotContinuation(d) && isUserTurn(d)) {
       if (t.requests.length >= MAX_TURNS) {
+        // 上限を超えた最初の依頼の文だけは、上限の依頼(200 件目)の扱いを読む参考に残す(応答は読まない)
+        if (t.requests.length === MAX_TURNS) {
+          t.requests.push(typeof d.content === 'string' ? d.content : '');
+          t.responses.push(null);
+        }
         cur = -1;
         continue;
       }

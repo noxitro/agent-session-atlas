@@ -47,6 +47,12 @@ describe('ツールの種類と工程の規則', () => {
     expect(commandKind('cmd /c "call vcvars64.bat && cmake --build build"')).toBe('verify');
     expect(commandKind('$vswhere = "C:\\vswhere.exe"; $ErrorActionPreference = "Stop"; Get-ChildItem src')).toBe('read');
     expect(commandKind('# 確認\nGet-Content a.txt')).toBe('read');
+    // 引用符の中の ; && | 改行では分けない(閉じない引用符は見ずに分ける)
+    expect(commandKind('git commit -m "fix; npm test"')).toBe('git');
+    expect(commandKind("git commit -m 'a && npm test'")).toBe('git');
+    expect(commandKind('git commit -m "first\nnpm test"')).toBe('git');
+    expect(commandKind('git commit -m "say \\"x; npm test\\""')).toBe('git');
+    expect(commandKind("echo don't; npm test")).toBe('verify');
   });
 
   it('工程: 編集 > 検証 > 運用 > 計画だけ > 回答のみ > 調査', () => {
@@ -66,6 +72,11 @@ describe('ツールの種類と工程の規則', () => {
     expect(requestKindOf('さっきの変更を元に戻して')).toBe('revert');
     expect(requestKindOf('そうじゃなくて、ボタンは右に置いて')).toBe('fix');
     expect(requestKindOf('CI が失敗してる？')).toBe('fix');
+    // 原因を尋ねるだけなら質問、直しを頼んでいれば修正
+    expect(requestKindOf('なぜ動かないの？')).toBe('question');
+    expect(requestKindOf('エラーが出ます。原因は何ですか？')).toBe('question');
+    expect(requestKindOf('なぜ動かないの？直して')).toBe('fix');
+    expect(requestKindOf('動かない。なぜ？直してもらえますか？')).toBe('fix');
     expect(requestKindOf('グループを保存する機能はある？')).toBe('question');
     expect(requestKindOf('なぜ 2 回呼ばれるのか教えて')).toBe('question');
     expect(requestKindOf('設定画面を作って')).toBe('task');
