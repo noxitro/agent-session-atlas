@@ -13,7 +13,7 @@
     full: '全文記録の作成',
     bundle: '添付ファイルの作成',
     export: 'レポートへの反映',
-    'turn-bundle': '依頼の判定の添付ファイルの作成',
+    'turn-bundle': '依頼判定用の添付ファイルの作成',
     'turn-judge': '依頼の判定',
   };
   const job = $derived(jobs.job);

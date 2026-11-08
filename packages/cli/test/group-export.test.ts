@@ -83,6 +83,17 @@ describe('グループの書き出し', () => {
     expect(ok.status).toBe(200);
     expect(await ok.json()).toMatchObject({ name: '調査: A/B', sessions: 2, turns: 3 });
     expect((await post('無い')).status).toBe(404);
+    // 書き出しの間だけ out/ の印を取り、終わったら外す(残ると次の集計が始められない)
+    expect(existsSync(join(out, '.job.json'))).toBe(false);
+  });
+
+  it('依頼ごとの判定のファイルが壊れていても、判定の列なしで書き出して注意を出す', async () => {
+    await writeFile(join(out, 'turn-judgments.json'), '{ 壊れた');
+    const logs: string[] = [];
+    const r = await exportGroup(paths(), '調査: A/B', (m) => logs.push(m));
+    expect(r.sessions).toBe(2);
+    expect(await readFile(join(r.dir, 'turns.csv'), 'utf8')).not.toMatch(/判定:/);
+    expect(logs.join('\n')).toMatch(/注意 .*turn-judgments\.json を読めないため/);
   });
 
   it('同じフォルダ名になる別のグループ(「A/B」と「A_B」)は、名前の短いハッシュを足して分ける', async () => {

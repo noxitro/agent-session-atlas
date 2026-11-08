@@ -140,15 +140,17 @@ export function chunksOf(s: SessionRecord, texts: TurnTexts, only: Set<number> |
   const out: TurnChunk[] = [];
   let i = 0;
   while (i < want.length) {
+    const from = want[i];
     let size = 1;
-    // 続いた番号を上限まで伸ばし、文字数の上限を超えたら 1 つ戻す
-    while (i + size < want.length && size < limits.chunkTurns && want[i + size] === want[i] + size) {
-      if (renderTurnChunk(s, texts, rows, want[i], want[i] + size, limits).length > limits.chunkChars) break;
+    let markdown = renderTurnChunk(s, texts, rows, from, from, limits);
+    // 続いた番号を上限まで伸ばし、文字数の上限を超えたら 1 つ戻す(上限に収まった最後の描画をそのまま使う)
+    while (i + size < want.length && size < limits.chunkTurns && want[i + size] === from + size) {
+      const longer = renderTurnChunk(s, texts, rows, from, from + size, limits);
+      if (longer.length > limits.chunkChars) break;
+      markdown = longer;
       size++;
     }
-    const from = want[i];
-    const to = want[i] + size - 1;
-    out.push({ sessionId: s.id, turns: Array.from({ length: size }, (_, k) => from + k), markdown: renderTurnChunk(s, texts, rows, from, to, limits) });
+    out.push({ sessionId: s.id, turns: Array.from({ length: size }, (_, k) => from + k), markdown });
     i += size;
   }
   return out;

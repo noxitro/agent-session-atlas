@@ -11,7 +11,8 @@
   import type { JobStore } from '../jobs.svelte.ts';
   import { dateTime, int } from '../../lib/format.ts';
 
-  let { jobs, onclose, target = 'effort' }: { jobs: JobStore; onclose: () => void; target?: JudgeTarget } = $props();
+  // reply は親(JobActions)が判定するものごとに持つ(判定するものを切り替えても貼りかけの返答が消えないように)
+  let { jobs, onclose, target = 'effort', reply = $bindable('') }: { jobs: JobStore; onclose: () => void; target?: JudgeTarget; reply?: string } = $props();
   /** 数える単位(工数はセッション、依頼ごとの判定は依頼) */
   const unit = $derived(target === 'turns' ? '依頼' : 'セッション');
   const bundleKind = $derived(target === 'turns' ? 'turn-bundle' : 'bundle');
@@ -26,7 +27,6 @@
   /** 依頼ごとの記録が無いセッション(依頼の判定のとき。古い集計) */
   let withoutTurns = $state(0);
   let loadError = $state('');
-  let reply = $state('');
   let importing = $state(false);
   let result = $state('');
   let importError = $state<{ message: string; problems: string[] } | null>(null);
@@ -86,8 +86,8 @@
   const copyPart = (p: ChatPart): Promise<void> => copy(`${stem(p)} の本文`, () => chatJudgeApi.partText(jobs.token, p.name, target));
   /** 保存するときの名前(相手のチャットが .md を添付として受け付けるか分からないので、受け付けられやすい .txt にする。中身は同じ) */
   const saveName = (p: ChatPart): string => `${target === 'turns' ? 'turns-' : ''}${p.name.replace(/\.md$/, '.txt')}`;
-  /** 表示の名前(保存するときの拡張子と食い違わないよう、拡張子を付けない) */
-  const stem = (p: ChatPart): string => p.name.replace(/\.md$/, '');
+  /** 画面に出す名前は保存する名前から拡張子を除いたもの(案内の名前とダウンロードフォルダの名前をそろえる) */
+  const stem = (p: ChatPart): string => saveName(p).replace(/\.txt$/, '');
   const kb = (b: number): string => `${Math.max(1, Math.round(b / 1024))} KB`;
   const partState = (p: ChatPart): string => (p.judged >= p.sessions ? '済' : p.judged > 0 ? `${p.judged}/${p.sessions} 件済` : '未');
 

@@ -598,7 +598,10 @@ html {
 .toc a {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   min-height: 36px;
+  /* 「メモ」のような 2 文字の項目でも押す的を 24px 以上にする(WCAG 2.5.8) */
+  min-width: 32px;
   white-space: nowrap;
   text-decoration: none;
   color: var(--ink-2);
@@ -692,6 +695,8 @@ html {
   .toc a {
     display: flex;
     flex-wrap: wrap;
+    justify-content: flex-start;
+    min-width: 0;
     min-height: 30px;
     padding: 4px 10px;
     white-space: normal;

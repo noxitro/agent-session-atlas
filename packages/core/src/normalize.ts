@@ -1055,14 +1055,26 @@ const isExternalError = (errorType: string): boolean => /quota|rate[_-]?limit/i.
  */
 function attributeUsage(items: UsageItem[], starts: (number | null)[], overflowMs: number | null, stats: TurnStats[]): void {
   if (!stats.length) return;
+  // 時刻のあるターンの開始を順に並べ、そこまでの最大値も持つ。「先頭から見て最初に u.at より後に始まるターンの、1 つ前の時刻のあるターン」を
+  // 最大値の列の二分探索で求める(開始の時刻が前後していても、先頭から 1 つずつ見るのと同じ結果になる。長いセッションで ターン数 × リクエスト数 にしない)
+  const at: number[] = [];
+  const maxUpTo: number[] = [];
+  for (let i = 0; i < starts.length; i++) {
+    const st = starts[i];
+    if (st == null) continue;
+    at.push(i);
+    maxUpTo.push(Math.max(maxUpTo[maxUpTo.length - 1] ?? -Infinity, st));
+  }
   for (const u of items) {
     if (u.at == null || (overflowMs != null && u.at >= overflowMs)) continue;
-    let idx = -1;
-    for (let i = 0; i < starts.length; i++) {
-      const st = starts[i];
-      if (st != null && st <= u.at) idx = i;
-      else if (st != null && st > u.at) break;
+    let lo = 0;
+    let hi = maxUpTo.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (maxUpTo[mid] > u.at) hi = mid;
+      else lo = mid + 1;
     }
+    const idx = lo > 0 ? at[lo - 1] : -1;
     const ts = idx >= 0 ? stats[idx] : undefined;
     if (!ts) continue;
     ts.input = (ts.input ?? 0) + u.input;

@@ -7,8 +7,24 @@
   import type { TurnAggregate } from '../../lib/turns.ts';
   import type { VerdictAggregate } from '../../lib/verdicts.ts';
   import TurnVerdicts from './TurnVerdicts.svelte';
+  import { refreshHint } from '../../lib/hints.ts';
 
-  let { agg, verdicts = null, verdictModel = null, verdictRanAt = null }: { agg: TurnAggregate; verdicts?: VerdictAggregate | null; verdictModel?: string | null; verdictRanAt?: string | null } = $props();
+  let {
+    agg,
+    verdicts = null,
+    verdictModel = null,
+    verdictRanAt = null,
+    editable = false,
+    anonymized = false,
+  }: {
+    agg: TurnAggregate;
+    verdicts?: VerdictAggregate | null;
+    verdictModel?: string | null;
+    verdictRanAt?: string | null;
+    /** serve から開き、操作のボタンがある(案内の文を分ける) */
+    editable?: boolean;
+    anonymized?: boolean;
+  } = $props();
 
   const PHASE_NOTE: Record<Phase, string> = {
     research: 'ファイルを読む・検索する・Web を調べる(編集なし)',
@@ -30,13 +46,13 @@
     </p>
   </div>
   {#if agg.sessionsWithoutTurns > 0}
-    <p class="note" data-testid="phases-missing">依頼があるのに依頼ごとの記録が無いセッションが {int(agg.sessionsWithoutTurns)} 件あります(古い集計か、ログが DB だけのもの)。「集計し直す」で入ります。</p>
+    <p class="note" data-testid="phases-missing">依頼があるのに依頼ごとの記録が無いセッションが {int(agg.sessionsWithoutTurns)} 件あります(古い集計か、イベントのログが無く記録が DB にしか無いもの)。{refreshHint({ editable, anonymized })}</p>
   {/if}
   {#if agg.turns === 0}
     <p class="note">依頼ごとの記録がありません。</p>
   {:else}
     <h3 class="sub" id="phase-table-h">工程別</h3>
-    <p class="note">列の意味は表の下の「表の読み方」にあります。</p>
+    <p class="note">列の意味は表のすぐ下の「表の読み方」にあります。</p>
     <div class="table-scroll">
       <table class="ledger small" data-testid="phase-table" aria-labelledby="phase-table-h">
         <thead>
@@ -91,8 +107,21 @@
         </tfoot>
       </table>
     </div>
+    <details class="how" id="phases-how">
+      <summary>表の読み方と、工程・依頼の種類の決め方</summary>
+      <ul>
+        <li><strong>詰まりのあった依頼</strong>: その依頼の間に、ツールの失敗・拒否(権限の確認で断った操作)・中断・エラー・再編集・文脈圧縮のどれかがあったもの。<strong>再編集</strong>は、前の依頼で編集したファイルをこの依頼でもう一度編集した回数です(同じ依頼の中で重ねて編集するのは普通の進め方なので数えません)。エラーの括弧内は利用上限・速度制限によるものです。</li>
+        <li><strong>次の依頼で直し・差し戻し</strong>: 次の依頼が「直して」「戻して」などだった依頼の数 / 次の依頼があった依頼の数。</li>
+        <li><strong>実働・AIU</strong>: 依頼の間の実働時間と、その間に記録されたリクエストの AI 使用量(サブエージェントの分を含む)。最初の依頼より前と 201 依頼目以降のリクエストは含めないので、全体サマリの値と一致しないことがあります(<a href="glossary.html#turn-stuck">用語の説明</a>)。</li>
+        <li>工程は、その依頼から次の依頼までに使ったツール(サブエージェントの分を含む)で決めます。編集があれば実装、無くてテスト・ビルドを実行していれば検証、git の書き込みなどがあれば運用、計画・確認だけなら計画、ツールが無ければ回答のみ、それ以外は調査です。</li>
+        <li>依頼の種類は、依頼文の語で分けた粗い推定です(「?」「教えて」なら質問、「直して」「違う」なら修正、「戻して」なら差し戻し、「進めて」「はい」など短い返事なら続行、それ以外は作業)。言い回しの違う修正は「作業」に入ることがあります。</li>
+        <li>「次の依頼で直し・差し戻し」は、AI の成果が受け入れられなかった兆しです。採用されたかどうかの判定ではありません。</li>
+        <li>1 セッションの先頭 200 依頼までを数えます。</li>
+        <li><strong>採用(LLM の判定)</strong>: 次の依頼の文と拒否・中断から、AI の成果がどう扱われたかを LLM が判定した推定です。<strong>採用率</strong>は判定できた作業の依頼のうち「そのまま」の割合、<strong>役に立った率</strong>は判定できた質問のうち「役に立った」の割合で、<strong>判定不能</strong>(次の依頼が無い・成果がまだ無い・読み取れない)は分母に入れません。<strong>工程(普段)</strong>は、設定した普段の工程名に LLM が当てはめたもので、この表の「工程」とは別です(<a href="glossary.html#turn-verdict">用語の説明</a>)。</li>
+      </ul>
+    </details>
 
-    <h3 class="sub" id="kind-table-h">依頼の種類 × 工程(どこで聞いているか)</h3>
+    <h3 class="sub" id="kind-table-h">依頼の種類ごとの工程の内訳</h3>
     <div class="table-scroll">
       <table class="ledger small" data-testid="kind-table" aria-labelledby="kind-table-h">
         <thead>
@@ -108,7 +137,7 @@
             {#if agg.byKind[k].turns > 0}
               <tr>
                 <th scope="row">{REQUEST_KIND_LABEL[k]}</th>
-                {#each rows as r (r.key)}<td class="num">{agg.byPhase[r.key].kinds[k] ? int(agg.byPhase[r.key].kinds[k]) : '—'}</td>{/each}
+                {#each rows as r (r.key)}<td class="num">{#if agg.byPhase[r.key].kinds[k]}{int(agg.byPhase[r.key].kinds[k])}{:else}<span class="zero">0</span>{/if}</td>{/each}
                 <td class="num">{int(agg.byKind[k].turns)}<span class="part"><span class="sr-only">、</span>{percent(agg.byKind[k].turns, agg.turns)}</span></td>
                 <td class="num">{int(agg.byKind[k].followedByFix)} / {int(agg.byKind[k].withNext)}<span class="part"><span class="sr-only">、</span>{percent(agg.byKind[k].followedByFix, agg.byKind[k].withNext)}</span></td>
               </tr>
@@ -117,19 +146,7 @@
         </tbody>
       </table>
     </div>
-    <TurnVerdicts agg={verdicts} model={verdictModel} ranAt={verdictRanAt} />
-    <details class="how">
-      <summary>表の読み方と、工程・依頼の種類の決め方</summary>
-      <ul>
-        <li><strong>詰まりのあった依頼</strong>: その依頼の間に、ツールの失敗・拒否(権限の確認で断った操作)・中断・エラー・再編集・文脈圧縮のどれかがあったもの。<strong>再編集</strong>は、前の依頼で編集したファイルをこの依頼でもう一度編集した回数です(同じ依頼の中で重ねて編集するのは普通の進め方なので数えません)。エラーの括弧内は利用上限・速度制限によるものです。</li>
-        <li><strong>次の依頼で直し・差し戻し</strong>: 次の依頼が「直して」「戻して」などだった依頼の数 / 次の依頼があった依頼の数。</li>
-        <li><strong>実働・AIU</strong>: 依頼の間の実働時間と、その間に記録されたリクエストの AI 使用量(サブエージェントの分を含む)。最初の依頼より前と 201 依頼目以降のリクエストは含めないので、全体サマリの値と一致しないことがあります(<a href="glossary.html#turn-stuck">用語の説明</a>)。</li>
-        <li>工程は、その依頼から次の依頼までに使ったツール(サブエージェントの分を含む)で決めます。編集があれば実装、無くてテスト・ビルドを実行していれば検証、git の書き込みなどがあれば運用、計画・確認だけなら計画、ツールが無ければ回答のみ、それ以外は調査です。</li>
-        <li>依頼の種類は、依頼文の語で分けた粗い推定です(「?」「教えて」なら質問、「直して」「違う」なら修正、「戻して」なら差し戻し、「進めて」「はい」など短い返事なら続行、それ以外は作業)。言い回しの違う修正は「作業」に入ることがあります。</li>
-        <li>「次の依頼で直し・差し戻し」は、AI の成果が受け入れられなかった兆しです。採用されたかどうかの判定ではありません。</li>
-        <li>1 セッションの先頭 200 依頼までを数えます。</li>
-      </ul>
-    </details>
+    <TurnVerdicts agg={verdicts} model={verdictModel} ranAt={verdictRanAt} {editable} {anonymized} />
   {/if}
 </section>
 
@@ -151,6 +168,13 @@
   }
   th .part {
     color: var(--ink-2);
+  }
+  /* 工程の名前と説明の列。狭い幅で数値の列に押されて 1〜2 文字ずつ折り返さないよう幅を確保する(表は横にスクロールする) */
+  tbody th[scope='row'] {
+    min-width: 11em;
+  }
+  .zero {
+    color: var(--ink-3);
   }
   .how {
     margin-top: 12px;

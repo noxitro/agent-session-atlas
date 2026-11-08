@@ -12,6 +12,8 @@ npm run e2e         # E2E(テスト時に生成する架空の fixture のみ。
 npx playwright install chromium   # 画面の操作の検査に使うブラウザ(初回だけ)
 npm run ui          # 画面の操作の検査(ui/。架空の fixture で atlas serve を立て、Chromium で押して確かめる)
 npm run audit:ui -- out   # 生成したレポートの全ページの網羅チェック(下記)
+# 画面の操作の検査を、CI の遅い機械に近い速さで(Chromium の CPU を N 倍遅くする。待ちの切れ方を手元で再現したいとき)
+ATLAS_UI_CPU_SLOWDOWN=20 npm run ui
 npm run fixtures    # fixture(.fixtures/)を手で作り直す(中身を見たいとき。E2E は毎回自動で作り直す)
 npm run build:report  # レポートのテンプレート(packages/report/dist/template.html)を作り直す(atlas build もソースが新しければ自動で作り直す)
 ```

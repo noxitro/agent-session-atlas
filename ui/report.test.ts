@@ -40,6 +40,9 @@ describe('画面の操作', () => {
     browser = await chromium.launch();
     // 1440px: サイドバー(1280px 以上)にグループの一覧が出る幅
     page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    // CI の遅い機械を手元でまねる(例: ATLAS_UI_CPU_SLOWDOWN=20 npm run ui。docs/development.md)
+    const slow = Number(process.env.ATLAS_UI_CPU_SLOWDOWN ?? 0);
+    if (slow > 1) await (await page.context().newCDPSession(page)).send('Emulation.setCPUThrottlingRate', { rate: slow });
     page.on('pageerror', (e) => problems.push(`pageerror: ${e.message}`));
     page.on('console', (m) => {
       if (m.type() === 'error') problems.push(`console: ${m.text()}`);
@@ -227,10 +230,19 @@ describe('画面の操作', () => {
       await page.getByTestId('add-to-group').click();
       await page.getByTestId('create-group').click();
       const form = page.getByTestId('create-form');
-      await form.getByPlaceholder('例: 11 月の調査').fill(name);
+      const nameBox = form.getByPlaceholder('例: 11 月の調査');
+      await nameBox.fill(name);
       await form.getByLabel('説明(任意)').fill(`${name}の説明`);
+      // 押す前に入力が残っていることを確かめる(CI で 1 度、作成されずに待ちが切れた。原因を絞れるよう、どこで止まったかを出す)
+      expect(await nameBox.inputValue(), '作成を押す前に名前の入力が消えた').toBe(name);
       await form.getByRole('button', { name: '作成' }).click();
-      await expect.poll(async () => (await readGroups()).some((g) => g.name === name)).toBe(true);
+      await expect
+        .poll(async () => {
+          if ((await readGroups()).some((g) => g.name === name)) return 'created';
+          const err = (await form.locator('#create-error').count()) ? await form.locator('#create-error').innerText() : '';
+          return err ? `作成の失敗: ${err}` : (await form.count()) ? '入力欄が開いたまま' : '入力欄が閉じたのに groups.json に無い';
+        })
+        .toBe('created');
     };
     await create([0], '丙');
     await rail().getByRole('button', { name: 'すべて', exact: true }).click();

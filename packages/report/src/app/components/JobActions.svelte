@@ -14,6 +14,8 @@
   /** 件数の上限の最大(工数はセッション、依頼ごとの判定は依頼の数) */
   const LIMIT_MAX: Record<JudgeTarget, number> = { effort: 500, turns: 5000 };
   const LIMIT_DEFAULT: Record<JudgeTarget, number> = { effort: 10, turns: 60 };
+  /** 依頼の判定で 1 回にまとめる依頼の数の上限(judge の DEFAULT_TURN_LIMITS.chunkTurns と同じ。判定の回数の目安に使う) */
+  const TURN_CHUNK = 6;
   const TARGET_KEY = 'atlas.judge-target';
   let target = $state<JudgeTarget>(readTarget());
   function readTarget(): JudgeTarget {
@@ -23,9 +25,14 @@
       return 'effort';
     }
   }
+  /** 判定するものごとの件数の上限と、チャットに貼りかけた返答(切り替えても失わない) */
+  const limits: Record<JudgeTarget, number | null> = { ...LIMIT_DEFAULT };
+  let replies = $state<Record<JudgeTarget, string>>({ effort: '', turns: '' });
   function setTarget(t: JudgeTarget): void {
+    limits[target] = limit;
     target = t;
-    limit = LIMIT_DEFAULT[t];
+    limit = limits[t];
+    runError = '';
     try {
       localStorage.setItem(TARGET_KEY, t);
     } catch {
@@ -134,7 +141,7 @@
     <label class="opt"><input type="radio" name="judge-method" value="chat" checked={method === 'chat'} onchange={() => setMethod('chat')} data-testid="judge-method-chat" />チャットに貼って判定する(M365 Copilot など。添付と貼り付けだけで使える)</label>
   </fieldset>
   {#if method === 'chat'}
-    {#if open}{#key target}<ChatJudge {jobs} {target} onclose={() => dlg?.close()} />{/key}{/if}
+    {#if open}{#key target}<ChatJudge {jobs} {target} bind:reply={replies[target]} onclose={() => dlg?.close()} />{/key}{/if}
   {:else}
     <form onsubmit={runJudge} aria-busy={jobs.busy}>
       <p class="lead">
@@ -154,16 +161,16 @@
         {/if}
       </div>
       <p class="count" id="judge-count" role="status" data-testid="judge-count">
-        {#if !limitOk}件数の上限は 1〜{LIMIT_MAX[target]} の整数で指定してください。
+        {#if !limitOk}件数の上限は 1〜{int(LIMIT_MAX[target])} の整数で指定してください。
         {:else if previewError}未判定の件数を数えられませんでした: {previewError}
         {:else if !preview}未判定の件数を数えています…
         {:else if preview.pending === 0}未判定の{unit}はありません(判定済み {int(preview.judged)} 件)。
-        {:else}未判定 {int(preview.pending)} 件のうち <strong>{int(count)} 件</strong>を判定します(判定済み {int(preview.judged)} 件は判定し直しません)。{/if}
+        {:else}未判定の{unit} {int(preview.pending)} 件のうち <strong>{int(count)} 件</strong>を判定します({#if target === 'turns'}約 {int(Math.ceil(count / TURN_CHUNK))} 回以上の判定。{/if}判定済み {int(preview.judged)} 件は判定し直しません)。{/if}
         {#if target === 'turns' && preview?.withoutTurns}<br />依頼ごとの記録が無いセッションが {int(preview.withoutTurns)} 件あります(古い集計)。先に「集計し直す」を押すと、その依頼も判定できます。{/if}
       </p>
       <p class="cost" id="judge-cost">
         <strong>AI クレジットを消費します。</strong>
-        {#if target === 'turns'}GitHub Copilot の AI クレジットを、依頼数件(最大 6 件)ごとに 1 回の判定の分だけ使います。{:else if backend === 'copilot-cli'}GitHub Copilot の AI クレジットを、1 件につき 1 回以上の判定の分だけ使います。{:else}opencode に設定してある既定のモデルで判定します。そのモデルの提供元のクレジットや利用料を、1 件につき 1 回以上使います。無料のモデルには、送った内容を学習に使うものがあります(モデルの選び方は docs/judge.md)。{/if}
+        {#if target === 'turns'}GitHub Copilot の AI クレジットを、続いた依頼 {TURN_CHUNK} 件まで(長い依頼はもっと少なく)ごとに 1 回の判定の分だけ使います。{:else if backend === 'copilot-cli'}GitHub Copilot の AI クレジットを、1 件につき 1 回以上の判定の分だけ使います。{:else}opencode に設定してある既定のモデルで判定します。そのモデルの提供元のクレジットや利用料を、1 件につき 1 回以上使います。無料のモデルには、送った内容を学習に使うものがあります(モデルの選び方は docs/judge.md)。{/if}
       </p>
       {#if runError}<p class="err" role="alert">{runError}</p>{/if}
       <div class="actions">

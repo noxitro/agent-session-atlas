@@ -93,7 +93,7 @@ describe('画面からの操作(Phase 14)', () => {
     const dialog = page.getByTestId('judge-dialog');
     await page.getByTestId('job-judge').click();
     await dialog.waitFor({ state: 'visible' });
-    await expect.poll(() => page.getByTestId('judge-count').innerText()).toMatch(/未判定 \d+ 件のうち 10 件を判定します/);
+    await expect.poll(() => page.getByTestId('judge-count').innerText()).toMatch(/未判定のセッション \d+ 件のうち 10 件を判定します/);
     expect(await dialog.innerText()).toContain('AI クレジットを消費します');
     // 初期フォーカスは「やめる」
     expect(await page.evaluate<string | undefined>('document.activeElement?.dataset.testid')).toBe('judge-cancel');
@@ -214,7 +214,7 @@ describe('画面からの操作(Phase 14)', () => {
     await page.getByTestId('judge-target-turns').check();
     // f2 でチャットを選んだので、このツールの判定に戻す
     await page.getByTestId('judge-method-tool').check();
-    await expect.poll(() => page.getByTestId('judge-count').innerText()).toMatch(/未判定 \d+ 件のうち \d+ 件を判定します/);
+    await expect.poll(() => page.getByTestId('judge-count').innerText()).toMatch(/未判定の依頼 \d+ 件のうち \d+ 件を判定します\(約 \d+ 回以上の判定。/);
     // 依頼ごとの判定は copilot -p だけ(opencode は選べない)
     expect(await dialog.getByRole('radio', { name: /opencode/ }).count()).toBe(0);
     await page.getByTestId('judge-limit').fill('3');
@@ -229,8 +229,9 @@ describe('画面からの操作(Phase 14)', () => {
     expect(await table.locator('tbody th').first().innerText()).toBe('実装');
     expect(await page.getByTestId('mismatch-table').innerText()).toContain('意図・要件の取り違え');
     // 判定した依頼のあるセッションの詳細ページに、採用・合わなかった点・工程(普段)の列
-    const href = await page.evaluate<string>("JSON.parse(document.getElementById('atlas-data').textContent).sessions.find((s) => s.turnVerdicts && s.turnVerdicts.length).href");
-    await page.goto(new URL(href, server.url).href);
+    // 埋め込みの要約は href を持たない(id から作る。report の lib/pack.ts)
+    const id = await page.evaluate<string>("JSON.parse(document.getElementById('atlas-data').textContent).sessions.find((s) => s.turnVerdicts && s.turnVerdicts.length).id");
+    await page.goto(new URL(`sessions/${id}.html`, server.url).href);
     const turns = page.locator('table.turns');
     await turns.waitFor({ state: 'visible' });
     expect(await turns.locator('thead').innerText()).toMatch(/採用\(LLM\)\s*合わなかった点\s*工程\(普段\)/);

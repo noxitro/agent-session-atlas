@@ -2,6 +2,7 @@
   import type { Aggregate } from '../../lib/aggregate.ts';
   import { date, dec, duration, int, percent } from '../../lib/format.ts';
   import { confidenceLabel } from '../../lib/judgment-labels.ts';
+  import { judgeHint } from '../../lib/hints.ts';
 
   let {
     agg,
@@ -13,6 +14,7 @@
     emptyCount,
     emptyInFilter,
     part = 'cover',
+    editable = false,
   }: {
     agg: Aggregate;
     judged: boolean;
@@ -27,6 +29,8 @@
     emptyInFilter: number;
     /** 表紙(規模の 4 欄。要点の前に置く)か、集計明細(残りの 12 欄と入力トークン記録の内訳。要点の後に置く)か */
     part?: 'cover' | 'detail';
+    /** serve から開き、判定のボタンがある(案内の文を分ける) */
+    editable?: boolean;
   } = $props();
 
   const o = $derived(agg.overall);
@@ -78,7 +82,7 @@
       {#if judged && o.judgedSessions > 0}
         <span class="v">{dec(o.humanHours)} 時間</span><span class="n">LLM の推定。判定済み {int(o.judgedSessions)} セッション、幅 {dec(o.humanLow)}〜{dec(o.humanHigh)} 時間</span>
       {:else}
-        <span class="v missing">未判定</span><span class="n">LLM による推定はまだありません。右上の「判定する…」から実行できます(Copilot の AI クレジットを使う方法と、M365 Copilot などのチャットに貼る方法があります)</span>
+        <span class="v missing">未判定</span><span class="n">LLM による推定はまだありません。{judgeHint('工数', { editable, anonymized })}{#if editable}Copilot の AI クレジットを使う方法と、M365 Copilot などのチャットに貼る方法があります。{/if}</span>
       {/if}
     </div>
   </div>

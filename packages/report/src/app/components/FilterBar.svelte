@@ -2,6 +2,7 @@
   import { categoryLabel } from '../../lib/judgment-labels.ts';
   import { NO_JUDGMENT, UNKNOWN, type FilterState, type Option } from '../../lib/filter.ts';
   import { int, modelLabel } from '../../lib/format.ts';
+  import { judgeHint } from '../../lib/hints.ts';
 
   let {
     filter,
@@ -11,6 +12,8 @@
     memoCount,
     lastDay,
     onchange,
+    editable = false,
+    anonymized = false,
   }: {
     filter: FilterState;
     options: { project: Option[]; client: Option[]; model: Option[]; branch: Option[]; taskCategory: Option[] };
@@ -22,6 +25,9 @@
     /** 最終記録日(YYYY-MM-DD、ローカル)。期間の簡易指定の基準 */
     lastDay: string | null;
     onchange: (patch: Partial<FilterState>) => void;
+    /** serve から開き、判定のボタンがある(案内の文を分ける) */
+    editable?: boolean;
+    anonymized?: boolean;
   } = $props();
 
   const label = (v: string): string => (v === UNKNOWN ? '不明' : v === NO_JUDGMENT ? '未判定' : categoryLabel(v));
@@ -139,7 +145,7 @@
           {/each}
         {/if}
       </select>
-      {#if !judged}<span class="why" id="task-category-why">工数の判定をまだ実行していないため選べません(右上の「判定する…」)</span>{/if}
+      {#if !judged}<span class="why" id="task-category-why">工数の判定をまだ実行していないため選べません。{judgeHint('工数', { editable, anonymized })}</span>{/if}
     </label>
 
     <label class="check">

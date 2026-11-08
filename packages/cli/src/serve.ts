@@ -47,7 +47,7 @@ import {
 import type { SessionRecord, SessionsFile } from '../../core/src/index.ts';
 import { importJudgmentsText, importTurnJudgmentsText, JudgmentValidationError, readBundleManifest, readTurnBundleManifest, readTurnJudgments, turnImportPhases } from '../../judge/src/index.ts';
 import { phaseNames } from './config.ts';
-import { JobError, JobRunner, parseJobRequest, runningJobIn, type RunFullFn, type SpawnFn } from './jobs.ts';
+import { acquireOutLock, JobError, JobRunner, OutBusyError, parseJobRequest, runningJobIn, type RunFullFn, type SpawnFn } from './jobs.ts';
 import { exportGroup } from './group-export.ts';
 
 export const TOKEN_PLACEHOLDER = '__ATLAS_TOKEN__';
@@ -299,6 +299,8 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     },
   });
   const refreshing = (): boolean => jobs.running() && jobs.current()?.kind === 'refresh';
+  /** グループの書き出し中(その間はジョブを始めない) */
+  let exporting = false;
   const REFRESHING = '集計し直している最中です(詳細ページと記録は作り直しの途中です)。集計が終わってから開き直してください。';
   let cssCache: string | null = null;
   const pageCss = async (): Promise<string> => (cssCache ??= await readPageCss());
@@ -423,12 +425,25 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
       }
       // 集計・記録の書き出し中は sessions.json や記録が書きかけのことがあるので待ってもらう
       if (jobs.running()) throw new HttpError(409, jobs.current()?.kind === 'refresh' ? REFRESHING : 'ほかの処理が動いています。終わってから書き出してください');
+      if (exporting) throw new HttpError(409, 'ほかのグループを書き出しています。終わってから書き出してください');
       const other = runningJobIn(outDir);
       if (other) throw new HttpError(409, `別の atlas の処理(${other})が動いています。終わってから書き出してください`);
+      // 書き出しの間は out/ の印を取り、別の atlas(CLI)が集計を始めないようにする。同じ serve のジョブは exporting で止める
+      let release: () => void;
+      try {
+        release = acquireOutLock(outDir, 'group export', 'serve');
+      } catch (e) {
+        if (e instanceof OutBusyError) throw new HttpError(409, e.message);
+        throw e;
+      }
+      exporting = true;
       try {
         sendJson(res, 200, await exportGroup({ out: outDir, sessions: join(outDir, 'sessions.json'), judgments: join(outDir, 'judgments.json'), groups: groupsPath }, name, log));
       } catch (e) {
         throw new HttpError(/はありません/.test((e as Error).message) ? 404 : 409, (e as Error).message);
+      } finally {
+        exporting = false;
+        release();
       }
       return;
     }
@@ -496,6 +511,8 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
         const body = await readJsonBody(req);
         const ids = body.kind === 'full' ? await sessionIndex() : null;
         const r = parseJobRequest(body, (id) => !!ids?.has(id));
+        // グループの書き出しは out/ を読んでいるので、終わるまで集計などを始めない
+        if (exporting) throw new JobError(409, 'グループを書き出しています。終わってから実行してください');
         sendJson(res, 202, jobs.start(r));
         return;
       }

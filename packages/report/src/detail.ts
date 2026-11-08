@@ -210,8 +210,10 @@ function tokenTable(rows: [string, TokenCounts][], keyLabel: string): string {
 function turnLead(r: SessionRecord, judged: boolean): string {
   const n = r.analysis?.turnStats?.length ?? 0;
   const cut = n > 0 && r.turns > n ? `先頭 ${esc(int(n))} 依頼だけを載せています(全 ${esc(int(r.turns))} 依頼)。` : '';
-  const llm = judged ? '「採用」「合わなかった点」「工程(普段)」は LLM の判定で、次の依頼の文から決めたものです(推定)。' : '';
-  return `${cut}工程はその依頼で使ったツール、依頼の種類は依頼文の語からの推定です(レポートの「工程と詰まり」と同じ規則)。${llm}詰まりのあった依頼に印を付けています`;
+  const llm = judged
+    ? '「採用」「合わなかった点」「工程(普段)」は LLM の判定で、次の依頼の文から決めたものです(推定)。「工程(普段)」は、設定した普段の工程名に LLM が当てはめたもので、「工程」(使ったツールから決めたもの)とは別です。'
+    : '';
+  return `${cut}工程はその依頼で使ったツール、依頼の種類は依頼文の語からの推定です(レポートの<a href="../atlas.html#phases">「工程と詰まり」</a>と同じ規則。<a href="../glossary.html#turn-phase">用語の説明</a>)。${llm}詰まりのあった依頼に印を付けています。`;
 }
 
 /** 依頼(ターン)ごとの工程・種類・詰まり・使用量の表 */
@@ -222,12 +224,13 @@ function turnTable(r: SessionRecord, anon: Anonymizer, verdicts: Map<number, Tur
   const verdictCells = (n: number): string => {
     if (!judged) return '';
     const v = verdicts!.get(n);
-    if (!v) return `<td>${missing('未判定')}</td><td></td><td></td>`;
+    if (!v) return `<td>${missing('未判定')}</td><td>${missing('—')}</td><td>${missing('—')}</td>`;
     const note = anon.freeText(v.note);
-    const why = note ? ` <span class="why" title="${esc(note)}">${esc(truncate(note, 60))}</span>` : '';
+    // 判定の理由は全文を出す(title だけだとキーボードとタッチで読めない。判定の指示で 80 字程度までにしている)
+    const why = note ? ` <span class="why">${esc(note)}</span>` : '';
     return `<td><span class="tag${v.outcome === 'rejected' || v.outcome === 'off_target' ? ' warn' : ''}">${esc(OUTCOME_LABEL[v.outcome])}</span>${why}</td><td>${v.mismatch ? esc(MISMATCH_LABEL[v.mismatch]) : ''}</td><td>${esc(v.phase)}</td>`;
   };
-  if (!rows.length) return `<p class="note">依頼ごとの記録がありません(イベントログが無いか、古い集計です。「集計し直す」で入ります)。</p>`;
+  if (!rows.length) return `<p class="note">依頼ごとの記録がありません(イベントログが無いか、古い集計です。atlas.bat で集計し直すと入ります)。</p>`;
   const body = rows
     .map((t) => {
       const text = anon.freeText(t.text);
@@ -238,10 +241,10 @@ function turnTable(r: SessionRecord, anon: Anonymizer, verdicts: Map<number, Tur
       const dt = t.startedAt ? dateTime(t.startedAt) : '';
       const time = dt ? esc(dt.slice(0, 10) === day0 ? dt.slice(11) : dt.slice(5)) : missing('—');
       const num = (v: number): string => (v ? esc(int(v)) : '<span class="zero">0</span>');
-      return `<tr${stuck ? ' class="stuck"' : ''}><td class="num">${esc(String(t.index))}</td><td>${time}</td><td class="req">${req}${next}</td><td>${esc(REQUEST_KIND_LABEL[t.kind])}</td><td>${esc(PHASE_LABEL[t.phase])}${stuck ? ' <span class="tag warn">詰まり</span>' : ''}</td><td class="num">${t.activeMs == null ? missing('—') : esc(duration(t.activeMs))}</td><td class="num">${num(t.tools)}</td><td class="num">${num(t.toolFailures)}</td><td class="num">${num(t.denied)}</td><td class="num">${num(t.aborts)}</td><td class="num">${num(t.errors)}</td><td class="num">${num(t.reEdits)}</td><td class="num">${num(t.compactions)}</td><td class="num">${t.nanoAiu ? esc(dec(t.nanoAiu / 1e9)) : missing('—')}</td>${verdictCells(t.index)}</tr>`;
+      return `<tr${stuck ? ' class="stuck"' : ''}><th scope="row" class="num">${esc(String(t.index))}</th><td>${time}</td><td class="req">${req}${next}</td><td>${esc(REQUEST_KIND_LABEL[t.kind])}</td><td>${esc(PHASE_LABEL[t.phase])}${stuck ? ' <span class="tag warn">詰まり</span>' : ''}</td><td class="num">${t.activeMs == null ? missing('—') : esc(duration(t.activeMs))}</td><td class="num">${num(t.tools)}</td><td class="num">${num(t.toolFailures)}</td><td class="num">${num(t.denied)}</td><td class="num">${num(t.aborts)}</td><td class="num">${num(t.errors)}</td><td class="num">${num(t.reEdits)}</td><td class="num">${num(t.compactions)}</td><td class="num">${t.nanoAiu ? esc(dec(t.nanoAiu / 1e9)) : missing('—')}</td>${verdictCells(t.index)}</tr>`;
     })
     .join('');
-  return `<div class="table-scroll"><table class="ledger small turns"><thead><tr><th scope="col" class="num">#</th><th scope="col">開始</th><th scope="col">依頼</th><th scope="col">種類</th><th scope="col">工程</th><th scope="col" class="num">実働</th><th scope="col" class="num">ツール</th><th scope="col" class="num">失敗</th><th scope="col" class="num">拒否</th><th scope="col" class="num">中断</th><th scope="col" class="num">エラー</th><th scope="col" class="num">再編集</th><th scope="col" class="num">文脈圧縮</th><th scope="col" class="num">AIU</th>${judged ? '<th scope="col">採用(LLM)</th><th scope="col">合わなかった点</th><th scope="col">工程(普段)</th>' : ''}</tr></thead><tbody>${body}</tbody></table></div>`;
+  return `<div class="table-scroll"><table class="ledger small turns"><thead><tr><th scope="col" class="num">#</th><th scope="col">開始</th><th scope="col">依頼</th><th scope="col">種類</th><th scope="col">工程</th><th scope="col" class="num">実働</th><th scope="col" class="num">ツール呼び出し</th><th scope="col" class="num">ツールの失敗</th><th scope="col" class="num">拒否</th><th scope="col" class="num">中断</th><th scope="col" class="num">エラー</th><th scope="col" class="num">再編集</th><th scope="col" class="num">文脈圧縮</th><th scope="col" class="num">AIU</th>${judged ? '<th scope="col">採用(LLM)</th><th scope="col">合わなかった点</th><th scope="col">工程(普段)</th>' : ''}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
 function timelineRow(e: TimelineEntry, anon: Anonymizer): string {
@@ -457,7 +460,7 @@ export interface DetailOptions {
 
 const DETAIL_CSS = `
 /* 依頼ごとの経過: 詰まりのあった行に左の印、0 は薄く、依頼文は折り返して読ませる */
-.ledger.turns tr.stuck td:first-child{box-shadow:inset 3px 0 0 var(--warn)}
+.ledger.turns tr.stuck > :first-child{box-shadow:inset 3px 0 0 var(--warn)}
 .ledger.turns .zero{color:var(--ink-3)}
 .ledger.turns td.req{min-width:16em;max-width:32em;white-space:normal;overflow-wrap:anywhere}
 .ledger.turns .why{display:block;font-size:.6875rem;color:var(--ink-2);white-space:normal;min-width:12em}

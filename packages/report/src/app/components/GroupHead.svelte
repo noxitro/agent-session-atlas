@@ -27,8 +27,15 @@
   } = $props();
   let exported = $state<GroupExport | null>(null);
   let pathCopied = $state(false);
+  /** 書き出しの結果の文(読み上げ用の live 領域は常に置き、文だけ差し替える) */
+  const exportedText = $derived(
+    exported
+      ? `書き出しました(${int(exported.sessions)} セッション・${int(exported.turns)} 依頼・記録(.md) ${int(exported.records)} 件${exported.missing ? `。グループのうち集計に無いセッション ${int(exported.missing)} 件は入っていません` : ''})。`
+      : '',
+  );
   function doExport(): void {
-    if (!onexport) return;
+    // 書き出し中に押しても前の結果を消さない(aria-disabled は押せてしまうため)
+    if (!onexport || busy) return;
     exported = null;
     pathCopied = false;
     void run(async () => {
@@ -144,7 +151,7 @@
         {#if group.note}<p class="desc">{group.note}</p>{:else if editable}<p class="desc none">説明はまだありません</p>{/if}
       </div>
       <div class="acts">
-        {#if editable && onexport}<button type="button" class="btn" data-testid="group-export" title="このグループの表(CSV)・集計・記録を 1 つのフォルダに書き出します" onclick={doExport} aria-disabled={busy}>{busy && mode === 'view' ? '書き出し中…' : '書き出す'}</button>{/if}
+        {#if editable && onexport}<button type="button" class="btn" data-testid="group-export" title="このグループの表(CSV)・集計・記録を 1 つのフォルダに書き出します" onclick={doExport} aria-disabled={busy}>{busy && mode === 'view' ? '書き出し中…' : '表と記録を書き出す'}</button>{/if}
         {#if editable}<button type="button" class="btn" bind:this={editBtn} data-testid="group-edit" onclick={begin}>編集</button>{/if}
         <button type="button" class="btn" onclick={clear}>絞り込みを外す</button>
       </div>
@@ -174,10 +181,11 @@
       </div>
     </div>
   {/if}
+  <p class="sr-only" role="status">{mode === 'view' ? exportedText : ''}</p>
   {#if exported && mode === 'view'}
-    <div class="exported" role="status" data-testid="group-exported">
-      <p>書き出しました({int(exported.sessions)} セッション・{int(exported.turns)} 依頼・記録 {int(exported.records)} 件{exported.missing ? `。集計に無い ${int(exported.missing)} 件は入っていません` : ''})。依頼ごとの表は turns.csv、セッションごとの表は sessions.csv です(Excel で開けます)。</p>
-      <p class="path"><code>{exported.dir}</code> <button type="button" class="link" onclick={() => void copyPath()}>{pathCopied ? '場所をコピーしました' : '場所をコピー'}</button></p>
+    <div class="exported" data-testid="group-exported">
+      <p>{exportedText}依頼ごとの表は turns.csv、セッションごとの表は sessions.csv です(Excel で開けます)。</p>
+      <p class="path"><code translate="no">{exported.dir}</code> <button type="button" class="link" onclick={() => void copyPath()}>{pathCopied ? '場所をコピーしました' : '場所をコピー'}</button></p>
     </div>
   {/if}
   {#if error}<p class="err" id="group-head-error" role="alert">{error}</p>{/if}

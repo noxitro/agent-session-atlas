@@ -9,9 +9,9 @@ import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { computeMetrics, sessionsCsv, turnsCsv, type SessionRecord, type SessionsFile } from '../../core/src/index.ts';
-import { readJudgments } from '../../judge/src/index.ts';
-import { loadGroups, parseVerdicts, transcriptFileName } from '../../report/src/index.ts';
+import { computeMetrics, type SessionRecord, type SessionsFile } from '../../core/src/index.ts';
+import { loadGroups, transcriptFileName } from '../../report/src/index.ts';
+import { buildTables } from './tables.ts';
 
 export interface GroupExportPaths {
   out: string;
@@ -39,12 +39,6 @@ export function safeDirName(name: string): string {
   return s || 'group';
 }
 
-/** 推定人手工数(判定済みのものだけ) */
-async function humanHoursOf(path: string): Promise<Map<string, number>> {
-  const j = await readJudgments(path).catch(() => null);
-  return new Map((j?.items ?? []).map((i) => [i.sessionId, i.humanEffort.hours]));
-}
-
 export async function exportGroup(p: GroupExportPaths, name: string, log: (m: string) => void = () => {}): Promise<GroupExportResult> {
   const loaded = await loadGroups(p.groups);
   const g = loaded.groups.find((x) => x.name === name);
@@ -60,11 +54,11 @@ export async function exportGroup(p: GroupExportPaths, name: string, log: (m: st
   // 前回の書き出しを消してから書く(グループから外したセッションの記録を残さない)
   await rm(dir, { recursive: true, force: true });
   await mkdir(join(dir, 'records'), { recursive: true });
-  const tj = p.turnJudgments ?? join(p.out, 'turn-judgments.json');
-  const verdicts = existsSync(tj) ? parseVerdicts(JSON.parse(await readFile(tj, 'utf8'))) : null;
-  const turns = turnsCsv(sessions, verdicts?.bySession ?? null);
-  await writeFile(join(dir, 'turns.csv'), turns);
-  await writeFile(join(dir, 'sessions.csv'), sessionsCsv(sessions, await humanHoursOf(p.judgments)));
+  // 判定のファイルが壊れていても、判定の列を付けずに書き出す(集計の表と同じ扱い)
+  const t = await buildTables(sessions, { judgments: p.judgments, turnJudgments: p.turnJudgments ?? join(p.out, 'turn-judgments.json') });
+  for (const w of t.warnings) log(`group export: 注意 ${w}`);
+  await writeFile(join(dir, 'turns.csv'), t.turns);
+  await writeFile(join(dir, 'sessions.csv'), t.sessions);
   const m = computeMetrics(sessions, { installed: file.installed });
   await writeFile(join(dir, 'metrics.json'), `${JSON.stringify(m, null, 2)}\n`);
   let records = 0;

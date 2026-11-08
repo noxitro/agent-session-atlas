@@ -3,6 +3,8 @@
 // - </script> や <!-- で要素が閉じないよう < > & をエスケープ
 // - 本文中の URL や "fetch(" が静的検査(外部参照の不在)に引っかからないよう / と ( もエスケープ
 //   (JSON の \/ と ( は JSON.parse で元の文字に戻る)
+// セッションの要約は既定値と同じ項目を落として埋め込むので(lib/pack.ts)、取り出すときは埋め戻す
+import { unpackData } from './pack.ts';
 
 export const DATA_PLACEHOLDER = '__ATLAS_DATA__';
 export const DATA_ELEMENT_ID = 'atlas-data';
@@ -30,5 +32,5 @@ export function extractEmbedded<T = unknown>(html: string): T {
   const re = new RegExp(`<script type="application/json" id="${DATA_ELEMENT_ID}">([\\s\\S]*?)</script>`);
   const m = re.exec(html);
   if (!m) throw new Error('埋め込みデータが見つかりません');
-  return JSON.parse(m[1]) as T;
+  return unpackData(JSON.parse(m[1])) as T;
 }

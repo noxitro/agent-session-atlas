@@ -4,7 +4,7 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, posix, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { computeMetrics, extract, METRICS_SCHEMA_VERSION, sessionsCsv, snapshot, turnsCsv, type MetricsFile, type SessionRecord, type SessionsFile, type SnapshotManifest } from '../../core/src/index.ts';
+import { computeMetrics, extract, METRICS_SCHEMA_VERSION, snapshot, type MetricsFile, type SessionRecord, type SessionsFile, type SnapshotManifest } from '../../core/src/index.ts';
 import {
   buildReport,
   DEFAULT_TRANSCRIPT_OPTIONS,
@@ -53,6 +53,7 @@ import {
 import type { CliOptions, GroupCliOptions, JudgeCliOptions, MemoCliOptions, TurnsCliOptions } from './args.ts';
 import { findRunningServer, openInBrowser, startServe } from './serve.ts';
 import { acquireOutLock } from './jobs.ts';
+import { buildTables } from './tables.ts';
 import { exportGroup } from './group-export.ts';
 import { CONFIG_FILE, loadConfig, phaseNames } from './config.ts';
 
@@ -310,12 +311,11 @@ export async function runMetrics(p: Paths, f: SessionFilter, log: Log, o: { tabl
 async function writeTables(p: Paths, sessions: SessionRecord[], cmd: string, log: Log): Promise<void> {
   const tables = join(p.out, 'tables');
   await mkdir(tables, { recursive: true });
-  const j = await readJudgments(p.judgments).catch(() => null);
-  const verdicts = existsSync(p.turnJudgments) ? parseVerdicts(await readJson(p.turnJudgments, '').catch(() => null)) : null;
-  const turns = turnsCsv(sessions, verdicts?.bySession ?? null);
-  await writeFile(join(tables, 'turns.csv'), turns);
-  await writeFile(join(tables, 'sessions.csv'), sessionsCsv(sessions, new Map((j?.items ?? []).map((i) => [i.sessionId, i.humanEffort.hours]))));
-  log(`${cmd}: 表 → ${join(tables, 'turns.csv')}・sessions.csv${verdicts ? '(依頼ごとの判定の列つき)' : ''}`);
+  const t = await buildTables(sessions, p);
+  for (const w of t.warnings) log(`${cmd}: 注意 ${w}`);
+  await writeFile(join(tables, 'turns.csv'), t.turns);
+  await writeFile(join(tables, 'sessions.csv'), t.sessions);
+  log(`${cmd}: 表 → ${join(tables, 'turns.csv')}・sessions.csv${t.withVerdicts ? '(依頼ごとの判定の列つき)' : ''}`);
 }
 
 export interface BuildOptions extends SessionFilter {

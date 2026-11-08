@@ -14,6 +14,7 @@ import { createAnonymizer, identityAnonymizer, type Anonymizer } from './lib/ano
 import { renderDetailHtml } from './detail.ts';
 import { GLOSSARY_FILE, renderGlossaryHtml } from './glossary-page.ts';
 import { embedData } from './lib/embed.ts';
+import { packSummary } from './lib/pack.ts';
 import type { JudgmentsIndex } from './lib/judgments.ts';
 import { verdictTuples, type VerdictIndex } from './lib/verdicts.ts';
 import type { SessionGroup } from './lib/groups.ts';
@@ -230,7 +231,8 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
   };
 
   await mkdir(input.outDir, { recursive: true });
-  const html = embedData(template, data);
+  // セッションの要約は既定値と同じ項目を落として埋め込む(読むときに埋め戻す。lib/pack.ts)
+  const html = embedData(template, { ...data, sessions: data.sessions.map(packSummary) });
   const htmlPath = join(input.outDir, 'atlas.html');
   await writeFile(htmlPath, html);
   // 用語の説明は 1 枚だけ別ページ(atlas.html と詳細ページからリンク)

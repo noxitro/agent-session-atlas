@@ -4,11 +4,21 @@
   import { MISMATCH_LABEL, MISMATCHES } from '../../../../core/src/turns.ts';
   import { dateTime, int, percent } from '../../lib/format.ts';
   import { questionDecided, workDecided, type OutcomeCounts, type VerdictAggregate } from '../../lib/verdicts.ts';
+  import { judgeHint } from '../../lib/hints.ts';
 
-  let { agg, model, ranAt }: { agg: VerdictAggregate | null; model: string | null; ranAt: string | null } = $props();
+  let {
+    agg,
+    model,
+    ranAt,
+    editable = false,
+    anonymized = false,
+  }: { agg: VerdictAggregate | null; model: string | null; ranAt: string | null; editable?: boolean; anonymized?: boolean } = $props();
 
   const rows = $derived(agg ? agg.phases.map((name, i) => ({ name, c: agg.byPhase[i] })).filter((r) => r.c.judged > 0) : []);
   const pct = (part: number, whole: number): string => (whole > 0 ? percent(part, whole) : '—');
+  /** 最後の判定(モデルと日時の分かる方だけ) */
+  const last = $derived([model ? `モデル ${model}` : '', ranAt ? dateTime(ranAt) : ''].filter(Boolean).join('、'));
+  const anyMismatch = $derived(!!agg && MISMATCHES.some((m) => agg.total.byMismatch[m] > 0));
 </script>
 
 {#snippet outcomeCells(c: OutcomeCounts)}
@@ -25,17 +35,21 @@
   <td class="num">{int(c.byOutcome.unknown)}</td>
 {/snippet}
 
-<h3 class="sub" id="verdicts-h">採用(LLM の判定)</h3>
+<h3 class="sub" id="verdicts-h">採用(LLM の判定)<a class="term" href="glossary.html#turn-verdict">用語の説明</a></h3>
 {#if !agg || agg.judged === 0}
   <p class="note" data-testid="verdicts-none">
-    {#if agg}この条件の依頼はまだ判定していません。{:else}依頼ごとの採用はまだ判定していません。{/if}右上の「判定する…」で「依頼ごとの採用」を選ぶと、M365 Copilot に貼るか GitHub Copilot CLI で判定できます。
+    {#if agg}この条件の依頼はまだ判定していません。{:else}依頼ごとの採用はまだ判定していません。{/if}{judgeHint('依頼ごとの採用', { editable, anonymized })}{#if editable}M365 Copilot に貼る方法と GitHub Copilot CLI で判定する方法があります。{/if}
   </p>
 {:else}
   <p class="note">
-    {int(agg.judged)} 依頼({int(agg.sessions)} セッション)を、次の依頼の文と拒否・中断から LLM が判定したものです(推定)。{model || ranAt ? `最後の判定: ${model ? `モデル ${model}、` : ''}${ranAt ? dateTime(ranAt) : ''}。` : ''}採用率は、判定できた作業の依頼のうち「そのまま採用」の割合です。
+    {int(agg.judged)} 依頼({int(agg.sessions)} セッション)を、次の依頼の文と拒否・中断から LLM が判定したものです(推定)。{last ? `最後の判定: ${last}。` : ''}採用率は、判定できた作業の依頼のうち「そのまま採用」の割合です(判定不能は分母に入れません)。「工程(普段)」は、設定した普段の工程名に LLM が当てはめたもので、上の表の「工程」(使ったツールから決めたもの)とは別です。
   </p>
   <div class="table-scroll">
     <table class="ledger small" data-testid="verdict-table" aria-labelledby="verdicts-h">
+      <colgroup><col /><col /></colgroup>
+      <colgroup span="5"></colgroup>
+      <colgroup span="4"></colgroup>
+      <colgroup><col /></colgroup>
       <thead>
         <tr>
           <th scope="col" rowspan="2">工程(普段)</th>
@@ -68,6 +82,9 @@
   </div>
 
   <h3 class="sub" id="mismatch-h">合わなかった点 × 工程(普段)</h3>
+  {#if !anyMismatch}
+    <p class="note">修正・不採用・的外れと判定された依頼はありません。</p>
+  {:else}
   <div class="table-scroll">
     <table class="ledger small" data-testid="mismatch-table" aria-labelledby="mismatch-h">
       <thead>
@@ -82,7 +99,7 @@
           {#if agg.total.byMismatch[m] > 0}
             <tr>
               <th scope="row">{MISMATCH_LABEL[m]}</th>
-              {#each rows as r (r.name)}<td class="num">{r.c.byMismatch[m] ? int(r.c.byMismatch[m]) : '—'}</td>{/each}
+              {#each rows as r (r.name)}<td class="num">{#if r.c.byMismatch[m]}{int(r.c.byMismatch[m])}{:else}<span class="zero">0</span>{/if}</td>{/each}
               <td class="num">{int(agg.total.byMismatch[m])}</td>
             </tr>
           {/if}
@@ -90,7 +107,7 @@
       </tbody>
     </table>
   </div>
-  {#if MISMATCHES.every((m) => agg.total.byMismatch[m] === 0)}<p class="note">修正・不採用・的外れと判定された依頼はありません。</p>{/if}
+  {/if}
 {/if}
 
 <style>
@@ -103,6 +120,14 @@
     font-size: 0.6875rem;
     font-weight: normal;
     color: var(--ink-3);
+  }
+  .zero {
+    color: var(--ink-3);
+  }
+  .term {
+    margin-left: 8px;
+    font-size: 0.75rem;
+    font-weight: normal;
   }
   .strong {
     font-weight: 600;
