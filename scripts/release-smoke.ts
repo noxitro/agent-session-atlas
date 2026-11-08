@@ -20,8 +20,8 @@ const pkg = process.argv[2] ? resolve(process.argv[2]) : fail('使い方: node s
 if (!existsSync(join(pkg, 'package.json'))) fail(`${pkg} に package.json がありません`);
 
 const bats = readdirSync(pkg).filter((f) => f.endsWith('.bat'));
-// Phase 14: 利用者が起動するのは atlas.bat だけ(他の操作は画面とコマンドから)
-if (bats.join(',') !== 'atlas.bat') fail(`*.bat は atlas.bat だけのはずです(入っているもの: ${bats.join(', ') || 'なし'})`);
+// Phase 14: 利用者が起動するのは atlas.bat(集計と画面)と setup.bat(初期設定)だけ(他の操作は画面とコマンドから)
+if (bats.sort().join(',') !== 'atlas.bat,setup.bat') fail(`*.bat は atlas.bat と setup.bat だけのはずです(入っているもの: ${bats.join(', ') || 'なし'})`);
 for (const f of bats) {
   if (/(^|[^\r])\n/.test(readFileSync(join(pkg, f), 'utf8'))) fail(`${f} に CRLF でない改行があります(.gitattributes の eol を確認)`);
 }
@@ -31,6 +31,11 @@ if (readFileSync(join(pkg, 'package.json'), 'utf8').includes('\r')) fail('packag
 if (depsFresh(pkg)) fail('node_modules が無いのに deps-fresh が「揃っている」と判定しました');
 execSync('npm install --no-audit --no-fund', { cwd: pkg, stdio: 'inherit' });
 if (!depsFresh(pkg)) fail('npm install のあとも deps-fresh が「足りない」と判定しました');
+
+// setup.bat が呼ぶ初期設定: vault なし・工程名は既定・最後に「n」で、書かずに正常に終わる
+const setup = spawnSync(process.execPath, [join('packages', 'cli', 'src', 'setup.ts')], { cwd: pkg, input: '\n\nn\n', encoding: 'utf8' });
+if (setup.status !== 0 || !setup.stdout.includes('書きませんでした')) fail(`初期設定(setup.ts)が通りません: ${setup.stderr}${setup.stdout}`);
+if (existsSync(join(pkg, 'atlas.config.json'))) fail('初期設定で「n」と答えたのに atlas.config.json ができました');
 
 const template = join(pkg, 'packages', 'report', 'dist', 'template.html');
 if (!existsSync(template)) fail('ビルド済みのテンプレートが入っていません');

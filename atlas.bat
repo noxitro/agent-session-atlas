@@ -2,7 +2,7 @@
 rem Copilot Session Atlas: ~/.copilot を集計して out\atlas.html と各セッションの記録(out\sessions\<id>.md)を作り、ローカルサーバ(127.0.0.1)で開く
 rem この窓はブラウザを閉じるまで残ります(閉じるとサーバも止まります)。共有するときは atlas.bat --anonymize で作った伏せ字版を渡します
 rem 元データは書き換えません(out\snapshot に複製してから読みます)
-rem 起動後の操作(集計し直す・工数の判定・記録と全文記録の表示)は画面から行います。起動用の bat はこれ 1 つです
+rem 起動後の操作(集計し直す・工数の判定・記録と全文記録の表示)は画面から行います。起動用の bat はこれ 1 つです(wiki などの初期設定は setup.bat)
 chcp 65001 >nul
 cd /d "%~dp0"
 

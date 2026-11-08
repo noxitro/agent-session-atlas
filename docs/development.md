@@ -47,7 +47,7 @@ npm run audit:ui -- out --json audit.json --shots shots
 
 - **CI**(`.github/workflows/ci.yml`): `main` への push と PR ごとに、Windows と Linux × Node.js 24 と 26 の 4 通りで `npm ci` → `typecheck` → `test` → `build:report` → `e2e` → 画面の操作の検査 → 配布物の動作確認を実行します。E2E はテスト時に生成する架空の fixture だけを使い(追加の手順は不要)、実データ(`ATLAS_LIVE`)や実際の LLM 判定は動かしません。Actions タブから手動でも実行できます。
   - 画面の操作の検査(`ui/report.test.ts`、Node.js 24 の 2 通りだけ): Playwright の Chromium で、一覧のチェックで集計し直す・グループの作成 / 選択 / 名前と説明の編集 / 削除・詳細ページでメモを書いて保存・用語ページとの行き来を実際に押して確かめ、どの画面でもページ内の例外とコンソールのエラーが無いことを見ます。
-  - 配布物の動作確認: リリースと同じ中身(`scripts/pack-release.ts`)を作り、`atlas.bat` と同じ順で動かします(`scripts/release-smoke.ts`。`*.bat` が CRLF か → 依存の判定 → `npm install` → 架空の fixture で `atlas all`(セッション記録ができるか)→ 同梱テンプレートを作り直していないか)。手元では `npm run build:report` のあと次のように試せます(コミット済みの内容だけが入ります)。
+  - 配布物の動作確認: リリースと同じ中身(`scripts/pack-release.ts`)を作り、`atlas.bat` と同じ順で動かします(`scripts/release-smoke.ts`。`*.bat` が CRLF か → 依存の判定 → `npm install` → 初期設定(`setup.ts`)が書かずに終わるか → 架空の fixture で `atlas all`(セッション記録ができるか)→ 同梱テンプレートを作り直していないか)。手元では `npm run build:report` のあと次のように試せます(コミット済みの内容だけが入ります)。
 
     ```
     node scripts/pack-release.ts agent-session-atlas-smoke <作業用フォルダ>

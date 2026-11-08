@@ -80,6 +80,7 @@ agent-session-atlas/
   docs/                     PLAN.md
   out/                      生成物(git 管理外): snapshot/ sessions.json metrics.json bundle/ judgments.json atlas.html sessions/<id>.html sessions/<id>.md
   atlas.bat(Phase 14 から起動用の bat はこれ 1 つ。他の操作は serve の画面とコマンド)
+  setup.bat(2026-11-08 から。初期設定: atlas.config.json の wikis と phases を対話で書く。集計はしない)
   README.md(日本語)
 ```
 
@@ -831,6 +832,16 @@ ui-ux-pro-max の照合(`--domain ux`、検索語「sidebar saved views labels�
 - **作ったもの**: `SessionRecord.availableSkills`(sessions.json の schemaVersion 7。一覧が無いセッションは null)。詳細ページの「指示ファイル」の節を「指示文と skill」にし、指示文の表と skill の表(使えた skill + 一覧に無い呼び出し、置き場所、呼んだ回数。呼んだものが先)を置く。伏せ字版では使えた skill の名前を出さず件数だけ(呼ばなかったプロジェクトの skill 名も含むため)。目次の「指示文と skill」と節の見出しの横のリンクは `instructions.html#session=<id>` を開き、指示文のページはそのセッションで使われた版だけを残す(版に `data-sessions`、帯に件数と「すべて表示」「セッションの詳細に戻る」)。
 - **検査**: 単体(抽出: 名前と置き場所、一覧なしは null、切れた一覧、複数のシステムメッセージの和集合 / 詳細ページ: 並び・回数・一覧に無し・一覧なしの文言・伏せ字 / 指示文のページ: data-sessions と名前の表)、E2E(fixture に指示文と使えた skill の一覧を足した。schemaVersion 7、詳細ページの件数の文)、ui に e(詳細ページから開くと他のセッションだけの項目と版が隠れ、「すべて表示」で戻り、詳細に戻れる)。陽性対照: 項目を隠す処理を外すと e が落ちる、版を隠す処理を外すと e が落ちる、抽出を常に null にすると単体 3 件が落ちる。実データの一時コピーで 1440 / 390px を撮り、横にはみ出さず、ページの例外・コンソールのエラーが無いことを見た。
 - **残したもの**: `custom` の意味(どこに置いた skill か)は公式の説明を確かめていないので、ログの値のまま出す。使えたが呼ばなかった skill の本文は記録に無いので指示文のページには出ない。
+
+### 初期設定の setup.bat(2026-11-08)
+
+利用者の依頼「wiki など初期設定をするための setup.bat を作って」への答え。Phase 14 の「起動用の bat は atlas.bat 1 つ」は集計と画面の起動の話として残し、設定だけをする bat を 1 つ足した(`launchers.test.ts` の一覧も atlas.bat・setup.bat の 2 つにした)。
+
+- **作ったもの**: `setup.bat` → `packages/cli/src/setup.ts`。依存を入れ(atlas.bat と同じ判定)、vault(ドラッグしたフォルダはフォルダ名だけにする。`wiki/` があれば個別ページの場所として勧め、`index.md` が無ければ索引の名前を尋ねる。インストール済みの skill のうち名前に wiki を含むものを 1 度だけ候補に出す)と普段の工程名を尋ね、`parseConfig` を通してから書く。既存は `.bak` に退避し、「このままにする」を既定にする。設定にある項目は wikis と phases だけなので、尋ねるのもこの 2 つ。
+- **決めたこと**: 入力は `rl.question` ではなく行の反復子で読む(入力を流し込んだときに、尋ねる前に届いた行を落として止まったため。実測)。入力が途中で終わったら書かずに失敗にする(空の答えは「既定のまま書く」になるため)。
+- **採らなかった案**: `~/.claude/wiki-vaults.json` などの他ツールの設定から vault を推測する(Copilot の利用者には無いもので、置き場所も決まっていない)。終わった後に続けて集計する(設定を見直してから atlas.bat を押せばよく、尋ねる項目が増える)。
+- **検査**: 単体 `setup.test.ts` 4 件(フォルダ名への変換と中の確認、答えから書いた設定を `loadConfig` で読める、既存の維持と .bak・工程名の誤りの尋ね直し、空の設定と書かない選択)。`setup.bat` を PowerShell から入力を流して実行し、最後の確認で「n」を答えて書かずに終わることを見た(手元の atlas.config.json は変えていない)。
+- **残したもの**: 実際の黒い窓で日本語を打ち込む操作と、フォルダのドラッグは試していない。
 
 ## 決めたこと・採らなかった案
 

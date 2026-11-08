@@ -71,7 +71,7 @@ npm run atlas -- --help                    # 使い方
 
 ## wiki の指定
 
-llm-wiki の参照は、ツール呼び出しの引数に vault の場所が現れたものを数えます。**vault を指定しないと wiki は集計せず、レポートの件数は 0 のままです。** 集計するときは、リポジトリ直下に `atlas.config.json` を置いて vault を指定してください(雛形は `atlas.config.example.json`。`atlas.bat` と画面の「集計し直す」もこの設定を読みます)。
+llm-wiki の参照は、ツール呼び出しの引数に vault の場所が現れたものを数えます。**vault を指定しないと wiki は集計せず、レポートの件数は 0 のままです。** 集計するときは、リポジトリ直下に `atlas.config.json` を置いて vault を指定してください(`setup.bat` が尋ねながら書きます。雛形は `atlas.config.example.json`。`atlas.bat` と画面の「集計し直す」もこの設定を読みます)。
 
 ```json
 {

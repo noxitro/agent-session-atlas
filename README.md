@@ -22,11 +22,21 @@ GitHub Copilot のセッションログ(`%USERPROFILE%\.copilot`)を手元で集
 
 前提: Node.js 24 以上。
 
+0. (初回だけ・任意)リポジトリ直下の `setup.bat` をダブルクリックして、初期設定をします(下記「[初期設定(setup.bat)](#初期設定setupbat)」)。llm-wiki の参照を数えないなら飛ばして構いません。
 1. リポジトリ直下の `atlas.bat` をダブルクリックします(初回だけ `npm install` が走ります)。
 2. 集計が終わると、既定のブラウザにレポートが開きます。約 800 セッションで十数秒かかります。2 回目以降は、変わっていないファイルの複製を省きます。
 3. 読み終わったらブラウザを閉じます。黒い窓とローカルサーバ(`127.0.0.1` だけに公開)も止まります。
 
 もう一度 `atlas.bat` を実行すると集計し直します。[GitHub Release](https://github.com/noxitro/agent-session-atlas/releases) の zip を展開した場合も、同じく `atlas.bat` をダブルクリックするだけです。
+
+### 初期設定(setup.bat)
+
+`setup.bat` は、依存を入れ(初回だけ `npm install`)、次の 2 つを順に尋ねて、リポジトリ直下に `atlas.config.json` を書きます。集計はしません。終わったら `atlas.bat` をダブルクリックします。
+
+1. **llm-wiki の vault**: vault のフォルダを黒い窓にドラッグするか、フォルダ名を入力します。フォルダ名だけで登録し(フルパスより確実です)、中に `wiki` フォルダがあれば個別ページの場所として勧めます。インストール済みの skill のうち、名前に `wiki` を含むものは「wiki の skill」として数えるか尋ねます。vault は続けて複数入れられます。何も入れずに Enter で次へ進みます。
+2. **普段の工程名**: 依頼ごとの採用の判定で使う工程名です。Enter で今のまま(初回は既定)になります。変えるときは `設計 / 実装 / テスト` のように区切って入力します。
+
+最後に書き込む内容を表示し、確認してから書きます。前の設定は `atlas.config.json.bak` に残します。もう一度実行すると、今の設定を見ながら直せます。手で書くときの項目は [docs/cli.md の「wiki の指定」](docs/cli.md#wiki-の指定) にあります。
 
 ### 画面でできること
 
@@ -72,7 +82,7 @@ npm run atlas -- --help                    # 使い方
 
 ## llm-wiki の参照を数えるとき
 
-**vault を指定しないと、llm-wiki の参照は 0 件のままです。** リポジトリ直下に `atlas.config.json` を置いて、vault のフォルダ名を書いてください(雛形は `atlas.config.example.json`)。
+**vault を指定しないと、llm-wiki の参照は 0 件のままです。** `setup.bat` で指定するか、リポジトリ直下に `atlas.config.json` を置いて、vault のフォルダ名を書いてください(雛形は `atlas.config.example.json`)。
 
 ```json
 { "wikis": ["my-wiki"] }

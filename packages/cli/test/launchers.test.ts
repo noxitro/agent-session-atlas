@@ -10,8 +10,8 @@ const ROOT = resolve(import.meta.dirname, '..', '..', '..');
 const BATS = readdirSync(ROOT).filter((f) => f.endsWith('.bat'));
 
 describe('*.bat', () => {
-  it('リポジトリ直下にあるのは atlas.bat だけ(Phase 14: 他の操作は画面とコマンドから)', () => {
-    expect(BATS).toEqual(['atlas.bat']);
+  it('リポジトリ直下にあるのは atlas.bat(集計と画面)と setup.bat(初期設定)だけ(Phase 14: 他の操作は画面とコマンドから)', () => {
+    expect(BATS).toEqual(['atlas.bat', 'setup.bat']);
   });
 
   it.each(BATS)('%s は改行がすべて CRLF で、BOM が無い', (f) => {
