@@ -17,7 +17,9 @@
     "e2e": "vitest run --project e2e",
     "fixtures": "node scripts/synthetic-fixtures.ts",
     "ui": "vitest run --project ui",
-    "audit:ui": "node scripts/ui-audit.ts"
+    "audit:ui": "node scripts/ui-audit.ts",
+    "smoke": "node scripts/smoke-local.ts",
+    "ci": "npm run typecheck && npm test && npm run build:report && npm run e2e && npm run ui && npm run smoke"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",

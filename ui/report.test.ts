@@ -11,7 +11,8 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, sep } from 'node:path';
 import { chromium, type Browser, type Locator, type Page } from 'playwright';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { shotOnFailure } from './failure-shot.ts';
 import { startServe, type ServeHandle } from '../packages/cli/src/serve.ts';
 import { buildFixtureHome, ROOT } from '../e2e/fixture-home.ts';
 
@@ -72,6 +73,8 @@ describe('画面の操作', () => {
     await server?.close('テスト終了');
     await close?.();
   });
+  // 落ちたらその時点の画面を out/ui-failures/ に残す(CI は成果物として上げる)
+  beforeEach((ctx) => shotOnFailure(ctx, () => page));
   afterEach(() => {
     // 次のテストに持ち越さない(1 件の失敗で後のテストがすべて落ちて、どこで起きたか分からなくならないように)
     expect(problems.splice(0)).toEqual([]);
