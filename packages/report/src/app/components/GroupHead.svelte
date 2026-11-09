@@ -4,11 +4,12 @@
   // サイドバーのグループの一覧は切り替えだけにする(選ぶたびに操作の行が差し込まれて下の行がずれ、削除が改名と同じ重さで並んでいたため)
   // アップロード(serve のとき): グループのセッションの生ログを、決めておいた基底フォルダの <グループ名>\<セッション id>\ に写す。
   // 先は見出しの下に 1 行で見せ、「場所を変える…」で同じ見出しの中に記入欄を開く(エクスプローラーで選ぶ / パスを入力)。
+  // 写す前にサーバが大きさと秘密らしい文字列を調べ、毎回確認を出す(送り先・件数・大きさ。秘密らしい文字列があれば警告)。写している間は進み具合(バイト数)を出す。
   import { untrack } from 'svelte';
   import { int } from '../../lib/format.ts';
   import { safeDirName } from '../../lib/groups.ts';
   import type { ReportGroup } from '../../lib/types.ts';
-  import type { GroupExport, GroupUpload, UploadHandlers } from '../api.ts';
+  import type { GroupExport, GroupUpload, UploadCheck, UploadHandlers, UploadProgress } from '../api.ts';
 
   let {
     group,
@@ -34,7 +35,11 @@
   let exported = $state<GroupExport | null>(null);
   let uploaded = $state<GroupUpload | null>(null);
   /** 何をしているか(ボタンの文言を「…中」にする) */
-  let task = $state<'export' | 'upload' | 'open' | 'pick' | 'root' | null>(null);
+  let task = $state<'export' | 'check' | 'upload' | 'open' | 'pick' | 'root' | null>(null);
+  /** 写す前の点検の結果(確認を出しているとき) */
+  let checked = $state<UploadCheck | null>(null);
+  /** 写している途中の進み具合 */
+  let progress = $state<UploadProgress | null>(null);
   /** アップロード先を決めた後に、そのままアップロードする(先が未定のまま「アップロード」を押したとき) */
   let uploadAfterRoot = $state(false);
   let rootInput = $state('');
@@ -52,11 +57,19 @@
   /** アップロードの結果の文(読み上げにも使う) */
   const uploadedText = $derived(
     uploaded
-      ? `アップロードしました(${int(uploaded.uploaded)} セッション${uploaded.memos ? `・メモ ${int(uploaded.memos)} 件` : ''}${uploaded.replaced ? `。うち ${int(uploaded.replaced)} 件は前に写したものを置き換え` : ''})。グループの説明とセッションの一覧は README.md にあります。` +
+      ? `アップロードしました(${int(uploaded.uploaded)} セッション${uploaded.memos ? `・メモ ${int(uploaded.memos)} 件` : ''}${uploaded.replaced ? `。うち ${int(uploaded.replaced)} 件は前に写したものを置き換え` : ''})。タスクタグの説明とセッションの一覧は README.md にあります。` +
           (uploaded.snapshotAt ? `写したのは前回の集計(${when(uploaded.snapshotAt)})の時点のログです。` : '') +
           (uploaded.missing.length ? `前回の集計に無いセッション ${int(uploaded.missing.length)} 件は写していません。` : '')
       : '',
   );
+  /** 確認に「大きいもの」を出す目安(serve の UPLOAD_CONFIRM_BYTES と同じ) */
+  const CONFIRM_BYTES = 100 * 1024 * 1024;
+  /** 確認から送り先を選び直す(決めたら点検し直して、また確かめる) */
+  function changeRootFromConfirm(): void {
+    checked = null;
+    beginRoot(true);
+  }
+  const size = (b: number): string => (b < 1024 * 1024 ? `${int(Math.ceil(b / 1024))} KB` : `${(b / 1024 / 1024).toFixed(b < 10 * 1024 * 1024 ? 1 : 0)} MB`);
   function doUpload(): void {
     if (!upload || busy) return;
     if (!upload.setting.root) {
@@ -66,10 +79,53 @@
     }
     exported = null;
     uploaded = null;
+    task = 'check';
+    let c: UploadCheck | null = null;
+    void run(
+      async () => {
+        c = await upload.check(group.name);
+      },
+      () => {
+        if (!c) return;
+        // 写す前に毎回、送り先と件数・大きさを見せて確かめる。秘密らしい文字列があれば焦点は「やめる」、無ければ「写す」
+        checked = c;
+        mode = 'confirm';
+        const warn = c.secrets.count > 0;
+        requestAnimationFrame(() => rootEl?.querySelector<HTMLButtonElement>(warn ? 'button[data-cancel]' : 'button[data-confirm]')?.focus());
+      },
+    );
+  }
+  /** 確認をやめて見出しに戻る(何も写さない) */
+  function leaveConfirm(): void {
+    checked = null;
+    mode = 'view';
+    error = '';
+    requestAnimationFrame(() => uploadBtn?.focus());
+  }
+  function copy(): void {
+    if (!upload || busy) return;
+    const u = upload;
+    checked = null;
+    mode = 'view';
     task = 'upload';
+    progress = null;
+    // 写している間、サーバに進み具合を尋ねる(写し終わるまで返事が来ないため)
+    const timer = setInterval(() => {
+      void u.progress(group.name).then(
+        (p) => {
+          if (p && task === 'upload') progress = p;
+        },
+        () => {},
+      );
+    }, 500);
     void run(async () => {
-      uploaded = await upload.run(group.name);
-    }, () => {});
+      try {
+        uploaded = await u.run(group.name);
+      } finally {
+        clearInterval(timer);
+        progress = null;
+      }
+    }, () => requestAnimationFrame(() => uploadBtn?.focus()));
   }
   function openUploaded(): void {
     if (!upload || busy) return;
@@ -121,7 +177,7 @@
   /** 書き出しの結果の文(読み上げ用の live 領域は常に置き、文だけ差し替える) */
   const exportedText = $derived(
     exported
-      ? `書き出しました(${int(exported.sessions)} セッション・${int(exported.turns)} 依頼・記録(.md) ${int(exported.records)} 件${exported.missing ? `。グループのうち集計に無いセッション ${int(exported.missing)} 件は入っていません` : ''})。`
+      ? `書き出しました(${int(exported.sessions)} セッション・${int(exported.turns)} 依頼・記録(.md) ${int(exported.records)} 件${exported.missing ? `。タスクタグのうち集計に無いセッション ${int(exported.missing)} 件は入っていません` : ''})。`
       : '',
   );
   function doExport(): void {
@@ -145,7 +201,7 @@
     }
   }
 
-  let mode = $state<'view' | 'edit' | 'delete' | 'root'>('view');
+  let mode = $state<'view' | 'edit' | 'delete' | 'root' | 'confirm'>('view');
   let name = $state('');
   let note = $state('');
   let error = $state('');
@@ -172,6 +228,7 @@
     e.stopPropagation();
     if (mode === 'delete') backToEdit();
     else if (mode === 'root') leaveRoot();
+    else if (mode === 'confirm') leaveConfirm();
     else leave();
   }
   async function run(action: () => Promise<void>, after: () => void): Promise<void> {
@@ -236,11 +293,49 @@
     void groupName;
     exported = null;
     uploaded = null;
+    checked = null;
+    resumed = false;
     // mode と rootEl は依存に入れない(入れると「編集」を押した直後にこの effect が走って表示に戻ってしまう)
     if (!editable) untrack(() => mode !== 'view' && rootEl?.contains(document.activeElement) && focusMain());
     mode = 'view';
     error = '';
+    // 写している途中に別のページへ移って戻った(または開き直した)ときは、サーバで続いている進み具合を出し、終わるまで待つ
+    // upload は依存に入れない(先を選び直すたびに作り直され、結果の表示や記入欄が消えてしまう)
+    if (editable) untrack(() => upload && resumeUpload(groupName));
   });
+  /** 戻ったときに写している途中だったアップロードの、進み具合を出す(この画面から始めたものは copy() が出す) */
+  let resumed = $state(false);
+  function resumeUpload(name: string): void {
+    const u = upload;
+    if (!u || busy) return;
+    void u.progress(name).then((p) => {
+      if (!p || busy || name !== group.name) return;
+      busy = true;
+      task = 'upload';
+      progress = p;
+      const timer = setInterval(() => {
+        void u.progress(name).then(
+          (q) => {
+            if (q) {
+              progress = q;
+              return;
+            }
+            clearInterval(timer);
+            progress = null;
+            task = null;
+            busy = false;
+            resumed = true;
+          },
+          () => {
+            clearInterval(timer);
+            progress = null;
+            task = null;
+            busy = false;
+          },
+        );
+      }, 500);
+    }, () => {});
+  }
   const count = $derived(group.present === group.ids.length ? `${int(group.ids.length)} 件` : `${int(group.present)} / ${int(group.ids.length)} 件`);
 </script>
 
@@ -249,13 +344,13 @@
   {#if mode === 'view'}
     <div class="line">
       <div class="what">
-        <p class="k">グループで絞り込み中</p>
+        <p class="k">タスクタグで絞り込み中</p>
         <h2 id="group-head-h"><span class="name">{group.name}</span><span class="cnt" aria-hidden="true" title={group.present === group.ids.length ? undefined : '記録にあるのは左の件数だけ'}>{count}</span><span class="sr-only">{group.present === group.ids.length ? `${int(group.ids.length)} 件` : `${int(group.ids.length)} 件のうち記録にあるのは ${int(group.present)} 件`}</span></h2>
         {#if group.note}<p class="desc">{group.note}</p>{:else if editable}<p class="desc none">説明はまだありません</p>{/if}
       </div>
       <div class="acts">
-        {#if editable && upload}<button type="button" class="btn primary" bind:this={uploadBtn} data-testid="group-upload" title="このグループのセッションの生ログを、アップロード先のグループ名のフォルダへ写します(同じセッションは置き換え)" onclick={doUpload} aria-disabled={busy}>{task === 'upload' ? 'アップロード中…' : 'アップロード'}</button>{/if}
-        {#if editable && onexport}<button type="button" class="btn" data-testid="group-export" title="このグループの表(CSV)・集計・記録を 1 つのフォルダに書き出します" onclick={doExport} aria-disabled={busy}>{task === 'export' ? '書き出し中…' : '表と記録を書き出す'}</button>{/if}
+        {#if editable && upload}<button type="button" class="btn primary" bind:this={uploadBtn} data-testid="group-upload" title="このタスクタグのセッションの生ログを、アップロード先のタスクタグ名のフォルダへ写します(同じセッションは置き換え)" onclick={doUpload} aria-disabled={busy}>{task === 'check' ? '確かめています…' : task === 'upload' ? 'アップロード中…' : 'アップロード'}</button>{/if}
+        {#if editable && onexport}<button type="button" class="btn" data-testid="group-export" title="このタスクタグの表(CSV)・集計・記録を 1 つのフォルダに書き出します" onclick={doExport} aria-disabled={busy}>{task === 'export' ? '書き出し中…' : '表と記録を書き出す'}</button>{/if}
         {#if editable}<button type="button" class="btn" bind:this={editBtn} data-testid="group-edit" onclick={begin}>編集</button>{/if}
         <button type="button" class="btn" onclick={clear}>絞り込みを外す</button>
       </div>
@@ -268,10 +363,43 @@
         {:else}<span class="none">まだ決まっていません</span>{/if}
         <button type="button" class="link" data-testid="group-upload-root" onclick={() => beginRoot(false)} disabled={busy}>{destDir ? '場所を変える…' : '場所を決める…'}</button>
       </p>
+      {#if task === 'upload'}
+        <div class="progress" data-testid="group-upload-progress">
+          {#if progress && progress.bytes}
+            <progress max={progress.bytes} value={progress.copied} aria-label="写した量"></progress>
+            <p>写しています: {int(progress.done)} / {int(progress.sessions)} セッション({size(progress.copied)} / {size(progress.bytes)})</p>
+          {:else}
+            <progress aria-label="写した量"></progress>
+            <p>写しています…</p>
+          {/if}
+        </div>
+      {/if}
     {/if}
+  {:else if mode === 'confirm' && checked}
+    <div class="confirm" role="group" aria-labelledby="group-head-h" data-testid="group-upload-confirm">
+      <h2 id="group-head-h" class="q">「{group.name}」を写す前に確かめてください</h2>
+      <p class="desc" data-testid="group-upload-confirm-dest">送り先: <code translate="no">{checked.dir}{sep(checked.dir)}</code> <button type="button" class="link" onclick={changeRootFromConfirm}>送り先を変える…</button></p>
+      <p class="desc">{int(checked.sessions)} セッション・合計 {size(checked.bytes)}({int(checked.files)} ファイル){checked.replace ? `。うち ${int(checked.replace)} 件は前に写したものを置き換えます` : ''}。</p>
+      {#if checked.largest.length && checked.bytes > CONFIRM_BYTES}
+        <p class="desc">大きいもの: {#each checked.largest.slice(0, 3) as x, i (x.id + x.path)}{i ? '、' : ''}<code translate="no">{x.id.slice(0, 8)}…/{x.path}</code> {size(x.bytes)}{/each}</p>
+      {/if}
+      {#if checked.secrets.count}
+        <div class="warn" data-testid="group-upload-secrets">
+          <p><strong>秘密らしい文字列が {int(checked.secrets.count)} 件あります</strong>({checked.secrets.kinds.map((k) => `${k.label} ${int(k.count)}`).join('・')})。偽陽性もありえます。生ログはそのまま写るので、写した先で見られる人を確かめてください。本物の鍵なら、写すかどうかに関わらず作り直してください。</p>
+          <ul>
+            {#each checked.secrets.files as f (f.id + f.path)}<li><code translate="no">{f.id.slice(0, 8)}…/{f.path}</code> {int(f.count)} 件</li>{/each}
+          </ul>
+          {#if checked.secrets.skipped}<p class="note">バイナリのファイル {int(checked.secrets.skipped)} 件(session.db など)は中身を調べていません。</p>{/if}
+        </div>
+      {/if}
+      <div class="edit-acts">
+        <button type="button" class="btn" data-cancel onclick={leaveConfirm}>やめる</button>
+        <button type="button" class={checked.secrets.count ? 'btn danger' : 'btn primary'} data-confirm onclick={copy}>{checked.secrets.count ? 'それでも写す' : '写す'}</button>
+      </div>
+    </div>
   {:else if mode === 'root' && upload}
     <form class="edit root" aria-label="アップロード先" onsubmit={submitRoot}>
-      <p class="k">アップロード先(すべてのグループで共通)</p>
+      <p class="k">アップロード先(すべてのタスクタグで共通)</p>
       <h2 id="group-head-h" class="sr-only">アップロード先を決める</h2>
       <p class="desc">選んだフォルダの中に「{safeDirName(group.name)}」のフォルダを作り、セッションごとのフォルダ(名前はセッション ID)を写します。同じセッションは置き換え、ほかのフォルダには触れません。</p>
       <div class="inputs">
@@ -285,24 +413,24 @@
       {#if task === 'pick'}<p class="desc">フォルダを選ぶ画面を開きました。見えないときはタスクバーを確かめてください。</p>{/if}
     </form>
   {:else if mode === 'edit'}
-    <form class="edit" aria-label="グループの編集" onsubmit={submit}>
-      <p class="k">グループの編集</p>
-      <h2 id="group-head-h" class="sr-only">グループ「{group.name}」の編集</h2>
+    <form class="edit" aria-label="タスクタグの編集" onsubmit={submit}>
+      <p class="k">タスクタグの編集</p>
+      <h2 id="group-head-h" class="sr-only">タスクタグ「{group.name}」の編集</h2>
       <div class="inputs">
         <label class="fld"><span class="k">名前</span><input type="text" bind:this={nameEl} bind:value={name} maxlength="100" readonly={busy} aria-invalid={error ? 'true' : undefined} aria-describedby={error ? 'group-head-error' : undefined} /></label>
-        <label class="fld wide"><span class="k">説明(任意)</span><input type="text" bind:value={note} maxlength="200" readonly={busy} placeholder="何のグループか" /></label>
+        <label class="fld wide"><span class="k">説明(任意)</span><input type="text" bind:value={note} maxlength="200" readonly={busy} placeholder="何のタスクか" /></label>
       </div>
       <div class="edit-acts">
         <button type="submit" class="btn" aria-disabled={busy}>{busy ? '保存中…' : '保存'}</button>
         <button type="button" class="btn" onclick={leave} disabled={busy}>取消</button>
         <!-- 取り消せない操作は保存と離して右端に、文字だけの弱い見た目で置く -->
-        <button type="button" class="link danger" data-testid="group-delete" onclick={askDelete} disabled={busy}>このグループを削除…</button>
+        <button type="button" class="link danger" data-testid="group-delete" onclick={askDelete} disabled={busy}>このタスクタグを削除…</button>
       </div>
     </form>
   {:else}
     <div class="confirm" role="group" aria-labelledby="group-head-h">
-      <h2 id="group-head-h" class="q">グループ「{group.name}」を削除しますか</h2>
-      <p class="desc">グループだけが消え、セッションと記録はそのまま残ります。</p>
+      <h2 id="group-head-h" class="q">タスクタグ「{group.name}」を削除しますか</h2>
+      <p class="desc">タスクタグだけが消え、セッションと記録はそのまま残ります。</p>
       <div class="edit-acts">
         <button type="button" class="btn" data-cancel onclick={backToEdit} disabled={busy}>やめる</button>
         <button type="button" class="btn danger" data-confirm onclick={() => void run(() => ondelete(group.name), focusMain)} aria-disabled={busy}>{busy ? '削除中…' : '削除する'}</button>
@@ -310,6 +438,9 @@
     </div>
   {/if}
   <p class="sr-only" role="status">{mode === 'view' ? exportedText || uploadedText : ''}</p>
+  {#if resumed && !uploaded && mode === 'view'}
+    <p class="exported" data-testid="group-upload-resumed" role="status">アップロードが終わりました。写した先の README.md で結果を確かめてください。</p>
+  {/if}
   {#if uploaded && mode === 'view'}
     <div class="exported" data-testid="group-uploaded">
       <p>{uploadedText}</p>
@@ -335,6 +466,49 @@
   }
   .exported p {
     margin: 0;
+  }
+  .progress {
+    margin-top: 8px;
+    font-size: 0.8125rem;
+  }
+  .progress progress {
+    display: block;
+    width: 100%;
+    max-width: 32em;
+    height: 8px;
+    accent-color: var(--form);
+  }
+  .progress p {
+    margin: 4px 0 0;
+    color: var(--ink-2);
+    font-variant-numeric: tabular-nums;
+  }
+  .confirm code {
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    overflow-wrap: anywhere;
+  }
+  .warn {
+    margin: 8px 0;
+    padding: 8px 10px;
+    font-size: 0.8125rem;
+    border: 1px solid var(--warn);
+  }
+  .warn p {
+    margin: 0;
+  }
+  .warn ul {
+    margin: 6px 0 0;
+    padding-left: 1.4em;
+  }
+  .warn code {
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    overflow-wrap: anywhere;
+  }
+  .warn .note {
+    margin-top: 6px;
+    color: var(--ink-2);
   }
   .dest {
     display: flex;

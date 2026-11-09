@@ -7,12 +7,13 @@
 // 同じセッションのフォルダは丸ごと置き換える。グループから外したセッションや、他の人が写したセッションのフォルダには触れない
 // (同じ場所を何人かで使うため)。受け取った側は `atlas all --home <基底>/<グループ名>` でそのまま集計できる。
 // 元(~/.copilot)は読まず、前回の集計で out/snapshot/ に複製したものを写す(SQLite は一貫した複製を取ってあるため)。
-import { existsSync, statSync } from 'node:fs';
-import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { createReadStream, existsSync, statSync } from 'node:fs';
+import { copyFile, cp, mkdir, open, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import { DESKTOP_JSON, desktopForSession, readSnapshotManifest, renameReplacing, SESSION_STORE_JSON, sessionStoreRows, type DesktopData, type SessionStoreJson } from '../../core/src/index.ts';
 import type { SessionRecord, SessionsFile } from '../../core/src/index.ts';
-import { loadGroups, memosDir, readMemo } from '../../report/src/index.ts';
+import { loadGroups, memosDir, readMemo, SECRET_PATTERNS } from '../../report/src/index.ts';
 import { truncate } from '../../report/src/lib/format.ts';
 import { safeDirName } from './group-export.ts';
 
@@ -23,8 +24,35 @@ const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 /** セッションのフォルダに添えるメモ(本文)と、その画像のフォルダ */
 export const UPLOAD_MEMO_FILE = 'atlas-memo.md';
 export const UPLOAD_MEMO_IMAGES = 'atlas-memo';
-/** グループのフォルダの説明 */
+/** グループ・プロジェクトのフォルダの説明(人が読む) */
 export const UPLOAD_README = 'README.md';
+/** グループ・プロジェクトのフォルダの索引(プログラムや AI が読む。セッションごとのタスクタグ・題名・日時) */
+export const UPLOAD_INDEX = 'atlas-index.json';
+/** セッションのフォルダに添える、そのセッションのタスクタグ・題名・日時(1 つのフォルダだけを渡されても分かるように) */
+export const UPLOAD_SESSION_META = 'atlas-session.json';
+
+/** 索引とセッションのフォルダに書く、1 セッション分の情報 */
+export interface UploadedSession {
+  id: string;
+  title: string | null;
+  project: string | null;
+  /** タスクタグ(そのセッションが入っているグループの名前)。無ければ空 */
+  tags: string[];
+  createdAt: string | null;
+  updatedAt: string | null;
+  memo: boolean;
+}
+
+/** タスクタグ(グループ)ごとの、入っているセッションの id。groups.json が無い・読めなければ空 */
+async function tagsById(groupsPath: string): Promise<Map<string, string[]>> {
+  const out = new Map<string, string[]>();
+  try {
+    for (const g of (await loadGroups(groupsPath)).groups) for (const id of g.ids) out.set(id, [...(out.get(id) ?? []), g.name]);
+  } catch {
+    /* タグ無しとして書く */
+  }
+  return out;
+}
 
 export interface GroupUploadPaths {
   /** out/snapshot(前回の集計の複製) */
@@ -52,12 +80,145 @@ export interface GroupUploadResult {
   memos: number;
 }
 
+interface FileEntry {
+  /** セッションのフォルダからの相対パス(区切りは /) */
+  rel: string;
+  bytes: number;
+  /** シンボリックリンク(中身は辿らず、リンクのまま写す) */
+  link: boolean;
+}
+
+/** セッションのフォルダの中のファイル(atlas の作業用のファイルは除く) */
+async function listFiles(base: string, sub = ''): Promise<FileEntry[]> {
+  const out: FileEntry[] = [];
+  for (const e of await readdir(join(base, sub), { withFileTypes: true })) {
+    if (SNAPSHOT_PRIVATE.test(e.name)) continue;
+    const rel = sub ? `${sub}/${e.name}` : e.name;
+    if (e.isDirectory()) out.push(...(await listFiles(base, rel)));
+    else if (e.isSymbolicLink()) out.push({ rel, bytes: 0, link: true });
+    else if (e.isFile()) out.push({ rel, bytes: (await stat(join(base, rel))).size, link: false });
+  }
+  return out;
+}
+
+/** 一覧のファイルを写し、1 つ写すごとにその大きさを知らせる(cp では進み具合が取れないため) */
+async function copyFiles(src: string, dest: string, files: FileEntry[], onBytes: (n: number) => void): Promise<void> {
+  await mkdir(dest, { recursive: true });
+  const made = new Set<string>();
+  for (const f of files) {
+    const parts = f.rel.split('/');
+    const parent = parts.slice(0, -1).join('/');
+    if (parent && !made.has(parent)) {
+      await mkdir(join(dest, ...parent.split('/')), { recursive: true });
+      made.add(parent);
+    }
+    const from = join(src, ...parts);
+    const to = join(dest, ...parts);
+    if (f.link) await cp(from, to, { verbatimSymlinks: true });
+    else await copyFile(from, to);
+    onBytes(f.bytes);
+  }
+}
+
+/** 先頭がこの大きさの中に NUL があればバイナリとして中身を調べない */
+const SNIFF_BYTES = 8192;
+/** 区切りをまたぐ文字列を取りこぼさないよう、前の塊の末尾をこれだけ重ねて調べる(鍵 1 つより長く取る) */
+const SCAN_OVERLAP = 16 * 1024;
+
+/** ファイルの中の秘密らしい文字列を種類ごとに数える(transcript.ts の SECRET_PATTERNS と同じ形)。バイナリなら null */
+export async function scanSecrets(path: string): Promise<Map<string, number> | null> {
+  const fh = await open(path, 'r');
+  try {
+    const head = Buffer.alloc(SNIFF_BYTES);
+    const { bytesRead } = await fh.read(head, 0, SNIFF_BYTES, 0);
+    if (head.subarray(0, bytesRead).includes(0)) return null;
+  } finally {
+    await fh.close();
+  }
+  const counts = new Map<string, number>();
+  const decoder = new StringDecoder('utf8');
+  let carry = '';
+  // 塊ごとに、重ねる部分より前で始まるものだけを数える(重ねた部分は次の塊で数える)。最後の塊は末尾まで数える
+  const scan = (text: string, last: boolean): void => {
+    const limit = last ? text.length : text.length - SCAN_OVERLAP;
+    for (const [label, re] of SECRET_PATTERNS) {
+      for (const m of text.matchAll(re)) if (m.index < limit) counts.set(label, (counts.get(label) ?? 0) + 1);
+    }
+    carry = last ? '' : text.slice(Math.max(0, limit));
+  };
+  for await (const chunk of createReadStream(path, { highWaterMark: 4 * 1024 * 1024 })) {
+    const text = carry + decoder.write(chunk as Buffer);
+    if (text.length > SCAN_OVERLAP) scan(text, false);
+    else carry = text;
+  }
+  scan(carry + decoder.end(), true);
+  return counts;
+}
+
 /** アップロード先のグループのフォルダ(<基底>/<グループ名>)。フォルダ名に使えない文字は _ にする */
 export function uploadDir(root: string, name: string): string {
   return join(root, safeDirName(name));
 }
 
-export async function uploadGroup(p: GroupUploadPaths, name: string, root: string, log: (m: string) => void = () => {}): Promise<GroupUploadResult> {
+/** 写す前の点検(画面の確認に出す)。大きさと、秘密らしい文字列 */
+export interface UploadCheck {
+  name: string;
+  dir: string;
+  /** 写すセッション(前回の集計にあるもの) */
+  sessions: number;
+  missing: string[];
+  /** そのうち、前にも写してあって置き換えるもの */
+  replace: number;
+  bytes: number;
+  files: number;
+  /** 大きいもの(セッションの直下のフォルダ・ファイル)。大きい順に最大 5 件 */
+  largest: { id: string; path: string; bytes: number }[];
+  secrets: {
+    /** 見つかった数(偽陽性もありうる) */
+    count: number;
+    kinds: { label: string; count: number }[];
+    /** 見つかったファイル。多い順に最大 10 件 */
+    files: { id: string; path: string; count: number }[];
+    /** 中身を調べなかったバイナリのファイルの数(session.db・画像・ビルドの成果物など) */
+    skipped: number;
+  };
+  snapshotAt: string | null;
+}
+
+/** 写している途中の進み具合(画面が問い合わせて出す) */
+export interface UploadProgress {
+  sessions: number;
+  done: number;
+  bytes: number;
+  copied: number;
+  /** 写しているセッション */
+  current: string | null;
+}
+
+/** 確認を挟む目安: 秘密らしい文字列が 1 つでもあるか、合計がこの大きさを超えるとき */
+export const UPLOAD_CONFIRM_BYTES = 100 * 1024 * 1024;
+
+/** 写すセッションのまとまり(グループか、集計のプロジェクト)。名前がアップロード先のフォルダ名になる */
+export interface UploadTarget {
+  kind: 'group' | 'project';
+  name: string;
+  /** README に書く説明 */
+  note: string;
+  ids: string[];
+}
+
+const KIND_LABEL: Record<UploadTarget['kind'], string> = { group: 'グループ', project: 'プロジェクト' };
+
+interface Prepared {
+  g: UploadTarget;
+  stateDir: string;
+  dir: string;
+  present: string[];
+  missing: string[];
+}
+
+/** groups.json のグループを、写すまとまりにする(無い・空・フォルダ名が別のグループと同じなら止まる) */
+export async function groupTarget(p: Pick<GroupUploadPaths, 'groups'>, name: string): Promise<UploadTarget> {
   const loaded = await loadGroups(p.groups);
   const g = loaded.groups.find((x) => x.name === name);
   if (!g) throw new Error(`グループ「${name}」はありません${loaded.groups.length ? `(あるのは: ${loaded.groups.map((x) => x.name).join(', ')})` : ''}`);
@@ -66,38 +227,163 @@ export async function uploadGroup(p: GroupUploadPaths, name: string, root: strin
   const folder = safeDirName(name);
   const clash = loaded.groups.find((x) => x.name !== name && safeDirName(x.name).toLowerCase() === folder.toLowerCase());
   if (clash) throw new Error(`グループ「${name}」と「${clash.name}」は、アップロード先のフォルダ名が同じ「${folder}」になります。どちらかの名前を変えてください`);
+  return { kind: 'group', name, note: g.note, ids: g.ids };
+}
+
+/** 集計のプロジェクト(sessions.json の project。プロジェクト別の表と同じ単位)ごとの、空でないセッションの数と最終更新。多い順 */
+export async function listProjects(sessionsPath: string): Promise<{ name: string; sessions: number; updatedAt: string | null }[]> {
+  const by = new Map<string, { sessions: number; updatedAt: string | null }>();
+  for (const s of await readSessions(sessionsPath)) {
+    if (s.empty) continue;
+    const x = by.get(s.project) ?? { sessions: 0, updatedAt: null };
+    x.sessions++;
+    if (s.updatedAt && (!x.updatedAt || s.updatedAt > x.updatedAt)) x.updatedAt = s.updatedAt;
+    by.set(s.project, x);
+  }
+  return [...by].map(([name, x]) => ({ name, ...x })).sort((a, b) => b.sessions - a.sessions || a.name.localeCompare(b.name));
+}
+
+/** 集計のプロジェクトのセッション(空のものは除く)を、写すまとまりにする */
+export async function projectTarget(sessionsPath: string, name: string): Promise<UploadTarget> {
+  const ids = (await readSessions(sessionsPath)).filter((s) => s.project === name && !s.empty).map((s) => s.id);
+  if (!ids.length) throw new Error(`プロジェクト「${name}」のセッションは、前回の集計にありません(空のセッションは写しません)`);
+  return { kind: 'project', name, note: `集計のプロジェクト「${name}」のセッション(空のものを除く ${ids.length} 件)`, ids };
+}
+
+async function readSessions(path: string): Promise<SessionRecord[]> {
+  if (!existsSync(path)) throw new Error(`${path} がありません。先に集計してください(atlas.bat か atlas all)`);
+  return (JSON.parse(await readFile(path, 'utf8')) as SessionsFile).sessions;
+}
+
+/** 写せるかを確かめ、写すセッションと写さないセッションに分ける(点検とアップロードで同じ条件) */
+async function prepare(p: GroupUploadPaths, g: UploadTarget, root: string): Promise<Prepared> {
+  const name = g.name;
   // 基底のフォルダは作らない(ネットワークドライブの切断やドライブ名の違いで、思わぬ場所に作らないように)
   if (!existsSync(root) || !statSync(root).isDirectory()) throw new Error(`アップロード先のフォルダが見つかりません: ${root}(フォルダを作るか、場所を選び直してください)`);
   const stateDir = join(p.snapshot, 'session-state');
   if (!existsSync(stateDir)) throw new Error(`${stateDir} がありません。先に集計してください(atlas.bat か atlas all)`);
   // 1 件も写せないなら、フォルダを作らず README も書き直さない(前に写したものの一覧が「0 件」で上書きされないように)
   if (!g.ids.some((id) => SAFE_ID.test(id) && existsSync(join(stateDir, id))))
-    throw new Error(`グループ「${name}」のセッション(${g.ids.length} 件)は、前回の集計に 1 件もありません。先に集計し直してください(何も写していません)`);
+    throw new Error(`${KIND_LABEL[g.kind]}「${name}」のセッション(${g.ids.length} 件)は、前回の集計に 1 件もありません。先に集計し直してください(何も写していません)`);
+  // groups.json は手で書けるので、フォルダの外を指す id(.. や区切りを含むもの)は写さない(元にも先にも触れない)
+  const present: string[] = [];
+  const missing: string[] = [];
+  for (const id of g.ids) (SAFE_ID.test(id) && existsSync(join(stateDir, id)) ? present : missing).push(id);
+  return { g, stateDir, dir: uploadDir(root, name), present, missing };
+}
+
+/** グループを写す前の点検 */
+export async function checkUpload(p: GroupUploadPaths, name: string, root: string): Promise<UploadCheck> {
+  return checkTarget(p, await groupTarget(p, name), root);
+}
+
+/** 写す前の点検(大きさと秘密らしい文字列)。何も写さない */
+export async function checkTarget(p: GroupUploadPaths, target: UploadTarget, root: string): Promise<UploadCheck> {
+  const { stateDir, dir, present, missing } = await prepare(p, target, root);
+  const name = target.name;
+  const tops: UploadCheck['largest'] = [];
+  const hits: UploadCheck['secrets']['files'] = [];
+  const kinds = new Map<string, number>();
+  let bytes = 0;
+  let files = 0;
+  let skipped = 0;
+  for (const id of present) {
+    const base = join(stateDir, id);
+    for (const f of await listFiles(base)) {
+      bytes += f.bytes;
+      files++;
+      const top = f.rel.split('/')[0];
+      const t = tops.find((x) => x.id === id && x.path === top);
+      if (t) t.bytes += f.bytes;
+      else tops.push({ id, path: top, bytes: f.bytes });
+      const found = await scanSecrets(join(base, f.rel));
+      if (found == null) {
+        skipped++;
+        continue;
+      }
+      let n = 0;
+      for (const [label, c] of found) {
+        kinds.set(label, (kinds.get(label) ?? 0) + c);
+        n += c;
+      }
+      if (n) hits.push({ id, path: f.rel, count: n });
+    }
+  }
   const manifest = await readSnapshotManifest(p.snapshot);
-  const dir = uploadDir(root, name);
+  return {
+    name,
+    dir,
+    sessions: present.length,
+    missing,
+    replace: present.filter((id) => existsSync(join(dir, id))).length,
+    bytes,
+    files,
+    largest: tops.sort((a, b) => b.bytes - a.bytes).slice(0, 5),
+    secrets: {
+      count: [...kinds.values()].reduce((a, b) => a + b, 0),
+      kinds: [...kinds].map(([label, count]) => ({ label, count })).sort((a, b) => b.count - a.count),
+      files: hits.sort((a, b) => b.count - a.count || a.id.localeCompare(b.id) || a.path.localeCompare(b.path)).slice(0, 10),
+      skipped,
+    },
+    snapshotAt: manifest?.createdAt ?? null,
+  };
+}
+
+export async function uploadGroup(
+  p: GroupUploadPaths,
+  name: string,
+  root: string,
+  log: (m: string) => void = () => {},
+  opts: { onProgress?: (p: UploadProgress) => void } = {},
+): Promise<GroupUploadResult> {
+  return uploadTarget(p, await groupTarget(p, name), root, log, opts);
+}
+
+/** まとまり(グループかプロジェクト)のセッションを <基底>/<名前>/<セッション id>/ に写す */
+export async function uploadTarget(
+  p: GroupUploadPaths,
+  target: UploadTarget,
+  root: string,
+  log: (m: string) => void = () => {},
+  opts: { onProgress?: (p: UploadProgress) => void } = {},
+): Promise<GroupUploadResult> {
+  const { g, stateDir, dir, present, missing } = await prepare(p, target, root);
+  const name = target.name;
+  const manifest = await readSnapshotManifest(p.snapshot);
   await mkdir(dir, { recursive: true });
   const storeDb = join(p.snapshot, 'session-store.db');
   // デスクトップアプリのセッションは題名・モデル・トークン数などが data.db にしかない(snapshot が許可リストの列だけを desktop.json に書いたもの)
   const desktop = await readDesktopJson(join(p.snapshot, DESKTOP_JSON));
   const memoDir = p.notes ? memosDir(p.notes) : null;
-  const missing: string[] = [];
   const done: string[] = [];
   const withMemo = new Set<string>();
   let uploaded = 0;
   let replaced = 0;
-  for (const id of g.ids) {
+  const records = await readRecords(p.sessions, present);
+  const tags = await tagsById(p.groups);
+  const info = (id: string): UploadedSession => {
+    const r = records.get(id);
+    // name はデスクトップアプリの題名も反映済み(extract の sessionName)
+    return { id, title: r ? r.name || r.firstUserMessage || null : null, project: r?.project ?? null, tags: tags.get(id) ?? [], createdAt: r?.createdAt ?? null, updatedAt: r?.updatedAt ?? null, memo: withMemo.has(id) };
+  };
+  // 進み具合はバイト数で出す(大きなセッションは 1 件で数百 MB になり、件数だけでは止まって見えるため)
+  const lists = new Map<string, FileEntry[]>();
+  for (const id of present) lists.set(id, await listFiles(join(stateDir, id)));
+  const progress: UploadProgress = { sessions: present.length, done: 0, bytes: [...lists.values()].flat().reduce((a, f) => a + f.bytes, 0), copied: 0, current: null };
+  const report = (): void => opts.onProgress?.({ ...progress });
+  for (const id of present) {
     const src = join(stateDir, id);
-    // groups.json は手で書けるので、フォルダの外を指す id(.. や区切りを含むもの)は写さない(元にも先にも触れない)
-    if (!SAFE_ID.test(id) || !existsSync(src)) {
-      missing.push(id);
-      continue;
-    }
     const dest = join(dir, id);
+    progress.current = id;
+    report();
     // 書きかけのフォルダを残さないよう、隣に写し終えてから置き換える
     const tmp = join(dir, `.${id}.uploading`);
     await rm(tmp, { recursive: true, force: true });
     try {
-      await cp(src, tmp, { recursive: true, filter: (from) => !SNAPSHOT_PRIVATE.test(from.split(/[\\/]/).pop() ?? '') });
+      await copyFiles(src, tmp, lists.get(id) ?? [], (n) => {
+        progress.copied += n;
+        report();
+      });
       const rows = await sessionStoreRows(storeDb, id);
       const desk = desktop ? desktopForSession(desktop, id) : null;
       if (rows || desk) {
@@ -105,6 +391,7 @@ export async function uploadGroup(p: GroupUploadPaths, name: string, root: strin
         await writeFile(join(tmp, SESSION_STORE_JSON), `${JSON.stringify(j)}\n`);
       }
       if (memoDir && (await copyMemo(memoDir, id, tmp))) withMemo.add(id);
+      await writeFile(join(tmp, UPLOAD_SESSION_META), `${JSON.stringify({ version: 1, ...info(id) }, null, 2)}\n`);
       const had = existsSync(dest);
       // 前のフォルダは先に消さず、名前を変えて退ける(中のファイルが開かれていて動かせなければ、ここで止まり前のフォルダはそのまま残る)。
       // 新しいフォルダを置けなければ前のフォルダを戻す。退けたものは最後に消す
@@ -121,6 +408,8 @@ export async function uploadGroup(p: GroupUploadPaths, name: string, root: strin
       }
       uploaded++;
       done.push(id);
+      progress.done = uploaded;
+      report();
       if (had) {
         replaced++;
         await rm(old, { recursive: true, force: true }).catch((e: Error) => log(`group upload: 前のフォルダ ${old} を消せませんでした(${e.message})。手で消してください`));
@@ -131,9 +420,14 @@ export async function uploadGroup(p: GroupUploadPaths, name: string, root: strin
     }
   }
   const snapshotAt = manifest?.createdAt ?? null;
-  const records = await readRecords(p.sessions, done);
-  await writeFile(join(dir, UPLOAD_README), groupReadme({ name, note: g.note, dir, done, missing, withMemo, snapshotAt, records }));
-  log(`group upload: 「${name}」 ${uploaded} セッション(置き換え ${replaced} 件・メモ ${withMemo.size} 件)→ ${dir}${missing.length ? `。前回の集計に無い ${missing.length} 件は写していません` : ''}`);
+  const now = new Date();
+  const sessions = done.map(info);
+  await writeFile(join(dir, UPLOAD_README), groupReadme({ kind: g.kind, name, note: g.note, dir, sessions, missing, snapshotAt, now }));
+  await writeFile(
+    join(dir, UPLOAD_INDEX),
+    `${JSON.stringify({ version: 1, kind: g.kind, name, note: g.note, uploadedAt: now.toISOString(), snapshotAt, sessions, missing }, null, 2)}\n`,
+  );
+  log(`${g.kind} upload: 「${name}」 ${uploaded} セッション(置き換え ${replaced} 件・メモ ${withMemo.size} 件)→ ${dir}${missing.length ? `。前回の集計に無い ${missing.length} 件は写していません` : ''}`);
   return { name, dir, uploaded, replaced, missing, snapshotAt, memos: withMemo.size };
 }
 
@@ -180,36 +474,48 @@ function localTime(iso: string | null): string {
 
 /** グループのフォルダの README.md(写すたびに書き直す)。人が開いて、何のまとまりか・どれにメモがあるかが分かるように */
 export function groupReadme(o: {
+  kind?: UploadTarget['kind'];
   name: string;
   note: string;
   dir: string;
-  done: string[];
+  sessions: UploadedSession[];
   missing: string[];
-  withMemo: Set<string>;
   snapshotAt: string | null;
-  records: Map<string, SessionRecord>;
   now?: Date;
 }): string {
+  const kind = o.kind ?? 'group';
   const lines = [`# ${o.name}`, ''];
-  lines.push(o.note.trim() ? o.note.trim() : '(グループの説明はありません。atlas の画面のグループの見出しで書けます)', '');
+  lines.push(o.note.trim() ? o.note.trim() : '(グループの説明はありません。atlas の画面のタスクタグの見出しで書けます)', '');
   lines.push(
     `- アップロードした日時: ${localTime((o.now ?? new Date()).toISOString())}`,
     `- ログの時点: ${o.snapshotAt ? `${localTime(o.snapshotAt)} の集計` : '不明'}`,
-    `- セッション: ${o.done.length} 件(うちメモあり ${o.withMemo.size} 件)`,
+    `- セッション: ${o.sessions.length} 件(うちメモあり ${o.sessions.filter((s) => s.memo).length} 件)`,
     '',
-    'この README はアップロードするたびに書き直します。このフォルダには、ほかの人やほかの回に写したセッションのフォルダもあることがあります。',
+    `この README と ${UPLOAD_INDEX}(プログラムや AI が読む索引)はアップロードするたびに書き直します。このフォルダには、ほかの人やほかの回に写したセッションのフォルダもあることがあります。`,
+    `タスクタグは、atlas の画面でセッションに付けたものです(各セッションのフォルダの ${UPLOAD_SESSION_META} にもあります)。`,
     '',
-    '| セッション ID | 題名 | 最終更新 | メモ |',
-    '| --- | --- | --- | --- |',
+    '| セッション ID | 題名 | タスクタグ | 最終更新 | メモ |',
+    '| --- | --- | --- | --- | --- |',
   );
-  for (const id of o.done) {
-    const r = o.records.get(id);
-    // name はデスクトップアプリの題名も反映済み(extract の sessionName)
-    const title = r ? cell(truncate(r.name || r.firstUserMessage || '', 60)) : '';
-    const memo = o.withMemo.has(id) ? `[あり](${id}/${UPLOAD_MEMO_FILE})` : '';
-    lines.push(`| [${id}](${id}/) | ${title || '-'} | ${localTime(r?.updatedAt ?? null)} | ${memo || '-'} |`);
+  for (const s of o.sessions) {
+    const memo = s.memo ? `[あり](${s.id}/${UPLOAD_MEMO_FILE})` : '';
+    lines.push(`| [${s.id}](${s.id}/) | ${cell(truncate(s.title ?? '', 60)) || '-'} | ${s.tags.length ? cell(s.tags.join('、')) : 'タグなし'} | ${localTime(s.updatedAt)} | ${memo || '-'} |`);
   }
-  if (o.missing.length) lines.push('', `グループにあっても、前回の集計に無かったため写していないもの: ${o.missing.map((x) => `\`${cell(x)}\``).join(', ')}`);
+  // タスクごとに見分けられるよう、タグごとの一覧も書く(1 つのセッションが複数のタグに入ることがある)
+  const byTag = new Map<string, UploadedSession[]>();
+  for (const s of o.sessions) for (const tag of s.tags.length ? s.tags : ['']) byTag.set(tag, [...(byTag.get(tag) ?? []), s]);
+  if (byTag.size > 1 || !byTag.has(o.name)) {
+    lines.push('', '## タスクタグごと', '');
+    const order = [...byTag.keys()].sort((a, b) => (a === '' ? 1 : b === '' ? -1 : a.localeCompare(b)));
+    for (const tag of order) {
+      const list = byTag.get(tag)!;
+      lines.push(`### ${tag ? cell(tag) : 'タグなし'}(${list.length} 件)`, '');
+      for (const s of list) lines.push(`- [${cell(truncate(s.title ?? s.id, 60))}](${s.id}/) — ${localTime(s.updatedAt)}`);
+      lines.push('');
+    }
+    lines.pop();
+  }
+  if (o.missing.length) lines.push('', `${KIND_LABEL[kind]}にあっても、前回の集計に無かったため写していないもの: ${o.missing.map((x) => `\`${cell(x)}\``).join(', ')}`);
   lines.push(
     '',
     '## 集計し直すには',

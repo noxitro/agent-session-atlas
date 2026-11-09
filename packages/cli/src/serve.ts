@@ -1,7 +1,9 @@
 // atlas serve: out/ を 127.0.0.1 だけに配信し、画面からグループ(atlas-notes/groups.json)とメモ(atlas-notes/memos/)を書く小さな API を持つ。
 // Phase 14: 画面からの操作(集計し直す・工数を判定する・全文を作る。jobs.ts)と、記録・全文記録の表示(/view/<id>)も持つ。
 // チャットでの判定(M365 Copilot など): 添付ファイル(bundle/parts/)の一覧と進み具合(/api/judge/parts)、貼った返答の取り込み(/api/judge/import)。
-// 画面(3 画面)が 3 秒ごとに送る heartbeat が途切れたら自分で終了する(ブラウザを閉じれば止まる)。ジョブの実行中は止めず、終わってから判定を再開する。
+// 画面(3 画面)は 3 秒ごとに heartbeat を送り、ページを閉じるときは bye を送る。開いている画面がすべて bye を送ったら BYE_GRACE_MS 後に、
+// heartbeat がどの画面からも IDLE の間届かなければ、自分で終了する(ブラウザを閉じれば止まる)。ジョブの実行中は止めず、終わってから判定を再開する。
+// IDLE を短くしないこと: ブラウザは隠れたタブのタイマーを間引く(Chrome は 5 分以上隠れたタブを 1 分に 1 回まで)。以前の 8 秒では、別のタブで作業している間に止まっていた。
 // 画面と保存の境界はこの API だけ(後でアプリ化するときに差し替える)。
 import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
@@ -49,15 +51,20 @@ import { importJudgmentsText, importTurnJudgmentsText, JudgmentValidationError, 
 import { phaseNames } from './config.ts';
 import { acquireOutLock, JobError, JobRunner, OutBusyError, parseJobRequest, runningJobIn, type RunFullFn, type SpawnFn } from './jobs.ts';
 import { exportGroup } from './group-export.ts';
-import { uploadDir, uploadGroup } from './group-upload.ts';
+import { checkUpload, uploadDir, uploadGroup, type UploadProgress } from './group-upload.ts';
 import { defaultConfigPath, loadConfig, parseUploadRoot, updateConfig } from './config.ts';
 import { CAN_PICK_FOLDER, openFolder, pickFolder } from './folder-picker.ts';
 
 export const TOKEN_PLACEHOLDER = '__ATLAS_TOKEN__';
 export const SERVE_STATE_FILE = '.serve.json';
-/** 画面が heartbeat を送る間隔(ms)。サーバの猶予(IDLE)はこの 2 回分より長くとる */
+/** 画面が heartbeat を送る間隔(ms) */
 export const HEARTBEAT_INTERVAL_MS = 3000;
-export const DEFAULT_IDLE_MS = 8000;
+/** どの画面からも heartbeat が届かなくなってから止まるまで(閉じたことを bye で知らせずに消えた画面・眠らされたタブのための保険) */
+export const DEFAULT_IDLE_MS = 30 * 60_000;
+/** 開いている画面がすべて bye を送ってから止まるまで(ページの移動なら、次のページの heartbeat がこの間に届く) */
+export const BYE_GRACE_MS = 15_000;
+/** この間 heartbeat の無い画面は、開いている画面に数えない(隠れたタブでも 1 分に 1 回は届く) */
+const CLIENT_STALE_MS = 3 * 60_000;
 export const DEFAULT_FIRST_HEARTBEAT_MS = 60_000;
 
 export interface ServeOptions {
@@ -72,6 +79,8 @@ export interface ServeOptions {
   log?: (msg: string) => void;
   /** 最後の heartbeat からこの時間で終了 */
   idleMs?: number;
+  /** 開いている画面がすべて bye を送ってから、この時間で終了 */
+  byeGraceMs?: number;
   /** 最初の heartbeat をこの時間待つ */
   firstHeartbeatMs?: number;
   /** メモの画像 1 枚の上限(バイト)。既定は MEMO_IMAGE_LIMIT */
@@ -237,6 +246,7 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
   const memoDir = memosDir(resolve(o.notesDir));
   const token = randomBytes(24).toString('base64url');
   const idleMs = o.idleMs ?? DEFAULT_IDLE_MS;
+  const byeGraceMs = o.byeGraceMs ?? BYE_GRACE_MS;
   const firstMs = o.firstHeartbeatMs ?? DEFAULT_FIRST_HEARTBEAT_MS;
 
   // 伏せ字版かどうかは atlas.html の埋め込みデータで判断(mtime が変わるまで覚える)
@@ -308,6 +318,8 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
   const refreshing = (): boolean => jobs.running() && jobs.current()?.kind === 'refresh';
   /** グループの書き出し中(その間はジョブを始めない) */
   let exporting = false;
+  /** 写している途中のアップロード(画面が進み具合を問い合わせる) */
+  let uploading: { name: string; progress: UploadProgress } | null = null;
   const configPath = resolve(o.configPath ?? defaultConfigPath());
   const canPick = o.folders?.canPick ?? CAN_PICK_FOLDER;
   const pick = o.folders?.pick ?? pickFolder;
@@ -377,17 +389,38 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(() => expire('画面が閉じられた(heartbeat が途切れた)'), idleMs);
   }
-  function heartbeat(): void {
+  /** 開いている画面がすべて閉じられ、短い猶予(byeGraceMs)を測っている */
+  let leaving = false;
+  /** 開いている画面(heartbeat の x-atlas-client)と、最後に heartbeat が届いた時刻 */
+  const clients = new Map<string, number>();
+  const clientOf = (req: IncomingMessage): string | null => {
+    const c = req.headers['x-atlas-client'];
+    return typeof c === 'string' && /^[A-Za-z0-9-]{1,64}$/.test(c) ? c : null;
+  };
+  function heartbeat(client: string | null): void {
     if (firstTimer) {
       clearTimeout(firstTimer);
       firstTimer = null;
     }
+    if (client) clients.set(client, Date.now());
     idlePending = null;
+    leaving = false;
     armIdle();
+  }
+  /** 画面が閉じられた。ほかに開いている画面が無ければ、少し待って(次のページの heartbeat が来なければ)止まる */
+  function bye(client: string | null): void {
+    if (client) clients.delete(client);
+    const now = Date.now();
+    for (const [c, at] of clients) if (now - at > CLIENT_STALE_MS) clients.delete(c);
+    if (clients.size) return;
+    leaving = true;
+    log(`serve: 開いている画面がすべて閉じられました。${Math.round(byeGraceMs / 1000)} 秒のうちに次の画面が開かなければ止まります`);
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => expire('画面がすべて閉じられた'), byeGraceMs);
   }
   /** 重い同期処理(大きな記録の描画)の直後に猶予を測り直す(止まっていた間に溜まった heartbeat より先に期限切れで閉じないため) */
   function touchIdle(): void {
-    if (idleTimer && !idlePending) armIdle();
+    if (idleTimer && !idlePending && !leaving) armIdle();
   }
 
   /** DNS rebinding を防ぐ: Host が自分でなければ同一オリジンに見えても応えない */
@@ -410,8 +443,15 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     const method = req.method ?? 'GET';
     if (path === '/api/heartbeat' && method === 'POST') {
       checkToken(req);
-      heartbeat();
+      heartbeat(clientOf(req));
       res.writeHead(204, { 'x-atlas-serve': '1' });
+      res.end();
+      return;
+    }
+    if (path === '/api/bye' && method === 'POST') {
+      checkToken(req);
+      bye(clientOf(req));
+      res.writeHead(204);
       res.end();
       return;
     }
@@ -479,9 +519,11 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
       await memoApi(req, res, method, memo[1], !!memo[2]);
       return;
     }
-    const gu = /^\/api\/groups\/([^/]+)\/upload(\/open)?$/.exec(path);
+    // upload(写す)・upload/check(写す前の点検: 大きさと秘密らしい文字列)・upload/progress(写している途中の進み具合)・upload/open(写した先を開く)
+    const gu = /^\/api\/groups\/([^/]+)\/upload(?:\/(open|check|progress))?$/.exec(path);
     if (gu) {
-      if (method !== 'POST') throw new HttpError(405, 'この方法では使えません');
+      const sub = gu[2] ?? '';
+      if (method !== (sub === 'progress' ? 'GET' : 'POST')) throw new HttpError(405, 'この方法では使えません');
       checkToken(req);
       let name: string;
       try {
@@ -489,10 +531,15 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
       } catch {
         throw new HttpError(400, 'グループ名を読めません');
       }
+      if (sub === 'progress') {
+        // このグループを写している途中なら進み具合、そうでなければ null
+        sendJson(res, 200, uploading?.name === name ? uploading.progress : null);
+        return;
+      }
       const up = await uploadRootOf();
       if (up.error) throw new HttpError(409, up.error);
       if (!up.root) throw new HttpError(409, 'アップロード先が決まっていません。先に場所を選んでください');
-      if (gu[2]) {
+      if (sub === 'open') {
         // 写した先のフォルダを開く(開けるのは設定のアップロード先の中の、このグループのフォルダだけ)
         const dir = uploadDir(up.root, name);
         if (!existsSync(dir)) throw new HttpError(404, `まだアップロードしていません: ${dir}`);
@@ -502,7 +549,8 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
       }
       // 集計の途中は out/snapshot/ が書きかけのことがあるので待ってもらう
       if (jobs.running()) throw new HttpError(409, jobs.current()?.kind === 'refresh' ? '集計し直している最中です。終わってからアップロードしてください' : 'ほかの処理が動いています。終わってからアップロードしてください');
-      if (exporting) throw new HttpError(409, 'ほかのグループを書き出しています。終わってからアップロードしてください');
+      if (uploading) throw new HttpError(409, `「${uploading.name}」をアップロードしている最中です。終わってからもう一度押してください`);
+      if (exporting) throw new HttpError(409, 'ほかのタスクタグを書き出しています。終わってからアップロードしてください');
       const other = runningJobIn(outDir);
       if (other) throw new HttpError(409, `別の atlas の処理(${other})が動いています。終わってからアップロードしてください`);
       let release: () => void;
@@ -513,11 +561,18 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
         throw e;
       }
       exporting = true;
+      const paths = { snapshot: join(outDir, 'snapshot'), groups: groupsPath, notes: resolve(o.notesDir), sessions: join(outDir, 'sessions.json') };
       try {
-        sendJson(res, 200, await uploadGroup({ snapshot: join(outDir, 'snapshot'), groups: groupsPath, notes: resolve(o.notesDir), sessions: join(outDir, 'sessions.json') }, name, up.root, log));
+        if (sub === 'check') sendJson(res, 200, await checkUpload(paths, name, up.root));
+        else {
+          uploading = { name, progress: { sessions: 0, done: 0, bytes: 0, copied: 0, current: null } };
+          const cur = uploading;
+          sendJson(res, 200, await uploadGroup(paths, name, up.root, log, { onProgress: (pr) => void (cur.progress = pr) }));
+        }
       } catch (e) {
         throw new HttpError(/^グループ「.*」はありません/.test((e as Error).message) ? 404 : 409, (e as Error).message);
       } finally {
+        uploading = null;
         exporting = false;
         release();
       }

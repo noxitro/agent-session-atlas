@@ -120,7 +120,7 @@ describe('parseCli', () => {
     expect(() => parseCli(['memo', 'remove', 'abc', 'x'])).toThrow('余分な引数');
     expect(() => parseCli(['build', '--file', 'a.md'])).toThrow('--file は memo set');
     expect(parseCli(['group', 'list'])).toMatchObject({ command: 'group', groupCmd: { action: 'list', name: null, ids: [], note: null } });
-    expect(parseCli(['group', 'add', 'g', 'a,b', 'c', '--note', 'メモ']).groupCmd).toEqual({ action: 'add', name: 'g', ids: ['a', 'b', 'c'], note: 'メモ', to: null });
+    expect(parseCli(['group', 'add', 'g', 'a,b', 'c', '--note', 'メモ']).groupCmd).toEqual({ action: 'add', name: 'g', ids: ['a', 'b', 'c'], note: 'メモ', to: null, force: false });
     expect(parseCli(['group', 'remove', 'g']).groupCmd).toMatchObject({ action: 'remove', name: 'g' });
     expect(() => parseCli(['group'])).toThrow(/list \/ add \/ remove/);
     expect(() => parseCli(['group', 'rename', 'g'])).toThrow(/不明な操作/);

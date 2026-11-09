@@ -29,7 +29,7 @@
 
 <div class="group-rail" data-testid="group-rail">
   {#if groups.length === 0 && selectedCount === 0}
-    {#if editable}<p class="empty">グループはまだありません。一覧でセッションを選ぶと作れます。</p>{:else if !anonymized}<p class="empty">グループは atlas.bat から開くと作れます。</p>{/if}
+    {#if editable}<p class="empty">タスクタグはまだありません。一覧でセッションを選ぶと作れます。</p>{:else if !anonymized}<p class="empty">タスクタグは atlas.bat から開くと作れます。</p>{/if}
   {:else}
     <ul class="list" role="list">
       <li><button type="button" class="row" aria-current={!current && selectedCount === 0 ? 'true' : undefined} onclick={() => onpick(null)}>すべて</button></li>

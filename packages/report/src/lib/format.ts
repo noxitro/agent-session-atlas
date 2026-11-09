@@ -99,7 +99,7 @@ export function msLabel(v: number | null | undefined, missing = '—'): string {
 const SHARED_LEAD_MIN = 20;
 /** 省いたあとに残す書き出しの長さ(文字。何の依頼かの手掛かりとして先頭だけ残す) */
 const SHARED_LEAD_KEEP = 10;
-/** 区切りとみなす文字(空白・和文の句読点と閉じ括弧・パスの区切り)。英数の記号は `nox::io` のように語の中に出るので含めない */
+/** 区切りとみなす文字(空白・和文の句読点と閉じ括弧・パスの区切り)。英数の記号は `lib::io` のように語の中に出るので含めない */
 const LEAD_BREAK = /[\s、。，．：；！？）」』/\\]/u;
 
 /**

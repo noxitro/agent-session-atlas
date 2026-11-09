@@ -5,7 +5,7 @@ import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { findRunningServer, SERVE_STATE_FILE, startServe, TOKEN_PLACEHOLDER, type ServeHandle } from '../src/serve.ts';
+import { BYE_GRACE_MS, DEFAULT_IDLE_MS, findRunningServer, SERVE_STATE_FILE, startServe, TOKEN_PLACEHOLDER, type ServeHandle } from '../src/serve.ts';
 
 const ATLAS = (anonymized: boolean): string =>
   `<!doctype html><html><head><meta name="atlas-token" content="${TOKEN_PLACEHOLDER}"></head><body><script type="application/json" id="atlas-data">{"version":5,"anonymized":${anonymized},"groups":[]}</script></body></html>`;
@@ -260,5 +260,38 @@ describe('serve', () => {
     await start({ firstHeartbeatMs: 200, idleMs: 400 });
     expect(await h!.done).toMatch(/最初の heartbeat/);
     h = null;
+  });
+
+  it('bye: 開いている画面がすべて閉じたら byeGraceMs で止まる。ほかの画面が開いていれば止まらず、猶予の間に heartbeat が来れば(ページの移動)止まらない', async () => {
+    // 猶予(idleMs)は長く、bye の後だけ短く待つ
+    await start({ idleMs: 600_000, byeGraceMs: 300 });
+    const post = (p: string, client: string): Promise<Response> => fetch(`${base()}/api/${p}`, { method: 'POST', headers: { 'x-atlas-token': h!.token, 'x-atlas-client': client } });
+    const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+    let reason: string | null = null;
+    void h!.done.then((r) => (reason = r));
+    expect((await fetch(`${base()}/api/bye`, { method: 'POST' })).status).toBe(403);
+    await post('heartbeat', 'a');
+    await post('heartbeat', 'b');
+    // a を閉じても b が開いているので止まらない
+    expect((await post('bye', 'a')).status).toBe(204);
+    await wait(500);
+    expect(reason).toBeNull();
+    // b も閉じたが、猶予の間に次のページ(c)の heartbeat が来たので止まらない
+    await post('bye', 'b');
+    await wait(100);
+    await post('heartbeat', 'c');
+    await wait(500);
+    expect(reason).toBeNull();
+    // c を閉じて誰も来なければ止まる
+    const t0 = performance.now();
+    await post('bye', 'c');
+    expect(await h!.done).toBe('画面がすべて閉じられた');
+    expect(performance.now() - t0).toBeGreaterThan(250);
+    h = null;
+  });
+
+  it('猶予の既定は、隠れたタブの間引かれた heartbeat(1 分に 1 回)より十分長い', () => {
+    expect(DEFAULT_IDLE_MS).toBeGreaterThanOrEqual(10 * 60_000);
+    expect(BYE_GRACE_MS).toBeGreaterThanOrEqual(10_000);
   });
 });

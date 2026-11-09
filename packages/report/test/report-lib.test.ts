@@ -515,7 +515,7 @@ describe('一覧の題名の見分け(sharedLeads)', () => {
   });
 
   it('まったく同じ題名が複数あっても、別の題名との違いの位置で縮める', () => {
-    const head = 'このフォルダは C++ のゲームエンジンのソースです。';
+    const head = 'このフォルダは C++ のライブラリのソースです。';
     const r = sharedLeads([`${head}Reset を呼ぶ箇所`, `${head}Reset を呼ぶ箇所`, `${head}Read を呼ぶ箇所`]);
     expect([...`${head}Reset を呼ぶ箇所`].slice(r[0].cut).join('')).toBe('Reset を呼ぶ箇所');
     expect(r[0].same).toBe(2);
@@ -524,11 +524,11 @@ describe('一覧の題名の見分け(sharedLeads)', () => {
   });
 
   it('違いの位置は英数の記号(:: や .)では切らず、和文の句読点か空白まで戻す。残す書き出しも区切りで切る', () => {
-    const head = 'このフォルダは C++ のゲームエンジンのソースです。';
-    const a = `${head}\`nox::io::File::Read\` を呼ぶ箇所`;
-    const b = `${head}\`nox::JobSystem::Initialize\` を呼ぶ箇所`;
+    const head = 'このフォルダは C++ のライブラリのソースです。';
+    const a = `${head}\`lib::io::File::Read\` を呼ぶ箇所`;
+    const b = `${head}\`lib::net::Socket::Open\` を呼ぶ箇所`;
     const [ra] = sharedLeads([a, b]);
-    expect(splitLead(a, ra.cut, 70)).toEqual({ lead: 'このフォルダは…', rest: '`nox::io::File::Read` を呼ぶ箇所' });
+    expect(splitLead(a, ra.cut, 70)).toEqual({ lead: 'このフォルダは…', rest: '`lib::io::File::Read` を呼ぶ箇所' });
   });
 
   it('空白の違いは同じとみなし、短い一致は縮めない', () => {

@@ -48,13 +48,9 @@ npm run audit:ui -- out --json audit.json --shots shots
 ## CI / リリース(GitHub Actions)
 
 - **CI**(`.github/workflows/ci.yml`): `main` への push と PR ごとに、Windows と Linux × Node.js 24 と 26 の 4 通りで `npm ci` → `typecheck` → `test` → `build:report` → `e2e` → 画面の操作の検査 → 配布物の動作確認を実行します。E2E はテスト時に生成する架空の fixture だけを使い(追加の手順は不要)、実データ(`ATLAS_LIVE`)や実際の LLM 判定は動かしません。Actions タブから手動でも実行できます。
-  - 画面の操作の検査(`ui/report.test.ts`、Node.js 24 の 2 通りだけ): Playwright の Chromium で、一覧のチェックで集計し直す・グループの作成 / 選択 / 名前と説明の編集 / 削除・詳細ページでメモを書いて保存・用語ページとの行き来を実際に押して確かめ、どの画面でもページ内の例外とコンソールのエラーが無いことを見ます。
-  - 配布物の動作確認: リリースと同じ中身(`scripts/pack-release.ts`)を作り、`atlas.bat` と同じ順で動かします(`scripts/release-smoke.ts`。`*.bat` が CRLF か → 依存の判定 → `npm install` → 初期設定(`setup.ts`)が書かずに終わるか → 架空の fixture で `atlas all`(セッション記録ができるか)→ 同梱テンプレートを作り直していないか)。手元では `npm run build:report` のあと次のように試せます(コミット済みの内容だけが入ります)。
-
-    ```
-    node scripts/pack-release.ts agent-session-atlas-smoke <作業用フォルダ>
-    node scripts/release-smoke.ts <作業用フォルダ>/agent-session-atlas-smoke
-    ```
+  - 画面の操作の検査(`ui/`、Node.js 24 の 2 通りだけ): Playwright の Chromium で、一覧のチェックで集計し直す・タスクタグの作成 / 選択 / 名前と説明の編集 / 削除・詳細ページでのタスクタグの付け外しとメモ・アップロード・戻る / 進む・サーバの止まり方・用語ページとの行き来を実際に押して確かめ、どの画面でもページ内の例外とコンソールのエラーが無いことを見ます。ブラウザの本体は Playwright の版ごとにキャッシュします。落ちたテストはその時点の画面を `out/ui-failures/<テスト名>.png` に残し(`ui/failure-shot.ts`)、CI では成果物 `ui-failures-<OS>` として 7 日間残します(Actions の実行結果の画面から落とせます)。
+  - 配布物の動作確認: リリースと同じ中身(`scripts/pack-release.ts`)を作り、`atlas.bat` と同じ順で動かします(`scripts/release-smoke.ts`。`*.bat` が CRLF か → 依存の判定 → `npm install` → 初期設定(`setup.ts`)が書かずに終わるか → 架空の fixture で `atlas all`(セッション記録ができるか)→ 同梱テンプレートを作り直していないか)。手元では `npm run build:report` のあと `npm run smoke` で同じことを試せます(`scripts/smoke-local.ts`。置き場は `out/ci-pkg/`。コミット済みの内容だけが入るので、コミットしていない変更があれば注意を出します)。
+  - **push の前に手元で CI と同じ順に回す**: `npm run ci`(`typecheck` → `test` → `build:report` → `e2e` → `ui` → `smoke`。最初に落ちたところで止まります)。画面の操作の検査には `npx playwright install chromium` が 1 回要ります。
 
   - 依存の脆弱性: `package.json` の `dependencies`(集計で毎回読み込むもの)に high 以上の警告があると止まります(`npm audit --omit=dev`)。`devDependencies` は止めず、Dependabot の PR で追います(`atlas.bat` の `npm install` は `devDependencies` も入れ、テンプレートが古いときは手元で Vite が動きます)。
 - **依存の更新**(`.github/dependabot.yml`): npm と GitHub Actions の更新を週 1 回 PR で出します。npm の minor / patch は 1 本にまとめ、major は個別の PR になります。どの PR も CI が通ってから取り込みます。

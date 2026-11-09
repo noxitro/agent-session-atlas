@@ -56,7 +56,7 @@ import { acquireOutLock } from './jobs.ts';
 import { buildTables } from './tables.ts';
 import { exportGroup } from './group-export.ts';
 import { CONFIG_FILE, loadConfig, parseUploadRoot, phaseNames } from './config.ts';
-import { uploadGroup } from './group-upload.ts';
+import { checkUpload, uploadGroup } from './group-upload.ts';
 
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
@@ -550,6 +550,14 @@ export async function runGroup(p: Paths, g: GroupCliOptions, log: Log, config: s
     } else root = parseUploadRoot(root);
     const release = acquireOutLock(p.out, 'group upload', 'cli');
     try {
+      // 写す前に大きさと秘密らしい文字列を調べる(画面の確認と同じ。秘密らしい文字列があれば --force が無い限り写さない)
+      const c = await checkUpload(p, g.name!, root);
+      log(`group upload: ${c.sessions} セッション・${mb(c.bytes)}${c.largest.length ? `(大きいもの: ${c.largest.slice(0, 3).map((x) => `${x.id.slice(0, 8)}/${x.path} ${mb(x.bytes)}`).join('、')})` : ''}`);
+      if (c.secrets.count) {
+        log(`group upload: 秘密らしい文字列が ${c.secrets.count} 件あります(${c.secrets.kinds.map((k) => `${k.label} ${k.count}`).join('・')}。偽陽性もありえます)`);
+        for (const f of c.secrets.files) log(`  ${f.id}/${f.path}: ${f.count} 件`);
+        if (!g.force) throw new Error('写していません。写した先で見られる人を確かめ、それでも写すなら --force を付けてください(本物の鍵なら作り直してください)');
+      }
       const r = await uploadGroup(p, g.name!, root, log);
       if (r.missing.length) log(`group upload: 前回の集計に無いセッション: ${r.missing.join(', ')}`);
       if (r.snapshotAt) log(`group upload: 写したのは ${r.snapshotAt} の集計の時点のログです(新しくするには先に atlas all)`);

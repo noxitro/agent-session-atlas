@@ -11,7 +11,8 @@ import { appendFile, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { shotOnFailure } from './failure-shot.ts';
 import { startServe, type ServeHandle } from '../packages/cli/src/serve.ts';
 import { buildFixtureHome, FIXTURE_CODE, ROOT } from '../e2e/fixture-home.ts';
 
@@ -62,6 +63,8 @@ describe('画面からの操作(Phase 14)', () => {
     await server?.close('テスト終了');
     await close?.();
   });
+  // 落ちたらその時点の画面を out/ui-failures/ に残す(CI は成果物として上げる)
+  beforeEach((ctx) => shotOnFailure(ctx, () => page));
   afterEach(() => {
     // 次のテストに持ち越さない(1 つの失敗が後のテストを全部落とさないように)
     expect(problems.splice(0)).toEqual([]);

@@ -8,7 +8,8 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { loadStore, mergeSessionStoreJson } from '../../core/src/index.ts';
 import { parseCli } from '../src/args.ts';
-import { uploadDir, uploadGroup } from '../src/group-upload.ts';
+import { resolvePaths, runGroup } from '../src/commands.ts';
+import { checkUpload, uploadDir, uploadGroup } from '../src/group-upload.ts';
 import { startServe, TOKEN_PLACEHOLDER, type ServeHandle } from '../src/serve.ts';
 
 describe('グループのアップロード', () => {
@@ -47,8 +48,8 @@ describe('グループのアップロード', () => {
   it('セッションごとのフォルダに写し、作業用のファイルは入れない。外を指す id と無い id は写さない', async () => {
     const r = await uploadGroup(paths(), 'Player/Weapon', root);
     expect(r).toEqual({ name: 'Player/Weapon', dir: join(root, 'Player_Weapon'), uploaded: 2, replaced: 0, missing: ['gone', '../s1'], snapshotAt: '2026-11-08T01:02:03.000Z', memos: 0 });
-    expect((await readdir(r.dir)).sort()).toEqual(['README.md', 's1', 's2']);
-    expect((await readdir(join(r.dir, 's1'))).sort()).toEqual(['events.jsonl', 'files']);
+    expect((await readdir(r.dir)).sort()).toEqual(['README.md', 'atlas-index.json', 's1', 's2']);
+    expect((await readdir(join(r.dir, 's1'))).sort()).toEqual(['atlas-session.json', 'events.jsonl', 'files']);
     expect(await readFile(join(r.dir, 's1', 'files', 'a.txt'), 'utf8')).toBe('a');
     // session-store.db が無ければ DB の行は添えない
     expect(existsSync(join(r.dir, 's1', 'atlas-session-store.json'))).toBe(false);
@@ -83,9 +84,9 @@ describe('グループのアップロード', () => {
     const readme = await readFile(join(r.dir, 'README.md'), 'utf8');
     expect(readme).toMatch(/^# Player\/Weapon\n\n武器 \| 当たり判定の\n直し\n/);
     expect(readme).toContain('セッション: 2 件(うちメモあり 1 件)');
-    expect(readme).toContain('| [s1](s1/) | 当たり判定を \\| 直して | ');
+    expect(readme).toContain('| [s1](s1/) | 当たり判定を \\| 直して | Player/Weapon | ');
     expect(readme).toContain('| [あり](s1/atlas-memo.md) |');
-    expect(readme).toContain('| [s2](s2/) | - | - | - |');
+    expect(readme).toContain('| [s2](s2/) | - | Player/Weapon | - | - |');
     expect(readme).toContain('写していないもの: `gone`');
     expect(readme).toContain(`--home "${r.dir}"`);
     // メモを消してからもう一度写すと、前に添えたメモも消える(フォルダごと置き換えるため)
@@ -223,4 +224,74 @@ describe('グループのアップロード', () => {
     expect(put.status).toBe(409);
     expect(await readFile(configPath, 'utf8')).toBe('{ 壊れた');
   });
+  // トークンの形をソースに直書きしない(秘密の検査に引っかからないように)
+  const TOKEN = ['ghp', 'UPLOADFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAK1'].join('_');
+
+  it('checkUpload: 大きさ・大きいもの・秘密らしい文字列を数え、バイナリは中身を調べない。塊の境目をまたいでも 1 回だけ数える', async () => {
+    const s1 = join(out, 'snapshot', 'session-state', 's1');
+    await writeFile(join(s1, 'events.jsonl'), `{"data":"token ${TOKEN}"}\n{"data":"Bearer ${'a'.repeat(30)}"}\n`);
+    // 読む塊(4 MB)の境目をまたぐ位置と、重ねて読む部分の中に 1 つずつ
+    const big = Buffer.alloc(9 * 1024 * 1024, 'x');
+    big.write(` ${TOKEN} `, 4 * 1024 * 1024 - 20);
+    big.write(` ${TOKEN} `, 8 * 1024 * 1024 - 8 * 1024);
+    await writeFile(join(s1, 'files', 'big.log'), big);
+    // NUL を含むファイルは調べない(SQLite・画像など)
+    await writeFile(join(out, 'snapshot', 'session-state', 's2', 'session.db'), Buffer.concat([Buffer.from([0, 1, 2]), Buffer.from(TOKEN)]));
+    const c = await checkUpload(paths(), 'Player/Weapon', root);
+    expect(c).toMatchObject({ name: 'Player/Weapon', dir: join(root, 'Player_Weapon'), sessions: 2, missing: ['gone', '../s1'], replace: 0, files: 5, snapshotAt: '2026-11-08T01:02:03.000Z' });
+    expect(c.bytes).toBeGreaterThan(9 * 1024 * 1024);
+    expect(c.largest[0]).toEqual({ id: 's1', path: 'files', bytes: 9 * 1024 * 1024 + 1 });
+    expect(c.secrets.kinds).toEqual([
+      { label: 'GitHub トークン', count: 3 },
+      { label: 'Bearer トークン', count: 1 },
+    ]);
+    expect(c.secrets.count).toBe(4);
+    expect(c.secrets.files).toEqual([
+      { id: 's1', path: 'events.jsonl', count: 2 },
+      { id: 's1', path: 'files/big.log', count: 2 },
+    ]);
+    expect(c.secrets.skipped).toBe(1);
+    // 点検は何も写さない
+    expect(existsSync(join(root, 'Player_Weapon'))).toBe(false);
+  });
+
+  it('uploadGroup の進み具合: 写したバイト数が増えていき、最後は合計に揃う', async () => {
+    await writeFile(join(out, 'snapshot', 'session-state', 's2', 'events.jsonl'), 'y'.repeat(5000));
+    const seen: { done: number; copied: number; bytes: number; current: string | null }[] = [];
+    await uploadGroup(paths(), 'Player/Weapon', root, () => {}, { onProgress: (p) => seen.push(p) });
+    const last = seen.at(-1)!;
+    expect(last).toMatchObject({ sessions: 2, done: 2, current: 's2' });
+    expect(last.copied).toBe(last.bytes);
+    for (let i = 1; i < seen.length; i++) expect(seen[i].copied).toBeGreaterThanOrEqual(seen[i - 1].copied);
+    expect(seen.some((p) => p.copied > 0 && p.copied < last.bytes)).toBe(true);
+  });
+
+  it('CLI: 秘密らしい文字列があれば --force が無い限り写さない', async () => {
+    expect(parseCli(['group', 'upload', 'g', '--force']).groupCmd).toMatchObject({ action: 'upload', force: true });
+    expect(() => parseCli(['group', 'export', 'g', '--force'])).toThrow(/--force は judge run と group upload/);
+    await writeFile(join(out, 'snapshot', 'session-state', 's1', 'events.jsonl'), `{"data":"${TOKEN}"}\n`);
+    const p = { ...resolvePaths({ home: dir, out, judgments: null, notesDir: notes }) };
+    const lines: string[] = [];
+    const g = { action: 'upload' as const, name: 'Player/Weapon', ids: [], note: null, to: root, force: false };
+    await expect(runGroup(p, g, (m) => lines.push(m))).rejects.toThrow(/--force/);
+    expect(lines.join('\n')).toMatch(/秘密らしい文字列が 1 件あります.GitHub トークン 1/);
+    expect(existsSync(join(root, 'Player_Weapon'))).toBe(false);
+    await runGroup(p, { ...g, force: true }, (m) => lines.push(m));
+    expect(existsSync(join(root, 'Player_Weapon', 's1', 'events.jsonl'))).toBe(true);
+  });
+
+  it('serve: 写す前の点検と、写している途中の進み具合(このグループを写していなければ null)', async () => {
+    await writeFile(configPath, JSON.stringify({ uploadRoot: root }));
+    h = await startServe({ outDir: out, notesDir: notes, groupsPath: join(notes, 'groups.json'), port: 0, open: false, configPath, folders: { canPick: false } });
+    const call = (p: string, method: string, token: string | null = h!.token) => fetch(`http://127.0.0.1:${h!.port}/${p}`, { method, headers: token ? { 'x-atlas-token': token } : {} });
+    const g = encodeURIComponent('Player/Weapon');
+    expect((await call(`api/groups/${g}/upload/check`, 'POST', null)).status).toBe(403);
+    expect((await call(`api/groups/${g}/upload/check`, 'GET')).status).toBe(405);
+    const c = (await (await call(`api/groups/${g}/upload/check`, 'POST')).json()) as { sessions: number; secrets: { count: number } };
+    expect(c).toMatchObject({ sessions: 2, secrets: { count: 0 } });
+    expect(existsSync(join(root, 'Player_Weapon'))).toBe(false);
+    expect(await (await call(`api/groups/${g}/upload/progress`, 'GET')).json()).toBeNull();
+    expect((await call(`api/groups/${g}/upload/progress`, 'POST')).status).toBe(405);
+    // サーバの起動を含むので、全体を同時に流したときの遅れで 5 秒を越えることがある
+  }, 20_000);
 });

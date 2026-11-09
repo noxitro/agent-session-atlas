@@ -4,6 +4,7 @@
   import { dateTime, dec, duration, int, modelLabel, pathParts, sharedLeads, splitLead, truncate } from '../../lib/format.ts';
   import type { ReportGroup, SessionSummary } from '../../lib/types.ts';
   import SortMark from './SortMark.svelte';
+  import { restoredView, saveView } from '../view-restore.ts';
   import { categoryLabel, confidenceLabel } from '../../lib/judgment-labels.ts';
 
   let {
@@ -67,9 +68,16 @@
     active: (s) => s.activeMs ?? -1,
     human: (s) => s.judgment?.hours ?? -1,
   };
-  let sortKey = $state<Key>('time');
-  let asc = $state(false);
-  let page = $state(0);
+  // 戻る / 進むで開かれたら、離れたときの並べ替えとページから始める(view-restore.ts)
+  const back = restoredView()?.table;
+  let sortKey = $state<Key>(back && back.sortKey in value ? (back.sortKey as Key) : 'time');
+  let asc = $state(back?.asc === true);
+  let page = $state(back && Number.isInteger(back.page) && back.page > 0 ? back.page : 0);
+  $effect(() => {
+    const onHide = (): void => saveView({ table: { sortKey, asc, page } });
+    addEventListener('pagehide', onHide);
+    return () => removeEventListener('pagehide', onHide);
+  });
   const PAGE = 50;
 
   const sorted = $derived.by(() => {
@@ -269,7 +277,7 @@
   <div class="select-bar" role="group" aria-label="セッションの選択">
     <p class="sel-count">
       <span aria-live="polite" aria-atomic="true"><strong data-testid="selected-count">{int(selected.size)}</strong> 件を選択中</span>{#if idsActive}<span class="tag on">この選択で集計中</span>{/if}
-      {#if selected.size === 0}<span class="why">左端の欄にチェックを付けると、そのセッションだけで集計し直したり、名前付きグループにできます。</span>{/if}
+      {#if selected.size === 0}<span class="why">左端の欄にチェックを付けると、そのセッションだけで集計し直したり、タスクタグを付けられます。</span>{/if}
     </p>
     <div class="sel-actions">
       <button type="button" class="btn" data-testid="apply-selection" disabled={selected.size === 0} onclick={onapply}>選んだ {int(selected.size)} 件だけ集計</button>
@@ -277,21 +285,21 @@
       <button type="button" class="btn" disabled={selected.size === 0 && !idsActive} onclick={onclear}>選択を解除</button>
       {#if editable}
         <span class="menu-wrap">
-          <button type="button" class="btn" data-testid="add-to-group" bind:this={menuBtn} disabled={selected.size === 0 || createOpen} aria-expanded={menuOpen} aria-controls="add-menu" onclick={toggleMenu}>グループに追加 <span aria-hidden="true">▾</span></button>
+          <button type="button" class="btn" data-testid="add-to-group" bind:this={menuBtn} disabled={selected.size === 0 || createOpen} aria-expanded={menuOpen} aria-controls="add-menu" onclick={toggleMenu}>タスクタグを付ける <span aria-hidden="true">▾</span></button>
           {#if menuOpen}
-            <div class="menu" id="add-menu" bind:this={menuEl} role="group" aria-label="追加先のグループ" data-testid="add-menu" onfocusout={(e) => { const t = e.relatedTarget as Node | null; if (t && !menuEl?.contains(t) && !menuBtn?.contains(t)) closeMenu(false); }}>
+            <div class="menu" id="add-menu" bind:this={menuEl} role="group" aria-label="付けるタスクタグ" data-testid="add-menu" onfocusout={(e) => { const t = e.relatedTarget as Node | null; if (t && !menuEl?.contains(t) && !menuBtn?.contains(t)) closeMenu(false); }}>
               {#each groups as g (g.name)}
                 <button type="button" class="item" onclick={() => pickAdd(g.name)}>{g.name}<span class="cnt" aria-hidden="true">{g.present === g.ids.length ? int(g.ids.length) : `${int(g.present)} / ${int(g.ids.length)}`}</span><span class="sr-only">{int(g.present)} 件</span></button>
               {/each}
-              <button type="button" class="item new" data-testid="create-group" onclick={pickNew}>新しいグループ…</button>
+              <button type="button" class="item new" data-testid="create-group" onclick={pickNew}>新しいタスクタグ…</button>
             </div>
           {/if}
         </span>
         {#if currentGroup}
-          <button type="button" class="btn" data-testid="remove-from-group" disabled={selected.size === 0} onclick={() => void report(onremove)}>このグループから外す</button>
+          <button type="button" class="btn" data-testid="remove-from-group" disabled={selected.size === 0} onclick={() => void report(onremove)}>このタスクタグを外す</button>
         {/if}
       {:else if !anonymized}
-        <span class="how">このファイルは閲覧用です。グループの作成や追加は atlas.bat から開いたときにできます</span>
+        <span class="how">このファイルは閲覧用です。タスクタグは atlas.bat から開いたときに付けられます</span>
       {/if}
     </div>
   </div>
@@ -300,11 +308,11 @@
     <p class="status-line" class:bad={statusError} role="status" data-testid="group-status">{status}</p>
   {/if}
   {#if createOpen && editable}
-    <form class="create-box" data-testid="create-form" aria-label="グループの作成" aria-busy={busy} onsubmit={submitCreate}>
-      <p class="create-lead">選んだ {int(selected.size)} 件を名前付きグループにします(atlas-notes/groups.json に保存され、左の「グループ」(狭い画面では目次の行の「グループ」)から選べます)。</p>
+    <form class="create-box" data-testid="create-form" aria-label="タスクタグの作成" aria-busy={busy} onsubmit={submitCreate}>
+      <p class="create-lead">選んだ {int(selected.size)} 件にタスクタグを付けます(atlas-notes/groups.json に保存され、左の「タスクタグ」(狭い画面では目次の行の「タスクタグ」)から選べます)。</p>
       <div class="create-row">
         <label class="fld"><span class="k">名前</span><input type="text" bind:this={nameEl} bind:value={newName} maxlength="100" readonly={busy} aria-invalid={createError ? 'true' : undefined} aria-describedby={createError ? 'create-error' : undefined} placeholder="例: 11 月の調査" /></label>
-        <label class="fld wide"><span class="k">説明(任意)</span><input type="text" bind:value={newNote} maxlength="200" readonly={busy} placeholder="何のグループか" /></label>
+        <label class="fld wide"><span class="k">説明(任意)</span><input type="text" bind:value={newNote} maxlength="200" readonly={busy} placeholder="何のタスクか" /></label>
         <button type="submit" class="btn" aria-disabled={busy}>{busy ? '作成中…' : '作成'}</button>
         <button type="button" class="btn" onclick={cancelCreate} aria-disabled={busy}>取消</button>
       </div>
@@ -354,7 +362,7 @@
               <td class="chk"><label><input type="checkbox" aria-label="{title(s)} を選択" checked={selected.has(s.id)} onchange={(e) => toggle(s.id, e.currentTarget.checked)} /></label></td>
               <td class="num when">{dateTime(s.createdAt ?? s.updatedAt)}</td>
               <td class="proj" title={s.project}>{#each pathParts(s.projectLabel) as seg, i (i)}{#if i}<wbr />{/if}{seg}{/each}{#if s.branch}<span class="sub">{s.branch}</span>{/if}</td>
-              <td class="name"><a href={s.href} title={title(s)}>{#if leads.get(s.id)?.lead}<span class="lead" title="ほかの行と同じ書き出し(縮めて表示)">{leads.get(s.id)?.lead}</span>{leads.get(s.id)?.rest}{:else}{title(s)}{/if}</a>{#if (leads.get(s.id)?.same ?? 1) > 1}<span class="tag" title="一覧の中に題名がまったく同じセッションが {leads.get(s.id)?.same} 件あります。開始時刻やプロジェクトで見分けてください">同じ題名 ×{leads.get(s.id)?.same}</span>{/if}{#if s.empty}<span class="tag" title="依頼・ツール呼び出し・応答がどれも無いセッション">空</span>{/if}{#if s.memo}<span class="sub" data-testid="memo-excerpt">メモ: {s.memo.excerpt || '(本文なし)'}</span>{/if}{#if groupsOf.has(s.id)}<span class="sub in-groups" data-testid="session-groups">グループ: {groupsOf.get(s.id)?.join('、')}</span>{/if}</td>
+              <td class="name"><a href={s.href} title={title(s)}>{#if leads.get(s.id)?.lead}<span class="lead" title="ほかの行と同じ書き出し(縮めて表示)">{leads.get(s.id)?.lead}</span>{leads.get(s.id)?.rest}{:else}{title(s)}{/if}</a>{#if (leads.get(s.id)?.same ?? 1) > 1}<span class="tag" title="一覧の中に題名がまったく同じセッションが {leads.get(s.id)?.same} 件あります。開始時刻やプロジェクトで見分けてください">同じ題名 ×{leads.get(s.id)?.same}</span>{/if}{#if s.empty}<span class="tag" title="依頼・ツール呼び出し・応答がどれも無いセッション">空</span>{/if}{#if s.memo}<span class="sub" data-testid="memo-excerpt">メモ: {s.memo.excerpt || '(本文なし)'}</span>{/if}{#if groupsOf.has(s.id)}<span class="sub in-groups" data-testid="session-groups">タスクタグ: {groupsOf.get(s.id)?.join('、')}</span>{/if}</td>
               <td class="nowrap">{s.client ?? '不明'}</td>
               <td class="models" title={s.models.join('、')}>{s.models.length ? s.models.map(modelLabel).join('、') : '不明'}</td>
               <td class="num">{int(s.turns)}</td>

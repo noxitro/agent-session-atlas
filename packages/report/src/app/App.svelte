@@ -23,6 +23,7 @@
   import { applyTheme, loadTheme, type ThemeChoice } from './theme.ts';
   import { watchScrollFocus } from './scroll-focus.ts';
   import { api, serveToken, startHeartbeat, type GroupExport, type UploadHandlers, type UploadSetting } from './api.ts';
+  import { restoreDone, restoredView, saveView } from './view-restore.ts';
   import { JobStore } from './jobs.svelte.ts';
   import JobActions from './components/JobActions.svelte';
   import JobBand from './components/JobBand.svelte';
@@ -89,6 +90,12 @@
   // 要点欄などの #… リンク(絞り込みの状態)を押したときに絞り込みを切り替える。#overview のようなページ内リンクは無視
   $effect(() => {
     const onHash = (): void => {
+      // 戻る / 進むで # の無い URL(絞り込みの無い状態は # を書かない)に戻ったら、絞り込みも外す。
+      // 以前は読み飛ばしていたので、要点のリンクで絞り込んでから「戻る」を押しても絞り込みが残っていた
+      if (location.hash.length <= 1) {
+        if (!isEmptyFilter(filter)) filter = emptyFilter();
+        return;
+      }
       if (!isStateHash(location.hash)) return;
       filter = decodeFilter(location.hash);
       showView(decodeView(location.hash) ?? 'sessions');
@@ -109,7 +116,8 @@
   $effect(() => {
     const h = encodeFilter(filter);
     try {
-      history.replaceState(null, '', h ? `#${h}` : location.pathname + location.search);
+      // history.state(戻ったときの見た目。view-restore.ts)は消さずに URL だけ変える
+      history.replaceState(history.state, '', h ? `#${h}` : location.pathname + location.search);
     } catch {
       /* file:// で履歴を書けない環境では URL に残さないだけ */
     }
@@ -250,7 +258,9 @@
             if (uploadSetting) uploadSetting = { ...uploadSetting, root: r.root, error: null };
             return r.root;
           },
+          check: (name) => api.checkUpload(token!, name),
           run: (name) => api.uploadGroup(token!, name),
+          progress: (name) => api.uploadProgress(token!, name),
           open: async (name) => void (await api.openUpload(token!, name)),
         }
       : undefined,
@@ -289,11 +299,11 @@
   /** 選んだセッションを現在のグループから外す(差分 remove を送る。0 件になっても消さない) */
   async function removeFromGroup(): Promise<string> {
     const name = currentName;
-    if (!name) throw new Error('グループで絞り込んでいるときだけ外せます');
+    if (!name) throw new Error('タスクタグで絞り込んでいるときだけ外せます');
     const res = await api.update(token!, name, { remove: selectedKnown() });
     liveGroups = res.groups;
     setFilter({ ids: groupIds(res.group, knownIds), group: groupKey(name) });
-    return `${int(res.removed)} 件を「${name}」から外しました${res.group.ids.length === 0 ? '(グループは 0 件のまま残ります)' : ''}`;
+    return `${int(res.removed)} 件を「${name}」から外しました${res.group.ids.length === 0 ? '(タスクタグは 0 件のまま残ります)' : ''}`;
   }
   // 狭い幅(768px 未満)では目次行の「グループ」から一覧を開く。外を押す / Esc で閉じ、焦点はボタンに戻す
   let groupsOpen = $state(false);
@@ -419,6 +429,37 @@
     if (l < ol.scrollLeft) ol.scrollLeft = l - 12;
     else if (r > ol.scrollLeft + ol.clientWidth) ol.scrollLeft = r - ol.clientWidth + 12;
   });
+  // 戻る / 進む・再読み込みで開かれたら、離れたときのスクロール位置に戻す(描いてから。ブラウザに任せると描く前の短いページで先頭になる)。
+  // 離れるときに今の位置を履歴の項目に書く(view-restore.ts)
+  $effect(() => {
+    const y = restoredView()?.y;
+    try {
+      history.scrollRestoration = 'manual';
+    } catch {
+      /* 使えない環境ではブラウザに任せる */
+    }
+    // effect の時点で本文は描き終わっているので、その場で戻す。後から高さが変わる(タスクタグの見出しが出るなど)ときのため、
+    // 少し後にもう一度だけ合わせる(その間に自分でスクロールしたら合わせない)
+    if (y != null && y > 0) {
+      const go = (): void => window.scrollTo({ top: y, behavior: 'instant' });
+      go();
+      let moved = false;
+      const stop = (): void => void (moved = true);
+      addEventListener('wheel', stop, { once: true, passive: true });
+      addEventListener('keydown', stop, { once: true });
+      addEventListener('touchstart', stop, { once: true, passive: true });
+      setTimeout(() => {
+        if (!moved && Math.abs(window.scrollY - y) > 1) go();
+        removeEventListener('wheel', stop);
+        removeEventListener('keydown', stop);
+        removeEventListener('touchstart', stop);
+      }, 300);
+    }
+    restoreDone();
+    const onHide = (): void => saveView({ y: window.scrollY });
+    addEventListener('pagehide', onHide);
+    return () => removeEventListener('pagehide', onHide);
+  });
   // 詳細・用語ページの「← 戻る」が history.back() で絞り込みを保てるよう、このページから別ページへ移るときに印を残す(file:// では referrer が無い)
   $effect(() => {
     const onClick = (e: MouseEvent): void => {
@@ -490,23 +531,23 @@
               </ol>
             </div>
           {/each}
-          <div class="toc-group groups-toggle" role="group" aria-label="グループ">
+          <div class="toc-group groups-toggle" role="group" aria-label="タスクタグ">
             <ol>
               <li>
                 <button type="button" class="toc-btn" bind:this={groupsBtn} aria-expanded={groupsOpen} aria-controls="group-pop" data-testid="groups-toggle" onclick={toggleGroups}>
-                  グループ<span class="cnt">{int(groupOptions.length)}</span>
+                  タスクタグ<span class="cnt">{int(groupOptions.length)}</span>
                 </button>
               </li>
             </ol>
           </div>
         </nav>
         <!-- サイドバー(768px 以上)の「グループ」の群。狭い幅では目次行の「グループ」から同じ中身を開く -->
-        <div class="rail-groups" role="group" aria-label="グループ">
-          <span class="toc-title" aria-hidden="true">グループ</span>
+        <div class="rail-groups" role="group" aria-label="タスクタグ">
+          <span class="toc-title" aria-hidden="true">タスクタグ</span>
           <GroupRail groups={groupOptions} current={currentName} selectedCount={adhocCount} {editable} anonymized={data.anonymized} onpick={pickGroup} />
         </div>
         {#if groupsOpen}
-          <div class="group-pop" id="group-pop" role="region" bind:this={groupsPop} tabindex="-1" aria-label="グループ" data-testid="group-pop" onfocusout={(e) => { const t = e.relatedTarget as Node | null; if (t && !groupsPop?.contains(t) && !groupsBtn?.contains(t)) closeGroups(false); }}>
+          <div class="group-pop" id="group-pop" role="region" bind:this={groupsPop} tabindex="-1" aria-label="タスクタグ" data-testid="group-pop" onfocusout={(e) => { const t = e.relatedTarget as Node | null; if (t && !groupsPop?.contains(t) && !groupsBtn?.contains(t)) closeGroups(false); }}>
             <GroupRail groups={groupOptions} current={currentName} selectedCount={adhocCount} {editable} anonymized={data.anonymized} onpick={(n) => { pickGroup(n); closeGroups(); }} />
           </div>
         {/if}
@@ -576,7 +617,7 @@
             読み取り時の注意: 未知のイベント種別 {int(data.warnings.unknownEventTypes)} 件、読めなかった行 {int(data.warnings.badLines)} 行。
           {/if}
           {#if data.warnings.notes?.length}
-            メモとグループ(atlas-notes)の読み取りで無視した箇所 {int(data.warnings.notes.length)} 件(全体サマリの集計明細に理由)。
+            メモとタスクタグ(atlas-notes)の読み取りで無視した箇所 {int(data.warnings.notes.length)} 件(全体サマリの集計明細に理由)。
           {/if}
         </p>
       </footer>

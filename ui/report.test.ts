@@ -11,7 +11,8 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, sep } from 'node:path';
 import { chromium, type Browser, type Locator, type Page } from 'playwright';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { shotOnFailure } from './failure-shot.ts';
 import { startServe, type ServeHandle } from '../packages/cli/src/serve.ts';
 import { buildFixtureHome, ROOT } from '../e2e/fixture-home.ts';
 
@@ -72,6 +73,8 @@ describe('画面の操作', () => {
     await server?.close('テスト終了');
     await close?.();
   });
+  // 落ちたらその時点の画面を out/ui-failures/ に残す(CI は成果物として上げる)
+  beforeEach((ctx) => shotOnFailure(ctx, () => page));
   afterEach(() => {
     // 次のテストに持ち越さない(1 件の失敗で後のテストがすべて落ちて、どこで起きたか分からなくならないように)
     expect(problems.splice(0)).toEqual([]);
@@ -219,20 +222,47 @@ describe('画面の操作', () => {
 
     // 一覧の行に所属が出る
     const groupsLine = (i: number) => page.locator('#sessions table.ledger tbody tr').nth(i).getByTestId('session-groups');
-    await expect.poll(() => groupsLine(2).innerText()).toBe('グループ: 甲、乙');
-    expect(await groupsLine(0).innerText()).toBe('グループ: 甲');
+    await expect.poll(() => groupsLine(2).innerText()).toBe('タスクタグ: 甲、乙');
+    expect(await groupsLine(0).innerText()).toBe('タスクタグ: 甲');
 
-    // 詳細ページにも所属が出て、名前からそのグループで絞り込んだレポートに移れる
+    // 詳細ページにもタスクタグが出て、ここで付け外しできる(今あるタグに足す・新しく作る・外す)
     await page.goto(new URL(`sessions/${id2}.html`, server.url).href);
     const line = page.getByTestId('detail-groups');
     await line.waitFor({ state: 'visible' });
-    expect(await line.innerText()).toMatch(/グループ\s*甲、乙/);
+    const tagNames = async (): Promise<string[]> => line.locator('.tag a').allInnerTexts();
+    expect(await tagNames()).toEqual(['甲', '乙']);
+    // 候補の一覧(datalist)付きの入力欄なので役割は combobox。ラベルで探す
+    const tagInput = line.getByLabel('付けるタスクタグ');
+    // 新しいタグを作って付ける
+    await tagInput.fill('丙タグ');
+    await line.getByRole('button', { name: '付ける' }).click();
+    await expect.poll(tagNames).toEqual(['甲', '乙', '丙タグ']);
+    expect((await readGroups()).find((g) => g.name === '丙タグ')?.ids).toEqual([id2]);
+    await expect.poll(() => line.locator('.tag-msg').innerText()).toBe('「丙タグ」を付けました');
+    // 外す(タグは 0 件で残る)。焦点は入力欄へ
+    await line.getByRole('button', { name: 'タスクタグ「丙タグ」を外す' }).click();
+    await expect.poll(tagNames).toEqual(['甲', '乙']);
+    expect((await readGroups()).find((g) => g.name === '丙タグ')?.ids).toEqual([]);
+    await focusLands(tagInput);
+    // 今あるタグ(甲)を別のセッションに付けると、ids に足す(作り直さない)
+    await page.goto(new URL(`sessions/${id1}.html`, server.url).href);
+    await line.waitFor({ state: 'visible' });
+    await expect.poll(tagNames).toEqual(['甲']);
+    await tagInput.fill('乙');
+    await line.getByRole('button', { name: '付ける' }).click();
+    await expect.poll(tagNames).toEqual(['甲', '乙']);
+    expect((await sorted())['乙']).toEqual([id1, id2].sort());
+    await line.getByRole('button', { name: 'タスクタグ「乙」を外す' }).click();
+    await expect.poll(tagNames).toEqual(['甲']);
+    // 名前からそのタグで絞り込んだレポートに移れる
+    await page.goto(new URL(`sessions/${id2}.html`, server.url).href);
+    await line.waitFor({ state: 'visible' });
     await line.getByRole('link', { name: '乙' }).click();
     await page.waitForURL('**/atlas.html#group=*');
     await expect.poll(shown).toBe(1);
 
     // 後片付け(後のテストに残さない)
-    for (const name of ['甲', '乙']) {
+    for (const name of ['甲', '乙', '丙タグ']) {
       await page.goto(server.url);
       await rail().getByRole('button', { name: new RegExp(name) }).click();
       const head = page.getByTestId('group-head');
@@ -444,17 +474,24 @@ describe('画面の操作', () => {
       const bad = problems.findIndex((p) => p.includes('status of 400'));
       expect(bad).toBeGreaterThanOrEqual(0);
       problems.splice(bad, 1);
-      // 選ぶと設定に書き、見出しに戻ってそのまま写す
+      // 選ぶと設定に書き、写す前の確認が出る(送り先を見せる。焦点は「写す」)。写すと結果が出る
       pickAnswer = root;
       await form.getByRole('button', { name: 'エクスプローラーで選ぶ…' }).click();
+      const confirm = head.getByTestId('group-upload-confirm');
+      await expect.poll(() => confirm.isVisible()).toBe(true);
+      expect(await head.getByTestId('group-upload-confirm-dest').locator('code').innerText()).toBe(`${dest}${sep}`);
+      await focusLands(confirm.getByRole('button', { name: '写す', exact: true }));
+      await page.keyboard.press('Enter');
       await expect.poll(() => head.getByTestId('group-uploaded').innerText(), { timeout: 15_000 }).toMatch(/アップロードしました.2 セッション.*README\.md/);
       expect(JSON.parse(await readFile(configPath, 'utf8'))).toEqual({ uploadRoot: root });
       expect(await head.getByTestId('group-upload-dest').locator('code').innerText()).toBe(`${dest}${sep}`);
       expect(await head.getByTestId('group-uploaded').locator('code').innerText()).toBe(dest);
       for (const id of ids) expect(existsSync(join(dest, id, 'events.jsonl'))).toBe(true);
       expect(await readFile(join(dest, 'README.md'), 'utf8')).toMatch(/^# アップ\/テスト\n\n画面から写す\n/);
-      // 2 回目は置き換え。焦点は「アップロード」に残る
+      // 2 回目も確かめてから写す(置き換えの件数を見せる)
       await head.getByTestId('group-upload').click();
+      await expect.poll(() => confirm.innerText()).toMatch(/うち 2 件は前に写したものを置き換えます/);
+      await confirm.getByRole('button', { name: '写す', exact: true }).click();
       await expect.poll(() => head.getByTestId('group-uploaded').innerText()).toMatch(/うち 2 件は前に写したものを置き換え/);
       // 写した先を開く(エクスプローラーの代わりに記録)
       await head.getByTestId('group-upload-open').click();
@@ -470,6 +507,81 @@ describe('画面の操作', () => {
       if (before == null) await rm(groupsPath, { force: true });
       else await writeFile(groupsPath, before);
     }
+  });
+
+  it('g2. 写す前の確認: 秘密らしい文字列があれば確認を出し(焦点は「やめる」)、Esc でやめると何も写さない。「それでも写す」で写す', async () => {
+    const s = JSON.parse(await readFile(join(out, 'sessions.json'), 'utf8')) as { sessions: { id: string }[] };
+    const id = s.sessions.map((x) => x.id).find((x) => existsSync(join(out, 'snapshot', 'session-state', x)))!;
+    const before = existsSync(groupsPath) ? await readFile(groupsPath, 'utf8') : null;
+    const beforeConfig = existsSync(configPath) ? await readFile(configPath, 'utf8') : null;
+    const name = '秘密の確認';
+    const root = join(WORK, 'atlas-logs-secret');
+    const secret = join(out, 'snapshot', 'session-state', id, 'files', 'ui-secret.txt');
+    await mkdir(root, { recursive: true });
+    await mkdir(notes, { recursive: true });
+    await mkdir(join(out, 'snapshot', 'session-state', id, 'files'), { recursive: true });
+    // トークンの形をソースに直書きしない
+    await writeFile(secret, `token=${['ghp', 'UITESTFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE'].join('_')}\n`);
+    await writeFile(configPath, JSON.stringify({ uploadRoot: root }));
+    await writeFile(groupsPath, JSON.stringify({ version: 1, groups: [{ name, note: '', ids: [id] }] }));
+    try {
+      // # だけが違う URL への goto はページ内の移動になり、前のテストのグループの一覧で読まれる(無いグループとして # が消える)。いったん外へ移ってから開く
+      await page.goto('about:blank');
+      await page.goto(`${server.url}#group=${encodeURIComponent(name)}`);
+      const head = page.getByTestId('group-head');
+      await expect.poll(() => head.getByTestId('group-upload-dest').innerText()).toContain(root);
+      await head.getByTestId('group-upload').click();
+      const confirm = head.getByTestId('group-upload-confirm');
+      await expect.poll(() => confirm.isVisible()).toBe(true);
+      expect(await head.getByTestId('group-upload-secrets').innerText()).toMatch(/秘密らしい文字列が 1 件あります.GitHub トークン 1.[\s\S]*files\/ui-secret\.txt 1 件/);
+      await focusLands(confirm.getByRole('button', { name: 'やめる' }));
+      await page.keyboard.press('Escape');
+      await expect.poll(() => confirm.count()).toBe(0);
+      await expect.poll(() => page.evaluate<string | null>("document.activeElement?.getAttribute('data-testid') ?? null")).toBe('group-upload');
+      expect(existsSync(join(root, name))).toBe(false);
+      // もう一度押して「それでも写す」
+      await head.getByTestId('group-upload').click();
+      await confirm.getByRole('button', { name: 'それでも写す' }).click();
+      await expect.poll(() => head.getByTestId('group-uploaded').innerText(), { timeout: 15_000 }).toMatch(/アップロードしました.1 セッション/);
+      expect(existsSync(join(root, name, id, 'files', 'ui-secret.txt'))).toBe(true);
+    } finally {
+      await rm(secret, { force: true });
+      if (before == null) await rm(groupsPath, { force: true });
+      else await writeFile(groupsPath, before);
+      if (beforeConfig == null) await rm(configPath, { force: true });
+      else await writeFile(configPath, beforeConfig);
+    }
+  });
+
+  it('i. 戻る・進む: 詳細ページから戻るとスクロール位置と一覧の並べ替えが戻る。要点のリンクで絞り込んでから戻ると絞り込みが外れ、進むとまた絞り込む', async () => {
+    await page.goto('about:blank');
+    await page.goto(server.url);
+    const all = await shown();
+    // 一覧を「開始」の古い順に並べ替え、一覧の位置までスクロールしてから詳細ページへ
+    const startHead = page.locator('#sessions table.ledger thead th', { has: page.getByRole('button', { name: /^開始/ }) });
+    await startHead.getByRole('button').click();
+    await expect.poll(() => startHead.getAttribute('aria-sort')).toBe('ascending');
+    const firstName = async (): Promise<string> => page.locator('#sessions table.ledger tbody tr td.name a').first().innerText();
+    const first = await firstName();
+    await page.locator('#sessions').scrollIntoViewIfNeeded();
+    await page.evaluate("window.scrollTo({ top: document.getElementById('sessions').getBoundingClientRect().top + window.scrollY - 40, behavior: 'instant' })");
+    const y = await page.evaluate<number>('Math.round(window.scrollY)');
+    expect(y).toBeGreaterThan(1000);
+    await page.locator('#sessions table.ledger tbody tr td.name a').first().click();
+    await page.waitForURL('**/sessions/*.html');
+    await page.goBack();
+    await page.waitForURL('**/atlas.html*');
+    await expect.poll(() => page.evaluate<number>('Math.round(window.scrollY)')).toBe(y);
+    expect(await startHead.getAttribute('aria-sort')).toBe('ascending');
+    expect(await firstName()).toBe(first);
+    // 要点の「このツールを使ったセッションに絞り込む→」は履歴に残る移動。戻ると絞り込みが外れ、進むとまた絞り込む
+    await page.getByRole('link', { name: /このツールを使ったセッションに絞り込む/ }).first().click();
+    await expect.poll(shown).toBeLessThan(all);
+    const narrowed = await shown();
+    await page.goBack();
+    await expect.poll(shown).toBe(all);
+    await page.goForward();
+    await expect.poll(shown).toBe(narrowed);
   });
 
   it('h. サイドバーを出す幅: 1024px でもサイドバーにグループの一覧が出て、768px 未満(375px)は上部の 1 行の「グループ」から開く', async () => {
