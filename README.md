@@ -1,5 +1,4 @@
 # agent-session-atlas
-[![CI](https://github.com/noxitro/agent-session-atlas/actions/workflows/ci.yml/badge.svg)](https://github.com/noxitro/agent-session-atlas/actions/workflows/ci.yml)
 
 Local-first analytics for GitHub Copilot session logs — visualize tokens, skills, agents, hooks, instruction files, and llm-wiki usage from `~/.copilot`, without an LLM.
 
@@ -27,7 +26,7 @@ GitHub Copilot のセッションログ(`%USERPROFILE%\.copilot`)を手元で集
 2. 集計が終わると、既定のブラウザにレポートが開きます。約 800 セッションで十数秒かかります。2 回目以降は、変わっていないファイルの複製を省きます。
 3. 読み終わったらブラウザを閉じます。黒い窓とローカルサーバ(`127.0.0.1` だけに公開)も止まります。
 
-もう一度 `atlas.bat` を実行すると集計し直します。[GitHub Release](https://github.com/noxitro/agent-session-atlas/releases) の zip を展開した場合も、同じく `atlas.bat` をダブルクリックするだけです。
+もう一度 `atlas.bat` を実行すると集計し直します。[GitHub Release](../../releases) の zip を展開した場合も、同じく `atlas.bat` をダブルクリックするだけです。
 
 ### 初期設定(setup.bat)
 

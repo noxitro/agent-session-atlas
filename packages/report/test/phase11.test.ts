@@ -329,19 +329,19 @@ describe('library', () => {
     const x1 = '# 共通\n\n1\n';
     const x2 = '# 共通\n\n1\n2\n';
     const x3 = '# 共通\n\n1\n2\n3\n';
-    lib.addSystemMessage('nox-1', `<custom_instruction>\n${x1}</custom_instruction>`, '2026-10-01T12:00:00Z');
+    lib.addSystemMessage('proj-1', `<custom_instruction>\n${x1}</custom_instruction>`, '2026-10-01T12:00:00Z');
     lib.addSystemMessage('home-1', `<custom_instruction>\n${x1}</custom_instruction>`, '2026-10-01T13:00:00Z');
     lib.addSystemMessage('home-2', `<custom_instruction>\n${x2}</custom_instruction>`, '2026-10-02T12:00:00Z');
     lib.addSystemMessage('tmp-1', `<custom_instruction>\n${x2}</custom_instruction>`, '2026-10-02T13:00:00Z');
     lib.addSystemMessage('tmp-2', `<custom_instruction>\n${x3}</custom_instruction>`, '2026-10-03T12:00:00Z');
-    lib.addSystemMessage('nox-2', `<custom_instruction>\n${x3}</custom_instruction>`, '2026-10-03T13:00:00Z');
+    lib.addSystemMessage('proj-2', `<custom_instruction>\n${x3}</custom_instruction>`, '2026-10-03T13:00:00Z');
     const groups = lib.result();
-    const project = (id: string): string => (id.startsWith('nox') ? 'X:\\work\\Nox' : id.startsWith('home') ? '(ホーム)' : '(一時フォルダ)');
+    const project = (id: string): string => (id.startsWith('proj') ? 'X:\\work\\Alpha' : id.startsWith('home') ? '(ホーム)' : '(一時フォルダ)');
     const html = renderInstructionsHtml({ css: '', generatedAt: T, groups, sessionName: (id) => id, sessionProject: project });
     // 版 2 は版 1 と(ホーム)だけが重なる → 同じプロジェクトに数えない
     expect(html).toContain('版 1 → 版 2 の差分(初回日の順で 1 つ前の版との行の比較。同じプロジェクトで前に使われた版が無いので');
-    // 版 3 は(一時フォルダ)で版 2 と重なるが数えず、Nox で使われた版 1 と比べる
-    expect(html).toContain('<p class="cap" title="X:\\work\\Nox">版 1 → 版 3 の差分(Nox で前に使われた版 1 との行の比較)</p>');
+    // 版 3 は(一時フォルダ)で版 2 と重なるが数えず、Alpha で使われた版 1 と比べる
+    expect(html).toContain('<p class="cap" title="X:\\work\\Alpha">版 1 → 版 3 の差分(Alpha で前に使われた版 1 との行の比較)</p>');
   });
 
   it('hasSession: 指示文か skill の本文を集めたセッションだけ true(詳細ページの絞り込みへのリンクに使う)', () => {
