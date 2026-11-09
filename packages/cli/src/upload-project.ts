@@ -121,16 +121,18 @@ export async function runUploadProject(io: UploadProjectIo, o: { paths: GroupUpl
       io.print('やめました(何も送っていません)。');
       return false;
     }
-    let last = -1;
+    let last = '';
     try {
       r = await withOutLock(outDir, () =>
         uploadTarget(o.paths, target, r0, () => {}, {
           expect: c.fingerprint,
           sessions: records,
           onProgress: (p) => {
+            // 1 割進むごとと、セッションを 1 件写し終えるごとに 1 行出す(最後に「1 / 1」まで出す)
             const pct = p.bytes ? Math.floor((p.copied / p.bytes) * 10) * 10 : 0;
-            if (pct !== last) {
-              last = pct;
+            const key = `${pct}/${p.done}`;
+            if (key !== last) {
+              last = key;
               io.print(`  写しています: ${p.done} / ${p.sessions} セッション(${size(p.copied)} / ${size(p.bytes)})`);
             }
           },

@@ -22,6 +22,22 @@ describe('*.bat', () => {
     expect(text.match(/(^|[^\r])\n/g)).toBeNull();
   });
 
+  // 囲み「if … (」〜「)」の中の echo と rem に半角の括弧があると、cmd がそれを囲みの終わりと読み、条件に関わらずその行で止まる
+  // (upload-project.bat の「集計に失敗しました…(…)。」で、集計が成功しても「。 was unexpected at this time.」で止まっていた)
+  it.each(BATS)('%s は囲みの中の echo と rem に半角の括弧を書かない(書くなら ^( ^) にする)', (f) => {
+    const bad: string[] = [];
+    let depth = 0;
+    readFileSync(join(ROOT, f), 'utf8')
+      .split(/\r\n/)
+      .forEach((raw, i) => {
+        const line = raw.trim();
+        if (/^\)/.test(line)) depth--;
+        if (depth > 0 && /^(echo|rem)\b/i.test(line) && /(^|[^^])[()]/.test(line.replace(/^(echo|rem)\b/i, ''))) bad.push(`${i + 1}: ${line}`);
+        if (/\($/.test(line)) depth++;
+      });
+    expect(bad).toEqual([]);
+  });
+
   // 配布 zip を展開した先(.git が無い)では git check-attr が使えないので見ない
   it.skipIf(!existsSync(join(ROOT, '.git'))).each(BATS)('%s は .gitattributes で eol=crlf が効いている', (f) => {
     expect(execFileSync('git', ['check-attr', 'eol', '--', f], { cwd: ROOT, encoding: 'utf8' }).trim()).toBe(`${f}: eol: crlf`);

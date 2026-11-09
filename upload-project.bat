@@ -27,7 +27,8 @@ echo 最新のログを集計しています...
 node packages\cli\src\main.ts all
 if errorlevel 1 (
   echo.
-  echo 集計に失敗しました。上のメッセージを確認してください(atlas.bat の画面で集計し直している最中なら、終わってからもう一度実行してください)。
+  rem 囲みの中の echo と rem には半角の括弧を書かない。cmd が囲みの終わりと読み、集計が成功しても止まるため
+  echo 集計に失敗しました。上のメッセージを確認してください。atlas.bat の画面で集計し直している最中なら、終わってからもう一度実行してください。
   pause
   exit /b 1
 )
