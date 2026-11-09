@@ -10,7 +10,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, sep } from 'node:path';
-import { chromium, type Browser, type Page } from 'playwright';
+import { chromium, type Browser, type Locator, type Page } from 'playwright';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { startServe, type ServeHandle } from '../packages/cli/src/serve.ts';
 import { buildFixtureHome, ROOT } from '../e2e/fixture-home.ts';
@@ -81,6 +81,8 @@ describe('画面の操作', () => {
   const rowChecks = () => page.locator('table.ledger tbody input[type="checkbox"]');
   // グループの一覧はサイドバーと狭い幅の一覧の 2 か所にあるので、見えている方を使う
   const rail = () => page.locator('[data-testid="group-rail"]:visible');
+  /** 開いた欄は requestAnimationFrame で焦点を移す(作成欄は名前へ、見出しの編集は名前を選ぶ)。移る前に打つと、遅い CI では打つ途中で焦点が移り、別の欄の文字が名前に入る */
+  const focusLands = (l: Locator): Promise<void> => expect.poll(() => l.evaluate((el) => el.matches(':focus'))).toBe(true);
   const readGroups = async (): Promise<{ name: string; note?: string; ids: string[] }[]> => (existsSync(groupsPath) ? JSON.parse(await readFile(groupsPath, 'utf8')).groups : []);
 
   it('a. 一覧でチェックした件数だけで集計し、解除すると元に戻る', async () => {
@@ -110,6 +112,7 @@ describe('画面の操作', () => {
     await page.getByTestId('add-to-group').click();
     await page.getByTestId('create-group').click();
     const form = page.getByTestId('create-form');
+    await focusLands(form.getByPlaceholder('例: 11 月の調査'));
     await form.getByPlaceholder('例: 11 月の調査').fill('画面のテスト');
     await form.getByRole('button', { name: '作成' }).click();
     await expect.poll(async () => (await readGroups()).map((g) => [g.name, g.ids.length])).toEqual([['画面のテスト', 2]]);
@@ -137,6 +140,7 @@ describe('画面の操作', () => {
     const head = page.getByTestId('group-head');
     expect(await head.getByRole('heading').innerText()).toMatch(/画面のテスト\s*2 件/);
     await head.getByTestId('group-edit').click();
+    await focusLands(head.getByLabel('名前'));
     await head.getByLabel('名前').fill('画面のテスト2');
     await head.getByLabel('説明(任意)').fill('見出しから直した');
     await head.getByRole('button', { name: '保存' }).click();
@@ -178,6 +182,7 @@ describe('画面の操作', () => {
       await page.getByTestId('add-to-group').click();
       await page.getByTestId('create-group').click();
       const form = page.getByTestId('create-form');
+      await focusLands(form.getByPlaceholder('例: 11 月の調査'));
       await form.getByPlaceholder('例: 11 月の調査').fill(name);
       await form.getByRole('button', { name: '作成' }).click();
       await expect.poll(async () => (await readGroups()).some((g) => g.name === name)).toBe(true);
@@ -246,8 +251,7 @@ describe('画面の操作', () => {
       await page.getByTestId('create-group').click();
       const form = page.getByTestId('create-form');
       const nameBox = form.getByPlaceholder('例: 11 月の調査');
-      // 開いた直後に requestAnimationFrame で名前の欄へ焦点を移す。先に打つと、遅い CI では説明を打つ途中で焦点が名前に戻り、説明が名前に入る
-      await expect.poll(() => page.evaluate<string | null>("document.activeElement?.getAttribute('placeholder') ?? null")).toBe('例: 11 月の調査');
+      await focusLands(nameBox);
       await nameBox.fill(name);
       await form.getByLabel('説明(任意)').fill(`${name}の説明`);
       // 押す前に入力が残っていることを確かめる(CI で 1 度、作成されずに待ちが切れた。原因を絞れるよう、どこで止まったかを出す)
@@ -268,6 +272,7 @@ describe('画面の操作', () => {
 
     // 編集を開いたまま一覧から別のグループに足しても(グループの一覧が作り直されても)、打ちかけた名前は残る
     await head.getByTestId('group-edit').click();
+    await focusLands(head.getByLabel('名前'));
     await head.getByLabel('名前').fill('打ちかけ');
     await page.getByTestId('add-to-group').click();
     await page.getByTestId('add-menu').getByRole('button', { name: /丙/ }).click();
