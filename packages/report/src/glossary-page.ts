@@ -1,7 +1,7 @@
 // 用語の説明ページ(out/glossary.html)。atlas.html と詳細ページから本文を外し、1 枚だけ別に置く
 // (読む人は初回だけ要るもので、毎ページに 33 項目を展開するとノイズになるため)。
 // 詳細ページと同じ base.css を埋め込み、同じ「様式」の見た目にする。各項目は id を持ち、他ページから glossary.html#<id> で飛べる。
-// 本文は 6 つの分類(h2、id は g-<分類>)で区切り、目次は分類だけを載せる。目次の帯は atlas.html・詳細ページと同じ作法(page-nav.ts): 1280px 以上は左のサイドバー、未満は上部の固定行。
+// 本文は 6 つの分類(h2、id は g-<分類>)で区切り、目次は分類だけを載せる。目次の帯は atlas.html・詳細ページと同じ作法(page-nav.ts): 768px 以上は左のサイドバー、未満は上部の固定行。
 import { dateTime } from './lib/format.ts';
 import { GLOSSARY, GLOSSARY_GROUPS, termsByGroup } from './lib/glossary.ts';
 import { esc } from './detail.ts';

@@ -125,7 +125,7 @@ fetch('../api/view/'+encodeURIComponent(id)+'?kind='+encodeURIComponent(kind),{h
   var toc=d.querySelector('.rail .toc'),ol=d.createElement('ol'),links=[],secs=[];
   (b.headings||[]).forEach(function(h){var el=d.getElementById(h.id);if(!el)return;var li=d.createElement('li'),a=d.createElement('a');a.href='#'+h.id;a.textContent=h.text||'(見出し)';li.appendChild(a);ol.appendChild(li);links.push(a);secs.push(el)});
   if(toc&&links.length){var g=d.createElement('div');g.className='toc-group';g.appendChild(ol);toc.appendChild(g)}
-  var W=matchMedia('(min-width:1280px)'),rail=d.querySelector('.rail'),tick=false;
+  var W=matchMedia('(min-width:768px)'),rail=d.querySelector('.rail'),tick=false;
   function mark(){tick=false;if(!secs.length)return;var top=W.matches||!rail?0:rail.offsetHeight,line=top+Math.min(160,innerHeight/3),i=0,k;for(k=0;k<secs.length;k++){if(secs[k].getBoundingClientRect().top<=line)i=k}if(innerHeight+scrollY>=root.scrollHeight-2)i=secs.length-1;for(k=0;k<links.length;k++){if(k===i)links[k].setAttribute('aria-current','true');else links[k].removeAttribute('aria-current')}}
   addEventListener('scroll',function(){if(!tick){tick=true;requestAnimationFrame(mark)}},{passive:true});mark();
   if(location.hash.length>1){var t=d.getElementById(decodeURIComponent(location.hash.slice(1)));if(t)t.scrollIntoView()}

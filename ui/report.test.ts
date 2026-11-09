@@ -53,7 +53,7 @@ describe('画面の操作', () => {
       folders: { canPick: true, pick: async () => pickAnswer, open: (d) => opened.push(d) },
     });
     browser = await chromium.launch();
-    // 1440px: サイドバー(1280px 以上)にグループの一覧が出る幅
+    // 1440px: サイドバー(768px 以上)にグループの一覧が出る幅
     page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
     // CI の遅い機械を手元でまねる(例: ATLAS_UI_CPU_SLOWDOWN=20 npm run ui。docs/development.md)
     const slow = Number(process.env.ATLAS_UI_CPU_SLOWDOWN ?? 0);
@@ -464,6 +464,20 @@ describe('画面の操作', () => {
     } finally {
       if (before == null) await rm(groupsPath, { force: true });
       else await writeFile(groupsPath, before);
+    }
+  });
+
+  it('h. サイドバーを出す幅: 1024px でもサイドバーにグループの一覧が出て、768px 未満(375px)は上部の 1 行の「グループ」から開く', async () => {
+    try {
+      await page.setViewportSize({ width: 1024, height: 768 });
+      await page.goto(server.url);
+      await expect.poll(() => page.locator('.rail-groups').isVisible()).toBe(true);
+      expect(await page.getByTestId('groups-toggle').isVisible()).toBe(false);
+      await page.setViewportSize({ width: 375, height: 812 });
+      await expect.poll(() => page.getByTestId('groups-toggle').isVisible()).toBe(true);
+      expect(await page.locator('.rail-groups').isVisible()).toBe(false);
+    } finally {
+      await page.setViewportSize({ width: 1440, height: 900 });
     }
   });
 });

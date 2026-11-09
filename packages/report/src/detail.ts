@@ -731,7 +731,7 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
     ),
   );
 
-  // 目次の帯(1280px 以上はサイドバー、未満は上部の固定行)。節は parts を描いた後に揃う
+  // 目次の帯(768px 以上はサイドバー、未満は上部の固定行)。節は parts を描いた後に揃う
   const nav = {
     crumbHref: '../atlas.html',
     crumbLabel: '← レポート(セッション一覧)に戻る',

@@ -295,7 +295,7 @@
     setFilter({ ids: groupIds(res.group, knownIds), group: groupKey(name) });
     return `${int(res.removed)} 件を「${name}」から外しました${res.group.ids.length === 0 ? '(グループは 0 件のまま残ります)' : ''}`;
   }
-  // 狭い幅(1280px 未満)では目次行の「グループ」から一覧を開く。外を押す / Esc で閉じ、焦点はボタンに戻す
+  // 狭い幅(768px 未満)では目次行の「グループ」から一覧を開く。外を押す / Esc で閉じ、焦点はボタンに戻す
   let groupsOpen = $state(false);
   let groupsBtn = $state<HTMLButtonElement | null>(null);
   let groupsPop = $state<HTMLElement | null>(null);
@@ -336,7 +336,7 @@
 
   /** 目次の 1 項目。id はページ内の節、href は別ページ */
   type TocItem = { id: string; label: string; href?: undefined } | { href: string; label: string; id?: undefined };
-  /** 節の目次。広い画面(1280px 以上)では左のサイドバー、狭い画面では上部の固定した 1 行。群で区切る(別ページは href) */
+  /** 節の目次。広い画面(768px 以上)では左のサイドバー、狭い画面では上部の固定した 1 行。群で区切る(別ページは href) */
   const tocGroups = $derived.by((): { title: string; items: TocItem[] }[] => [
     {
       title: '概況',
@@ -370,7 +370,7 @@
   let topbarPx = 0;
   let railEl = $state<HTMLElement | null>(null);
   $effect(() => {
-    const wide = matchMedia('(min-width: 1280px)');
+    const wide = matchMedia('(min-width: 768px)');
     const h = railHeight;
     const apply = (): void => {
       topbarPx = wide.matches ? 0 : h;
@@ -500,7 +500,7 @@
             </ol>
           </div>
         </nav>
-        <!-- サイドバー(1280px 以上)の「グループ」の群。狭い幅では目次行の「グループ」から同じ中身を開く -->
+        <!-- サイドバー(768px 以上)の「グループ」の群。狭い幅では目次行の「グループ」から同じ中身を開く -->
         <div class="rail-groups" role="group" aria-label="グループ">
           <span class="toc-title" aria-hidden="true">グループ</span>
           <GroupRail groups={groupOptions} current={currentName} selectedCount={adhocCount} {editable} anonymized={data.anonymized} onpick={pickGroup} />
@@ -660,7 +660,7 @@
       display: inline;
     }
   }
-  @media (min-width: 1280px) {
+  @media (min-width: 768px) {
     /* マストヘッドの幅をサイドバー + 本文(.shell)に揃える */
     .mast-row {
       max-width: calc(1360px + 13em + 32px);
@@ -740,7 +740,7 @@
   .mast-tools .seg button {
     padding: 2px 8px;
   }
-  /* グループの群: 狭い幅では目次行の「グループ」ボタンから開く一覧(.group-pop)、1280px 以上ではサイドバーの群(.rail-groups) */
+  /* グループの群: 狭い幅では目次行の「グループ」ボタンから開く一覧(.group-pop)、768px 以上ではサイドバーの群(.rail-groups) */
   .rail-groups {
     display: none;
   }
@@ -801,7 +801,7 @@
     padding-right: 10px;
     border-right: 1px solid var(--rule);
   }
-  @media (min-width: 1280px) {
+  @media (min-width: 768px) {
     .groups-toggle,
     .group-pop {
       display: none;
