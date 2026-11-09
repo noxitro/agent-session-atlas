@@ -24,8 +24,35 @@ const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 /** セッションのフォルダに添えるメモ(本文)と、その画像のフォルダ */
 export const UPLOAD_MEMO_FILE = 'atlas-memo.md';
 export const UPLOAD_MEMO_IMAGES = 'atlas-memo';
-/** グループのフォルダの説明 */
+/** グループ・プロジェクトのフォルダの説明(人が読む) */
 export const UPLOAD_README = 'README.md';
+/** グループ・プロジェクトのフォルダの索引(プログラムや AI が読む。セッションごとのタスクタグ・題名・日時) */
+export const UPLOAD_INDEX = 'atlas-index.json';
+/** セッションのフォルダに添える、そのセッションのタスクタグ・題名・日時(1 つのフォルダだけを渡されても分かるように) */
+export const UPLOAD_SESSION_META = 'atlas-session.json';
+
+/** 索引とセッションのフォルダに書く、1 セッション分の情報 */
+export interface UploadedSession {
+  id: string;
+  title: string | null;
+  project: string | null;
+  /** タスクタグ(そのセッションが入っているグループの名前)。無ければ空 */
+  tags: string[];
+  createdAt: string | null;
+  updatedAt: string | null;
+  memo: boolean;
+}
+
+/** タスクタグ(グループ)ごとの、入っているセッションの id。groups.json が無い・読めなければ空 */
+async function tagsById(groupsPath: string): Promise<Map<string, string[]>> {
+  const out = new Map<string, string[]>();
+  try {
+    for (const g of (await loadGroups(groupsPath)).groups) for (const id of g.ids) out.set(id, [...(out.get(id) ?? []), g.name]);
+  } catch {
+    /* タグ無しとして書く */
+  }
+  return out;
+}
 
 export interface GroupUploadPaths {
   /** out/snapshot(前回の集計の複製) */
@@ -332,6 +359,13 @@ export async function uploadTarget(
   const withMemo = new Set<string>();
   let uploaded = 0;
   let replaced = 0;
+  const records = await readRecords(p.sessions, present);
+  const tags = await tagsById(p.groups);
+  const info = (id: string): UploadedSession => {
+    const r = records.get(id);
+    // name はデスクトップアプリの題名も反映済み(extract の sessionName)
+    return { id, title: r ? r.name || r.firstUserMessage || null : null, project: r?.project ?? null, tags: tags.get(id) ?? [], createdAt: r?.createdAt ?? null, updatedAt: r?.updatedAt ?? null, memo: withMemo.has(id) };
+  };
   // 進み具合はバイト数で出す(大きなセッションは 1 件で数百 MB になり、件数だけでは止まって見えるため)
   const lists = new Map<string, FileEntry[]>();
   for (const id of present) lists.set(id, await listFiles(join(stateDir, id)));
@@ -357,6 +391,7 @@ export async function uploadTarget(
         await writeFile(join(tmp, SESSION_STORE_JSON), `${JSON.stringify(j)}\n`);
       }
       if (memoDir && (await copyMemo(memoDir, id, tmp))) withMemo.add(id);
+      await writeFile(join(tmp, UPLOAD_SESSION_META), `${JSON.stringify({ version: 1, ...info(id) }, null, 2)}\n`);
       const had = existsSync(dest);
       // 前のフォルダは先に消さず、名前を変えて退ける(中のファイルが開かれていて動かせなければ、ここで止まり前のフォルダはそのまま残る)。
       // 新しいフォルダを置けなければ前のフォルダを戻す。退けたものは最後に消す
@@ -385,8 +420,13 @@ export async function uploadTarget(
     }
   }
   const snapshotAt = manifest?.createdAt ?? null;
-  const records = await readRecords(p.sessions, done);
-  await writeFile(join(dir, UPLOAD_README), groupReadme({ name, note: g.note, dir, done, missing, withMemo, snapshotAt, records }));
+  const now = new Date();
+  const sessions = done.map(info);
+  await writeFile(join(dir, UPLOAD_README), groupReadme({ kind: g.kind, name, note: g.note, dir, sessions, missing, snapshotAt, now }));
+  await writeFile(
+    join(dir, UPLOAD_INDEX),
+    `${JSON.stringify({ version: 1, kind: g.kind, name, note: g.note, uploadedAt: now.toISOString(), snapshotAt, sessions, missing }, null, 2)}\n`,
+  );
   log(`${g.kind} upload: 「${name}」 ${uploaded} セッション(置き換え ${replaced} 件・メモ ${withMemo.size} 件)→ ${dir}${missing.length ? `。前回の集計に無い ${missing.length} 件は写していません` : ''}`);
   return { name, dir, uploaded, replaced, missing, snapshotAt, memos: withMemo.size };
 }
@@ -434,36 +474,48 @@ function localTime(iso: string | null): string {
 
 /** グループのフォルダの README.md(写すたびに書き直す)。人が開いて、何のまとまりか・どれにメモがあるかが分かるように */
 export function groupReadme(o: {
+  kind?: UploadTarget['kind'];
   name: string;
   note: string;
   dir: string;
-  done: string[];
+  sessions: UploadedSession[];
   missing: string[];
-  withMemo: Set<string>;
   snapshotAt: string | null;
-  records: Map<string, SessionRecord>;
   now?: Date;
 }): string {
+  const kind = o.kind ?? 'group';
   const lines = [`# ${o.name}`, ''];
-  lines.push(o.note.trim() ? o.note.trim() : '(グループの説明はありません。atlas の画面のグループの見出しで書けます)', '');
+  lines.push(o.note.trim() ? o.note.trim() : '(グループの説明はありません。atlas の画面のタスクタグの見出しで書けます)', '');
   lines.push(
     `- アップロードした日時: ${localTime((o.now ?? new Date()).toISOString())}`,
     `- ログの時点: ${o.snapshotAt ? `${localTime(o.snapshotAt)} の集計` : '不明'}`,
-    `- セッション: ${o.done.length} 件(うちメモあり ${o.withMemo.size} 件)`,
+    `- セッション: ${o.sessions.length} 件(うちメモあり ${o.sessions.filter((s) => s.memo).length} 件)`,
     '',
-    'この README はアップロードするたびに書き直します。このフォルダには、ほかの人やほかの回に写したセッションのフォルダもあることがあります。',
+    `この README と ${UPLOAD_INDEX}(プログラムや AI が読む索引)はアップロードするたびに書き直します。このフォルダには、ほかの人やほかの回に写したセッションのフォルダもあることがあります。`,
+    `タスクタグは、atlas の画面でセッションに付けたものです(各セッションのフォルダの ${UPLOAD_SESSION_META} にもあります)。`,
     '',
-    '| セッション ID | 題名 | 最終更新 | メモ |',
-    '| --- | --- | --- | --- |',
+    '| セッション ID | 題名 | タスクタグ | 最終更新 | メモ |',
+    '| --- | --- | --- | --- | --- |',
   );
-  for (const id of o.done) {
-    const r = o.records.get(id);
-    // name はデスクトップアプリの題名も反映済み(extract の sessionName)
-    const title = r ? cell(truncate(r.name || r.firstUserMessage || '', 60)) : '';
-    const memo = o.withMemo.has(id) ? `[あり](${id}/${UPLOAD_MEMO_FILE})` : '';
-    lines.push(`| [${id}](${id}/) | ${title || '-'} | ${localTime(r?.updatedAt ?? null)} | ${memo || '-'} |`);
+  for (const s of o.sessions) {
+    const memo = s.memo ? `[あり](${s.id}/${UPLOAD_MEMO_FILE})` : '';
+    lines.push(`| [${s.id}](${s.id}/) | ${cell(truncate(s.title ?? '', 60)) || '-'} | ${s.tags.length ? cell(s.tags.join('、')) : 'タグなし'} | ${localTime(s.updatedAt)} | ${memo || '-'} |`);
   }
-  if (o.missing.length) lines.push('', `グループにあっても、前回の集計に無かったため写していないもの: ${o.missing.map((x) => `\`${cell(x)}\``).join(', ')}`);
+  // タスクごとに見分けられるよう、タグごとの一覧も書く(1 つのセッションが複数のタグに入ることがある)
+  const byTag = new Map<string, UploadedSession[]>();
+  for (const s of o.sessions) for (const tag of s.tags.length ? s.tags : ['']) byTag.set(tag, [...(byTag.get(tag) ?? []), s]);
+  if (byTag.size > 1 || !byTag.has(o.name)) {
+    lines.push('', '## タスクタグごと', '');
+    const order = [...byTag.keys()].sort((a, b) => (a === '' ? 1 : b === '' ? -1 : a.localeCompare(b)));
+    for (const tag of order) {
+      const list = byTag.get(tag)!;
+      lines.push(`### ${tag ? cell(tag) : 'タグなし'}(${list.length} 件)`, '');
+      for (const s of list) lines.push(`- [${cell(truncate(s.title ?? s.id, 60))}](${s.id}/) — ${localTime(s.updatedAt)}`);
+      lines.push('');
+    }
+    lines.pop();
+  }
+  if (o.missing.length) lines.push('', `${KIND_LABEL[kind]}にあっても、前回の集計に無かったため写していないもの: ${o.missing.map((x) => `\`${cell(x)}\``).join(', ')}`);
   lines.push(
     '',
     '## 集計し直すには',

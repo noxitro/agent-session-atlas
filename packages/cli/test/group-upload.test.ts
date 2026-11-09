@@ -48,8 +48,8 @@ describe('グループのアップロード', () => {
   it('セッションごとのフォルダに写し、作業用のファイルは入れない。外を指す id と無い id は写さない', async () => {
     const r = await uploadGroup(paths(), 'Player/Weapon', root);
     expect(r).toEqual({ name: 'Player/Weapon', dir: join(root, 'Player_Weapon'), uploaded: 2, replaced: 0, missing: ['gone', '../s1'], snapshotAt: '2026-11-08T01:02:03.000Z', memos: 0 });
-    expect((await readdir(r.dir)).sort()).toEqual(['README.md', 's1', 's2']);
-    expect((await readdir(join(r.dir, 's1'))).sort()).toEqual(['events.jsonl', 'files']);
+    expect((await readdir(r.dir)).sort()).toEqual(['README.md', 'atlas-index.json', 's1', 's2']);
+    expect((await readdir(join(r.dir, 's1'))).sort()).toEqual(['atlas-session.json', 'events.jsonl', 'files']);
     expect(await readFile(join(r.dir, 's1', 'files', 'a.txt'), 'utf8')).toBe('a');
     // session-store.db が無ければ DB の行は添えない
     expect(existsSync(join(r.dir, 's1', 'atlas-session-store.json'))).toBe(false);
@@ -84,9 +84,9 @@ describe('グループのアップロード', () => {
     const readme = await readFile(join(r.dir, 'README.md'), 'utf8');
     expect(readme).toMatch(/^# Player\/Weapon\n\n武器 \| 当たり判定の\n直し\n/);
     expect(readme).toContain('セッション: 2 件(うちメモあり 1 件)');
-    expect(readme).toContain('| [s1](s1/) | 当たり判定を \\| 直して | ');
+    expect(readme).toContain('| [s1](s1/) | 当たり判定を \\| 直して | Player/Weapon | ');
     expect(readme).toContain('| [あり](s1/atlas-memo.md) |');
-    expect(readme).toContain('| [s2](s2/) | - | - | - |');
+    expect(readme).toContain('| [s2](s2/) | - | Player/Weapon | - | - |');
     expect(readme).toContain('写していないもの: `gone`');
     expect(readme).toContain(`--home "${r.dir}"`);
     // メモを消してからもう一度写すと、前に添えたメモも消える(フォルダごと置き換えるため)

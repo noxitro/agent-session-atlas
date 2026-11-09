@@ -75,10 +75,11 @@ describe('Phase 15 E2E: グループのアップロード', () => {
     expect(r.status, r.stderr).toBe(0);
     expect(r.out).toMatch(/3 セッション.置き換え 0 件./);
     expect(r.out).toMatch(/前回の集計に無い 2 件は写していません/);
-    expect((await readdir(dest)).sort()).toEqual([...ids, desk, 'README.md', 'someone-else'].sort());
+    expect((await readdir(dest)).sort()).toEqual([...ids, desk, 'README.md', 'atlas-index.json', 'someone-else'].sort());
     for (const id of ids) {
       const files = await readdir(join(dest, id));
       expect(files).toContain('events.jsonl');
+      expect(files).toContain('atlas-session.json');
       expect(files).toContain('workspace.yaml');
       expect(files).not.toContain('.session.db.src');
       const rows = JSON.parse(await readFile(join(dest, id, 'atlas-session-store.json'), 'utf8')) as SessionStoreJson;
