@@ -1,3 +1,8 @@
+<script lang="ts" module>
+  /** タスクタグごとに、出した(またはこの画面で写し終えた)直近の結果の時刻。同じ結果を何度も出さない */
+  const seenUpload = new Map<string, number>();
+</script>
+
 <script lang="ts">
   // グループで絞り込んでいるときの見出し(本文の先頭)。名前・件数・説明と、「絞り込みを外す」。
   // 編集できるとき(atlas serve)は「編集」で名前と説明を 1 つの欄で直す。削除は編集欄の奥に置き、確認を 1 回挟む。
@@ -125,6 +130,9 @@
   }
   function showLast(name: string, p: Exclude<UploadPoll, UploadProgress | null>): void {
     if (group.name !== name) return;
+    // 同じ結果は 1 回だけ出す(タグを開き直すたびに同じ失敗を出さない)。この画面で写し終えたものは、その場で出したので出さない
+    if (p.at <= (seenUpload.get(name) ?? 0)) return;
+    seenUpload.set(name, p.at);
     if (p.ok && p.result) uploaded = p.result;
     else if (!p.ok) error = `アップロードできませんでした(${p.error ?? '理由は分かりません'})`;
   }
@@ -132,6 +140,7 @@
     if (!upload || busy) return;
     const u = upload;
     const name = group.name;
+    const expect = checked?.fingerprint;
     checked = null;
     mode = 'view';
     error = '';
@@ -149,7 +158,7 @@
       );
     }, 500);
     timers.add(timer);
-    void u.run(name).then(
+    void u.run(name, expect).then(
       (r) => {
         if (group.name === name) uploaded = r;
       },
@@ -158,6 +167,8 @@
       },
     ).finally(() => {
       stopTimer(timer);
+      // この画面で結果を出したので、戻ったときの「直近の結果」としては出さない
+      seenUpload.set(name, Date.now());
       finishUpload(name);
     });
   }

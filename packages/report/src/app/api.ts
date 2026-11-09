@@ -33,7 +33,8 @@ export interface UploadHandlers {
   setRoot: (root: string) => Promise<string>;
   /** 写す前の点検(大きさと秘密らしい文字列) */
   check: (name: string) => Promise<UploadCheck>;
-  run: (name: string) => Promise<GroupUpload>;
+  /** 写す。expect は確かめたときの点検の指紋(写す直前に点検し直し、違えば写さずに理由を返す) */
+  run: (name: string, expect?: string) => Promise<GroupUpload>;
   /** 写している途中の進み具合。終わっていれば直近の結果(10 分以内)。どちらでもなければ null */
   progress: (name: string) => Promise<UploadPoll>;
   open: (name: string) => Promise<void>;
@@ -51,6 +52,8 @@ export interface UploadCheck {
   largest: { id: string; path: string; bytes: number }[];
   secrets: { count: number; kinds: { label: string; count: number }[]; files: { id: string; path: string; count: number }[]; skipped: number };
   snapshotAt: string | null;
+  /** この点検の指紋(写すときに渡す) */
+  fingerprint: string;
 }
 
 /** 写している途中の進み具合(serve の group-upload.ts の UploadProgress と同じ形) */
@@ -63,7 +66,7 @@ export interface UploadProgress {
 }
 
 /** 進み具合の問い合わせの答え: 写している途中なら進み具合、終わっていれば直近の結果、どちらでもなければ null */
-export type UploadPoll = UploadProgress | { finished: true; ok: boolean; error: string | null; result: GroupUpload | null } | null;
+export type UploadPoll = UploadProgress | { finished: true; at: number; ok: boolean; error: string | null; result: GroupUpload | null } | null;
 
 /** グループのアップロードの結果(serve の group-upload.ts と同じ形) */
 export interface GroupUpload {
@@ -139,8 +142,8 @@ export const api = {
   setUploadRoot(token: string, root: string): Promise<{ root: string }> {
     return connect(fetch('api/upload-root', { method: 'PUT', headers: headers(token), body: JSON.stringify({ root }) }), (r) => parse(r));
   },
-  uploadGroup(token: string, name: string): Promise<GroupUpload> {
-    return connect(fetch('api/groups/' + encodeURIComponent(name) + '/upload', { method: 'POST', headers: headers(token) }), (r) => parse<GroupUpload>(r));
+  uploadGroup(token: string, name: string, expect?: string): Promise<GroupUpload> {
+    return connect(fetch('api/groups/' + encodeURIComponent(name) + '/upload', { method: 'POST', headers: headers(token), body: JSON.stringify(expect ? { expect } : {}) }), (r) => parse<GroupUpload>(r));
   },
   /** 写した先のフォルダをエクスプローラーで開く */
   checkUpload(token: string, name: string): Promise<UploadCheck> {

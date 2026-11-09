@@ -51,7 +51,7 @@ import { importJudgmentsText, importTurnJudgmentsText, JudgmentValidationError, 
 import { phaseNames } from './config.ts';
 import { acquireOutLock, JobError, JobRunner, OutBusyError, parseJobRequest, runningJobIn, type RunFullFn, type SpawnFn } from './jobs.ts';
 import { exportGroup } from './group-export.ts';
-import { checkUpload, uploadDir, uploadGroup, type GroupUploadResult, type UploadProgress } from './group-upload.ts';
+import { checkUpload, UploadChangedError, uploadDir, uploadedAt, uploadGroup, type GroupUploadResult, type UploadProgress } from './group-upload.ts';
 import { defaultConfigPath, loadConfig, parseUploadRoot, updateConfig } from './config.ts';
 import { CAN_PICK_FOLDER, openFolder, pickFolder } from './folder-picker.ts';
 
@@ -435,7 +435,8 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
   function bye(client: string | null, seq: number | null): void {
     if (client) {
       clients.delete(client);
-      byeSeq.set(client, seq ?? Number.MAX_SAFE_INTEGER);
+      // 番号の無い bye(番号を送らない古いページ)は記録しない。記録すると、そのページが戻ってきても heartbeat を数え直せない
+      if (seq != null) byeSeq.set(client, seq);
       // 覚えておくのは最近のものだけ(長く開いたままのサーバで増え続けないように)
       if (byeSeq.size > 200) byeSeq.delete(byeSeq.keys().next().value!);
     }
@@ -564,13 +565,23 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
         if (uploading?.name === name) sendJson(res, 200, uploading.progress);
         else {
           const last = lastUpload.get(name);
-          sendJson(res, 200, last && Date.now() - last.at < LAST_UPLOAD_MS ? { finished: true, ok: last.ok, error: last.error, result: last.result } : null);
+          let fresh = !!last && Date.now() - last.at < LAST_UPLOAD_MS;
+          // 失敗の後に、ほかから(CLI など)送り直して成功していれば、失敗は出さない(送り先の索引の日時が新しい)
+          if (fresh && last && !last.ok) {
+            const root = (await uploadRootOf()).root;
+            const at = root ? await uploadedAt(root, name) : null;
+            if (at && Date.parse(at) > last.at) fresh = false;
+          }
+          sendJson(res, 200, fresh && last ? { finished: true, at: last.at, ok: last.ok, error: last.error, result: last.result } : null);
         }
         return;
       }
       const up = await uploadRootOf();
       if (up.error) throw new HttpError(409, up.error);
       if (!up.root) throw new HttpError(409, 'アップロード先が決まっていません。先に場所を選んでください');
+      // 写すときは、確かめたときの点検の指紋(expect)を受け取り、写す直前に点検し直して違えば写さない(本文は、ほかの処理の最中かを見る前に読む。間で待つと割り込まれる)
+      const body = sub === '' ? await readJsonBody(req).catch(() => ({}) as Record<string, unknown>) : {};
+      const expect = typeof body.expect === 'string' ? body.expect : undefined;
       if (sub === 'open') {
         // 写した先のフォルダを開く(開けるのは設定のアップロード先の中の、このグループのフォルダだけ)
         const dir = uploadDir(up.root, name);
@@ -599,11 +610,12 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
           uploading = { name, progress: { sessions: 0, done: 0, bytes: 0, copied: 0, current: null } };
           const cur = uploading;
           try {
-            const result = await uploadGroup(paths, name, up.root, log, { onProgress: (pr) => void (cur.progress = pr) });
+            const result = await uploadGroup(paths, name, up.root, log, { onProgress: (pr) => void (cur.progress = pr), expect });
             lastUpload.set(name, { at: Date.now(), ok: true, error: null, result });
             sendJson(res, 200, result);
           } catch (e) {
-            lastUpload.set(name, { at: Date.now(), ok: false, error: (e as Error).message, result: null });
+            // 中身が変わったので写さなかったときは、失敗として覚えない(押した画面がその場で理由を出し、確かめ直してもらう)
+            if (!(e instanceof UploadChangedError)) lastUpload.set(name, { at: Date.now(), ok: false, error: (e as Error).message, result: null });
             throw e;
           }
         }

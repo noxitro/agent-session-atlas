@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { listProjects, projectTarget } from '../src/group-upload.ts';
+import { checkTarget, listProjects, projectTarget, uploadGroup, uploadTarget } from '../src/group-upload.ts';
 import { runUploadProject, type UploadProjectIo } from '../src/upload-project.ts';
 
 describe('プロジェクトのセッションをまとめて送る', () => {
@@ -68,10 +68,47 @@ describe('プロジェクトのセッションをまとめて送る', () => {
     expect(f.printed.join('\n')).toMatch(/owner\/app {2}1 件 .*ほかにログのフォルダが無いので送れないもの 1 件/);
   });
 
-  it('送り先のフォルダ名がタスクタグや別のプロジェクトと同じになるときは送らない(README と索引が上書きし合うため)', async () => {
+  it('フォルダ名が同じになるタスクタグがあっても、まだ送っていなければ送れる。送り先にそのタグがすでに送られていれば送らない(README と索引が上書きし合うため)', async () => {
     await mkdir(join(dir, 'notes'), { recursive: true });
-    await writeFile(join(dir, 'notes', 'groups.json'), JSON.stringify({ version: 1, groups: [{ name: 'Owner_App', note: '', ids: ['s4'] }] }));
-    await expect(projectTarget(paths(), 'owner/app')).rejects.toThrow(/タスクタグ「Owner_App」は、送り先のフォルダ名が同じ「owner_app」/);
+    // フォルダ名が owner_app になるタスクタグ(0 件のときも、まだ送っていないときも、プロジェクトを止めない)
+    await writeFile(join(dir, 'notes', 'groups.json'), JSON.stringify({ version: 1, groups: [{ name: 'owner_app', note: '', ids: ['s4'] }] }));
+    const target = await projectTarget(paths(), 'owner/app');
+    expect(await checkTarget(paths(), target, rootA)).toMatchObject({ sessions: 2 });
+    // そのタグを先に送っておくと、同じフォルダにプロジェクトは送らない
+    await uploadGroup(paths(), 'owner_app', rootA);
+    await expect(checkTarget(paths(), target, rootA)).rejects.toThrow(/タスクタグ「owner_app」がすでに送られています/);
+    await expect(uploadTarget(paths(), target, rootA)).rejects.toThrow(/混ざるので写しません/);
+    expect((await readdir(join(rootA, 'owner_app'))).sort()).toEqual(['README.md', 'atlas-index.json', 's4']);
+    // 同じプロジェクトを送り直すのは止めない
+    await rm(join(rootA, 'owner_app'), { recursive: true });
+    await uploadTarget(paths(), target, rootA);
+    expect((await uploadTarget(paths(), target, rootA)).replaced).toBe(2);
+  });
+
+  it('確かめてから送るまでの間にログが変わったら(集計し直したなど)、写さずにもう一度確かめる', async () => {
+    await writeFile(configPath, JSON.stringify({ uploadRoot: rootA }));
+    const answers = ['1', 'y', ''];
+    let changed = false;
+    const printed: string[] = [];
+    const io: UploadProjectIo = {
+      ask: async (q) => {
+        // 1 回目の「送るなら y…」を待っている間に、ログに鍵が書き足される
+        if (/送るなら y/.test(q) && !changed) {
+          changed = true;
+          const token = ['ghp', 'CHANGEDFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE'].join('_');
+          await writeFile(join(out, 'snapshot', 'session-state', 's1', 'events.jsonl'), JSON.stringify({ data: token }) + '\n');
+        }
+        return answers.shift() ?? '';
+      },
+      print: (l) => printed.push(l),
+      pick: async () => null,
+    };
+    expect(await runUploadProject(io, { paths: paths(), configPath })).toBe(false);
+    const text = printed.join('\n');
+    expect(text).toContain('確かめた後に、写すログが変わりました');
+    // 確かめ直したときには、書き足された鍵が出る
+    expect(text).toMatch(/秘密らしい文字列が 1 件あります/);
+    expect(existsSync(join(rootA, 'owner_app'))).toBe(false);
   });
 
   it('覚えた送り先が無くなっていたら、選び直して送れる(選ばなければ何も送らない)', async () => {

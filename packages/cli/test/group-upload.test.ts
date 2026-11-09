@@ -295,6 +295,20 @@ describe('グループのアップロード', () => {
     expect(seen.some((p) => p.copied > 0 && p.copied < last.bytes)).toBe(true);
   });
 
+  it('確認の合計と進み具合の合計は同じ(atlas が足して写すメモの本文と画像も入れる)', async () => {
+    const memos = join(notes, 'memos');
+    await mkdir(join(memos, 's1'), { recursive: true });
+    await writeFile(join(memos, 's1.md'), '![図](s1/a.png)\n');
+    await writeFile(join(memos, 's1', 'a.png'), Buffer.alloc(3000, 1));
+    const p = { ...paths(), notes };
+    const c = await checkUpload(p, 'Player/Weapon', root);
+    expect(c.largest.some((x) => x.id === 's1' && x.path === 'atlas-memo' && x.bytes === 3000)).toBe(true);
+    const seen: { bytes: number; copied: number }[] = [];
+    await uploadGroup(p, 'Player/Weapon', root, () => {}, { onProgress: (q) => seen.push(q) });
+    expect(seen.at(-1)!.bytes).toBe(c.bytes);
+    expect(seen.at(-1)!.copied).toBe(c.bytes);
+  });
+
   it('CLI: 秘密らしい文字列があれば --force が無い限り写さない', async () => {
     expect(parseCli(['group', 'upload', 'g', '--force']).groupCmd).toMatchObject({ action: 'upload', force: true });
     expect(() => parseCli(['group', 'export', 'g', '--force'])).toThrow(/--force は judge run と group upload/);
@@ -321,6 +335,21 @@ describe('グループのアップロード', () => {
     expect(existsSync(join(root, 'Player_Weapon'))).toBe(false);
     expect(await (await call(`api/groups/${g}/upload/progress`, 'GET')).json()).toBeNull();
     expect((await call(`api/groups/${g}/upload/progress`, 'POST')).status).toBe(405);
+    // 写すときに確かめた指紋を渡す。確かめた後にログが変わっていたら(指紋が違えば)写さない
+    const post = (body: unknown) => fetch(`http://127.0.0.1:${h!.port}/api/groups/${g}/upload`, { method: 'POST', headers: { 'x-atlas-token': h!.token, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const fp = (c as unknown as { fingerprint: string }).fingerprint;
+    await writeFile(join(out, 'snapshot', 'session-state', 's1', 'events.jsonl'), `{"data":"${TOKEN}"}\n`);
+    const stale = await post({ expect: fp });
+    expect(stale.status).toBe(409);
+    expect(((await stale.json()) as { error: string }).error).toMatch(/確かめた後に、写すログが変わりました/);
+    expect(existsSync(join(root, 'Player_Weapon'))).toBe(false);
+    // 中身が変わって写さなかったことは「直近の失敗」として覚えない
+    expect(await (await call(`api/groups/${g}/upload/progress`, 'GET')).json()).toBeNull();
+    const again = (await (await call(`api/groups/${g}/upload/check`, 'POST')).json()) as { fingerprint: string; secrets: { count: number } };
+    expect(again.secrets.count).toBe(1);
+    expect((await post({ expect: again.fingerprint })).status).toBe(200);
+    // 終わった後は直近の結果(時刻つき)を返す
+    expect(await (await call(`api/groups/${g}/upload/progress`, 'GET')).json()).toMatchObject({ finished: true, ok: true, result: { uploaded: 2 } });
     // サーバの起動を含むので、全体を同時に流したときの遅れで 5 秒を越えることがある
   }, 20_000);
 });

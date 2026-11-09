@@ -18,7 +18,7 @@ export {
 } from './project.ts';
 export type { ProjectResolverOptions, ResolvedProject } from './project.ts';
 export type { NormalizeInput } from './normalize.ts';
-export { extract, loadStore, sessionStoreRows, mergeSessionStoreJson, type SessionStoreJson, listSessionDirs, readWorkspaceYaml, readTodos } from './extract.ts';
+export { extract, loadStore, sessionStoreRows, openSessionStoreReader, type SessionStoreReader, mergeSessionStoreJson, type SessionStoreJson, listSessionDirs, readWorkspaceYaml, readTodos } from './extract.ts';
 export type { ExtractOptions, StoreData } from './extract.ts';
 export { computeMetrics, bucketOf, distribution, quantiles, latencyByModel, toolDurationStats, monthKey, isEmptySession, installedSkillNames, unusedInstalledSkills } from './metrics.ts';
 export { extractInstructionBlocks, resolveInstructions, charCount, fileFromPath, contentHash } from './instructions.ts';
