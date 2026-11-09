@@ -43,6 +43,8 @@ export interface GroupUpload {
   replaced: number;
   missing: string[];
   snapshotAt: string | null;
+  /** メモを添えたセッションの数 */
+  memos: number;
 }
 
 /** serve が差し込んだ token。http(s) 以外・無し・プレースホルダ(__ で始まる)なら null */

@@ -52,7 +52,7 @@
   /** アップロードの結果の文(読み上げにも使う) */
   const uploadedText = $derived(
     uploaded
-      ? `アップロードしました(${int(uploaded.uploaded)} セッション${uploaded.replaced ? `。うち ${int(uploaded.replaced)} 件は前に写したものを置き換え` : ''})。` +
+      ? `アップロードしました(${int(uploaded.uploaded)} セッション${uploaded.memos ? `・メモ ${int(uploaded.memos)} 件` : ''}${uploaded.replaced ? `。うち ${int(uploaded.replaced)} 件は前に写したものを置き換え` : ''})。グループの説明とセッションの一覧は README.md にあります。` +
           (uploaded.snapshotAt ? `写したのは前回の集計(${when(uploaded.snapshotAt)})の時点のログです。` : '') +
           (uploaded.missing.length ? `前回の集計に無いセッション ${int(uploaded.missing.length)} 件は写していません。` : '')
       : '',

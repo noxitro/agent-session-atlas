@@ -45,8 +45,8 @@ describe('グループのアップロード', () => {
 
   it('セッションごとのフォルダに写し、作業用のファイルは入れない。外を指す id と無い id は写さない', async () => {
     const r = await uploadGroup(paths(), 'Player/Weapon', root);
-    expect(r).toEqual({ name: 'Player/Weapon', dir: join(root, 'Player_Weapon'), uploaded: 2, replaced: 0, missing: ['gone', '../s1'], snapshotAt: '2026-11-08T01:02:03.000Z' });
-    expect((await readdir(r.dir)).sort()).toEqual(['s1', 's2']);
+    expect(r).toEqual({ name: 'Player/Weapon', dir: join(root, 'Player_Weapon'), uploaded: 2, replaced: 0, missing: ['gone', '../s1'], snapshotAt: '2026-11-08T01:02:03.000Z', memos: 0 });
+    expect((await readdir(r.dir)).sort()).toEqual(['README.md', 's1', 's2']);
     expect((await readdir(join(r.dir, 's1'))).sort()).toEqual(['events.jsonl', 'files']);
     expect(await readFile(join(r.dir, 's1', 'files', 'a.txt'), 'utf8')).toBe('a');
     // session-store.db が無ければ DB の行は添えない
@@ -56,6 +56,41 @@ describe('グループのアップロード', () => {
     expect(await uploadGroup(paths(), 'Player/Weapon', root)).toMatchObject({ uploaded: 2, replaced: 2 });
     expect(existsSync(join(r.dir, 's2', 'old.txt'))).toBe(false);
     expect(uploadDir(root, 'con')).toBe(join(root, '_con'));
+  });
+
+  it('メモと画像をセッションのフォルダに添え、グループの説明と一覧を README.md に書く', async () => {
+    const memos = join(notes, 'memos');
+    await mkdir(join(memos, 's1'), { recursive: true });
+    await writeFile(join(memos, 's1.md'), '# 武器の当たり判定\n\n![画像](s1/abc.png) と ![別](./s1/def.png)。[外の](https://example.invalid/s1/x)\n');
+    await writeFile(join(memos, 's1', 'abc.png'), 'png');
+    await writeFile(join(memos, 's1', 'def.png'), 'png2');
+    // 空白だけのメモは無いのと同じ
+    await writeFile(join(memos, 's2.md'), '  \n');
+    await writeFile(
+      join(notes, 'groups.json'),
+      JSON.stringify({ version: 1, groups: [{ name: 'Player/Weapon', note: '武器 | 当たり判定の\n直し', ids: ['s1', 's2', 'gone'] }] }),
+    );
+    const sessions = join(out, 'sessions.json');
+    await writeFile(sessions, JSON.stringify({ sessions: [{ id: 's1', name: null, firstUserMessage: '当たり判定を | 直して', updatedAt: '2026-11-07T03:04:00.000Z' }] }));
+    const r = await uploadGroup({ ...paths(), notes, sessions }, 'Player/Weapon', root);
+    expect(r.memos).toBe(1);
+    expect(await readFile(join(r.dir, 's1', 'atlas-memo.md'), 'utf8')).toBe(
+      '# 武器の当たり判定\n\n![画像](atlas-memo/abc.png) と ![別](atlas-memo/def.png)。[外の](https://example.invalid/s1/x)\n',
+    );
+    expect((await readdir(join(r.dir, 's1', 'atlas-memo'))).sort()).toEqual(['abc.png', 'def.png']);
+    expect(existsSync(join(r.dir, 's2', 'atlas-memo.md'))).toBe(false);
+    const readme = await readFile(join(r.dir, 'README.md'), 'utf8');
+    expect(readme).toMatch(/^# Player\/Weapon\n\n武器 \| 当たり判定の\n直し\n/);
+    expect(readme).toContain('セッション: 2 件(うちメモあり 1 件)');
+    expect(readme).toContain('| [s1](s1/) | 当たり判定を \\| 直して | ');
+    expect(readme).toContain('| [あり](s1/atlas-memo.md) |');
+    expect(readme).toContain('| [s2](s2/) | - | - | - |');
+    expect(readme).toContain('写していないもの: `gone`');
+    expect(readme).toContain(`--home "${r.dir}"`);
+    // メモを消してからもう一度写すと、前に添えたメモも消える(フォルダごと置き換えるため)
+    await rm(join(memos, 's1.md'));
+    expect((await uploadGroup({ ...paths(), notes, sessions }, 'Player/Weapon', root)).memos).toBe(0);
+    expect(existsSync(join(r.dir, 's1', 'atlas-memo.md'))).toBe(false);
   });
 
   it('基底のフォルダが無い・グループが無い・空・集計前なら止まる(何も作らない)', async () => {

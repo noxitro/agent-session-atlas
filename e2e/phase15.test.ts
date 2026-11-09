@@ -5,6 +5,7 @@
 //  b. アップ先から集計し直すと、元から集計したのと同じトークン・依頼・モデル・ツールになる(DB の行も添えてあるため)。
 //     デスクトップアプリのセッションの data.db の行(題名・モデル・トークン数など)も運ばれる(資格情報の表・許可外の列は入らない)
 //  c. アップロード先が無い・決まっていないときは何も写さずに止まる
+//  d. グループの説明とセッションの一覧が README.md に、メモ(と画像)が各セッションのフォルダの atlas-memo.md に残る
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
@@ -55,7 +56,11 @@ describe('Phase 15 E2E: グループのアップロード', () => {
     }
     expect(ids).toHaveLength(2);
     await mkdir(notes, { recursive: true });
-    await writeFile(join(notes, 'groups.json'), JSON.stringify({ version: 1, groups: [{ name: GROUP, note: '', ids: [...ids, desk, 'not-in-snapshot', '..'] }] }));
+    await writeFile(join(notes, 'groups.json'), JSON.stringify({ version: 1, groups: [{ name: GROUP, note: 'プレイヤーの武器の当たり判定を直したタスク', ids: [...ids, desk, 'not-in-snapshot', '..'] }] }));
+    // 1 件目にだけ画像付きのメモ
+    await mkdir(join(notes, 'memos', ids[0]), { recursive: true });
+    await writeFile(join(notes, 'memos', `${ids[0]}.md`), `# 結論\n\n判定の幅を直した。\n\n![画像](${ids[0]}/0123456789abcdef.png)\n`);
+    await writeFile(join(notes, 'memos', ids[0], '0123456789abcdef.png'), Buffer.from('89504e470d0a1a0a', 'hex'));
     // 同じ場所を使うほかの人が先に写したセッション(触れてはいけない)
     await mkdir(join(dest, 'someone-else'), { recursive: true });
     await writeFile(join(dest, 'someone-else', 'events.jsonl'), '');
@@ -67,7 +72,7 @@ describe('Phase 15 E2E: グループのアップロード', () => {
     expect(r.status, r.stderr).toBe(0);
     expect(r.out).toMatch(/3 セッション.置き換え 0 件./);
     expect(r.out).toMatch(/前回の集計に無い 2 件は写していません/);
-    expect((await readdir(dest)).sort()).toEqual([...ids, desk, 'someone-else'].sort());
+    expect((await readdir(dest)).sort()).toEqual([...ids, desk, 'README.md', 'someone-else'].sort());
     for (const id of ids) {
       const files = await readdir(join(dest, id));
       expect(files).toContain('events.jsonl');
@@ -113,6 +118,27 @@ describe('Phase 15 E2E: グループのアップロード', () => {
       const b = again.sessions.find((s) => s.id === id)!;
       expect(pick(b)).toEqual(pick(a));
     }
+  });
+
+  it('d. グループの説明とセッションの一覧が README.md に、メモと画像が各セッションのフォルダに残る', async () => {
+    const readme = await readFile(join(dest, 'README.md'), 'utf8');
+    expect(readme.startsWith(`# ${GROUP}\n\nプレイヤーの武器の当たり判定を直したタスク\n`)).toBe(true);
+    expect(readme).toContain('セッション: 3 件(うちメモあり 1 件)');
+    for (const id of [...ids, desk]) expect(readme).toContain(`| [${id}](${id}/) |`);
+    // 題名は集計の記録から(デスクトップアプリのセッションも含む)
+    const first = original.sessions.find((s) => s.id === ids[0])!;
+    const title = (first.name || first.firstUserMessage || '').replace(/\s+/g, ' ').slice(0, 20);
+    expect(title.length).toBeGreaterThan(0);
+    expect(readme).toContain(title);
+    expect(readme).toContain(`| [${desk}](${desk}/) | デスクトップのセッション |`);
+    expect(readme).toContain(`| [あり](${ids[0]}/atlas-memo.md) |`);
+    expect(readme).toContain('`not-in-snapshot`');
+    // ほかの人のフォルダは一覧に出さない(今回写したものだけ)
+    expect(readme).not.toContain('someone-else');
+    // メモの画像の参照は、添えた画像のフォルダを指す(Markdown のビューアでそのまま開ける)
+    expect(await readFile(join(dest, ids[0], 'atlas-memo.md'), 'utf8')).toBe('# 結論\n\n判定の幅を直した。\n\n![画像](atlas-memo/0123456789abcdef.png)\n');
+    expect(existsSync(join(dest, ids[0], 'atlas-memo', '0123456789abcdef.png'))).toBe(true);
+    expect(existsSync(join(dest, ids[1], 'atlas-memo.md'))).toBe(false);
   });
 
   it('c. アップロード先が無い・決まっていないときは止まり、何も写さない', async () => {

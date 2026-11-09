@@ -49,7 +49,7 @@ GitHub Copilot のセッションログ(`%USERPROFILE%\.copilot`)を手元で集
 | 集計し直す | レポートの右上 |
 | 判定する…(工数 / 依頼ごとの採用。このツールで回すと AI クレジットを消費します。実行前に確認が出ます) | レポートの右上 |
 | セッションを選んで集計する / グループにする | セッション一覧 |
-| グループのセッションをアップロードする(決めた場所の グループ名セッション ID のフォルダへ写す) | グループで絞り込んだときの見出し |
+| グループのセッションをアップロードする(決めた場所の `<グループ名>\<セッション ID>\` へ写す。グループの説明とメモも残す) | グループで絞り込んだときの見出し |
 | 記録を読む / 全文を作って読む | 詳細ページの表題の下 |
 | メモを書く(Markdown と画像) | 詳細ページ |
 
@@ -119,8 +119,9 @@ npm run atlas -- --help                    # 使い方
 3. 見出しの「アップロード」を押すと、次の形で写します。同じセッションは置き換え、ほかのフォルダには触れません。
 
 ```
-E:\dev\atlas-logs\Player-Weapon\<セッション ID>\events.jsonl など
-E:\dev\atlas-logs\Player-Weapon\<セッション ID>\…
+E:\dev\atlas-logs\Player-Weapon\README.md                        グループ名・グループの説明・写した日時・セッションの一覧(題名・メモの有無)
+E:\dev\atlas-logs\Player-Weapon\<セッション ID>\events.jsonl など  セッションの生ログ
+E:\dev\atlas-logs\Player-Weapon\<セッション ID>\atlas-memo.md     そのセッションのメモ(画像は atlas-memo\ に)
 ```
 
 写すのは `atlas.bat` を起動したとき(か「集計し直す」)に複製したログです。受け取った側は `npm run atlas -- all --home "E:\dev\atlas-logs\Player-Weapon" --out out-player-weapon` でそのまま集計できます。生ログには依頼文や応答、パスがそのまま入るので、写す先を見せてよい相手か確かめてください。詳しくは [docs/screen.md の「グループを作る・直す」](docs/screen.md#グループを作る直すatlasbat-から開いたときだけ) にあります。

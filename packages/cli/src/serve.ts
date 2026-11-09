@@ -514,7 +514,7 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
       }
       exporting = true;
       try {
-        sendJson(res, 200, await uploadGroup({ snapshot: join(outDir, 'snapshot'), groups: groupsPath }, name, up.root, log));
+        sendJson(res, 200, await uploadGroup({ snapshot: join(outDir, 'snapshot'), groups: groupsPath, notes: resolve(o.notesDir), sessions: join(outDir, 'sessions.json') }, name, up.root, log));
       } catch (e) {
         throw new HttpError(/^グループ「.*」はありません/.test((e as Error).message) ? 404 : 409, (e as Error).message);
       } finally {
