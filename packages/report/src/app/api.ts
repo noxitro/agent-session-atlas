@@ -268,6 +268,13 @@ export function clientId(): string {
 export function startHeartbeat(token: string, onDown: () => void, intervalMs = 3000): () => void {
   const client = clientId();
   const h = { ...headers(token), 'x-atlas-client': client };
+  /** 送った順の番号(サーバは bye より前に出た heartbeat が遅れて届いても数え直さない) */
+  let seq = 0;
+  // 宛先は文字列のまま書く(外へ通信しないことを e2e が fetch( の直後の文字列で確かめる)
+  const send = (path: 'heartbeat' | 'bye'): Promise<Response> => {
+    const init: RequestInit = { method: 'POST', headers: { ...h, 'x-atlas-seq': String(++seq) }, keepalive: true };
+    return path === 'bye' ? fetch('api/bye', init) : fetch('api/heartbeat', init);
+  };
   let timer: ReturnType<typeof setInterval> | null = null;
   let fails = 0;
   const fail = (now: boolean): void => {
@@ -278,16 +285,17 @@ export function startHeartbeat(token: string, onDown: () => void, intervalMs = 3
     }
   };
   const beat = (): void => {
-    fetch('api/heartbeat', { method: 'POST', headers: h, keepalive: true })
+    send('heartbeat')
       .then((r) => {
         if (r.ok) fails = 0;
         else fail(r.status === 403);
       })
       .catch(() => fail(false));
   };
-  const onHide = (e: PageTransitionEvent): void => {
-    // 戻る / 進むのためにページが残される(bfcache)ときは閉じたことにしない
-    if (!e.persisted && timer != null) void fetch('api/bye', { method: 'POST', headers: h, keepalive: true }).catch(() => {});
+  // 閉じるときも、戻る / 進むのためにページが残される(bfcache)ときも bye を送る(残されたページは heartbeat を送れないので、
+  // 開いている画面に数えたままにすると、ほかを閉じてもサーバが止まらない)。戻ってきたら pageshow ですぐ heartbeat を送って数え直してもらう
+  const onHide = (): void => {
+    if (timer != null) void send('bye').catch(() => {});
   };
   const onShow = (e: PageTransitionEvent): void => {
     if (e.persisted && timer != null) beat();

@@ -98,7 +98,7 @@ describe('グループのアップロード', () => {
   it('基底のフォルダが無い・グループが無い・空・集計前なら止まる(何も作らない)', async () => {
     await expect(uploadGroup(paths(), 'Player/Weapon', join(dir, 'none'))).rejects.toThrow(/アップロード先のフォルダが見つかりません/);
     expect(existsSync(join(dir, 'none'))).toBe(false);
-    await expect(uploadGroup(paths(), '無い', root)).rejects.toThrow(/グループ「無い」はありません/);
+    await expect(uploadGroup(paths(), '無い', root)).rejects.toThrow(/タスクタグ「無い」はありません/);
     await expect(uploadGroup(paths(), '空', root)).rejects.toThrow(/セッションがありません/);
     await expect(uploadGroup({ ...paths(), snapshot: join(dir, 'nosnap') }, 'Player/Weapon', root)).rejects.toThrow(/先に集計してください/);
   });

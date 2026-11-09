@@ -290,6 +290,26 @@ describe('serve', () => {
     h = null;
   });
 
+  it('bye の番号(x-atlas-seq): 閉じる前に出た heartbeat が bye の後に届いても数え直さない。番号が新しければ(bfcache から戻った画面)数え直す', async () => {
+    await start({ idleMs: 600_000, byeGraceMs: 300 });
+    const post = (p: string, client: string, seq: number): Promise<Response> =>
+      fetch(`${base()}/api/${p}`, { method: 'POST', headers: { 'x-atlas-token': h!.token, 'x-atlas-client': client, 'x-atlas-seq': String(seq) } });
+    const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+    let reason: string | null = null;
+    void h!.done.then((r) => (reason = r));
+    await post('heartbeat', 'a', 1);
+    // bfcache に入った(bye 3)。戻ってきた(heartbeat 4)ので数え直され、止まらない
+    await post('bye', 'a', 3);
+    await post('heartbeat', 'a', 4);
+    await wait(500);
+    expect(reason).toBeNull();
+    // 閉じた(bye 6)後に、閉じる前の heartbeat(5)が遅れて届いても、開いている画面に数えないので止まる
+    await post('bye', 'a', 6);
+    await post('heartbeat', 'a', 5);
+    expect(await h!.done).toBe('画面がすべて閉じられた');
+    h = null;
+  });
+
   it('猶予の既定は、隠れたタブの間引かれた heartbeat(1 分に 1 回)より十分長い', () => {
     expect(DEFAULT_IDLE_MS).toBeGreaterThanOrEqual(10 * 60_000);
     expect(BYE_GRACE_MS).toBeGreaterThanOrEqual(10_000);

@@ -52,13 +52,43 @@ describe('プロジェクトのセッションをまとめて送る', () => {
     return { io, printed, asked, pickedFrom };
   };
 
-  it('プロジェクトは空のセッションを数えず、多い順に並ぶ', async () => {
+  it('プロジェクトは空のセッションを数えず、多い順に並ぶ。ログのフォルダが無いもの(DB にだけ記録)は送れない件数として分ける', async () => {
     expect(await listProjects(join(out, 'sessions.json'))).toEqual([
-      { name: 'owner/app', sessions: 2, updatedAt: '2026-11-03T00:00:00.000Z' },
-      { name: 'X:\\work\\tool', sessions: 1, updatedAt: '2026-10-01T00:00:00.000Z' },
+      { name: 'owner/app', sessions: 2, noLog: 0, updatedAt: '2026-11-03T00:00:00.000Z' },
+      { name: 'X:\\work\\tool', sessions: 1, noLog: 0, updatedAt: '2026-10-01T00:00:00.000Z' },
     ]);
-    expect((await projectTarget(join(out, 'sessions.json'), 'owner/app')).ids).toEqual(['s1', 's2']);
-    await expect(projectTarget(join(out, 'sessions.json'), '無い')).rejects.toThrow(/前回の集計にありません/);
+    expect((await projectTarget(paths(), 'owner/app')).ids).toEqual(['s1', 's2']);
+    await expect(projectTarget(paths(), '無い')).rejects.toThrow(/前回の集計にありません/);
+    // s2 のログのフォルダが無いとき: 一覧の件数と送るものが揃い、送れない件数を出す
+    await rm(join(out, 'snapshot', 'session-state', 's2'), { recursive: true });
+    expect((await listProjects(join(out, 'sessions.json'), join(out, 'snapshot')))[0]).toMatchObject({ name: 'owner/app', sessions: 1, noLog: 1, updatedAt: '2026-11-01T00:00:00.000Z' });
+    expect((await projectTarget(paths(), 'owner/app')).ids).toEqual(['s1']);
+    const f = fakeIo([''], []);
+    await runUploadProject(f.io, { paths: paths(), configPath });
+    expect(f.printed.join('\n')).toMatch(/owner\/app {2}1 件 .*ほかにログのフォルダが無いので送れないもの 1 件/);
+  });
+
+  it('送り先のフォルダ名がタスクタグや別のプロジェクトと同じになるときは送らない(README と索引が上書きし合うため)', async () => {
+    await mkdir(join(dir, 'notes'), { recursive: true });
+    await writeFile(join(dir, 'notes', 'groups.json'), JSON.stringify({ version: 1, groups: [{ name: 'Owner_App', note: '', ids: ['s4'] }] }));
+    await expect(projectTarget(paths(), 'owner/app')).rejects.toThrow(/タスクタグ「Owner_App」は、送り先のフォルダ名が同じ「owner_app」/);
+  });
+
+  it('覚えた送り先が無くなっていたら、選び直して送れる(選ばなければ何も送らない)', async () => {
+    await writeFile(configPath, JSON.stringify({ uploadRoot: join(dir, 'gone') }));
+    const f = fakeIo(['1', 'y'], [rootB]);
+    expect(await runUploadProject(f.io, { paths: paths(), configPath })).toBe(true);
+    expect(f.printed.join('\n')).toContain('覚えている送り先が見つかりません');
+    expect(JSON.parse(await readFile(configPath, 'utf8'))).toEqual({ uploadRoot: rootB });
+    expect(existsSync(join(rootB, 'owner_app', 's1'))).toBe(true);
+  });
+
+  it('集計し直している最中(out/.job.json を別の生きている処理が持つ)は送らずに止まる', async () => {
+    await writeFile(configPath, JSON.stringify({ uploadRoot: rootA }));
+    // 生きている別の処理として、このテストを動かしている親のプロセス
+    await writeFile(join(out, '.job.json'), JSON.stringify({ pid: process.ppid, kind: 'refresh', by: 'serve', startedAt: new Date().toISOString() }));
+    await expect(runUploadProject(fakeIo(['1', 'y'], []).io, { paths: paths(), configPath })).rejects.toThrow(/動いています.*何も送っていません/);
+    expect(existsSync(join(rootA, 'owner_app'))).toBe(false);
   });
 
   it('何も選ばなければ何も送らず、送り先も尋ねない', async () => {
