@@ -279,6 +279,8 @@ export function startHeartbeat(token: string, onDown: () => void, intervalMs = 3
   const init = (): RequestInit => ({ method: 'POST', headers: { ...h, 'x-atlas-seq': String(++seq) }, keepalive: true });
   let timer: ReturnType<typeof setInterval> | null = null;
   let fails = 0;
+  /** bye を送った(閉じる途中・bfcache に入った)。その後はタイマーが動いても heartbeat を送らない(bye より新しい番号で数え直されてしまうため) */
+  let gone = false;
   const fail = (now: boolean): void => {
     if (timer == null) return;
     if (now || ++fails >= HEARTBEAT_FAILS) {
@@ -287,6 +289,7 @@ export function startHeartbeat(token: string, onDown: () => void, intervalMs = 3
     }
   };
   const beat = (): void => {
+    if (gone) return;
     // 宛先は呼ぶところで文字列のまま書く(外へ通信しないことを e2e が fetch( の直後の文字列で確かめる。1 つの関数で宛先を選ぶと、最小化で fetch(条件 ? … : …) にまとめられる)
     fetch('api/heartbeat', init())
       .then((r) => {
@@ -298,10 +301,14 @@ export function startHeartbeat(token: string, onDown: () => void, intervalMs = 3
   // 閉じるときも、戻る / 進むのためにページが残される(bfcache)ときも bye を送る(残されたページは heartbeat を送れないので、
   // 開いている画面に数えたままにすると、ほかを閉じてもサーバが止まらない)。戻ってきたら pageshow ですぐ heartbeat を送って数え直してもらう
   const onHide = (): void => {
-    if (timer != null) void fetch('api/bye', init()).catch(() => {});
+    if (timer == null || gone) return;
+    gone = true;
+    void fetch('api/bye', init()).catch(() => {});
   };
   const onShow = (e: PageTransitionEvent): void => {
-    if (e.persisted && timer != null) beat();
+    if (!e.persisted || timer == null) return;
+    gone = false;
+    beat();
   };
   const onVisible = (): void => {
     if (document.visibilityState === 'visible' && timer != null) beat();
