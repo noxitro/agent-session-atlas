@@ -472,6 +472,50 @@ describe('画面の操作', () => {
     }
   });
 
+  it('g2. 写す前の確認: 秘密らしい文字列があれば確認を出し(焦点は「やめる」)、Esc でやめると何も写さない。「それでも写す」で写す', async () => {
+    const s = JSON.parse(await readFile(join(out, 'sessions.json'), 'utf8')) as { sessions: { id: string }[] };
+    const id = s.sessions.map((x) => x.id).find((x) => existsSync(join(out, 'snapshot', 'session-state', x)))!;
+    const before = existsSync(groupsPath) ? await readFile(groupsPath, 'utf8') : null;
+    const beforeConfig = existsSync(configPath) ? await readFile(configPath, 'utf8') : null;
+    const name = '秘密の確認';
+    const root = join(WORK, 'atlas-logs-secret');
+    const secret = join(out, 'snapshot', 'session-state', id, 'files', 'ui-secret.txt');
+    await mkdir(root, { recursive: true });
+    await mkdir(notes, { recursive: true });
+    await mkdir(join(out, 'snapshot', 'session-state', id, 'files'), { recursive: true });
+    // トークンの形をソースに直書きしない
+    await writeFile(secret, `token=${['ghp', 'UITESTFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE'].join('_')}\n`);
+    await writeFile(configPath, JSON.stringify({ uploadRoot: root }));
+    await writeFile(groupsPath, JSON.stringify({ version: 1, groups: [{ name, note: '', ids: [id] }] }));
+    try {
+      // # だけが違う URL への goto はページ内の移動になり、前のテストのグループの一覧で読まれる(無いグループとして # が消える)。いったん外へ移ってから開く
+      await page.goto('about:blank');
+      await page.goto(`${server.url}#group=${encodeURIComponent(name)}`);
+      const head = page.getByTestId('group-head');
+      await expect.poll(() => head.getByTestId('group-upload-dest').innerText()).toContain(root);
+      await head.getByTestId('group-upload').click();
+      const confirm = head.getByTestId('group-upload-confirm');
+      await expect.poll(() => confirm.isVisible()).toBe(true);
+      expect(await head.getByTestId('group-upload-secrets').innerText()).toMatch(/秘密らしい文字列が 1 件あります.GitHub トークン 1.[\s\S]*files\/ui-secret\.txt 1 件/);
+      await focusLands(confirm.getByRole('button', { name: 'やめる' }));
+      await page.keyboard.press('Escape');
+      await expect.poll(() => confirm.count()).toBe(0);
+      await expect.poll(() => page.evaluate<string | null>("document.activeElement?.getAttribute('data-testid') ?? null")).toBe('group-upload');
+      expect(existsSync(join(root, name))).toBe(false);
+      // もう一度押して「それでも写す」
+      await head.getByTestId('group-upload').click();
+      await confirm.getByRole('button', { name: 'それでも写す' }).click();
+      await expect.poll(() => head.getByTestId('group-uploaded').innerText(), { timeout: 15_000 }).toMatch(/アップロードしました.1 セッション/);
+      expect(existsSync(join(root, name, id, 'files', 'ui-secret.txt'))).toBe(true);
+    } finally {
+      await rm(secret, { force: true });
+      if (before == null) await rm(groupsPath, { force: true });
+      else await writeFile(groupsPath, before);
+      if (beforeConfig == null) await rm(configPath, { force: true });
+      else await writeFile(configPath, beforeConfig);
+    }
+  });
+
   it('h. サイドバーを出す幅: 1024px でもサイドバーにグループの一覧が出て、768px 未満(375px)は上部の 1 行の「グループ」から開く', async () => {
     try {
       await page.setViewportSize({ width: 1024, height: 768 });
