@@ -57,4 +57,25 @@ const up = spawnSync(process.execPath, [join('packages', 'cli', 'src', 'upload-p
 if (up.status !== 0 || !/プロジェクト/.test(up.stdout) || !up.stdout.includes('やめました')) fail(`プロジェクトを送る操作(upload-project.ts)が通りません: ${up.stderr}${up.stdout}`);
 if (statSync(template).mtimeMs !== before) fail('同梱のテンプレートを作り直しました(mtime がソースより新しくなっていない)');
 
-console.log(`release-smoke: 通過(${bats.length} 本の *.bat、npm install、atlas all、プロジェクトを送る操作)`);
+// Windows では *.bat を cmd で実際に起動する(中のスクリプトを直接呼ぶだけでは、bat の書き方の誤りを見逃す。
+// upload-project.bat は囲みの中の echo の括弧で、集計の後に必ず止まっていた)。集計は架空の fixture を読む(ATLAS_COPILOT_HOME)。
+// 入力を流し込んでも bat の中の前のプログラムが先に読むことがあるので、答えて進むところまでは見ず、bat が止まらずに中のスクリプトまで進むことを見る。
+// atlas.bat は最後にサーバを開いたまま待つので起動しない(中の集計とサーバは上と E2E で見ている)
+if (process.platform === 'win32') {
+  const { ATLAS_CONFIG: _ignored, ...env } = process.env;
+  const runBat = (bat: string, input: string): string => {
+    // 置き場所をはっきり書く(NoDefaultCurrentDirectoryInExePath が効いている環境では、名前だけだと今のフォルダの bat を探さない)
+    const r = spawnSync('cmd.exe', ['/d', '/c', `.\\${bat}`], { cwd: pkg, input, encoding: 'utf8', env: { ...env, ATLAS_COPILOT_HOME: join(FIXTURES_DIR, 'copilot-home') }, timeout: 300_000 });
+    const text = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+    // cmd が bat を読めなかったときの文言(英語版と日本語版)
+    if (/was unexpected at this time|は予期されていません|is not recognized as an internal or external command|内部コマンドまたは外部コマンド/.test(text)) fail(`${bat} を cmd が読めずに止まりました:\n${text}`);
+    return text;
+  };
+  const upBat = runBat('upload-project.bat', '\n\n');
+  if (!/プロジェクト\(|送れるセッションがありません/.test(upBat)) fail(`upload-project.bat が、送る操作(プロジェクトの一覧)まで進みませんでした:\n${upBat}`);
+  const setupBat = runBat('setup.bat', '\n\n\nn\n\n');
+  if (!setupBat.includes('agent-session-atlas の初期設定')) fail(`setup.bat が、初期設定のスクリプトまで進みませんでした:\n${setupBat}`);
+  if (existsSync(join(pkg, 'atlas.config.json'))) fail('setup.bat で書かない答えをしたのに atlas.config.json ができました');
+}
+
+console.log(`release-smoke: 通過(${bats.length} 本の *.bat、npm install、atlas all、プロジェクトを送る操作${process.platform === 'win32' ? '、upload-project.bat と setup.bat の起動' : ''})`);
