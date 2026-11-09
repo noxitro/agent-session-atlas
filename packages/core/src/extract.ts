@@ -135,10 +135,24 @@ export async function mergeSessionStoreJson(store: StoreData, id: string, path: 
   add(store.turns, j.turns);
   add(store.usage, j.usage);
   add(store.files, j.files);
-  // data.db の行(desktop.json に同じセッションがあればそちらを使う。extract が決める)
-  if (desktops && j.desktop && typeof j.desktop === 'object') desktops.set(id, j.desktop);
   if (store.schemaVersion == null && j.schemaVersion != null) store.schemaVersion = j.schemaVersion;
+  // data.db の行(desktop.json に同じセッションがあればそちらを使う。extract が決める)。
+  // 形が違えば使わない(レポートは contextUsage などを配列として読むので、版の違う・手で直したファイルで止まらないように)
+  if (j.desktop == null) return null;
+  if (!isDesktopSessionInfo(j.desktop)) return `${id}: ${SESSION_STORE_JSON} の desktop の形が違うため使いません`;
+  desktops?.set(id, j.desktop);
   return null;
+}
+
+const isRow = (v: unknown): boolean => typeof v === 'object' && v !== null && !Array.isArray(v);
+const isRowOrNull = (v: unknown): boolean => v === null || isRow(v);
+const isRows = (v: unknown): boolean => Array.isArray(v) && v.every(isRow);
+
+/** desktopForSession が返す形か(添えたファイルを信じる前に確かめる) */
+function isDesktopSessionInfo(v: unknown): v is DesktopSessionInfo {
+  if (!isRow(v)) return false;
+  const d = v as Record<string, unknown>;
+  return isRowOrNull(d.session) && isRows(d.contextUsage) && isRows(d.checkpoints) && isRows(d.activity) && isRowOrNull(d.workspace) && isRowOrNull(d.project);
 }
 
 /**

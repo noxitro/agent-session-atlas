@@ -2,10 +2,11 @@
 // 画面からはアップロード先を決め(エクスプローラーで選ぶ / パスを入力)、写し、写した先をエクスプローラーで開く。
 // 通しの確認(集計し直して元と一致する)は e2e/phase15.test.ts
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, open, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { loadStore, mergeSessionStoreJson } from '../../core/src/index.ts';
 import { parseCli } from '../src/args.ts';
 import { uploadDir, uploadGroup } from '../src/group-upload.ts';
 import { startServe, TOKEN_PLACEHOLDER, type ServeHandle } from '../src/serve.ts';
@@ -99,6 +100,57 @@ describe('グループのアップロード', () => {
     await expect(uploadGroup(paths(), '無い', root)).rejects.toThrow(/グループ「無い」はありません/);
     await expect(uploadGroup(paths(), '空', root)).rejects.toThrow(/セッションがありません/);
     await expect(uploadGroup({ ...paths(), snapshot: join(dir, 'nosnap') }, 'Player/Weapon', root)).rejects.toThrow(/先に集計してください/);
+  });
+
+  it('フォルダ名が同じになる別のグループ・前回の集計に 1 件も無いグループは写さない(フォルダも README も作らない)。予約名は拡張子付きも避ける', async () => {
+    await writeFile(
+      join(notes, 'groups.json'),
+      JSON.stringify({
+        version: 1,
+        groups: [
+          { name: 'Player/Weapon', note: '', ids: ['s1'] },
+          { name: 'player_weapon', note: '', ids: ['s2'] },
+          { name: '古い', note: '', ids: ['gone', 'gone2'] },
+        ],
+      }),
+    );
+    await expect(uploadGroup(paths(), 'Player/Weapon', root)).rejects.toThrow(/「Player\/Weapon」と「player_weapon」は、アップロード先のフォルダ名が同じ「Player_Weapon」/);
+    await expect(uploadGroup(paths(), '古い', root)).rejects.toThrow(/2 件.は、前回の集計に 1 件もありません/);
+    expect(await readdir(root)).toEqual([]);
+    expect(uploadDir(root, 'nul.log')).toBe(join(root, '_nul.log'));
+    expect(uploadDir(root, 'COM1.txt')).toBe(join(root, '_COM1.txt'));
+    expect(uploadDir(root, 'console')).toBe(join(root, 'console'));
+  });
+
+  it.skipIf(process.platform !== 'win32')('前に写したフォルダのファイルが開かれていて置き換えられないときは、前のフォルダをそのまま残して止まる', async () => {
+    const r = await uploadGroup(paths(), 'Player/Weapon', root);
+    const locked = join(r.dir, 's2', 'events.jsonl');
+    const before = await readFile(locked, 'utf8');
+    const fh = await open(locked, 'r');
+    try {
+      await expect(uploadGroup(paths(), 'Player/Weapon', root)).rejects.toThrow(/セッション s\d を写せませんでした.*前に写したフォルダはそのままです/);
+    } finally {
+      await fh.close();
+    }
+    expect(await readFile(locked, 'utf8')).toBe(before);
+    expect((await readdir(r.dir)).filter((n) => n.startsWith('.'))).toEqual([]);
+    // 閉じれば写せる
+    expect(await uploadGroup(paths(), 'Player/Weapon', root)).toMatchObject({ uploaded: 2, replaced: 2 });
+  }, 20_000);
+
+  it('添えたファイルの desktop の形が違えば使わず、理由を返す(集計は止めない)', async () => {
+    const f = join(dir, 'store.json');
+    const store = await loadStore(join(dir, 'no.db'));
+    const desktops = new Map();
+    const base = { version: 1, schemaVersion: null, sessions: [{ id: 's1' }], turns: [], usage: [], files: [] };
+    await writeFile(f, JSON.stringify({ ...base, desktop: { session: { title: 't' } } }));
+    expect(await mergeSessionStoreJson(store, 's1', f, desktops)).toMatch(/desktop の形が違う/);
+    expect(desktops.size).toBe(0);
+    expect(store.sessions.has('s1')).toBe(true);
+    const ok = { session: { title: 't' }, contextUsage: [], checkpoints: [], activity: [{ id: 'a' }], workspace: null, project: null };
+    await writeFile(f, JSON.stringify({ ...base, desktop: ok }));
+    expect(await mergeSessionStoreJson(store, 's1', f, desktops)).toBeNull();
+    expect(desktops.get('s1')).toEqual(ok);
   });
 
   it('CLI: group upload は --to か設定の uploadRoot を使う。--to は upload でだけ', () => {

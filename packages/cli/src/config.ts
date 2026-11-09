@@ -1,10 +1,12 @@
 // 設定ファイル atlas.config.json の読み込み。wiki の指定と、依頼ごとの判定に使う普段の工程名、グループのアップロード先を持つ
+import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DEFAULT_PHASE_NAMES, type WikiSpec } from '../../core/src/index.ts';
+import { isDeepStrictEqual } from 'node:util';
+import { DEFAULT_PHASE_NAMES, renameReplacing, type WikiSpec } from '../../core/src/index.ts';
 
 export const CONFIG_FILE = 'atlas.config.json';
 
@@ -80,14 +82,17 @@ export function defaultConfigPath(): string {
 }
 
 /**
- * 設定ファイルの 1 項目だけを書き換える(他の項目と書き方はそのまま残す)。書く前に読むときと同じ検査を通す。
- * ファイルが無ければ作る。読めない(壊れた)ファイルは上書きしない
+ * 設定ファイルの 1 項目だけを書き換える。書く前に読むときと同じ検査を通す。ファイルが無ければ作る。読めない(壊れた)ファイルは上書きしない。
+ * 文字列の値を差し替える・末尾に足すだけで済むときは、他の項目の書き方(手で詰めた配列など)をそのまま残す。済まなければ全体を整えて書く。
+ * 一時ファイルに書いてから置き換える(途中で止まっても設定ファイルが欠けない)
  */
 export async function updateConfig(path: string, key: (typeof KEYS)[number], value: unknown): Promise<void> {
   let cur: Record<string, unknown> = {};
+  let raw: string | null = null;
   if (existsSync(path)) {
     try {
-      const v = JSON.parse((await readFile(path, 'utf8')).replace(/^﻿/, '')) as unknown;
+      raw = (await readFile(path, 'utf8')).replace(/^﻿/, '');
+      const v = JSON.parse(raw) as unknown;
       if (!isObject(v)) throw new Error('全体がオブジェクトではありません');
       cur = v;
     } catch (e) {
@@ -97,8 +102,32 @@ export async function updateConfig(path: string, key: (typeof KEYS)[number], val
   const next = { ...cur, [key]: value };
   if (value === undefined) delete next[key];
   parseConfig(next);
-  await writeFile(path, `${JSON.stringify(next, null, 2)}
-`);
+  let text = `${JSON.stringify(next, null, 2)}\n`;
+  if (raw != null && typeof value === 'string') {
+    const lit = JSON.stringify(value);
+    const at = new RegExp(`("${key}"\\s*:\\s*)"(?:[^"\\\\]|\\\\.)*"`);
+    const end = raw.lastIndexOf('}');
+    const kept =
+      key in cur
+        ? raw.replace(at, (_m, head: string) => `${head}${lit}`)
+        : end > 0
+          ? `${raw.slice(0, end).trimEnd()}${Object.keys(cur).length ? ',' : ''}\n  "${key}": ${lit}\n${raw.slice(end)}`
+          : null;
+    // 差し替えた結果が狙いどおりの中身になったときだけ使う(同じ名前が別の場所にある等で外れたら、整えて書く)
+    try {
+      if (kept != null && isDeepStrictEqual(JSON.parse(kept), next)) text = kept;
+    } catch {
+      /* 整えて書く */
+    }
+  }
+  const tmp = `${path}.${randomUUID()}.tmp`;
+  await writeFile(tmp, text);
+  try {
+    await renameReplacing(tmp, path);
+  } catch (e) {
+    await rm(tmp, { force: true });
+    throw e;
+  }
 }
 
 /** 依頼ごとの判定に使う普段の工程名(環境変数 ATLAS_CONFIG かリポジトリ直下の atlas.config.json の phases、無ければ既定) */

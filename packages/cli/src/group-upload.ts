@@ -8,9 +8,9 @@
 // (同じ場所を何人かで使うため)。受け取った側は `atlas all --home <基底>/<グループ名>` でそのまま集計できる。
 // 元(~/.copilot)は読まず、前回の集計で out/snapshot/ に複製したものを写す(SQLite は一貫した複製を取ってあるため)。
 import { existsSync, statSync } from 'node:fs';
-import { cp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { DESKTOP_JSON, desktopForSession, readSnapshotManifest, SESSION_STORE_JSON, sessionStoreRows, type DesktopData, type SessionStoreJson } from '../../core/src/index.ts';
+import { DESKTOP_JSON, desktopForSession, readSnapshotManifest, renameReplacing, SESSION_STORE_JSON, sessionStoreRows, type DesktopData, type SessionStoreJson } from '../../core/src/index.ts';
 import type { SessionRecord, SessionsFile } from '../../core/src/index.ts';
 import { loadGroups, memosDir, readMemo } from '../../report/src/index.ts';
 import { truncate } from '../../report/src/lib/format.ts';
@@ -62,10 +62,17 @@ export async function uploadGroup(p: GroupUploadPaths, name: string, root: strin
   const g = loaded.groups.find((x) => x.name === name);
   if (!g) throw new Error(`グループ「${name}」はありません${loaded.groups.length ? `(あるのは: ${loaded.groups.map((x) => x.name).join(', ')})` : ''}`);
   if (g.ids.length === 0) throw new Error(`グループ「${name}」にセッションがありません`);
+  // フォルダ名に直すと同じになる別のグループ(Player/Weapon と Player_Weapon。Windows は大文字小文字も区別しない)があれば、混ざるので写さない
+  const folder = safeDirName(name);
+  const clash = loaded.groups.find((x) => x.name !== name && safeDirName(x.name).toLowerCase() === folder.toLowerCase());
+  if (clash) throw new Error(`グループ「${name}」と「${clash.name}」は、アップロード先のフォルダ名が同じ「${folder}」になります。どちらかの名前を変えてください`);
   // 基底のフォルダは作らない(ネットワークドライブの切断やドライブ名の違いで、思わぬ場所に作らないように)
   if (!existsSync(root) || !statSync(root).isDirectory()) throw new Error(`アップロード先のフォルダが見つかりません: ${root}(フォルダを作るか、場所を選び直してください)`);
   const stateDir = join(p.snapshot, 'session-state');
   if (!existsSync(stateDir)) throw new Error(`${stateDir} がありません。先に集計してください(atlas.bat か atlas all)`);
+  // 1 件も写せないなら、フォルダを作らず README も書き直さない(前に写したものの一覧が「0 件」で上書きされないように)
+  if (!g.ids.some((id) => SAFE_ID.test(id) && existsSync(join(stateDir, id))))
+    throw new Error(`グループ「${name}」のセッション(${g.ids.length} 件)は、前回の集計に 1 件もありません。先に集計し直してください(何も写していません)`);
   const manifest = await readSnapshotManifest(p.snapshot);
   const dir = uploadDir(root, name);
   await mkdir(dir, { recursive: true });
@@ -99,14 +106,28 @@ export async function uploadGroup(p: GroupUploadPaths, name: string, root: strin
       }
       if (memoDir && (await copyMemo(memoDir, id, tmp))) withMemo.add(id);
       const had = existsSync(dest);
-      if (had) await rm(dest, { recursive: true, force: true });
-      await rename(tmp, dest);
+      // 前のフォルダは先に消さず、名前を変えて退ける(中のファイルが開かれていて動かせなければ、ここで止まり前のフォルダはそのまま残る)。
+      // 新しいフォルダを置けなければ前のフォルダを戻す。退けたものは最後に消す
+      const old = join(dir, `.${id}.old`);
+      if (had) {
+        await rm(old, { recursive: true, force: true });
+        await renameReplacing(dest, old);
+      }
+      try {
+        await renameReplacing(tmp, dest);
+      } catch (e) {
+        if (had) await renameReplacing(old, dest).catch(() => {});
+        throw e;
+      }
       uploaded++;
       done.push(id);
-      if (had) replaced++;
+      if (had) {
+        replaced++;
+        await rm(old, { recursive: true, force: true }).catch((e: Error) => log(`group upload: 前のフォルダ ${old} を消せませんでした(${e.message})。手で消してください`));
+      }
     } catch (e) {
       await rm(tmp, { recursive: true, force: true }).catch(() => {});
-      throw new Error(`セッション ${id} を写せませんでした(${(e as Error).message})。写し終えたのは ${uploaded} 件です`);
+      throw new Error(`セッション ${id} を写せませんでした(${(e as Error).message})。前に写したフォルダはそのままです。写し終えたのは ${uploaded} 件です`);
     }
   }
   const snapshotAt = manifest?.createdAt ?? null;

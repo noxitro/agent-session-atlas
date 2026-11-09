@@ -13,7 +13,8 @@ export const GROUPS_FILE_NAME = 'groups.json';
  */
 export function safeDirName(name: string): string {
   let s = name.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').replace(/[. ]+$/, '').trim();
-  if (/^(con|prn|aux|nul|com\d|lpt\d)$/i.test(s)) s = `_${s}`;
+  // 拡張子が付いても予約名(nul.log など)。memo.ts の RESERVED_NAME と同じ
+  if (/^(con|prn|aux|nul|com\d|lpt\d)(\.|$)/i.test(s)) s = `_${s}`;
   return s || 'group';
 }
 

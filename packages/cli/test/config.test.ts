@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -90,6 +90,26 @@ describe('updateConfig', () => {
     writeFileSync(broken, '{');
     await expect(updateConfig(broken, 'uploadRoot', root)).rejects.toThrow(/書き換えません/);
     expect(readFileSync(broken, 'utf8')).toBe('{');
+    // 一時ファイルを残さない
+    expect(readdirSync(dir).filter((n) => n.endsWith('.tmp'))).toEqual([]);
+  });
+
+  it('値の差し替えと末尾への追加では、手で詰めて書いた他の項目の書き方を変えない', async () => {
+    const p = join(dir, 'hand.json');
+    const hand = '{\n  "wikis": [\n    {\n      "path": "my-notes",\n      "index": ["README.md", "00-home.md"]\n    }\n  ]\n}\n';
+    writeFileSync(p, hand);
+    const a = join(dir, 'a "x"');
+    await updateConfig(p, 'uploadRoot', a);
+    expect(readFileSync(p, 'utf8')).toBe(`{\n  "wikis": [\n    {\n      "path": "my-notes",\n      "index": ["README.md", "00-home.md"]\n    }\n  ],\n  "uploadRoot": ${JSON.stringify(a)}\n}\n`);
+    // 2 回目は値だけ差し替える(引用符を含む前の値も正しく置き換える)
+    const b = join(dir, 'b$1');
+    await updateConfig(p, 'uploadRoot', b);
+    expect(readFileSync(p, 'utf8')).toBe(`{\n  "wikis": [\n    {\n      "path": "my-notes",\n      "index": ["README.md", "00-home.md"]\n    }\n  ],\n  "uploadRoot": ${JSON.stringify(b)}\n}\n`);
+    // 空のオブジェクトにも足せる
+    const e = join(dir, 'empty.json');
+    writeFileSync(e, '{}');
+    await updateConfig(e, 'uploadRoot', b);
+    expect(JSON.parse(readFileSync(e, 'utf8'))).toEqual({ uploadRoot: b });
   });
 });
 
