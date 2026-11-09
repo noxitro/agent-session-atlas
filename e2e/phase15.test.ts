@@ -149,6 +149,23 @@ describe('Phase 15 E2E: グループのアップロード', () => {
     expect(existsSync(join(dest, ids[1], 'atlas-memo.md'))).toBe(false);
   });
 
+  it('e. 読みやすい記録(.md)は送らず、送った先で集計し直すと各セッションの分ができる(README に作り方がある)', async () => {
+    // 送ったフォルダには記録の .md を入れない(容量を使わないため。生ログから作れる)
+    for (const id of [...ids, desk]) expect((await readdir(join(dest, id))).some((f) => f.endsWith('.md') && f !== 'atlas-memo.md' && f !== 'plan.md')).toBe(false);
+    const readme = await readFile(join(dest, 'README.md'), 'utf8');
+    expect(readme).toContain('sessions\\<セッション ID>.md');
+    expect(readme).toContain(`npm run atlas -- all --home "${dest}" --out "<出力先>"`);
+    // README のとおりに集計し直すと、送ったセッションごとに記録ができる
+    const out3 = join(WORK, 'out-records');
+    const r = atlas(['all', '--home', dest, '--out', out3]);
+    expect(r.status, r.stderr).toBe(0);
+    for (const id of [...ids, desk]) {
+      const md = join(out3, 'sessions', `${id}.md`);
+      expect(existsSync(md), md).toBe(true);
+      expect((await readFile(md, 'utf8')).length).toBeGreaterThan(200);
+    }
+  });
+
   it('c. アップロード先が無い・決まっていないときは止まり、何も写さない', async () => {
     const missing = join(WORK, 'no-such-dir');
     const r = atlas(['group', 'upload', GROUP, '--to', missing, '--out', out1, '--notes-dir', notes]);

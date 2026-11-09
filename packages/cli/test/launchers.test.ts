@@ -38,7 +38,7 @@ describe('*.bat', () => {
     expect(bad).toEqual([]);
   });
 
-  // 配布 zip を展開した先(.git が無い)では git check-attr が使えないので見ない
+  // git の無い場所(git archive で作ったフォルダなど)では git check-attr が使えないので見ない
   it.skipIf(!existsSync(join(ROOT, '.git'))).each(BATS)('%s は .gitattributes で eol=crlf が効いている', (f) => {
     expect(execFileSync('git', ['check-attr', 'eol', '--', f], { cwd: ROOT, encoding: 'utf8' }).trim()).toBe(`${f}: eol: crlf`);
   });
