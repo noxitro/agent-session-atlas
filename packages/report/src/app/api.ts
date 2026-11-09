@@ -252,27 +252,60 @@ export const chatJudgeApi = {
   },
 };
 
-/** 3 秒ごとに heartbeat を送る。失敗したら onDown を 1 回呼んで止める。戻り値で止められる */
+/** heartbeat が続けてこの回数失敗したら止まったとみなす(スリープからの復帰などで 1 回失敗しただけでは決めない) */
+export const HEARTBEAT_FAILS = 3;
+
+/** このページを表す id(サーバは開いている画面を数え、すべて閉じられたら止まる) */
+export function clientId(): string {
+  return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/**
+ * 3 秒ごとに heartbeat を送り、ページを閉じるときは bye を送る(serve.ts の先頭の説明)。
+ * 続けて HEARTBEAT_FAILS 回失敗したら(token が違うと言われたらすぐ)onDown を 1 回呼んで止める。
+ * タブが表に戻ったとき・戻る / 進むでこのページに戻ったときは、間隔を待たずにすぐ送る。戻り値で止められる
+ */
 export function startHeartbeat(token: string, onDown: () => void, intervalMs = 3000): () => void {
+  const client = clientId();
+  const h = { ...headers(token), 'x-atlas-client': client };
   let timer: ReturnType<typeof setInterval> | null = null;
-  const stop = (): void => {
-    if (timer) clearInterval(timer);
-    timer = null;
+  let fails = 0;
+  const fail = (now: boolean): void => {
+    if (timer == null) return;
+    if (now || ++fails >= HEARTBEAT_FAILS) {
+      stop();
+      onDown();
+    }
   };
   const beat = (): void => {
-    fetch('api/heartbeat', { method: 'POST', headers: headers(token), keepalive: true })
+    fetch('api/heartbeat', { method: 'POST', headers: h, keepalive: true })
       .then((r) => {
-        if (!r.ok) {
-          stop();
-          onDown();
-        }
+        if (r.ok) fails = 0;
+        else fail(r.status === 403);
       })
-      .catch(() => {
-        stop();
-        onDown();
-      });
+      .catch(() => fail(false));
   };
+  const onHide = (e: PageTransitionEvent): void => {
+    // 戻る / 進むのためにページが残される(bfcache)ときは閉じたことにしない
+    if (!e.persisted && timer != null) void fetch('api/bye', { method: 'POST', headers: h, keepalive: true }).catch(() => {});
+  };
+  const onShow = (e: PageTransitionEvent): void => {
+    if (e.persisted && timer != null) beat();
+  };
+  const onVisible = (): void => {
+    if (document.visibilityState === 'visible' && timer != null) beat();
+  };
+  function stop(): void {
+    if (timer) clearInterval(timer);
+    timer = null;
+    removeEventListener('pagehide', onHide);
+    removeEventListener('pageshow', onShow);
+    document.removeEventListener('visibilitychange', onVisible);
+  }
   timer = setInterval(beat, intervalMs);
+  addEventListener('pagehide', onHide);
+  addEventListener('pageshow', onShow);
+  document.addEventListener('visibilitychange', onVisible);
   beat();
   return stop;
 }

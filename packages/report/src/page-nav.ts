@@ -87,8 +87,9 @@ export function renderRail(o: PageNavOptions): string {
  * - 読んでいる節に aria-current の印(見出しが画面上部 1/3 を越えた最後の節。末尾では最後の節)。狭い画面では現在地が見える位置まで目次行をずらす
  * - 「← 戻る」: atlas.html から来たとき(atlas.html が別ページへ移るときに sessionStorage に残す印。http では referrer でも分かる)は history.back() で戻り、
  *   URL の # に残る絞り込みを保つ。直接開いたとき・新しいタブ・修飾キー付きのクリックでは普通のリンク。印は読んだら消す
- * - heartbeat: atlas serve から開かれたとき(http(s) で、meta の token がプレースホルダでない)だけ 3 秒ごとに POST する。
- *   失敗したら止めて「サーバが止まっています」の帯を出す。宛先は同一オリジンの相対パス(詳細ページは ../api/、用語ページは api/)
+ * - heartbeat: atlas serve から開かれたとき(http(s) で、meta の token がプレースホルダでない)だけ 3 秒ごとに POST し、ページを閉じるときは bye を送る
+ *   (atlas.html の startHeartbeat と同じ作法。ページの id を x-atlas-client で送る)。続けて 3 回失敗したら(403 ならすぐ)止めて「サーバが止まっています」の帯を出す。
+ *   タブが表に戻ったとき・戻る / 進むで戻ったときはすぐ送る。宛先は同一オリジンの相対パス(詳細ページは ../api/、用語ページは api/)
  * - メモの編集: atlas serve のときだけ、メモの節(#memo)があるページに編集の script を読み込む。止まったら atlas-down を知らせる
  * - Phase 14: 同じ条件で「記録を読む」「全文を作って読む」の script(api/session-tools.js)も読み込む(伏せ字版には #memo が無いので出ない)
  */
@@ -108,9 +109,13 @@ sf();addEventListener('resize',sf);d.addEventListener('toggle',sf,true);
 var m=false;try{m=sessionStorage.getItem('atlas-return')==='1';sessionStorage.removeItem('atlas-return')}catch(e){}
 d.querySelectorAll('a.crumb').forEach(function(a){a.addEventListener('click',function(e){if(e.button!==0||e.metaKey||e.ctrlKey||e.shiftKey||e.altKey)return;var ok=false;try{ok=history.length>1&&(m||/atlas\\.html/.test(d.referrer))}catch(err){}if(ok){e.preventDefault();history.back()}})});
 (function(){var mt=d.querySelector('meta[name="atlas-token"]'),t=mt?mt.content:'';if(!/^https?:$/.test(location.protocol)||!t||/^__/.test(t))return;
-var c=d.querySelector('a.crumb'),up=!!c&&/^\\.\\.\\//.test(c.getAttribute('href')||''),o={method:'POST',headers:{'X-Atlas-Token':t},keepalive:true},iv=null;
-function down(){if(iv)clearInterval(iv);iv=null;var b=d.createElement('div');b.className='down-band';b.setAttribute('role','alert');b.textContent='サーバが止まっています。atlas.bat を実行し直してください(閲覧はそのままできます)。';d.body.insertBefore(b,d.body.firstChild);d.dispatchEvent(new Event('atlas-down'))}
-function beat(){try{(up?fetch('../api/heartbeat',o):fetch('api/heartbeat',o)).then(function(r){if(!r.ok)down()}).catch(down)}catch(e){down()}}
+var c=d.querySelector('a.crumb'),up=!!c&&/^\\.\\.\\//.test(c.getAttribute('href')||''),cid=(window.crypto&&crypto.randomUUID)?crypto.randomUUID():'c'+Date.now().toString(36)+Math.random().toString(36).slice(2,10),o={method:'POST',headers:{'X-Atlas-Token':t,'X-Atlas-Client':cid},keepalive:true},iv=null,fails=0;
+function down(){if(!iv)return;clearInterval(iv);iv=null;var b=d.createElement('div');b.className='down-band';b.setAttribute('role','alert');b.textContent='サーバが止まっています。atlas.bat を実行し直してください(閲覧はそのままできます)。';d.body.insertBefore(b,d.body.firstChild);d.dispatchEvent(new Event('atlas-down'))}
+function fail(now){if(now||++fails>=3)down()}
+function beat(){if(!iv)return;try{(up?fetch('../api/heartbeat',o):fetch('api/heartbeat',o)).then(function(r){if(r.ok)fails=0;else fail(r.status===403)}).catch(function(){fail(false)})}catch(e){fail(false)}}
 iv=setInterval(beat,3000);beat();
+addEventListener('pagehide',function(e){if(!e.persisted&&iv)try{(up?fetch('../api/bye',o):fetch('api/bye',o)).catch(function(){})}catch(err){}});
+addEventListener('pageshow',function(e){if(e.persisted)beat()});
+d.addEventListener('visibilitychange',function(){if(d.visibilityState==='visible')beat()});
 if(up&&d.getElementById('memo')){['../api/memo-editor.js','../api/session-tools.js'].forEach(function(p){var s=d.createElement('script');s.src=p;d.body.appendChild(s)})}})();
 })();`;
