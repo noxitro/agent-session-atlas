@@ -10,7 +10,8 @@ import { defaultConfigPath, loadConfig, updateConfig } from './config.ts';
 import { pickFolder } from './folder-picker.ts';
 import { resolvePaths } from './commands.ts';
 import { acquireOutLock, OutBusyError } from './jobs.ts';
-import { checkTarget, listProjects, localTime, projectTarget, uploadTarget, type GroupUploadPaths, type UploadCheck } from './group-upload.ts';
+import { dateTime } from '../../report/src/lib/format.ts';
+import { checkTarget, listProjects, projectTarget, readSessions, UploadChangedError, uploadTarget, type GroupUploadPaths, type GroupUploadResult, type UploadCheck } from './group-upload.ts';
 
 export interface UploadProjectIo {
   ask: (q: string) => Promise<string>;
@@ -36,7 +37,7 @@ async function chooseRoot(io: UploadProjectIo, configPath: string, current: stri
 function describe(io: UploadProjectIo, c: UploadCheck): void {
   io.print(`  送り先: ${c.dir}`);
   io.print(`  ${c.sessions} セッション・合計 ${size(c.bytes)}(${c.files} ファイル)${c.replace ? `。うち ${c.replace} 件は前に送ったものを置き換えます` : ''}`);
-  if (c.snapshotAt) io.print(`  送るのは ${localTime(c.snapshotAt)} の集計の時点のログです`);
+  if (c.snapshotAt) io.print(`  送るのは ${dateTime(c.snapshotAt)} の集計の時点のログです`);
   if (c.largest.length) io.print(`  大きいもの: ${c.largest.slice(0, 3).map((x) => `${x.id.slice(0, 8)}…/${x.path} ${size(x.bytes)}`).join('、')}`);
   if (c.secrets.count) {
     io.print(`  注意: 秘密らしい文字列が ${c.secrets.count} 件あります(${c.secrets.kinds.map((k) => `${k.label} ${k.count}`).join('・')}。偽陽性もありえます)`);
@@ -67,7 +68,9 @@ async function withOutLock<T>(outDir: string, fn: () => Promise<T>): Promise<T> 
 /** 対話の本体。送ったら true、やめたら false */
 export async function runUploadProject(io: UploadProjectIo, o: { paths: GroupUploadPaths & { sessions: string }; configPath: string }): Promise<boolean> {
   const outDir = dirname(o.paths.snapshot);
-  const projects = await listProjects(o.paths.sessions, o.paths.snapshot);
+  // sessions.json は 1 回だけ読み、一覧・送るまとまり・README で使い回す(実データでは十数 MB ある)
+  const records = await readSessions(o.paths.sessions);
+  const projects = await listProjects(records, o.paths.snapshot);
   if (!projects.length) {
     io.print('送れるセッションがありません(空のセッションと、ログのフォルダが無いものは送りません)。');
     return false;
@@ -84,7 +87,7 @@ export async function runUploadProject(io: UploadProjectIo, o: { paths: GroupUpl
   const n = Number(answer);
   const chosen = Number.isInteger(n) && n >= 1 && n <= projects.length ? projects[n - 1] : projects.find((p) => p.name === answer);
   if (!chosen) throw new Error(`「${answer}」に当たるプロジェクトがありません(何も送っていません)`);
-  const target = await projectTarget(o.paths, chosen.name);
+  const target = await projectTarget(o.paths, chosen.name, records);
 
   let root = (await loadConfig(o.configPath, false)).uploadRoot;
   // 覚えた送り先が無い(ネットワークドライブの切断・フォルダの削除)ときも、ここで選び直せるようにする
@@ -100,7 +103,9 @@ export async function runUploadProject(io: UploadProjectIo, o: { paths: GroupUpl
       return false;
     }
   }
-  // 送る前に毎回確かめる(送り先は覚えたものを使うので、違っていたらここで選び直す)
+  // 送る前に毎回確かめる(送り先は覚えたものを使うので、違っていたらここで選び直す)。
+  // 入力を待つ間はロックを放すので、写すときに確かめた中身と同じかを見直し、変わっていたら(集計し直したなど)もう一度確かめる
+  let r: GroupUploadResult;
   for (;;) {
     io.print(`「${chosen.name}」を送る前に確かめてください(調べています…)`);
     const r0 = root;
@@ -108,29 +113,36 @@ export async function runUploadProject(io: UploadProjectIo, o: { paths: GroupUpl
     describe(io, c);
     const a = (await io.ask('送るなら y、送り先を選び直すなら c、やめるなら Enter: ')).toLowerCase();
     if (a === 'c') {
-      const r = await chooseRoot(io, o.configPath, root);
-      if (r) root = r;
+      const picked = await chooseRoot(io, o.configPath, root);
+      if (picked) root = picked;
       continue;
     }
     if (a !== 'y') {
       io.print('やめました(何も送っていません)。');
       return false;
     }
+    let last = -1;
+    try {
+      r = await withOutLock(outDir, () =>
+        uploadTarget(o.paths, target, r0, () => {}, {
+          expect: c.fingerprint,
+          sessions: records,
+          onProgress: (p) => {
+            const pct = p.bytes ? Math.floor((p.copied / p.bytes) * 10) * 10 : 0;
+            if (pct !== last) {
+              last = pct;
+              io.print(`  写しています: ${p.done} / ${p.sessions} セッション(${size(p.copied)} / ${size(p.bytes)})`);
+            }
+          },
+        }),
+      );
+    } catch (e) {
+      if (!(e instanceof UploadChangedError)) throw e;
+      io.print(e.message);
+      continue;
+    }
     break;
   }
-  let last = -1;
-  const r1 = root;
-  const r = await withOutLock(outDir, () =>
-    uploadTarget(o.paths, target, r1, () => {}, {
-      onProgress: (p) => {
-        const pct = p.bytes ? Math.floor((p.copied / p.bytes) * 10) * 10 : 0;
-        if (pct !== last) {
-          last = pct;
-          io.print(`  写しています: ${p.done} / ${p.sessions} セッション(${size(p.copied)} / ${size(p.bytes)})`);
-        }
-      },
-    }),
-  );
   io.print(`送りました: ${r.uploaded} セッション${r.memos ? `・メモ ${r.memos} 件` : ''}${r.replaced ? `(うち ${r.replaced} 件は置き換え)` : ''} → ${r.dir}`);
   io.print('プロジェクトの説明とセッションの一覧は、そのフォルダの README.md にあります。');
   return true;

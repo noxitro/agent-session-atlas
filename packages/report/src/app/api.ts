@@ -33,7 +33,8 @@ export interface UploadHandlers {
   setRoot: (root: string) => Promise<string>;
   /** 写す前の点検(大きさと秘密らしい文字列) */
   check: (name: string) => Promise<UploadCheck>;
-  run: (name: string) => Promise<GroupUpload>;
+  /** 写す。expect は確かめたときの点検の指紋(写す直前に点検し直し、違えば写さずに理由を返す) */
+  run: (name: string, expect?: string) => Promise<GroupUpload>;
   /** 写している途中の進み具合。終わっていれば直近の結果(10 分以内)。どちらでもなければ null */
   progress: (name: string) => Promise<UploadPoll>;
   open: (name: string) => Promise<void>;
@@ -51,6 +52,8 @@ export interface UploadCheck {
   largest: { id: string; path: string; bytes: number }[];
   secrets: { count: number; kinds: { label: string; count: number }[]; files: { id: string; path: string; count: number }[]; skipped: number };
   snapshotAt: string | null;
+  /** この点検の指紋(写すときに渡す) */
+  fingerprint: string;
 }
 
 /** 写している途中の進み具合(serve の group-upload.ts の UploadProgress と同じ形) */
@@ -63,7 +66,7 @@ export interface UploadProgress {
 }
 
 /** 進み具合の問い合わせの答え: 写している途中なら進み具合、終わっていれば直近の結果、どちらでもなければ null */
-export type UploadPoll = UploadProgress | { finished: true; ok: boolean; error: string | null; result: GroupUpload | null } | null;
+export type UploadPoll = UploadProgress | { finished: true; at: number; ok: boolean; error: string | null; result: GroupUpload | null } | null;
 
 /** グループのアップロードの結果(serve の group-upload.ts と同じ形) */
 export interface GroupUpload {
@@ -139,8 +142,8 @@ export const api = {
   setUploadRoot(token: string, root: string): Promise<{ root: string }> {
     return connect(fetch('api/upload-root', { method: 'PUT', headers: headers(token), body: JSON.stringify({ root }) }), (r) => parse(r));
   },
-  uploadGroup(token: string, name: string): Promise<GroupUpload> {
-    return connect(fetch('api/groups/' + encodeURIComponent(name) + '/upload', { method: 'POST', headers: headers(token) }), (r) => parse<GroupUpload>(r));
+  uploadGroup(token: string, name: string, expect?: string): Promise<GroupUpload> {
+    return connect(fetch('api/groups/' + encodeURIComponent(name) + '/upload', { method: 'POST', headers: headers(token), body: JSON.stringify(expect ? { expect } : {}) }), (r) => parse<GroupUpload>(r));
   },
   /** 写した先のフォルダをエクスプローラーで開く */
   checkUpload(token: string, name: string): Promise<UploadCheck> {
@@ -276,6 +279,8 @@ export function startHeartbeat(token: string, onDown: () => void, intervalMs = 3
   const init = (): RequestInit => ({ method: 'POST', headers: { ...h, 'x-atlas-seq': String(++seq) }, keepalive: true });
   let timer: ReturnType<typeof setInterval> | null = null;
   let fails = 0;
+  /** bye を送った(閉じる途中・bfcache に入った)。その後はタイマーが動いても heartbeat を送らない(bye より新しい番号で数え直されてしまうため) */
+  let gone = false;
   const fail = (now: boolean): void => {
     if (timer == null) return;
     if (now || ++fails >= HEARTBEAT_FAILS) {
@@ -284,6 +289,7 @@ export function startHeartbeat(token: string, onDown: () => void, intervalMs = 3
     }
   };
   const beat = (): void => {
+    if (gone) return;
     // 宛先は呼ぶところで文字列のまま書く(外へ通信しないことを e2e が fetch( の直後の文字列で確かめる。1 つの関数で宛先を選ぶと、最小化で fetch(条件 ? … : …) にまとめられる)
     fetch('api/heartbeat', init())
       .then((r) => {
@@ -295,10 +301,14 @@ export function startHeartbeat(token: string, onDown: () => void, intervalMs = 3
   // 閉じるときも、戻る / 進むのためにページが残される(bfcache)ときも bye を送る(残されたページは heartbeat を送れないので、
   // 開いている画面に数えたままにすると、ほかを閉じてもサーバが止まらない)。戻ってきたら pageshow ですぐ heartbeat を送って数え直してもらう
   const onHide = (): void => {
-    if (timer != null) void fetch('api/bye', init()).catch(() => {});
+    if (timer == null || gone) return;
+    gone = true;
+    void fetch('api/bye', init()).catch(() => {});
   };
   const onShow = (e: PageTransitionEvent): void => {
-    if (e.persisted && timer != null) beat();
+    if (!e.persisted || timer == null) return;
+    gone = false;
+    beat();
   };
   const onVisible = (): void => {
     if (document.visibilityState === 'visible' && timer != null) beat();

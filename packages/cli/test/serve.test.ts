@@ -310,6 +310,20 @@ describe('serve', () => {
     h = null;
   });
 
+  it('番号の無い bye(番号を送らない古いページ)は覚えないので、そのページが戻って heartbeat を送れば数え直す', async () => {
+    await start({ idleMs: 600_000, byeGraceMs: 300 });
+    const post = (p: string): Promise<Response> => fetch(`${base()}/api/${p}`, { method: 'POST', headers: { 'x-atlas-token': h!.token, 'x-atlas-client': 'old' } });
+    let reason: string | null = null;
+    void h!.done.then((r) => (reason = r));
+    await post('heartbeat');
+    await post('bye');
+    await post('heartbeat');
+    await new Promise((r) => setTimeout(r, 600));
+    expect(reason).toBeNull();
+    await h!.close();
+    h = null;
+  });
+
   it('猶予の既定は、隠れたタブの間引かれた heartbeat(1 分に 1 回)より十分長い', () => {
     expect(DEFAULT_IDLE_MS).toBeGreaterThanOrEqual(10 * 60_000);
     expect(BYE_GRACE_MS).toBeGreaterThanOrEqual(10_000);

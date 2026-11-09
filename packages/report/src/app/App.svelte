@@ -259,7 +259,7 @@
             return r.root;
           },
           check: (name) => api.checkUpload(token!, name),
-          run: (name) => api.uploadGroup(token!, name),
+          run: (name, expect) => api.uploadGroup(token!, name, expect),
           progress: (name) => api.uploadProgress(token!, name),
           open: async (name) => void (await api.openUpload(token!, name)),
         }

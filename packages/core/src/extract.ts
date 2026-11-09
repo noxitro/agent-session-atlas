@@ -92,24 +92,57 @@ export async function loadStore(dbPath: string): Promise<StoreData> {
   }
 }
 
-/** session-store.db からセッション 1 件分の行を取り出す(アップロードで添える)。DB が無いか、そのセッションの行が 1 つも無ければ null */
-export async function sessionStoreRows(dbPath: string, id: string): Promise<SessionStoreJson | null> {
+/** session-store.db をセッションごとに読む道具(1 回だけ開き、使い終わったら close する)。rows はそのセッションの行が 1 つも無ければ null */
+export interface SessionStoreReader {
+  rows: (id: string) => SessionStoreJson | null;
+  close: () => void;
+}
+
+/** session-store.db を 1 回だけ開き、セッションごとの行を取り出す道具を返す(アップロードで添える)。DB が無ければ null */
+export async function openSessionStoreReader(dbPath: string): Promise<SessionStoreReader | null> {
   if (!existsSync(dbPath)) return null;
   const db = await openReadOnly(dbPath);
+  const has = new Map<string, boolean>();
+  const exists = (table: string): boolean => {
+    if (!has.has(table)) has.set(table, tableExists(db, table));
+    return has.get(table)!;
+  };
+  const schemaVersion = exists('schema_version') ? ((db.prepare('SELECT version FROM schema_version').get() as { version: number } | undefined)?.version ?? null) : null;
+  const stmts = new Map<string, ReturnType<typeof db.prepare>>();
+  const rows = <T>(q: (typeof STORE_QUERIES)[keyof typeof STORE_QUERIES], id: string): T[] => {
+    if (!exists(q.table)) return [];
+    const sql = `${q.sql} WHERE ${q.key} = ?${q.order}`;
+    let st = stmts.get(sql);
+    if (!st) {
+      st = db.prepare(sql);
+      stmts.set(sql, st);
+    }
+    return (st.all(id) as unknown as T[]).map((r) => ({ ...r }));
+  };
+  return {
+    rows: (id) => {
+      const out: SessionStoreJson = {
+        version: 1,
+        schemaVersion,
+        sessions: rows<DbSessionRow>(STORE_QUERIES.sessions, id),
+        turns: rows<DbTurnRow>(STORE_QUERIES.turns, id),
+        usage: rows<DbUsageRow>(STORE_QUERIES.usage, id),
+        files: rows<DbFileRow>(STORE_QUERIES.files, id),
+      };
+      return out.sessions.length + out.turns.length + out.usage.length + out.files.length ? out : null;
+    },
+    close: () => db.close(),
+  };
+}
+
+/** session-store.db からセッション 1 件分の行を取り出す(1 件だけ読むとき)。DB が無いか、そのセッションの行が 1 つも無ければ null */
+export async function sessionStoreRows(dbPath: string, id: string): Promise<SessionStoreJson | null> {
+  const r = await openSessionStoreReader(dbPath);
+  if (!r) return null;
   try {
-    const rows = <T>(q: (typeof STORE_QUERIES)[keyof typeof STORE_QUERIES]): T[] =>
-      tableExists(db, q.table) ? (db.prepare(`${q.sql} WHERE ${q.key} = ?${q.order}`).all(id) as unknown as T[]).map((r) => ({ ...r })) : [];
-    const out: SessionStoreJson = {
-      version: 1,
-      schemaVersion: tableExists(db, 'schema_version') ? ((db.prepare('SELECT version FROM schema_version').get() as { version: number } | undefined)?.version ?? null) : null,
-      sessions: rows<DbSessionRow>(STORE_QUERIES.sessions),
-      turns: rows<DbTurnRow>(STORE_QUERIES.turns),
-      usage: rows<DbUsageRow>(STORE_QUERIES.usage),
-      files: rows<DbFileRow>(STORE_QUERIES.files),
-    };
-    return out.sessions.length + out.turns.length + out.usage.length + out.files.length ? out : null;
+    return r.rows(id);
   } finally {
-    db.close();
+    r.close();
   }
 }
 
