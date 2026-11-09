@@ -110,8 +110,10 @@ describe('Phase 15 E2E: グループのアップロード', () => {
       expect(r.status, r.stderr).toBe(0);
     }
     const again = JSON.parse(await readFile(join(out2, 'sessions.json'), 'utf8')) as SessionsFile;
-    const manifest = JSON.parse(await readFile(join(out2, 'snapshot', 'snapshot-manifest.json'), 'utf8')) as { layout?: string };
+    const manifest = JSON.parse(await readFile(join(out2, 'snapshot', 'snapshot-manifest.json'), 'utf8')) as { layout?: string; extras?: { skipped: { path: string }[] } };
     expect(manifest.layout).toBe('flat');
+    // アップロードで添えたもの(atlas-session.json・メモ)は集計に使わないので、写さず「写さなかったもの」にも数えない
+    expect((manifest.extras?.skipped ?? []).filter((s) => /atlas-session\.json|atlas-memo/.test(s.path))).toEqual([]);
     // ほかの人のフォルダ(中身が空)は記録の無いセッションとして入るだけ
     expect(again.sessions.map((s) => s.id).sort()).toEqual([...ids, desk, 'someone-else'].sort());
     // 指示ファイルの名前は、ほかのセッションと突き合わせて決めるので、一部のセッションだけを集計すると決まらないことがある。それ以外は全部同じ
@@ -161,6 +163,6 @@ describe('Phase 15 E2E: グループのアップロード', () => {
     expect(r2.out).toMatch(/アップロード先が決まっていません/);
     const r3 = atlas(['group', 'upload', 'no-such-group', '--to', root, '--out', out1, '--notes-dir', notes]);
     expect(r3.status).not.toBe(0);
-    expect(r3.out).toMatch(/グループ「no-such-group」はありません/);
+    expect(r3.out).toMatch(/タスクタグ「no-such-group」はありません/);
   });
 });

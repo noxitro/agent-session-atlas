@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { loadStore, mergeSessionStoreJson } from '../../core/src/index.ts';
 import { parseCli } from '../src/args.ts';
 import { resolvePaths, runGroup } from '../src/commands.ts';
-import { checkUpload, uploadDir, uploadGroup } from '../src/group-upload.ts';
+import { checkUpload, scanSecrets, uploadDir, uploadGroup } from '../src/group-upload.ts';
 import { startServe, TOKEN_PLACEHOLDER, type ServeHandle } from '../src/serve.ts';
 
 describe('グループのアップロード', () => {
@@ -253,6 +253,35 @@ describe('グループのアップロード', () => {
     expect(c.secrets.skipped).toBe(1);
     // 点検は何も写さない
     expect(existsSync(join(root, 'Player_Weapon'))).toBe(false);
+  });
+
+  it('点検は atlas が足して写すもの(メモの本文)も調べ、大きさに入れる。空のフォルダも写す', async () => {
+    const memos = join(notes, 'memos');
+    await mkdir(memos, { recursive: true });
+    await writeFile(join(memos, 's2.md'), `メモに貼った鍵 ${TOKEN}\n`);
+    await mkdir(join(out, 'snapshot', 'session-state', 's1', 'checkpoints'), { recursive: true });
+    const p = { ...paths(), notes };
+    const c = await checkUpload(p, 'Player/Weapon', root);
+    expect(c.secrets.files).toEqual([{ id: 's2', path: 'atlas-memo.md', count: 1 }]);
+    expect(c.largest.some((x) => x.id === 's2' && x.path === 'atlas-memo.md')).toBe(true);
+    // 空のフォルダ(checkpoints/)も写し、点検の件数には入れない
+    expect(c.files).toBe(4);
+    const r = await uploadGroup(p, 'Player/Weapon', root);
+    expect(existsSync(join(r.dir, 's1', 'checkpoints'))).toBe(true);
+  });
+
+  it('scanSecrets: 読む塊の境目の直前が英数字でも、続く文字列を秘密らしい文字列と誤って数えない(\\b が先頭として成り立たない)', async () => {
+    const f = join(dir, 'edge.log');
+    // 重ねて読む部分(16 KB)の始まりにちょうど「x + トークンの形」が来るようにする: 英数字に続くので語の始まりではない
+    const big = Buffer.alloc(8 * 1024 * 1024, 'y');
+    const at = 4 * 1024 * 1024 - 16 * 1024 - 1;
+    big.write(`x${TOKEN} `, at);
+    await writeFile(f, big);
+    expect((await scanSecrets(f))?.get('GitHub トークン') ?? 0).toBe(0);
+    // 同じ位置でも前が空白なら 1 件
+    big.write(` ${TOKEN} `, at);
+    await writeFile(f, big);
+    expect((await scanSecrets(f))?.get('GitHub トークン')).toBe(1);
   });
 
   it('uploadGroup の進み具合: 写したバイト数が増えていき、最後は合計に揃う', async () => {

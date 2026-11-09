@@ -34,8 +34,8 @@ export interface UploadHandlers {
   /** 写す前の点検(大きさと秘密らしい文字列) */
   check: (name: string) => Promise<UploadCheck>;
   run: (name: string) => Promise<GroupUpload>;
-  /** 写している途中の進み具合(写していなければ null) */
-  progress: (name: string) => Promise<UploadProgress | null>;
+  /** 写している途中の進み具合。終わっていれば直近の結果(10 分以内)。どちらでもなければ null */
+  progress: (name: string) => Promise<UploadPoll>;
   open: (name: string) => Promise<void>;
 }
 
@@ -61,6 +61,9 @@ export interface UploadProgress {
   copied: number;
   current: string | null;
 }
+
+/** 進み具合の問い合わせの答え: 写している途中なら進み具合、終わっていれば直近の結果、どちらでもなければ null */
+export type UploadPoll = UploadProgress | { finished: true; ok: boolean; error: string | null; result: GroupUpload | null } | null;
 
 /** グループのアップロードの結果(serve の group-upload.ts と同じ形) */
 export interface GroupUpload {
@@ -143,8 +146,8 @@ export const api = {
   checkUpload(token: string, name: string): Promise<UploadCheck> {
     return connect(fetch('api/groups/' + encodeURIComponent(name) + '/upload/check', { method: 'POST', headers: headers(token) }), (r) => parse<UploadCheck>(r));
   },
-  uploadProgress(token: string, name: string): Promise<UploadProgress | null> {
-    return connect(fetch('api/groups/' + encodeURIComponent(name) + '/upload/progress', { headers: headers(token) }), (r) => parse<UploadProgress | null>(r));
+  uploadProgress(token: string, name: string): Promise<UploadPoll> {
+    return connect(fetch('api/groups/' + encodeURIComponent(name) + '/upload/progress', { headers: headers(token) }), (r) => parse<UploadPoll>(r));
   },
   openUpload(token: string, name: string): Promise<{ dir: string }> {
     return connect(fetch('api/groups/' + encodeURIComponent(name) + '/upload/open', { method: 'POST', headers: headers(token) }), (r) => parse(r));

@@ -51,7 +51,7 @@ import { importJudgmentsText, importTurnJudgmentsText, JudgmentValidationError, 
 import { phaseNames } from './config.ts';
 import { acquireOutLock, JobError, JobRunner, OutBusyError, parseJobRequest, runningJobIn, type RunFullFn, type SpawnFn } from './jobs.ts';
 import { exportGroup } from './group-export.ts';
-import { checkUpload, uploadDir, uploadGroup, type UploadProgress } from './group-upload.ts';
+import { checkUpload, uploadDir, uploadGroup, type GroupUploadResult, type UploadProgress } from './group-upload.ts';
 import { defaultConfigPath, loadConfig, parseUploadRoot, updateConfig } from './config.ts';
 import { CAN_PICK_FOLDER, openFolder, pickFolder } from './folder-picker.ts';
 
@@ -322,6 +322,9 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
   let busyWith: string | null = null;
   /** 写している途中のアップロード(画面が進み具合を問い合わせる) */
   let uploading: { name: string; progress: UploadProgress } | null = null;
+  /** タスクタグごとの直近のアップロードの結果(写している途中に別のページへ移って戻った画面が、成功か失敗かを出せるように。10 分だけ) */
+  const lastUpload = new Map<string, { at: number; ok: boolean; error: string | null; result: GroupUploadResult | null }>();
+  const LAST_UPLOAD_MS = 10 * 60_000;
   const configPath = resolve(o.configPath ?? defaultConfigPath());
   const canPick = o.folders?.canPick ?? CAN_PICK_FOLDER;
   const pick = o.folders?.pick ?? pickFolder;
@@ -557,7 +560,12 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
       }
       if (sub === 'progress') {
         // このグループを写している途中なら進み具合、そうでなければ null
-        sendJson(res, 200, uploading?.name === name ? uploading.progress : null);
+        // 写している途中なら進み具合。終わっていれば直近の結果({ finished: true, ok, error, result })。どちらでもなければ null
+        if (uploading?.name === name) sendJson(res, 200, uploading.progress);
+        else {
+          const last = lastUpload.get(name);
+          sendJson(res, 200, last && Date.now() - last.at < LAST_UPLOAD_MS ? { finished: true, ok: last.ok, error: last.error, result: last.result } : null);
+        }
         return;
       }
       const up = await uploadRootOf();
@@ -590,7 +598,14 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
         else {
           uploading = { name, progress: { sessions: 0, done: 0, bytes: 0, copied: 0, current: null } };
           const cur = uploading;
-          sendJson(res, 200, await uploadGroup(paths, name, up.root, log, { onProgress: (pr) => void (cur.progress = pr) }));
+          try {
+            const result = await uploadGroup(paths, name, up.root, log, { onProgress: (pr) => void (cur.progress = pr) });
+            lastUpload.set(name, { at: Date.now(), ok: true, error: null, result });
+            sendJson(res, 200, result);
+          } catch (e) {
+            lastUpload.set(name, { at: Date.now(), ok: false, error: (e as Error).message, result: null });
+            throw e;
+          }
         }
       } catch (e) {
         throw new HttpError(/^タスクタグ「.*」はありません/.test((e as Error).message) ? 404 : 409, (e as Error).message);

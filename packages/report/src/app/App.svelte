@@ -429,15 +429,11 @@
     if (l < ol.scrollLeft) ol.scrollLeft = l - 12;
     else if (r > ol.scrollLeft + ol.clientWidth) ol.scrollLeft = r - ol.clientWidth + 12;
   });
-  // 戻る / 進む・再読み込みで開かれたら、離れたときのスクロール位置に戻す(描いてから。ブラウザに任せると描く前の短いページで先頭になる)。
+  // 戻る / 進む・再読み込みで別のページから開かれたら、離れたときのスクロール位置に戻す(描いてから。ブラウザに任せると描く前の短いページで先頭になる)。
   // 離れるときに今の位置を履歴の項目に書く(view-restore.ts)
   $effect(() => {
     const y = restoredView()?.y;
-    try {
-      history.scrollRestoration = 'manual';
-    } catch {
-      /* 使えない環境ではブラウザに任せる */
-    }
+    // scrollRestoration は 'auto' のままにする('manual' にすると、目次や要点のリンクで移ってからの「戻る」でブラウザが位置を戻さなくなる)
     // effect の時点で本文は描き終わっているので、その場で戻す。後から高さが変わる(タスクタグの見出しが出るなど)ときのため、
     // 少し後にもう一度だけ合わせる(その間に自分でスクロールしたら合わせない)
     if (y != null && y > 0) {

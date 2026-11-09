@@ -18,6 +18,11 @@ export const SNAPSHOT_SESSION_FILES = ['workspace.yaml', 'events.jsonl'] as cons
 export const SESSION_STORE_JSON = 'atlas-session-store.json';
 /** Phase 11: セッションフォルダの追加のファイル(あれば写す)。SESSION_STORE_JSON はアップロード先から集計し直すときだけある */
 export const SNAPSHOT_SESSION_EXTRA_FILES = ['plan.md', 'vscode.metadata.json', SESSION_STORE_JSON] as const;
+/**
+ * アップロードで atlas がセッションのフォルダに添えるもの(タスクタグ・題名の atlas-session.json、メモの atlas-memo.md と画像の atlas-memo/)。
+ * アップロード先を --home にして集計し直すときに、写さず「写さなかったもの」にも数えない(集計には使わない。人や AI が読むためのもの)
+ */
+export const UPLOAD_ONLY_ENTRIES = new Set<string>(['atlas-session.json', 'atlas-memo.md', 'atlas-memo']);
 /** Phase 11: セッションフォルダの追加のサブフォルダ(あれば再帰的に写す) */
 export const SNAPSHOT_SESSION_EXTRA_DIRS = ['checkpoints', 'files', 'rewind-file-snapshots', 'policies', 'research', 'sandbox-denials'] as const;
 /** Phase 11: 既定では写さず --snapshot-all で写すサブフォルダ(大きい。rewind-snapshots は 1 セッションで数十 MB) */
@@ -354,6 +359,7 @@ async function copySessionExtras(dirSrc: string, dirDest: string, root: string, 
   for (const ent of ents) {
     const name = ent.name;
     const p = join(dirSrc, name);
+    if (UPLOAD_ONLY_ENTRIES.has(name)) continue;
     if (ent.isSymbolicLink()) {
       extras.skipped.push({ path: relPath(p), bytes: 0, reason: LINK_REASON });
       continue;
