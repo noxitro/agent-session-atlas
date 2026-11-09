@@ -55,7 +55,8 @@ import { findRunningServer, openInBrowser, startServe } from './serve.ts';
 import { acquireOutLock } from './jobs.ts';
 import { buildTables } from './tables.ts';
 import { exportGroup } from './group-export.ts';
-import { CONFIG_FILE, loadConfig, phaseNames } from './config.ts';
+import { CONFIG_FILE, loadConfig, parseUploadRoot, phaseNames } from './config.ts';
+import { uploadGroup } from './group-upload.ts';
 
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
@@ -522,7 +523,7 @@ export async function runJudgeCommand(p: Paths, j: JudgeCliOptions, log: Log, ba
  * atlas group list / add / remove。add の id は sessions.json があれば先頭一致で解決する(無ければそのまま書く)。
  * 壊れた groups.json は上書きしない(loadGroupsForWrite がエラーにする)。
  */
-export async function runGroup(p: Paths, g: GroupCliOptions, log: Log): Promise<void> {
+export async function runGroup(p: Paths, g: GroupCliOptions, log: Log, config: string | null = null): Promise<void> {
   if (g.action === 'list') {
     const loaded = await loadGroups(p.groups);
     for (const w of loaded.warnings) log(`group: 注意 ${w}`);
@@ -535,6 +536,25 @@ export async function runGroup(p: Paths, g: GroupCliOptions, log: Log): Promise<
     for (const x of loaded.groups) {
       const k = known ? x.ids.filter((id) => known.has(id)).length : null;
       log(`  ${x.name}: ${x.ids.length} 件${k != null && k !== x.ids.length ? `(うち記録にあるのは ${k} 件)` : ''}${x.note ? ` — ${x.note}` : ''}`);
+    }
+    return;
+  }
+  if (g.action === 'upload') {
+    // 前回の集計の複製(out/snapshot/)を読むので、集計の途中と重ならないよう印を取る
+    let root = g.to;
+    if (root == null) {
+      const configPath = config ?? process.env.ATLAS_CONFIG ?? null;
+      const cfg = await loadConfig(configPath ? resolve(configPath) : join(REPO_ROOT, CONFIG_FILE), configPath != null);
+      root = cfg.uploadRoot;
+      if (!root) throw new Error('アップロード先が決まっていません。--to <フォルダ> で指定するか、setup.bat か画面のグループの見出しで既定の場所を決めてください');
+    } else root = parseUploadRoot(root);
+    const release = acquireOutLock(p.out, 'group upload', 'cli');
+    try {
+      const r = await uploadGroup(p, g.name!, root, log);
+      if (r.missing.length) log(`group upload: 前回の集計に無いセッション: ${r.missing.join(', ')}`);
+      if (r.snapshotAt) log(`group upload: 写したのは ${r.snapshotAt} の集計の時点のログです(新しくするには先に atlas all)`);
+    } finally {
+      release();
     }
     return;
   }
@@ -612,7 +632,7 @@ export async function runMemo(p: Paths, m: MemoCliOptions, log: Log): Promise<vo
 /**
  * atlas serve: 既に動いているサーバがあればブラウザを開くだけ。無ければ起動し、画面の heartbeat が途切れる(ブラウザを閉じる)まで待つ。
  */
-export async function runServe(p: Paths, o: { port: number | null; open: boolean }, log: Log): Promise<string> {
+export async function runServe(p: Paths, o: { port: number | null; open: boolean; config?: string | null }, log: Log): Promise<string> {
   if (!existsSync(p.html)) throw new Error(`${p.html} がありません。先に atlas build(または atlas all)を実行してください。`);
   const running = await findRunningServer(p.out);
   if (running) {
@@ -621,7 +641,7 @@ export async function runServe(p: Paths, o: { port: number | null; open: boolean
     if (o.open) openInBrowser(url, log);
     return '既存のサーバを使用';
   }
-  const h = await startServe({ outDir: p.out, notesDir: p.notes, groupsPath: p.groups, port: o.port ?? 0, open: o.open, log });
+  const h = await startServe({ outDir: p.out, notesDir: p.notes, groupsPath: p.groups, port: o.port ?? 0, open: o.open, log, ...(o.config ? { configPath: resolve(o.config) } : {}) });
   const onSignal = (): void => void h.close('中断');
   process.once('SIGINT', onSignal);
   process.once('SIGTERM', onSignal);
@@ -692,13 +712,13 @@ async function runCommand(o: CliOptions, p: Paths, log: Log): Promise<RunResult>
     case 'judge':
       return { paths: p, judge: await runJudgeCommand(p, o.judge!, log) };
     case 'group':
-      await runGroup(p, o.groupCmd!, log);
+      await runGroup(p, o.groupCmd!, log, o.config);
       return { paths: p };
     case 'memo':
       await runMemo(p, o.memoCmd!, log);
       return { paths: p };
     case 'serve':
-      await runServe(p, { port: o.port, open: o.open }, log);
+      await runServe(p, { port: o.port, open: o.open, config: o.config }, log);
       return { paths: p };
     case 'skill-draft':
       await runSkillDraft(p, o.skillDraft!, log);

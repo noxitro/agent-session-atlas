@@ -10,7 +10,7 @@ import { existsSync } from 'node:fs';
 import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { computeMetrics, type SessionRecord, type SessionsFile } from '../../core/src/index.ts';
-import { loadGroups, transcriptFileName } from '../../report/src/index.ts';
+import { loadGroups, safeDirName, transcriptFileName } from '../../report/src/index.ts';
 import { buildTables } from './tables.ts';
 
 export interface GroupExportPaths {
@@ -32,12 +32,8 @@ export interface GroupExportResult {
   missing: number;
 }
 
-/** フォルダ名に使えない文字を _ にする(Windows の予約名・末尾の点と空白も避ける) */
-export function safeDirName(name: string): string {
-  let s = name.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').replace(/[. ]+$/, '').trim();
-  if (/^(con|prn|aux|nul|com\d|lpt\d)$/i.test(s)) s = `_${s}`;
-  return s || 'group';
-}
+/** フォルダ名に使えない文字を _ にする(画面と共通なので report の lib/groups.ts に置いてある) */
+export { safeDirName };
 
 export async function exportGroup(p: GroupExportPaths, name: string, log: (m: string) => void = () => {}): Promise<GroupExportResult> {
   const loaded = await loadGroups(p.groups);

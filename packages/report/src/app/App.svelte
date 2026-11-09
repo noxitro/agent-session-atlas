@@ -22,7 +22,7 @@
   import SessionTable from './components/SessionTable.svelte';
   import { applyTheme, loadTheme, type ThemeChoice } from './theme.ts';
   import { watchScrollFocus } from './scroll-focus.ts';
-  import { api, serveToken, startHeartbeat, type GroupExport } from './api.ts';
+  import { api, serveToken, startHeartbeat, type GroupExport, type UploadHandlers, type UploadSetting } from './api.ts';
   import { JobStore } from './jobs.svelte.ts';
   import JobActions from './components/JobActions.svelte';
   import JobBand from './components/JobBand.svelte';
@@ -175,6 +175,7 @@
         .then((s) => {
           liveGroups = s.groups;
           liveMemos = s.memos ?? null; // 古い serve には無い(埋め込みの抜粋を残す)
+          uploadSetting = s.upload ?? null; // 古い serve には無い(アップロードの操作を出さない)
           editable = true;
         })
         .catch(() => {});
@@ -233,6 +234,27 @@
     liveGroups = r.groups;
     if (patch.name && filter.group === oldName) setFilter({ group: patch.name });
   }
+  /** グループのアップロード先(atlas.config.json の uploadRoot)。serve が教えてくれたときだけ操作を出す */
+  let uploadSetting = $state<UploadSetting | null>(null);
+  const uploadHandlers = $derived<UploadHandlers | undefined>(
+    uploadSetting
+      ? {
+          setting: uploadSetting,
+          pick: async () => {
+            const r = await api.pickUploadRoot(token!);
+            if (r.root && uploadSetting) uploadSetting = { ...uploadSetting, root: r.root, error: null };
+            return r.root;
+          },
+          setRoot: async (root) => {
+            const r = await api.setUploadRoot(token!, root);
+            if (uploadSetting) uploadSetting = { ...uploadSetting, root: r.root, error: null };
+            return r.root;
+          },
+          run: (name) => api.uploadGroup(token!, name),
+          open: async (name) => void (await api.openUpload(token!, name)),
+        }
+      : undefined,
+  );
   function exportGroup(name: string): Promise<GroupExport> {
     return api.exportGroup(token!, name);
   }
@@ -509,7 +531,7 @@
 
       <main class="wrap" id="main" tabindex="-1">
         {#if currentGroup}
-          <GroupHead group={currentGroup} {editable} onclear={() => pickGroup(null)} onsave={saveGroup} ondelete={deleteGroup} onexport={exportGroup} />
+          <GroupHead group={currentGroup} {editable} onclear={() => pickGroup(null)} onsave={saveGroup} ondelete={deleteGroup} onexport={exportGroup} upload={uploadHandlers} />
         {/if}
         <div class="empty" class:show={filtered.length === 0} role="status">
           {#if filtered.length === 0}

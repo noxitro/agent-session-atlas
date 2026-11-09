@@ -1,5 +1,5 @@
 @echo off
-rem agent-session-atlas の初期設定: 依存を入れ、llm-wiki の vault と普段の工程名を尋ねて atlas.config.json を書きます
+rem agent-session-atlas の初期設定: 依存を入れ、llm-wiki の vault・普段の工程名・グループのアップロード先を尋ねて atlas.config.json を書きます
 rem 集計はしません(終わったら atlas.bat をダブルクリックします)。もう一度実行すると、今の設定を見ながら直せます
 chcp 65001 >nul
 cd /d "%~dp0"

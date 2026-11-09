@@ -11,8 +11,13 @@ export const SNAPSHOT_DBS = ['session-store.db'] as const;
 /** 以前のバージョンが複製していたが今は複製しないファイル。snapshot 時に残っていれば消す */
 export const SNAPSHOT_STALE_FILES = ['data.db'] as const;
 export const SNAPSHOT_SESSION_FILES = ['workspace.yaml', 'events.jsonl'] as const;
-/** Phase 11: セッションフォルダの追加のファイル(あれば写す) */
-export const SNAPSHOT_SESSION_EXTRA_FILES = ['plan.md', 'vscode.metadata.json'] as const;
+/**
+ * アップロードしたセッションのフォルダに添える、session-store.db のそのセッションの行(atlas が書く。Copilot のファイルではない)。
+ * 生ログ(events.jsonl など)だけだと、DB にしか無いトークン数・依頼の記録が欠けるため。extract はこれも読む
+ */
+export const SESSION_STORE_JSON = 'atlas-session-store.json';
+/** Phase 11: セッションフォルダの追加のファイル(あれば写す)。SESSION_STORE_JSON はアップロード先から集計し直すときだけある */
+export const SNAPSHOT_SESSION_EXTRA_FILES = ['plan.md', 'vscode.metadata.json', SESSION_STORE_JSON] as const;
 /** Phase 11: セッションフォルダの追加のサブフォルダ(あれば再帰的に写す) */
 export const SNAPSHOT_SESSION_EXTRA_DIRS = ['checkpoints', 'files', 'rewind-file-snapshots', 'policies', 'research', 'sandbox-denials'] as const;
 /** Phase 11: 既定では写さず --snapshot-all で写すサブフォルダ(大きい。rewind-snapshots は 1 セッションで数十 MB) */
@@ -50,6 +55,11 @@ export interface SkippedEntry {
 export interface SnapshotManifest {
   createdAt: string;
   sourceRoot: string;
+  /**
+   * 元の形。'copilot' は ~/.copilot(session-state/ の下にセッション)、'flat' はセッションのフォルダが直下に並ぶもの
+   * (atlas がアップロードしたグループのフォルダ)。古いマニフェストには無い('copilot' と同じ)
+   */
+  layout?: 'copilot' | 'flat';
   since: string | null;
   /** copied が false なら今回は複製できず、前回の複製(bytes が 0 なら無し)を使っている。理由は error */
   databases: Record<string, { copied: boolean; bytes: number; attempts: number; error?: string }>;
@@ -149,7 +159,10 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
     }
   }
 
-  const stateSrc = join(src, 'session-state');
+  // アップロードしたグループのフォルダ(<基底>\<グループ>\<セッション id>\events.jsonl …)は、そのフォルダを session-state/ とみなす
+  const flat = await isFlatLayout(src);
+  manifest.layout = flat ? 'flat' : 'copilot';
+  const stateSrc = flat ? src : join(src, 'session-state');
   const stateDest = join(dest, 'session-state');
   if (existsSync(stateSrc)) {
     for (const ent of await readdir(stateSrc, { withFileTypes: true })) {
@@ -167,8 +180,9 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
     }
   }
 
-  // Phase 11: ~/.copilot 直下の plans/・attachments/(と chats/ の *.md)。logs/ は --snapshot-all、repos/ は写さない
-  await copyTopLevel(src, dest, all, prune, extras);
+  // Phase 11: ~/.copilot 直下の plans/・attachments/(と chats/ の *.md)。logs/ は --snapshot-all、repos/ は写さない。
+  // 直下にセッションが並ぶ形では、直下のフォルダはセッションそのものなので写さない(写したものとして一覧に出さない)
+  if (!flat) await copyTopLevel(src, dest, all, prune, extras);
   // Phase 11: data.db は複製せず、許可リストの列だけを desktop.json に書く(immutable で開く。元には触れない)
   try {
     const d = await readDesktopDb(join(src, 'data.db'));
@@ -188,6 +202,21 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
 
   await writeFile(join(dest, SNAPSHOT_MANIFEST), JSON.stringify(manifest, null, 2));
   return manifest;
+}
+
+/**
+ * 直下にセッションのフォルダ(workspace.yaml か events.jsonl を持つ)が並ぶ形か。~/.copilot の印(session-state/・session-store.db)があれば違う。
+ * atlas のアップロード先(<基底>\<グループ>)を --home に指して集計し直すとき用
+ */
+export async function isFlatLayout(src: string): Promise<boolean> {
+  if (existsSync(join(src, 'session-state')) || existsSync(join(src, 'session-store.db'))) return false;
+  let ents: import('node:fs').Dirent[];
+  try {
+    ents = await readdir(src, { withFileTypes: true });
+  } catch {
+    return false;
+  }
+  return ents.some((e) => e.isDirectory() && SNAPSHOT_SESSION_FILES.some((f) => existsSync(join(src, e.name, f))));
 }
 
 const KNOWN_SESSION_ENTRIES = new Set<string>([

@@ -1,8 +1,8 @@
-// 設定ファイル atlas.config.json の読み込み。wiki の指定と、依頼ごとの判定に使う普段の工程名を持つ
+// 設定ファイル atlas.config.json の読み込み。wiki の指定と、依頼ごとの判定に使う普段の工程名、グループのアップロード先を持つ
 import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_PHASE_NAMES, type WikiSpec } from '../../core/src/index.ts';
 
@@ -15,7 +15,11 @@ export interface AtlasConfig {
   wikis: WikiSpec[] | null;
   /** 依頼ごとの判定(段階 2)で LLM に選ばせる普段の工程名。設定に無ければ null(既定の DEFAULT_PHASE_NAMES) */
   phases: string[] | null;
+  /** グループのアップロード先の基底フォルダ(<基底>\<グループ名>\<セッション id>\ に写す)。設定に無ければ null */
+  uploadRoot: string | null;
 }
+
+const KEYS = ['wikis', 'phases', 'uploadRoot'] as const;
 
 const WIKI_LISTS = ['index', 'pages', 'extensions', 'skills'] as const;
 
@@ -43,7 +47,7 @@ function parseWiki(v: unknown, i: number): WikiSpec {
 
 export function parseConfig(v: unknown): Omit<AtlasConfig, 'path'> {
   if (!isObject(v)) throw new Error('全体をオブジェクトにしてください');
-  for (const k of Object.keys(v)) if (k !== 'wikis' && k !== 'phases') throw new Error(`不明な項目です: ${k}`);
+  for (const k of Object.keys(v)) if (!(KEYS as readonly string[]).includes(k)) throw new Error(`不明な項目です: ${k}`);
   let wikis: WikiSpec[] | null = null;
   if (v.wikis !== undefined) {
     if (!Array.isArray(v.wikis)) throw new Error('wikis は配列で指定してください');
@@ -55,21 +59,58 @@ export function parseConfig(v: unknown): Omit<AtlasConfig, 'path'> {
     if (phases.length < 2) throw new Error('phases は 2 つ以上指定してください');
     if (new Set(phases).size !== phases.length) throw new Error('phases に同じ名前が 2 回あります');
   }
-  return { wikis, phases };
+  let uploadRoot: string | null = null;
+  if (v.uploadRoot !== undefined) uploadRoot = parseUploadRoot(v.uploadRoot);
+  return { wikis, phases, uploadRoot };
+}
+
+/** アップロード先の基底フォルダ。フルパス(~\ で始まるものはホームから)だけを受け付ける(相対パスは起動した場所で意味が変わるため) */
+export function parseUploadRoot(v: unknown): string {
+  if (typeof v !== 'string' || v.trim() === '') throw new Error('uploadRoot にはアップロード先のフォルダのフルパスを指定してください');
+  const raw = v.trim().replace(/^"(.*)"$/, '$1');
+  const full = /^~[\\/]/.test(raw) ? join(homedir(), raw.slice(2)) : raw;
+  if (!isAbsolute(full)) throw new Error(`uploadRoot はフルパスで指定してください(例: E:\\dev\\atlas-logs): ${raw}`);
+  return resolve(full);
+}
+
+/** 設定ファイルの既定の場所(環境変数 ATLAS_CONFIG、無ければリポジトリ直下の atlas.config.json) */
+export function defaultConfigPath(): string {
+  const explicit = process.env.ATLAS_CONFIG ?? null;
+  return explicit ? resolve(explicit) : join(resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..'), CONFIG_FILE);
+}
+
+/**
+ * 設定ファイルの 1 項目だけを書き換える(他の項目と書き方はそのまま残す)。書く前に読むときと同じ検査を通す。
+ * ファイルが無ければ作る。読めない(壊れた)ファイルは上書きしない
+ */
+export async function updateConfig(path: string, key: (typeof KEYS)[number], value: unknown): Promise<void> {
+  let cur: Record<string, unknown> = {};
+  if (existsSync(path)) {
+    try {
+      const v = JSON.parse((await readFile(path, 'utf8')).replace(/^﻿/, '')) as unknown;
+      if (!isObject(v)) throw new Error('全体がオブジェクトではありません');
+      cur = v;
+    } catch (e) {
+      throw new Error(`設定ファイル ${path} を読めないので書き換えません(${(e as Error).message})。setup.bat で作り直すか、手で直してください`);
+    }
+  }
+  const next = { ...cur, [key]: value };
+  if (value === undefined) delete next[key];
+  parseConfig(next);
+  await writeFile(path, `${JSON.stringify(next, null, 2)}
+`);
 }
 
 /** 依頼ごとの判定に使う普段の工程名(環境変数 ATLAS_CONFIG かリポジトリ直下の atlas.config.json の phases、無ければ既定) */
 export async function phaseNames(): Promise<string[]> {
-  const explicit = process.env.ATLAS_CONFIG ?? null;
-  const path = explicit ? resolve(explicit) : join(resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..'), CONFIG_FILE);
-  return (await loadConfig(path, explicit != null)).phases ?? [...DEFAULT_PHASE_NAMES];
+  return (await loadConfig(defaultConfigPath(), process.env.ATLAS_CONFIG != null)).phases ?? [...DEFAULT_PHASE_NAMES];
 }
 
 /** 設定を読む。path を明示したときだけファイルが無いと失敗し、既定の場所に無ければ設定なしで続ける */
 export async function loadConfig(path: string, required: boolean): Promise<AtlasConfig> {
   if (!existsSync(path)) {
     if (required) throw new Error(`設定ファイルがありません: ${path}`);
-    return { path: null, wikis: null, phases: null };
+    return { path: null, wikis: null, phases: null, uploadRoot: null };
   }
   try {
     // メモ帳などが付ける BOM は取り除く

@@ -49,30 +49,37 @@ describe('初期設定', () => {
 
   it('vault・ページのフォルダ・wiki の skill・工程名を尋ねて書き、集計と同じ形で読める', async () => {
     // 1 つ目: フォルダ・ページ(既定の wiki)・候補の skill・追加の skill。2 つ目: 名前だけ(候補の skill は 1 度しか尋ねない)
-    const io = scripted([`"${vault}"`, '', 'y', 'my-wiki-skill', 'second', '', '', '', '設計 / 実装 / テスト', '']);
+    // 3 つ目: アップロード先。無いフォルダと相対パスは尋ね直す
+    const logs = join(d, 'atlas logs');
+    await mkdir(logs);
+    const io = scripted([`"${vault}"`, '', 'y', 'my-wiki-skill', 'second', '', '', '', '設計 / 実装 / テスト', join(d, 'none'), 'relative', `"${logs}\\"`, '']);
     const r = await runSetup(io, { configPath, copilotHome: home });
     expect(r.written).toBe(true);
     expect(JSON.parse(await readFile(configPath, 'utf8'))).toEqual({
       wikis: [{ path: 'my vault', pages: ['wiki'], skills: ['wiki-query', 'my-wiki-skill'] }, 'second'],
       phases: ['設計', '実装', 'テスト'],
+      uploadRoot: logs,
     });
+    expect(io.printed.join('\n')).toMatch(/フォルダが見つかりません/);
+    expect(io.printed.join('\n')).toMatch(/フルパスで指定してください/);
     const c = await loadConfig(configPath, true);
+    expect(c.uploadRoot).toBe(logs);
     expect(c.wikis?.map((w) => w.path)).toEqual(['my vault', 'second']);
     expect(c.phases).toEqual(['設計', '実装', 'テスト']);
   });
 
   it('既存の設定はそのままにでき、書く前に .bak に退避する。工程名の誤りは尋ね直す', async () => {
-    await writeFile(configPath, JSON.stringify({ wikis: [{ path: 'old', pages: ['wiki'] }], phases: ['a', 'b'] }));
-    const io = scripted(['', '1つだけ', 'x / x', 'x / y', '']);
+    await writeFile(configPath, JSON.stringify({ wikis: [{ path: 'old', pages: ['wiki'] }], phases: ['a', 'b'], uploadRoot: d }));
+    const io = scripted(['', '1つだけ', 'x / x', 'x / y', '', '']);
     await runSetup(io, { configPath, copilotHome: home });
-    expect(JSON.parse(await readFile(configPath, 'utf8'))).toEqual({ wikis: [{ path: 'old', pages: ['wiki'] }], phases: ['x', 'y'] });
+    expect(JSON.parse(await readFile(configPath, 'utf8'))).toEqual({ wikis: [{ path: 'old', pages: ['wiki'] }], phases: ['x', 'y'], uploadRoot: d });
     expect(JSON.parse(await readFile(`${configPath}.bak`, 'utf8')).phases).toEqual(['a', 'b']);
     expect(io.printed.join('\n')).toMatch(/phases は 2 つ以上指定してください/);
     expect(io.printed.join('\n')).toMatch(/phases に同じ名前が 2 回あります/);
   });
 
   it('何も指定しなければ空の設定、最後に断れば書かない', async () => {
-    const io = scripted(['', '', 'n']);
+    const io = scripted(['', '', '', 'n']);
     const r = await runSetup(io, { configPath, copilotHome: join(d, 'none') });
     expect(r).toEqual({ written: false, config: {} });
     expect(existsSync(configPath)).toBe(false);

@@ -7,6 +7,16 @@ export const GROUPS_VERSION = 1;
 export const NOTES_DIR_NAME = 'atlas-notes';
 export const GROUPS_FILE_NAME = 'groups.json';
 
+/**
+ * グループ名をフォルダ名にする(書き出し out/groups/<名前>/ とアップロード <基底>/<名前>/)。
+ * フォルダ名に使えない文字は _ にし、Windows の予約名・末尾の点と空白も避ける。画面がアップロード先を見せるのにも使う
+ */
+export function safeDirName(name: string): string {
+  let s = name.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').replace(/[. ]+$/, '').trim();
+  if (/^(con|prn|aux|nul|com\d|lpt\d)$/i.test(s)) s = `_${s}`;
+  return s || 'group';
+}
+
 export interface SessionGroup {
   /** 一意な名前 */
   name: string;

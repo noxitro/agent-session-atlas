@@ -2,10 +2,13 @@
   // グループで絞り込んでいるときの見出し(本文の先頭)。名前・件数・説明と、「絞り込みを外す」。
   // 編集できるとき(atlas serve)は「編集」で名前と説明を 1 つの欄で直す。削除は編集欄の奥に置き、確認を 1 回挟む。
   // サイドバーのグループの一覧は切り替えだけにする(選ぶたびに操作の行が差し込まれて下の行がずれ、削除が改名と同じ重さで並んでいたため)
+  // アップロード(serve のとき): グループのセッションの生ログを、決めておいた基底フォルダの <グループ名>\<セッション id>\ に写す。
+  // 先は見出しの下に 1 行で見せ、「場所を変える…」で同じ見出しの中に記入欄を開く(エクスプローラーで選ぶ / パスを入力)。
   import { untrack } from 'svelte';
   import { int } from '../../lib/format.ts';
+  import { safeDirName } from '../../lib/groups.ts';
   import type { ReportGroup } from '../../lib/types.ts';
-  import type { GroupExport } from '../api.ts';
+  import type { GroupExport, GroupUpload, UploadHandlers } from '../api.ts';
 
   let {
     group,
@@ -14,6 +17,7 @@
     onsave,
     ondelete,
     onexport,
+    upload,
   }: {
     group: ReportGroup & { present: number };
     editable: boolean;
@@ -24,8 +28,95 @@
     ondelete: (name: string) => Promise<void>;
     /** そのグループの表(CSV)・集計・記録をフォルダに書き出す(atlas serve のときだけ) */
     onexport?: (name: string) => Promise<GroupExport>;
+    /** グループのセッションをアップロード先へ写す(atlas serve のときだけ) */
+    upload?: UploadHandlers;
   } = $props();
   let exported = $state<GroupExport | null>(null);
+  let uploaded = $state<GroupUpload | null>(null);
+  /** 何をしているか(ボタンの文言を「…中」にする) */
+  let task = $state<'export' | 'upload' | 'open' | 'pick' | 'root' | null>(null);
+  /** アップロード先を決めた後に、そのままアップロードする(先が未定のまま「アップロード」を押したとき) */
+  let uploadAfterRoot = $state(false);
+  let rootInput = $state('');
+  let rootInputEl = $state<HTMLInputElement | null>(null);
+  let uploadBtn = $state<HTMLButtonElement | null>(null);
+  /** パスの区切り(設定のパスに合わせる。Windows は \) */
+  const sep = (root: string): string => (root.includes('\\') || /^[A-Za-z]:/.test(root) ? '\\' : '/');
+  /** このグループのアップロード先(<基底>\<グループ名>)。基底が未定なら null */
+  const destDir = $derived(upload?.setting.root ? `${upload.setting.root.replace(/[\\/]+$/, '')}${sep(upload.setting.root)}${safeDirName(group.name)}` : null);
+  const when = (iso: string): string => {
+    const d = new Date(iso);
+    const p = (n: number): string => String(n).padStart(2, '0');
+    return Number.isNaN(d.getTime()) ? iso : `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  };
+  /** アップロードの結果の文(読み上げにも使う) */
+  const uploadedText = $derived(
+    uploaded
+      ? `アップロードしました(${int(uploaded.uploaded)} セッション${uploaded.replaced ? `。うち ${int(uploaded.replaced)} 件は前に写したものを置き換え` : ''})。` +
+          (uploaded.snapshotAt ? `写したのは前回の集計(${when(uploaded.snapshotAt)})の時点のログです。` : '') +
+          (uploaded.missing.length ? `前回の集計に無いセッション ${int(uploaded.missing.length)} 件は写していません。` : '')
+      : '',
+  );
+  function doUpload(): void {
+    if (!upload || busy) return;
+    if (!upload.setting.root) {
+      // 先が未定なら記入欄を開き、決めたらそのまま写す
+      beginRoot(true);
+      return;
+    }
+    exported = null;
+    uploaded = null;
+    task = 'upload';
+    void run(async () => {
+      uploaded = await upload.run(group.name);
+    }, () => {});
+  }
+  function openUploaded(): void {
+    if (!upload || busy) return;
+    task = 'open';
+    void run(() => upload.open(group.name), () => {});
+  }
+  function beginRoot(thenUpload: boolean): void {
+    uploadAfterRoot = thenUpload;
+    rootInput = upload?.setting.root ?? '';
+    error = '';
+    mode = 'root';
+    // エクスプローラーで選べるならそのボタン、選べなければ入力欄へ
+    requestAnimationFrame(() => (upload?.setting.canPick ? rootEl?.querySelector<HTMLButtonElement>('[data-pick]')?.focus() : rootInputEl?.focus()));
+  }
+  /** 先が決まったら見出しに戻り、未定のまま「アップロード」を押していたらそのまま写す */
+  function rootDecided(): void {
+    const next = uploadAfterRoot;
+    uploadAfterRoot = false;
+    mode = 'view';
+    if (next) requestAnimationFrame(() => doUpload());
+    requestAnimationFrame(() => uploadBtn?.focus());
+  }
+  function pickRoot(): void {
+    if (!upload || busy) return;
+    task = 'pick';
+    let chosen: string | null = null;
+    void run(
+      async () => {
+        chosen = await upload.pick();
+      },
+      () => {
+        if (chosen) rootDecided();
+      },
+    );
+  }
+  function submitRoot(e: SubmitEvent): void {
+    e.preventDefault();
+    if (!upload || busy) return;
+    const r = rootInput.trim();
+    if (!r) {
+      error = 'フォルダのフルパスを入れてください';
+      rootInputEl?.focus();
+      return;
+    }
+    task = 'root';
+    void run(async () => void (await upload.setRoot(r)), rootDecided);
+  }
   let pathCopied = $state(false);
   /** 書き出しの結果の文(読み上げ用の live 領域は常に置き、文だけ差し替える) */
   const exportedText = $derived(
@@ -37,7 +128,9 @@
     // 書き出し中に押しても前の結果を消さない(aria-disabled は押せてしまうため)
     if (!onexport || busy) return;
     exported = null;
+    uploaded = null;
     pathCopied = false;
+    task = 'export';
     void run(async () => {
       exported = await onexport(group.name);
     }, () => {});
@@ -52,7 +145,7 @@
     }
   }
 
-  let mode = $state<'view' | 'edit' | 'delete'>('view');
+  let mode = $state<'view' | 'edit' | 'delete' | 'root'>('view');
   let name = $state('');
   let note = $state('');
   let error = $state('');
@@ -78,6 +171,7 @@
     if (e.key !== 'Escape' || mode === 'view' || busy) return;
     e.stopPropagation();
     if (mode === 'delete') backToEdit();
+    else if (mode === 'root') leaveRoot();
     else leave();
   }
   async function run(action: () => Promise<void>, after: () => void): Promise<void> {
@@ -91,6 +185,7 @@
       error = (e as Error).message;
     } finally {
       busy = false;
+      task = null;
     }
   }
   function submit(e: SubmitEvent): void {
@@ -110,6 +205,13 @@
       return;
     }
     void run(() => onsave(group.name, patch), leave);
+  }
+  /** アップロード先の記入欄を閉じる(何も変えない) */
+  function leaveRoot(): void {
+    uploadAfterRoot = false;
+    mode = 'view';
+    error = '';
+    requestAnimationFrame(() => uploadBtn?.focus());
   }
   function backToEdit(): void {
     error = '';
@@ -133,6 +235,7 @@
   $effect(() => {
     void groupName;
     exported = null;
+    uploaded = null;
     // mode と rootEl は依存に入れない(入れると「編集」を押した直後にこの effect が走って表示に戻ってしまう)
     if (!editable) untrack(() => mode !== 'view' && rootEl?.contains(document.activeElement) && focusMain());
     mode = 'view';
@@ -151,11 +254,36 @@
         {#if group.note}<p class="desc">{group.note}</p>{:else if editable}<p class="desc none">説明はまだありません</p>{/if}
       </div>
       <div class="acts">
-        {#if editable && onexport}<button type="button" class="btn" data-testid="group-export" title="このグループの表(CSV)・集計・記録を 1 つのフォルダに書き出します" onclick={doExport} aria-disabled={busy}>{busy && mode === 'view' ? '書き出し中…' : '表と記録を書き出す'}</button>{/if}
+        {#if editable && upload}<button type="button" class="btn primary" bind:this={uploadBtn} data-testid="group-upload" title="このグループのセッションの生ログを、アップロード先のグループ名のフォルダへ写します(同じセッションは置き換え)" onclick={doUpload} aria-disabled={busy}>{task === 'upload' ? 'アップロード中…' : 'アップロード'}</button>{/if}
+        {#if editable && onexport}<button type="button" class="btn" data-testid="group-export" title="このグループの表(CSV)・集計・記録を 1 つのフォルダに書き出します" onclick={doExport} aria-disabled={busy}>{task === 'export' ? '書き出し中…' : '表と記録を書き出す'}</button>{/if}
         {#if editable}<button type="button" class="btn" bind:this={editBtn} data-testid="group-edit" onclick={begin}>編集</button>{/if}
         <button type="button" class="btn" onclick={clear}>絞り込みを外す</button>
       </div>
     </div>
+    {#if editable && upload}
+      <p class="dest" data-testid="group-upload-dest">
+        <span class="k">アップロード先</span>
+        {#if upload.setting.error}<span class="bad">設定ファイルを読めません({upload.setting.error})</span>
+        {:else if destDir}<code translate="no">{destDir}{sep(destDir)}</code>
+        {:else}<span class="none">まだ決まっていません</span>{/if}
+        <button type="button" class="link" data-testid="group-upload-root" onclick={() => beginRoot(false)} disabled={busy}>{destDir ? '場所を変える…' : '場所を決める…'}</button>
+      </p>
+    {/if}
+  {:else if mode === 'root' && upload}
+    <form class="edit root" aria-label="アップロード先" onsubmit={submitRoot}>
+      <p class="k">アップロード先(すべてのグループで共通)</p>
+      <h2 id="group-head-h" class="sr-only">アップロード先を決める</h2>
+      <p class="desc">選んだフォルダの中に「{safeDirName(group.name)}」のフォルダを作り、セッションごとのフォルダ(名前はセッション ID)を写します。同じセッションは置き換え、ほかのフォルダには触れません。</p>
+      <div class="inputs">
+        <label class="fld wide"><span class="k">フォルダ(フルパス)</span><input type="text" bind:this={rootInputEl} bind:value={rootInput} readonly={busy} placeholder={'E:\\dev\\atlas-logs'} spellcheck="false" autocomplete="off" aria-invalid={error ? 'true' : undefined} aria-describedby={error ? 'group-head-error' : undefined} /></label>
+      </div>
+      <div class="edit-acts">
+        {#if upload.setting.canPick}<button type="button" class="btn primary" data-pick onclick={pickRoot} aria-disabled={busy}>{task === 'pick' ? '選んでいます…' : 'エクスプローラーで選ぶ…'}</button>{/if}
+        <button type="submit" class="btn" aria-disabled={busy}>{task === 'root' ? '保存中…' : '入力したパスにする'}</button>
+        <button type="button" class="btn" onclick={leaveRoot} disabled={busy}>取消</button>
+      </div>
+      {#if task === 'pick'}<p class="desc">フォルダを選ぶ画面を開きました。見えないときはタスクバーを確かめてください。</p>{/if}
+    </form>
   {:else if mode === 'edit'}
     <form class="edit" aria-label="グループの編集" onsubmit={submit}>
       <p class="k">グループの編集</p>
@@ -181,7 +309,13 @@
       </div>
     </div>
   {/if}
-  <p class="sr-only" role="status">{mode === 'view' ? exportedText : ''}</p>
+  <p class="sr-only" role="status">{mode === 'view' ? exportedText || uploadedText : ''}</p>
+  {#if uploaded && mode === 'view'}
+    <div class="exported" data-testid="group-uploaded">
+      <p>{uploadedText}</p>
+      <p class="path"><code translate="no">{uploaded.dir}</code> <button type="button" class="link" data-testid="group-upload-open" onclick={openUploaded} disabled={busy}>エクスプローラーで開く</button></p>
+    </div>
+  {/if}
   {#if exported && mode === 'view'}
     <div class="exported" data-testid="group-exported">
       <p>{exportedText}依頼ごとの表は turns.csv、セッションごとの表は sessions.csv です(Excel で開けます)。</p>
@@ -201,6 +335,41 @@
   }
   .exported p {
     margin: 0;
+  }
+  .dest {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 2px 10px;
+    margin: 8px 0 0;
+    padding-top: 6px;
+    border-top: 1px solid var(--rule);
+    font-size: 0.8125rem;
+  }
+  .dest .k {
+    display: inline;
+    margin: 0;
+  }
+  .dest code {
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    overflow-wrap: anywhere;
+  }
+  .dest .none {
+    color: var(--ink-3);
+  }
+  .dest .bad {
+    color: var(--warn);
+  }
+  .dest .link {
+    margin-left: 0;
+  }
+  .btn.primary {
+    background: var(--form);
+    color: var(--surface);
+  }
+  .btn.primary:hover {
+    text-decoration: underline;
   }
   .exported .path {
     margin-top: 4px;

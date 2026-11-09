@@ -45,7 +45,7 @@ export interface TurnsCliOptions {
   timeoutSec: number;
 }
 
-export const GROUP_ACTIONS = ['list', 'add', 'remove', 'export'] as const;
+export const GROUP_ACTIONS = ['list', 'add', 'remove', 'export', 'upload'] as const;
 export type GroupAction = (typeof GROUP_ACTIONS)[number];
 
 export interface GroupCliOptions {
@@ -56,6 +56,8 @@ export interface GroupCliOptions {
   ids: string[];
   /** add の --note */
   note: string | null;
+  /** upload の --to(アップロード先の基底フォルダ)。未指定は null(atlas.config.json の uploadRoot) */
+  to: string | null;
 }
 
 export const MEMO_ACTIONS = ['list', 'show', 'set', 'remove'] as const;
@@ -148,8 +150,11 @@ export const USAGE = `使い方: atlas <コマンド> [オプション]
              <out>/turn-bundle/parts/ を作る(LLM は呼ばない)。run は GitHub Copilot CLI で判定する(AI クレジットを消費します)。
              import はチャットの返答を <out>/turn-judgments.json に取り込む
   group list / group add <名前> <id...> [--note <一文>] / group remove <名前> / group export <名前>
+  group upload <名前> [--to <基底フォルダ>]
              名前付きグループ(<notes-dir>/groups.json)を一覧・追加(既存名なら id を追記)・削除する。
-             export はそのグループの表(CSV)・集計・記録を <out>/groups/<名前>/ に書き出す
+             export はそのグループの表(CSV)・集計・記録を <out>/groups/<名前>/ に書き出す。
+             upload はそのグループのセッションの生ログ(前回の集計の複製)を <基底>/<名前>/<セッション id>/ に写す
+             (同じセッションは置き換え。基底は --to か atlas.config.json の uploadRoot)
   memo list / memo show <id> / memo set <id> <本文...> / memo set <id> --file <path> / memo remove <id>
              セッションごとのメモ(<notes-dir>/memos/<id>.md)を一覧・表示・保存・削除する(remove は画像を残す)
   serve      out/ を 127.0.0.1 だけに配信してブラウザで開く(画面からグループとメモを書け、集計し直す・工数の判定・
@@ -180,7 +185,7 @@ export const USAGE = `使い方: atlas <コマンド> [オプション]
                      (%TEMP% と AppData\\Local\\Temp・/tmp のパターン)を使わない
   --snapshot-all     snapshot: 既定で写さない大きなもの(rewind-snapshots、一覧に無い名前のもの、logs/)も写す
   --snapshot-prune   snapshot: 前回 --snapshot-all で写したが今回は写さないものを消す(既定は残して manifest に日時を出す)
-  --config <file>    extract: 設定ファイル(wiki の vault の指定)の場所
+  --config <file>    extract・all・serve・group upload: 設定ファイル(wiki の vault・アップロード先の指定)の場所
                      (既定: 環境変数 ATLAS_CONFIG、無ければリポジトリ直下の atlas.config.json)
   -h, --help         この説明を出す
 
@@ -234,6 +239,7 @@ export function parseCli(argv: string[]): CliOptions {
         session: { type: 'string', multiple: true },
         'notes-dir': { type: 'string' },
         note: { type: 'string' },
+        to: { type: 'string' },
         file: { type: 'string' },
         anonymize: { type: 'boolean', default: false },
         judgments: { type: 'string' },
@@ -330,17 +336,19 @@ export function parseCli(argv: string[]): CliOptions {
   let groupCmd: GroupCliOptions | null = null;
   if (cmd === 'group') {
     const action = positionals[1];
-    if (!action) throw new UsageError('group の後に list / add / remove / export を指定してください');
-    if (!(GROUP_ACTIONS as readonly string[]).includes(action)) throw new UsageError(`group の不明な操作です: ${action}(list / add / remove / export)`);
+    if (!action) throw new UsageError('group の後に list / add / remove / export / upload を指定してください');
+    if (!(GROUP_ACTIONS as readonly string[]).includes(action)) throw new UsageError(`group の不明な操作です: ${action}(list / add / remove / export / upload)`);
     const name = positionals[2] ?? null;
     const ids = positionals.slice(3).flatMap((s) => s.split(',')).map((s) => s.trim()).filter(Boolean);
     if (action === 'list' && positionals.length > 2) throw new UsageError(`余分な引数があります: ${positionals.slice(2).join(' ')}`);
     if (action !== 'list' && !name) throw new UsageError(`group ${action} にはグループ名を指定してください`);
     if (action === 'add' && ids.length === 0) throw new UsageError('group add にはセッション id を 1 つ以上指定してください');
-    if ((action === 'remove' || action === 'export') && positionals.length > 3) throw new UsageError(`余分な引数があります: ${positionals.slice(3).join(' ')}`);
+    if ((action === 'remove' || action === 'export' || action === 'upload') && positionals.length > 3) throw new UsageError(`余分な引数があります: ${positionals.slice(3).join(' ')}`);
     if (values.note != null && action !== 'add') throw new UsageError('--note は group add でだけ使えます');
-    groupCmd = { action: action as GroupAction, name, ids, note: values.note ?? null };
+    if (values.to != null && action !== 'upload') throw new UsageError('--to は group upload でだけ使えます');
+    groupCmd = { action: action as GroupAction, name, ids, note: values.note ?? null, to: values.to ?? null };
   } else if (values.note != null) throw new UsageError('--note は group add でだけ使えます');
+  else if (values.to != null) throw new UsageError('--to は group upload でだけ使えます');
   let memoCmd: MemoCliOptions | null = null;
   if (cmd === 'memo') {
     const action = positionals[1];
@@ -372,7 +380,8 @@ export function parseCli(argv: string[]): CliOptions {
   if (values.anonymize && !['build', 'export', 'all'].includes(cmd))
     throw new UsageError(`--anonymize は build / export / all でだけ使えます(${cmd} の出力は伏せ字になりません。評価バンドルを外部の LLM に渡すときは中身を確認してください)`);
   if ((values['snapshot-all'] || values['snapshot-prune']) && !['snapshot', 'all', 'export'].includes(cmd)) throw new UsageError('--snapshot-all と --snapshot-prune は snapshot / all / export で使えます');
-  if (values.config != null && cmd !== 'extract' && cmd !== 'all') throw new UsageError('--config は extract と all でだけ使えます');
+  if (values.config != null && cmd !== 'extract' && cmd !== 'all' && cmd !== 'serve' && !(cmd === 'group' && positionals[1] === 'upload'))
+    throw new UsageError('--config は extract・all・serve・group upload でだけ使えます');
   if (values.since != null && Number.isNaN(Date.parse(values.since))) throw new UsageError(`--since の日時を解釈できません: ${values.since}`);
   if ((values.port != null || values.open === false) && cmd !== 'serve') throw new UsageError('--port と --no-open は serve でだけ使えます');
   const port = posInt(values.port, '--port', 0);
