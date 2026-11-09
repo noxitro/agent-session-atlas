@@ -72,7 +72,8 @@ function drawTags(groups){
   f.addEventListener('submit',function(e){
     e.preventDefault();var n=inp.value.trim();if(!n){inp.focus();return}
     if(mine.indexOf(n)>=0){tagMsg('「'+n+'」は付いています');return}
-    tagOp(function(){return allTags.indexOf(n)>=0?call('groups/'+encodeURIComponent(n),{method:'PUT',headers:JH,body:JSON.stringify({add:[id]})}):call('groups',{method:'POST',headers:JH,body:JSON.stringify({name:n,note:'',ids:[id]})})},'「'+n+'」を付けました');
+    // 付ける直前に最新のタグの一覧を読み、今あるタグなら足し、無ければ作る(開いた時点の一覧で決めると、別の画面で増えたタグに「既にあります」で付けられない)
+    tagOp(function(){return call('state',{headers:H,cache:'no-store'}).then(function(s){var has=!!(s.ok&&s.body&&Array.isArray(s.body.groups)&&s.body.groups.some(function(g){return g.name===n}));return has?call('groups/'+encodeURIComponent(n),{method:'PUT',headers:JH,body:JSON.stringify({add:[id]})}):call('groups',{method:'POST',headers:JH,body:JSON.stringify({name:n,note:'',ids:[id]})})})},'「'+n+'」を付けました');
   });
   gl.appendChild(f);
   var m=el('p','tag-msg');m.setAttribute('role','status');gl.appendChild(m);

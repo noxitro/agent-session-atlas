@@ -384,6 +384,22 @@ describe('serve の jobs と記録の表示(Phase 14)', () => {
     h = null;
   });
 
+  it('ジョブの実行中に画面がすべて閉じられたら、終わってからは短い猶予(byeGraceMs)で止まる(30 分の保険を張り直さない)', async () => {
+    await start({ idleMs: 600_000, byeGraceMs: 150, firstHeartbeatMs: 600_000 });
+    const hdr = (seq: number) => ({ 'x-atlas-token': h!.token, 'x-atlas-client': 'p1', 'x-atlas-seq': String(seq) });
+    await fetch(`${base()}/api/heartbeat`, { method: 'POST', headers: hdr(1) });
+    await post({ kind: 'refresh' });
+    await fetch(`${base()}/api/bye`, { method: 'POST', headers: hdr(2) });
+    await sleep(500);
+    // 猶予(150ms)を過ぎてもジョブの間は止まらない
+    expect((await json('/api/jobs/current')).body.state).toBe('running');
+    const t = performance.now();
+    children[0].exit(0);
+    expect(await h!.done).toBe('画面がすべて閉じられた');
+    expect(performance.now() - t).toBeLessThan(5_000);
+    h = null;
+  });
+
   it('集計し直している間の 404 は「集計し直している最中」の文面', async () => {
     await start();
     expect(await (await fetch(`${base()}/sessions/nope.html`)).text()).toBe('ありません');

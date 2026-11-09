@@ -51,7 +51,7 @@ import { importJudgmentsText, importTurnJudgmentsText, JudgmentValidationError, 
 import { phaseNames } from './config.ts';
 import { acquireOutLock, JobError, JobRunner, OutBusyError, parseJobRequest, runningJobIn, type RunFullFn, type SpawnFn } from './jobs.ts';
 import { exportGroup } from './group-export.ts';
-import { checkUpload, uploadDir, uploadGroup, type UploadProgress } from './group-upload.ts';
+import { checkUpload, uploadDir, uploadGroup, type GroupUploadResult, type UploadProgress } from './group-upload.ts';
 import { defaultConfigPath, loadConfig, parseUploadRoot, updateConfig } from './config.ts';
 import { CAN_PICK_FOLDER, openFolder, pickFolder } from './folder-picker.ts';
 
@@ -308,18 +308,23 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     runFull: o.jobs?.runFull ?? runFullDefault,
     log,
     onEnd: () => {
-      // 画面が閉じられた後もジョブは最後まで走らせ、終わってから idle の判定を再開する
+      // 画面が閉じられた後もジョブは最後まで走らせ、終わってから判定を再開する。
+      // 画面がすべて閉じていたら短い猶予で(以前は 30 分の保険を張り直していた)
       if (idlePending) {
         idlePending = null;
-        armIdle();
+        if (leaving && clients.size === 0) armLeaving();
+        else armIdle();
       }
     },
   });
   const refreshing = (): boolean => jobs.running() && jobs.current()?.kind === 'refresh';
-  /** グループの書き出し中(その間はジョブを始めない) */
-  let exporting = false;
+  /** タスクタグの書き出し・写す前の点検・アップロードのどれかをしている最中なら、その内容(「「A」をアップロードしている」など)。その間はほかの書き出し・点検・アップロード・ジョブを始めない */
+  let busyWith: string | null = null;
   /** 写している途中のアップロード(画面が進み具合を問い合わせる) */
   let uploading: { name: string; progress: UploadProgress } | null = null;
+  /** タスクタグごとの直近のアップロードの結果(写している途中に別のページへ移って戻った画面が、成功か失敗かを出せるように。10 分だけ) */
+  const lastUpload = new Map<string, { at: number; ok: boolean; error: string | null; result: GroupUploadResult | null }>();
+  const LAST_UPLOAD_MS = 10 * 60_000;
   const configPath = resolve(o.configPath ?? defaultConfigPath());
   const canPick = o.folders?.canPick ?? CAN_PICK_FOLDER;
   const pick = o.folders?.pick ?? pickFolder;
@@ -397,26 +402,48 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     const c = req.headers['x-atlas-client'];
     return typeof c === 'string' && /^[A-Za-z0-9-]{1,64}$/.test(c) ? c : null;
   };
-  function heartbeat(client: string | null): void {
+  /** 画面が送った順の番号(x-atlas-seq)。古い画面は送らない(null) */
+  const seqOf = (req: IncomingMessage): number | null => {
+    const s = Number(req.headers['x-atlas-seq']);
+    return Number.isSafeInteger(s) && s >= 0 ? s : null;
+  };
+  /** bye を送った画面と、その bye の番号。bye より前に出た heartbeat が遅れて届いても、開いている画面に数え直さない */
+  const byeSeq = new Map<string, number>();
+  function heartbeat(client: string | null, seq: number | null): void {
     if (firstTimer) {
       clearTimeout(firstTimer);
       firstTimer = null;
     }
-    if (client) clients.set(client, Date.now());
+    if (client) {
+      const b = byeSeq.get(client);
+      // 閉じた後に届いた、閉じる前の heartbeat(keepalive の追い越し)は無視する。番号が新しければ戻ってきた画面(bfcache)なので数え直す
+      if (b != null && (seq == null || seq <= b)) return;
+      byeSeq.delete(client);
+      clients.set(client, Date.now());
+    }
     idlePending = null;
     leaving = false;
     armIdle();
   }
-  /** 画面が閉じられた。ほかに開いている画面が無ければ、少し待って(次のページの heartbeat が来なければ)止まる */
-  function bye(client: string | null): void {
-    if (client) clients.delete(client);
+  /** 猶予(byeGraceMs)を測り始める */
+  function armLeaving(): void {
+    leaving = true;
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => expire('画面がすべて閉じられた'), byeGraceMs);
+  }
+  /** 画面が閉じられた(bfcache に入るときも)。ほかに開いている画面が無ければ、少し待って(次のページの heartbeat が来なければ)止まる */
+  function bye(client: string | null, seq: number | null): void {
+    if (client) {
+      clients.delete(client);
+      byeSeq.set(client, seq ?? Number.MAX_SAFE_INTEGER);
+      // 覚えておくのは最近のものだけ(長く開いたままのサーバで増え続けないように)
+      if (byeSeq.size > 200) byeSeq.delete(byeSeq.keys().next().value!);
+    }
     const now = Date.now();
     for (const [c, at] of clients) if (now - at > CLIENT_STALE_MS) clients.delete(c);
     if (clients.size) return;
-    leaving = true;
     log(`serve: 開いている画面がすべて閉じられました。${Math.round(byeGraceMs / 1000)} 秒のうちに次の画面が開かなければ止まります`);
-    if (idleTimer) clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => expire('画面がすべて閉じられた'), byeGraceMs);
+    armLeaving();
   }
   /** 重い同期処理(大きな記録の描画)の直後に猶予を測り直す(止まっていた間に溜まった heartbeat より先に期限切れで閉じないため) */
   function touchIdle(): void {
@@ -443,14 +470,14 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     const method = req.method ?? 'GET';
     if (path === '/api/heartbeat' && method === 'POST') {
       checkToken(req);
-      heartbeat(clientOf(req));
+      heartbeat(clientOf(req), seqOf(req));
       res.writeHead(204, { 'x-atlas-serve': '1' });
       res.end();
       return;
     }
     if (path === '/api/bye' && method === 'POST') {
       checkToken(req);
-      bye(clientOf(req));
+      bye(clientOf(req), seqOf(req));
       res.writeHead(204);
       res.end();
       return;
@@ -479,7 +506,7 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
           const cur = (await uploadRootOf()).root;
           let chosen: string | null;
           try {
-            chosen = await pick('アップロード先の基底フォルダを選んでください(この中にグループ名のフォルダを作ります)', cur);
+            chosen = await pick('アップロード先の基底フォルダを選んでください(この中にタスクタグ名のフォルダを作ります)', cur);
           } catch (e) {
             throw new HttpError(500, (e as Error).message);
           }
@@ -529,11 +556,16 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
       try {
         name = decodeURIComponent(gu[1]);
       } catch {
-        throw new HttpError(400, 'グループ名を読めません');
+        throw new HttpError(400, 'タスクタグの名前を読めません');
       }
       if (sub === 'progress') {
         // このグループを写している途中なら進み具合、そうでなければ null
-        sendJson(res, 200, uploading?.name === name ? uploading.progress : null);
+        // 写している途中なら進み具合。終わっていれば直近の結果({ finished: true, ok, error, result })。どちらでもなければ null
+        if (uploading?.name === name) sendJson(res, 200, uploading.progress);
+        else {
+          const last = lastUpload.get(name);
+          sendJson(res, 200, last && Date.now() - last.at < LAST_UPLOAD_MS ? { finished: true, ok: last.ok, error: last.error, result: last.result } : null);
+        }
         return;
       }
       const up = await uploadRootOf();
@@ -549,8 +581,7 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
       }
       // 集計の途中は out/snapshot/ が書きかけのことがあるので待ってもらう
       if (jobs.running()) throw new HttpError(409, jobs.current()?.kind === 'refresh' ? '集計し直している最中です。終わってからアップロードしてください' : 'ほかの処理が動いています。終わってからアップロードしてください');
-      if (uploading) throw new HttpError(409, `「${uploading.name}」をアップロードしている最中です。終わってからもう一度押してください`);
-      if (exporting) throw new HttpError(409, 'ほかのタスクタグを書き出しています。終わってからアップロードしてください');
+      if (busyWith) throw new HttpError(409, `${busyWith}最中です。終わってからもう一度押してください`);
       const other = runningJobIn(outDir);
       if (other) throw new HttpError(409, `別の atlas の処理(${other})が動いています。終わってからアップロードしてください`);
       let release: () => void;
@@ -560,20 +591,27 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
         if (e instanceof OutBusyError) throw new HttpError(409, e.message);
         throw e;
       }
-      exporting = true;
+      busyWith = sub === 'check' ? `「${name}」を写す前に調べている` : `「${name}」をアップロードしている`;
       const paths = { snapshot: join(outDir, 'snapshot'), groups: groupsPath, notes: resolve(o.notesDir), sessions: join(outDir, 'sessions.json') };
       try {
         if (sub === 'check') sendJson(res, 200, await checkUpload(paths, name, up.root));
         else {
           uploading = { name, progress: { sessions: 0, done: 0, bytes: 0, copied: 0, current: null } };
           const cur = uploading;
-          sendJson(res, 200, await uploadGroup(paths, name, up.root, log, { onProgress: (pr) => void (cur.progress = pr) }));
+          try {
+            const result = await uploadGroup(paths, name, up.root, log, { onProgress: (pr) => void (cur.progress = pr) });
+            lastUpload.set(name, { at: Date.now(), ok: true, error: null, result });
+            sendJson(res, 200, result);
+          } catch (e) {
+            lastUpload.set(name, { at: Date.now(), ok: false, error: (e as Error).message, result: null });
+            throw e;
+          }
         }
       } catch (e) {
-        throw new HttpError(/^グループ「.*」はありません/.test((e as Error).message) ? 404 : 409, (e as Error).message);
+        throw new HttpError(/^タスクタグ「.*」はありません/.test((e as Error).message) ? 404 : 409, (e as Error).message);
       } finally {
         uploading = null;
-        exporting = false;
+        busyWith = null;
         release();
       }
       return;
@@ -586,14 +624,14 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
       try {
         name = decodeURIComponent(ge[1]);
       } catch {
-        throw new HttpError(400, 'グループ名を読めません');
+        throw new HttpError(400, 'タスクタグの名前を読めません');
       }
       // 集計・記録の書き出し中は sessions.json や記録が書きかけのことがあるので待ってもらう
       if (jobs.running()) throw new HttpError(409, jobs.current()?.kind === 'refresh' ? REFRESHING : 'ほかの処理が動いています。終わってから書き出してください');
-      if (exporting) throw new HttpError(409, 'ほかのグループを書き出しています。終わってから書き出してください');
+      if (busyWith) throw new HttpError(409, `${busyWith}最中です。終わってから書き出してください`);
       const other = runningJobIn(outDir);
       if (other) throw new HttpError(409, `別の atlas の処理(${other})が動いています。終わってから書き出してください`);
-      // 書き出しの間は out/ の印を取り、別の atlas(CLI)が集計を始めないようにする。同じ serve のジョブは exporting で止める
+      // 書き出しの間は out/ の印を取り、別の atlas(CLI)が集計を始めないようにする。同じ serve のジョブは busyWith で止める
       let release: () => void;
       try {
         release = acquireOutLock(outDir, 'group export', 'serve');
@@ -601,13 +639,13 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
         if (e instanceof OutBusyError) throw new HttpError(409, e.message);
         throw e;
       }
-      exporting = true;
+      busyWith = `「${name}」を書き出している`;
       try {
         sendJson(res, 200, await exportGroup({ out: outDir, sessions: join(outDir, 'sessions.json'), judgments: join(outDir, 'judgments.json'), groups: groupsPath }, name, log));
       } catch (e) {
         throw new HttpError(/はありません/.test((e as Error).message) ? 404 : 409, (e as Error).message);
       } finally {
-        exporting = false;
+        busyWith = null;
         release();
       }
       return;
@@ -620,7 +658,7 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
       const input = groupInput(await readJsonBody(req), false) as SessionGroup;
       await withGroupsLock(async () => {
         const groups = await loadForWrite();
-        if (groups.some((g) => g.name === input.name)) throw new HttpError(409, `グループ「${input.name}」は既にあります`);
+        if (groups.some((g) => g.name === input.name)) throw new HttpError(409, `タスクタグ「${input.name}」は既にあります`);
         groups.push(input);
         await saveGroups(groupsPath, groups);
         sendJson(res, 201, { group: input, groups });
@@ -635,8 +673,8 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
       await withGroupsLock(async () => {
         const groups = await loadForWrite();
         const cur = groups.find((g) => g.name === target);
-        if (!cur) throw new HttpError(404, `グループ「${target}」はありません`);
-        if (input.name != null && input.name !== cur.name && groups.some((g) => g.name === input.name)) throw new HttpError(409, `グループ「${input.name}」は既にあります`);
+        if (!cur) throw new HttpError(404, `タスクタグ「${target}」はありません`);
+        if (input.name != null && input.name !== cur.name && groups.some((g) => g.name === input.name)) throw new HttpError(409, `タスクタグ「${input.name}」は既にあります`);
         Object.assign(cur, input);
         let added = 0;
         let dup = 0;
@@ -659,7 +697,7 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
       await withGroupsLock(async () => {
         const groups = await loadForWrite();
         const i = groups.findIndex((g) => g.name === target);
-        if (i < 0) throw new HttpError(404, `グループ「${target}」はありません`);
+        if (i < 0) throw new HttpError(404, `タスクタグ「${target}」はありません`);
         groups.splice(i, 1);
         await saveGroups(groupsPath, groups);
         sendJson(res, 200, { groups });
@@ -677,7 +715,7 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
         const ids = body.kind === 'full' ? await sessionIndex() : null;
         const r = parseJobRequest(body, (id) => !!ids?.has(id));
         // グループの書き出しは out/ を読んでいるので、終わるまで集計などを始めない
-        if (exporting) throw new JobError(409, 'グループを書き出しています。終わってから実行してください');
+        if (busyWith) throw new JobError(409, `${busyWith}最中です。終わってから実行してください`);
         sendJson(res, 202, jobs.start(r));
         return;
       }

@@ -34,8 +34,8 @@ export interface UploadHandlers {
   /** 写す前の点検(大きさと秘密らしい文字列) */
   check: (name: string) => Promise<UploadCheck>;
   run: (name: string) => Promise<GroupUpload>;
-  /** 写している途中の進み具合(写していなければ null) */
-  progress: (name: string) => Promise<UploadProgress | null>;
+  /** 写している途中の進み具合。終わっていれば直近の結果(10 分以内)。どちらでもなければ null */
+  progress: (name: string) => Promise<UploadPoll>;
   open: (name: string) => Promise<void>;
 }
 
@@ -61,6 +61,9 @@ export interface UploadProgress {
   copied: number;
   current: string | null;
 }
+
+/** 進み具合の問い合わせの答え: 写している途中なら進み具合、終わっていれば直近の結果、どちらでもなければ null */
+export type UploadPoll = UploadProgress | { finished: true; ok: boolean; error: string | null; result: GroupUpload | null } | null;
 
 /** グループのアップロードの結果(serve の group-upload.ts と同じ形) */
 export interface GroupUpload {
@@ -143,8 +146,8 @@ export const api = {
   checkUpload(token: string, name: string): Promise<UploadCheck> {
     return connect(fetch('api/groups/' + encodeURIComponent(name) + '/upload/check', { method: 'POST', headers: headers(token) }), (r) => parse<UploadCheck>(r));
   },
-  uploadProgress(token: string, name: string): Promise<UploadProgress | null> {
-    return connect(fetch('api/groups/' + encodeURIComponent(name) + '/upload/progress', { headers: headers(token) }), (r) => parse<UploadProgress | null>(r));
+  uploadProgress(token: string, name: string): Promise<UploadPoll> {
+    return connect(fetch('api/groups/' + encodeURIComponent(name) + '/upload/progress', { headers: headers(token) }), (r) => parse<UploadPoll>(r));
   },
   openUpload(token: string, name: string): Promise<{ dir: string }> {
     return connect(fetch('api/groups/' + encodeURIComponent(name) + '/upload/open', { method: 'POST', headers: headers(token) }), (r) => parse(r));
@@ -268,6 +271,9 @@ export function clientId(): string {
 export function startHeartbeat(token: string, onDown: () => void, intervalMs = 3000): () => void {
   const client = clientId();
   const h = { ...headers(token), 'x-atlas-client': client };
+  /** 送った順の番号(サーバは bye より前に出た heartbeat が遅れて届いても数え直さない) */
+  let seq = 0;
+  const init = (): RequestInit => ({ method: 'POST', headers: { ...h, 'x-atlas-seq': String(++seq) }, keepalive: true });
   let timer: ReturnType<typeof setInterval> | null = null;
   let fails = 0;
   const fail = (now: boolean): void => {
@@ -278,16 +284,18 @@ export function startHeartbeat(token: string, onDown: () => void, intervalMs = 3
     }
   };
   const beat = (): void => {
-    fetch('api/heartbeat', { method: 'POST', headers: h, keepalive: true })
+    // 宛先は呼ぶところで文字列のまま書く(外へ通信しないことを e2e が fetch( の直後の文字列で確かめる。1 つの関数で宛先を選ぶと、最小化で fetch(条件 ? … : …) にまとめられる)
+    fetch('api/heartbeat', init())
       .then((r) => {
         if (r.ok) fails = 0;
         else fail(r.status === 403);
       })
       .catch(() => fail(false));
   };
-  const onHide = (e: PageTransitionEvent): void => {
-    // 戻る / 進むのためにページが残される(bfcache)ときは閉じたことにしない
-    if (!e.persisted && timer != null) void fetch('api/bye', { method: 'POST', headers: h, keepalive: true }).catch(() => {});
+  // 閉じるときも、戻る / 進むのためにページが残される(bfcache)ときも bye を送る(残されたページは heartbeat を送れないので、
+  // 開いている画面に数えたままにすると、ほかを閉じてもサーバが止まらない)。戻ってきたら pageshow ですぐ heartbeat を送って数え直してもらう
+  const onHide = (): void => {
+    if (timer != null) void fetch('api/bye', init()).catch(() => {});
   };
   const onShow = (e: PageTransitionEvent): void => {
     if (e.persisted && timer != null) beat();

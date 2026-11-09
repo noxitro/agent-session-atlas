@@ -86,6 +86,8 @@ interface FileEntry {
   bytes: number;
   /** シンボリックリンク(中身は辿らず、リンクのまま写す) */
   link: boolean;
+  /** 空のフォルダ(中身が無くても形を保つ。以前の cp と同じ) */
+  dir?: boolean;
 }
 
 /** セッションのフォルダの中のファイル(atlas の作業用のファイルは除く) */
@@ -94,7 +96,10 @@ async function listFiles(base: string, sub = ''): Promise<FileEntry[]> {
   for (const e of await readdir(join(base, sub), { withFileTypes: true })) {
     if (SNAPSHOT_PRIVATE.test(e.name)) continue;
     const rel = sub ? `${sub}/${e.name}` : e.name;
-    if (e.isDirectory()) out.push(...(await listFiles(base, rel)));
+    if (e.isDirectory()) {
+      const inner = await listFiles(base, rel);
+      out.push(...(inner.length ? inner : [{ rel, bytes: 0, link: false, dir: true }]));
+    }
     else if (e.isSymbolicLink()) out.push({ rel, bytes: 0, link: true });
     else if (e.isFile()) out.push({ rel, bytes: (await stat(join(base, rel))).size, link: false });
   }
@@ -114,7 +119,8 @@ async function copyFiles(src: string, dest: string, files: FileEntry[], onBytes:
     }
     const from = join(src, ...parts);
     const to = join(dest, ...parts);
-    if (f.link) await cp(from, to, { verbatimSymlinks: true });
+    if (f.dir) await mkdir(to, { recursive: true });
+    else if (f.link) await cp(from, to, { verbatimSymlinks: true });
     else await copyFile(from, to);
     onBytes(f.bytes);
   }
@@ -138,20 +144,34 @@ export async function scanSecrets(path: string): Promise<Map<string, number> | n
   const counts = new Map<string, number>();
   const decoder = new StringDecoder('utf8');
   let carry = '';
+  /** carry の先頭のうち、前の塊で数え終えた文字数(\b が前の文字を見られるよう 1 文字だけ持ち越す) */
+  let from = 0;
   // 塊ごとに、重ねる部分より前で始まるものだけを数える(重ねた部分は次の塊で数える)。最後の塊は末尾まで数える
   const scan = (text: string, last: boolean): void => {
     const limit = last ? text.length : text.length - SCAN_OVERLAP;
     for (const [label, re] of SECRET_PATTERNS) {
-      for (const m of text.matchAll(re)) if (m.index < limit) counts.set(label, (counts.get(label) ?? 0) + 1);
+      for (const m of text.matchAll(re)) if (m.index >= from && m.index < limit) counts.set(label, (counts.get(label) ?? 0) + 1);
     }
-    carry = last ? '' : text.slice(Math.max(0, limit));
+    const keep = Math.max(0, limit - 1);
+    carry = last ? '' : text.slice(keep);
+    from = last ? 0 : limit - keep;
   };
   for await (const chunk of createReadStream(path, { highWaterMark: 4 * 1024 * 1024 })) {
     const text = carry + decoder.write(chunk as Buffer);
-    if (text.length > SCAN_OVERLAP) scan(text, false);
+    if (text.length > SCAN_OVERLAP + from) scan(text, false);
     else carry = text;
   }
   scan(carry + decoder.end(), true);
+  return counts;
+}
+
+/** 文字列の中の秘密らしい文字列を種類ごとに数える(atlas が足して写すもの: DB の行・メモ) */
+function countSecrets(text: string): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const [label, re] of SECRET_PATTERNS) {
+    const n = [...text.matchAll(re)].length;
+    if (n) counts.set(label, n);
+  }
   return counts;
 }
 
@@ -218,36 +238,71 @@ interface Prepared {
 }
 
 /** groups.json のグループを、写すまとまりにする(無い・空・フォルダ名が別のグループと同じなら止まる) */
-export async function groupTarget(p: Pick<GroupUploadPaths, 'groups'>, name: string): Promise<UploadTarget> {
+export async function groupTarget(p: Pick<GroupUploadPaths, 'groups' | 'sessions'>, name: string): Promise<UploadTarget> {
   const loaded = await loadGroups(p.groups);
   const g = loaded.groups.find((x) => x.name === name);
-  if (!g) throw new Error(`グループ「${name}」はありません${loaded.groups.length ? `(あるのは: ${loaded.groups.map((x) => x.name).join(', ')})` : ''}`);
-  if (g.ids.length === 0) throw new Error(`グループ「${name}」にセッションがありません`);
-  // フォルダ名に直すと同じになる別のグループ(Player/Weapon と Player_Weapon。Windows は大文字小文字も区別しない)があれば、混ざるので写さない
+  if (!g) throw new Error(`タスクタグ「${name}」はありません${loaded.groups.length ? `(あるのは: ${loaded.groups.map((x) => x.name).join(', ')})` : ''}`);
+  if (g.ids.length === 0) throw new Error(`タスクタグ「${name}」にセッションがありません`);
+  // フォルダ名に直すと同じになる別のタスクタグ(Player/Weapon と Player_Weapon。Windows は大文字小文字も区別しない)やプロジェクトがあれば、混ざるので写さない
   const folder = safeDirName(name);
-  const clash = loaded.groups.find((x) => x.name !== name && safeDirName(x.name).toLowerCase() === folder.toLowerCase());
-  if (clash) throw new Error(`グループ「${name}」と「${clash.name}」は、アップロード先のフォルダ名が同じ「${folder}」になります。どちらかの名前を変えてください`);
+  const same = (x: string): boolean => safeDirName(x).toLowerCase() === folder.toLowerCase();
+  const clash = loaded.groups.find((x) => x.name !== name && same(x.name));
+  if (clash) throw new Error(`タスクタグ「${name}」と「${clash.name}」は、アップロード先のフォルダ名が同じ「${folder}」になります。どちらかの名前を変えてください`);
+  const project = p.sessions && existsSync(p.sessions) ? (await listProjects(p.sessions)).find((x) => same(x.name)) : undefined;
+  if (project) throw new Error(`タスクタグ「${name}」とプロジェクト「${project.name}」は、アップロード先のフォルダ名が同じ「${folder}」になります(混ざるので写しません)。タスクタグの名前を変えてください`);
   return { kind: 'group', name, note: g.note, ids: g.ids };
 }
 
-/** 集計のプロジェクト(sessions.json の project。プロジェクト別の表と同じ単位)ごとの、空でないセッションの数と最終更新。多い順 */
-export async function listProjects(sessionsPath: string): Promise<{ name: string; sessions: number; updatedAt: string | null }[]> {
-  const by = new Map<string, { sessions: number; updatedAt: string | null }>();
-  for (const s of await readSessions(sessionsPath)) {
-    if (s.empty) continue;
-    const x = by.get(s.project) ?? { sessions: 0, updatedAt: null };
-    x.sessions++;
-    if (s.updatedAt && (!x.updatedAt || s.updatedAt > x.updatedAt)) x.updatedAt = s.updatedAt;
-    by.set(s.project, x);
-  }
-  return [...by].map(([name, x]) => ({ name, ...x })).sort((a, b) => b.sessions - a.sessions || a.name.localeCompare(b.name));
+export interface ProjectSummary {
+  name: string;
+  /** 送れるセッション(空でなく、前回の集計の複製にログのフォルダがあるもの) */
+  sessions: number;
+  /** 記録はあるが、ログのフォルダが無いので送れないもの(session-store.db にだけ残っているセッション) */
+  noLog: number;
+  updatedAt: string | null;
 }
 
-/** 集計のプロジェクトのセッション(空のものは除く)を、写すまとまりにする */
-export async function projectTarget(sessionsPath: string, name: string): Promise<UploadTarget> {
-  const ids = (await readSessions(sessionsPath)).filter((s) => s.project === name && !s.empty).map((s) => s.id);
-  if (!ids.length) throw new Error(`プロジェクト「${name}」のセッションは、前回の集計にありません(空のセッションは写しません)`);
-  return { kind: 'project', name, note: `集計のプロジェクト「${name}」のセッション(空のものを除く ${ids.length} 件)`, ids };
+/**
+ * 集計のプロジェクト(sessions.json の project。プロジェクト別の表と同じ単位)ごとの、送れるセッションの数と最終更新。多い順。
+ * snapshot を渡すと、ログのフォルダがあるものだけを数え、無いものは noLog に分ける(一覧の件数と確認の件数を揃える)
+ */
+export async function listProjects(sessionsPath: string, snapshot?: string): Promise<ProjectSummary[]> {
+  const stateDir = snapshot ? join(snapshot, 'session-state') : null;
+  const by = new Map<string, { sessions: number; noLog: number; updatedAt: string | null }>();
+  for (const s of await readSessions(sessionsPath)) {
+    if (s.empty || typeof s.project !== 'string') continue;
+    const x = by.get(s.project) ?? { sessions: 0, noLog: 0, updatedAt: null };
+    if (stateDir && !(SAFE_ID.test(s.id) && existsSync(join(stateDir, s.id)))) x.noLog++;
+    else {
+      x.sessions++;
+      if (s.updatedAt && (!x.updatedAt || s.updatedAt > x.updatedAt)) x.updatedAt = s.updatedAt;
+    }
+    by.set(s.project, x);
+  }
+  return [...by]
+    .map(([name, x]) => ({ name, ...x }))
+    .filter((x) => x.sessions > 0)
+    .sort((a, b) => b.sessions - a.sessions || a.name.localeCompare(b.name));
+}
+
+/** 集計のプロジェクトの、送れるセッション(空でなく、ログのフォルダがあるもの)を、写すまとまりにする */
+export async function projectTarget(p: Pick<GroupUploadPaths, 'snapshot' | 'groups'> & { sessions: string }, name: string): Promise<UploadTarget> {
+  const stateDir = join(p.snapshot, 'session-state');
+  const ids = (await readSessions(p.sessions)).filter((s) => s.project === name && !s.empty && SAFE_ID.test(s.id) && existsSync(join(stateDir, s.id))).map((s) => s.id);
+  if (!ids.length) throw new Error(`プロジェクト「${name}」の送れるセッションは、前回の集計にありません(空のセッションと、ログのフォルダが無いものは送りません)`);
+  // フォルダ名に直すと同じになるタスクタグや別のプロジェクトがあれば、README と索引が上書きし合うので送らない
+  const folder = safeDirName(name);
+  const same = (x: string): boolean => safeDirName(x).toLowerCase() === folder.toLowerCase();
+  const otherProject = (await listProjects(p.sessions)).find((x) => x.name !== name && same(x.name));
+  if (otherProject) throw new Error(`プロジェクト「${name}」と「${otherProject.name}」は、送り先のフォルダ名が同じ「${folder}」になります(混ざるので送りません)`);
+  let tag: string | undefined;
+  try {
+    tag = (await loadGroups(p.groups)).groups.find((x) => same(x.name))?.name;
+  } catch {
+    tag = undefined;
+  }
+  if (tag) throw new Error(`プロジェクト「${name}」とタスクタグ「${tag}」は、送り先のフォルダ名が同じ「${folder}」になります(混ざるので送りません)。タスクタグの名前を変えてください`);
+  return { kind: 'project', name, note: `集計のプロジェクト「${name}」のセッション(空のものとログのフォルダが無いものを除く ${ids.length} 件)`, ids };
 }
 
 async function readSessions(path: string): Promise<SessionRecord[]> {
@@ -277,36 +332,83 @@ export async function checkUpload(p: GroupUploadPaths, name: string, root: strin
   return checkTarget(p, await groupTarget(p, name), root);
 }
 
+/** atlas がセッションのフォルダに足して写すもの(session-store.db と data.db の行、メモ)を作る道具。点検とアップロードで共通 */
+interface Added {
+  /** atlas-session-store.json の中身(DB にも data.db にも行が無ければ null) */
+  storeJson: (id: string) => Promise<string | null>;
+  /** メモの本文(無いか空なら null) */
+  memo: (id: string) => Promise<string | null>;
+}
+
+async function addedFiles(p: GroupUploadPaths): Promise<Added> {
+  const storeDb = join(p.snapshot, 'session-store.db');
+  // デスクトップアプリのセッションは題名・モデル・トークン数などが data.db にしかない(snapshot が許可リストの列だけを desktop.json に書いたもの)
+  const desktop = await readDesktopJson(join(p.snapshot, DESKTOP_JSON));
+  const memoDir = p.notes ? memosDir(p.notes) : null;
+  return {
+    storeJson: async (id) => {
+      const rows = await sessionStoreRows(storeDb, id);
+      const desk = desktop ? desktopForSession(desktop, id) : null;
+      if (!rows && !desk) return null;
+      const j: SessionStoreJson = { ...(rows ?? { version: 1, schemaVersion: null, sessions: [], turns: [], usage: [], files: [] }), ...(desk ? { desktop: desk } : {}) };
+      return `${JSON.stringify(j)}\n`;
+    },
+    memo: async (id) => {
+      if (!memoDir) return null;
+      const m = await readMemo(memoDir, id);
+      return m && m.text.trim() ? m.text : null;
+    },
+  };
+}
+
 /** 写す前の点検(大きさと秘密らしい文字列)。何も写さない */
 export async function checkTarget(p: GroupUploadPaths, target: UploadTarget, root: string): Promise<UploadCheck> {
   const { stateDir, dir, present, missing } = await prepare(p, target, root);
   const name = target.name;
+  const added = await addedFiles(p);
   const tops: UploadCheck['largest'] = [];
   const hits: UploadCheck['secrets']['files'] = [];
   const kinds = new Map<string, number>();
   let bytes = 0;
   let files = 0;
   let skipped = 0;
+  const tally = (id: string, path: string, found: Map<string, number>): void => {
+    let n = 0;
+    for (const [label, c] of found) {
+      kinds.set(label, (kinds.get(label) ?? 0) + c);
+      n += c;
+    }
+    if (n) hits.push({ id, path, count: n });
+  };
+  const addTop = (id: string, path: string, n: number): void => {
+    const t = tops.find((x) => x.id === id && x.path === path);
+    if (t) t.bytes += n;
+    else tops.push({ id, path, bytes: n });
+  };
   for (const id of present) {
     const base = join(stateDir, id);
     for (const f of await listFiles(base)) {
+      // 空のフォルダは数えない。シンボリックリンクはリンクのまま写すので中身を開かない(リンク切れで点検が止まらないように)
+      if (f.dir) continue;
       bytes += f.bytes;
       files++;
-      const top = f.rel.split('/')[0];
-      const t = tops.find((x) => x.id === id && x.path === top);
-      if (t) t.bytes += f.bytes;
-      else tops.push({ id, path: top, bytes: f.bytes });
+      addTop(id, f.rel.split('/')[0], f.bytes);
+      if (f.link) continue;
       const found = await scanSecrets(join(base, f.rel));
-      if (found == null) {
-        skipped++;
-        continue;
-      }
-      let n = 0;
-      for (const [label, c] of found) {
-        kinds.set(label, (kinds.get(label) ?? 0) + c);
-        n += c;
-      }
-      if (n) hits.push({ id, path: f.rel, count: n });
+      if (found == null) skipped++;
+      else tally(id, f.rel, found);
+    }
+    // atlas が足して写すもの(DB の行には依頼文や応答の本文が入る。メモには利用者が貼ったものが入る)も調べる
+    for (const [path, text] of [
+      [SESSION_STORE_JSON, await added.storeJson(id)],
+      [UPLOAD_MEMO_FILE, await added.memo(id)],
+    ] as const) {
+      if (text == null) continue;
+      const n = Buffer.byteLength(text);
+      bytes += n;
+      files++;
+      addTop(id, path, n);
+      tally(id, path, countSecrets(text));
     }
   }
   const manifest = await readSnapshotManifest(p.snapshot);
@@ -351,9 +453,7 @@ export async function uploadTarget(
   const name = target.name;
   const manifest = await readSnapshotManifest(p.snapshot);
   await mkdir(dir, { recursive: true });
-  const storeDb = join(p.snapshot, 'session-store.db');
-  // デスクトップアプリのセッションは題名・モデル・トークン数などが data.db にしかない(snapshot が許可リストの列だけを desktop.json に書いたもの)
-  const desktop = await readDesktopJson(join(p.snapshot, DESKTOP_JSON));
+  const added = await addedFiles(p);
   const memoDir = p.notes ? memosDir(p.notes) : null;
   const done: string[] = [];
   const withMemo = new Set<string>();
@@ -384,12 +484,8 @@ export async function uploadTarget(
         progress.copied += n;
         report();
       });
-      const rows = await sessionStoreRows(storeDb, id);
-      const desk = desktop ? desktopForSession(desktop, id) : null;
-      if (rows || desk) {
-        const j: SessionStoreJson = { ...(rows ?? { version: 1, schemaVersion: null, sessions: [], turns: [], usage: [], files: [] }), ...(desk ? { desktop: desk } : {}) };
-        await writeFile(join(tmp, SESSION_STORE_JSON), `${JSON.stringify(j)}\n`);
-      }
+      const store = await added.storeJson(id);
+      if (store != null) await writeFile(join(tmp, SESSION_STORE_JSON), store);
       if (memoDir && (await copyMemo(memoDir, id, tmp))) withMemo.add(id);
       await writeFile(join(tmp, UPLOAD_SESSION_META), `${JSON.stringify({ version: 1, ...info(id) }, null, 2)}\n`);
       const had = existsSync(dest);
@@ -464,7 +560,8 @@ async function readRecords(path: string | undefined, ids: string[]): Promise<Map
 const cell = (s: string): string => s.replace(/\s+/g, ' ').replace(/\|/g, '\\|').trim();
 
 /** 日時を、この PC の時刻で「2026-11-09 10:05」にする */
-function localTime(iso: string | null): string {
+/** この PC の時刻で「YYYY-MM-DD hh:mm」(README と upload-project.bat の確認で揃える) */
+export function localTime(iso: string | null): string {
   if (!iso) return '-';
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;

@@ -9,7 +9,7 @@
   import { int } from '../../lib/format.ts';
   import { safeDirName } from '../../lib/groups.ts';
   import type { ReportGroup } from '../../lib/types.ts';
-  import type { GroupExport, GroupUpload, UploadCheck, UploadHandlers, UploadProgress } from '../api.ts';
+  import type { GroupExport, GroupUpload, UploadCheck, UploadHandlers, UploadPoll, UploadProgress } from '../api.ts';
 
   let {
     group,
@@ -102,30 +102,64 @@
     error = '';
     requestAnimationFrame(() => uploadBtn?.focus());
   }
+  /** 写しているタスクタグの名前(写している途中に別のタスクタグへ切り替えても、進み具合と結果はこの名前の見出しにだけ出す) */
+  let uploadName = $state<string | null>(null);
+  /** 進み具合を尋ねるタイマー(見出しが消えるときに止める) */
+  const timers = new Set<ReturnType<typeof setInterval>>();
+  const stopTimer = (h: ReturnType<typeof setInterval>): void => {
+    clearInterval(h);
+    timers.delete(h);
+  };
+  $effect(() => () => {
+    for (const h of timers) clearInterval(h);
+    timers.clear();
+  });
+  const isProgress = (p: UploadPoll): p is UploadProgress => !!p && 'sessions' in p;
+  /** 写し終わった(または失敗した)。写していたタスクタグを今も見ているときだけ結果を出す */
+  function finishUpload(name: string): void {
+    progress = null;
+    uploadName = null;
+    task = null;
+    busy = false;
+    if (group.name === name) requestAnimationFrame(() => uploadBtn?.focus());
+  }
+  function showLast(name: string, p: Exclude<UploadPoll, UploadProgress | null>): void {
+    if (group.name !== name) return;
+    if (p.ok && p.result) uploaded = p.result;
+    else if (!p.ok) error = `アップロードできませんでした(${p.error ?? '理由は分かりません'})`;
+  }
   function copy(): void {
     if (!upload || busy) return;
     const u = upload;
+    const name = group.name;
     checked = null;
     mode = 'view';
+    error = '';
+    busy = true;
     task = 'upload';
     progress = null;
+    uploadName = name;
     // 写している間、サーバに進み具合を尋ねる(写し終わるまで返事が来ないため)
     const timer = setInterval(() => {
-      void u.progress(group.name).then(
+      void u.progress(name).then(
         (p) => {
-          if (p && task === 'upload') progress = p;
+          if (isProgress(p) && uploadName === name) progress = p;
         },
         () => {},
       );
     }, 500);
-    void run(async () => {
-      try {
-        uploaded = await u.run(group.name);
-      } finally {
-        clearInterval(timer);
-        progress = null;
-      }
-    }, () => requestAnimationFrame(() => uploadBtn?.focus()));
+    timers.add(timer);
+    void u.run(name).then(
+      (r) => {
+        if (group.name === name) uploaded = r;
+      },
+      (e) => {
+        if (group.name === name) error = (e as Error).message;
+      },
+    ).finally(() => {
+      stopTimer(timer);
+      finishUpload(name);
+    });
   }
   function openUploaded(): void {
     if (!upload || busy) return;
@@ -294,7 +328,6 @@
     exported = null;
     uploaded = null;
     checked = null;
-    resumed = false;
     // mode と rootEl は依存に入れない(入れると「編集」を押した直後にこの effect が走って表示に戻ってしまう)
     if (!editable) untrack(() => mode !== 'view' && rootEl?.contains(document.activeElement) && focusMain());
     mode = 'view';
@@ -303,37 +336,41 @@
     // upload は依存に入れない(先を選び直すたびに作り直され、結果の表示や記入欄が消えてしまう)
     if (editable) untrack(() => upload && resumeUpload(groupName));
   });
-  /** 戻ったときに写している途中だったアップロードの、進み具合を出す(この画面から始めたものは copy() が出す) */
-  let resumed = $state(false);
+  /**
+   * 戻ったとき(別のページへ移って戻った・開き直した)に、写している途中なら進み具合を出して終わりを待ち、
+   * 終わっていれば直近の結果(成功なら写した件数、失敗なら理由。サーバが 10 分覚えている)を出す。この画面から始めたものは copy() が出す
+   */
   function resumeUpload(name: string): void {
     const u = upload;
     if (!u || busy) return;
     void u.progress(name).then((p) => {
       if (!p || busy || name !== group.name) return;
+      if (!isProgress(p)) {
+        showLast(name, p);
+        return;
+      }
       busy = true;
       task = 'upload';
+      uploadName = name;
       progress = p;
       const timer = setInterval(() => {
         void u.progress(name).then(
           (q) => {
-            if (q) {
-              progress = q;
+            if (isProgress(q)) {
+              if (uploadName === name) progress = q;
               return;
             }
-            clearInterval(timer);
-            progress = null;
-            task = null;
-            busy = false;
-            resumed = true;
+            stopTimer(timer);
+            finishUpload(name);
+            if (q) showLast(name, q);
           },
           () => {
-            clearInterval(timer);
-            progress = null;
-            task = null;
-            busy = false;
+            stopTimer(timer);
+            finishUpload(name);
           },
         );
       }, 500);
+      timers.add(timer);
     }, () => {});
   }
   const count = $derived(group.present === group.ids.length ? `${int(group.ids.length)} 件` : `${int(group.present)} / ${int(group.ids.length)} 件`);
@@ -363,7 +400,9 @@
         {:else}<span class="none">まだ決まっていません</span>{/if}
         <button type="button" class="link" data-testid="group-upload-root" onclick={() => beginRoot(false)} disabled={busy}>{destDir ? '場所を変える…' : '場所を決める…'}</button>
       </p>
-      {#if task === 'upload'}
+      {#if uploadName && uploadName !== group.name}
+        <p class="progress" data-testid="group-upload-elsewhere">「{uploadName}」をアップロードしています。終わるまで、ほかのタスクタグは写せません。</p>
+      {:else if task === 'upload'}
         <div class="progress" data-testid="group-upload-progress">
           {#if progress && progress.bytes}
             <progress max={progress.bytes} value={progress.copied} aria-label="写した量"></progress>
@@ -438,9 +477,6 @@
     </div>
   {/if}
   <p class="sr-only" role="status">{mode === 'view' ? exportedText || uploadedText : ''}</p>
-  {#if resumed && !uploaded && mode === 'view'}
-    <p class="exported" data-testid="group-upload-resumed" role="status">アップロードが終わりました。写した先の README.md で結果を確かめてください。</p>
-  {/if}
   {#if uploaded && mode === 'view'}
     <div class="exported" data-testid="group-uploaded">
       <p>{uploadedText}</p>
