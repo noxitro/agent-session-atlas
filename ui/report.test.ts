@@ -219,20 +219,47 @@ describe('画面の操作', () => {
 
     // 一覧の行に所属が出る
     const groupsLine = (i: number) => page.locator('#sessions table.ledger tbody tr').nth(i).getByTestId('session-groups');
-    await expect.poll(() => groupsLine(2).innerText()).toBe('グループ: 甲、乙');
-    expect(await groupsLine(0).innerText()).toBe('グループ: 甲');
+    await expect.poll(() => groupsLine(2).innerText()).toBe('タスクタグ: 甲、乙');
+    expect(await groupsLine(0).innerText()).toBe('タスクタグ: 甲');
 
-    // 詳細ページにも所属が出て、名前からそのグループで絞り込んだレポートに移れる
+    // 詳細ページにもタスクタグが出て、ここで付け外しできる(今あるタグに足す・新しく作る・外す)
     await page.goto(new URL(`sessions/${id2}.html`, server.url).href);
     const line = page.getByTestId('detail-groups');
     await line.waitFor({ state: 'visible' });
-    expect(await line.innerText()).toMatch(/グループ\s*甲、乙/);
+    const tagNames = async (): Promise<string[]> => line.locator('.tag a').allInnerTexts();
+    expect(await tagNames()).toEqual(['甲', '乙']);
+    // 候補の一覧(datalist)付きの入力欄なので役割は combobox。ラベルで探す
+    const tagInput = line.getByLabel('付けるタスクタグ');
+    // 新しいタグを作って付ける
+    await tagInput.fill('丙タグ');
+    await line.getByRole('button', { name: '付ける' }).click();
+    await expect.poll(tagNames).toEqual(['甲', '乙', '丙タグ']);
+    expect((await readGroups()).find((g) => g.name === '丙タグ')?.ids).toEqual([id2]);
+    await expect.poll(() => line.locator('.tag-msg').innerText()).toBe('「丙タグ」を付けました');
+    // 外す(タグは 0 件で残る)。焦点は入力欄へ
+    await line.getByRole('button', { name: 'タスクタグ「丙タグ」を外す' }).click();
+    await expect.poll(tagNames).toEqual(['甲', '乙']);
+    expect((await readGroups()).find((g) => g.name === '丙タグ')?.ids).toEqual([]);
+    await focusLands(tagInput);
+    // 今あるタグ(甲)を別のセッションに付けると、ids に足す(作り直さない)
+    await page.goto(new URL(`sessions/${id1}.html`, server.url).href);
+    await line.waitFor({ state: 'visible' });
+    await expect.poll(tagNames).toEqual(['甲']);
+    await tagInput.fill('乙');
+    await line.getByRole('button', { name: '付ける' }).click();
+    await expect.poll(tagNames).toEqual(['甲', '乙']);
+    expect((await sorted())['乙']).toEqual([id1, id2].sort());
+    await line.getByRole('button', { name: 'タスクタグ「乙」を外す' }).click();
+    await expect.poll(tagNames).toEqual(['甲']);
+    // 名前からそのタグで絞り込んだレポートに移れる
+    await page.goto(new URL(`sessions/${id2}.html`, server.url).href);
+    await line.waitFor({ state: 'visible' });
     await line.getByRole('link', { name: '乙' }).click();
     await page.waitForURL('**/atlas.html#group=*');
     await expect.poll(shown).toBe(1);
 
     // 後片付け(後のテストに残さない)
-    for (const name of ['甲', '乙']) {
+    for (const name of ['甲', '乙', '丙タグ']) {
       await page.goto(server.url);
       await rail().getByRole('button', { name: new RegExp(name) }).click();
       const head = page.getByTestId('group-head');

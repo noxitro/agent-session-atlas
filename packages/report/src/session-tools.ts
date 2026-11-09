@@ -18,6 +18,15 @@ const TOOLS_CSS = `
 .ops-groups[hidden]{display:none}
 .ops-groups .k{color:var(--form);font-size:.75rem;margin-right:.75em}
 .ops-groups .none{color:var(--ink-3)}
+.ops-groups{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px}
+.ops-groups .tags{display:flex;flex-wrap:wrap;gap:6px;margin:0;padding:0;list-style:none}
+.ops-groups .tag{display:inline-flex;align-items:center;border:1px solid var(--rule);background:var(--form-wash)}
+.ops-groups .tag a{padding:2px 6px}
+.ops-groups .tag-x{min-width:24px;min-height:24px;border:0;border-left:1px solid var(--rule);background:none;color:var(--ink-2);cursor:pointer;font:inherit}
+.ops-groups .tag-x:hover{color:var(--ink)}
+.ops-groups .tag-add{display:inline-flex;gap:6px;align-items:center}
+.ops-groups .tag-add input{min-height:28px;padding:2px 6px;font:inherit;border:1px solid var(--rule-strong);background:var(--surface);color:var(--ink);width:16em;max-width:60vw}
+.ops-groups .tag-msg{flex-basis:100%;margin:0;min-height:1.2em;font-size:.75rem;color:var(--ink-2)}
 .session-ops .ops-err{flex-basis:100%;margin:2px 0 0;font-size:.8125rem;color:var(--ink);background:var(--warn-wash);border:1px solid var(--warn);padding:4px 8px;max-width:75ch}
 `;
 
@@ -37,15 +46,52 @@ box.appendChild(el('p','ops-help',(md?'記録を読む: 依頼・応答・ツー
 var status=el('p','ops-status');status.id='ops-status';status.setAttribute('role','status');box.appendChild(status);
 var err=el('p','ops-err');err.setAttribute('role','alert');err.hidden=true;box.appendChild(err);
 title.appendChild(box);
-// 入っているグループ(atlas serve の最新。名前を押すとレポートをそのグループで絞り込む)
-var gl=el('p','ops-groups');gl.setAttribute('data-testid','detail-groups');gl.hidden=true;title.insertBefore(gl,box);
+// タスクタグ(保存は atlas-notes/groups.json のグループ。atlas serve の最新を出す)。名前を押すとレポートをそのタグで絞り込む。
+// ここで付け外しできる: 「×」で外す(タグは 0 件でも残る)、入力して「付ける」(今あるタグなら足し、無ければ新しく作る)
+var gl=el('div','ops-groups');gl.setAttribute('data-testid','detail-groups');gl.setAttribute('role','group');gl.setAttribute('aria-label','タスクタグ');gl.hidden=true;title.insertBefore(gl,box);
+var JH={'x-atlas-token':token,'content-type':'application/json'},tagBusy=false,tagDown=false,allTags=[];
+function drawTags(groups){
+  allTags=groups.map(function(g){return g.name});
+  var mine=groups.filter(function(g){return Array.isArray(g.ids)&&g.ids.indexOf(id)>=0}).map(function(g){return g.name});
+  gl.textContent='';
+  gl.appendChild(el('span','k','タスクタグ'));
+  var ul=el('ul','tags');
+  if(!mine.length)ul.appendChild(el('li','none','なし'));
+  mine.forEach(function(n){
+    var li=el('li','tag'),a=el('a',null,n);a.href='../atlas.html#group='+encodeURIComponent(n);li.appendChild(a);
+    var x=el('button','tag-x','×');x.type='button';x.setAttribute('aria-label','タスクタグ「'+n+'」を外す');x.disabled=tagDown;
+    x.addEventListener('click',function(){tagOp(function(){return call('groups/'+encodeURIComponent(n),{method:'PUT',headers:JH,body:JSON.stringify({remove:[id]})})},'「'+n+'」を外しました')});
+    li.appendChild(x);ul.appendChild(li);
+  });
+  gl.appendChild(ul);
+  var f=el('form','tag-add'),inp=el('input'),dl=el('datalist'),b=el('button','btn','付ける');
+  dl.id='tag-options';allTags.filter(function(n){return mine.indexOf(n)<0}).forEach(function(n){var o=el('option');o.value=n;dl.appendChild(o)});
+  inp.type='text';inp.setAttribute('list','tag-options');inp.maxLength=100;inp.placeholder='タグの名前(例: Player-Weapon)';inp.setAttribute('aria-label','付けるタスクタグ');inp.disabled=tagDown;
+  b.type='submit';b.disabled=tagDown;
+  f.appendChild(inp);f.appendChild(dl);f.appendChild(b);
+  f.addEventListener('submit',function(e){
+    e.preventDefault();var n=inp.value.trim();if(!n){inp.focus();return}
+    if(mine.indexOf(n)>=0){tagMsg('「'+n+'」は付いています');return}
+    tagOp(function(){return allTags.indexOf(n)>=0?call('groups/'+encodeURIComponent(n),{method:'PUT',headers:JH,body:JSON.stringify({add:[id]})}):call('groups',{method:'POST',headers:JH,body:JSON.stringify({name:n,note:'',ids:[id]})})},'「'+n+'」を付けました');
+  });
+  gl.appendChild(f);
+  var m=el('p','tag-msg');m.setAttribute('role','status');gl.appendChild(m);
+  gl.hidden=false;
+}
+function tagMsg(t){var m=gl.querySelector('.tag-msg');if(m)m.textContent=t}
+function tagOp(run,done){
+  if(tagBusy||tagDown)return;tagBusy=true;err.hidden=true;
+  run().then(function(r){
+    if(!r.ok||!r.body||!Array.isArray(r.body.groups))throw new Error((r.body&&r.body.error)||('サーバの応答 '+r.status));
+    drawTags(r.body.groups);tagMsg(done);
+    // 描き直すと押したボタンが消えるので、焦点はタグの入力欄へ
+    var t=gl.querySelector('.tag-add input');if(t)t.focus();
+  }).catch(function(e){err.textContent='タスクタグを変えられませんでした('+e.message+')';err.hidden=false}).then(function(){tagBusy=false});
+}
+d.addEventListener('atlas-down',function(){tagDown=true;gl.querySelectorAll('button,input').forEach(function(x){x.disabled=true})});
 call('state',{headers:H,cache:'no-store'}).then(function(r){
   if(!r.ok||!r.body||!Array.isArray(r.body.groups))return;
-  var names=r.body.groups.filter(function(g){return Array.isArray(g.ids)&&g.ids.indexOf(id)>=0}).map(function(g){return g.name});
-  gl.appendChild(el('span','k','グループ'));
-  if(!names.length)gl.appendChild(el('span','none','なし(レポートの一覧でチェックして「グループに追加」)'));
-  names.forEach(function(n,i){if(i)gl.appendChild(d.createTextNode('、'));var a=el('a',null,n);a.href='../atlas.html#group='+encodeURIComponent(n);gl.appendChild(a)});
-  gl.hidden=false;
+  drawTags(r.body.groups);
 }).catch(function(){});
 var busy=false,down=false,t0=0,win=null,fullUrl=new URL(view+'?kind=full',location.href).href;
 function shut(){if(win&&!win.closed){try{win.close()}catch(e){}}win=null}

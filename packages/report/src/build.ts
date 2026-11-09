@@ -189,7 +189,7 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
         }
       : null,
     // 伏せ字モードではグループ名と note(自由記述)は出さず、ファイルの順で「グループ 1, 2, …」にする。ids は不透明なのでそのまま
-    groups: (input.groups ?? []).map((g, i) => (anon.enabled ? { name: `グループ ${i + 1}`, note: '', ids: [...g.ids] } : { name: g.name, note: g.note, ids: [...g.ids] })),
+    groups: (input.groups ?? []).map((g, i) => (anon.enabled ? { name: `タスクタグ ${i + 1}`, note: '', ids: [...g.ids] } : { name: g.name, note: g.note, ids: [...g.ids] })),
     library: !!(input.transcripts && (input.library ?? true) && !anon.enabled),
     insights: { meta: {}, candidates: [], computedOver: input.sessions.length },
     // 警告文には groups.json の絶対パスが入るので、伏せ字モードでは <path> に置き換える(scrub)

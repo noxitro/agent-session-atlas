@@ -57,7 +57,7 @@
   /** アップロードの結果の文(読み上げにも使う) */
   const uploadedText = $derived(
     uploaded
-      ? `アップロードしました(${int(uploaded.uploaded)} セッション${uploaded.memos ? `・メモ ${int(uploaded.memos)} 件` : ''}${uploaded.replaced ? `。うち ${int(uploaded.replaced)} 件は前に写したものを置き換え` : ''})。グループの説明とセッションの一覧は README.md にあります。` +
+      ? `アップロードしました(${int(uploaded.uploaded)} セッション${uploaded.memos ? `・メモ ${int(uploaded.memos)} 件` : ''}${uploaded.replaced ? `。うち ${int(uploaded.replaced)} 件は前に写したものを置き換え` : ''})。タスクタグの説明とセッションの一覧は README.md にあります。` +
           (uploaded.snapshotAt ? `写したのは前回の集計(${when(uploaded.snapshotAt)})の時点のログです。` : '') +
           (uploaded.missing.length ? `前回の集計に無いセッション ${int(uploaded.missing.length)} 件は写していません。` : '')
       : '',
@@ -177,7 +177,7 @@
   /** 書き出しの結果の文(読み上げ用の live 領域は常に置き、文だけ差し替える) */
   const exportedText = $derived(
     exported
-      ? `書き出しました(${int(exported.sessions)} セッション・${int(exported.turns)} 依頼・記録(.md) ${int(exported.records)} 件${exported.missing ? `。グループのうち集計に無いセッション ${int(exported.missing)} 件は入っていません` : ''})。`
+      ? `書き出しました(${int(exported.sessions)} セッション・${int(exported.turns)} 依頼・記録(.md) ${int(exported.records)} 件${exported.missing ? `。タスクタグのうち集計に無いセッション ${int(exported.missing)} 件は入っていません` : ''})。`
       : '',
   );
   function doExport(): void {
@@ -307,13 +307,13 @@
   {#if mode === 'view'}
     <div class="line">
       <div class="what">
-        <p class="k">グループで絞り込み中</p>
+        <p class="k">タスクタグで絞り込み中</p>
         <h2 id="group-head-h"><span class="name">{group.name}</span><span class="cnt" aria-hidden="true" title={group.present === group.ids.length ? undefined : '記録にあるのは左の件数だけ'}>{count}</span><span class="sr-only">{group.present === group.ids.length ? `${int(group.ids.length)} 件` : `${int(group.ids.length)} 件のうち記録にあるのは ${int(group.present)} 件`}</span></h2>
         {#if group.note}<p class="desc">{group.note}</p>{:else if editable}<p class="desc none">説明はまだありません</p>{/if}
       </div>
       <div class="acts">
-        {#if editable && upload}<button type="button" class="btn primary" bind:this={uploadBtn} data-testid="group-upload" title="このグループのセッションの生ログを、アップロード先のグループ名のフォルダへ写します(同じセッションは置き換え)" onclick={doUpload} aria-disabled={busy}>{task === 'check' ? '確かめています…' : task === 'upload' ? 'アップロード中…' : 'アップロード'}</button>{/if}
-        {#if editable && onexport}<button type="button" class="btn" data-testid="group-export" title="このグループの表(CSV)・集計・記録を 1 つのフォルダに書き出します" onclick={doExport} aria-disabled={busy}>{task === 'export' ? '書き出し中…' : '表と記録を書き出す'}</button>{/if}
+        {#if editable && upload}<button type="button" class="btn primary" bind:this={uploadBtn} data-testid="group-upload" title="このタスクタグのセッションの生ログを、アップロード先のタスクタグ名のフォルダへ写します(同じセッションは置き換え)" onclick={doUpload} aria-disabled={busy}>{task === 'check' ? '確かめています…' : task === 'upload' ? 'アップロード中…' : 'アップロード'}</button>{/if}
+        {#if editable && onexport}<button type="button" class="btn" data-testid="group-export" title="このタスクタグの表(CSV)・集計・記録を 1 つのフォルダに書き出します" onclick={doExport} aria-disabled={busy}>{task === 'export' ? '書き出し中…' : '表と記録を書き出す'}</button>{/if}
         {#if editable}<button type="button" class="btn" bind:this={editBtn} data-testid="group-edit" onclick={begin}>編集</button>{/if}
         <button type="button" class="btn" onclick={clear}>絞り込みを外す</button>
       </div>
@@ -362,7 +362,7 @@
     </div>
   {:else if mode === 'root' && upload}
     <form class="edit root" aria-label="アップロード先" onsubmit={submitRoot}>
-      <p class="k">アップロード先(すべてのグループで共通)</p>
+      <p class="k">アップロード先(すべてのタスクタグで共通)</p>
       <h2 id="group-head-h" class="sr-only">アップロード先を決める</h2>
       <p class="desc">選んだフォルダの中に「{safeDirName(group.name)}」のフォルダを作り、セッションごとのフォルダ(名前はセッション ID)を写します。同じセッションは置き換え、ほかのフォルダには触れません。</p>
       <div class="inputs">
@@ -376,24 +376,24 @@
       {#if task === 'pick'}<p class="desc">フォルダを選ぶ画面を開きました。見えないときはタスクバーを確かめてください。</p>{/if}
     </form>
   {:else if mode === 'edit'}
-    <form class="edit" aria-label="グループの編集" onsubmit={submit}>
-      <p class="k">グループの編集</p>
-      <h2 id="group-head-h" class="sr-only">グループ「{group.name}」の編集</h2>
+    <form class="edit" aria-label="タスクタグの編集" onsubmit={submit}>
+      <p class="k">タスクタグの編集</p>
+      <h2 id="group-head-h" class="sr-only">タスクタグ「{group.name}」の編集</h2>
       <div class="inputs">
         <label class="fld"><span class="k">名前</span><input type="text" bind:this={nameEl} bind:value={name} maxlength="100" readonly={busy} aria-invalid={error ? 'true' : undefined} aria-describedby={error ? 'group-head-error' : undefined} /></label>
-        <label class="fld wide"><span class="k">説明(任意)</span><input type="text" bind:value={note} maxlength="200" readonly={busy} placeholder="何のグループか" /></label>
+        <label class="fld wide"><span class="k">説明(任意)</span><input type="text" bind:value={note} maxlength="200" readonly={busy} placeholder="何のタスクか" /></label>
       </div>
       <div class="edit-acts">
         <button type="submit" class="btn" aria-disabled={busy}>{busy ? '保存中…' : '保存'}</button>
         <button type="button" class="btn" onclick={leave} disabled={busy}>取消</button>
         <!-- 取り消せない操作は保存と離して右端に、文字だけの弱い見た目で置く -->
-        <button type="button" class="link danger" data-testid="group-delete" onclick={askDelete} disabled={busy}>このグループを削除…</button>
+        <button type="button" class="link danger" data-testid="group-delete" onclick={askDelete} disabled={busy}>このタスクタグを削除…</button>
       </div>
     </form>
   {:else}
     <div class="confirm" role="group" aria-labelledby="group-head-h">
-      <h2 id="group-head-h" class="q">グループ「{group.name}」を削除しますか</h2>
-      <p class="desc">グループだけが消え、セッションと記録はそのまま残ります。</p>
+      <h2 id="group-head-h" class="q">タスクタグ「{group.name}」を削除しますか</h2>
+      <p class="desc">タスクタグだけが消え、セッションと記録はそのまま残ります。</p>
       <div class="edit-acts">
         <button type="button" class="btn" data-cancel onclick={backToEdit} disabled={busy}>やめる</button>
         <button type="button" class="btn danger" data-confirm onclick={() => void run(() => ondelete(group.name), focusMain)} aria-disabled={busy}>{busy ? '削除中…' : '削除する'}</button>

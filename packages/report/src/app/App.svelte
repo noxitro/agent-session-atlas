@@ -291,11 +291,11 @@
   /** 選んだセッションを現在のグループから外す(差分 remove を送る。0 件になっても消さない) */
   async function removeFromGroup(): Promise<string> {
     const name = currentName;
-    if (!name) throw new Error('グループで絞り込んでいるときだけ外せます');
+    if (!name) throw new Error('タスクタグで絞り込んでいるときだけ外せます');
     const res = await api.update(token!, name, { remove: selectedKnown() });
     liveGroups = res.groups;
     setFilter({ ids: groupIds(res.group, knownIds), group: groupKey(name) });
-    return `${int(res.removed)} 件を「${name}」から外しました${res.group.ids.length === 0 ? '(グループは 0 件のまま残ります)' : ''}`;
+    return `${int(res.removed)} 件を「${name}」から外しました${res.group.ids.length === 0 ? '(タスクタグは 0 件のまま残ります)' : ''}`;
   }
   // 狭い幅(768px 未満)では目次行の「グループ」から一覧を開く。外を押す / Esc で閉じ、焦点はボタンに戻す
   let groupsOpen = $state(false);
@@ -492,23 +492,23 @@
               </ol>
             </div>
           {/each}
-          <div class="toc-group groups-toggle" role="group" aria-label="グループ">
+          <div class="toc-group groups-toggle" role="group" aria-label="タスクタグ">
             <ol>
               <li>
                 <button type="button" class="toc-btn" bind:this={groupsBtn} aria-expanded={groupsOpen} aria-controls="group-pop" data-testid="groups-toggle" onclick={toggleGroups}>
-                  グループ<span class="cnt">{int(groupOptions.length)}</span>
+                  タスクタグ<span class="cnt">{int(groupOptions.length)}</span>
                 </button>
               </li>
             </ol>
           </div>
         </nav>
         <!-- サイドバー(768px 以上)の「グループ」の群。狭い幅では目次行の「グループ」から同じ中身を開く -->
-        <div class="rail-groups" role="group" aria-label="グループ">
-          <span class="toc-title" aria-hidden="true">グループ</span>
+        <div class="rail-groups" role="group" aria-label="タスクタグ">
+          <span class="toc-title" aria-hidden="true">タスクタグ</span>
           <GroupRail groups={groupOptions} current={currentName} selectedCount={adhocCount} {editable} anonymized={data.anonymized} onpick={pickGroup} />
         </div>
         {#if groupsOpen}
-          <div class="group-pop" id="group-pop" role="region" bind:this={groupsPop} tabindex="-1" aria-label="グループ" data-testid="group-pop" onfocusout={(e) => { const t = e.relatedTarget as Node | null; if (t && !groupsPop?.contains(t) && !groupsBtn?.contains(t)) closeGroups(false); }}>
+          <div class="group-pop" id="group-pop" role="region" bind:this={groupsPop} tabindex="-1" aria-label="タスクタグ" data-testid="group-pop" onfocusout={(e) => { const t = e.relatedTarget as Node | null; if (t && !groupsPop?.contains(t) && !groupsBtn?.contains(t)) closeGroups(false); }}>
             <GroupRail groups={groupOptions} current={currentName} selectedCount={adhocCount} {editable} anonymized={data.anonymized} onpick={(n) => { pickGroup(n); closeGroups(); }} />
           </div>
         {/if}
@@ -578,7 +578,7 @@
             読み取り時の注意: 未知のイベント種別 {int(data.warnings.unknownEventTypes)} 件、読めなかった行 {int(data.warnings.badLines)} 行。
           {/if}
           {#if data.warnings.notes?.length}
-            メモとグループ(atlas-notes)の読み取りで無視した箇所 {int(data.warnings.notes.length)} 件(全体サマリの集計明細に理由)。
+            メモとタスクタグ(atlas-notes)の読み取りで無視した箇所 {int(data.warnings.notes.length)} 件(全体サマリの集計明細に理由)。
           {/if}
         </p>
       </footer>

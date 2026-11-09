@@ -197,7 +197,7 @@
     <p class="note">ログに未知のイベント種別が {int(warnings.unknownEventTypes)} 件ありました(集計からは除外し、件数だけ数えています)。</p>
   {/if}
   {#each warnings.notes as n (n)}
-    <p class="note">メモとグループの読み取りの注意: {n}</p>
+    <p class="note">メモとタスクタグの読み取りの注意: {n}</p>
   {/each}
 </section>
 {/if}

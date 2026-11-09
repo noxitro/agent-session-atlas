@@ -316,7 +316,7 @@ describe('Phase 2 E2E: fixtures', () => {
     expect(ra.status, ra.stderr).toBe(0);
     const anonHtml = await readFile(join(outAnon, 'atlas.html'), 'utf8');
     const da = extractEmbedded<ReportData>(anonHtml);
-    expect(da.groups).toEqual([{ name: 'グループ 1', note: '', ids: [...g1, ghost] }, { name: 'グループ 2', note: '', ids: [ids[3]] }]);
+    expect(da.groups).toEqual([{ name: 'タスクタグ 1', note: '', ids: [...g1, ghost] }, { name: 'タスクタグ 2', note: '', ids: [ids[3]] }]);
     expect(anonHtml).not.toContain('甲の調べ');
     expect(anonHtml).not.toContain('甲の覚え書き');
 
