@@ -4,6 +4,7 @@
   import { dateTime, dec, duration, int, modelLabel, pathParts, sharedLeads, splitLead, truncate } from '../../lib/format.ts';
   import type { ReportGroup, SessionSummary } from '../../lib/types.ts';
   import SortMark from './SortMark.svelte';
+  import { restoredView, saveView } from '../view-restore.ts';
   import { categoryLabel, confidenceLabel } from '../../lib/judgment-labels.ts';
 
   let {
@@ -67,9 +68,16 @@
     active: (s) => s.activeMs ?? -1,
     human: (s) => s.judgment?.hours ?? -1,
   };
-  let sortKey = $state<Key>('time');
-  let asc = $state(false);
-  let page = $state(0);
+  // 戻る / 進むで開かれたら、離れたときの並べ替えとページから始める(view-restore.ts)
+  const back = restoredView()?.table;
+  let sortKey = $state<Key>(back && back.sortKey in value ? (back.sortKey as Key) : 'time');
+  let asc = $state(back?.asc === true);
+  let page = $state(back && Number.isInteger(back.page) && back.page > 0 ? back.page : 0);
+  $effect(() => {
+    const onHide = (): void => saveView({ table: { sortKey, asc, page } });
+    addEventListener('pagehide', onHide);
+    return () => removeEventListener('pagehide', onHide);
+  });
   const PAGE = 50;
 
   const sorted = $derived.by(() => {

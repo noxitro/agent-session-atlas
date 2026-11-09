@@ -550,6 +550,37 @@ describe('画面の操作', () => {
     }
   });
 
+  it('i. 戻る・進む: 詳細ページから戻るとスクロール位置と一覧の並べ替えが戻る。要点のリンクで絞り込んでから戻ると絞り込みが外れ、進むとまた絞り込む', async () => {
+    await page.goto('about:blank');
+    await page.goto(server.url);
+    const all = await shown();
+    // 一覧を「開始」の古い順に並べ替え、一覧の位置までスクロールしてから詳細ページへ
+    const startHead = page.locator('#sessions table.ledger thead th', { has: page.getByRole('button', { name: /^開始/ }) });
+    await startHead.getByRole('button').click();
+    await expect.poll(() => startHead.getAttribute('aria-sort')).toBe('ascending');
+    const firstName = async (): Promise<string> => page.locator('#sessions table.ledger tbody tr td.name a').first().innerText();
+    const first = await firstName();
+    await page.locator('#sessions').scrollIntoViewIfNeeded();
+    await page.evaluate("window.scrollTo({ top: document.getElementById('sessions').getBoundingClientRect().top + window.scrollY - 40, behavior: 'instant' })");
+    const y = await page.evaluate<number>('Math.round(window.scrollY)');
+    expect(y).toBeGreaterThan(1000);
+    await page.locator('#sessions table.ledger tbody tr td.name a').first().click();
+    await page.waitForURL('**/sessions/*.html');
+    await page.goBack();
+    await page.waitForURL('**/atlas.html*');
+    await expect.poll(() => page.evaluate<number>('Math.round(window.scrollY)')).toBe(y);
+    expect(await startHead.getAttribute('aria-sort')).toBe('ascending');
+    expect(await firstName()).toBe(first);
+    // 要点の「このツールを使ったセッションに絞り込む→」は履歴に残る移動。戻ると絞り込みが外れ、進むとまた絞り込む
+    await page.getByRole('link', { name: /このツールを使ったセッションに絞り込む/ }).first().click();
+    await expect.poll(shown).toBeLessThan(all);
+    const narrowed = await shown();
+    await page.goBack();
+    await expect.poll(shown).toBe(all);
+    await page.goForward();
+    await expect.poll(shown).toBe(narrowed);
+  });
+
   it('h. サイドバーを出す幅: 1024px でもサイドバーにグループの一覧が出て、768px 未満(375px)は上部の 1 行の「グループ」から開く', async () => {
     try {
       await page.setViewportSize({ width: 1024, height: 768 });

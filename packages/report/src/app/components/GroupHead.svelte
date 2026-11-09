@@ -294,11 +294,48 @@
     exported = null;
     uploaded = null;
     checked = null;
+    resumed = false;
     // mode と rootEl は依存に入れない(入れると「編集」を押した直後にこの effect が走って表示に戻ってしまう)
     if (!editable) untrack(() => mode !== 'view' && rootEl?.contains(document.activeElement) && focusMain());
     mode = 'view';
     error = '';
+    // 写している途中に別のページへ移って戻った(または開き直した)ときは、サーバで続いている進み具合を出し、終わるまで待つ
+    // upload は依存に入れない(先を選び直すたびに作り直され、結果の表示や記入欄が消えてしまう)
+    if (editable) untrack(() => upload && resumeUpload(groupName));
   });
+  /** 戻ったときに写している途中だったアップロードの、進み具合を出す(この画面から始めたものは copy() が出す) */
+  let resumed = $state(false);
+  function resumeUpload(name: string): void {
+    const u = upload;
+    if (!u || busy) return;
+    void u.progress(name).then((p) => {
+      if (!p || busy || name !== group.name) return;
+      busy = true;
+      task = 'upload';
+      progress = p;
+      const timer = setInterval(() => {
+        void u.progress(name).then(
+          (q) => {
+            if (q) {
+              progress = q;
+              return;
+            }
+            clearInterval(timer);
+            progress = null;
+            task = null;
+            busy = false;
+            resumed = true;
+          },
+          () => {
+            clearInterval(timer);
+            progress = null;
+            task = null;
+            busy = false;
+          },
+        );
+      }, 500);
+    }, () => {});
+  }
   const count = $derived(group.present === group.ids.length ? `${int(group.ids.length)} 件` : `${int(group.present)} / ${int(group.ids.length)} 件`);
 </script>
 
@@ -401,6 +438,9 @@
     </div>
   {/if}
   <p class="sr-only" role="status">{mode === 'view' ? exportedText || uploadedText : ''}</p>
+  {#if resumed && !uploaded && mode === 'view'}
+    <p class="exported" data-testid="group-upload-resumed" role="status">アップロードが終わりました。写した先の README.md で結果を確かめてください。</p>
+  {/if}
   {#if uploaded && mode === 'view'}
     <div class="exported" data-testid="group-uploaded">
       <p>{uploadedText}</p>

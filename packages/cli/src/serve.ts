@@ -549,7 +549,8 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
       }
       // 集計の途中は out/snapshot/ が書きかけのことがあるので待ってもらう
       if (jobs.running()) throw new HttpError(409, jobs.current()?.kind === 'refresh' ? '集計し直している最中です。終わってからアップロードしてください' : 'ほかの処理が動いています。終わってからアップロードしてください');
-      if (exporting) throw new HttpError(409, 'ほかのグループを書き出しています。終わってからアップロードしてください');
+      if (uploading) throw new HttpError(409, `「${uploading.name}」をアップロードしている最中です。終わってからもう一度押してください`);
+      if (exporting) throw new HttpError(409, 'ほかのタスクタグを書き出しています。終わってからアップロードしてください');
       const other = runningJobIn(outDir);
       if (other) throw new HttpError(409, `別の atlas の処理(${other})が動いています。終わってからアップロードしてください`);
       let release: () => void;

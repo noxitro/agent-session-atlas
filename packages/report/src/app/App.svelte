@@ -23,6 +23,7 @@
   import { applyTheme, loadTheme, type ThemeChoice } from './theme.ts';
   import { watchScrollFocus } from './scroll-focus.ts';
   import { api, serveToken, startHeartbeat, type GroupExport, type UploadHandlers, type UploadSetting } from './api.ts';
+  import { restoreDone, restoredView, saveView } from './view-restore.ts';
   import { JobStore } from './jobs.svelte.ts';
   import JobActions from './components/JobActions.svelte';
   import JobBand from './components/JobBand.svelte';
@@ -89,6 +90,12 @@
   // 要点欄などの #… リンク(絞り込みの状態)を押したときに絞り込みを切り替える。#overview のようなページ内リンクは無視
   $effect(() => {
     const onHash = (): void => {
+      // 戻る / 進むで # の無い URL(絞り込みの無い状態は # を書かない)に戻ったら、絞り込みも外す。
+      // 以前は読み飛ばしていたので、要点のリンクで絞り込んでから「戻る」を押しても絞り込みが残っていた
+      if (location.hash.length <= 1) {
+        if (!isEmptyFilter(filter)) filter = emptyFilter();
+        return;
+      }
       if (!isStateHash(location.hash)) return;
       filter = decodeFilter(location.hash);
       showView(decodeView(location.hash) ?? 'sessions');
@@ -109,7 +116,8 @@
   $effect(() => {
     const h = encodeFilter(filter);
     try {
-      history.replaceState(null, '', h ? `#${h}` : location.pathname + location.search);
+      // history.state(戻ったときの見た目。view-restore.ts)は消さずに URL だけ変える
+      history.replaceState(history.state, '', h ? `#${h}` : location.pathname + location.search);
     } catch {
       /* file:// で履歴を書けない環境では URL に残さないだけ */
     }
@@ -420,6 +428,37 @@
     const r = l + a.offsetWidth;
     if (l < ol.scrollLeft) ol.scrollLeft = l - 12;
     else if (r > ol.scrollLeft + ol.clientWidth) ol.scrollLeft = r - ol.clientWidth + 12;
+  });
+  // 戻る / 進む・再読み込みで開かれたら、離れたときのスクロール位置に戻す(描いてから。ブラウザに任せると描く前の短いページで先頭になる)。
+  // 離れるときに今の位置を履歴の項目に書く(view-restore.ts)
+  $effect(() => {
+    const y = restoredView()?.y;
+    try {
+      history.scrollRestoration = 'manual';
+    } catch {
+      /* 使えない環境ではブラウザに任せる */
+    }
+    // effect の時点で本文は描き終わっているので、その場で戻す。後から高さが変わる(タスクタグの見出しが出るなど)ときのため、
+    // 少し後にもう一度だけ合わせる(その間に自分でスクロールしたら合わせない)
+    if (y != null && y > 0) {
+      const go = (): void => window.scrollTo({ top: y, behavior: 'instant' });
+      go();
+      let moved = false;
+      const stop = (): void => void (moved = true);
+      addEventListener('wheel', stop, { once: true, passive: true });
+      addEventListener('keydown', stop, { once: true });
+      addEventListener('touchstart', stop, { once: true, passive: true });
+      setTimeout(() => {
+        if (!moved && Math.abs(window.scrollY - y) > 1) go();
+        removeEventListener('wheel', stop);
+        removeEventListener('keydown', stop);
+        removeEventListener('touchstart', stop);
+      }, 300);
+    }
+    restoreDone();
+    const onHide = (): void => saveView({ y: window.scrollY });
+    addEventListener('pagehide', onHide);
+    return () => removeEventListener('pagehide', onHide);
   });
   // 詳細・用語ページの「← 戻る」が history.back() で絞り込みを保てるよう、このページから別ページへ移るときに印を残す(file:// では referrer が無い)
   $effect(() => {
