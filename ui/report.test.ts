@@ -9,7 +9,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { chromium, type Browser, type Page } from 'playwright';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { startServe, type ServeHandle } from '../packages/cli/src/serve.ts';
@@ -246,6 +246,8 @@ describe('画面の操作', () => {
       await page.getByTestId('create-group').click();
       const form = page.getByTestId('create-form');
       const nameBox = form.getByPlaceholder('例: 11 月の調査');
+      // 開いた直後に requestAnimationFrame で名前の欄へ焦点を移す。先に打つと、遅い CI では説明を打つ途中で焦点が名前に戻り、説明が名前に入る
+      await expect.poll(() => page.evaluate<string | null>("document.activeElement?.getAttribute('placeholder') ?? null")).toBe('例: 11 月の調査');
       await nameBox.fill(name);
       await form.getByLabel('説明(任意)').fill(`${name}の説明`);
       // 押す前に入力が残っていることを確かめる(CI で 1 度、作成されずに待ちが切れた。原因を絞れるよう、どこで止まったかを出す)
@@ -442,7 +444,7 @@ describe('画面の操作', () => {
       await form.getByRole('button', { name: 'エクスプローラーで選ぶ…' }).click();
       await expect.poll(() => head.getByTestId('group-uploaded').innerText(), { timeout: 15_000 }).toMatch(/アップロードしました.2 セッション.*README\.md/);
       expect(JSON.parse(await readFile(configPath, 'utf8'))).toEqual({ uploadRoot: root });
-      expect(await head.getByTestId('group-upload-dest').locator('code').innerText()).toBe(`${dest}\\`);
+      expect(await head.getByTestId('group-upload-dest').locator('code').innerText()).toBe(`${dest}${sep}`);
       expect(await head.getByTestId('group-uploaded').locator('code').innerText()).toBe(dest);
       for (const id of ids) expect(existsSync(join(dest, id, 'events.jsonl'))).toBe(true);
       expect(await readFile(join(dest, 'README.md'), 'utf8')).toMatch(/^# アップ\/テスト\n\n画面から写す\n/);
