@@ -8,5 +8,6 @@
       "extensions": [".md", ".mdx"],
       "skills": ["notes-search"]
     }
-  ]
+  ],
+  "uploadRoot": "E:\\dev\\atlas-logs"
 }

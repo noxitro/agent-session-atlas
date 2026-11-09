@@ -7,10 +7,12 @@ import { newParseStats, parseEvents } from './events.ts';
 import { resolveInstructions } from './instructions.ts';
 import { normalizeSession } from './normalize.ts';
 import { ProjectResolver, type ProjectResolverOptions } from './project.ts';
-import { DESKTOP_JSON, readSnapshotManifest, SNAPSHOT_SESSION_DB } from './snapshot.ts';
-import { desktopForSession, type DesktopData } from './desktop.ts';
+import { DESKTOP_JSON, readSnapshotManifest, SESSION_STORE_JSON, SNAPSHOT_SESSION_DB } from './snapshot.ts';
+import { desktopForSession, type DesktopData, type DesktopSessionInfo } from './desktop.ts';
 import { openReadOnly } from './sqlite.ts';
 import { WikiClassifier, type WikiSpec } from './wiki.ts';
+
+export { SESSION_STORE_JSON };
 import {
   SESSIONS_SCHEMA_VERSION,
   type DbFileRow,
@@ -45,17 +47,38 @@ function tableExists(db: Awaited<ReturnType<typeof openReadOnly>>, name: string)
   return db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name) != null;
 }
 
+/** session-store.db から読む表と列(セッション 1 件分を書き出すときも同じ問い合わせを使う) */
+const STORE_QUERIES = {
+  sessions: { table: 'sessions', sql: 'SELECT id, cwd, repository, host_type, branch, summary, created_at, updated_at FROM sessions', key: 'id', order: '' },
+  turns: { table: 'turns', sql: 'SELECT session_id, turn_index, user_message, assistant_response, timestamp FROM turns', key: 'session_id', order: '' },
+  usage: { table: 'assistant_usage_events', sql: 'SELECT * FROM assistant_usage_events', key: 'session_id', order: ' ORDER BY id' },
+  files: { table: 'session_files', sql: 'SELECT session_id, file_path, tool_name, turn_index, first_seen_at FROM session_files', key: 'session_id', order: '' },
+} as const;
+
+
+export interface SessionStoreJson {
+  version: 1;
+  /** session-store.db の schema_version(無ければ null) */
+  schemaVersion: number | null;
+  sessions: DbSessionRow[];
+  turns: DbTurnRow[];
+  usage: DbUsageRow[];
+  files: DbFileRow[];
+  /** デスクトップアプリの data.db(許可リストの列)の、このセッションの行。アップロードで添える。無ければ省く */
+  desktop?: DesktopSessionInfo | null;
+}
+
 /** session-store.db(スナップショット側)を読む。無ければ空 */
 export async function loadStore(dbPath: string): Promise<StoreData> {
   const empty: StoreData = { sessions: new Map(), turns: new Map(), usage: new Map(), files: new Map(), schemaVersion: null };
   if (!existsSync(dbPath)) return empty;
   const db = await openReadOnly(dbPath);
   try {
-    const all = <T>(table: string, sql: string): T[] => (tableExists(db, table) ? (db.prepare(sql).all() as unknown as T[]) : []);
-    const sessions = all<DbSessionRow>('sessions', 'SELECT id, cwd, repository, host_type, branch, summary, created_at, updated_at FROM sessions');
-    const turns = all<DbTurnRow>('turns', 'SELECT session_id, turn_index, user_message, assistant_response, timestamp FROM turns');
-    const usage = all<DbUsageRow>('assistant_usage_events', 'SELECT * FROM assistant_usage_events ORDER BY id');
-    const files = all<DbFileRow>('session_files', 'SELECT session_id, file_path, tool_name, turn_index, first_seen_at FROM session_files');
+    const all = <T>(q: (typeof STORE_QUERIES)[keyof typeof STORE_QUERIES]): T[] => (tableExists(db, q.table) ? (db.prepare(q.sql + q.order).all() as unknown as T[]) : []);
+    const sessions = all<DbSessionRow>(STORE_QUERIES.sessions);
+    const turns = all<DbTurnRow>(STORE_QUERIES.turns);
+    const usage = all<DbUsageRow>(STORE_QUERIES.usage);
+    const files = all<DbFileRow>(STORE_QUERIES.files);
     const sv = tableExists(db, 'schema_version') ? (db.prepare('SELECT version FROM schema_version').get() as { version: number } | undefined) : undefined;
     return {
       sessions: new Map(sessions.map((s) => [s.id, { ...s }])),
@@ -67,6 +90,81 @@ export async function loadStore(dbPath: string): Promise<StoreData> {
   } finally {
     db.close();
   }
+}
+
+/** session-store.db からセッション 1 件分の行を取り出す(アップロードで添える)。DB が無いか、そのセッションの行が 1 つも無ければ null */
+export async function sessionStoreRows(dbPath: string, id: string): Promise<SessionStoreJson | null> {
+  if (!existsSync(dbPath)) return null;
+  const db = await openReadOnly(dbPath);
+  try {
+    const rows = <T>(q: (typeof STORE_QUERIES)[keyof typeof STORE_QUERIES]): T[] =>
+      tableExists(db, q.table) ? (db.prepare(`${q.sql} WHERE ${q.key} = ?${q.order}`).all(id) as unknown as T[]).map((r) => ({ ...r })) : [];
+    const out: SessionStoreJson = {
+      version: 1,
+      schemaVersion: tableExists(db, 'schema_version') ? ((db.prepare('SELECT version FROM schema_version').get() as { version: number } | undefined)?.version ?? null) : null,
+      sessions: rows<DbSessionRow>(STORE_QUERIES.sessions),
+      turns: rows<DbTurnRow>(STORE_QUERIES.turns),
+      usage: rows<DbUsageRow>(STORE_QUERIES.usage),
+      files: rows<DbFileRow>(STORE_QUERIES.files),
+    };
+    return out.sessions.length + out.turns.length + out.usage.length + out.files.length ? out : null;
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * セッションのフォルダに添えた行(SESSION_STORE_JSON)を store に足す。session-store.db に同じセッションの行があればそちらを優先する
+ * (Copilot の DB が正。添えた行はアップロード先から集計し直すときのためのもの)。読めなければ理由を返す
+ */
+export async function mergeSessionStoreJson(store: StoreData, id: string, path: string, desktops?: Map<string, DesktopSessionInfo>): Promise<string | null> {
+  let j: SessionStoreJson;
+  try {
+    j = JSON.parse(await readFile(path, 'utf8')) as SessionStoreJson;
+    if (j?.version !== 1 || !Array.isArray(j.sessions) || !Array.isArray(j.turns) || !Array.isArray(j.usage) || !Array.isArray(j.files)) throw new Error('形が違います');
+  } catch (e) {
+    return `${id}: ${SESSION_STORE_JSON} を読めない (${(e as Error).message})`;
+  }
+  // 別のセッションの行が混じっていても、このフォルダのセッションの分だけを使う
+  const s = j.sessions.find((r) => r.id === id);
+  if (s && !store.sessions.has(id)) store.sessions.set(id, { ...s });
+  const add = <T extends { session_id: string }>(m: Map<string, T[]>, rows: T[]): void => {
+    const mine = rows.filter((r) => r.session_id === id);
+    if (mine.length && !m.get(id)?.length) m.set(id, mine.map((r) => ({ ...r })));
+  };
+  add(store.turns, j.turns);
+  add(store.usage, j.usage);
+  add(store.files, j.files);
+  if (store.schemaVersion == null && j.schemaVersion != null) store.schemaVersion = j.schemaVersion;
+  // data.db の行(desktop.json に同じセッションがあればそちらを使う。extract が決める)。
+  // 形が違えば使わない(レポートは contextUsage などを配列として読むので、版の違う・手で直したファイルで止まらないように)
+  if (j.desktop == null) return null;
+  if (!isDesktopSessionInfo(j.desktop)) return `${id}: ${SESSION_STORE_JSON} の desktop の形が違うため使いません`;
+  desktops?.set(id, j.desktop);
+  return null;
+}
+
+/** デスクトップアプリが作ったばかりのセッションの workspace.yaml に残る仮の名前(題名は data.db の側で付く) */
+const PLACEHOLDER_NAMES = new Set(['New session']);
+
+/**
+ * セッションの名前。workspace.yaml の名前が無いか仮の名前(New session)のままなら、デスクトップアプリの data.db の題名を使う。
+ * 名前があればそちらを残す(利用者が付けた名前の方が、自動で付いた題名より短く的確なことがある)
+ */
+export function sessionName(name: string | null, desktopTitle: unknown): string | null {
+  const t = typeof desktopTitle === 'string' ? desktopTitle.trim() : '';
+  return t && (!name?.trim() || PLACEHOLDER_NAMES.has(name.trim())) ? t : name;
+}
+
+const isRow = (v: unknown): boolean => typeof v === 'object' && v !== null && !Array.isArray(v);
+const isRowOrNull = (v: unknown): boolean => v === null || isRow(v);
+const isRows = (v: unknown): boolean => Array.isArray(v) && v.every(isRow);
+
+/** desktopForSession が返す形か(添えたファイルを信じる前に確かめる) */
+function isDesktopSessionInfo(v: unknown): v is DesktopSessionInfo {
+  if (!isRow(v)) return false;
+  const d = v as Record<string, unknown>;
+  return isRowOrNull(d.session) && isRows(d.contextUsage) && isRows(d.checkpoints) && isRows(d.activity) && isRowOrNull(d.workspace) && isRowOrNull(d.project);
 }
 
 /**
@@ -148,12 +246,20 @@ export async function extract(snapshotDir: string, opts: ExtractOptions = {}): P
   }
   const stateDir = join(snapshotDir, 'session-state');
   const dirs = new Set(await listSessionDirs(stateDir));
+  const messages: string[] = [];
+  // アップロード先から集計し直すとき: セッションのフォルダに添えた session-store.db と data.db の行を足す
+  const dirDesktops = new Map<string, DesktopSessionInfo>();
+  for (const id of dirs) {
+    const p = join(stateDir, id, SESSION_STORE_JSON);
+    if (!existsSync(p)) continue;
+    const w = await mergeSessionStoreJson(store, id, p, dirDesktops);
+    if (w) messages.push(w);
+  }
 
   const ids = [...new Set([...store.sessions.keys(), ...dirs])].sort();
   const resolver = opts.projects === false ? null : new ProjectResolver(withSourceHome(opts.projects ?? {}, manifest?.sourceRoot ?? null));
   const wikiClassifier = new WikiClassifier(opts.wikis);
   const sessions: SessionRecord[] = [];
-  const messages: string[] = [];
   const unknownAll: Record<string, number> = {};
   let badLines = 0;
   let done = 0;
@@ -192,7 +298,8 @@ export async function extract(snapshotDir: string, opts: ExtractOptions = {}): P
       rec.project = p.project;
       rec.projectSource = p.source;
     }
-    rec.desktop = desktop ? desktopForSession(desktop, id) : null;
+    rec.desktop = (desktop ? desktopForSession(desktop, id) : null) ?? dirDesktops.get(id) ?? null;
+    rec.name = sessionName(rec.name, rec.desktop?.session?.title);
     done++;
     opts.onProgress?.(done, ids.length, id);
     if (sinceMs != null) {

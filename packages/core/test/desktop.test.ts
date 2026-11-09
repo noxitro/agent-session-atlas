@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { DESKTOP_ALLOWLIST, DESKTOP_FORBIDDEN_TABLES, desktopForSession, readDesktopDb } from '../src/desktop.ts';
+import { sessionName } from '../src/extract.ts';
 import { openWritable } from '../src/sqlite.ts';
 
 const SECRET = ['ghp', 'UNITFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE01'].join('_'); // トークンの形をソースに直書きしない
@@ -79,5 +80,17 @@ CREATE TABLE unrelated_table (x TEXT);
     const d = await readDesktopDb(path);
     expect(d!.warnings.length).toBeGreaterThan(0);
     expect(Object.keys(DESKTOP_FORBIDDEN_TABLES)).toContain('accounts');
+  });
+});
+
+describe('sessionName(デスクトップアプリの題名で名前を補う)', () => {
+  it('名前が無いか仮の名前(New session)なら data.db の題名、名前があればそのまま', () => {
+    expect(sessionName('New session', 'LSP を試す')).toBe('LSP を試す');
+    expect(sessionName(null, ' LSP を試す ')).toBe('LSP を試す');
+    expect(sessionName('  ', 'LSP を試す')).toBe('LSP を試す');
+    expect(sessionName('Studio UI ux監査', '自動で付いた長い題名')).toBe('Studio UI ux監査');
+    expect(sessionName('New session', null)).toBe('New session');
+    expect(sessionName('New session', '   ')).toBe('New session');
+    expect(sessionName(null, 42)).toBeNull();
   });
 });

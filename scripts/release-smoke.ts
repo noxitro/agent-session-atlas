@@ -32,8 +32,8 @@ if (depsFresh(pkg)) fail('node_modules が無いのに deps-fresh が「揃っ�
 execSync('npm install --no-audit --no-fund', { cwd: pkg, stdio: 'inherit' });
 if (!depsFresh(pkg)) fail('npm install のあとも deps-fresh が「足りない」と判定しました');
 
-// setup.bat が呼ぶ初期設定: vault なし・工程名は既定・最後に「n」で、書かずに正常に終わる
-const setup = spawnSync(process.execPath, [join('packages', 'cli', 'src', 'setup.ts')], { cwd: pkg, input: '\n\nn\n', encoding: 'utf8' });
+// setup.bat が呼ぶ初期設定: vault なし・工程名は既定・アップロード先は決めない・最後に「n」で、書かずに正常に終わる
+const setup = spawnSync(process.execPath, [join('packages', 'cli', 'src', 'setup.ts')], { cwd: pkg, input: '\n\n\nn\n', encoding: 'utf8' });
 if (setup.status !== 0 || !setup.stdout.includes('書きませんでした')) fail(`初期設定(setup.ts)が通りません: ${setup.stderr}${setup.stdout}`);
 if (existsSync(join(pkg, 'atlas.config.json'))) fail('初期設定で「n」と答えたのに atlas.config.json ができました');
 

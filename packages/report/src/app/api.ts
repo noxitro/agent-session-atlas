@@ -13,6 +13,38 @@ export interface ApiState {
   groupsPath: string;
   exists: boolean;
   warnings: string[];
+  /** グループのアップロード先(atlas.config.json の uploadRoot)。この機能より古い serve には無い */
+  upload?: UploadSetting;
+}
+
+/** グループのアップロード先の設定。root は基底フォルダ(未設定は null)、error は設定ファイルを読めない理由、canPick はフォルダを選ぶ画面を出せるか */
+export interface UploadSetting {
+  root: string | null;
+  error: string | null;
+  canPick: boolean;
+}
+
+/** アップロードの操作(App が下の api をつなぎ、GroupHead が使う)。setting は今のアップロード先 */
+export interface UploadHandlers {
+  setting: UploadSetting;
+  /** フォルダを選ぶ画面を出して既定にする。取り消したら null */
+  pick: () => Promise<string | null>;
+  /** 入力したパスを既定にする */
+  setRoot: (root: string) => Promise<string>;
+  run: (name: string) => Promise<GroupUpload>;
+  open: (name: string) => Promise<void>;
+}
+
+/** グループのアップロードの結果(serve の group-upload.ts と同じ形) */
+export interface GroupUpload {
+  name: string;
+  dir: string;
+  uploaded: number;
+  replaced: number;
+  missing: string[];
+  snapshotAt: string | null;
+  /** メモを添えたセッションの数 */
+  memos: number;
 }
 
 /** serve が差し込んだ token。http(s) 以外・無し・プレースホルダ(__ で始まる)なら null */
@@ -69,6 +101,21 @@ export const api = {
     return connect(fetch('api/groups/' + encodeURIComponent(name), { method: 'DELETE', headers: headers(token) }), (r) => parse(r));
   },
   /** グループの表(CSV)・集計・記録を out/groups/<名前>/ に書き出す */
+  /** フォルダを選ぶ画面を出し、選んだ場所をアップロード先にする(取り消したら root は null) */
+  pickUploadRoot(token: string): Promise<{ root: string | null }> {
+    return connect(fetch('api/upload-root', { method: 'POST', headers: headers(token) }), (r) => parse(r));
+  },
+  /** 入力したパスをアップロード先にする(実在するフォルダだけ) */
+  setUploadRoot(token: string, root: string): Promise<{ root: string }> {
+    return connect(fetch('api/upload-root', { method: 'PUT', headers: headers(token), body: JSON.stringify({ root }) }), (r) => parse(r));
+  },
+  uploadGroup(token: string, name: string): Promise<GroupUpload> {
+    return connect(fetch('api/groups/' + encodeURIComponent(name) + '/upload', { method: 'POST', headers: headers(token) }), (r) => parse<GroupUpload>(r));
+  },
+  /** 写した先のフォルダをエクスプローラーで開く */
+  openUpload(token: string, name: string): Promise<{ dir: string }> {
+    return connect(fetch('api/groups/' + encodeURIComponent(name) + '/upload/open', { method: 'POST', headers: headers(token) }), (r) => parse(r));
+  },
   exportGroup(token: string, name: string): Promise<GroupExport> {
     return connect(fetch('api/groups/' + encodeURIComponent(name) + '/export', { method: 'POST', headers: headers(token) }), (r) => parse<GroupExport>(r));
   },

@@ -49,6 +49,9 @@ import { importJudgmentsText, importTurnJudgmentsText, JudgmentValidationError, 
 import { phaseNames } from './config.ts';
 import { acquireOutLock, JobError, JobRunner, OutBusyError, parseJobRequest, runningJobIn, type RunFullFn, type SpawnFn } from './jobs.ts';
 import { exportGroup } from './group-export.ts';
+import { uploadDir, uploadGroup } from './group-upload.ts';
+import { defaultConfigPath, loadConfig, parseUploadRoot, updateConfig } from './config.ts';
+import { CAN_PICK_FOLDER, openFolder, pickFolder } from './folder-picker.ts';
 
 export const TOKEN_PLACEHOLDER = '__ATLAS_TOKEN__';
 export const SERVE_STATE_FILE = '.serve.json';
@@ -77,6 +80,10 @@ export interface ServeOptions {
   jobs?: { spawn?: SpawnFn; env?: NodeJS.ProcessEnv; runFull?: RunFullFn };
   /** Phase 14: 記録の表示で描く .md の上限(バイト)。既定は VIEW_LIMIT(20MB) */
   viewLimit?: number;
+  /** グループのアップロード先(uploadRoot)を読み書きする設定ファイル。既定は defaultConfigPath() */
+  configPath?: string;
+  /** フォルダを選ぶ画面とエクスプローラーで開く操作(既定は folder-picker.ts。テストで差し替える) */
+  folders?: { canPick?: boolean; pick?: (title: string, initial: string | null) => Promise<string | null>; open?: (dir: string) => void };
 }
 
 export interface ServeHandle {
@@ -301,6 +308,36 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
   const refreshing = (): boolean => jobs.running() && jobs.current()?.kind === 'refresh';
   /** グループの書き出し中(その間はジョブを始めない) */
   let exporting = false;
+  const configPath = resolve(o.configPath ?? defaultConfigPath());
+  const canPick = o.folders?.canPick ?? CAN_PICK_FOLDER;
+  const pick = o.folders?.pick ?? pickFolder;
+  const openDir = o.folders?.open ?? openFolder;
+  /** 設定のアップロード先(読めない設定は理由つきで返す。画面に出す) */
+  async function uploadRootOf(): Promise<{ root: string | null; error: string | null }> {
+    try {
+      return { root: (await loadConfig(configPath, false)).uploadRoot, error: null };
+    } catch (e) {
+      return { root: null, error: (e as Error).message };
+    }
+  }
+  /** アップロード先を決めて設定に書く(実在するフォルダだけ) */
+  async function saveUploadRoot(input: unknown): Promise<string> {
+    let root: string;
+    try {
+      root = parseUploadRoot(input);
+    } catch (e) {
+      throw new HttpError(400, (e as Error).message);
+    }
+    if (!existsSync(root) || !(await stat(root)).isDirectory()) throw new HttpError(400, `フォルダが見つかりません: ${root}`);
+    try {
+      await updateConfig(configPath, 'uploadRoot', root);
+    } catch (e) {
+      throw new HttpError(409, (e as Error).message);
+    }
+    log(`serve: アップロード先を ${root} にしました(${configPath})`);
+    return root;
+  }
+  let picking = false;
   const REFRESHING = '集計し直している最中です(詳細ページと記録は作り直しの途中です)。集計が終わってから開き直してください。';
   let cssCache: string | null = null;
   const pageCss = async (): Promise<string> => (cssCache ??= await readPageCss());
@@ -382,8 +419,37 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     if (path === '/api/state' && method === 'GET') {
       const g = await loadGroups(groupsPath);
       const memos = Object.fromEntries([...(await loadMemoIndex(memoDir))].map(([id, x]) => [id, memoSummary(x.text, x.updatedAt)]));
-      sendJson(res, 200, { version: 1, groups: g.groups, memos, notesDir: o.notesDir, groupsPath, exists: g.exists, warnings: g.warnings });
+      const up = await uploadRootOf();
+      sendJson(res, 200, { version: 1, groups: g.groups, memos, notesDir: o.notesDir, groupsPath, exists: g.exists, warnings: g.warnings, upload: { root: up.root, error: up.error, canPick } });
       return;
+    }
+    if (path === '/api/upload-root') {
+      checkToken(req);
+      if (method === 'PUT') {
+        const body = await readJsonBody(req);
+        sendJson(res, 200, { root: await saveUploadRoot(body.root) });
+        return;
+      }
+      if (method === 'POST') {
+        // フォルダを選ぶ画面を出し、選んだ場所を既定にする(取り消したら root: null で何も変えない)
+        if (!canPick) throw new HttpError(501, 'この OS ではフォルダを選ぶ画面を出せません。パスを入力してください');
+        if (picking) throw new HttpError(409, 'フォルダを選ぶ画面が開いています(タスクバーを確かめてください)');
+        picking = true;
+        try {
+          const cur = (await uploadRootOf()).root;
+          let chosen: string | null;
+          try {
+            chosen = await pick('アップロード先の基底フォルダを選んでください(この中にグループ名のフォルダを作ります)', cur);
+          } catch (e) {
+            throw new HttpError(500, (e as Error).message);
+          }
+          sendJson(res, 200, { root: chosen == null ? null : await saveUploadRoot(chosen) });
+        } finally {
+          picking = false;
+        }
+        return;
+      }
+      throw new HttpError(405, 'この方法では使えません');
     }
     if (path === '/api/memo-editor.js' && method === 'GET') {
       res.writeHead(200, { 'content-type': MIME['.js'], 'cache-control': 'no-store', 'x-atlas-serve': '1', ...NOSNIFF });
@@ -411,6 +477,50 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     const memo = /^\/api\/memos\/([^/]+)(\/images)?$/.exec(path);
     if (memo) {
       await memoApi(req, res, method, memo[1], !!memo[2]);
+      return;
+    }
+    const gu = /^\/api\/groups\/([^/]+)\/upload(\/open)?$/.exec(path);
+    if (gu) {
+      if (method !== 'POST') throw new HttpError(405, 'この方法では使えません');
+      checkToken(req);
+      let name: string;
+      try {
+        name = decodeURIComponent(gu[1]);
+      } catch {
+        throw new HttpError(400, 'グループ名を読めません');
+      }
+      const up = await uploadRootOf();
+      if (up.error) throw new HttpError(409, up.error);
+      if (!up.root) throw new HttpError(409, 'アップロード先が決まっていません。先に場所を選んでください');
+      if (gu[2]) {
+        // 写した先のフォルダを開く(開けるのは設定のアップロード先の中の、このグループのフォルダだけ)
+        const dir = uploadDir(up.root, name);
+        if (!existsSync(dir)) throw new HttpError(404, `まだアップロードしていません: ${dir}`);
+        openDir(dir);
+        sendJson(res, 200, { dir });
+        return;
+      }
+      // 集計の途中は out/snapshot/ が書きかけのことがあるので待ってもらう
+      if (jobs.running()) throw new HttpError(409, jobs.current()?.kind === 'refresh' ? '集計し直している最中です。終わってからアップロードしてください' : 'ほかの処理が動いています。終わってからアップロードしてください');
+      if (exporting) throw new HttpError(409, 'ほかのグループを書き出しています。終わってからアップロードしてください');
+      const other = runningJobIn(outDir);
+      if (other) throw new HttpError(409, `別の atlas の処理(${other})が動いています。終わってからアップロードしてください`);
+      let release: () => void;
+      try {
+        release = acquireOutLock(outDir, 'group upload', 'serve');
+      } catch (e) {
+        if (e instanceof OutBusyError) throw new HttpError(409, e.message);
+        throw e;
+      }
+      exporting = true;
+      try {
+        sendJson(res, 200, await uploadGroup({ snapshot: join(outDir, 'snapshot'), groups: groupsPath, notes: resolve(o.notesDir), sessions: join(outDir, 'sessions.json') }, name, up.root, log));
+      } catch (e) {
+        throw new HttpError(/^グループ「.*」はありません/.test((e as Error).message) ? 404 : 409, (e as Error).message);
+      } finally {
+        exporting = false;
+        release();
+      }
       return;
     }
     const ge = /^\/api\/groups\/([^/]+)\/export$/.exec(path);

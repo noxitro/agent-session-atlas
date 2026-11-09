@@ -26,7 +26,7 @@ npm run atlas -- --help                    # 使い方
 | `serve` | `out/` をローカルサーバ(`127.0.0.1`)で配信してブラウザで開く。画面からグループとメモを書け、集計し直す・工数の判定・記録と全文記録の表示ができる([screen.md の「画面からの操作」](screen.md#画面からの操作))。ブラウザを閉じると止まる(画面から動かした処理の実行中は、終わるまで待ってから止まる)。`atlas.bat` はこれで終わる |
 | `memo list` / `memo show <id>` / `memo set <id> <本文...>` / `memo set <id> --file <path>` / `memo remove <id>` | セッションごとのメモ(`atlas-notes/memos/<id>.md`)を一覧・表示・保存・削除する。id は先頭の数文字でよい。`remove` は画像を残す([screen.md の「セッションのメモ」](screen.md#セッションのメモ)) |
 | `turns bundle [--unjudged]` / `turns run [--limit <n>] [--model <名前>]` / `turns import <ファイル>` | 依頼ごとの採用の判定(段階 2。[judge.md の 3](judge.md#3-依頼ごとの採用段階-2))。`bundle` は M365 Copilot などに添付する `<out>/turn-bundle/parts/` と、GitHub Copilot CLI に渡す塊を作る(LLM は呼ばない)。`run` は GitHub Copilot CLI で判定する(AI クレジットを消費。opencode と従量課金の API は使わない)。`import` はチャットの返答を `<out>/turn-judgments.json` に取り込む |
-| `group list` / `group add <名前> <id...> [--note <一文>]` / `group remove <名前>` / `group export <名前>` | 名前付きグループ(`atlas-notes/groups.json`)を一覧・追加・削除する。`export` はそのグループの表(CSV)・集計・記録を `<out>/groups/<名前>/` に書き出す([outputs.md の「表(CSV)」](outputs.md#表csv))。`add` は既存の名前なら id を追記(重複は除く)。id は先頭の数文字でよい(1 つに決まらなければエラー)。壊れたファイルは上書きしない([screen.md の「グループとセッションの選択」](screen.md#グループとセッションの選択)) |
+| `group list` / `group add <名前> <id...> [--note <一文>]` / `group remove <名前>` / `group export <名前>` / `group upload <名前> [--to <基底フォルダ>]` | 名前付きグループ(`atlas-notes/groups.json`)を一覧・追加・削除する。`export` はそのグループの表(CSV)・集計・記録を `<out>/groups/<名前>/` に書き出す([outputs.md の「表(CSV)」](outputs.md#表csv))。`upload` はそのグループのセッションの生ログ(前回の集計で `<out>/snapshot/` に複製したもの)と `session-store.db`・`data.db`(許可リストの列だけ)のそのセッションの行(`atlas-session-store.json`)を `<基底>/<名前>/<セッション id>/` に写し、メモがあれば `atlas-memo.md`(画像は `atlas-memo/`)を添え、`<基底>/<名前>/README.md` にグループの説明と今回写したセッションの一覧を書く。同じセッションは置き換え、ほかのフォルダには触れない。基底は `--to` か設定の `uploadRoot`(無いフォルダは作らずに止まる。[screen.md の「グループを作る・直す」](screen.md#グループを作る直すatlasbat-から開いたときだけ))。`add` は既存の名前なら id を追記(重複は除く)。id は先頭の数文字でよい(1 つに決まらなければエラー)。壊れたファイルは上書きしない([screen.md の「グループとセッションの選択」](screen.md#グループとセッションの選択)) |
 
 ## オプション
 
@@ -53,7 +53,8 @@ npm run atlas -- --help                    # 使い方
 | `--snapshot-all` | `snapshot` / `all` / `export` で、既定で写さない大きなもの(`rewind-snapshots/`、一覧に無い名前のフォルダ、`logs/`)も写す |
 | `--snapshot-prune` | `snapshot` / `all` / `export` で、前回 `--snapshot-all` で写したが今回は写さないものを消す(既定は残して `snapshot-manifest.json` の `extras.leftover` とログに日時を出す) |
 | `--temp-dir <dir>` | `extract` で、このフォルダ配下を「(一時フォルダ)」にまとめる(複数指定可)。指定すると既定の判定(`%TEMP%` と `AppData\Local\Temp`・`/tmp` のパターン)を使わず、挙げたフォルダだけを一時フォルダとみなす。このリポジトリ自体を一時フォルダ配下に置いて試すときや、別のマシンのデータを読むとき用 |
-| `--config <file>` | `extract` と `all` で読む設定ファイル(既定: 環境変数 `ATLAS_CONFIG`、無ければリポジトリ直下の `atlas.config.json`。下記「[wiki の指定](#wiki-の指定)」) |
+| `--config <file>` | `extract`・`all`・`serve`・`group upload` で読む設定ファイル(既定: 環境変数 `ATLAS_CONFIG`、無ければリポジトリ直下の `atlas.config.json`。下記「[wiki の指定](#wiki-の指定)」と「[アップロード先の指定](#アップロード先の指定)」)。`serve` は画面で決めたアップロード先をこのファイルに書く |
+| `--to <dir>` | `group upload` で、アップロード先の基底フォルダ(フルパス)。省略すると設定の `uploadRoot` |
 
 `judge run` 専用のオプション(`--backend` `--limit` `--only` `--concurrency` `--force` `--no-allow-tools` `--timeout`)は [judge.md](judge.md) を見てください。`judge run` では `--model` は判定に使うモデルの指定になります。
 
@@ -62,6 +63,8 @@ npm run atlas -- --help                    # 使い方
 `snapshot` は各セッションの `session-state/<id>/session.db`(エージェントが残す todo の記録)も `session-store.db` と同じ方法(元を開かずにバイト列をコピーし、コピー側から `VACUUM INTO`)で複製します。2 回目以降は元のサイズと更新時刻が同じなら複製し直しません。`extract` が読むのは todo の状態別の件数と依存関係の数だけで、タイトルや説明は読みません。壊れていて複製できない `session.db` はそのセッションだけ飛ばし、理由を警告に出します。`session-store.db` を、Copilot が書き続けているなどで何度か取り直しても一貫した状態で複製できなかったときは、集計を止めずに前回の複製を使い(前回の複製が無ければその内容を使わず)、理由を警告に出します。走査の途中で消されたセッションは飛ばします。
 
 `snapshot` が `~/.copilot` から名前だけ記録するもの(中身は読みません): `skills/` のディレクトリ名、`installed-plugins/<マーケットプレイス>/<プラグイン>/` とその `skills/` のディレクトリ名、`settings.json` の `disabledSkills`(他のキーは記録しません)。読めなかったものは理由を `extract` の警告に出します。
+
+`--home` には、`group upload` で写したグループのフォルダ(`<基底>\<グループ名>`。直下にセッション ID のフォルダが並ぶもの)も指定できます。`session-state\` と `session-store.db` が無く、直下に `events.jsonl` か `workspace.yaml` を持つフォルダがあれば、そのフォルダを `session-state\` とみなして写し(`snapshot-manifest.json` の `layout` が `flat`)、`extract` は各セッションのフォルダの `atlas-session-store.json`(`session-store.db` と `data.db` のそのセッションの行)も読みます(同じセッションの行が `session-store.db` や `data.db` にあればそちらを使います)。指示ファイルの名前はほかのセッションと突き合わせて決めるため、一部のセッションだけを集計すると「不明」になることがあります。それ以外は元から集計したのと同じになります。
 
 `extract` は、repository の記録が無いセッションについて、作業フォルダ(`gitRoot`。無ければ `cwd` から上へ探した `.git`)の `.git/config` の `[remote "origin"]` を**読むだけ**で(git コマンドは使いません)、URL から「所有者/リポジトリ」を取り出してプロジェクトにします。worktree(`.git` がファイル)は `gitdir` → `commondir` を辿って共有の設定を読みます。origin が無い・読めないときはパスのままです。上へ探すときは、ホームディレクトリと一時フォルダより上には上りません。
 
@@ -106,3 +109,13 @@ llm-wiki の参照は、ツール呼び出しの引数に vault の場所が現�
 - 項目の書き間違いは、件数が 0 になって気付きにくいのでエラーで止めます。
 
 判定は `extract` で行うので、設定を変えたら `extract` からやり直してください(`atlas.bat` や `npm run atlas` なら毎回行います)。`extract` のログに対象の vault と参照のあったセッション数が出ます(未設定のときはその旨が出ます)。0 件のときは、まず `path` が合っているか確かめてください。
+
+## アップロード先の指定
+
+画面のグループの「アップロード」と `group upload` が写す先の基底フォルダです。`setup.bat` の 3 つ目の質問か、画面の「場所を決める…」で決めると `atlas.config.json` に書かれます。手で書くときはフルパスで書きます(`~/` で始めるとホームから)。
+
+```json
+{ "uploadRoot": "E:\\dev\\atlas-logs" }
+```
+
+写す先は `<uploadRoot>\<グループ名>\<セッション ID>\` です。基底のフォルダが無いときは作らずに止まります。

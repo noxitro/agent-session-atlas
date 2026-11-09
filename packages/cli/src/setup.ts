@@ -1,4 +1,4 @@
-// 初期設定(setup.bat から呼ぶ): llm-wiki の vault と普段の工程名を対話で尋ね、リポジトリ直下の atlas.config.json を書く。
+// 初期設定(setup.bat から呼ぶ): llm-wiki の vault と普段の工程名、グループのアップロード先を対話で尋ね、リポジトリ直下の atlas.config.json を書く。
 // 書く前に parseConfig で検査し、既存の設定は atlas.config.json.bak に退避する。集計はしない(atlas.bat で行う)。
 import { existsSync, statSync } from 'node:fs';
 import { copyFile, writeFile } from 'node:fs/promises';
@@ -7,7 +7,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_PHASE_NAMES, readInventory, type WikiSpec } from '../../core/src/index.ts';
-import { CONFIG_FILE, loadConfig, parseConfig } from './config.ts';
+import { CONFIG_FILE, loadConfig, parseConfig, parseUploadRoot } from './config.ts';
 
 export interface SetupIo {
   /** 1 行を尋ねる(前後の空白は取り除いて返す) */
@@ -26,6 +26,7 @@ export interface SetupOptions {
 export interface ConfigJson {
   wikis?: (string | WikiSpec)[];
   phases?: string[];
+  uploadRoot?: string;
 }
 
 const yes = (a: string, def: boolean): boolean => (a === '' ? def : /^(?:y|yes|はい|ｙ)$/i.test(a));
@@ -108,7 +109,7 @@ export async function runSetup(io: SetupIo, o: SetupOptions): Promise<{ written:
   const config: ConfigJson = {};
 
   io.print('');
-  io.print('[1/2] llm-wiki の vault(参照を数える wiki のフォルダ。指定しないと wiki の参照は 0 件のままです)');
+  io.print('[1/3] llm-wiki の vault(参照を数える wiki のフォルダ。指定しないと wiki の参照は 0 件のままです)');
   let keepWikis = false;
   if (current?.wikis?.length) {
     io.print(`  今の設定: ${current.wikis.map((w) => w.path).join(', ')}`);
@@ -129,7 +130,7 @@ export async function runSetup(io: SetupIo, o: SetupOptions): Promise<{ written:
   }
 
   io.print('');
-  io.print('[2/2] 普段の工程名(依頼ごとの採用の判定で、LLM に選ばせる工程)');
+  io.print('[2/3] 普段の工程名(依頼ごとの採用の判定で、LLM に選ばせる工程)');
   const def = current?.phases ?? [...DEFAULT_PHASE_NAMES];
   io.print(`  ${current?.phases ? '今の設定' : '既定'}: ${def.join(' / ')}`);
   for (;;) {
@@ -142,6 +143,28 @@ export async function runSetup(io: SetupIo, o: SetupOptions): Promise<{ written:
     try {
       parseConfig({ phases });
       config.phases = phases;
+      break;
+    } catch (e) {
+      io.print(`  ${(e as Error).message}。もう一度入力してください。`);
+    }
+  }
+
+  io.print('');
+  io.print('[3/3] グループのアップロード先(画面のグループの「アップロード」で、<この場所>\\<グループ名>\\<セッション ID>\\ に写します)');
+  if (current?.uploadRoot) io.print(`  今の設定: ${current.uploadRoot}`);
+  for (;;) {
+    const a = unquote(await io.ask(`  フォルダをこの窓にドラッグするか、フルパスを入力して Enter(${current?.uploadRoot ? 'このままなら' : '決めないなら'}何も入れずに Enter。画面からも決められます): `));
+    if (a === '') {
+      if (current?.uploadRoot) config.uploadRoot = current.uploadRoot;
+      break;
+    }
+    try {
+      const root = parseUploadRoot(a);
+      if (!existsSync(root) || !statSync(root).isDirectory()) {
+        io.print(`  フォルダが見つかりません: ${root}(先にフォルダを作ってから入力してください)`);
+        continue;
+      }
+      config.uploadRoot = root;
       break;
     } catch (e) {
       io.print(`  ${(e as Error).message}。もう一度入力してください。`);

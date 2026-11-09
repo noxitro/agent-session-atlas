@@ -465,7 +465,7 @@ details.tableview > summary {
   white-space: nowrap;
 }
 
-/* 静的ページ(詳細・用語)の上部(戻る・別ページへのリンク・配色。1280px 以上ではサイドバーに同じ物を出すので隠す)と表題 */
+/* 静的ページ(詳細・用語)の上部(戻る・別ページへのリンク・配色。768px 以上ではサイドバーに同じ物を出すので隠す)と表題 */
 .top {
   background: var(--surface);
   border-bottom: 1px solid var(--rule-strong);
@@ -526,7 +526,7 @@ summary {
   touch-action: manipulation;
 }
 
-/* 上部に目次の帯が固定される幅(1280px 未満)では、ページ内リンクの飛び先とキーボードで移った部品をその高さ分下げる(--topbar-h は App / NAV_JS が設定。サイドバーの幅では 0)。
+/* 上部に目次の帯が固定される幅(768px 未満)では、ページ内リンクの飛び先とキーボードで移った部品をその高さ分下げる(--topbar-h は App / NAV_JS が設定。サイドバーの幅では 0)。
    飛び先の余白は scroll-margin-top(要素側)で足す。両方に帯の高さを入れると二重に下がる */
 html {
   scroll-padding-top: var(--topbar-h, 0px);
@@ -536,8 +536,8 @@ html {
 }
 
 /* 目次の帯(.rail)。atlas.html・詳細・用語ページで共用。
-   1280px 未満: 上部に固定した細い 1 行。目次は横に流れ、端の影が続きの手掛かり。戻る・リンク・配色は出さない(.top か atlas のマストヘッドにある)
-   1280px 以上: 左のサイドバー(sticky)。戻る → 目次(群の題つき)→ 別ページへのリンク → 配色。幅は本文から取らず .shell の最大幅を広げて確保 */
+   768px 未満: 上部に固定した細い 1 行。目次は横に流れ、端の影が続きの手掛かり。戻る・リンク・配色は出さない(.top か atlas のマストヘッドにある)
+   768px 以上: 左のサイドバー(sticky)。戻る → 目次(群の題つき)→ 別ページへのリンク → 配色。幅は本文から取らず .shell の最大幅を広げて確保 */
 .rail {
   position: sticky;
   top: 0;
@@ -626,7 +626,7 @@ html {
 .toc .lead {
   display: none;
 }
-@media (min-width: 1280px) {
+@media (min-width: 768px) {
   .shell {
     max-width: calc(1360px + 13em + 32px);
     margin: 0 auto;

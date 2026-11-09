@@ -8,9 +8,9 @@
 // どの画面でもページ内の例外とコンソールのエラーが無いこと。
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { readFile, rm } from 'node:fs/promises';
-import { join } from 'node:path';
-import { chromium, type Browser, type Page } from 'playwright';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { join, sep } from 'node:path';
+import { chromium, type Browser, type Locator, type Page } from 'playwright';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { startServe, type ServeHandle } from '../packages/cli/src/serve.ts';
 import { buildFixtureHome, ROOT } from '../e2e/fixture-home.ts';
@@ -23,6 +23,10 @@ describe('画面の操作', () => {
   const out = join(WORK, 'out');
   const notes = join(WORK, 'notes');
   const groupsPath = join(notes, 'groups.json');
+  const configPath = join(WORK, 'atlas.config.json');
+  /** フォルダを選ぶ画面の代わりに返す答え(null は取り消し) */
+  let pickAnswer: string | null = null;
+  const opened: string[] = [];
   let close: () => Promise<void>;
   let server: ServeHandle;
   let browser: Browser;
@@ -36,9 +40,20 @@ describe('画面の操作', () => {
     const r = spawnSync(process.execPath, [CLI, 'all', '--home', home, '--out', out, '--notes-dir', notes], { cwd: ROOT, encoding: 'utf8', timeout: 120_000 });
     expect(r.status, r.stderr).toBe(0);
     // テスト中に heartbeat が途切れても止まらないよう、猶予を長くとる
-    server = await startServe({ outDir: out, notesDir: notes, groupsPath, port: 0, open: false, idleMs: 600_000, firstHeartbeatMs: 600_000 });
+    // 設定ファイルはテスト用の場所(リポジトリの atlas.config.json を書き換えない)。フォルダを選ぶ画面は出さずに pickAnswer を返す
+    server = await startServe({
+      outDir: out,
+      notesDir: notes,
+      groupsPath,
+      port: 0,
+      open: false,
+      idleMs: 600_000,
+      firstHeartbeatMs: 600_000,
+      configPath,
+      folders: { canPick: true, pick: async () => pickAnswer, open: (d) => opened.push(d) },
+    });
     browser = await chromium.launch();
-    // 1440px: サイドバー(1280px 以上)にグループの一覧が出る幅
+    // 1440px: サイドバー(768px 以上)にグループの一覧が出る幅
     page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
     // CI の遅い機械を手元でまねる(例: ATLAS_UI_CPU_SLOWDOWN=20 npm run ui。docs/development.md)
     const slow = Number(process.env.ATLAS_UI_CPU_SLOWDOWN ?? 0);
@@ -66,6 +81,8 @@ describe('画面の操作', () => {
   const rowChecks = () => page.locator('table.ledger tbody input[type="checkbox"]');
   // グループの一覧はサイドバーと狭い幅の一覧の 2 か所にあるので、見えている方を使う
   const rail = () => page.locator('[data-testid="group-rail"]:visible');
+  /** 開いた欄は requestAnimationFrame で焦点を移す(作成欄は名前へ、見出しの編集は名前を選ぶ)。移る前に打つと、遅い CI では打つ途中で焦点が移り、別の欄の文字が名前に入る */
+  const focusLands = (l: Locator): Promise<void> => expect.poll(() => l.evaluate((el) => el.matches(':focus'))).toBe(true);
   const readGroups = async (): Promise<{ name: string; note?: string; ids: string[] }[]> => (existsSync(groupsPath) ? JSON.parse(await readFile(groupsPath, 'utf8')).groups : []);
 
   it('a. 一覧でチェックした件数だけで集計し、解除すると元に戻る', async () => {
@@ -95,6 +112,7 @@ describe('画面の操作', () => {
     await page.getByTestId('add-to-group').click();
     await page.getByTestId('create-group').click();
     const form = page.getByTestId('create-form');
+    await focusLands(form.getByPlaceholder('例: 11 月の調査'));
     await form.getByPlaceholder('例: 11 月の調査').fill('画面のテスト');
     await form.getByRole('button', { name: '作成' }).click();
     await expect.poll(async () => (await readGroups()).map((g) => [g.name, g.ids.length])).toEqual([['画面のテスト', 2]]);
@@ -122,6 +140,7 @@ describe('画面の操作', () => {
     const head = page.getByTestId('group-head');
     expect(await head.getByRole('heading').innerText()).toMatch(/画面のテスト\s*2 件/);
     await head.getByTestId('group-edit').click();
+    await focusLands(head.getByLabel('名前'));
     await head.getByLabel('名前').fill('画面のテスト2');
     await head.getByLabel('説明(任意)').fill('見出しから直した');
     await head.getByRole('button', { name: '保存' }).click();
@@ -163,6 +182,7 @@ describe('画面の操作', () => {
       await page.getByTestId('add-to-group').click();
       await page.getByTestId('create-group').click();
       const form = page.getByTestId('create-form');
+      await focusLands(form.getByPlaceholder('例: 11 月の調査'));
       await form.getByPlaceholder('例: 11 月の調査').fill(name);
       await form.getByRole('button', { name: '作成' }).click();
       await expect.poll(async () => (await readGroups()).some((g) => g.name === name)).toBe(true);
@@ -231,6 +251,7 @@ describe('画面の操作', () => {
       await page.getByTestId('create-group').click();
       const form = page.getByTestId('create-form');
       const nameBox = form.getByPlaceholder('例: 11 月の調査');
+      await focusLands(nameBox);
       await nameBox.fill(name);
       await form.getByLabel('説明(任意)').fill(`${name}の説明`);
       // 押す前に入力が残っていることを確かめる(CI で 1 度、作成されずに待ちが切れた。原因を絞れるよう、どこで止まったかを出す)
@@ -251,6 +272,7 @@ describe('画面の操作', () => {
 
     // 編集を開いたまま一覧から別のグループに足しても(グループの一覧が作り直されても)、打ちかけた名前は残る
     await head.getByTestId('group-edit').click();
+    await focusLands(head.getByLabel('名前'));
     await head.getByLabel('名前').fill('打ちかけ');
     await page.getByTestId('add-to-group').click();
     await page.getByTestId('add-menu').getByRole('button', { name: /丙/ }).click();
@@ -385,5 +407,82 @@ describe('画面の操作', () => {
     expect(await page.locator('.lib-group:visible').count()).toBe(0);
     await banner.getByRole('link', { name: 'セッションの詳細に戻る' }).click();
     await page.waitForURL(`**/sessions/${none!.id}.html`);
+  });
+
+  it('g. グループのアップロード: 先が未定なら記入欄が開き、選ぶと設定に書いてそのまま写す。2 回目は置き換え、写した先を開ける', async () => {
+    const s = JSON.parse(await readFile(join(out, 'sessions.json'), 'utf8')) as { sessions: { id: string }[] };
+    const ids = s.sessions.map((x) => x.id).filter((id) => existsSync(join(out, 'snapshot', 'session-state', id))).slice(0, 2);
+    expect(ids).toHaveLength(2);
+    const before = existsSync(groupsPath) ? await readFile(groupsPath, 'utf8') : null;
+    const name = 'アップ/テスト';
+    await mkdir(notes, { recursive: true });
+    await writeFile(groupsPath, JSON.stringify({ version: 1, groups: [{ name, note: '画面から写す', ids }] }));
+    const root = join(WORK, 'atlas-logs');
+    await mkdir(root, { recursive: true });
+    const dest = join(root, 'アップ_テスト');
+    try {
+      await page.goto(`${server.url}#group=${encodeURIComponent(name)}`);
+      const head = page.getByTestId('group-head');
+      await expect.poll(() => head.getByTestId('group-upload-dest').innerText()).toMatch(/まだ決まっていません/);
+      // 先が未定のまま「アップロード」→ 記入欄が開き、焦点は「エクスプローラーで選ぶ…」
+      await head.getByTestId('group-upload').click();
+      const form = head.getByRole('form', { name: 'アップロード先' });
+      await expect.poll(() => form.isVisible()).toBe(true);
+      const focused = (): Promise<string | null> => page.evaluate<string | null>('document.activeElement?.textContent ?? null');
+      await expect.poll(focused).toBe('エクスプローラーで選ぶ…');
+      // 取り消したら何も変えず、記入欄に残る
+      pickAnswer = null;
+      await form.getByRole('button', { name: 'エクスプローラーで選ぶ…' }).click();
+      await expect.poll(() => form.getByRole('button', { name: 'エクスプローラーで選ぶ…' }).isVisible()).toBe(true);
+      expect(existsSync(configPath)).toBe(false);
+      // 無いフォルダを入力すると理由が出て、設定は書かない
+      await form.getByLabel('フォルダ(フルパス)').fill(join(WORK, 'no-such-dir'));
+      await form.getByRole('button', { name: '入力したパスにする' }).click();
+      await expect.poll(() => head.getByRole('alert').innerText()).toMatch(/フォルダが見つかりません/);
+      expect(existsSync(configPath)).toBe(false);
+      // この 400 は想定どおり(ブラウザがコンソールに出す分は問題から外す)
+      const bad = problems.findIndex((p) => p.includes('status of 400'));
+      expect(bad).toBeGreaterThanOrEqual(0);
+      problems.splice(bad, 1);
+      // 選ぶと設定に書き、見出しに戻ってそのまま写す
+      pickAnswer = root;
+      await form.getByRole('button', { name: 'エクスプローラーで選ぶ…' }).click();
+      await expect.poll(() => head.getByTestId('group-uploaded').innerText(), { timeout: 15_000 }).toMatch(/アップロードしました.2 セッション.*README\.md/);
+      expect(JSON.parse(await readFile(configPath, 'utf8'))).toEqual({ uploadRoot: root });
+      expect(await head.getByTestId('group-upload-dest').locator('code').innerText()).toBe(`${dest}${sep}`);
+      expect(await head.getByTestId('group-uploaded').locator('code').innerText()).toBe(dest);
+      for (const id of ids) expect(existsSync(join(dest, id, 'events.jsonl'))).toBe(true);
+      expect(await readFile(join(dest, 'README.md'), 'utf8')).toMatch(/^# アップ\/テスト\n\n画面から写す\n/);
+      // 2 回目は置き換え。焦点は「アップロード」に残る
+      await head.getByTestId('group-upload').click();
+      await expect.poll(() => head.getByTestId('group-uploaded').innerText()).toMatch(/うち 2 件は前に写したものを置き換え/);
+      // 写した先を開く(エクスプローラーの代わりに記録)
+      await head.getByTestId('group-upload-open').click();
+      await expect.poll(() => opened).toEqual([dest]);
+      // 「場所を変える…」の記入欄は Esc で閉じ、焦点は「アップロード」に戻る(何も変えない)
+      await head.getByTestId('group-upload-root').click();
+      await expect.poll(focused).toBe('エクスプローラーで選ぶ…');
+      await page.keyboard.press('Escape');
+      await expect.poll(() => form.count()).toBe(0);
+      await expect.poll(() => page.evaluate<string | null>("document.activeElement?.getAttribute('data-testid') ?? null")).toBe('group-upload');
+      expect(JSON.parse(await readFile(configPath, 'utf8'))).toEqual({ uploadRoot: root });
+    } finally {
+      if (before == null) await rm(groupsPath, { force: true });
+      else await writeFile(groupsPath, before);
+    }
+  });
+
+  it('h. サイドバーを出す幅: 1024px でもサイドバーにグループの一覧が出て、768px 未満(375px)は上部の 1 行の「グループ」から開く', async () => {
+    try {
+      await page.setViewportSize({ width: 1024, height: 768 });
+      await page.goto(server.url);
+      await expect.poll(() => page.locator('.rail-groups').isVisible()).toBe(true);
+      expect(await page.getByTestId('groups-toggle').isVisible()).toBe(false);
+      await page.setViewportSize({ width: 375, height: 812 });
+      await expect.poll(() => page.getByTestId('groups-toggle').isVisible()).toBe(true);
+      expect(await page.locator('.rail-groups').isVisible()).toBe(false);
+    } finally {
+      await page.setViewportSize({ width: 1440, height: 900 });
+    }
   });
 });
