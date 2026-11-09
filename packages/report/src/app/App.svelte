@@ -250,7 +250,9 @@
             if (uploadSetting) uploadSetting = { ...uploadSetting, root: r.root, error: null };
             return r.root;
           },
+          check: (name) => api.checkUpload(token!, name),
           run: (name) => api.uploadGroup(token!, name),
+          progress: (name) => api.uploadProgress(token!, name),
           open: async (name) => void (await api.openUpload(token!, name)),
         }
       : undefined,

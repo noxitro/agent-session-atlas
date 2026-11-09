@@ -58,6 +58,8 @@ export interface GroupCliOptions {
   note: string | null;
   /** upload の --to(アップロード先の基底フォルダ)。未指定は null(atlas.config.json の uploadRoot) */
   to: string | null;
+  /** upload の --force(秘密らしい文字列が見つかっても写す) */
+  force: boolean;
 }
 
 export const MEMO_ACTIONS = ['list', 'show', 'set', 'remove'] as const;
@@ -150,10 +152,11 @@ export const USAGE = `使い方: atlas <コマンド> [オプション]
              <out>/turn-bundle/parts/ を作る(LLM は呼ばない)。run は GitHub Copilot CLI で判定する(AI クレジットを消費します)。
              import はチャットの返答を <out>/turn-judgments.json に取り込む
   group list / group add <名前> <id...> [--note <一文>] / group remove <名前> / group export <名前>
-  group upload <名前> [--to <基底フォルダ>]
+  group upload <名前> [--to <基底フォルダ>] [--force]
              名前付きグループ(<notes-dir>/groups.json)を一覧・追加(既存名なら id を追記)・削除する。
              export はそのグループの表(CSV)・集計・記録を <out>/groups/<名前>/ に書き出す。
-             upload はそのグループのセッションの生ログ(前回の集計の複製)を <基底>/<名前>/<セッション id>/ に写す
+             upload はそのグループのセッションの生ログ(前回の集計の複製)を <基底>/<名前>/<セッション id>/ に写す。
+             写す前に大きさと秘密らしい文字列(API キー・トークンなど)を調べ、見つかれば写さずに止まる(--force で写す)
              (同じセッションは置き換え。基底は --to か atlas.config.json の uploadRoot)
   memo list / memo show <id> / memo set <id> <本文...> / memo set <id> --file <path> / memo remove <id>
              セッションごとのメモ(<notes-dir>/memos/<id>.md)を一覧・表示・保存・削除する(remove は画像を残す)
@@ -346,7 +349,8 @@ export function parseCli(argv: string[]): CliOptions {
     if ((action === 'remove' || action === 'export' || action === 'upload') && positionals.length > 3) throw new UsageError(`余分な引数があります: ${positionals.slice(3).join(' ')}`);
     if (values.note != null && action !== 'add') throw new UsageError('--note は group add でだけ使えます');
     if (values.to != null && action !== 'upload') throw new UsageError('--to は group upload でだけ使えます');
-    groupCmd = { action: action as GroupAction, name, ids, note: values.note ?? null, to: values.to ?? null };
+    if (values.force && action !== 'upload') throw new UsageError('--force は judge run と group upload でだけ使えます');
+    groupCmd = { action: action as GroupAction, name, ids, note: values.note ?? null, to: values.to ?? null, force: values.force ?? false };
   } else if (values.note != null) throw new UsageError('--note は group add でだけ使えます');
   else if (values.to != null) throw new UsageError('--to は group upload でだけ使えます');
   let memoCmd: MemoCliOptions | null = null;
@@ -367,7 +371,7 @@ export function parseCli(argv: string[]): CliOptions {
   if (cmd !== 'judge' && cmd !== 'turns' && cmd !== 'group' && cmd !== 'memo' && cmd !== 'skill-draft') {
     if (positionals.length > 1) throw new UsageError(`コマンドは 1 つだけ指定してください: ${positionals.join(' ')}`);
     for (const k of ['backend', 'limit', 'only', 'concurrency', 'timeout'] as const) if (values[k] != null) throw new UsageError(`--${k} は judge run でだけ使えます`);
-    if (values.force) throw new UsageError('--force は judge run でだけ使えます');
+    if (values.force) throw new UsageError('--force は judge run と group upload でだけ使えます');
   }
   const toolOutput = values['tool-output'] ?? 'fail';
   if (!['fail', 'all', 'none'].includes(toolOutput)) throw new UsageError(`--tool-output は fail / all / none のどれかです: ${toolOutput}`);

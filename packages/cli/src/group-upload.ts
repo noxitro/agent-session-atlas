@@ -7,12 +7,13 @@
 // 同じセッションのフォルダは丸ごと置き換える。グループから外したセッションや、他の人が写したセッションのフォルダには触れない
 // (同じ場所を何人かで使うため)。受け取った側は `atlas all --home <基底>/<グループ名>` でそのまま集計できる。
 // 元(~/.copilot)は読まず、前回の集計で out/snapshot/ に複製したものを写す(SQLite は一貫した複製を取ってあるため)。
-import { existsSync, statSync } from 'node:fs';
-import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { createReadStream, existsSync, statSync } from 'node:fs';
+import { copyFile, cp, mkdir, open, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import { DESKTOP_JSON, desktopForSession, readSnapshotManifest, renameReplacing, SESSION_STORE_JSON, sessionStoreRows, type DesktopData, type SessionStoreJson } from '../../core/src/index.ts';
 import type { SessionRecord, SessionsFile } from '../../core/src/index.ts';
-import { loadGroups, memosDir, readMemo } from '../../report/src/index.ts';
+import { loadGroups, memosDir, readMemo, SECRET_PATTERNS } from '../../report/src/index.ts';
 import { truncate } from '../../report/src/lib/format.ts';
 import { safeDirName } from './group-export.ts';
 
@@ -52,12 +53,134 @@ export interface GroupUploadResult {
   memos: number;
 }
 
+interface FileEntry {
+  /** セッションのフォルダからの相対パス(区切りは /) */
+  rel: string;
+  bytes: number;
+  /** シンボリックリンク(中身は辿らず、リンクのまま写す) */
+  link: boolean;
+}
+
+/** セッションのフォルダの中のファイル(atlas の作業用のファイルは除く) */
+async function listFiles(base: string, sub = ''): Promise<FileEntry[]> {
+  const out: FileEntry[] = [];
+  for (const e of await readdir(join(base, sub), { withFileTypes: true })) {
+    if (SNAPSHOT_PRIVATE.test(e.name)) continue;
+    const rel = sub ? `${sub}/${e.name}` : e.name;
+    if (e.isDirectory()) out.push(...(await listFiles(base, rel)));
+    else if (e.isSymbolicLink()) out.push({ rel, bytes: 0, link: true });
+    else if (e.isFile()) out.push({ rel, bytes: (await stat(join(base, rel))).size, link: false });
+  }
+  return out;
+}
+
+/** 一覧のファイルを写し、1 つ写すごとにその大きさを知らせる(cp では進み具合が取れないため) */
+async function copyFiles(src: string, dest: string, files: FileEntry[], onBytes: (n: number) => void): Promise<void> {
+  await mkdir(dest, { recursive: true });
+  const made = new Set<string>();
+  for (const f of files) {
+    const parts = f.rel.split('/');
+    const parent = parts.slice(0, -1).join('/');
+    if (parent && !made.has(parent)) {
+      await mkdir(join(dest, ...parent.split('/')), { recursive: true });
+      made.add(parent);
+    }
+    const from = join(src, ...parts);
+    const to = join(dest, ...parts);
+    if (f.link) await cp(from, to, { verbatimSymlinks: true });
+    else await copyFile(from, to);
+    onBytes(f.bytes);
+  }
+}
+
+/** 先頭がこの大きさの中に NUL があればバイナリとして中身を調べない */
+const SNIFF_BYTES = 8192;
+/** 区切りをまたぐ文字列を取りこぼさないよう、前の塊の末尾をこれだけ重ねて調べる(鍵 1 つより長く取る) */
+const SCAN_OVERLAP = 16 * 1024;
+
+/** ファイルの中の秘密らしい文字列を種類ごとに数える(transcript.ts の SECRET_PATTERNS と同じ形)。バイナリなら null */
+export async function scanSecrets(path: string): Promise<Map<string, number> | null> {
+  const fh = await open(path, 'r');
+  try {
+    const head = Buffer.alloc(SNIFF_BYTES);
+    const { bytesRead } = await fh.read(head, 0, SNIFF_BYTES, 0);
+    if (head.subarray(0, bytesRead).includes(0)) return null;
+  } finally {
+    await fh.close();
+  }
+  const counts = new Map<string, number>();
+  const decoder = new StringDecoder('utf8');
+  let carry = '';
+  // 塊ごとに、重ねる部分より前で始まるものだけを数える(重ねた部分は次の塊で数える)。最後の塊は末尾まで数える
+  const scan = (text: string, last: boolean): void => {
+    const limit = last ? text.length : text.length - SCAN_OVERLAP;
+    for (const [label, re] of SECRET_PATTERNS) {
+      for (const m of text.matchAll(re)) if (m.index < limit) counts.set(label, (counts.get(label) ?? 0) + 1);
+    }
+    carry = last ? '' : text.slice(Math.max(0, limit));
+  };
+  for await (const chunk of createReadStream(path, { highWaterMark: 4 * 1024 * 1024 })) {
+    const text = carry + decoder.write(chunk as Buffer);
+    if (text.length > SCAN_OVERLAP) scan(text, false);
+    else carry = text;
+  }
+  scan(carry + decoder.end(), true);
+  return counts;
+}
+
 /** アップロード先のグループのフォルダ(<基底>/<グループ名>)。フォルダ名に使えない文字は _ にする */
 export function uploadDir(root: string, name: string): string {
   return join(root, safeDirName(name));
 }
 
-export async function uploadGroup(p: GroupUploadPaths, name: string, root: string, log: (m: string) => void = () => {}): Promise<GroupUploadResult> {
+/** 写す前の点検(画面の確認に出す)。大きさと、秘密らしい文字列 */
+export interface UploadCheck {
+  name: string;
+  dir: string;
+  /** 写すセッション(前回の集計にあるもの) */
+  sessions: number;
+  missing: string[];
+  /** そのうち、前にも写してあって置き換えるもの */
+  replace: number;
+  bytes: number;
+  files: number;
+  /** 大きいもの(セッションの直下のフォルダ・ファイル)。大きい順に最大 5 件 */
+  largest: { id: string; path: string; bytes: number }[];
+  secrets: {
+    /** 見つかった数(偽陽性もありうる) */
+    count: number;
+    kinds: { label: string; count: number }[];
+    /** 見つかったファイル。多い順に最大 10 件 */
+    files: { id: string; path: string; count: number }[];
+    /** 中身を調べなかったバイナリのファイルの数(session.db・画像・ビルドの成果物など) */
+    skipped: number;
+  };
+  snapshotAt: string | null;
+}
+
+/** 写している途中の進み具合(画面が問い合わせて出す) */
+export interface UploadProgress {
+  sessions: number;
+  done: number;
+  bytes: number;
+  copied: number;
+  /** 写しているセッション */
+  current: string | null;
+}
+
+/** 確認を挟む目安: 秘密らしい文字列が 1 つでもあるか、合計がこの大きさを超えるとき */
+export const UPLOAD_CONFIRM_BYTES = 100 * 1024 * 1024;
+
+interface Prepared {
+  g: { name: string; note: string; ids: string[] };
+  stateDir: string;
+  dir: string;
+  present: string[];
+  missing: string[];
+}
+
+/** 写せるかを確かめ、写すセッションと写さないセッションに分ける(点検とアップロードで同じ条件) */
+async function prepare(p: GroupUploadPaths, name: string, root: string): Promise<Prepared> {
   const loaded = await loadGroups(p.groups);
   const g = loaded.groups.find((x) => x.name === name);
   if (!g) throw new Error(`グループ「${name}」はありません${loaded.groups.length ? `(あるのは: ${loaded.groups.map((x) => x.name).join(', ')})` : ''}`);
@@ -73,31 +196,99 @@ export async function uploadGroup(p: GroupUploadPaths, name: string, root: strin
   // 1 件も写せないなら、フォルダを作らず README も書き直さない(前に写したものの一覧が「0 件」で上書きされないように)
   if (!g.ids.some((id) => SAFE_ID.test(id) && existsSync(join(stateDir, id))))
     throw new Error(`グループ「${name}」のセッション(${g.ids.length} 件)は、前回の集計に 1 件もありません。先に集計し直してください(何も写していません)`);
+  // groups.json は手で書けるので、フォルダの外を指す id(.. や区切りを含むもの)は写さない(元にも先にも触れない)
+  const present: string[] = [];
+  const missing: string[] = [];
+  for (const id of g.ids) (SAFE_ID.test(id) && existsSync(join(stateDir, id)) ? present : missing).push(id);
+  return { g, stateDir, dir: uploadDir(root, name), present, missing };
+}
+
+export async function checkUpload(p: GroupUploadPaths, name: string, root: string): Promise<UploadCheck> {
+  const { stateDir, dir, present, missing } = await prepare(p, name, root);
+  const tops: UploadCheck['largest'] = [];
+  const hits: UploadCheck['secrets']['files'] = [];
+  const kinds = new Map<string, number>();
+  let bytes = 0;
+  let files = 0;
+  let skipped = 0;
+  for (const id of present) {
+    const base = join(stateDir, id);
+    for (const f of await listFiles(base)) {
+      bytes += f.bytes;
+      files++;
+      const top = f.rel.split('/')[0];
+      const t = tops.find((x) => x.id === id && x.path === top);
+      if (t) t.bytes += f.bytes;
+      else tops.push({ id, path: top, bytes: f.bytes });
+      const found = await scanSecrets(join(base, f.rel));
+      if (found == null) {
+        skipped++;
+        continue;
+      }
+      let n = 0;
+      for (const [label, c] of found) {
+        kinds.set(label, (kinds.get(label) ?? 0) + c);
+        n += c;
+      }
+      if (n) hits.push({ id, path: f.rel, count: n });
+    }
+  }
   const manifest = await readSnapshotManifest(p.snapshot);
-  const dir = uploadDir(root, name);
+  return {
+    name,
+    dir,
+    sessions: present.length,
+    missing,
+    replace: present.filter((id) => existsSync(join(dir, id))).length,
+    bytes,
+    files,
+    largest: tops.sort((a, b) => b.bytes - a.bytes).slice(0, 5),
+    secrets: {
+      count: [...kinds.values()].reduce((a, b) => a + b, 0),
+      kinds: [...kinds].map(([label, count]) => ({ label, count })).sort((a, b) => b.count - a.count),
+      files: hits.sort((a, b) => b.count - a.count || a.id.localeCompare(b.id) || a.path.localeCompare(b.path)).slice(0, 10),
+      skipped,
+    },
+    snapshotAt: manifest?.createdAt ?? null,
+  };
+}
+
+export async function uploadGroup(
+  p: GroupUploadPaths,
+  name: string,
+  root: string,
+  log: (m: string) => void = () => {},
+  opts: { onProgress?: (p: UploadProgress) => void } = {},
+): Promise<GroupUploadResult> {
+  const { g, stateDir, dir, present, missing } = await prepare(p, name, root);
+  const manifest = await readSnapshotManifest(p.snapshot);
   await mkdir(dir, { recursive: true });
   const storeDb = join(p.snapshot, 'session-store.db');
   // デスクトップアプリのセッションは題名・モデル・トークン数などが data.db にしかない(snapshot が許可リストの列だけを desktop.json に書いたもの)
   const desktop = await readDesktopJson(join(p.snapshot, DESKTOP_JSON));
   const memoDir = p.notes ? memosDir(p.notes) : null;
-  const missing: string[] = [];
   const done: string[] = [];
   const withMemo = new Set<string>();
   let uploaded = 0;
   let replaced = 0;
-  for (const id of g.ids) {
+  // 進み具合はバイト数で出す(大きなセッションは 1 件で数百 MB になり、件数だけでは止まって見えるため)
+  const lists = new Map<string, FileEntry[]>();
+  for (const id of present) lists.set(id, await listFiles(join(stateDir, id)));
+  const progress: UploadProgress = { sessions: present.length, done: 0, bytes: [...lists.values()].flat().reduce((a, f) => a + f.bytes, 0), copied: 0, current: null };
+  const report = (): void => opts.onProgress?.({ ...progress });
+  for (const id of present) {
     const src = join(stateDir, id);
-    // groups.json は手で書けるので、フォルダの外を指す id(.. や区切りを含むもの)は写さない(元にも先にも触れない)
-    if (!SAFE_ID.test(id) || !existsSync(src)) {
-      missing.push(id);
-      continue;
-    }
     const dest = join(dir, id);
+    progress.current = id;
+    report();
     // 書きかけのフォルダを残さないよう、隣に写し終えてから置き換える
     const tmp = join(dir, `.${id}.uploading`);
     await rm(tmp, { recursive: true, force: true });
     try {
-      await cp(src, tmp, { recursive: true, filter: (from) => !SNAPSHOT_PRIVATE.test(from.split(/[\\/]/).pop() ?? '') });
+      await copyFiles(src, tmp, lists.get(id) ?? [], (n) => {
+        progress.copied += n;
+        report();
+      });
       const rows = await sessionStoreRows(storeDb, id);
       const desk = desktop ? desktopForSession(desktop, id) : null;
       if (rows || desk) {
@@ -121,6 +312,8 @@ export async function uploadGroup(p: GroupUploadPaths, name: string, root: strin
       }
       uploaded++;
       done.push(id);
+      progress.done = uploaded;
+      report();
       if (had) {
         replaced++;
         await rm(old, { recursive: true, force: true }).catch((e: Error) => log(`group upload: 前のフォルダ ${old} を消せませんでした(${e.message})。手で消してください`));

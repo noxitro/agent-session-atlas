@@ -49,7 +49,7 @@ import { importJudgmentsText, importTurnJudgmentsText, JudgmentValidationError, 
 import { phaseNames } from './config.ts';
 import { acquireOutLock, JobError, JobRunner, OutBusyError, parseJobRequest, runningJobIn, type RunFullFn, type SpawnFn } from './jobs.ts';
 import { exportGroup } from './group-export.ts';
-import { uploadDir, uploadGroup } from './group-upload.ts';
+import { checkUpload, uploadDir, uploadGroup, type UploadProgress } from './group-upload.ts';
 import { defaultConfigPath, loadConfig, parseUploadRoot, updateConfig } from './config.ts';
 import { CAN_PICK_FOLDER, openFolder, pickFolder } from './folder-picker.ts';
 
@@ -308,6 +308,8 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
   const refreshing = (): boolean => jobs.running() && jobs.current()?.kind === 'refresh';
   /** グループの書き出し中(その間はジョブを始めない) */
   let exporting = false;
+  /** 写している途中のアップロード(画面が進み具合を問い合わせる) */
+  let uploading: { name: string; progress: UploadProgress } | null = null;
   const configPath = resolve(o.configPath ?? defaultConfigPath());
   const canPick = o.folders?.canPick ?? CAN_PICK_FOLDER;
   const pick = o.folders?.pick ?? pickFolder;
@@ -479,9 +481,11 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
       await memoApi(req, res, method, memo[1], !!memo[2]);
       return;
     }
-    const gu = /^\/api\/groups\/([^/]+)\/upload(\/open)?$/.exec(path);
+    // upload(写す)・upload/check(写す前の点検: 大きさと秘密らしい文字列)・upload/progress(写している途中の進み具合)・upload/open(写した先を開く)
+    const gu = /^\/api\/groups\/([^/]+)\/upload(?:\/(open|check|progress))?$/.exec(path);
     if (gu) {
-      if (method !== 'POST') throw new HttpError(405, 'この方法では使えません');
+      const sub = gu[2] ?? '';
+      if (method !== (sub === 'progress' ? 'GET' : 'POST')) throw new HttpError(405, 'この方法では使えません');
       checkToken(req);
       let name: string;
       try {
@@ -489,10 +493,15 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
       } catch {
         throw new HttpError(400, 'グループ名を読めません');
       }
+      if (sub === 'progress') {
+        // このグループを写している途中なら進み具合、そうでなければ null
+        sendJson(res, 200, uploading?.name === name ? uploading.progress : null);
+        return;
+      }
       const up = await uploadRootOf();
       if (up.error) throw new HttpError(409, up.error);
       if (!up.root) throw new HttpError(409, 'アップロード先が決まっていません。先に場所を選んでください');
-      if (gu[2]) {
+      if (sub === 'open') {
         // 写した先のフォルダを開く(開けるのは設定のアップロード先の中の、このグループのフォルダだけ)
         const dir = uploadDir(up.root, name);
         if (!existsSync(dir)) throw new HttpError(404, `まだアップロードしていません: ${dir}`);
@@ -513,11 +522,18 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
         throw e;
       }
       exporting = true;
+      const paths = { snapshot: join(outDir, 'snapshot'), groups: groupsPath, notes: resolve(o.notesDir), sessions: join(outDir, 'sessions.json') };
       try {
-        sendJson(res, 200, await uploadGroup({ snapshot: join(outDir, 'snapshot'), groups: groupsPath, notes: resolve(o.notesDir), sessions: join(outDir, 'sessions.json') }, name, up.root, log));
+        if (sub === 'check') sendJson(res, 200, await checkUpload(paths, name, up.root));
+        else {
+          uploading = { name, progress: { sessions: 0, done: 0, bytes: 0, copied: 0, current: null } };
+          const cur = uploading;
+          sendJson(res, 200, await uploadGroup(paths, name, up.root, log, { onProgress: (pr) => void (cur.progress = pr) }));
+        }
       } catch (e) {
         throw new HttpError(/^グループ「.*」はありません/.test((e as Error).message) ? 404 : 409, (e as Error).message);
       } finally {
+        uploading = null;
         exporting = false;
         release();
       }

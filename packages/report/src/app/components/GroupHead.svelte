@@ -4,11 +4,12 @@
   // サイドバーのグループの一覧は切り替えだけにする(選ぶたびに操作の行が差し込まれて下の行がずれ、削除が改名と同じ重さで並んでいたため)
   // アップロード(serve のとき): グループのセッションの生ログを、決めておいた基底フォルダの <グループ名>\<セッション id>\ に写す。
   // 先は見出しの下に 1 行で見せ、「場所を変える…」で同じ見出しの中に記入欄を開く(エクスプローラーで選ぶ / パスを入力)。
+  // 写す前にサーバが大きさと秘密らしい文字列を調べ、秘密らしい文字列があるか大きいときだけ確認を挟む。写している間は進み具合(バイト数)を出す。
   import { untrack } from 'svelte';
   import { int } from '../../lib/format.ts';
   import { safeDirName } from '../../lib/groups.ts';
   import type { ReportGroup } from '../../lib/types.ts';
-  import type { GroupExport, GroupUpload, UploadHandlers } from '../api.ts';
+  import type { GroupExport, GroupUpload, UploadCheck, UploadHandlers, UploadProgress } from '../api.ts';
 
   let {
     group,
@@ -34,7 +35,11 @@
   let exported = $state<GroupExport | null>(null);
   let uploaded = $state<GroupUpload | null>(null);
   /** 何をしているか(ボタンの文言を「…中」にする) */
-  let task = $state<'export' | 'upload' | 'open' | 'pick' | 'root' | null>(null);
+  let task = $state<'export' | 'check' | 'upload' | 'open' | 'pick' | 'root' | null>(null);
+  /** 写す前の点検の結果(確認を出しているとき) */
+  let checked = $state<UploadCheck | null>(null);
+  /** 写している途中の進み具合 */
+  let progress = $state<UploadProgress | null>(null);
   /** アップロード先を決めた後に、そのままアップロードする(先が未定のまま「アップロード」を押したとき) */
   let uploadAfterRoot = $state(false);
   let rootInput = $state('');
@@ -57,6 +62,9 @@
           (uploaded.missing.length ? `前回の集計に無いセッション ${int(uploaded.missing.length)} 件は写していません。` : '')
       : '',
   );
+  /** 確認を挟む目安(serve の UPLOAD_CONFIRM_BYTES と同じ): 秘密らしい文字列が 1 つでもあるか、合計が 100 MB を超えるとき */
+  const CONFIRM_BYTES = 100 * 1024 * 1024;
+  const size = (b: number): string => (b < 1024 * 1024 ? `${int(Math.ceil(b / 1024))} KB` : `${(b / 1024 / 1024).toFixed(b < 10 * 1024 * 1024 ? 1 : 0)} MB`);
   function doUpload(): void {
     if (!upload || busy) return;
     if (!upload.setting.root) {
@@ -66,10 +74,53 @@
     }
     exported = null;
     uploaded = null;
+    task = 'check';
+    let c: UploadCheck | null = null;
+    void run(
+      async () => {
+        c = await upload.check(group.name);
+      },
+      () => {
+        if (!c) return;
+        if (c.secrets.count || c.bytes > CONFIRM_BYTES) {
+          checked = c;
+          mode = 'confirm';
+          requestAnimationFrame(() => rootEl?.querySelector<HTMLButtonElement>('button[data-cancel]')?.focus());
+        } else queueMicrotask(copy);
+      },
+    );
+  }
+  /** 確認をやめて見出しに戻る(何も写さない) */
+  function leaveConfirm(): void {
+    checked = null;
+    mode = 'view';
+    error = '';
+    requestAnimationFrame(() => uploadBtn?.focus());
+  }
+  function copy(): void {
+    if (!upload || busy) return;
+    const u = upload;
+    checked = null;
+    mode = 'view';
     task = 'upload';
+    progress = null;
+    // 写している間、サーバに進み具合を尋ねる(写し終わるまで返事が来ないため)
+    const timer = setInterval(() => {
+      void u.progress(group.name).then(
+        (p) => {
+          if (p && task === 'upload') progress = p;
+        },
+        () => {},
+      );
+    }, 500);
     void run(async () => {
-      uploaded = await upload.run(group.name);
-    }, () => {});
+      try {
+        uploaded = await u.run(group.name);
+      } finally {
+        clearInterval(timer);
+        progress = null;
+      }
+    }, () => requestAnimationFrame(() => uploadBtn?.focus()));
   }
   function openUploaded(): void {
     if (!upload || busy) return;
@@ -145,7 +196,7 @@
     }
   }
 
-  let mode = $state<'view' | 'edit' | 'delete' | 'root'>('view');
+  let mode = $state<'view' | 'edit' | 'delete' | 'root' | 'confirm'>('view');
   let name = $state('');
   let note = $state('');
   let error = $state('');
@@ -172,6 +223,7 @@
     e.stopPropagation();
     if (mode === 'delete') backToEdit();
     else if (mode === 'root') leaveRoot();
+    else if (mode === 'confirm') leaveConfirm();
     else leave();
   }
   async function run(action: () => Promise<void>, after: () => void): Promise<void> {
@@ -236,6 +288,7 @@
     void groupName;
     exported = null;
     uploaded = null;
+    checked = null;
     // mode と rootEl は依存に入れない(入れると「編集」を押した直後にこの effect が走って表示に戻ってしまう)
     if (!editable) untrack(() => mode !== 'view' && rootEl?.contains(document.activeElement) && focusMain());
     mode = 'view';
@@ -254,7 +307,7 @@
         {#if group.note}<p class="desc">{group.note}</p>{:else if editable}<p class="desc none">説明はまだありません</p>{/if}
       </div>
       <div class="acts">
-        {#if editable && upload}<button type="button" class="btn primary" bind:this={uploadBtn} data-testid="group-upload" title="このグループのセッションの生ログを、アップロード先のグループ名のフォルダへ写します(同じセッションは置き換え)" onclick={doUpload} aria-disabled={busy}>{task === 'upload' ? 'アップロード中…' : 'アップロード'}</button>{/if}
+        {#if editable && upload}<button type="button" class="btn primary" bind:this={uploadBtn} data-testid="group-upload" title="このグループのセッションの生ログを、アップロード先のグループ名のフォルダへ写します(同じセッションは置き換え)" onclick={doUpload} aria-disabled={busy}>{task === 'check' ? '確かめています…' : task === 'upload' ? 'アップロード中…' : 'アップロード'}</button>{/if}
         {#if editable && onexport}<button type="button" class="btn" data-testid="group-export" title="このグループの表(CSV)・集計・記録を 1 つのフォルダに書き出します" onclick={doExport} aria-disabled={busy}>{task === 'export' ? '書き出し中…' : '表と記録を書き出す'}</button>{/if}
         {#if editable}<button type="button" class="btn" bind:this={editBtn} data-testid="group-edit" onclick={begin}>編集</button>{/if}
         <button type="button" class="btn" onclick={clear}>絞り込みを外す</button>
@@ -268,7 +321,39 @@
         {:else}<span class="none">まだ決まっていません</span>{/if}
         <button type="button" class="link" data-testid="group-upload-root" onclick={() => beginRoot(false)} disabled={busy}>{destDir ? '場所を変える…' : '場所を決める…'}</button>
       </p>
+      {#if task === 'upload'}
+        <div class="progress" data-testid="group-upload-progress">
+          {#if progress && progress.bytes}
+            <progress max={progress.bytes} value={progress.copied} aria-label="写した量"></progress>
+            <p>写しています: {int(progress.done)} / {int(progress.sessions)} セッション({size(progress.copied)} / {size(progress.bytes)})</p>
+          {:else}
+            <progress aria-label="写した量"></progress>
+            <p>写しています…</p>
+          {/if}
+        </div>
+      {/if}
     {/if}
+  {:else if mode === 'confirm' && checked}
+    <div class="confirm" role="group" aria-labelledby="group-head-h" data-testid="group-upload-confirm">
+      <h2 id="group-head-h" class="q">「{group.name}」を写す前に確かめてください</h2>
+      <p class="desc">{int(checked.sessions)} セッション・合計 {size(checked.bytes)}({int(checked.files)} ファイル){checked.replace ? `。うち ${int(checked.replace)} 件は前に写したものを置き換えます` : ''}。</p>
+      {#if checked.largest.length && checked.bytes > CONFIRM_BYTES}
+        <p class="desc">大きいもの: {#each checked.largest.slice(0, 3) as x, i (x.id + x.path)}{i ? '、' : ''}<code translate="no">{x.id.slice(0, 8)}…/{x.path}</code> {size(x.bytes)}{/each}</p>
+      {/if}
+      {#if checked.secrets.count}
+        <div class="warn" data-testid="group-upload-secrets">
+          <p><strong>秘密らしい文字列が {int(checked.secrets.count)} 件あります</strong>({checked.secrets.kinds.map((k) => `${k.label} ${int(k.count)}`).join('・')})。偽陽性もありえます。生ログはそのまま写るので、写した先で見られる人を確かめてください。本物の鍵なら、写すかどうかに関わらず作り直してください。</p>
+          <ul>
+            {#each checked.secrets.files as f (f.id + f.path)}<li><code translate="no">{f.id.slice(0, 8)}…/{f.path}</code> {int(f.count)} 件</li>{/each}
+          </ul>
+          {#if checked.secrets.skipped}<p class="note">バイナリのファイル {int(checked.secrets.skipped)} 件(session.db など)は中身を調べていません。</p>{/if}
+        </div>
+      {/if}
+      <div class="edit-acts">
+        <button type="button" class="btn" data-cancel onclick={leaveConfirm}>やめる</button>
+        <button type="button" class={checked.secrets.count ? 'btn danger' : 'btn primary'} data-confirm onclick={copy}>{checked.secrets.count ? 'それでも写す' : '写す'}</button>
+      </div>
+    </div>
   {:else if mode === 'root' && upload}
     <form class="edit root" aria-label="アップロード先" onsubmit={submitRoot}>
       <p class="k">アップロード先(すべてのグループで共通)</p>
@@ -335,6 +420,44 @@
   }
   .exported p {
     margin: 0;
+  }
+  .progress {
+    margin-top: 8px;
+    font-size: 0.8125rem;
+  }
+  .progress progress {
+    display: block;
+    width: 100%;
+    max-width: 32em;
+    height: 8px;
+    accent-color: var(--form);
+  }
+  .progress p {
+    margin: 4px 0 0;
+    color: var(--ink-2);
+    font-variant-numeric: tabular-nums;
+  }
+  .warn {
+    margin: 8px 0;
+    padding: 8px 10px;
+    font-size: 0.8125rem;
+    border: 1px solid var(--warn);
+  }
+  .warn p {
+    margin: 0;
+  }
+  .warn ul {
+    margin: 6px 0 0;
+    padding-left: 1.4em;
+  }
+  .warn code {
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    overflow-wrap: anywhere;
+  }
+  .warn .note {
+    margin-top: 6px;
+    color: var(--ink-2);
   }
   .dest {
     display: flex;

@@ -31,8 +31,35 @@ export interface UploadHandlers {
   pick: () => Promise<string | null>;
   /** 入力したパスを既定にする */
   setRoot: (root: string) => Promise<string>;
+  /** 写す前の点検(大きさと秘密らしい文字列) */
+  check: (name: string) => Promise<UploadCheck>;
   run: (name: string) => Promise<GroupUpload>;
+  /** 写している途中の進み具合(写していなければ null) */
+  progress: (name: string) => Promise<UploadProgress | null>;
   open: (name: string) => Promise<void>;
+}
+
+/** 写す前の点検(serve の group-upload.ts の UploadCheck と同じ形) */
+export interface UploadCheck {
+  name: string;
+  dir: string;
+  sessions: number;
+  missing: string[];
+  replace: number;
+  bytes: number;
+  files: number;
+  largest: { id: string; path: string; bytes: number }[];
+  secrets: { count: number; kinds: { label: string; count: number }[]; files: { id: string; path: string; count: number }[]; skipped: number };
+  snapshotAt: string | null;
+}
+
+/** 写している途中の進み具合(serve の group-upload.ts の UploadProgress と同じ形) */
+export interface UploadProgress {
+  sessions: number;
+  done: number;
+  bytes: number;
+  copied: number;
+  current: string | null;
 }
 
 /** グループのアップロードの結果(serve の group-upload.ts と同じ形) */
@@ -113,6 +140,12 @@ export const api = {
     return connect(fetch('api/groups/' + encodeURIComponent(name) + '/upload', { method: 'POST', headers: headers(token) }), (r) => parse<GroupUpload>(r));
   },
   /** 写した先のフォルダをエクスプローラーで開く */
+  checkUpload(token: string, name: string): Promise<UploadCheck> {
+    return connect(fetch('api/groups/' + encodeURIComponent(name) + '/upload/check', { method: 'POST', headers: headers(token) }), (r) => parse<UploadCheck>(r));
+  },
+  uploadProgress(token: string, name: string): Promise<UploadProgress | null> {
+    return connect(fetch('api/groups/' + encodeURIComponent(name) + '/upload/progress', { headers: headers(token) }), (r) => parse<UploadProgress | null>(r));
+  },
   openUpload(token: string, name: string): Promise<{ dir: string }> {
     return connect(fetch('api/groups/' + encodeURIComponent(name) + '/upload/open', { method: 'POST', headers: headers(token) }), (r) => parse(r));
   },
