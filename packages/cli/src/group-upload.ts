@@ -171,16 +171,27 @@ export interface UploadProgress {
 /** 確認を挟む目安: 秘密らしい文字列が 1 つでもあるか、合計がこの大きさを超えるとき */
 export const UPLOAD_CONFIRM_BYTES = 100 * 1024 * 1024;
 
+/** 写すセッションのまとまり(グループか、集計のプロジェクト)。名前がアップロード先のフォルダ名になる */
+export interface UploadTarget {
+  kind: 'group' | 'project';
+  name: string;
+  /** README に書く説明 */
+  note: string;
+  ids: string[];
+}
+
+const KIND_LABEL: Record<UploadTarget['kind'], string> = { group: 'グループ', project: 'プロジェクト' };
+
 interface Prepared {
-  g: { name: string; note: string; ids: string[] };
+  g: UploadTarget;
   stateDir: string;
   dir: string;
   present: string[];
   missing: string[];
 }
 
-/** 写せるかを確かめ、写すセッションと写さないセッションに分ける(点検とアップロードで同じ条件) */
-async function prepare(p: GroupUploadPaths, name: string, root: string): Promise<Prepared> {
+/** groups.json のグループを、写すまとまりにする(無い・空・フォルダ名が別のグループと同じなら止まる) */
+export async function groupTarget(p: Pick<GroupUploadPaths, 'groups'>, name: string): Promise<UploadTarget> {
   const loaded = await loadGroups(p.groups);
   const g = loaded.groups.find((x) => x.name === name);
   if (!g) throw new Error(`グループ「${name}」はありません${loaded.groups.length ? `(あるのは: ${loaded.groups.map((x) => x.name).join(', ')})` : ''}`);
@@ -189,13 +200,44 @@ async function prepare(p: GroupUploadPaths, name: string, root: string): Promise
   const folder = safeDirName(name);
   const clash = loaded.groups.find((x) => x.name !== name && safeDirName(x.name).toLowerCase() === folder.toLowerCase());
   if (clash) throw new Error(`グループ「${name}」と「${clash.name}」は、アップロード先のフォルダ名が同じ「${folder}」になります。どちらかの名前を変えてください`);
+  return { kind: 'group', name, note: g.note, ids: g.ids };
+}
+
+/** 集計のプロジェクト(sessions.json の project。プロジェクト別の表と同じ単位)ごとの、空でないセッションの数と最終更新。多い順 */
+export async function listProjects(sessionsPath: string): Promise<{ name: string; sessions: number; updatedAt: string | null }[]> {
+  const by = new Map<string, { sessions: number; updatedAt: string | null }>();
+  for (const s of await readSessions(sessionsPath)) {
+    if (s.empty) continue;
+    const x = by.get(s.project) ?? { sessions: 0, updatedAt: null };
+    x.sessions++;
+    if (s.updatedAt && (!x.updatedAt || s.updatedAt > x.updatedAt)) x.updatedAt = s.updatedAt;
+    by.set(s.project, x);
+  }
+  return [...by].map(([name, x]) => ({ name, ...x })).sort((a, b) => b.sessions - a.sessions || a.name.localeCompare(b.name));
+}
+
+/** 集計のプロジェクトのセッション(空のものは除く)を、写すまとまりにする */
+export async function projectTarget(sessionsPath: string, name: string): Promise<UploadTarget> {
+  const ids = (await readSessions(sessionsPath)).filter((s) => s.project === name && !s.empty).map((s) => s.id);
+  if (!ids.length) throw new Error(`プロジェクト「${name}」のセッションは、前回の集計にありません(空のセッションは写しません)`);
+  return { kind: 'project', name, note: `集計のプロジェクト「${name}」のセッション(空のものを除く ${ids.length} 件)`, ids };
+}
+
+async function readSessions(path: string): Promise<SessionRecord[]> {
+  if (!existsSync(path)) throw new Error(`${path} がありません。先に集計してください(atlas.bat か atlas all)`);
+  return (JSON.parse(await readFile(path, 'utf8')) as SessionsFile).sessions;
+}
+
+/** 写せるかを確かめ、写すセッションと写さないセッションに分ける(点検とアップロードで同じ条件) */
+async function prepare(p: GroupUploadPaths, g: UploadTarget, root: string): Promise<Prepared> {
+  const name = g.name;
   // 基底のフォルダは作らない(ネットワークドライブの切断やドライブ名の違いで、思わぬ場所に作らないように)
   if (!existsSync(root) || !statSync(root).isDirectory()) throw new Error(`アップロード先のフォルダが見つかりません: ${root}(フォルダを作るか、場所を選び直してください)`);
   const stateDir = join(p.snapshot, 'session-state');
   if (!existsSync(stateDir)) throw new Error(`${stateDir} がありません。先に集計してください(atlas.bat か atlas all)`);
   // 1 件も写せないなら、フォルダを作らず README も書き直さない(前に写したものの一覧が「0 件」で上書きされないように)
   if (!g.ids.some((id) => SAFE_ID.test(id) && existsSync(join(stateDir, id))))
-    throw new Error(`グループ「${name}」のセッション(${g.ids.length} 件)は、前回の集計に 1 件もありません。先に集計し直してください(何も写していません)`);
+    throw new Error(`${KIND_LABEL[g.kind]}「${name}」のセッション(${g.ids.length} 件)は、前回の集計に 1 件もありません。先に集計し直してください(何も写していません)`);
   // groups.json は手で書けるので、フォルダの外を指す id(.. や区切りを含むもの)は写さない(元にも先にも触れない)
   const present: string[] = [];
   const missing: string[] = [];
@@ -203,8 +245,15 @@ async function prepare(p: GroupUploadPaths, name: string, root: string): Promise
   return { g, stateDir, dir: uploadDir(root, name), present, missing };
 }
 
+/** グループを写す前の点検 */
 export async function checkUpload(p: GroupUploadPaths, name: string, root: string): Promise<UploadCheck> {
-  const { stateDir, dir, present, missing } = await prepare(p, name, root);
+  return checkTarget(p, await groupTarget(p, name), root);
+}
+
+/** 写す前の点検(大きさと秘密らしい文字列)。何も写さない */
+export async function checkTarget(p: GroupUploadPaths, target: UploadTarget, root: string): Promise<UploadCheck> {
+  const { stateDir, dir, present, missing } = await prepare(p, target, root);
+  const name = target.name;
   const tops: UploadCheck['largest'] = [];
   const hits: UploadCheck['secrets']['files'] = [];
   const kinds = new Map<string, number>();
@@ -260,7 +309,19 @@ export async function uploadGroup(
   log: (m: string) => void = () => {},
   opts: { onProgress?: (p: UploadProgress) => void } = {},
 ): Promise<GroupUploadResult> {
-  const { g, stateDir, dir, present, missing } = await prepare(p, name, root);
+  return uploadTarget(p, await groupTarget(p, name), root, log, opts);
+}
+
+/** まとまり(グループかプロジェクト)のセッションを <基底>/<名前>/<セッション id>/ に写す */
+export async function uploadTarget(
+  p: GroupUploadPaths,
+  target: UploadTarget,
+  root: string,
+  log: (m: string) => void = () => {},
+  opts: { onProgress?: (p: UploadProgress) => void } = {},
+): Promise<GroupUploadResult> {
+  const { g, stateDir, dir, present, missing } = await prepare(p, target, root);
+  const name = target.name;
   const manifest = await readSnapshotManifest(p.snapshot);
   await mkdir(dir, { recursive: true });
   const storeDb = join(p.snapshot, 'session-store.db');
@@ -326,7 +387,7 @@ export async function uploadGroup(
   const snapshotAt = manifest?.createdAt ?? null;
   const records = await readRecords(p.sessions, done);
   await writeFile(join(dir, UPLOAD_README), groupReadme({ name, note: g.note, dir, done, missing, withMemo, snapshotAt, records }));
-  log(`group upload: 「${name}」 ${uploaded} セッション(置き換え ${replaced} 件・メモ ${withMemo.size} 件)→ ${dir}${missing.length ? `。前回の集計に無い ${missing.length} 件は写していません` : ''}`);
+  log(`${g.kind} upload: 「${name}」 ${uploaded} セッション(置き換え ${replaced} 件・メモ ${withMemo.size} 件)→ ${dir}${missing.length ? `。前回の集計に無い ${missing.length} 件は写していません` : ''}`);
   return { name, dir, uploaded, replaced, missing, snapshotAt, memos: withMemo.size };
 }
 

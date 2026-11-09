@@ -444,17 +444,24 @@ describe('画面の操作', () => {
       const bad = problems.findIndex((p) => p.includes('status of 400'));
       expect(bad).toBeGreaterThanOrEqual(0);
       problems.splice(bad, 1);
-      // 選ぶと設定に書き、見出しに戻ってそのまま写す
+      // 選ぶと設定に書き、写す前の確認が出る(送り先を見せる。焦点は「写す」)。写すと結果が出る
       pickAnswer = root;
       await form.getByRole('button', { name: 'エクスプローラーで選ぶ…' }).click();
+      const confirm = head.getByTestId('group-upload-confirm');
+      await expect.poll(() => confirm.isVisible()).toBe(true);
+      expect(await head.getByTestId('group-upload-confirm-dest').locator('code').innerText()).toBe(`${dest}${sep}`);
+      await focusLands(confirm.getByRole('button', { name: '写す', exact: true }));
+      await page.keyboard.press('Enter');
       await expect.poll(() => head.getByTestId('group-uploaded').innerText(), { timeout: 15_000 }).toMatch(/アップロードしました.2 セッション.*README\.md/);
       expect(JSON.parse(await readFile(configPath, 'utf8'))).toEqual({ uploadRoot: root });
       expect(await head.getByTestId('group-upload-dest').locator('code').innerText()).toBe(`${dest}${sep}`);
       expect(await head.getByTestId('group-uploaded').locator('code').innerText()).toBe(dest);
       for (const id of ids) expect(existsSync(join(dest, id, 'events.jsonl'))).toBe(true);
       expect(await readFile(join(dest, 'README.md'), 'utf8')).toMatch(/^# アップ\/テスト\n\n画面から写す\n/);
-      // 2 回目は置き換え。焦点は「アップロード」に残る
+      // 2 回目も確かめてから写す(置き換えの件数を見せる)
       await head.getByTestId('group-upload').click();
+      await expect.poll(() => confirm.innerText()).toMatch(/うち 2 件は前に写したものを置き換えます/);
+      await confirm.getByRole('button', { name: '写す', exact: true }).click();
       await expect.poll(() => head.getByTestId('group-uploaded').innerText()).toMatch(/うち 2 件は前に写したものを置き換え/);
       // 写した先を開く(エクスプローラーの代わりに記録)
       await head.getByTestId('group-upload-open').click();

@@ -20,8 +20,8 @@ const pkg = process.argv[2] ? resolve(process.argv[2]) : fail('使い方: node s
 if (!existsSync(join(pkg, 'package.json'))) fail(`${pkg} に package.json がありません`);
 
 const bats = readdirSync(pkg).filter((f) => f.endsWith('.bat'));
-// Phase 14: 利用者が起動するのは atlas.bat(集計と画面)と setup.bat(初期設定)だけ(他の操作は画面とコマンドから)
-if (bats.sort().join(',') !== 'atlas.bat,setup.bat') fail(`*.bat は atlas.bat と setup.bat だけのはずです(入っているもの: ${bats.join(', ') || 'なし'})`);
+// 利用者が起動するのは atlas.bat(集計と画面)・setup.bat(初期設定)・upload-project.bat(プロジェクトのセッションを送る)だけ(他の操作は画面とコマンドから)
+if (bats.sort().join(',') !== 'atlas.bat,setup.bat,upload-project.bat') fail(`*.bat は atlas.bat・setup.bat・upload-project.bat だけのはずです(入っているもの: ${bats.join(', ') || 'なし'})`);
 for (const f of bats) {
   if (/(^|[^\r])\n/.test(readFileSync(join(pkg, f), 'utf8'))) fail(`${f} に CRLF でない改行があります(.gitattributes の eol を確認)`);
 }
@@ -52,6 +52,9 @@ for (const f of ['atlas.html', 'insights.html', 'glossary.html']) {
   if (!existsSync(join(out, f)) || statSync(join(out, f)).size === 0) fail(`${f} ができていません`);
 }
 if (!readdirSync(join(out, 'sessions')).some((f) => f.endsWith('.md'))) fail('セッション記録(sessions/*.md)ができていません');
+// upload-project.bat が呼ぶ送る操作: プロジェクトの一覧を出し、何も選ばずに Enter で何も送らずに正常に終わる
+const up = spawnSync(process.execPath, [join('packages', 'cli', 'src', 'upload-project.ts')], { cwd: pkg, input: '\n', encoding: 'utf8', env: { ...process.env, ATLAS_CONFIG: join(pkg, 'atlas.config.json') } });
+if (up.status !== 0 || !/プロジェクト/.test(up.stdout) || !up.stdout.includes('やめました')) fail(`プロジェクトを送る操作(upload-project.ts)が通りません: ${up.stderr}${up.stdout}`);
 if (statSync(template).mtimeMs !== before) fail('同梱のテンプレートを作り直しました(mtime がソースより新しくなっていない)');
 
-console.log(`release-smoke: 通過(${bats.length} 本の *.bat、npm install、atlas all)`);
+console.log(`release-smoke: 通過(${bats.length} 本の *.bat、npm install、atlas all、プロジェクトを送る操作)`);

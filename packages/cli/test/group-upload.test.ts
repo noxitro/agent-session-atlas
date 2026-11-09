@@ -292,5 +292,6 @@ describe('グループのアップロード', () => {
     expect(existsSync(join(root, 'Player_Weapon'))).toBe(false);
     expect(await (await call(`api/groups/${g}/upload/progress`, 'GET')).json()).toBeNull();
     expect((await call(`api/groups/${g}/upload/progress`, 'POST')).status).toBe(405);
-  });
+    // サーバの起動を含むので、全体を同時に流したときの遅れで 5 秒を越えることがある
+  }, 20_000);
 });

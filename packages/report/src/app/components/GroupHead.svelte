@@ -4,7 +4,7 @@
   // サイドバーのグループの一覧は切り替えだけにする(選ぶたびに操作の行が差し込まれて下の行がずれ、削除が改名と同じ重さで並んでいたため)
   // アップロード(serve のとき): グループのセッションの生ログを、決めておいた基底フォルダの <グループ名>\<セッション id>\ に写す。
   // 先は見出しの下に 1 行で見せ、「場所を変える…」で同じ見出しの中に記入欄を開く(エクスプローラーで選ぶ / パスを入力)。
-  // 写す前にサーバが大きさと秘密らしい文字列を調べ、秘密らしい文字列があるか大きいときだけ確認を挟む。写している間は進み具合(バイト数)を出す。
+  // 写す前にサーバが大きさと秘密らしい文字列を調べ、毎回確認を出す(送り先・件数・大きさ。秘密らしい文字列があれば警告)。写している間は進み具合(バイト数)を出す。
   import { untrack } from 'svelte';
   import { int } from '../../lib/format.ts';
   import { safeDirName } from '../../lib/groups.ts';
@@ -62,8 +62,13 @@
           (uploaded.missing.length ? `前回の集計に無いセッション ${int(uploaded.missing.length)} 件は写していません。` : '')
       : '',
   );
-  /** 確認を挟む目安(serve の UPLOAD_CONFIRM_BYTES と同じ): 秘密らしい文字列が 1 つでもあるか、合計が 100 MB を超えるとき */
+  /** 確認に「大きいもの」を出す目安(serve の UPLOAD_CONFIRM_BYTES と同じ) */
   const CONFIRM_BYTES = 100 * 1024 * 1024;
+  /** 確認から送り先を選び直す(決めたら点検し直して、また確かめる) */
+  function changeRootFromConfirm(): void {
+    checked = null;
+    beginRoot(true);
+  }
   const size = (b: number): string => (b < 1024 * 1024 ? `${int(Math.ceil(b / 1024))} KB` : `${(b / 1024 / 1024).toFixed(b < 10 * 1024 * 1024 ? 1 : 0)} MB`);
   function doUpload(): void {
     if (!upload || busy) return;
@@ -82,11 +87,11 @@
       },
       () => {
         if (!c) return;
-        if (c.secrets.count || c.bytes > CONFIRM_BYTES) {
-          checked = c;
-          mode = 'confirm';
-          requestAnimationFrame(() => rootEl?.querySelector<HTMLButtonElement>('button[data-cancel]')?.focus());
-        } else queueMicrotask(copy);
+        // 写す前に毎回、送り先と件数・大きさを見せて確かめる。秘密らしい文字列があれば焦点は「やめる」、無ければ「写す」
+        checked = c;
+        mode = 'confirm';
+        const warn = c.secrets.count > 0;
+        requestAnimationFrame(() => rootEl?.querySelector<HTMLButtonElement>(warn ? 'button[data-cancel]' : 'button[data-confirm]')?.focus());
       },
     );
   }
@@ -336,6 +341,7 @@
   {:else if mode === 'confirm' && checked}
     <div class="confirm" role="group" aria-labelledby="group-head-h" data-testid="group-upload-confirm">
       <h2 id="group-head-h" class="q">「{group.name}」を写す前に確かめてください</h2>
+      <p class="desc" data-testid="group-upload-confirm-dest">送り先: <code translate="no">{checked.dir}{sep(checked.dir)}</code> <button type="button" class="link" onclick={changeRootFromConfirm}>送り先を変える…</button></p>
       <p class="desc">{int(checked.sessions)} セッション・合計 {size(checked.bytes)}({int(checked.files)} ファイル){checked.replace ? `。うち ${int(checked.replace)} 件は前に写したものを置き換えます` : ''}。</p>
       {#if checked.largest.length && checked.bytes > CONFIRM_BYTES}
         <p class="desc">大きいもの: {#each checked.largest.slice(0, 3) as x, i (x.id + x.path)}{i ? '、' : ''}<code translate="no">{x.id.slice(0, 8)}…/{x.path}</code> {size(x.bytes)}{/each}</p>
@@ -436,6 +442,11 @@
     margin: 4px 0 0;
     color: var(--ink-2);
     font-variant-numeric: tabular-nums;
+  }
+  .confirm code {
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    overflow-wrap: anywhere;
   }
   .warn {
     margin: 8px 0;
