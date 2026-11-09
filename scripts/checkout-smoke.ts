@@ -1,14 +1,14 @@
-// 配布用フォルダ(scripts/pack-release.ts の出力)を atlas.bat と同じ順で動かして確かめる:
+// clone した直後と同じ中身のフォルダ(scripts/fresh-checkout.ts の出力)を atlas.bat と同じ順で動かして確かめる:
 // *.bat が CRLF → 依存が無いと判定される → npm install → 揃ったと判定される → 架空の fixture で atlas all が通る
-// → 同梱のテンプレートを作り直していない。
-// 使い方: node scripts/release-smoke.ts <配布用フォルダ>(npm install するのでネットワークが要る)
+// (レポートのテンプレートは入っていないので、最初の atlas all が作る)→ プロジェクトを送る操作 → Windows では *.bat を実際に起動する。
+// 使い方: node scripts/checkout-smoke.ts <フォルダ>(npm install するのでネットワークが要る)
 import { execSync, spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { FIXTURES_DIR, writeFixtures } from './synthetic-fixtures.ts';
 
 function fail(message: string): never {
-  console.error(`release-smoke: 失敗: ${message}`);
+  console.error(`checkout-smoke: 失敗: ${message}`);
   process.exit(1);
 }
 
@@ -16,7 +16,7 @@ function depsFresh(dir: string): boolean {
   return spawnSync(process.execPath, [join('scripts', 'deps-fresh.mjs')], { cwd: dir, stdio: 'inherit' }).status === 0;
 }
 
-const pkg = process.argv[2] ? resolve(process.argv[2]) : fail('使い方: node scripts/release-smoke.ts <配布用フォルダ>');
+const pkg = process.argv[2] ? resolve(process.argv[2]) : fail('使い方: node scripts/checkout-smoke.ts <フォルダ>');
 if (!existsSync(join(pkg, 'package.json'))) fail(`${pkg} に package.json がありません`);
 
 const bats = readdirSync(pkg).filter((f) => f.endsWith('.bat'));
@@ -37,9 +37,9 @@ const setup = spawnSync(process.execPath, [join('packages', 'cli', 'src', 'setup
 if (setup.status !== 0 || !setup.stdout.includes('書きませんでした')) fail(`初期設定(setup.ts)が通りません: ${setup.stderr}${setup.stdout}`);
 if (existsSync(join(pkg, 'atlas.config.json'))) fail('初期設定で「n」と答えたのに atlas.config.json ができました');
 
+// clone した直後にはレポートのテンプレートが無い(packages/report/dist は git に入れない)。最初の atlas all が Vite で作る
 const template = join(pkg, 'packages', 'report', 'dist', 'template.html');
-if (!existsSync(template)) fail('ビルド済みのテンプレートが入っていません');
-const before = statSync(template).mtimeMs;
+if (existsSync(template)) fail('clone した直後には無いはずのレポートのテンプレートが入っています');
 
 await writeFixtures();
 const out = join(pkg, 'out');
@@ -52,10 +52,10 @@ for (const f of ['atlas.html', 'insights.html', 'glossary.html']) {
   if (!existsSync(join(out, f)) || statSync(join(out, f)).size === 0) fail(`${f} ができていません`);
 }
 if (!readdirSync(join(out, 'sessions')).some((f) => f.endsWith('.md'))) fail('セッション記録(sessions/*.md)ができていません');
+if (!existsSync(template)) fail('最初の atlas all がレポートのテンプレートを作りませんでした');
 // upload-project.bat が呼ぶ送る操作: プロジェクトの一覧を出し、何も選ばずに Enter で何も送らずに正常に終わる
 const up = spawnSync(process.execPath, [join('packages', 'cli', 'src', 'upload-project.ts')], { cwd: pkg, input: '\n', encoding: 'utf8', env: { ...process.env, ATLAS_CONFIG: join(pkg, 'atlas.config.json') } });
 if (up.status !== 0 || !/プロジェクト/.test(up.stdout) || !up.stdout.includes('やめました')) fail(`プロジェクトを送る操作(upload-project.ts)が通りません: ${up.stderr}${up.stdout}`);
-if (statSync(template).mtimeMs !== before) fail('同梱のテンプレートを作り直しました(mtime がソースより新しくなっていない)');
 
 // Windows では *.bat を cmd で実際に起動する(中のスクリプトを直接呼ぶだけでは、bat の書き方の誤りを見逃す。
 // upload-project.bat は囲みの中の echo の括弧で、集計の後に必ず止まっていた)。集計は架空の fixture を読む(ATLAS_COPILOT_HOME)。
@@ -78,4 +78,4 @@ if (process.platform === 'win32') {
   if (existsSync(join(pkg, 'atlas.config.json'))) fail('setup.bat で書かない答えをしたのに atlas.config.json ができました');
 }
 
-console.log(`release-smoke: 通過(${bats.length} 本の *.bat、npm install、atlas all、プロジェクトを送る操作${process.platform === 'win32' ? '、upload-project.bat と setup.bat の起動' : ''})`);
+console.log(`checkout-smoke: 通過(${bats.length} 本の *.bat、npm install、atlas all、プロジェクトを送る操作${process.platform === 'win32' ? '、upload-project.bat と setup.bat の起動' : ''})`);

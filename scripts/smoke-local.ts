@@ -1,9 +1,8 @@
 #!/usr/bin/env node
-// 配布物の動作確認を手元で回す(npm run smoke。CI の「配布物の動作確認」と同じ pack-release.ts → release-smoke.ts)。
+// clone した直後と同じ中身での動作確認を手元で回す(npm run smoke。CI の「clone した状態での動作確認」と同じ fresh-checkout.ts → checkout-smoke.ts)。
 // 置き場はリポジトリの外の一時フォルダ(CI は RUNNER_TEMP、手元は OS の一時フォルダの atlas-ci-pkg-XXXXXX/。回すたびに別の名前で、通ったら消す)。
-// リポジトリの中に作ると、配布物に入れ忘れた依存も上の階層の node_modules から読めてしまい、見逃すため。
-// git archive HEAD なので、コミットしていない変更は入らない(入っていなければ注意を出す)。
-// 先に npm run build:report が要る(npm run ci は順に回す)。
+// リポジトリの中に作ると、package.json に入れ忘れた依存も上の階層の node_modules から読めてしまい、見逃すため。
+// git archive HEAD なので、コミットしていない変更は入らない(あれば注意を出す)。
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -17,17 +16,17 @@ const NAME = 'agent-session-atlas-smoke';
 
 try {
   const dirty = execFileSync('git', ['status', '--porcelain'], { cwd: ROOT, encoding: 'utf8' }).trim();
-  if (dirty) console.log('smoke: 注意: コミットしていない変更があります。配布物はコミット済みの内容(HEAD)だけで作るので、変更は確かめられません。');
+  if (dirty) console.log('smoke: 注意: コミットしていない変更があります。確かめるのはコミット済みの内容(HEAD)だけです。');
 } catch {
   /* git が無い(配布 zip を展開した先)なら何も言わない */
 }
 for (const [script, args] of [
-  ['pack-release.ts', [NAME, BASE]],
-  ['release-smoke.ts', [join(BASE, NAME)]],
+  ['fresh-checkout.ts', [NAME, BASE]],
+  ['checkout-smoke.ts', [join(BASE, NAME)]],
 ] as const) {
   const r = spawnSync(process.execPath, [join(ROOT, 'scripts', script), ...args], { cwd: ROOT, stdio: 'inherit' });
   if (r.status !== 0) {
-    console.log(`smoke: 配布物は ${BASE} に残しました`);
+    console.log(`smoke: 確かめたフォルダは ${BASE} に残しました`);
     process.exit(r.status ?? 1);
   }
 }

@@ -678,13 +678,16 @@ export function groupReadme(o: {
   if (o.missing.length) lines.push('', `${KIND_LABEL[kind]}にあっても、前回の集計に無かったため写していないもの: ${o.missing.map((x) => `\`${cell(x)}\``).join(', ')}`);
   lines.push(
     '',
-    '## 集計し直すには',
+    '## 集計し直すには(読みやすい記録もここで作れます)',
     '',
     'agent-session-atlas のフォルダで、次を実行します(出力先は好きな場所に)。',
     '',
     '```',
     `npm run atlas -- all --home "${o.dir}" --out "<出力先>"`,
     '```',
+    '',
+    '<出力先> に、画面(atlas.html)と、セッションごとの読みやすい記録(sessions\\<セッション ID>.md。依頼・応答・ツールの経過・消費をまとめた Markdown)ができます。',
+    '記録はここに送った生ログから作れるので、送るものには含めていません(送り先の容量を使わないため)。',
     '',
     `メモ(各セッションのフォルダの ${UPLOAD_MEMO_FILE})は、集計し直した画面には出ません。ファイルを開いて読んでください。`,
     '',

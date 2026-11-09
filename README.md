@@ -19,14 +19,14 @@ GitHub Copilot のセッションログ(`%USERPROFILE%\.copilot`)を手元で集
 
 ## 使い方
 
-前提: Node.js 24 以上。
+前提: Node.js 24 以上と Git。このリポジトリを `git clone` して使います(配布用の zip はありません)。
 
 0. (初回だけ・任意)リポジトリ直下の `setup.bat` をダブルクリックして、初期設定をします(下記「[初期設定(setup.bat)](#初期設定setupbat)」)。llm-wiki の参照を数えないなら飛ばして構いません。
 1. リポジトリ直下の `atlas.bat` をダブルクリックします(初回だけ `npm install` が走ります)。
 2. 集計が終わると、既定のブラウザにレポートが開きます。約 800 セッションで十数秒かかります。2 回目以降は、変わっていないファイルの複製を省きます。
 3. 読み終わったらブラウザを閉じます。黒い窓とローカルサーバ(`127.0.0.1` だけに公開)も止まります。
 
-もう一度 `atlas.bat` を実行すると集計し直します。[GitHub Release](../../releases) の zip を展開した場合も、同じく `atlas.bat` をダブルクリックするだけです。
+もう一度 `atlas.bat` を実行すると集計し直します。新しい版にするには `git pull` してから `atlas.bat` を実行します(依存が変わっていれば `npm install` が走り、レポートのテンプレートも作り直します)。
 
 ### 初期設定(setup.bat)
 
@@ -125,7 +125,7 @@ E:\dev\atlas-logs\Player-Weapon\<セッション ID>\atlas-session.json その�
 E:\dev\atlas-logs\Player-Weapon\<セッション ID>\atlas-memo.md     そのセッションのメモ(画像は atlas-memo\ に)
 ```
 
-写すのは `atlas.bat` を起動したとき(か「集計し直す」)に複製したログです。受け取った側は `npm run atlas -- all --home "E:\dev\atlas-logs\Player-Weapon" --out out-player-weapon` でそのまま集計できます。生ログには依頼文や応答、パスがそのまま入るので、写す先を見せてよい相手か確かめてください。詳しくは [docs/screen.md の「タスクタグを作る・直す」](docs/screen.md#タスクタグを作る直すatlasbat-から開いたときだけ) にあります。
+写すのは `atlas.bat` を起動したとき(か「集計し直す」)に複製したログです。受け取った側は `npm run atlas -- all --home "E:\dev\atlas-logs\Player-Weapon" --out out-player-weapon` でそのまま集計できます。このとき、セッションごとの読みやすい記録(`<出力先>\sessions\<セッション ID>.md`。依頼・応答・ツールの経過をまとめた Markdown)もできます(記録は生ログから作れるので、送るものには含めません。送り先の容量を使わないため)。生ログには依頼文や応答、パスがそのまま入るので、写す先を見せてよい相手か確かめてください。詳しくは [docs/screen.md の「タスクタグを作る・直す」](docs/screen.md#タスクタグを作る直すatlasbat-から開いたときだけ) にあります。
 
 ## プロジェクトのセッションをまとめて送る(upload-project.bat)
 
@@ -154,5 +154,5 @@ E:\dev\atlas-logs\Player-Weapon\<セッション ID>\atlas-memo.md     そのセ
 | [docs/cli.md](docs/cli.md) | コマンドとオプションの全一覧、snapshot / extract が読むもの、wiki の指定 |
 | [docs/outputs.md](docs/outputs.md) | セッション記録(Markdown)、解析用の完全出力、改善点の分析、スキルの下書き |
 | [docs/judge.md](docs/judge.md) | 推定人手工数の判定の回し方(評価バンドル、外部の LLM、バックエンドと費用) |
-| [docs/development.md](docs/development.md) | 開発・テスト・全ページの網羅チェック・CI / リリース・fixtures・元データを書き換えない仕組み |
+| [docs/development.md](docs/development.md) | 開発・テスト・全ページの網羅チェック・CI・fixtures・元データを書き換えない仕組み |
 | [docs/PLAN.md](docs/PLAN.md) | 計画と、各フェーズの設計判断 |
