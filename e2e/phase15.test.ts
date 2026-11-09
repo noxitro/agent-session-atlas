@@ -41,6 +41,9 @@ describe('Phase 15 E2E: グループのアップロード', () => {
     await rm(WORK, { recursive: true, force: true });
     let home: string;
     ({ home, close } = await buildFixtureHome(join(WORK, 'home'), { phase11: true }));
+    // デスクトップアプリで作ったばかりのセッションは、workspace.yaml の名前が仮の「New session」のままで、題名は data.db にある
+    const ws = join(home, 'session-state', desk, 'workspace.yaml');
+    await writeFile(ws, (await readFile(ws, 'utf8')).replace(/^name: .*$/m, 'name: "New session"'));
     for (const cmd of ['snapshot', 'extract']) {
       const r = atlas([cmd, '--home', home, '--out', out1]);
       expect(r.status, r.stderr).toBe(0);
@@ -130,6 +133,8 @@ describe('Phase 15 E2E: グループのアップロード', () => {
     const title = (first.name || first.firstUserMessage || '').replace(/\s+/g, ' ').slice(0, 20);
     expect(title.length).toBeGreaterThan(0);
     expect(readme).toContain(title);
+    // 名前が「New session」のままのセッションは、data.db の題名で呼ぶ(集計の記録の name も同じ)
+    expect(original.sessions.find((s) => s.id === desk)!.name).toBe('デスクトップのセッション');
     expect(readme).toContain(`| [${desk}](${desk}/) | デスクトップのセッション |`);
     expect(readme).toContain(`| [あり](${ids[0]}/atlas-memo.md) |`);
     expect(readme).toContain('`not-in-snapshot`');

@@ -144,6 +144,18 @@ export async function mergeSessionStoreJson(store: StoreData, id: string, path: 
   return null;
 }
 
+/** デスクトップアプリが作ったばかりのセッションの workspace.yaml に残る仮の名前(題名は data.db の側で付く) */
+const PLACEHOLDER_NAMES = new Set(['New session']);
+
+/**
+ * セッションの名前。workspace.yaml の名前が無いか仮の名前(New session)のままなら、デスクトップアプリの data.db の題名を使う。
+ * 名前があればそちらを残す(利用者が付けた名前の方が、自動で付いた題名より短く的確なことがある)
+ */
+export function sessionName(name: string | null, desktopTitle: unknown): string | null {
+  const t = typeof desktopTitle === 'string' ? desktopTitle.trim() : '';
+  return t && (!name?.trim() || PLACEHOLDER_NAMES.has(name.trim())) ? t : name;
+}
+
 const isRow = (v: unknown): boolean => typeof v === 'object' && v !== null && !Array.isArray(v);
 const isRowOrNull = (v: unknown): boolean => v === null || isRow(v);
 const isRows = (v: unknown): boolean => Array.isArray(v) && v.every(isRow);
@@ -287,6 +299,7 @@ export async function extract(snapshotDir: string, opts: ExtractOptions = {}): P
       rec.projectSource = p.source;
     }
     rec.desktop = (desktop ? desktopForSession(desktop, id) : null) ?? dirDesktops.get(id) ?? null;
+    rec.name = sessionName(rec.name, rec.desktop?.session?.title);
     done++;
     opts.onProgress?.(done, ids.length, id);
     if (sinceMs != null) {

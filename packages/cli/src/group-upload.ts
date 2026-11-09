@@ -204,9 +204,8 @@ export function groupReadme(o: {
   );
   for (const id of o.done) {
     const r = o.records.get(id);
-    // デスクトップアプリのセッションは name が「New session」のままで、題名は data.db にある
-    const desk = r?.desktop?.session?.title;
-    const title = r ? cell(truncate((typeof desk === 'string' && desk) || r.name || r.firstUserMessage || '', 60)) : '';
+    // name はデスクトップアプリの題名も反映済み(extract の sessionName)
+    const title = r ? cell(truncate(r.name || r.firstUserMessage || '', 60)) : '';
     const memo = o.withMemo.has(id) ? `[あり](${id}/${UPLOAD_MEMO_FILE})` : '';
     lines.push(`| [${id}](${id}/) | ${title || '-'} | ${localTime(r?.updatedAt ?? null)} | ${memo || '-'} |`);
   }
