@@ -335,6 +335,54 @@ describe('serve', () => {
     h = null;
   });
 
+  it('自分から止まる前に、応えている途中の要求(フォルダ選び・アップロードなど)が終わるのを待つ。相手が先に切っても処理が済むまで待ち、済んだら猶予を測り直して止まる', async () => {
+    const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+    // aborted: 画面が応答を待たずに閉じた(接続は切れたが、サーバの処理は続いている)
+    for (const aborted of [false, true]) {
+      const logs: string[] = [];
+      let answer!: (v: string | null) => void;
+      let asked!: () => void;
+      const picking = new Promise<void>((r) => (asked = r));
+      await start({
+        idleMs: 600_000,
+        byeGraceMs: 200,
+        configPath: join(dir, 'config.json'),
+        log: (m) => logs.push(m),
+        folders: { canPick: true, pick: () => (asked(), new Promise<string | null>((r) => (answer = r))) },
+      });
+      let reason: string | null = null;
+      void h!.done.then((r) => (reason = r));
+      const post = (p: string, seq: number): Promise<Response> => fetch(`${base()}/api/${p}`, { method: 'POST', headers: { 'x-atlas-token': h!.token, 'x-atlas-client': 'a', 'x-atlas-seq': String(seq) } });
+      await post('heartbeat', 1);
+      // フォルダを選ぶ画面が出ている間、応答は返らない
+      const ac = new AbortController();
+      const slow = fetch(`${base()}/api/upload-root`, { method: 'POST', headers: { 'x-atlas-token': h!.token }, signal: ac.signal }).catch((e: unknown) => e as Error);
+      await picking;
+      if (aborted) {
+        ac.abort();
+        await wait(100);
+      }
+      await post('bye', 2);
+      // 猶予(200ms)は過ぎたが、応えている途中なので止まらない(以前は接続ごと切って止まった)
+      await wait(600);
+      expect({ aborted, reason }).toEqual({ aborted, reason: null });
+      expect(logs.filter((l) => l.includes('画面がすべて閉じられた。処理が終わるまで止めずに待ちます'))).toHaveLength(1);
+      const t0 = performance.now();
+      answer(null);
+      const r = await slow;
+      if (aborted) expect(r).toBeInstanceOf(Error);
+      else {
+        // 応答は切られずに最後まで届く
+        expect((r as Response).status).toBe(200);
+        expect(await (r as Response).json()).toEqual({ root: null });
+      }
+      // 終わったら、猶予を測り直してから止まる
+      expect(await h!.done).toBe('画面がすべて閉じられた');
+      expect(performance.now() - t0).toBeGreaterThan(150);
+      h = null;
+    }
+  });
+
   it('bye の番号(x-atlas-seq): 閉じる前に出た heartbeat が bye の後に届いても数え直さない。番号が新しければ(bfcache から戻った画面)数え直す', async () => {
     await start({ idleMs: 600_000, byeGraceMs: 300 });
     const post = (p: string, client: string, seq: number): Promise<Response> =>

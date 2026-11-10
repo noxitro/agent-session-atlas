@@ -29,6 +29,15 @@ export const REPORT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..'
 export const TEMPLATE_PATH = join(REPORT_ROOT, 'dist', 'template.html');
 /** template.html の版の目印のプレースホルダ(集計が codeStamp() に置き換える) */
 export const CODE_PLACEHOLDER = '__ATLAS_CODE__';
+/**
+ * テンプレートの版の目印の位置(CODE_PLACEHOLDER)を目印に置き換える。
+ * 位置が無ければ止める(黙って進むと、ページは版を比べられず、サーバとずれていても知らせが出ない。目印の meta を足す前に作った dist が残っているときなど)
+ */
+export function embedCodeStamp(template: string, stamp: string): string {
+  const i = template.indexOf(CODE_PLACEHOLDER);
+  if (i < 0) throw new Error(`テンプレートに版の目印の位置 ${CODE_PLACEHOLDER} がありません(report のビルドが古いか壊れています。packages/report/dist を消してから、もう一度実行してください)`);
+  return template.slice(0, i) + stamp + template.slice(i + CODE_PLACEHOLDER.length);
+}
 const BASE_CSS_PATH = join(REPORT_ROOT, 'src', 'styles', 'base.css');
 
 /** 静的ページ(詳細 797 件・用語)に埋め込む CSS からコメントと余分な空白を落とす(1 件あたり約 4KB の節約。atlas.html は Vite が同じことをする) */
@@ -235,7 +244,7 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
   await mkdir(input.outDir, { recursive: true });
   // セッションの要約は既定値と同じ項目を落として埋め込む(読むときに埋め戻す。lib/pack.ts)
   // 版の目印はデータを埋める前に置き換える(記録の本文に同じ文字列があっても触れない)
-  const html = embedData(template.replace(CODE_PLACEHOLDER, codeStamp()), { ...data, sessions: data.sessions.map(packSummary) });
+  const html = embedData(embedCodeStamp(template, codeStamp()), { ...data, sessions: data.sessions.map(packSummary) });
   const htmlPath = join(input.outDir, 'atlas.html');
   await writeFile(htmlPath, html);
   // 用語の説明は 1 枚だけ別ページ(atlas.html と詳細ページからリンク)

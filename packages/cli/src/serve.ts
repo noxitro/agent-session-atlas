@@ -2,7 +2,7 @@
 // Phase 14: 画面からの操作(集計し直す・工数を判定する・全文を作る。jobs.ts)と、記録・全文記録の表示(/view/<id>)も持つ。
 // チャットでの判定(M365 Copilot など): 添付ファイル(bundle/parts/)の一覧と進み具合(/api/judge/parts)、貼った返答の取り込み(/api/judge/import)。
 // 画面(3 画面)は 3 秒ごとに heartbeat を送り、ページを閉じるときは bye を送る。開いている画面がすべて bye を送ったら BYE_GRACE_MS 後に、
-// heartbeat がどの画面からも IDLE の間届かなければ、自分で終了する(ブラウザを閉じれば止まる)。ジョブの実行中は止めず、終わってから判定を再開する。
+// heartbeat がどの画面からも IDLE の間届かなければ、自分で終了する(ブラウザを閉じれば止まる)。ジョブの実行中と、要求に応えている途中は止めず、終わってから判定を再開する。
 // IDLE を短くしないこと: ブラウザは隠れたタブのタイマーを間引く(Chrome は 5 分以上隠れたタブを 1 分に 1 回まで)。以前の 8 秒では、別のタブで作業している間に止まっていた。
 // 画面と保存の境界はこの API だけ(後でアプリ化するときに差し替える)。
 import { randomBytes } from 'node:crypto';
@@ -316,15 +316,8 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     env: o.jobs?.env,
     runFull: o.jobs?.runFull ?? runFullDefault,
     log,
-    onEnd: () => {
-      // 画面が閉じられた後もジョブは最後まで走らせ、終わってから判定を再開する。
-      // 画面がすべて閉じていたら短い猶予で(以前は 30 分の保険を張り直していた)
-      if (idlePending) {
-        idlePending = null;
-        if (leaving && clients.size === 0) armLeaving();
-        else armIdle();
-      }
-    },
+    // 画面が閉じられた後もジョブは最後まで走らせ、終わってから判定を再開する
+    onEnd: () => resume(),
   });
   const refreshing = (): boolean => jobs.running() && jobs.current()?.kind === 'refresh';
   /** タスクタグの書き出し・写す前の点検・アップロードのどれかをしている最中なら、その内容(「「A」をアップロードしている」など)。その間はほかの書き出し・点検・アップロード・ジョブを始めない */
@@ -472,8 +465,10 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
   let closed = false;
   let firstTimer: NodeJS.Timeout | null = null;
   let idleTimer: NodeJS.Timeout | null = null;
-  /** heartbeat が途切れたがジョブの実行中なので待っている(理由) */
+  /** heartbeat が途切れたが、ジョブの実行中か、要求に応えている途中なので待っている(理由) */
   let idlePending: string | null = null;
+  /** 応えている途中の要求の数(処理が済み、応答を送り終えるか相手が切るまで) */
+  let inflight = 0;
   let port = 0;
 
   async function close(reason = '停止'): Promise<void> {
@@ -484,7 +479,8 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     await rm(join(outDir, SERVE_STATE_FILE), { force: true }).catch(() => {});
     jobs.dropLock();
     // close() は使い終えた接続しか閉じず、残りが閉じるまで待つ。ブラウザが次の要求のために先に開けておき、まだ何も送っていない接続も
-    // 「要求の途中」とみなされて残り、ブラウザが閉じるまで止まらなかった(atlas.bat の窓が残る)。止めるときはすべて切る
+    // 「要求の途中」とみなされて残り、ブラウザが閉じるまで止まらなかった(atlas.bat の窓が残る)。止めるときはすべて切る。
+    // 自分から止まるとき(expire)は、応えている途中の要求が無いことを確かめてからここへ来る。切られるのは、中断(Ctrl+C)のときだけ
     await new Promise<void>((r) => {
       server.close(() => r());
       server.closeAllConnections();
@@ -492,14 +488,21 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     resolveDone(reason);
   }
 
-  /** 猶予が切れた。ジョブの実行中は止めずに待ち、終わってから(onEnd)猶予を測り直す */
+  /** 猶予が切れた。ジョブの実行中と、要求に応えている途中(アップロード・フォルダ選び・大きな記録の表示など)は止めずに待ち、終わってから(resume)猶予を測り直す */
   function expire(reason: string): void {
-    if (jobs.running()) {
+    if (jobs.running() || inflight) {
       if (!idlePending) log(`serve: ${reason}。処理が終わるまで止めずに待ちます`);
       idlePending = reason;
       return;
     }
     void close(reason);
+  }
+  /** 待っていた処理(ジョブ・応えている途中の要求)が終わった。ほかに残っていなければ猶予を測り直す。画面がすべて閉じていたら短い猶予で(以前は 30 分の保険を張り直していた) */
+  function resume(): void {
+    if (closed || !idlePending || inflight || jobs.running()) return;
+    idlePending = null;
+    if (leaving && clients.size === 0) armLeaving();
+    else armIdle();
   }
   function armIdle(): void {
     if (idleTimer) clearTimeout(idleTimer);
@@ -1255,6 +1258,15 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
   }
 
   server = createServer((req, res) => {
+    // 処理が済み、かつ応答を送り終える(か相手が切る)までを「応えている途中」と数える。相手が先に切っても、処理(アップロードなど)が続いていれば待つ
+    inflight++;
+    let waiting = 2;
+    const settle = (): void => {
+      if (--waiting) return;
+      inflight--;
+      resume();
+    };
+    res.once('close', settle);
     if (code) res.setHeader('x-atlas-code', code);
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
     const path = url.pathname;
@@ -1270,7 +1282,7 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
         res.writeHead(status, { 'content-type': 'text/plain; charset=utf-8' });
         res.end(message);
       }
-    });
+    }).finally(settle);
   });
   await new Promise<void>((ok, ng) => {
     server.once('error', ng);
