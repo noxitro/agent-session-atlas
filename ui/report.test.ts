@@ -584,6 +584,74 @@ describe('画面の操作', () => {
     }
   });
 
+  it('g4. 写している途中にタスクタグを切り替える: 切り替えた先では写しているタグの名前を出して写せなくし、写し終えた後に戻ると結果を出す(「すべて」へ外して戻っても同じ)', async () => {
+    const s = JSON.parse(await readFile(join(out, 'sessions.json'), 'utf8')) as { sessions: { id: string }[] };
+    const ids = s.sessions.map((x) => x.id).filter((x) => existsSync(join(out, 'snapshot', 'session-state', x)));
+    const before = existsSync(groupsPath) ? await readFile(groupsPath, 'utf8') : null;
+    const beforeConfig = existsSync(configPath) ? await readFile(configPath, 'utf8') : null;
+    const [a, b] = ['切り替え元', '切り替え先'];
+    const root = join(WORK, 'atlas-logs-switch');
+    await mkdir(root, { recursive: true });
+    await mkdir(notes, { recursive: true });
+    await writeFile(configPath, JSON.stringify({ uploadRoot: root }));
+    await writeFile(groupsPath, JSON.stringify({ version: 1, groups: [{ name: a, note: '', ids: [ids[0]] }, { name: b, note: '', ids: [ids[1]] }] }));
+    // 写す要求の答えを、合図があるまで画面に返さない(サーバは写し終えているが、画面はまだ写している途中 = 大きなログを写している間と同じ)
+    let release: () => void = () => {};
+    const held = (): Promise<void> => new Promise((r) => (release = r));
+    const uploadUrl = `**/api/groups/${encodeURIComponent(a)}/upload`;
+    try {
+      for (const away of ['tag', 'all'] as const) {
+        const gate = held();
+        await page.route(uploadUrl, async (route) => {
+          const response = await route.fetch();
+          await gate;
+          await route.fulfill({ response });
+        });
+        await page.goto('about:blank');
+        await page.goto(`${server.url}#group=${encodeURIComponent(a)}`);
+        const head = page.getByTestId('group-head');
+        await head.getByTestId('group-upload').click();
+        const confirm = head.getByTestId('group-upload-confirm');
+        await expect.poll(() => confirm.isVisible()).toBe(true);
+        await confirm.getByRole('button', { name: '写す', exact: true }).click();
+        await expect.poll(() => head.getByTestId('group-upload').innerText()).toBe('アップロード中…');
+        if (away === 'tag') {
+          // 別のタグへ: 写しているタグの名前を出し、このタグは写せない
+          await rail().getByRole('button', { name: new RegExp(b) }).click();
+          await expect.poll(() => head.locator('h2 .name').innerText()).toBe(b);
+          expect(await head.getByTestId('group-upload-elsewhere').innerText()).toContain(`「${a}」をアップロードしています`);
+          expect(await head.getByTestId('group-upload').getAttribute('aria-disabled')).toBe('true');
+          expect(await head.getByTestId('group-uploaded').count()).toBe(0);
+        } else {
+          // 「すべて」へ外す(見出しが消える)
+          await rail().getByRole('button', { name: 'すべて', exact: true }).click();
+          await expect.poll(() => page.getByTestId('group-head').count()).toBe(0);
+        }
+        // 写し終える(画面に答えが届く)。切り替えた先に結果は出さない
+        release();
+        if (away === 'tag') {
+          // 終わったことだけを知らせ、結果の中身は写したタグを開くと出す
+          await expect.poll(() => head.getByTestId('group-upload-elsewhere-done').innerText()).toMatch(new RegExp(`「${a}」のアップロードが終わりました.1 セッション.。詳しくは「${a}」を開くと出ます`));
+          expect(await head.getByTestId('group-upload-elsewhere').count()).toBe(0);
+          expect(await head.getByTestId('group-uploaded').count()).toBe(0);
+          expect(await head.getByTestId('group-upload').getAttribute('aria-disabled')).toBe('false');
+        } else await page.waitForTimeout(300);
+        // 戻ると、写したタグの見出しに結果を出す
+        await rail().getByRole('button', { name: new RegExp(a) }).click();
+        await expect.poll(() => page.getByTestId('group-head').locator('h2 .name').innerText()).toBe(a);
+        await expect.poll(() => page.getByTestId('group-head').getByTestId('group-uploaded').innerText(), { timeout: 5000 }).toMatch(/アップロードしました.1 セッション/);
+        await page.unroute(uploadUrl);
+      }
+    } finally {
+      release();
+      await page.unroute(uploadUrl);
+      if (before == null) await rm(groupsPath, { force: true });
+      else await writeFile(groupsPath, before);
+      if (beforeConfig == null) await rm(configPath, { force: true });
+      else await writeFile(configPath, beforeConfig);
+    }
+  });
+
   it('i. 戻る・進む: 詳細ページから戻るとスクロール位置と一覧の並べ替えが戻る。要点のリンクで絞り込んでから戻ると絞り込みが外れ、進むとまた絞り込む', async () => {
     await page.goto('about:blank');
     await page.goto(server.url);
