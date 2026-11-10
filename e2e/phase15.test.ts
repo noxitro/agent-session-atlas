@@ -1,7 +1,7 @@
 // グループのアップロード(atlas group upload / 画面の「アップロード」): グループのセッションの生ログを <基底>/<グループ名>/<セッション id>/ に写し、
-// 受け取った側が `--home <基底>/<グループ名>` でそのまま集計し直せることを、架空の fixture で通しで確かめる。
+// 送った先で `--home <基底>/<グループ名>` でそのまま集計し直せることを、架空の fixture で通しで確かめる。
 //  a. 写したフォルダの形(生ログ + atlas-session-store.json。スナップショットの作業用ファイルは入れない)、
-//     前回の集計に無い id と外を指す id は写さない、ほかの人のフォルダには触れない、2 回目は同じセッションを置き換える
+//     前回の集計に無い id と外を指す id は写さない、ほかの PC から写したフォルダには触れない、2 回目は同じセッションを置き換える
 //  b. アップ先から集計し直すと、元から集計したのと同じトークン・依頼・モデル・ツールになる(DB の行も添えてあるため)。
 //     デスクトップアプリのセッションの data.db の行(題名・モデル・トークン数など)も運ばれる(資格情報の表・許可外の列は入らない)
 //  c. アップロード先が無い・決まっていないときは何も写さずに止まる
@@ -64,7 +64,7 @@ describe('Phase 15 E2E: グループのアップロード', () => {
     await mkdir(join(notes, 'memos', ids[0]), { recursive: true });
     await writeFile(join(notes, 'memos', `${ids[0]}.md`), `# 結論\n\n判定の幅を直した。\n\n![画像](${ids[0]}/0123456789abcdef.png)\n`);
     await writeFile(join(notes, 'memos', ids[0], '0123456789abcdef.png'), Buffer.from('89504e470d0a1a0a', 'hex'));
-    // 同じ場所を使うほかの人が先に写したセッション(触れてはいけない)
+    // ほかの PC から先に写してあったセッション(触れてはいけない)
     await mkdir(join(dest, 'someone-else'), { recursive: true });
     await writeFile(join(dest, 'someone-else', 'events.jsonl'), '');
   });
@@ -94,7 +94,7 @@ describe('Phase 15 E2E: グループのアップロード', () => {
     const dj = await readFile(join(dest, desk, 'atlas-session-store.json'), 'utf8');
     expect((JSON.parse(dj) as SessionStoreJson).desktop?.session?.title).toBe('デスクトップのセッション');
     for (const v of [...Object.values(FAKE_SECRETS), ...Object.values(UNLISTED_VALUES)]) expect(dj).not.toContain(v);
-    // 2 回目: 前に写したフォルダは丸ごと置き換える(手で足したファイルは消える)。ほかの人のフォルダは残る
+    // 2 回目: 前に写したフォルダは丸ごと置き換える(手で足したファイルは消える)。ほかの PC から写したフォルダは残る
     await writeFile(join(dest, ids[0], 'stale.txt'), 'x');
     const r2 = atlas(['group', 'upload', GROUP, '--to', root, '--out', out1, '--notes-dir', notes]);
     expect(r2.status, r2.stderr).toBe(0);
@@ -114,7 +114,7 @@ describe('Phase 15 E2E: グループのアップロード', () => {
     expect(manifest.layout).toBe('flat');
     // アップロードで添えたもの(atlas-session.json・メモ)は集計に使わないので、写さず「写さなかったもの」にも数えない
     expect((manifest.extras?.skipped ?? []).filter((s) => /atlas-session\.json|atlas-memo/.test(s.path))).toEqual([]);
-    // ほかの人のフォルダ(中身が空)は記録の無いセッションとして入るだけ
+    // ほかの PC から写したフォルダ(中身が空)は記録の無いセッションとして入るだけ
     expect(again.sessions.map((s) => s.id).sort()).toEqual([...ids, desk, 'someone-else'].sort());
     // 指示ファイルの名前は、ほかのセッションと突き合わせて決めるので、一部のセッションだけを集計すると決まらないことがある。それ以外は全部同じ
     const pick = ({ instructions: _i, ...rest }: SessionRecord) => rest;
@@ -141,7 +141,7 @@ describe('Phase 15 E2E: グループのアップロード', () => {
     expect(readme).toContain(`| [${desk}](${desk}/) | デスクトップのセッション |`);
     expect(readme).toContain(`| [あり](${ids[0]}/atlas-memo.md) |`);
     expect(readme).toContain('`not-in-snapshot`');
-    // ほかの人のフォルダは一覧に出さない(今回写したものだけ)
+    // ほかの PC から写したフォルダは一覧に出さない(今回写したものだけ)
     expect(readme).not.toContain('someone-else');
     // メモの画像の参照は、添えた画像のフォルダを指す(Markdown のビューアでそのまま開ける)
     expect(await readFile(join(dest, ids[0], 'atlas-memo.md'), 'utf8')).toBe('# 結論\n\n判定の幅を直した。\n\n![画像](atlas-memo/0123456789abcdef.png)\n');

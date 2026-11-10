@@ -31,7 +31,7 @@ function call(id: string, toolName: string, result: 'ok' | 'fail' | 'deny' | nul
 async function sessions(): Promise<SessionRecord[]> {
   const a = await normalizeSession({
     id: 'a',
-    workspace: { repository: 'acme/a', client_name: 'github/cli', created_at: '2026-10-01T00:00:00Z' },
+    workspace: { repository: 'quokka/a', client_name: 'github/cli', created_at: '2026-10-01T00:00:00Z' },
     events: [
       ev('user.message', { content: 'a' }),
       ...call('1', 'gh-search', 'ok', { mcpServerName: 'gh' }),
@@ -49,7 +49,7 @@ async function sessions(): Promise<SessionRecord[]> {
   });
   const b = await normalizeSession({
     id: 'b',
-    workspace: { repository: 'acme/b', client_name: 'github/autopilot', created_at: '2026-10-02T00:00:00Z' },
+    workspace: { repository: 'quokka/b', client_name: 'github/autopilot', created_at: '2026-10-02T00:00:00Z' },
     events: [
       ev('user.message', { content: 'b' }),
       ...call('1', 'view', 'ok'),
@@ -104,7 +104,7 @@ describe('usageRanking', () => {
 
   it('絞り込みに追従する(プロジェクトで絞ると、そのセッションの分だけになる)', async () => {
     const summaries = (await sessions()).map((r) => summarize(r, identityAnonymizer(), null));
-    const only = aggregate(applyFilter(summaries, { ...emptyFilter(), project: 'acme/b' }));
+    const only = aggregate(applyFilter(summaries, { ...emptyFilter(), project: 'quokka/b' }));
     expect(only.usage.tools.map((t) => [t.key, t.calls])).toEqual([
       ['mcp:gh', 1],
       ['skill', 1],

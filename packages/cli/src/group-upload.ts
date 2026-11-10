@@ -4,8 +4,8 @@
 //                                      atlas-session-store.json   ← session-store.db と data.db(許可リストの列)のそのセッションの行(atlas が添える)
 //                                      atlas-memo.md / atlas-memo/ ← そのセッションのメモと画像(atlas-notes/memos/。あれば)
 //   <基底>/<グループ名>/README.md                                 ← グループ名・説明・写した日時・セッションの一覧(写すたびに書き直す)
-// 同じセッションのフォルダは丸ごと置き換える。グループから外したセッションや、他の人が写したセッションのフォルダには触れない
-// (同じ場所を何人かで使うため)。受け取った側は `atlas all --home <基底>/<グループ名>` でそのまま集計できる。
+// 同じセッションのフォルダは丸ごと置き換える。グループから外したセッションや、ほかの回・ほかの PC から写したセッションのフォルダには触れない
+// (前に写したものを消さないため)。送った先は `atlas all --home <基底>/<グループ名>` でそのまま集計できる。
 // 元(~/.copilot)は読まず、前回の集計で out/snapshot/ に複製したものを写す(SQLite は一貫した複製を取ってあるため)。
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import { copyFile, cp, mkdir, open, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
@@ -256,7 +256,7 @@ export async function groupTarget(p: Pick<GroupUploadPaths, 'groups'>, name: str
   if (!g) throw new Error(`タスクタグ「${name}」はありません${loaded.groups.length ? `(あるのは: ${loaded.groups.map((x) => x.name).join(', ')})` : ''}`);
   if (g.ids.length === 0) throw new Error(`タスクタグ「${name}」にセッションがありません`);
   // フォルダ名に直すと同じになる別のタスクタグ(Player/Weapon と Player_Weapon。Windows は大文字小文字も区別しない)があれば、混ざるので写さない
-  // (プロジェクトや、ほかの人が送ったものとの衝突は、送り先のフォルダの索引で見る。prepare)
+  // (プロジェクトや、ほかの PC から送ったものとの衝突は、送り先のフォルダの索引で見る。prepare)
   const folder = safeDirName(name);
   const clash = loaded.groups.find((x) => x.name !== name && safeDirName(x.name).toLowerCase() === folder.toLowerCase());
   if (clash) throw new Error(`タスクタグ「${name}」と「${clash.name}」は、アップロード先のフォルダ名が同じ「${folder}」になります。どちらかの名前を変えてください`);
@@ -662,7 +662,7 @@ export function groupReadme(o: {
     `- ログの時点: ${o.snapshotAt ? `${localTime(o.snapshotAt)} の集計` : '不明'}`,
     `- セッション: ${o.sessions.length} 件(うちメモあり ${o.sessions.filter((s) => s.memo).length} 件)`,
     '',
-    `この README と ${UPLOAD_INDEX}(プログラムや AI が読む索引)はアップロードするたびに書き直します。このフォルダには、ほかの人やほかの回に写したセッションのフォルダもあることがあります。`,
+    `この README と ${UPLOAD_INDEX}(プログラムや AI が読む索引)はアップロードするたびに書き直します。このフォルダには、ほかの回やほかの PC から写したセッションのフォルダもあることがあります。`,
     `タスクタグは、atlas の画面でセッションに付けたものです(各セッションのフォルダの ${UPLOAD_SESSION_META} にもあります)。`,
     '',
     '| セッション ID | 題名 | タスクタグ | 最終更新 | メモ |',

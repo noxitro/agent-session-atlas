@@ -126,7 +126,7 @@ E:\dev\atlas-logs\Player-Weapon\<セッション ID>\atlas-session.json その�
 E:\dev\atlas-logs\Player-Weapon\<セッション ID>\atlas-memo.md     そのセッションのメモ(画像は atlas-memo\ に)
 ```
 
-写すのは `atlas.bat` を起動したとき(か「集計し直す」)に複製したログです。受け取った側は `npm run atlas -- all --home "E:\dev\atlas-logs\Player-Weapon" --out out-player-weapon` でそのまま集計できます。このとき、セッションごとの読みやすい記録(`<出力先>\sessions\<セッション ID>.md`。依頼・応答・ツールの経過をまとめた Markdown)もできます(記録は生ログから作れるので、送るものには含めません。送り先の容量を使わないため)。生ログには依頼文や応答、パスがそのまま入るので、写す先を見せてよい相手か確かめてください。詳しくは [docs/screen.md の「タスクタグを作る・直す」](docs/screen.md#タスクタグを作る直すatlasbat-から開いたときだけ) にあります。
+写すのは `atlas.bat` を起動したとき(か「集計し直す」)に複製したログです。写したフォルダは `npm run atlas -- all --home "E:\dev\atlas-logs\Player-Weapon" --out out-player-weapon` でそのまま集計できます。このとき、セッションごとの読みやすい記録(`<出力先>\sessions\<セッション ID>.md`。依頼・応答・ツールの経過をまとめた Markdown)もできます(記録は生ログから作れるので、送るものには含めません。送り先の容量を使わないため)。生ログには依頼文や応答、パスがそのまま入るので、写す先を見られる人を確かめてください。詳しくは [docs/screen.md の「タスクタグを作る・直す」](docs/screen.md#タスクタグを作る直すatlasbat-から開いたときだけ) にあります。
 
 ## プロジェクトのセッションをまとめて送る(upload-project.bat)
 

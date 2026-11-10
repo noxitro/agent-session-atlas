@@ -138,7 +138,7 @@ describe('filterSessions', () => {
   it('--project は完全一致を優先し、無ければ部分一致。--since は更新日時で絞る', async () => {
     const mk = (id: string, repository: string, client: string, at: string) =>
       normalizeSession({ id, workspace: { repository, client_name: client, created_at: at, updated_at: at }, events: [] });
-    const rs = [await mk('1', 'acme/app', 'github/cli', '2026-07-01T00:00:00Z'), await mk('2', 'acme/app-docs', 'github/autopilot', '2026-09-01T00:00:00Z'), await mk('3', 'other/x', 'github/cli', '2026-10-01T00:00:00Z')];
+    const rs = [await mk('1', 'quokka/app', 'github/cli', '2026-07-01T00:00:00Z'), await mk('2', 'quokka/app-docs', 'github/autopilot', '2026-09-01T00:00:00Z'), await mk('3', 'other/x', 'github/cli', '2026-10-01T00:00:00Z')];
     const none = { since: null, project: null, client: null, model: null, branch: null };
     expect(hasFilter(none)).toBe(false);
     expect(hasFilter({ ...none, group: 'g' })).toBe(true);
@@ -157,10 +157,10 @@ describe('filterSessions', () => {
     expect([...resolveIdFilter(rs, { ...none, sessions: ['2'] }, groups)!.set]).toEqual(['2']);
     expect([...resolveIdFilter(rs, { ...none, group: 'g', sessions: ['1', '2'] }, groups)!.set]).toEqual(['1']);
     expect(resolveIdFilter(rs, none, groups)).toBeNull();
-    expect(filterSessions(rs, { ...none, project: 'acme/app' }).sessions.map((s) => s.id)).toEqual(['1']);
-    const partial = filterSessions(rs, { ...none, project: 'ACME' });
+    expect(filterSessions(rs, { ...none, project: 'quokka/app' }).sessions.map((s) => s.id)).toEqual(['1']);
+    const partial = filterSessions(rs, { ...none, project: 'QUOKKA' });
     expect(partial.sessions.map((s) => s.id)).toEqual(['1', '2']);
-    expect(partial.projects.sort()).toEqual(['acme/app', 'acme/app-docs']);
+    expect(partial.projects.sort()).toEqual(['quokka/app', 'quokka/app-docs']);
     expect(filterSessions(rs, { ...none, client: 'github/cli' }).sessions.map((s) => s.id)).toEqual(['1', '3']);
     expect(filterSessions(rs, { ...none, since: '2026-08-15' }).sessions.map((s) => s.id)).toEqual(['2', '3']);
   });

@@ -58,9 +58,9 @@ async function outputOnly(id: string, ws: Record<string, unknown>, model: string
 
 async function fixture(): Promise<SessionRecord[]> {
   return [
-    await withInput('a', { client_name: 'github/cli', repository: 'acme/secret-proj', cwd: 'C:\\work\\secret-proj', branch: 'feature/x1', created_at: '2026-07-10T03:00:00Z', name: 'secret-proj の修正' }, 'gpt-5.5', 100, 10),
+    await withInput('a', { client_name: 'github/cli', repository: 'quokka/secret-proj', cwd: 'C:\\work\\secret-proj', branch: 'feature/x1', created_at: '2026-07-10T03:00:00Z', name: 'secret-proj の修正' }, 'gpt-5.5', 100, 10),
     await withInput('b', { client_name: 'github/autopilot', cwd: '/home/me/.copilot/chats/c1', created_at: '2026-09-02T03:00:00Z' }, 'claude-sonnet-5', 50, 5),
-    await outputOnly('c', { client_name: 'github/cli', repository: 'acme/secret-proj', cwd: 'C:\\work\\secret-proj', branch: 'main', created_at: '2026-09-20T03:00:00Z' }, 'gpt-5.5', 7),
+    await outputOnly('c', { client_name: 'github/cli', repository: 'quokka/secret-proj', cwd: 'C:\\work\\secret-proj', branch: 'main', created_at: '2026-09-20T03:00:00Z' }, 'gpt-5.5', 7),
     // トークン記録なし(欠測)。Phase 5 で依頼 0・ツール 0・応答 0 は「空」として既定の集計から外すため、依頼を 1 件持たせて空でなくする
     await normalizeSession({
       id: 'd',
@@ -111,7 +111,7 @@ describe('filter', () => {
     const s = summaries(await fixture());
     const f = emptyFilter();
     expect(applyFilter(s, f)).toHaveLength(4);
-    expect(applyFilter(s, { ...f, project: 'acme/secret-proj' }).map((x) => x.id)).toEqual(['a', 'c']);
+    expect(applyFilter(s, { ...f, project: 'quokka/secret-proj' }).map((x) => x.id)).toEqual(['a', 'c']);
     expect(applyFilter(s, { ...f, client: 'github/cli' }).map((x) => x.id)).toEqual(['a', 'c']);
     expect(applyFilter(s, { ...f, client: UNKNOWN }).map((x) => x.id)).toEqual(['d']);
     expect(applyFilter(s, { ...f, model: 'gpt-5.5' }).map((x) => x.id)).toEqual(['a', 'c']);
@@ -121,7 +121,7 @@ describe('filter', () => {
     expect(applyFilter(s, { ...f, coverage: 'output-only' }).map((x) => x.id)).toEqual(['c']);
     expect(applyFilter(s, { ...f, coverage: 'none' }).map((x) => x.id)).toEqual(['d']);
     expect(applyFilter(s, { ...f, from: '2026-09-01', to: '2026-09-30' }).map((x) => x.id)).toEqual(['b', 'c']);
-    expect(applyFilter(s, { ...f, project: 'acme/secret-proj', coverage: 'input' }).map((x) => x.id)).toEqual(['a']);
+    expect(applyFilter(s, { ...f, project: 'quokka/secret-proj', coverage: 'input' }).map((x) => x.id)).toEqual(['a']);
   });
 
   it('空のセッションは既定で除外し、「含める」(#empty=1)で含める。内訳では「空」として数える', async () => {
@@ -160,7 +160,7 @@ describe('filter', () => {
 
   it('選択肢は件数の多い順で、件数付き', async () => {
     const o = filterOptions(summaries(await fixture()));
-    expect(o.project[0]).toEqual({ value: 'acme/secret-proj', label: 'acme/secret-proj', count: 2 });
+    expect(o.project[0]).toEqual({ value: 'quokka/secret-proj', label: 'quokka/secret-proj', count: 2 });
     expect(o.client.map((x) => x.value)).toEqual(['github/cli', '(unknown)', 'github/autopilot']);
     expect(o.model.find((x) => x.value === 'gpt-5.5')?.count).toBe(2);
   });
@@ -307,14 +307,14 @@ describe('anonymize', () => {
     const rs = await fixture();
     const anon = createAnonymizer(rs);
     const s = rs.map((r) => summarize(r, anon, null));
-    // 辞書順: 'D:\other' < '/home/me/...' < 'acme/secret-proj'(localeCompare)
+    // 辞書順: 'D:\other' < '/home/me/...' < 'quokka/secret-proj'(localeCompare)
     expect(s.map((x) => x.project)).toEqual(['project-03', 'project-02', 'project-03', 'project-01']);
     expect(s.map((x) => x.branch)).toEqual(['branch-01', null, 'branch-02', null]);
     expect(s.every((x) => x.name === null && x.firstUserMessage === null)).toBe(true);
     const json = JSON.stringify(s);
-    for (const secret of ['secret-proj', 'acme', 'feature/x1', 'C:\\\\work', '.copilot', 'D:\\\\other']) expect(json).not.toContain(secret);
+    for (const secret of ['secret-proj', 'quokka', 'feature/x1', 'C:\\\\work', '.copilot', 'D:\\\\other']) expect(json).not.toContain(secret);
     // 同じ入力からは同じ仮名
-    expect(createAnonymizer(rs).project('acme/secret-proj')).toBe('project-03');
+    expect(createAnonymizer(rs).project('quokka/secret-proj')).toBe('project-03');
   });
 
   it('scrub はパスと既知の固有名を置き換える', async () => {
@@ -324,13 +324,13 @@ describe('anonymize', () => {
   });
 
   it('scrub: 空白を含むフォルダ名・大文字小文字の違い・~ や /root の下も伏せる', async () => {
-    const cwd = 'E:\\Work\\Acme Corp';
-    const anon = createAnonymizer([...(await fixture()), { project: 'acme-corp-app', cwd, gitRoot: null, repository: null, branch: null }]);
-    expect(anon.scrub('read D:\\Profiles\\John Smith\\OneDrive - Acme Corp\\notes.txt failed')).toBe('read <path> failed');
+    const cwd = 'E:\\Files\\Quokka Den';
+    const anon = createAnonymizer([...(await fixture()), { project: 'quokka-den-app', cwd, gitRoot: null, repository: null, branch: null }]);
+    expect(anon.scrub('read D:\\Profiles\\John Smith\\Cloud Sync - Quokka Den\\notes.txt failed')).toBe('read <path> failed');
     // 作業フォルダの最後の名前に空白があっても、その下を含めて伏せる(大文字小文字は問わない)
     expect(anon.scrub(`in ${cwd} now`)).toBe('in <path> now');
-    expect(anon.scrub('in e:\\work\\acme corp\\src\\a.ts now')).toBe('in <path> now');
-    const p = anon.project('acme/secret-proj');
+    expect(anon.scrub('in e:\\files\\quokka den\\src\\a.ts now')).toBe('in <path> now');
+    const p = anon.project('quokka/secret-proj');
     expect(anon.scrub('Secret-Proj and SECRET-PROJ')).toBe(`${p} and ${p}`);
     for (const s of ['~/projects/secret-x/a.md', '/root/secret-x/a', '/workspaces/secret-x/a', 'C:/Profiles/John Smith/a.txt']) expect(anon.scrub(`at ${s} end`)).toBe('at <path> end');
     // \ のパスの後の文中の / は呑まない
@@ -341,7 +341,7 @@ describe('anonymize', () => {
     const t = '2026-10-01T00:00:00Z';
     const r = await normalizeSession({
       id: 'e',
-      workspace: { cwd: 'C:\work\secret-proj', repository: 'acme/secret-proj', created_at: t },
+      workspace: { cwd: 'C:\work\secret-proj', repository: 'quokka/secret-proj', created_at: t },
       events: [
         { type: 'user.message', data: { content: '依頼 e' }, timestamp: t },
         { type: 'subagent.started', data: { agentName: 'helper', toolCallId: 'c1' }, timestamp: t },
@@ -365,7 +365,7 @@ describe('anonymize', () => {
     const rs = await fixture();
     const anon = createAnonymizer(rs);
     const html = renderDetailHtml(rs[0], { anon, css: '', judgment: null, generatedAt: '2026-10-28T00:00:00Z' });
-    for (const secret of ['secret-proj', 'acme', 'feature/x1', 'work\\', '依頼 a']) expect(html).not.toContain(secret);
+    for (const secret of ['secret-proj', 'quokka', 'feature/x1', 'work\\', '依頼 a']) expect(html).not.toContain(secret);
     expect(html).toContain('project-03');
     const plain = renderDetailHtml(rs[0], { anon: identityAnonymizer(), css: '', judgment: null, generatedAt: '2026-10-28T00:00:00Z' });
     expect(plain).toContain('secret-proj');
@@ -409,7 +409,7 @@ describe('anonymize', () => {
   it('ホームディレクトリは ~ に短縮して表示する', () => {
     // Windows 形式(C:\Users\<name>)は実データの E2E(ATLAS_LIVE)で検証する。ここでは POSIX 形式で ~ 短縮を確かめる
     expect(shortProjectLabel('/home/me/.copilot/chats/c1')).toBe('~/.copilot/chats/c1');
-    expect(shortProjectLabel('acme/x')).toBe('acme/x');
+    expect(shortProjectLabel('quokka/x')).toBe('quokka/x');
   });
 });
 
