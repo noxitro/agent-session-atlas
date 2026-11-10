@@ -52,7 +52,7 @@ import { phaseNames } from './config.ts';
 import { acquireOutLock, JobError, JobRunner, OutBusyError, parseJobRequest, runningJobIn, type RunFullFn, type SpawnFn } from './jobs.ts';
 import { exportGroup } from './group-export.ts';
 import { checkUpload, UploadChangedError, uploadDir, uploadedAt, uploadGroup, type GroupUploadResult, type UploadProgress } from './group-upload.ts';
-import { defaultConfigPath, loadConfig, parseUploadRoot, updateConfig } from './config.ts';
+import { defaultConfigPath, loadConfig, modifyConfig, NO_CHANGE, parseUploadRoot, updateConfig } from './config.ts';
 import { CAN_PICK_FOLDER, openFolder, pickFolder } from './folder-picker.ts';
 
 export const TOKEN_PLACEHOLDER = '__ATLAS_TOKEN__';
@@ -329,16 +329,6 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
   const canPick = o.folders?.canPick ?? CAN_PICK_FOLDER;
   const pick = o.folders?.pick ?? pickFolder;
   const openDir = o.folders?.open ?? openFolder;
-  /**
-   * 設定ファイルの書き換えを 1 つずつ行う(読んでから書くので、画面で印を続けて押したときなどに重なると、先に書いた分が消えるため)。
-   * 失敗しても次の書き換えは止めない
-   */
-  let configChain: Promise<unknown> = Promise.resolve();
-  function withConfigWrite<T>(fn: () => Promise<T>): Promise<T> {
-    const r = configChain.then(fn);
-    configChain = r.catch(() => {});
-    return r;
-  }
   /** 設定のアップロード先と、upload-project.bat がまとめて送るプロジェクト(読めない設定は理由つきで返す。画面に出す) */
   async function uploadRootOf(): Promise<{ root: string | null; projects: string[]; error: string | null }> {
     try {
@@ -348,29 +338,27 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
       return { root: null, projects: [], error: (e as Error).message };
     }
   }
-  /** upload-project.bat がまとめて送るプロジェクトに足す・外す(画面の「プロジェクト別」の印)。毎回設定を読み直してから書く(bat や手で書いた分を消さない) */
+  /** upload-project.bat がまとめて送るプロジェクトに足す・外す(画面の「プロジェクト別」の印)。返すのは書いた後の一覧 */
   async function saveUploadProject(input: Record<string, unknown>): Promise<string[]> {
     const { project, on } = input;
     if (typeof project !== 'string' || project.trim() === '' || project.length > 1000) throw new HttpError(400, 'project にプロジェクト名を指定してください');
     if (typeof on !== 'boolean') throw new HttpError(400, 'on に true(まとめて送る)か false(送らない)を指定してください');
-    return withConfigWrite(async () => {
-      let cur: string[];
-      try {
-        cur = (await loadConfig(configPath, false)).uploadProjects ?? [];
-      } catch (e) {
-        throw new HttpError(409, (e as Error).message);
-      }
-      const next = on ? (cur.includes(project) ? cur : [...cur, project]) : cur.filter((x) => x !== project);
-      if (next.length !== cur.length) {
-        try {
-          await updateConfig(configPath, 'uploadProjects', next.length ? next : undefined);
-        } catch (e) {
-          throw new HttpError(409, (e as Error).message);
-        }
-        log(`serve: 「${project}」を upload-project.bat で${on ? 'まとめて送る' : '送らない'}ようにしました(まとめて送るもの ${next.length} 件。${configPath})`);
-      }
-      return next;
-    });
+    // 読んでから書くまでを設定ファイルのロックの中で行う(続けて押したときや、bat が送り先を書き換えるときに、先に書いた分を消さない)
+    let next: string[] = [];
+    let changed: boolean;
+    try {
+      changed =
+        (await modifyConfig(configPath, 'uploadProjects', (c) => {
+          const cur = c.uploadProjects ?? [];
+          next = on ? (cur.includes(project) ? cur : [...cur, project]) : cur.filter((x) => x !== project);
+          if (next.length === cur.length) return NO_CHANGE;
+          return next.length ? next : undefined;
+        })) !== NO_CHANGE;
+    } catch (e) {
+      throw new HttpError(409, (e as Error).message);
+    }
+    if (changed) log(`serve: 「${project}」を upload-project.bat で${on ? 'まとめて送る' : '送らない'}ようにしました(まとめて送るもの ${next.length} 件。${configPath})`);
+    return next;
   }
   /** アップロード先を決めて設定に書く(実在するフォルダだけ) */
   async function saveUploadRoot(input: unknown): Promise<string> {
@@ -382,7 +370,7 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     }
     if (!existsSync(root) || !(await stat(root)).isDirectory()) throw new HttpError(400, `フォルダが見つかりません: ${root}`);
     try {
-      await withConfigWrite(() => updateConfig(configPath, 'uploadRoot', root));
+      await updateConfig(configPath, 'uploadRoot', root);
     } catch (e) {
       throw new HttpError(409, (e as Error).message);
     }

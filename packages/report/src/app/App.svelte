@@ -266,13 +266,21 @@
       : undefined,
   );
   /** upload-project.bat がまとめて送るプロジェクトの印(プロジェクト別の表)。serve が教えてくれたときだけ出す */
+  let sendIssued = 0;
   const projectSend = $derived(
     uploadSetting?.projects
       ? {
           projects: uploadSetting.projects,
+          error: uploadSetting.error,
           toggle: async (project: string, on: boolean) => {
+            const seq = ++sendIssued;
             const r = await api.setUploadProject(token!, project, on);
-            if (uploadSetting) uploadSetting = { ...uploadSetting, projects: r.projects };
+            if (!uploadSetting) return;
+            // 最後に出した要求の答えなら、サーバの一覧(ほかで書き換えた分も入る)をそのまま使う。
+            // 先に出した要求の答えが後から届いたときは、その印だけを反映する(新しい一覧を古い一覧で上書きしない)
+            const cur = uploadSetting.projects ?? [];
+            const projects = seq === sendIssued ? r.projects : on ? (cur.includes(project) ? cur : [...cur, project]) : cur.filter((x) => x !== project);
+            uploadSetting = { ...uploadSetting, projects };
           },
         }
       : undefined,

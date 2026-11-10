@@ -3,6 +3,8 @@ dist/
 out/
 # 利用者ごとの設定(手元のパスを含む。雛形は atlas.config.example.json)
 atlas.config.json
+# 設定ファイルを書き換える間だけ作るロック(落ちると残ることがある)
+atlas.config.json.lock
 # 利用者のメモとグループ(セッション ID や自由記述を含む)
 atlas-notes/
 # テスト時に生成する fixture(架空の値だけ。サンプルデータはリポジトリに置かない)
