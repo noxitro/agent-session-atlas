@@ -86,13 +86,15 @@
     uploaded = null;
     doneElsewhere = null;
     task = 'check';
+    const name = group.name;
     let c: UploadCheck | null = null;
     void run(
       async () => {
-        c = await upload.check(group.name);
+        c = await upload.check(name);
       },
       () => {
-        if (!c) return;
+        // 確かめている間に別のタグへ切り替えた(または見出しが消えた)なら、前のタグの確認は出さない
+        if (!c || !alive || group.name !== name) return;
         // 写す前に毎回、送り先と件数・大きさを見せて確かめる。秘密らしい文字列があれば焦点は「やめる」、無ければ「写す」
         checked = c;
         mode = 'confirm';
@@ -131,7 +133,7 @@
     const more = `詳しくは「${name}」を開くと出ます。`;
     doneElsewhere = o.ok
       ? { ok: true, text: `「${name}」のアップロードが終わりました${o.result ? `(${int(o.result.uploaded)} セッション)` : ''}。${more}` }
-      : { ok: false, text: `「${name}」をアップロードできませんでした(${o.error})。${more}` };
+      : { ok: false, text: `「${name}」をアップロードできませんでした(${o.error})。` };
   }
   const isProgress = (p: UploadPoll): p is UploadProgress => !!p && 'sessions' in p;
   /**
@@ -154,10 +156,12 @@
     if (!alive) return;
     if (group.name === name) requestAnimationFrame(() => uploadBtn?.focus());
     // ほかのタグを見ている間に終わった: 写している間は尋ねなかった、今のタグの直近の結果・続いているアップロードを尋ねる
-    else if (editable) resumeUpload(group.name);
+    // (編集などの欄を開いているときは尋ねない。結果が欄の誤りとして出て、閉じると消えてしまうため)
+    else if (editable && mode === 'view') resumeUpload(group.name);
   }
   function showLast(name: string, p: Exclude<UploadPoll, UploadProgress | null>): void {
-    if (!alive || group.name !== name) return;
+    // 見出しを表示しているときだけ出す(編集などの欄では欄の誤りになり、閉じると消えてしまう。出さなければ、次に開いたときに出す)
+    if (!alive || group.name !== name || mode !== 'view') return;
     // 同じ結果は 1 回だけ出す(タグを開き直すたびに同じ失敗を出さない)。この画面で写し終えたものは、その場で出したので出さない
     if (p.at <= (seenUpload.get(name) ?? 0)) return;
     seenUpload.set(name, p.at);
@@ -270,8 +274,10 @@
     uploaded = null;
     pathCopied = false;
     task = 'export';
+    const name = group.name;
     void run(async () => {
-      exported = await onexport(group.name);
+      const r = await onexport(name);
+      if (alive && group.name === name) exported = r;
     }, () => {});
   }
   async function copyPath(): Promise<void> {
@@ -403,13 +409,18 @@
       task = 'upload';
       uploadName = name;
       progress = p;
+      // 問い合わせは 0.5 秒ごとに出すので、遅い答えが重なると「終わった」を 2 回受け取る。2 回目は捨てる
+      // (その間にこの見出しで写し始めていると、写している状態を消してしまうため)
+      let ended = false;
       const timer = setInterval(() => {
         void u.progress(name).then(
           (q) => {
+            if (ended) return;
             if (isProgress(q)) {
               if (uploadName === name) progress = q;
               return;
             }
+            ended = true;
             stopTimer(timer);
             finishUpload(name);
             if (q) {
@@ -418,6 +429,8 @@
             }
           },
           () => {
+            if (ended) return;
+            ended = true;
             stopTimer(timer);
             finishUpload(name);
           },
@@ -532,7 +545,8 @@
       </div>
     </div>
   {/if}
-  <p class="sr-only" role="status">{mode === 'view' ? [exportedText || uploadedText, doneElsewhere?.text ?? ''].filter(Boolean).join(' ') : ''}</p>
+  <p class="sr-only" role="status">{mode === 'view' ? exportedText || uploadedText : ''}</p>
+  <p class="sr-only" role="status" data-testid="group-upload-elsewhere-status">{doneElsewhere?.text ?? ''}</p>
   {#if uploaded && mode === 'view'}
     <div class="exported" data-testid="group-uploaded">
       <p>{uploadedText}</p>
