@@ -15,8 +15,8 @@
     judged: boolean;
     current: string;
     onpick: (project: string) => void;
-    /** upload-project.bat がまとめて送るプロジェクトの印(atlas serve から開いたときだけ)。projects は設定の一覧、toggle は足す・外す */
-    send?: { projects: string[]; toggle: (project: string, on: boolean) => Promise<void> };
+    /** upload-project.bat がまとめて送るプロジェクトの印(atlas serve から開いたときだけ)。projects は設定の一覧、error は設定ファイルを読めない理由、toggle は足す・外す */
+    send?: { projects: string[]; error: string | null; toggle: (project: string, on: boolean) => Promise<void> };
   } = $props();
 
   type Key = 'label' | 'sessions' | 'input' | 'output' | 'tools' | 'lines' | 'skills' | 'agents' | 'hooks' | 'instructions' | 'wiki' | 'friction' | 'active' | 'human';
@@ -137,9 +137,16 @@
     </p>
   </div>
   {#if send}
-    <p class="send-note">
-      「まとめて送る」に印を付けたプロジェクトは、<code>upload-project.bat</code> が番号を聞かずにまとめて送ります(送る前に確かめます)。今 {int(send.projects.length)} 件{#if sendHidden}(うち {int(sendHidden)} 件は、絞り込みの外か、今の集計に無いもの){/if}。印は <code>atlas.config.json</code> に残ります。
-    </p>
+    {#if send.error}
+      <!-- 読めない設定では今の印が分からないので、印を 0 件と見せずに理由を出し、押せないようにする -->
+      <p class="send-error" role="alert" data-testid="project-send-config-error">
+        設定ファイルを読めないので、<code>upload-project.bat</code> でまとめて送る印を出せません({send.error})。<code>setup.bat</code> で作り直すか手で直してから、画面を開き直してください。
+      </p>
+    {:else}
+      <p class="send-note">
+        「まとめて送る」に印を付けたプロジェクトは、<code>upload-project.bat</code> が番号を聞かずにまとめて送ります(送る前に確かめます)。今 {int(send.projects.length)} 件{#if sendHidden}(うち {int(sendHidden)} 件は、絞り込みの外か、今の集計に無いもの){/if}。印は <code>atlas.config.json</code> に残ります。
+      </p>
+    {/if}
     {#if sendError}<p class="send-error" role="alert">{sendError}</p>{/if}
   {/if}
   {#if rows.length === 0}
@@ -174,7 +181,7 @@
               </th>
               {#if send}
                 <td class="send">
-                  <input type="checkbox" checked={sendSet.has(b.key)} disabled={saving.has(b.key)} aria-label={`「${b.label}」を upload-project.bat でまとめて送る`} onchange={(e) => toggleSend(e, b.key)} />
+                  <input type="checkbox" checked={sendSet.has(b.key)} disabled={saving.has(b.key) || !!send.error} aria-label={`「${b.label}」を upload-project.bat でまとめて送る`} onchange={(e) => toggleSend(e, b.key)} />
                 </td>
               {/if}
               <td class="num">{int(b.sessions)}</td>

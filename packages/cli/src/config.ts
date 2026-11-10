@@ -1,7 +1,7 @@
 // 設定ファイル atlas.config.json の読み込み。wiki の指定と、依頼ごとの判定に使う普段の工程名、グループのアップロード先、upload-project.bat がまとめて送るプロジェクトを持つ
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { readFile, rm, writeFile } from 'node:fs/promises';
+import { open, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -89,53 +89,184 @@ export function defaultConfigPath(): string {
   return explicit ? resolve(explicit) : join(resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..'), CONFIG_FILE);
 }
 
+/** modifyConfig の関数がこれを返したら、何も書かない(変わらないときに書き方を崩さないように) */
+export const NO_CHANGE: unique symbol = Symbol('no change');
+
+/** ロックを取れるまで待つ長さと、落ちた処理が残したロックとみなす古さ */
+const LOCK_WAIT_MS = 5000;
+const LOCK_STALE_MS = 10_000;
+
 /**
- * 設定ファイルの 1 項目だけを書き換える。書く前に読むときと同じ検査を通す。ファイルが無ければ作る。読めない(壊れた)ファイルは上書きしない。
- * 文字列の値を差し替える・末尾に足すだけで済むときは、他の項目の書き方(手で詰めた配列など)をそのまま残す。済まなければ全体を整えて書く。
- * 一時ファイルに書いてから置き換える(途中で止まっても設定ファイルが欠けない)
+ * 設定ファイルの書き換えを 1 つずつ行うためのロック(<設定ファイル>.lock を排他で作る)。
+ * serve(画面の印・アップロード先)と upload-project.bat(送り先の選び直し)は別のプロセスから同じファイルを読んで書くので、
+ * 重なると先に書いた分が消える。落ちた処理が残したロックは、古ければ消して取り直す
  */
-export async function updateConfig(path: string, key: (typeof KEYS)[number], value: unknown): Promise<void> {
-  let cur: Record<string, unknown> = {};
-  let raw: string | null = null;
-  if (existsSync(path)) {
+async function withConfigLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
+  const lock = `${path}.lock`;
+  const started = Date.now();
+  for (;;) {
     try {
-      raw = (await readFile(path, 'utf8')).replace(/^﻿/, '');
-      const v = JSON.parse(raw) as unknown;
-      if (!isObject(v)) throw new Error('全体がオブジェクトではありません');
-      cur = v;
+      await (await open(lock, 'wx')).close();
+      break;
     } catch (e) {
-      throw new Error(`設定ファイル ${path} を読めないので書き換えません(${(e as Error).message})。setup.bat で作り直すか、手で直してください`);
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
     }
-  }
-  const next = { ...cur, [key]: value };
-  if (value === undefined) delete next[key];
-  parseConfig(next);
-  let text = `${JSON.stringify(next, null, 2)}\n`;
-  if (raw != null && typeof value === 'string') {
-    const lit = JSON.stringify(value);
-    const at = new RegExp(`("${key}"\\s*:\\s*)"(?:[^"\\\\]|\\\\.)*"`);
-    const end = raw.lastIndexOf('}');
-    const kept =
-      key in cur
-        ? raw.replace(at, (_m, head: string) => `${head}${lit}`)
-        : end > 0
-          ? `${raw.slice(0, end).trimEnd()}${Object.keys(cur).length ? ',' : ''}\n  "${key}": ${lit}\n${raw.slice(end)}`
-          : null;
-    // 差し替えた結果が狙いどおりの中身になったときだけ使う(同じ名前が別の場所にある等で外れたら、整えて書く)
     try {
-      if (kept != null && isDeepStrictEqual(JSON.parse(kept), next)) text = kept;
+      if (Date.now() - (await stat(lock)).mtimeMs > LOCK_STALE_MS) {
+        await rm(lock, { force: true });
+        continue;
+      }
     } catch {
-      /* 整えて書く */
+      continue; // 調べる間に消えた: すぐ取り直す
     }
+    if (Date.now() - started > LOCK_WAIT_MS) throw new Error(`設定ファイル ${path} を別の処理が書き換えています(${lock})。少し待ってからやり直してください`);
+    await new Promise((r) => setTimeout(r, 20));
   }
-  const tmp = `${path}.${randomUUID()}.tmp`;
-  await writeFile(tmp, text);
   try {
-    await renameReplacing(tmp, path);
-  } catch (e) {
-    await rm(tmp, { force: true });
-    throw e;
+    return await fn();
+  } finally {
+    await rm(lock, { force: true });
   }
+}
+
+/**
+ * raw(JSON のオブジェクト)の一番外側にある "key": <値> の、名前の始まりと値の範囲。文字列と括弧の対応を見て読む。見つからなければ null。
+ * 外れても、書く前に中身が狙いどおりかを確かめるので、整えて書く方に倒れる
+ */
+function topLevelSpan(raw: string, key: string): { keyStart: number; start: number; end: number } | null {
+  let depth = 0;
+  let i = 0;
+  const skipString = (k: number): number => {
+    for (let j = k + 1; j < raw.length; j++) {
+      if (raw[j] === '\\') j++;
+      else if (raw[j] === '"') return j + 1;
+    }
+    return raw.length;
+  };
+  const skipSpace = (k: number): number => {
+    while (k < raw.length && /\s/.test(raw[k]!)) k++;
+    return k;
+  };
+  while (i < raw.length) {
+    const c = raw[i]!;
+    if (c === '"') {
+      const close = skipString(i);
+      const colon = skipSpace(close);
+      if (depth === 1 && raw[colon] === ':' && JSON.parse(raw.slice(i, close)) === key) {
+        const start = skipSpace(colon + 1);
+        let end = start;
+        if (raw[start] === '"') end = skipString(start);
+        else if (raw[start] === '[' || raw[start] === '{') {
+          let d = 0;
+          for (end = start; end < raw.length; end++) {
+            if (raw[end] === '"') {
+              end = skipString(end) - 1;
+              continue;
+            }
+            if (raw[end] === '[' || raw[end] === '{') d++;
+            else if (raw[end] === ']' || raw[end] === '}') {
+              d--;
+              if (d === 0) {
+                end++;
+                break;
+              }
+            }
+          }
+        } else while (end < raw.length && !/[\s,}\]]/.test(raw[end]!)) end++;
+        return { keyStart: i, start, end };
+      }
+      i = close;
+      continue;
+    }
+    if (c === '{' || c === '[') depth++;
+    else if (c === '}' || c === ']') depth--;
+    i++;
+  }
+  return null;
+}
+
+/** 書き方をできるだけ残して、1 項目を差し替える・足す・消した JSON の文字列。作れなければ null */
+function keepFormatting(raw: string, cur: Record<string, unknown>, key: string, value: unknown): string | null {
+  const span = topLevelSpan(raw, key);
+  if (value === undefined) {
+    if (!span) return null;
+    // 前の区切りの , から消す。先頭の項目なら後ろの , と、その行の残りまで消す
+    let a = span.keyStart;
+    let b = span.end;
+    let i = a - 1;
+    while (i >= 0 && /\s/.test(raw[i]!)) i--;
+    if (raw[i] === ',') a = i;
+    else {
+      while (a > 0 && /[ \t]/.test(raw[a - 1]!)) a--;
+      let j = b;
+      while (j < raw.length && /\s/.test(raw[j]!)) j++;
+      if (raw[j] === ',') {
+        b = j + 1;
+        while (b < raw.length && /[ \t]/.test(raw[b]!)) b++;
+        if (raw[b] === '\r') b++;
+        if (raw[b] === '\n') b++;
+      }
+    }
+    return raw.slice(0, a) + raw.slice(b);
+  }
+  // 値は 2 字下げの形で書く(setup.bat が書く形と同じ。文字列なら 1 行)
+  const lit = JSON.stringify(value, null, 2).replace(/\n/g, '\n  ');
+  if (key in cur) return span ? raw.slice(0, span.start) + lit + raw.slice(span.end) : null;
+  const end = raw.lastIndexOf('}');
+  return end > 0 ? `${raw.slice(0, end).trimEnd()}${Object.keys(cur).length ? ',' : ''}\n  "${key}": ${lit}\n${raw.slice(end)}` : null;
+}
+
+/**
+ * 設定ファイルの 1 項目を、今の設定から決めて書き換える(読んでから書くまでをロックの中で行い、別の処理の書き換えと重ならないようにする)。
+ * fn は今の設定(読めた中身を検査したもの)を受け取り、新しい値を返す。undefined なら項目を消し、NO_CHANGE なら何も書かない。
+ * 書く前に読むときと同じ検査を通す。ファイルが無ければ作る。読めない(壊れた)ファイルは上書きしない。
+ * 値を差し替える・末尾に足す・消すだけで済むときは、他の項目の書き方(手で詰めた配列など)をそのまま残す。済まなければ全体を整えて書く。
+ * 一時ファイルに書いてから置き換える(途中で止まっても設定ファイルが欠けない)。返すのは fn の返した値
+ */
+export async function modifyConfig<T>(path: string, key: (typeof KEYS)[number], fn: (current: Omit<AtlasConfig, 'path'>) => T | typeof NO_CHANGE): Promise<T | typeof NO_CHANGE> {
+  return withConfigLock(path, async () => {
+    let cur: Record<string, unknown> = {};
+    let raw: string | null = null;
+    if (existsSync(path)) {
+      try {
+        raw = (await readFile(path, 'utf8')).replace(/^﻿/, '');
+        const v = JSON.parse(raw) as unknown;
+        if (!isObject(v)) throw new Error('全体がオブジェクトではありません');
+        cur = v;
+      } catch (e) {
+        throw new Error(`設定ファイル ${path} を読めないので書き換えません(${(e as Error).message})。setup.bat で作り直すか、手で直してください`);
+      }
+    }
+    const value = fn(parseConfig(cur));
+    if (value === NO_CHANGE) return value;
+    const next = { ...cur, [key]: value };
+    if (value === undefined) delete next[key];
+    parseConfig(next);
+    let text = Object.keys(next).length ? `${JSON.stringify(next, null, 2)}\n` : '{}\n';
+    if (raw != null && Object.keys(next).length) {
+      const kept = keepFormatting(raw, cur, key, value);
+      // 差し替えた結果が狙いどおりの中身になったときだけ使う(読み違えたら、整えて書く)
+      try {
+        if (kept != null && isDeepStrictEqual(JSON.parse(kept), next)) text = kept;
+      } catch {
+        /* 整えて書く */
+      }
+    }
+    const tmp = `${path}.${randomUUID()}.tmp`;
+    await writeFile(tmp, text);
+    try {
+      await renameReplacing(tmp, path);
+    } catch (e) {
+      await rm(tmp, { force: true });
+      throw e;
+    }
+    return value;
+  });
+}
+
+/** 設定ファイルの 1 項目だけを、決まった値に書き換える(undefined なら消す)。書き方の残し方とロックは modifyConfig と同じ */
+export async function updateConfig(path: string, key: (typeof KEYS)[number], value: unknown): Promise<void> {
+  await modifyConfig(path, key, () => value);
 }
 
 /** 依頼ごとの判定に使う普段の工程名(環境変数 ATLAS_CONFIG かリポジトリ直下の atlas.config.json の phases、無ければ既定) */

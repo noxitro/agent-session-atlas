@@ -1,9 +1,9 @@
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { parseCli, UsageError } from '../src/args.ts';
-import { loadConfig, parseConfig, updateConfig } from '../src/config.ts';
+import { loadConfig, modifyConfig, NO_CHANGE, parseConfig, updateConfig } from '../src/config.ts';
 
 describe('parseConfig', () => {
   it('文字列は path だけの指定、オブジェクトは形式も読む', () => {
@@ -119,6 +119,68 @@ describe('updateConfig', () => {
     writeFileSync(e, '{}');
     await updateConfig(e, 'uploadRoot', b);
     expect(JSON.parse(readFileSync(e, 'utf8'))).toEqual({ uploadRoot: b });
+  });
+
+  it('配列の値も、足す・差し替える・消すだけなら手で書いた他の項目の書き方を変えない(全部消えたら {})', async () => {
+    const p = join(dir, 'arr.json');
+    const head = '{\n  "wikis": [\n    {\n      "path": "my-notes",\n      "index": ["README.md", "00-home.md"]\n    }\n  ]';
+    writeFileSync(p, `${head}\n}\n`);
+    await updateConfig(p, 'uploadProjects', ['owner/app']);
+    expect(readFileSync(p, 'utf8')).toBe(`${head},\n  "uploadProjects": [\n    "owner/app"\n  ]\n}\n`);
+    // 差し替え(中に ] や " を含む名前でも、括弧と文字列の対応を見て値の範囲を読む)
+    await updateConfig(p, 'uploadProjects', ['owner/app', 'a "]" b']);
+    expect(readFileSync(p, 'utf8')).toBe(`${head},\n  "uploadProjects": [\n    "owner/app",\n    "a \\"]\\" b"\n  ]\n}\n`);
+    // 消す(前の項目の , ごと)
+    await updateConfig(p, 'uploadProjects', undefined);
+    expect(readFileSync(p, 'utf8')).toBe(`${head}\n}\n`);
+    // 先頭の項目を消すときは、後ろの , とその行の残りを消す
+    const q = join(dir, 'first.json');
+    writeFileSync(q, '{\n  "uploadProjects": ["x"],\n  "phases": ["a", "b"]\n}\n');
+    await updateConfig(q, 'uploadProjects', undefined);
+    expect(readFileSync(q, 'utf8')).toBe('{\n  "phases": ["a", "b"]\n}\n');
+    // 最後の 1 つを消すと {}
+    await updateConfig(q, 'phases', undefined);
+    expect(readFileSync(q, 'utf8')).toBe('{}\n');
+  });
+
+  it('modifyConfig: 今の設定から次の値を決め、NO_CHANGE なら書かない。読めない設定は書き換えない', async () => {
+    const p = join(dir, 'mod.json');
+    const hand = '{ "uploadProjects": ["a"],   "phases": ["x", "y"] }\n';
+    writeFileSync(p, hand);
+    expect(await modifyConfig(p, 'uploadProjects', (c) => (c.uploadProjects?.includes('a') ? NO_CHANGE : ['a']))).toBe(NO_CHANGE);
+    expect(readFileSync(p, 'utf8')).toBe(hand);
+    expect(await modifyConfig(p, 'uploadProjects', (c) => [...(c.uploadProjects ?? []), 'b'])).toEqual(['a', 'b']);
+    expect(JSON.parse(readFileSync(p, 'utf8'))).toEqual({ uploadProjects: ['a', 'b'], phases: ['x', 'y'] });
+    writeFileSync(p, '{ 壊れた');
+    await expect(modifyConfig(p, 'uploadProjects', () => ['c'])).rejects.toThrow(/書き換えません/);
+    expect(readFileSync(p, 'utf8')).toBe('{ 壊れた');
+    expect(existsSync(`${p}.lock`)).toBe(false);
+  });
+
+  it('書き換えはロック(<設定>.lock)で 1 つずつ行い、重なっても先に書いた分を消さない。残ったロックは、古ければ消して取り直し、新しければ消えるまで待つ', async () => {
+    const p = join(dir, 'lock.json');
+    writeFileSync(p, '{}');
+    const names = Array.from({ length: 12 }, (_, i) => `p${i}`);
+    await Promise.all(names.map((n) => modifyConfig(p, 'uploadProjects', (c) => [...(c.uploadProjects ?? []), n])));
+    expect((JSON.parse(readFileSync(p, 'utf8')).uploadProjects as string[]).sort()).toEqual([...names].sort());
+    expect(existsSync(`${p}.lock`)).toBe(false);
+    // 落ちた処理が残した古いロック(10 秒より前)は消して取り直す
+    writeFileSync(`${p}.lock`, '');
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(`${p}.lock`, old, old);
+    await updateConfig(p, 'uploadRoot', dir);
+    expect(JSON.parse(readFileSync(p, 'utf8')).uploadRoot).toBe(dir);
+    expect(existsSync(`${p}.lock`)).toBe(false);
+    // 新しいロック(別の処理が書いている最中)は、消えるまで待ってから書く
+    writeFileSync(`${p}.lock`, '');
+    let released = false;
+    setTimeout(() => {
+      released = true;
+      rmSync(`${p}.lock`);
+    }, 200);
+    await updateConfig(p, 'uploadProjects', ['after']);
+    expect(released).toBe(true);
+    expect(JSON.parse(readFileSync(p, 'utf8')).uploadProjects).toEqual(['after']);
   });
 });
 

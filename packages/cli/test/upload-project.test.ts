@@ -1,11 +1,11 @@
 // プロジェクトのセッションをまとめて送る(upload-project.bat → upload-project.ts)。
 // 集計のプロジェクトを番号で選び、送り先(一度選ぶと atlas.config.json に覚える)を毎回確かめてから <送り先>/<プロジェクト名>/<id>/ に写す。
-import { existsSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { checkTarget, listProjects, projectTarget, uploadGroup, uploadTarget } from '../src/group-upload.ts';
+import { checkTarget, listProjects, openUploadContext, projectTarget, uploadGroup, uploadTarget } from '../src/group-upload.ts';
 import { parseNumbers, runUploadProject, type UploadProjectIo } from '../src/upload-project.ts';
 
 describe('プロジェクトのセッションをまとめて送る', () => {
@@ -189,14 +189,21 @@ describe('プロジェクトのセッションをまとめて送る', () => {
     const g = fakeIo(['1'], [null]);
     expect(await runUploadProject(g.io, { paths: paths(), configPath })).toBe(false);
     expect(existsSync(configPath)).toBe(false);
-    // 当たらない番号は止まる
-    await expect(runUploadProject(fakeIo(['9'], []).io, { paths: paths(), configPath })).rejects.toThrow(/当たるプロジェクトがありません/);
+    // 当たらない番号は、集計からやり直しにならないよう尋ね直す(何も入れなければやめる)
+    const h = fakeIo(['9', '3-1', ''], []);
+    expect(await runUploadProject(h.io, { paths: paths(), configPath })).toBe(false);
+    expect(h.printed.join('\n')).toContain('「9」に当たるプロジェクトがありません。一覧の番号(1〜2)か名前を入れ直してください。');
+    expect(h.printed.join('\n')).toContain('「3-1」に当たるプロジェクトがありません');
+    expect(h.asked.filter((q) => /送るプロジェクトの番号/.test(q))).toHaveLength(3);
   });
 
   it('番号は「1 3 5-8」「1,3」のように複数選べる(全角も可。入力の順・重複なし)。読めない・範囲の外は null', () => {
     expect(parseNumbers('1 3 5-8', 9)).toEqual([1, 3, 5, 6, 7, 8]);
     expect(parseNumbers('3,1、3', 3)).toEqual([3, 1]);
     expect(parseNumbers('２ １－２', 2)).toEqual([2, 1]);
+    // 区切りの前後の空白は許す
+    expect(parseNumbers('1, 2 - 3', 3)).toEqual([1, 2, 3]);
+    expect(parseNumbers('3 〜 3', 3)).toEqual([3]);
     for (const bad of ['0', '4', '2-1', '1-4', 'a', '1 x', '', '-1']) expect(parseNumbers(bad, 3)).toBeNull();
   });
 
@@ -226,13 +233,13 @@ describe('プロジェクトのセッションをまとめて送る', () => {
     await writeFile(configPath, JSON.stringify({ uploadRoot: rootA, uploadProjects: ['X:\\work\\tool', '消えたプロジェクト'] }));
     const f = fakeIo(['y'], []);
     expect(await runUploadProject(f.io, { paths: paths(), configPath })).toBe(true);
-    expect(f.asked.some((q) => /番号/.test(q))).toBe(false);
+    expect(f.asked.some((q) => /送るプロジェクトの番号/.test(q))).toBe(false);
     expect(existsSync(join(rootA, 'X__work_tool', 's4'))).toBe(true);
     expect(existsSync(join(rootA, 'owner_app'))).toBe(false);
     const text = f.printed.join('\n');
     expect(text).toMatch(/まとめて送るプロジェクト.*: 1 件\n +1\. X:\\work\\tool {2}1 件/);
     expect(text).toContain('今の集計に送れるセッションが無いもの(送りません): 消えたプロジェクト');
-    expect(text).toContain('印の無いプロジェクトが 1 件あります(送りません): owner/app');
+    expect(text).toContain('印の無いプロジェクトが 1 件あります(送りません)。最近更新したもの: owner/app(2026-11-03)');
     // 1 プロジェクトだけなら、送り先はそのプロジェクトのフォルダで見せる
     expect(text).toContain(`送り先: ${join(rootA, 'X__work_tool')}`);
     expect(text).not.toContain('毎回同じものを送るなら');
@@ -267,5 +274,72 @@ describe('プロジェクトのセッションをまとめて送る', () => {
     expect(text).toMatch(/送れませんでした: 「owner\/app」/);
     expect(text).toMatch(/送れなかったプロジェクト.1 件.: owner\/app/);
     expect(existsSync(join(rootA, 'X__work_tool', 's4', 'events.jsonl'))).toBe(true);
+  });
+
+  it('確認で n なら、印は変えずに今回送るものだけを番号で選び直せる(何も選ばなければやめる)', async () => {
+    const config = { uploadRoot: rootA, uploadProjects: ['X:\\work\\tool'] };
+    await writeFile(configPath, JSON.stringify(config));
+    const f = fakeIo(['n', '1', 'y'], []);
+    expect(await runUploadProject(f.io, { paths: paths(), configPath })).toBe(true);
+    expect(existsSync(join(rootA, 'owner_app', 's1'))).toBe(true);
+    expect(existsSync(join(rootA, 'X__work_tool'))).toBe(false);
+    expect(JSON.parse(await readFile(configPath, 'utf8'))).toEqual(config);
+    const text = f.printed.join('\n');
+    expect(text).toContain('「X:\\work\\tool」を送る前に確かめてください');
+    expect(text).toContain('「owner/app」を送る前に確かめてください');
+    const g = fakeIo(['n', ''], []);
+    expect(await runUploadProject(g.io, { paths: paths(), configPath })).toBe(false);
+    expect(g.printed.join('\n')).toContain('やめました(何も送っていません)。');
+    expect(existsSync(join(rootA, 'X__work_tool'))).toBe(false);
+  });
+
+  it('まとめて送る途中で中身が変わったら、送ったものは除いて残りだけを確かめ直す', async () => {
+    await writeFile(configPath, JSON.stringify({ uploadRoot: rootA, uploadProjects: ['owner/app', 'X:\\work\\tool'] }));
+    const f = fakeIo(['y', 'y'], []);
+    const print = f.io.print;
+    f.io.print = (l) => {
+      print(l);
+      // 1 つ目を送り終えたところで、2 つ目のログが書き足される
+      if (l.startsWith('送りました: 「owner/app」')) writeFileSync(join(out, 'snapshot', 'session-state', 's4', 'events.jsonl'), '{"id":"s4"}\n{"more":1}\n');
+    };
+    expect(await runUploadProject(f.io, { paths: paths(), configPath })).toBe(true);
+    const text = f.printed.join('\n');
+    expect(text).toContain('確かめた後に、写すログが変わりました');
+    // 確かめ直すのは残りの 1 つだけ(送ったものは送り直さない)
+    expect(text).toMatch(/2 プロジェクトを送る前に確かめてください[\s\S]*「X:\\work\\tool」を送る前に確かめてください/);
+    expect(f.printed.filter((l) => l.startsWith('送りました: '))).toHaveLength(2);
+    expect(f.asked.filter((q) => /送るなら y/.test(q))).toHaveLength(2);
+    expect(await readFile(join(rootA, 'X__work_tool', 's4', 'events.jsonl'), 'utf8')).toContain('more');
+  });
+
+  it('途中で止まっても(確かめ直すときに、画面で集計し直している最中など)、ここまでに送ったものを知らせる', async () => {
+    await writeFile(configPath, JSON.stringify({ uploadRoot: rootA, uploadProjects: ['owner/app', 'X:\\work\\tool'] }));
+    const f = fakeIo(['y'], []);
+    const print = f.io.print;
+    f.io.print = (l) => {
+      print(l);
+      if (l.startsWith('送りました: 「owner/app」')) {
+        // 2 つ目のログが変わり(確かめ直しになる)、その間に画面の「集計し直す」が始まる(生きている別の処理がロックを持つ)
+        writeFileSync(join(out, 'snapshot', 'session-state', 's4', 'events.jsonl'), '{"changed":1}\n');
+        writeFileSync(join(out, '.job.json'), JSON.stringify({ pid: process.ppid, kind: 'refresh', by: 'serve', startedAt: new Date().toISOString() }));
+      }
+    };
+    await expect(runUploadProject(f.io, { paths: paths(), configPath })).rejects.toThrow(/動いています.*ここまでに 1 プロジェクトを送りました\(owner\/app\)。残りは送っていません/);
+    expect(f.printed.join('\n')).toContain('そのフォルダの README.md にあります');
+    expect(existsSync(join(rootA, 'owner_app', 's1'))).toBe(true);
+    expect(existsSync(join(rootA, 'X__work_tool'))).toBe(false);
+  });
+
+  it('点検とアップロードは、渡した読む口を閉じずに使い回す(まとめて送るときに DB を開き直さない)', async () => {
+    const ctx = await openUploadContext(paths());
+    let closed = 0;
+    const shared = { ...ctx, close: () => (closed++, ctx.close()) };
+    const target = await projectTarget(paths(), 'owner/app');
+    const c = await checkTarget(paths(), target, rootA, shared);
+    await uploadTarget(paths(), target, rootA, () => {}, { context: shared, expect: c.fingerprint });
+    expect(closed).toBe(0);
+    shared.close();
+    expect(closed).toBe(1);
+    expect(existsSync(join(rootA, 'owner_app', 's2'))).toBe(true);
   });
 });

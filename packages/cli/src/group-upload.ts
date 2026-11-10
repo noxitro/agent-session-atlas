@@ -359,7 +359,8 @@ export async function checkUpload(p: GroupUploadPaths, name: string, root: strin
 }
 
 /** atlas がセッションのフォルダに足して写すもの(session-store.db と data.db の行、メモと画像)を作る道具。点検とアップロードで共通。使い終わったら close */
-interface Added {
+/** atlas が足して写すもの(DB の行・メモと画像)を読む口。session-store.db を開いたままにするので、使い終わったら close する */
+export interface UploadContext {
   /** atlas-session-store.json の中身(DB にも data.db にも行が無ければ null) */
   storeJson: (id: string) => string | null;
   /** メモの本文(無いか空なら null) */
@@ -371,7 +372,15 @@ interface Added {
   close: () => void;
 }
 
-async function addedFiles(p: GroupUploadPaths): Promise<Added> {
+/**
+ * 点検とアップロードで共有できる、atlas が足して写すものを読む口。何プロジェクトかをまとめて点検・送るときに 1 回だけ開く
+ * (session-store.db・desktop.json をまとまりごとに開き直さないように)。渡さなければ点検・アップロードがそれぞれ開いて閉じる
+ */
+export function openUploadContext(p: GroupUploadPaths): Promise<UploadContext> {
+  return addedFiles(p);
+}
+
+async function addedFiles(p: GroupUploadPaths): Promise<UploadContext> {
   // session-store.db は 1 回だけ開く(セッションごとに開き直すと、数百件のプロジェクトで点検とアップロードが遅くなる)
   const reader = await openSessionStoreReader(join(p.snapshot, 'session-store.db'));
   // デスクトップアプリのセッションは題名・モデル・トークン数などが data.db にしかない(snapshot が許可リストの列だけを desktop.json に書いたもの)
@@ -407,11 +416,11 @@ async function addedFiles(p: GroupUploadPaths): Promise<Added> {
   };
 }
 
-/** 写す前の点検(大きさと秘密らしい文字列)。何も写さない */
-export async function checkTarget(p: GroupUploadPaths, target: UploadTarget, root: string): Promise<UploadCheck> {
+/** 写す前の点検(大きさと秘密らしい文字列)。何も写さない。ctx は共有する読む口(渡せば閉じない) */
+export async function checkTarget(p: GroupUploadPaths, target: UploadTarget, root: string, ctx?: UploadContext): Promise<UploadCheck> {
   const { stateDir, dir, present, missing } = await prepare(p, target, root);
   const name = target.name;
-  const added = await addedFiles(p);
+  const added = ctx ?? (await addedFiles(p));
   const tops: UploadCheck['largest'] = [];
   const hits: UploadCheck['secrets']['files'] = [];
   const kinds = new Map<string, number>();
@@ -466,7 +475,7 @@ export async function checkTarget(p: GroupUploadPaths, target: UploadTarget, roo
       }
     }
   } finally {
-    added.close();
+    if (!ctx) added.close();
   }
   const manifest = await readSnapshotManifest(p.snapshot);
   const count = [...kinds.values()].reduce((a, b) => a + b, 0);
@@ -496,6 +505,8 @@ export interface UploadOptions {
   expect?: string;
   /** 読み込み済みの sessions.json の記録(README の題名と日付に使う。無ければ読む) */
   sessions?: SessionRecord[];
+  /** 共有する読む口(openUploadContext。渡せば閉じない) */
+  context?: UploadContext;
 }
 
 export async function uploadGroup(p: GroupUploadPaths, name: string, root: string, log: (m: string) => void = () => {}, opts: UploadOptions = {}): Promise<GroupUploadResult> {
@@ -505,12 +516,12 @@ export async function uploadGroup(p: GroupUploadPaths, name: string, root: strin
 /** まとまり(グループかプロジェクト)のセッションを <基底>/<名前>/<セッション id>/ に写す */
 export async function uploadTarget(p: GroupUploadPaths, target: UploadTarget, root: string, log: (m: string) => void = () => {}, opts: UploadOptions = {}): Promise<GroupUploadResult> {
   // 確かめてから今までに中身が変わっていたら写さない(点検していないログを写さないように)
-  if (opts.expect != null && (await checkTarget(p, target, root)).fingerprint !== opts.expect) throw new UploadChangedError();
+  if (opts.expect != null && (await checkTarget(p, target, root, opts.context)).fingerprint !== opts.expect) throw new UploadChangedError();
   const { g, stateDir, dir, present, missing } = await prepare(p, target, root);
   const name = target.name;
   const manifest = await readSnapshotManifest(p.snapshot);
   await mkdir(dir, { recursive: true });
-  const added = await addedFiles(p);
+  const added = opts.context ?? (await addedFiles(p));
   const memoDir = p.notes ? memosDir(p.notes) : null;
   const done: string[] = [];
   const withMemo = new Set<string>();
@@ -582,7 +593,7 @@ export async function uploadTarget(p: GroupUploadPaths, target: UploadTarget, ro
       }
     }
   } finally {
-    added.close();
+    if (!opts.context) added.close();
   }
   const snapshotAt = manifest?.createdAt ?? null;
   const now = new Date();

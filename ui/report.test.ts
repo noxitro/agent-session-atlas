@@ -659,14 +659,55 @@ describe('画面の操作', () => {
       await writeFile(configPath, '{ 壊れた設定');
       const again = section.locator('tbody tr').first().getByRole('checkbox');
       await again.click();
-      await expect.poll(() => section.getByRole('alert').innerText()).toMatch(/印を付けられませんでした.*読めません/);
+      await expect.poll(() => section.getByRole('alert').innerText()).toMatch(/印を付けられませんでした.*読めないので書き換えません/);
       await expect.poll(() => again.isChecked()).toBe(false);
       expect(await readFile(configPath, 'utf8')).toBe('{ 壊れた設定');
       // この 409 は想定どおり(ブラウザがコンソールに出す分は問題から外す)
       const bad = problems.findIndex((p) => p.includes('status of 409'));
       expect(bad).toBeGreaterThanOrEqual(0);
       problems.splice(bad, 1);
+      // 壊れたまま開き直すと、印を 0 件と見せずに理由を出し、押せないようにする
+      await page.reload();
+      await expect.poll(() => section.getByTestId('project-send-config-error').innerText()).toMatch(/設定ファイルを読めないので.*読めません/);
+      expect(await section.locator('.send-note').count()).toBe(0);
+      expect(await section.locator('tbody tr').first().getByRole('checkbox').isDisabled()).toBe(true);
     } finally {
+      if (before == null) await rm(configPath, { force: true });
+      else await writeFile(configPath, before);
+    }
+  });
+
+  it('j2. 続けて印を付けたとき、先の答えが後から届いても、後の印を古い一覧で消さない', async () => {
+    const before = existsSync(configPath) ? await readFile(configPath, 'utf8') : null;
+    await writeFile(configPath, '{}');
+    let first = true;
+    // 1 つ目の答えだけを遅らせる(サーバは先に書き終えているが、画面には 2 つ目の答えより後に届く)
+    await page.route('**/api/upload-projects', async (route) => {
+      if (!first) return route.continue();
+      first = false;
+      const response = await route.fetch();
+      await new Promise((r) => setTimeout(r, 600));
+      await route.fulfill({ response });
+    });
+    try {
+      await page.goto(server.url);
+      const section = page.locator('#projects');
+      await expect.poll(() => section.locator('.send-note').innerText()).toMatch(/今 0 件/);
+      const rows = section.locator('tbody tr');
+      const keyOf = async (i: number): Promise<string> => decodeURIComponent((await rows.nth(i).locator('a.link').getAttribute('href'))!.replace(/^#project=/, ''));
+      const [a, b] = [await keyOf(0), await keyOf(1)];
+      await rows.nth(0).getByRole('checkbox').click();
+      await expect.poll(async () => JSON.parse(await readFile(configPath, 'utf8')).uploadProjects).toEqual([a]);
+      await rows.nth(1).getByRole('checkbox').click();
+      await expect.poll(async () => JSON.parse(await readFile(configPath, 'utf8')).uploadProjects).toEqual([a, b]);
+      // 遅れた 1 つ目の答え([a])が届いた後も、両方に印が付いたまま
+      await expect.poll(() => rows.nth(0).getByRole('checkbox').isEnabled()).toBe(true);
+      await page.waitForTimeout(200);
+      expect(await rows.nth(0).getByRole('checkbox').isChecked()).toBe(true);
+      expect(await rows.nth(1).getByRole('checkbox').isChecked()).toBe(true);
+      expect(await section.locator('.send-note').innerText()).toMatch(/今 2 件/);
+    } finally {
+      await page.unroute('**/api/upload-projects');
       if (before == null) await rm(configPath, { force: true });
       else await writeFile(configPath, before);
     }
