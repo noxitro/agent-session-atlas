@@ -3,16 +3,21 @@
 // 送るプロジェクトは、画面の「プロジェクト別」で「まとめて送る」に印を付けたもの(atlas.config.json の uploadProjects)。
 // 印が無ければ、その場で番号を選ぶ(1 3 5-8 のように複数選べる)。印の無い新しいプロジェクトは送らず、最近更新したものの名前を出して知らせる。
 // 送り先は一度選んだら atlas.config.json の uploadRoot に覚える(画面のグループのアップロードと共通)。まだ無ければエクスプローラーで選ぶ。
-// 送る前に毎回、送り先・件数・大きさ・秘密らしい文字列を見せて確認する(y で送る / n で今回だけ番号で選び直す / c で送り先を選び直す / それ以外はやめる)。
+// 送る前に毎回、送り先・セッション数・大きさ・秘密らしい文字列を見せて確認する(y で送る / n で今回だけ番号で選び直す / c で送り先を選び直す / それ以外はやめる)。
+//
+// 黒い窓に出す文の決まり(読み飛ばされないように):
+//  - 場面ごとに見出し(== … ==)で区切り、前に空行を 1 つ置く。中身は 2 文字下げる
+//  - 1 行に 1 つのことだけを書く。一覧は名前の列をそろえる
+//  - 調べている・写している途中の様子は、行を増やさずに 1 行を書き換えて出す(io.status。端末でなければ出さない)
 import { existsSync, statSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import { clearLine, cursorTo } from 'node:readline';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { defaultConfigPath, loadConfig, updateConfig } from './config.ts';
 import { pickFolder } from './folder-picker.ts';
 import { resolvePaths } from './commands.ts';
 import { acquireOutLock, OutBusyError } from './jobs.ts';
-import { dateTime } from '../../report/src/lib/format.ts';
 import { safeDirName } from './group-export.ts';
 import {
   checkTarget,
@@ -35,19 +40,64 @@ export interface UploadProjectIo {
   print: (line: string) => void;
   /** 送り先のフォルダを選んでもらう(取り消しは null) */
   pick: (initial: string | null) => Promise<string | null>;
+  /** 今の様子(調べている・写している)を、行を増やさずに 1 行で見せる。次の print・ask で消える。無ければ出さない(端末でないとき) */
+  status?: (text: string) => void;
 }
+
+/** 送れなかったプロジェクトがある(どれが送れなかったかと理由は、もう画面に出してある) */
+export class UploadIncompleteError extends Error {}
 
 const size = (b: number): string => (b < 1024 * 1024 ? `${Math.ceil(b / 1024)} KB` : `${(b / 1024 / 1024).toFixed(b < 10 * 1024 * 1024 ? 1 : 0)} MB`);
 const day = (iso: string | null): string => (iso ? iso.slice(0, 10) : '日付不明');
 
+/** 画面での幅(全角の文字は 2、ほかは 1)。一覧の列をそろえるのと、1 行に収めるのに使う */
+export function width(s: string): number {
+  let n = 0;
+  for (const ch of s) {
+    const c = ch.codePointAt(0)!;
+    const wide =
+      (c >= 0x1100 && c <= 0x115f) ||
+      (c >= 0x2e80 && c <= 0xa4cf) ||
+      (c >= 0xac00 && c <= 0xd7a3) ||
+      (c >= 0xf900 && c <= 0xfaff) ||
+      (c >= 0xfe30 && c <= 0xfe4f) ||
+      (c >= 0xff00 && c <= 0xff60) ||
+      (c >= 0xffe0 && c <= 0xffe6) ||
+      (c >= 0x1f300 && c <= 0x1faff) ||
+      (c >= 0x20000 && c <= 0x3fffd);
+    n += wide ? 2 : 1;
+  }
+  return n;
+}
+
+/** 右を空白で埋めて、画面での幅を n にそろえる(長ければそのまま) */
+const padEnd = (s: string, n: number): string => s + ' '.repeat(Math.max(0, n - width(s)));
+
+/** 画面での幅が max に収まるところで切る(書き換える 1 行が折り返すと、消し残るため) */
+export function fit(s: string, max: number): string {
+  let n = 0;
+  let out = '';
+  for (const ch of s) {
+    const w = width(ch);
+    if (n + w > max) break;
+    n += w;
+    out += ch;
+  }
+  return out;
+}
+
+/** 名前の列の幅(いちばん長い名前に合わせる。長すぎる名前があっても、ほかの行まで間延びしないよう上限を置く) */
+const NAME_MAX = 40;
+const nameWidth = (list: string[]): number => Math.min(NAME_MAX, Math.max(0, ...list.map(width)));
+
 /** 送り先を選んでもらい、設定に覚える。取り消したら null */
 async function chooseRoot(io: UploadProjectIo, configPath: string, current: string | null): Promise<string | null> {
-  io.print('送り先のフォルダを選ぶ画面を開きます(見えないときはタスクバーを確かめてください)。');
+  io.print('  送り先のフォルダを選ぶ画面を開きます。見えないときはタスクバーを確かめてください。');
   const r = await io.pick(current);
   if (!r) return null;
   if (!existsSync(r) || !statSync(r).isDirectory()) throw new Error(`フォルダが見つかりません: ${r}`);
   await updateConfig(configPath, 'uploadRoot', r);
-  io.print(`送り先を覚えました: ${r}(${configPath} の uploadRoot。画面のアップロードでも使います)`);
+  io.print(`  送り先を覚えました(次からは聞きません): ${r}`);
   return r;
 }
 
@@ -79,63 +129,71 @@ export function parseNumbers(answer: string, max: number): number[] | null {
   return out;
 }
 
-const projectLine = (p: ProjectSummary, i: number): string =>
-  `  ${String(i + 1).padStart(3)}. ${p.name}  ${p.sessions} 件  最終更新 ${day(p.updatedAt)}${p.noLog ? `(ほかにログのフォルダが無いので送れないもの ${p.noLog} 件)` : ''}`;
+/** 番号つきの行の頭(番号は右にそろえる) */
+const numbered = (i: number, count: number): string => `  ${String(i + 1).padStart(String(count).length + 1)}. `;
 
 /** 番号で選んでもらう。当たらなければ尋ね直す(打ち間違いで集計からやり直しにならないように)。やめたら null */
 async function askProjects(io: UploadProjectIo, projects: ProjectSummary[]): Promise<ProjectSummary[] | null> {
-  io.print('プロジェクト(集計のプロジェクト別と同じ単位。空のセッションは数えません):');
-  projects.forEach((p, i) => io.print(projectLine(p, i)));
+  const w = nameWidth(projects.map((p) => p.name));
+  const sw = String(Math.max(...projects.map((p) => p.sessions))).length;
+  io.print('');
+  io.print('== 送るプロジェクトを選ぶ ==');
+  projects.forEach((p, i) =>
+    io.print(
+      `${numbered(i, projects.length)}${padEnd(p.name, w)}  ${String(p.sessions).padStart(sw)} セッション   最終更新 ${day(p.updatedAt)}${p.noLog ? `(ほかに、ログが無くて送れないもの ${p.noLog} 件)` : ''}`,
+    ),
+  );
+  io.print('');
   for (;;) {
-    const answer = await io.ask('送るプロジェクトの番号を入れて Enter(1 3 5-8 のように複数選べます。やめるなら何も入れずに Enter): ');
+    const answer = await io.ask('  番号を入れて Enter(例: 1 3 5-8。やめるなら Enter だけ)\n  > ');
     if (!answer) return null;
     const nums = parseNumbers(answer, projects.length);
     const chosen = nums ? nums.map((n) => projects[n - 1]!) : projects.filter((p) => p.name === answer);
     if (chosen.length) return chosen;
-    io.print(`「${answer}」に当たるプロジェクトがありません。一覧の番号(1〜${projects.length})か名前を入れ直してください。`);
+    io.print(`  「${answer}」に当たるプロジェクトがありません。一覧の番号(1〜${projects.length})か名前を入れ直してください。`);
   }
 }
 
 /**
  * 送る前の確認。1 プロジェクトなら送り先はそのフォルダ、何プロジェクトかならプロジェクトごとの 1 行と合計。
- * 大きいものと秘密らしい文字列はまとめて出す(何プロジェクトかなら、どのプロジェクトのものかを添える)
+ * 秘密らしい文字列はまとめて出す(何プロジェクトかなら、どのプロジェクトのものかを添える)
  */
 function describe(io: UploadProjectIo, checks: UploadCheck[], root: string): void {
   const many = checks.length > 1;
   const one = checks[0]!;
   const sum = (f: (c: UploadCheck) => number): number => checks.reduce((a, c) => a + f(c), 0);
-  const replace = sum((c) => c.replace);
-  const replaceNote = replace ? `。うち ${replace} 件は前に送ったものを置き換えます` : '';
-  const of = (name: string): string => (many ? `${name} の ` : '');
   if (many) {
     io.print(`  送り先: ${root}(この中にプロジェクトごとのフォルダを作ります)`);
+    const total = '合計';
+    const w = Math.max(nameWidth(checks.map((c) => c.name)), width(total));
+    const sw = String(sum((c) => c.sessions)).length;
+    const sizes = checks.map((c) => size(c.bytes));
+    const all = size(sum((c) => c.bytes));
+    const bw = Math.max(all.length, ...sizes.map((s) => s.length));
     checks.forEach((c, i) =>
       io.print(
-        `  ${String(i + 1).padStart(3)}. ${c.name}: ${c.sessions} セッション・${size(c.bytes)}${c.replace ? `(置き換え ${c.replace} 件)` : ''}${c.secrets.count ? `  秘密らしい文字列 ${c.secrets.count} 件` : ''}`,
+        `${numbered(i, checks.length)}${padEnd(c.name, w)}  ${String(c.sessions).padStart(sw)} セッション  ${sizes[i]!.padStart(bw)}${c.secrets.count ? `   秘密らしい文字列 ${c.secrets.count} 件` : ''}`,
       ),
     );
-    io.print(`  合計: ${sum((c) => c.sessions)} セッション・${size(sum((c) => c.bytes))}(${sum((c) => c.files)} ファイル)${replaceNote}`);
+    io.print(`${' '.repeat(numbered(0, checks.length).length)}${padEnd(total, w)}  ${String(sum((c) => c.sessions)).padStart(sw)} セッション  ${all.padStart(bw)}`);
   } else {
     io.print(`  送り先: ${one.dir}`);
-    io.print(`  ${one.sessions} セッション・合計 ${size(one.bytes)}(${one.files} ファイル)${replaceNote}`);
+    io.print(`  ${one.name}: ${one.sessions} セッション・${size(one.bytes)}`);
   }
-  const at = checks.find((c) => c.snapshotAt)?.snapshotAt;
-  if (at) io.print(`  送るのは ${dateTime(at)} の集計の時点のログです`);
-  const largest = checks
-    .flatMap((c) => c.largest.map((x) => ({ ...x, name: c.name })))
-    .sort((a, b) => b.bytes - a.bytes)
-    .slice(0, 3);
-  if (largest.length) io.print(`  大きいもの: ${largest.map((x) => `${of(x.name)}${x.id.slice(0, 8)}…/${x.path} ${size(x.bytes)}`).join('、')}`);
+  const replace = sum((c) => c.replace);
+  if (replace) io.print(`  うち ${replace} セッションは、前に送ったものを置き換えます。`);
   const secrets = sum((c) => c.secrets.count);
   if (secrets) {
     const kinds = new Map<string, number>();
     for (const c of checks) for (const k of c.secrets.kinds) kinds.set(k.label, (kinds.get(k.label) ?? 0) + k.count);
+    io.print('');
     io.print(`  注意: 秘密らしい文字列が ${secrets} 件あります(${[...kinds].map(([k, n]) => `${k} ${n}`).join('・')}。偽陽性もありえます)`);
-    // 点検はプロジェクトごとに多い順 10 ファイルまで返す。並べ直して全体の多い順 10 ファイルを出す
+    // 点検はプロジェクトごとに多い順 10 ファイルまで返す。並べ直して全体の多い順 5 ファイルを出す
     const files = checks.flatMap((c) => c.secrets.files.map((f) => ({ ...f, name: c.name }))).sort((a, b) => b.count - a.count);
-    for (const f of files.slice(0, 10)) io.print(`    ${many ? `${f.name}: ` : ''}${f.id}/${f.path}: ${f.count} 件`);
-    if (files.length > 10) io.print('    ほかのファイルにもあります');
-    io.print('  生ログはそのまま写ります。送り先で見られる人を確かめてください。本物の鍵なら、送るかどうかに関わらず作り直してください。');
+    for (const f of files.slice(0, 5)) io.print(`    ${many ? `${f.name}: ` : ''}${f.id}/${f.path}: ${f.count} 件`);
+    if (files.length > 5) io.print('    ほかのファイルにもあります');
+    io.print('  ログはそのまま写ります。送り先を見られる人を確かめてください。');
+    io.print('  本物の鍵なら、送る・送らないに関わらず作り直してください。');
   }
 }
 
@@ -161,28 +219,24 @@ async function withOutLock<T>(outDir: string, note: string, fn: () => Promise<T>
 /** 送るプロジェクトを決める(画面の印があればそれ、無ければ番号で選ぶ)。やめたら null */
 async function chooseProjects(io: UploadProjectIo, projects: ProjectSummary[], marked: string[] | null): Promise<ProjectSummary[] | null> {
   if (marked) {
-    // 画面で印を付けたプロジェクトを、番号を聞かずに送る(並びは一覧と同じ多い順)
+    // 画面で印を付けたプロジェクトを、番号を聞かずに送る(並びは一覧と同じ多い順)。どれを送るかは、すぐ後の確認に並ぶ
     const set = new Set(marked);
     const chosen = projects.filter((p) => set.has(p.name));
     const gone = marked.filter((n) => !projects.some((p) => p.name === n));
     const others = projects.filter((p) => !set.has(p.name));
-    io.print(`まとめて送るプロジェクト(画面の「プロジェクト別」で「まとめて送る」に印を付けたもの): ${chosen.length} 件`);
-    chosen.forEach((p, i) => io.print(projectLine(p, i)));
-    if (gone.length) io.print(`  印はあるが、今の集計に送れるセッションが無いもの(送りません): ${names(gone)}`);
-    if (others.length) {
+    io.print('');
+    io.print('== 送るプロジェクト ==');
+    io.print(chosen.length ? `  画面で印を付けた ${chosen.length} プロジェクトを送ります。` : '  印を付けたプロジェクトに、今送れるものがありません。番号で選んでください。');
+    if (gone.length) io.print(`  印はあるが、送れるセッションが無いもの: ${names(gone, 3)}`);
+    if (chosen.length && others.length) {
       // 全部の名前は並べない(送らないと決めたものが毎回並ぶため)。新しく始めたプロジェクトを見落とさないよう、最近更新したものだけ出す
-      const recent = [...others].sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? '')).slice(0, 5);
-      io.print(
-        `  印の無いプロジェクトが ${others.length} 件あります(送りません)。最近更新したもの: ${recent.map((p) => `${p.name}(${day(p.updatedAt)})`).join('、')}${others.length > recent.length ? ' ほか' : ''}`,
-      );
-      io.print('  送るなら、atlas.bat の画面の「プロジェクト別」で「まとめて送る」に印を付けてください(今回だけなら、確かめるところで n を押すと番号で選べます)。');
+      const recent = [...others].sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? '')).map((p) => p.name);
+      io.print(`  印の無い ${others.length} プロジェクトは送りません(最近更新: ${names(recent, 3)})。`);
+      io.print('  印は、atlas.bat の画面の「プロジェクト別」で付け外しできます。');
     }
     if (chosen.length) return chosen;
-    io.print('印を付けたプロジェクトに、今送れるものがありません。番号で選んでください。');
   }
-  const chosen = await askProjects(io, projects);
-  if (chosen && !marked) io.print('(毎回同じものを送るなら、atlas.bat の画面の「プロジェクト別」で「まとめて送る」に印を付けておくと、番号を聞かずに送ります)');
-  return chosen;
+  return askProjects(io, projects);
 }
 
 /** 選んだプロジェクトを、写すまとまりにする。フォルダ名が同じになるもの(owner/app と owner_app など)を一度に選んだら、2 つめが混ざるので止める */
@@ -206,28 +260,31 @@ export async function runUploadProject(io: UploadProjectIo, o: { paths: GroupUpl
   const records = await readSessions(o.paths.sessions);
   const projects = await listProjects(records, o.paths.snapshot);
   if (!projects.length) {
+    io.print('');
     io.print('送れるセッションがありません(空のセッションと、ログのフォルダが無いものは送りません)。');
     return false;
   }
   const config = await loadConfig(o.configPath, false);
   const chosen = await chooseProjects(io, projects, config.uploadProjects);
   if (!chosen) {
-    io.print('やめました(何も送っていません)。');
+    io.print('  やめました(何も送っていません)。');
     return false;
   }
   let pending = await targetsOf(o.paths, chosen, records);
 
   let root = config.uploadRoot;
   // 覚えた送り先が無い(ネットワークドライブの切断・フォルダの削除)ときも、ここで選び直せるようにする
-  if (root && !(existsSync(root) && statSync(root).isDirectory())) {
-    io.print(`覚えている送り先が見つかりません: ${root}(ドライブがつながっているか確かめるか、選び直してください)`);
-    root = null;
-  }
-  if (!root) {
-    io.print('送り先を選んでください。');
+  const lost = root != null && !(existsSync(root) && statSync(root).isDirectory());
+  if (!root || lost) {
+    io.print('');
+    io.print('== 送り先 ==');
+    if (lost) {
+      io.print(`  覚えている送り先が見つかりません: ${root}`);
+      io.print('  ドライブがつながっているか確かめるか、選び直してください。');
+    }
     root = await chooseRoot(io, o.configPath, null);
     if (!root) {
-      io.print('送り先を選ばなかったので、やめました(何も送っていません)。');
+      io.print('  送り先を選ばなかったので、やめました(何も送っていません)。');
       return false;
     }
   }
@@ -237,11 +294,14 @@ export async function runUploadProject(io: UploadProjectIo, o: { paths: GroupUpl
   const failed: { name: string; error: string }[] = [];
   /** 途中で止まったときに添える、ここまでに送ったもの */
   const sentNote = (): string => (sent.length ? `ここまでに ${sent.length} プロジェクトを送りました(${names(sent.map((r) => r.name))})。残りは送っていません` : '何も送っていません');
+  let stopped = false;
   try {
     while (pending.length) {
       const todo = pending;
       const many = todo.length > 1;
-      io.print(many ? `${todo.length} プロジェクトを送る前に確かめてください(調べています…)` : `「${todo[0]!.name}」を送る前に確かめてください(調べています…)`);
+      io.print('');
+      io.print('== 送る前の確認 ==');
+      io.status?.('  調べています...');
       const r0 = root;
       // session-store.db などは 1 回だけ開き、プロジェクトの間で使い回す
       const checks = await withOutLock(outDir, sentNote(), async () => {
@@ -255,7 +315,8 @@ export async function runUploadProject(io: UploadProjectIo, o: { paths: GroupUpl
         }
       });
       describe(io, checks, r0);
-      const a = (await io.ask('送るなら y、今回だけ番号で選び直すなら n、送り先を選び直すなら c、やめるなら Enter: ')).toLowerCase();
+      io.print('');
+      const a = (await io.ask('  y = 送る   n = 番号で選び直す   c = 送り先を変える   Enter = やめる\n  > ')).toLowerCase();
       if (a === 'c') {
         const picked = await chooseRoot(io, o.configPath, root);
         if (picked) root = picked;
@@ -265,50 +326,55 @@ export async function runUploadProject(io: UploadProjectIo, o: { paths: GroupUpl
         // 印は変えずに、今回送るものだけを選び直す
         const picked = await askProjects(io, projects);
         if (!picked) {
-          io.print(sent.length ? `やめました(${sentNote()})。` : 'やめました(何も送っていません)。');
+          io.print(sent.length ? `  やめました(${sentNote()})。` : '  やめました(何も送っていません)。');
           break;
         }
         pending = await targetsOf(o.paths, picked, records);
         continue;
       }
       if (a !== 'y') {
-        io.print(sent.length ? `やめました(残りの ${todo.length} プロジェクトは送っていません)。` : 'やめました(何も送っていません)。');
+        io.print(sent.length ? `  やめました(残りの ${todo.length} プロジェクトは送っていません)。` : '  やめました(何も送っていません)。');
         break;
       }
+      io.print('');
+      io.print('== 送っています ==');
+      const w = nameWidth(todo.map((t) => t.name));
+      const sw = String(Math.max(...checks.map((c) => c.sessions))).length;
       // まとめて送る間はロックを持ち続ける(途中で集計し直されて、残りが確かめた中身と変わらないように)
       pending = await withOutLock(outDir, sentNote(), async () => {
         const ctx = await openUploadContext(o.paths);
         try {
           for (let i = 0; i < todo.length; i++) {
             const t = todo[i]!;
-            const tag = many ? `[${i + 1}/${todo.length}] ${t.name}: ` : '';
-            let last = '';
+            const tag = many ? `[${i + 1}/${todo.length}] ` : '';
+            let shownAt = 0;
+            let shownDone = -1;
             try {
               const r = await uploadTarget(o.paths, t, r0, () => {}, {
                 expect: checks[i]!.fingerprint,
                 sessions: records,
                 context: ctx,
                 onProgress: (p) => {
-                  // 1 割進むごとと、セッションを 1 件写し終えるごとに 1 行出す(最後に「1 / 1」まで出す)
-                  const pct = p.bytes ? Math.floor((p.copied / p.bytes) * 10) * 10 : 0;
-                  const key = `${pct}/${p.done}`;
-                  if (key !== last) {
-                    last = key;
-                    io.print(`  ${tag}写しています: ${p.done} / ${p.sessions} セッション(${size(p.copied)} / ${size(p.bytes)})`);
-                  }
+                  // 写すたびに呼ばれるので、セッションを 1 件写し終えたときと、間が空いたときだけ書き換える(窓への書き込みで写すのが遅くならないように)
+                  const now = Date.now();
+                  if (!io.status || (p.done === shownDone && now - shownAt < 200)) return;
+                  shownAt = now;
+                  shownDone = p.done;
+                  io.status(`  ${tag}${t.name}  ${p.done} / ${p.sessions} セッション(${size(p.copied)} / ${size(p.bytes)})`);
                 },
               });
               sent.push(r);
-              io.print(`送りました: ${many ? `「${t.name}」 ` : ''}${r.uploaded} セッション${r.memos ? `・メモ ${r.memos} 件` : ''}${r.replaced ? `(うち ${r.replaced} 件は置き換え)` : ''} → ${r.dir}`);
+              const extra = [r.replaced ? `置き換え ${r.replaced} セッション` : '', r.memos ? `メモ ${r.memos} 件` : ''].filter(Boolean).join('・');
+              io.print(`  ${tag}${padEnd(t.name, w)}  ${String(r.uploaded).padStart(sw)} セッションを送りました${extra ? `(${extra})` : ''}`);
             } catch (e) {
               if (e instanceof UploadChangedError) {
                 // 確かめた後にログやメモが変わった: これと残りを確かめ直す(送ったものはそのまま)
-                io.print(e.message);
+                io.print(`  ${e.message}`);
                 return todo.slice(i);
               }
               // 1 つ送れなくても残りは送る(ネットワークの一時的な切断や、送り先で開かれているファイルなど)
               failed.push({ name: t.name, error: (e as Error).message });
-              io.print(`送れませんでした: 「${t.name}」(${(e as Error).message})`);
+              io.print(`  ${tag}${padEnd(t.name, w)}  送れませんでした: ${(e as Error).message}`);
             }
           }
           return [];
@@ -317,40 +383,89 @@ export async function runUploadProject(io: UploadProjectIo, o: { paths: GroupUpl
         }
       });
     }
+  } catch (e) {
+    stopped = true;
+    throw e;
   } finally {
     // 途中で止まっても(ロックが取れないなど)、送ったもの・送れなかったものを知らせる
-    if (sent.length) io.print(sent.length > 1 ? 'プロジェクトの説明とセッションの一覧は、それぞれのフォルダの README.md にあります。' : 'プロジェクトの説明とセッションの一覧は、そのフォルダの README.md にあります。');
-    if (failed.length) io.print(`送れなかったプロジェクト(${failed.length} 件): ${names(failed.map((f) => f.name))}。理由を確かめてから、もう一度実行してください(送れたものは、送り直しても置き換えるだけです)。`);
+    if (sent.length || failed.length) {
+      io.print('');
+      io.print(failed.length ? '== 送れなかったものがあります ==' : stopped ? '== 途中で止まりました ==' : '== 終わりました ==');
+      if (sent.length) {
+        io.print(`  ${sent.length} プロジェクト・${sent.reduce((a, r) => a + r.uploaded, 0)} セッションを送りました。`);
+        io.print(`  送り先: ${sent.length > 1 ? [...new Set(sent.map((r) => dirname(r.dir)))].join('、') : sent[0]!.dir}`);
+        io.print(sent.length > 1 ? '  説明とセッションの一覧は、それぞれのフォルダの README.md にあります。' : '  説明とセッションの一覧は、そのフォルダの README.md にあります。');
+      }
+      if (failed.length) {
+        io.print(`  送れなかったプロジェクト(${failed.length} 件): ${names(failed.map((f) => f.name))}`);
+        io.print('  理由を確かめてから、もう一度実行してください(送れたものは、送り直しても置き換えるだけです)。');
+      }
+      if (sent.length && !config.uploadProjects) io.print('  毎回同じものを送るなら、atlas.bat の画面の「プロジェクト別」で「まとめて送る」に印を付けると、番号を聞かずに送ります。');
+    }
   }
-  if (failed.length) throw new Error(`${failed.length} プロジェクトを送れませんでした(送れたのは ${sent.length} プロジェクトです)`);
+  if (failed.length) throw new UploadIncompleteError(`${failed.length} プロジェクトを送れませんでした(送れたのは ${sent.length} プロジェクトです)`);
   return sent.length > 0 && pending.length === 0;
+}
+
+/**
+ * 黒い窓(標準入出力)とやりとりする io。pick は送り先のフォルダを選ぶ画面。
+ * 書き換える 1 行(status)は、出力が端末のときだけ使う(ファイルやパイプに流すと、書き換えの制御文字が残るため)
+ */
+export function consoleIo(pick: UploadProjectIo['pick']): { io: UploadProjectIo; clear: () => void; close: () => void } {
+  // rl.question は入力を流し込んだとき(パイプ)に、尋ねる前に届いた行を落とすので、行の反復子から 1 行ずつ読む
+  const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+  const lines = rl[Symbol.asyncIterator]();
+  const out = process.stdout;
+  // 書き換える 1 行が出ているか。次に何かを書く前に消す
+  let shown = false;
+  const clear = (): void => {
+    if (!shown) return;
+    clearLine(out, 0);
+    cursorTo(out, 0);
+    shown = false;
+  };
+  const io: UploadProjectIo = {
+    ask: async (q) => {
+      clear();
+      out.write(q);
+      const r = await lines.next();
+      return r.done ? '' : r.value.trim();
+    },
+    print: (l) => {
+      clear();
+      out.write(`${l}\n`);
+    },
+    pick,
+    ...(out.isTTY
+      ? {
+          status: (text: string): void => {
+            clear();
+            // 折り返すと 1 行では消えないので、窓の幅に収める
+            out.write(fit(text, (out.columns || 80) - 1));
+            shown = true;
+          },
+        }
+      : {}),
+  };
+  return { io, clear, close: () => rl.close() };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   // 置き場は atlas.bat と同じ既定(out/ と atlas-notes/)
   const paths = resolvePaths({ home: null, out: null, judgments: null });
-  // rl.question は入力を流し込んだとき(パイプ)に、尋ねる前に届いた行を落とすので、行の反復子から 1 行ずつ読む
-  const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
-  const lines = rl[Symbol.asyncIterator]();
-  const io: UploadProjectIo = {
-    ask: async (q) => {
-      process.stdout.write(q);
-      const r = await lines.next();
-      return r.done ? '' : r.value.trim();
-    },
-    print: (l) => process.stdout.write(`${l}\n`),
-    pick: (initial) => pickFolder('プロジェクトのセッションを送る先のフォルダを選んでください', initial),
-  };
+  const c = consoleIo((initial) => pickFolder('プロジェクトのセッションを送る先のフォルダを選んでください', initial));
   try {
-    await runUploadProject(io, {
+    await runUploadProject(c.io, {
       paths,
       configPath: defaultConfigPath(),
     });
     process.exitCode = 0;
   } catch (e) {
-    process.stderr.write(`upload-project: ${(e as Error).message}\n`);
+    c.clear();
+    // 送れなかったプロジェクトと理由は、もう画面に出してある(同じことを 2 度書かない)
+    if (!(e instanceof UploadIncompleteError)) process.stderr.write(`\n止まりました: ${(e as Error).message}\n`);
     process.exitCode = 1;
   } finally {
-    rl.close();
+    c.close();
   }
 }
