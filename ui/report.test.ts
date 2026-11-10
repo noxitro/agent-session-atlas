@@ -591,6 +591,8 @@ describe('画面の操作', () => {
     const beforeConfig = existsSync(configPath) ? await readFile(configPath, 'utf8') : null;
     const [a, b] = ['切り替え元', '切り替え先'];
     const root = join(WORK, 'atlas-logs-switch');
+    // 前の実行の残りを持ち込まない(2 回目以降が置き換えの結果になる)
+    await rm(root, { recursive: true, force: true });
     await mkdir(root, { recursive: true });
     await mkdir(notes, { recursive: true });
     await writeFile(configPath, JSON.stringify({ uploadRoot: root }));
@@ -640,11 +642,204 @@ describe('画面の操作', () => {
         await rail().getByRole('button', { name: new RegExp(a) }).click();
         await expect.poll(() => page.getByTestId('group-head').locator('h2 .name').innerText()).toBe(a);
         await expect.poll(() => page.getByTestId('group-head').getByTestId('group-uploaded').innerText(), { timeout: 5000 }).toMatch(/アップロードしました.1 セッション/);
+        if (away === 'tag') {
+          // 同じ結果は 1 回だけ: もう一度切り替えて戻っても出さない
+          await rail().getByRole('button', { name: new RegExp(b) }).click();
+          await expect.poll(() => head.locator('h2 .name').innerText()).toBe(b);
+          await rail().getByRole('button', { name: new RegExp(a) }).click();
+          await expect.poll(() => head.locator('h2 .name').innerText()).toBe(a);
+          await page.waitForTimeout(300);
+          expect(await head.getByTestId('group-uploaded').count()).toBe(0);
+        }
         await page.unroute(uploadUrl);
       }
     } finally {
       release();
       await page.unroute(uploadUrl);
+      if (before == null) await rm(groupsPath, { force: true });
+      else await writeFile(groupsPath, before);
+      if (beforeConfig == null) await rm(configPath, { force: true });
+      else await writeFile(configPath, beforeConfig);
+    }
+  });
+
+  it('g5. 切り替えた先で失敗の知らせを出し、そのタグ自身の直近の結果も出す。知らせの後にそのタグで写すと、知らせを消して進み具合を出す。戻ると失敗の理由を出す', async () => {
+    const s = JSON.parse(await readFile(join(out, 'sessions.json'), 'utf8')) as { sessions: { id: string }[] };
+    const ids = s.sessions.map((x) => x.id).filter((x) => existsSync(join(out, 'snapshot', 'session-state', x)));
+    const before = existsSync(groupsPath) ? await readFile(groupsPath, 'utf8') : null;
+    const beforeConfig = existsSync(configPath) ? await readFile(configPath, 'utf8') : null;
+    const [a, b] = ['失敗する側', '見ている側'];
+    const root = join(WORK, 'atlas-logs-switch-fail');
+    await rm(root, { recursive: true, force: true });
+    await mkdir(root, { recursive: true });
+    await mkdir(notes, { recursive: true });
+    await writeFile(configPath, JSON.stringify({ uploadRoot: root }));
+    await writeFile(groupsPath, JSON.stringify({ version: 1, groups: [{ name: a, note: '', ids: [ids[0]] }, { name: b, note: '', ids: [ids[1]] }] }));
+    /** 写す要求の答えを、合図があるまで画面に返さない */
+    const hold = async (name: string): Promise<{ url: string; release: () => void }> => {
+      let release: () => void = () => {};
+      const gate = new Promise<void>((r) => (release = r));
+      const url = `**/api/groups/${encodeURIComponent(name)}/upload`;
+      await page.route(url, async (route) => {
+        const response = await route.fetch();
+        await gate;
+        await route.fulfill({ response });
+      });
+      return { url, release: () => release() };
+    };
+    const held: { url: string; release: () => void }[] = [];
+    try {
+      // 見ている側のタグは、ほかのページで写してあり、まだ結果を見ていない
+      await page.goto('about:blank');
+      await page.goto(server.url);
+      const status = await page.evaluate<number>(
+        `fetch('api/groups/' + encodeURIComponent(${JSON.stringify(b)}) + '/upload', { method: 'POST', headers: { 'x-atlas-token': document.querySelector('meta[name="atlas-token"]').content } }).then((r) => r.status)`,
+      );
+      expect(status).toBe(200);
+      await page.goto('about:blank');
+      await page.goto(`${server.url}#group=${encodeURIComponent(a)}`);
+      const head = page.getByTestId('group-head');
+      await head.getByTestId('group-upload').click();
+      const confirm = head.getByTestId('group-upload-confirm');
+      await expect.poll(() => confirm.isVisible()).toBe(true);
+      // 確かめた後に、送り先のタグのフォルダの場所にファイルを置いて、写すのを失敗させる
+      await writeFile(join(root, a), 'ふさぐ');
+      held.push(await hold(a));
+      await confirm.getByRole('button', { name: '写す', exact: true }).click();
+      await expect.poll(() => head.getByTestId('group-upload').innerText()).toBe('アップロード中…');
+      await rail().getByRole('button', { name: new RegExp(b) }).click();
+      await expect.poll(() => head.locator('h2 .name').innerText()).toBe(b);
+      expect(await head.getByTestId('group-upload-elsewhere').innerText()).toContain(`「${a}」をアップロードしています`);
+      // 失敗が届くと、失敗の知らせ(読み上げにも入る)と、見ている側のタグ自身の直近の結果を出す
+      held[0]!.release();
+      // 失敗のときは「開くと出ます」と言わない(サーバが覚えない失敗もある)。理由は知らせに入れる
+      await expect.poll(() => head.getByTestId('group-upload-elsewhere-done').innerText()).toMatch(new RegExp(`^「${a}」をアップロードできませんでした(.+)。$`));
+      expect(await head.getByTestId('group-upload-elsewhere-done').innerText()).not.toContain('詳しくは');
+      expect(await head.getByTestId('group-upload-elsewhere-done').getAttribute('class')).toContain('bad');
+      await expect.poll(() => head.getByTestId('group-upload-elsewhere-status').innerText()).toContain(`「${a}」をアップロードできませんでした`);
+      await expect.poll(() => head.getByTestId('group-uploaded').innerText()).toMatch(/アップロードしました.1 セッション/);
+      const bad = problems.findIndex((p) => p.includes('status of 409'));
+      expect(bad).toBeGreaterThanOrEqual(0);
+      problems.splice(bad, 1);
+      // 知らせが出たまま、このタグで写す: 知らせを消して、このタグの進み具合を出す
+      held.push(await hold(b));
+      await head.getByTestId('group-upload').click();
+      await expect.poll(() => confirm.isVisible()).toBe(true);
+      await confirm.getByRole('button', { name: '写す', exact: true }).click();
+      await expect.poll(() => head.getByTestId('group-upload-progress').isVisible()).toBe(true);
+      expect(await head.getByTestId('group-upload-elsewhere-done').count()).toBe(0);
+      held[1]!.release();
+      await expect.poll(() => head.getByTestId('group-uploaded').innerText()).toMatch(/うち 1 件は前に写したものを置き換え/);
+      expect(await head.getByTestId('group-upload-elsewhere-done').count()).toBe(0);
+      // 失敗した側へ戻ると、失敗の理由を出す
+      await rail().getByRole('button', { name: new RegExp(a) }).click();
+      await expect.poll(() => head.locator('h2 .name').innerText()).toBe(a);
+      await expect.poll(() => head.getByRole('alert').innerText()).toMatch(/アップロードできませんでした/);
+    } finally {
+      for (const h of held) {
+        h.release();
+        await page.unroute(h.url);
+      }
+      await rm(join(root, a), { force: true });
+      if (before == null) await rm(groupsPath, { force: true });
+      else await writeFile(groupsPath, before);
+      if (beforeConfig == null) await rm(configPath, { force: true });
+      else await writeFile(configPath, beforeConfig);
+    }
+  });
+
+  it('g6. 戻って続きを待っているアップロードも切り替えた先に知らせ、戻ると結果を出す。確かめている間に切り替えても前のタグの確認を出さず、編集している間に終わっても欄の誤りにしない', async () => {
+    const s = JSON.parse(await readFile(join(out, 'sessions.json'), 'utf8')) as { sessions: { id: string }[] };
+    const ids = s.sessions.map((x) => x.id).filter((x) => existsSync(join(out, 'snapshot', 'session-state', x)));
+    const before = existsSync(groupsPath) ? await readFile(groupsPath, 'utf8') : null;
+    const beforeConfig = existsSync(configPath) ? await readFile(configPath, 'utf8') : null;
+    const [a, b] = ['続きを待つ側', '切り替えた側'];
+    const enc = encodeURIComponent;
+    const root = join(WORK, 'atlas-logs-switch-resume');
+    await rm(root, { recursive: true, force: true });
+    await mkdir(root, { recursive: true });
+    await mkdir(notes, { recursive: true });
+    await writeFile(configPath, JSON.stringify({ uploadRoot: root }));
+    await writeFile(groupsPath, JSON.stringify({ version: 1, groups: [{ name: a, note: '', ids: [ids[0]] }, { name: b, note: '', ids: [ids[1]] }] }));
+    const routes: string[] = [];
+    const gates: (() => void)[] = [];
+    /** その要求の答えを、合図があるまで画面に返さない */
+    const hold = async (url: string): Promise<() => void> => {
+      let release: () => void = () => {};
+      const gate = new Promise<void>((r) => (release = r));
+      routes.push(url);
+      gates.push(() => release());
+      await page.route(url, async (route) => {
+        const response = await route.fetch();
+        await gate;
+        await route.fulfill({ response });
+      });
+      return () => release();
+    };
+    const post = (name: string): Promise<number> =>
+      page.evaluate<number>(`fetch('api/groups/' + encodeURIComponent(${JSON.stringify(name)}) + '/upload', { method: 'POST', headers: { 'x-atlas-token': document.querySelector('meta[name="atlas-token"]').content } }).then((r) => r.status)`);
+    try {
+      const head = page.getByTestId('group-head');
+      // 1. ほかのページで写し始めたアップロードの続きを待っている(進み具合の答えを、合図があるまで「写している途中」にする)
+      await page.goto('about:blank');
+      await page.goto(server.url);
+      expect(await post(a)).toBe(200);
+      let writing = true;
+      const progressUrl = `**/api/groups/${enc(a)}/upload/progress`;
+      routes.push(progressUrl);
+      await page.route(progressUrl, (route) =>
+        writing ? route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ sessions: 1, done: 0, bytes: 100, copied: 40, current: null }) }) : route.continue(),
+      );
+      await page.goto('about:blank');
+      await page.goto(`${server.url}#group=${enc(a)}`);
+      await expect.poll(() => head.getByTestId('group-upload-progress').isVisible()).toBe(true);
+      await rail().getByRole('button', { name: new RegExp(b) }).click();
+      await expect.poll(() => head.locator('h2 .name').innerText()).toBe(b);
+      expect(await head.getByTestId('group-upload-elsewhere').innerText()).toContain(`「${a}」をアップロードしています`);
+      writing = false;
+      await expect.poll(() => head.getByTestId('group-upload-elsewhere-done').innerText()).toBe(`「${a}」のアップロードが終わりました(1 セッション)。詳しくは「${a}」を開くと出ます。`);
+      await rail().getByRole('button', { name: new RegExp(a) }).click();
+      await expect.poll(() => head.getByTestId('group-uploaded').innerText()).toMatch(/アップロードしました.1 セッション/);
+      // 2. 確かめている間に切り替える: 切り替えた先に、前のタグの確認を出さない
+      const releaseCheck = await hold(`**/api/groups/${enc(a)}/upload/check`);
+      await head.getByTestId('group-upload').click();
+      await expect.poll(() => head.getByTestId('group-upload').innerText()).toBe('確かめています…');
+      await rail().getByRole('button', { name: new RegExp(b) }).click();
+      await expect.poll(() => head.locator('h2 .name').innerText()).toBe(b);
+      releaseCheck();
+      await expect.poll(() => head.getByTestId('group-upload').innerText()).toBe('アップロード');
+      await page.waitForTimeout(300);
+      expect(await head.getByTestId('group-upload-confirm').count()).toBe(0);
+      expect(await head.locator('h2 .name').innerText()).toBe(b);
+      // 3. 切り替えた側には、まだ見ていない失敗の結果がある(ほかのページで写して失敗した)
+      await writeFile(join(root, b), 'ふさぐ');
+      expect(await post(b)).toBe(409);
+      const bad = problems.findIndex((p) => p.includes('status of 409'));
+      expect(bad).toBeGreaterThanOrEqual(0);
+      problems.splice(bad, 1);
+      // A を写している間に B で「編集」を開き、その間に A が終わる: B の失敗を編集の欄の誤りとして出さない
+      await rail().getByRole('button', { name: new RegExp(a) }).click();
+      await expect.poll(() => head.locator('h2 .name').innerText()).toBe(a);
+      const releaseUpload = await hold(`**/api/groups/${enc(a)}/upload`);
+      await head.getByTestId('group-upload').click();
+      const confirm = head.getByTestId('group-upload-confirm');
+      await expect.poll(() => confirm.isVisible()).toBe(true);
+      await confirm.getByRole('button', { name: '写す', exact: true }).click();
+      await expect.poll(() => head.getByTestId('group-upload').innerText()).toBe('アップロード中…');
+      await rail().getByRole('button', { name: new RegExp(b) }).click();
+      await expect.poll(() => head.locator('h2 .name').innerText()).toBe(b);
+      await head.getByTestId('group-edit').click();
+      const form = head.getByRole('form', { name: 'タスクタグの編集' });
+      await expect.poll(() => form.isVisible()).toBe(true);
+      releaseUpload();
+      await expect.poll(() => head.getAttribute('aria-busy')).toBe('false');
+      await page.waitForTimeout(300);
+      expect(await head.getByRole('alert').count()).toBe(0);
+      expect(await form.getByRole('textbox').first().getAttribute('aria-invalid')).toBeNull();
+    } finally {
+      for (const g of gates) g();
+      for (const u of routes) await page.unroute(u);
+      await rm(join(root, b), { force: true });
       if (before == null) await rm(groupsPath, { force: true });
       else await writeFile(groupsPath, before);
       if (beforeConfig == null) await rm(configPath, { force: true });

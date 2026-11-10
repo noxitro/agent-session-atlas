@@ -84,14 +84,17 @@
     }
     exported = null;
     uploaded = null;
+    doneElsewhere = null;
     task = 'check';
+    const name = group.name;
     let c: UploadCheck | null = null;
     void run(
       async () => {
-        c = await upload.check(group.name);
+        c = await upload.check(name);
       },
       () => {
-        if (!c) return;
+        // 確かめている間に別のタグへ切り替えた(または見出しが消えた)なら、前のタグの確認は出さない
+        if (!c || !alive || group.name !== name) return;
         // 写す前に毎回、送り先と件数・大きさを見せて確かめる。秘密らしい文字列があれば焦点は「やめる」、無ければ「写す」
         checked = c;
         mode = 'confirm';
@@ -123,12 +126,26 @@
     timers.clear();
   });
   /** 別のタスクタグを見ている間に終わったアップロードの知らせ(結果の中身は、写したタグを開くと出す) */
-  let doneElsewhere = $state<{ name: string; ok: boolean; text: string } | null>(null);
-  /** 写したタグを今見ていなければ、今の見出しに終わったことだけを知らせる */
-  function noteElsewhere(name: string, ok: boolean, text: string): void {
-    if (alive && group.name !== name) doneElsewhere = { name, ok, text };
+  let doneElsewhere = $state<{ ok: boolean; text: string } | null>(null);
+  /** 写したタグを今見ていなければ、今の見出しに終わったことだけを知らせる(成功なら写した件数、失敗なら理由) */
+  function noteElsewhere(name: string, o: { ok: true; result: GroupUpload | null } | { ok: false; error: string }): void {
+    if (!alive || group.name === name) return;
+    const more = `詳しくは「${name}」を開くと出ます。`;
+    doneElsewhere = o.ok
+      ? { ok: true, text: `「${name}」のアップロードが終わりました${o.result ? `(${int(o.result.uploaded)} セッション)` : ''}。${more}` }
+      : { ok: false, text: `「${name}」をアップロードできませんでした(${o.error})。` };
   }
   const isProgress = (p: UploadPoll): p is UploadProgress => !!p && 'sessions' in p;
+  /**
+   * 進み具合の欄に出すもの(1 つだけ)。ほかのタグを写している > このタグを写している > ほかのタグで終わった の順。
+   * 写し始めるときに前の知らせを消すので、このタグで写している間に古い知らせが残ることはないが、並び順でも進み具合を先にする
+   */
+  const uploadStatus = $derived.by((): { kind: 'elsewhere'; name: string } | { kind: 'own' } | { kind: 'done'; ok: boolean; text: string } | null => {
+    if (uploadName && uploadName !== group.name) return { kind: 'elsewhere', name: uploadName };
+    if (task === 'upload') return { kind: 'own' };
+    if (doneElsewhere) return { kind: 'done', ...doneElsewhere };
+    return null;
+  });
   /** 写し終わった(または失敗した)。写していたタスクタグを今も見ているときだけ結果を出す */
   function finishUpload(name: string): void {
     progress = null;
@@ -136,10 +153,15 @@
     task = null;
     busy = false;
     // 見出しが消えた後(「すべて」へ外した)は group を読まない(親が null にしている)
-    if (alive && group.name === name) requestAnimationFrame(() => uploadBtn?.focus());
+    if (!alive) return;
+    if (group.name === name) requestAnimationFrame(() => uploadBtn?.focus());
+    // ほかのタグを見ている間に終わった: 写している間は尋ねなかった、今のタグの直近の結果・続いているアップロードを尋ねる
+    // (編集などの欄を開いているときは尋ねない。結果が欄の誤りとして出て、閉じると消えてしまうため)
+    else if (editable && mode === 'view') resumeUpload(group.name);
   }
   function showLast(name: string, p: Exclude<UploadPoll, UploadProgress | null>): void {
-    if (!alive || group.name !== name) return;
+    // 見出しを表示しているときだけ出す(編集などの欄では欄の誤りになり、閉じると消えてしまう。出さなければ、次に開いたときに出す)
+    if (!alive || group.name !== name || mode !== 'view') return;
     // 同じ結果は 1 回だけ出す(タグを開き直すたびに同じ失敗を出さない)。この画面で写し終えたものは、その場で出したので出さない
     if (p.at <= (seenUpload.get(name) ?? 0)) return;
     seenUpload.set(name, p.at);
@@ -154,6 +176,7 @@
     checked = null;
     mode = 'view';
     error = '';
+    doneElsewhere = null;
     busy = true;
     task = 'upload';
     progress = null;
@@ -176,13 +199,13 @@
         if (alive && group.name === name) {
           uploaded = r;
           shown = true;
-        } else noteElsewhere(name, true, `${int(r.uploaded)} セッション`);
+        } else noteElsewhere(name, { ok: true, result: r });
       },
       (e) => {
         if (alive && group.name === name) {
           error = (e as Error).message;
           shown = true;
-        } else noteElsewhere(name, false, (e as Error).message);
+        } else noteElsewhere(name, { ok: false, error: (e as Error).message });
       },
     ).finally(() => {
       stopTimer(timer);
@@ -251,8 +274,10 @@
     uploaded = null;
     pathCopied = false;
     task = 'export';
+    const name = group.name;
     void run(async () => {
-      exported = await onexport(group.name);
+      const r = await onexport(name);
+      if (alive && group.name === name) exported = r;
     }, () => {});
   }
   async function copyPath(): Promise<void> {
@@ -384,22 +409,28 @@
       task = 'upload';
       uploadName = name;
       progress = p;
+      // 問い合わせは 0.5 秒ごとに出すので、遅い答えが重なると「終わった」を 2 回受け取る。2 回目は捨てる
+      // (その間にこの見出しで写し始めていると、写している状態を消してしまうため)
+      let ended = false;
       const timer = setInterval(() => {
         void u.progress(name).then(
           (q) => {
+            if (ended) return;
             if (isProgress(q)) {
               if (uploadName === name) progress = q;
               return;
             }
+            ended = true;
             stopTimer(timer);
             finishUpload(name);
             if (q) {
               showLast(name, q);
-              if (q.ok) noteElsewhere(name, true, q.result ? `${int(q.result.uploaded)} セッション` : '');
-              else noteElsewhere(name, false, q.error ?? '理由は分かりません');
+              noteElsewhere(name, q.ok ? { ok: true, result: q.result } : { ok: false, error: q.error ?? '理由は分かりません' });
             }
           },
           () => {
+            if (ended) return;
+            ended = true;
             stopTimer(timer);
             finishUpload(name);
           },
@@ -435,13 +466,12 @@
         {:else}<span class="none">まだ決まっていません</span>{/if}
         <button type="button" class="link" data-testid="group-upload-root" onclick={() => beginRoot(false)} disabled={busy}>{destDir ? '場所を変える…' : '場所を決める…'}</button>
       </p>
-      {#if uploadName && uploadName !== group.name}
-        <p class="progress" data-testid="group-upload-elsewhere">「{uploadName}」をアップロードしています。終わるまで、ほかのタスクタグは写せません。</p>
-      {:else if doneElsewhere}
-        <p class="progress" class:bad={!doneElsewhere.ok} role="status" data-testid="group-upload-elsewhere-done">
-          {doneElsewhere.ok ? `「${doneElsewhere.name}」のアップロードが終わりました${doneElsewhere.text ? `(${doneElsewhere.text})` : ''}。` : `「${doneElsewhere.name}」をアップロードできませんでした(${doneElsewhere.text})。`}詳しくは「{doneElsewhere.name}」を開くと出ます。
-        </p>
-      {:else if task === 'upload'}
+      {#if uploadStatus?.kind === 'elsewhere'}
+        <p class="progress" data-testid="group-upload-elsewhere">「{uploadStatus.name}」をアップロードしています。終わるまで、ほかのタスクタグは写せません。</p>
+      {:else if uploadStatus?.kind === 'done'}
+        <!-- 読み上げは下の常に置いてある status が受け持つ(差し込んだ要素の role=status は読まれないことがあるため) -->
+        <p class="progress" class:bad={!uploadStatus.ok} data-testid="group-upload-elsewhere-done">{uploadStatus.text}</p>
+      {:else if uploadStatus?.kind === 'own'}
         <div class="progress" data-testid="group-upload-progress">
           {#if progress && progress.bytes}
             <progress max={progress.bytes} value={progress.copied} aria-label="写した量"></progress>
@@ -516,6 +546,7 @@
     </div>
   {/if}
   <p class="sr-only" role="status">{mode === 'view' ? exportedText || uploadedText : ''}</p>
+  <p class="sr-only" role="status" data-testid="group-upload-elsewhere-status">{doneElsewhere?.text ?? ''}</p>
   {#if uploaded && mode === 'view'}
     <div class="exported" data-testid="group-uploaded">
       <p>{uploadedText}</p>
