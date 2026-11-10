@@ -386,7 +386,7 @@ export async function runBuild(p: Paths, o: BuildOptions, log: Log): Promise<Bui
     desktopMeta: s.desktop ?? null,
   });
   if (r.stale.full) log(`build: 前回の --full の出力(out/full/ と coverage.json、生成 ${r.stale.full})が残っています。消すには --anonymize で作るか、フォルダを手で消してください`);
-  if (r.stale.library) log(`build: 前回の export の閲覧ページ(instructions.html と library/、生成 ${r.stale.library})が残っています`);
+  if (r.stale.library) log(`build: 前回の export の閲覧ページ(instructions.html と library/、生成 ${r.stale.library})が残っています(前の版の atlas で作ったものなら、開くと「画面とサーバの版が違います」と出ます。atlas export か atlas all で作り直せます)`);
   if (r.library) log(`export: 指示文と skill の閲覧ページ ${r.library.path}(${r.library.groups} 項目・${r.library.versions} 版、本文 ${r.library.files} ファイル ${mb(r.library.bytes)})`);
   if (r.full) {
     const f = r.full;
@@ -647,7 +647,7 @@ export async function runServe(p: Paths, o: { port: number | null; open: boolean
     const url = `http://127.0.0.1:${running.port}/atlas.html`;
     log(`serve: 既に動いているサーバがあります(${url})。ブラウザで開くだけにします`);
     if (running.code !== codeStamp())
-      log('serve: 動いているサーバは、今の atlas と版が違います(atlas を更新する前に起動したもの)。前に開いた atlas.bat の黒い窓を閉じてから、もう一度 atlas.bat を実行してください');
+      log('serve: 動いているサーバは、今の atlas と版が違います(atlas のコードが変わる前に起動したもの)。前に開いた atlas.bat の黒い窓を閉じてから、もう一度 atlas.bat を実行してください');
     if (o.open) openInBrowser(url, log);
     return '既存のサーバを使用';
   }
