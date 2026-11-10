@@ -329,13 +329,48 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
   const canPick = o.folders?.canPick ?? CAN_PICK_FOLDER;
   const pick = o.folders?.pick ?? pickFolder;
   const openDir = o.folders?.open ?? openFolder;
-  /** 設定のアップロード先(読めない設定は理由つきで返す。画面に出す) */
-  async function uploadRootOf(): Promise<{ root: string | null; error: string | null }> {
+  /**
+   * 設定ファイルの書き換えを 1 つずつ行う(読んでから書くので、画面で印を続けて押したときなどに重なると、先に書いた分が消えるため)。
+   * 失敗しても次の書き換えは止めない
+   */
+  let configChain: Promise<unknown> = Promise.resolve();
+  function withConfigWrite<T>(fn: () => Promise<T>): Promise<T> {
+    const r = configChain.then(fn);
+    configChain = r.catch(() => {});
+    return r;
+  }
+  /** 設定のアップロード先と、upload-project.bat がまとめて送るプロジェクト(読めない設定は理由つきで返す。画面に出す) */
+  async function uploadRootOf(): Promise<{ root: string | null; projects: string[]; error: string | null }> {
     try {
-      return { root: (await loadConfig(configPath, false)).uploadRoot, error: null };
+      const c = await loadConfig(configPath, false);
+      return { root: c.uploadRoot, projects: c.uploadProjects ?? [], error: null };
     } catch (e) {
-      return { root: null, error: (e as Error).message };
+      return { root: null, projects: [], error: (e as Error).message };
     }
+  }
+  /** upload-project.bat がまとめて送るプロジェクトに足す・外す(画面の「プロジェクト別」の印)。毎回設定を読み直してから書く(bat や手で書いた分を消さない) */
+  async function saveUploadProject(input: Record<string, unknown>): Promise<string[]> {
+    const { project, on } = input;
+    if (typeof project !== 'string' || project.trim() === '' || project.length > 1000) throw new HttpError(400, 'project にプロジェクト名を指定してください');
+    if (typeof on !== 'boolean') throw new HttpError(400, 'on に true(まとめて送る)か false(送らない)を指定してください');
+    return withConfigWrite(async () => {
+      let cur: string[];
+      try {
+        cur = (await loadConfig(configPath, false)).uploadProjects ?? [];
+      } catch (e) {
+        throw new HttpError(409, (e as Error).message);
+      }
+      const next = on ? (cur.includes(project) ? cur : [...cur, project]) : cur.filter((x) => x !== project);
+      if (next.length !== cur.length) {
+        try {
+          await updateConfig(configPath, 'uploadProjects', next.length ? next : undefined);
+        } catch (e) {
+          throw new HttpError(409, (e as Error).message);
+        }
+        log(`serve: 「${project}」を upload-project.bat で${on ? 'まとめて送る' : '送らない'}ようにしました(まとめて送るもの ${next.length} 件。${configPath})`);
+      }
+      return next;
+    });
   }
   /** アップロード先を決めて設定に書く(実在するフォルダだけ) */
   async function saveUploadRoot(input: unknown): Promise<string> {
@@ -347,7 +382,7 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     }
     if (!existsSync(root) || !(await stat(root)).isDirectory()) throw new HttpError(400, `フォルダが見つかりません: ${root}`);
     try {
-      await updateConfig(configPath, 'uploadRoot', root);
+      await withConfigWrite(() => updateConfig(configPath, 'uploadRoot', root));
     } catch (e) {
       throw new HttpError(409, (e as Error).message);
     }
@@ -488,7 +523,7 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
       const g = await loadGroups(groupsPath);
       const memos = Object.fromEntries([...(await loadMemoIndex(memoDir))].map(([id, x]) => [id, memoSummary(x.text, x.updatedAt)]));
       const up = await uploadRootOf();
-      sendJson(res, 200, { version: 1, groups: g.groups, memos, notesDir: o.notesDir, groupsPath, exists: g.exists, warnings: g.warnings, upload: { root: up.root, error: up.error, canPick } });
+      sendJson(res, 200, { version: 1, groups: g.groups, memos, notesDir: o.notesDir, groupsPath, exists: g.exists, warnings: g.warnings, upload: { root: up.root, projects: up.projects, error: up.error, canPick } });
       return;
     }
     if (path === '/api/upload-root') {
@@ -518,6 +553,12 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
         return;
       }
       throw new HttpError(405, 'この方法では使えません');
+    }
+    if (path === '/api/upload-projects') {
+      checkToken(req);
+      if (method !== 'PUT') throw new HttpError(405, 'この方法では使えません');
+      sendJson(res, 200, { projects: await saveUploadProject(await readJsonBody(req)) });
+      return;
     }
     if (path === '/api/memo-editor.js' && method === 'GET') {
       res.writeHead(200, { 'content-type': MIME['.js'], 'cache-control': 'no-store', 'x-atlas-serve': '1', ...NOSNIFF });

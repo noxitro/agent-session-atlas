@@ -27,6 +27,8 @@ export interface ConfigJson {
   wikis?: (string | WikiSpec)[];
   phases?: string[];
   uploadRoot?: string;
+  /** upload-project.bat がまとめて送るプロジェクト(画面の「プロジェクト別」で選ぶ。setup.bat では尋ねず、今の設定を残す) */
+  uploadProjects?: string[];
 }
 
 const yes = (a: string, def: boolean): boolean => (a === '' ? def : /^(?:y|yes|はい|ｙ)$/i.test(a));
@@ -169,6 +171,13 @@ export async function runSetup(io: SetupIo, o: SetupOptions): Promise<{ written:
     } catch (e) {
       io.print(`  ${(e as Error).message}。もう一度入力してください。`);
     }
+  }
+
+  // まとめて送るプロジェクトは画面で選ぶものなので尋ねず、今の設定をそのまま残す
+  if (current?.uploadProjects) {
+    config.uploadProjects = current.uploadProjects;
+    io.print('');
+    io.print(`upload-project.bat でまとめて送るプロジェクト(${current.uploadProjects.length} 件)は、今の設定のまま残します(変えるときは atlas.bat の画面の「プロジェクト別」で)。`);
   }
 
   parseConfig(config); // 書く前に、集計が読むのと同じ検査を通す

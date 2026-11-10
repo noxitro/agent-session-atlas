@@ -20,6 +20,8 @@ export interface ApiState {
 /** グループのアップロード先の設定。root は基底フォルダ(未設定は null)、error は設定ファイルを読めない理由、canPick はフォルダを選ぶ画面を出せるか */
 export interface UploadSetting {
   root: string | null;
+  /** upload-project.bat がまとめて送るプロジェクト(atlas.config.json の uploadProjects)。この機能より古い serve には無い */
+  projects?: string[];
   error: string | null;
   canPick: boolean;
 }
@@ -141,6 +143,10 @@ export const api = {
   /** 入力したパスをアップロード先にする(実在するフォルダだけ) */
   setUploadRoot(token: string, root: string): Promise<{ root: string }> {
     return connect(fetch('api/upload-root', { method: 'PUT', headers: headers(token), body: JSON.stringify({ root }) }), (r) => parse(r));
+  },
+  /** upload-project.bat がまとめて送るプロジェクトに足す(on: true)・外す(on: false)。返すのは書いた後の一覧 */
+  setUploadProject(token: string, project: string, on: boolean): Promise<{ projects: string[] }> {
+    return connect(fetch('api/upload-projects', { method: 'PUT', headers: headers(token), body: JSON.stringify({ project, on }) }), (r) => parse(r));
   },
   uploadGroup(token: string, name: string, expect?: string): Promise<GroupUpload> {
     return connect(fetch('api/groups/' + encodeURIComponent(name) + '/upload', { method: 'POST', headers: headers(token), body: JSON.stringify(expect ? { expect } : {}) }), (r) => parse<GroupUpload>(r));

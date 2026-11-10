@@ -1,4 +1,4 @@
-// 設定ファイル atlas.config.json の読み込み。wiki の指定と、依頼ごとの判定に使う普段の工程名、グループのアップロード先を持つ
+// 設定ファイル atlas.config.json の読み込み。wiki の指定と、依頼ごとの判定に使う普段の工程名、グループのアップロード先、upload-project.bat がまとめて送るプロジェクトを持つ
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { readFile, rm, writeFile } from 'node:fs/promises';
@@ -19,9 +19,11 @@ export interface AtlasConfig {
   phases: string[] | null;
   /** グループのアップロード先の基底フォルダ(<基底>\<グループ名>\<セッション id>\ に写す)。設定に無ければ null */
   uploadRoot: string | null;
+  /** upload-project.bat がまとめて送るプロジェクト(集計のプロジェクト名。画面の「プロジェクト別」で選ぶ)。設定に無いか空なら null(bat で番号を選ぶ) */
+  uploadProjects: string[] | null;
 }
 
-const KEYS = ['wikis', 'phases', 'uploadRoot'] as const;
+const KEYS = ['wikis', 'phases', 'uploadRoot', 'uploadProjects'] as const;
 
 const WIKI_LISTS = ['index', 'pages', 'extensions', 'skills'] as const;
 
@@ -63,7 +65,13 @@ export function parseConfig(v: unknown): Omit<AtlasConfig, 'path'> {
   }
   let uploadRoot: string | null = null;
   if (v.uploadRoot !== undefined) uploadRoot = parseUploadRoot(v.uploadRoot);
-  return { wikis, phases, uploadRoot };
+  let uploadProjects: string[] | null = null;
+  if (v.uploadProjects !== undefined) {
+    // 名前は集計のプロジェクト名そのもの(前後の空白も名前のうちなので削らない)。同じ名前は 1 つにする
+    const names = [...new Set(stringList(v.uploadProjects, 'uploadProjects'))];
+    uploadProjects = names.length ? names : null;
+  }
+  return { wikis, phases, uploadRoot, uploadProjects };
 }
 
 /** アップロード先の基底フォルダ。フルパス(~\ で始まるものはホームから)だけを受け付ける(相対パスは起動した場所で意味が変わるため) */
@@ -139,7 +147,7 @@ export async function phaseNames(): Promise<string[]> {
 export async function loadConfig(path: string, required: boolean): Promise<AtlasConfig> {
   if (!existsSync(path)) {
     if (required) throw new Error(`設定ファイルがありません: ${path}`);
-    return { path: null, wikis: null, phases: null, uploadRoot: null };
+    return { path: null, wikis: null, phases: null, uploadRoot: null, uploadProjects: null };
   }
   try {
     // メモ帳などが付ける BOM は取り除く
