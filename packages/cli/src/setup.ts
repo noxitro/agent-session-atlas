@@ -1,4 +1,5 @@
-// 初期設定(setup.bat から呼ぶ): llm-wiki の vault と普段の工程名、グループのアップロード先を対話で尋ね、リポジトリ直下の atlas.config.json を書く。
+// 初期設定(setup.bat から呼ぶ): llm-wiki の vault と普段の工程名、アップロード先を対話で尋ね、リポジトリ直下の atlas.config.json を書く。
+// フォルダはエクスプローラー(フォルダを選ぶ画面)で選べる。黒い窓へのドラッグとパスの入力でも決められる。
 // 書く前に parseConfig で検査し、既存の設定は atlas.config.json.bak に退避する。集計はしない(atlas.bat で行う)。
 import { existsSync, statSync } from 'node:fs';
 import { copyFile, writeFile } from 'node:fs/promises';
@@ -8,11 +9,33 @@ import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_PHASE_NAMES, readInventory, type WikiSpec } from '../../core/src/index.ts';
 import { CONFIG_FILE, loadConfig, parseConfig, parseUploadRoot } from './config.ts';
+import { CAN_PICK_FOLDER, pickFolder } from './folder-picker.ts';
 
 export interface SetupIo {
   /** 1 行を尋ねる(前後の空白は取り除いて返す) */
   ask(question: string): Promise<string>;
   print(line: string): void;
+  /**
+   * フォルダを選ぶ画面(エクスプローラー)を出して選んでもらう(取り消しは null)。
+   * 出せないとき(Windows 以外、入力を流し込んでいるとき)は無い。無ければドラッグかパスの入力で尋ねる
+   */
+  pick?: (title: string, initial: string | null) => Promise<string | null>;
+}
+
+/** フォルダを選ぶ画面を出して、選んだフォルダを返す。取り消し・出せなかったときは理由を出して null */
+async function pickWith(io: SetupIo, title: string, initial: string | null): Promise<string | null> {
+  if (!io.pick) return null;
+  io.print('  フォルダを選ぶ画面(エクスプローラー)を開きます。見えないときはタスクバーを確かめてください。');
+  try {
+    const r = await io.pick(title, initial);
+    if (!r) io.print('  選びませんでした。');
+    return r;
+  } catch (e) {
+    // 出せない理由(PowerShell が止められているなど)は押し直しても変わらないので、以後は出さずにドラッグかパスの入力で尋ねる
+    delete io.pick;
+    io.print(`  ${(e as Error).message}。以後は、フォルダをこの窓にドラッグするか、パスを入力して決めてください。`);
+    return null;
+  }
 }
 
 export interface SetupOptions {
@@ -67,9 +90,18 @@ export async function wikiSkillCandidates(copilotHome: string): Promise<string[]
 
 /** skills はまだ尋ねていない skill の候補(尋ねたら空にする。skill は vault をまたいで数えるので、同じ候補を何度も尋ねない) */
 async function askVault(io: SetupIo, skills: string[]): Promise<WikiSpec | null> {
-  const a = await io.ask('vault のフォルダをこの窓にドラッグするか、フォルダ名を入力して Enter(終わるときは何も入れずに Enter): ');
+  // vault を数えない人が多いので、Enter は「終わる」のまま。エクスプローラーは y で開く
+  const a = io.pick
+    ? await io.ask('vault を数えるなら y でエクスプローラーが開きます(フォルダをこの窓にドラッグするか、フォルダ名を入力しても決められます。終わるときは何も入れずに Enter): ')
+    : await io.ask('vault のフォルダをこの窓にドラッグするか、フォルダ名を入力して Enter(終わるときは何も入れずに Enter): ');
   if (a === '') return null;
-  const v = describeVault(a);
+  let input = a;
+  if (io.pick && yes(a, false)) {
+    const picked = await pickWith(io, 'llm-wiki の vault のフォルダを選んでください', null);
+    if (!picked) return askVault(io, skills);
+    input = picked;
+  }
+  const v = describeVault(input);
   if (!/[^./\\~\s]/.test(v.name)) {
     io.print('  フォルダ名を読めませんでした。もう一度入力してください。');
     return askVault(io, skills);
@@ -152,12 +184,26 @@ export async function runSetup(io: SetupIo, o: SetupOptions): Promise<{ written:
   }
 
   io.print('');
-  io.print('[3/3] グループのアップロード先(画面のグループの「アップロード」で、<この場所>\\<グループ名>\\<セッション ID>\\ に写します)');
-  if (current?.uploadRoot) io.print(`  今の設定: ${current.uploadRoot}`);
+  io.print('[3/3] アップロード先(画面のタスクタグの「アップロード」と upload-project.bat が、<この場所>\\<タスクタグ名かプロジェクト名>\\<セッション ID>\\ に写します)');
+  const cur = current?.uploadRoot ?? null;
+  if (cur) io.print(`  今の設定: ${cur}`);
+  // エクスプローラーを出せるときは、まだ決めていなければ Enter で開く(決めてあれば Enter はこのまま、y で開く)。
+  // 出せないとき(入力を流し込んでいるとき・出せなかった後)は、ドラッグかパスの入力だけで尋ねる
+  const question = (): string =>
+    !io.pick
+      ? `  フォルダをこの窓にドラッグするか、フルパスを入力して Enter(${cur ? 'このままなら' : '決めないなら'}何も入れずに Enter。画面からも決められます): `
+      : cur
+        ? '  このままなら Enter。変えるなら y でエクスプローラーが開きます(フォルダをこの窓にドラッグするか、フルパスを入力しても決められます): '
+        : '  Enter でエクスプローラーが開きます(フォルダをこの窓にドラッグするか、フルパスを入力しても決められます。決めないなら n。画面からも決められます): ';
   for (;;) {
-    const a = unquote(await io.ask(`  フォルダをこの窓にドラッグするか、フルパスを入力して Enter(${current?.uploadRoot ? 'このままなら' : '決めないなら'}何も入れずに Enter。画面からも決められます): `));
-    if (a === '') {
-      if (current?.uploadRoot) config.uploadRoot = current.uploadRoot;
+    let a = unquote(await io.ask(question()));
+    const open = io.pick && (cur ? yes(a, false) : a === '');
+    if (open) {
+      const picked = await pickWith(io, 'アップロード先のフォルダを選んでください(この中にタスクタグ名・プロジェクト名のフォルダを作ります)', cur);
+      if (!picked) continue;
+      a = picked;
+    } else if (a === '' || (io.pick && /^(?:n|no|いいえ|ｎ)$/i.test(a))) {
+      if (cur) config.uploadRoot = cur;
       break;
     }
     try {
@@ -212,6 +258,8 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       return r.value.trim();
     },
     print: (l) => process.stdout.write(`${l}\n`),
+    // エクスプローラーは、黒い窓で答えているときだけ出す(入力を流し込んでいるときに出すと、閉じる人がいなくて止まるため)
+    ...(CAN_PICK_FOLDER && process.stdin.isTTY ? { pick: (title: string, initial: string | null) => pickFolder(title, initial) } : {}),
   };
   const configPath = join(ROOT, CONFIG_FILE);
   if (process.env.ATLAS_CONFIG) io.print(`注意: 環境変数 ATLAS_CONFIG(${process.env.ATLAS_CONFIG})が設定されています。集計はそちらを読むので、ここで書く ${configPath} は使われません。`);

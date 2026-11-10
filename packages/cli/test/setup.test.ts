@@ -80,6 +80,80 @@ describe('初期設定', () => {
     expect(io.printed.join('\n')).toMatch(/phases に同じ名前が 2 回あります/);
   });
 
+  it('エクスプローラーを出せるとき: アップロード先は、まだ決めていなければ Enter で選ぶ画面を開き、取り消したら尋ね直す。vault は y で開く', async () => {
+    const logs = join(d, 'atlas logs');
+    await mkdir(logs);
+    const picks: (string | null)[] = [vault, null, logs];
+    const pickedFrom: [string, string | null][] = [];
+    // vault: y で選ぶ → ページは既定 → 候補の skill は数えない → 追加なし → 終わる。工程名はそのまま。
+    // アップロード先: Enter で開いて取り消す → もう一度 Enter で開いて選ぶ。最後に書く
+    const io = { ...scripted(['y', '', 'n', '', '', '', '', '', '']), pick: async (title: string, initial: string | null) => (pickedFrom.push([title, initial]), picks.shift() ?? null) };
+    const r = await runSetup(io, { configPath, copilotHome: home });
+    expect(r.written).toBe(true);
+    expect(JSON.parse(await readFile(configPath, 'utf8'))).toEqual({ wikis: [{ path: 'my vault', pages: ['wiki'] }], uploadRoot: logs });
+    expect(pickedFrom.map(([t, i]) => [t.slice(0, 6), i])).toEqual([
+      ['llm-wi', null],
+      ['アップロード', null],
+      ['アップロード', null],
+    ]);
+    const text = io.printed.join('\n');
+    expect(text).toContain('フォルダを選ぶ画面(エクスプローラー)を開きます');
+    expect(text).toContain('選びませんでした。');
+    expect(io.asked.some((q) => q.includes('Enter でエクスプローラーが開きます'))).toBe(true);
+    expect(io.asked.some((q) => q.startsWith('vault を数えるなら y でエクスプローラーが開きます'))).toBe(true);
+  });
+
+  it('vault の選ぶ画面を取り消したら尋ね直す。選ぶ画面を出せなかったら、以後はドラッグかパスの入力で尋ねる(押し直しても同じ理由で出せないため)', async () => {
+    const logs = join(d, 'logs');
+    await mkdir(logs);
+    let calls = 0;
+    // vault: y → 取り消す → 尋ね直されて Enter で終わる。工程名はそのまま。
+    // アップロード先: Enter → 画面を出せない → 以後は入力で尋ねるので、パスを入力。最後に書く
+    const io = {
+      ...scripted(['y', '', '', '', logs, '']),
+      pick: async (): Promise<string | null> => {
+        if (++calls === 1) return null;
+        throw new Error('フォルダを選ぶ画面を出せませんでした(テスト)');
+      },
+    };
+    await runSetup(io, { configPath, copilotHome: home });
+    expect(JSON.parse(await readFile(configPath, 'utf8'))).toEqual({ uploadRoot: logs });
+    expect(calls).toBe(2);
+    expect(io.asked.filter((q) => q.startsWith('vault を数えるなら y'))).toHaveLength(2);
+    expect(io.printed.join('\n')).toContain('フォルダを選ぶ画面を出せませんでした(テスト)。以後は、フォルダをこの窓にドラッグするか、パスを入力して決めてください。');
+    // 出せなかった後は、Enter で開く案内をやめ、入力で尋ねる
+    expect(io.asked.at(-2)).toMatch(/^ {2}フォルダをこの窓にドラッグするか、フルパスを入力して Enter/);
+  });
+
+  it('決めてあるアップロード先は Enter か n でそのまま、y で今の場所から選ぶ画面を開く', async () => {
+    const a = join(d, 'a');
+    const b = join(d, 'b');
+    await mkdir(a);
+    await mkdir(b);
+    await writeFile(configPath, JSON.stringify({ uploadRoot: a }));
+    const never = async (): Promise<string | null> => {
+      throw new Error('開かないはず');
+    };
+    // vault は終わる・工程名はそのまま・アップロード先は Enter でそのまま・書く
+    const keep = { ...scripted(['', '', '', '']), pick: never };
+    await runSetup(keep, { configPath, copilotHome: home });
+    expect(JSON.parse(await readFile(configPath, 'utf8'))).toEqual({ uploadRoot: a });
+    expect(keep.asked.some((q) => q.includes('このままなら Enter。変えるなら y でエクスプローラーが開きます'))).toBe(true);
+    // y → 今の場所から開いて b を選ぶ
+    const initials: (string | null)[] = [];
+    const change = {
+      ...scripted(['', '', 'y', '']),
+      pick: async (_t: string, initial: string | null): Promise<string | null> => (initials.push(initial), b),
+    };
+    await runSetup(change, { configPath, copilotHome: home });
+    expect(JSON.parse(await readFile(configPath, 'utf8'))).toEqual({ uploadRoot: b });
+    expect(initials).toEqual([a]);
+    // n でもそのまま
+    const no = { ...scripted(['', '', 'n', '']), pick: never };
+    await runSetup(no, { configPath, copilotHome: home });
+    expect(JSON.parse(await readFile(configPath, 'utf8'))).toEqual({ uploadRoot: b });
+  });
+
   it('何も指定しなければ空の設定、最後に断れば書かない', async () => {
     const io = scripted(['', '', '', 'n']);
     const r = await runSetup(io, { configPath, copilotHome: join(d, 'none') });
