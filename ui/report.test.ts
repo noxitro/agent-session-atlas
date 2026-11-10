@@ -21,6 +21,8 @@ const CLI = join(ROOT, 'packages', 'cli', 'src', 'main.ts');
 const MEMO = 'UI テストのメモ KESTREL-MEMO';
 
 describe('画面の操作', () => {
+  /** 架空の fixture の Copilot のデータの場所(設定の skill の候補もここから出す) */
+  let home: string;
   const out = join(WORK, 'out');
   const notes = join(WORK, 'notes');
   const groupsPath = join(notes, 'groups.json');
@@ -36,7 +38,6 @@ describe('画面の操作', () => {
 
   beforeAll(async () => {
     await rm(WORK, { recursive: true, force: true });
-    let home: string;
     ({ home, close } = await buildFixtureHome(join(WORK, 'home')));
     const r = spawnSync(process.execPath, [CLI, 'all', '--home', home, '--out', out, '--notes-dir', notes], { cwd: ROOT, encoding: 'utf8', timeout: 120_000 });
     expect(r.status, r.stderr).toBe(0);
@@ -985,6 +986,9 @@ describe('画面の操作', () => {
     const root = join(WORK, 'atlas-logs-settings');
     await mkdir(root, { recursive: true });
     await writeFile(configPath, '{}');
+    // 名前に wiki を含むインストール済みの skill(候補に出る)
+    const skillDir = join(home, 'skills', 'wiki-k');
+    await mkdir(skillDir, { recursive: true });
     const readConfig = async (): Promise<Record<string, unknown>> => JSON.parse(await readFile(configPath, 'utf8'));
     try {
       await page.goto('about:blank');
@@ -1002,9 +1006,14 @@ describe('画面の操作', () => {
       await expect.poll(() => found.innerText()).toMatch(/フォルダ名「vault-k」で足します/);
       expect(await found.getByLabel(/個別ページを置くフォルダ/).inputValue()).toBe('wiki');
       await found.getByLabel(/索引のファイル名/).fill('README.md');
+      // 候補の skill は初めから選んである。wiki-k だけを数える
+      expect(await found.getByRole('checkbox', { name: 'wiki-k' }).isChecked()).toBe(true);
       for (const box of await found.getByRole('checkbox').all()) await box.uncheck();
+      await found.getByRole('checkbox', { name: 'wiki-k' }).check();
       await found.getByTestId('settings-vault-add').click();
-      await expect.poll(readConfig).toEqual({ wikis: [{ path: 'vault-k', index: ['README.md'], pages: ['wiki'] }] });
+      await expect.poll(readConfig).toEqual({ wikis: [{ path: 'vault-k', index: ['README.md'], pages: ['wiki'], skills: ['wiki-k'] }] });
+      // 足した後の焦点は、vault の入力欄(押したボタンが消えて本文の先頭に落ちないように)
+      await expect.poll(() => page.evaluate<string | null>("document.activeElement?.getAttribute('data-testid') ?? null")).toBe('settings-vault-input');
       await expect.poll(() => wiki.getByTestId('settings-refresh').isVisible()).toBe(true);
       expect(await wiki.locator('.items li').first().innerText()).toMatch(/vault-k[\s\S]*ページ: wiki・索引: README\.md/);
       // 入力したフォルダ名(見つからない)も足せる。path だけなら文字列で書く
@@ -1012,9 +1021,11 @@ describe('画面の操作', () => {
       await wiki.getByRole('button', { name: '調べる' }).click();
       await expect.poll(() => wiki.getByTestId('settings-vault-found').innerText()).toMatch(/「notes-k」で足します.*フォルダが見つからない/);
       await wiki.getByTestId('settings-vault-found').getByLabel(/個別ページを置くフォルダ/).fill('.');
+      expect(await wiki.getByTestId('settings-vault-found').getByRole('checkbox', { name: 'wiki-k' }).isChecked()).toBe(false);
       for (const box of await wiki.getByTestId('settings-vault-found').getByRole('checkbox').all()) await box.uncheck();
       await wiki.getByTestId('settings-vault-add').click();
-      await expect.poll(async () => (await readConfig()).wikis).toEqual([{ path: 'vault-k', index: ['README.md'], pages: ['wiki'] }, 'notes-k']);
+      // ほかの vault でもう数えている skill は、初めから選ばない
+      await expect.poll(async () => (await readConfig()).wikis).toEqual([{ path: 'vault-k', index: ['README.md'], pages: ['wiki'], skills: ['wiki-k'] }, 'notes-k']);
       // 外す
       await wiki.getByRole('button', { name: 'vault「vault-k」を外す' }).click();
       await expect.poll(async () => (await readConfig()).wikis).toEqual(['notes-k']);
@@ -1056,6 +1067,7 @@ describe('画面の操作', () => {
       expect(await dlg.getByTestId('settings-phases-input').isDisabled()).toBe(true);
       await dlg.getByTestId('settings-close').click();
     } finally {
+      await rm(skillDir, { recursive: true, force: true });
       if (before == null) await rm(configPath, { force: true });
       else await writeFile(configPath, before);
     }

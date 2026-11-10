@@ -2,7 +2,7 @@
 // アップロード先とまとめて送るプロジェクトは、既存の API(upload-root・upload-projects)を使う(group-upload.test.ts と upload-project.test.ts)
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, parse } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { startServe, TOKEN_PLACEHOLDER, type ServeHandle } from '../src/serve.ts';
 
@@ -108,6 +108,46 @@ describe('画面の設定(serve の API)', () => {
     expect((await call('api/settings/phases', 'PUT', { phases: [] })).status).toBe(400);
     expect((await call('api/settings/phases', 'PUT', { phases: null })).status).toBe(200);
     expect(await config()).toEqual({});
+  });
+
+  it('同じ vault は足さない(~/ を展開し、フルパスとフォルダ名は最後のフォルダ名で比べる。Windows は大文字小文字を区別しない)', async () => {
+    await writeFile(configPath, JSON.stringify({ wikis: ['~/notes', 'my vault'] }));
+    await start();
+    for (const path of ['~/notes', join(homedir(), 'notes'), vault, ...(process.platform === 'win32' ? ['MY VAULT'] : [])]) {
+      const r = await call('api/settings/wikis', 'POST', { vault: { path } });
+      expect(r.status, path).toBe(409);
+      expect((await json(r)).error).toMatch(/もう入っています/);
+    }
+    // 別のフォルダ名なら足せる
+    expect((await call('api/settings/wikis', 'POST', { vault: { path: 'notes-2' } })).status).toBe(200);
+    expect(await config()).toEqual({ wikis: ['~/notes', 'my vault', 'notes-2'] });
+  });
+
+  it('エクスプローラーでドライブの直下など(フォルダ名が無いもの)を選んだら、足す前に理由を返す', async () => {
+    await start();
+    picks = [parse(dir).root];
+    const r = await call('api/settings/vault/pick', 'POST');
+    expect(r.status).toBe(400);
+    expect((await json(r)).error).toMatch(/フォルダ名を読めませんでした.*vault のフォルダを選んでください/);
+  });
+
+  it('設定ファイルを書けない(フォルダが無いなど)は 500、ほかの処理が書き換えている(ロック)は 409', { timeout: 20_000 }, async () => {
+    configPath = join(dir, 'no-such-dir', 'atlas.config.json');
+    await start();
+    const r = await call('api/settings/phases', 'PUT', { phases: ['a', 'b'] });
+    expect(r.status).toBe(500);
+    expect((await json(r)).error).toMatch(/設定ファイルに書けませんでした/);
+    await h!.close();
+    // ロックを別の処理が持っている(新しい)ままなら、待ってから 409(何も書かない)
+    configPath = join(dir, 'atlas.config.json');
+    await writeFile(configPath, '{}');
+    await writeFile(`${configPath}.lock`, '');
+    await start();
+    const busy = await call('api/settings/phases', 'PUT', { phases: ['a', 'b'] });
+    expect(busy.status).toBe(409);
+    expect((await json(busy)).error).toMatch(/別の処理が書き換えています/);
+    expect(await config()).toEqual({});
+    await rm(`${configPath}.lock`, { force: true });
   });
 
   it('設定ファイルが壊れていれば、理由を返して書き換えない', async () => {

@@ -9,7 +9,7 @@ import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { extname, join, relative, resolve, sep } from 'node:path';
+import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { spawn } from 'node:child_process';
 import {
   addIds,
@@ -414,8 +414,28 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     } catch (e) {
       if (e instanceof HttpError) throw e;
       const m = (e as Error).message;
-      throw new HttpError(/読めないので書き換えません|別の処理が書き換えています/.test(m) ? 409 : 400, m);
+      if (/読めないので書き換えません|別の処理が書き換えています/.test(m)) throw new HttpError(409, m);
+      // ファイルを書けない(ほかのプログラムが開いている・フォルダが無い・権限が無いなど)は、入力の誤りではない
+      if ((e as NodeJS.ErrnoException).code) throw new HttpError(500, `設定ファイルに書けませんでした(${m})`);
+      throw new HttpError(400, m);
     }
+  }
+  /**
+   * 同じ vault か。~/ を展開し、Windows では大文字小文字を区別しない。フルパスとフォルダ名(setup.bat はフォルダ名で登録する)は、
+   * フルパスの最後のフォルダ名が同じなら同じ vault とみなす(同じ vault を二重に数えないように)
+   */
+  function sameVault(a: string, b: string): boolean {
+    const norm = (p: string): string => {
+      const x = /^~[\\/]/.test(p) ? join(homedir(), p.slice(2)) : p;
+      const y = isAbsolute(x) ? resolve(x) : x.replace(/[\\/]+$/, '');
+      return process.platform === 'win32' ? y.toLowerCase() : y;
+    };
+    const x = norm(a);
+    const y = norm(b);
+    if (x === y) return true;
+    const last = (p: string): string => p.split(/[\\/]/).filter(Boolean).pop() ?? p;
+    const bare = (p: string): boolean => !/[\\/]/.test(p);
+    return (isAbsolute(x) && bare(y) && last(x) === y) || (isAbsolute(y) && bare(x) && last(y) === x);
   }
   const strings = (v: unknown, where: string): string[] | undefined => {
     if (v === undefined || v === null) return undefined;
@@ -629,7 +649,10 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
           } catch (e) {
             throw new HttpError(500, (e as Error).message);
           }
-          sendJson(res, 200, chosen ? describeVault(chosen) : null);
+          const d = chosen ? describeVault(chosen) : null;
+          // ドライブの直下などはフォルダ名が無い(入力のときと同じく、足す前に止める)
+          if (d && !/[^./\\~\s]/.test(d.name)) throw new HttpError(400, `フォルダ名を読めませんでした: ${chosen}(ドライブの直下ではなく、vault のフォルダを選んでください)`);
+          sendJson(res, 200, d);
         } finally {
           picking = false;
         }
@@ -645,7 +668,8 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
           throw new HttpError(400, (e as Error).message);
         }
         await writeSetting('wikis', (c, raw) => {
-          if ((c.wikis ?? []).some((w) => w.path === name)) throw new HttpError(409, `vault「${name}」はもう入っています`);
+          const same = (c.wikis ?? []).find((w) => sameVault(w.path, name));
+          if (same) throw new HttpError(409, `vault「${name}」はもう入っています(${same.path})`);
           return [...(Array.isArray(raw.wikis) ? raw.wikis : []), spec];
         });
         log(`serve: vault「${name}」を足しました(${configPath})`);

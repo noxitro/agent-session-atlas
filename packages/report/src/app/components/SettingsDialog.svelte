@@ -37,6 +37,14 @@
   let needsRefresh = $state(false);
   /** 読み上げる知らせ(常に置いてある status に入れる。差し込んだ要素の role=status は読まれないことがあるため) */
   let announce = $state('');
+  // ヘッダの「集計し直す」などで集計し直し始めたら、「集計し直します」の案内は消す(どこから始めても反映される)
+  $effect(() => {
+    if (jobs.running && jobs.job?.kind === 'refresh') needsRefresh = false;
+  });
+  /** 足す・やめる・外すで押したものが消えたら、焦点を vault の入力欄へ戻す(本文の先頭に落ちないように) */
+  function focusVaultEntry(): void {
+    void tick().then(() => dlg?.querySelector<HTMLElement>('[data-testid="settings-vault-input"]')?.focus());
+  }
 
   /** 「a / b, c」や改行で区切った入力を一覧にする(setup.bat と同じ区切り) */
   const list = (s: string): string[] =>
@@ -122,6 +130,7 @@
       vaultInput = '';
       needsRefresh = true;
       announce = `vault「${spec.path}」を足しました。反映するには集計し直します。`;
+      focusVaultEntry();
     });
   }
   function removeVault(i: number, path: string): void {
@@ -129,6 +138,7 @@
       settings = await settingsApi.removeWiki(jobs.token, i, path);
       needsRefresh = true;
       announce = `vault「${path}」を外しました。反映するには集計し直します。`;
+      focusVaultEntry();
     });
   }
   /** vault の指定を 1 行で(ページ・索引・skill) */
@@ -275,7 +285,15 @@
             {/if}
             <label class="fld"><span class="k">ほかに wiki の skill として数える名前(, で区切って。無ければ空)</span><input type="text" bind:value={skillMore} spellcheck="false" autocomplete="off" /></label>
             <div class="actions">
-              <button type="button" class="btn" disabled={!!busy} onclick={() => (found = null)}>やめる</button>
+              <button
+                type="button"
+                class="btn"
+                disabled={!!busy}
+                onclick={() => {
+                  found = null;
+                  focusVaultEntry();
+                }}>やめる</button
+              >
               <button type="submit" class="btn primary" disabled={!!busy} data-testid="settings-vault-add">{busy === 'vault-add' ? '足しています…' : 'この vault を足す'}</button>
             </div>
           </form>
