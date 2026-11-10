@@ -115,10 +115,19 @@
     clearInterval(h);
     timers.delete(h);
   };
+  /** 見出しが出ているか(「すべて」へ外すと消える。消えた見出しは結果を出していないので、出したことにしない) */
+  let alive = true;
   $effect(() => () => {
+    alive = false;
     for (const h of timers) clearInterval(h);
     timers.clear();
   });
+  /** 別のタスクタグを見ている間に終わったアップロードの知らせ(結果の中身は、写したタグを開くと出す) */
+  let doneElsewhere = $state<{ name: string; ok: boolean; text: string } | null>(null);
+  /** 写したタグを今見ていなければ、今の見出しに終わったことだけを知らせる */
+  function noteElsewhere(name: string, ok: boolean, text: string): void {
+    if (alive && group.name !== name) doneElsewhere = { name, ok, text };
+  }
   const isProgress = (p: UploadPoll): p is UploadProgress => !!p && 'sessions' in p;
   /** 写し終わった(または失敗した)。写していたタスクタグを今も見ているときだけ結果を出す */
   function finishUpload(name: string): void {
@@ -126,10 +135,11 @@
     uploadName = null;
     task = null;
     busy = false;
-    if (group.name === name) requestAnimationFrame(() => uploadBtn?.focus());
+    // 見出しが消えた後(「すべて」へ外した)は group を読まない(親が null にしている)
+    if (alive && group.name === name) requestAnimationFrame(() => uploadBtn?.focus());
   }
   function showLast(name: string, p: Exclude<UploadPoll, UploadProgress | null>): void {
-    if (group.name !== name) return;
+    if (!alive || group.name !== name) return;
     // 同じ結果は 1 回だけ出す(タグを開き直すたびに同じ失敗を出さない)。この画面で写し終えたものは、その場で出したので出さない
     if (p.at <= (seenUpload.get(name) ?? 0)) return;
     seenUpload.set(name, p.at);
@@ -158,17 +168,26 @@
       );
     }, 500);
     timers.add(timer);
+    // 結果を出したのは、写したタグの見出しが出ていたときだけ。別のタグへ切り替えていた・「すべて」へ外していたなら、
+    // 戻ったときにサーバの直近の結果から出す(ここで出したことにすると、成功も失敗の理由も出ないままになる)
+    let shown = false;
     void u.run(name, expect).then(
       (r) => {
-        if (group.name === name) uploaded = r;
+        if (alive && group.name === name) {
+          uploaded = r;
+          shown = true;
+        } else noteElsewhere(name, true, `${int(r.uploaded)} セッション`);
       },
       (e) => {
-        if (group.name === name) error = (e as Error).message;
+        if (alive && group.name === name) {
+          error = (e as Error).message;
+          shown = true;
+        } else noteElsewhere(name, false, (e as Error).message);
       },
     ).finally(() => {
       stopTimer(timer);
-      // この画面で結果を出したので、戻ったときの「直近の結果」としては出さない
-      seenUpload.set(name, Date.now());
+      // この画面で結果を出したときだけ、戻ったときの「直近の結果」としては出さない
+      if (shown) seenUpload.set(name, Date.now());
       finishUpload(name);
     });
   }
@@ -339,6 +358,7 @@
     exported = null;
     uploaded = null;
     checked = null;
+    doneElsewhere = null;
     // mode と rootEl は依存に入れない(入れると「編集」を押した直後にこの effect が走って表示に戻ってしまう)
     if (!editable) untrack(() => mode !== 'view' && rootEl?.contains(document.activeElement) && focusMain());
     mode = 'view';
@@ -355,7 +375,7 @@
     const u = upload;
     if (!u || busy) return;
     void u.progress(name).then((p) => {
-      if (!p || busy || name !== group.name) return;
+      if (!alive || !p || busy || name !== group.name) return;
       if (!isProgress(p)) {
         showLast(name, p);
         return;
@@ -373,7 +393,11 @@
             }
             stopTimer(timer);
             finishUpload(name);
-            if (q) showLast(name, q);
+            if (q) {
+              showLast(name, q);
+              if (q.ok) noteElsewhere(name, true, q.result ? `${int(q.result.uploaded)} セッション` : '');
+              else noteElsewhere(name, false, q.error ?? '理由は分かりません');
+            }
           },
           () => {
             stopTimer(timer);
@@ -413,6 +437,10 @@
       </p>
       {#if uploadName && uploadName !== group.name}
         <p class="progress" data-testid="group-upload-elsewhere">「{uploadName}」をアップロードしています。終わるまで、ほかのタスクタグは写せません。</p>
+      {:else if doneElsewhere}
+        <p class="progress" class:bad={!doneElsewhere.ok} role="status" data-testid="group-upload-elsewhere-done">
+          {doneElsewhere.ok ? `「${doneElsewhere.name}」のアップロードが終わりました${doneElsewhere.text ? `(${doneElsewhere.text})` : ''}。` : `「${doneElsewhere.name}」をアップロードできませんでした(${doneElsewhere.text})。`}詳しくは「{doneElsewhere.name}」を開くと出ます。
+        </p>
       {:else if task === 'upload'}
         <div class="progress" data-testid="group-upload-progress">
           {#if progress && progress.bytes}
@@ -579,7 +607,8 @@
   .dest .none {
     color: var(--ink-3);
   }
-  .dest .bad {
+  .dest .bad,
+  .progress.bad {
     color: var(--warn);
   }
   .dest .link {
