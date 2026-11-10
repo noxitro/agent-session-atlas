@@ -652,6 +652,89 @@ describe('画面の操作', () => {
     }
   });
 
+  it('g5. 切り替えた先で失敗の知らせを出し、そのタグ自身の直近の結果も出す。知らせの後にそのタグで写すと、知らせを消して進み具合を出す。戻ると失敗の理由を出す', async () => {
+    const s = JSON.parse(await readFile(join(out, 'sessions.json'), 'utf8')) as { sessions: { id: string }[] };
+    const ids = s.sessions.map((x) => x.id).filter((x) => existsSync(join(out, 'snapshot', 'session-state', x)));
+    const before = existsSync(groupsPath) ? await readFile(groupsPath, 'utf8') : null;
+    const beforeConfig = existsSync(configPath) ? await readFile(configPath, 'utf8') : null;
+    const [a, b] = ['失敗する側', '見ている側'];
+    const root = join(WORK, 'atlas-logs-switch-fail');
+    await rm(root, { recursive: true, force: true });
+    await mkdir(root, { recursive: true });
+    await mkdir(notes, { recursive: true });
+    await writeFile(configPath, JSON.stringify({ uploadRoot: root }));
+    await writeFile(groupsPath, JSON.stringify({ version: 1, groups: [{ name: a, note: '', ids: [ids[0]] }, { name: b, note: '', ids: [ids[1]] }] }));
+    /** 写す要求の答えを、合図があるまで画面に返さない */
+    const hold = async (name: string): Promise<{ url: string; release: () => void }> => {
+      let release: () => void = () => {};
+      const gate = new Promise<void>((r) => (release = r));
+      const url = `**/api/groups/${encodeURIComponent(name)}/upload`;
+      await page.route(url, async (route) => {
+        const response = await route.fetch();
+        await gate;
+        await route.fulfill({ response });
+      });
+      return { url, release: () => release() };
+    };
+    const held: { url: string; release: () => void }[] = [];
+    try {
+      // 見ている側のタグは、ほかのページで写してあり、まだ結果を見ていない
+      await page.goto('about:blank');
+      await page.goto(server.url);
+      const status = await page.evaluate<number>(
+        `fetch('api/groups/' + encodeURIComponent(${JSON.stringify(b)}) + '/upload', { method: 'POST', headers: { 'x-atlas-token': document.querySelector('meta[name="atlas-token"]').content } }).then((r) => r.status)`,
+      );
+      expect(status).toBe(200);
+      await page.goto('about:blank');
+      await page.goto(`${server.url}#group=${encodeURIComponent(a)}`);
+      const head = page.getByTestId('group-head');
+      await head.getByTestId('group-upload').click();
+      const confirm = head.getByTestId('group-upload-confirm');
+      await expect.poll(() => confirm.isVisible()).toBe(true);
+      // 確かめた後に、送り先のタグのフォルダの場所にファイルを置いて、写すのを失敗させる
+      await writeFile(join(root, a), 'ふさぐ');
+      held.push(await hold(a));
+      await confirm.getByRole('button', { name: '写す', exact: true }).click();
+      await expect.poll(() => head.getByTestId('group-upload').innerText()).toBe('アップロード中…');
+      await rail().getByRole('button', { name: new RegExp(b) }).click();
+      await expect.poll(() => head.locator('h2 .name').innerText()).toBe(b);
+      expect(await head.getByTestId('group-upload-elsewhere').innerText()).toContain(`「${a}」をアップロードしています`);
+      // 失敗が届くと、失敗の知らせ(読み上げにも入る)と、見ている側のタグ自身の直近の結果を出す
+      held[0]!.release();
+      await expect.poll(() => head.getByTestId('group-upload-elsewhere-done').innerText()).toMatch(new RegExp(`「${a}」をアップロードできませんでした.+。詳しくは「${a}」を開くと出ます`));
+      expect(await head.getByTestId('group-upload-elsewhere-done').getAttribute('class')).toContain('bad');
+      await expect.poll(() => head.locator('p.sr-only[role="status"]').innerText()).toContain(`「${a}」をアップロードできませんでした`);
+      await expect.poll(() => head.getByTestId('group-uploaded').innerText()).toMatch(/アップロードしました.1 セッション/);
+      const bad = problems.findIndex((p) => p.includes('status of 409'));
+      expect(bad).toBeGreaterThanOrEqual(0);
+      problems.splice(bad, 1);
+      // 知らせが出たまま、このタグで写す: 知らせを消して、このタグの進み具合を出す
+      held.push(await hold(b));
+      await head.getByTestId('group-upload').click();
+      await expect.poll(() => confirm.isVisible()).toBe(true);
+      await confirm.getByRole('button', { name: '写す', exact: true }).click();
+      await expect.poll(() => head.getByTestId('group-upload-progress').isVisible()).toBe(true);
+      expect(await head.getByTestId('group-upload-elsewhere-done').count()).toBe(0);
+      held[1]!.release();
+      await expect.poll(() => head.getByTestId('group-uploaded').innerText()).toMatch(/うち 1 件は前に写したものを置き換え/);
+      expect(await head.getByTestId('group-upload-elsewhere-done').count()).toBe(0);
+      // 失敗した側へ戻ると、失敗の理由を出す
+      await rail().getByRole('button', { name: new RegExp(a) }).click();
+      await expect.poll(() => head.locator('h2 .name').innerText()).toBe(a);
+      await expect.poll(() => head.getByRole('alert').innerText()).toMatch(/アップロードできませんでした/);
+    } finally {
+      for (const h of held) {
+        h.release();
+        await page.unroute(h.url);
+      }
+      await rm(join(root, a), { force: true });
+      if (before == null) await rm(groupsPath, { force: true });
+      else await writeFile(groupsPath, before);
+      if (beforeConfig == null) await rm(configPath, { force: true });
+      else await writeFile(configPath, beforeConfig);
+    }
+  });
+
   it('i. 戻る・進む: 詳細ページから戻るとスクロール位置と一覧の並べ替えが戻る。要点のリンクで絞り込んでから戻ると絞り込みが外れ、進むとまた絞り込む', async () => {
     await page.goto('about:blank');
     await page.goto(server.url);
