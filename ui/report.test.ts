@@ -81,7 +81,7 @@ describe('画面の操作', () => {
   });
 
   const shown = async (): Promise<number> => Number((await page.getByTestId('shown-count').innerText()).replace(/,/g, ''));
-  const rowChecks = () => page.locator('table.ledger tbody input[type="checkbox"]');
+  const rowChecks = () => page.locator('#sessions table.ledger tbody input[type="checkbox"]');
   // グループの一覧はサイドバーと狭い幅の一覧の 2 か所にあるので、見えている方を使う
   const rail = () => page.locator('[data-testid="group-rail"]:visible');
   /** 開いた欄は requestAnimationFrame で焦点を移す(作成欄は名前へ、見出しの編集は名前を選ぶ)。移る前に打つと、遅い CI では打つ途中で焦点が移り、別の欄の文字が名前に入る */
@@ -626,6 +626,49 @@ describe('画面の操作', () => {
       expect(await page.locator('.rail-groups').isVisible()).toBe(false);
     } finally {
       await page.setViewportSize({ width: 1440, height: 900 });
+    }
+  });
+
+  it('j. プロジェクト別の「まとめて送る」: 印を付けると設定の uploadProjects に書き(ほかの設定は残す)、再読み込みしても残る。外すと消える。書けなければ理由を出して印を戻す', async () => {
+    const before = existsSync(configPath) ? await readFile(configPath, 'utf8') : null;
+    const root = join(WORK, 'atlas-logs');
+    await mkdir(root, { recursive: true });
+    await writeFile(configPath, JSON.stringify({ uploadRoot: root }));
+    const readConfig = async (): Promise<Record<string, unknown>> => JSON.parse(await readFile(configPath, 'utf8'));
+    try {
+      await page.goto(server.url);
+      const section = page.locator('#projects');
+      const note = section.locator('.send-note');
+      await expect.poll(() => note.innerText()).toMatch(/今 0 件/);
+      const row = section.locator('tbody tr').first();
+      const key = decodeURIComponent((await row.locator('a.link').getAttribute('href'))!.replace(/^#project=/, ''));
+      const box = row.getByRole('checkbox');
+      expect(await box.getAttribute('aria-label')).toMatch(/を upload-project\.bat でまとめて送る$/);
+      expect(await box.isChecked()).toBe(false);
+      await box.check();
+      await expect.poll(readConfig).toEqual({ uploadRoot: root, uploadProjects: [key] });
+      await expect.poll(() => note.innerText()).toMatch(/今 1 件/);
+      // 再読み込みしても印は残る(設定から読む)
+      await page.reload();
+      await expect.poll(() => section.locator('tbody tr').first().getByRole('checkbox').isChecked()).toBe(true);
+      // 外すと設定から消える(空なら項目ごと消し、bat は番号で選ぶ)
+      await section.locator('tbody tr').first().getByRole('checkbox').uncheck();
+      await expect.poll(readConfig).toEqual({ uploadRoot: root });
+      await expect.poll(() => note.innerText()).toMatch(/今 0 件/);
+      // 設定ファイルが壊れていれば書き換えず、理由を出して印を戻す
+      await writeFile(configPath, '{ 壊れた設定');
+      const again = section.locator('tbody tr').first().getByRole('checkbox');
+      await again.click();
+      await expect.poll(() => section.getByRole('alert').innerText()).toMatch(/印を付けられませんでした.*読めません/);
+      await expect.poll(() => again.isChecked()).toBe(false);
+      expect(await readFile(configPath, 'utf8')).toBe('{ 壊れた設定');
+      // この 409 は想定どおり(ブラウザがコンソールに出す分は問題から外す)
+      const bad = problems.findIndex((p) => p.includes('status of 409'));
+      expect(bad).toBeGreaterThanOrEqual(0);
+      problems.splice(bad, 1);
+    } finally {
+      if (before == null) await rm(configPath, { force: true });
+      else await writeFile(configPath, before);
     }
   });
 });

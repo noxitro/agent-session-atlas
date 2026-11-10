@@ -68,11 +68,13 @@ describe('初期設定', () => {
     expect(c.phases).toEqual(['設計', '実装', 'テスト']);
   });
 
-  it('既存の設定はそのままにでき、書く前に .bak に退避する。工程名の誤りは尋ね直す', async () => {
-    await writeFile(configPath, JSON.stringify({ wikis: [{ path: 'old', pages: ['wiki'] }], phases: ['a', 'b'], uploadRoot: d }));
+  it('既存の設定はそのままにでき(まとめて送るプロジェクトも残す)、書く前に .bak に退避する。工程名の誤りは尋ね直す', async () => {
+    await writeFile(configPath, JSON.stringify({ wikis: [{ path: 'old', pages: ['wiki'] }], phases: ['a', 'b'], uploadRoot: d, uploadProjects: ['owner/app'] }));
     const io = scripted(['', '1つだけ', 'x / x', 'x / y', '', '']);
     await runSetup(io, { configPath, copilotHome: home });
-    expect(JSON.parse(await readFile(configPath, 'utf8'))).toEqual({ wikis: [{ path: 'old', pages: ['wiki'] }], phases: ['x', 'y'], uploadRoot: d });
+    // まとめて送るプロジェクトは尋ねずに残す(画面の「プロジェクト別」で選ぶもの)
+    expect(JSON.parse(await readFile(configPath, 'utf8'))).toEqual({ wikis: [{ path: 'old', pages: ['wiki'] }], phases: ['x', 'y'], uploadRoot: d, uploadProjects: ['owner/app'] });
+    expect(io.printed.join('\n')).toMatch(/まとめて送るプロジェクト.1 件.は、今の設定のまま残します/);
     expect(JSON.parse(await readFile(`${configPath}.bak`, 'utf8')).phases).toEqual(['a', 'b']);
     expect(io.printed.join('\n')).toMatch(/phases は 2 つ以上指定してください/);
     expect(io.printed.join('\n')).toMatch(/phases に同じ名前が 2 回あります/);

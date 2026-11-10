@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { checkTarget, listProjects, projectTarget, uploadGroup, uploadTarget } from '../src/group-upload.ts';
-import { runUploadProject, type UploadProjectIo } from '../src/upload-project.ts';
+import { parseNumbers, runUploadProject, type UploadProjectIo } from '../src/upload-project.ts';
 
 describe('プロジェクトのセッションをまとめて送る', () => {
   let dir: string;
@@ -191,5 +191,81 @@ describe('プロジェクトのセッションをまとめて送る', () => {
     expect(existsSync(configPath)).toBe(false);
     // 当たらない番号は止まる
     await expect(runUploadProject(fakeIo(['9'], []).io, { paths: paths(), configPath })).rejects.toThrow(/当たるプロジェクトがありません/);
+  });
+
+  it('番号は「1 3 5-8」「1,3」のように複数選べる(全角も可。入力の順・重複なし)。読めない・範囲の外は null', () => {
+    expect(parseNumbers('1 3 5-8', 9)).toEqual([1, 3, 5, 6, 7, 8]);
+    expect(parseNumbers('3,1、3', 3)).toEqual([3, 1]);
+    expect(parseNumbers('２ １－２', 2)).toEqual([2, 1]);
+    for (const bad of ['0', '4', '2-1', '1-4', 'a', '1 x', '', '-1']) expect(parseNumbers(bad, 3)).toBeNull();
+  });
+
+  it('番号を複数選ぶと、まとめて確かめてから(プロジェクトごとの行と合計)すべて送る。毎回選ばずに済む方法を知らせる', async () => {
+    await writeFile(configPath, JSON.stringify({ uploadRoot: rootA }));
+    const f = fakeIo(['1 2', 'y'], []);
+    expect(await runUploadProject(f.io, { paths: paths(), configPath })).toBe(true);
+    expect(existsSync(join(rootA, 'owner_app', 's2', 'events.jsonl'))).toBe(true);
+    expect(existsSync(join(rootA, 'X__work_tool', 's4', 'events.jsonl'))).toBe(true);
+    const text = f.printed.join('\n');
+    expect(text).toContain('毎回同じものを送るなら');
+    expect(text).toContain('2 プロジェクトを送る前に確かめてください');
+    expect(text).toContain(`送り先: ${rootA}(この中にプロジェクトごとのフォルダを作ります)`);
+    expect(text).toMatch(/1\. owner\/app: 2 セッション/);
+    expect(text).toMatch(/2\. X:\\work\\tool: 1 セッション/);
+    expect(text).toMatch(/合計: 3 セッション/);
+    expect(text).toMatch(/\[1\/2\] owner\/app: 写しています/);
+    expect(text).toMatch(/送りました: 「X:\\work\\tool」 1 セッション/);
+    expect(text).toContain('それぞれのフォルダの README.md');
+    // 2 回目は置き換えの件数を合計に出す
+    const g = fakeIo(['1-2', ''], []);
+    expect(await runUploadProject(g.io, { paths: paths(), configPath })).toBe(false);
+    expect(g.printed.join('\n')).toMatch(/合計: 3 セッション.*うち 3 件は前に送ったものを置き換えます/);
+  });
+
+  it('画面で印を付けたプロジェクト(uploadProjects)は番号を聞かずに送る。印の無いものは送らずに名前を出し、今の集計に無いものも知らせる', async () => {
+    await writeFile(configPath, JSON.stringify({ uploadRoot: rootA, uploadProjects: ['X:\\work\\tool', '消えたプロジェクト'] }));
+    const f = fakeIo(['y'], []);
+    expect(await runUploadProject(f.io, { paths: paths(), configPath })).toBe(true);
+    expect(f.asked.some((q) => /番号/.test(q))).toBe(false);
+    expect(existsSync(join(rootA, 'X__work_tool', 's4'))).toBe(true);
+    expect(existsSync(join(rootA, 'owner_app'))).toBe(false);
+    const text = f.printed.join('\n');
+    expect(text).toMatch(/まとめて送るプロジェクト.*: 1 件\n +1\. X:\\work\\tool {2}1 件/);
+    expect(text).toContain('今の集計に送れるセッションが無いもの(送りません): 消えたプロジェクト');
+    expect(text).toContain('印の無いプロジェクトが 1 件あります(送りません): owner/app');
+    // 1 プロジェクトだけなら、送り先はそのプロジェクトのフォルダで見せる
+    expect(text).toContain(`送り先: ${join(rootA, 'X__work_tool')}`);
+    expect(text).not.toContain('毎回同じものを送るなら');
+  });
+
+  it('印を付けたものが今 1 件も送れなければ、番号で選んで送れる', async () => {
+    await writeFile(configPath, JSON.stringify({ uploadRoot: rootA, uploadProjects: ['消えたプロジェクト'] }));
+    const f = fakeIo(['1', 'y'], []);
+    expect(await runUploadProject(f.io, { paths: paths(), configPath })).toBe(true);
+    expect(f.printed.join('\n')).toContain('印を付けたプロジェクトに、今送れるものがありません。番号で選んでください。');
+    expect(existsSync(join(rootA, 'owner_app', 's1'))).toBe(true);
+  });
+
+  it('フォルダ名が同じになるプロジェクトを一度に選ぶと、何も送らずに止まる', async () => {
+    const s = JSON.parse(await readFile(join(out, 'sessions.json'), 'utf8')) as { sessions: unknown[] };
+    s.sessions.push({ id: 's5', project: 'owner_app', empty: false, updatedAt: '2026-09-01T00:00:00.000Z' });
+    await writeFile(join(out, 'sessions.json'), JSON.stringify(s));
+    await mkdir(join(out, 'snapshot', 'session-state', 's5'), { recursive: true });
+    await writeFile(join(out, 'snapshot', 'session-state', 's5', 'events.jsonl'), '{}\n');
+    await writeFile(configPath, JSON.stringify({ uploadRoot: rootA, uploadProjects: ['owner/app', 'owner_app'] }));
+    await expect(runUploadProject(fakeIo(['y'], []).io, { paths: paths(), configPath })).rejects.toThrow(/「owner\/app」と「owner_app」は、送り先のフォルダ名が同じ「owner_app」.*何も送っていません/);
+    expect(await readdir(rootA)).toEqual([]);
+  });
+
+  it('1 つ送れなくても残りは送り、送れなかったものを知らせて止まる', async () => {
+    await writeFile(configPath, JSON.stringify({ uploadRoot: rootA, uploadProjects: ['owner/app', 'X:\\work\\tool'] }));
+    // owner/app の送り先にフォルダを作れない(同じ名前のファイルがある)
+    await writeFile(join(rootA, 'owner_app'), 'ファイル');
+    const f = fakeIo(['y'], []);
+    await expect(runUploadProject(f.io, { paths: paths(), configPath })).rejects.toThrow(/1 プロジェクトを送れませんでした.*送れたのは 1 プロジェクト/);
+    const text = f.printed.join('\n');
+    expect(text).toMatch(/送れませんでした: 「owner\/app」/);
+    expect(text).toMatch(/送れなかったプロジェクト.1 件.: owner\/app/);
+    expect(existsSync(join(rootA, 'X__work_tool', 's4', 'events.jsonl'))).toBe(true);
   });
 });

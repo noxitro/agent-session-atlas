@@ -265,6 +265,18 @@
         }
       : undefined,
   );
+  /** upload-project.bat がまとめて送るプロジェクトの印(プロジェクト別の表)。serve が教えてくれたときだけ出す */
+  const projectSend = $derived(
+    uploadSetting?.projects
+      ? {
+          projects: uploadSetting.projects,
+          toggle: async (project: string, on: boolean) => {
+            const r = await api.setUploadProject(token!, project, on);
+            if (uploadSetting) uploadSetting = { ...uploadSetting, projects: r.projects };
+          },
+        }
+      : undefined,
+  );
   function exportGroup(name: string): Promise<GroupExport> {
     return api.exportGroup(token!, name);
   }
@@ -586,7 +598,7 @@
         {#if judged}<JudgmentPanel {agg} meta={data.judgments} />{/if}
         <UsageRanking usage={agg.usage} installed={data.installed ?? null} bind:tab={usageTab} />
         <ExecProfile exec={agg.exec} sessions={filtered.length} />
-        <ProjectTable rows={agg.byProject} {judged} current={filter.project} onpick={(p) => setFilter({ project: p })} />
+        <ProjectTable rows={agg.byProject} {judged} current={filter.project} onpick={(p) => setFilter({ project: p })} send={editable && !serverDown ? projectSend : undefined} />
         <MonthlyChart months={agg.byMonth} lastAt={all.overall.lastAt} />
         <ModelChart rows={agg.byModel} />
         <SessionTable

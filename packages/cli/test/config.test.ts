@@ -11,19 +11,20 @@ describe('parseConfig', () => {
       wikis: [{ path: 'my-notes' }, { path: 'D:/brain', index: ['README.md'], pages: ['.'], extensions: ['.org'], skills: [] }],
       phases: null,
       uploadRoot: null,
+      uploadProjects: null,
     });
   });
 
   it('phases: 依頼ごとの判定の普段の工程名(2 つ以上、重複なし、前後の空白は除く)', () => {
-    expect(parseConfig({ phases: [' 要件定義', '実装 ', 'テスト'] })).toEqual({ wikis: null, phases: ['要件定義', '実装', 'テスト'], uploadRoot: null });
+    expect(parseConfig({ phases: [' 要件定義', '実装 ', 'テスト'] })).toEqual({ wikis: null, phases: ['要件定義', '実装', 'テスト'], uploadRoot: null, uploadProjects: null });
     expect(() => parseConfig({ phases: ['実装'] })).toThrow(/2 つ以上/);
     expect(() => parseConfig({ phases: ['実装', '実装'] })).toThrow(/同じ名前/);
     expect(() => parseConfig({ phases: '実装' })).toThrow(/phases/);
   });
 
   it('wikis が無ければ null、空配列は集計なしとしてそのまま', () => {
-    expect(parseConfig({})).toEqual({ wikis: null, phases: null, uploadRoot: null });
-    expect(parseConfig({ wikis: [] })).toEqual({ wikis: [], phases: null, uploadRoot: null });
+    expect(parseConfig({})).toEqual({ wikis: null, phases: null, uploadRoot: null, uploadProjects: null });
+    expect(parseConfig({ wikis: [] })).toEqual({ wikis: [], phases: null, uploadRoot: null, uploadProjects: null });
   });
 
   it('uploadRoot: グループのアップロード先はフルパスだけ(~/ はホーム、前後の空白と引用符は除く)', () => {
@@ -33,6 +34,14 @@ describe('parseConfig', () => {
     expect(() => parseConfig({ uploadRoot: 'atlas-logs' })).toThrow(/フルパス/);
     expect(() => parseConfig({ uploadRoot: '' })).toThrow(/uploadRoot/);
     expect(() => parseConfig({ uploadRoot: 1 })).toThrow(/uploadRoot/);
+  });
+
+  it('uploadProjects: upload-project.bat がまとめて送るプロジェクト名(同じ名前は 1 つに、空なら null。名前の空白はそのまま)', () => {
+    expect(parseConfig({ uploadProjects: ['owner/app', ' 空白 ', 'owner/app'] }).uploadProjects).toEqual(['owner/app', ' 空白 ']);
+    expect(parseConfig({ uploadProjects: [] }).uploadProjects).toBeNull();
+    expect(() => parseConfig({ uploadProjects: 'owner/app' })).toThrow(/uploadProjects/);
+    expect(() => parseConfig({ uploadProjects: ['  '] })).toThrow(/uploadProjects/);
+    expect(() => parseConfig({ uploadProjects: [1] })).toThrow(/uploadProjects/);
   });
 
   it('~/ はホームに展開する', () => {
@@ -57,14 +66,14 @@ describe('loadConfig', () => {
 
   it('既定の場所に無ければ設定なし、明示したのに無ければ失敗', async () => {
     const missing = join(dir, 'none.json');
-    await expect(loadConfig(missing, false)).resolves.toEqual({ path: null, wikis: null, phases: null, uploadRoot: null });
+    await expect(loadConfig(missing, false)).resolves.toEqual({ path: null, wikis: null, phases: null, uploadRoot: null, uploadProjects: null });
     await expect(loadConfig(missing, true)).rejects.toThrow(/ありません/);
   });
 
   it('BOM 付きを読み、壊れた JSON はファイル名付きで失敗する', async () => {
     const ok = join(dir, 'ok.json');
     writeFileSync(ok, '\uFEFF{"wikis":["notes"]}');
-    await expect(loadConfig(ok, true)).resolves.toEqual({ path: ok, wikis: [{ path: 'notes' }], phases: null, uploadRoot: null });
+    await expect(loadConfig(ok, true)).resolves.toEqual({ path: ok, wikis: [{ path: 'notes' }], phases: null, uploadRoot: null, uploadProjects: null });
     const bad = join(dir, 'bad.json');
     writeFileSync(bad, '{');
     await expect(loadConfig(bad, false)).rejects.toThrow(/bad\.json/);

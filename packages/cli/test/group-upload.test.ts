@@ -178,7 +178,7 @@ describe('グループのアップロード', () => {
     const call = (p: string, method: string, body?: unknown, token: string | null = h!.token) =>
       fetch(url(p), { method, headers: { 'content-type': 'application/json', ...(token ? { 'x-atlas-token': token } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
     const state = async () => ((await (await fetch(url('api/state'))).json()) as { upload: unknown }).upload;
-    expect(await state()).toEqual({ root: null, error: null, canPick: true });
+    expect(await state()).toEqual({ root: null, projects: [], error: null, canPick: true });
     // 先が未定なら写さない
     const g = encodeURIComponent('Player/Weapon');
     const none = await call(`api/groups/${g}/upload`, 'POST');
@@ -198,7 +198,7 @@ describe('グループのアップロード', () => {
     await mkdir(other);
     answer = other;
     expect(await (await call('api/upload-root', 'POST')).json()).toEqual({ root: other });
-    expect(await state()).toEqual({ root: other, error: null, canPick: true });
+    expect(await state()).toEqual({ root: other, projects: [], error: null, canPick: true });
     // 写す前に開くと 404、写したら開ける(開けるのは設定の先の、そのグループのフォルダだけ)
     expect((await call(`api/groups/${g}/upload/open`, 'POST')).status).toBe(404);
     const up = await call(`api/groups/${g}/upload`, 'POST');
@@ -222,7 +222,39 @@ describe('グループのアップロード', () => {
     expect((await call('api/upload-root', 'POST')).status).toBe(501);
     const put = await call('api/upload-root', 'PUT', { root });
     expect(put.status).toBe(409);
+    expect((await call('api/upload-projects', 'PUT', { project: 'owner/app', on: true })).status).toBe(409);
     expect(await readFile(configPath, 'utf8')).toBe('{ 壊れた');
+  });
+
+  it('serve: upload-project.bat がまとめて送るプロジェクトの印を足す・外す。ほかの設定は残し、空になれば項目ごと消す。token が要る', async () => {
+    await writeFile(configPath, JSON.stringify({ uploadRoot: root }));
+    h = await startServe({ outDir: out, notesDir: notes, groupsPath: join(notes, 'groups.json'), port: 0, open: false, configPath, folders: { canPick: false } });
+    const call = (body: unknown, token: string | null = h!.token, method = 'PUT') =>
+      fetch(`http://127.0.0.1:${h!.port}/api/upload-projects`, { method, headers: { 'content-type': 'application/json', ...(token ? { 'x-atlas-token': token } : {}) }, body: JSON.stringify(body) });
+    const state = async () => ((await (await fetch(`http://127.0.0.1:${h!.port}/api/state`)).json()) as { upload: { projects: string[] } }).upload.projects;
+    const config = async () => JSON.parse(await readFile(configPath, 'utf8'));
+    expect(await state()).toEqual([]);
+    expect((await call({ project: 'owner/app', on: true }, null)).status).toBe(403);
+    expect((await call({ project: 'owner/app', on: true }, h.token, 'POST')).status).toBe(405);
+    expect((await call({ project: '', on: true })).status).toBe(400);
+    expect((await call({ project: 'owner/app', on: 'yes' })).status).toBe(400);
+    expect(await config()).toEqual({ uploadRoot: root });
+    expect(await (await call({ project: 'owner/app', on: true })).json()).toEqual({ projects: ['owner/app'] });
+    // 同じものをもう一度足しても 1 つのまま。足した順に並ぶ
+    expect(await (await call({ project: 'owner/app', on: true })).json()).toEqual({ projects: ['owner/app'] });
+    expect(await (await call({ project: 'X:\\work\\tool', on: true })).json()).toEqual({ projects: ['owner/app', 'X:\\work\\tool'] });
+    expect(await config()).toEqual({ uploadRoot: root, uploadProjects: ['owner/app', 'X:\\work\\tool'] });
+    expect(await state()).toEqual(['owner/app', 'X:\\work\\tool']);
+    // 設定を書き換えたあと(bat や手で)も、読み直してから足す・外す
+    await writeFile(configPath, JSON.stringify({ uploadRoot: root, uploadProjects: ['手で足した'] }));
+    expect(await (await call({ project: 'owner/app', on: false })).json()).toEqual({ projects: ['手で足した'] });
+    expect(await (await call({ project: '手で足した', on: false })).json()).toEqual({ projects: [] });
+    expect(await config()).toEqual({ uploadRoot: root });
+    // 続けて押しても(要求が重なっても)、先に足した分を消さない
+    const many = Array.from({ length: 8 }, (_, i) => `p${i}`);
+    const rs = await Promise.all(many.map((project) => call({ project, on: true })));
+    expect(rs.map((r) => r.status)).toEqual(many.map(() => 200));
+    expect(((await config()).uploadProjects as string[]).sort()).toEqual(many);
   });
   // トークンの形をソースに直書きしない(秘密の検査に引っかからないように)
   const TOKEN = ['ghp', 'UPLOADFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAK1'].join('_');

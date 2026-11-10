@@ -9,7 +9,15 @@
     judged,
     current,
     onpick,
-  }: { rows: Bucket[]; judged: boolean; current: string; onpick: (project: string) => void } = $props();
+    send,
+  }: {
+    rows: Bucket[];
+    judged: boolean;
+    current: string;
+    onpick: (project: string) => void;
+    /** upload-project.bat がまとめて送るプロジェクトの印(atlas serve から開いたときだけ)。projects は設定の一覧、toggle は足す・外す */
+    send?: { projects: string[]; toggle: (project: string, on: boolean) => Promise<void> };
+  } = $props();
 
   type Key = 'label' | 'sessions' | 'input' | 'output' | 'tools' | 'lines' | 'skills' | 'agents' | 'hooks' | 'instructions' | 'wiki' | 'friction' | 'active' | 'human';
   const value: Record<Key, (b: Bucket) => number | string> = {
@@ -32,6 +40,31 @@
   let asc = $state(false);
   let expanded = $state(false);
   const LIMIT = 15;
+
+  /** 書いている途中のプロジェクト(その印は押せないようにする) */
+  let saving = $state<Set<string>>(new Set());
+  let sendError = $state<string | null>(null);
+  const sendSet = $derived(new Set(send?.projects ?? []));
+  /** 印はあるが、行に無いもの(絞り込みの外か、今の集計に無いもの。折りたたんで見えないだけの行は数えない) */
+  const sendHidden = $derived(send ? send.projects.filter((x) => !rows.some((b) => b.key === x)).length : 0);
+  async function toggleSend(e: Event, key: string): Promise<void> {
+    if (!send) return;
+    const box = e.currentTarget as HTMLInputElement;
+    const on = box.checked;
+    saving = new Set([...saving, key]);
+    sendError = null;
+    try {
+      await send.toggle(key, on);
+    } catch (err) {
+      // 書けなければ印を元に戻す(設定の一覧は変わっていないので、表示だけ戻す)
+      box.checked = !on;
+      sendError = `「${key}」の印を${on ? '付けられ' : '外せ'}ませんでした: ${(err as Error).message}`;
+    } finally {
+      const next = new Set(saving);
+      next.delete(key);
+      saving = next;
+    }
+  }
 
   const sorted = $derived.by(() => {
     const f = value[sortKey];
@@ -103,6 +136,12 @@
       {int(rows.length)} プロジェクト。名前を押すとそのプロジェクトに絞り込みます(列見出しで並べ替え)。指示・wiki の列は「該当セッション数 / セッション数」、入力トークン・変更行の下の小さい分数は「記録のあるセッション数 / セッション数」(合計はその記録のあるセッションだけのもの)。リポジトリ名の記録が無いものは git のリモート(owner/repo)で束ね、ホーム・一時フォルダ・atlas の判定実行はそれぞれ 1 つにまとめています。
     </p>
   </div>
+  {#if send}
+    <p class="send-note">
+      「まとめて送る」に印を付けたプロジェクトは、<code>upload-project.bat</code> が番号を聞かずにまとめて送ります(送る前に確かめます)。今 {int(send.projects.length)} 件{#if sendHidden}(うち {int(sendHidden)} 件は、絞り込みの外か、今の集計に無いもの){/if}。印は <code>atlas.config.json</code> に残ります。
+    </p>
+    {#if sendError}<p class="send-error" role="alert">{sendError}</p>{/if}
+  {/if}
   {#if rows.length === 0}
     <p class="note">該当するプロジェクトはありません。</p>
   {:else}
@@ -113,6 +152,7 @@
             <th scope="col" aria-sort={ariaSort('label')}>
               <button type="button" class="sort" onclick={() => sortBy('label')}>プロジェクト<SortMark state={sortKey === 'label' ? (asc ? 'asc' : 'desc') : 'none'} /></button>
             </th>
+            {#if send}<th scope="col" class="send" title="upload-project.bat がまとめて送るプロジェクト">まとめて送る</th>{/if}
             {#each cols as c}
               <th scope="col" class="num" aria-sort={ariaSort(c.key)} title={c.title}>
                 <button type="button" class="sort" onclick={() => sortBy(c.key)}>{c.label}<SortMark state={sortKey === c.key ? (asc ? 'asc' : 'desc') : 'none'} /></button>
@@ -132,6 +172,11 @@
                 <a class="link" href={projectHref(b.key)} aria-current={current === b.key ? 'true' : undefined} onclick={(e) => pick(e, b.key)}>{#each pathParts(b.label) as seg, i (i)}{#if i}<wbr />{/if}{seg}{/each}</a>
                 {#if current === b.key}<span class="part">絞り込み中(もう一度押すと解除)</span>{/if}
               </th>
+              {#if send}
+                <td class="send">
+                  <input type="checkbox" checked={sendSet.has(b.key)} disabled={saving.has(b.key)} aria-label={`「${b.label}」を upload-project.bat でまとめて送る`} onchange={(e) => toggleSend(e, b.key)} />
+                </td>
+              {/if}
               <td class="num">{int(b.sessions)}</td>
               <td class="num">
                 {#if b.sessionsWithInput === 0}<span class="missing-value">記録なし</span>{:else}{int(b.tokens.input)}{#if b.sessionsWithInput < b.sessions}<span class="part" title="記録のあるセッション数 / 全セッション数">{b.sessionsWithInput}/{b.sessions}</span>{/if}{/if}
@@ -210,5 +255,27 @@
   }
   .more {
     margin: 8px 0 0;
+  }
+  .send-note {
+    margin: 0 0 8px;
+    color: var(--ink-2);
+  }
+  .send-error {
+    margin: 0 0 8px;
+    color: var(--warn);
+  }
+  th.send,
+  td.send {
+    text-align: center;
+    white-space: nowrap;
+  }
+  td.send input {
+    width: 20px;
+    height: 20px;
+    margin: 2px;
+    cursor: pointer;
+  }
+  td.send input:disabled {
+    cursor: progress;
   }
 </style>
