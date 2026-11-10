@@ -169,10 +169,10 @@ describe('readInventory', () => {
 
 describe('プロジェクトの統合', () => {
   it('remote の URL から owner/repo を取り出す(https・scp 形式・ssh、ローカルは null)', () => {
-    expect(ownerRepoFromUrl('https://github.com/acme/widget.git')).toBe('acme/widget');
-    expect(ownerRepoFromUrl('https://github.com/acme/widget')).toBe('acme/widget');
-    expect(ownerRepoFromUrl('git@github.com:acme/widget.git')).toBe('acme/widget');
-    expect(ownerRepoFromUrl('ssh://git@example.com:2222/acme/widget.git')).toBe('acme/widget');
+    expect(ownerRepoFromUrl('https://github.com/quokka/widget.git')).toBe('quokka/widget');
+    expect(ownerRepoFromUrl('https://github.com/quokka/widget')).toBe('quokka/widget');
+    expect(ownerRepoFromUrl('git@github.com:quokka/widget.git')).toBe('quokka/widget');
+    expect(ownerRepoFromUrl('ssh://git@example.com:2222/quokka/widget.git')).toBe('quokka/widget');
     expect(ownerRepoFromUrl('https://gitlab.example.com/group/sub/widget.git')).toBe('sub/widget');
     expect(ownerRepoFromUrl('X:\\repos\\widget')).toBeNull();
     expect(ownerRepoFromUrl('../widget')).toBeNull();
@@ -191,14 +191,14 @@ describe('プロジェクトの統合', () => {
       root = await mkdtemp(join(tmpdir(), 'atlas-git-'));
       // 通常のリポジトリ
       await mkdir(join(root, 'main', '.git', 'worktrees', 'wt'), { recursive: true });
-      await writeFile(join(root, 'main', '.git', 'config'), '[remote "origin"]\n\turl = https://github.com/acme/main.git\n');
+      await writeFile(join(root, 'main', '.git', 'config'), '[remote "origin"]\n\turl = https://github.com/quokka/main.git\n');
       // worktree: .git ファイル → gitdir → commondir(../..)→ 共有の config
       await mkdir(join(root, 'wt'), { recursive: true });
       await writeFile(join(root, 'wt', '.git'), `gitdir: ${join(root, 'main', '.git', 'worktrees', 'wt')}\n`);
       await writeFile(join(root, 'main', '.git', 'worktrees', 'wt', 'commondir'), '../..\n');
       // submodule 形式: gitdir に config がある(commondir 無し)。相対パス
       await mkdir(join(root, 'mods', 'sub'), { recursive: true });
-      await writeFile(join(root, 'mods', 'sub', 'config'), '[remote "origin"]\n\turl = git@github.com:acme/sub.git\n');
+      await writeFile(join(root, 'mods', 'sub', 'config'), '[remote "origin"]\n\turl = git@github.com:quokka/sub.git\n');
       await mkdir(join(root, 'subwt'), { recursive: true });
       await writeFile(join(root, 'subwt', '.git'), 'gitdir: ../mods/sub\n');
       // remote の無いリポジトリ
@@ -213,9 +213,9 @@ describe('プロジェクトの統合', () => {
       expect(gitConfigPath(join(root, 'subwt'))).toBe(resolve(root, 'mods', 'sub', 'config'));
       expect(gitConfigPath(join(root, 'nothing'))).toBeNull();
       const r = new ProjectResolver({ homes: [], temps: [] });
-      expect(r.remoteOf(join(root, 'main'))).toBe('acme/main');
-      expect(r.remoteOf(join(root, 'wt'))).toBe('acme/main');
-      expect(r.remoteOf(join(root, 'subwt'))).toBe('acme/sub');
+      expect(r.remoteOf(join(root, 'main'))).toBe('quokka/main');
+      expect(r.remoteOf(join(root, 'wt'))).toBe('quokka/main');
+      expect(r.remoteOf(join(root, 'subwt'))).toBe('quokka/sub');
       expect(r.remoteOf(join(root, 'local'))).toBeNull();
     });
   });
@@ -227,7 +227,7 @@ describe('プロジェクトの統合', () => {
       await rm(work, { recursive: true, force: true });
       await mkdir(join(work, 'repo', '.git'), { recursive: true });
       await mkdir(join(work, 'repo', 'sub', 'deep'), { recursive: true });
-      await writeFile(join(work, 'repo', '.git', 'config'), '[remote "origin"]\n\turl = https://github.com/acme/repo.git\n');
+      await writeFile(join(work, 'repo', '.git', 'config'), '[remote "origin"]\n\turl = https://github.com/quokka/repo.git\n');
     });
     afterAll(async () => rm(work, { recursive: true, force: true }));
 
@@ -240,13 +240,13 @@ describe('プロジェクトの統合', () => {
       // judge の作業フォルダは repository があっても判定扱い(この形のフォルダはツール自身が作る)
       expect(r.resolve(s('/scratch/tmp/atlas-judge-cwd-AbC123', null, 'x/y'))).toEqual({ project: ATLAS_JUDGE_PROJECT, source: 'atlas-judge' });
       expect(r.resolve(s('X:\\home\\someone\\AppData\\Local\\Temp\\atlas-judge-cwd-Zz9'))).toEqual({ project: ATLAS_JUDGE_PROJECT, source: 'atlas-judge' });
-      expect(r.resolve(s('/scratch/tmp/x', null, 'acme/r'))).toEqual({ project: 'acme/r', source: 'repository' });
+      expect(r.resolve(s('/scratch/tmp/x', null, 'quokka/r'))).toEqual({ project: 'quokka/r', source: 'repository' });
       expect(r.resolve(s('/scratch/tmp/claude/x/scratchpad/probe', '/scratch/tmp/claude/x/scratchpad/probe'))).toEqual({ project: TEMP_PROJECT, source: 'temp' });
       expect(r.resolve(s('X:\\home\\someone\\AppData\\Local\\Temp'))).toEqual({ project: TEMP_PROJECT, source: 'temp' });
       expect(r.resolve(s('/tmp/probe'))).toEqual({ project: TEMP_PROJECT, source: 'temp' });
-      expect(rGit.resolve(s(join(work, 'repo'), join(work, 'repo')))).toEqual({ project: 'acme/repo', source: 'git-remote' });
+      expect(rGit.resolve(s(join(work, 'repo'), join(work, 'repo')))).toEqual({ project: 'quokka/repo', source: 'git-remote' });
       // gitRoot の記録が無いときは cwd から上へ探す
-      expect(rGit.resolve(s(join(work, 'repo', 'sub', 'deep')))).toEqual({ project: 'acme/repo', source: 'git-remote' });
+      expect(rGit.resolve(s(join(work, 'repo', 'sub', 'deep')))).toEqual({ project: 'quokka/repo', source: 'git-remote' });
       // tempPatterns: false なら既定のパターン(AppData\Local\Temp・/tmp)は一時フォルダにしない
       expect(rGit.resolve(s('/tmp/probe')).source).toBe('path');
       expect(rGit.resolve(s('/scratch/tmp/x')).source).toBe('temp');

@@ -25,7 +25,7 @@ function calls(prefix: string, tool: string, n: number, fail: number, at: number
 async function records(): Promise<SessionRecord[]> {
   const a = await normalizeSession({
     id: 'a',
-    workspace: { repository: 'acme/a', name: 'session A', created_at: '2026-10-01T00:00:00Z' },
+    workspace: { repository: 'quokka/a', name: 'session A', created_at: '2026-10-01T00:00:00Z' },
     events: [
       ev(0, 'session.start', { reasoningEffort: 'high' }),
       ev(1, 'user.message', { content: 'a', agentMode: 'autopilot' }),
@@ -40,7 +40,7 @@ async function records(): Promise<SessionRecord[]> {
   a.todos = { total: 2, byStatus: { done: 1, blocked: 1 }, deps: 0 };
   const b = await normalizeSession({
     id: 'b',
-    workspace: { repository: 'acme/b', created_at: '2026-10-02T00:00:00Z' },
+    workspace: { repository: 'quokka/b', created_at: '2026-10-02T00:00:00Z' },
     events: [
       ev(0, 'user.message', { content: 'b' }),
       ...calls('v', 'view', 2, 0, 10, 100),
@@ -64,8 +64,8 @@ describe('Phase 7: 実行の性質の集計', () => {
     expect(x.initiators).toEqual({ rows: [{ key: 'user', requests: 1 }, { key: 'agent', requests: 1 }], total: 2 });
     expect(x.context).toMatchObject({ sessions: 2, toolDefAvg: 40, toolDefMedian: 20, shareAvg: 0.6, shareSessions: 1, availableToolsAvg: null });
     expect(x.context.byProject.map((p) => [p.key, p.toolDefAvg])).toEqual([
-      ['acme/a', 60],
-      ['acme/b', 20],
+      ['quokka/a', 60],
+      ['quokka/b', 20],
     ]);
     expect(x.latency).toEqual([{ model: 'gpt-5.5', ttft: { n: 2, median: 300, p90: 900 }, duration: { n: 1, median: 2000, p90: 2000 } }]);
     expect(x.toolDurations.rows.map((r) => [r.tool, r.n, r.median, r.p90])).toEqual([
@@ -76,7 +76,7 @@ describe('Phase 7: 実行の性質の集計', () => {
     expect(x.friction.compaction).toEqual({ compactions: 3, recorded: 0, input: 0, output: 0, nanoAiu: 0, tokensRemoved: 5 });
     expect(x.todos).toEqual({ sessionsWithDb: 1, sessionsWithTodos: 1, total: 2, byStatus: { done: 1, blocked: 1 }, deps: 0, completionRate: 0.5 });
     // 絞り込みに追従する
-    const onlyB = execAggregate(applyFilter(all, { ...emptyFilter(), project: 'acme/b' }));
+    const onlyB = execAggregate(applyFilter(all, { ...emptyFilter(), project: 'quokka/b' }));
     expect(onlyB.modes.rows).toEqual([{ key: 'interactive', turns: 1 }]);
     expect(onlyB.todos.sessionsWithDb).toBe(0);
     expect(aggregate(all).exec).toEqual(x);
@@ -123,9 +123,9 @@ describe('Phase 7: 要点欄とツールの絞り込み', () => {
   });
 
   it('URL ハッシュ: 絞り込みと表示の指定(view)を分けて読み書きし、#overview のようなページ内リンクは状態とみなさない', () => {
-    const f = { ...emptyFilter(), project: 'acme/a', tool: 'mcp:gh' };
+    const f = { ...emptyFilter(), project: 'quokka/a', tool: 'mcp:gh' };
     expect(filterHref(f)).toBe(`#${encodeFilter(f)}`);
-    expect(filterHref(f, 'unused-skills')).toBe('#project=acme%2Fa&tool=mcp%3Agh&view=unused-skills');
+    expect(filterHref(f, 'unused-skills')).toBe('#project=quokka%2Fa&tool=mcp%3Agh&view=unused-skills');
     expect(decodeFilter(filterHref(f, 'unused-skills'))).toEqual(f);
     expect(decodeView('#project=x&view=unused-skills')).toBe('unused-skills');
     expect(decodeView('#project=x')).toBeNull();

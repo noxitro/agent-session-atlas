@@ -47,7 +47,7 @@ async function setup(): Promise<{ record: Awaited<ReturnType<typeof normalizeSes
   await writeFile(eventsPath, EVENTS.map((e) => JSON.stringify(e)).join('\n') + '\n');
   const record = await normalizeSession({
     id: 'tr1',
-    workspace: { cwd: 'C:\\work\\secret-proj', repository: 'acme/secret-proj', branch: 'feature/x1', created_at: at(0), client_name: 'github/cli', name: 'secret-proj の修正' },
+    workspace: { cwd: 'C:\\work\\secret-proj', repository: 'quokka/secret-proj', branch: 'feature/x1', created_at: at(0), client_name: 'github/cli', name: 'secret-proj の修正' },
     events: EVENTS,
     db: { usage: USAGE },
   });
@@ -133,7 +133,7 @@ describe('transcript', () => {
     const r = await renderTranscript(record, eventsPath, USAGE, { ...opts(), anon });
     const md = r.markdown;
     expect(md).toContain('伏せ字モード');
-    for (const secret of ['secret-proj', 'acme', 'feature/x1', 'C:\\work']) expect(md).not.toContain(secret);
+    for (const secret of ['secret-proj', 'quokka', 'feature/x1', 'C:\\work']) expect(md).not.toContain(secret);
     expect(md).toContain('project-01');
     expect(md).toContain('branch-01');
     expect(md).toContain('<path>');

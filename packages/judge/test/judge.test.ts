@@ -144,7 +144,7 @@ describe('packet', () => {
   async function record() {
     return normalizeSession({
       id: 'sess-1',
-      workspace: { repository: 'acme/app', client_name: 'github/cli', created_at: '2026-09-01T00:00:00Z' },
+      workspace: { repository: 'quokka/app', client_name: 'github/cli', created_at: '2026-09-01T00:00:00Z' },
       events: [
         { type: 'user.message', timestamp: '2026-09-01T00:00:00Z', data: { content: '直して' } },
         { type: 'assistant.message', timestamp: '2026-09-01T00:01:00Z', data: { content: 'はい', outputTokens: 5 } },
