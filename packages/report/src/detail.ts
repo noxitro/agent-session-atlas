@@ -5,7 +5,7 @@ import type { Anonymizer } from './lib/anonymize.ts';
 import { frictionTotal } from './lib/aggregate.ts';
 import { coverageOf } from './lib/filter.ts';
 import { MEMO_CSS } from './memo-render.ts';
-import { NAV_JS, renderRail, renderTop } from './page-nav.ts';
+import { codeMeta, NAV_JS, renderRail, renderTop } from './page-nav.ts';
 import { skillAnchor } from './library.ts';
 import { cleanHeading } from './lib/insights.ts';
 import { dateTime, dec, duration, int, modelLabel, msLabel, percent, truncate } from './lib/format.ts';
@@ -756,6 +756,7 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <meta name="atlas-token" content="__ATLAS_TOKEN__">
+${codeMeta()}
 <meta name="theme-color" content="#f3f5f3" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0e1110" media="(prefers-color-scheme: dark)">
 <title>${esc(truncate(title, 60))} | Copilot Session Atlas</title>

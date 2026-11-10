@@ -4,7 +4,7 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, posix, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { computeMetrics, extract, METRICS_SCHEMA_VERSION, snapshot, type MetricsFile, type SessionRecord, type SessionsFile, type SnapshotManifest } from '../../core/src/index.ts';
+import { codeStamp, computeMetrics, extract, METRICS_SCHEMA_VERSION, snapshot, type MetricsFile, type SessionRecord, type SessionsFile, type SnapshotManifest } from '../../core/src/index.ts';
 import {
   buildReport,
   DEFAULT_TRANSCRIPT_OPTIONS,
@@ -646,6 +646,8 @@ export async function runServe(p: Paths, o: { port: number | null; open: boolean
   if (running) {
     const url = `http://127.0.0.1:${running.port}/atlas.html`;
     log(`serve: 既に動いているサーバがあります(${url})。ブラウザで開くだけにします`);
+    if (running.code !== codeStamp())
+      log('serve: 動いているサーバは、今の atlas と版が違います(atlas を更新する前に起動したもの)。前に開いた atlas.bat の黒い窓を閉じてから、もう一度 atlas.bat を実行してください');
     if (o.open) openInBrowser(url, log);
     return '既存のサーバを使用';
   }

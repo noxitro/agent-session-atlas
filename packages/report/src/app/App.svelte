@@ -22,6 +22,7 @@
   import SessionTable from './components/SessionTable.svelte';
   import { applyTheme, loadTheme, type ThemeChoice } from './theme.ts';
   import { watchScrollFocus } from './scroll-focus.ts';
+  import { STALE_MESSAGE } from '../lib/code-check.ts';
   import { api, serveToken, startHeartbeat, type GroupExport, type UploadHandlers, type UploadSetting } from './api.ts';
   import { restoreDone, restoredView, saveView } from './view-restore.ts';
   import { JobStore } from './jobs.svelte.ts';
@@ -171,12 +172,18 @@
   let liveGroups = $state<ReportGroup[] | null>(null);
   /** heartbeat が失敗した(サーバが止まった)。閲覧はそのまま、編集だけ無効 */
   let serverDown = $state(false);
+  /** サーバがこの画面と違う版(atlas を更新した後も、前から動いているサーバが応えている)。閲覧と編集はそのまま、帯で知らせる */
+  let serverStale = $state(false);
   $effect(() => {
     if (!token) return;
-    const stop = startHeartbeat(token, () => {
-      serverDown = true;
-      editable = false;
-    });
+    const stop = startHeartbeat(
+      token,
+      () => {
+        serverDown = true;
+        editable = false;
+      },
+      { onStale: () => (serverStale = true) },
+    );
     if (!data?.anonymized) {
       // 1 回だけ試す。失敗しても(古い serve、伏せ字版の 403 など)黙って閲覧専用にする
       api
@@ -588,6 +595,8 @@
     <div class="content">
       {#if serverDown}
         <div class="down-band" role="alert">サーバが止まっています。atlas.bat を実行し直してください(閲覧はそのままできます)。</div>
+      {:else if serverStale}
+        <div class="down-band stale-band" role="alert">{STALE_MESSAGE}</div>
       {/if}
       {#if editable && jobStore}<JobBand jobs={jobStore} generatedAt={data.generatedAt} />{/if}
       <FilterBar {filter} {options} {judged} {emptyCount} {memoCount} lastDay={all.overall.lastAt ? date(all.overall.lastAt) : null} onchange={setFilter} {editable} anonymized={data.anonymized} />

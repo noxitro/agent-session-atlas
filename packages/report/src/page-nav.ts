@@ -1,7 +1,9 @@
 // 静的ページ(詳細・用語)の目次の帯と上部。atlas.html(App.svelte)と同じ作法:
 // 768px 以上は左に固定したサイドバー(戻る → 目次 → 別ページへのリンク → 配色)、768px 未満は上部に固定した細い目次行(横に流れる)と、
 // その上の帯(戻る・リンク・配色)。見た目は base.css の .rail / .toc / .top が持ち、動きは NAV_JS(外部参照なし、file:// で動く)。
+import { codeStamp } from '../../core/src/code-stamp.ts';
 import { esc } from './detail.ts';
+import { STALE_MESSAGE } from './lib/code-check.ts';
 import { SCROLLERS } from './lib/scroll-focus.ts';
 
 export interface NavItem {
@@ -90,10 +92,14 @@ export function renderRail(o: PageNavOptions): string {
  * - heartbeat: atlas serve から開かれたとき(http(s) で、meta の token がプレースホルダでない)だけ 3 秒ごとに POST し、ページを閉じるときは bye を送る
  *   (atlas.html の startHeartbeat と同じ作法。ページの id を x-atlas-client、送った順の番号を x-atlas-seq で送る。bfcache に入るときも bye を送り、戻ったら pageshow で数え直してもらう。bye の後はタイマーが動いても heartbeat を送らない)。続けて 3 回失敗したら(403 ならすぐ)止めて「サーバが止まっています」の帯を出す。
  *   タブが表に戻ったとき・戻る / 進むで戻ったときはすぐ送る。宛先は同一オリジンの相対パス(詳細ページは ../api/、用語ページは api/)
+ * - 版のずれ: 最初に成功した heartbeat の応答の x-atlas-code を、ページの meta atlas-code(codeMeta)と比べ、違えば(返さない古いサーバも)「画面とサーバの版が違います」の帯を出す(lib/code-check.ts の isStaleServer と同じ決まり)
  * - メモの編集: atlas serve のときだけ、メモの節(#memo)があるページに編集の script を読み込む。止まったら atlas-down を知らせる
  * - Phase 14: 同じ条件で「記録を読む」「全文を作って読む」の script(api/session-tools.js)も読み込む(伏せ字版には #memo が無いので出ない)
  */
-export const NAV_JS = `(function(){var SCROLLERS=${JSON.stringify(SCROLLERS)};var d=document,root=d.documentElement,W=matchMedia('(min-width:768px)'),KEY='atlas-theme';
+/** 版の目印(core の code-stamp.ts)。serve から開いたとき、NAV_JS が heartbeat の x-atlas-code と比べる */
+export const codeMeta = (): string => `<meta name="atlas-code" content="${codeStamp()}">`;
+
+export const NAV_JS = `(function(){var SCROLLERS=${JSON.stringify(SCROLLERS)},STALE=${JSON.stringify(STALE_MESSAGE)};var d=document,root=d.documentElement,W=matchMedia('(min-width:768px)'),KEY='atlas-theme';
 var segs=d.querySelectorAll('[data-theme-seg] button');function paint(t){segs.forEach(function(b){b.setAttribute('aria-pressed',b.dataset.theme===t?'true':'false')})}
 segs.forEach(function(b){b.addEventListener('click',function(){var t=b.dataset.theme;if(t==='auto')delete root.dataset.theme;else root.dataset.theme=t;try{if(t==='auto')localStorage.removeItem(KEY);else localStorage.setItem(KEY,t)}catch(e){}paint(t)})});
 (function(){var t='auto';try{var v=localStorage.getItem(KEY);if(v==='light'||v==='dark')t=v}catch(e){}paint(t)})();
@@ -109,11 +115,12 @@ sf();addEventListener('resize',sf);d.addEventListener('toggle',sf,true);
 var m=false;try{m=sessionStorage.getItem('atlas-return')==='1';sessionStorage.removeItem('atlas-return')}catch(e){}
 d.querySelectorAll('a.crumb').forEach(function(a){a.addEventListener('click',function(e){if(e.button!==0||e.metaKey||e.ctrlKey||e.shiftKey||e.altKey)return;var ok=false;try{ok=history.length>1&&(m||/atlas\\.html/.test(d.referrer))}catch(err){}if(ok){e.preventDefault();history.back()}})});
 (function(){var mt=d.querySelector('meta[name="atlas-token"]'),t=mt?mt.content:'';if(!/^https?:$/.test(location.protocol)||!t||/^__/.test(t))return;
-var c=d.querySelector('a.crumb'),up=!!c&&/^\\.\\.\\//.test(c.getAttribute('href')||''),cid=(window.crypto&&crypto.randomUUID)?crypto.randomUUID():'c'+Date.now().toString(36)+Math.random().toString(36).slice(2,10),sq=0,iv=null,fails=0,gone=false;
+var c=d.querySelector('a.crumb'),up=!!c&&/^\\.\\.\\//.test(c.getAttribute('href')||''),cid=(window.crypto&&crypto.randomUUID)?crypto.randomUUID():'c'+Date.now().toString(36)+Math.random().toString(36).slice(2,10),sq=0,iv=null,fails=0,gone=false,vc=false;
 function o(){return{method:'POST',headers:{'X-Atlas-Token':t,'X-Atlas-Client':cid,'X-Atlas-Seq':String(++sq)},keepalive:true}}
-function down(){if(!iv)return;clearInterval(iv);iv=null;var b=d.createElement('div');b.className='down-band';b.setAttribute('role','alert');b.textContent='サーバが止まっています。atlas.bat を実行し直してください(閲覧はそのままできます)。';d.body.insertBefore(b,d.body.firstChild);d.dispatchEvent(new Event('atlas-down'))}
+function down(){if(!iv)return;clearInterval(iv);iv=null;var s=d.querySelector('.stale-band');if(s)s.remove();var b=d.createElement('div');b.className='down-band';b.setAttribute('role','alert');b.textContent='サーバが止まっています。atlas.bat を実行し直してください(閲覧はそのままできます)。';d.body.insertBefore(b,d.body.firstChild);d.dispatchEvent(new Event('atlas-down'))}
 function fail(now){if(now||++fails>=3)down()}
-function beat(){if(!iv||gone)return;try{(up?fetch('../api/heartbeat',o()):fetch('api/heartbeat',o())).then(function(r){if(r.ok)fails=0;else fail(r.status===403)}).catch(function(){fail(false)})}catch(e){fail(false)}}
+function ver(r){if(vc)return;vc=true;var mc=d.querySelector('meta[name="atlas-code"]'),v=mc?mc.content:'';if(!v||/^__/.test(v)||r.headers.get('x-atlas-code')===v)return;var b=d.createElement('div');b.className='down-band stale-band';b.setAttribute('role','alert');b.textContent=STALE;d.body.insertBefore(b,d.body.firstChild)}
+function beat(){if(!iv||gone)return;try{(up?fetch('../api/heartbeat',o()):fetch('api/heartbeat',o())).then(function(r){if(r.ok){fails=0;ver(r)}else fail(r.status===403)}).catch(function(){fail(false)})}catch(e){fail(false)}}
 iv=setInterval(beat,3000);beat();
 addEventListener('pagehide',function(){if(!iv||gone)return;gone=true;try{(up?fetch('../api/bye',o()):fetch('api/bye',o())).catch(function(){})}catch(err){}});
 addEventListener('pageshow',function(e){if(e.persisted){gone=false;beat()}});

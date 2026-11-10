@@ -4,7 +4,7 @@ import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { CopilotEvent, InstalledInventory, InstructionFile, InstructionInjection, MetricsBucket, MetricsFile, SessionRecord } from '../../core/src/types.ts';
-import { contentHash, parseEvents } from '../../core/src/index.ts';
+import { codeStamp, contentHash, parseEvents } from '../../core/src/index.ts';
 import { CoverageCounter, coverageFile, desktopCoverage } from './coverage.ts';
 import { createFileSink, fullFileName, renderFullTo } from './full.ts';
 import { INSTRUCTIONS_FILE, LIBRARY_DIR, LibraryCollector, renderInstructionsHtml, writeLibrary } from './library.ts';
@@ -27,6 +27,8 @@ import { REPORT_DATA_VERSION, type ReportData } from './lib/types.ts';
 
 export const REPORT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const TEMPLATE_PATH = join(REPORT_ROOT, 'dist', 'template.html');
+/** template.html の版の目印のプレースホルダ(集計が codeStamp() に置き換える) */
+export const CODE_PLACEHOLDER = '__ATLAS_CODE__';
 const BASE_CSS_PATH = join(REPORT_ROOT, 'src', 'styles', 'base.css');
 
 /** 静的ページ(詳細 797 件・用語)に埋め込む CSS からコメントと余分な空白を落とす(1 件あたり約 4KB の節約。atlas.html は Vite が同じことをする) */
@@ -232,7 +234,8 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
 
   await mkdir(input.outDir, { recursive: true });
   // セッションの要約は既定値と同じ項目を落として埋め込む(読むときに埋め戻す。lib/pack.ts)
-  const html = embedData(template, { ...data, sessions: data.sessions.map(packSummary) });
+  // 版の目印はデータを埋める前に置き換える(記録の本文に同じ文字列があっても触れない)
+  const html = embedData(template.replace(CODE_PLACEHOLDER, codeStamp()), { ...data, sessions: data.sessions.map(packSummary) });
   const htmlPath = join(input.outDir, 'atlas.html');
   await writeFile(htmlPath, html);
   // 用語の説明は 1 枚だけ別ページ(atlas.html と詳細ページからリンク)

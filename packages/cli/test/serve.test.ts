@@ -6,6 +6,7 @@ import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { codeStamp } from '../../core/src/code-stamp.ts';
 import { BYE_GRACE_MS, DEFAULT_IDLE_MS, findRunningServer, SERVE_STATE_FILE, startServe, TOKEN_PLACEHOLDER, type ServeHandle } from '../src/serve.ts';
 
 const ATLAS = (anonymized: boolean): string =>
@@ -61,7 +62,22 @@ describe('serve', () => {
     const st = JSON.parse(await readFile(join(out, SERVE_STATE_FILE), 'utf8'));
     expect(st).toMatchObject({ port: h!.port, pid: process.pid });
     expect(JSON.stringify(st)).not.toContain(h!.token);
-    expect(await findRunningServer(out)).toEqual({ port: h!.port, pid: process.pid });
+    expect(await findRunningServer(out)).toEqual({ port: h!.port, pid: process.pid, code: codeStamp() });
+  });
+
+  it('版の目印: どの応答にも起動したときの目印(x-atlas-code)を付ける。目印を返さない古いサーバの代わり(null)では付けない', async () => {
+    await start();
+    const beat = await fetch(`${base()}/api/heartbeat`, { method: 'POST', headers: { 'x-atlas-token': h!.token } });
+    expect(beat.headers.get('x-atlas-code')).toBe(codeStamp());
+    expect((await fetch(h!.url)).headers.get('x-atlas-code')).toBe(codeStamp());
+    expect((await fetch(`${base()}/api/nothing`)).headers.get('x-atlas-code')).toBe(codeStamp());
+    await h!.close();
+    await start({ codeStamp: 'old' });
+    expect(await findRunningServer(out)).toMatchObject({ code: 'old' });
+    await h!.close();
+    await start({ codeStamp: null });
+    expect((await fetch(`${base()}/api/heartbeat`, { method: 'POST', headers: { 'x-atlas-token': h!.token } })).headers.has('x-atlas-code')).toBe(false);
+    expect(await findRunningServer(out)).toMatchObject({ code: null });
   });
 
   it('メモの API: 読みは token 無し、書きは token が要る。rev の競合は 409 で書かない。/api/state に概要が出る', async () => {
