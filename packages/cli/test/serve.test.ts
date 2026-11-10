@@ -2,6 +2,7 @@
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { request } from 'node:http';
+import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -287,6 +288,34 @@ describe('serve', () => {
     await post('bye', 'c');
     expect(await h!.done).toBe('画面がすべて閉じられた');
     expect(performance.now() - t0).toBeGreaterThan(250);
+    h = null;
+  });
+
+  it('止めるときは、まだ何も送っていない接続(ブラウザが次の要求のために先に開けておくもの)や送りかけの要求が残っていても、待たずに止まる', async () => {
+    await start({ idleMs: 600_000, byeGraceMs: 200 });
+    const open = async (): Promise<Socket> => {
+      const s = connect(h!.port, '127.0.0.1');
+      s.on('error', () => {});
+      await new Promise((r) => s.once('connect', r));
+      return s;
+    };
+    const quiet = await open();
+    const partial = await open();
+    partial.write('GET /atlas.html HTTP/1.1\r\nHost: 127.0.0.1\r\n');
+    const cut = Promise.all([quiet, partial].map((s) => new Promise<void>((r) => s.once('close', () => r()))));
+    try {
+      const post = (p: string): Promise<Response> => fetch(`${base()}/api/${p}`, { method: 'POST', headers: { 'x-atlas-token': h!.token, 'x-atlas-client': 'a', 'x-atlas-seq': p === 'bye' ? '2' : '1' } });
+      await post('heartbeat');
+      await post('bye');
+      const t0 = performance.now();
+      // 以前は close() がこの 2 本の接続が閉じるのを待ち続け、done が返らなかった
+      expect(await Promise.race([h!.done, new Promise((r) => setTimeout(() => r('5 秒たっても止まらない'), 5000))])).toBe('画面がすべて閉じられた');
+      expect(performance.now() - t0).toBeLessThan(3000);
+      await cut;
+    } finally {
+      quiet.destroy();
+      partial.destroy();
+    }
     h = null;
   });
 
