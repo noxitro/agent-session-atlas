@@ -51,7 +51,7 @@ jobs:
       # ブラウザの本体は Playwright の版ごとにキャッシュする(毎回のダウンロードを省く)。
       # Linux はブラウザが使う共有ライブラリも入れる(--with-deps。キャッシュがあっても共有ライブラリは入れ直す)
       - if: matrix.node == 24
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ runner.os == 'Windows' && '~\AppData\Local\ms-playwright' || '~/.cache/ms-playwright' }}
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
