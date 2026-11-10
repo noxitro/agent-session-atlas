@@ -72,7 +72,7 @@ if (process.platform === 'win32') {
     return text;
   };
   const upBat = runBat('upload-project.bat', '\n\n');
-  if (!/プロジェクト\(|送れるセッションがありません/.test(upBat)) fail(`upload-project.bat が、送る操作(プロジェクトの一覧)まで進みませんでした:\n${upBat}`);
+  if (!/== 送るプロジェクト|送れるセッションがありません/.test(upBat)) fail(`upload-project.bat が、送る操作(プロジェクトの一覧)まで進みませんでした:\n${upBat}`);
   const setupBat = runBat('setup.bat', '\n\n\nn\n\n');
   if (!setupBat.includes('agent-session-atlas の初期設定')) fail(`setup.bat が、初期設定のスクリプトまで進みませんでした:\n${setupBat}`);
   if (existsSync(join(pkg, 'atlas.config.json'))) fail('setup.bat で書かない答えをしたのに atlas.config.json ができました');

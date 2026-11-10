@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { checkTarget, listProjects, openUploadContext, projectTarget, uploadGroup, uploadTarget } from '../src/group-upload.ts';
-import { parseNumbers, runUploadProject, type UploadProjectIo } from '../src/upload-project.ts';
+import { fit, parseNumbers, runUploadProject, UploadIncompleteError, width, type UploadProjectIo } from '../src/upload-project.ts';
 
 describe('プロジェクトのセッションをまとめて送る', () => {
   let dir: string;
@@ -65,7 +65,7 @@ describe('プロジェクトのセッションをまとめて送る', () => {
     expect((await projectTarget(paths(), 'owner/app')).ids).toEqual(['s1']);
     const f = fakeIo([''], []);
     await runUploadProject(f.io, { paths: paths(), configPath });
-    expect(f.printed.join('\n')).toMatch(/owner\/app {2}1 件 .*ほかにログのフォルダが無いので送れないもの 1 件/);
+    expect(f.printed.join('\n')).toMatch(/1\. owner\/app +1 セッション +最終更新 2026-11-01\(ほかに、ログが無くて送れないもの 1 件\)/);
   });
 
   it('フォルダ名が同じになるタスクタグがあっても、まだ送っていなければ送れる。送り先にそのタグがすでに送られていれば送らない(README と索引が上書きし合うため)', async () => {
@@ -92,8 +92,8 @@ describe('プロジェクトのセッションをまとめて送る', () => {
     const printed: string[] = [];
     const io: UploadProjectIo = {
       ask: async (q) => {
-        // 1 回目の「送るなら y…」を待っている間に、ログに鍵が書き足される
-        if (/送るなら y/.test(q) && !changed) {
+        // 1 回目の「y = 送る…」を待っている間に、ログに鍵が書き足される
+        if (/y = 送る/.test(q) && !changed) {
           changed = true;
           const token = ['ghp', 'CHANGEDFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE'].join('_');
           await writeFile(join(out, 'snapshot', 'session-state', 's1', 'events.jsonl'), JSON.stringify({ data: token }) + '\n');
@@ -132,7 +132,7 @@ describe('プロジェクトのセッションをまとめて送る', () => {
     const f = fakeIo([''], []);
     expect(await runUploadProject(f.io, { paths: paths(), configPath })).toBe(false);
     expect(f.pickedFrom).toEqual([]);
-    expect(f.printed.join('\n')).toMatch(/1\. owner\/app {2}2 件/);
+    expect(f.printed.join('\n')).toMatch(/1\. owner\/app +2 セッション/);
   });
 
   it('タグの無いセッションも送り、各セッションのタスクタグを README・索引・セッションのフォルダに書く(人と AI がタスクを見分けられる)', async () => {
@@ -194,7 +194,7 @@ describe('プロジェクトのセッションをまとめて送る', () => {
     expect(await runUploadProject(h.io, { paths: paths(), configPath })).toBe(false);
     expect(h.printed.join('\n')).toContain('「9」に当たるプロジェクトがありません。一覧の番号(1〜2)か名前を入れ直してください。');
     expect(h.printed.join('\n')).toContain('「3-1」に当たるプロジェクトがありません');
-    expect(h.asked.filter((q) => /送るプロジェクトの番号/.test(q))).toHaveLength(3);
+    expect(h.asked.filter((q) => /番号を入れて Enter/.test(q))).toHaveLength(3);
   });
 
   it('番号は「1 3 5-8」「1,3」のように複数選べる(全角も可。入力の順・重複なし)。読めない・範囲の外は null', () => {
@@ -215,31 +215,35 @@ describe('プロジェクトのセッションをまとめて送る', () => {
     expect(existsSync(join(rootA, 'X__work_tool', 's4', 'events.jsonl'))).toBe(true);
     const text = f.printed.join('\n');
     expect(text).toContain('毎回同じものを送るなら');
-    expect(text).toContain('2 プロジェクトを送る前に確かめてください');
+    expect(text).toContain('== 送る前の確認 ==');
     expect(text).toContain(`送り先: ${rootA}(この中にプロジェクトごとのフォルダを作ります)`);
-    expect(text).toMatch(/1\. owner\/app: 2 セッション/);
-    expect(text).toMatch(/2\. X:\\work\\tool: 1 セッション/);
-    expect(text).toMatch(/合計: 3 セッション/);
-    expect(text).toMatch(/\[1\/2\] owner\/app: 写しています/);
-    expect(text).toMatch(/送りました: 「X:\\work\\tool」 1 セッション/);
+    expect(text).toMatch(/1\. owner\/app +2 セッション/);
+    expect(text).toMatch(/2\. X:\\work\\tool +1 セッション/);
+    expect(text).toMatch(/合計 +3 セッション/);
+    expect(text).toMatch(/\[1\/2\] owner\/app +2 セッションを送りました/);
+    expect(text).toMatch(/\[2\/2\] X:\\work\\tool +1 セッションを送りました/);
+    expect(text).toContain('== 終わりました ==');
+    expect(text).toContain('2 プロジェクト・3 セッションを送りました。');
     expect(text).toContain('それぞれのフォルダの README.md');
+    // 写している途中の様子は、行を増やして出さない(io.status が無い = 端末でないときは出さない)
+    expect(text).not.toMatch(/ \/ \d+ セッション/);
     // 2 回目は置き換えの件数を合計に出す
     const g = fakeIo(['1-2', ''], []);
     expect(await runUploadProject(g.io, { paths: paths(), configPath })).toBe(false);
-    expect(g.printed.join('\n')).toMatch(/合計: 3 セッション.*うち 3 件は前に送ったものを置き換えます/);
+    expect(g.printed.join('\n')).toMatch(/合計 +3 セッション[\s\S]*うち 3 セッションは、前に送ったものを置き換えます。/);
   });
 
   it('画面で印を付けたプロジェクト(uploadProjects)は番号を聞かずに送る。印の無いものは送らずに名前を出し、今の集計に無いものも知らせる', async () => {
     await writeFile(configPath, JSON.stringify({ uploadRoot: rootA, uploadProjects: ['X:\\work\\tool', '消えたプロジェクト'] }));
     const f = fakeIo(['y'], []);
     expect(await runUploadProject(f.io, { paths: paths(), configPath })).toBe(true);
-    expect(f.asked.some((q) => /送るプロジェクトの番号/.test(q))).toBe(false);
+    expect(f.asked.some((q) => /番号を入れて Enter/.test(q))).toBe(false);
     expect(existsSync(join(rootA, 'X__work_tool', 's4'))).toBe(true);
     expect(existsSync(join(rootA, 'owner_app'))).toBe(false);
     const text = f.printed.join('\n');
-    expect(text).toMatch(/まとめて送るプロジェクト.*: 1 件\n +1\. X:\\work\\tool {2}1 件/);
-    expect(text).toContain('今の集計に送れるセッションが無いもの(送りません): 消えたプロジェクト');
-    expect(text).toContain('印の無いプロジェクトが 1 件あります(送りません)。最近更新したもの: owner/app(2026-11-03)');
+    expect(text).toContain('画面で印を付けた 1 プロジェクトを送ります。');
+    expect(text).toContain('印はあるが、送れるセッションが無いもの: 消えたプロジェクト');
+    expect(text).toContain('印の無い 1 プロジェクトは送りません(最近更新: owner/app)。');
     // 1 プロジェクトだけなら、送り先はそのプロジェクトのフォルダで見せる
     expect(text).toContain(`送り先: ${join(rootA, 'X__work_tool')}`);
     expect(text).not.toContain('毎回同じものを送るなら');
@@ -271,7 +275,8 @@ describe('プロジェクトのセッションをまとめて送る', () => {
     const f = fakeIo(['y'], []);
     await expect(runUploadProject(f.io, { paths: paths(), configPath })).rejects.toThrow(/1 プロジェクトを送れませんでした.*送れたのは 1 プロジェクト/);
     const text = f.printed.join('\n');
-    expect(text).toMatch(/送れませんでした: 「owner\/app」/);
+    expect(text).toMatch(/\[1\/2\] owner\/app +送れませんでした: /);
+    expect(text).toContain('== 送れなかったものがあります ==');
     expect(text).toMatch(/送れなかったプロジェクト.1 件.: owner\/app/);
     expect(existsSync(join(rootA, 'X__work_tool', 's4', 'events.jsonl'))).toBe(true);
   });
@@ -285,8 +290,10 @@ describe('プロジェクトのセッションをまとめて送る', () => {
     expect(existsSync(join(rootA, 'X__work_tool'))).toBe(false);
     expect(JSON.parse(await readFile(configPath, 'utf8'))).toEqual(config);
     const text = f.printed.join('\n');
-    expect(text).toContain('「X:\\work\\tool」を送る前に確かめてください');
-    expect(text).toContain('「owner/app」を送る前に確かめてください');
+    // 1 プロジェクトなら、確認にそのプロジェクトの名前を出す(選び直した後は、選び直したもの)
+    const [, first, second] = text.split('== 送る前の確認 ==');
+    expect(first).toContain('X:\\work\\tool: 1 セッション');
+    expect(second).toContain('owner/app: 2 セッション');
     const g = fakeIo(['n', ''], []);
     expect(await runUploadProject(g.io, { paths: paths(), configPath })).toBe(false);
     expect(g.printed.join('\n')).toContain('やめました(何も送っていません)。');
@@ -300,15 +307,18 @@ describe('プロジェクトのセッションをまとめて送る', () => {
     f.io.print = (l) => {
       print(l);
       // 1 つ目を送り終えたところで、2 つ目のログが書き足される
-      if (l.startsWith('送りました: 「owner/app」')) writeFileSync(join(out, 'snapshot', 'session-state', 's4', 'events.jsonl'), '{"id":"s4"}\n{"more":1}\n');
+      if (/owner\/app +2 セッションを送りました/.test(l)) writeFileSync(join(out, 'snapshot', 'session-state', 's4', 'events.jsonl'), '{"id":"s4"}\n{"more":1}\n');
     };
     expect(await runUploadProject(f.io, { paths: paths(), configPath })).toBe(true);
     const text = f.printed.join('\n');
     expect(text).toContain('確かめた後に、写すログが変わりました');
     // 確かめ直すのは残りの 1 つだけ(送ったものは送り直さない)
-    expect(text).toMatch(/2 プロジェクトを送る前に確かめてください[\s\S]*「X:\\work\\tool」を送る前に確かめてください/);
-    expect(f.printed.filter((l) => l.startsWith('送りました: '))).toHaveLength(2);
-    expect(f.asked.filter((q) => /送るなら y/.test(q))).toHaveLength(2);
+    const [, first, second] = text.split('== 送る前の確認 ==');
+    expect(first).toMatch(/1\. owner\/app +2 セッション[\s\S]*2\. X:\\work\\tool +1 セッション/);
+    expect(second).toContain('X:\\work\\tool: 1 セッション');
+    expect(second).not.toContain('owner/app');
+    expect(f.printed.filter((l) => /セッションを送りました(\(.*\))?$/.test(l))).toHaveLength(2);
+    expect(f.asked.filter((q) => /y = 送る/.test(q))).toHaveLength(2);
     expect(await readFile(join(rootA, 'X__work_tool', 's4', 'events.jsonl'), 'utf8')).toContain('more');
   });
 
@@ -318,7 +328,7 @@ describe('プロジェクトのセッションをまとめて送る', () => {
     const print = f.io.print;
     f.io.print = (l) => {
       print(l);
-      if (l.startsWith('送りました: 「owner/app」')) {
+      if (/owner\/app +2 セッションを送りました/.test(l)) {
         // 2 つ目のログが変わり(確かめ直しになる)、その間に画面の「集計し直す」が始まる(生きている別の処理がロックを持つ)
         writeFileSync(join(out, 'snapshot', 'session-state', 's4', 'events.jsonl'), '{"changed":1}\n');
         writeFileSync(join(out, '.job.json'), JSON.stringify({ pid: process.ppid, kind: 'refresh', by: 'serve', startedAt: new Date().toISOString() }));
@@ -328,6 +338,33 @@ describe('プロジェクトのセッションをまとめて送る', () => {
     expect(f.printed.join('\n')).toContain('そのフォルダの README.md にあります');
     expect(existsSync(join(rootA, 'owner_app', 's1'))).toBe(true);
     expect(existsSync(join(rootA, 'X__work_tool'))).toBe(false);
+  });
+
+  it('調べている・写している途中の様子は io.status に出し(行を増やさない)、送った結果は 1 プロジェクト 1 行で print に出す', async () => {
+    await writeFile(configPath, JSON.stringify({ uploadRoot: rootA, uploadProjects: ['owner/app', 'X:\\work\\tool'] }));
+    const f = fakeIo(['y'], []);
+    const statuses: string[] = [];
+    f.io.status = (t) => statuses.push(t);
+    expect(await runUploadProject(f.io, { paths: paths(), configPath })).toBe(true);
+    expect(statuses[0]).toContain('調べています');
+    expect(statuses.some((s) => /\[1\/2\] owner\/app +\d \/ 2 セッション/.test(s))).toBe(true);
+    expect(statuses.some((s) => /\[2\/2\] X:\\work\\tool +\d \/ 1 セッション/.test(s))).toBe(true);
+    expect(f.printed.join('\n')).not.toMatch(/調べています| \/ \d+ セッション/);
+    expect(f.printed.filter((l) => /セッションを送りました(\(.*\))?$/.test(l))).toHaveLength(2);
+  });
+
+  it('送れなかったものがあれば、画面に出した上で UploadIncompleteError で止まる(bat で同じことを 2 度出さない)', async () => {
+    await writeFile(configPath, JSON.stringify({ uploadRoot: rootA, uploadProjects: ['owner/app'] }));
+    await writeFile(join(rootA, 'owner_app'), 'ファイル');
+    await expect(runUploadProject(fakeIo(['y'], []).io, { paths: paths(), configPath })).rejects.toBeInstanceOf(UploadIncompleteError);
+  });
+
+  it('画面での幅は全角を 2 と数え、1 行に収めるときは全角の途中で切らない', () => {
+    expect(width('owner/app')).toBe(9);
+    expect(width('送り先(abc)')).toBe(11);
+    expect(width('ＡＢ')).toBe(4);
+    expect(fit('写しています abc', 7)).toBe('写して');
+    expect(fit('abc', 10)).toBe('abc');
   });
 
   it('点検とアップロードは、渡した読む口を閉じずに使い回す(まとめて送るときに DB を開き直さない)', async () => {
