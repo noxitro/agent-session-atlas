@@ -23,6 +23,7 @@ import { buildReport, extractEmbedded, type ReportData } from '../packages/repor
 import { GLOSSARY, GLOSSARY_GROUPS } from '../packages/report/src/lib/glossary.ts';
 import { computeMetrics, GROUPED_PROJECTS } from '../packages/core/src/index.ts';
 import { buildFixtureHome, FIXTURES, readFixtureStore, ROOT } from './fixture-home.ts';
+import { startServe } from '../packages/cli/src/serve.ts';
 
 const LIVE = process.env.ATLAS_LIVE === '1';
 const WORK = join(ROOT, 'out', 'e2e-phase2');
@@ -402,9 +403,16 @@ describe('Phase 2 E2E: fixtures', () => {
     const base = url.replace(/\/atlas\.html$/, '');
     try {
       // 配信された atlas.html には token が入り、.serve.json がある
-      const served = await (await fetch(url)).text();
+      const res = await fetch(url);
+      const served = await res.text();
       const token = /<meta name="atlas-token" content="([^"]+)"/.exec(served)![1];
       expect(token).not.toBe('__ATLAS_TOKEN__');
+      // 版の目印: 集計が埋めたページの目印と、サーバが返す目印が同じ(同じコードで作って起動したので、画面は「版が違います」を出さない)
+      const pageCode = /<meta name="atlas-code" content="([^"]+)"/.exec(served)?.[1];
+      expect(pageCode).toMatch(/^[0-9a-f]{16}$/);
+      expect(res.headers.get('x-atlas-code')).toBe(pageCode);
+      const detail = await (await fetch(new URL(`sessions/${data.sessions[0].id}.html`, url).href)).text();
+      expect(/<meta name="atlas-code" content="([^"]+)"/.exec(detail)?.[1]).toBe(pageCode);
       expect(JSON.parse(await readFile(join(out, '.serve.json'), 'utf8'))).toMatchObject({ pid: child.pid });
       const jf = async (path: string, init: RequestInit = {}): Promise<{ status: number; body: any }> => {
         const r = await fetch(base + path, { ...init, headers: { 'content-type': 'application/json', 'x-atlas-token': token, ...(init.headers ?? {}) } });
@@ -435,12 +443,39 @@ describe('Phase 2 E2E: fixtures', () => {
       const again = atlas(['serve', '--out', out, '--notes-dir', notes, '--no-open']);
       expect(again.status, again.stderr).toBe(0);
       expect(again.stdout).toMatch(/既に動いているサーバがあります/);
+      expect(again.stdout).not.toMatch(/版が違います/);
     } finally {
       child.kill();
       await new Promise((r) => child.once('exit', r));
     }
     await rm(join(out, '.serve.json'), { force: true });
     // out/ を元に戻す(最後の build は --group でエラーになったので out は変わっていない)
+  });
+
+  it('動いているサーバが今の atlas と違う版なら、二重起動のときにターミナルへ知らせる', async () => {
+    const notes = join(WORK, 'notes-serve');
+    const old = await startServe({ outDir: out, notesDir: notes, groupsPath: join(notes, 'groups.json'), port: 0, open: false, codeStamp: 'old-version' });
+    try {
+      // 同じプロセスのサーバが応えられるよう、spawnSync ではなく待てる形で起動する
+      const again = await new Promise<{ status: number | null; stdout: string; stderr: string }>((ok) => {
+        const c = spawn(process.execPath, [CLI, 'serve', '--out', out, '--notes-dir', notes, '--no-open'], { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] });
+        let so = '';
+        let se = '';
+        c.stdout.on('data', (d) => (so += String(d)));
+        c.stderr.on('data', (d) => (se += String(d)));
+        // 見つけられずに自分で起動してしまったら、待ち続けないよう止める
+        const t = setTimeout(() => c.kill(), 30_000);
+        c.once('exit', (status) => {
+          clearTimeout(t);
+          ok({ status, stdout: so, stderr: se });
+        });
+      });
+      expect(again.status, again.stderr).toBe(0);
+      expect(again.stdout).toMatch(/既に動いているサーバがあります/);
+      expect(again.stdout).toMatch(/動いているサーバは、今の atlas と版が違います.*黒い窓を閉じてから、もう一度 atlas\.bat を実行してください/);
+    } finally {
+      await old.close();
+    }
   });
 
   it('judgments.json があれば推定工数が埋め込まれる(Phase 3 の口)', async () => {

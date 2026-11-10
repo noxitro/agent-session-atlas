@@ -47,7 +47,7 @@ import {
   type SessionGroup,
 } from '../../report/src/index.ts';
 import type { SessionRecord, SessionsFile, WikiSpec } from '../../core/src/index.ts';
-import { DEFAULT_PHASE_NAMES } from '../../core/src/index.ts';
+import { codeStamp, DEFAULT_PHASE_NAMES } from '../../core/src/index.ts';
 import { homedir } from 'node:os';
 import { describeVault, wikiSkillCandidates } from './setup.ts';
 import { importJudgmentsText, importTurnJudgmentsText, JudgmentValidationError, readBundleManifest, readTurnBundleManifest, readTurnJudgments, turnImportPhases } from '../../judge/src/index.ts';
@@ -98,6 +98,8 @@ export interface ServeOptions {
   folders?: { canPick?: boolean; pick?: (title: string, initial: string | null) => Promise<string | null>; open?: (dir: string) => void };
   /** Copilot のデータの場所(画面の設定で、名前に wiki を含むインストール済みの skill を候補に出すのに使う)。既定は ATLAS_COPILOT_HOME か ~/.copilot */
   copilotHome?: string;
+  /** 応答の x-atlas-code で返す版の目印。既定は codeStamp()(起動したときのソースの中身)。null なら返さない(目印を返す前の古いサーバの代わり。テスト用) */
+  codeStamp?: string | null;
 }
 
 export interface ServeHandle {
@@ -229,8 +231,8 @@ export function openInBrowser(url: string, log: (m: string) => void = () => {}):
   }
 }
 
-/** 既に動いているサーバがあれば { port } を返す(out/.serve.json を見て GET /api/state が応えるか) */
-export async function findRunningServer(outDir: string): Promise<{ port: number; pid: number } | null> {
+/** 既に動いているサーバがあれば { port, code } を返す(out/.serve.json を見て GET /api/state が応えるか)。code はそのサーバの版の目印(返さない古いサーバは null) */
+export async function findRunningServer(outDir: string): Promise<{ port: number; pid: number; code: string | null } | null> {
   const p = join(outDir, SERVE_STATE_FILE);
   if (!existsSync(p)) return null;
   try {
@@ -238,7 +240,7 @@ export async function findRunningServer(outDir: string): Promise<{ port: number;
     if (!j.port) return null;
     const r = await fetch(`http://127.0.0.1:${j.port}/api/state`, { signal: AbortSignal.timeout(1500) });
     if (r.headers.get('x-atlas-serve') !== '1') return null;
-    return { port: j.port, pid: j.pid ?? 0 };
+    return { port: j.port, pid: j.pid ?? 0, code: r.headers.get('x-atlas-code') };
   } catch {
     return null;
   }
@@ -250,6 +252,8 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
   const groupsPath = resolve(o.groupsPath);
   const memoDir = memosDir(resolve(o.notesDir));
   const token = randomBytes(24).toString('base64url');
+  /** このサーバの版の目印(画面がページの目印と比べ、違えば「版が違います」と出す。core の code-stamp.ts) */
+  const code = o.codeStamp === undefined ? codeStamp() : o.codeStamp;
   const idleMs = o.idleMs ?? DEFAULT_IDLE_MS;
   const byeGraceMs = o.byeGraceMs ?? BYE_GRACE_MS;
   const firstMs = o.firstHeartbeatMs ?? DEFAULT_FIRST_HEARTBEAT_MS;
@@ -1251,6 +1255,7 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
   }
 
   server = createServer((req, res) => {
+    if (code) res.setHeader('x-atlas-code', code);
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
     const path = url.pathname;
     const handle = async (): Promise<void> => {

@@ -3,7 +3,7 @@
 import { esc } from './detail.ts';
 import { date, dateTime, dec, duration, int } from './lib/format.ts';
 import { cleanHeading, THRESHOLDS, type Candidate, type InstructionFindings, type SkillStat, type StuckSession, type VersionMeta, type VersionStat } from './lib/insights.ts';
-import { NAV_JS, renderRail, renderTop } from './page-nav.ts';
+import { codeMeta, NAV_JS, renderRail, renderTop } from './page-nav.ts';
 
 export const INSIGHTS_FILE = 'insights.html';
 export const INSIGHTS_JSON = 'insights.json';
@@ -153,6 +153,7 @@ export function renderInsightsHtml(o: InsightsPageOptions): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <meta name="atlas-token" content="__ATLAS_TOKEN__">
+${codeMeta()}
 <meta name="theme-color" content="#f3f5f3" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0e1110" media="(prefers-color-scheme: dark)">
 <title>改善点 | Copilot Session Atlas</title>

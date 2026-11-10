@@ -28,6 +28,7 @@ export { loadSqlite, openReadOnly, openWritable } from './sqlite.ts';
 export { renameReplacing } from './fs-retry.ts';
 export type { Database } from './sqlite.ts';
 export { runPipeline } from './pipeline.ts';
+export { codeStamp, computeCodeStamp } from './code-stamp.ts';
 export type { PipelineResult } from './pipeline.ts';
 export { normalizeModel, INTERNAL_TOOLS, isInternalTool, isUserTurn, isAutopilotContinuation, isMainAssistantMessage, resolveFilePath, filePathKey, isSessionStatePath, FileTracker } from './classify.ts';
 export type { FileOp } from './classify.ts';

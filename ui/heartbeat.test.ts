@@ -86,4 +86,52 @@ describe('サーバの止まり方', () => {
       await server.close();
     }
   }, 60_000);
+
+  it('版のずれ: サーバが画面と違う版なら(目印を返さない古いサーバも)、一覧と詳細ページに「画面とサーバの版が違います」を出す。同じ版なら出さない', async () => {
+    const s = JSON.parse(await readFile(join(out, 'sessions.json'), 'utf8')) as { sessions: { id: string }[] };
+    const detail = `sessions/${s.sessions[0].id}.html`;
+    // undefined: 同じコードで起動した(既定) / 'old-version': 違う版 / null: 目印を返さない古いサーバ
+    for (const [stamp, stale] of [
+      [undefined, false],
+      ['old-version', true],
+      [null, true],
+    ] as const) {
+      const server = await startServe({
+        outDir: out,
+        notesDir: notes,
+        groupsPath: join(notes, 'groups.json'),
+        port: 0,
+        open: false,
+        idleMs: 600_000,
+        firstHeartbeatMs: 600_000,
+        ...(stamp === undefined ? {} : { codeStamp: stamp }),
+      });
+      const page = await browser.newPage();
+      const problems: string[] = [];
+      page.on('pageerror', (e) => problems.push(e.message));
+      try {
+        for (const path of ['atlas.html', detail]) {
+          const label = `${String(stamp)} ${path}`;
+          const answered = page.waitForResponse((r) => /\/api\/heartbeat$/.test(r.url()));
+          await page.goto(new URL(path, server.url).href);
+          await answered;
+          const band = page.locator('.stale-band');
+          if (stale) {
+            await expect.poll(() => band.count(), { message: label }).toBe(1);
+            expect(await band.textContent(), label).toContain('画面とサーバの版が違います');
+            expect(await band.getAttribute('role'), label).toBe('alert');
+            // 止まった帯とは別(サーバは動いている)
+            expect(await page.locator('.down-band:not(.stale-band)').count(), label).toBe(0);
+          } else {
+            await page.waitForTimeout(500);
+            expect(await band.count(), label).toBe(0);
+          }
+        }
+        expect(problems).toEqual([]);
+      } finally {
+        await page.close();
+        await server.close();
+      }
+    }
+  }, 60_000);
 });

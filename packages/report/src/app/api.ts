@@ -1,6 +1,7 @@
 // atlas serve の API(画面と保存の境界)。http(s) で開かれ、serve が meta に token を入れたときだけ使える。
 // file:// で開いたときは token がプレースホルダのままなので何も呼ばない(console にエラーを出さない)。
 // fetch の宛先は同一オリジンの相対パス 'api/…' だけ(E2E の外部参照の検査はこの形だけを許す)。
+import { isStaleServer } from '../lib/code-check.ts';
 import type { MemoSummary } from '../lib/memo.ts';
 import type { ReportGroup } from '../lib/types.ts';
 
@@ -328,9 +329,13 @@ export function clientId(): string {
 /**
  * 3 秒ごとに heartbeat を送り、ページを閉じるときは bye を送る(serve.ts の先頭の説明)。
  * 続けて HEARTBEAT_FAILS 回失敗したら(token が違うと言われたらすぐ)onDown を 1 回呼んで止める。
- * タブが表に戻ったとき・戻る / 進むでこのページに戻ったときは、間隔を待たずにすぐ送る。戻り値で止められる
+ * タブが表に戻ったとき・戻る / 進むでこのページに戻ったときは、間隔を待たずにすぐ送る。戻り値で止められる。
+ * 最初に成功した応答の版の目印(x-atlas-code)がページの meta atlas-code と違えば(返さない古いサーバも)onStale を 1 回呼ぶ
  */
-export function startHeartbeat(token: string, onDown: () => void, intervalMs = 3000): () => void {
+export function startHeartbeat(token: string, onDown: () => void, o: { intervalMs?: number; onStale?: () => void } = {}): () => void {
+  const intervalMs = o.intervalMs ?? 3000;
+  const pageCode = document.querySelector<HTMLMetaElement>('meta[name="atlas-code"]')?.content ?? null;
+  let checked = false;
   const client = clientId();
   const h = { ...headers(token), 'x-atlas-client': client };
   /** 送った順の番号(サーバは bye より前に出た heartbeat が遅れて届いても数え直さない) */
@@ -352,8 +357,11 @@ export function startHeartbeat(token: string, onDown: () => void, intervalMs = 3
     // 宛先は呼ぶところで文字列のまま書く(外へ通信しないことを e2e が fetch( の直後の文字列で確かめる。1 つの関数で宛先を選ぶと、最小化で fetch(条件 ? … : …) にまとめられる)
     fetch('api/heartbeat', init())
       .then((r) => {
-        if (r.ok) fails = 0;
-        else fail(r.status === 403);
+        if (!r.ok) return fail(r.status === 403);
+        fails = 0;
+        if (checked) return;
+        checked = true;
+        if (isStaleServer(pageCode, r.headers.get('x-atlas-code'))) o.onStale?.();
       })
       .catch(() => fail(false));
   };
