@@ -167,7 +167,60 @@ export const api = {
 };
 
 /** Phase 14: 画面から動かす処理(serve の jobs.ts と同じ形) */
-export type JobKind = 'refresh' | 'judge' | 'full' | 'bundle' | 'export' | 'turn-bundle' | 'turn-judge';
+/** 画面の「設定」(serve の settingsOf と同じ形)。setup.bat と同じ項目を画面から決める */
+export interface WikiSetting {
+  path: string;
+  index?: string[];
+  pages?: string[];
+  extensions?: string[];
+  skills?: string[];
+}
+export interface Settings {
+  configPath: string;
+  /** 設定ファイルを読めない理由(読めなければ書き換えない) */
+  error: string | null;
+  canPick: boolean;
+  wikis: WikiSetting[];
+  /** 普段の工程名。設定に無ければ null(既定の defaultPhases を使う) */
+  phases: string[] | null;
+  defaultPhases: string[];
+  uploadRoot: string | null;
+  uploadProjects: string[];
+  /** 名前に wiki を含むインストール済みの skill */
+  skillCandidates: string[];
+}
+/** 調べた vault(serve の describeVault と同じ形)。dir は実在したときのフルパス */
+export interface VaultInfo {
+  name: string;
+  dir: string | null;
+  hasIndex: boolean;
+  pagesDir: string | null;
+}
+export const settingsApi = {
+  get(token: string): Promise<Settings> {
+    return connect(fetch('api/settings', { cache: 'no-store', headers: headers(token) }), (r) => parse<Settings>(r));
+  },
+  describeVault(token: string, input: string): Promise<VaultInfo> {
+    return connect(fetch('api/settings/vault/describe', { method: 'POST', headers: headers(token), body: JSON.stringify({ input }) }), (r) => parse<VaultInfo>(r));
+  },
+  /** フォルダを選ぶ画面を出して vault を選ぶ(取り消したら null) */
+  pickVault(token: string): Promise<VaultInfo | null> {
+    return connect(fetch('api/settings/vault/pick', { method: 'POST', headers: headers(token) }), (r) => parse<VaultInfo | null>(r));
+  },
+  addWiki(token: string, vault: WikiSetting): Promise<Settings> {
+    return connect(fetch('api/settings/wikis', { method: 'POST', headers: headers(token), body: JSON.stringify({ vault }) }), (r) => parse<Settings>(r));
+  },
+  /** 見えている一覧の index 番目(名前が path のもの)を外す */
+  removeWiki(token: string, index: number, path: string): Promise<Settings> {
+    return connect(fetch('api/settings/wikis/remove', { method: 'POST', headers: headers(token), body: JSON.stringify({ index, path }) }), (r) => parse<Settings>(r));
+  },
+  /** 普段の工程名(null なら既定に戻す) */
+  setPhases(token: string, phases: string[] | null): Promise<Settings> {
+    return connect(fetch('api/settings/phases', { method: 'PUT', headers: headers(token), body: JSON.stringify({ phases }) }), (r) => parse<Settings>(r));
+  },
+};
+
+export type JobKind ='refresh' | 'judge' | 'full' | 'bundle' | 'export' | 'turn-bundle' | 'turn-judge';
 /** 何を判定するか: 工数(セッションごと)/ 依頼ごとの採用・種類・工程 */
 export type JudgeTarget = 'effort' | 'turns';
 export type JobBackend = 'copilot-cli' | 'opencode';

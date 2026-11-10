@@ -21,6 +21,8 @@ const CLI = join(ROOT, 'packages', 'cli', 'src', 'main.ts');
 const MEMO = 'UI テストのメモ KESTREL-MEMO';
 
 describe('画面の操作', () => {
+  /** 架空の fixture の Copilot のデータの場所(設定の skill の候補もここから出す) */
+  let home: string;
   const out = join(WORK, 'out');
   const notes = join(WORK, 'notes');
   const groupsPath = join(notes, 'groups.json');
@@ -36,7 +38,6 @@ describe('画面の操作', () => {
 
   beforeAll(async () => {
     await rm(WORK, { recursive: true, force: true });
-    let home: string;
     ({ home, close } = await buildFixtureHome(join(WORK, 'home')));
     const r = spawnSync(process.execPath, [CLI, 'all', '--home', home, '--out', out, '--notes-dir', notes], { cwd: ROOT, encoding: 'utf8', timeout: 120_000 });
     expect(r.status, r.stderr).toBe(0);
@@ -52,6 +53,8 @@ describe('画面の操作', () => {
       firstHeartbeatMs: 600_000,
       configPath,
       folders: { canPick: true, pick: async () => pickAnswer, open: (d) => opened.push(d) },
+      // 設定の skill の候補は架空の fixture から出す(手元の ~/.copilot に左右されないように)
+      copilotHome: home,
     });
     browser = await chromium.launch();
     // 1440px: サイドバー(768px 以上)にグループの一覧が出る幅
@@ -971,6 +974,100 @@ describe('画面の操作', () => {
       expect(await section.locator('.send-note').innerText()).toMatch(/今 2 件/);
     } finally {
       await page.unroute('**/api/upload-projects');
+      if (before == null) await rm(configPath, { force: true });
+      else await writeFile(configPath, before);
+    }
+  });
+
+  it('k. 設定…: setup.bat を使わずに、vault(エクスプローラー・入力)・普段の工程名・アップロード先・まとめて送るプロジェクトを決められ、設定ファイルに書く。読めない設定では変えさせない', async () => {
+    const before = existsSync(configPath) ? await readFile(configPath, 'utf8') : null;
+    const vaultDir = join(WORK, 'vault-k');
+    await mkdir(join(vaultDir, 'wiki'), { recursive: true });
+    const root = join(WORK, 'atlas-logs-settings');
+    await mkdir(root, { recursive: true });
+    await writeFile(configPath, '{}');
+    // 名前に wiki を含むインストール済みの skill(候補に出る)
+    const skillDir = join(home, 'skills', 'wiki-k');
+    await mkdir(skillDir, { recursive: true });
+    const readConfig = async (): Promise<Record<string, unknown>> => JSON.parse(await readFile(configPath, 'utf8'));
+    try {
+      await page.goto('about:blank');
+      await page.goto(server.url);
+      const open = page.getByTestId('settings-open');
+      await expect.poll(() => open.isVisible()).toBe(true);
+      await open.click();
+      const dlg = page.getByTestId('settings-dialog');
+      const wiki = dlg.getByTestId('settings-wiki');
+      await expect.poll(() => wiki.innerText()).toMatch(/まだありません/);
+      // vault: エクスプローラーで選ぶ → 中を見て、ページは wiki/、index.md が無いので索引を尋ねる → 足す
+      pickAnswer = vaultDir;
+      await wiki.getByTestId('settings-vault-pick').click();
+      const found = wiki.getByTestId('settings-vault-found');
+      await expect.poll(() => found.innerText()).toMatch(/フォルダ名「vault-k」で足します/);
+      expect(await found.getByLabel(/個別ページを置くフォルダ/).inputValue()).toBe('wiki');
+      await found.getByLabel(/索引のファイル名/).fill('README.md');
+      // 候補の skill は初めから選んである。wiki-k だけを数える
+      expect(await found.getByRole('checkbox', { name: 'wiki-k' }).isChecked()).toBe(true);
+      for (const box of await found.getByRole('checkbox').all()) await box.uncheck();
+      await found.getByRole('checkbox', { name: 'wiki-k' }).check();
+      await found.getByTestId('settings-vault-add').click();
+      await expect.poll(readConfig).toEqual({ wikis: [{ path: 'vault-k', index: ['README.md'], pages: ['wiki'], skills: ['wiki-k'] }] });
+      // 足した後の焦点は、vault の入力欄(押したボタンが消えて本文の先頭に落ちないように)
+      await expect.poll(() => page.evaluate<string | null>("document.activeElement?.getAttribute('data-testid') ?? null")).toBe('settings-vault-input');
+      await expect.poll(() => wiki.getByTestId('settings-refresh').isVisible()).toBe(true);
+      expect(await wiki.locator('.items li').first().innerText()).toMatch(/vault-k[\s\S]*ページ: wiki・索引: README\.md/);
+      // 入力したフォルダ名(見つからない)も足せる。path だけなら文字列で書く
+      await wiki.getByTestId('settings-vault-input').fill('notes-k');
+      await wiki.getByRole('button', { name: '調べる' }).click();
+      await expect.poll(() => wiki.getByTestId('settings-vault-found').innerText()).toMatch(/「notes-k」で足します.*フォルダが見つからない/);
+      await wiki.getByTestId('settings-vault-found').getByLabel(/個別ページを置くフォルダ/).fill('.');
+      expect(await wiki.getByTestId('settings-vault-found').getByRole('checkbox', { name: 'wiki-k' }).isChecked()).toBe(false);
+      for (const box of await wiki.getByTestId('settings-vault-found').getByRole('checkbox').all()) await box.uncheck();
+      await wiki.getByTestId('settings-vault-add').click();
+      // ほかの vault でもう数えている skill は、初めから選ばない
+      await expect.poll(async () => (await readConfig()).wikis).toEqual([{ path: 'vault-k', index: ['README.md'], pages: ['wiki'], skills: ['wiki-k'] }, 'notes-k']);
+      // 外す
+      await wiki.getByRole('button', { name: 'vault「vault-k」を外す' }).click();
+      await expect.poll(async () => (await readConfig()).wikis).toEqual(['notes-k']);
+      // 普段の工程名: 保存 → 既定に戻す
+      const phases = dlg.getByTestId('settings-phases');
+      await phases.getByTestId('settings-phases-input').fill('設計 / 実装 / テスト');
+      await phases.getByRole('button', { name: '保存' }).click();
+      await expect.poll(async () => (await readConfig()).phases).toEqual(['設計', '実装', 'テスト']);
+      expect(await phases.getByTestId('settings-phases-saved').innerText()).toBe('保存しました。');
+      expect(await dlg.getByTestId('settings-status').innerText()).toBe('普段の工程名を保存しました。');
+      await phases.getByRole('button', { name: '既定に戻す' }).click();
+      await expect.poll(async () => 'phases' in (await readConfig())).toBe(false);
+      // アップロード先: エクスプローラーで選ぶ
+      pickAnswer = root;
+      const rootSec = dlg.getByTestId('settings-root');
+      await rootSec.getByTestId('settings-root-pick').click();
+      await expect.poll(async () => (await readConfig()).uploadRoot).toBe(root);
+      expect(await rootSec.getByTestId('settings-root-current').innerText()).toBe(root);
+      // まとめて送るプロジェクト: 絞り込んで印を付ける・外す(プロジェクト別の表と同じ設定)
+      const proj = dlg.getByTestId('settings-projects');
+      const first = proj.locator('.checks li').first();
+      const label = await first.locator('.pname').innerText();
+      await proj.getByTestId('settings-projects-filter').fill(label.slice(0, Math.max(2, Math.floor(label.length / 2))));
+      await expect.poll(() => proj.locator('.checks li').first().locator('.pname').innerText()).toBe(label);
+      await proj.locator('.checks li').first().getByRole('checkbox').check();
+      await expect.poll(async () => ((await readConfig()).uploadProjects as string[] | undefined)?.length ?? 0).toBe(1);
+      await expect.poll(() => proj.locator('.note').first().innerText()).toMatch(/今 1 件/);
+      await proj.locator('.checks li').first().getByRole('checkbox').uncheck();
+      await expect.poll(async () => 'uploadProjects' in (await readConfig())).toBe(false);
+      expect(await readConfig()).toEqual({ wikis: ['notes-k'], uploadRoot: root });
+      // 閉じると焦点は「設定…」に戻る
+      await dlg.getByTestId('settings-close').click();
+      await expect.poll(() => page.evaluate<string | null>("document.activeElement?.getAttribute('data-testid') ?? null")).toBe('settings-open');
+      // 読めない設定では、理由を出して変えさせない
+      await writeFile(configPath, '{ 壊れた');
+      await open.click();
+      await expect.poll(() => dlg.getByTestId('settings-config-error').innerText()).toMatch(/設定ファイルを読めないので/);
+      expect(await dlg.getByTestId('settings-vault-input').isDisabled()).toBe(true);
+      expect(await dlg.getByTestId('settings-phases-input').isDisabled()).toBe(true);
+      await dlg.getByTestId('settings-close').click();
+    } finally {
+      await rm(skillDir, { recursive: true, force: true });
       if (before == null) await rm(configPath, { force: true });
       else await writeFile(configPath, before);
     }

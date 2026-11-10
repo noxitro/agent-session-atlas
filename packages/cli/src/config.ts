@@ -218,12 +218,12 @@ function keepFormatting(raw: string, cur: Record<string, unknown>, key: string, 
 
 /**
  * 設定ファイルの 1 項目を、今の設定から決めて書き換える(読んでから書くまでをロックの中で行い、別の処理の書き換えと重ならないようにする)。
- * fn は今の設定(読めた中身を検査したもの)を受け取り、新しい値を返す。undefined なら項目を消し、NO_CHANGE なら何も書かない。
+ * fn は今の設定(読めた中身を検査したもの)と、書いてあるとおりの中身(~/ などを展開していないもの)を受け取り、新しい値を返す。undefined なら項目を消し、NO_CHANGE なら何も書かない。
  * 書く前に読むときと同じ検査を通す。ファイルが無ければ作る。読めない(壊れた)ファイルは上書きしない。
  * 値を差し替える・末尾に足す・消すだけで済むときは、他の項目の書き方(手で詰めた配列など)をそのまま残す。済まなければ全体を整えて書く。
  * 一時ファイルに書いてから置き換える(途中で止まっても設定ファイルが欠けない)。返すのは fn の返した値
  */
-export async function modifyConfig<T>(path: string, key: (typeof KEYS)[number], fn: (current: Omit<AtlasConfig, 'path'>) => T | typeof NO_CHANGE): Promise<T | typeof NO_CHANGE> {
+export async function modifyConfig<T>(path: string, key: (typeof KEYS)[number], fn: (current: Omit<AtlasConfig, 'path'>, raw: Readonly<Record<string, unknown>>) => T | typeof NO_CHANGE): Promise<T | typeof NO_CHANGE> {
   return withConfigLock(path, async () => {
     let cur: Record<string, unknown> = {};
     let raw: string | null = null;
@@ -237,7 +237,7 @@ export async function modifyConfig<T>(path: string, key: (typeof KEYS)[number], 
         throw new Error(`設定ファイル ${path} を読めないので書き換えません(${(e as Error).message})。setup.bat で作り直すか、手で直してください`);
       }
     }
-    const value = fn(parseConfig(cur));
+    const value = fn(parseConfig(cur), cur);
     if (value === NO_CHANGE) return value;
     const next = { ...cur, [key]: value };
     if (value === undefined) delete next[key];

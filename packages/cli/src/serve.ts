@@ -9,7 +9,7 @@ import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { extname, join, relative, resolve, sep } from 'node:path';
+import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { spawn } from 'node:child_process';
 import {
   addIds,
@@ -46,13 +46,16 @@ import {
   type ReportData,
   type SessionGroup,
 } from '../../report/src/index.ts';
-import type { SessionRecord, SessionsFile } from '../../core/src/index.ts';
+import type { SessionRecord, SessionsFile, WikiSpec } from '../../core/src/index.ts';
+import { DEFAULT_PHASE_NAMES } from '../../core/src/index.ts';
+import { homedir } from 'node:os';
+import { describeVault, wikiSkillCandidates } from './setup.ts';
 import { importJudgmentsText, importTurnJudgmentsText, JudgmentValidationError, readBundleManifest, readTurnBundleManifest, readTurnJudgments, turnImportPhases } from '../../judge/src/index.ts';
 import { phaseNames } from './config.ts';
 import { acquireOutLock, JobError, JobRunner, OutBusyError, parseJobRequest, runningJobIn, type RunFullFn, type SpawnFn } from './jobs.ts';
 import { exportGroup } from './group-export.ts';
 import { checkUpload, UploadChangedError, uploadDir, uploadedAt, uploadGroup, type GroupUploadResult, type UploadProgress } from './group-upload.ts';
-import { defaultConfigPath, loadConfig, modifyConfig, NO_CHANGE, parseUploadRoot, updateConfig } from './config.ts';
+import { defaultConfigPath, loadConfig, modifyConfig, NO_CHANGE, parseConfig, parseUploadRoot, updateConfig } from './config.ts';
 import { CAN_PICK_FOLDER, openFolder, pickFolder } from './folder-picker.ts';
 
 export const TOKEN_PLACEHOLDER = '__ATLAS_TOKEN__';
@@ -93,6 +96,8 @@ export interface ServeOptions {
   configPath?: string;
   /** フォルダを選ぶ画面とエクスプローラーで開く操作(既定は folder-picker.ts。テストで差し替える) */
   folders?: { canPick?: boolean; pick?: (title: string, initial: string | null) => Promise<string | null>; open?: (dir: string) => void };
+  /** Copilot のデータの場所(画面の設定で、名前に wiki を含むインストール済みの skill を候補に出すのに使う)。既定は ATLAS_COPILOT_HOME か ~/.copilot */
+  copilotHome?: string;
 }
 
 export interface ServeHandle {
@@ -378,7 +383,82 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     return root;
   }
   let picking = false;
-  const REFRESHING = '集計し直している最中です(詳細ページと記録は作り直しの途中です)。集計が終わってから開き直してください。';
+  // --- 画面の「設定」(setup.bat と同じ項目を画面から決める)。書き換えは modifyConfig(設定ファイルのロックの中で読んでから書く) ---
+  const copilotHome = resolve(o.copilotHome ?? process.env.ATLAS_COPILOT_HOME ?? join(homedir(), '.copilot'));
+  /** 画面の設定に出す今の設定。読めない設定ファイルは理由を返す(画面は理由を出し、書き換えさせない) */
+  async function settingsOf(): Promise<Record<string, unknown>> {
+    let error: string | null = null;
+    let c: Awaited<ReturnType<typeof loadConfig>> | null = null;
+    try {
+      c = await loadConfig(configPath, false);
+    } catch (e) {
+      error = (e as Error).message;
+    }
+    return {
+      configPath,
+      error,
+      canPick,
+      wikis: c?.wikis ?? [],
+      phases: c?.phases ?? null,
+      defaultPhases: [...DEFAULT_PHASE_NAMES],
+      uploadRoot: c?.uploadRoot ?? null,
+      uploadProjects: c?.uploadProjects ?? [],
+      // 名前に wiki を含むインストール済みの skill(vault を足すときに、wiki の skill として数えるか選べるように。setup.bat と同じ候補)
+      skillCandidates: await wikiSkillCandidates(copilotHome).catch(() => []),
+    };
+  }
+  /** 設定ファイルの 1 項目を書き換える。読めない設定・ロックが取れないときは 409、検査に通らない値は 400 */
+  async function writeSetting<T>(key: Parameters<typeof modifyConfig>[1], fn: Parameters<typeof modifyConfig<T>>[2]): Promise<void> {
+    try {
+      await modifyConfig(configPath, key, fn);
+    } catch (e) {
+      if (e instanceof HttpError) throw e;
+      const m = (e as Error).message;
+      if (/読めないので書き換えません|別の処理が書き換えています/.test(m)) throw new HttpError(409, m);
+      // ファイルを書けない(ほかのプログラムが開いている・フォルダが無い・権限が無いなど)は、入力の誤りではない
+      if ((e as NodeJS.ErrnoException).code) throw new HttpError(500, `設定ファイルに書けませんでした(${m})`);
+      throw new HttpError(400, m);
+    }
+  }
+  /**
+   * 同じ vault か。~/ を展開し、Windows では大文字小文字を区別しない。フルパスとフォルダ名(setup.bat はフォルダ名で登録する)は、
+   * フルパスの最後のフォルダ名が同じなら同じ vault とみなす(同じ vault を二重に数えないように)
+   */
+  function sameVault(a: string, b: string): boolean {
+    const norm = (p: string): string => {
+      const x = /^~[\\/]/.test(p) ? join(homedir(), p.slice(2)) : p;
+      const y = isAbsolute(x) ? resolve(x) : x.replace(/[\\/]+$/, '');
+      return process.platform === 'win32' ? y.toLowerCase() : y;
+    };
+    const x = norm(a);
+    const y = norm(b);
+    if (x === y) return true;
+    const last = (p: string): string => p.split(/[\\/]/).filter(Boolean).pop() ?? p;
+    const bare = (p: string): boolean => !/[\\/]/.test(p);
+    return (isAbsolute(x) && bare(y) && last(x) === y) || (isAbsolute(y) && bare(x) && last(y) === x);
+  }
+  const strings = (v: unknown, where: string): string[] | undefined => {
+    if (v === undefined || v === null) return undefined;
+    if (!Array.isArray(v) || v.some((x) => typeof x !== 'string')) throw new HttpError(400, `${where} は文字列の配列で指定してください`);
+    const list = (v as string[]).map((x) => x.trim()).filter(Boolean);
+    return list.length ? list : undefined;
+  };
+  /** 画面から足す vault の指定(path と、任意の index・pages・skills)。設定ファイルには setup.bat と同じ形(path だけなら文字列)で書く */
+  function vaultSpec(v: unknown): string | WikiSpec {
+    if (typeof v !== 'object' || v === null) throw new HttpError(400, 'vault の指定がありません');
+    const r = v as Record<string, unknown>;
+    if (typeof r.path !== 'string' || !/[^./\\~\s]/.test(r.path)) throw new HttpError(400, 'vault のフォルダ名かパスを指定してください');
+    const spec: WikiSpec = { path: r.path.trim() };
+    const index = strings(r.index, 'index');
+    const pages = strings(r.pages, 'pages');
+    const skills = strings(r.skills, 'skills');
+    if (index) spec.index = index;
+    // ページのフォルダが vault 全体(.)だけなら書かない(既定と同じ)
+    if (pages && !(pages.length === 1 && pages[0] === '.')) spec.pages = pages;
+    if (skills) spec.skills = [...new Set(skills)];
+    return Object.keys(spec).length === 1 ? spec.path : spec;
+  }
+  const REFRESHING ='集計し直している最中です(詳細ページと記録は作り直しの途中です)。集計が終わってから開き直してください。';
   let cssCache: string | null = null;
   const pageCss = async (): Promise<string> => (cssCache ??= await readPageCss());
 
@@ -541,6 +621,94 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
         return;
       }
       throw new HttpError(405, 'この方法では使えません');
+    }
+    if (path === '/api/settings' || path.startsWith('/api/settings/')) {
+      checkToken(req);
+      if (path === '/api/settings' && method === 'GET') {
+        sendJson(res, 200, await settingsOf());
+        return;
+      }
+      if (method !== 'POST' && method !== 'PUT') throw new HttpError(405, 'この方法では使えません');
+      if (path === '/api/settings/vault/describe') {
+        // 入力されたフォルダ名かパスを調べる(実在すればフォルダ名だけにし、中の index.md と wiki/ を見る。setup.bat と同じ)
+        const body = await readJsonBody(req);
+        if (typeof body.input !== 'string' || !body.input.trim()) throw new HttpError(400, 'vault のフォルダ名かパスを入力してください');
+        const d = describeVault(body.input);
+        if (!/[^./\\~\s]/.test(d.name)) throw new HttpError(400, `フォルダ名を読めませんでした: ${body.input}`);
+        sendJson(res, 200, d);
+        return;
+      }
+      if (path === '/api/settings/vault/pick') {
+        if (!canPick) throw new HttpError(501, 'この OS ではフォルダを選ぶ画面を出せません。フォルダ名かパスを入力してください');
+        if (picking) throw new HttpError(409, 'フォルダを選ぶ画面が開いています(タスクバーを確かめてください)');
+        picking = true;
+        try {
+          let chosen: string | null;
+          try {
+            chosen = await pick('llm-wiki の vault のフォルダを選んでください', null);
+          } catch (e) {
+            throw new HttpError(500, (e as Error).message);
+          }
+          const d = chosen ? describeVault(chosen) : null;
+          // ドライブの直下などはフォルダ名が無い(入力のときと同じく、足す前に止める)
+          if (d && !/[^./\\~\s]/.test(d.name)) throw new HttpError(400, `フォルダ名を読めませんでした: ${chosen}(ドライブの直下ではなく、vault のフォルダを選んでください)`);
+          sendJson(res, 200, d);
+        } finally {
+          picking = false;
+        }
+        return;
+      }
+      if (path === '/api/settings/wikis') {
+        // vault を 1 つ足す(同じ名前があれば足さない)
+        const spec = vaultSpec((await readJsonBody(req)).vault);
+        const name = typeof spec === 'string' ? spec : spec.path;
+        try {
+          parseConfig({ wikis: [spec] });
+        } catch (e) {
+          throw new HttpError(400, (e as Error).message);
+        }
+        await writeSetting('wikis', (c, raw) => {
+          const same = (c.wikis ?? []).find((w) => sameVault(w.path, name));
+          if (same) throw new HttpError(409, `vault「${name}」はもう入っています(${same.path})`);
+          return [...(Array.isArray(raw.wikis) ? raw.wikis : []), spec];
+        });
+        log(`serve: vault「${name}」を足しました(${configPath})`);
+        sendJson(res, 200, await settingsOf());
+        return;
+      }
+      if (path === '/api/settings/wikis/remove') {
+        // 見えている一覧の何番目かと名前で外す(開いてからほかで書き換えていたら、違うものを外さないよう止める)。書いてあるとおりの値から外す
+        const body = await readJsonBody(req);
+        const at = body.index;
+        if (typeof at !== 'number' || !Number.isInteger(at) || at < 0 || typeof body.path !== 'string') throw new HttpError(400, '外す vault の番号と名前を指定してください');
+        await writeSetting('wikis', (c, raw) => {
+          if (!Array.isArray(raw.wikis) || c.wikis?.[at]?.path !== body.path) throw new HttpError(409, '設定がほかで書き換えられました。設定を開き直してください(何も外していません)');
+          const next = raw.wikis.filter((_, i) => i !== at);
+          return next.length ? next : undefined;
+        });
+        log(`serve: vault「${body.path}」を外しました(${configPath})`);
+        sendJson(res, 200, await settingsOf());
+        return;
+      }
+      if (path === '/api/settings/phases') {
+        // 普段の工程名(null なら既定に戻す)
+        const body = await readJsonBody(req);
+        let phases: string[] | undefined;
+        if (body.phases !== null) {
+          phases = strings(body.phases, 'phases');
+          if (!phases) throw new HttpError(400, '工程名を 2 つ以上入力してください');
+          try {
+            parseConfig({ phases });
+          } catch (e) {
+            throw new HttpError(400, (e as Error).message);
+          }
+        }
+        await writeSetting('phases', () => phases);
+        log(`serve: 普段の工程名を${phases ? ` ${phases.join(' / ')} に` : '既定に'}しました(${configPath})`);
+        sendJson(res, 200, await settingsOf());
+        return;
+      }
+      throw new HttpError(404, '見つかりません');
     }
     if (path === '/api/upload-projects') {
       checkToken(req);

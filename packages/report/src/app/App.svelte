@@ -26,6 +26,7 @@
   import { restoreDone, restoredView, saveView } from './view-restore.ts';
   import { JobStore } from './jobs.svelte.ts';
   import JobActions from './components/JobActions.svelte';
+  import SettingsDialog from './components/SettingsDialog.svelte';
   import JobBand from './components/JobBand.svelte';
   import type { MemoSummary } from '../lib/memo.ts';
   import type { ReportGroup } from '../lib/types.ts';
@@ -285,6 +286,11 @@
         }
       : undefined,
   );
+  /**
+   * 画面の設定の「まとめて送るプロジェクト」に出す、集計のプロジェクト(絞り込みに関係なく全部)。
+   * 空のセッションだけのプロジェクトは出さない(upload-project.bat は空のセッションを送らないので、印を付けても何も送られない)
+   */
+  const settingsProjects = $derived(aggregate(sessions.filter((x) => !x.empty)).byProject.map((b) => ({ key: b.key, label: b.label, sessions: b.sessions })));
   function exportGroup(name: string): Promise<GroupExport> {
     return api.exportGroup(token!, name);
   }
@@ -521,7 +527,7 @@
         </p>
       </div>
       <div class="mast-tools">
-        {#if editable && jobStore}<JobActions jobs={jobStore} disabled={serverDown} />{/if}
+        {#if editable && jobStore}<JobActions jobs={jobStore} disabled={serverDown} /><SettingsDialog jobs={jobStore} disabled={serverDown} upload={uploadHandlers} send={projectSend} projects={settingsProjects} />{/if}
         {#if data.anonymized}<span class="tag">伏せ字モード</span>{/if}
         {#if scopeNotes.length}<span class="tag" title="atlas build の実行時に絞り込んだ条件">出力時の絞り込み: {scopeNotes.join('、')}</span>{/if}
         <div class="seg" role="group" aria-label="配色">
