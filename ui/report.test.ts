@@ -1015,7 +1015,7 @@ describe('画面の操作', () => {
       // 足した後の焦点は、vault の入力欄(押したボタンが消えて本文の先頭に落ちないように)
       await expect.poll(() => page.evaluate<string | null>("document.activeElement?.getAttribute('data-testid') ?? null")).toBe('settings-vault-input');
       await expect.poll(() => wiki.getByTestId('settings-refresh').isVisible()).toBe(true);
-      expect(await wiki.locator('.items li').first().innerText()).toMatch(/vault-k[\s\S]*ページ: wiki・索引: README\.md/);
+      await expect.poll(() => wiki.locator('.items li').first().innerText()).toMatch(/vault-k[\s\S]*ページ: wiki・索引: README\.md/);
       // 入力したフォルダ名(見つからない)も足せる。path だけなら文字列で書く
       await wiki.getByTestId('settings-vault-input').fill('notes-k');
       await wiki.getByRole('button', { name: '調べる' }).click();
@@ -1034,8 +1034,9 @@ describe('画面の操作', () => {
       await phases.getByTestId('settings-phases-input').fill('設計 / 実装 / テスト');
       await phases.getByRole('button', { name: '保存' }).click();
       await expect.poll(async () => (await readConfig()).phases).toEqual(['設計', '実装', 'テスト']);
-      expect(await phases.getByTestId('settings-phases-saved').innerText()).toBe('保存しました。');
-      expect(await dlg.getByTestId('settings-status').innerText()).toBe('普段の工程名を保存しました。');
+      // 設定ファイルに書かれてから、答えが画面に届いて書き換わるまでに間があるので、待って読む
+      await expect.poll(() => phases.getByTestId('settings-phases-saved').innerText()).toBe('保存しました。');
+      await expect.poll(() => dlg.getByTestId('settings-status').innerText()).toBe('普段の工程名を保存しました。');
       await phases.getByRole('button', { name: '既定に戻す' }).click();
       await expect.poll(async () => 'phases' in (await readConfig())).toBe(false);
       // アップロード先: エクスプローラーで選ぶ
@@ -1043,7 +1044,7 @@ describe('画面の操作', () => {
       const rootSec = dlg.getByTestId('settings-root');
       await rootSec.getByTestId('settings-root-pick').click();
       await expect.poll(async () => (await readConfig()).uploadRoot).toBe(root);
-      expect(await rootSec.getByTestId('settings-root-current').innerText()).toBe(root);
+      await expect.poll(() => rootSec.getByTestId('settings-root-current').innerText()).toBe(root);
       // まとめて送るプロジェクト: 絞り込んで印を付ける・外す(プロジェクト別の表と同じ設定)
       const proj = dlg.getByTestId('settings-projects');
       const first = proj.locator('.checks li').first();

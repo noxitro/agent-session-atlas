@@ -479,8 +479,12 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     if (idleTimer) clearTimeout(idleTimer);
     await rm(join(outDir, SERVE_STATE_FILE), { force: true }).catch(() => {});
     jobs.dropLock();
-    await new Promise<void>((r) => server.close(() => r()));
-    server.closeAllConnections?.();
+    // close() は使い終えた接続しか閉じず、残りが閉じるまで待つ。ブラウザが次の要求のために先に開けておき、まだ何も送っていない接続も
+    // 「要求の途中」とみなされて残り、ブラウザが閉じるまで止まらなかった(atlas.bat の窓が残る)。止めるときはすべて切る
+    await new Promise<void>((r) => {
+      server.close(() => r());
+      server.closeAllConnections();
+    });
     resolveDone(reason);
   }
 
