@@ -29,3 +29,5 @@ rem 集計を別のプログラムにすると、集計を待つ間に押した 
 node packages\cli\src\upload-project.ts
 echo.
 pause
+rem pause の後で終わらせる。chcp 65001 の後、cmd は bat を読み直す位置がずれることがあり、続きを前の行の途中から読んで止まるため
+exit /b
