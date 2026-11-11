@@ -73,11 +73,16 @@ if (process.platform === 'win32') {
   const { ATLAS_CONFIG: _ignored, ...env } = process.env;
   const runBat = (bat: string, input: string): string => {
     // 置き場所をはっきり書く(NoDefaultCurrentDirectoryInExePath が効いている環境では、名前だけだと今のフォルダの bat を探さない)
-    const r = spawnSync('cmd.exe', ['/d', '/c', `.\\${bat}`], { cwd: pkg, input, encoding: 'utf8', env: { ...env, ATLAS_COPILOT_HOME: join(FIXTURES_DIR, 'copilot-home') }, timeout: 300_000 });
-    const text = `${r.stdout ?? ''}${r.stderr ?? ''}`;
-    // cmd が bat を読めなかったときの文言(英語版と日本語版)
-    if (/was unexpected at this time|は予期されていません|is not recognized as an internal or external command|内部コマンドまたは外部コマンド/.test(text)) fail(`${bat} を cmd が読めずに止まりました:\n${text}`);
-    return text;
+    const r = spawnSync('cmd.exe', ['/d', '/c', `.\\${bat}`], { cwd: pkg, input, env: { ...env, ATLAS_COPILOT_HOME: join(FIXTURES_DIR, 'copilot-home') }, timeout: 300_000 });
+    // cmd の文言は、読み違えたときに cp932 で出ることがある(utf8 で読むと化けて、文言で見つけられない)ので、どちらでも読む
+    const read = (b: Buffer | null): string => (b == null ? '' : b.toString('utf8').includes('�') ? new TextDecoder('shift_jis').decode(b) : b.toString('utf8'));
+    const stdout = read(r.stdout);
+    const stderr = read(r.stderr);
+    const text = `${stdout}${stderr}`;
+    // cmd が bat を読めなかった・読み違えた(chcp 65001 の後に、前の行の途中を実行した)ときの文言(英語版と日本語版)。
+    // 架空の fixture で正しく動けば、エラー出力には何も出ない
+    if (stderr.trim() || /was unexpected at this time|は予期されていません|is not recognized as an internal or external command|内部コマンドまたは外部コマンド/.test(text)) fail(`${bat} を cmd が読めずに止まりました:\n${text}`);
+    return stdout;
   };
   const upBat = runBat('upload-project.bat', '\n\n');
   if (!/== 送るプロジェクト|送れるセッションがありません/.test(upBat)) fail(`upload-project.bat が、送る操作(プロジェクトの一覧)まで進みませんでした:\n${upBat}`);
