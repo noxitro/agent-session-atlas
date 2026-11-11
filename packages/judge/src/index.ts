@@ -14,7 +14,6 @@ export type { RunOptions, RunSummary } from './run.ts';
 export type { JudgeBackend, JudgePacket, JudgeResult } from './backends/types.ts';
 export { copilotCliBackend, copilotArgs, copilotMcpServers, JUDGE_AVAILABLE_TOOLS, JUDGE_DENIED_TOOL_KINDS } from './backends/copilot-cli.ts';
 export type { CopilotCliOptions } from './backends/copilot-cli.ts';
-export { opencodeBackend, opencodeArgs, opencodeEnv, OPENCODE_JUDGE_CONFIG } from './backends/opencode.ts';
 export { anthropicBackend, ANTHROPIC_DEFAULT_MODEL, ANTHROPIC_API_VERSION } from './backends/anthropic.ts';
 export { parseAgentJsonl, itemFromTexts } from './backends/output.ts';
 export { resolveCommand } from './backends/proc.ts';

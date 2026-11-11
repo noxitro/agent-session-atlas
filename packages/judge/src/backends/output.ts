@@ -1,5 +1,5 @@
 // エージェント CLI の出力(JSONL)から最終的な assistant 本文を取り出し、判定 JSON を検証する。
-// copilot -p --output-format json / opencode run --format json の行の形は版によって違いうるので、
+// copilot -p --output-format json の行の形は版によって違いうるので、
 // 既知の形を広く受け、どれにも当たらなければ出力全体を本文として扱う。
 import { itemsFromCandidates, itemProblems, jsonCandidates, validateJudgmentItem, type JudgmentItem } from '../schema.ts';
 
@@ -8,8 +8,6 @@ export interface AgentOutput {
   texts: string[];
   lines: number;
   jsonLines: number;
-  /** opencode の step_finish 等から拾ったトークン数(無ければ null) */
-  usage: Record<string, number> | null;
   /** session.error 等のエラー本文(出現順) */
   errors: string[];
 }
@@ -19,7 +17,6 @@ const isObj = (v: unknown): v is Record<string, any> => !!v && typeof v === 'obj
 export function parseAgentJsonl(stdout: string): AgentOutput {
   const texts: string[] = [];
   const deltas = new Map<string, string>();
-  let usage: Record<string, number> | null = null;
   const errors: string[] = [];
   let lines = 0;
   let jsonLines = 0;
@@ -42,15 +39,6 @@ export function parseAgentJsonl(stdout: string): AgentOutput {
     } else if (e.type === 'assistant.message_delta' && typeof d.deltaContent === 'string') {
       const k = String(d.messageId ?? '');
       deltas.set(k, (deltas.get(k) ?? '') + d.deltaContent);
-    } else if (e.type === 'text' && isObj(e.part) && typeof e.part.text === 'string') {
-      // opencode の JSON イベント
-      texts.push(e.part.text);
-    } else if (e.type === 'step_finish' && isObj(e.part) && isObj(e.part.tokens)) {
-      usage ??= {};
-      for (const [k, v] of Object.entries(e.part.tokens)) {
-        if (typeof v === 'number') usage[k] = (usage[k] ?? 0) + v;
-        else if (isObj(v)) for (const [k2, v2] of Object.entries(v)) if (typeof v2 === 'number') usage[`${k}.${k2}`] = (usage[`${k}.${k2}`] ?? 0) + v2;
-      }
     } else if (e.type === 'session.error') {
       // Copilot: {type:"session.error", data:{errorType:"quota", errorCode:"quota_exceeded", statusCode:402, message:"…"}}
       const parts = [d.errorCode ?? d.errorType, d.statusCode != null ? `HTTP ${d.statusCode}` : null, d.message].filter((x) => x != null && x !== '');
@@ -64,7 +52,7 @@ export function parseAgentJsonl(stdout: string): AgentOutput {
   }
   if (texts.length === 0) for (const v of deltas.values()) if (v.trim()) texts.push(v);
   if (texts.length === 0 && jsonLines === 0 && stdout.trim()) texts.push(stdout);
-  return { texts, lines, jsonLines, usage, errors };
+  return { texts, lines, jsonLines, errors };
 }
 
 /**

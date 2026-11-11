@@ -9,18 +9,18 @@
 //  - 場面ごとに見出し(== … ==)で区切り、前に空行を 1 つ置く。中身は 2 文字下げる
 //  - 1 行に 1 つのことだけを書く。一覧は名前の列をそろえる
 //  - 調べている・写している途中の様子は、行を増やさずに 1 行を書き換えて出す(io.status。端末でなければ出さない)
-import { existsSync, statSync } from 'node:fs';
-import { writeFile } from 'node:fs/promises';
+import { closeSync, existsSync, openSync, statSync, writeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { clearLine, createInterface, cursorTo, moveCursor } from 'node:readline';
+import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { format, stripVTControlCharacters } from 'node:util';
 import { parseCli } from './args.ts';
 import { defaultConfigPath, loadConfig, updateConfig } from './config.ts';
 import { pickFolder } from './folder-picker.ts';
 import { resolvePaths, run as runCli } from './commands.ts';
-import { acquireOutLock, OutBusyError } from './jobs.ts';
+import { acquireOutLock, OutBusyError, releaseOutLock } from './jobs.ts';
 import { safeDirName } from './group-export.ts';
 import {
   checkTarget,
@@ -53,27 +53,35 @@ export class UploadIncompleteError extends Error {}
 const size = (b: number): string => (b < 1024 * 1024 ? `${Math.ceil(b / 1024)} KB` : `${(b / 1024 / 1024).toFixed(b < 10 * 1024 * 1024 ? 1 : 0)} MB`);
 const day = (iso: string | null): string => (iso ? iso.slice(0, 10) : '日付不明');
 
-/** 幅を取らない文字(結合する記号・異体字セレクタ・ZWJ などの書式の文字) */
+/** 幅を取らない文字(結合する記号・異体字セレクタ・ZWJ などの書式の文字)。ソフトハイフン(U+00AD)は書式の文字だが、端末では 1 桁で出るので除く */
 const ZERO_WIDTH = /[\p{Mn}\p{Me}\p{Cf}]/u;
 /** 端末で絵文字として 2 桁で出る文字(☕ ⭐ ✅ など、全角の範囲の外にもある) */
 const EMOJI = /\p{Emoji_Presentation}/u;
+/** 肌の色の修飾(U+1F3FB〜1F3FF)を後ろに受けて、1 つの絵文字として出る文字(👍 ☝ など) */
+const SKIN_BASE = /\p{Emoji_Modifier_Base}/u;
 
 /**
  * 画面での幅(全角の文字と絵文字は 2、結合する記号などは 0、ほかは 1)。一覧の列をそろえるのと、1 行に収めるのに使う。
  * 後ろに U+FE0F(絵文字で出す指定)が付いた文字(✔️ など)は 2 と数える。
- * 1 つの絵文字として出るもの(ZWJ でつないだ 👨‍👩‍👧、地域指示記号 2 つの国旗 🇯🇵)は、全体で 2 と数える
+ * 1 つの絵文字として出るもの(ZWJ でつないだ 👨‍👩‍👧、地域指示記号 2 つの国旗 🇯🇵、肌の色の修飾が付いた 👍🏽)は、全体で 2 と数える。
+ * 肌の色の修飾が重なるのは、修飾を受ける絵文字(SKIN_BASE)の後ろだけ(漢字の後ろに置いたものは、それだけで 2)
  */
 export function width(s: string): number {
   let n = 0;
   let prev = 0;
   let joined = false;
   let flagHalf = false;
+  // 直前の見える文字が、肌の色の修飾を受ける絵文字(👍 ☝ など)か
+  let base = false;
   for (const ch of s) {
     const c = ch.codePointAt(0)!;
     // ZWJ の次の文字は、前の絵文字とつながって 1 つに出る
     if (joined) {
       joined = false;
-      if (!ZERO_WIDTH.test(ch)) continue;
+      if (!ZERO_WIDTH.test(ch)) {
+        base = SKIN_BASE.test(ch);
+        continue;
+      }
     }
     if (c === 0x200d) {
       joined = prev === 2;
@@ -88,10 +96,21 @@ export function width(s: string): number {
       flagHalf = true;
       n += 2;
       prev = 2;
+      base = false;
       continue;
     }
     flagHalf = false;
-    if (ZERO_WIDTH.test(ch)) {
+    // 肌の色の修飾(U+1F3FB〜1F3FF)は、修飾を受ける絵文字の後ろでは重なって出る(合わせて 2)。
+    // ほかの文字(漢字など)の後ろや先頭では、それだけで 1 つの絵文字として 2
+    if (c >= 0x1f3fb && c <= 0x1f3ff && base) {
+      base = false;
+      if (prev === 1) {
+        n += 1;
+        prev = 2;
+      }
+      continue;
+    }
+    if (c !== 0xad && ZERO_WIDTH.test(ch)) {
       if (c === 0xfe0f && prev === 1) {
         n += 1;
         prev = 2;
@@ -111,6 +130,7 @@ export function width(s: string): number {
       (c >= 0x20000 && c <= 0x3fffd);
     prev = wide ? 2 : 1;
     n += prev;
+    base = SKIN_BASE.test(ch);
   }
   return n;
 }
@@ -341,6 +361,8 @@ export async function runUploadProject(io: UploadProjectIo, o: { paths: GroupUpl
   /** 途中で止まったときに添える、ここまでに送ったもの */
   const sentNote = (): string => (sent.length ? `ここまでに ${sent.length} プロジェクトを送りました(${names(sent.map((r) => r.name))})。残りは送っていません` : '何も送っていません');
   let stopped = false;
+  // 送ったもの・送れなかったものがあれば、送っていない残りはすぐ後のまとめに出す(同じことを 2 度書かない)
+  const quit = (): void => io.print(sent.length || failed.length ? '  やめました。' : '  やめました(何も送っていません)。');
   try {
     while (pending.length) {
       const todo = pending;
@@ -372,15 +394,14 @@ export async function runUploadProject(io: UploadProjectIo, o: { paths: GroupUpl
         // 印は変えずに、今回送るものだけを選び直す
         const picked = await askProjects(io, projects);
         if (!picked) {
-          io.print(sent.length ? `  やめました(${sentNote()})。` : '  やめました(何も送っていません)。');
+          quit();
           break;
         }
         pending = await targetsOf(o.paths, picked, records);
         continue;
       }
       if (a !== 'y') {
-        // 送ったものがあれば、送っていない残りはすぐ後のまとめ(途中でやめました)に出す(同じことを 2 度書かない)
-        io.print(sent.length ? '  やめました。' : '  やめました(何も送っていません)。');
+        quit();
         break;
       }
       io.print('');
@@ -443,14 +464,14 @@ export async function runUploadProject(io: UploadProjectIo, o: { paths: GroupUpl
     // 途中で止まっても(ロックが取れないなど)、送ったもの・送れなかったものを知らせる
     if (sent.length || failed.length) {
       io.print('');
-      // 残り(pending)があるのは、送る途中で確かめ直しになり、そこでやめたとき
+      // 残り(pending)があるのは、送る途中で確かめ直しになり、そこでやめたとき(送れなかったものがあっても、残りは出す)
       io.print(failed.length ? '== 送れなかったものがあります ==' : stopped ? '== 途中で止まりました ==' : pending.length ? '== 途中でやめました ==' : '== 終わりました ==');
       if (sent.length) {
         io.print(`  ${sent.length} プロジェクト・${sent.reduce((a, r) => a + r.uploaded, 0)} セッションを送りました。`);
         io.print(`  送り先: ${sent.length > 1 ? [...new Set(sent.map((r) => dirname(r.dir)))].join('、') : sent[0]!.dir}`);
         io.print(sent.length > 1 ? '  説明とセッションの一覧は、それぞれのフォルダの README.md にあります。' : '  説明とセッションの一覧は、そのフォルダの README.md にあります。');
       }
-      if (pending.length && !stopped && !failed.length) io.print(`  残りの ${pending.length} プロジェクト(${names(pending.map((t) => t.name), 3)})は送っていません。`);
+      if (pending.length && !stopped) io.print(`  残りの ${pending.length} プロジェクト(${names(pending.map((t) => t.name), 3)})は送っていません。`);
       if (failed.length) {
         io.print(`  送れなかったプロジェクト(${failed.length} 件): ${names(failed.map((f) => f.name))}`);
         io.print('  理由を確かめてから、もう一度実行してください(送れたものは、送り直しても置き換えるだけです)。');
@@ -472,46 +493,106 @@ const STAGES: Record<string, string> = {
   all: '仕上げています',
 };
 
+/** 改行やタブを空白にして 1 行にする(書き換える 1 行と、窓に出す注意に使う) */
+const oneLine = (s: string): string => s.replace(/[\r\n\t\v\f]+/g, ' ').trim();
+
 /**
  * 送る前に、最新のログを集計し直す(upload-project.bat から、送る操作の前に呼ぶ)。
  * 経過の行(長いパスが続く)は窓に出さずに logPath に書き、途中の様子は 1 行の書き換えで出す。
- * 注意(複製できず前回の複製を使った、など)は送るものに関わるので窓に出す。失敗したら理由と logPath を出して false
+ * 窓に出す注意は、送るものに関わるもの(ログを写す段階の注意: 複製できず前回の複製を使った、など)だけ。
+ * ほかの段階の注意(記録で伏せた文字列の数など)は、画面と CLI で見られるので経過のファイルにだけ書く。
+ * 失敗したら理由と logPath を出して false
  */
 export async function refreshAggregate(io: UploadProjectIo, o: { logPath: string; run: (log: (m: string) => void) => Promise<unknown> }): Promise<boolean> {
   io.print('');
   io.print('== 集計 ==');
   io.print('  最新のログを集計しています。少し待ってください。');
-  const lines: string[] = [];
-  const log = (m: string): void => {
-    lines.push(m);
-    if (m.includes('注意')) io.print(`  注意: ${m.replace(/^[a-z -]+: (注意 )?/, '')}`);
-    else {
-      const stage = /^([a-z-]+)[ :]/.exec(m)?.[1];
-      // 段階の頭が無い行(「レポートのテンプレートをビルドしています…」など)は、その文のまま出す
-      if (stage) io.status?.(`  ${STAGES[stage] ?? '集計しています'}...`);
-      else if (m.trim()) io.status?.(`  ${m.trim()}`);
+  // 経過は 1 行ごとにその場でファイルに書く(途中で窓を閉じても、そこまでの経過が残るように)。書けなくても集計は続ける(経過を残す場所が無いだけ)
+  let fd: number | null = null;
+  try {
+    fd = openSync(o.logPath, 'w');
+  } catch {
+    /* 経過を残せないだけ */
+  }
+  const keep = (m: string): void => {
+    if (fd == null) return;
+    try {
+      writeSync(fd, `${m}\n`);
+    } catch {
+      /* 書けなかった行は残らないだけ */
     }
   };
-  // 集計の中で console に直に書くもの(初回のテンプレートのビルドで Vite が出す警告など)も、log に通す。
-  // 直に窓へ書かれると、書き換えている 1 行の途中に混ざり、消す行がずれるため。警告とエラーは注意として窓に出す
-  const saved = { log: console.log, info: console.info, warn: console.warn, error: console.error };
+  const log = (m: string): void => {
+    keep(m);
+    // 行の頭が「snapshot: 注意」のものだけ(文の途中に「注意」とある行や、ほかの段階の注意は出さない)
+    const notice = /^snapshot: 注意 ([\s\S]+)/.exec(m)?.[1];
+    if (notice) {
+      io.print(`  注意: ${oneLine(notice)}`);
+      return;
+    }
+    const stage = /^([a-z-]+)[ :]/.exec(m)?.[1];
+    // 段階の頭が無い行(「レポートのテンプレートをビルドしています…」など)は、その文のまま出す
+    if (stage) io.status?.(`  ${STAGES[stage] ?? '集計しています'}...`);
+    else if (m.trim()) io.status?.(`  ${oneLine(m)}`);
+  };
+  // 集計の中で窓に直に書かれるもの(初回のテンプレートのビルドで Vite が console に出す警告、node の警告を stderr に書く core/sqlite.ts など)は、
+  // 窓に出さずに経過のファイルに書く。直に書かれると、書き換えている 1 行の途中に混ざり、消す行がずれるため。
+  // 警告とエラー(console.warn/error と stderr)は、あったことと経過のファイルの場所を最後に 1 行で知らせる
+  // (件数は出さない。1 つの警告が何回かに分けて書かれることも、何行にもなることもあり、数が合わないため)
+  let warned = false;
+  const warn = (text: string): void => {
+    for (const l of text.split(/\r?\n/)) {
+      if (!l.trim()) continue;
+      keep(`警告: ${l}`);
+      warned = true;
+    }
+  };
   const plain = (args: unknown[]): string => stripVTControlCharacters(format(...args));
-  console.log = console.info = (...args: unknown[]) => log(plain(args));
-  console.warn = console.error = (...args: unknown[]) => log(`build: 注意 ${plain(args)}`);
+  /** process.stdout/stderr の write の代わり(呼び出し側が渡した終わりの合図は呼ぶ) */
+  const capture =
+    (to: (text: string) => void) =>
+    (chunk: unknown, a?: unknown, b?: unknown): boolean => {
+      to(stripVTControlCharacters(typeof chunk === 'string' ? chunk : Buffer.from(chunk as Uint8Array).toString('utf8')));
+      const done = typeof a === 'function' ? a : b;
+      if (typeof done === 'function') (done as () => void)();
+      return true;
+    };
+  const saved = { log: console.log, info: console.info, debug: console.debug, warn: console.warn, error: console.error };
+  const savedOut = process.stdout.write;
+  const savedErr = process.stderr.write;
+  console.log = console.info = console.debug = (...args: unknown[]) => log(plain(args));
+  console.warn = console.error = (...args: unknown[]) => warn(plain(args));
+  process.stdout.write = capture((t) => t.split(/\r?\n/).forEach((l) => l.trim() && keep(l))) as typeof process.stdout.write;
+  process.stderr.write = capture(warn) as typeof process.stderr.write;
+  const restore = (): void => {
+    Object.assign(console, saved);
+    process.stdout.write = savedOut;
+    process.stderr.write = savedErr;
+  };
+  // 差し替えた出力は、集計が終わったところ(成功でも失敗でも)で 1 度だけ戻す。結果を窓に出すのはその後
+  let failure: Error | null = null;
   try {
     await o.run(log);
+  } catch (e) {
+    failure = e instanceof Error ? e : new Error(String(e));
+  } finally {
+    restore();
+  }
+  try {
+    if (failure) {
+      keep(`失敗しました: ${failure.message}`);
+      // どこで失敗したかも残す(窓には理由だけを出す)
+      if (failure.stack) keep(failure.stack);
+      io.print(`  集計に失敗しました: ${oneLine(failure.message)}`);
+      io.print('  atlas.bat の画面で集計し直している最中なら、終わってからもう一度実行してください。');
+      io.print(`  集計の経過: ${o.logPath}`);
+      return false;
+    }
+    if (warned) io.print(`  集計の途中で警告が出ました(経過のファイルに書きました): ${o.logPath}`);
     io.print('  集計しました。');
     return true;
-  } catch (e) {
-    lines.push(`失敗しました: ${(e as Error).message}`);
-    io.print(`  集計に失敗しました: ${(e as Error).message}`);
-    io.print('  atlas.bat の画面で集計し直している最中なら、終わってからもう一度実行してください。');
-    io.print(`  集計の経過: ${o.logPath}`);
-    return false;
   } finally {
-    Object.assign(console, saved);
-    // 書けなくても送る操作は続ける(経過を残す場所が無いだけ)
-    await writeFile(o.logPath, `${lines.join('\n')}\n`).catch(() => {});
+    if (fd != null) closeSync(fd);
   }
 }
 
@@ -522,28 +603,78 @@ export interface ConsoleOut {
   columns?: number;
 }
 
+/** 黒い窓の入力(端末なら setRawMode を持つ。テストでは偽物を渡す) */
+export type ConsoleIn = NodeJS.ReadableStream & { isTTY?: boolean; setRawMode?: (mode: boolean) => unknown };
+
 /**
  * 黒い窓(標準入出力)とやりとりする io。pick は送り先のフォルダを選ぶ画面。
  * 書き換える 1 行(status)は、出力が端末のときだけ使う(ファイルやパイプに流すと、書き換えの制御文字が残るため)。
- * 入力が端末のときは、尋ねていない間に入った行を捨てる(集計を待つ間に押した Enter が、まだ見ていない質問の答えにならないように)。
+ * 入力が端末のときは、尋ねていない間に打ったキーを捨てる(集計を待つ間に打った文字や Enter が、まだ見ていない質問の答えにならないように)。
+ * 端末は、Enter を押すまでの文字を自分で持っていて、こちらには届かない(届いた行を捨てるだけでは、Enter を押していない文字が次の答えの頭に付く)。
+ * そこで、尋ねていない間は 1 文字ずつ届く状態(raw)にしてその場で捨て、尋ねている間だけ行で受け取る状態に戻す。
  * 流し込んだ入力(パイプ)では、尋ねる前に届いた行も順に答えに使う
  */
 export function consoleIo(
   pick: UploadProjectIo['pick'],
-  s: { input?: NodeJS.ReadableStream & { isTTY?: boolean }; output?: ConsoleOut } = {},
+  s: { input?: ConsoleIn; output?: ConsoleOut; settleMs?: number; exit?: (code: number) => void } = {},
 ): { io: UploadProjectIo; clear: () => void; close: () => void } {
-  const input = s.input ?? process.stdin;
+  const input: ConsoleIn = s.input ?? process.stdin;
   const out = s.output ?? process.stdout;
-  const rl = createInterface({ input, crlfDelay: Infinity });
+  // 書く口は今のうちに取っておく(集計の間は process.stdout.write を差し替えるので、書くたびに引くと自分の出力まで経過のファイルに行く)
+  const write = out.write.bind(out) as (text: string) => boolean;
+  const stream = { write } as unknown as NodeJS.WritableStream;
+  const setRaw = (on: boolean): boolean => {
+    if (input.isTTY !== true || typeof input.setRawMode !== 'function') return false;
+    try {
+      input.setRawMode(on);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  /** 1 文字ずつ受け取る状態にできた端末か(できなければ、届いた行を捨てるだけの前のやり方に落とす) */
+  const raw = setRaw(true);
+  // raw のときは、尋ねている間に届いた分だけを行に分ける(尋ねていない間の分は渡さないので、行の頭に残らない)
+  const feed = raw ? new PassThrough() : null;
+  const rl = createInterface({ input: feed ?? input, crlfDelay: Infinity });
   const keepEarly = input.isTTY !== true;
   const early: string[] = [];
   let waiting: ((line: string) => void) | null = null;
+  let asking = false;
   let closed = false;
   const answer = (line: string): void => {
     const w = waiting;
     waiting = null;
+    if (asking) {
+      asking = false;
+      setRaw(true);
+    }
     w?.(line);
   };
+  const onData = (chunk: Buffer | string): void => {
+    if (asking) {
+      feed!.write(chunk);
+      return;
+    }
+    // 1 文字ずつ受け取る間は Ctrl+C も文字として届く(端末が止めてくれない)ので、ここで終わる。
+    // 端末を元に戻し、書き換えていた 1 行を消して、中断したことを 1 行で出す。
+    // 終わり方は、端末が止めたとき(SIGINT)にそろえる: SIGINT を受ける処理があればそれに任せ、無ければ終了コード 130 で終わる。
+    // process.exit は finally を通らないので、要る後始末は 'exit' に掛けておく(このファイルの末尾の起動の部分)
+    if (String(chunk).includes('\x03')) {
+      setRaw(false);
+      const had = shown;
+      clear();
+      write(`${had ? '' : '\n'}  中断しました。\n`);
+      if (s.exit) s.exit(130);
+      else if (process.listenerCount('SIGINT') > 0) process.emit('SIGINT', 'SIGINT');
+      else process.exit(130);
+    }
+  };
+  const onEnd = (): void => void feed!.end();
+  if (feed) {
+    input.on('data', onData);
+    input.on('end', onEnd);
+  }
   rl.on('line', (line) => {
     if (waiting) answer(line);
     else if (keepEarly) early.push(line);
@@ -553,20 +684,19 @@ export function consoleIo(
     closed = true;
     answer('');
   });
-  const stream = out as unknown as NodeJS.WritableStream;
   // 書き換える 1 行が出ているか。次に何かを書く前に消す
   let shown = false;
   let lastStatus = '';
   /**
-   * 尋ねていない間に端末で入った行を捨てたとき: 窓には打った文字と改行が写っている(行を読む前に端末が写す)ので、
-   * 1 行上に戻ってその行を消し、書き換えていた 1 行を書き直す(進み具合の行が 1 行で済むように)
+   * raw にできなかった端末で、尋ねていない間に入った行を捨てたとき: 窓には打った文字と改行が写っている(行を読む前に端末が写す)ので、
+   * 1 行上に戻ってその行を消し、書き換えていた 1 行を書き直す(進み具合の行が 1 行で済むように)。raw のときは端末が写さないので要らない
    */
   const dropped = (): void => {
-    if (!out.isTTY) return;
+    if (!out.isTTY || raw) return;
     moveCursor(stream, 0, -1);
     clearLine(stream, 0);
     cursorTo(stream, 0);
-    if (shown) out.write(lastStatus);
+    if (shown) write(lastStatus);
   };
   const clear = (): void => {
     if (!shown) return;
@@ -577,28 +707,50 @@ export function consoleIo(
   const io: UploadProjectIo = {
     ask: async (q) => {
       clear();
-      out.write(q);
-      const line = early.length ? early.shift()! : closed ? '' : await new Promise<string>((r) => (waiting = r));
+      write(q);
+      if (early.length) return early.shift()!.trim();
+      if (closed) return '';
+      if (feed) {
+        // 集計などで手が離せなかった間に打たれたキーは、まだ届いていないことがある。届き切るのを少し待って捨ててから、行で受け取る状態に戻す
+        await new Promise((r) => setTimeout(r, s.settleMs ?? 50));
+        if (closed) return '';
+        asking = true;
+        setRaw(false);
+      }
+      const line = await new Promise<string>((r) => (waiting = r));
       return line.trim();
     },
     print: (l) => {
       clear();
-      out.write(`${l}\n`);
+      write(`${l}\n`);
     },
     pick,
     ...(out.isTTY
       ? {
           status: (text: string): void => {
             clear();
-            // 折り返すと 1 行では消えないので、窓の幅に収める
-            lastStatus = fit(text, (out.columns || 80) - 1);
-            out.write(lastStatus);
+            // 折り返すと 1 行では消えないので、改行やタブは空白にして、窓の幅に収める
+            lastStatus = fit(text.replace(/[\r\n\t\v\f]+/g, ' '), (out.columns || 80) - 1);
+            write(lastStatus);
             shown = true;
           },
         }
       : {}),
   };
-  return { io, clear, close: () => rl.close() };
+  return {
+    io,
+    clear,
+    close: () => {
+      rl.close();
+      if (feed) {
+        input.off('data', onData);
+        input.off('end', onEnd);
+        // 端末を元の状態(行で受け取る)に戻し、読むのを止める(読み続けると、プロセスが終わらない)
+        setRaw(false);
+        input.pause();
+      }
+    },
+  };
 }
 
 /** 集計の経過を書くファイル(集計に失敗したときに場所を出す) */
@@ -608,6 +760,9 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   // 置き場は atlas.bat と同じ既定(out/ と atlas-notes/)
   const paths = resolvePaths({ home: null, out: null, judgments: null });
   const c = consoleIo((initial) => pickFolder('プロジェクトのセッションを送る先のフォルダを選んでください', initial));
+  // Ctrl+C で終わるときは finally を通らないので、集計の作業中の印(out/.job.json)はここで外す(自分の印だけを消す。無ければ何もしない)。
+  // 写している途中のフォルダ(.<id>.uploading)は消さない(置き換えの最中かもしれない。次のアップロードが片付け、集計は数えない)
+  process.once('exit', () => releaseOutLock(paths.out));
   try {
     // 集計もここで動かす(別のプログラムにすると、集計を待つ間に押した Enter が、送る操作の最初の答えになるため)
     if (!(await refreshAggregate(c.io, { logPath: UPLOAD_LOG, run: (log) => runCli(parseCli(['all']), log) }))) process.exitCode = 1;

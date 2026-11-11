@@ -1,7 +1,7 @@
 export * from './types.ts';
 export { KNOWN_EVENT_TYPES } from './event-types.ts';
 export { parseEvents, readEvents, newParseStats } from './events.ts';
-export { snapshot, isFlatLayout, SESSION_STORE_JSON, readSnapshotManifest, readInventory, SNAPSHOT_DBS, SNAPSHOT_SESSION_FILES, SNAPSHOT_SESSION_DB, SNAPSHOT_MANIFEST, SNAPSHOT_SESSION_EXTRA_FILES, SNAPSHOT_SESSION_EXTRA_DIRS, SNAPSHOT_SESSION_HEAVY_DIRS, DESKTOP_JSON } from './snapshot.ts';
+export { snapshot, isFlatLayout, SESSION_STORE_JSON, readSnapshotManifest, readInventory, SNAPSHOT_DBS, SNAPSHOT_SESSION_FILES, SNAPSHOT_SESSION_DB, SNAPSHOT_MANIFEST, SNAPSHOT_SOURCE, SNAPSHOT_SESSION_EXTRA_FILES, SNAPSHOT_SESSION_EXTRA_DIRS, SNAPSHOT_SESSION_HEAVY_DIRS, DESKTOP_JSON, UPLOAD_SESSION_META, UPLOAD_INDEX, UPLOAD_WORK_REASON, uploadTmpName, uploadOldName, isUploadWorkDir, uploadWorkDirId } from './snapshot.ts';
 export type { SnapshotOptions, SnapshotManifest, SkippedEntry } from './snapshot.ts';
 export { readDesktopDb, desktopForSession, DESKTOP_ALLOWLIST, DESKTOP_FORBIDDEN_TABLES } from './desktop.ts';
 export type { DesktopData, DesktopRow, DesktopSessionInfo, DesktopTableCoverage } from './desktop.ts';
@@ -18,7 +18,7 @@ export {
 } from './project.ts';
 export type { ProjectResolverOptions, ResolvedProject } from './project.ts';
 export type { NormalizeInput } from './normalize.ts';
-export { extract, loadStore, sessionStoreRows, openSessionStoreReader, type SessionStoreReader, mergeSessionStoreJson, type SessionStoreJson, listSessionDirs, readWorkspaceYaml, readTodos } from './extract.ts';
+export { extract, loadStore, sessionStoreRows, openSessionStoreReader, type SessionStoreReader, mergeSessionStoreJson, type SessionStoreJson, listSessionDirs, readWorkspaceYaml, readTodos, readSenderProject } from './extract.ts';
 export type { ExtractOptions, StoreData } from './extract.ts';
 export { computeMetrics, bucketOf, distribution, quantiles, latencyByModel, toolDurationStats, monthKey, isEmptySession, installedSkillNames, unusedInstalledSkills } from './metrics.ts';
 export { extractInstructionBlocks, resolveInstructions, charCount, fileFromPath, contentHash } from './instructions.ts';

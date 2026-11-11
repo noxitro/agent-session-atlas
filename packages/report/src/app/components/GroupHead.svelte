@@ -64,7 +64,11 @@
     uploaded
       ? `アップロードしました(${int(uploaded.uploaded)} セッション${uploaded.memos ? `・メモ ${int(uploaded.memos)} 件` : ''}${uploaded.replaced ? `。うち ${int(uploaded.replaced)} 件は前に写したものを置き換え` : ''})。タスクタグの説明とセッションの一覧は README.md にあります。` +
           (uploaded.snapshotAt ? `写したのは前回の集計(${when(uploaded.snapshotAt)})の時点のログです。` : '') +
-          (uploaded.missing.length ? `前回の集計に無いセッション ${int(uploaded.missing.length)} 件は写していません。` : '')
+          (uploaded.missing.length ? `前回の集計に無いセッション ${int(uploaded.missing.length)} 件は写していません。` : '') +
+          // 黒い窓(upload-project.bat)と同じ知らせ: 残ったフォルダは次に送っても消えないので、手で消してもらう
+          (uploaded.leftovers?.length
+            ? `置き換えた前のフォルダを ${int(uploaded.leftovers.length)} 件消せませんでした(送り先で開かれているなど)。閉じてから手で消してください: ${uploaded.leftovers.slice(0, 3).join('、')}${uploaded.leftovers.length > 3 ? ` ほか ${int(uploaded.leftovers.length - 3)} 件` : ''}`
+            : '')
       : '',
   );
   /** 確認に「大きいもの」を出す目安(serve の UPLOAD_CONFIRM_BYTES と同じ) */

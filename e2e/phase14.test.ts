@@ -206,7 +206,7 @@ describe('Phase 14 E2E: 画面からの操作(jobs)', () => {
     expect(pre.pending).toBeGreaterThan(2);
     // copilot -p 以外・件数の無い要求は受けない
     expect((await startJob({ kind: 'turn-judge' })).status).toBe(400);
-    expect((await startJob({ kind: 'turn-judge', limit: 3, backend: 'opencode' })).status).toBe(400);
+    expect((await startJob({ kind: 'turn-judge', limit: 3, backend: 'copilot-cli' })).status).toBe(400);
     expect((await startJob({ kind: 'turn-judge', limit: 3 })).status).toBe(202);
     const j = await waitJob();
     expect(j.state, j.log.join('\n')).toBe('done');

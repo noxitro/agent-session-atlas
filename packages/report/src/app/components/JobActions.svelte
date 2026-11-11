@@ -2,9 +2,9 @@
   // Phase 14: マストヘッドの操作「集計し直す」「判定する…」(atlas serve から開いたときだけ)。
   // 判定は AI クレジットを消費するので、必ず確認ダイアログ(件数・バックエンド・費用)を通す。「やめる」では API を呼ばない。
   // ダイアログでは判定するもの(工数 = セッションごと / 依頼ごとの採用)と、判定の方法を選べる:
-  // このツールから(工数は copilot -p / opencode、依頼は copilot -p だけ)か、チャットに貼る(M365 Copilot など。ChatJudge)。選んだものはこのブラウザに覚える。
+  // このツールから(copilot -p)か、チャットに貼る(M365 Copilot など。ChatJudge)。選んだものはこのブラウザに覚える。
   import { tick } from 'svelte';
-  import { jobsApi, type JobBackend, type JudgeTarget } from '../api.ts';
+  import { jobsApi, type JudgeTarget } from '../api.ts';
   import type { JobStore } from '../jobs.svelte.ts';
   import { int } from '../../lib/format.ts';
   import ChatJudge from './ChatJudge.svelte';
@@ -73,7 +73,6 @@
   let previewError = $state('');
   let runError = $state('');
   let limit = $state<number | null>(LIMIT_DEFAULT[readTarget()]);
-  let backend = $state<JobBackend>('copilot-cli');
   const off = $derived(disabled || jobs.running || jobs.busy);
   const limitOk = $derived(typeof limit === 'number' && Number.isInteger(limit) && limit >= 1 && limit <= LIMIT_MAX[target]);
   /** 実際に判定する件数(未判定のうち上限まで) */
@@ -102,7 +101,7 @@
   async function runJudge(e: SubmitEvent): Promise<void> {
     e.preventDefault();
     if (!limitOk || count < 1 || jobs.busy) return;
-    const req = target === 'turns' ? { kind: 'turn-judge' as const, limit: limit as number } : { kind: 'judge' as const, limit: limit as number, backend };
+    const req = target === 'turns' ? { kind: 'turn-judge' as const, limit: limit as number } : { kind: 'judge' as const, limit: limit as number };
     if (await jobs.run(req)) dlg?.close();
     else runError = jobs.error;
   }
@@ -137,7 +136,7 @@
   </fieldset>
   <fieldset class="fld method">
     <legend class="k">判定の方法</legend>
-    <label class="opt"><input type="radio" name="judge-method" value="tool" checked={method === 'tool'} onchange={() => setMethod('tool')} data-testid="judge-method-tool" />このツールが判定する(GitHub Copilot CLI{target === 'effort' ? ' か opencode' : ''} を手元で動かす)</label>
+    <label class="opt"><input type="radio" name="judge-method" value="tool" checked={method === 'tool'} onchange={() => setMethod('tool')} data-testid="judge-method-tool" />このツールが判定する(GitHub Copilot CLI を手元で動かす)</label>
     <label class="opt"><input type="radio" name="judge-method" value="chat" checked={method === 'chat'} onchange={() => setMethod('chat')} data-testid="judge-method-chat" />チャットに貼って判定する(M365 Copilot など。添付と貼り付けだけで使える)</label>
   </fieldset>
   {#if method === 'chat'}
@@ -150,15 +149,7 @@
       </p>
       <div class="row">
         <label class="fld"><span class="k">件数({unit})の上限</span><input type="number" name="judge-limit" autocomplete="off" min="1" max={LIMIT_MAX[target]} step="1" inputmode="numeric" bind:value={limit} aria-invalid={limitOk ? undefined : 'true'} aria-describedby="judge-count" data-testid="judge-limit" /></label>
-        {#if target === 'turns'}
-          <p class="fld only">判定に使うもの: GitHub Copilot CLI(copilot -p)</p>
-        {:else}
-          <fieldset class="fld">
-            <legend class="k">判定に使うもの</legend>
-            <label class="opt"><input type="radio" name="judge-backend" value="copilot-cli" bind:group={backend} />GitHub Copilot CLI(copilot -p。既定)</label>
-            <label class="opt"><input type="radio" name="judge-backend" value="opencode" bind:group={backend} />opencode(別にインストールが必要)</label>
-          </fieldset>
-        {/if}
+        <p class="fld only">判定に使うもの: GitHub Copilot CLI(copilot -p)</p>
       </div>
       <p class="count" id="judge-count" role="status" data-testid="judge-count">
         {#if !limitOk}件数の上限は 1〜{int(LIMIT_MAX[target])} の整数で指定してください。
@@ -170,7 +161,7 @@
       </p>
       <p class="cost" id="judge-cost">
         <strong>AI クレジットを消費します。</strong>
-        {#if target === 'turns'}GitHub Copilot の AI クレジットを、続いた依頼 {TURN_CHUNK} 件まで(長い依頼はもっと少なく)ごとに 1 回の判定の分だけ使います。{:else if backend === 'copilot-cli'}GitHub Copilot の AI クレジットを、1 件につき 1 回以上の判定の分だけ使います。{:else}opencode に設定してある既定のモデルで判定します。そのモデルの提供元のクレジットや利用料を、1 件につき 1 回以上使います。無料のモデルには、送った内容を学習に使うものがあります(モデルの選び方は docs/judge.md)。{/if}
+        {#if target === 'turns'}GitHub Copilot の AI クレジットを、続いた依頼 {TURN_CHUNK} 件まで(長い依頼はもっと少なく)ごとに 1 回の判定の分だけ使います。{:else}GitHub Copilot の AI クレジットを、1 件につき 1 回以上の判定の分だけ使います。{/if}
       </p>
       {#if runError}<p class="err" role="alert">{runError}</p>{/if}
       <div class="actions">

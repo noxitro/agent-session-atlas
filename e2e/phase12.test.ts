@@ -144,16 +144,6 @@ describe('Phase 12 E2E: fixtures', () => {
     expect(atlas(['skill-draft', '1', '--out', outAnon], env).stderr).toMatch(/伏せ字版/);
     expect(atlas(['skill-draft'], env).status).toBe(2);
     expect(atlas(['skill-draft', '1', '--backend', 'nope'], env).stderr).toMatch(/不明なバックエンド/);
-    // opencode も同じ作業フォルダの規則で動く(偽の CLI。本物は呼ばない)
-    await rm(log, { force: true });
-    const oc = atlas(['skill-draft', '2', '--backend', 'opencode', '--out', out], { ATLAS_OPENCODE_BIN: env.ATLAS_COPILOT_BIN, FAKE_COPILOT_LOG: log });
-    expect(oc.status, oc.stderr).toBe(0);
-    const ocCall = JSON.parse((await readFile(log, 'utf8')).trim()) as { argv: string[]; cwd: string; opencodeConfig: string | null };
-    expect(ocCall.argv[0]).toBe('run');
-    // opencode のツールは既定で許可なので、設定の上書きで全ツールを拒否して起動する
-    expect(JSON.parse(ocCall.opencodeConfig ?? '{}').permission?.['*']).toBe('deny');
-    expect(ocCall.argv.at(-1)).toContain('候補 2');
-    expect(ocCall.cwd).toMatch(/atlas-judge-cwd-[^\\/]+$/);
     expect(existsSync(join(outAnon, 'skill-drafts'))).toBe(false);
   });
 });

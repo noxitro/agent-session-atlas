@@ -7,6 +7,7 @@ export const JUDGMENTS_SCHEMA_VERSION = 1;
 export const TASK_CATEGORIES = ['feature', 'bugfix', 'investigation', 'refactor', 'docs', 'ops', 'other'] as const;
 export type TaskCategory = (typeof TASK_CATEGORIES)[number];
 
+/** 判定を出したもの。opencode は今は選べないが、前に判定した judgments.json を読めるように残す */
 export const BACKENDS = ['copilot-cli', 'opencode', 'anthropic', 'external'] as const;
 export type BackendName = (typeof BACKENDS)[number];
 

@@ -81,6 +81,8 @@ export interface GroupUpload {
   snapshotAt: string | null;
   /** メモを添えたセッションの数 */
   memos: number;
+  /** 置き換えた前のフォルダのうち、消せずに送り先に残ったもの(送り先で開かれていたなど) */
+  leftovers: string[];
 }
 
 /** serve が差し込んだ token。http(s) 以外・無し・プレースホルダ(__ で始まる)なら null */
@@ -224,7 +226,7 @@ export const settingsApi = {
 export type JobKind ='refresh' | 'judge' | 'full' | 'bundle' | 'export' | 'turn-bundle' | 'turn-judge';
 /** 何を判定するか: 工数(セッションごと)/ 依頼ごとの採用・種類・工程 */
 export type JudgeTarget = 'effort' | 'turns';
-export type JobBackend = 'copilot-cli' | 'opencode';
+export type JobBackend = 'copilot-cli';
 export interface JobInfo {
   id: string;
   kind: JobKind;
@@ -237,7 +239,7 @@ export interface JobInfo {
 }
 export type JobRequest =
   | { kind: 'refresh' }
-  | { kind: 'judge'; limit: number; backend: JobBackend }
+  | { kind: 'judge'; limit: number }
   | { kind: 'bundle' }
   | { kind: 'export' }
   | { kind: 'turn-bundle' }

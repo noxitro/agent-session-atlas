@@ -2,7 +2,7 @@
 // 画面からはアップロード先を決め(エクスプローラーで選ぶ / パスを入力)、写し、写した先をエクスプローラーで開く。
 // 通しの確認(集計し直して元と一致する)は e2e/phase15.test.ts
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, open, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, open, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -57,6 +57,10 @@ describe('グループのアップロード', () => {
     await writeFile(join(r.dir, 's2', 'old.txt'), 'x');
     expect(await uploadGroup(paths(), 'Player/Weapon', root)).toMatchObject({ uploaded: 2, replaced: 2 });
     expect(existsSync(join(r.dir, 's2', 'old.txt'))).toBe(false);
+    // 前の回が置き換えの途中で止まって残したもの(本体のフォルダが無く、退けた前のフォルダだけがある)も、新しいフォルダを置けたら消す
+    await rename(join(r.dir, 's2'), join(r.dir, '.s2.old'));
+    expect(await uploadGroup(paths(), 'Player/Weapon', root)).toMatchObject({ uploaded: 2, replaced: 1, leftovers: [] });
+    expect((await readdir(r.dir)).sort()).toEqual(['README.md', 'atlas-index.json', 's1', 's2']);
     expect(uploadDir(root, 'con')).toBe(join(root, '_con'));
   });
 

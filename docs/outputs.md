@@ -59,7 +59,7 @@ npm run atlas -- snapshot --snapshot-all         # rewind-snapshots / 一覧に�
 
 | 出力 | 中身 |
 |---|---|
-| `out/snapshot/` | 原本の複製(スナップショット)。セッションフォルダの `plan.md` / `checkpoints/` / `files/` / `rewind-file-snapshots/` / `policies/`、直下の `plans/` / `attachments/` / `chats/` の `*.md` も写す。写さなかったもの(`rewind-snapshots/` は 1 セッションで数十 MB、一覧に無い名前のフォルダ、`logs/`、`repos/`、`chats/` の `*.md` 以外)は `snapshot-manifest.json` の `extras.skipped` に名前と容量を残し、`--snapshot-all` で写す(`repos/` と `chats/` の `*.md` 以外は写さない) |
+| `out/snapshot/` | 原本の複製(スナップショット)。セッションフォルダの `plan.md` / `checkpoints/` / `files/` / `rewind-file-snapshots/` / `policies/`、直下の `plans/` / `attachments/` / `chats/` の `*.md` も写す。写さなかったもの(`rewind-snapshots/` は 1 セッションで数十 MB、一覧に無い名前のフォルダ、`logs/`、`repos/`、`chats/` の `*.md` 以外)は `snapshot-manifest.json` の `extras.skipped` に名前と容量を残し(`snapshot-source.json` は、どこから集計したかの印。集計が途中で止まっても残り、別の場所のログを同じ出力先に足すのを止めます)、`--snapshot-all` で写す(`repos/` と `chats/` の `*.md` 以外は写さない) |
 | `out/snapshot/desktop.json` | デスクトップアプリの `data.db` から、名前で固定した許可リストの列だけを読んだもの(下記) |
 | `out/full/<id>.md` | 全文記録。依頼、応答、reasoningText、ツールの引数と結果(成功含む)、hook の入出力、system.message、compaction の要約、skill の本文、plan.md、チェックポイント、`files/` などの一覧、data.db の列を時系列で、上限なしで書く。除くのは暗号化・不透明データ(`encryptedContent`、`reasoningOpaque`、`reasoningBlocks` の中の base64 らしい値)と base64 の本体(画像などは `out/full/assets/<id>/` に書き出してリンク)だけで、除いた箇所に種別とバイト数を書く。hook の入力に入っているツールの結果がツールの結果と同一なら参照にする。API キーらしい文字列は形式検査で伏せて件数を末尾に書く |
 | `out/coverage.json` | 網羅の検査。元データの event type × data のキーごとに件数・バイト数・扱い(`full` = 全文に出した / `ref` = 参照にした / `excluded` = 理由付きで除外)。扱いの表(`packages/report/src/coverage.ts`)に無いキーは `unclassified` として数え、`export` のログと全文記録の末尾にも出す(0 件なら欠損なし)。`data.db` の列も同じ表で(許可 = `full`、許可外 = `unclassified`、開かない表 = `excluded`) |
@@ -88,7 +88,7 @@ npm run atlas -- snapshot --snapshot-all         # rewind-snapshots / 一覧に�
 ### スキルの下書き(`atlas skill-draft`、任意)
 
 ```
-npm run atlas -- skill-draft <番号>            # out/insights.json の候補の番号。--backend copilot-cli(既定)/ opencode / anthropic、--model、--timeout
+npm run atlas -- skill-draft <番号>            # out/insights.json の候補の番号。--backend copilot-cli(既定)/ anthropic、--model、--timeout
 ```
 
-候補の繰り返し回数・代表の依頼文・ツールの並びを LLM に渡し、SKILL.md の形の下書きを `out/skill-drafts/<番号>-<名前>.md` に書きます。**明示したときだけ動き、`build` / `export` / `all` では呼びません**。費用は 1 回の実行で判定 1 件と同じです。`copilot-cli` はモデル 1 リクエスト相当の AI クレジット、`opencode` は選んだモデルの料金、`anthropic` は Anthropic API の従量課金(`ANTHROPIC_API_KEY` が必要)を消費します。`copilot-cli` は判定と同じ安全策(`--no-custom-instructions`、`shell` / `write` / `url` の拒否、`--add-dir` なし)で動きます。`opencode` にはツールを拒否する引数を渡していないので、作業フォルダが空であることだけが歯止めです(判定と同じ)。下書きの作業フォルダは判定と同じ接頭辞にしており、次回の集計では「(atlas の判定)」に分類されて候補に戻りません。テストは偽の CLI(`ATLAS_COPILOT_BIN`、`ATLAS_OPENCODE_BIN`)と fetch の差し替えで行い、本物は呼びません。伏せ字版の `out/` では拒否します(本文が無いため)。下書きは案なので、使う前に読んで直してください。
+候補の繰り返し回数・代表の依頼文・ツールの並びを LLM に渡し、SKILL.md の形の下書きを `out/skill-drafts/<番号>-<名前>.md` に書きます。**明示したときだけ動き、`build` / `export` / `all` では呼びません**。費用は 1 回の実行で判定 1 件と同じです。`copilot-cli` はモデル 1 リクエスト相当の AI クレジット、`anthropic` は Anthropic API の従量課金(`ANTHROPIC_API_KEY` が必要)を消費します。`copilot-cli` は判定と同じ安全策(`--no-custom-instructions`、`shell` / `write` / `url` の拒否、`--add-dir` なし)で動きます。下書きの作業フォルダは判定と同じ接頭辞にしており、次回の集計では「(atlas の判定)」に分類されて候補に戻りません。テストは偽の CLI(`ATLAS_COPILOT_BIN`)と fetch の差し替えで行い、本物は呼びません。伏せ字版の `out/` では拒否します(本文が無いため)。下書きは案なので、使う前に読んで直してください。

@@ -9,7 +9,7 @@ import type { ProjectSource, SessionRecord } from './types.ts';
 
 export { ATLAS_JUDGE_PROJECT, GROUPED_PROJECTS, HOME_PROJECT, TEMP_PROJECT } from './project-keys.ts';
 
-/** このツールの判定(judge)が copilot / opencode を起動する作業フォルダ(mkdtemp の atlas-judge-cwd-XXXXXX) */
+/** このツールの判定(judge)が copilot を起動する作業フォルダ(mkdtemp の atlas-judge-cwd-XXXXXX) */
 const ATLAS_JUDGE_RE = /(?:^|[\\/])atlas-judge-cwd-[^\\/]+[\\/]*$/;
 /** ホームディレクトリそのもの(Windows の <ドライブ>:\Users\<名前>、/home/<名前>、/Users/<名前>) */
 const HOME_RE = /^(?:[A-Za-z]:[\\/]Users[\\/][^\\/]+|\/home\/[^/]+|\/Users\/[^/]+)[\\/]*$/i;

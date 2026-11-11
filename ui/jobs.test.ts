@@ -117,7 +117,7 @@ describe('画面からの操作(Phase 14)', () => {
     await expect.poll(() => page.getByTestId('judge-run').innerText()).toBe('2 件を判定する');
     await page.getByTestId('judge-run').click();
     await dialog.waitFor({ state: 'hidden' });
-    expect(jobPosts.map((b) => JSON.parse(b))).toEqual([{ kind: 'judge', limit: 2, backend: 'copilot-cli' }]);
+    expect(jobPosts.map((b) => JSON.parse(b))).toEqual([{ kind: 'judge', limit: 2 }]);
     await page.getByTestId('job-reload').waitFor({ state: 'visible', timeout: 60_000 });
     const j = JSON.parse(await readFile(join(out, 'judgments.json'), 'utf8')) as { items: unknown[] };
     expect(j.items).toHaveLength(2);
@@ -218,8 +218,9 @@ describe('画面からの操作(Phase 14)', () => {
     // f2 でチャットを選んだので、このツールの判定に戻す
     await page.getByTestId('judge-method-tool').check();
     await expect.poll(() => page.getByTestId('judge-count').innerText()).toMatch(/未判定の依頼 \d+ 件のうち \d+ 件を判定します\(約 \d+ 回以上の判定。/);
-    // 依頼ごとの判定は copilot -p だけ(opencode は選べない)
-    expect(await dialog.getByRole('radio', { name: /opencode/ }).count()).toBe(0);
+    // 判定に使うものは copilot -p だけ(選ぶ欄は無い)
+    expect(await dialog.locator('input[name="judge-backend"]').count()).toBe(0);
+    expect(await dialog.getByText('判定に使うもの: GitHub Copilot CLI(copilot -p)').count()).toBe(1);
     await page.getByTestId('judge-limit').fill('3');
     await page.getByTestId('judge-run').click();
     await dialog.waitFor({ state: 'hidden' });

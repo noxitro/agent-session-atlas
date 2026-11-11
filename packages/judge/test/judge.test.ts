@@ -11,7 +11,6 @@ import {
   buildJudgePrompt,
   clip,
   copilotArgs,
-  opencodeEnv,
   JUDGE_DENIED_TOOL_KINDS,
   DEFAULT_LIMITS,
   emptyJudgments,
@@ -53,6 +52,8 @@ describe('schema', () => {
   it('妥当な judgments を通し、範囲外の値はまとめて報告する', () => {
     const ok = { schemaVersion: 1, judge: { backend: 'external', model: null, ranAt: '2026-10-28T00:00:00Z' }, items: [item('a'), item('b')] };
     expect(validateJudgments(ok).items).toHaveLength(2);
+    // 今は選べないバックエンドで前に判定した結果も読める
+    expect(validateJudgments({ ...ok, judge: { ...ok.judge, backend: 'opencode' } }).judge.backend).toBe('opencode');
     const bad = {
       ...ok,
       items: [item('a', { humanEffort: { hours: 5, low: 6, high: 7, confidence: 1.5, rationale: '' } }), item('a', { taskCategory: 'nope' as never, aiOutcome: { completed: true, quality: 9, rework: 0, rationale: '' } })],
@@ -121,12 +122,6 @@ describe('JSON の取り出し', () => {
     expect(() => itemFromTexts(['ただの文章'], 'S1')).toThrow(/取り出せません/);
     // JSONL でない出力は全体を本文として扱う
     expect(parseAgentJsonl(`text ${JSON.stringify(item('S1'))}`).texts).toHaveLength(1);
-    // opencode 形式
-    const oc = parseAgentJsonl(
-      [JSON.stringify({ type: 'text', part: { text: JSON.stringify(item('S1')) } }), JSON.stringify({ type: 'step_finish', part: { tokens: { input: 3, output: 4, cache: { read: 1 } } } })].join('\n'),
-    );
-    expect(oc.usage).toEqual({ input: 3, output: 4, 'cache.read': 1 });
-    expect(itemFromTexts(oc.texts, 'S1').taskCategory).toBe('feature');
     // Copilot の session.error(2026-10-28 実走で確認した形)はエラー本文として拾う
     const err = parseAgentJsonl(
       [
@@ -136,7 +131,6 @@ describe('JSON の取り出し', () => {
     );
     expect(err.errors).toEqual(['quota_exceeded HTTP 402 You have exceeded your monthly quota']);
     expect(err.texts).toHaveLength(0);
-    expect(oc.errors).toEqual([]);
   });
 });
 
@@ -241,14 +235,6 @@ describe('backends', () => {
     const c = copilotArgs('P', 'u', {}, ['srv-a', 'srv-b']);
     expect(denied(c)).toEqual([...JUDGE_DENIED_TOOL_KINDS, 'srv-a', 'srv-b']);
     expect(c.flatMap((x, i) => (x === '--disable-mcp-server' ? [c[i + 1]] : []))).toEqual(['srv-a', 'srv-b']);
-  });
-
-  it('opencode は設定の上書き(OPENCODE_CONFIG_CONTENT)で全ツールを拒否して起動する', () => {
-    const env = opencodeEnv({ PATH: 'x', OPENCODE_CONFIG_CONTENT: '{"permission":"allow"}' });
-    expect(env.PATH).toBe('x');
-    const cfg = JSON.parse(env.OPENCODE_CONFIG_CONTENT!) as { permission: Record<string, string> };
-    expect(cfg.permission['*']).toBe('deny');
-    expect(Object.values(cfg.permission).every((v) => v === 'deny')).toBe(true);
   });
 
   it('npm の .cmd シムから node + JS / .exe を解決する', async () => {

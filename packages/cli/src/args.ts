@@ -7,7 +7,7 @@ export type Command = (typeof COMMANDS)[number];
 export const JUDGE_ACTIONS = ['run', 'import'] as const;
 export type JudgeAction = (typeof JUDGE_ACTIONS)[number];
 
-export const BACKEND_NAMES = ['copilot-cli', 'opencode', 'anthropic'] as const;
+export const BACKEND_NAMES = ['copilot-cli', 'anthropic'] as const;
 export type BackendChoice = (typeof BACKEND_NAMES)[number];
 
 export interface JudgeCliOptions {
@@ -30,7 +30,7 @@ export interface JudgeCliOptions {
 export const TURNS_ACTIONS = ['bundle', 'run', 'import'] as const;
 export type TurnsAction = (typeof TURNS_ACTIONS)[number];
 
-/** 依頼ごとの判定(段階 2)。run は GitHub Copilot CLI だけ(従量課金・opencode は使わない) */
+/** 依頼ごとの判定(段階 2)。run は GitHub Copilot CLI だけ(従量課金の anthropic は使わない) */
 export interface TurnsCliOptions {
   action: TurnsAction;
   /** import するファイル */
@@ -203,14 +203,14 @@ serve のオプション:
   --no-open          起動後にブラウザを開かない
 
 judge run のオプション:
-  --backend <name>   copilot-cli(既定、copilot -p)/ opencode / anthropic(従量課金、ANTHROPIC_API_KEY が必要)
+  --backend <name>   copilot-cli(既定、copilot -p)/ anthropic(従量課金、ANTHROPIC_API_KEY が必要)
   --limit <n>        未判定のものから最大 n 件だけ判定する
   --only <id,...>    指定したセッションだけ判定する
   --concurrency <n>  同時に判定する数(既定 1)
   --force            判定済みのセッションも判定し直す
   --no-allow-tools   copilot に --allow-all-tools を付けない(既定は付ける)
   --timeout <秒>     1 件あたりの制限時間(既定 600)
-  copilot の実行ファイルは環境変数 ATLAS_COPILOT_BIN で差し替えられます(opencode は ATLAS_OPENCODE_BIN)。
+  copilot の実行ファイルは環境変数 ATLAS_COPILOT_BIN で差し替えられます。
 `;
 
 export class UsageError extends Error {}
