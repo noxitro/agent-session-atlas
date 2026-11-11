@@ -336,6 +336,14 @@ describe('serve の jobs と記録の表示(Phase 14)', () => {
     await until(async () => (await current()).state !== 'running');
     expect((await current()).state).toBe('canceled');
 
+    // 止める操作が間に合わず、最後まで終わった(終了コード 0)ものは完了のまま(結果は書かれている)
+    await post({ kind: 'bundle' });
+    children[1].kill = () => {};
+    expect((await json('/api/jobs/current/cancel', { method: 'POST' })).status).toBe(200);
+    children[1].exit(0);
+    await until(async () => (await current()).state !== 'running');
+    expect(await current()).toMatchObject({ kind: 'bundle', state: 'done', exitCode: 0 });
+
     let release!: () => void;
     fullImpl = (id, ctx) =>
       new Promise((ok, ng) => {
@@ -344,7 +352,7 @@ describe('serve の jobs と記録の表示(Phase 14)', () => {
         release = ok;
       });
     expect((await post({ kind: 'full', id: 's2' })).status).toBe(202);
-    expect(calls).toHaveLength(1); // 全文はサーバ内(子プロセスを起動しない)
+    expect(calls).toHaveLength(2); // 全文はサーバ内(子プロセスを起動しない)
     expect(fulls.map((f) => f.id)).toEqual(['s2']);
     await json('/api/jobs/current/cancel', { method: 'POST' });
     await until(async () => (await current()).state !== 'running');

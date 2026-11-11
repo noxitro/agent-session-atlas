@@ -1,10 +1,10 @@
 // atlas の各コマンド。元データ(~/.copilot)は core の snapshot 経由でだけ読む(コピーしてから開く)。
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join, posix, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { codeStamp, computeMetrics, extract, METRICS_SCHEMA_VERSION, snapshot, type MetricsFile, type SessionRecord, type SessionsFile, type SnapshotManifest } from '../../core/src/index.ts';
+import { codeStamp, computeMetrics, describeSource, extract, METRICS_SCHEMA_VERSION, removeTree, snapshot, UPLOAD_OLD_ONLY_REASON, UPLOAD_PROBE_HINT, uploadWorkDirId, type MetricsFile, type SessionRecord, type SessionsFile, type SnapshotManifest } from '../../core/src/index.ts';
 import {
   buildReport,
   DEFAULT_TRANSCRIPT_OPTIONS,
@@ -172,6 +172,11 @@ export async function runSnapshot(p: Paths, since: string | null, log: Log, all 
   log(
     `snapshot: セッションディレクトリ ${m.sessions.dirs}(複製 ${m.sessions.copiedFiles} / 再利用 ${m.sessions.reusedFiles} ファイル、${mb(m.sessions.bytes)}、session.db 複製 ${m.sessions.dbCopied ?? 0} / 再利用 ${m.sessions.dbReused ?? 0})、${ms(performance.now() - t)}`,
   );
+  // 集計できる形のフォルダではなかったとき(0 件のまま黙って空のレポートを作らないように、指定のしかたを出す)
+  if (m.sessions.dirs === 0 && m.sessions.skippedBySince === 0 && (await describeSource(p.home)).kind === 'none')
+    log(
+      `snapshot: 注意 ${p.home} には、集計できるセッションが見つかりません。--home には、Copilot のデータのフォルダ(.copilot)か、アップロード先のフォルダ・その下の人ごとのフォルダ・プロジェクトのフォルダを指定してください(読むのは 2 段下までです)。${UPLOAD_PROBE_HINT}`,
+    );
   for (const [name, d] of Object.entries(m.databases)) if (!d.copied && d.error) log(`snapshot: 注意 ${name} を今回は複製できませんでした(${d.bytes ? '前回の複製を使います' : '前回の複製も無いので、このファイルの内容は使いません'}): ${d.error}`);
   if (m.sessionDbErrors?.length) log(`snapshot: 注意 session.db を複製できなかったセッション ${m.sessionDbErrors.length} 件(${m.sessionDbErrors.slice(0, 3).join(' / ')})`);
   if (m.merged) {
@@ -180,7 +185,12 @@ export async function runSnapshot(p: Paths, since: string | null, log: Log, all 
     if (m.merged.duplicates) log(`snapshot: 注意 同じ id のセッションが複数のフォルダにあったので、events.jsonl が大きいほうだけ数えました(数えなかったもの ${m.merged.duplicates} 件。manifest の extras.skipped)`);
   }
   const x = m.extras;
-  if (x?.recovered?.length) log(`snapshot: 注意 アップロードの置き換えが途中で止まっていたセッション ${x.recovered.length} 件は、作業用のフォルダから写しました(${x.recovered.slice(0, 3).map((r) => r.path).join(' / ')})`);
+  if (x?.recovered?.length) log(`snapshot: 注意 アップロードの置き換えが途中で止まっていたセッション ${x.recovered.length} 件は、写し終えていた作業用のフォルダから写しました(${x.recovered.slice(0, 3).map((r) => r.path).join(' / ')})`);
+  const oldOnly = x?.skipped.filter((k) => k.reason === UPLOAD_OLD_ONLY_REASON) ?? [];
+  if (oldOnly.length)
+    log(
+      `snapshot: 注意 本体のフォルダが無く、アップロードの置き換えで退けた前のフォルダだけが残っているセッション ${new Set(oldOnly.map((k) => uploadWorkDirId(basename(k.path)))).size} 件は、写していません(${oldOnly.slice(0, 3).map((k) => k.path).join(' / ')})。共有から消したセッションなら、このフォルダも消してください。消した覚えが無ければ、送った PC でもう一度アップロードすると戻ります`,
+    );
   if (x) {
     const top = Object.entries(x.topLevel).map(([k, v]) => `${k} ${v.files}`).join(' / ');
     log(`snapshot: 付随物 セッションフォルダ ${x.sessionFiles} ファイル(${mb(x.sessionBytes)})${top ? `、直下 ${top}` : ''}、写さなかったもの ${x.skipped.length} 件(${mb(x.skipped.reduce((a, s) => a + s.bytes, 0))}。manifest の extras.skipped)`);
@@ -366,7 +376,7 @@ export async function runBuild(p: Paths, o: BuildOptions, log: Log): Promise<Bui
   // 伏せ字版では表を書かない(依頼文とパスがそのまま入るため)。前に書いた表も、共有用の out/ に残さないよう消す(out/full/ と同じ扱い)
   if (!o.anonymize) await writeTables(p, sessions, o.transcripts ? 'export' : 'build', log);
   else if (existsSync(join(p.out, 'tables'))) {
-    await rm(join(p.out, 'tables'), { recursive: true, force: true });
+    await removeTree(join(p.out, 'tables'));
     log('build: 伏せ字版なので、依頼文の入った表(out/tables/)を消しました');
   }
 

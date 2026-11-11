@@ -6,10 +6,12 @@
   // 4. レポートに反映する(export のジョブ)
   // どの手順も AI クレジットを使わない(判定するのはチャットの側)。
   // target が turns なら依頼ごとの判定(turn-bundle/・turn-judgments.json。件数は依頼の数)。
-  import { tick } from 'svelte';
+  import { onDestroy, tick } from 'svelte';
   import { chatJudgeApi, ChatImportError, jobsApi, type ChatPart, type ChatParts, type JudgeTarget } from '../api.ts';
   import type { JobStore } from '../jobs.svelte.ts';
   import { dateTime, int } from '../../lib/format.ts';
+  import { failureReason } from '../../lib/job-log.ts';
+  import JobLog from './JobLog.svelte';
 
   // reply は親(JobActions)が判定するものごとに持つ(判定するものを切り替えても貼りかけの返答が消えないように)
   let { jobs, onclose, target = 'effort', reply = $bindable('') }: { jobs: JobStore; onclose: () => void; target?: JudgeTarget; reply?: string } = $props();
@@ -40,12 +42,29 @@
   const next = $derived(parts.find((p) => p.judged < p.sessions) ?? null);
   const bundling = $derived(jobs.running && jobs.job?.kind === bundleKind);
   const off = $derived(jobs.running || jobs.busy);
-  /** 添付ファイルを作る処理が失敗したか、止められたとき(本文の上の帯には出ないので、理由はここで見せる) */
-  const ended = $derived(jobs.job && jobs.job.kind === bundleKind && (jobs.job.state === 'failed' || jobs.job.state === 'canceled') ? jobs.job : null);
-  /** 理由の 1 行(処理が最後に書いた行。「atlas: 失敗しました: …」) */
-  const reason = $derived(ended?.state === 'failed' && ended.log.length ? ended.log[ended.log.length - 1] : '');
-  /** ほかのプログラムがファイルを掴んでいるときの失敗(Windows) */
-  const held = $derived(/\b(EBUSY|EPERM|ENOTEMPTY)\b/.test(reason));
+  /** いま使える添付ファイルがあるか(作り直しに失敗しても、前に作ったものは残る) */
+  const made = $derived(!!info?.exists && parts.length > 0);
+  /**
+   * 添付ファイルを作る処理が失敗したか、止められたとき(本文の上の帯には出ないので、ここで見せる)。
+   * この画面で動いているのを見た処理だけを出す。一度見て閉じたものと、その後に(コマンドなどで)作れたものは出さない
+   */
+  const ended = $derived.by(() => {
+    const j = jobs.job;
+    if (!j || j.kind !== bundleKind || (j.state !== 'failed' && j.state !== 'canceled')) return null;
+    if (jobs.live !== j.id || jobs.dismissed === j.id) return null;
+    if (j.endedAt && info?.generatedAt && Date.parse(info.generatedAt) > Date.parse(j.endedAt)) return null;
+    return j;
+  });
+  /** 処理が書いた理由(「atlas: 失敗しました: …」の後ろ)。書かずに終わったときは空で、ログを読んでもらう */
+  const reason = $derived(ended?.state === 'failed' ? failureReason(ended.log) : '');
+  // 見せた失敗は、閉じたら(判定するものを切り替えたときも)もう出さない
+  let shownId: string | null = null;
+  $effect(() => {
+    if (ended) shownId = ended.id;
+  });
+  onDestroy(() => {
+    if (shownId && jobs.job?.id === shownId) jobs.dismissed = shownId;
+  });
 
   async function load(): Promise<void> {
     loadError = '';
@@ -158,22 +177,13 @@
       {#if ended}
         <div class="err" role="alert" data-testid="chat-bundle-failed">
           {#if ended.state === 'failed'}
-            <p><strong>添付ファイルを作れませんでした</strong>(終了コード {ended.exitCode ?? '—'})。{reason ? `理由: ${reason}` : ''}</p>
-            <p>
-              {#if held}添付ファイルのフォルダーかその中のファイルを、ほかのアプリ(エディターやプレビューなど)が開いたままにしています。閉じてから、もう一度押してください。{:else}原因を直してから、もう一度押してください。{/if}
-              作りかけのファイルは使えません。
-            </p>
+            <p><strong>添付ファイルを作れませんでした</strong>(終了コード {ended.exitCode ?? '—'})。{reason ? '' : '理由は下のログで確かめてください。'}</p>
+            {#if reason}<p class="reason" data-testid="chat-bundle-reason">理由: {reason}</p>{/if}
+            <p>原因を直してから、もう一度押してください。{made ? '前に作った添付ファイルは、そのまま使えます。' : ''}</p>
           {:else}
-            <p><strong>添付ファイルの作成を止めました</strong>。作りかけのファイルは使えないので、もう一度作ってください。</p>
+            <p><strong>添付ファイルの作成を止めました</strong>。{made ? '前に作った添付ファイルは、そのまま使えます。' : '使える添付ファイルはまだありません。もう一度作ってください。'}</p>
           {/if}
-          {#if ended.log.length > 1}
-            <details class="log">
-              <summary>ログ(末尾 {ended.log.length} 行)</summary>
-              <!-- 縦に流れる枠はキーボードでも送れるようにする(Tab で止まって矢印で送る) -->
-              <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-              <pre tabindex="0" aria-label="処理のログ">{ended.log.join('\n')}</pre>
-            </details>
-          {/if}
+          {#if ended.log.length}<div class="log"><JobLog log={ended.log} /></div>{/if}
         </div>
       {/if}
     </li>
@@ -470,27 +480,11 @@
   .err p {
     overflow-wrap: anywhere;
   }
+  .err .reason {
+    white-space: pre-wrap;
+  }
   .log {
     margin: 4px 0 0;
-    font-size: 0.75rem;
-  }
-  .log summary {
-    cursor: pointer;
-    width: max-content;
-  }
-  .log pre {
-    margin: 4px 0 2px;
-    padding: 6px 8px;
-    max-height: 14em;
-    overflow: auto;
-    color: var(--ink);
-    background: var(--surface);
-    border: 1px solid var(--rule);
-    font-family: var(--mono);
-    font-size: 0.75rem;
-    line-height: 1.5;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
   }
   .footer {
     display: flex;

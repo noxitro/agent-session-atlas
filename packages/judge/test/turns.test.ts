@@ -143,23 +143,34 @@ describe('判定に渡すファイル', () => {
     expect(await readdir(join(d, 'tb', 'chunks'))).toEqual(['0001.md']);
   });
 
-  it('作り直しが途中で止まったら、前の一覧(manifest.json)を残さない(消した後のファイルを指す「作成済み」にしない)', async () => {
-    // 依頼ごとの判定
-    await buildTurnBundle([s], { bundleDir: join(d, 'tb'), snapshotDir: join(d, 'snapshot'), phases: PHASES });
-    expect(existsSync(join(d, 'tb', 'manifest.json'))).toBe(true);
+  it('作り直しが途中で失敗しても、前に作ったもの(一覧と、それが指すファイル)はそのまま使える。作りかけは残さない', async () => {
     const stop = (): string => {
       throw new Error('途中で止まった');
     };
-    await expect(buildTurnBundle([s], { bundleDir: join(d, 'tb'), snapshotDir: join(d, 'snapshot'), phases: PHASES, boundary: stop })).rejects.toThrow('途中で止まった');
-    expect(existsSync(join(d, 'tb', 'manifest.json'))).toBe(false);
-    // 工数の判定
-    await buildBundle([s], { bundleDir: join(d, 'b'), snapshotDir: join(d, 'snapshot') });
-    expect(existsSync(join(d, 'b', 'manifest.json'))).toBe(true);
-    await expect(buildBundle([s], { bundleDir: join(d, 'b'), snapshotDir: join(d, 'snapshot'), perPart: 0 })).rejects.toThrow(/perPart/);
-    expect(existsSync(join(d, 'b', 'manifest.json'))).toBe(false);
-    // もう一度作れば元に戻る
-    await buildBundle([s], { bundleDir: join(d, 'b'), snapshotDir: join(d, 'snapshot') });
-    expect(existsSync(join(d, 'b', 'manifest.json'))).toBe(true);
+    // 依頼ごとの判定: 一覧の phases(貼った返答の取り込みが工程の名前に使う)も残る
+    const tb = join(d, 'tb');
+    const first = await buildTurnBundle([s], { bundleDir: tb, snapshotDir: join(d, 'snapshot'), phases: PHASES });
+    const part = await readFile(join(tb, first.parts[0].path), 'utf8');
+    await expect(buildTurnBundle([s], { bundleDir: tb, snapshotDir: join(d, 'snapshot'), phases: ['別の工程'], boundary: stop })).rejects.toThrow('途中で止まった');
+    expect(JSON.parse(await readFile(join(tb, 'manifest.json'), 'utf8'))).toEqual(first);
+    expect(await readFile(join(tb, first.parts[0].path), 'utf8')).toBe(part);
+    expect(await turnImportPhases(tb, ['設定の工程'])).toEqual([...PHASES, '設定の工程']);
+    expect((await readdir(tb)).sort()).toEqual(['chunks', 'manifest.json', 'parts']);
+    // 工数の判定: 指定の誤りは何も触る前に止める
+    const b = join(d, 'b');
+    await mkdir(b, { recursive: true });
+    await writeFile(join(b, 'memo.txt'), '利用者が置いたファイル');
+    const m = await buildBundle([s], { bundleDir: b, snapshotDir: join(d, 'snapshot') });
+    await expect(buildBundle([s], { bundleDir: b, snapshotDir: join(d, 'snapshot'), perPart: 0 })).rejects.toThrow(/perPart/);
+    await expect(buildBundle([s], { bundleDir: b, snapshotDir: join(d, 'snapshot'), boundary: stop })).rejects.toThrow('途中で止まった');
+    expect(JSON.parse(await readFile(join(b, 'manifest.json'), 'utf8'))).toEqual(m);
+    expect(existsSync(join(b, m.sessions[0].path))).toBe(true);
+    expect(existsSync(join(b, m.parts![0].path))).toBe(true);
+    // 作り直せば新しいものに入れ替わる(減ったパケットと分割ファイルは残らない)。出力先にあった別のファイルには触らない
+    const again = await buildBundle([], { bundleDir: b, snapshotDir: join(d, 'snapshot') });
+    expect(again.count).toBe(0);
+    expect((await readdir(b)).sort()).toEqual(['INSTRUCTIONS.md', 'manifest.json', 'memo.txt', 'schema.json', 'sessions']);
+    expect(await readdir(join(b, 'sessions'))).toEqual([]);
   });
 
   it('copilot -p で塊ごとに判定し、1 塊ずつ確定する。応答が欠けた塊は failures に残して次へ進む', async () => {

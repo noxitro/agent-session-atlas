@@ -7,9 +7,9 @@
 // いつものレポート(atlas.html・metrics.json)は書き換えない。atlas group export と、atlas serve の画面の「書き出す」が使う。
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { computeMetrics, type SessionRecord, type SessionsFile } from '../../core/src/index.ts';
+import { computeMetrics, removeTree, type SessionRecord, type SessionsFile } from '../../core/src/index.ts';
 import { loadGroups, safeDirName, transcriptFileName } from '../../report/src/index.ts';
 import { buildTables } from './tables.ts';
 
@@ -48,7 +48,7 @@ export async function exportGroup(p: GroupExportPaths, name: string, log: (m: st
   const clash = loaded.groups.some((x) => x.name !== name && safeDirName(x.name).toLowerCase() === safe.toLowerCase());
   const dir = join(p.out, 'groups', clash ? `${safe}-${createHash('sha1').update(name).digest('hex').slice(0, 6)}` : safe);
   // 前回の書き出しを消してから書く(グループから外したセッションの記録を残さない)
-  await rm(dir, { recursive: true, force: true });
+  await removeTree(dir);
   await mkdir(join(dir, 'records'), { recursive: true });
   // 判定のファイルが壊れていても、判定の列を付けずに書き出す(集計の表と同じ扱い)
   const t = await buildTables(sessions, { judgments: p.judgments, turnJudgments: p.turnJudgments ?? join(p.out, 'turn-judgments.json') });

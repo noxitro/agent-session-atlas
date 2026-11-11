@@ -291,7 +291,8 @@ export class JobRunner {
   private finish(state: JobState, exitCode: number | null): void {
     const j = this.job!;
     if (j.state !== 'running') return;
-    j.state = this.canceling ? 'canceled' : state;
+    // 止める操作の後でも、間に合って最後まで終わった(終了コード 0)ものは完了として扱う(結果は書かれている。「止めました」と出すと作り直しを促してしまう)
+    j.state = this.canceling && state !== 'done' ? 'canceled' : state;
     j.exitCode = exitCode;
     j.endedAt = new Date().toISOString();
     this.stop = null;

@@ -4,7 +4,7 @@
 //   manifest.json: 塊と分割ファイルの一覧
 // 依頼の区切りは core の normalize と同じ(本体の依頼。autopilot の自動継続・サブエージェントは除く。先頭 200 依頼まで)。
 import { existsSync } from 'node:fs';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   isAutopilotContinuation,
@@ -18,12 +18,12 @@ import {
   QUESTION_OUTCOMES,
   REQUEST_KIND_LABEL,
   REQUEST_KINDS,
+  replaceEntries,
   sessionTurns,
   WORK_OUTCOMES,
   type SessionRecord,
   type TurnRow,
 } from '../../core/src/index.ts';
-import { REMOVE } from './bundle.ts';
 import { clip, fenced } from './packet.ts';
 import { packetBoundary, SAFETY_RULES } from './rubric.ts';
 import { TURN_JUDGMENTS_VERSION, turnJsonSchema } from './turn-schema.ts';
@@ -286,13 +286,21 @@ export interface TurnBundleOptions {
   now?: () => Date;
 }
 
-export async function buildTurnBundle(sessions: SessionRecord[], o: TurnBundleOptions): Promise<TurnBundleManifest> {
+/** 入れ替える名前。先頭が一覧(manifest.json) */
+const TURN_BUNDLE_ENTRIES = ['manifest.json', 'parts', 'chunks'] as const;
+
+/**
+ * 作りかけの場所に全部を作ってから、前のものと入れ替える。途中で失敗したり止められたりしても、前に作ったもの
+ * (一覧の phases も。貼った返答の取り込みが工程の名前に使う)はそのまま使える
+ */
+export function buildTurnBundle(sessions: SessionRecord[], o: TurnBundleOptions): Promise<TurnBundleManifest> {
+  return replaceEntries(o.bundleDir, TURN_BUNDLE_ENTRIES, (dir) => writeTurnBundle(sessions, o, dir));
+}
+
+async function writeTurnBundle(sessions: SessionRecord[], o: TurnBundleOptions, dir: string): Promise<TurnBundleManifest> {
   const limits = o.limits ?? DEFAULT_TURN_LIMITS;
   const generatedAt = (o.now?.() ?? new Date()).toISOString();
-  // 一覧を最初に消す(途中で止まったときに、消した後のファイルを指す古い一覧を残さない)
-  await rm(join(o.bundleDir, 'manifest.json'), REMOVE);
-  await rm(join(o.bundleDir, 'parts'), REMOVE);
-  await mkdir(join(o.bundleDir, 'parts'), { recursive: true });
+  await mkdir(join(dir, 'parts'), { recursive: true });
   const chunks: TurnChunk[] = [];
   const skipped: TurnBundleManifest['skipped'] = [];
   for (const s of sessions) {
@@ -324,7 +332,7 @@ export async function buildTurnBundle(sessions: SessionRecord[], o: TurnBundleOp
     const body = groups[i].map((c) => `\n<<<PACKET_BEGIN ${boundary}\n${c.markdown.trimEnd()}\nPACKET_END ${boundary}>>>\n`).join('');
     const md = head + body;
     const path = `parts/part-${String(i + 1).padStart(width, '0')}.md`;
-    await writeFile(join(o.bundleDir, path), md);
+    await writeFile(join(dir, path), md);
     parts.push({ path, chunks: groups[i].map((c) => ({ sessionId: c.sessionId, turns: c.turns })), turns: groups[i].reduce((a, c) => a + c.turns.length, 0), bytes: Buffer.byteLength(md) });
   }
   const manifest: TurnBundleManifest = {
@@ -338,9 +346,8 @@ export async function buildTurnBundle(sessions: SessionRecord[], o: TurnBundleOp
     skipped,
   };
   // copilot -p で回すときは塊ごとの本文が要るので、塊の本文も残す
-  await rm(join(o.bundleDir, 'chunks'), REMOVE);
-  await mkdir(join(o.bundleDir, 'chunks'), { recursive: true });
-  for (let i = 0; i < chunks.length; i++) await writeFile(join(o.bundleDir, 'chunks', `${String(i + 1).padStart(4, '0')}.md`), chunks[i].markdown);
-  await writeFile(join(o.bundleDir, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+  await mkdir(join(dir, 'chunks'), { recursive: true });
+  for (let i = 0; i < chunks.length; i++) await writeFile(join(dir, 'chunks', `${String(i + 1).padStart(4, '0')}.md`), chunks[i].markdown);
+  await writeFile(join(dir, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
   return manifest;
 }

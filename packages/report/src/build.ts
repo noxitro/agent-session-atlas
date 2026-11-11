@@ -4,7 +4,7 @@ import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { CopilotEvent, InstalledInventory, InstructionFile, InstructionInjection, MetricsBucket, MetricsFile, SessionRecord } from '../../core/src/types.ts';
-import { codeStamp, contentHash, parseEvents } from '../../core/src/index.ts';
+import { codeStamp, contentHash, parseEvents, removeTree } from '../../core/src/index.ts';
 import { CoverageCounter, coverageFile, desktopCoverage } from './coverage.ts';
 import { createFileSink, fullFileName, renderFullTo } from './full.ts';
 import { INSTRUCTIONS_FILE, LIBRARY_DIR, LibraryCollector, renderInstructionsHtml, writeLibrary } from './library.ts';
@@ -281,7 +281,7 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
 
   // 詳細ページ: 前回の生成物を消してから書く(フィルタで減ったセッションのページを残さない)
   const detailDir = join(input.outDir, 'sessions');
-  await rm(detailDir, { recursive: true, force: true });
+  await removeTree(detailDir);
   await mkdir(detailDir, { recursive: true });
   let detailBytes = 0;
   const tr = input.transcripts;
@@ -297,12 +297,12 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
   // ユーザーの生成物を黙って消さない: 作り直すときと伏せ字モード(共有用の out/ に残さない)だけ消す。それ以外は残して日時を返す
   const stale: BuildResult['stale'] = { full: null, library: null };
   if (wantFull || anon.enabled) {
-    await rm(fullDir, { recursive: true, force: true });
+    await removeTree(fullDir);
     await rm(coveragePath, { force: true });
   } else if (existsSync(coveragePath)) stale.full = (await stat(coveragePath)).mtime.toISOString();
   else if (existsSync(fullDir)) stale.full = (await stat(fullDir)).mtime.toISOString(); // coverage.json が無くても full/ が残っていれば報告する
   if (wantLibrary || anon.enabled) {
-    await rm(join(input.outDir, LIBRARY_DIR), { recursive: true, force: true });
+    await removeTree(join(input.outDir, LIBRARY_DIR));
     await rm(instructionsPath, { force: true });
   } else if (existsSync(instructionsPath)) stale.library = (await stat(instructionsPath)).mtime.toISOString();
   if (wantFull) await mkdir(fullDir, { recursive: true });

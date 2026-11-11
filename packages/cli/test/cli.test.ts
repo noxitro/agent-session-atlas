@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { normalizeSession } from '../../core/src/normalize.ts';
 import { parseCli, UsageError } from '../src/args.ts';
-import { filterSessions, hasFilter, REPO_ROOT as REPO, resolveIdFilter, resolvePaths } from '../src/commands.ts';
+import { filterSessions, hasFilter, REPO_ROOT as REPO, resolveIdFilter, resolvePaths, runSnapshot } from '../src/commands.ts';
 
 describe('deps-fresh(bat が npm install するかの判定)', () => {
   const run = (root: string): number | null => spawnSync(process.execPath, [join(REPO, 'scripts', 'deps-fresh.mjs'), root]).status;
@@ -153,6 +153,51 @@ describe('parseCli', () => {
     expect(() => parseCli(['build', '--note', 'x'])).toThrow(/group add/);
     expect(() => parseCli(['build', '--session', ' , '])).toThrow(/--session/);
     expect(() => parseCli(['build', '--group', ' '])).toThrow(/--group/);
+  });
+});
+
+describe('runSnapshot(ログを写す段階の知らせ)', () => {
+  const EVENT = '{"type":"session.start","data":{"sessionId":"x","version":1},"id":"e1","timestamp":"2026-07-02T09:00:00.000Z","parentId":null}\n';
+  const run = async (home: string, out: string): Promise<string[]> => {
+    const lines: string[] = [];
+    await runSnapshot(resolvePaths({ home, out, judgments: null }), null, (m) => lines.push(m));
+    return lines;
+  };
+  it('集計できる形のフォルダでなければ、0 件のまま黙らずに指定のしかたを出す。セッションがあれば出さない', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'atlas-snaplog-'));
+    try {
+      // 索引の無いフォルダが 21 個あり、セッションは名前の順で 21 番目にだけある(中を確かめるのは先頭の 20 個まで)
+      const big = join(base, 'big');
+      for (let i = 0; i < 21; i++) await mkdir(join(big, `d${String(i).padStart(2, '0')}`), { recursive: true });
+      await mkdir(join(big, 'd20', 's1'));
+      await writeFile(join(big, 'd20', 's1', 'events.jsonl'), EVENT);
+      const none = (await run(big, join(base, 'out-a'))).filter((l) => l.startsWith('snapshot: 注意'));
+      expect(none).toHaveLength(1);
+      expect(none[0]).toContain(`${big} には、集計できるセッションが見つかりません`);
+      expect(none[0]).toMatch(/--home には、.*読むのは 2 段下までです/);
+      expect(none[0]).toMatch(/索引.*の無いフォルダは、名前の順で先頭の 20 個までしか中を確かめません.*直接指定してください/);
+      // 案内のとおりに、そのフォルダを直接指せば読める(注意は出ない)
+      const direct = await run(join(big, 'd20'), join(base, 'out-b'));
+      expect(direct.join('\n')).toMatch(/セッションディレクトリ 1/);
+      expect(direct.filter((l) => l.startsWith('snapshot: 注意'))).toEqual([]);
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+  it('退けた前のフォルダだけが残っているセッションは、写していないことと、どうすればよいかを出す', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'atlas-snaplog-'));
+    try {
+      const src = join(base, 'group');
+      for (const d of ['ok', '.gone.old']) {
+        await mkdir(join(src, d), { recursive: true });
+        await writeFile(join(src, d, 'events.jsonl'), EVENT);
+      }
+      const notes = (await run(src, join(base, 'out'))).filter((l) => l.startsWith('snapshot: 注意'));
+      expect(notes).toHaveLength(1);
+      expect(notes[0]).toMatch(/退けた前のフォルダだけが残っているセッション 1 件は、写していません\(\.gone\.old\)。.*このフォルダも消してください.*もう一度アップロードすると戻ります/);
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
   });
 });
 

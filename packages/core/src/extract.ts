@@ -1,14 +1,14 @@
 import { existsSync } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { newParseStats, parseEvents } from './events.ts';
 import { resolveInstructions } from './instructions.ts';
 import { normalizeSession } from './normalize.ts';
 import { ProjectResolver, type ProjectResolverOptions } from './project.ts';
 import { ATLAS_JUDGE_PROJECT, HOME_PROJECT, TEMP_PROJECT } from './project-keys.ts';
-import { DESKTOP_JSON, isUploadWorkDir, readSnapshotManifest, SESSION_STORE_JSON, SNAPSHOT_SESSION_DB, UPLOAD_SESSION_META, UPLOAD_WORK_REASON } from './snapshot.ts';
+import { DESKTOP_JSON, hasSessionFile, isUploadWorkDir, readSnapshotManifest, SESSION_STORE_JSON, SNAPSHOT_SESSION_DB, UPLOAD_OLD_ONLY_REASON, UPLOAD_SESSION_META, UPLOAD_WORK_REASON, uploadWorkDirId } from './snapshot.ts';
 import { desktopForSession, type DesktopData, type DesktopSessionInfo } from './desktop.ts';
 import { openReadOnly } from './sqlite.ts';
 import { WikiClassifier, type WikiSpec } from './wiki.ts';
@@ -258,7 +258,8 @@ const GROUPED_SOURCES = new Set<ProjectSource>(GROUPED_SOURCE.values());
 /**
  * アップロードで添えた記録(UPLOAD_SESSION_META)から、送った側が決めたプロジェクト名とその決め方を読む。
  * 無い・読めない・形が違う・ほかのセッションのものなら null。決め方の記録が無い(前の版が書いた)ものは source が null。
- * 共有フォルダに置かれたファイルなので、そのまま信じない: 名前は前後の空白を落とし、制御文字(改行など)を含むものは使わない。
+ * 共有フォルダに置かれたファイルなので、そのまま信じない: 名前は前後の空白を落とし、制御文字(改行など)と、
+ * 見えない書式の文字(文字の向きを変えるもの・幅の無い空白など。別の名前に見せかけられる)を含むものは使わない。
  * 決め方は名前と合うものだけ使う(まとめ用の名前はその決め方に揃え、ほかの名前にまとめ用の決め方が付いていたら捨てる)
  */
 export async function readSenderProject(path: string, id: string): Promise<{ project: string; source: ProjectSource | null } | null> {
@@ -268,7 +269,7 @@ export async function readSenderProject(path: string, id: string): Promise<{ pro
     if (!isRow(j) || j.version !== 1 || j.id !== id) return null;
     if (typeof j.project !== 'string' || j.project.length > 1000) return null;
     const project = j.project.trim();
-    if (!project || /[\p{Cc}\p{Zl}\p{Zp}]/u.test(project)) return null;
+    if (!project || /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(project)) return null;
     const grouped = GROUPED_SOURCE.get(project);
     if (grouped) return { project, source: grouped };
     const source = typeof j.projectSource === 'string' && PROJECT_SOURCES.includes(j.projectSource) ? (j.projectSource as ProjectSource) : null;
@@ -331,26 +332,22 @@ export async function readWorkspaceYaml(path: string): Promise<WorkspaceInfo | n
  * アップロードの作業用のフォルダ(.<id>.uploading / .<id>.old)は同じセッションの複製なので入れない(前の版が写したスナップショットに残っていても数えない)
  */
 export async function listSessionDirs(stateDir: string): Promise<string[]> {
-  if (!existsSync(stateDir)) return [];
-  const out: string[] = [];
-  for (const ent of await readdir(stateDir, { withFileTypes: true })) {
-    if (!ent.isDirectory() || isUploadWorkDir(ent.name)) continue;
-    const d = join(stateDir, ent.name);
-    if (existsSync(join(d, 'workspace.yaml')) || existsSync(join(d, 'events.jsonl'))) out.push(ent.name);
-  }
-  return out.sort();
+  return (await listStateDirs(stateDir)).sessions;
 }
 
-/** session-state/ 配下に残っている、アップロードの作業用のフォルダ(セッションのファイルを持つもの)の名前 */
-async function listWorkDirs(stateDir: string): Promise<string[]> {
-  if (!existsSync(stateDir)) return [];
-  const out: string[] = [];
+/**
+ * session-state/ 配下の、セッションのファイルを持つフォルダの名前(1 回読んで分ける)。
+ * sessions はセッションのフォルダ、work は残っているアップロードの作業用のフォルダ(どちらも名前の順)
+ */
+async function listStateDirs(stateDir: string): Promise<{ sessions: string[]; work: string[] }> {
+  const sessions: string[] = [];
+  const work: string[] = [];
+  if (!existsSync(stateDir)) return { sessions, work };
   for (const ent of await readdir(stateDir, { withFileTypes: true })) {
-    if (!ent.isDirectory() || !isUploadWorkDir(ent.name)) continue;
-    const d = join(stateDir, ent.name);
-    if (existsSync(join(d, 'workspace.yaml')) || existsSync(join(d, 'events.jsonl'))) out.push(ent.name);
+    if (!ent.isDirectory() || !hasSessionFile(join(stateDir, ent.name))) continue;
+    (isUploadWorkDir(ent.name) ? work : sessions).push(ent.name);
   }
-  return out.sort();
+  return { sessions: sessions.sort(), work: work.sort() };
 }
 
 export interface ExtractOptions {
@@ -388,11 +385,24 @@ export async function extract(snapshotDir: string, opts: ExtractOptions = {}): P
     }
   }
   const stateDir = join(snapshotDir, 'session-state');
-  const dirs = new Set(await listSessionDirs(stateDir));
+  const listed = await listStateDirs(stateDir);
+  const dirs = new Set(listed.sessions);
   const work = (manifest?.extras?.skipped ?? []).filter((x) => x.reason === UPLOAD_WORK_REASON).map((x) => x.path);
   if (work.length) messages.push(`アップロードの置き換えの途中か消し残しのフォルダ ${work.length} 件は、セッションとして数えていない(${work.slice(0, 3).join('、')}${work.length > 3 ? ' ほか' : ''})`);
+  // 本体が無く、退けた前のフォルダだけが残っているもの。共有から消したセッションと見分けられないので数えず、どうすればよいかを出す
+  // (前の集計の複製が出力先に残っていて数えているものは、出さない)
+  const oldOnlyId = (x: { path: string }): string => uploadWorkDirId(basename(x.path)) ?? '';
+  const oldOnlyRows = (manifest?.extras?.skipped ?? []).filter((x) => x.reason === UPLOAD_OLD_ONLY_REASON && !dirs.has(oldOnlyId(x)));
+  const oldOnly = oldOnlyRows.map((x) => x.path);
+  if (oldOnly.length) {
+    // まとめて読むときは、同じセッションのものが複数のフォルダにあることがある(件数はセッションの数)
+    messages.push(
+      `本体のフォルダが無く、アップロードの置き換えで退けた前のフォルダだけが残っているセッション ${new Set(oldOnlyRows.map(oldOnlyId)).size} 件は、数えていない(${oldOnly.slice(0, 3).join('、')}${oldOnly.length > 3 ? ' ほか' : ''})。` +
+        '共有から消したセッションなら、このフォルダも消すと出なくなる。消した覚えが無ければ、送った PC でもう一度アップロードすると戻る',
+    );
+  }
   // 前の版が写した作業用のフォルダが出力先に残っているとき(今の版は写さない)。数えないので、前の集計より件数が減った理由を出す
-  const stale = await listWorkDirs(stateDir);
+  const stale = listed.work;
   if (stale.length) {
     messages.push(
       `前の版が写した、アップロードの作業用のフォルダ ${stale.length} 件が出力先に残っている。セッションとして数えていない(${stale.slice(0, 3).join('、')}${stale.length > 3 ? ' ほか' : ''})。` +
@@ -402,7 +412,7 @@ export async function extract(snapshotDir: string, opts: ExtractOptions = {}): P
   const recovered = manifest?.extras?.recovered ?? [];
   if (recovered.length) {
     messages.push(
-      `アップロードの置き換えが途中で止まっていたセッション ${recovered.length} 件は、作業用のフォルダから読んだ(${recovered
+      `アップロードの置き換えが途中で止まっていたセッション ${recovered.length} 件は、写し終えていた作業用のフォルダから読んだ(${recovered
         .slice(0, 3)
         .map((r) => r.path)
         .join('、')}${recovered.length > 3 ? ' ほか' : ''})。送った PC でもう一度アップロードすると、元の形に戻る`,
