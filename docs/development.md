@@ -52,8 +52,10 @@ npm run audit:ui -- out --json audit.json --shots shots
   - clone した状態での動作確認: clone した直後と同じ中身(`scripts/fresh-checkout.ts`。git archive HEAD だけで、レポートのテンプレートは入れない)を作り、`atlas.bat` と同じ順で動かします(`scripts/checkout-smoke.ts`。`*.bat` が CRLF か → 依存の判定 → `npm install` → 初期設定(`setup.ts`)が書かずに終わるか → 架空の fixture で `atlas all`(セッション記録ができるか、最初の実行でテンプレートを作るか)→ プロジェクトを送る操作 → Windows では `upload-project.bat` と `setup.bat` を cmd で実際に起動する)。手元では `npm run smoke` で同じことを試せます(`scripts/smoke-local.ts`。置き場はリポジトリの外の一時フォルダ(OS の一時フォルダの `atlas-ci-pkg-XXXXXX/`。回すたびに別の名前で、通ったら消し、落ちたら残す。中に作ると、入れ忘れた依存もリポジトリの `node_modules` から読めて見逃すため)。コミット済みの内容だけが入るので、コミットしていない変更があれば注意を出します)。
   - **push の前に手元で CI と同じ順に回す**: `npm run ci`(`typecheck` → `test` → `build:report` → `e2e` → `ui` → `smoke`。最初に落ちたところで止まります)。画面の操作の検査には `npx playwright install chromium` が 1 回要ります。
 
-  - 依存の脆弱性: `package.json` の `dependencies`(集計で毎回読み込むもの)に high 以上の警告があると止まります(`npm audit --omit=dev`)。`devDependencies` は止めず、Dependabot の PR で追います(`atlas.bat` の `npm install` は `devDependencies` も入れ、テンプレートが古いときは手元で Vite が動きます)。
-- **依存の更新**(`.github/dependabot.yml`): npm と GitHub Actions の更新を週 1 回 PR で出します。npm の minor / patch は 1 本にまとめ、major は個別の PR になります。どの PR も CI が通ってから取り込みます。
+  - 依存の脆弱性: `package.json` の `dependencies`(集計で毎回読み込むもの)に high 以上の警告があると止まります(`npm audit --omit=dev`)。PR では、その PR で新しく入る・上がる `dependencies` も同じ基準で見ます(ジョブ `dependency-review`。`actions/dependency-review-action`)。`devDependencies` は止めず、Dependabot の PR で追います(`atlas.bat` の `npm install` は `devDependencies` も入れ、テンプレートが古いときは手元で Vite が動きます)。
+  - まとめのジョブ `ci-ok`: 上のジョブがどれか落ちたか取り消されたら落ちます。`main` のルール(リポジトリの Settings → Rules)で必須にするのはこれだけです(行列の組み合わせを変えても、必須チェックの名前を変えずに済むため)。`main` へは PR を通してだけ入れ、`ci-ok` が通るまでマージできません。
+  - 外部の Action はコミット SHA で固定し、行末の `# v7.0.1` のような注記で版を示します(タグが付け替えられても中身が変わらないため)。更新は Dependabot が SHA と注記をまとめて行います。
+- **依存の更新**(`.github/dependabot.yml`): npm と GitHub Actions の更新を週 1 回 PR で出します。npm の minor / patch は 1 本にまとめ、major は個別の PR になります。どの PR も CI が通ってから取り込みます。公開されてすぐの版は取り込みません(`cooldown`。npm は patch 3 日・minor 7 日・major 14 日、Actions は 7 日。乗っ取られた版が公開直後に見つかって取り下げられる間を待つため)。脆弱性の修正(セキュリティ更新)には `cooldown` が効かないので、すぐ PR になります。
 - **配布**: zip での配布(GitHub Release)はしません。利用者はリポジトリを `git clone` して使い、`git pull` で新しい版にします。
 
 公開リポジトリなので標準ランナーの Actions は無料枠で動きます。
