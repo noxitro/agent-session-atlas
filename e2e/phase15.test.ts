@@ -112,7 +112,7 @@ describe('Phase 15 E2E: グループのアップロード', () => {
     const again = JSON.parse(await readFile(join(out2, 'sessions.json'), 'utf8')) as SessionsFile;
     const manifest = JSON.parse(await readFile(join(out2, 'snapshot', 'snapshot-manifest.json'), 'utf8')) as { layout?: string; extras?: { skipped: { path: string }[] } };
     expect(manifest.layout).toBe('flat');
-    // アップロードで添えたもの(atlas-session.json・メモ)は集計に使わないので、写さず「写さなかったもの」にも数えない
+    // アップロードで添えたもののうち、atlas-session.json は写して集計に使い(プロジェクト名。e2e/phase16.test.ts)、メモは使わないので写さない。どちらも「写さなかったもの」には数えない
     expect((manifest.extras?.skipped ?? []).filter((s) => /atlas-session\.json|atlas-memo/.test(s.path))).toEqual([]);
     // ほかの PC から写したフォルダ(中身が空)は記録の無いセッションとして入るだけ
     expect(again.sessions.map((s) => s.id).sort()).toEqual([...ids, desk, 'someone-else'].sort());

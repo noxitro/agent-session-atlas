@@ -1,0 +1,218 @@
+// アップロード先のフォルダを --home にして集計し直す側(読む側)を、架空の fixture で通しで確かめる。
+// (送る側と、元と同じ集計になることは e2e/phase15.test.ts)
+//  a. プロジェクト名は送った側の記録から取る(読む側の PC に作業フォルダが無くても、同じパスに別のリポジトリがあっても変わらない)
+//  b. 置き換えの途中・消し残しのフォルダ(.<id>.uploading / .<id>.old)があっても、セッションもトークンも二重に数えない
+//  c. 出力先を別のフォルダで使い回すと止まり、前の集計はそのまま残る
+//  d. 添えた行(atlas-session-store.json)の形が違っても止まらず、警告を出して続ける
+//  e. アップロード先の基底を指すと、0 件のレポートを作らずに、指すフォルダを案内して止まる
+//  f. リンクのファイルは辿らない(フォルダの外のファイルを写さない)
+import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { cp, mkdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { sessionStoreRows, type SessionRecord, type SessionsFile, type SessionStoreJson } from '../packages/core/src/index.ts';
+import { buildFixtureHome, ROOT } from './fixture-home.ts';
+
+const WORK = join(ROOT, 'out', 'e2e-phase16');
+const CLI = join(ROOT, 'packages', 'cli', 'src', 'main.ts');
+const GROUP_A = 'Read-Side-A';
+const GROUP_B = 'Read-Side-B';
+/** 作業フォルダの .git/config からプロジェクト名が決まるセッション(ログに repository の記録が無い) */
+const GIT_SESSION = '00000000-0000-4000-8000-000000160001';
+
+function atlas(args: string[]): { status: number | null; out: string } {
+  const r = spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8', cwd: ROOT, timeout: 600_000 });
+  return { status: r.status, out: r.stdout + r.stderr };
+}
+
+/** フォルダを集計して(snapshot → extract)、sessions.json を読む */
+async function aggregate(home: string, out: string): Promise<SessionsFile> {
+  for (const cmd of ['snapshot', 'extract']) {
+    const r = atlas([cmd, '--home', home, '--out', out]);
+    expect(r.status, r.out).toBe(0);
+  }
+  return JSON.parse(await readFile(join(out, 'sessions.json'), 'utf8')) as SessionsFile;
+}
+
+const tokens = (ss: SessionRecord[]): number => ss.reduce((n, s) => n + (s.tokens.input ?? 0) + (s.tokens.output ?? 0), 0);
+
+describe('Phase 16 E2E: アップロード先から集計し直す(読む側)', () => {
+  let close: () => Promise<void>;
+  let home: string;
+  const out1 = join(WORK, 'out-src');
+  const notes = join(WORK, 'notes');
+  const root = join(WORK, 'atlas-logs');
+  const destA = join(root, GROUP_A);
+  const destB = join(root, GROUP_B);
+  const repo = join(WORK, 'pc-a', 'my-app');
+  let original: SessionsFile;
+  /** DB とフォルダの両方があり、トークンが記録されているセッション */
+  let ids: string[];
+  /** グループ B に入れる、別のセッション */
+  let other: string;
+  /** グループ A を集計し直したもの(消し残しや壊れたファイルが無いときの基準) */
+  let clean: SessionsFile;
+
+  beforeAll(async () => {
+    await rm(WORK, { recursive: true, force: true });
+    ({ home, close } = await buildFixtureHome(join(WORK, 'home')));
+    await mkdir(join(repo, '.git'), { recursive: true });
+    await writeFile(join(repo, '.git', 'config'), '[remote "origin"]\n\turl = https://github.com/zz-owner/zz-from-disk.git\n');
+    const gdir = join(home, 'session-state', GIT_SESSION);
+    await mkdir(gdir);
+    await writeFile(
+      join(gdir, 'workspace.yaml'),
+      `id: ${GIT_SESSION}\ncwd: ${JSON.stringify(repo)}\ngit_root: ${JSON.stringify(repo)}\nclient_name: github/cli\nname: "合成: ディスクから名前が決まる"\nuser_named: false\ncreated_at: 2026-07-02T09:00:00.000Z\nupdated_at: 2026-07-02T09:05:00.000Z\n`,
+    );
+    const events = [
+      { type: 'session.start', data: { sessionId: GIT_SESSION, version: 1, copilotVersion: '1.0.50', selectedModel: 'gpt-5.5-mini', context: { cwd: repo, gitRoot: repo } }, id: 'e1', timestamp: '2026-07-02T09:00:00.000Z', parentId: null },
+      { type: 'user.message', data: { content: '合成の依頼' }, id: 'e2', timestamp: '2026-07-02T09:00:05.000Z', parentId: 'e1' },
+      { type: 'assistant.message', data: { content: '合成の応答' }, id: 'e3', timestamp: '2026-07-02T09:00:20.000Z', parentId: 'e2' },
+    ];
+    await writeFile(join(gdir, 'events.jsonl'), events.map((e) => JSON.stringify(e)).join('\n') + '\n');
+
+    original = await aggregate(home, out1);
+    ids = [];
+    for (const x of original.sessions) {
+      if (ids.length === 2) break;
+      if (x.sources.length !== 2 || !existsSync(join(out1, 'snapshot', 'session-state', x.id, 'events.jsonl'))) continue;
+      const rows = await sessionStoreRows(join(out1, 'snapshot', 'session-store.db'), x.id);
+      if (rows?.usage.length) ids.push(x.id);
+    }
+    expect(ids).toHaveLength(2);
+    other = original.sessions.find((x) => !ids.includes(x.id) && x.id !== GIT_SESSION && existsSync(join(out1, 'snapshot', 'session-state', x.id, 'events.jsonl')))!.id;
+    await mkdir(notes, { recursive: true });
+    await writeFile(
+      join(notes, 'groups.json'),
+      JSON.stringify({ version: 1, groups: [{ name: GROUP_A, note: '', ids: [...ids, GIT_SESSION] }, { name: GROUP_B, note: '', ids: [other] }] }),
+    );
+    await mkdir(root, { recursive: true });
+    for (const g of [GROUP_A, GROUP_B]) {
+      const r = atlas(['group', 'upload', g, '--to', root, '--out', out1, '--notes-dir', notes]);
+      expect(r.status, r.out).toBe(0);
+    }
+    clean = await aggregate(destA, join(WORK, 'out-clean'));
+    expect(clean.sessions.map((s) => s.id).sort()).toEqual([...ids, GIT_SESSION].sort());
+    expect(tokens(clean.sessions)).toBeGreaterThan(0);
+  }, 180_000);
+  afterAll(async () => close?.());
+
+  it('a. プロジェクト名は送った側の記録から取る(作業フォルダが無くても、同じパスに別のリポジトリがあっても同じ)', async () => {
+    // 対照: 元の PC では、作業フォルダの .git/config から決まっている
+    const first = original.sessions.find((s) => s.id === GIT_SESSION)!;
+    expect([first.project, first.projectSource]).toEqual(['zz-owner/zz-from-disk', 'git-remote']);
+    // その名前と決め方を、セッションのフォルダに添えてある
+    expect(JSON.parse(await readFile(join(destA, GIT_SESSION, 'atlas-session.json'), 'utf8'))).toMatchObject({ version: 1, id: GIT_SESSION, project: 'zz-owner/zz-from-disk', projectSource: 'git-remote' });
+    const projectOf = (f: SessionsFile) => {
+      const s = f.sessions.find((x) => x.id === GIT_SESSION)!;
+      return [s.project, s.projectSource];
+    };
+    expect(projectOf(clean)).toEqual(['zz-owner/zz-from-disk', 'git-remote']);
+    // 読む側の PC に、送った人の作業フォルダが無い
+    await rename(join(WORK, 'pc-a'), join(WORK, 'pc-a-gone'));
+    expect(projectOf(await aggregate(destA, join(WORK, 'out-no-folder')))).toEqual(['zz-owner/zz-from-disk', 'git-remote']);
+    // 読む側の PC の同じパスに、別のリポジトリがある
+    await mkdir(join(repo, '.git'), { recursive: true });
+    await writeFile(join(repo, '.git', 'config'), '[remote "origin"]\n\turl = https://github.com/zz-other/zz-unrelated.git\n');
+    const there = await aggregate(destA, join(WORK, 'out-other-repo'));
+    expect(projectOf(there)).toEqual(['zz-owner/zz-from-disk', 'git-remote']);
+    // ほかのセッションも、元の集計と同じプロジェクトのまま
+    for (const id of ids) {
+      const a = original.sessions.find((s) => s.id === id)!;
+      const b = there.sessions.find((s) => s.id === id)!;
+      expect([b.project, b.projectSource]).toEqual([a.project, a.projectSource]);
+    }
+  });
+
+  it('b. 置き換えの途中・消し残しのフォルダがあっても、二重に数えない', async () => {
+    const dest = join(WORK, 'dest-leftover');
+    await cp(destA, dest, { recursive: true });
+    await cp(join(dest, ids[0]), join(dest, `.${ids[0]}.old`), { recursive: true });
+    await cp(join(dest, ids[0]), join(dest, `.${ids[0]}.uploading`), { recursive: true });
+    const out = join(WORK, 'out-leftover');
+    const again = await aggregate(dest, out);
+    expect(again.sessions.map((s) => s.id).sort()).toEqual(clean.sessions.map((s) => s.id).sort());
+    expect(tokens(again.sessions)).toBe(tokens(clean.sessions));
+    expect(again.warnings.messages.join('\n')).toMatch(/消し残しのフォルダ 2 件は、セッションとして数えていない/);
+    expect(existsSync(join(out, 'snapshot', 'session-state', `.${ids[0]}.old`))).toBe(false);
+  });
+
+  it('c. 出力先を別のフォルダで使い回すと止まり、前の集計はそのまま残る', async () => {
+    const out = join(WORK, 'out-reuse');
+    const before = await aggregate(destA, out);
+    const text = await readFile(join(out, 'sessions.json'), 'utf8');
+    for (const from of [destB, home]) {
+      for (const cmd of ['snapshot', 'all']) {
+        const r = atlas([cmd, '--home', from, '--out', out]);
+        expect(r.status, r.out).not.toBe(0);
+        expect(r.out).toMatch(/別の場所.*から集計したものです/);
+        expect(r.out).toContain('--out');
+      }
+    }
+    expect(await readFile(join(out, 'sessions.json'), 'utf8')).toBe(text);
+    expect(existsSync(join(out, 'snapshot', 'session-state', other))).toBe(false);
+    // 同じフォルダなら、何度でも同じ出力先に集計し直せる
+    expect((await aggregate(destA, out)).sessions.map((s) => s.id)).toEqual(before.sessions.map((s) => s.id));
+    // 別の出力先なら、別のフォルダを集計できる
+    expect((await aggregate(destB, join(WORK, 'out-b'))).sessions.map((s) => s.id)).toEqual([other]);
+  });
+
+  it('d. 添えた行の形が違っても止まらず、警告を出して続ける', async () => {
+    const id = ids[0];
+    const base = JSON.parse(await readFile(join(destA, id, 'atlas-session-store.json'), 'utf8')) as SessionStoreJson;
+    expect(base.usage.length).toBeGreaterThan(0);
+    const cases: [string, unknown][] = [
+      ['sessions-null', { ...base, sessions: [null] }],
+      ['usage-null', { ...base, usage: [null] }],
+      ['turns-null', { ...base, turns: [null] }],
+      ['session-types', { ...base, sessions: [{ id, cwd: 123, repository: ['a'], summary: {}, branch: 7, created_at: 5, updated_at: {} }] }],
+      ['usage-strings', { ...base, usage: [Object.fromEntries(Object.keys(base.usage[0]).map((k) => [k, k === 'session_id' ? id : 'x']))] }],
+      ['not-json', 'not json'],
+    ];
+    for (const [name, v] of cases) {
+      const dest = join(WORK, `dest-bad-${name}`);
+      await cp(destA, dest, { recursive: true });
+      await writeFile(join(dest, id, 'atlas-session-store.json'), typeof v === 'string' ? v : JSON.stringify(v));
+      const again = await aggregate(dest, join(WORK, `out-bad-${name}`));
+      expect(again.warnings.messages.filter((m) => m.includes('atlas-session-store.json')), name).toHaveLength(1);
+      expect(again.warnings.messages.join('\n'), name).toContain(`${id}: atlas-session-store.json を読めない`);
+      // そのセッションはイベントのログだけで集計に残り、ほかのセッションは基準と同じ
+      expect(again.sessions.map((s) => s.id).sort(), name).toEqual(clean.sessions.map((s) => s.id).sort());
+      const rest = (f: SessionsFile) => f.sessions.filter((s) => s.id !== id).map(({ instructions: _i, ...r }) => r);
+      expect(rest(again), name).toEqual(rest(clean));
+    }
+  });
+
+  it('e. アップロード先の基底を指すと、指すフォルダを案内して止まる(0 件のレポートを作らない)', async () => {
+    const out = join(WORK, 'out-base');
+    const r = atlas(['all', '--home', root, '--out', out]);
+    expect(r.status, r.out).not.toBe(0);
+    expect(r.out).toMatch(/アップロード先の基底/);
+    expect(r.out).toContain(`--home "${destA}"`);
+    expect(r.out).toContain(`${GROUP_A}、${GROUP_B}`);
+    expect(existsSync(join(out, 'sessions.json'))).toBe(false);
+    expect(existsSync(join(out, 'atlas.html'))).toBe(false);
+  });
+
+  it('f. リンクのファイルは辿らない(フォルダの外のファイルを写さない)', async (ctx) => {
+    const dest = join(WORK, 'dest-link');
+    await cp(destA, dest, { recursive: true });
+    const outside = join(WORK, 'outside.txt');
+    await writeFile(outside, 'OUTSIDE-FILE-CONTENT\n');
+    await rm(join(dest, ids[0], 'plan.md'), { force: true });
+    try {
+      await symlink(outside, join(dest, ids[0], 'plan.md'), 'file');
+    } catch (e) {
+      // リンクを作れない環境(Windows で権限が無い)では確かめられない
+      if (['EPERM', 'EACCES', 'ENOSYS'].includes((e as NodeJS.ErrnoException).code ?? '')) return ctx.skip();
+      throw e;
+    }
+    const out = join(WORK, 'out-link');
+    const again = await aggregate(dest, out);
+    expect(again.sessions.map((s) => s.id).sort()).toEqual(clean.sessions.map((s) => s.id).sort());
+    expect(existsSync(join(out, 'snapshot', 'session-state', ids[0], 'plan.md'))).toBe(false);
+    const manifest = JSON.parse(await readFile(join(out, 'snapshot', 'snapshot-manifest.json'), 'utf8')) as { extras?: { skipped: { path: string; reason: string }[] } };
+    expect((manifest.extras?.skipped ?? []).filter((s) => s.path === `${ids[0]}/plan.md`).map((s) => s.reason)).toEqual([expect.stringMatching(/リンク/)]);
+  });
+});

@@ -24,7 +24,7 @@ describe('プロジェクトのセッションをまとめて送る', () => {
     await mkdir(rootA);
     await mkdir(rootB);
     const sessions = [
-      { id: 's1', project: 'owner/app', empty: false, updatedAt: '2026-11-01T00:00:00.000Z' },
+      { id: 's1', project: 'owner/app', projectSource: 'git-remote', empty: false, updatedAt: '2026-11-01T00:00:00.000Z' },
       { id: 's2', project: 'owner/app', empty: false, updatedAt: '2026-11-03T00:00:00.000Z' },
       { id: 's3', project: 'owner/app', empty: true, updatedAt: '2026-11-04T00:00:00.000Z' },
       { id: 's4', project: 'X:\\work\\tool', empty: false, updatedAt: '2026-10-01T00:00:00.000Z' },
@@ -152,7 +152,9 @@ describe('プロジェクトのセッションをまとめて送る', () => {
       ['s1', ['Player-Weapon', '調査']],
       ['s2', []],
     ]);
-    expect(JSON.parse(await readFile(join(dest, 's1', 'atlas-session.json'), 'utf8'))).toMatchObject({ version: 1, id: 's1', project: 'owner/app', tags: ['Player-Weapon', '調査'] });
+    expect(JSON.parse(await readFile(join(dest, 's1', 'atlas-session.json'), 'utf8'))).toMatchObject({ version: 1, id: 's1', project: 'owner/app', projectSource: 'git-remote', tags: ['Player-Weapon', '調査'] });
+    // プロジェクト名の決め方も添える(集計し直す側が、名前とこれをそのまま使う)。集計の記録に無ければ null
+    expect(JSON.parse(await readFile(join(dest, 's2', 'atlas-session.json'), 'utf8'))).toMatchObject({ id: 's2', project: 'owner/app', projectSource: null });
     const readme = await readFile(join(dest, 'README.md'), 'utf8');
     expect(readme).toContain('| [s1](s1/) | - | Player-Weapon、調査 |');
     expect(readme).toContain('| [s2](s2/) | - | タグなし |');

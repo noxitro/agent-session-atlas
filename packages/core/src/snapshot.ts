@@ -1,6 +1,6 @@
-import { copyFile, mkdir, readdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { copyFile, lstat, mkdir, readdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { basename, dirname, join, relative } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { readDesktopDb } from './desktop.ts';
 import { openWritable, sqlString } from './sqlite.ts';
 import { renameReplacing } from './fs-retry.ts';
@@ -16,13 +16,26 @@ export const SNAPSHOT_SESSION_FILES = ['workspace.yaml', 'events.jsonl'] as cons
  * 生ログ(events.jsonl など)だけだと、DB にしか無いトークン数・依頼の記録が欠けるため。extract はこれも読む
  */
 export const SESSION_STORE_JSON = 'atlas-session-store.json';
-/** Phase 11: セッションフォルダの追加のファイル(あれば写す)。SESSION_STORE_JSON はアップロード先から集計し直すときだけある */
-export const SNAPSHOT_SESSION_EXTRA_FILES = ['plan.md', 'vscode.metadata.json', SESSION_STORE_JSON] as const;
 /**
- * アップロードで atlas がセッションのフォルダに添えるもの(タスクタグ・題名の atlas-session.json、メモの atlas-memo.md と画像の atlas-memo/)。
- * アップロード先を --home にして集計し直すときに、写さず「写さなかったもの」にも数えない(集計には使わない。人や AI が読むためのもの)
+ * アップロードしたセッションのフォルダに添える、送った側の記録(題名・プロジェクト名とその決め方・タスクタグ・日時)。
+ * アップロード先から集計し直すとき、extract はプロジェクト名をここから取る(読む側の PC のディスクからは決めない)
  */
-export const UPLOAD_ONLY_ENTRIES = new Set<string>(['atlas-session.json', 'atlas-memo.md', 'atlas-memo']);
+export const UPLOAD_SESSION_META = 'atlas-session.json';
+/** アップロード先のフォルダ(グループ・プロジェクト)の索引。写すたびに書き直す */
+export const UPLOAD_INDEX = 'atlas-index.json';
+/** アップロードがセッションのフォルダを置き換えるときの作業用のフォルダ(写している途中のもの) */
+export const uploadTmpName = (id: string): string => `.${id}.uploading`;
+/** アップロードがセッションのフォルダを置き換えるときに退けた、前のフォルダ(消せなかったときに残る) */
+export const uploadOldName = (id: string): string => `.${id}.old`;
+/** アップロードの作業用のフォルダの名前か(uploadTmpName / uploadOldName)。中身はセッションの複製だが、セッションとして数えない */
+export const isUploadWorkDir = (name: string): boolean => /^\..+\.(?:uploading|old)$/.test(name);
+/** Phase 11: セッションフォルダの追加のファイル(あれば写す)。SESSION_STORE_JSON と UPLOAD_SESSION_META はアップロード先から集計し直すときだけある */
+export const SNAPSHOT_SESSION_EXTRA_FILES = ['plan.md', 'vscode.metadata.json', SESSION_STORE_JSON, UPLOAD_SESSION_META] as const;
+/**
+ * アップロードで atlas がセッションのフォルダに添えるもののうち、集計に使わないもの(メモの atlas-memo.md と画像の atlas-memo/)。
+ * アップロード先を --home にして集計し直すときに、写さず「写さなかったもの」にも数えない(人や AI が読むためのもの)
+ */
+export const UPLOAD_ONLY_ENTRIES = new Set<string>(['atlas-memo.md', 'atlas-memo']);
 /** Phase 11: セッションフォルダの追加のサブフォルダ(あれば再帰的に写す) */
 export const SNAPSHOT_SESSION_EXTRA_DIRS = ['checkpoints', 'files', 'rewind-file-snapshots', 'policies', 'research', 'sandbox-denials'] as const;
 /** Phase 11: 既定では写さず --snapshot-all で写すサブフォルダ(大きい。rewind-snapshots は 1 セッションで数十 MB) */
@@ -101,6 +114,30 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
   const extras: NonNullable<SnapshotManifest['extras']> = { all, sessionFiles: 0, sessionBytes: 0, topLevel: {}, skipped: [], desktop: null, leftover: [] };
   if (since && Number.isNaN(since.getTime())) throw new Error(`since が日時として解釈できない: ${String(opts.since)}`);
   if (!existsSync(src)) throw new Error(`元ディレクトリが無い: ${src}`);
+  // アップロードしたグループのフォルダ(<基底>\<グループ>\<セッション id>\events.jsonl …)は、そのフォルダを session-state/ とみなす
+  const flat = await isFlatLayout(src);
+  // アップロード先の基底(グループ・プロジェクトのフォルダが並ぶ場所)を指していたら、0 件のレポートを作らずに止めて、指すフォルダを案内する
+  if (!flat && !looksLikeCopilotHome(src)) {
+    const subs = await uploadFoldersUnder(src);
+    if (subs.length) {
+      const names = `${subs.slice(0, 3).join('、')}${subs.length > 3 ? ` ほか ${subs.length - 3} 件` : ''}`;
+      throw new Error(`${src} は、アップロード先の基底(グループやプロジェクトのフォルダが並ぶ場所)のようです。集計し直すフォルダを 1 つ選んで指定してください(例: --home "${join(src, subs[0])}")。この下にあるフォルダ: ${names}`);
+    }
+  }
+  // 出力先が別の元から作ったものなら、足さずに止める(前の元のセッションと session-store.db が残っていて、黙って混ざるため)。
+  // 前の複製は消さない(元で消したログの、最後の複製かもしれない)
+  let prev: SnapshotManifest | null = null;
+  try {
+    prev = await readSnapshotManifest(dest);
+  } catch {
+    /* 読めないマニフェストは無いものとして扱う(書き直す) */
+  }
+  if (typeof prev?.sourceRoot === 'string' && !samePath(prev.sourceRoot, src)) {
+    throw new Error(
+      `出力先 ${dest} は、別の場所(${prev.sourceRoot})から集計したものです。同じ出力先に足すと両方のセッションが混ざるので止めました。別の出力先(--out)を指定してください。` +
+        `同じ場所を別の書き方で指しているだけ(フォルダを移した、など)なら、${join(dest, SNAPSHOT_MANIFEST)} を消してからやり直すと、今の出力先を使い続けます`,
+    );
+  }
   await mkdir(dest, { recursive: true });
 
   const manifest: SnapshotManifest = {
@@ -133,7 +170,9 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
       else manifest.sessions.reusedFiles++;
     }
     const dbSrc = join(dirSrc, SNAPSHOT_SESSION_DB);
-    if (existsSync(dbSrc)) {
+    // リンクの session.db(と -wal)は辿らない(前に写したものも消す。写さなかったことは copySessionExtras が manifest に残す)
+    if ((await isLink(dbSrc)) || (await isLink(`${dbSrc}-wal`))) await rm(join(dirDest, SNAPSHOT_SESSION_DB), { force: true });
+    else if (existsSync(dbSrc)) {
       try {
         const copied = await copySessionDb(dbSrc, join(dirDest, SNAPSHOT_SESSION_DB), join(dest, '.tmp-sqlite'));
         if (copied) manifest.sessions.dbCopied!++;
@@ -164,8 +203,6 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
     }
   }
 
-  // アップロードしたグループのフォルダ(<基底>\<グループ>\<セッション id>\events.jsonl …)は、そのフォルダを session-state/ とみなす
-  const flat = await isFlatLayout(src);
   manifest.layout = flat ? 'flat' : 'copilot';
   const stateSrc = flat ? src : join(src, 'session-state');
   const stateDest = join(dest, 'session-state');
@@ -173,8 +210,25 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
     for (const ent of await readdir(stateSrc, { withFileTypes: true })) {
       if (!ent.isDirectory()) continue;
       const dirSrc = join(stateSrc, ent.name);
-      const present = SNAPSHOT_SESSION_FILES.filter((f) => existsSync(join(dirSrc, f)));
-      if (present.length === 0) continue; // optimistic-chat-* など中身の無いディレクトリ
+      const rel = relative(src, dirSrc).replace(/\\/g, '/');
+      // アップロードの置き換えの途中・消し残しのフォルダは、同じセッションの複製なので数えない(二重に数えないように)
+      if (isUploadWorkDir(ent.name)) {
+        if (SNAPSHOT_SESSION_FILES.some((f) => existsSync(join(dirSrc, f)))) extras.skipped.push({ path: rel, bytes: 0, reason: UPLOAD_WORK_REASON });
+        continue;
+      }
+      // リンク(シンボリックリンク・ジャンクション)のファイルは辿らない(フォルダの外のファイルを写さないように)
+      const present: string[] = [];
+      const linked: string[] = [];
+      for (const f of SNAPSHOT_SESSION_FILES) {
+        if (await isLink(join(dirSrc, f))) linked.push(f);
+        else if (existsSync(join(dirSrc, f))) present.push(f);
+      }
+      for (const f of linked) await rm(join(stateDest, ent.name, f), { force: true });
+      if (present.length === 0) {
+        // optimistic-chat-* など中身の無いディレクトリ。リンクしか無いものは、写さなかったことを残す
+        for (const f of linked) extras.skipped.push({ path: `${rel}/${f}`, bytes: 0, reason: LINK_REASON });
+        continue;
+      }
       try {
         await snapshotSession(ent.name, dirSrc, present);
       } catch (e) {
@@ -214,7 +268,7 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
  * atlas のアップロード先(<基底>\<グループ>)を --home に指して集計し直すとき用
  */
 export async function isFlatLayout(src: string): Promise<boolean> {
-  if (existsSync(join(src, 'session-state')) || existsSync(join(src, 'session-store.db'))) return false;
+  if (looksLikeCopilotHome(src)) return false;
   let ents: import('node:fs').Dirent[];
   try {
     ents = await readdir(src, { withFileTypes: true });
@@ -222,6 +276,43 @@ export async function isFlatLayout(src: string): Promise<boolean> {
     return false;
   }
   return ents.some((e) => e.isDirectory() && SNAPSHOT_SESSION_FILES.some((f) => existsSync(join(src, e.name, f))));
+}
+
+/** ~/.copilot の印(session-state/ か session-store.db)があるか */
+function looksLikeCopilotHome(src: string): boolean {
+  return existsSync(join(src, 'session-state')) || existsSync(join(src, 'session-store.db'));
+}
+
+/** 直下のフォルダのうち、アップロードしたグループ・プロジェクトのフォルダ(索引があるか、セッションのフォルダが並ぶもの)の名前 */
+async function uploadFoldersUnder(src: string): Promise<string[]> {
+  let ents: import('node:fs').Dirent[];
+  try {
+    ents = await readdir(src, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const out: string[] = [];
+  for (const e of ents) {
+    if (!e.isDirectory()) continue;
+    const dir = join(src, e.name);
+    if (existsSync(join(dir, UPLOAD_INDEX)) || (await isFlatLayout(dir))) out.push(e.name);
+  }
+  return out.sort();
+}
+
+/** 同じ場所を指すパスか(相対・末尾の区切り・Windows の大文字小文字の違いは同じとみなす) */
+function samePath(a: string, b: string): boolean {
+  const n = (p: string): string => (process.platform === 'win32' ? resolve(p).toLowerCase() : resolve(p));
+  return n(a) === n(b);
+}
+
+/** シンボリックリンク・ジャンクションか(無ければ false) */
+async function isLink(p: string): Promise<boolean> {
+  try {
+    return (await lstat(p)).isSymbolicLink();
+  } catch {
+    return false;
+  }
 }
 
 const KNOWN_SESSION_ENTRIES = new Set<string>([
@@ -236,6 +327,8 @@ const KNOWN_SESSION_ENTRIES = new Set<string>([
 const isLock = (name: string): boolean => /^inuse\.\d+\.(lock|hold)$/.test(name) || name.endsWith('.lock');
 
 const LINK_REASON = 'シンボリックリンク / ジャンクション(辿らない)';
+/** アップロードの作業用のフォルダを数えなかったときの理由(manifest の extras.skipped) */
+export const UPLOAD_WORK_REASON = 'アップロードの置き換えの途中か消し残しのフォルダ(セッションとして数えない)';
 
 /**
  * フォルダを歩く(シンボリックリンク・ジャンクションは辿らず、リンクの一覧に返す)。相対パスは / 区切り。
@@ -344,7 +437,8 @@ async function copySessionExtras(dirSrc: string, dirDest: string, root: string, 
   };
   for (const f of SNAPSHOT_SESSION_EXTRA_FILES) {
     const p = join(dirSrc, f);
-    if (existsSync(p)) await copyOne(p, join(dirDest, f));
+    // リンクは辿らない(下の一覧で「写さなかったもの」に残る)。前に写したものは消す
+    if (!(await isLink(p)) && existsSync(p)) await copyOne(p, join(dirDest, f));
     else await rm(join(dirDest, f), { force: true }); // 元から消えたものは複製先からも消す
   }
   const present = new Set<string>();

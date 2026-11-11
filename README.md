@@ -125,11 +125,11 @@ npm run atlas -- --help                    # 使い方
 E:\dev\atlas-logs\Player-Weapon\README.md                        タグ名・タグの説明・写した日時・セッションの一覧(題名・タスクタグ・メモの有無)
 E:\dev\atlas-logs\Player-Weapon\<セッション ID>\events.jsonl など  セッションの生ログ
 E:\dev\atlas-logs\Player-Weapon\atlas-index.json                 プログラムや AI が読む索引(セッションごとのタスクタグ・題名・日時)
-E:\dev\atlas-logs\Player-Weapon\<セッション ID>\atlas-session.json そのセッションのタスクタグ・題名・日時
+E:\dev\atlas-logs\Player-Weapon\<セッション ID>\atlas-session.json そのセッションのタスクタグ・題名・日時・プロジェクト名
 E:\dev\atlas-logs\Player-Weapon\<セッション ID>\atlas-memo.md     そのセッションのメモ(画像は atlas-memo\ に)
 ```
 
-写すのは `atlas.bat` を起動したとき(か「集計し直す」)に複製したログです。写したフォルダは `npm run atlas -- all --home "E:\dev\atlas-logs\Player-Weapon" --out out-player-weapon` でそのまま集計できます。このとき、セッションごとの読みやすい記録(`<出力先>\sessions\<セッション ID>.md`。依頼・応答・ツールの経過をまとめた Markdown)もできます(記録は生ログから作れるので、送るものには含めません。送り先の容量を使わないため)。生ログには依頼文や応答、パスがそのまま入るので、写す先を見られる人を確かめてください。詳しくは [docs/screen.md の「タスクタグを作る・直す」](docs/screen.md#タスクタグを作る直すatlasbat-から開いたときだけ) にあります。
+写すのは `atlas.bat` を起動したとき(か「集計し直す」)に複製したログです。写したフォルダは `npm run atlas -- all --home "E:\dev\atlas-logs\Player-Weapon" --out out-player-weapon` でそのまま集計できます(`--home` にはタスクタグのフォルダを指定し、`--out` は集計するフォルダごとに分けます。いつもの `out` や別のフォルダを集計した出力先を指定すると、セッションが混ざるので書かずに止まります。プロジェクト名は送った PC で決めた名前のままです)。このとき、セッションごとの読みやすい記録(`<出力先>\sessions\<セッション ID>.md`。依頼・応答・ツールの経過をまとめた Markdown)もできます(記録は生ログから作れるので、送るものには含めません。送り先の容量を使わないため)。生ログには依頼文や応答、パスがそのまま入るので、写す先を見られる人を確かめてください。詳しくは [docs/screen.md の「タスクタグを作る・直す」](docs/screen.md#タスクタグを作る直すatlasbat-から開いたときだけ) にあります。
 
 ## プロジェクトのセッションをまとめて送る(upload-project.bat)
 

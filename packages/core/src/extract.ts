@@ -7,7 +7,8 @@ import { newParseStats, parseEvents } from './events.ts';
 import { resolveInstructions } from './instructions.ts';
 import { normalizeSession } from './normalize.ts';
 import { ProjectResolver, type ProjectResolverOptions } from './project.ts';
-import { DESKTOP_JSON, readSnapshotManifest, SESSION_STORE_JSON, SNAPSHOT_SESSION_DB } from './snapshot.ts';
+import { ATLAS_JUDGE_PROJECT, HOME_PROJECT, TEMP_PROJECT } from './project-keys.ts';
+import { DESKTOP_JSON, isUploadWorkDir, readSnapshotManifest, SESSION_STORE_JSON, SNAPSHOT_SESSION_DB, UPLOAD_SESSION_META, UPLOAD_WORK_REASON } from './snapshot.ts';
 import { desktopForSession, type DesktopData, type DesktopSessionInfo } from './desktop.ts';
 import { openReadOnly } from './sqlite.ts';
 import { WikiClassifier, type WikiSpec } from './wiki.ts';
@@ -19,6 +20,7 @@ import {
   type DbSessionRow,
   type DbTurnRow,
   type DbUsageRow,
+  type ProjectSource,
   type SessionRecord,
   type SessionsFile,
   type TodoSummary,
@@ -155,6 +157,11 @@ export async function mergeSessionStoreJson(store: StoreData, id: string, path: 
   try {
     j = JSON.parse(await readFile(path, 'utf8')) as SessionStoreJson;
     if (j?.version !== 1 || !Array.isArray(j.sessions) || !Array.isArray(j.turns) || !Array.isArray(j.usage) || !Array.isArray(j.files)) throw new Error('形が違います');
+    // 行の形と列の型も確かめる(版の違う・手で直した・壊れたファイルの 1 つで、集計の全体が止まらないように。使わないことにして警告に出す)
+    checkRows('sessions', j.sessions, 'id', id, SESSION_COLS);
+    checkRows('turns', j.turns, 'session_id', id, TURN_COLS);
+    checkRows('usage', j.usage, 'session_id', id, USAGE_COLS);
+    checkRows('files', j.files, 'session_id', id, FILE_COLS);
   } catch (e) {
     return `${id}: ${SESSION_STORE_JSON} を読めない (${(e as Error).message})`;
   }
@@ -192,6 +199,78 @@ export function sessionName(name: string | null, desktopTitle: unknown): string 
 const isRow = (v: unknown): boolean => typeof v === 'object' && v !== null && !Array.isArray(v);
 const isRowOrNull = (v: unknown): boolean => v === null || isRow(v);
 const isRows = (v: unknown): boolean => Array.isArray(v) && v.every(isRow);
+
+/** 添えた行の列の型。s / n は文字列 / 数値(null か欠けていてもよい)、S / N は必ずある文字列 / 数値 */
+type ColKind = 's' | 'n' | 'S' | 'N';
+const SESSION_COLS: Record<string, ColKind> = { cwd: 's', repository: 's', host_type: 's', branch: 's', summary: 's', created_at: 's', updated_at: 's' };
+const TURN_COLS: Record<string, ColKind> = { turn_index: 'N', user_message: 's', assistant_response: 's', timestamp: 's' };
+const USAGE_COLS: Record<string, ColKind> = {
+  id: 'n',
+  turn_index: 'n',
+  agent_id: 's',
+  parent_tool_call_id: 's',
+  model: 'S',
+  input_tokens: 'n',
+  output_tokens: 'n',
+  cache_read_tokens: 'n',
+  cache_write_tokens: 'n',
+  reasoning_tokens: 'n',
+  total_nano_aiu: 'n',
+  request_multiplier: 'n',
+  initiator: 's',
+  reasoning_effort: 's',
+  finish_reason: 's',
+  duration_ms: 'n',
+  time_to_first_token_ms: 'n',
+  created_at: 's',
+};
+const FILE_COLS: Record<string, ColKind> = { file_path: 'S', tool_name: 's', turn_index: 'n', first_seen_at: 's' };
+
+/**
+ * 添えた行が、DB から読んだ行と同じ形か。どの要素もオブジェクトで、このセッションの行は列の型が合っていること
+ * (一覧に無い列は、文字列・数値・真偽値・null ならよい)。違えば例外
+ */
+function checkRows(table: string, rows: unknown[], key: 'id' | 'session_id', id: string, cols: Record<string, ColKind>): void {
+  for (const r of rows) {
+    if (!isRow(r)) throw new Error(`形が違います(${table} の行)`);
+    const row = r as Record<string, unknown>;
+    if (row[key] !== id) continue; // ほかのセッションの行は使わない
+    for (const [k, kind] of Object.entries(cols)) if ((kind === 'S' || kind === 'N') && row[k] == null) throw new Error(`形が違います(${table} の ${k} が無い)`);
+    for (const [k, v] of Object.entries(row)) {
+      if (v == null || k === key) continue;
+      const kind = cols[k]?.toLowerCase();
+      const ok = kind === 's' ? typeof v === 'string' : kind === 'n' ? typeof v === 'number' : typeof v !== 'object';
+      if (!ok) throw new Error(`形が違います(${table} の ${k})`);
+    }
+  }
+}
+
+const PROJECT_SOURCES: readonly string[] = ['repository', 'git-remote', 'path', 'home', 'temp', 'atlas-judge', 'unknown'] satisfies ProjectSource[];
+
+/**
+ * アップロードで添えた記録(UPLOAD_SESSION_META)から、送った側が決めたプロジェクト名とその決め方を読む。
+ * 無い・読めない・形が違う・ほかのセッションのものなら null。決め方の記録が無い(前の版が書いた)ものは source が null
+ */
+export async function readSenderProject(path: string, id: string): Promise<{ project: string; source: ProjectSource | null } | null> {
+  if (!existsSync(path)) return null;
+  try {
+    const j = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>;
+    if (!isRow(j) || j.version !== 1 || j.id !== id) return null;
+    const project = j.project;
+    if (typeof project !== 'string' || !project.trim() || project.length > 1000) return null;
+    return { project, source: typeof j.projectSource === 'string' && PROJECT_SOURCES.includes(j.projectSource) ? (j.projectSource as ProjectSource) : null };
+  } catch {
+    return null;
+  }
+}
+
+/** 決め方の記録が無いプロジェクト名から、決め方を推す(まとめ用の名前はそれぞれ、owner/repo の形は git の origin、ほかはパス) */
+function inferProjectSource(project: string): ProjectSource {
+  if (project === TEMP_PROJECT) return 'temp';
+  if (project === HOME_PROJECT) return 'home';
+  if (project === ATLAS_JUDGE_PROJECT) return 'atlas-judge';
+  return /^[^\\/:\s]+\/[^\\/:\s]+$/.test(project) ? 'git-remote' : 'path';
+}
 
 /** desktopForSession が返す形か(添えたファイルを信じる前に確かめる) */
 function isDesktopSessionInfo(v: unknown): v is DesktopSessionInfo {
@@ -233,12 +312,15 @@ export async function readWorkspaceYaml(path: string): Promise<WorkspaceInfo | n
   return out;
 }
 
-/** session-state/ 配下のセッションディレクトリ(workspace.yaml か events.jsonl を持つもの) */
+/**
+ * session-state/ 配下のセッションディレクトリ(workspace.yaml か events.jsonl を持つもの)。
+ * アップロードの作業用のフォルダ(.<id>.uploading / .<id>.old)は同じセッションの複製なので入れない(前の版が写したスナップショットに残っていても数えない)
+ */
 export async function listSessionDirs(stateDir: string): Promise<string[]> {
   if (!existsSync(stateDir)) return [];
   const out: string[] = [];
   for (const ent of await readdir(stateDir, { withFileTypes: true })) {
-    if (!ent.isDirectory()) continue;
+    if (!ent.isDirectory() || isUploadWorkDir(ent.name)) continue;
     const d = join(stateDir, ent.name);
     if (existsSync(join(d, 'workspace.yaml')) || existsSync(join(d, 'events.jsonl'))) out.push(ent.name);
   }
@@ -268,6 +350,7 @@ export async function extract(snapshotDir: string, opts: ExtractOptions = {}): P
   const sinceMs = since ? Date.parse(since) : null;
   const store = await loadStore(join(snapshotDir, 'session-store.db'));
   // Phase 11: data.db の許可リストの列(snapshot が desktop.json に書いたもの)。無ければ null
+  const messages: string[] = [];
   let desktop: DesktopData | null = null;
   const desktopPath = join(snapshotDir, DESKTOP_JSON);
   if (existsSync(desktopPath)) {
@@ -275,11 +358,13 @@ export async function extract(snapshotDir: string, opts: ExtractOptions = {}): P
       desktop = JSON.parse(await readFile(desktopPath, 'utf8')) as DesktopData;
     } catch (e) {
       desktop = null;
+      messages.push(`${DESKTOP_JSON} を読めない(デスクトップアプリの記録は使っていない): ${(e as Error).message}`);
     }
   }
   const stateDir = join(snapshotDir, 'session-state');
   const dirs = new Set(await listSessionDirs(stateDir));
-  const messages: string[] = [];
+  const work = (manifest?.extras?.skipped ?? []).filter((x) => x.reason === UPLOAD_WORK_REASON).map((x) => x.path);
+  if (work.length) messages.push(`アップロードの置き換えの途中か消し残しのフォルダ ${work.length} 件は、セッションとして数えていない(${work.slice(0, 3).join('、')}${work.length > 3 ? ' ほか' : ''})`);
   // アップロード先から集計し直すとき: セッションのフォルダに添えた session-store.db と data.db の行を足す
   const dirDesktops = new Map<string, DesktopSessionInfo>();
   for (const id of dirs) {
@@ -290,7 +375,11 @@ export async function extract(snapshotDir: string, opts: ExtractOptions = {}): P
   }
 
   const ids = [...new Set([...store.sessions.keys(), ...dirs])].sort();
-  const resolver = opts.projects === false ? null : new ProjectResolver(withSourceHome(opts.projects ?? {}, manifest?.sourceRoot ?? null));
+  // アップロード先から集計し直すとき(直下にセッションが並ぶ形)は、ログのパスを読む側の PC のディスクで調べない
+  // (送った人の作業フォルダは無いか、同じパスに別のリポジトリがある。ネットワークのパスなら読みに行ってしまう)。
+  // プロジェクト名は、送った側が決めて添えた記録(UPLOAD_SESSION_META)から取る
+  const uploaded = manifest?.layout === 'flat';
+  const resolver = opts.projects === false ? null : new ProjectResolver({ ...withSourceHome(opts.projects ?? {}, manifest?.sourceRoot ?? null), ...(uploaded ? { readGit: false } : {}) });
   const wikiClassifier = new WikiClassifier(opts.wikis);
   const sessions: SessionRecord[] = [];
   const unknownAll: Record<string, number> = {};
@@ -328,8 +417,9 @@ export async function extract(snapshotDir: string, opts: ExtractOptions = {}): P
     }
     if (resolver) {
       const p = resolver.resolve(rec);
-      rec.project = p.project;
-      rec.projectSource = p.source;
+      const sent = uploaded && hasDir ? await readSenderProject(join(dir, UPLOAD_SESSION_META), id) : null;
+      rec.project = sent?.project ?? p.project;
+      rec.projectSource = sent ? (sent.source ?? (sent.project === p.project ? p.source : inferProjectSource(sent.project))) : p.source;
     }
     rec.desktop = (desktop ? desktopForSession(desktop, id) : null) ?? dirDesktops.get(id) ?? null;
     rec.name = sessionName(rec.name, rec.desktop?.session?.title);

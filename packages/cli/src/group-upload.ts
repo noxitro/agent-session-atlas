@@ -11,8 +11,21 @@ import { createReadStream, existsSync, statSync } from 'node:fs';
 import { copyFile, cp, mkdir, open, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
-import { DESKTOP_JSON, desktopForSession, openSessionStoreReader, readSnapshotManifest, renameReplacing, SESSION_STORE_JSON, type DesktopData, type SessionStoreJson } from '../../core/src/index.ts';
-import type { SessionRecord, SessionsFile } from '../../core/src/index.ts';
+import {
+  DESKTOP_JSON,
+  desktopForSession,
+  openSessionStoreReader,
+  readSnapshotManifest,
+  renameReplacing,
+  SESSION_STORE_JSON,
+  UPLOAD_INDEX,
+  UPLOAD_SESSION_META,
+  uploadOldName,
+  uploadTmpName,
+  type DesktopData,
+  type SessionStoreJson,
+} from '../../core/src/index.ts';
+import type { ProjectSource, SessionRecord, SessionsFile } from '../../core/src/index.ts';
 import { loadGroups, memosDir, readMemo, SECRET_PATTERNS } from '../../report/src/index.ts';
 import { dateTime, truncate } from '../../report/src/lib/format.ts';
 import { safeDirName } from './group-export.ts';
@@ -26,16 +39,18 @@ export const UPLOAD_MEMO_FILE = 'atlas-memo.md';
 export const UPLOAD_MEMO_IMAGES = 'atlas-memo';
 /** グループ・プロジェクトのフォルダの説明(人が読む) */
 export const UPLOAD_README = 'README.md';
-/** グループ・プロジェクトのフォルダの索引(プログラムや AI が読む。セッションごとのタスクタグ・題名・日時) */
-export const UPLOAD_INDEX = 'atlas-index.json';
-/** セッションのフォルダに添える、そのセッションのタスクタグ・題名・日時(1 つのフォルダだけを渡されても分かるように) */
-export const UPLOAD_SESSION_META = 'atlas-session.json';
+// グループ・プロジェクトのフォルダの索引(UPLOAD_INDEX。プログラムや AI が読む。セッションごとのタスクタグ・題名・日時)と、
+// セッションのフォルダに添える記録(UPLOAD_SESSION_META。1 つのフォルダだけを渡されても分かるように)。
+// 名前は、集計し直す側(core の snapshot / extract)も使うので core に置く
+export { UPLOAD_INDEX, UPLOAD_SESSION_META };
 
 /** 索引とセッションのフォルダに書く、1 セッション分の情報 */
 export interface UploadedSession {
   id: string;
   title: string | null;
   project: string | null;
+  /** プロジェクト名の決め方。集計し直す側は、名前とこれをそのまま使う(読む側の PC のディスクからは決め直さない)。集計に無いセッションは null */
+  projectSource: ProjectSource | null;
   /** タスクタグ(そのセッションが入っているグループの名前)。無ければ空 */
   tags: string[];
   createdAt: string | null;
@@ -535,7 +550,7 @@ export async function uploadTarget(p: GroupUploadPaths, target: UploadTarget, ro
   const info = (id: string): UploadedSession => {
     const r = records.get(id);
     // name はデスクトップアプリの題名も反映済み(extract の sessionName)
-    return { id, title: r ? r.name || r.firstUserMessage || null : null, project: r?.project ?? null, tags: tags.get(id) ?? [], createdAt: r?.createdAt ?? null, updatedAt: r?.updatedAt ?? null, memo: withMemo.has(id) };
+    return { id, title: r ? r.name || r.firstUserMessage || null : null, project: r?.project ?? null, projectSource: r?.projectSource ?? null, tags: tags.get(id) ?? [], createdAt: r?.createdAt ?? null, updatedAt: r?.updatedAt ?? null, memo: withMemo.has(id) };
   };
   try {
     // 進み具合はバイト数で出す(大きなセッションは 1 件で数百 MB になり、件数だけでは止まって見えるため)。
@@ -555,7 +570,7 @@ export async function uploadTarget(p: GroupUploadPaths, target: UploadTarget, ro
       progress.current = id;
       report();
       // 書きかけのフォルダを残さないよう、隣に写し終えてから置き換える
-      const tmp = join(dir, `.${id}.uploading`);
+      const tmp = join(dir, uploadTmpName(id));
       await rm(tmp, { recursive: true, force: true });
       try {
         await copyFiles(src, tmp, lists.get(id) ?? [], (n) => {
@@ -571,7 +586,7 @@ export async function uploadTarget(p: GroupUploadPaths, target: UploadTarget, ro
         const had = existsSync(dest);
         // 前のフォルダは先に消さず、名前を変えて退ける(中のファイルが開かれていて動かせなければ、ここで止まり前のフォルダはそのまま残る)。
         // 新しいフォルダを置けなければ前のフォルダを戻す。退けたものは最後に消す
-        const old = join(dir, `.${id}.old`);
+        const old = join(dir, uploadOldName(id));
         if (had) {
           await rm(old, { recursive: true, force: true });
           await renameReplacing(dest, old);
@@ -697,7 +712,7 @@ export function groupReadme(o: {
     '',
     '## 集計し直すには(読みやすい記録もここで作れます)',
     '',
-    'agent-session-atlas のフォルダで、次を実行します(出力先は好きな場所に)。',
+    'agent-session-atlas のフォルダで、次を実行します(出力先は、このフォルダの集計だけに使う場所にします。ほかの集計に使った出力先を指定すると、セッションが混ざらないように止まります)。',
     '',
     '```',
     `npm run atlas -- all --home "${o.dir}" --out "<出力先>"`,
