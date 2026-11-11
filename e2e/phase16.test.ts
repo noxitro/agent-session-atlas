@@ -4,14 +4,16 @@
 //  b. 置き換えの途中・消し残しのフォルダ(.<id>.uploading / .<id>.old)があっても、セッションもトークンも二重に数えない
 //  c. 出力先を別のフォルダで使い回すと止まり、前の集計はそのまま残る
 //  d. 添えた行(atlas-session-store.json)の形が違っても止まらず、警告を出して続ける
-//  e. アップロード先の基底を指すと、0 件のレポートを作らずに、指すフォルダを案内して止まる
+//  e. アップロードしたフォルダが並ぶ場所(人ごとのフォルダ)を指すと、下のフォルダをまとめて集計する。もう 1 段上(全員の分)も、まとめて集計する
 //  f. リンクのファイルは辿らない(フォルダの外のファイルを写さない)
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { cp, mkdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { sessionStoreRows, type SessionRecord, type SessionsFile, type SessionStoreJson } from '../packages/core/src/index.ts';
+import { folderPaths, foldersRootOf } from '../packages/cli/src/folders.ts';
+import { extractEmbedded } from '../packages/report/src/index.ts';
 import { buildFixtureHome, ROOT } from './fixture-home.ts';
 
 const WORK = join(ROOT, 'out', 'e2e-phase16');
@@ -184,16 +186,43 @@ describe('Phase 16 E2E: アップロード先から集計し直す(読む側)', 
     }
   });
 
-  it('e. アップロード先の基底を指すと、指すフォルダを案内して止まる(0 件のレポートを作らない)', async () => {
+  it('e. アップロードしたフォルダが並ぶ場所を指すと、下のフォルダをまとめて集計する。もう 1 段上(全員の分)も、まとめて集計する', async () => {
     const out = join(WORK, 'out-base');
     const r = atlas(['all', '--home', root, '--out', out]);
-    expect(r.status, r.out).not.toBe(0);
-    expect(r.out).toMatch(/アップロード先の基底/);
-    expect(r.out).toContain(`--home "${destA}"`);
-    expect(r.out).toContain(`${GROUP_A}、${GROUP_B}`);
-    expect(existsSync(join(out, 'sessions.json'))).toBe(false);
-    expect(existsSync(join(out, 'atlas.html'))).toBe(false);
-  });
+    expect(r.status, r.out).toBe(0);
+    expect(r.out).toContain(`下のフォルダ 2 件をまとめて読みました(${GROUP_A}、${GROUP_B})`);
+    const merged = JSON.parse(await readFile(join(out, 'sessions.json'), 'utf8')) as SessionsFile;
+    expect(merged.source).toMatchObject({ layout: 'merged', folders: [GROUP_A, GROUP_B] });
+    expect(merged.sessions.map((x) => x.id).sort()).toEqual([...ids, GIT_SESSION, other].sort());
+    // フォルダ 1 つずつ集計したときと、セッションごとの中身が同じ(トークンも、送った側の記録から取るプロジェクト名も)
+    const strip = (f: SessionsFile) => f.sessions.filter((x) => x.id !== other).map(({ instructions: _i, ...rest }) => rest);
+    expect(strip(merged)).toEqual(strip(clean));
+    expect(existsSync(join(out, 'atlas.html'))).toBe(true);
+    // 同じセッションを 2 つのフォルダに送ってあっても、1 度だけ数える
+    const twice = join(WORK, 'atlas-logs-twice');
+    await cp(root, twice, { recursive: true });
+    await cp(join(twice, GROUP_A, ids[0]), join(twice, GROUP_B, ids[0]), { recursive: true });
+    const again = await aggregate(twice, join(WORK, 'out-twice'));
+    expect(again.sessions.map((x) => x.id).sort()).toEqual([...ids, GIT_SESSION, other].sort());
+    expect(tokens(again.sessions)).toBe(tokens(merged.sessions));
+    // もう 1 段上(人ごとのフォルダが並ぶ場所。全員の分)は、2 段下のフォルダまでまとめて集計する。2 人が同じセッションを送ってあっても 1 度だけ数える
+    const everyone = join(WORK, 'everyone');
+    await cp(root, join(everyone, 'person-a'), { recursive: true });
+    await cp(root, join(everyone, 'person-b'), { recursive: true });
+    const out2 = join(WORK, 'out-everyone');
+    const r2 = atlas(['all', '--home', everyone, '--out', out2]);
+    expect(r2.status, r2.out).toBe(0);
+    expect(r2.out).toContain('下のフォルダ 4 件をまとめて読みました(');
+    const all = JSON.parse(await readFile(join(out2, 'sessions.json'), 'utf8')) as SessionsFile;
+    expect(all.source).toMatchObject({ layout: 'merged', folders: [`person-a/${GROUP_A}`, `person-a/${GROUP_B}`, `person-b/${GROUP_A}`, `person-b/${GROUP_B}`] });
+    expect(all.sessions.map((x) => x.id).sort()).toEqual([...ids, GIT_SESSION, other].sort());
+    expect(tokens(all.sessions)).toBe(tokens(merged.sessions));
+    expect(existsSync(join(out2, 'atlas.html'))).toBe(true);
+    // 人のフォルダ 1 つを指すと、その人の分だけ
+    const one = await aggregate(join(everyone, 'person-b'), join(WORK, 'out-person-b'));
+    expect(one.source).toMatchObject({ layout: 'merged', folders: [GROUP_A, GROUP_B] });
+    expect(one.sessions.map((x) => x.id).sort()).toEqual([...ids, GIT_SESSION, other].sort());
+  }, 180_000);
 
   it('f. リンクのファイルは辿らない(フォルダの外のファイルを写さない)', async (ctx) => {
     const dest = join(WORK, 'dest-link');
@@ -215,4 +244,62 @@ describe('Phase 16 E2E: アップロード先から集計し直す(読む側)', 
     const manifest = JSON.parse(await readFile(join(out, 'snapshot', 'snapshot-manifest.json'), 'utf8')) as { extras?: { skipped: { path: string; reason: string }[] } };
     expect((manifest.extras?.skipped ?? []).filter((s) => s.path === `${ids[0]}/plan.md`).map((s) => s.reason)).toEqual([expect.stringMatching(/リンク/)]);
   });
+
+  it('g. atlas open <フォルダ>: いつもの出力先とは別の場所に集計して、そのフォルダのサーバを立てる(全員の分)', async () => {
+    const everyone = join(WORK, 'everyone-open');
+    await cp(root, join(everyone, 'person-a'), { recursive: true });
+    await cp(root, join(everyone, 'person-b'), { recursive: true });
+    const localOut = join(WORK, 'out-local');
+    const localNotes = join(WORK, 'notes-local');
+    const fp = folderPaths(foldersRootOf(localOut), localNotes, everyone);
+    const child = spawn(process.execPath, [CLI, 'open', everyone, '--out', localOut, '--notes-dir', localNotes, '--no-open', '--port', '0'], { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] });
+    let output = '';
+    child.stdout.on('data', (d) => (output += String(d)));
+    child.stderr.on('data', (d) => (output += String(d)));
+    try {
+      const url = await new Promise<string>((ok, ng) => {
+        const t = setTimeout(() => ng(new Error(`open が起動しない: ${output}`)), 150_000);
+        child.once('exit', (code) => {
+          clearTimeout(t);
+          ng(new Error(`open が終わった(${code}): ${output}`));
+        });
+        const tick = (): void => {
+          const m = /serve: (http:\/\/127\.0\.0\.1:\d+\/atlas\.html)/.exec(output);
+          if (m) {
+            clearTimeout(t);
+            ok(m[1]);
+          } else setTimeout(tick, 100);
+        };
+        tick();
+      });
+      expect(output).toContain('2 段下まで読み');
+      // 集計はフォルダごとの置き場に出る。いつもの出力先には何も作らない
+      const all = JSON.parse(await readFile(join(fp.out, 'sessions.json'), 'utf8')) as SessionsFile;
+      expect(all.source).toMatchObject({ layout: 'merged', folders: [`person-a/${GROUP_A}`, `person-a/${GROUP_B}`, `person-b/${GROUP_A}`, `person-b/${GROUP_B}`] });
+      expect(all.sessions.map((x) => x.id).sort()).toEqual([...ids, GIT_SESSION, other].sort());
+      expect(existsSync(localOut)).toBe(false);
+      expect(JSON.parse(await readFile(fp.state, 'utf8'))).toMatchObject({ path: everyone, name: 'everyone-open', listed: true, run: { state: 'serving', pid: child.pid } });
+      expect(JSON.parse(await readFile(join(fp.out, '.serve.json'), 'utf8'))).toMatchObject({ pid: child.pid });
+      // 画面: 埋め込みのデータに対象のフォルダが入り、一覧の API はこのフォルダを「この画面」として返す
+      const served = await (await fetch(url)).text();
+      const data = extractEmbedded<{ source?: { name: string; path: string } }>(served);
+      expect(data.source).toMatchObject({ name: 'everyone-open', path: everyone });
+      const token = /<meta name="atlas-token" content="([^"]+)"/.exec(served)![1];
+      const list = (await (await fetch(new URL('api/folders', url), { headers: { 'x-atlas-token': token } })).json()) as { current: unknown; local: unknown; folders: { key: string; status: string }[] };
+      expect(list).toMatchObject({ current: { path: everyone, name: 'everyone-open' }, local: { status: 'idle', url: null } });
+      expect(list.folders).toMatchObject([{ key: fp.key, status: 'current' }]);
+      // 同じフォルダをもう一度開くと、集計し直さずに、動いているサーバを使う
+      const again = atlas(['open', everyone, '--out', localOut, '--notes-dir', localNotes, '--no-open']);
+      expect(again.status, again.out).toBe(0);
+      expect(again.out).toMatch(/既に動いているサーバがあります/);
+      // メモとタスクタグは、フォルダごとの場所に書く
+      const made = await fetch(new URL('api/groups', url), { method: 'POST', headers: { 'content-type': 'application/json', 'x-atlas-token': token }, body: JSON.stringify({ name: '全員の分のタグ', note: '', ids: [ids[0]] }) });
+      expect(made.status).toBe(201);
+      expect(existsSync(join(fp.notes, 'groups.json'))).toBe(true);
+      expect(existsSync(join(localNotes, 'groups.json'))).toBe(false);
+    } finally {
+      child.kill();
+      if (child.exitCode === null) await new Promise((r) => child.once('exit', r));
+    }
+  }, 240_000);
 });

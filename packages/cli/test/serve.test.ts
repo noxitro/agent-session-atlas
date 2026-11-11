@@ -417,6 +417,64 @@ describe('serve', () => {
     h = null;
   });
 
+  it('別のフォルダを開く(/api/folders): token が要り、調べる・開く・一覧・外すが働く。開くのは別のプロセス(このサーバの出力先には触れない)', async () => {
+    // logs/<人>/<プロジェクト>/<セッション>
+    const logs = join(dir, 'logs');
+    for (const p of ['person-a/proj-a/s1', 'person-a/proj-b/s2', 'person-b/proj-a/s3']) {
+      await mkdir(join(logs, p), { recursive: true });
+      await writeFile(join(logs, p, 'events.jsonl'), '{"type":"session.start","data":{"sessionId":"x","version":1},"id":"e1","timestamp":"2026-07-02T09:00:00.000Z","parentId":null}\n');
+    }
+    const launched: string[][] = [];
+    await start({
+      configPath: join(dir, 'atlas.config.json'),
+      reports: {
+        launch: (args) => {
+          launched.push(args);
+          return process.pid;
+        },
+      },
+    });
+    const post = (path: string, body: unknown, token: string | null = h!.token) => json(`/api/folders/${path}`, { method: 'POST', body: JSON.stringify(body) }, token);
+    expect((await json('/api/folders', {}, null)).status).toBe(403);
+    expect((await post('open', { path: logs }, null)).status).toBe(403);
+    expect((await json('/api/folders', { method: 'PUT', body: '{}' })).status).toBe(405);
+    expect((await post('nope', {})).status).toBe(404);
+    const empty = await json('/api/folders');
+    expect(empty).toMatchObject({ status: 200, body: { current: null, local: { status: 'current', url: null }, folders: [] } });
+    expect(typeof empty.body.canPick).toBe('boolean');
+    // 調べる: 何を読むかを返す。集計できないものは、理由を答えとして返す(ok: false)
+    expect(await post('check', { path: logs })).toMatchObject({ status: 200, body: { path: logs, ok: true, name: 'logs', summary: expect.stringContaining('3 件のフォルダをまとめて集計します') } });
+    expect(await post('check', { path: join(logs, 'person-a') })).toMatchObject({ status: 200, body: { name: 'person-a', summary: '下のフォルダ 2 件をまとめて集計します(proj-a、proj-b)' } });
+    expect(await post('check', { path: join(dir, 'nope') })).toMatchObject({ status: 200, body: { path: join(dir, 'nope'), ok: false, error: expect.stringContaining('見つかりません') } });
+    expect(await post('check', { path: 'logs' })).toMatchObject({ status: 200, body: { path: 'logs', ok: false, error: expect.stringContaining('フルパス') } });
+    expect(await post('check', {})).toMatchObject({ status: 200, body: { path: '', ok: false } });
+    // 開く: 別のプロセスに、フォルダと、いつもの出力先・メモの場所・設定ファイルを渡す(ブラウザを開かない指定も引き継ぐ)
+    const opened = await post('open', { path: join(logs, 'person-a') });
+    expect(opened).toMatchObject({ status: 200, body: { name: 'person-a', status: 'starting' } });
+    expect(launched).toHaveLength(1);
+    expect(launched[0].slice(1)).toEqual(['open', join(logs, 'person-a'), '--out', out, '--notes-dir', notes, '--config', join(dir, 'atlas.config.json'), '--no-open']);
+    expect((await post('open', { path: join(logs, 'person-a') })).body.status).toBe('starting');
+    expect(launched).toHaveLength(1);
+    expect((await post('open', { path: join(dir, 'nope') })).status).toBe(400);
+    const key = opened.body.key as string;
+    expect(existsSync(join(`${out}-folders`, key, 'folder.json'))).toBe(true);
+    expect(existsSync(join(out, 'folder.json'))).toBe(false);
+    expect((await json('/api/folders')).body.folders).toMatchObject([{ key, path: join(logs, 'person-a'), status: 'starting' }]);
+    // 外す: 一覧から消える(置き場は残る)。キーの形が違うもの・無いものは理由を返す
+    expect((await post('forget', { key: '../x' })).status).toBe(400);
+    expect((await post('forget', { key: 'none-00000000' })).status).toBe(404);
+    expect(await post('forget', { key })).toMatchObject({ status: 200, body: { folders: [] } });
+    expect(existsSync(join(`${out}-folders`, key, 'folder.json'))).toBe(true);
+  });
+
+  it('別のフォルダを開いたサーバ(reports.current): 一覧はそのフォルダを「この画面」とし、この PC の集計は開いていなければ idle', async () => {
+    const logs = join(dir, 'logs');
+    await mkdir(join(logs, 'proj', 's1'), { recursive: true });
+    await writeFile(join(logs, 'proj', 's1', 'events.jsonl'), '{}\n');
+    await start({ home: logs, reports: { root: join(dir, 'reports'), notesBase: notes, localOut: join(dir, 'local-out'), current: logs, launch: () => null } });
+    expect((await json('/api/folders')).body).toMatchObject({ current: { path: logs, name: 'logs' }, local: { status: 'idle', url: null }, folders: [] });
+  });
+
   it('猶予の既定は、隠れたタブの間引かれた heartbeat(1 分に 1 回)より十分長い', () => {
     expect(DEFAULT_IDLE_MS).toBeGreaterThanOrEqual(10 * 60_000);
     expect(BYE_GRACE_MS).toBeGreaterThanOrEqual(10_000);

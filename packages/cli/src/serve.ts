@@ -57,6 +57,7 @@ import { exportGroup } from './group-export.ts';
 import { checkUpload, UploadChangedError, uploadDir, uploadedAt, uploadGroup, type GroupUploadResult, type UploadProgress } from './group-upload.ts';
 import { defaultConfigPath, loadConfig, modifyConfig, NO_CHANGE, parseConfig, parseUploadRoot, updateConfig } from './config.ts';
 import { CAN_PICK_FOLDER, openFolder, pickFolder } from './folder-picker.ts';
+import { checkFolder, FolderError, foldersRootOf, forgetFolder, launchDetached, listFolders, listFolderStates, openFolderReport, type FolderContext, type LaunchFn } from './folders.ts';
 
 export const TOKEN_PLACEHOLDER = '__ATLAS_TOKEN__';
 export const SERVE_STATE_FILE = '.serve.json';
@@ -98,6 +99,13 @@ export interface ServeOptions {
   folders?: { canPick?: boolean; pick?: (title: string, initial: string | null) => Promise<string | null>; open?: (dir: string) => void };
   /** Copilot のデータの場所(画面の設定で、名前に wiki を含むインストール済みの skill を候補に出すのに使う)。既定は ATLAS_COPILOT_HOME か ~/.copilot */
   copilotHome?: string;
+  /** 集計し直すときに読む場所(別のフォルダを開いたサーバ。省略時は CLI の既定 = この PC の Copilot のデータ) */
+  home?: string;
+  /**
+   * 「別のフォルダを開く」の置き場(folders.ts)。root: フォルダごとの出力先の置き場(既定は <outDir>-folders)、notesBase: いつものメモの置き場(既定は notesDir)、
+   * localOut: いつもの出力先(既定は outDir)、current: このサーバが出しているフォルダ(いつもの集計なら省略)、launch: 別のプロセスの起動(テストで差し替える)
+   */
+  reports?: { root?: string; notesBase?: string; localOut?: string; current?: string | null; launch?: LaunchFn };
   /** 応答の x-atlas-code で返す版の目印。既定は codeStamp()(起動したときのソースの中身)。null なら返さない(目印を返す前の古いサーバの代わり。テスト用) */
   codeStamp?: string | null;
 }
@@ -312,6 +320,7 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
   const jobs = new JobRunner({
     outDir,
     notesDir: resolve(o.notesDir),
+    home: o.home,
     spawn: o.jobs?.spawn,
     env: o.jobs?.env,
     runFull: o.jobs?.runFull ?? runFullDefault,
@@ -331,6 +340,19 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
   const canPick = o.folders?.canPick ?? CAN_PICK_FOLDER;
   const pick = o.folders?.pick ?? pickFolder;
   const openDir = o.folders?.open ?? openFolder;
+  /** 「別のフォルダを開く」: 開いたフォルダは、フォルダごとの出力先で、別のプロセス(atlas open)が集計して配信する */
+  const folderCtx: FolderContext = {
+    root: resolve(o.reports?.root ?? foldersRootOf(outDir)),
+    notesBase: resolve(o.reports?.notesBase ?? o.notesDir),
+    localOut: resolve(o.reports?.localOut ?? outDir),
+    current: o.reports?.current ? resolve(o.reports.current) : null,
+    canPick,
+    findRunning: findRunningServer,
+    launch: o.reports?.launch ?? launchDetached,
+    // 開いたフォルダのサーバにも、同じ設定ファイルと、ブラウザを開くかどうかを引き継ぐ
+    extraArgs: [...(o.configPath ? ['--config', resolve(o.configPath)] : []), ...(o.open === false ? ['--no-open'] : [])],
+    pending: new Set(),
+  };
   /** 設定のアップロード先と、upload-project.bat がまとめて送るプロジェクト(読めない設定は理由つきで返す。画面に出す) */
   async function uploadRootOf(): Promise<{ root: string | null; projects: string[]; error: string | null }> {
     try {
@@ -718,6 +740,72 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
         log(`serve: 普段の工程名を${phases ? ` ${phases.join(' / ')} に` : '既定に'}しました(${configPath})`);
         sendJson(res, 200, await settingsOf());
         return;
+      }
+      throw new HttpError(404, '見つかりません');
+    }
+    if (path === '/api/folders' || path.startsWith('/api/folders/')) {
+      checkToken(req);
+      try {
+        if (path === '/api/folders' && method === 'GET') {
+          sendJson(res, 200, await listFolders(folderCtx));
+          return;
+        }
+        if (method !== 'POST') throw new HttpError(405, 'この方法では使えません');
+        if (path === '/api/folders/pick') {
+          // フォルダを選ぶ画面を出し、選んだ場所が集計できるかを確かめて返す(取り消したら path: null。開くのは画面の「集計して開く」)
+          if (!canPick) throw new HttpError(501, 'この OS ではフォルダを選ぶ画面を出せません。パスを入力してください');
+          if (picking) throw new HttpError(409, 'フォルダを選ぶ画面が開いています(タスクバーを確かめてください)');
+          picking = true;
+          try {
+            const initial = folderCtx.current ?? listFolderStates(folderCtx.root)[0]?.state.path ?? (await uploadRootOf()).root;
+            let chosen: string | null;
+            try {
+              chosen = await pick('集計して開くフォルダを選んでください(アップロード先・人ごとのフォルダ・プロジェクトのフォルダ)', initial);
+            } catch (e) {
+              throw new HttpError(500, (e as Error).message);
+            }
+            if (chosen == null) {
+              sendJson(res, 200, { path: null });
+              return;
+            }
+            try {
+              const info = await checkFolder(chosen);
+              sendJson(res, 200, { path: info.path, ok: true, name: info.name, summary: info.summary });
+            } catch (e) {
+              if (!(e instanceof FolderError)) throw e;
+              sendJson(res, 200, { path: chosen, ok: false, error: e.message });
+            }
+          } finally {
+            picking = false;
+          }
+          return;
+        }
+        const body = await readJsonBody(req);
+        if (path === '/api/folders/check') {
+          // 集計できないフォルダは、失敗ではなく答えとして返す(ok: false と理由。選ぶ画面から選んだときと同じ形)
+          try {
+            const info = await checkFolder(body.path);
+            sendJson(res, 200, { path: info.path, ok: true, name: info.name, summary: info.summary });
+          } catch (e) {
+            if (!(e instanceof FolderError)) throw e;
+            sendJson(res, 200, { path: typeof body.path === 'string' ? body.path : '', ok: false, error: e.message });
+          }
+          return;
+        }
+        if (path === '/api/folders/open') {
+          const entry = await openFolderReport(folderCtx, body.path);
+          if (entry.status === 'starting') log(`serve: 別のフォルダを集計して開きます(${entry.path})`);
+          sendJson(res, 200, entry);
+          return;
+        }
+        if (path === '/api/folders/forget') {
+          forgetFolder(folderCtx, body.key);
+          sendJson(res, 200, await listFolders(folderCtx));
+          return;
+        }
+      } catch (e) {
+        if (e instanceof FolderError) throw new HttpError(e.status, e.message);
+        throw e;
       }
       throw new HttpError(404, '見つかりません');
     }

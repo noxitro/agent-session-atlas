@@ -54,6 +54,28 @@ describe('parseCli', () => {
     expect(() => parseCli(['build', 'extra'])).toThrow(/1 つだけ/);
   });
 
+  it('open: 集計して開くフォルダを 1 つ取る。--home・判定の指定・伏せ字は受け付けず、serve のオプションと絞り込みは通す', () => {
+    expect(parseCli(['open', 'D:\\logs\\person-a'])).toMatchObject({ command: 'open', target: 'D:\\logs\\person-a', open: true, port: null });
+    expect(parseCli(['open', '/srv/logs', '--no-open', '--port', '0', '--out', 'o', '--notes-dir', 'n', '--since', '2026-07-01', '--config', 'c.json'])).toMatchObject({
+      command: 'open',
+      target: '/srv/logs',
+      open: false,
+      port: 0,
+      out: 'o',
+      notesDir: 'n',
+      since: '2026-07-01',
+      config: 'c.json',
+    });
+    expect(parseCli(['serve'])).toMatchObject({ target: null });
+    expect(() => parseCli(['open'])).toThrow(/集計して開くフォルダを指定/);
+    expect(() => parseCli(['open', '  '])).toThrow(/集計して開くフォルダを指定/);
+    expect(() => parseCli(['open', 'D:\\my', 'logs'])).toThrow(/余分な引数.*logs.*"…" で囲んで/);
+    expect(() => parseCli(['open', '/srv/logs', '--home', '/x'])).toThrow(/open では --home を使えません/);
+    expect(() => parseCli(['open', '/srv/logs', '--judgments', 'j.json'])).toThrow(/--judgments は open では使えません/);
+    expect(() => parseCli(['open', '/srv/logs', '--anonymize'])).toThrow(UsageError);
+    expect(() => parseCli(['build', '--no-open'])).toThrow(/serve と open でだけ/);
+  });
+
   it('export と --tool-output / --max-chars を読む(export 以外では UsageError)', () => {
     expect(parseCli(['export'])).toMatchObject({ command: 'export', toolOutput: 'fail', maxChars: null });
     expect(parseCli(['export', '--tool-output', 'all', '--max-chars', '500', '--anonymize'])).toMatchObject({ command: 'export', toolOutput: 'all', maxChars: 500, anonymize: true });

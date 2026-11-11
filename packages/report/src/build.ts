@@ -91,6 +91,8 @@ export interface BuildInput {
   installed?: InstalledInventory | null;
   /** sessions.json の総件数(フィルタ前) */
   totalSessionsInSource: number;
+  /** アップロードしたフォルダを集計したときの、そのフォルダ(画面の見出しに出す。伏せ字版には入れない) */
+  source?: ReportData['source'];
   warnings: { unknownEventTypes: number; badLines: number; notes?: string[] };
   judgments: JudgmentsIndex | null;
   /** 段階 2: 依頼ごとの LLM 判定(turn-judgments.json)。無ければ null / 省略 */
@@ -177,6 +179,7 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
       branch: input.scope?.branch ? (anon.enabled ? '(伏せ字)' : input.scope.branch) : null,
     },
     totalSessionsInSource: input.totalSessionsInSource,
+    ...(input.source && !anon.enabled ? { source: input.source } : {}),
     metrics: anonymizeMetrics(input.metrics, anon),
     sessions,
     judgments: {
