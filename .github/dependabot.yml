@@ -1,11 +1,18 @@
 # 依存の更新を週 1 回 PR で出す。PR ごとに CI(ci.yml)が回るので、通ったものだけ取り込む。
 # npm は minor / patch をまとめて 1 本にし、major(vitest 3 → 5 など)は個別の PR にする。
+# cooldown: 公開されてすぐの版は取り込まない(乗っ取られた版が公開直後に見つかって取り下げられる間を待つ)。
+# セキュリティ更新には効かないので、脆弱性の修正はすぐ PR になる。
 version: 2
 updates:
   - package-ecosystem: npm
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+      semver-minor-days: 7
+      semver-patch-days: 3
     groups:
       npm-minor-and-patch:
         update-types: [minor, patch]
@@ -13,7 +20,11 @@ updates:
       # svelte-check(4.7.8 時点)は TypeScript 7 単体に未対応(peer は ^5 || ^6)。対応したらこの指定を外す
       - dependency-name: typescript
         versions: ['>=7']
+  # ci.yml の Action はコミット SHA で固定してあり、Dependabot は SHA と末尾の版の注記をまとめて更新する
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    # github-actions は版の種類ごとの日数(semver-*-days)に未対応なので、default-days だけ
+    cooldown:
+      default-days: 7

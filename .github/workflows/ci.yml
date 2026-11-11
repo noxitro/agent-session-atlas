@@ -3,6 +3,7 @@
 # 手元で同じ順に回すのは npm run ci(docs/development.md の「CI」)。
 # fixture は e2e の globalSetup(e2e/global-setup.ts)が作るので、ここに生成の手順は要らない。
 # 実データ(ATLAS_LIVE)と実 LLM 判定は CI では動かさない。
+# 外部の Action はタグの付け替えで中身が変わらないようコミット SHA で固定する(末尾の注記が版。Dependabot が SHA ごと更新する)。
 name: CI
 
 on:
@@ -29,12 +30,13 @@ jobs:
         # engines は >=24。下限の 24 と、新しく入れる人が選ぶ現行 LTS の 26(node:sqlite は実験的 API なので版で変わりうる)
         node: [24, 26]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    # ふだんは 2〜4 分。固まったときに早く気づけるよう短めにする
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ matrix.node }}
           cache: npm
@@ -48,20 +50,24 @@ jobs:
       - run: npm run build:report
       - run: npm run e2e
       # 画面の操作(Playwright の Chromium、ui/)。ブラウザは OS ごとに見れば足りるので Node 24 だけで回す。
-      # ブラウザの本体は Playwright の版ごとにキャッシュする(毎回のダウンロードを省く)。
+      # ブラウザの本体は Playwright の版ごとにキャッシュする(ほかの依存が上がっても取り直さない)。
       # Linux はブラウザが使う共有ライブラリも入れる(--with-deps。キャッシュがあっても共有ライブラリは入れ直す)
       - if: matrix.node == 24
-        uses: actions/cache@v6
+        id: playwright
+        shell: bash
+        run: echo "version=$(node -p "require('playwright/package.json').version")" >> "$GITHUB_OUTPUT"
+      - if: matrix.node == 24
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.os == 'Windows' && '~\AppData\Local\ms-playwright' || '~/.cache/ms-playwright' }}
-          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
       - if: matrix.node == 24
         run: npx playwright install ${{ runner.os == 'Linux' && '--with-deps' || '' }} chromium
       - if: matrix.node == 24
         run: npm run ui
       # 画面テストが落ちたら、その時点の画面(ui/failure-shot.ts が out/ui-failures/ に残す)を成果物として上げる
       - if: failure() && matrix.node == 24
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ui-failures-${{ matrix.os }}
           path: out/ui-failures/
@@ -70,3 +76,32 @@ jobs:
       # clone した状態での動作確認(手元の npm run smoke と同じ。scripts/smoke-local.ts)
       - name: clone した状態での動作確認
         run: npm run smoke
+
+  # PR で新しく入る・上がる依存に既知の脆弱性が無いかを見る(dependencies だけ。npm audit と同じく devDependencies では止めない)
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+          fail-on-scopes: runtime
+
+  # main のルールで必須にするのはこのジョブだけ(行列の組み合わせを変えても、必須チェックの名前を変えずに済む)。
+  # 上のどれかが落ちたか取り消されたら落ちる。push では dependency-review が飛ばされる(skipped)が、それは通す
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs: [check, dependency-review]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - env:
+          FAILED: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        run: |
+          echo "check=${{ needs.check.result }} dependency-review=${{ needs.dependency-review.result }}"
+          test "$FAILED" != "true"
