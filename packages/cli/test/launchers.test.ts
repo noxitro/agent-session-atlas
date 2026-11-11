@@ -38,16 +38,33 @@ describe('*.bat', () => {
     expect(bad).toEqual([]);
   });
 
-  // chcp 65001 の後、cmd は日本語の行を読んだ分だけ bat を読み直す位置がずれることがあり、node や pause から戻ったときに前の行の途中を実行する
-  // (説明の rem が冒頭にあった upload-project.bat と setup.bat で、終わりに「'r' is not recognized」などが毎回出ていた)。
-  // 日本語の説明の rem は最後に実行する行(exit /b で終える)より後ろにだけ置く
-  it.each(BATS)('%s は日本語の説明の rem を、exit /b で終える最後の行より後ろにだけ置く', (f) => {
+  // 日本語の説明の rem が冒頭(chcp 65001 の前)にあった upload-project.bat と setup.bat は、node や pause から戻ったときに、
+  // cmd が前の行の途中(「'r' is not recognized」「'pm' is not recognized」など)を毎回実行していた。
+  // 実測で分かったこと: chcp 65001 の前の日本語を無くし、説明の rem を最後に実行する行より後ろに移すと起きない
+  // (説明を chcp の後ろに移しただけでは、パイプで入力を渡したときにときどき起きた)。原因の細かい仕組みは確かめていない
+  it.each(BATS)('%s は chcp 65001 より前に日本語を書かず、説明の rem は最後に実行する行(exit /b)より後ろにだけ置く', (f) => {
     const lines = readFileSync(join(ROOT, f), 'utf8').split(/\r\n/);
     const isRem = (l: string): boolean => /^rem\b/i.test(l.trim());
+    const nonAscii = (l: string): boolean => /[^\x00-\x7f]/.test(l);
+    const chcp = lines.findIndex((l) => /^chcp 65001\b/i.test(l.trim()));
+    expect(chcp).toBeGreaterThan(-1);
+    expect(lines.slice(0, chcp).filter(nonAscii)).toEqual([]);
     const lastCode = lines.findLastIndex((l) => l.trim() !== '' && !isRem(l));
-    expect(lines[lastCode]).toMatch(/exit \/b$/i);
-    const early = lines.flatMap((l, i) => (i < lastCode && isRem(l) && /[^\x00-\x7f]/.test(l) ? [`${i + 1}: ${l}`] : []));
+    expect(lines[lastCode]).toMatch(/exit \/b( %\w+%)?$/i);
+    const early = lines.flatMap((l, i) => (i < lastCode && isRem(l) && nonAscii(l) ? [`${i + 1}: ${l}`] : []));
     expect(early).toEqual([]);
+  });
+
+  // 最後に動かす node の終了コードを、bat の終了コードとして返す(「& exit /b」で終えると、cmd の終了コードは常に 0 になる)。
+  // 同じ行に %errorlevel% を書くと行を読んだとき(node の前)の値になるので、次の行で調べるか取っておく
+  it.each(BATS)('%s は最後に動かす node の終了コードを、次の行で調べるか取っておく', (f) => {
+    const lines = readFileSync(join(ROOT, f), 'utf8')
+      .split(/\r\n/)
+      .map((l) => l.trim())
+      .filter((l) => l && !/^rem\b/i.test(l));
+    const last = lines.findLastIndex((l) => /^node packages\\/i.test(l));
+    expect(lines[last]).not.toContain('&');
+    expect(lines[last + 1]).toMatch(/^(if errorlevel 1 \(|set "code=%errorlevel%"|exit \/b %errorlevel%)$/i);
   });
 
   // git の無い場所(git archive で作ったフォルダなど)では git check-attr が使えないので見ない

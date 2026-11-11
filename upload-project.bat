@@ -20,7 +20,9 @@ if errorlevel 1 (
   )
 )
 
-node packages\cli\src\upload-project.ts & echo. & pause & exit /b
+node packages\cli\src\upload-project.ts
+set "code=%errorlevel%"
+echo. & pause & exit /b %code%
 
 rem ここから下は説明で、実行しません。cmd は chcp 65001 の後、日本語の行を読んだ分だけ bat を読み直す位置がずれることがあり、続きを前の行の途中から実行してしまうため、説明は最後の exit /b の後に置きます
 rem プロジェクトのセッションをまとめて送る: 集計し直してから、画面の「プロジェクト別」で「まとめて送る」に印を付けたプロジェクト

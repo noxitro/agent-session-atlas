@@ -28,7 +28,8 @@ if errorlevel 1 (
   exit /b 1
 )
 
-node packages\cli\src\main.ts serve & exit /b
+node packages\cli\src\main.ts serve
+exit /b %errorlevel%
 
 rem ここから下は説明で、実行しません。cmd は chcp 65001 の後、日本語の行を読んだ分だけ bat を読み直す位置がずれることがあり、続きを前の行の途中から実行してしまうため、説明は最後の exit /b の後に置きます
 rem Copilot Session Atlas: ~/.copilot を集計して out\atlas.html と各セッションの記録(out\sessions\<id>.md)を作り、ローカルサーバ(127.0.0.1)で開く

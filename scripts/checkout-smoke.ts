@@ -82,6 +82,8 @@ if (process.platform === 'win32') {
     // cmd が bat を読めなかった・読み違えた(chcp 65001 の後に、前の行の途中を実行した)ときの文言(英語版と日本語版)。
     // 架空の fixture で正しく動けば、エラー出力には何も出ない
     if (stderr.trim() || /was unexpected at this time|は予期されていません|is not recognized as an internal or external command|内部コマンドまたは外部コマンド/.test(text)) fail(`${bat} を cmd が読めずに止まりました:\n${text}`);
+    // 中の node が正常に終われば、bat も 0 で終わる(node の終了コードを bat の終了コードとして返す)
+    if (r.status !== 0) fail(`${bat} が終了コード ${r.status} で終わりました:\n${text}`);
     return stdout;
   };
   const upBat = runBat('upload-project.bat', '\n\n');

@@ -13,8 +13,9 @@ import { existsSync, statSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { clearLine, createInterface, cursorTo } from 'node:readline';
+import { clearLine, createInterface, cursorTo, moveCursor } from 'node:readline';
 import { fileURLToPath } from 'node:url';
+import { format, stripVTControlCharacters } from 'node:util';
 import { parseCli } from './args.ts';
 import { defaultConfigPath, loadConfig, updateConfig } from './config.ts';
 import { pickFolder } from './folder-picker.ts';
@@ -59,13 +60,37 @@ const EMOJI = /\p{Emoji_Presentation}/u;
 
 /**
  * 画面での幅(全角の文字と絵文字は 2、結合する記号などは 0、ほかは 1)。一覧の列をそろえるのと、1 行に収めるのに使う。
- * 後ろに U+FE0F(絵文字で出す指定)が付いた文字(✔️ など)は 2 と数える
+ * 後ろに U+FE0F(絵文字で出す指定)が付いた文字(✔️ など)は 2 と数える。
+ * 1 つの絵文字として出るもの(ZWJ でつないだ 👨‍👩‍👧、地域指示記号 2 つの国旗 🇯🇵)は、全体で 2 と数える
  */
 export function width(s: string): number {
   let n = 0;
   let prev = 0;
+  let joined = false;
+  let flagHalf = false;
   for (const ch of s) {
     const c = ch.codePointAt(0)!;
+    // ZWJ の次の文字は、前の絵文字とつながって 1 つに出る
+    if (joined) {
+      joined = false;
+      if (!ZERO_WIDTH.test(ch)) continue;
+    }
+    if (c === 0x200d) {
+      joined = prev === 2;
+      continue;
+    }
+    // 地域指示記号は 2 つで 1 つの国旗になる(1 つ目を 2、2 つ目を 0 と数える)
+    if (c >= 0x1f1e6 && c <= 0x1f1ff) {
+      if (flagHalf) {
+        flagHalf = false;
+        continue;
+      }
+      flagHalf = true;
+      n += 2;
+      prev = 2;
+      continue;
+    }
+    flagHalf = false;
     if (ZERO_WIDTH.test(ch)) {
       if (c === 0xfe0f && prev === 1) {
         n += 1;
@@ -354,7 +379,8 @@ export async function runUploadProject(io: UploadProjectIo, o: { paths: GroupUpl
         continue;
       }
       if (a !== 'y') {
-        io.print(sent.length ? `  やめました(残りの ${todo.length} プロジェクトは送っていません)。` : '  やめました(何も送っていません)。');
+        // 送ったものがあれば、送っていない残りはすぐ後のまとめ(途中でやめました)に出す(同じことを 2 度書かない)
+        io.print(sent.length ? '  やめました。' : '  やめました(何も送っていません)。');
         break;
       }
       io.print('');
@@ -461,9 +487,17 @@ export async function refreshAggregate(io: UploadProjectIo, o: { logPath: string
     if (m.includes('注意')) io.print(`  注意: ${m.replace(/^[a-z -]+: (注意 )?/, '')}`);
     else {
       const stage = /^([a-z-]+)[ :]/.exec(m)?.[1];
+      // 段階の頭が無い行(「レポートのテンプレートをビルドしています…」など)は、その文のまま出す
       if (stage) io.status?.(`  ${STAGES[stage] ?? '集計しています'}...`);
+      else if (m.trim()) io.status?.(`  ${m.trim()}`);
     }
   };
+  // 集計の中で console に直に書くもの(初回のテンプレートのビルドで Vite が出す警告など)も、log に通す。
+  // 直に窓へ書かれると、書き換えている 1 行の途中に混ざり、消す行がずれるため。警告とエラーは注意として窓に出す
+  const saved = { log: console.log, info: console.info, warn: console.warn, error: console.error };
+  const plain = (args: unknown[]): string => stripVTControlCharacters(format(...args));
+  console.log = console.info = (...args: unknown[]) => log(plain(args));
+  console.warn = console.error = (...args: unknown[]) => log(`build: 注意 ${plain(args)}`);
   try {
     await o.run(log);
     io.print('  集計しました。');
@@ -475,6 +509,7 @@ export async function refreshAggregate(io: UploadProjectIo, o: { logPath: string
     io.print(`  集計の経過: ${o.logPath}`);
     return false;
   } finally {
+    Object.assign(console, saved);
     // 書けなくても送る操作は続ける(経過を残す場所が無いだけ)
     await writeFile(o.logPath, `${lines.join('\n')}\n`).catch(() => {});
   }
@@ -512,6 +547,7 @@ export function consoleIo(
   rl.on('line', (line) => {
     if (waiting) answer(line);
     else if (keepEarly) early.push(line);
+    else dropped();
   });
   rl.on('close', () => {
     closed = true;
@@ -520,6 +556,18 @@ export function consoleIo(
   const stream = out as unknown as NodeJS.WritableStream;
   // 書き換える 1 行が出ているか。次に何かを書く前に消す
   let shown = false;
+  let lastStatus = '';
+  /**
+   * 尋ねていない間に端末で入った行を捨てたとき: 窓には打った文字と改行が写っている(行を読む前に端末が写す)ので、
+   * 1 行上に戻ってその行を消し、書き換えていた 1 行を書き直す(進み具合の行が 1 行で済むように)
+   */
+  const dropped = (): void => {
+    if (!out.isTTY) return;
+    moveCursor(stream, 0, -1);
+    clearLine(stream, 0);
+    cursorTo(stream, 0);
+    if (shown) out.write(lastStatus);
+  };
   const clear = (): void => {
     if (!shown) return;
     clearLine(stream, 0);
@@ -543,7 +591,8 @@ export function consoleIo(
           status: (text: string): void => {
             clear();
             // 折り返すと 1 行では消えないので、窓の幅に収める
-            out.write(fit(text, (out.columns || 80) - 1));
+            lastStatus = fit(text, (out.columns || 80) - 1);
+            out.write(lastStatus);
             shown = true;
           },
         }

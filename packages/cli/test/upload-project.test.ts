@@ -344,6 +344,8 @@ describe('プロジェクトのセッションをまとめて送る', () => {
     expect(await runUploadProject(f.io, { paths: paths(), configPath })).toBe(false);
     const text = f.printed.join('\n');
     expect(text).toContain('== 途中でやめました ==');
+    // 残りはまとめにだけ出す(やめたときの行と 2 度書かない)
+    expect(text.match(/送っていません/g)).toHaveLength(1);
     expect(text).not.toContain('== 終わりました ==');
     expect(text).toContain('1 プロジェクト・2 セッションを送りました。');
     expect(text).toContain('残りの 1 プロジェクト(X:\\work\\tool)は送っていません。');
@@ -401,6 +403,32 @@ describe('プロジェクトのセッションをまとめて送る', () => {
     expect(width('a‍b')).toBe(2);
     expect(fit('☕☕', 3)).toBe('☕');
     expect(width(fit('✔️✔️✔️', 5))).toBeLessThanOrEqual(5);
+    // 1 つの絵文字として出るもの(国旗・ZWJ でつないだもの)は全体で 2
+    expect(width('🇯🇵')).toBe(2);
+    expect(width('🇯🇵🇺🇸')).toBe(4);
+    expect(width('👨‍👩‍👧')).toBe(2);
+    expect(width('a👨‍👩b')).toBe(4);
+  });
+
+  it('集計し直すとき: 段階の頭が無い行はその文のまま status に出し、console に直に書かれたものも log に通す(警告は注意として窓に出す)', async () => {
+    const logPath = join(dir, 'upload.log');
+    const statuses: string[] = [];
+    const f = fakeIo([], []);
+    f.io.status = (t) => statuses.push(t);
+    const warn = console.warn;
+    const ok = await refreshAggregate(f.io, {
+      logPath,
+      run: async (log) => {
+        log('レポートのテンプレートをビルドしています(初回またはソース更新時のみ)…');
+        console.warn('\x1b[33m(!) Some chunks are larger than 500 kB\x1b[39m');
+        console.log('vite v7 building for production...');
+      },
+    });
+    expect(ok).toBe(true);
+    expect(console.warn).toBe(warn);
+    expect(statuses).toContain('  レポートのテンプレートをビルドしています(初回またはソース更新時のみ)…');
+    expect(f.printed.join('\n')).toContain('  注意: (!) Some chunks are larger than 500 kB');
+    expect(readFileSync(logPath, 'utf8')).toContain('vite v7 building for production...');
   });
 
   it('集計し直すとき: 経過の行はファイルに書いて窓には出さず、段階は status に、注意は窓に出す', async () => {
@@ -488,6 +516,19 @@ describe('プロジェクトのセッションをまとめて送る', () => {
     expect(await d.io.ask('> ')).toBe('y');
     expect(await d.io.ask('> ')).toBe('');
     d.close();
+  });
+
+  it('黒い窓: 端末で、尋ねていない間に Enter が押されたら、写った行を消して書き換えていた 1 行を書き直す(進み具合の行が増えない)', async () => {
+    const tty = Object.assign(new PassThrough(), { isTTY: true });
+    const o = fakeOut(true);
+    const c = consoleIo(async () => null, { input: tty, output: o.out });
+    c.io.status!('  ログを読んでいます...');
+    o.written.length = 0;
+    tty.write('\n');
+    await tick();
+    // 1 行上に戻り(CSI 1A)、その行を消して(CSI 2K)、行の頭から書き直す(20 桁の窓に収めた同じ文)
+    expect(o.written.join('')).toBe(`\x1b[1A\x1b[2K\x1b[1G${fit('  ログを読んでいます...', 19)}`);
+    c.close();
   });
 
   it('点検とアップロードは、渡した読む口を閉じずに使い回す(まとめて送るときに DB を開き直さない)', async () => {
