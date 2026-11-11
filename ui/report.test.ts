@@ -496,6 +496,23 @@ describe('画面の操作', () => {
       await expect.poll(() => confirm.innerText()).toMatch(/うち 2 件は前に写したものを置き換えます/);
       await confirm.getByRole('button', { name: '写す', exact: true }).click();
       await expect.poll(() => head.getByTestId('group-uploaded').innerText()).toMatch(/うち 2 件は前に写したものを置き換え/);
+      expect(await head.getByTestId('group-uploaded').innerText()).not.toContain('消せませんでした');
+      // 置き換えた前のフォルダが消せずに残ったときは、件数と場所(3 件まで)を結果に出す。
+      // 実際に残るのは送り先で開かれているときだけなので、サーバの答えに足して確かめる
+      const uploadUrl = `**/api/groups/${encodeURIComponent(name)}/upload`;
+      const left = [1, 2, 3, 4].map((n) => join(root, `.atlas-old-${n}`));
+      await page.route(uploadUrl, async (route) => {
+        const response = await route.fetch();
+        await route.fulfill({ response, json: { ...((await response.json()) as object), leftovers: left } });
+      });
+      try {
+        await head.getByTestId('group-upload').click();
+        await expect.poll(() => confirm.isVisible()).toBe(true);
+        await confirm.getByRole('button', { name: '写す', exact: true }).click();
+        await expect.poll(() => head.getByTestId('group-uploaded').innerText()).toContain(`置き換えた前のフォルダを 4 件消せませんでした(送り先で開かれているなど)。閉じてから手で消してください: ${left.slice(0, 3).join('、')} ほか 1 件`);
+      } finally {
+        await page.unroute(uploadUrl);
+      }
       // 写した先を開く(エクスプローラーの代わりに記録)
       await head.getByTestId('group-upload-open').click();
       await expect.poll(() => opened).toEqual([dest]);

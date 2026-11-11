@@ -81,6 +81,8 @@ export interface GroupUpload {
   snapshotAt: string | null;
   /** メモを添えたセッションの数 */
   memos: number;
+  /** 置き換えた前のフォルダのうち、消せずに送り先に残ったもの(送り先で開かれていたなど) */
+  leftovers: string[];
 }
 
 /** serve が差し込んだ token。http(s) 以外・無し・プレースホルダ(__ で始まる)なら null */

@@ -5,6 +5,7 @@
 import { execSync, spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { decodeConsole } from './console-text.ts';
 import { FIXTURES_DIR, writeFixtures } from './synthetic-fixtures.ts';
 
 function fail(message: string): never {
@@ -74,14 +75,14 @@ if (process.platform === 'win32') {
   const runBat = (bat: string, input: string): string => {
     // 置き場所をはっきり書く(NoDefaultCurrentDirectoryInExePath が効いている環境では、名前だけだと今のフォルダの bat を探さない)
     const r = spawnSync('cmd.exe', ['/d', '/c', `.\\${bat}`], { cwd: pkg, input, env: { ...env, ATLAS_COPILOT_HOME: join(FIXTURES_DIR, 'copilot-home') }, timeout: 300_000 });
-    // cmd の文言は、読み違えたときに cp932 で出ることがある(utf8 で読むと化けて、文言で見つけられない)ので、どちらでも読む
-    const read = (b: Buffer | null): string => (b == null ? '' : b.toString('utf8').includes('�') ? new TextDecoder('shift_jis').decode(b) : b.toString('utf8'));
-    const stdout = read(r.stdout);
-    const stderr = read(r.stderr);
+    // cmd の文言は cp932 で、中の node の出力は UTF-8 で出る(1 つの出力に混ざる)ので、1 行ずつ合うほうで読む
+    const stdout = decodeConsole(r.stdout);
+    const stderr = decodeConsole(r.stderr);
     const text = `${stdout}${stderr}`;
-    // cmd が bat を読めなかった・読み違えた(chcp 65001 の後に、前の行の途中を実行した)ときの文言(英語版と日本語版)。
-    // 架空の fixture で正しく動けば、エラー出力には何も出ない
-    if (stderr.trim() || /was unexpected at this time|は予期されていません|is not recognized as an internal or external command|内部コマンドまたは外部コマンド/.test(text)) fail(`${bat} を cmd が読めずに止まりました:\n${text}`);
+    // cmd が bat を読めなかった・読み違えた(chcp 65001 の後に、前の行の途中を実行した)ときの文言(英語版と日本語版)
+    if (/was unexpected at this time|は予期されていません|is not recognized as an internal or external command|内部コマンドまたは外部コマンド/.test(text)) fail(`${bat} を cmd が読めずに止まりました:\n${text}`);
+    // 架空の fixture で正しく動けば、エラー出力には何も出ない(出たのは cmd の読み違えとは限らない: node の警告や、中のスクリプトのエラーのこともある)
+    if (stderr.trim()) fail(`${bat} がエラー出力に何かを書きました(正しく動けば何も出ません):\n${stderr}\n--- 標準出力 ---\n${stdout}`);
     // 中の node が正常に終われば、bat も 0 で終わる(node の終了コードを bat の終了コードとして返す)
     if (r.status !== 0) fail(`${bat} が終了コード ${r.status} で終わりました:\n${text}`);
     return stdout;

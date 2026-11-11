@@ -352,6 +352,42 @@ describe('プロジェクトのセッションをまとめて送る', () => {
     expect(existsSync(join(rootA, 'X__work_tool'))).toBe(false);
   });
 
+  it('送る途中で確かめ直しになり、n で選び直してから何も選ばずにやめても、残りはまとめに 1 度だけ出す', async () => {
+    await writeFile(configPath, JSON.stringify({ uploadRoot: rootA, uploadProjects: ['owner/app', 'X:\\work\\tool'] }));
+    const f = fakeIo(['y', 'n', ''], []);
+    const print = f.io.print;
+    f.io.print = (l) => {
+      print(l);
+      if (/owner\/app +2 セッションを送りました/.test(l)) writeFileSync(join(out, 'snapshot', 'session-state', 's4', 'events.jsonl'), '{"id":"s4"}\n{"more":1}\n');
+    };
+    expect(await runUploadProject(f.io, { paths: paths(), configPath })).toBe(false);
+    const text = f.printed.join('\n');
+    expect(text).toContain('== 途中でやめました ==');
+    expect(text).toContain('  やめました。');
+    expect(text.match(/送っていません/g)).toHaveLength(1);
+    expect(text).toContain('残りの 1 プロジェクト(X:\\work\\tool)は送っていません。');
+  });
+
+  it('送れなかったものがあるときも、確かめ直しでやめた残りを「送っていません」と出す(送れなかったものと取り違えない)', async () => {
+    await writeFile(configPath, JSON.stringify({ uploadRoot: rootA, uploadProjects: ['owner/app', 'X:\\work\\tool'] }));
+    // owner/app は送れない(送り先に同じ名前のファイルがある)。その後で 2 つ目のログが変わり、確かめ直しでやめる
+    await writeFile(join(rootA, 'owner_app'), 'ファイル');
+    const f = fakeIo(['y', ''], []);
+    const print = f.io.print;
+    f.io.print = (l) => {
+      print(l);
+      if (/owner\/app +送れませんでした/.test(l)) writeFileSync(join(out, 'snapshot', 'session-state', 's4', 'events.jsonl'), '{"id":"s4"}\n{"more":1}\n');
+    };
+    await expect(runUploadProject(f.io, { paths: paths(), configPath })).rejects.toBeInstanceOf(UploadIncompleteError);
+    const text = f.printed.join('\n');
+    expect(text).toContain('== 送れなかったものがあります ==');
+    expect(text).toContain('  やめました。');
+    expect(text).toContain('残りの 1 プロジェクト(X:\\work\\tool)は送っていません。');
+    expect(text).toMatch(/送れなかったプロジェクト.1 件.: owner\/app/);
+    expect(text.match(/送っていません/g)).toHaveLength(1);
+    expect(existsSync(join(rootA, 'X__work_tool'))).toBe(false);
+  });
+
   it('途中で止まっても(確かめ直すときに、画面で集計し直している最中など)、ここまでに送ったものを知らせる', async () => {
     await writeFile(configPath, JSON.stringify({ uploadRoot: rootA, uploadProjects: ['owner/app', 'X:\\work\\tool'] }));
     const f = fakeIo(['y'], []);
@@ -408,9 +444,15 @@ describe('プロジェクトのセッションをまとめて送る', () => {
     expect(width('🇯🇵🇺🇸')).toBe(4);
     expect(width('👨‍👩‍👧')).toBe(2);
     expect(width('a👨‍👩b')).toBe(4);
+    // 肌の色の修飾は前の絵文字に重なる(前に絵文字が無ければ、それだけで 2)。ソフトハイフン(U+00AD)は端末では 1 桁
+    expect(width('👍🏽')).toBe(2);
+    expect(width('👋🏻a')).toBe(3);
+    expect(width('🏽')).toBe(2);
+    expect(width('a­b')).toBe(3);
+    expect(width(fit('👍🏽👍🏽👍🏽', 5))).toBe(4);
   });
 
-  it('集計し直すとき: 段階の頭が無い行はその文のまま status に出し、console に直に書かれたものも log に通す(警告は注意として窓に出す)', async () => {
+  it('集計し直すとき: 段階の頭が無い行はその文のまま status に出し、console の警告は窓に出さずに経過のファイルに書いて、あったことを 1 行で知らせる', async () => {
     const logPath = join(dir, 'upload.log');
     const statuses: string[] = [];
     const f = fakeIo([], []);
@@ -427,8 +469,76 @@ describe('プロジェクトのセッションをまとめて送る', () => {
     expect(ok).toBe(true);
     expect(console.warn).toBe(warn);
     expect(statuses).toContain('  レポートのテンプレートをビルドしています(初回またはソース更新時のみ)…');
-    expect(f.printed.join('\n')).toContain('  注意: (!) Some chunks are larger than 500 kB');
-    expect(readFileSync(logPath, 'utf8')).toContain('vite v7 building for production...');
+    expect(f.printed.join('\n')).not.toContain('Some chunks');
+    // 知らせるのは「集計しました」の前
+    expect(f.printed.slice(-2)).toEqual([`  集計の途中で警告が 1 件出ました(経過のファイルに書きました): ${logPath}`, '  集計しました。']);
+    const text = readFileSync(logPath, 'utf8');
+    expect(text).toContain('警告: (!) Some chunks are larger than 500 kB\n');
+    expect(text).toContain('vite v7 building for production...');
+  });
+
+  it('集計し直すとき: 窓に出す注意は、ログを写す段階のもの(行の頭が「snapshot: 注意」)だけ。ほかの段階の注意や、文の途中の「注意」は経過のファイルにだけ書く', async () => {
+    const logPath = join(dir, 'upload.log');
+    const f = fakeIo([], []);
+    const ok = await refreshAggregate(f.io, {
+      logPath,
+      run: async (log) => {
+        log('snapshot: 3 セッションを複製(注意 1 件は前回の複製)');
+        log('extract: 注意 読めない行が 2 行ありました');
+        log('export: 注意 記録の中の秘密らしい文字列を 5 件伏せました');
+        log('snapshot: 注意 session-store.db を\n今回は複製できませんでした');
+      },
+    });
+    expect(ok).toBe(true);
+    // 改行のある文は 1 行にして出す
+    expect(f.printed.filter((l) => l.includes('注意'))).toEqual(['  注意: session-store.db を 今回は複製できませんでした']);
+    expect(f.printed.join('\n')).not.toContain('警告');
+    const text = readFileSync(logPath, 'utf8');
+    for (const kept of ['複製(注意 1 件は前回の複製)', 'extract: 注意 読めない行が 2 行ありました', 'export: 注意 記録の中の秘密らしい文字列を 5 件伏せました']) expect(text).toContain(kept);
+  });
+
+  it('集計し直すとき: 標準出力・エラー出力に直に書かれたものと console.debug も、窓に出さずに経過のファイルに書く(終わったら書く口を元に戻す)', async () => {
+    const logPath = join(dir, 'upload.log');
+    const f = fakeIo([], []);
+    const saved = { out: process.stdout.write, err: process.stderr.write, debug: console.debug };
+    let called = 0;
+    const ok = await refreshAggregate(f.io, {
+      logPath,
+      run: async () => {
+        process.stderr.write('(node:1234) ExperimentalWarning: SQLite is an experimental feature\n', () => called++);
+        process.stdout.write(Buffer.from('直に書いた行\n'));
+        console.debug('細かい記録 %d', 7);
+      },
+    });
+    expect(ok).toBe(true);
+    expect(called).toBe(1);
+    expect(process.stdout.write).toBe(saved.out);
+    expect(process.stderr.write).toBe(saved.err);
+    expect(console.debug).toBe(saved.debug);
+    expect(f.printed.join('\n')).not.toMatch(/ExperimentalWarning|直に書いた行|細かい記録/);
+    expect(f.printed).toContain(`  集計の途中で警告が 1 件出ました(経過のファイルに書きました): ${logPath}`);
+    const text = readFileSync(logPath, 'utf8');
+    expect(text).toContain('警告: (node:1234) ExperimentalWarning: SQLite is an experimental feature\n');
+    expect(text).toContain('直に書いた行\n');
+    expect(text).toContain('細かい記録 7\n');
+  });
+
+  it('集計し直すとき: 経過は 1 行ごとにその場でファイルに書く(途中で窓を閉じても残る)。段階の頭が無い文に改行があっても status は 1 行', async () => {
+    const logPath = join(dir, 'upload.log');
+    const statuses: string[] = [];
+    const f = fakeIo([], []);
+    f.io.status = (t) => statuses.push(t);
+    let during = '';
+    await refreshAggregate(f.io, {
+      logPath,
+      run: async (log) => {
+        log('snapshot: 始めます');
+        log('レポートを\r\n作って\tいます');
+        during = readFileSync(logPath, 'utf8');
+      },
+    });
+    expect(during).toBe('snapshot: 始めます\nレポートを\r\n作って\tいます\n');
+    expect(statuses).toEqual(['  ログを写しています...', '  レポートを 作って います']);
   });
 
   it('集計し直すとき: 経過の行はファイルに書いて窓には出さず、段階は status に、注意は窓に出す', async () => {
@@ -467,7 +577,18 @@ describe('プロジェクトのセッションをまとめて送る', () => {
     const text = f.printed.join('\n');
     expect(text).toContain('集計に失敗しました: 画面から実行した集計が動いています');
     expect(text).toContain(`集計の経過: ${logPath}`);
-    expect(readFileSync(logPath, 'utf8')).toMatch(/snapshot: 始めます\n失敗しました: 画面から実行した集計が動いています/);
+    // 経過のファイルには、どこで失敗したか(スタック)も残す。窓には出さない
+    expect(readFileSync(logPath, 'utf8')).toMatch(/snapshot: 始めます\n失敗しました: 画面から実行した集計が動いています\n[\s\S]*\n\s+at /);
+    expect(text).not.toMatch(/\n\s+at /);
+    // 理由に改行があっても、窓には 1 行で出す
+    const g = fakeIo([], []);
+    await refreshAggregate(g.io, {
+      logPath,
+      run: async () => {
+        throw new Error('1 行目\n2 行目');
+      },
+    });
+    expect(g.printed).toContain('  集計に失敗しました: 1 行目 2 行目');
   });
 
   const tick = () => new Promise((r) => setImmediate(r));
@@ -529,6 +650,73 @@ describe('プロジェクトのセッションをまとめて送る', () => {
     // 1 行上に戻り(CSI 1A)、その行を消して(CSI 2K)、行の頭から書き直す(20 桁の窓に収めた同じ文)
     expect(o.written.join('')).toBe(`\x1b[1A\x1b[2K\x1b[1G${fit('  ログを読んでいます...', 19)}`);
     c.close();
+  });
+
+  /** 1 文字ずつ受け取る状態(raw)に切り替えられる端末の偽物。modes は切り替えの履歴 */
+  const fakeTty = () => {
+    const modes: boolean[] = [];
+    const tty = Object.assign(new PassThrough(), { isTTY: true, setRawMode: (m: boolean) => (modes.push(m), tty) });
+    return { tty, modes };
+  };
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  it('黒い窓: 1 文字ずつ受け取れる端末では、尋ねていない間に打ったキーを Enter の有無に関わらず捨てる(次の答えの頭に付かない)。尋ねている間だけ行で受け取る', async () => {
+    const { tty, modes } = fakeTty();
+    const o = fakeOut(true);
+    const c = consoleIo(async () => null, { input: tty, output: o.out, settleMs: 0 });
+    expect(modes).toEqual([true]);
+    c.io.status!('  ログを読んでいます...');
+    o.written.length = 0;
+    // 集計を待つ間: Enter を押していない文字と、Enter まで打った行
+    tty.write('y');
+    tty.write('z\r');
+    await tick();
+    // 端末は打った文字を写さないので、書き直すものは無い
+    expect(o.written).toEqual([]);
+    const a = c.io.ask('> ');
+    // 尋ねた直後に届いた分(手が離せなかった間に打たれていたキー)も捨ててから、行で受け取る状態に戻す
+    tty.write('x');
+    await wait(20);
+    expect(modes).toEqual([true, false]);
+    tty.write('n\r\n');
+    expect(await a).toBe('n');
+    // 答えを受け取ったら、また捨てる状態に戻す
+    expect(modes).toEqual([true, false, true]);
+    tty.write('q\r');
+    await tick();
+    const b = c.io.ask('> ');
+    await wait(20);
+    tty.write('\r\n');
+    expect(await b).toBe('');
+    c.close();
+    // 閉じるときは、端末を元の状態(行で受け取る)に戻す
+    expect(modes.at(-1)).toBe(false);
+  });
+
+  it('黒い窓: 1 文字ずつ受け取る間の Ctrl+C は文字として届くので、端末を元に戻して終了コード 130 で終わる', async () => {
+    const { tty, modes } = fakeTty();
+    const exits: number[] = [];
+    const c = consoleIo(async () => null, { input: tty, output: fakeOut(true).out, settleMs: 0, exit: (code) => exits.push(code) });
+    tty.write('a');
+    await tick();
+    expect(exits).toEqual([]);
+    tty.write('\x03');
+    await tick();
+    expect(exits).toEqual([130]);
+    expect(modes).toEqual([true, false]);
+    c.close();
+  });
+
+  it('黒い窓: 書く口は作ったときのものを使う(集計の間に差し替えられても、質問や結果は窓に出る)。status は改行を空白にして 1 行にする', () => {
+    const o = fakeOut(true);
+    const c = consoleIo(async () => null, { input: new PassThrough(), output: o.out });
+    const stolen: string[] = [];
+    o.out.write = (t: string) => (stolen.push(t), true);
+    c.io.print('結果');
+    c.io.status!('  1 行目\n2 行目');
+    c.close();
+    expect(stolen).toEqual([]);
+    expect(o.written).toEqual(['結果\n', '  1 行目 2 行目']);
   });
 
   it('点検とアップロードは、渡した読む口を閉じずに使い回す(まとめて送るときに DB を開き直さない)', async () => {

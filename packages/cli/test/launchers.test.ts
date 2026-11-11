@@ -5,9 +5,25 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { decodeConsole } from '../../../scripts/console-text.ts';
 
 const ROOT = resolve(import.meta.dirname, '..', '..', '..');
 const BATS = readdirSync(ROOT).filter((f) => f.endsWith('.bat'));
+
+describe('cmd の出力を読む(scripts/console-text.ts)', () => {
+  it('cp932 の行(cmd の文言)と UTF-8 の行(中の node の出力)が混ざっていても、1 行ずつ合うほうで読む', () => {
+    // 「) は予期されていません。」(cp932。「予」の 2 バイト目は 0x5C)
+    const cmd = Buffer.from([0x29, 0x20, 0x82, 0xcd, 0x97, 0x5c, 0x8a, 0xfa, 0x82, 0xb3, 0x82, 0xea, 0x82, 0xc4, 0x82, 0xa2, 0x82, 0xdc, 0x82, 0xb9, 0x82, 0xf1, 0x81, 0x42]);
+    const mixed = Buffer.concat([Buffer.from('== 集計 ==\r\n  最新のログを集計しています。\r\n'), cmd, Buffer.from('\r\n続行するには何かキーを押してください . . .')]);
+    expect(decodeConsole(mixed)).toBe('== 集計 ==\r\n  最新のログを集計しています。\r\n) は予期されていません。\r\n続行するには何かキーを押してください . . .');
+    // 丸ごと cp932 で読むと UTF-8 の行が化け、丸ごと UTF-8 で読むと cmd の文言が化ける(どちらも前の読み方で起きた)
+    expect(new TextDecoder('shift_jis').decode(mixed)).not.toContain('集計');
+    expect(mixed.toString('utf8')).not.toContain('予期されていません');
+    expect(decodeConsole(Buffer.from('abc\n'))).toBe('abc\n');
+    expect(decodeConsole(Buffer.alloc(0))).toBe('');
+    expect(decodeConsole(null)).toBe('');
+  });
+});
 
 describe('*.bat', () => {
   it('リポジトリ直下にあるのは atlas.bat(集計と画面)・setup.bat(初期設定)・upload-project.bat(プロジェクトのセッションを送る)だけ(他の操作は画面とコマンドから)', () => {
