@@ -239,7 +239,7 @@ export interface JobInfo {
 }
 export type JobRequest =
   | { kind: 'refresh' }
-  | { kind: 'judge'; limit: number; backend: JobBackend }
+  | { kind: 'judge'; limit: number }
   | { kind: 'bundle' }
   | { kind: 'export' }
   | { kind: 'turn-bundle' }

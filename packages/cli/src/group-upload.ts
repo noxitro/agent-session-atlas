@@ -40,9 +40,8 @@ export const UPLOAD_MEMO_IMAGES = 'atlas-memo';
 /** グループ・プロジェクトのフォルダの説明(人が読む) */
 export const UPLOAD_README = 'README.md';
 // グループ・プロジェクトのフォルダの索引(UPLOAD_INDEX。プログラムや AI が読む。セッションごとのタスクタグ・題名・日時)と、
-// セッションのフォルダに添える記録(UPLOAD_SESSION_META。1 つのフォルダだけを渡されても分かるように)。
-// 名前は、集計し直す側(core の snapshot / extract)も使うので core に置く
-export { UPLOAD_INDEX, UPLOAD_SESSION_META };
+// セッションのフォルダに添える記録(UPLOAD_SESSION_META。1 つのフォルダだけを渡されても分かるように)の名前は、
+// 集計し直す側(core の snapshot / extract)も使うので core に置いてある
 
 /** 索引とセッションのフォルダに書く、1 セッション分の情報 */
 export interface UploadedSession {
@@ -601,8 +600,9 @@ export async function uploadTarget(p: GroupUploadPaths, target: UploadTarget, ro
         done.push(id);
         progress.done = uploaded;
         report();
-        if (had) {
-          replaced++;
+        if (had) replaced++;
+        // 退けた前のフォルダを消す。前の回が置き換えの途中で止まって残したもの(今回は退けていない)も、新しいフォルダを置けたのでここで消す
+        if (had || existsSync(old)) {
           await rm(old, { recursive: true, force: true }).catch((e: Error) => {
             leftovers.push(old);
             log(`${g.kind} upload: 前のフォルダ ${old} を消せませんでした(${e.message})。手で消してください`);

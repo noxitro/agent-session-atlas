@@ -20,7 +20,7 @@ import { parseCli } from './args.ts';
 import { defaultConfigPath, loadConfig, updateConfig } from './config.ts';
 import { pickFolder } from './folder-picker.ts';
 import { resolvePaths, run as runCli } from './commands.ts';
-import { acquireOutLock, OutBusyError } from './jobs.ts';
+import { acquireOutLock, OutBusyError, releaseOutLock } from './jobs.ts';
 import { safeDirName } from './group-export.ts';
 import {
   checkTarget,
@@ -57,23 +57,31 @@ const day = (iso: string | null): string => (iso ? iso.slice(0, 10) : '日付不
 const ZERO_WIDTH = /[\p{Mn}\p{Me}\p{Cf}]/u;
 /** 端末で絵文字として 2 桁で出る文字(☕ ⭐ ✅ など、全角の範囲の外にもある) */
 const EMOJI = /\p{Emoji_Presentation}/u;
+/** 肌の色の修飾(U+1F3FB〜1F3FF)を後ろに受けて、1 つの絵文字として出る文字(👍 ☝ など) */
+const SKIN_BASE = /\p{Emoji_Modifier_Base}/u;
 
 /**
  * 画面での幅(全角の文字と絵文字は 2、結合する記号などは 0、ほかは 1)。一覧の列をそろえるのと、1 行に収めるのに使う。
  * 後ろに U+FE0F(絵文字で出す指定)が付いた文字(✔️ など)は 2 と数える。
- * 1 つの絵文字として出るもの(ZWJ でつないだ 👨‍👩‍👧、地域指示記号 2 つの国旗 🇯🇵、肌の色の修飾が付いた 👍🏽)は、全体で 2 と数える
+ * 1 つの絵文字として出るもの(ZWJ でつないだ 👨‍👩‍👧、地域指示記号 2 つの国旗 🇯🇵、肌の色の修飾が付いた 👍🏽)は、全体で 2 と数える。
+ * 肌の色の修飾が重なるのは、修飾を受ける絵文字(SKIN_BASE)の後ろだけ(漢字の後ろに置いたものは、それだけで 2)
  */
 export function width(s: string): number {
   let n = 0;
   let prev = 0;
   let joined = false;
   let flagHalf = false;
+  // 直前の見える文字が、肌の色の修飾を受ける絵文字(👍 ☝ など)か
+  let base = false;
   for (const ch of s) {
     const c = ch.codePointAt(0)!;
     // ZWJ の次の文字は、前の絵文字とつながって 1 つに出る
     if (joined) {
       joined = false;
-      if (!ZERO_WIDTH.test(ch)) continue;
+      if (!ZERO_WIDTH.test(ch)) {
+        base = SKIN_BASE.test(ch);
+        continue;
+      }
     }
     if (c === 0x200d) {
       joined = prev === 2;
@@ -88,11 +96,20 @@ export function width(s: string): number {
       flagHalf = true;
       n += 2;
       prev = 2;
+      base = false;
       continue;
     }
     flagHalf = false;
-    // 肌の色の修飾(U+1F3FB〜1F3FF)は、前の絵文字に重なって出る(前に絵文字が無ければ、それだけで 2)
-    if (c >= 0x1f3fb && c <= 0x1f3ff && prev === 2) continue;
+    // 肌の色の修飾(U+1F3FB〜1F3FF)は、修飾を受ける絵文字の後ろでは重なって出る(合わせて 2)。
+    // ほかの文字(漢字など)の後ろや先頭では、それだけで 1 つの絵文字として 2
+    if (c >= 0x1f3fb && c <= 0x1f3ff && base) {
+      base = false;
+      if (prev === 1) {
+        n += 1;
+        prev = 2;
+      }
+      continue;
+    }
     if (c !== 0xad && ZERO_WIDTH.test(ch)) {
       if (c === 0xfe0f && prev === 1) {
         n += 1;
@@ -113,6 +130,7 @@ export function width(s: string): number {
       (c >= 0x20000 && c <= 0x3fffd);
     prev = wide ? 2 : 1;
     n += prev;
+    base = SKIN_BASE.test(ch);
   }
   return n;
 }
@@ -519,11 +537,15 @@ export async function refreshAggregate(io: UploadProjectIo, o: { logPath: string
   };
   // 集計の中で窓に直に書かれるもの(初回のテンプレートのビルドで Vite が console に出す警告、node の警告を stderr に書く core/sqlite.ts など)は、
   // 窓に出さずに経過のファイルに書く。直に書かれると、書き換えている 1 行の途中に混ざり、消す行がずれるため。
-  // 警告とエラー(console.warn/error と stderr)は数えておき、あったことと経過のファイルの場所を最後に 1 行で知らせる
-  let warnings = 0;
+  // 警告とエラー(console.warn/error と stderr)は、あったことと経過のファイルの場所を最後に 1 行で知らせる
+  // (件数は出さない。1 つの警告が何回かに分けて書かれることも、何行にもなることもあり、数が合わないため)
+  let warned = false;
   const warn = (text: string): void => {
-    for (const l of text.split(/\r?\n/)) if (l.trim()) keep(`警告: ${l}`);
-    if (text.trim()) warnings++;
+    for (const l of text.split(/\r?\n/)) {
+      if (!l.trim()) continue;
+      keep(`警告: ${l}`);
+      warned = true;
+    }
   };
   const plain = (args: unknown[]): string => stripVTControlCharacters(format(...args));
   /** process.stdout/stderr の write の代わり(呼び出し側が渡した終わりの合図は呼ぶ) */
@@ -547,23 +569,29 @@ export async function refreshAggregate(io: UploadProjectIo, o: { logPath: string
     process.stdout.write = savedOut;
     process.stderr.write = savedErr;
   };
+  // 差し替えた出力は、集計が終わったところ(成功でも失敗でも)で 1 度だけ戻す。結果を窓に出すのはその後
+  let failure: Error | null = null;
   try {
     await o.run(log);
-    restore();
-    if (warnings) io.print(`  集計の途中で警告が ${warnings} 件出ました(経過のファイルに書きました): ${o.logPath}`);
-    io.print('  集計しました。');
-    return true;
   } catch (e) {
-    restore();
-    keep(`失敗しました: ${(e as Error).message}`);
-    // どこで失敗したかも残す(窓には理由だけを出す)
-    if ((e as Error).stack) keep((e as Error).stack!);
-    io.print(`  集計に失敗しました: ${oneLine((e as Error).message)}`);
-    io.print('  atlas.bat の画面で集計し直している最中なら、終わってからもう一度実行してください。');
-    io.print(`  集計の経過: ${o.logPath}`);
-    return false;
+    failure = e instanceof Error ? e : new Error(String(e));
   } finally {
     restore();
+  }
+  try {
+    if (failure) {
+      keep(`失敗しました: ${failure.message}`);
+      // どこで失敗したかも残す(窓には理由だけを出す)
+      if (failure.stack) keep(failure.stack);
+      io.print(`  集計に失敗しました: ${oneLine(failure.message)}`);
+      io.print('  atlas.bat の画面で集計し直している最中なら、終わってからもう一度実行してください。');
+      io.print(`  集計の経過: ${o.logPath}`);
+      return false;
+    }
+    if (warned) io.print(`  集計の途中で警告が出ました(経過のファイルに書きました): ${o.logPath}`);
+    io.print('  集計しました。');
+    return true;
+  } finally {
     if (fd != null) closeSync(fd);
   }
 }
@@ -628,10 +656,18 @@ export function consoleIo(
       feed!.write(chunk);
       return;
     }
-    // 1 文字ずつ受け取る間は Ctrl+C も文字として届く(端末が止めてくれない)ので、ここで終わる
+    // 1 文字ずつ受け取る間は Ctrl+C も文字として届く(端末が止めてくれない)ので、ここで終わる。
+    // 端末を元に戻し、書き換えていた 1 行を消して、中断したことを 1 行で出す。
+    // 終わり方は、端末が止めたとき(SIGINT)にそろえる: SIGINT を受ける処理があればそれに任せ、無ければ終了コード 130 で終わる。
+    // process.exit は finally を通らないので、要る後始末は 'exit' に掛けておく(このファイルの末尾の起動の部分)
     if (String(chunk).includes('\x03')) {
       setRaw(false);
-      (s.exit ?? process.exit)(130);
+      const had = shown;
+      clear();
+      write(`${had ? '' : '\n'}  中断しました。\n`);
+      if (s.exit) s.exit(130);
+      else if (process.listenerCount('SIGINT') > 0) process.emit('SIGINT', 'SIGINT');
+      else process.exit(130);
     }
   };
   const onEnd = (): void => void feed!.end();
@@ -724,6 +760,9 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   // 置き場は atlas.bat と同じ既定(out/ と atlas-notes/)
   const paths = resolvePaths({ home: null, out: null, judgments: null });
   const c = consoleIo((initial) => pickFolder('プロジェクトのセッションを送る先のフォルダを選んでください', initial));
+  // Ctrl+C で終わるときは finally を通らないので、集計の作業中の印(out/.job.json)はここで外す(自分の印だけを消す。無ければ何もしない)。
+  // 写している途中のフォルダ(.<id>.uploading)は消さない(置き換えの最中かもしれない。次のアップロードが片付け、集計は数えない)
+  process.once('exit', () => releaseOutLock(paths.out));
   try {
     // 集計もここで動かす(別のプログラムにすると、集計を待つ間に押した Enter が、送る操作の最初の答えになるため)
     if (!(await refreshAggregate(c.io, { logPath: UPLOAD_LOG, run: (log) => runCli(parseCli(['all']), log) }))) process.exitCode = 1;

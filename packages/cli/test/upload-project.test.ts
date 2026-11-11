@@ -452,6 +452,11 @@ describe('プロジェクトのセッションをまとめて送る', () => {
     expect(width('🏽')).toBe(2);
     expect(width('a­b')).toBe(3);
     expect(width(fit('👍🏽👍🏽👍🏽', 5))).toBe(4);
+    // 修飾を受けない文字(漢字・英字)の後ろの修飾は、重ならずにそれだけで 2。修飾を受ける 1 桁の記号(☝)の後ろなら、合わせて 2
+    expect(width('漢🏽')).toBe(4);
+    expect(width('a🏽')).toBe(3);
+    expect(width('☝🏽')).toBe(2);
+    expect(width('👍🏽🏽')).toBe(4);
   });
 
   it('集計し直すとき: 段階の頭が無い行はその文のまま status に出し、console の警告は窓に出さずに経過のファイルに書いて、あったことを 1 行で知らせる', async () => {
@@ -473,7 +478,7 @@ describe('プロジェクトのセッションをまとめて送る', () => {
     expect(statuses).toContain('  レポートのテンプレートをビルドしています(初回またはソース更新時のみ)…');
     expect(f.printed.join('\n')).not.toContain('Some chunks');
     // 知らせるのは「集計しました」の前
-    expect(f.printed.slice(-2)).toEqual([`  集計の途中で警告が 1 件出ました(経過のファイルに書きました): ${logPath}`, '  集計しました。']);
+    expect(f.printed.slice(-2)).toEqual([`  集計の途中で警告が出ました(経過のファイルに書きました): ${logPath}`, '  集計しました。']);
     const text = readFileSync(logPath, 'utf8');
     expect(text).toContain('警告: (!) Some chunks are larger than 500 kB\n');
     expect(text).toContain('vite v7 building for production...');
@@ -518,7 +523,7 @@ describe('プロジェクトのセッションをまとめて送る', () => {
     expect(process.stderr.write).toBe(saved.err);
     expect(console.debug).toBe(saved.debug);
     expect(f.printed.join('\n')).not.toMatch(/ExperimentalWarning|直に書いた行|細かい記録/);
-    expect(f.printed).toContain(`  集計の途中で警告が 1 件出ました(経過のファイルに書きました): ${logPath}`);
+    expect(f.printed).toContain(`  集計の途中で警告が出ました(経過のファイルに書きました): ${logPath}`);
     const text = readFileSync(logPath, 'utf8');
     expect(text).toContain('警告: (node:1234) ExperimentalWarning: SQLite is an experimental feature\n');
     expect(text).toContain('直に書いた行\n');
@@ -698,14 +703,20 @@ describe('プロジェクトのセッションをまとめて送る', () => {
   it('黒い窓: 1 文字ずつ受け取る間の Ctrl+C は文字として届くので、端末を元に戻して終了コード 130 で終わる', async () => {
     const { tty, modes } = fakeTty();
     const exits: number[] = [];
-    const c = consoleIo(async () => null, { input: tty, output: fakeOut(true).out, settleMs: 0, exit: (code) => exits.push(code) });
+    const o = fakeOut(true);
+    const c = consoleIo(async () => null, { input: tty, output: o.out, settleMs: 0, exit: (code) => exits.push(code) });
+    c.io.status!('  写しています...');
     tty.write('a');
     await tick();
     expect(exits).toEqual([]);
+    o.written.length = 0;
     tty.write('\x03');
     await tick();
     expect(exits).toEqual([130]);
     expect(modes).toEqual([true, false]);
+    // 書き換えていた 1 行を消してから、中断したことを 1 行で出す
+    expect(o.written.join('')).toMatch(/\x1b\[2K[^]*  中断しました。\n$/);
+    expect(o.written.join('')).not.toContain('写しています');
     c.close();
   });
 

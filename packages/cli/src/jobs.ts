@@ -168,7 +168,8 @@ const KEYS: Record<JobKind, string[]> = {
 
 /**
  * POST /api/jobs の本文を検証する(純関数)。kind は列挙、limit は 0〜500 の整数(数値で必須。画面の確認で決めた件数だけ受ける)、
- * backend は copilot-cli、id はファイル名に使える形で、knownId(sessions.json にあるか)を満たすこと。知らないキーは 400
+ * backend は省ける(画面から始める判定は copilot-cli だけなので、無ければそれ。書くなら copilot-cli)、id はファイル名に使える形で、
+ * knownId(sessions.json にあるか)を満たすこと。知らないキーは 400
  */
 export function parseJobRequest(body: Record<string, unknown>, knownId: (id: string) => boolean): JobRequest {
   const kind = body.kind;
@@ -182,7 +183,8 @@ export function parseJobRequest(body: Record<string, unknown>, knownId: (id: str
     return { kind: 'turn-judge', limit };
   }
   if (kind === 'judge') {
-    const { limit, backend } = body;
+    const { limit } = body;
+    const backend = body.backend === undefined ? JOB_BACKENDS[0] : body.backend;
     if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 0 || limit > JOB_LIMIT_MAX) throw new JobError(400, `limit には 0〜${JOB_LIMIT_MAX} の整数を指定してください(判定する件数の上限)`);
     if (typeof backend !== 'string' || !(JOB_BACKENDS as readonly string[]).includes(backend)) throw new JobError(400, `backend は ${JOB_BACKENDS.join(' / ')} です(従量課金の anthropic は CLI からだけ使えます)`);
     return { kind: 'judge', limit, backend: backend as JobBackend };

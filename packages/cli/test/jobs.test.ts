@@ -207,7 +207,8 @@ describe('serve の jobs と記録の表示(Phase 14)', () => {
       [{ kind: 'judge', limit: 501, backend: 'copilot-cli' }, 400],
       [{ kind: 'judge', limit: 1.5, backend: 'copilot-cli' }, 400],
       [{ kind: 'judge', limit: '10', backend: 'copilot-cli' }, 400],
-      [{ kind: 'judge', limit: 10 }, 400],
+      [{ kind: 'judge', limit: 10, backend: null }, 400],
+      [{ kind: 'judge', limit: 10, backend: '' }, 400],
       [{ kind: 'judge', limit: 10, backend: 'anthropic' }, 400],
       [{ kind: 'judge', limit: 10, backend: 'copilot-cli; calc' }, 400],
       [{ kind: 'judge', limit: 10, backend: 'copilot-cli', only: 's1' }, 400],
@@ -225,6 +226,8 @@ describe('serve の jobs と記録の表示(Phase 14)', () => {
     expect(fulls).toEqual([]);
     // 0 件(画面から 0 は送らないが、CLI の --limit 0 と同じく受ける)と上限ちょうど
     expect(parseJobRequest({ kind: 'judge', limit: 0, backend: 'copilot-cli' }, () => true)).toEqual({ kind: 'judge', limit: 0, backend: 'copilot-cli' });
+    // backend は省ける(画面は送らない)。無ければ copilot-cli
+    expect(parseJobRequest({ kind: 'judge', limit: 10 }, () => true)).toEqual({ kind: 'judge', limit: 10, backend: 'copilot-cli' });
     expect(parseJobRequest({ kind: 'judge', limit: 500, backend: 'copilot-cli' }, () => true)).toEqual({ kind: 'judge', limit: 500, backend: 'copilot-cli' });
   });
 

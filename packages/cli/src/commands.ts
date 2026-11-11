@@ -174,6 +174,7 @@ export async function runSnapshot(p: Paths, since: string | null, log: Log, all 
   for (const [name, d] of Object.entries(m.databases)) if (!d.copied && d.error) log(`snapshot: 注意 ${name} を今回は複製できませんでした(${d.bytes ? '前回の複製を使います' : '前回の複製も無いので、このファイルの内容は使いません'}): ${d.error}`);
   if (m.sessionDbErrors?.length) log(`snapshot: 注意 session.db を複製できなかったセッション ${m.sessionDbErrors.length} 件(${m.sessionDbErrors.slice(0, 3).join(' / ')})`);
   const x = m.extras;
+  if (x?.recovered?.length) log(`snapshot: 注意 アップロードの置き換えが途中で止まっていたセッション ${x.recovered.length} 件は、作業用のフォルダから写しました(${x.recovered.slice(0, 3).map((r) => r.path).join(' / ')})`);
   if (x) {
     const top = Object.entries(x.topLevel).map(([k, v]) => `${k} ${v.files}`).join(' / ');
     log(`snapshot: 付随物 セッションフォルダ ${x.sessionFiles} ファイル(${mb(x.sessionBytes)})${top ? `、直下 ${top}` : ''}、写さなかったもの ${x.skipped.length} 件(${mb(x.skipped.reduce((a, s) => a + s.bytes, 0))}。manifest の extras.skipped)`);

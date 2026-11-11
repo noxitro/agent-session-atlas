@@ -101,7 +101,7 @@
   async function runJudge(e: SubmitEvent): Promise<void> {
     e.preventDefault();
     if (!limitOk || count < 1 || jobs.busy) return;
-    const req = target === 'turns' ? { kind: 'turn-judge' as const, limit: limit as number } : { kind: 'judge' as const, limit: limit as number, backend: 'copilot-cli' as const };
+    const req = target === 'turns' ? { kind: 'turn-judge' as const, limit: limit as number } : { kind: 'judge' as const, limit: limit as number };
     if (await jobs.run(req)) dlg?.close();
     else runError = jobs.error;
   }
