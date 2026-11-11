@@ -88,7 +88,7 @@ npm run atlas -- snapshot --snapshot-all         # rewind-snapshots / 一覧に�
 ### スキルの下書き(`atlas skill-draft`、任意)
 
 ```
-npm run atlas -- skill-draft <番号>            # out/insights.json の候補の番号。--backend copilot-cli(既定)/ opencode / anthropic、--model、--timeout
+npm run atlas -- skill-draft <番号>            # out/insights.json の候補の番号。--backend copilot-cli(既定)/ anthropic、--model、--timeout
 ```
 
-候補の繰り返し回数・代表の依頼文・ツールの並びを LLM に渡し、SKILL.md の形の下書きを `out/skill-drafts/<番号>-<名前>.md` に書きます。**明示したときだけ動き、`build` / `export` / `all` では呼びません**。費用は 1 回の実行で判定 1 件と同じです。`copilot-cli` はモデル 1 リクエスト相当の AI クレジット、`opencode` は選んだモデルの料金、`anthropic` は Anthropic API の従量課金(`ANTHROPIC_API_KEY` が必要)を消費します。`copilot-cli` は判定と同じ安全策(`--no-custom-instructions`、`shell` / `write` / `url` の拒否、`--add-dir` なし)で動きます。`opencode` にはツールを拒否する引数を渡していないので、作業フォルダが空であることだけが歯止めです(判定と同じ)。下書きの作業フォルダは判定と同じ接頭辞にしており、次回の集計では「(atlas の判定)」に分類されて候補に戻りません。テストは偽の CLI(`ATLAS_COPILOT_BIN`、`ATLAS_OPENCODE_BIN`)と fetch の差し替えで行い、本物は呼びません。伏せ字版の `out/` では拒否します(本文が無いため)。下書きは案なので、使う前に読んで直してください。
+候補の繰り返し回数・代表の依頼文・ツールの並びを LLM に渡し、SKILL.md の形の下書きを `out/skill-drafts/<番号>-<名前>.md` に書きます。**明示したときだけ動き、`build` / `export` / `all` では呼びません**。費用は 1 回の実行で判定 1 件と同じです。`copilot-cli` はモデル 1 リクエスト相当の AI クレジット、`anthropic` は Anthropic API の従量課金(`ANTHROPIC_API_KEY` が必要)を消費します。`copilot-cli` は判定と同じ安全策(`--no-custom-instructions`、`shell` / `write` / `url` の拒否、`--add-dir` なし)で動きます。下書きの作業フォルダは判定と同じ接頭辞にしており、次回の集計では「(atlas の判定)」に分類されて候補に戻りません。テストは偽の CLI(`ATLAS_COPILOT_BIN`)と fetch の差し替えで行い、本物は呼びません。伏せ字版の `out/` では拒否します(本文が無いため)。下書きは案なので、使う前に読んで直してください。

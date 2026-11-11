@@ -78,8 +78,8 @@ describe('parseCli', () => {
       judge: { action: 'run', backend: 'copilot-cli', model: null, limit: null, only: null, concurrency: 1, force: false, allowTools: true, timeoutSec: 600 },
     });
     expect(
-      parseCli(['judge', 'run', '--backend', 'opencode', '--model', 'x/y', '--limit', '3', '--only', 'a, b', '--concurrency', '2', '--force', '--no-allow-tools', '--timeout', '30']).judge,
-    ).toMatchObject({ backend: 'opencode', model: 'x/y', limit: 3, only: ['a', 'b'], concurrency: 2, force: true, allowTools: false, timeoutSec: 30 });
+      parseCli(['judge', 'run', '--backend', 'anthropic', '--model', 'x/y', '--limit', '3', '--only', 'a, b', '--concurrency', '2', '--force', '--no-allow-tools', '--timeout', '30']).judge,
+    ).toMatchObject({ backend: 'anthropic', model: 'x/y', limit: 3, only: ['a', 'b'], concurrency: 2, force: true, allowTools: false, timeoutSec: 30 });
     expect(parseCli(['judge', 'import', 'r.md']).judge).toMatchObject({ action: 'import', file: 'r.md' });
     expect(() => parseCli(['judge'])).toThrow(/run か import/);
     expect(() => parseCli(['judge', 'import'])).toThrow(/ファイル/);

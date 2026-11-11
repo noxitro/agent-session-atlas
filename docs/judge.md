@@ -58,7 +58,7 @@ npm run atlas -- export                   # レポートに合成(画面の「�
 
 ## 2b. このツールの中で判定する(画面から、またはコマンドで)
 
-`atlas.bat` から開いた画面の「判定する…」を押し、判定するものに「工数」、判定の方法に「このツールが判定する」を選ぶと、件数の上限(既定 10)と判定に使うもの(GitHub Copilot CLI の `copilot -p` か `opencode`)を選ぶ確認が出ます。「〜件を判定する」を押すと、バンドルを作り直し、未判定のセッションを上限まで判定して、レポートを作り直します([screen.md の「画面からの操作」](screen.md#画面からの操作))。従量課金の `anthropic` は画面からは選べません(コマンドの `--backend anthropic` だけ)。コマンドでは次のとおりです。
+`atlas.bat` から開いた画面の「判定する…」を押し、判定するものに「工数」、判定の方法に「このツールが判定する」を選ぶと、件数の上限(既定 10)を決める確認が出ます(判定には GitHub Copilot CLI の `copilot -p` を使います)。「〜件を判定する」を押すと、バンドルを作り直し、未判定のセッションを上限まで判定して、レポートを作り直します([screen.md の「画面からの操作」](screen.md#画面からの操作))。従量課金の `anthropic` とモデルの指定は画面からはできません(コマンドの `--backend anthropic` と `--model` だけ。画面からの判定は Copilot に設定してある既定のモデルを使います)。コマンドでは次のとおりです。
 
 ```
 npm run atlas:judge                               # bundle → judge run → export(画面の「工数を判定する」と同じ。伏せ字版は build)
@@ -66,6 +66,7 @@ npm run atlas -- judge run --limit 5              # まず 5 件だけ試す
 npm run atlas -- judge run --only <id>,<id>       # 指定したセッションだけ
 npm run atlas -- judge run --force                # 判定済みも判定し直す
 npm run atlas -- judge run --model <モデル名>      # 判定に使うモデルを指定
+npm run atlas -- judge run --model anthropic/claude-haiku-5-5   # Copilot に保存した自分のモデル(BYOK)を使う
 ```
 
 - 判定済みのセッションは飛ばすので、途中で止めても続きから再開できます。失敗したセッションは `judgments.json` の `failures` に記録し、次へ進みます(最後に終了コード 1)。
@@ -74,11 +75,10 @@ npm run atlas -- judge run --model <モデル名>      # 判定に使うモデ�
 | バックエンド | 中身 | 費用 |
 |---|---|---|
 | `copilot-cli`(既定) | `copilot -p` を空の作業フォルダで起動し、パケットをプロンプトに埋め込んで渡す | GitHub Copilot のサブスクリプション内で AI クレジット(旧課金では premium request)を消費します(1 セッション 1 回以上) |
-| `opencode` | `opencode run --format json` | 選んだモデル次第(無料モデルなら無料)。画面から選ぶと opencode に設定してある既定のモデルを、コマンドでは `--model` で指定したモデルを使います。**無料モデルはデータの扱いがモデルごとに違います**([opencode Zen の文書](https://opencode.ai/docs/zen/)): `opencode/glm-5.3-flash-free` と `opencode/deepseek-v4.1-flash-free` は「保持しない・学習に使わない」とされています。一方、NVIDIA の無料モデル(`nemotron` を含む名前)は「試用だけ。個人情報や機密は送らないで」とされ、Big Pickle などは無料期間中に学習に使われることがあります。パケットには依頼文やパスがそのまま入るので、保持しないモデルを選んでください(この 2 つでの実走はまだ確認していません。以前 `--model openrouter/nvidia/nemotron-3-ultra-550b-a55b:free` で実走を確認しました。1 件 20〜30 秒)。opencode の既定モデルがカタログから消えていると `UnknownError` になるので、その場合は `opencode models` で残っている無料モデルを `--model` に指定してください |
 | `anthropic` | Anthropic Messages API を直接呼ぶ(既定モデル `claude-sonnet-5-5`、環境変数 `ANTHROPIC_API_KEY` が必要) | **従量課金**です。明示的に `--backend anthropic` を指定したときだけ使います |
 
-- `copilot-cli` は `--add-dir` を使いません(そのフォルダの `.github/skills` / `agents` を信頼設定として読むため、他セッションの本文を含むバンドルが指示の注入口になりうるからです)。ユーザーの AGENTS.md 等も読ませません(`--no-custom-instructions`)。`--allow-all-tools` は既定で付けます(付けたくないときは `--no-allow-tools`)が、判定にツールは要らないので、シェル・ファイルの作成と変更・URL アクセス(`shell` / `write` / `url`)は常に `--deny-tool` で拒否します(`copilot help permissions` によれば拒否は `--allow-all-tools` より優先されます。パケット本文に「コマンドを実行せよ」のような文が含まれていても動かないようにするためです。実走での確認はクレジット超過のためまだです)。MCP のツールはこの 3 種類のどれにも当たらない(`copilot help permissions` で別の種類 `<サーバー名>(ツール名)`)ので、モデルに見せるツールを `--available-tools=view` に絞り(作業フォルダは空で、copilot は既定でその外のパスを読ませません)、組み込みの MCP を `--disable-builtin-mcps` で止め、`copilot mcp list --json`(LLM は呼びません)で得た各サーバーを `--disable-mcp-server` と `--deny-tool <サーバー名>` で止めます。一覧を取れなかったときはサーバーごとの指定を付けずに続け、その旨を判定の notes に残します(引数が copilot 1.0.105 に受け付けられることは確認済み、実際にツールが見えなくなることの実走確認はまだです)。プロンプト中のパケットの境界には依頼ごとの乱数を付け、本文側で境界を偽装できないようにしています。
-- `opencode` はツールを既定で許可するので([公式文書](https://opencode.ai/docs/permissions/))、環境変数 `OPENCODE_CONFIG_CONTENT`(設定の中で後から効く上書き)で全ツールを拒否して起動します(`"*": "deny"` と主なツール名)。利用者の設定にある許可より後ろに足されて勝つことを `opencode debug agent build`(1.19.3)で確認しました。`skill-draft` も同じ制限で動きます。
+- `copilot-cli` は `--add-dir` を使いません(そのフォルダの `.github/skills` / `agents` を信頼設定として読むため、他セッションの本文を含むバンドルが指示の注入口になりうるからです)。ユーザーの AGENTS.md 等も読ませません(`--no-custom-instructions`)。`--allow-all-tools` は既定で付けます(付けたくないときは `--no-allow-tools`)が、判定にツールは要らないので、シェル・ファイルの作成と変更・URL アクセス(`shell` / `write` / `url`)は常に `--deny-tool` で拒否します(`copilot help permissions` によれば拒否は `--allow-all-tools` より優先されます。パケット本文に「コマンドを実行せよ」のような文が含まれていても動かないようにするためです)。MCP のツールはこの 3 種類のどれにも当たらない(`copilot help permissions` で別の種類 `<サーバー名>(ツール名)`)ので、モデルに見せるツールを `--available-tools=view` に絞り(作業フォルダは空で、copilot は既定でその外のパスを読ませません)、組み込みの MCP を `--disable-builtin-mcps` で止め、`copilot mcp list --json`(LLM は呼びません)で得た各サーバーを `--disable-mcp-server` と `--deny-tool <サーバー名>` で止めます。一覧を取れなかったときはサーバーごとの指定を付けずに続け、その旨を判定の notes に残します(copilot 1.0.109 での実走を 2026-11-11 に確認しました。架空のデータで、判定の間にツールの呼び出しは 0 回でした。同じ引数で起動してモデルに尋ねると、使えるツールは `view` だけと答え、作業フォルダの外のファイルを `view` で読もうとすると拒否されました)。プロンプト中のパケットの境界には依頼ごとの乱数を付け、本文側で境界を偽装できないようにしています。
+- **Copilot に保存した自分のモデル(BYOK)を使う**: Copilot CLI の `/model` で自分の API キーのモデルを保存してあれば(`~/.copilot/providers.json`。`copilot help providers`)、`--model <プロバイダー名>/<モデル ID>` で指定できます(例: `--model anthropic/claude-haiku-5-5`)。モデル ID だけを書くと `Model "…" is not available` で失敗します(copilot 1.0.109 で確認)。このとき GitHub の AI クレジットは使わず、**提供元の従量課金**になります(工数 2 件の判定で入力 1.3 万・出力 0.3 万トークンほどでした)。`turns run --model` と `npm run atlas:judge -- --model` でも同じです。
 - 判定自体の使用量は `copilot` の `--usage-output-file` から集計し、`judgments.json` の `judge.usage` に残します。
 - `copilot` の場所は環境変数 `ATLAS_COPILOT_BIN` で指定できます(テストでは偽の copilot `fixtures/fake-copilot.mjs` に差し替えています)。
 - 月間の AI クレジット(旧課金では premium request)を使い切っていると、どのモデルを指定しても `quota_exceeded HTTP 402` で失敗します(消費はありません)。`judgments.json` の `failures` に残るので、翌月や別のバックエンドで `judge run` を再実行すれば再試行されます。
@@ -113,7 +113,7 @@ npm run atlas -- export                       # レポートに反映する
 
 ### GitHub Copilot CLI で回す
 
-「判定する…」で「依頼ごとの採用」と「このツールが判定する」を選び、件数(依頼の数の上限。既定 60)を決めて実行します。依頼を最大 6 件ずつまとめて `copilot -p` を 1 回呼ぶので、AI クレジットは依頼 6 件ほどにつき 1 回分です。安全策(ツールの拒否、MCP の停止、空の作業フォルダ)は工数の判定と同じです。opencode と従量課金の API は、依頼ごとの判定には使いません。
+「判定する…」で「依頼ごとの採用」と「このツールが判定する」を選び、件数(依頼の数の上限。既定 60)を決めて実行します。依頼を最大 6 件ずつまとめて `copilot -p` を 1 回呼ぶので、AI クレジットは依頼 6 件ほどにつき 1 回分です。安全策(ツールの拒否、MCP の停止、空の作業フォルダ)は工数の判定と同じです。`--backend anthropic`(従量課金の API を直接呼ぶ)は、依頼ごとの判定には使えません。件数の上限は依頼のまとまりごとに確かめるので、上限を少し超えて判定することがあります(上限 12 で 14 件など)。
 
 ```
 npm run atlas:judge -- --turns --limit 60     # turns bundle --unjudged → turns run → export

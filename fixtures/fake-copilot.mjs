@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 // テスト用の「偽の copilot」。LLM は呼ばない。
-// - 受け取った引数・作業ディレクトリ・環境変数 OPENCODE_CONFIG_CONTENT(偽の opencode としても使う)を
-//   環境変数 FAKE_COPILOT_LOG のファイルに 1 行 JSON で追記する
+// - 受け取った引数・作業ディレクトリを、環境変数 FAKE_COPILOT_LOG のファイルに 1 行 JSON で追記する
 // - プロンプト(-p の値)から sessionId を読み、その sessionId の固定の判定(このファイル内に持つ)を標準出力に流す
 // - --usage-output-file があれば、そこに使用量の JSON を書く
 // - 環境変数 FAKE_COPILOT_FAIL_ID のセッションは終了コード 3 で失敗する
@@ -24,8 +23,7 @@ const m = /sessionId は "([^"]+)"/.exec(prompt);
 const sessionId = m ? m[1] : 'unknown';
 
 if (process.env.FAKE_COPILOT_LOG) {
-  const opencodeConfig = process.env.OPENCODE_CONFIG_CONTENT ?? null;
-  appendFileSync(process.env.FAKE_COPILOT_LOG, `${JSON.stringify({ argv, cwd: process.cwd(), cwdEntries: readdirSync(process.cwd()), sessionId, opencodeConfig })}\n`);
+  appendFileSync(process.env.FAKE_COPILOT_LOG, `${JSON.stringify({ argv, cwd: process.cwd(), cwdEntries: readdirSync(process.cwd()), sessionId })}\n`);
 }
 
 if (process.env.FAKE_COPILOT_DELAY_MS) await new Promise((r) => setTimeout(r, Number(process.env.FAKE_COPILOT_DELAY_MS)));

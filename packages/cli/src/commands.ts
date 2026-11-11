@@ -38,7 +38,6 @@ import {
   draftSkill,
   type DraftCandidate,
   importJudgments,
-  opencodeBackend,
   readJudgments,
   buildTurnBundle,
   importTurnJudgmentsText,
@@ -482,8 +481,6 @@ export function makeBackend(j: JudgeCliOptions): JudgeBackend {
   switch (j.backend) {
     case 'copilot-cli':
       return copilotCliBackend({ model: j.model, allowTools: j.allowTools, timeoutMs });
-    case 'opencode':
-      return opencodeBackend({ model: j.model, timeoutMs });
     case 'anthropic':
       return anthropicBackend({ model: j.model, timeoutMs });
   }

@@ -43,7 +43,7 @@
     return `${LABEL[j.kind]}を止めました。`;
   });
   const target = (j: JobInfo): string =>
-    j.kind === 'judge' ? `最大 ${j.target.limit} 件、${j.target.backend === 'opencode' ? 'opencode' : 'copilot -p'}` : j.kind === 'turn-judge' ? `最大 ${j.target.limit} 依頼、copilot -p` : '';
+    j.kind === 'judge' ? `最大 ${j.target.limit} 件、copilot -p` : j.kind === 'turn-judge' ? `最大 ${j.target.limit} 依頼、copilot -p` : '';
 </script>
 
 <!-- 読み上げは状態が変わったときの 1 文だけ(経過の秒は毎秒変わるので live 領域に入れない)。live 領域は常に置き、文だけ差し替える -->

@@ -132,11 +132,11 @@ describe('serve の jobs と記録の表示(Phase 14)', () => {
     expect(await current()).toMatchObject({ state: 'done', exitCode: 0, log: ['一行目', '二行目の続き', '警告'] });
     expect(existsSync(join(out, JOB_LOCK_FILE))).toBe(false);
 
-    expect((await post({ kind: 'judge', limit: 3, backend: 'opencode' })).status).toBe(202);
-    expect(calls[1].args).toEqual([JUDGE_FLOW_TS, '--limit', '3', '--backend', 'opencode', '--out', out, '--notes-dir', notes]);
+    expect((await post({ kind: 'judge', limit: 3, backend: 'copilot-cli' })).status).toBe(202);
+    expect(calls[1].args).toEqual([JUDGE_FLOW_TS, '--limit', '3', '--backend', 'copilot-cli', '--out', out, '--notes-dir', notes]);
     children[1].exit(1);
     await until(async () => (await current()).state !== 'running');
-    expect(await current()).toMatchObject({ kind: 'judge', state: 'failed', exitCode: 1, target: { limit: 3, backend: 'opencode' } });
+    expect(await current()).toMatchObject({ kind: 'judge', state: 'failed', exitCode: 1, target: { limit: 3, backend: 'copilot-cli' } });
   });
 
   it('実行中の印: 他のプロセスの印があれば all が止まる。プロセスが無い古い印・自分の印・ジョブの子プロセスでは止まらない', async () => {
@@ -225,7 +225,7 @@ describe('serve の jobs と記録の表示(Phase 14)', () => {
     expect(fulls).toEqual([]);
     // 0 件(画面から 0 は送らないが、CLI の --limit 0 と同じく受ける)と上限ちょうど
     expect(parseJobRequest({ kind: 'judge', limit: 0, backend: 'copilot-cli' }, () => true)).toEqual({ kind: 'judge', limit: 0, backend: 'copilot-cli' });
-    expect(parseJobRequest({ kind: 'judge', limit: 500, backend: 'opencode' }, () => true)).toEqual({ kind: 'judge', limit: 500, backend: 'opencode' });
+    expect(parseJobRequest({ kind: 'judge', limit: 500, backend: 'copilot-cli' }, () => true)).toEqual({ kind: 'judge', limit: 500, backend: 'copilot-cli' });
   });
 
   it('チャットでの判定: 添付ファイルの作成と反映は固定の引数で起動し、一覧・本文・取り込みは manifest と judgments.json に従う', async () => {

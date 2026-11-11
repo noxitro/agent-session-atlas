@@ -1,13 +1,12 @@
 // Phase 12: スキル化の候補から SKILL.md の下書きを LLM に作らせる(任意。明示したときだけ動く)。
-// 判定と同じバックエンド(copilot-cli / opencode / anthropic)の経路を使う。copilot-cli は空の作業ディレクトリ、
-// --no-custom-instructions、shell / write / url と MCP の拒否まで判定と同じ。opencode も判定と同じく全ツールを拒否する。
+// 判定と同じバックエンド(copilot-cli / anthropic)の経路を使う。copilot-cli は空の作業ディレクトリ、
+// --no-custom-instructions、shell / write / url と MCP の拒否まで判定と同じ。
 // クレジットや従量課金を消費しうるので既定の処理では呼ばず、テストは偽の CLI と fetch の差し替えで行う。
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { anthropicMessage, type AnthropicOptions } from './backends/anthropic.ts';
 import { copilotArgs, copilotMcpServers } from './backends/copilot-cli.ts';
-import { opencodeArgs, opencodeEnv } from './backends/opencode.ts';
 import { parseAgentJsonl } from './backends/output.ts';
 import { commandLineLength, MAX_COMMAND_LINE, resolveCommand, runProcess, tail, type ResolvedCommand } from './backends/proc.ts';
 
@@ -43,7 +42,7 @@ export interface SkillDraftResult {
   notes: string[];
 }
 
-export type DraftBackend = 'copilot-cli' | 'opencode' | 'anthropic';
+export type DraftBackend = 'copilot-cli' | 'anthropic';
 
 export interface SkillDraftOptions {
   backend?: DraftBackend;
@@ -51,7 +50,6 @@ export interface SkillDraftOptions {
   timeoutMs?: number;
   /** テスト用 */
   copilotBin?: string | null;
-  opencodeBin?: string | null;
   anthropic?: Pick<AnthropicOptions, 'apiKey' | 'fetchImpl' | 'baseUrl'>;
 }
 
@@ -99,30 +97,12 @@ async function draftWithCopilot(prompt: string, o: SkillDraftOptions): Promise<S
   }
 }
 
-async function draftWithOpencode(prompt: string, o: SkillDraftOptions): Promise<SkillDraftResult> {
-  const cmd = resolveCommand(o.opencodeBin ?? process.env.ATLAS_OPENCODE_BIN ?? 'opencode');
-  const args = opencodeArgs(prompt, { model: o.model });
-  checkLength(cmd, args);
-  const work = await mkdtemp(join(tmpdir(), WORK_DIR_PREFIX));
-  try {
-    const r = await runProcess(cmd, args, { cwd: work, timeoutMs: o.timeoutMs ?? 600_000, env: opencodeEnv() });
-    if (r.timedOut) throw new Error('opencode が時間内に終わりませんでした');
-    if (r.code !== 0) throw new Error(`opencode が終了コード ${r.code} で失敗しました: ${tail(r.stderr || r.stdout)}`);
-    const out = parseAgentJsonl(r.stdout);
-    return { markdown: requireText(out.texts, 'opencode'), usage: out.usage, notes: out.usage ? [] : ['opencode の出力にトークン数がありませんでした'] };
-  } finally {
-    await rm(work, { recursive: true, force: true }).catch(() => {});
-  }
-}
-
 /** 選んだバックエンドで下書きを作る(クレジットや従量課金を消費しうる。明示されたときだけ呼ぶ) */
 export async function draftSkill(c: DraftCandidate, index: number, o: SkillDraftOptions = {}): Promise<SkillDraftResult> {
   const prompt = buildSkillDraftPrompt(c, index);
   switch (o.backend ?? 'copilot-cli') {
     case 'copilot-cli':
       return draftWithCopilot(prompt, o);
-    case 'opencode':
-      return draftWithOpencode(prompt, o);
     case 'anthropic': {
       const r = await anthropicMessage(prompt, { model: o.model, timeoutMs: o.timeoutMs, ...o.anthropic });
       return { markdown: requireText(r.texts, 'Anthropic API'), usage: r.usage, notes: r.notes };

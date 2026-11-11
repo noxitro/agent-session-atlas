@@ -73,7 +73,7 @@ agent-session-atlas/
   packages/core/            抽出(snapshot → parse → normalize)と集計(metrics)
   packages/cli/             atlas コマンド: snapshot | extract | metrics | bundle | judge | build | export | all
   packages/report/          Vite + Svelte 5 → dist/atlas.html(単一ファイル、集計+要約のみ埋め込み)、詳細ページ、セッション記録(transcript.ts)
-  packages/judge/           評価バンドル生成、judgments.json スキーマ、バックエンド(copilot-cli / opencode / anthropic)
+  packages/judge/           評価バンドル生成、judgments.json スキーマ、バックエンド(copilot-cli / anthropic)
   fixtures/                 テスト用のコード(偽の copilot)だけ。サンプルデータは置かない
   scripts/                  fixture の生成器(架空の値だけ。テスト時に .fixtures/ へ書く。git 管理外)
   e2e/                      フェーズごとの E2E テスト(vitest)
@@ -1063,3 +1063,16 @@ CI の画面テスト `ui/heartbeat.test.ts`(外へ移ると猶予の後に止�
 - **スモークの読み方**: bat の出力を、UTF-8 として化けたら丸ごと cp932 で読んでいたので、cp932 の行(cmd の文言)と UTF-8 の行(中の node の出力)が混ざると、片方が化けた。1 行ずつ、UTF-8 として正しければ UTF-8、そうでなければ cp932 で読む(`scripts/console-text.ts`)。エラー出力に何か出たときの失敗の文も、「cmd が読めずに止まりました」(読み違えの文言があったとき)と「エラー出力に何かを書きました」に分けた。
 - **採らなかった案**: 先打ちは README の書き方だけを直す(答えに混ざること自体は残る)。raw のまま自分で行を組み立てる(日本語入力や編集キーを自分で扱うことになる)。警告をすべて窓に出す(初回のビルドのたびに、送ることに関わらない Vite の警告が並ぶ)。
 - **検査**: 単体 `upload-project.test.ts`(偽の端末で raw の切り替えの順・捨てること・Ctrl+C、注意の出し分け、直書きの取り込みと書く口の戻し、経過をその場で書くこと、まとめの文、幅)。直す前のコードに同じテストを流すと 11 件落ちる(確かめた)。`launchers.test.ts`(cp932 と UTF-8 が混ざった出力の読み方)。画面のテスト g(消せなかったフォルダの文。実際に残るのは送り先で開かれているときだけなので、サーバの答えに足して確かめる)。
+
+### 判定から opencode を外す・本物の copilot で通す(2026-11-11)
+
+- **外したもの**: 判定と下書きのバックエンド `opencode`(`packages/judge/src/backends/opencode.ts`、`--backend opencode`、`ATLAS_OPENCODE_BIN`、出力の読み取りの opencode の形)、画面の「判定に使うもの」の選ぶ欄(copilot -p の 1 行だけにした)、README と docs の記述。`POST /api/jobs` の `backend` は項目を残し、受ける値を `copilot-cli` だけにした(画面とサーバの版がずれても形は同じ)。この節より前の記述は、当時の記録としてそのまま残す。
+- **残したもの**: 前に opencode で判定した `judgments.json` を読むこと(`schema.ts` の `BACKENDS` と、レポートの表示名)。単体テストを 1 つ足した。
+- **本物の copilot での実走**(copilot 1.0.109、架空のデータだけ。Copilot に保存した自分のモデル `anthropic/claude-haiku-5-5` を `--model` で指定):
+  - 工数: `all` → `bundle`(11 件、添付 3 つ)→ `judge run --limit 2` が 2 件成功・失敗 0(1 件 10 秒ほど)。使用量は GitHub の AI クレジット 0、入力 12,922・出力 2,633 トークン。
+  - 依頼ごと: `turns bundle --unjudged`(20 依頼)→ `turns run --limit 12` が 5 回の呼び出しで 14 依頼を判定、失敗 0(32 秒)。
+  - チャットの流れ(M365 Copilot の代わりに同じモデルに、画面の依頼文と添付ファイルの本文を渡した): `bundle --unjudged` の添付 → 返答 → `judge import` で 5 件、`turns bundle --unjudged` の添付 → 返答 → `turns import` で 6 件。`export` の後、`turns.csv` の「判定:」の列と atlas.html に判定が入った。
+  - ツールの制限: 判定の間のツールの呼び出しは 0 回。同じ引数で起動してモデルに尋ねると、使えるツールは `view` だけと答え、作業フォルダの外のファイルの `view` は拒否された(シェル・書き込み・URL の取得は、ツールが無いので試せなかった)。
+- **わかったこと**: 保存した自分のモデルは `--model <プロバイダー名>/<モデル ID>` で指定する(ID だけだと `Model "…" is not available`)。`turns run --limit` は依頼のまとまりごとに確かめるので、上限を少し超える(12 に対して 14)。どちらも docs/judge.md に書いた。
+- **未検証**: M365 Copilot そのものでの判定(モデルも添付の扱いも違う)。画面の「判定する…」から本物の copilot を動かすこと(画面はモデルを選べないので Copilot の既定のモデルと AI クレジットを使う)。実データでの判定。
+- **採らなかった案**: 文言だけを消して `--backend opencode` を残す(使い方がどこにも書かれていない機能が残る)。`BACKENDS` からも消す(前の判定結果が読めなくなる)。
