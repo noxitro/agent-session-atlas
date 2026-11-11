@@ -53,9 +53,17 @@ for (const f of ['atlas.html', 'insights.html', 'glossary.html']) {
 }
 if (!readdirSync(join(out, 'sessions')).some((f) => f.endsWith('.md'))) fail('セッション記録(sessions/*.md)ができていません');
 if (!existsSync(template)) fail('最初の atlas all がレポートのテンプレートを作りませんでした');
-// upload-project.bat が呼ぶ送る操作: プロジェクトの一覧を出し、何も選ばずに Enter で何も送らずに正常に終わる
-const up = spawnSync(process.execPath, [join('packages', 'cli', 'src', 'upload-project.ts')], { cwd: pkg, input: '\n', encoding: 'utf8', env: { ...process.env, ATLAS_CONFIG: join(pkg, 'atlas.config.json') } });
-if (up.status !== 0 || !/プロジェクト/.test(up.stdout) || !up.stdout.includes('やめました')) fail(`プロジェクトを送る操作(upload-project.ts)が通りません: ${up.stderr}${up.stdout}`);
+// upload-project.bat が呼ぶ送る操作: 集計し直してからプロジェクトの一覧を出し、何も選ばずに Enter で何も送らずに正常に終わる。
+// 集計は中で動くので、読むのは架空の fixture にする(ATLAS_COPILOT_HOME。無いと手元の ~/.copilot を読む)。
+// 設定は bat と同じく既定の場所(フォルダの atlas.config.json。まだ無い)を使う。ATLAS_CONFIG を指すと、無い設定ファイルとして集計が止まる
+const { ATLAS_CONFIG: _config, ...upEnv } = process.env;
+const up = spawnSync(process.execPath, [join('packages', 'cli', 'src', 'upload-project.ts')], {
+  cwd: pkg,
+  input: '\n',
+  encoding: 'utf8',
+  env: { ...upEnv, ATLAS_COPILOT_HOME: join(FIXTURES_DIR, 'copilot-home') },
+});
+if (up.status !== 0 || !up.stdout.includes('集計しました') || !/プロジェクト/.test(up.stdout) || !up.stdout.includes('やめました')) fail(`プロジェクトを送る操作(upload-project.ts)が通りません: ${up.stderr}${up.stdout}`);
 
 // Windows では *.bat を cmd で実際に起動する(中のスクリプトを直接呼ぶだけでは、bat の書き方の誤りを見逃す。
 // upload-project.bat は囲みの中の echo の括弧で、集計の後に必ず止まっていた)。集計は架空の fixture を読む(ATLAS_COPILOT_HOME)。
@@ -65,11 +73,18 @@ if (process.platform === 'win32') {
   const { ATLAS_CONFIG: _ignored, ...env } = process.env;
   const runBat = (bat: string, input: string): string => {
     // 置き場所をはっきり書く(NoDefaultCurrentDirectoryInExePath が効いている環境では、名前だけだと今のフォルダの bat を探さない)
-    const r = spawnSync('cmd.exe', ['/d', '/c', `.\\${bat}`], { cwd: pkg, input, encoding: 'utf8', env: { ...env, ATLAS_COPILOT_HOME: join(FIXTURES_DIR, 'copilot-home') }, timeout: 300_000 });
-    const text = `${r.stdout ?? ''}${r.stderr ?? ''}`;
-    // cmd が bat を読めなかったときの文言(英語版と日本語版)
-    if (/was unexpected at this time|は予期されていません|is not recognized as an internal or external command|内部コマンドまたは外部コマンド/.test(text)) fail(`${bat} を cmd が読めずに止まりました:\n${text}`);
-    return text;
+    const r = spawnSync('cmd.exe', ['/d', '/c', `.\\${bat}`], { cwd: pkg, input, env: { ...env, ATLAS_COPILOT_HOME: join(FIXTURES_DIR, 'copilot-home') }, timeout: 300_000 });
+    // cmd の文言は、読み違えたときに cp932 で出ることがある(utf8 で読むと化けて、文言で見つけられない)ので、どちらでも読む
+    const read = (b: Buffer | null): string => (b == null ? '' : b.toString('utf8').includes('�') ? new TextDecoder('shift_jis').decode(b) : b.toString('utf8'));
+    const stdout = read(r.stdout);
+    const stderr = read(r.stderr);
+    const text = `${stdout}${stderr}`;
+    // cmd が bat を読めなかった・読み違えた(chcp 65001 の後に、前の行の途中を実行した)ときの文言(英語版と日本語版)。
+    // 架空の fixture で正しく動けば、エラー出力には何も出ない
+    if (stderr.trim() || /was unexpected at this time|は予期されていません|is not recognized as an internal or external command|内部コマンドまたは外部コマンド/.test(text)) fail(`${bat} を cmd が読めずに止まりました:\n${text}`);
+    // 中の node が正常に終われば、bat も 0 で終わる(node の終了コードを bat の終了コードとして返す)
+    if (r.status !== 0) fail(`${bat} が終了コード ${r.status} で終わりました:\n${text}`);
+    return stdout;
   };
   const upBat = runBat('upload-project.bat', '\n\n');
   if (!/== 送るプロジェクト|送れるセッションがありません/.test(upBat)) fail(`upload-project.bat が、送る操作(プロジェクトの一覧)まで進みませんでした:\n${upBat}`);
