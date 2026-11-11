@@ -1,6 +1,8 @@
 node_modules/
 dist/
 out/
+# 「別のフォルダを開く」で開いたフォルダごとの出力先(<out>-folders/)
+out-folders/
 # 利用者ごとの設定(手元のパスを含む。雛形は atlas.config.example.json)
 atlas.config.json
 # 設定ファイルを書き換える間だけ作るロック(落ちると残ることがある)

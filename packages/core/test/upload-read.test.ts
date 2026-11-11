@@ -1,7 +1,7 @@
 // アップロード先のフォルダ(<基底>/<グループやプロジェクトの名前>/<セッション id>/ …)を --home にして集計し直すときの、読む側の守り。
 //  - 出力先を別の元で使い回したら止める(前の元のセッションと混ざらないように)
 //  - 置き換えの途中・消し残しのフォルダ(.<id>.uploading / .<id>.old)はセッションとして数えない
-//  - アップロードしたフォルダが並ぶ場所(人ごとのフォルダ)を指したら、下のフォルダをまとめて読む。もう 1 段上なら、指すフォルダを案内して止まる
+//  - アップロードしたフォルダが並ぶ場所(人ごとのフォルダ)を指したら、下のフォルダをまとめて読む。もう 1 段上(全員の分)なら、2 段下のフォルダまでまとめて読む
 //  - リンクのファイルは辿らない(フォルダの外のファイルを写さない)
 //  - 添えた行(atlas-session-store.json)の形が違っても止まらない
 //  - プロジェクト名は送った側の記録(atlas-session.json)から取り、読む側の PC のディスクからは決めない
@@ -249,28 +249,65 @@ describe('アップロード先から集計し直す: snapshot', () => {
     expect(await readFile(join(dest, 'session-state', 's4', 'plan.md'), 'utf8')).toBe('a');
   });
 
-  it('もう 1 段上(まとめて読めるフォルダが並ぶ場所)を指したら、何も写さずに、指すフォルダを案内して止まる', async () => {
+  it('もう 1 段上(人ごとのフォルダが並ぶ場所。全員の分)を指したら、2 段下のフォルダまでまとめて読む', async () => {
     const base = await work();
     const root = join(base, 'logs');
     const dest = join(base, 'out', 'snapshot');
-    for (const person of ['person-a', 'person-b']) {
-      await session(join(root, person, 'proj-a', 's1'));
-      await writeFile(join(root, person, 'proj-a', UPLOAD_INDEX), '{}');
-    }
+    await session(join(root, 'person-a', 'proj-a', 's1'), { [UPLOAD_SESSION_META]: JSON.stringify({ version: 1, id: 's1', project: 'zz-owner/zz-a', projectSource: 'git-remote' }) });
+    await session(join(root, 'person-a', 'proj-b', 's2'));
+    await session(join(root, 'person-b', 'proj-a', 's3'));
+    // 同じ id のセッションが 2 人のフォルダにあれば、1 度だけ数える
+    await session(join(root, 'person-b', 'proj-a', 's1'));
+    for (const d of ['person-a/proj-a', 'person-b/proj-a']) await writeFile(join(root, d, UPLOAD_INDEX), '{}');
     await mkdir(join(root, 'other'));
-    expect(await describeSource(root)).toEqual({ kind: 'parent', names: ['person-a', 'person-b'] });
-    const err = await snapshot(root, dest).then(
-      () => null,
-      (e: Error) => e,
-    );
-    expect(err?.message).toMatch(/1 段下まで/);
-    expect(err?.message).toContain(`--home "${join(root, 'person-a')}"`);
-    expect(err?.message).toContain('person-a、person-b');
-    expect(existsSync(dest)).toBe(false);
+    expect(await describeSource(root)).toEqual({ kind: 'merged', folders: ['person-a/proj-a', 'person-a/proj-b', 'person-b/proj-a'] });
+    const m = await snapshot(root, dest);
+    expect(m.layout).toBe('merged');
+    expect(m.merged).toEqual({ folders: ['person-a/proj-a', 'person-a/proj-b', 'person-b/proj-a'], duplicates: 1 });
+    expect(m.sessions.dirs).toBe(3);
+    expect((await readdir(join(dest, 'session-state'))).sort()).toEqual(['s1', 's2', 's3']);
+    expect(m.extras?.skipped.filter((x) => x.reason === DUPLICATE_REASON).map((x) => x.path)).toEqual(['person-b/proj-a/s1']);
+    expect(m.extras?.topLevel).toEqual({});
+    const x = await extract(dest, { projects: { homes: [], temps: [], tempPatterns: false } });
+    expect(x.source).toMatchObject({ layout: 'merged', folders: ['person-a/proj-a', 'person-a/proj-b', 'person-b/proj-a'] });
+    expect(x.sessions.find((r) => r.id === 's1')?.project).toBe('zz-owner/zz-a');
+    // 人のフォルダ 1 つを指したときは、その人の分だけ
+    expect(await describeSource(join(root, 'person-a'))).toEqual({ kind: 'merged', folders: ['proj-a', 'proj-b'] });
+    expect((await snapshot(join(root, 'person-a'), join(base, 'out-a'))).sessions.dirs).toBe(2);
+    // 直下にアップロードしたフォルダがあり、その横に人ごとのフォルダもあるときは、両方を読む
+    await session(join(root, 'shared', 's4'));
+    expect(await describeSource(root)).toEqual({ kind: 'merged', folders: ['person-a/proj-a', 'person-a/proj-b', 'person-b/proj-a', 'shared'] });
+    expect((await snapshot(root, join(base, 'out-b'))).sessions.dirs).toBe(4);
     // どれでもないフォルダ・無いフォルダは none(今までどおり 0 件で終わる)
     expect(await describeSource(join(root, 'other'))).toEqual({ kind: 'none' });
     expect(await describeSource(join(root, 'nothing-here'))).toEqual({ kind: 'none' });
     expect((await snapshot(join(root, 'other'), join(base, 'out-other'))).sessions.dirs).toBe(0);
+    // さらに 1 段上(全員の分が入ったフォルダが並ぶ場所)は読まない
+    const top = join(base, 'top');
+    await session(join(top, 'logs', 'person-a', 'proj-a', 's1'));
+    await writeFile(join(top, 'logs', 'person-a', 'proj-a', UPLOAD_INDEX), '{}');
+    expect(await describeSource(top)).toEqual({ kind: 'none' });
+    // ~/.copilot の形のフォルダ(バックアップなど)が横にあっても、人ごとのフォルダとしては読まない
+    await session(join(root, 'backup', 'session-state', 's9'));
+    expect(await describeSource(root)).toEqual({ kind: 'merged', folders: ['person-a/proj-a', 'person-a/proj-b', 'person-b/proj-a', 'shared'] });
+  });
+
+  it('2 段下まで読むかどうかは、索引と、人のフォルダごとに先頭の 3 個までで確かめる', async () => {
+    const base = await work();
+    const root = join(base, 'logs');
+    // 索引の無いフォルダ(前の版が写した、手で写した)でも、人のフォルダの下の先頭の 3 個までにあれば読む
+    await session(join(root, 'person-a', 'proj-a', 's1'));
+    expect(await describeSource(root)).toEqual({ kind: 'merged', folders: ['person-a/proj-a'] });
+    // 4 番目より後ろにしか無ければ、読まない(関係のないフォルダを 2 段下まで全部は見ない)
+    const far = join(base, 'far');
+    for (const d of ['d1', 'd2', 'd3']) await mkdir(join(far, 'person-a', d), { recursive: true });
+    await session(join(far, 'person-a', 'proj-z', 's1'));
+    expect(await describeSource(far)).toEqual({ kind: 'none' });
+    expect((await snapshot(far, join(base, 'out-far'))).sessions.dirs).toBe(0);
+    // どこか 1 つに索引があれば、索引の無いフォルダも読む
+    await session(join(far, 'person-b', 'proj-b', 's2'));
+    await writeFile(join(far, 'person-b', 'proj-b', UPLOAD_INDEX), '{}');
+    expect(await describeSource(far)).toEqual({ kind: 'merged', folders: ['person-a/proj-z', 'person-b/proj-b'] });
   });
 
   it('まとめて読むかどうかを確かめるとき、索引の無いフォルダを中まで見るのは先頭の 20 個まで。読むと決めたら残りも読む', async () => {

@@ -2,7 +2,7 @@
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join, posix, resolve, win32 } from 'node:path';
+import { basename, dirname, join, posix, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { codeStamp, computeMetrics, extract, METRICS_SCHEMA_VERSION, snapshot, type MetricsFile, type SessionRecord, type SessionsFile, type SnapshotManifest } from '../../core/src/index.ts';
 import {
@@ -50,8 +50,9 @@ import {
   type RunSummary,
 } from '../../judge/src/index.ts';
 import type { CliOptions, GroupCliOptions, JudgeCliOptions, MemoCliOptions, TurnsCliOptions } from './args.ts';
-import { findRunningServer, openInBrowser, startServe } from './serve.ts';
-import { acquireOutLock } from './jobs.ts';
+import { findRunningServer, openInBrowser, startServe, type ServeOptions } from './serve.ts';
+import { acquireOutLock, OutBusyError } from './jobs.ts';
+import { checkFolder, folderPaths, foldersRootOf, readFolderState, writeFolderState, type FolderRun, type FolderState } from './folders.ts';
 import { buildTables } from './tables.ts';
 import { exportGroup } from './group-export.ts';
 import { CONFIG_FILE, loadConfig, parseUploadRoot, phaseNames } from './config.ts';
@@ -376,6 +377,8 @@ export async function runBuild(p: Paths, o: BuildOptions, log: Log): Promise<Bui
     metrics,
     installed: s.installed ?? null,
     totalSessionsInSource: s.sessions.length,
+    // アップロードしたフォルダを集計したとき(--home や atlas open)は、どのフォルダの集計かを画面に出す
+    source: s.source.root && s.source.layout ? { name: basename(s.source.root) || s.source.root, path: s.source.root, layout: s.source.layout, folders: s.source.folders?.length ?? 1 } : null,
     warnings: { unknownEventTypes: unknown, badLines: s.warnings.badLines, notes: groups.warnings },
     judgments,
     verdicts,
@@ -643,7 +646,11 @@ export async function runMemo(p: Paths, m: MemoCliOptions, log: Log): Promise<vo
 /**
  * atlas serve: 既に動いているサーバがあればブラウザを開くだけ。無ければ起動し、画面の heartbeat が途切れる(ブラウザを閉じる)まで待つ。
  */
-export async function runServe(p: Paths, o: { port: number | null; open: boolean; config?: string | null }, log: Log): Promise<string> {
+export async function runServe(
+  p: Paths,
+  o: { port: number | null; open: boolean; config?: string | null; home?: string; reports?: ServeOptions['reports'] },
+  log: Log,
+): Promise<string> {
   if (!existsSync(p.html)) throw new Error(`${p.html} がありません。先に atlas build(または atlas all)を実行してください。`);
   const running = await findRunningServer(p.out);
   if (running) {
@@ -654,7 +661,7 @@ export async function runServe(p: Paths, o: { port: number | null; open: boolean
     if (o.open) openInBrowser(url, log);
     return '既存のサーバを使用';
   }
-  const h = await startServe({ outDir: p.out, notesDir: p.notes, groupsPath: p.groups, port: o.port ?? 0, open: o.open, log, ...(o.config ? { configPath: resolve(o.config) } : {}) });
+  const h = await startServe({ outDir: p.out, notesDir: p.notes, groupsPath: p.groups, port: o.port ?? 0, open: o.open, log, home: o.home, reports: o.reports, ...(o.config ? { configPath: resolve(o.config) } : {}) });
   const onSignal = (): void => void h.close('中断');
   process.once('SIGINT', onSignal);
   process.once('SIGTERM', onSignal);
@@ -689,7 +696,52 @@ const WRITES_OUT: ReadonlySet<CliOptions['command']> = new Set(['snapshot', 'ext
 
 type RunResult = { paths: Paths; build?: BuildResult; judge?: RunSummary | null };
 
+/**
+ * atlas open <フォルダ>: いつもの集計とは別に、指定したフォルダ(アップロード先・人ごとのフォルダ・プロジェクトのフォルダ)を集計して、別のサーバで開く。
+ * 出力先とメモはフォルダごとに分ける(folders.ts)。そのフォルダのサーバが動いていれば、ブラウザで開くだけ。
+ * 状態(集計中・表示中・失敗)は <置き場>/<キー>/folder.json に書き、画面の「別のフォルダを開く…」の一覧が読む。
+ */
+export async function runOpen(o: CliOptions, log: Log): Promise<RunResult> {
+  const local = resolvePaths({ home: null, out: o.out, judgments: null, notesDir: o.notesDir });
+  const info = await checkFolder(o.target);
+  const root = foldersRootOf(local.out);
+  const fp = folderPaths(root, local.notes, info.path);
+  const p = resolvePaths({ home: info.path, out: fp.out, judgments: null, notesDir: fp.notes });
+  const prev = readFolderState(fp.state);
+  const at = (): string => new Date().toISOString();
+  const base: Omit<FolderState, 'run'> = { version: 1, path: info.path, name: info.name, addedAt: prev?.addedAt || at(), openedAt: at(), listed: true };
+  // 一覧から外す操作(画面)が途中で入っていたら、それを残す
+  const save = (run: FolderRun | null, relist = false): void => writeFolderState(fp.state, { ...base, listed: relist ? true : (readFolderState(fp.state)?.listed ?? true), run });
+  const serve = { port: o.port, open: o.open, config: o.config, home: info.path, reports: { root, notesBase: local.notes, localOut: local.out, current: info.path } };
+  log(`open: ${info.path}(${info.summary})`);
+  log(`open: 出力先 ${fp.out}、メモとタスクタグ ${fp.notes}`);
+  if (await findRunningServer(p.out)) {
+    save(prev?.run ?? null, true);
+    await runServe(p, serve, log);
+    return { paths: p };
+  }
+  let build: BuildResult | undefined;
+  try {
+    // 同じフォルダを別のプロセスが集計していれば、ここで止まる(その状態は書き換えない)
+    const release = acquireOutLock(p.out, 'all', 'cli');
+    try {
+      save({ state: 'aggregating', pid: process.pid, at: at() }, true);
+      build = (await runCommand({ ...o, command: 'all', home: info.path, out: fp.out, notesDir: fp.notes }, p, log)).build;
+    } finally {
+      release();
+    }
+    save({ state: 'serving', pid: process.pid, at: at() });
+    await runServe(p, serve, log);
+    save(null);
+  } catch (e) {
+    if (!(e instanceof OutBusyError)) save({ state: 'failed', pid: process.pid, at: at(), error: (e as Error).message.slice(0, 600) });
+    throw e;
+  }
+  return { paths: p, build };
+}
+
 export async function run(o: CliOptions, log: Log): Promise<RunResult> {
+  if (o.command === 'open') return runOpen(o, log);
   const p = resolvePaths(o);
   const release = WRITES_OUT.has(o.command) ? acquireOutLock(p.out, o.command, 'cli') : () => {};
   try {
@@ -736,6 +788,8 @@ async function runCommand(o: CliOptions, p: Paths, log: Log): Promise<RunResult>
     case 'skill-draft':
       await runSkillDraft(p, o.skillDraft!, log);
       return { paths: p };
+    case 'open':
+      return runOpen(o, log);
     case 'all': {
       await runSnapshot(p, o.since, log, o.snapshotAll, o.snapshotPrune);
       await runExtract(p, o.since, log, o.tempDirs, o.config);

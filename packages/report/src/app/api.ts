@@ -223,6 +223,51 @@ export const settingsApi = {
   },
 };
 
+// --- 別のフォルダを開く(serve の folders.ts と同じ形) ---
+export type FolderStatus = 'current' | 'open' | 'starting' | 'failed' | 'idle';
+export interface FolderEntry {
+  key: string;
+  path: string;
+  name: string;
+  openedAt: string;
+  /** current: この画面 / open: 別のサーバで開いている / starting: 集計中か起動中 / failed: 失敗 / idle: 開いていない */
+  status: FolderStatus;
+  url: string | null;
+  error: string | null;
+  /** 集計中の進み具合(記録の最後の行) */
+  progress: string | null;
+}
+export interface FolderList {
+  canPick: boolean;
+  /** この画面が開いているフォルダ(この PC のセッションなら null) */
+  current: { path: string; name: string } | null;
+  /** この PC のセッションの画面 */
+  local: { status: 'current' | 'open' | 'idle'; url: string | null };
+  folders: FolderEntry[];
+}
+/** 選んだフォルダを調べた結果(ok でなければ、集計できない理由) */
+export type FolderCheck = { path: string; ok: true; name: string; summary: string } | { path: string; ok: false; error: string };
+export const foldersApi = {
+  list(token: string): Promise<FolderList> {
+    return connect(fetch('api/folders', { cache: 'no-store', headers: headers(token) }), (r) => parse<FolderList>(r));
+  },
+  /** フォルダを選ぶ画面を出す(取り消したら path が null) */
+  pick(token: string): Promise<FolderCheck | { path: null }> {
+    return connect(fetch('api/folders/pick', { method: 'POST', headers: headers(token) }), (r) => parse<FolderCheck | { path: null }>(r));
+  },
+  check(token: string, path: string): Promise<FolderCheck> {
+    return connect(fetch('api/folders/check', { method: 'POST', headers: headers(token), body: JSON.stringify({ path }) }), (r) => parse<FolderCheck>(r));
+  },
+  /** 集計して別のサーバで開く(もう開いていれば、その場所を返す) */
+  open(token: string, path: string): Promise<FolderEntry> {
+    return connect(fetch('api/folders/open', { method: 'POST', headers: headers(token), body: JSON.stringify({ path }) }), (r) => parse<FolderEntry>(r));
+  },
+  /** 一覧から外す(集計の出力とメモは残す) */
+  forget(token: string, key: string): Promise<FolderList> {
+    return connect(fetch('api/folders/forget', { method: 'POST', headers: headers(token), body: JSON.stringify({ key }) }), (r) => parse<FolderList>(r));
+  },
+};
+
 export type JobKind ='refresh' | 'judge' | 'full' | 'bundle' | 'export' | 'turn-bundle' | 'turn-judge';
 /** 何を判定するか: 工数(セッションごと)/ 依頼ごとの採用・種類・工程 */
 export type JudgeTarget = 'effort' | 'turns';

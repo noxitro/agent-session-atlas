@@ -194,6 +194,11 @@ export interface ReportData {
   scope: { since: string | null; project: string | null; client: string | null; model: string | null; branch: string | null };
   /** sessions.json の総件数(CLI フィルタ前) */
   totalSessionsInSource: number;
+  /**
+   * アップロードしたフォルダを集計したときの、そのフォルダ(この PC の Copilot のデータを集計したときと、伏せ字版には無い)。
+   * layout: flat はセッションのフォルダが並ぶ 1 つのフォルダ、merged は下のフォルダをまとめたもの(folders はその数)
+   */
+  source?: { name: string; path: string; layout: 'flat' | 'merged'; folders: number } | null;
   metrics: MetricsFile;
   sessions: SessionSummary[];
   judgments: { available: boolean; backend: string | null; model: string | null; ranAt: string | null; items: number };

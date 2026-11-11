@@ -9,7 +9,7 @@ import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parseCli } from '../src/args.ts';
 import { run } from '../src/commands.ts';
-import { acquireOutLock, JOB_ENV, JOB_LOCK_FILE, JUDGE_FLOW_TS, MAIN_TS, OutBusyError, parseJobRequest, runningJobIn, type ChildLike, type RunFullFn } from '../src/jobs.ts';
+import { jobArgs, acquireOutLock, JOB_ENV, JOB_LOCK_FILE, JUDGE_FLOW_TS, MAIN_TS, OutBusyError, parseJobRequest, runningJobIn, type ChildLike, type RunFullFn } from '../src/jobs.ts';
 import { startServe, TOKEN_PLACEHOLDER, type ServeHandle } from '../src/serve.ts';
 
 const ATLAS = (anonymized: boolean): string =>
@@ -535,5 +535,13 @@ describe('serve の jobs と記録の表示(Phase 14)', () => {
       expect(r.body).toMatchObject({ tooLarge: true, limit: 64, size: Buffer.byteLength(MD), mdHref: '../sessions/s1.md' });
       expect(r.body.html).toBeUndefined();
     });
+  });
+
+  it('集計し直すときの引数: 別のフォルダを開いたサーバ(home)は、同じフォルダを --home にして読み直す', () => {
+    const p = { outDir: 'o', notesDir: 'n', main: 'main.ts' };
+    expect(jobArgs({ kind: 'refresh' }, p)).toEqual(['main.ts', 'all', '--out', 'o', '--notes-dir', 'n']);
+    expect(jobArgs({ kind: 'refresh' }, { ...p, home: '/srv/logs/person-a' })).toEqual(['main.ts', 'all', '--home', '/srv/logs/person-a', '--out', 'o', '--notes-dir', 'n']);
+    // 集計し直す以外は、出力先にあるものだけを使う
+    expect(jobArgs({ kind: 'export' }, { ...p, home: '/srv/logs' })).toEqual(['main.ts', 'export', '--out', 'o', '--notes-dir', 'n']);
   });
 });

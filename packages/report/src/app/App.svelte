@@ -23,11 +23,12 @@
   import { applyTheme, loadTheme, type ThemeChoice } from './theme.ts';
   import { watchScrollFocus } from './scroll-focus.ts';
   import { STALE_MESSAGE } from '../lib/code-check.ts';
-  import { api, serveToken, startHeartbeat, type GroupExport, type UploadHandlers, type UploadSetting } from './api.ts';
+  import { api, foldersApi, serveToken, startHeartbeat, type GroupExport, type UploadHandlers, type UploadSetting } from './api.ts';
   import { restoreDone, restoredView, saveView } from './view-restore.ts';
   import { JobStore } from './jobs.svelte.ts';
   import JobActions from './components/JobActions.svelte';
   import SettingsDialog from './components/SettingsDialog.svelte';
+  import OpenFolder from './components/OpenFolder.svelte';
   import JobBand from './components/JobBand.svelte';
   import type { MemoSummary } from '../lib/memo.ts';
   import type { ReportGroup } from '../lib/types.ts';
@@ -174,6 +175,13 @@
   let serverDown = $state(false);
   /** サーバがこの画面と違う版(atlas を更新した後も、前から動いているサーバが応えている)。閲覧と編集はそのまま、帯で知らせる */
   let serverStale = $state(false);
+  /** 「別のフォルダを開く」で開いた画面なら、そのフォルダ(サーバに聞く。~/.copilot の形のフォルダは埋め込みの source に出ないため) */
+  let liveSource = $state<{ name: string; path: string } | null>(null);
+  /** この画面が集計しているフォルダ(この PC のセッションなら null) */
+  const sourceLabel = $derived(liveSource ?? (data?.source ? { name: data.source.name, path: data.source.path } : null));
+  $effect(() => {
+    if (sourceLabel) document.title = `${sourceLabel.name} | Copilot Session Atlas`;
+  });
   $effect(() => {
     if (!token) return;
     const stop = startHeartbeat(
@@ -193,6 +201,11 @@
           liveMemos = s.memos ?? null; // 古い serve には無い(埋め込みの抜粋を残す)
           uploadSetting = s.upload ?? null; // 古い serve には無い(アップロードの操作を出さない)
           editable = true;
+          // 古い serve には無い(失敗しても、埋め込みの source だけで出す)
+          foldersApi
+            .list(token)
+            .then((l) => (liveSource = l.current))
+            .catch(() => {});
         })
         .catch(() => {});
     }
@@ -534,7 +547,8 @@
         </p>
       </div>
       <div class="mast-tools">
-        {#if editable && jobStore}<JobActions jobs={jobStore} disabled={serverDown} /><SettingsDialog jobs={jobStore} disabled={serverDown} upload={uploadHandlers} send={projectSend} projects={settingsProjects} />{/if}
+        {#if editable && jobStore}<JobActions jobs={jobStore} disabled={serverDown} /><SettingsDialog jobs={jobStore} disabled={serverDown} upload={uploadHandlers} send={projectSend} projects={settingsProjects} /><OpenFolder token={jobStore.token} disabled={serverDown} />{/if}
+        {#if sourceLabel}<span class="tag" title={sourceLabel.path} data-testid="source-tag">対象: {sourceLabel.name}</span>{/if}
         {#if data.anonymized}<span class="tag">伏せ字モード</span>{/if}
         {#if scopeNotes.length}<span class="tag" title="atlas build の実行時に絞り込んだ条件">出力時の絞り込み: {scopeNotes.join('、')}</span>{/if}
         <div class="seg" role="group" aria-label="配色">

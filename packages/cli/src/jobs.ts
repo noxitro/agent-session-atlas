@@ -41,7 +41,7 @@ interface LockInfo {
   by?: 'serve' | 'cli';
 }
 
-function alive(pid: number): boolean {
+export function alive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
@@ -200,9 +200,10 @@ export const MAIN_TS = join(CLI_DIR, 'main.ts');
 export const JUDGE_FLOW_TS = join(CLI_DIR, 'judge-flow.ts');
 
 /** 子プロセスの引数(process.execPath の後ろ)。サーバが固定の形で組み立てる。full はサーバ内なので null */
-export function jobArgs(req: JobRequest, p: { outDir: string; notesDir: string; main?: string; judgeFlow?: string }): string[] | null {
+export function jobArgs(req: JobRequest, p: { outDir: string; notesDir: string; home?: string; main?: string; judgeFlow?: string }): string[] | null {
   const common = ['--out', p.outDir, '--notes-dir', p.notesDir];
-  if (req.kind === 'refresh') return [p.main ?? MAIN_TS, 'all', ...common];
+  // home: 別のフォルダを開いたサーバ(atlas open)は、集計し直すときも同じフォルダを読む
+  if (req.kind === 'refresh') return [p.main ?? MAIN_TS, 'all', ...(p.home ? ['--home', p.home] : []), ...common];
   if (req.kind === 'judge') return [p.judgeFlow ?? JUDGE_FLOW_TS, '--limit', String(req.limit), '--backend', req.backend, ...common];
   if (req.kind === 'bundle') return [p.main ?? MAIN_TS, 'bundle', '--unjudged', ...common];
   if (req.kind === 'export') return [p.main ?? MAIN_TS, 'export', ...common];
@@ -242,6 +243,8 @@ export type RunFullFn = (id: string, ctx: { log: (line: string) => void; signal:
 export interface JobRunnerOptions {
   outDir: string;
   notesDir: string;
+  /** 集計し直すときに読む場所(別のフォルダを開いたサーバ。省略時は CLI の既定) */
+  home?: string;
   spawn?: SpawnFn;
   env?: NodeJS.ProcessEnv;
   runFull: RunFullFn;

@@ -61,8 +61,10 @@ export const SNAPSHOT_MANIFEST = 'snapshot-manifest.json';
 export const SNAPSHOT_SOURCE = 'snapshot-source.json';
 /** アップロード先のフォルダが並ぶ場所かどうかを確かめるとき、索引の無いフォルダを中まで見る数の上限 */
 const UPLOAD_PROBE_MAX = 20;
-/** もう 1 段上(アップロード先のフォルダが並ぶ場所が、さらに並ぶ場所)かどうかを確かめるとき、下のフォルダ 1 つにつき索引を探す数の上限 */
-const PARENT_PROBE_MAX = 50;
+/** 2 段下(人ごとのフォルダの下)にアップロード先のフォルダがあるかを確かめるとき、下のフォルダ 1 つにつき索引を探す数の上限 */
+const NESTED_PROBE_MAX = 50;
+/** 同じく、索引の無いフォルダ(前の版が写した、手で写した)を中まで見る数の上限(下のフォルダ 1 つにつき) */
+const NESTED_FLAT_PROBE_MAX = 3;
 
 export interface SnapshotOptions {
   /** この時刻以降に更新されたセッションだけを複製する(ISO 文字列か Date) */
@@ -86,13 +88,13 @@ export interface SnapshotManifest {
   sourceRoot: string;
   /**
    * 元の形。'copilot' は ~/.copilot(session-state/ の下にセッション)、'flat' はセッションのフォルダが直下に並ぶもの
-   * (atlas がアップロードしたグループ・プロジェクトのフォルダ)、'merged' はそのフォルダが直下に並ぶもの(まとめて読む)。
+   * (atlas がアップロードしたグループ・プロジェクトのフォルダ)、'merged' はそのフォルダが下(2 段下まで)に並ぶもの(まとめて読む)。
    * 古いマニフェストには無い('copilot' と同じ)
    */
   layout?: SourceLayout;
   /**
-   * layout が 'merged' のとき、まとめて読んだフォルダの名前(名前の順)と、同じ id のセッションが複数のフォルダにあって
-   * 1 つだけ数えたときに、数えなかったほうの数
+   * layout が 'merged' のとき、まとめて読んだフォルダ(元のルートからの相対パス。/ 区切り。1 段下なら名前だけ、2 段下なら <人>/<プロジェクト>。
+   * 名前の順)と、同じ id のセッションが複数のフォルダにあって 1 つだけ数えたときに、数えなかったほうの数
    */
   merged?: { folders: string[]; duplicates: number };
   since: string | null;
@@ -128,20 +130,27 @@ export type SourceLayout = 'copilot' | 'flat' | 'merged';
  * 集計の元に指したフォルダの形。
  * - copilot: ~/.copilot(session-state/ か session-store.db がある)
  * - flat: セッションのフォルダが直下に並ぶ(アップロードしたグループ・プロジェクトのフォルダ)
- * - merged: flat のフォルダが直下に並ぶ(人ごとのフォルダなど)。folders を 1 つのレポートにまとめて読む
- * - parent: merged のフォルダが直下に並ぶ(送り先そのものなど)。まとめては読まない。names は下のフォルダの名前
+ * - merged: flat のフォルダが下に並ぶ。folders(src からの相対パス。/ 区切り)を 1 つのレポートにまとめて読む。
+ *   1 段下に並ぶもの(人ごとのフォルダなど。folders は名前だけ)と、2 段下に並ぶもの(送り先そのものなど。folders は <人>/<プロジェクト>)の両方
  * - none: どれでもない(セッションが 1 件も見つからない)
  */
-export type SourceShape = { kind: 'copilot' } | { kind: 'flat' } | { kind: 'merged'; folders: string[] } | { kind: 'parent'; names: string[] } | { kind: 'none' };
+export type SourceShape = { kind: 'copilot' } | { kind: 'flat' } | { kind: 'merged'; folders: string[] } | { kind: 'none' };
 
 /** 集計の元に指したフォルダの形を調べる(読むだけ)。無い・読めないフォルダは none */
 export async function describeSource(src: string): Promise<SourceShape> {
   if (looksLikeCopilotHome(src)) return { kind: 'copilot' };
   if (await isFlatLayout(src)) return { kind: 'flat' };
-  // まとめて読むかどうかは先頭の UPLOAD_PROBE_MAX 個までで決め、読むと決めたら残りも全部調べる(索引の無いフォルダを読み落とさないように)
-  if ((await uploadFoldersUnder(src, UPLOAD_PROBE_MAX)).length) return { kind: 'merged', folders: await uploadFoldersUnder(src, Infinity) };
-  const names = await mergedFoldersUnder(src);
-  return names.length ? { kind: 'parent', names } : { kind: 'none' };
+  // 1 段下: アップロードしたフォルダ(プロジェクトやグループ)
+  const direct = await allUploadFolders(src);
+  const isDirect = new Set(direct);
+  // ~/.copilot の形のフォルダ(バックアップや、集計の出力先)は、人ごとのフォルダとしては見ない
+  const rest = (await subDirs(src)).filter((n) => !isDirect.has(n) && !looksLikeCopilotHome(join(src, n)));
+  // 2 段下: 直下のフォルダ(人ごとのフォルダ)の下のアップロードしたフォルダ。
+  // 1 段下に 1 つも無いときは、先頭の UPLOAD_PROBE_MAX 個を軽く確かめてから読む(関係のない大きなフォルダを指したときに、2 段下まで全部読まないように)
+  if (direct.length === 0 && !(await hasNestedUploadFolder(src, rest.slice(0, UPLOAD_PROBE_MAX)))) return { kind: 'none' };
+  const folders = [...direct];
+  for (const n of rest) for (const f of await allUploadFolders(join(src, n))) folders.push(`${n}/${f}`);
+  return { kind: 'merged', folders: folders.sort() };
 }
 
 /** 同じ id のセッションが複数のフォルダにあって、数えなかったほうの理由(manifest の extras.skipped) */
@@ -162,16 +171,8 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
   if (since && Number.isNaN(since.getTime())) throw new Error(`since が日時として解釈できない: ${String(opts.since)}`);
   if (!existsSync(src)) throw new Error(`元ディレクトリが無い: ${src}`);
   // アップロードしたグループ・プロジェクトのフォルダ(<送り先>\<フォルダ>\<セッション id>\events.jsonl …)は、そのフォルダを session-state/ とみなす。
-  // そのフォルダが並ぶ場所(人ごとのフォルダなど)は、下のフォルダをまとめて読む
+  // そのフォルダが並ぶ場所(人ごとのフォルダ)と、もう 1 段上(送り先そのもの。全員の分)は、下のフォルダをまとめて読む
   const shape = await describeSource(src);
-  // もう 1 段上(送り先そのものなど)を指していたら、0 件のレポートを作らずに止めて、指すフォルダを案内する
-  if (shape.kind === 'parent') {
-    const names = `${shape.names.slice(0, 3).join('、')}${shape.names.length > 3 ? ` ほか ${shape.names.length - 3} 件` : ''}`;
-    throw new Error(
-      `${src} の下には、アップロードしたフォルダ(プロジェクトやグループ)を持つフォルダが並んでいます。まとめて集計できるのは 1 段下までなので、` +
-        `集計するフォルダを 1 つ選んで指定してください(例: --home "${join(src, shape.names[0])}")。この下にあるフォルダ: ${names}`,
-    );
-  }
   const flat = shape.kind === 'flat';
   const merged = shape.kind === 'merged' ? shape.folders : null;
   // 出力先が別の元から作ったものなら、足さずに止める(前の元のセッションと session-store.db が残っていて、黙って混ざるため)。
@@ -400,17 +401,25 @@ async function uploadFoldersUnder(src: string, probeMax: number): Promise<string
 }
 
 /**
- * 直下のフォルダのうち、アップロードしたフォルダを下に持つものの名前(名前の順)。もう 1 段上を指したときの案内に使う。
- * 索引(UPLOAD_INDEX)だけで確かめ、見るのは名前の順で先頭の UPLOAD_PROBE_MAX 個、その下も先頭の PARENT_PROBE_MAX 個まで
- * (関係のない大きなフォルダを指したときに、2 段下まで全部読まないように)
+ * 直下のアップロードしたフォルダを全部(名前の順)。あるかどうかは先頭の UPLOAD_PROBE_MAX 個までで決め、
+ * あると決めたら残りも全部調べる(索引の無いフォルダを読み落とさないように)
  */
-async function mergedFoldersUnder(src: string): Promise<string[]> {
-  const out: string[] = [];
-  for (const n of (await subDirs(src)).slice(0, UPLOAD_PROBE_MAX)) {
-    const subs = (await subDirs(join(src, n))).slice(0, PARENT_PROBE_MAX);
-    if (subs.some((s) => existsSync(join(src, n, s, UPLOAD_INDEX)))) out.push(n);
+async function allUploadFolders(src: string): Promise<string[]> {
+  return (await uploadFoldersUnder(src, UPLOAD_PROBE_MAX)).length ? uploadFoldersUnder(src, Infinity) : [];
+}
+
+/**
+ * names(src の直下のフォルダ)のどれかが、アップロードしたフォルダを下に持つか。
+ * 下のフォルダは名前の順で先頭の NESTED_PROBE_MAX 個までを索引(UPLOAD_INDEX)で確かめ、
+ * 索引が無ければ先頭の NESTED_FLAT_PROBE_MAX 個だけ、セッションのフォルダが並ぶかを中まで見る
+ */
+async function hasNestedUploadFolder(src: string, names: readonly string[]): Promise<boolean> {
+  for (const n of names) {
+    const subs = (await subDirs(join(src, n))).slice(0, NESTED_PROBE_MAX);
+    if (subs.some((s) => existsSync(join(src, n, s, UPLOAD_INDEX)))) return true;
+    for (const s of subs.slice(0, NESTED_FLAT_PROBE_MAX)) if (await isFlatLayout(join(src, n, s))) return true;
   }
-  return out;
+  return false;
 }
 
 /**

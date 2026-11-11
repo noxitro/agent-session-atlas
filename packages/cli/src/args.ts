@@ -1,7 +1,7 @@
 // atlas コマンドの引数解釈(純関数)
 import { parseArgs } from 'node:util';
 
-export const COMMANDS = ['snapshot', 'extract', 'metrics', 'build', 'export', 'all', 'bundle', 'judge', 'turns', 'group', 'memo', 'serve', 'skill-draft'] as const;
+export const COMMANDS = ['snapshot', 'extract', 'metrics', 'build', 'export', 'all', 'bundle', 'judge', 'turns', 'group', 'memo', 'serve', 'open', 'skill-draft'] as const;
 export type Command = (typeof COMMANDS)[number];
 
 export const JUDGE_ACTIONS = ['run', 'import'] as const;
@@ -125,8 +125,10 @@ export interface CliOptions {
   memoCmd: MemoCliOptions | null;
   /** serve: 固定するポート(null は空きポート) */
   port: number | null;
-  /** serve: 起動後にブラウザを開く(--no-open で開かない) */
+  /** serve・open: 起動後にブラウザを開く(--no-open で開かない) */
   open: boolean;
+  /** open: 集計して開くフォルダ */
+  target: string | null;
   /** skill-draft: 候補の番号(insights.json の順)と、使うバックエンド */
   skillDraft: { index: number; backend: BackendChoice; model: string | null; timeoutSec: number } | null;
   help: boolean;
@@ -162,6 +164,11 @@ export const USAGE = `使い方: atlas <コマンド> [オプション]
              セッションごとのメモ(<notes-dir>/memos/<id>.md)を一覧・表示・保存・削除する(remove は画像を残す)
   serve      out/ を 127.0.0.1 だけに配信してブラウザで開く(画面からグループとメモを書け、集計し直す・工数の判定・
              記録と全文記録の表示ができる)。ブラウザを閉じると止まる(画面から動かした処理の実行中は終わるまで待つ)
+  open <フォルダ>
+             いつもの集計(この PC のデータ)とは別に、指定したフォルダを集計して、別のサーバで開く。指定できるのは、
+             アップロード先(全員の分)・その下の人ごとのフォルダ(その人の分)・プロジェクトやタスクタグのフォルダ。
+             出力先は <out>-folders/<フォルダごとの名前>/out、メモは <notes-dir>/folders/<同じ名前>/ に分ける
+             (--out と --notes-dir は、いつもの集計の場所のまま指定する)。画面の「別のフォルダを開く…」と同じ
   skill-draft <番号>
              改善点の「スキル化の候補」(out/insights.json の番号)から SKILL.md の下書きを LLM に作らせ、
              out/skill-drafts/ に書く(クレジットや従量課金を消費しうる。明示したときだけ動く。--backend は judge と同じ)
@@ -188,7 +195,7 @@ export const USAGE = `使い方: atlas <コマンド> [オプション]
                      (%TEMP% と AppData\\Local\\Temp・/tmp のパターン)を使わない
   --snapshot-all     snapshot: 既定で写さない大きなもの(rewind-snapshots、一覧に無い名前のもの、logs/)も写す
   --snapshot-prune   snapshot: 前回 --snapshot-all で写したが今回は写さないものを消す(既定は残して manifest に日時を出す)
-  --config <file>    extract・all・serve・group upload: 設定ファイル(wiki の vault・アップロード先の指定)の場所
+  --config <file>    extract・all・serve・open・group upload: 設定ファイル(wiki の vault・アップロード先の指定)の場所
                      (既定: 環境変数 ATLAS_CONFIG、無ければリポジトリ直下の atlas.config.json)
   -h, --help         この説明を出す
 
@@ -198,7 +205,7 @@ export のオプション:
   --full             解析用の全文記録(out/full/<id>.md、上限なし。暗号化データと base64 本体だけ除外)と
                      out/coverage.json(網羅の検査)も書く。--anonymize とは併用できない。共有しないこと
 
-serve のオプション:
+serve・open のオプション:
   --port <n>         ポートを固定する(既定は空きポートを自動で取る)
   --no-open          起動後にブラウザを開かない
 
@@ -368,8 +375,16 @@ export function parseCli(argv: string[]): CliOptions {
     memoCmd = { action: action as MemoAction, id, text: rest.length ? rest.join(' ') : null, file: values.file ?? null };
   }
   if (values.file != null && memoCmd?.action !== 'set') throw new UsageError('--file は memo set でだけ使えます');
+  let target: string | null = null;
+  if (cmd === 'open') {
+    target = positionals[1]?.trim() || null;
+    if (!target) throw new UsageError('open には、集計して開くフォルダを指定してください(例: atlas open \\\\server\\share\\logs)');
+    if (positionals.length > 2) throw new UsageError(`余分な引数があります: ${positionals.slice(2).join(' ')}(空白を含むパスは "…" で囲んでください)`);
+    if (values.home != null) throw new UsageError('open では --home を使えません(開くフォルダは open の後ろに指定します)');
+    for (const k of ['judgments', 'bundle'] as const) if (values[k] != null) throw new UsageError(`--${k} は open では使えません`);
+  }
   if (cmd !== 'judge' && cmd !== 'turns' && cmd !== 'group' && cmd !== 'memo' && cmd !== 'skill-draft') {
-    if (positionals.length > 1) throw new UsageError(`コマンドは 1 つだけ指定してください: ${positionals.join(' ')}`);
+    if (cmd !== 'open' && positionals.length > 1) throw new UsageError(`コマンドは 1 つだけ指定してください: ${positionals.join(' ')}`);
     for (const k of ['backend', 'limit', 'only', 'concurrency', 'timeout'] as const) if (values[k] != null) throw new UsageError(`--${k} は judge run でだけ使えます`);
     if (values.force) throw new UsageError('--force は judge run と group upload でだけ使えます');
   }
@@ -383,11 +398,11 @@ export function parseCli(argv: string[]): CliOptions {
   // 伏せ字に対応していないコマンドで黙って無視すると、伏せたつもりの評価バンドル(依頼文の全文・パス入り)を外部へ渡してしまう
   if (values.anonymize && !['build', 'export', 'all'].includes(cmd))
     throw new UsageError(`--anonymize は build / export / all でだけ使えます(${cmd} の出力は伏せ字になりません。評価バンドルを外部の LLM に渡すときは中身を確認してください)`);
-  if ((values['snapshot-all'] || values['snapshot-prune']) && !['snapshot', 'all', 'export'].includes(cmd)) throw new UsageError('--snapshot-all と --snapshot-prune は snapshot / all / export で使えます');
-  if (values.config != null && cmd !== 'extract' && cmd !== 'all' && cmd !== 'serve' && !(cmd === 'group' && positionals[1] === 'upload'))
-    throw new UsageError('--config は extract・all・serve・group upload でだけ使えます');
+  if ((values['snapshot-all'] || values['snapshot-prune']) && !['snapshot', 'all', 'export', 'open'].includes(cmd)) throw new UsageError('--snapshot-all と --snapshot-prune は snapshot / all / export / open で使えます');
+  if (values.config != null && cmd !== 'extract' && cmd !== 'all' && cmd !== 'serve' && cmd !== 'open' && !(cmd === 'group' && positionals[1] === 'upload'))
+    throw new UsageError('--config は extract・all・serve・open・group upload でだけ使えます');
   if (values.since != null && Number.isNaN(Date.parse(values.since))) throw new UsageError(`--since の日時を解釈できません: ${values.since}`);
-  if ((values.port != null || values.open === false) && cmd !== 'serve') throw new UsageError('--port と --no-open は serve でだけ使えます');
+  if ((values.port != null || values.open === false) && cmd !== 'serve' && cmd !== 'open') throw new UsageError('--port と --no-open は serve と open でだけ使えます');
   const port = posInt(values.port, '--port', 0);
   if (port != null && port > 65535) throw new UsageError(`--port は 65535 以下です: ${port}`);
   const sessions = values.session ? values.session.flatMap((s) => s.split(',')).map((s) => s.trim()).filter(Boolean) : null;
@@ -424,6 +439,7 @@ export function parseCli(argv: string[]): CliOptions {
     memoCmd,
     port,
     open: values.open ?? true,
+    target,
     skillDraft,
     help: values.help ?? false,
   };
