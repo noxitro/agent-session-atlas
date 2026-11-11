@@ -4,7 +4,7 @@
 //  b. 置き換えの途中・消し残しのフォルダ(.<id>.uploading / .<id>.old)があっても、セッションもトークンも二重に数えない
 //  c. 出力先を別のフォルダで使い回すと止まり、前の集計はそのまま残る
 //  d. 添えた行(atlas-session-store.json)の形が違っても止まらず、警告を出して続ける
-//  e. アップロード先の基底を指すと、0 件のレポートを作らずに、指すフォルダを案内して止まる
+//  e. アップロードしたフォルダが並ぶ場所(人ごとのフォルダ)を指すと、下のフォルダをまとめて集計する。もう 1 段上は、指すフォルダを案内して止まる
 //  f. リンクのファイルは辿らない(フォルダの外のファイルを写さない)
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -184,16 +184,38 @@ describe('Phase 16 E2E: アップロード先から集計し直す(読む側)', 
     }
   });
 
-  it('e. アップロード先の基底を指すと、指すフォルダを案内して止まる(0 件のレポートを作らない)', async () => {
+  it('e. アップロードしたフォルダが並ぶ場所を指すと、下のフォルダをまとめて集計する。もう 1 段上は、指すフォルダを案内して止まる', async () => {
     const out = join(WORK, 'out-base');
     const r = atlas(['all', '--home', root, '--out', out]);
-    expect(r.status, r.out).not.toBe(0);
-    expect(r.out).toMatch(/アップロード先の基底/);
-    expect(r.out).toContain(`--home "${destA}"`);
-    expect(r.out).toContain(`${GROUP_A}、${GROUP_B}`);
-    expect(existsSync(join(out, 'sessions.json'))).toBe(false);
-    expect(existsSync(join(out, 'atlas.html'))).toBe(false);
-  });
+    expect(r.status, r.out).toBe(0);
+    expect(r.out).toContain(`下のフォルダ 2 件をまとめて読みました(${GROUP_A}、${GROUP_B})`);
+    const merged = JSON.parse(await readFile(join(out, 'sessions.json'), 'utf8')) as SessionsFile;
+    expect(merged.source).toMatchObject({ layout: 'merged', folders: [GROUP_A, GROUP_B] });
+    expect(merged.sessions.map((x) => x.id).sort()).toEqual([...ids, GIT_SESSION, other].sort());
+    // フォルダ 1 つずつ集計したときと、セッションごとの中身が同じ(トークンも、送った側の記録から取るプロジェクト名も)
+    const strip = (f: SessionsFile) => f.sessions.filter((x) => x.id !== other).map(({ instructions: _i, ...rest }) => rest);
+    expect(strip(merged)).toEqual(strip(clean));
+    expect(existsSync(join(out, 'atlas.html'))).toBe(true);
+    // 同じセッションを 2 つのフォルダに送ってあっても、1 度だけ数える
+    const twice = join(WORK, 'atlas-logs-twice');
+    await cp(root, twice, { recursive: true });
+    await cp(join(twice, GROUP_A, ids[0]), join(twice, GROUP_B, ids[0]), { recursive: true });
+    const again = await aggregate(twice, join(WORK, 'out-twice'));
+    expect(again.sessions.map((x) => x.id).sort()).toEqual([...ids, GIT_SESSION, other].sort());
+    expect(tokens(again.sessions)).toBe(tokens(merged.sessions));
+    // もう 1 段上(人ごとのフォルダが並ぶ場所)は、0 件のレポートを作らずに止まる
+    const everyone = join(WORK, 'everyone');
+    await cp(root, join(everyone, 'person-a'), { recursive: true });
+    await cp(root, join(everyone, 'person-b'), { recursive: true });
+    const out2 = join(WORK, 'out-everyone');
+    const r2 = atlas(['all', '--home', everyone, '--out', out2]);
+    expect(r2.status, r2.out).not.toBe(0);
+    expect(r2.out).toMatch(/1 段下まで/);
+    expect(r2.out).toContain(`--home "${join(everyone, 'person-a')}"`);
+    expect(r2.out).toContain('person-a、person-b');
+    expect(existsSync(join(out2, 'sessions.json'))).toBe(false);
+    expect(existsSync(join(out2, 'atlas.html'))).toBe(false);
+  }, 180_000);
 
   it('f. リンクのファイルは辿らない(フォルダの外のファイルを写さない)', async (ctx) => {
     const dest = join(WORK, 'dest-link');

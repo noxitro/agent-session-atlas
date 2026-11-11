@@ -524,7 +524,11 @@ export interface SessionRecord {
 export interface SessionsFile {
   schemaVersion: number;
   generatedAt: string;
-  source: { root: string | null; snapshotDir: string; since: string | null };
+  /**
+   * layout と folders は、アップロードしたフォルダから集計したときだけある('flat' はフォルダ 1 つ、'merged' は下のフォルダをまとめて読んだもの。
+   * folders はまとめて読んだフォルダの名前)
+   */
+  source: { root: string | null; snapshotDir: string; since: string | null; layout?: 'flat' | 'merged'; folders?: string[] };
   /** Phase 11: data.db の読み取りの状態(WAL の注意、表ごとの列の扱い)。無ければ null */
   desktop?: { readAt: string; wal: DesktopData['wal']; coverage: DesktopData['coverage']; warnings: string[]; sessions: number } | null;
   /** empty: 依頼 0・ツール 0・応答 0 のセッション数(sessions には含む) */

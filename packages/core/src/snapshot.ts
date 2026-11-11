@@ -59,8 +59,10 @@ export const SNAPSHOT_MANIFEST = 'snapshot-manifest.json';
  * 途中で止まった集計の後でも、出力先がどこから集計したものかが分かるようにする
  */
 export const SNAPSHOT_SOURCE = 'snapshot-source.json';
-/** アップロード先の基底かどうかを確かめるとき、索引の無いフォルダを中まで見る数の上限 */
+/** アップロード先のフォルダが並ぶ場所かどうかを確かめるとき、索引の無いフォルダを中まで見る数の上限 */
 const UPLOAD_PROBE_MAX = 20;
+/** もう 1 段上(アップロード先のフォルダが並ぶ場所が、さらに並ぶ場所)かどうかを確かめるとき、下のフォルダ 1 つにつき索引を探す数の上限 */
+const PARENT_PROBE_MAX = 50;
 
 export interface SnapshotOptions {
   /** この時刻以降に更新されたセッションだけを複製する(ISO 文字列か Date) */
@@ -84,9 +86,15 @@ export interface SnapshotManifest {
   sourceRoot: string;
   /**
    * 元の形。'copilot' は ~/.copilot(session-state/ の下にセッション)、'flat' はセッションのフォルダが直下に並ぶもの
-   * (atlas がアップロードしたグループのフォルダ)。古いマニフェストには無い('copilot' と同じ)
+   * (atlas がアップロードしたグループ・プロジェクトのフォルダ)、'merged' はそのフォルダが直下に並ぶもの(まとめて読む)。
+   * 古いマニフェストには無い('copilot' と同じ)
    */
-  layout?: 'copilot' | 'flat';
+  layout?: SourceLayout;
+  /**
+   * layout が 'merged' のとき、まとめて読んだフォルダの名前(名前の順)と、同じ id のセッションが複数のフォルダにあって
+   * 1 つだけ数えたときに、数えなかったほうの数
+   */
+  merged?: { folders: string[]; duplicates: number };
   since: string | null;
   /** copied が false なら今回は複製できず、前回の複製(bytes が 0 なら無し)を使っている。理由は error */
   databases: Record<string, { copied: boolean; bytes: number; attempts: number; error?: string }>;
@@ -114,6 +122,31 @@ export interface SnapshotManifest {
   };
 }
 
+export type SourceLayout = 'copilot' | 'flat' | 'merged';
+
+/**
+ * 集計の元に指したフォルダの形。
+ * - copilot: ~/.copilot(session-state/ か session-store.db がある)
+ * - flat: セッションのフォルダが直下に並ぶ(アップロードしたグループ・プロジェクトのフォルダ)
+ * - merged: flat のフォルダが直下に並ぶ(人ごとのフォルダなど)。folders を 1 つのレポートにまとめて読む
+ * - parent: merged のフォルダが直下に並ぶ(送り先そのものなど)。まとめては読まない。names は下のフォルダの名前
+ * - none: どれでもない(セッションが 1 件も見つからない)
+ */
+export type SourceShape = { kind: 'copilot' } | { kind: 'flat' } | { kind: 'merged'; folders: string[] } | { kind: 'parent'; names: string[] } | { kind: 'none' };
+
+/** 集計の元に指したフォルダの形を調べる(読むだけ)。無い・読めないフォルダは none */
+export async function describeSource(src: string): Promise<SourceShape> {
+  if (looksLikeCopilotHome(src)) return { kind: 'copilot' };
+  if (await isFlatLayout(src)) return { kind: 'flat' };
+  // まとめて読むかどうかは先頭の UPLOAD_PROBE_MAX 個までで決め、読むと決めたら残りも全部調べる(索引の無いフォルダを読み落とさないように)
+  if ((await uploadFoldersUnder(src, UPLOAD_PROBE_MAX)).length) return { kind: 'merged', folders: await uploadFoldersUnder(src, Infinity) };
+  const names = await mergedFoldersUnder(src);
+  return names.length ? { kind: 'parent', names } : { kind: 'none' };
+}
+
+/** 同じ id のセッションが複数のフォルダにあって、数えなかったほうの理由(manifest の extras.skipped) */
+export const DUPLICATE_REASON = '同じ id のセッションが別のフォルダにもある(events.jsonl が大きいほうだけ数えた)';
+
 /**
  * ~/.copilot の必要部分を dest へ複製する。元は一切書き換えない。
  * - SQLite は本体と -wal をバイト列でコピーし、コピー側から VACUUM INTO(WAL の内容も含む単一ファイル)
@@ -128,16 +161,19 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
   const extras: NonNullable<SnapshotManifest['extras']> = { all, sessionFiles: 0, sessionBytes: 0, topLevel: {}, skipped: [], desktop: null, leftover: [] };
   if (since && Number.isNaN(since.getTime())) throw new Error(`since が日時として解釈できない: ${String(opts.since)}`);
   if (!existsSync(src)) throw new Error(`元ディレクトリが無い: ${src}`);
-  // アップロードしたグループのフォルダ(<基底>\<グループ>\<セッション id>\events.jsonl …)は、そのフォルダを session-state/ とみなす
-  const flat = await isFlatLayout(src);
-  // アップロード先の基底(グループ・プロジェクトのフォルダが並ぶ場所)を指していたら、0 件のレポートを作らずに止めて、指すフォルダを案内する
-  if (!flat && !looksLikeCopilotHome(src)) {
-    const subs = await uploadFoldersUnder(src);
-    if (subs.length) {
-      const names = `${subs.slice(0, 3).join('、')}${subs.length > 3 ? ` ほか ${subs.length - 3} 件` : ''}`;
-      throw new Error(`${src} は、アップロード先の基底(グループやプロジェクトのフォルダが並ぶ場所)のようです。集計し直すフォルダを 1 つ選んで指定してください(例: --home "${join(src, subs[0])}")。この下にあるフォルダ: ${names}`);
-    }
+  // アップロードしたグループ・プロジェクトのフォルダ(<送り先>\<フォルダ>\<セッション id>\events.jsonl …)は、そのフォルダを session-state/ とみなす。
+  // そのフォルダが並ぶ場所(人ごとのフォルダなど)は、下のフォルダをまとめて読む
+  const shape = await describeSource(src);
+  // もう 1 段上(送り先そのものなど)を指していたら、0 件のレポートを作らずに止めて、指すフォルダを案内する
+  if (shape.kind === 'parent') {
+    const names = `${shape.names.slice(0, 3).join('、')}${shape.names.length > 3 ? ` ほか ${shape.names.length - 3} 件` : ''}`;
+    throw new Error(
+      `${src} の下には、アップロードしたフォルダ(プロジェクトやグループ)を持つフォルダが並んでいます。まとめて集計できるのは 1 段下までなので、` +
+        `集計するフォルダを 1 つ選んで指定してください(例: --home "${join(src, shape.names[0])}")。この下にあるフォルダ: ${names}`,
+    );
   }
+  const flat = shape.kind === 'flat';
+  const merged = shape.kind === 'merged' ? shape.folders : null;
   // 出力先が別の元から作ったものなら、足さずに止める(前の元のセッションと session-store.db が残っていて、黙って混ざるため)。
   // 前の複製は消さない(元で消したログの、最後の複製かもしれない)
   // 前の元は、最後まで終わった集計の manifest と、集計を始めたときに書く印(SNAPSHOT_SOURCE)の両方で確かめる
@@ -216,10 +252,17 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
     }
   }
 
-  manifest.layout = flat ? 'flat' : 'copilot';
-  const stateSrc = flat ? src : join(src, 'session-state');
+  manifest.layout = shape.kind === 'flat' || shape.kind === 'merged' ? shape.kind : 'copilot';
+  // セッションのフォルダが並ぶ場所。まとめて読むときは下のフォルダの数だけある
+  const stateSrcs = merged ? merged.map((f) => join(src, f)) : [flat ? src : join(src, 'session-state')];
   const stateDest = join(dest, 'session-state');
-  if (existsSync(stateSrc)) {
+  // まとめて読むとき、同じ id のセッションが複数のフォルダにあれば 1 つだけ数える(events.jsonl が大きいほう。同じなら名前の順で先のフォルダ)
+  const owners = merged ? await sessionOwners(stateSrcs) : null;
+  if (merged) manifest.merged = { folders: merged, duplicates: 0 };
+  /** 写し終えたセッションの id(まとめて読むとき、作業用のフォルダから同じ id を 2 度写さないように) */
+  const taken = new Set<string>();
+  for (const stateSrc of stateSrcs) {
+    if (!existsSync(stateSrc)) continue;
     for (const ent of await readdir(stateSrc, { withFileTypes: true })) {
       if (!ent.isDirectory()) continue;
       const dirSrc = join(stateSrc, ent.name);
@@ -230,13 +273,20 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
       // ただし、置き換えの途中で止まって本体(<id>)が無いセッションは、作業用のフォルダから写す(集計から消えたままにしない)
       const workId = uploadWorkDirId(ent.name);
       if (workId != null) {
-        if (!hasSessionFile(join(stateSrc, workId)) && orphanSource(stateSrc, workId) === ent.name) {
+        // まとめて読むときは、本体が別のフォルダにあるもの・別のフォルダの作業用のフォルダから写したものも、本体があるものとして扱う
+        const elsewhere = owners != null && (owners.has(workId) || taken.has(workId));
+        if (!elsewhere && !hasSessionFile(join(stateSrc, workId)) && orphanSource(stateSrc, workId) === ent.name) {
           name = workId;
           (extras.recovered ??= []).push({ id: workId, path: rel });
         } else {
           if (hasSessionFile(dirSrc)) extras.skipped.push({ path: rel, bytes: 0, reason: UPLOAD_WORK_REASON });
           continue;
         }
+      } else if (owners != null && owners.has(name) && owners.get(name) !== stateSrc) {
+        // 同じ id のセッションが別のフォルダにあり、そちらを数える(ここで止めて、下のリンクの片付けで数えるほうの複製を消さない)
+        extras.skipped.push({ path: rel, bytes: 0, reason: DUPLICATE_REASON });
+        manifest.merged!.duplicates++;
+        continue;
       }
       // リンク(シンボリックリンク・ジャンクション)のファイルは辿らない(フォルダの外のファイルを写さないように)
       const present: string[] = [];
@@ -253,6 +303,7 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
       }
       try {
         await snapshotSession(name, dirSrc, present);
+        taken.add(name);
       } catch (e) {
         // 走査中にセッションが消された(Copilot の削除・一時セッションの片付け)なら飛ばす。それ以外は止める
         if ((e as NodeJS.ErrnoException).code === 'ENOENT' && !existsSync(dirSrc)) continue;
@@ -262,8 +313,8 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
   }
 
   // Phase 11: ~/.copilot 直下の plans/・attachments/(と chats/ の *.md)。logs/ は --snapshot-all、repos/ は写さない。
-  // 直下にセッションが並ぶ形では、直下のフォルダはセッションそのものなので写さない(写したものとして一覧に出さない)
-  if (!flat) await copyTopLevel(src, dest, all, prune, extras);
+  // 直下にセッションが並ぶ形・そのフォルダが並ぶ形では、直下のフォルダはセッションかその入れ物なので写さない(写したものとして一覧に出さない)
+  if (!flat && !merged) await copyTopLevel(src, dest, all, prune, extras);
   // Phase 11: data.db は複製せず、許可リストの列だけを desktop.json に書く(immutable で開く。元には触れない)
   try {
     const d = await readDesktopDb(join(src, 'data.db'));
@@ -320,30 +371,68 @@ function orphanSource(stateSrc: string, id: string): string | null {
   return hasSessionFile(join(stateSrc, old)) ? old : null;
 }
 
-/**
- * 直下のフォルダのうち、アップロードしたグループ・プロジェクトのフォルダの名前。
- * 索引(写すたびに書く UPLOAD_INDEX)があるものは、フォルダ 1 つにつき 1 回調べるだけで分かる。
- * 索引の無いもの(前の版が写した、手で作った)は、セッションのフォルダが並ぶかを中まで見るので、名前の順で先頭の UPLOAD_PROBE_MAX 個までにする
- * (関係のない大きなフォルダを指したときに、下のフォルダを全部読まないように)
- */
-async function uploadFoldersUnder(src: string): Promise<string[]> {
-  let ents: import('node:fs').Dirent[];
+/** 直下のフォルダの名前(名前の順)。読めなければ空 */
+async function subDirs(src: string): Promise<string[]> {
   try {
-    ents = await readdir(src, { withFileTypes: true });
+    return (await readdir(src, { withFileTypes: true }))
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name)
+      .sort();
   } catch {
     return [];
   }
-  const dirs = ents
-    .filter((e) => e.isDirectory())
-    .map((e) => e.name)
-    .sort();
+}
+
+/**
+ * 直下のフォルダのうち、アップロードしたグループ・プロジェクトのフォルダの名前(名前の順)。
+ * 索引(写すたびに書く UPLOAD_INDEX)があるものは、フォルダ 1 つにつき 1 回調べるだけで分かる。
+ * 索引の無いもの(前の版が写した、手で作った)は、セッションのフォルダが並ぶかを中まで見るので、名前の順で先頭の probeMax 個までにする
+ * (関係のない大きなフォルダを指したときに、下のフォルダを全部読まないように)
+ */
+async function uploadFoldersUnder(src: string, probeMax: number): Promise<string[]> {
   const out: string[] = [];
   let probed = 0;
-  for (const n of dirs) {
+  for (const n of await subDirs(src)) {
     if (existsSync(join(src, n, UPLOAD_INDEX))) out.push(n);
-    else if (probed++ < UPLOAD_PROBE_MAX && (await isFlatLayout(join(src, n)))) out.push(n);
+    else if (probed++ < probeMax && (await isFlatLayout(join(src, n)))) out.push(n);
   }
   return out;
+}
+
+/**
+ * 直下のフォルダのうち、アップロードしたフォルダを下に持つものの名前(名前の順)。もう 1 段上を指したときの案内に使う。
+ * 索引(UPLOAD_INDEX)だけで確かめ、見るのは名前の順で先頭の UPLOAD_PROBE_MAX 個、その下も先頭の PARENT_PROBE_MAX 個まで
+ * (関係のない大きなフォルダを指したときに、2 段下まで全部読まないように)
+ */
+async function mergedFoldersUnder(src: string): Promise<string[]> {
+  const out: string[] = [];
+  for (const n of (await subDirs(src)).slice(0, UPLOAD_PROBE_MAX)) {
+    const subs = (await subDirs(join(src, n))).slice(0, PARENT_PROBE_MAX);
+    if (subs.some((s) => existsSync(join(src, n, s, UPLOAD_INDEX)))) out.push(n);
+  }
+  return out;
+}
+
+/**
+ * まとめて読むフォルダのうち、セッションの id ごとに、数えるほうのフォルダ(events.jsonl が大きいほう。同じなら先に見たほう)。
+ * 作業用のフォルダ(置き換えの途中・消し残し)は入れない
+ */
+async function sessionOwners(stateSrcs: readonly string[]): Promise<Map<string, string>> {
+  const best = new Map<string, { dir: string; bytes: number }>();
+  for (const dir of stateSrcs) {
+    for (const id of await subDirs(dir)) {
+      if (isUploadWorkDir(id) || !hasSessionFile(join(dir, id))) continue;
+      let bytes = 0;
+      try {
+        bytes = (await stat(join(dir, id, 'events.jsonl'))).size;
+      } catch {
+        /* events.jsonl が無い(workspace.yaml だけ) */
+      }
+      const cur = best.get(id);
+      if (!cur || bytes > cur.bytes) best.set(id, { dir, bytes });
+    }
+  }
+  return new Map([...best].map(([id, x]) => [id, x.dir]));
 }
 
 /** 出力先に残っている、前の集計の元の場所(最後まで終わった集計の manifest と、始めたときの印)。無い・読めないものは入れない(書き直す) */

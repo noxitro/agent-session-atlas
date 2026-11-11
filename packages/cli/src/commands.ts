@@ -173,6 +173,11 @@ export async function runSnapshot(p: Paths, since: string | null, log: Log, all 
   );
   for (const [name, d] of Object.entries(m.databases)) if (!d.copied && d.error) log(`snapshot: 注意 ${name} を今回は複製できませんでした(${d.bytes ? '前回の複製を使います' : '前回の複製も無いので、このファイルの内容は使いません'}): ${d.error}`);
   if (m.sessionDbErrors?.length) log(`snapshot: 注意 session.db を複製できなかったセッション ${m.sessionDbErrors.length} 件(${m.sessionDbErrors.slice(0, 3).join(' / ')})`);
+  if (m.merged) {
+    const names = m.merged.folders;
+    log(`snapshot: 下のフォルダ ${names.length} 件をまとめて読みました(${names.slice(0, 5).join('、')}${names.length > 5 ? ` ほか ${names.length - 5} 件` : ''})`);
+    if (m.merged.duplicates) log(`snapshot: 注意 同じ id のセッションが複数のフォルダにあったので、events.jsonl が大きいほうだけ数えました(数えなかったもの ${m.merged.duplicates} 件。manifest の extras.skipped)`);
+  }
   const x = m.extras;
   if (x?.recovered?.length) log(`snapshot: 注意 アップロードの置き換えが途中で止まっていたセッション ${x.recovered.length} 件は、作業用のフォルダから写しました(${x.recovered.slice(0, 3).map((r) => r.path).join(' / ')})`);
   if (x) {

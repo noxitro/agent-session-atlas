@@ -418,10 +418,11 @@ export async function extract(snapshotDir: string, opts: ExtractOptions = {}): P
   }
 
   const ids = [...new Set([...store.sessions.keys(), ...dirs])].sort();
-  // アップロード先から集計し直すとき(直下にセッションが並ぶ形)は、ログのパスを読む側の PC のディスクで調べない
+  // アップロード先から集計し直すとき(直下にセッションが並ぶ形と、そのフォルダをまとめて読む形)は、ログのパスを読む側の PC のディスクで調べない
   // (送った人の作業フォルダは無いか、同じパスに別のリポジトリがある。ネットワークのパスなら読みに行ってしまう)。
   // プロジェクト名は、送った側が決めて添えた記録(UPLOAD_SESSION_META)から取る
-  const uploaded = manifest?.layout === 'flat';
+  const layout = manifest?.layout === 'flat' || manifest?.layout === 'merged' ? manifest.layout : null;
+  const uploaded = layout != null;
   const resolver = opts.projects === false ? null : new ProjectResolver({ ...withSourceHome(opts.projects ?? {}, manifest?.sourceRoot ?? null), ...(uploaded ? { readGit: false } : {}) });
   const wikiClassifier = new WikiClassifier(opts.wikis);
   const sessions: SessionRecord[] = [];
@@ -491,7 +492,7 @@ export async function extract(snapshotDir: string, opts: ExtractOptions = {}): P
   return {
     schemaVersion: SESSIONS_SCHEMA_VERSION,
     generatedAt: new Date().toISOString(),
-    source: { root: manifest?.sourceRoot ?? null, snapshotDir, since },
+    source: { root: manifest?.sourceRoot ?? null, snapshotDir, since, ...(layout ? { layout, ...(manifest?.merged ? { folders: manifest.merged.folders } : {}) } : {}) },
     desktop: desktop ? { readAt: desktop.readAt, wal: desktop.wal, coverage: desktop.coverage, warnings: desktop.warnings, sessions: desktop.tables.sessions?.length ?? 0 } : null,
     counts: { sessions: sessions.length, dbOnly, dirOnly: sessions.length - both - dbOnly, both, empty: sessions.filter((s) => s.empty).length },
     installed,
