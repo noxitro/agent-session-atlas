@@ -1,13 +1,14 @@
 // Phase 14 の画面の操作(Playwright の Chromium)。架空の fixture で atlas all → atlas serve(port 0)を立て、実際に押して確かめる。
 //  e. 「集計し直す」→ 帯が実行中から完了に変わり、「再読み込み」で新しい集計(埋め込みの生成日時)が出て帯は消える
 //  f. 「判定する…」の確認ダイアログ: 「やめる」なら API を呼ばない。件数を決めて実行すると偽 copilot で判定が増える
+//  f1. 「チャットに貼る」: 添付ファイルを作れなかったら、ダイアログに失敗と理由が出る
 //  f2. 「チャットに貼る」: 添付ファイルを作り、保存のリンクと本文のコピーが働き、形の違う返答は理由を出して取り込まず、正しい返答を取り込んで反映できる
 //  g. 詳細ページの「記録を読む」「全文を作って読む」で本文が描かれ、記録に混ぜた script やイベント属性は実行されない
 //  h. file:// で開いた atlas.html と詳細ページには操作が出ない
 // どの画面でもページ内の例外とコンソールのエラーが無いこと。
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { appendFile, readFile, rm } from 'node:fs/promises';
+import { appendFile, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright';
@@ -127,6 +128,34 @@ describe('画面からの操作(Phase 14)', () => {
     await expect.poll(() => page.evaluate<number>("JSON.parse(document.getElementById('atlas-data').textContent).judgments.items")).toBe(2);
   });
 
+  it('f1. 「チャットに貼る」: 添付ファイルを作れなかったら、ダイアログに失敗と理由を出す(裏の帯には出ないので、ここで見せる)', async () => {
+    // bundle/ をファイルに置き換えて、作る処理(子プロセス)を失敗させる
+    const bundle = join(out, 'bundle');
+    const aside = join(out, 'bundle.aside');
+    await rename(bundle, aside);
+    await writeFile(bundle, 'フォルダーではない');
+    try {
+      await page.goto(server.url);
+      await page.getByTestId('job-judge').click();
+      await page.getByTestId('judge-dialog').waitFor({ state: 'visible' });
+      await page.getByTestId('judge-method-chat').check();
+      await expect.poll(() => page.getByTestId('chat-bundle').innerText()).toMatch(/^未判定 \d+ 件で作る$/);
+      expect(await page.getByTestId('chat-bundle-failed').count()).toBe(0);
+      await page.getByTestId('chat-bundle').click();
+      const failed = page.getByTestId('chat-bundle-failed');
+      await failed.waitFor({ state: 'visible', timeout: 60_000 });
+      expect(await failed.getAttribute('role')).toBe('alert');
+      expect(await failed.innerText()).toMatch(/添付ファイルを作れませんでした\(終了コード 1\)。理由: atlas: 失敗しました: /);
+      // 作れていないので「まだ作っていません」のまま。もう一度押せる
+      expect(await page.getByTestId('chat-bundle-state').innerText()).toContain('まだ作っていません');
+      expect(await page.getByTestId('chat-bundle').isEnabled()).toBe(true);
+      await expect.poll(() => band().getAttribute('data-state')).toBe('');
+    } finally {
+      await rm(bundle, { force: true });
+      await rename(aside, bundle);
+    }
+  });
+
   it('f2. 「チャットに貼る」: 添付ファイルを作り、返答を貼って取り込み、レポートに反映する', async () => {
     jobPosts.length = 0;
     await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin: new URL(server.url).origin });
@@ -144,6 +173,8 @@ describe('画面からの操作(Phase 14)', () => {
     await page.getByTestId('chat-bundle').click();
     await expect.poll(() => page.getByTestId('chat-bundle-state').innerText(), { timeout: 60_000 }).toMatch(/未判定だけ、\d+ ファイル/);
     expect(jobPosts.map((b) => JSON.parse(b))).toEqual([{ kind: 'bundle' }]);
+    // f1. の失敗の表示は、作れたら消える
+    expect(await page.getByTestId('chat-bundle-failed').count()).toBe(0);
     // 終わったことはダイアログの手順 1 が示すので、裏の帯には出さない(レポートは変わっていないので「再読み込み」も出さない)
     await expect.poll(() => band().getAttribute('data-state')).toBe('');
     expect(await page.getByTestId('job-reload').count()).toBe(0);

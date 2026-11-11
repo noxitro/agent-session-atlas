@@ -1,4 +1,5 @@
 // 段階 2: 依頼ごとの判定(turn-judgments.json)の検証・取り込み、判定に渡すファイルの塊と分割、copilot -p の応答の読み取りと実行
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { normalizeSession } from '../../core/src/normalize.ts';
 import type { CopilotEvent, SessionRecord } from '../../core/src/types.ts';
 import type { JudgeBackend } from '../src/backends/types.ts';
+import { buildBundle } from '../src/bundle.ts';
 import { buildTurnBundle, buildTurnPrompt, chunksOf, collectTurnTexts, DEFAULT_TURN_LIMITS } from '../src/turn-bundle.ts';
 import { runTurnJudge, turnImportPhases, turnItemsFromTexts } from '../src/turn-run.ts';
 import { importTurnJudgmentsText, readTurnJudgments, turnItemProblems } from '../src/turn-schema.ts';
@@ -139,6 +141,25 @@ describe('判定に渡すファイル', () => {
     expect(part).toContain('# Copilot の依頼ごとの判定の指示(分割 1 / 1)');
     expect(part).toContain('`要件定義` / `設計` / `実装` / `テスト`');
     expect(await readdir(join(d, 'tb', 'chunks'))).toEqual(['0001.md']);
+  });
+
+  it('作り直しが途中で止まったら、前の一覧(manifest.json)を残さない(消した後のファイルを指す「作成済み」にしない)', async () => {
+    // 依頼ごとの判定
+    await buildTurnBundle([s], { bundleDir: join(d, 'tb'), snapshotDir: join(d, 'snapshot'), phases: PHASES });
+    expect(existsSync(join(d, 'tb', 'manifest.json'))).toBe(true);
+    const stop = (): string => {
+      throw new Error('途中で止まった');
+    };
+    await expect(buildTurnBundle([s], { bundleDir: join(d, 'tb'), snapshotDir: join(d, 'snapshot'), phases: PHASES, boundary: stop })).rejects.toThrow('途中で止まった');
+    expect(existsSync(join(d, 'tb', 'manifest.json'))).toBe(false);
+    // 工数の判定
+    await buildBundle([s], { bundleDir: join(d, 'b'), snapshotDir: join(d, 'snapshot') });
+    expect(existsSync(join(d, 'b', 'manifest.json'))).toBe(true);
+    await expect(buildBundle([s], { bundleDir: join(d, 'b'), snapshotDir: join(d, 'snapshot'), perPart: 0 })).rejects.toThrow(/perPart/);
+    expect(existsSync(join(d, 'b', 'manifest.json'))).toBe(false);
+    // もう一度作れば元に戻る
+    await buildBundle([s], { bundleDir: join(d, 'b'), snapshotDir: join(d, 'snapshot') });
+    expect(existsSync(join(d, 'b', 'manifest.json'))).toBe(true);
   });
 
   it('copilot -p で塊ごとに判定し、1 塊ずつ確定する。応答が欠けた塊は failures に残して次へ進む', async () => {

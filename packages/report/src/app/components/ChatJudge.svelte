@@ -40,6 +40,12 @@
   const next = $derived(parts.find((p) => p.judged < p.sessions) ?? null);
   const bundling = $derived(jobs.running && jobs.job?.kind === bundleKind);
   const off = $derived(jobs.running || jobs.busy);
+  /** 添付ファイルを作る処理が失敗したか、止められたとき(本文の上の帯には出ないので、理由はここで見せる) */
+  const ended = $derived(jobs.job && jobs.job.kind === bundleKind && (jobs.job.state === 'failed' || jobs.job.state === 'canceled') ? jobs.job : null);
+  /** 理由の 1 行(処理が最後に書いた行。「atlas: 失敗しました: …」) */
+  const reason = $derived(ended?.state === 'failed' && ended.log.length ? ended.log[ended.log.length - 1] : '');
+  /** ほかのプログラムがファイルを掴んでいるときの失敗(Windows) */
+  const held = $derived(/\b(EBUSY|EPERM|ENOTEMPTY)\b/.test(reason));
 
   async function load(): Promise<void> {
     loadError = '';
@@ -149,6 +155,27 @@
       </button>
       {#if target === 'turns' && withoutTurns > 0}<p class="state" data-testid="chat-without-turns">依頼ごとの記録が無いセッションが {int(withoutTurns)} 件あります(古い集計)。先に「集計し直す」を押すと、その依頼も入ります。</p>{/if}
       {#if jobs.error && !bundling}<p class="err" role="alert">{jobs.error}</p>{/if}
+      {#if ended}
+        <div class="err" role="alert" data-testid="chat-bundle-failed">
+          {#if ended.state === 'failed'}
+            <p><strong>添付ファイルを作れませんでした</strong>(終了コード {ended.exitCode ?? '—'})。{reason ? `理由: ${reason}` : ''}</p>
+            <p>
+              {#if held}添付ファイルのフォルダーかその中のファイルを、ほかのアプリ(エディターやプレビューなど)が開いたままにしています。閉じてから、もう一度押してください。{:else}原因を直してから、もう一度押してください。{/if}
+              作りかけのファイルは使えません。
+            </p>
+          {:else}
+            <p><strong>添付ファイルの作成を止めました</strong>。作りかけのファイルは使えないので、もう一度作ってください。</p>
+          {/if}
+          {#if ended.log.length > 1}
+            <details class="log">
+              <summary>ログ(末尾 {ended.log.length} 行)</summary>
+              <!-- 縦に流れる枠はキーボードでも送れるようにする(Tab で止まって矢印で送る) -->
+              <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+              <pre tabindex="0" aria-label="処理のログ">{ended.log.join('\n')}</pre>
+            </details>
+          {/if}
+        </div>
+      {/if}
     </li>
 
     <li>
@@ -438,6 +465,31 @@
   }
   .err ul {
     padding-left: 1.2em;
+    overflow-wrap: anywhere;
+  }
+  .err p {
+    overflow-wrap: anywhere;
+  }
+  .log {
+    margin: 4px 0 0;
+    font-size: 0.75rem;
+  }
+  .log summary {
+    cursor: pointer;
+    width: max-content;
+  }
+  .log pre {
+    margin: 4px 0 2px;
+    padding: 6px 8px;
+    max-height: 14em;
+    overflow: auto;
+    color: var(--ink);
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
     overflow-wrap: anywhere;
   }
   .footer {

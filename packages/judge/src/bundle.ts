@@ -70,6 +70,14 @@ export function packetFileName(id: string): string {
   return `${id.replace(/[^A-Za-z0-9._-]/g, '_')}.md`;
 }
 
+/**
+ * 前回の生成物を消すときの指定。ほかのプログラム(ウイルス対策・検索の索引・開いたままのアプリ)がファイルを一時的に掴んでいると
+ * Windows では EBUSY / EPERM / ENOTEMPTY になるので、少し待ってやり直す。
+ * やり直しはフォルダーとその中のファイルの両方で数えられるので、待ちは掛け算で延びる:
+ * この指定で、フォルダーの直下のファイルが掴まれ続けたときに諦めるまで約 3 秒(maxRetries 5 / retryDelay 200 だと約 21 秒で、画面が長く止まって見える)
+ */
+export const REMOVE = { recursive: true, force: true, maxRetries: 3, retryDelay: 100 } as const;
+
 export async function buildBundle(sessions: SessionRecord[], opts: BundleOptions): Promise<BundleManifest> {
   const log = opts.log ?? (() => {});
   const limits = opts.limits ?? DEFAULT_LIMITS;
@@ -83,10 +91,12 @@ export async function buildBundle(sessions: SessionRecord[], opts: BundleOptions
     log(`bundle: 注意 スナップショット${opts.snapshotDir ? `(${opts.snapshotDir})` : ''}が無いため、本文は sessions.json の抜粋(先頭・末尾 2,000 字)で代用します`);
   }
 
-  // 前回の生成物を消す(絞り込みで減ったパケットを残さない)
-  await rm(join(dir, 'sessions'), { recursive: true, force: true });
+  // 前回の生成物を消す(絞り込みで減ったパケットを残さない)。一覧(manifest.json)を最初に消す:
+  // 途中で止まったときに、消した後のファイルを指す古い一覧が「作成済み」として残らないようにする
+  await rm(join(dir, 'manifest.json'), REMOVE);
+  await rm(join(dir, 'sessions'), REMOVE);
   await mkdir(join(dir, 'sessions'), { recursive: true });
-  await rm(join(dir, 'parts'), { recursive: true, force: true });
+  await rm(join(dir, 'parts'), REMOVE);
 
   const entries: BundleEntry[] = [];
   const markdowns = new Map<string, string>();

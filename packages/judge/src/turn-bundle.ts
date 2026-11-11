@@ -23,6 +23,7 @@ import {
   type SessionRecord,
   type TurnRow,
 } from '../../core/src/index.ts';
+import { REMOVE } from './bundle.ts';
 import { clip, fenced } from './packet.ts';
 import { packetBoundary, SAFETY_RULES } from './rubric.ts';
 import { TURN_JUDGMENTS_VERSION, turnJsonSchema } from './turn-schema.ts';
@@ -288,7 +289,9 @@ export interface TurnBundleOptions {
 export async function buildTurnBundle(sessions: SessionRecord[], o: TurnBundleOptions): Promise<TurnBundleManifest> {
   const limits = o.limits ?? DEFAULT_TURN_LIMITS;
   const generatedAt = (o.now?.() ?? new Date()).toISOString();
-  await rm(join(o.bundleDir, 'parts'), { recursive: true, force: true });
+  // 一覧を最初に消す(途中で止まったときに、消した後のファイルを指す古い一覧を残さない)
+  await rm(join(o.bundleDir, 'manifest.json'), REMOVE);
+  await rm(join(o.bundleDir, 'parts'), REMOVE);
   await mkdir(join(o.bundleDir, 'parts'), { recursive: true });
   const chunks: TurnChunk[] = [];
   const skipped: TurnBundleManifest['skipped'] = [];
@@ -335,7 +338,7 @@ export async function buildTurnBundle(sessions: SessionRecord[], o: TurnBundleOp
     skipped,
   };
   // copilot -p で回すときは塊ごとの本文が要るので、塊の本文も残す
-  await rm(join(o.bundleDir, 'chunks'), { recursive: true, force: true });
+  await rm(join(o.bundleDir, 'chunks'), REMOVE);
   await mkdir(join(o.bundleDir, 'chunks'), { recursive: true });
   for (let i = 0; i < chunks.length; i++) await writeFile(join(o.bundleDir, 'chunks', `${String(i + 1).padStart(4, '0')}.md`), chunks[i].markdown);
   await writeFile(join(o.bundleDir, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
