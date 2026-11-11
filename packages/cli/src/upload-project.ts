@@ -1,4 +1,4 @@
-// プロジェクトのセッションをまとめて送る(upload-project.bat から、集計の後に呼ぶ)。
+// プロジェクトのセッションをまとめて送る(upload-project.bat から呼ぶ。最新のログを集計し直してから、送る操作に進む)。
 // 集計のプロジェクト(プロジェクト別の表と同じ単位)のセッションの生ログを、<送り先>/<プロジェクト名>/<セッション id>/ に写す。
 // 送るプロジェクトは、画面の「プロジェクト別」で「まとめて送る」に印を付けたもの(atlas.config.json の uploadProjects)。
 // 印が無ければ、その場で番号を選ぶ(1 3 5-8 のように複数選べる)。印の無い新しいプロジェクトは送らず、最近更新したものの名前を出して知らせる。
@@ -10,13 +10,15 @@
 //  - 1 行に 1 つのことだけを書く。一覧は名前の列をそろえる
 //  - 調べている・写している途中の様子は、行を増やさずに 1 行を書き換えて出す(io.status。端末でなければ出さない)
 import { existsSync, statSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { clearLine, cursorTo } from 'node:readline';
-import { createInterface } from 'node:readline/promises';
+import { writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { clearLine, createInterface, cursorTo } from 'node:readline';
 import { fileURLToPath } from 'node:url';
+import { parseCli } from './args.ts';
 import { defaultConfigPath, loadConfig, updateConfig } from './config.ts';
 import { pickFolder } from './folder-picker.ts';
-import { resolvePaths } from './commands.ts';
+import { resolvePaths, run as runCli } from './commands.ts';
 import { acquireOutLock, OutBusyError } from './jobs.ts';
 import { safeDirName } from './group-export.ts';
 import {
@@ -50,12 +52,29 @@ export class UploadIncompleteError extends Error {}
 const size = (b: number): string => (b < 1024 * 1024 ? `${Math.ceil(b / 1024)} KB` : `${(b / 1024 / 1024).toFixed(b < 10 * 1024 * 1024 ? 1 : 0)} MB`);
 const day = (iso: string | null): string => (iso ? iso.slice(0, 10) : '日付不明');
 
-/** 画面での幅(全角の文字は 2、ほかは 1)。一覧の列をそろえるのと、1 行に収めるのに使う */
+/** 幅を取らない文字(結合する記号・異体字セレクタ・ZWJ などの書式の文字) */
+const ZERO_WIDTH = /[\p{Mn}\p{Me}\p{Cf}]/u;
+/** 端末で絵文字として 2 桁で出る文字(☕ ⭐ ✅ など、全角の範囲の外にもある) */
+const EMOJI = /\p{Emoji_Presentation}/u;
+
+/**
+ * 画面での幅(全角の文字と絵文字は 2、結合する記号などは 0、ほかは 1)。一覧の列をそろえるのと、1 行に収めるのに使う。
+ * 後ろに U+FE0F(絵文字で出す指定)が付いた文字(✔️ など)は 2 と数える
+ */
 export function width(s: string): number {
   let n = 0;
+  let prev = 0;
   for (const ch of s) {
     const c = ch.codePointAt(0)!;
+    if (ZERO_WIDTH.test(ch)) {
+      if (c === 0xfe0f && prev === 1) {
+        n += 1;
+        prev = 2;
+      }
+      continue;
+    }
     const wide =
+      EMOJI.test(ch) ||
       (c >= 0x1100 && c <= 0x115f) ||
       (c >= 0x2e80 && c <= 0xa4cf) ||
       (c >= 0xac00 && c <= 0xd7a3) ||
@@ -65,7 +84,8 @@ export function width(s: string): number {
       (c >= 0xffe0 && c <= 0xffe6) ||
       (c >= 0x1f300 && c <= 0x1faff) ||
       (c >= 0x20000 && c <= 0x3fffd);
-    n += wide ? 2 : 1;
+    prev = wide ? 2 : 1;
+    n += prev;
   }
   return n;
 }
@@ -75,12 +95,10 @@ const padEnd = (s: string, n: number): string => s + ' '.repeat(Math.max(0, n - 
 
 /** 画面での幅が max に収まるところで切る(書き換える 1 行が折り返すと、消し残るため) */
 export function fit(s: string, max: number): string {
-  let n = 0;
   let out = '';
+  // 1 文字ずつではなく、ここまでの全体の幅で見る(U+FE0F のように、前の文字の幅を変えるものがあるため)
   for (const ch of s) {
-    const w = width(ch);
-    if (n + w > max) break;
-    n += w;
+    if (width(out + ch) > max) break;
     out += ch;
   }
   return out;
@@ -227,6 +245,9 @@ async function chooseProjects(io: UploadProjectIo, projects: ProjectSummary[], m
     io.print('');
     io.print('== 送るプロジェクト ==');
     io.print(chosen.length ? `  画面で印を付けた ${chosen.length} プロジェクトを送ります。` : '  印を付けたプロジェクトに、今送れるものがありません。番号で選んでください。');
+    // 一覧を出さないので、ログが無くて送れないセッションの数はここで知らせる(画面の件数と合わない理由が分かるように)
+    const noLog = chosen.reduce((a, p) => a + p.noLog, 0);
+    if (noLog) io.print(`  このほかに、ログが無くて送れないセッションが ${noLog} 件あります(送りません)。`);
     if (gone.length) io.print(`  印はあるが、送れるセッションが無いもの: ${names(gone, 3)}`);
     if (chosen.length && others.length) {
       // 全部の名前は並べない(送らないと決めたものが毎回並ぶため)。新しく始めたプロジェクトを見落とさないよう、最近更新したものだけ出す
@@ -366,6 +387,12 @@ export async function runUploadProject(io: UploadProjectIo, o: { paths: GroupUpl
               sent.push(r);
               const extra = [r.replaced ? `置き換え ${r.replaced} セッション` : '', r.memos ? `メモ ${r.memos} 件` : ''].filter(Boolean).join('・');
               io.print(`  ${tag}${padEnd(t.name, w)}  ${String(r.uploaded).padStart(sw)} セッションを送りました${extra ? `(${extra})` : ''}`);
+              if (r.leftovers.length) {
+                // 置き換えた前のフォルダが、送り先で開かれていたなどで消せずに残った(次に送るときも残り続けるので、手で消してもらう)
+                io.print(`      置き換えた前のフォルダを ${r.leftovers.length} 件消せませんでした。閉じてから手で消してください:`);
+                for (const l of r.leftovers.slice(0, 3)) io.print(`        ${l}`);
+                if (r.leftovers.length > 3) io.print(`        ほか ${r.leftovers.length - 3} 件`);
+              }
             } catch (e) {
               if (e instanceof UploadChangedError) {
                 // 確かめた後にログやメモが変わった: これと残りを確かめ直す(送ったものはそのまま)
@@ -390,12 +417,14 @@ export async function runUploadProject(io: UploadProjectIo, o: { paths: GroupUpl
     // 途中で止まっても(ロックが取れないなど)、送ったもの・送れなかったものを知らせる
     if (sent.length || failed.length) {
       io.print('');
-      io.print(failed.length ? '== 送れなかったものがあります ==' : stopped ? '== 途中で止まりました ==' : '== 終わりました ==');
+      // 残り(pending)があるのは、送る途中で確かめ直しになり、そこでやめたとき
+      io.print(failed.length ? '== 送れなかったものがあります ==' : stopped ? '== 途中で止まりました ==' : pending.length ? '== 途中でやめました ==' : '== 終わりました ==');
       if (sent.length) {
         io.print(`  ${sent.length} プロジェクト・${sent.reduce((a, r) => a + r.uploaded, 0)} セッションを送りました。`);
         io.print(`  送り先: ${sent.length > 1 ? [...new Set(sent.map((r) => dirname(r.dir)))].join('、') : sent[0]!.dir}`);
         io.print(sent.length > 1 ? '  説明とセッションの一覧は、それぞれのフォルダの README.md にあります。' : '  説明とセッションの一覧は、そのフォルダの README.md にあります。');
       }
+      if (pending.length && !stopped && !failed.length) io.print(`  残りの ${pending.length} プロジェクト(${names(pending.map((t) => t.name), 3)})は送っていません。`);
       if (failed.length) {
         io.print(`  送れなかったプロジェクト(${failed.length} 件): ${names(failed.map((f) => f.name))}`);
         io.print('  理由を確かめてから、もう一度実行してください(送れたものは、送り直しても置き換えるだけです)。');
@@ -407,29 +436,102 @@ export async function runUploadProject(io: UploadProjectIo, o: { paths: GroupUpl
   return sent.length > 0 && pending.length === 0;
 }
 
+/** 集計の各段階(ログの行の頭)を、途中の様子に出す言葉にする */
+const STAGES: Record<string, string> = {
+  snapshot: 'ログを写しています',
+  extract: 'ログを読んでいます',
+  metrics: '数えています',
+  build: 'レポートを作っています',
+  export: 'セッション記録を作っています',
+  all: '仕上げています',
+};
+
+/**
+ * 送る前に、最新のログを集計し直す(upload-project.bat から、送る操作の前に呼ぶ)。
+ * 経過の行(長いパスが続く)は窓に出さずに logPath に書き、途中の様子は 1 行の書き換えで出す。
+ * 注意(複製できず前回の複製を使った、など)は送るものに関わるので窓に出す。失敗したら理由と logPath を出して false
+ */
+export async function refreshAggregate(io: UploadProjectIo, o: { logPath: string; run: (log: (m: string) => void) => Promise<unknown> }): Promise<boolean> {
+  io.print('');
+  io.print('== 集計 ==');
+  io.print('  最新のログを集計しています。少し待ってください。');
+  const lines: string[] = [];
+  const log = (m: string): void => {
+    lines.push(m);
+    if (m.includes('注意')) io.print(`  注意: ${m.replace(/^[a-z -]+: (注意 )?/, '')}`);
+    else {
+      const stage = /^([a-z-]+)[ :]/.exec(m)?.[1];
+      if (stage) io.status?.(`  ${STAGES[stage] ?? '集計しています'}...`);
+    }
+  };
+  try {
+    await o.run(log);
+    io.print('  集計しました。');
+    return true;
+  } catch (e) {
+    lines.push(`失敗しました: ${(e as Error).message}`);
+    io.print(`  集計に失敗しました: ${(e as Error).message}`);
+    io.print('  atlas.bat の画面で集計し直している最中なら、終わってからもう一度実行してください。');
+    io.print(`  集計の経過: ${o.logPath}`);
+    return false;
+  } finally {
+    // 書けなくても送る操作は続ける(経過を残す場所が無いだけ)
+    await writeFile(o.logPath, `${lines.join('\n')}\n`).catch(() => {});
+  }
+}
+
+/** 黒い窓の出力(テストでは偽物を渡す) */
+export interface ConsoleOut {
+  write: (s: string) => boolean;
+  isTTY?: boolean;
+  columns?: number;
+}
+
 /**
  * 黒い窓(標準入出力)とやりとりする io。pick は送り先のフォルダを選ぶ画面。
- * 書き換える 1 行(status)は、出力が端末のときだけ使う(ファイルやパイプに流すと、書き換えの制御文字が残るため)
+ * 書き換える 1 行(status)は、出力が端末のときだけ使う(ファイルやパイプに流すと、書き換えの制御文字が残るため)。
+ * 入力が端末のときは、尋ねていない間に入った行を捨てる(集計を待つ間に押した Enter が、まだ見ていない質問の答えにならないように)。
+ * 流し込んだ入力(パイプ)では、尋ねる前に届いた行も順に答えに使う
  */
-export function consoleIo(pick: UploadProjectIo['pick']): { io: UploadProjectIo; clear: () => void; close: () => void } {
-  // rl.question は入力を流し込んだとき(パイプ)に、尋ねる前に届いた行を落とすので、行の反復子から 1 行ずつ読む
-  const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
-  const lines = rl[Symbol.asyncIterator]();
-  const out = process.stdout;
+export function consoleIo(
+  pick: UploadProjectIo['pick'],
+  s: { input?: NodeJS.ReadableStream & { isTTY?: boolean }; output?: ConsoleOut } = {},
+): { io: UploadProjectIo; clear: () => void; close: () => void } {
+  const input = s.input ?? process.stdin;
+  const out = s.output ?? process.stdout;
+  const rl = createInterface({ input, crlfDelay: Infinity });
+  const keepEarly = input.isTTY !== true;
+  const early: string[] = [];
+  let waiting: ((line: string) => void) | null = null;
+  let closed = false;
+  const answer = (line: string): void => {
+    const w = waiting;
+    waiting = null;
+    w?.(line);
+  };
+  rl.on('line', (line) => {
+    if (waiting) answer(line);
+    else if (keepEarly) early.push(line);
+  });
+  rl.on('close', () => {
+    closed = true;
+    answer('');
+  });
+  const stream = out as unknown as NodeJS.WritableStream;
   // 書き換える 1 行が出ているか。次に何かを書く前に消す
   let shown = false;
   const clear = (): void => {
     if (!shown) return;
-    clearLine(out, 0);
-    cursorTo(out, 0);
+    clearLine(stream, 0);
+    cursorTo(stream, 0);
     shown = false;
   };
   const io: UploadProjectIo = {
     ask: async (q) => {
       clear();
       out.write(q);
-      const r = await lines.next();
-      return r.done ? '' : r.value.trim();
+      const line = early.length ? early.shift()! : closed ? '' : await new Promise<string>((r) => (waiting = r));
+      return line.trim();
     },
     print: (l) => {
       clear();
@@ -450,16 +552,23 @@ export function consoleIo(pick: UploadProjectIo['pick']): { io: UploadProjectIo;
   return { io, clear, close: () => rl.close() };
 }
 
+/** 集計の経過を書くファイル(集計に失敗したときに場所を出す) */
+export const UPLOAD_LOG = join(tmpdir(), 'atlas-upload-project.log');
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   // 置き場は atlas.bat と同じ既定(out/ と atlas-notes/)
   const paths = resolvePaths({ home: null, out: null, judgments: null });
   const c = consoleIo((initial) => pickFolder('プロジェクトのセッションを送る先のフォルダを選んでください', initial));
   try {
-    await runUploadProject(c.io, {
-      paths,
-      configPath: defaultConfigPath(),
-    });
-    process.exitCode = 0;
+    // 集計もここで動かす(別のプログラムにすると、集計を待つ間に押した Enter が、送る操作の最初の答えになるため)
+    if (!(await refreshAggregate(c.io, { logPath: UPLOAD_LOG, run: (log) => runCli(parseCli(['all']), log) }))) process.exitCode = 1;
+    else {
+      await runUploadProject(c.io, {
+        paths,
+        configPath: defaultConfigPath(),
+      });
+      process.exitCode = 0;
+    }
   } catch (e) {
     c.clear();
     // 送れなかったプロジェクトと理由は、もう画面に出してある(同じことを 2 度書かない)

@@ -53,9 +53,15 @@ for (const f of ['atlas.html', 'insights.html', 'glossary.html']) {
 }
 if (!readdirSync(join(out, 'sessions')).some((f) => f.endsWith('.md'))) fail('セッション記録(sessions/*.md)ができていません');
 if (!existsSync(template)) fail('最初の atlas all がレポートのテンプレートを作りませんでした');
-// upload-project.bat が呼ぶ送る操作: プロジェクトの一覧を出し、何も選ばずに Enter で何も送らずに正常に終わる
-const up = spawnSync(process.execPath, [join('packages', 'cli', 'src', 'upload-project.ts')], { cwd: pkg, input: '\n', encoding: 'utf8', env: { ...process.env, ATLAS_CONFIG: join(pkg, 'atlas.config.json') } });
-if (up.status !== 0 || !/プロジェクト/.test(up.stdout) || !up.stdout.includes('やめました')) fail(`プロジェクトを送る操作(upload-project.ts)が通りません: ${up.stderr}${up.stdout}`);
+// upload-project.bat が呼ぶ送る操作: 集計し直してからプロジェクトの一覧を出し、何も選ばずに Enter で何も送らずに正常に終わる。
+// 集計は中で動くので、読むのは架空の fixture にする(ATLAS_COPILOT_HOME。無いと手元の ~/.copilot を読む)
+const up = spawnSync(process.execPath, [join('packages', 'cli', 'src', 'upload-project.ts')], {
+  cwd: pkg,
+  input: '\n',
+  encoding: 'utf8',
+  env: { ...process.env, ATLAS_CONFIG: join(pkg, 'atlas.config.json'), ATLAS_COPILOT_HOME: join(FIXTURES_DIR, 'copilot-home') },
+});
+if (up.status !== 0 || !up.stdout.includes('集計しました') || !/プロジェクト/.test(up.stdout) || !up.stdout.includes('やめました')) fail(`プロジェクトを送る操作(upload-project.ts)が通りません: ${up.stderr}${up.stdout}`);
 
 // Windows では *.bat を cmd で実際に起動する(中のスクリプトを直接呼ぶだけでは、bat の書き方の誤りを見逃す。
 // upload-project.bat は囲みの中の echo の括弧で、集計の後に必ず止まっていた)。集計は架空の fixture を読む(ATLAS_COPILOT_HOME)。

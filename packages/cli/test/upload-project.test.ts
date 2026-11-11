@@ -1,12 +1,13 @@
 // プロジェクトのセッションをまとめて送る(upload-project.bat → upload-project.ts)。
 // 集計のプロジェクトを番号で選び、送り先(一度選ぶと atlas.config.json に覚える)を毎回確かめてから <送り先>/<プロジェクト名>/<id>/ に写す。
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { checkTarget, listProjects, openUploadContext, projectTarget, uploadGroup, uploadTarget } from '../src/group-upload.ts';
-import { fit, parseNumbers, runUploadProject, UploadIncompleteError, width, type UploadProjectIo } from '../src/upload-project.ts';
+import { consoleIo, fit, parseNumbers, refreshAggregate, runUploadProject, UploadIncompleteError, width, type UploadProjectIo } from '../src/upload-project.ts';
 
 describe('プロジェクトのセッションをまとめて送る', () => {
   let dir: string;
@@ -249,6 +250,16 @@ describe('プロジェクトのセッションをまとめて送る', () => {
     expect(text).not.toContain('毎回同じものを送るなら');
   });
 
+  it('印のあるときは一覧を出さないので、ログが無くて送れないセッションの数を知らせる', async () => {
+    const s = JSON.parse(await readFile(join(out, 'sessions.json'), 'utf8')) as { sessions: unknown[] };
+    s.sessions.push({ id: 's6', project: 'X:\\work\\tool', empty: false, updatedAt: '2026-09-01T00:00:00.000Z' });
+    await writeFile(join(out, 'sessions.json'), JSON.stringify(s));
+    await writeFile(configPath, JSON.stringify({ uploadRoot: rootA, uploadProjects: ['X:\\work\\tool'] }));
+    const f = fakeIo([''], []);
+    expect(await runUploadProject(f.io, { paths: paths(), configPath })).toBe(false);
+    expect(f.printed.join('\n')).toContain('このほかに、ログが無くて送れないセッションが 1 件あります(送りません)。');
+  });
+
   it('印を付けたものが今 1 件も送れなければ、番号で選んで送れる', async () => {
     await writeFile(configPath, JSON.stringify({ uploadRoot: rootA, uploadProjects: ['消えたプロジェクト'] }));
     const f = fakeIo(['1', 'y'], []);
@@ -322,6 +333,23 @@ describe('プロジェクトのセッションをまとめて送る', () => {
     expect(await readFile(join(rootA, 'X__work_tool', 's4', 'events.jsonl'), 'utf8')).toContain('more');
   });
 
+  it('送る途中で確かめ直しになり、そこでやめたら「途中でやめました」と残りを出す(「終わりました」とは出さない)', async () => {
+    await writeFile(configPath, JSON.stringify({ uploadRoot: rootA, uploadProjects: ['owner/app', 'X:\\work\\tool'] }));
+    const f = fakeIo(['y', ''], []);
+    const print = f.io.print;
+    f.io.print = (l) => {
+      print(l);
+      if (/owner\/app +2 セッションを送りました/.test(l)) writeFileSync(join(out, 'snapshot', 'session-state', 's4', 'events.jsonl'), '{"id":"s4"}\n{"more":1}\n');
+    };
+    expect(await runUploadProject(f.io, { paths: paths(), configPath })).toBe(false);
+    const text = f.printed.join('\n');
+    expect(text).toContain('== 途中でやめました ==');
+    expect(text).not.toContain('== 終わりました ==');
+    expect(text).toContain('1 プロジェクト・2 セッションを送りました。');
+    expect(text).toContain('残りの 1 プロジェクト(X:\\work\\tool)は送っていません。');
+    expect(existsSync(join(rootA, 'X__work_tool'))).toBe(false);
+  });
+
   it('途中で止まっても(確かめ直すときに、画面で集計し直している最中など)、ここまでに送ったものを知らせる', async () => {
     await writeFile(configPath, JSON.stringify({ uploadRoot: rootA, uploadProjects: ['owner/app', 'X:\\work\\tool'] }));
     const f = fakeIo(['y'], []);
@@ -365,6 +393,101 @@ describe('プロジェクトのセッションをまとめて送る', () => {
     expect(width('ＡＢ')).toBe(4);
     expect(fit('写しています abc', 7)).toBe('写して');
     expect(fit('abc', 10)).toBe('abc');
+    // 絵文字は全角の範囲の外でも 2、結合する記号・ZWJ は 0、U+FE0F が付くと 2
+    expect(width('☕a')).toBe(3);
+    expect(width('✅')).toBe(2);
+    expect(width('✔️')).toBe(2);
+    expect(width('é')).toBe(1);
+    expect(width('a‍b')).toBe(2);
+    expect(fit('☕☕', 3)).toBe('☕');
+    expect(width(fit('✔️✔️✔️', 5))).toBeLessThanOrEqual(5);
+  });
+
+  it('集計し直すとき: 経過の行はファイルに書いて窓には出さず、段階は status に、注意は窓に出す', async () => {
+    const logPath = join(dir, 'upload.log');
+    const statuses: string[] = [];
+    const f = fakeIo([], []);
+    f.io.status = (t) => statuses.push(t);
+    const ok = await refreshAggregate(f.io, {
+      logPath,
+      run: async (log) => {
+        log(`snapshot: ${join(dir, 'very', 'long', 'path')} に 3 セッションを複製`);
+        log('snapshot: 注意 session-store.db を今回は複製できませんでした(前回の複製を使います)');
+        log('build: atlas.html を書きました');
+      },
+    });
+    expect(ok).toBe(true);
+    const text = f.printed.join('\n');
+    expect(text).toContain('  注意: session-store.db を今回は複製できませんでした(前回の複製を使います)');
+    expect(text).toContain('集計しました。');
+    expect(text).not.toContain('very');
+    expect(statuses).toEqual(['  ログを写しています...', '  レポートを作っています...']);
+    expect(readFileSync(logPath, 'utf8')).toContain('3 セッションを複製');
+  });
+
+  it('集計に失敗したら、理由と経過のファイルの場所を出して false(送る操作には進まない)', async () => {
+    const logPath = join(dir, 'upload.log');
+    const f = fakeIo([], []);
+    const ok = await refreshAggregate(f.io, {
+      logPath,
+      run: async (log) => {
+        log('snapshot: 始めます');
+        throw new Error('画面から実行した集計が動いています');
+      },
+    });
+    expect(ok).toBe(false);
+    const text = f.printed.join('\n');
+    expect(text).toContain('集計に失敗しました: 画面から実行した集計が動いています');
+    expect(text).toContain(`集計の経過: ${logPath}`);
+    expect(readFileSync(logPath, 'utf8')).toMatch(/snapshot: 始めます\n失敗しました: 画面から実行した集計が動いています/);
+  });
+
+  const tick = () => new Promise((r) => setImmediate(r));
+  const fakeOut = (tty: boolean) => {
+    const written: string[] = [];
+    return { written, out: { isTTY: tty, columns: 20, write: (t: string) => (written.push(t), true) } };
+  };
+
+  it('黒い窓: 端末なら status で 1 行を窓の幅に収めて書き、次の print の前に消す。端末でなければ status を持たない', () => {
+    const o = fakeOut(true);
+    const c = consoleIo(async () => null, { input: new PassThrough(), output: o.out });
+    c.io.status!(`  ${'あ'.repeat(30)}`);
+    c.io.print('結果');
+    c.close();
+    const all = o.written.join('');
+    // 20 桁の窓なら 19 桁まで(2 + 全角 8 文字 = 18)
+    expect(o.written[0]).toBe(`  ${'あ'.repeat(8)}`);
+    expect(all.indexOf('\x1b[2K')).toBeGreaterThan(all.indexOf('あ'));
+    expect(all.endsWith('結果\n')).toBe(true);
+    // 書き換える行が無ければ、消す制御文字は書かない
+    const p = fakeOut(true);
+    const d = consoleIo(async () => null, { input: new PassThrough(), output: p.out });
+    d.io.print('a');
+    d.close();
+    expect(p.written).toEqual(['a\n']);
+    const q = consoleIo(async () => null, { input: new PassThrough(), output: fakeOut(false).out });
+    expect(q.io.status).toBeUndefined();
+    q.close();
+  });
+
+  it('黒い窓: 入力が端末なら、尋ねる前に入った行(集計を待つ間の Enter)は捨てる。流し込んだ入力では順に答えに使う', async () => {
+    const tty = Object.assign(new PassThrough(), { isTTY: true });
+    const c = consoleIo(async () => null, { input: tty, output: fakeOut(false).out });
+    tty.write('\n');
+    await tick();
+    const a = c.io.ask('> ');
+    tty.write('y\n');
+    expect(await a).toBe('y');
+    c.close();
+    const pipe = new PassThrough();
+    const d = consoleIo(async () => null, { input: pipe, output: fakeOut(false).out });
+    pipe.write('1\ny\n');
+    pipe.end();
+    await tick();
+    expect(await d.io.ask('> ')).toBe('1');
+    expect(await d.io.ask('> ')).toBe('y');
+    expect(await d.io.ask('> ')).toBe('');
+    d.close();
   });
 
   it('点検とアップロードは、渡した読む口を閉じずに使い回す(まとめて送るときに DB を開き直さない)', async () => {

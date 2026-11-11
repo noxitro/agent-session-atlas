@@ -78,6 +78,8 @@ export interface GroupUploadResult {
   snapshotAt: string | null;
   /** メモを添えたセッションの数 */
   memos: number;
+  /** 置き換えた前のフォルダのうち、消せずに残ったもの(送り先で開かれていたなど。手で消してもらう) */
+  leftovers: string[];
 }
 
 interface FileEntry {
@@ -527,6 +529,7 @@ export async function uploadTarget(p: GroupUploadPaths, target: UploadTarget, ro
   const withMemo = new Set<string>();
   let uploaded = 0;
   let replaced = 0;
+  const leftovers: string[] = [];
   const records = await readRecords(opts.sessions ?? p.sessions, present);
   const tags = await tagsById(p.groups);
   const info = (id: string): UploadedSession => {
@@ -585,7 +588,10 @@ export async function uploadTarget(p: GroupUploadPaths, target: UploadTarget, ro
         report();
         if (had) {
           replaced++;
-          await rm(old, { recursive: true, force: true }).catch((e: Error) => log(`${g.kind} upload: 前のフォルダ ${old} を消せませんでした(${e.message})。手で消してください`));
+          await rm(old, { recursive: true, force: true }).catch((e: Error) => {
+            leftovers.push(old);
+            log(`${g.kind} upload: 前のフォルダ ${old} を消せませんでした(${e.message})。手で消してください`);
+          });
         }
       } catch (e) {
         await rm(tmp, { recursive: true, force: true }).catch(() => {});
@@ -604,7 +610,7 @@ export async function uploadTarget(p: GroupUploadPaths, target: UploadTarget, ro
     `${JSON.stringify({ version: 1, kind: g.kind, name, note: g.note, uploadedAt: now.toISOString(), snapshotAt, sessions, missing }, null, 2)}\n`,
   );
   log(`${g.kind} upload: 「${name}」 ${uploaded} セッション(置き換え ${replaced} 件・メモ ${withMemo.size} 件)→ ${dir}${missing.length ? `。前回の集計に無い ${missing.length} 件は写していません` : ''}`);
-  return { name, dir, uploaded, replaced, missing, snapshotAt, memos: withMemo.size };
+  return { name, dir, uploaded, replaced, missing, snapshotAt, memos: withMemo.size, leftovers };
 }
 
 /**

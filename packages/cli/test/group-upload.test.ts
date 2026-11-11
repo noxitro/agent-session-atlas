@@ -47,7 +47,7 @@ describe('グループのアップロード', () => {
 
   it('セッションごとのフォルダに写し、作業用のファイルは入れない。外を指す id と無い id は写さない', async () => {
     const r = await uploadGroup(paths(), 'Player/Weapon', root);
-    expect(r).toEqual({ name: 'Player/Weapon', dir: join(root, 'Player_Weapon'), uploaded: 2, replaced: 0, missing: ['gone', '../s1'], snapshotAt: '2026-11-08T01:02:03.000Z', memos: 0 });
+    expect(r).toEqual({ name: 'Player/Weapon', dir: join(root, 'Player_Weapon'), uploaded: 2, replaced: 0, missing: ['gone', '../s1'], snapshotAt: '2026-11-08T01:02:03.000Z', memos: 0, leftovers: [] });
     expect((await readdir(r.dir)).sort()).toEqual(['README.md', 'atlas-index.json', 's1', 's2']);
     expect((await readdir(join(r.dir, 's1'))).sort()).toEqual(['atlas-session.json', 'events.jsonl', 'files']);
     expect(await readFile(join(r.dir, 's1', 'files', 'a.txt'), 'utf8')).toBe('a');
