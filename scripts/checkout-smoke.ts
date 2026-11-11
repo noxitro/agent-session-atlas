@@ -54,12 +54,14 @@ for (const f of ['atlas.html', 'insights.html', 'glossary.html']) {
 if (!readdirSync(join(out, 'sessions')).some((f) => f.endsWith('.md'))) fail('セッション記録(sessions/*.md)ができていません');
 if (!existsSync(template)) fail('最初の atlas all がレポートのテンプレートを作りませんでした');
 // upload-project.bat が呼ぶ送る操作: 集計し直してからプロジェクトの一覧を出し、何も選ばずに Enter で何も送らずに正常に終わる。
-// 集計は中で動くので、読むのは架空の fixture にする(ATLAS_COPILOT_HOME。無いと手元の ~/.copilot を読む)
+// 集計は中で動くので、読むのは架空の fixture にする(ATLAS_COPILOT_HOME。無いと手元の ~/.copilot を読む)。
+// 設定は bat と同じく既定の場所(フォルダの atlas.config.json。まだ無い)を使う。ATLAS_CONFIG を指すと、無い設定ファイルとして集計が止まる
+const { ATLAS_CONFIG: _config, ...upEnv } = process.env;
 const up = spawnSync(process.execPath, [join('packages', 'cli', 'src', 'upload-project.ts')], {
   cwd: pkg,
   input: '\n',
   encoding: 'utf8',
-  env: { ...process.env, ATLAS_CONFIG: join(pkg, 'atlas.config.json'), ATLAS_COPILOT_HOME: join(FIXTURES_DIR, 'copilot-home') },
+  env: { ...upEnv, ATLAS_COPILOT_HOME: join(FIXTURES_DIR, 'copilot-home') },
 });
 if (up.status !== 0 || !up.stdout.includes('集計しました') || !/プロジェクト/.test(up.stdout) || !up.stdout.includes('やめました')) fail(`プロジェクトを送る操作(upload-project.ts)が通りません: ${up.stderr}${up.stdout}`);
 
