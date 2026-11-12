@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isSafeMemoId } from '../../report/src/index.ts';
 
-export const JOB_KINDS = ['refresh', 'judge', 'full', 'bundle', 'export', 'turn-bundle', 'turn-judge'] as const;
+export const JOB_KINDS = ['refresh', 'judge', 'full', 'bundle', 'export', 'turn-bundle', 'turn-judge', 'm365', 'turn-m365'] as const;
 export type JobKind = (typeof JOB_KINDS)[number];
 /** 画面から始める判定のバックエンド(従量課金の anthropic は CLI だけ) */
 export const JOB_BACKENDS = ['copilot-cli'] as const;
@@ -132,7 +132,9 @@ export type JobRequest =
   | { kind: 'bundle' }
   | { kind: 'export' }
   | { kind: 'turn-bundle' }
-  | { kind: 'turn-judge'; limit: number };
+  | { kind: 'turn-judge'; limit: number }
+  | { kind: 'm365' }
+  | { kind: 'turn-m365' };
 export type JobState = 'running' | 'done' | 'failed' | 'canceled';
 
 export interface JobSnapshot {
@@ -164,6 +166,8 @@ const KEYS: Record<JobKind, string[]> = {
   export: ['kind'],
   'turn-bundle': ['kind'],
   'turn-judge': ['kind', 'limit'],
+  m365: ['kind'],
+  'turn-m365': ['kind'],
 };
 
 /**
@@ -176,7 +180,7 @@ export function parseJobRequest(body: Record<string, unknown>, knownId: (id: str
   if (typeof kind !== 'string' || !(JOB_KINDS as readonly string[]).includes(kind)) throw new JobError(400, `kind は ${JOB_KINDS.join(' / ')} のどれかです`);
   const extra = Object.keys(body).filter((k) => !KEYS[kind as JobKind].includes(k));
   if (extra.length) throw new JobError(400, `${kind} では使えない項目です: ${extra.join(', ')}`);
-  if (kind === 'refresh' || kind === 'bundle' || kind === 'export' || kind === 'turn-bundle') return { kind };
+  if (kind === 'refresh' || kind === 'bundle' || kind === 'export' || kind === 'turn-bundle' || kind === 'm365' || kind === 'turn-m365') return { kind };
   if (kind === 'turn-judge') {
     const { limit } = body;
     if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 0 || limit > TURN_LIMIT_MAX) throw new JobError(400, `limit には 0〜${TURN_LIMIT_MAX} の整数を指定してください(判定する依頼の数の上限)`);
@@ -209,6 +213,9 @@ export function jobArgs(req: JobRequest, p: { outDir: string; notesDir: string; 
   if (req.kind === 'export') return [p.main ?? MAIN_TS, 'export', ...common];
   if (req.kind === 'turn-bundle') return [p.main ?? MAIN_TS, 'turns', 'bundle', '--unjudged', ...common];
   if (req.kind === 'turn-judge') return [p.judgeFlow ?? JUDGE_FLOW_TS, '--turns', '--limit', String(req.limit), ...common];
+  // M365 Copilot のアプリを操作して、未判定の添付ファイルを判定する(取り込めたらレポートにも反映する)
+  if (req.kind === 'm365') return [p.main ?? MAIN_TS, 'judge', 'm365', ...common];
+  if (req.kind === 'turn-m365') return [p.main ?? MAIN_TS, 'turns', 'm365', ...common];
   return null;
 }
 
@@ -262,6 +269,8 @@ const LABEL: Record<JobKind, string> = {
   export: 'レポートに反映する',
   'turn-bundle': '依頼の判定の添付ファイルを作る',
   'turn-judge': '依頼を判定する',
+  m365: 'M365 Copilot で工数を判定する',
+  'turn-m365': 'M365 Copilot で依頼を判定する',
 };
 
 export class JobRunner {

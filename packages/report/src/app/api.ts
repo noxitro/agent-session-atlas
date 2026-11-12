@@ -270,7 +270,7 @@ export const foldersApi = {
   },
 };
 
-export type JobKind ='refresh' | 'judge' | 'full' | 'bundle' | 'export' | 'turn-bundle' | 'turn-judge';
+export type JobKind = 'refresh' | 'judge' | 'full' | 'bundle' | 'export' | 'turn-bundle' | 'turn-judge' | 'm365' | 'turn-m365';
 /** 何を判定するか: 工数(セッションごと)/ 依頼ごとの採用・種類・工程 */
 export type JudgeTarget = 'effort' | 'turns';
 export type JobBackend = 'copilot-cli';
@@ -290,7 +290,9 @@ export type JobRequest =
   | { kind: 'bundle' }
   | { kind: 'export' }
   | { kind: 'turn-bundle' }
-  | { kind: 'turn-judge'; limit: number };
+  | { kind: 'turn-judge'; limit: number }
+  | { kind: 'm365' }
+  | { kind: 'turn-m365' };
 
 export const jobsApi = {
   /** 最後のジョブ(まだ無ければ null) */
@@ -337,6 +339,8 @@ export interface ChatParts {
   unjudgedOnly?: boolean;
   count?: number;
   parts?: ChatPart[];
+  /** M365 Copilot のアプリを自動で操作できるか(サーバが Windows のとき) */
+  canAutomate?: boolean;
 }
 export interface ChatImportResult {
   imported: number;

@@ -51,7 +51,8 @@ import type { SessionRecord, SessionsFile, WikiSpec } from '../../core/src/index
 import { codeStamp, DEFAULT_PHASE_NAMES } from '../../core/src/index.ts';
 import { homedir } from 'node:os';
 import { describeVault, wikiSkillCandidates } from './setup.ts';
-import { importJudgmentsText, importTurnJudgmentsText, JudgmentValidationError, readBundleManifest, readTurnBundleManifest, readTurnJudgments, turnImportPhases } from '../../judge/src/index.ts';
+import { importJudgmentsText, importTurnJudgmentsText, JudgmentValidationError, turnImportPhases } from '../../judge/src/index.ts';
+import { judgedSessionIds, judgedTurnKeys, listChatParts, type ChatParts, type ChatTarget } from './chat-parts.ts';
 import { phaseNames } from './config.ts';
 import { acquireOutLock, JobError, JobRunner, OutBusyError, parseJobRequest, runningJobIn, type RunFullFn, type SpawnFn } from './jobs.ts';
 import { exportGroup } from './group-export.ts';
@@ -98,6 +99,8 @@ export interface ServeOptions {
   configPath?: string;
   /** フォルダを選ぶ画面とエクスプローラーで開く操作(既定は folder-picker.ts。テストで差し替える) */
   folders?: { canPick?: boolean; pick?: (title: string, initial: string | null) => Promise<string | null>; open?: (dir: string) => void };
+  /** M365 Copilot のアプリを自動で操作する判定(m365.ts)を画面に出すか。既定は Windows のとき */
+  m365?: boolean;
   /** Copilot のデータの場所(画面の設定で、名前に wiki を含むインストール済みの skill を候補に出すのに使う)。既定は ATLAS_COPILOT_HOME か ~/.copilot */
   copilotHome?: string;
   /** 集計し直すときに読む場所(別のフォルダを開いたサーバ。省略時は CLI の既定 = この PC の Copilot のデータ) */
@@ -1102,17 +1105,11 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
   }
   /** judgments.json にあるセッション id(無ければ空) */
   async function judgedIds(): Promise<Set<string>> {
-    const judged = new Set<string>();
-    const jp = join(outDir, 'judgments.json');
-    if (existsSync(jp)) {
-      try {
-        const j = JSON.parse(await readFile(jp, 'utf8')) as { items?: { sessionId?: unknown }[] };
-        for (const it of j.items ?? []) if (typeof it?.sessionId === 'string') judged.add(it.sessionId);
-      } catch (e) {
-        throw new HttpError(409, `judgments.json を読めません: ${(e as Error).message}`);
-      }
+    try {
+      return await judgedSessionIds(outDir);
+    } catch (e) {
+      throw new HttpError(409, (e as Error).message);
     }
-    return judged;
   }
   /** 判定の確認ダイアログの件数: 依頼の記録があるセッションのうち judgments.json に無いもの */
   async function judgePreview(): Promise<{ eligible: number; judged: number; pending: number }> {
@@ -1131,10 +1128,9 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
   /** turn-judgments.json の判定済みの依頼(セッション ID#依頼番号) */
   async function judgedTurns(): Promise<Set<string>> {
     try {
-      const j = await readTurnJudgments(join(outDir, 'turn-judgments.json'));
-      return new Set((j?.items ?? []).map((i) => `${i.sessionId}#${i.turn}`));
+      return await judgedTurnKeys(outDir);
     } catch (e) {
-      throw new HttpError(409, `turn-judgments.json を読めません: ${(e as Error).message}`);
+      throw new HttpError(409, (e as Error).message);
     }
   }
   /** 依頼ごとの判定の件数(依頼ごとの記録がある依頼のうち、turn-judgments.json に無いもの) */
@@ -1165,10 +1161,10 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
    */
   async function chatJudgeApi(req: IncomingMessage, res: ServerResponse, method: string, path: string, target: 'effort' | 'turns'): Promise<void> {
     checkToken(req);
-    const partsOf = () => (target === 'turns' ? turnParts() : chatParts());
+    const partsOf = () => partsFor(target === 'turns' ? 'turns' : 'effort');
     if (path === '/api/judge/parts') {
       if (method !== 'GET') throw new HttpError(405, 'この方法では使えません');
-      sendJson(res, 200, await partsOf());
+      sendJson(res, 200, { ...(await partsOf()), canAutomate: o.m365 ?? process.platform === 'win32' });
       return;
     }
     const one = /^\/api\/judge\/parts\/([^/]+)$/.exec(path);
@@ -1213,48 +1209,13 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     }
     throw new HttpError(404, '無い API です');
   }
-  async function chatParts(): Promise<{
-    exists: boolean;
-    generatedAt?: string;
-    unjudgedOnly?: boolean;
-    count?: number;
-    parts?: { path: string; name: string; sessions: number; judged: number; bytes: number }[];
-  }> {
-    const dir = join(outDir, 'bundle');
-    if (!existsSync(join(dir, 'manifest.json'))) return { exists: false };
-    let m;
+  /** 添付ファイルの一覧(chat-parts.ts。manifest が読めなければ 409) */
+  async function partsFor(target: ChatTarget): Promise<ChatParts> {
     try {
-      m = await readBundleManifest(dir);
+      return await listChatParts(outDir, target);
     } catch (e) {
       throw new HttpError(409, (e as Error).message);
     }
-    const judged = await judgedIds();
-    const parts = (m.parts ?? [])
-      .filter((p) => existsSync(join(dir, ...p.path.split('/'))))
-      .map((p) => ({ path: `bundle/${p.path}`, name: p.path.split('/').pop()!, sessions: p.sessions.length, judged: p.sessions.filter((id) => judged.has(id)).length, bytes: p.bytes }));
-    return { exists: true, generatedAt: m.generatedAt, unjudgedOnly: m.scope?.unjudged === 'yes', count: m.count, parts };
-  }
-  /** 依頼ごとの判定の添付ファイル(turn-bundle/parts/)。sessions / judged は依頼の数 */
-  async function turnParts(): Promise<Awaited<ReturnType<typeof chatParts>>> {
-    const dir = join(outDir, 'turn-bundle');
-    if (!existsSync(join(dir, 'manifest.json'))) return { exists: false };
-    let m;
-    try {
-      m = await readTurnBundleManifest(dir);
-    } catch (e) {
-      throw new HttpError(409, (e as Error).message);
-    }
-    const judged = await judgedTurns();
-    const parts = m.parts
-      .filter((p) => existsSync(join(dir, ...p.path.split('/'))))
-      .map((p) => ({
-        path: `turn-bundle/${p.path}`,
-        name: p.path.split('/').pop()!,
-        sessions: p.turns,
-        judged: p.chunks.reduce((a, c) => a + c.turns.filter((t) => judged.has(`${c.sessionId}#${t}`)).length, 0),
-        bytes: p.bytes,
-      }));
-    return { exists: true, generatedAt: m.generatedAt, unjudgedOnly: m.unjudgedOnly, count: m.count, parts };
   }
   function viewTarget(rawId: string, kindParam: string | null): { id: string; kind: ViewKind; file: string; mdHref: string } {
     let id: string;

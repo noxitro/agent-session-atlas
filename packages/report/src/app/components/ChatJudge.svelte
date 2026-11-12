@@ -4,6 +4,7 @@
   // 2. 次のファイルを保存(またはコピー)して、依頼文と一緒にチャットへ渡す
   // 3. 返答をまるごと貼って取り込む(judgments.json。形が合わなければ何も書かず、どこが違うかを出す)
   // 4. レポートに反映する(export のジョブ)
+  // 2 と 3 は、サーバが Windows なら「M365 Copilot で自動で判定する」(m365 のジョブ)でまとめて行える(取り込めたらレポートにも反映する)
   // どの手順も AI クレジットを使わない(判定するのはチャットの側)。
   // target が turns なら依頼ごとの判定(turn-bundle/・turn-judgments.json。件数は依頼の数)。
   import { onDestroy, tick } from 'svelte';
@@ -18,6 +19,7 @@
   /** 数える単位(工数はセッション、依頼ごとの判定は依頼) */
   const unit = $derived(target === 'turns' ? '依頼' : 'セッション');
   const bundleKind = $derived(target === 'turns' ? 'turn-bundle' : 'bundle');
+  const m365Kind = $derived(target === 'turns' ? 'turn-m365' : 'm365');
 
   /** チャットに添付ファイルと一緒に送る依頼文 */
   const REQUEST = '添付したファイルの指示に従って判定し、JSON を返してください。';
@@ -41,6 +43,11 @@
   const doneParts = $derived(parts.filter((p) => p.judged >= p.sessions).length);
   const next = $derived(parts.find((p) => p.judged < p.sessions) ?? null);
   const bundling = $derived(jobs.running && jobs.job?.kind === bundleKind);
+  const automating = $derived(jobs.running && jobs.job?.kind === m365Kind);
+  /** まだ判定し終えていないファイルの数 */
+  const remaining = $derived(parts.length - doneParts);
+  /** この画面で見た M365 Copilot の自動の判定(動いている間と、終わった後のログ) */
+  const m365Job = $derived(jobs.job && jobs.job.kind === m365Kind && jobs.live === jobs.job.id ? jobs.job : null);
   const off = $derived(jobs.running || jobs.busy);
   /** いま使える添付ファイルがあるか(作り直しに失敗しても、前に作ったものは残る) */
   const made = $derived(!!info?.exists && parts.length > 0);
@@ -83,7 +90,7 @@
   let seen: string | null = null;
   $effect(() => {
     const j = jobs.job;
-    const key = j && j.kind === bundleKind && j.state !== 'running' ? `${j.id}:${j.state}` : '';
+    const key = j && (j.kind === bundleKind || j.kind === m365Kind) && j.state !== 'running' ? `${j.id}:${j.state}` : '';
     if (seen === null || seen === key) {
       seen = key;
       return;
@@ -96,6 +103,12 @@
     result = '';
     importError = null;
     await jobs.run({ kind: bundleKind });
+  }
+
+  async function startM365(): Promise<void> {
+    result = '';
+    importError = null;
+    await jobs.run({ kind: m365Kind });
   }
 
   async function copy(what: string, text: () => Promise<string> | string): Promise<void> {
@@ -207,6 +220,26 @@
         <button type="button" class="btn" onclick={() => void copy('依頼文', () => REQUEST)}>依頼文をコピー</button>
       </div>
       <p class="copied" role="status">{copied ? `${copied}をコピーしました。` : ''}</p>
+      {#if info?.canAutomate && (next || m365Job)}
+        <div class="auto" data-testid="chat-m365">
+          <h4>M365 Copilot で自動で判定する</h4>
+          <p>開いている M365 Copilot のアプリを、このツールが操作します。残りの {int(remaining)} ファイルを 1 つずつ新しいチャットで送り(モデルは Think Deeper)、返答を取り込んで、レポートに反映します。手順 2〜4 を手でする代わりです。</p>
+          <ul>
+            <li>先に M365 Copilot のアプリを開いてサインインし、チャットの画面を出しておきます。</li>
+            <li>終わるまで M365 Copilot の画面に触らないでください。1 ファイルに数分かかることがあります。</li>
+            <li>添付したファイルは、手で添付したときと同じく OneDrive に入ります。</li>
+          </ul>
+          <button type="button" class="btn primary" disabled={off || !next} data-testid="chat-m365-start" onclick={() => void startM365()}>
+            {automating ? '判定しています…' : `M365 Copilot で ${int(remaining)} ファイルを判定する`}
+          </button>
+          {#if m365Job && m365Job.state !== 'running'}
+            <p class={m365Job.state === 'done' ? 'ok' : 'err'} role="status" data-testid="chat-m365-result">
+              {m365Job.state === 'done' ? '終わりました。上の帯の「再読み込み」でレポートに出ます。' : m365Job.state === 'canceled' ? '止めました。取り込めた分は保存されています。' : '途中で止まったか、取り込めなかったファイルがあります(取り込めた分は保存されています)。理由は下のログで確かめてください。'}
+            </p>
+          {/if}
+          {#if m365Job?.log.length}<div class="log"><JobLog log={m365Job.log} /></div>{/if}
+        </div>
+      {/if}
       {#if copyError}<p class="err" role="alert">{copyError}</p>{/if}
       {#if parts.length > 1}
         <details class="list">
@@ -361,6 +394,24 @@
     font-family: var(--font);
     font-size: 0.8125rem;
     overflow-wrap: anywhere;
+  }
+  .auto {
+    margin-top: 12px;
+    padding: 8px 10px;
+    font-size: 0.8125rem;
+    border: 1px solid var(--rule);
+  }
+  .auto h4 {
+    margin: 0 0 4px;
+    font-size: 0.8125rem;
+  }
+  .auto p,
+  .auto ul {
+    margin: 0 0 6px;
+  }
+  .auto ul {
+    padding-left: 1.2em;
+    color: var(--ink-2);
   }
   .hint {
     margin: 6px 0 0;
