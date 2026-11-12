@@ -25,7 +25,7 @@ function inc(map: Record<string, number>, key: string, by = 1): void {
 
 export function distribution(values: number[]): Distribution {
   if (values.length === 0) return { total: 0, median: null, p90: null };
-  const s = [...values].sort((a, b) => a - b);
+  const s = [...values].sort((a, b) => b - a);
   const q = (p: number): number => s[Math.min(s.length - 1, Math.max(0, Math.ceil(p * s.length) - 1))];
   return { total: s.reduce((a, b) => a + b, 0), median: q(0.5), p90: q(0.9) };
 }
