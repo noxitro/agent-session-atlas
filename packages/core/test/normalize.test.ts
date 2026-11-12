@@ -133,7 +133,8 @@ describe('normalizeSession', () => {
       total: 4,
       internal: { byName: {}, total: 0 },
       mcp: {},
-      results: { view: { success: 0, failure: 1, denied: 0 } },
+      // 失敗の文が無いので、要因は「その他」
+      results: { view: { success: 0, failure: 1, denied: 0, causes: { other: 1 } } },
       // Phase 7: 所要時間(complete があるのは view だけ)
       durations: { view: [100] },
       durationOutliers: {},

@@ -41,7 +41,7 @@ describe('normalizeSession(Phase 6 の内訳)', () => {
       ],
     });
     expect(r.tools.mcp).toEqual({ srv: { 'srv-search': 2 } });
-    expect(r.tools.results).toEqual({ 'srv-search': { success: 1, failure: 1, denied: 0 }, view: { success: 0, failure: 0, denied: 1 } });
+    expect(r.tools.results).toEqual({ 'srv-search': { success: 1, failure: 1, denied: 0, causes: { other: 1 } }, view: { success: 0, failure: 0, denied: 1 } });
     expect(r.friction.toolFailures).toBe(3);
     // ツール + イベントの組は event の trigger で上書き、ツールだけはモデルが呼んだもの(agent)、trigger の無いイベントは不明
     expect(r.skills.map((s) => [s.name, s.via, s.trigger])).toEqual([

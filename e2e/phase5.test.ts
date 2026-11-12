@@ -111,7 +111,7 @@ describe('Phase 5 E2E: fixtures', () => {
       total: 5,
       internal: { byName: { report_intent: 2 }, total: 2 },
       mcp: {},
-      results: { edit: { success: 1, failure: 0, denied: 0 }, create: { success: 2, failure: 0, denied: 0 }, powershell: { success: 1, failure: 0, denied: 0 }, apply_patch: { success: 0, failure: 1, denied: 0 } },
+      results: { edit: { success: 1, failure: 0, denied: 0 }, create: { success: 2, failure: 0, denied: 0 }, powershell: { success: 1, failure: 0, denied: 0 }, apply_patch: { success: 0, failure: 1, denied: 0, causes: { other: 1 } } },
       // Phase 7 で所要時間を足した(合成 fixture はイベントが 1 秒間隔。内部ツールは除く)
       durations: { edit: [1000], create: [1000, 1000], powershell: [1000], apply_patch: [1000] },
       durationOutliers: {},
