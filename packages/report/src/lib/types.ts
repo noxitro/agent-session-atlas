@@ -218,6 +218,8 @@ export interface ReportData {
   turnJudgments?: { available: boolean; model: string | null; ranAt: string | null; items: number; phases: string[] };
   /** インストール済みの skill(snapshot で名前だけ記録)。記録が無ければ null */
   installed: { skills: string[]; disabled: string[] } | null;
+  /** 人のフォルダの名前ごとのインストール済みの skill(送り先の全体を集計したとき。伏せ字版と古い埋め込みには無い) */
+  installedByPerson?: Record<string, { skills: string[]; disabled: string[] }>;
   /** 名前付きグループ(atlas-notes/groups.json)。無ければ空。伏せ字モードでは name は「グループ 1」など、note は '' */
   groups: ReportGroup[];
   /** Phase 11: 指示文と skill の閲覧ページ(instructions.html)を作ったか(export のとき。伏せ字版では false) */

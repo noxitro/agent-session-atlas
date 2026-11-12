@@ -390,6 +390,7 @@ export async function runBuild(p: Paths, o: BuildOptions, log: Log): Promise<Bui
     sessions,
     metrics,
     installed: s.installed ?? null,
+    installedByPerson: s.installedByPerson ?? null,
     totalSessionsInSource: s.sessions.length,
     // アップロードしたフォルダを集計したとき(--home や atlas open)は、どのフォルダの集計かを画面に出す
     source: s.source.root && s.source.layout ? { name: basename(s.source.root) || s.source.root, path: s.source.root, layout: s.source.layout, folders: s.source.folders?.length ?? 1 } : null,
@@ -581,7 +582,8 @@ export async function runGroup(p: Paths, g: GroupCliOptions, log: Log, config: s
         for (const f of c.secrets.files) log(`  ${f.id}/${f.path}: ${f.count} 件`);
         if (!g.force) throw new Error('写していません。写した先で見られる人を確かめ、それでも写すなら --force を付けてください(本物の鍵なら作り直してください)');
       }
-      const r = await uploadGroup(p, g.name!, root, log);
+      // 点検したときの分け方を使い回す(送り先の一覧を 2 度読まない)。点検の後に中身が変わっていれば写さずに止まる
+      const r = await uploadGroup(p, g.name!, root, log, { expect: c.fingerprint, check: c });
       if (r.missing.length) log(`group upload: 前回の集計に無いセッション: ${r.missing.join(', ')}`);
       if (r.snapshotAt) log(`group upload: 写したのは ${r.snapshotAt} の集計の時点のログです(新しくするには先に atlas all)`);
     } finally {

@@ -554,6 +554,8 @@ export interface SessionsFile {
   counts: { sessions: number; dbOnly: number; dirOnly: number; both: number; empty: number };
   /** インストール済みの skill / プラグイン(snapshot の記録。古いスナップショットでは null) */
   installed: InstalledInventory | null;
+  /** 送り先の全体を集計したときの、人のフォルダの名前ごとのインストール済みの記録(送った人が添えたもの)。無ければ無い */
+  installedByPerson?: Record<string, InstalledInventory> | null;
   warnings: { unknownEventTypes: Record<string, number>; badLines: number; messages: string[] };
   sessions: SessionRecord[];
 }

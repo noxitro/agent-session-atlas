@@ -252,11 +252,11 @@ describe('プロジェクトのセッションをまとめて送る', () => {
     expect(await runUploadProject(h.io, { paths: paths(), configPath })).toBe(true);
     expect(h.printed.join('\n')).toContain('2 プロジェクト・1 セッションを送りました(変わっていない 2 セッションはそのまま)。');
     expect(await readFile(join(rootA, 'owner_app', 's1', 'events.jsonl'), 'utf8')).toBe('{"id":"s1","more":true}\n');
-    // 何も変わっていなければ、送るかどうかを尋ねずに、送り先の一覧だけを書き直す(README と索引には全部のセッションが残る)
-    const k = fakeIo(['1-2'], []);
+    // 何も変わっていなければ、y は送り先の一覧だけを書き直す(送り先を変える・選び直すこともできるので、尋ねるのは同じ。README と索引には全部のセッションが残る)
+    const k = fakeIo(['1-2', 'y'], []);
     expect(await runUploadProject(k.io, { paths: paths(), configPath })).toBe(true);
-    expect(k.asked.some((q) => /y = 送る/.test(q))).toBe(false);
-    expect(k.printed.join('\n')).toContain('前に送ったときから変わったセッションはありません。送り先の一覧(README.md)だけ書き直します。');
+    expect(k.asked.some((q) => q.includes('y = 送り先の一覧(README.md)だけ書き直す   n = 番号で選び直す   c = 送り先を変える'))).toBe(true);
+    expect(k.printed.join('\n')).toContain('前に送ったときから変わったセッションはありません。');
     expect(k.printed.join('\n')).toContain('2 プロジェクト・0 セッションを送りました(変わっていない 3 セッションはそのまま)。');
     const index = JSON.parse(await readFile(join(rootA, 'owner_app', 'atlas-index.json'), 'utf8')) as { sessions: { id: string }[] };
     expect(index.sessions.map((s) => s.id)).toEqual(['s1', 's2']);

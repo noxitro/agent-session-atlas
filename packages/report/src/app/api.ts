@@ -89,6 +89,8 @@ export interface GroupUpload {
   memos: number;
   /** 置き換えた前のフォルダのうち、消せずに送り先に残ったもの(送り先で開かれていたなど) */
   leftovers: string[];
+  /** 写さなかったセッションのうち、添えた記録を書き直せなかったもの(古いサーバは返さない) */
+  staleMeta?: string[];
 }
 
 /** serve が差し込んだ token。http(s) 以外・無し・プレースホルダ(__ で始まる)なら null */

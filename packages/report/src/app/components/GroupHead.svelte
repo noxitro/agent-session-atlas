@@ -68,6 +68,9 @@
           // 黒い窓(upload-project.bat)と同じ知らせ: 残ったフォルダは次に送っても消えないので、手で消してもらう
           (uploaded.leftovers?.length
             ? `置き換えた前のフォルダを ${int(uploaded.leftovers.length)} 件消せませんでした(送り先で開かれているなど)。閉じてから手で消してください: ${uploaded.leftovers.slice(0, 3).join('、')}${uploaded.leftovers.length > 3 ? ` ほか ${int(uploaded.leftovers.length - 3)} 件` : ''}`
+            : '') +
+          (uploaded.staleMeta?.length
+            ? `タスクタグや題名の記録(atlas-session.json)を書き直せなかったセッションが ${int(uploaded.staleMeta.length)} 件あります(送り先で開かれているなど。次に写すときにもう一度書き直します)。`
             : '')
       : '',
   );

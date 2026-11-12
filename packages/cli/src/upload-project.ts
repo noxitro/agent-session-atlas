@@ -436,11 +436,14 @@ export async function runUploadProject(
       });
       describe(io, checks, r0);
       io.print('');
-      // 前に送ったときから何も変わっていなければ、写すものが無いので尋ねない(送り先の一覧と添えた記録だけを書き直す)
+      // 前に送ったときから何も変わっていなければ、写すものは無い(y なら送り先の一覧と添えた記録だけを書き直す)。
+      // 送り先を変える(c)・選び直す(n)こともあるので、尋ねるのは同じ
       const nothing = checks.every((c) => c.sessions === 0);
-      if (nothing) io.print('  前に送ったときから変わったセッションはありません。送り先の一覧(README.md)だけ書き直します。');
+      if (nothing) io.print('  前に送ったときから変わったセッションはありません。');
       // 自動のときは、登録したときに「確認を出さずに送る」と承知してもらっている(schedule-upload.bat)
-      const a = auto || nothing ? 'y' : (await io.ask('  y = 送る   n = 番号で選び直す   c = 送り先を変える   Enter = やめる\n  > ')).toLowerCase();
+      const a = auto
+        ? 'y'
+        : (await io.ask(`  ${nothing ? 'y = 送り先の一覧(README.md)だけ書き直す' : 'y = 送る'}   n = 番号で選び直す   c = 送り先を変える   Enter = やめる\n  > `)).toLowerCase();
       if (a === 'c') {
         const picked = await chooseRoot(io, o.configPath, root);
         if (picked) root = picked;
@@ -476,6 +479,8 @@ export async function runUploadProject(
             try {
               const r = await uploadTarget(o.paths, t, r0, () => {}, {
                 expect: checks[i]!.fingerprint,
+                // 確かめたときの点検を渡す(前に送ったときのままと確かめたものは、送り先の一覧を読み直さない)
+                check: checks[i],
                 sessions: records,
                 context: ctx,
                 onProgress: (p) => {
@@ -499,6 +504,10 @@ export async function runUploadProject(
                 io.print(`      置き換えた前のフォルダを ${r.leftovers.length} 件消せませんでした。閉じてから手で消してください:`);
                 for (const l of r.leftovers.slice(0, 3)) io.print(`        ${l}`);
                 if (r.leftovers.length > 3) io.print(`        ほか ${r.leftovers.length - 3} 件`);
+              }
+              if (r.staleMeta.length) {
+                // 写さなかったセッションの記録(タスクタグ・題名)を書き直せなかった(ログは前に送ったときのまま。次に送るときに書き直す)
+                io.print(`      タスクタグや題名の記録(atlas-session.json)を書き直せなかったセッションが ${r.staleMeta.length} 件あります(送り先で開かれているなど。次に送るときにもう一度書き直します): ${names(r.staleMeta, 3)}`);
               }
             } catch (e) {
               if (e instanceof UploadChangedError) {
