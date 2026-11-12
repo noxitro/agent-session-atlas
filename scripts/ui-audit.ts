@@ -10,6 +10,8 @@
 //  - 文言(全ページ、atlas.html はタブを 1 つずつ押した状態も): undefined・NaN・[object Object]・テンプレートの ${…}・
 //    二重に逃がした実体参照(&amp; 等)・HTML コメントや生のタグの漏れ(pre / code / textarea の中は除く)
 //  - アクセシビリティの基本(全ページ): lang / 名前の無いリンクとボタン / alt の無い画像 / ラベルの無い入力欄 / 見出しの段の飛び(warn)
+//  - 押せそうで押せない要素(全ページ): 自分自身へのリンク / 指のカーソルが出るのに操作できない要素 /
+//    ホバーで見た目が変わるのに操作できない要素(warn)/ 下線があるのにリンクでない文字(warn)
 //  - 実行時(全ページ): ページ内の例外とコンソールのエラー
 //  - レイアウト(主要ページと詳細ページの見本、375 / 1024 / 1440px × ライト / ダーク): 横のはみ出し / 文字のコントラスト不足 /
 //    切れた文字(warn)/ キーボードで届かないスクロール領域(warn)/ 375px での小さすぎる押す的(warn)/
@@ -139,6 +141,58 @@ const STATIC_CHECK = `(() => {
     const lv = Number(h.tagName[1]);
     if (prev && lv > prev + 1) add('warn', '見出しの段の飛び', 'h' + prev + ' → h' + lv + ' ' + desc(h));
     prev = lv;
+  }
+  // 押せそうで押せない要素(押しても何も起きない、または同じ場所に留まるだけ)
+  const CONTROL = 'a[href], button, summary, label, input, select, textarea, [onclick], [contenteditable=""], [contenteditable="true"], ' +
+    '[role="button"], [role="link"], [role="tab"], [role="checkbox"], [role="radio"], [role="switch"], [role="menuitem"], [role="option"]';
+  const rendered = (el) => el.getClientRects().length > 0;
+  const norm = (s) => (s || '').replace(/\\s+/g, ' ').trim();
+  // 自分自身へのリンク: 行き先が自分か、中身がそのリンクだけの要素(<dt id="x"><a href="#x">語</a></dt> など)。
+  // 節の先頭へ戻るリンクのように、行き先がほかの中身も持つものは指摘しない
+  for (const a of document.querySelectorAll('a[href^="#"]')) {
+    const frag = a.getAttribute('href').slice(1);
+    if (!frag || frag.split('&').some((p) => p.indexOf('=') > 0)) continue;
+    let id = frag;
+    try { id = decodeURIComponent(frag); } catch (e) {}
+    const t = document.getElementById(id);
+    if (t && (t === a || (t.contains(a) && norm(t.textContent) === norm(a.textContent)))) add('error', '自分自身へのリンク(押しても同じ場所に留まる)', desc(a));
+  }
+  // 指のカーソルが出るのに操作できない要素。カーソルは子に引き継がれるので、いちばん外側だけを挙げる
+  const ptr = new Set();
+  for (const el of document.body.querySelectorAll('*')) {
+    if (el.closest(CONTROL) || !rendered(el)) continue;
+    if (getComputedStyle(el).cursor !== 'pointer') continue;
+    ptr.add(el);
+    if (!ptr.has(el.parentElement)) add('error', '指のカーソルが出るのに操作できない', desc(el));
+  }
+  // ホバーで見た目が変わるのに操作できない要素(表の行の読み取り補助など意図したものもあるので目で確かめる)。
+  // セレクタのうち :hover が付いた段(.a:hover > .b なら .a)を、ページの要素に当てて確かめる
+  const hoverSel = [];
+  const walk = (rules) => { for (const r of rules) { if (r.selectorText) { if (r.selectorText.includes(':hover')) hoverSel.push(r.selectorText); } else if (r.cssRules) walk(r.cssRules); } };
+  for (const s of document.styleSheets) { try { walk(s.cssRules); } catch (e) {} }
+  const seenH = new Set();
+  for (const sel of hoverSel)
+    for (const part of sel.split(',')) {
+      const i = part.indexOf(':hover');
+      if (i < 0) continue;
+      const tail = /^[^\\s>+~]*/.exec(part.slice(i + 6))[0].replace(/::?(?:before|after|marker|placeholder|selection)\\b.*$/, '');
+      const hovered = (part.slice(0, i) + tail).replace(/:hover/g, '').trim();
+      if (!hovered || /[\\s>+~]$/.test(hovered)) continue;
+      let els;
+      try { els = document.querySelectorAll(hovered); } catch (e) { continue; }
+      for (const el of els) {
+        if (el.closest(CONTROL) || !rendered(el)) continue;
+        const key = part.trim() + '|' + desc(el);
+        if (seenH.has(key)) continue;
+        seenH.add(key);
+        add('warn', 'ホバーで見た目が変わるのに操作できない', part.trim() + ' → ' + desc(el));
+      }
+    }
+  // 下線が付いているのにリンクでない文字(リンクに見える)。<u>・<ins>・title 付きの <abbr> は意図した下線なので除く
+  for (const el of document.body.querySelectorAll('*')) {
+    if (el.closest(CONTROL) || el.closest('u, ins, abbr[title]') || !rendered(el)) continue;
+    if (![...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim())) continue;
+    if (getComputedStyle(el).textDecorationLine.includes('underline')) add('warn', '下線があるのにリンクでない', desc(el));
   }
   const tabs = document.querySelectorAll('[role="tab"]').length;
   return { ids, links, findings: out, tabs };

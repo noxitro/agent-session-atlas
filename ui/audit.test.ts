@@ -25,7 +25,15 @@ describe('網羅チェック', () => {
   it('a. わざと入れた不備を、種類ごとに見つける', async () => {
     const dir = join(WORK, 'positive');
     await mkdir(join(dir, 'sessions'), { recursive: true });
-    await writeFile(join(dir, 'other.html'), page('<p id="here">行き先</p>'));
+    // 指摘しないもの: 節の先頭へ戻るリンク(行き先がほかの中身も持つ)・ボタンの中の字の指のカーソル・リンクのホバー・title 付きの略語の下線
+    await writeFile(
+      join(dir, 'other.html'),
+      page(
+        '<p id="here">行き先</p><section id="sec"><h2>節</h2><p>本文</p><a href="#sec">節の先頭へ</a></section>' +
+          '<button class="p">押す<span>中</span></button><a class="h" href="#here">リンク</a><abbr title="略語の説明">略語</abbr>',
+        '.p{cursor:pointer;padding:8px}.h:hover{color:#000}',
+      ),
+    );
     await writeFile(
       join(dir, 'bad.html'),
       page(
@@ -47,9 +55,14 @@ describe('網羅チェック', () => {
           '<input type="text">',
           '<h3>段の飛び</h3>',
           '<div class="scroll"><p class="tall">縦に長い</p></div>',
+          '<dl><dt id="term"><a href="#term">用語</a></dt><dd>説明</dd></dl>',
+          '<p class="ptr">押せそうな字<span>中の字(外側だけ数える)</span></p>',
+          '<div class="hov">ホバーで変わる</div>',
+          '<p class="ul">下線の字</p>',
           '<script>console.error("わざとのエラー")</script>',
         ].join(''),
-        '.faint{color:#aaa}.wide{width:2000px}.scroll{height:40px;overflow:auto}.tall{height:400px}',
+        '.faint{color:#aaa}.wide{width:2000px}.scroll{height:40px;overflow:auto}.tall{height:400px}' +
+          '.ptr{cursor:pointer}.hov:hover{background:#eee}.ul{text-decoration:underline}',
       ),
     );
     const r = await audit(dir, { layoutSessions: 0 });
@@ -74,8 +87,14 @@ describe('網羅チェック', () => {
         'キーボードで届かないスクロール領域',
         '押す的が小さい(375px)', // 名前の無い空のボタン
         '実行時のエラー',
+        '自分自身へのリンク(押しても同じ場所に留まる)',
+        '指のカーソルが出るのに操作できない',
+        'ホバーで見た目が変わるのに操作できない',
+        '下線があるのにリンクでない',
       ].sort(),
     );
+    // カーソルは子に引き継がれるが、指摘は外側の 1 つだけ
+    expect(r.findings.filter((f) => f.page === 'bad.html' && f.kind === '指のカーソルが出るのに操作できない')).toHaveLength(1);
     // 正しいリンク・絞り込みの状態のハッシュ・pre の中は指摘しない
     expect(r.findings.some((f) => /other\.html#here|#ids=/.test(f.detail))).toBe(false);
     expect(kinds('other.html')).toEqual([]);

@@ -1,6 +1,7 @@
 // 用語の説明ページ(out/glossary.html)。atlas.html と詳細ページから本文を外し、1 枚だけ別に置く
 // (読む人は初回だけ要るもので、毎ページに 33 項目を展開するとノイズになるため)。
-// 詳細ページと同じ base.css を埋め込み、同じ「様式」の見た目にする。各項目は id を持ち、他ページから glossary.html#<id> で飛べる。
+// 詳細ページと同じ base.css を埋め込み、同じ「様式」の見た目にする。各項目は id を持ち、他ページから glossary.html#<id> で飛べる(飛んだ先は :target で色を付ける)。
+// 語そのものは自分へのリンクにしない(押しても同じ場所に留まるだけで、押せそうに見えて何も起きないため)。
 // 本文は分類(h2、id は g-<分類>)で区切り、目次は分類だけを載せる。目次の帯は atlas.html・詳細ページと同じ作法(page-nav.ts): 768px 以上は左のサイドバー、未満は上部の固定行。
 import { dateTime } from './lib/format.ts';
 import { GLOSSARY, GLOSSARY_GROUPS, termsByGroup } from './lib/glossary.ts';
@@ -20,8 +21,6 @@ const GLOSSARY_CSS = `
 .group .section-head p{max-width:none}
 dl.glossary{margin-top:10px}
 dl.glossary dt{scroll-margin-top:12px}
-dl.glossary dt a{color:inherit;text-decoration:none}
-dl.glossary dt a:hover,dl.glossary dt a:focus-visible{text-decoration:underline}
 dl.glossary dt:target,dl.glossary dt:target+dd{background:var(--form-wash)}
 .gbody .missing-legend{margin:10px 0 0}
 `;
@@ -44,7 +43,7 @@ export function renderGlossaryHtml(o: GlossaryPageOptions): string {
   };
   const groups = GLOSSARY_GROUPS.map((g) => {
     const terms = termsByGroup(g.id);
-    const dl = terms.map((t) => `<dt id="${esc(t.id)}"><a href="#${esc(t.id)}">${esc(t.term)}</a></dt><dd>${esc(t.body)}</dd>`).join('');
+    const dl = terms.map((t) => `<dt id="${esc(t.id)}">${esc(t.term)}</dt><dd>${esc(t.body)}</dd>`).join('');
     return `<section class="section group" id="g-${g.id}" aria-labelledby="h-${g.id}"><div class="section-head"><h2 id="h-${g.id}">${esc(g.title)}</h2><p>${esc(g.lead)}</p></div>${
       g.id === 'records' ? MISSING_LEGEND : ''
     }<dl class="glossary">${dl}</dl></section>`;
