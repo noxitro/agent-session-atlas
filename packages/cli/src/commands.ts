@@ -59,6 +59,8 @@ import { buildTables } from './tables.ts';
 import { exportGroup } from './group-export.ts';
 import { CONFIG_FILE, loadConfig, parseUploadRoot, phaseNames, resolveJudgeModel } from './config.ts';
 import { checkUpload, uploadGroup } from './group-upload.ts';
+import { M365_DEFAULT_MODEL, runM365Judge } from './m365.ts';
+import type { ChatTarget } from './chat-parts.ts';
 
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
@@ -778,6 +780,21 @@ export async function run(o: CliOptions, log: Log): Promise<RunResult> {
   }
 }
 
+/**
+ * judge m365 / turns m365: 開いている M365 Copilot のアプリを操作して未判定の添付ファイルを判定し(m365.ts)、
+ * 1 件でも取り込めたらレポートに反映する(export)。送れなかった・取り込めなかったファイルがあれば、反映した後に失敗にする
+ */
+async function runM365Command(o: CliOptions, p: Paths, target: ChatTarget, x: { model: string | null; limit: number | null; timeoutSec: number }, log: Log): Promise<RunResult> {
+  const s = await runM365Judge(
+    { out: p.out, sessions: p.sessions, judgments: p.judgments, turnJudgments: p.turnJudgments, turnBundle: p.turnBundle },
+    { target, model: x.model ?? M365_DEFAULT_MODEL, limit: x.limit, timeoutSec: x.timeoutSec },
+    log,
+  );
+  const build = s.imported > 0 ? (await runCommand({ ...o, command: 'export', model: null, judge: null, turns: null }, p, log)).build : undefined;
+  if (s.failed.length) throw new Error(`M365 Copilot で判定できなかったファイルが ${s.failed.length} 個あります: ${s.failed.map((f) => `${f.name}(${f.reason})`).join(' / ')}`);
+  return { paths: p, build };
+}
+
 async function runCommand(o: CliOptions, p: Paths, log: Log): Promise<RunResult> {
   const f: SessionFilter = { since: o.since, project: o.project, client: o.client, model: o.model, branch: o.branch, group: o.group, sessions: o.sessions };
   const t = performance.now();
@@ -799,9 +816,11 @@ async function runCommand(o: CliOptions, p: Paths, log: Log): Promise<RunResult>
       await runBundle(p, f, { includeEmpty: o.includeEmpty, perPart: o.perPart, unjudged: o.unjudged }, log);
       return { paths: p };
     case 'turns':
+      if (o.turns!.action === 'm365') return runM365Command(o, p, 'turns', o.turns!, log);
       await runTurns(p, { ...f, model: null }, o.turns!, log);
       return { paths: p };
     case 'judge':
+      if (o.judge!.action === 'm365') return runM365Command(o, p, 'effort', o.judge!, log);
       return { paths: p, judge: await runJudgeCommand(p, o.judge!, log) };
     case 'group':
       await runGroup(p, o.groupCmd!, log, o.config);

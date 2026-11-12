@@ -246,7 +246,8 @@ describe('serve の jobs と記録の表示(Phase 14)', () => {
     children[1].exit(0);
     await until(async () => (await current()).state !== 'running');
 
-    expect((await json('/api/judge/parts')).body).toEqual({ exists: false });
+    // canAutomate: M365 Copilot の自動操作を出すか(サーバが Windows のとき)
+    expect((await json('/api/judge/parts')).body).toEqual({ exists: false, canAutomate: process.platform === 'win32' });
     await mkdir(join(out, 'bundle', 'parts'), { recursive: true });
     await writeFile(join(out, 'bundle', 'parts', 'part-01.md'), '# 指示\nパケット s1 s2');
     await writeFile(join(out, 'bundle', 'secret.md'), '出さない');
@@ -261,6 +262,7 @@ describe('serve の jobs と記録の表示(Phase 14)', () => {
       unjudgedOnly: true,
       count: 2,
       parts: [{ path: 'bundle/parts/part-01.md', name: 'part-01.md', sessions: 2, judged: 0, bytes: 30 }],
+      canAutomate: process.platform === 'win32',
     });
     expect((await json('/api/judge/parts/part-01.md')).body).toEqual({ name: 'part-01.md', text: '# 指示\nパケット s1 s2' });
     for (const bad of ['part-02.md', '..%2Fsecret.md', 'secret.md']) expect({ bad, status: (await json(`/api/judge/parts/${bad}`)).status }).toEqual({ bad, status: 404 });

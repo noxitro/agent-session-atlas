@@ -109,7 +109,7 @@ describe('parseCli', () => {
       parseCli(['judge', 'run', '--backend', 'anthropic', '--model', 'x/y', '--limit', '3', '--only', 'a, b', '--concurrency', '2', '--force', '--no-allow-tools', '--timeout', '30']).judge,
     ).toMatchObject({ backend: 'anthropic', model: 'x/y', limit: 3, only: ['a', 'b'], concurrency: 2, force: true, allowTools: false, timeoutSec: 30 });
     expect(parseCli(['judge', 'import', 'r.md']).judge).toMatchObject({ action: 'import', file: 'r.md' });
-    expect(() => parseCli(['judge'])).toThrow(/run か import/);
+    expect(() => parseCli(['judge'])).toThrow('run / import / m365');
     expect(() => parseCli(['judge', 'import'])).toThrow(/ファイル/);
     expect(() => parseCli(['judge', 'run', '--backend', 'gpt'])).toThrow(/バックエンド/);
     expect(() => parseCli(['judge', 'run', '--limit', '-1'])).toThrow(/--limit/);

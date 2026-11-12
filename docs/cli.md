@@ -23,6 +23,7 @@ npm run atlas -- --help                    # 使い方
 | `bundle` | LLM に工数を判定させる評価バンドル `out/bundle/` を作る(LLM は呼ばない)。ZIP を渡せない相手用に、指示とパケット数件を 1 ファイルにまとめた `out/bundle/parts/part-<番号>.md` も書く |
 | `judge run` | バンドルの各セッションを LLM で判定し `out/judgments.json` に追記する(**クレジットを消費します**) |
 | `judge import <ファイル>` | 外部の LLM で作った判定(JSON か、JSON を含む Markdown)を検証して `out/judgments.json` に取り込む |
+| `judge m365` / `turns m365` `[--model <名前>] [--limit <ファイル数>] [--timeout <秒>]` | 開いている M365 Copilot のアプリ(Windows)を UI Automation で操作し、未判定の添付ファイル(`bundle` / `turns bundle` で作ったもの)を 1 つずつ新しいチャットで送って、返答を取り込み、レポートに反映する。`--model` は M365 Copilot のモデルの選択の名前(既定 `Think Deeper`)、`--timeout` は 1 ファイルの待ち時間(既定 900 秒)。AI クレジットは使わない。添付は OneDrive に入る([judge.md の「M365 Copilot のアプリを自動で操作する」](judge.md#m365-copilot-のアプリを自動で操作するwindows)) |
 | `serve` | `out/` をローカルサーバ(`127.0.0.1`)で配信してブラウザで開く。画面からグループとメモを書け、集計し直す・工数の判定・記録と全文記録の表示ができる([screen.md の「画面からの操作」](screen.md#画面からの操作))。ブラウザを閉じると止まる(画面から動かした処理の実行中は、終わるまで待ってから止まる)。`atlas.bat` はこれで終わる |
 | `open <フォルダ>` | いつもの集計(この PC のデータ → `out/`)とは別に、指定したフォルダを集計して(`all` と同じ手順)、そのフォルダのサーバで開く。画面の「別のフォルダを開く…」と同じ([screen.md の「別のフォルダを開く」](screen.md#別のフォルダを開く))。指定できるのは、アップロード先(全員の分)・その下の人ごとのフォルダ(その人の分)・プロジェクトやタスクタグのフォルダ・`~/.copilot` の形のフォルダ(下記「[別のフォルダを開く(open)](#別のフォルダを開くopen)」) |
 | `memo list` / `memo show <id>` / `memo set <id> <本文...>` / `memo set <id> --file <path>` / `memo remove <id>` | セッションごとのメモ(`atlas-notes/memos/<id>.md`)を一覧・表示・保存・削除する。id は先頭の数文字でよい。`remove` は画像を残す([screen.md の「セッションのメモ」](screen.md#セッションのメモ)) |

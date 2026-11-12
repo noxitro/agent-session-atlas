@@ -4,7 +4,7 @@ import { parseArgs } from 'node:util';
 export const COMMANDS = ['snapshot', 'extract', 'metrics', 'build', 'export', 'all', 'bundle', 'judge', 'turns', 'group', 'memo', 'serve', 'open', 'skill-draft'] as const;
 export type Command = (typeof COMMANDS)[number];
 
-export const JUDGE_ACTIONS = ['run', 'import'] as const;
+export const JUDGE_ACTIONS = ['run', 'import', 'm365'] as const;
 export type JudgeAction = (typeof JUDGE_ACTIONS)[number];
 
 export const BACKEND_NAMES = ['copilot-cli', 'anthropic'] as const;
@@ -27,7 +27,7 @@ export interface JudgeCliOptions {
   timeoutSec: number;
 }
 
-export const TURNS_ACTIONS = ['bundle', 'run', 'import'] as const;
+export const TURNS_ACTIONS = ['bundle', 'run', 'import', 'm365'] as const;
 export type TurnsAction = (typeof TURNS_ACTIONS)[number];
 
 /** 依頼ごとの判定(段階 2)。run は GitHub Copilot CLI だけ(従量課金の anthropic は使わない) */
@@ -151,6 +151,11 @@ export const USAGE = `使い方: atlas <コマンド> [オプション]
   judge run  バンドルの各セッションを LLM で判定し <out>/judgments.json に追記する(クレジットを消費します)
   judge import <ファイル>
              外部の LLM で作った判定(JSON か、JSON を含む Markdown)を検証して judgments.json に取り込む
+  judge m365 [--model <M365 のモデル>] [--limit <ファイル数>] [--timeout <秒>]
+  turns m365 [--model <M365 のモデル>] [--limit <ファイル数>] [--timeout <秒>]
+             開いている M365 Copilot のアプリ(Windows)を UI Automation で操作し、未判定の添付ファイル(bundle / turns bundle
+             で作ったもの)を 1 つずつ新しいチャットで送って、返答を取り込み、レポートに反映する。モデルの既定は Think Deeper、
+             1 ファイルの待ち時間の既定は 900 秒。判定するのは M365 Copilot(AI クレジットは使わない)。添付は OneDrive に入る
   turns bundle [--unjudged] / turns run [--limit <n>] [--model <名前>] / turns import <ファイル>
              依頼ごとの判定(採用・依頼の種類・合わなかった点・普段の工程名)。bundle は M365 Copilot などに添付する
              <out>/turn-bundle/parts/ を作る(LLM は呼ばない)。run は GitHub Copilot CLI で判定する(AI クレジットを消費します)。
@@ -290,8 +295,12 @@ export function parseCli(argv: string[]): CliOptions {
   let judge: JudgeCliOptions | null = null;
   if (cmd === 'judge') {
     const action = positionals[1];
-    if (!action) throw new UsageError('judge の後に run か import を指定してください');
-    if (!(JUDGE_ACTIONS as readonly string[]).includes(action)) throw new UsageError(`judge の不明な操作です: ${action}(run / import)`);
+    if (!action) throw new UsageError('judge の後に run / import / m365 を指定してください');
+    if (!(JUDGE_ACTIONS as readonly string[]).includes(action)) throw new UsageError(`judge の不明な操作です: ${action}(run / import / m365)`);
+    if (action === 'm365') {
+      for (const k of ['only', 'concurrency', 'backend'] as const) if (values[k] != null) throw new UsageError(`--${k} は judge m365 では使えません`);
+      if (values.force) throw new UsageError('--force は judge m365 では使えません(判定済みのセッションは添付ファイルに入りません)');
+    }
     const file = positionals[2] ?? null;
     if (action === 'import' && !file) throw new UsageError('judge import には取り込むファイルを指定してください');
     const maxPos = action === 'import' ? 3 : 2;
@@ -310,7 +319,8 @@ export function parseCli(argv: string[]): CliOptions {
       concurrency: posInt(values.concurrency, '--concurrency', 1) ?? 1,
       force: values.force ?? false,
       allowTools: values['allow-tools'] ?? true,
-      timeoutSec: posInt(values.timeout, '--timeout', 1) ?? 600,
+      // m365 は 1 ファイルの返答を待つ秒数(Think Deeper は数分かかることがあるので長め。m365.ts の M365_DEFAULT_TIMEOUT_SEC)
+      timeoutSec: posInt(values.timeout, '--timeout', 1) ?? (action === 'm365' ? 900 : 600),
     };
   }
   let skillDraft: CliOptions['skillDraft'] = null;
@@ -327,8 +337,8 @@ export function parseCli(argv: string[]): CliOptions {
   let turns: TurnsCliOptions | null = null;
   if (cmd === 'turns') {
     const action = positionals[1];
-    if (!action) throw new UsageError('turns の後に bundle / run / import を指定してください');
-    if (!(TURNS_ACTIONS as readonly string[]).includes(action)) throw new UsageError(`turns の不明な操作です: ${action}(bundle / run / import)`);
+    if (!action) throw new UsageError('turns の後に bundle / run / import / m365 を指定してください');
+    if (!(TURNS_ACTIONS as readonly string[]).includes(action)) throw new UsageError(`turns の不明な操作です: ${action}(bundle / run / import / m365)`);
     const file = positionals[2] ?? null;
     if (action === 'import' && !file) throw new UsageError('turns import には取り込むファイルを指定してください');
     const maxPos = action === 'import' ? 3 : 2;
@@ -336,7 +346,7 @@ export function parseCli(argv: string[]): CliOptions {
     if (values.backend != null && values.backend !== 'copilot-cli') throw new UsageError('turns run は GitHub Copilot CLI(copilot-cli)でだけ回せます(ほかはチャットに貼る方法を使ってください)');
     for (const k of ['only', 'concurrency'] as const) if (values[k] != null) throw new UsageError(`--${k} は turns では使えません`);
     if (values.force) throw new UsageError('--force は turns では使えません');
-    if (action !== 'run') for (const k of ['limit', 'model', 'timeout'] as const) if (values[k] != null) throw new UsageError(`--${k} は turns run でだけ使えます`);
+    if (action !== 'run' && action !== 'm365') for (const k of ['limit', 'model', 'timeout'] as const) if (values[k] != null) throw new UsageError(`--${k} は turns run と turns m365 でだけ使えます`);
     if (values.unjudged && action !== 'bundle') throw new UsageError('--unjudged は bundle と turns bundle でだけ使えます');
     turns = {
       action: action as TurnsAction,
@@ -344,7 +354,7 @@ export function parseCli(argv: string[]): CliOptions {
       limit: posInt(values.limit, '--limit', 0),
       model: values.model ?? null,
       unjudged: values.unjudged ?? false,
-      timeoutSec: posInt(values.timeout, '--timeout', 1) ?? 600,
+      timeoutSec: posInt(values.timeout, '--timeout', 1) ?? (action === 'm365' ? 900 : 600),
     };
   }
   let groupCmd: GroupCliOptions | null = null;
