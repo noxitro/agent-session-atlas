@@ -1,3 +1,4 @@
+import { addCauses } from './tool-failure.ts';
 import {
   METRICS_SCHEMA_VERSION,
   type Distribution,
@@ -106,6 +107,7 @@ export function bucketOf(sessions: SessionRecord[]): MetricsBucket {
       t.success += r.success;
       t.failure += r.failure;
       t.denied += r.denied;
+      if (r.causes) addCauses((t.causes ??= {}), r.causes);
     }
     const lines = s.lines ?? { added: 0, removed: 0, source: 'none' as const };
     b.lines.added += lines.added;

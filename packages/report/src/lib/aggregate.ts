@@ -2,6 +2,7 @@
 // core の computeMetrics と同じ定義(合計は記録のあるセッションだけの和、月は UTC の YYYY-MM)。
 import { execAggregate, type ExecAggregate } from './exec.ts';
 import { hasPeople, UNKNOWN } from './filter.ts';
+import { addCauses, FAILURE_CAUSE_LABELS, type FailureCause, type FailureCauses } from '../../../core/src/tool-failure.ts';
 import type { SessionSummary } from './types.ts';
 
 export interface TokenTotals {
@@ -99,6 +100,8 @@ export interface ToolRow {
   failure: number;
   denied: number;
   sessions: number;
+  /** 失敗(failure)の要因別の回数。記録の無い古いセッションの失敗は入らない */
+  causes: FailureCauses;
 }
 
 export interface McpRow {
@@ -108,8 +111,19 @@ export interface McpRow {
   failure: number;
   denied: number;
   sessions: number;
-  /** ツール名(byName のキー)と回数。多い順 */
-  tools: { name: string; calls: number }[];
+  /** ツール名(byName のキー)と回数・失敗・失敗の要因。多い順 */
+  tools: { name: string; calls: number; failure: number; causes: FailureCauses }[];
+}
+
+/** 失敗の要因ごとの行(ボトルネックを要因から見る) */
+export interface CauseRow {
+  cause: FailureCause;
+  label: string;
+  /** その要因の失敗の回数 */
+  count: number;
+  sessions: number;
+  /** その要因で失敗したツール(MCP はサーバーの中のツール単位)。多い順 */
+  tools: { key: string; label: string; mcpServer: string | null; count: number }[];
 }
 
 export interface SkillRow {
@@ -143,6 +157,10 @@ export interface UsageRanking {
   hooks: CountRow[];
   /** 指示ファイル。count は注入されたセッション数(sessions と同じ) */
   instructions: CountRow[];
+  /** 失敗の要因(多い順)。要因の記録がある失敗だけ */
+  causes: CauseRow[];
+  /** 失敗(failure)のうち、要因の記録が無いもの(古い記録から作ったセッションの失敗) */
+  causesUnrecorded: number;
 }
 
 export interface Aggregate {
@@ -412,8 +430,17 @@ class Tally<T extends { sessions: number }> {
 
 /** 絞り込んだセッションから利用ランキング(ツール・MCP・skill・agent・hook・指示ファイル)を作る */
 export function usageRanking(sessions: SessionSummary[]): UsageRanking {
-  const tools = new Tally<ToolRow>((key) => ({ key, label: key, mcpServer: null, calls: 0, completed: 0, success: 0, failure: 0, denied: 0, sessions: 0 }));
-  const mcp = new Tally<McpRow & { toolMap: Map<string, number> }>((server) => ({ server, calls: 0, completed: 0, failure: 0, denied: 0, sessions: 0, tools: [], toolMap: new Map() }));
+  const tools = new Tally<ToolRow>((key) => ({ key, label: key, mcpServer: null, calls: 0, completed: 0, success: 0, failure: 0, denied: 0, sessions: 0, causes: {} }));
+  const mcp = new Tally<McpRow & { toolMap: Map<string, McpRow['tools'][number]> }>((server) => ({ server, calls: 0, completed: 0, failure: 0, denied: 0, sessions: 0, tools: [], toolMap: new Map() }));
+  const causeRows = new Tally<CauseRow & { toolMap: Map<string, CauseRow['tools'][number]> }>((cause) => ({
+    cause: cause as FailureCause,
+    label: FAILURE_CAUSE_LABELS[cause as FailureCause] ?? cause,
+    count: 0,
+    sessions: 0,
+    tools: [],
+    toolMap: new Map(),
+  }));
+  let causesUnrecorded = 0;
   const skills = new Tally<SkillRow>((name) => ({ name, uses: 0, user: 0, agent: 0, unknown: 0, sessions: 0 }));
   const agents = new Tally<AgentRow>((name) => ({ name, runs: 0, failed: 0, tokens: 0, sessions: 0 }));
   const hooks = new Tally<CountRow>((name) => ({ name, count: 0, sessions: 0 }));
@@ -428,6 +455,17 @@ export function usageRanking(sessions: SessionSummary[]): UsageRanking {
       const denied = issue ? issue[1] : 0;
       const completed = issue ? issue[2] : calls;
       const server = serverOf.get(tool) ?? null;
+      const causes = s.tools.causes?.[tool];
+      const recorded = Object.values(causes ?? {}).reduce((a, n) => a + n, 0);
+      causesUnrecorded += Math.max(0, failure - recorded);
+      for (const [cause, n] of Object.entries(causes ?? {})) {
+        const c = causeRows.get(cause, i);
+        c.count += n;
+        const label = server && tool.startsWith(`${server}-`) ? tool.slice(server.length + 1) : tool;
+        const t = c.toolMap.get(tool) ?? { key: tool, label, mcpServer: server, count: 0 };
+        t.count += n;
+        c.toolMap.set(tool, t);
+      }
       const r = tools.get(server ? `mcp:${server}` : tool, i);
       r.label = server ?? tool;
       r.mcpServer = server;
@@ -436,13 +474,18 @@ export function usageRanking(sessions: SessionSummary[]): UsageRanking {
       r.failure += failure;
       r.denied += denied;
       r.success += completed - failure - denied;
+      addCauses(r.causes, causes);
       if (server) {
         const m = mcp.get(server, i);
         m.calls += calls;
         m.completed += completed;
         m.failure += failure;
         m.denied += denied;
-        m.toolMap.set(tool, (m.toolMap.get(tool) ?? 0) + calls);
+        const mt = m.toolMap.get(tool) ?? { name: tool, calls: 0, failure: 0, causes: {} };
+        mt.calls += calls;
+        mt.failure += failure;
+        addCauses(mt.causes, causes);
+        m.toolMap.set(tool, mt);
       }
     }
     for (const [name, [user, agent, unknown]] of Object.entries(s.skills)) {
@@ -466,12 +509,17 @@ export function usageRanking(sessions: SessionSummary[]): UsageRanking {
     tools: tools.values().sort(byCountThenName((x) => x.calls, (x) => x.key)),
     mcp: mcp
       .values()
-      .map(({ toolMap, ...m }) => ({ ...m, tools: [...toolMap].map(([name, calls]) => ({ name, calls })).sort(byCountThenName((x) => x.calls, (x) => x.name)) }))
+      .map(({ toolMap, ...m }) => ({ ...m, tools: [...toolMap.values()].sort(byCountThenName((x) => x.calls, (x) => x.name)) }))
       .sort(byCountThenName((x) => x.calls, (x) => x.server)),
     skills: skills.values().sort(byCountThenName((x) => x.uses, (x) => x.name)),
     agents: agents.values().sort(byCountThenName((x) => x.runs, (x) => x.name)),
     hooks: hooks.values().sort(byCountThenName((x) => x.count, (x) => x.name)),
     instructions: instructions.values().sort(byCountThenName((x) => x.count, (x) => x.name)),
+    causes: causeRows
+      .values()
+      .map(({ toolMap, ...c }) => ({ ...c, tools: [...toolMap.values()].sort(byCountThenName((x) => x.count, (x) => x.key)) }))
+      .sort(byCountThenName((x) => x.count, (x) => x.cause)),
+    causesUnrecorded,
   };
 }
 

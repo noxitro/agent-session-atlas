@@ -1,4 +1,5 @@
 // SessionRecord → SessionSummary(HTML に埋め込む要約)。生イベント・timeline・長文は落とす。
+import type { FailureCauses } from '../../../core/src/tool-failure.ts';
 import type { SessionRecord } from '../../../core/src/types.ts';
 import type { Anonymizer } from './anonymize.ts';
 import { coverageOf } from './filter.ts';
@@ -80,10 +81,12 @@ export function summarize(r: SessionRecord, anon: Anonymizer, judgment: Judgment
     instructions[key] = (instructions[key] ?? 0) + i.chars;
   }
   const issues: Record<string, ToolIssue> = {};
+  const causes: Record<string, FailureCauses> = {};
   for (const [tool, calls] of Object.entries(r.tools.byName)) {
     const res = r.tools.results?.[tool];
     const completed = res ? res.success + res.failure + res.denied : 0;
     if (!res || res.failure > 0 || res.denied > 0 || completed !== calls) issues[tool] = [res?.failure ?? 0, res?.denied ?? 0, completed];
+    if (res?.causes && Object.keys(res.causes).length) causes[tool] = res.causes;
   }
   const name = anon.freeText(r.name);
   const first = anon.freeText(r.firstUserMessage);
@@ -125,6 +128,7 @@ export function summarize(r: SessionRecord, anon: Anonymizer, judgment: Judgment
       internal: r.tools.internal?.total ?? 0,
       mcp: r.tools.mcp ?? {},
       issues,
+      causes,
       durations: r.tools.durations ?? {},
       outliers: r.tools.durationOutliers ?? {},
     },

@@ -3,6 +3,7 @@
 import type { InstructionInjection, LineChanges, ProjectSource, SessionRecord, SessionTokens, TimelineEntry, TokenCounts, TokenSource } from '../../core/src/types.ts';
 import type { Anonymizer } from './lib/anonymize.ts';
 import { frictionTotal } from './lib/aggregate.ts';
+import { FAILURE_CAUSE_LABELS, sortedCauses } from '../../core/src/tool-failure.ts';
 import { coverageOf } from './lib/filter.ts';
 import { MEMO_CSS } from './memo-render.ts';
 import { codeMeta, NAV_JS, renderRail, renderTop } from './page-nav.ts';
@@ -143,12 +144,18 @@ function toolTable(r: SessionRecord): string {
     return res ? Math.max(0, calls - res.success - res.failure - res.denied) : 0;
   };
   const anyNoResult = rows.some(([k, v]) => noResult(k, v) > 0);
-  return `<div class="table-scroll"><table class="ledger"><thead><tr><th scope="col">ツール</th><th scope="col" class="num">回数</th><th scope="col" class="num">成功</th><th scope="col" class="num">失敗</th><th scope="col" class="num">拒否</th>${anyNoResult ? '<th scope="col" class="num">結果なし</th>' : ''}<th scope="col" class="barcol"><span class="sr-only">割合</span></th></tr></thead><tbody>${rows
+  // 失敗の要因(どれかのツールに記録があるときだけ列を出す)
+  const causeText = (k: string): string =>
+    sortedCauses(r.tools.results?.[k]?.causes)
+      .map(([c, n]) => `${FAILURE_CAUSE_LABELS[c]} ${int(n)}`)
+      .join('・');
+  const anyCause = rows.some(([k]) => causeText(k) !== '');
+  return `<div class="table-scroll"><table class="ledger"><thead><tr><th scope="col">ツール</th><th scope="col" class="num">回数</th><th scope="col" class="num">成功</th><th scope="col" class="num">失敗</th><th scope="col" class="num">拒否</th>${anyNoResult ? '<th scope="col" class="num">結果なし</th>' : ''}${anyCause ? '<th scope="col">失敗の要因</th>' : ''}<th scope="col" class="barcol"><span class="sr-only">割合</span></th></tr></thead><tbody>${rows
     .map(([k, v]) => {
       const res = r.tools.results?.[k];
       const server = serverOf.get(k);
       const nr = noResult(k, v);
-      return `<tr><th scope="row">${esc(k)}${server ? ` <span class="tag">MCP: ${esc(server)}</span>` : ''}</th><td class="num">${esc(int(v))}</td><td class="num">${res ? esc(int(res.success)) : missing('—')}</td><td class="num">${res ? esc(int(res.failure)) : missing('—')}</td><td class="num">${res ? esc(int(res.denied)) : missing('—')}</td>${anyNoResult ? `<td class="num">${nr ? esc(int(nr)) : missing('—')}</td>` : ''}<td class="barcol"><span class="bar" style="width:${((v / max) * 100).toFixed(1)}%"></span></td></tr>`;
+      return `<tr><th scope="row">${esc(k)}${server ? ` <span class="tag">MCP: ${esc(server)}</span>` : ''}</th><td class="num">${esc(int(v))}</td><td class="num">${res ? esc(int(res.success)) : missing('—')}</td><td class="num">${res ? esc(int(res.failure)) : missing('—')}</td><td class="num">${res ? esc(int(res.denied)) : missing('—')}</td>${anyNoResult ? `<td class="num">${nr ? esc(int(nr)) : missing('—')}</td>` : ''}${anyCause ? `<td>${causeText(k) ? esc(causeText(k)) : missing('—')}</td>` : ''}<td class="barcol"><span class="bar" style="width:${((v / max) * 100).toFixed(1)}%"></span></td></tr>`;
     })
     .join('')}</tbody></table></div>${anyNoResult ? '<p class="note">結果なし: 呼び出しの開始はあるが、終わり(成功・失敗・拒否)の記録が無いもの(中断など)。</p>' : ''}`;
 }

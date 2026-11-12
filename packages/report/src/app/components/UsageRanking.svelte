@@ -1,8 +1,9 @@
 <script lang="ts">
+  import { FAILURE_CAUSE_LABELS, sortedCauses, type FailureCauses } from '../../../../core/src/tool-failure.ts';
   import { failureRate, unusedSkills, type UsageRanking } from '../../lib/aggregate.ts';
   import { compact, int, percent } from '../../lib/format.ts';
 
-  type Tab = 'tools' | 'mcp' | 'skills' | 'agents' | 'hooks' | 'instructions';
+  type Tab = 'tools' | 'mcp' | 'causes' | 'skills' | 'agents' | 'hooks' | 'instructions';
 
   let {
     usage,
@@ -19,6 +20,7 @@
   const tabs: { key: Tab; label: string }[] = [
     { key: 'tools', label: 'ツール' },
     { key: 'mcp', label: 'MCP サーバー' },
+    { key: 'causes', label: '失敗の要因' },
     { key: 'skills', label: 'skill' },
     { key: 'agents', label: 'agent' },
     { key: 'hooks', label: 'hook' },
@@ -48,6 +50,17 @@
   };
   /** MCP のツール名は「<サーバー>-<ツール>」なので、表示ではサーバー名の接頭辞を外す */
   const mcpToolLabel = (server: string, name: string): string => (name.startsWith(`${server}-`) ? name.slice(server.length + 1) : name);
+  /** 失敗の要因を多い順に n 件(「時間切れ 30・その他 8」)。記録が無ければ空 */
+  const causeText = (causes: FailureCauses, n = 2): string => {
+    const list = sortedCauses(causes);
+    return list
+      .slice(0, n)
+      .map(([c, k]) => `${FAILURE_CAUSE_LABELS[c]} ${int(k)}`)
+      .join('・')
+      .concat(list.length > n ? '・…' : '');
+  };
+  const causeTotal = $derived(usage.causes.reduce((a, c) => a + c.count, 0));
+  const causeToolText = (t: { label: string; mcpServer: string | null; count: number }): string => `${t.mcpServer ? `MCP ${t.mcpServer} の ` : ''}${t.label} ${int(t.count)}`;
 
   const rows = $derived.by((): Row[] => {
     switch (tab) {
@@ -67,9 +80,17 @@
           tag: t.mcpServer ? 'MCP' : undefined,
           value: toolOrder === 'rate' ? (failureRate(t) ?? 0) : t.calls,
           valueText: toolOrder === 'rate' ? pct(t.failure + t.denied, t.completed) : int(t.calls),
-          note: toolOrder === 'rate' ? `${int(t.calls)} 回・失敗 ${int(t.failure)}・拒否 ${int(t.denied)}` : rateText(t),
+          note: `${toolOrder === 'rate' ? `${int(t.calls)} 回・失敗 ${int(t.failure)}・拒否 ${int(t.denied)}` : rateText(t)}${causeText(t.causes) ? `・主な要因: ${causeText(t.causes)}` : ''}`,
         }));
       }
+      case 'causes':
+        return usage.causes.map((c) => ({
+          key: c.cause,
+          name: c.label,
+          value: c.count,
+          valueText: int(c.count),
+          note: `失敗の ${pct(c.count, causeTotal)}・${int(c.sessions)} セッション・${c.tools.slice(0, 3).map(causeToolText).join('・')}${c.tools.length > 3 ? '・…' : ''}`,
+        }));
       case 'mcp':
         return usage.mcp.map((m) => ({
           key: m.server,
@@ -112,7 +133,7 @@
   const shown = $derived(rows.slice(0, TOP_N));
   const max = $derived(Math.max(tab === 'tools' && toolOrder === 'rate' ? 0 : 1, ...shown.map((r) => r.value)) || 1);
   const tabLabel = $derived(tabs.find((t) => t.key === tab)!.label);
-  const total = $derived(tab === 'tools' ? usage.tools.length : tab === 'mcp' ? usage.mcp.length : tab === 'skills' ? usage.skills.length : tab === 'agents' ? usage.agents.length : tab === 'hooks' ? usage.hooks.length : usage.instructions.length);
+  const total = $derived(tab === 'tools' ? usage.tools.length : tab === 'mcp' ? usage.mcp.length : tab === 'causes' ? usage.causes.length : tab === 'skills' ? usage.skills.length : tab === 'agents' ? usage.agents.length : tab === 'hooks' ? usage.hooks.length : usage.instructions.length);
 
   const unused = $derived(installed ? unusedSkills(installed.skills, usage.skills.map((s) => s.name)) : []);
   const disabled = $derived(new Set((installed?.disabled ?? []).map((n) => n.toLowerCase())));
@@ -132,6 +153,8 @@
       絞り込み後のツール呼び出しの多い順。MCP ツールはサーバーごとに 1 行にまとめています(「MCP」の印)。失敗率は(失敗 + 拒否)÷ 結果の記録がある回数です。
     {:else if tab === 'mcp'}
       MCP サーバー(tool.execution_start の mcpServerName)ごとの呼び出し数と、よく使ったツール。
+    {:else if tab === 'causes'}
+      ツールの失敗(拒否を除く)を、エラーの種類と文の 1 行目から決まった規則で分けた要因の多い順。右に、その要因で失敗したツール(MCP はサーバーの中のツール)を多い順に出します。エラーの文そのものは記録に残していません。{#if usage.causesUnrecorded > 0}要因の記録が無い失敗 {int(usage.causesUnrecorded)} 回(以前の版で集計したセッション)は数えていません。{/if}
     {:else if tab === 'skills'}
       skill の呼び出し回数。「利用者が呼んだ」は skill.invoked の trigger が user-invoked のもの、「エージェントが呼んだ」は agent-invoked と skill ツールの呼び出しです。
     {:else if tab === 'agents'}
@@ -188,6 +211,7 @@
                 <th scope="col" class="num">結果なし</th>
                 <th scope="col" class="num">失敗率</th>
                 <th scope="col" class="num">セッション</th>
+                <th scope="col">主な失敗の要因</th>
               </tr>
             </thead>
             <tbody>
@@ -201,6 +225,7 @@
                   <td class="num">{int(t.calls - t.completed)}</td>
                   <td class="num">{pct(t.failure + t.denied, t.completed)}</td>
                   <td class="num">{int(t.sessions)}</td>
+                  <td>{causeText(t.causes, 3) || '—'}</td>
                 </tr>
               {/each}
             </tbody>
@@ -223,7 +248,30 @@
                   <td class="num">{int(m.calls)}</td>
                   <td class="num">{pct(m.failure + m.denied, m.completed)}</td>
                   <td class="num">{int(m.sessions)}</td>
-                  <td>{m.tools.map((t) => `${mcpToolLabel(m.server, t.name)} ${int(t.calls)}`).join('、')}</td>
+                  <td>{m.tools.map((t) => `${mcpToolLabel(m.server, t.name)} ${int(t.calls)}${t.failure ? `(失敗 ${int(t.failure)}${causeText(t.causes) ? `: ${causeText(t.causes)}` : ''})` : ''}`).join('、')}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        {:else if tab === 'causes'}
+          <table class="ledger">
+            <thead>
+              <tr>
+                <th scope="col">失敗の要因</th>
+                <th scope="col" class="num">回数</th>
+                <th scope="col" class="num">失敗に占める割合</th>
+                <th scope="col" class="num">セッション</th>
+                <th scope="col">ツール(回数)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each usage.causes as c (c.cause)}
+                <tr>
+                  <th scope="row">{c.label}</th>
+                  <td class="num">{int(c.count)}</td>
+                  <td class="num">{pct(c.count, causeTotal)}</td>
+                  <td class="num">{int(c.sessions)}</td>
+                  <td>{c.tools.map(causeToolText).join('、')}</td>
                 </tr>
               {/each}
             </tbody>

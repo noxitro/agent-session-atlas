@@ -28,7 +28,7 @@ const DEFAULTS: Plain = {
   tokens: { input: null, output: null, cacheRead: null, cacheWrite: null, reasoning: null, premiumRequests: null, nanoAiu: null, requests: 0, source: 'none' },
   coverage: 'none',
   byModel: {},
-  tools: { total: 0, byName: {}, internal: 0, mcp: {}, issues: {}, durations: {}, outliers: {} },
+  tools: { total: 0, byName: {}, internal: 0, mcp: {}, issues: {}, causes: {}, durations: {}, outliers: {} },
   exec: { modes: {}, modesInferred: 0, efforts: {}, initiators: {}, context: null, latency: {} },
   frictionDetail: { permissions: [0, 0, 0], errorTypes: {}, subagentFailures: {}, compaction: [0, 0, 0, 0, 0] },
   todos: null,

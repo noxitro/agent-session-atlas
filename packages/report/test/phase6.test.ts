@@ -91,7 +91,7 @@ describe('usageRanking', () => {
     expect(failureRate(u.tools[0])).toBeCloseTo(1 / 3);
     expect(failureRate(u.tools[2])).toBeNull();
     expect(u.mcp).toEqual([
-      { server: 'gh', calls: 3, completed: 3, failure: 1, denied: 0, sessions: 2, tools: [{ name: 'gh-search', calls: 2 }, { name: 'gh-get', calls: 1 }] },
+      { server: 'gh', calls: 3, completed: 3, failure: 1, denied: 0, sessions: 2, tools: [{ name: 'gh-search', calls: 2, failure: 0, causes: {} }, { name: 'gh-get', calls: 1, failure: 1, causes: { other: 1 } }] },
     ]);
     // b の skill ツール呼び出しはエージェントが呼んだもの
     expect(u.skills).toEqual([{ name: 'wiki-query', uses: 2, user: 1, agent: 1, unknown: 0, sessions: 2 }]);

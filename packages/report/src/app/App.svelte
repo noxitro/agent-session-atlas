@@ -74,7 +74,7 @@
   const all = $derived(aggregate(sessions));
   const points = $derived(highlights(filtered, agg.usage, { filter, anonymized: !!data?.anonymized, installed: data?.installed ?? null }));
   /** 利用ランキングの表示中の種類(要点欄の「未使用の skill」から skill に切り替える) */
-  let usageTab = $state<'tools' | 'mcp' | 'skills' | 'agents' | 'hooks' | 'instructions'>('tools');
+  let usageTab = $state<'tools' | 'mcp' | 'causes' | 'skills' | 'agents' | 'hooks' | 'instructions'>('tools');
 
   /** URL ハッシュの表示の指定(view=…)に従ってその場所へ移る */
   function showView(view: string | null): void {

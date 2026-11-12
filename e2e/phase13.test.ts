@@ -73,7 +73,7 @@ describe('Phase 13: メモ', () => {
   it('b. atlas.html には抜粋だけを埋め込み、全文は入れない', async () => {
     const raw = await readFile(join(out, 'atlas.html'), 'utf8');
     const data = extractEmbedded<ReportData>(raw);
-    expect(data.version).toBe(10);
+    expect(data.version).toBe(11);
     const s = data.sessions.find((x) => x.id === id)!;
     expect(s.memo).toMatchObject({ excerpt: '調べた理由', images: 1 });
     expect(data.sessions.find((x) => x.id === other)?.memo ?? null).toBeNull();

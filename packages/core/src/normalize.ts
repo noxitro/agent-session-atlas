@@ -1,5 +1,6 @@
 import { FileTracker, isAutopilotContinuation, isInternalTool, isMainAssistantMessage, isUserTurn, normalizeModel, type FileOp } from './classify.ts';
 import { KNOWN_EVENT_TYPES } from './event-types.ts';
+import { classifyToolFailure, isDeniedError } from './tool-failure.ts';
 import { InstructionCollector } from './instructions.ts';
 import { toolKind } from './turns.ts';
 import { emptyWiki, WikiClassifier } from './wiki.ts';
@@ -666,7 +667,7 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
             if (ts) {
               if (d.success) turnConsecutive = 0;
               else {
-                if (d.error?.code === 'denied') ts.denied++;
+                if (isDeniedError(d.error)) ts.denied++;
                 else ts.toolFailures++;
                 turnConsecutive++;
                 if (turnConsecutive > ts.maxConsecutiveFailures) ts.maxConsecutiveFailures = turnConsecutive;
@@ -677,8 +678,14 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
           if (callName != null && typeof d.success === 'boolean') {
             const r = (results[callName] ??= { success: 0, failure: 0, denied: 0 });
             if (d.success) r.success++;
-            else if (d.error?.code === 'denied') r.denied++;
-            else r.failure++;
+            else if (isDeniedError(d.error)) r.denied++;
+            else {
+              r.failure++;
+              // 失敗の要因(文は残さず、決まった規則で分けた種類だけ)
+              const cause = classifyToolFailure(d.error);
+              const causes = (r.causes ??= {});
+              causes[cause] = (causes[cause] ?? 0) + 1;
+            }
           }
           if (callName != null && t != null) {
             const st = toolStartMs.get(d.toolCallId);

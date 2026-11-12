@@ -102,7 +102,7 @@ describe('Phase 7: 要点欄とツールの絞り込み', () => {
       ['session A: 3 AIU(この条件の合計の 75%)', 'sessions/a.html'],
       ['b: 1 AIU(この条件の合計の 25%)', 'sessions/b.html'],
     ]);
-    expect(g[1].items).toEqual([{ text: 'grep: 失敗率 50%(失敗 3・拒否 0 / 6 回、1 セッション)', href: '#tool=grep', linkLabel: 'このツールを使ったセッションに絞り込む' }]);
+    expect(g[1].items).toEqual([{ text: 'grep: 失敗率 50%(失敗 3・拒否 0 / 6 回、1 セッション)。主な要因: その他 3 回', href: '#tool=grep', linkLabel: 'このツールを使ったセッションに絞り込む' }]);
     expect(g[2].items.map((i) => i.href)).toEqual(['sessions/a.html', 'sessions/b.html']);
     expect(g[3].items[0]).toMatchObject({ text: '2 / 2 件: grep-skill、zz', href: '#view=unused-skills' });
     // ツールの絞り込み

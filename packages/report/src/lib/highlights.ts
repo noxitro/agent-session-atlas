@@ -1,5 +1,6 @@
 // Phase 7: 要点欄。絞り込んだ集計から機械的に短い一覧を作る(LLM は使わない)。
 // 各項目は根拠のリンクを持つ: セッション詳細ページ(sessions/<id>.html)か、絞り込み状態の URL(#...)。
+import { FAILURE_CAUSE_LABELS, sortedCauses } from '../../../core/src/tool-failure.ts';
 import { failureRate, unusedSkills, type UsageRanking } from './aggregate.ts';
 import { filterHref, type FilterState } from './filter.ts';
 import { date, dec, int, percent, truncate } from './format.ts';
@@ -79,7 +80,12 @@ export function highlights(
       });
   }
 
-  // 2. 失敗率の高いツール(結果の記録が下限以上)。リンクはそのツールを呼んだセッションへの絞り込み
+  // 2. 失敗率の高いツール(結果の記録が下限以上)。リンクはそのツールを呼んだセッションへの絞り込み。
+  // 失敗の要因の記録があれば、いちばん多い要因を添える
+  const mainCause = (causes: UsageRanking['tools'][number]['causes']): string => {
+    const top = sortedCauses(causes)[0];
+    return top ? `。主な要因: ${FAILURE_CAUSE_LABELS[top[0]]} ${int(top[1])} 回` : '';
+  };
   const rates = usage.tools
     .filter((t) => t.completed >= HIGHLIGHT_RATE_MIN && (failureRate(t) ?? 0) > 0)
     .sort((a, b) => (failureRate(b) ?? 0) - (failureRate(a) ?? 0) || b.calls - a.calls || a.key.localeCompare(b.key))
@@ -90,7 +96,7 @@ export function highlights(
       title: '失敗率の高いツール',
       basis: `結果の記録が ${HIGHLIGHT_RATE_MIN} 回以上で失敗・拒否のあったツールを失敗率の高い順に`,
       items: rates.map((t) => ({
-        text: `${t.mcpServer ? `MCP ${t.label}` : t.label}: 失敗率 ${percent(t.failure + t.denied, t.completed)}(失敗 ${int(t.failure)}・拒否 ${int(t.denied)} / ${int(t.completed)} 回、${int(t.sessions)} セッション)`,
+        text: `${t.mcpServer ? `MCP ${t.label}` : t.label}: 失敗率 ${percent(t.failure + t.denied, t.completed)}(失敗 ${int(t.failure)}・拒否 ${int(t.denied)} / ${int(t.completed)} 回、${int(t.sessions)} セッション)${mainCause(t.causes)}`,
         href: filterHref({ ...opts.filter, tool: t.key }),
         linkLabel: 'このツールを使ったセッションに絞り込む',
       })),

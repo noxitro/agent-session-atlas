@@ -186,7 +186,7 @@ describe('Phase 6 E2E: fixtures', () => {
   it('2. ツール別の成功・失敗・拒否と失敗率', () => {
     expect(rec(11).tools.results).toEqual({
       'github-mcp-server-search_code': { success: 1, failure: 0, denied: 0 },
-      'github-mcp-server-get_file_contents': { success: 0, failure: 1, denied: 0 },
+      'github-mcp-server-get_file_contents': { success: 0, failure: 1, denied: 0, causes: { not_found: 1 } },
       'ide-get_diagnostics': { success: 1, failure: 0, denied: 0 },
       view: { success: 1, failure: 0, denied: 1 },
       edit: { success: 1, failure: 0, denied: 0 },

@@ -1,4 +1,5 @@
 // 共有読者向けの用語説明。out/glossary.html(別ページ)に載せ、atlas.html と詳細ページからリンクする。
+import { FAILURE_CAUSES, FAILURE_CAUSE_HINTS, FAILURE_CAUSE_LABELS } from '../../../core/src/tool-failure.ts';
 
 export type GroupId = 'units' | 'time' | 'records' | 'mechanics' | 'effort' | 'insights';
 
@@ -91,6 +92,12 @@ export const GLOSSARY: Term[] = [
     group: 'effort',
     term: 'ツールの失敗率',
     body: '(失敗 + 拒否)÷ 結果の記録がある回数。失敗はツールがエラーを返したもの(error.code が failure など)、拒否は利用者や権限設定が実行を断ったもの(denied)です。中断などで結果の記録が無い呼び出しは分母に含めません。',
+  },
+  {
+    id: 'tool-failure-cause',
+    group: 'effort',
+    term: '失敗の要因',
+    body: `ツールの失敗(拒否を除く)を、エラーの種類と文の 1 行目から決まった規則で分けた種類です(LLM は使いません)。エラーの文そのものは記録に残しません。上から順に見て、最初に当たったものにします: ${FAILURE_CAUSES.map((c) => `${FAILURE_CAUSE_LABELS[c]}(${FAILURE_CAUSE_HINTS[c]})`).join('、')}。以前の版で集計したセッションの失敗には要因の記録がありません(集計し直すと付きます)。`,
   },
   {
     id: 'lines',

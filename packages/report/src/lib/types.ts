@@ -1,6 +1,7 @@
 // HTML に埋め込むデータ(atlas.html の <script type="application/json" id="atlas-data">)。
 // sessions.json の SessionRecord から生イベント・timeline・長文を落とした要約だけを持つ。
 // ここはブラウザ側(Svelte)と Node 側(build)の両方から読むので、DOM や node: に依存しない。
+import type { FailureCauses } from '../../../core/src/tool-failure.ts';
 import type { LineChanges, MetricsFile, ProjectSource, TodoSummary, TokenSource } from '../../../core/src/types.ts';
 import type { MemoSummary } from './memo.ts';
 import type { TurnTuple } from './turns.ts';
@@ -15,7 +16,8 @@ import type { VerdictTuple } from './verdicts.ts';
 // 8: Phase 13(memo)
 // 9: turnRows(依頼単位の分析の段階 1)
 // 10: person(送り先が人ごとに分けてあるときの、人ごとの内訳)
-export const REPORT_DATA_VERSION = 10;
+// 11: tools.causes(ツールの失敗の要因別の回数)
+export const REPORT_DATA_VERSION = 11;
 
 /** 推論強度別の [リクエスト, 入力, 出力, nano AIU] */
 export type EffortTuple = [requests: number, input: number, output: number, nanoAiu: number];
@@ -145,6 +147,8 @@ export interface SessionSummary {
     internal: number;
     mcp: Record<string, Record<string, number>>;
     issues: Record<string, ToolIssue>;
+    /** 失敗のあったツールだけ: ツール名 → 失敗の要因別の回数(古い記録から作ったものには無い) */
+    causes?: Record<string, FailureCauses>;
     /** ツール別の所要時間(ms、1 時間超を除く) */
     durations: Record<string, number[]>;
     /** 1 時間を超えて外した回数(ツール別) */

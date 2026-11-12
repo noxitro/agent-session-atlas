@@ -1,3 +1,4 @@
+import type { FailureCauses } from './tool-failure.ts';
 import type { DesktopData, DesktopSessionInfo } from './desktop-types.ts';
 import type { TurnMetrics } from './turns.ts';
 // sessions.json / metrics.json のスキーマ。後続フェーズ(cli / report / judge)はここだけを参照する。
@@ -16,9 +17,11 @@ import type { TurnMetrics } from './turns.ts';
 // 9: analysis.turnActiveMs(ターンごとの実働。スキル化の候補のスコアに使う)
 // 10: analysis.turnStats(依頼単位の分析の段階 1: ターンごとのツールの種類・失敗・拒否・中断・再編集・使用量)
 // 11: person(送り先が人ごとに分けてあるときの、その人のフォルダの名前)
-export const SESSIONS_SCHEMA_VERSION = 12;
+// 13: tools.results[].causes(ツールの失敗の要因別の回数)。error.code: rejected も拒否に数える
+export const SESSIONS_SCHEMA_VERSION = 13;
 // 5: turns(依頼単位の工程 × 詰まり・依頼の種類の集計)
-export const METRICS_SCHEMA_VERSION = 5;
+// 6: tools.results[].causes(ツールの失敗の要因別の回数)
+export const METRICS_SCHEMA_VERSION = 6;
 
 // ---------- 入力(生データ) ----------
 
@@ -248,10 +251,15 @@ export type SkillTrigger = 'user' | 'agent';
 /** ツール 1 種類の結果(tool.execution_complete の success と error.code) */
 export interface ToolResult {
   success: number;
-  /** success: false で error.code が denied 以外(failure など) */
+  /** success: false で error.code が denied・rejected 以外(failure など) */
   failure: number;
-  /** error.code: denied(利用者・権限設定による拒否) */
+  /** error.code: denied・rejected(利用者・権限設定による拒否) */
   denied: number;
+  /**
+   * failure の要因別の回数(error の種類と文の 1 行目から決まった規則で分けた種類。文そのものは残さない。
+   * 規則は tool-failure.ts)。失敗が無ければ無い。古い記録(スキーマ 12 まで)にも無い
+   */
+  causes?: FailureCauses;
 }
 
 /**
