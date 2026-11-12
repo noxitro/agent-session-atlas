@@ -175,6 +175,9 @@ describe('別のフォルダを開く', () => {
     // 読むだけ: 「読むだけ」の札。タスクタグを作る・付ける操作と、まとめて送る印は出さない(集計し直す・判定は出す)
     await expect.poll(() => other!.getByTestId('readonly-tag').innerText()).toBe('読むだけ');
     expect(await other.getByTestId('add-to-group').count()).toBe(0);
+    // 案内も読むだけの画面のもの(「atlas.bat から開くと付けられる」とは出さない)
+    expect(await other.getByTestId('readonly-how').innerText()).toContain('読むだけの画面です');
+    expect(await other.getByText('atlas.bat から開いたときに付けられます').count()).toBe(0);
     expect(await other.locator('#projects').getByRole('checkbox').count()).toBe(0);
     expect(await other.getByTestId('job-judge').count()).toBe(1);
     expect(await other.getByTestId('job-refresh').count()).toBe(1);

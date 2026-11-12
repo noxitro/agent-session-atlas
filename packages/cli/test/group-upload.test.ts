@@ -99,6 +99,27 @@ describe('グループのアップロード', () => {
     expect(existsSync(join(r.dir, 's1', 'atlas-memo.md'))).toBe(false);
   });
 
+  it('送り先から集計した出力先から写しても、送った人のメモと画像・添えた記録は写さない(メモはこの PC の置き場のものだけ)', async () => {
+    const s1 = join(out, 'snapshot', 'session-state', 's1');
+    const s2 = join(out, 'snapshot', 'session-state', 's2');
+    await writeFile(join(s1, 'atlas-memo.md'), '# 送った人のメモ');
+    await mkdir(join(s1, 'atlas-memo'));
+    await writeFile(join(s1, 'atlas-memo', 'member.png'), 'm');
+    await writeFile(join(s2, 'atlas-memo.md'), '# 送った人のメモ 2');
+    await writeFile(join(s2, 'atlas-session.json'), JSON.stringify({ version: 1, id: 's2', tags: ['他人の'] }));
+    const memos = join(notes, 'memos');
+    await mkdir(join(memos, 's1'), { recursive: true });
+    await writeFile(join(memos, 's1.md'), '# 自分のメモ ![](s1/mine.png)');
+    await writeFile(join(memos, 's1', 'mine.png'), 'pp');
+    const c = await checkUpload({ ...paths(), notes }, 'Player/Weapon', root);
+    expect(c.largest.find((x) => x.id === 's1' && x.path === 'atlas-memo')?.bytes).toBe(2);
+    const r = await uploadGroup({ ...paths(), notes }, 'Player/Weapon', root);
+    expect(await readFile(join(r.dir, 's1', 'atlas-memo.md'), 'utf8')).toBe('# 自分のメモ ![](atlas-memo/mine.png)');
+    expect(await readdir(join(r.dir, 's1', 'atlas-memo'))).toEqual(['mine.png']);
+    expect(existsSync(join(r.dir, 's2', 'atlas-memo.md'))).toBe(false);
+    expect(JSON.parse(await readFile(join(r.dir, 's2', 'atlas-session.json'), 'utf8')).tags).not.toContain('他人の');
+  });
+
   it('基底のフォルダが無い・グループが無い・空・集計前なら止まる(何も作らない)', async () => {
     await expect(uploadGroup(paths(), 'Player/Weapon', join(dir, 'none'))).rejects.toThrow(/アップロード先のフォルダが見つかりません/);
     expect(existsSync(join(dir, 'none'))).toBe(false);

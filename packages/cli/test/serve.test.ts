@@ -151,6 +151,27 @@ describe('serve', () => {
     expect(saved.body.html).toContain('src="data:image/png;base64,');
   });
 
+  it('送り先から集計した出力先(sessions.json の layout が flat / merged)を atlas serve で開いても読むだけ。タグは送った人のもの', async () => {
+    await mkdir(notes, { recursive: true });
+    await writeFile(join(notes, 'groups.json'), JSON.stringify({ version: 1, groups: [{ name: 'この PC の', note: '', ids: ['s1'] }] }));
+    await writeFile(
+      join(out, 'sessions.json'),
+      JSON.stringify({ version: 12, source: { root: dir, snapshotDir: join(out, 'snapshot'), since: null, layout: 'merged' }, sessions: [{ id: 's1', person: 'person-a', uploadTags: ['武器'], turns: 0 }] }),
+    );
+    await start();
+    const s = await json('/api/state');
+    expect(s.status).toBe(200);
+    expect(s.body).toMatchObject({ readOnly: true, groups: [{ name: 'person-a / 武器', note: '', ids: ['s1'] }] });
+    expect((await json('/api/groups', { method: 'POST', body: JSON.stringify({ name: 'x', note: '', ids: ['s1'] }) })).status).toBe(403);
+    expect((await json('/api/memos/s1', { method: 'PUT', body: JSON.stringify({ text: 'x', rev: '' }) })).status).toBe(403);
+    expect(await (await fetch(`${base()}/api/memo-editor.js`)).text()).toContain('読むだけ');
+    // この PC の集計に戻したら(layout が無い)、書ける画面に戻る
+    await writeFile(join(out, 'sessions.json'), JSON.stringify({ version: 12, source: { root: null, snapshotDir: join(out, 'snapshot'), since: null }, sessions: [{ id: 's1', turns: 0 }] }));
+    const t = await json('/api/state');
+    expect(t.body.readOnly).toBeUndefined();
+    expect(t.body.groups.map((g: { name: string }) => g.name)).toEqual(['この PC の']);
+  });
+
   it('編集の script は serve だけが配り、伏せ字版ではメモの API も script も 403', async () => {
     await start();
     const js = await fetch(`${base()}/api/memo-editor.js`);

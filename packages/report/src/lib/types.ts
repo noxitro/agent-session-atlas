@@ -205,6 +205,8 @@ export interface ReportData {
    * layout: flat はセッションのフォルダが並ぶ 1 つのフォルダ、merged は下のフォルダをまとめたもの(folders はその数)
    */
   source?: { name: string; path: string; layout: 'flat' | 'merged'; folders: number } | null;
+  /** 読むだけの画面として作った(送り先から集計した・別のフォルダを開いた)。タスクタグとメモは送った人のもの。古い埋め込みには無い */
+  readOnly?: boolean;
   metrics: MetricsFile;
   sessions: SessionSummary[];
   judgments: { available: boolean; backend: string | null; model: string | null; ranAt: string | null; items: number };

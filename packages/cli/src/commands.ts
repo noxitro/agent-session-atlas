@@ -54,7 +54,7 @@ import type { CliOptions, GroupCliOptions, JudgeCliOptions, MemoCliOptions, Turn
 import { findRunningServer, openInBrowser, startServe, type ServeOptions } from './serve.ts';
 import { acquireOutLock, OutBusyError } from './jobs.ts';
 import { pickFolder } from './folder-picker.ts';
-import { checkFolder, folderPaths, foldersRootOf, listFolderStates, readFolderState, writeFolderState, type FolderRun, type FolderState } from './folders.ts';
+import { checkFolder, folderPaths, foldersRootOf, isReadOnlyView, listFolderStates, readFolderState, writeFolderState, type FolderRun, type FolderState } from './folders.ts';
 import { buildTables } from './tables.ts';
 import { exportGroup } from './group-export.ts';
 import { CONFIG_FILE, loadConfig, parseUploadRoot, phaseNames, resolveJudgeModel } from './config.ts';
@@ -394,10 +394,10 @@ export async function runBuild(p: Paths, o: BuildOptions, log: Log): Promise<Bui
     warnings: { unknownEventTypes: unknown, badLines: s.warnings.badLines, notes: groups.warnings },
     judgments,
     verdicts,
-    // 送り先から集計したとき(--home や atlas open)は、送った人が付けていたタスクタグ(人ごと)とメモを出す。
-    // この PC の置き場(groups.json・memos/)のものは混ぜない(別のフォルダを開いた画面は読むだけ)
-    ...(s.source.layout
-      ? { groups: memberGroups(s.sessions), memberMemosDir: join(p.snapshot, 'session-state') }
+    // 読むだけの画面(送り先から集計した・別のフォルダを開いた)は、送った人が付けていたタスクタグ(人ごと)とメモを出す。
+    // この PC の置き場(groups.json・memos/)のものは混ぜない。判定はサーバと同じ isReadOnlyView
+    ...(isReadOnlyView(p.out, s.source)
+      ? { groups: memberGroups(s.sessions), memberMemosDir: join(p.snapshot, 'session-state'), readOnly: true }
       : { groups: groups.groups, memosDir: memosDir(p.notes) }),
     outDir: p.out,
     anonymize: o.anonymize,
@@ -741,7 +741,7 @@ export async function runOpen(o: CliOptions, log: Log, deps: { pick?: typeof pic
   const save = (run: FolderRun | null, relist = false): void => writeFolderState(fp.state, { ...base, listed: relist ? true : (readFolderState(fp.state)?.listed ?? true), run });
   const serve = { port: o.port, open: o.open, config: o.config, home: info.path, reports: { root, notesBase: local.notes, localOut: local.out, current: info.path } };
   log(`open: ${info.path}(${info.summary})`);
-  log(`open: 出力先 ${fp.out}、メモとタスクタグ ${fp.notes}`);
+  log(`open: 出力先 ${fp.out}(読むだけの画面です。タスクタグとメモは送った人が付けたものを出し、この画面では書き換えません)`);
   if (await findRunningServer(p.out)) {
     save(prev?.run ?? null, true);
     await runServe(p, serve, log);

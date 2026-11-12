@@ -58,6 +58,21 @@ export interface FolderPaths {
   log: string;
 }
 
+/** 別のフォルダを開いた(atlas open)ときの出力先か。<置き場>/<キー>/out で、隣に folder.json がある */
+export function isOpenedFolderOut(outDir: string): boolean {
+  const dir = resolve(outDir);
+  return basename(dir) === 'out' && existsSync(join(dirname(dir), FOLDER_STATE_FILE));
+}
+
+/**
+ * 読むだけの画面にするか。build(埋め込むタスクタグとメモ)とサーバ(書き換えを断るか)で同じ判定を使う。
+ * 送り先から集計した(layout が flat / merged。--home でも atlas open でも)か、別のフォルダを開いた出力先なら読むだけ。
+ * 読むだけのときは、タスクタグとメモは送った人が付けたものだけを出し、この PC の置き場のものは混ぜない
+ */
+export function isReadOnlyView(outDir: string, source: { layout?: string | null } | null | undefined): boolean {
+  return source?.layout === 'flat' || source?.layout === 'merged' || isOpenedFolderOut(outDir);
+}
+
 export function folderPaths(root: string, notesBase: string, path: string): FolderPaths {
   const key = folderKey(path);
   const dir = join(resolve(root), key);
