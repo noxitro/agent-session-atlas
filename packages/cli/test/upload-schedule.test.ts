@@ -8,8 +8,10 @@ import { runAutoUpload, type AutoDeps } from '../src/upload-auto.ts';
 import type { AutoStatusFile } from '../src/upload-auto-files.ts';
 import {
   describeStatus,
+  MAX_TIMES,
   nodeOf,
   parseTime,
+  parseTimes,
   psErrorText,
   QUERY_SCRIPT,
   REGISTER_SCRIPT,
@@ -44,6 +46,21 @@ describe('送る時刻と、タスクの中身', () => {
     for (const bad of ['24:00', '18:60', '夕方', '', '18:00:00', '-1']) expect(parseTime(bad)).toBeNull();
   });
 
+  it('1 日に何回か送る時刻は「,」「、」や空白で区切り、早い順・重なりなしにする。1 つでも読めない・上限より多い・空なら null', () => {
+    expect(parseTimes('18:00')).toEqual(['18:00']);
+    expect(parseTimes('12:00,18:00')).toEqual(['12:00', '18:00']);
+    expect(parseTimes('18、12')).toEqual(['12:00', '18:00']);
+    expect(parseTimes('１８：００，１２：００')).toEqual(['12:00', '18:00']);
+    expect(parseTimes(' 18:00  9:30 18時 ')).toEqual(['09:30', '18:00']);
+    expect(parseTimes('12:00,,18:00,')).toEqual(['12:00', '18:00']);
+    expect(parseTimes('12:00,夕方')).toBeNull();
+    expect(parseTimes('12:00,24:00')).toBeNull();
+    expect(parseTimes(' , ')).toBeNull();
+    const many = Array.from({ length: MAX_TIMES + 1 }, (_, i) => `${i + 1}:00`).join(',');
+    expect(parseTimes(many)).toBeNull();
+    expect(parseTimes(Array.from({ length: MAX_TIMES }, (_, i) => `${i + 1}:00`).join(','))).toHaveLength(MAX_TIMES);
+  });
+
   it('タスクは窓を出さずに(conhost --headless)、今の node で upload-auto.ts を動かす。node のパスは引数から取り出せる', () => {
     const args = taskArguments('C:\\Program Files\\nodejs\\node.exe', 'E:\\atlas\\packages\\cli\\src\\upload-auto.ts');
     expect(args).toBe('--headless "C:\\Program Files\\nodejs\\node.exe" "E:\\atlas\\packages\\cli\\src\\upload-auto.ts"');
@@ -58,12 +75,17 @@ describe('送る時刻と、タスクの中身', () => {
     expect(REGISTER_SCRIPT).toContain('-MultipleInstances IgnoreNew');
     expect(REGISTER_SCRIPT).toContain("-Execute 'conhost.exe' -Argument $env:ATLAS_TASK_ARGS");
     expect(REGISTER_SCRIPT).toContain('-Force');
+    // 時刻ごとに毎日のトリガーを 1 つずつ作る
+    expect(REGISTER_SCRIPT).toContain("$env:ATLAS_TASK_TIMES -split ','");
   });
 
   it('タスク スケジューラの操作は、名前・時刻・引数を環境変数で渡し、結果の JSON を読む。失敗したら PowerShell のエラーの文を添える', async () => {
     const calls: { script: string; env: Record<string, string> }[] = [];
     const replies: { code: number; stdout: string; stderr: string }[] = [
-      { code: 0, stdout: '{"exists":true,"state":"Ready","at":"18:30","arguments":"--headless \\"n\\" \\"e\\"","lastRun":null,"lastResult":267011,"nextRun":"2026-11-12T18:30:00"}', stderr: '' },
+      { code: 0, stdout: '{"exists":true,"state":"Ready","times":["12:00","18:30"],"arguments":"--headless \\"n\\" \\"e\\"","lastRun":null,"lastResult":267011,"nextRun":"2026-11-12T18:30:00"}', stderr: '' },
+      // トリガーの無いタスクは、PowerShell 5.1 だと times が null で届くことがある
+      { code: 0, stdout: '{"exists":true,"state":"Ready","times":null,"arguments":"","lastRun":null,"lastResult":null,"nextRun":null}', stderr: '' },
+      { code: 0, stdout: '{"exists":false}', stderr: '' },
       { code: 0, stdout: '', stderr: '' },
       {
         code: 1,
@@ -73,12 +95,14 @@ describe('送る時刻と、タスクの中身', () => {
     ];
     const run: PsRunner = async (script, env) => (calls.push({ script, env }), replies.shift()!);
     const s = taskScheduler(run, { node: 'C:\\node\\node.exe', entry: 'E:\\a\\upload-auto.ts', cwd: 'E:\\a' });
-    expect(await s.query()).toMatchObject({ exists: true, at: '18:30', nextRun: '2026-11-12T18:30:00' });
+    expect(await s.query()).toMatchObject({ exists: true, times: ['12:00', '18:30'], nextRun: '2026-11-12T18:30:00' });
     expect(calls[0]).toEqual({ script: QUERY_SCRIPT, env: { ATLAS_TASK_NAME: TASK_NAME } });
-    await s.register('07:05');
-    expect(calls[1]!.script).toBe(REGISTER_SCRIPT);
-    expect(calls[1]!.env).toMatchObject({ ATLAS_TASK_NAME: TASK_NAME, ATLAS_TASK_TIME: '07:05', ATLAS_TASK_ARGS: '--headless "C:\\node\\node.exe" "E:\\a\\upload-auto.ts"', ATLAS_TASK_CWD: 'E:\\a' });
-    expect(calls[1]!.env.ATLAS_TASK_DESCRIPTION).toContain('毎日 07:05 に');
+    expect(await s.query()).toMatchObject({ exists: true, times: [] });
+    expect(await s.query()).toEqual({ exists: false });
+    await s.register(['07:05', '12:30']);
+    expect(calls[3]!.script).toBe(REGISTER_SCRIPT);
+    expect(calls[3]!.env).toMatchObject({ ATLAS_TASK_NAME: TASK_NAME, ATLAS_TASK_TIMES: '07:05,12:30', ATLAS_TASK_ARGS: '--headless "C:\\node\\node.exe" "E:\\a\\upload-auto.ts"', ATLAS_TASK_CWD: 'E:\\a' });
+    expect(calls[3]!.env.ATLAS_TASK_DESCRIPTION).toContain('毎日 07:05・12:30 に');
     await expect(s.unregister()).rejects.toThrow('タスクを消せませんでした(Register-ScheduledTask : アクセスが拒否されました。)');
   });
 
@@ -102,7 +126,7 @@ describe('登録の対話(runSchedule)', () => {
     const log: string[] = [];
     const s: Scheduler = {
       query: async () => state,
-      register: async (t) => void log.push(`register ${t}`),
+      register: async (t) => void log.push(`register ${t.join(',')}`),
       start: async () => {
         log.push('start');
         await onStart?.();
@@ -118,7 +142,7 @@ describe('登録の対話(runSchedule)', () => {
     return { io, printed, asked, text: () => printed.join('\n') };
   };
   const ready = async () => ({ uploadRoot: dir, uploadProjects: ['owner/app', 'X:\\work\\tool'] });
-  const registered: TaskState = { exists: true, state: 'Ready', at: '18:00', arguments: '--headless "C:\\node\\node.exe" "E:\\a\\upload-auto.ts"', lastRun: null, lastResult: null, nextRun: '2026-11-12T18:00:00' };
+  const registered: TaskState = { exists: true, state: 'Ready', times: ['18:00'], arguments: '--headless "C:\\node\\node.exe" "E:\\a\\upload-auto.ts"', lastRun: null, lastResult: null, nextRun: '2026-11-12T18:00:00' };
 
   it('登録していなくて、送り先か印が無ければ、先に決めることを出して何も登録しない(尋ねない)', async () => {
     const f = fakeIo([]);
@@ -195,6 +219,37 @@ describe('登録の対話(runSchedule)', () => {
     const c = fakeScheduler(registered);
     await runSchedule(fakeIo(['']).io, { scheduler: c.s, config: ready, outDir: dir });
     expect(c.log).toEqual([]);
+  });
+
+  it('1 日に何回か送る時刻を「,」で区切って登録でき、登録してあれば全部の時刻を見せる。t で Enter なら今の時刻を全部そのまま残す', async () => {
+    const a = fakeScheduler({ exists: false });
+    const f = fakeIo(['18:00,12:00,夕方', '18:00,12:00', '']);
+    await runSchedule(f.io, { scheduler: a.s, config: ready, outDir: dir });
+    expect(a.log).toEqual(['register 12:00,18:00']);
+    expect(f.asked[0]).toContain('12:00,18:00 のように「,」で区切る');
+    expect(f.text()).toContain(`18:00 や 12:00,18:00 の形で入れ直してください(1 日に ${MAX_TIMES} 回まで)`);
+    expect(f.text()).toContain('登録しました。毎日 12:00・18:00 に送ります。');
+
+    const twice: TaskState = { ...registered, times: ['12:00', '18:00'], nextRun: '2026-11-12T12:00:00' };
+    const b = fakeScheduler(twice);
+    const g = fakeIo(['t', '']);
+    await runSchedule(g.io, { scheduler: b.s, config: ready, outDir: dir, exists: () => true });
+    expect(g.text()).toMatch(/毎日 12:00・18:00 に送ります\(次: 2026-11-12 12:00\)。/);
+    expect(g.asked[1]).toContain('Enter だけなら 12:00・18:00');
+    expect(b.log).toEqual(['register 12:00,18:00']);
+    expect(g.text()).toContain('登録し直しました。毎日 12:00・18:00 に送ります。');
+
+    // 1 日 1 回に戻す
+    const c = fakeScheduler(twice);
+    await runSchedule(fakeIo(['t', '17:30']).io, { scheduler: c.s, config: ready, outDir: dir, exists: () => true });
+    expect(c.log).toEqual(['register 17:30']);
+
+    // トリガーが無くなったタスク(タスク スケジューラで消した)は時刻不明と出し、t の Enter は 18:00
+    const d = fakeScheduler({ ...registered, times: [] });
+    const h = fakeIo(['t', '']);
+    await runSchedule(h.io, { scheduler: d.s, config: ready, outDir: dir, exists: () => true });
+    expect(h.text()).toContain('毎日 (時刻不明) に送ります');
+    expect(d.log).toEqual(['register 18:00']);
   });
 
   it('登録したときの Node.js が無くなっていたり、タスクが無効になっていたりしたら、登録し直すよう知らせる', async () => {
