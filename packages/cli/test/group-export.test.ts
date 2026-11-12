@@ -54,7 +54,7 @@ describe('グループの書き出し', () => {
     const r = await exportGroup(paths(), '調査: A/B');
     expect(r).toMatchObject({ sessions: 2, turns: 3, records: 1, missing: 1 });
     expect(r.dir).toBe(join(out, 'groups', '調査_ A_B'));
-    expect((await readdir(r.dir)).sort()).toEqual(['README.md', 'metrics.json', 'records', 'sessions.csv', 'turns.csv']);
+    expect((await readdir(r.dir)).sort()).toEqual(['README.md', 'atlas.sqlite', 'metrics.json', 'records', 'sessions.csv', 'turns.csv']);
     const turns = (await readFile(join(r.dir, 'turns.csv'), 'utf8')).trimEnd().split('\r\n');
     expect(turns).toHaveLength(4);
     expect(turns.slice(1).map((l) => l.split(',')[0])).toEqual(['s1', 's1', 's2']);

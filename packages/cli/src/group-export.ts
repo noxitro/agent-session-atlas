@@ -1,6 +1,8 @@
 // グループの書き出し: そのグループのセッションだけを、表計算ソフトや別の分析に持ち出せる形で 1 つのフォルダにまとめる。
 //   <out>/groups/<グループ名>/turns.csv     依頼(ターン)ごとの表
 //                             sessions.csv  セッションごとの表
+//                             vcs-hunks.csv AI の変更のまとまりごとの、VCS の照合の結果(照合してあるときだけ)
+//                             atlas.sqlite  上の表と同じ中身の SQLite
 //                             metrics.json  集計(atlas metrics と同じ形)
 //                             README.md     何をいつ書き出したか・列の読み方
 //                             records/      セッション記録(.md。out/sessions/ にあるものだけ写す)
@@ -9,9 +11,9 @@ import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { computeMetrics, removeTree, type SessionRecord, type SessionsFile } from '../../core/src/index.ts';
+import { computeMetrics, removeTree, VCS_RETENTION_FILE, type SessionRecord, type SessionsFile } from '../../core/src/index.ts';
 import { loadGroups, safeDirName, transcriptFileName } from '../../report/src/index.ts';
-import { buildTables } from './tables.ts';
+import { buildTables, SQLITE_FILE, writeSqlite } from './tables.ts';
 
 export interface GroupExportPaths {
   out: string;
@@ -51,10 +53,16 @@ export async function exportGroup(p: GroupExportPaths, name: string, log: (m: st
   await removeTree(dir);
   await mkdir(join(dir, 'records'), { recursive: true });
   // 判定のファイルが壊れていても、判定の列を付けずに書き出す(集計の表と同じ扱い)
-  const t = await buildTables(sessions, { judgments: p.judgments, turnJudgments: p.turnJudgments ?? join(p.out, 'turn-judgments.json') });
+  const t = await buildTables(sessions, { judgments: p.judgments, turnJudgments: p.turnJudgments ?? join(p.out, 'turn-judgments.json'), vcsRetention: join(p.out, VCS_RETENTION_FILE) });
   for (const w of t.warnings) log(`group export: 注意 ${w}`);
   await writeFile(join(dir, 'turns.csv'), t.turns);
   await writeFile(join(dir, 'sessions.csv'), t.sessions);
+  if (t.vcsHunks != null) await writeFile(join(dir, 'vcs-hunks.csv'), t.vcsHunks);
+  try {
+    await writeSqlite(join(dir, SQLITE_FILE), t.data);
+  } catch (e) {
+    log(`group export: 注意 ${SQLITE_FILE} を書けませんでした(${(e as Error).message})`);
+  }
   const m = computeMetrics(sessions, { installed: file.installed });
   await writeFile(join(dir, 'metrics.json'), `${JSON.stringify(m, null, 2)}\n`);
   let records = 0;
@@ -82,7 +90,9 @@ export async function exportGroup(p: GroupExportPaths, name: string, log: (m: st
       '| ファイル | 中身 |',
       '|---|---|',
       '| turns.csv | 依頼ごとの表。工程・依頼の種類・詰まり(ツールの失敗・拒否・中断・エラー・再編集・文脈圧縮)・使用量。依頼ごとの LLM 判定があれば「判定:」の列(扱い・合わなかった点・普段の工程・確信度・理由) |',
-      '| sessions.csv | セッションごとの表。規模・使用量・摩擦・推定人手工数(判定済みのものだけ) |',
+      '| sessions.csv | セッションごとの表。規模・使用量・摩擦・推定人手工数(判定済みのものだけ)。VCS の照合をしてあれば、AI の変更が作業後の差分に残っているかの列 |',
+      ...(t.vcsHunks != null ? ['| vcs-hunks.csv | AI の変更のまとまりごとの、VCS の照合の結果(未変更で残存・変更後に残存・終了時の差分で未確認・帰属・照合不能)。未確認と照合不能は不採用の意味ではありません |'] : []),
+      `| ${SQLITE_FILE} | 上の表と同じ中身の SQLite(表 turns・sessions${t.vcsHunks != null ? '・vcs_hunks' : ''}。列名は CSV の見出し) |`,
       '| metrics.json | 集計(atlas metrics と同じ形。turns に工程別・依頼の種類別の集計) |',
       '| records/ | セッション記録(Markdown) |',
       '',

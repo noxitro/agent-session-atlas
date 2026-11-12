@@ -809,4 +809,33 @@ describe('プロジェクトのセッションをまとめて送る', () => {
     expect(closed).toBe(1);
     expect(existsSync(join(rootA, 'owner_app', 's2'))).toBe(true);
   });
+
+  it('この PC で照合した VCS の結果(out/vcs-retention.json)を、セッションのフォルダに atlas-vcs.json として添える。送り先から集計したものは添えない', async () => {
+    const result = (id: string) => ({
+      sessionId: id,
+      outcome: 'measured',
+      vcs: 'git',
+      root: 'X:\\zz',
+      baseline: { rev: 'abc', source: 'observed' },
+      evaluated: null,
+      hunks: [{ id: 1, path: 'X:\\zz\\a.ts', status: 'kept', lines: { kept: 1, modified: 0, missing: 0, unattributable: 0 } }],
+      excludedHunks: 0,
+      counts: { kept: 1, modified: 0, missing: 0, unattributable: 0 },
+      lines: { kept: 1, modified: 0, missing: 0, unattributable: 0 },
+      provenance: { aiChanges: 'events', baseline: 'observed', context: {} },
+    });
+    const file = (computedOn: string) => ({ schemaVersion: 1, generatedAt: '2026-11-05T00:00:00.000Z', computedOn, mode: 'worktree', similarity: 0.75, pathMap: 0, summary: {}, sessions: [result('s1')] });
+    await writeFile(join(out, 'vcs-retention.json'), JSON.stringify(file('local')));
+    const target = await projectTarget(paths(), 'owner/app');
+    const c = await checkTarget(paths(), target, rootA);
+    await uploadTarget(paths(), target, rootA, () => {}, { expect: c.fingerprint });
+    const sent = JSON.parse(await readFile(join(rootA, 'owner_app', 's1', 'atlas-vcs.json'), 'utf8'));
+    expect(sent).toMatchObject({ version: 1, sessionId: 's1', computedAt: '2026-11-05T00:00:00.000Z', mode: 'worktree', result: { sessionId: 's1', outcome: 'measured' } });
+    // 照合の結果に無いセッションには添えない
+    expect(existsSync(join(rootA, 'owner_app', 's2', 'atlas-vcs.json'))).toBe(false);
+    // 送り先から集計し直した out/ の結果(送った側のもの)は、この PC の結果ではないので添えない
+    await writeFile(join(out, 'vcs-retention.json'), JSON.stringify(file('sender')));
+    await uploadTarget(paths(), target, rootB);
+    expect(existsSync(join(rootB, 'owner_app', 's1', 'atlas-vcs.json'))).toBe(false);
+  });
 });

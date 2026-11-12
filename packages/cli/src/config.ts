@@ -6,7 +6,7 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
-import { DEFAULT_PHASE_NAMES, renameReplacing, type WikiSpec } from '../../core/src/index.ts';
+import { DEFAULT_PHASE_NAMES, renameReplacing, type PathMapping, type WikiSpec } from '../../core/src/index.ts';
 
 export const CONFIG_FILE = 'atlas.config.json';
 
@@ -26,9 +26,47 @@ export interface AtlasConfig {
    * 自分の API キーのモデル(BYOK)は <プロバイダー名>/<モデル ID>(例: anthropic/claude-sonnet-5-5)。設定に無ければ null(Copilot の既定のモデル。AI クレジットを使う)
    */
   judgeModel: string | null;
+  /**
+   * AI の変更が作業後の VCS に残っているかの照合(atlas vcs)。pathMap はリポジトリを別の場所へ移したときの、ログのパス → 今の場所。
+   * mode は作業後の状態をどこで見るか(worktree = 今の作業ツリー、committed = 最後に取り込んだ版)。設定に無ければ省略
+   */
+  vcs?: VcsConfig | null;
 }
 
-const KEYS = ['wikis', 'phases', 'uploadRoot', 'uploadProjects', 'judgeModel'] as const;
+export interface VcsConfig {
+  pathMap: PathMapping[];
+  mode: 'worktree' | 'committed' | null;
+}
+
+const KEYS = ['wikis', 'phases', 'uploadRoot', 'uploadProjects', 'judgeModel', 'vcs'] as const;
+
+/** vcs の項目。書き間違いは照合が 0 件になって気付きにくいので止める */
+function parseVcs(v: unknown): VcsConfig {
+  if (!isObject(v)) throw new Error('vcs はオブジェクトで指定してください(例: { "pathMap": [{ "from": "D:\\\\old\\\\repo", "to": "E:\\\\dev\\\\repo" }] })');
+  for (const k of Object.keys(v)) if (k !== 'pathMap' && k !== 'mode') throw new Error(`vcs の不明な項目です: ${k}`);
+  let mode: VcsConfig['mode'] = null;
+  if (v.mode !== undefined) {
+    if (v.mode !== 'worktree' && v.mode !== 'committed') throw new Error('vcs.mode は "worktree" か "committed" です');
+    mode = v.mode;
+  }
+  const pathMap: PathMapping[] = [];
+  if (v.pathMap !== undefined) {
+    if (!Array.isArray(v.pathMap)) throw new Error('vcs.pathMap は配列で指定してください');
+    v.pathMap.forEach((m, i) => {
+      const where = `vcs.pathMap[${i}]`;
+      if (!isObject(m)) throw new Error(`${where} は { "from": "...", "to": "..." } で指定してください`);
+      for (const k of Object.keys(m)) if (k !== 'from' && k !== 'to') throw new Error(`${where} の不明な項目です: ${k}`);
+      if (typeof m.from !== 'string' || typeof m.to !== 'string' || !m.from.trim() || !m.to.trim()) throw new Error(`${where} の from と to にフォルダのパスを指定してください`);
+      const from = m.from.trim();
+      const to = m.to.trim();
+      // Windows のパスは、POSIX で集計するときもフルパスとして受け付ける(ログに残るのは元の PC のパスのため)
+      if (!isAbsolute(from) && !/^[A-Za-z]:[\\/]/.test(from)) throw new Error(`${where}.from はフルパスで指定してください: ${from}`);
+      if (!isAbsolute(to) && !/^[A-Za-z]:[\\/]/.test(to)) throw new Error(`${where}.to はフルパスで指定してください: ${to}`);
+      pathMap.push({ from, to });
+    });
+  }
+  return { pathMap, mode };
+}
 
 const WIKI_LISTS = ['index', 'pages', 'extensions', 'skills'] as const;
 
@@ -81,7 +119,8 @@ export function parseConfig(v: unknown): Omit<AtlasConfig, 'path'> {
     if (typeof v.judgeModel !== 'string' || !/^[^\s"]+$/.test(v.judgeModel.trim())) throw new Error('judgeModel にはモデル名を 1 つ指定してください(例: anthropic/claude-sonnet-5-5)');
     judgeModel = v.judgeModel.trim();
   }
-  return { wikis, phases, uploadRoot, uploadProjects, judgeModel };
+  const vcs = v.vcs !== undefined ? parseVcs(v.vcs) : null;
+  return { wikis, phases, uploadRoot, uploadProjects, judgeModel, ...(vcs ? { vcs } : {}) };
 }
 
 /** Copilot CLI の BYOK のモデル(<プロバイダー名>/<モデル ID>)か。Copilot が用意するモデルの名前には / が無い */

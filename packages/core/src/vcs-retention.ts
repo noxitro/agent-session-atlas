@@ -25,7 +25,7 @@ export const RETENTION_STATUS_LABEL: Record<RetentionStatus, string> = {
   unattributable: '帰属・照合不能',
 };
 
-export const UNATTRIBUTABLE_REASONS = ['repo_not_found', 'no_vcs', 'baseline_missing', 'outside_repo', 'read_error', 'concurrent_session', 'later_session'] as const;
+export const UNATTRIBUTABLE_REASONS = ['repo_not_found', 'no_vcs', 'baseline_missing', 'outside_repo', 'read_error', 'concurrent_session', 'later_session', 'not_measured'] as const;
 export type UnattributableReason = (typeof UNATTRIBUTABLE_REASONS)[number];
 export const UNATTRIBUTABLE_REASON_LABEL: Record<UnattributableReason, string> = {
   repo_not_found: '作業フォルダがこの PC に無い',
@@ -35,6 +35,7 @@ export const UNATTRIBUTABLE_REASON_LABEL: Record<UnattributableReason, string> =
   read_error: 'VCS かファイルを読めなかった',
   concurrent_session: '時間の重なる別のセッションと同じ行',
   later_session: '後のセッションも同じ行を足した',
+  not_measured: '送った側で照合していない',
 };
 
 export interface LineCounts {
@@ -71,6 +72,10 @@ export interface SessionRetention {
   lines: LineCounts;
   /** 値の出所 */
   provenance: { aiChanges: 'events'; baseline: Revision['source'] | null; context: Partial<Record<string, ValueSource>> };
+  /** 作業フォルダとファイルのパスを、設定の対応づけ(vcs.pathMap)で読み替えたか(vcs-step.ts が付ける) */
+  pathMapped?: boolean;
+  /** 照合した場所。local = この PC、sender = 送った側の PC(アップロードに添えられた結果を読んだ)。vcs-step.ts が付ける */
+  computedOn?: 'local' | 'sender';
 }
 
 export interface RetentionOptions {
