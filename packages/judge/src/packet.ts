@@ -172,24 +172,39 @@ function countsLine(rec: Record<string, number>, max: number): string {
   return s.join('、');
 }
 
+const len = (s: string): number => [...s].length;
+
+/** 予算に入らなかった本文をまとめた 1 行(件数がいくら多くても 1 つの見出しにする) */
+function omittedLine(label: string, from: number, to: number, chars: number): string {
+  const range = from === to ? `${from}` : `${from}〜${to}`;
+  return `### ${label} ${range}\n(上限のため省略。${nf.format(to - from + 1)} 件、計 ${nf.format(chars)} 字)`;
+}
+
+/**
+ * 本文を予算 total に収めて並べる。見出しと囲みも予算に数える(短い依頼が何百件もあるセッションで、
+ * 本文の上限を下げてもパケットが縮まなくなるのを防ぐ)。予算を使い切った後の本文は、まとめて 1 行にする
+ */
 function textBlocks(entries: TextEntry[], perItem: number, total: number, label: string): { md: string; truncated: number } {
   if (entries.length === 0) return { md: 'なし', truncated: 0 };
   const parts: string[] = [];
   let used = 0;
   let truncated = 0;
-  entries.forEach((e, i) => {
-    const remaining = total - used;
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
     const head = `### ${label} ${i + 1}${e.at ? `(${e.at})` : ''}`;
+    const remaining = total - used - len(head) - 10; // 10: 囲みの行と区切りの空行
     if (remaining < 200) {
-      truncated++;
-      parts.push(`${head}\n(上限のため省略。${nf.format([...e.text].length)} 字)`);
-      return;
+      const rest = entries.slice(i);
+      truncated += rest.length;
+      parts.push(omittedLine(label, i + 1, entries.length, rest.reduce((n, x) => n + len(x.text), 0)));
+      break;
     }
     const c = clip(e.text, Math.min(perItem, remaining));
     if (c.omitted) truncated++;
-    used += Math.min([...e.text].length, Math.min(perItem, remaining));
-    parts.push(`${head}\n${fenced(c.text)}`);
-  });
+    const block = `${head}\n${fenced(c.text)}`;
+    used += len(block) + 2;
+    parts.push(block);
+  }
   return { md: parts.join('\n\n'), truncated };
 }
 
@@ -288,7 +303,11 @@ function renderOnce(s: SessionRecord, t: SessionTexts, L: PacketLimits): { md: s
   else {
     lines.push(`- llm-wiki: 索引の読み取り ${w.indexReads} 回 / ページ読み取り ${w.pageReads.length} 件 / wiki skill ${w.skillCalls.length} 回 / 書き込み ${w.writes} 回`);
     if (w.pageReads.length) lines.push(list(w.pageReads.map((p) => `読んだページ: ${p}`), Math.min(15, L.listItems), ''));
-    if (w.skillCalls.length) lines.push(`- wiki skill: ${w.skillCalls.join('、')}`);
+    if (w.skillCalls.length) {
+      const calls: Record<string, number> = {};
+      for (const c of w.skillCalls) calls[c] = (calls[c] ?? 0) + 1;
+      lines.push(`- wiki skill: ${countsLine(calls, Math.min(20, L.listItems))}`);
+    }
   }
   lines.push('');
 
@@ -298,19 +317,27 @@ function renderOnce(s: SessionRecord, t: SessionTexts, L: PacketLimits): { md: s
     // 最新の要約ほど全体を表すので、新しい順に予算を割り当てる
     const all = [...t.compactions.map((e) => ({ ...e, kind: 'compaction 要約' })), ...t.taskCompletes.map((e) => ({ ...e, kind: 'タスク完了の報告' }))];
     all.sort((a, b) => (b.at ?? '').localeCompare(a.at ?? ''));
+    // 見出しと囲みも予算に数え、予算を使い切った後の(古い)要約はまとめて 1 行にする(textBlocks と同じ理由)
     let used = 0;
     const parts: string[] = [];
-    for (const e of all) {
-      const remaining = L.summaryChars - used;
+    for (let i = 0; i < all.length; i++) {
+      const e = all[i];
+      const head = `### ${e.kind}${e.at ? `(${e.at})` : ''}`;
+      const remaining = L.summaryChars - used - len(head) - 10;
       if (remaining < 200) {
-        truncated++;
-        parts.push(`### ${e.kind}${e.at ? `(${e.at})` : ''}\n(上限のため省略)`);
-        continue;
+        const rest = all.slice(i);
+        truncated += rest.length;
+        const oldest = rest[rest.length - 1].at;
+        const newest = rest[0].at;
+        const span = oldest && newest ? `(${oldest}〜${newest})` : '';
+        parts.push(`### それより前の要約 ${nf.format(rest.length)} 件${span}\n(上限のため省略。計 ${nf.format(rest.reduce((n, x) => n + len(x.text), 0))} 字)`);
+        break;
       }
       const c = clip(e.text, remaining);
       if (c.omitted) truncated++;
-      used += Math.min([...e.text].length, remaining);
-      parts.push(`### ${e.kind}${e.at ? `(${e.at})` : ''}\n${fenced(c.text)}`);
+      const block = `${head}\n${fenced(c.text)}`;
+      used += len(block) + 2;
+      parts.push(block);
     }
     lines.push(parts.reverse().join('\n\n'));
   }

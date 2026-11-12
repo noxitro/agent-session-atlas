@@ -74,6 +74,12 @@ describe('parseCli', () => {
     expect(() => parseCli(['open', '/srv/logs', '--judgments', 'j.json'])).toThrow(/--judgments は open では使えません/);
     expect(() => parseCli(['open', '/srv/logs', '--anonymize'])).toThrow(UsageError);
     expect(() => parseCli(['build', '--no-open'])).toThrow(/serve と open でだけ/);
+    // --pick: フォルダは選ぶ画面で決める(open-folder.bat)。フォルダの指定とは一緒に使えない
+    expect(parseCli(['open', '--pick'])).toMatchObject({ command: 'open', target: null, pick: true });
+    expect(parseCli(['open', 'D:\\logs'])).toMatchObject({ pick: false });
+    expect(() => parseCli(['open', '--pick', 'D:\\logs'])).toThrow(/--pick を一緒に使えません/);
+    expect(() => parseCli(['serve', '--pick'])).toThrow(/--pick は open でだけ/);
+    expect(() => parseCli(['open'])).toThrow(/atlas open --pick/);
   });
 
   it('export と --tool-output / --max-chars を読む(export 以外では UsageError)', () => {

@@ -84,8 +84,10 @@ npm run atlas -- --help                    # 使い方
 npm run atlas -- open "\\server\share\log"            # アップロード先: 全員の分
 npm run atlas -- open "\\server\share\log\<名前>"     # 人のフォルダ: その人の分
 npm run atlas -- open "D:\atlas-logs\Player-Weapon"   # プロジェクトやタスクタグのフォルダ
+npm run atlas -- open --pick                          # フォルダを選ぶ画面から選ぶ(open-folder.bat と同じ)
 ```
 
+- **フォルダを選ぶ画面から選ぶ**(`--pick`。Windows だけ): フォルダを選ぶ画面を出し、選んだフォルダを開きます。画面は、前に開いたフォルダ(`<out>-folders/*/folder.json` のうち、いちばん新しく開いたもの)の場所で出ます。「キャンセル」を押すと、何も書かずに終了コード 0 で終わります。`--pick` とフォルダの指定は一緒に使えません。リポジトリ直下の `open-folder.bat` は、引数が無ければ `open --pick` を、引数があれば(フォルダを bat に重ねて離したとき)`open <フォルダ>` を実行します。
 - **フォルダはフルパスで 1 つ指定します**(空白を含むときは `"…"` で囲みます)。集計できる形かを先に確かめ、セッションが見つからないフォルダ・無いフォルダ・フルパスでないものは、何も書かずに理由を出して止まります。何を読むかは「[snapshot と extract が読むもの](#snapshot-と-extract-が読むもの)」の `--home` と同じです(読むのは 2 段下まで)。
 - **出力先とメモは、フォルダごとに分けます**: `--out` と `--notes-dir` には、いつもの集計の場所をそのまま指定します(省けば既定の `out/` と `atlas-notes/`)。集計は `<out>-folders/<キー>/out/` に、メモとタスクタグは `<notes-dir>/folders/<キー>/` に書き、いつもの `out/` と `atlas-notes/` には触れません。`<キー>` は `<フォルダ名(40 文字まで)>-<パスから作った 8 桁>` です(同じ名前の別のフォルダを混ぜないため)。
 
@@ -97,7 +99,7 @@ npm run atlas -- open "D:\atlas-logs\Player-Weapon"   # プロジェクトやタ
   ```
 
 - **開くたびに集計し直します**。そのフォルダのサーバがもう動いていれば、集計し直さずに、その画面をブラウザで開くだけにします(`serve` と同じ)。同じ出力先に書く処理が動いている間は、始めずに理由を出します。
-- **使えるオプション**: `--port` `--no-open` `--config`、絞り込み(`--since` `--project` など。集計にそのまま渡します)、`--snapshot-all` `--snapshot-prune`。`--home`(開くフォルダは `open` の後ろに書きます)・`--judgments`・`--bundle`・`--anonymize` は使えません。
+- **使えるオプション**: `--pick` `--port` `--no-open` `--config`、絞り込み(`--since` `--project` など。集計にそのまま渡します)、`--snapshot-all` `--snapshot-prune`。`--home`(開くフォルダは `open` の後ろに書きます)・`--judgments`・`--bundle`・`--anonymize` は使えません。
 - **開いた画面で「集計し直す」を押すと、同じフォルダを読み直します**(`open` に渡した絞り込みは引き継ぎません。`serve` と同じ)。
 - 開いたフォルダは `atlas.config.json` には書きません(覚えるのは `folder.json` だけ)。
 

@@ -52,7 +52,8 @@ import {
 import type { CliOptions, GroupCliOptions, JudgeCliOptions, MemoCliOptions, TurnsCliOptions } from './args.ts';
 import { findRunningServer, openInBrowser, startServe, type ServeOptions } from './serve.ts';
 import { acquireOutLock, OutBusyError } from './jobs.ts';
-import { checkFolder, folderPaths, foldersRootOf, readFolderState, writeFolderState, type FolderRun, type FolderState } from './folders.ts';
+import { pickFolder } from './folder-picker.ts';
+import { checkFolder, folderPaths, foldersRootOf, listFolderStates, readFolderState, writeFolderState, type FolderRun, type FolderState } from './folders.ts';
 import { buildTables } from './tables.ts';
 import { exportGroup } from './group-export.ts';
 import { CONFIG_FILE, loadConfig, parseUploadRoot, phaseNames } from './config.ts';
@@ -711,10 +712,21 @@ type RunResult = { paths: Paths; build?: BuildResult; judge?: RunSummary | null 
  * 出力先とメモはフォルダごとに分ける(folders.ts)。そのフォルダのサーバが動いていれば、ブラウザで開くだけ。
  * 状態(集計中・表示中・失敗)は <置き場>/<キー>/folder.json に書き、画面の「別のフォルダを開く…」の一覧が読む。
  */
-export async function runOpen(o: CliOptions, log: Log): Promise<RunResult> {
+export async function runOpen(o: CliOptions, log: Log, deps: { pick?: typeof pickFolder } = {}): Promise<RunResult> {
   const local = resolvePaths({ home: null, out: o.out, judgments: null, notesDir: o.notesDir });
-  const info = await checkFolder(o.target);
   const root = foldersRootOf(local.out);
+  let target = o.target;
+  if (o.pick) {
+    // --pick(open-folder.bat): 選ぶ画面を、前に開いたフォルダの場所で出す。取り消したら何も書かずに終わる
+    const initial = listFolderStates(root)[0]?.state.path ?? null;
+    log('open: フォルダを選ぶ画面を出します(タスクバーに隠れていたら、そこから開いてください)');
+    target = await (deps.pick ?? pickFolder)('集計して開くフォルダを選んでください(アップロード先・人ごとのフォルダ・プロジェクトのフォルダ)', initial);
+    if (target == null) {
+      log('open: フォルダを選ばなかったので、何もしません');
+      return { paths: local };
+    }
+  }
+  const info = await checkFolder(target);
   const fp = folderPaths(root, local.notes, info.path);
   const p = resolvePaths({ home: info.path, out: fp.out, judgments: null, notesDir: fp.notes });
   const prev = readFolderState(fp.state);
