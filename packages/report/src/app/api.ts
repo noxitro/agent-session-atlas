@@ -50,6 +50,8 @@ export interface UploadCheck {
   name: string;
   dir: string;
   sessions: number;
+  /** 前に写したときから変わっていないので写さないセッション(古いサーバは返さない) */
+  unchanged?: number;
   missing: string[];
   replace: number;
   bytes: number;
@@ -79,6 +81,8 @@ export interface GroupUpload {
   dir: string;
   uploaded: number;
   replaced: number;
+  /** 前に写したときから変わっていないので写さなかったセッション(古いサーバは返さない) */
+  unchanged?: number;
   missing: string[];
   snapshotAt: string | null;
   /** メモを添えたセッションの数 */

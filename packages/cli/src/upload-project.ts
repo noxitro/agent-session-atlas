@@ -245,6 +245,8 @@ function describe(io: UploadProjectIo, checks: UploadCheck[], root: string): voi
   }
   const replace = sum((c) => c.replace);
   if (replace) io.print(`  うち ${replace} セッションは、前に送ったものを置き換えます。`);
+  const unchanged = sum((c) => c.unchanged);
+  if (unchanged) io.print(`  前に送ったときから変わっていない ${unchanged} セッションは、送り先にあるものをそのまま使います(送りません)。`);
   const secrets = sum((c) => c.secrets.count);
   if (secrets) {
     const kinds = new Map<string, number>();
@@ -347,8 +349,8 @@ async function targetsOf(paths: GroupUploadPaths & { sessions: string }, chosen:
 
 /** 自動で送った結果(schedule-upload.bat の状態の表示に使う) */
 export interface UploadSummary {
-  /** 送ったプロジェクトと、送ったセッションの数 */
-  sent: { name: string; sessions: number }[];
+  /** 送ったプロジェクトと、送ったセッションの数(unchanged は前に送ったときから変わっていないので送らなかった数) */
+  sent: { name: string; sessions: number; unchanged?: number }[];
   /** 送ったものにあった秘密らしい文字列の数(偽陽性もありうる) */
   secrets: number;
   root: string | null;
@@ -434,8 +436,11 @@ export async function runUploadProject(
       });
       describe(io, checks, r0);
       io.print('');
+      // 前に送ったときから何も変わっていなければ、写すものが無いので尋ねない(送り先の一覧と添えた記録だけを書き直す)
+      const nothing = checks.every((c) => c.sessions === 0);
+      if (nothing) io.print('  前に送ったときから変わったセッションはありません。送り先の一覧(README.md)だけ書き直します。');
       // 自動のときは、登録したときに「確認を出さずに送る」と承知してもらっている(schedule-upload.bat)
-      const a = auto ? 'y' : (await io.ask('  y = 送る   n = 番号で選び直す   c = 送り先を変える   Enter = やめる\n  > ')).toLowerCase();
+      const a = auto || nothing ? 'y' : (await io.ask('  y = 送る   n = 番号で選び直す   c = 送り先を変える   Enter = やめる\n  > ')).toLowerCase();
       if (a === 'c') {
         const picked = await chooseRoot(io, o.configPath, root);
         if (picked) root = picked;
@@ -483,9 +488,11 @@ export async function runUploadProject(
                 },
               });
               sent.push(r);
-              o.summary?.sent.push({ name: r.name, sessions: r.uploaded });
+              o.summary?.sent.push({ name: r.name, sessions: r.uploaded, unchanged: r.unchanged });
               if (o.summary) o.summary.secrets += checks[i]!.secrets.count;
-              const extra = [r.replaced ? `置き換え ${r.replaced} セッション` : '', r.memos ? `メモ ${r.memos} 件` : ''].filter(Boolean).join('・');
+              const extra = [r.replaced ? `置き換え ${r.replaced} セッション` : '', r.unchanged ? `変わっていない ${r.unchanged} セッションはそのまま` : '', r.memos ? `メモ ${r.memos} 件` : '']
+                .filter(Boolean)
+                .join('・');
               io.print(`  ${tag}${padEnd(t.name, w)}  ${String(r.uploaded).padStart(sw)} セッションを送りました${extra ? `(${extra})` : ''}`);
               if (r.leftovers.length) {
                 // 置き換えた前のフォルダが、送り先で開かれていたなどで消せずに残った(次に送るときも残り続けるので、手で消してもらう)
@@ -520,7 +527,8 @@ export async function runUploadProject(
       // 残り(pending)があるのは、送る途中で確かめ直しになり、そこでやめたとき(送れなかったものがあっても、残りは出す)
       io.print(failed.length ? '== 送れなかったものがあります ==' : stopped ? '== 途中で止まりました ==' : pending.length ? '== 途中でやめました ==' : '== 終わりました ==');
       if (sent.length) {
-        io.print(`  ${sent.length} プロジェクト・${sent.reduce((a, r) => a + r.uploaded, 0)} セッションを送りました。`);
+        const kept = sent.reduce((a, r) => a + r.unchanged, 0);
+        io.print(`  ${sent.length} プロジェクト・${sent.reduce((a, r) => a + r.uploaded, 0)} セッションを送りました${kept ? `(変わっていない ${kept} セッションはそのまま)` : ''}。`);
         io.print(`  送り先: ${sent.length > 1 ? [...new Set(sent.map((r) => dirname(r.dir)))].join('、') : sent[0]!.dir}`);
         io.print(sent.length > 1 ? '  説明とセッションの一覧は、それぞれのフォルダの README.md にあります。' : '  説明とセッションの一覧は、そのフォルダの README.md にあります。');
       }

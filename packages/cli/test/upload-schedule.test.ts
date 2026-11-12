@@ -115,6 +115,10 @@ describe('送る時刻と、タスクの中身', () => {
     const base: AutoStatusFile = { startedAt: '2026-11-11T09:00:00.000Z', finishedAt: '2026-11-11T09:01:00.000Z', ok: true, error: null, sent: [{ name: 'a', sessions: 3 }, { name: 'b', sessions: 2 }], secrets: 0, root: 'X:\\logs' };
     expect(describeStatus(base)).toMatch(/^前回: 2026-11-11 \d\d:01 に 2 プロジェクト・5 セッションを送りました。$/);
     expect(describeStatus({ ...base, secrets: 4 })).toContain('(秘密らしい文字列 4 件を含む)');
+    // 前に送ったときから変わっていないので送らなかったものも出す
+    expect(describeStatus({ ...base, sent: [{ name: 'a', sessions: 1, unchanged: 7 }, { name: 'b', sessions: 0, unchanged: 3 }], secrets: 2 })).toMatch(
+      /に 2 プロジェクト・1 セッションを送りました\(変わっていない 10 セッションはそのまま・秘密らしい文字列 2 件を含む\)。$/,
+    );
     expect(describeStatus({ ...base, ok: false, error: '送り先が見つかりません' })).toMatch(/に送れませんでした: 送り先が見つかりません$/);
     expect(describeStatus({ ...base, finishedAt: null })).toContain('まだ終わっていません');
   });

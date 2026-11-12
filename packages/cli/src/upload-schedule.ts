@@ -217,7 +217,9 @@ export function describeStatus(s: AutoStatus): string {
   if (!s.finishedAt) return `前回: ${when(s.startedAt)} に始めて、まだ終わっていません(動いている途中か、途中で止まりました)。`;
   if (!s.ok) return `前回: ${when(s.finishedAt)} に送れませんでした: ${s.error ?? '理由は記録をご覧ください'}`;
   const sessions = s.sent.reduce((a, p) => a + p.sessions, 0);
-  return `前回: ${when(s.finishedAt)} に ${s.sent.length} プロジェクト・${sessions} セッションを送りました${s.secrets ? `(秘密らしい文字列 ${s.secrets} 件を含む)` : ''}。`;
+  const kept = s.sent.reduce((a, p) => a + (p.unchanged ?? 0), 0);
+  const notes = [kept ? `変わっていない ${kept} セッションはそのまま` : '', s.secrets ? `秘密らしい文字列 ${s.secrets} 件を含む` : ''].filter(Boolean).join('・');
+  return `前回: ${when(s.finishedAt)} に ${s.sent.length} プロジェクト・${sessions} セッションを送りました${notes ? `(${notes})` : ''}。`;
 }
 
 export interface ScheduleIo {

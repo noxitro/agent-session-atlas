@@ -573,7 +573,7 @@ export async function runGroup(p: Paths, g: GroupCliOptions, log: Log, config: s
     try {
       // 写す前に大きさと秘密らしい文字列を調べる(画面の確認と同じ。秘密らしい文字列があれば --force が無い限り写さない)
       const c = await checkUpload(p, g.name!, root);
-      log(`group upload: ${c.sessions} セッション・${mb(c.bytes)}${c.largest.length ? `(大きいもの: ${c.largest.slice(0, 3).map((x) => `${x.id.slice(0, 8)}/${x.path} ${mb(x.bytes)}`).join('、')})` : ''}`);
+      log(`group upload: ${c.sessions} セッション・${mb(c.bytes)}${c.unchanged ? `(前に送ったときから変わっていない ${c.unchanged} セッションは写しません)` : ''}${c.largest.length ? `(大きいもの: ${c.largest.slice(0, 3).map((x) => `${x.id.slice(0, 8)}/${x.path} ${mb(x.bytes)}`).join('、')})` : ''}`);
       if (c.secrets.count) {
         log(`group upload: 秘密らしい文字列が ${c.secrets.count} 件あります(${c.secrets.kinds.map((k) => `${k.label} ${k.count}`).join('・')}。偽陽性もありえます)`);
         for (const f of c.secrets.files) log(`  ${f.id}/${f.path}: ${f.count} 件`);

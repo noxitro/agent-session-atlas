@@ -16,7 +16,7 @@ export interface AutoStatusFile {
   /** 失敗したときの理由(送れたときは null) */
   error: string | null;
   /** 送ったプロジェクトと、送ったセッションの数(途中で失敗しても、送れた分は残す) */
-  sent: { name: string; sessions: number }[];
+  sent: { name: string; sessions: number; unchanged?: number }[];
   /** 送ったものにあった秘密らしい文字列の数 */
   secrets: number;
   root: string | null;
