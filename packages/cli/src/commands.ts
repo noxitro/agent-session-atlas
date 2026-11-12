@@ -416,6 +416,10 @@ export async function runBuild(p: Paths, o: BuildOptions, log: Log): Promise<Bui
     if (verdicts) log(`build: 依頼ごとの判定 ${[...verdicts.bySession.values()].reduce((a, m) => a + m.size, 0)} 件を合成(${p.turnJudgments})`);
   }
 
+  const retention = await readVcsRetention(p.vcsRetention);
+  if (retention) log(`build: VCS の照合 ${retention.sessions.length} 件を合成(${p.vcsRetention}、照合 ${retention.generatedAt})`);
+  else if (existsSync(p.vcsRetention)) log(`build: 注意 ${p.vcsRetention} を読めないため、AI の変更の残存は出しません(atlas vcs で作り直せます)`);
+
   // 伏せ字版では表を書かない(依頼文とパスがそのまま入るため)。前に書いた表も、共有用の out/ に残さないよう消す(out/full/ と同じ扱い)
   if (!o.anonymize) await writeTables(p, sessions, o.transcripts ? 'export' : 'build', log);
   else if (existsSync(join(p.out, 'tables'))) {
@@ -435,6 +439,7 @@ export async function runBuild(p: Paths, o: BuildOptions, log: Log): Promise<Bui
     warnings: { unknownEventTypes: unknown, badLines: s.warnings.badLines, notes: groups.warnings },
     judgments,
     verdicts,
+    retention,
     // 読むだけの画面(送り先から集計した・別のフォルダを開いた)は、送った人が付けていたタスクタグ(人ごと)とメモを出す。
     // この PC の置き場(groups.json・memos/)のものは混ぜない。判定はサーバと同じ isReadOnlyView
     ...(isReadOnlyView(p.out, s.source)
