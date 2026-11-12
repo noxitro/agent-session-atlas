@@ -10,7 +10,7 @@ import { spawn as nodeSpawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
-import { describeSource, type SourceShape } from '../../core/src/index.ts';
+import { describeSource, UPLOAD_PROBE_HINT, type SourceShape } from '../../core/src/index.ts';
 import { alive, JOB_ENV, JOB_LOCK_FILE, MAIN_TS } from './jobs.ts';
 
 export const FOLDER_STATE_FILE = 'folder.json';
@@ -180,7 +180,7 @@ export async function checkFolder(input: unknown): Promise<FolderInfo> {
   const shape = await describeSource(path);
   if (shape.kind === 'none')
     throw new FolderError(
-      `このフォルダには、集計できるセッションが見つかりません: ${path}(アップロード先のフォルダ・その下の人ごとのフォルダ・プロジェクトのフォルダのどれかを指定してください。読むのは 2 段下までです)`,
+      `このフォルダには、集計できるセッションが見つかりません: ${path}(アップロード先のフォルダ・その下の人ごとのフォルダ・プロジェクトのフォルダのどれかを指定してください。読むのは 2 段下までです。${UPLOAD_PROBE_HINT})`,
     );
   return { path, name: folderName(path), shape, summary: describeShape(shape) };
 }

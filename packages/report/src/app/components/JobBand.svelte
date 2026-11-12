@@ -4,6 +4,7 @@
   // この画面のデータより後に始まった処理だけを出す(再読み込みした後は出さない)。全文記録の作成(詳細ページから)は実行中だけ出す。
   import type { JobInfo } from '../api.ts';
   import type { JobStore } from '../jobs.svelte.ts';
+  import JobLog from './JobLog.svelte';
 
   let { jobs, generatedAt }: { jobs: JobStore; generatedAt: string } = $props();
 
@@ -81,12 +82,7 @@
       {#if shown.state === 'running' && shown.log.length}
         <p class="last" title={shown.log[shown.log.length - 1]}>直近: {shown.log[shown.log.length - 1]}</p>
       {:else if (shown.state === 'failed' || shown.state === 'canceled') && shown.log.length}
-        <details class="log">
-          <summary>ログ(末尾 {shown.log.length} 行)</summary>
-          <!-- 縦に流れる枠はキーボードでも送れるようにする(Tab で止まって矢印で送る) -->
-          <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-          <pre tabindex="0" aria-label="処理のログ">{shown.log.join('\n')}</pre>
-        </details>
+        <div class="log"><JobLog log={shown.log} /></div>
       {/if}
     </div>
   {/if}
@@ -155,25 +151,7 @@
   }
   .log {
     flex-basis: 100%;
-    font-size: 0.75rem;
-  }
-  .log summary {
-    cursor: pointer;
-    color: var(--form);
-    width: max-content;
-  }
-  .log pre {
-    margin: 4px 0 2px;
-    padding: 6px 8px;
-    max-height: 14em;
-    overflow: auto;
-    background: var(--surface);
-    border: 1px solid var(--rule);
-    font-family: var(--mono);
-    font-size: 0.75rem;
-    line-height: 1.5;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
+    --job-log-summary: var(--form);
   }
   .err {
     margin: 0;

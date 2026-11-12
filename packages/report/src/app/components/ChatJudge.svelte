@@ -6,10 +6,12 @@
   // 4. レポートに反映する(export のジョブ)
   // どの手順も AI クレジットを使わない(判定するのはチャットの側)。
   // target が turns なら依頼ごとの判定(turn-bundle/・turn-judgments.json。件数は依頼の数)。
-  import { tick } from 'svelte';
+  import { onDestroy, tick } from 'svelte';
   import { chatJudgeApi, ChatImportError, jobsApi, type ChatPart, type ChatParts, type JudgeTarget } from '../api.ts';
   import type { JobStore } from '../jobs.svelte.ts';
   import { dateTime, int } from '../../lib/format.ts';
+  import { failureReason } from '../../lib/job-log.ts';
+  import JobLog from './JobLog.svelte';
 
   // reply は親(JobActions)が判定するものごとに持つ(判定するものを切り替えても貼りかけの返答が消えないように)
   let { jobs, onclose, target = 'effort', reply = $bindable('') }: { jobs: JobStore; onclose: () => void; target?: JudgeTarget; reply?: string } = $props();
@@ -40,6 +42,29 @@
   const next = $derived(parts.find((p) => p.judged < p.sessions) ?? null);
   const bundling = $derived(jobs.running && jobs.job?.kind === bundleKind);
   const off = $derived(jobs.running || jobs.busy);
+  /** いま使える添付ファイルがあるか(作り直しに失敗しても、前に作ったものは残る) */
+  const made = $derived(!!info?.exists && parts.length > 0);
+  /**
+   * 添付ファイルを作る処理が失敗したか、止められたとき(本文の上の帯には出ないので、ここで見せる)。
+   * この画面で動いているのを見た処理だけを出す。一度見て閉じたものと、その後に(コマンドなどで)作れたものは出さない
+   */
+  const ended = $derived.by(() => {
+    const j = jobs.job;
+    if (!j || j.kind !== bundleKind || (j.state !== 'failed' && j.state !== 'canceled')) return null;
+    if (jobs.live !== j.id || jobs.dismissed === j.id) return null;
+    if (j.endedAt && info?.generatedAt && Date.parse(info.generatedAt) > Date.parse(j.endedAt)) return null;
+    return j;
+  });
+  /** 処理が書いた理由(「atlas: 失敗しました: …」の後ろ)。書かずに終わったときは空で、ログを読んでもらう */
+  const reason = $derived(ended?.state === 'failed' ? failureReason(ended.log) : '');
+  // 見せた失敗は、閉じたら(判定するものを切り替えたときも)もう出さない
+  let shownId: string | null = null;
+  $effect(() => {
+    if (ended) shownId = ended.id;
+  });
+  onDestroy(() => {
+    if (shownId && jobs.job?.id === shownId) jobs.dismissed = shownId;
+  });
 
   async function load(): Promise<void> {
     loadError = '';
@@ -149,6 +174,18 @@
       </button>
       {#if target === 'turns' && withoutTurns > 0}<p class="state" data-testid="chat-without-turns">依頼ごとの記録が無いセッションが {int(withoutTurns)} 件あります(古い集計)。先に「集計し直す」を押すと、その依頼も入ります。</p>{/if}
       {#if jobs.error && !bundling}<p class="err" role="alert">{jobs.error}</p>{/if}
+      {#if ended}
+        <div class="err" role="alert" data-testid="chat-bundle-failed">
+          {#if ended.state === 'failed'}
+            <p><strong>添付ファイルを作れませんでした</strong>(終了コード {ended.exitCode ?? '—'})。{reason ? '' : '理由は下のログで確かめてください。'}</p>
+            {#if reason}<p class="reason" data-testid="chat-bundle-reason">理由: {reason}</p>{/if}
+            <p>原因を直してから、もう一度押してください。{made ? '前に作った添付ファイルは、そのまま使えます。' : ''}</p>
+          {:else}
+            <p><strong>添付ファイルの作成を止めました</strong>。{made ? '前に作った添付ファイルは、そのまま使えます。' : '使える添付ファイルはまだありません。もう一度作ってください。'}</p>
+          {/if}
+          {#if ended.log.length}<div class="log"><JobLog log={ended.log} /></div>{/if}
+        </div>
+      {/if}
     </li>
 
     <li>
@@ -439,6 +476,15 @@
   .err ul {
     padding-left: 1.2em;
     overflow-wrap: anywhere;
+  }
+  .err p {
+    overflow-wrap: anywhere;
+  }
+  .err .reason {
+    white-space: pre-wrap;
+  }
+  .log {
+    margin: 4px 0 0;
   }
   .footer {
     display: flex;

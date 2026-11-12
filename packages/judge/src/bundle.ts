@@ -2,9 +2,9 @@
 // ZIP は作らない(Node 標準で作れず、依存を増やさないため)。フォルダごと ZIP にして外部 LLM に渡すか、
 // ZIP を渡せない相手(M365 Copilot のようにテキストの添付だけ)には parts/ のファイルを 1 つずつ渡す。
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { SessionRecord } from '../../core/src/index.ts';
+import { replaceEntries, type SessionRecord } from '../../core/src/index.ts';
 import { collectTexts, DEFAULT_LIMITS, excerptTexts, hasRequest, renderPacket, type PacketLimits, type SessionTexts } from './packet.ts';
 import { packetBoundary, renderInstructions, renderPartInstructions } from './rubric.ts';
 import { JUDGMENTS_JSON_SCHEMA } from './schema.ts';
@@ -70,11 +70,23 @@ export function packetFileName(id: string): string {
   return `${id.replace(/[^A-Za-z0-9._-]/g, '_')}.md`;
 }
 
+/** 入れ替える名前。先頭が一覧(manifest.json)。ここに無いもの(利用者が --bundle で指した先にあった別のファイル)には触らない */
+const BUNDLE_ENTRIES = ['manifest.json', 'sessions', 'parts', 'INSTRUCTIONS.md', 'schema.json'] as const;
+
+/**
+ * 作りかけの場所に全部を作ってから、前のものと入れ替える(絞り込みで減ったパケットは残らない)。
+ * 途中で失敗したり止められたりしても、前に作ったものはそのまま使える
+ */
 export async function buildBundle(sessions: SessionRecord[], opts: BundleOptions): Promise<BundleManifest> {
+  const perPart = opts.perPart ?? DEFAULT_PER_PART;
+  if (!Number.isInteger(perPart) || perPart < 1) throw new Error(`perPart は 1 以上の整数です: ${perPart}`);
+  return replaceEntries(opts.bundleDir, BUNDLE_ENTRIES, (dir) => writeBundle(sessions, opts, dir, perPart));
+}
+
+async function writeBundle(sessions: SessionRecord[], opts: BundleOptions, dir: string, perPart: number): Promise<BundleManifest> {
   const log = opts.log ?? (() => {});
   const limits = opts.limits ?? DEFAULT_LIMITS;
   const generatedAt = (opts.now?.() ?? new Date()).toISOString();
-  const dir = opts.bundleDir;
 
   let texts = new Map<string, SessionTexts>();
   if (opts.snapshotDir && existsSync(join(opts.snapshotDir, 'session-state'))) {
@@ -83,10 +95,7 @@ export async function buildBundle(sessions: SessionRecord[], opts: BundleOptions
     log(`bundle: 注意 スナップショット${opts.snapshotDir ? `(${opts.snapshotDir})` : ''}が無いため、本文は sessions.json の抜粋(先頭・末尾 2,000 字)で代用します`);
   }
 
-  // 前回の生成物を消す(絞り込みで減ったパケットを残さない)
-  await rm(join(dir, 'sessions'), { recursive: true, force: true });
   await mkdir(join(dir, 'sessions'), { recursive: true });
-  await rm(join(dir, 'parts'), { recursive: true, force: true });
 
   const entries: BundleEntry[] = [];
   const markdowns = new Map<string, string>();
@@ -118,8 +127,6 @@ export async function buildBundle(sessions: SessionRecord[], opts: BundleOptions
   }
   entries.sort((a, b) => (a.createdAt ?? '').localeCompare(b.createdAt ?? '') || a.id.localeCompare(b.id));
 
-  const perPart = opts.perPart ?? DEFAULT_PER_PART;
-  if (!Number.isInteger(perPart) || perPart < 1) throw new Error(`perPart は 1 以上の整数です: ${perPart}`);
   const schemaJson = `${JSON.stringify(JUDGMENTS_JSON_SCHEMA, null, 2)}\n`;
   const parts: NonNullable<BundleManifest['parts']> = [];
   const partCount = Math.ceil(entries.length / perPart);

@@ -710,8 +710,17 @@ describe('プロジェクトのセッションをまとめて送る', () => {
     await tick();
     expect(exits).toEqual([]);
     o.written.length = 0;
-    tty.write('\x03');
-    await tick();
+    // SIGINT を聞いているものがあっても、そちらには回さずに自分で終わる(止まらないままにならない)
+    let signaled = 0;
+    const onSigint = (): void => void signaled++;
+    process.on('SIGINT', onSigint);
+    try {
+      tty.write('\x03');
+      await tick();
+    } finally {
+      process.off('SIGINT', onSigint);
+    }
+    expect(signaled).toBe(0);
     expect(exits).toEqual([130]);
     expect(modes).toEqual([true, false]);
     // 書き換えていた 1 行を消してから、中断したことを 1 行で出す

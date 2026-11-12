@@ -10,6 +10,8 @@ export class JobStore {
   now = $state(Date.now());
   /** 「閉じる」で隠した処理の id */
   dismissed = $state<string | null>(null);
+  /** この画面で動いているのを見た最後の処理の id(読み込む前に終わっていた処理と区別する) */
+  live = $state<string | null>(null);
   busy = $state(false);
   readonly token: string;
   #timer: ReturnType<typeof setTimeout> | null = null;
@@ -24,6 +26,11 @@ export class JobStore {
     return this.job?.state === 'running';
   }
 
+  #set(job: JobInfo | null): void {
+    if (job?.state === 'running') this.live = job.id;
+    this.job = job;
+  }
+
   #schedule(ms: number): void {
     if (this.#timer) clearTimeout(this.#timer);
     this.#timer = this.#polling ? setTimeout(() => void this.poll(), ms) : null;
@@ -32,7 +39,7 @@ export class JobStore {
   async poll(): Promise<void> {
     if (!this.#polling) return;
     try {
-      this.job = await jobsApi.current(this.token);
+      this.#set(await jobsApi.current(this.token));
     } catch {
       /* サーバが止まったことは heartbeat が知らせる(帯は前の状態のまま) */
     }
@@ -67,7 +74,7 @@ export class JobStore {
     this.error = '';
     this.busy = true;
     try {
-      this.job = await jobsApi.start(this.token, req);
+      this.#set(await jobsApi.start(this.token, req));
       this.dismissed = null;
       this.now = Date.now();
       this.#syncClock();
@@ -85,7 +92,7 @@ export class JobStore {
   async cancel(): Promise<void> {
     this.error = '';
     try {
-      this.job = await jobsApi.cancel(this.token);
+      this.#set(await jobsApi.cancel(this.token));
     } catch (e) {
       this.error = (e as Error).message;
     }

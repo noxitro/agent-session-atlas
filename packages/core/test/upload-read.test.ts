@@ -1,6 +1,7 @@
 // アップロード先のフォルダ(<基底>/<グループやプロジェクトの名前>/<セッション id>/ …)を --home にして集計し直すときの、読む側の守り。
 //  - 出力先を別の元で使い回したら止める(前の元のセッションと混ざらないように)
-//  - 置き換えの途中・消し残しのフォルダ(.<id>.uploading / .<id>.old)はセッションとして数えない
+//  - 置き換えの途中・消し残しのフォルダ(.<id>.uploading / .<id>.old)はセッションとして数えない。
+//    本体が無いセッションは、写し終えていた .<id>.uploading からだけ写す(.<id>.old だけなら数えず、理由を残す)
 //  - アップロードしたフォルダが並ぶ場所(人ごとのフォルダ)を指したら、下のフォルダをまとめて読む。もう 1 段上(全員の分)なら、2 段下のフォルダまでまとめて読む
 //  - リンクのファイルは辿らない(フォルダの外のファイルを写さない)
 //  - 添えた行(atlas-session-store.json)の形が違っても止まらない
@@ -12,7 +13,7 @@ import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { extract, listSessionDirs, loadStore, mergeSessionStoreJson, readSenderProject } from '../src/extract.ts';
-import { describeSource, DUPLICATE_REASON, isUploadWorkDir, snapshot, SNAPSHOT_MANIFEST, SNAPSHOT_SOURCE, UPLOAD_INDEX, UPLOAD_SESSION_META, UPLOAD_WORK_REASON, uploadOldName, uploadTmpName, uploadWorkDirId } from '../src/snapshot.ts';
+import { describeSource, DUPLICATE_REASON, isUploadWorkDir, snapshot, SNAPSHOT_MANIFEST, SNAPSHOT_SOURCE, UPLOAD_INDEX, UPLOAD_OLD_ONLY_REASON, UPLOAD_SESSION_META, UPLOAD_WORK_REASON, uploadOldName, uploadTmpName, uploadWorkDirId } from '../src/snapshot.ts';
 
 const EVENT = '{"type":"session.start","data":{"sessionId":"x","version":1},"id":"e1","timestamp":"2026-07-02T09:00:00.000Z","parentId":null}\n';
 
@@ -70,6 +71,32 @@ describe('アップロード先から集計し直す: snapshot', () => {
     expect((await snapshot(a, dest)).sessions.dirs).toBe(1);
   });
 
+  it('前の集計が何も写していない出力先は、別の元でも使える(場所を間違えて 0 件だった後に、指定し直せる)', async () => {
+    const base = await work();
+    const empty = join(base, 'logs', 'empty');
+    const a = join(base, 'logs', 'group-a');
+    const b = join(base, 'logs', 'group-b');
+    const dest = join(base, 'out', 'snapshot');
+    await mkdir(empty, { recursive: true });
+    await session(join(a, 'sa'));
+    await session(join(b, 'sb'));
+    expect((await snapshot(empty, dest)).sessions.dirs).toBe(0);
+    expect(JSON.parse(await readFile(join(dest, SNAPSHOT_MANIFEST), 'utf8'))).toMatchObject({ sourceRoot: empty });
+    // 0 件だった集計の印は消して、今の元のものに書き直す
+    expect((await snapshot(a, dest)).sessions.dirs).toBe(1);
+    expect(JSON.parse(await readFile(join(dest, SNAPSHOT_MANIFEST), 'utf8'))).toMatchObject({ sourceRoot: a });
+    expect(JSON.parse(await readFile(join(dest, SNAPSHOT_SOURCE), 'utf8'))).toMatchObject({ sourceRoot: a });
+    // 写したものがある出力先は、今までどおり止める
+    await expect(snapshot(b, dest)).rejects.toThrow(/別の場所/);
+    expect(existsSync(join(dest, 'session-state', 'sb'))).toBe(false);
+    // 0 件のまま途中で止まった集計(印だけがある)の後も同じ
+    const dest2 = join(base, 'out2', 'snapshot');
+    await snapshot(empty, dest2);
+    await rm(join(dest2, SNAPSHOT_MANIFEST));
+    expect((await snapshot(b, dest2)).sessions.dirs).toBe(1);
+    expect(JSON.parse(await readFile(join(dest2, SNAPSHOT_SOURCE), 'utf8'))).toMatchObject({ sourceRoot: b });
+  });
+
   it('途中で止まった集計(マニフェストが無い)の後でも、別の元を足さない', async () => {
     const base = await work();
     const a = join(base, 'logs', 'group-a');
@@ -110,7 +137,7 @@ describe('アップロード先から集計し直す: snapshot', () => {
     await expect(snapshot(moved, dest)).rejects.toThrow(/別の場所/);
   });
 
-  it('置き換えの途中で止まって本体のフォルダが無いセッションは、作業用のフォルダから写す', async () => {
+  it('置き換えの途中で止まって本体のフォルダが無いセッションは、写し終えていた作業用のフォルダから写す。退けた前のフォルダだけなら写さない', async () => {
     const base = await work();
     const src = join(base, 'logs', 'group');
     const dest = join(base, 'out', 'snapshot');
@@ -119,29 +146,104 @@ describe('アップロード先から集計し直す: snapshot', () => {
     // s1: 前のフォルダを退けたところで止まった(新しいものは写し終えている) → 新しいものを使う
     await session(join(src, uploadOldName('s1')));
     await session(join(src, uploadTmpName('s1')), { ...meta('s1'), 'plan.md': '# 新しい\n' });
-    // s2: 退けた前のフォルダだけが残った → それを使う
-    await session(join(src, uploadOldName('s2')), { 'plan.md': '# 前の\n' });
+    // s2: 退けた前のフォルダだけが残った → 使わない(消し残しがあるセッションを共有から消したときと見分けられない)
+    await session(join(src, uploadOldName('s2')), { ...meta('s2'), 'plan.md': '# 前の\n' });
     // s3: 初めて送っている途中(記録がまだ無い) → 使わない
     await session(join(src, uploadTmpName('s3')));
     const m = await snapshot(src, dest);
-    expect(m.sessions.dirs).toBe(3);
-    expect(m.extras?.recovered).toEqual([
-      { id: 's1', path: '.s1.uploading' },
-      { id: 's2', path: '.s2.old' },
-    ]);
+    expect(m.sessions.dirs).toBe(2);
+    expect(m.extras?.recovered).toEqual([{ id: 's1', path: '.s1.uploading' }]);
     expect(m.extras?.skipped.filter((x) => x.reason === UPLOAD_WORK_REASON).map((x) => x.path).sort()).toEqual(['.s1.old', '.s3.uploading']);
-    expect(await listSessionDirs(join(dest, 'session-state'))).toEqual(['ok', 's1', 's2']);
+    expect(m.extras?.skipped.filter((x) => x.reason === UPLOAD_OLD_ONLY_REASON).map((x) => x.path)).toEqual(['.s2.old']);
+    expect(await listSessionDirs(join(dest, 'session-state'))).toEqual(['ok', 's1']);
     expect(await readFile(join(dest, 'session-state', 's1', 'plan.md'), 'utf8')).toBe('# 新しい\n');
-    expect(await readFile(join(dest, 'session-state', 's2', 'plan.md'), 'utf8')).toBe('# 前の\n');
+    expect(existsSync(join(dest, 'session-state', 's2'))).toBe(false);
     const file = await extract(dest, { projects: { homes: [], temps: [], tempPatterns: false } });
-    expect(file.sessions.map((s) => s.id).sort()).toEqual(['ok', 's1', 's2']);
+    expect(file.sessions.map((s) => s.id).sort()).toEqual(['ok', 's1']);
     expect(file.sessions.find((s) => s.id === 's1')?.project).toBe('zz-owner/zz-app');
-    expect(file.warnings.messages.join('\n')).toMatch(/置き換えが途中で止まっていたセッション 2 件は、作業用のフォルダから読んだ/);
+    const warned = file.warnings.messages.join('\n');
+    expect(warned).toMatch(/置き換えが途中で止まっていたセッション 1 件は、写し終えていた作業用のフォルダから読んだ\(\.s1\.uploading\)/);
+    // 数えなかったことと、どうすればよいか(消したのなら消す・消していなければ送り直す)を出す
+    expect(warned).toMatch(/退けた前のフォルダだけが残っているセッション 1 件は、数えていない\(\.s2\.old\)。.*このフォルダも消す.*もう一度アップロード/);
+    expect(warned).toMatch(/消し残しのフォルダ 2 件は、セッションとして数えていない/);
     // 本体のフォルダが戻れば(送り直した)、作業用のフォルダは数えないだけ
     await session(join(src, 's1'));
+    await session(join(src, 's2'));
     const again = await snapshot(src, dest);
-    expect(again.extras?.recovered).toEqual([{ id: 's2', path: '.s2.old' }]);
+    expect(again.extras?.recovered).toBeUndefined();
+    expect(again.extras?.skipped.filter((x) => x.reason === UPLOAD_OLD_ONLY_REASON)).toEqual([]);
     expect(again.sessions.dirs).toBe(3);
+  });
+
+  it('作業用のフォルダの名前から取った id が、写す先の名前に使えないものなら写さない(出力先のフォルダの外・別の名前のフォルダに書かない)', async () => {
+    const base = await work();
+    const src = join(base, 'logs', 'group');
+    const dest = join(base, 'out', 'snapshot');
+    const meta = (id: string): Record<string, string> => ({ [UPLOAD_SESSION_META]: JSON.stringify({ version: 1, id }), 'plan.md': '# 外に出さない\n' });
+    await session(join(src, 's1'));
+    // 写し終えた形(記録まである)の作業用のフォルダ。id は順に「..」「.」「.x.old」「x (空白で終わる)」「x.(点で終わる)」
+    const bad = ['..', '.', '.x.old', 'x ', 'x.'];
+    for (const id of bad) await session(join(src, uploadTmpName(id)), meta(id));
+    const m = await snapshot(src, dest);
+    expect(m.sessions.dirs).toBe(1);
+    expect(m.extras?.recovered).toBeUndefined();
+    expect(m.extras?.skipped.filter((x) => x.reason === UPLOAD_WORK_REASON).map((x) => x.path).sort()).toEqual(bad.map((id) => uploadTmpName(id)).sort());
+    // 出力先の session-state には s1 だけがあり、その外(出力先の直下・1 つ上)には何も写っていない
+    expect(await readdir(join(dest, 'session-state'))).toEqual(['s1']);
+    for (const dir of [dest, join(dest, 'session-state'), join(dest, '..')]) for (const f of ['events.jsonl', 'plan.md', UPLOAD_SESSION_META]) expect(existsSync(join(dir, f)), join(dir, f)).toBe(false);
+    expect(JSON.parse(await readFile(join(dest, SNAPSHOT_SOURCE), 'utf8'))).toMatchObject({ sourceRoot: src });
+    expect(await readFile(join(dest, 'session-state', 's1', 'events.jsonl'), 'utf8')).toBe(EVENT);
+  });
+
+  it('作業用のフォルダから写したことは、写したときだけ残す(--since で写さなかったものは入れない)', async () => {
+    const base = await work();
+    const src = join(base, 'logs', 'group');
+    const dest = join(base, 'out', 'snapshot');
+    await session(join(src, uploadTmpName('s1')), { [UPLOAD_SESSION_META]: JSON.stringify({ version: 1, id: 's1' }) });
+    const m = await snapshot(src, dest, { since: '2999-01-01T00:00:00Z' });
+    expect(m.sessions).toMatchObject({ dirs: 0, skippedBySince: 1 });
+    expect(m.extras?.recovered).toBeUndefined();
+    expect(existsSync(join(dest, 'session-state', 's1'))).toBe(false);
+    const file = await extract(dest, { projects: false });
+    expect(file.warnings.messages.join('\n')).not.toMatch(/作業用のフォルダから読んだ/);
+    // 期間に入っていれば写して、残す
+    const all = await snapshot(src, dest);
+    expect(all.sessions.dirs).toBe(1);
+    expect(all.extras?.recovered).toEqual([{ id: 's1', path: '.s1.uploading' }]);
+  });
+
+  it('本体のフォルダがあれば、中がリンクだけでも作業用のフォルダからは写さない。別のフォルダから写し終えた複製は、リンクの片付けで消さない', async (ctx) => {
+    const base = await work();
+    const src = join(base, 'logs', 'group');
+    const dest = join(base, 'out', 'snapshot');
+    const meta = { [UPLOAD_SESSION_META]: JSON.stringify({ version: 1, id: 'abc' }) };
+    await mkdir(join(src, 'abc'), { recursive: true });
+    // 指す先の無いリンク(本体の events.jsonl)
+    if (!(await link(join(base, 'gone.jsonl'), join(src, 'abc', 'events.jsonl')))) return ctx.skip();
+    await session(join(src, uploadTmpName('abc')), meta);
+    const m = await snapshot(src, dest);
+    expect(m.sessions.dirs).toBe(0);
+    expect(m.extras?.recovered).toBeUndefined();
+    expect(m.extras?.skipped.filter((x) => x.reason === UPLOAD_WORK_REASON).map((x) => x.path)).toEqual(['.abc.uploading']);
+    expect(m.extras?.skipped.filter((x) => /リンク/.test(x.reason)).map((x) => x.path)).toEqual(['abc/events.jsonl']);
+    expect(existsSync(join(dest, 'session-state', 'abc'))).toBe(false);
+
+    // まとめて読むとき: 先のフォルダの作業用のフォルダから写した後に、後のフォルダにリンクだけの本体があっても、写した複製は残る
+    const root = join(base, 'logs2', 'person');
+    const dest2 = join(base, 'out2', 'snapshot');
+    for (const f of ['proj-a', 'proj-b']) {
+      await mkdir(join(root, f), { recursive: true });
+      await writeFile(join(root, f, UPLOAD_INDEX), '{}');
+    }
+    await session(join(root, 'proj-a', uploadTmpName('abc')), meta);
+    await mkdir(join(root, 'proj-b', 'abc'));
+    await link(join(base, 'gone.jsonl'), join(root, 'proj-b', 'abc', 'events.jsonl'));
+    const mm = await snapshot(root, dest2);
+    expect(mm.layout).toBe('merged');
+    expect(mm.sessions.dirs).toBe(1);
+    expect(mm.extras?.recovered).toEqual([{ id: 'abc', path: 'proj-a/.abc.uploading' }]);
+    expect(await readFile(join(dest2, 'session-state', 'abc', 'events.jsonl'), 'utf8')).toBe(EVENT);
+    expect(mm.extras?.skipped.filter((x) => /リンク/.test(x.reason)).map((x) => x.path)).toEqual(['proj-b/abc/events.jsonl']);
   });
 
   it('置き換えの途中・消し残しのフォルダは写さず、数えなかったことを manifest に残す', async () => {
@@ -227,22 +329,30 @@ describe('アップロード先から集計し直す: snapshot', () => {
     await session(join(root, 'proj-b', 's4'), { 'plan.md': 'b' });
     // 本体が別のフォルダにあるセッションの消し残しは、作業用のフォルダから写さない
     await session(join(root, 'proj-a', uploadOldName('s2')));
-    // 本体がどこにも無いセッションの消し残しが 2 つのフォルダにあれば、1 度だけ写す
-    await session(join(root, 'proj-a', uploadOldName('s5')));
-    await session(join(root, 'proj-b', uploadOldName('s5')));
+    // 本体がどこにも無いセッションの、写し終えた作業用のフォルダが 2 つのフォルダにあれば、1 度だけ写す
+    const done = { [UPLOAD_SESSION_META]: JSON.stringify({ version: 1, id: 's5' }) };
+    await session(join(root, 'proj-a', uploadTmpName('s5')), done);
+    await session(join(root, 'proj-b', uploadTmpName('s5')), done);
+    // 退けた前のフォルダだけが 2 つのフォルダにあるものは、どちらも写さない
+    await session(join(root, 'proj-a', uploadOldName('s6')));
+    await session(join(root, 'proj-b', uploadOldName('s6')));
     const m = await snapshot(root, dest);
     expect(m.sessions.dirs).toBe(4);
     expect(m.merged?.duplicates).toBe(2);
     expect(await readFile(join(dest, 'session-state', 's1', 'events.jsonl'), 'utf8')).toBe(EVENT + EVENT);
     expect(await readFile(join(dest, 'session-state', 's4', 'plan.md'), 'utf8')).toBe('a');
     expect(m.extras?.skipped.filter((x) => x.reason === DUPLICATE_REASON).map((x) => x.path)).toEqual(['proj-a/s1', 'proj-b/s4']);
-    expect(m.extras?.recovered).toEqual([{ id: 's5', path: `proj-a/${uploadOldName('s5')}` }]);
+    expect(m.extras?.recovered).toEqual([{ id: 's5', path: `proj-a/${uploadTmpName('s5')}` }]);
+    expect(m.extras?.skipped.filter((x) => x.reason === UPLOAD_OLD_ONLY_REASON).map((x) => x.path)).toEqual([`proj-a/${uploadOldName('s6')}`, `proj-b/${uploadOldName('s6')}`]);
+    expect(existsSync(join(dest, 'session-state', 's6'))).toBe(false);
+    // 警告は、フォルダの数ではなくセッションの数で出す
+    expect((await extract(dest, { projects: false })).warnings.messages.join('\n')).toMatch(/退けた前のフォルダだけが残っているセッション 1 件は、数えていない/);
     expect(
       m.extras?.skipped
         .filter((x) => x.reason === UPLOAD_WORK_REASON)
         .map((x) => x.path)
         .sort(),
-    ).toEqual([`proj-a/${uploadOldName('s2')}`, `proj-b/${uploadOldName('s5')}`]);
+    ).toEqual([`proj-a/${uploadOldName('s2')}`, `proj-b/${uploadTmpName('s5')}`]);
     // 2 度目も、数えるほうは変わらない(数えなかったほうで上書きしない)
     await snapshot(root, dest);
     expect(await readFile(join(dest, 'session-state', 's1', 'events.jsonl'), 'utf8')).toBe(EVENT + EVENT);
@@ -464,9 +574,9 @@ describe('アップロード先から集計し直す: extract', () => {
       await writeFile(f, JSON.stringify({ version: 1, id: 's1', project, ...(projectSource === undefined ? {} : { projectSource }) }));
       return readSenderProject(f, 's1');
     };
-    // 前後の空白は落とす。制御文字(改行・タブ・行の区切り)を含む名前は使わない
+    // 前後の空白は落とす。制御文字(改行・タブ・行の区切り)と、見えない文字・文字の向きを変える文字を含む名前は使わない
     expect(await read('  owner/app \n', 'git-remote')).toEqual({ project: 'owner/app', source: 'git-remote' });
-    for (const bad of ['owner/app\nsecond', 'a\tb', 'a\u0000b', 'a\u2028b', 'a\u0085b', 'x'.repeat(1001)]) expect(await read(bad, 'path'), JSON.stringify(bad.slice(0, 12))).toBeNull();
+    for (const bad of ['owner/app\nsecond', 'a\tb', 'a\u0000b', 'a\u2028b', 'a\u0085b', 'app\u202Egnp.exe', 'app\u200Bx', 'a\uFEFFb', 'a\u2066b', 'x'.repeat(1001)]) expect(await read(bad, 'path'), JSON.stringify(bad.slice(0, 12))).toBeNull();
     // まとめ用の名前は、その決め方に揃える(記録の決め方が違っても)
     expect(await read('(一時フォルダ)', 'git-remote')).toEqual({ project: '(一時フォルダ)', source: 'temp' });
     expect(await read('(一時フォルダ)')).toEqual({ project: '(一時フォルダ)', source: 'temp' });

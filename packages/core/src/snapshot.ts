@@ -27,10 +27,10 @@ export const UPLOAD_INDEX = 'atlas-index.json';
 export const uploadTmpName = (id: string): string => `.${id}.uploading`;
 /** アップロードがセッションのフォルダを置き換えるときに退けた、前のフォルダ(消せなかったときに残る) */
 export const uploadOldName = (id: string): string => `.${id}.old`;
-/** アップロードの作業用のフォルダの名前か(uploadTmpName / uploadOldName)。中身はセッションの複製だが、セッションとして数えない */
-export const isUploadWorkDir = (name: string): boolean => /^\..+\.(?:uploading|old)$/.test(name);
 /** アップロードの作業用のフォルダの名前から、セッションの id を取る(作業用のフォルダの名前でなければ null) */
 export const uploadWorkDirId = (name: string): string | null => /^\.(.+)\.(?:uploading|old)$/.exec(name)?.[1] ?? null;
+/** アップロードの作業用のフォルダの名前か(uploadTmpName / uploadOldName)。中身はセッションの複製だが、セッションとして数えない */
+export const isUploadWorkDir = (name: string): boolean => uploadWorkDirId(name) != null;
 /** Phase 11: セッションフォルダの追加のファイル(あれば写す)。SESSION_STORE_JSON と UPLOAD_SESSION_META はアップロード先から集計し直すときだけある */
 export const SNAPSHOT_SESSION_EXTRA_FILES = ['plan.md', 'vscode.metadata.json', SESSION_STORE_JSON, UPLOAD_SESSION_META] as const;
 /**
@@ -61,6 +61,10 @@ export const SNAPSHOT_MANIFEST = 'snapshot-manifest.json';
 export const SNAPSHOT_SOURCE = 'snapshot-source.json';
 /** アップロード先のフォルダが並ぶ場所かどうかを確かめるとき、索引の無いフォルダを中まで見る数の上限 */
 const UPLOAD_PROBE_MAX = 20;
+/** セッションが 1 件も見つからなかったときに添える案内(上限のせいで見つけられなかったフォルダの指定のしかた) */
+export const UPLOAD_PROBE_HINT =
+  `索引(${UPLOAD_INDEX})の無いフォルダは、名前の順で先頭の ${UPLOAD_PROBE_MAX} 個までしか中を確かめません。` +
+  '前の版でアップロードしたフォルダや手で写したフォルダが見つからないときは、そのフォルダ(セッションのフォルダが直下に並ぶもの)を直接指定してください';
 /** 2 段下(人ごとのフォルダの下)にアップロード先のフォルダがあるかを確かめるとき、下のフォルダ 1 つにつき索引を探す数の上限 */
 const NESTED_PROBE_MAX = 50;
 /** 同じく、索引の無いフォルダ(前の版が写した、手で写した)を中まで見る数の上限(下のフォルダ 1 つにつき) */
@@ -117,8 +121,8 @@ export interface SnapshotManifest {
     /** 前回 --snapshot-all で写したが今回は写さなかったもの(残してある。--snapshot-prune で消す) */
     leftover: { path: string; mtime: string }[];
     /**
-     * アップロードの置き換えの途中で止まって本体のフォルダ(<id>)が無かったため、作業用のフォルダから写したセッション
-     * (path は元のルートからの相対パス)。無ければ項目ごと無い
+     * アップロードの置き換えの途中で止まって本体のフォルダ(<id>)が無かったため、写し終えていた作業用のフォルダ(.<id>.uploading)から
+     * 今回写したセッション(path は元のルートからの相対パス)。無ければ項目ごと無い
      */
     recovered?: { id: string; path: string }[];
   };
@@ -180,8 +184,15 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
   // 前の元は、最後まで終わった集計の manifest と、集計を始めたときに書く印(SNAPSHOT_SOURCE)の両方で確かめる
   // (manifest は最後に書くので、途中で止まった集計の後は印しか無い)
   const marks = await previousSources(dest);
+  // 前の集計が何も写していなければ(場所を間違えて 0 件だったなど)、混ざるものが無いので止めない
+  const kept = marks.length > 0 && (await holdsCopies(dest));
   for (const m of marks) {
     if (await sameLocation(m.root, src)) continue;
+    if (!kept) {
+      // 前の元の印は消しておく(今回の集計が途中で止まったときに、前の元と比べて止めないように)
+      await rm(m.file, { force: true });
+      continue;
+    }
     throw new Error(
       `出力先 ${dest} は、別の場所(${m.root})から集計したものです。同じ出力先に足すと両方のセッションが混ざるので止めました。別の出力先(--out)を指定してください。` +
         `フォルダを移したなど、元が同じものだと分かっているなら、${marks.map((x) => x.file).join(' と ')} を消してからやり直すと、今の出力先を使い続けます`,
@@ -198,11 +209,11 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
     sessions: { dirs: 0, copiedFiles: 0, reusedFiles: 0, skippedBySince: 0, bytes: 0, dbCopied: 0, dbReused: 0 },
   };
 
-  /** 1 セッション分を写す(workspace.yaml / events.jsonl・session.db・追加のファイル) */
-  async function snapshotSession(name: string, dirSrc: string, present: readonly string[]): Promise<void> {
+  /** 1 セッション分を写す(workspace.yaml / events.jsonl・session.db・追加のファイル)。since より前のもので写さなかったら false */
+  async function snapshotSession(name: string, dirSrc: string, present: readonly string[]): Promise<boolean> {
     if (since && !(await isUpdatedSince(dirSrc, present, since))) {
       manifest.sessions.skippedBySince++;
-      return;
+      return false;
     }
     manifest.sessions.dirs++;
     const dirDest = join(stateDest, name);
@@ -235,6 +246,7 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
     } else await rm(join(dirDest, SNAPSHOT_SESSION_DB), { force: true }); // 元から消えたものは複製側も消す
     // Phase 11: plan.md・checkpoints/・files/ などを写す。大きいもの・一覧に無いものは --snapshot-all のときだけ
     await copySessionExtras(dirSrc, dirDest, src, all, prune, extras);
+    return true;
   }
 
   for (const name of SNAPSHOT_STALE_FILES) await rm(join(dest, name), { force: true });
@@ -271,16 +283,23 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
       // 写す先の名前(セッションの id)。作業用のフォルダから写すときだけ、フォルダの名前と違う
       let name = ent.name;
       // アップロードの置き換えの途中・消し残しのフォルダは、同じセッションの複製なので数えない(二重に数えないように)。
-      // ただし、置き換えの途中で止まって本体(<id>)が無いセッションは、作業用のフォルダから写す(集計から消えたままにしない)
+      // ただし、置き換えの途中で止まって本体(<id>)が無いセッションは、写し終えていた作業用のフォルダから写す(集計から消えたままにしない)
       const workId = uploadWorkDirId(ent.name);
+      /** 作業用のフォルダから写しているとき、その元(元のルートからの相対パス) */
+      let recoveredFrom: string | null = null;
       if (workId != null) {
-        // まとめて読むときは、本体が別のフォルダにあるもの・別のフォルダの作業用のフォルダから写したものも、本体があるものとして扱う
-        const elsewhere = owners != null && (owners.has(workId) || taken.has(workId));
-        if (!elsewhere && !hasSessionFile(join(stateSrc, workId)) && orphanSource(stateSrc, workId) === ent.name) {
+        // 本体があるか。フォルダがあれば、中がリンクだけでも本体があるものとして扱う(本体のほうの片付けと食い違わないように)。
+        // まとめて読むときは、本体が別のフォルダにあるもの・別のフォルダの作業用のフォルダから写したものも同じ
+        const hasMain = existsSync(join(stateSrc, workId)) || (owners != null && owners.has(workId)) || taken.has(workId);
+        const orphan = !hasMain && isRecoverableId(workId);
+        const from = orphan ? orphanSource(stateSrc, workId) : null;
+        if (from === ent.name) {
           name = workId;
-          (extras.recovered ??= []).push({ id: workId, path: rel });
+          recoveredFrom = rel;
         } else {
-          if (hasSessionFile(dirSrc)) extras.skipped.push({ path: rel, bytes: 0, reason: UPLOAD_WORK_REASON });
+          // 退けた前のフォルダだけが残っているもの(本体も、写し終えた新しいものも無い)は、理由を分けて残す
+          const oldOnly = orphan && from == null && ent.name === uploadOldName(workId);
+          if (hasSessionFile(dirSrc)) extras.skipped.push({ path: rel, bytes: 0, reason: oldOnly ? UPLOAD_OLD_ONLY_REASON : UPLOAD_WORK_REASON });
           continue;
         }
       } else if (owners != null && owners.has(name) && owners.get(name) !== stateSrc) {
@@ -296,15 +315,18 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
         if (await isLink(join(dirSrc, f))) linked.push(f);
         else if (existsSync(join(dirSrc, f))) present.push(f);
       }
-      for (const f of linked) await rm(join(stateDest, name, f), { force: true });
+      // 前に写した分は消す。この集計で同じ id を別のフォルダから写し終えていたら、それは消さない
+      if (!taken.has(name)) for (const f of linked) await rm(join(stateDest, name, f), { force: true });
       if (present.length === 0) {
         // optimistic-chat-* など中身の無いディレクトリ。リンクしか無いものは、写さなかったことを残す
         for (const f of linked) extras.skipped.push({ path: `${rel}/${f}`, bytes: 0, reason: LINK_REASON });
         continue;
       }
       try {
-        await snapshotSession(name, dirSrc, present);
+        const copied = await snapshotSession(name, dirSrc, present);
         taken.add(name);
+        // 作業用のフォルダから写したことは、写し終えてから残す(since で写さなかったもの・途中で消えたものは入れない)
+        if (copied && recoveredFrom != null) (extras.recovered ??= []).push({ id: name, path: recoveredFrom });
       } catch (e) {
         // 走査中にセッションが消された(Copilot の削除・一時セッションの片付け)なら飛ばす。それ以外は止める
         if ((e as NodeJS.ErrnoException).code === 'ENOENT' && !existsSync(dirSrc)) continue;
@@ -349,7 +371,7 @@ export async function isFlatLayout(src: string): Promise<boolean> {
   } catch {
     return false;
   }
-  return ents.some((e) => e.isDirectory() && SNAPSHOT_SESSION_FILES.some((f) => existsSync(join(src, e.name, f))));
+  return ents.some((e) => e.isDirectory() && hasSessionFile(join(src, e.name)));
 }
 
 /** ~/.copilot の印(session-state/ か session-store.db)があるか */
@@ -358,18 +380,29 @@ function looksLikeCopilotHome(src: string): boolean {
 }
 
 /** セッションのフォルダか(workspace.yaml か events.jsonl を持つ) */
-const hasSessionFile = (dir: string): boolean => SNAPSHOT_SESSION_FILES.some((f) => existsSync(join(dir, f)));
+export const hasSessionFile = (dir: string): boolean => SNAPSHOT_SESSION_FILES.some((f) => existsSync(join(dir, f)));
+
+/**
+ * 作業用のフォルダの名前から取った id を、写す先のフォルダの名前に使ってよいか。
+ * 共有フォルダに置かれた名前なので、そのまま信じない: 「.」「..」と、点や空白で終わる名前(Windows では別の名前のフォルダを指す)、
+ * それ自体が作業用のフォルダの名前になるもの(写しても数えない)は使わない
+ */
+const isRecoverableId = (id: string): boolean => !/[.\s]$/u.test(id) && !isUploadWorkDir(id);
 
 /**
  * 本体のフォルダ(<id>)が無いセッションを写す元にする、作業用のフォルダの名前(無ければ null)。
- * 写し終えた新しいもの(送る側が最後に書く UPLOAD_SESSION_META まである .<id>.uploading)を先に、無ければ退けた前のもの(.<id>.old)を使う。
- * 写している途中の .<id>.uploading(初めて送っている最中のもの)は使わない
+ * 使うのは、写し終えた新しいもの(送る側が最後に書く UPLOAD_SESSION_META まである .<id>.uploading)だけ。
+ * 写している途中の .<id>.uploading(初めて送っている最中のもの)は使わない。
+ * 退けた前のもの(.<id>.old)も使わない: 消し残しがあるセッションを共有から消したときと見分けられず、消したセッションが古い中身で戻ってしまう
  */
 function orphanSource(stateSrc: string, id: string): string | null {
   const tmp = uploadTmpName(id);
-  if (existsSync(join(stateSrc, tmp, UPLOAD_SESSION_META)) && hasSessionFile(join(stateSrc, tmp))) return tmp;
-  const old = uploadOldName(id);
-  return hasSessionFile(join(stateSrc, old)) ? old : null;
+  return existsSync(join(stateSrc, tmp, UPLOAD_SESSION_META)) && hasSessionFile(join(stateSrc, tmp)) ? tmp : null;
+}
+
+/** 出力先に、前の集計が写したもの(セッションのフォルダか session-store.db)があるか */
+async function holdsCopies(dest: string): Promise<boolean> {
+  return SNAPSHOT_DBS.some((n) => existsSync(join(dest, n))) || (await subDirs(join(dest, 'session-state'))).length > 0;
 }
 
 /** 直下のフォルダの名前(名前の順)。読めなければ空 */
@@ -508,6 +541,8 @@ const isLock = (name: string): boolean => /^inuse\.\d+\.(lock|hold)$/.test(name)
 const LINK_REASON = 'シンボリックリンク / ジャンクション(辿らない)';
 /** アップロードの作業用のフォルダを数えなかったときの理由(manifest の extras.skipped) */
 export const UPLOAD_WORK_REASON = 'アップロードの置き換えの途中か消し残しのフォルダ(セッションとして数えない)';
+/** 本体のフォルダも写し終えた新しいフォルダも無く、退けた前のフォルダ(.<id>.old)だけが残っているもの(manifest の extras.skipped) */
+export const UPLOAD_OLD_ONLY_REASON = '本体のフォルダが無く、アップロードの置き換えで退けた前のフォルダだけが残っている(共有から消したセッションかもしれないので数えない)';
 
 /**
  * フォルダを歩く(シンボリックリンク・ジャンクションは辿らず、リンクの一覧に返す)。相対パスは / 区切り。

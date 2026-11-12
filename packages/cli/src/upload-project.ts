@@ -658,7 +658,7 @@ export function consoleIo(
     }
     // 1 文字ずつ受け取る間は Ctrl+C も文字として届く(端末が止めてくれない)ので、ここで終わる。
     // 端末を元に戻し、書き換えていた 1 行を消して、中断したことを 1 行で出す。
-    // 終わり方は、端末が止めたとき(SIGINT)にそろえる: SIGINT を受ける処理があればそれに任せ、無ければ終了コード 130 で終わる。
+    // 終わり方は、端末が止めたとき(SIGINT)にそろえて、終了コード 130 で終わる。
     // process.exit は finally を通らないので、要る後始末は 'exit' に掛けておく(このファイルの末尾の起動の部分)
     if (String(chunk).includes('\x03')) {
       setRaw(false);
@@ -666,7 +666,6 @@ export function consoleIo(
       clear();
       write(`${had ? '' : '\n'}  中断しました。\n`);
       if (s.exit) s.exit(130);
-      else if (process.listenerCount('SIGINT') > 0) process.emit('SIGINT', 'SIGINT');
       else process.exit(130);
     }
   };
