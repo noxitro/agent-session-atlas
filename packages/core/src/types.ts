@@ -15,7 +15,8 @@ import type { TurnMetrics } from './turns.ts';
 //    timeline の shutdown 行。abort の 2 件目・サブエージェント失敗と対の session.error・source: agent のモデル切り替えは数えない)
 // 9: analysis.turnActiveMs(ターンごとの実働。スキル化の候補のスコアに使う)
 // 10: analysis.turnStats(依頼単位の分析の段階 1: ターンごとのツールの種類・失敗・拒否・中断・再編集・使用量)
-export const SESSIONS_SCHEMA_VERSION = 10;
+// 11: person(送り先が人ごとに分けてあるときの、その人のフォルダの名前)
+export const SESSIONS_SCHEMA_VERSION = 11;
 // 5: turns(依頼単位の工程 × 詰まり・依頼の種類の集計)
 export const METRICS_SCHEMA_VERSION = 5;
 
@@ -451,6 +452,11 @@ export interface SessionRecord {
   project: string;
   /** project の決め方 */
   projectSource: ProjectSource;
+  /**
+   * 送り先(<送り先>/<人>/<プロジェクト>/<セッション id>)をまとめて集計したときの、人のフォルダの名前。
+   * この PC の記録・人のフォルダやプロジェクトのフォルダだけを集計したとき・古い sessions.json には無い(null か省略)
+   */
+  person?: string | null;
   copilotVersion: string | null;
   schemaVersion: number | null;
   createdAt: string | null;

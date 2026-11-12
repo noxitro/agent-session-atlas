@@ -16,6 +16,7 @@ const DEFAULTS: Plain = {
   client: null,
   projectSource: 'path',
   branch: null,
+  person: null,
   name: null,
   firstUserMessage: null,
   durationMs: 0,

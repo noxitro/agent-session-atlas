@@ -5,7 +5,7 @@ import type { SessionRecord } from '../../core/src/types.ts';
 import { aggregate, coverageBreakdown, monthRange } from '../src/lib/aggregate.ts';
 import { createAnonymizer, identityAnonymizer, shortProjectLabel } from '../src/lib/anonymize.ts';
 import { embedData, extractEmbedded, serializeForScript } from '../src/lib/embed.ts';
-import { applyFilter, currentGroupName, decodeFilter, effectiveIds, emptyFilter, encodeFilter, filterOptions, groupIds, isEmptyFilter, joinIds, knownSelection, NO_JUDGMENT, NO_SESSION, sameIds, splitIds, UNKNOWN } from '../src/lib/filter.ts';
+import { applyFilter, currentGroupName, decodeFilter, effectiveIds, emptyFilter, encodeFilter, filterOptions, groupIds, hasPeople, isEmptyFilter, joinIds, knownSelection, NO_JUDGMENT, NO_SESSION, sameIds, splitIds, UNKNOWN } from '../src/lib/filter.ts';
 import { addIds, parseGroups, removeIds, resolveIdPrefixes, serializeGroups } from '../src/lib/groups.ts';
 import { parseJudgments } from '../src/lib/judgments.ts';
 import { niceTicks } from '../src/lib/scale.ts';
@@ -72,6 +72,10 @@ async function fixture(): Promise<SessionRecord[]> {
 
 const summaries = (rs: SessionRecord[]): SessionSummary[] => rs.map((r) => summarize(r, identityAnonymizer(), null));
 
+/** 送り先(<人>/<プロジェクト>)をまとめて集計したときの形: a・c は person-a、b は person-b、d は人のフォルダの下に無い */
+const PEOPLE: Record<string, string | null> = { a: 'person-a', b: 'person-b', c: 'person-a', d: null };
+const withPeople = (rs: SessionRecord[]): SessionRecord[] => rs.map((r) => ({ ...r, person: PEOPLE[r.id] }));
+
 describe('aggregate', () => {
   it('全体・プロジェクト・月・モデルが core の computeMetrics と一致する', async () => {
     const rs = await fixture();
@@ -94,6 +98,25 @@ describe('aggregate', () => {
     expect(Object.fromEntries(a.byModel.map((r) => [r.model, [r.sessions, r.input, r.output]]))).toEqual(
       Object.fromEntries(Object.entries(m.byModel).map(([k, r]) => [k, [r.sessions, r.input, r.output]])),
     );
+  });
+
+  it('人別: 人のフォルダの名前ごとにまとめ、人のフォルダの下に無いものは「不明」。人が 1 件も無ければ空', async () => {
+    const rs = await fixture();
+    expect(aggregate(summaries(rs)).byPerson).toEqual([]);
+    const a = aggregate(summaries(withPeople(rs)));
+    // 出力トークンの多い順(person-a: 10 + 7、person-b: 5、不明: 記録なし)
+    expect(a.byPerson.map((b) => [b.key, b.label, b.sessions, b.tokens.output])).toEqual([
+      ['person-a', 'person-a', 2, 17],
+      ['person-b', 'person-b', 1, 5],
+      [UNKNOWN, '不明', 1, 0],
+    ]);
+    // 人ごとの合計は全体と同じ(どのセッションも 1 行にだけ入る)
+    expect(a.byPerson.reduce((n, b) => n + b.sessions, 0)).toBe(a.overall.sessions);
+    // 「不明」だけに絞ると、渡したセッションには人が残らない。レポート全体に人の軸があると伝えれば、不明の行を出す
+    const unknownOnly = applyFilter(summaries(withPeople(rs)), { ...emptyFilter(), person: UNKNOWN });
+    expect(aggregate(unknownOnly).byPerson).toEqual([]);
+    expect(aggregate(unknownOnly, true).byPerson.map((b) => [b.key, b.label, b.sessions])).toEqual([[UNKNOWN, '不明', 1]]);
+    expect(aggregate(summaries(withPeople(rs)), false).byPerson).toEqual([]);
   });
 
   it('入力トークン記録の内訳を欠測込みで数える', async () => {
@@ -122,6 +145,33 @@ describe('filter', () => {
     expect(applyFilter(s, { ...f, coverage: 'none' }).map((x) => x.id)).toEqual(['d']);
     expect(applyFilter(s, { ...f, from: '2026-09-01', to: '2026-09-30' }).map((x) => x.id)).toEqual(['b', 'c']);
     expect(applyFilter(s, { ...f, project: 'quokka/secret-proj', coverage: 'input' }).map((x) => x.id)).toEqual(['a']);
+  });
+
+  it('人(送り先の、人のフォルダの名前)で絞れる。人が 1 件も無いレポートでは選択肢を出さない', async () => {
+    const rs = await fixture();
+    const plain = summaries(rs);
+    expect(hasPeople(plain)).toBe(false);
+    expect(filterOptions(plain).person).toEqual([]);
+    // 人の軸が無いレポートに #person= が付いていても、当たるものが無いだけ(落ちない)
+    expect(applyFilter(plain, { ...emptyFilter(), person: 'person-a' })).toEqual([]);
+    const s = summaries(withPeople(rs));
+    const f = emptyFilter();
+    expect(hasPeople(s)).toBe(true);
+    expect(applyFilter(s, { ...f, person: 'person-a' }).map((x) => x.id)).toEqual(['a', 'c']);
+    expect(applyFilter(s, { ...f, person: 'person-b' }).map((x) => x.id)).toEqual(['b']);
+    expect(applyFilter(s, { ...f, person: UNKNOWN }).map((x) => x.id)).toEqual(['d']);
+    // 他の軸と AND
+    expect(applyFilter(s, { ...f, person: 'person-a', coverage: 'input' }).map((x) => x.id)).toEqual(['a']);
+    expect(filterOptions(s).person).toEqual([
+      { value: 'person-a', label: 'person-a', count: 2 },
+      { value: UNKNOWN, label: UNKNOWN, count: 1 },
+      { value: 'person-b', label: 'person-b', count: 1 },
+    ]);
+    // URL ハッシュと往復(和文の名前も)
+    const g = { ...f, person: '架空 太郎', project: 'a/b' };
+    expect(encodeFilter(g)).toContain('person=');
+    expect(decodeFilter(`#${encodeFilter(g)}`)).toEqual(g);
+    expect(isEmptyFilter({ ...f, person: 'person-a' })).toBe(false);
   });
 
   it('空のセッションは既定で除外し、「含める」(#empty=1)で含める。内訳では「空」として数える', async () => {
@@ -315,6 +365,25 @@ describe('anonymize', () => {
     for (const secret of ['secret-proj', 'quokka', 'feature/x1', 'C:\\\\work', '.copilot', 'D:\\\\other']) expect(json).not.toContain(secret);
     // 同じ入力からは同じ仮名
     expect(createAnonymizer(rs).project('quokka/secret-proj')).toBe('project-03');
+  });
+
+  it('人のフォルダの名前も辞書順の仮名(person-01…)にし、本文に出てきた名前も伏せる。人が無ければ null のまま', async () => {
+    const rs = withPeople(await fixture());
+    const anon = createAnonymizer(rs);
+    expect(rs.map((r) => summarize(r, anon, null).person)).toEqual(['person-01', 'person-02', 'person-01', null]);
+    const named = createAnonymizer([{ ...rs[0], person: 'zz-kakuu-taro' }, { ...rs[1], person: 'aa-kakuu-hanako' }]);
+    expect(named.person('zz-kakuu-taro')).toBe('person-02');
+    expect(named.person('aa-kakuu-hanako')).toBe('person-01');
+    expect(named.person(null)).toBeNull();
+    expect(named.scrub('reviewed by zz-kakuu-taro')).toBe('reviewed by person-02');
+    // 伏せ字にしないときはそのまま。詳細ページにも人の札を出す(伏せ字では仮名)
+    expect(identityAnonymizer().person('zz-kakuu-taro')).toBe('zz-kakuu-taro');
+    const rec = { ...rs[0], person: 'zz-kakuu-taro' };
+    const html = renderDetailHtml(rec, { anon: createAnonymizer([rec]), css: '', judgment: null, generatedAt: '2026-10-28T00:00:00Z' });
+    expect(html).toContain('人: person-01');
+    expect(html).not.toContain('zz-kakuu-taro');
+    expect(renderDetailHtml(rec, { anon: identityAnonymizer(), css: '', judgment: null, generatedAt: '2026-10-28T00:00:00Z' })).toContain('人: zz-kakuu-taro');
+    expect(renderDetailHtml(rs[3], { anon: identityAnonymizer(), css: '', judgment: null, generatedAt: '2026-10-28T00:00:00Z' })).not.toContain('人: ');
   });
 
   it('scrub はパスと既知の固有名を置き換える', async () => {

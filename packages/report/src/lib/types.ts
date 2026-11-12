@@ -14,7 +14,8 @@ import type { VerdictTuple } from './verdicts.ts';
 // 7: Phase 12(skillChars / instructionVersions / analysis / insights)
 // 8: Phase 13(memo)
 // 9: turnRows(依頼単位の分析の段階 1)
-export const REPORT_DATA_VERSION = 9;
+// 10: person(送り先が人ごとに分けてあるときの、人ごとの内訳)
+export const REPORT_DATA_VERSION = 10;
 
 /** 推論強度別の [リクエスト, 入力, 出力, nano AIU] */
 export type EffortTuple = [requests: number, input: number, output: number, nanoAiu: number];
@@ -112,6 +113,11 @@ export interface SessionSummary {
   /** プロジェクトの決め方(git の origin・(ホーム)・(一時フォルダ) など) */
   projectSource: ProjectSource;
   branch: string | null;
+  /**
+   * 送り先(<送り先>/<人>/<プロジェクト>)をまとめて集計したときの、人のフォルダの名前(伏せ字モードでは person-01 など)。
+   * それ以外の集計・古い埋め込みでは null か省略
+   */
+  person?: string | null;
   /** セッション名(伏せ字モードでは null) */
   name: string | null;
   /** 最初の依頼の先頭(伏せ字モードでは null) */

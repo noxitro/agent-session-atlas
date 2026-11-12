@@ -1,0 +1,770 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-12T00:00:00.000Z",
+  "title": "Design System: Copilot Session Atlas",
+  "extensions": {
+    "colorMeta": {
+      "form": {
+        "role": "primary",
+        "displayName": "様式の緑",
+        "canonical": "#1b6549",
+        "tonalRamp": [
+          "oklch(15.0% 0.085 163.6)",
+          "oklch(26.0% 0.085 163.6)",
+          "oklch(38.0% 0.085 163.6)",
+          "oklch(50.0% 0.085 163.6)",
+          "oklch(62.0% 0.085 163.6)",
+          "oklch(73.0% 0.085 163.6)",
+          "oklch(84.0% 0.085 163.6)",
+          "oklch(95.0% 0.085 163.6)"
+        ]
+      },
+      "form-wash": {
+        "role": "primary",
+        "displayName": "様式の緑の淡い地",
+        "canonical": "#e8f2ec",
+        "tonalRamp": [
+          "oklch(15.0% 0.013 159.9)",
+          "oklch(26.0% 0.013 159.9)",
+          "oklch(38.0% 0.013 159.9)",
+          "oklch(50.0% 0.013 159.9)",
+          "oklch(62.0% 0.013 159.9)",
+          "oklch(73.0% 0.013 159.9)",
+          "oklch(84.0% 0.013 159.9)",
+          "oklch(95.0% 0.013 159.9)"
+        ]
+      },
+      "page": {
+        "role": "neutral",
+        "displayName": "紙の外",
+        "canonical": "#f3f5f3",
+        "tonalRamp": [
+          "oklch(15.0% 0.003 145.5)",
+          "oklch(26.0% 0.003 145.5)",
+          "oklch(38.0% 0.003 145.5)",
+          "oklch(50.0% 0.003 145.5)",
+          "oklch(62.0% 0.003 145.5)",
+          "oklch(73.0% 0.003 145.5)",
+          "oklch(84.0% 0.003 145.5)",
+          "oklch(95.0% 0.003 145.5)"
+        ]
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "紙",
+        "canonical": "#ffffff",
+        "tonalRamp": [
+          "oklch(15.0% 0.000 0.0)",
+          "oklch(26.0% 0.000 0.0)",
+          "oklch(38.0% 0.000 0.0)",
+          "oklch(50.0% 0.000 0.0)",
+          "oklch(62.0% 0.000 0.0)",
+          "oklch(73.0% 0.000 0.0)",
+          "oklch(84.0% 0.000 0.0)",
+          "oklch(95.0% 0.000 0.0)"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "墨",
+        "canonical": "#141816",
+        "tonalRamp": [
+          "oklch(15.0% 0.007 164.2)",
+          "oklch(26.0% 0.007 164.2)",
+          "oklch(38.0% 0.007 164.2)",
+          "oklch(50.0% 0.007 164.2)",
+          "oklch(62.0% 0.007 164.2)",
+          "oklch(73.0% 0.007 164.2)",
+          "oklch(84.0% 0.007 164.2)",
+          "oklch(95.0% 0.007 164.2)"
+        ]
+      },
+      "ink-2": {
+        "role": "neutral",
+        "displayName": "薄墨",
+        "canonical": "#464e4a",
+        "tonalRamp": [
+          "oklch(15.0% 0.012 164.3)",
+          "oklch(26.0% 0.012 164.3)",
+          "oklch(38.0% 0.012 164.3)",
+          "oklch(50.0% 0.012 164.3)",
+          "oklch(62.0% 0.012 164.3)",
+          "oklch(73.0% 0.012 164.3)",
+          "oklch(84.0% 0.012 164.3)",
+          "oklch(95.0% 0.012 164.3)"
+        ]
+      },
+      "ink-3": {
+        "role": "neutral",
+        "displayName": "淡墨",
+        "canonical": "#636b67",
+        "tonalRamp": [
+          "oklch(15.0% 0.012 164.5)",
+          "oklch(26.0% 0.012 164.5)",
+          "oklch(38.0% 0.012 164.5)",
+          "oklch(50.0% 0.012 164.5)",
+          "oklch(62.0% 0.012 164.5)",
+          "oklch(73.0% 0.012 164.5)",
+          "oklch(84.0% 0.012 164.5)",
+          "oklch(95.0% 0.012 164.5)"
+        ]
+      },
+      "rule": {
+        "role": "neutral",
+        "displayName": "罫",
+        "canonical": "#c5d4cc",
+        "tonalRamp": [
+          "oklch(15.0% 0.020 162.9)",
+          "oklch(26.0% 0.020 162.9)",
+          "oklch(38.0% 0.020 162.9)",
+          "oklch(50.0% 0.020 162.9)",
+          "oklch(62.0% 0.020 162.9)",
+          "oklch(73.0% 0.020 162.9)",
+          "oklch(84.0% 0.020 162.9)",
+          "oklch(95.0% 0.020 162.9)"
+        ]
+      },
+      "rule-strong": {
+        "role": "neutral",
+        "displayName": "濃い罫",
+        "canonical": "#86a898",
+        "tonalRamp": [
+          "oklch(15.0% 0.044 164.9)",
+          "oklch(26.0% 0.044 164.9)",
+          "oklch(38.0% 0.044 164.9)",
+          "oklch(50.0% 0.044 164.9)",
+          "oklch(62.0% 0.044 164.9)",
+          "oklch(73.0% 0.044 164.9)",
+          "oklch(84.0% 0.044 164.9)",
+          "oklch(95.0% 0.044 164.9)"
+        ]
+      },
+      "control": {
+        "role": "neutral",
+        "displayName": "入力部品の枠",
+        "canonical": "#6f7f77",
+        "tonalRamp": [
+          "oklch(15.0% 0.022 164.1)",
+          "oklch(26.0% 0.022 164.1)",
+          "oklch(38.0% 0.022 164.1)",
+          "oklch(50.0% 0.022 164.1)",
+          "oklch(62.0% 0.022 164.1)",
+          "oklch(73.0% 0.022 164.1)",
+          "oklch(84.0% 0.022 164.1)",
+          "oklch(95.0% 0.022 164.1)"
+        ]
+      },
+      "warn": {
+        "role": "secondary",
+        "displayName": "注意の茶",
+        "canonical": "#8a4b00",
+        "tonalRamp": [
+          "oklch(15.0% 0.112 59.9)",
+          "oklch(26.0% 0.112 59.9)",
+          "oklch(38.0% 0.112 59.9)",
+          "oklch(50.0% 0.112 59.9)",
+          "oklch(62.0% 0.112 59.9)",
+          "oklch(73.0% 0.112 59.9)",
+          "oklch(84.0% 0.112 59.9)",
+          "oklch(95.0% 0.112 59.9)"
+        ]
+      },
+      "warn-wash": {
+        "role": "secondary",
+        "displayName": "注意の茶の淡い地",
+        "canonical": "#fbf1e3",
+        "tonalRamp": [
+          "oklch(15.0% 0.021 76.5)",
+          "oklch(26.0% 0.021 76.5)",
+          "oklch(38.0% 0.021 76.5)",
+          "oklch(50.0% 0.021 76.5)",
+          "oklch(62.0% 0.021 76.5)",
+          "oklch(73.0% 0.021 76.5)",
+          "oklch(84.0% 0.021 76.5)",
+          "oklch(95.0% 0.021 76.5)"
+        ]
+      },
+      "series-1": {
+        "role": "tertiary",
+        "displayName": "グラフの系列 1(青)",
+        "canonical": "#2a78d6",
+        "tonalRamp": [
+          "oklch(15.0% 0.163 255.5)",
+          "oklch(26.0% 0.163 255.5)",
+          "oklch(38.0% 0.163 255.5)",
+          "oklch(50.0% 0.163 255.5)",
+          "oklch(62.0% 0.163 255.5)",
+          "oklch(73.0% 0.163 255.5)",
+          "oklch(84.0% 0.163 255.5)",
+          "oklch(95.0% 0.163 255.5)"
+        ]
+      },
+      "series-2": {
+        "role": "tertiary",
+        "displayName": "グラフの系列 2(橙)",
+        "canonical": "#eb6834",
+        "tonalRamp": [
+          "oklch(15.0% 0.175 40.6)",
+          "oklch(26.0% 0.175 40.6)",
+          "oklch(38.0% 0.175 40.6)",
+          "oklch(50.0% 0.175 40.6)",
+          "oklch(62.0% 0.175 40.6)",
+          "oklch(73.0% 0.175 40.6)",
+          "oklch(84.0% 0.175 40.6)",
+          "oklch(95.0% 0.175 40.6)"
+        ]
+      },
+      "series-3": {
+        "role": "tertiary",
+        "displayName": "グラフの系列 3(緑)",
+        "canonical": "#1baf7a",
+        "tonalRamp": [
+          "oklch(15.0% 0.141 162.1)",
+          "oklch(26.0% 0.141 162.1)",
+          "oklch(38.0% 0.141 162.1)",
+          "oklch(50.0% 0.141 162.1)",
+          "oklch(62.0% 0.141 162.1)",
+          "oklch(73.0% 0.141 162.1)",
+          "oklch(84.0% 0.141 162.1)",
+          "oklch(95.0% 0.141 162.1)"
+        ]
+      },
+      "series-4": {
+        "role": "tertiary",
+        "displayName": "グラフの系列 4(黄)",
+        "canonical": "#eda100",
+        "tonalRamp": [
+          "oklch(15.0% 0.161 75.1)",
+          "oklch(26.0% 0.161 75.1)",
+          "oklch(38.0% 0.161 75.1)",
+          "oklch(50.0% 0.161 75.1)",
+          "oklch(62.0% 0.161 75.1)",
+          "oklch(73.0% 0.161 75.1)",
+          "oklch(84.0% 0.161 75.1)",
+          "oklch(95.0% 0.161 75.1)"
+        ]
+      },
+      "missing": {
+        "role": "tertiary",
+        "displayName": "記録なしの灰",
+        "canonical": "#b9bcb8",
+        "tonalRamp": [
+          "oklch(15.0% 0.006 137.8)",
+          "oklch(26.0% 0.006 137.8)",
+          "oklch(38.0% 0.006 137.8)",
+          "oklch(50.0% 0.006 137.8)",
+          "oklch(62.0% 0.006 137.8)",
+          "oklch(73.0% 0.006 137.8)",
+          "oklch(84.0% 0.006 137.8)",
+          "oklch(95.0% 0.006 137.8)"
+        ]
+      },
+      "grid": {
+        "role": "tertiary",
+        "displayName": "目盛りの線",
+        "canonical": "#e1e0d9",
+        "tonalRamp": [
+          "oklch(15.0% 0.009 100.0)",
+          "oklch(26.0% 0.009 100.0)",
+          "oklch(38.0% 0.009 100.0)",
+          "oklch(50.0% 0.009 100.0)",
+          "oklch(62.0% 0.009 100.0)",
+          "oklch(73.0% 0.009 100.0)",
+          "oklch(84.0% 0.009 100.0)",
+          "oklch(95.0% 0.009 100.0)"
+        ]
+      },
+      "axis": {
+        "role": "tertiary",
+        "displayName": "軸の線",
+        "canonical": "#c3c2b7",
+        "tonalRamp": [
+          "oklch(15.0% 0.015 102.5)",
+          "oklch(26.0% 0.015 102.5)",
+          "oklch(38.0% 0.015 102.5)",
+          "oklch(50.0% 0.015 102.5)",
+          "oklch(62.0% 0.015 102.5)",
+          "oklch(73.0% 0.015 102.5)",
+          "oklch(84.0% 0.015 102.5)",
+          "oklch(95.0% 0.015 102.5)"
+        ]
+      },
+      "form-dark": {
+        "role": "primary",
+        "displayName": "様式の緑(ダーク)",
+        "canonical": "#7cc3a3",
+        "tonalRamp": [
+          "oklch(15.0% 0.086 164.1)",
+          "oklch(26.0% 0.086 164.1)",
+          "oklch(38.0% 0.086 164.1)",
+          "oklch(50.0% 0.086 164.1)",
+          "oklch(62.0% 0.086 164.1)",
+          "oklch(73.0% 0.086 164.1)",
+          "oklch(84.0% 0.086 164.1)",
+          "oklch(95.0% 0.086 164.1)"
+        ]
+      },
+      "form-wash-dark": {
+        "role": "primary",
+        "displayName": "様式の緑の淡い地(ダーク)",
+        "canonical": "#1b2822",
+        "tonalRamp": [
+          "oklch(15.0% 0.021 164.7)",
+          "oklch(26.0% 0.021 164.7)",
+          "oklch(38.0% 0.021 164.7)",
+          "oklch(50.0% 0.021 164.7)",
+          "oklch(62.0% 0.021 164.7)",
+          "oklch(73.0% 0.021 164.7)",
+          "oklch(84.0% 0.021 164.7)",
+          "oklch(95.0% 0.021 164.7)"
+        ]
+      },
+      "page-dark": {
+        "role": "neutral",
+        "displayName": "紙の外(ダーク)",
+        "canonical": "#0e1110",
+        "tonalRamp": [
+          "oklch(15.0% 0.005 173.7)",
+          "oklch(26.0% 0.005 173.7)",
+          "oklch(38.0% 0.005 173.7)",
+          "oklch(50.0% 0.005 173.7)",
+          "oklch(62.0% 0.005 173.7)",
+          "oklch(73.0% 0.005 173.7)",
+          "oklch(84.0% 0.005 173.7)",
+          "oklch(95.0% 0.005 173.7)"
+        ]
+      },
+      "surface-dark": {
+        "role": "neutral",
+        "displayName": "紙(ダーク)",
+        "canonical": "#161a18",
+        "tonalRamp": [
+          "oklch(15.0% 0.007 164.2)",
+          "oklch(26.0% 0.007 164.2)",
+          "oklch(38.0% 0.007 164.2)",
+          "oklch(50.0% 0.007 164.2)",
+          "oklch(62.0% 0.007 164.2)",
+          "oklch(73.0% 0.007 164.2)",
+          "oklch(84.0% 0.007 164.2)",
+          "oklch(95.0% 0.007 164.2)"
+        ]
+      },
+      "ink-dark": {
+        "role": "neutral",
+        "displayName": "墨(ダーク)",
+        "canonical": "#e8ece9",
+        "tonalRamp": [
+          "oklch(15.0% 0.006 153.8)",
+          "oklch(26.0% 0.006 153.8)",
+          "oklch(38.0% 0.006 153.8)",
+          "oklch(50.0% 0.006 153.8)",
+          "oklch(62.0% 0.006 153.8)",
+          "oklch(73.0% 0.006 153.8)",
+          "oklch(84.0% 0.006 153.8)",
+          "oklch(95.0% 0.006 153.8)"
+        ]
+      },
+      "ink-2-dark": {
+        "role": "neutral",
+        "displayName": "薄墨(ダーク)",
+        "canonical": "#bcc4c0",
+        "tonalRamp": [
+          "oklch(15.0% 0.010 164.8)",
+          "oklch(26.0% 0.010 164.8)",
+          "oklch(38.0% 0.010 164.8)",
+          "oklch(50.0% 0.010 164.8)",
+          "oklch(62.0% 0.010 164.8)",
+          "oklch(73.0% 0.010 164.8)",
+          "oklch(84.0% 0.010 164.8)",
+          "oklch(95.0% 0.010 164.8)"
+        ]
+      },
+      "ink-3-dark": {
+        "role": "neutral",
+        "displayName": "淡墨(ダーク)",
+        "canonical": "#939c97",
+        "tonalRamp": [
+          "oklch(15.0% 0.013 161.9)",
+          "oklch(26.0% 0.013 161.9)",
+          "oklch(38.0% 0.013 161.9)",
+          "oklch(50.0% 0.013 161.9)",
+          "oklch(62.0% 0.013 161.9)",
+          "oklch(73.0% 0.013 161.9)",
+          "oklch(84.0% 0.013 161.9)",
+          "oklch(95.0% 0.013 161.9)"
+        ]
+      },
+      "rule-dark": {
+        "role": "neutral",
+        "displayName": "罫(ダーク)",
+        "canonical": "#34423b",
+        "tonalRamp": [
+          "oklch(15.0% 0.022 163.5)",
+          "oklch(26.0% 0.022 163.5)",
+          "oklch(38.0% 0.022 163.5)",
+          "oklch(50.0% 0.022 163.5)",
+          "oklch(62.0% 0.022 163.5)",
+          "oklch(73.0% 0.022 163.5)",
+          "oklch(84.0% 0.022 163.5)",
+          "oklch(95.0% 0.022 163.5)"
+        ]
+      },
+      "rule-strong-dark": {
+        "role": "neutral",
+        "displayName": "濃い罫(ダーク)",
+        "canonical": "#5c7568",
+        "tonalRamp": [
+          "oklch(15.0% 0.036 162.3)",
+          "oklch(26.0% 0.036 162.3)",
+          "oklch(38.0% 0.036 162.3)",
+          "oklch(50.0% 0.036 162.3)",
+          "oklch(62.0% 0.036 162.3)",
+          "oklch(73.0% 0.036 162.3)",
+          "oklch(84.0% 0.036 162.3)",
+          "oklch(95.0% 0.036 162.3)"
+        ]
+      },
+      "control-dark": {
+        "role": "neutral",
+        "displayName": "入力部品の枠(ダーク)",
+        "canonical": "#7a8c84",
+        "tonalRamp": [
+          "oklch(15.0% 0.024 167.0)",
+          "oklch(26.0% 0.024 167.0)",
+          "oklch(38.0% 0.024 167.0)",
+          "oklch(50.0% 0.024 167.0)",
+          "oklch(62.0% 0.024 167.0)",
+          "oklch(73.0% 0.024 167.0)",
+          "oklch(84.0% 0.024 167.0)",
+          "oklch(95.0% 0.024 167.0)"
+        ]
+      },
+      "warn-dark": {
+        "role": "secondary",
+        "displayName": "注意の茶(ダーク)",
+        "canonical": "#f0b25c",
+        "tonalRamp": [
+          "oklch(15.0% 0.126 73.3)",
+          "oklch(26.0% 0.126 73.3)",
+          "oklch(38.0% 0.126 73.3)",
+          "oklch(50.0% 0.126 73.3)",
+          "oklch(62.0% 0.126 73.3)",
+          "oklch(73.0% 0.126 73.3)",
+          "oklch(84.0% 0.126 73.3)",
+          "oklch(95.0% 0.126 73.3)"
+        ]
+      },
+      "warn-wash-dark": {
+        "role": "secondary",
+        "displayName": "注意の茶の淡い地(ダーク)",
+        "canonical": "#2a2116",
+        "tonalRamp": [
+          "oklch(15.0% 0.024 72.0)",
+          "oklch(26.0% 0.024 72.0)",
+          "oklch(38.0% 0.024 72.0)",
+          "oklch(50.0% 0.024 72.0)",
+          "oklch(62.0% 0.024 72.0)",
+          "oklch(73.0% 0.024 72.0)",
+          "oklch(84.0% 0.024 72.0)",
+          "oklch(95.0% 0.024 72.0)"
+        ]
+      },
+      "series-1-dark": {
+        "role": "tertiary",
+        "displayName": "グラフの系列 1(青)(ダーク)",
+        "canonical": "#3987e5",
+        "tonalRamp": [
+          "oklch(15.0% 0.161 255.1)",
+          "oklch(26.0% 0.161 255.1)",
+          "oklch(38.0% 0.161 255.1)",
+          "oklch(50.0% 0.161 255.1)",
+          "oklch(62.0% 0.161 255.1)",
+          "oklch(73.0% 0.161 255.1)",
+          "oklch(84.0% 0.161 255.1)",
+          "oklch(95.0% 0.161 255.1)"
+        ]
+      },
+      "series-2-dark": {
+        "role": "tertiary",
+        "displayName": "グラフの系列 2(橙)(ダーク)",
+        "canonical": "#d95926",
+        "tonalRamp": [
+          "oklch(15.0% 0.173 40.1)",
+          "oklch(26.0% 0.173 40.1)",
+          "oklch(38.0% 0.173 40.1)",
+          "oklch(50.0% 0.173 40.1)",
+          "oklch(62.0% 0.173 40.1)",
+          "oklch(73.0% 0.173 40.1)",
+          "oklch(84.0% 0.173 40.1)",
+          "oklch(95.0% 0.173 40.1)"
+        ]
+      },
+      "series-3-dark": {
+        "role": "tertiary",
+        "displayName": "グラフの系列 3(緑)(ダーク)",
+        "canonical": "#199e70",
+        "tonalRamp": [
+          "oklch(15.0% 0.128 163.1)",
+          "oklch(26.0% 0.128 163.1)",
+          "oklch(38.0% 0.128 163.1)",
+          "oklch(50.0% 0.128 163.1)",
+          "oklch(62.0% 0.128 163.1)",
+          "oklch(73.0% 0.128 163.1)",
+          "oklch(84.0% 0.128 163.1)",
+          "oklch(95.0% 0.128 163.1)"
+        ]
+      },
+      "series-4-dark": {
+        "role": "tertiary",
+        "displayName": "グラフの系列 4(黄)(ダーク)",
+        "canonical": "#c98500",
+        "tonalRamp": [
+          "oklch(15.0% 0.143 73.2)",
+          "oklch(26.0% 0.143 73.2)",
+          "oklch(38.0% 0.143 73.2)",
+          "oklch(50.0% 0.143 73.2)",
+          "oklch(62.0% 0.143 73.2)",
+          "oklch(73.0% 0.143 73.2)",
+          "oklch(84.0% 0.143 73.2)",
+          "oklch(95.0% 0.143 73.2)"
+        ]
+      },
+      "missing-dark": {
+        "role": "tertiary",
+        "displayName": "記録なしの灰(ダーク)",
+        "canonical": "#4b504d",
+        "tonalRamp": [
+          "oklch(15.0% 0.008 159.8)",
+          "oklch(26.0% 0.008 159.8)",
+          "oklch(38.0% 0.008 159.8)",
+          "oklch(50.0% 0.008 159.8)",
+          "oklch(62.0% 0.008 159.8)",
+          "oklch(73.0% 0.008 159.8)",
+          "oklch(84.0% 0.008 159.8)",
+          "oklch(95.0% 0.008 159.8)"
+        ]
+      },
+      "grid-dark": {
+        "role": "tertiary",
+        "displayName": "目盛りの線(ダーク)",
+        "canonical": "#2c2c2a",
+        "tonalRamp": [
+          "oklch(15.0% 0.004 106.6)",
+          "oklch(26.0% 0.004 106.6)",
+          "oklch(38.0% 0.004 106.6)",
+          "oklch(50.0% 0.004 106.6)",
+          "oklch(62.0% 0.004 106.6)",
+          "oklch(73.0% 0.004 106.6)",
+          "oklch(84.0% 0.004 106.6)",
+          "oklch(95.0% 0.004 106.6)"
+        ]
+      },
+      "axis-dark": {
+        "role": "tertiary",
+        "displayName": "軸の線(ダーク)",
+        "canonical": "#383835",
+        "tonalRamp": [
+          "oklch(15.0% 0.005 106.7)",
+          "oklch(26.0% 0.005 106.7)",
+          "oklch(38.0% 0.005 106.7)",
+          "oklch(50.0% 0.005 106.7)",
+          "oklch(62.0% 0.005 106.7)",
+          "oklch(73.0% 0.005 106.7)",
+          "oklch(84.0% 0.005 106.7)",
+          "oklch(95.0% 0.005 106.7)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "headline": {
+        "displayName": "ページの題",
+        "purpose": "レポート名、詳細ページのセッション名。1 ページに 1 つ。"
+      },
+      "title": {
+        "displayName": "節の見出し",
+        "purpose": "節の見出し。下に緑の 2px の罫が付く。"
+      },
+      "subtitle": {
+        "displayName": "小見出し",
+        "purpose": "節の中の小見出し。"
+      },
+      "value": {
+        "displayName": "欄の値",
+        "purpose": "欄に記入された値。紙面でいちばん大きい字。"
+      },
+      "body": {
+        "displayName": "本文",
+        "purpose": "本文。"
+      },
+      "table": {
+        "displayName": "表・部品",
+        "purpose": "表の中身、ボタン、select、目次、節の説明文。"
+      },
+      "label": {
+        "displayName": "項目名",
+        "purpose": "欄の項目名、表の見出し、札、補足。"
+      },
+      "mono": {
+        "displayName": "等幅",
+        "purpose": "ID、パス、ファイル名、コマンド。"
+      }
+    },
+    "shadows": [
+      {
+        "name": "scroll-shade",
+        "value": "linear-gradient(90deg, rgba(20, 24, 22, 0.14), transparent)",
+        "purpose": "横にスクロールできる表と目次の端に出す、続きがあることの手掛かり(ダークは rgba(0, 0, 0, 0.55))。浮かせる影ではない。"
+      },
+      {
+        "name": "stuck-band-line",
+        "value": "0 1px 0 var(--rule-strong)",
+        "purpose": "上に貼り付いた帯の下の 1px の線。"
+      },
+      {
+        "name": "stuck-turn-mark",
+        "value": "inset 3px 0 0 var(--warn)",
+        "purpose": "詳細ページで、詰まったターンの行の左に付ける印。"
+      }
+    ],
+    "motion": [
+      {
+        "name": "scroll-behavior",
+        "value": "smooth",
+        "purpose": "目次から節へ移るときの移動。prefers-reduced-motion: reduce では、動きと移り変わりをすべて止める。"
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "narrow",
+        "value": "720px",
+        "purpose": "これ以下で、欄を 2 列にし、左右の余白を 12px にする。"
+      },
+      {
+        "name": "rail",
+        "value": "768px",
+        "purpose": "これ以上で、目次を左の列に置く。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "ボタン",
+      "kind": "button",
+      "refersTo": "button",
+      "description": "様式の中の押しボタン(解除・ページ送り・もっと見る)。",
+      "html": "<button class=\"ds-btn\" type=\"button\">絞り込みを解除</button> <button class=\"ds-btn\" type=\"button\" disabled>次へ</button>",
+      "css": ".ds-btn { font: inherit; font-size: 0.8125rem; padding: 4px 12px; border: 1px solid var(--form); background: var(--surface); color: var(--form); cursor: pointer; border-radius: 0; } .ds-btn:hover { background: var(--form-wash); } .ds-btn:disabled { border-color: var(--rule); color: var(--ink-3); cursor: not-allowed; background: var(--surface); } .ds-btn:focus-visible { outline: 2px solid var(--form); outline-offset: 2px; }"
+    },
+    {
+      "name": "切り替え",
+      "kind": "button",
+      "refersTo": "segment",
+      "description": "配色やグラフの値を切り替える、枠でまとめたボタンの並び。",
+      "html": "<div class=\"ds-seg\" role=\"group\" aria-label=\"配色\"><button type=\"button\" aria-pressed=\"true\">自動</button><button type=\"button\" aria-pressed=\"false\">ライト</button><button type=\"button\" aria-pressed=\"false\">ダーク</button></div>",
+      "css": ".ds-seg { display: inline-flex; flex-wrap: wrap; border: 1px solid var(--control); } .ds-seg button { font: inherit; font-size: 0.75rem; min-height: 24px; padding: 3px 10px; border: 0; border-left: 1px solid var(--rule); background: var(--surface); color: var(--ink-2); cursor: pointer; } .ds-seg button:first-child { border-left: 0; } .ds-seg button:hover { background: var(--form-wash); } .ds-seg button[aria-pressed='true'] { background: var(--form); color: var(--surface); } .ds-seg button:focus-visible { outline: 2px solid var(--form); outline-offset: 2px; }"
+    },
+    {
+      "name": "絞り込みの選択",
+      "kind": "input",
+      "refersTo": "select",
+      "description": "項目名を上に置いた select(絞り込みの行)。",
+      "html": "<label class=\"ds-sel\"><span class=\"ds-sel-k\">プロジェクト</span><select><option>すべて(3)</option><option>project-01(2)</option></select></label>",
+      "css": ".ds-sel { display: inline-block; } .ds-sel-k { display: block; font-size: 0.6875rem; color: var(--form); margin-bottom: 2px; } .ds-sel select { font: inherit; font-size: 0.8125rem; color: var(--ink); background: var(--surface); border: 1px solid var(--control); border-radius: 0; padding: 3px 6px; height: 30px; max-width: 13em; } .ds-sel select:hover { border-color: var(--form); } .ds-sel select:focus-visible { outline: 2px solid var(--form); outline-offset: 2px; }"
+    },
+    {
+      "name": "札",
+      "kind": "chip",
+      "refersTo": "tag",
+      "description": "「種類: 値」を書く札。注意は茶。",
+      "html": "<span class=\"ds-tag\">クライアント: github/cli</span> <span class=\"ds-tag ds-tag-warn\">入力トークンの記録なし</span>",
+      "css": ".ds-tag { display: inline-block; border: 1px solid var(--control); padding: 0 6px; font-size: 0.75rem; line-height: 1.5; color: var(--ink-2); max-width: 100%; overflow-wrap: anywhere; } .ds-tag-warn { border-color: var(--warn); color: var(--warn); background: var(--warn-wash); }"
+    },
+    {
+      "name": "欄",
+      "kind": "card",
+      "refersTo": "field",
+      "description": "罫で仕切った記入欄。左上に項目名、その下に値と補足。",
+      "html": "<div class=\"ds-fields\"><div class=\"ds-field\"><span class=\"ds-k\">セッション</span><span class=\"ds-v\">3</span><span class=\"ds-n\">依頼 8 回</span></div><div class=\"ds-field\"><span class=\"ds-k\">実働時間の合計</span><span class=\"ds-v\">3分</span><span class=\"ds-n\">中央値 1分 / セッション</span></div></div>",
+      "css": ".ds-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border: 1px solid var(--rule); border-top-color: var(--rule-strong); background: var(--surface); } .ds-field { border-right: 1px solid var(--rule); border-bottom: 1px solid var(--rule); margin: 0 -1px -1px 0; padding: 8px 12px 10px; min-width: 0; } .ds-k { display: block; font-size: 0.75rem; color: var(--form); letter-spacing: 0.02em; } .ds-v { display: block; font-size: 1.375rem; font-weight: 600; line-height: 1.25; margin-top: 2px; } .ds-n { display: block; font-size: 0.75rem; color: var(--ink-3); margin-top: 2px; }"
+    },
+    {
+      "name": "罫線の表",
+      "kind": "custom",
+      "refersTo": "ledger-cell",
+      "description": "すべてのセルに罫を引いた表。数値は右寄せの等幅数字、記録の無い値は淡墨。",
+      "html": "<table class=\"ds-ledger\"><thead><tr><th scope=\"col\">プロジェクト</th><th scope=\"col\" class=\"ds-num\">セッション</th><th scope=\"col\" class=\"ds-num\">入力トークン</th></tr></thead><tbody><tr><td><a href=\"#\">project-01</a></td><td class=\"ds-num\">2</td><td class=\"ds-num\">393,000</td></tr><tr><td><a href=\"#\">project-02</a></td><td class=\"ds-num\">1</td><td class=\"ds-num\"><span class=\"ds-missing\">記録なし</span></td></tr></tbody></table>",
+      "css": ".ds-ledger { width: 100%; border-collapse: collapse; background: var(--surface); font-size: 0.8125rem; } .ds-ledger th, .ds-ledger td { border: 1px solid var(--rule); padding: 5px 8px; text-align: left; vertical-align: top; } .ds-ledger thead th { background: var(--form-wash); color: var(--form); font-weight: 600; font-size: 0.75rem; white-space: nowrap; border-bottom-color: var(--rule-strong); } .ds-ledger .ds-num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; } .ds-ledger a { color: var(--form); text-underline-offset: 3px; text-decoration-thickness: 1px; } .ds-ledger a:hover { text-decoration-thickness: 2px; } .ds-ledger a:focus-visible { outline: 2px solid var(--form); outline-offset: 2px; } .ds-missing { color: var(--ink-3); font-size: 0.75rem; }"
+    },
+    {
+      "name": "目次",
+      "kind": "nav",
+      "refersTo": "toc-link",
+      "description": "節へのリンクの並び。今いる項目は緑の太字と 2px の線。",
+      "html": "<nav class=\"ds-toc\" aria-label=\"目次\"><a href=\"#\" aria-current=\"true\">全体</a><a href=\"#\">要点</a><a href=\"#\">プロジェクト別</a></nav>",
+      "css": ".ds-toc { display: flex; gap: 16px; font-size: 0.8125rem; background: var(--surface); border-bottom: 1px solid var(--rule-strong); padding: 0 12px; } .ds-toc a { display: inline-flex; align-items: center; min-height: 36px; min-width: 32px; white-space: nowrap; text-decoration: none; color: var(--ink-2); border-bottom: 2px solid transparent; } .ds-toc a:hover { color: var(--form); text-decoration: underline; } .ds-toc a[aria-current] { color: var(--form); font-weight: 600; border-bottom-color: var(--form); } .ds-toc a:focus-visible { outline: 2px solid var(--form); outline-offset: 2px; }"
+    },
+    {
+      "name": "節の見出し",
+      "kind": "custom",
+      "refersTo": "toc-link-current",
+      "description": "見出しと説明文を 1 行に並べ、下に緑の 2px の罫を引く。",
+      "html": "<div class=\"ds-head\"><h2>プロジェクト別</h2><p>3 プロジェクト。名前を押すとそのプロジェクトに絞り込みます。</p></div>",
+      "css": ".ds-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding-bottom: 6px; border-bottom: 2px solid var(--form); } .ds-head h2 { margin: 0; font-size: 1.0625rem; font-weight: 600; line-height: 1.3; } .ds-head p { margin: 0; color: var(--ink-2); font-size: 0.8125rem; max-width: 70ch; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "記入済みの様式",
+    "overview": "役所や経理の帳票のように、罫で仕切った欄に値が記入されている紙面です。欄の左上に小さな項目名があり、その下に値が入ります。飾りで注意を引くのではなく、罫と項目名の位置で「どこに何が書いてあるか」を先に分からせます。CSS の中でもこの考え方を「様式」と呼んでいて、基調の緑の変数名も `--form` です。\n\n密度は高めです。本文は 14px(0.875rem)、表は 13px、項目名は 12px で、1 画面に全体 → 絞り込み → 根拠のセッションまでを並べます。その代わり、面は平らで、角は丸めず、影も付けません。色は緑 1 色(見出しの罫・項目名・リンク・押せるもの)と、注意の茶色、グラフの系列色だけです。\n\n読む人は、元のセッションを知らない相手のこともあります。だから、記録が無い値は「記録なし」と書き、推定は推定と書き、色だけで区別させません。",
+    "keyCharacteristics": [
+      "罫で仕切った欄と表が紙面の骨格。面を浮かせず、罫の濃さ(薄い罫・濃い罫・緑の 2px)で区切りの強さを表す",
+      "角丸なし、影なし、動きは画面内の移動(スムーズスクロール)だけ",
+      "緑は「様式の色」: 項目名・見出しの下の罫・リンク・ボタンの枠",
+      "数値は右寄せの等幅数字(`tabular-nums`)、桁区切りあり",
+      "記録の無い値は灰色の「記録なし」「—」で、0 と区別する",
+      "ライト・ダークの両方で同じ役割の色を持つ(自動・ライト・ダークを切り替えられる)"
+    ],
+    "rules": [
+      {
+        "name": "緑は様式の色の規則",
+        "body": "緑(`form`)は項目名・罫・押せるものにだけ使います。値そのものや、良い・悪いの評価には塗りません。",
+        "section": "colors"
+      },
+      {
+        "name": "色だけにしない規則",
+        "body": "状態や系列の違いは、色に加えて言葉・印・位置のどれかでも分かるようにします(例: 絞り込み中の行は地の色と「絞り込み中」の文字、別のウィンドウで開くリンクは「↗」)。",
+        "section": "colors"
+      },
+      {
+        "name": "値が主役の規則",
+        "body": "いちばん大きく太い字は欄の値です。見出しは値より小さく、罫で区切りを示します。",
+        "section": "typography"
+      },
+      {
+        "name": "文節で折る規則",
+        "body": "見出しと説明文は日本語の文節で折り返します(`word-break: auto-phrase`、見出しは `text-wrap: balance`)。数値と表の見出しは折り返しません。",
+        "section": "typography"
+      },
+      {
+        "name": "平らな紙の規則",
+        "body": "欄・表・ボタン・ダイアログに、浮かせるための影を付けません。区切りは罫で引きます。",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "**Do** 新しい集計は、欄(`.fields` / `.field`)か罫線の表(`table.ledger`)で出す。",
+      "**Do** 色は CSS 変数(`--form`、`--ink-2` など)で指定し、ライトとダークの両方で確かめる。",
+      "**Do** 記録が無い値は「記録なし」か「—」にして、0 と区別する。推定の値には推定と書く。",
+      "**Do** 数値は右寄せ・等幅数字・桁区切りにする。",
+      "**Do** 列の多い表は `.table-scroll` に入れて、表だけを横にスクロールさせる。",
+      "**Do** 押せるものは 24px 以上の的にし、キーボードで操作できるようにする。"
+    ],
+    "donts": [
+      "**Don't** 角を丸めない。浮かせる影を付けない。",
+      "**Don't** 緑を、値の強調や良し悪しの表示に使わない。",
+      "**Don't** グラフの系列色を、画面の部品(ボタン・札・罫)に使わない。",
+      "**Don't** 色だけで状態や系列を区別させない。",
+      "**Don't** Web フォントや外部の画像を読み込まない(レポートは 1 つの HTML で、`file://` でも開く)。",
+      "**Don't** 記録が無いことを空欄や 0 で隠さない。"
+    ]
+  }
+}

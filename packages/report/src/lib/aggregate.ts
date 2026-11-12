@@ -1,6 +1,7 @@
 // 絞り込んだ SessionSummary[] から画面の集計を作る純関数。
 // core の computeMetrics と同じ定義(合計は記録のあるセッションだけの和、月は UTC の YYYY-MM)。
 import { execAggregate, type ExecAggregate } from './exec.ts';
+import { hasPeople, UNKNOWN } from './filter.ts';
 import type { SessionSummary } from './types.ts';
 
 export interface TokenTotals {
@@ -148,6 +149,8 @@ export interface Aggregate {
   overall: Bucket;
   coverage: CoverageBreakdown;
   byProject: Bucket[];
+  /** 人ごと(送り先をまとめて集計したレポートだけ。人のフォルダの名前が 1 件も無ければ空)。key が UNKNOWN の行は、人のフォルダの下に無いセッション */
+  byPerson: Bucket[];
   byMonth: Bucket[];
   byModel: ModelRow[];
   usage: UsageRanking;
@@ -337,10 +340,16 @@ export function coverageBreakdown(sessions: SessionSummary[]): CoverageBreakdown
   return c;
 }
 
-export function aggregate(sessions: SessionSummary[]): Aggregate {
+/**
+ * people: 人ごとにもまとめるか。省くと、渡したセッションに人のフォルダの名前が 1 件でもあればまとめる。
+ * 絞り込んだ後のセッションを渡すときは、レポート全体に人の軸があるかを渡す(「不明」だけに絞っても行を出すため)
+ */
+export function aggregate(sessions: SessionSummary[], people: boolean = hasPeople(sessions)): Aggregate {
   const labels = new Map(sessions.map((s) => [s.project, s.projectLabel]));
   const byProject = [...groupBy(sessions, (s) => s.project)].map(([k, v]) => bucket(k, labels.get(k) ?? k, v));
-  byProject.sort((a, b) => b.tokens.output - a.tokens.output || b.sessions - a.sessions || a.key.localeCompare(b.key));
+  const order = (a: Bucket, b: Bucket): number => b.tokens.output - a.tokens.output || b.sessions - a.sessions || a.key.localeCompare(b.key);
+  byProject.sort(order);
+  const byPerson = people ? [...groupBy(sessions, (s) => s.person ?? UNKNOWN)].map(([k, v]) => bucket(k, k === UNKNOWN ? '不明' : k, v)).sort(order) : [];
 
   const months = groupBy(sessions, monthOf);
   const known = [...months.keys()].filter((k) => k !== '(unknown)').sort();
@@ -368,6 +377,7 @@ export function aggregate(sessions: SessionSummary[]): Aggregate {
     overall: bucket('all', '全体', sessions),
     coverage: coverageBreakdown(sessions),
     byProject,
+    byPerson,
     byMonth,
     byModel,
     usage: usageRanking(sessions),

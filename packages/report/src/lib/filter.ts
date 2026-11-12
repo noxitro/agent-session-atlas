@@ -19,6 +19,8 @@ export interface FilterState {
   from: string;
   to: string;
   project: string;
+  /** 人のフォルダの名前(送り先をまとめて集計したレポートだけ)。UNKNOWN は人のフォルダの下に無いセッション */
+  person: string;
   client: string;
   model: string;
   branch: string;
@@ -40,7 +42,7 @@ export interface FilterState {
 export const NO_JUDGMENT = '(none)';
 
 export function emptyFilter(): FilterState {
-  return { from: '', to: '', project: ALL, client: ALL, model: ALL, branch: ALL, coverage: '', taskCategory: ALL, empty: '', tool: ALL, ids: '', group: '', memo: '' };
+  return { from: '', to: '', project: ALL, person: ALL, client: ALL, model: ALL, branch: ALL, coverage: '', taskCategory: ALL, empty: '', tool: ALL, ids: '', group: '', memo: '' };
 }
 
 /**
@@ -149,6 +151,7 @@ export function matches(s: SessionSummary, f: FilterState, ids: Set<string> | nu
   if (!inScope(s, f)) return false;
   if (ids && !ids.has(s.id)) return false;
   if (!matchesBase(s, f)) return false;
+  if (f.person && !eqOrUnknown(s.person ?? null, f.person)) return false;
   if (f.tool && !usedTool(s, f.tool)) return false;
   if (f.coverage && s.coverage !== f.coverage) return false;
   if (f.memo && !s.memo) return false;
@@ -178,9 +181,15 @@ function countOptions(values: string[], label: (v: string) => string = (v) => v)
     .map(([value, count]) => ({ value, label: label(value), count }));
 }
 
-/** フィルタの選択肢(全セッションに対する件数付き) */
+/** 人のフォルダの名前が 1 件でも付いているか(送り先をまとめて集計したレポートか) */
+export function hasPeople(sessions: Pick<SessionSummary, 'person'>[]): boolean {
+  return sessions.some((s) => s.person != null);
+}
+
+/** フィルタの選択肢(全セッションに対する件数付き)。person は、人のフォルダの名前が 1 件も無ければ空 */
 export function filterOptions(sessions: SessionSummary[]): {
   project: Option[];
+  person: Option[];
   client: Option[];
   model: Option[];
   branch: Option[];
@@ -192,6 +201,7 @@ export function filterOptions(sessions: SessionSummary[]): {
       sessions.map((s) => s.project),
       (v) => labels.get(v) ?? v,
     ),
+    person: hasPeople(sessions) ? countOptions(sessions.map((s) => s.person ?? UNKNOWN)) : [],
     client: countOptions(sessions.map((s) => s.client ?? UNKNOWN)),
     model: countOptions(sessions.flatMap((s) => (s.models.length ? s.models : [UNKNOWN]))),
     branch: countOptions(sessions.map((s) => s.branch ?? UNKNOWN)),
