@@ -7,6 +7,8 @@ import type { ReportGroup } from '../lib/types.ts';
 
 export interface ApiState {
   version: number;
+  /** 別のフォルダを開いた画面(読むだけ)。タスクタグは送った人のもので、メモ・アップロード先は返さない */
+  readOnly?: boolean;
   groups: ReportGroup[];
   /** セッション id → メモの概要(メモの API より古い serve には無い) */
   memos?: Record<string, MemoSummary>;

@@ -6,7 +6,7 @@ import { aggregate, coverageBreakdown, monthRange } from '../src/lib/aggregate.t
 import { createAnonymizer, identityAnonymizer, shortProjectLabel } from '../src/lib/anonymize.ts';
 import { embedData, extractEmbedded, serializeForScript } from '../src/lib/embed.ts';
 import { applyFilter, currentGroupName, decodeFilter, effectiveIds, emptyFilter, encodeFilter, filterOptions, groupIds, hasPeople, isEmptyFilter, joinIds, knownSelection, NO_JUDGMENT, NO_SESSION, sameIds, splitIds, UNKNOWN } from '../src/lib/filter.ts';
-import { addIds, parseGroups, removeIds, resolveIdPrefixes, serializeGroups } from '../src/lib/groups.ts';
+import { addIds, memberGroups, parseGroups, removeIds, resolveIdPrefixes, serializeGroups } from '../src/lib/groups.ts';
 import { parseJudgments } from '../src/lib/judgments.ts';
 import { niceTicks } from '../src/lib/scale.ts';
 import { modelLabel, sharedLeads, splitLead } from '../src/lib/format.ts';
@@ -604,5 +604,26 @@ describe('一覧の題名の見分け(sharedLeads)', () => {
     const r = sharedLeads(['リポジトリの README を  更新して。章立ては変えない', 'リポジトリの README を 更新して。章立ては変える', 'リポジトリの別の話']);
     expect(r[0].cut).toBeGreaterThan(0);
     expect(r[2]).toEqual({ cut: 0, same: 1 });
+  });
+});
+
+describe('memberGroups(送った人のタスクタグ)', () => {
+  it('人ごとに分ける(同じ名前のタグでも別の人なら別のグループ)。名前は「人 / タグ」、人が無ければタグだけ。人・タグの順に並べる', () => {
+    expect(
+      memberGroups([
+        { id: 's1', person: 'person-b', uploadTags: ['武器'] },
+        { id: 's2', person: 'person-a', uploadTags: ['武器', 'UI'] },
+        { id: 's3', person: 'person-a', uploadTags: ['武器'] },
+        { id: 's4', person: null, uploadTags: ['共有'] },
+        { id: 's5', person: 'person-a', uploadTags: [] },
+        { id: 's6' },
+      ]),
+    ).toEqual([
+      { name: '共有', note: '', ids: ['s4'] },
+      { name: 'person-a / UI', note: '', ids: ['s2'] },
+      { name: 'person-a / 武器', note: '', ids: ['s2', 's3'] },
+      { name: 'person-b / 武器', note: '', ids: ['s1'] },
+    ]);
+    expect(memberGroups([])).toEqual([]);
   });
 });

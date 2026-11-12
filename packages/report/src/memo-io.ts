@@ -3,7 +3,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { renameReplacing } from '../../core/src/index.ts';
+import { renameReplacing, UPLOAD_MEMO_FILE, UPLOAD_MEMO_IMAGES } from '../../core/src/index.ts';
 import { extname, join } from 'node:path';
 import { isSafeFileName, isSafeMemoId, MEMOS_DIR_NAME } from './lib/memo.ts';
 import { renderMemoHtml } from './memo-render.ts';
@@ -100,8 +100,11 @@ export async function saveMemoImage(dir: string, id: string, data: Buffer): Prom
   return { name, markdown: `![画像](${id}/${name})` };
 }
 
-/** 本文の画像の参照を data: URI にする。<id>/ の直下の画像だけを読む(.. や別のセッションのフォルダは読まない) */
-function imageDataUri(dir: string, id: string, href: string): string | null {
+/**
+ * 本文の画像の参照を data: URI にする。参照は <folder>/<名前> の形だけを受け、base/<folder>/ の直下の画像だけを読む
+ * (.. や別のセッションのフォルダは読まない)。置き場のメモは base = 置き場・folder = id、送った人のメモは base = セッションのフォルダ・folder = atlas-memo
+ */
+function imageDataUri(base: string, folderName: string, href: string): string | null {
   let path: string;
   try {
     path = decodeURI(href).replace(/^\.\//, '');
@@ -109,9 +112,9 @@ function imageDataUri(dir: string, id: string, href: string): string | null {
     return null;
   }
   const [folder, name, ...rest] = path.split('/');
-  if (folder !== id || !name || rest.length || !isSafeFileName(name)) return null;
+  if (folder !== folderName || !name || rest.length || !isSafeFileName(name)) return null;
   const mime = IMAGE_MIME[extname(name).toLowerCase()];
-  const file = join(dir, id, name);
+  const file = join(base, folderName, name);
   if (!mime || !existsSync(file)) return null;
   try {
     if (statSync(file).size > MEMO_IMAGE_LIMIT) return null; // 手で置いた画像にも同じ上限(詳細ページに埋め込むため)
@@ -123,4 +126,29 @@ function imageDataUri(dir: string, id: string, href: string): string | null {
 
 export function renderMemo(dir: string, id: string, text: string): string {
   return renderMemoHtml(text, (href) => imageDataUri(dir, id, href));
+}
+
+/**
+ * 送り先から集計したときの、送った人のメモ(写したセッションのフォルダ <stateDir>/<id>/atlas-memo.md)を読む。
+ * 読むだけで、書き換えない(別のフォルダを開いた画面は読むだけ)。読めないもの・id に使えない名前・空のものは飛ばす
+ */
+export async function loadMemberMemos(stateDir: string, ids: Iterable<string>): Promise<Map<string, MemoFile>> {
+  const out = new Map<string, MemoFile>();
+  for (const id of ids) {
+    if (!isSafeMemoId(id)) continue;
+    const path = join(stateDir, id, UPLOAD_MEMO_FILE);
+    if (!existsSync(path)) continue;
+    try {
+      const m = await readAt(path, id);
+      if (m.text.trim()) out.set(id, m);
+    } catch {
+      /* 読めないファイルがあっても他のメモと build を止めない */
+    }
+  }
+  return out;
+}
+
+/** 送った人のメモを HTML にする(画像は <stateDir>/<id>/atlas-memo/ の直下だけ) */
+export function renderMemberMemo(stateDir: string, id: string, text: string): string {
+  return renderMemoHtml(text, (href) => imageDataUri(join(stateDir, id), UPLOAD_MEMO_IMAGES, href));
 }

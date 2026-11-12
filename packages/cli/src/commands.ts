@@ -18,6 +18,7 @@ import {
   memosDir,
   memoSummary,
   NOTES_DIR_NAME,
+  memberGroups,
   parseJudgments,
   parseVerdicts,
   type VerdictIndex,
@@ -393,8 +394,11 @@ export async function runBuild(p: Paths, o: BuildOptions, log: Log): Promise<Bui
     warnings: { unknownEventTypes: unknown, badLines: s.warnings.badLines, notes: groups.warnings },
     judgments,
     verdicts,
-    groups: groups.groups,
-    memosDir: memosDir(p.notes),
+    // 送り先から集計したとき(--home や atlas open)は、送った人が付けていたタスクタグ(人ごと)とメモを出す。
+    // この PC の置き場(groups.json・memos/)のものは混ぜない(別のフォルダを開いた画面は読むだけ)
+    ...(s.source.layout
+      ? { groups: memberGroups(s.sessions), memberMemosDir: join(p.snapshot, 'session-state') }
+      : { groups: groups.groups, memosDir: memosDir(p.notes) }),
     outDir: p.out,
     anonymize: o.anonymize,
     scope: { since: o.since, project: o.project, client: o.client, model: o.model, branch: o.branch },

@@ -19,7 +19,7 @@ import type { JudgmentsIndex } from './lib/judgments.ts';
 import { verdictTuples, type VerdictIndex } from './lib/verdicts.ts';
 import type { SessionGroup } from './lib/groups.ts';
 import { memoSummary } from './lib/memo.ts';
-import { loadMemoIndex, renderMemo, type MemoFile } from './memo-io.ts';
+import { loadMemberMemos, loadMemoIndex, renderMemberMemo, renderMemo, type MemoFile } from './memo-io.ts';
 import { detailFileName, summarize } from './lib/summarize.ts';
 import { renderTranscript, transcriptFileName, type TranscriptOptions } from './transcript.ts';
 import { loadStore, type StoreData } from '../../core/src/index.ts';
@@ -101,6 +101,8 @@ export interface BuildInput {
   groups?: SessionGroup[];
   /** Phase 13: メモの置き場(<notes-dir>/memos)。無ければメモなし */
   memosDir?: string;
+  /** 送り先から集計したとき: 送った人のメモを読む、写したセッションのフォルダ(<snapshot>/session-state)。あれば memosDir より優先する */
+  memberMemosDir?: string;
   outDir: string;
   anonymize: boolean;
   scope?: Partial<ReportData['scope']>;
@@ -158,7 +160,15 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
   const j = input.judgments;
 
   // 伏せ字版にはメモを一切出さない(自由記述のため。抜粋も件数も持たない)
-  const memos = input.memosDir && !anon.enabled ? await loadMemoIndex(input.memosDir) : new Map<string, MemoFile>();
+  const memberDir = input.memberMemosDir ?? null;
+  const memos = anon.enabled
+    ? new Map<string, MemoFile>()
+    : memberDir
+      ? await loadMemberMemos(memberDir, input.sessions.map((s) => s.id))
+      : input.memosDir
+        ? await loadMemoIndex(input.memosDir)
+        : new Map<string, MemoFile>();
+  const memoHtml = (id: string, text: string): string => (memberDir ? renderMemberMemo(memberDir, id, text) : renderMemo(input.memosDir!, id, text));
   const vx = input.verdicts ?? null;
   const sessions = input.sessions.map((r) => {
     const base = summarize(r, anon, j?.bySession.get(r.id) ?? null);
@@ -380,7 +390,7 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
       }
     }
     const m = memos.get(r.id);
-    const memo = m ? { html: renderMemo(input.memosDir!, r.id, m.text), updatedAt: m.updatedAt } : null;
+    const memo = m ? { html: memoHtml(r.id, m.text), updatedAt: m.updatedAt } : null;
     const page = renderDetailHtml(r, { anon, css, judgment, verdicts: vx?.bySession.get(r.id) ?? null, generatedAt, transcriptHref, libraryHref: data.library ? `../${INSTRUCTIONS_FILE}` : null, skillHasPage: (name) => !!lib?.hasSkill(name), libraryHasSession: !!lib?.hasSession(r.id), fullHref, memo });
     detailBytes += Buffer.byteLength(page);
     await writeFile(join(detailDir, detailFileName(r.id)), page);

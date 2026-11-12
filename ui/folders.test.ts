@@ -64,7 +64,9 @@ describe('別のフォルダを開く', () => {
     const s = JSON.parse(await readFile(join(out, 'sessions.json'), 'utf8')) as { sessions: { id: string }[] };
     const ids = s.sessions.map((x) => x.id).filter((id) => existsSync(join(out, 'snapshot', 'session-state', id, 'events.jsonl')));
     expect(ids.length).toBeGreaterThanOrEqual(3);
-    await mkdir(notes, { recursive: true });
+    await mkdir(join(notes, 'memos'), { recursive: true });
+    // 送った人のメモ(アップロードで atlas-memo.md としてセッションのフォルダに入る)
+    await writeFile(join(notes, 'memos', `${ids[0]}.md`), '# 送った人のメモ\n\n当たり判定を直した。');
     await writeFile(join(notes, 'groups.json'), JSON.stringify({ version: 1, groups: [{ name: 'proj-a', note: '', ids: ids.slice(0, 2) }, { name: 'proj-b', note: '', ids: ids.slice(2, 3) }] }));
     const upload = join(WORK, 'upload');
     await mkdir(upload, { recursive: true });
@@ -147,7 +149,7 @@ describe('別のフォルダを開く', () => {
     expect(await dialog(page).locator('[data-folder-row]').count()).toBe(1);
   });
 
-  it('b. 開いた先は対象のフォルダの名前を出し、いつもの集計へのリンクを持つ。メモとタスクタグはフォルダごとの場所に書く', async () => {
+  it('b. 開いた先は対象のフォルダの名前と「読むだけ」を出し、いつもの集計へのリンクを持つ。タスクタグとメモは送った人のもので、書き換えられない', async () => {
     const href = (await row(page).getByRole('link', { name: /person-a を表示する/ }).getAttribute('href'))!;
     other = await browser.newPage({ viewport: { width: 1440, height: 900 } });
     watch(other);
@@ -170,11 +172,38 @@ describe('別のフォルダを開く', () => {
     await dialog(other).getByTestId('folders-close').click();
     await expect.poll(() => focused(other!)).toBe('folders-open');
 
-    // タスクタグ: いつもの集計の proj-a / proj-b は、このフォルダの画面には無い(置き場が別)
+    // 読むだけ: 「読むだけ」の札。タスクタグを作る・付ける操作と、まとめて送る印は出さない(集計し直す・判定は出す)
+    await expect.poll(() => other!.getByTestId('readonly-tag').innerText()).toBe('読むだけ');
+    expect(await other.getByTestId('add-to-group').count()).toBe(0);
+    expect(await other.locator('#projects').getByRole('checkbox').count()).toBe(0);
+    expect(await other.getByTestId('job-judge').count()).toBe(1);
+    expect(await other.getByTestId('job-refresh').count()).toBe(1);
+    // タスクタグ: 送った人が付けていたもの(人のフォルダを開いたので、人の名前は付かない)。いつもの置き場のものとは別
     const token = await other.evaluate<string>("document.querySelector('meta[name=\"atlas-token\"]').content");
-    const state = (await (await fetch(new URL('api/state', href), { headers: { 'x-atlas-token': token } })).json()) as { groups: unknown[]; notesDir: string };
-    expect(state.groups).toEqual([]);
+    const state = (await (await fetch(new URL('api/state', href), { headers: { 'x-atlas-token': token } })).json()) as { readOnly: boolean; groups: { name: string; ids: string[] }[]; notesDir: string };
+    expect(state.readOnly).toBe(true);
+    expect(state.groups.map((g) => [g.name, g.ids.length])).toEqual([
+      ['proj-a', 2],
+      ['proj-b', 1],
+    ]);
     expect(state.notesDir).toBe(fp.notes);
+    // 画面の左の一覧にも出る
+    await expect.poll(() => other!.locator('.group-rail').innerText()).toContain('proj-a');
+    // 書き換える API はサーバが断る(画面を通さずに呼んでも)
+    const put = (path: string, body: unknown, method = 'PUT') => fetch(new URL(path, href), { method, headers: { 'x-atlas-token': token, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    for (const r of [await put('api/groups', { name: '新しい', note: '', ids: [] }, 'POST'), await put('api/groups/proj-a', { remove: [state.groups[0].ids[0]] }), await put(`api/memos/${state.groups[0].ids[0]}`, { text: 'x', rev: '' }), await put('api/upload-projects', { project: 'x', on: true })]) {
+      expect(r.status).toBe(403);
+      expect(((await r.json()) as { error: string }).error).toContain('読むだけ');
+    }
+    expect(existsSync(join(fp.notes, 'groups.json'))).toBe(false);
+    // 詳細ページ: 送った人のメモを出し、書き換える欄は出さない。タスクタグは送った人のもので、外す・付けるは出さない
+    const memoId = state.groups[0].ids.find((x) => existsSync(join(fp.out, 'snapshot', 'session-state', x, 'atlas-memo.md')))!;
+    expect(memoId).toBeTruthy();
+    await other.goto(new URL(`sessions/${memoId}.html`, href).href);
+    await expect.poll(() => other!.locator('#memo').innerText()).toContain('当たり判定を直した。');
+    await expect.poll(() => other!.getByTestId('detail-groups').innerText()).toContain('送った人が付けたもの');
+    expect(await other.getByTestId('detail-groups').locator('button, input').count()).toBe(0);
+    expect(await other.getByTestId('memo-text').count()).toBe(0);
     await other.close();
   });
 
@@ -227,6 +256,12 @@ describe('別のフォルダを開く', () => {
       expect([...names].sort()).toEqual(['person-a', 'person-b']);
       // 「まとめて送る」の印は、人別には出さない
       expect(await people.getByRole('checkbox').count()).toBe(0);
+      // 送った人のタスクタグを、人ごとに分けて出す(同じ proj-a でも、人が違えば別)
+      const groups = await other.evaluate<{ name: string; ids: string[] }[]>("JSON.parse(document.getElementById('atlas-data').textContent).groups");
+      expect(groups.map((g) => [g.name, g.ids.length])).toEqual([
+        ['person-a / proj-a', 2],
+        ['person-b / proj-b', 1],
+      ]);
       // 絞り込みの「人」: 件数付き
       const select = personLabel(other).locator('select');
       expect(await select.locator('option').allInnerTexts()).toEqual(['すべて(2)', 'person-a(2)', 'person-b(1)']);
