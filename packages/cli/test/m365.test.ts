@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parseCli, UsageError } from '../src/args.ts';
 import { CHAT_REQUEST } from '../src/chat-parts.ts';
 import { jobArgs, MAIN_TS, parseJobRequest } from '../src/jobs.ts';
-import { M365_DEFAULT_MODEL, M365_SCRIPT, runM365Judge, type M365Driver, type M365Request } from '../src/m365.ts';
+import { cleanCopilotReply, M365_DEFAULT_MODEL, M365_SCRIPT, runM365Judge, type M365Driver, type M365Request } from '../src/m365.ts';
 
 const item = (sessionId: string) => ({
   sessionId,
@@ -103,6 +103,18 @@ describe('M365 Copilot の自動操作での判定', () => {
 
     await expect(runM365Judge(paths(), { target: 'effort', model: 'Think Deeper', limit: null, timeoutSec: 60 }, () => {}, recorder([]), 'linux')).rejects.toThrow(/Windows でだけ/);
     await expect(runM365Judge(paths(), { target: 'turns', model: 'Think Deeper', limit: null, timeoutSec: 60 }, () => {}, recorder([]), 'win32')).rejects.toThrow(/添付ファイルがまだありません/);
+  });
+
+  it('画面から読んだ返答(行番号とボタンの名前が混じり、囲みが無い)を、取り込める ```json に直す', () => {
+    // M365 Copilot の画面を UI Automation で読んだときの形(行番号の行に行頭の空白が付き、本文は次の行。数字だけの本文の行もある)
+    const raw = ['￼', '判定しました。', 'JSON', 'コードをコピー', 'その他のオプション', '￼', '1', '{', '2  ', '"items": [', '3    ', '7,', '4    ', '8', '5  ', ']', '6', '}', '応答のコピー', '気に入った点がある', '不満な点がある', '￼', 'その他のオプション'].join('\n');
+    const md = cleanCopilotReply(raw);
+    expect(md).toContain('判定しました。');
+    expect(md).toContain('```json\n{\n  "items": [\n    7,\n    8\n  ]\n}\n```');
+    expect(JSON.parse(/```json\n([\s\S]*?)\n```/.exec(md)![1])).toEqual({ items: [7, 8] });
+    expect(md).not.toContain('￼');
+    // コードブロックの無い返答はそのまま
+    expect(cleanCopilotReply('すみません、判定できません。')).toBe('すみません、判定できません。\n');
   });
 
   it('CLI とジョブ: judge m365 / turns m365 と、画面から始める m365 / turn-m365', () => {

@@ -4,7 +4,7 @@
 // 返答は <bundle>/replies/<名前>.md に残す(形が合わずに取り込めなかったとき、読んで確かめられるように)。
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { copyFile, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -138,7 +138,11 @@ export async function runM365Judge(p: M365Paths, o: M365Options, log: (msg: stri
         log(`m365: ${name} で画面の操作が止まりました: ${(e as Error).message}`);
         break;
       }
-      const text = existsSync(reply) ? await readFile(reply, 'utf8') : '';
+      // 画面から読んだ文字はコードブロックの囲みが無く、行番号とボタンの名前が混じる。組み立て直したものを残して取り込む(読んだままの文字も残す)
+      const raw = existsSync(reply) ? await readFile(reply, 'utf8') : '';
+      const text = cleanCopilotReply(raw);
+      await writeFile(reply.replace(/\.md$/, '.raw.txt'), raw);
+      await writeFile(reply, text);
       try {
         const r =
           o.target === 'turns'
@@ -161,3 +165,55 @@ export async function runM365Judge(p: M365Paths, o: M365Options, log: (msg: stri
   return summary;
 }
 
+/** コードブロックの上に出るボタン(この行の後ろから行番号つきの本文が始まる) */
+const CODE_TOOLBAR = new Set(['コードをコピー', 'Copy code', 'Copy']);
+/** コードブロックの上下に出る、本文ではない行(言語名の後ろのボタン・返答の下のボタン・画像などの置き換え文字) */
+const UI_LINES = new Set(['その他のオプション', 'More options', '応答のコピー', 'Copy response', '気に入った点がある', '不満な点がある', 'Like', 'Dislike', '\uFFFC', '']);
+
+/**
+ * M365 Copilot の画面から UI Automation で読んだ返答を、取り込める Markdown に直す。
+ * 画面のコードブロックは「行番号(と行頭の空白)」の行と「その行の本文」の行が交互に並び、```json の囲みが無い。
+ * 「コードをコピー」のボタンの後ろの、1 から続く行番号の並びを見つけ、本文の行を元の字下げでつなぎ直して ```json で囲む。
+ * 行番号は 1 つずつ増えるものだけを行番号とみなす(本文に数字だけの行があっても崩さない)。それ以外の行はそのまま残す
+ */
+export function cleanCopilotReply(text: string): string {
+  const lines = text.replace(/\r\n?/g, '\n').split('\n');
+  const out: string[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const t = lines[i].trim();
+    if (!CODE_TOOLBAR.has(t)) {
+      if (t !== '\uFFFC') out.push(lines[i]);
+      i++;
+      continue;
+    }
+    let j = i + 1;
+    while (j < lines.length && UI_LINES.has(lines[j].trim())) j++;
+    if (lines[j]?.trim() !== '1') {
+      i++;
+      continue;
+    }
+    // 直前の言語名(JSON など)の行は囲みの言語にする
+    const lang = out.length && /^[A-Za-z][\w+#-]{0,15}$/.test(out[out.length - 1].trim()) ? out.pop()!.trim().toLowerCase() : '';
+    const code: string[] = [];
+    let n = 1;
+    let k = j;
+    /** 本文の行の終わり: 次の行番号か、本文ではないボタンの行 */
+    const ends = (line: string): boolean => {
+      const s = line.trim();
+      return s === String(n + 1) || CODE_TOOLBAR.has(s) || (s !== '' && UI_LINES.has(s));
+    };
+    while (k < lines.length && lines[k].trim() === String(n)) {
+      // 行番号の後ろの空白は、その行の字下げ
+      const indent = lines[k].slice(lines[k].indexOf(String(n)) + String(n).length);
+      k++;
+      const body: string[] = [];
+      while (k < lines.length && !ends(lines[k])) body.push(lines[k++]);
+      code.push(indent + body.join(''));
+      n++;
+    }
+    out.push(`\`\`\`${lang}`, ...code, '```');
+    i = k;
+  }
+  return `${out.join('\n').replace(/\n{3,}/g, '\n\n').trim()}\n`;
+}

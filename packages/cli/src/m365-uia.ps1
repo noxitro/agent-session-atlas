@@ -20,10 +20,33 @@ Add-Type -AssemblyName UIAutomationTypes
 $AE = [System.Windows.Automation.AutomationElement]
 $Scope = [System.Windows.Automation.TreeScope]
 $CT = [System.Windows.Automation.ControlType]
-$True_ = [System.Windows.Automation.Condition]::TrueCondition
+Add-Type @"
+using System; using System.Runtime.InteropServices; using System.Text;
+public static class AtlasM365Win32 {
+  [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "SendMessageW")] public static extern IntPtr SendMessageText(IntPtr h, int msg, IntPtr w, string l);
+  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, int msg, IntPtr w, IntPtr l);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+}
+"@
+# 開いたままのファイルを選ぶ画面(止まったときに「キャンセル」で閉じる)
+$script:DialogHwnd = [IntPtr]::Zero
 
 function Say([string]$msg) { [Console]::Out.WriteLine("progress: $msg"); [Console]::Out.Flush() }
-function Fail([string]$msg) { [Console]::Out.WriteLine("error: $msg"); [Console]::Out.Flush(); exit 2 }
+function Fail([string]$msg) {
+  if ($script:DialogHwnd -ne [IntPtr]::Zero) { $null = [AtlasM365Win32]::PostMessage($script:DialogHwnd, 0x0111, [IntPtr]2, [IntPtr]::Zero) }
+  [Console]::Out.WriteLine("error: $msg"); [Console]::Out.Flush(); exit 2
+}
+function ClassOf([IntPtr]$h) {
+  $sb = New-Object System.Text.StringBuilder 64
+  $null = [AtlasM365Win32]::GetClassName($h, $sb, 64)
+  $sb.ToString()
+}
+# アプリが出したファイルを選ぶ画面(#32770)。アプリの窓の下か、デスクトップの直下にある
+function FileDialog($win, $procCond) {
+  $d = $win.FindFirst($Scope::Descendants, (New-Object System.Windows.Automation.PropertyCondition($AE::ClassNameProperty, '#32770')))
+  if (-not $d) { $d = @($AE::RootElement.FindAll($Scope::Children, $procCond) | Where-Object { $_.Current.ClassName -eq '#32770' })[0] }
+  $d
+}
 
 function ById($root, [string]$aid) {
   $root.FindFirst($Scope::Descendants, (New-Object System.Windows.Automation.PropertyCondition($AE::AutomationIdProperty, $aid)))
@@ -136,19 +159,18 @@ $upload = WaitFor {
   @($AE::RootElement.FindAll($Scope::Descendants, $procCond) | Where-Object { $_.Current.ControlType -eq $CT::MenuItem -and ($_.Current.Name -like '*ファイルのアップロード*' -or $_.Current.Name -like '*Upload*') })[0]
 } 10 '「画像とファイルのアップロード」'
 Press $upload
-$dialog = WaitFor {
-  $d = $win.FindFirst($Scope::Children, (New-Object System.Windows.Automation.PropertyCondition($AE::ClassNameProperty, '#32770')))
-  if (-not $d) { $d = @($AE::RootElement.FindAll($Scope::Children, $procCond) | Where-Object { $_.Current.ClassName -eq '#32770' })[0] }
-  $d
-} 15 'ファイルを選ぶ画面'
-$nameBox = WaitFor { ById $dialog '1148' } 10 'ファイルを選ぶ画面の「ファイル名」'
-$vp = Pattern $nameBox ([System.Windows.Automation.ValuePattern]::Pattern)
-if (-not $vp) { Fail 'ファイルを選ぶ画面の「ファイル名」に書けません' }
-$vp.SetValue((Resolve-Path -LiteralPath $Attach).Path)
-$open = $dialog.FindFirst($Scope::Children, (New-Object System.Windows.Automation.PropertyCondition($AE::AutomationIdProperty, '1')))
-if (-not $open) { Fail 'ファイルを選ぶ画面の「開く」が見つかりません' }
-Press $open
-$null = WaitFor { if (-not ($win.FindFirst($Scope::Children, (New-Object System.Windows.Automation.PropertyCondition($AE::ClassNameProperty, '#32770'))))) { $true } } 15 'ファイルを選ぶ画面が閉じること'
+$dialog = WaitFor { FileDialog $win $procCond } 15 'ファイルを選ぶ画面'
+$script:DialogHwnd = [IntPtr]$dialog.Current.NativeWindowHandle
+# この画面の中の部品は UIA の pattern を出さない(アプリの窓の下にあるため)。Win32 の窓に直接入れる:
+# 「ファイル名」(1148 の Edit)に WM_SETTEXT でパスを入れ、画面に WM_COMMAND の IDOK(「開く」)を送る
+$nameEdit = WaitFor {
+  @($dialog.FindAll($Scope::Descendants, (New-Object System.Windows.Automation.PropertyCondition($AE::AutomationIdProperty, '1148'))) | Where-Object { (ClassOf ([IntPtr]$_.Current.NativeWindowHandle)) -eq 'Edit' })[0]
+} 10 'ファイルを選ぶ画面の「ファイル名」'
+$path = (Resolve-Path -LiteralPath $Attach).Path
+$null = [AtlasM365Win32]::SendMessageText([IntPtr]$nameEdit.Current.NativeWindowHandle, 0x000C, [IntPtr]::Zero, $path)
+$null = [AtlasM365Win32]::PostMessage($script:DialogHwnd, 0x0111, [IntPtr]1, [IntPtr]::Zero)
+$null = WaitFor { if (-not (FileDialog $win $procCond)) { $true } } 15 'ファイルを選ぶ画面が閉じること'
+$script:DialogHwnd = [IntPtr]::Zero
 $null = WaitFor { ByName $win $CT::Text @("*$attachName*") ; } 120 "添付した $attachName"
 Say "添付しました: $attachName"
 
