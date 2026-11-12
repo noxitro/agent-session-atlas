@@ -261,6 +261,30 @@ function classifyFile(
   return { results, excluded };
 }
 
+/** 決まった数だけ同時に進める(結果は items の順) */
+export async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i], i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker));
+  return out;
+}
+
+/** 同時に照合するセッションの数(VCS のコマンドを並べて起動しすぎないように) */
+const SESSION_CONCURRENCY = 4;
+
+/** 同じ鍵の読み取りは 1 回だけ行い、結果(失敗も)を使い回す */
+function memo<T>(cache: Map<string, Promise<T>>, key: string, load: () => Promise<T>): Promise<T> {
+  let p = cache.get(key);
+  if (!p) cache.set(key, (p = load()));
+  return p;
+}
+
 function unattributed(h: AiHunk, reason: UnattributableReason): HunkRetention {
   return { id: h.id, path: h.path, status: 'unattributable', reason, lines: { ...emptyLines(), unattributable: h.lines.length } };
 }
@@ -275,10 +299,14 @@ export async function measureRetention(sets: readonly AiChangeSet[], opts: Reten
   const now = (opts.now ?? (() => new Date()))().toISOString();
   const similarity = opts.similarity ?? 0.75;
   const repoCache = new Map<string, Promise<OpenRepoResult>>();
+  // セッションをまたいで同じもの(同じ版のファイル・作業後のファイル・記録された開始時の版・今の版)を読むことが多いので、照合 1 回の中で使い回す
+  const baselineCache = new Map<string, Promise<{ revision: Revision | null; reason?: 'baseline_missing' }>>();
+  const readCache = new Map<string, Promise<string | null>>();
+  const revCache = new Map<string, Promise<string | null>>();
+  const repoKey = (repo: VcsRepo): string => `${repo.kind}\0${filePathKey(repo.root)}`;
   const { index, owners } = buildIndex(sets);
-  const out: SessionRetention[] = [];
 
-  for (const set of sets) {
+  return mapLimit(sets, SESSION_CONCURRENCY, async (set): Promise<SessionRetention> => {
     const me = owners.get(set.sessionId)!;
     const ctx = set.context;
     const result: SessionRetention = {
@@ -294,8 +322,7 @@ export async function measureRetention(sets: readonly AiChangeSet[], opts: Reten
       lines: emptyLines(),
       provenance: { aiChanges: 'events', baseline: null, context: { ...ctx.sources } },
     };
-    out.push(result);
-    if (set.hunks.length === 0) continue;
+    if (set.hunks.length === 0) return result;
 
     // セッションの作業フォルダの VCS(ファイルが別のリポジトリにあれば、そのファイルの場所で探し直す)
     const sessionDir = ctx.gitRoot ?? ctx.cwd;
@@ -309,7 +336,9 @@ export async function measureRetention(sets: readonly AiChangeSet[], opts: Reten
       if (!b) {
         // headCommit はそのセッションの git のリポジトリのものなので、同じリポジトリのときだけ使う
         const sameRepo = repo.kind === 'git' && sessionRepo?.repo === repo;
-        b = repo.baseline({ headCommit: sameRepo ? ctx.headCommit : null, start: ctx.start });
+        const headCommit = sameRepo ? ctx.headCommit : null;
+        const start = ctx.start;
+        b = memo(baselineCache, `${repoKey(repo)}\0${headCommit ?? ''}\0${headCommit ? '' : (start ?? '')}`, () => repo.baseline({ headCommit, start }));
         baselines.set(repo, b);
       }
       return b;
@@ -353,8 +382,10 @@ export async function measureRetention(sets: readonly AiChangeSet[], opts: Reten
           result.baseline = b.revision;
           result.provenance.baseline = b.revision.source;
         }
-        const base = await repo.readAt(b.revision.rev, path);
-        const after = await repo.readAfter(mode, path);
+        const rev = b.revision.rev;
+        const fk = filePathKey(path);
+        const base = await memo(readCache, `${repoKey(repo)}\0at\0${rev}\0${fk}`, () => repo.readAt(rev, path));
+        const after = await memo(readCache, `${repoKey(repo)}\0after\0${mode}\0${fk}`, () => repo.readAfter(mode, path));
         const { results, excluded } = classifyFile(hunks, base, after, (line) => lineClaim(index, me, path, line), similarity);
         result.hunks.push(...results);
         result.excludedHunks += excluded;
@@ -364,12 +395,8 @@ export async function measureRetention(sets: readonly AiChangeSet[], opts: Reten
     }
 
     if (sessionRepo?.repo) {
-      let rev: string | null = null;
-      try {
-        rev = await sessionRepo.repo.currentRevision();
-      } catch {
-        rev = null;
-      }
+      const repo = sessionRepo.repo;
+      const rev = await memo(revCache, repoKey(repo), () => repo.currentRevision().catch(() => null));
       result.evaluated = { mode, rev, at: now };
     }
     result.hunks.sort((a, b) => a.id - b.id);
@@ -385,8 +412,8 @@ export async function measureRetention(sets: readonly AiChangeSet[], opts: Reten
       for (const h of result.hunks) if (h.reason) byReason.set(h.reason, (byReason.get(h.reason) ?? 0) + 1);
       result.reason = [...byReason].sort((a, b) => b[1] - a[1])[0]?.[0];
     }
-  }
-  return out;
+    return result;
+  });
 }
 
 export interface RetentionSummary {

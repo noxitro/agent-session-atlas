@@ -96,10 +96,25 @@ describe('lib/compare', () => {
     expect(rr.find((x) => x.key === 'retention-measured')!.a).toBe(5);
   });
 
-  it('inPeriod と defaultPeriods: 両端を含む。既定は最後の日までの 30 日と、その前の 30 日', () => {
-    expect(inPeriod({ createdAt: '2026-11-01T23:00:00Z' }, '2026-11-01', '2026-11-01')).toBe(true);
-    expect(inPeriod({ createdAt: '2026-10-31T23:00:00Z' }, '2026-11-01', '')).toBe(false);
-    expect(inPeriod({ createdAt: null }, '', '')).toBe(false);
-    expect(defaultPeriods('2026-11-30T12:00:00Z')).toEqual({ a: { from: '2026-10-02', to: '2026-10-31' }, b: { from: '2026-11-01', to: '2026-11-30' } });
+  it('平均は、実際に割る数(記録のあったセッション)が 5 未満なら出さない', () => {
+    const many = Array.from({ length: 6 }, (_, i) => s(`m${i}`, i === 0 ? {} : { tokens: { nanoAiu: null }, activeMs: null } as Partial<CompareSession>));
+    const rows = compareRows(compareSide(many), compareSide(many));
+    expect(rows.find((x) => x.key === 'aiu')!.a).toBeNull();
+    expect(rows.find((x) => x.key === 'active')!.a).toBeNull();
+    expect(rows.find((x) => x.key === 'turns')!.a).toBe(2);
+  });
+
+  // 日付はローカルの日付(上の絞り込み・日付の入力欄と同じ)。時刻はローカルで作り、どの時間帯で走らせても同じ結果にする
+  const local = (y: number, mo: number, d: number, h: number) => new Date(y, mo - 1, d, h).toISOString();
+  it('inPeriod と defaultPeriods: ローカルの日付で両端を含む。既定は最後の日までの 30 日と、その前の 30 日', () => {
+    expect(inPeriod({ createdAt: local(2026, 11, 1, 23), updatedAt: null }, '2026-11-01', '2026-11-01')).toBe(true);
+    expect(inPeriod({ createdAt: local(2026, 11, 1, 0), updatedAt: null }, '2026-11-01', '2026-11-01')).toBe(true);
+    expect(inPeriod({ createdAt: local(2026, 10, 31, 23), updatedAt: null }, '2026-11-01', '')).toBe(false);
+    expect(inPeriod({ createdAt: local(2026, 11, 2, 0), updatedAt: null }, '', '2026-11-01')).toBe(false);
+    // 作成日時が無ければ、上の絞り込みと同じく更新日時で決める
+    expect(inPeriod({ createdAt: null, updatedAt: local(2026, 11, 1, 9) }, '2026-11-01', '2026-11-01')).toBe(true);
+    expect(inPeriod({ createdAt: null, updatedAt: null }, '', '')).toBe(false);
+    expect(defaultPeriods(local(2026, 11, 30, 23))).toEqual({ a: { from: '2026-10-02', to: '2026-10-31' }, b: { from: '2026-11-01', to: '2026-11-30' } });
+    expect(defaultPeriods(local(2026, 11, 30, 0))).toEqual({ a: { from: '2026-10-02', to: '2026-10-31' }, b: { from: '2026-11-01', to: '2026-11-30' } });
   });
 });

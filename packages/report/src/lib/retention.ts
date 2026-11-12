@@ -74,6 +74,16 @@ export interface RetentionMeta {
   pathMap: number;
   /** 照合したセッションの数(vcs-retention.json の件数) */
   sessions: number;
+  /**
+   * computedOn が sender のとき、送った側が照合した日時の範囲と見方の内訳(generatedAt はこの PC で集計した日時なので、照合の時点はこちら)。
+   * 送った側の結果が無い・古い埋め込みでは null / 省略
+   */
+  senders?: { sessions: number; from: string | null; to: string | null; modes: Partial<Record<RetentionMeta['mode'], number>> } | null;
+}
+
+/** 照合した場所の言葉(照合していない = どこでも照合していない。送った側の結果が添えられていなかったもの) */
+export function placeLabel(computedOn: 'local' | 'sender' | undefined): string {
+  return computedOn === 'sender' ? '送った側の PC' : computedOn === 'local' ? 'この PC' : '照合していない';
 }
 
 const tuple = (c: Record<RetentionStatus, number>): StatusTuple => [c.kept, c.modified, c.missing, c.unattributable];

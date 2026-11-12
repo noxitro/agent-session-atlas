@@ -165,7 +165,8 @@ function retentionCells(r: SessionRetention | undefined): Cell[] {
     r.reason ? UNATTRIBUTABLE_REASON_LABEL[r.reason] : '',
     r.vcs ?? '',
     r.baseline ? (r.baseline.source === 'observed' ? '観測' : '推定') : '',
-    r.computedOn === 'sender' ? '送った側の PC' : 'この PC',
+    // computedOn が無いのは、送った側の結果が添えられておらず、どこでも照合していないもの
+    r.computedOn === 'sender' ? '送った側の PC' : r.computedOn === 'local' ? 'この PC' : '照合していない',
     ...RETENTION_STATUSES.map((k) => (r.outcome === 'no_ai_changes' ? null : measured || k === 'unattributable' ? r.counts[k] : null)),
     ...RETENTION_STATUSES.map((k) => (r.outcome === 'no_ai_changes' ? null : measured || k === 'unattributable' ? r.lines[k] : null)),
   ];

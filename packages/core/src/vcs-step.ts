@@ -9,11 +9,13 @@ import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { extractAiChanges, type AiChangeSet, type WorkspaceHints } from './ai-changes.ts';
+import { resolveFilePath } from './classify.ts';
 import { readEvents } from './events.ts';
 import { listSessionDirs, readWorkspaceYaml } from './extract.ts';
 import { readSnapshotManifest, UPLOAD_VCS_META } from './snapshot.ts';
 import { VCS_KINDS, type EvalMode, type VcsKind } from './vcs.ts';
 import {
+  mapLimit,
   measureRetention,
   RETENTION_STATUSES,
   summarizeRetention,
@@ -47,6 +49,11 @@ export interface VcsRetentionFile {
   similarity: number;
   /** 使ったパスの対応づけの数(0 なら読み替えていない) */
   pathMap: number;
+  /**
+   * computedOn が sender のとき、送った側が照合した日時の範囲と作業後の状態の見方(セッションの数)。
+   * generatedAt と mode はこの PC で集計した日時と既定の見方なので、照合した時点としてはこちらを出す。送った側の結果が 1 つも無ければ null
+   */
+  senders?: SenderSummary | null;
   summary: RetentionSummary;
   sessions: SessionRetention[];
 }
@@ -58,6 +65,14 @@ export interface SenderVcsFile {
   computedAt: string;
   mode: EvalMode;
   result: SessionRetention;
+}
+
+/** 送った側の結果を読んだセッションの、照合した日時の範囲と見方の内訳 */
+export interface SenderSummary {
+  sessions: number;
+  from: string | null;
+  to: string | null;
+  modes: Partial<Record<EvalMode, number>>;
 }
 
 export interface VcsStepOptions extends RetentionOptions {
@@ -89,11 +104,11 @@ export function mapPath(path: string, map: readonly PathMapping[]): string | nul
     }
   }
   if (!best) return null;
-  // 残りの部分は元のパスから取る(大文字小文字を変えない)。区切りは読み替え先の形に揃える
+  // 残りの部分は元のパスから取る(大文字小文字を変えない)。読み替えた後は、ログのパスと同じ形(resolveFilePath)にそろえる。
+  // そろえないと、to を / で書いたときに区切りが混ざり、filePathKey で同じファイルと見なされなくなる(二重計上の判定が外れる)
   const rest = path.replace(/\\/g, '/').replace(/\/+$/, '').slice(bestLen).replace(/^\//, '');
-  const sep = isWinPath(best.to) || best.to.includes('\\') ? '\\' : '/';
-  const to = best.to.replace(/[\\/]+$/, '');
-  return rest ? `${to}${sep}${rest.split('/').join(sep)}` : to;
+  const to = best.to.replace(/[\\/]+$/, '') || best.to;
+  return resolveFilePath(rest ? `${to}/${rest}` : to, null);
 }
 
 /** セッションの作業フォルダとファイルのパスを読み替える。1 つでも読み替えたら mapped */
@@ -140,6 +155,11 @@ function lineCounts(v: unknown): LineCounts | null {
   return o;
 }
 
+function statusOfLines(l: LineCounts): RetentionStatus {
+  const counted = l.kept + l.modified + l.missing;
+  return counted === 0 ? 'unattributable' : l.kept === counted ? 'kept' : l.kept + l.modified > 0 ? 'modified' : 'missing';
+}
+
 function hunkOf(v: unknown): HunkRetention | null {
   if (!isObj(v)) return null;
   const id = count(v.id);
@@ -147,6 +167,8 @@ function hunkOf(v: unknown): HunkRetention | null {
   const status = typeof v.status === 'string' && (RETENTION_STATUSES as readonly string[]).includes(v.status) ? (v.status as RetentionStatus) : null;
   const lines = lineCounts(v.lines);
   if (id == null || path == null || !status || !lines) return null;
+  // 状態は行の内訳から決まる(vcs-retention.ts の classifyFile と同じ決め方)。食い違うものは使わない(まとまりと行の内訳が合わなくなるため)
+  if (lines.kept + lines.modified + lines.missing + lines.unattributable === 0 || statusOfLines(lines) !== status) return null;
   const h: HunkRetention = { id, path, status, lines };
   if (status === 'unattributable') {
     const reason = typeof v.reason === 'string' && (UNATTRIBUTABLE_REASONS as readonly string[]).includes(v.reason) ? (v.reason as UnattributableReason) : 'read_error';
@@ -165,16 +187,27 @@ export function parseSenderVcs(json: unknown, id: string): SessionRetention | nu
   if (r.sessionId !== id) return null;
   if (!Array.isArray(r.hunks) || r.hunks.length > SENDER_HUNKS_MAX) return null;
   const hunks: HunkRetention[] = [];
+  const seen = new Set<number>();
   for (const h of r.hunks) {
     const x = hunkOf(h);
-    if (!x) return null;
+    // 同じ番号のまとまりが 2 つあるものは、数え直しで二重に数えるので使わない
+    if (!x || seen.has(x.id)) return null;
+    seen.add(x.id);
     hunks.push(x);
   }
   const vcs = typeof r.vcs === 'string' && (VCS_KINDS as readonly string[]).includes(r.vcs) ? (r.vcs as VcsKind) : null;
   const b = isObj(r.baseline) ? r.baseline : null;
   const baseline = b && safeStr(b.rev, 200) && (b.source === 'observed' || b.source === 'estimated') ? { rev: b.rev as string, source: b.source as 'observed' | 'estimated' } : null;
+  // 照合した日時と見方は送った側のもの(この PC で集計した日時・既定の見方で埋めない)。セッションの記録に無ければ、添えたファイルの値を使う
+  const senderMode = json.mode === 'worktree' || json.mode === 'committed' ? (json.mode as EvalMode) : null;
+  const senderAt = isoOrNull(json.computedAt);
   const e = isObj(r.evaluated) ? r.evaluated : null;
-  const evaluated = e && (e.mode === 'worktree' || e.mode === 'committed') ? { mode: e.mode as EvalMode, rev: safeStr(e.rev, 200), at: isoOrNull(e.at) ?? '' } : null;
+  const evaluated =
+    e && (e.mode === 'worktree' || e.mode === 'committed')
+      ? { mode: e.mode as EvalMode, rev: safeStr(e.rev, 200), at: isoOrNull(e.at) ?? senderAt ?? '' }
+      : senderMode
+        ? { mode: senderMode, rev: null, at: senderAt ?? '' }
+        : null;
   const out: SessionRetention = {
     sessionId: id,
     outcome: 'no_ai_changes',
@@ -213,7 +246,10 @@ function finishCounts(r: SessionRetention): void {
   } else r.outcome = 'no_ai_changes';
 }
 
-/** AI の変更はあるが照合していない(送った側の結果が無い)セッションの結果 */
+/**
+ * AI の変更はあるが照合していない(送った側の結果が無い)セッションの結果。
+ * どこでも照合していないので computedOn は付けない(「送った側の PC で照合」と読めないように)
+ */
 function notMeasured(set: AiChangeSet): SessionRetention {
   const r: SessionRetention = {
     sessionId: set.sessionId,
@@ -227,11 +263,29 @@ function notMeasured(set: AiChangeSet): SessionRetention {
     counts: { kept: 0, modified: 0, missing: 0, unattributable: 0 },
     lines: { kept: 0, modified: 0, missing: 0, unattributable: 0 },
     provenance: { aiChanges: 'events', baseline: null, context: set.context.sources },
-    computedOn: 'sender',
   };
   finishCounts(r);
   return r;
 }
+
+/** 送った側の結果の、照合した日時の範囲と見方の内訳(照合していないセッションは数えない) */
+function senderSummary(results: readonly SessionRetention[]): SenderSummary | null {
+  const s: SenderSummary = { sessions: 0, from: null, to: null, modes: {} };
+  for (const r of results) {
+    if (r.computedOn !== 'sender') continue;
+    s.sessions++;
+    if (r.evaluated) s.modes[r.evaluated.mode] = (s.modes[r.evaluated.mode] ?? 0) + 1;
+    const at = r.evaluated?.at;
+    if (at) {
+      if (!s.from || at < s.from) s.from = at;
+      if (!s.to || at > s.to) s.to = at;
+    }
+  }
+  return s.sessions ? s : null;
+}
+
+/** events.jsonl を読む数(ディスクを読むだけなので、いくつか同時に) */
+const READ_CONCURRENCY = 8;
 
 // --- 段の本体 ---
 
@@ -260,7 +314,7 @@ export async function runVcsStep(snapshotDir: string, opts: VcsStepOptions = {})
   const results: SessionRetention[] = [];
 
   if (uploaded) {
-    for (const id of ids) {
+    const read = await mapLimit(ids, READ_CONCURRENCY, async (id) => {
       const dir = join(stateDir, id);
       const metaPath = join(dir, UPLOAD_VCS_META);
       let sender: SessionRetention | null = null;
@@ -271,27 +325,28 @@ export async function runVcsStep(snapshotDir: string, opts: VcsStepOptions = {})
           sender = null;
         }
       }
-      results.push(sender ?? notMeasured(await readAiChanges(dir, id)));
-    }
+      return sender ?? notMeasured(await readAiChanges(dir, id));
+    });
+    results.push(...read);
   } else {
-    const sets: AiChangeSet[] = [];
-    const mappedIds = new Set<string>();
-    for (const id of ids) {
-      const { set, mapped } = applyPathMap(await readAiChanges(join(stateDir, id), id), map);
-      if (mapped) mappedIds.add(id);
-      sets.push(set);
-    }
+    const read = await mapLimit(ids, READ_CONCURRENCY, async (id) => applyPathMap(await readAiChanges(join(stateDir, id), id), map));
+    const sets = read.map((r) => r.set);
+    const mappedIds = new Set(read.filter((r) => r.mapped).map((r) => r.set.sessionId));
     const measured = await measureRetention(sets, { ...opts, mode, similarity });
     for (const r of measured) results.push({ ...r, computedOn: 'local', ...(mappedIds.has(r.sessionId) ? { pathMapped: true } : {}) });
   }
   results.sort((a, b) => (a.sessionId < b.sessionId ? -1 : a.sessionId > b.sessionId ? 1 : 0));
+  const senders = uploaded ? senderSummary(results) : null;
+  // 送り先から集計したときの見方は、送った側でいちばん多かったもの(送った側の結果が無ければ指定・既定のまま)
+  const senderMode = senders ? (Object.entries(senders.modes) as [EvalMode, number][]).sort((a, b) => b[1] - a[1])[0]?.[0] : undefined;
   return {
     schemaVersion: VCS_RETENTION_SCHEMA_VERSION,
     generatedAt: (opts.now?.() ?? new Date()).toISOString(),
     computedOn: uploaded ? 'sender' : 'local',
-    mode,
+    mode: senderMode ?? mode,
     similarity,
     pathMap: map.length,
+    ...(uploaded ? { senders } : {}),
     summary: summarizeRetention(results),
     sessions: results,
   };

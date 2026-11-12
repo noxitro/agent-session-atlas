@@ -17,7 +17,8 @@ import { followedByFix, isStuck, MISMATCH_LABEL, OUTCOME_LABEL, PHASE_LABEL, REQ
 import type { JudgmentSummary } from './lib/types.ts';
 import type { TurnVerdict } from './lib/verdicts.ts';
 import type { SessionRetention } from '../../core/src/vcs-retention.ts';
-import { MODE_LABEL, REASON_LABEL, STATUS_LABEL, STATUSES, VCS_LABEL, type RetentionMeta } from './lib/retention.ts';
+import { MODE_LABEL, placeLabel, REASON_LABEL, STATUS_LABEL, STATUSES, VCS_LABEL, type RetentionMeta } from './lib/retention.ts';
+import { relativeInside } from '../../core/src/classify.ts';
 
 /** HTML エスケープ。外部参照の静的検査(http:// / fetch( の不在)を本文中の文字列で誤検出しないよう、:// と fetch( も実体参照にする */
 export function esc(s: unknown): string {
@@ -316,7 +317,7 @@ function retentionSection(r: SessionRetention, meta: RetentionMeta | null, anon:
     'AI が作った変更(追加した行)が、作業後の VCS の差分に残っているかの記録です。採用の意図や良し悪しではありません。「終了時の差分で未確認」と「帰属・照合不能」を不採用とはみなしません。LLM の判定とは別の指標です。';
   if (r.outcome === 'no_ai_changes') return section('AI の変更の残存(VCS)', '<p class="note">このセッションには、数える AI の変更(編集・作成で足した行)がありません。</p>', lead);
   const measuredHunks = r.counts.kept + r.counts.modified + r.counts.missing;
-  const where = r.computedOn === 'sender' ? '送った側の PC で照合' : 'この PC で照合';
+  const where = r.computedOn ? `${placeLabel(r.computedOn)}で照合` : placeLabel(r.computedOn);
   const baseline = r.baseline ? `${r.baseline.source === 'observed' ? '観測(ログに記録された開始時の版)' : '推定(開始時刻から VCS の履歴で探した版)'}` : '';
   const fields = `<div class="fields" style="--cols:4">${[
     field(
@@ -329,18 +330,16 @@ function retentionSection(r: SessionRetention, meta: RetentionMeta | null, anon:
     field(
       '作業後の状態',
       r.evaluated ? esc(MODE_LABEL[r.evaluated.mode]) : missing('なし'),
-      r.evaluated ? `照合 ${esc(dateTime(r.evaluated.at || meta?.generatedAt || null))}` : '',
+      // 照合した日時は照合した側のもの。送った側の結果に日時が無ければ、この PC で集計した日時で埋めない
+      r.evaluated ? `照合 ${esc(dateTime(r.evaluated.at || (r.computedOn === 'local' ? meta?.generatedAt : null) || null))}` : '',
     ),
   ].join('')}</div>`;
   const counts = `<div class="table-scroll"><table class="ledger"><thead><tr><th scope="col">状態</th><th scope="col" class="num">まとまり</th><th scope="col" class="num">行</th></tr></thead><tbody>${STATUSES.map(
     (k) => `<tr><th scope="row">${esc(STATUS_LABEL[k])}</th><td class="num">${esc(int(r.counts[k]))}</td><td class="num">${esc(int(r.lines[k]))}</td></tr>`,
   ).join('')}</tbody></table></div>`;
-  // リポジトリの中のファイルは、リポジトリからの相対パスで出す(長い絶対パスで表が読めなくならないように)
-  const root = r.root ? r.root.replace(/[\\/]+$/, '') : null;
-  const rel = (p: string): string => {
-    if (root && p.toLowerCase().startsWith(root.toLowerCase()) && /[\\/]/.test(p.charAt(root.length))) return p.slice(root.length + 1);
-    return p;
-  };
+  // リポジトリの中のファイルは、リポジトリからの相対パスで出す(長い絶対パスで表が読めなくならないように)。照合と同じ relativeInside で決める
+  const root = r.root;
+  const rel = (p: string): string => (root ? relativeInside(root, p) : null) ?? p;
   const rows = r.hunks
     .map((h) => {
       const path = anon.path(rel(h.path));

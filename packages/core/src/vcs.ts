@@ -6,8 +6,8 @@
 import { execFile } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { dirname, posix, win32 } from 'node:path';
-import { filePathKey, resolveFilePath } from './classify.ts';
+import { dirname } from 'node:path';
+import { filePathKey, relativeInside, resolveFilePath } from './classify.ts';
 
 export type VcsKind = 'git' | 'p4' | 'svn';
 export const VCS_KINDS: readonly VcsKind[] = ['git', 'svn', 'p4'];
@@ -112,13 +112,7 @@ function isWin(p: string): boolean {
   return /^[A-Za-z]:[\\/]/.test(p) || p.startsWith('\\\\');
 }
 
-function relativeTo(root: string, absPath: string): string | null {
-  const r = resolveFilePath(root, null);
-  const p = resolveFilePath(absPath, null);
-  const rel = isWin(r) ? win32.relative(r, p) : posix.relative(r, p);
-  if (rel === '' || rel.startsWith('..') || win32.isAbsolute(rel) || posix.isAbsolute(rel)) return null;
-  return rel.replace(/\\/g, '/');
-}
+const relativeTo = relativeInside;
 
 async function readDisk(absPath: string): Promise<string | null> {
   try {

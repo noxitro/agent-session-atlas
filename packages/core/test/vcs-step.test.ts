@@ -65,6 +65,12 @@ describe('mapPath / applyPathMap', () => {
     expect(mapPath(`X:${B}old`, map)).toBe(`Y:${B}new`);
     expect(mapPath('/home/zz/old/x/y.ts', map)).toBe('/srv/new/x/y.ts');
   });
+  it('読み替え先を / で書いても、ログのパスと同じ形(\\ 区切り)にそろえる(同じファイルの鍵が一致するように)', () => {
+    const slash = [{ from: `X:${B}old`, to: 'y:/new/' }];
+    expect(mapPath(`X:${B}old${B}src${B}a.ts`, slash)).toBe(`Y:${B}new${B}src${B}a.ts`);
+    expect(mapPath(`X:${B}old`, slash)).toBe(`Y:${B}new`);
+    expect(mapPath('/home/zz/old/x/../y.ts', [{ from: '/home/zz/old', to: '/srv/new//' }])).toBe('/srv/new/y.ts');
+  });
   it('名前の途中で切れる一致や、当たらないものは読み替えない', () => {
     expect(mapPath(`X:${B}older${B}a.ts`, map)).toBeNull();
     expect(mapPath('/home/zz/OLD/a.ts', map)).toBeNull(); // POSIX は大文字小文字を区別する
@@ -156,8 +162,48 @@ describe('runVcsStep(アップロード先から集計し直したとき)', () =
     const [s1, s2, s3] = r.sessions;
     expect(s1).toMatchObject({ outcome: 'measured', vcs: 'p4', baseline: { source: 'estimated' }, computedOn: 'sender', counts: { kept: 1, missing: 1 }, lines: { kept: 3, missing: 2 } });
     expect(s2).toMatchObject({ outcome: 'unattributable', reason: 'not_measured', vcs: null, counts: { unattributable: 1 }, lines: { unattributable: 2 } });
+    // どこでも照合していないので、照合した場所は付けない(「送った側の PC で照合」と読めないように)
+    expect(s2.computedOn).toBeUndefined();
     expect(s3.outcome).toBe('no_ai_changes');
     expect(r.summary).toMatchObject({ withAiChanges: 2, measured: 1, unattributable: { not_measured: 1 }, baselineEstimated: 1, byVcs: { p4: 1 } });
+  });
+
+  it('照合した日時と見方は送った側のもの(この PC で集計した日時・既定の見方で上書きしない)', async () => {
+    const snap = tmp();
+    writeFileSync(join(snap, SNAPSHOT_MANIFEST), JSON.stringify({ layout: 'flat' }));
+    const committed = { ...resultOf('c1'), evaluated: { mode: 'committed', rev: '42', at: at(7) } };
+    // セッションの記録に作業後の状態が無いものは、添えたファイルの日時と見方を使う
+    const bare = { ...resultOf('c2'), evaluated: null };
+    writeSession(snap, 'c1', eventsJsonl({ cwd: tmp(), path: 'X:/zz/a.cpp', added: ['x'] }), { [UPLOAD_VCS_META]: JSON.stringify({ version: 1, sessionId: 'c1', computedAt: at(7), mode: 'committed', result: committed }) });
+    writeSession(snap, 'c2', eventsJsonl({ cwd: tmp(), path: 'X:/zz/a.cpp', added: ['x'] }), { [UPLOAD_VCS_META]: JSON.stringify({ version: 1, sessionId: 'c2', computedAt: at(9), mode: 'committed', result: bare }) });
+    writeSession(snap, 'c3', eventsJsonl({ cwd: tmp(), path: 'X:/zz/a.cpp', added: ['x'] }));
+    const r = await runVcsStep(snap, { now: () => new Date(at(20)), mode: 'worktree' });
+    expect(r).toMatchObject({ computedOn: 'sender', generatedAt: at(20), mode: 'committed', senders: { sessions: 2, from: at(7), to: at(9), modes: { committed: 2 } } });
+    expect(r.sessions.find((s) => s.sessionId === 'c2')!.evaluated).toEqual({ mode: 'committed', rev: null, at: at(9) });
+    // 送った側の結果が 1 つも無ければ senders は null、見方は指定のまま
+    const none = tmp();
+    writeFileSync(join(none, SNAPSHOT_MANIFEST), JSON.stringify({ layout: 'flat' }));
+    writeSession(none, 'n1', eventsJsonl({ cwd: tmp(), path: 'X:/zz/a.cpp', added: ['x'] }));
+    expect(await runVcsStep(none, { mode: 'worktree' })).toMatchObject({ senders: null, mode: 'worktree' });
+    // この PC で照合したときは senders を付けない
+    const localSnap = tmp();
+    writeSession(localSnap, 'l1', eventsJsonl({ cwd: join(tmp(), 'gone'), path: join(tmp(), 'gone', 'a.ts'), added: ['x'] }));
+    expect((await runVcsStep(localSnap)).senders).toBeUndefined();
+  });
+
+  it('まとまりの状態と行の内訳が食い違うもの・同じ番号のまとまりが 2 つあるものは使わない', () => {
+    const ok = { version: 1, sessionId: 's', computedAt: at(11), mode: 'worktree', result: resultOf('s') };
+    const h0 = resultOf('s').hunks[0];
+    const withHunks = (hunks: unknown[]) => ({ ...ok, result: { ...resultOf('s'), hunks } });
+    // 「未変更で残存」なのに行は未確認だけ
+    expect(parseSenderVcs(withHunks([{ ...h0, lines: { kept: 0, modified: 0, missing: 5, unattributable: 0 } }]), 's')).toBeNull();
+    // 「照合不能」なのに残った行がある
+    expect(parseSenderVcs(withHunks([{ ...h0, status: 'unattributable', reason: 'no_vcs' }]), 's')).toBeNull();
+    // 行が 1 つも無い
+    expect(parseSenderVcs(withHunks([{ ...h0, lines: { kept: 0, modified: 0, missing: 0, unattributable: 0 } }]), 's')).toBeNull();
+    expect(parseSenderVcs(withHunks([h0, { ...h0, path: 'X:/zz/c.cpp' }]), 's')).toBeNull();
+    // 一部だけ残ったものは「変更後に残存」
+    expect(parseSenderVcs(withHunks([{ ...h0, status: 'modified', lines: { kept: 1, modified: 0, missing: 1, unattributable: 0 } }]), 's')?.counts.modified).toBe(1);
   });
 
   it('送った側の結果は形を確かめる(ほかのセッションのもの・知らない状態・制御文字を含むパスは使わない)', () => {
@@ -225,5 +271,9 @@ describe('表(sessions の照合の列・まとまりの表)', () => {
     expect(t.rows[0][col('照合した場所')]).toBe('送った側の PC');
     const h = retentionHunksTable([measured]);
     expect(h.rows).toEqual([['a', 1, 'f', '未変更で残存', '', 'git', '観測', 2, 0, 0, 0]]);
+    // 照合した場所の無いもの(送った側の結果が無かった)は「照合していない」
+    const { computedOn: _c, ...notMeasured } = { ...measured, sessionId: 'c', outcome: 'unattributable' as const, reason: 'not_measured' as const };
+    const t2 = sessionsTable([rec('c')], new Map(), new Map([['c', notMeasured]]));
+    expect(t2.rows[0][t2.header.indexOf('照合した場所')]).toBe('照合していない');
   });
 });

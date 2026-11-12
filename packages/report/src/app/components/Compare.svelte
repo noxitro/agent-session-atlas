@@ -30,12 +30,25 @@
   let tagB = $state('');
   let projA = $state('');
   let projB = $state('');
-  // 選択肢が決まったら、先頭の 2 つを既定にする(まだ選んでいないときだけ)
+  /**
+   * 選んでいる値が選択肢に無ければ(まだ選んでいない・タグの名前を変えた / 消した・空のセッションの条件で選択肢から消えた)、
+   * 選び直す。A は先頭、B は A と違う最初のもの。選択肢にあるうちは、選んだ値を変えない
+   */
+  function keep(cur: string, values: string[], avoid: string | null): string {
+    if (values.includes(cur)) return cur;
+    return values.find((v) => v !== avoid) ?? '';
+  }
   $effect(() => {
-    if (!tagA && usableGroups[0]) tagA = usableGroups[0].name;
-    if (!tagB && usableGroups[1]) tagB = usableGroups[1].name;
-    if (!projA && projects[0]) projA = projects[0].value;
-    if (!projB && projects[1]) projB = projects[1].value;
+    const tags = usableGroups.map((g) => g.name);
+    const projs = projects.map((p) => p.value);
+    const a = keep(tagA, tags, null);
+    if (a !== tagA) tagA = a;
+    const b = keep(tagB, tags, a);
+    if (b !== tagB) tagB = b;
+    const pa = keep(projA, projs, null);
+    if (pa !== projA) projA = pa;
+    const pb = keep(projB, projs, pa);
+    if (pb !== projB) projB = pb;
   });
 
   function pick(side: 'a' | 'b'): CompareSession[] {
@@ -93,7 +106,7 @@
   <div class="section-head">
     <h2 id="compare-h">比べる</h2>
     <p>
-      2 つの条件(タスクタグ・期間・プロジェクト)のセッションを並べます。上の絞り込みには従わず、全セッション(空のセッションを含めるかの条件だけ)から選びます。どちらかのセッションが {COMPARE_MIN_SESSIONS} 件未満の割合と平均は「—」です。差は相関で、条件の違いが原因とは限りません。人ごとの比較には使わないでください。
+      2 つの条件(タスクタグ・期間・プロジェクト)のセッションを並べます。上の絞り込みには従わず、全セッション(空のセッションを含めるかの条件だけ)から選びます。セッションが {COMPARE_MIN_SESSIONS} 件未満の側の割合と、割る数(記録のあるセッション)が {COMPARE_MIN_SESSIONS} 件未満の平均は「—」です。差は相関で、条件の違いが原因とは限りません。人ごとの比較には使わないでください。
     </p>
   </div>
 

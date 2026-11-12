@@ -54,4 +54,4 @@ export type { VcsKind, VcsRunner, RunResult, Revision, EvalMode, VcsRepo, OpenRe
 export { measureRetention, summarizeRetention, dice, RETENTION_STATUSES, RETENTION_STATUS_LABEL, UNATTRIBUTABLE_REASONS, UNATTRIBUTABLE_REASON_LABEL } from './vcs-retention.ts';
 export type { RetentionStatus, UnattributableReason, HunkRetention, SessionRetention, RetentionOptions, RetentionSummary, LineCounts } from './vcs-retention.ts';
 export { runVcsStep, readVcsRetention, readAiChanges, parseSenderVcs, senderVcsJson, mapPath, applyPathMap, VCS_RETENTION_FILE, VCS_RETENTION_SCHEMA_VERSION, DEFAULT_SIMILARITY } from './vcs-step.ts';
-export type { PathMapping, VcsRetentionFile, SenderVcsFile, VcsStepOptions } from './vcs-step.ts';
+export type { PathMapping, VcsRetentionFile, SenderVcsFile, SenderSummary, VcsStepOptions } from './vcs-step.ts';

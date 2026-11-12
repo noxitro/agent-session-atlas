@@ -14,6 +14,19 @@
   const totalHunks = $derived(a.hunks.reduce((x, y) => x + y, 0));
   let hover = $state<string | null>(null);
 
+  /** 送り先から集計したとき: 照合した日時と見方は送った側のもの(この PC で集計した日時ではない) */
+  const senderText = $derived.by(() => {
+    const s = meta.senders;
+    if (!s) return null;
+    const range = s.from && s.to ? (s.from === s.to ? dateTime(s.from) : `${dateTime(s.from)}〜${dateTime(s.to)}`) : '日時不明';
+    const modes =
+      (Object.entries(s.modes) as [keyof typeof MODE_LABEL, number][])
+        .filter(([, n]) => n > 0)
+        .map(([k, n]) => `${MODE_LABEL[k]} ${int(n)}`)
+        .join('・') || '不明';
+    return `${int(s.sessions)} セッション・照合 ${range}・作業後の状態: ${modes}`;
+  });
+
   const reasons = $derived(REASONS.filter((k) => (a.unattributable[k] ?? 0) > 0).map((k) => ({ key: k, label: REASON_LABEL[k], n: a.unattributable[k] ?? 0 })));
   const vcsText = $derived(
     Object.entries(a.byVcs)
@@ -40,7 +53,11 @@
     <h2 id="retention-h">AI の変更の残存(VCS)</h2>
     <p>
       AI が作った変更(追加した行)が、作業後の VCS の差分に残っているかの記録です。採用の意図や良し悪しではなく、「終了時の差分で未確認」と「帰属・照合不能」を不採用とはみなしません。LLM の判定とは別の指標です。
-      作業後の状態: {MODE_LABEL[meta.mode]}・照合 {dateTime(meta.generatedAt)}{meta.computedOn === 'sender' ? '・送った側の PC で照合した結果' : ''}{meta.pathMap ? `・パスの読み替え ${int(meta.pathMap)} 件` : ''}
+      {#if meta.computedOn === 'sender'}
+        送った側の PC で照合した結果です{senderText ? `(${senderText})` : '(添えられた結果はありません)'}。
+      {:else}
+        作業後の状態: {MODE_LABEL[meta.mode]}・照合 {dateTime(meta.generatedAt)}{meta.pathMap ? `・パスの読み替え ${int(meta.pathMap)} 件` : ''}
+      {/if}
     </p>
   </div>
 

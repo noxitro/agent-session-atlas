@@ -1,10 +1,11 @@
 // 表計算ソフトで開く表(依頼ごとの turns.csv・セッションごとの sessions.csv・VCS の照合のまとまりごとの vcs-hunks.csv)と、
 // 同じ中身の SQLite(atlas.sqlite)を作る。out/tables/(metrics・build・export)とグループの書き出し(out/groups/<名前>/)が同じものを使う。
 import { existsSync } from 'node:fs';
-import { readFile, rename, rm } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
 import {
   openWritable,
   readVcsRetention,
+  renameReplacing,
   retentionHunksTable,
   sessionsTable,
   toCsv,
@@ -86,32 +87,37 @@ export async function buildTables(sessions: SessionRecord[], p: TablePaths): Pro
 const ident = (s: string): string => `"${s.replace(/"/g, '""')}"`;
 
 /**
- * 表を SQLite のファイルに書く(CSV と同じ列。型は値から SQLite が決める)。書き終えてから置き換えるので、
- * 途中で止まっても前のファイルは壊れない
+ * 表を SQLite のファイルに書く(CSV と同じ列。型は値から SQLite が決める)。一時ファイルに書き終えてから置き換える
+ * (renameReplacing: 前のファイルを先に消さないので、置き換えに失敗しても前のファイルは残る。Windows で別のプロセスが
+ * 開いている間は少し待ってやり直す)。失敗したら一時ファイルを残さない
  */
 export async function writeSqlite(path: string, tables: Record<string, Table>): Promise<void> {
   const tmp = `${path}.writing`;
   await rm(tmp, { force: true });
-  const db = await openWritable(tmp);
   try {
-    db.exec('PRAGMA journal_mode = OFF; PRAGMA synchronous = OFF;');
-    db.exec('BEGIN');
-    for (const [name, t] of Object.entries(tables)) {
-      // 同じ見出しが 2 回ある表は無いが、念のため 2 つ目以降に番号を付ける
-      const seen = new Map<string, number>();
-      const cols = t.header.map((h) => {
-        const n = (seen.get(h) ?? 0) + 1;
-        seen.set(h, n);
-        return n > 1 ? `${h}_${n}` : h;
-      });
-      db.exec(`CREATE TABLE ${ident(name)} (${cols.map(ident).join(', ')})`);
-      const ins = db.prepare(`INSERT INTO ${ident(name)} VALUES (${cols.map(() => '?').join(', ')})`);
-      for (const r of t.rows) ins.run(...r.map((v) => (v === undefined ? null : typeof v === 'boolean' ? (v ? 1 : 0) : v)));
+    const db = await openWritable(tmp);
+    try {
+      db.exec('PRAGMA journal_mode = OFF; PRAGMA synchronous = OFF;');
+      db.exec('BEGIN');
+      for (const [name, t] of Object.entries(tables)) {
+        // 同じ見出しが 2 回ある表は無いが、念のため 2 つ目以降に番号を付ける
+        const seen = new Map<string, number>();
+        const cols = t.header.map((h) => {
+          const n = (seen.get(h) ?? 0) + 1;
+          seen.set(h, n);
+          return n > 1 ? `${h}_${n}` : h;
+        });
+        db.exec(`CREATE TABLE ${ident(name)} (${cols.map(ident).join(', ')})`);
+        const ins = db.prepare(`INSERT INTO ${ident(name)} VALUES (${cols.map(() => '?').join(', ')})`);
+        for (const r of t.rows) ins.run(...r.map((v) => (v === undefined ? null : typeof v === 'boolean' ? (v ? 1 : 0) : v)));
+      }
+      db.exec('COMMIT');
+    } finally {
+      db.close();
     }
-    db.exec('COMMIT');
-  } finally {
-    db.close();
+    await renameReplacing(tmp, path);
+  } catch (e) {
+    await rm(tmp, { force: true }).catch(() => {});
+    throw e;
   }
-  await rm(path, { force: true });
-  await rename(tmp, path);
 }

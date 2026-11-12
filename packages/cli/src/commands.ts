@@ -335,7 +335,7 @@ export async function runVcs(p: Paths, log: Log, o: { mode?: 'worktree' | 'commi
     .join('、');
   log(
     `vcs: AI の変更があったセッション ${s.withAiChanges} / ${s.sessions} 件、照合できた ${s.measured} 件(基準を推定 ${s.baselineEstimated} 件)${reasons ? `、照合不能 ${reasons}` : ''}` +
-      `(${r.computedOn === 'sender' ? '送った側の PC の結果を読んだ' : `作業後の状態: ${mode === 'worktree' ? '今の作業ツリー' : '最後に取り込んだ版'}`}${r.pathMap ? `、パスの読み替え ${r.pathMap} 件` : ''}、${ms(performance.now() - t)})→ ${p.vcsRetention}`,
+      `(${r.computedOn === 'sender' ? `送った側の PC の結果を読んだ${r.senders ? ` ${r.senders.sessions} 件、照合 ${r.senders.from ?? '不明'}〜${r.senders.to ?? '不明'}` : '(添えた結果なし)'}` : `作業後の状態: ${mode === 'worktree' ? '今の作業ツリー' : '最後に取り込んだ版'}`}${r.pathMap ? `、パスの読み替え ${r.pathMap} 件` : ''}、${ms(performance.now() - t)})→ ${p.vcsRetention}`,
   );
   if (s.measured) log(`vcs: 変更のまとまり ${(['kept', 'modified', 'missing', 'unattributable'] as const).map((k) => `${RETENTION_STATUS_LABEL[k]} ${s.hunks[k]}`).join('、')}`);
   return r;

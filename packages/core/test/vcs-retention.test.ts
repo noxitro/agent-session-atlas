@@ -388,6 +388,22 @@ describe.each(['svn', 'p4'] as const)('measureRetention(%s。偽の CLI)', (kind
     expect(summarizeRetention(r)).toMatchObject({ measured: 0, withAiChanges: 1, unattributable: { baseline_missing: 1 }, hunks: { missing: 0 } });
   });
 
+  it('セッションをまたいで同じ版のファイルは 1 回だけ読む(結果は各セッションに同じように付く)', async () => {
+    const root = tmp();
+    const f = join(root, 'a.c');
+    const { runner, calls } = fakeVcs(kind, root, [{ rev: 1, at: at(8), files: { 'a.c': ['base'] } }]);
+    write(f, ['base', 'line one', 'line two']);
+    const s1 = session({ cwd: root, start: [10, 0], end: [10, 20], edits: [{ path: f, added: ['line one'] }] });
+    const s2 = session({ cwd: root, start: [11, 0], end: [11, 20], edits: [{ path: f, added: ['line two'], t: [11, 1] }] });
+    const rs = await measureRetention([extractAiChanges('a', s1), extractAiChanges('b', s2)], { runner });
+    expect(rs.map((r) => [r.sessionId, r.outcome, r.counts.kept, r.baseline?.rev])).toEqual([
+      ['a', 'measured', 1, '1'],
+      ['b', 'measured', 1, '1'],
+    ]);
+    const reads = calls.filter((c) => c.args.includes(kind === 'svn' ? 'cat' : 'print'));
+    expect(reads).toHaveLength(1);
+  });
+
   it('二重計上を防ぎ、時間が重なるセッションの同じ行は帰属不能にする', async () => {
     const root = tmp();
     const f = join(root, 'a.c');

@@ -88,6 +88,18 @@ export function resolveFilePath(p: string, cwd: string | null | undefined): stri
   return looksWindows(raw) ? win(win32.normalize(raw)) : posix.normalize(raw);
 }
 
+/**
+ * root の中のパスなら、root からの相対パス(区切りは /)。中でなければ(root そのもの・外・別のドライブ)null。
+ * どちらも resolveFilePath でそろえてから比べる(Windows のパスは大文字小文字と / \ の違いを無視する)
+ */
+export function relativeInside(root: string, absPath: string): string | null {
+  const r = resolveFilePath(root, null);
+  const p = resolveFilePath(absPath, null);
+  const rel = WIN_ABS_RE.test(r) ? win32.relative(r, p) : posix.relative(r, p);
+  if (rel === '' || rel === '..' || rel.startsWith('../') || rel.startsWith('..\\') || win32.isAbsolute(rel) || posix.isAbsolute(rel)) return null;
+  return rel.replace(/\\/g, '/');
+}
+
 /** 重複除去のキー。Windows のパスは大文字小文字を区別しない */
 export function filePathKey(resolved: string): string {
   return looksWindows(resolved) ? resolved.toLowerCase() : resolved;
