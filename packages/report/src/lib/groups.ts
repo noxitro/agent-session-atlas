@@ -7,6 +7,30 @@ export const GROUPS_VERSION = 1;
 export const NOTES_DIR_NAME = 'atlas-notes';
 export const GROUPS_FILE_NAME = 'groups.json';
 
+/** 送った人のタスクタグのグループ名の、人とタグの区切り */
+export const MEMBER_TAG_SEP = ' / ';
+
+/**
+ * 送り先から集計したセッションの、送った人が付けていたタスクタグ(uploadTags)をグループにする。
+ * 人ごとに分ける(同じ名前のタグでも、別の人のものは別のグループ)。名前は「<人> / <タグ>」、人のフォルダが無ければタグだけ。
+ * 並びは人の名前、タグの名前の順。タグの無いセッションは入らない
+ */
+export function memberGroups(sessions: readonly { id: string; person?: string | null; uploadTags?: readonly string[] }[]): SessionGroup[] {
+  const byName = new Map<string, { person: string; tag: string; ids: string[] }>();
+  for (const s of sessions) {
+    for (const tag of s.uploadTags ?? []) {
+      const person = s.person ?? '';
+      const name = person ? `${person}${MEMBER_TAG_SEP}${tag}` : tag;
+      let g = byName.get(name);
+      if (!g) byName.set(name, (g = { person, tag, ids: [] }));
+      if (!g.ids.includes(s.id)) g.ids.push(s.id);
+    }
+  }
+  return [...byName.entries()]
+    .sort(([, a], [, b]) => a.person.localeCompare(b.person) || a.tag.localeCompare(b.tag))
+    .map(([name, g]) => ({ name, note: '', ids: g.ids }));
+}
+
 /**
  * グループ名をフォルダ名にする(書き出し out/groups/<名前>/ とアップロード <基底>/<名前>/)。
  * フォルダ名に使えない文字は _ にし、Windows の予約名・末尾の点と空白も避ける。画面がアップロード先を見せるのにも使う

@@ -365,9 +365,15 @@ describe('アップロード先から集計し直す: snapshot', () => {
     const base = await work();
     const root = join(base, 'logs');
     const dest = join(base, 'out', 'snapshot');
-    await session(join(root, 'person-a', 'proj-a', 's1'), { [UPLOAD_SESSION_META]: JSON.stringify({ version: 1, id: 's1', project: 'zz-owner/zz-a', projectSource: 'git-remote' }) });
+    await session(join(root, 'person-a', 'proj-a', 's1'), {
+      [UPLOAD_SESSION_META]: JSON.stringify({ version: 1, id: 's1', project: 'zz-owner/zz-a', projectSource: 'git-remote', tags: [' 武器 ', '武器', '', 'a\u202eb', 'x'.repeat(101), 3, 'UI'] }),
+      'atlas-memo.md': '# 送った人のメモ\n\n![図](atlas-memo/p.png)',
+    });
+    await mkdir(join(root, 'person-a', 'proj-a', 's1', 'atlas-memo'));
+    await writeFile(join(root, 'person-a', 'proj-a', 's1', 'atlas-memo', 'p.png'), 'png');
     await session(join(root, 'person-a', 'proj-b', 's2'));
-    await session(join(root, 'person-b', 'proj-a', 's3'));
+    // 別のセッションの記録(id が違う)と、形の違う tags は使わない
+    await session(join(root, 'person-b', 'proj-a', 's3'), { [UPLOAD_SESSION_META]: JSON.stringify({ version: 1, id: 'zz', tags: ['他人の'] }) });
     // 同じ id のセッションが 2 人のフォルダにあれば、1 度だけ数える
     await session(join(root, 'person-b', 'proj-a', 's1'));
     for (const d of ['person-a/proj-a', 'person-b/proj-a']) await writeFile(join(root, d, UPLOAD_INDEX), '{}');
@@ -389,6 +395,12 @@ describe('アップロード先から集計し直す: snapshot', () => {
     expect(x.sessions.find((r) => r.id === 's1')?.project).toBe('zz-owner/zz-a');
     // 人のフォルダの名前を、セッションごとに持たせる(2 人のフォルダにある s1 は、数えたほうの人)
     expect(Object.fromEntries(x.sessions.map((r) => [r.id, r.person]))).toEqual({ s1: 'person-a', s2: 'person-a', s3: 'person-b' });
+    // 送った人が付けていたタスクタグ(前後の空白を落とし、同じ名前・空・書式の文字・長すぎるもの・文字列以外は使わない)。記録が無い・別のセッションのものなら空
+    expect(Object.fromEntries(x.sessions.map((r) => [r.id, r.uploadTags]))).toEqual({ s1: ['武器', 'UI'], s2: [], s3: [] });
+    // 送った人のメモ(atlas-memo.md と画像の atlas-memo/)も写す(読むだけの画面で出す)
+    expect(await readFile(join(dest, 'session-state', 's1', 'atlas-memo.md'), 'utf8')).toContain('送った人のメモ');
+    expect(await readFile(join(dest, 'session-state', 's1', 'atlas-memo', 'p.png'), 'utf8')).toBe('png');
+    expect(m.extras?.skipped.some((s) => s.path.includes('atlas-memo'))).toBe(false);
     // 人のフォルダ 1 つを指したときは、その人の分だけ
     expect(await describeSource(join(root, 'person-a'))).toEqual({ kind: 'merged', folders: ['proj-a', 'proj-b'] });
     expect((await snapshot(join(root, 'person-a'), join(base, 'out-a'))).sessions.dirs).toBe(2);

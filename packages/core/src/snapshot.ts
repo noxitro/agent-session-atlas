@@ -31,15 +31,16 @@ export const uploadOldName = (id: string): string => `.${id}.old`;
 export const uploadWorkDirId = (name: string): string | null => /^\.(.+)\.(?:uploading|old)$/.exec(name)?.[1] ?? null;
 /** アップロードの作業用のフォルダの名前か(uploadTmpName / uploadOldName)。中身はセッションの複製だが、セッションとして数えない */
 export const isUploadWorkDir = (name: string): boolean => uploadWorkDirId(name) != null;
-/** Phase 11: セッションフォルダの追加のファイル(あれば写す)。SESSION_STORE_JSON と UPLOAD_SESSION_META はアップロード先から集計し直すときだけある */
-export const SNAPSHOT_SESSION_EXTRA_FILES = ['plan.md', 'vscode.metadata.json', SESSION_STORE_JSON, UPLOAD_SESSION_META] as const;
+/** アップロードで、送った人のメモを入れるファイル(セッションのフォルダの直下)と、その画像のフォルダ。本文の画像は atlas-memo/<名前> で参照する */
+export const UPLOAD_MEMO_FILE = 'atlas-memo.md';
+export const UPLOAD_MEMO_IMAGES = 'atlas-memo';
 /**
- * アップロードで atlas がセッションのフォルダに添えるもののうち、集計に使わないもの(メモの atlas-memo.md と画像の atlas-memo/)。
- * アップロード先を --home にして集計し直すときに、写さず「写さなかったもの」にも数えない(人や AI が読むためのもの)
+ * Phase 11: セッションフォルダの追加のファイル(あれば写す)。SESSION_STORE_JSON・UPLOAD_SESSION_META・UPLOAD_MEMO_FILE はアップロード先から集計し直すときだけある
+ * (送った人のメモは、別のフォルダを開いた画面で読むだけで出す)
  */
-export const UPLOAD_ONLY_ENTRIES = new Set<string>(['atlas-memo.md', 'atlas-memo']);
-/** Phase 11: セッションフォルダの追加のサブフォルダ(あれば再帰的に写す) */
-export const SNAPSHOT_SESSION_EXTRA_DIRS = ['checkpoints', 'files', 'rewind-file-snapshots', 'policies', 'research', 'sandbox-denials'] as const;
+export const SNAPSHOT_SESSION_EXTRA_FILES = ['plan.md', 'vscode.metadata.json', SESSION_STORE_JSON, UPLOAD_SESSION_META, UPLOAD_MEMO_FILE] as const;
+/** Phase 11: セッションフォルダの追加のサブフォルダ(あれば再帰的に写す)。UPLOAD_MEMO_IMAGES はアップロード先から集計し直すときだけある */
+export const SNAPSHOT_SESSION_EXTRA_DIRS = ['checkpoints', 'files', 'rewind-file-snapshots', 'policies', 'research', 'sandbox-denials', UPLOAD_MEMO_IMAGES] as const;
 /** Phase 11: 既定では写さず --snapshot-all で写すサブフォルダ(大きい。rewind-snapshots は 1 セッションで数十 MB) */
 export const SNAPSHOT_SESSION_HEAVY_DIRS = ['rewind-snapshots'] as const;
 /** Phase 11: ~/.copilot 直下で写すフォルダ */
@@ -702,7 +703,6 @@ async function copySessionExtras(dirSrc: string, dirDest: string, root: string, 
   for (const ent of ents) {
     const name = ent.name;
     const p = join(dirSrc, name);
-    if (UPLOAD_ONLY_ENTRIES.has(name)) continue;
     if (ent.isSymbolicLink()) {
       extras.skipped.push({ path: relPath(p), bytes: 0, reason: LINK_REASON });
       continue;

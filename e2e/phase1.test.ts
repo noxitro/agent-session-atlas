@@ -125,7 +125,7 @@ describe('Phase 1 E2E: fixtures', () => {
     // Phase 5 でレコードの形(empty・tools.internal・files.deleted など)が変わったため 2、
     // Phase 6 で tools.mcp・results / skills[].trigger / lines / projectSource / installed を足したため 3、
     // Phase 7 で exec / tools.durations / frictionDetail / todos / agents[].error を足したため 4
-    expect(s.schemaVersion).toBe(11);
+    expect(s.schemaVersion).toBe(12);
     expect(s.sessions.length).toBe(result.sessions.sessions.length);
     const m = JSON.parse(await readFile(result.paths.metrics, 'utf8'));
     // Phase 5: metrics は空のセッションを除いた集計 + 空の件数(006 / 007 / 010 の 3 件)

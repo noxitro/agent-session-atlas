@@ -112,12 +112,14 @@ describe('Phase 15 E2E: グループのアップロード', () => {
     const again = JSON.parse(await readFile(join(out2, 'sessions.json'), 'utf8')) as SessionsFile;
     const manifest = JSON.parse(await readFile(join(out2, 'snapshot', 'snapshot-manifest.json'), 'utf8')) as { layout?: string; extras?: { skipped: { path: string }[] } };
     expect(manifest.layout).toBe('flat');
-    // アップロードで添えたもののうち、atlas-session.json は写して集計に使い(プロジェクト名。e2e/phase16.test.ts)、メモは使わないので写さない。どちらも「写さなかったもの」には数えない
+    // アップロードで添えた atlas-session.json(プロジェクト名とタスクタグ。e2e/phase16.test.ts)とメモ(読むだけの画面で出す)は写して使う。どちらも「写さなかったもの」には数えない
     expect((manifest.extras?.skipped ?? []).filter((s) => /atlas-session\.json|atlas-memo/.test(s.path))).toEqual([]);
     // ほかの PC から写したフォルダ(中身が空)は記録の無いセッションとして入るだけ
     expect(again.sessions.map((s) => s.id).sort()).toEqual([...ids, desk, 'someone-else'].sort());
     // 指示ファイルの名前は、ほかのセッションと突き合わせて決めるので、一部のセッションだけを集計すると決まらないことがある。それ以外は全部同じ
-    const pick = ({ instructions: _i, ...rest }: SessionRecord) => rest;
+    // 送り先から集計すると、送った人が付けていたタスクタグ(uploadTags)が付く。元の集計には無い
+    const pick = ({ instructions: _i, uploadTags: _t, ...rest }: SessionRecord) => rest;
+    for (const id of ids) expect(again.sessions.find((s) => s.id === id)!.uploadTags).toEqual(['Player-Weapon']);
     expect(original.sessions.find((s) => s.id === desk)!.desktop).not.toBeNull();
     for (const id of [...ids, desk]) {
       const a = original.sessions.find((s) => s.id === id)!;

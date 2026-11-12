@@ -50,20 +50,23 @@ title.appendChild(box);
 // ここで付け外しできる: 「×」で外す(タグは 0 件でも残る)、入力して「付ける」(今あるタグなら足し、無ければ新しく作る)
 var gl=el('div','ops-groups');gl.setAttribute('data-testid','detail-groups');gl.setAttribute('role','group');gl.setAttribute('aria-label','タスクタグ');gl.hidden=true;title.insertBefore(gl,box);
 var JH={'x-atlas-token':token,'content-type':'application/json'},tagBusy=false,tagDown=false,allTags=[];
-function drawTags(groups){
+// ro: 読むだけの画面(別のフォルダを開いたもの)。送った人が付けたタグを出すだけで、外す・付けるは出さない
+function drawTags(groups,ro){
   allTags=groups.map(function(g){return g.name});
   var mine=groups.filter(function(g){return Array.isArray(g.ids)&&g.ids.indexOf(id)>=0}).map(function(g){return g.name});
   gl.textContent='';
-  gl.appendChild(el('span','k','タスクタグ'));
+  gl.appendChild(el('span','k',ro?'タスクタグ(送った人が付けたもの)':'タスクタグ'));
   var ul=el('ul','tags');
   if(!mine.length)ul.appendChild(el('li','none','なし'));
   mine.forEach(function(n){
     var li=el('li','tag'),a=el('a',null,n);a.href='../atlas.html#group='+encodeURIComponent(n);li.appendChild(a);
+    if(ro){ul.appendChild(li);return}
     var x=el('button','tag-x','×');x.type='button';x.setAttribute('aria-label','タスクタグ「'+n+'」を外す');x.disabled=tagDown;
     x.addEventListener('click',function(){tagOp(function(){return call('groups/'+encodeURIComponent(n),{method:'PUT',headers:JH,body:JSON.stringify({remove:[id]})})},'「'+n+'」を外しました')});
     li.appendChild(x);ul.appendChild(li);
   });
   gl.appendChild(ul);
+  if(ro){gl.hidden=false;return}
   var f=el('form','tag-add'),inp=el('input'),dl=el('datalist'),b=el('button','btn','付ける');
   dl.id='tag-options';allTags.filter(function(n){return mine.indexOf(n)<0}).forEach(function(n){var o=el('option');o.value=n;dl.appendChild(o)});
   inp.type='text';inp.setAttribute('list','tag-options');inp.maxLength=100;inp.placeholder='タグの名前(例: Player-Weapon)';inp.setAttribute('aria-label','付けるタスクタグ');inp.disabled=tagDown;
@@ -92,7 +95,7 @@ function tagOp(run,done){
 d.addEventListener('atlas-down',function(){tagDown=true;gl.querySelectorAll('button,input').forEach(function(x){x.disabled=true})});
 call('state',{headers:H,cache:'no-store'}).then(function(r){
   if(!r.ok||!r.body||!Array.isArray(r.body.groups))return;
-  drawTags(r.body.groups);
+  drawTags(r.body.groups,r.body.readOnly===true);
 }).catch(function(){});
 var busy=false,down=false,t0=0,win=null,fullUrl=new URL(view+'?kind=full',location.href).href;
 function shut(){if(win&&!win.closed){try{win.close()}catch(e){}}win=null}

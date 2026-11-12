@@ -16,7 +16,7 @@ import type { TurnMetrics } from './turns.ts';
 // 9: analysis.turnActiveMs(ターンごとの実働。スキル化の候補のスコアに使う)
 // 10: analysis.turnStats(依頼単位の分析の段階 1: ターンごとのツールの種類・失敗・拒否・中断・再編集・使用量)
 // 11: person(送り先が人ごとに分けてあるときの、その人のフォルダの名前)
-export const SESSIONS_SCHEMA_VERSION = 11;
+export const SESSIONS_SCHEMA_VERSION = 12;
 // 5: turns(依頼単位の工程 × 詰まり・依頼の種類の集計)
 export const METRICS_SCHEMA_VERSION = 5;
 
@@ -457,6 +457,11 @@ export interface SessionRecord {
    * この PC の記録・人のフォルダやプロジェクトのフォルダだけを集計したとき・古い sessions.json には無い(null か省略)
    */
   person?: string | null;
+  /**
+   * 送り先から集計したときの、送った人がそのセッションに付けていたタスクタグ(送った時点のもの。atlas-session.json の tags)。
+   * 送り先から集計したセッションにだけある(タグが無ければ空)。この PC の記録・古い sessions.json には無い
+   */
+  uploadTags?: string[];
   copilotVersion: string | null;
   schemaVersion: number | null;
   createdAt: string | null;
