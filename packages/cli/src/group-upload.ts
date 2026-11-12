@@ -123,6 +123,16 @@ async function listFiles(base: string, sub = ''): Promise<FileEntry[]> {
   return out;
 }
 
+/**
+ * 写すセッションのフォルダの中身。atlas が足して写すもの(メモと画像・atlas-session.json)は除く。
+ * 送り先から集計した出力先では、送った人のメモ(atlas-memo.md・atlas-memo/)と atlas-session.json も写してあるので、
+ * それをこの PC の利用者のフォルダへ写さない(メモはこの PC の置き場のものだけを送る)
+ */
+const ADDED_BY_UPLOAD = new Set<string>([UPLOAD_MEMO_FILE, UPLOAD_MEMO_IMAGES, UPLOAD_SESSION_META]);
+async function sessionFiles(base: string): Promise<FileEntry[]> {
+  return (await listFiles(base)).filter((f) => !ADDED_BY_UPLOAD.has(f.rel.split('/')[0]));
+}
+
 /** 一覧のファイルを写し、1 つ写すごとにその大きさを知らせる(cp では進み具合が取れないため) */
 async function copyFiles(src: string, dest: string, files: FileEntry[], onBytes: (n: number) => void): Promise<void> {
   await mkdir(dest, { recursive: true });
@@ -460,7 +470,7 @@ export async function checkTarget(p: GroupUploadPaths, target: UploadTarget, roo
   try {
     for (const id of present) {
       const base = join(stateDir, id);
-      for (const f of await listFiles(base)) {
+      for (const f of await sessionFiles(base)) {
         // 空のフォルダは数えない。シンボリックリンクはリンクのまま写すので中身を開かない(リンク切れで点検が止まらないように)
         if (f.dir) continue;
         bytes += f.bytes;
@@ -558,7 +568,7 @@ export async function uploadTarget(p: GroupUploadPaths, target: UploadTarget, ro
     const lists = new Map<string, FileEntry[]>();
     const extra = new Map<string, number>();
     for (const id of present) {
-      lists.set(id, await listFiles(join(stateDir, id)));
+      lists.set(id, await sessionFiles(join(stateDir, id)));
       extra.set(id, await added.bytes(id));
     }
     const total = [...lists.values()].flat().reduce((a, f) => a + f.bytes, 0) + [...extra.values()].reduce((a, n) => a + n, 0);

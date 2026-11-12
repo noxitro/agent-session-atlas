@@ -12,8 +12,8 @@ import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { extract, listSessionDirs, loadStore, mergeSessionStoreJson, readSenderProject } from '../src/extract.ts';
-import { describeSource, DUPLICATE_REASON, isUploadWorkDir, personOfFolder, snapshot, SNAPSHOT_MANIFEST, SNAPSHOT_SOURCE, UPLOAD_INDEX, UPLOAD_OLD_ONLY_REASON, UPLOAD_SESSION_META, UPLOAD_WORK_REASON, uploadOldName, uploadTmpName, uploadWorkDirId } from '../src/snapshot.ts';
+import { extract, listSessionDirs, loadStore, mergeSessionStoreJson, readSenderMeta, readSenderProject, readSenderTags } from '../src/extract.ts';
+import { describeSource, DUPLICATE_REASON, isUploadWorkDir, personOfFolder, snapshot, SNAPSHOT_MANIFEST, SNAPSHOT_SOURCE, UPLOAD_INDEX, UPLOAD_MEMO_IMAGES_LIMIT, UPLOAD_MEMO_TEXT_LIMIT, UPLOAD_OLD_ONLY_REASON, UPLOAD_SESSION_META, UPLOAD_WORK_REASON, uploadOldName, uploadTmpName, uploadWorkDirId } from '../src/snapshot.ts';
 
 const EVENT = '{"type":"session.start","data":{"sessionId":"x","version":1},"id":"e1","timestamp":"2026-07-02T09:00:00.000Z","parentId":null}\n';
 
@@ -612,6 +612,37 @@ describe('アップロード先から集計し直す: extract', () => {
       ['array', '[1]'],
       ['broken', '{'],
     ]) expect(await run(`bad-${name}`, text), name).toEqual(byPath);
+  });
+
+  it('送った人のタスクタグは、使えないものを捨ててから 50 個までにする。プロジェクト名と一緒に 1 度だけ読める', async () => {
+    const base = await work();
+    const f = join(base, UPLOAD_SESSION_META);
+    const valid = Array.from({ length: 60 }, (_, i) => `t${i}`);
+    await writeFile(f, JSON.stringify({ version: 1, id: 's1', project: 'owner/app', tags: [...Array(60).fill(''), ...Array(10).fill('t0'), ...valid] }));
+    const tags = await readSenderTags(f, 's1');
+    expect(tags).toEqual(valid.slice(0, 50));
+    expect(await readSenderMeta(f, 's1')).toEqual({ project: { project: 'owner/app', source: null }, tags });
+    expect(await readSenderMeta(f, 's2')).toBeNull();
+    expect(await readSenderMeta(join(base, 'none.json'), 's1')).toBeNull();
+  });
+
+  it('送った人のメモが大きすぎるとき(本文・画像の合計)は写さず、理由を残す。前に写したものも消す', async () => {
+    const base = await work();
+    const root = join(base, 'logs');
+    const dest = join(base, 'out', 'snapshot');
+    await session(join(root, 's1'), { 'atlas-memo.md': '# 小さいメモ' });
+    await mkdir(join(root, 's1', 'atlas-memo'));
+    await writeFile(join(root, 's1', 'atlas-memo', 'p.png'), 'png');
+    expect(await describeSource(root)).toEqual({ kind: 'flat' });
+    await snapshot(root, dest);
+    expect(existsSync(join(dest, 'session-state', 's1', 'atlas-memo.md'))).toBe(true);
+    expect(existsSync(join(dest, 'session-state', 's1', 'atlas-memo', 'p.png'))).toBe(true);
+    await writeFile(join(root, 's1', 'atlas-memo.md'), 'x'.repeat(UPLOAD_MEMO_TEXT_LIMIT + 1));
+    await writeFile(join(root, 's1', 'atlas-memo', 'big.bin'), Buffer.alloc(UPLOAD_MEMO_IMAGES_LIMIT + 1));
+    const m = await snapshot(root, dest);
+    expect(existsSync(join(dest, 'session-state', 's1', 'atlas-memo.md'))).toBe(false);
+    expect(existsSync(join(dest, 'session-state', 's1', 'atlas-memo'))).toBe(false);
+    expect(m.extras?.skipped.filter((s) => s.path.includes('atlas-memo')).map((s) => s.path).sort()).toEqual(['s1/atlas-memo', 's1/atlas-memo.md']);
   });
 
   it('送った側の記録を読む(このセッションのものだけ)', async () => {

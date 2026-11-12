@@ -14,6 +14,7 @@
     selected,
     idsActive,
     editable,
+    readOnly = false,
     groups,
     currentGroup,
     onselect,
@@ -37,6 +38,8 @@
     onclear: () => void;
     /** atlas serve から開いていて、グループを作れる */
     editable: boolean;
+    /** 読むだけの画面(タスクタグは送った人が付けたもの。ここでは付けられない) */
+    readOnly?: boolean;
     /** 選んだセッションでグループを作る(失敗は例外。理由を入力欄の下に出す) */
     oncreate: (name: string, note: string) => Promise<void>;
     /** 既存のグループ(「グループに追加」の一覧) */
@@ -277,7 +280,7 @@
   <div class="select-bar" role="group" aria-label="セッションの選択">
     <p class="sel-count">
       <span aria-live="polite" aria-atomic="true"><strong data-testid="selected-count">{int(selected.size)}</strong> 件を選択中</span>{#if idsActive}<span class="tag on">この選択で集計中</span>{/if}
-      {#if selected.size === 0}<span class="why">左端の欄にチェックを付けると、そのセッションだけで集計し直したり、タスクタグを付けられます。</span>{/if}
+      {#if selected.size === 0}<span class="why">{editable ? '左端の欄にチェックを付けると、そのセッションだけで集計し直したり、タスクタグを付けられます。' : '左端の欄にチェックを付けると、そのセッションだけで集計し直せます。'}</span>{/if}
     </p>
     <div class="sel-actions">
       <button type="button" class="btn" data-testid="apply-selection" disabled={selected.size === 0} onclick={onapply}>選んだ {int(selected.size)} 件だけ集計</button>
@@ -298,6 +301,8 @@
         {#if currentGroup}
           <button type="button" class="btn" data-testid="remove-from-group" disabled={selected.size === 0} onclick={() => void report(onremove)}>このタスクタグを外す</button>
         {/if}
+      {:else if readOnly}
+        <span class="how" data-testid="readonly-how">読むだけの画面です。タスクタグは送った人が付けたものを出し、ここでは付けられません</span>
       {:else if !anonymized}
         <span class="how">このファイルは閲覧用です。タスクタグは atlas.bat から開いたときに付けられます</span>
       {/if}

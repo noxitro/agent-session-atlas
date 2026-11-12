@@ -35,6 +35,12 @@ export const isUploadWorkDir = (name: string): boolean => uploadWorkDirId(name) 
 export const UPLOAD_MEMO_FILE = 'atlas-memo.md';
 export const UPLOAD_MEMO_IMAGES = 'atlas-memo';
 /**
+ * 送った人のメモの上限(共有フォルダに置かれたものなので、大きすぎるものは写さず、読まない)。
+ * 本文はこの PC でメモを保存できる大きさ(要求の本文 1 MB)と同じ。画像のフォルダは 1 セッションの合計
+ */
+export const UPLOAD_MEMO_TEXT_LIMIT = 1024 * 1024;
+export const UPLOAD_MEMO_IMAGES_LIMIT = 100 * 1024 * 1024;
+/**
  * Phase 11: セッションフォルダの追加のファイル(あれば写す)。SESSION_STORE_JSON・UPLOAD_SESSION_META・UPLOAD_MEMO_FILE はアップロード先から集計し直すときだけある
  * (送った人のメモは、別のフォルダを開いた画面で読むだけで出す)
  */
@@ -687,6 +693,12 @@ async function copySessionExtras(dirSrc: string, dirDest: string, root: string, 
   };
   for (const f of SNAPSHOT_SESSION_EXTRA_FILES) {
     const p = join(dirSrc, f);
+    // 送った人のメモが大きすぎるときは写さない(前に写したものも消す)
+    if (f === UPLOAD_MEMO_FILE && existsSync(p) && (await sizeOr0(p)) > UPLOAD_MEMO_TEXT_LIMIT) {
+      extras.skipped.push({ path: relPath(p), bytes: await sizeOr0(p), reason: `送った人のメモが大きすぎる(${UPLOAD_MEMO_TEXT_LIMIT / 1024 / 1024} MB まで)` });
+      await rm(join(dirDest, f), { force: true });
+      continue;
+    }
     // リンクは辿らない(下の一覧で「写さなかったもの」に残る)。前に写したものは消す
     if (!(await isLink(p)) && existsSync(p)) await copyOne(p, join(dirDest, f));
     else await rm(join(dirDest, f), { force: true }); // 元から消えたものは複製先からも消す
@@ -710,6 +722,15 @@ async function copySessionExtras(dirSrc: string, dirDest: string, root: string, 
     if (ent.isDirectory()) {
       const heavy = (SNAPSHOT_SESSION_HEAVY_DIRS as readonly string[]).includes(name);
       const known = (SNAPSHOT_SESSION_EXTRA_DIRS as readonly string[]).includes(name);
+      // 送った人のメモの画像が合計で大きすぎるときは写さない(--snapshot-all でも。前に写したものは下の片付けで消える)
+      if (name === UPLOAD_MEMO_IMAGES) {
+        const n = await dirBytes(p);
+        if (n > UPLOAD_MEMO_IMAGES_LIMIT) {
+          extras.skipped.push({ path: relPath(p), bytes: n, reason: `送った人のメモの画像が大きすぎる(合計 ${UPLOAD_MEMO_IMAGES_LIMIT / 1024 / 1024} MB まで)` });
+          await rm(join(dirDest, name), { recursive: true, force: true });
+          continue;
+        }
+      }
       if (known || ((heavy || !KNOWN_SESSION_ENTRIES.has(name)) && all)) {
         present.add(name);
         const r = await copyTree(p, join(dirDest, name), extras.skipped, relPath(p));

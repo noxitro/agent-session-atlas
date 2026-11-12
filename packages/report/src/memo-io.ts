@@ -3,7 +3,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { renameReplacing, UPLOAD_MEMO_FILE, UPLOAD_MEMO_IMAGES } from '../../core/src/index.ts';
+import { renameReplacing, UPLOAD_MEMO_FILE, UPLOAD_MEMO_IMAGES, UPLOAD_MEMO_TEXT_LIMIT } from '../../core/src/index.ts';
 import { extname, join } from 'node:path';
 import { isSafeFileName, isSafeMemoId, MEMOS_DIR_NAME } from './lib/memo.ts';
 import { renderMemoHtml } from './memo-render.ts';
@@ -139,6 +139,8 @@ export async function loadMemberMemos(stateDir: string, ids: Iterable<string>): 
     const path = join(stateDir, id, UPLOAD_MEMO_FILE);
     if (!existsSync(path)) continue;
     try {
+      // 大きすぎるもの(写すときにも外すが、前の版で写したもの)は読まない。詳細ページに埋め込むため
+      if ((await stat(path)).size > UPLOAD_MEMO_TEXT_LIMIT) continue;
       const m = await readAt(path, id);
       if (m.text.trim()) out.set(id, m);
     } catch {

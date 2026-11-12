@@ -103,6 +103,8 @@ export interface BuildInput {
   memosDir?: string;
   /** 送り先から集計したとき: 送った人のメモを読む、写したセッションのフォルダ(<snapshot>/session-state)。あれば memosDir より優先する */
   memberMemosDir?: string;
+  /** 読むだけの画面として作る(画面の文言を変える。タスクタグとメモは groups・memberMemosDir で渡す) */
+  readOnly?: boolean;
   outDir: string;
   anonymize: boolean;
   scope?: Partial<ReportData['scope']>;
@@ -190,6 +192,7 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
     },
     totalSessionsInSource: input.totalSessionsInSource,
     ...(input.source && !anon.enabled ? { source: input.source } : {}),
+    ...(input.readOnly ? { readOnly: true } : {}),
     metrics: anonymizeMetrics(input.metrics, anon),
     sessions,
     judgments: {

@@ -626,4 +626,17 @@ describe('memberGroups(送った人のタスクタグ)', () => {
     ]);
     expect(memberGroups([])).toEqual([]);
   });
+
+  it('人とタグの組で分ける。表示名が重なったら後のものに番号を付ける(名前はグループの鍵なので重ねない)', () => {
+    const g = memberGroups([
+      { id: 's1', person: 'a', uploadTags: ['b / c'] },
+      { id: 's2', person: 'a / b', uploadTags: ['c'] },
+      { id: 's3', person: 'a', uploadTags: ['b / c', 'b / c'] },
+    ]);
+    expect(g).toEqual([
+      { name: 'a / b / c', note: '', ids: ['s1', 's3'] },
+      { name: 'a / b / c (2)', note: '', ids: ['s2'] },
+    ]);
+    expect(new Set(g.map((x) => x.name)).size).toBe(g.length);
+  });
 });

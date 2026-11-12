@@ -58,7 +58,7 @@ import { exportGroup } from './group-export.ts';
 import { checkUpload, UploadChangedError, uploadDir, uploadedAt, uploadGroup, type GroupUploadResult, type UploadProgress } from './group-upload.ts';
 import { defaultConfigPath, isByokModel, loadConfig, modifyConfig, NO_CHANGE, parseConfig, parseUploadRoot, updateConfig } from './config.ts';
 import { CAN_PICK_FOLDER, openFolder, pickFolder } from './folder-picker.ts';
-import { checkFolder, FolderError, foldersRootOf, forgetFolder, launchDetached, listFolders, listFolderStates, openFolderReport, type FolderContext, type LaunchFn } from './folders.ts';
+import { checkFolder, FolderError, foldersRootOf, forgetFolder, isReadOnlyView, launchDetached, listFolders, listFolderStates, openFolderReport, type FolderContext, type LaunchFn } from './folders.ts';
 
 export const TOKEN_PLACEHOLDER = '__ATLAS_TOKEN__';
 export const SERVE_STATE_FILE = '.serve.json';
@@ -288,8 +288,14 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     return anonCache.anonymized;
   }
 
-  // Phase 14: sessions.json の id → 表題と判定の対象か(mtime が変わるまで覚える。本文は持たない)
-  let sessionsCache: { mtime: number; ids: Map<string, { title: string; eligible: boolean; turns: number }> } | null = null;
+  // Phase 14: sessions.json の id → 表題と判定の対象か(mtime が変わるまで覚える。本文は持たない)。
+  // 集計元(読むだけの画面かを決める)と、送った人のタスクタグ(読むだけの画面の /api/state)も一緒に覚える
+  let sessionsCache: {
+    mtime: number;
+    ids: Map<string, { title: string; eligible: boolean; turns: number }>;
+    source: SessionsFile['source'] | null;
+    members: SessionGroup[];
+  } | null = null;
   async function sessionIndex(): Promise<Map<string, { title: string; eligible: boolean; turns: number }> | null> {
     const p = join(outDir, 'sessions.json');
     if (!existsSync(p)) return null;
@@ -306,9 +312,24 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
       sessionsCache = {
         mtime: m,
         ids: new Map(file.sessions.map((r) => [r.id, { title: r.name?.trim() || '(名前なし)', eligible: r.turns > 0 || !!r.firstUserMessage, turns: r.analysis?.turnStats?.length ?? 0 }])),
+        source: file.source ?? null,
+        members: memberGroups(file.sessions),
       };
     }
     return sessionsCache.ids;
+  }
+
+  /**
+   * 読むだけの画面か(build と同じ isReadOnlyView)と、送った人のタスクタグ。sessions.json を読めないとき(集計の途中など)は前に読んだものを使う。
+   * atlas open が立てたサーバ(reports.current)は、まだ集計していなくても読むだけ
+   */
+  async function viewState(): Promise<{ readOnly: boolean; members: SessionGroup[] }> {
+    try {
+      await sessionIndex();
+    } catch {
+      /* 集計の途中: 前に読んだものを使う */
+    }
+    return { readOnly: !!o.reports?.current || isReadOnlyView(outDir, sessionsCache?.source), members: sessionsCache?.members ?? [] };
   }
 
   /** 1 件の全文記録を書く(サーバ内。atlas.html・coverage.json・他のセッションの全文は触らない) */
@@ -606,9 +627,9 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
   /**
    * 別のフォルダ(送り先など)を開いた画面は読むだけ。タスクタグとメモは送った人が付けたものを出し、ここでは書き換えない。
    * 断るのは、タスクタグ(付け外し・作る・消す・書き出し・アップロード)・メモ・アップロード先・まとめて送る印。
-   * 集計し直す・判定(手元の出力先に書くだけで、送り先は書き換えない)・設定・別のフォルダを開く操作は使える
+   * 集計し直す・判定(手元の出力先に書くだけで、送り先は書き換えない)・設定・別のフォルダを開く操作は使える。
+   * 読むだけかは viewState(build と同じ判定)で決める
    */
-  const readOnly = !!o.reports?.current;
   function blockedWhenReadOnly(path: string, method: string): boolean {
     if (method === 'GET' || method === 'HEAD') return false;
     return path === '/api/groups' || path.startsWith('/api/groups/') || path.startsWith('/api/memos/') || path === '/api/upload-root' || path === '/api/upload-projects';
@@ -635,16 +656,12 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
       return;
     }
     if (await isAnonymized()) throw new HttpError(403, '伏せ字版では編集できません');
+    const vs = await viewState();
+    const readOnly = vs.readOnly;
     if (readOnly && blockedWhenReadOnly(path, method)) throw new HttpError(403, READ_ONLY_MESSAGE);
     if (path === '/api/state' && method === 'GET' && readOnly) {
       // 読むだけ: タスクタグは送った人のもの(集計の sessions.json から人ごとに作る。レポートに埋め込んだものと同じ)。メモ・アップロード先は返さない(埋め込みを使う)
-      let groups: SessionGroup[] = [];
-      try {
-        groups = memberGroups((JSON.parse(await readFile(join(outDir, 'sessions.json'), 'utf8')) as { sessions: Parameters<typeof memberGroups>[0] }).sessions);
-      } catch {
-        /* まだ集計していない */
-      }
-      sendJson(res, 200, { version: 1, readOnly: true, groups, notesDir: o.notesDir, groupsPath, exists: false, warnings: [] });
+      sendJson(res, 200, { version: 1, readOnly: true, groups: vs.members, notesDir: o.notesDir, groupsPath, exists: false, warnings: [] });
       return;
     }
     if (path === '/api/state' && method === 'GET') {

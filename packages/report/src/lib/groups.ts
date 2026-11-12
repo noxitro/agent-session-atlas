@@ -16,19 +16,29 @@ export const MEMBER_TAG_SEP = ' / ';
  * 並びは人の名前、タグの名前の順。タグの無いセッションは入らない
  */
 export function memberGroups(sessions: readonly { id: string; person?: string | null; uploadTags?: readonly string[] }[]): SessionGroup[] {
-  const byName = new Map<string, { person: string; tag: string; ids: string[] }>();
+  // 人とタグの組で分ける(名前をつないだ文字列で分けると、「a」の「b / c」と「a / b」の「c」が 1 つになる)
+  const byKey = new Map<string, { person: string; tag: string; ids: Set<string> }>();
   for (const s of sessions) {
     for (const tag of s.uploadTags ?? []) {
       const person = s.person ?? '';
-      const name = person ? `${person}${MEMBER_TAG_SEP}${tag}` : tag;
-      let g = byName.get(name);
-      if (!g) byName.set(name, (g = { person, tag, ids: [] }));
-      if (!g.ids.includes(s.id)) g.ids.push(s.id);
+      const key = JSON.stringify([person, tag]);
+      let g = byKey.get(key);
+      if (!g) byKey.set(key, (g = { person, tag, ids: new Set() }));
+      g.ids.add(s.id);
     }
   }
-  return [...byName.entries()]
-    .sort(([, a], [, b]) => a.person.localeCompare(b.person) || a.tag.localeCompare(b.tag))
-    .map(([name, g]) => ({ name, note: '', ids: g.ids }));
+  // 並びは実行する PC のロケールによらず同じにする(build とサーバで同じ並びになるように)
+  const order = new Intl.Collator('ja');
+  const sorted = [...byKey.values()].sort((a, b) => order.compare(a.person, b.person) || order.compare(a.tag, b.tag));
+  // 表示名が重なったら(人の名前やタグに「 / 」が入っているとき)、後のものに番号を付けて分ける(名前はグループの鍵なので重ねない)
+  const used = new Set<string>();
+  return sorted.map((g) => {
+    const base = g.person ? `${g.person}${MEMBER_TAG_SEP}${g.tag}` : g.tag;
+    let name = base;
+    for (let n = 2; used.has(name); n++) name = `${base} (${n})`;
+    used.add(name);
+    return { name, note: '', ids: [...g.ids] };
+  });
 }
 
 /**

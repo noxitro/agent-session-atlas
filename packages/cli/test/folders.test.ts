@@ -21,6 +21,8 @@ import {
   foldersRootOf,
   forgetFolder,
   isFolderKey,
+  isOpenedFolderOut,
+  isReadOnlyView,
   lastLogLine,
   listFolders,
   listFolderStates,
@@ -79,6 +81,27 @@ describe('別のフォルダを開く: 置き場と状態', () => {
   });
   afterEach(async () => {
     await rm(dir, { recursive: true, force: true });
+  });
+
+  it('読むだけの画面か: 送り先から集計した(flat / merged)か、別のフォルダを開いた出力先(隣に folder.json)なら読むだけ', async () => {
+    const d = await mkdtemp(join(tmpdir(), 'atlas-ro-'));
+    try {
+      const fp = folderPaths(join(d, 'folders'), join(d, 'notes'), join(d, 'shared'));
+      expect(isOpenedFolderOut(fp.out)).toBe(false);
+      await mkdir(fp.out, { recursive: true });
+      writeFolderState(fp.state, { version: 1, path: join(d, 'shared'), name: 'shared', addedAt: '', openedAt: '', listed: true, run: null });
+      expect(isOpenedFolderOut(fp.out)).toBe(true);
+      // copilot の形のフォルダを開いたとき(layout が無い)も読むだけ
+      expect(isReadOnlyView(fp.out, { layout: undefined })).toBe(true);
+      // この PC の出力先: --home で送り先を集計したときだけ読むだけ
+      const local = join(d, 'out');
+      expect(isReadOnlyView(local, null)).toBe(false);
+      expect(isReadOnlyView(local, {})).toBe(false);
+      expect(isReadOnlyView(local, { layout: 'flat' })).toBe(true);
+      expect(isReadOnlyView(local, { layout: 'merged' })).toBe(true);
+    } finally {
+      await rm(d, { recursive: true, force: true });
+    }
   });
 
   it('置き場の名前: 同じフォルダは同じ名前、同じ名前の別のフォルダは別の名前。置き場の外を指すキーは通さない', () => {

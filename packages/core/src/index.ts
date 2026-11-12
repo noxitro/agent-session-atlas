@@ -1,7 +1,7 @@
 export * from './types.ts';
 export { KNOWN_EVENT_TYPES } from './event-types.ts';
 export { parseEvents, readEvents, newParseStats } from './events.ts';
-export { snapshot, isFlatLayout, describeSource, personOfFolder, DUPLICATE_REASON, type SourceShape, type SourceLayout, SESSION_STORE_JSON, readSnapshotManifest, readInventory, SNAPSHOT_DBS, SNAPSHOT_SESSION_FILES, SNAPSHOT_SESSION_DB, SNAPSHOT_MANIFEST, SNAPSHOT_SOURCE, SNAPSHOT_SESSION_EXTRA_FILES, SNAPSHOT_SESSION_EXTRA_DIRS, SNAPSHOT_SESSION_HEAVY_DIRS, DESKTOP_JSON, UPLOAD_SESSION_META, UPLOAD_MEMO_FILE, UPLOAD_MEMO_IMAGES, UPLOAD_INDEX, UPLOAD_WORK_REASON, UPLOAD_OLD_ONLY_REASON, UPLOAD_PROBE_HINT, uploadTmpName, uploadOldName, isUploadWorkDir, uploadWorkDirId } from './snapshot.ts';
+export { snapshot, isFlatLayout, describeSource, personOfFolder, DUPLICATE_REASON, type SourceShape, type SourceLayout, SESSION_STORE_JSON, readSnapshotManifest, readInventory, SNAPSHOT_DBS, SNAPSHOT_SESSION_FILES, SNAPSHOT_SESSION_DB, SNAPSHOT_MANIFEST, SNAPSHOT_SOURCE, SNAPSHOT_SESSION_EXTRA_FILES, SNAPSHOT_SESSION_EXTRA_DIRS, SNAPSHOT_SESSION_HEAVY_DIRS, DESKTOP_JSON, UPLOAD_SESSION_META, UPLOAD_MEMO_FILE, UPLOAD_MEMO_IMAGES, UPLOAD_MEMO_TEXT_LIMIT, UPLOAD_MEMO_IMAGES_LIMIT, UPLOAD_INDEX, UPLOAD_WORK_REASON, UPLOAD_OLD_ONLY_REASON, UPLOAD_PROBE_HINT, uploadTmpName, uploadOldName, isUploadWorkDir, uploadWorkDirId } from './snapshot.ts';
 export type { SnapshotOptions, SnapshotManifest, SkippedEntry } from './snapshot.ts';
 export { readDesktopDb, desktopForSession, DESKTOP_ALLOWLIST, DESKTOP_FORBIDDEN_TABLES } from './desktop.ts';
 export type { DesktopData, DesktopRow, DesktopSessionInfo, DesktopTableCoverage } from './desktop.ts';

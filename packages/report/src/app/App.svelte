@@ -173,6 +173,8 @@
   let readOnly = $state(false);
   /** タスクタグ・アップロード・まとめて送る印を書き換えられるか */
   const canEdit = $derived(editable && !readOnly);
+  /** 読むだけの画面として作ったレポート(ファイルで開いたときも、案内の文言を読むだけの画面のものにする) */
+  const readOnlyView = $derived(readOnly || data?.readOnly === true);
   /** API から読んだグループ(編集モードではこちらを使う。CLI で足したものも再読み込みで出る) */
   let liveGroups = $state<ReportGroup[] | null>(null);
   /** heartbeat が失敗した(サーバが止まった)。閲覧はそのまま、編集だけ無効 */
@@ -594,11 +596,11 @@
         <!-- サイドバー(768px 以上)の「グループ」の群。狭い幅では目次行の「グループ」から同じ中身を開く -->
         <div class="rail-groups" role="group" aria-label="タスクタグ">
           <span class="toc-title" aria-hidden="true">タスクタグ</span>
-          <GroupRail groups={groupOptions} current={currentName} selectedCount={adhocCount} editable={canEdit} anonymized={data.anonymized} onpick={pickGroup} />
+          <GroupRail groups={groupOptions} current={currentName} selectedCount={adhocCount} editable={canEdit} readOnly={readOnlyView} anonymized={data.anonymized} onpick={pickGroup} />
         </div>
         {#if groupsOpen}
           <div class="group-pop" id="group-pop" role="region" bind:this={groupsPop} tabindex="-1" aria-label="タスクタグ" data-testid="group-pop" onfocusout={(e) => { const t = e.relatedTarget as Node | null; if (t && !groupsPop?.contains(t) && !groupsBtn?.contains(t)) closeGroups(false); }}>
-            <GroupRail groups={groupOptions} current={currentName} selectedCount={adhocCount} editable={canEdit} anonymized={data.anonymized} onpick={(n) => { pickGroup(n); closeGroups(); }} />
+            <GroupRail groups={groupOptions} current={currentName} selectedCount={adhocCount} editable={canEdit} readOnly={readOnlyView} anonymized={data.anonymized} onpick={(n) => { pickGroup(n); closeGroups(); }} />
           </div>
         {/if}
         <div class="status">
@@ -654,6 +656,7 @@
           {selected}
           idsActive={eff.ids !== ''}
           editable={canEdit}
+          readOnly={readOnlyView}
           groups={groupOptions}
           currentGroup={currentName}
           onselect={(s) => (selected = s)}
