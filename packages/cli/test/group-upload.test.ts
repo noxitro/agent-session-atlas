@@ -76,6 +76,15 @@ describe('グループのアップロード', () => {
     const before = (await stat(sent)).mtimeMs;
     expect(await uploadGroup({ ...paths(), notes }, 'Player/Weapon', root)).toMatchObject({ uploaded: 0, unchanged: 2 });
     expect((await stat(sent)).mtimeMs).toBe(before);
+    // 送り先のフォルダを開いただけで OS が作るもの(Thumbs.db・desktop.ini・.DS_Store)は、変わったことにしない
+    await writeFile(join(r.dir, 's1', 'files', 'Thumbs.db'), 'thumb');
+    await writeFile(join(r.dir, 's1', 'desktop.ini'), '[.ShellClassInfo]');
+    await writeFile(join(r.dir, 's2', '.DS_Store'), 'mac');
+    expect(await uploadGroup({ ...paths(), notes }, 'Player/Weapon', root)).toMatchObject({ uploaded: 0, unchanged: 2 });
+    // 似た名前でも、ほかのファイルが足されていれば写し直す
+    await writeFile(join(r.dir, 's2', 'Thumbs.db.txt'), 'x');
+    expect(await uploadGroup({ ...paths(), notes }, 'Player/Weapon', root)).toMatchObject({ uploaded: 1, unchanged: 1 });
+    expect(existsSync(join(r.dir, 's2', 'Thumbs.db.txt'))).toBe(false);
     await mark('s1');
     // 同じ大きさでも、更新時刻が変われば写し直す
     await writeFile(join(state, 's1', 'events.jsonl'), '{"type":"session.start","id":"S1"}\n');

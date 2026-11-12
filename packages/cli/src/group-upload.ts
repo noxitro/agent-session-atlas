@@ -173,6 +173,12 @@ const CONTENTS_VERSION = 1;
 const sha = (s: string): string => createHash('sha256').update(s).digest('hex');
 
 /**
+ * 送り先で OS が勝手に作るファイル(Windows のエクスプローラーの Thumbs.db・desktop.ini、Mac の .DS_Store)。
+ * 前に送ったときのままかを比べるときは数えない(数えると、送り先のフォルダを開いただけで毎回写し直すため)
+ */
+const OS_ADDED_FILES = /^(?:thumbs\.db|desktop\.ini|\.ds_store)$/i;
+
+/**
  * そのセッションの、送る中身の要約。セッションのフォルダのファイルの名前・大きさ・更新時刻と、atlas が足すもの
  * (DB の行・メモの本文・メモの画像)から作る。送り先の atlas-session.json に残し、次の回に比べる。
  * 写す元(out/snapshot/)のファイルは、元が変わったときにだけ写し直されて更新時刻も元のものに揃うので、変わらなければ同じ要約になる
@@ -207,7 +213,8 @@ async function sameAsSent(dest: string, id: string, key: string, files: FileEntr
       want.set(UPLOAD_MEMO_FILE, Buffer.byteLength(memoForUpload(memo, id)));
       for (const f of await added.memoImages(id)) want.set(`${UPLOAD_MEMO_IMAGES}/${f.rel}`, f.bytes);
     }
-    const have = await listFiles(dest);
+    // エクスプローラーや Mac が勝手に作るもの(画像のフォルダを開いたときの Thumbs.db など)は、送ったものに無ければ数えない
+    const have = (await listFiles(dest)).filter((f) => want.has(f.rel) || !OS_ADDED_FILES.test(f.rel.split('/').at(-1)!));
     if (have.length !== want.size) return false;
     for (const f of have) {
       const w = want.get(f.rel);
