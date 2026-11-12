@@ -17,6 +17,8 @@ import { embedData } from './lib/embed.ts';
 import { packSummary } from './lib/pack.ts';
 import type { JudgmentsIndex } from './lib/judgments.ts';
 import { verdictTuples, type VerdictIndex } from './lib/verdicts.ts';
+import { retentionItem } from './lib/retention.ts';
+import type { VcsRetentionFile } from '../../core/src/vcs-step.ts';
 import type { SessionGroup } from './lib/groups.ts';
 import { memoSummary } from './lib/memo.ts';
 import { loadMemberMemos, loadMemoIndex, renderMemberMemo, renderMemo, type MemoFile } from './memo-io.ts';
@@ -99,6 +101,8 @@ export interface BuildInput {
   judgments: JudgmentsIndex | null;
   /** 段階 2: 依頼ごとの LLM 判定(turn-judgments.json)。無ければ null / 省略 */
   verdicts?: VerdictIndex | null;
+  /** AI の変更が作業後の VCS に残っているか(vcs-retention.json)。無ければ null / 省略 */
+  retention?: VcsRetentionFile | null;
   /** 名前付きグループ(atlas-notes/groups.json)。無ければ省略 */
   groups?: SessionGroup[];
   /** Phase 13: メモの置き場(<notes-dir>/memos)。無ければメモなし */
@@ -179,10 +183,13 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
         : new Map<string, MemoFile>();
   const memoHtml = (id: string, text: string): string => (memberDir ? renderMemberMemo(memberDir, id, text) : renderMemo(input.memosDir!, id, text));
   const vx = input.verdicts ?? null;
+  const rx = input.retention ?? null;
+  const retentionById = new Map((rx?.sessions ?? []).map((r) => [r.sessionId, r]));
   const sessions = input.sessions.map((r) => {
     const base = summarize(r, anon, j?.bySession.get(r.id) ?? null);
     const vt = vx ? verdictTuples(vx.bySession.get(r.id), vx.phases) : [];
-    const s = vt.length ? { ...base, turnVerdicts: vt } : base;
+    const rt = retentionById.get(r.id);
+    const s = { ...base, ...(vt.length ? { turnVerdicts: vt } : {}), ...(rt ? { retention: retentionItem(rt) } : {}) };
     const m = memos.get(r.id);
     return m ? { ...s, memo: memoSummary(m.text, m.updatedAt) } : s;
   });
@@ -216,6 +223,7 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
       items: vx ? input.sessions.reduce((a, s) => a + (vx.bySession.get(s.id)?.size ?? 0), 0) : 0,
       phases: vx?.phases ?? [],
     },
+    retention: rx ? { generatedAt: rx.generatedAt, computedOn: rx.computedOn, mode: rx.mode, similarity: rx.similarity, pathMap: rx.pathMap, sessions: rx.sessions.length } : null,
     installed: input.installed ? installedView(input.installed) : null,
     // 人に絞ったときに、その人のインストール済みの skill で「未使用」を出す。伏せ字版では人の名前を仮名にするので入れない(全員分を使う)
     ...(input.installedByPerson && !anon.enabled
@@ -400,7 +408,7 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
     }
     const m = memos.get(r.id);
     const memo = m ? { html: memoHtml(r.id, m.text), updatedAt: m.updatedAt } : null;
-    const page = renderDetailHtml(r, { anon, css, judgment, verdicts: vx?.bySession.get(r.id) ?? null, generatedAt, transcriptHref, libraryHref: data.library ? `../${INSTRUCTIONS_FILE}` : null, skillHasPage: (name) => !!lib?.hasSkill(name), libraryHasSession: !!lib?.hasSession(r.id), fullHref, memo });
+    const page = renderDetailHtml(r, { anon, css, judgment, verdicts: vx?.bySession.get(r.id) ?? null, retention: retentionById.get(r.id) ?? null, retentionMeta: data.retention ?? null, generatedAt, transcriptHref, libraryHref: data.library ? `../${INSTRUCTIONS_FILE}` : null, skillHasPage: (name) => !!lib?.hasSkill(name), libraryHasSession: !!lib?.hasSession(r.id), fullHref, memo });
     detailBytes += Buffer.byteLength(page);
     await writeFile(join(detailDir, detailFileName(r.id)), page);
   }

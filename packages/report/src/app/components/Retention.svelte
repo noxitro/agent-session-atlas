@@ -1,0 +1,233 @@
+<script lang="ts">
+  import { dateTime, int, percent } from '../../lib/format.ts';
+  import { aggregateRetention, measuredOf, MODE_LABEL, REASON_LABEL, REASONS, STATUS_LABEL, STATUSES, VCS_LABEL, type RetentionMeta } from '../../lib/retention.ts';
+  import type { SessionSummary } from '../../lib/types.ts';
+
+  let { sessions, meta }: { sessions: SessionSummary[]; meta: RetentionMeta } = $props();
+
+  const a = $derived(aggregateRetention(sessions));
+  const hunksMeasured = $derived(measuredOf(a.hunks));
+  const linesMeasured = $derived(measuredOf(a.lines));
+  /** 状態の色。色だけにしない(凡例の言葉と、照合不能は斜線) */
+  const COLORS = ['var(--s1)', 'var(--s3)', 'var(--s4)', 'var(--missing)'] as const;
+  const segments = $derived(STATUSES.map((k, i) => ({ key: k, label: STATUS_LABEL[k], n: a.hunks[i], lines: a.lines[i], color: COLORS[i] })));
+  const totalHunks = $derived(a.hunks.reduce((x, y) => x + y, 0));
+  let hover = $state<string | null>(null);
+
+  const reasons = $derived(REASONS.filter((k) => (a.unattributable[k] ?? 0) > 0).map((k) => ({ key: k, label: REASON_LABEL[k], n: a.unattributable[k] ?? 0 })));
+  const vcsText = $derived(
+    Object.entries(a.byVcs)
+      .map(([k, n]) => `${VCS_LABEL[k as keyof typeof VCS_LABEL] ?? k} ${int(n ?? 0)}`)
+      .join('・'),
+  );
+
+  /** プロジェクトごと(照合できたセッションがあるものだけ) */
+  const rows = $derived.by(() => {
+    const by = new Map<string, { key: string; label: string; list: SessionSummary[] }>();
+    for (const s of sessions) {
+      const g = by.get(s.project) ?? by.set(s.project, { key: s.project, label: s.projectLabel, list: [] }).get(s.project)!;
+      g.list.push(s);
+    }
+    return [...by.values()]
+      .map((g) => ({ key: g.key, label: g.label, agg: aggregateRetention(g.list) }))
+      .filter((r) => r.agg.withAi > 0)
+      .sort((x, y) => y.agg.measured - x.agg.measured || y.agg.withAi - x.agg.withAi || x.label.localeCompare(y.label));
+  });
+</script>
+
+<section class="section" id="retention" aria-labelledby="retention-h">
+  <div class="section-head">
+    <h2 id="retention-h">AI の変更の残存(VCS)</h2>
+    <p>
+      AI が作った変更(追加した行)が、作業後の VCS の差分に残っているかの記録です。採用の意図や良し悪しではなく、「終了時の差分で未確認」と「帰属・照合不能」を不採用とはみなしません。LLM の判定とは別の指標です。
+      作業後の状態: {MODE_LABEL[meta.mode]}・照合 {dateTime(meta.generatedAt)}{meta.computedOn === 'sender' ? '・送った側の PC で照合した結果' : ''}{meta.pathMap ? `・パスの読み替え ${int(meta.pathMap)} 件` : ''}
+    </p>
+  </div>
+
+  {#if a.withAi === 0}
+    <p class="note">
+      この絞り込みには、AI の変更があったセッションがありません(表示中 {int(a.sessions)} セッション{a.notChecked ? `、うち照合していない ${int(a.notChecked)} 件` : ''})。
+    </p>
+  {:else}
+    <div class="fields" style="--cols:4">
+      <div class="field">
+        <span class="k">照合できたセッション(分母)</span>
+        <span class="v">{int(a.measured)}</span>
+        <span class="n">AI の変更があった {int(a.withAi)} セッションのうち {percent(a.measured, a.withAi)}。照合不能 {int(a.unattributableTotal)}</span>
+      </div>
+      {#each [0, 1, 2] as i (i)}
+        <div class="field">
+          <span class="k">{STATUS_LABEL[STATUSES[i]]}(まとまり)</span>
+          <span class="v">{hunksMeasured ? percent(a.hunks[i], hunksMeasured) : '—'}</span>
+          <span class="n">{int(a.hunks[i])} / {int(hunksMeasured)} まとまり・{int(a.lines[i])} / {int(linesMeasured)} 行</span>
+        </div>
+      {/each}
+    </div>
+
+    <div class="coverage">
+      <div class="cov-head">
+        <h3 id="ret-dist-h">まとまりの内訳(照合できたセッション)</h3>
+        <p class="muted">割合の分母は照合できたまとまり(未変更・変更後・未確認)です。照合できたセッションの中の照合不能のまとまりは、分母に入れず件数だけ出します。</p>
+      </div>
+      {#if totalHunks > 0}
+        <div class="stack" role="img" aria-labelledby="ret-dist-h" aria-describedby="ret-legend">
+          {#each segments as s (s.key)}
+            {#if s.n > 0}
+              <span
+                class="piece"
+                class:dim={hover && hover !== s.key}
+                class:hatch={s.key === 'unattributable'}
+                style="flex-grow:{s.n};background-color:{s.color}"
+                title="{s.label}: {int(s.n)} まとまり"
+              ></span>
+            {/if}
+          {/each}
+        </div>
+      {/if}
+      <ul class="legend" id="ret-legend">
+        {#each segments as s (s.key)}
+          <li onpointerenter={() => (hover = s.key)} onpointerleave={() => (hover = null)}>
+            <span class="sw" class:hatch={s.key === 'unattributable'} style="background-color:{s.color}" aria-hidden="true"></span>
+            <span class="lab">{s.label}</span>
+            <strong>{int(s.n)}</strong>
+            <span class="muted">{s.key === 'unattributable' ? '(分母に入れない)' : `(${percent(s.n, hunksMeasured)})`}</span>
+            <span class="src muted">{int(s.lines)} 行</span>
+          </li>
+        {/each}
+      </ul>
+    </div>
+
+    <h3 class="sub-h" id="ret-scope-h">記録範囲</h3>
+    <div class="table-scroll">
+      <table class="ledger" aria-labelledby="ret-scope-h">
+        <thead>
+          <tr><th scope="col">セッション</th><th scope="col" class="num">件数</th><th scope="col">値の種類・補足</th></tr>
+        </thead>
+        <tbody>
+          <tr><th scope="row">表示中</th><td class="num">{int(a.sessions)}</td><td>記録範囲の分母</td></tr>
+          <tr><th scope="row" class="ind">AI の変更なし</th><td class="num">{int(a.none)}</td><td>編集・作成で足した行が無い</td></tr>
+          {#if a.notChecked}<tr><th scope="row" class="ind">照合していない</th><td class="num">{int(a.notChecked)}</td><td>照合した後に増えたセッションなど。atlas vcs で照合し直せます</td></tr>{/if}
+          <tr><th scope="row" class="ind">AI の変更あり</th><td class="num">{int(a.withAi)}</td><td>AI の変更はイベントのログから取った<b>観測</b>値</td></tr>
+          <tr><th scope="row" class="ind2">照合できた(分母)</th><td class="num">{int(a.measured)}</td><td>開始時の基準: 観測 {int(a.baseline.observed)}・<b>推定</b> {int(a.baseline.estimated)}{vcsText ? `。${vcsText}` : ''}{a.sender ? `。送った側の PC で照合 ${int(a.sender)}` : ''}{a.mapped ? `。パスを読み替え ${int(a.mapped)}` : ''}</td></tr>
+          {#each reasons as r (r.key)}
+            <tr><th scope="row" class="ind2">照合不能: {r.label}</th><td class="num">{int(r.n)}</td><td>不採用ではない</td></tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
+    <p class="note">
+      開始時の基準が<b>観測</b>なのは、ログに記録された開始時の版(git のコミット)を使ったもの、<b>推定</b>なのは、記録が無く開始時刻から VCS の履歴で探したもの(svn・p4 は常に推定)です。似た行とみなす下限は文字の 2 字組の重なり {Math.round(meta.similarity * 100)}% です。
+    </p>
+
+    {#if rows.length > 0}
+      <h3 class="sub-h" id="ret-proj-h">プロジェクトごと(AI の変更があったものだけ)</h3>
+      <div class="table-scroll">
+        <table class="ledger" aria-labelledby="ret-proj-h">
+          <thead>
+            <tr>
+              <th scope="col">プロジェクト</th>
+              <th scope="col" class="num">照合できた / AI の変更あり</th>
+              <th scope="col" class="num">未変更で残存</th>
+              <th scope="col" class="num">変更後に残存</th>
+              <th scope="col" class="num">終了時の差分で未確認</th>
+              <th scope="col" class="num">帰属・照合不能</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each rows as r (r.key)}
+              {@const m = measuredOf(r.agg.hunks)}
+              <tr>
+                <th scope="row" class="proj" title={r.key}>{r.label}</th>
+                <td class="num">{int(r.agg.measured)} / {int(r.agg.withAi)}</td>
+                {#each [0, 1, 2] as i (i)}
+                  <td class="num">{m ? `${int(r.agg.hunks[i])}(${percent(r.agg.hunks[i], m)})` : '—'}</td>
+                {/each}
+                <td class="num">{int(r.agg.hunks[3])}{r.agg.unattributableTotal ? `・照合不能のセッション ${int(r.agg.unattributableTotal)}` : ''}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+      <p class="note">件数はまとまり(AI の 1 回の編集の、連続して足した行)の数で、括弧はそのプロジェクトの照合できたまとまりに対する割合です。人ごとの比較や順位付けには使わないでください。</p>
+    {/if}
+  {/if}
+</section>
+
+<style>
+  .sub-h {
+    margin: 16px 0 6px;
+    font-size: 0.9375rem;
+  }
+  .proj {
+    font-weight: normal;
+    min-width: 11em;
+    max-width: 28em;
+    overflow-wrap: anywhere;
+  }
+  .ind {
+    font-weight: normal;
+    padding-left: 1.5em;
+  }
+  .ind2 {
+    font-weight: normal;
+    padding-left: 3em;
+  }
+  .coverage {
+    margin-top: 14px;
+  }
+  .cov-head h3 {
+    margin: 0;
+    font-size: 0.9375rem;
+  }
+  .cov-head p {
+    margin: 2px 0 0;
+    font-size: 0.8125rem;
+  }
+  .stack {
+    display: flex;
+    gap: 2px;
+    height: 18px;
+    margin-top: 10px;
+    background: var(--surface);
+  }
+  .piece {
+    display: block;
+    min-width: 3px;
+    flex-basis: 0;
+    transition: opacity 150ms ease-out;
+  }
+  .piece.dim {
+    opacity: 0.35;
+  }
+  /* 照合不能は色だけでなく斜線でも区別する */
+  .hatch {
+    background-image: repeating-linear-gradient(135deg, transparent 0 3px, var(--surface) 3px 4px);
+  }
+  .legend {
+    list-style: none;
+    margin: 10px 0 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 6px 20px;
+    font-size: 0.8125rem;
+  }
+  .legend li {
+    display: flex;
+    flex-wrap: wrap;
+    align-content: flex-start;
+    align-items: baseline;
+    gap: 0 6px;
+  }
+  .sw {
+    width: 10px;
+    height: 10px;
+    flex: none;
+    align-self: center;
+  }
+  .src {
+    flex-basis: 100%;
+    padding-left: 16px;
+    font-size: 0.75rem;
+  }
+</style>

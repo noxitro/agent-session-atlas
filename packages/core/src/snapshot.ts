@@ -21,6 +21,11 @@ export const SESSION_STORE_JSON = 'atlas-session-store.json';
  * アップロード先から集計し直すとき、extract はプロジェクト名をここから取る(読む側の PC のディスクからは決めない)
  */
 export const UPLOAD_SESSION_META = 'atlas-session.json';
+/**
+ * アップロードしたセッションのフォルダに添える、送った側の PC で照合した「AI の変更が作業後の VCS に残っているか」(vcs-step.ts)。
+ * 送り先にはリポジトリが無いことが多いので、アップロード先から集計し直すときはこれを読む(無ければ照合していない扱い)
+ */
+export const UPLOAD_VCS_META = 'atlas-vcs.json';
 /** アップロード先のフォルダ(グループ・プロジェクト)の索引。写すたびに書き直す */
 export const UPLOAD_INDEX = 'atlas-index.json';
 /**
@@ -46,10 +51,10 @@ export const UPLOAD_MEMO_IMAGES = 'atlas-memo';
 export const UPLOAD_MEMO_TEXT_LIMIT = 1024 * 1024;
 export const UPLOAD_MEMO_IMAGES_LIMIT = 100 * 1024 * 1024;
 /**
- * Phase 11: セッションフォルダの追加のファイル(あれば写す)。SESSION_STORE_JSON・UPLOAD_SESSION_META・UPLOAD_MEMO_FILE はアップロード先から集計し直すときだけある
+ * Phase 11: セッションフォルダの追加のファイル(あれば写す)。SESSION_STORE_JSON・UPLOAD_SESSION_META・UPLOAD_VCS_META・UPLOAD_MEMO_FILE はアップロード先から集計し直すときだけある
  * (送った人のメモは、別のフォルダを開いた画面で読むだけで出す)
  */
-export const SNAPSHOT_SESSION_EXTRA_FILES = ['plan.md', 'vscode.metadata.json', SESSION_STORE_JSON, UPLOAD_SESSION_META, UPLOAD_MEMO_FILE] as const;
+export const SNAPSHOT_SESSION_EXTRA_FILES = ['plan.md', 'vscode.metadata.json', SESSION_STORE_JSON, UPLOAD_SESSION_META, UPLOAD_VCS_META, UPLOAD_MEMO_FILE] as const;
 /** Phase 11: セッションフォルダの追加のサブフォルダ(あれば再帰的に写す)。UPLOAD_MEMO_IMAGES はアップロード先から集計し直すときだけある */
 export const SNAPSHOT_SESSION_EXTRA_DIRS = ['checkpoints', 'files', 'rewind-file-snapshots', 'policies', 'research', 'sandbox-denials', UPLOAD_MEMO_IMAGES] as const;
 /** Phase 11: 既定では写さず --snapshot-all で写すサブフォルダ(大きい。rewind-snapshots は 1 セッションで数十 MB) */

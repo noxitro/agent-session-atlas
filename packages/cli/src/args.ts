@@ -1,7 +1,7 @@
 // atlas コマンドの引数解釈(純関数)
 import { parseArgs } from 'node:util';
 
-export const COMMANDS = ['snapshot', 'extract', 'metrics', 'build', 'export', 'all', 'bundle', 'judge', 'turns', 'group', 'memo', 'serve', 'open', 'skill-draft'] as const;
+export const COMMANDS = ['snapshot', 'extract', 'metrics', 'vcs', 'build', 'export', 'all', 'bundle', 'judge', 'turns', 'group', 'memo', 'serve', 'open', 'skill-draft'] as const;
 export type Command = (typeof COMMANDS)[number];
 
 export const JUDGE_ACTIONS = ['run', 'import', 'm365'] as const;
@@ -131,6 +131,8 @@ export interface CliOptions {
   target: string | null;
   /** open: フォルダを選ぶ画面を出して、選んだフォルダを開く(open-folder.bat) */
   pick: boolean;
+  /** vcs・all: 作業後の状態をどこで見るか(worktree = 今の作業ツリー、committed = 最後に取り込んだ版)。未指定は null(設定の vcs.mode、無ければ worktree) */
+  vcsMode: 'worktree' | 'committed' | null;
   /** skill-draft: 候補の番号(insights.json の順)と、使うバックエンド */
   skillDraft: { index: number; backend: BackendChoice; model: string | null; timeoutSec: number } | null;
   help: boolean;
@@ -142,9 +144,11 @@ export const USAGE = `使い方: atlas <コマンド> [オプション]
   snapshot   ~/.copilot の必要部分を <out>/snapshot へ複製する(元は書き換えない)
   extract    スナップショットから <out>/sessions.json を作る
   metrics    sessions.json から <out>/metrics.json を作る
+  vcs        AI が作った変更が、作業後の VCS(git / svn / p4)の差分に残っているかを照合し、<out>/vcs-retention.json に書く。
+             VCS は読むだけ(書き込み・同期のコマンドは呼ばない)。アップロード先から集計したときは、送った側の PC の結果を読む
   build      <out>/atlas.html と <out>/sessions/<id>.html を作る
   export     build に加えて、各セッションの記録(経過・消費)を <out>/sessions/<id>.md に書く(LLM での振り返り用。共有するなら --anonymize)
-  all        snapshot → extract → metrics → export(セッション記録つき)を通しで実行する(コマンド省略時の既定)。
+  all        snapshot → extract → vcs → metrics → export(セッション記録つき)を通しで実行する(コマンド省略時の既定)。
              --anonymize のときは記録を作らず build にする
   bundle     LLM に工数を判定させる評価バンドルを <out>/bundle に作る(LLM は呼ばない)。ZIP を渡せない相手用に、
              指示とパケット数件を 1 ファイルにまとめた <out>/bundle/parts/part-<番号>.md も書く
@@ -203,8 +207,9 @@ export const USAGE = `使い方: atlas <コマンド> [オプション]
                      (%TEMP% と AppData\\Local\\Temp・/tmp のパターン)を使わない
   --snapshot-all     snapshot: 既定で写さない大きなもの(rewind-snapshots、一覧に無い名前のもの、logs/)も写す
   --snapshot-prune   snapshot: 前回 --snapshot-all で写したが今回は写さないものを消す(既定は残して manifest に日時を出す)
-  --config <file>    extract・all・serve・open・group upload: 設定ファイル(wiki の vault・アップロード先の指定)の場所
+  --config <file>    extract・vcs・all・serve・open・group upload: 設定ファイル(wiki の vault・アップロード先の指定)の場所
                      (既定: 環境変数 ATLAS_CONFIG、無ければリポジトリ直下の atlas.config.json)
+  --vcs-mode <v>     vcs・all: 作業後の状態をどこで見るか。worktree(既定、今の作業ツリー)/ committed(最後に取り込んだ版)
   -h, --help         この説明を出す
 
 export のオプション:
@@ -272,6 +277,7 @@ export function parseCli(argv: string[]): CliOptions {
         'snapshot-all': { type: 'boolean', default: false },
         'snapshot-prune': { type: 'boolean', default: false },
         'max-chars': { type: 'string' },
+        'vcs-mode': { type: 'string' },
         backend: { type: 'string' },
         limit: { type: 'string' },
         only: { type: 'string' },
@@ -414,8 +420,11 @@ export function parseCli(argv: string[]): CliOptions {
   if (values.anonymize && !['build', 'export', 'all'].includes(cmd))
     throw new UsageError(`--anonymize は build / export / all でだけ使えます(${cmd} の出力は伏せ字になりません。評価バンドルを外部の LLM に渡すときは中身を確認してください)`);
   if ((values['snapshot-all'] || values['snapshot-prune']) && !['snapshot', 'all', 'export', 'open'].includes(cmd)) throw new UsageError('--snapshot-all と --snapshot-prune は snapshot / all / export / open で使えます');
-  if (values.config != null && cmd !== 'extract' && cmd !== 'all' && cmd !== 'serve' && cmd !== 'open' && !(cmd === 'group' && positionals[1] === 'upload'))
-    throw new UsageError('--config は extract・all・serve・open・group upload でだけ使えます');
+  const vcsMode = values['vcs-mode'] ?? null;
+  if (vcsMode != null && cmd !== 'vcs' && cmd !== 'all') throw new UsageError('--vcs-mode は vcs と all でだけ使えます');
+  if (vcsMode != null && vcsMode !== 'worktree' && vcsMode !== 'committed') throw new UsageError(`--vcs-mode は worktree / committed のどちらかです: ${vcsMode}`);
+  if (values.config != null && cmd !== 'extract' && cmd !== 'vcs' && cmd !== 'all' && cmd !== 'serve' && cmd !== 'open' && !(cmd === 'group' && positionals[1] === 'upload'))
+    throw new UsageError('--config は extract・vcs・all・serve・open・group upload でだけ使えます');
   if (values.since != null && Number.isNaN(Date.parse(values.since))) throw new UsageError(`--since の日時を解釈できません: ${values.since}`);
   if ((values.port != null || values.open === false) && cmd !== 'serve' && cmd !== 'open') throw new UsageError('--port と --no-open は serve と open でだけ使えます');
   if (values.pick && cmd !== 'open') throw new UsageError('--pick は open でだけ使えます');
@@ -458,6 +467,7 @@ export function parseCli(argv: string[]): CliOptions {
     target,
     pick: values.pick ?? false,
     skillDraft,
+    vcsMode: vcsMode as 'worktree' | 'committed' | null,
     help: values.help ?? false,
   };
 }

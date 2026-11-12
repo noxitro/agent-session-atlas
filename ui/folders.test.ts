@@ -248,6 +248,11 @@ describe('別のフォルダを開く', () => {
     try {
       await other.goto(all.url);
       const people = other.locator('#people');
+      // 人ごとの評価や順位付けに使わないため、人別の表は既定で畳んである(人数だけ出す)。ボタンで開く
+      await expect.poll(() => people.locator('[data-testid="show-people"]').count()).toBe(1);
+      expect(await people.locator('tbody tr').count()).toBe(0);
+      expect(await people.locator('.section-head p').innerText()).toContain('既定で畳んでいます(2 人分)');
+      await people.locator('[data-testid="show-people"]').click();
       await expect.poll(() => people.locator('tbody tr').count()).toBe(2);
       expect(await people.locator('h2').innerText()).toBe('人別');
       expect(await people.locator('.section-head p').innerText()).toContain('2 人。');
@@ -290,6 +295,9 @@ describe('別のフォルダを開く', () => {
       // URL から開いても同じ(共有したリンクで、その人に絞った状態になる)
       await other.goto(`${all.url}#person=person-b`);
       await other.reload();
+      // 開いた状態は覚えないので、開き直すと人別の表はまた畳まれている(絞り込みは URL のとおり)
+      await expect.poll(() => people.locator('[data-testid="show-people"]').count()).toBe(1);
+      await people.locator('[data-testid="show-people"]').click();
       await expect.poll(() => people.locator('tbody tr').count()).toBe(1);
       expect(await select.inputValue()).toBe('person-b');
 

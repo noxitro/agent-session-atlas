@@ -82,6 +82,14 @@ describe('parseCli', () => {
     expect(() => parseCli(['open'])).toThrow(/atlas open --pick/);
   });
 
+  it('vcs と --vcs-mode(vcs と all だけ)', () => {
+    expect(parseCli(['vcs'])).toMatchObject({ command: 'vcs', vcsMode: null });
+    expect(parseCli(['vcs', '--vcs-mode', 'committed', '--config', 'c.json'])).toMatchObject({ command: 'vcs', vcsMode: 'committed', config: 'c.json' });
+    expect(parseCli(['all', '--vcs-mode', 'worktree'])).toMatchObject({ command: 'all', vcsMode: 'worktree' });
+    expect(() => parseCli(['vcs', '--vcs-mode', 'head'])).toThrow(/worktree \/ committed/);
+    expect(() => parseCli(['build', '--vcs-mode', 'worktree'])).toThrow(/vcs と all でだけ/);
+  });
+
   it('export と --tool-output / --max-chars を読む(export 以外では UsageError)', () => {
     expect(parseCli(['export'])).toMatchObject({ command: 'export', toolOutput: 'fail', maxChars: null });
     expect(parseCli(['export', '--tool-output', 'all', '--max-chars', '500', '--anonymize'])).toMatchObject({ command: 'export', toolOutput: 'all', maxChars: 500, anonymize: true });
