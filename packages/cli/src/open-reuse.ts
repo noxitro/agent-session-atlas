@@ -7,12 +7,12 @@
 //   - 集計に渡したオプション(絞り込みなど)と、設定ファイルの中身
 //   - 写した複製(<out>/snapshot/)の全ファイルの名前・大きさ・更新日時と、manifest(作った日時は除く)
 //   - 判定(judgments.json・turn-judgments.json)とタスクタグ(groups.json)の大きさと更新日時
-// 出力(atlas.html・sessions.json・metrics.json)が built.json に書いたものと違えば、別の処理(画面の「集計し直す」・判定・手で実行した export)が
+// 出力(atlas.html・sessions.json・metrics.json と、あれば vcs-retention.json)が built.json に書いたものと違えば、別の処理(画面の「集計し直す」・判定・手で実行した export)が
 // 書き換えているので、作り直す。
 import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
-import { codeStamp, SNAPSHOT_MANIFEST, SNAPSHOT_SOURCE } from '../../core/src/index.ts';
+import { codeStamp, SNAPSHOT_MANIFEST, SNAPSHOT_SOURCE, VCS_RETENTION_FILE } from '../../core/src/index.ts';
 
 export const BUILT_FILE = 'built.json';
 
@@ -36,6 +36,10 @@ export interface ReusePaths {
 
 /** 確かめる出力(出力先からの相対パス)。画面が読む atlas.html と、その元の sessions.json・metrics.json */
 const OUTPUT_FILES = ['atlas.html', 'sessions.json', 'metrics.json'] as const;
+/** あれば確かめる出力。VCS の照合の結果(照合できなかったときは無い。手で atlas vcs を実行して作り直したら、レポートも作り直す) */
+const OPTIONAL_OUTPUT_FILES = [VCS_RETENTION_FILE] as const;
+/** 無いファイルの印 */
+const ABSENT = 'none';
 
 /** manifest の sessions のうち、元が同じでも変わる項目(1 回目は写した数、2 回目からは前の複製を使った数に入る) */
 const VOLATILE_SESSION_COUNTS = ['copiedFiles', 'reusedFiles', 'dbCopied', 'dbReused'] as const;
@@ -58,6 +62,7 @@ export function outputsOf(out: string): Record<string, string> | null {
     if (k == null) return null;
     r[f] = k;
   }
+  for (const f of OPTIONAL_OUTPUT_FILES) r[f] = statKey(join(out, f)) ?? ABSENT;
   return r;
 }
 
@@ -127,7 +132,7 @@ export function readBuilt(file: string): BuiltStamp | null {
 export function canReuse(prev: BuiltStamp | null, key: string, out: string): prev is BuiltStamp {
   if (!prev || prev.key !== key) return false;
   const now = outputsOf(out);
-  return now != null && OUTPUT_FILES.every((f) => prev.outputs[f] === now[f]);
+  return now != null && [...OUTPUT_FILES, ...OPTIONAL_OUTPUT_FILES].every((f) => prev.outputs[f] === now[f]);
 }
 
 /** 作り直す前に、前の印を消す(途中で止まったときに、古い印と新しい出力が食い違ったまま残らないように) */

@@ -3,7 +3,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { SNAPSHOT_MANIFEST, SNAPSHOT_SOURCE } from '../../core/src/index.ts';
+import { SNAPSHOT_MANIFEST, SNAPSHOT_SOURCE, VCS_RETENTION_FILE } from '../../core/src/index.ts';
 import { canReuse, clearBuilt, inputsKey, outputsOf, readBuilt, writeBuilt, type ReusePaths } from '../src/open-reuse.ts';
 
 let dir = '';
@@ -97,6 +97,14 @@ describe('open-reuse: 使い回せるか', () => {
     expect(canReuse(prev, key, p.out)).toBe(false);
     writeBuilt(built, key, p.out);
     expect(canReuse(readBuilt(built), key, p.out)).toBe(true);
+    // VCS の照合の結果は、無くても使い回せる。後から作られた・書き換わった・消えたときは作り直す
+    writeFileSync(join(p.out, VCS_RETENTION_FILE), '{}');
+    expect(canReuse(readBuilt(built), key, p.out)).toBe(false);
+    writeBuilt(built, key, p.out);
+    expect(canReuse(readBuilt(built), key, p.out)).toBe(true);
+    rmSync(join(p.out, VCS_RETENTION_FILE));
+    expect(canReuse(readBuilt(built), key, p.out)).toBe(false);
+    writeBuilt(built, key, p.out);
     rmSync(join(p.out, 'metrics.json'));
     expect(outputsOf(p.out)).toBeNull();
     expect(canReuse(readBuilt(built), key, p.out)).toBe(false);

@@ -13,13 +13,17 @@
 import { createHash } from 'node:crypto';
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import { copyFile, cp, lstat, mkdir, open, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import {
   DESKTOP_JSON,
   desktopForSession,
   openSessionStoreReader,
   readSnapshotManifest,
+  readVcsRetention,
+  senderVcsJson,
+  VCS_RETENTION_FILE,
+  UPLOAD_VCS_META,
   renameReplacing,
   SESSION_STORE_JSON,
   UPLOAD_INDEX,
@@ -149,7 +153,7 @@ async function listFiles(base: string, sub = '', skip?: (rel: string, name: stri
  * 送り先から集計した出力先では、送った人のメモ(atlas-memo.md・atlas-memo/)と atlas-session.json も写してあるので、
  * それをこの PC の利用者のフォルダへ写さない(メモはこの PC の置き場のものだけを送る)
  */
-const ADDED_BY_UPLOAD = new Set<string>([UPLOAD_MEMO_FILE, UPLOAD_MEMO_IMAGES, UPLOAD_SESSION_META]);
+const ADDED_BY_UPLOAD = new Set<string>([UPLOAD_MEMO_FILE, UPLOAD_MEMO_IMAGES, UPLOAD_SESSION_META, UPLOAD_VCS_META]);
 async function sessionFiles(base: string): Promise<FileEntry[]> {
   return (await listFiles(base)).filter((f) => !ADDED_BY_UPLOAD.has(f.rel.split('/')[0]));
 }
@@ -219,6 +223,21 @@ export function storeKeyText(store: string): string {
   }
 }
 
+/**
+ * 要約に入れる照合の結果の文字列。照合した日時(computedAt と evaluated.at)は atlas vcs を実行するたびに変わるので除く
+ * (結果が同じなら写し直さない。送り先の atlas-vcs.json の日時は、そのセッションを次に写すまで古いまま)。読めなければそのまま
+ */
+export function vcsKeyText(vcs: string): string {
+  try {
+    const j = JSON.parse(vcs) as { computedAt?: unknown; result?: { evaluated?: { at?: unknown } | null } };
+    delete j.computedAt;
+    if (j.result?.evaluated) delete j.result.evaluated.at;
+    return JSON.stringify(j);
+  } catch {
+    return vcs;
+  }
+}
+
 /** ファイルの並びを要約や比べるときの 1 行に(種類・名前・大きさ・更新時刻) */
 const entryLine = (prefix: string, f: FileEntry): string => `${prefix}${f.dir ? 'd' : f.link ? 'l' : 'f'}\t${f.rel}\t${f.bytes}\t${f.mtime}`;
 
@@ -242,6 +261,9 @@ async function contentsKey(id: string, files: FileEntry[], added: UploadContext)
   const memo = await added.memo(id);
   lines.push(`memo\t${memo == null ? '-' : sha(memo)}`);
   for (const f of [...(await added.memoImages(id))].sort(byRel)) lines.push(entryLine('image\t', f));
+  // 照合の結果は、あるときだけ行を足す(照合していないセッションは前の版と同じ要約のまま。写し直さない)
+  const vcs = added.vcsJson(id);
+  if (vcs != null) lines.push(`vcs\t${sha(vcsKeyText(vcs))}`);
   return sha(lines.join('\n'));
 }
 
@@ -261,6 +283,7 @@ async function sameAsSent(dest: string, id: string, key: string, files: FileEntr
     const want = new Map<string, number>(files.map((f) => [f.rel, wantOf(f)]));
     want.set(UPLOAD_SESSION_META, WANT_ANY_FILE);
     if (added.storeJson(id) != null) want.set(SESSION_STORE_JSON, WANT_ANY_FILE);
+    if (added.vcsJson(id) != null) want.set(UPLOAD_VCS_META, WANT_ANY_FILE);
     const memo = await added.memo(id);
     if (memo != null) {
       want.set(UPLOAD_MEMO_FILE, Buffer.byteLength(memoForUpload(memo, id)));
@@ -559,6 +582,11 @@ export interface UploadContext {
   storeJson: (id: string) => string | null;
   /** メモの本文(無いか空なら null) */
   memo: (id: string) => Promise<string | null>;
+  /**
+   * この PC で照合した「AI の変更が作業後の VCS に残っているか」(atlas-vcs.json の中身)。送り先にはリポジトリが無いことが多いので、
+   * 送る側の結果を添える。照合していない(out/vcs-retention.json が無い・そのセッションが入っていない)なら null
+   */
+  vcsJson: (id: string) => string | null;
   /** メモの画像(<notes>/memos/<id>/。空のフォルダとリンクも含む)。メモの本文が無ければ写さないので空 */
   memoImages: (id: string) => Promise<FileEntry[]>;
   /** atlas が足して写すものの大きさの合計(本文・DB の行・画像) */
@@ -580,6 +608,13 @@ async function addedFiles(p: GroupUploadPaths): Promise<UploadContext> {
   // デスクトップアプリのセッションは題名・モデル・トークン数などが data.db にしかない(snapshot が許可リストの列だけを desktop.json に書いたもの)
   const desktop = await readDesktopJson(join(p.snapshot, DESKTOP_JSON));
   const memoDir = p.notes ? memosDir(p.notes) : null;
+  // 照合の結果は out/(スナップショットの親)にある。送り先から集計したもの(computedOn が sender)は、この PC の結果ではないので添えない
+  const retention = await readVcsRetention(join(dirname(p.snapshot), VCS_RETENTION_FILE));
+  const byId = new Map(retention && retention.computedOn === 'local' ? retention.sessions.map((r) => [r.sessionId, r]) : []);
+  const vcsJson = (id: string): string | null => {
+    const r = byId.get(id);
+    return r && retention ? senderVcsJson(r, retention) : null;
+  };
   // 要約・送り先との比べ・点検・写すところが同じセッションの分を何度も使うので、この読む口の間は 1 回だけ作る
   // (読む口は 1 回の点検かアップロードの間だけ使う。次の確認では開き直すので、書き換えたメモも読み直す)
   const stores = new Map<string, string | null>();
@@ -618,10 +653,12 @@ async function addedFiles(p: GroupUploadPaths): Promise<UploadContext> {
     storeJson,
     memo,
     memoImages,
+    vcsJson,
     bytes: async (id) => {
       const s = storeJson(id);
       const m = await memo(id);
-      return (s ? Buffer.byteLength(s) : 0) + (m ? Buffer.byteLength(m) : 0) + (await memoImages(id)).reduce((a, f) => a + f.bytes, 0);
+      const v = vcsJson(id);
+      return (s ? Buffer.byteLength(s) : 0) + (m ? Buffer.byteLength(m) : 0) + (v ? Buffer.byteLength(v) : 0) + (await memoImages(id)).reduce((a, f) => a + f.bytes, 0);
     },
     close: () => reader?.close(),
   };
@@ -693,6 +730,7 @@ async function inspect(
       for (const [path, text] of [
         [SESSION_STORE_JSON, added.storeJson(id)],
         [UPLOAD_MEMO_FILE, await added.memo(id)],
+        [UPLOAD_VCS_META, added.vcsJson(id)],
       ] as const) {
         if (text == null) continue;
         const n = Buffer.byteLength(text);
@@ -824,6 +862,8 @@ export async function uploadTarget(p: GroupUploadPaths, target: UploadTarget, ro
         });
         const store = added.storeJson(id);
         if (store != null) await writeFile(join(tmp, SESSION_STORE_JSON), store);
+        const vcs = added.vcsJson(id);
+        if (vcs != null) await writeFile(join(tmp, UPLOAD_VCS_META), vcs);
         if (memoDir && (await copyMemo(memoDir, id, tmp))) withMemo.add(id);
         progress.copied += extra.get(id) ?? 0;
         report();

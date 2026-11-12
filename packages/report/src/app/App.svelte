@@ -11,6 +11,8 @@
   import FilterBar from './components/FilterBar.svelte';
   import Overview from './components/Overview.svelte';
   import JudgmentPanel from './components/JudgmentPanel.svelte';
+  import Retention from './components/Retention.svelte';
+  import Compare from './components/Compare.svelte';
   import ProjectTable from './components/ProjectTable.svelte';
   import UsageRanking from './components/UsageRanking.svelte';
   import Highlights from './components/Highlights.svelte';
@@ -75,6 +77,8 @@
   // インストール済みの skill: 人に絞っていれば、その人が添えた記録(無ければ全員分)
   const installed = $derived((filter.person && data?.installedByPerson?.[filter.person]) || (data?.installed ?? null));
   const points = $derived(highlights(filtered, agg.usage, { filter, anonymized: !!data?.anonymized, installed }));
+  /** 人別の表を開いているか(既定は畳む。人ごとの評価や順位付けに使わないため。開いた状態は覚えない) */
+  let showPeople = $state(false);
   /** 利用ランキングの表示中の種類(要点欄の「未使用の skill」から skill に切り替える) */
   let usageTab = $state<'tools' | 'mcp' | 'causes' | 'skills' | 'agents' | 'hooks' | 'instructions'>('tools');
 
@@ -412,6 +416,8 @@
         { id: 'phases', label: '工程と詰まり' },
         { id: 'detail', label: '集計明細' },
         ...(judged ? [{ id: 'judgments', label: 'AI 投入量 vs 推定人手工数' }] : []),
+        ...(data?.retention ? [{ id: 'retention', label: 'AI の変更の残存' }] : []),
+        { id: 'compare', label: '比べる' },
       ],
     },
     {
@@ -644,10 +650,25 @@
         <TurnPhases agg={turnAgg} verdicts={verdictAgg} verdictModel={data.turnJudgments?.model ?? null} verdictRanAt={data.turnJudgments?.ranAt ?? null} {editable} anonymized={data.anonymized} />
         <Overview part="detail" {agg} {judged} anonymized={data.anonymized} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} {emptyInFilter} />
         {#if judged}<JudgmentPanel {agg} meta={data.judgments} />{/if}
+        {#if data.retention}<Retention sessions={filtered} meta={data.retention} />{/if}
+        <Compare sessions={scoped} groups={groupOptions} projects={options.project} lastAt={all.overall.lastAt} retention={!!data.retention} />
         <UsageRanking usage={agg.usage} {installed} bind:tab={usageTab} />
         <ExecProfile exec={agg.exec} sessions={filtered.length} />
-        <!-- 人別は、送り先(<人>/<プロジェクト>)をまとめて集計したレポートだけ -->
-        {#if options.person.length > 0}<ProjectTable kind="person" rows={agg.byPerson} {judged} current={filter.person} onpick={(p) => setFilter({ person: p })} />{/if}
+        <!-- 人別は、送り先(<人>/<プロジェクト>)をまとめて集計したレポートだけ。人ごとの評価や順位付けに使わないため、既定では畳んでおき、開いたときだけ表を出す -->
+        {#if options.person.length > 0}
+          {#if showPeople}
+            <ProjectTable kind="person" rows={agg.byPerson} {judged} current={filter.person} onpick={(p) => setFilter({ person: p })} />
+            <p><button type="button" class="btn" onclick={() => (showPeople = false)}>人別の表を畳む</button></p>
+          {:else}
+            <section class="section" id="people" aria-labelledby="people-h">
+              <div class="section-head">
+                <h2 id="people-h">人別</h2>
+                <p>集計は、プロジェクト・期間・タスクタグの単位で比べるためのものです。人ごとの評価や順位付けに使わないため、人別の表は既定で畳んでいます({int(options.person.length)} 人分)。自分の分を確かめるときは、上の絞り込みの「人」で選べます。</p>
+              </div>
+              <button type="button" class="btn" aria-expanded="false" onclick={() => (showPeople = true)} data-testid="show-people">人別の表を開く</button>
+            </section>
+          {/if}
+        {/if}
         <ProjectTable rows={agg.byProject} {judged} current={filter.project} onpick={(p) => setFilter({ project: p })} send={canEdit && !serverDown ? projectSend : undefined} />
         <MonthlyChart months={agg.byMonth} lastAt={all.overall.lastAt} />
         <ModelChart rows={agg.byModel} />

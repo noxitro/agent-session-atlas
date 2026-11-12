@@ -1,0 +1,105 @@
+// レポートの「AI の変更の残存」と「比べる」の集計(lib/retention.ts・lib/compare.ts)。値はすべて架空のもの
+import { describe, expect, it } from 'vitest';
+import { RETENTION_STATUS_LABEL, RETENTION_STATUSES, UNATTRIBUTABLE_REASON_LABEL, UNATTRIBUTABLE_REASONS } from '../../core/src/vcs-retention.ts';
+import { VCS_KINDS } from '../../core/src/vcs.ts';
+import { aggregateRetention, REASON_LABEL, REASONS, retentionItem, shareOf, STATUS_LABEL, STATUSES, VCS_LABEL, type RetentionItem } from '../src/lib/retention.ts';
+import { compareRows, compareSide, COMPARE_MIN_SESSIONS, defaultPeriods, inPeriod, type CompareSession } from '../src/lib/compare.ts';
+
+const item = (o: Partial<RetentionItem>): RetentionItem => ({ outcome: 'measured', reason: null, vcs: 'git', baseline: 'observed', on: 'local', mapped: false, hunks: [0, 0, 0, 0], lines: [0, 0, 0, 0], ...o });
+
+describe('lib/retention', () => {
+  it('状態・理由・VCS の並びと名前が core と同じ(ブラウザ側は core を読めないので写している)', () => {
+    expect([...STATUSES]).toEqual([...RETENTION_STATUSES]);
+    expect(STATUS_LABEL).toEqual(RETENTION_STATUS_LABEL);
+    expect([...REASONS]).toEqual([...UNATTRIBUTABLE_REASONS]);
+    expect(REASON_LABEL).toEqual(UNATTRIBUTABLE_REASON_LABEL);
+    expect(Object.keys(VCS_LABEL).sort()).toEqual([...VCS_KINDS].sort());
+  });
+
+  it('retentionItem: 埋め込みの形にする(パスは持たない)', () => {
+    const r = retentionItem({
+      outcome: 'unattributable',
+      reason: 'repo_not_found',
+      vcs: null,
+      baseline: null,
+      counts: { kept: 0, modified: 0, missing: 0, unattributable: 2 },
+      lines: { kept: 0, modified: 0, missing: 0, unattributable: 5 },
+    });
+    expect(r).toEqual({ outcome: 'unattributable', reason: 'repo_not_found', vcs: null, baseline: null, on: 'local', mapped: false, hunks: [0, 0, 0, 2], lines: [0, 0, 0, 5] });
+    expect(retentionItem({ outcome: 'no_ai_changes', vcs: null, baseline: null, counts: { kept: 0, modified: 0, missing: 0, unattributable: 0 }, lines: { kept: 0, modified: 0, missing: 0, unattributable: 0 }, computedOn: 'sender', pathMapped: true }).outcome).toBe('none');
+  });
+
+  it('aggregateRetention: 照合できたセッションだけを分母にし、記録範囲(照合していない・変更なし・照合不能の理由)を数える', () => {
+    const a = aggregateRetention([
+      { retention: item({ hunks: [3, 1, 1, 1], lines: [10, 2, 3, 4] }) },
+      { retention: item({ baseline: 'estimated', vcs: 'p4', on: 'sender', hunks: [1, 0, 0, 0], lines: [2, 0, 0, 0] }) },
+      { retention: item({ mapped: true, hunks: [0, 0, 2, 0], lines: [0, 0, 4, 0] }) },
+      { retention: item({ outcome: 'unattributable', reason: 'no_vcs', hunks: [0, 0, 0, 3] }) },
+      { retention: item({ outcome: 'unattributable', reason: null, hunks: [0, 0, 0, 1] }) },
+      { retention: item({ outcome: 'none' }) },
+      {},
+      { retention: null },
+    ]);
+    expect(a).toMatchObject({
+      sessions: 8,
+      notChecked: 2,
+      none: 1,
+      withAi: 5,
+      measured: 3,
+      unattributable: { no_vcs: 1, read_error: 1 },
+      unattributableTotal: 2,
+      baseline: { observed: 2, estimated: 1 },
+      byVcs: { git: 2, p4: 1 },
+      sender: 1,
+      mapped: 1,
+      hunks: [4, 1, 3, 1],
+      lines: [12, 2, 7, 4],
+    });
+    // 割合の分母は照合できたまとまり(照合不能を除く 8)
+    expect(shareOf(a.hunks, 0)).toBe(4 / 8);
+    expect(shareOf([0, 0, 0, 5], 0)).toBeNull();
+  });
+});
+
+describe('lib/compare', () => {
+  const s = (id: string, o: Partial<CompareSession> = {}): CompareSession =>
+    ({
+      id,
+      turns: 2,
+      activeMs: 60_000,
+      tools: { total: 10 },
+      friction: { toolFailures: 1 },
+      analysis: { filesReedited: 0, extraEdits: 0, maxConsecutiveFailures: 0, turns: 2 },
+      tokens: { nanoAiu: 2e9 },
+      createdAt: '2026-11-01T10:00:00.000Z',
+      project: 'p',
+      ...o,
+    }) as unknown as CompareSession;
+
+  it('compareSide / compareRows: 割合と平均は 5 セッション以上のときだけ。差は B − A', () => {
+    const A = Array.from({ length: COMPARE_MIN_SESSIONS }, (_, i) => s(`a${i}`, i === 0 ? { analysis: { filesReedited: 1, extraEdits: 0, maxConsecutiveFailures: 0, turns: 2 } } : {}));
+    const B = [s('b1'), s('b2')];
+    const rows = compareRows(compareSide(A), compareSide(B));
+    const r = (k: string) => rows.find((x) => x.key === k)!;
+    expect(r('sessions')).toMatchObject({ a: 5, b: 2 });
+    expect(r('turns')).toMatchObject({ a: 2, b: null });
+    expect(r('failure')).toMatchObject({ a: 0.1, b: null });
+    expect(r('rework')).toMatchObject({ a: 0.2, b: null });
+    expect(r('aiu')).toMatchObject({ a: 2 });
+    expect(r('active')).toMatchObject({ a: 60_000 });
+    // 照合できたセッションが 5 未満なら残存の割合は出さない
+    expect(r('retention-kept').a).toBeNull();
+    const withRet = Array.from({ length: 5 }, (_, i) => s(`r${i}`, { retention: item({ hunks: [1, 1, 2, 9], lines: [1, 1, 2, 9] }) }));
+    const rr = compareRows(compareSide(withRet), compareSide([]));
+    expect(rr.find((x) => x.key === 'retention-kept')!.a).toBe(10 / 20);
+    expect(rr.find((x) => x.key === 'retention-missing')!.a).toBe(10 / 20);
+    expect(rr.find((x) => x.key === 'retention-measured')!.a).toBe(5);
+  });
+
+  it('inPeriod と defaultPeriods: 両端を含む。既定は最後の日までの 30 日と、その前の 30 日', () => {
+    expect(inPeriod({ createdAt: '2026-11-01T23:00:00Z' }, '2026-11-01', '2026-11-01')).toBe(true);
+    expect(inPeriod({ createdAt: '2026-10-31T23:00:00Z' }, '2026-11-01', '')).toBe(false);
+    expect(inPeriod({ createdAt: null }, '', '')).toBe(false);
+    expect(defaultPeriods('2026-11-30T12:00:00Z')).toEqual({ a: { from: '2026-10-02', to: '2026-10-31' }, b: { from: '2026-11-01', to: '2026-11-30' } });
+  });
+});
