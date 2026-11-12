@@ -79,6 +79,10 @@ describe('parseCli', () => {
     expect(parseCli(['open', 'D:\\logs'])).toMatchObject({ pick: false });
     expect(() => parseCli(['open', '--pick', 'D:\\logs'])).toThrow(/--pick を一緒に使えません/);
     expect(() => parseCli(['serve', '--pick'])).toThrow(/--pick は open でだけ/);
+    // --rebuild: 変わっていなくても作り直す(open だけ)
+    expect(parseCli(['open', 'D:\logs'])).toMatchObject({ rebuild: false });
+    expect(parseCli(['open', 'D:\logs', '--rebuild'])).toMatchObject({ rebuild: true });
+    expect(() => parseCli(['all', '--rebuild'])).toThrow(/--rebuild は open でだけ/);
     expect(() => parseCli(['open'])).toThrow(/atlas open --pick/);
   });
 

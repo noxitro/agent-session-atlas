@@ -54,6 +54,7 @@ import type { CliOptions, GroupCliOptions, JudgeCliOptions, MemoCliOptions, Turn
 import { findRunningServer, openInBrowser, startServe, type ServeOptions } from './serve.ts';
 import { acquireOutLock, OutBusyError } from './jobs.ts';
 import { pickFolder } from './folder-picker.ts';
+import { canReuse, clearBuilt, inputsKey, readBuilt, writeBuilt } from './open-reuse.ts';
 import { checkFolder, folderPaths, foldersRootOf, isReadOnlyView, listFolderStates, readFolderState, writeFolderState, type FolderRun, type FolderState } from './folders.ts';
 import { buildTables } from './tables.ts';
 import { exportGroup } from './group-export.ts';
@@ -757,7 +758,7 @@ export async function runOpen(o: CliOptions, log: Log, deps: { pick?: typeof pic
     const release = acquireOutLock(p.out, 'all', 'cli');
     try {
       save({ state: 'aggregating', pid: process.pid, at: at() }, true);
-      build = (await runCommand({ ...o, command: 'all', home: info.path, out: fp.out, notesDir: fp.notes }, p, log)).build;
+      build = await runAllOrReuse({ ...o, command: 'all', home: info.path, out: fp.out, notesDir: fp.notes }, p, fp.built, log);
     } finally {
       release();
     }
@@ -769,6 +770,43 @@ export async function runOpen(o: CliOptions, log: Log, deps: { pick?: typeof pic
     throw e;
   }
   return { paths: p, build };
+}
+
+/**
+ * open の集計: 共有フォルダから写した後、前に集計したときから何も変わっていなければ(open-reuse.ts)、作り直さずにそのときのレポートを使う。
+ * 使い回したときは build を返さない(レポートは前のまま)
+ */
+async function runAllOrReuse(o: CliOptions, p: Paths, builtFile: string, log: Log): Promise<BuildResult | undefined> {
+  const t = performance.now();
+  await runSnapshot(p, o.since, log, o.snapshotAll, o.snapshotPrune);
+  const configPath = o.config ?? process.env.ATLAS_CONFIG ?? null;
+  const key = inputsKey(
+    p,
+    { since: o.since, project: o.project, client: o.client, model: o.model, branch: o.branch, group: o.group, sessions: o.sessions, anonymize: o.anonymize, toolOutput: o.toolOutput, maxChars: o.maxChars, tempDirs: o.tempDirs },
+    configPath ? resolve(configPath) : join(REPO_ROOT, CONFIG_FILE),
+  );
+  const prev = readBuilt(builtFile);
+  if (!o.rebuild && canReuse(prev, key, p.out)) {
+    log(`open: 前に集計したとき(${new Date(prev.builtAt).toLocaleString('ja-JP')})から、フォルダの中身も atlas も変わっていないので、そのときのレポートを使います(作り直すときは --rebuild か、画面の「集計し直す」)、${ms(performance.now() - t)}`);
+    return undefined;
+  }
+  clearBuilt(builtFile);
+  const build = await runAllAfterSnapshot(o, p, log, t);
+  writeBuilt(builtFile, key, p.out);
+  return build;
+}
+
+/** all の、snapshot の後(extract → metrics → build)。t は all を始めた時刻 */
+async function runAllAfterSnapshot(o: CliOptions, p: Paths, log: Log, t: number): Promise<BuildResult> {
+  const f: SessionFilter = { since: o.since, project: o.project, client: o.client, model: o.model, branch: o.branch, group: o.group, sessions: o.sessions };
+  await runExtract(p, o.since, log, o.tempDirs, o.config);
+  await runMetrics(p, f, log, { tables: !o.anonymize });
+  // セッション記録(.md)も作る(build と export で作るものが違うと、どちらで作ったかで経過が見えたり消えたりするため)。
+  // 伏せ字版は作らない: 記録の伏せ字は自由記述を機械的に置き換えるだけで、共有する sessions/ に HTML より弱い保証のものが混ざる
+  const build = await runBuild(p, { ...f, anonymize: o.anonymize, transcripts: o.anonymize ? null : { toolOutput: o.toolOutput, maxChars: o.maxChars } }, log);
+  if (o.anonymize) log('all: 伏せ字版なのでセッション記録(.md)は作りません(必要なら atlas export --anonymize)');
+  log(`all: 完了 ${ms(performance.now() - t)}`);
+  return build;
 }
 
 export async function run(o: CliOptions, log: Log): Promise<RunResult> {
@@ -840,14 +878,7 @@ async function runCommand(o: CliOptions, p: Paths, log: Log): Promise<RunResult>
       return runOpen(o, log);
     case 'all': {
       await runSnapshot(p, o.since, log, o.snapshotAll, o.snapshotPrune);
-      await runExtract(p, o.since, log, o.tempDirs, o.config);
-      await runMetrics(p, f, log, { tables: !o.anonymize });
-      // セッション記録(.md)も作る(build と export で作るものが違うと、どちらで作ったかで経過が見えたり消えたりするため)。
-      // 伏せ字版は作らない: 記録の伏せ字は自由記述を機械的に置き換えるだけで、共有する sessions/ に HTML より弱い保証のものが混ざる
-      const build = await runBuild(p, { ...f, anonymize: o.anonymize, transcripts: o.anonymize ? null : { toolOutput: o.toolOutput, maxChars: o.maxChars } }, log);
-      if (o.anonymize) log('all: 伏せ字版なのでセッション記録(.md)は作りません(必要なら atlas export --anonymize)');
-      log(`all: 完了 ${ms(performance.now() - t)}`);
-      return { paths: p, build };
+      return { paths: p, build: await runAllAfterSnapshot(o, p, log, t) };
     }
   }
 }

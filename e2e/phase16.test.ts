@@ -39,6 +39,39 @@ async function aggregate(home: string, out: string): Promise<SessionsFile> {
 
 const tokens = (ss: SessionRecord[]): number => ss.reduce((n, s) => n + (s.tokens.input ?? 0) + (s.tokens.output ?? 0), 0);
 
+/** atlas open を起動し、サーバが応え始めるまで待つ。返すのは、それまでの出力と、止める関数 */
+async function openUntilServing(args: string[]): Promise<{ url: string; output: () => string; pid: number | undefined; stop: () => Promise<void> }> {
+  const child = spawn(process.execPath, [CLI, 'open', ...args], { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] });
+  let output = '';
+  child.stdout.on('data', (d) => (output += String(d)));
+  child.stderr.on('data', (d) => (output += String(d)));
+  const stop = async (): Promise<void> => {
+    child.kill();
+    if (child.exitCode === null) await new Promise((r) => child.once('exit', r));
+  };
+  try {
+    const url = await new Promise<string>((ok, ng) => {
+      const t = setTimeout(() => ng(new Error(`open が起動しない: ${output}`)), 150_000);
+      child.once('exit', (code) => {
+        clearTimeout(t);
+        ng(new Error(`open が終わった(${code}): ${output}`));
+      });
+      const tick = (): void => {
+        const m = /serve: (http:\/\/127\.0\.0\.1:\d+\/atlas\.html)/.exec(output);
+        if (m) {
+          clearTimeout(t);
+          ok(m[1]);
+        } else setTimeout(tick, 100);
+      };
+      tick();
+    });
+    return { url, output: () => output, pid: child.pid, stop };
+  } catch (e) {
+    await stop();
+    throw e;
+  }
+}
+
 describe('Phase 16 E2E: アップロード先から集計し直す(読む側)', () => {
   let close: () => Promise<void>;
   let home: string;
@@ -262,26 +295,11 @@ describe('Phase 16 E2E: アップロード先から集計し直す(読む側)', 
     const localOut = join(WORK, 'out-local');
     const localNotes = join(WORK, 'notes-local');
     const fp = folderPaths(foldersRootOf(localOut), localNotes, everyone);
-    const child = spawn(process.execPath, [CLI, 'open', everyone, '--out', localOut, '--notes-dir', localNotes, '--no-open', '--port', '0'], { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] });
-    let output = '';
-    child.stdout.on('data', (d) => (output += String(d)));
-    child.stderr.on('data', (d) => (output += String(d)));
+    const opened = await openUntilServing([everyone, '--out', localOut, '--notes-dir', localNotes, '--no-open', '--port', '0']);
+    const { url } = opened;
+    const output = opened.output();
+    const child = { pid: opened.pid };
     try {
-      const url = await new Promise<string>((ok, ng) => {
-        const t = setTimeout(() => ng(new Error(`open が起動しない: ${output}`)), 150_000);
-        child.once('exit', (code) => {
-          clearTimeout(t);
-          ng(new Error(`open が終わった(${code}): ${output}`));
-        });
-        const tick = (): void => {
-          const m = /serve: (http:\/\/127\.0\.0\.1:\d+\/atlas\.html)/.exec(output);
-          if (m) {
-            clearTimeout(t);
-            ok(m[1]);
-          } else setTimeout(tick, 100);
-        };
-        tick();
-      });
       expect(output).toContain('2 段下まで読み');
       // 集計はフォルダごとの置き場に出る。いつもの出力先には何も作らない
       const all = JSON.parse(await readFile(join(fp.out, 'sessions.json'), 'utf8')) as SessionsFile;
@@ -311,8 +329,54 @@ describe('Phase 16 E2E: アップロード先から集計し直す(読む側)', 
       const st = (await (await fetch(new URL('api/state', url), { headers: { 'x-atlas-token': token } })).json()) as { readOnly: boolean };
       expect(st.readOnly).toBe(true);
     } finally {
-      child.kill();
-      if (child.exitCode === null) await new Promise((r) => child.once('exit', r));
+      await opened.stop();
     }
   }, 240_000);
+
+  it('h. atlas open: 前に集計したときから何も変わっていなければ、作り直さずにそのときのレポートを開く。変わっていれば作り直す', async () => {
+    const everyone = join(WORK, 'everyone-open');
+    const localOut = join(WORK, 'out-local');
+    const localNotes = join(WORK, 'notes-local');
+    const fp = folderPaths(foldersRootOf(localOut), localNotes, everyone);
+    const args = [everyone, '--out', localOut, '--notes-dir', localNotes, '--no-open', '--port', '0'];
+    const REUSED = /そのときのレポートを使います/;
+    /** 開いて、サーバが応えるところまでの出力を返す(レポートが開けることも確かめる) */
+    const open = async (extra: string[] = []): Promise<string> => {
+      const o = await openUntilServing([...args, ...extra]);
+      try {
+        const data = extractEmbedded<{ source?: { path: string } }>(await (await fetch(o.url)).text());
+        expect(data.source).toMatchObject({ path: everyone });
+        return o.output();
+      } finally {
+        await o.stop();
+      }
+    };
+    // g. で集計したまま(サーバは止めてある): 共有から写すところまでは行い、その後は作り直さない
+    expect(existsSync(fp.built)).toBe(true);
+    const htmlBefore = await readFile(join(fp.out, 'atlas.html'), 'utf8');
+    const same = await open();
+    expect(same).toMatch(/snapshot: /);
+    expect(same).toMatch(REUSED);
+    expect(same).not.toMatch(/extract: |build: /);
+    expect(await readFile(join(fp.out, 'atlas.html'), 'utf8')).toBe(htmlBefore);
+    // 元のフォルダのログが増えた: 作り直す
+    const events = join(everyone, 'person-a', GROUP_A, ids[0], 'events.jsonl');
+    await writeFile(events, `${await readFile(events, 'utf8')}
+`);
+    const grown = await open();
+    expect(grown).not.toMatch(REUSED);
+    expect(grown).toMatch(/extract: /);
+    expect(grown).toMatch(/build: /);
+    // --rebuild: 変わっていなくても作り直す
+    const forced = await open(['--rebuild']);
+    expect(forced).not.toMatch(REUSED);
+    expect(forced).toMatch(/build: /);
+    // 別の処理(画面の「集計し直す」・判定など)がレポートを書き換えていたら、作り直す
+    await writeFile(join(fp.out, 'atlas.html'), `${await readFile(join(fp.out, 'atlas.html'), 'utf8')}<!-- 別の処理が書いた -->`);
+    const touched = await open();
+    expect(touched).not.toMatch(REUSED);
+    expect(touched).toMatch(/build: /);
+    // 作り直した後は、また使い回す
+    expect(await open()).toMatch(REUSED);
+  }, 480_000);
 });

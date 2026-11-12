@@ -4,6 +4,7 @@
 //   <キー>/folder.json … 開いたフォルダと、今の状態(集計中・表示中・失敗)。画面の一覧はこれを読む
 //   <キー>/open.log    … 画面から開いたときの、集計の出力(進み具合と失敗の理由)
 //   <キー>/out/        … 集計の出力先(atlas.html など)
+//   <キー>/built.json  … 前に集計したときの入力の印(何も変わっていなければ、作り直さずに使い回す。open-reuse.ts)
 // メモとタスクタグは <notes-dir>/folders/<キー>/ に分ける。
 // 設定ファイル(atlas.config.json)には書かない: 知らない項目があると前の版の atlas が設定を読めなくなる。
 import { spawn as nodeSpawn } from 'node:child_process';
@@ -12,6 +13,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, 
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { describeSource, UPLOAD_PROBE_HINT, type SourceShape } from '../../core/src/index.ts';
 import { alive, JOB_ENV, JOB_LOCK_FILE, MAIN_TS, withThreadPool } from './jobs.ts';
+import { BUILT_FILE } from './open-reuse.ts';
 
 export const FOLDER_STATE_FILE = 'folder.json';
 export const FOLDER_LOG_FILE = 'open.log';
@@ -56,6 +58,8 @@ export interface FolderPaths {
   notes: string;
   state: string;
   log: string;
+  /** 前に集計したときの入力の印(open-reuse.ts) */
+  built: string;
 }
 
 /** 別のフォルダを開いた(atlas open)ときの出力先か。<置き場>/<キー>/out で、隣に folder.json がある */
@@ -76,7 +80,7 @@ export function isReadOnlyView(outDir: string, source: { layout?: string | null 
 export function folderPaths(root: string, notesBase: string, path: string): FolderPaths {
   const key = folderKey(path);
   const dir = join(resolve(root), key);
-  return { key, dir, out: join(dir, 'out'), notes: join(resolve(notesBase), 'folders', key), state: join(dir, FOLDER_STATE_FILE), log: join(dir, FOLDER_LOG_FILE) };
+  return { key, dir, out: join(dir, 'out'), notes: join(resolve(notesBase), 'folders', key), state: join(dir, FOLDER_STATE_FILE), log: join(dir, FOLDER_LOG_FILE), built: join(dir, BUILT_FILE) };
 }
 
 export interface FolderRun {
