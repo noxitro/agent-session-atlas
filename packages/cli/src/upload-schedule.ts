@@ -13,7 +13,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AUTO_ENTRY_NAME, AUTO_LOG_FILE, AUTO_STATUS_FILE, type AutoStatusFile } from './upload-auto-files.ts';
+import { AUTO_ENTRY_NAME, AUTO_LOG_FILE, AUTO_STATUS_FILE, NO_UPDATE_FLAG, type AutoStatusFile } from './upload-auto-files.ts';
 
 /** タスク スケジューラでの名前(ライブラリの直下。サブフォルダは、作る権限が無い PC があるため使わない) */
 export const TASK_NAME = 'agent-session-atlas-upload';
@@ -144,9 +144,14 @@ export function listTimes(times: string[]): string {
   return times.join('・');
 }
 
-/** 窓を出さずに node で upload-auto.ts を動かす引数(conhost.exe に渡す) */
-export function taskArguments(node: string, entry: string = AUTO_ENTRY): string {
-  return `--headless "${node}" "${entry}"`;
+/** 窓を出さずに node で upload-auto.ts を動かす引数(conhost.exe に渡す)。update が false なら、送る前に atlas を新しい版にしない */
+export function taskArguments(node: string, entry: string = AUTO_ENTRY, update = true): string {
+  return `--headless "${node}" "${entry}"${update ? '' : ` ${NO_UPDATE_FLAG}`}`;
+}
+
+/** タスクの引数から、送る前に atlas を新しい版にするかを読む(--no-update が無ければする。この版より前に登録したタスクも、する) */
+export function updatesOf(args: string): boolean {
+  return !args.split(/\s+/).includes(NO_UPDATE_FLAG);
 }
 
 /** タスクの引数から、登録したときの node のパスを取り出す(Node.js を入れ直して場所が変わったかを見る) */
@@ -156,7 +161,8 @@ export function nodeOf(args: string): string | null {
 
 export interface Scheduler {
   query(): Promise<TaskState>;
-  register(times: string[]): Promise<void>;
+  /** update: 送る前に atlas を新しい版にするか(既定はする) */
+  register(times: string[], update?: boolean): Promise<void>;
   start(): Promise<void>;
   unregister(): Promise<void>;
 }
@@ -172,13 +178,13 @@ export function taskScheduler(run: PsRunner = runPowerShell, o: { node?: string;
       // PowerShell 5.1 の ConvertTo-Json は、空の並びを null にすることがある
       return t.exists ? { ...t, times: t.times ?? [] } : t;
     },
-    async register(times) {
+    async register(times, update = true) {
       const r = await run(REGISTER_SCRIPT, {
         ...env,
-        ATLAS_TASK_ARGS: taskArguments(o.node ?? process.execPath, o.entry ?? AUTO_ENTRY),
+        ATLAS_TASK_ARGS: taskArguments(o.node ?? process.execPath, o.entry ?? AUTO_ENTRY, update),
         ATLAS_TASK_CWD: o.cwd ?? REPO_ROOT,
         ATLAS_TASK_TIMES: times.join(','),
-        ATLAS_TASK_DESCRIPTION: `agent-session-atlas: 毎日 ${listTimes(times)} に、印を付けたプロジェクトのセッションを送り先へ送ります(schedule-upload.bat で変更・停止できます)`,
+        ATLAS_TASK_DESCRIPTION: `agent-session-atlas: 毎日 ${listTimes(times)} に、${update ? 'atlas を新しい版にしてから、' : ''}印を付けたプロジェクトのセッションを送り先へ送ります(schedule-upload.bat で変更・停止できます)`,
       });
       if (r.code !== 0) throw psError(r, 'タスクを登録できませんでした');
     },
@@ -222,6 +228,14 @@ export function describeStatus(s: AutoStatus): string {
   return `前回: ${when(s.finishedAt)} に ${s.sent.length} プロジェクト・${sessions} セッションを送りました${notes ? `(${notes})` : ''}。`;
 }
 
+/** 前回、送る前に atlas を新しい版にしたかを 1 行で(記録が無い・最新だったときは null。毎回出すと読み飛ばされるので、知らせることがあるときだけ) */
+export function describeUpdate(s: AutoStatus): string | null {
+  const u = s.update;
+  if (!u || u.outcome === 'latest') return null;
+  if (u.outcome === 'updated') return `atlas の更新: ${u.note}。`;
+  return `atlas の更新: ${u.note}${u.outcome === 'skipped' ? '(新しい版にするには、git pull してください)' : ''}。`;
+}
+
 export interface ScheduleIo {
   ask: (q: string) => Promise<string>;
   print: (line: string) => void;
@@ -254,6 +268,8 @@ async function runOnce(io: ScheduleIo, o: ScheduleOptions): Promise<void> {
     const s = readAutoStatus(o.outDir);
     if (s && s.startedAt !== before && s.finishedAt) {
       io.print(`  ${describeStatus(s).replace(/^前回: /, '')}`);
+      const u = describeUpdate(s);
+      if (u) io.print(`  ${u}`);
       if (!s.ok) io.print(`  記録: ${join(o.outDir, AUTO_LOG_FILE)}`);
       return;
     }
@@ -297,8 +313,12 @@ export async function runSchedule(io: ScheduleIo, o: ScheduleOptions): Promise<v
     if (task.state === 'Disabled') io.print('  ただし、タスク スケジューラで「無効」になっています。t で登録し直すと有効に戻ります。');
     const node = nodeOf(task.arguments);
     if (node && !exists(node)) io.print(`  登録したときの Node.js が見つかりません(${node})。t で登録し直してください。`);
-    if (last) io.print(`  ${describeStatus(last)}`);
-    else if (task.lastRun) io.print(`  前回: ${when(task.lastRun)} に動きましたが、結果の記録がありません(終了コード ${task.lastResult})。`);
+    io.print(`  atlas の自動更新: ${updatesOf(task.arguments) ? '送る前に、atlas を新しい版にします' : 'しません(u で、送る前に新しい版にするよう切り替えられます)'}`);
+    if (last) {
+      io.print(`  ${describeStatus(last)}`);
+      const u = describeUpdate(last);
+      if (u) io.print(`  ${u}`);
+    } else if (task.lastRun) io.print(`  前回: ${when(task.lastRun)} に動きましたが、結果の記録がありません(終了コード ${task.lastResult})。`);
     else io.print('  まだ 1 回も動いていません。');
   } else {
     io.print('  まだ登録していません。');
@@ -322,6 +342,8 @@ export async function runSchedule(io: ScheduleIo, o: ScheduleOptions): Promise<v
     io.print('');
     io.print('== 自動で送るときの決まり ==');
     io.print('  - 毎日決まった時刻に、窓を出さずに集計し直してから、印を付けたプロジェクトを送り先へ送ります。');
+    io.print('  - 送る前に、atlas を新しい版にします(git pull。依存が変わっていれば npm install も)。手でファイルを変えているとき・');
+    io.print('    main 以外のブランチのときは、新しい版にせず、今の版のまま送ります。更新しないようにするには、登録した後に u で切り替えます。');
     io.print('  - その時刻に PC が止まっていたら、次に PC を使い始めたときに送ります(ログオンしている間だけ動きます)。');
     io.print('  - 送る前の確認(送り先・大きさ・秘密らしい文字列)は出しません。秘密らしい文字列があっても送り、数を記録に残します。');
     io.print('  - 印の無いプロジェクトは送りません。新しく始めたプロジェクトは、画面で印を付けてください。');
@@ -340,15 +362,28 @@ export async function runSchedule(io: ScheduleIo, o: ScheduleOptions): Promise<v
   }
 
   io.print('');
-  const a = (await io.ask('  t = 時刻を変える   s = 今すぐ 1 回送る   d = 自動で送るのをやめる   Enter = 閉じる\n  > ')).normalize('NFKC').trim().toLowerCase();
+  const updating = updatesOf(task.arguments);
+  const a = (
+    await io.ask(`  t = 時刻を変える   s = 今すぐ 1 回送る   u = atlas の自動更新を${updating ? 'やめる' : 'する'}   d = 自動で送るのをやめる   Enter = 閉じる\n  > `)
+  )
+    .normalize('NFKC')
+    .trim()
+    .toLowerCase();
   if (a === 't') {
     const times = await askTimes(io, task.times);
     if (!times) {
       io.print('  やめました(登録は今のままです)。');
       return;
     }
-    await o.scheduler.register(times);
+    await o.scheduler.register(times, updating);
     io.print(`  登録し直しました。毎日 ${listTimes(times)} に送ります。`);
+  } else if (a === 'u') {
+    if (!task.times.length) {
+      io.print('  送る時刻が分からないので、切り替えられません。t で時刻を入れて登録し直してください。');
+      return;
+    }
+    await o.scheduler.register(task.times, !updating);
+    io.print(updating ? '  切り替えました。これからは、送る前に atlas を新しい版にしません(新しい版にするには、git pull してください)。' : '  切り替えました。これからは、送る前に atlas を新しい版にします。');
   } else if (a === 's') {
     await runOnce(io, o);
   } else if (a === 'd') {

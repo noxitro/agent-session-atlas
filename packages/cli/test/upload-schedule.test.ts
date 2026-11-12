@@ -8,6 +8,7 @@ import { runAutoUpload, type AutoDeps } from '../src/upload-auto.ts';
 import type { AutoStatusFile } from '../src/upload-auto-files.ts';
 import {
   describeStatus,
+  describeUpdate,
   MAX_TIMES,
   nodeOf,
   parseTime,
@@ -19,6 +20,7 @@ import {
   TASK_NAME,
   taskArguments,
   taskScheduler,
+  updatesOf,
   type PsRunner,
   type Scheduler,
   type ScheduleIo,
@@ -68,6 +70,16 @@ describe('送る時刻と、タスクの中身', () => {
     expect(nodeOf('ほかのもの')).toBeNull();
   });
 
+  it('送る前に atlas を新しい版にするのが既定。しないときは --no-update を付ける(この版より前に登録したタスクは、する)', () => {
+    const on = taskArguments('C:\\node\\node.exe', 'E:\\a\\upload-auto.ts');
+    const off = taskArguments('C:\\node\\node.exe', 'E:\\a\\upload-auto.ts', false);
+    expect(off).toBe(`${on} --no-update`);
+    expect(updatesOf(on)).toBe(true);
+    expect(updatesOf(off)).toBe(false);
+    expect(nodeOf(off)).toBe('C:\\node\\node.exe');
+    expect(updatesOf('--headless "C:\\node\\node.exe" "E:\\a\\upload-auto.ts"')).toBe(true);
+  });
+
   it('登録のスクリプトは、PC が止まっていた回を次に動かし、電池でも動かし、ログオン中の自分のユーザーで動かす(値は環境変数で渡す)', () => {
     expect(REGISTER_SCRIPT).toContain('-StartWhenAvailable');
     expect(REGISTER_SCRIPT).toContain('-AllowStartIfOnBatteries -DontStopIfGoingOnBatteries');
@@ -102,7 +114,7 @@ describe('送る時刻と、タスクの中身', () => {
     await s.register(['07:05', '12:30']);
     expect(calls[3]!.script).toBe(REGISTER_SCRIPT);
     expect(calls[3]!.env).toMatchObject({ ATLAS_TASK_NAME: TASK_NAME, ATLAS_TASK_TIMES: '07:05,12:30', ATLAS_TASK_ARGS: '--headless "C:\\node\\node.exe" "E:\\a\\upload-auto.ts"', ATLAS_TASK_CWD: 'E:\\a' });
-    expect(calls[3]!.env.ATLAS_TASK_DESCRIPTION).toContain('毎日 07:05・12:30 に');
+    expect(calls[3]!.env.ATLAS_TASK_DESCRIPTION).toContain('毎日 07:05・12:30 に、atlas を新しい版にしてから');
     await expect(s.unregister()).rejects.toThrow('タスクを消せませんでした(Register-ScheduledTask : アクセスが拒否されました。)');
   });
 
@@ -122,6 +134,18 @@ describe('送る時刻と、タスクの中身', () => {
     expect(describeStatus({ ...base, ok: false, error: '送り先が見つかりません' })).toMatch(/に送れませんでした: 送り先が見つかりません$/);
     expect(describeStatus({ ...base, finishedAt: null })).toContain('まだ終わっていません');
   });
+
+  it('送る前の更新は、知らせることがあるときだけ 1 行で出す(最新だった・記録が無いときは出さない)', () => {
+    const base: AutoStatusFile = { startedAt: '2026-11-11T09:00:00.000Z', finishedAt: '2026-11-11T09:01:00.000Z', ok: true, error: null, sent: [], secrets: 0, root: 'X:\\logs' };
+    expect(describeUpdate(base)).toBeNull();
+    expect(describeUpdate({ ...base, update: null })).toBeNull();
+    expect(describeUpdate({ ...base, update: { outcome: 'latest', from: 'aaaaaaa', to: 'aaaaaaa', note: '最新です(aaaaaaa)' } })).toBeNull();
+    expect(describeUpdate({ ...base, update: { outcome: 'updated', from: 'aaaaaaa', to: 'bbbbbbb', note: 'aaaaaaa から bbbbbbb に更新しました' } })).toBe('atlas の更新: aaaaaaa から bbbbbbb に更新しました。');
+    expect(describeUpdate({ ...base, update: { outcome: 'skipped', from: 'aaaaaaa', to: null, note: 'atlas のファイルを手で変えているので、更新しません' } })).toBe(
+      'atlas の更新: atlas のファイルを手で変えているので、更新しません(新しい版にするには、git pull してください)。',
+    );
+    expect(describeUpdate({ ...base, update: { outcome: 'failed', from: 'aaaaaaa', to: null, note: '新しい版を取りに行けなかったので、今の版のまま送ります' } })).toBe('atlas の更新: 新しい版を取りに行けなかったので、今の版のまま送ります。');
+  });
 });
 
 describe('登録の対話(runSchedule)', () => {
@@ -130,7 +154,7 @@ describe('登録の対話(runSchedule)', () => {
     const log: string[] = [];
     const s: Scheduler = {
       query: async () => state,
-      register: async (t) => void log.push(`register ${t.join(',')}`),
+      register: async (t, update = true) => void log.push(`register ${t.join(',')}${update ? '' : ' no-update'}`),
       start: async () => {
         log.push('start');
         await onStart?.();
@@ -256,6 +280,47 @@ describe('登録の対話(runSchedule)', () => {
     expect(d.log).toEqual(['register 18:00']);
   });
 
+  it('自動更新: 登録の決まりで知らせ、登録してあれば様子と前回の更新を見せる。u で切り替え、t は今の設定のまま登録し直す', async () => {
+    const a = fakeScheduler({ exists: false });
+    const f = fakeIo(['', '']);
+    await runSchedule(f.io, { scheduler: a.s, config: ready, outDir: dir });
+    expect(f.text()).toContain('送る前に、atlas を新しい版にします(git pull。依存が変わっていれば npm install も)');
+    expect(a.log).toEqual(['register 18:00']);
+
+    const st: AutoStatusFile = {
+      startedAt: '2026-11-11T09:00:00.000Z',
+      finishedAt: '2026-11-11T09:02:00.000Z',
+      ok: true,
+      error: null,
+      sent: [{ name: 'a', sessions: 1 }],
+      secrets: 0,
+      root: dir,
+      update: { outcome: 'updated', from: 'aaaaaaa', to: 'bbbbbbb', note: 'aaaaaaa から bbbbbbb に更新しました' },
+    };
+    await writeFile(join(dir, 'auto-upload.json'), JSON.stringify(st));
+    const b = fakeScheduler(registered);
+    const g = fakeIo(['u']);
+    await runSchedule(g.io, { scheduler: b.s, config: ready, outDir: dir, exists: () => true });
+    expect(g.text()).toContain('atlas の自動更新: 送る前に、atlas を新しい版にします');
+    expect(g.text()).toContain('atlas の更新: aaaaaaa から bbbbbbb に更新しました。');
+    expect(g.asked[0]).toContain('u = atlas の自動更新をやめる');
+    expect(b.log).toEqual(['register 18:00 no-update']);
+    expect(g.text()).toContain('これからは、送る前に atlas を新しい版にしません');
+
+    const off: TaskState = { ...registered, arguments: `${registered.arguments} --no-update` };
+    const c = fakeScheduler(off);
+    const h = fakeIo(['u']);
+    await runSchedule(h.io, { scheduler: c.s, config: ready, outDir: dir, exists: () => true });
+    expect(h.text()).toContain('atlas の自動更新: しません');
+    expect(h.asked[0]).toContain('u = atlas の自動更新をする');
+    expect(c.log).toEqual(['register 18:00']);
+
+    // t で時刻を変えても、自動更新の設定はそのまま
+    const d = fakeScheduler(off);
+    await runSchedule(fakeIo(['t', '17:30']).io, { scheduler: d.s, config: ready, outDir: dir, exists: () => true });
+    expect(d.log).toEqual(['register 17:30 no-update']);
+  });
+
   it('登録したときの Node.js が無くなっていたり、タスクが無効になっていたりしたら、登録し直すよう知らせる', async () => {
     const f = fakeIo(['']);
     const { s } = fakeScheduler({ ...registered, state: 'Disabled' });
@@ -290,9 +355,9 @@ describe('自動で送る本体(runAutoUpload)', () => {
   const status = async () => JSON.parse(await readFile(join(dir, 'auto-upload.json'), 'utf8')) as AutoStatusFile;
 
   it('集計し直してから送り、送ったものを結果のファイルに残す(送れたときは知らせない)', async () => {
-    const { d, notes } = deps();
+    const { d, notes } = deps({ update: { outcome: 'updated', from: 'aaaaaaa', to: 'bbbbbbb', note: 'aaaaaaa から bbbbbbb に更新しました' } });
     expect(await runAutoUpload(d)).toBe(true);
-    expect(await status()).toMatchObject({ ok: true, error: null, sent: [{ name: 'owner/app', sessions: 2 }], secrets: 1, root: 'X:\\logs' });
+    expect(await status()).toMatchObject({ ok: true, error: null, sent: [{ name: 'owner/app', sessions: 2 }], secrets: 1, root: 'X:\\logs', update: { outcome: 'updated', to: 'bbbbbbb' } });
     expect((await status()).finishedAt).not.toBeNull();
     expect(notes).toEqual([]);
   });

@@ -1,11 +1,14 @@
 // 自動で送る(schedule-upload.bat で登録したタスクが、毎日決まった時刻に窓を出さずに動かす)。
 // 集計し直してから、画面で「まとめて送る」に印を付けたプロジェクトを、覚えた送り先へ尋ねずに送る(upload-project.bat の y まで進めたのと同じ)。
 // 窓が無いので、経過は out/auto-upload.log に、結果は out/auto-upload.json に書き、送れなかったときは Windows の通知で知らせる。
+// 送る前に、atlas 自身を新しい版にする(self-update.ts。タスクの引数に --no-update があればしない)。新しい版にしたら、
+// 新しいコードで動かし直す(今のプロセスは古いコードを読み込んだままなので)。
 // 依存が欠けていても(npm install の前など)記録と通知が残るよう、ここで読むのは node: の標準モジュールだけにし、ほかは動かすときに読む
+import { spawnSync } from 'node:child_process';
 import { closeSync, mkdirSync, openSync, renameSync, writeFileSync, writeSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AUTO_AGGREGATE_LOG_FILE, AUTO_LOG_FILE, AUTO_STATUS_FILE, type AutoStatusFile } from './upload-auto-files.ts';
+import { AUTO_AGGREGATE_LOG_FILE, AUTO_LOG_FILE, AUTO_STATUS_FILE, NO_UPDATE_FLAG, UPDATED_ENV, type AutoStatusFile, type AutoUpdateResult } from './upload-auto-files.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -40,6 +43,8 @@ export interface AutoDeps {
   now?: () => Date;
   sleep?: (ms: number) => Promise<void>;
   busyWaitMs?: number;
+  /** 送る前に atlas を新しい版にした結果(結果のファイルに残す)。更新しない設定なら null */
+  update?: AutoUpdateResult | null;
 }
 
 /** 自動で送る本体。送れたら true */
@@ -47,7 +52,7 @@ export async function runAutoUpload(d: AutoDeps): Promise<boolean> {
   const now = d.now ?? (() => new Date());
   const sleep = d.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   const statusPath = join(d.outDir, AUTO_STATUS_FILE);
-  const status: AutoStatusFile = { startedAt: now().toISOString(), finishedAt: null, ok: false, error: null, sent: [], secrets: 0, root: null };
+  const status: AutoStatusFile = { startedAt: now().toISOString(), finishedAt: null, ok: false, error: null, sent: [], secrets: 0, root: null, update: d.update ?? null };
   writeStatus(statusPath, status);
   d.log(`自動で送ります(${status.startedAt})`);
   try {
@@ -90,13 +95,53 @@ $x.LoadXml("<toast><visual><binding template=""ToastGeneric""><text>$(& $esc $en
 [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe').Show([Windows.UI.Notifications.ToastNotification]::new($x))
 `;
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+/** リポジトリの直下 */
+const REPO_ROOT = resolve(HERE, '..', '..', '..');
+
+/**
+ * 送る前に atlas を新しい版にする。新しい版にしたら、新しいコードで自分を動かし直して、その終了コードを返す(動かし直さなければ null)。
+ * 動かし直した側には、更新の結果を環境変数で渡す(結果のファイルに残すため。そちらでは更新しない)
+ */
+async function updateFirst(log: (line: string) => void, closeLog: () => void): Promise<{ update: AutoUpdateResult | null; exitCode: number | null }> {
+  const passed = process.env[UPDATED_ENV];
+  if (passed != null) {
+    try {
+      return { update: JSON.parse(passed) as AutoUpdateResult, exitCode: null };
+    } catch {
+      return { update: null, exitCode: null };
+    }
+  }
+  if (process.argv.includes(NO_UPDATE_FLAG)) {
+    log('atlas の更新: しない設定です(schedule-upload.bat の u で切り替えられます)');
+    return { update: null, exitCode: null };
+  }
+  let update: AutoUpdateResult;
+  try {
+    const { selfUpdate } = await import('./self-update.ts');
+    update = selfUpdate({ repo: REPO_ROOT, log });
+  } catch (e) {
+    update = { outcome: 'failed', from: null, to: null, note: `更新できませんでした(${(e as Error).message.replace(/\s+/g, ' ').trim()})` };
+    log(`atlas の更新: ${update.note}`);
+  }
+  if (update.outcome !== 'updated') return { update, exitCode: null };
+  log('atlas の更新: 新しい版で動かし直します');
+  closeLog();
+  const r = spawnSync(process.execPath, [fileURLToPath(import.meta.url), ...process.argv.slice(2)], {
+    stdio: 'ignore',
+    windowsHide: true,
+    env: { ...process.env, [UPDATED_ENV]: JSON.stringify(update) },
+  });
+  return { update, exitCode: r.status ?? 1 };
+}
+
+async function main(): Promise<void> {
   // 置き場は atlas.bat と同じ既定(out/)。依存を読む前に決める(読めなくても記録を残すため)。ATLAS_OUT は試すとき用
   const outDir = process.env.ATLAS_OUT ? resolve(process.env.ATLAS_OUT) : resolve(HERE, '..', '..', '..', 'out');
   mkdirSync(outDir, { recursive: true });
   let fd: number | null = null;
   try {
-    fd = openSync(join(outDir, AUTO_LOG_FILE), 'w');
+    // 新しい版にして動かし直した側は、前の側が書いた記録(更新の経過)に続けて書く
+    fd = openSync(join(outDir, AUTO_LOG_FILE), process.env[UPDATED_ENV] != null ? 'a' : 'w');
   } catch {
     /* 記録を残せないだけ */
   }
@@ -108,6 +153,15 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       /* 書けなかった行は残らないだけ */
     }
   };
+  const closeLog = (): void => {
+    if (fd != null) closeSync(fd);
+    fd = null;
+  };
+  const first = await updateFirst(log, closeLog);
+  if (first.exitCode != null) {
+    process.exitCode = first.exitCode;
+    return;
+  }
   let notify: AutoDeps['notify'] = async () => {};
   let ok = false;
   try {
@@ -133,16 +187,19 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       aggregate: () => up.refreshAggregate(io, { logPath: join(outDir, AUTO_AGGREGATE_LOG_FILE), run: (l) => runCli(parseCli(['all', '--out', outDir]), l) }),
       upload: (summary) => up.runUploadProject(io, { paths, configPath: defaultConfigPath(), auto: true, summary }),
       notify,
+      update: first.update,
     });
   } catch (e) {
     // 依存が読めないなど、本体に入る前に止まったとき
     const message = (e as Error).message.replace(/\s+/g, ' ').trim();
     log(`送れませんでした: ${message}`);
     if ((e as Error).stack) log((e as Error).stack!);
-    writeStatus(join(outDir, AUTO_STATUS_FILE), { startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), ok: false, error: `始められませんでした: ${message}(atlas.bat を一度開くと、足りない依存を入れます)`, sent: [], secrets: 0, root: null });
+    writeStatus(join(outDir, AUTO_STATUS_FILE), { startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), ok: false, error: `始められませんでした: ${message}(atlas.bat を一度開くと、足りない依存を入れます)`, sent: [], secrets: 0, root: null, update: first.update });
     await notify('agent-session-atlas: 自動で送れませんでした', `${message}\natlas.bat を一度開いてから、schedule-upload.bat で試してください。`).catch(() => {});
   } finally {
-    if (fd != null) closeSync(fd);
+    closeLog();
   }
   process.exitCode = ok ? 0 : 1;
 }
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();

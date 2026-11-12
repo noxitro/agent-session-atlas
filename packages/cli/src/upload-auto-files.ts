@@ -20,4 +20,22 @@ export interface AutoStatusFile {
   /** 送ったものにあった秘密らしい文字列の数 */
   secrets: number;
   root: string | null;
+  /** 送る前に atlas 自身を新しい版にしたか(self-update.ts)。この版より前の記録には無い。更新しない設定なら null */
+  update?: AutoUpdateResult | null;
 }
+
+/** 送る前に atlas 自身を新しい版にした結果(self-update.ts が作る) */
+export interface AutoUpdateResult {
+  /** updated: 新しい版にした / latest: もう最新だった / skipped: 条件に合わないので何もしなかった / failed: 途中で失敗した(前の版のまま) */
+  outcome: 'updated' | 'latest' | 'skipped' | 'failed';
+  /** 前と後の版(コミットの先頭 7 桁)。分からなければ null */
+  from: string | null;
+  to: string | null;
+  /** 何をしたか・しなかった理由(1 文) */
+  note: string;
+}
+
+/** タスクの引数に付けると、送る前に atlas を新しい版にしない(schedule-upload.bat の u で切り替える) */
+export const NO_UPDATE_FLAG = '--no-update';
+/** 新しい版にした後、新しいコードで動かし直すときに付ける印(環境変数)。中身は更新の結果(JSON) */
+export const UPDATED_ENV = 'ATLAS_AUTO_UPDATED';
