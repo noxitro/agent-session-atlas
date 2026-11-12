@@ -848,6 +848,18 @@ describe('プロジェクトのセッションをまとめて送る', () => {
     expect(sent).toMatchObject({ version: 1, sessionId: 's1', computedAt: '2026-11-05T00:00:00.000Z', mode: 'worktree', result: { sessionId: 's1', outcome: 'measured' } });
     // 照合の結果に無いセッションには添えない
     expect(existsSync(join(rootA, 'owner_app', 's2', 'atlas-vcs.json'))).toBe(false);
+    // 照合し直して日時だけが変わったときは、写し直さない(結果が同じなら送り先のものをそのまま使う)
+    const later = (r: ReturnType<typeof result>, kept: number) => ({ ...file('local'), generatedAt: '2026-11-06T00:00:00.000Z', sessions: [{ ...r, hunks: [{ ...r.hunks[0], lines: { ...r.hunks[0].lines, kept } }] }] });
+    await writeFile(join(out, 'vcs-retention.json'), JSON.stringify(later(result('s1'), 1)));
+    expect(await uploadTarget(paths(), target, rootA)).toMatchObject({ uploaded: 0, unchanged: 2 });
+    // 結果が変わったら、そのセッションだけ写し直す
+    await writeFile(join(out, 'vcs-retention.json'), JSON.stringify(later(result('s1'), 2)));
+    expect(await uploadTarget(paths(), target, rootA)).toMatchObject({ uploaded: 1, unchanged: 1 });
+    expect(JSON.parse(await readFile(join(rootA, 'owner_app', 's1', 'atlas-vcs.json'), 'utf8')).result.hunks[0].lines.kept).toBe(2);
+    // 照合の結果が無くなったセッションも写し直す(送り先に古い atlas-vcs.json を残さない)
+    await rm(join(out, 'vcs-retention.json'));
+    expect(await uploadTarget(paths(), target, rootA)).toMatchObject({ uploaded: 1, unchanged: 1 });
+    expect(existsSync(join(rootA, 'owner_app', 's1', 'atlas-vcs.json'))).toBe(false);
     // 送り先から集計し直した out/ の結果(送った側のもの)は、この PC の結果ではないので添えない
     await writeFile(join(out, 'vcs-retention.json'), JSON.stringify(file('sender')));
     await uploadTarget(paths(), target, rootB);
