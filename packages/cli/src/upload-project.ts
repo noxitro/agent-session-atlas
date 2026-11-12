@@ -279,8 +279,34 @@ async function withOutLock<T>(outDir: string, note: string, fn: () => Promise<T>
   }
 }
 
+/** 自動で送る(schedule-upload.bat で登録したタスク)ときに、人に尋ねないと進めない場面。理由は message に書く(何も送っていない) */
+export class AutoUploadBlockedError extends Error {}
+
+/** 自動で送るときに、確かめ直しが続いてもあきらめずに送り直す回数(送っている間に画面で集計し直し続けるなど) */
+const AUTO_RECHECKS = 3;
+
 /** 送るプロジェクトを決める(画面の印があればそれ、無ければ番号で選ぶ)。やめたら null */
-async function chooseProjects(io: UploadProjectIo, projects: ProjectSummary[], marked: string[] | null): Promise<ProjectSummary[] | null> {
+async function chooseProjects(io: UploadProjectIo, projects: ProjectSummary[], marked: string[] | null, auto = false): Promise<ProjectSummary[] | null> {
+  if (auto) {
+    // 自動のときは番号を尋ねられないので、印のあるものだけを送る(印の無い新しいプロジェクトは名前を記録に残す)
+    if (!marked) throw new AutoUploadBlockedError('まとめて送るプロジェクトに印がありません。atlas.bat の画面の「プロジェクト別」で「まとめて送る」に印を付けてください(何も送っていません)');
+    const set = new Set(marked);
+    const chosen = projects.filter((p) => set.has(p.name));
+    if (!chosen.length) throw new AutoUploadBlockedError(`印を付けたプロジェクト(${names(marked, 3)})に、今送れるセッションがありません(何も送っていません)`);
+    const others = projects.filter((p) => !set.has(p.name));
+    io.print('');
+    io.print('== 送るプロジェクト ==');
+    io.print(`  印を付けた ${chosen.length} プロジェクトを送ります: ${names(chosen.map((p) => p.name))}`);
+    const noLog = chosen.reduce((a, p) => a + p.noLog, 0);
+    if (noLog) io.print(`  このほかに、ログが無くて送れないセッションが ${noLog} 件あります(送りません)。`);
+    const gone = marked.filter((n) => !projects.some((p) => p.name === n));
+    if (gone.length) io.print(`  印はあるが、送れるセッションが無いもの: ${names(gone, 3)}`);
+    if (others.length) {
+      const recent = [...others].sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? '')).map((p) => p.name);
+      io.print(`  印の無い ${others.length} プロジェクトは送りません(最近更新: ${names(recent, 3)})。`);
+    }
+    return chosen;
+  }
   if (marked) {
     // 画面で印を付けたプロジェクトを、番号を聞かずに送る(並びは一覧と同じ多い順)。どれを送るかは、すぐ後の確認に並ぶ
     const set = new Set(marked);
@@ -319,19 +345,37 @@ async function targetsOf(paths: GroupUploadPaths & { sessions: string }, chosen:
   return out;
 }
 
-/** 対話の本体。すべて送ったら true、やめたら false。送れなかったプロジェクトがあれば、送れたものを知らせてから止まる(例外) */
-export async function runUploadProject(io: UploadProjectIo, o: { paths: GroupUploadPaths & { sessions: string }; configPath: string }): Promise<boolean> {
+/** 自動で送った結果(schedule-upload.bat の状態の表示に使う) */
+export interface UploadSummary {
+  /** 送ったプロジェクトと、送ったセッションの数 */
+  sent: { name: string; sessions: number }[];
+  /** 送ったものにあった秘密らしい文字列の数(偽陽性もありうる) */
+  secrets: number;
+  root: string | null;
+}
+
+/**
+ * 対話の本体。すべて送ったら true、やめたら false。送れなかったプロジェクトがあれば、送れたものを知らせてから止まる(例外)。
+ * auto なら尋ねない(schedule-upload.bat で登録したタスクから動かすとき): 印のあるプロジェクトを、覚えた送り先へ、送る前の確認を出さずに送る。
+ * 印や送り先が無いなど、尋ねないと進めないときは AutoUploadBlockedError で止まる(何も送らない)。summary を渡すと、送ったものを書き込む
+ */
+export async function runUploadProject(
+  io: UploadProjectIo,
+  o: { paths: GroupUploadPaths & { sessions: string }; configPath: string; auto?: boolean; summary?: UploadSummary },
+): Promise<boolean> {
+  const auto = o.auto === true;
   const outDir = dirname(o.paths.snapshot);
   // sessions.json は 1 回だけ読み、一覧・送るまとまり・README で使い回す(実データでは十数 MB ある)
   const records = await readSessions(o.paths.sessions);
   const projects = await listProjects(records, o.paths.snapshot);
   if (!projects.length) {
+    if (auto) throw new AutoUploadBlockedError('送れるセッションがありません(空のセッションと、ログのフォルダが無いものは送りません)');
     io.print('');
     io.print('送れるセッションがありません(空のセッションと、ログのフォルダが無いものは送りません)。');
     return false;
   }
   const config = await loadConfig(o.configPath, false);
-  const chosen = await chooseProjects(io, projects, config.uploadProjects);
+  const chosen = await chooseProjects(io, projects, config.uploadProjects, auto);
   if (!chosen) {
     io.print('  やめました(何も送っていません)。');
     return false;
@@ -341,6 +385,8 @@ export async function runUploadProject(io: UploadProjectIo, o: { paths: GroupUpl
   let root = config.uploadRoot;
   // 覚えた送り先が無い(ネットワークドライブの切断・フォルダの削除)ときも、ここで選び直せるようにする
   const lost = root != null && !(existsSync(root) && statSync(root).isDirectory());
+  if (auto && !root) throw new AutoUploadBlockedError('送り先がまだ決まっていません。upload-project.bat か atlas.bat の画面の「設定…」で決めてください(何も送っていません)');
+  if (auto && lost) throw new AutoUploadBlockedError(`覚えている送り先が見つかりません: ${root}(ドライブがつながっているか確かめてください。何も送っていません)`);
   if (!root || lost) {
     io.print('');
     io.print('== 送り先 ==');
@@ -361,10 +407,14 @@ export async function runUploadProject(io: UploadProjectIo, o: { paths: GroupUpl
   /** 途中で止まったときに添える、ここまでに送ったもの */
   const sentNote = (): string => (sent.length ? `ここまでに ${sent.length} プロジェクトを送りました(${names(sent.map((r) => r.name))})。残りは送っていません` : '何も送っていません');
   let stopped = false;
+  if (o.summary) o.summary.root = root;
+  let rechecks = 0;
   // 送ったもの・送れなかったものがあれば、送っていない残りはすぐ後のまとめに出す(同じことを 2 度書かない)
   const quit = (): void => io.print(sent.length || failed.length ? '  やめました。' : '  やめました(何も送っていません)。');
   try {
     while (pending.length) {
+      // 自動のときは確かめ直しが続いても尋ねられないので、決まった回数で止める(送ったものはまとめに出る)
+      if (auto && rechecks++ > AUTO_RECHECKS) throw new Error(`確かめる間にログが変わり続けたので、残りの ${pending.length} プロジェクトは送っていません。次の回に送ります`);
       const todo = pending;
       const many = todo.length > 1;
       io.print('');
@@ -384,7 +434,8 @@ export async function runUploadProject(io: UploadProjectIo, o: { paths: GroupUpl
       });
       describe(io, checks, r0);
       io.print('');
-      const a = (await io.ask('  y = 送る   n = 番号で選び直す   c = 送り先を変える   Enter = やめる\n  > ')).toLowerCase();
+      // 自動のときは、登録したときに「確認を出さずに送る」と承知してもらっている(schedule-upload.bat)
+      const a = auto ? 'y' : (await io.ask('  y = 送る   n = 番号で選び直す   c = 送り先を変える   Enter = やめる\n  > ')).toLowerCase();
       if (a === 'c') {
         const picked = await chooseRoot(io, o.configPath, root);
         if (picked) root = picked;
@@ -432,6 +483,8 @@ export async function runUploadProject(io: UploadProjectIo, o: { paths: GroupUpl
                 },
               });
               sent.push(r);
+              o.summary?.sent.push({ name: r.name, sessions: r.uploaded });
+              if (o.summary) o.summary.secrets += checks[i]!.secrets.count;
               const extra = [r.replaced ? `置き換え ${r.replaced} セッション` : '', r.memos ? `メモ ${r.memos} 件` : ''].filter(Boolean).join('・');
               io.print(`  ${tag}${padEnd(t.name, w)}  ${String(r.uploaded).padStart(sw)} セッションを送りました${extra ? `(${extra})` : ''}`);
               if (r.leftovers.length) {
@@ -476,7 +529,7 @@ export async function runUploadProject(io: UploadProjectIo, o: { paths: GroupUpl
         io.print(`  送れなかったプロジェクト(${failed.length} 件): ${names(failed.map((f) => f.name))}`);
         io.print('  理由を確かめてから、もう一度実行してください(送れたものは、送り直しても置き換えるだけです)。');
       }
-      if (sent.length && !config.uploadProjects) io.print('  毎回同じものを送るなら、atlas.bat の画面の「プロジェクト別」で「まとめて送る」に印を付けると、番号を聞かずに送ります。');
+      if (sent.length && !config.uploadProjects && !auto) io.print('  毎回同じものを送るなら、atlas.bat の画面の「プロジェクト別」で「まとめて送る」に印を付けると、番号を聞かずに送ります。');
     }
   }
   if (failed.length) throw new UploadIncompleteError(`${failed.length} プロジェクトを送れませんでした(送れたのは ${sent.length} プロジェクトです)`);
@@ -766,11 +819,19 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     // 集計もここで動かす(別のプログラムにすると、集計を待つ間に押した Enter が、送る操作の最初の答えになるため)
     if (!(await refreshAggregate(c.io, { logPath: UPLOAD_LOG, run: (log) => runCli(parseCli(['all']), log) }))) process.exitCode = 1;
     else {
-      await runUploadProject(c.io, {
+      const sent = await runUploadProject(c.io, {
         paths,
         configPath: defaultConfigPath(),
       });
       process.exitCode = 0;
+      // 毎回手で送らずに済むよう、自動で送る登録がまだなら知らせる(調べられなければ何も出さない)
+      if (sent && process.platform === 'win32') {
+        const { taskScheduler } = await import('./upload-schedule.ts');
+        const task = await taskScheduler()
+          .query()
+          .catch(() => null);
+        if (task && !task.exists) c.io.print('  毎日決まった時刻に自動で送るなら、schedule-upload.bat で登録できます。');
+      }
     }
   } catch (e) {
     c.clear();

@@ -158,7 +158,7 @@ llm-wiki の参照は、ツール呼び出しの引数に vault の場所が現�
 
 ## まとめて送るプロジェクトの指定
 
-`upload-project.bat` が番号を聞かずにまとめて送るプロジェクトです。画面の「プロジェクト別」の「まとめて送る」で印を付けると書かれます(`setup.bat` では尋ねず、書き直すときも今の設定を残します)。名前は集計のプロジェクト名(画面のプロジェクト別の名前、`sessions.json` の `project`)そのままです。
+`upload-project.bat` が番号を聞かずにまとめて送るプロジェクトです。`schedule-upload.bat` で登録した毎日の自動送信も、このプロジェクトだけを送ります。画面の「プロジェクト別」の「まとめて送る」で印を付けると書かれます(`setup.bat` では尋ねず、書き直すときも今の設定を残します)。名前は集計のプロジェクト名(画面のプロジェクト別の名前、`sessions.json` の `project`)そのままです。
 
 ```json
 { "uploadRoot": "E:\\dev\\atlas-logs", "uploadProjects": ["owner/app", "X:\\work\\tool"] }
