@@ -23,6 +23,11 @@ export const SESSION_STORE_JSON = 'atlas-session-store.json';
 export const UPLOAD_SESSION_META = 'atlas-session.json';
 /** アップロード先のフォルダ(グループ・プロジェクト)の索引。写すたびに書き直す */
 export const UPLOAD_INDEX = 'atlas-index.json';
+/**
+ * アップロード先のフォルダ(グループ・プロジェクト)に添える、送った人がインストールしている skill・プラグインの名前
+ * (readInventory と同じ形。中身は読まず名前だけ)。送るたびに書き直す。集計し直すときは「インストール済みで未使用の skill」に使う
+ */
+export const UPLOAD_INSTALLED = 'atlas-installed.json';
 /** アップロードがセッションのフォルダを置き換えるときの作業用のフォルダ(写している途中のもの) */
 export const uploadTmpName = (id: string): string => `.${id}.uploading`;
 /** アップロードがセッションのフォルダを置き換えるときに退けた、前のフォルダ(消せなかったときに残る) */
@@ -390,7 +395,10 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
   }
   manifest.extras = extras;
 
-  manifest.installed = await readInventory(src);
+  // アップロードしたフォルダから集計するときは、送った人が添えたインストール済みの記録を読む(何人分かなら合わせる)。
+  // 1 つも無ければ記録なし(元のフォルダの直下に skills/ は無いので、読むと 0 件に見えてしまう)
+  const installed = flat ? await readSentInventory(src, ['.']) : merged ? await readSentInventory(src, merged) : await readInventory(src);
+  if (installed) manifest.installed = installed;
 
   // 元から消えたセッションの複製が出力先に残っていれば、前の集計で数えたフォルダを引き継ぐ(人ごとの内訳から外さない)
   for (const [id, folder] of Object.entries(previousOwners)) {
@@ -872,6 +880,82 @@ export async function readInventory(src: string): Promise<InstalledInventory> {
     }
   }
   return inv;
+}
+
+/** 送った人のインストール済みの記録で使う名前の上限(共有フォルダに置かれたファイルなので、大きすぎるもの・おかしな名前は使わない) */
+const SENT_NAMES_MAX = 5000;
+const SENT_NAME_CHARS = 200;
+
+/** 名前の並び。文字列でないもの・長すぎるもの・制御文字や見えない書式の文字を含むものは除く。並びでなければ null */
+function sentNames(v: unknown): string[] | null {
+  if (!Array.isArray(v)) return null;
+  const out = new Set<string>();
+  for (const x of v) {
+    if (out.size >= SENT_NAMES_MAX) break;
+    if (typeof x !== 'string') continue;
+    const n = x.trim();
+    if (n && [...n].length <= SENT_NAME_CHARS && !/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(n)) out.add(n);
+  }
+  return [...out];
+}
+
+/**
+ * アップロードしたフォルダ(src からの相対パス。/ 区切り。'.' は src そのもの)に添えられた、送った人のインストール済みの記録
+ * (UPLOAD_INSTALLED)を読んで合わせる。名前はどれかのフォルダにあれば入れる(何人分かなら、誰かが入れているもの)。
+ * 1 つも無ければ undefined(この版より前の atlas で送ったもの)。無いフォルダ・読めないフォルダは warnings に数を残す
+ */
+export async function readSentInventory(src: string, folders: readonly string[]): Promise<InstalledInventory | undefined> {
+  const skills = new Set<string>();
+  const plugins = new Map<string, { marketplace: string; name: string; skills: Set<string> }>();
+  const disabled = new Set<string>();
+  let anyDisabled = false;
+  const warnings: string[] = [];
+  let found = 0;
+  let missing = 0;
+  for (const f of folders) {
+    const path = join(src, ...(f === '.' ? [] : f.split('/')), UPLOAD_INSTALLED);
+    if (!existsSync(path)) {
+      missing++;
+      continue;
+    }
+    let j: Record<string, unknown>;
+    try {
+      j = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>;
+      if (!j || typeof j !== 'object' || j.version !== 1) throw new Error('形が違う');
+    } catch (e) {
+      warnings.push(`${f === '.' ? '' : `${f} の `}${UPLOAD_INSTALLED} を読めない (${(e as Error).message})`);
+      continue;
+    }
+    found++;
+    for (const n of sentNames(j.skills) ?? []) skills.add(n);
+    if (Array.isArray(j.plugins)) {
+      for (const p of j.plugins.slice(0, SENT_NAMES_MAX) as unknown[]) {
+        if (!p || typeof p !== 'object') continue;
+        const o = p as Record<string, unknown>;
+        const [market] = sentNames([o.marketplace]) ?? [];
+        const [name] = sentNames([o.name]) ?? [];
+        if (!market || !name) continue;
+        const key = `${market}/${name}`;
+        const x = plugins.get(key) ?? { marketplace: market, name, skills: new Set<string>() };
+        for (const n of sentNames(o.skills) ?? []) x.skills.add(n);
+        plugins.set(key, x);
+      }
+    }
+    const d = sentNames(j.disabledSkills);
+    if (d) {
+      anyDisabled = true;
+      for (const n of d) disabled.add(n);
+    }
+    for (const w of (sentNames(j.warnings) ?? []).slice(0, 20)) warnings.push(`${f === '.' ? '' : `${f}: `}${w}`);
+  }
+  if (!found) return undefined;
+  if (missing) warnings.push(`送った人のインストール済みの記録が無いフォルダが ${missing} 件あります(この版より前の atlas で送ったもの。送り直すと付きます)`);
+  return {
+    skills: [...skills].sort(),
+    plugins: [...plugins.values()].map((p) => ({ marketplace: p.marketplace, name: p.name, skills: [...p.skills].sort() })).sort((a, b) => `${a.marketplace}/${a.name}`.localeCompare(`${b.marketplace}/${b.name}`)),
+    disabledSkills: anyDisabled ? [...disabled].sort() : null,
+    warnings,
+  };
 }
 
 export async function readSnapshotManifest(dir: string): Promise<SnapshotManifest | null> {
