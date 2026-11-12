@@ -123,6 +123,8 @@ export interface SnapshotManifest {
   sessionDbErrors?: string[];
   /** インストール済みの skill / プラグインの名前(Phase 6。古いマニフェストには無い) */
   installed?: InstalledInventory;
+  /** 送り先の全体を集計したときの、人のフォルダの名前ごとのインストール済みの記録(送った人が添えたもの。無ければ無い) */
+  installedByPerson?: Record<string, InstalledInventory>;
   /** Phase 11: 追加で写したもの(セッションフォルダの中身と ~/.copilot 直下)と、写さなかったもの */
   extras?: {
     all: boolean;
@@ -397,8 +399,11 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
 
   // アップロードしたフォルダから集計するときは、送った人が添えたインストール済みの記録を読む(何人分かなら合わせる)。
   // 1 つも無ければ記録なし(元のフォルダの直下に skills/ は無いので、読むと 0 件に見えてしまう)
-  const installed = flat ? await readSentInventory(src, ['.']) : merged ? await readSentInventory(src, merged) : await readInventory(src);
-  if (installed) manifest.installed = installed;
+  if (flat || merged) {
+    const sent = await readSentInventory(src, flat ? ['.'] : merged!);
+    if (sent.installed) manifest.installed = sent.installed;
+    if (sent.byPerson) manifest.installedByPerson = sent.byPerson;
+  } else manifest.installed = await readInventory(src);
 
   // 元から消えたセッションの複製が出力先に残っていれば、前の集計で数えたフォルダを引き継ぐ(人ごとの内訳から外さない)
   for (const [id, folder] of Object.entries(previousOwners)) {
@@ -899,63 +904,106 @@ function sentNames(v: unknown): string[] | null {
   return [...out];
 }
 
-/**
- * アップロードしたフォルダ(src からの相対パス。/ 区切り。'.' は src そのもの)に添えられた、送った人のインストール済みの記録
- * (UPLOAD_INSTALLED)を読んで合わせる。名前はどれかのフォルダにあれば入れる(何人分かなら、誰かが入れているもの)。
- * 1 つも無ければ undefined(この版より前の atlas で送ったもの)。無いフォルダ・読めないフォルダは warnings に数を残す
- */
-export async function readSentInventory(src: string, folders: readonly string[]): Promise<InstalledInventory | undefined> {
+/** 送った人のインストール済みの記録(UPLOAD_INSTALLED)の大きさの上限。名前だけなので、これを超えるものは読まない */
+export const UPLOAD_INSTALLED_LIMIT = 1024 * 1024;
+
+/** 送った人のインストール済みの記録を合わせた結果 */
+export interface SentInventory {
+  /** 全員分を合わせたもの(誰かが入れているもの)。1 つも無ければ undefined(この版より前の atlas で送ったもの) */
+  installed?: InstalledInventory;
+  /** 人のフォルダの名前ごと(personOfFolder と同じ名前)。人のフォルダの下に無いものだけなら undefined */
+  byPerson?: Record<string, InstalledInventory>;
+}
+
+/** 1 つの記録を、名前を確かめてインストール済みの形にする */
+function sentInventoryOf(j: Record<string, unknown>, where: string): InstalledInventory {
+  const plugins = new Map<string, { marketplace: string; name: string; skills: string[] }>();
+  if (Array.isArray(j.plugins)) {
+    for (const p of j.plugins.slice(0, SENT_NAMES_MAX) as unknown[]) {
+      if (!p || typeof p !== 'object') continue;
+      const o = p as Record<string, unknown>;
+      const [market] = sentNames([o.marketplace]) ?? [];
+      const [name] = sentNames([o.name]) ?? [];
+      if (market && name) plugins.set(`${market}/${name}`, { marketplace: market, name, skills: sentNames(o.skills) ?? [] });
+    }
+  }
+  return {
+    skills: sentNames(j.skills) ?? [],
+    plugins: [...plugins.values()],
+    disabledSkills: sentNames(j.disabledSkills),
+    warnings: (sentNames(j.warnings) ?? []).slice(0, 20).map((w) => `${where}${w}`),
+  };
+}
+
+/** 何人分かを合わせる(名前はどれかにあれば入れる。無効にした skill も、どれかで無効なら入れる) */
+function mergeInventories(list: InstalledInventory[]): InstalledInventory {
   const skills = new Set<string>();
   const plugins = new Map<string, { marketplace: string; name: string; skills: Set<string> }>();
   const disabled = new Set<string>();
   let anyDisabled = false;
   const warnings: string[] = [];
-  let found = 0;
-  let missing = 0;
-  for (const f of folders) {
-    const path = join(src, ...(f === '.' ? [] : f.split('/')), UPLOAD_INSTALLED);
-    if (!existsSync(path)) {
-      missing++;
-      continue;
+  for (const inv of list) {
+    for (const n of inv.skills) skills.add(n);
+    for (const p of inv.plugins) {
+      const key = `${p.marketplace}/${p.name}`;
+      const x = plugins.get(key) ?? { marketplace: p.marketplace, name: p.name, skills: new Set<string>() };
+      for (const n of p.skills) x.skills.add(n);
+      plugins.set(key, x);
     }
-    let j: Record<string, unknown>;
-    try {
-      j = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>;
-      if (!j || typeof j !== 'object' || j.version !== 1) throw new Error('形が違う');
-    } catch (e) {
-      warnings.push(`${f === '.' ? '' : `${f} の `}${UPLOAD_INSTALLED} を読めない (${(e as Error).message})`);
-      continue;
-    }
-    found++;
-    for (const n of sentNames(j.skills) ?? []) skills.add(n);
-    if (Array.isArray(j.plugins)) {
-      for (const p of j.plugins.slice(0, SENT_NAMES_MAX) as unknown[]) {
-        if (!p || typeof p !== 'object') continue;
-        const o = p as Record<string, unknown>;
-        const [market] = sentNames([o.marketplace]) ?? [];
-        const [name] = sentNames([o.name]) ?? [];
-        if (!market || !name) continue;
-        const key = `${market}/${name}`;
-        const x = plugins.get(key) ?? { marketplace: market, name, skills: new Set<string>() };
-        for (const n of sentNames(o.skills) ?? []) x.skills.add(n);
-        plugins.set(key, x);
-      }
-    }
-    const d = sentNames(j.disabledSkills);
-    if (d) {
+    if (inv.disabledSkills) {
       anyDisabled = true;
-      for (const n of d) disabled.add(n);
+      for (const n of inv.disabledSkills) disabled.add(n);
     }
-    for (const w of (sentNames(j.warnings) ?? []).slice(0, 20)) warnings.push(`${f === '.' ? '' : `${f}: `}${w}`);
+    warnings.push(...inv.warnings);
   }
-  if (!found) return undefined;
-  if (missing) warnings.push(`送った人のインストール済みの記録が無いフォルダが ${missing} 件あります(この版より前の atlas で送ったもの。送り直すと付きます)`);
   return {
     skills: [...skills].sort(),
     plugins: [...plugins.values()].map((p) => ({ marketplace: p.marketplace, name: p.name, skills: [...p.skills].sort() })).sort((a, b) => `${a.marketplace}/${a.name}`.localeCompare(`${b.marketplace}/${b.name}`)),
     disabledSkills: anyDisabled ? [...disabled].sort() : null,
     warnings,
   };
+}
+
+/**
+ * アップロードしたフォルダ(src からの相対パス。/ 区切り。'.' は src そのもの)に添えられた、送った人のインストール済みの記録
+ * (UPLOAD_INSTALLED)を読む。同じ人(人のフォルダの名前。人のフォルダの下に無いものは 1 人とみなす)の記録が何プロジェクト分かあれば、
+ * 送った日時(sentAt)が新しいものだけを使う(印を外して送らなくなったプロジェクトに、前に入れていた skill が残り続けないように)。
+ * 全員分は、人ごとの記録を合わせる(誰かが入れているもの)。人ごとの記録は、画面で人に絞ったときに使う。
+ * 共有フォルダに置かれたファイルなので、大きすぎるもの(UPLOAD_INSTALLED_LIMIT 超)は読まない。
+ * 無いフォルダ・読めないフォルダは warnings に数を残す
+ */
+export async function readSentInventory(src: string, folders: readonly string[]): Promise<SentInventory> {
+  const newest = new Map<string, { at: string; inv: InstalledInventory }>();
+  const warnings: string[] = [];
+  let missing = 0;
+  for (const f of folders) {
+    const path = join(src, ...(f === '.' ? [] : f.split('/')), UPLOAD_INSTALLED);
+    const where = f === '.' ? '' : `${f}: `;
+    if (!existsSync(path)) {
+      missing++;
+      continue;
+    }
+    let j: Record<string, unknown>;
+    try {
+      const size = (await stat(path)).size;
+      if (size > UPLOAD_INSTALLED_LIMIT) throw new Error(`大きすぎる(${size} バイト。${UPLOAD_INSTALLED_LIMIT / 1024 / 1024} MB まで)`);
+      j = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>;
+      if (!j || typeof j !== 'object' || j.version !== 1) throw new Error('形が違う');
+    } catch (e) {
+      warnings.push(`${f === '.' ? '' : `${f} の `}${UPLOAD_INSTALLED} を読めない (${(e as Error).message})`);
+      continue;
+    }
+    const person = personOfFolder(f) ?? '';
+    const at = typeof j.sentAt === 'string' ? j.sentAt : '';
+    const prev = newest.get(person);
+    if (!prev || at > prev.at) newest.set(person, { at, inv: sentInventoryOf(j, where) });
+  }
+  if (!newest.size) return {};
+  const installed = mergeInventories([...newest.values()].map((x) => x.inv));
+  installed.warnings.unshift(...warnings);
+  if (missing) installed.warnings.push(`送った人のインストール済みの記録が無いフォルダが ${missing} 件あります(この版より前の atlas で送ったもの。送り直すと付きます)`);
+  const people = [...newest].filter(([person]) => person !== '');
+  return people.length ? { installed, byPerson: Object.fromEntries(people.map(([person, x]) => [person, mergeInventories([x.inv])])) } : { installed };
 }
 
 export async function readSnapshotManifest(dir: string): Promise<SnapshotManifest | null> {

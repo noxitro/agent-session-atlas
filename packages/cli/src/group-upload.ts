@@ -94,6 +94,11 @@ export interface GroupUploadResult {
   replaced: number;
   /** 前に送ったときから中身が変わっていないので、写し直さなかったセッション(送り先にあるものをそのまま使う) */
   unchanged: number;
+  /**
+   * 写さなかったセッションのうち、添えた記録(atlas-session.json のタスクタグ・題名など)を書き直せなかったもの
+   * (送り先で開かれているなど。ログは前に送ったときのままで、記録だけが古い)
+   */
+  staleMeta: string[];
   /** グループの id のうち、前回の集計の複製に無かったもの */
   missing: string[];
   /** 写した元の複製を作った日時(前回の集計)。分からなければ null */
@@ -116,14 +121,18 @@ interface FileEntry {
   dir?: boolean;
 }
 
-/** セッションのフォルダの中のファイル(atlas の作業用のファイルは除く) */
-async function listFiles(base: string, sub = ''): Promise<FileEntry[]> {
+/**
+ * セッションのフォルダの中のファイル(atlas の作業用のファイルは除く)。skip に当たるもの(フォルダなら中身ごと)も除く。
+ * 除いた結果で中身が無くなったフォルダは、空のフォルダとして返す
+ */
+async function listFiles(base: string, sub = '', skip?: (rel: string, name: string, dir: boolean) => boolean): Promise<FileEntry[]> {
   const out: FileEntry[] = [];
   for (const e of await readdir(join(base, sub), { withFileTypes: true })) {
     if (SNAPSHOT_PRIVATE.test(e.name)) continue;
     const rel = sub ? `${sub}/${e.name}` : e.name;
+    if (skip?.(rel, e.name, e.isDirectory())) continue;
     if (e.isDirectory()) {
-      const inner = await listFiles(base, rel);
+      const inner = await listFiles(base, rel, skip);
       out.push(...(inner.length ? inner : [{ rel, bytes: 0, mtime: 0, link: false, dir: true }]));
     }
     else if (e.isSymbolicLink()) out.push({ rel, bytes: 0, mtime: Math.round((await lstat(join(base, rel))).mtimeMs), link: true });
@@ -173,10 +182,51 @@ const CONTENTS_VERSION = 1;
 const sha = (s: string): string => createHash('sha256').update(s).digest('hex');
 
 /**
- * 送り先で OS が勝手に作るファイル(Windows のエクスプローラーの Thumbs.db・desktop.ini、Mac の .DS_Store)。
+ * 送り先で OS や NAS が勝手に作るファイル: Windows のエクスプローラーの Thumbs.db・ehthumbs.db・desktop.ini、
+ * Mac の .DS_Store と、SMB の共有に作る ._<名前>(AppleDouble)。
  * 前に送ったときのままかを比べるときは数えない(数えると、送り先のフォルダを開いただけで毎回写し直すため)
  */
-const OS_ADDED_FILES = /^(?:thumbs\.db|desktop\.ini|\.ds_store)$/i;
+const OS_ADDED_FILES = /^(?:thumbs\.db|ehthumbs\.db|desktop\.ini|\.ds_store|\._.+)$/i;
+/** 同じく、NAS が勝手に作るフォルダ(Synology のサムネイルの @eaDir、QNAP の .@__thumb、Mac の .AppleDouble) */
+const OS_ADDED_DIRS = /^(?:@eadir|\.@__thumb|\.appledouble)$/i;
+
+/**
+ * 要約に入れない、デスクトップアプリの行の列(セッションの中身と関係なく変わるもの)。
+ * プロジェクトを開いた日時やサイドバーの表示、ワークスペースの更新日時と最後の差分、通知の既読など。
+ * これが変わっただけでは写し直さないので、送り先の atlas-session-store.json のこの列は、そのセッションを次に写すまで古いまま
+ */
+const DESKTOP_VOLATILE: Record<string, readonly string[]> = {
+  project: ['last_opened_at', 'show_in_sidebar'],
+  workspace: ['updated_at', 'last_diff_files_changed', 'last_diff_insertions', 'last_diff_deletions', 'last_diff_updated_at'],
+  activity: ['is_read', 'updated_at'],
+};
+
+/** 要約に入れる DB の行の文字列(DESKTOP_VOLATILE の列を除いたもの)。読めなければそのまま */
+export function storeKeyText(store: string): string {
+  try {
+    const j = JSON.parse(store) as Record<string, unknown>;
+    const d = j.desktop;
+    if (d && typeof d === 'object') {
+      const drop = (r: unknown, cols: readonly string[]): unknown =>
+        r && typeof r === 'object' && !Array.isArray(r) ? Object.fromEntries(Object.entries(r).filter(([k]) => !cols.includes(k))) : r;
+      const desk = { ...(d as Record<string, unknown>) };
+      for (const [k, cols] of Object.entries(DESKTOP_VOLATILE)) desk[k] = Array.isArray(desk[k]) ? (desk[k] as unknown[]).map((r) => drop(r, cols)) : drop(desk[k], cols);
+      j.desktop = desk;
+    }
+    return JSON.stringify(j);
+  } catch {
+    return store;
+  }
+}
+
+/** ファイルの並びを要約や比べるときの 1 行に(種類・名前・大きさ・更新時刻) */
+const entryLine = (prefix: string, f: FileEntry): string => `${prefix}${f.dir ? 'd' : f.link ? 'l' : 'f'}\t${f.rel}\t${f.bytes}\t${f.mtime}`;
+
+/** 送り先で比べるときの大きさの印: リンク / 空のフォルダ / 中身を問わないファイル(atlas が書くもの) */
+const WANT_LINK = -1;
+const WANT_DIR = -2;
+const WANT_ANY_FILE = -3;
+const wantOf = (f: FileEntry): number => (f.link ? WANT_LINK : f.dir ? WANT_DIR : f.bytes);
 
 /**
  * そのセッションの、送る中身の要約。セッションのフォルダのファイルの名前・大きさ・更新時刻と、atlas が足すもの
@@ -185,12 +235,13 @@ const OS_ADDED_FILES = /^(?:thumbs\.db|desktop\.ini|\.ds_store)$/i;
  */
 async function contentsKey(id: string, files: FileEntry[], added: UploadContext): Promise<string> {
   const lines = [`v${CONTENTS_VERSION}`];
-  for (const f of [...files].sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0))) lines.push(`${f.dir ? 'd' : f.link ? 'l' : 'f'}\t${f.rel}\t${f.bytes}\t${f.mtime}`);
+  const byRel = (a: FileEntry, b: FileEntry): number => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0);
+  for (const f of [...files].sort(byRel)) lines.push(entryLine('', f));
   const store = added.storeJson(id);
-  lines.push(`store\t${store == null ? '-' : sha(store)}`);
+  lines.push(`store\t${store == null ? '-' : sha(storeKeyText(store))}`);
   const memo = await added.memo(id);
   lines.push(`memo\t${memo == null ? '-' : sha(memo)}`);
-  for (const f of await added.memoImages(id)) lines.push(`image\t${f.rel}\t${f.bytes}\t${f.mtime}`);
+  for (const f of [...(await added.memoImages(id))].sort(byRel)) lines.push(entryLine('image\t', f));
   return sha(lines.join('\n'));
 }
 
@@ -198,28 +249,32 @@ async function contentsKey(id: string, files: FileEntry[], added: UploadContext)
  * 送り先のそのセッションのフォルダが、前に送ったときのままか。添えた記録(atlas-session.json)の要約が今の中身と同じで、
  * フォルダの中のファイルの並びと大きさも、今送るものと同じなら true(送り先で消したり足したりされていれば、写し直す)
  */
-async function sameAsSent(dest: string, id: string, key: string, files: FileEntry[], added: UploadContext): Promise<boolean> {
+async function sameAsSent(dest: string, id: string, key: string, files: FileEntry[], added: UploadContext, trusted?: ReadonlyMap<string, string>): Promise<boolean> {
   if (!existsSync(dest)) return false;
+  // 確かめてから写すまでの点検し直しでは、確かめたときに同じだったもの(要約も同じもの)の、送り先のファイルの一覧を読み直さない
+  // (NAS を 2 度読まないように。送り先は変えない前提で、記録があることだけを見る)
+  if (trusted?.get(dest) === key && existsSync(join(dest, UPLOAD_SESSION_META))) return true;
   try {
     const meta = JSON.parse(await readFile(join(dest, UPLOAD_SESSION_META), 'utf8')) as { id?: unknown; contents?: unknown };
     if (meta?.id !== id || meta.contents !== key) return false;
-    // 大きさ。リンクは -1、空のフォルダは -2、中身を問わないもの(添えた記録)は -3
-    const want = new Map<string, number>(files.map((f) => [f.rel, f.link ? -1 : f.dir ? -2 : f.bytes]));
-    want.set(UPLOAD_SESSION_META, -3);
-    const store = added.storeJson(id);
-    if (store != null) want.set(SESSION_STORE_JSON, Buffer.byteLength(store));
+    // 大きさ(か WANT_* の印)。DB の行は、要約に入れない列があるので大きさを問わない(中身は要約で比べてある)
+    const want = new Map<string, number>(files.map((f) => [f.rel, wantOf(f)]));
+    want.set(UPLOAD_SESSION_META, WANT_ANY_FILE);
+    if (added.storeJson(id) != null) want.set(SESSION_STORE_JSON, WANT_ANY_FILE);
     const memo = await added.memo(id);
     if (memo != null) {
       want.set(UPLOAD_MEMO_FILE, Buffer.byteLength(memoForUpload(memo, id)));
-      for (const f of await added.memoImages(id)) want.set(`${UPLOAD_MEMO_IMAGES}/${f.rel}`, f.bytes);
+      // 画像のフォルダは丸ごと写す(cp)ので、空のフォルダもリンクもそのまま並ぶ
+      for (const f of await added.memoImages(id)) want.set(`${UPLOAD_MEMO_IMAGES}/${f.rel}`, wantOf(f));
     }
-    // エクスプローラーや Mac が勝手に作るもの(画像のフォルダを開いたときの Thumbs.db など)は、送ったものに無ければ数えない
-    const have = (await listFiles(dest)).filter((f) => want.has(f.rel) || !OS_ADDED_FILES.test(f.rel.split('/').at(-1)!));
+    // OS や NAS が勝手に作るもの(Thumbs.db・._<名前>・@eaDir など)は、送ったものに無ければ数えない
+    const skip = (rel: string, name: string, dir: boolean): boolean => !want.has(rel) && (dir ? OS_ADDED_DIRS : OS_ADDED_FILES).test(name);
+    const have = await listFiles(dest, '', skip);
     if (have.length !== want.size) return false;
     for (const f of have) {
       const w = want.get(f.rel);
       if (w === undefined) return false;
-      if (w === -1 ? !f.link : w === -2 ? !f.dir : w === -3 ? f.dir || f.link : f.dir || f.link || f.bytes !== w) return false;
+      if (w === WANT_LINK ? !f.link : w === WANT_DIR ? !f.dir : w === WANT_ANY_FILE ? f.dir || f.link : f.dir || f.link || f.bytes !== w) return false;
     }
     return true;
   } catch {
@@ -227,6 +282,16 @@ async function sameAsSent(dest: string, id: string, key: string, files: FileEntr
     return false;
   }
 }
+
+/**
+ * 点検で、送り先のフォルダが前に送ったときのままと確かめたもの(送り先のセッションのフォルダ → 要約)。
+ * 写すときにその点検を渡す(UploadOptions.check)と、点検し直しでは送り先のファイルの一覧を読み直さない。
+ * 点検の結果は画面にも JSON で返すので、点検そのものには入れずにここで持つ
+ */
+const trustedByCheck = new WeakMap<UploadCheck, ReadonlyMap<string, string>>();
+
+/** 送り先のフォルダを読む数の上限(NAS へ 1 つずつ順に聞くと、待ち時間が積み重なるため) */
+const PLAN_CONCURRENCY = 8;
 
 /** 送るセッションごとの、写すファイルと要約と、前に送ったときのままか */
 interface SessionPlan {
@@ -237,13 +302,19 @@ interface SessionPlan {
 }
 
 /** 写すセッションを、写すものと、前に送ったときのままのものに分ける(点検とアップロードで同じ分け方)。full なら全部写す */
-async function planSessions(stateDir: string, dir: string, present: string[], added: UploadContext, full: boolean): Promise<SessionPlan[]> {
-  const out: SessionPlan[] = [];
-  for (const id of present) {
-    const files = await sessionFiles(join(stateDir, id));
-    const key = await contentsKey(id, files, added);
-    out.push({ id, files, key, unchanged: !full && (await sameAsSent(join(dir, id), id, key, files, added)) });
-  }
+async function planSessions(stateDir: string, dir: string, present: string[], added: UploadContext, full: boolean, trusted?: ReadonlyMap<string, string>): Promise<SessionPlan[]> {
+  const out: SessionPlan[] = new Array(present.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < present.length) {
+      const i = next++;
+      const id = present[i]!;
+      const files = await sessionFiles(join(stateDir, id));
+      const key = await contentsKey(id, files, added);
+      out[i] = { id, files, key, unchanged: !full && (await sameAsSent(join(dir, id), id, key, files, added, trusted)) };
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(PLAN_CONCURRENCY, present.length) }, worker));
   return out;
 }
 
@@ -488,7 +559,7 @@ export interface UploadContext {
   storeJson: (id: string) => string | null;
   /** メモの本文(無いか空なら null) */
   memo: (id: string) => Promise<string | null>;
-  /** メモの画像(<notes>/memos/<id>/)。メモの本文が無ければ写さないので空 */
+  /** メモの画像(<notes>/memos/<id>/。空のフォルダとリンクも含む)。メモの本文が無ければ写さないので空 */
   memoImages: (id: string) => Promise<FileEntry[]>;
   /** atlas が足して写すものの大きさの合計(本文・DB の行・画像) */
   bytes: (id: string) => Promise<number>;
@@ -509,22 +580,39 @@ async function addedFiles(p: GroupUploadPaths): Promise<UploadContext> {
   // デスクトップアプリのセッションは題名・モデル・トークン数などが data.db にしかない(snapshot が許可リストの列だけを desktop.json に書いたもの)
   const desktop = await readDesktopJson(join(p.snapshot, DESKTOP_JSON));
   const memoDir = p.notes ? memosDir(p.notes) : null;
+  // 要約・送り先との比べ・点検・写すところが同じセッションの分を何度も使うので、この読む口の間は 1 回だけ作る
+  // (読む口は 1 回の点検かアップロードの間だけ使う。次の確認では開き直すので、書き換えたメモも読み直す)
+  const stores = new Map<string, string | null>();
+  const memos = new Map<string, Promise<string | null>>();
+  const images = new Map<string, Promise<FileEntry[]>>();
   const storeJson = (id: string): string | null => {
+    if (stores.has(id)) return stores.get(id)!;
     const rows = reader?.rows(id) ?? null;
     const desk = desktop ? desktopForSession(desktop, id) : null;
-    if (!rows && !desk) return null;
-    const j: SessionStoreJson = { ...(rows ?? { version: 1, schemaVersion: null, sessions: [], turns: [], usage: [], files: [] }), ...(desk ? { desktop: desk } : {}) };
-    return `${JSON.stringify(j)}\n`;
+    const text = !rows && !desk ? null : `${JSON.stringify({ ...(rows ?? { version: 1, schemaVersion: null, sessions: [], turns: [], usage: [], files: [] }), ...(desk ? { desktop: desk } : {}) } satisfies SessionStoreJson)}\n`;
+    stores.set(id, text);
+    return text;
   };
-  const memo = async (id: string): Promise<string | null> => {
-    if (!memoDir) return null;
-    const m = await readMemo(memoDir, id);
-    return m && m.text.trim() ? m.text : null;
+  const memo = (id: string): Promise<string | null> => {
+    let m = memos.get(id);
+    if (!m) {
+      m = memoDir ? readMemo(memoDir, id).then((x) => (x && x.text.trim() ? x.text : null)) : Promise.resolve(null);
+      memos.set(id, m);
+    }
+    return m;
   };
-  const memoImages = async (id: string): Promise<FileEntry[]> => {
-    if (!memoDir || !(await memo(id))) return [];
-    const dir = join(memoDir, id);
-    return existsSync(dir) && statSync(dir).isDirectory() ? (await listFiles(dir)).filter((f) => !f.dir) : [];
+  /** メモの画像(<notes>/memos/<id>/)。写すときは丸ごと写すので、空のフォルダとリンクも返す */
+  const memoImages = (id: string): Promise<FileEntry[]> => {
+    let x = images.get(id);
+    if (!x) {
+      x = (async () => {
+        if (!memoDir || !(await memo(id))) return [];
+        const dir = join(memoDir, id);
+        return existsSync(dir) && statSync(dir).isDirectory() ? listFiles(dir) : [];
+      })();
+      images.set(id, x);
+    }
+    return x;
   };
   return {
     storeJson,
@@ -548,7 +636,13 @@ export async function checkTarget(p: GroupUploadPaths, target: UploadTarget, roo
 }
 
 /** 点検の本体。写すときに使い回せるよう、セッションごとの分け方(planSessions)も返す */
-async function inspect(p: GroupUploadPaths, target: UploadTarget, root: string, ctx: UploadContext | undefined, o: { full?: boolean }): Promise<{ check: UploadCheck; plans: SessionPlan[] }> {
+async function inspect(
+  p: GroupUploadPaths,
+  target: UploadTarget,
+  root: string,
+  ctx: UploadContext | undefined,
+  o: { full?: boolean; trusted?: ReadonlyMap<string, string> },
+): Promise<{ check: UploadCheck; plans: SessionPlan[] }> {
   const { stateDir, dir, present, missing } = await prepare(p, target, root);
   const name = target.name;
   const added = ctx ?? (await addedFiles(p));
@@ -575,7 +669,7 @@ async function inspect(p: GroupUploadPaths, target: UploadTarget, root: string, 
   const unchanged: string[] = [];
   let plans: SessionPlan[] = [];
   try {
-    plans = await planSessions(stateDir, dir, present, added, !!o.full);
+    plans = await planSessions(stateDir, dir, present, added, !!o.full, o.trusted);
     for (const plan of plans) {
       const id = plan.id;
       if (plan.unchanged) {
@@ -607,8 +701,8 @@ async function inspect(p: GroupUploadPaths, target: UploadTarget, root: string, 
         addTop(id, path, n);
         tally(id, path, countSecrets(text));
       }
-      // メモの画像も写すので、大きさに入れる(中身は画像なので調べない)
-      for (const f of await added.memoImages(id)) {
+      // メモの画像も写すので、大きさに入れる(中身は画像なので調べない。空のフォルダは数えない)
+      for (const f of (await added.memoImages(id)).filter((x) => !x.dir)) {
         bytes += f.bytes;
         files++;
         skipped++;
@@ -639,6 +733,7 @@ async function inspect(p: GroupUploadPaths, target: UploadTarget, root: string, 
     snapshotAt: manifest?.createdAt ?? null,
     fingerprint: [send.join(','), unchanged.join(','), files, bytes, count, manifest?.createdAt ?? ''].join('|'),
   };
+  trustedByCheck.set(check, new Map(plans.filter((x) => x.unchanged).map((x) => [join(dir, x.id), x.key])));
   return { check, plans };
 }
 
@@ -652,6 +747,11 @@ export interface UploadOptions {
   context?: UploadContext;
   /** 前に送ったときから変わっていないセッションも写し直す(点検の full と揃える) */
   full?: boolean;
+  /**
+   * 確かめたときの点検(この処理の中で checkTarget が返したもの)。渡すと、点検し直しで、そのとき前に送ったときのままと
+   * 確かめたセッションの送り先の一覧を読み直さない(expect と一緒に渡す)
+   */
+  check?: UploadCheck;
 }
 
 export async function uploadGroup(p: GroupUploadPaths, name: string, root: string, log: (m: string) => void = () => {}, opts: UploadOptions = {}): Promise<GroupUploadResult> {
@@ -664,7 +764,7 @@ export async function uploadTarget(p: GroupUploadPaths, target: UploadTarget, ro
   // 点検し直したときの分け方は使い回す(送り先のフォルダを 2 度読まないように)
   let planned: SessionPlan[] | null = null;
   if (opts.expect != null) {
-    const x = await inspect(p, target, root, opts.context, { full: opts.full });
+    const x = await inspect(p, target, root, opts.context, { full: opts.full, trusted: opts.check ? trustedByCheck.get(opts.check) : undefined });
     if (x.check.fingerprint !== opts.expect) throw new UploadChangedError();
     planned = x.plans;
   }
@@ -681,6 +781,7 @@ export async function uploadTarget(p: GroupUploadPaths, target: UploadTarget, ro
   let uploaded = 0;
   let replaced = 0;
   const leftovers: string[] = [];
+  const staleMeta: string[] = [];
   const records = await readRecords(opts.sessions ?? p.sessions, present);
   const tags = await tagsById(p.groups);
   const info = (id: string): UploadedSession => {
@@ -704,22 +805,6 @@ export async function uploadTarget(p: GroupUploadPaths, target: UploadTarget, ro
       send.push(plan.id);
       lists.set(plan.id, plan.files);
       extra.set(plan.id, await added.bytes(plan.id));
-    }
-    // 写さないものも、添えた記録(タスクタグ・題名など。中身の要約は同じ)が変わっていれば書き直す
-    for (const id of kept) {
-      const dest = join(dir, id);
-      if (await added.memo(id)) withMemo.add(id);
-      const meta = `${JSON.stringify({ version: 1, ...info(id), contents: keys.get(id) }, null, 2)}\n`;
-      const path = join(dest, UPLOAD_SESSION_META);
-      if ((await readFile(path, 'utf8').catch(() => null)) !== meta) {
-        const tmp = join(dest, `.${UPLOAD_SESSION_META}.tmp`);
-        await writeFile(tmp, meta);
-        await renameReplacing(tmp, path);
-      }
-      // 前の回が置き換えの途中で止まって残したもの(本体のフォルダは前に送ったときのまま)を片付ける
-      for (const left of [join(dir, uploadOldName(id)), join(dir, uploadTmpName(id))]) {
-        if (existsSync(left)) await rm(left, { recursive: true, force: true }).catch(() => {});
-      }
     }
     const total = [...lists.values()].flat().reduce((a, f) => a + f.bytes, 0) + [...extra.values()].reduce((a, n) => a + n, 0);
     const progress: UploadProgress = { sessions: send.length, done: 0, bytes: total, copied: 0, current: null };
@@ -775,6 +860,33 @@ export async function uploadTarget(p: GroupUploadPaths, target: UploadTarget, ro
         throw new Error(`セッション ${id} を写せませんでした(${(e as Error).message})。前に写したフォルダはそのままです。写し終えたのは ${uploaded} 件です`);
       }
     }
+    // 写さないものも、添えた記録(タスクタグ・題名など。中身の要約は同じ)が変わっていれば書き直す。
+    // 書き直せなくても(送り先で開かれているなど)、ログは前に送ったときのままなので止めずに、セッションを知らせる
+    for (const id of kept) {
+      const dest = join(dir, id);
+      if (await added.memo(id)) withMemo.add(id);
+      const meta = `${JSON.stringify({ version: 1, ...info(id), contents: keys.get(id) }, null, 2)}\n`;
+      const path = join(dest, UPLOAD_SESSION_META);
+      const tmp = join(dest, `.${UPLOAD_SESSION_META}.tmp`);
+      try {
+        if ((await readFile(path, 'utf8').catch(() => null)) !== meta) {
+          await writeFile(tmp, meta);
+          await renameReplacing(tmp, path);
+        }
+      } catch (e) {
+        await rm(tmp, { force: true }).catch(() => {});
+        staleMeta.push(id);
+        log(`${g.kind} upload: セッション ${id} の記録(${UPLOAD_SESSION_META})を書き直せませんでした(${(e as Error).message})。ログは前に送ったときのままです`);
+      }
+      // 前の回が置き換えの途中で止まって残したもの(本体のフォルダは前に送ったときのまま)を片付ける。消せなければ知らせる
+      for (const left of [join(dir, uploadOldName(id)), join(dir, uploadTmpName(id))]) {
+        if (!existsSync(left)) continue;
+        await rm(left, { recursive: true, force: true }).catch((e: Error) => {
+          leftovers.push(left);
+          log(`${g.kind} upload: 前のフォルダ ${left} を消せませんでした(${e.message})。手で消してください`);
+        });
+      }
+    }
   } finally {
     if (!opts.context) added.close();
   }
@@ -795,7 +907,7 @@ export async function uploadTarget(p: GroupUploadPaths, target: UploadTarget, ro
   log(
     `${g.kind} upload: 「${name}」 ${uploaded} セッション(置き換え ${replaced} 件・メモ ${withMemo.size} 件${kept.size ? `・前に送ったときのままの ${kept.size} 件は写していません` : ''})→ ${dir}${missing.length ? `。前回の集計に無い ${missing.length} 件は写していません` : ''}`,
   );
-  return { name, dir, uploaded, replaced, unchanged: kept.size, missing, snapshotAt, memos: withMemo.size, leftovers };
+  return { name, dir, uploaded, replaced, unchanged: kept.size, staleMeta, missing, snapshotAt, memos: withMemo.size, leftovers };
 }
 
 /**
