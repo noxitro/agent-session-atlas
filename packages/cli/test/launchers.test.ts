@@ -26,8 +26,8 @@ describe('cmd の出力を読む(scripts/console-text.ts)', () => {
 });
 
 describe('*.bat', () => {
-  it('リポジトリ直下にあるのは atlas.bat(集計と画面)・setup.bat(初期設定)・upload-project.bat(プロジェクトのセッションを送る)だけ(他の操作は画面とコマンドから)', () => {
-    expect(BATS).toEqual(['atlas.bat', 'setup.bat', 'upload-project.bat']);
+  it('リポジトリ直下にあるのは atlas.bat(集計と画面)・open-folder.bat(選んだフォルダを集計して開く)・setup.bat(初期設定)・upload-project.bat(プロジェクトのセッションを送る)だけ(他の操作は画面とコマンドから)', () => {
+    expect(BATS).toEqual(['atlas.bat', 'open-folder.bat', 'setup.bat', 'upload-project.bat']);
   });
 
   it.each(BATS)('%s は改行がすべて CRLF で、BOM が無い', (f) => {

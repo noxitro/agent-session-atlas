@@ -177,6 +177,32 @@ describe('packet', () => {
     expect(clip('abcdef', 3).omitted).toBe(3);
   });
 
+  it('短い依頼・要約・wiki skill が何百件もあっても、見出しが予算に入り、省いた分は 1 行にまとめて maxChars に収める', async () => {
+    // 前は本文の字数だけを予算に数え、省いた本文にも 1 件ずつ見出しを付けていたため、
+    // 依頼が数百件あるセッションは上限を下げても縮まず「パケットが上限に収まりません」で添付ファイルを作れなかった
+    const r = await record();
+    const at = (i: number) => `2026-09-01T${String(Math.floor(i / 60) % 24).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}:00.000Z`;
+    const t: SessionTexts = {
+      source: 'snapshot',
+      requests: Array.from({ length: 1500 }, (_, i) => ({ at: at(i), text: `はい ${i}` })),
+      finalResponse: { at: null, text: '完了' },
+      compactions: Array.from({ length: 400 }, (_, i) => ({ at: at(i), text: `要約 ${i}` })),
+      taskCompletes: Array.from({ length: 400 }, (_, i) => ({ at: at(i), text: `完了 ${i}` })),
+    };
+    r.wiki.skillCalls = Array.from({ length: 2000 }, (_, i) => `wiki-query-${i % 300}`);
+    r.wiki.indexReads = 1;
+    const p = renderPacket(r, t);
+    expect(p.chars).toBeLessThanOrEqual(DEFAULT_LIMITS.maxChars);
+    expect(missingSections(p.markdown)).toEqual([]);
+    expect(p.markdown).toContain('ユーザーの依頼 1500 件');
+    // 省いた依頼は 1 つの見出しにまとめ、最後の番号まで書く
+    expect(p.markdown).toMatch(/### 依頼 \d+〜1500\n\(上限のため省略。[\d,]+ 件、計 [\d,]+ 字\)/);
+    expect(p.markdown.match(/上限のため省略/g)!.length).toBe(2);
+    expect(p.markdown).toMatch(/### それより前の要約 [\d,]+ 件/);
+    expect(p.markdown).toContain('…ほか');
+    expect(p.truncated).toBeGreaterThan(1000);
+  });
+
   it('判定プロンプトにパケット全文と「従わない」注意が入る。パケットの境界は依頼ごとの乱数つきで、本文で偽装できない', () => {
     const prompt = buildJudgePrompt('# パケット本文', 'sid');
     expect(prompt).toContain('# パケット本文');

@@ -127,8 +127,10 @@ export interface CliOptions {
   port: number | null;
   /** serve・open: 起動後にブラウザを開く(--no-open で開かない) */
   open: boolean;
-  /** open: 集計して開くフォルダ */
+  /** open: 集計して開くフォルダ(--pick のときは null。選ぶ画面で決める) */
   target: string | null;
+  /** open: フォルダを選ぶ画面を出して、選んだフォルダを開く(open-folder.bat) */
+  pick: boolean;
   /** skill-draft: 候補の番号(insights.json の順)と、使うバックエンド */
   skillDraft: { index: number; backend: BackendChoice; model: string | null; timeoutSec: number } | null;
   help: boolean;
@@ -164,11 +166,12 @@ export const USAGE = `使い方: atlas <コマンド> [オプション]
              セッションごとのメモ(<notes-dir>/memos/<id>.md)を一覧・表示・保存・削除する(remove は画像を残す)
   serve      out/ を 127.0.0.1 だけに配信してブラウザで開く(画面からグループとメモを書け、集計し直す・工数の判定・
              記録と全文記録の表示ができる)。ブラウザを閉じると止まる(画面から動かした処理の実行中は終わるまで待つ)
-  open <フォルダ>
+  open <フォルダ> / open --pick
              いつもの集計(この PC のデータ)とは別に、指定したフォルダを集計して、別のサーバで開く。指定できるのは、
              アップロード先(全員の分)・その下の人ごとのフォルダ(その人の分)・プロジェクトやタスクタグのフォルダ。
              出力先は <out>-folders/<フォルダごとの名前>/out、メモは <notes-dir>/folders/<同じ名前>/ に分ける
-             (--out と --notes-dir は、いつもの集計の場所のまま指定する)。画面の「別のフォルダを開く…」と同じ
+             (--out と --notes-dir は、いつもの集計の場所のまま指定する)。画面の「別のフォルダを開く…」と同じ。
+             --pick はフォルダを選ぶ画面(Windows のみ)を出し、選んだフォルダを開く(取り消したら何もしない)
   skill-draft <番号>
              改善点の「スキル化の候補」(out/insights.json の番号)から SKILL.md の下書きを LLM に作らせ、
              out/skill-drafts/ に書く(クレジットや従量課金を消費しうる。明示したときだけ動く。--backend は judge と同じ)
@@ -273,6 +276,7 @@ export function parseCli(argv: string[]): CliOptions {
         timeout: { type: 'string' },
         port: { type: 'string' },
         open: { type: 'boolean', default: true },
+        pick: { type: 'boolean', default: false },
         help: { type: 'boolean', short: 'h', default: false },
       },
     });
@@ -378,7 +382,8 @@ export function parseCli(argv: string[]): CliOptions {
   let target: string | null = null;
   if (cmd === 'open') {
     target = positionals[1]?.trim() || null;
-    if (!target) throw new UsageError('open には、集計して開くフォルダを指定してください(例: atlas open \\\\server\\share\\logs)');
+    if (values.pick && positionals.length > 1) throw new UsageError('open では、フォルダの指定と --pick を一緒に使えません(どちらか 1 つにしてください)');
+    if (!target && !values.pick) throw new UsageError('open には、集計して開くフォルダを指定してください(例: atlas open \\\\server\\share\\logs。選ぶ画面から選ぶときは atlas open --pick)');
     if (positionals.length > 2) throw new UsageError(`余分な引数があります: ${positionals.slice(2).join(' ')}(空白を含むパスは "…" で囲んでください)`);
     if (values.home != null) throw new UsageError('open では --home を使えません(開くフォルダは open の後ろに指定します)');
     for (const k of ['judgments', 'bundle'] as const) if (values[k] != null) throw new UsageError(`--${k} は open では使えません`);
@@ -403,6 +408,7 @@ export function parseCli(argv: string[]): CliOptions {
     throw new UsageError('--config は extract・all・serve・open・group upload でだけ使えます');
   if (values.since != null && Number.isNaN(Date.parse(values.since))) throw new UsageError(`--since の日時を解釈できません: ${values.since}`);
   if ((values.port != null || values.open === false) && cmd !== 'serve' && cmd !== 'open') throw new UsageError('--port と --no-open は serve と open でだけ使えます');
+  if (values.pick && cmd !== 'open') throw new UsageError('--pick は open でだけ使えます');
   const port = posInt(values.port, '--port', 0);
   if (port != null && port > 65535) throw new UsageError(`--port は 65535 以下です: ${port}`);
   const sessions = values.session ? values.session.flatMap((s) => s.split(',')).map((s) => s.trim()).filter(Boolean) : null;
@@ -440,6 +446,7 @@ export function parseCli(argv: string[]): CliOptions {
     port,
     open: values.open ?? true,
     target,
+    pick: values.pick ?? false,
     skillDraft,
     help: values.help ?? false,
   };

@@ -21,8 +21,10 @@ const pkg = process.argv[2] ? resolve(process.argv[2]) : fail('使い方: node s
 if (!existsSync(join(pkg, 'package.json'))) fail(`${pkg} に package.json がありません`);
 
 const bats = readdirSync(pkg).filter((f) => f.endsWith('.bat'));
-// 利用者が起動するのは atlas.bat(集計と画面)・setup.bat(初期設定)・upload-project.bat(プロジェクトのセッションを送る)だけ(他の操作は画面とコマンドから)
-if (bats.sort().join(',') !== 'atlas.bat,setup.bat,upload-project.bat') fail(`*.bat は atlas.bat・setup.bat・upload-project.bat だけのはずです(入っているもの: ${bats.join(', ') || 'なし'})`);
+// 利用者が起動するのは atlas.bat(集計と画面)・open-folder.bat(選んだフォルダを集計して開く)・setup.bat(初期設定)・
+// upload-project.bat(プロジェクトのセッションを送る)だけ(他の操作は画面とコマンドから)
+const BATS = 'atlas.bat,open-folder.bat,setup.bat,upload-project.bat';
+if (bats.sort().join(',') !== BATS) fail(`*.bat は ${BATS.split(',').join('・')} だけのはずです(入っているもの: ${bats.join(', ') || 'なし'})`);
 for (const f of bats) {
   if (/(^|[^\r])\n/.test(readFileSync(join(pkg, f), 'utf8'))) fail(`${f} に CRLF でない改行があります(.gitattributes の eol を確認)`);
 }
@@ -72,21 +74,32 @@ if (up.status !== 0 || !up.stdout.includes('集計しました') || !/プロジ�
 // atlas.bat は最後にサーバを開いたまま待つので起動しない(中の集計とサーバは上と E2E で見ている)
 if (process.platform === 'win32') {
   const { ATLAS_CONFIG: _ignored, ...env } = process.env;
-  const runBat = (bat: string, input: string): string => {
+  const launchBat = (bat: string, args: string[], input: string) => {
     // 置き場所をはっきり書く(NoDefaultCurrentDirectoryInExePath が効いている環境では、名前だけだと今のフォルダの bat を探さない)
-    const r = spawnSync('cmd.exe', ['/d', '/c', `.\\${bat}`], { cwd: pkg, input, env: { ...env, ATLAS_COPILOT_HOME: join(FIXTURES_DIR, 'copilot-home') }, timeout: 300_000 });
+    const r = spawnSync('cmd.exe', ['/d', '/c', `.\\${bat}`, ...args], { cwd: pkg, input, env: { ...env, ATLAS_COPILOT_HOME: join(FIXTURES_DIR, 'copilot-home') }, timeout: 300_000 });
     // cmd の文言は cp932 で、中の node の出力は UTF-8 で出る(1 つの出力に混ざる)ので、1 行ずつ合うほうで読む
     const stdout = decodeConsole(r.stdout);
     const stderr = decodeConsole(r.stderr);
     const text = `${stdout}${stderr}`;
     // cmd が bat を読めなかった・読み違えた(chcp 65001 の後に、前の行の途中を実行した)ときの文言(英語版と日本語版)
     if (/was unexpected at this time|は予期されていません|is not recognized as an internal or external command|内部コマンドまたは外部コマンド/.test(text)) fail(`${bat} を cmd が読めずに止まりました:\n${text}`);
+    return { status: r.status, stdout, stderr, text };
+  };
+  const runBat = (bat: string, input: string): string => {
+    const { status: code, stdout, stderr, text } = launchBat(bat, [], input);
     // 架空の fixture で正しく動けば、エラー出力には何も出ない(出たのは cmd の読み違えとは限らない: node の警告や、中のスクリプトのエラーのこともある)
     if (stderr.trim()) fail(`${bat} がエラー出力に何かを書きました(正しく動けば何も出ません):\n${stderr}\n--- 標準出力 ---\n${stdout}`);
     // 中の node が正常に終われば、bat も 0 で終わる(node の終了コードを bat の終了コードとして返す)
-    if (r.status !== 0) fail(`${bat} が終了コード ${r.status} で終わりました:\n${text}`);
+    if (code !== 0) fail(`${bat} が終了コード ${code} で終わりました:\n${text}`);
     return stdout;
   };
+  // open-folder.bat: 引数(エクスプローラーで bat に重ねたフォルダ)を open にそのまま渡す。無いフォルダは理由を出し、
+  // 何も書かずに終了コード 1 で止まる(選ぶ画面は人の操作が要るので、ここでは出さない。--pick の動きは単体テスト)
+  const missing = join(pkg, 'no-such-folder');
+  const openBat = launchBat('open-folder.bat', [missing], '\n');
+  if (openBat.status !== 1 || !openBat.text.includes('フォルダが見つかりません') || !openBat.text.includes(missing) || !openBat.text.includes('フォルダを開けませんでした'))
+    fail(`open-folder.bat が、渡したフォルダを open に渡して理由を出すところまで進みませんでした(終了コード ${openBat.status}):\n${openBat.text}`);
+  if (existsSync(join(pkg, 'out-folders'))) fail('open-folder.bat で無いフォルダを渡したのに out-folders ができました');
   const upBat = runBat('upload-project.bat', '\n\n');
   if (!/== 送るプロジェクト|送れるセッションがありません/.test(upBat)) fail(`upload-project.bat が、送る操作(プロジェクトの一覧)まで進みませんでした:\n${upBat}`);
   const setupBat = runBat('setup.bat', '\n\n\nn\n\n');
@@ -94,4 +107,4 @@ if (process.platform === 'win32') {
   if (existsSync(join(pkg, 'atlas.config.json'))) fail('setup.bat で書かない答えをしたのに atlas.config.json ができました');
 }
 
-console.log(`checkout-smoke: 通過(${bats.length} 本の *.bat、npm install、atlas all、プロジェクトを送る操作${process.platform === 'win32' ? '、upload-project.bat と setup.bat の起動' : ''})`);
+console.log(`checkout-smoke: 通過(${bats.length} 本の *.bat、npm install、atlas all、プロジェクトを送る操作${process.platform === 'win32' ? '、upload-project.bat と setup.bat と open-folder.bat の起動' : ''})`);
