@@ -55,7 +55,7 @@ import { phaseNames } from './config.ts';
 import { acquireOutLock, JobError, JobRunner, OutBusyError, parseJobRequest, runningJobIn, type RunFullFn, type SpawnFn } from './jobs.ts';
 import { exportGroup } from './group-export.ts';
 import { checkUpload, UploadChangedError, uploadDir, uploadedAt, uploadGroup, type GroupUploadResult, type UploadProgress } from './group-upload.ts';
-import { defaultConfigPath, loadConfig, modifyConfig, NO_CHANGE, parseConfig, parseUploadRoot, updateConfig } from './config.ts';
+import { defaultConfigPath, isByokModel, loadConfig, modifyConfig, NO_CHANGE, parseConfig, parseUploadRoot, updateConfig } from './config.ts';
 import { CAN_PICK_FOLDER, openFolder, pickFolder } from './folder-picker.ts';
 import { checkFolder, FolderError, foldersRootOf, forgetFolder, launchDetached, listFolders, listFolderStates, openFolderReport, type FolderContext, type LaunchFn } from './folders.ts';
 
@@ -322,7 +322,8 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     notesDir: resolve(o.notesDir),
     home: o.home,
     spawn: o.jobs?.spawn,
-    env: o.jobs?.env,
+    // --config で起動したサーバは、画面から動かす処理(集計し直す・判定)にも同じ設定ファイル(wiki・工程名・判定に使うモデル)を読ませる
+    env: { ...(o.configPath ? { ATLAS_CONFIG: resolve(o.configPath) } : {}), ...o.jobs?.env },
     runFull: o.jobs?.runFull ?? runFullDefault,
     log,
     // 画面が閉じられた後もジョブは最後まで走らせ、終わってから判定を再開する
@@ -1036,7 +1037,16 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
         return;
       }
       if (path === '/api/jobs/judge-preview' && method === 'GET') {
-        sendJson(res, 200, url.searchParams.get('target') === 'turns' ? await turnPreview() : await judgePreview());
+        // 判定に使うモデル(設定の judgeModel)も返す。確認ダイアログが、Copilot の AI クレジットを使うか、自分の API キー(BYOK)かを出す
+        let model: string | null = null;
+        let modelError: string | null = null;
+        try {
+          model = (await loadConfig(configPath, false)).judgeModel;
+        } catch (e) {
+          modelError = (e as Error).message;
+        }
+        const counts = url.searchParams.get('target') === 'turns' ? await turnPreview() : await judgePreview();
+        sendJson(res, 200, { ...counts, model, byok: isByokModel(model), modelError });
         return;
       }
     } catch (e) {

@@ -56,7 +56,7 @@ import { pickFolder } from './folder-picker.ts';
 import { checkFolder, folderPaths, foldersRootOf, listFolderStates, readFolderState, writeFolderState, type FolderRun, type FolderState } from './folders.ts';
 import { buildTables } from './tables.ts';
 import { exportGroup } from './group-export.ts';
-import { CONFIG_FILE, loadConfig, parseUploadRoot, phaseNames } from './config.ts';
+import { CONFIG_FILE, loadConfig, parseUploadRoot, phaseNames, resolveJudgeModel } from './config.ts';
 import { checkUpload, uploadGroup } from './group-upload.ts';
 
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
@@ -484,7 +484,7 @@ export async function runTurns(p: Paths, f: SessionFilter, t: TurnsCliOptions, l
     return;
   }
   if (t.action === 'run') {
-    const backend = copilotCliBackend({ model: t.model, timeoutMs: t.timeoutSec * 1000 });
+    const backend = copilotCliBackend({ model: await resolveJudgeModel(t.model, 'turns', log), timeoutMs: t.timeoutSec * 1000 });
     const r = await runTurnJudge({ bundleDir: p.turnBundle, path: p.turnJudgments, backend, limit: t.limit, log });
     if (r.failed.length) throw new Error(`判定できなかった塊が ${r.failed.length} 個あります(${p.turnJudgments} の failures。もう一度実行すると再試行します)`);
     return;
@@ -519,7 +519,7 @@ export async function runJudgeCommand(p: Paths, j: JudgeCliOptions, log: Log, ba
   const s = await runJudge({
     bundleDir: p.bundle,
     judgmentsPath: p.judgments,
-    backend: backend ?? makeBackend(j),
+    backend: backend ?? makeBackend(j.backend === 'copilot-cli' ? { ...j, model: await resolveJudgeModel(j.model, 'judge', log) } : j),
     limit: j.limit,
     only: j.only,
     force: j.force,
@@ -691,7 +691,8 @@ export async function runSkillDraft(p: Paths, o: NonNullable<CliOptions['skillDr
   const c = j.candidates[o.index - 1];
   if (!c) throw new Error(`候補 ${o.index} はありません(候補は ${j.candidates.length} 件)`);
   log(`skill-draft: 候補 ${o.index}(${c.kind === 'tools' ? c.key : (c.representative ?? c.key).slice(0, 60)})を ${o.backend} で下書きします${o.backend === 'anthropic' ? '(Anthropic API の従量課金です)' : '(クレジットを消費する場合があります)'}`);
-  const r = await draftSkill(c, o.index, { backend: o.backend, model: o.model, timeoutMs: o.timeoutSec * 1000 });
+  const model = o.backend === 'copilot-cli' ? await resolveJudgeModel(o.model, 'skill-draft', log) : o.model;
+  const r = await draftSkill(c, o.index, { backend: o.backend, model, timeoutMs: o.timeoutSec * 1000 });
   const dir = join(p.out, 'skill-drafts');
   await mkdir(dir, { recursive: true });
   const slug = (c.tools ? c.tools.join('-') : (c.representative ?? c.key)).replace(/[^A-Za-z0-9\u3040-\u30ff\u3400-\u9fff_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'draft';

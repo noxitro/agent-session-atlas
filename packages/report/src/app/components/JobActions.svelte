@@ -4,7 +4,7 @@
   // ダイアログでは判定するもの(工数 = セッションごと / 依頼ごとの採用)と、判定の方法を選べる:
   // このツールから(copilot -p)か、チャットに貼る(M365 Copilot など。ChatJudge)。選んだものはこのブラウザに覚える。
   import { tick } from 'svelte';
-  import { jobsApi, type JudgeTarget } from '../api.ts';
+  import { jobsApi, type JudgePreview, type JudgeTarget } from '../api.ts';
   import type { JobStore } from '../jobs.svelte.ts';
   import { int } from '../../lib/format.ts';
   import ChatJudge from './ChatJudge.svelte';
@@ -69,7 +69,7 @@
     dlg?.querySelector<HTMLElement>('[data-autofocus]')?.focus({ preventScroll: true });
     if (dlg) dlg.scrollTop = 0;
   }
-  let preview = $state<{ eligible: number; judged: number; pending: number; withoutTurns?: number } | null>(null);
+  let preview = $state<JudgePreview | null>(null);
   let previewError = $state('');
   let runError = $state('');
   let limit = $state<number | null>(LIMIT_DEFAULT[readTarget()]);
@@ -151,6 +151,11 @@
         <label class="fld"><span class="k">件数({unit})の上限</span><input type="number" name="judge-limit" autocomplete="off" min="1" max={LIMIT_MAX[target]} step="1" inputmode="numeric" bind:value={limit} aria-invalid={limitOk ? undefined : 'true'} aria-describedby="judge-count" data-testid="judge-limit" /></label>
         <p class="fld only">判定に使うもの: GitHub Copilot CLI(copilot -p)</p>
       </div>
+      {#if preview}
+        <p class="model" data-testid="judge-model">
+          モデル: {#if preview.model}<code>{preview.model}</code>{#if preview.byok}(自分の API キー・BYOK){/if}{:else}Copilot の既定のモデル{/if}<span class="src">(atlas.config.json の judgeModel{preview.model ? '' : 'が未設定'})</span>
+        </p>
+      {/if}
       <p class="count" id="judge-count" role="status" data-testid="judge-count">
         {#if !limitOk}件数の上限は 1〜{int(LIMIT_MAX[target])} の整数で指定してください。
         {:else if previewError}未判定の件数を数えられませんでした: {previewError}
@@ -160,8 +165,13 @@
         {#if target === 'turns' && preview?.withoutTurns}<br />依頼ごとの記録が無いセッションが {int(preview.withoutTurns)} 件あります(古い集計)。先に「集計し直す」を押すと、その依頼も判定できます。{/if}
       </p>
       <p class="cost" id="judge-cost">
-        <strong>AI クレジットを消費します。</strong>
-        {#if target === 'turns'}GitHub Copilot の AI クレジットを、続いた依頼 {TURN_CHUNK} 件まで(長い依頼はもっと少なく)ごとに 1 回の判定の分だけ使います。{:else}GitHub Copilot の AI クレジットを、1 件につき 1 回以上の判定の分だけ使います。{/if}
+        {#if preview?.byok}<strong>API の利用料がかかります。</strong>
+          自分の API キーのモデル(BYOK)で判定するので、GitHub Copilot の AI クレジットは使いません。そのモデルの提供元(例: Anthropic)の API の従量課金を、{#if target === 'turns'}続いた依頼 {TURN_CHUNK} 件まで(長い依頼はもっと少なく)ごとに 1 回{:else}1 件につき 1 回以上{/if}の判定の分だけ使います。
+        {:else}<strong>AI クレジットを消費します。</strong>
+          {#if target === 'turns'}GitHub Copilot の AI クレジットを、続いた依頼 {TURN_CHUNK} 件まで(長い依頼はもっと少なく)ごとに 1 回の判定の分だけ使います。{:else}GitHub Copilot の AI クレジットを、1 件につき 1 回以上の判定の分だけ使います。{/if}
+          自分の API キーのモデル(BYOK)で判定するには、atlas.config.json に <code>"judgeModel": "anthropic/claude-sonnet-5-5"</code> のように書きます。
+        {/if}
+        {#if preview?.modelError}<br />設定ファイルを読めませんでした: {preview.modelError}{/if}
       </p>
       {#if runError}<p class="err" role="alert">{runError}</p>{/if}
       <div class="actions">
@@ -273,6 +283,20 @@
   .opt input {
     margin: 0;
     accent-color: var(--form);
+  }
+  .model {
+    margin: 8px 0 0;
+    font-size: 0.8125rem;
+    overflow-wrap: anywhere;
+  }
+  .model code,
+  .cost code {
+    font-family: var(--mono);
+    font-size: 0.8125rem;
+    overflow-wrap: anywhere;
+  }
+  .model .src {
+    color: var(--ink-3);
   }
   .count {
     margin: 12px 0 0;

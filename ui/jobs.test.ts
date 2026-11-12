@@ -27,6 +27,7 @@ describe('画面からの操作(Phase 14)', () => {
   const out = join(WORK, 'out');
   const notes = join(WORK, 'notes');
   const fakeLog = join(WORK, 'fake-copilot.log');
+  const configPath = join(WORK, 'atlas.config.json');
   let close: () => Promise<void>;
   let server: ServeHandle;
   let browser: Browser;
@@ -40,10 +41,13 @@ describe('画面からの操作(Phase 14)', () => {
     ({ home, close } = await buildFixtureHome(join(WORK, 'home'), { phase11: true }));
     const r = spawnSync(process.execPath, [CLI, 'all', '--home', home, '--out', out, '--notes-dir', notes], { cwd: ROOT, encoding: 'utf8', timeout: 120_000 });
     expect(r.status, r.stderr).toBe(0);
+    // 設定ファイルはテスト用の場所(リポジトリの atlas.config.json を読まない)。判定には自分の API キーのモデル(BYOK)を使う設定にする
+    await writeFile(configPath, JSON.stringify({ judgeModel: 'anthropic/claude-sonnet-5-5' }));
     server = await startServe({
       outDir: out,
       notesDir: notes,
       groupsPath: join(notes, 'groups.json'),
+      configPath,
       port: 0,
       open: false,
       idleMs: 600_000,
@@ -99,7 +103,11 @@ describe('画面からの操作(Phase 14)', () => {
     await page.getByTestId('job-judge').click();
     await dialog.waitFor({ state: 'visible' });
     await expect.poll(() => page.getByTestId('judge-count').innerText()).toMatch(/未判定のセッション \d+ 件のうち 10 件を判定します/);
-    expect(await dialog.innerText()).toContain('AI クレジットを消費します');
+    // 設定の judgeModel が BYOK なので、Copilot の AI クレジットではなく API の利用料だと出す
+    await expect.poll(() => page.getByTestId('judge-model').innerText()).toBe('モデル: anthropic/claude-sonnet-5-5(自分の API キー・BYOK)(atlas.config.json の judgeModel)');
+    expect(await dialog.innerText()).toContain('API の利用料がかかります');
+    expect(await dialog.innerText()).toContain('GitHub Copilot の AI クレジットは使いません');
+    expect(await dialog.innerText()).not.toContain('AI クレジットを消費します');
     // 初期フォーカスは「やめる」
     expect(await page.evaluate<string | undefined>('document.activeElement?.dataset.testid')).toBe('judge-cancel');
     await page.getByTestId('judge-cancel').click();
@@ -123,7 +131,13 @@ describe('画面からの操作(Phase 14)', () => {
     await page.getByTestId('job-reload').waitFor({ state: 'visible', timeout: 60_000 });
     const j = JSON.parse(await readFile(join(out, 'judgments.json'), 'utf8')) as { items: unknown[] };
     expect(j.items).toHaveLength(2);
-    expect((await readFile(fakeLog, 'utf8')).trim().split('\n')).toHaveLength(2);
+    const calls = (await readFile(fakeLog, 'utf8'))
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l) as { argv: string[] });
+    expect(calls).toHaveLength(2);
+    // 画面からの判定にも、設定のモデルを渡す(渡さないと Copilot の既定のモデルで AI クレジットを使う)
+    for (const c of calls) expect(c.argv[c.argv.indexOf('--model') + 1]).toBe('anthropic/claude-sonnet-5-5');
     await page.getByTestId('job-reload').click();
     await page.waitForLoadState('load');
     await expect.poll(() => page.evaluate<number>("JSON.parse(document.getElementById('atlas-data').textContent).judgments.items")).toBe(2);
