@@ -47,3 +47,9 @@ export { commandKind, toolKind, phaseOf, requestKindOf, sessionTurns, followedBy
 export type { Phase, RequestKind, TurnRow, TurnBucket, TurnMetrics, TurnFacts, Outcome, Mismatch } from './turns.ts';
 export { turnsCsv, sessionsCsv, toCsv, csvCell } from './tables.ts';
 export type { TurnVerdictLike, VerdictMap } from './tables.ts';
+export { extractAiChanges, parseUnifiedDiff, parseApplyPatch, lineText } from './ai-changes.ts';
+export type { AiChangeSet, AiHunk, AiFileChange, SessionVcsContext, WorkspaceHints, ValueSource, DiffFile } from './ai-changes.ts';
+export { VCS_KINDS, assertReadOnly, defaultRunner, readOnlyRunner, openRepo, decodeText, nearestExistingDir, VcsReadError } from './vcs.ts';
+export type { VcsKind, VcsRunner, RunResult, Revision, EvalMode, VcsRepo, OpenRepoResult } from './vcs.ts';
+export { measureRetention, summarizeRetention, dice, RETENTION_STATUSES, RETENTION_STATUS_LABEL, UNATTRIBUTABLE_REASONS, UNATTRIBUTABLE_REASON_LABEL } from './vcs-retention.ts';
+export type { RetentionStatus, UnattributableReason, HunkRetention, SessionRetention, RetentionOptions, RetentionSummary, LineCounts } from './vcs-retention.ts';
