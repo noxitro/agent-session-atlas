@@ -21,9 +21,14 @@ export interface AtlasConfig {
   uploadRoot: string | null;
   /** upload-project.bat がまとめて送るプロジェクト(集計のプロジェクト名。画面の「プロジェクト別」で選ぶ)。設定に無いか空なら null(bat で番号を選ぶ) */
   uploadProjects: string[] | null;
+  /**
+   * LLM の判定(judge run・turns run・skill-draft と画面の「このツールが判定する」)で Copilot CLI に渡すモデル。
+   * 自分の API キーのモデル(BYOK)は <プロバイダー名>/<モデル ID>(例: anthropic/claude-sonnet-5-5)。設定に無ければ null(Copilot の既定のモデル。AI クレジットを使う)
+   */
+  judgeModel: string | null;
 }
 
-const KEYS = ['wikis', 'phases', 'uploadRoot', 'uploadProjects'] as const;
+const KEYS = ['wikis', 'phases', 'uploadRoot', 'uploadProjects', 'judgeModel'] as const;
 
 const WIKI_LISTS = ['index', 'pages', 'extensions', 'skills'] as const;
 
@@ -71,7 +76,17 @@ export function parseConfig(v: unknown): Omit<AtlasConfig, 'path'> {
     const names = [...new Set(stringList(v.uploadProjects, 'uploadProjects'))];
     uploadProjects = names.length ? names : null;
   }
-  return { wikis, phases, uploadRoot, uploadProjects };
+  let judgeModel: string | null = null;
+  if (v.judgeModel !== undefined) {
+    if (typeof v.judgeModel !== 'string' || !/^[^\s"]+$/.test(v.judgeModel.trim())) throw new Error('judgeModel にはモデル名を 1 つ指定してください(例: anthropic/claude-sonnet-5-5)');
+    judgeModel = v.judgeModel.trim();
+  }
+  return { wikis, phases, uploadRoot, uploadProjects, judgeModel };
+}
+
+/** Copilot CLI の BYOK のモデル(<プロバイダー名>/<モデル ID>)か。Copilot が用意するモデルの名前には / が無い */
+export function isByokModel(model: string | null): boolean {
+  return !!model && /^[^/\s]+\/[^/\s]+$/.test(model);
 }
 
 /** アップロード先の基底フォルダ。フルパス(~\ で始まるものはホームから)だけを受け付ける(相対パスは起動した場所で意味が変わるため) */
@@ -274,11 +289,28 @@ export async function phaseNames(): Promise<string[]> {
   return (await loadConfig(defaultConfigPath(), process.env.ATLAS_CONFIG != null)).phases ?? [...DEFAULT_PHASE_NAMES];
 }
 
+/** 判定に使うモデル(環境変数 ATLAS_CONFIG かリポジトリ直下の atlas.config.json の judgeModel、無ければ null) */
+export async function judgeModelSetting(): Promise<string | null> {
+  return (await loadConfig(defaultConfigPath(), process.env.ATLAS_CONFIG != null)).judgeModel;
+}
+
+/**
+ * 判定に使うモデルを決めて、どこから来たかをログに書く。指定(--model)> 設定の judgeModel > なし(Copilot の既定のモデル)。
+ * 設定は copilot-cli のときだけ使う(anthropic バックエンドのモデル名は形が違う)
+ */
+export async function resolveJudgeModel(explicit: string | null, label: string, log: (msg: string) => void): Promise<string | null> {
+  if (explicit) return explicit;
+  const m = await judgeModelSetting();
+  if (m) log(`${label}: 判定に使うモデル ${m}(atlas.config.json の judgeModel${isByokModel(m) ? '。自分の API キーのモデル(BYOK)なので、Copilot の AI クレジットは使いません' : ''})`);
+  else log(`${label}: 注意 モデルを指定していないので、Copilot の既定のモデルで判定します(AI クレジットを使います)。自分の API キーのモデル(BYOK)を使うときは、atlas.config.json に "judgeModel": "anthropic/claude-sonnet-5-5" のように書きます`);
+  return m;
+}
+
 /** 設定を読む。path を明示したときだけファイルが無いと失敗し、既定の場所に無ければ設定なしで続ける */
 export async function loadConfig(path: string, required: boolean): Promise<AtlasConfig> {
   if (!existsSync(path)) {
     if (required) throw new Error(`設定ファイルがありません: ${path}`);
-    return { path: null, wikis: null, phases: null, uploadRoot: null, uploadProjects: null };
+    return { path: null, wikis: null, phases: null, uploadRoot: null, uploadProjects: null, judgeModel: null };
   }
   try {
     // メモ帳などが付ける BOM は取り除く

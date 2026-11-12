@@ -3,7 +3,7 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { parseCli, UsageError } from '../src/args.ts';
-import { loadConfig, modifyConfig, NO_CHANGE, parseConfig, updateConfig } from '../src/config.ts';
+import { isByokModel, loadConfig, modifyConfig, NO_CHANGE, parseConfig, resolveJudgeModel, updateConfig } from '../src/config.ts';
 
 describe('parseConfig', () => {
   it('文字列は path だけの指定、オブジェクトは形式も読む', () => {
@@ -12,19 +12,20 @@ describe('parseConfig', () => {
       phases: null,
       uploadRoot: null,
       uploadProjects: null,
+      judgeModel: null,
     });
   });
 
   it('phases: 依頼ごとの判定の普段の工程名(2 つ以上、重複なし、前後の空白は除く)', () => {
-    expect(parseConfig({ phases: [' 要件定義', '実装 ', 'テスト'] })).toEqual({ wikis: null, phases: ['要件定義', '実装', 'テスト'], uploadRoot: null, uploadProjects: null });
+    expect(parseConfig({ phases: [' 要件定義', '実装 ', 'テスト'] })).toEqual({ wikis: null, phases: ['要件定義', '実装', 'テスト'], uploadRoot: null, uploadProjects: null, judgeModel: null });
     expect(() => parseConfig({ phases: ['実装'] })).toThrow(/2 つ以上/);
     expect(() => parseConfig({ phases: ['実装', '実装'] })).toThrow(/同じ名前/);
     expect(() => parseConfig({ phases: '実装' })).toThrow(/phases/);
   });
 
   it('wikis が無ければ null、空配列は集計なしとしてそのまま', () => {
-    expect(parseConfig({})).toEqual({ wikis: null, phases: null, uploadRoot: null, uploadProjects: null });
-    expect(parseConfig({ wikis: [] })).toEqual({ wikis: [], phases: null, uploadRoot: null, uploadProjects: null });
+    expect(parseConfig({})).toEqual({ wikis: null, phases: null, uploadRoot: null, uploadProjects: null, judgeModel: null });
+    expect(parseConfig({ wikis: [] })).toEqual({ wikis: [], phases: null, uploadRoot: null, uploadProjects: null, judgeModel: null });
   });
 
   it('uploadRoot: グループのアップロード先はフルパスだけ(~/ はホーム、前後の空白と引用符は除く)', () => {
@@ -42,6 +43,37 @@ describe('parseConfig', () => {
     expect(() => parseConfig({ uploadProjects: 'owner/app' })).toThrow(/uploadProjects/);
     expect(() => parseConfig({ uploadProjects: ['  '] })).toThrow(/uploadProjects/);
     expect(() => parseConfig({ uploadProjects: [1] })).toThrow(/uploadProjects/);
+  });
+
+  it('judgeModel: 判定に使う Copilot CLI のモデル(前後の空白は除く。空・空白入り・文字列以外は止める)。BYOK は <プロバイダー名>/<モデル ID>', () => {
+    expect(parseConfig({ judgeModel: ' anthropic/claude-sonnet-5-5 ' }).judgeModel).toBe('anthropic/claude-sonnet-5-5');
+    expect(parseConfig({}).judgeModel).toBeNull();
+    for (const bad of ['', '  ', 'a b', 1, null]) expect(() => parseConfig({ judgeModel: bad })).toThrow(/judgeModel/);
+    expect(isByokModel('anthropic/claude-sonnet-5-5')).toBe(true);
+    // Copilot が用意するモデルの名前には / が無い(AI クレジットを使う)
+    for (const m of ['claude-sonnet-5.5', 'auto', null, '/x', 'a/', 'a/b/c']) expect(isByokModel(m)).toBe(false);
+  });
+
+  it('resolveJudgeModel: 指定(--model)> 設定の judgeModel > なし。どこから来たか、AI クレジットを使うかをログに書く', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'atlas-judge-model-'));
+    const file = join(dir, 'atlas.config.json');
+    const prev = process.env.ATLAS_CONFIG;
+    process.env.ATLAS_CONFIG = file;
+    try {
+      const logs: string[] = [];
+      writeFileSync(file, JSON.stringify({ judgeModel: 'anthropic/claude-sonnet-5-5' }));
+      expect(await resolveJudgeModel('claude-haiku-5.5', 'judge', (m) => logs.push(m))).toBe('claude-haiku-5.5');
+      expect(logs).toEqual([]);
+      expect(await resolveJudgeModel(null, 'turns', (m) => logs.push(m))).toBe('anthropic/claude-sonnet-5-5');
+      expect(logs.pop()).toMatch(/^turns: 判定に使うモデル anthropic\/claude-sonnet-5-5\(atlas\.config\.json の judgeModel。自分の API キーのモデル\(BYOK\)なので、Copilot の AI クレジットは使いません\)$/);
+      writeFileSync(file, '{}');
+      expect(await resolveJudgeModel(null, 'judge', (m) => logs.push(m))).toBeNull();
+      expect(logs.pop()).toMatch(/^judge: 注意 モデルを指定していないので、Copilot の既定のモデルで判定します\(AI クレジットを使います\)/);
+    } finally {
+      if (prev === undefined) delete process.env.ATLAS_CONFIG;
+      else process.env.ATLAS_CONFIG = prev;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('~/ はホームに展開する', () => {
@@ -66,14 +98,14 @@ describe('loadConfig', () => {
 
   it('既定の場所に無ければ設定なし、明示したのに無ければ失敗', async () => {
     const missing = join(dir, 'none.json');
-    await expect(loadConfig(missing, false)).resolves.toEqual({ path: null, wikis: null, phases: null, uploadRoot: null, uploadProjects: null });
+    await expect(loadConfig(missing, false)).resolves.toEqual({ path: null, wikis: null, phases: null, uploadRoot: null, uploadProjects: null, judgeModel: null });
     await expect(loadConfig(missing, true)).rejects.toThrow(/ありません/);
   });
 
   it('BOM 付きを読み、壊れた JSON はファイル名付きで失敗する', async () => {
     const ok = join(dir, 'ok.json');
     writeFileSync(ok, '\uFEFF{"wikis":["notes"]}');
-    await expect(loadConfig(ok, true)).resolves.toEqual({ path: ok, wikis: [{ path: 'notes' }], phases: null, uploadRoot: null, uploadProjects: null });
+    await expect(loadConfig(ok, true)).resolves.toEqual({ path: ok, wikis: [{ path: 'notes' }], phases: null, uploadRoot: null, uploadProjects: null, judgeModel: null });
     const bad = join(dir, 'bad.json');
     writeFileSync(bad, '{');
     await expect(loadConfig(bad, false)).rejects.toThrow(/bad\.json/);

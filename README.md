@@ -201,6 +201,6 @@ E:\dev\atlas-logs\Player-Weapon\<セッション ID>\atlas-memo.md     そのセ
 | [docs/screen.md](docs/screen.md) | 画面の見方(各欄の意味)、画面からの操作、タスクタグ、セッションのメモ |
 | [docs/cli.md](docs/cli.md) | コマンドとオプションの全一覧、snapshot / extract が読むもの、wiki の指定 |
 | [docs/outputs.md](docs/outputs.md) | セッション記録(Markdown)、解析用の完全出力、改善点の分析、スキルの下書き |
-| [docs/judge.md](docs/judge.md) | 推定人手工数の判定の回し方(評価バンドル、外部の LLM、バックエンドと費用) |
+| [docs/judge.md](docs/judge.md) | 推定人手工数の判定の回し方(評価バンドル、外部の LLM、バックエンドと費用。自分の API キーのモデル(BYOK)をいつも使うときは、`atlas.config.json` の `judgeModel`) |
 | [docs/development.md](docs/development.md) | 開発・テスト・全ページの網羅チェック・CI・fixtures・元データを書き換えない仕組み |
 | [docs/PLAN.md](docs/PLAN.md) | 計画と、各フェーズの設計判断 |

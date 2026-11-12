@@ -9,5 +9,6 @@
       "skills": ["notes-search"]
     }
   ],
-  "uploadRoot": "E:\\dev\\atlas-logs"
+  "uploadRoot": "E:\\dev\\atlas-logs",
+  "judgeModel": "anthropic/claude-sonnet-5-5"
 }

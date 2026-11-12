@@ -1263,3 +1263,13 @@ CI の画面テスト `ui/heartbeat.test.ts`(外へ移ると猶予の後に止�
 - **`open-folder.bat`**: 引数が無ければ `open --pick`、あれば(フォルダを bat に重ねて離したとき)`open %*`。失敗したら理由を残して `pause` する(`atlas.bat` と同じ)。出力先とメモは画面から開いたときと同じ `out-folders\<キー>\` と `atlas-notes\folders\<キー>\`。
 - **採らなかった案**: `atlas.bat --pick` のように既存の bat に引数で足す(ダブルクリックでは引数を渡せない)。いつもの画面を開いてから「別のフォルダを開く…」を自動で出す(この PC の集計を毎回待つことになる)。
 - **検査**: 単体 `packages/cli/test/cli.test.ts`(`--pick` の組み合わせ)、`open-pick.test.ts`(取り消し・初期の場所・集計できないフォルダ)。`scripts/checkout-smoke.ts` に bat を足し、Windows では無いフォルダを渡して起動し、理由を出して終了コード 1 で止まり何も書かないことを見る。選ぶ画面が出ることは手元で実測した(pwsh 7 で「フォルダーの選択」の窓が出る。押さずに閉じた)。選んで開くところまでの通しは、人の操作が要るので自動の検査には入れていない。
+
+### 判定に使うモデルの設定 judgeModel(2026-11-12)
+
+画面の「このツールが判定する」は、モデルを指定せずに Copilot CLI を呼んでいた。そのため、いつも Copilot の既定のモデルで判定し、AI クレジットを使っていた。自分の API キーのモデル(BYOK)で判定したい利用者は、画面からは選べなかった。また、Copilot CLI の既定のモデル(`~/.copilot/settings.json` の `model`)が使えなくなっていると、`Model "…" is not available` で全件が失敗していた(手元で実測。設定に残っていた `gpt-5.4-mini` が使えなくなっていた)。
+
+- **`atlas.config.json` の `judgeModel`**: `judge run`・`turns run`・`skill-draft` の copilot-cli で、`--model` が無いときに使う。決まる順は `--model` > `judgeModel` > Copilot の既定。どれを使ったかと、AI クレジットを使うかを、判定のログの最初に出す。
+- **画面**: 確認ダイアログに、使うモデルと、費用の出どころ(BYOK なら「API の利用料」、それ以外は「AI クレジット」)を出す。`/api/jobs/judge-preview` が `model`・`byok`・`modelError` を返す。BYOK かどうかは、名前が `<プロバイダー名>/<モデル ID>` の形かで決める(Copilot が用意するモデルの名前には `/` が無い)。
+- **設定ファイルを子プロセスにも渡す**: `--config` で起動したサーバは、画面から動かす処理(集計し直す・判定)に `ATLAS_CONFIG` で同じ設定ファイルを渡す。前は子プロセスがリポジトリ直下の設定を読んでいたので、wiki や工程名もサーバとずれることがあった。
+- **採らなかった案**: 既定を BYOK のモデルにする(`providers.json` に Anthropic を入れていない利用者は、全件が失敗する)。画面で選ぶ欄を足す(設定は利用者ごとに 1 つ決めれば足り、選び間違えると費用の出どころが変わる)。
+- **検査**: 単体(設定の検査、決まる順とログ、下見の API の `model`・`byok`・壊れた設定、子プロセスへの `ATLAS_CONFIG`)。画面 `ui/jobs.test.ts` の f(BYOK の設定で、ダイアログに「API の利用料」が出て、偽の copilot に `--model anthropic/claude-sonnet-5-5` が渡る)。
