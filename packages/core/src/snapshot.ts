@@ -1,4 +1,4 @@
-import { copyFile, lstat, mkdir, readdir, readFile, realpath, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { access, copyFile, lstat, mkdir, readdir, readFile, realpath, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { readDesktopDb } from './desktop.ts';
@@ -164,12 +164,16 @@ export async function describeSource(src: string): Promise<SourceShape> {
   const direct = await allUploadFolders(src);
   const isDirect = new Set(direct);
   // ~/.copilot の形のフォルダ(バックアップや、集計の出力先)は、人ごとのフォルダとしては見ない
-  const rest = (await subDirs(src)).filter((n) => !isDirect.has(n) && !looksLikeCopilotHome(join(src, n)));
+  const candidates = (await subDirs(src)).filter((n) => !isDirect.has(n));
+  const homes = await mapLimit(candidates, SNAPSHOT_CONCURRENCY, (n) => looksLikeCopilotHomeAsync(join(src, n)));
+  const rest = candidates.filter((_, i) => !homes[i]);
   // 2 段下: 直下のフォルダ(人ごとのフォルダ)の下のアップロードしたフォルダ。
   // 1 段下に 1 つも無いときは、先頭の UPLOAD_PROBE_MAX 個を軽く確かめてから読む(関係のない大きなフォルダを指したときに、2 段下まで全部読まないように)
   if (direct.length === 0 && !(await hasNestedUploadFolder(src, rest.slice(0, UPLOAD_PROBE_MAX)))) return { kind: 'none' };
   const folders = [...direct];
-  for (const n of rest) for (const f of await allUploadFolders(join(src, n))) folders.push(`${n}/${f}`);
+  // 人ごとのフォルダは並べて調べる(人が多いと、1 つずつでは往復の待ちが人数分積み重なる)
+  const nested = await mapLimit(rest, SNAPSHOT_CONCURRENCY, (n) => allUploadFolders(join(src, n)));
+  rest.forEach((n, i) => folders.push(...nested[i].map((f) => `${n}/${f}`)));
   return { kind: 'merged', folders: folders.sort() };
 }
 
@@ -246,8 +250,12 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
     sessions: { dirs: 0, copiedFiles: 0, reusedFiles: 0, skippedBySince: 0, bytes: 0, dbCopied: 0, dbReused: 0 },
   };
 
-  /** 1 セッション分を写す(workspace.yaml / events.jsonl・session.db・追加のファイル)。since より前のもので写さなかったら false */
-  async function snapshotSession(name: string, dirSrc: string, present: readonly string[]): Promise<boolean> {
+  /**
+   * 1 セッション分を写す(workspace.yaml / events.jsonl・session.db・追加のファイル)。since より前のもので写さなかったら false。
+   * 並べて動かすので、順に並べたい記録(写さなかったもの・残したもの・session.db の失敗)は acc に積み、後で元の順に manifest へ移す。
+   * worker は並べて動かしている枠の番号(session.db を複製する一時フォルダを分ける)
+   */
+  async function snapshotSession(name: string, dirSrc: string, present: readonly string[], ents: SessionEntries, acc: SessionAcc, worker: number): Promise<boolean> {
     if (since && !(await isUpdatedSince(dirSrc, present, since))) {
       manifest.sessions.skippedBySince++;
       return false;
@@ -268,21 +276,23 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
       else manifest.sessions.reusedFiles++;
     }
     const dbSrc = join(dirSrc, SNAPSHOT_SESSION_DB);
+    const db = ents.get(SNAPSHOT_SESSION_DB);
+    const wal = ents.get(`${SNAPSHOT_SESSION_DB}-wal`);
     // リンクの session.db(と -wal)は辿らない(前に写したものも消す。写さなかったことは copySessionExtras が manifest に残す)
-    if ((await isLink(dbSrc)) || (await isLink(`${dbSrc}-wal`))) await rm(join(dirDest, SNAPSHOT_SESSION_DB), { force: true });
-    else if (existsSync(dbSrc)) {
+    if (db?.isSymbolicLink() || wal?.isSymbolicLink()) await rm(join(dirDest, SNAPSHOT_SESSION_DB), { force: true });
+    else if (db) {
       try {
-        const copied = await copySessionDb(dbSrc, join(dirDest, SNAPSHOT_SESSION_DB), join(dest, '.tmp-sqlite'));
+        const copied = await copySessionDb(dbSrc, join(dirDest, SNAPSHOT_SESSION_DB), join(dest, `.tmp-sqlite-w${worker}`));
         if (copied) manifest.sessions.dbCopied!++;
         else manifest.sessions.dbReused!++;
       } catch (e) {
         // 1 セッションの session.db が壊れていてもスナップショット全体は止めない(理由は manifest に残し、extract が警告に出す)
         await rm(join(dirDest, SNAPSHOT_SESSION_DB), { force: true });
-        (manifest.sessionDbErrors ??= []).push(`${name}: ${(e as Error).message}`);
+        acc.dbErrors.push(`${name}: ${(e as Error).message}`);
       }
     } else await rm(join(dirDest, SNAPSHOT_SESSION_DB), { force: true }); // 元から消えたものは複製側も消す
     // Phase 11: plan.md・checkpoints/・files/ などを写す。大きいもの・一覧に無いものは --snapshot-all のときだけ
-    await copySessionExtras(dirSrc, dirDest, src, all, prune, extras);
+    await copySessionExtras(dirSrc, dirDest, src, all, prune, acc, ents);
     return true;
   }
 
@@ -306,21 +316,31 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
   // セッションのフォルダが並ぶ場所。まとめて読むときは下のフォルダの数だけある
   const stateSrcs = merged ? merged.map((f) => join(src, f)) : [flat ? src : join(src, 'session-state')];
   const stateDest = join(dest, 'session-state');
+  // セッションのフォルダの一覧と、それぞれの中身の名前を先に並べて読む。共有フォルダでは 1 回ごとに往復の待ちがあるので、
+  // 以下の判定(セッションのフォルダか・リンクか・あるか)はこの一覧で済ませ、元への問い合わせを減らす
+  const listing = await listStateDirs(stateSrcs);
   // まとめて読むとき、同じ id のセッションが複数のフォルダにあれば 1 つだけ数える(events.jsonl が大きいほう。同じなら名前の順で先のフォルダ)
-  const owners = merged ? await sessionOwners(stateSrcs) : null;
+  const owners = merged ? await sessionOwners(stateSrcs, listing) : null;
   /** 元のルートからの相対パス(/ 区切り。manifest の merged.folders と同じ書き方) */
   const folderOf = (stateSrc: string): string => relative(src, stateSrc).replace(/\\/g, '/');
   /** セッションの id ごとの、数えたフォルダ(since で写さなかったものも入る) */
   const ownerFolders: Record<string, string> = {};
   if (owners) for (const [id, dir] of owners) ownerFolders[id] = folderOf(dir);
   if (merged) manifest.merged = { folders: merged, duplicates: 0, owners: ownerFolders };
-  /** 写し終えたセッションの id(まとめて読むとき、作業用のフォルダから同じ id を 2 度写さないように) */
+  /** 写すと決めたセッションの id(まとめて読むとき、作業用のフォルダから同じ id を 2 度写さないように) */
   const taken = new Set<string>();
+  /**
+   * フォルダ 1 つごとの記録の枠(元の順)。写すかどうかはここで順に決め(どれを写すかが前のフォルダの結果で変わるため)、
+   * 写すのは後でまとめて並べて行う。写さなかったものの記録は、枠の順に manifest へ移す(並べて写しても順が変わらないように)
+   */
+  const slots: { pre: SkippedEntry[]; task: SessionTask | null }[] = [];
   for (const stateSrc of stateSrcs) {
-    if (!existsSync(stateSrc)) continue;
-    for (const ent of await readdir(stateSrc, { withFileTypes: true })) {
-      if (!ent.isDirectory()) continue;
+    for (const ent of listing.get(stateSrc) ?? []) {
+      const slot: (typeof slots)[number] = { pre: [], task: null };
+      slots.push(slot);
+      const skipped = slot.pre;
       const dirSrc = join(stateSrc, ent.name);
+      const ents = ent.entries;
       const rel = relative(src, dirSrc).replace(/\\/g, '/');
       // 写す先の名前(セッションの id)。作業用のフォルダから写すときだけ、フォルダの名前と違う
       let name = ent.name;
@@ -341,12 +361,12 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
         } else {
           // 退けた前のフォルダだけが残っているもの(本体も、写し終えた新しいものも無い)は、理由を分けて残す
           const oldOnly = orphan && from == null && ent.name === uploadOldName(workId);
-          if (hasSessionFile(dirSrc)) extras.skipped.push({ path: rel, bytes: 0, reason: oldOnly ? UPLOAD_OLD_ONLY_REASON : UPLOAD_WORK_REASON });
+          if (hasSessionFileIn(dirSrc, ents)) skipped.push({ path: rel, bytes: 0, reason: oldOnly ? UPLOAD_OLD_ONLY_REASON : UPLOAD_WORK_REASON });
           continue;
         }
       } else if (owners != null && owners.has(name) && owners.get(name) !== stateSrc) {
         // 同じ id のセッションが別のフォルダにあり、そちらを数える(ここで止めて、下のリンクの片付けで数えるほうの複製を消さない)
-        extras.skipped.push({ path: rel, bytes: 0, reason: DUPLICATE_REASON });
+        skipped.push({ path: rel, bytes: 0, reason: DUPLICATE_REASON });
         manifest.merged!.duplicates++;
         continue;
       }
@@ -354,29 +374,47 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
       const present: string[] = [];
       const linked: string[] = [];
       for (const f of SNAPSHOT_SESSION_FILES) {
-        if (await isLink(join(dirSrc, f))) linked.push(f);
-        else if (existsSync(join(dirSrc, f))) present.push(f);
+        const e = ents.get(f);
+        if (e?.isSymbolicLink()) linked.push(f);
+        else if (e) present.push(f);
       }
-      // 前に写した分は消す。この集計で同じ id を別のフォルダから写し終えていたら、それは消さない
+      // 前に写した分は消す。この集計で同じ id を別のフォルダから写すと決めていたら、それは消さない
       if (!taken.has(name)) for (const f of linked) await rm(join(stateDest, name, f), { force: true });
       if (present.length === 0) {
         // optimistic-chat-* など中身の無いディレクトリ。リンクしか無いものは、写さなかったことを残す
-        for (const f of linked) extras.skipped.push({ path: `${rel}/${f}`, bytes: 0, reason: LINK_REASON });
+        for (const f of linked) skipped.push({ path: `${rel}/${f}`, bytes: 0, reason: LINK_REASON });
         continue;
       }
-      try {
-        const copied = await snapshotSession(name, dirSrc, present);
-        taken.add(name);
-        // 作業用のフォルダから写したことは、写し終えてから残す(since で写さなかったもの・途中で消えたものは入れない)
-        if (copied && recoveredFrom != null) (extras.recovered ??= []).push({ id: name, path: recoveredFrom });
-        // 作業用のフォルダから写したセッションは、そのフォルダのものとして数える
-        if (merged && recoveredFrom != null) ownerFolders[name] = folderOf(stateSrc);
-      } catch (e) {
-        // 走査中にセッションが消された(Copilot の削除・一時セッションの片付け)なら飛ばす。それ以外は止める
-        if ((e as NodeJS.ErrnoException).code === 'ENOENT' && !existsSync(dirSrc)) continue;
-        throw e;
-      }
+      taken.add(name);
+      slot.task = { name, dirSrc, stateSrc, present, ents, recoveredFrom, acc: { skipped: [], leftover: [], dbErrors: [], sessionFiles: 0, sessionBytes: 0 }, copied: false, done: false };
     }
+  }
+
+  // 決めたセッションを並べて写す(1 件ずつだと、共有フォルダでは往復の待ちが件数分積み重なる)
+  const tasks = slots.flatMap((s) => (s.task ? [s.task] : []));
+  await forEachLimit(tasks, SNAPSHOT_CONCURRENCY, async (t, worker) => {
+    try {
+      t.copied = await snapshotSession(t.name, t.dirSrc, t.present, t.ents, t.acc, worker);
+      t.done = true;
+    } catch (e) {
+      // 走査中にセッションが消された(Copilot の削除・一時セッションの片付け)なら飛ばす。それ以外は止める
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT' && !existsSync(t.dirSrc)) return;
+      throw e;
+    }
+  });
+  // 記録を元の順に移す
+  for (const { pre, task: t } of slots) {
+    extras.skipped.push(...pre);
+    if (!t) continue;
+    extras.skipped.push(...t.acc.skipped);
+    extras.leftover.push(...t.acc.leftover);
+    extras.sessionFiles += t.acc.sessionFiles;
+    extras.sessionBytes += t.acc.sessionBytes;
+    if (t.acc.dbErrors.length) (manifest.sessionDbErrors ??= []).push(...t.acc.dbErrors);
+    // 作業用のフォルダから写したことは、写し終えてから残す(since で写さなかったもの・途中で消えたものは入れない)
+    if (t.copied && t.recoveredFrom != null) (extras.recovered ??= []).push({ id: t.name, path: t.recoveredFrom });
+    // 作業用のフォルダから写したセッションは、そのフォルダのものとして数える
+    if (merged && t.done && t.recoveredFrom != null) ownerFolders[t.name] = folderOf(t.stateSrc);
   }
 
   // Phase 11: ~/.copilot 直下の plans/・attachments/(と chats/ の *.md)。logs/ は --snapshot-all、repos/ は写さない。
@@ -419,19 +457,40 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
  * atlas のアップロード先(<基底>\<グループ>)を --home に指して集計し直すとき用
  */
 export async function isFlatLayout(src: string): Promise<boolean> {
-  if (looksLikeCopilotHome(src)) return false;
+  if (await looksLikeCopilotHomeAsync(src)) return false;
   let ents: import('node:fs').Dirent[];
   try {
     ents = await readdir(src, { withFileTypes: true });
   } catch {
     return false;
   }
-  return ents.some((e) => e.isDirectory() && hasSessionFile(join(src, e.name)));
+  // 並べて確かめ、見つかったところで止める(セッションが何千も並ぶフォルダでも、先頭の数件で決まる)
+  return someLimit(
+    ents.filter((e) => e.isDirectory()),
+    SNAPSHOT_CONCURRENCY,
+    (e) => hasSessionFileAsync(join(src, e.name)),
+  );
 }
 
 /** ~/.copilot の印(session-state/ か session-store.db)があるか */
 function looksLikeCopilotHome(src: string): boolean {
   return existsSync(join(src, 'session-state')) || existsSync(join(src, 'session-store.db'));
+}
+
+/** existsSync と同じ判定(リンクは辿る)を、並べて動かせる形で。共有フォルダでは 1 回ごとに往復の待ちがあるので、多く確かめるところはこちらを使う */
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function looksLikeCopilotHomeAsync(src: string): Promise<boolean> {
+  return (await Promise.all([pathExists(join(src, 'session-state')), pathExists(join(src, 'session-store.db'))])).some(Boolean);
+}
+async function hasSessionFileAsync(dir: string): Promise<boolean> {
+  return (await Promise.all(SNAPSHOT_SESSION_FILES.map((f) => pathExists(join(dir, f))))).some(Boolean);
 }
 
 /** セッションのフォルダか(workspace.yaml か events.jsonl を持つ) */
@@ -478,22 +537,21 @@ async function subDirs(src: string): Promise<string[]> {
  * 索引の無いもの(前の版が写した、手で作った)は、セッションのフォルダが並ぶかを中まで見るので、名前の順で先頭の probeMax 個までにする
  * (関係のない大きなフォルダを指したときに、下のフォルダを全部読まないように)
  */
-async function uploadFoldersUnder(src: string, probeMax: number): Promise<string[]> {
-  const out: string[] = [];
-  let probed = 0;
-  for (const n of await subDirs(src)) {
-    if (existsSync(join(src, n, UPLOAD_INDEX))) out.push(n);
-    else if (probed++ < probeMax && (await isFlatLayout(join(src, n)))) out.push(n);
-  }
-  return out;
-}
-
 /**
- * 直下のアップロードしたフォルダを全部(名前の順)。あるかどうかは先頭の UPLOAD_PROBE_MAX 個までで決め、
- * あると決めたら残りも全部調べる(索引の無いフォルダを読み落とさないように)
+ * 直下のアップロードしたフォルダを全部(名前の順)。あるかどうかは、索引のあるフォルダと、索引の無いフォルダの先頭 UPLOAD_PROBE_MAX 個までで決め、
+ * あると決めたら索引の無い残りも全部調べる(索引の無いフォルダを読み落とさないように)。
+ * 確かめるのは並べて行い、同じフォルダを 2 度は見ない(共有フォルダでは 1 回ごとに往復の待ちがある)
  */
 async function allUploadFolders(src: string): Promise<string[]> {
-  return (await uploadFoldersUnder(src, UPLOAD_PROBE_MAX)).length ? uploadFoldersUnder(src, Infinity) : [];
+  const names = await subDirs(src);
+  const indexed = await mapLimit(names, SNAPSHOT_CONCURRENCY, (n) => pathExists(join(src, n, UPLOAD_INDEX)));
+  const rest = names.filter((_, i) => !indexed[i]);
+  const flatOf = (list: string[]): Promise<boolean[]> => mapLimit(list, SNAPSHOT_CONCURRENCY, (n) => isFlatLayout(join(src, n)));
+  const probe = await flatOf(rest.slice(0, UPLOAD_PROBE_MAX));
+  if (!indexed.some(Boolean) && !probe.some(Boolean)) return [];
+  const flat = [...probe, ...(await flatOf(rest.slice(UPLOAD_PROBE_MAX)))];
+  const isFlat = new Set(rest.filter((_, i) => flat[i]));
+  return names.filter((n, i) => indexed[i] || isFlat.has(n));
 }
 
 /**
@@ -511,25 +569,147 @@ async function hasNestedUploadFolder(src: string, names: readonly string[]): Pro
 }
 
 /**
- * まとめて読むフォルダのうち、セッションの id ごとに、数えるほうのフォルダ(events.jsonl が大きいほう。同じなら先に見たほう)。
- * 作業用のフォルダ(置き換えの途中・消し残し)は入れない
+ * セッションのフォルダを並べて写す数。共有フォルダ(SMB)は 1 回の問い合わせごとに往復の待ちがあり、1 件ずつだと件数分積み重なる。
+ * ファイルの操作は libuv のスレッドプール(既定 4。起動時の UV_THREADPOOL_SIZE で変わる)で動くので、実際に同時に動く数はその大きさまで
  */
-async function sessionOwners(stateSrcs: readonly string[]): Promise<Map<string, string>> {
-  const best = new Map<string, { dir: string; bytes: number }>();
-  for (const dir of stateSrcs) {
-    for (const id of await subDirs(dir)) {
-      if (isUploadWorkDir(id) || !hasSessionFile(join(dir, id))) continue;
-      let bytes = 0;
-      try {
-        bytes = (await stat(join(dir, id, 'events.jsonl'))).size;
-      } catch {
-        /* events.jsonl が無い(workspace.yaml だけ) */
-      }
-      const cur = best.get(id);
-      if (!cur || bytes > cur.bytes) best.set(id, { dir, bytes });
-    }
+export const SNAPSHOT_CONCURRENCY = 16;
+
+/**
+ * セッションのフォルダの中身(名前 → 種類)。名前は大文字小文字を区別しないディスク(Windows・macOS)では小文字にして引く
+ * (existsSync で確かめていたときと同じく、Events.jsonl も events.jsonl として見つかるように)
+ */
+class SessionEntries {
+  private readonly map = new Map<string, import('node:fs').Dirent>();
+  readonly list: import('node:fs').Dirent[];
+  constructor(list: import('node:fs').Dirent[]) {
+    this.list = list;
+    for (const e of list) this.map.set(foldName(e.name), e);
   }
+  get(name: string): import('node:fs').Dirent | undefined {
+    return this.map.get(foldName(name));
+  }
+}
+const CASE_INSENSITIVE_FS = process.platform === 'win32' || process.platform === 'darwin';
+const foldName = (name: string): string => (CASE_INSENSITIVE_FS ? name.toLowerCase() : name);
+const NO_ENTRIES = new SessionEntries([]);
+
+/** 1 セッション分の、順に並べて manifest に移す記録(並べて写すので、写し終えてから元の順に移す) */
+interface SessionAcc {
+  skipped: SkippedEntry[];
+  leftover: { path: string; mtime: string }[];
+  dbErrors: string[];
+  sessionFiles: number;
+  sessionBytes: number;
+}
+
+interface SessionTask {
+  name: string;
+  dirSrc: string;
+  stateSrc: string;
+  present: string[];
+  ents: SessionEntries;
+  recoveredFrom: string | null;
+  acc: SessionAcc;
+  /** since で除かずに写した */
+  copied: boolean;
+  /** 最後まで済んだ(途中で元から消えたものは false) */
+  done: boolean;
+}
+
+/**
+ * セッションのフォルダが並ぶ場所ごとに、直下のフォルダ(元の readdir の順)とその中身。並べて読む。
+ * 読めない・無いフォルダは空(セッションのフォルダが読めなければ、中身の無いフォルダとして扱う。前の existsSync と同じ結果)
+ */
+async function listStateDirs(stateSrcs: readonly string[]): Promise<Map<string, { name: string; entries: SessionEntries }[]>> {
+  const dirs = await mapLimit(stateSrcs, SNAPSHOT_CONCURRENCY, async (s) => {
+    try {
+      return (await readdir(s, { withFileTypes: true })).filter((e) => e.isDirectory()).map((e) => e.name);
+    } catch (e) {
+      // 無い場所は飛ばす(前と同じ)。それ以外の読めない理由は止める(前は readdir の例外がそのまま出ていた)
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw e;
+    }
+  });
+  const flat = stateSrcs.flatMap((s, i) => dirs[i].map((name) => ({ s, name })));
+  const entries = await mapLimit(flat, SNAPSHOT_CONCURRENCY, async ({ s, name }) => {
+    try {
+      return new SessionEntries(await readdir(join(s, name), { withFileTypes: true }));
+    } catch {
+      return NO_ENTRIES;
+    }
+  });
+  const out = new Map<string, { name: string; entries: SessionEntries }[]>(stateSrcs.map((s) => [s, []]));
+  flat.forEach(({ s, name }, i) => out.get(s)!.push({ name, entries: entries[i] }));
+  return out;
+}
+
+/**
+ * セッションのフォルダか(hasSessionFile を、読んである中身で確かめる)。リンクだけは指す先があるかを確かめる
+ * (existsSync はリンクを辿るので、指す先の無いリンクしか無いフォルダはセッションのフォルダとみなさない)
+ */
+function hasSessionFileIn(dir: string, ents: SessionEntries): boolean {
+  return SNAPSHOT_SESSION_FILES.some((f) => {
+    const e = ents.get(f);
+    return e != null && (!e.isSymbolicLink() || existsSync(join(dir, f)));
+  });
+}
+
+/**
+ * まとめて読むフォルダのうち、セッションの id ごとに、数えるほうのフォルダ(events.jsonl が大きいほう。同じなら先に見たほう)。
+ * 作業用のフォルダ(置き換えの途中・消し残し)は入れない。events.jsonl の大きさは、複数のフォルダにある id だけ調べる
+ */
+async function sessionOwners(stateSrcs: readonly string[], listing: Map<string, { name: string; entries: SessionEntries }[]>): Promise<Map<string, string>> {
+  const found: { dir: string; id: string }[] = [];
+  for (const dir of stateSrcs) {
+    const names = [...(listing.get(dir) ?? [])].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    for (const { name: id, entries } of names) if (!isUploadWorkDir(id) && hasSessionFileIn(join(dir, id), entries)) found.push({ dir, id });
+  }
+  const seen = new Map<string, number>();
+  for (const { id } of found) seen.set(id, (seen.get(id) ?? 0) + 1);
+  const sizes = await mapLimit(found, SNAPSHOT_CONCURRENCY, async ({ dir, id }) => {
+    if (seen.get(id)! < 2) return 0;
+    try {
+      return (await stat(join(dir, id, 'events.jsonl'))).size;
+    } catch {
+      return 0; // events.jsonl が無い(workspace.yaml だけ)
+    }
+  });
+  const best = new Map<string, { dir: string; bytes: number }>();
+  found.forEach(({ dir, id }, i) => {
+    const cur = best.get(id);
+    if (!cur || sizes[i] > cur.bytes) best.set(id, { dir, bytes: sizes[i] });
+  });
   return new Map([...best].map(([id, x]) => [id, x.dir]));
+}
+
+/** items を limit 個ずつ並べて fn に通し、結果を元の順で返す。1 つでも失敗したら、残りは始めず、動いているものを待ってから最初の失敗を投げる */
+async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T, worker: number) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  let failed: { e: unknown } | null = null;
+  const run = async (worker: number): Promise<void> => {
+    while (!failed && next < items.length) {
+      const i = next++;
+      try {
+        out[i] = await fn(items[i], worker);
+      } catch (e) {
+        failed ??= { e };
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, (_, w) => run(w)));
+  if (failed) throw (failed as { e: unknown }).e;
+  return out;
+}
+
+/** pred が true になるものがあるか。limit 個ずつ並べて確かめ、見つかった組で止める */
+async function someLimit<T>(items: readonly T[], limit: number, pred: (item: T) => Promise<boolean>): Promise<boolean> {
+  for (let i = 0; i < items.length; i += limit) if ((await Promise.all(items.slice(i, i + limit).map(pred))).some(Boolean)) return true;
+  return false;
+}
+
+async function forEachLimit<T>(items: readonly T[], limit: number, fn: (item: T, worker: number) => Promise<void>): Promise<void> {
+  await mapLimit(items, limit, fn);
 }
 
 /** 出力先に残っている、前の集計の元の場所(最後まで終わった集計の manifest と、始めたときの印)。無い・読めないものは入れない(書き直す) */
@@ -692,7 +872,8 @@ async function pruneTree(from: string, to: string, keep: Set<string>): Promise<v
   }
 }
 
-async function copySessionExtras(dirSrc: string, dirDest: string, root: string, all: boolean, prune: boolean, extras: NonNullable<SnapshotManifest['extras']>): Promise<void> {
+/** セッションのフォルダの追加のファイルを写す。ents は先に読んだそのフォルダの中身(元に問い合わせ直さない) */
+async function copySessionExtras(dirSrc: string, dirDest: string, root: string, all: boolean, prune: boolean, extras: SessionAcc, ents: SessionEntries): Promise<void> {
   const relPath = (p: string): string => relative(root, p).replace(/\\/g, '/');
   const copyOne = async (from: string, to: string): Promise<void> => {
     try {
@@ -706,26 +887,20 @@ async function copySessionExtras(dirSrc: string, dirDest: string, root: string, 
   };
   for (const f of SNAPSHOT_SESSION_EXTRA_FILES) {
     const p = join(dirSrc, f);
+    const ent = ents.get(f);
     // 送った人のメモが大きすぎるときは写さない(前に写したものも消す)
-    if (f === UPLOAD_MEMO_FILE && existsSync(p) && (await sizeOr0(p)) > UPLOAD_MEMO_TEXT_LIMIT) {
-      extras.skipped.push({ path: relPath(p), bytes: await sizeOr0(p), reason: `送った人のメモが大きすぎる(${UPLOAD_MEMO_TEXT_LIMIT / 1024 / 1024} MB まで)` });
+    const memoBytes = f === UPLOAD_MEMO_FILE && ent ? await sizeOr0(p) : 0;
+    if (memoBytes > UPLOAD_MEMO_TEXT_LIMIT) {
+      extras.skipped.push({ path: relPath(p), bytes: memoBytes, reason: `送った人のメモが大きすぎる(${UPLOAD_MEMO_TEXT_LIMIT / 1024 / 1024} MB まで)` });
       await rm(join(dirDest, f), { force: true });
       continue;
     }
     // リンクは辿らない(下の一覧で「写さなかったもの」に残る)。前に写したものは消す
-    if (!(await isLink(p)) && existsSync(p)) await copyOne(p, join(dirDest, f));
+    if (ent && !ent.isSymbolicLink()) await copyOne(p, join(dirDest, f));
     else await rm(join(dirDest, f), { force: true }); // 元から消えたものは複製先からも消す
   }
   const present = new Set<string>();
-  let ents: import('node:fs').Dirent[];
-  try {
-    ents = await readdir(dirSrc, { withFileTypes: true });
-  } catch (e) {
-    const err = e as NodeJS.ErrnoException;
-    extras.skipped.push({ path: relPath(dirSrc), bytes: 0, reason: `読めなかった (${err.code ?? err.message})` });
-    return;
-  }
-  for (const ent of ents) {
+  for (const ent of ents.list) {
     const name = ent.name;
     const p = join(dirSrc, name);
     if (ent.isSymbolicLink()) {
@@ -767,7 +942,7 @@ async function copySessionExtras(dirSrc: string, dirDest: string, root: string, 
       if (KNOWN_SESSION_ENTRIES.has(name) && !(SNAPSHOT_SESSION_EXTRA_DIRS as readonly string[]).includes(name) && !(SNAPSHOT_SESSION_HEAVY_DIRS as readonly string[]).includes(name)) continue;
       if (name === SESSION_DB_FINGERPRINT || present.has(name)) continue;
       const p = join(dirDest, name);
-      if (!existsSync(join(dirSrc, name)) || prune) await rm(p, { recursive: true, force: true });
+      if (!ents.get(name) || prune) await rm(p, { recursive: true, force: true });
       else extras.leftover.push({ path: relPath(join(dirSrc, name)), mtime: (await stat(p)).mtime.toISOString() });
     }
   }

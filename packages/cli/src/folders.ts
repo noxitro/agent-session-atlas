@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto';
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { describeSource, UPLOAD_PROBE_HINT, type SourceShape } from '../../core/src/index.ts';
-import { alive, JOB_ENV, JOB_LOCK_FILE, MAIN_TS } from './jobs.ts';
+import { alive, JOB_ENV, JOB_LOCK_FILE, MAIN_TS, withThreadPool } from './jobs.ts';
 
 export const FOLDER_STATE_FILE = 'folder.json';
 export const FOLDER_LOG_FILE = 'open.log';
@@ -235,7 +235,7 @@ export const launchDetached: LaunchFn = (args, logFile) => {
   try {
     const env = { ...process.env };
     delete env[JOB_ENV];
-    const c = nodeSpawn(process.execPath, args, { shell: false, detached: true, windowsHide: true, stdio: ['ignore', fd, fd], env });
+    const c = nodeSpawn(process.execPath, args, { shell: false, detached: true, windowsHide: true, stdio: ['ignore', fd, fd], env: withThreadPool(env) });
     c.on('error', () => {});
     c.unref();
     return c.pid ?? null;

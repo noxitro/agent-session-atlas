@@ -229,9 +229,18 @@ export interface ChildLike {
 }
 export type SpawnFn = (args: string[], env: NodeJS.ProcessEnv) => ChildLike;
 
+/**
+ * 子の atlas に渡す、ファイル操作を並べて動かす数(libuv のスレッドプールの大きさ。既定は 4)。
+ * 共有フォルダからの集計は、ファイル 1 つごとの往復の待ちが積み重なるので、並べる数を増やす。プロセスの起動後には変えられないので、起動するときの環境変数で渡す
+ */
+export const THREADPOOL_SIZE = '16';
+export function withThreadPool(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return env.UV_THREADPOOL_SIZE ? env : { ...env, UV_THREADPOOL_SIZE: THREADPOOL_SIZE };
+}
+
 /** 既定の起動: process.execPath を shell なしで。止めるときは Windows では子孫ごと(judge-flow が起動した copilot を残さない) */
 export const defaultSpawn: SpawnFn = (args, env) => {
-  const c = nodeSpawn(process.execPath, args, { shell: false, windowsHide: true, env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const c = nodeSpawn(process.execPath, args, { shell: false, windowsHide: true, env: withThreadPool(env), stdio: ['ignore', 'pipe', 'pipe'] });
   return {
     stdout: c.stdout,
     stderr: c.stderr,
