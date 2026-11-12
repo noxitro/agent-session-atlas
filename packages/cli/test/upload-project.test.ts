@@ -7,7 +7,18 @@ import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { checkTarget, listProjects, openUploadContext, projectTarget, uploadGroup, uploadTarget } from '../src/group-upload.ts';
-import { consoleIo, fit, parseNumbers, refreshAggregate, runUploadProject, UploadIncompleteError, width, type UploadProjectIo } from '../src/upload-project.ts';
+import {
+  AutoUploadBlockedError,
+  consoleIo,
+  fit,
+  parseNumbers,
+  refreshAggregate,
+  runUploadProject,
+  UploadIncompleteError,
+  width,
+  type UploadProjectIo,
+  type UploadSummary,
+} from '../src/upload-project.ts';
 
 describe('プロジェクトのセッションをまとめて送る', () => {
   let dir: string;
@@ -250,6 +261,51 @@ describe('プロジェクトのセッションをまとめて送る', () => {
     // 1 プロジェクトだけなら、送り先はそのプロジェクトのフォルダで見せる
     expect(text).toContain(`送り先: ${join(rootA, 'X__work_tool')}`);
     expect(text).not.toContain('毎回同じものを送るなら');
+  });
+
+  it('自動で送る(auto): 印のあるプロジェクトを、覚えた送り先へ、何も尋ねずに送る。送ったものと秘密らしい文字列の数を summary に書く', async () => {
+    await writeFile(configPath, JSON.stringify({ uploadRoot: rootA, uploadProjects: ['owner/app', 'X:\\work\\tool'] }));
+    const token = ['ghp', 'AUTOFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE'].join('_');
+    await writeFile(join(out, 'snapshot', 'session-state', 's4', 'events.jsonl'), JSON.stringify({ data: token }) + '\n');
+    const f = fakeIo([], []);
+    const summary: UploadSummary = { sent: [], secrets: 0, root: null };
+    expect(await runUploadProject(f.io, { paths: paths(), configPath, auto: true, summary })).toBe(true);
+    expect(f.asked).toEqual([]);
+    expect(f.pickedFrom).toEqual([]);
+    expect(summary).toEqual({ sent: [{ name: 'owner/app', sessions: 2 }, { name: 'X:\\work\\tool', sessions: 1 }], secrets: 1, root: rootA });
+    expect(existsSync(join(rootA, 'owner_app', 's2'))).toBe(true);
+    expect(existsSync(join(rootA, 'X__work_tool', 's4'))).toBe(true);
+    const text = f.printed.join('\n');
+    expect(text).toContain('印を付けた 2 プロジェクトを送ります: owner/app、X:\\work\\tool');
+    // 記録には確認と同じ中身(秘密らしい文字列の注意も)を残す
+    expect(text).toMatch(/秘密らしい文字列が 1 件あります/);
+    expect(text).toContain('== 終わりました ==');
+    expect(text).not.toContain('毎回同じものを送るなら');
+  });
+
+  it('自動で送る(auto): 印の無い新しいプロジェクトは送らずに、最近更新したものの名前を記録に残す', async () => {
+    await writeFile(configPath, JSON.stringify({ uploadRoot: rootA, uploadProjects: ['X:\\work\\tool'] }));
+    const f = fakeIo([], []);
+    expect(await runUploadProject(f.io, { paths: paths(), configPath, auto: true })).toBe(true);
+    expect(f.printed.join('\n')).toContain('印の無い 1 プロジェクトは送りません(最近更新: owner/app)。');
+    expect(existsSync(join(rootA, 'owner_app'))).toBe(false);
+  });
+
+  it.each([
+    ['印が無い', { uploadRoot: 'ROOT' }, /印がありません/],
+    ['印を付けたものが今の集計に無い', { uploadRoot: 'ROOT', uploadProjects: ['消えたプロジェクト'] }, /今送れるセッションがありません/],
+    ['送り先が決まっていない', { uploadProjects: ['owner/app'] }, /送り先がまだ決まっていません/],
+    ['覚えた送り先が見つからない', { uploadRoot: 'GONE', uploadProjects: ['owner/app'] }, /覚えている送り先が見つかりません/],
+  ])('自動で送る(auto): %s ときは、尋ねずに AutoUploadBlockedError で止まり、何も送らない', async (_, cfg, message) => {
+    const c = Object.fromEntries(Object.entries(cfg).map(([k, v]) => [k, v === 'ROOT' ? rootA : v === 'GONE' ? join(dir, 'gone') : v]));
+    await writeFile(configPath, JSON.stringify(c));
+    const f = fakeIo([], []);
+    const run = runUploadProject(f.io, { paths: paths(), configPath, auto: true });
+    await expect(run).rejects.toThrow(AutoUploadBlockedError);
+    await expect(run).rejects.toThrow(message);
+    expect(f.asked).toEqual([]);
+    expect(f.pickedFrom).toEqual([]);
+    expect(await readdir(rootA)).toEqual([]);
   });
 
   it('印のあるときは一覧を出さないので、ログが無くて送れないセッションの数を知らせる', async () => {

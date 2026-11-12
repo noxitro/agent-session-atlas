@@ -21,9 +21,9 @@ const pkg = process.argv[2] ? resolve(process.argv[2]) : fail('使い方: node s
 if (!existsSync(join(pkg, 'package.json'))) fail(`${pkg} に package.json がありません`);
 
 const bats = readdirSync(pkg).filter((f) => f.endsWith('.bat'));
-// 利用者が起動するのは atlas.bat(集計と画面)・open-folder.bat(選んだフォルダを集計して開く)・setup.bat(初期設定)・
-// upload-project.bat(プロジェクトのセッションを送る)だけ(他の操作は画面とコマンドから)
-const BATS = 'atlas.bat,open-folder.bat,setup.bat,upload-project.bat';
+// 利用者が起動するのは atlas.bat(集計と画面)・open-folder.bat(選んだフォルダを集計して開く)・schedule-upload.bat(毎日自動で送る登録)・
+// setup.bat(初期設定)・upload-project.bat(プロジェクトのセッションを送る)だけ(他の操作は画面とコマンドから)
+const BATS = 'atlas.bat,open-folder.bat,schedule-upload.bat,setup.bat,upload-project.bat';
 if (bats.sort().join(',') !== BATS) fail(`*.bat は ${BATS.split(',').join('・')} だけのはずです(入っているもの: ${bats.join(', ') || 'なし'})`);
 for (const f of bats) {
   if (/(^|[^\r])\n/.test(readFileSync(join(pkg, f), 'utf8'))) fail(`${f} に CRLF でない改行があります(.gitattributes の eol を確認)`);
@@ -102,9 +102,13 @@ if (process.platform === 'win32') {
   if (existsSync(join(pkg, 'out-folders'))) fail('open-folder.bat で無いフォルダを渡したのに out-folders ができました');
   const upBat = runBat('upload-project.bat', '\n\n');
   if (!/== 送るプロジェクト|送れるセッションがありません/.test(upBat)) fail(`upload-project.bat が、送る操作(プロジェクトの一覧)まで進みませんでした:\n${upBat}`);
+  // schedule-upload.bat: 送り先も印もまだ無いので、先に決めることを出して何も登録せずに終わる(タスク スケジューラは読むだけ。
+  // 登録してある PC でも、Enter だけなら何も変えない)
+  const schedBat = runBat('schedule-upload.bat', '\n\n');
+  if (!schedBat.includes('== 毎日自動で送る ==')) fail(`schedule-upload.bat が、登録の画面まで進みませんでした:\n${schedBat}`);
   const setupBat = runBat('setup.bat', '\n\n\nn\n\n');
   if (!setupBat.includes('agent-session-atlas の初期設定')) fail(`setup.bat が、初期設定のスクリプトまで進みませんでした:\n${setupBat}`);
   if (existsSync(join(pkg, 'atlas.config.json'))) fail('setup.bat で書かない答えをしたのに atlas.config.json ができました');
 }
 
-console.log(`checkout-smoke: 通過(${bats.length} 本の *.bat、npm install、atlas all、プロジェクトを送る操作${process.platform === 'win32' ? '、upload-project.bat と setup.bat と open-folder.bat の起動' : ''})`);
+console.log(`checkout-smoke: 通過(${bats.length} 本の *.bat、npm install、atlas all、プロジェクトを送る操作${process.platform === 'win32' ? '、upload-project.bat と schedule-upload.bat と setup.bat と open-folder.bat の起動' : ''})`);
