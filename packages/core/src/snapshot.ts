@@ -98,9 +98,11 @@ export interface SnapshotManifest {
   layout?: SourceLayout;
   /**
    * layout が 'merged' のとき、まとめて読んだフォルダ(元のルートからの相対パス。/ 区切り。1 段下なら名前だけ、2 段下なら <人>/<プロジェクト>。
-   * 名前の順)と、同じ id のセッションが複数のフォルダにあって 1 つだけ数えたときに、数えなかったほうの数
+   * 名前の順)と、同じ id のセッションが複数のフォルダにあって 1 つだけ数えたときに、数えなかったほうの数。
+   * owners は、セッションの id ごとの、数えたフォルダ(folders と同じ書き方)。人ごとの内訳に使う。
+   * 元から消えたセッションの複製が出力先に残っているときは、前の集計の値を引き継ぐ。古いマニフェストには無い
    */
-  merged?: { folders: string[]; duplicates: number };
+  merged?: { folders: string[]; duplicates: number; owners?: Record<string, string> };
   since: string | null;
   /** copied が false なら今回は複製できず、前回の複製(bytes が 0 なら無し)を使っている。理由は error */
   databases: Record<string, { copied: boolean; bytes: number; attempts: number; error?: string }>;
@@ -157,6 +159,16 @@ export async function describeSource(src: string): Promise<SourceShape> {
   return { kind: 'merged', folders: folders.sort() };
 }
 
+/**
+ * まとめて読んだフォルダ(manifest の merged.folders・merged.owners の書き方)から、人のフォルダの名前を取り出す。
+ * 2 段下のフォルダ(<人>/<プロジェクト>)なら <人>。1 段下のフォルダ(名前だけ)や、フォルダが分からないときは null
+ */
+export function personOfFolder(folder: string | null | undefined): string | null {
+  if (!folder) return null;
+  const i = folder.indexOf('/');
+  return i > 0 ? folder.slice(0, i) : null;
+}
+
 /** 同じ id のセッションが複数のフォルダにあって、数えなかったほうの理由(manifest の extras.skipped) */
 export const DUPLICATE_REASON = '同じ id のセッションが別のフォルダにもある(events.jsonl が大きいほうだけ数えた)';
 
@@ -197,6 +209,17 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
       `出力先 ${dest} は、別の場所(${m.root})から集計したものです。同じ出力先に足すと両方のセッションが混ざるので止めました。別の出力先(--out)を指定してください。` +
         `フォルダを移したなど、元が同じものだと分かっているなら、${marks.map((x) => x.file).join(' と ')} を消してからやり直すと、今の出力先を使い続けます`,
     );
+  }
+  // 前の集計で、セッションごとに数えたフォルダ(元から消えたセッションの複製が出力先に残っているときに引き継ぐ)。
+  // 別の元の manifest は上で消してあるので、ここで読めるのは同じ元のものだけ
+  let previousOwners: Record<string, string> = {};
+  if (merged) {
+    try {
+      const o = (await readSnapshotManifest(dest))?.merged?.owners;
+      if (o && typeof o === 'object') previousOwners = o;
+    } catch {
+      /* 前の manifest が読めない(引き継がない) */
+    }
   }
   await mkdir(dest, { recursive: true });
   await writeFile(join(dest, SNAPSHOT_SOURCE), `${JSON.stringify({ sourceRoot: src, startedAt: new Date().toISOString() })}\n`);
@@ -271,7 +294,12 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
   const stateDest = join(dest, 'session-state');
   // まとめて読むとき、同じ id のセッションが複数のフォルダにあれば 1 つだけ数える(events.jsonl が大きいほう。同じなら名前の順で先のフォルダ)
   const owners = merged ? await sessionOwners(stateSrcs) : null;
-  if (merged) manifest.merged = { folders: merged, duplicates: 0 };
+  /** 元のルートからの相対パス(/ 区切り。manifest の merged.folders と同じ書き方) */
+  const folderOf = (stateSrc: string): string => relative(src, stateSrc).replace(/\\/g, '/');
+  /** セッションの id ごとの、数えたフォルダ(since で写さなかったものも入る) */
+  const ownerFolders: Record<string, string> = {};
+  if (owners) for (const [id, dir] of owners) ownerFolders[id] = folderOf(dir);
+  if (merged) manifest.merged = { folders: merged, duplicates: 0, owners: ownerFolders };
   /** 写し終えたセッションの id(まとめて読むとき、作業用のフォルダから同じ id を 2 度写さないように) */
   const taken = new Set<string>();
   for (const stateSrc of stateSrcs) {
@@ -327,6 +355,8 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
         taken.add(name);
         // 作業用のフォルダから写したことは、写し終えてから残す(since で写さなかったもの・途中で消えたものは入れない)
         if (copied && recoveredFrom != null) (extras.recovered ??= []).push({ id: name, path: recoveredFrom });
+        // 作業用のフォルダから写したセッションは、そのフォルダのものとして数える
+        if (merged && recoveredFrom != null) ownerFolders[name] = folderOf(stateSrc);
       } catch (e) {
         // 走査中にセッションが消された(Copilot の削除・一時セッションの片付け)なら飛ばす。それ以外は止める
         if ((e as NodeJS.ErrnoException).code === 'ENOENT' && !existsSync(dirSrc)) continue;
@@ -354,6 +384,11 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
   manifest.extras = extras;
 
   manifest.installed = await readInventory(src);
+
+  // 元から消えたセッションの複製が出力先に残っていれば、前の集計で数えたフォルダを引き継ぐ(人ごとの内訳から外さない)
+  for (const [id, folder] of Object.entries(previousOwners)) {
+    if (!(id in ownerFolders) && typeof folder === 'string' && existsSync(join(stateDest, id))) ownerFolders[id] = folder;
+  }
 
   await writeFile(join(dest, SNAPSHOT_MANIFEST), JSON.stringify(manifest, null, 2));
   return manifest;

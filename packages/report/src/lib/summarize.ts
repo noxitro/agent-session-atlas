@@ -95,6 +95,7 @@ export function summarize(r: SessionRecord, anon: Anonymizer, judgment: Judgment
     projectLabel: anon.projectLabel(r.project),
     projectSource: r.projectSource ?? 'path',
     branch: anon.branch(r.branch),
+    person: anon.person(r.person ?? null),
     name: name ? truncate(name, SUMMARY_TEXT_CHARS) : null,
     firstUserMessage: first ? truncate(first, SUMMARY_TEXT_CHARS) : null,
     createdAt: r.createdAt,

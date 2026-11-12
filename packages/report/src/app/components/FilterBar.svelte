@@ -16,7 +16,7 @@
     anonymized = false,
   }: {
     filter: FilterState;
-    options: { project: Option[]; client: Option[]; model: Option[]; branch: Option[]; taskCategory: Option[] };
+    options: { project: Option[]; person: Option[]; client: Option[]; model: Option[]; branch: Option[]; taskCategory: Option[] };
     judged: boolean;
     /** 空のセッション(依頼 0・ツール 0・応答 0)の件数 */
     emptyCount: number;
@@ -53,7 +53,7 @@
 
 </script>
 
-  {#snippet select(key: 'project' | 'client' | 'model' | 'branch', title: string, opts: Option[], show: (v: string) => string = label)}
+  {#snippet select(key: 'project' | 'person' | 'client' | 'model' | 'branch', title: string, opts: Option[], show: (v: string) => string = label)}
     <label class="sel">
       <span class="k">{title}</span>
       <select value={filter[key]} onchange={(e) => onchange({ [key]: e.currentTarget.value })}>
@@ -91,6 +91,8 @@
     </fieldset>
 
 
+    <!-- 人は、送り先(<人>/<プロジェクト>)をまとめて集計したレポートだけ。効いている条件は、選択肢が無くても外せるように出す -->
+    {#if options.person.length > 0 || filter.person !== ''}{@render select('person', '人', options.person)}{/if}
     {@render select('project', 'プロジェクト', options.project)}
     {@render select('client', 'クライアント', options.client)}
     {@render select('model', 'モデル', options.model, modelLabel)}

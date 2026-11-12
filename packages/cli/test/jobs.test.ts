@@ -381,9 +381,11 @@ describe('serve の jobs と記録の表示(Phase 14)', () => {
   });
 
   it('ジョブの実行中は heartbeat が途切れても止まらず、終わってから idleMs で止まる', async () => {
-    await start({ idleMs: 150, firstHeartbeatMs: 150 });
-    await fetch(`${base()}/api/heartbeat`, { method: 'POST', headers: { 'x-atlas-token': h!.token } });
+    // ジョブを始めてから heartbeat を送る。先に heartbeat を送ると、ジョブの依頼が 150ms のうちに届かなければ
+    // サーバが先に止まる(負荷の高いときに時々落ちた)。最初の heartbeat を待つ時間も、同じ理由で短くしない
+    await start({ idleMs: 150, firstHeartbeatMs: 600_000 });
     await post({ kind: 'refresh' });
+    await fetch(`${base()}/api/heartbeat`, { method: 'POST', headers: { 'x-atlas-token': h!.token } });
     await sleep(500);
     // 猶予(150ms)の 3 倍待っても動いている
     expect((await json('/api/jobs/current')).body.state).toBe('running');

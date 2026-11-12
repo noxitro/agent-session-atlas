@@ -10,11 +10,14 @@
     current,
     onpick,
     send,
+    kind = 'project',
   }: {
     rows: Bucket[];
     judged: boolean;
     current: string;
     onpick: (project: string) => void;
+    /** 何ごとの表か。person は、送り先をまとめて集計したときの人ごと(見出し・説明・絞り込みの先が変わる。まとめて送る印は出さない) */
+    kind?: 'project' | 'person';
     /** upload-project.bat がまとめて送るプロジェクトの印(atlas serve から開いたときだけ)。projects は設定の一覧、error は設定ファイルを読めない理由、toggle は足す・外す */
     send?: { projects: string[]; error: string | null; toggle: (project: string, on: boolean) => Promise<void> };
   } = $props();
@@ -101,8 +104,14 @@
   ];
   const ariaSort = (k: Key): 'ascending' | 'descending' | 'none' => (sortKey === k ? (asc ? 'ascending' : 'descending') : 'none');
 
-  /** そのプロジェクトだけに絞った状態の URL(新しいタブでも開ける)。クリックは親に任せて他の条件を保つ */
-  const projectHref = (key: string): string => `#project=${encodeURIComponent(key)}`;
+  /** 見出しの id・呼び名・絞り込みのキー(プロジェクトごとと人ごとで変わるところ) */
+  const t = $derived(
+    kind === 'person'
+      ? { id: 'people', heading: '人別', noun: '人', param: 'person' }
+      : { id: 'projects', heading: 'プロジェクト別', noun: 'プロジェクト', param: 'project' },
+  );
+  /** そのプロジェクト(人)だけに絞った状態の URL(新しいタブでも開ける)。クリックは親に任せて他の条件を保つ */
+  const projectHref = (key: string): string => `#${t.param}=${encodeURIComponent(key)}`;
   function pick(e: MouseEvent, key: string): void {
     if (e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0) return;
     e.preventDefault();
@@ -129,12 +138,18 @@
   }
 </script>
 
-<section class="section" id="projects" aria-labelledby="projects-h">
+<section class="section" id={t.id} aria-labelledby="{t.id}-h">
   <div class="section-head">
-    <h2 id="projects-h">プロジェクト別</h2>
-    <p>
-      {int(rows.length)} プロジェクト。名前を押すとそのプロジェクトに絞り込みます(列見出しで並べ替え)。指示・wiki の列は「該当セッション数 / セッション数」、入力トークン・変更行の下の小さい分数は「記録のあるセッション数 / セッション数」(合計はその記録のあるセッションだけのもの)。リポジトリ名の記録が無いものは git のリモート(owner/repo)で束ね、ホーム・一時フォルダ・atlas の判定実行はそれぞれ 1 つにまとめています。
-    </p>
+    <h2 id="{t.id}-h">{t.heading}</h2>
+    {#if kind === 'person'}
+      <p>
+        {int(rows.length)} 人。送り先のフォルダ(<code>&lt;人&gt;/&lt;プロジェクト&gt;</code>)の、人のフォルダの名前ごとの内訳です。名前を押すとその人に絞り込みます(列見出しで並べ替え)。列の読み方は下の「プロジェクト別」と同じです。人のフォルダの下に無いセッションは「不明」にまとめています。
+      </p>
+    {:else}
+      <p>
+        {int(rows.length)} プロジェクト。名前を押すとそのプロジェクトに絞り込みます(列見出しで並べ替え)。指示・wiki の列は「該当セッション数 / セッション数」、入力トークン・変更行の下の小さい分数は「記録のあるセッション数 / セッション数」(合計はその記録のあるセッションだけのもの)。リポジトリ名の記録が無いものは git のリモート(owner/repo)で束ね、ホーム・一時フォルダ・atlas の判定実行はそれぞれ 1 つにまとめています。
+      </p>
+    {/if}
   </div>
   {#if send}
     {#if send.error}
@@ -150,14 +165,14 @@
     {#if sendError}<p class="send-error" role="alert">{sendError}</p>{/if}
   {/if}
   {#if rows.length === 0}
-    <p class="note">該当するプロジェクトはありません。</p>
+    <p class="note">該当する{t.noun}はありません。</p>
   {:else}
     <div class="table-scroll">
       <table class="ledger">
         <thead>
           <tr>
             <th scope="col" aria-sort={ariaSort('label')}>
-              <button type="button" class="sort" onclick={() => sortBy('label')}>プロジェクト<SortMark state={sortKey === 'label' ? (asc ? 'asc' : 'desc') : 'none'} /></button>
+              <button type="button" class="sort" onclick={() => sortBy('label')}>{t.noun}<SortMark state={sortKey === 'label' ? (asc ? 'asc' : 'desc') : 'none'} /></button>
             </th>
             {#if send}<th scope="col" class="send" title="upload-project.bat がまとめて送るプロジェクト">まとめて送る</th>{/if}
             {#each cols as c}

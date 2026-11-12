@@ -1,4 +1,4 @@
-// 共有用の伏せ字(--anonymize)。プロジェクト・パス・リポジトリ名・ブランチを決定的な仮名に置き換える。
+// 共有用の伏せ字(--anonymize)。プロジェクト・パス・リポジトリ名・ブランチ・人のフォルダの名前を決定的な仮名に置き換える。
 // 仮名はキーの辞書順で振るので、同じ入力からは常に同じ仮名になる。
 // 伏せ字モードでは、依頼本文・セッション名・指示ファイルの見出しなどの自由記述は出さない
 // (本文中にどんな固有名が含まれるかを機械的に保証できないため)。
@@ -11,6 +11,8 @@ export interface AnonSource {
   gitRoot: string | null;
   repository: string | null;
   branch: string | null;
+  /** 送り先の、人のフォルダの名前(無ければ null か省略) */
+  person?: string | null;
 }
 
 export interface Anonymizer {
@@ -18,6 +20,8 @@ export interface Anonymizer {
   project(key: string): string;
   projectLabel(key: string): string;
   branch(b: string | null): string | null;
+  /** 人のフォルダの名前。伏せ字モードでは person-01 など */
+  person(name: string | null): string | null;
   /** 自由記述。伏せ字モードでは null(表示しない) */
   freeText(s: string | null): string | null;
   /** エラー文やツール名など、短い機械的な文字列。伏せ字モードでは既知の固有名とパスを置き換える */
@@ -62,6 +66,7 @@ export function identityAnonymizer(): Anonymizer {
     project: (k) => k,
     projectLabel: shortProjectLabel,
     branch: (b) => b,
+    person: (n) => n,
     freeText: (s) => s,
     scrub: (s) => s,
     path: (p) => p,
@@ -72,9 +77,12 @@ export function createAnonymizer(sessions: AnonSource[]): Anonymizer {
   const projects = [...new Set(sessions.map((s) => s.project))].filter((p) => !GROUPED_PROJECTS.has(p)).sort();
   const branches = [...new Set(sessions.map((s) => s.branch).filter((b): b is string => !!b))].sort();
   const pw = Math.max(2, String(projects.length).length);
+  const people = [...new Set(sessions.map((s) => s.person).filter((n): n is string => !!n))].sort();
   const bw = Math.max(2, String(branches.length).length);
+  const nw = Math.max(2, String(people.length).length);
   const projectMap = new Map(projects.map((p, i) => [p, `project-${pad(i + 1, pw)}`]));
   const branchMap = new Map(branches.map((b, i) => [b, `branch-${pad(i + 1, bw)}`]));
+  const personMap = new Map(people.map((n, i) => [n, `person-${pad(i + 1, nw)}`]));
 
   // scrub で置き換える既知の固有名(長いものから)。3 文字未満は誤置換が多いので除く
   const repl = new Map<string, string>();
@@ -94,6 +102,7 @@ export function createAnonymizer(sessions: AnonSource[]): Anonymizer {
     if (s.repository) for (const part of s.repository.split('/')) add(part, p);
     for (const path of [s.cwd, s.gitRoot]) if (path) add(lastSegment(path), p);
     if (s.branch) add(s.branch, branchMap.get(s.branch)!);
+    if (s.person) add(s.person, personMap.get(s.person)!);
   }
   // 作業フォルダの絶対パスは、その下を含めて先に <path> にする(最後のフォルダ名が空白を含むと PATH_RE では途中で止まるため)。
   // Windows のパスは大文字小文字を区別しないので、既知の固有名とあわせて大文字小文字を無視して比べる
@@ -114,6 +123,7 @@ export function createAnonymizer(sessions: AnonSource[]): Anonymizer {
     project: (k) => (GROUPED_PROJECTS.has(k) ? k : (projectMap.get(k) ?? 'project-??')),
     projectLabel: (k) => (GROUPED_PROJECTS.has(k) ? k : (projectMap.get(k) ?? 'project-??')),
     branch: (b) => (b == null ? null : (branchMap.get(b) ?? 'branch-??')),
+    person: (n) => (n == null ? null : (personMap.get(n) ?? 'person-??')),
     freeText: () => null,
     scrub: (s) => {
       let out = dirRe ? s.replace(dirRe, '<path>') : s;

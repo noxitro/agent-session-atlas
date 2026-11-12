@@ -68,7 +68,7 @@
   const options = $derived(filterOptions(scoped));
   // 集計に使う id は「group の名前が今のグループにあればその ids、無ければ ids」(effectiveIds。宣言は下だが評価は描画時)
   const filtered = $derived.by(() => applyFilter(sessions, { ...filter, ids: eff.ids }));
-  const agg = $derived(aggregate(filtered));
+  const agg = $derived(aggregate(filtered, options.person.length > 0));
   const turnAgg = $derived(turnAggregate(filtered));
   const verdictAgg = $derived(data?.turnJudgments?.available ? verdictAggregate(filtered, data.turnJudgments.phases) : null);
   const all = $derived(aggregate(sessions));
@@ -385,7 +385,7 @@
   /** 効いている絞り込みの条件の数(期間は開始・終了で 1 つ、セッションの選択は 1 つ) */
   const activeConditions = $derived.by(() => {
     let n = filter.from || filter.to ? 1 : 0;
-    for (const k of ['project', 'client', 'model', 'branch', 'coverage', 'taskCategory', 'tool', 'ids', 'memo'] as const) if (filter[k]) n++;
+    for (const k of ['project', 'person', 'client', 'model', 'branch', 'coverage', 'taskCategory', 'tool', 'ids', 'memo'] as const) if (filter[k]) n++;
     if (filter.empty === '1') n++;
     return n;
   });
@@ -410,6 +410,7 @@
       items: [
         { id: 'usage', label: '利用ランキング' },
         { id: 'exec', label: '実行の性質' },
+        ...(options.person.length > 0 ? [{ id: 'people', label: '人別' }] : []),
         { id: 'projects', label: 'プロジェクト別' },
         { id: 'monthly', label: '月別推移' },
         { id: 'models', label: 'モデル別' },
@@ -635,6 +636,8 @@
         {#if judged}<JudgmentPanel {agg} meta={data.judgments} />{/if}
         <UsageRanking usage={agg.usage} installed={data.installed ?? null} bind:tab={usageTab} />
         <ExecProfile exec={agg.exec} sessions={filtered.length} />
+        <!-- 人別は、送り先(<人>/<プロジェクト>)をまとめて集計したレポートだけ -->
+        {#if options.person.length > 0}<ProjectTable kind="person" rows={agg.byPerson} {judged} current={filter.person} onpick={(p) => setFilter({ person: p })} />{/if}
         <ProjectTable rows={agg.byProject} {judged} current={filter.project} onpick={(p) => setFilter({ project: p })} send={editable && !serverDown ? projectSend : undefined} />
         <MonthlyChart months={agg.byMonth} lastAt={all.overall.lastAt} />
         <ModelChart rows={agg.byModel} />

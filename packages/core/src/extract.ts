@@ -8,7 +8,7 @@ import { resolveInstructions } from './instructions.ts';
 import { normalizeSession } from './normalize.ts';
 import { ProjectResolver, type ProjectResolverOptions } from './project.ts';
 import { ATLAS_JUDGE_PROJECT, HOME_PROJECT, TEMP_PROJECT } from './project-keys.ts';
-import { DESKTOP_JSON, hasSessionFile, isUploadWorkDir, readSnapshotManifest, SESSION_STORE_JSON, SNAPSHOT_SESSION_DB, UPLOAD_OLD_ONLY_REASON, UPLOAD_SESSION_META, UPLOAD_WORK_REASON, uploadWorkDirId } from './snapshot.ts';
+import { DESKTOP_JSON, hasSessionFile, isUploadWorkDir, personOfFolder, readSnapshotManifest, SESSION_STORE_JSON, SNAPSHOT_SESSION_DB, UPLOAD_OLD_ONLY_REASON, UPLOAD_SESSION_META, UPLOAD_WORK_REASON, uploadWorkDirId } from './snapshot.ts';
 import { desktopForSession, type DesktopData, type DesktopSessionInfo } from './desktop.ts';
 import { openReadOnly } from './sqlite.ts';
 import { WikiClassifier, type WikiSpec } from './wiki.ts';
@@ -475,6 +475,8 @@ export async function extract(snapshotDir: string, opts: ExtractOptions = {}): P
       rec.project = sent?.project ?? p.project;
       rec.projectSource = sent ? (sent.source ?? (sent.project === p.project ? p.source : inferProjectSource(sent.project))) : p.source;
     }
+    // 送り先をまとめて集計したとき(<人>/<プロジェクト> の下のセッション)は、人のフォルダの名前を持たせる
+    rec.person = layout === 'merged' ? personOfFolder(manifest?.merged?.owners?.[id]) : null;
     rec.desktop = (desktop ? desktopForSession(desktop, id) : null) ?? dirDesktops.get(id) ?? null;
     rec.name = sessionName(rec.name, rec.desktop?.session?.title);
     done++;

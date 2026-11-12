@@ -53,6 +53,16 @@ describe('埋め込む要約の圧縮', () => {
     expect(roundTrip(s)).toEqual(s);
   });
 
+  it('人のフォルダの名前は、付いているときだけ残す(無いレポートでは 1 件ぶんも増えない)', async () => {
+    const [, busy] = await summaries();
+    expect(packSummary(busy)).not.toHaveProperty('person');
+    const s: SessionSummary = { ...busy, person: 'person-a' };
+    expect(packSummary(s)).toHaveProperty('person', 'person-a');
+    expect(roundTrip(s)).toEqual(s);
+    // 古い埋め込み(person が無い)を読んでも、人なしになる
+    expect(roundTrip(busy).person).toBeNull();
+  });
+
   it('入れ子の一部だけ既定値と違えば、その項目だけ残す', async () => {
     const [, busy] = await summaries();
     const packed = packSummary(busy) as { friction?: Record<string, number> };

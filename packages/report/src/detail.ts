@@ -501,8 +501,10 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
   const title = name ? truncate(name, 120) : anon.enabled ? 'セッション(伏せ字)' : '(名前なし)';
   const project = anon.projectLabel(r.project);
   const branch = anon.branch(r.branch);
+  const person = anon.person(r.person ?? null);
 
   const meta = [
+    person ? `<span class="tag" title="送り先の、人のフォルダの名前">人: ${esc(person)}</span>` : '',
     `<span class="tag" title="${esc(PROJECT_SOURCE_LABEL[r.projectSource ?? 'path'])}">プロジェクト: ${esc(project)}</span>`,
     `<span class="tag">クライアント: ${esc(r.client ?? '不明')}</span>`,
     branch ? `<span class="tag">ブランチ: ${esc(branch)}</span>` : '',

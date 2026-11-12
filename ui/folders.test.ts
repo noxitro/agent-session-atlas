@@ -3,6 +3,7 @@
 //  a. 集計できないフォルダは理由を出す。人のフォルダを調べると何を読むかが出て、「集計して開く」で一覧が「集計しています…」から「開いています」に変わる
 //  b. 開いた先(別のサーバ)は、対象のフォルダの名前を出し、いつもの集計へのリンクを持つ。メモとタスクタグはフォルダごとの場所に書く
 //  c. 開いた先のサーバが止まると「前に開いた日時」に戻り、一覧から外せる(集計の出力は残る)
+//  d. 送り先の全体(<人>/<プロジェクト>)を集計したレポートだけ、「人」の絞り込みと「人別」の表を出す。名前を押すとその人に絞り込む
 // 開くのは別のプロセス(atlas open)なので、終わったら止める。どの画面でもページ内の例外とコンソールのエラーが無いこと。
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
@@ -190,5 +191,77 @@ describe('別のフォルダを開く', () => {
     await expect.poll(() => dialog(page).locator('[role="status"]').innerText()).toContain('一覧から外しました');
     expect(existsSync(join(fp.out, 'atlas.html'))).toBe(true);
     expect(existsSync(fp.state)).toBe(true);
+  });
+
+  it('d. 送り先の全体を集計したレポートだけ、「人」の絞り込みと「人別」の表を出す。名前を押すとその人に絞り込む', async () => {
+    const personLabel = (p: Page) => p.locator('.filterbar label.sel').filter({ has: p.locator('.k', { hasText: /^人$/ }) });
+    // いつもの集計(この PC のセッション)には、人の軸を出さない
+    await page.goto(server.url);
+    await expect.poll(() => page.locator('#projects tbody tr').count()).toBeGreaterThan(0);
+    expect(await page.locator('#people').count()).toBe(0);
+    expect(await personLabel(page).count()).toBe(0);
+    expect(await page.locator('a[href="#people"]').count()).toBe(0);
+
+    // 2 人のフォルダを持つ送り先: person-a/proj-a(2 件)と person-b/proj-b(1 件)
+    const everyone = join(WORK, 'logs-everyone');
+    await cp(join(WORK, 'upload', 'proj-a'), join(everyone, 'person-a', 'proj-a'), { recursive: true });
+    await cp(join(WORK, 'upload', 'proj-b'), join(everyone, 'person-b', 'proj-b'), { recursive: true });
+    const outAll = join(WORK, 'out-everyone');
+    const notesAll = join(WORK, 'notes-everyone');
+    const r = spawnSync(process.execPath, [CLI, 'all', '--home', everyone, '--out', outAll, '--notes-dir', notesAll], { cwd: ROOT, encoding: 'utf8', timeout: 120_000 });
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    const all = await startServe({ outDir: outAll, notesDir: notesAll, groupsPath: join(notesAll, 'groups.json'), port: 0, open: false, idleMs: 600_000, firstHeartbeatMs: 600_000 });
+    other = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    watch(other);
+    try {
+      await other.goto(all.url);
+      const people = other.locator('#people');
+      await expect.poll(() => people.locator('tbody tr').count()).toBe(2);
+      expect(await people.locator('h2').innerText()).toBe('人別');
+      expect(await people.locator('.section-head p').innerText()).toContain('2 人。');
+      // 人別はプロジェクト別の上。目次からも行ける
+      expect(await other.evaluate<boolean>("!!(document.getElementById('people').compareDocumentPosition(document.getElementById('projects')) & Node.DOCUMENT_POSITION_FOLLOWING)")).toBe(true);
+      expect(await other.locator('a[href="#people"]').count()).toBeGreaterThan(0);
+      // 出力トークンの多い順に限らないので、名前で見る
+      const names = await people.locator('tbody tr a.link').allInnerTexts();
+      expect([...names].sort()).toEqual(['person-a', 'person-b']);
+      // 「まとめて送る」の印は、人別には出さない
+      expect(await people.getByRole('checkbox').count()).toBe(0);
+      // 絞り込みの「人」: 件数付き
+      const select = personLabel(other).locator('select');
+      expect(await select.locator('option').allInnerTexts()).toEqual(['すべて(2)', 'person-a(2)', 'person-b(1)']);
+      expect(await select.inputValue()).toBe('');
+
+      // 名前を押すと、その人に絞り込む(URL・選択・表のどれも揃う)
+      const link = people.locator('tbody tr a.link', { hasText: 'person-b' });
+      expect(await link.getAttribute('href')).toBe('#person=person-b');
+      await link.click();
+      await expect.poll(() => other!.evaluate<string>('location.hash')).toContain('person=person-b');
+      await expect.poll(() => select.inputValue()).toBe('person-b');
+      await expect.poll(() => people.locator('tbody tr').count()).toBe(1);
+      expect(await people.locator('tbody tr.current').count()).toBe(1);
+      expect(await people.locator('tbody tr a.link').getAttribute('aria-current')).toBe('true');
+      await expect.poll(() => other!.locator('#projects tbody tr').count()).toBe(1);
+      // 「人」の選択から別の人へ。「すべて」で外れる
+      await select.selectOption('person-a');
+      await expect.poll(() => other!.evaluate<string>('location.hash')).toContain('person=person-a');
+      await expect.poll(() => people.locator('tbody tr a.link').innerText()).toBe('person-a');
+      await select.selectOption('');
+      await expect.poll(() => people.locator('tbody tr').count()).toBe(2);
+      expect(await other.evaluate<string>('location.hash')).not.toContain('person=');
+      // URL から開いても同じ(共有したリンクで、その人に絞った状態になる)
+      await other.goto(`${all.url}#person=person-b`);
+      await other.reload();
+      await expect.poll(() => people.locator('tbody tr').count()).toBe(1);
+      expect(await select.inputValue()).toBe('person-b');
+
+      // 詳細ページにも、人の札を出す
+      const id = await other.evaluate<string>("JSON.parse(document.getElementById('atlas-data').textContent).sessions.find((s) => s.person === 'person-b').id");
+      await other.goto(new URL(`sessions/${id}.html`, all.url).href);
+      await expect.poll(() => other!.locator('.tag', { hasText: '人: person-b' }).count()).toBe(1);
+    } finally {
+      await other.close();
+      await all.close('テスト終了');
+    }
   });
 });

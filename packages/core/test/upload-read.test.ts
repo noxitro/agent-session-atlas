@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { extract, listSessionDirs, loadStore, mergeSessionStoreJson, readSenderProject } from '../src/extract.ts';
-import { describeSource, DUPLICATE_REASON, isUploadWorkDir, snapshot, SNAPSHOT_MANIFEST, SNAPSHOT_SOURCE, UPLOAD_INDEX, UPLOAD_OLD_ONLY_REASON, UPLOAD_SESSION_META, UPLOAD_WORK_REASON, uploadOldName, uploadTmpName, uploadWorkDirId } from '../src/snapshot.ts';
+import { describeSource, DUPLICATE_REASON, isUploadWorkDir, personOfFolder, snapshot, SNAPSHOT_MANIFEST, SNAPSHOT_SOURCE, UPLOAD_INDEX, UPLOAD_OLD_ONLY_REASON, UPLOAD_SESSION_META, UPLOAD_WORK_REASON, uploadOldName, uploadTmpName, uploadWorkDirId } from '../src/snapshot.ts';
 
 const EVENT = '{"type":"session.start","data":{"sessionId":"x","version":1},"id":"e1","timestamp":"2026-07-02T09:00:00.000Z","parentId":null}\n';
 
@@ -292,7 +292,7 @@ describe('アップロード先から集計し直す: snapshot', () => {
     expect(await describeSource(root)).toEqual({ kind: 'merged', folders: ['proj-a', 'proj-b', 'proj-c'] });
     const m = await snapshot(root, dest);
     expect(m.layout).toBe('merged');
-    expect(m.merged).toEqual({ folders: ['proj-a', 'proj-b', 'proj-c'], duplicates: 0 });
+    expect(m.merged).toEqual({ folders: ['proj-a', 'proj-b', 'proj-c'], duplicates: 0, owners: { s1: 'proj-b', s2: 'proj-b', s3: 'proj-c' } });
     expect(m.sessions.dirs).toBe(3);
     expect((await readdir(join(dest, 'session-state'))).sort()).toEqual(['s1', 's2', 's3']);
     // 直下のフォルダ(セッションの入れ物)は、~/.copilot の直下のフォルダとしては写さない
@@ -301,6 +301,8 @@ describe('アップロード先から集計し直す: snapshot', () => {
     const x = await extract(dest, { projects: { homes: [], temps: [], tempPatterns: false } });
     expect(x.source).toMatchObject({ layout: 'merged', folders: ['proj-a', 'proj-b', 'proj-c'] });
     expect(Object.fromEntries(x.sessions.map((r) => [r.id, r.project]))).toMatchObject({ s1: 'zz-owner/zz-b', s3: 'zz-owner/zz-c' });
+    // 人のフォルダ 1 つを指したときは、人ごとには分けない(全部その人の分)
+    expect(x.sessions.map((r) => r.person)).toEqual([null, null, null]);
     // 2 度目も同じ(出力先は同じ元のもの)
     expect((await snapshot(root, dest)).sessions.dirs).toBe(3);
     // プロジェクトのフォルダ 1 つを指したときは、今までどおり直下を読む
@@ -373,7 +375,11 @@ describe('アップロード先から集計し直す: snapshot', () => {
     expect(await describeSource(root)).toEqual({ kind: 'merged', folders: ['person-a/proj-a', 'person-a/proj-b', 'person-b/proj-a'] });
     const m = await snapshot(root, dest);
     expect(m.layout).toBe('merged');
-    expect(m.merged).toEqual({ folders: ['person-a/proj-a', 'person-a/proj-b', 'person-b/proj-a'], duplicates: 1 });
+    expect(m.merged).toEqual({
+      folders: ['person-a/proj-a', 'person-a/proj-b', 'person-b/proj-a'],
+      duplicates: 1,
+      owners: { s1: 'person-a/proj-a', s2: 'person-a/proj-b', s3: 'person-b/proj-a' },
+    });
     expect(m.sessions.dirs).toBe(3);
     expect((await readdir(join(dest, 'session-state'))).sort()).toEqual(['s1', 's2', 's3']);
     expect(m.extras?.skipped.filter((x) => x.reason === DUPLICATE_REASON).map((x) => x.path)).toEqual(['person-b/proj-a/s1']);
@@ -381,6 +387,8 @@ describe('アップロード先から集計し直す: snapshot', () => {
     const x = await extract(dest, { projects: { homes: [], temps: [], tempPatterns: false } });
     expect(x.source).toMatchObject({ layout: 'merged', folders: ['person-a/proj-a', 'person-a/proj-b', 'person-b/proj-a'] });
     expect(x.sessions.find((r) => r.id === 's1')?.project).toBe('zz-owner/zz-a');
+    // 人のフォルダの名前を、セッションごとに持たせる(2 人のフォルダにある s1 は、数えたほうの人)
+    expect(Object.fromEntries(x.sessions.map((r) => [r.id, r.person]))).toEqual({ s1: 'person-a', s2: 'person-a', s3: 'person-b' });
     // 人のフォルダ 1 つを指したときは、その人の分だけ
     expect(await describeSource(join(root, 'person-a'))).toEqual({ kind: 'merged', folders: ['proj-a', 'proj-b'] });
     expect((await snapshot(join(root, 'person-a'), join(base, 'out-a'))).sessions.dirs).toBe(2);
@@ -400,6 +408,44 @@ describe('アップロード先から集計し直す: snapshot', () => {
     // ~/.copilot の形のフォルダ(バックアップなど)が横にあっても、人ごとのフォルダとしては読まない
     await session(join(root, 'backup', 'session-state', 's9'));
     expect(await describeSource(root)).toEqual({ kind: 'merged', folders: ['person-a/proj-a', 'person-a/proj-b', 'person-b/proj-a', 'shared'] });
+  });
+
+  it('人のフォルダの名前は、数えたフォルダから決める(直下のフォルダ・作業用のフォルダから写したもの・元から消えたもの)', async () => {
+    expect(personOfFolder('person-a/proj-a')).toBe('person-a');
+    expect(personOfFolder('proj-a')).toBeNull();
+    expect(personOfFolder('/proj-a')).toBeNull();
+    expect(personOfFolder('')).toBeNull();
+    expect(personOfFolder(undefined)).toBeNull();
+    const base = await work();
+    const root = join(base, 'logs');
+    const dest = join(base, 'out', 'snapshot');
+    await session(join(root, 'person-a', 'proj-a', 's1'));
+    await session(join(root, 'person-b', 'proj-a', 's2'));
+    // 人のフォルダの下に無いもの(送り先の直下のフォルダ)は、人が分からない
+    await session(join(root, 'shared', 's3'));
+    // 置き換えの途中で止まり、写し終えた作業用のフォルダだけが残ったセッションは、そのフォルダの人
+    await session(join(root, 'person-b', 'proj-b', uploadTmpName('s4')), { [UPLOAD_SESSION_META]: JSON.stringify({ version: 1, id: 's4' }) });
+    await writeFile(join(root, 'person-b', 'proj-b', UPLOAD_INDEX), '{}');
+    const m = await snapshot(root, dest);
+    expect(m.merged?.owners).toEqual({ s1: 'person-a/proj-a', s2: 'person-b/proj-a', s3: 'shared', s4: 'person-b/proj-b' });
+    const people = async (): Promise<Record<string, string | null | undefined>> =>
+      Object.fromEntries((await extract(dest, { projects: false })).sessions.map((r) => [r.id, r.person]));
+    expect(await people()).toEqual({ s1: 'person-a', s2: 'person-b', s3: null, s4: 'person-b' });
+    // 元から消えたセッションの複製は出力先に残る。前の集計で数えたフォルダを引き継ぐ(人ごとの内訳から外れない)
+    await rm(join(root, 'person-b', 'proj-a', 's2'), { recursive: true });
+    const again = await snapshot(root, dest);
+    expect(existsSync(join(dest, 'session-state', 's2'))).toBe(true);
+    expect(again.merged?.owners).toEqual({ s1: 'person-a/proj-a', s2: 'person-b/proj-a', s3: 'shared', s4: 'person-b/proj-b' });
+    expect(await people()).toEqual({ s1: 'person-a', s2: 'person-b', s3: null, s4: 'person-b' });
+    // 別の人のフォルダに移したら、今あるほうの人になる(前の値より、今の元を先に見る)
+    await session(join(root, 'person-a', 'proj-a', 's2'));
+    expect((await snapshot(root, dest)).merged?.owners?.s2).toBe('person-a/proj-a');
+    // 古い manifest(owners が無い)から集計し直したものは、人が分からない(止まらない)
+    const file = join(dest, SNAPSHOT_MANIFEST);
+    const old = JSON.parse(await readFile(file, 'utf8')) as { merged: { owners?: unknown } };
+    delete old.merged.owners;
+    await writeFile(file, JSON.stringify(old));
+    expect(Object.values(await people())).toEqual([null, null, null, null]);
   });
 
   it('2 段下まで読むかどうかは、索引と、人のフォルダごとに先頭の 3 個までで確かめる', async () => {
