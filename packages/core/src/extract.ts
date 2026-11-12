@@ -279,6 +279,33 @@ export async function readSenderProject(path: string, id: string): Promise<{ pro
   }
 }
 
+/** 送った人のタスクタグの数と長さの上限(共有フォルダに置かれたファイルなので、大きすぎるものは使わない) */
+const SENDER_TAGS_MAX = 50;
+const SENDER_TAG_CHARS = 100;
+
+/**
+ * アップロードで添えた記録(UPLOAD_SESSION_META)から、送った人がそのセッションに付けていたタスクタグを読む。
+ * 無い・読めない・形が違う・ほかのセッションのものなら空。名前の扱いは readSenderProject と同じ(前後の空白を落とし、
+ * 制御文字と見えない書式の文字を含むもの、長すぎるものは使わない)。同じ名前は 1 つにする
+ */
+export async function readSenderTags(path: string, id: string): Promise<string[]> {
+  if (!existsSync(path)) return [];
+  try {
+    const j = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>;
+    if (!isRow(j) || j.version !== 1 || j.id !== id || !Array.isArray(j.tags)) return [];
+    const out: string[] = [];
+    for (const t of j.tags.slice(0, SENDER_TAGS_MAX)) {
+      if (typeof t !== 'string') continue;
+      const name = t.trim();
+      if (!name || [...name].length > SENDER_TAG_CHARS || /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(name) || out.includes(name)) continue;
+      out.push(name);
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
 /** 決め方の記録が無いプロジェクト名から、決め方を推す(まとめ用の名前はそれぞれ、owner/repo の形は git の origin、ほかはパス) */
 function inferProjectSource(project: string): ProjectSource {
   if (project === TEMP_PROJECT) return 'temp';
@@ -477,6 +504,8 @@ export async function extract(snapshotDir: string, opts: ExtractOptions = {}): P
     }
     // 送り先をまとめて集計したとき(<人>/<プロジェクト> の下のセッション)は、人のフォルダの名前を持たせる
     rec.person = layout === 'merged' ? personOfFolder(manifest?.merged?.owners?.[id]) : null;
+    // 送り先から集計したときは、送った人が付けていたタスクタグも持たせる(画面は人ごとに分けて、読むだけで出す)
+    if (uploaded) rec.uploadTags = hasDir ? await readSenderTags(join(dir, UPLOAD_SESSION_META), id) : [];
     rec.desktop = (desktop ? desktopForSession(desktop, id) : null) ?? dirDesktops.get(id) ?? null;
     rec.name = sessionName(rec.name, rec.desktop?.session?.title);
     done++;

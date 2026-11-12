@@ -19,6 +19,8 @@ import {
   renameReplacing,
   SESSION_STORE_JSON,
   UPLOAD_INDEX,
+  UPLOAD_MEMO_FILE,
+  UPLOAD_MEMO_IMAGES,
   UPLOAD_SESSION_META,
   uploadOldName,
   uploadTmpName,
@@ -34,9 +36,8 @@ import { safeDirName } from './group-export.ts';
 const SNAPSHOT_PRIVATE = /^\.session\.db\.src$/;
 /** セッション id として写してよい名前(Copilot の id は英数字と - だけ。. で始まるもの・区切りを含むものは除く) */
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
-/** セッションのフォルダに添えるメモ(本文)と、その画像のフォルダ */
-export const UPLOAD_MEMO_FILE = 'atlas-memo.md';
-export const UPLOAD_MEMO_IMAGES = 'atlas-memo';
+/** セッションのフォルダに添えるメモ(本文)と、その画像のフォルダ(集計し直す側も読むので core に置いてある) */
+export { UPLOAD_MEMO_FILE, UPLOAD_MEMO_IMAGES };
 /** グループ・プロジェクトのフォルダの説明(人が読む) */
 export const UPLOAD_README = 'README.md';
 // グループ・プロジェクトのフォルダの索引(UPLOAD_INDEX。プログラムや AI が読む。セッションごとのタスクタグ・題名・日時)と、
@@ -721,7 +722,7 @@ export function groupReadme(o: {
     '<出力先> に、画面(atlas.html)と、セッションごとの読みやすい記録(sessions\\<セッション ID>.md。依頼・応答・ツールの経過・消費をまとめた Markdown)ができます。',
     '記録はここに送った生ログから作れるので、送るものには含めていません(送り先の容量を使わないため)。',
     '',
-    `メモ(各セッションのフォルダの ${UPLOAD_MEMO_FILE})は、集計し直した画面には出ません。ファイルを開いて読んでください。`,
+    `メモ(各セッションのフォルダの ${UPLOAD_MEMO_FILE})とタスクタグ(${UPLOAD_SESSION_META} の tags)は、このフォルダを集計し直した画面に、読むだけで出ます。ファイルを開いて読むこともできます。`,
     '',
   );
   return lines.join('\n');

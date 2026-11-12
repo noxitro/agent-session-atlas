@@ -7,6 +7,8 @@ import type { ReportGroup } from '../lib/types.ts';
 
 export interface ApiState {
   version: number;
+  /** 別のフォルダを開いた画面(読むだけ)。タスクタグは送った人のもので、メモ・アップロード先は返さない */
+  readOnly?: boolean;
   groups: ReportGroup[];
   /** セッション id → メモの概要(メモの API より古い serve には無い) */
   memos?: Record<string, MemoSummary>;
@@ -302,10 +304,23 @@ export const jobsApi = {
     return connect(fetch('api/jobs/current/cancel', { method: 'POST', headers: headers(token) }), (r) => parse<JobInfo>(r));
   },
   /** 判定の確認ダイアログの件数(工数: 依頼の記録があるセッション / 依頼: 依頼ごとの記録がある依頼。そのうち未判定のもの) */
-  judgePreview(token: string, target: JudgeTarget = 'effort'): Promise<{ eligible: number; judged: number; pending: number; withoutTurns?: number }> {
+  judgePreview(token: string, target: JudgeTarget = 'effort'): Promise<JudgePreview> {
     return connect(fetch('api/jobs/judge-preview' + (target === 'turns' ? '?target=turns' : ''), { cache: 'no-store', headers: headers(token) }), (r) => parse(r));
   },
 };
+
+/** 判定の確認ダイアログの件数と、判定に使うモデル(設定の judgeModel。null は Copilot の既定のモデル) */
+export interface JudgePreview {
+  eligible: number;
+  judged: number;
+  pending: number;
+  withoutTurns?: number;
+  model?: string | null;
+  /** 自分の API キーのモデル(BYOK。<プロバイダー名>/<モデル ID>)か。Copilot の AI クレジットは使わない */
+  byok?: boolean;
+  /** 設定ファイルを読めなかったときの理由 */
+  modelError?: string | null;
+}
 
 /** チャットでの判定の添付ファイル(bundle/parts/)。path は atlas.html からの相対パス */
 export interface ChatPart {

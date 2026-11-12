@@ -292,11 +292,14 @@ describe('Phase 16 E2E: アップロード先から集計し直す(読む側)', 
       const again = atlas(['open', everyone, '--out', localOut, '--notes-dir', localNotes, '--no-open']);
       expect(again.status, again.out).toBe(0);
       expect(again.out).toMatch(/既に動いているサーバがあります/);
-      // メモとタスクタグは、フォルダごとの場所に書く
+      // 開いた画面は読むだけ: タスクタグは作れず、どちらの置き場にも書かない
       const made = await fetch(new URL('api/groups', url), { method: 'POST', headers: { 'content-type': 'application/json', 'x-atlas-token': token }, body: JSON.stringify({ name: '全員の分のタグ', note: '', ids: [ids[0]] }) });
-      expect(made.status).toBe(201);
-      expect(existsSync(join(fp.notes, 'groups.json'))).toBe(true);
+      expect(made.status).toBe(403);
+      expect(((await made.json()) as { error: string }).error).toMatch(/読むだけ/);
+      expect(existsSync(join(fp.notes, 'groups.json'))).toBe(false);
       expect(existsSync(join(localNotes, 'groups.json'))).toBe(false);
+      const st = (await (await fetch(new URL('api/state', url), { headers: { 'x-atlas-token': token } })).json()) as { readOnly: boolean };
+      expect(st.readOnly).toBe(true);
     } finally {
       child.kill();
       if (child.exitCode === null) await new Promise((r) => child.once('exit', r));

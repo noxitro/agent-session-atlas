@@ -10,12 +10,12 @@ export { parseVerdicts, verdictAggregate, verdictTuples } from './lib/verdicts.t
 export type { TurnVerdict, VerdictIndex, VerdictTuple } from './lib/verdicts.ts';
 export type { JudgmentsIndex } from './lib/judgments.ts';
 export { matchesBase, applyFilter, emptyFilter, splitIds, joinIds } from './lib/filter.ts';
-export { parseGroups, serializeGroups, safeDirName, resolveIdPrefixes, uniqueIds, addIds, removeIds, GROUPS_VERSION, GROUPS_FILE_NAME, NOTES_DIR_NAME } from './lib/groups.ts';
+export { parseGroups, serializeGroups, safeDirName, memberGroups, MEMBER_TAG_SEP, resolveIdPrefixes, uniqueIds, addIds, removeIds, GROUPS_VERSION, GROUPS_FILE_NAME, NOTES_DIR_NAME } from './lib/groups.ts';
 export type { SessionGroup, GroupsFile, ParsedGroups } from './lib/groups.ts';
 export { loadGroups, loadGroupsForWrite, saveGroups } from './groups-io.ts';
 export { isSafeFileName, isSafeMemoId, memoExcerpt, memoSummary, MEMOS_DIR_NAME } from './lib/memo.ts';
 export type { MemoSummary } from './lib/memo.ts';
-export { imageExt, loadMemoIndex, MEMO_IMAGE_LIMIT, memoRev, memosDir, readMemo, renderMemo, saveMemo, saveMemoImage } from './memo-io.ts';
+export { imageExt, loadMemberMemos, loadMemoIndex, MEMO_IMAGE_LIMIT, memoRev, memosDir, readMemo, renderMemberMemo, renderMemo, saveMemo, saveMemoImage } from './memo-io.ts';
 export type { MemoFile } from './memo-io.ts';
 export { renderMemoHtml, renderSafeMarkdown, MEMO_CSS } from './memo-render.ts';
 export type { SafeMarkdown, SafeMarkdownOptions } from './memo-render.ts';

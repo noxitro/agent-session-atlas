@@ -33,6 +33,7 @@ import {
   writeFullRecord,
   detailFileName,
   type ViewKind,
+  memberGroups,
   memosDir,
   memoSummary,
   readMemo,
@@ -55,7 +56,7 @@ import { phaseNames } from './config.ts';
 import { acquireOutLock, JobError, JobRunner, OutBusyError, parseJobRequest, runningJobIn, type RunFullFn, type SpawnFn } from './jobs.ts';
 import { exportGroup } from './group-export.ts';
 import { checkUpload, UploadChangedError, uploadDir, uploadedAt, uploadGroup, type GroupUploadResult, type UploadProgress } from './group-upload.ts';
-import { defaultConfigPath, loadConfig, modifyConfig, NO_CHANGE, parseConfig, parseUploadRoot, updateConfig } from './config.ts';
+import { defaultConfigPath, isByokModel, loadConfig, modifyConfig, NO_CHANGE, parseConfig, parseUploadRoot, updateConfig } from './config.ts';
 import { CAN_PICK_FOLDER, openFolder, pickFolder } from './folder-picker.ts';
 import { checkFolder, FolderError, foldersRootOf, forgetFolder, launchDetached, listFolders, listFolderStates, openFolderReport, type FolderContext, type LaunchFn } from './folders.ts';
 
@@ -166,6 +167,9 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-atlas-serve': '1', ...NOSNIFF });
   res.end(text);
 }
+
+/** 別のフォルダを開いた画面(読むだけ)で、書き換える操作を断るときの理由 */
+export const READ_ONLY_MESSAGE = '別のフォルダを開いた画面は読むだけです。タスクタグとメモは、送った人が付けたものを出します(書き換えるのは、送った人の PC の画面です)';
 
 /** 上限を超えても最後まで読み捨ててから 413 にする(途中で打ち切ると送信中の相手が応答を受け取れず止まる) */
 async function readBody(req: IncomingMessage, limit: number): Promise<Buffer> {
@@ -322,7 +326,8 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     notesDir: resolve(o.notesDir),
     home: o.home,
     spawn: o.jobs?.spawn,
-    env: o.jobs?.env,
+    // --config で起動したサーバは、画面から動かす処理(集計し直す・判定)にも同じ設定ファイル(wiki・工程名・判定に使うモデル)を読ませる
+    env: { ...(o.configPath ? { ATLAS_CONFIG: resolve(o.configPath) } : {}), ...o.jobs?.env },
     runFull: o.jobs?.runFull ?? runFullDefault,
     log,
     // 画面が閉じられた後もジョブは最後まで走らせ、終わってから判定を再開する
@@ -598,6 +603,16 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     const origin = req.headers.origin;
     if (origin && origin !== `http://127.0.0.1:${port}` && origin !== `http://localhost:${port}`) throw new HttpError(403, '同一オリジン以外からの要求は受け付けません');
   }
+  /**
+   * 別のフォルダ(送り先など)を開いた画面は読むだけ。タスクタグとメモは送った人が付けたものを出し、ここでは書き換えない。
+   * 断るのは、タスクタグ(付け外し・作る・消す・書き出し・アップロード)・メモ・アップロード先・まとめて送る印。
+   * 集計し直す・判定(手元の出力先に書くだけで、送り先は書き換えない)・設定・別のフォルダを開く操作は使える
+   */
+  const readOnly = !!o.reports?.current;
+  function blockedWhenReadOnly(path: string, method: string): boolean {
+    if (method === 'GET' || method === 'HEAD') return false;
+    return path === '/api/groups' || path.startsWith('/api/groups/') || path.startsWith('/api/memos/') || path === '/api/upload-root' || path === '/api/upload-projects';
+  }
   function checkToken(req: IncomingMessage): void {
     if (req.headers['x-atlas-token'] !== token) throw new HttpError(403, 'token が無いか違います(atlas serve から開いた画面だけが書けます)');
   }
@@ -620,6 +635,18 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
       return;
     }
     if (await isAnonymized()) throw new HttpError(403, '伏せ字版では編集できません');
+    if (readOnly && blockedWhenReadOnly(path, method)) throw new HttpError(403, READ_ONLY_MESSAGE);
+    if (path === '/api/state' && method === 'GET' && readOnly) {
+      // 読むだけ: タスクタグは送った人のもの(集計の sessions.json から人ごとに作る。レポートに埋め込んだものと同じ)。メモ・アップロード先は返さない(埋め込みを使う)
+      let groups: SessionGroup[] = [];
+      try {
+        groups = memberGroups((JSON.parse(await readFile(join(outDir, 'sessions.json'), 'utf8')) as { sessions: Parameters<typeof memberGroups>[0] }).sessions);
+      } catch {
+        /* まだ集計していない */
+      }
+      sendJson(res, 200, { version: 1, readOnly: true, groups, notesDir: o.notesDir, groupsPath, exists: false, warnings: [] });
+      return;
+    }
     if (path === '/api/state' && method === 'GET') {
       const g = await loadGroups(groupsPath);
       const memos = Object.fromEntries([...(await loadMemoIndex(memoDir))].map(([id, x]) => [id, memoSummary(x.text, x.updatedAt)]));
@@ -817,7 +844,8 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     }
     if (path === '/api/memo-editor.js' && method === 'GET') {
       res.writeHead(200, { 'content-type': MIME['.js'], 'cache-control': 'no-store', 'x-atlas-serve': '1', ...NOSNIFF });
-      res.end(MEMO_EDITOR_JS);
+      // 読むだけの画面ではメモを書かせない(詳細ページには、送った人のメモを作ったときの HTML のまま出す)
+      res.end(readOnly ? '/* 読むだけの画面: メモは書き換えません */\n' : MEMO_EDITOR_JS);
       return;
     }
     if (path === '/api/session-tools.js' && method === 'GET') {
@@ -1036,7 +1064,16 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
         return;
       }
       if (path === '/api/jobs/judge-preview' && method === 'GET') {
-        sendJson(res, 200, url.searchParams.get('target') === 'turns' ? await turnPreview() : await judgePreview());
+        // 判定に使うモデル(設定の judgeModel)も返す。確認ダイアログが、Copilot の AI クレジットを使うか、自分の API キー(BYOK)かを出す
+        let model: string | null = null;
+        let modelError: string | null = null;
+        try {
+          model = (await loadConfig(configPath, false)).judgeModel;
+        } catch (e) {
+          modelError = (e as Error).message;
+        }
+        const counts = url.searchParams.get('target') === 'turns' ? await turnPreview() : await judgePreview();
+        sendJson(res, 200, { ...counts, model, byok: isByokModel(model), modelError });
         return;
       }
     } catch (e) {

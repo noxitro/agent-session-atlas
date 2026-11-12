@@ -78,6 +78,8 @@ describe('serve の jobs と記録の表示(Phase 14)', () => {
       outDir: out,
       notesDir: notes,
       groupsPath: join(notes, 'groups.json'),
+      // 設定ファイルはテスト用の場所(リポジトリの atlas.config.json を読まない。無ければ設定なし)
+      configPath: join(dir, 'atlas.config.json'),
       port: 0,
       open: false,
       jobs: {
@@ -287,7 +289,7 @@ describe('serve の jobs と記録の表示(Phase 14)', () => {
     expect(ok.status).toBe(200);
     expect(ok.body).toMatchObject({ imported: 2, overwritten: 0, unknownIds: ['zz'], total: 2 });
     expect(ok.body.parts.parts[0]).toMatchObject({ name: 'part-01.md', judged: 1 });
-    expect((await json('/api/jobs/judge-preview')).body).toEqual({ eligible: 2, judged: 1, pending: 1 });
+    expect((await json('/api/jobs/judge-preview')).body).toMatchObject({ eligible: 2, judged: 1, pending: 1 });
     expect((await json('/api/judge/parts', {}, null)).status).toBe(403);
   });
 
@@ -375,9 +377,19 @@ describe('serve の jobs と記録の表示(Phase 14)', () => {
 
   it('judge-preview: 依頼の記録があるセッションのうち judgments.json に無いもの', async () => {
     await start();
-    expect((await json('/api/jobs/judge-preview')).body).toEqual({ eligible: 2, judged: 0, pending: 2 });
+    // 設定ファイルが無ければ、判定に使うモデルは Copilot の既定(AI クレジットを使う)
+    expect((await json('/api/jobs/judge-preview')).body).toEqual({ eligible: 2, judged: 0, pending: 2, model: null, byok: false, modelError: null });
+    await writeFile(join(dir, 'atlas.config.json'), JSON.stringify({ judgeModel: 'anthropic/claude-sonnet-5-5' }));
+    expect((await json('/api/jobs/judge-preview')).body).toMatchObject({ pending: 2, model: 'anthropic/claude-sonnet-5-5', byok: true, modelError: null });
+    await writeFile(join(dir, 'atlas.config.json'), '{ broken');
+    expect((await json('/api/jobs/judge-preview')).body).toMatchObject({ pending: 2, model: null, byok: false, modelError: expect.stringMatching(/atlas\.config\.json を読めません/) });
+    // 画面から動かす処理(子プロセス)にも、サーバと同じ設定ファイルを渡す
+    await post({ kind: 'judge', limit: 1, backend: 'copilot-cli' });
+    expect(calls.at(-1)!.env.ATLAS_CONFIG).toBe(join(dir, 'atlas.config.json'));
+    children.at(-1)!.exit(0);
+    await writeFile(join(dir, 'atlas.config.json'), '{}');
     await writeFile(join(out, 'judgments.json'), JSON.stringify({ schemaVersion: 1, items: [{ sessionId: 's1' }, { sessionId: 'zzz' }] }));
-    expect((await json('/api/jobs/judge-preview')).body).toEqual({ eligible: 2, judged: 1, pending: 1 });
+    expect((await json('/api/jobs/judge-preview')).body).toMatchObject({ eligible: 2, judged: 1, pending: 1 });
   });
 
   it('ジョブの実行中は heartbeat が途切れても止まらず、終わってから idleMs で止まる', async () => {

@@ -169,6 +169,10 @@
   const token = serveToken();
   /** http(s) で開かれ、token があり、GET api/state が成功し、伏せ字版でない */
   let editable = $state(false);
+  /** 別のフォルダを開いた画面(サーバが読むだけと答えた)。集計し直す・判定は使えるが、タスクタグ・メモ・アップロードは書き換えない */
+  let readOnly = $state(false);
+  /** タスクタグ・アップロード・まとめて送る印を書き換えられるか */
+  const canEdit = $derived(editable && !readOnly);
   /** API から読んだグループ(編集モードではこちらを使う。CLI で足したものも再読み込みで出る) */
   let liveGroups = $state<ReportGroup[] | null>(null);
   /** heartbeat が失敗した(サーバが止まった)。閲覧はそのまま、編集だけ無効 */
@@ -200,6 +204,7 @@
           liveGroups = s.groups;
           liveMemos = s.memos ?? null; // 古い serve には無い(埋め込みの抜粋を残す)
           uploadSetting = s.upload ?? null; // 古い serve には無い(アップロードの操作を出さない)
+          readOnly = s.readOnly === true;
           editable = true;
           // 古い serve には無い(失敗しても、埋め込みの source だけで出す)
           foldersApi
@@ -548,8 +553,9 @@
         </p>
       </div>
       <div class="mast-tools">
-        {#if editable && jobStore}<JobActions jobs={jobStore} disabled={serverDown} /><SettingsDialog jobs={jobStore} disabled={serverDown} upload={uploadHandlers} send={projectSend} projects={settingsProjects} /><OpenFolder token={jobStore.token} disabled={serverDown} />{/if}
+        {#if editable && jobStore}<JobActions jobs={jobStore} disabled={serverDown} /><SettingsDialog jobs={jobStore} disabled={serverDown} upload={uploadHandlers} send={canEdit ? projectSend : undefined} projects={settingsProjects} /><OpenFolder token={jobStore.token} disabled={serverDown} />{/if}
         {#if sourceLabel}<span class="tag" title={sourceLabel.path} data-testid="source-tag">対象: {sourceLabel.name}</span>{/if}
+        {#if readOnly}<span class="tag" title="タスクタグとメモは、送った人が付けたものを出します。この画面では書き換えません(集計し直す・判定はできます)" data-testid="readonly-tag">読むだけ</span>{/if}
         {#if data.anonymized}<span class="tag">伏せ字モード</span>{/if}
         {#if scopeNotes.length}<span class="tag" title="atlas build の実行時に絞り込んだ条件">出力時の絞り込み: {scopeNotes.join('、')}</span>{/if}
         <div class="seg" role="group" aria-label="配色">
@@ -588,11 +594,11 @@
         <!-- サイドバー(768px 以上)の「グループ」の群。狭い幅では目次行の「グループ」から同じ中身を開く -->
         <div class="rail-groups" role="group" aria-label="タスクタグ">
           <span class="toc-title" aria-hidden="true">タスクタグ</span>
-          <GroupRail groups={groupOptions} current={currentName} selectedCount={adhocCount} {editable} anonymized={data.anonymized} onpick={pickGroup} />
+          <GroupRail groups={groupOptions} current={currentName} selectedCount={adhocCount} editable={canEdit} anonymized={data.anonymized} onpick={pickGroup} />
         </div>
         {#if groupsOpen}
           <div class="group-pop" id="group-pop" role="region" bind:this={groupsPop} tabindex="-1" aria-label="タスクタグ" data-testid="group-pop" onfocusout={(e) => { const t = e.relatedTarget as Node | null; if (t && !groupsPop?.contains(t) && !groupsBtn?.contains(t)) closeGroups(false); }}>
-            <GroupRail groups={groupOptions} current={currentName} selectedCount={adhocCount} {editable} anonymized={data.anonymized} onpick={(n) => { pickGroup(n); closeGroups(); }} />
+            <GroupRail groups={groupOptions} current={currentName} selectedCount={adhocCount} editable={canEdit} anonymized={data.anonymized} onpick={(n) => { pickGroup(n); closeGroups(); }} />
           </div>
         {/if}
         <div class="status">
@@ -618,7 +624,7 @@
 
       <main class="wrap" id="main" tabindex="-1">
         {#if currentGroup}
-          <GroupHead group={currentGroup} {editable} onclear={() => pickGroup(null)} onsave={saveGroup} ondelete={deleteGroup} onexport={exportGroup} upload={uploadHandlers} />
+          <GroupHead group={currentGroup} editable={canEdit} onclear={() => pickGroup(null)} onsave={saveGroup} ondelete={deleteGroup} onexport={exportGroup} upload={uploadHandlers} />
         {/if}
         <div class="empty" class:show={filtered.length === 0} role="status">
           {#if filtered.length === 0}
@@ -638,7 +644,7 @@
         <ExecProfile exec={agg.exec} sessions={filtered.length} />
         <!-- 人別は、送り先(<人>/<プロジェクト>)をまとめて集計したレポートだけ -->
         {#if options.person.length > 0}<ProjectTable kind="person" rows={agg.byPerson} {judged} current={filter.person} onpick={(p) => setFilter({ person: p })} />{/if}
-        <ProjectTable rows={agg.byProject} {judged} current={filter.project} onpick={(p) => setFilter({ project: p })} send={editable && !serverDown ? projectSend : undefined} />
+        <ProjectTable rows={agg.byProject} {judged} current={filter.project} onpick={(p) => setFilter({ project: p })} send={canEdit && !serverDown ? projectSend : undefined} />
         <MonthlyChart months={agg.byMonth} lastAt={all.overall.lastAt} />
         <ModelChart rows={agg.byModel} />
         <SessionTable
@@ -647,7 +653,7 @@
           anonymized={data.anonymized}
           {selected}
           idsActive={eff.ids !== ''}
-          {editable}
+          editable={canEdit}
           groups={groupOptions}
           currentGroup={currentName}
           onselect={(s) => (selected = s)}
