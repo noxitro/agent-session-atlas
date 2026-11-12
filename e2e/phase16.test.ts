@@ -209,6 +209,12 @@ describe('Phase 16 E2E: アップロード先から集計し直す(読む側)', 
     const everyone = join(WORK, 'everyone');
     await cp(root, join(everyone, 'person-a'), { recursive: true });
     await cp(root, join(everyone, 'person-b'), { recursive: true });
+    // 送った人のインストール済みの記録: 人ごとに、新しいほうの記録だけを使う(person-a の GROUP_B は古い記録)
+    const inventory = (sentAt: string, skills: string[]) => JSON.stringify({ version: 1, sentAt, skills, plugins: [], disabledSkills: [], warnings: [] });
+    await writeFile(join(everyone, 'person-a', GROUP_A, 'atlas-installed.json'), inventory('2026-11-10T00:00:00.000Z', ['zz-skill-a']));
+    await writeFile(join(everyone, 'person-a', GROUP_B, 'atlas-installed.json'), inventory('2026-11-01T00:00:00.000Z', ['zz-removed']));
+    await writeFile(join(everyone, 'person-b', GROUP_A, 'atlas-installed.json'), inventory('2026-11-10T00:00:00.000Z', ['zz-skill-b']));
+    await writeFile(join(everyone, 'person-b', GROUP_B, 'atlas-installed.json'), inventory('2026-11-09T00:00:00.000Z', ['zz-skill-b']));
     const out2 = join(WORK, 'out-everyone');
     const r2 = atlas(['all', '--home', everyone, '--out', out2]);
     expect(r2.status, r2.out).toBe(0);
@@ -218,6 +224,10 @@ describe('Phase 16 E2E: アップロード先から集計し直す(読む側)', 
     expect(all.sessions.map((x) => x.id).sort()).toEqual([...ids, GIT_SESSION, other].sort());
     expect(tokens(all.sessions)).toBe(tokens(merged.sessions));
     expect(existsSync(join(out2, 'atlas.html'))).toBe(true);
+    // 全員分は、人ごとの新しい記録を合わせたもの。人ごとの記録は、画面で人に絞ったときに使う
+    expect(all.installed?.skills).toEqual(['zz-skill-a', 'zz-skill-b']);
+    expect(Object.fromEntries(Object.entries(all.installedByPerson ?? {}).map(([p, inv]) => [p, inv.skills]))).toEqual({ 'person-a': ['zz-skill-a'], 'person-b': ['zz-skill-b'] });
+    expect(await readFile(join(out2, 'atlas.html'), 'utf8')).toContain('"installedByPerson":{"person-a":{"skills":["zz-skill-a"]');
     // 人のフォルダ 1 つを指すと、その人の分だけ
     const one = await aggregate(join(everyone, 'person-b'), join(WORK, 'out-person-b'));
     expect(one.source).toMatchObject({ layout: 'merged', folders: [GROUP_A, GROUP_B] });

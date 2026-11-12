@@ -50,6 +50,8 @@ export interface UploadCheck {
   name: string;
   dir: string;
   sessions: number;
+  /** 前に写したときから変わっていないので写さないセッション(古いサーバは返さない) */
+  unchanged?: number;
   missing: string[];
   replace: number;
   bytes: number;
@@ -79,12 +81,16 @@ export interface GroupUpload {
   dir: string;
   uploaded: number;
   replaced: number;
+  /** 前に写したときから変わっていないので写さなかったセッション(古いサーバは返さない) */
+  unchanged?: number;
   missing: string[];
   snapshotAt: string | null;
   /** メモを添えたセッションの数 */
   memos: number;
   /** 置き換えた前のフォルダのうち、消せずに送り先に残ったもの(送り先で開かれていたなど) */
   leftovers: string[];
+  /** 写さなかったセッションのうち、添えた記録を書き直せなかったもの(古いサーバは返さない) */
+  staleMeta?: string[];
 }
 
 /** serve が差し込んだ token。http(s) 以外・無し・プレースホルダ(__ で始まる)なら null */

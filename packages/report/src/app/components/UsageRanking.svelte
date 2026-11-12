@@ -353,7 +353,7 @@
     <div class="unused" id="unused-skills" tabindex="-1" data-testid="unused-skills">
       <h3>インストール済みで未使用の skill</h3>
       {#if !installed}
-        <p class="note">インストール済みの記録がありません(スナップショットを取り直すと記録されます)。</p>
+        <p class="note">インストール済みの記録がありません(スナップショットを取り直すと記録されます。送られたフォルダから集計したときは、送った人が新しい版の atlas で送り直すと付きます)。</p>
       {:else if installed.skills.length === 0}
         <p class="note">~/.copilot/skills/ とプラグインに skill がありません。</p>
       {:else if unused.length === 0}

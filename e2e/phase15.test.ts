@@ -75,7 +75,7 @@ describe('Phase 15 E2E: グループのアップロード', () => {
     expect(r.status, r.stderr).toBe(0);
     expect(r.out).toMatch(/3 セッション.置き換え 0 件./);
     expect(r.out).toMatch(/前回の集計に無い 2 件は写していません/);
-    expect((await readdir(dest)).sort()).toEqual([...ids, desk, 'README.md', 'atlas-index.json', 'someone-else'].sort());
+    expect((await readdir(dest)).sort()).toEqual([...ids, desk, 'README.md', 'atlas-index.json', 'atlas-installed.json', 'someone-else'].sort());
     for (const id of ids) {
       const files = await readdir(join(dest, id));
       expect(files).toContain('events.jsonl');
@@ -94,11 +94,12 @@ describe('Phase 15 E2E: グループのアップロード', () => {
     const dj = await readFile(join(dest, desk, 'atlas-session-store.json'), 'utf8');
     expect((JSON.parse(dj) as SessionStoreJson).desktop?.session?.title).toBe('デスクトップのセッション');
     for (const v of [...Object.values(FAKE_SECRETS), ...Object.values(UNLISTED_VALUES)]) expect(dj).not.toContain(v);
-    // 2 回目: 前に写したフォルダは丸ごと置き換える(手で足したファイルは消える)。ほかの PC から写したフォルダは残る
+    // 2 回目: 送り先で手を加えたフォルダは丸ごと置き換える(手で足したファイルは消える)。前に写したときのままのものは写し直さない。
+    // ほかの PC から写したフォルダは残る
     await writeFile(join(dest, ids[0], 'stale.txt'), 'x');
     const r2 = atlas(['group', 'upload', GROUP, '--to', root, '--out', out1, '--notes-dir', notes]);
     expect(r2.status, r2.stderr).toBe(0);
-    expect(r2.out).toMatch(/3 セッション.置き換え 3 件./);
+    expect(r2.out).toMatch(/1 セッション.置き換え 1 件・メモ 1 件・前に送ったときのままの 2 件は写していません./);
     expect(existsSync(join(dest, ids[0], 'stale.txt'))).toBe(false);
     expect(existsSync(join(dest, 'someone-else', 'events.jsonl'))).toBe(true);
     expect((await readdir(dest)).filter((n) => n.startsWith('.'))).toEqual([]);

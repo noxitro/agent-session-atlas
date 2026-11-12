@@ -552,6 +552,7 @@ export async function extract(snapshotDir: string, opts: ExtractOptions = {}): P
     desktop: desktop ? { readAt: desktop.readAt, wal: desktop.wal, coverage: desktop.coverage, warnings: desktop.warnings, sessions: desktop.tables.sessions?.length ?? 0 } : null,
     counts: { sessions: sessions.length, dbOnly, dirOnly: sessions.length - both - dbOnly, both, empty: sessions.filter((s) => s.empty).length },
     installed,
+    ...(manifest?.installedByPerson ? { installedByPerson: manifest.installedByPerson } : {}),
     warnings: { unknownEventTypes: unknownAll, badLines, messages },
     sessions,
   };

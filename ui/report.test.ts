@@ -491,11 +491,18 @@ describe('画面の操作', () => {
       expect(await head.getByTestId('group-uploaded').locator('code').innerText()).toBe(dest);
       for (const id of ids) expect(existsSync(join(dest, id, 'events.jsonl'))).toBe(true);
       expect(await readFile(join(dest, 'README.md'), 'utf8')).toMatch(/^# アップ\/テスト\n\n画面から写す\n/);
-      // 2 回目も確かめてから写す(置き換えの件数を見せる)
+      // 2 回目も確かめてから写す。中身が変わっていなければ写さず、その件数を見せる
+      await head.getByTestId('group-upload').click();
+      await expect.poll(() => confirm.innerText()).toMatch(/0 セッション.*前に写したときから変わっていない 2 件は写しません/);
+      await confirm.getByRole('button', { name: '写す', exact: true }).click();
+      await expect.poll(() => head.getByTestId('group-uploaded').innerText()).toMatch(/アップロードしました.0 セッション。変わっていない 2 件はそのまま/);
+      // 送り先で手を加えられていれば、写し直す(置き換えの件数を見せる)
+      for (const id of ids) await writeFile(join(dest, id, 'stale.txt'), 'x');
       await head.getByTestId('group-upload').click();
       await expect.poll(() => confirm.innerText()).toMatch(/うち 2 件は前に写したものを置き換えます/);
       await confirm.getByRole('button', { name: '写す', exact: true }).click();
       await expect.poll(() => head.getByTestId('group-uploaded').innerText()).toMatch(/うち 2 件は前に写したものを置き換え/);
+      for (const id of ids) expect(existsSync(join(dest, id, 'stale.txt'))).toBe(false);
       expect(await head.getByTestId('group-uploaded').innerText()).not.toContain('消せませんでした');
       // 置き換えた前のフォルダが消せずに残ったときは、件数と場所(3 件まで)を結果に出す。
       // 実際に残るのは送り先で開かれているときだけなので、サーバの答えに足して確かめる
@@ -611,9 +618,6 @@ describe('画面の操作', () => {
     const beforeConfig = existsSync(configPath) ? await readFile(configPath, 'utf8') : null;
     const [a, b] = ['切り替え元', '切り替え先'];
     const root = join(WORK, 'atlas-logs-switch');
-    // 前の実行の残りを持ち込まない(2 回目以降が置き換えの結果になる)
-    await rm(root, { recursive: true, force: true });
-    await mkdir(root, { recursive: true });
     await mkdir(notes, { recursive: true });
     await writeFile(configPath, JSON.stringify({ uploadRoot: root }));
     await writeFile(groupsPath, JSON.stringify({ version: 1, groups: [{ name: a, note: '', ids: [ids[0]] }, { name: b, note: '', ids: [ids[1]] }] }));
@@ -623,6 +627,9 @@ describe('画面の操作', () => {
     const uploadUrl = `**/api/groups/${encodeURIComponent(a)}/upload`;
     try {
       for (const away of ['tag', 'all'] as const) {
+        // 前の回・前の実行の残りを持ち込まない(残っていると、変わっていないので写さない結果になる)
+        await rm(root, { recursive: true, force: true });
+        await mkdir(root, { recursive: true });
         const gate = held();
         await page.route(uploadUrl, async (route) => {
           const response = await route.fetch();
@@ -741,7 +748,9 @@ describe('画面の操作', () => {
       const bad = problems.findIndex((p) => p.includes('status of 409'));
       expect(bad).toBeGreaterThanOrEqual(0);
       problems.splice(bad, 1);
-      // 知らせが出たまま、このタグで写す: 知らせを消して、このタグの進み具合を出す
+      // 知らせが出たまま、このタグで写す: 知らせを消して、このタグの進み具合を出す。
+      // 前に写したときのままだと写さないので、送り先に手を加えて写し直させる
+      await writeFile(join(root, b, ids[1]!, 'stale.txt'), 'x');
       held.push(await hold(b));
       await head.getByTestId('group-upload').click();
       await expect.poll(() => confirm.isVisible()).toBe(true);

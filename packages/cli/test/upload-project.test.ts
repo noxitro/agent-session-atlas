@@ -94,7 +94,8 @@ describe('プロジェクトのセッションをまとめて送る', () => {
     // 同じプロジェクトを送り直すのは止めない
     await rm(join(rootA, 'owner_app'), { recursive: true });
     await uploadTarget(paths(), target, rootA);
-    expect((await uploadTarget(paths(), target, rootA)).replaced).toBe(2);
+    // 中身が変わっていなければ写し直さない(止めもしない)
+    expect(await uploadTarget(paths(), target, rootA)).toMatchObject({ uploaded: 0, replaced: 0, unchanged: 2 });
   });
 
   it('確かめてから送るまでの間にログが変わったら(集計し直したなど)、写さずにもう一度確かめる', async () => {
@@ -241,10 +242,24 @@ describe('プロジェクトのセッションをまとめて送る', () => {
     expect(text).toContain('それぞれのフォルダの README.md');
     // 写している途中の様子は、行を増やして出さない(io.status が無い = 端末でないときは出さない)
     expect(text).not.toMatch(/ \/ \d+ セッション/);
-    // 2 回目は置き換えの件数を合計に出す
+    // 2 回目: 変わったセッションだけを送る。置き換えの件数と、変わっていないものの件数を出す
+    await writeFile(join(out, 'snapshot', 'session-state', 's1', 'events.jsonl'), '{"id":"s1","more":true}\n');
     const g = fakeIo(['1-2', ''], []);
     expect(await runUploadProject(g.io, { paths: paths(), configPath })).toBe(false);
-    expect(g.printed.join('\n')).toMatch(/合計 +3 セッション[\s\S]*うち 3 セッションは、前に送ったものを置き換えます。/);
+    expect(g.printed.join('\n')).toMatch(/1\. owner\/app +1 セッション[\s\S]*2\. X:\\work\\tool +0 セッション[\s\S]*合計 +1 セッション[\s\S]*うち 1 セッションは、前に送ったものを置き換えます。/);
+    expect(g.printed.join('\n')).toContain('前に送ったときから変わっていない 2 セッションは、送り先にあるものをそのまま使います(送りません)。');
+    const h = fakeIo(['1-2', 'y'], []);
+    expect(await runUploadProject(h.io, { paths: paths(), configPath })).toBe(true);
+    expect(h.printed.join('\n')).toContain('2 プロジェクト・1 セッションを送りました(変わっていない 2 セッションはそのまま)。');
+    expect(await readFile(join(rootA, 'owner_app', 's1', 'events.jsonl'), 'utf8')).toBe('{"id":"s1","more":true}\n');
+    // 何も変わっていなければ、y は送り先の一覧だけを書き直す(送り先を変える・選び直すこともできるので、尋ねるのは同じ。README と索引には全部のセッションが残る)
+    const k = fakeIo(['1-2', 'y'], []);
+    expect(await runUploadProject(k.io, { paths: paths(), configPath })).toBe(true);
+    expect(k.asked.some((q) => q.includes('y = 送り先の一覧(README.md)だけ書き直す   n = 番号で選び直す   c = 送り先を変える'))).toBe(true);
+    expect(k.printed.join('\n')).toContain('前に送ったときから変わったセッションはありません。');
+    expect(k.printed.join('\n')).toContain('2 プロジェクト・0 セッションを送りました(変わっていない 3 セッションはそのまま)。');
+    const index = JSON.parse(await readFile(join(rootA, 'owner_app', 'atlas-index.json'), 'utf8')) as { sessions: { id: string }[] };
+    expect(index.sessions.map((s) => s.id)).toEqual(['s1', 's2']);
   });
 
   it('画面で印を付けたプロジェクト(uploadProjects)は番号を聞かずに送る。印の無いものは送らずに名前を出し、今の集計に無いものも知らせる', async () => {
@@ -272,7 +287,7 @@ describe('プロジェクトのセッションをまとめて送る', () => {
     expect(await runUploadProject(f.io, { paths: paths(), configPath, auto: true, summary })).toBe(true);
     expect(f.asked).toEqual([]);
     expect(f.pickedFrom).toEqual([]);
-    expect(summary).toEqual({ sent: [{ name: 'owner/app', sessions: 2 }, { name: 'X:\\work\\tool', sessions: 1 }], secrets: 1, root: rootA });
+    expect(summary).toEqual({ sent: [{ name: 'owner/app', sessions: 2, unchanged: 0 }, { name: 'X:\\work\\tool', sessions: 1, unchanged: 0 }], secrets: 1, root: rootA });
     expect(existsSync(join(rootA, 'owner_app', 's2'))).toBe(true);
     expect(existsSync(join(rootA, 'X__work_tool', 's4'))).toBe(true);
     const text = f.printed.join('\n');

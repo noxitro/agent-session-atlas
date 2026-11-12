@@ -91,6 +91,8 @@ export interface BuildInput {
   metrics: MetricsFile;
   /** インストール済みの skill(sessions.json の installed。無ければ null) */
   installed?: InstalledInventory | null;
+  /** 人のフォルダの名前ごとのインストール済みの skill(sessions.json の installedByPerson。無ければ null) */
+  installedByPerson?: Record<string, InstalledInventory> | null;
   /** sessions.json の総件数(フィルタ前) */
   totalSessionsInSource: number;
   /** アップロードしたフォルダを集計したときの、そのフォルダ(画面の見出しに出す。伏せ字版には入れない) */
@@ -145,6 +147,11 @@ export interface BuildResult {
   /** Phase 11: 今回は作らなかったが前回の出力が残っているもの(生成日時)。伏せ字モードでは消す */
   stale: { full: string | null; library: string | null };
   ms: number;
+}
+
+/** 画面に出すインストール済みの skill(~/.copilot/skills/ とプラグインの skill の名前を合わせたもの)と、無効にしたもの */
+function installedView(inv: InstalledInventory): { skills: string[]; disabled: string[] } {
+  return { skills: [...new Set([...inv.skills, ...inv.plugins.flatMap((p) => p.skills)])].sort(), disabled: [...(inv.disabledSkills ?? [])].sort() };
 }
 
 function remapBuckets(b: Record<string, MetricsBucket>, map: (k: string) => string): Record<string, MetricsBucket> {
@@ -217,12 +224,11 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
       phases: vx?.phases ?? [],
     },
     retention: rx ? { generatedAt: rx.generatedAt, computedOn: rx.computedOn, mode: rx.mode, similarity: rx.similarity, pathMap: rx.pathMap, sessions: rx.sessions.length } : null,
-    installed: input.installed
-      ? {
-          skills: [...new Set([...input.installed.skills, ...input.installed.plugins.flatMap((p) => p.skills)])].sort(),
-          disabled: [...(input.installed.disabledSkills ?? [])].sort(),
-        }
-      : null,
+    installed: input.installed ? installedView(input.installed) : null,
+    // 人に絞ったときに、その人のインストール済みの skill で「未使用」を出す。伏せ字版では人の名前を仮名にするので入れない(全員分を使う)
+    ...(input.installedByPerson && !anon.enabled
+      ? { installedByPerson: Object.fromEntries(Object.entries(input.installedByPerson).map(([person, inv]) => [person, installedView(inv)])) }
+      : {}),
     // 伏せ字モードではグループ名と note(自由記述)は出さず、ファイルの順で「グループ 1, 2, …」にする。ids は不透明なのでそのまま
     groups: (input.groups ?? []).map((g, i) => (anon.enabled ? { name: `タスクタグ ${i + 1}`, note: '', ids: [...g.ids] } : { name: g.name, note: g.note, ids: [...g.ids] })),
     library: !!(input.transcripts && (input.library ?? true) && !anon.enabled),

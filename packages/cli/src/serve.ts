@@ -56,7 +56,7 @@ import { judgedSessionIds, judgedTurnKeys, listChatParts, type ChatParts, type C
 import { phaseNames } from './config.ts';
 import { acquireOutLock, JobError, JobRunner, OutBusyError, parseJobRequest, runningJobIn, type RunFullFn, type SpawnFn } from './jobs.ts';
 import { exportGroup } from './group-export.ts';
-import { checkUpload, UploadChangedError, uploadDir, uploadedAt, uploadGroup, type GroupUploadResult, type UploadProgress } from './group-upload.ts';
+import { checkUpload, UploadChangedError, uploadDir, uploadedAt, uploadGroup, type GroupUploadResult, type UploadCheck, type UploadProgress } from './group-upload.ts';
 import { defaultConfigPath, isByokModel, loadConfig, modifyConfig, NO_CHANGE, parseConfig, parseUploadRoot, updateConfig } from './config.ts';
 import { CAN_PICK_FOLDER, openFolder, pickFolder } from './folder-picker.ts';
 import { checkFolder, FolderError, foldersRootOf, forgetFolder, isReadOnlyView, launchDetached, listFolders, listFolderStates, openFolderReport, type FolderContext, type LaunchFn } from './folders.ts';
@@ -364,6 +364,8 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
   let uploading: { name: string; progress: UploadProgress } | null = null;
   /** タスクタグごとの直近のアップロードの結果(写している途中に別のページへ移って戻った画面が、成功か失敗かを出せるように。10 分だけ) */
   const lastUpload = new Map<string, { at: number; ok: boolean; error: string | null; result: GroupUploadResult | null }>();
+  /** タスクタグごとの直近の点検(写すときに同じ指紋で来たら渡し、送り先の一覧を読み直さない) */
+  const lastCheck = new Map<string, UploadCheck>();
   const LAST_UPLOAD_MS = 10 * 60_000;
   const configPath = resolve(o.configPath ?? defaultConfigPath());
   const canPick = o.folders?.canPick ?? CAN_PICK_FOLDER;
@@ -949,12 +951,19 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
       busyWith = sub === 'check' ? `「${name}」を写す前に調べている` : `「${name}」をアップロードしている`;
       const paths = { snapshot: join(outDir, 'snapshot'), groups: groupsPath, notes: resolve(o.notesDir), sessions: join(outDir, 'sessions.json') };
       try {
-        if (sub === 'check') sendJson(res, 200, await checkUpload(paths, name, up.root));
-        else {
+        if (sub === 'check') {
+          const c = await checkUpload(paths, name, up.root);
+          lastCheck.set(name, c);
+          sendJson(res, 200, c);
+        } else {
           uploading = { name, progress: { sessions: 0, done: 0, bytes: 0, copied: 0, current: null } };
           const cur = uploading;
+          // 直近の点検と同じ指紋で来たときだけ、その点検を渡す(別の送り先・別の回の点検は使わない)
+          const prev = lastCheck.get(name);
+          const check = prev && expect != null && prev.fingerprint === expect && prev.dir === uploadDir(up.root, name) ? prev : undefined;
+          lastCheck.delete(name);
           try {
-            const result = await uploadGroup(paths, name, up.root, log, { onProgress: (pr) => void (cur.progress = pr), expect });
+            const result = await uploadGroup(paths, name, up.root, log, { onProgress: (pr) => void (cur.progress = pr), expect, check });
             lastUpload.set(name, { at: Date.now(), ok: true, error: null, result });
             sendJson(res, 200, result);
           } catch (e) {

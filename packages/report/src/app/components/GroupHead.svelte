@@ -62,12 +62,15 @@
   /** アップロードの結果の文(読み上げにも使う) */
   const uploadedText = $derived(
     uploaded
-      ? `アップロードしました(${int(uploaded.uploaded)} セッション${uploaded.memos ? `・メモ ${int(uploaded.memos)} 件` : ''}${uploaded.replaced ? `。うち ${int(uploaded.replaced)} 件は前に写したものを置き換え` : ''})。タスクタグの説明とセッションの一覧は README.md にあります。` +
+      ? `アップロードしました(${int(uploaded.uploaded)} セッション${uploaded.memos ? `・メモ ${int(uploaded.memos)} 件` : ''}${uploaded.replaced ? `。うち ${int(uploaded.replaced)} 件は前に写したものを置き換え` : ''}${uploaded.unchanged ? `。変わっていない ${int(uploaded.unchanged)} 件はそのまま` : ''})。タスクタグの説明とセッションの一覧は README.md にあります。` +
           (uploaded.snapshotAt ? `写したのは前回の集計(${when(uploaded.snapshotAt)})の時点のログです。` : '') +
           (uploaded.missing.length ? `前回の集計に無いセッション ${int(uploaded.missing.length)} 件は写していません。` : '') +
           // 黒い窓(upload-project.bat)と同じ知らせ: 残ったフォルダは次に送っても消えないので、手で消してもらう
           (uploaded.leftovers?.length
             ? `置き換えた前のフォルダを ${int(uploaded.leftovers.length)} 件消せませんでした(送り先で開かれているなど)。閉じてから手で消してください: ${uploaded.leftovers.slice(0, 3).join('、')}${uploaded.leftovers.length > 3 ? ` ほか ${int(uploaded.leftovers.length - 3)} 件` : ''}`
+            : '') +
+          (uploaded.staleMeta?.length
+            ? `タスクタグや題名の記録(atlas-session.json)を書き直せなかったセッションが ${int(uploaded.staleMeta.length)} 件あります(送り先で開かれているなど。次に写すときにもう一度書き直します)。`
             : '')
       : '',
   );
@@ -491,7 +494,7 @@
     <div class="confirm" role="group" aria-labelledby="group-head-h" data-testid="group-upload-confirm">
       <h2 id="group-head-h" class="q">「{group.name}」を写す前に確かめてください</h2>
       <p class="desc" data-testid="group-upload-confirm-dest">送り先: <code translate="no">{checked.dir}{sep(checked.dir)}</code> <button type="button" class="link" onclick={changeRootFromConfirm}>送り先を変える…</button></p>
-      <p class="desc">{int(checked.sessions)} セッション・合計 {size(checked.bytes)}({int(checked.files)} ファイル){checked.replace ? `。うち ${int(checked.replace)} 件は前に写したものを置き換えます` : ''}。</p>
+      <p class="desc">{int(checked.sessions)} セッション・合計 {size(checked.bytes)}({int(checked.files)} ファイル){checked.replace ? `。うち ${int(checked.replace)} 件は前に写したものを置き換えます` : ''}{checked.unchanged ? `。前に写したときから変わっていない ${int(checked.unchanged)} 件は写しません(送り先にあるものをそのまま使います)` : ''}。</p>
       {#if checked.largest.length && checked.bytes > CONFIRM_BYTES}
         <p class="desc">大きいもの: {#each checked.largest.slice(0, 3) as x, i (x.id + x.path)}{i ? '、' : ''}<code translate="no">{x.id.slice(0, 8)}…/{x.path}</code> {size(x.bytes)}{/each}</p>
       {/if}

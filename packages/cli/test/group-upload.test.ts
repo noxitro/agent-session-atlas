@@ -1,15 +1,16 @@
 // グループのアップロード(uploadGroup と serve の API): 前回の集計の複製(out/snapshot/session-state/<id>/)を <基底>/<グループ名>/<id>/ に写す。
 // 画面からはアップロード先を決め(エクスプローラーで選ぶ / パスを入力)、写し、写した先をエクスプローラーで開く。
 // 通しの確認(集計し直して元と一致する)は e2e/phase15.test.ts
+import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, open, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, open, readdir, readFile, rename, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { loadStore, mergeSessionStoreJson } from '../../core/src/index.ts';
+import { loadStore, mergeSessionStoreJson, readSentInventory, snapshot } from '../../core/src/index.ts';
 import { parseCli } from '../src/args.ts';
 import { resolvePaths, runGroup } from '../src/commands.ts';
-import { checkUpload, scanSecrets, uploadDir, uploadGroup } from '../src/group-upload.ts';
+import { checkUpload, scanSecrets, storeKeyText, UploadChangedError, uploadDir, uploadGroup } from '../src/group-upload.ts';
 import { startServe, TOKEN_PLACEHOLDER, type ServeHandle } from '../src/serve.ts';
 
 describe('グループのアップロード', () => {
@@ -47,21 +48,211 @@ describe('グループのアップロード', () => {
 
   it('セッションごとのフォルダに写し、作業用のファイルは入れない。外を指す id と無い id は写さない', async () => {
     const r = await uploadGroup(paths(), 'Player/Weapon', root);
-    expect(r).toEqual({ name: 'Player/Weapon', dir: join(root, 'Player_Weapon'), uploaded: 2, replaced: 0, missing: ['gone', '../s1'], snapshotAt: '2026-11-08T01:02:03.000Z', memos: 0, leftovers: [] });
+    expect(r).toEqual({ name: 'Player/Weapon', dir: join(root, 'Player_Weapon'), uploaded: 2, replaced: 0, unchanged: 0, staleMeta: [], missing: ['gone', '../s1'], snapshotAt: '2026-11-08T01:02:03.000Z', memos: 0, leftovers: [] });
     expect((await readdir(r.dir)).sort()).toEqual(['README.md', 'atlas-index.json', 's1', 's2']);
     expect((await readdir(join(r.dir, 's1'))).sort()).toEqual(['atlas-session.json', 'events.jsonl', 'files']);
     expect(await readFile(join(r.dir, 's1', 'files', 'a.txt'), 'utf8')).toBe('a');
     // session-store.db が無ければ DB の行は添えない
     expect(existsSync(join(r.dir, 's1', 'atlas-session-store.json'))).toBe(false);
-    // 2 回目は置き換え(前のフォルダの中身は残さない)
+    // 2 回目: 送り先で足されたファイルがあるセッションは置き換え(前のフォルダの中身は残さない)、変わっていないものは写さない
     await writeFile(join(r.dir, 's2', 'old.txt'), 'x');
-    expect(await uploadGroup(paths(), 'Player/Weapon', root)).toMatchObject({ uploaded: 2, replaced: 2 });
+    expect(await uploadGroup(paths(), 'Player/Weapon', root)).toMatchObject({ uploaded: 1, replaced: 1, unchanged: 1 });
     expect(existsSync(join(r.dir, 's2', 'old.txt'))).toBe(false);
     // 前の回が置き換えの途中で止まって残したもの(本体のフォルダが無く、退けた前のフォルダだけがある)も、新しいフォルダを置けたら消す
     await rename(join(r.dir, 's2'), join(r.dir, '.s2.old'));
-    expect(await uploadGroup(paths(), 'Player/Weapon', root)).toMatchObject({ uploaded: 2, replaced: 1, leftovers: [] });
+    expect(await uploadGroup(paths(), 'Player/Weapon', root)).toMatchObject({ uploaded: 1, replaced: 0, unchanged: 1, leftovers: [] });
+    // full なら、変わっていないものも写し直す
+    expect(await uploadGroup(paths(), 'Player/Weapon', root, () => {}, { full: true })).toMatchObject({ uploaded: 2, replaced: 2, unchanged: 0 });
     expect((await readdir(r.dir)).sort()).toEqual(['README.md', 'atlas-index.json', 's1', 's2']);
     expect(uploadDir(root, 'con')).toBe(join(root, '_con'));
+  });
+
+  it('2 回目からは、前に送ったときから変わったセッションだけを写す(更新時刻・メモ・送り先での欠け)。タグだけの変更は添えた記録を書き直す', async () => {
+    const state = join(out, 'snapshot', 'session-state');
+    const r = await uploadGroup({ ...paths(), notes }, 'Player/Weapon', root);
+    const sent = join(r.dir, 's1', 'events.jsonl');
+    // 送り先のファイルに印を付けておく(写し直されれば消える)
+    const mark = async (id: string) => writeFile(join(r.dir, id, 'files-mark.txt'), 'x').then(() => rm(join(r.dir, id, 'files-mark.txt')));
+    expect(JSON.parse(await readFile(join(r.dir, 's1', 'atlas-session.json'), 'utf8')).contents).toMatch(/^[0-9a-f]{64}$/);
+    const before = (await stat(sent)).mtimeMs;
+    expect(await uploadGroup({ ...paths(), notes }, 'Player/Weapon', root)).toMatchObject({ uploaded: 0, unchanged: 2 });
+    expect((await stat(sent)).mtimeMs).toBe(before);
+    // 送り先のフォルダを開いただけで OS が作るもの(Thumbs.db・desktop.ini・.DS_Store)は、変わったことにしない
+    await writeFile(join(r.dir, 's1', 'files', 'Thumbs.db'), 'thumb');
+    await writeFile(join(r.dir, 's1', 'desktop.ini'), '[.ShellClassInfo]');
+    await writeFile(join(r.dir, 's2', '.DS_Store'), 'mac');
+    expect(await uploadGroup({ ...paths(), notes }, 'Player/Weapon', root)).toMatchObject({ uploaded: 0, unchanged: 2 });
+    // 似た名前でも、ほかのファイルが足されていれば写し直す
+    await writeFile(join(r.dir, 's2', 'Thumbs.db.txt'), 'x');
+    expect(await uploadGroup({ ...paths(), notes }, 'Player/Weapon', root)).toMatchObject({ uploaded: 1, unchanged: 1 });
+    expect(existsSync(join(r.dir, 's2', 'Thumbs.db.txt'))).toBe(false);
+    // Mac が SMB の共有に作る ._<名前>・NAS のサムネイルのフォルダ(@eaDir)・空のフォルダの中の .DS_Store も、変わったことにしない
+    await mkdir(join(state, 's2', 'empty'));
+    expect(await uploadGroup({ ...paths(), notes }, 'Player/Weapon', root)).toMatchObject({ uploaded: 1, unchanged: 1 });
+    await writeFile(join(r.dir, 's1', '._events.jsonl'), 'apple');
+    await mkdir(join(r.dir, 's1', '@eaDir', 'events.jsonl'), { recursive: true });
+    await writeFile(join(r.dir, 's1', '@eaDir', 'events.jsonl', 'SYNOFILE_THUMB_M.jpg'), 'thumb');
+    await writeFile(join(r.dir, 's2', 'empty', '.DS_Store'), 'mac');
+    expect(await uploadGroup({ ...paths(), notes }, 'Player/Weapon', root)).toMatchObject({ uploaded: 0, unchanged: 2 });
+    await mark('s1');
+    // 同じ大きさでも、更新時刻が変われば写し直す
+    await writeFile(join(state, 's1', 'events.jsonl'), '{"type":"session.start","id":"S1"}\n');
+    await utimes(join(state, 's1', 'events.jsonl'), new Date('2026-11-09T00:00:00Z'), new Date('2026-11-09T00:00:00Z'));
+    expect(await uploadGroup({ ...paths(), notes }, 'Player/Weapon', root)).toMatchObject({ uploaded: 1, replaced: 1, unchanged: 1 });
+    expect(await readFile(sent, 'utf8')).toContain('"S1"');
+    // メモを書けば、そのセッションを写し直す
+    await mkdir(join(notes, 'memos'), { recursive: true });
+    await writeFile(join(notes, 'memos', 's2.md'), '# メモ');
+    expect(await uploadGroup({ ...paths(), notes }, 'Player/Weapon', root)).toMatchObject({ uploaded: 1, unchanged: 1, memos: 1 });
+    expect(await readFile(join(r.dir, 's2', 'atlas-memo.md'), 'utf8')).toBe('# メモ');
+    // 送り先でファイルが消されていれば、写し直す
+    await rm(join(r.dir, 's1', 'files', 'a.txt'));
+    expect(await uploadGroup({ ...paths(), notes }, 'Player/Weapon', root)).toMatchObject({ uploaded: 1, unchanged: 1 });
+    expect(await readFile(join(r.dir, 's1', 'files', 'a.txt'), 'utf8')).toBe('a');
+    // タスクタグを変えただけなら写し直さず、添えた記録と README を書き直す
+    await writeFile(join(notes, 'groups.json'), JSON.stringify({ version: 1, groups: [{ name: 'Player/Weapon', note: '', ids: ['s1', 's2'] }, { name: '調査', note: '', ids: ['s1'] }] }));
+    const at = (await stat(sent)).mtimeMs;
+    expect(await uploadGroup({ ...paths(), notes }, 'Player/Weapon', root)).toMatchObject({ uploaded: 0, unchanged: 2 });
+    expect((await stat(sent)).mtimeMs).toBe(at);
+    expect(JSON.parse(await readFile(join(r.dir, 's1', 'atlas-session.json'), 'utf8')).tags).toEqual(['Player/Weapon', '調査']);
+    expect(await readFile(join(r.dir, 'README.md'), 'utf8')).toContain('セッション: 2 件');
+    expect((await readdir(r.dir)).filter((n) => n.startsWith('.'))).toEqual([]);
+  });
+
+  it('点検は、前に送ったときから変わっていないセッションを読まずに数える(写すものだけの大きさと秘密らしい文字列)', async () => {
+    await uploadGroup(paths(), 'Player/Weapon', root);
+    const token = ['ghp', 'DIFFFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE'].join('_');
+    expect(await checkUpload(paths(), 'Player/Weapon', root)).toMatchObject({ sessions: 0, unchanged: 2, bytes: 0, files: 0, replace: 0, secrets: { count: 0 } });
+    await writeFile(join(out, 'snapshot', 'session-state', 's2', 'events.jsonl'), JSON.stringify({ data: token }) + '\n');
+    const c = await checkUpload(paths(), 'Player/Weapon', root);
+    expect(c).toMatchObject({ sessions: 1, unchanged: 1, replace: 1, files: 1, secrets: { count: 1 } });
+    expect(c.secrets.files).toEqual([{ id: 's2', path: 'events.jsonl', count: 1 }]);
+  });
+
+  it('メモの画像のフォルダに空のフォルダがあっても、2 回目は写し直さない(画像は丸ごと写すので、送り先にも空のフォルダがある)', async () => {
+    const memos = join(notes, 'memos');
+    await mkdir(join(memos, 's1', 'sub'), { recursive: true });
+    await writeFile(join(memos, 's1.md'), '# m\n\n![a](s1/a.png)\n');
+    await writeFile(join(memos, 's1', 'a.png'), 'png');
+    const r = await uploadGroup({ ...paths(), notes }, 'Player/Weapon', root);
+    expect(existsSync(join(r.dir, 's1', 'atlas-memo', 'sub'))).toBe(true);
+    expect(await uploadGroup({ ...paths(), notes }, 'Player/Weapon', root)).toMatchObject({ uploaded: 0, unchanged: 2, memos: 1 });
+    // 画像を足せば写し直す
+    await writeFile(join(memos, 's1', 'b.png'), 'png2');
+    expect(await uploadGroup({ ...paths(), notes }, 'Player/Weapon', root)).toMatchObject({ uploaded: 1, unchanged: 1 });
+    expect(existsSync(join(r.dir, 's1', 'atlas-memo', 'b.png'))).toBe(true);
+  });
+
+  it('要約に入れる DB の行は、デスクトップアプリの行のうちセッションの中身と関係なく変わる列(プロジェクトを開いた日時・既読など)を除く', () => {
+    const row = (o: { opened: string; read: number; title: string; diff: number }) =>
+      JSON.stringify({
+        version: 1,
+        sessions: [],
+        desktop: {
+          session: { id: 's1', title: o.title },
+          project: { id: 'p', name: 'app', last_opened_at: o.opened, show_in_sidebar: 1 },
+          workspace: { id: 'w', branch: 'main', updated_at: o.opened, last_diff_files_changed: o.diff },
+          activity: [{ id: 'a', preview: 'x', is_read: o.read, updated_at: o.opened }],
+          checkpoints: [],
+          contextUsage: [],
+        },
+      });
+    const a = storeKeyText(row({ opened: '2026-11-01', read: 0, title: 't', diff: 1 }));
+    expect(storeKeyText(row({ opened: '2026-11-12', read: 1, title: 't', diff: 5 }))).toBe(a);
+    // セッションの中身(題名など)が変われば違う
+    expect(storeKeyText(row({ opened: '2026-11-01', read: 0, title: '別の題名', diff: 1 }))).not.toBe(a);
+    // 読めないものはそのまま
+    expect(storeKeyText('{壊れた')).toBe('{壊れた');
+  });
+
+  it('写すときに点検を渡すと、点検で前に送ったときのままと確かめたものは、送り先の一覧を読み直さない', async () => {
+    const r = await uploadGroup(paths(), 'Player/Weapon', root);
+    const c = await checkUpload(paths(), 'Player/Weapon', root);
+    expect(c).toMatchObject({ sessions: 0, unchanged: 2 });
+    // 点検の後に送り先のファイルが消えた: 点検を渡さなければ読み直して気づき、確かめた中身と違うので写さない
+    await rm(join(r.dir, 's1', 'files', 'a.txt'));
+    await expect(uploadGroup(paths(), 'Player/Weapon', root, () => {}, { expect: c.fingerprint })).rejects.toThrow(UploadChangedError);
+    // 点検を渡すと、そのとき確かめた結果を使う(送り先は変えない前提。次の点検で気づいて写し直す)
+    expect(await uploadGroup(paths(), 'Player/Weapon', root, () => {}, { expect: c.fingerprint, check: c })).toMatchObject({ uploaded: 0, unchanged: 2 });
+    expect(await checkUpload(paths(), 'Player/Weapon', root)).toMatchObject({ sessions: 1, unchanged: 1 });
+  });
+
+  it.skipIf(process.platform !== 'win32')('写さないセッションの記録を書き直せなくても止めずに知らせ、消せない前のフォルダも知らせる', async () => {
+    const r = await uploadGroup({ ...paths(), notes }, 'Player/Weapon', root);
+    await writeFile(join(notes, 'groups.json'), JSON.stringify({ version: 1, groups: [{ name: 'Player/Weapon', note: '', ids: ['s1', 's2'] }, { name: '調査', note: '', ids: ['s1'] }] }));
+    // s1 の記録は読み取り専用で書き直せない。s2 の前の回の消し残し(.s2.old)は、中のファイルをほかのプロセスが
+    // ほかに開かせない形で開いていて消せない(node の open は消すことを許す形で開くので、PowerShell で開く)
+    await chmod(join(r.dir, 's1', 'atlas-session.json'), 0o444);
+    await mkdir(join(r.dir, '.s2.old'), { recursive: true });
+    const lockedFile = join(r.dir, '.s2.old', 'x.txt');
+    await writeFile(lockedFile, 'x');
+    const holder = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `$f = [IO.File]::Open($env:ATLAS_LOCK, 'Open', 'Read', 'None'); 'locked'; Start-Sleep -Seconds 60`], {
+      env: { ...process.env, ATLAS_LOCK: lockedFile },
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    try {
+      await new Promise<void>((ok, ng) => {
+        holder.stdout.on('data', (b: Buffer) => b.toString().includes('locked') && ok());
+        holder.on('exit', () => ng(new Error('PowerShell がファイルを開けませんでした')));
+      });
+      expect(await uploadGroup({ ...paths(), notes }, 'Player/Weapon', root)).toMatchObject({ uploaded: 0, unchanged: 2, staleMeta: ['s1'], leftovers: [join(r.dir, '.s2.old')] });
+    } finally {
+      holder.kill();
+      await new Promise((ok) => (holder.exitCode != null ? ok(null) : holder.once('exit', ok)));
+      await chmod(join(r.dir, 's1', 'atlas-session.json'), 0o666);
+    }
+    // 直れば、次の回に書き直して片付ける
+    expect(await uploadGroup({ ...paths(), notes }, 'Player/Weapon', root)).toMatchObject({ uploaded: 0, unchanged: 2, staleMeta: [], leftovers: [] });
+    expect(JSON.parse(await readFile(join(r.dir, 's1', 'atlas-session.json'), 'utf8')).tags).toEqual(['Player/Weapon', '調査']);
+    expect(existsSync(join(r.dir, '.s2.old'))).toBe(false);
+  }, 20_000);
+
+  it('送った人のインストール済みの skill・プラグインの名前を atlas-installed.json に添え、集計し直す側が読む(送り先から集計したものは添えない)', async () => {
+    const installed = { skills: ['alpha'], plugins: [{ marketplace: 'm', name: 'p', skills: ['beta'] }], disabledSkills: ['alpha'], warnings: [] };
+    await writeFile(join(out, 'snapshot', 'snapshot-manifest.json'), JSON.stringify({ createdAt: '2026-11-08T01:02:03.000Z', installed }));
+    const r = await uploadGroup(paths(), 'Player/Weapon', root);
+    expect(JSON.parse(await readFile(join(r.dir, 'atlas-installed.json'), 'utf8'))).toMatchObject({ version: 1, ...installed });
+    // 送り先のフォルダから集計し直すと、インストール済みの記録として使う
+    const m = await snapshot(r.dir, join(dir, 'reread'));
+    expect(m.installed).toEqual(installed);
+    // 人のフォルダの下ではないので、人ごとの記録は無い
+    expect(m.installedByPerson).toBeUndefined();
+    // 送り先から集計した出力先から写すときは、ほかの人のものなので添えない
+    await rm(join(r.dir, 'atlas-installed.json'));
+    await writeFile(join(out, 'snapshot', 'snapshot-manifest.json'), JSON.stringify({ createdAt: '2026-11-08T01:02:03.000Z', layout: 'merged', installed }));
+    await uploadGroup(paths(), 'Player/Weapon', root, () => {}, { full: true });
+    expect(existsSync(join(r.dir, 'atlas-installed.json'))).toBe(false);
+    // 添えた記録が無いフォルダから集計すると、0 件ではなく「記録なし」
+    expect((await snapshot(r.dir, join(dir, 'reread2'))).installed).toBeUndefined();
+  });
+
+  it('readSentInventory: 人ごとに新しい記録だけを使って全員分を合わせ、人ごとの記録も返す。おかしな名前・形の違う・大きすぎるファイルは使わない', async () => {
+    const base = join(dir, 'sent');
+    const put = async (folder: string, body: unknown) => {
+      await mkdir(join(base, ...folder.split('/')), { recursive: true });
+      await writeFile(join(base, ...folder.split('/'), 'atlas-installed.json'), typeof body === 'string' ? body : JSON.stringify(body));
+    };
+    // a は 2 プロジェクト分。古いほう(p1)にだけある skill は、もう入れていないものとして使わない
+    await put('a/p1', { version: 1, sentAt: '2026-11-01T00:00:00.000Z', skills: ['old-skill'], plugins: [], disabledSkills: [], warnings: [] });
+    await put('a/p2', { version: 1, sentAt: '2026-11-10T00:00:00.000Z', skills: ['x', 'y', 'bad\u202ename', 7], plugins: [{ marketplace: 'm', name: 'p', skills: ['s1'] }], disabledSkills: ['y'], warnings: [] });
+    await put('b/p3', { version: 1, sentAt: '2026-11-05T00:00:00.000Z', skills: ['y', 'z'], plugins: [{ marketplace: 'm', name: 'p', skills: ['s2'] }, { marketplace: '', name: 'q' }], disabledSkills: null, warnings: ['skills/ を読めない'] });
+    await put('c/p4', '{壊れた');
+    await put('c/p5', `{"version":1,"skills":["${'x'.repeat(1024 * 1024)}"]}`);
+    await mkdir(join(base, 'd', 'p6'), { recursive: true });
+    // 人のフォルダの下に無いもの(送り先の直下に置いたプロジェクト)は、全員分にだけ入れる
+    await put('loose', { version: 1, sentAt: '2026-11-02T00:00:00.000Z', skills: ['loose-skill'], plugins: [], disabledSkills: [], warnings: [] });
+    const r = await readSentInventory(base, ['a/p1', 'a/p2', 'b/p3', 'c/p4', 'c/p5', 'd/p6', 'loose']);
+    expect(r.installed).toMatchObject({ skills: ['loose-skill', 'x', 'y', 'z'], plugins: [{ marketplace: 'm', name: 'p', skills: ['s1', 's2'] }], disabledSkills: ['y'] });
+    expect(Object.keys(r.byPerson ?? {}).sort()).toEqual(['a', 'b']);
+    expect(r.byPerson!.a).toMatchObject({ skills: ['x', 'y'], disabledSkills: ['y'] });
+    expect(r.byPerson!.b).toMatchObject({ skills: ['y', 'z'], disabledSkills: null });
+    expect(r.installed!.warnings).toEqual([
+      expect.stringMatching(/^c\/p4 の atlas-installed\.json を読めない/),
+      expect.stringMatching(/^c\/p5 の atlas-installed\.json を読めない \(大きすぎる/),
+      'b/p3: skills/ を読めない',
+      '送った人のインストール済みの記録が無いフォルダが 1 件あります(この版より前の atlas で送ったもの。送り直すと付きます)',
+    ]);
+    expect(await readSentInventory(base, ['d/p6'])).toEqual({});
   });
 
   it('メモと画像をセッションのフォルダに添え、グループの説明と一覧を README.md に書く', async () => {
@@ -154,14 +345,15 @@ describe('グループのアップロード', () => {
     const before = await readFile(locked, 'utf8');
     const fh = await open(locked, 'r');
     try {
-      await expect(uploadGroup(paths(), 'Player/Weapon', root)).rejects.toThrow(/セッション s\d を写せませんでした.*前に写したフォルダはそのままです/);
+      // 変わっていないと写さないので、写し直す(full)
+      await expect(uploadGroup(paths(), 'Player/Weapon', root, () => {}, { full: true })).rejects.toThrow(/セッション s\d を写せませんでした.*前に写したフォルダはそのままです/);
     } finally {
       await fh.close();
     }
     expect(await readFile(locked, 'utf8')).toBe(before);
     expect((await readdir(r.dir)).filter((n) => n.startsWith('.'))).toEqual([]);
     // 閉じれば写せる
-    expect(await uploadGroup(paths(), 'Player/Weapon', root)).toMatchObject({ uploaded: 2, replaced: 2 });
+    expect(await uploadGroup(paths(), 'Player/Weapon', root, () => {}, { full: true })).toMatchObject({ uploaded: 2, replaced: 2 });
   }, 20_000);
 
   it('添えたファイルの desktop の形が違えば使わず、理由を返す(集計は止めない)', async () => {

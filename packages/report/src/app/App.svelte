@@ -74,7 +74,9 @@
   const turnAgg = $derived(turnAggregate(filtered));
   const verdictAgg = $derived(data?.turnJudgments?.available ? verdictAggregate(filtered, data.turnJudgments.phases) : null);
   const all = $derived(aggregate(sessions));
-  const points = $derived(highlights(filtered, agg.usage, { filter, anonymized: !!data?.anonymized, installed: data?.installed ?? null }));
+  // インストール済みの skill: 人に絞っていれば、その人が添えた記録(無ければ全員分)
+  const installed = $derived((filter.person && data?.installedByPerson?.[filter.person]) || (data?.installed ?? null));
+  const points = $derived(highlights(filtered, agg.usage, { filter, anonymized: !!data?.anonymized, installed }));
   /** 人別の表を開いているか(既定は畳む。人ごとの評価や順位付けに使わないため。開いた状態は覚えない) */
   let showPeople = $state(false);
   /** 利用ランキングの表示中の種類(要点欄の「未使用の skill」から skill に切り替える) */
@@ -644,13 +646,13 @@
         <!-- 帳票の順: 表紙(規模の 4 欄)→ 摘要(要点)→ 明細 -->
         <Overview part="cover" {agg} {judged} anonymized={data.anonymized} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} {emptyInFilter} {editable} />
         <Highlights groups={points} />
-        <Insights sessions={filtered} allSessions={data.sessions} installed={data.installed?.skills ?? null} disabled={data.installed?.disabled ?? []} meta={data.insights?.meta ?? {}} candidates={data.insights?.candidates ?? []} candidateTotal={data.insights?.candidateTotal ?? data.insights?.candidates.length ?? 0} computedOver={data.insights?.computedOver ?? sessions.length} anonymized={data.anonymized} hasPage={true} libraryHref={data.library ? 'instructions.html' : null} />
+        <Insights sessions={filtered} allSessions={data.sessions} installed={installed?.skills ?? null} disabled={installed?.disabled ?? []} meta={data.insights?.meta ?? {}} candidates={data.insights?.candidates ?? []} candidateTotal={data.insights?.candidateTotal ?? data.insights?.candidates.length ?? 0} computedOver={data.insights?.computedOver ?? sessions.length} anonymized={data.anonymized} hasPage={true} libraryHref={data.library ? 'instructions.html' : null} />
         <TurnPhases agg={turnAgg} verdicts={verdictAgg} verdictModel={data.turnJudgments?.model ?? null} verdictRanAt={data.turnJudgments?.ranAt ?? null} {editable} anonymized={data.anonymized} />
         <Overview part="detail" {agg} {judged} anonymized={data.anonymized} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} {emptyInFilter} />
         {#if judged}<JudgmentPanel {agg} meta={data.judgments} />{/if}
         {#if data.retention}<Retention sessions={filtered} meta={data.retention} />{/if}
         <Compare sessions={scoped} groups={groupOptions} projects={options.project} lastAt={all.overall.lastAt} retention={!!data.retention} />
-        <UsageRanking usage={agg.usage} installed={data.installed ?? null} bind:tab={usageTab} />
+        <UsageRanking usage={agg.usage} {installed} bind:tab={usageTab} />
         <ExecProfile exec={agg.exec} sessions={filtered.length} />
         <!-- 人別は、送り先(<人>/<プロジェクト>)をまとめて集計したレポートだけ。人ごとの評価や順位付けに使わないため、既定では畳んでおき、開いたときだけ表を出す -->
         {#if options.person.length > 0}
