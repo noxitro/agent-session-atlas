@@ -4,7 +4,7 @@
 // 送る前の確認は出さない(登録するときに承知してもらう)。結果は out/auto-upload.json と out/auto-upload.log に残し、ここで見せる。
 //
 // タスクの作り:
-//  - 毎日 HH:MM。その時刻に PC が止まっていたら、次に使い始めたときに動かす(StartWhenAvailable)
+//  - 毎日 HH:MM(1 日に何回かでもよい。時刻ごとにトリガーを 1 つ)。その時刻に PC が止まっていたら、次に使い始めたときに動かす(StartWhenAvailable)
 //  - ログオンしている間だけ、自分のユーザーで動かす(Interactive)。ネットワークドライブや NAS へ、いつもの資格情報で書けるように
 //    (「ログオンしていなくても動かす」にすると、パスワードを預けるか、ネットワークに出られない動かし方になる)
 //  - 電池で動いているときも動かし、電池に切り替わっても止めない(ノート PC で毎回飛ばされないように)
@@ -88,15 +88,34 @@ export function parseTime(answer: string): string | null {
   return `${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
 }
 
+/** 1 日に送る回数の上限(打ち間違いで大量のトリガーを作らないように) */
+export const MAX_TIMES = 6;
+
+/**
+ * 送る時刻の入力を HH:MM の並び(早い順・重なりなし)にする。1 日に何回か送るときは「12:00,18:00」のように
+ * 「,」「、」や空白で区切る。どれか 1 つでも読めない・上限より多いときは null
+ */
+export function parseTimes(answer: string): string[] | null {
+  const parts = answer.normalize('NFKC').split(/[,、;\s]+/).filter(Boolean);
+  if (!parts.length) return null;
+  const times = new Set<string>();
+  for (const part of parts) {
+    const t = parseTime(part);
+    if (!t) return null;
+    times.add(t);
+  }
+  return times.size > MAX_TIMES ? null : [...times].sort();
+}
+
 /** タスクの登録(同じ名前があれば置き換える)。値は環境変数 ATLAS_TASK_* で渡す */
 export const REGISTER_SCRIPT = `
 $a = New-ScheduledTaskAction -Execute 'conhost.exe' -Argument $env:ATLAS_TASK_ARGS -WorkingDirectory $env:ATLAS_TASK_CWD
-$t = New-ScheduledTaskTrigger -Daily -At $env:ATLAS_TASK_TIME
+$t = @($env:ATLAS_TASK_TIMES -split ',' | ForEach-Object { New-ScheduledTaskTrigger -Daily -At $_ })
 $s = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 2) -MultipleInstances IgnoreNew
 $p = New-ScheduledTaskPrincipal -UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited
 $task = New-ScheduledTask -Action $a -Trigger $t -Settings $s -Principal $p -Description $env:ATLAS_TASK_DESCRIPTION
 if ($env:ATLAS_TASK_DRY_RUN -eq '1') {
-  [Console]::Out.Write((@{ execute = $task.Actions[0].Execute; arguments = $task.Actions[0].Arguments; cwd = $task.Actions[0].WorkingDirectory; at = ([datetime]$task.Triggers[0].StartBoundary).ToString('HH:mm'); startWhenAvailable = $task.Settings.StartWhenAvailable; onBatteries = (-not $task.Settings.DisallowStartIfOnBatteries); logon = "$($task.Principal.LogonType)" } | ConvertTo-Json -Compress))
+  [Console]::Out.Write((@{ execute = $task.Actions[0].Execute; arguments = $task.Actions[0].Arguments; cwd = $task.Actions[0].WorkingDirectory; times = @($task.Triggers | ForEach-Object { ([datetime]$_.StartBoundary).ToString('HH:mm') }); startWhenAvailable = $task.Settings.StartWhenAvailable; onBatteries = (-not $task.Settings.DisallowStartIfOnBatteries); logon = "$($task.Principal.LogonType)" } | ConvertTo-Json -Compress))
   return
 }
 Register-ScheduledTask -TaskName $env:ATLAS_TASK_NAME -TaskPath '\\' -InputObject $task -Force | Out-Null
@@ -108,9 +127,8 @@ $t = Get-ScheduledTask -TaskName $env:ATLAS_TASK_NAME -TaskPath '\\' -ErrorActio
 if (-not $t) { [Console]::Out.Write('{"exists":false}'); return }
 $i = $t | Get-ScheduledTaskInfo
 function When($d) { if ($d -and $d.Year -gt 2000) { $d.ToString('yyyy-MM-ddTHH:mm:ss') } else { $null } }
-$at = $null
-if ($t.Triggers.Count -gt 0 -and $t.Triggers[0].StartBoundary) { $at = ([datetime]$t.Triggers[0].StartBoundary).ToString('HH:mm') }
-[Console]::Out.Write((@{ exists = $true; state = "$($t.State)"; at = $at; arguments = $t.Actions[0].Arguments; lastRun = (When $i.LastRunTime); lastResult = $i.LastTaskResult; nextRun = (When $i.NextRunTime) } | ConvertTo-Json -Compress))
+$times = @($t.Triggers | Where-Object { $_.StartBoundary } | ForEach-Object { ([datetime]$_.StartBoundary).ToString('HH:mm') } | Sort-Object -Unique)
+[Console]::Out.Write((@{ exists = $true; state = "$($t.State)"; times = $times; arguments = $t.Actions[0].Arguments; lastRun = (When $i.LastRunTime); lastResult = $i.LastTaskResult; nextRun = (When $i.NextRunTime) } | ConvertTo-Json -Compress))
 `;
 
 export const START_SCRIPT = `Start-ScheduledTask -TaskName $env:ATLAS_TASK_NAME -TaskPath '\\'`;
@@ -119,7 +137,12 @@ export const UNREGISTER_SCRIPT = `Unregister-ScheduledTask -TaskName $env:ATLAS_
 /** タスクの今の様子 */
 export type TaskState =
   | { exists: false }
-  | { exists: true; state: string; at: string | null; arguments: string; lastRun: string | null; lastResult: number | null; nextRun: string | null };
+  | { exists: true; state: string; /** 送る時刻(早い順。トリガーの無いタスクは空) */ times: string[]; arguments: string; lastRun: string | null; lastResult: number | null; nextRun: string | null };
+
+/** 時刻の並びを「12:00・18:00」の形で */
+export function listTimes(times: string[]): string {
+  return times.join('・');
+}
 
 /** 窓を出さずに node で upload-auto.ts を動かす引数(conhost.exe に渡す) */
 export function taskArguments(node: string, entry: string = AUTO_ENTRY): string {
@@ -133,7 +156,7 @@ export function nodeOf(args: string): string | null {
 
 export interface Scheduler {
   query(): Promise<TaskState>;
-  register(time: string): Promise<void>;
+  register(times: string[]): Promise<void>;
   start(): Promise<void>;
   unregister(): Promise<void>;
 }
@@ -145,15 +168,17 @@ export function taskScheduler(run: PsRunner = runPowerShell, o: { node?: string;
     async query() {
       const r = await run(QUERY_SCRIPT, env);
       if (r.code !== 0) throw psError(r, 'タスク スケジューラを読めませんでした');
-      return JSON.parse(r.stdout.trim()) as TaskState;
+      const t = JSON.parse(r.stdout.trim()) as TaskState;
+      // PowerShell 5.1 の ConvertTo-Json は、空の並びを null にすることがある
+      return t.exists ? { ...t, times: t.times ?? [] } : t;
     },
-    async register(time) {
+    async register(times) {
       const r = await run(REGISTER_SCRIPT, {
         ...env,
         ATLAS_TASK_ARGS: taskArguments(o.node ?? process.execPath, o.entry ?? AUTO_ENTRY),
         ATLAS_TASK_CWD: o.cwd ?? REPO_ROOT,
-        ATLAS_TASK_TIME: time,
-        ATLAS_TASK_DESCRIPTION: `agent-session-atlas: 毎日 ${time} に、印を付けたプロジェクトのセッションを送り先へ送ります(schedule-upload.bat で変更・停止できます)`,
+        ATLAS_TASK_TIMES: times.join(','),
+        ATLAS_TASK_DESCRIPTION: `agent-session-atlas: 毎日 ${listTimes(times)} に、印を付けたプロジェクトのセッションを送り先へ送ります(schedule-upload.bat で変更・停止できます)`,
       });
       if (r.code !== 0) throw psError(r, 'タスクを登録できませんでした');
     },
@@ -240,15 +265,17 @@ async function runOnce(io: ScheduleIo, o: ScheduleOptions): Promise<void> {
 }
 
 /** 送る時刻を尋ねる。やめたら null */
-async function askTime(io: ScheduleIo, current: string | null): Promise<string | null> {
+async function askTimes(io: ScheduleIo, current: string[]): Promise<string[] | null> {
+  const def = current.length ? current : [DEFAULT_TIME];
   for (;;) {
-    const def = current ?? DEFAULT_TIME;
-    const a = await io.ask(`  送る時刻を入れて Enter(例: 18:00。Enter だけなら ${def}。やめるなら n)\n  > `);
+    const a = await io.ask(
+      `  送る時刻を入れて Enter(例: 18:00。1 日に何回か送るなら 12:00,18:00 のように「,」で区切る。Enter だけなら ${listTimes(def)}。やめるなら n)\n  > `,
+    );
     if (/^n(o)?$/i.test(a.normalize('NFKC').trim())) return null;
     if (!a.trim()) return def;
-    const t = parseTime(a);
+    const t = parseTimes(a);
     if (t) return t;
-    io.print(`  「${a}」は時刻として読めません。18:00 や 17:30 の形で入れ直してください。`);
+    io.print(`  「${a}」は時刻として読めません。18:00 や 12:00,18:00 の形で入れ直してください(1 日に ${MAX_TIMES} 回まで)。`);
   }
 }
 
@@ -264,7 +291,7 @@ export async function runSchedule(io: ScheduleIo, o: ScheduleOptions): Promise<v
   io.print('');
   io.print('== 毎日自動で送る ==');
   if (task.exists) {
-    io.print(`  毎日 ${task.at ?? '(時刻不明)'} に送ります${task.nextRun ? `(次: ${when(task.nextRun)})` : ''}。`);
+    io.print(`  毎日 ${task.times.length ? listTimes(task.times) : '(時刻不明)'} に送ります${task.nextRun ? `(次: ${when(task.nextRun)})` : ''}。`);
     if (task.state === 'Disabled') io.print('  ただし、タスク スケジューラで「無効」になっています。t で登録し直すと有効に戻ります。');
     const node = nodeOf(task.arguments);
     if (node && !exists(node)) io.print(`  登録したときの Node.js が見つかりません(${node})。t で登録し直してください。`);
@@ -298,13 +325,13 @@ export async function runSchedule(io: ScheduleIo, o: ScheduleOptions): Promise<v
     io.print('  - 印の無いプロジェクトは送りません。新しく始めたプロジェクトは、画面で印を付けてください。');
     io.print('  - 送れなかったときは、Windows の通知で知らせます。結果は、この schedule-upload.bat を開くと見られます。');
     io.print('');
-    const time = await askTime(io, null);
-    if (!time) {
+    const times = await askTimes(io, []);
+    if (!times) {
       io.print('  やめました(何も登録していません)。');
       return;
     }
-    await o.scheduler.register(time);
-    io.print(`  登録しました。毎日 ${time} に送ります。`);
+    await o.scheduler.register(times);
+    io.print(`  登録しました。毎日 ${listTimes(times)} に送ります。`);
     io.print('');
     if (yes(await io.ask('  今すぐ 1 回送って試しますか? y = 送る   Enter = 送らない\n  > '))) await runOnce(io, o);
     return;
@@ -313,13 +340,13 @@ export async function runSchedule(io: ScheduleIo, o: ScheduleOptions): Promise<v
   io.print('');
   const a = (await io.ask('  t = 時刻を変える   s = 今すぐ 1 回送る   d = 自動で送るのをやめる   Enter = 閉じる\n  > ')).normalize('NFKC').trim().toLowerCase();
   if (a === 't') {
-    const time = await askTime(io, task.at);
-    if (!time) {
+    const times = await askTimes(io, task.times);
+    if (!times) {
       io.print('  やめました(登録は今のままです)。');
       return;
     }
-    await o.scheduler.register(time);
-    io.print(`  登録し直しました。毎日 ${time} に送ります。`);
+    await o.scheduler.register(times);
+    io.print(`  登録し直しました。毎日 ${listTimes(times)} に送ります。`);
   } else if (a === 's') {
     await runOnce(io, o);
   } else if (a === 'd') {
