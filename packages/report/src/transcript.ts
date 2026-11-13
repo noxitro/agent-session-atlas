@@ -23,6 +23,11 @@ export interface TranscriptOptions {
   maxToolChars: number;
   /** これ以上の空白を「待ち」として書く(ミリ秒) */
   gapMs: number;
+  /**
+   * events.jsonl から読んだイベントを 1 件ずつ渡す(読んだ順)。build が、閲覧ページ(指示文と skill)の収集を
+   * この読み込みで済ませ、同じファイルを 2 度読まないように使う
+   */
+  onEvent?: (e: CopilotEvent) => void;
 }
 
 export const DEFAULT_TRANSCRIPT_OPTIONS: Omit<TranscriptOptions, 'anon' | 'generatedAt'> = {
@@ -208,6 +213,7 @@ export async function renderTranscript(r: SessionRecord, eventsPath: string | nu
   let source: TranscriptResult['source'] = 'record';
   if (eventsPath && existsSync(eventsPath)) {
     for await (const e of parseEvents(eventsPath)) {
+      o.onEvent?.(e);
       events.push(e);
       if (e.type === 'session.usage_record') usageRecords.push(e);
     }

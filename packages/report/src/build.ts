@@ -336,6 +336,13 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
   const coverage = new CoverageCounter();
   const fullStat = wantFull ? { files: 0, bytes: 0, assets: { files: 0, bytes: 0 }, secretHits: 0, excluded: { n: 0, bytes: 0 }, unclassified: new Set<string>(), events: 0 } : null;
   const lib = wantLibrary ? new LibraryCollector() : null;
+  /** 閲覧ページ(指示文と skill)の収集。イベントを読んだ順に渡す */
+  const collect = (id: string, e: CopilotEvent): void => {
+    if (!lib) return;
+    const d = (e.data ?? {}) as Record<string, unknown>;
+    if (e.type === 'system.message' && typeof d.content === 'string') lib.addSystemMessage(id, d.content, e.timestamp ?? null);
+    if (e.type === 'skill.invoked' && typeof d.content === 'string' && typeof d.name === 'string') lib.addSkill(id, d.name, d.content, contentHash(d.content), e.timestamp ?? null, typeof d.path === 'string' ? d.path : null);
+  };
   for (const r of input.sessions) {
     const full = j?.bySession.get(r.id) ?? null;
     // 詳細ページには根拠も出す(伏せ字モードでは自由記述を出さない)
@@ -343,7 +350,9 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
     let transcriptHref: string | null = null;
     if (tr && store && trStat) {
       const eventsPath = join(tr.snapshotDir, 'session-state', r.id, 'events.jsonl');
-      const t = await renderTranscript(r, eventsPath, store.usage.get(r.id) ?? [], { ...tr, anon, generatedAt });
+      // 全文記録を作らないときは、閲覧ページの収集も記録を作るときの読み込みで済ませる(events.jsonl を 2 度読まない)
+      const onEvent = lib && !wantFull ? (e: CopilotEvent): void => collect(r.id, e) : undefined;
+      const t = await renderTranscript(r, eventsPath, store.usage.get(r.id) ?? [], { ...tr, anon, generatedAt, onEvent });
       const file = transcriptFileName(r.id);
       await writeFile(join(detailDir, file), t.markdown);
       transcriptHref = file;
@@ -354,18 +363,15 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
       if (t.source === 'record') trStat.fromRecordOnly++;
     }
     let fullHref: string | null = null;
-    if (tr && store && (wantFull || lib)) {
+    // 全文記録を作るとき(--full)は、収集と全文記録の書き出しを 1 回の走査で済ませる。作らないときの収集は、上の記録の読み込みで済んでいる
+    if (tr && store && wantFull) {
       const sessionDir = join(tr.snapshotDir, 'session-state', r.id);
       const eventsPath = join(sessionDir, 'events.jsonl');
       // events.jsonl は 1 行ずつ読み、閲覧ページの収集と全文記録の書き出しを 1 回の走査で済ませる(セッション全体をメモリに載せない)
       const source: AsyncIterable<CopilotEvent> | CopilotEvent[] = existsSync(eventsPath) ? parseEvents(eventsPath) : [];
       async function* tee(): AsyncGenerator<CopilotEvent> {
         for await (const e of source) {
-          if (lib) {
-            const d = (e.data ?? {}) as Record<string, unknown>;
-            if (e.type === 'system.message' && typeof d.content === 'string') lib.addSystemMessage(r.id, d.content, e.timestamp ?? null);
-            if (e.type === 'skill.invoked' && typeof d.content === 'string' && typeof d.name === 'string') lib.addSkill(r.id, d.name, d.content, contentHash(d.content), e.timestamp ?? null, typeof d.path === 'string' ? d.path : null);
-          }
+          collect(r.id, e);
           yield e;
         }
       }
@@ -400,10 +406,6 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
         fullStat.excluded.bytes += res.excluded.bytes;
         fullStat.events += res.events;
         for (const k of res.unclassified) fullStat.unclassified.add(k);
-      } else {
-        for await (const _e of tee()) {
-          /* 閲覧ページの収集だけ */
-        }
       }
     }
     const m = memos.get(r.id);
