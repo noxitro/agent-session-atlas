@@ -65,6 +65,8 @@ export interface Bucket {
   durationMs: number;
   firstAt: string | null;
   lastAt: string | null;
+  /** 最終更新(セッションの更新日時のうち、いちばん後のもの。更新日時の無いセッションは開始日時で数える)。lastAt は開始日時のいちばん後 */
+  updatedAt: string | null;
   /** judgments の推定人手工数(判定済みセッションだけの和) */
   judgedSessions: number;
   humanHours: number;
@@ -238,6 +240,7 @@ export function bucket(key: string, label: string, sessions: SessionSummary[]): 
     durationMs: 0,
     firstAt: null,
     lastAt: null,
+    updatedAt: null,
     judgedSessions: 0,
     humanHours: 0,
     humanLow: 0,
@@ -288,6 +291,8 @@ export function bucket(key: string, label: string, sessions: SessionSummary[]): 
       if (!b.firstAt || at < b.firstAt) b.firstAt = at;
       if (!b.lastAt || at > b.lastAt) b.lastAt = at;
     }
+    const up = s.updatedAt ?? s.createdAt;
+    if (up && (!b.updatedAt || Date.parse(up) > Date.parse(b.updatedAt))) b.updatedAt = up;
     const j = s.judgment;
     if (j?.hours != null) {
       b.judgedSessions++;

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { frictionTotal } from '../../lib/aggregate.ts';
-  import { sessionTime } from '../../lib/filter.ts';
+  import { sessionTime, sessionUpdated } from '../../lib/filter.ts';
   import { dateTime, dec, duration, int, modelLabel, pathParts, sharedLeads, splitLead, truncate } from '../../lib/format.ts';
   import type { ReportGroup, SessionSummary } from '../../lib/types.ts';
   import SortMark from './SortMark.svelte';
@@ -59,9 +59,10 @@
     return src && why ? `${src}(${why})` : src || why;
   }
 
-  type Key = 'time' | 'turns' | 'input' | 'output' | 'tools' | 'lines' | 'friction' | 'active' | 'human';
+  type Key = 'time' | 'updated' | 'turns' | 'input' | 'output' | 'tools' | 'lines' | 'friction' | 'active' | 'human';
   const value: Record<Key, (s: SessionSummary) => number> = {
     time: (s) => sessionTime(s) ?? -Infinity,
+    updated: (s) => sessionUpdated(s) ?? -Infinity,
     turns: (s) => s.turns,
     input: (s) => s.tokens.input ?? -1,
     output: (s) => s.tokens.output,
@@ -86,7 +87,12 @@
   const sorted = $derived.by(() => {
     const f = value[sortKey];
     const dir = asc ? 1 : -1;
-    return [...sessions].sort((a, b) => (f(a) - f(b)) * dir || a.id.localeCompare(b.id));
+    // 日時の無いもの(-Infinity)どうしの差は NaN になるので、同じとみなす
+    return [...sessions].sort((a, b) => {
+      const x = f(a);
+      const y = f(b);
+      return (x === y ? 0 : (x - y) * dir) || a.id.localeCompare(b.id);
+    });
   });
   const pages = $derived(Math.max(1, Math.ceil(sorted.length / PAGE)));
   // 絞り込みで件数が減ったらページを戻す
@@ -347,6 +353,7 @@
               </label>
             </th>
             {@render head('time', '開始', false)}
+            {@render head('updated', '最終更新', false)}
             <th scope="col">プロジェクト</th>
             <th scope="col">セッション</th>
             <th scope="col">クライアント</th>
@@ -366,6 +373,7 @@
             <tr class:picked={selected.has(s.id)}>
               <td class="chk"><label><input type="checkbox" aria-label="{title(s)} を選択" checked={selected.has(s.id)} onchange={(e) => toggle(s.id, e.currentTarget.checked)} /></label></td>
               <td class="num when">{dateTime(s.createdAt ?? s.updatedAt)}</td>
+              <td class="num when">{dateTime(s.updatedAt ?? s.createdAt)}</td>
               <td class="proj" title={s.project}>{#each pathParts(s.projectLabel) as seg, i (i)}{#if i}<wbr />{/if}{seg}{/each}{#if s.branch}<span class="sub">{s.branch}</span>{/if}</td>
               <td class="name"><a href={s.href} title={title(s)}>{#if leads.get(s.id)?.lead}<span class="lead" title="ほかの行と同じ書き出し(縮めて表示)">{leads.get(s.id)?.lead}</span>{leads.get(s.id)?.rest}{:else}{title(s)}{/if}</a>{#if (leads.get(s.id)?.same ?? 1) > 1}<span class="tag" title="一覧の中に題名がまったく同じセッションが {leads.get(s.id)?.same} 件あります。開始時刻やプロジェクトで見分けてください">同じ題名 ×{leads.get(s.id)?.same}</span>{/if}{#if s.empty}<span class="tag" title="依頼・ツール呼び出し・応答がどれも無いセッション">空</span>{/if}{#if s.memo}<span class="sub" data-testid="memo-excerpt">メモ: {s.memo.excerpt || '(本文なし)'}</span>{/if}{#if groupsOf.has(s.id)}<span class="sub in-groups" data-testid="session-groups">タスクタグ: {groupsOf.get(s.id)?.join('、')}</span>{/if}</td>
               <td class="nowrap">{s.client ?? '不明'}</td>

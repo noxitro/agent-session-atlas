@@ -5,7 +5,7 @@ import type { SessionRecord } from '../../core/src/types.ts';
 import { aggregate, coverageBreakdown, monthRange } from '../src/lib/aggregate.ts';
 import { createAnonymizer, identityAnonymizer, shortProjectLabel } from '../src/lib/anonymize.ts';
 import { embedData, extractEmbedded, serializeForScript } from '../src/lib/embed.ts';
-import { applyFilter, currentGroupName, decodeFilter, effectiveIds, emptyFilter, encodeFilter, filterOptions, groupIds, hasPeople, isEmptyFilter, joinIds, knownSelection, NO_JUDGMENT, NO_SESSION, sameIds, splitIds, UNKNOWN } from '../src/lib/filter.ts';
+import { applyFilter, sessionUpdated, currentGroupName, decodeFilter, effectiveIds, emptyFilter, encodeFilter, filterOptions, groupIds, hasPeople, isEmptyFilter, joinIds, knownSelection, NO_JUDGMENT, NO_SESSION, sameIds, splitIds, UNKNOWN } from '../src/lib/filter.ts';
 import { addIds, memberGroups, parseGroups, removeIds, resolveIdPrefixes, serializeGroups } from '../src/lib/groups.ts';
 import { parseJudgments } from '../src/lib/judgments.ts';
 import { niceTicks } from '../src/lib/scale.ts';
@@ -77,6 +77,27 @@ const PEOPLE: Record<string, string | null> = { a: 'person-a', b: 'person-b', c:
 const withPeople = (rs: SessionRecord[]): SessionRecord[] => rs.map((r) => ({ ...r, person: PEOPLE[r.id] }));
 
 describe('aggregate', () => {
+  it('最終更新は、セッションの更新日時のいちばん後(更新日時の無いものは開始日時)。開始日時のいちばん後(lastAt)とは別に持つ', async () => {
+    const base = summaries(await fixture())[0]!;
+    const s = (id: string, project: string, createdAt: string | null, updatedAt: string | null): SessionSummary => ({ ...base, id, project, projectLabel: project, createdAt, updatedAt });
+    const a = aggregate([
+      s('a1', 'app', '2026-11-01T00:00:00.000Z', '2026-11-12T09:00:00.000Z'),
+      s('a2', 'app', '2026-11-10T00:00:00.000Z', '2026-11-10T01:00:00.000Z'),
+      // 更新日時の無いものは開始日時で数える
+      s('b1', 'tool', '2026-11-05T00:00:00.000Z', null),
+      // 日時の書き方が違っても(タイムゾーン付き)時刻で比べる
+      s('c1', 'web', '2026-11-01T00:00:00.000Z', '2026-11-13T08:00:00+09:00'),
+      s('c2', 'web', '2026-11-01T00:00:00.000Z', '2026-11-12T23:30:00.000Z'),
+    ]);
+    const by = Object.fromEntries(a.byProject.map((b) => [b.key, [b.updatedAt, b.lastAt]]));
+    expect(by.app).toEqual(['2026-11-12T09:00:00.000Z', '2026-11-10T00:00:00.000Z']);
+    expect(by.tool).toEqual(['2026-11-05T00:00:00.000Z', '2026-11-05T00:00:00.000Z']);
+    expect(by.web).toEqual(['2026-11-12T23:30:00.000Z', '2026-11-01T00:00:00.000Z']);
+    expect(a.overall.updatedAt).toBe('2026-11-12T23:30:00.000Z');
+    expect(sessionUpdated({ createdAt: '2026-11-01T00:00:00.000Z', updatedAt: null })).toBe(Date.parse('2026-11-01T00:00:00.000Z'));
+    expect(sessionUpdated({ createdAt: null, updatedAt: null })).toBeNull();
+  });
+
   it('全体・プロジェクト・月・モデルが core の computeMetrics と一致する', async () => {
     const rs = await fixture();
     const m = computeMetrics(rs);
