@@ -16,6 +16,8 @@ import { copyFile, cp, lstat, mkdir, open, readdir, readFile, rm, stat, writeFil
 import { dirname, join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import {
+  currentAtlasBuild,
+  type AtlasBuild,
   DESKTOP_JSON,
   desktopForSession,
   openSessionStoreReader,
@@ -790,6 +792,8 @@ export interface UploadOptions {
    * 確かめたセッションの送り先の一覧を読み直さない(expect と一緒に渡す)
    */
   check?: UploadCheck;
+  /** 添える atlas の版(テスト用。既定はこのプロセスの版) */
+  atlas?: AtlasBuild;
 }
 
 export async function uploadGroup(p: GroupUploadPaths, name: string, root: string, log: (m: string) => void = () => {}, opts: UploadOptions = {}): Promise<GroupUploadResult> {
@@ -822,6 +826,10 @@ export async function uploadTarget(p: GroupUploadPaths, target: UploadTarget, ro
   const staleMeta: string[] = [];
   const records = await readRecords(opts.sessions ?? p.sessions, present);
   const tags = await tagsById(p.groups);
+  // 送る atlas の版。写し直さないセッションの記録も、この版に書き直す: 写し直さないのは、この版が作る中身の要約
+  // (ログのファイルと、この版が添える DB の行・照合の結果・メモ)が前に送ったものと同じだったときなので、
+  // 送り先のフォルダはこの版で送ったものと同じ中身になっている
+  const atlas = opts.atlas ?? currentAtlasBuild();
   const info = (id: string): UploadedSession => {
     const r = records.get(id);
     // name はデスクトップアプリの題名も反映済み(extract の sessionName)
@@ -868,7 +876,7 @@ export async function uploadTarget(p: GroupUploadPaths, target: UploadTarget, ro
         progress.copied += extra.get(id) ?? 0;
         report();
         // 中身の要約(contents)を添えておき、次の回に同じなら写し直さない
-        await writeFile(join(tmp, UPLOAD_SESSION_META), `${JSON.stringify({ version: 1, ...info(id), contents: keys.get(id) }, null, 2)}\n`);
+        await writeFile(join(tmp, UPLOAD_SESSION_META), `${JSON.stringify({ version: 1, ...info(id), contents: keys.get(id), atlas }, null, 2)}\n`);
         const had = existsSync(dest);
         // 前のフォルダは先に消さず、名前を変えて退ける(中のファイルが開かれていて動かせなければ、ここで止まり前のフォルダはそのまま残る)。
         // 新しいフォルダを置けなければ前のフォルダを戻す。退けたものは最後に消す
@@ -905,7 +913,7 @@ export async function uploadTarget(p: GroupUploadPaths, target: UploadTarget, ro
     for (const id of kept) {
       const dest = join(dir, id);
       if (await added.memo(id)) withMemo.add(id);
-      const meta = `${JSON.stringify({ version: 1, ...info(id), contents: keys.get(id) }, null, 2)}\n`;
+      const meta = `${JSON.stringify({ version: 1, ...info(id), contents: keys.get(id), atlas }, null, 2)}\n`;
       const path = join(dest, UPLOAD_SESSION_META);
       const tmp = join(dest, `.${UPLOAD_SESSION_META}.tmp`);
       try {
@@ -937,7 +945,7 @@ export async function uploadTarget(p: GroupUploadPaths, target: UploadTarget, ro
   await writeFile(join(dir, UPLOAD_README), groupReadme({ kind: g.kind, name, note: g.note, dir, sessions, missing, snapshotAt, now }));
   await writeFile(
     join(dir, UPLOAD_INDEX),
-    `${JSON.stringify({ version: 1, kind: g.kind, name, note: g.note, uploadedAt: now.toISOString(), snapshotAt, sessions, missing }, null, 2)}\n`,
+    `${JSON.stringify({ version: 1, kind: g.kind, name, note: g.note, uploadedAt: now.toISOString(), snapshotAt, atlas, sessions, missing }, null, 2)}\n`,
   );
   // 送った人がインストールしている skill・プラグインの名前(集計し直す側が「インストール済みで未使用の skill」に使う)。
   // ~/.copilot から集計したときだけ書く(送り先から集計した出力先から写すときは、ほかの人のものなので書かない)

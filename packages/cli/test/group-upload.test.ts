@@ -119,6 +119,36 @@ describe('グループのアップロード', () => {
     expect((await readdir(r.dir)).filter((n) => n.startsWith('.'))).toEqual([]);
   });
 
+  it('atlas の版を索引とセッションの記録に添える。写し直さないセッションの記録も、送った版に書き直す', async () => {
+    const v1 = { commit: 'a'.repeat(40), committedAt: '2026-11-01T00:00:00.000Z', dirty: false, code: '0123456789abcdef' };
+    const v2 = { commit: 'b'.repeat(40), committedAt: '2026-11-10T00:00:00.000Z', dirty: true, code: 'fedcba9876543210' };
+    const sessionMeta = (id: string) => join(root, 'Player_Weapon', id, 'atlas-session.json');
+    const meta = async (id: string) => JSON.parse(await readFile(sessionMeta(id), 'utf8'));
+    const index = async () => JSON.parse(await readFile(join(root, 'Player_Weapon', 'atlas-index.json'), 'utf8'));
+    await uploadGroup(paths(), 'Player/Weapon', root, () => {}, { atlas: v1 });
+    expect((await meta('s1')).atlas).toEqual(v1);
+    expect((await index()).atlas).toEqual(v1);
+    // s1 だけ変えて新しい版で送る: 写した s1 も、写し直さない s2 も新しい版(s2 は、新しい版が作る中身が前に送ったものと同じだった)
+    const ev = join(out, 'snapshot', 'session-state', 's1', 'events.jsonl');
+    await writeFile(ev, '{"type":"session.start","id":"S1"}\n');
+    await utimes(ev, new Date('2026-11-09T00:00:00Z'), new Date('2026-11-09T00:00:00Z'));
+    const sent = join(root, 'Player_Weapon', 's2', 'events.jsonl');
+    const before = (await stat(sent)).mtimeMs;
+    expect(await uploadGroup(paths(), 'Player/Weapon', root, () => {}, { atlas: v2 })).toMatchObject({ uploaded: 1, unchanged: 1 });
+    expect((await meta('s1')).atlas).toEqual(v2);
+    expect((await meta('s2')).atlas).toEqual(v2);
+    expect((await stat(sent)).mtimeMs).toBe(before);
+    expect((await index()).atlas).toEqual(v2);
+    // 版を記録する前の atlas で送ったもの(記録が無い)も、次に送れば記録が付く(ログは写し直さない)
+    const { atlas: _, ...old } = await meta('s2');
+    await writeFile(sessionMeta('s2'), `${JSON.stringify(old, null, 2)}\n`);
+    expect(await uploadGroup(paths(), 'Player/Weapon', root, () => {}, { atlas: v2 })).toMatchObject({ uploaded: 0, unchanged: 2 });
+    expect((await meta('s2')).atlas).toEqual(v2);
+    // 既定は、このチェックアウトの版(目印は必ずある)
+    await uploadGroup(paths(), 'Player/Weapon', root, () => {}, { full: true });
+    expect((await meta('s1')).atlas.code).toMatch(/^[0-9a-f]{16}$/);
+  });
+
   it('点検は、前に送ったときから変わっていないセッションを読まずに数える(写すものだけの大きさと秘密らしい文字列)', async () => {
     await uploadGroup(paths(), 'Player/Weapon', root);
     const token = ['ghp', 'DIFFFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE'].join('_');

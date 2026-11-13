@@ -3,6 +3,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
+import { parseAtlasBuild, type AtlasBuild } from './atlas-version.ts';
 import { newParseStats, parseEvents } from './events.ts';
 import { resolveInstructions } from './instructions.ts';
 import { normalizeSession } from './normalize.ts';
@@ -273,7 +274,7 @@ export async function readSenderProject(path: string, id: string): Promise<{ pro
  * アップロードで添えた記録(UPLOAD_SESSION_META)を 1 度だけ読み、プロジェクト名(readSenderProject)とタスクタグ(readSenderTags)を返す。
  * 無い・読めない・形が違う・ほかのセッションのものなら null
  */
-export async function readSenderMeta(path: string, id: string): Promise<{ project: { project: string; source: ProjectSource | null } | null; tags: string[] } | null> {
+export async function readSenderMeta(path: string, id: string): Promise<{ project: { project: string; source: ProjectSource | null } | null; tags: string[]; atlas: AtlasBuild | null } | null> {
   if (!existsSync(path)) return null;
   let j: Record<string, unknown>;
   try {
@@ -282,7 +283,7 @@ export async function readSenderMeta(path: string, id: string): Promise<{ projec
     return null;
   }
   if (!isRow(j) || j.version !== 1 || j.id !== id) return null;
-  return { project: senderProjectOf(j), tags: senderTagsOf(j) };
+  return { project: senderProjectOf(j), tags: senderTagsOf(j), atlas: parseAtlasBuild(j.atlas) };
 }
 
 function senderProjectOf(j: Record<string, unknown>): { project: string; source: ProjectSource | null } | null {
@@ -532,6 +533,8 @@ export async function extract(snapshotDir: string, opts: ExtractOptions = {}): P
     rec.person = layout === 'merged' ? personOfFolder(manifest?.merged?.owners?.[id]) : null;
     // 送り先から集計したときは、送った人が付けていたタスクタグも持たせる(画面は人ごとに分けて、読むだけで出す)
     if (uploaded) rec.uploadTags = meta?.tags ?? [];
+    // 送り先から集計したときは、そのセッションのフォルダを写した atlas の版も持たせる(記録が無ければ null。古い版で送ったものを数えるため)
+    if (uploaded) rec.uploadAtlas = meta?.atlas ?? null;
     rec.desktop = (desktop ? desktopForSession(desktop, id) : null) ?? dirDesktops.get(id) ?? null;
     rec.name = sessionName(rec.name, rec.desktop?.session?.title);
     done++;
