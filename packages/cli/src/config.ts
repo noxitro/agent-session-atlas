@@ -169,11 +169,8 @@ export function defaultConfigPath(): string {
 /** modifyConfig の関数がこれを返したら、何も書かない(変わらないときに書き方を崩さないように) */
 export const NO_CHANGE: unique symbol = Symbol('no change');
 
-/**
- * ロックを取れるまで待つ長さと、落ちた処理が残したロックとみなす古さ。待つ長さは古さより長くする
- * (消せずに残ったロックを、待っている側が古いものとして消して取り直せるように)
- */
-const LOCK_WAIT_MS = 15_000;
+/** ロックを取れるまで待つ長さと、落ちた処理が残したロックとみなす古さ */
+const LOCK_WAIT_MS = 5000;
 const LOCK_STALE_MS = 10_000;
 /**
  * Windows で、ロックを作る・消すときに一時的に出る失敗。消したばかりのロックをほかのプログラム(ウイルス対策の検査など)がまだ
