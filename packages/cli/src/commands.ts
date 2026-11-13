@@ -357,7 +357,7 @@ export async function runVcs(p: Paths, log: Log, o: { mode?: 'worktree' | 'commi
   // ログの形が変わると、AI の編集から変更を取り出せなくなる(黙って 0 件にならないよう、数を出す)
   const unread = r.sessions.reduce((n, x) => n + (x.unreadEdits ?? 0), 0);
   if (unread) log(`vcs: 注意 ログから変更を取り出せなかった AI の編集 ${unread} 件(${r.sessions.filter((x) => x.unreadEdits).length} セッション)。Copilot のログの形が変わった可能性があります`);
-  if (s.measured) log(`vcs: 変更のまとまり${(['kept', 'modified', 'missing', 'unattributable'] as const).map((k) => `${r.labels?.[k] ?? RETENTION_STATUS_LABEL[k]} ${s.hunks[k]}`).join('、')}`);
+  if (s.measured) log(`vcs: 変更のまとまり ${(['kept', 'modified', 'missing', 'unattributable'] as const).map((k) => `${r.labels?.[k] ?? RETENTION_STATUS_LABEL[k]} ${s.hunks[k]}`).join('、')}`);
   return r;
 }
 
