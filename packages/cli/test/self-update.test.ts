@@ -213,6 +213,39 @@ describe('selfUpdate: 手で触っているチェックアウトは変えない'
     expect(head(member)).toBe(before);
   });
 
+  it('origin の履歴が書き換えられた(force push)だけなら、新しい main に合わせ直す。手元にだけあるコミットがあれば、何もしない', () => {
+    // 作業メンバーは、前に取りに行った main のまま
+    release();
+    expect(update().r.outcome).toBe('updated');
+    const before = head(member);
+    // 作る人が、main の履歴を書き換えて送り直す(同じ親の上に、別のコミット)
+    writeFileSync(join(dev, 'a.txt'), 'rewritten');
+    git(dev, 'add', '-A');
+    git(dev, 'commit', '-q', '--amend', '-m', 'rewritten');
+    git(dev, 'push', '-q', '--force', 'origin', 'main');
+    const rewritten = head(dev);
+    const { r, logs } = update();
+    expect(r).toMatchObject({ outcome: 'updated', fromSha: before, toSha: rewritten });
+    expect(r.note).toContain('履歴が書き換えられていたので、新しい origin/main に合わせました');
+    expect(logs.join('\n')).toContain('履歴が書き換えられていたので');
+    expect(head(member)).toBe(rewritten);
+    expect(git(member, 'status', '--porcelain', '--untracked-files=no')).toBe('');
+
+    // 手元にだけあるコミットがあるときに書き換えられたら、合わせ直さない(手元のコミットを消さない)
+    writeFileSync(join(member, 'b.txt'), 'local commit');
+    git(member, 'add', '-A');
+    git(member, 'commit', '-q', '-m', 'local');
+    const local = head(member);
+    writeFileSync(join(dev, 'a.txt'), 'rewritten again');
+    git(dev, 'add', '-A');
+    git(dev, 'commit', '-q', '--amend', '-m', 'rewritten again');
+    git(dev, 'push', '-q', '--force', 'origin', 'main');
+    const kept = update();
+    expect(kept.r.outcome).toBe('skipped');
+    expect(kept.r.note).toMatch(/早送りだけでは/);
+    expect(head(member)).toBe(local);
+  });
+
   it('origin に届かなければ、今の版のまま(送るのは止めない)', () => {
     const before = head(member);
     git(member, 'remote', 'set-url', 'origin', join(base, 'no-such-origin.git'));
