@@ -11,7 +11,8 @@
 //    二重に逃がした実体参照(&amp; 等)・HTML コメントや生のタグの漏れ(pre / code / textarea の中は除く)
 //  - アクセシビリティの基本(全ページ): lang / 名前の無いリンクとボタン / alt の無い画像 / ラベルの無い入力欄 / 見出しの段の飛び(warn)
 //  - 押せそうで押せない要素(全ページ、atlas.html はタブごと、開閉要素を開いた状態、レイアウトの見本は 3 幅でも): 自分自身へのリンク /
-//    指のカーソルが出るのに操作できない要素 / ホバーで見た目が変わるのに操作できない要素(warn)/ 下線があるのにリンクでない文字(warn)。
+//    指のカーソルが出るのに操作できない要素 / ホバーで見た目が変わるのに操作できない要素(warn)/ 下線があるのにリンクでない文字(warn)/
+//    逆向きの、操作できるのに指のカーソルが出ない要素(warn。字を打つ欄・選ぶ欄とそのラベルは除く)。
 //    サーバが要るダイアログ・ポップアップの中は ui/ の画面の操作の検査が clickableFindings で見る
 //  - 実行時(全ページ): ページ内の例外とコンソールのエラー
 //  - レイアウト(主要ページと詳細ページの見本、375 / 1024 / 1440px × ライト / ダーク): 横のはみ出し / 文字のコントラスト不足 /
@@ -215,6 +216,19 @@ export const CLICKABLE_CHECK = `(() => {
       }
       if (/^inline-(?:block|flex|grid|table)$/.test(qs.display) || qs.position === 'absolute' || qs.position === 'fixed' || qs.float !== 'none') break;
     }
+  }
+
+  // 逆向き: 押せるのに押せそうに見えない要素(指のカーソルが出ない)。字を打つ欄・選ぶ欄と、それに付いたラベルは矢印や I 字が普通なので除く。
+  // 使えない状態(disabled・aria-disabled)と、待ち・不可を示すカーソル(wait・progress・not-allowed)を付けたものも除く
+  const TYPING = ['text', 'search', 'email', 'url', 'tel', 'password', 'number', 'date', 'datetime-local', 'month', 'week', 'time'];
+  const typingField = (el) => el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || (el.tagName === 'INPUT' && TYPING.includes((el.type || 'text').toLowerCase()));
+  for (const el of document.querySelectorAll(CONTROL)) {
+    if (el.tagName === 'A' || !rendered(el) || el.matches(':disabled, [aria-disabled="true"]') || el.closest('[aria-disabled="true"], fieldset:disabled')) continue;
+    if (typingField(el) || el.isContentEditable || el.matches('[role="textbox"], [role="searchbox"], [role="combobox"], [role="spinbutton"], [role="slider"], [role="scrollbar"]')) continue;
+    if (el.tagName === 'LABEL' && el.control && typingField(el.control)) continue;
+    if (el.tagName === 'INPUT' && el.type === 'hidden') continue;
+    const c = style(el).cursor;
+    if (c === 'default' || c === 'auto') add('warn', '操作できるのに指のカーソルが出ない', desc(el));
   }
 
   // ホバーで見た目が変わるのに操作できない要素(表の行の読み取り補助など意図したものもあるので目で確かめる)。

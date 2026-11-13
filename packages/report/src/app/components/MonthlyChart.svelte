@@ -223,8 +223,9 @@
   .hit {
     fill: transparent;
   }
+  /* 押すと値の表示を固定できるので、指のカーソルで押せることを示す */
   .col {
-    cursor: default;
+    cursor: pointer;
     /* フォーカス表示は下の .col:focus-visible .hit(帯の枠線)が担うので、g 要素の既定の枠は消す */
     outline: none;
   }

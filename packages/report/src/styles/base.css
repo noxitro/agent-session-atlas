@@ -517,6 +517,18 @@ details.tableview > summary {
   font-size: 0.75rem;
 }
 
+/* 押せる部品は指のカーソルで押せることを示す。チェックボックス・ラジオはブラウザの既定が矢印で、指のカーソルのラベルの中でも印の上だけ矢印になるため、
+   ここでそろえる(使えない状態は矢印に戻す)。部品ごとの指定はこれを上書きしてよい */
+summary,
+input[type='checkbox'],
+input[type='radio'] {
+  cursor: pointer;
+}
+input[type='checkbox']:disabled,
+input[type='radio']:disabled {
+  cursor: default;
+}
+
 /* タッチ操作でダブルタップ拡大の待ちを入れない */
 a,
 button,

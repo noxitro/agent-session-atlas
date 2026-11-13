@@ -930,8 +930,10 @@ describe('画面の操作', () => {
     }
   });
 
-  it('h2. 押せそうで押せない要素: 網羅チェック(file:// で開く)では開けない設定・別のフォルダのダイアログと、375px のタスクタグの一覧の中にも無い', async () => {
-    const errorsNow = async (where: string): Promise<string[]> => (await clickableFindings(page)).filter((f) => f.severity === 'error').map((f) => `${where}: ${f.kind} ${f.detail}`);
+  it('h2. 押せそうで押せない要素と、押せるのに指のカーソルが出ない要素: 網羅チェック(file:// で開く)では開けない設定・別のフォルダのダイアログと、375px のタスクタグの一覧の中にも無い', async () => {
+    // 要修正に加えて、逆向きの「操作できるのに指のカーソルが出ない」も、ここで開く部品では起きないことを確かめる(ほかの要確認は目で見る種類なので数えない)
+    const errorsNow = async (where: string): Promise<string[]> =>
+      (await clickableFindings(page)).filter((f) => f.severity === 'error' || f.kind === '操作できるのに指のカーソルが出ない').map((f) => `${where}: ${f.kind} ${f.detail}`);
     const found: string[] = [];
     try {
       await page.goto(server.url);
