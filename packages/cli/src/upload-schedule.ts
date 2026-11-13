@@ -228,12 +228,14 @@ export function describeStatus(s: AutoStatus): string {
   return `前回: ${when(s.finishedAt)} に ${s.sent.length} プロジェクト・${sessions} セッションを送りました${notes ? `(${notes})` : ''}。`;
 }
 
-/** 前回、送る前に atlas を新しい版にしたかを 1 行で(記録が無い・最新だったときは null。毎回出すと読み飛ばされるので、知らせることがあるときだけ) */
+/**
+ * 前回、送る前に atlas を新しい版にしたかを 1 行で(記録が無い・最新だったときは null。毎回出すと読み飛ばされるので、知らせることがあるときだけ)。
+ * どうすれば新しい版になるかは、理由ごとに self-update.ts が note に書いてある
+ */
 export function describeUpdate(s: AutoStatus): string | null {
   const u = s.update;
   if (!u || u.outcome === 'latest') return null;
-  if (u.outcome === 'updated') return `atlas の更新: ${u.note}。`;
-  return `atlas の更新: ${u.note}${u.outcome === 'skipped' ? '(新しい版にするには、git pull してください)' : ''}。`;
+  return `atlas の更新: ${u.note}。`;
 }
 
 export interface ScheduleIo {

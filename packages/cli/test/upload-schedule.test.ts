@@ -142,7 +142,7 @@ describe('送る時刻と、タスクの中身', () => {
     expect(describeUpdate({ ...base, update: { outcome: 'latest', from: 'aaaaaaa', to: 'aaaaaaa', note: '最新です(aaaaaaa)' } })).toBeNull();
     expect(describeUpdate({ ...base, update: { outcome: 'updated', from: 'aaaaaaa', to: 'bbbbbbb', note: 'aaaaaaa から bbbbbbb に更新しました' } })).toBe('atlas の更新: aaaaaaa から bbbbbbb に更新しました。');
     expect(describeUpdate({ ...base, update: { outcome: 'skipped', from: 'aaaaaaa', to: null, note: 'atlas のファイルを手で変えているので、更新しません' } })).toBe(
-      'atlas の更新: atlas のファイルを手で変えているので、更新しません(新しい版にするには、git pull してください)。',
+      'atlas の更新: atlas のファイルを手で変えているので、更新しません。',
     );
     expect(describeUpdate({ ...base, update: { outcome: 'failed', from: 'aaaaaaa', to: null, note: '新しい版を取りに行けなかったので、今の版のまま送ります' } })).toBe('atlas の更新: 新しい版を取りに行けなかったので、今の版のまま送ります。');
   });

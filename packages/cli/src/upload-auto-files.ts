@@ -31,7 +31,10 @@ export interface AutoUpdateResult {
   /** 前と後の版(コミットの先頭 7 桁)。分からなければ null */
   from: string | null;
   to: string | null;
-  /** 何をしたか・しなかった理由(1 文) */
+  /** 前と後の版(コミットの全桁。前の版に戻すときと、動かなかった版を覚えるときに使う)。この版より前の記録には無い */
+  fromSha?: string | null;
+  toSha?: string | null;
+  /** 何をしたか・しなかった理由と、どうすれば新しい版になるか(1 文) */
   note: string;
 }
 
@@ -39,3 +42,13 @@ export interface AutoUpdateResult {
 export const NO_UPDATE_FLAG = '--no-update';
 /** 新しい版にした後、新しいコードで動かし直すときに付ける印(環境変数)。中身は更新の結果(JSON) */
 export const UPDATED_ENV = 'ATLAS_AUTO_UPDATED';
+/** 動かし直した側に渡す、呼び出し元のプロセスの番号(環境変数)。呼び出し元が止められたら、動かし直した側も止まる */
+export const PARENT_ENV = 'ATLAS_AUTO_PARENT_PID';
+/** 新しい版がこの PC で動かなかったときに、その版を覚えておくファイル(出力先 out/ の中。もっと新しい版が出るまで使わない) */
+export const AUTO_UPDATE_STATE_FILE = 'auto-update.json';
+/**
+ * atlas の処理が出力先で動いているかを見る印のファイルの名前(jobs.ts の JOB_LOCK_FILE と serve.ts の SERVE_STATE_FILE と同じ。
+ * upload-auto.ts は依存を読まずに確かめるので、ここにも置く。同じであることはテストで確かめる)
+ */
+export const JOB_LOCK_NAME = '.job.json';
+export const SERVE_STATE_NAME = '.serve.json';

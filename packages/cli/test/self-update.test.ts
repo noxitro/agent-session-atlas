@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { selfUpdate, type UpdateOptions } from '../src/self-update.ts';
+import { rollback, runCmd, selfUpdate, type CmdRunner, type UpdateOptions } from '../src/self-update.ts';
 
 let base = '';
 /** 作る人のチェックアウト(新しい版を origin に送る) */
@@ -98,8 +98,7 @@ describe('selfUpdate: 新しい版にする', () => {
     expect(head(member)).toBe(next);
   });
 
-  it('依存が変わっていれば入れる。入れられなければ前の版に戻す', () => {
-    const before = head(member);
+  it('依存が変わっていれば入れる。入れられなければ前の版に戻し、前の版の依存を入れ直す', () => {
     release('package-lock.json', '{"v":2}');
     const ok = update({ depsFresh: () => false });
     expect(ok.r.outcome).toBe('updated');
@@ -107,12 +106,76 @@ describe('selfUpdate: 新しい版にする', () => {
 
     const mid = head(member);
     release('package-lock.json', '{"v":3}');
-    const ng = update({ depsFresh: () => false, installDeps: () => false });
-    expect(ng.r).toMatchObject({ outcome: 'failed', from: mid.slice(0, 7), to: mid.slice(0, 7) });
-    expect(ng.r.note).toMatch(/依存を入れられなかったので、前の版.*に戻して送ります/);
+    // 新しい版の依存は入れられない。前の版に戻した後は、前の版の依存を入れ直せる
+    let installs = 0;
+    const ng = update({ depsFresh: () => false, installDeps: () => ++installs > 1 });
+    expect(ng.r).toMatchObject({ outcome: 'failed', from: mid.slice(0, 7), to: mid.slice(0, 7), fromSha: mid });
+    expect(ng.r.note).toMatch(/依存を入れられなかったので、前の版\(.{7}\)に戻し、依存も入れ直しました。今の版のまま送ります/);
+    expect(installs).toBe(2);
     expect(head(member)).toBe(mid);
     expect(git(member, 'status', '--porcelain', '--untracked-files=no')).toBe('');
-    expect(before).not.toBe(mid);
+
+    // 前の版の依存も入れ直せないときは、そう書く(コードは前の版に戻っている)
+    const worse = update({ depsFresh: () => false, installDeps: () => false });
+    expect(worse.r).toMatchObject({ outcome: 'failed', to: mid.slice(0, 7) });
+    expect(worse.r.note).toMatch(/依存を入れ直せませんでした。atlas\.bat を開くと入れ直します/);
+    expect(head(member)).toBe(mid);
+  });
+
+  it('依存は npm ci で入れる(package-lock.json を書き換えない)', () => {
+    release('package-lock.json', '{"v":2}');
+    const calls: string[] = [];
+    const run: CmdRunner = (cmd, args, o) => {
+      if (cmd === 'git') return runCmd(cmd, args, o);
+      calls.push([cmd, ...args].join(' '));
+      return { code: 0, stdout: '', stderr: '' };
+    };
+    const { r } = update({ run, depsFresh: () => false, installDeps: undefined });
+    expect(r.outcome).toBe('updated');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatch(/npm ci --no-audit --no-fund/);
+  });
+
+  it('npm が書き換えた package-lock.json だけが変わっているときは、元に戻してから新しい版にする', () => {
+    writeFileSync(join(member, 'package-lock.json'), '{"lock":1}');
+    git(member, 'add', '-A');
+    git(member, 'commit', '-q', '-m', 'lock');
+    git(member, 'push', '-q', 'origin', 'HEAD:main');
+    git(dev, 'pull', '-q', 'origin', 'main');
+    writeFileSync(join(member, 'package-lock.json'), '{"lock":1,"rewritten":true}');
+    const next = release();
+    const { r, logs } = update();
+    expect(r.outcome).toBe('updated');
+    expect(head(member)).toBe(next);
+    expect(logs.join('\n')).toContain('npm が書き換えた package-lock.json を元に戻しました');
+    expect(git(member, 'status', '--porcelain', '--untracked-files=no')).toBe('');
+    // ほかのファイルも変わっていれば、手で変えたものとして何もしない
+    writeFileSync(join(member, 'package-lock.json'), '{"lock":1,"rewritten":2}');
+    writeFileSync(join(member, 'a.txt'), 'local edit');
+    release('b.txt');
+    expect(update().r.note).toMatch(/手で変えている/);
+  });
+
+  it('前にこの PC で動かなかった版は使わない。もっと新しい版が出たら、それにする', () => {
+    const before = head(member);
+    const bad = release();
+    const skipped = update({ avoid: bad });
+    expect(skipped.r.outcome).toBe('skipped');
+    expect(skipped.r.note).toMatch(/前にこの PC で動かなかったので、使いません/);
+    expect(head(member)).toBe(before);
+    const good = release();
+    expect(update({ avoid: bad }).r).toMatchObject({ outcome: 'updated', toSha: good });
+  });
+
+  it('rollback: 前の版に戻し、依存が揃っていなければ入れ直す', () => {
+    const before = head(member);
+    release();
+    expect(update().r.outcome).toBe('updated');
+    let installs = 0;
+    const r = rollback({ repo: member, log: () => {}, depsFresh: () => false, installDeps: () => (installs++, true) }, before);
+    expect(r).toMatchObject({ ok: true, reverted: true });
+    expect(installs).toBe(1);
+    expect(head(member)).toBe(before);
   });
 });
 
@@ -134,6 +197,7 @@ describe('selfUpdate: 手で触っているチェックアウトは変えない'
     const { r } = update();
     expect(r.outcome).toBe('skipped');
     expect(r.note).toContain('origin/main を追っていないブランチ(feature)');
+    expect(r.note).toContain('git switch main で戻すと');
     expect(head(member)).toBe(before);
   });
 
@@ -163,6 +227,18 @@ describe('selfUpdate: 手で触っているチェックアウトは変えない'
     const { r } = update({ repo: plain });
     expect(r).toMatchObject({ outcome: 'skipped', from: null, to: null });
     expect(r.note).toMatch(/git で取得したフォルダではない/);
+  });
+
+  it('atlas の処理がこのチェックアウトで動いていれば、今回は更新しない(取りに行きもしない)', () => {
+    const before = head(member);
+    release();
+    const seen: string[] = [];
+    const run: CmdRunner = (cmd, args, o) => (seen.push(args[0] ?? ''), runCmd(cmd, args, o));
+    const { r } = update({ run, busy: () => '画面のサーバ。X:\\out' });
+    expect(r.outcome).toBe('skipped');
+    expect(r.note).toMatch(/atlas が動いている\(画面のサーバ/);
+    expect(seen).not.toContain('fetch');
+    expect(head(member)).toBe(before);
   });
 
   it('git を動かせなければ、何もしない', () => {
