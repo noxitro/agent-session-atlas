@@ -21,6 +21,7 @@
   import TurnPhases from './components/TurnPhases.svelte';
   import MonthlyChart from './components/MonthlyChart.svelte';
   import ModelChart from './components/ModelChart.svelte';
+  import ModelValue from './components/ModelValue.svelte';
   import SessionTable from './components/SessionTable.svelte';
   import { applyTheme, loadTheme, type ThemeChoice } from './theme.ts';
   import { watchScrollFocus } from './scroll-focus.ts';
@@ -427,6 +428,7 @@
         { id: 'projects', label: 'プロジェクト別' },
         { id: 'monthly', label: '月別推移' },
         { id: 'models', label: 'モデル別' },
+        { id: 'model-value', label: 'モデルと推論強度の効果' },
       ],
     },
     { title: '一覧', items: [{ id: 'sessions', label: 'セッション一覧' }] },
@@ -658,6 +660,7 @@
         <ProjectTable rows={agg.byProject} {judged} current={filter.project} onpick={(p) => setFilter({ project: p })} send={canEdit && !serverDown ? projectSend : undefined} />
         <MonthlyChart months={agg.byMonth} lastAt={all.overall.lastAt} />
         <ModelChart rows={agg.byModel} />
+        <ModelValue sessions={filtered} />
         <SessionTable
           sessions={filtered}
           {judged}
