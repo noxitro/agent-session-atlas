@@ -57,7 +57,7 @@ npm run atlas -- --help                    # 使い方
 | `--snapshot-prune` | `snapshot` / `all` / `export` で、前回 `--snapshot-all` で写したが今回は写さないものを消す(既定は残して `snapshot-manifest.json` の `extras.leftover` とログに日時を出す) |
 | `--temp-dir <dir>` | `extract` で、このフォルダ配下を「(一時フォルダ)」にまとめる(複数指定可)。指定すると既定の判定(`%TEMP%` と `AppData\Local\Temp`・`/tmp` のパターン)を使わず、挙げたフォルダだけを一時フォルダとみなす。このリポジトリ自体を一時フォルダ配下に置いて試すときや、別のマシンのデータを読むとき用 |
 | `--config <file>` | `extract`・`vcs`・`all`・`serve`・`open`・`group upload` で読む設定ファイル(既定: 環境変数 `ATLAS_CONFIG`、無ければリポジトリ直下の `atlas.config.json`。下記「[wiki の指定](#wiki-の指定)」と「[アップロード先の指定](#アップロード先の指定)」)。`serve` は画面で決めたアップロード先をこのファイルに書く |
-| `--vcs-mode <v>` | `vcs` / `all` で、比べる版をどこで見るか。`worktree`(既定。照合した時点の作業ツリーで、まだ取り込んでいない変更も含む)/ `committed`(最後に取り込んだ版。git は HEAD、svn は BASE、p4 は手元の版)。設定の `vcs.mode` より優先する |
+| `--vcs-mode <v>` | `vcs` / `all` で、比べる版をどこで見るか。`worktree`(既定。照合した時点の作業ツリーで、まだ取り込んでいない変更も含む)/ `committed`(最後に取り込んだ版。git は HEAD、svn は BASE、p4 は手元の版)/ `fixed`(セッションの終わりから決まった日数後の時点で取り込まれていた版。日数は設定の `vcs.lagDays`、既定 7)。設定の `vcs.mode` より優先する |
 | `--to <dir>` | `group upload` で、アップロード先の基底フォルダ(フルパス)。省略すると設定の `uploadRoot` |
 
 `judge run` 専用のオプション(`--backend` `--limit` `--only` `--concurrency` `--force` `--no-allow-tools` `--timeout`)は [judge.md](judge.md) を見てください。`judge run` では `--model` は判定に使うモデルの指定になります。
@@ -190,7 +190,7 @@ llm-wiki の参照は、ツール呼び出しの引数に vault の場所が現�
 
 - `from` と `to` はフルパスです。前方一致で、フォルダ名の途中では切りません(`D:\work\old-repo2` は当たらない)。Windows のパスは大文字小文字と `/` `\` の違いを無視します。JSON の中では `\` を `\\` と書きます。複数当たるときは長い `from` を使います。
 - 読み替えたセッションは、レポートと表に「パスを読み替え」と出ます。開始時のコミット(ログの `headCommit`)はそのまま使うので、移す前と同じリポジトリ(同じ履歴)を指してください。
-- `mode` は比べる版の見方で、`--vcs-mode` と同じ値です(省略時は `worktree`)。
+- `mode` は比べる版の見方で、`--vcs-mode` と同じ値です(省略時は `worktree`)。`worktree` と `committed` は照合した日で値が変わり、古いセッションほど後から人が手を入れた分が混ざります。期間で比べるときは `fixed` と `lagDays`(1〜365 日)で日数をそろえてください。`fixed` では、その日数がまだ経っていないセッションを「決まった日数がまだ経っていない」として照合しません(後で照合し直すと測れます)。取り込んでいない変更は見えません。
 - `labels` で状態の名前(`kept` / `modified` / `missing` / `unattributable`)を差し替えられます。表の列名・画面・詳細ページに使います(40 文字まで)。`note` は画面の「AI の変更の残存」の節の説明に足す一文です(1000 文字まで)。どちらも `atlas vcs` の結果(`vcs-retention.json`)に入るので、変えたら `atlas vcs`(か `atlas.bat`)で照合し直します。チームの決まりや言葉づかいは、リポジトリに入れずにここ(未追跡の設定ファイル)に置けます。
 - 書き間違い(知らない項目・相対パス)は、照合が 0 件になって気付きにくいので、エラーで止めます。
 

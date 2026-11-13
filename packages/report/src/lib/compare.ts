@@ -2,7 +2,7 @@
 // 差は相関で、条件の違いが原因とは限らない。
 import { localDayStart, sessionTime } from './filter.ts';
 import { PHASES, type Phase, type TurnBucket } from '../../../core/src/turns.ts';
-import { aggregateRetention, measuredOf, retentionByPhase, type RetentionAgg, type StatusTuple } from './retention.ts';
+import { aggregateRetention, measuredOf, median, retentionByPhase, type RetentionAgg, type StatusTuple } from './retention.ts';
 import { turnAggregate } from './turns.ts';
 import type { SessionSummary } from './types.ts';
 
@@ -60,7 +60,7 @@ export interface CompareRow {
   key: string;
   label: string;
   /** 'count' は件数・合計、'rate' は割合(0〜1)、'mean' は 1 セッションあたり */
-  unit: 'count' | 'rate' | 'mean' | 'minutes' | 'aiu';
+  unit: 'count' | 'rate' | 'mean' | 'minutes' | 'aiu' | 'days';
   a: number | null;
   b: number | null;
   note: string;
@@ -83,6 +83,7 @@ export function compareRows(a: CompareSide, b: CompareSide): CompareRow[] {
     row('retention-measured', '照合できたセッション(AI の変更の残存の分母)', 'count', (s) => s.retention.measured, 'AI の変更があったセッションのうち'),
     row('retention-kept', '残っている(そのまま + 直されて)割合', 'rate', keptShare, '照合できたまとまりに対する割合。照合できたセッションが 5 未満なら —'),
     row('retention-missing', '見つからない割合', 'rate', missingShare, '照合できたまとまりに対する割合'),
+    row('retention-lag', 'セッションの終わりから比べた時点まで(中央値)', 'days', (s) => (s.retention.measured < COMPARE_MIN_SESSIONS ? null : median(s.retention.lags)), '照合できたセッション。両側で大きく違うと、後から人が手を入れた時間が違うので残存の割合を比べにくい'),
   ];
 }
 

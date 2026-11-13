@@ -327,14 +327,14 @@ async function selectSessions(p: Paths, f: SessionFilter, cmd: string, hint: str
  * vcs: AI が作った変更が、その後の VCS のファイルに残っているかを照合し、out/vcs-retention.json に書く。
  * VCS は読むだけ。アップロード先から集計したときは、送った側の PC の結果(セッションのフォルダの atlas-vcs.json)を読む
  */
-export async function runVcs(p: Paths, log: Log, o: { mode?: 'worktree' | 'committed' | null; config?: string | null } = {}): Promise<VcsRetentionFile> {
+export async function runVcs(p: Paths, log: Log, o: { mode?: 'worktree' | 'committed' | 'fixed' | null; config?: string | null } = {}): Promise<VcsRetentionFile> {
   if (!existsSync(p.snapshot)) throw new Error(`スナップショットがありません: ${p.snapshot}。先に atlas snapshot(または atlas all)を実行してください。`);
   const t = performance.now();
   const configPath = o.config ?? process.env.ATLAS_CONFIG ?? null;
   const cfg = await loadConfig(configPath ? resolve(configPath) : join(REPO_ROOT, CONFIG_FILE), configPath != null);
   const mode = o.mode ?? cfg.vcs?.mode ?? 'worktree';
   // 状態の名前と節の一文は、設定(atlas.config.json の vcs.labels・vcs.note)で差し替えたものを結果に入れる(表と画面はそれを使う)
-  const r = { ...(await runVcsStep(p.snapshot, { mode, pathMap: cfg.vcs?.pathMap ?? [] })), ...(cfg.vcs?.labels ? { labels: cfg.vcs.labels } : {}), ...(cfg.vcs?.note ? { note: cfg.vcs.note } : {}) };
+  const r = { ...(await runVcsStep(p.snapshot, { mode, pathMap: cfg.vcs?.pathMap ?? [], ...(cfg.vcs?.lagDays ? { lagDays: cfg.vcs.lagDays } : {}) })), ...(cfg.vcs?.labels ? { labels: cfg.vcs.labels } : {}), ...(cfg.vcs?.note ? { note: cfg.vcs.note } : {}) };
   await mkdir(p.out, { recursive: true });
   await writeFile(p.vcsRetention, JSON.stringify(r, null, 2));
   const s = r.summary;
@@ -344,9 +344,12 @@ export async function runVcs(p: Paths, log: Log, o: { mode?: 'worktree' | 'commi
     .join('、');
   log(
     `vcs: AI の変更があったセッション ${s.withAiChanges} / ${s.sessions} 件、照合できた ${s.measured} 件(基準を推定 ${s.baselineEstimated} 件)${reasons ? `、照合不可 ${reasons}` : ''}` +
-      `(${r.computedOn === 'sender' ? `送った側の PC の結果を読んだ${r.senders ? ` ${r.senders.sessions} 件、照合 ${r.senders.from ?? '不明'}〜${r.senders.to ?? '不明'}` : '(添えた結果なし)'}` : `比べる版: ${mode === 'worktree' ? '今の作業ツリー' : '最後に取り込んだ版'}`}${r.pathMap ? `、パスの読み替え ${r.pathMap} 件` : ''}、${ms(performance.now() - t)})→ ${p.vcsRetention}`,
+      `(${r.computedOn === 'sender' ? `送った側の PC の結果を読んだ${r.senders ? ` ${r.senders.sessions} 件、照合 ${r.senders.from ?? '不明'}〜${r.senders.to ?? '不明'}` : '(添えた結果なし)'}` : `比べる版: ${mode === 'worktree' ? '今の作業ツリー' : mode === 'committed' ? '最後に取り込んだ版' : `セッションの終わりから ${r.lagDays} 日後の版`}`}${r.pathMap ? `、パスの読み替え ${r.pathMap} 件` : ''}、${ms(performance.now() - t)})→ ${p.vcsRetention}`,
   );
-  if (s.measured) log(`vcs: 変更のまとまり ${(['kept', 'modified', 'missing', 'unattributable'] as const).map((k) => `${r.labels?.[k] ?? RETENTION_STATUS_LABEL[k]} ${s.hunks[k]}`).join('、')}`);
+  // ログの形が変わると、AI の編集から変更を取り出せなくなる(黙って 0 件にならないよう、数を出す)
+  const unread = r.sessions.reduce((n, x) => n + (x.unreadEdits ?? 0), 0);
+  if (unread) log(`vcs: 注意 ログから変更を取り出せなかった AI の編集 ${unread} 件(${r.sessions.filter((x) => x.unreadEdits).length} セッション)。Copilot のログの形が変わった可能性があります`);
+  if (s.measured) log(`vcs: 変更のまとまり${(['kept', 'modified', 'missing', 'unattributable'] as const).map((k) => `${r.labels?.[k] ?? RETENTION_STATUS_LABEL[k]} ${s.hunks[k]}`).join('、')}`);
   return r;
 }
 

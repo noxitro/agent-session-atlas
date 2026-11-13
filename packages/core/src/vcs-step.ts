@@ -13,9 +13,10 @@ import { resolveFilePath } from './classify.ts';
 import { readEvents } from './events.ts';
 import { listSessionDirs, readWorkspaceYaml } from './extract.ts';
 import { readSnapshotManifest, UPLOAD_VCS_META } from './snapshot.ts';
-import { VCS_KINDS, type EvalMode, type VcsKind } from './vcs.ts';
+import { EVAL_MODES, VCS_KINDS, type EvalMode, type VcsKind } from './vcs.ts';
 import {
   mapLimit,
+  DEFAULT_LAG_DAYS,
   measureRetention,
   RETENTION_STATUSES,
   summarizeRetention,
@@ -46,6 +47,8 @@ export interface VcsRetentionFile {
   /** local = この PC で照合した。sender = アップロード先から集計し、送った側の PC の結果を読んだ */
   computedOn: 'local' | 'sender';
   mode: EvalMode;
+  /** mode が fixed のときの日数(セッションの終わりから何日後の版と比べたか) */
+  lagDays?: number;
   similarity: number;
   /** 使ったパスの対応づけの数(0 なら読み替えていない) */
   pathMap: number;
@@ -205,11 +208,11 @@ export function parseSenderVcs(json: unknown, id: string): SessionRetention | nu
   const b = isObj(r.baseline) ? r.baseline : null;
   const baseline = b && safeStr(b.rev, 200) && (b.source === 'observed' || b.source === 'estimated') ? { rev: b.rev as string, source: b.source as 'observed' | 'estimated' } : null;
   // 照合した日時と見方は送った側のもの(この PC で集計した日時・既定の見方で埋めない)。セッションの記録に無ければ、添えたファイルの値を使う
-  const senderMode = json.mode === 'worktree' || json.mode === 'committed' ? (json.mode as EvalMode) : null;
+  const senderMode = typeof json.mode === 'string' && (EVAL_MODES as readonly string[]).includes(json.mode) ? (json.mode as EvalMode) : null;
   const senderAt = isoOrNull(json.computedAt);
   const e = isObj(r.evaluated) ? r.evaluated : null;
   const evaluated =
-    e && (e.mode === 'worktree' || e.mode === 'committed')
+    e && typeof e.mode === 'string' && (EVAL_MODES as readonly string[]).includes(e.mode)
       ? { mode: e.mode as EvalMode, rev: safeStr(e.rev, 200), at: isoOrNull(e.at) ?? senderAt ?? '' }
       : senderMode
         ? { mode: senderMode, rev: null, at: senderAt ?? '' }
@@ -228,6 +231,8 @@ export function parseSenderVcs(json: unknown, id: string): SessionRetention | nu
     provenance: { aiChanges: 'events', baseline: baseline?.source ?? null, context: {} },
     computedOn: 'sender',
     ...(r.pathMapped === true ? { pathMapped: true } : {}),
+    ...(isoOrNull(r.sessionEnd) ? { sessionEnd: isoOrNull(r.sessionEnd) } : {}),
+    ...(count(r.unreadEdits) ? { unreadEdits: count(r.unreadEdits)! } : {}),
   };
   // 送った側で「照合不可」だったときの理由も、まとまりの理由から決め直す
   finishCounts(out);
@@ -269,6 +274,8 @@ function notMeasured(set: AiChangeSet): SessionRetention {
     counts: { kept: 0, modified: 0, missing: 0, unattributable: 0 },
     lines: { kept: 0, modified: 0, missing: 0, unattributable: 0 },
     provenance: { aiChanges: 'events', baseline: null, context: set.context.sources },
+    sessionEnd: set.context.end,
+    ...(set.skipped.noMaterial ? { unreadEdits: set.skipped.noMaterial } : {}),
   };
   finishCounts(r);
   return r;
@@ -352,6 +359,7 @@ export async function runVcsStep(snapshotDir: string, opts: VcsStepOptions = {})
     mode: senderMode ?? mode,
     similarity,
     pathMap: map.length,
+    ...(mode === 'fixed' && !uploaded ? { lagDays: opts.lagDays ?? DEFAULT_LAG_DAYS } : {}),
     ...(uploaded ? { senders } : {}),
     summary: summarizeRetention(results),
     sessions: results,

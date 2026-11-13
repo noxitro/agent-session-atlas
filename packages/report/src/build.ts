@@ -254,7 +254,7 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
       items: vx ? input.sessions.reduce((a, s) => a + (vx.bySession.get(s.id)?.size ?? 0), 0) : 0,
       phases: vx?.phases ?? [],
     },
-    retention: rx ? { generatedAt: rx.generatedAt, computedOn: rx.computedOn, mode: rx.mode, similarity: rx.similarity, pathMap: rx.pathMap, sessions: rx.sessions.length, senders: rx.senders ?? null, ...(rx.labels ? { labels: rx.labels } : {}), ...(rx.note ? { note: rx.note } : {}) } : null,
+    retention: rx ? { generatedAt: rx.generatedAt, computedOn: rx.computedOn, mode: rx.mode, similarity: rx.similarity, pathMap: rx.pathMap, sessions: rx.sessions.length, senders: rx.senders ?? null, ...(rx.labels ? { labels: rx.labels } : {}), ...(rx.lagDays ? { lagDays: rx.lagDays } : {}), ...(rx.note ? { note: rx.note } : {}) } : null,
     installed: input.installed ? installedView(input.installed) : null,
     // 人に絞ったときに、その人のインストール済みの skill で「未使用」を出す。伏せ字版では人の名前を仮名にするので入れない(全員分を使う)
     ...(input.installedByPerson && !anon.enabled

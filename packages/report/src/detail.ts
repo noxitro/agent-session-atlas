@@ -332,7 +332,9 @@ function retentionSection(r: SessionRetention, meta: RetentionMeta | null, anon:
       '比べる版',
       r.evaluated ? esc(MODE_LABEL[r.evaluated.mode]) : missing('なし'),
       // 照合した日時は照合した側のもの。送った側の結果に日時が無ければ、この PC で集計した日時で埋めない
-      r.evaluated ? `照合 ${esc(dateTime(r.evaluated.at || (r.computedOn === 'local' ? meta?.generatedAt : null) || null))}` : '',
+      r.evaluated
+        ? `${r.evaluated.mode === 'fixed' ? '比べた時点' : '照合'} ${esc(dateTime(r.evaluated.at || (r.computedOn === 'local' ? meta?.generatedAt : null) || null))}${lagText(r.sessionEnd ?? null, r.evaluated.at)}`
+        : '',
     ),
   ].join('')}</div>`;
   const counts = `<div class="table-scroll"><table class="ledger"><thead><tr><th scope="col">状態</th><th scope="col" class="num">まとまり</th><th scope="col" class="num">行</th></tr></thead><tbody>${STATUSES.map(
@@ -351,7 +353,17 @@ function retentionSection(r: SessionRetention, meta: RetentionMeta | null, anon:
     ? `<h3 class="gap">まとまりごと</h3><div class="table-scroll"><table class="ledger turns"><thead><tr><th scope="col" class="num">番号</th><th scope="col">ファイル</th><th scope="col">状態</th>${STATUSES.map((k) => `<th scope="col" class="num">${esc(L[k])}(行)</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div>`
     : '';
   const excluded = r.excludedHunks ? `<p class="note">開始時の基準のファイルにもともとあった行だけでできたまとまり ${esc(int(r.excludedHunks))} 件は数えていません。</p>` : '';
-  return section('AI の変更の残存(VCS)', `${fields}${counts}${table}${excluded}`, lead);
+  const unread = r.unreadEdits ? `<p class="note">ログから変更を取り出せなかった AI の編集 ${esc(int(r.unreadEdits))} 件は数えていません(diff も編集の引数も読めなかったもの)。</p>` : '';
+  return section('AI の変更の残存(VCS)', `${fields}${counts}${table}${excluded}${unread}`, lead);
+}
+
+/** セッションの終わりから比べた時点までの日数(「・終わりから 3.5 日後」)。どちらかが無ければ空 */
+function lagText(end: string | null, at: string | null | undefined): string {
+  const e = end ? Date.parse(end) : NaN;
+  const t = at ? Date.parse(at) : NaN;
+  if (Number.isNaN(e) || Number.isNaN(t)) return '';
+  const d = Math.max(0, Math.round(((t - e) / 86_400_000) * 10) / 10);
+  return `・セッションの終わりから ${esc(dec(d))} 日後`;
 }
 
 /** 決まった並び(order)→ 残りは名前順、(unknown) は最後 */

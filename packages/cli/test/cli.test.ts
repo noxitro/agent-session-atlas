@@ -90,6 +90,7 @@ describe('parseCli', () => {
     expect(parseCli(['vcs'])).toMatchObject({ command: 'vcs', vcsMode: null });
     expect(parseCli(['vcs', '--vcs-mode', 'committed', '--config', 'c.json'])).toMatchObject({ command: 'vcs', vcsMode: 'committed', config: 'c.json' });
     expect(parseCli(['all', '--vcs-mode', 'worktree'])).toMatchObject({ command: 'all', vcsMode: 'worktree' });
+    expect(parseCli(['vcs', '--vcs-mode', 'fixed'])).toMatchObject({ command: 'vcs', vcsMode: 'fixed' });
     expect(() => parseCli(['vcs', '--vcs-mode', 'head'])).toThrow(/worktree \/ committed/);
     expect(() => parseCli(['build', '--vcs-mode', 'worktree'])).toThrow(/vcs と all でだけ/);
   });

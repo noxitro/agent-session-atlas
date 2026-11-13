@@ -134,7 +134,7 @@ export interface CliOptions {
   /** open: 前に集計したときから何も変わっていなくても、レポートを作り直す */
   rebuild: boolean;
   /** vcs・all: 比べる版をどこで見るか(worktree = 今の作業ツリー、committed = 最後に取り込んだ版)。未指定は null(設定の vcs.mode、無ければ worktree) */
-  vcsMode: 'worktree' | 'committed' | null;
+  vcsMode: 'worktree' | 'committed' | 'fixed' | null;
   /** skill-draft: 候補の番号(insights.json の順)と、使うバックエンド */
   skillDraft: { index: number; backend: BackendChoice; model: string | null; timeoutSec: number } | null;
   help: boolean;
@@ -213,7 +213,8 @@ export const USAGE = `使い方: atlas <コマンド> [オプション]
   --snapshot-prune   snapshot: 前回 --snapshot-all で写したが今回は写さないものを消す(既定は残して manifest に日時を出す)
   --config <file>    extract・vcs・all・serve・open・group upload: 設定ファイル(wiki の vault・アップロード先の指定)の場所
                      (既定: 環境変数 ATLAS_CONFIG、無ければリポジトリ直下の atlas.config.json)
-  --vcs-mode <v>     vcs・all: 比べる版をどこで見るか。worktree(既定、今の作業ツリー)/ committed(最後に取り込んだ版)
+  --vcs-mode <v>     vcs・all: 比べる版をどこで見るか。worktree(既定、今の作業ツリー)/ committed(最後に取り込んだ版)/
+                     fixed(セッションの終わりから決まった日数後の版。日数は設定の vcs.lagDays、既定 7)
   -h, --help         この説明を出す
 
 export のオプション:
@@ -427,7 +428,7 @@ export function parseCli(argv: string[]): CliOptions {
   if ((values['snapshot-all'] || values['snapshot-prune']) && !['snapshot', 'all', 'export', 'open'].includes(cmd)) throw new UsageError('--snapshot-all と --snapshot-prune は snapshot / all / export / open で使えます');
   const vcsMode = values['vcs-mode'] ?? null;
   if (vcsMode != null && cmd !== 'vcs' && cmd !== 'all') throw new UsageError('--vcs-mode は vcs と all でだけ使えます');
-  if (vcsMode != null && vcsMode !== 'worktree' && vcsMode !== 'committed') throw new UsageError(`--vcs-mode は worktree / committed のどちらかです: ${vcsMode}`);
+  if (vcsMode != null && vcsMode !== 'worktree' && vcsMode !== 'committed' && vcsMode !== 'fixed') throw new UsageError(`--vcs-mode は worktree / committed / fixed のどれかです: ${vcsMode}`);
   if (values.config != null && cmd !== 'extract' && cmd !== 'vcs' && cmd !== 'all' && cmd !== 'serve' && cmd !== 'open' && !(cmd === 'group' && positionals[1] === 'upload'))
     throw new UsageError('--config は extract・vcs・all・serve・open・group upload でだけ使えます');
   if (values.since != null && Number.isNaN(Date.parse(values.since))) throw new UsageError(`--since の日時を解釈できません: ${values.since}`);
@@ -474,7 +475,7 @@ export function parseCli(argv: string[]): CliOptions {
     pick: values.pick ?? false,
     rebuild: values.rebuild ?? false,
     skillDraft,
-    vcsMode: vcsMode as 'worktree' | 'committed' | null,
+    vcsMode: vcsMode as 'worktree' | 'committed' | 'fixed' | null,
     help: values.help ?? false,
   };
 }

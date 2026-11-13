@@ -96,6 +96,8 @@
         return `${dec(Math.round(v / 6000) / 10)} 分`;
       case 'aiu':
         return dec(Math.round(v * 100) / 100);
+      case 'days':
+        return `${dec(Math.round(v * 10) / 10)} 日`;
     }
   }
   /** 差(B − A)。割合はポイント、件数は件数 */
@@ -103,6 +105,7 @@
     if (r.a == null || r.b == null || r.key === 'sessions' || r.key === 'turns' && kind === 'phase' || r.key === 'retention-measured' || r.key === 'retention-hunks') return '';
     const d = r.b - r.a;
     if (r.unit === 'rate') return `${d >= 0 ? '+' : '−'}${dec(Math.round(Math.abs(d) * 1000) / 10)} ポイント`;
+    if (r.unit === 'days') return `${d >= 0 ? '+' : '−'}${dec(Math.round(Math.abs(d) * 10) / 10)} 日`;
     if (r.unit === 'minutes') return `${d >= 0 ? '+' : '−'}${dec(Math.round(Math.abs(d) / 6000) / 10)} 分`;
     return `${d >= 0 ? '+' : '−'}${dec(Math.round(Math.abs(d) * 100) / 100)}`;
   }

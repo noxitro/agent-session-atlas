@@ -24,7 +24,7 @@ export const RETENTION_STATUS_LABEL: Record<RetentionStatus, string> = {
   unattributable: '照合不可',
 };
 
-export const UNATTRIBUTABLE_REASONS = ['repo_not_found', 'no_vcs', 'baseline_missing', 'outside_repo', 'read_error', 'concurrent_session', 'later_session', 'not_measured'] as const;
+export const UNATTRIBUTABLE_REASONS = ['repo_not_found', 'no_vcs', 'baseline_missing', 'outside_repo', 'read_error', 'concurrent_session', 'later_session', 'not_measured', 'too_recent', 'after_missing'] as const;
 export type UnattributableReason = (typeof UNATTRIBUTABLE_REASONS)[number];
 export const UNATTRIBUTABLE_REASON_LABEL: Record<UnattributableReason, string> = {
   repo_not_found: '作業フォルダがこの PC に無い',
@@ -35,6 +35,8 @@ export const UNATTRIBUTABLE_REASON_LABEL: Record<UnattributableReason, string> =
   concurrent_session: '時間の重なる別のセッションと同じ行',
   later_session: '後のセッションも同じ行を足した',
   not_measured: '送った側で照合していない',
+  too_recent: '決まった日数がまだ経っていない',
+  after_missing: '比べる版を決められない',
 };
 
 export interface LineCounts {
@@ -77,16 +79,26 @@ export interface SessionRetention {
   pathMapped?: boolean;
   /** 照合した場所。local = この PC、sender = 送った側の PC(アップロードに添えられた結果を読んだ)。vcs-step.ts が付ける */
   computedOn?: 'local' | 'sender';
+  /** セッションの終わり(最後のイベントの時刻)。照合した時点までの日数を出すのに使う */
+  sessionEnd?: string | null;
+  /** AI の編集のうち、ログから変更を取り出せなかったもの(diff も引数も読めなかった)。ログの形が変わると増える */
+  unreadEdits?: number;
 }
 
 export interface RetentionOptions {
   runner?: VcsRunner;
-  /** 比べる版。worktree = 今の作業ツリー(既定)、committed = 最後に取り込んだ版 */
+  /** 比べる版。worktree = 今の作業ツリー(既定)、committed = 最後に取り込んだ版、fixed = セッションの終わりから lagDays 日後の版 */
   mode?: EvalMode;
+  /** fixed のときの日数(既定 7) */
+  lagDays?: number;
   now?: () => Date;
   /** 似た本文とみなす 2 字組の重なり(Dice 係数)の下限 */
   similarity?: number;
 }
+
+/** fixed の既定の日数 */
+export const DEFAULT_LAG_DAYS = 7;
+const DAY_MS = 24 * 3600 * 1000;
 
 const emptyLines = (): LineCounts => ({ kept: 0, modified: 0, missing: 0, unattributable: 0 });
 const emptyCounts = (): Record<RetentionStatus, number> => ({ kept: 0, modified: 0, missing: 0, unattributable: 0 });
@@ -320,6 +332,8 @@ export async function measureRetention(sets: readonly AiChangeSet[], opts: Reten
   const mode = opts.mode ?? 'worktree';
   const now = (opts.now ?? (() => new Date()))().toISOString();
   const similarity = opts.similarity ?? 0.75;
+  const lagDays = opts.lagDays ?? DEFAULT_LAG_DAYS;
+  const nowMs = Date.parse(now);
   const repoCache = new Map<string, Promise<OpenRepoResult>>();
   // セッションをまたいで同じもの(同じ版のファイル・照合した時点のファイル・記録された開始時の版・今の版)を読むことが多いので、照合 1 回の中で使い回す
   const baselineCache = new Map<string, Promise<{ revision: Revision | null; reason?: 'baseline_missing' }>>();
@@ -343,8 +357,25 @@ export async function measureRetention(sets: readonly AiChangeSet[], opts: Reten
       counts: emptyCounts(),
       lines: emptyLines(),
       provenance: { aiChanges: 'events', baseline: null, context: { ...ctx.sources } },
+      sessionEnd: ctx.end,
+      ...(set.skipped.noMaterial ? { unreadEdits: set.skipped.noMaterial } : {}),
     };
     if (set.hunks.length === 0) return result;
+
+    // fixed: セッションの終わりから lagDays 日後の時点の版と比べる。その日がまだ来ていなければ照合しない(後で照合し直すと測れる)
+    const endMs = toMs(ctx.end);
+    const fixedAt = mode === 'fixed' && endMs != null ? new Date(endMs + lagDays * DAY_MS).toISOString() : null;
+    const tooRecent = mode === 'fixed' && (endMs == null || endMs + lagDays * DAY_MS > nowMs);
+    const afters = new Map<VcsRepo, Promise<string | null>>();
+    const afterRevOf = (repo: VcsRepo): Promise<string | null> => {
+      let r = afters.get(repo);
+      if (!r) {
+        const branch = repo.kind === 'git' && sessionRepo?.repo === repo ? ctx.branch : null;
+        r = memo(revCache, `${repoKey(repo)}\0at\0${fixedAt}\0${branch ?? ''}`, () => repo.revisionAt(fixedAt!, branch).catch(() => null));
+        afters.set(repo, r);
+      }
+      return r;
+    };
 
     // セッションの作業フォルダの VCS(ファイルが別のリポジトリにあれば、そのファイルの場所で探し直す)
     const sessionDir = ctx.gitRoot ?? ctx.cwd;
@@ -396,6 +427,10 @@ export async function measureRetention(sets: readonly AiChangeSet[], opts: Reten
         result.hunks.push(...hunks.map((h) => unattributed(h, reason)));
         continue;
       }
+      if (tooRecent) {
+        result.hunks.push(...hunks.map((h) => unattributed(h, 'too_recent')));
+        continue;
+      }
       try {
         const b = await baselineOf(repo);
         if (!b.revision) {
@@ -409,7 +444,18 @@ export async function measureRetention(sets: readonly AiChangeSet[], opts: Reten
         const rev = b.revision.rev;
         const fk = filePathKey(path);
         const base = await memo(readCache, `${repoKey(repo)}\0at\0${rev}\0${fk}`, () => repo.readAt(rev, path));
-        const after = await memo(readCache, `${repoKey(repo)}\0after\0${mode}\0${fk}`, () => repo.readAfter(mode, path));
+        let after: string | null;
+        if (mode === 'fixed') {
+          const afterRev = await afterRevOf(repo);
+          if (!afterRev) {
+            result.hunks.push(...hunks.map((h) => unattributed(h, 'after_missing')));
+            continue;
+          }
+          after = await memo(readCache, `${repoKey(repo)}\0at\0${afterRev}\0${fk}`, () => repo.readAt(afterRev, path));
+        } else {
+          const m = mode;
+          after = await memo(readCache, `${repoKey(repo)}\0after\0${m}\0${fk}`, () => repo.readAfter(m, path));
+        }
         const { results, excluded } = classifyFile(hunks, base, after, (line) => lineClaim(index, me, path, line), similarity);
         result.hunks.push(...results);
         result.excludedHunks += excluded;
@@ -420,8 +466,13 @@ export async function measureRetention(sets: readonly AiChangeSet[], opts: Reten
 
     if (sessionRepo?.repo) {
       const repo = sessionRepo.repo;
-      const rev = await memo(revCache, repoKey(repo), () => repo.currentRevision().catch(() => null));
-      result.evaluated = { mode, rev, at: now };
+      if (mode === 'fixed') {
+        // 比べた時点は、セッションの終わりから決まった日数後(照合した日ではない)
+        if (fixedAt && !tooRecent) result.evaluated = { mode, rev: await afterRevOf(repo), at: fixedAt };
+      } else {
+        const rev = await memo(revCache, repoKey(repo), () => repo.currentRevision().catch(() => null));
+        result.evaluated = { mode, rev, at: now };
+      }
     }
     result.hunks.sort((a, b) => a.id - b.id);
     for (const h of result.hunks) {
