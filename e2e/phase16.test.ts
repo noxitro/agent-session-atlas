@@ -322,10 +322,20 @@ describe('Phase 16 E2E: アップロード先から集計し直す(読む側)', 
       const list = (await (await fetch(new URL('api/folders', url), { headers: { 'x-atlas-token': token } })).json()) as { current: unknown; local: unknown; folders: { key: string; status: string }[] };
       expect(list).toMatchObject({ current: { path: everyone, name: 'everyone-open' }, local: { status: 'idle', url: null } });
       expect(list.folders).toMatchObject([{ key: fp.key, status: 'current' }]);
-      // 同じフォルダをもう一度開くと、集計し直さずに、動いているサーバを使う
+      // サーバが動いたまま、送り先にセッションが増えた。同じフォルダをもう一度開くと、送り先を読み直してから、動いているサーバを使う
+      // (前は読み直さずに開くだけだったので、増えたセッションが出なかった)
+      const added = '00000000-0000-4000-8000-000000169999';
+      await cp(join(everyone, 'person-a', GROUP_A, ids[0]), join(everyone, 'person-a', GROUP_A, added), { recursive: true });
       const again = atlas(['open', everyone, '--out', localOut, '--notes-dir', localNotes, '--no-open']);
       expect(again.status, again.out).toBe(0);
+      expect(again.out).toMatch(/snapshot: /);
       expect(again.out).toMatch(/既に動いているサーバがあります/);
+      expect(again.out).toContain('前から開いていたタブは、再読み込みすると新しい集計が出ます');
+      const reread = JSON.parse(await readFile(join(fp.out, 'sessions.json'), 'utf8')) as SessionsFile;
+      expect(reread.sessions.map((x) => x.id)).toContain(added);
+      // 動いているサーバの画面(新しく開いたタブ)にも出る
+      const fresh = extractEmbedded<{ sessions: { id: string }[] }>(await (await fetch(url)).text());
+      expect(fresh.sessions.map((x) => x.id)).toContain(added);
       // 開いた画面は読むだけ: タスクタグは作れず、どちらの置き場にも書かない
       const made = await fetch(new URL('api/groups', url), { method: 'POST', headers: { 'content-type': 'application/json', 'x-atlas-token': token }, body: JSON.stringify({ name: '全員の分のタグ', note: '', ids: [ids[0]] }) });
       expect(made.status).toBe(403);

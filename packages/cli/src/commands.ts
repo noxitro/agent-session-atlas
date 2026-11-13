@@ -815,9 +815,30 @@ export async function runOpen(o: CliOptions, log: Log, deps: { pick?: typeof pic
   log(`open: ${info.path}(${info.summary})`);
   log(`open: 出力先 ${fp.out}(読むだけの画面です。タスクタグとメモは送った人が付けたものを出し、この画面では書き換えません)`);
   if (await findRunningServer(p.out)) {
+    // 前に開いたサーバがまだ動いている(タブを開いたままなど)。前は読み直さずに開くだけだったので、送り先に増えたセッションが出なかった。
+    // 送り先を読み直してから(何も変わっていなければ前のレポートを使う)、動いているサーバの画面を開く。サーバは出力先のファイルを
+    // 開くたびに読むので、新しく開いたタブには新しい集計が出る(画面の「集計し直す」と同じ)。前から開いていたタブは再読み込みが要る
+    let build: BuildResult | undefined;
+    try {
+      const release = acquireOutLock(p.out, 'all', 'cli');
+      try {
+        build = await runAllOrReuse({ ...o, command: 'all', home: info.path, out: fp.out, notesDir: fp.notes }, p, fp.built, log);
+      } finally {
+        release();
+      }
+      log('open: 前から開いていたタブは、再読み込みすると新しい集計が出ます');
+    } catch (e) {
+      // 画面で集計し直している最中(出力先の印がある)なら、それに任せる。読み直せなかったときも、動いているサーバの画面は開く
+      // (状態は動いているサーバのものなので書き換えない)
+      log(
+        e instanceof OutBusyError
+          ? `open: 画面で集計し直している最中なので、読み直さずに開きます。終わると画面に「新しい集計ができました」と出ます(${e.message})`
+          : `open: 注意 送り先を読み直せなかったので、前の集計のまま開きます(${(e as Error).message})`,
+      );
+    }
     save(prev?.run ?? null, true);
     await runServe(p, serve, log);
-    return { paths: p };
+    return { paths: p, build };
   }
   let build: BuildResult | undefined;
   try {
