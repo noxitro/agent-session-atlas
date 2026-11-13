@@ -424,11 +424,27 @@ export function requestCandidates(sources: CandidateSource[], anonymized: boolea
       items.push({ id: s.id, text, norm, grams: trigrams(norm), ms: s.analysis.turnActiveMs?.[i] ?? null });
     });
   }
+  // 先に作ったまとまりから順に、代表との類似度がしきい値以上の最初のまとまりに入れる。
+  // 代表の 3 文字の組がどのまとまりにあるかの索引を持ち、共通する組の数を数えて類似度を出す(jaccard と同じ式)。
+  // 共通する組が 1 つも無いまとまりは類似度 0 なので見ない(1 件ずつ全部のまとまりと比べると、依頼の数の 2 乗で遅くなる)
   const clusters: { rep: Item; members: Item[] }[] = [];
+  const byGram = new Map<string, number[]>();
   for (const it of items) {
-    const c = clusters.find((x) => jaccard(x.rep.grams, it.grams) >= THRESHOLDS.SIMILARITY);
-    if (c) c.members.push(it);
-    else clusters.push({ rep: it, members: [it] });
+    let found = -1;
+    if (it.grams.size === 0) found = clusters.findIndex((x) => jaccard(x.rep.grams, it.grams) >= THRESHOLDS.SIMILARITY);
+    else {
+      const shared = new Map<number, number>();
+      for (const g of it.grams) for (const ci of byGram.get(g) ?? []) shared.set(ci, (shared.get(ci) ?? 0) + 1);
+      for (const [ci, inter] of shared) {
+        if (found !== -1 && ci > found) continue;
+        if (inter / (clusters[ci]!.rep.grams.size + it.grams.size - inter) >= THRESHOLDS.SIMILARITY) found = ci;
+      }
+    }
+    if (found !== -1) clusters[found]!.members.push(it);
+    else {
+      const ci = clusters.push({ rep: it, members: [it] }) - 1;
+      for (const g of it.grams) (byGram.get(g) ?? byGram.set(g, []).get(g)!).push(ci);
+    }
   }
   const out: Candidate[] = [];
   for (const c of clusters) {
