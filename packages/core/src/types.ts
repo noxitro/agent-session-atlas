@@ -21,7 +21,8 @@ import type { AtlasBuild, FolderUpload } from './atlas-version.ts';
 // 13: tools.results[].causes(ツールの失敗の要因別の回数)。error.code: rejected も拒否に数える
 // 14: uploadAtlas(送り先から集計したときの、そのセッションのフォルダを写した atlas の版)
 // 15: uploadFolder(送り先から集計したときの、そのセッションの送り先のフォルダ)・source.uploads(フォルダごとの最後に送った日時と版)
-export const SESSIONS_SCHEMA_VERSION = 15;
+// 16: exec.modelEfforts(モデル別 × 推論強度別のリクエスト数・トークン)
+export const SESSIONS_SCHEMA_VERSION = 16;
 // 5: turns(依頼単位の工程 × 詰まり・依頼の種類の集計)
 // 6: tools.results[].causes(ツールの失敗の要因別の回数)
 export const METRICS_SCHEMA_VERSION = 6;
@@ -408,6 +409,12 @@ export interface ExecProfile {
    * 終了時の累計(shutdown)しか無いセッションは、セッション中の設定が 1 種類ならそれ、それ以外は (unknown) に入れる
    */
   efforts: Record<string, EffortStat>;
+  /**
+   * モデル → 推論強度 → リクエスト数・トークン・nano AIU(efforts をモデルごとに分けたもの。強度の決め方は efforts と同じ)。
+   * 終了時の累計しか無いセッションは、モデル別の累計(tokens.byModel)を、セッション中の設定が 1 種類ならその強度、それ以外は (unknown) に入れる。
+   * schema 15 以前の sessions.json には無い
+   */
+  modelEfforts?: Record<string, Record<string, EffortStat>>;
   /** リクエストの起点(DB / usage_record の initiator: user / agent / sub-agent / compaction / (unknown))。明細のあるリクエストだけ */
   initiators: Record<string, number>;
   context: ContextBreakdown;

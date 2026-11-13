@@ -1114,17 +1114,21 @@ function buildExec(
   rest: Pick<ExecProfile, 'modes' | 'context'>,
 ): ExecProfile {
   const efforts: Record<string, EffortStat> = {};
+  const modelEfforts: Record<string, Record<string, EffortStat>> = {};
   const initiators: Record<string, number> = {};
   const latency: ExecProfile['latency'] = {};
-  const add = (key: string, s: EffortStat): void => {
-    const e = (efforts[key] ??= { requests: 0, input: 0, output: 0, nanoAiu: 0 });
+  const add = (to: Record<string, EffortStat>, key: string, s: EffortStat): void => {
+    const e = (to[key] ??= { requests: 0, input: 0, output: 0, nanoAiu: 0 });
     e.requests += s.requests;
     e.input += s.input;
     e.output += s.output;
     e.nanoAiu += s.nanoAiu;
   };
   for (const u of items) {
-    add(u.effort ?? effortAt(effortChanges, u.at) ?? UNKNOWN_KEY, { requests: 1, input: u.input, output: u.output, nanoAiu: u.nanoAiu ?? 0 });
+    const key = u.effort ?? effortAt(effortChanges, u.at) ?? UNKNOWN_KEY;
+    const s = { requests: 1, input: u.input, output: u.output, nanoAiu: u.nanoAiu ?? 0 };
+    add(efforts, key, s);
+    add((modelEfforts[u.model] ??= {}), key, s);
     inc(initiators, u.initiator ?? UNKNOWN_KEY);
     if (u.ttft != null || u.duration != null) {
       const l = (latency[u.model] ??= { ttft: [], duration: [] });
@@ -1135,9 +1139,12 @@ function buildExec(
   if (items.length === 0 && tokens.source === 'shutdown') {
     // 明細が無く終了時の累計だけ: セッション中の設定が 1 種類ならその強度、それ以外は不明
     const distinct = new Set(effortChanges.map((c) => c.effort));
-    add(distinct.size === 1 ? [...distinct][0] : UNKNOWN_KEY, { requests: tokens.requests ?? 0, input: tokens.input ?? 0, output: tokens.output, nanoAiu: tokens.nanoAiu ?? 0 });
+    const key = distinct.size === 1 ? [...distinct][0] : UNKNOWN_KEY;
+    const stat = (t: TokenCounts): EffortStat => ({ requests: t.requests ?? 0, input: t.input ?? 0, output: t.output, nanoAiu: t.nanoAiu ?? 0 });
+    add(efforts, key, stat(tokens));
+    for (const [m, t] of Object.entries(tokens.byModel)) add((modelEfforts[m] ??= {}), key, stat(t));
   }
-  return { ...rest, efforts, initiators, latency };
+  return { ...rest, efforts, modelEfforts, initiators, latency };
 }
 
 /** null は「不明」を保つ(どちらかが null なら、もう一方の値) */

@@ -68,6 +68,11 @@ describe('Phase 7: normalizeSession の実行の性質', () => {
     });
     expect(r.exec.modes).toEqual({ byMode: { interactive: 1 }, inferred: 1 });
     expect(r.exec.efforts).toEqual({ medium: { requests: 2, input: 30, output: 3, nanoAiu: 0 } });
+    // モデルごとに分けたもの(モデル名は正規化した名前)
+    expect(r.exec.modelEfforts).toEqual({
+      'claude-haiku-5.5': { medium: { requests: 1, input: 10, output: 1, nanoAiu: 0 } },
+      'gpt-5.5': { medium: { requests: 1, input: 20, output: 2, nanoAiu: 0 } },
+    });
     expect(r.exec.initiators).toEqual({ user: 1, agent: 1 });
     expect(r.exec.latency).toEqual({ 'claude-haiku-5.5': { ttft: [701], duration: [1500] } });
     // compaction の内訳(ツール定義 300)が usage の toolTokenCount(4000)より優先。使えるツールの数は usage の値

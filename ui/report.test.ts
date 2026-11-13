@@ -92,6 +92,52 @@ describe('画面の操作', () => {
   const focusLands = (l: Locator): Promise<void> => expect.poll(() => l.evaluate((el) => el.matches(':focus'))).toBe(true);
   const readGroups = async (): Promise<{ name: string; note?: string; ids: string[] }[]> => (existsSync(groupsPath) ? JSON.parse(await readFile(groupsPath, 'utf8')).groups : []);
 
+  it('m. モデル別: 「推論強度で分ける」で モデル × 推論強度 の行になり、「モデルごと」で戻る。モデルごとの表には推論強度別のリクエストを出す', async () => {
+    await page.goto(server.url);
+    const sec = page.locator('#models');
+    await sec.getByText('表で見る').click();
+    const rows = sec.locator('table.ledger tbody tr');
+    const heads = async (): Promise<string[]> => sec.locator('table.ledger thead th').allInnerTexts();
+    expect(await heads()).toContain('推論強度別のリクエスト');
+    const models = await rows.count();
+    expect(models).toBeGreaterThan(0);
+    // 推論強度の記録があるモデルは「high 3」のように強度と回数を出す
+    const efforts = await rows.locator('td.efforts').allInnerTexts();
+    expect(efforts.some((t) => /^\S+ [\d,]+(・\S+ [\d,]+)*$/.test(t)), efforts.join(' / ')).toBe(true);
+    await sec.getByRole('button', { name: '推論強度で分ける' }).click();
+    await expect.poll(heads).toContain('推論強度');
+    expect(await heads()).not.toContain('推論強度別のリクエスト');
+    expect(await rows.count()).toBeGreaterThanOrEqual(models);
+    // 分けた行のリクエストの合計は、モデルごとの合計と同じ(強度の記録が無いリクエストは「不明」に入る)
+    const sum = async (): Promise<number> => {
+      const texts = await rows.locator('td.req').allInnerTexts();
+      return texts.reduce((a, t) => a + Number(t.replace(/,/g, '')), 0);
+    };
+    const splitSum = await sum();
+    await sec.getByRole('button', { name: 'モデルごと' }).click();
+    await expect.poll(() => rows.count()).toBe(models);
+    expect(await sum()).toBe(splitSum);
+  });
+
+  it('m2. モデルと推論強度の効果: 既定は モデル × 推論強度 の行で、「モデルごと」でモデルの数の行になる。リクエストの合計はどちらも同じ', async () => {
+    await page.goto(server.url);
+    const sec = page.locator('#model-value');
+    const rows = sec.getByTestId('model-value-table').locator('tbody tr');
+    const heads = async (): Promise<string[]> => sec.locator('thead th').allInnerTexts();
+    expect(await heads()).toContain('推論強度');
+    expect(await heads()).toContain('AIU / リクエスト');
+    const reqSum = async (): Promise<number> => (await rows.locator('td.req').allInnerTexts()).reduce((a, t) => a + Number(t.replace(/,/g, '')), 0);
+    const splitRows = await rows.count();
+    const splitSum = await reqSum();
+    expect(splitSum).toBeGreaterThan(0);
+    await sec.getByRole('button', { name: 'モデルごと' }).click();
+    await expect.poll(heads).not.toContain('推論強度');
+    expect(await rows.count()).toBeLessThanOrEqual(splitRows);
+    expect(await reqSum()).toBe(splitSum);
+    // 目次から飛べる
+    expect(await page.locator('a[href="#model-value"]').count()).toBeGreaterThan(0);
+  });
+
   it('a. 一覧でチェックした件数だけで集計し、解除すると元に戻る', async () => {
     await page.goto(server.url);
     const all = await shown();
