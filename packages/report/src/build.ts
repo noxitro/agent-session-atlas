@@ -4,7 +4,7 @@ import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { CopilotEvent, InstalledInventory, InstructionFile, InstructionInjection, MetricsBucket, MetricsFile, SessionRecord } from '../../core/src/types.ts';
-import { codeStamp, contentHash, describeAtlasBuilds, parseEvents, removeTree, summarizeAtlasBuilds, type AtlasBuild, type FolderUpload } from '../../core/src/index.ts';
+import { anonymizeAtlasBuilds, codeStamp, contentHash, describeAtlasBuilds, parseEvents, removeTree, summarizeAtlasBuilds, type AtlasBuild, type FolderUpload } from '../../core/src/index.ts';
 import { CoverageCounter, coverageFile, desktopCoverage } from './coverage.ts';
 import { createFileSink, fullFileName, renderFullTo } from './full.ts';
 import { INSTRUCTIONS_FILE, LIBRARY_DIR, LibraryCollector, renderInstructionsHtml, writeLibrary } from './library.ts';
@@ -216,13 +216,7 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
   // 送り先から集計したときの、送った atlas の版。伏せ字版では人の名前を出さない
   const builds = summarizeAtlasBuilds(input.sessions, input.atlasLocal ?? null, input.atlasUploads ?? undefined);
   // 伏せ字版では、人の名前とフォルダ(人とプロジェクトの名前を含む)を出さない
-  const atlasBuilds = builds
-    ? describeAtlasBuilds(
-        anon.enabled
-          ? { ...builds, unknownPersons: [], olderPersons: [], builds: builds.builds.map((g) => ({ ...g, persons: [] })), ...(builds.folders ? { folders: builds.folders.map((f, i) => ({ ...f, folder: `フォルダ ${i + 1}` })) } : {}) }
-          : builds,
-      )
-    : null;
+  const atlasBuilds = builds ? describeAtlasBuilds(anon.enabled ? anonymizeAtlasBuilds(builds) : builds) : null;
   const data: ReportData = {
     version: REPORT_DATA_VERSION,
     generatedAt,

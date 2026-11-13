@@ -91,9 +91,13 @@ export function inputsKey(p: ReusePaths, options: unknown, configPath: string): 
   // 始めたときの印(SNAPSHOT_SOURCE)も毎回変わるので入れない
   let manifest = '';
   try {
-    const m = JSON.parse(readFileSync(join(p.snapshot, SNAPSHOT_MANIFEST), 'utf8')) as { createdAt?: unknown; sessions?: Record<string, unknown> };
+    const m = JSON.parse(readFileSync(join(p.snapshot, SNAPSHOT_MANIFEST), 'utf8')) as { createdAt?: unknown; sessions?: Record<string, unknown>; uploads?: Record<string, { uploadedAt?: unknown }> };
     delete m.createdAt;
     if (m.sessions && typeof m.sessions === 'object') for (const k of VOLATILE_SESSION_COUNTS) delete m.sessions[k];
+    // フォルダごとの最後に送った日時(送り先の索引)は、変わったセッションが無くても送るたびに変わる。レポートには日付までしか出さないので、
+    // 日付までにして入れる(そのままだと、作業メンバーが送るたびに作り直しになる)。版と、索引を読めたかは、そのまま入れる
+    if (m.uploads && typeof m.uploads === 'object')
+      for (const u of Object.values(m.uploads)) if (u && typeof u === 'object' && typeof u.uploadedAt === 'string') u.uploadedAt = u.uploadedAt.slice(0, 10);
     manifest = JSON.stringify(m);
   } catch {
     /* manifest が無い・読めない */

@@ -20,7 +20,8 @@ import type { AtlasBuild, FolderUpload } from './atlas-version.ts';
 // 11: person(送り先が人ごとに分けてあるときの、その人のフォルダの名前)
 // 13: tools.results[].causes(ツールの失敗の要因別の回数)。error.code: rejected も拒否に数える
 // 14: uploadAtlas(送り先から集計したときの、そのセッションのフォルダを写した atlas の版)
-export const SESSIONS_SCHEMA_VERSION = 14;
+// 15: uploadFolder(送り先から集計したときの、そのセッションの送り先のフォルダ)・source.uploads(フォルダごとの最後に送った日時と版)
+export const SESSIONS_SCHEMA_VERSION = 15;
 // 5: turns(依頼単位の工程 × 詰まり・依頼の種類の集計)
 // 6: tools.results[].causes(ツールの失敗の要因別の回数)
 export const METRICS_SCHEMA_VERSION = 6;
@@ -477,6 +478,11 @@ export interface SessionRecord {
    * 記録が無い(前の版で送った)ものは null。この PC の記録・古い sessions.json には無い(省略)
    */
   uploadAtlas?: AtlasBuild | null;
+  /**
+   * 送り先から集計したときの、そのセッションを数えた送り先のフォルダ(元のルートからの相対パス。source.uploads のキーと同じ書き方。
+   * 直下にセッションが並ぶ形は '.')。分からなければ null。送り先から集計したセッションにだけある
+   */
+  uploadFolder?: string | null;
   copilotVersion: string | null;
   schemaVersion: number | null;
   createdAt: string | null;

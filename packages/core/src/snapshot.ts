@@ -1,4 +1,4 @@
-import { access, copyFile, lstat, mkdir, readdir, readFile, realpath, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { access, copyFile, lstat, mkdir, open, readdir, readFile, realpath, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { readDesktopDb } from './desktop.ts';
@@ -1074,25 +1074,59 @@ export async function readInventory(src: string): Promise<InstalledInventory> {
   return inv;
 }
 
-/** 索引(UPLOAD_INDEX)の大きさの上限。セッションの一覧を含むので大きめにする。これを超えるものは読まない(共有フォルダのファイルなので) */
-const UPLOAD_INDEX_LIMIT = 20 * 1024 * 1024;
+/**
+ * 索引(UPLOAD_INDEX)のうち読む先頭の大きさ。索引にはそのフォルダの全セッションの一覧が入って大きくなるが、要るのは先頭に書く
+ * uploadedAt と atlas だけ(group-upload.ts が sessions より前に書く)。共有フォルダから全体を読まないように、先頭だけを読む
+ */
+const UPLOAD_INDEX_HEAD = 64 * 1024;
+
+/** 索引の先頭(全体が UPLOAD_INDEX_HEAD に収まらないとき)から、uploadedAt と atlas を取り出す。形が合わなければ null */
+function uploadIndexHead(text: string): Record<string, unknown> | null {
+  // version は先頭の項目(group-upload.ts の書き方)。atlas は入れ子の無いオブジェクトか null
+  if (!/^\s*\{\s*"version"\s*:\s*1\s*,/.test(text)) return null;
+  const at = /"uploadedAt"\s*:\s*("(?:[^"\\]|\\.){0,64}"|null)/.exec(text)?.[1];
+  const atlas = /"atlas"\s*:\s*(\{[^{}]{0,2000}\}|null)/.exec(text)?.[1];
+  try {
+    return { version: 1, uploadedAt: at ? JSON.parse(at) : undefined, atlas: atlas ? JSON.parse(atlas) : undefined };
+  } catch {
+    return null;
+  }
+}
 
 /**
  * アップロードしたフォルダ(src からの相対パス。'.' は src そのもの)の索引から、最後に送ったときの日時と atlas の版を読む。
- * 索引が無い・読めない・大きすぎる・形が違うフォルダは入れない(版の記録が無い atlas で送った索引は、atlas が null)
+ * 索引の無いフォルダは入れない(前の版や手で写したもの)。索引はあるが読めない・書きかけ・形が違うものは、unreadable として入れる
+ * (黙って外すと、ほかが最新なら「すべて最新」と出てしまう)。版の記録が無い atlas で送った索引は、atlas が null
  */
 export async function readUploadIndexes(src: string, folders: readonly string[]): Promise<Record<string, FolderUpload>> {
+  const unreadable: FolderUpload = { uploadedAt: null, atlas: null, unreadable: true };
   const read = await mapLimit(folders, SNAPSHOT_CONCURRENCY, async (f): Promise<FolderUpload | null> => {
     const path = join(src, ...(f === '.' ? [] : f.split('/')), UPLOAD_INDEX);
+    let text: string;
+    let whole: boolean;
     try {
-      if ((await stat(path)).size > UPLOAD_INDEX_LIMIT) return null;
-      const j = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown> | null;
-      if (!j || typeof j !== 'object' || Array.isArray(j) || j.version !== 1) return null;
-      const t = typeof j.uploadedAt === 'string' && j.uploadedAt.length <= 40 ? Date.parse(j.uploadedAt) : NaN;
-      return { uploadedAt: Number.isFinite(t) ? new Date(t).toISOString() : null, atlas: parseAtlasBuild(j.atlas) };
-    } catch {
-      return null;
+      const fh = await open(path, 'r');
+      try {
+        const buf = Buffer.alloc(UPLOAD_INDEX_HEAD + 1);
+        const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+        whole = bytesRead <= UPLOAD_INDEX_HEAD;
+        text = buf.subarray(0, Math.min(bytesRead, UPLOAD_INDEX_HEAD)).toString('utf8');
+      } finally {
+        await fh.close();
+      }
+    } catch (e) {
+      return (e as NodeJS.ErrnoException).code === 'ENOENT' ? null : unreadable;
     }
+    let j: Record<string, unknown> | null = null;
+    try {
+      const v = whole ? (JSON.parse(text.replace(/^﻿/, '')) as unknown) : uploadIndexHead(text);
+      j = v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+    } catch {
+      j = null;
+    }
+    if (!j || j.version !== 1) return unreadable;
+    const t = typeof j.uploadedAt === 'string' && j.uploadedAt.length <= 40 ? Date.parse(j.uploadedAt) : NaN;
+    return { uploadedAt: Number.isFinite(t) ? new Date(t).toISOString() : null, atlas: parseAtlasBuild(j.atlas) };
   });
   const out: Record<string, FolderUpload> = {};
   folders.forEach((f, i) => {

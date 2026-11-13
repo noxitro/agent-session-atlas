@@ -632,7 +632,7 @@ describe('アップロード先から集計し直す: extract', () => {
     expect(await readSenderMeta(join(base, 'none.json'), 's1')).toBeNull();
   });
 
-  it('フォルダごとの最後に送ったときの日時と atlas の版を、索引(atlas-index.json)から読む。無い・壊れた索引のフォルダは入れない', async () => {
+  it('フォルダごとの最後に送ったときの日時と atlas の版を、索引(atlas-index.json)から読む。索引の無いフォルダは入れず、読めない索引は読めなかったとして入れる', async () => {
     const base = await work();
     const root = join(base, 'logs');
     const dest = join(base, 'out', 'snapshot');
@@ -641,16 +641,29 @@ describe('アップロード先から集計し直す: extract', () => {
     await writeFile(join(root, 'person-a', 'proj-a', UPLOAD_INDEX), JSON.stringify({ version: 1, uploadedAt: '2026-11-13T00:00:00.000Z', atlas, sessions: [] }));
     // 版を記録するより前の atlas で送った索引
     await writeFile(join(root, 'person-b', 'proj-a', UPLOAD_INDEX), JSON.stringify({ version: 1, uploadedAt: '2026-11-01T09:00:00+09:00', sessions: [] }));
-    // 壊れた索引・形の違う索引は入れない
-    await writeFile(join(root, 'person-b', 'proj-b', UPLOAD_INDEX), '{ 壊れた');
+    // 書きかけ・壊れた索引と、形の違う索引は、読めなかったとして入れる(黙って外すと「すべて最新」と出てしまう)
+    await writeFile(join(root, 'person-b', 'proj-b', UPLOAD_INDEX), '{ "version": 1, "uploadedAt": "2026-11-');
     await writeFile(join(root, 'person-c', 'proj-a', UPLOAD_INDEX), JSON.stringify({ version: 2, uploadedAt: '2026-11-01T00:00:00.000Z' }));
+    // 索引の無いフォルダ(前の版や手で写したもの)は入れない
+    await session(join(root, 'person-d', 'proj-a', 's-d'));
+    await session(join(root, 'person-d', 'proj-a', 's-d2'));
+    // セッションの一覧で大きくなった索引も、先頭(uploadedAt と atlas)だけで読む
+    const big = { version: 1, kind: 'project', name: 'proj-b', note: '', uploadedAt: '2026-11-12T00:00:00.000Z', snapshotAt: null, atlas, sessions: Array.from({ length: 3000 }, (_, i) => ({ id: `x${i}`, title: `題名 "atlas": { "commit": "zz" } ${'あ'.repeat(20)}` })), missing: [] };
+    await session(join(root, 'person-e', 'proj-b', 's-e'));
+    await writeFile(join(root, 'person-e', 'proj-b', UPLOAD_INDEX), JSON.stringify(big, null, 2));
     const m = await snapshot(root, dest);
     expect(m.uploads).toEqual({
       'person-a/proj-a': { uploadedAt: '2026-11-13T00:00:00.000Z', atlas: { ...atlas, committedAt: '2026-11-13T00:00:00.000Z' } },
       'person-b/proj-a': { uploadedAt: '2026-11-01T00:00:00.000Z', atlas: null },
+      'person-b/proj-b': { uploadedAt: null, atlas: null, unreadable: true },
+      'person-c/proj-a': { uploadedAt: null, atlas: null, unreadable: true },
+      'person-e/proj-b': { uploadedAt: '2026-11-12T00:00:00.000Z', atlas: { ...atlas, committedAt: '2026-11-13T00:00:00.000Z' } },
     });
     const x = await extract(dest, { projects: { homes: [], temps: [], tempPatterns: false } });
     expect(x.source.uploads).toEqual(m.uploads);
+    // セッションごとに、数えた送り先のフォルダを持たせる(絞り込んだレポートで、対象のセッションがあるフォルダだけを見るため)
+    expect(x.sessions.find((r) => r.id === 's-person-a-proj-a')?.uploadFolder).toBe('person-a/proj-a');
+    expect(x.sessions.find((r) => r.id === 's-d')?.uploadFolder).toBe('person-d/proj-a');
   });
 
   it('送った人のメモが大きすぎるとき(本文・画像の合計)は写さず、理由を残す。前に写したものも消す', async () => {

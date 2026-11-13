@@ -227,9 +227,12 @@ describe('Phase 16 E2E: アップロード先から集計し直す(読む側)', 
     const merged = JSON.parse(await readFile(join(out, 'sessions.json'), 'utf8')) as SessionsFile;
     expect(merged.source).toMatchObject({ layout: 'merged', folders: [GROUP_A, GROUP_B] });
     expect(merged.sessions.map((x) => x.id).sort()).toEqual([...ids, GIT_SESSION, other].sort());
-    // フォルダ 1 つずつ集計したときと、セッションごとの中身が同じ(トークンも、送った側の記録から取るプロジェクト名も)
-    const strip = (f: SessionsFile) => f.sessions.filter((x) => x.id !== other).map(({ instructions: _i, ...rest }) => rest);
+    // フォルダ 1 つずつ集計したときと、セッションごとの中身が同じ(トークンも、送った側の記録から取るプロジェクト名も)。
+    // 数えたフォルダ(uploadFolder)だけは、元のルートからの相対パスなので違う(1 つずつなら '.'、まとめて読めば <フォルダ>)
+    const strip = (f: SessionsFile) => f.sessions.filter((x) => x.id !== other).map(({ instructions: _i, uploadFolder: _f, ...rest }) => rest);
     expect(strip(merged)).toEqual(strip(clean));
+    expect(Object.fromEntries(merged.sessions.filter((x) => ids.includes(x.id)).map((x) => [x.id, x.uploadFolder]))).toEqual(Object.fromEntries(ids.map((id) => [id, GROUP_A])));
+    expect(clean.sessions.every((x) => x.uploadFolder === '.')).toBe(true);
     expect(existsSync(join(out, 'atlas.html'))).toBe(true);
     // 同じセッションを 2 つのフォルダに送ってあっても、1 度だけ数える
     const twice = join(WORK, 'atlas-logs-twice');
