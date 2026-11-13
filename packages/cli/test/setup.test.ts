@@ -48,7 +48,13 @@ describe('初期設定', () => {
   });
 
   it('引用符と末尾の区切りを取る。Windows ではドライブの直下の区切りを残し(「C:」は今のフォルダの意味になるため)、ほかの OS では「x:」もそのまま', () => {
-    for (const input of ['C:\\', 'C:', '"C:\\"', 'c:/']) expect(unquote(input, 'win32'), input).toBe(input.replace(/"/g, '').slice(0, 2) + '\\');
+    const win: [string, string][] = [
+      ['C:\\', 'C:\\'],
+      ['C:', 'C:\\'],
+      ['"C:\\"', 'C:\\'],
+      ['c:/', 'c:\\'],
+    ];
+    for (const [input, want] of win) expect(unquote(input, 'win32'), input).toBe(want);
     expect(unquote('"D:\\logs\\"', 'win32')).toBe('D:\\logs');
     expect(unquote('x:', 'linux')).toBe('x:');
     expect(unquote('/home/me/notes/', 'linux')).toBe('/home/me/notes');

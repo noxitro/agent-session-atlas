@@ -518,15 +518,25 @@ details.tableview > summary {
 
 /* 押せる部品は指のカーソルで押せることを示す。ここで全画面をそろえ、部品ごとには書かない(書くのは待ちなど別の意味を示すときだけ)。
    - summary・チェックボックス・ラジオ: ブラウザの既定は矢印
-   - チェックボックス・ラジオを包むラベル: 字の上でも押せるので指。中の印が使えない状態なら、印もラベルも矢印に戻す */
+   - チェックボックス・ラジオのラベル: 字の上でも押せるので指。中の印が使えない状態なら、印もラベルも矢印に戻す。
+     ラベルは、印を包む形(<label><input>…</label>)と、印のすぐ後ろに for で付ける形(<input id> <label for>)を受け持つ。
+     それ以外の並べ方は部品で指定する(網羅チェックの「操作できるのに指のカーソルが出ない」が知らせる)
+   :has() は規則を分けて書く。:has() を知らないブラウザ(Firefox 121 より前など)は、:has() を含むセレクタの一覧を規則ごと捨てるので、
+   ほかの部品の指定と同じ一覧に入れると、summary やチェックボックスの指まで消える */
 summary,
 input[type='checkbox'],
 input[type='radio'],
-label:has(input:is([type='checkbox'], [type='radio'])) {
+input:is([type='checkbox'], [type='radio']) + label {
   cursor: pointer;
 }
 input[type='checkbox']:disabled,
 input[type='radio']:disabled,
+input:is([type='checkbox'], [type='radio']):disabled + label {
+  cursor: default;
+}
+label:has(input:is([type='checkbox'], [type='radio'])) {
+  cursor: pointer;
+}
 label:has(input:is([type='checkbox'], [type='radio']):disabled) {
   cursor: default;
 }

@@ -218,20 +218,25 @@ export const CLICKABLE_CHECK = `(() => {
     }
   }
 
-  // 逆向き: 押せるのに押せそうに見えない要素(指のカーソル以外)。字を打つ欄・選ぶ欄と、それに付いたラベルは矢印や I 字が普通なので除く。
-  // 使えない状態(disabled・aria-disabled。ラベルは中の部品が使えない状態のときも)と、別の意味を示すカーソル
-  // (待ち・不可の wait・progress・not-allowed、つかんで動かす grab・grabbing・move)を付けたものも除く
+  // 逆向き: 押せるのに押せそうに見えない要素。「押すものが無い」ことを示すカーソル(矢印・既定・I 字・疑問符・無し)のものを挙げる。
+  // 別の操作を示すカーソル(待ち・不可・つかむ・拡大・幅を変える・写す など)は、その部品が意図して付けたものなので挙げない。除くもの:
+  //  - 字を打つ欄・選ぶ欄と、それに付いたラベル(矢印や I 字が普通)
+  //  - 使えない状態(disabled・aria-disabled。ラベルは中の部品が使えない状態のときも)
+  //  - 部品の付いていないラベル(押しても何も起きない字なので、操作要素として数えない)
+  //  - 一覧・表・木・メニューの中の項目(option・gridcell・treeitem・menuitem*。ブラウザやアプリの一覧と同じく矢印が普通)
   const TYPING = ['text', 'search', 'email', 'url', 'tel', 'password', 'number', 'date', 'datetime-local', 'month', 'week', 'time'];
-  const MEANINGFUL = ['pointer', 'wait', 'progress', 'not-allowed', 'grab', 'grabbing', 'move'];
+  const NOTHING_TO_PRESS = ['auto', 'default', 'text', 'vertical-text', 'help', 'none'];
+  const ITEM_ROLES = '[role="option"], [role="gridcell"], [role="treeitem"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]';
   const typingField = (el) => el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || (el.tagName === 'INPUT' && TYPING.includes((el.type || 'text').toLowerCase()));
   const unusable = (el) => el.matches(':disabled, [aria-disabled="true"]') || !!el.closest('[aria-disabled="true"], fieldset:disabled');
   for (const el of document.querySelectorAll(CONTROL)) {
     if (el.tagName === 'A' || !rendered(el) || unusable(el)) continue;
     if (typingField(el) || el.isContentEditable || el.matches('[role="textbox"], [role="searchbox"], [role="combobox"], [role="spinbutton"], [role="slider"], [role="scrollbar"]')) continue;
-    if (el.tagName === 'LABEL' && el.control && (typingField(el.control) || unusable(el.control))) continue;
+    if (el.matches(ITEM_ROLES)) continue;
+    if (el.tagName === 'LABEL' && (!el.control || typingField(el.control) || unusable(el.control))) continue;
     if (el.tagName === 'INPUT' && el.type === 'hidden') continue;
     const c = style(el).cursor.split(',').pop().trim();
-    if (!MEANINGFUL.includes(c)) add('warn', '操作できるのに指のカーソルが出ない', desc(el) + '(' + c + ')');
+    if (NOTHING_TO_PRESS.includes(c)) add('warn', '操作できるのに指のカーソルが出ない', desc(el) + '(' + c + ')');
   }
 
   // ホバーで見た目が変わるのに操作できない要素(表の行の読み取り補助など意図したものもあるので目で確かめる)。
