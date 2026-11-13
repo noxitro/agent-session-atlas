@@ -60,8 +60,14 @@ const list = (a: string): string[] =>
     .split(/[,、/／\s]+/)
     .map((x) => x.trim())
     .filter(Boolean);
-/** ドラッグで入る引用符と、末尾の区切りを取る */
-const unquote = (a: string): string => a.replace(/^"(.*)"$/, '$1').replace(/[\\/]+$/, '');
+/**
+ * ドラッグで入る引用符と、末尾の区切りを取る。ドライブの直下(C:\)は区切りを残す:
+ * Windows で「C:」だけにすると「C ドライブの今のフォルダ」の意味になり、atlas をそのドライブから動かしていると、直下ではなく今のフォルダを指してしまう
+ */
+const unquote = (a: string): string => {
+  const s = a.replace(/^"(.*)"$/, '$1').replace(/[\\/]+$/, '');
+  return /^[A-Za-z]:$/.test(s) ? `${s}\\` : s;
+};
 
 /**
  * 入力された vault を、設定に書く指定にする。実在するフォルダならフォルダ名だけにし(docs/cli.md「path はフォルダ名だけの指定が確実」)、

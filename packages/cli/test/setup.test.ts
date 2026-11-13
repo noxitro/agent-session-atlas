@@ -2,7 +2,7 @@
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, parse } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { loadConfig } from '../src/config.ts';
 import { describeVault, runSetup, type SetupIo } from '../src/setup.ts';
@@ -45,6 +45,11 @@ describe('初期設定', () => {
   it('ドラッグしたフォルダはフォルダ名だけにし、中の wiki/ と index.md を見る。無いフォルダは入力のまま', () => {
     expect(describeVault(`"${vault}\\"`)).toMatchObject({ name: 'my vault', hasIndex: true, pagesDir: 'wiki' });
     expect(describeVault('work/notes')).toEqual({ name: 'work/notes', dir: null, hasIndex: false, pagesDir: null });
+  });
+
+  it.runIf(process.platform === 'win32')('ドライブの直下は、今のフォルダと同じドライブでもフォルダ名の無い直下のまま(「C:」にして今のフォルダを指さない)', () => {
+    const drive = parse(process.cwd()).root;
+    for (const input of [drive, drive.slice(0, 2), `"${drive}"`]) expect(describeVault(input), input).toMatchObject({ name: '', dir: drive });
   });
 
   it('vault・ページのフォルダ・wiki の skill・工程名を尋ねて書き、集計と同じ形で読める', async () => {
