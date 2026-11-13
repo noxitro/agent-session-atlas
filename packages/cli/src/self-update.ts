@@ -8,7 +8,9 @@
 //  - git が管理しているファイルを手で変えていない(git status に出る変更が無い。git が管理していないファイルは見ない)。
 //    ただし package-lock.json だけが変わっているときは、npm が書き換えたものとして元に戻してから進める
 //    (npm install は、npm の版によって package-lock.json を書き直す。そのままだと、次の回から更新できなくなる)
-//  - 早送り(fast-forward)だけで新しい版になる(手元にだけあるコミットがあれば、何もしない)
+//  - 早送り(fast-forward)だけで新しい版になる(手元にだけあるコミットがあれば、何もしない)。
+//    ただし、origin の履歴が書き換えられた(force push)だけで、手元にだけあるコミットが無いときは、新しい main に合わせ直す
+//    (前に取りに行った origin の main に今の版が含まれていれば、手元にだけあるコミットは無い)
 //  - 新しい版が、前にこの PC で動かなかった版(avoid)ではない
 // 依存(package-lock.json)が変わっていれば npm ci で入れる(package-lock.json を書き換えない)。入れられなければ、前の版に戻して
 // 前の版の依存を入れ直す(rollback)。どれかで止まっても、送ることは止めない(今の版のまま送る)。何をしたか・しなかった理由と、
@@ -148,6 +150,8 @@ export function selfUpdate(o: UpdateOptions): UpdateResult {
   } else if (changed.length) {
     return result('skipped', from, null, `atlas のファイルを手で変えているので、更新しません(git status で確かめ、元に戻すと、次の回から新しい版にします)`);
   }
+  // 取りに行く前の origin の main(前に取りに行ったときのもの)。origin の履歴が書き換えられたかを見分けるのに使う
+  const before = git(['rev-parse', '@{u}']).stdout.trim();
   const fetch = git(['fetch', '--quiet', 'origin'], FETCH_TIMEOUT_MS);
   if (fetch.code !== 0) return result('failed', from, null, `新しい版を取りに行けなかったので、今の版のまま送ります(${reasonOf(fetch)}。次の回にもう一度試します)`);
   const target = git(['rev-parse', '@{u}']);
@@ -155,9 +159,23 @@ export function selfUpdate(o: UpdateOptions): UpdateResult {
   const to = target.stdout.trim();
   if (to === from) return result('latest', from, from, `最新です(${short(from)})`);
   if (o.avoid && to === o.avoid) return result('skipped', from, null, `新しい版(${short(to)})は前にこの PC で動かなかったので、使いません(もっと新しい版が出たら、それにします)`);
-  const merge = git(['merge', '--ff-only', '--quiet', to]);
-  if (merge.code !== 0)
-    return result('skipped', from, null, `早送りだけでは新しい版にできないので、更新しません(手元にだけあるコミットがあるなど。git log ${main}..HEAD で確かめられます。${reasonOf(merge)})`);
+  const isAncestor = (a: string, b: string): boolean => git(['merge-base', '--is-ancestor', a, b]).code === 0;
+  /** origin の履歴が書き換えられていて(force push)、新しい main に合わせ直したか */
+  let rewritten = false;
+  if (isAncestor(from, to)) {
+    const merge = git(['merge', '--ff-only', '--quiet', to]);
+    if (merge.code !== 0) return result('skipped', from, null, `新しい版を取り込めないので、更新しません(${reasonOf(merge)})`);
+  } else if (before && before !== to && isAncestor(from, before) && !isAncestor(before, to)) {
+    // 早送りできないのが、origin の履歴が書き換えられたためだけのとき: 今の版は前に取りに行った origin の main に含まれていて
+    // (手元にだけあるコミットが無い)、origin の main がそこから続いていない。手で変えたファイルが無いことは確かめてあるので、
+    // 新しい main に合わせ直す(--keep は、手元の変更を消さない。前の版のコミットも手元には残る)
+    const reset = git(['reset', '--keep', to]);
+    if (reset.code !== 0) return result('skipped', from, null, `origin の履歴が書き換えられていて、新しい版に合わせられないので、更新しません(${reasonOf(reset)})`);
+    rewritten = true;
+    o.log(`atlas の更新: origin の ${main} の履歴が書き換えられていたので、新しい ${main} に合わせました`);
+  } else {
+    return result('skipped', from, null, `早送りだけでは新しい版にできないので、更新しません(手元にだけあるコミットがあるなど。git log ${main}..HEAD で確かめられます)`);
+  }
   o.log(`atlas の更新: 新しい版(${short(to)})を取り込みました`);
   const deps = depsOf(o);
   if (!deps.fresh()) {
@@ -175,5 +193,5 @@ export function selfUpdate(o: UpdateOptions): UpdateResult {
       );
     }
   }
-  return result('updated', from, to, `${short(from)} から ${short(to)} に更新しました`);
+  return result('updated', from, to, `${short(from)} から ${short(to)} に更新しました${rewritten ? `(origin の ${main} の履歴が書き換えられていたので、新しい ${main} に合わせました)` : ''}`);
 }
