@@ -13,6 +13,7 @@ import { join, sep } from 'node:path';
 import { chromium, type Browser, type Locator, type Page } from 'playwright';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { shotOnFailure } from './failure-shot.ts';
+import { clickableFindings } from '../scripts/ui-audit.ts';
 import { startServe, type ServeHandle } from '../packages/cli/src/serve.ts';
 import { buildFixtureHome, ROOT } from '../e2e/fixture-home.ts';
 
@@ -369,6 +370,14 @@ describe('画面の操作', () => {
     await page.locator('a[href="glossary.html"]:visible').first().click();
     await page.waitForURL('**/glossary.html');
     await page.locator('h1').waitFor({ state: 'visible' });
+    // 語の「リンクをコピー」で、その語の URL(#<id>)がクリップボードに入り、読み上げ欄とボタンの字で知らせる
+    await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin: new URL(server.url).origin });
+    const copy = page.locator('button[data-copy-link]').first();
+    const id = await copy.getAttribute('data-copy-link');
+    await copy.click();
+    await expect.poll(() => page.evaluate<string>('navigator.clipboard.readText()')).toBe(`${page.url().split('#')[0]}#${id}`);
+    expect(await page.locator('#copy-status').innerText()).toMatch(/^リンクをコピーしました: /);
+    expect(await copy.innerText()).toBe('コピーしました');
     await page.locator('a.crumb:visible').first().click();
     await page.waitForURL('**/atlas.html');
     await page.getByTestId('shown-count').waitFor({ state: 'visible' });
@@ -919,6 +928,31 @@ describe('画面の操作', () => {
     } finally {
       await page.setViewportSize({ width: 1440, height: 900 });
     }
+  });
+
+  it('h2. 押せそうで押せない要素: 網羅チェック(file:// で開く)では開けない設定・別のフォルダのダイアログと、375px のタスクタグの一覧の中にも無い', async () => {
+    const errorsNow = async (where: string): Promise<string[]> => (await clickableFindings(page)).filter((f) => f.severity === 'error').map((f) => `${where}: ${f.kind} ${f.detail}`);
+    const found: string[] = [];
+    try {
+      await page.goto(server.url);
+      await page.getByTestId('settings-open').click();
+      await expect.poll(() => page.getByTestId('settings-dialog').isVisible()).toBe(true);
+      found.push(...(await errorsNow('設定')));
+      await page.getByTestId('settings-dialog').getByTestId('settings-close').click();
+      await page.getByTestId('folders-open').click();
+      await expect.poll(() => page.getByTestId('folders-dialog').isVisible()).toBe(true);
+      found.push(...(await errorsNow('別のフォルダを開く')));
+      await page.getByTestId('folders-close').click();
+      await page.setViewportSize({ width: 375, height: 812 });
+      await expect.poll(() => page.getByTestId('groups-toggle').isVisible()).toBe(true);
+      found.push(...(await errorsNow('375px')));
+      await page.getByTestId('groups-toggle').click();
+      await expect.poll(() => page.getByTestId('group-pop').isVisible()).toBe(true);
+      found.push(...(await errorsNow('375px のタスクタグの一覧')));
+    } finally {
+      await page.setViewportSize({ width: 1440, height: 900 });
+    }
+    expect(found).toEqual([]);
   });
 
   it('j. プロジェクト別の「まとめて送る」: 印を付けると設定の uploadProjects に書き(ほかの設定は残す)、再読み込みしても残る。外すと消える。書けなければ理由を出して印を戻す', async () => {

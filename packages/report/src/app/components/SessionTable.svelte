@@ -428,13 +428,16 @@
     overflow-wrap: anywhere;
     font-size: 0.75rem;
   }
-  /* 題名(多くは依頼文の先頭)は 2 行で切る。全文は title とセッションの詳細で読める。行の高さを揃えて一覧を見渡せるようにする */
+  /* 題名(多くは依頼文の先頭)は 2 行で切る。全文は title とセッションの詳細で読める。行の高さを揃えて一覧を見渡せるようにする。
+     空白の無い長い語(`FAnimInstanceProxy::Initialize(...)` などの識別子やパス)も欄の中で折り返す(折り返せないと右端で省略記号なしに切れる)。
+     anywhere ではなく break-word にする: 欄の最小幅の計算に長い語の幅が残り、欄が 18em まで縮んで題名の見える量が減ることがない */
   .name a {
     display: -webkit-box;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
     line-clamp: 2;
     overflow: hidden;
+    overflow-wrap: break-word;
     min-height: 24px;
     padding: 2px 0;
   }
