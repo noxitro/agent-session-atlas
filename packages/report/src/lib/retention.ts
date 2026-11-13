@@ -171,6 +171,9 @@ export function retentionItem(r: RetentionLike, turns: readonly TurnStart[] = []
   };
 }
 
+/** fixed の既定の日数(core の DEFAULT_LAG_DAYS と同じ。ブラウザ側は core を読めないので写している) */
+export const DEFAULT_LAG_DAYS = 7;
+
 export const MODE_LABEL: Record<RetentionMeta['mode'], string> = { worktree: '今の作業ツリー', committed: '最後に取り込んだ版', fixed: 'セッションの終わりから決まった日数後の版' };
 
 /** 中央値(空なら null) */

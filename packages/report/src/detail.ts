@@ -316,7 +316,8 @@ function retentionSection(r: SessionRetention, meta: RetentionMeta | null, anon:
   // 状態の名前は、設定(vcs.labels)で差し替えたものがあればそれ。節の一文(vcs.note)も足す
   const L = { ...STATUS_LABEL, ...(meta?.labels ?? {}) };
   const lead = esc(`AI が足した行が、その後の VCS のファイルに残っているかを数えます。${meta?.note ?? ''}`);
-  if (r.outcome === 'no_ai_changes') return section('AI の変更の残存(VCS)', '<p class="note">このセッションには、数える AI の変更(編集・作成で足した行)がありません。</p>', lead);
+  const unread = r.unreadEdits ? `<p class="note">ログから変更を取り出せなかった AI の編集 ${esc(int(r.unreadEdits))} 件は数えていません(diff も編集の引数も読めなかったもの)。</p>` : '';
+  if (r.outcome === 'no_ai_changes') return section('AI の変更の残存(VCS)', `<p class="note">このセッションには、数える AI の変更(編集・作成で足した行)がありません。</p>${unread}`, lead);
   const measuredHunks = r.counts.kept + r.counts.modified + r.counts.missing;
   const where = r.computedOn ? `${placeLabel(r.computedOn)}で照合` : placeLabel(r.computedOn);
   const baseline = r.baseline ? `${r.baseline.source === 'observed' ? '記録(ログに残った開始時の版)' : '推定(開始時刻から VCS の履歴で探した版)'}` : '';
@@ -353,7 +354,6 @@ function retentionSection(r: SessionRetention, meta: RetentionMeta | null, anon:
     ? `<h3 class="gap">まとまりごと</h3><div class="table-scroll"><table class="ledger turns"><thead><tr><th scope="col" class="num">番号</th><th scope="col">ファイル</th><th scope="col">状態</th>${STATUSES.map((k) => `<th scope="col" class="num">${esc(L[k])}(行)</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div>`
     : '';
   const excluded = r.excludedHunks ? `<p class="note">開始時の基準のファイルにもともとあった行だけでできたまとまり ${esc(int(r.excludedHunks))} 件は数えていません。</p>` : '';
-  const unread = r.unreadEdits ? `<p class="note">ログから変更を取り出せなかった AI の編集 ${esc(int(r.unreadEdits))} 件は数えていません(diff も編集の引数も読めなかったもの)。</p>` : '';
   return section('AI の変更の残存(VCS)', `${fields}${counts}${table}${excluded}${unread}`, lead);
 }
 

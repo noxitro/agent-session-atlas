@@ -1,8 +1,8 @@
 // レポートの「AI の変更の残存」と「比べる」の集計(lib/retention.ts・lib/compare.ts)。値はすべて架空のもの
 import { describe, expect, it } from 'vitest';
-import { RETENTION_STATUS_LABEL, RETENTION_STATUSES, UNATTRIBUTABLE_REASON_LABEL, UNATTRIBUTABLE_REASONS } from '../../core/src/vcs-retention.ts';
+import { DEFAULT_LAG_DAYS as CORE_LAG_DAYS, RETENTION_STATUS_LABEL, RETENTION_STATUSES, UNATTRIBUTABLE_REASON_LABEL, UNATTRIBUTABLE_REASONS } from '../../core/src/vcs-retention.ts';
 import { VCS_KINDS } from '../../core/src/vcs.ts';
-import { aggregateRetention, median, phaseAt, REASON_LABEL, REASONS, retentionByPhase, retentionItem, shareOf, STATUS_LABEL, STATUSES, UNKNOWN_PHASE, VCS_LABEL, type RetentionItem } from '../src/lib/retention.ts';
+import { aggregateRetention, DEFAULT_LAG_DAYS, median, phaseAt, REASON_LABEL, REASONS, retentionByPhase, retentionItem, shareOf, STATUS_LABEL, STATUSES, UNKNOWN_PHASE, VCS_LABEL, type RetentionItem } from '../src/lib/retention.ts';
 import { comparePhaseRows, compareRows, compareSide, COMPARE_MIN_SESSIONS, defaultPeriods, inPeriod, type CompareSession } from '../src/lib/compare.ts';
 import { PHASES } from '../../core/src/turns.ts';
 import type { TurnTuple } from '../src/lib/turns.ts';
@@ -16,6 +16,7 @@ describe('lib/retention', () => {
     expect([...REASONS]).toEqual([...UNATTRIBUTABLE_REASONS]);
     expect(REASON_LABEL).toEqual(UNATTRIBUTABLE_REASON_LABEL);
     expect(Object.keys(VCS_LABEL).sort()).toEqual([...VCS_KINDS].sort());
+    expect(DEFAULT_LAG_DAYS).toBe(CORE_LAG_DAYS);
   });
 
   it('retentionItem: 埋め込みの形にする(パスは持たない)', () => {
