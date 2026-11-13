@@ -564,6 +564,7 @@
         {#if editable && jobStore}<JobActions jobs={jobStore} disabled={serverDown} /><SettingsDialog jobs={jobStore} disabled={serverDown} upload={uploadHandlers} send={canEdit ? projectSend : undefined} projects={settingsProjects} /><OpenFolder token={jobStore.token} disabled={serverDown} />{/if}
         {#if sourceLabel}<span class="tag" title={sourceLabel.path} data-testid="source-tag">対象: {sourceLabel.name}</span>{/if}
         {#if readOnly}<span class="tag" title="タスクタグとメモは、送った人が付けたものを出します。この画面では書き換えません(集計し直す・判定はできます)" data-testid="readonly-tag">読むだけ</span>{/if}
+        {#if data.atlasBuilds}<span class={data.atlasBuilds.ok ? 'tag' : 'tag warn'} title={[data.atlasBuilds.headline, ...data.atlasBuilds.lines].join('\n')} data-testid="atlas-builds-tag">atlas の版: {data.atlasBuilds.short}</span>{/if}
         {#if data.anonymized}<span class="tag">伏せ字モード</span>{/if}
         {#if scopeNotes.length}<span class="tag" title="atlas build の実行時に絞り込んだ条件">出力時の絞り込み: {scopeNotes.join('、')}</span>{/if}
         <div class="seg" role="group" aria-label="配色">

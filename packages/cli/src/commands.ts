@@ -4,7 +4,7 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join, posix, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { codeStamp, computeMetrics, describeSource, extract, readSnapshotManifest, METRICS_SCHEMA_VERSION, readVcsRetention, removeTree, runVcsStep, snapshot, VCS_RETENTION_FILE, RETENTION_STATUS_LABEL, UNATTRIBUTABLE_REASON_LABEL, type VcsRetentionFile, UPLOAD_OLD_ONLY_REASON, UPLOAD_PROBE_HINT, uploadWorkDirId, type MetricsFile, type SessionRecord, type SessionsFile, type SnapshotManifest } from '../../core/src/index.ts';
+import { codeStamp, computeMetrics, currentAtlasBuild, describeAtlasBuilds, summarizeAtlasBuilds, describeSource, extract, readSnapshotManifest, METRICS_SCHEMA_VERSION, readVcsRetention, removeTree, runVcsStep, snapshot, VCS_RETENTION_FILE, RETENTION_STATUS_LABEL, UNATTRIBUTABLE_REASON_LABEL, type VcsRetentionFile, UPLOAD_OLD_ONLY_REASON, UPLOAD_PROBE_HINT, uploadWorkDirId, type MetricsFile, type SessionRecord, type SessionsFile, type SnapshotManifest } from '../../core/src/index.ts';
 import {
   buildReport,
   DEFAULT_TRANSCRIPT_OPTIONS,
@@ -242,6 +242,13 @@ export async function runExtract(p: Paths, since: string | null, log: Log, tempD
     log(`extract: wiki の対象 ${cfg.wikis.map((w) => w.path).join('、')}(${cfg.path})、参照のあったセッション ${used} 件`);
   } else log(`extract: wiki は未設定のため集計しません(${CONFIG_FILE} の wikis で vault を指定できます)`);
   if (unknown > 0 || s.warnings.badLines > 0) log(`extract: 注意 未知のイベント種別 ${unknown} 件、読めなかった行 ${s.warnings.badLines} 行`);
+  // 送り先から集計したときは、送った atlas の版を数える(古い版で送ったものが混ざっていないか)
+  const builds = summarizeAtlasBuilds(s.sessions, currentAtlasBuild());
+  if (builds) {
+    const d = describeAtlasBuilds(builds);
+    log(`extract: ${d.ok ? '' : '注意 '}${d.headline}`);
+    if (!d.ok) for (const l of d.lines) log(`extract:   ${l}`);
+  }
   return s;
 }
 
@@ -443,6 +450,7 @@ export async function runBuild(p: Paths, o: BuildOptions, log: Log): Promise<Bui
     judgments,
     verdicts,
     retention,
+    atlasLocal: currentAtlasBuild(),
     // 読むだけの画面(送り先から集計した・別のフォルダを開いた)は、送った人が付けていたタスクタグ(人ごと)とメモを出す。
     // この PC の置き場(groups.json・memos/)のものは混ぜない。判定はサーバと同じ isReadOnlyView
     ...(isReadOnlyView(p.out, s.source)

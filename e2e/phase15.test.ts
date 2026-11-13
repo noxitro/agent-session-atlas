@@ -106,10 +106,14 @@ describe('Phase 15 E2E: グループのアップロード', () => {
   });
 
   it('b. アップ先のグループのフォルダを --home にすると、元と同じ集計になる', async () => {
+    let log = '';
     for (const cmd of ['snapshot', 'extract']) {
       const r = atlas([cmd, '--home', dest, '--out', out2]);
       expect(r.status, r.stderr).toBe(0);
+      log = r.out;
     }
+    // 送った atlas の版(このチェックアウトで送り、このチェックアウトで集計したので、すべて最新)。ほかの PC から写したフォルダは記録なし
+    expect(log).toMatch(/extract: 注意 送った atlas の版: \d+ 件のうち 版の記録なし 1 件/);
     const again = JSON.parse(await readFile(join(out2, 'sessions.json'), 'utf8')) as SessionsFile;
     const manifest = JSON.parse(await readFile(join(out2, 'snapshot', 'snapshot-manifest.json'), 'utf8')) as { layout?: string; extras?: { skipped: { path: string }[] } };
     expect(manifest.layout).toBe('flat');
@@ -119,8 +123,11 @@ describe('Phase 15 E2E: グループのアップロード', () => {
     expect(again.sessions.map((s) => s.id).sort()).toEqual([...ids, desk, 'someone-else'].sort());
     // 指示ファイルの名前は、ほかのセッションと突き合わせて決めるので、一部のセッションだけを集計すると決まらないことがある。それ以外は全部同じ
     // 送り先から集計すると、送った人が付けていたタスクタグ(uploadTags)が付く。元の集計には無い
-    const pick = ({ instructions: _i, uploadTags: _t, ...rest }: SessionRecord) => rest;
+    // 写した atlas の版(uploadAtlas)も付く
+    const pick = ({ instructions: _i, uploadTags: _t, uploadAtlas: _a, ...rest }: SessionRecord) => rest;
     for (const id of ids) expect(again.sessions.find((s) => s.id === id)!.uploadTags).toEqual(['Player-Weapon']);
+    for (const id of ids) expect(again.sessions.find((s) => s.id === id)!.uploadAtlas?.code).toMatch(/^[0-9a-f]{16}$/);
+    expect(again.sessions.find((s) => s.id === 'someone-else')!.uploadAtlas).toBeNull();
     expect(original.sessions.find((s) => s.id === desk)!.desktop).not.toBeNull();
     for (const id of [...ids, desk]) {
       const a = original.sessions.find((s) => s.id === id)!;

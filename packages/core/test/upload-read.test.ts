@@ -366,7 +366,7 @@ describe('アップロード先から集計し直す: snapshot', () => {
     const root = join(base, 'logs');
     const dest = join(base, 'out', 'snapshot');
     await session(join(root, 'person-a', 'proj-a', 's1'), {
-      [UPLOAD_SESSION_META]: JSON.stringify({ version: 1, id: 's1', project: 'zz-owner/zz-a', projectSource: 'git-remote', tags: [' 武器 ', '武器', '', 'a\u202eb', 'x'.repeat(101), 3, 'UI'] }),
+      [UPLOAD_SESSION_META]: JSON.stringify({ version: 1, id: 's1', project: 'zz-owner/zz-a', projectSource: 'git-remote', tags: [' 武器 ', '武器', '', 'a\u202eb', 'x'.repeat(101), 3, 'UI'], atlas: { commit: 'c'.repeat(40), committedAt: '2026-11-01T09:00:00+09:00', dirty: false, code: '0123456789abcdef' } }),
       'atlas-memo.md': '# 送った人のメモ\n\n![図](atlas-memo/p.png)',
     });
     await mkdir(join(root, 'person-a', 'proj-a', 's1', 'atlas-memo'));
@@ -397,6 +397,12 @@ describe('アップロード先から集計し直す: snapshot', () => {
     expect(Object.fromEntries(x.sessions.map((r) => [r.id, r.person]))).toEqual({ s1: 'person-a', s2: 'person-a', s3: 'person-b' });
     // 送った人が付けていたタスクタグ(前後の空白を落とし、同じ名前・空・書式の文字・長すぎるもの・文字列以外は使わない)。記録が無い・別のセッションのものなら空
     expect(Object.fromEntries(x.sessions.map((r) => [r.id, r.uploadTags]))).toEqual({ s1: ['武器', 'UI'], s2: [], s3: [] });
+    // そのセッションを写した atlas の版(日時は UTC にそろえる)。記録が無い・別のセッションのものなら null
+    expect(Object.fromEntries(x.sessions.map((r) => [r.id, r.uploadAtlas]))).toEqual({
+      s1: { commit: 'c'.repeat(40), committedAt: '2026-11-01T00:00:00.000Z', dirty: false, code: '0123456789abcdef' },
+      s2: null,
+      s3: null,
+    });
     // 送った人のメモ(atlas-memo.md と画像の atlas-memo/)も写す(読むだけの画面で出す)
     expect(await readFile(join(dest, 'session-state', 's1', 'atlas-memo.md'), 'utf8')).toContain('送った人のメモ');
     expect(await readFile(join(dest, 'session-state', 's1', 'atlas-memo', 'p.png'), 'utf8')).toBe('png');
@@ -621,7 +627,7 @@ describe('アップロード先から集計し直す: extract', () => {
     await writeFile(f, JSON.stringify({ version: 1, id: 's1', project: 'owner/app', tags: [...Array(60).fill(''), ...Array(10).fill('t0'), ...valid] }));
     const tags = await readSenderTags(f, 's1');
     expect(tags).toEqual(valid.slice(0, 50));
-    expect(await readSenderMeta(f, 's1')).toEqual({ project: { project: 'owner/app', source: null }, tags });
+    expect(await readSenderMeta(f, 's1')).toEqual({ project: { project: 'owner/app', source: null }, tags, atlas: null });
     expect(await readSenderMeta(f, 's2')).toBeNull();
     expect(await readSenderMeta(join(base, 'none.json'), 's1')).toBeNull();
   });

@@ -215,6 +215,11 @@ export interface ReportData {
   source?: { name: string; path: string; layout: 'flat' | 'merged'; folders: number } | null;
   /** 読むだけの画面として作った(送り先から集計した・別のフォルダを開いた)。タスクタグとメモは送った人のもの。古い埋め込みには無い */
   readOnly?: boolean;
+  /**
+   * 送り先から集計したときの、送った atlas の版(core の describeAtlasBuilds)。ok = すべていちばん新しい版。
+   * この PC の記録だけを集計したとき・古い埋め込みには無い。伏せ字版では人の名前を出さない
+   */
+  atlasBuilds?: { ok: boolean; short: string; headline: string; lines: string[] } | null;
   metrics: MetricsFile;
   sessions: SessionSummary[];
   judgments: { available: boolean; backend: string | null; model: string | null; ranAt: string | null; items: number };

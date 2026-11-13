@@ -4,7 +4,7 @@ import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { CopilotEvent, InstalledInventory, InstructionFile, InstructionInjection, MetricsBucket, MetricsFile, SessionRecord } from '../../core/src/types.ts';
-import { codeStamp, contentHash, parseEvents, removeTree } from '../../core/src/index.ts';
+import { codeStamp, contentHash, describeAtlasBuilds, parseEvents, removeTree, summarizeAtlasBuilds, type AtlasBuild } from '../../core/src/index.ts';
 import { CoverageCounter, coverageFile, desktopCoverage } from './coverage.ts';
 import { createFileSink, fullFileName, renderFullTo } from './full.ts';
 import { INSTRUCTIONS_FILE, LIBRARY_DIR, LibraryCollector, renderInstructionsHtml, writeLibrary } from './library.ts';
@@ -111,6 +111,8 @@ export interface BuildInput {
   memberMemosDir?: string;
   /** 読むだけの画面として作る(画面の文言を変える。タスクタグとメモは groups・memberMemosDir で渡す) */
   readOnly?: boolean;
+  /** 集計したこの PC の atlas の版(送った版と比べる。省略・null なら送った版どうしだけで比べる) */
+  atlasLocal?: AtlasBuild | null;
   outDir: string;
   anonymize: boolean;
   scope?: Partial<ReportData['scope']>;
@@ -193,6 +195,9 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
     const m = memos.get(r.id);
     return m ? { ...s, memo: memoSummary(m.text, m.updatedAt) } : s;
   });
+  // 送り先から集計したときの、送った atlas の版。伏せ字版では人の名前を出さない
+  const builds = summarizeAtlasBuilds(input.sessions, input.atlasLocal ?? null);
+  const atlasBuilds = builds ? describeAtlasBuilds(anon.enabled ? { ...builds, unknownPersons: [], olderPersons: [], builds: builds.builds.map((g) => ({ ...g, persons: [] })) } : builds) : null;
   const data: ReportData = {
     version: REPORT_DATA_VERSION,
     generatedAt,
@@ -207,6 +212,7 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
     totalSessionsInSource: input.totalSessionsInSource,
     ...(input.source && !anon.enabled ? { source: input.source } : {}),
     ...(input.readOnly ? { readOnly: true } : {}),
+    ...(atlasBuilds ? { atlasBuilds } : {}),
     metrics: anonymizeMetrics(input.metrics, anon),
     sessions,
     judgments: {

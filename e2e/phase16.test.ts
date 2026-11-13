@@ -261,6 +261,9 @@ describe('Phase 16 E2E: アップロード先から集計し直す(読む側)', 
     expect(all.installed?.skills).toEqual(['zz-skill-a', 'zz-skill-b']);
     expect(Object.fromEntries(Object.entries(all.installedByPerson ?? {}).map(([p, inv]) => [p, inv.skills]))).toEqual({ 'person-a': ['zz-skill-a'], 'person-b': ['zz-skill-b'] });
     expect(await readFile(join(out2, 'atlas.html'), 'utf8')).toContain('"installedByPerson":{"person-a":{"skills":["zz-skill-a"]');
+    // 送った atlas の版を画面の見出しに出す(送ったのも集計したのもこのチェックアウトなので、古い版は無い)
+    expect(await readFile(join(out2, 'atlas.html'), 'utf8')).toMatch(/"atlasBuilds":\{"ok":(true|false),"short":"[^"]*"/);
+    expect(r2.out).not.toMatch(/古い版 \d+ 件/);
     // 人のフォルダ 1 つを指すと、その人の分だけ
     const one = await aggregate(join(everyone, 'person-b'), join(WORK, 'out-person-b'));
     expect(one.source).toMatchObject({ layout: 'merged', folders: [GROUP_A, GROUP_B] });

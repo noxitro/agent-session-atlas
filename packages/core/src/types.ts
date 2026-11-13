@@ -1,6 +1,7 @@
 import type { FailureCauses } from './tool-failure.ts';
 import type { DesktopData, DesktopSessionInfo } from './desktop-types.ts';
 import type { TurnMetrics } from './turns.ts';
+import type { AtlasBuild } from './atlas-version.ts';
 // sessions.json / metrics.json のスキーマ。後続フェーズ(cli / report / judge)はここだけを参照する。
 
 // 2: Phase 5(empty / autopilotContinuations / tools.internal / files.deleted・sessionState、
@@ -18,7 +19,8 @@ import type { TurnMetrics } from './turns.ts';
 // 10: analysis.turnStats(依頼単位の分析の段階 1: ターンごとのツールの種類・失敗・拒否・中断・再編集・使用量)
 // 11: person(送り先が人ごとに分けてあるときの、その人のフォルダの名前)
 // 13: tools.results[].causes(ツールの失敗の要因別の回数)。error.code: rejected も拒否に数える
-export const SESSIONS_SCHEMA_VERSION = 13;
+// 14: uploadAtlas(送り先から集計したときの、そのセッションのフォルダを写した atlas の版)
+export const SESSIONS_SCHEMA_VERSION = 14;
 // 5: turns(依頼単位の工程 × 詰まり・依頼の種類の集計)
 // 6: tools.results[].causes(ツールの失敗の要因別の回数)
 export const METRICS_SCHEMA_VERSION = 6;
@@ -470,6 +472,11 @@ export interface SessionRecord {
    * 送り先から集計したセッションにだけある(タグが無ければ空)。この PC の記録・古い sessions.json には無い
    */
   uploadTags?: string[];
+  /**
+   * 送り先から集計したときの、そのセッションのフォルダを写した atlas の版(atlas-session.json の atlas)。
+   * 記録が無い(前の版で送った)ものは null。この PC の記録・古い sessions.json には無い(省略)
+   */
+  uploadAtlas?: AtlasBuild | null;
   copilotVersion: string | null;
   schemaVersion: number | null;
   createdAt: string | null;
