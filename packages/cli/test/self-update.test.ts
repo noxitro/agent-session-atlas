@@ -4,8 +4,12 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { rollback, runCmd, selfUpdate, type CmdRunner, type UpdateOptions } from '../src/self-update.ts';
+
+// 1 つのテストと準備で、本物の git(clone・commit・push)を何度も動かす。Windows の CI では既定の待ち時間
+// (テスト 5 秒・準備 10 秒)を超えることがあるので、このファイルだけ延ばす
+vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 
 let base = '';
 /** 作る人のチェックアウト(新しい版を origin に送る) */
