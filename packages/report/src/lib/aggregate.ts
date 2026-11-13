@@ -1,6 +1,6 @@
 // 絞り込んだ SessionSummary[] から画面の集計を作る純関数。
 // core の computeMetrics と同じ定義(合計は記録のあるセッションだけの和、月は UTC の YYYY-MM)。
-import { execAggregate, type ExecAggregate } from './exec.ts';
+import { EFFORT_ORDER, execAggregate, orderBy, type ExecAggregate } from './exec.ts';
 import { hasPeople, UNKNOWN } from './filter.ts';
 import { addCauses, FAILURE_CAUSE_LABELS, type FailureCause, type FailureCauses } from '../../../core/src/tool-failure.ts';
 import type { SessionSummary } from './types.ts';
@@ -77,6 +77,17 @@ export interface Bucket {
   judgedAi: { activeMs: number; activeKnown: number; output: number; input: number; inputKnown: number; premiumRequests: number };
 }
 
+/** モデルの推論強度別の行(key は推論強度。記録の無いものは (unknown)) */
+export interface ModelEffortRow {
+  key: string;
+  /** そのモデルをその強度で使ったセッションの数 */
+  sessions: number;
+  requests: number;
+  input: number;
+  output: number;
+  nanoAiu: number;
+}
+
 export interface ModelRow {
   model: string;
   sessions: number;
@@ -85,6 +96,8 @@ export interface ModelRow {
   output: number;
   cacheRead: number;
   premiumRequests: number;
+  /** 推論強度別(強度の順。強度の記録の無い古い sessions.json から作ったセッションは数えない) */
+  efforts: ModelEffortRow[];
 }
 
 /** 利用ランキングのツール行。MCP ツールはサーバーごとに 1 行(key は mcp:<サーバー>) */
@@ -376,10 +389,29 @@ export function aggregate(sessions: SessionSummary[], people: boolean = hasPeopl
   if (months.has('(unknown)')) byMonth.push(bucket('(unknown)', '日時不明', months.get('(unknown)')!));
 
   const models = new Map<string, ModelRow>();
+  const modelEfforts = new Map<string, Map<string, ModelEffortRow>>();
+  const modelRow = (m: string): ModelRow => {
+    let r = models.get(m);
+    if (!r) models.set(m, (r = { model: m, sessions: 0, requests: 0, input: 0, output: 0, cacheRead: 0, premiumRequests: 0, efforts: [] }));
+    return r;
+  };
   for (const s of sessions) {
+    for (const [m, byEffort] of Object.entries(s.exec.modelEfforts)) {
+      modelRow(m);
+      let es = modelEfforts.get(m);
+      if (!es) modelEfforts.set(m, (es = new Map()));
+      for (const [k, [requests, input, output, nanoAiu]] of Object.entries(byEffort)) {
+        let e = es.get(k);
+        if (!e) es.set(k, (e = { key: k, sessions: 0, requests: 0, input: 0, output: 0, nanoAiu: 0 }));
+        e.sessions++;
+        e.requests += requests;
+        e.input += input;
+        e.output += output;
+        e.nanoAiu += nanoAiu;
+      }
+    }
     for (const [m, t] of Object.entries(s.byModel)) {
-      let r = models.get(m);
-      if (!r) models.set(m, (r = { model: m, sessions: 0, requests: 0, input: 0, output: 0, cacheRead: 0, premiumRequests: 0 }));
+      const r = modelRow(m);
       r.sessions++;
       r.requests += t.requests ?? 0;
       r.input += t.input ?? 0;
@@ -388,7 +420,12 @@ export function aggregate(sessions: SessionSummary[], people: boolean = hasPeopl
       r.premiumRequests += t.premiumRequests ?? 0;
     }
   }
-  const byModel = [...models.values()].map((r) => ({ ...r, premiumRequests: Math.round(r.premiumRequests * 1000) / 1000 }));
+  const byEffort = orderBy(EFFORT_ORDER);
+  const byModel = [...models.values()].map((r) => ({
+    ...r,
+    premiumRequests: Math.round(r.premiumRequests * 1000) / 1000,
+    efforts: [...(modelEfforts.get(r.model)?.values() ?? [])].sort((a, b) => byEffort(a.key, b.key)),
+  }));
   byModel.sort((a, b) => b.output - a.output || b.sessions - a.sessions || a.model.localeCompare(b.model));
 
   return {

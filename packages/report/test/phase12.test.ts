@@ -102,7 +102,7 @@ describe('指示文の版', () => {
 
   it('止まっている箇所は理由の数が同じなら余分な編集・失敗の連続の多い順(待ち時間の記録の有無で順位を決めない)', () => {
     const T = THRESHOLDS.STUCK;
-    const withTtft = sess({ id: 'w', exec: { modes: {}, modesInferred: 0, efforts: {}, initiators: {}, context: null, latency: { m: [[5_000], [9_000]] } }, analysis: { filesReedited: 1, extraEdits: T.extraEdits, maxConsecutiveFailures: 0, turns: 1 } });
+    const withTtft = sess({ id: 'w', exec: { modes: {}, modesInferred: 0, efforts: {}, modelEfforts: {}, initiators: {}, context: null, latency: { m: [[5_000], [9_000]] } }, analysis: { filesReedited: 1, extraEdits: T.extraEdits, maxConsecutiveFailures: 0, turns: 1 } });
     const manyEdits = sess({ id: 'e', analysis: { filesReedited: 5, extraEdits: T.extraEdits * 40, maxConsecutiveFailures: 0, turns: 1 } });
     expect(stuckSessions([withTtft, manyEdits]).map((x) => x.id)).toEqual(['e', 'w']);
   });
@@ -121,7 +121,7 @@ describe('skill と止まっている箇所', () => {
 
   it('閾値を超えた理由だけを挙げ、理由の数の順に並べ、プロジェクト別に数える', () => {
     const T = THRESHOLDS.STUCK;
-    const a = sess({ id: 'a', exec: { modes: {}, modesInferred: 0, efforts: {}, initiators: {}, context: null, latency: { m: [[T.ttftMs, T.ttftMs + 1], [1, 2]] } }, analysis: { filesReedited: 1, extraEdits: T.extraEdits, maxConsecutiveFailures: T.consecutiveFailures, turns: 1 } });
+    const a = sess({ id: 'a', exec: { modes: {}, modesInferred: 0, efforts: {}, modelEfforts: {}, initiators: {}, context: null, latency: { m: [[T.ttftMs, T.ttftMs + 1], [1, 2]] } }, analysis: { filesReedited: 1, extraEdits: T.extraEdits, maxConsecutiveFailures: T.consecutiveFailures, turns: 1 } });
     const b = sess({ id: 'b', project: 'q', projectLabel: 'q', friction: { compactions: T.compactions - 1, aborts: 0, errors: 0, permissionRequests: T.permissions - 1, askUser: 0, modelChanges: 0, modeChanges: 0, toolFailures: 0, subagentFailures: 0 } });
     const c = sess({ id: 'c', friction: { compactions: T.compactions, aborts: 0, errors: 0, permissionRequests: 0, askUser: 0, modelChanges: 0, modeChanges: 0, toolFailures: 0, subagentFailures: 0 } });
     const st = stuckSessions([a, b, c]);
