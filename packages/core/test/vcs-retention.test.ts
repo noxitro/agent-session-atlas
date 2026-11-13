@@ -7,7 +7,7 @@ import { join, relative } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { extractAiChanges } from '../src/ai-changes.ts';
 import type { CopilotEvent } from '../src/types.ts';
-import { assertReadOnly, type RunResult, type VcsRunner } from '../src/vcs.ts';
+import { assertReadOnly, p4Escape, vcsEnv, type RunResult, type VcsRunner } from '../src/vcs.ts';
 import { measureRetention, summarizeRetention } from '../src/vcs-retention.ts';
 
 const at = (h: number, m = 0) => new Date(Date.UTC(2026, 10, 1, h, m)).toISOString();
@@ -129,6 +129,61 @@ describe('measureRetention(git)', () => {
     expect(r.counts).toEqual({ kept: 1, modified: 1, missing: 1, unattributable: 0 });
     expect(r.lines).toEqual({ kept: 2, modified: 1, missing: 1, unattributable: 0 });
     expect(r.provenance).toMatchObject({ aiChanges: 'events', baseline: 'observed' });
+  });
+
+  it('基準にもある本文でも、新しく足した分(増えた分)は数える。消されていれば未確認', async () => {
+    const { root, head } = gitRepo({ 'a.ts': ['function a() {', '  return null;', '}'] });
+    const f = join(root, 'a.ts');
+    const ev = session({
+      cwd: root,
+      gitRoot: root,
+      headCommit: head,
+      start: [10, 0],
+      end: [11, 0],
+      edits: [
+        { path: f, added: ['function b() {', '  return null;', '}'], t: [10, 1] },
+        { path: f, added: ['function c() {', '  return null;', '}'], t: [10, 2] },
+      ],
+    });
+    // b は残し、c は消した。return null; と } は基準にもあるが、b の分だけ増えている
+    write(f, ['function a() {', '  return null;', '}', 'function b() {', '  return null;', '}']);
+    const [r] = await measureRetention([extractAiChanges('s1', ev)]);
+    expect(r.hunks.map((h) => [h.status, h.lines.kept, h.lines.missing])).toEqual([
+      ['kept', 3, 0],
+      ['missing', 0, 1],
+    ]);
+    // c の return null; と } は、照合時に増えた行に当たらず、基準にある本文なので数えない
+    expect(r.lines).toMatchObject({ kept: 3, missing: 1 });
+  });
+
+  it('推定の基準は、セッションのブランチの履歴で探す(今の HEAD が別のブランチでも)', async () => {
+    const { root } = gitRepo({ 'a.txt': ['base'] });
+    git(root, ['checkout', '-q', '-b', 'feat/x']);
+    write(join(root, 'a.txt'), ['base', 'on feature branch']);
+    git(root, ['commit', '-q', '-am', 'feature'], at(9, 30));
+    const feat = git(root, ['rev-parse', 'HEAD']);
+    git(root, ['checkout', '-q', 'main']);
+    const f = join(root, 'a.txt');
+    const ev = session({ cwd: root, gitRoot: root, start: [10, 0], end: [11, 0], edits: [{ path: f, added: ['ai line here'] }] });
+    ev[0].data.context.branch = 'feat/x';
+    const [r] = await measureRetention([extractAiChanges('s1', ev)]);
+    expect(r.baseline).toEqual({ rev: feat, source: 'estimated' });
+    // 名前が素直でないブランチ(引数として読まれうるもの)は使わず、HEAD で探す
+    const ev2 = session({ cwd: root, gitRoot: root, start: [10, 0], end: [11, 0], edits: [{ path: f, added: ['ai line here'] }] });
+    ev2[0].data.context.branch = '--output=x';
+    const [r2] = await measureRetention([extractAiChanges('s2', ev2)]);
+    expect(r2.baseline?.rev).toBe(git(root, ['rev-parse', 'main']));
+  });
+
+  it('時間の重なる別のセッションと、短いありふれた行だけが同じなら、照合不可にしない', async () => {
+    const { root, head } = gitRepo({ 'a.ts': ['base'] });
+    const f = join(root, 'a.ts');
+    const a = session({ cwd: root, gitRoot: root, headCommit: head, start: [10, 0], end: [11, 0], edits: [{ path: f, added: ['export const fromA = 1;', '}'] }] });
+    const b = session({ cwd: root, gitRoot: root, headCommit: head, start: [10, 30], end: [11, 30], edits: [{ path: f, added: ['export const fromB = 2;', '}'] }] });
+    write(f, ['base', 'export const fromA = 1;', '}', 'export const fromB = 2;', '}']);
+    const [ra, rb] = await measureRetention([extractAiChanges('a', a), extractAiChanges('b', b)]);
+    expect(ra.hunks[0]).toMatchObject({ status: 'kept', lines: { kept: 2, unattributable: 0 } });
+    expect(rb.hunks[0]).toMatchObject({ status: 'kept', lines: { kept: 2, unattributable: 0 } });
   });
 
   it('一部の行だけ残ったまとまりは「直されて残る」', async () => {
@@ -311,7 +366,11 @@ function fakeVcs(kind: 'svn' | 'p4', root: string, revs: FakeRev[]) {
         return r ? ok(`${r.rev}\n`) : { code: 1, stdout: '', stderr: 'svn: E195012: no revision' };
       }
       if (a[0] === 'info' && a[2] === 'revision') return ok(`${revs[revs.length - 1].rev}\n`);
-      if (a[0] === 'cat') return content(a[2] === 'BASE' ? revs[revs.length - 1] : revs.find((r) => String(r.rev) === a[2]), a[3]);
+      // 実物の svn と同じく、パスの末尾の @(空の peg 版)は外して読む
+      if (a[0] === 'cat') {
+        expect(a[3].endsWith('@')).toBe(true);
+        return content(a[2] === 'BASE' ? revs[revs.length - 1] : revs.find((r) => String(r.rev) === a[2]), a[3].slice(0, -1));
+      }
     } else {
       if (a[0] === 'info') return ok(`... clientName zz-ws\n... clientRoot ${root}\n`);
       if (a[0] === 'changes') {
@@ -419,5 +478,19 @@ describe.each(['svn', 'p4'] as const)('measureRetention(%s。偽の CLI)', (kind
     const rs = await measureRetention([extractAiChanges('e', early), extractAiChanges('o', overlap)], { runner });
     expect(rs.map((x) => x.reason)).toEqual(['concurrent_session', 'concurrent_session']);
     expect(summarizeRetention(rs).lines.kept).toBe(0);
+  });
+});
+
+describe('VCS に渡すもの', () => {
+  it('p4Escape: p4 のファイル指定で特別な文字を逃がす(% を先に)', () => {
+    expect(p4Escape('/w/img@2x.png')).toBe('/w/img%402x.png');
+    expect(p4Escape('/w/C#notes 100%*.md')).toBe('/w/C%23notes 100%25%2A.md');
+  });
+  it('vcsEnv: メッセージだけ英語にし、文字の扱いは利用者のものを残す(LC_ALL を外して LC_CTYPE に移す)', () => {
+    const e = vcsEnv({ LC_ALL: 'ja_JP.UTF-8', PATH: '/bin' });
+    expect(e.LC_ALL).toBeUndefined();
+    expect(e).toMatchObject({ LC_CTYPE: 'ja_JP.UTF-8', LC_MESSAGES: 'C', LANGUAGE: 'C', GIT_OPTIONAL_LOCKS: '0', PATH: '/bin' });
+    expect(vcsEnv({ LANG: 'en_US.UTF-8' }).LC_CTYPE).toBe('en_US.UTF-8');
+    expect(vcsEnv({}).LC_CTYPE).toBeUndefined();
   });
 });

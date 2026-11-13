@@ -1,17 +1,19 @@
-// 「比べる」の節: 2 つの条件(タスクタグ・期間・プロジェクト)のセッションの指標を並べる。
+// 「比べる」の節: 2 つの条件(タスクタグ・期間・プロジェクト)のセッションの指標を並べる。工程は依頼(ターン)の単位で並べる。
 // 差は相関で、条件の違いが原因とは限らない。
 import { localDayStart, sessionTime } from './filter.ts';
-import { aggregateRetention, measuredOf, type RetentionAgg } from './retention.ts';
+import { PHASES, type Phase, type TurnBucket } from '../../../core/src/turns.ts';
+import { aggregateRetention, measuredOf, retentionByPhase, type RetentionAgg, type StatusTuple } from './retention.ts';
+import { turnAggregate } from './turns.ts';
 import type { SessionSummary } from './types.ts';
 
 /** 割合を出す最小のセッション数(改善点の率と同じ 5) */
 export const COMPARE_MIN_SESSIONS = 5;
 
-export const COMPARE_KINDS = ['tag', 'period', 'project'] as const;
+export const COMPARE_KINDS = ['tag', 'period', 'project', 'phase'] as const;
 export type CompareKind = (typeof COMPARE_KINDS)[number];
-export const COMPARE_KIND_LABEL: Record<CompareKind, string> = { tag: 'タスクタグ', period: '期間', project: 'プロジェクト' };
+export const COMPARE_KIND_LABEL: Record<CompareKind, string> = { tag: 'タスクタグ', period: '期間', project: 'プロジェクト', phase: '工程' };
 
-export type CompareSession = Pick<SessionSummary, 'id' | 'turns' | 'activeMs' | 'tools' | 'friction' | 'analysis' | 'tokens' | 'retention' | 'createdAt' | 'updatedAt' | 'project'>;
+export type CompareSession = Pick<SessionSummary, 'id' | 'turns' | 'activeMs' | 'tools' | 'friction' | 'analysis' | 'tokens' | 'retention' | 'createdAt' | 'updatedAt' | 'project' | 'turnRows'>;
 
 export interface CompareSide {
   sessions: number;
@@ -105,4 +107,38 @@ export function defaultPeriods(lastAt: string | null, days = 30): { a: { from: s
   const day = (offset: number): string => localDay(new Date(end.getFullYear(), end.getMonth(), end.getDate() - offset));
   // A が前の期間、B が後の期間(左から右へ時間が進む)
   return { a: { from: day(days * 2 - 1), to: day(days) }, b: { from: day(days - 1), to: day(0) } };
+}
+
+/** 割合や平均を出す最小の依頼の数(セッションの 5 と同じ考え方) */
+export const COMPARE_MIN_TURNS = 5;
+
+/**
+ * 工程どうしを、依頼(ターン)の単位で比べる。母集団は渡したセッションの依頼のうち、その工程のもの。
+ * AI の変更の残存は、照合できたセッションのまとまりを、作った依頼の工程で分けたもの
+ */
+export function comparePhaseRows(sessions: readonly CompareSession[], a: Phase, b: Phase): CompareRow[] {
+  const agg = turnAggregate(sessions);
+  const ret = retentionByPhase(sessions).byPhase;
+  const bucket = (p: Phase): TurnBucket => agg.byPhase[p];
+  const hunks = (p: Phase): StatusTuple => ret.get(PHASES.indexOf(p)) ?? [0, 0, 0, 0];
+  const perTurn = (v: number, n: number): number | null => (n < COMPARE_MIN_TURNS ? null : v / n);
+  const share = (part: number, whole: number, n: number): number | null => (n < COMPARE_MIN_TURNS || whole <= 0 ? null : part / whole);
+  const row = (key: string, label: string, unit: CompareRow['unit'], f: (p: Phase) => number | null, note: string): CompareRow => ({ key, label, unit, a: f(a), b: f(b), note });
+  const retShare = (p: Phase, i: 'kept' | 'missing'): number | null => {
+    const t = hunks(p);
+    const m = measuredOf(t);
+    if (m < COMPARE_MIN_TURNS) return null;
+    return i === 'kept' ? (t[0] + t[1]) / m : t[2] / m;
+  };
+  return [
+    row('turns', '依頼', 'count', (p) => bucket(p).turns, '依頼(ターン)の数'),
+    row('active', '実働 / 依頼', 'minutes', (p) => perTurn(bucket(p).activeMs, bucket(p).turns), '平均(記録の無い依頼は 0 として足す。5 件未満なら —)'),
+    row('failure', 'ツールの失敗・拒否の率', 'rate', (p) => share(bucket(p).toolFailures + bucket(p).denied, bucket(p).tools, bucket(p).turns), '失敗・拒否 ÷ ツール呼び出し'),
+    row('stuck', '詰まりのあった依頼の割合', 'rate', (p) => share(bucket(p).stuck, bucket(p).turns, bucket(p).turns), '失敗・拒否・中断・エラー・再編集・文脈圧縮のどれかがあった'),
+    row('fix', '次の依頼で直し・差し戻しの割合', 'rate', (p) => share(bucket(p).followedByFix, bucket(p).withNext, bucket(p).turns), '次の依頼があった依頼に対する割合'),
+    row('aiu', 'AIU / 依頼', 'aiu', (p) => perTurn(bucket(p).nanoAiu / 1e9, bucket(p).turns), '平均(5 件未満なら —)'),
+    row('retention-hunks', '照合できたまとまり', 'count', (p) => measuredOf(hunks(p)), '照合できたセッションの、その工程の依頼で AI が足したまとまり'),
+    row('retention-kept', '残っている(そのまま + 直されて)割合', 'rate', (p) => retShare(p, 'kept'), '照合できたまとまりに対する割合(5 件未満なら —)'),
+    row('retention-missing', '見つからない割合', 'rate', (p) => retShare(p, 'missing'), '照合できたまとまりに対する割合'),
+  ];
 }

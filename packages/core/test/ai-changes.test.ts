@@ -138,3 +138,23 @@ describe('extractAiChanges', () => {
     expect(s.context.sources).toEqual({ cwd: 'events', gitRoot: 'workspace', branch: 'workspace' });
   });
 });
+
+describe('レビューの指摘', () => {
+  it('diff --git の無い複数ファイルの diff でも、--- / +++ のすぐ後に @@ が続くものは次のファイルとして読む', () => {
+    const text = ['--- a/one.ts', '+++ b/one.ts', '@@ -1,1 +1,2 @@', ' x', '+in one', '--- a/two.ts', '+++ b/two.ts', '@@ -1,1 +1,2 @@', ' y', '+in two', ''].join('\n');
+    const d = parseUnifiedDiff(text);
+    expect(d.map((x) => [x.newPath, x.blocks])).toEqual([
+      ['one.ts', [{ added: ['in one'], removed: [] }]],
+      ['two.ts', [{ added: ['in two'], removed: [] }]],
+    ]);
+  });
+
+  it('create でファイルを作り直したら、前に足した行は数えない(diff が無い引数だけのときも)', () => {
+    const s = extractAiChanges('s1', [
+      start(),
+      ...edit(`${ROOT}\c.ts`, [], [], { noDiff: true, tool: 'create', args: { path: `${ROOT}\c.ts`, file_text: 'old one\nold two' }, min: 1 }),
+      ...edit(`${ROOT}\c.ts`, [], [], { noDiff: true, tool: 'create', args: { path: `${ROOT}\c.ts`, file_text: 'new one' }, min: 2 }),
+    ]);
+    expect(s.hunks.map((h) => h.lines)).toEqual([['new one']]);
+  });
+});

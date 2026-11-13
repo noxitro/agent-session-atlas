@@ -51,6 +51,8 @@ export interface HunkRetention {
   reason?: UnattributableReason;
   /** 数えた行の内訳(基準にあった行・空白行は含めない) */
   lines: LineCounts;
+  /** そのまとまりを作った編集の時刻(ISO。工程ごとの集計で、どの依頼のものかを決めるのに使う)。記録が無ければ省略 */
+  at?: string;
 }
 
 export interface SessionRetention {
@@ -101,14 +103,20 @@ function bigrams(s: string): Map<string, number> {
   return m;
 }
 
+/** 似た本文の判定と、ほかのセッションとの重なりの判定をする行の最小の長さ(空白を除いた文字数) */
+const MIN_SIMILAR_CHARS = 6;
+
+/** 作っておいた 2 字組どうしの重なり(la・lb はそれぞれの 2 字組の数) */
+function diceGrams(A: Map<string, number>, la: number, B: Map<string, number>, lb: number): number {
+  let common = 0;
+  for (const [g, n] of A) common += Math.min(n, B.get(g) ?? 0);
+  return (2 * common) / (la + lb);
+}
+
 /** 文字の 2 字組の重なり(0〜1) */
 export function dice(a: string, b: string): number {
   if (a.length < 2 || b.length < 2) return a === b ? 1 : 0;
-  const A = bigrams(a);
-  const B = bigrams(b);
-  let common = 0;
-  for (const [g, n] of A) common += Math.min(n, B.get(g) ?? 0);
-  return (2 * common) / (a.length - 1 + (b.length - 1));
+  return diceGrams(bigrams(a), a.length - 1, bigrams(b), b.length - 1);
 }
 
 /** 本文の行(行末の空白を落とす) */
@@ -171,6 +179,9 @@ function buildIndex(sets: readonly AiChangeSet[]): { index: LineIndex; owners: M
 
 /** その行を、ほかのセッションとの関係でこのセッションの分として数えられるか */
 function lineClaim(index: LineIndex, me: Owner, path: string, line: string): 'mine' | 'concurrent_session' | 'later_session' {
+  // 短い行(} や return; など)は、別のセッションが同じ本文を足していても同じ変更とは言えないので、重なりを判定しない
+  // (判定すると、ありふれた 1 行のためにまとまりごと照合不可になる)
+  if (squash(line).length < MIN_SIMILAR_CHARS) return 'mine';
   const others = index.get(filePathKey(path))?.get(line)?.filter((o) => o !== me) ?? [];
   if (others.some((o) => overlaps(me, o))) return 'concurrent_session';
   if (others.some((o) => o.startMs != null && me.endMs != null && o.startMs > me.endMs)) return 'later_session';
@@ -192,13 +203,12 @@ function classifyFile(
     const b = multiset(fileLines(base));
     for (const l of fileLines(after)) if (l.trim() !== '' && !take(b, l)) added.push(l);
   }
-  type Line = { text: string; state: 'pending' | 'kept' | 'modified' | 'missing' | UnattributableReason };
+  type Line = { text: string; state: 'pending' | 'kept' | 'modified' | 'missing' | 'excluded' | UnattributableReason };
   const per: { h: AiHunk; lines: Line[]; concurrent: boolean }[] = [];
   for (const h of hunks) {
     const lines: Line[] = [];
     let concurrent = false;
     for (const text of h.lines) {
-      if (take(baseLeft, text)) continue; // 基準にもともとあった行
       const c = claim(text);
       if (c === 'concurrent_session') concurrent = true;
       lines.push({ text, state: c === 'mine' ? 'pending' : c });
@@ -212,6 +222,9 @@ function classifyFile(
   const exact = new Map<string, number>();
   for (const l of added) exact.set(l, (exact.get(l) ?? 0) + 1);
   for (const l of pending()) if (take(exact, l.text)) l.state = 'kept';
+  // 増えた行に当たらず、基準のファイルにもともとある本文の行(動かしただけの行・同じ本文の書き直し)は数えない。
+  // 同じ本文が増えた分(} を 3 つ足したなど)は先に当てたので、ありふれた行でも新しく足した分は数える
+  for (const l of pending()) if (take(baseLeft, l.text)) l.state = 'excluded';
   const rest = added.filter((l) => {
     // exact で使わなかった分を残す
     const n = exact.get(l) ?? 0;
@@ -226,14 +239,23 @@ function classifyFile(
     const i = rest.findIndex((r, j) => !used[j] && squash(r) === squash(l.text));
     if (i >= 0) ((used[i] = true), (l.state = 'modified'));
   }
+  // 似た本文: 照合した時点の行の 2 字組は 1 度だけ作る(行ごと・組ごとに作り直すと、大きなファイルで遅くなる)
+  const restSq = rest.map(squash);
+  const restGrams = restSq.map((r) => (r.length >= MIN_SIMILAR_CHARS ? bigrams(r) : null));
   for (const l of pending()) {
     const s = squash(l.text);
-    if (s.length < 6) continue; // 短い行(} や end など)は似ていても当てにならない
+    if (s.length < MIN_SIMILAR_CHARS) continue; // 短い行(} や end など)は似ていても当てにならない
+    const grams = bigrams(s);
     let best = -1;
     let bestScore = similarity;
     for (let j = 0; j < rest.length; j++) {
-      if (used[j]) continue;
-      const score = dice(s, squash(rest[j]));
+      const g = restGrams[j];
+      if (used[j] || !g) continue;
+      // 長さの差だけで下限に届かないものは、数えずに飛ばす(重なりは短いほうの 2 字組の数を超えない)
+      const la = s.length - 1;
+      const lb = restSq[j].length - 1;
+      if ((2 * Math.min(la, lb)) / (la + lb) < bestScore) continue;
+      const score = diceGrams(grams, la, g, lb);
       if (score >= bestScore) ((best = j), (bestScore = score));
     }
     if (best >= 0) ((used[best] = true), (l.state = 'modified'));
@@ -243,19 +265,20 @@ function classifyFile(
   const results: HunkRetention[] = [];
   let excluded = 0;
   for (const p of per) {
-    if (p.lines.length === 0) {
+    const countedLines = p.lines.filter((l) => l.state !== 'excluded');
+    if (countedLines.length === 0) {
       excluded++;
       continue;
     }
     const lines = emptyLines();
     let reason: UnattributableReason | undefined;
-    for (const l of p.lines) {
+    for (const l of countedLines) {
       if (l.state === 'kept' || l.state === 'modified' || l.state === 'missing') lines[l.state]++;
       else ((lines.unattributable += 1), (reason ??= l.state as UnattributableReason));
     }
     const counted = lines.kept + lines.modified + lines.missing;
     const status: RetentionStatus = counted === 0 ? 'unattributable' : lines.kept === counted ? 'kept' : lines.kept + lines.modified > 0 ? 'modified' : 'missing';
-    results.push({ id: p.h.id, path: p.h.path, status, ...(status === 'unattributable' ? { reason } : {}), lines });
+    results.push({ id: p.h.id, path: p.h.path, status, ...(status === 'unattributable' ? { reason } : {}), lines, ...(p.h.at ? { at: p.h.at } : {}) });
   }
   return { results, excluded };
 }
@@ -285,7 +308,7 @@ function memo<T>(cache: Map<string, Promise<T>>, key: string, load: () => Promis
 }
 
 function unattributed(h: AiHunk, reason: UnattributableReason): HunkRetention {
-  return { id: h.id, path: h.path, status: 'unattributable', reason, lines: { ...emptyLines(), unattributable: h.lines.length } };
+  return { id: h.id, path: h.path, status: 'unattributable', reason, lines: { ...emptyLines(), unattributable: h.lines.length }, ...(h.at ? { at: h.at } : {}) };
 }
 
 /**
@@ -337,7 +360,9 @@ export async function measureRetention(sets: readonly AiChangeSet[], opts: Reten
         const sameRepo = repo.kind === 'git' && sessionRepo?.repo === repo;
         const headCommit = sameRepo ? ctx.headCommit : null;
         const start = ctx.start;
-        b = memo(baselineCache, `${repoKey(repo)}\0${headCommit ?? ''}\0${headCommit ? '' : (start ?? '')}`, () => repo.baseline({ headCommit, start }));
+        // 推定するときは、セッションのブランチの履歴で探す(同じリポジトリのときだけ)
+        const branch = sameRepo ? ctx.branch : null;
+        b = memo(baselineCache, `${repoKey(repo)}\0${headCommit ?? ''}\0${headCommit ? '' : `${start ?? ''}\0${branch ?? ''}`}`, () => repo.baseline({ headCommit, start, branch }));
         baselines.set(repo, b);
       }
       return b;

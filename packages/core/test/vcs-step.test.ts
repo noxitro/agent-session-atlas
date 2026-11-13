@@ -231,6 +231,9 @@ describe('runVcsStep(アップロード先から集計し直したとき)', () =
     const local = await runVcsStep(snap);
     const back = parseSenderVcs(JSON.parse(senderVcsJson(local.sessions[0], local)), 'sx');
     expect(back).toMatchObject({ outcome: 'measured', vcs: 'git', baseline: { rev: head, source: 'observed' }, counts: local.sessions[0].counts, lines: local.sessions[0].lines, computedOn: 'sender' });
+    // まとまりを作った編集の時刻も残る(工程ごとの集計に使う)
+    expect(local.sessions[0].hunks[0].at).toBeTruthy();
+    expect(back?.hunks[0].at).toBe(local.sessions[0].hunks[0].at);
   });
 });
 
