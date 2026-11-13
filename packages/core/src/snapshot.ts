@@ -4,6 +4,7 @@ import { basename, dirname, join, relative, resolve } from 'node:path';
 import { readDesktopDb } from './desktop.ts';
 import { openWritable, sqlString } from './sqlite.ts';
 import { renameReplacing } from './fs-retry.ts';
+import { parseAtlasBuild, type FolderUpload } from './atlas-version.ts';
 import type { InstalledInventory } from './types.ts';
 
 /** 複製する SQLite(ルート直下)。data.db(デスクトップアプリ)は資格情報列を含むので複製せず、Phase 11 から許可リストの列だけを desktop.json に書く */
@@ -130,6 +131,11 @@ export interface SnapshotManifest {
   installed?: InstalledInventory;
   /** 送り先の全体を集計したときの、人のフォルダの名前ごとのインストール済みの記録(送った人が添えたもの。無ければ無い) */
   installedByPerson?: Record<string, InstalledInventory>;
+  /**
+   * アップロードしたフォルダから集計したときの、フォルダごとの最後に送ったときの記録(索引 UPLOAD_INDEX の uploadedAt と atlas の版)。
+   * キーは元のルートからの相対パス(merged.folders と同じ書き方。直下にセッションが並ぶ形は '.')。索引の無い・読めないフォルダは入れない。古いマニフェストには無い
+   */
+  uploads?: Record<string, FolderUpload>;
   /** Phase 11: 追加で写したもの(セッションフォルダの中身と ~/.copilot 直下)と、写さなかったもの */
   extras?: {
     all: boolean;
@@ -446,6 +452,7 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
     const sent = await readSentInventory(src, flat ? ['.'] : merged!);
     if (sent.installed) manifest.installed = sent.installed;
     if (sent.byPerson) manifest.installedByPerson = sent.byPerson;
+    manifest.uploads = await readUploadIndexes(src, flat ? ['.'] : merged!);
   } else manifest.installed = await readInventory(src);
 
   // 元から消えたセッションの複製が出力先に残っていれば、前の集計で数えたフォルダを引き継ぐ(人ごとの内訳から外さない)
@@ -1065,6 +1072,34 @@ export async function readInventory(src: string): Promise<InstalledInventory> {
     }
   }
   return inv;
+}
+
+/** 索引(UPLOAD_INDEX)の大きさの上限。セッションの一覧を含むので大きめにする。これを超えるものは読まない(共有フォルダのファイルなので) */
+const UPLOAD_INDEX_LIMIT = 20 * 1024 * 1024;
+
+/**
+ * アップロードしたフォルダ(src からの相対パス。'.' は src そのもの)の索引から、最後に送ったときの日時と atlas の版を読む。
+ * 索引が無い・読めない・大きすぎる・形が違うフォルダは入れない(版の記録が無い atlas で送った索引は、atlas が null)
+ */
+export async function readUploadIndexes(src: string, folders: readonly string[]): Promise<Record<string, FolderUpload>> {
+  const read = await mapLimit(folders, SNAPSHOT_CONCURRENCY, async (f): Promise<FolderUpload | null> => {
+    const path = join(src, ...(f === '.' ? [] : f.split('/')), UPLOAD_INDEX);
+    try {
+      if ((await stat(path)).size > UPLOAD_INDEX_LIMIT) return null;
+      const j = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown> | null;
+      if (!j || typeof j !== 'object' || Array.isArray(j) || j.version !== 1) return null;
+      const t = typeof j.uploadedAt === 'string' && j.uploadedAt.length <= 40 ? Date.parse(j.uploadedAt) : NaN;
+      return { uploadedAt: Number.isFinite(t) ? new Date(t).toISOString() : null, atlas: parseAtlasBuild(j.atlas) };
+    } catch {
+      return null;
+    }
+  });
+  const out: Record<string, FolderUpload> = {};
+  folders.forEach((f, i) => {
+    const r = read[i];
+    if (r) out[f] = r;
+  });
+  return out;
 }
 
 /** 送った人のインストール済みの記録で使う名前の上限(共有フォルダに置かれたファイルなので、大きすぎるもの・おかしな名前は使わない) */

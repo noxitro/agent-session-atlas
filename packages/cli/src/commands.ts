@@ -243,7 +243,7 @@ export async function runExtract(p: Paths, since: string | null, log: Log, tempD
   } else log(`extract: wiki は未設定のため集計しません(${CONFIG_FILE} の wikis で vault を指定できます)`);
   if (unknown > 0 || s.warnings.badLines > 0) log(`extract: 注意 未知のイベント種別 ${unknown} 件、読めなかった行 ${s.warnings.badLines} 行`);
   // 送り先から集計したときは、送った atlas の版を数える(古い版で送ったものが混ざっていないか)
-  const builds = summarizeAtlasBuilds(s.sessions, currentAtlasBuild());
+  const builds = summarizeAtlasBuilds(s.sessions, currentAtlasBuild(), s.source.uploads);
   if (builds) {
     const d = describeAtlasBuilds(builds);
     log(`extract: ${d.ok ? '' : '注意 '}${d.headline}`);
@@ -451,6 +451,8 @@ export async function runBuild(p: Paths, o: BuildOptions, log: Log): Promise<Bui
     verdicts,
     retention,
     atlasLocal: currentAtlasBuild(),
+    // フォルダごとの、最後に送ったときの日時と版(最後に送った版が古いフォルダを出す)
+    atlasUploads: s.source.uploads ?? null,
     // 読むだけの画面(送り先から集計した・別のフォルダを開いた)は、送った人が付けていたタスクタグ(人ごと)とメモを出す。
     // この PC の置き場(groups.json・memos/)のものは混ぜない。判定はサーバと同じ isReadOnlyView
     ...(isReadOnlyView(p.out, s.source)

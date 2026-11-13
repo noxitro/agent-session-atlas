@@ -632,6 +632,27 @@ describe('アップロード先から集計し直す: extract', () => {
     expect(await readSenderMeta(join(base, 'none.json'), 's1')).toBeNull();
   });
 
+  it('フォルダごとの最後に送ったときの日時と atlas の版を、索引(atlas-index.json)から読む。無い・壊れた索引のフォルダは入れない', async () => {
+    const base = await work();
+    const root = join(base, 'logs');
+    const dest = join(base, 'out', 'snapshot');
+    const atlas = { commit: 'a'.repeat(40), committedAt: '2026-11-13T09:00:00+09:00', dirty: false, code: '0123456789abcdef' };
+    for (const f of ['person-a/proj-a', 'person-b/proj-a', 'person-b/proj-b', 'person-c/proj-a']) await session(join(root, f, `s-${f.replace('/', '-')}`));
+    await writeFile(join(root, 'person-a', 'proj-a', UPLOAD_INDEX), JSON.stringify({ version: 1, uploadedAt: '2026-11-13T00:00:00.000Z', atlas, sessions: [] }));
+    // 版を記録するより前の atlas で送った索引
+    await writeFile(join(root, 'person-b', 'proj-a', UPLOAD_INDEX), JSON.stringify({ version: 1, uploadedAt: '2026-11-01T09:00:00+09:00', sessions: [] }));
+    // 壊れた索引・形の違う索引は入れない
+    await writeFile(join(root, 'person-b', 'proj-b', UPLOAD_INDEX), '{ 壊れた');
+    await writeFile(join(root, 'person-c', 'proj-a', UPLOAD_INDEX), JSON.stringify({ version: 2, uploadedAt: '2026-11-01T00:00:00.000Z' }));
+    const m = await snapshot(root, dest);
+    expect(m.uploads).toEqual({
+      'person-a/proj-a': { uploadedAt: '2026-11-13T00:00:00.000Z', atlas: { ...atlas, committedAt: '2026-11-13T00:00:00.000Z' } },
+      'person-b/proj-a': { uploadedAt: '2026-11-01T00:00:00.000Z', atlas: null },
+    });
+    const x = await extract(dest, { projects: { homes: [], temps: [], tempPatterns: false } });
+    expect(x.source.uploads).toEqual(m.uploads);
+  });
+
   it('送った人のメモが大きすぎるとき(本文・画像の合計)は写さず、理由を残す。前に写したものも消す', async () => {
     const base = await work();
     const root = join(base, 'logs');

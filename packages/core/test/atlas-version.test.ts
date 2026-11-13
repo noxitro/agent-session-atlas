@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { readAtlasBuild } from '../src/atlas-build.ts';
-import { describeAtlasBuilds, parseAtlasBuild, summarizeAtlasBuilds, type AtlasBuild } from '../src/atlas-version.ts';
+import { describeAtlasBuilds, parseAtlasBuild, staleFolders, summarizeAtlasBuilds, type AtlasBuild } from '../src/atlas-version.ts';
 
 const b = (c: string, at: string | null, o: Partial<AtlasBuild> = {}): AtlasBuild => ({ commit: c.repeat(40), committedAt: at, dirty: false, code: `${c.repeat(8)}00000000`, ...o });
 
@@ -61,6 +61,40 @@ describe('atlas の版', () => {
     expect(describeAtlasBuilds(same)).toMatchObject({ ok: true, short: 'すべて最新', headline: '送った atlas の版: すべて最新(aaaaaaa)' });
     // 送り先から集計したものが無ければ数えない
     expect(summarizeAtlasBuilds([{ person: null }, {}], null)).toBeNull();
+  });
+
+  it('フォルダごとの最後に送った版: いちばん新しい版でないフォルダを、最後に送った日時の古い順に出す(セッションの数だけでは、いつ・どの版で最後に送ったかが分からないため)', () => {
+    const sent = [{ person: 'person-a', uploadAtlas: b('b', '2026-11-10T00:00:00.000Z') }];
+    const folders = {
+      'person-a/app': { uploadedAt: '2026-11-12T00:00:00.000Z', atlas: b('b', '2026-11-10T00:00:00.000Z') },
+      'person-b/app': { uploadedAt: '2026-11-05T00:00:00.000Z', atlas: b('a', '2026-11-01T00:00:00.000Z') },
+      'person-c/app': { uploadedAt: '2026-10-20T00:00:00.000Z', atlas: null },
+      'person-d/app': { uploadedAt: null, atlas: { commit: null, committedAt: null, dirty: null, code: 'dddddddd00000000' } },
+    };
+    const s = summarizeAtlasBuilds(sent, null, folders)!;
+    expect(s.folders).toEqual([
+      { folder: 'person-d/app', uploadedAt: null, reason: 'undated', label: '目印 dddddddd' },
+      { folder: 'person-c/app', uploadedAt: '2026-10-20T00:00:00.000Z', reason: 'unknown', label: null },
+      { folder: 'person-b/app', uploadedAt: '2026-11-05T00:00:00.000Z', reason: 'older', label: 'aaaaaaa' },
+    ]);
+    const d = describeAtlasBuilds(s);
+    // セッションはすべて最新でも、最後に送った版が古いフォルダがあれば ok にしない
+    expect(d.ok).toBe(false);
+    expect(d.short).toBe('最後に送った版が古いフォルダ 3 件');
+    expect(d.lines).toContain(
+      '最後に送ったときの版が最新でないフォルダ: person-d/app(送った日時不明・新旧を決められない版 目印 dddddddd)、person-c/app(2026-10-20 に送った・版の記録なし)、person-b/app(2026-11-05 に送った・古い版 aaaaaaa)',
+    );
+    // フォルダの記録しか無い新しい版も、いちばん新しい版の候補にする(そのフォルダのセッションがほかのフォルダで数えられたときなど)
+    const newer = summarizeAtlasBuilds(sent, null, { 'person-e/app': { uploadedAt: '2026-11-13T00:00:00.000Z', atlas: b('c', '2026-11-12T00:00:00.000Z') } })!;
+    expect(newer.latest).toMatchObject({ commit: 'c'.repeat(40) });
+    expect(newer.older).toBe(1);
+    // すべて最新なら、フォルダは出さず ok
+    const ok = summarizeAtlasBuilds(sent, null, { 'person-a/app': folders['person-a/app'] })!;
+    expect(ok.folders).toEqual([]);
+    expect(describeAtlasBuilds(ok).ok).toBe(true);
+    // フォルダの記録を渡さなければ、フォルダは数えない(前と同じ)
+    expect(summarizeAtlasBuilds(sent, null)!.folders).toBeUndefined();
+    expect(staleFolders({}, null)).toEqual([]);
   });
 });
 

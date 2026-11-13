@@ -1,7 +1,7 @@
 import type { FailureCauses } from './tool-failure.ts';
 import type { DesktopData, DesktopSessionInfo } from './desktop-types.ts';
 import type { TurnMetrics } from './turns.ts';
-import type { AtlasBuild } from './atlas-version.ts';
+import type { AtlasBuild, FolderUpload } from './atlas-version.ts';
 // sessions.json / metrics.json のスキーマ。後続フェーズ(cli / report / judge)はここだけを参照する。
 
 // 2: Phase 5(empty / autopilotContinuations / tools.internal / files.deleted・sessionState、
@@ -554,7 +554,15 @@ export interface SessionsFile {
    * layout と folders は、アップロードしたフォルダから集計したときだけある('flat' はフォルダ 1 つ、'merged' は下のフォルダをまとめて読んだもの。
    * folders はまとめて読んだフォルダの名前)
    */
-  source: { root: string | null; snapshotDir: string; since: string | null; layout?: 'flat' | 'merged'; folders?: string[] };
+  source: {
+    root: string | null;
+    snapshotDir: string;
+    since: string | null;
+    layout?: 'flat' | 'merged';
+    folders?: string[];
+    /** フォルダごとの、最後に送ったときの日時と atlas の版(snapshot の manifest の uploads)。送り先から集計したときだけある */
+    uploads?: Record<string, FolderUpload>;
+  };
   /** Phase 11: data.db の読み取りの状態(WAL の注意、表ごとの列の扱い)。無ければ null */
   desktop?: { readAt: string; wal: DesktopData['wal']; coverage: DesktopData['coverage']; warnings: string[]; sessions: number } | null;
   /** empty: 依頼 0・ツール 0・応答 0 のセッション数(sessions には含む) */
