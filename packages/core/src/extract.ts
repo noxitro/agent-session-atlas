@@ -531,6 +531,8 @@ export async function extract(snapshotDir: string, opts: ExtractOptions = {}): P
     }
     // 送り先をまとめて集計したとき(<人>/<プロジェクト> の下のセッション)は、人のフォルダの名前を持たせる
     rec.person = layout === 'merged' ? personOfFolder(manifest?.merged?.owners?.[id]) : null;
+    // 送り先から集計したときは、そのセッションを数えたフォルダも持たせる(絞り込んだレポートで、対象のセッションがあるフォルダだけを見るため)
+    if (uploaded) rec.uploadFolder = layout === 'merged' ? (manifest?.merged?.owners?.[id] ?? null) : '.';
     // 送り先から集計したときは、送った人が付けていたタスクタグも持たせる(画面は人ごとに分けて、読むだけで出す)
     if (uploaded) rec.uploadTags = meta?.tags ?? [];
     // 送り先から集計したときは、そのセッションのフォルダを写した atlas の版も持たせる(記録が無ければ null。古い版で送ったものを数えるため)

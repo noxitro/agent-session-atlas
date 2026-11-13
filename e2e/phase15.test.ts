@@ -124,7 +124,7 @@ describe('Phase 15 E2E: グループのアップロード', () => {
     // 指示ファイルの名前は、ほかのセッションと突き合わせて決めるので、一部のセッションだけを集計すると決まらないことがある。それ以外は全部同じ
     // 送り先から集計すると、送った人が付けていたタスクタグ(uploadTags)が付く。元の集計には無い
     // 写した atlas の版(uploadAtlas)も付く
-    const pick = ({ instructions: _i, uploadTags: _t, uploadAtlas: _a, ...rest }: SessionRecord) => rest;
+    const pick = ({ instructions: _i, uploadTags: _t, uploadAtlas: _a, uploadFolder: _f, ...rest }: SessionRecord) => rest;
     for (const id of ids) expect(again.sessions.find((s) => s.id === id)!.uploadTags).toEqual(['Player-Weapon']);
     for (const id of ids) expect(again.sessions.find((s) => s.id === id)!.uploadAtlas?.code).toMatch(/^[0-9a-f]{16}$/);
     expect(again.sessions.find((s) => s.id === 'someone-else')!.uploadAtlas).toBeNull();

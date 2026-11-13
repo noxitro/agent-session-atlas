@@ -31,7 +31,7 @@ export type { Database } from './sqlite.ts';
 export { runPipeline } from './pipeline.ts';
 export { codeStamp, computeCodeStamp } from './code-stamp.ts';
 export { readAtlasBuild, currentAtlasBuild } from './atlas-build.ts';
-export { parseAtlasBuild, summarizeAtlasBuilds, describeAtlasBuilds, buildLabel, staleFolders } from './atlas-version.ts';
+export { parseAtlasBuild, summarizeAtlasBuilds, describeAtlasBuilds, buildLabel, staleFolders, anonymizeAtlasBuilds, folderOwner } from './atlas-version.ts';
 export type { AtlasBuild, AtlasBuildGroup, AtlasBuildSummary, FolderUpload, StaleFolder } from './atlas-version.ts';
 export type { PipelineResult } from './pipeline.ts';
 export { normalizeModel, INTERNAL_TOOLS, isInternalTool, isUserTurn, isAutopilotContinuation, isMainAssistantMessage, resolveFilePath, filePathKey, isSessionStatePath, FileTracker } from './classify.ts';

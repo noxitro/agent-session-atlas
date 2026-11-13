@@ -252,6 +252,14 @@ export async function runExtract(p: Paths, since: string | null, log: Log, tempD
   return s;
 }
 
+/** レポートで見るフォルダごとの記録。絞り込んだときは、対象のセッションを数えたフォルダだけにする */
+export function uploadsFor(uploads: SessionsFile['source']['uploads'], sessions: readonly SessionRecord[], filtered: boolean): SessionsFile['source']['uploads'] | null {
+  if (!uploads) return null;
+  if (!filtered) return uploads;
+  const keep = new Set(sessions.map((r) => r.uploadFolder).filter((f): f is string => f != null));
+  return Object.fromEntries(Object.entries(uploads).filter(([f]) => keep.has(f)));
+}
+
 function describeFilter(f: SessionFilter, projects: string[], ids: ResolvedIds | null): string {
   const parts: string[] = [];
   if (f.since) parts.push(`since=${f.since}`);
@@ -454,8 +462,9 @@ export async function runBuild(p: Paths, o: BuildOptions, log: Log): Promise<Bui
     verdicts,
     retention,
     atlasLocal: currentAtlasBuild(),
-    // フォルダごとの、最後に送ったときの日時と版(最後に送った版が古いフォルダを出す)
-    atlasUploads: s.source.uploads ?? null,
+    // フォルダごとの、最後に送ったときの日時と版(最後に送った版が古いフォルダを出す)。絞り込んだときは、対象のセッションがあるフォルダだけ
+    // (もう送っていない人・関係のないプロジェクトのフォルダを数えないように)
+    atlasUploads: uploadsFor(s.source.uploads, sessions, hasFilter(o)),
     // 読むだけの画面(送り先から集計した・別のフォルダを開いた)は、送った人が付けていたタスクタグ(人ごと)とメモを出す。
     // この PC の置き場(groups.json・memos/)のものは混ぜない。判定はサーバと同じ isReadOnlyView
     ...(isReadOnlyView(p.out, s.source)

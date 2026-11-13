@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { readAtlasBuild } from '../src/atlas-build.ts';
-import { describeAtlasBuilds, parseAtlasBuild, staleFolders, summarizeAtlasBuilds, type AtlasBuild } from '../src/atlas-version.ts';
+import { anonymizeAtlasBuilds, describeAtlasBuilds, folderOwner, parseAtlasBuild, staleFolders, summarizeAtlasBuilds, type AtlasBuild } from '../src/atlas-version.ts';
 
 const b = (c: string, at: string | null, o: Partial<AtlasBuild> = {}): AtlasBuild => ({ commit: c.repeat(40), committedAt: at, dirty: false, code: `${c.repeat(8)}00000000`, ...o });
 
@@ -80,10 +80,12 @@ describe('atlas の版', () => {
     const d = describeAtlasBuilds(s);
     // セッションはすべて最新でも、最後に送った版が古いフォルダがあれば ok にしない
     expect(d.ok).toBe(false);
-    expect(d.short).toBe('最後に送った版が古いフォルダ 3 件');
-    expect(d.lines).toContain(
-      '最後に送ったときの版が最新でないフォルダ: person-d/app(送った日時不明・新旧を決められない版 目印 dddddddd)、person-c/app(2026-10-20 に送った・版の記録なし)、person-b/app(2026-11-05 に送った・古い版 aaaaaaa)',
-    );
+    // 理由ごとに分けて数える(新旧を決められないだけのものを「古い」と数えない)
+    expect(d.short).toBe('古い版で最後に送ったフォルダ 1 件・版の記録が無いフォルダ 1 件・新旧を決められない版で最後に送ったフォルダ 1 件');
+    expect(d.lines).toContain('最後に送ったときの版が最新でないフォルダ 3 件(人ごと。フォルダごとの全部は sessions.json の source.uploads):');
+    expect(d.lines).toContain('  person-c: 1 フォルダ(版の記録なし 1。いちばん前に送ったのは 2026-10-20)');
+    expect(d.lines).toContain('  person-b: 1 フォルダ(古い版 1。版 aaaaaaa。いちばん前に送ったのは 2026-11-05)');
+    expect(d.lines).toContain('  person-d: 1 フォルダ(新旧を決められない版 1。版 目印 dddddddd)');
     // フォルダの記録しか無い新しい版も、いちばん新しい版の候補にする(そのフォルダのセッションがほかのフォルダで数えられたときなど)
     const newer = summarizeAtlasBuilds(sent, null, { 'person-e/app': { uploadedAt: '2026-11-13T00:00:00.000Z', atlas: b('c', '2026-11-12T00:00:00.000Z') } })!;
     expect(newer.latest).toMatchObject({ commit: 'c'.repeat(40) });
@@ -95,6 +97,48 @@ describe('atlas の版', () => {
     // フォルダの記録を渡さなければ、フォルダは数えない(前と同じ)
     expect(summarizeAtlasBuilds(sent, null)!.folders).toBeUndefined();
     expect(staleFolders({}, null)).toEqual([]);
+  });
+
+  it('最新でないフォルダは人ごとにまとめる(1 人が多くのフォルダを古い版で送っていても、ほかの人が埋もれない)。読めなかった索引も知らせる', () => {
+    const sent = [{ person: 'person-a', uploadAtlas: b('b', '2026-11-10T00:00:00.000Z') }];
+    const folders: Record<string, { uploadedAt: string | null; atlas: AtlasBuild | null; unreadable?: boolean }> = {};
+    for (let i = 0; i < 12; i++) folders[`person-x/app-${String(i).padStart(2, '0')}`] = { uploadedAt: `2026-10-${String(10 + i).padStart(2, '0')}T00:00:00.000Z`, atlas: b('a', '2026-11-01T00:00:00.000Z') };
+    folders['person-y/app'] = { uploadedAt: '2026-11-08T00:00:00.000Z', atlas: b('a', '2026-11-01T00:00:00.000Z') };
+    folders['person-z/app'] = { uploadedAt: null, atlas: null, unreadable: true };
+    const s = summarizeAtlasBuilds(sent, null, folders)!;
+    expect(s.folders?.length).toBe(14);
+    const d = describeAtlasBuilds(s);
+    expect(d.short).toBe('古い版で最後に送ったフォルダ 13 件・索引を読めないフォルダ 1 件');
+    // 人ごとの行は、いちばん前に送った日時の古い順(読めなかったものは日時が分からないので先)
+    expect(d.lines.filter((l) => l.startsWith('  '))).toEqual([
+      '  person-z: 1 フォルダ(索引を読めない 1)',
+      '  person-x: 12 フォルダ(古い版 12。版 aaaaaaa。いちばん前に送ったのは 2026-10-10)',
+      '  person-y: 1 フォルダ(古い版 1。版 aaaaaaa。いちばん前に送ったのは 2026-11-08)',
+    ]);
+    expect(d.lines.join('\n')).toContain('索引を読めなかったフォルダは、送っている最中だったのかもしれません');
+    // 読めなかった索引の版は、いちばん新しい版の候補にしない
+    expect(s.latest).toMatchObject({ commit: 'b'.repeat(40) });
+    // 持ち主: <人>/<プロジェクト> なら人、人のフォルダの下に無いものはフォルダそのもの
+    expect([folderOwner('person-a/app'), folderOwner('app'), folderOwner('.')]).toEqual(['person-a', 'app', '(このフォルダ)']);
+  });
+
+  it('伏せ字版: 人の名前とフォルダの名前を消し、フォルダは番号にする(どれだけ最新でないかは残す)', () => {
+    const s = summarizeAtlasBuilds(
+      [
+        { person: 'person-a', uploadAtlas: b('a', '2026-11-01T00:00:00.000Z') },
+        { person: 'person-b', uploadAtlas: null },
+      ],
+      b('b', '2026-11-10T00:00:00.000Z'),
+      { 'person-a/secret-app': { uploadedAt: '2026-11-02T00:00:00.000Z', atlas: b('a', '2026-11-01T00:00:00.000Z') } },
+    )!;
+    const a = anonymizeAtlasBuilds(s);
+    expect(a.olderPersons).toEqual([]);
+    expect(a.unknownPersons).toEqual([]);
+    expect(a.builds.every((g) => g.persons.length === 0)).toBe(true);
+    expect(a.folders?.map((f) => f.folder)).toEqual(['フォルダ 1']);
+    const text = JSON.stringify(describeAtlasBuilds(a));
+    for (const name of ['person-a', 'person-b', 'secret-app']) expect(text).not.toContain(name);
+    expect(describeAtlasBuilds(a).short).toBe(describeAtlasBuilds(s).short);
   });
 });
 

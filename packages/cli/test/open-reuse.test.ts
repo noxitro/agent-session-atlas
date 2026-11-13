@@ -3,7 +3,8 @@ import { appendFileSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { SNAPSHOT_MANIFEST, SNAPSHOT_SOURCE, VCS_RETENTION_FILE } from '../../core/src/index.ts';
+import { SNAPSHOT_MANIFEST, SNAPSHOT_SOURCE, VCS_RETENTION_FILE, type SessionRecord } from '../../core/src/index.ts';
+import { uploadsFor } from '../src/commands.ts';
 import { canReuse, clearBuilt, inputsKey, outputsOf, readBuilt, writeBuilt, type ReusePaths } from '../src/open-reuse.ts';
 
 let dir = '';
@@ -79,6 +80,37 @@ describe('open-reuse: 入力の印', () => {
     expect(keys.has(inputsKey(p, { ...OPTS, since: '2026-11-01' }, config))).toBe(false);
     // 設定ファイルが無いときも止まらない(中身が空として数える)
     expect(typeof inputsKey(p, OPTS, join(dir, 'no-such.json'))).toBe('string');
+  });
+});
+
+describe('open-reuse: フォルダごとの最後に送った記録', () => {
+  it('最後に送った日時は日付までで比べる(作業メンバーが送るたびに作り直しにならない)。版や、索引を読めたかが変われば変わる', () => {
+    const { p, config } = setup();
+    const atlas = { commit: 'a'.repeat(40), committedAt: '2026-11-13T00:00:00.000Z', dirty: false, code: '0123456789abcdef' };
+    const write = (uploads: unknown): void =>
+      writeFileSync(join(p.snapshot, SNAPSHOT_MANIFEST), JSON.stringify({ createdAt: '2026-11-13T00:00:00.000Z', sourceRoot: 'X:\logs', sessions: { dirs: 1 }, uploads }));
+    write({ 'person-a/app': { uploadedAt: '2026-11-13T09:00:00.000Z', atlas } });
+    const key = inputsKey(p, OPTS, config);
+    write({ 'person-a/app': { uploadedAt: '2026-11-13T18:30:00.000Z', atlas } });
+    expect(inputsKey(p, OPTS, config)).toBe(key);
+    write({ 'person-a/app': { uploadedAt: '2026-11-14T08:00:00.000Z', atlas } });
+    expect(inputsKey(p, OPTS, config)).not.toBe(key);
+    write({ 'person-a/app': { uploadedAt: '2026-11-13T09:00:00.000Z', atlas: { ...atlas, commit: 'b'.repeat(40) } } });
+    expect(inputsKey(p, OPTS, config)).not.toBe(key);
+    write({ 'person-a/app': { uploadedAt: null, atlas: null, unreadable: true } });
+    expect(inputsKey(p, OPTS, config)).not.toBe(key);
+  });
+
+  it('絞り込んだレポートでは、対象のセッションを数えたフォルダだけを見る。絞り込んでいなければ全部', () => {
+    const uploads = {
+      'person-a/app': { uploadedAt: null, atlas: null },
+      'person-b/app': { uploadedAt: null, atlas: null },
+    };
+    const sessions = [{ uploadFolder: 'person-a/app' }, { uploadFolder: null }] as unknown as SessionRecord[];
+    expect(uploadsFor(uploads, sessions, false)).toBe(uploads);
+    expect(uploadsFor(uploads, sessions, true)).toEqual({ 'person-a/app': { uploadedAt: null, atlas: null } });
+    expect(uploadsFor(uploads, [], true)).toEqual({});
+    expect(uploadsFor(undefined, sessions, true)).toBeNull();
   });
 });
 
