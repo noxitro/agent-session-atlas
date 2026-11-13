@@ -502,7 +502,6 @@
     min-height: 30px;
     margin-right: 14px;
     font-size: 0.8125rem;
-    cursor: pointer;
   }
   .opt input {
     margin: 0;

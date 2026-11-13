@@ -181,7 +181,6 @@
     font-size: 0.8125rem;
   }
   .how summary {
-    cursor: pointer;
     color: var(--form);
     min-height: 24px;
   }

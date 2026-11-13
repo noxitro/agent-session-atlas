@@ -218,17 +218,20 @@ export const CLICKABLE_CHECK = `(() => {
     }
   }
 
-  // 逆向き: 押せるのに押せそうに見えない要素(指のカーソルが出ない)。字を打つ欄・選ぶ欄と、それに付いたラベルは矢印や I 字が普通なので除く。
-  // 使えない状態(disabled・aria-disabled)と、待ち・不可を示すカーソル(wait・progress・not-allowed)を付けたものも除く
+  // 逆向き: 押せるのに押せそうに見えない要素(指のカーソル以外)。字を打つ欄・選ぶ欄と、それに付いたラベルは矢印や I 字が普通なので除く。
+  // 使えない状態(disabled・aria-disabled。ラベルは中の部品が使えない状態のときも)と、別の意味を示すカーソル
+  // (待ち・不可の wait・progress・not-allowed、つかんで動かす grab・grabbing・move)を付けたものも除く
   const TYPING = ['text', 'search', 'email', 'url', 'tel', 'password', 'number', 'date', 'datetime-local', 'month', 'week', 'time'];
+  const MEANINGFUL = ['pointer', 'wait', 'progress', 'not-allowed', 'grab', 'grabbing', 'move'];
   const typingField = (el) => el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || (el.tagName === 'INPUT' && TYPING.includes((el.type || 'text').toLowerCase()));
+  const unusable = (el) => el.matches(':disabled, [aria-disabled="true"]') || !!el.closest('[aria-disabled="true"], fieldset:disabled');
   for (const el of document.querySelectorAll(CONTROL)) {
-    if (el.tagName === 'A' || !rendered(el) || el.matches(':disabled, [aria-disabled="true"]') || el.closest('[aria-disabled="true"], fieldset:disabled')) continue;
+    if (el.tagName === 'A' || !rendered(el) || unusable(el)) continue;
     if (typingField(el) || el.isContentEditable || el.matches('[role="textbox"], [role="searchbox"], [role="combobox"], [role="spinbutton"], [role="slider"], [role="scrollbar"]')) continue;
-    if (el.tagName === 'LABEL' && el.control && typingField(el.control)) continue;
+    if (el.tagName === 'LABEL' && el.control && (typingField(el.control) || unusable(el.control))) continue;
     if (el.tagName === 'INPUT' && el.type === 'hidden') continue;
-    const c = style(el).cursor;
-    if (c === 'default' || c === 'auto') add('warn', '操作できるのに指のカーソルが出ない', desc(el));
+    const c = style(el).cursor.split(',').pop().trim();
+    if (!MEANINGFUL.includes(c)) add('warn', '操作できるのに指のカーソルが出ない', desc(el) + '(' + c + ')');
   }
 
   // ホバーで見た目が変わるのに操作できない要素(表の行の読み取り補助など意図したものもあるので目で確かめる)。

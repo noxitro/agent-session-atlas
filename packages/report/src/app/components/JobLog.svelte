@@ -16,7 +16,6 @@
     font-size: 0.75rem;
   }
   .log summary {
-    cursor: pointer;
     color: var(--job-log-summary, inherit);
     width: max-content;
   }

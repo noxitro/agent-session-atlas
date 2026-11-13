@@ -280,7 +280,6 @@
     padding-top: 15px;
     font-size: 0.8125rem;
     color: var(--ink-2);
-    cursor: pointer;
   }
   .check input {
     width: 16px;

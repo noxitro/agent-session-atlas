@@ -96,7 +96,7 @@ export const VIEW_CSS = `
 .doc hr{border:0;border-top:1px solid var(--rule);margin:16px 0}
 .doc small{font-size:.75rem;color:var(--ink-3)}
 .doc details{margin:8px 0;padding:4px 10px;border:1px solid var(--rule)}
-.doc summary{cursor:pointer;color:var(--form)}
+.doc summary{color:var(--form)}
 @media (max-width:720px){.doc{padding:12px}}
 `;
 

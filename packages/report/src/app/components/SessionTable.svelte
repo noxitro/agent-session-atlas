@@ -524,14 +524,12 @@
     justify-content: center;
     min-width: 28px;
     min-height: 32px;
-    cursor: pointer;
   }
   .chk input {
     width: 16px;
     height: 16px;
     margin: 0;
     accent-color: var(--form);
-    cursor: pointer;
   }
   tr.picked td {
     background: var(--form-wash);
