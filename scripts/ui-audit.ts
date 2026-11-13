@@ -10,8 +10,9 @@
 //  - 文言(全ページ、atlas.html はタブを 1 つずつ押した状態も): undefined・NaN・[object Object]・テンプレートの ${…}・
 //    二重に逃がした実体参照(&amp; 等)・HTML コメントや生のタグの漏れ(pre / code / textarea の中は除く)
 //  - アクセシビリティの基本(全ページ): lang / 名前の無いリンクとボタン / alt の無い画像 / ラベルの無い入力欄 / 見出しの段の飛び(warn)
-//  - 押せそうで押せない要素(全ページ): 自分自身へのリンク / 指のカーソルが出るのに操作できない要素 /
-//    ホバーで見た目が変わるのに操作できない要素(warn)/ 下線があるのにリンクでない文字(warn)
+//  - 押せそうで押せない要素(全ページ、atlas.html はタブごと、開閉要素を開いた状態、レイアウトの見本は 3 幅でも): 自分自身へのリンク /
+//    指のカーソルが出るのに操作できない要素 / ホバーで見た目が変わるのに操作できない要素(warn)/ 下線があるのにリンクでない文字(warn)。
+//    サーバが要るダイアログ・ポップアップの中は ui/ の画面の操作の検査が clickableFindings で見る
 //  - 実行時(全ページ): ページ内の例外とコンソールのエラー
 //  - レイアウト(主要ページと詳細ページの見本、375 / 1024 / 1440px × ライト / ダーク): 横のはみ出し / 文字のコントラスト不足 /
 //    切れた文字(warn)/ キーボードで届かないスクロール領域(warn)/ 375px での小さすぎる押す的(warn)/
@@ -142,61 +143,154 @@ const STATIC_CHECK = `(() => {
     if (prev && lv > prev + 1) add('warn', '見出しの段の飛び', 'h' + prev + ' → h' + lv + ' ' + desc(h));
     prev = lv;
   }
-  // 押せそうで押せない要素(押しても何も起きない、または同じ場所に留まるだけ)
+  const tabs = document.querySelectorAll('[role="tab"]').length;
+  return { ids, links, findings: out, tabs };
+})()`;
+
+/**
+ * 押せそうで押せない要素の検査(押しても何も起きない、または同じ場所に留まるだけ)。今の幅・開閉の状態に対して何度でも呼べる。
+ * 全要素の計算済みスタイルと「操作要素の中か」を 1 回ずつだけ求め、指のカーソルと下線の検査で使い回す
+ */
+export const CLICKABLE_CHECK = `(() => {
+  const out = [];
+  const add = (severity, kind, detail) => out.push({ severity, kind, detail });
+  const desc = (el) => {
+    const t = el.tagName.toLowerCase();
+    const id = el.id ? '#' + el.id : '';
+    const cls = typeof el.className === 'string' && el.className.trim() ? '.' + el.className.trim().split(/\\s+/).slice(0, 2).join('.') : '';
+    const txt = (el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 40);
+    return t + id + cls + (txt ? ' 「' + txt + '」' : '');
+  };
+  // 操作できる要素(ネイティブの操作要素と、操作を受ける ARIA の役割)
+  const ROLES = ['button', 'link', 'tab', 'checkbox', 'radio', 'switch', 'option', 'menuitem', 'menuitemcheckbox', 'menuitemradio',
+    'treeitem', 'combobox', 'slider', 'spinbutton', 'searchbox', 'textbox', 'gridcell', 'scrollbar'];
   const CONTROL = 'a[href], button, summary, label, input, select, textarea, [onclick], [contenteditable=""], [contenteditable="true"], ' +
-    '[role="button"], [role="link"], [role="tab"], [role="checkbox"], [role="radio"], [role="switch"], [role="menuitem"], [role="option"]';
-  const rendered = (el) => el.getClientRects().length > 0;
+    ROLES.map((r) => '[role="' + r + '"]').join(', ');
   const norm = (s) => (s || '').replace(/\\s+/g, ' ').trim();
-  // 自分自身へのリンク: 行き先が自分か、中身がそのリンクだけの要素(<dt id="x"><a href="#x">語</a></dt> など)。
-  // 節の先頭へ戻るリンクのように、行き先がほかの中身も持つものは指摘しない
-  for (const a of document.querySelectorAll('a[href^="#"]')) {
-    const frag = a.getAttribute('href').slice(1);
+  const cs = new Map();
+  const style = (el) => { let s = cs.get(el); if (!s) { s = getComputedStyle(el); cs.set(el, s); } return s; };
+  // 「操作要素の中か」は文書順(親が先)に親の答えを引き継いで求める(要素ごとに closest を呼ばない)
+  const all = [document.documentElement, ...document.documentElement.querySelectorAll('body, body *')];
+  const inCtl = new Map();
+  for (const el of all) inCtl.set(el, inCtl.get(el.parentElement) || el.matches(CONTROL));
+  // 見えているか: 閉じた details の中身は Chromium では箱を持つ(getClientRects が空でない)ので checkVisibility で見る。
+  // display: contents の要素は箱を持たないが、子に指のカーソルを引き継ぐので検査の対象にする
+  const rendered = (el) => (el.checkVisibility ? el.checkVisibility() : el.getClientRects().length > 0) || style(el).display === 'contents';
+
+  // 自分自身へのリンク: 行き先が自分か、自分を含む「語や見出し」の要素(<dt id="x"><a href="#x">語</a></dt>・<h2 id="x"><a href="#x">見出し</a> …</h2>)。
+  // 同じページをファイル名付きで指すもの(glossary.html#x)も同じ。節の先頭へ戻るリンクのように、行き先が節や枠でほかの中身も持つものは指摘しない
+  const here = location.origin + location.pathname + location.search;
+  for (const a of document.querySelectorAll('a[href]')) {
+    let u;
+    try { u = new URL(a.getAttribute('href'), location.href); } catch (e) { continue; }
+    if (u.origin + u.pathname + u.search !== here) continue;
+    const frag = u.hash.slice(1);
     if (!frag || frag.split('&').some((p) => p.indexOf('=') > 0)) continue;
     let id = frag;
     try { id = decodeURIComponent(frag); } catch (e) {}
     const t = document.getElementById(id);
-    if (t && (t === a || (t.contains(a) && norm(t.textContent) === norm(a.textContent)))) add('error', '自分自身へのリンク(押しても同じ場所に留まる)', desc(a));
+    if (!t) continue;
+    if (t === a || (t.contains(a) && (norm(t.textContent) === norm(a.textContent) || t.matches('h1, h2, h3, h4, h5, h6, dt, th, caption, figcaption, legend'))))
+      add('error', '自分自身へのリンク(押しても同じ場所に留まる)', desc(a));
   }
-  // 指のカーソルが出るのに操作できない要素。カーソルは子に引き継がれるので、いちばん外側だけを挙げる
-  const ptr = new Set();
-  for (const el of document.body.querySelectorAll('*')) {
-    if (el.closest(CONTROL) || !rendered(el)) continue;
-    if (getComputedStyle(el).cursor !== 'pointer') continue;
-    ptr.add(el);
-    if (!ptr.has(el.parentElement)) add('error', '指のカーソルが出るのに操作できない', desc(el));
+
+  // 指のカーソルが出るのに操作できない要素。カーソルは子に引き継がれるので、親から引き継いでいない(そこで付けた)要素だけを挙げる
+  const decorated = new Set();
+  for (const el of all) {
+    if (inCtl.get(el) || !rendered(el)) continue;
+    const s = style(el);
+    if (s.cursor === 'pointer') {
+      const p = el.parentElement;
+      if (!p || style(p).cursor !== 'pointer') add('error', '指のカーソルが出るのに操作できない', desc(el));
+    }
+    // 下線があるのにリンクでない文字(リンクに見える)。下線は子孫の字にも引かれるので、字を持つ要素から祖先へたどって下線を付けた要素を挙げる。
+    // インラインブロック・浮動・絶対配置の境は越えない(そこから先の祖先の下線は引かれない)。<u>・<ins>・title 付きの <abbr> は意図した下線なので除く
+    if (![...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim())) continue;
+    for (let q = el; q && q !== document.documentElement; q = q.parentElement) {
+      if (inCtl.get(q) || q.matches('u, ins, abbr[title]')) break;
+      const qs = style(q);
+      if (qs.textDecorationLine.includes('underline')) {
+        if (!decorated.has(q)) { decorated.add(q); add('warn', '下線があるのにリンクでない', desc(q)); }
+        break;
+      }
+      if (/^inline-(?:block|flex|grid|table)$/.test(qs.display) || qs.position === 'absolute' || qs.position === 'fixed' || qs.float !== 'none') break;
+    }
   }
+
   // ホバーで見た目が変わるのに操作できない要素(表の行の読み取り補助など意図したものもあるので目で確かめる)。
-  // セレクタのうち :hover が付いた段(.a:hover > .b なら .a)を、ページの要素に当てて確かめる
+  // セレクタの一覧を括弧・引用符の外の「,」で分け、:hover を含む段(.a:hover > .b なら .a、:is(.a, .b):hover ならその段)までを、:hover を外して当てる
+  const topLevel = (s, at) => {
+    let depth = 0, q = '';
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      if (c === '\\\\') { i++; continue; }
+      if (q) { if (c === q) q = ''; continue; }
+      if (c === '"' || c === "'") q = c;
+      else if (c === '(' || c === '[') depth++;
+      else if (c === ')' || c === ']') depth--;
+      else if (depth === 0) at(c, i);
+    }
+  };
+  const PSEUDO_EL = /::?(?:before|after|marker|placeholder|selection|first-line|first-letter|backdrop|file-selector-button)\\b(?:\\([^)]*\\))?/g;
+  const hoveredOf = (part) => {
+    const cuts = [];
+    topLevel(part, (c, i) => { if (/[\\s>+~]/.test(c)) cuts.push(i); });
+    let start = 0;
+    for (const end of [...cuts, part.length]) {
+      if (part.slice(start, end).includes(':hover')) return part.slice(0, end).replace(/:hover\\b/g, ':is(*)').replace(PSEUDO_EL, '').trim();
+      start = end + 1;
+    }
+    return '';
+  };
   const hoverSel = [];
-  const walk = (rules) => { for (const r of rules) { if (r.selectorText) { if (r.selectorText.includes(':hover')) hoverSel.push(r.selectorText); } else if (r.cssRules) walk(r.cssRules); } };
+  const walk = (rules) => {
+    for (const r of rules) {
+      if (r.selectorText && r.selectorText.includes(':hover')) hoverSel.push(r.selectorText);
+      if (r.cssRules) walk(r.cssRules);
+    }
+  };
   for (const s of document.styleSheets) { try { walk(s.cssRules); } catch (e) {} }
   const seenH = new Set();
-  for (const sel of hoverSel)
-    for (const part of sel.split(',')) {
-      const i = part.indexOf(':hover');
-      if (i < 0) continue;
-      const tail = /^[^\\s>+~]*/.exec(part.slice(i + 6))[0].replace(/::?(?:before|after|marker|placeholder|selection)\\b.*$/, '');
-      const hovered = (part.slice(0, i) + tail).replace(/:hover/g, '').trim();
-      if (!hovered || /[\\s>+~]$/.test(hovered)) continue;
+  for (const sel of hoverSel) {
+    const parts = [];
+    let start = 0;
+    topLevel(sel, (c, i) => { if (c === ',') { parts.push(sel.slice(start, i)); start = i + 1; } });
+    parts.push(sel.slice(start));
+    for (const part of parts) {
+      const hovered = part.includes(':hover') ? hoveredOf(part) : '';
+      if (!hovered) continue;
       let els;
       try { els = document.querySelectorAll(hovered); } catch (e) { continue; }
       for (const el of els) {
-        if (el.closest(CONTROL) || !rendered(el)) continue;
+        if (inCtl.get(el) || !rendered(el)) continue;
         const key = part.trim() + '|' + desc(el);
         if (seenH.has(key)) continue;
         seenH.add(key);
         add('warn', 'ホバーで見た目が変わるのに操作できない', part.trim() + ' → ' + desc(el));
       }
     }
-  // 下線が付いているのにリンクでない文字(リンクに見える)。<u>・<ins>・title 付きの <abbr> は意図した下線なので除く
-  for (const el of document.body.querySelectorAll('*')) {
-    if (el.closest(CONTROL) || el.closest('u, ins, abbr[title]') || !rendered(el)) continue;
-    if (![...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim())) continue;
-    if (getComputedStyle(el).textDecorationLine.includes('underline')) add('warn', '下線があるのにリンクでない', desc(el));
   }
-  const tabs = document.querySelectorAll('[role="tab"]').length;
-  return { ids, links, findings: out, tabs };
+  return out;
 })()`;
+
+/** 閉じている開閉要素(details と aria-expanded="false" のボタン)を開く。開いたものの数を返す */
+const OPEN_ALL = `(() => {
+  let n = 0;
+  for (const d of document.querySelectorAll('details:not([open])')) { d.open = true; n++; }
+  for (const b of document.querySelectorAll('button[aria-expanded="false"]')) {
+    if (b.disabled || b.getClientRects().length === 0) continue;
+    b.click();
+    n++;
+  }
+  return n;
+})()`;
+
+type RawFinding = { severity: 'error' | 'warn'; kind: string; detail: string };
+
+/** 押せそうで押せない要素の指摘(ui/ の画面の操作の検査から、ダイアログやポップアップを開いた状態で呼ぶ) */
+export async function clickableFindings(page: Page): Promise<RawFinding[]> {
+  return (await page.evaluate(CLICKABLE_CHECK)) as RawFinding[];
+}
 
 /** レイアウトの検査(今の幅・配色で) */
 const LAYOUT_CHECK = `((narrow) => {
@@ -341,6 +435,10 @@ export async function audit(outDir: string, o: AuditOptions = {}): Promise<Audit
   const idsByPage = new Map<string, Set<string>>();
   const versionLabel = new Map<string, string>(); // instructions.html の版の id → 「版 N」
   const crossLinks: { from: string; href: string; text: string }[] = [];
+  /** 同じページ・種類・中身の指摘は、状態(タブ・開閉・幅)が違っても 1 回だけ数える */
+  const addOnce = (f: Finding): void => {
+    if (!findings.some((x) => x.page === f.page && x.kind === f.kind && x.detail === f.detail)) findings.push(f);
+  };
   const browser: Browser = await chromium.launch();
   try {
     // 1) 構造・文言・a11y(全ページ、1440px ライト)
@@ -351,11 +449,18 @@ export async function audit(outDir: string, o: AuditOptions = {}): Promise<Audit
       const page = await openPage(ctx, pageUrl(root, rel), errors);
       const facts = (await page.evaluate(STATIC_CHECK)) as PageFacts;
       for (const f of facts.findings) findings.push({ page: rel, ...f });
+      for (const f of await clickableFindings(page)) addOnce({ page: rel, ...f });
       if (facts.tabs > 0)
         await eachTab(page, async (label) => {
           const again = (await page.evaluate(STATIC_CHECK)) as PageFacts;
           for (const f of again.findings) if (!facts.findings.some((x) => x.kind === f.kind && x.detail === f.detail)) findings.push({ page: rel, ...f, where: `タブ「${label}」` });
+          for (const f of await clickableFindings(page)) addOnce({ page: rel, ...f, where: `タブ「${label}」` });
         });
+      // 開閉要素(details・aria-expanded のボタン)の中は、閉じたままだと表示されず検査されないので、開いた状態でもう一度見る
+      if (((await page.evaluate(OPEN_ALL)) as number) > 0) {
+        await page.waitForTimeout(50);
+        for (const f of await clickableFindings(page)) addOnce({ page: rel, ...f, where: '開閉要素を開いた状態' });
+      }
       idsByPage.set(rel, new Set(facts.ids));
       if (rel === 'instructions.html') {
         for (const [id, label] of (await page.evaluate(`[...document.querySelectorAll('details.ver')].map((d) => [d.id, d.querySelector('summary b')?.textContent ?? ''])`)) as [string, string][]) versionLabel.set(id, label);
@@ -422,6 +527,8 @@ export async function audit(outDir: string, o: AuditOptions = {}): Promise<Audit
           };
           await run('');
           if (rel === 'atlas.html') await eachTab(page, (label) => run(` タブ「${label}」`));
+          // 押せそうで押せない要素は幅で出る部品が変わる(375px の上部の目次の行など)ので、幅ごとに見る(配色では変わらないのでライトだけ)
+          if (scheme === 'light') for (const f of await clickableFindings(page)) addOnce({ page: rel, ...f, where });
           // 字の幅は OS のフォントで変わる(Linux の Noto は Windows の游ゴシックより広く、CI でだけはみ出した)。
           // 375px では字間を広げた状態でも横のはみ出しだけを確かめ、手元のフォントで収まっていても見逃さないようにする
           if (vp.width < 768 && scheme === 'light') {

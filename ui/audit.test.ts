@@ -30,8 +30,27 @@ describe('網羅チェック', () => {
       join(dir, 'other.html'),
       page(
         '<p id="here">行き先</p><section id="sec"><h2>節</h2><p>本文</p><a href="#sec">節の先頭へ</a></section>' +
-          '<button class="p">押す<span>中</span></button><a class="h" href="#here">リンク</a><abbr title="略語の説明">略語</abbr>',
-        '.p{cursor:pointer;padding:8px}.h:hover{color:#000}',
+          '<button class="p">押す<span>中</span></button><a class="h" href="#here">リンク</a><abbr title="略語の説明">略語</abbr>' +
+          '<div role="treeitem" tabindex="0" class="p2">木の項目(操作を受ける役割)</div>',
+        '.p{cursor:pointer;padding:8px}.h:hover{color:#000}.p2{cursor:pointer}',
+      ),
+    );
+    // 押せそうで押せない要素の、見落としやすい形(ファイル名付きの自分へのリンク・見出しの中の自分へのリンク・display: contents の親の指のカーソル・
+    // 包んだ要素の下線・カンマや入れ子のあるホバーのセレクタ・閉じた details の中・狭い幅でだけ付く指のカーソル)
+    await writeFile(
+      join(dir, 'clickable.html'),
+      page(
+        [
+          '<dl><dt id="t2"><a href="clickable.html#t2">ファイル名付き</a></dt><dd>説明</dd></dl>',
+          '<h2 id="hx"><a href="#hx">見出し</a> <small>補足</small></h2>',
+          '<div class="contents"><span>子の一</span><span>子の二</span></div>',
+          '<p class="wrap-ul"><span>包んだ下線</span></p>',
+          '<div class="tile">タイル</div><div class="row">行</div>',
+          '<details><summary>開く</summary><span class="ptr-in">開いた中</span></details>',
+          '<p class="narrow-ptr">狭い幅だけ</p>',
+        ].join(''),
+        '.contents{display:contents;cursor:pointer}.wrap-ul{text-decoration:underline}:is(.card, .tile):hover{background:#eee}' +
+          '.row:is(:hover, :focus-within){background:#eee}.ptr-in{cursor:pointer}@media (max-width: 500px){.narrow-ptr{cursor:pointer}}',
       ),
     );
     await writeFile(
@@ -95,6 +114,16 @@ describe('網羅チェック', () => {
     );
     // カーソルは子に引き継がれるが、指摘は外側の 1 つだけ
     expect(r.findings.filter((f) => f.page === 'bad.html' && f.kind === '指のカーソルが出るのに操作できない')).toHaveLength(1);
+    // 見落としやすい形も、どの要素かまで当てる
+    const on = (kind: string): string[] => r.findings.filter((f) => f.page === 'clickable.html' && f.kind === kind).map((f) => `${f.detail}${f.where ? ` @${f.where}` : ''}`);
+    expect(on('自分自身へのリンク(押しても同じ場所に留まる)')).toEqual(['a 「ファイル名付き」', 'a 「見出し」']);
+    const ptr = on('指のカーソルが出るのに操作できない');
+    expect(ptr).toHaveLength(3);
+    expect(ptr[0]).toBe('div.contents 「子の一子の二」');
+    expect(ptr[1]).toBe('span.ptr-in 「開いた中」 @開閉要素を開いた状態');
+    expect(ptr[2]).toMatch(/^p\.narrow-ptr 「狭い幅だけ」 @375px ライト$/);
+    expect(on('下線があるのにリンクでない')).toEqual(['p.wrap-ul 「包んだ下線」']);
+    expect(on('ホバーで見た目が変わるのに操作できない')).toEqual([':is(.card, .tile):hover → div.tile 「タイル」', '.row:is(:hover, :focus-within) → div.row 「行」']);
     // 正しいリンク・絞り込みの状態のハッシュ・pre の中は指摘しない
     expect(r.findings.some((f) => /other\.html#here|#ids=/.test(f.detail))).toBe(false);
     expect(kinds('other.html')).toEqual([]);
