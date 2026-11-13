@@ -295,8 +295,8 @@
     width: 20px;
     height: 20px;
     margin: 2px;
-    cursor: pointer;
   }
+  /* 書き込み中は押せない(共通の「使えない状態は矢印」より、待っていることを示す) */
   td.send input:disabled {
     cursor: progress;
   }

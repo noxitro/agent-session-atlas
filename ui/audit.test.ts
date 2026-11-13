@@ -32,8 +32,10 @@ describe('網羅チェック', () => {
         '<p id="here">行き先</p><section id="sec"><h2>節</h2><p>本文</p><a href="#sec">節の先頭へ</a></section>' +
           '<button class="p">押す<span>中</span></button><a class="h" href="#here">リンク</a><abbr title="略語の説明">略語</abbr>' +
           '<div role="treeitem" tabindex="0" class="p2">木の項目(操作を受ける役割)</div>' +
-          '<label>名前<input type="text" name="n"></label><label>期間<select name="s"><option>すべて</option></select></label><button class="p" disabled>使えない</button>',
-        '.p{cursor:pointer;padding:8px}.h:hover{color:#000}.p2{cursor:pointer}button:disabled{cursor:default}input,select{min-height:28px;min-width:28px}',
+          '<label>名前<input type="text" name="n"></label><label>期間<select name="s"><option>すべて</option></select></label><button class="p" disabled>使えない</button>' +
+          '<label class="off"><input type="checkbox" disabled>使えない印のラベル</label><button class="busy">書き込み中</button>',
+        '.p{cursor:pointer;padding:8px}.h:hover{color:#000}.p2{cursor:pointer}button:disabled{cursor:default}input,select{min-height:28px;min-width:28px}' +
+          '.off{cursor:default}.off input{width:28px;height:28px}.busy{cursor:progress;padding:8px}',
       ),
     );
     // 押せそうで押せない要素の、見落としやすい形(ファイル名付きの自分へのリンク・見出しの中の自分へのリンク・display: contents の親の指のカーソル・
@@ -50,9 +52,11 @@ describe('網羅チェック', () => {
           '<details><summary>開く</summary><span class="ptr-in">開いた中</span></details>',
           '<p class="narrow-ptr">狭い幅だけ</p>',
           '<span role="button" tabindex="0" class="arrow">押せるのに矢印</span>',
+          '<button class="help">押せるのに疑問符</button>',
         ].join(''),
         '.contents{display:contents;cursor:pointer}.wrap-ul{text-decoration:underline}:is(.card, .tile):hover{background:#eee}' +
-          '.row:is(:hover, :focus-within){background:#eee}.ptr-in{cursor:pointer}@media (max-width: 500px){.narrow-ptr{cursor:pointer}}',
+          '.row:is(:hover, :focus-within){background:#eee}.ptr-in{cursor:pointer}@media (max-width: 500px){.narrow-ptr{cursor:pointer}}' +
+          '.help{cursor:help;padding:8px}',
       ),
     );
     await writeFile(
@@ -126,8 +130,9 @@ describe('網羅チェック', () => {
     expect(ptr[1]).toBe('span.ptr-in 「開いた中」 @開閉要素を開いた状態');
     expect(ptr[2]).toMatch(/^p\.narrow-ptr 「狭い幅だけ」 @375px ライト$/);
     expect(on('下線があるのにリンクでない')).toEqual(['p.wrap-ul 「包んだ下線」']);
-    // 逆向き: 押せるのに矢印のまま(指のカーソルを付けていない summary も)。字を打つ欄・選ぶ欄とそのラベル、使えないボタンは指摘しない(other.html)
-    expect(on('操作できるのに指のカーソルが出ない')).toEqual(['summary 「開く」', 'span.arrow 「押せるのに矢印」']);
+    // 逆向き: 押せるのに矢印や疑問符のまま(指のカーソルを付けていない summary も)。字を打つ欄・選ぶ欄とそのラベル、使えないボタン、
+    // 中の印が使えないラベル、待ちを示すカーソル(progress)は指摘しない(other.html)
+    expect(on('操作できるのに指のカーソルが出ない')).toEqual(['summary 「開く」(auto)','span.arrow 「押せるのに矢印」(auto)', 'button.help 「押せるのに疑問符」(help)']);
     expect(on('ホバーで見た目が変わるのに操作できない')).toEqual([':is(.card, .tile):hover → div.tile 「タイル」', '.row:is(:hover, :focus-within) → div.row 「行」']);
     // 正しいリンク・絞り込みの状態のハッシュ・pre の中は指摘しない
     expect(r.findings.some((f) => /other\.html#here|#ids=/.test(f.detail))).toBe(false);

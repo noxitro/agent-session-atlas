@@ -61,12 +61,14 @@ const list = (a: string): string[] =>
     .map((x) => x.trim())
     .filter(Boolean);
 /**
- * ドラッグで入る引用符と、末尾の区切りを取る。ドライブの直下(C:\)は区切りを残す:
- * Windows で「C:」だけにすると「C ドライブの今のフォルダ」の意味になり、atlas をそのドライブから動かしていると、直下ではなく今のフォルダを指してしまう
+ * ドラッグで入る引用符と、末尾の区切りを取る。Windows ではドライブの直下(C:\)は区切りを残す:
+ * 「C:」だけにすると「C ドライブの今のフォルダ」の意味になり、atlas をそのドライブから動かしていると、直下ではなく今のフォルダを指してしまう。
+ * vault では「フォルダ名を読めませんでした」で止め、アップロード先では画面の設定と同じくドライブの直下として受け付ける。
+ * Windows 以外では「x:」は普通のフォルダ名なので変えない
  */
-const unquote = (a: string): string => {
+export const unquote = (a: string, platform: NodeJS.Platform = process.platform): string => {
   const s = a.replace(/^"(.*)"$/, '$1').replace(/[\\/]+$/, '');
-  return /^[A-Za-z]:$/.test(s) ? `${s}\\` : s;
+  return platform === 'win32' && /^[A-Za-z]:$/.test(s) ? `${s}\\` : s;
 };
 
 /**

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, parse } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { loadConfig } from '../src/config.ts';
-import { describeVault, runSetup, type SetupIo } from '../src/setup.ts';
+import { describeVault, runSetup, unquote, type SetupIo } from '../src/setup.ts';
 
 /** 答えを順に返す io(尋ねた文と表示した行を残す) */
 function scripted(answers: string[]): SetupIo & { asked: string[]; printed: string[] } {
@@ -47,9 +47,26 @@ describe('初期設定', () => {
     expect(describeVault('work/notes')).toEqual({ name: 'work/notes', dir: null, hasIndex: false, pagesDir: null });
   });
 
-  it.runIf(process.platform === 'win32')('ドライブの直下は、今のフォルダと同じドライブでもフォルダ名の無い直下のまま(「C:」にして今のフォルダを指さない)', () => {
-    const drive = parse(process.cwd()).root;
-    for (const input of [drive, drive.slice(0, 2), `"${drive}"`]) expect(describeVault(input), input).toMatchObject({ name: '', dir: drive });
+  it('引用符と末尾の区切りを取る。Windows ではドライブの直下の区切りを残し(「C:」は今のフォルダの意味になるため)、ほかの OS では「x:」もそのまま', () => {
+    for (const input of ['C:\\', 'C:', '"C:\\"', 'c:/']) expect(unquote(input, 'win32'), input).toBe(input.replace(/"/g, '').slice(0, 2) + '\\');
+    expect(unquote('"D:\\logs\\"', 'win32')).toBe('D:\\logs');
+    expect(unquote('x:', 'linux')).toBe('x:');
+    expect(unquote('/home/me/notes/', 'linux')).toBe('/home/me/notes');
+  });
+
+  // 今のフォルダがドライブ文字の上にあるときだけ(ネットワーク上のフォルダ \\server\share では「X:」の形を作れない)
+  const cwdDrive = parse(process.cwd()).root;
+  const onDriveLetter = process.platform === 'win32' && /^[A-Za-z]:\\$/.test(cwdDrive);
+
+  it.runIf(onDriveLetter)('vault: ドライブの直下は、今のフォルダと同じドライブでもフォルダ名の無い直下のまま(今のフォルダを指さない)', () => {
+    for (const input of [cwdDrive, cwdDrive.slice(0, 2), `"${cwdDrive}"`]) expect(describeVault(input), input).toMatchObject({ name: '', dir: cwdDrive });
+  });
+
+  it.runIf(onDriveLetter)('アップロード先: ドライブの直下(「X:」と入れても)は、画面の設定と同じくドライブの直下として受け付ける(今のフォルダにしない)', async () => {
+    // vault は終わる・工程名はそのまま・アップロード先にドライブ文字だけを入れる・書く
+    const io = scripted(['', '', cwdDrive.slice(0, 2), '']);
+    await runSetup(io, { configPath, copilotHome: home });
+    expect(JSON.parse(await readFile(configPath, 'utf8'))).toEqual({ uploadRoot: cwdDrive });
   });
 
   it('vault・ページのフォルダ・wiki の skill・工程名を尋ねて書き、集計と同じ形で読める', async () => {

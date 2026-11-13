@@ -388,7 +388,6 @@ details.tableview {
   margin-top: 8px;
 }
 details.tableview > summary {
-  cursor: pointer;
   font-size: 0.8125rem;
   color: var(--form);
   padding: 4px 0;
@@ -517,15 +516,18 @@ details.tableview > summary {
   font-size: 0.75rem;
 }
 
-/* 押せる部品は指のカーソルで押せることを示す。チェックボックス・ラジオはブラウザの既定が矢印で、指のカーソルのラベルの中でも印の上だけ矢印になるため、
-   ここでそろえる(使えない状態は矢印に戻す)。部品ごとの指定はこれを上書きしてよい */
+/* 押せる部品は指のカーソルで押せることを示す。ここで全画面をそろえ、部品ごとには書かない(書くのは待ちなど別の意味を示すときだけ)。
+   - summary・チェックボックス・ラジオ: ブラウザの既定は矢印
+   - チェックボックス・ラジオを包むラベル: 字の上でも押せるので指。中の印が使えない状態なら、印もラベルも矢印に戻す */
 summary,
 input[type='checkbox'],
-input[type='radio'] {
+input[type='radio'],
+label:has(input:is([type='checkbox'], [type='radio'])) {
   cursor: pointer;
 }
 input[type='checkbox']:disabled,
-input[type='radio']:disabled {
+input[type='radio']:disabled,
+label:has(input:is([type='checkbox'], [type='radio']):disabled) {
   cursor: default;
 }
 

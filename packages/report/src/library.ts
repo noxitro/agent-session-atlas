@@ -165,7 +165,7 @@ const LIB_CSS = `
 .lib-group .section-head p{max-width:none}
 .versions{margin-top:10px}
 .ver{margin-top:14px;border:1px solid var(--rule-strong);background:var(--surface)}
-.ver>summary{cursor:pointer;padding:6px 10px;font-size:.8125rem;color:var(--form);display:flex;flex-wrap:wrap;gap:4px 14px;align-items:baseline}
+.ver>summary{padding:6px 10px;font-size:.8125rem;color:var(--form);display:flex;flex-wrap:wrap;gap:4px 14px;align-items:baseline}
 .ver>summary b{color:var(--ink)}
 .ver>summary .tag.latest{border-color:var(--form);color:var(--form)}
 .ver>summary .hash{margin-left:auto;font:.6875rem var(--mono);color:var(--ink-3)}

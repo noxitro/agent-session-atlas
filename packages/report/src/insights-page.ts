@@ -35,7 +35,7 @@ const CSS = `
 .ins{margin-top:28px}.ins:first-child{margin-top:0}
 .ins .section-head p{max-width:none}
 .cand{margin-top:14px;border:1px solid var(--rule-strong);background:var(--surface)}
-.cand>summary{cursor:pointer;padding:6px 10px;font-size:.8125rem;color:var(--form);display:flex;flex-wrap:wrap;gap:4px 14px;align-items:baseline}
+.cand>summary{padding:6px 10px;font-size:.8125rem;color:var(--form);display:flex;flex-wrap:wrap;gap:4px 14px;align-items:baseline}
 .cand>summary b{color:var(--ink)}
 .cand .body{margin:0;padding:8px 10px;border-top:1px solid var(--rule);font:.75rem/1.5 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;max-height:40vh;overflow:auto}
 .cand .body:focus-visible{outline:2px solid var(--form);outline-offset:-2px}
