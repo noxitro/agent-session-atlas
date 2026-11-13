@@ -688,7 +688,7 @@ async function sessionOwners(stateSrcs: readonly string[], listing: Map<string, 
 }
 
 /** items を limit 個ずつ並べて fn に通し、結果を元の順で返す。1 つでも失敗したら、残りは始めず、動いているものを待ってから最初の失敗を投げる */
-async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T, worker: number) => Promise<R>): Promise<R[]> {
+export async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T, worker: number) => Promise<R>): Promise<R[]> {
   const out = new Array<R>(items.length);
   let next = 0;
   let failed: { e: unknown } | null = null;

@@ -8,7 +8,7 @@ import { resolveInstructions } from './instructions.ts';
 import { normalizeSession } from './normalize.ts';
 import { ProjectResolver, type ProjectResolverOptions } from './project.ts';
 import { ATLAS_JUDGE_PROJECT, HOME_PROJECT, TEMP_PROJECT } from './project-keys.ts';
-import { DESKTOP_JSON, hasSessionFile, isUploadWorkDir, personOfFolder, readSnapshotManifest, SESSION_STORE_JSON, SNAPSHOT_SESSION_DB, UPLOAD_OLD_ONLY_REASON, UPLOAD_SESSION_META, UPLOAD_WORK_REASON, uploadWorkDirId } from './snapshot.ts';
+import { DESKTOP_JSON, hasSessionFile, isUploadWorkDir, mapLimit, personOfFolder, readSnapshotManifest, SESSION_STORE_JSON, SNAPSHOT_SESSION_DB, UPLOAD_OLD_ONLY_REASON, UPLOAD_SESSION_META, UPLOAD_WORK_REASON, uploadWorkDirId } from './snapshot.ts';
 import { desktopForSession, type DesktopData, type DesktopSessionInfo } from './desktop.ts';
 import { openReadOnly } from './sqlite.ts';
 import { WikiClassifier, type WikiSpec } from './wiki.ts';
@@ -50,6 +50,9 @@ function tableExists(db: Awaited<ReturnType<typeof openReadOnly>>, name: string)
 }
 
 /** session-store.db から読む表と列(セッション 1 件分を書き出すときも同じ問い合わせを使う) */
+/** セッションごとのファイルを並べて読む数(読み込みの待ちを重ねる。解析は 1 つのスレッドで順に進むので、増やしても速くならない) */
+const EXTRACT_CONCURRENCY = 8;
+
 const STORE_QUERIES = {
   sessions: { table: 'sessions', sql: 'SELECT id, cwd, repository, host_type, branch, summary, created_at, updated_at FROM sessions', key: 'id', order: '' },
   turns: { table: 'turns', sql: 'SELECT session_id, turn_index, user_message, assistant_response, timestamp FROM turns', key: 'session_id', order: '' },
@@ -479,15 +482,19 @@ export async function extract(snapshotDir: string, opts: ExtractOptions = {}): P
   const unknownAll: Record<string, number> = {};
   let badLines = 0;
   let done = 0;
-  for (const id of ids) {
+  // セッションごとのファイル(workspace.yaml・events.jsonl・session.db・送った側の記録)を読むところは並べて行う
+  // (1 件ずつだと、読み込みの待ちが件数分積み重なる)。プロジェクト名を決める・数を足す・警告を並べるところは、id の順に行う
+  // (ProjectResolver は見つけたものを覚えて使い回し、警告の順も今までと同じにするため)
+  const loaded = await mapLimit(ids, EXTRACT_CONCURRENCY, async (id) => {
     const hasDir = dirs.has(id);
     const dir = join(stateDir, id);
+    const notes: string[] = [];
     let workspace: WorkspaceInfo | null = null;
     if (hasDir) {
       try {
         workspace = await readWorkspaceYaml(join(dir, 'workspace.yaml'));
       } catch (err) {
-        messages.push(`${id}: workspace.yaml を読めない (${(err as Error).message})`);
+        notes.push(`${id}: workspace.yaml を読めない (${(err as Error).message})`);
       }
     }
     const eventsPath = join(dir, 'events.jsonl');
@@ -506,11 +513,15 @@ export async function extract(snapshotDir: string, opts: ExtractOptions = {}): P
       try {
         rec.todos = await readTodos(join(dir, SNAPSHOT_SESSION_DB));
       } catch (err) {
-        messages.push(`${id}: session.db を読めない (${(err as Error).message})`);
+        notes.push(`${id}: session.db を読めない (${(err as Error).message})`);
       }
     }
     // 送り先から集計したときは、添えた記録(プロジェクト名とタスクタグ)を 1 度だけ読む
     const meta = uploaded && hasDir ? await readSenderMeta(join(dir, UPLOAD_SESSION_META), id) : null;
+    return { id, rec, stats, meta, notes };
+  });
+  for (const { id, rec, stats, meta, notes } of loaded) {
+    messages.push(...notes);
     if (resolver) {
       const p = resolver.resolve(rec);
       const sent = meta?.project ?? null;
