@@ -33,9 +33,13 @@ describe('網羅チェック', () => {
           '<button class="p">押す<span>中</span></button><a class="h" href="#here">リンク</a><abbr title="略語の説明">略語</abbr>' +
           '<div role="treeitem" tabindex="0" class="p2">木の項目(操作を受ける役割)</div>' +
           '<label>名前<input type="text" name="n"></label><label>期間<select name="s"><option>すべて</option></select></label><button class="p" disabled>使えない</button>' +
-          '<label class="off"><input type="checkbox" disabled>使えない印のラベル</label><button class="busy">書き込み中</button>',
+          '<label class="off"><input type="checkbox" disabled>使えない印のラベル</label><button class="busy">書き込み中</button>' +
+          // 別の操作を示すカーソル(拡大・幅を変える)、部品の付いていないラベル、一覧の項目(矢印が普通)も指摘しない
+          '<button class="zoom">拡大</button><button class="resize">幅</button><label class="cap">見出しだけのラベル</label>' +
+          '<ul role="listbox" aria-label="一覧"><li role="option" aria-selected="false">項目</li></ul>',
         '.p{cursor:pointer;padding:8px}.h:hover{color:#000}.p2{cursor:pointer}button:disabled{cursor:default}input,select{min-height:28px;min-width:28px}' +
-          '.off{cursor:default}.off input{width:28px;height:28px}.busy{cursor:progress;padding:8px}',
+          '.off{cursor:default}.off input{width:28px;height:28px}.busy{cursor:progress;padding:8px}' +
+          '.zoom{cursor:zoom-in;padding:8px}.resize{cursor:col-resize;padding:8px}',
       ),
     );
     // 押せそうで押せない要素の、見落としやすい形(ファイル名付きの自分へのリンク・見出しの中の自分へのリンク・display: contents の親の指のカーソル・
