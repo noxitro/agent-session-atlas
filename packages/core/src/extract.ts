@@ -562,7 +562,12 @@ export async function extract(snapshotDir: string, opts: ExtractOptions = {}): P
   return {
     schemaVersion: SESSIONS_SCHEMA_VERSION,
     generatedAt: new Date().toISOString(),
-    source: { root: manifest?.sourceRoot ?? null, snapshotDir, since, ...(layout ? { layout, ...(manifest?.merged ? { folders: manifest.merged.folders } : {}) } : {}) },
+    source: {
+      root: manifest?.sourceRoot ?? null,
+      snapshotDir,
+      since,
+      ...(layout ? { layout, ...(manifest?.merged ? { folders: manifest.merged.folders } : {}), ...(manifest?.uploads ? { uploads: manifest.uploads } : {}) } : {}),
+    },
     desktop: desktop ? { readAt: desktop.readAt, wal: desktop.wal, coverage: desktop.coverage, warnings: desktop.warnings, sessions: desktop.tables.sessions?.length ?? 0 } : null,
     counts: { sessions: sessions.length, dbOnly, dirOnly: sessions.length - both - dbOnly, both, empty: sessions.filter((s) => s.empty).length },
     installed,

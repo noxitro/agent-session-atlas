@@ -30,6 +30,24 @@ export function parseAtlasBuild(v: unknown): AtlasBuild | null {
   return { commit, committedAt: Number.isFinite(t) ? new Date(t).toISOString() : null, dirty: typeof o.dirty === 'boolean' ? o.dirty : null, code: o.code };
 }
 
+/** フォルダごとの、最後に送ったときの記録(送り先の atlas-index.json の uploadedAt と atlas。snapshot が manifest の uploads に入れる) */
+export interface FolderUpload {
+  uploadedAt: string | null;
+  /** 版の記録が無い(この記録を書く前の版で送った)なら null */
+  atlas: AtlasBuild | null;
+}
+
+/** 最後に送ったときの版が、いちばん新しい版でないフォルダ */
+export interface StaleFolder {
+  /** 送り先からの相対パス(/ 区切り。直下にセッションが並ぶ形は '.') */
+  folder: string;
+  uploadedAt: string | null;
+  /** older: いちばん新しい版より古い版 / unknown: 版の記録なし / undated: 新旧を決められない版 */
+  reason: 'older' | 'unknown' | 'undated';
+  /** 送った版の短い名前(記録が無ければ null) */
+  label: string | null;
+}
+
 /** 版ごとのまとまり(同じコミット、git が無ければ同じ目印) */
 export interface AtlasBuildGroup {
   commit: string | null;
@@ -62,6 +80,11 @@ export interface AtlasBuildSummary {
   builds: AtlasBuildGroup[];
   /** 集計したこの PC の版 */
   local: AtlasBuild | null;
+  /**
+   * 最後に送ったときの版が、いちばん新しい版でないフォルダ(最後に送った日時の古い順)。フォルダごとの記録を渡したときだけある。
+   * セッションの数だけでは、その人がいつ・どの版で最後に送ったかが分からないため(送り直しを頼む相手を決めるのに使う)
+   */
+  folders?: StaleFolder[];
 }
 
 const time = (at: string | null): number => (at ? Date.parse(at) : NaN);
@@ -70,7 +93,11 @@ const time = (at: string | null): number => (at ? Date.parse(at) : NaN);
  * 送り先から集計したセッションの、送った atlas の版を数える。uploadAtlas が undefined のセッション(この PC の記録)は数えない。
  * 送り先から集計したセッションが 1 件も無ければ null
  */
-export function summarizeAtlasBuilds(sessions: readonly { person?: string | null; uploadAtlas?: AtlasBuild | null }[], local: AtlasBuild | null): AtlasBuildSummary | null {
+export function summarizeAtlasBuilds(
+  sessions: readonly { person?: string | null; uploadAtlas?: AtlasBuild | null }[],
+  local: AtlasBuild | null,
+  folders?: Readonly<Record<string, FolderUpload>>,
+): AtlasBuildSummary | null {
   const sent = sessions.filter((s) => s.uploadAtlas !== undefined);
   if (!sent.length) return null;
   const groups = new Map<string, AtlasBuildGroup & { people: Set<string> }>();
@@ -98,9 +125,10 @@ export function summarizeAtlasBuilds(sessions: readonly { person?: string | null
   const builds = [...groups.values()]
     .map(({ people, ...g }) => ({ ...g, persons: [...people].sort() }))
     .sort((a, b) => order(time(b.committedAt)) - order(time(a.committedAt)) || (a.commit ?? a.code).localeCompare(b.commit ?? b.code));
-  // いちばん新しい版は、送った側の版とこの PC の版のうち、コミットの日時がいちばん後のもの(同じ日時なら送った側を先に見る)
+  // いちばん新しい版は、送った側の版(セッションとフォルダの記録)とこの PC の版のうち、コミットの日時がいちばん後のもの(同じ日時なら送った側を先に見る)
   let latest: AtlasBuildSummary['latest'] = null;
-  for (const c of [...builds.map((g) => ({ commit: g.commit, committedAt: g.committedAt, local: false })), ...(local ? [{ commit: local.commit, committedAt: local.committedAt, local: true }] : [])]) {
+  const folderBuilds = Object.values(folders ?? {}).flatMap((f) => (f.atlas ? [{ commit: f.atlas.commit, committedAt: f.atlas.committedAt, local: false }] : []));
+  for (const c of [...builds.map((g) => ({ commit: g.commit, committedAt: g.committedAt, local: false })), ...folderBuilds, ...(local ? [{ commit: local.commit, committedAt: local.committedAt, local: true }] : [])]) {
     if (!c.commit || !c.committedAt || !Number.isFinite(time(c.committedAt))) continue;
     if (!latest || time(c.committedAt) > time(latest.committedAt)) latest = { commit: c.commit, committedAt: c.committedAt, local: c.local };
   }
@@ -117,7 +145,22 @@ export function summarizeAtlasBuilds(sessions: readonly { person?: string | null
       for (const p of g.persons) olderPeople.add(p);
     }
   }
-  return { sessions: sent.length, unknown, unknownPersons: [...unknownPeople].sort(), undated, latest, older, olderPersons: [...olderPeople].sort(), dirty, builds, local };
+  const summary: AtlasBuildSummary = { sessions: sent.length, unknown, unknownPersons: [...unknownPeople].sort(), undated, latest, older, olderPersons: [...olderPeople].sort(), dirty, builds, local };
+  if (folders) summary.folders = staleFolders(folders, latest);
+  return summary;
+}
+
+/** 最後に送ったときの版が、いちばん新しい版(latest)でないフォルダ。最後に送った日時の古い順(日時の分からないものは前) */
+export function staleFolders(folders: Readonly<Record<string, FolderUpload>>, latest: AtlasBuildSummary['latest']): StaleFolder[] {
+  const out: StaleFolder[] = [];
+  for (const [folder, f] of Object.entries(folders)) {
+    const b = f.atlas;
+    if (!b) out.push({ folder, uploadedAt: f.uploadedAt, reason: 'unknown', label: null });
+    else if (!b.commit || !Number.isFinite(time(b.committedAt))) out.push({ folder, uploadedAt: f.uploadedAt, reason: 'undated', label: buildLabel(b) });
+    else if (latest && b.commit !== latest.commit && time(b.committedAt) < time(latest.committedAt)) out.push({ folder, uploadedAt: f.uploadedAt, reason: 'older', label: buildLabel(b) });
+  }
+  const at = (x: StaleFolder): number => (Number.isFinite(time(x.uploadedAt)) ? time(x.uploadedAt) : -Infinity);
+  return out.sort((a, b) => at(a) - at(b) || a.folder.localeCompare(b.folder));
 }
 
 /** 版の短い名前(コミットの先頭 7 桁、git が無ければ目印) */
@@ -131,12 +174,14 @@ const whose = (persons: readonly string[]): string => (persons.length ? `(${pers
  * ok = すべていちばん新しい版で、手で変えた版も記録の無いものも無い。short は画面の見出しのタグ、headline は 1 行、lines は版ごとの内訳
  */
 export function describeAtlasBuilds(s: AtlasBuildSummary): { ok: boolean; short: string; headline: string; lines: string[] } {
-  const ok = s.older === 0 && s.unknown === 0 && s.undated === 0 && s.dirty === 0;
+  const stale = s.folders ?? [];
+  const ok = s.older === 0 && s.unknown === 0 && s.undated === 0 && s.dirty === 0 && stale.length === 0;
   const parts = [
     s.older ? `古い版 ${s.older} 件` : '',
     s.unknown ? `版の記録なし ${s.unknown} 件` : '',
     s.undated ? `新旧を決められない版 ${s.undated} 件` : '',
     s.dirty ? `手で変えた版 ${s.dirty} 件` : '',
+    stale.length ? `最後に送った版が古いフォルダ ${stale.length} 件` : '',
   ].filter(Boolean);
   const short = ok ? 'すべて最新' : parts.join('・');
   const headline = ok ? `送った atlas の版: すべて最新${s.latest ? `(${s.latest.commit.slice(0, 7)})` : ''}` : `送った atlas の版: ${s.sessions} 件のうち ${short}`;
@@ -147,6 +192,15 @@ export function describeAtlasBuilds(s: AtlasBuildSummary): { ok: boolean; short:
     lines.push(`${buildLabel(g)}(${day(g.committedAt)})${old ? ' 古い版' : ''}: ${g.sessions} 件${g.dirty ? `(うち手で変えた版 ${g.dirty} 件)` : ''}${whose(g.persons)}`);
   }
   if (s.unknown) lines.push(`版の記録なし(この記録を書く前の版で送ったもの): ${s.unknown} 件${whose(s.unknownPersons)}`);
+  if (stale.length) {
+    const why: Record<StaleFolder['reason'], string> = { older: '古い版', unknown: '版の記録なし', undated: '新旧を決められない版' };
+    lines.push(
+      `最後に送ったときの版が最新でないフォルダ: ${stale
+        .slice(0, 8)
+        .map((f) => `${f.folder === '.' ? '(このフォルダ)' : f.folder}(${f.uploadedAt ? `${day(f.uploadedAt)} に送った` : '送った日時不明'}・${why[f.reason]}${f.label ? ` ${f.label}` : ''})`)
+        .join('、')}${stale.length > 8 ? ` ほか ${stale.length - 8} 件` : ''}`,
+    );
+  }
   if (s.local && !(s.latest?.local && s.latest.commit === s.local.commit)) lines.push(`この PC の版: ${buildLabel(s.local)}(${day(s.local.committedAt)})${s.local.dirty ? '。手で変えた版' : ''}`);
   return { ok, short, headline, lines };
 }
