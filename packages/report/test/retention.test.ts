@@ -128,7 +128,6 @@ describe('工程ごと(まとまりを作った依頼の工程)', () => {
   const turns = [
     { startedAt: at(0), phase: research },
     { startedAt: at(10), phase: implement },
-    { startedAt: null, phase: research },
   ];
 
   it('phaseAt: 開始が時刻以前の最後の依頼の工程。最初の依頼より前・時刻なしは不明', () => {
@@ -137,6 +136,16 @@ describe('工程ごと(まとまりを作った依頼の工程)', () => {
     expect(phaseAt(at(30), turns)).toBe(implement);
     expect(phaseAt(new Date(Date.UTC(2026, 10, 1, 9)).toISOString(), turns)).toBe(UNKNOWN_PHASE);
     expect(phaseAt(undefined, turns)).toBe(UNKNOWN_PHASE);
+  });
+
+  it('phaseAt: 開始時刻の無い依頼をはさむと決めない。打ち切りの印(不明の依頼)より後は不明', () => {
+    const withGap = [...turns, { startedAt: null, phase: research }, { startedAt: at(40), phase: research }];
+    expect(phaseAt(at(30), withGap)).toBe(UNKNOWN_PHASE);
+    expect(phaseAt(at(45), withGap)).toBe(research);
+    expect(phaseAt(at(5), withGap)).toBe(research);
+    const truncated = [...turns, { startedAt: at(20), phase: UNKNOWN_PHASE }];
+    expect(phaseAt(at(15), truncated)).toBe(implement);
+    expect(phaseAt(at(25), truncated)).toBe(UNKNOWN_PHASE);
   });
 
   it('retentionItem が工程ごとのまとまりを数え、retentionByPhase が照合できたセッションだけを足す', () => {

@@ -46,6 +46,16 @@ export function assertReadOnly(cmd: VcsKind, args: readonly string[]): void {
   if (bad) throw new Error(`書き出しの引数を止めました: ${bad}`);
 }
 
+/**
+ * VCS に渡す環境変数。メッセージは英語にそろえる(見つからないことを英語の文で見分けるため)が、文字の扱い(LC_CTYPE)は利用者のものを残す。
+ * LC_ALL=C にすると、POSIX の svn が ASCII 以外のパスを UTF-8 に直せず、日本語のファイル名などを読めなくなる
+ */
+export function vcsEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const { LC_ALL, ...rest } = base;
+  const ctype = rest.LC_CTYPE ?? LC_ALL ?? rest.LANG;
+  return { ...rest, ...(ctype ? { LC_CTYPE: ctype } : {}), LC_MESSAGES: 'C', LANGUAGE: 'C', GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' };
+}
+
 /** 既定の実行(シェルを通さない。30 秒で打ち切る) */
 export const defaultRunner: VcsRunner = (cmd, args, opts) =>
   new Promise((resolve) => {
@@ -58,7 +68,7 @@ export const defaultRunner: VcsRunner = (cmd, args, opts) =>
         maxBuffer: 64 * 1024 * 1024,
         windowsHide: true,
         encoding: 'utf8',
-        env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C', LANG: 'C' },
+        env: vcsEnv(),
       },
       (err, stdout, stderr) => {
         if (err && (err as NodeJS.ErrnoException).code === 'ENOENT') return resolve({ code: -1, stdout: '', stderr: `${cmd} が見つかりません` });
@@ -94,7 +104,7 @@ export interface VcsRepo {
    * 開始時の基準。headCommit は git のときだけ使う(別のリポジトリの値は渡さない)。
    * 決められなければ null(理由は reason に)
    */
-  baseline(hint: { headCommit: string | null; start: string | null }): Promise<{ revision: Revision | null; reason?: 'baseline_missing' }>;
+  baseline(hint: { headCommit: string | null; start: string | null; branch?: string | null }): Promise<{ revision: Revision | null; reason?: 'baseline_missing' }>;
   /** 照合時の版の印(git: HEAD、svn: 作業コピーの版、p4: have の最新の変更番号) */
   currentRevision(): Promise<string | null>;
   /** 版 rev のファイル。その版に無ければ null。読めないときは例外 */
@@ -146,16 +156,22 @@ function gitRepo(root: string, run: VcsRunner): VcsRepo {
     kind: 'git',
     root,
     relative: (p) => relativeTo(root, p),
-    async baseline({ headCommit, start }) {
+    async baseline({ headCommit, start, branch }) {
       if (headCommit) {
         const r = await git('cat-file', '-e', `${headCommit}^{commit}`);
         // ログに記録された版がもう無い(履歴の書き換え・別の複製)なら、推定で置き換えない
         return r.code === 0 ? { revision: { rev: headCommit, source: 'observed' } } : { revision: null, reason: 'baseline_missing' };
       }
       if (!start) return { revision: null, reason: 'baseline_missing' };
-      const r = await git('rev-list', '-1', `--before=${start}`, 'HEAD');
-      const rev = r.stdout.trim();
-      return r.code === 0 && rev ? { revision: { rev, source: 'estimated' } } : { revision: null, reason: 'baseline_missing' };
+      // セッションのブランチの履歴で探す(今の HEAD が別のブランチでも取り違えない)。ブランチが無い・読めなければ HEAD。
+      // ブランチ名はログの値なので、ref の名前として素直なものだけを refs/heads/ の下で使う(引数として読まれないように)
+      const refs = branch && /^[\w.\/-]+$/.test(branch) && !branch.startsWith('-') && !branch.includes('..') ? [`refs/heads/${branch}`, 'HEAD'] : ['HEAD'];
+      for (const ref of refs) {
+        const r = await git('rev-list', '-1', `--before=${start}`, ref);
+        const rev = r.stdout.trim();
+        if (r.code === 0 && rev) return { revision: { rev, source: 'estimated' } };
+      }
+      return { revision: null, reason: 'baseline_missing' };
     },
     async currentRevision() {
       const r = await git('rev-parse', 'HEAD');
@@ -187,7 +203,8 @@ function svnDate(iso: string): string {
 function svnRepo(root: string, run: VcsRunner): VcsRepo {
   const svn = (...args: string[]) => run('svn', ['--non-interactive', ...args], { cwd: root });
   const cat = async (rev: string, absPath: string): Promise<string | null> => {
-    const args = ['cat', '-r', rev, absPath];
+    // 末尾の @ は空の peg 版(既定)。付けないと、名前に @ を含むファイル(icon@2x.png など)の @ 以降を版の指定として読む
+    const args = ['cat', '-r', rev, `${absPath}@`];
     const r = await svn(...args);
     if (r.code === 0) return decodeText(r.stdout);
     if (SVN_MISSING.test(r.stderr)) return null;
@@ -230,9 +247,14 @@ function p4Date(iso: string): string {
   return `@${d.getUTCFullYear()}/${pad(d.getUTCMonth() + 1)}/${pad(d.getUTCDate())}:${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
 }
 
+/** p4 のファイル指定で特別な意味を持つ文字(@ # % *)を逃がす(% を先に) */
+export function p4Escape(path: string): string {
+  return path.replace(/%/g, '%25').replace(/@/g, '%40').replace(/#/g, '%23').replace(/\*/g, '%2A');
+}
+
 function p4Repo(root: string, run: VcsRunner): VcsRepo {
   const p4 = (...args: string[]) => run('p4', ['-d', root, ...args], { cwd: root });
-  const tree = `${root}${isWin(root) ? '\\' : '/'}...`;
+  const tree = `${p4Escape(root)}${isWin(root) ? '\\' : '/'}...`;
   const print = async (spec: string): Promise<string | null> => {
     const args = ['-q', 'print', spec];
     const r = await p4('-q', 'print', spec);
@@ -260,11 +282,11 @@ function p4Repo(root: string, run: VcsRunner): VcsRepo {
     },
     async readAt(rev, absPath) {
       if (relativeTo(root, absPath) == null) throw new VcsReadError('クライアントの外のファイルです');
-      return print(`${absPath}@${rev}`);
+      return print(`${p4Escape(absPath)}@${rev}`);
     },
     async readAfter(mode, absPath) {
       if (mode === 'worktree') return readDisk(absPath);
-      return print(`${absPath}#have`);
+      return print(`${p4Escape(absPath)}#have`);
     },
   };
 }

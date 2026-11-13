@@ -17,7 +17,7 @@ import { embedData } from './lib/embed.ts';
 import { packSummary } from './lib/pack.ts';
 import type { JudgmentsIndex } from './lib/judgments.ts';
 import { verdictTuples, type VerdictIndex } from './lib/verdicts.ts';
-import { retentionItem } from './lib/retention.ts';
+import { retentionItem, UNKNOWN_PHASE, type TurnStart } from './lib/retention.ts';
 import { PHASES, sessionTurns } from '../../core/src/turns.ts';
 import type { VcsRetentionFile } from '../../core/src/vcs-step.ts';
 import type { SessionGroup } from './lib/groups.ts';
@@ -164,6 +164,21 @@ export function anonymizeMetrics(m: MetricsFile, anon: Anonymizer): MetricsFile 
   return { ...m, byProject: remapBuckets(m.byProject, (k) => anon.project(k)) };
 }
 
+/**
+ * 工程ごとの集計に使う、依頼の開始時刻と工程。依頼の記録が先頭 200 依頼で打ち切られたセッションは、最後の依頼の終わり
+ * (時間の記録が無ければ始まり)に「不明」を足し、それより後のまとまりを最後の依頼の工程に入れないようにする
+ */
+function turnStarts(r: SessionRecord): TurnStart[] {
+  const rows = sessionTurns(r);
+  const out: TurnStart[] = rows.map((t) => ({ startedAt: t.startedAt, phase: PHASES.indexOf(t.phase) }));
+  const last = rows[rows.length - 1];
+  if (last && r.turns > rows.length) {
+    const end = last.startedAt && last.ms != null ? new Date(Date.parse(last.startedAt) + last.ms).toISOString() : last.startedAt;
+    out.push({ startedAt: end, phase: UNKNOWN_PHASE });
+  }
+  return out;
+}
+
 export async function buildReport(input: BuildInput): Promise<BuildResult> {
   const t0 = performance.now();
   const templatePath = input.templatePath ?? (await ensureTemplate());
@@ -190,7 +205,7 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
     const base = summarize(r, anon, j?.bySession.get(r.id) ?? null);
     const vt = vx ? verdictTuples(vx.bySession.get(r.id), vx.phases) : [];
     const rt = retentionById.get(r.id);
-    const s = { ...base, ...(vt.length ? { turnVerdicts: vt } : {}), ...(rt ? { retention: retentionItem(rt, sessionTurns(r).map((t) => ({ startedAt: t.startedAt, phase: PHASES.indexOf(t.phase) }))) } : {}) };
+    const s = { ...base, ...(vt.length ? { turnVerdicts: vt } : {}), ...(rt ? { retention: retentionItem(rt, turnStarts(r)) } : {}) };
     const m = memos.get(r.id);
     return m ? { ...s, memo: memoSummary(m.text, m.updatedAt) } : s;
   });

@@ -120,8 +120,9 @@ export function parseUnifiedDiff(text: string): DiffFile[] {
       inHunk = false;
       continue;
     }
-    // 見出しは塊の外でだけ読む(塊の中の "--- x" は、"-- x" という行を消した印のことがある)
-    if (!inHunk) {
+    // 見出しは塊の外で読む(塊の中の "--- x" は、"-- x" という行を消した印のことがある)。
+    // diff --git の無い複数ファイルの diff では、塊の中でも、--- / +++ のすぐ後に @@ が続くものは次のファイルの見出しとして読む
+    if (!inHunk || lines[i + 2]?.startsWith('@@')) {
       if (l.startsWith('--- ') && lines[i + 1]?.startsWith('+++ ')) {
         flush();
         cur = { oldPath: diffPath(l.slice(4)), newPath: diffPath(lines[i + 1].slice(4)), blocks: [] };
@@ -286,6 +287,8 @@ export function extractAiChanges(sessionId: string, events: readonly CopilotEven
       return;
     }
     if (op === 'add' && f.edits === 1) f.created = true;
+    // ファイルを作り直した(create で上書きした)なら、前の中身は残っていない。前に足した行は数えない
+    if (op === 'add') for (const e of f.entries) e.alive = false;
     f.deleted = false;
     for (const b of blocks) {
       // AI が前に足した行を消したなら、その行は数えない(同じ本文のうち、いちばん新しい生きている行)

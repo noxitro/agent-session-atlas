@@ -29,19 +29,28 @@ export interface TurnStart {
 /** 工程がわからないまとまり(最初の依頼より前の編集・時刻の記録が無いもの) */
 export const UNKNOWN_PHASE = -1;
 
-/** 時刻 at のまとまりを作った依頼の工程(開始が at 以前の最後の依頼)。決まらなければ UNKNOWN_PHASE */
+/**
+ * 時刻 at のまとまりを作った依頼の工程(開始が at 以前の最後の依頼)。決まらなければ UNKNOWN_PHASE。
+ * 開始時刻の記録が無い依頼をはさむと、その依頼のものかもしれないので決めない。
+ * 依頼の記録が途中で打ち切られたセッションは、最後に UNKNOWN_PHASE の依頼(最後の依頼の終わりの時刻)を足して渡す
+ */
 export function phaseAt(at: string | undefined, turns: readonly TurnStart[]): number {
   if (!at) return UNKNOWN_PHASE;
   const t = Date.parse(at);
   if (Number.isNaN(t)) return UNKNOWN_PHASE;
   let phase = UNKNOWN_PHASE;
+  let unsure = false;
   for (const x of turns) {
     const s = x.startedAt ? Date.parse(x.startedAt) : NaN;
-    if (Number.isNaN(s)) continue;
-    if (s <= t) phase = x.phase;
-    else break;
+    if (Number.isNaN(s)) {
+      unsure = true;
+      continue;
+    }
+    if (s > t) break;
+    phase = x.phase;
+    unsure = false;
   }
-  return phase;
+  return unsure ? UNKNOWN_PHASE : phase;
 }
 
 export const STATUSES = ['kept', 'modified', 'missing', 'unattributable'] as const satisfies readonly RetentionStatus[];
