@@ -169,9 +169,19 @@ export function defaultConfigPath(): string {
 /** modifyConfig の関数がこれを返したら、何も書かない(変わらないときに書き方を崩さないように) */
 export const NO_CHANGE: unique symbol = Symbol('no change');
 
-/** ロックを取れるまで待つ長さと、落ちた処理が残したロックとみなす古さ */
-const LOCK_WAIT_MS = 5000;
+/**
+ * ロックを取れるまで待つ長さと、落ちた処理が残したロックとみなす古さ。待つ長さは古さより長くする
+ * (消せずに残ったロックを、待っている側が古いものとして消して取り直せるように)
+ */
+const LOCK_WAIT_MS = 15_000;
 const LOCK_STALE_MS = 10_000;
+/**
+ * Windows で、ロックを作る・消すときに一時的に出る失敗。消したばかりのロックをほかのプログラム(ウイルス対策の検査など)がまだ
+ * 開いていると、同じ名前で作るのが EPERM(削除待ち)になり、消すのが EBUSY / EPERM になる。少し待ってやり直す
+ * (fs-retry.ts の renameReplacing と同じ考え方)
+ */
+const TRANSIENT_LOCK_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
+const isTransientLockError = (e: unknown): boolean => process.platform === 'win32' && TRANSIENT_LOCK_CODES.has((e as NodeJS.ErrnoException).code ?? '');
 
 /**
  * 設定ファイルの書き換えを 1 つずつ行うためのロック(<設定ファイル>.lock を排他で作る)。
@@ -181,11 +191,19 @@ const LOCK_STALE_MS = 10_000;
 async function withConfigLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
   const lock = `${path}.lock`;
   const started = Date.now();
+  /** 一時的な失敗のまま待ちきったときに出す、元の失敗 */
+  let transient: unknown = null;
   for (;;) {
     try {
       await (await open(lock, 'wx')).close();
       break;
     } catch (e) {
+      if (isTransientLockError(e)) {
+        transient = e;
+        if (Date.now() - started > LOCK_WAIT_MS) throw e;
+        await new Promise((r) => setTimeout(r, 20));
+        continue;
+      }
       if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
     }
     try {
@@ -194,15 +212,19 @@ async function withConfigLock<T>(path: string, fn: () => Promise<T>): Promise<T>
         continue;
       }
     } catch {
-      continue; // 調べる間に消えた: すぐ取り直す
+      continue; // 調べる間に消えた(か、消せなかった): すぐ取り直す
     }
-    if (Date.now() - started > LOCK_WAIT_MS) throw new Error(`設定ファイル ${path} を別の処理が書き換えています(${lock})。少し待ってからやり直してください`);
+    if (Date.now() - started > LOCK_WAIT_MS) {
+      if (transient) throw transient;
+      throw new Error(`設定ファイル ${path} を別の処理が書き換えています(${lock})。少し待ってからやり直してください`);
+    }
     await new Promise((r) => setTimeout(r, 20));
   }
   try {
     return await fn();
   } finally {
-    await rm(lock, { force: true });
+    // 書き終えた後にロックを消せなくても、書いたことは失敗にしない(残ったロックは、古くなれば次の処理が消して取り直す)
+    await rm(lock, { force: true, maxRetries: 5, retryDelay: 50 }).catch(() => {});
   }
 }
 
