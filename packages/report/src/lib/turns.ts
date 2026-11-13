@@ -92,7 +92,7 @@ export interface TurnAggregate {
 }
 
 /** 絞り込み後のセッションのターンを集計する */
-export function turnAggregate(sessions: { turns: number; turnRows?: TurnTuple[] }[]): TurnAggregate {
+export function turnAggregate(sessions: readonly { turns: number; turnRows?: TurnTuple[] }[]): TurnAggregate {
   const byPhase = Object.fromEntries(PHASES.map((p) => [p, emptyTurnBucket()])) as Record<Phase, TurnBucket>;
   const byKind = Object.fromEntries(REQUEST_KINDS.map((k) => [k, emptyTurnBucket()])) as Record<RequestKind, TurnBucket>;
   const total = emptyTurnBucket();

@@ -51,6 +51,8 @@ export interface HunkRetention {
   reason?: UnattributableReason;
   /** 数えた行の内訳(基準にあった行・空白行は含めない) */
   lines: LineCounts;
+  /** そのまとまりを作った編集の時刻(ISO。工程ごとの集計で、どの依頼のものかを決めるのに使う)。記録が無ければ省略 */
+  at?: string;
 }
 
 export interface SessionRetention {
@@ -255,7 +257,7 @@ function classifyFile(
     }
     const counted = lines.kept + lines.modified + lines.missing;
     const status: RetentionStatus = counted === 0 ? 'unattributable' : lines.kept === counted ? 'kept' : lines.kept + lines.modified > 0 ? 'modified' : 'missing';
-    results.push({ id: p.h.id, path: p.h.path, status, ...(status === 'unattributable' ? { reason } : {}), lines });
+    results.push({ id: p.h.id, path: p.h.path, status, ...(status === 'unattributable' ? { reason } : {}), lines, ...(p.h.at ? { at: p.h.at } : {}) });
   }
   return { results, excluded };
 }
@@ -285,7 +287,7 @@ function memo<T>(cache: Map<string, Promise<T>>, key: string, load: () => Promis
 }
 
 function unattributed(h: AiHunk, reason: UnattributableReason): HunkRetention {
-  return { id: h.id, path: h.path, status: 'unattributable', reason, lines: { ...emptyLines(), unattributable: h.lines.length } };
+  return { id: h.id, path: h.path, status: 'unattributable', reason, lines: { ...emptyLines(), unattributable: h.lines.length }, ...(h.at ? { at: h.at } : {}) };
 }
 
 /**

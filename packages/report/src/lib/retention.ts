@@ -16,6 +16,32 @@ export interface RetentionLike {
   lines: Record<RetentionStatus, number>;
   pathMapped?: boolean;
   computedOn?: 'local' | 'sender';
+  /** まとまりごとの状態と、作った編集の時刻(工程ごとの集計に使う) */
+  hunks?: readonly { status: RetentionStatus; at?: string }[];
+}
+
+/** 依頼の開始時刻と工程(PHASES の番号)。工程ごとの集計で、まとまりがどの依頼のものかを決めるのに使う */
+export interface TurnStart {
+  startedAt: string | null;
+  phase: number;
+}
+
+/** 工程がわからないまとまり(最初の依頼より前の編集・時刻の記録が無いもの) */
+export const UNKNOWN_PHASE = -1;
+
+/** 時刻 at のまとまりを作った依頼の工程(開始が at 以前の最後の依頼)。決まらなければ UNKNOWN_PHASE */
+export function phaseAt(at: string | undefined, turns: readonly TurnStart[]): number {
+  if (!at) return UNKNOWN_PHASE;
+  const t = Date.parse(at);
+  if (Number.isNaN(t)) return UNKNOWN_PHASE;
+  let phase = UNKNOWN_PHASE;
+  for (const x of turns) {
+    const s = x.startedAt ? Date.parse(x.startedAt) : NaN;
+    if (Number.isNaN(s)) continue;
+    if (s <= t) phase = x.phase;
+    else break;
+  }
+  return phase;
 }
 
 export const STATUSES = ['kept', 'modified', 'missing', 'unattributable'] as const satisfies readonly RetentionStatus[];
@@ -61,6 +87,8 @@ export interface RetentionItem {
   hunks: StatusTuple;
   /** 行の数(状態別) */
   lines: StatusTuple;
+  /** 工程(PHASES の番号。UNKNOWN_PHASE は不明)ごとのまとまりの数 [工程, ...状態別]。依頼の記録が無いセッション・古い埋め込みには無い */
+  phases?: [phase: number, ...counts: StatusTuple][];
 }
 
 /** 照合の全体の条件(ReportData.retention) */
@@ -91,8 +119,20 @@ export function placeLabel(computedOn: 'local' | 'sender' | undefined): string {
 
 const tuple = (c: Record<RetentionStatus, number>): StatusTuple => [c.kept, c.modified, c.missing, c.unattributable];
 
-export function retentionItem(r: RetentionLike): RetentionItem {
+export function retentionItem(r: RetentionLike, turns: readonly TurnStart[] = []): RetentionItem {
+  // 工程ごとのまとまりの数(依頼の記録があり、まとまりがあるときだけ)
+  let phases: RetentionItem['phases'];
+  if (turns.length && r.hunks?.length) {
+    const by = new Map<number, StatusTuple>();
+    for (const h of r.hunks) {
+      const p = phaseAt(h.at, turns);
+      const t = by.get(p) ?? by.set(p, zero()).get(p)!;
+      t[STATUSES.indexOf(h.status)]++;
+    }
+    phases = [...by].sort((a, b) => a[0] - b[0]).map(([p, t]) => [p, ...t]);
+  }
   return {
+    ...(phases ? { phases } : {}),
     outcome: r.outcome === 'no_ai_changes' ? 'none' : r.outcome,
     reason: r.reason ?? null,
     vcs: r.vcs,
@@ -176,4 +216,23 @@ export const measuredOf = (t: StatusTuple): number => t[0] + t[1] + t[2];
 export function shareOf(t: StatusTuple, i: 0 | 1 | 2): number | null {
   const d = measuredOf(t);
   return d > 0 ? t[i] / d : null;
+}
+
+/**
+ * 照合できたセッションのまとまりを、工程(PHASES の番号。UNKNOWN_PHASE は不明)ごとに数える。
+ * 工程の記録が無いセッション(古い埋め込み・依頼の記録が無いもの)は数えず、その数を返す
+ */
+export function retentionByPhase(sessions: readonly { retention?: RetentionItem | null }[]): { byPhase: Map<number, StatusTuple>; withoutPhases: number } {
+  const byPhase = new Map<number, StatusTuple>();
+  let withoutPhases = 0;
+  for (const s of sessions) {
+    const r = s.retention;
+    if (!r || r.outcome !== 'measured') continue;
+    if (!r.phases?.length) {
+      withoutPhases++;
+      continue;
+    }
+    for (const [p, ...t] of r.phases) add(byPhase.get(p) ?? byPhase.set(p, zero()).get(p)!, t as StatusTuple);
+  }
+  return { byPhase, withoutPhases };
 }

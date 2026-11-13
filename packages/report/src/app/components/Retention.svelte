@@ -1,6 +1,7 @@
 <script lang="ts">
   import { dateTime, int, percent } from '../../lib/format.ts';
-  import { aggregateRetention, measuredOf, MODE_LABEL, REASON_LABEL, REASONS, STATUS_LABEL, STATUSES, VCS_LABEL, type RetentionMeta } from '../../lib/retention.ts';
+  import { aggregateRetention, measuredOf, MODE_LABEL, REASON_LABEL, REASONS, retentionByPhase, STATUS_LABEL, STATUSES, UNKNOWN_PHASE, VCS_LABEL, type RetentionMeta } from '../../lib/retention.ts';
+  import { PHASE_LABEL, PHASES } from '../../../../core/src/turns.ts';
   import type { SessionSummary } from '../../lib/types.ts';
 
   let { sessions, meta }: { sessions: SessionSummary[]; meta: RetentionMeta } = $props();
@@ -34,6 +35,14 @@
     Object.entries(a.byVcs)
       .map(([k, n]) => `${VCS_LABEL[k as keyof typeof VCS_LABEL] ?? k} ${int(n ?? 0)}`)
       .join('・'),
+  );
+
+  /** 工程ごと(照合できたセッションのまとまりを、作った依頼の工程で分ける。まとまりのある工程だけ、PHASES の順、不明は最後) */
+  const phaseRet = $derived(retentionByPhase(sessions));
+  const phaseRows = $derived(
+    [...PHASES.map((ph, i) => ({ key: ph as string, label: PHASE_LABEL[ph], t: phaseRet.byPhase.get(i) })), { key: 'unknown', label: '不明(最初の依頼より前など)', t: phaseRet.byPhase.get(UNKNOWN_PHASE) }].filter(
+      (r): r is { key: string; label: string; t: [number, number, number, number] } => !!r.t && r.t.some((n) => n > 0),
+    ),
   );
 
   /** プロジェクトごと(照合できたセッションがあるものだけ) */
@@ -137,6 +146,33 @@
     <p class="note">
       開始時の基準の「記録」はログに残った開始時の版(git のコミット)、「推定」は開始時刻から VCS の履歴で探した版(svn・p4 は常に推定)です。似た行とみなす下限は文字の 2 字組の重なり {Math.round(meta.similarity * 100)}% です。
     </p>
+
+    {#if phaseRows.length > 0}
+      <h3 class="sub-h" id="ret-phase-h">工程ごと(照合できたセッション)</h3>
+      <div class="table-scroll">
+        <table class="ledger" aria-labelledby="ret-phase-h">
+          <thead>
+            <tr>
+              <th scope="col">工程</th>
+              {#each STATUSES as k (k)}<th scope="col" class="num">{L[k]}</th>{/each}
+            </tr>
+          </thead>
+          <tbody>
+            {#each phaseRows as r (r.key)}
+              {@const m = measuredOf(r.t)}
+              <tr>
+                <th scope="row" class="proj">{r.label}</th>
+                {#each [0, 1, 2] as i (i)}
+                  <td class="num">{m ? `${int(r.t[i])}(${percent(r.t[i], m)})` : '—'}</td>
+                {/each}
+                <td class="num">{int(r.t[3])}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+      <p class="note">まとまりを作った編集の時刻から、その時に進んでいた依頼の工程に分けています(工程の決め方は「工程と詰まり」と同じ)。括弧は、その工程の照合できたまとまりに対する割合です。{phaseRet.withoutPhases ? `依頼の記録が無く工程に分けられないセッション ${int(phaseRet.withoutPhases)} 件は入れていません。` : ''}</p>
+    {/if}
 
     {#if rows.length > 0}
       <h3 class="sub-h" id="ret-proj-h">プロジェクトごと(AI の変更があったものだけ)</h3>

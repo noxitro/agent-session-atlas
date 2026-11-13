@@ -2,8 +2,10 @@
 import { describe, expect, it } from 'vitest';
 import { RETENTION_STATUS_LABEL, RETENTION_STATUSES, UNATTRIBUTABLE_REASON_LABEL, UNATTRIBUTABLE_REASONS } from '../../core/src/vcs-retention.ts';
 import { VCS_KINDS } from '../../core/src/vcs.ts';
-import { aggregateRetention, REASON_LABEL, REASONS, retentionItem, shareOf, STATUS_LABEL, STATUSES, VCS_LABEL, type RetentionItem } from '../src/lib/retention.ts';
-import { compareRows, compareSide, COMPARE_MIN_SESSIONS, defaultPeriods, inPeriod, type CompareSession } from '../src/lib/compare.ts';
+import { aggregateRetention, phaseAt, REASON_LABEL, REASONS, retentionByPhase, retentionItem, shareOf, STATUS_LABEL, STATUSES, UNKNOWN_PHASE, VCS_LABEL, type RetentionItem } from '../src/lib/retention.ts';
+import { comparePhaseRows, compareRows, compareSide, COMPARE_MIN_SESSIONS, defaultPeriods, inPeriod, type CompareSession } from '../src/lib/compare.ts';
+import { PHASES } from '../../core/src/turns.ts';
+import type { TurnTuple } from '../src/lib/turns.ts';
 
 const item = (o: Partial<RetentionItem>): RetentionItem => ({ outcome: 'measured', reason: null, vcs: 'git', baseline: 'observed', on: 'local', mapped: false, hunks: [0, 0, 0, 0], lines: [0, 0, 0, 0], ...o });
 
@@ -116,5 +118,56 @@ describe('lib/compare', () => {
     expect(inPeriod({ createdAt: null, updatedAt: null }, '', '')).toBe(false);
     expect(defaultPeriods(local(2026, 11, 30, 23))).toEqual({ a: { from: '2026-10-02', to: '2026-10-31' }, b: { from: '2026-11-01', to: '2026-11-30' } });
     expect(defaultPeriods(local(2026, 11, 30, 0))).toEqual({ a: { from: '2026-10-02', to: '2026-10-31' }, b: { from: '2026-11-01', to: '2026-11-30' } });
+  });
+});
+
+describe('工程ごと(まとまりを作った依頼の工程)', () => {
+  const at = (m: number) => new Date(Date.UTC(2026, 10, 1, 10, m)).toISOString();
+  const research = PHASES.indexOf('research');
+  const implement = PHASES.indexOf('implement');
+  const turns = [
+    { startedAt: at(0), phase: research },
+    { startedAt: at(10), phase: implement },
+    { startedAt: null, phase: research },
+  ];
+
+  it('phaseAt: 開始が時刻以前の最後の依頼の工程。最初の依頼より前・時刻なしは不明', () => {
+    expect(phaseAt(at(5), turns)).toBe(research);
+    expect(phaseAt(at(10), turns)).toBe(implement);
+    expect(phaseAt(at(30), turns)).toBe(implement);
+    expect(phaseAt(new Date(Date.UTC(2026, 10, 1, 9)).toISOString(), turns)).toBe(UNKNOWN_PHASE);
+    expect(phaseAt(undefined, turns)).toBe(UNKNOWN_PHASE);
+  });
+
+  it('retentionItem が工程ごとのまとまりを数え、retentionByPhase が照合できたセッションだけを足す', () => {
+    const counts = { kept: 2, modified: 0, missing: 1, unattributable: 0 };
+    const base = { outcome: 'measured' as const, vcs: 'git' as const, baseline: { source: 'observed' as const }, counts, lines: counts };
+    const r = retentionItem({ ...base, hunks: [{ status: 'kept', at: at(1) }, { status: 'kept', at: at(12) }, { status: 'missing', at: at(13) }] }, turns);
+    expect(r.phases).toEqual([
+      [research, 1, 0, 0, 0],
+      [implement, 1, 0, 1, 0],
+    ]);
+    // 依頼の記録が無ければ工程は持たない
+    expect(retentionItem({ ...base, hunks: [{ status: 'kept', at: at(1) }] }).phases).toBeUndefined();
+    const agg = retentionByPhase([{ retention: r }, { retention: r }, { retention: { ...r, outcome: 'unattributable' } }, { retention: { ...r, phases: undefined } }]);
+    expect(agg.byPhase.get(implement)).toEqual([2, 0, 2, 0]);
+    expect(agg.withoutPhases).toBe(1);
+  });
+
+  it('comparePhaseRows: 工程どうしを依頼の単位で並べる(5 件未満の割合は —)', () => {
+    // TurnTuple: [工程, 種類, 次の種類, 実働, ツール, 失敗, 拒否, 中断, エラー, 利用上限, 圧縮, 再編集, nanoAIU, サブエージェント失敗, 編集]
+    const t = (phase: number, failures: number): TurnTuple => [phase, 0, 0, 60_000, 10, failures, 0, 0, 0, 0, 0, 0, 1e9, 0, 1];
+    const sess = (rows: TurnTuple[], ret?: RetentionItem) => ({ id: 'x', turns: rows.length, turnRows: rows, retention: ret }) as unknown as CompareSession;
+    const impl = Array.from({ length: 5 }, () => t(implement, 1));
+    const ret = { outcome: 'measured', reason: null, vcs: 'git', baseline: 'observed', on: 'local', mapped: false, hunks: [0, 0, 0, 0], lines: [0, 0, 0, 0], phases: [[implement, 4, 1, 1, 0]] } as unknown as RetentionItem;
+    const rows = comparePhaseRows([sess(impl, ret), sess([t(research, 0)])], 'implement', 'research');
+    const r = (k: string) => rows.find((x) => x.key === k)!;
+    expect(r('turns')).toMatchObject({ a: 5, b: 1 });
+    expect(r('failure')).toMatchObject({ a: 0.1, b: null });
+    expect(r('stuck')).toMatchObject({ a: 1, b: null });
+    expect(r('retention-hunks')).toMatchObject({ a: 6, b: 0 });
+    expect(r('retention-kept').a).toBe(5 / 6);
+    expect(r('retention-missing').a).toBe(1 / 6);
+    expect(r('retention-kept').b).toBeNull();
   });
 });

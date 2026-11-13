@@ -18,6 +18,7 @@ import { packSummary } from './lib/pack.ts';
 import type { JudgmentsIndex } from './lib/judgments.ts';
 import { verdictTuples, type VerdictIndex } from './lib/verdicts.ts';
 import { retentionItem } from './lib/retention.ts';
+import { PHASES, sessionTurns } from '../../core/src/turns.ts';
 import type { VcsRetentionFile } from '../../core/src/vcs-step.ts';
 import type { SessionGroup } from './lib/groups.ts';
 import { memoSummary } from './lib/memo.ts';
@@ -189,7 +190,7 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
     const base = summarize(r, anon, j?.bySession.get(r.id) ?? null);
     const vt = vx ? verdictTuples(vx.bySession.get(r.id), vx.phases) : [];
     const rt = retentionById.get(r.id);
-    const s = { ...base, ...(vt.length ? { turnVerdicts: vt } : {}), ...(rt ? { retention: retentionItem(rt) } : {}) };
+    const s = { ...base, ...(vt.length ? { turnVerdicts: vt } : {}), ...(rt ? { retention: retentionItem(rt, sessionTurns(r).map((t) => ({ startedAt: t.startedAt, phase: PHASES.indexOf(t.phase) }))) } : {}) };
     const m = memos.get(r.id);
     return m ? { ...s, memo: memoSummary(m.text, m.updatedAt) } : s;
   });

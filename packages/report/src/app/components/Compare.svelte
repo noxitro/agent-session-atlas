@@ -1,6 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { COMPARE_KIND_LABEL, COMPARE_KINDS, COMPARE_MIN_SESSIONS, compareRows, compareSide, defaultPeriods, inPeriod, type CompareKind, type CompareRow, type CompareSession } from '../../lib/compare.ts';
+  import { COMPARE_KIND_LABEL, COMPARE_KINDS, COMPARE_MIN_SESSIONS, COMPARE_MIN_TURNS, comparePhaseRows, compareRows, compareSide, defaultPeriods, inPeriod, type CompareKind, type CompareRow, type CompareSession } from '../../lib/compare.ts';
+  import { PHASE_LABEL, PHASES, type Phase } from '../../../../core/src/turns.ts';
   import { dec, int, percent } from '../../lib/format.ts';
   import type { Option } from '../../lib/filter.ts';
 
@@ -30,6 +31,9 @@
   let tagB = $state('');
   let projA = $state('');
   let projB = $state('');
+  // 工程の既定は、実装と調査(依頼の多い 2 つ)
+  let phaseA = $state<Phase>('implement');
+  let phaseB = $state<Phase>('research');
   /**
    * 選んでいる値が選択肢に無ければ(まだ選んでいない・タグの名前を変えた / 消した・空のセッションの条件で選択肢から消えた)、
    * 選び直す。A は先頭、B は A と違う最初のもの。選択肢にあるうちは、選んだ値を変えない
@@ -66,13 +70,15 @@
   }
   const a = $derived(compareSide(pick('a')));
   const b = $derived(compareSide(pick('b')));
-  const rows = $derived(compareRows(a, b).filter((r) => retention || !r.key.startsWith('retention')));
+  // 工程は依頼の単位で並べる(セッションの単位の行とは別の表になる)
+  const rows = $derived((kind === 'phase' ? comparePhaseRows(sessions, phaseA, phaseB) : compareRows(a, b)).filter((r) => retention || !r.key.startsWith('retention')));
   const sideLabel = (side: 'a' | 'b'): string => {
     if (kind === 'period') {
       const p = side === 'a' ? periodA : periodB;
       return `${p.from || '最初'}〜${p.to || '最後'}`;
     }
     if (kind === 'tag') return (side === 'a' ? tagA : tagB) || '(未選択)';
+    if (kind === 'phase') return PHASE_LABEL[side === 'a' ? phaseA : phaseB];
     const key = side === 'a' ? projA : projB;
     return projects.find((p) => p.value === key)?.label ?? '(未選択)';
   };
@@ -94,7 +100,7 @@
   }
   /** 差(B − A)。割合はポイント、件数は件数 */
   function diff(r: CompareRow): string {
-    if (r.a == null || r.b == null || r.key === 'sessions' || r.key === 'retention-measured') return '';
+    if (r.a == null || r.b == null || r.key === 'sessions' || r.key === 'turns' && kind === 'phase' || r.key === 'retention-measured' || r.key === 'retention-hunks') return '';
     const d = r.b - r.a;
     if (r.unit === 'rate') return `${d >= 0 ? '+' : '−'}${dec(Math.round(Math.abs(d) * 1000) / 10)} ポイント`;
     if (r.unit === 'minutes') return `${d >= 0 ? '+' : '−'}${dec(Math.round(Math.abs(d) / 6000) / 10)} 分`;
@@ -106,7 +112,7 @@
   <div class="section-head">
     <h2 id="compare-h">比べる</h2>
     <p>
-      2 つの条件(タスクタグ・期間・プロジェクト)のセッションを並べます。上の絞り込みには従わず、全セッション(空のセッションを含めるかの条件だけ)から選びます。セッションが {COMPARE_MIN_SESSIONS} 件未満の側の割合と、割る数(記録のあるセッション)が {COMPARE_MIN_SESSIONS} 件未満の平均は「—」です。差は相関で、条件の違いが原因とは限りません。
+      2 つの条件(タスクタグ・期間・プロジェクト・工程)を並べます。上の絞り込みには従わず、全セッション(空のセッションを含めるかの条件だけ)から選びます。セッションが {COMPARE_MIN_SESSIONS} 件未満の側の割合と、割る数(記録のあるセッション)が {COMPARE_MIN_SESSIONS} 件未満の平均は「—」です。工程は依頼(ターン)の単位で並べ、依頼かまとまりが {COMPARE_MIN_TURNS} 件未満の割合と平均を「—」にします。差は相関で、条件の違いが原因とは限りません。
     </p>
   </div>
 
@@ -135,6 +141,13 @@
               </select>
             </label>
           {/if}
+        {:else if kind === 'phase'}
+          <label>
+            <span class="sr-only">{side === 'a' ? 'A' : 'B'} の工程</span>
+            <select value={side === 'a' ? phaseA : phaseB} onchange={(e) => (side === 'a' ? (phaseA = e.currentTarget.value as Phase) : (phaseB = e.currentTarget.value as Phase))}>
+              {#each PHASES as ph (ph)}<option value={ph}>{PHASE_LABEL[ph]}</option>{/each}
+            </select>
+          </label>
         {:else}
           <label>
             <span class="sr-only">{side === 'a' ? 'A' : 'B'} のプロジェクト</span>

@@ -174,6 +174,8 @@ function hunkOf(v: unknown): HunkRetention | null {
   // 状態は行の内訳から決まる(vcs-retention.ts の classifyFile と同じ決め方)。食い違うものは使わない(まとまりと行の内訳が合わなくなるため)
   if (lines.kept + lines.modified + lines.missing + lines.unattributable === 0 || statusOfLines(lines) !== status) return null;
   const h: HunkRetention = { id, path, status, lines };
+  const at = isoOrNull(v.at);
+  if (at) h.at = at;
   if (status === 'unattributable') {
     const reason = typeof v.reason === 'string' && (UNATTRIBUTABLE_REASONS as readonly string[]).includes(v.reason) ? (v.reason as UnattributableReason) : 'read_error';
     h.reason = reason;
@@ -262,7 +264,7 @@ function notMeasured(set: AiChangeSet): SessionRetention {
     root: null,
     baseline: null,
     evaluated: null,
-    hunks: set.hunks.map((h) => ({ id: h.id, path: h.path, status: 'unattributable', reason: 'not_measured', lines: { kept: 0, modified: 0, missing: 0, unattributable: h.lines.length } })),
+    hunks: set.hunks.map((h) => ({ id: h.id, path: h.path, status: 'unattributable', reason: 'not_measured', lines: { kept: 0, modified: 0, missing: 0, unattributable: h.lines.length }, ...(h.at ? { at: h.at } : {}) })),
     excludedHunks: 0,
     counts: { kept: 0, modified: 0, missing: 0, unattributable: 0 },
     lines: { kept: 0, modified: 0, missing: 0, unattributable: 0 },
