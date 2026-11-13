@@ -4,7 +4,7 @@
 
 ```
 npm install
-npm run atlas                              # all と同じ: snapshot → extract → metrics → export(記録つき)
+npm run atlas                              # all と同じ: snapshot → extract → vcs → metrics → export(記録つき)
 npm run atlas -- build --anonymize         # 伏せ字版の HTML を作り直す(共有用)
 npm run atlas -- all --since 2026-07-01    # 7 月以降に更新されたセッションだけ
 npm run atlas -- --help                    # 使い方
@@ -17,9 +17,10 @@ npm run atlas -- --help                    # 使い方
 | `snapshot` | `~/.copilot` の必要部分(`session-store.db`、各セッションの `workspace.yaml` / `events.jsonl` / `session.db` / `plan.md` / `checkpoints/` / `files/` / `rewind-file-snapshots/` / `policies/`、直下の `plans/` / `attachments/` / `chats/` の `*.md`)を `out/snapshot/` へ複製する。`data.db`(デスクトップアプリ)は複製せず、許可リストの列だけを `desktop.json` に書く([outputs.md](outputs.md#解析用の完全出力) の「data.db」)。大きいもの(`rewind-snapshots/`、一覧に無い名前のフォルダ、`logs/`)は既定で写さず名前と容量を `snapshot-manifest.json` に残す(`--snapshot-all` で写す)。インストール済みの skill・プラグインは**名前だけ**を記録する(下記) |
 | `extract` | スナップショットから `out/sessions.json` を作る。repository の記録が無いセッションは、作業フォルダの git の設定を読んでプロジェクトを束ねる(下記) |
 | `metrics` | `out/metrics.json` と、表計算ソフトで開く表 `out/tables/turns.csv`・`sessions.csv`([outputs.md の「表(CSV)」](outputs.md#表csv))を作る。metrics.json は(全体・プロジェクト・クライアント・月・モデル別の集計。空のセッションは除き、件数を `emptySessions` に、トークンの出所別・欠測の件数を各集計の `tokenSources` / `sessionsMissingTokens` に、ツールの成否と失敗の要因別の回数を `tools.results`(要因は `causes`)、MCP サーバー別を `tools.mcp`、skill の呼んだ側を `skills.byTrigger`、agent の失敗とトークンを `agents.byNameDetail`、変更行数を `lines`、インストール済みで未使用の skill を `installedSkills`、モード・推論強度・リクエストの起点・ツール定義のトークンを `exec`、権限の結果・エラーの種別・サブエージェント失敗の理由・compaction 自体のトークンを `frictionDetail`、todo を `todos`、モデル別の待ち時間を `latency`、ツール別の所要時間を `toolDurations` に、依頼(ターン)単位の工程別・依頼の種類別の集計を `turns` に持つ) |
+| `vcs` | AI が作った変更(編集・作成で足した行)が、その後の VCS(Git / SVN / Perforce)のファイルに残っているかを照合し、`out/vcs-retention.json` に書く([outputs.md の「AI の変更の残存」](outputs.md#ai-の変更の残存vcs-の照合))。VCS は読むだけで、書き込みや同期のコマンドは呼ばない(許可リストで止める)。アップロード先から集計したときは、ディスクを読まず、送った側の PC が照合して添えた結果を読む。`all` にも入る(失敗しても止めない) |
 | `build` | `out/atlas.html` と `out/sessions/<id>.html`(セッション詳細)を作る |
 | `export` | `build` に加えて、各セッションの記録(経過・消費)を `out/sessions/<id>.md` に書く。LLM での振り返り用(共有するなら `--anonymize` の記録を中身を確かめてから。[outputs.md の「セッション記録」](outputs.md#セッション記録markdown))。指示文と skill の閲覧ページ `out/instructions.html` も作る。`--full` で解析用の全文記録([outputs.md](outputs.md#解析用の完全出力))。LLM は呼ばない |
-| `all` | `snapshot` → `extract` → `metrics` → `export` を順に実行する(コマンド省略時の既定)。`--anonymize` のときは記録を作らず `build` にする(記録の伏せ字は HTML より弱いため) |
+| `all` | `snapshot` → `extract` → `vcs` → `metrics` → `export` を順に実行する(コマンド省略時の既定)。`--anonymize` のときは記録を作らず `build` にする(記録の伏せ字は HTML より弱いため) |
 | `bundle` | LLM に工数を判定させる評価バンドル `out/bundle/` を作る(LLM は呼ばない)。ZIP を渡せない相手用に、指示とパケット数件を 1 ファイルにまとめた `out/bundle/parts/part-<番号>.md` も書く |
 | `judge run` | バンドルの各セッションを LLM で判定し `out/judgments.json` に追記する(**クレジットを消費します**) |
 | `judge import <ファイル>` | 外部の LLM で作った判定(JSON か、JSON を含む Markdown)を検証して `out/judgments.json` に取り込む |
@@ -55,7 +56,8 @@ npm run atlas -- --help                    # 使い方
 | `--snapshot-all` | `snapshot` / `all` / `export` で、既定で写さない大きなもの(`rewind-snapshots/`、一覧に無い名前のフォルダ、`logs/`)も写す |
 | `--snapshot-prune` | `snapshot` / `all` / `export` で、前回 `--snapshot-all` で写したが今回は写さないものを消す(既定は残して `snapshot-manifest.json` の `extras.leftover` とログに日時を出す) |
 | `--temp-dir <dir>` | `extract` で、このフォルダ配下を「(一時フォルダ)」にまとめる(複数指定可)。指定すると既定の判定(`%TEMP%` と `AppData\Local\Temp`・`/tmp` のパターン)を使わず、挙げたフォルダだけを一時フォルダとみなす。このリポジトリ自体を一時フォルダ配下に置いて試すときや、別のマシンのデータを読むとき用 |
-| `--config <file>` | `extract`・`all`・`serve`・`open`・`group upload` で読む設定ファイル(既定: 環境変数 `ATLAS_CONFIG`、無ければリポジトリ直下の `atlas.config.json`。下記「[wiki の指定](#wiki-の指定)」と「[アップロード先の指定](#アップロード先の指定)」)。`serve` は画面で決めたアップロード先をこのファイルに書く |
+| `--config <file>` | `extract`・`vcs`・`all`・`serve`・`open`・`group upload` で読む設定ファイル(既定: 環境変数 `ATLAS_CONFIG`、無ければリポジトリ直下の `atlas.config.json`。下記「[wiki の指定](#wiki-の指定)」と「[アップロード先の指定](#アップロード先の指定)」)。`serve` は画面で決めたアップロード先をこのファイルに書く |
+| `--vcs-mode <v>` | `vcs` / `all` で、比べる版をどこで見るか。`worktree`(既定。照合した時点の作業ツリーで、まだ取り込んでいない変更も含む)/ `committed`(最後に取り込んだ版。git は HEAD、svn は BASE、p4 は手元の版)。設定の `vcs.mode` より優先する |
 | `--to <dir>` | `group upload` で、アップロード先の基底フォルダ(フルパス)。省略すると設定の `uploadRoot` |
 
 `judge run` 専用のオプション(`--backend` `--limit` `--only` `--concurrency` `--force` `--no-allow-tools` `--timeout`)は [judge.md](judge.md) を見てください。`judge run` では `--model` は判定に使うモデルの指定になります。
@@ -97,12 +99,14 @@ npm run atlas -- open --pick                          # フォルダを選ぶ画
   ```
   out-folders/<キー>/folder.json   開いたフォルダと、今の状態(集計中・表示中・失敗)。画面の「開いたことのあるフォルダ」はこれを読む
   out-folders/<キー>/open.log      画面から開いたときの、集計の出力(進み具合と失敗の理由)
+  out-folders/<キー>/built.json    前に集計したときの入力の印(何も変わっていなければ、作り直さずにそのときのレポートを使う)
   out-folders/<キー>/out/          集計の出力先(atlas.html など。いつもの out/ と同じ中身)
   atlas-notes/folders/<キー>/      そのフォルダの画面のメモの置き場(読むだけなので、今は書きません。前の版で書いたものは残ります)
   ```
 
-- **開くたびに集計し直します**。そのフォルダのサーバがもう動いていれば、集計し直さずに、その画面をブラウザで開くだけにします(`serve` と同じ)。同じ出力先に書く処理が動いている間は、始めずに理由を出します。
-- **使えるオプション**: `--pick` `--port` `--no-open` `--config`、絞り込み(`--since` `--project` など。集計にそのまま渡します)、`--snapshot-all` `--snapshot-prune`。`--home`(開くフォルダは `open` の後ろに書きます)・`--judgments`・`--bundle`・`--anonymize` は使えません。
+- **開くたびにフォルダを読み直し、変わっていたところだけ作り直します**。元のフォルダから手元へ写すところ(snapshot)は毎回行います(元が変わったかは、写してみないと分かりません。変わっていないファイルは写し直しません)。その後の extract・metrics・build は、前に集計したときから何も変わっていなければ省き、そのときのレポートをそのまま開きます(ログに「そのときのレポートを使います」と出ます)。作り直すのは、次のどれかが変わったときです: 写した複製(ファイルの名前・大きさ・更新日時)、`open` に渡した絞り込み、設定ファイル、atlas のコード、判定(`judgments.json`・`turn-judgments.json`)。レポート(`atlas.html`・`sessions.json`・`metrics.json`・`vcs-retention.json`)が前に集計したときのままでないとき(開いた画面で「集計し直す」や判定を動かした後など)も作り直します。必ず作り直したいときは `--rebuild` を付けるか、開いた画面で「集計し直す」を押します。使い回すのは、アップロードしたフォルダ(送った側が添えた記録だけで集計が決まるもの)だけです。`~/.copilot` の形のフォルダは、この PC のディスク(作業フォルダの VCS の状態など)も読んで集計するので、いつも作り直します。
+- そのフォルダのサーバがもう動いていれば、読み直さずに、その画面をブラウザで開くだけにします(`serve` と同じ)。同じ出力先に書く処理が動いている間は、始めずに理由を出します。
+- **使えるオプション**: `--pick` `--rebuild` `--port` `--no-open` `--config`、絞り込み(`--since` `--project` など。集計にそのまま渡します)、`--snapshot-all` `--snapshot-prune`。`--home`(開くフォルダは `open` の後ろに書きます)・`--judgments`・`--bundle`・`--anonymize` は使えません。
 - **開いた画面で「集計し直す」を押すと、同じフォルダを読み直します**(`open` に渡した絞り込みは引き継ぎません。`serve` と同じ)。
 - 開いたフォルダは `atlas.config.json` には書きません(覚えるのは `folder.json` だけ)。
 
@@ -167,6 +171,27 @@ llm-wiki の参照は、ツール呼び出しの引数に vault の場所が現�
 ```
 
 無いか空なら、bat はその場で番号を選ぶ形になります。今の集計に無い名前は送らずに知らせ、ここに無いプロジェクトは送らずに、最近更新したものの名前を出します。
+
+## VCS の照合の指定
+
+`atlas vcs`(と `all`)は、ログに残る作業フォルダのリポジトリを読みます。リポジトリを別の場所へ移した・ドライブを変えたときは、ログのパスでは見つからず「作業フォルダがこの PC に無い」になります。設定ファイルの `vcs.pathMap` で、ログのパス(`from`)を今の場所(`to`)に読み替えられます。
+
+```json
+{
+  "vcs": {
+    "pathMap": [
+      { "from": "D:\\work\\old-repo", "to": "E:\\dev\\repo" }
+    ],
+    "mode": "worktree"
+  }
+}
+```
+
+- `from` と `to` はフルパスです。前方一致で、フォルダ名の途中では切りません(`D:\work\old-repo2` は当たらない)。Windows のパスは大文字小文字と `/` `\` の違いを無視します。JSON の中では `\` を `\\` と書きます。複数当たるときは長い `from` を使います。
+- 読み替えたセッションは、レポートと表に「パスを読み替え」と出ます。開始時のコミット(ログの `headCommit`)はそのまま使うので、移す前と同じリポジトリ(同じ履歴)を指してください。
+- `mode` は比べる版の見方で、`--vcs-mode` と同じ値です(省略時は `worktree`)。
+- `labels` で状態の名前(`kept` / `modified` / `missing` / `unattributable`)を差し替えられます。表の列名・画面・詳細ページに使います(40 文字まで)。`note` は画面の「AI の変更の残存」の節の説明に足す一文です(1000 文字まで)。どちらも `atlas vcs` の結果(`vcs-retention.json`)に入るので、変えたら `atlas vcs`(か `atlas.bat`)で照合し直します。チームの決まりや言葉づかいは、リポジトリに入れずにここ(未追跡の設定ファイル)に置けます。
+- 書き間違い(知らない項目・相対パス)は、照合が 0 件になって気付きにくいので、エラーで止めます。
 
 ## 判定に使うモデルの指定
 

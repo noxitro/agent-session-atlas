@@ -1,10 +1,10 @@
 // atlas の各コマンド。元データ(~/.copilot)は core の snapshot 経由でだけ読む(コピーしてから開く)。
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join, posix, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { codeStamp, computeMetrics, describeSource, extract, METRICS_SCHEMA_VERSION, removeTree, snapshot, UPLOAD_OLD_ONLY_REASON, UPLOAD_PROBE_HINT, uploadWorkDirId, type MetricsFile, type SessionRecord, type SessionsFile, type SnapshotManifest } from '../../core/src/index.ts';
+import { codeStamp, computeMetrics, describeSource, extract, readSnapshotManifest, METRICS_SCHEMA_VERSION, readVcsRetention, removeTree, runVcsStep, snapshot, VCS_RETENTION_FILE, RETENTION_STATUS_LABEL, UNATTRIBUTABLE_REASON_LABEL, type VcsRetentionFile, UPLOAD_OLD_ONLY_REASON, UPLOAD_PROBE_HINT, uploadWorkDirId, type MetricsFile, type SessionRecord, type SessionsFile, type SnapshotManifest } from '../../core/src/index.ts';
 import {
   buildReport,
   DEFAULT_TRANSCRIPT_OPTIONS,
@@ -54,8 +54,9 @@ import type { CliOptions, GroupCliOptions, JudgeCliOptions, MemoCliOptions, Turn
 import { findRunningServer, openInBrowser, startServe, type ServeOptions } from './serve.ts';
 import { acquireOutLock, OutBusyError } from './jobs.ts';
 import { pickFolder } from './folder-picker.ts';
+import { canReuse, clearBuilt, inputsKey, readBuilt, writeBuilt } from './open-reuse.ts';
 import { checkFolder, folderPaths, foldersRootOf, isReadOnlyView, listFolderStates, readFolderState, writeFolderState, type FolderRun, type FolderState } from './folders.ts';
-import { buildTables } from './tables.ts';
+import { buildTables, SQLITE_FILE, writeSqlite } from './tables.ts';
 import { exportGroup } from './group-export.ts';
 import { CONFIG_FILE, loadConfig, parseUploadRoot, phaseNames, resolveJudgeModel } from './config.ts';
 import { checkUpload, uploadGroup } from './group-upload.ts';
@@ -77,6 +78,8 @@ export interface Paths {
   /** 依頼ごとの判定(段階 2)の結果と、判定に渡すファイル */
   turnJudgments: string;
   turnBundle: string;
+  /** AI の変更がその後の VCS のファイルに残っているか(atlas vcs) */
+  vcsRetention: string;
   html: string;
   /** メモとグループの置き場(既定はリポジトリ直下の atlas-notes/。out/ ではなくユーザーが管理するもの) */
   notes: string;
@@ -97,6 +100,7 @@ export function resolvePaths(o: Pick<CliOptions, 'home' | 'out' | 'judgments'> &
     bundle: o.bundle ? resolve(o.bundle) : join(out, 'bundle'),
     turnJudgments: join(out, 'turn-judgments.json'),
     turnBundle: join(out, 'turn-bundle'),
+    vcsRetention: join(out, VCS_RETENTION_FILE),
     html: join(out, 'atlas.html'),
     notes,
     groups: join(notes, GROUPS_FILE_NAME),
@@ -312,6 +316,33 @@ async function selectSessions(p: Paths, f: SessionFilter, cmd: string, hint: str
   return { file, sessions, groups };
 }
 
+/**
+ * vcs: AI が作った変更が、その後の VCS のファイルに残っているかを照合し、out/vcs-retention.json に書く。
+ * VCS は読むだけ。アップロード先から集計したときは、送った側の PC の結果(セッションのフォルダの atlas-vcs.json)を読む
+ */
+export async function runVcs(p: Paths, log: Log, o: { mode?: 'worktree' | 'committed' | null; config?: string | null } = {}): Promise<VcsRetentionFile> {
+  if (!existsSync(p.snapshot)) throw new Error(`スナップショットがありません: ${p.snapshot}。先に atlas snapshot(または atlas all)を実行してください。`);
+  const t = performance.now();
+  const configPath = o.config ?? process.env.ATLAS_CONFIG ?? null;
+  const cfg = await loadConfig(configPath ? resolve(configPath) : join(REPO_ROOT, CONFIG_FILE), configPath != null);
+  const mode = o.mode ?? cfg.vcs?.mode ?? 'worktree';
+  // 状態の名前と節の一文は、設定(atlas.config.json の vcs.labels・vcs.note)で差し替えたものを結果に入れる(表と画面はそれを使う)
+  const r = { ...(await runVcsStep(p.snapshot, { mode, pathMap: cfg.vcs?.pathMap ?? [] })), ...(cfg.vcs?.labels ? { labels: cfg.vcs.labels } : {}), ...(cfg.vcs?.note ? { note: cfg.vcs.note } : {}) };
+  await mkdir(p.out, { recursive: true });
+  await writeFile(p.vcsRetention, JSON.stringify(r, null, 2));
+  const s = r.summary;
+  const reasons = Object.entries(s.unattributable)
+    .sort((a, b) => b[1] - a[1])
+    .map(([k, n]) => `${UNATTRIBUTABLE_REASON_LABEL[k as keyof typeof UNATTRIBUTABLE_REASON_LABEL] ?? k} ${n}`)
+    .join('、');
+  log(
+    `vcs: AI の変更があったセッション ${s.withAiChanges} / ${s.sessions} 件、照合できた ${s.measured} 件(基準を推定 ${s.baselineEstimated} 件)${reasons ? `、照合不可 ${reasons}` : ''}` +
+      `(${r.computedOn === 'sender' ? `送った側の PC の結果を読んだ${r.senders ? ` ${r.senders.sessions} 件、照合 ${r.senders.from ?? '不明'}〜${r.senders.to ?? '不明'}` : '(添えた結果なし)'}` : `比べる版: ${mode === 'worktree' ? '今の作業ツリー' : '最後に取り込んだ版'}`}${r.pathMap ? `、パスの読み替え ${r.pathMap} 件` : ''}、${ms(performance.now() - t)})→ ${p.vcsRetention}`,
+  );
+  if (s.measured) log(`vcs: 変更のまとまり ${(['kept', 'modified', 'missing', 'unattributable'] as const).map((k) => `${r.labels?.[k] ?? RETENTION_STATUS_LABEL[k]} ${s.hunks[k]}`).join('、')}`);
+  return r;
+}
+
 /** tables: out/tables/ に表も書く(伏せ字版の all では書かない。依頼文とパスがそのまま入るため) */
 export async function runMetrics(p: Paths, f: SessionFilter, log: Log, o: { tables?: boolean } = {}): Promise<MetricsFile> {
   const { file: s, sessions } = await selectSessions(p, f, 'metrics', '先に atlas extract を実行してください。', log);
@@ -336,7 +367,17 @@ async function writeTables(p: Paths, sessions: SessionRecord[], cmd: string, log
   for (const w of t.warnings) log(`${cmd}: 注意 ${w}`);
   await writeFile(join(tables, 'turns.csv'), t.turns);
   await writeFile(join(tables, 'sessions.csv'), t.sessions);
-  log(`${cmd}: 表 → ${join(tables, 'turns.csv')}・sessions.csv${t.withVerdicts ? '(依頼ごとの判定の列つき)' : ''}`);
+  // 照合の結果が無くなったとき(vcs が失敗した等)は、前の vcs-hunks.csv を残さない
+  if (t.vcsHunks != null) await writeFile(join(tables, 'vcs-hunks.csv'), t.vcsHunks);
+  else await rm(join(tables, 'vcs-hunks.csv'), { force: true });
+  let sqlite = '';
+  try {
+    await writeSqlite(join(tables, SQLITE_FILE), t.data);
+    sqlite = `・${SQLITE_FILE}`;
+  } catch (e) {
+    log(`${cmd}: 注意 ${SQLITE_FILE} を書けませんでした(${(e as Error).message})。CSV は書きました`);
+  }
+  log(`${cmd}: 表 → ${join(tables, 'turns.csv')}・sessions.csv${t.vcsHunks != null ? '・vcs-hunks.csv' : ''}${sqlite}${t.withVerdicts ? '(依頼ごとの判定の列つき)' : ''}${t.withRetention ? '(VCS の照合の列つき)' : ''}`);
 }
 
 export interface BuildOptions extends SessionFilter {
@@ -377,6 +418,10 @@ export async function runBuild(p: Paths, o: BuildOptions, log: Log): Promise<Bui
     if (verdicts) log(`build: 依頼ごとの判定 ${[...verdicts.bySession.values()].reduce((a, m) => a + m.size, 0)} 件を合成(${p.turnJudgments})`);
   }
 
+  const retention = await readVcsRetention(p.vcsRetention);
+  if (retention) log(`build: VCS の照合 ${retention.sessions.length} 件を合成(${p.vcsRetention}、照合 ${retention.generatedAt})`);
+  else if (existsSync(p.vcsRetention)) log(`build: 注意 ${p.vcsRetention} を読めないため、AI の変更の残存は出しません(atlas vcs で作り直せます)`);
+
   // 伏せ字版では表を書かない(依頼文とパスがそのまま入るため)。前に書いた表も、共有用の out/ に残さないよう消す(out/full/ と同じ扱い)
   if (!o.anonymize) await writeTables(p, sessions, o.transcripts ? 'export' : 'build', log);
   else if (existsSync(join(p.out, 'tables'))) {
@@ -397,6 +442,7 @@ export async function runBuild(p: Paths, o: BuildOptions, log: Log): Promise<Bui
     warnings: { unknownEventTypes: unknown, badLines: s.warnings.badLines, notes: groups.warnings },
     judgments,
     verdicts,
+    retention,
     // 読むだけの画面(送り先から集計した・別のフォルダを開いた)は、送った人が付けていたタスクタグ(人ごと)とメモを出す。
     // この PC の置き場(groups.json・memos/)のものは混ぜない。判定はサーバと同じ isReadOnlyView
     ...(isReadOnlyView(p.out, s.source)
@@ -757,7 +803,7 @@ export async function runOpen(o: CliOptions, log: Log, deps: { pick?: typeof pic
     const release = acquireOutLock(p.out, 'all', 'cli');
     try {
       save({ state: 'aggregating', pid: process.pid, at: at() }, true);
-      build = (await runCommand({ ...o, command: 'all', home: info.path, out: fp.out, notesDir: fp.notes }, p, log)).build;
+      build = await runAllOrReuse({ ...o, command: 'all', home: info.path, out: fp.out, notesDir: fp.notes }, p, fp.built, log);
     } finally {
       release();
     }
@@ -769,6 +815,54 @@ export async function runOpen(o: CliOptions, log: Log, deps: { pick?: typeof pic
     throw e;
   }
   return { paths: p, build };
+}
+
+/**
+ * open の集計: 共有フォルダから写した後、前に集計したときから何も変わっていなければ(open-reuse.ts)、作り直さずにそのときのレポートを使う。
+ * 使い回したときは build を返さない(レポートは前のまま)
+ */
+async function runAllOrReuse(o: CliOptions, p: Paths, builtFile: string, log: Log): Promise<BuildResult | undefined> {
+  const t = performance.now();
+  await runSnapshot(p, o.since, log, o.snapshotAll, o.snapshotPrune);
+  const configPath = o.config ?? process.env.ATLAS_CONFIG ?? null;
+  const key = inputsKey(
+    p,
+    { since: o.since, project: o.project, client: o.client, model: o.model, branch: o.branch, group: o.group, sessions: o.sessions, anonymize: o.anonymize, toolOutput: o.toolOutput, maxChars: o.maxChars, tempDirs: o.tempDirs, vcsMode: o.vcsMode },
+    configPath ? resolve(configPath) : join(REPO_ROOT, CONFIG_FILE),
+  );
+  const prev = readBuilt(builtFile);
+  // 使い回すのは、アップロードしたフォルダ(送った側が添えた記録だけで集計が決まる)のときだけ。~/.copilot の形のフォルダは、
+  // この PC のディスク(作業フォルダの VCS の状態など)も読んで集計するので、写した複製が同じでも結果が変わりうる
+  const layout = (await readSnapshotManifest(p.snapshot))?.layout;
+  const uploaded = layout === 'flat' || layout === 'merged';
+  if (uploaded && !o.rebuild && canReuse(prev, key, p.out)) {
+    log(`open: 前に集計したとき(${new Date(prev.builtAt).toLocaleString('ja-JP')})から、フォルダの中身も atlas も変わっていないので、そのときのレポートを使います(作り直すときは --rebuild か、画面の「集計し直す」)、${ms(performance.now() - t)}`);
+    return undefined;
+  }
+  clearBuilt(builtFile);
+  const build = await runAllAfterSnapshot(o, p, log, t);
+  if (uploaded) writeBuilt(builtFile, key, p.out);
+  return build;
+}
+
+/** all の、snapshot の後(extract → vcs → metrics → build)。t は all を始めた時刻 */
+async function runAllAfterSnapshot(o: CliOptions, p: Paths, log: Log, t: number): Promise<BuildResult> {
+  const f: SessionFilter = { since: o.since, project: o.project, client: o.client, model: o.model, branch: o.branch, group: o.group, sessions: o.sessions };
+  await runExtract(p, o.since, log, o.tempDirs, o.config);
+  // 照合は集計の補足なので、失敗しても止めない(前の結果は使わないよう消す)
+  try {
+    await runVcs(p, log, { mode: o.vcsMode, config: o.config });
+  } catch (e) {
+    await rm(p.vcsRetention, { force: true });
+    log(`vcs: 注意 照合できませんでした(${(e as Error).message})。レポートの「AI の変更の残存」は出しません`);
+  }
+  await runMetrics(p, f, log, { tables: !o.anonymize });
+  // セッション記録(.md)も作る(build と export で作るものが違うと、どちらで作ったかで経過が見えたり消えたりするため)。
+  // 伏せ字版は作らない: 記録の伏せ字は自由記述を機械的に置き換えるだけで、共有する sessions/ に HTML より弱い保証のものが混ざる
+  const build = await runBuild(p, { ...f, anonymize: o.anonymize, transcripts: o.anonymize ? null : { toolOutput: o.toolOutput, maxChars: o.maxChars } }, log);
+  if (o.anonymize) log('all: 伏せ字版なのでセッション記録(.md)は作りません(必要なら atlas export --anonymize)');
+  log(`all: 完了 ${ms(performance.now() - t)}`);
+  return build;
 }
 
 export async function run(o: CliOptions, log: Log): Promise<RunResult> {
@@ -810,6 +904,9 @@ async function runCommand(o: CliOptions, p: Paths, log: Log): Promise<RunResult>
     case 'metrics':
       await runMetrics(p, f, log);
       return { paths: p };
+    case 'vcs':
+      await runVcs(p, log, { mode: o.vcsMode, config: o.config });
+      return { paths: p };
     case 'build':
       return { paths: p, build: await runBuild(p, { ...f, anonymize: o.anonymize }, log) };
     case 'export':
@@ -840,14 +937,7 @@ async function runCommand(o: CliOptions, p: Paths, log: Log): Promise<RunResult>
       return runOpen(o, log);
     case 'all': {
       await runSnapshot(p, o.since, log, o.snapshotAll, o.snapshotPrune);
-      await runExtract(p, o.since, log, o.tempDirs, o.config);
-      await runMetrics(p, f, log, { tables: !o.anonymize });
-      // セッション記録(.md)も作る(build と export で作るものが違うと、どちらで作ったかで経過が見えたり消えたりするため)。
-      // 伏せ字版は作らない: 記録の伏せ字は自由記述を機械的に置き換えるだけで、共有する sessions/ に HTML より弱い保証のものが混ざる
-      const build = await runBuild(p, { ...f, anonymize: o.anonymize, transcripts: o.anonymize ? null : { toolOutput: o.toolOutput, maxChars: o.maxChars } }, log);
-      if (o.anonymize) log('all: 伏せ字版なのでセッション記録(.md)は作りません(必要なら atlas export --anonymize)');
-      log(`all: 完了 ${ms(performance.now() - t)}`);
-      return { paths: p, build };
+      return { paths: p, build: await runAllAfterSnapshot(o, p, log, t) };
     }
   }
 }

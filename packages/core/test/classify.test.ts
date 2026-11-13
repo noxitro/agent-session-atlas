@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { FileTracker, isMainAssistantMessage, isUserTurn, normalizeModel, resolveFilePath } from '../src/classify.ts';
+import { FileTracker, isMainAssistantMessage, isUserTurn, normalizeModel, relativeInside, resolveFilePath } from '../src/classify.ts';
 import { computeMetrics } from '../src/metrics.ts';
 import { normalizeSession } from '../src/normalize.ts';
 
@@ -115,5 +115,20 @@ describe('normalizeSession(Phase 5 の形式)', () => {
     expect(Object.keys(r.tokens.byModel)).toEqual(['claude-sonnet-5.5']);
     expect(r.tokens.byModel['claude-sonnet-5.5']).toMatchObject({ input: 15, output: 3, requests: 3, premiumRequests: 1 });
     expect(r.models).toEqual(['claude-sonnet-5.5']);
+  });
+});
+
+describe('relativeInside', () => {
+  it('root の中のパスだけ相対にする。Windows のパスは大文字小文字と区切りの違いを無視する', () => {
+    const w = (s: string) => s.replace(/\//g, '\\');
+    expect(relativeInside(w('X:/zz/repo'), 'x:/ZZ/repo/src/a.ts')).toBe('src/a.ts');
+    expect(relativeInside(w('X:/zz/repo/'), w('X:/zz/repo/a.ts'))).toBe('a.ts');
+    expect(relativeInside(w('X:/zz/repo'), w('X:/zz/repo2/a.ts'))).toBeNull();
+    expect(relativeInside(w('X:/zz/repo'), w('X:/zz/repo'))).toBeNull();
+    expect(relativeInside(w('X:/zz/repo'), w('Y:/zz/repo/a.ts'))).toBeNull();
+    // POSIX は大文字小文字を区別する。..で始まる名前のファイルは中のもの
+    expect(relativeInside('/srv/repo', '/srv/repo/..cfg')).toBe('..cfg');
+    expect(relativeInside('/srv/repo', '/srv/Repo/a.ts')).toBeNull();
+    expect(relativeInside('/srv/repo', '/srv/other/a.ts')).toBeNull();
   });
 });

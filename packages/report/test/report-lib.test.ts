@@ -541,6 +541,8 @@ describe('glossary', () => {
     const html = renderGlossaryHtml({ css: '', generatedAt: '2026-11-01T00:00:00Z' });
     for (const g of GLOSSARY_GROUPS) expect(html).toContain(`<h2 id="h-${g.id}">${g.title}</h2>`);
     for (const t of GLOSSARY) expect(html).toContain(`<dt id="${t.id}">`);
+    // 語は自分へのリンクにしない(押しても同じ場所に留まるだけ)
+    expect(html).not.toMatch(/<dt id="[^"]+"><a /);
     const toc = html.match(/<nav class="toc"[\s\S]*?<\/nav>/)?.[0] ?? '';
     expect(toc.match(/<li>/g)?.length).toBe(GLOSSARY_GROUPS.length);
     // 目次の帯は詳細ページと同じ作法(戻る → 目次 → 配色)で、上部の帯にも戻るがある

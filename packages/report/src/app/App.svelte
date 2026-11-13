@@ -11,6 +11,8 @@
   import FilterBar from './components/FilterBar.svelte';
   import Overview from './components/Overview.svelte';
   import JudgmentPanel from './components/JudgmentPanel.svelte';
+  import Retention from './components/Retention.svelte';
+  import Compare from './components/Compare.svelte';
   import ProjectTable from './components/ProjectTable.svelte';
   import UsageRanking from './components/UsageRanking.svelte';
   import Highlights from './components/Highlights.svelte';
@@ -412,6 +414,8 @@
         { id: 'phases', label: '工程と詰まり' },
         { id: 'detail', label: '集計明細' },
         ...(judged ? [{ id: 'judgments', label: 'AI 投入量 vs 推定人手工数' }] : []),
+        ...(data?.retention ? [{ id: 'retention', label: 'AI の変更の残存' }] : []),
+        { id: 'compare', label: '比べる' },
       ],
     },
     {
@@ -644,6 +648,8 @@
         <TurnPhases agg={turnAgg} verdicts={verdictAgg} verdictModel={data.turnJudgments?.model ?? null} verdictRanAt={data.turnJudgments?.ranAt ?? null} {editable} anonymized={data.anonymized} />
         <Overview part="detail" {agg} {judged} anonymized={data.anonymized} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} {emptyInFilter} />
         {#if judged}<JudgmentPanel {agg} meta={data.judgments} />{/if}
+        {#if data.retention}<Retention sessions={filtered} meta={data.retention} />{/if}
+        <Compare sessions={scoped} groups={groupOptions} projects={options.project} lastAt={all.overall.lastAt} retention={!!data.retention} />
         <UsageRanking usage={agg.usage} {installed} bind:tab={usageTab} />
         <ExecProfile exec={agg.exec} sessions={filtered.length} />
         <!-- 人別は、送り先(<人>/<プロジェクト>)をまとめて集計したレポートだけ -->

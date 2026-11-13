@@ -4,6 +4,7 @@
 import type { FailureCauses } from '../../../core/src/tool-failure.ts';
 import type { LineChanges, MetricsFile, ProjectSource, TodoSummary, TokenSource } from '../../../core/src/types.ts';
 import type { MemoSummary } from './memo.ts';
+import type { RetentionItem, RetentionMeta } from './retention.ts';
 import type { TurnTuple } from './turns.ts';
 import type { VerdictTuple } from './verdicts.ts';
 
@@ -17,7 +18,8 @@ import type { VerdictTuple } from './verdicts.ts';
 // 9: turnRows(依頼単位の分析の段階 1)
 // 10: person(送り先が人ごとに分けてあるときの、人ごとの内訳)
 // 11: tools.causes(ツールの失敗の要因別の回数)
-export const REPORT_DATA_VERSION = 11;
+// 12: retention(AI の変更がその後の VCS のファイルに残っているか。atlas vcs の結果)
+export const REPORT_DATA_VERSION = 12;
 
 /** 推論強度別の [リクエスト, 入力, 出力, nano AIU] */
 export type EffortTuple = [requests: number, input: number, output: number, nanoAiu: number];
@@ -194,6 +196,8 @@ export interface SessionSummary {
   /** 詳細ページへの相対リンク */
   href: string;
   judgment: JudgmentSummary | null;
+  /** AI の変更がその後の VCS のファイルに残っているか(atlas vcs の結果)。照合していないセッション・古い埋め込みには無い */
+  retention?: RetentionItem;
 }
 
 export interface ReportData {
@@ -216,6 +220,8 @@ export interface ReportData {
   judgments: { available: boolean; backend: string | null; model: string | null; ranAt: string | null; items: number };
   /** 段階 2: 依頼ごとの LLM 判定(turn-judgments.json)。phases は判定に使った普段の工程名(VerdictTuple の工程の番号の先)。古い埋め込みには無い */
   turnJudgments?: { available: boolean; model: string | null; ranAt: string | null; items: number; phases: string[] };
+  /** AI の変更がその後の VCS のファイルに残っているかを照合した条件(atlas vcs)。照合していなければ null。古い埋め込みには無い */
+  retention?: RetentionMeta | null;
   /** インストール済みの skill(snapshot で名前だけ記録)。記録が無ければ null */
   installed: { skills: string[]; disabled: string[] } | null;
   /** 人のフォルダの名前ごとのインストール済みの skill(送り先の全体を集計したとき。伏せ字版と古い埋め込みには無い) */

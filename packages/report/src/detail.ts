@@ -16,6 +16,9 @@ import { backendLabel, categoryLabel, confidenceLabel, effectLabel } from './lib
 import { followedByFix, isStuck, MISMATCH_LABEL, OUTCOME_LABEL, PHASE_LABEL, REQUEST_KIND_LABEL, sessionTurns } from '../../core/src/turns.ts';
 import type { JudgmentSummary } from './lib/types.ts';
 import type { TurnVerdict } from './lib/verdicts.ts';
+import type { SessionRetention } from '../../core/src/vcs-retention.ts';
+import { MODE_LABEL, placeLabel, REASON_LABEL, STATUS_LABEL, STATUSES, VCS_LABEL, type RetentionMeta } from './lib/retention.ts';
+import { relativeInside } from '../../core/src/classify.ts';
 
 /** HTML エスケープ。外部参照の静的検査(http:// / fetch( の不在)を本文中の文字列で誤検出しないよう、:// と fetch( も実体参照にする */
 export function esc(s: unknown): string {
@@ -305,6 +308,52 @@ function judgmentSection(j: JudgmentSummary, activeMs: number | null): string {
   return section('LLM による判定(推定)', `${fields}${summary}${rationale}`, '人が AI なしで同じ成果を出す場合の工数を LLM に推定させた値です。実測ではありません。');
 }
 
+/**
+ * AI の変更がその後の VCS のファイルに残っているか(atlas vcs の結果)。まとまりごとの状態の表を付ける。
+ * 伏せ字版ではパスを出さない(まとまりの番号と状態だけ)
+ */
+function retentionSection(r: SessionRetention, meta: RetentionMeta | null, anon: Anonymizer): string {
+  // 状態の名前は、設定(vcs.labels)で差し替えたものがあればそれ。節の一文(vcs.note)も足す
+  const L = { ...STATUS_LABEL, ...(meta?.labels ?? {}) };
+  const lead = esc(`AI が足した行が、その後の VCS のファイルに残っているかを数えます。${meta?.note ?? ''}`);
+  if (r.outcome === 'no_ai_changes') return section('AI の変更の残存(VCS)', '<p class="note">このセッションには、数える AI の変更(編集・作成で足した行)がありません。</p>', lead);
+  const measuredHunks = r.counts.kept + r.counts.modified + r.counts.missing;
+  const where = r.computedOn ? `${placeLabel(r.computedOn)}で照合` : placeLabel(r.computedOn);
+  const baseline = r.baseline ? `${r.baseline.source === 'observed' ? '記録(ログに残った開始時の版)' : '推定(開始時刻から VCS の履歴で探した版)'}` : '';
+  const fields = `<div class="fields" style="--cols:4">${[
+    field(
+      '照合の結果',
+      r.outcome === 'measured' ? '照合できた' : esc(L.unattributable),
+      r.outcome === 'unattributable' && r.reason ? esc(REASON_LABEL[r.reason]) : `照合できたまとまり ${esc(int(measuredHunks))} / ${esc(int(r.hunks.length))}`,
+    ),
+    field('VCS', r.vcs ? esc(VCS_LABEL[r.vcs]) : missing('不明'), `${esc(where)}${r.pathMapped ? '・パスを設定で読み替え' : ''}`),
+    field('開始時の基準', r.baseline ? esc(r.baseline.source === 'observed' ? '記録' : '推定') : missing('なし'), baseline ? esc(baseline) : ''),
+    field(
+      '比べる版',
+      r.evaluated ? esc(MODE_LABEL[r.evaluated.mode]) : missing('なし'),
+      // 照合した日時は照合した側のもの。送った側の結果に日時が無ければ、この PC で集計した日時で埋めない
+      r.evaluated ? `照合 ${esc(dateTime(r.evaluated.at || (r.computedOn === 'local' ? meta?.generatedAt : null) || null))}` : '',
+    ),
+  ].join('')}</div>`;
+  const counts = `<div class="table-scroll"><table class="ledger"><thead><tr><th scope="col">状態</th><th scope="col" class="num">まとまり</th><th scope="col" class="num">行</th></tr></thead><tbody>${STATUSES.map(
+    (k) => `<tr><th scope="row">${esc(L[k])}</th><td class="num">${esc(int(r.counts[k]))}</td><td class="num">${esc(int(r.lines[k]))}</td></tr>`,
+  ).join('')}</tbody></table></div>`;
+  // リポジトリの中のファイルは、リポジトリからの相対パスで出す(長い絶対パスで表が読めなくならないように)。照合と同じ relativeInside で決める
+  const root = r.root;
+  const rel = (p: string): string => (root ? relativeInside(root, p) : null) ?? p;
+  const rows = r.hunks
+    .map((h) => {
+      const path = anon.path(rel(h.path));
+      return `<tr><td class="num">${esc(int(h.id))}</td><td>${path ? `<code>${esc(path)}</code>` : missing('伏せ字')}</td><td class="st">${esc(L[h.status])}${h.reason ? `<span class="why">${esc(REASON_LABEL[h.reason])}</span>` : ''}</td>${STATUSES.map((k) => `<td class="num">${esc(int(h.lines[k]))}</td>`).join('')}</tr>`;
+    })
+    .join('');
+  const table = r.hunks.length
+    ? `<h3 class="gap">まとまりごと</h3><div class="table-scroll"><table class="ledger turns"><thead><tr><th scope="col" class="num">番号</th><th scope="col">ファイル</th><th scope="col">状態</th>${STATUSES.map((k) => `<th scope="col" class="num">${esc(L[k])}(行)</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div>`
+    : '';
+  const excluded = r.excludedHunks ? `<p class="note">開始時の基準のファイルにもともとあった行だけでできたまとまり ${esc(int(r.excludedHunks))} 件は数えていません。</p>` : '';
+  return section('AI の変更の残存(VCS)', `${fields}${counts}${table}${excluded}`, lead);
+}
+
 /** 決まった並び(order)→ 残りは名前順、(unknown) は最後 */
 function ordered(keys: string[], order: string[]): string[] {
   const rank = (k: string): number => (k === UNKNOWN_KEY ? order.length + 1 : order.includes(k) ? order.indexOf(k) : order.length);
@@ -463,6 +512,9 @@ export interface DetailOptions {
   fullHref?: string | null;
   /** Phase 13: メモ(描画済みの HTML と更新日時)。無ければ省略 */
   memo?: { html: string; updatedAt: string } | null;
+  /** AI の変更がその後の VCS のファイルに残っているか(atlas vcs の結果)。照合していなければ省略 */
+  retention?: SessionRetention | null;
+  retentionMeta?: RetentionMeta | null;
 }
 
 const DETAIL_CSS = `
@@ -471,6 +523,7 @@ const DETAIL_CSS = `
 .ledger.turns .zero{color:var(--ink-3)}
 .ledger.turns td.req{min-width:16em;max-width:32em;white-space:normal;overflow-wrap:anywhere}
 .ledger.turns .why{display:block;font-size:.6875rem;color:var(--ink-2);white-space:normal;min-width:12em}
+.ledger.turns td.st{white-space:nowrap;min-width:9em}
 /* このセッションの skill の表: 呼んだ行の名前を太く(使えただけの行と見分ける) */
 .ledger tr.called td:first-child{font-weight:600}
 .meta{display:flex;flex-wrap:wrap;gap:6px 8px;margin-top:8px}
@@ -556,6 +609,7 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
   }
   parts.push(section('概要', overview));
   if (o.judgment) parts.push(judgmentSection(o.judgment, r.activeMs));
+  if (o.retention) parts.push(retentionSection(o.retention, o.retentionMeta ?? null, anon));
 
   const first = anon.freeText(r.firstUserMessage);
   const last = anon.freeText(r.lastAssistantMessage);

@@ -1,7 +1,7 @@
 // 共有読者向けの用語説明。out/glossary.html(別ページ)に載せ、atlas.html と詳細ページからリンクする。
 import { FAILURE_CAUSES, FAILURE_CAUSE_HINTS, FAILURE_CAUSE_LABELS } from '../../../core/src/tool-failure.ts';
 
-export type GroupId = 'units' | 'time' | 'records' | 'mechanics' | 'effort' | 'insights';
+export type GroupId = 'units' | 'time' | 'records' | 'mechanics' | 'effort' | 'vcs' | 'insights';
 
 export interface TermGroup {
   id: GroupId;
@@ -10,13 +10,14 @@ export interface TermGroup {
   lead: string;
 }
 
-/** 用語の分類。用語ページでは各分類が h2(id は g-<id>)になり、目次はこの 6 つだけを載せる。並びは読む順(消費 → 時間 → 記録 → 仕組み → 工数 → 改善点) */
+/** 用語の分類。用語ページでは各分類が h2(id は g-<id>)になり、目次は分類だけを載せる。並びは読む順(消費 → 時間 → 記録 → 仕組み → 工数 → 残存 → 改善点) */
 export const GLOSSARY_GROUPS: TermGroup[] = [
   { id: 'units', title: '消費の単位', lead: 'AI 使用量・トークン・リクエストなど、「どれだけ使ったか」を数える単位。' },
   { id: 'time', title: '時間と待ち', lead: '所要時間・実働時間・待ち時間など、「どれだけ掛かったか」の測り方。' },
   { id: 'records', title: '記録の由来と欠測', lead: '数値がどの記録から来ているか、無いときに何と表示するか、どうまとめているか。' },
   { id: 'mechanics', title: '動かし方と拡張の仕組み', lead: 'モード・推論強度・compaction と、skill / MCP / agent / hook / 指示ファイル / llm-wiki。' },
   { id: 'effort', title: '工数と判定', lead: '推定人手工数・摩擦・権限の確認・todo・要点など、「うまく進んだか」を見る欄。' },
+  { id: 'vcs', title: 'AI の変更の残存', lead: 'AI の変更がその後の VCS のファイルに残っているかの数え方と、比べる節。' },
   { id: 'insights', title: '改善点の指標', lead: '改善点の節とページ(insights.html)で使う、LLM を呼ばない規則の指標と閾値。' },
 ];
 
@@ -362,5 +363,47 @@ export const GLOSSARY: Term[] = [
     group: 'mechanics',
     term: 'compaction で減ったトークン',
     body: 'compaction の記録の tokensRemoved の合計。この値を記録しない版のログでは 0 ではなく「記録なし」と出します。compaction 自体に使ったトークンは、新旧どちらの記録の形(input / inputTokens)も読みます。',
+  },
+  {
+    id: 'retention',
+    group: 'vcs',
+    term: 'AI の変更の残存(VCS)',
+    body: 'AI がセッションの中で編集・作成して足した行が、その後の VCS(Git / SVN / Perforce)のファイルに残っているかを数えたもの。atlas vcs(atlas.bat の集計にも入る)が照合し、VCS は読むだけで書き換えません。',
+  },
+  {
+    id: 'retention-hunk',
+    group: 'vcs',
+    term: 'まとまり / 数える行',
+    body: 'まとまりは、AI の 1 回の編集で続けて足した行です。同じセッションの中で AI が後から書き直した行は、最後の形だけを数えます。空白だけの行と、開始時の基準のファイルにもともとあった行は数えません。',
+  },
+  {
+    id: 'retention-status',
+    group: 'vcs',
+    term: 'そのまま残る / 直されて残る / 見つからない / 照合不可',
+    body: 'そのまま残るは、数えた行がすべて同じ本文であるまとまり。直されて残るは、一部だけ残っているか、空白の違いや似た本文(文字の 2 字組の重なりが 75% 以上、6 文字以上の行)で残っているもの。見つからないは、ファイルは照合できたがどの行も無いもの。照合不可は、照合できなかったものです(理由は下)。状態の名前は、設定(atlas.config.json の vcs.labels)で差し替えられます。',
+  },
+  {
+    id: 'retention-unattributable',
+    group: 'vcs',
+    term: '照合不可の理由',
+    body: '作業フォルダがこの PC に無い(設定の vcs.pathMap で今の場所に読み替えられます)、VCS の管理下でない、開始時の基準を決められない、リポジトリの外のファイル、VCS かファイルを読めなかった、時間の重なる別のセッションと同じ行、後のセッションも同じ行を足した、送った側で照合していない、のどれかです。',
+  },
+  {
+    id: 'retention-baseline',
+    group: 'vcs',
+    term: '開始時の基準(記録 / 推定)/ 比べる版',
+    body: '開始時の基準は、比べる起点の版です。Git ではログに残った開始時のコミット(記録)を使い、無いときと SVN・Perforce では開始時刻の直前の版を VCS の履歴から探します(推定)。比べる版は、既定では照合した時点の作業ツリーで、設定で最後に取り込んだ版にもできます。',
+  },
+  {
+    id: 'retention-denominator',
+    group: 'vcs',
+    term: '割合の分母',
+    body: '割合の分母は、照合できたセッションの、照合不可を除いたまとまりです。照合不可のまとまりとセッションは、件数と理由を並べて出します。',
+  },
+  {
+    id: 'compare',
+    group: 'vcs',
+    term: '比べる(2 つの条件の並べ比べ)',
+    body: 'レポートの「比べる」の節で、タスクタグ・期間・プロジェクトのどれかで 2 つの条件を選び、主な指標と AI の変更の残存を並べます。件数が 5 セッション未満の側の割合と平均は「—」です。',
   },
 ];

@@ -3,13 +3,20 @@
 import { isEmptySession } from './metrics.ts';
 import { followedByFix, isStuck, MISMATCH_LABEL, OUTCOME_LABEL, PHASE_LABEL, REQUEST_KIND_LABEL, sessionTurns, type Mismatch, type Outcome, type RequestKind } from './turns.ts';
 import { TOOL_KINDS, type SessionRecord, type ToolKind } from './types.ts';
+import { RETENTION_STATUS_LABEL, RETENTION_STATUSES, UNATTRIBUTABLE_REASON_LABEL, type RetentionStatus, type SessionRetention } from './vcs-retention.ts';
 
 const TOOL_KIND_LABEL: Record<ToolKind, string> = { read: '読む', edit: '編集', verify: '検証', git: 'git', shell: 'シェル', plan: '計画', web: 'Web', delegate: '委任', other: 'その他' };
 
 /** Excel が UTF-8 と判断するための印 */
 const BOM = String.fromCharCode(0xfeff);
 
-type Cell = string | number | boolean | null | undefined;
+export type Cell = string | number | boolean | null | undefined;
+
+/** 表 1 つ(見出しと行)。CSV と SQLite が同じものを使う */
+export interface Table {
+  header: string[];
+  rows: Cell[][];
+}
 
 /** 段階 2 の依頼ごとの判定(turn-judgments.json の 1 項目のうち CSV に載せるもの) */
 export interface TurnVerdictLike {
@@ -47,6 +54,12 @@ const oneLine = (s: string, n = 200): string => {
 
 /** 依頼(ターン)ごとの CSV。空のセッションは除く。verdicts があれば LLM の判定の列を足す(判定の無い依頼は空) */
 export function turnsCsv(sessions: SessionRecord[], verdicts: VerdictMap | null = null): string {
+  const t = turnsTable(sessions, verdicts);
+  return toCsv(t.header, t.rows);
+}
+
+/** 依頼(ターン)ごとの表(turnsCsv の中身) */
+export function turnsTable(sessions: SessionRecord[], verdicts: VerdictMap | null = null): Table {
   const header = [
     'セッションID',
     'セッション名',
@@ -121,11 +134,73 @@ export function turnsCsv(sessions: SessionRecord[], verdicts: VerdictMap | null 
       ]);
     }
   }
-  return toCsv(header, rows);
+  return { header, rows };
 }
 
 /** セッションごとの CSV。空のセッションは除く。humanHours はセッション ID → 推定人手工数(時間。判定済みのものだけ) */
-export function sessionsCsv(sessions: SessionRecord[], humanHours: Map<string, number> = new Map()): string {
+export function sessionsCsv(sessions: SessionRecord[], humanHours: Map<string, number> = new Map(), retention: ReadonlyMap<string, SessionRetention> | null = null, labels: RetentionLabels = {}): string {
+  const t = sessionsTable(sessions, humanHours, retention, labels);
+  return toCsv(t.header, t.rows);
+}
+
+/** 状態の名前の差し替え(atlas.config.json の vcs.labels。vcs-retention.json に入る)。無い状態は RETENTION_STATUS_LABEL */
+export type RetentionLabels = Partial<Record<RetentionStatus, string>>;
+const labelOf = (labels: RetentionLabels) => (k: RetentionStatus): string => labels[k] ?? RETENTION_STATUS_LABEL[k];
+/** 開始時の基準の出所の言葉(記録 = ログに残った開始時の版、推定 = 開始時刻から VCS の履歴で探した版) */
+const baselineCell = (r: SessionRetention): string => (r.baseline ? (r.baseline.source === 'observed' ? '記録' : '推定') : '');
+
+/** VCS の照合の列(retention を渡したときだけ。最初の依頼の列の前に入れる) */
+function retentionHeader(labels: RetentionLabels): string[] {
+  const L = labelOf(labels);
+  return [
+    'VCS の照合',
+    `${L('unattributable')}の理由`,
+    'VCS',
+    '開始時の基準',
+    '照合した場所',
+    ...RETENTION_STATUSES.map((k) => `${L(k)}(まとまり)`),
+    ...RETENTION_STATUSES.map((k) => `${L(k)}(行)`),
+  ];
+}
+
+function retentionCells(r: SessionRetention | undefined, labels: RetentionLabels): Cell[] {
+  // 照合していないセッション(vcs-retention.json に無い)は空にする(0 と区別するため)
+  if (!r) return retentionHeader(labels).map(() => null);
+  const measured = r.outcome === 'measured';
+  return [
+    r.outcome === 'measured' ? '照合できた' : r.outcome === 'no_ai_changes' ? 'AI の変更なし' : labelOf(labels)('unattributable'),
+    r.reason ? UNATTRIBUTABLE_REASON_LABEL[r.reason] : '',
+    r.vcs ?? '',
+    baselineCell(r),
+    // computedOn が無いのは、送った側の結果が添えられておらず、どこでも照合していないもの
+    r.computedOn === 'sender' ? '送った側の PC' : r.computedOn === 'local' ? 'この PC' : '照合していない',
+    ...RETENTION_STATUSES.map((k) => (r.outcome === 'no_ai_changes' ? null : measured || k === 'unattributable' ? r.counts[k] : null)),
+    ...RETENTION_STATUSES.map((k) => (r.outcome === 'no_ai_changes' ? null : measured || k === 'unattributable' ? r.lines[k] : null)),
+  ];
+}
+
+/** AI の変更のまとまりごとの表(照合の結果。retention に入っているセッションの全部) */
+export function retentionHunksTable(retention: readonly SessionRetention[], labels: RetentionLabels = {}): Table {
+  const L = labelOf(labels);
+  const header = ['セッションID', 'まとまり', 'パス', '状態', `${L('unattributable')}の理由`, 'VCS', '開始時の基準', ...RETENTION_STATUSES.map((k) => `${L(k)}(行)`)];
+  const rows: Cell[][] = [];
+  for (const r of retention)
+    for (const h of r.hunks)
+      rows.push([
+        r.sessionId,
+        h.id,
+        h.path,
+        L(h.status),
+        h.reason ? UNATTRIBUTABLE_REASON_LABEL[h.reason] : '',
+        r.vcs ?? '',
+        baselineCell(r),
+        ...RETENTION_STATUSES.map((k) => h.lines[k]),
+      ]);
+  return { header, rows };
+}
+
+/** セッションごとの表(sessionsCsv の中身) */
+export function sessionsTable(sessions: SessionRecord[], humanHours: Map<string, number> = new Map(), retention: ReadonlyMap<string, SessionRetention> | null = null, labels: RetentionLabels = {}): Table {
   const header = [
     'セッションID',
     'セッション名',
@@ -158,6 +233,7 @@ export function sessionsCsv(sessions: SessionRecord[], humanHours: Map<string, n
     '追加行',
     '削除行',
     '推定人手工数(時間)',
+    ...(retention ? retentionHeader(labels) : []),
     '最初の依頼(先頭)',
   ];
   const min = (ms: number | null): number | null => (ms == null ? null : Math.round(ms / 6000) / 10);
@@ -197,8 +273,9 @@ export function sessionsCsv(sessions: SessionRecord[], humanHours: Map<string, n
       s.lines?.source === 'none' ? null : s.lines?.added,
       s.lines?.source === 'none' ? null : s.lines?.removed,
       humanHours.get(s.id) ?? null,
+      ...(retention ? retentionCells(retention.get(s.id), labels) : []),
       oneLine(s.firstUserMessage ?? ''),
     ]);
   }
-  return toCsv(header, rows);
+  return { header, rows };
 }

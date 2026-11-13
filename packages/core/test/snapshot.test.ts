@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { snapshot } from '../src/snapshot.ts';
+import { snapshot, SNAPSHOT_CONCURRENCY } from '../src/snapshot.ts';
 import { openReadOnly, openWritable } from '../src/sqlite.ts';
 
 async function mtimes(dir: string): Promise<Record<string, number>> {
@@ -89,6 +89,36 @@ describe('snapshot', () => {
     expect((r.prepare('SELECT count(*) AS n FROM sessions').get() as { n: number }).n).toBe(1);
     r.close();
     expect(existsSync(join(dest, '.tmp-sqlite'))).toBe(false);
+  });
+
+  it('並べて写しても、件数・session.db・写さなかったものの順は 1 件ずつ写したときと同じで、一時フォルダを残さない', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'atlas-snap-'));
+    const src = join(base, 'src');
+    const dest = join(base, 'dest');
+    // 並べる数(SNAPSHOT_CONCURRENCY)より多いセッション。3 件おきに session.db、5 件おきに写さない名前のフォルダを置く
+    const ids = Array.from({ length: SNAPSHOT_CONCURRENCY * 3 + 5 }, (_, i) => `s${String(i).padStart(3, '0')}`);
+    for (const [i, id] of ids.entries()) {
+      const dir = join(src, 'session-state', id);
+      await mkdir(join(dir, 'files'), { recursive: true });
+      await writeFile(join(dir, 'events.jsonl'), `{"type":"x","i":${i}}\n`);
+      await writeFile(join(dir, 'files', 'a.txt'), id);
+      if (i % 3 === 0) {
+        const db = await openWritable(join(dir, 'session.db'));
+        db.exec(`CREATE TABLE todos(id TEXT); INSERT INTO todos VALUES ('${id}');`);
+        db.close();
+      }
+      if (i % 5 === 0) await mkdir(join(dir, 'unknown-dir'));
+    }
+    const m = await snapshot(src, dest);
+    expect(m.sessions).toMatchObject({ dirs: ids.length, copiedFiles: ids.length, dbCopied: ids.filter((_, i) => i % 3 === 0).length });
+    expect(m.extras?.sessionFiles).toBe(ids.length);
+    expect(m.extras?.skipped.map((s) => s.path)).toEqual(ids.filter((_, i) => i % 5 === 0).map((id) => `session-state/${id}/unknown-dir`));
+    expect((await readdir(dest)).filter((n) => n.startsWith('.tmp-sqlite'))).toEqual([]);
+    const r = await openReadOnly(join(dest, 'session-state', ids[3], 'session.db'));
+    expect((r.prepare('SELECT id FROM todos').get() as { id: string }).id).toBe(ids[3]);
+    r.close();
+    const again = await snapshot(src, dest);
+    expect(again.sessions).toMatchObject({ copiedFiles: 0, reusedFiles: ids.length, dbCopied: 0, dbReused: ids.filter((_, i) => i % 3 === 0).length });
   });
 
   it('元ディレクトリが無ければ例外', async () => {

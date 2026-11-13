@@ -1,6 +1,7 @@
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
+if not defined UV_THREADPOOL_SIZE set "UV_THREADPOOL_SIZE=16"
 
 where node >nul 2>nul
 if errorlevel 1 (

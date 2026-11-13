@@ -23,6 +23,29 @@ describe('parseConfig', () => {
     expect(() => parseConfig({ phases: '実装' })).toThrow(/phases/);
   });
 
+  it('vcs: パスの読み替え(フルパスだけ)と比べる版の見方。書き間違いは止める', () => {
+    expect(parseConfig({ vcs: { pathMap: [{ from: ' D:\\old\\repo ', to: 'E:\\dev\\repo' }, { from: '/home/zz/a', to: '/srv/a' }], mode: 'committed' } }).vcs).toEqual({
+      pathMap: [
+        { from: 'D:\\old\\repo', to: 'E:\\dev\\repo' },
+        { from: '/home/zz/a', to: '/srv/a' },
+      ],
+      mode: 'committed',
+    });
+    expect(parseConfig({ vcs: {} }).vcs).toEqual({ pathMap: [], mode: null });
+    // 状態の名前と節の一文の差し替え
+    expect(parseConfig({ vcs: { labels: { kept: ' 残った ', unattributable: '不明' }, note: ' 一文。 ' } }).vcs).toEqual({ pathMap: [], mode: null, labels: { kept: '残った', unattributable: '不明' }, note: '一文。' });
+    expect(() => parseConfig({ vcs: { labels: { gone: 'x' } } })).toThrow(/不明な状態/);
+    expect(() => parseConfig({ vcs: { labels: { kept: '' } } })).toThrow(/vcs.labels.kept/);
+    expect(() => parseConfig({ vcs: { labels: { kept: 'x'.repeat(41) } } })).toThrow(/40 文字/);
+    expect(() => parseConfig({ vcs: { note: 1 } })).toThrow(/vcs.note/);
+    expect(parseConfig({}).vcs).toBeUndefined();
+    expect(() => parseConfig({ vcs: { pathMaps: [] } })).toThrow(/vcs の不明な項目/);
+    expect(() => parseConfig({ vcs: { mode: 'head' } })).toThrow(/vcs.mode/);
+    expect(() => parseConfig({ vcs: { pathMap: [{ from: 'old', to: 'E:\\x' }] } })).toThrow(/from はフルパス/);
+    expect(() => parseConfig({ vcs: { pathMap: [{ from: 'D:\\x' }] } })).toThrow(/from と to/);
+    expect(() => parseConfig({ vcs: { pathMap: [{ from: 'D:\\x', to: 'E:\\y', note: 1 }] } })).toThrow(/不明な項目/);
+  });
+
   it('wikis が無ければ null、空配列は集計なしとしてそのまま', () => {
     expect(parseConfig({})).toEqual({ wikis: null, phases: null, uploadRoot: null, uploadProjects: null, judgeModel: null });
     expect(parseConfig({ wikis: [] })).toEqual({ wikis: [], phases: null, uploadRoot: null, uploadProjects: null, judgeModel: null });
