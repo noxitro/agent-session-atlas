@@ -1,8 +1,8 @@
 // レポートの「AI の変更の残存」と「比べる」の集計(lib/retention.ts・lib/compare.ts)。値はすべて架空のもの
 import { describe, expect, it } from 'vitest';
-import { RETENTION_STATUS_LABEL, RETENTION_STATUSES, UNATTRIBUTABLE_REASON_LABEL, UNATTRIBUTABLE_REASONS } from '../../core/src/vcs-retention.ts';
+import { DEFAULT_LAG_DAYS as CORE_LAG_DAYS, RETENTION_STATUS_LABEL, RETENTION_STATUSES, UNATTRIBUTABLE_REASON_LABEL, UNATTRIBUTABLE_REASONS } from '../../core/src/vcs-retention.ts';
 import { VCS_KINDS } from '../../core/src/vcs.ts';
-import { aggregateRetention, phaseAt, REASON_LABEL, REASONS, retentionByPhase, retentionItem, shareOf, STATUS_LABEL, STATUSES, UNKNOWN_PHASE, VCS_LABEL, type RetentionItem } from '../src/lib/retention.ts';
+import { aggregateRetention, DEFAULT_LAG_DAYS, median, phaseAt, REASON_LABEL, REASONS, retentionByPhase, retentionItem, shareOf, STATUS_LABEL, STATUSES, UNKNOWN_PHASE, VCS_LABEL, type RetentionItem } from '../src/lib/retention.ts';
 import { comparePhaseRows, compareRows, compareSide, COMPARE_MIN_SESSIONS, defaultPeriods, inPeriod, type CompareSession } from '../src/lib/compare.ts';
 import { PHASES } from '../../core/src/turns.ts';
 import type { TurnTuple } from '../src/lib/turns.ts';
@@ -16,6 +16,7 @@ describe('lib/retention', () => {
     expect([...REASONS]).toEqual([...UNATTRIBUTABLE_REASONS]);
     expect(REASON_LABEL).toEqual(UNATTRIBUTABLE_REASON_LABEL);
     expect(Object.keys(VCS_LABEL).sort()).toEqual([...VCS_KINDS].sort());
+    expect(DEFAULT_LAG_DAYS).toBe(CORE_LAG_DAYS);
   });
 
   it('retentionItem: 埋め込みの形にする(パスは持たない)', () => {
@@ -178,5 +179,21 @@ describe('工程ごと(まとまりを作った依頼の工程)', () => {
     expect(r('retention-kept').a).toBe(5 / 6);
     expect(r('retention-missing').a).toBe(1 / 6);
     expect(r('retention-kept').b).toBeNull();
+  });
+});
+
+describe('照合までの日数と、取り出せなかった編集', () => {
+  it('retentionItem が日数を求め、aggregateRetention が照合できたものの日数と、取り出せなかった編集を数える', () => {
+    const counts = { kept: 1, modified: 0, missing: 0, unattributable: 0 };
+    const base = { outcome: 'measured' as const, vcs: 'git' as const, baseline: { source: 'observed' as const }, counts, lines: counts };
+    const r = retentionItem({ ...base, sessionEnd: '2026-11-01T00:00:00Z', evaluated: { at: '2026-11-04T12:00:00Z' }, unreadEdits: 2 });
+    expect(r).toMatchObject({ lag: 3.5, unread: 2 });
+    expect(retentionItem({ ...base, sessionEnd: null, evaluated: { at: '2026-11-04T12:00:00Z' } }).lag).toBeUndefined();
+    const a = aggregateRetention([{ retention: r }, { retention: { ...r, lag: 1.5, unread: undefined } }, { retention: { ...r, outcome: 'unattributable', lag: 9 } }]);
+    expect(a.lags).toEqual([3.5, 1.5]);
+    expect(a).toMatchObject({ unread: 4, unreadSessions: 2 });
+    expect(median([3, 1, 2])).toBe(2);
+    expect(median([4, 1, 2, 3])).toBe(2.5);
+    expect(median([])).toBeNull();
   });
 });

@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { dateTime, int, percent } from '../../lib/format.ts';
-  import { aggregateRetention, measuredOf, MODE_LABEL, REASON_LABEL, REASONS, retentionByPhase, STATUS_LABEL, STATUSES, UNKNOWN_PHASE, VCS_LABEL, type RetentionMeta } from '../../lib/retention.ts';
+  import { dateTime, dec, int, percent } from '../../lib/format.ts';
+  import { aggregateRetention, DEFAULT_LAG_DAYS, measuredOf, median, MODE_LABEL, REASON_LABEL, REASONS, retentionByPhase, STATUS_LABEL, STATUSES, UNKNOWN_PHASE, VCS_LABEL, type RetentionMeta } from '../../lib/retention.ts';
   import { PHASE_LABEL, PHASES } from '../../../../core/src/turns.ts';
   import type { SessionSummary } from '../../lib/types.ts';
 
@@ -27,8 +27,15 @@
         .filter(([, n]) => n > 0)
         .map(([k, n]) => `${MODE_LABEL[k]} ${int(n)}`)
         .join('・') || '不明';
-    return `${int(s.sessions)} セッション・照合 ${range}・比べる版: ${modes}`;
+    // fixed の日数は送った側の設定なので、ここでは出さない(下の「セッションの終わりから比べた時点まで」で分かる)
+    return `${int(s.sessions)} セッション・照合 ${range}・比べる版: ${modes}${s.modes.fixed ? '(日数は下の「セッションの終わりから比べた時点まで」)' : ''}`;
   });
+
+  /** セッションの終わりから比べた時点までの日数(照合できたセッション)。fixed ではそろうが、ほかの見方では照合した日で変わる */
+  const lagMedian = $derived(median(a.lags));
+  // 件数が多くても引数の数の上限に当たらないよう、1 回なめて求める
+  const lagRange = $derived(a.lags.length ? a.lags.reduce<[number, number]>(([lo, hi], x) => [Math.min(lo, x), Math.max(hi, x)], [Infinity, -Infinity]) : null);
+  const days = (n: number): string => `${dec(Math.round(n * 10) / 10)} 日`;
 
   const reasons = $derived(REASONS.filter((k) => (a.unattributable[k] ?? 0) > 0).map((k) => ({ key: k, label: REASON_LABEL[k], n: a.unattributable[k] ?? 0 })));
   const vcsText = $derived(
@@ -67,7 +74,7 @@
       {#if meta.computedOn === 'sender'}
         送った側の PC で照合した結果です{senderText ? `(${senderText})` : '(添えられた結果はありません)'}。
       {:else}
-        比べる版: {MODE_LABEL[meta.mode]}・照合 {dateTime(meta.generatedAt)}{meta.pathMap ? `・パスの読み替え ${int(meta.pathMap)} 件` : ''}
+        比べる版: {meta.mode === 'fixed' ? `セッションの終わりから ${int(meta.lagDays ?? DEFAULT_LAG_DAYS)} 日後の版(その時点で取り込まれていた変更だけ)` : MODE_LABEL[meta.mode]}・照合 {dateTime(meta.generatedAt)}{meta.pathMap ? `・パスの読み替え ${int(meta.pathMap)} 件` : ''}
       {/if}
     </p>
   </div>
@@ -75,6 +82,7 @@
   {#if a.withAi === 0}
     <p class="note">
       この絞り込みには、AI の変更があったセッションがありません(表示中 {int(a.sessions)} セッション{a.notChecked ? `、うち照合していない ${int(a.notChecked)} 件` : ''})。
+      {#if a.unread}ただし、ログから変更を取り出せなかった AI の編集が {int(a.unread)} 件({int(a.unreadSessions)} セッション)あります。数えていないので、Copilot のログの形が変わった可能性があります。{/if}
     </p>
   {:else}
     <div class="fields" style="--cols:4">
@@ -140,11 +148,15 @@
           {#each reasons as r (r.key)}
             <tr><th scope="row" class="ind2">{L.unattributable}: {r.label}</th><td class="num">{int(r.n)}</td><td></td></tr>
           {/each}
+          {#if a.unread}<tr><th scope="row" class="ind">ログから変更を取り出せなかった AI の編集</th><td class="num">{int(a.unread)}</td><td>{int(a.unreadSessions)} セッション。数えていません。多いときは、Copilot のログの形が変わった可能性があります</td></tr>{/if}
         </tbody>
       </table>
     </div>
     <p class="note">
       開始時の基準の「記録」はログに残った開始時の版(git のコミット)、「推定」は開始時刻から VCS の履歴で探した版(svn・p4 は常に推定)です。似た行とみなす下限は文字の 2 字組の重なり {Math.round(meta.similarity * 100)}% です。
+      {#if lagMedian != null && lagRange}
+        セッションの終わりから比べた時点までは、中央値 {days(lagMedian)}(短いもの {days(lagRange[0])}・長いもの {days(lagRange[1])})です。{meta.mode === 'fixed' ? '' : '古いセッションほど、後から人が手を入れる時間が長いので、期間で比べるときは日数をそろえる見方(設定の vcs.mode を fixed)を使ってください。'}
+      {/if}
     </p>
 
     {#if phaseRows.length > 0}

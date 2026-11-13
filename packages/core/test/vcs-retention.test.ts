@@ -494,3 +494,34 @@ describe('VCS に渡すもの', () => {
     expect(vcsEnv({}).LC_CTYPE).toBeUndefined();
   });
 });
+
+describe('比べる版: セッションの終わりから決まった日数後(fixed)', () => {
+  it('その時点で取り込まれていた版と比べる(後から消されても、その時点で残っていれば残る)。日数が経っていなければ照合しない', async () => {
+    const { root, head } = gitRepo({ 'a.txt': ['base'] });
+    const f = join(root, 'a.txt');
+    const ev = session({ cwd: root, gitRoot: root, headCommit: head, start: [10, 0], end: [11, 0], edits: [{ path: f, added: ['ai line that stays a while'] }] });
+    // 翌日に取り込み、10 日後に消した
+    write(f, ['base', 'ai line that stays a while']);
+    git(root, ['commit', '-q', '-am', 'take ai line'], at(24 + 10));
+    write(f, ['base']);
+    git(root, ['commit', '-q', '-am', 'remove ai line'], at(24 * 10 + 10));
+    const set = extractAiChanges('s1', ev);
+    const [worktree] = await measureRetention([set], { now: () => new Date(at(24 * 20)) });
+    expect(worktree.hunks[0].status).toBe('missing');
+    const [fixed] = await measureRetention([set], { mode: 'fixed', lagDays: 7, now: () => new Date(at(24 * 20)) });
+    expect(fixed).toMatchObject({ outcome: 'measured', evaluated: { mode: 'fixed', at: at(11 + 24 * 7) }, sessionEnd: at(11, 0) });
+    expect(fixed.hunks[0].status).toBe('kept');
+    // セッションの終わりから 3 日しか経っていなければ、照合しない
+    const [early] = await measureRetention([set], { mode: 'fixed', lagDays: 7, now: () => new Date(at(24 * 3)) });
+    expect(early).toMatchObject({ outcome: 'unattributable', reason: 'too_recent', evaluated: null });
+  });
+
+  it('ログから変更を取り出せなかった編集の数を残す', async () => {
+    const { root, head } = gitRepo({ 'a.txt': ['base'] });
+    const ev = session({ cwd: root, gitRoot: root, headCommit: head, start: [10, 0], end: [11, 0], edits: [] });
+    ev.push({ type: 'tool.execution_start', timestamp: at(10, 5), data: { toolCallId: 'odd', toolName: 'apply_patch', arguments: { unknown: 1 } } });
+    ev.push({ type: 'tool.execution_complete', timestamp: at(10, 5), data: { toolCallId: 'odd', success: true, result: { content: 'ok' } } });
+    const [r] = await measureRetention([extractAiChanges('s1', ev)]);
+    expect(r).toMatchObject({ outcome: 'no_ai_changes', unreadEdits: 1 });
+  });
+});

@@ -32,6 +32,10 @@ describe('parseConfig', () => {
       mode: 'committed',
     });
     expect(parseConfig({ vcs: {} }).vcs).toEqual({ pathMap: [], mode: null });
+    // セッションの終わりから決まった日数後の版
+    expect(parseConfig({ vcs: { mode: 'fixed', lagDays: 14 } }).vcs).toEqual({ pathMap: [], mode: 'fixed', lagDays: 14 });
+    expect(() => parseConfig({ vcs: { lagDays: 0 } })).toThrow(/vcs.lagDays/);
+    expect(() => parseConfig({ vcs: { lagDays: 1.5 } })).toThrow(/vcs.lagDays/);
     // 状態の名前と節の一文の差し替え
     expect(parseConfig({ vcs: { labels: { kept: ' 残った ', unattributable: '不明' }, note: ' 一文。 ' } }).vcs).toEqual({ pathMap: [], mode: null, labels: { kept: '残った', unattributable: '不明' }, note: '一文。' });
     expect(() => parseConfig({ vcs: { labels: { gone: 'x' } } })).toThrow(/不明な状態/);

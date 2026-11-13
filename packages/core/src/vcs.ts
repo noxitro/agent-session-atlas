@@ -92,7 +92,12 @@ export interface Revision {
   source: 'observed' | 'estimated';
 }
 
-export type EvalMode = 'worktree' | 'committed';
+/**
+ * 照合で比べる版の見方。worktree = 照合した時点の作業ツリー、committed = 照合した時点で最後に取り込んだ版、
+ * fixed = セッションの終わりから決まった日数後の時点で取り込まれていた版(照合した時期で値が変わらない。取り込んでいない変更は見えない)
+ */
+export type EvalMode = 'worktree' | 'committed' | 'fixed';
+export const EVAL_MODES: readonly EvalMode[] = ['worktree', 'committed', 'fixed'];
 
 export interface VcsRepo {
   kind: VcsKind;
@@ -107,10 +112,12 @@ export interface VcsRepo {
   baseline(hint: { headCommit: string | null; start: string | null; branch?: string | null }): Promise<{ revision: Revision | null; reason?: 'baseline_missing' }>;
   /** 照合時の版の印(git: HEAD、svn: 作業コピーの版、p4: have の最新の変更番号) */
   currentRevision(): Promise<string | null>;
+  /** 時刻 at の時点で取り込まれていた最後の版(git はブランチの履歴、無ければ HEAD)。無ければ null */
+  revisionAt(at: string, branch?: string | null): Promise<string | null>;
   /** 版 rev のファイル。その版に無ければ null。読めないときは例外 */
   readAt(rev: string, absPath: string): Promise<string | null>;
-  /** 照合した時点のファイル。worktree = ディスク、committed = 最後に取り込んだ版 */
-  readAfter(mode: EvalMode, absPath: string): Promise<string | null>;
+  /** 照合した時点のファイル。worktree = ディスク、committed = 最後に取り込んだ版(fixed は readAt で読む) */
+  readAfter(mode: 'worktree' | 'committed', absPath: string): Promise<string | null>;
 }
 
 /** 本文を比べられる形にする(BOM を落とし、改行を LF に) */
@@ -152,6 +159,17 @@ function gitRepo(root: string, run: VcsRunner): VcsRepo {
     if (GIT_MISSING.test(r.stderr)) return null;
     failed('git', args, r);
   };
+  // 時刻 at までの最後のコミット。セッションのブランチの履歴で探す(今の HEAD が別のブランチでも取り違えない)。ブランチが無い・読めなければ HEAD。
+  // ブランチ名はログの値なので、ref の名前として素直なものだけを refs/heads/ の下で使う(引数として読まれないように)
+  const revisionAt = async (at: string, branch?: string | null): Promise<string | null> => {
+    const refs = branch && /^[\w.\/-]+$/.test(branch) && !branch.startsWith('-') && !branch.includes('..') ? [`refs/heads/${branch}`, 'HEAD'] : ['HEAD'];
+    for (const ref of refs) {
+      const r = await git('rev-list', '-1', `--before=${at}`, ref);
+      const rev = r.stdout.trim();
+      if (r.code === 0 && rev) return rev;
+    }
+    return null;
+  };
   return {
     kind: 'git',
     root,
@@ -163,20 +181,14 @@ function gitRepo(root: string, run: VcsRunner): VcsRepo {
         return r.code === 0 ? { revision: { rev: headCommit, source: 'observed' } } : { revision: null, reason: 'baseline_missing' };
       }
       if (!start) return { revision: null, reason: 'baseline_missing' };
-      // セッションのブランチの履歴で探す(今の HEAD が別のブランチでも取り違えない)。ブランチが無い・読めなければ HEAD。
-      // ブランチ名はログの値なので、ref の名前として素直なものだけを refs/heads/ の下で使う(引数として読まれないように)
-      const refs = branch && /^[\w.\/-]+$/.test(branch) && !branch.startsWith('-') && !branch.includes('..') ? [`refs/heads/${branch}`, 'HEAD'] : ['HEAD'];
-      for (const ref of refs) {
-        const r = await git('rev-list', '-1', `--before=${start}`, ref);
-        const rev = r.stdout.trim();
-        if (r.code === 0 && rev) return { revision: { rev, source: 'estimated' } };
-      }
-      return { revision: null, reason: 'baseline_missing' };
+      const rev = await revisionAt(start, branch);
+      return rev ? { revision: { rev, source: 'estimated' } } : { revision: null, reason: 'baseline_missing' };
     },
     async currentRevision() {
       const r = await git('rev-parse', 'HEAD');
       return r.code === 0 ? r.stdout.trim() || null : null;
     },
+    revisionAt: (at, branch) => revisionAt(at, branch),
     async readAt(rev, absPath) {
       const rel = relativeTo(root, absPath);
       if (rel == null) throw new VcsReadError('リポジトリの外のファイルです');
@@ -210,6 +222,11 @@ function svnRepo(root: string, run: VcsRunner): VcsRepo {
     if (SVN_MISSING.test(r.stderr)) return null;
     failed('svn', args, r);
   };
+  const revisionAt = async (at: string): Promise<string | null> => {
+    const r = await svn('info', '--show-item', 'revision', '-r', svnDate(at), root);
+    const rev = r.stdout.trim();
+    return r.code === 0 && /^\d+$/.test(rev) ? rev : null;
+  };
   return {
     kind: 'svn',
     root,
@@ -217,14 +234,14 @@ function svnRepo(root: string, run: VcsRunner): VcsRepo {
     async baseline({ start }) {
       // ログに svn の版は残らないので、開始時刻の版を推定する
       if (!start) return { revision: null, reason: 'baseline_missing' };
-      const r = await svn('info', '--show-item', 'revision', '-r', svnDate(start), root);
-      const rev = r.stdout.trim();
-      return r.code === 0 && /^\d+$/.test(rev) ? { revision: { rev, source: 'estimated' } } : { revision: null, reason: 'baseline_missing' };
+      const rev = await revisionAt(start);
+      return rev ? { revision: { rev, source: 'estimated' } } : { revision: null, reason: 'baseline_missing' };
     },
     async currentRevision() {
       const r = await svn('info', '--show-item', 'revision', root);
       return r.code === 0 ? r.stdout.trim() || null : null;
     },
+    revisionAt: (at) => revisionAt(at),
     async readAt(rev, absPath) {
       if (relativeTo(root, absPath) == null) throw new VcsReadError('作業コピーの外のファイルです');
       return cat(rev, absPath);
@@ -280,6 +297,7 @@ function p4Repo(root: string, run: VcsRunner): VcsRepo {
     async currentRevision() {
       return lastChange(`${tree}#have`);
     },
+    revisionAt: (at) => lastChange(`${tree}${p4Date(at)}`),
     async readAt(rev, absPath) {
       if (relativeTo(root, absPath) == null) throw new VcsReadError('クライアントの外のファイルです');
       return print(`${p4Escape(absPath)}@${rev}`);

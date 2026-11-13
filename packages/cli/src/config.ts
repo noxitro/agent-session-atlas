@@ -28,14 +28,16 @@ export interface AtlasConfig {
   judgeModel: string | null;
   /**
    * AI の変更がその後の VCS のファイルに残っているかの照合(atlas vcs)。pathMap はリポジトリを別の場所へ移したときの、ログのパス → 今の場所。
-   * mode は比べる版をどこで見るか(worktree = 今の作業ツリー、committed = 最後に取り込んだ版)。設定に無ければ省略
+   * mode は比べる版をどこで見るか(worktree = 今の作業ツリー、committed = 最後に取り込んだ版、fixed = セッションの終わりから lagDays 日後の版)。設定に無ければ省略
    */
   vcs?: VcsConfig | null;
 }
 
 export interface VcsConfig {
   pathMap: PathMapping[];
-  mode: 'worktree' | 'committed' | null;
+  mode: 'worktree' | 'committed' | 'fixed' | null;
+  /** mode が fixed のときの日数(1〜365。設定に無ければ省略し、既定の 7 日) */
+  lagDays?: number;
   /** 状態の名前の差し替え(kept / modified / missing / unattributable → 表と画面に出す名前)。設定に無ければ省略 */
   labels?: Partial<Record<RetentionStatus, string>>;
   /** 画面の「AI の変更の残存」の節の説明に足す一文。設定に無ければ省略 */
@@ -51,7 +53,7 @@ const KEYS = ['wikis', 'phases', 'uploadRoot', 'uploadProjects', 'judgeModel', '
 /** vcs の項目。書き間違いは照合が 0 件になって気付きにくいので止める */
 function parseVcs(v: unknown): VcsConfig {
   if (!isObject(v)) throw new Error('vcs はオブジェクトで指定してください(例: { "pathMap": [{ "from": "D:\\\\old\\\\repo", "to": "E:\\\\dev\\\\repo" }] })');
-  for (const k of Object.keys(v)) if (!['pathMap', 'mode', 'labels', 'note'].includes(k)) throw new Error(`vcs の不明な項目です: ${k}`);
+  for (const k of Object.keys(v)) if (!['pathMap', 'mode', 'lagDays', 'labels', 'note'].includes(k)) throw new Error(`vcs の不明な項目です: ${k}`);
   let labels: VcsConfig['labels'];
   if (v.labels !== undefined) {
     if (!isObject(v.labels)) throw new Error('vcs.labels は { "kept": "…", "modified": "…", "missing": "…", "unattributable": "…" } の形で指定してください');
@@ -69,8 +71,13 @@ function parseVcs(v: unknown): VcsConfig {
   }
   let mode: VcsConfig['mode'] = null;
   if (v.mode !== undefined) {
-    if (v.mode !== 'worktree' && v.mode !== 'committed') throw new Error('vcs.mode は "worktree" か "committed" です');
+    if (v.mode !== 'worktree' && v.mode !== 'committed' && v.mode !== 'fixed') throw new Error('vcs.mode は "worktree"・"committed"・"fixed" のどれかです');
     mode = v.mode;
+  }
+  let lagDays: number | undefined;
+  if (v.lagDays !== undefined) {
+    if (typeof v.lagDays !== 'number' || !Number.isInteger(v.lagDays) || v.lagDays < 1 || v.lagDays > 365) throw new Error('vcs.lagDays には 1〜365 の整数(日数)を指定してください');
+    lagDays = v.lagDays;
   }
   const pathMap: PathMapping[] = [];
   if (v.pathMap !== undefined) {
@@ -88,7 +95,7 @@ function parseVcs(v: unknown): VcsConfig {
       pathMap.push({ from, to });
     });
   }
-  return { pathMap, mode, ...(labels ? { labels } : {}), ...(note ? { note } : {}) };
+  return { pathMap, mode, ...(lagDays ? { lagDays } : {}), ...(labels ? { labels } : {}), ...(note ? { note } : {}) };
 }
 
 const WIKI_LISTS = ['index', 'pages', 'extensions', 'skills'] as const;
