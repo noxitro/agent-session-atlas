@@ -119,6 +119,25 @@ describe('画面の操作', () => {
     expect(await sum()).toBe(splitSum);
   });
 
+  it('m2. モデルと推論強度の効果: 既定は モデル × 推論強度 の行で、「モデルごと」でモデルの数の行になる。リクエストの合計はどちらも同じ', async () => {
+    await page.goto(server.url);
+    const sec = page.locator('#model-value');
+    const rows = sec.getByTestId('model-value-table').locator('tbody tr');
+    const heads = async (): Promise<string[]> => sec.locator('thead th').allInnerTexts();
+    expect(await heads()).toContain('推論強度');
+    expect(await heads()).toContain('AIU / リクエスト');
+    const reqSum = async (): Promise<number> => (await rows.locator('td.req').allInnerTexts()).reduce((a, t) => a + Number(t.replace(/,/g, '')), 0);
+    const splitRows = await rows.count();
+    const splitSum = await reqSum();
+    expect(splitSum).toBeGreaterThan(0);
+    await sec.getByRole('button', { name: 'モデルごと' }).click();
+    await expect.poll(heads).not.toContain('推論強度');
+    expect(await rows.count()).toBeLessThanOrEqual(splitRows);
+    expect(await reqSum()).toBe(splitSum);
+    // 目次から飛べる
+    expect(await page.locator('a[href="#model-value"]').count()).toBeGreaterThan(0);
+  });
+
   it('a. 一覧でチェックした件数だけで集計し、解除すると元に戻る', async () => {
     await page.goto(server.url);
     const all = await shown();
