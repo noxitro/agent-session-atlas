@@ -100,6 +100,14 @@ export function isEmptyFilter(f: FilterState): boolean {
 }
 
 /** セッションの基準時刻(作成日時、無ければ更新日時)。ミリ秒 */
+/** セッションの最終更新の時刻(ミリ秒)。更新日時が無ければ開始日時、どちらも無ければ null。一覧の「最終更新」の並べ替えに使う */
+export function sessionUpdated(s: Pick<Filterable, 'createdAt' | 'updatedAt'>): number | null {
+  const t = s.updatedAt ?? s.createdAt;
+  if (!t) return null;
+  const ms = Date.parse(t);
+  return Number.isNaN(ms) ? null : ms;
+}
+
 export function sessionTime(s: Pick<Filterable, 'createdAt' | 'updatedAt'>): number | null {
   const t = s.createdAt ?? s.updatedAt;
   if (!t) return null;

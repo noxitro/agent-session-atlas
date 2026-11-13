@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Bucket } from '../../lib/aggregate.ts';
-  import { dec, duration, int, pathParts } from '../../lib/format.ts';
+  import { dateTime, dec, duration, int, pathParts } from '../../lib/format.ts';
   import { confidenceLabel } from '../../lib/judgment-labels.ts';
   import SortMark from './SortMark.svelte';
 
@@ -22,9 +22,15 @@
     send?: { projects: string[]; error: string | null; toggle: (project: string, on: boolean) => Promise<void> };
   } = $props();
 
-  type Key = 'label' | 'sessions' | 'input' | 'output' | 'tools' | 'lines' | 'skills' | 'agents' | 'hooks' | 'instructions' | 'wiki' | 'friction' | 'active' | 'human';
+  type Key = 'label' | 'updated' | 'sessions' | 'input' | 'output' | 'tools' | 'lines' | 'skills' | 'agents' | 'hooks' | 'instructions' | 'wiki' | 'friction' | 'active' | 'human';
+  /** 最終更新の時刻(日時の無いものは、新しい順で最後に来るように -Infinity) */
+  const updatedMs = (b: Bucket): number => {
+    const t = b.updatedAt ? Date.parse(b.updatedAt) : NaN;
+    return Number.isNaN(t) ? -Infinity : t;
+  };
   const value: Record<Key, (b: Bucket) => number | string> = {
     label: (b) => b.label,
+    updated: updatedMs,
     sessions: (b) => b.sessions,
     input: (b) => b.tokens.input,
     output: (b) => b.tokens.output,
@@ -75,7 +81,8 @@
     return [...rows].sort((a, b) => {
       const x = f(a);
       const y = f(b);
-      const c = typeof x === 'string' ? x.localeCompare(y as string, 'ja') : x - (y as number);
+      // 日時の無いもの(-Infinity)どうしの差は NaN になるので、同じとみなす
+      const c = typeof x === 'string' ? x.localeCompare(y as string, 'ja') : x === y ? 0 : x - (y as number);
       return c * dir || a.key.localeCompare(b.key);
     });
   });
@@ -89,6 +96,7 @@
     }
   }
   const cols: { key: Key; label: string; title?: string }[] = [
+    { key: 'updated', label: '最終更新', title: 'いちばん後に更新されたセッションの日時' },
     { key: 'sessions', label: 'セッション' },
     { key: 'input', label: '入力トークン', title: '記録のあるセッションだけの合計' },
     { key: 'output', label: '出力トークン' },
@@ -199,6 +207,7 @@
                   <input type="checkbox" checked={sendSet.has(b.key)} disabled={saving.has(b.key) || !!send.error} aria-label={`「${b.label}」を upload-project.bat でまとめて送る`} onchange={(e) => toggleSend(e, b.key)} />
                 </td>
               {/if}
+              <td class="num when">{dateTime(b.updatedAt, '—')}</td>
               <td class="num">{int(b.sessions)}</td>
               <td class="num">
                 {#if b.sessionsWithInput === 0}<span class="missing-value">記録なし</span>{:else}{int(b.tokens.input)}{#if b.sessionsWithInput < b.sessions}<span class="part" title="記録のあるセッション数 / 全セッション数">{b.sessionsWithInput}/{b.sessions}</span>{/if}{/if}
@@ -250,6 +259,9 @@
   }
   .sort:hover {
     text-decoration: underline;
+  }
+  .when {
+    white-space: nowrap;
   }
   .proj {
     font-weight: normal;

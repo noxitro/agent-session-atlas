@@ -1135,4 +1135,29 @@ describe('画面の操作', () => {
       else await writeFile(configPath, before);
     }
   });
+
+  it('l. 最終更新で並べ替え: セッションの一覧とプロジェクト別の表に「最終更新」の列があり、押すと新しい順、もう一度押すと古い順に並ぶ', async () => {
+    await page.goto('about:blank');
+    await page.goto(server.url);
+    /** 表の「最終更新」の列の値(YYYY-MM-DD HH:mm。日時の無いものは除く) */
+    const column = async (table: string): Promise<string[]> => {
+      const heads = await page.locator(`${table} table.ledger thead th`).allInnerTexts();
+      const at = heads.findIndex((h) => h.startsWith('最終更新'));
+      expect(at, `${table} に最終更新の列がある`).toBeGreaterThanOrEqual(0);
+      const cells = await page.locator(`${table} table.ledger tbody tr`).evaluateAll((rows, i) => rows.map((r) => (r.children[i as number] as { innerText?: string } | undefined)?.innerText?.trim() ?? ''), at);
+      return cells.filter((c) => /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(c));
+    };
+    for (const table of ['#sessions', '#projects']) {
+      const head = page.locator(`${table} table.ledger thead th`, { has: page.getByRole('button', { name: /^最終更新/ }) });
+      await head.getByRole('button').click();
+      await expect.poll(() => head.getAttribute('aria-sort')).toBe('descending');
+      const desc = await column(table);
+      expect(desc.length, `${table} に日時のある行がある`).toBeGreaterThan(1);
+      expect(desc).toEqual([...desc].sort().reverse());
+      await head.getByRole('button').click();
+      await expect.poll(() => head.getAttribute('aria-sort')).toBe('ascending');
+      const asc = await column(table);
+      expect(asc).toEqual([...asc].sort());
+    }
+  });
 });
