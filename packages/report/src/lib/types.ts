@@ -19,7 +19,8 @@ import type { VerdictTuple } from './verdicts.ts';
 // 10: person(送り先が人ごとに分けてあるときの、人ごとの内訳)
 // 11: tools.causes(ツールの失敗の要因別の回数)
 // 12: retention(AI の変更がその後の VCS のファイルに残っているか。atlas vcs の結果)
-export const REPORT_DATA_VERSION = 12;
+// 13: exec.modelEfforts(モデル別 × 推論強度別)
+export const REPORT_DATA_VERSION = 13;
 
 /** 推論強度別の [リクエスト, 入力, 出力, nano AIU] */
 export type EffortTuple = [requests: number, input: number, output: number, nanoAiu: number];
@@ -33,6 +34,8 @@ export interface ExecSummary {
   /** 記録が無く既定の interactive とみなしたターン数(modes の interactive に含む) */
   modesInferred: number;
   efforts: Record<string, EffortTuple>;
+  /** モデル → 推論強度 → [リクエスト, 入力, 出力, nano AIU](記録の無い古い sessions.json からは空) */
+  modelEfforts: Record<string, Record<string, EffortTuple>>;
   /** リクエストの起点 → 回数 */
   initiators: Record<string, number>;
   /** 記録が全く無ければ null */

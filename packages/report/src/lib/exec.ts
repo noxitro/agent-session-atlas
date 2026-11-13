@@ -30,7 +30,7 @@ export function quantilesOf(values: number[]): QuantileRow {
   return { n: s.length, median: quantileSorted(s, 0.5), p90: quantileSorted(s, 0.9) };
 }
 
-function orderBy(order: string[]): (a: string, b: string) => number {
+export function orderBy(order: string[]): (a: string, b: string) => number {
   const rank = (k: string): number => {
     if (k === UNKNOWN_KEY) return order.length + 1;
     const i = order.indexOf(k);

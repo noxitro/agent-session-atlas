@@ -16,9 +16,14 @@ export function permissionGroup(kind: string): 0 | 1 | 2 {
 
 function execSummary(r: SessionRecord): ExecSummary {
   const e = r.exec;
-  if (!e) return { modes: {}, modesInferred: 0, efforts: {}, initiators: {}, context: null, latency: {} };
+  if (!e) return { modes: {}, modesInferred: 0, efforts: {}, modelEfforts: {}, initiators: {}, context: null, latency: {} };
   const efforts: Record<string, EffortTuple> = {};
   for (const [k, v] of Object.entries(e.efforts)) efforts[k] = [v.requests, v.input, v.output, v.nanoAiu];
+  const modelEfforts: Record<string, Record<string, EffortTuple>> = {};
+  for (const [m, byEffort] of Object.entries(e.modelEfforts ?? {})) {
+    const to: Record<string, EffortTuple> = (modelEfforts[m] = {});
+    for (const [k, v] of Object.entries(byEffort)) to[k] = [v.requests, v.input, v.output, v.nanoAiu];
+  }
   const c = e.context;
   const anyCtx = c.systemTokens != null || c.conversationTokens != null || c.toolDefinitionsTokens != null || c.availableToolCount != null;
   const latency: ExecSummary['latency'] = {};
@@ -27,6 +32,7 @@ function execSummary(r: SessionRecord): ExecSummary {
     modes: e.modes.byMode,
     modesInferred: e.modes.inferred,
     efforts,
+    modelEfforts,
     initiators: e.initiators,
     context: anyCtx ? [c.systemTokens, c.conversationTokens, c.toolDefinitionsTokens, c.availableToolCount] : null,
     latency,

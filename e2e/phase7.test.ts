@@ -250,6 +250,18 @@ describe('Phase 7 E2E: fixtures', () => {
     expect(rec(14).tokens).toMatchObject({ source: 'db+events', requests: 4, records: { db: 2, events: 2, duplicatesRemoved: 1 } });
     // 明細が無く終了時の累計だけ: セッション中の設定が high だけなので high
     expect(rec(15).exec.efforts).toEqual({ high: { requests: 3, input: 3000, output: 300, nanoAiu: 400_000_000 } });
+    // モデル別 × 推論強度別
+    expect(rec(14).exec.modelEfforts).toEqual({
+      'gpt-5.5': { medium: { requests: 1, input: 1000, output: 100, nanoAiu: 1_000_000_000 }, low: { requests: 1, input: 700, output: 70, nanoAiu: 700_000_000 } },
+      'claude-sonnet-5.5': { xhigh: { requests: 1, input: 2000, output: 300, nanoAiu: 2_000_000_000 }, high: { requests: 1, input: 500, output: 50, nanoAiu: 500_000_000 } },
+    });
+    // 明細が無く終了時の累計だけ: モデル別の累計を、セッション中の設定(high)に入れる
+    expect(rec(15).exec.modelEfforts).toEqual({ 'gpt-5.5': { high: { requests: 3, input: 3000, output: 300, nanoAiu: 400_000_000 } } });
+    expect(p7().byModel.map((r) => [r.model, r.efforts.map((e) => [e.key, e.sessions, e.requests, e.output])])).toEqual([
+      // 強度の順(low < medium < high < xhigh)
+      ['claude-sonnet-5.5', [['high', 1, 1, 50], ['xhigh', 1, 1, 300]]],
+      ['gpt-5.5', [['low', 1, 1, 70], ['medium', 1, 1, 100]]],
+    ]);
     expect(m.byProject[P7].exec.modes).toEqual({ byMode: { interactive: 1, plan: 1, autopilot: 1 }, inferred: 0 });
     expect(m.byProject[P7].exec.efforts.xhigh).toEqual({ requests: 1, input: 2000, output: 300, nanoAiu: 2_000_000_000 });
     // 画面の集計(絞り込み後)
