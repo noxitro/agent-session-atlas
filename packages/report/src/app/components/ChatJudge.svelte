@@ -46,6 +46,8 @@
   const automating = $derived(jobs.running && jobs.job?.kind === m365Kind);
   /** まだ判定し終えていないファイルの数 */
   const remaining = $derived(parts.length - doneParts);
+  /** 依頼の判定で、セッションの最後の依頼だけのファイルの数(採用は判定不能。先頭のファイルの後ろに並ぶ) */
+  const lastOnlyParts = $derived(parts.filter((p) => p.lastOnly).length);
   /** この画面で見た M365 Copilot の自動の判定(動いている間と、終わった後のログ) */
   const m365Job = $derived(jobs.job && jobs.job.kind === m365Kind && jobs.live === jobs.job.id ? jobs.job : null);
   const off = $derived(jobs.running || jobs.busy);
@@ -174,6 +176,15 @@
         {:else if !info.exists || parts.length === 0}まだ作っていません。
         {:else}<strong>作成済み</strong>: {dateTime(info.generatedAt)}({info.unjudgedOnly ? '未判定だけ' : '全件'}、{int(parts.length)} ファイル)。取り込み済み <strong>{int(doneParts)}</strong> / {int(parts.length)} ファイル。次の手順 2 へ進んでください。{/if}
       </p>
+      {#if made && info?.decidable && lastOnlyParts > 0}
+        <p class="state" data-testid="chat-decidable">
+          {#if info.decidable.turns > 0}
+            採用を判定できる依頼(次の依頼がある依頼)は {int(info.decidable.turns)} 件で、先頭の <strong>{int(info.decidable.parts)}</strong> ファイルに入っています。その後ろの {int(lastOnlyParts)} ファイルはセッションの最後の依頼だけで、種類と工程だけが決まります(採用は判定不能)。採用率だけを見たいときは、先頭の {int(info.decidable.parts)} ファイルで止められます。
+          {:else}
+            どのファイルもセッションの最後の依頼だけです。種類と工程だけが決まります(採用は判定不能)。
+          {/if}
+        </p>
+      {/if}
       <button type="button" class="btn" disabled={off || pending === 0} data-testid="chat-bundle" onclick={makeBundle}>
         {bundling
           ? '作っています…'
@@ -210,6 +221,7 @@
           <button type="button" class="btn" onclick={() => void copyPart(next)}>本文をコピー</button>
         </div>
         <p class="hint">ファイルはブラウザの保存先(ふつうは「ダウンロード」フォルダー)に入ります。チャットの添付でそのファイルを選びます。</p>
+        {#if next.lastOnly && info?.decidable?.turns}<p class="hint" data-testid="chat-next-last-only">このファイルから後ろは、セッションの最後の依頼だけです(種類と工程だけが決まります)。採用率だけを見たいときは、ここで止めて手順 4 へ進めます。</p>{/if}
       {:else if parts.length}
         <p class="next" data-testid="chat-next">すべてのファイルを取り込みました。</p>
       {:else}
@@ -250,7 +262,7 @@
               <tbody>
                 {#each parts as p (p.name)}
                   <tr class:done={p.judged >= p.sessions}>
-                    <td>{stem(p)}</td>
+                    <td>{stem(p)}{#if p.lastOnly}<span class="last-only">最後の依頼だけ</span>{/if}</td>
                     <td class="num">{int(p.sessions)}</td>
                     <td>{partState(p)}</td>
                     <td class="row-acts"><a href={p.path} download={saveName(p)}>ダウンロード</a><button type="button" class="link" onclick={() => void copyPart(p)}>コピー</button></td>
@@ -469,6 +481,11 @@
   }
   .list tr.done td {
     color: var(--ink-3);
+  }
+  .list .last-only {
+    margin-left: 8px;
+    font-size: 0.6875rem;
+    color: var(--ink-2);
   }
   .row-acts {
     white-space: nowrap;

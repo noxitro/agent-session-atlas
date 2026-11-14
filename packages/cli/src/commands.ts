@@ -41,6 +41,7 @@ import {
   importJudgments,
   readJudgments,
   buildTurnBundle,
+  decidableNote,
   importTurnJudgmentsText,
   readTurnJudgments,
   runTurnJudge,
@@ -555,6 +556,8 @@ export async function runTurns(p: Paths, f: SessionFilter, t: TurnsCliOptions, l
     log(
       `turns bundle: 依頼 ${m.count} 件${t.unjudged ? '(判定済みを除く)' : ''}を、M365 Copilot などに添付する ${m.parts.length} ファイル(parts/)と、GitHub Copilot CLI で 1 回ずつ渡す ${m.chunks.length} 個の塊にしました → ${p.turnBundle}${m.skipped.length ? `。本文が読めず外したセッション ${m.skipped.length} 件` : ''}`,
     );
+    const note = decidableNote(m);
+    if (note) log(`turns bundle: ${note}`);
     log(`turns bundle: 工程名 ${phases.join(' / ')}(atlas.config.json の phases で変えられます)`);
     return;
   }

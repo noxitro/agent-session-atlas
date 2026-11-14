@@ -4,6 +4,7 @@
 //  f1. 「チャットに貼る」: 作り直しに失敗したら、ダイアログに失敗・理由・ログが出て、前に作った添付ファイルはそのまま使える。閉じたらもう出ない
 //  f1b. 「チャットに貼る」: 作るのを止めたら、止めたことと、使える添付ファイルがあるかが出る。この画面で動くのを見ていない処理は出ない
 //  f2. 「チャットに貼る」: 添付ファイルを作り、保存のリンクと本文のコピーが働き、形の違う返答は理由を出して取り込まず、正しい返答を取り込んで反映できる
+//  f2b. 「チャットに貼る」(依頼ごとの採用): 採用を判定できる依頼が先頭の何ファイルまでかが出て、一覧の最後の依頼だけのファイルに印が付く
 //  g. 詳細ページの「記録を読む」「全文を作って読む」で本文が描かれ、記録に混ぜた script やイベント属性は実行されない
 //  h. file:// で開いた atlas.html と詳細ページには操作が出ない
 // どの画面でもページ内の例外とコンソールのエラーが無いこと。
@@ -319,6 +320,38 @@ describe('画面からの操作(Phase 14)', () => {
     // 初期フォーカスは表題の横の「閉じる」で、開いたときは表題から見える
     expect(await page.evaluate<string | undefined>('document.activeElement?.dataset.testid')).toBe('judge-close');
     expect(await dialog.evaluate((d) => d.scrollTop)).toBe(0);
+    await page.getByTestId('chat-close').click();
+    await dialog.waitFor({ state: 'hidden' });
+  });
+
+  it('f2b. 「チャットに貼る」(依頼ごとの採用): 採用を判定できる依頼が先頭の何ファイルまでかを出し、一覧で最後の依頼だけのファイルに印を付ける', async () => {
+    await page.goto(server.url);
+    const dialog = page.getByTestId('judge-dialog');
+    await page.getByTestId('job-judge').click();
+    await dialog.waitFor({ state: 'visible' });
+    await page.getByTestId('judge-target-turns').check();
+    await page.getByTestId('judge-method-chat').check();
+    await page.getByTestId('chat-judge').waitFor({ state: 'visible' });
+    await expect.poll(() => page.getByTestId('chat-bundle').isEnabled()).toBe(true);
+    await page.getByTestId('chat-bundle').click();
+    // 依頼の判定がまだ 1 件も無いので、未判定だけで作っても「全件」と出る
+    await expect.poll(() => page.getByTestId('chat-bundle-state').innerText(), { timeout: 60_000 }).toMatch(/全件、\d+ ファイル/);
+    const m = JSON.parse(await readFile(join(out, 'turn-bundle', 'manifest.json'), 'utf8')) as { count: number; parts: unknown[]; decidable: { turns: number; parts: number } };
+    // fixture には、依頼が 2 件以上のセッション(判定できる依頼)と、どのセッションにもある最後の依頼の両方がある
+    expect(m.decidable.turns).toBeGreaterThan(0);
+    expect(m.parts.length).toBeGreaterThan(m.decidable.parts);
+    const note = await page.getByTestId('chat-decidable').innerText();
+    expect(note).toContain(`採用を判定できる依頼(次の依頼がある依頼)は ${m.decidable.turns} 件で、先頭の ${m.decidable.parts} ファイルに入っています`);
+    expect(note).toContain(`その後ろの ${m.parts.length - m.decidable.parts} ファイルはセッションの最後の依頼だけ`);
+    // 次に渡すのは先頭のファイル(判定できる依頼)なので、「ここで止められる」の案内はまだ出ない
+    expect(await page.getByTestId('chat-save').getAttribute('href')).toBe('turn-bundle/parts/part-01.md');
+    expect(await page.getByTestId('chat-next-last-only').count()).toBe(0);
+    // 一覧では、先頭のファイルの後ろに「最後の依頼だけ」の印
+    await dialog.locator('details.list summary').click();
+    const rows = dialog.locator('details.list tbody tr');
+    expect(await rows.count()).toBe(m.parts.length);
+    const marked = (await rows.allInnerTexts()).map((t) => t.includes('最後の依頼だけ'));
+    expect(marked).toEqual(m.parts.map((_, i) => i >= m.decidable.parts));
     await page.getByTestId('chat-close').click();
     await dialog.waitFor({ state: 'hidden' });
   });
