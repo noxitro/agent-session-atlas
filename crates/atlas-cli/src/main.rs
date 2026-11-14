@@ -4,9 +4,24 @@ mod args;
 mod chat_parts;
 mod commands;
 mod config;
+// 段 5(serve の画面・open)が使う関数を含む。今はまだ呼ばれないものがある
+#[allow(dead_code)]
+mod folder_picker;
+#[allow(dead_code)]
+mod folders;
+mod group_upload;
+mod jobs;
 mod m365;
+mod open_reuse;
 mod paths;
+mod self_update;
+mod setup;
+mod sys;
 mod tables;
+mod upload_auto;
+mod upload_auto_files;
+mod upload_project;
+mod upload_schedule;
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -16,6 +31,15 @@ fn main() -> ExitCode {
     // 判定の通し(TS 版の judge-flow.ts / npm run atlas:judge)。引数の解釈が違うので、先に振り分ける
     if argv.first().is_some_and(|a| a == "judge-flow") {
         return ExitCode::from(commands::judge_flow::main(&argv[1..]));
+    }
+    // .bat から動かす入口(TS 版では packages/cli/src/ の別のファイル。setup.ts・upload-project.ts・upload-schedule.ts・upload-auto.ts)。
+    // 使い方には出さない。引数と出力は TS 版の各ファイルと同じ
+    match argv.first().map(String::as_str) {
+        Some("setup") => return ExitCode::from(setup::main(&argv[1..])),
+        Some("upload-project") => return ExitCode::from(upload_project::main(&argv[1..])),
+        Some("upload-schedule") => return ExitCode::from(upload_schedule::main(&argv[1..])),
+        Some("upload-auto") => return ExitCode::from(upload_auto::main(&argv[1..])),
+        _ => {}
     }
     let opts = match args::parse_cli(&argv) {
         Ok(o) => o,

@@ -211,7 +211,7 @@ fn num_or_null(v: Option<&Value>) -> Option<f64> {
     present(v).and_then(Value::as_f64)
 }
 
-fn from_usage_record(e: &CopilotEvent) -> Option<UsageItem> {
+pub fn from_usage_record(e: &CopilotEvent) -> Option<UsageItem> {
     let u = e.data.as_ref()?.get("usage").filter(|u| truthy(Some(u)))?;
     let model = str_of(u.get("model"))?;
     let initiator = present(u.get("initiator"));

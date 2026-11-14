@@ -7,9 +7,10 @@ use crate::m365::{powershell_driver, run_m365_judge, M365Options, M365Paths, M36
 use crate::paths::{resolve_paths, PathInputs, Paths};
 use anyhow::Result;
 use atlas_core::jsnum::to_fixed;
-use std::path::PathBuf;
 use std::time::Duration;
 
+mod all;
+pub mod build;
 mod bundle;
 mod extract;
 pub(crate) mod judge;
@@ -34,10 +35,7 @@ pub(crate) fn mb(b: u64) -> String {
 }
 
 /// build・export・all の結果(main がレポートの場所を出す)
-#[derive(Debug, Clone, Default)]
-pub struct BuildResult {
-    pub html_path: PathBuf,
-}
+pub use build::BuildResult;
 
 /// judge run の結果(失敗したセッションがあれば終了コード 1)
 #[derive(Debug, Clone, Default)]
@@ -113,7 +111,11 @@ pub fn run_command(o: &CliOptions, p: &Paths, log: Log<'_>) -> Result<RunResult>
             vcs::run_vcs(p, log, o.vcs_mode.as_deref(), o.config.as_deref())?;
             Ok(RunResult::of(p))
         }
-        "build" | "export" => Err(not_ported(&o.command)),
+        "build" | "export" => {
+            let transcripts = (o.command == "export").then(|| build::TranscriptCli { tool_output: o.tool_output, max_chars: o.max_chars, full: o.full });
+            let b = build::run_build(p, &build::BuildOptions { filter: metrics::SessionFilter::from_cli(o), anonymize: o.anonymize, transcripts }, log)?;
+            Ok(RunResult { build: Some(b), ..RunResult::of(p) })
+        }
         "bundle" => {
             bundle::run_bundle(p, &metrics::SessionFilter::from_cli(o), &bundle::BundleCliOptions { include_empty: o.include_empty, per_part: o.per_part, unjudged: o.unjudged }, log)?;
             Ok(RunResult::of(p))
@@ -133,7 +135,15 @@ pub fn run_command(o: &CliOptions, p: &Paths, log: Log<'_>) -> Result<RunResult>
             }
             Ok(RunResult { judge: judge::run_judge_command(p, j, log)?, ..RunResult::of(p) })
         }
-        "group" => Err(not_ported("group")),
+        "group" => {
+            // TODO(段 5): list / add / remove / export も移す
+            let g = o.group_cmd.as_ref().ok_or_else(|| anyhow::anyhow!("group の操作がありません"))?;
+            if g.action != "upload" {
+                return Err(not_ported(&format!("group {}", g.action)));
+            }
+            crate::group_upload::run_group_upload(p, g.name.as_deref().unwrap_or(""), g.to.as_deref(), g.force, o.config.as_deref(), log)?;
+            Ok(RunResult::of(p))
+        }
         "memo" => Err(not_ported("memo")),
         "serve" => Err(not_ported("serve")),
         "skill-draft" => {
@@ -142,7 +152,7 @@ pub fn run_command(o: &CliOptions, p: &Paths, log: Log<'_>) -> Result<RunResult>
             Ok(RunResult::of(p))
         }
         "open" => Err(not_ported("open")),
-        "all" => Err(not_ported("all")),
+        "all" => Ok(RunResult { build: Some(all::run_all(o, p, log)?), ..RunResult::of(p) }),
         other => Err(anyhow::anyhow!("不明なコマンドです: {other}")),
     }
 }

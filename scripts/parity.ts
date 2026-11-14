@@ -14,6 +14,7 @@ import { join, relative, resolve, dirname, sep } from 'node:path';
 import { parseArgs } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
+import { dateTime } from '../packages/report/src/lib/format.ts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const TS_CLI = join(ROOT, 'packages', 'cli', 'src', 'main.ts');
@@ -174,10 +175,27 @@ function firstTextDiff(a: string, b: string): string {
   return `${line} 行目付近(文字 ${i})\n      TS:   ${ctx(a)}\n      Rust: ${ctx(b)}`;
 }
 
+/**
+ * build の生成日時(insights.json の generatedAt)は実行のたびに変わる。ページ・記録(.html・.md)の本文に書く生成日時は、
+ * Rust 側の値(ISO と画面の「YYYY-MM-DD HH:mm」)を TS 側の値に読み替えて比べる
+ */
+function generatedSwaps(): [string, string][] {
+  const gen = (dir: string): string | null => {
+    try {
+      return (JSON.parse(readFileSync(join(dir, 'insights.json'), 'utf8')) as { generatedAt?: string }).generatedAt ?? null;
+    } catch {
+      return null;
+    }
+  };
+  const [a, b] = [gen(outTs), gen(outRs)];
+  return a && b && a !== b ? [[b, a], [dateTime(b), dateTime(a)]] : [];
+}
+
 function compare(before: Map<string, string>): { files: number; diffs: string[] } {
   const ts = listFiles(outTs);
   const rs = listFiles(outRs);
   const diffs: string[] = [];
+  const swaps = generatedSwaps();
   let files = 0;
   for (const [rel, p] of ts) {
     // この工程で変わっていないファイルは比べない
@@ -210,7 +228,9 @@ function compare(before: Map<string, string>): { files: number; diffs: string[] 
       }
       if (da !== db) diffs.push(`${rel}: SQLite の中身が違う ${firstTextDiff(da, db)}`);
     } else {
-      const [ta, tb] = [a.toString('utf8'), sameDir(b.toString('utf8')) as string];
+      let tb = sameDir(b.toString('utf8')) as string;
+      for (const [from, to] of swaps) tb = tb.split(from).join(to);
+      const ta = a.toString('utf8');
       if (ta !== tb) diffs.push(`${rel}: ${firstTextDiff(ta, tb)}`);
     }
   }
