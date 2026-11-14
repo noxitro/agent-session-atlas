@@ -2,6 +2,7 @@
 //   chunks: 1 セッションの続いた依頼を数件ずつ(copilot -p に 1 回で渡せる大きさ)。次の依頼の文は、成果の扱いを決める材料として必ず添える
 //   parts/part-<番号>.md: 判定の指示・JSON Schema と、塊を数個まとめたもの(M365 Copilot などに 1 ファイルずつ添付する)
 //   manifest.json: 塊と分割ファイルの一覧
+// 塊は、次の依頼の文がある依頼(成果の扱いを判定できる依頼)を含むものを先に並べる。
 // 依頼の区切りは core の normalize と同じ(本体の依頼。autopilot の自動継続・サブエージェントは除く。先頭 200 依頼まで)。
 import { existsSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
@@ -267,6 +268,11 @@ export interface TurnBundleManifest {
   phases: string[];
   /** 判定する依頼の数 */
   count: number;
+  /**
+   * 次の依頼の文があり、成果の扱いを判定できる依頼の数(turns)と、それが入っている先頭の分割ファイルの数(parts)。
+   * 残りはセッションの最後の依頼で、扱いは判定不能になる(種類と工程だけが決まる)。古い manifest には無い
+   */
+  decidable?: { turns: number; parts: number };
   /** 判定済みを除いて作ったか */
   unjudgedOnly: boolean;
   chunks: { sessionId: string; turns: number[]; chars: number }[];
@@ -301,7 +307,8 @@ async function writeTurnBundle(sessions: SessionRecord[], o: TurnBundleOptions, 
   const limits = o.limits ?? DEFAULT_TURN_LIMITS;
   const generatedAt = (o.now?.() ?? new Date()).toISOString();
   await mkdir(join(dir, 'parts'), { recursive: true });
-  const chunks: TurnChunk[] = [];
+  // 塊と、その中で次の依頼の文がある依頼(成果の扱いを判定できる依頼)の数
+  const found: { chunk: TurnChunk; withNext: number }[] = [];
   const skipped: TurnBundleManifest['skipped'] = [];
   for (const s of sessions) {
     if (!s.analysis?.turnStats?.length) continue;
@@ -314,8 +321,13 @@ async function writeTurnBundle(sessions: SessionRecord[], o: TurnBundleOptions, 
     const all = sessionTurns(s).map((r) => r.index);
     const only = done ? new Set(all.filter((n) => !done.has(n))) : null;
     if (only && only.size === 0) continue;
-    chunks.push(...chunksOf(s, texts, only, limits));
+    for (const chunk of chunksOf(s, texts, only, limits)) found.push({ chunk, withNext: chunk.turns.filter((n) => n < texts.requests.length).length });
   }
+  // 次の依頼の文がある依頼を含む塊を先に並べる(セッションの最後の依頼だけの塊は、成果の扱いが必ず判定不能になるので後ろへ。
+  // 1 依頼だけのセッションが多いと、先頭のファイルが判定不能ばかりになるため)。それぞれの中の並びは元のまま
+  const ordered = [...found.filter((f) => f.withNext > 0), ...found.filter((f) => f.withNext === 0)];
+  const chunks = ordered.map((f) => f.chunk);
+  const withNext = new Map(ordered.map((f) => [f.chunk, f.withNext]));
   // 分割ファイル: 塊を順に詰め、依頼の数の上限で区切る(塊は分けない)
   const groups: TurnChunk[][] = [];
   for (const c of chunks) {
@@ -340,6 +352,7 @@ async function writeTurnBundle(sessions: SessionRecord[], o: TurnBundleOptions, 
     generatedAt,
     phases: [...o.phases],
     count: total,
+    decidable: { turns: ordered.reduce((a, f) => a + f.withNext, 0), parts: groups.filter((g) => g.some((c) => withNext.get(c)! > 0)).length },
     unjudgedOnly: !!o.judged,
     chunks: chunks.map((c) => ({ sessionId: c.sessionId, turns: c.turns, chars: c.markdown.length })),
     parts,

@@ -555,6 +555,12 @@ export async function runTurns(p: Paths, f: SessionFilter, t: TurnsCliOptions, l
     log(
       `turns bundle: 依頼 ${m.count} 件${t.unjudged ? '(判定済みを除く)' : ''}を、M365 Copilot などに添付する ${m.parts.length} ファイル(parts/)と、GitHub Copilot CLI で 1 回ずつ渡す ${m.chunks.length} 個の塊にしました → ${p.turnBundle}${m.skipped.length ? `。本文が読めず外したセッション ${m.skipped.length} 件` : ''}`,
     );
+    if (m.decidable && m.decidable.turns < m.count)
+      log(
+        m.decidable.turns
+          ? `turns bundle: 採用を判定できる依頼(次の依頼がある依頼)は ${m.decidable.turns} 件で、先頭の ${m.decidable.parts} ファイルに入れました。残りの ${m.count - m.decidable.turns} 件はセッションの最後の依頼で、種類と工程だけが決まります(採用は判定不能)`
+          : `turns bundle: ${m.count} 件はどれもセッションの最後の依頼で、種類と工程だけが決まります(採用は判定不能)`,
+      );
     log(`turns bundle: 工程名 ${phases.join(' / ')}(atlas.config.json の phases で変えられます)`);
     return;
   }

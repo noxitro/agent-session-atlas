@@ -143,6 +143,30 @@ describe('判定に渡すファイル', () => {
     expect(await readdir(join(d, 'tb', 'chunks'))).toEqual(['0001.md']);
   });
 
+  it('次の依頼がある依頼(採用を判定できる依頼)を含む塊を先に並べ、セッションの最後の依頼だけの塊は後ろへ回す', async () => {
+    // 1 依頼だけのセッション 2 つ(s0・s9)で、8 依頼のセッション s1 を挟む
+    const singles: SessionRecord[] = [];
+    for (const id of ['s0', 's9']) {
+      const events: CopilotEvent[] = [ev(0, 'session.start', { context: { cwd: 'X:\\p' } }), ev(1000, 'user.message', { content: `${id} の依頼` }), ev(1100, 'assistant.message', { content: `${id} の応答` })];
+      singles.push(await normalizeSession({ id, events }));
+      await mkdir(join(d, 'snapshot', 'session-state', id), { recursive: true });
+      await writeFile(join(d, 'snapshot', 'session-state', id, 'events.jsonl'), events.map((e) => JSON.stringify(e)).join('\n'));
+    }
+    const o = { bundleDir: join(d, 'tb'), snapshotDir: join(d, 'snapshot'), phases: PHASES, limits: { ...DEFAULT_TURN_LIMITS, partTurns: 6 } };
+    const m = await buildTurnBundle([singles[0], s, singles[1]], o);
+    expect(m.chunks.map((c) => `${c.sessionId}:${c.turns.join(',')}`)).toEqual(['s1:1,2,3,4,5,6', 's1:7,8', 's0:1', 's9:1']);
+    // 判定できるのは s1 の依頼 1〜7(8 は最後の依頼)。分割ファイルは [s1 の 1〜6] [s1 の 7・8、s0、s9]
+    expect(m).toMatchObject({ count: 10, decidable: { turns: 7, parts: 2 } });
+    expect(m.parts.map((p) => p.chunks.map((c) => c.sessionId).join())).toEqual(['s1', 's1,s0,s9']);
+    // 塊の本文の番号(copilot -p が読む)も同じ並び
+    expect(await readFile(join(d, 'tb', 'chunks', '0001.md'), 'utf8')).toContain('セッション s1');
+    expect(await readFile(join(d, 'tb', 'chunks', '0003.md'), 'utf8')).toContain('セッション s0');
+    // 判定済みを除いた結果、最後の依頼だけが残ったセッションは後ろへ回る
+    const rest = await buildTurnBundle([s, singles[0]], { ...o, judged: new Map([['s1', new Set([1, 2, 3, 4, 5, 6, 7])]]) });
+    expect(rest.chunks.map((c) => `${c.sessionId}:${c.turns.join(',')}`)).toEqual(['s1:8', 's0:1']);
+    expect(rest.decidable).toEqual({ turns: 0, parts: 0 });
+  });
+
   it('作り直しが途中で失敗しても、前に作ったもの(一覧と、それが指すファイル)はそのまま使える。作りかけは残さない', async () => {
     const stop = (): string => {
       throw new Error('途中で止まった');
