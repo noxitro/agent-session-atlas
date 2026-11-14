@@ -17,15 +17,9 @@ use std::sync::LazyLock;
 
 pub const CONFIG_FILE: &str = "atlas.config.json";
 
-/// AI の変更の残存の状態(core の vcs-retention.ts の RETENTION_STATUSES)。TODO(段 2): vcs_retention.rs に寄せる
-pub const RETENTION_STATUSES: [&str; 4] = ["kept", "modified", "missing", "unattributable"];
-
-/// ログのパス → 今の場所(core の vcs-step.ts の PathMapping)。TODO(段 2): vcs_step.rs に寄せる
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PathMapping {
-    pub from: String,
-    pub to: String,
-}
+// AI の変更の残存の状態の名前と、ログのパス → 今の場所の対応づけは core の vcs_retention.rs・vcs_step.rs のもの
+use atlas_core::vcs_retention::RETENTION_STATUS_NAMES as RETENTION_STATUSES;
+pub use atlas_core::vcs_step::PathMapping;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

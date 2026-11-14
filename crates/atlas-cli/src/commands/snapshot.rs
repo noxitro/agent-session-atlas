@@ -1,22 +1,11 @@
 //! atlas snapshot(packages/cli/src/commands.ts の runSnapshot の移植)。ログの文言は TS 版と同じ(所要時間だけ違う)。
 
-use super::Log;
+use super::{mb, ms, Log};
 use crate::paths::Paths;
 use anyhow::{Result, bail};
-use atlas_core::jsnum::to_fixed;
 use atlas_core::snapshot::{self, SnapshotManifest, SnapshotOptions, SourceShape, UPLOAD_OLD_ONLY_REASON, UPLOAD_PROBE_HINT, describe_source, upload_work_dir_id};
 use std::collections::HashSet;
-use std::time::{Duration, Instant};
-
-/// 所要時間(TS 版の ms())
-pub(crate) fn ms(d: Duration) -> String {
-    format!("{} 秒", to_fixed(d.as_secs_f64(), 1))
-}
-
-/// 容量(TS 版の mb())
-pub(crate) fn mb(b: u64) -> String {
-    format!("{} MB", to_fixed(b as f64 / 1024.0 / 1024.0, 2))
-}
+use std::time::Instant;
 
 /// path.basename(Windows では \ と / の両方で区切る)
 fn basename(p: &str) -> &str {
@@ -118,6 +107,7 @@ pub fn run_snapshot(p: &Paths, since: Option<&str>, log: Log<'_>, all: bool, pru
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn formats_like_ts() {

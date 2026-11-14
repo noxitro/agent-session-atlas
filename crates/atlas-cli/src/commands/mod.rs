@@ -4,13 +4,27 @@
 use crate::args::CliOptions;
 use crate::paths::{resolve_paths, PathInputs, Paths};
 use anyhow::Result;
+use atlas_core::jsnum::to_fixed;
 use std::path::PathBuf;
+use std::time::Duration;
 
 mod extract;
+mod metrics;
 mod snapshot;
+mod vcs;
 
 /// 進み具合を 1 行ずつ出す先(TS 版の Log)
 pub type Log<'a> = &'a (dyn Fn(&str) + Sync);
+
+/// 所要時間(TS 版の ms())
+pub(crate) fn ms(d: Duration) -> String {
+    format!("{} 秒", to_fixed(d.as_secs_f64(), 1))
+}
+
+/// 容量(TS 版の mb())
+pub(crate) fn mb(b: u64) -> String {
+    format!("{} MB", to_fixed(b as f64 / 1024.0 / 1024.0, 2))
+}
 
 /// build・export・all の結果(main がレポートの場所を出す)
 #[derive(Debug, Clone, Default)]
@@ -63,8 +77,14 @@ pub fn run_command(o: &CliOptions, p: &Paths, log: Log<'_>) -> Result<RunResult>
             extract::run_extract(p, o.since.as_deref(), log, o.temp_dirs.as_deref(), o.config.as_deref())?;
             Ok(RunResult::of(p))
         }
-        "metrics" => Err(not_ported("metrics")),
-        "vcs" => Err(not_ported("vcs")),
+        "metrics" => {
+            metrics::run_metrics(p, &metrics::SessionFilter::from_cli(o), log, true)?;
+            Ok(RunResult::of(p))
+        }
+        "vcs" => {
+            vcs::run_vcs(p, log, o.vcs_mode.as_deref(), o.config.as_deref())?;
+            Ok(RunResult::of(p))
+        }
         "build" | "export" => Err(not_ported(&o.command)),
         "bundle" => Err(not_ported("bundle")),
         "turns" => Err(not_ported("turns")),

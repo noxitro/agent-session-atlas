@@ -1,6 +1,6 @@
 //! atlas extract(packages/cli/src/commands.ts の runExtract の移植)。ログの文言は TS 版と同じ(所要時間だけ違う)。
 
-use super::snapshot::ms;
+use super::ms;
 use super::Log;
 use crate::config::{load_config, CONFIG_FILE};
 use crate::paths::{resolve, Paths, REPO_ROOT};

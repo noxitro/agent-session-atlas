@@ -6,7 +6,7 @@
 // - 工程ごとに、TS 版の 1 つ前までの出力を Rust 側へ写してから同じ工程を両方で動かし、その工程で変わったファイルを比べる
 //   (前の工程のずれが後ろの工程に持ち越されない)。snapshot/ は snapshot 工程の後は共有する(後ろの工程は読むだけ)。
 // - JSON は値で比べる(キーの順も見る)。数値は相対 1e-9 まで同じとみなす。SQLite(.db・.sqlite)は中身(dumpSqlite)で、それ以外のファイルはバイト単位で比べる。
-// - 実行のたびに変わる値(時刻・所要時間)は IGNORE_KEYS(どの深さでも)と IGNORE_PATHS(ファイルと場所を決めて)で比べない。
+// - 実行のたびに変わる値(時刻・所要時間)は IGNORE_KEYS(どの深さでも)と IGNORE_PATHS(ファイルと場所を決めて。[*] は配列のどの添字にも当たる)で比べない。
 // - Rust 版は既定で target/release/atlas(.exe)、無ければ target/debug/atlas(.exe)。
 import { spawnSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync } from 'node:fs';
@@ -31,7 +31,11 @@ const IGNORE_PATHS: Record<string, readonly string[]> = {
   'snapshot/snapshot-manifest.json': ['$.createdAt'],
   'snapshot/snapshot-source.json': ['$.startedAt'],
   'snapshot/desktop.json': ['$.readAt'],
+  // この PC で照合したときの照合した時刻(照合を始めた時刻)
+  'vcs-retention.json': ['$.sessions[*].evaluated.at'],
 };
+/** IGNORE_PATHS に当たるか([*] は配列のどの添字にも当たる) */
+const ignored = (ignore: readonly string[], path: string): boolean => ignore.includes(path) || ignore.includes(path.replace(/\[\d+\]/g, '[*]'));
 /** 比べないファイル(実行の記録・ロックなど) */
 const IGNORE_FILES = [/\.lock$/, /\.serve\.json$/, /(^|[\\/])\.built\.json$/];
 
@@ -110,7 +114,7 @@ type Diff = string;
 const sameDir = (v: unknown): unknown => (typeof v === 'string' ? v.split(outRs).join(outTs).split(notesRs).join(notesTs) : v);
 
 function cmpJson(a: unknown, b: unknown, path: string, out: Diff[], ignore: readonly string[] = []): void {
-  if (out.length >= maxDiffs || ignore.includes(path)) return;
+  if (out.length >= maxDiffs || ignored(ignore, path)) return;
   if (typeof a === 'number' && typeof b === 'number') {
     if (a === b) return;
     const d = Math.abs(a - b) / Math.max(Math.abs(a), Math.abs(b), 1e-300);
@@ -130,7 +134,7 @@ function cmpJson(a: unknown, b: unknown, path: string, out: Diff[], ignore: read
     for (let i = 0; i < Math.min(a.length, b.length); i++) cmpJson(a[i], b[i], `${path}[${i}]`, out, ignore);
     return;
   }
-  const kept = (k: string): boolean => !IGNORE_KEYS.has(k) && !ignore.includes(`${path}.${k}`);
+  const kept = (k: string): boolean => !IGNORE_KEYS.has(k) && !ignored(ignore, `${path}.${k}`);
   const ka = Object.keys(a as object).filter(kept);
   const kb = Object.keys(b as object).filter(kept);
   const missing = ka.filter((k) => !kb.includes(k));

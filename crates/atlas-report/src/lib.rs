@@ -1,14 +1,5 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! atlas-report: packages/report の Node 側と、build が使う lib/* の移植。移植の方針は docs/rust-migration.md。
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub mod filter;
+pub mod groups;
+pub mod verdicts;

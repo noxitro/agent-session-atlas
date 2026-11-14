@@ -4,6 +4,7 @@ mod args;
 mod commands;
 mod config;
 mod paths;
+mod tables;
 
 use std::io::Write;
 use std::process::ExitCode;
