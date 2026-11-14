@@ -19,7 +19,7 @@ export { parseAgentJsonl, itemFromTexts } from './backends/output.ts';
 export { resolveCommand } from './backends/proc.ts';
 export { TURN_JUDGMENTS_VERSION, turnItemProblems, validateTurnJudgments, readTurnJudgments, writeTurnJudgments, mergeTurnJudgments, emptyTurnJudgments, importTurnJudgmentsText, turnJsonSchema } from './turn-schema.ts';
 export type { TurnJudgment, TurnJudgmentsFile, TurnImportResult } from './turn-schema.ts';
-export { buildTurnBundle, collectTurnTexts, chunksOf, renderTurnChunk, buildTurnPrompt, renderTurnPartInstructions, turnRubric, DEFAULT_TURN_LIMITS, TURN_BUNDLE_VERSION } from './turn-bundle.ts';
+export { buildTurnBundle, collectTurnTexts, chunksOf, decidableNote, renderTurnChunk, buildTurnPrompt, renderTurnPartInstructions, turnRubric, DEFAULT_TURN_LIMITS, TURN_BUNDLE_VERSION } from './turn-bundle.ts';
 export type { TurnBundleManifest, TurnChunk, TurnLimits, TurnTexts } from './turn-bundle.ts';
 export { runTurnJudge, readTurnBundleManifest, turnImportPhases, turnItemsFromTexts } from './turn-run.ts';
 export type { TurnRunSummary } from './turn-run.ts';

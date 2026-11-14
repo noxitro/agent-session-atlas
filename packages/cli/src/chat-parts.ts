@@ -17,6 +17,8 @@ export interface ChatPart {
   /** そのうち判定済みの数 */
   judged: number;
   bytes: number;
+  /** 依頼の判定で、セッションの最後の依頼だけのファイルか(採用は判定不能で、種類と工程だけが決まる)。古い添付には無い */
+  lastOnly?: boolean;
 }
 
 export interface ChatParts {
@@ -25,6 +27,8 @@ export interface ChatParts {
   unjudgedOnly?: boolean;
   count?: number;
   parts?: ChatPart[];
+  /** 依頼の判定で、採用を判定できる依頼の数(turns)と、それが入っている先頭のファイルの数(parts)。古い添付には無い */
+  decidable?: { turns: number; parts: number };
 }
 
 /** judgments.json にあるセッション id(無ければ空。読めなければ例外) */
@@ -59,16 +63,20 @@ export async function listChatParts(outDir: string, target: ChatTarget): Promise
     if (!existsSync(join(dir, 'manifest.json'))) return { exists: false };
     const m = await readTurnBundleManifest(dir);
     const judged = await judgedTurnKeys(outDir);
+    const d = m.decidable;
     const parts = m.parts
-      .filter((p) => existsSync(join(dir, ...p.path.split('/'))))
-      .map((p) => ({
+      // 先頭の d.parts ファイルが採用を判定できる依頼で、その後ろは最後の依頼だけ(消えたファイルを除く前の番号で決める)
+      .map((p, i) => ({ p, lastOnly: d ? i >= d.parts : undefined }))
+      .filter(({ p }) => existsSync(join(dir, ...p.path.split('/'))))
+      .map(({ p, lastOnly }) => ({
         path: `turn-bundle/${p.path}`,
         name: p.path.split('/').pop()!,
         sessions: p.turns,
         judged: p.chunks.reduce((a, c) => a + c.turns.filter((t) => judged.has(`${c.sessionId}#${t}`)).length, 0),
         bytes: p.bytes,
+        ...(lastOnly === undefined ? {} : { lastOnly }),
       }));
-    return { exists: true, generatedAt: m.generatedAt, unjudgedOnly: m.unjudgedOnly, count: m.count, parts };
+    return { exists: true, generatedAt: m.generatedAt, unjudgedOnly: m.unjudgedOnly, count: m.count, parts, ...(d ? { decidable: { turns: d.turns, parts: d.parts } } : {}) };
   }
   const dir = join(outDir, 'bundle');
   if (!existsSync(join(dir, 'manifest.json'))) return { exists: false };

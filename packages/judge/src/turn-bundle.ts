@@ -2,7 +2,8 @@
 //   chunks: 1 セッションの続いた依頼を数件ずつ(copilot -p に 1 回で渡せる大きさ)。次の依頼の文は、成果の扱いを決める材料として必ず添える
 //   parts/part-<番号>.md: 判定の指示・JSON Schema と、塊を数個まとめたもの(M365 Copilot などに 1 ファイルずつ添付する)
 //   manifest.json: 塊と分割ファイルの一覧
-// 塊は、次の依頼の文がある依頼(成果の扱いを判定できる依頼)を含むものを先に並べる。
+// セッションの最後の依頼(次の依頼の文が無く、成果の扱いは必ず判定不能)は 1 件だけの塊にして、塊も分割ファイルも後ろへ回す。
+// 先頭には、成果の扱いを判定できる依頼だけが並ぶ(どこまでかは manifest.json の decidable)。
 // 依頼の区切りは core の normalize と同じ(本体の依頼。autopilot の自動継続・サブエージェントは除く。先頭 200 依頼まで)。
 import { existsSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
@@ -132,8 +133,12 @@ export function renderTurnChunk(s: SessionRecord, texts: TurnTexts, rows: TurnRo
   return L.filter((l, i, a) => !(l === '' && a[i - 1] === '')).join('\n');
 }
 
+/** 次の依頼の文があるか(成果の扱いを判定できる依頼か)。無いのは、読めた範囲でセッションの最後の依頼だけ */
+const hasNext = (texts: TurnTexts, turn: number): boolean => turn < texts.requests.length;
+
 /**
  * セッションの依頼を塊に分ける。only は判定する依頼番号(未判定だけを渡すとき)。続いた番号ごとに区切り、上限で分ける。
+ * セッションの最後の依頼は前の依頼と同じ塊に入れず、1 件だけの塊にする(どのセッションでも同じ扱いにして、後ろへ回せるように)。
  * 依頼の記録(turnStats)が無いセッション・本文の読めないセッションは空
  */
 export function chunksOf(s: SessionRecord, texts: TurnTexts, only: Set<number> | null, limits: TurnLimits = DEFAULT_TURN_LIMITS): TurnChunk[] {
@@ -146,7 +151,7 @@ export function chunksOf(s: SessionRecord, texts: TurnTexts, only: Set<number> |
     let size = 1;
     let markdown = renderTurnChunk(s, texts, rows, from, from, limits);
     // 続いた番号を上限まで伸ばし、文字数の上限を超えたら 1 つ戻す(上限に収まった最後の描画をそのまま使う)
-    while (i + size < want.length && size < limits.chunkTurns && want[i + size] === from + size) {
+    while (i + size < want.length && size < limits.chunkTurns && want[i + size] === from + size && hasNext(texts, from + size)) {
       const longer = renderTurnChunk(s, texts, rows, from, from + size, limits);
       if (longer.length > limits.chunkChars) break;
       markdown = longer;
@@ -269,16 +274,28 @@ export interface TurnBundleManifest {
   /** 判定する依頼の数 */
   count: number;
   /**
-   * 次の依頼の文があり、成果の扱いを判定できる依頼の数(turns)と、それが入っている先頭の分割ファイルの数(parts)。
+   * 次の依頼の文があり、成果の扱いを判定できる依頼の数(turns)と、それが入っている先頭の塊の数(chunks)・分割ファイルの数(parts)。
+   * 先頭の塊と分割ファイルには、判定できる依頼だけが入る(turns run --limit に turns を渡すと、ちょうど先頭の塊を回す)。
    * 残りはセッションの最後の依頼で、扱いは判定不能になる(種類と工程だけが決まる)。古い manifest には無い
    */
-  decidable?: { turns: number; parts: number };
+  decidable?: { turns: number; chunks: number; parts: number };
   /** 判定済みを除いて作ったか */
   unjudgedOnly: boolean;
   chunks: { sessionId: string; turns: number[]; chars: number }[];
   parts: { path: string; chunks: { sessionId: string; turns: number[] }[]; turns: number; bytes: number }[];
   /** 本文が読めず外したセッション */
   skipped: { id: string; reason: string }[];
+}
+
+/**
+ * 添付を作ったときに知らせる文(採用を判定できる依頼が、先頭のどこまでか)。
+ * 全部が判定できるとき・判定する依頼が無いとき・古い manifest(decidable が無い)は null
+ */
+export function decidableNote(m: Pick<TurnBundleManifest, 'count' | 'decidable'>): string | null {
+  const d = m.decidable;
+  if (!d || d.turns >= m.count) return null;
+  if (d.turns === 0) return `${m.count} 件はどれもセッションの最後の依頼で、種類と工程だけが決まります(採用は判定不能)`;
+  return `採用を判定できる依頼(次の依頼がある依頼)は ${d.turns} 件で、先頭の ${d.parts} ファイルと先頭の ${d.chunks} 個の塊に入れました(GitHub Copilot CLI では turns run --limit ${d.turns} でそこまでを回せます)。残りの ${m.count - d.turns} 件はセッションの最後の依頼で、種類と工程だけが決まります(採用は判定不能)`;
 }
 
 export interface TurnBundleOptions {
@@ -307,8 +324,10 @@ async function writeTurnBundle(sessions: SessionRecord[], o: TurnBundleOptions, 
   const limits = o.limits ?? DEFAULT_TURN_LIMITS;
   const generatedAt = (o.now?.() ?? new Date()).toISOString();
   await mkdir(join(dir, 'parts'), { recursive: true });
-  // 塊と、その中で次の依頼の文がある依頼(成果の扱いを判定できる依頼)の数
-  const found: { chunk: TurnChunk; withNext: number }[] = [];
+  // 成果の扱いを判定できる依頼の塊(front)と、セッションの最後の依頼だけの塊(tail。扱いは必ず判定不能)。
+  // 1 依頼だけのセッションが多いと先頭のファイルが判定不能ばかりになるので、tail は後ろへ回す。それぞれの中の並びは元のまま
+  const front: TurnChunk[] = [];
+  const tail: TurnChunk[] = [];
   const skipped: TurnBundleManifest['skipped'] = [];
   for (const s of sessions) {
     if (!s.analysis?.turnStats?.length) continue;
@@ -321,21 +340,24 @@ async function writeTurnBundle(sessions: SessionRecord[], o: TurnBundleOptions, 
     const all = sessionTurns(s).map((r) => r.index);
     const only = done ? new Set(all.filter((n) => !done.has(n))) : null;
     if (only && only.size === 0) continue;
-    for (const chunk of chunksOf(s, texts, only, limits)) found.push({ chunk, withNext: chunk.turns.filter((n) => n < texts.requests.length).length });
+    // 最後の依頼は必ず 1 件だけの塊(chunksOf)なので、塊の先頭の依頼で決まる
+    for (const chunk of chunksOf(s, texts, only, limits)) (hasNext(texts, chunk.turns[0]) ? front : tail).push(chunk);
   }
-  // 次の依頼の文がある依頼を含む塊を先に並べる(セッションの最後の依頼だけの塊は、成果の扱いが必ず判定不能になるので後ろへ。
-  // 1 依頼だけのセッションが多いと、先頭のファイルが判定不能ばかりになるため)。それぞれの中の並びは元のまま
-  const ordered = [...found.filter((f) => f.withNext > 0), ...found.filter((f) => f.withNext === 0)];
-  const chunks = ordered.map((f) => f.chunk);
-  const withNext = new Map(ordered.map((f) => [f.chunk, f.withNext]));
-  // 分割ファイル: 塊を順に詰め、依頼の数の上限で区切る(塊は分けない)
-  const groups: TurnChunk[][] = [];
-  for (const c of chunks) {
-    const g = groups[groups.length - 1];
-    if (g && g.reduce((a, x) => a + x.turns.length, 0) + c.turns.length <= limits.partTurns) g.push(c);
-    else groups.push([c]);
-  }
-  const total = chunks.reduce((a, c) => a + c.turns.length, 0);
+  const chunks = [...front, ...tail];
+  const turnsIn = (cs: TurnChunk[]): number => cs.reduce((a, c) => a + c.turns.length, 0);
+  // 分割ファイル: 塊を順に詰め、依頼の数の上限で区切る(塊は分けない)。front と tail は同じファイルに混ぜない
+  const pack = (cs: TurnChunk[]): TurnChunk[][] => {
+    const out: TurnChunk[][] = [];
+    for (const c of cs) {
+      const g = out[out.length - 1];
+      if (g && turnsIn(g) + c.turns.length <= limits.partTurns) g.push(c);
+      else out.push([c]);
+    }
+    return out;
+  };
+  const frontGroups = pack(front);
+  const groups = [...frontGroups, ...pack(tail)];
+  const total = turnsIn(chunks);
   const width = Math.max(2, String(groups.length).length);
   const parts: TurnBundleManifest['parts'] = [];
   for (let i = 0; i < groups.length; i++) {
@@ -345,14 +367,14 @@ async function writeTurnBundle(sessions: SessionRecord[], o: TurnBundleOptions, 
     const md = head + body;
     const path = `parts/part-${String(i + 1).padStart(width, '0')}.md`;
     await writeFile(join(dir, path), md);
-    parts.push({ path, chunks: groups[i].map((c) => ({ sessionId: c.sessionId, turns: c.turns })), turns: groups[i].reduce((a, c) => a + c.turns.length, 0), bytes: Buffer.byteLength(md) });
+    parts.push({ path, chunks: groups[i].map((c) => ({ sessionId: c.sessionId, turns: c.turns })), turns: turnsIn(groups[i]), bytes: Buffer.byteLength(md) });
   }
   const manifest: TurnBundleManifest = {
     version: TURN_BUNDLE_VERSION,
     generatedAt,
     phases: [...o.phases],
     count: total,
-    decidable: { turns: ordered.reduce((a, f) => a + f.withNext, 0), parts: groups.filter((g) => g.some((c) => withNext.get(c)! > 0)).length },
+    decidable: { turns: turnsIn(front), chunks: front.length, parts: frontGroups.length },
     unjudgedOnly: !!o.judged,
     chunks: chunks.map((c) => ({ sessionId: c.sessionId, turns: c.turns, chars: c.markdown.length })),
     parts,

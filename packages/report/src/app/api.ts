@@ -337,6 +337,8 @@ export interface ChatPart {
   sessions: number;
   judged: number;
   bytes: number;
+  /** 依頼の判定で、セッションの最後の依頼だけのファイルか(採用は判定不能で、種類と工程だけが決まる)。古い添付には無い */
+  lastOnly?: boolean;
 }
 export interface ChatParts {
   exists: boolean;
@@ -345,6 +347,8 @@ export interface ChatParts {
   unjudgedOnly?: boolean;
   count?: number;
   parts?: ChatPart[];
+  /** 依頼の判定で、採用を判定できる依頼の数(turns)と、それが入っている先頭のファイルの数(parts)。古い添付には無い */
+  decidable?: { turns: number; parts: number };
   /** M365 Copilot のアプリを自動で操作できるか(サーバが Windows のとき) */
   canAutomate?: boolean;
 }
