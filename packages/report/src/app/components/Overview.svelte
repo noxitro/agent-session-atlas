@@ -80,7 +80,7 @@
     <div class="field">
       <span class="k">推定人手工数</span>
       {#if judged && o.judgedSessions > 0}
-        <span class="v">{dec(o.humanHours)} 時間</span><span class="n">LLM の推定。判定済み {int(o.judgedSessions)} セッション、幅 {dec(o.humanLow)}〜{dec(o.humanHigh)} 時間</span>
+        <span class="v">{dec(o.humanHours)} 時間</span><span class="n">LLM の推定。判定済み {int(o.judgedSessions)} セッション、幅 {dec(o.humanLow)}〜{dec(o.humanHigh)} 時間、中央値 {dec(o.humanMedian)} 時間 / セッション{#if o.humanSkew}。<span data-testid="effort-skew">合計の {percent(o.humanSkew.hours, o.humanHours)} は上位 {int(o.humanSkew.sessions)} セッションの推定です</span>{/if}</span>
       {:else}
         <span class="v missing">未判定</span><span class="n">LLM による推定はまだありません。{judgeHint('工数', { editable, anonymized })}{#if editable}Copilot の AI クレジットを使う方法と、M365 Copilot などのチャットに貼る方法があります。{/if}</span>
       {/if}

@@ -73,6 +73,10 @@ export interface Bucket {
   /** 推定の幅(判定済みセッションの low / high の和) */
   humanLow: number;
   humanHigh: number;
+  /** 判定済みセッションの推定人手工数の中央値(判定が無ければ null) */
+  humanMedian: number | null;
+  /** 推定人手工数の合計が少数のセッションに偏っているときの、その偏り(偏っていなければ null) */
+  humanSkew: EffortSkew | null;
   /** 判定済みセッションの確信度の平均(判定が無ければ null) */
   judgedConfidence: number | null;
   /** 判定済みセッションに AI が使った量(AI 投入量 vs 推定人手工数の比較用) */
@@ -210,6 +214,36 @@ function median(values: number[]): number | null {
   return s[Math.min(s.length - 1, Math.max(0, Math.ceil(0.5 * s.length) - 1))];
 }
 
+/** 推定人手工数の合計の偏り: 推定の大きい上位 sessions 件(計 hours 時間)が、合計の share(0〜1)を占める */
+export interface EffortSkew {
+  sessions: number;
+  hours: number;
+  share: number;
+}
+
+/** 偏りを見る判定済みセッションの数の下限(これより少ないと、1 件が半分を超えるのは珍しくない) */
+export const SKEW_MIN_SESSIONS = 5;
+/** 上位として数える割合(判定済みセッションの 5%。1 件に満たなければ 1 件) */
+export const SKEW_TOP_RATE = 0.05;
+/** 上位がこの割合以上を占めたら「偏っている」とする */
+export const SKEW_SHARE = 0.5;
+
+/**
+ * 推定人手工数(セッションごとの時間)の偏り。上位 5% のセッションが合計の半分以上を占めるときだけ返す。
+ * 合計は和なので、AI が大量に生成したセッションの大きな推定が数件あるだけで、ほぼその値になる
+ */
+export function effortSkew(hours: number[]): EffortSkew | null {
+  const total = hours.reduce((a, h) => a + h, 0);
+  if (hours.length < SKEW_MIN_SESSIONS || total <= 0) return null;
+  const n = Math.max(1, Math.round(hours.length * SKEW_TOP_RATE));
+  const top = [...hours]
+    .sort((a, b) => b - a)
+    .slice(0, n)
+    .reduce((a, h) => a + h, 0);
+  const share = top / total;
+  return share >= SKEW_SHARE ? { sessions: n, hours: Math.round(top * 100) / 100, share } : null;
+}
+
 export function bucket(key: string, label: string, sessions: SessionSummary[]): Bucket {
   const b: Bucket = {
     key,
@@ -245,12 +279,15 @@ export function bucket(key: string, label: string, sessions: SessionSummary[]): 
     humanHours: 0,
     humanLow: 0,
     humanHigh: 0,
+    humanMedian: null,
+    humanSkew: null,
     judgedConfidence: null,
     judgedAi: { activeMs: 0, activeKnown: 0, output: 0, input: 0, inputKnown: 0, premiumRequests: 0 },
   };
   let confSum = 0;
   let confN = 0;
   const actives: number[] = [];
+  const humans: number[] = [];
   for (const s of sessions) {
     const t = s.tokens;
     if (t.input != null) b.sessionsWithInput++;
@@ -296,6 +333,7 @@ export function bucket(key: string, label: string, sessions: SessionSummary[]): 
     const j = s.judgment;
     if (j?.hours != null) {
       b.judgedSessions++;
+      humans.push(j.hours);
       b.humanHours += j.hours;
       b.humanLow += j.low ?? j.hours;
       b.humanHigh += j.high ?? j.hours;
@@ -318,6 +356,8 @@ export function bucket(key: string, label: string, sessions: SessionSummary[]): 
   }
   b.activeMedianMs = median(actives);
   b.judgedConfidence = confN ? confSum / confN : null;
+  b.humanMedian = median(humans);
+  b.humanSkew = effortSkew(humans);
   b.humanHours = Math.round(b.humanHours * 100) / 100;
   b.humanLow = Math.round(b.humanLow * 100) / 100;
   b.humanHigh = Math.round(b.humanHigh * 100) / 100;
