@@ -3,6 +3,9 @@
 # atlas.exe と atlas.exe.sha256 を取ってきて照らし合わせる。タグの版と Cargo.toml の version が違えば止める。
 # 手順は docs/development.md の「リリース」(Cargo.toml の version を上げてコミット → v<version> のタグ → タグを push)。
 # 作り直すときは、Actions の画面からタグを指定して動かす(workflow_dispatch。同じ名前のファイルは置き換える)。
+# atlas.exe には GitHub の artifact attestation(ビルドの来歴。Sigstore で署名され、どのリポジトリ・ワークフロー・コミットで
+# 作ったかを示す)も付ける。利用者は gh attestation verify で確かめられる(ensure-atlas.ps1 は gh があれば確かめる。README)。
+# 既定の機能だけでビルドする(従量課金の API を直接呼ぶ anthropic-backend は入れない)。
 # 外部の Action はコミット SHA で固定する(ci.yml と同じ)。Rust はランナーに入っている rustup で入れる。
 name: Release
 
@@ -30,9 +33,11 @@ jobs:
     name: atlas.exe(Windows)
     runs-on: windows-latest
     timeout-minutes: 40
-    # リリースを作ってファイルを付けるので、このジョブだけ書き込める
+    # リリースを作ってファイルを付けるので、このジョブだけ書き込める。id-token と attestations は来歴(attestation)の署名と保存に使う
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     env:
       TAG: ${{ github.event.inputs.tag || github.ref_name }}
     steps:
@@ -77,6 +82,10 @@ jobs:
         run: |
           sha256sum atlas.exe > atlas.exe.sha256
           cat atlas.exe.sha256
+      # ビルドの来歴を atlas.exe に付ける(リポジトリの attestation として保存される。gh attestation verify で確かめる)
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/atlas.exe
       - name: リリースに付ける
         shell: bash
         env:

@@ -98,41 +98,92 @@ pub fn run_serve(p: &Paths, o: ServeCli, log: Log<'_>) -> Result<String> {
     so.reports = o.reports.unwrap_or_default();
     so.config_path = o.config.map(PathBuf::from);
     test_overrides(&mut so);
-    // 待っている間のメモリを小さくする(受け付けは 2 本、処理は要求ごとのスレッド)
-    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().thread_keep_alive(Duration::from_secs(10)).build()?;
-    let reason = rt.block_on(async move {
-        let h = start_serve(so).await?;
-        let reason = tokio::select! {
-            r = h.done() => r,
-            _ = interrupted() => {
-                h.close("中断");
-                h.done().await
-            }
-        };
-        anyhow::Ok(reason)
-    });
-    rt.shutdown_background();
-    let reason = reason?;
+    let h = start_serve(so)?;
+    let close = h.closer();
+    on_interrupt(move || close("中断"));
+    let reason = h.wait();
     log(&format!("serve: 終了({reason})"));
     Ok(reason)
 }
 
-/// Ctrl+C(と、Windows で窓を閉じたとき・Unix の SIGTERM)
-async fn interrupted() {
-    #[cfg(windows)]
-    {
-        let mut close = tokio::signal::windows::ctrl_close().ok();
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {}
-            _ = async { match close.as_mut() { Some(c) => { c.recv().await; } None => std::future::pending::<()>().await } } => {}
+type Interrupt = Box<dyn Fn() + Send + Sync>;
+static INTERRUPT: std::sync::Mutex<Option<Interrupt>> = std::sync::Mutex::new(None);
+
+/// Ctrl+C(と、Windows で窓を閉じたとき・Unix の SIGTERM)で f を呼ぶ(サーバを止め、待っている run_serve が戻る)
+fn on_interrupt(f: impl Fn() + Send + Sync + 'static) {
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    *INTERRUPT.lock().unwrap_or_else(|e| e.into_inner()) = Some(Box::new(f));
+    INSTALL.call_once(install_interrupt);
+}
+
+fn fire_interrupt() -> bool {
+    match INTERRUPT.lock() {
+        Ok(g) => match g.as_ref() {
+            Some(f) => {
+                f();
+                true
+            }
+            None => false,
+        },
+        Err(_) => false,
+    }
+}
+
+#[cfg(windows)]
+fn install_interrupt() {
+    use windows_sys::Win32::System::Console::{SetConsoleCtrlHandler, CTRL_CLOSE_EVENT, CTRL_C_EVENT};
+    unsafe extern "system" fn handler(kind: u32) -> windows_sys::core::BOOL {
+        // 呼ばれるのは別のスレッド。窓を閉じたときは、戻ると OS がプロセスを終わらせるので、止める処理(.serve.json を消すなど)を済ませてから戻る
+        if (kind == CTRL_C_EVENT || kind == CTRL_CLOSE_EVENT) && fire_interrupt() {
+            return 1;
+        }
+        0
+    }
+    // SAFETY: プロセスの終わりまで残る関数を登録する
+    unsafe {
+        SetConsoleCtrlHandler(Some(handler), 1);
+    }
+}
+
+#[cfg(unix)]
+fn install_interrupt() {
+    use std::sync::atomic::{AtomicI32, Ordering};
+    static PIPE_W: AtomicI32 = AtomicI32::new(-1);
+    extern "C" fn handler(_: libc::c_int) {
+        // シグナルの中では、書き込み 1 回だけ(待っているスレッドが止める処理をする)
+        let fd = PIPE_W.load(Ordering::SeqCst);
+        if fd >= 0 {
+            // SAFETY: write はシグナルの中で呼んでよい
+            unsafe {
+                libc::write(fd, b"x".as_ptr().cast(), 1);
+            }
         }
     }
-    #[cfg(unix)]
-    {
-        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {}
-            _ = async { match term.as_mut() { Some(t) => { t.recv().await; } None => std::future::pending::<()>().await } } => {}
+    let mut fds = [0 as libc::c_int; 2];
+    // SAFETY: 2 つの fd を書かせる
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return;
+    }
+    PIPE_W.store(fds[1], Ordering::SeqCst);
+    let rd = fds[0];
+    let watcher = std::thread::Builder::new().name("atlas-serve-signal".into()).spawn(move || {
+        let mut b = [0u8; 1];
+        loop {
+            // SAFETY: 1 バイトだけ読む
+            let n = unsafe { libc::read(rd, b.as_mut_ptr().cast(), 1) };
+            if n == 1 {
+                fire_interrupt();
+            } else if n == 0 || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+                return;
+            }
         }
+    });
+    if watcher.is_err() {
+        return;
+    }
+    // SAFETY: プロセスの終わりまで残る関数を登録する
+    unsafe {
+        libc::signal(libc::SIGINT, handler as *const () as libc::sighandler_t);
+        libc::signal(libc::SIGTERM, handler as *const () as libc::sighandler_t);
     }
 }

@@ -23,7 +23,7 @@ GitHub Copilot のセッションログ(`%USERPROFILE%\.copilot`)を手元で集
 
 ## 使い方
 
-前提: Git。このリポジトリを `git clone` して使います(配布用の zip はありません)。動かすのは 1 つの実行ファイル `bin\atlas.exe` で、起動用の `.bat` が最初に用意します(下記「[atlas.exe の用意と更新](#atlasexe-の用意と更新)」)。リリースが出ていれば、Node.js も Rust も要りません。
+前提: Git。このリポジトリを `git clone` して使います(配布用の zip はありません)。動かすのは 1 つの実行ファイル `bin\atlas.exe` で、起動用の `.bat` が最初に用意します(下記「[atlas.exe の用意と更新](#atlasexe-の用意と更新)」)。リリースが出ていれば、Node.js も Rust(と、Windows でビルドに使う Visual Studio の C++ のビルドツール)も要りません。
 
 0. (任意)設定は、`atlas.bat` で開いた画面の右上の「設定…」で決められます(llm-wiki の vault・普段の工程名・アップロード先・まとめて送るプロジェクト)。黒い窓で決めたいときは、`setup.bat` も使えます(下記「[初期設定(setup.bat)](#初期設定setupbat)」)。llm-wiki の参照を数えないなら、どちらも飛ばして構いません。
 1. リポジトリ直下の `atlas.bat` をダブルクリックします(初回だけ `bin\atlas.exe` を用意します。リリースから取ってくるなら数秒、この PC でビルドするなら数分かかります)。
@@ -67,14 +67,35 @@ GitHub Copilot のセッションログ(`%USERPROFILE%\.copilot`)を手元で集
 
 起動用の `.bat`(`atlas.bat`・`setup.bat`・`upload-project.bat`・`schedule-upload.bat`・`open-folder.bat`)は、最初に `scripts\ensure-atlas.ps1` を動かして、`bin\atlas.exe` がこのフォルダの版(`Cargo.toml` の `version`)のものかを確かめます。違えば次の順に用意します(管理者の権限は要りません)。
 
-1. このリポジトリの GitHub のリリース `v<version>` から `atlas.exe` を取ってきて、同じリリースの `atlas.exe.sha256` と照らし合わせてから `bin\` に置きます(リポジトリは `git remote get-url origin` から決めます)。
-2. リリースが無いか取れなければ、Node.js 24 以上と Rust(`cargo`)があれば、この PC でビルドします(`npm ci` → `npm run build:report` → `cargo build --release`。経過は `bin\build.log`。初めては数分かかります)。
-3. どちらもできなければ、何を入れればよいかを出して止まります。Node.js(<https://nodejs.org/>)と Rust(<https://rustup.rs/>)を入れるか、その版のリリースが出るのを待ってください。
+1. このリポジトリの GitHub のリリース `v<version>` から `atlas.exe` を取ってきて、同じリリースの `atlas.exe.sha256` と照らし合わせてから `bin\` に置きます(リポジトリは `git remote get-url origin` から決めます)。GitHub CLI(`gh`)が入っていてログインしていれば、ビルドの来歴(下記)も `gh attestation verify` で確かめ、合わなければ使いません。`gh` が無いかログインしていなければ、sha256 だけで確かめ、そのことを 1 行出します。
+2. リリースが無いか取れなければ、ビルドに要るもの(下記)があれば、この PC でビルドします(`npm ci` → `npm run build:report` → `cargo build --release`。経過は `bin\build.log`。初めては数分かかります)。
+3. どちらもできなければ、何を入れればよいかを出して止まります。ビルドに要るものを入れるか、その版のリリースが出るのを待ってください。
 
-- 何も要らないのは、その版のリリースがあるときです。無い版(リリースの前のコミットなど)を使うときは Node.js と Rust が要ります。
+この PC でビルドするのに要るもの:
+
+- Node.js 24 以上(<https://nodejs.org/>。画面のビルドに使います)
+- Rust(<https://rustup.rs/>。stable の `cargo`)
+- Windows では、Visual Studio Build Tools(<https://visualstudio.microsoft.com/visual-cpp-build-tools/>)の「C++ によるデスクトップ開発」(MSVC と Windows SDK)。Rust のリンカーと、atlas に入れる SQLite のコンパイルに使います。Visual Studio を入れてあって C++ のワークロードがあれば、それで足ります(rustup の Windows 用のインストーラーも、無ければ入れるよう案内します)。`scripts\ensure-atlas.ps1` は `vswhere.exe` で x64 の C++ のビルドツール(`Microsoft.VisualStudio.Component.VC.Tools.x86.x64`)を探し、見つからなければ PATH の `cl.exe` と `link.exe` を見ます。
+
+- 何も要らないのは、その版のリリースがあるときです。無い版(リリースの前のコミットなど)を使うときは、上のビルドに要るものが要ります。
 - 新しい版にするのは `git pull` です。`Cargo.toml` の `version` が変わっていれば、次に `.bat` を開いたときに、その版の `bin\atlas.exe` を用意し直します。同じ版のうちは、リリースから取ってきた `bin\atlas.exe` をそのまま使います(この PC でビルドしたものは、ソースが変わっていればビルドし直します)。
 - 画面のサーバが前の `bin\atlas.exe` で動いたままでも置き換えられます(動いているものは別の名前に移し、次に用意するときに消します)。
 - `bin\` は git に入れません(消しても、次に `.bat` を開くと用意し直します)。
+
+### リリースの atlas.exe を自分で確かめる
+
+リリースの `atlas.exe` は、このリポジトリの GitHub Actions(`.github/workflows/release.yml`)がタグのコミットからビルドしたものです。同じリリースに sha256 を付け、ビルドの来歴(GitHub の artifact attestation。Sigstore で署名され、どのリポジトリ・ワークフロー・コミットで作ったかを示します)を GitHub に保存しています。起動用の `.bat` はこれを自動で確かめますが、手で確かめるときは次のとおりです(`<owner>/<repo>` は取ってきたリポジトリ)。
+
+```
+gh release download v<version> -R <owner>/<repo> -p atlas.exe -p atlas.exe.sha256
+certutil -hashfile atlas.exe SHA256
+type atlas.exe.sha256
+gh attestation verify atlas.exe --repo <owner>/<repo> --signer-workflow <owner>/<repo>/.github/workflows/release.yml
+```
+
+`certutil` が出す値と `atlas.exe.sha256` の値が同じで、`gh attestation verify` が成功すれば(`gh auth login` が要ります)、そのリポジトリのリリースのワークフローが作ったものです。来歴はブラウザでもリポジトリの「Actions」→「Attestations」で見られます。
+
+リリースの `atlas.exe` は既定の機能だけでビルドします。従量課金の Anthropic API を直接呼ぶ判定(`--backend anthropic`)は入っていません([docs/judge.md](docs/judge.md))。
 
 ## 共有するときの注意
 
@@ -120,7 +141,7 @@ bin\atlas.exe --help                  # 使い方
 - **M365 Copilot のアプリを自動で操作して(Windows)**: 「チャットに貼って判定する」の手順 2 にある「M365 Copilot で自動で判定する」を押すと、開いている M365 Copilot のアプリをこのツールが操作し、未判定のファイルを 1 つずつ送って(モデルは Think Deeper)、返答を取り込みます。終わるまで M365 Copilot の画面に触らないでください([docs/judge.md](docs/judge.md#m365-copilot-のアプリを自動で操作するwindows))。
 - **チャットに貼って(M365 Copilot など)**: 「判定する…」で「チャットに貼って判定する」を選びます。画面の 4 つの手順(添付ファイルを作る → ダウンロードしてチャットに添付する → 返答を貼って取り込む → レポートに反映する)に沿って進めます。ターミナルは使いません。
 
-`copilot -p` は AI クレジットを消費します。従量課金の `anthropic` は、コマンドで明示したときだけ使います。手順・費用・安全策は [docs/judge.md](docs/judge.md) にあります。
+`copilot -p` は AI クレジットを消費します。従量課金の `anthropic` は、コマンドで明示したときだけ使います(既定のビルドとリリースの `atlas.exe` には入っていません。`--features anthropic-backend` を付けて自分でビルドしたときだけ使えます)。手順・費用・安全策は [docs/judge.md](docs/judge.md) にあります。
 
 ## 依頼ごとの採用(任意)
 

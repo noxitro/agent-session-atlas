@@ -245,7 +245,6 @@ pub(crate) struct Env {
     pub dir: PathBuf,
     pub out: PathBuf,
     pub notes: PathBuf,
-    rt: tokio::runtime::Runtime,
     pub h: Option<ServeHandle>,
     pub logs: Arc<Mutex<Vec<String>>>,
     conn: Mutex<Option<Conn>>,
@@ -261,8 +260,7 @@ impl Env {
         fs::write(out.join("atlas.html"), atlas_html(false)).unwrap();
         fs::write(out.join("sessions").join("a.html"), "<p>a</p>").unwrap();
         fs::write(dir.join("secret.txt"), "x").unwrap();
-        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
-        Env { _t: t, dir, out, notes, rt, h: None, logs: Arc::new(Mutex::new(vec![])), conn: Mutex::new(None) }
+        Env { _t: t, dir, out, notes, h: None, logs: Arc::new(Mutex::new(vec![])), conn: Mutex::new(None) }
     }
 
     pub fn start(&mut self, f: impl FnOnce(&mut ServeOptions)) {
@@ -278,7 +276,7 @@ impl Env {
         o.code_stamp = Some(Some("test-code".into()));
         f(&mut o);
         *lock(&self.conn) = None;
-        self.h = Some(self.rt.block_on(start_serve(o)).unwrap());
+        self.h = Some(start_serve(o).unwrap());
     }
 
     pub fn h(&self) -> &ServeHandle {
@@ -397,6 +395,36 @@ fn binds_serves_and_injects_token() {
     assert_eq!(st["pid"], json!(std::process::id()));
     assert!(!st.to_string().contains(&e.token()));
     assert_eq!(find_running_server(&e.out), Some(RunningServer { port: e.port(), pid: std::process::id(), code: Some("test-code".into()) }));
+}
+
+#[test]
+fn http_connection_handling() {
+    let mut e = Env::new();
+    e.start(|o| o.memo_image_limit = 1024);
+    fs::write(e.out.join("a.txt"), "abcdefgh").unwrap();
+    let host = e.host();
+    // 本文を読まずに断った要求の後も、同じ接続で次の要求に応える(本文は読み捨てる)
+    let mut c = Conn::open(e.port()).unwrap();
+    let r = c.request("POST", "/api/memos/s1/images", &host, &[("content-type", "image/png")], &[7u8; 100]).unwrap();
+    assert_eq!((r.status, r.header("connection")), (403, None));
+    let r = c.request("GET", "/a.txt", &host, &[], b"").unwrap();
+    assert_eq!((r.status, r.text().as_str(), r.header("content-length")), (200, "abcdefgh", Some("8")));
+    // 413 も最後まで読んでから返し、接続は続けて使える
+    let r = c.request("POST", "/api/memos/s1/images", &host, &[("x-atlas-token", &e.token()), ("content-type", "image/png")], &vec![0u8; 300_000]).unwrap();
+    assert_eq!(r.status, 413);
+    assert_eq!(c.request("GET", "/a.txt", &host, &[], b"").unwrap().status, 200);
+    // Connection: close には close と返して切る
+    let r = raw(e.port(), "GET", "/a.txt", &host, &[], b"");
+    assert_eq!((r.status, r.header("connection"), r.text().as_str()), (200, Some("close"), "abcdefgh"));
+    // 読めない要求は 400 を返して切る(落ちない)
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", e.port())).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+    s.write_all(b"GARBAGE\r\n\r\n").unwrap();
+    let mut buf = Vec::new();
+    let _ = s.read_to_end(&mut buf);
+    assert!(String::from_utf8_lossy(&buf).starts_with("HTTP/1.1 400 Bad Request\r\n"), "{}", String::from_utf8_lossy(&buf));
+    // サーバは動き続ける
+    assert_eq!(e.req("GET", "/a.txt", None, &[], b"").status, 200);
 }
 
 #[test]

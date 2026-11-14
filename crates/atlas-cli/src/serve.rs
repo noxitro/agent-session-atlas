@@ -6,9 +6,9 @@
 //! IDLE を短くしないこと: ブラウザは隠れたタブのタイマーを間引く(Chrome は 5 分以上隠れたタブを 1 分に 1 回まで)。以前の 8 秒では、別のタブで作業している間に止まっていた。
 //! 画面と保存の境界はこの API だけ(後でアプリ化するときに差し替える)。
 //!
-//! HTTP は hyper をそのまま使う(axum の経路分けは使わない。TS 版と同じ 1 つの振り分けにし、止めるときに接続をすべて切り、
-//! 応答を送り終えるまでを「応えている途中」と数えるため)。接続の受け付けは tokio、要求の処理(ファイルの読み書き・描画・アップロード)は
-//! 処理ごとのスレッド(spawn_blocking)で、TS 版と同じ順に確かめてから本文を読む。
+//! HTTP は標準ライブラリだけで話す(http.rs。127.0.0.1 の 1 人だけが使うので、外部の HTTP ライブラリと非同期の実行環境を持ち込まない)。
+//! TS 版と同じ 1 つの振り分けにし、止めるときに接続をすべて切り、応答を送り終えるまでを「応えている途中」と数える。
+//! 接続ごとに 1 本のスレッドで、要求の処理(ファイルの読み書き・描画・アップロード)もそのスレッドで、TS 版と同じ順に確かめてから本文を読む。
 
 mod http;
 #[cfg(test)]
@@ -27,16 +27,16 @@ use atlas_report::groups_io::{load_groups, load_groups_for_write, save_groups};
 use atlas_report::memo::{is_safe_memo_id, memo_summary};
 use atlas_report::memo_io::{image_ext, load_memo_index, memos_dir, read_memo, render_memo, save_memo, save_memo_image, MemoFile, MEMO_IMAGE_LIMIT};
 use atlas_report::viewer::{encode_uri_component, render_view_document, render_viewer_shell, view_label, ViewKind, ViewerShellOptions, VIEW_KINDS, VIEW_LIMIT};
-use bytes::Bytes;
-use http::{decode_uri_component, header, parse_request_target, BodyReader, ReqUrl, Resp, Settle, SettleBody};
+use http::{decode_uri_component, header, parse_request_target, BodyReader, Headers, ReqUrl, Resp};
 use indexmap::IndexMap;
 use regex::Regex;
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU8, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, MutexGuard, OnceLock, Weak};
-use std::time::Duration;
+use std::net::{Shutdown, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::sync::{Arc, Condvar, LazyLock, Mutex, MutexGuard, OnceLock, Weak};
+use std::time::{Duration, Instant};
 
 pub use http::simple_request;
 
@@ -219,7 +219,7 @@ fn send_json(status: u16, body: &Value) -> Resp {
     Resp {
         status,
         headers: vec![("content-type", "application/json; charset=utf-8".into()), ("cache-control", "no-store".into()), ("x-atlas-serve", "1".into()), (NOSNIFF.0, NOSNIFF.1.into())],
-        body: Bytes::from(atlas_core::json::to_js_string(body).unwrap_or_default()),
+        body: Vec::from(atlas_core::json::to_js_string(body).unwrap_or_default()),
     }
 }
 
@@ -343,7 +343,7 @@ struct Server {
     log: LogFn,
     jobs: Arc<JobRunner>,
     port: AtomicU16,
-    rt: tokio::runtime::Handle,
+    clock: Arc<Clock>,
     anon_cache: Mutex<Option<(f64, bool)>>,
     sessions_cache: Mutex<Option<(f64, Arc<SessionIndex>)>>,
     /// タスクタグの書き出し・写す前の点検・アップロードのどれかをしている最中なら、その内容。その間はほかの書き出し・点検・アップロード・ジョブを始めない
@@ -361,12 +361,81 @@ struct Server {
     groups_lock: Mutex<()>,
     memo_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     /// 終わったら理由が入る
-    done_tx: tokio::sync::watch::Sender<Option<String>>,
-    conns: Mutex<Vec<tokio::task::AbortHandle>>,
+    done: Mutex<Option<String>>,
+    done_cv: Condvar,
+    conns: Mutex<Conns>,
 }
+
+/// 開いている接続(止めるときに、まだ何も送っていない接続も含めてすべて切る)
+#[derive(Default)]
+struct Conns {
+    closed: bool,
+    next: u64,
+    open: HashMap<u64, TcpStream>,
+}
+
+/// 同時に開いておく接続の上限(ブラウザは 1 つの宛先に 6 本ほど。超えた分はすぐ切る)
+const MAX_CONNS: usize = 256;
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// 止まり方の時計(最初の heartbeat を待つ時計と猶予の時計を 1 本のスレッドで測る)。
+/// 張り直すと前の時計は取り消したことになる(どちらも番号が変わり、前の時計が鳴っても何もしないため、置き換えてよい)
+#[derive(Default)]
+struct Clock {
+    slots: Mutex<ClockSlots>,
+    cv: Condvar,
+}
+
+#[derive(Default)]
+struct ClockSlots {
+    stop: bool,
+    first: Option<(Instant, u64, &'static str)>,
+    idle: Option<(Instant, u64, &'static str)>,
+}
+
+impl Clock {
+    fn set(&self, which: Timer, generation: u64, ms: u64, reason: &'static str) {
+        let at = Instant::now() + Duration::from_millis(ms);
+        let mut s = lock(&self.slots);
+        match which {
+            Timer::First => s.first = Some((at, generation, reason)),
+            Timer::Idle => s.idle = Some((at, generation, reason)),
+        }
+        self.cv.notify_all();
+    }
+
+    fn stop(&self) {
+        lock(&self.slots).stop = true;
+        self.cv.notify_all();
+    }
+
+    /// 鳴った時計を順に渡す(止めるまで)
+    fn run(&self, fire: impl Fn(Timer, u64, &'static str)) {
+        let mut s = lock(&self.slots);
+        loop {
+            if s.stop {
+                return;
+            }
+            let now = Instant::now();
+            let due = [(Timer::First, s.first), (Timer::Idle, s.idle)].into_iter().filter_map(|(w, x)| x.map(|(at, g, r)| (at, w, g, r))).min_by_key(|x| x.0);
+            match due {
+                Some((at, which, generation, reason)) if at <= now => {
+                    match which {
+                        Timer::First => s.first = None,
+                        Timer::Idle => s.idle = None,
+                    }
+                    drop(s);
+                    fire(which, generation, reason);
+                    s = lock(&self.slots);
+                }
+                Some((at, ..)) => s = self.cv.wait_timeout(s, at - now).map(|(g, _)| g).unwrap_or_else(|e| e.into_inner().0),
+                None => s = self.cv.wait(s).unwrap_or_else(|e| e.into_inner()),
+            }
+        }
+    }
 }
 
 /// token(24 バイトの乱数の base64url)
@@ -418,36 +487,44 @@ pub struct ServeHandle {
     #[cfg(test)]
     pub token: String,
     server: Arc<Server>,
-    done: tokio::sync::watch::Receiver<Option<String>>,
 }
 
 impl ServeHandle {
-    /// 終了したときに理由を返す
-    pub async fn done(&self) -> String {
-        let mut rx = self.done.clone();
+    /// 終了するまで待ち、理由を返す
+    pub fn wait(&self) -> String {
+        let mut d = lock(&self.server.done);
         loop {
-            if let Some(r) = rx.borrow().clone() {
+            if let Some(r) = d.clone() {
                 return r;
             }
-            if rx.changed().await.is_err() {
-                return "停止".into();
-            }
+            d = self.server.done_cv.wait(d).unwrap_or_else(|e| e.into_inner());
         }
     }
 
     /// 終わっていれば理由
     #[cfg(test)]
     pub fn finished(&self) -> Option<String> {
-        self.done.borrow().clone()
+        lock(&self.server.done).clone()
     }
 
+    #[cfg(test)]
     pub fn close(&self, reason: &str) {
         self.server.close(reason);
     }
+
+    /// 別のスレッド(Ctrl+C を受けたときなど)から止める口
+    pub fn closer(&self) -> impl Fn(&str) + Send + Sync + 'static {
+        let s = Arc::downgrade(&self.server);
+        move |reason: &str| {
+            if let Some(s) = s.upgrade() {
+                s.close(reason);
+            }
+        }
+    }
 }
 
-/// サーバを起動する(tokio の中で呼ぶ)
-pub async fn start_serve(o: ServeOptions) -> anyhow::Result<ServeHandle> {
+/// サーバを起動する(受け付けと時計は別のスレッドで動き、すぐ戻る)
+pub fn start_serve(o: ServeOptions) -> anyhow::Result<ServeHandle> {
     let log = o.log.clone();
     let out_dir = crate::paths::resolve(&o.out_dir);
     let out_s = out_dir.to_string_lossy().into_owned();
@@ -496,8 +573,10 @@ pub async fn start_serve(o: ServeOptions) -> anyhow::Result<ServeHandle> {
     if let Some(c) = &o.config_path {
         env.insert(0, ("ATLAS_CONFIG".into(), crate::paths::resolve(c).to_string_lossy().into_owned()));
     }
-    let (done_tx, done_rx) = tokio::sync::watch::channel::<Option<String>>(None);
-    let rt = tokio::runtime::Handle::current();
+    // 先に受け付けの口を開く(開けなければ何も始めない)
+    let listener = TcpListener::bind(("127.0.0.1", o.port))?;
+    let port = listener.local_addr()?.port();
+    let clock = Arc::new(Clock::default());
     let server = Arc::new_cyclic(|me: &Weak<Server>| {
         let full_out = out_dir.clone();
         let run_full: RunFullFn = o.run_full.clone().unwrap_or_else(|| Arc::new(move |id: &str, ctx: &FullCtx| run_full_default(&full_out, id, ctx)));
@@ -542,7 +621,7 @@ pub async fn start_serve(o: ServeOptions) -> anyhow::Result<ServeHandle> {
             log: log.clone(),
             jobs,
             port: AtomicU16::new(0),
-            rt: rt.clone(),
+            clock: clock.clone(),
             anon_cache: Mutex::new(None),
             sessions_cache: Mutex::new(None),
             busy_with: Mutex::new(None),
@@ -554,31 +633,42 @@ pub async fn start_serve(o: ServeOptions) -> anyhow::Result<ServeHandle> {
             life: Mutex::new(Life::default()),
             groups_lock: Mutex::new(()),
             memo_locks: Mutex::new(HashMap::new()),
-            done_tx,
-            conns: Mutex::new(Vec::new()),
+            done: Mutex::new(None),
+            done_cv: Condvar::new(),
+            conns: Mutex::new(Conns::default()),
         }
     });
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", o.port)).await?;
-    let port = listener.local_addr()?.port();
     server.port.store(port, Ordering::SeqCst);
     let url = format!("http://127.0.0.1:{port}/atlas.html");
     std::fs::write(
         out_dir.join(SERVE_STATE_FILE),
         format!("{}\n", atlas_core::json::to_js_string(&json!({ "port": port, "pid": std::process::id(), "startedAt": atlas_core::jsdate::now_iso() }))?),
     )?;
-    let acc = server.clone();
-    let mut stop = done_rx.clone();
-    rt.spawn(async move {
+    // 時計(サーバへの弱い参照だけを持つ。止めたら終わる)
+    let tick = Arc::downgrade(&server);
+    std::thread::Builder::new().name("atlas-serve-clock".into()).spawn(move || {
+        clock.run(|which, generation, reason| {
+            if let Some(s) = tick.upgrade() {
+                s.timer_fired(which, generation, reason);
+            }
+        })
+    })?;
+    // 受け付け(止めるときは close が自分につないで起こし、ここで抜けて口を閉じる)
+    let acc = Arc::downgrade(&server);
+    std::thread::Builder::new().name("atlas-serve-accept".into()).spawn(move || {
         loop {
-            tokio::select! {
-                r = listener.accept() => {
-                    let Ok((stream, _)) = r else { continue };
-                    acc.serve_connection(stream);
-                }
-                _ = stop.changed() => break,
+            let r = listener.accept();
+            let Some(s) = acc.upgrade() else { return };
+            if lock(&s.conns).closed {
+                return;
+            }
+            match r {
+                Ok((stream, _)) => s.serve_connection(stream),
+                // 受け付けの失敗(ハンドルが足りないなど)は、少し待ってから続ける
+                Err(_) => std::thread::sleep(Duration::from_millis(50)),
             }
         }
-    });
+    })?;
     {
         let mut l = lock(&server.life);
         l.first_active = true;
@@ -600,7 +690,6 @@ pub async fn start_serve(o: ServeOptions) -> anyhow::Result<ServeHandle> {
         #[cfg(test)]
         token,
         server,
-        done: done_rx,
     })
 }
 
@@ -644,7 +733,7 @@ enum Timer {
 /// 要求の中身(処理のスレッドに渡す)
 struct Req {
     method: String,
-    headers: hyper::HeaderMap,
+    headers: Headers,
     url: ReqUrl,
     body: BodyReader,
 }
@@ -667,13 +756,7 @@ impl Server {
     // ---------- 止まり方 ----------
 
     fn spawn_timer(&self, which: Timer, generation: u64, ms: u64, reason: &'static str) {
-        let me = self.me.clone();
-        self.rt.spawn(async move {
-            tokio::time::sleep(Duration::from_millis(ms)).await;
-            if let Some(s) = me.upgrade() {
-                s.timer_fired(which, generation, reason);
-            }
-        });
+        self.clock.set(which, generation, ms, reason);
     }
 
     fn timer_fired(&self, which: Timer, generation: u64, reason: &str) {
@@ -799,73 +882,67 @@ impl Server {
         self.jobs.drop_lock();
         // 止めるときは、まだ何も送っていない接続(ブラウザが次の要求のために先に開けておくもの)や送りかけの要求も、待たずにすべて切る。
         // 自分から止まるとき(expire)は、応えている途中の要求が無いことを確かめてからここへ来る。切られるのは、中断(Ctrl+C)のときだけ
-        for c in lock(&self.conns).drain(..) {
-            c.abort();
+        {
+            let mut c = lock(&self.conns);
+            c.closed = true;
+            for (_, s) in c.open.drain() {
+                let _ = s.shutdown(Shutdown::Both);
+            }
         }
-        let _ = self.done_tx.send(Some(reason.to_string()));
+        self.clock.stop();
+        *lock(&self.done) = Some(reason.to_string());
+        self.done_cv.notify_all();
+        // 受け付けで待っているスレッドを起こす(起きると閉じたことを見て、受け付けの口を閉じる)
+        let _ = TcpStream::connect_timeout(&std::net::SocketAddr::from(([127, 0, 0, 1], self.port())), Duration::from_secs(1));
     }
 
     // ---------- 接続と要求 ----------
 
-    fn serve_connection(&self, stream: tokio::net::TcpStream) {
+    fn serve_connection(&self, stream: TcpStream) {
         // 応答を分けて書いても待たせない(Node の http サーバと同じく Nagle を切る。切らないと Windows の遅延 ACK で 1 回 200ms 待つ)
         let _ = stream.set_nodelay(true);
+        let Ok(peer) = stream.try_clone() else { return };
+        let id = {
+            let mut c = lock(&self.conns);
+            if c.closed || c.open.len() >= MAX_CONNS {
+                return;
+            }
+            c.next += 1;
+            let id = c.next;
+            c.open.insert(id, peer);
+            id
+        };
         let me = self.arc();
-        let svc = hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
-            let s = me.clone();
-            async move { Ok::<_, std::convert::Infallible>(s.serve_request(req).await) }
+        let spawned = std::thread::Builder::new().name("atlas-serve-conn".into()).spawn(move || {
+            let _forget = ConnGuard(&me, id);
+            http::serve_conn(stream, || me.begin_request(), |req| me.serve_request(req));
         });
-        let io = hyper_util::rt::TokioIo::new(stream);
-        let task = self.rt.spawn(async move {
-            let _ = hyper::server::conn::http1::Builder::new().keep_alive(true).serve_connection(io, svc).await;
-        });
-        let mut conns = lock(&self.conns);
-        conns.retain(|c| !c.is_finished());
-        if lock(&self.life).closed {
-            task.abort();
-        } else {
-            conns.push(task.abort_handle());
+        if spawned.is_err() {
+            lock(&self.conns).open.remove(&id);
         }
     }
 
-    /// 処理が済み、かつ応答を送り終える(か相手が切る)までを「応えている途中」と数える。相手が先に切っても、処理(アップロードなど)が続いていれば待つ
-    async fn serve_request(self: Arc<Self>, req: hyper::Request<hyper::body::Incoming>) -> hyper::Response<SettleBody> {
+    /// 要求を受けてから、処理が済み、かつ応答を送り終える(か相手が切る)までを「応えている途中」と数える。
+    /// 相手が先に切っても、処理(アップロードなど)が続いていれば待つ。返す印を落とすと数から外れる
+    fn begin_request(&self) -> Inflight {
         lock(&self.life).inflight += 1;
-        let waiting = Arc::new(AtomicU8::new(2));
-        let half = |s: &Arc<Server>| {
-            let w = waiting.clone();
-            let me = Arc::downgrade(s);
-            Settle(Some(Box::new(move || {
-                if w.fetch_sub(1, Ordering::SeqCst) == 1
-                    && let Some(s) = me.upgrade()
-                {
-                    lock(&s.life).inflight -= 1;
-                    s.resume();
-                }
-            })))
-        };
-        let sent = half(&self);
-        let handled = half(&self);
-        let target = req.uri().path_and_query().map(|p| p.as_str().to_string()).unwrap_or_else(|| "/".into());
-        let url = parse_request_target(&target);
-        let (parts, body) = req.into_parts();
-        let rt = self.rt.clone();
-        let s = self.clone();
-        let resp = tokio::task::spawn_blocking(move || {
-            let _done = handled;
-            let mut r = Req { method: parts.method.as_str().to_string(), headers: parts.headers, url, body: BodyReader::new(body, rt) };
-            s.handle(&mut r)
-        })
-        .await
-        .unwrap_or_else(|e| send_json(500, &json!({ "error": format!("サーバの内部エラー: {e}") })));
-        let mut b = hyper::Response::builder().status(resp.status);
+        Inflight(self.me.clone())
+    }
+
+    fn serve_request(&self, req: http::Request) -> (Resp, BodyReader) {
+        let url = parse_request_target(&req.target);
+        let mut r = Req { method: req.method, headers: req.headers, url, body: req.body };
+        // 処理の中で落ちても、接続と「応えている途中」の数を壊さずに 500 を返す
+        let resp = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.handle(&mut r))).unwrap_or_else(|e| {
+            let m = e.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| e.downcast_ref::<String>().cloned()).unwrap_or_default();
+            send_json(500, &json!({ "error": format!("サーバの内部エラー: {m}") }))
+        });
+        let mut headers = Vec::with_capacity(resp.headers.len() + 1);
         if let Some(c) = &self.code {
-            b = b.header("x-atlas-code", c.as_str());
+            headers.push(("x-atlas-code", c.clone()));
         }
-        for (k, v) in &resp.headers {
-            b = b.header(*k, v.as_str());
-        }
-        b.body(SettleBody::new(resp.body, sent)).unwrap_or_else(|_| hyper::Response::new(SettleBody::new(Bytes::new(), Settle(None))))
+        headers.extend(resp.headers);
+        (Resp { status: resp.status, headers, body: resp.body }, r.body)
     }
 
     fn handle(&self, req: &mut Req) -> Resp {
@@ -875,7 +952,7 @@ impl Server {
         match r {
             Ok(r) => r,
             Err(e) if api => send_json(e.status, &json!({ "error": e.message })),
-            Err(e) => Resp { status: e.status, headers: vec![("content-type", "text/plain; charset=utf-8".into())], body: Bytes::from(e.message) },
+            Err(e) => Resp { status: e.status, headers: vec![("content-type", "text/plain; charset=utf-8".into())], body: Vec::from(e.message) },
         }
     }
 
@@ -1114,12 +1191,12 @@ impl Server {
         if path == "/api/heartbeat" && method == "POST" {
             self.check_token(req)?;
             self.heartbeat(client_of(req), seq_of(req));
-            return Ok(Resp { status: 204, headers: vec![("x-atlas-serve", "1".into())], body: Bytes::new() });
+            return Ok(Resp { status: 204, headers: vec![("x-atlas-serve", "1".into())], body: Vec::new() });
         }
         if path == "/api/bye" && method == "POST" {
             self.check_token(req)?;
             self.bye(client_of(req), seq_of(req));
-            return Ok(Resp { status: 204, headers: vec![], body: Bytes::new() });
+            return Ok(Resp { status: 204, headers: vec![], body: Vec::new() });
         }
         if self.is_anonymized() {
             return Err(HttpError::new(403, "伏せ字版では編集できません"));
@@ -1607,7 +1684,7 @@ impl Server {
         let html = render_viewer_shell(&ViewerShellOptions { css: &css, id: &id, kind, detail_href: &detail_href, md_href: &md_href }).replacen(TOKEN_PLACEHOLDER, &self.token, 1);
         let mut headers = vec![("content-type", "text/html; charset=utf-8".to_string()), ("cache-control", "no-store".into()), ("x-atlas-serve", "1".into())];
         headers.extend(HTML_HEADERS.iter().map(|(k, v)| (*k, v.to_string())));
-        Ok(Resp { status: 200, headers, body: if req.method == "HEAD" { Bytes::new() } else { Bytes::from(html) } })
+        Ok(Resp { status: 200, headers, body: if req.method == "HEAD" { Vec::new() } else { Vec::from(html) } })
     }
 
     fn page_css(&self) -> R<String> {
@@ -1898,7 +1975,7 @@ impl Server {
             return self.view_shell(req, &raw);
         }
         if path == "/" {
-            return Ok(Resp { status: 302, headers: vec![("location", "/atlas.html".into())], body: Bytes::new() });
+            return Ok(Resp { status: 302, headers: vec![("location", "/atlas.html".into())], body: Vec::new() });
         }
         let decoded = decode_uri_component(path).map_err(|()| HttpError::new(400, "パスを読めません"))?;
         if decoded.contains('\0') {
@@ -1929,18 +2006,42 @@ impl Server {
             let mut headers = vec![("content-type", ctype.to_string()), ("cache-control", "no-store".into())];
             headers.extend(HTML_HEADERS.iter().map(|(k, v)| (*k, v.to_string())));
             let body = if head {
-                Bytes::new()
+                Vec::new()
             } else {
                 let text = std::fs::read(&file).map_err(HttpError::internal)?;
-                Bytes::from(String::from_utf8_lossy(&text).replacen(TOKEN_PLACEHOLDER, &self.token, 1))
+                Vec::from(String::from_utf8_lossy(&text).replacen(TOKEN_PLACEHOLDER, &self.token, 1))
             };
             return Ok(Resp { status: 200, headers, body });
         }
         let mut headers = vec![("content-type", ctype.to_string()), ("content-length", st.len().to_string()), ("cache-control", "no-store".into())];
         headers.extend(FILE_HEADERS.iter().map(|(k, v)| (*k, v.to_string())));
-        // HEAD でも本文を渡す(hyper は HEAD には本文を送らず、大きさだけ content-length で返す)
-        let body = Bytes::from(std::fs::read(&file).map_err(HttpError::internal)?);
+        // HEAD でも本文を渡す(http.rs は HEAD には本文を送らず、大きさだけ content-length で返す)
+        let body = std::fs::read(&file).map_err(HttpError::internal)?;
         Ok(Resp { status: 200, headers, body })
+    }
+}
+
+/// 応えている途中の要求の印(落とすと数から外し、待っていた止まり方の判定を再開する)
+struct Inflight(Weak<Server>);
+
+impl Drop for Inflight {
+    fn drop(&mut self) {
+        if let Some(s) = self.0.upgrade() {
+            {
+                let mut l = lock(&s.life);
+                l.inflight = l.inflight.saturating_sub(1);
+            }
+            s.resume();
+        }
+    }
+}
+
+/// 接続のスレッドが終わったら(落ちても)、開いている接続の一覧から外す
+struct ConnGuard<'a>(&'a Server, u64);
+
+impl Drop for ConnGuard<'_> {
+    fn drop(&mut self) {
+        lock(&self.0.conns).open.remove(&self.1);
     }
 }
 
@@ -1986,7 +2087,7 @@ fn js_resp(text: &str) -> Resp {
     Resp {
         status: 200,
         headers: vec![("content-type", "text/javascript; charset=utf-8".into()), ("cache-control", "no-store".into()), ("x-atlas-serve", "1".into()), (NOSNIFF.0, NOSNIFF.1.into())],
-        body: Bytes::from(text.to_string()),
+        body: Vec::from(text.to_string()),
     }
 }
 

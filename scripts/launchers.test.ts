@@ -135,6 +135,27 @@ describe('scripts/ensure-atlas.ps1', () => {
     expect(text.match(/\$exe\b/g) ?? []).toEqual([]);
   });
 
+  // sha256 はリリースと同じ場所から取るので、リリースを差し替えられると一緒に差し替わる。来歴(attestation)は GitHub の署名で、
+  // このリポジトリのリリースのワークフローが作ったものかを確かめる。gh が無いときは sha256 だけで続け、そのことを出す
+  it('gh があってログインしていれば、取ってきたものを動かす前にビルドの来歴を gh attestation verify で確かめ、合わなければ使わない', () => {
+    expect(text).toContain('gh attestation verify $file --repo $slug --signer-workflow "$slug/.github/workflows/release.yml"');
+    expect(text).toContain('& gh auth status');
+    expect(text.indexOf('Test-Attestation $file $slug')).toBeGreaterThan(text.indexOf('Get-FileHash -Algorithm SHA256'));
+    expect(text.indexOf('Test-Attestation $file $slug')).toBeLessThan(text.indexOf('Get-ExeInfo $file'));
+    expect(text).toContain("if ($script:Attestation -eq 'fail') { return $null }");
+    expect(text).toContain('gh(GitHub CLI)が無いので、ビルドの来歴(attestation)は確かめず、sha256 だけで確かめました');
+  });
+
+  // Windows の Rust(MSVC 向け)はリンカーと、同梱の SQLite のコンパイルに Visual Studio の C++ のビルドツールを使う。
+  // 無いまま cargo build に進むと、分かりにくいリンクのエラーで止まるので、先に足りないものとして案内する
+  it('Windows でビルドする前に、Visual Studio の C++ のビルドツールを vswhere(無ければ PATH の cl.exe と link.exe)で確かめ、無ければ入れるよう案内する', () => {
+    expect(text).toContain("'Microsoft Visual Studio\\Installer\\vswhere.exe'");
+    expect(text).toContain('-requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64');
+    expect(text).toContain("(Test-Tool 'cl.exe') -and (Test-Tool 'link.exe')");
+    expect(text).toContain("if (-not (Test-MsvcTools)) { $missing += 'Visual Studio の C++ のビルドツール(MSVC)' }");
+    expect(text).toContain('https://visualstudio.microsoft.com/visual-cpp-build-tools/');
+  });
+
   it('管理者の権限が要る操作をしない', () => {
     expect(text).not.toMatch(/RunAs|Set-ExecutionPolicy|-Scope\s+(LocalMachine|AllUsers)|Program Files/i);
   });

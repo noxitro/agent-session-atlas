@@ -208,7 +208,7 @@ LLM の判定(`judge run`・`turns run`・`skill-draft`・`bin\atlas.exe judge-f
 
 - 決まる順: コマンドの `--model` > 設定の `judgeModel` > どちらも無ければ Copilot の既定のモデル。どれを使ったかは、判定のログの最初に出ます。
 - **設定が無いと、GitHub Copilot の AI クレジットを使います**(Copilot の既定のモデル)。BYOK のモデルなら AI クレジットは使わず、提供元の API の従量課金になります。画面の確認ダイアログには、使うモデルと、どちらの費用かが出ます。
-- `--backend anthropic`(Anthropic API を直接呼ぶ)には使いません(モデル名の形が違うため。そちらは `--model` で指定します)。
+- `--backend anthropic`(Anthropic API を直接呼ぶ)には使いません(モデル名の形が違うため。そちらは `--model` で指定します)。`anthropic` は、機能 `anthropic-backend` を付けてビルドした atlas にだけ入っています(リリースの `atlas.exe` には無い。[judge.md](judge.md#2b-このツールの中で判定する画面からまたはコマンドで))。
 - 画面から動かす処理は、サーバと同じ設定ファイルを読みます(`serve` や `open` を `--config` で起動したときは、その設定ファイル)。
 
 画面と bat は、設定ファイルを書き換える間 `atlas.config.json.lock` を作り、1 つずつ書きます(別の処理の書き換えを消さないように。落ちて残ったものは 10 秒たてば無視します)。書き換えるのは 1 項目だけで、ほかの項目の書き方(手で詰めた配列など)はそのまま残します。
