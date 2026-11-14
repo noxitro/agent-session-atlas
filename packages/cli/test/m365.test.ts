@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parseCli, UsageError } from '../src/args.ts';
 import { CHAT_REQUEST } from '../src/chat-parts.ts';
 import { jobArgs, MAIN_TS, parseJobRequest } from '../src/jobs.ts';
-import { cleanCopilotReply, M365_DEFAULT_MODEL, M365_SCRIPT, runM365Judge, type M365Driver, type M365Request } from '../src/m365.ts';
+import { cleanCopilotReply, M365_DEFAULT_MODEL, M365_SCRIPT, M365FatalError, runM365Judge, type M365Driver, type M365Request } from '../src/m365.ts';
 
 const item = (sessionId: string) => ({
   sessionId,
@@ -88,13 +88,15 @@ describe('M365 Copilot の自動操作での判定', () => {
     expect(none).toEqual([]);
   });
 
-  it('画面の操作が止まったら、残りのファイルは送らない。--limit で送る数を絞れる。Windows 以外と、添付ファイルが無いときは止まる', async () => {
+  const noPause = async () => {};
+
+  it('画面が見つからないときはやり直さず、残りのファイルも送らない。--limit で送る数を絞れる。Windows 以外と、添付ファイルが無いときは止まる', async () => {
     const calls: string[] = [];
     const broken: M365Driver = async (req) => {
       calls.push(basename(req.attach));
-      throw new Error('M365 Copilot の画面が見つかりません');
+      throw new M365FatalError('M365 Copilot の画面が見つかりません');
     };
-    const s = await runM365Judge(paths(), { target: 'effort', model: 'Think Deeper', limit: null, timeoutSec: 60 }, () => {}, broken, 'win32');
+    const s = await runM365Judge(paths(), { target: 'effort', model: 'Think Deeper', limit: null, timeoutSec: 60 }, () => {}, broken, 'win32', noPause);
     expect(calls).toEqual(['part-01.txt']);
     expect(s).toMatchObject({ attempted: 1, succeeded: 0, stopped: true, failed: [{ name: 'part-01.txt', reason: 'M365 Copilot の画面が見つかりません' }] });
 
@@ -105,6 +107,35 @@ describe('M365 Copilot の自動操作での判定', () => {
     await expect(runM365Judge(paths(), { target: 'turns', model: 'Think Deeper', limit: null, timeoutSec: 60 }, () => {}, recorder([]), 'win32')).rejects.toThrow(/添付ファイルがまだありません/);
   });
 
+  it('画面の操作が途中で崩れたら、同じファイルを既定で 2 回までやり直す。やり直しても崩れたら残りを送らない', async () => {
+    // part-01 は 1 回目だけ崩れる → やり直しで通り、次へ進む
+    const calls: string[] = [];
+    const logs: string[] = [];
+    const ok = recorder([]);
+    const flaky: M365Driver = async (req) => {
+      calls.push(basename(req.attach));
+      if (calls.length === 1) throw new Error('添付した part-01.txt が 120 秒たっても見つかりません');
+      await ok(req);
+    };
+    const s = await runM365Judge(paths(), { target: 'effort', model: 'Think Deeper', limit: null, timeoutSec: 60 }, (m) => logs.push(m), flaky, 'win32', noPause);
+    expect(calls).toEqual(['part-01.txt', 'part-01.txt', 'part-02.txt', 'part-03.txt']);
+    expect(s).toMatchObject({ attempted: 3, succeeded: 3, imported: 4, failed: [], stopped: false });
+    expect(logs.some((l) => l.includes('やり直します(2/3 回目)'))).toBe(true);
+
+    // 毎回崩れる → 3 回送って止まる。retries: 0 ならやり直さない
+    await rm(join(out, 'judgments.json'), { force: true });
+    const always: string[] = [];
+    const broken: M365Driver = async (req) => {
+      always.push(basename(req.attach));
+      throw new Error('送ってから 180 秒たっても返答が始まりません');
+    };
+    expect(await runM365Judge(paths(), { target: 'effort', model: 'Think Deeper', limit: null, timeoutSec: 60 }, () => {}, broken, 'win32', noPause)).toMatchObject({ attempted: 1, stopped: true, failed: [{ name: 'part-01.txt' }] });
+    expect(always).toEqual(['part-01.txt', 'part-01.txt', 'part-01.txt']);
+    always.length = 0;
+    await runM365Judge(paths(), { target: 'effort', model: 'Think Deeper', limit: null, timeoutSec: 60, retries: 0 }, () => {}, broken, 'win32', noPause);
+    expect(always).toEqual(['part-01.txt']);
+  });
+
   it('画面から読んだ返答(行番号とボタンの名前が混じり、囲みが無い)を、取り込める ```json に直す', () => {
     // M365 Copilot の画面を UI Automation で読んだときの形(行番号の行に行頭の空白が付き、本文は次の行。数字だけの本文の行もある)
     const raw = ['￼', '判定しました。', 'JSON', 'コードをコピー', 'その他のオプション', '￼', '1', '{', '2  ', '"items": [', '3    ', '7,', '4    ', '8', '5  ', ']', '6', '}', '応答のコピー', '気に入った点がある', '不満な点がある', '￼', 'その他のオプション'].join('\n');
@@ -113,6 +144,9 @@ describe('M365 Copilot の自動操作での判定', () => {
     expect(md).toContain('```json\n{\n  "items": [\n    7,\n    8\n  ]\n}\n```');
     expect(JSON.parse(/```json\n([\s\S]*?)\n```/.exec(md)![1])).toEqual({ items: [7, 8] });
     expect(md).not.toContain('￼');
+    // ノーブレークスペースだけの行(画面のコードに混じる)は、JSON として読めるように普通の空白にする
+    const nbsp = cleanCopilotReply(['コードをコピー', '1', '[', '2  ', '7,', '3', ' ', '4  ', '8', '5', ']'].join('\n'));
+    expect(JSON.parse(/```\n([\s\S]*?)\n```/.exec(nbsp)![1])).toEqual([7, 8]);
     // コードブロックの無い返答はそのまま
     expect(cleanCopilotReply('すみません、判定できません。')).toBe('すみません、判定できません。\n');
   });
