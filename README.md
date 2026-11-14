@@ -69,7 +69,7 @@ GitHub Copilot のセッションログ(`%USERPROFILE%\.copilot`)を手元で集
 
 1. このリポジトリの GitHub のリリース `v<version>` から `atlas.exe` を取ってきて、同じリリースの `atlas.exe.sha256` と照らし合わせてから `bin\` に置きます(リポジトリは `git remote get-url origin` から決めます)。GitHub CLI(`gh`)が入っていてログインしていれば、ビルドの来歴(下記)も `gh attestation verify` で確かめ、合わなければ使いません。`gh` が無いかログインしていなければ、sha256 だけで確かめ、そのことを 1 行出します。
 2. リリースが無いか取れなければ、ビルドに要るもの(下記)があれば、この PC でビルドします(`npm ci` → `npm run build:report` → `cargo build --release`。経過は `bin\build.log`。初めては数分かかります)。
-3. どちらもできなければ、何を入れればよいかを出して止まります。ビルドに要るものを入れるか、その版のリリースが出るのを待ってください。
+3. どちらもできなければ、何を入れればよいかを出します。前の版の `bin\atlas.exe` があれば、今回はそれで開き、次に開いたときにもう一度用意します(新しい版のリリースができるまでの間に `git pull` したときなど)。前の版も無ければ止まります。ビルドに要るものを入れるか、その版のリリースが出るのを待ってください。
 
 この PC でビルドするのに要るもの:
 
@@ -84,7 +84,7 @@ GitHub Copilot のセッションログ(`%USERPROFILE%\.copilot`)を手元で集
 
 ### リリースの atlas.exe を自分で確かめる
 
-リリースの `atlas.exe` は、このリポジトリの GitHub Actions(`.github/workflows/release.yml`)がタグのコミットからビルドしたものです。同じリリースに sha256 を付け、ビルドの来歴(GitHub の artifact attestation。Sigstore で署名され、どのリポジトリ・ワークフロー・コミットで作ったかを示します)を GitHub に保存しています。起動用の `.bat` はこれを自動で確かめますが、手で確かめるときは次のとおりです(`<owner>/<repo>` は取ってきたリポジトリ)。
+リリースの `atlas.exe` は、このリポジトリの GitHub Actions(`.github/workflows/release.yml`)が、`version` を上げて `main` に入ったコミットからビルドしたものです。同じリリースに sha256 を付け、ビルドの来歴(GitHub の artifact attestation。Sigstore で署名され、どのリポジトリ・ワークフロー・コミットで作ったかを示します)を GitHub に保存しています。起動用の `.bat` はこれを自動で確かめますが、手で確かめるときは次のとおりです(`<owner>/<repo>` は取ってきたリポジトリ)。
 
 ```
 gh release download v<version> -R <owner>/<repo> -p atlas.exe -p atlas.exe.sha256

@@ -95,15 +95,16 @@ npm run audit:ui -- out --json audit.json --shots shots
   - まとめのジョブ `ci-ok`: 上のジョブがどれか落ちたか取り消されたら落ちます。`main` のルール(リポジトリの Settings → Rules)で必須にするのはこれだけです(行列の組み合わせを変えても、必須チェックの名前を変えずに済むため)。`main` へは PR を通してだけ入れ、`ci-ok` が通るまでマージできません。
   - 外部の Action はコミット SHA で固定し、行末の `# v7.0.1` のような注記で版を示します(タグが付け替えられても中身が変わらないため)。更新は Dependabot が SHA と注記をまとめて行います。Rust は Action を使わず、ランナーに入っている rustup で入れます。
 - **依存の更新**(`.github/dependabot.yml`): npm・Cargo・GitHub Actions の更新を週 1 回 PR で出します。npm と Cargo の minor / patch はそれぞれ 1 本にまとめ、major は個別の PR になります。どの PR も CI が通ってから取り込みます。公開されてすぐの版は取り込みません(`cooldown`。npm と Cargo は patch 3 日・minor 7 日・major 14 日、Actions は 7 日。乗っ取られた版が公開直後に見つかって取り下げられる間を待つため)。脆弱性の修正(セキュリティ更新)には `cooldown` が効かないので、すぐ PR になります。
-- **リリース**(`.github/workflows/release.yml`): `v<version>` のタグを push すると、Windows のランナーで `npm ci` → `build:report` → `cargo build --release`(テンプレートが無ければ止める `ATLAS_REQUIRE_TEMPLATE=1`)で `atlas.exe` を作り(既定の機能だけ。`anthropic-backend` は入れない)、`atlas.exe.sha256` と一緒にそのタグの GitHub Release に付けます(`gh release`)。`atlas.exe` にはビルドの来歴(GitHub の artifact attestation。`actions/attest-build-provenance`)も付けます。書き込みの権限(`contents: write`、来歴の署名と保存の `id-token: write`・`attestations: write`)はこのジョブだけです。タグと `Cargo.toml` の `version` が違えば止めます。Actions の画面からタグを指定して作り直すこともできます(同じ名前のファイルは置き換えます)。利用者の起動用の `.bat` は、`scripts/ensure-atlas.ps1` でこれを取ってきます(README の「atlas.exe の用意と更新」)。
+- **リリース**(`.github/workflows/release.yml`): `main` に入ったコミットの `Cargo.toml` の `version` に、まだリリース `v<version>` が無ければ、Windows のランナーで `npm ci` → `build:report` → `cargo build --release`(テンプレートが無ければ止める `ATLAS_REQUIRE_TEMPLATE=1`)で `atlas.exe` を作り(既定の機能だけ。`anthropic-backend` は入れない)、`atlas.exe.sha256` と一緒にリリース `v<version>` を作って付けます(`gh release create`。タグ `v<version>` もこのとき、そのコミットに付きます。ファイルを上げてから公開するので、ファイルの無いリリースは見えません)。版を上げていないコミットでは、リリースがもうあるのを確かめて、すぐ終わります。`atlas.exe` にはビルドの来歴(GitHub の artifact attestation。`actions/attest-build-provenance`)も付けます。書き込みの権限(`contents: write`、来歴の署名と保存の `id-token: write`・`attestations: write`)はこのジョブだけです。リリースが無いのにタグ `v<version>` だけが別のコミットにあれば、作らずに止めます。Actions の画面からタグを指定して作り直すこともできます(タグと `Cargo.toml` の `version` が違えば止めます。同じ名前のファイルは置き換えます)。利用者の起動用の `.bat` は、`scripts/ensure-atlas.ps1` でこれを取ってきます(README の「atlas.exe の用意と更新」)。
 
 ### リリースの手順
 
-1. ワークスペースの `Cargo.toml` の `[workspace.package]` の `version` を上げ、`cargo build` で `Cargo.lock` も更新して、PR を通して `main` に入れる。
-2. `main` のそのコミットに `v<version>` のタグを付けて push する(`git tag v0.2.0 && git push origin v0.2.0`)。
-3. Actions の「Release」が通り、リリースに `atlas.exe` と `atlas.exe.sha256` が付いたことを確かめる。来歴は `gh attestation verify atlas.exe --repo <owner>/<repo>` で確かめられる(README の「リリースの atlas.exe を自分で確かめる」)。
+1. ワークスペースの `Cargo.toml` の `[workspace.package]` の `version` を上げ、`cargo build` で `Cargo.lock` も更新して、PR を通して `main` に入れる。タグは手で付けない。
+2. マージすると、Actions の「Release」がそのコミットからリリース `v<version>` を作る(十数分)。`atlas.exe` と `atlas.exe.sha256` が付いたかは、後で見ればよい。来歴は `gh attestation verify atlas.exe --repo <owner>/<repo>` で確かめられる(README の「リリースの atlas.exe を自分で確かめる」)。
+3. 「Release」が落ちたら、直す PR を入れる(版がそのままなら、その PR のマージでもう一度作る)か、Actions の画面からタグを指定して作り直す(タグまで付いていたとき)。
 
-`version` を上げたコミットが `main` に入ってからリリースが出るまでの間に `git pull` した利用者は、Node.js と Rust が無いと atlas.exe を用意できません(自動で送るタスクは前の版に戻して送り、次の回にもう一度試します)。`version` を上げたら、間を空けずにタグを push してください。
+**マージは「Release」を待たない**: PR をマージしてよいかは、CI の `ci-ok` だけで決めます。「Release」はマージの後に動き、マージの条件にも、マージした後の作業の前提にもしません。版を上げていない PR では何もしません。
+版を上げたコミットが `main` に入ってからリリースができるまでの間(や、「Release」が落ちたままの間)に `git pull` した利用者は、新しい版の `atlas.exe` を取れません。そのとき、起動用の `.bat` は今ある `bin\atlas.exe` のまま開き(`ensure-atlas.ps1 -KeepOlder`)、次に開いたときに取り直します。今ある `bin\atlas.exe` が無い(初めて使う)ときは、Node.js と Rust があればこの PC でビルドし、無ければリリースを待つよう出して止まります。自動で送るタスクは、前の版に戻して送り、次の回にもう一度試します。
 `version` を上げずに `main` を進めても、リリースから取ってきた利用者の `atlas.exe` は変わりません(この PC でビルドした人は、次に `.bat` を開いたときにビルドし直します)。利用者に届けたい変更は、`version` を上げてリリースします。
 
 公開リポジトリなので標準ランナーの Actions は無料枠で動きます。

@@ -15,14 +15,17 @@
 # 管理者の権限は要らない(書くのは bin\ と target\ と node_modules\ だけ)。
 # 動いている bin\atlas.exe(開いたままの画面のサーバなど)は消せないので、別の名前に移してから置き換える(次に動かしたときに消す)。
 #
-#   -Check  何も変えずに、bin\atlas.exe が今の版のものかだけを終了コードで返す(0 = そのまま使える、1 = 用意し直す)
+#   -Check      何も変えずに、bin\atlas.exe が今の版のものかだけを終了コードで返す(0 = そのまま使える、1 = 用意し直す)
+#   -KeepOlder  新しい版を用意できなくても、前の版の bin\atlas.exe が動けば、それで続ける(終了コード 0)。起動用の .bat が付ける。
+#               版を上げたコミットが main に入ってからリリースができるまで(数分から十数分)や、リリースのワークフローが失敗したままの間に
+#               git pull しても、開けなくならないように。自動で送るタスク(self_update.rs)は付けない(用意できなければ前の版に戻す)
 #
 # 環境変数(ふだんは要らない):
 #   ATLAS_BUILD_LOCAL=1   リリースを取りに行かず、この PC でビルドする(開発用)
 #   ATLAS_RELEASE_REPO    リリースを探すリポジトリ(owner/name)。無ければ origin から決める
 #
 # Windows PowerShell 5.1 が日本語を読めるよう、このファイルは BOM 付きの UTF-8 で置く(.gitattributes で改行は CRLF)。
-param([switch]$Check)
+param([switch]$Check, [switch]$KeepOlder)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
@@ -255,6 +258,16 @@ function Build-LocalExe([string]$work) {
   return $copy
 }
 
+# -KeepOlder のとき、新しい版を用意できなかったら、動く前の bin\atlas.exe で続ける。続けるなら $true
+function Use-Older {
+  if (-not $KeepOlder) { return $false }
+  $info = Get-ExeInfo $Exe
+  if (-not $info) { return $false }
+  Say ''
+  Say "今回は、今ある bin\atlas.exe(版 $($info.Version))のまま続けます。次に開いたときに、もう一度用意します。"
+  return $true
+}
+
 function Show-LogTail {
   if (Test-Path -LiteralPath $BuildLog) {
     Say "  --- $BuildLog の最後 ---"
@@ -300,6 +313,7 @@ try {
       Show-LogTail
       Say ''
       Say 'atlas をビルドできませんでした。上の記録を確かめてください。'
+      if (Use-Older) { exit 0 }
       exit 1
     }
     Say ''
@@ -308,6 +322,7 @@ try {
     if ($OnWindows) { $tools += '、Visual Studio Build Tools の「C++ によるデスクトップ開発」(MSVC と Windows SDK。https://visualstudio.microsoft.com/visual-cpp-build-tools/)' }
     Say "  - $tools を入れる。この PC でビルドします(足りないもの: $($missing -join '、'))"
     Say "  - 版 v$want のリリースが出るのを待つ(出ていなければ、atlas を作っている人に知らせてください)"
+    if (Use-Older) { exit 0 }
     exit 1
   } finally {
     Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
