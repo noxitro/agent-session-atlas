@@ -74,8 +74,7 @@ pub fn run_serve(p: &Paths, o: ServeCli, log: Log<'_>) -> Result<String> {
     if let Some(running) = find_running_server(&p.out) {
         let url = format!("http://127.0.0.1:{}/atlas.html", running.port);
         log(&format!("serve: 既に動いているサーバがあります({url})。ブラウザで開くだけにします"));
-        let code = atlas_report::build::code_stamp(Some(&crate::paths::REPO_ROOT.join("packages")))?;
-        if running.code.as_deref() != Some(code.as_str()) {
+        if running.code.as_deref() != Some(crate::version::CODE_STAMP) {
             log("serve: 動いているサーバは、今の atlas と版が違います(atlas のコードが変わる前に起動したもの)。前に開いた atlas.bat の黒い窓を閉じてから、もう一度 atlas.bat を実行してください");
         }
         if o.open {

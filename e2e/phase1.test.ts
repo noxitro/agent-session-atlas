@@ -8,8 +8,10 @@ import { readFile, readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { openReadOnly, runPipeline, type PipelineResult, type SessionRecord, type SessionsFile } from '../packages/core/src/index.ts';
-import { buildFixtureHome, FIXTURE_WIKIS, readFixtureStore, ROOT } from './fixture-home.ts';
+import type { SessionRecord, SessionsFile } from '../packages/report/src/shared/types.ts';
+import { buildFixtureHome, readFixtureStore, ROOT } from './fixture-home.ts';
+import { runPipeline, type PipelineResult } from './pipeline.ts';
+import { openReadOnly } from './sqlite.ts';
 
 const LIVE = process.env.ATLAS_LIVE === '1';
 const WORK = join(ROOT, 'out', 'e2e-phase1');
@@ -109,7 +111,8 @@ describe('Phase 1 E2E: fixtures', () => {
     ({ home, close } = await buildFixtureHome(join(WORK, 'home')));
     before = await mtimes(home);
     // 実環境と同じく、書き手が開いたまま(行は WAL にだけある)で走らせる
-    result = await runPipeline(home, join(WORK, 'out'), { wikis: FIXTURE_WIKIS });
+    // wiki の指定は globalSetup が ATLAS_CONFIG に指した fixture 用の設定(FIXTURE_WIKIS)から atlas が読む
+    result = runPipeline(home, join(WORK, 'out'));
     after = await mtimes(home);
   });
   afterAll(async () => close?.());
@@ -283,7 +286,7 @@ describe('Phase 1 E2E: fixtures', () => {
     const alive = await buildFixtureHome(join(WORK, 'home-alive'), { writer: 'alive' });
     try {
       const b = await mtimes(alive.home);
-      const r = await runPipeline(alive.home, join(WORK, 'out-alive'));
+      const r = runPipeline(alive.home, join(WORK, 'out-alive'));
       expect(await mtimes(alive.home)).toEqual(b);
       expect(r.sessions.counts.sessions).toBe(result.sessions.counts.sessions);
       expect(r.sessions.sessions.find((x) => x.id === id(3))?.tokens.records.db).toBe(4);
@@ -322,7 +325,7 @@ describe.skipIf(!LIVE)('Phase 1 E2E: 実データ(ATLAS_LIVE=1)', () => {
     preDirs = sessionDirsIn(join(src, 'session-state'));
     before = new Map(watched().map((f) => [f, statSync(f).mtimeMs]));
     const t = performance.now();
-    result = await runPipeline(src, out);
+    result = runPipeline(src, out);
     wallMs = performance.now() - t;
     after = new Map([...before.keys()].map((f) => [f, statSync(f).mtimeMs]));
   });

@@ -1,4 +1,4 @@
-//! 自動で送る前に、atlas 自身を新しい版にする(packages/cli/src/self-update.ts の移植。schedule-upload.bat で登録したタスクが、upload_auto.rs から呼ぶ)。
+//! 自動で送る前に、atlas 自身を新しい版にする(TS 版の packages/cli/src/self-update.ts の移植。schedule-upload.bat で登録したタスクが、upload_auto.rs から呼ぶ)。
 //! 作業メンバーは定期の自動送信しか使わず、atlas.bat を開かないので、git pull しないままだと古い版で送り続けてしまうため。
 //!
 //! 新しい版にするのは、次をすべて満たすときだけ(手で触っているチェックアウトを壊さない):
@@ -9,10 +9,11 @@
 //!  - 早送り(fast-forward)だけで新しい版になる。ただし、origin の履歴が書き換えられた(force push)だけで、手元にだけあるコミットが無いときは、新しい main に合わせ直す
 //!  - 新しい版が、前にこの PC で動かなかった版(avoid)ではない
 //!
-//! 依存(package-lock.json)が変わっていれば npm ci で入れる。入れられなければ、前の版に戻して前の版の依存を入れ直す(rollback)。
+//! 実行ファイル(bin/atlas.exe)は git pull では新しくならない。取り込んだ版の実行ファイルは、起動用の .bat と同じ scripts/ensure-atlas.ps1 で用意する
+//! (Cargo.toml の version と同じ版のリリースがあれば取ってきて sha256 を確かめ、無ければ Node と Rust があればここでビルドする)。
+//! 用意できなければ、前の版に戻して前の版の実行ファイルを用意し直す(rollback)。
+//! ダウンロードと検証とビルドの手順は .bat と同じものを使いたいので、Rust で書き直さずにスクリプトを呼ぶ(HTTP と TLS のクレートを実行ファイルに入れずに済む)。
 //! どれかで止まっても、送ることは止めない(今の版のまま送る)。何をしたか・しなかった理由と、どうすれば新しい版になるかは、記録と結果に残す。
-//! TODO(段 8): Rust 版の実行ファイルは git pull では新しくならない。配り方(実行ファイルをリポジトリに置く・ここでビルドし直す)を決めたら、
-//! 依存を入れる口(install_deps・deps_fresh)をそれに合わせる。
 
 use crate::upload_auto_files::AutoUpdateResult;
 use std::path::Path;
@@ -82,10 +83,10 @@ pub struct UpdateOptions<'a> {
     pub repo: &'a Path,
     pub log: &'a dyn Fn(&str),
     pub run: Option<CmdRunner<'a>>,
-    /// 依存が package-lock.json と揃っているか(既定は scripts/deps-fresh.mjs)
-    pub deps_fresh: Option<&'a dyn Fn() -> bool>,
-    /// 依存を入れる。入れられたら true(既定は npm ci)
-    pub install_deps: Option<&'a dyn Fn() -> bool>,
+    /// bin/ の実行ファイルが、今のチェックアウトの版のものか(既定は scripts/ensure-atlas.ps1 -Check)
+    pub exe_fresh: Option<&'a dyn Fn() -> bool>,
+    /// 今のチェックアウトの版の実行ファイルを用意する。用意できたら true(既定は scripts/ensure-atlas.ps1)
+    pub install_exe: Option<&'a dyn Fn() -> bool>,
     /// このチェックアウトで atlas の処理が動いていれば、その説明(動いていれば更新しない)
     pub busy: Option<&'a dyn Fn() -> Option<String>>,
     /// 使わない版(前にこの PC で動かなかった版。コミットの全桁)
@@ -94,7 +95,7 @@ pub struct UpdateOptions<'a> {
 
 impl<'a> UpdateOptions<'a> {
     pub fn new(repo: &'a Path, log: &'a dyn Fn(&str)) -> Self {
-        UpdateOptions { repo, log, run: None, deps_fresh: None, install_deps: None, busy: None, avoid: None }
+        UpdateOptions { repo, log, run: None, exe_fresh: None, install_exe: None, busy: None, avoid: None }
     }
     fn runner(&self) -> CmdRunner<'a> {
         self.run.unwrap_or(&run_cmd)
@@ -103,7 +104,8 @@ impl<'a> UpdateOptions<'a> {
 
 const FETCH_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 const GIT_TIMEOUT: Duration = Duration::from_secs(60);
-const NPM_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+/// 実行ファイルを用意する長さ(リリースが無くてここでビルドするときは、初めてなら数分かかる)
+const ENSURE_TIMEOUT: Duration = Duration::from_secs(40 * 60);
 /// npm が書き換えることのある、git が管理しているファイル(これだけが変わっているときは、元に戻してから進める)
 const LOCK_FILE: &str = "package-lock.json";
 
@@ -125,28 +127,34 @@ fn short_s(sha: &str) -> String {
     short(Some(sha)).unwrap_or_default()
 }
 
-fn deps_fresh(o: &UpdateOptions<'_>) -> bool {
-    if let Some(f) = o.deps_fresh {
-        return f();
+/// scripts/ensure-atlas.ps1 を動かす(Windows は Windows PowerShell、ほかは pwsh)。窓は出さない
+fn ensure_script(o: &UpdateOptions<'_>, check: bool) -> CmdResult {
+    let script = o.repo.join("scripts").join("ensure-atlas.ps1");
+    let script = script.to_string_lossy();
+    let mut args = vec!["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", &script];
+    if check {
+        args.push("-Check");
     }
-    let script = o.repo.join("scripts").join("deps-fresh.mjs");
-    (o.runner())("node", &[&script.to_string_lossy(), &o.repo.to_string_lossy()], o.repo, GIT_TIMEOUT).code == 0
+    (o.runner())(if cfg!(windows) { "powershell.exe" } else { "pwsh" }, &args, o.repo, if check { GIT_TIMEOUT } else { ENSURE_TIMEOUT })
 }
 
-fn install_deps(o: &UpdateOptions<'_>) -> bool {
-    if let Some(f) = o.install_deps {
+fn exe_fresh(o: &UpdateOptions<'_>) -> bool {
+    if let Some(f) = o.exe_fresh {
         return f();
     }
-    // npm ci は package-lock.json のとおりに入れ、書き換えない。Windows の npm は npm.cmd なので、cmd.exe から動かす
-    let run = o.runner();
-    let r = if cfg!(windows) {
-        let comspec = std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".into());
-        run(&comspec, &["/d", "/s", "/c", "npm ci --no-audit --no-fund"], o.repo, NPM_TIMEOUT)
-    } else {
-        run("npm", &["ci", "--no-audit", "--no-fund"], o.repo, NPM_TIMEOUT)
-    };
+    ensure_script(o, true).code == 0
+}
+
+fn install_exe(o: &UpdateOptions<'_>) -> bool {
+    if let Some(f) = o.install_exe {
+        return f();
+    }
+    let r = ensure_script(o, false);
+    for line in r.stdout.split('\n').map(|l| atlas_core::js::trim(l.strip_suffix('\r').unwrap_or(l))).filter(|l| !l.is_empty()) {
+        (o.log)(&format!("  {line}"));
+    }
     if r.code != 0 {
-        (o.log)(&format!("atlas の更新: 依存を入れられませんでした({})", reason_of(&r)));
+        (o.log)(&format!("atlas の更新: 実行ファイルを用意できませんでした({})", reason_of(&r)));
     }
     r.code == 0
 }
@@ -159,7 +167,7 @@ pub struct RollbackResult {
     pub note: String,
 }
 
-/// 前の版(from_sha)に戻し、依存が前の版と揃っていなければ入れ直す。新しい版の依存を入れられなかったときと、
+/// 前の版(from_sha)に戻し、実行ファイルが前の版のものでなければ用意し直す。新しい版の実行ファイルを用意できなかったときと、
 /// 新しい版がこの PC で動かなかったとき(upload_auto.rs)に使う。手で変えたファイルが無いことは確かめてあるので、--keep で戻せる
 pub fn rollback(o: &UpdateOptions<'_>, from_sha: &str) -> RollbackResult {
     let back = (o.runner())("git", &["reset", "--keep", from_sha], o.repo, GIT_TIMEOUT);
@@ -168,14 +176,14 @@ pub fn rollback(o: &UpdateOptions<'_>, from_sha: &str) -> RollbackResult {
         return RollbackResult { ok: false, reverted: false, note: format!("前の版({s})に戻せませんでした({})。atlas.bat を開いて確かめてください", reason_of(&back)) };
     }
     (o.log)(&format!("atlas の更新: 前の版({s})に戻しました"));
-    if deps_fresh(o) {
+    if exe_fresh(o) {
         return RollbackResult { ok: true, reverted: true, note: format!("前の版({s})に戻しました") };
     }
-    (o.log)("atlas の更新: 前の版の依存を入れ直します");
-    if install_deps(o) {
-        return RollbackResult { ok: true, reverted: true, note: format!("前の版({s})に戻し、依存も入れ直しました") };
+    (o.log)("atlas の更新: 前の版の実行ファイルを用意し直します");
+    if install_exe(o) {
+        return RollbackResult { ok: true, reverted: true, note: format!("前の版({s})に戻し、実行ファイルも前の版にしました") };
     }
-    RollbackResult { ok: false, reverted: true, note: format!("前の版({s})に戻しましたが、依存を入れ直せませんでした。atlas.bat を開くと入れ直します") }
+    RollbackResult { ok: false, reverted: true, note: format!("前の版({s})に戻しましたが、実行ファイルを前の版にできませんでした。atlas.bat を開くと用意し直します") }
 }
 
 /// atlas 自身を新しい版にする(できるときだけ)。失敗は結果に書き、止めない
@@ -282,15 +290,15 @@ pub fn self_update(o: &UpdateOptions<'_>) -> AutoUpdateResult {
         return result("skipped", from, None, format!("早送りだけでは新しい版にできないので、更新しません(手元にだけあるコミットがあるなど。git log {main}..HEAD で確かめられます)"));
     }
     (o.log)(&format!("atlas の更新: 新しい版({})を取り込みました", short_s(&to)));
-    if !deps_fresh(o) {
-        (o.log)("atlas の更新: 依存が変わったので、npm ci で入れます");
-        if !install_deps(o) {
-            // 新しい版を、その版の依存なしで動かさない
+    if !exe_fresh(o) {
+        (o.log)("atlas の更新: 版が変わったので、新しい版の実行ファイルを用意します");
+        if !install_exe(o) {
+            // 新しい版のソースを、前の版の実行ファイルで動かさない(設定やファイルの形が合わないことがある)
             let back = rollback(o, from_s);
             let note = if back.ok {
-                format!("新しい版({})の依存を入れられなかったので、{}。今の版のまま送ります(次の回にもう一度試します)", short_s(&to), back.note)
+                format!("新しい版({})の実行ファイルを用意できなかったので、{}。今の版のまま送ります(次の回にもう一度試します)", short_s(&to), back.note)
             } else {
-                format!("新しい版({})の依存を入れられず、{}", short_s(&to), back.note)
+                format!("新しい版({})の実行ファイルを用意できず、{}", short_s(&to), back.note)
             };
             return result("failed", from, Some(if back.reverted { from_s } else { &to }), note);
         }
@@ -362,7 +370,7 @@ mod tests {
         fn head(&self, cwd: &Path) -> String {
             self.git(cwd, &["rev-parse", "HEAD"])
         }
-        /// 偽の依存の口で更新する(git は本物。この PC の設定は使わない)
+        /// 偽の実行ファイルの口で更新する(git は本物。この PC の設定は使わない)
         fn update(&self, fresh: bool, installs: &dyn Fn() -> bool, avoid: Option<String>, busy: Option<&dyn Fn() -> Option<String>>) -> (AutoUpdateResult, Vec<String>) {
             let logs = RefCell::new(Vec::new());
             let log = |l: &str| logs.borrow_mut().push(l.to_string());
@@ -374,8 +382,8 @@ mod tests {
             let fresh_f = move || fresh;
             let mut o = UpdateOptions::new(&self.member, &log);
             o.run = Some(&run);
-            o.deps_fresh = Some(&fresh_f);
-            o.install_deps = Some(installs);
+            o.exe_fresh = Some(&fresh_f);
+            o.install_exe = Some(installs);
             o.avoid = avoid;
             o.busy = busy;
             let r = self_update(&o);
@@ -403,7 +411,7 @@ mod tests {
         assert_eq!(u.outcome, "updated");
         assert_eq!(r.head(&r.member), next);
         assert!(logs.join("\n").contains(&format!("{} から {} に更新しました", &before[..7], &next[..7])));
-        // 依存を入れられなければ前の版に戻し、前の版の依存を入れ直す
+        // 実行ファイルを用意できなければ前の版に戻し、前の版の実行ファイルを用意し直す
         let mid = next;
         r.release("package-lock.json", "{\"v\":3}");
         let n = RefCell::new(0);
@@ -413,7 +421,7 @@ mod tests {
         };
         let (u, _) = r.update(false, &installs, None, None);
         assert_eq!((u.outcome.as_str(), u.from.as_deref(), u.to.as_deref(), u.from_sha()), ("failed", Some(&mid[..7]), Some(&mid[..7]), Some(mid.as_str())));
-        assert!(u.note.contains("依存を入れられなかったので、前の版(") && u.note.contains(")に戻し、依存も入れ直しました。今の版のまま送ります"), "{}", u.note);
+        assert!(u.note.contains("実行ファイルを用意できなかったので、前の版(") && u.note.contains(")に戻し、実行ファイルも前の版にしました。今の版のまま送ります"), "{}", u.note);
         assert_eq!(*n.borrow(), 2);
         assert_eq!(r.head(&r.member), mid);
         // 前にこの PC で動かなかった版は使わない。もっと新しい版が出たら、それにする
@@ -486,10 +494,10 @@ mod tests {
         let stale = || false;
         let mut o = UpdateOptions::new(&r.member, &log);
         o.run = Some(&run);
-        o.deps_fresh = Some(&stale);
-        o.install_deps = Some(&yes);
+        o.exe_fresh = Some(&stale);
+        o.install_exe = Some(&yes);
         let b = rollback(&o, &first);
-        assert_eq!(b, RollbackResult { ok: true, reverted: true, note: format!("前の版({})に戻し、依存も入れ直しました", &first[..7]) });
+        assert_eq!(b, RollbackResult { ok: true, reverted: true, note: format!("前の版({})に戻し、実行ファイルも前の版にしました", &first[..7]) });
         assert_eq!(r.head(&r.member), first);
     }
 }

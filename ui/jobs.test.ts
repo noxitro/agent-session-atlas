@@ -15,8 +15,7 @@ import { pathToFileURL } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { shotOnFailure } from './failure-shot.ts';
-import type { ServeHandle } from '../packages/cli/src/serve.ts';
-import { buildFixtureHome, FIXTURE_CODE, ROOT, cliCommand, startServer } from '../e2e/fixture-home.ts';
+import { buildFixtureHome, FIXTURE_CODE, ROOT, cliCommand, startServer, type ServeHandle } from '../e2e/fixture-home.ts';
 
 const WORK = join(ROOT, 'out', 'ui-jobs');
 const FAKE = join(FIXTURE_CODE, 'fake-copilot.mjs');

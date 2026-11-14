@@ -18,10 +18,11 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { parse as parseYaml } from 'yaml';
-import type { SessionsFile } from '../packages/core/src/index.ts';
-import { buildReport, extractEmbedded, type ReportData } from '../packages/report/src/index.ts';
+import { extractEmbedded } from '../packages/report/src/lib/embed.ts';
 import { GLOSSARY, GLOSSARY_GROUPS } from '../packages/report/src/lib/glossary.ts';
-import { computeMetrics, GROUPED_PROJECTS } from '../packages/core/src/index.ts';
+import type { ReportData } from '../packages/report/src/lib/types.ts';
+import { GROUPED_PROJECTS } from '../packages/report/src/shared/project-keys.ts';
+import type { SessionsFile } from '../packages/report/src/shared/types.ts';
 import { buildFixtureHome, FIXTURES, readFixtureStore, ROOT, cliCommand, startServer } from './fixture-home.ts';
 
 const LIVE = process.env.ATLAS_LIVE === '1';
@@ -529,15 +530,9 @@ describe.skipIf(!LIVE)('Phase 2 E2E: 実データ(ATLAS_LIVE=1)', () => {
   it('実データの伏せ字版に cwd / リポジトリ名 / ブランチが出ない', async () => {
     const s = JSON.parse(await readFile(join(out, 'sessions.json'), 'utf8')) as SessionsFile;
     const anonOut = join(ROOT, 'out', 'e2e-phase2-live-anon');
-    await buildReport({
-      sessions: s.sessions,
-      metrics: computeMetrics(s.sessions),
-      totalSessionsInSource: s.sessions.length,
-      warnings: { unknownEventTypes: 0, badLines: 0 },
-      judgments: null,
-      outDir: anonOut,
-      anonymize: true,
-    });
+    // 伏せ字版は atlas all --anonymize で作る(実データを別の出力先に集計し直す)
+    const ra = atlas(['all', '--home', src, '--out', anonOut, '--anonymize']);
+    expect(ra.status, ra.stderr).toBe(0);
     // 一般的な語と衝突しない程度に長い固有名だけを調べる(短いブランチ名 main 等は仮名の文脈では区別できない)
     const secrets = [...new Set(s.sessions.flatMap((x) => [x.cwd, x.gitRoot, x.repository, x.branch && x.branch.length >= 8 ? x.branch : null]))].filter(
       (v): v is string => !!v && v.length >= 8,

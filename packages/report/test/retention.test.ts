@@ -1,22 +1,53 @@
 // レポートの「AI の変更の残存」と「比べる」の集計(lib/retention.ts・lib/compare.ts)。値はすべて架空のもの
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_LAG_DAYS as CORE_LAG_DAYS, RETENTION_STATUS_LABEL, RETENTION_STATUSES, UNATTRIBUTABLE_REASON_LABEL, UNATTRIBUTABLE_REASONS } from '../../core/src/vcs-retention.ts';
-import { VCS_KINDS } from '../../core/src/vcs.ts';
 import { aggregateRetention, DEFAULT_LAG_DAYS, median, phaseAt, REASON_LABEL, REASONS, retentionByPhase, retentionItem, shareOf, STATUS_LABEL, STATUSES, UNKNOWN_PHASE, VCS_LABEL, type RetentionItem } from '../src/lib/retention.ts';
 import { comparePhaseRows, compareRows, compareSide, COMPARE_MIN_SESSIONS, defaultPeriods, inPeriod, type CompareSession } from '../src/lib/compare.ts';
-import { PHASES } from '../../core/src/turns.ts';
+import { PHASES } from '../src/shared/turns.ts';
 import type { TurnTuple } from '../src/lib/turns.ts';
+
+// 照合の本体は Rust(crates/atlas-core/src/vcs_retention.rs・vcs.rs)。画面の lib はその並びと名前を写しているので、Rust のソースから読んで比べる
+const CORE = join(import.meta.dirname, '..', '..', '..', 'crates', 'atlas-core', 'src');
+const RETENTION_RS = readFileSync(join(CORE, 'vcs_retention.rs'), 'utf8');
+const VCS_RS = readFileSync(join(CORE, 'vcs.rs'), 'utf8');
+
+/** `pub const NAME: [Enum; n] = [Enum::A, …];` の並び(列挙子の名前) */
+function rustList(src: string, name: string, en: string): string[] {
+  const m = new RegExp(String.raw`pub const ${name}: \[${en}; \d+\] = \[([\s\S]*?)\];`).exec(src);
+  if (!m) throw new Error(`${name} が読めません`);
+  return [...m[1].matchAll(new RegExp(String.raw`${en}::(\w+)`, 'g'))].map((x) => x[1]);
+}
+
+/** `impl Enum { … pub fn fname(self) … { match self { Enum::A => "…", … } }` の対応(列挙子の名前 → 文字列) */
+function rustArms(src: string, en: string, fname: string): Record<string, string> {
+  const impl = src.indexOf(`impl ${en} {`);
+  const start = src.indexOf(`pub fn ${fname}(self)`, impl);
+  if (impl < 0 || start < 0) throw new Error(`${en}::${fname} が読めません`);
+  const end = src.indexOf('\n    }\n', start);
+  return Object.fromEntries([...src.slice(start, end).matchAll(new RegExp(String.raw`${en}::(\w+) => "([^"]*)"`, 'g'))].map((x) => [x[1], x[2]]));
+}
+
+function rustNamed(src: string, list: string, en: string): { keys: string[]; labels: Record<string, string> } {
+  const variants = rustList(src, list, en);
+  const str = rustArms(src, en, 'as_str');
+  const label = rustArms(src, en, 'label');
+  return { keys: variants.map((v) => str[v]), labels: Object.fromEntries(variants.map((v) => [str[v], label[v]])) };
+}
 
 const item = (o: Partial<RetentionItem>): RetentionItem => ({ outcome: 'measured', reason: null, vcs: 'git', baseline: 'observed', on: 'local', mapped: false, hunks: [0, 0, 0, 0], lines: [0, 0, 0, 0], ...o });
 
 describe('lib/retention', () => {
-  it('状態・理由・VCS の並びと名前が core と同じ(ブラウザ側は core を読めないので写している)', () => {
-    expect([...STATUSES]).toEqual([...RETENTION_STATUSES]);
-    expect(STATUS_LABEL).toEqual(RETENTION_STATUS_LABEL);
-    expect([...REASONS]).toEqual([...UNATTRIBUTABLE_REASONS]);
-    expect(REASON_LABEL).toEqual(UNATTRIBUTABLE_REASON_LABEL);
-    expect(Object.keys(VCS_LABEL).sort()).toEqual([...VCS_KINDS].sort());
-    expect(DEFAULT_LAG_DAYS).toBe(CORE_LAG_DAYS);
+  it('状態・理由・VCS の並びと名前が Rust の本体と同じ(ブラウザ側は写している)', () => {
+    const status = rustNamed(RETENTION_RS, 'RETENTION_STATUSES', 'RetentionStatus');
+    expect([...STATUSES]).toEqual(status.keys);
+    expect(STATUS_LABEL).toEqual(status.labels);
+    const reason = rustNamed(RETENTION_RS, 'UNATTRIBUTABLE_REASONS', 'UnattributableReason');
+    expect([...REASONS]).toEqual(reason.keys);
+    expect(REASON_LABEL).toEqual(reason.labels);
+    const vcs = rustArms(VCS_RS, 'VcsKind', 'as_str');
+    expect(Object.keys(VCS_LABEL).sort()).toEqual(rustList(VCS_RS, 'VCS_KINDS', 'VcsKind').map((v) => vcs[v]).sort());
+    expect(DEFAULT_LAG_DAYS).toBe(Number(/pub const DEFAULT_LAG_DAYS: i64 = (\d+);/.exec(RETENTION_RS)?.[1]));
   });
 
   it('retentionItem: 埋め込みの形にする(パスは持たない)', () => {

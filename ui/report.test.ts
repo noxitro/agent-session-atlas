@@ -14,8 +14,7 @@ import { chromium, type Browser, type Locator, type Page } from 'playwright';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { shotOnFailure } from './failure-shot.ts';
 import { clickableFindings } from '../scripts/ui-audit.ts';
-import type { ServeHandle } from '../packages/cli/src/serve.ts';
-import { buildFixtureHome, ROOT, cliCommand, startServer } from '../e2e/fixture-home.ts';
+import { buildFixtureHome, ROOT, cliCommand, startServer, type ServeHandle } from '../e2e/fixture-home.ts';
 
 const WORK = join(ROOT, 'out', 'ui');
 const MEMO = 'UI テストのメモ KESTREL-MEMO';

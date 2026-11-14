@@ -1,5 +1,5 @@
 //! atlas build / export(packages/cli/src/commands.ts の runBuild・uploadsFor の移植)。ログの文言は TS 版と同じ(所要時間だけ違う)。
-//! 描くのは atlas-report の build(build_report)。テンプレートは ensure_template、CSS は read_page_css、版の目印は code_stamp で決める。
+//! 描くのは atlas-report の build(build_report)。テンプレートと CSS は実行ファイルに埋め込んだもの(template・page_css)、版の目印は version::CODE_STAMP。
 
 use super::metrics::{has_filter, select_sessions, write_tables, SessionFilter};
 use super::{mb, ms, Log};
@@ -13,7 +13,7 @@ use atlas_core::jsdate;
 use atlas_core::metrics::compute_metrics;
 use atlas_core::types::{SessionRecord, SessionsFile, METRICS_SCHEMA_VERSION};
 use atlas_core::vcs_step::read_vcs_retention;
-use atlas_report::build::{build_report, code_stamp, ensure_template, read_page_css, BuildInput, BuildScope, BuildWarnings, ReportSource, TranscriptSettings, HTML_SIZE_LIMIT};
+use atlas_report::build::{build_report, page_css, template, BuildInput, BuildScope, BuildWarnings, ReportSource, TranscriptSettings, HTML_SIZE_LIMIT};
 use atlas_report::groups::{member_groups, MemberSource};
 use atlas_report::judgments::parse_judgments;
 use atlas_report::memo_io::memos_dir;
@@ -141,8 +141,6 @@ pub fn run_build(p: &Paths, o: &BuildOptions, log: Log<'_>) -> Result<BuildResul
         log("build: 伏せ字版なので、依頼文の入った表(out/tables/)を消しました");
     }
 
-    let report_root = REPO_ROOT.join("packages").join("report");
-    let template = ensure_template(Some(&report_root), Some(&REPO_ROOT), &|m: &str| log(m))?;
     let unknown: i64 = s.warnings.unknown_event_types.values().sum();
     let layout = s.source.layout.map(|l| match l {
         atlas_core::types::UploadLayout::Flat => "flat",
@@ -181,15 +179,15 @@ pub fn run_build(p: &Paths, o: &BuildOptions, log: Log<'_>) -> Result<BuildResul
         memos_dir: memos,
         member_memos_dir: member_memos,
         read_only,
-        atlas_local: Some(current_atlas_build(&REPO_ROOT)),
+        atlas_local: Some(current_atlas_build(&REPO_ROOT, crate::version::CODE_STAMP)),
         // フォルダごとの、最後に送ったときの日時と版。絞り込んだときは、対象のセッションがあるフォルダだけ
         atlas_uploads: uploads_for(s.source.uploads.as_ref(), &sessions, has_filter(f)),
         out_dir: p.out.clone(),
         anonymize: o.anonymize,
         scope: BuildScope { since: f.since.clone(), project: f.project.clone(), client: f.client.clone(), model: f.model.clone(), branch: f.branch.clone() },
-        template: template.read()?,
-        css: read_page_css(Some(&report_root))?,
-        code: code_stamp(Some(&REPO_ROOT.join("packages")))?,
+        template: template()?.to_string(),
+        css: page_css(),
+        code: crate::version::CODE_STAMP.to_string(),
         transcripts: o.transcripts.as_ref().map(|t| TranscriptSettings {
             tool_output: match t.tool_output {
                 ToolOutput::Fail => ToolOutputMode::Fail,

@@ -74,6 +74,7 @@
   --vcs-mode <v>     vcs・all: 比べる版をどこで見るか。worktree(既定、今の作業ツリー)/ committed(最後に取り込んだ版)/
                      fixed(セッションの終わりから決まった日数後の版。日数は設定の vcs.lagDays、既定 7)
   -h, --help         この説明を出す
+  -V, --version      版(Cargo.toml の version と、作ったときの git のコミット)を出す
 
 export のオプション:
   --tool-output <v>  ツールの結果を記録に入れる条件: fail(既定、失敗したときだけ)/ all / none

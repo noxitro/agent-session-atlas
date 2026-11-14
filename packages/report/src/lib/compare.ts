@@ -1,7 +1,7 @@
 // 「比べる」の節: 2 つの条件(タスクタグ・期間・プロジェクト)のセッションの指標を並べる。工程は依頼(ターン)の単位で並べる。
 // 差は相関で、条件の違いが原因とは限らない。
 import { localDayStart, sessionTime } from './filter.ts';
-import { PHASES, type Phase, type TurnBucket } from '../../../core/src/turns.ts';
+import { PHASES, type Phase, type TurnBucket } from '../shared/turns.ts';
 import { aggregateRetention, measuredOf, median, retentionByPhase, type RetentionAgg, type StatusTuple } from './retention.ts';
 import { turnAggregate } from './turns.ts';
 import type { SessionSummary } from './types.ts';

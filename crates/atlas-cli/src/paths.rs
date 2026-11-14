@@ -28,6 +28,12 @@ pub static REPO_ROOT: LazyLock<PathBuf> = LazyLock::new(|| {
     strip_verbatim(dir)
 });
 
+/// 起動用の .bat が使う実行ファイル(リポジトリ直下の bin/atlas.exe。scripts/ensure-atlas.ps1 が置く)。無ければ None
+pub fn installed_exe() -> Option<PathBuf> {
+    let p = REPO_ROOT.join("bin").join(if cfg!(windows) { "atlas.exe" } else { "atlas" });
+    p.is_file().then_some(p)
+}
+
 /// Windows の canonicalize が付ける \\?\ を外す(ログやパスの比較が TS 版とずれないように)
 pub fn strip_verbatim(p: PathBuf) -> PathBuf {
     let s = p.to_string_lossy();

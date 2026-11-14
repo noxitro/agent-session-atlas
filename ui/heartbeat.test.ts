@@ -7,8 +7,7 @@ import { readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { chromium, type Browser } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { ServeHandle } from '../packages/cli/src/serve.ts';
-import { buildFixtureHome, ROOT, cliCommand, startServer } from '../e2e/fixture-home.ts';
+import { buildFixtureHome, ROOT, cliCommand, startServer, type ServeHandle } from '../e2e/fixture-home.ts';
 
 const WORK = join(ROOT, 'out', 'ui-heartbeat');
 

@@ -43,7 +43,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::{LazyLock, OnceLock};
+use std::sync::LazyLock;
 use std::time::Instant;
 
 /// events.jsonl を同時に読むセッションの数の上限
@@ -54,7 +54,7 @@ pub const CODE_PLACEHOLDER: &str = "__ATLAS_CODE__";
 /// atlas.html の大きさの上限(docs/PLAN.md「HTML の方針」。超えても出力はするが、CLI が注意を出す)
 pub const HTML_SIZE_LIMIT: u64 = 5 * 1024 * 1024;
 
-/// 実行ファイルに埋め込んだ base.css(リポジトリの外に置いた実行ファイルが使う)
+/// 実行ファイルに埋め込んだ base.css(画面と静的ページの共通スタイル)
 pub const EMBEDDED_BASE_CSS: &str = include_str!("../../../packages/report/src/styles/base.css");
 
 /// 実行ファイルに埋め込んだテンプレート(cargo build のときに packages/report/dist/template.html があったときだけ)
@@ -89,123 +89,18 @@ pub fn compact_css(css: &str) -> String {
     js::trim(&c.replace(";}", "}")).to_string()
 }
 
-/// 静的ページに埋め込む CSS(base.css を詰めたもの)。リポジトリの packages/report/src/styles/base.css があればそれを、無ければ埋め込んだものを使う
-pub fn read_page_css(report_root: Option<&Path>) -> Result<String> {
-    let path = report_root.map(|r| r.join("src").join("styles").join("base.css"));
-    match path.filter(|p| p.exists()) {
-        Some(p) => Ok(compact_css(&std::fs::read_to_string(&p).with_context(|| format!("{} を読めません", p.display()))?)),
-        None => Ok(compact_css(EMBEDDED_BASE_CSS)),
+/// 静的ページに埋め込む CSS(実行ファイルに埋め込んだ base.css を詰めたもの)
+pub fn page_css() -> String {
+    compact_css(EMBEDDED_BASE_CSS)
+}
+
+/// 使う画面のテンプレート(実行ファイルに埋め込んだもの)。実行するときにリポジトリの dist/ は読まない
+/// (置いてある dist/ が実行ファイルと違う版のものでも、実行ファイルと同じ版の画面を書くため。版の目印もこれを材料に決まる)
+pub fn template() -> Result<&'static str> {
+    match embedded_template() {
+        Some(t) => Ok(t),
+        None => bail!("この実行ファイルには画面のテンプレートが入っていません(リポジトリで npm run build:report の後に cargo build し直してください)"),
     }
-}
-
-fn mtime_ms(p: &Path) -> std::io::Result<f64> {
-    Ok(atlas_core::jsfs::mtime_ms(&std::fs::metadata(p)?))
-}
-
-fn newest_mtime(paths: &[PathBuf]) -> std::io::Result<f64> {
-    let mut max = 0f64;
-    for p in paths {
-        if !p.exists() {
-            continue;
-        }
-        if p.is_dir() {
-            for e in walkdir_files(p)? {
-                max = max.max(mtime_ms(&e)?);
-            }
-        } else {
-            max = max.max(mtime_ms(p)?);
-        }
-    }
-    Ok(max)
-}
-
-fn walkdir_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
-    let mut out = Vec::new();
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(d) = stack.pop() {
-        for e in atlas_core::jsfs::read_dir(&d)? {
-            let p = d.join(&e.name);
-            if e.is_dir() {
-                stack.push(p);
-            } else if e.is_file() {
-                out.push(p);
-            }
-        }
-    }
-    Ok(out)
-}
-
-/// 使うテンプレート
-pub enum TemplateSource {
-    /// リポジトリの dist/template.html
-    File(PathBuf),
-    /// 実行ファイルに埋め込んだもの
-    Embedded(&'static str),
-}
-
-impl TemplateSource {
-    pub fn read(&self) -> Result<String> {
-        match self {
-            TemplateSource::File(p) => std::fs::read_to_string(p).with_context(|| format!("{} を読めません", p.display())),
-            TemplateSource::Embedded(s) => Ok((*s).to_string()),
-        }
-    }
-}
-
-/// dist/template.html が無いか、report のソースより古ければ Vite でビルドする(TS 版の ensureTemplate)。
-/// report_root はリポジトリの packages/report。無ければ(リポジトリの外の実行ファイル)埋め込んだテンプレートを使う
-pub fn ensure_template(report_root: Option<&Path>, repo_root: Option<&Path>, log: &dyn Fn(&str)) -> Result<TemplateSource> {
-    let Some(root) = report_root.filter(|r| r.join("src").exists()) else {
-        return match embedded_template() {
-            Some(t) => Ok(TemplateSource::Embedded(t)),
-            None => bail!("画面のテンプレートがありません(この実行ファイルにはテンプレートが入っていません。リポジトリで npm run build:report の後に cargo build し直してください)"),
-        };
-    };
-    let template = root.join("dist").join("template.html");
-    let sources = [root.join("src"), root.join("template.html"), root.join("vite.config.ts"), root.join("svelte.config.js")];
-    let fresh = template.exists() && mtime_ms(&template)? >= newest_mtime(&sources)?;
-    if !fresh {
-        log("レポートのテンプレートをビルドしています(初回またはソース更新時のみ)…");
-        let candidates = [repo_root.map(|r| r.join("node_modules").join("vite").join("bin").join("vite.js")), Some(root.join("node_modules").join("vite").join("bin").join("vite.js"))];
-        let Some(vite) = candidates.into_iter().flatten().find(|p| p.exists()) else {
-            bail!("テンプレートを作る Vite がありません(リポジトリで npm install を実行してから、もう一度実行してください)");
-        };
-        let status = std::process::Command::new("node")
-            .arg(&vite)
-            .args(["build", "--config"])
-            .arg(root.join("vite.config.ts"))
-            .args(["--logLevel", "warn"])
-            .current_dir(root)
-            .stdin(std::process::Stdio::null())
-            .status()
-            .map_err(|e| anyhow!("テンプレートのビルド(node)を起動できません: {e}"))?;
-        if !status.success() || !template.exists() {
-            bail!("テンプレートのビルドに失敗しました: {} がありません", template.display());
-        }
-    }
-    Ok(TemplateSource::File(template))
-}
-
-/// このプロセスが動かしているコードの目印(core の code-stamp.ts の codeStamp と同じ値。最初に呼んだときの中身)。
-/// packages_root(リポジトリの packages/)があればそこから作る(TS 版と同じ)。無ければ(リポジトリの外の実行ファイル)
-/// 埋め込んだテンプレートと base.css から作る(TODO(段 8): TS のコードを消すときに作り方を決め直す)
-pub fn code_stamp(packages_root: Option<&Path>) -> Result<String> {
-    static CACHED: OnceLock<String> = OnceLock::new();
-    if let Some(s) = CACHED.get() {
-        return Ok(s.clone());
-    }
-    let s = match packages_root.filter(|p| p.exists()) {
-        Some(p) => atlas_core::atlas_build::compute_code_stamp(p).with_context(|| format!("{} から版の目印を作れません", p.display()))?,
-        None => {
-            use sha2::{Digest, Sha256};
-            let mut h = Sha256::new();
-            h.update(embedded_template().unwrap_or("").as_bytes());
-            h.update(b"\0");
-            h.update(EMBEDDED_BASE_CSS.as_bytes());
-            hex::encode(h.finalize())[..16].to_string()
-        }
-    };
-    Ok(CACHED.get_or_init(|| s).clone())
 }
 
 /// アップロードしたフォルダを集計したときの、そのフォルダ(画面の見出しに出す。伏せ字版には入れない)

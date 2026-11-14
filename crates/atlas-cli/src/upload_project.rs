@@ -968,8 +968,7 @@ pub fn upload_log() -> PathBuf {
     node_tmpdir().join("atlas-upload-project.log")
 }
 
-/// 突き合わせ(scripts/parity-cli.ts)のときだけ、集計し直さずに送る操作に進む(環境変数 ATLAS_PARITY_SKIP_AGGREGATE=1)。
-/// TS 版の同じ入口を、集計を空の処理に替えて動かしたものと比べるため
+/// 試すとき用: 集計し直さずに送る操作に進む(環境変数 ATLAS_PARITY_SKIP_AGGREGATE=1。TS 版との突き合わせに使ったもの)
 pub fn parity_skip_aggregate() -> bool {
     std::env::var("ATLAS_PARITY_SKIP_AGGREGATE").is_ok_and(|v| v == "1")
 }

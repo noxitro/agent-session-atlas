@@ -12,13 +12,13 @@
 //   <work>/rs に書き、ファイルごとに比べる(parity-common.ts の cmpJson。数値は相対 1e-9 まで同じとみなし、キーの順も見る)。
 //   重い入口(要約・集計・候補)の所要時間を両方について出す。<work> の既定は out/parity-lib-dump。
 // - 実データの結果には依頼文がそのまま入る。比べ終わったら <work> を消すこと(コミットしない)。
+// - TS のサーバー側を消した後も、画面が使う TS の lib と、build が使う Rust の lib がずれていないかを見るために残す(npm run parity:lib)。
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import type { SessionsFile } from '../packages/core/src/types.ts';
-import { readVcsRetention } from '../packages/core/src/vcs-step.ts';
+import type { SessionsFile } from '../packages/report/src/shared/types.ts';
 import { aggregate, coverageBreakdown, monthRange, unusedSkills } from '../packages/report/src/lib/aggregate.ts';
 import { createAnonymizer, identityAnonymizer, shortProjectLabel } from '../packages/report/src/lib/anonymize.ts';
 import { embedData, extractEmbedded, serializeForScript } from '../packages/report/src/lib/embed.ts';
@@ -54,9 +54,36 @@ import { detailFileName, summarize } from '../packages/report/src/lib/summarize.
 import { turnAggregate } from '../packages/report/src/lib/turns.ts';
 import { parseVerdicts, verdictAggregate, verdictTuples } from '../packages/report/src/lib/verdicts.ts';
 import { REPORT_DATA_VERSION } from '../packages/report/src/lib/types.ts';
-import { PHASES, sessionTurns } from '../packages/core/src/turns.ts';
-import type { SessionRecord } from '../packages/core/src/types.ts';
+import { PHASES, sessionTurns } from '../packages/report/src/shared/turns.ts';
+import type { SessionRecord } from '../packages/report/src/shared/types.ts';
 import { cmpJson, firstTextDiff } from './parity-common.ts';
+
+/** vcs-retention.json(atlas vcs の出力)。突き合わせに使う項目だけ */
+interface VcsRetentionFile {
+  schemaVersion: 1;
+  generatedAt: string;
+  computedOn: string;
+  mode: string;
+  similarity: unknown;
+  pathMap: unknown;
+  senders?: unknown;
+  labels?: unknown;
+  lagDays?: number;
+  note?: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  sessions: any[];
+}
+
+/** vcs-retention.json を読む。無い・形が違えば null(Rust 版の vcs_step::read_vcs_retention と同じ) */
+function readVcsRetention(path: string): VcsRetentionFile | null {
+  if (!existsSync(path)) return null;
+  try {
+    const j = JSON.parse(readFileSync(path, 'utf8')) as VcsRetentionFile;
+    return j && j.schemaVersion === 1 && Array.isArray(j.sessions) ? j : null;
+  } catch {
+    return null;
+  }
+}
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -113,7 +140,7 @@ async function dumpTs(outDir: string): Promise<void> {
   const verdicts = existsSync(vPath) ? parseVerdicts(JSON.parse(readFileSync(vPath, 'utf8'))) : null;
   const gPath = join(notesDir, 'groups.json');
   const groups = existsSync(gPath) ? parseGroups(JSON.parse(readFileSync(gPath, 'utf8')), 'groups.json') : { groups: [], warnings: [] };
-  const rx = await readVcsRetention(join(inDir, 'vcs-retention.json'));
+  const rx = readVcsRetention(join(inDir, 'vcs-retention.json'));
   dumpWith(outDir, write, file, records, judgments, verdicts, groups, rx);
 }
 
@@ -125,7 +152,7 @@ function dumpWith(
   judgments: ReturnType<typeof parseJudgments> | null,
   verdicts: ReturnType<typeof parseVerdicts>,
   groups: ReturnType<typeof parseGroups>,
-  rx: Awaited<ReturnType<typeof readVcsRetention>>,
+  rx: VcsRetentionFile | null,
 ): void {
   const installed = file.installed ? { skills: [...new Set([...file.installed.skills, ...file.installed.plugins.flatMap((p) => p.skills)])].sort(), disabled: [...(file.installed.disabledSkills ?? [])].sort() } : null;
   write('judgments', judgments ? { backend: judgments.backend, model: judgments.model, ranAt: judgments.ranAt, bySession: Object.fromEntries(judgments.bySession) } : null);

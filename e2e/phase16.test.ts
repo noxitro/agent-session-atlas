@@ -11,10 +11,12 @@ import { existsSync } from 'node:fs';
 import { cp, mkdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { sessionStoreRows, type SessionRecord, type SessionsFile, type SessionStoreJson } from '../packages/core/src/index.ts';
-import { folderPaths, foldersRootOf } from '../packages/cli/src/folders.ts';
-import { extractEmbedded } from '../packages/report/src/index.ts';
+import type { SessionRecord, SessionsFile } from '../packages/report/src/shared/types.ts';
+import type { SessionStoreJson } from './output-types.ts';
+import { hasUsageRows } from './sqlite.ts';
+import { extractEmbedded } from '../packages/report/src/lib/embed.ts';
 import { buildFixtureHome, ROOT, cliCommand } from './fixture-home.ts';
+import { folderPaths, foldersRootOf } from './folders.ts';
 
 const WORK = join(ROOT, 'out', 'e2e-phase16');
 const GROUP_A = 'Read-Side-A';
@@ -111,8 +113,7 @@ describe('Phase 16 E2E: アップロード先から集計し直す(読む側)', 
     for (const x of original.sessions) {
       if (ids.length === 2) break;
       if (x.sources.length !== 2 || !existsSync(join(out1, 'snapshot', 'session-state', x.id, 'events.jsonl'))) continue;
-      const rows = await sessionStoreRows(join(out1, 'snapshot', 'session-store.db'), x.id);
-      if (rows?.usage.length) ids.push(x.id);
+      if (await hasUsageRows(join(out1, 'snapshot', 'session-store.db'), x.id)) ids.push(x.id);
     }
     expect(ids).toHaveLength(2);
     other = original.sessions.find((x) => !ids.includes(x.id) && x.id !== GIT_SESSION && existsSync(join(out1, 'snapshot', 'session-state', x.id, 'events.jsonl')))!.id;

@@ -1,4 +1,4 @@
-//! atlas コマンドの入口(packages/cli/src/main.ts の移植): atlas <command> [options]
+//! atlas コマンドの入口(TS 版の packages/cli/src/main.ts の移植): atlas <command> [options]
 
 mod args;
 mod chat_parts;
@@ -21,12 +21,18 @@ mod upload_auto;
 mod upload_auto_files;
 mod upload_project;
 mod upload_schedule;
+mod version;
 
 use std::io::Write;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
+    // 版(scripts/ensure-atlas.ps1 が、置いてある実行ファイルの版を確かめるのに使う)
+    if argv.first().is_some_and(|a| a == "--version" || a == "-V") {
+        println!("{}", version::version_line());
+        return ExitCode::SUCCESS;
+    }
     // 判定の通し(TS 版の judge-flow.ts / npm run atlas:judge)。引数の解釈が違うので、先に振り分ける
     if argv.first().is_some_and(|a| a == "judge-flow") {
         return ExitCode::from(commands::judge_flow::main(&argv[1..]));

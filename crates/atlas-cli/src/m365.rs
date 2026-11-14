@@ -30,8 +30,8 @@ pub const M365_DEFAULT_MODEL: &str = "Think Deeper";
 /// 1 ファイルの返答を待つ既定の秒数(Think Deeper は数分かかることがある)
 #[allow(dead_code)] // 画面(serve)の移植で使う
 pub const M365_DEFAULT_TIMEOUT_SEC: u64 = 900;
-/// 画面を操作するスクリプト(TS 版の packages/cli/src/m365-uia.ps1 そのもの。BOM 付きで、Windows PowerShell で読める)
-pub const M365_SCRIPT: &[u8] = include_bytes!("../../../packages/cli/src/m365-uia.ps1");
+/// 画面を操作するスクリプト(assets/m365-uia.ps1。BOM 付きで、Windows PowerShell で読める)
+pub const M365_SCRIPT: &[u8] = include_bytes!("../assets/m365-uia.ps1");
 
 pub struct M365Request<'a> {
     /// 添付するファイル(名前がそのままチャットに出る)

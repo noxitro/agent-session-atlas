@@ -1,6 +1,6 @@
 // fixture の期待値の根拠になる素朴カウント(core を使わずに JSONL を 1 行ずつ数える)。
 // synthetic-fixtures.ts が生成時に .fixtures/fixture-counts.json へ書く(実データは読まない)。
-import type { CopilotEvent } from '../packages/core/src/index.ts';
+import type { CopilotEvent } from '../packages/report/src/shared/types.ts';
 
 /** core を使わずに数える(期待値の根拠。テストはこの値を定数として持つ) */
 export function naiveCount(lines: string[]) {

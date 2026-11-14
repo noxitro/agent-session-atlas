@@ -1,9 +1,11 @@
-# push / PR ごとに型検査・単体テスト・レポートのビルド・E2E(テスト時に生成する架空の fixture のみ)を回し、
-# 最後に clone した直後と同じ中身を作って atlas.bat と同じ順で動かす(npm run smoke = scripts/fresh-checkout.ts → scripts/checkout-smoke.ts)。
+# push / PR ごとに型検査・レポートの画面のビルド・単体テスト(Rust と TS)・atlas のビルド・TS と Rust の lib の突き合わせ・
+# E2E(テスト時に生成する架空の fixture のみ)を回し、最後に clone した直後と同じ中身を作って atlas.bat と同じ順で動かす
+# (npm run smoke = scripts/fresh-checkout.ts → scripts/checkout-smoke.ts。リリースが無いときの、この PC でビルドする道)。
 # 手元で同じ順に回すのは npm run ci(docs/development.md の「CI」)。
 # fixture は e2e の globalSetup(e2e/global-setup.ts)が作るので、ここに生成の手順は要らない。
 # 実データ(ATLAS_LIVE)と実 LLM 判定は CI では動かさない。
 # 外部の Action はタグの付け替えで中身が変わらないようコミット SHA で固定する(末尾の注記が版。Dependabot が SHA ごと更新する)。
+# Rust はランナーに入っている rustup で入れる(SHA で固定できる Action を増やさない)。
 name: CI
 
 on:
@@ -19,6 +21,11 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  CARGO_TERM_COLOR: never
+  # キャッシュを小さく保つ(CI では差分のビルドの中間ファイルを使い回さない)
+  CARGO_INCREMENTAL: '0'
+
 jobs:
   check:
     name: check (${{ matrix.os }}, node ${{ matrix.node }})
@@ -27,11 +34,11 @@ jobs:
       matrix:
         # 想定利用環境は Windows(atlas.bat)。パス処理の取りこぼしを見るため Linux でも回す
         os: [windows-latest, ubuntu-latest]
-        # engines は >=24。下限の 24 と、新しく入れる人が選ぶ現行 LTS の 26(node:sqlite は実験的 API なので版で変わりうる)
+        # engines は >=24。下限の 24 と、新しく入れる人が選ぶ現行 LTS の 26(e2e が fixture を作る node:sqlite は実験的 API なので版で変わりうる)
         node: [24, 26]
     runs-on: ${{ matrix.os }}
-    # ふだんは 2〜4 分。固まったときに早く気づけるよう短めにする
-    timeout-minutes: 10
+    # Rust のビルド(テスト用と release)と、clone した状態での release のビルドがあるので、キャッシュが無いと 20 分ほどかかる
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -40,14 +47,35 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: npm
+      - name: Rust を入れる
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          rustc --version
+      # crates.io から取った依存と target/ を、Cargo.lock ごとにキャッシュする
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
       - run: npm ci
-      # package.json の dependencies だけを見る(集計で毎回読み込むもの)。atlas.bat の npm install は devDependencies も入れ、
-      # テンプレートが古いときは vite も動くが、devDependencies の警告はここでは止めず Dependabot の PR で追う
+      # package.json の dependencies だけを見る(画面のビルドの devDependencies の警告はここでは止めず Dependabot の PR で追う)
       - if: matrix.os == 'ubuntu-latest' && matrix.node == 24
         run: npm audit --omit=dev --audit-level=high
       - run: npm run typecheck
-      - run: npm test
+      # 画面(Svelte)を先に作る: atlas のビルドが packages/report/dist/template.html を実行ファイルに埋め込む
       - run: npm run build:report
+      - run: npm test
+      - run: npm run build:atlas
+        env:
+          ATLAS_REQUIRE_TEMPLATE: '1'
+      # 画面の TS の lib と、build が使う Rust の lib の突き合わせ(架空の fixture)
+      - run: npm run parity:fixture
       - run: npm run e2e
       # 画面の操作(Playwright の Chromium、ui/)。ブラウザは OS ごとに見れば足りるので Node 24 だけで回す。
       # ブラウザの本体は Playwright の版ごとにキャッシュする(ほかの依存が上がっても取り直さない)。
@@ -73,7 +101,8 @@ jobs:
           path: out/ui-failures/
           if-no-files-found: ignore
           retention-days: 7
-      # clone した状態での動作確認(手元の npm run smoke と同じ。scripts/smoke-local.ts)
+      # clone した状態での動作確認(手元の npm run smoke と同じ。scripts/smoke-local.ts)。リリースは探さず(origin が無い)、
+      # scripts/ensure-atlas.ps1 がこの PC でビルドする道を通る(Linux は pwsh で動かす)
       - name: clone した状態での動作確認
         run: npm run smoke
 

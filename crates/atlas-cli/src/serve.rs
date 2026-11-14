@@ -20,7 +20,6 @@ use crate::folders::{check_folder, folders_root_of, forget_folder, is_read_only_
 use crate::group_export::{export_group, GroupExportPaths};
 use crate::group_upload::{check_upload, upload_dir, upload_group, uploaded_at, GroupUploadPaths, GroupUploadResult, UploadChangedError, UploadCheck, UploadOptions, UploadProgress};
 use crate::jobs::{acquire_out_lock, parse_job_request, running_job_in, FullCtx, JobRunner, JobRunnerOptions, RunFullFn, SpawnFn};
-use crate::paths::REPO_ROOT;
 use atlas_core::js;
 use atlas_core::nodepath::platform;
 use atlas_report::groups::{add_ids, member_groups, remove_ids, unique_ids, MemberSource, SessionGroup};
@@ -119,7 +118,7 @@ pub struct ServeOptions {
     /// 集計し直すときに読む場所(別のフォルダを開いたサーバ。省略時は CLI の既定 = この PC の Copilot のデータ)
     pub home: Option<String>,
     pub reports: ReportsOptions,
-    /// 応答の x-atlas-code で返す版の目印。None なら code_stamp()(起動したときのソースの中身)。Some(None) なら返さない(目印を返す前の古いサーバの代わり。テスト用)
+    /// 応答の x-atlas-code で返す版の目印。None なら version::CODE_STAMP(この実行ファイルを作ったときの目印)。Some(None) なら返さない(目印を返す前の古いサーバの代わり。テスト用)
     pub code_stamp: Option<Option<String>>,
 }
 
@@ -459,7 +458,7 @@ pub async fn start_serve(o: ServeOptions) -> anyhow::Result<ServeHandle> {
     // このサーバの版の目印(画面がページの目印と比べ、違えば「版が違います」と出す)
     let code = match o.code_stamp.clone() {
         Some(c) => c,
-        None => Some(atlas_report::build::code_stamp(Some(&REPO_ROOT.join("packages")))?),
+        None => Some(crate::version::CODE_STAMP.to_string()),
     };
     let config_path = crate::paths::resolve(o.config_path.clone().unwrap_or_else(|| PathBuf::from(default_config_path()))).to_string_lossy().into_owned();
     let can_pick = o.can_pick.unwrap_or(crate::folder_picker::CAN_PICK_FOLDER);
@@ -1615,7 +1614,7 @@ impl Server {
         if let Some(c) = self.css.get() {
             return Ok(c.clone());
         }
-        let c = atlas_report::build::read_page_css(Some(&REPO_ROOT.join("packages").join("report"))).map_err(HttpError::internal)?;
+        let c = atlas_report::build::page_css();
         Ok(self.css.get_or_init(|| c).clone())
     }
 

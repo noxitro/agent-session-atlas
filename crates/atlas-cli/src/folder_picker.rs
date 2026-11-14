@@ -36,7 +36,7 @@ pub fn pick_folder(title: &str, initial: Option<&str>) -> Result<Option<String>>
     if !CAN_PICK_FOLDER {
         bail!("この OS ではフォルダを選ぶ画面を出せません。パスを入力してください");
     }
-    // 突き合わせ(scripts/parity-cli.ts。偽の PowerShell を使うとき)では画面を出さない
+    // 偽の PowerShell を使うとき(ATLAS_PARITY_FAKE_PS。試すとき用)は画面を出さない
     if std::env::var_os("ATLAS_PARITY_FAKE_PS").is_some() {
         bail!("parity: フォルダを選ぶ画面は出しません");
     }

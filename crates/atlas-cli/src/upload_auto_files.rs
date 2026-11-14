@@ -70,6 +70,8 @@ pub const NO_UPDATE_FLAG: &str = "--no-update";
 pub const UPDATED_ENV: &str = "ATLAS_AUTO_UPDATED";
 /// 動かし直した側に渡す、呼び出し元のプロセスの番号(環境変数)。呼び出し元が止められたら、動かし直した側も止まる
 pub const PARENT_ENV: &str = "ATLAS_AUTO_PARENT_PID";
+/// TS 版で登録したタスクから、互換の入口(packages/cli/src/upload-auto.ts)を通して動かしたときに付く
+pub const TS_TASK_ENV: &str = "ATLAS_TS_TASK";
 /// 新しい版がこの PC で動かなかったときに、その版を覚えておくファイル(出力先 out/ の中。もっと新しい版が出るまで使わない)
 pub const AUTO_UPDATE_STATE_FILE: &str = "auto-update.json";
 /// atlas の処理が出力先で動いているかを見る印のファイルの名前(jobs.rs の JOB_LOCK_FILE と serve の SERVE_STATE_FILE と同じ)

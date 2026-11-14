@@ -1,4 +1,4 @@
-//! 自動で送る(packages/cli/src/upload-auto.ts の移植。schedule-upload.bat で登録したタスクが、毎日決まった時刻に窓を出さずに `atlas upload-auto` を動かす)。
+//! 自動で送る(TS 版の packages/cli/src/upload-auto.ts の移植。schedule-upload.bat で登録したタスクが、毎日決まった時刻に窓を出さずに `atlas upload-auto` を動かす)。
 //! 集計し直してから、画面で「まとめて送る」に印を付けたプロジェクトを、覚えた送り先へ尋ねずに送る(upload-project.bat の y まで進めたのと同じ)。
 //! 窓が無いので、経過は out/auto-upload.log に、結果は out/auto-upload.json に書き、送れなかったときは Windows の通知で知らせる。
 //! 送る前に、atlas 自身を新しい版にする(self_update.rs。タスクの引数に --no-update があればしない)。新しい版にしたら、
@@ -333,6 +333,9 @@ pub fn main(argv: &[String]) -> u8 {
             let _ = writeln!(f, "{line}");
         }
     };
+    if env.contains_key(crate::upload_auto_files::TS_TASK_ENV) && !env.contains_key(UPDATED_ENV) {
+        log("このタスクは前の版(Node.js で動かす版)で登録したものです。schedule-upload.bat を開くと、atlas.exe で動くように登録し直します");
+    }
     // 動かし直された側: 呼び出し元が止められたら(タスクの打ち切りなど)、こちらも止まる(残って次の回と重ならないように)
     if let Some(parent) = env.get(PARENT_ENV).and_then(|p| p.parse::<u32>().ok()).filter(|p| *p > 0) {
         let log = log.clone();
@@ -356,7 +359,8 @@ pub fn main(argv: &[String]) -> u8 {
     };
     let rest: Vec<String> = argv.to_vec();
     let relaunch = |extra: &[(String, String)]| -> Relaunched {
-        let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("atlas"));
+        // 新しい版にしたときは、bin/ に用意した新しい実行ファイルで動かす(動いている実行ファイルは、置き換えるときに別の名前に移されている)
+        let exe = crate::paths::installed_exe().unwrap_or_else(|| std::env::current_exe().unwrap_or_else(|_| PathBuf::from("atlas")));
         let mut c = std::process::Command::new(exe);
         c.arg("upload-auto").args(&rest).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped());
         for (k, v) in extra {

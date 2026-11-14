@@ -2,7 +2,7 @@
 // core の computeMetrics と同じ定義(合計は記録のあるセッションだけの和、月は UTC の YYYY-MM)。
 import { EFFORT_ORDER, execAggregate, orderBy, type ExecAggregate } from './exec.ts';
 import { hasPeople, UNKNOWN } from './filter.ts';
-import { addCauses, FAILURE_CAUSE_LABELS, type FailureCause, type FailureCauses } from '../../../core/src/tool-failure.ts';
+import { addCauses, FAILURE_CAUSE_LABELS, type FailureCause, type FailureCauses } from '../shared/tool-failure.ts';
 import type { SessionSummary } from './types.ts';
 
 export interface TokenTotals {

@@ -1,7 +1,7 @@
 <script lang="ts">
   // 段階 2: 依頼ごとの LLM 判定の集計(「工程と詰まり」の中)。普段の工程別の採用と、合わなかった点 × 普段の工程。
   // 絞り込み後のセッションで集計し直す(lib/verdicts.ts)。判定は推定(次の依頼の文から LLM が決めたもの)。
-  import { MISMATCH_LABEL, MISMATCHES } from '../../../../core/src/turns.ts';
+  import { MISMATCH_LABEL, MISMATCHES } from '../../shared/turns.ts';
   import { dateTime, int, percent } from '../../lib/format.ts';
   import { questionDecided, workDecided, type OutcomeCounts, type VerdictAggregate } from '../../lib/verdicts.ts';
   import { judgeHint } from '../../lib/hints.ts';

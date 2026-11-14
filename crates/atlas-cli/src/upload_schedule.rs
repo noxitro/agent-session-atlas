@@ -1,4 +1,4 @@
-//! 毎日決まった時刻に、プロジェクトのセッションを自動で送る(packages/cli/src/upload-schedule.ts の移植。schedule-upload.bat から `atlas upload-schedule` で呼ぶ)。
+//! 毎日決まった時刻に、プロジェクトのセッションを自動で送る(TS 版の packages/cli/src/upload-schedule.ts の移植。schedule-upload.bat から `atlas upload-schedule` で呼ぶ)。
 //! Windows のタスク スケジューラに、自分のユーザーで動くタスクを 1 つ登録する。タスクは窓を出さずに `atlas upload-auto` を動かし、
 //! 集計し直してから、画面の「プロジェクト別」で「まとめて送る」に印を付けたプロジェクトを、覚えた送り先(uploadRoot)へ送る。
 //! 送る前の確認は出さない(登録するときに承知してもらう)。結果は out/auto-upload.json と out/auto-upload.log に残し、ここで見せる。
@@ -10,7 +10,9 @@
 //!  - 窓は出さない(conhost.exe --headless)。2 時間で打ち切り、前の回が動いていれば重ねない
 //!
 //! TS 版との違い: タスクが動かすのは `conhost.exe --headless "<node>" "<upload-auto.ts>"` ではなく
-//! `conhost.exe --headless "<atlas.exe>" upload-auto`(--no-update はどちらも末尾)。
+//! `conhost.exe --headless "<リポジトリ>\bin\atlas.exe" upload-auto`(--no-update はどちらも末尾)。
+//! TS 版で登録したタスクは、packages/cli/src/upload-auto.ts(互換の入口)が bin\atlas.exe を動かすので、そのままでも送れる。
+//! schedule-upload.bat を開いたときに TS 版のタスクだと分かれば、時刻と自動更新の設定はそのままで、atlas.exe を動かす形に登録し直す。
 
 use crate::upload_auto_files::{AutoStatusFile, AUTO_LOG_FILE, AUTO_STATUS_FILE, NO_UPDATE_FLAG};
 use crate::upload_project::ConsoleIo;
@@ -56,9 +58,9 @@ pub fn run_power_shell(script: &str, env: &[(String, String)]) -> anyhow::Result
     Ok(PsResult { code: o.status.code().unwrap_or(1), stdout: String::from_utf8_lossy(&o.stdout).into_owned(), stderr: String::from_utf8_lossy(&o.stderr).into_owned() })
 }
 
-/// 突き合わせ(scripts/parity-cli.ts)のときだけ使う、偽の PowerShell(環境変数 ATLAS_PARITY_FAKE_PS=<フォルダ>)。
+/// 試すとき用の偽の PowerShell(環境変数 ATLAS_PARITY_FAKE_PS=<フォルダ>。TS 版との突き合わせに使ったもの)。
 /// 本物のタスク スケジューラと通知に触れずに、渡すはずだった値を比べるため。呼ばれたスクリプトの種類と環境変数を <フォルダ>/calls.jsonl に 1 行ずつ足し、
-/// (スクリプトは sha256 で残す)。<フォルダ>/<種類>.json があれば、その { code, stdout, stderr } を返す(無ければ code 0)。TS 版の突き合わせの側も同じ偽物を使う
+/// (スクリプトは sha256 で残す)。<フォルダ>/<種類>.json があれば、その { code, stdout, stderr } を返す(無ければ code 0)
 fn parity_fake_power_shell(dir: &Path, script: &str, env: &[(String, String)]) -> PsResult {
     let kind = match script {
         s if s == QUERY_SCRIPT => "query",
@@ -232,11 +234,16 @@ pub fn updates_of(args: &str) -> bool {
     !WS_RE.split(args).any(|a| a == NO_UPDATE_FLAG)
 }
 
-static NODE_OF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"^--headless "([^"]+)""#).unwrap());
+static PROGRAM_OF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"^--headless "([^"]+)""#).unwrap());
 
 /// タスクの引数から、登録したときに動かすもの(TS 版で登録したタスクは node、この版は atlas の実行ファイル)のパスを取り出す
-pub fn node_of(args: &str) -> Option<String> {
-    NODE_OF.captures(args).map(|c| c[1].to_string())
+pub fn program_of(args: &str) -> Option<String> {
+    PROGRAM_OF.captures(args).map(|c| c[1].to_string())
+}
+
+/// TS 版(node で upload-auto.ts を動かす)で登録したタスクか
+pub fn is_ts_task(args: &str) -> bool {
+    args.contains("upload-auto.ts")
 }
 
 pub trait Scheduler {
@@ -254,9 +261,14 @@ pub struct TaskScheduler<'a> {
     pub cwd: String,
 }
 
-/// 既定のタスク スケジューラ(今動いている atlas の実行ファイルを、リポジトリの直下で動かす)
+/// 既定のタスク スケジューラ(リポジトリの直下の bin\atlas.exe を、リポジトリの直下で動かす。bin\ に無ければ今動いている atlas の実行ファイル)
 pub fn task_scheduler() -> TaskScheduler<'static> {
-    let exe = std::env::current_exe().map(crate::paths::strip_verbatim).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| "atlas.exe".into());
+    let exe = crate::paths::installed_exe()
+        .map(Ok)
+        .unwrap_or_else(std::env::current_exe)
+        .map(crate::paths::strip_verbatim)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| "atlas.exe".into());
     TaskScheduler { run: &run_power_shell, exe, cwd: crate::paths::REPO_ROOT.to_string_lossy().into_owned() }
 }
 
@@ -469,9 +481,16 @@ pub fn run_schedule(io: &ScheduleIo, o: &ScheduleOptions<'_>) -> anyhow::Result<
         if task.state == "Disabled" {
             io.print("  ただし、タスク スケジューラで「無効」になっています。t で登録し直すと有効に戻ります。");
         }
-        if let Some(node) = node_of(&task.arguments) {
-            if !exists(&node) {
-                io.print(&format!("  登録したときの Node.js が見つかりません({node})。t で登録し直してください。"));
+        if is_ts_task(&task.arguments) {
+            if task.times.is_empty() {
+                io.print("  前の版(Node.js で動かす版)で登録したタスクです。t で時刻を入れて登録し直してください(atlas.exe で動くようにします)。");
+            } else {
+                o.scheduler.register(&task.times, updates_of(&task.arguments))?;
+                io.print("  前の版(Node.js で動かす版)で登録したタスクだったので、atlas.exe で動くように登録し直しました(時刻と自動更新はそのままです)。");
+            }
+        } else if let Some(exe) = program_of(&task.arguments) {
+            if !exists(&exe) {
+                io.print(&format!("  登録したときの atlas の実行ファイルが見つかりません({exe})。t で登録し直してください。"));
             }
         }
         io.print(&format!(
@@ -532,7 +551,7 @@ pub fn run_schedule(io: &ScheduleIo, o: &ScheduleOptions<'_>) -> anyhow::Result<
         io.print("");
         io.print("== 自動で送るときの決まり ==");
         io.print("  - 毎日決まった時刻に、窓を出さずに集計し直してから、印を付けたプロジェクトを送り先へ送ります。");
-        io.print("  - 送る前に、atlas を新しい版にします(git pull。依存が変わっていれば npm install も)。手でファイルを変えているとき・");
+        io.print("  - 送る前に、atlas を新しい版にします(git pull。版が変わっていれば、その版の atlas.exe を取ってくるかビルドします)。手でファイルを変えているとき・");
         io.print("    main 以外のブランチのときは、新しい版にせず、今の版のまま送ります。更新しないようにするには、登録した後に u で切り替えます。");
         io.print("  - その時刻に PC が止まっていたら、次に PC を使い始めたときに送ります(ログオンしている間だけ動きます)。");
         io.print("  - 送る前の確認(送り先・大きさ・秘密らしい文字列)は出しません。秘密らしい文字列があっても送り、数を記録に残します。");
@@ -644,14 +663,16 @@ mod tests {
     fn task_arguments_and_updates() {
         let a = task_arguments("C:\\x\\atlas.exe", true);
         assert_eq!(a, "--headless \"C:\\x\\atlas.exe\" upload-auto");
-        assert_eq!(node_of(&a).as_deref(), Some("C:\\x\\atlas.exe"));
+        assert_eq!(program_of(&a).as_deref(), Some("C:\\x\\atlas.exe"));
+        assert!(!is_ts_task(&a));
         assert!(updates_of(&a));
         let b = task_arguments("C:\\x\\atlas.exe", false);
         assert_eq!(b, "--headless \"C:\\x\\atlas.exe\" upload-auto --no-update");
         assert!(!updates_of(&b));
         // TS 版で登録したタスク(node と upload-auto.ts)も読める
         assert!(updates_of("--headless \"C:\\n\\node.exe\" \"C:\\r\\upload-auto.ts\""));
-        assert_eq!(node_of("--headless \"C:\\n\\node.exe\" \"C:\\r\\upload-auto.ts\"").as_deref(), Some("C:\\n\\node.exe"));
+        assert_eq!(program_of("--headless \"C:\\n\\node.exe\" \"C:\\r\\upload-auto.ts\"").as_deref(), Some("C:\\n\\node.exe"));
+        assert!(is_ts_task("--headless \"C:\\n\\node.exe\" \"C:\\r\\upload-auto.ts\" --no-update"));
         assert!(REGISTER_SCRIPT.contains("-StartWhenAvailable") && REGISTER_SCRIPT.contains("-AllowStartIfOnBatteries") && REGISTER_SCRIPT.contains("-LogonType Interactive"));
         assert!(REGISTER_SCRIPT.contains("-TaskPath '\\'"));
     }
@@ -784,7 +805,27 @@ mod tests {
         assert_eq!(*s.calls.borrow(), vec!["register 18:00 false"]);
         let text = io.printed();
         assert!(text.contains("  ただし、タスク スケジューラで「無効」になっています。"));
-        assert!(text.contains("  登録したときの Node.js が見つかりません(C:\\gone\\atlas.exe)。t で登録し直してください。"));
+        assert!(text.contains("  登録したときの atlas の実行ファイルが見つかりません(C:\\gone\\atlas.exe)。t で登録し直してください。"));
         assert!(text.contains("  切り替えました。これからは、送る前に atlas を新しい版にしません"));
+        // TS 版で登録したタスクは、時刻と自動更新はそのままで atlas.exe を動かす形に登録し直す(node のパスは確かめない)
+        let s = FakeScheduler {
+            state: RefCell::new(TaskState {
+                exists: true,
+                state: "Ready".into(),
+                times: vec!["09:00".into()],
+                arguments: "--headless \"C:\\gone\\node.exe\" \"C:\\r\\packages\\cli\\src\\upload-auto.ts\" --no-update".into(),
+                ..Default::default()
+            }),
+            calls: RefCell::new(vec![]),
+            on_start: Box::new(|| {}),
+        };
+        let io = Scripted::new(&[""]);
+        let mut o = ScheduleOptions::new(&s, &cfg_ok, out.clone());
+        o.exists = &gone;
+        run_schedule(&io, &o).unwrap();
+        assert_eq!(*s.calls.borrow(), vec!["register 09:00 false"]);
+        let text = io.printed();
+        assert!(text.contains("  前の版(Node.js で動かす版)で登録したタスクだったので、atlas.exe で動くように登録し直しました"));
+        assert!(!text.contains("見つかりません"));
     }
 }

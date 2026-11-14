@@ -1,8 +1,8 @@
 <script lang="ts">
   // 依頼(ターン)単位の分析の段階 1: 工程別の詰まりと、依頼の種類 × 工程。絞り込み後のセッションで集計し直す(lib/turns.ts)。
-  // 工程はその依頼で使ったツール、依頼の種類は依頼文の語からの推定(LLM なし。規則は core/src/turns.ts)。
-  import { PHASE_LABEL, PHASES, REQUEST_KIND_LABEL, REQUEST_KINDS, type Phase } from '../../../../core/src/turns.ts';
-  import type { TurnBucket } from '../../../../core/src/turns.ts';
+  // 工程はその依頼で使ったツール、依頼の種類は依頼文の語からの推定(LLM なし。規則は shared/turns.ts)。
+  import { PHASE_LABEL, PHASES, REQUEST_KIND_LABEL, REQUEST_KINDS, type Phase } from '../../shared/turns.ts';
+  import type { TurnBucket } from '../../shared/turns.ts';
   import { dec, duration, int, percent } from '../../lib/format.ts';
   import type { TurnAggregate } from '../../lib/turns.ts';
   import type { VerdictAggregate } from '../../lib/verdicts.ts';

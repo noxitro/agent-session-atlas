@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { COMPARE_KIND_LABEL, COMPARE_KINDS, COMPARE_MIN_SESSIONS, COMPARE_MIN_TURNS, comparePhaseRows, compareRows, compareSide, defaultPeriods, inPeriod, type CompareKind, type CompareRow, type CompareSession } from '../../lib/compare.ts';
-  import { PHASE_LABEL, PHASES, type Phase } from '../../../../core/src/turns.ts';
+  import { PHASE_LABEL, PHASES, type Phase } from '../../shared/turns.ts';
   import { dec, int, percent } from '../../lib/format.ts';
   import type { Option } from '../../lib/filter.ts';
 

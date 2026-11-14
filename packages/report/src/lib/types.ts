@@ -1,8 +1,8 @@
 // HTML に埋め込むデータ(atlas.html の <script type="application/json" id="atlas-data">)。
 // sessions.json の SessionRecord から生イベント・timeline・長文を落とした要約だけを持つ。
 // ここはブラウザ側(Svelte)と Node 側(build)の両方から読むので、DOM や node: に依存しない。
-import type { FailureCauses } from '../../../core/src/tool-failure.ts';
-import type { LineChanges, MetricsFile, ProjectSource, TodoSummary, TokenSource } from '../../../core/src/types.ts';
+import type { FailureCauses } from '../shared/tool-failure.ts';
+import type { LineChanges, MetricsFile, ProjectSource, TodoSummary, TokenSource } from '../shared/types.ts';
 import type { MemoSummary } from './memo.ts';
 import type { RetentionItem, RetentionMeta } from './retention.ts';
 import type { TurnTuple } from './turns.ts';

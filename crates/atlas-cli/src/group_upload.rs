@@ -1162,7 +1162,7 @@ pub fn upload_target(p: &GroupUploadPaths, target: &UploadTarget, root: &Path, l
     let records = read_records(opts.sessions, p.sessions.as_deref(), &present);
     let tags = tags_by_id(&p.groups);
     // 送る atlas の版。写し直さないセッションの記録も、この版に書き直す
-    let atlas = opts.atlas.clone().unwrap_or_else(|| atlas_core::atlas_build::current_atlas_build(&crate::paths::REPO_ROOT));
+    let atlas = opts.atlas.clone().unwrap_or_else(|| atlas_core::atlas_build::current_atlas_build(&crate::paths::REPO_ROOT, crate::version::CODE_STAMP));
     let info = |id: &str, with_memo: &HashSet<String>| -> UploadedSession {
         let r = records.get(id);
         UploadedSession {
@@ -1500,13 +1500,13 @@ pub fn group_readme(o: &ReadmeInput<'_>) -> String {
             "",
             "## 集計し直すには(読みやすい記録もここで作れます)",
             "",
-            "agent-session-atlas のフォルダで、次を実行します(出力先は、このフォルダの集計だけに使う場所にします。ほかの集計に使った出力先を指定すると、セッションが混ざらないように止まります)。",
+            "agent-session-atlas のフォルダで、次を実行します(bin\\atlas.exe は atlas.bat を一度開くとできます。出力先は、このフォルダの集計だけに使う場所にします。ほかの集計に使った出力先を指定すると、セッションが混ざらないように止まります)。",
             "",
             "```",
         ]
         .map(String::from),
     );
-    lines.push(format!("npm run atlas -- all --home \"{}\" --out \"<出力先>\"", o.dir));
+    lines.push(format!("bin\\atlas.exe all --home \"{}\" --out \"<出力先>\"", o.dir));
     lines.extend(
         [
             "```",

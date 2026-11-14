@@ -12,10 +12,10 @@ import { existsSync } from 'node:fs';
 import { readdir, readFile, rm, stat } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { SessionsFile } from '../packages/core/src/index.ts';
-import type { ServeHandle } from '../packages/cli/src/serve.ts';
-import { extractEmbedded, type ReportData } from '../packages/report/src/index.ts';
-import { buildFixtureHome, FIXTURE_CODE, P11_SESSION, ROOT, cliCommand, startServer } from './fixture-home.ts';
+import { extractEmbedded } from '../packages/report/src/lib/embed.ts';
+import type { ReportData } from '../packages/report/src/lib/types.ts';
+import type { SessionsFile } from '../packages/report/src/shared/types.ts';
+import { buildFixtureHome, FIXTURE_CODE, P11_SESSION, ROOT, cliCommand, startServer, type ServeHandle } from './fixture-home.ts';
 
 const WORK = join(ROOT, 'out', 'e2e-phase14');
 const FAKE = join(FIXTURE_CODE, 'fake-copilot.mjs');

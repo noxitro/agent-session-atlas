@@ -70,7 +70,7 @@ pub fn run_all_or_reuse(o: &CliOptions, p: &Paths, built_file: &Path, log: Log<'
         "since": o.since, "project": o.project, "client": o.client, "model": o.model, "branch": o.branch, "group": o.group, "sessions": o.sessions,
         "anonymize": o.anonymize, "toolOutput": o.tool_output.as_str(), "maxChars": o.max_chars, "tempDirs": o.temp_dirs, "vcsMode": o.vcs_mode,
     });
-    let code = atlas_report::build::code_stamp(Some(&REPO_ROOT.join("packages")))?;
+    let code = crate::version::CODE_STAMP.to_string();
     let key = inputs_key(&ReusePaths { snapshot: &p.snapshot, judgments: &p.judgments, turn_judgments: &p.turn_judgments, groups: &p.groups }, &options, &config_file, &code)?;
     let prev = read_built(built_file);
     // 使い回すのは、アップロードしたフォルダ(送った側が添えた記録だけで集計が決まる)のときだけ

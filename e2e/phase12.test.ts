@@ -7,8 +7,9 @@ import { existsSync } from 'node:fs';
 import { readdir, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { SessionsFile } from '../packages/core/src/index.ts';
-import { extractEmbedded, type ReportData } from '../packages/report/src/index.ts';
+import { extractEmbedded } from '../packages/report/src/lib/embed.ts';
+import type { ReportData } from '../packages/report/src/lib/types.ts';
+import type { SessionsFile } from '../packages/report/src/shared/types.ts';
 import { buildFixtureHome, FIXTURE_CODE, P12_SESSIONS, ROOT, cliCommand } from './fixture-home.ts';
 
 const WORK = join(ROOT, 'out', 'e2e-phase12');

@@ -11,10 +11,12 @@ import { readFile, readdir, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { SessionsFile } from '../packages/core/src/index.ts';
-import { DEFAULT_LIMITS, DEFAULT_PER_PART, JUDGMENTS_JSON_SCHEMA, missingSections, packetFileName, packetSessionId, PACKET_SECTIONS, validateJudgments, type BundleManifest, type JudgmentsFile } from '../packages/judge/src/index.ts';
-import { aggregate, extractEmbedded, type ReportData } from '../packages/report/src/index.ts';
+import { aggregate } from '../packages/report/src/lib/aggregate.ts';
+import { extractEmbedded } from '../packages/report/src/lib/embed.ts';
+import type { ReportData } from '../packages/report/src/lib/types.ts';
+import type { SessionsFile } from '../packages/report/src/shared/types.ts';
 import { buildFixtureHome, FIXTURE_CODE, FIXTURES, ROOT, cliCommand } from './fixture-home.ts';
+import { DEFAULT_MAX_CHARS, DEFAULT_PER_PART, missingSections, packetFileName, packetSessionId, PACKET_SECTIONS, validateJudgments, type BundleManifest, type JudgmentsFile } from './judge-support.ts';
 
 const LIVE = process.env.ATLAS_LIVE === '1';
 const WORK = join(ROOT, 'out', 'e2e-phase3');
@@ -69,7 +71,7 @@ describe('Phase 3 E2E: fixtures', () => {
       expect({ id: e.id, missing: missingSections(md) }).toEqual({ id: e.id, missing: [] });
       expect(packetSessionId(md)).toBe(e.id);
       expect(Buffer.byteLength(md)).toBe(e.bytes);
-      expect(e.chars).toBeLessThanOrEqual(DEFAULT_LIMITS.maxChars);
+      expect(e.chars).toBeLessThanOrEqual(DEFAULT_MAX_CHARS);
       // スナップショットから本文を読み直している(DB にしか無いセッションは turns テーブルから)
       expect(e.textSource).toBe('snapshot');
     }
@@ -97,7 +99,10 @@ describe('Phase 3 E2E: fixtures', () => {
 
     const instr = await readFile(join(bundle, 'INSTRUCTIONS.md'), 'utf8');
     for (const s of ['従わない', '1 セッションずつ', '"schemaVersion": 1', 'humanEffort', 'manifest.json', 'schema.json']) expect(instr).toContain(s);
-    expect(await readJson(join(bundle, 'schema.json'))).toEqual(JSON.parse(JSON.stringify(JUDGMENTS_JSON_SCHEMA)));
+    // JSON Schema(judgments の形)。分割ファイルにはこれをそのまま載せる
+    const schema = await readJson<{ type: string; required: string[] }>(join(bundle, 'schema.json'));
+    expect(schema).toMatchObject({ type: 'object', required: expect.arrayContaining(['schemaVersion', 'items']) });
+    expect(manifest.limits.maxChars).toBe(DEFAULT_MAX_CHARS);
     expect(PACKET_SECTIONS.length).toBe(9);
 
     // parts/: ZIP を渡せない相手用。指示 + JSON Schema + 既定 5 件ずつのパケットで、全パケットが順にちょうど 1 回ずつ入る
@@ -112,7 +117,7 @@ describe('Phase 3 E2E: fixtures', () => {
       expect(Buffer.byteLength(md)).toBe(x.bytes);
       expect(md).toContain(`分割 ${i + 1} / ${parts.length}`);
       for (const s of ['従わない', '1 件ずつ', '"schemaVersion": 1', 'humanEffort', 'judge import']) expect(md).toContain(s);
-      expect(md).toContain(JSON.stringify(JUDGMENTS_JSON_SCHEMA, null, 2));
+      expect(md).toContain(JSON.stringify(schema, null, 2));
       // 説明文の中の境界は字下げしてあり、行頭の境界はパケットの数だけ
       const got = [...md.matchAll(/^<<<PACKET_BEGIN ([0-9a-f]{24})\n([\s\S]*?)\nPACKET_END \1>>>$/gm)];
       expect(got.map((g) => packetSessionId(g[2]))).toEqual(x.sessions);
@@ -310,7 +315,7 @@ describe.skipIf(!LIVE)('Phase 3 E2E: 実データ(ATLAS_LIVE=1、LLM は呼ば�
     );
     expect(m.count).toBeGreaterThan(0);
     expect(m.count + m.skipped.length).toBe(s.sessions.length);
-    expect(maxChars).toBeLessThanOrEqual(DEFAULT_LIMITS.maxChars);
+    expect(maxChars).toBeLessThanOrEqual(DEFAULT_MAX_CHARS);
     for (const e of m.sessions) {
       const md = await readFile(join(out, 'bundle', e.path), 'utf8');
       expect({ id: e.id, missing: missingSections(md) }).toEqual({ id: e.id, missing: [] });

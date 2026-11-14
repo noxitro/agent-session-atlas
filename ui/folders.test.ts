@@ -12,9 +12,8 @@ import { join } from 'node:path';
 import { chromium, type Browser, type Page } from 'playwright';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { shotOnFailure } from './failure-shot.ts';
-import { folderPaths, foldersRootOf, type FolderPaths } from '../packages/cli/src/folders.ts';
-import type { ServeHandle } from '../packages/cli/src/serve.ts';
-import { buildFixtureHome, ROOT, cliCommand, startServer } from '../e2e/fixture-home.ts';
+import { buildFixtureHome, ROOT, cliCommand, startServer, type ServeHandle } from '../e2e/fixture-home.ts';
+import { folderPaths, foldersRootOf, type FolderPaths } from '../e2e/folders.ts';
 
 const WORK = join(ROOT, 'out', 'ui-folders');
 

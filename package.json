@@ -3,28 +3,31 @@
   "private": true,
   "type": "module",
   "workspaces": [
-    "packages/*"
+    "packages/report"
   ],
   "engines": {
     "node": ">=24"
   },
   "scripts": {
-    "atlas": "node packages/cli/src/main.ts",
-    "atlas:judge": "node packages/cli/src/judge-flow.ts",
+    "atlas": "node scripts/atlas.ts",
     "build:report": "npm run build -w @atlas/report",
+    "build:atlas": "cargo build --release --locked -p atlas-cli",
     "typecheck": "tsc -p tsconfig.json && npm run check -w @atlas/report",
-    "test": "vitest run --project unit",
+    "test": "cargo test --workspace --locked && vitest run --project unit",
     "e2e": "vitest run --project e2e",
     "fixtures": "node scripts/synthetic-fixtures.ts",
     "ui": "vitest run --project ui",
     "audit:ui": "node scripts/ui-audit.ts",
+    "parity:lib": "node scripts/parity-lib.ts",
     "smoke": "node scripts/smoke-local.ts",
-    "ci": "npm run typecheck && npm test && npm run build:report && npm run e2e && npm run ui && npm run smoke"
+    "ci": "npm run typecheck && npm run build:report && npm test && npm run build:atlas && npm run parity:fixture && npm run e2e && npm run ui && npm run smoke",
+    "parity:fixture": "node scripts/parity-fixture.ts"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
     "playwright": "^1.65.0",
     "typescript": "^6.0.3",
-    "vitest": "^5.1.0"
+    "vitest": "^5.1.0",
+    "yaml": "^2.8.0"
   }
 }

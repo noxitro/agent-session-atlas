@@ -17,10 +17,46 @@ import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { latencyByModel, openReadOnly, openWritable, toolDurationStats, type MetricsFile, type SessionRecord, type SessionsFile } from '../packages/core/src/index.ts';
-import { aggregate, applyFilter, emptyFilter, extractEmbedded, highlights, type ReportData } from '../packages/report/src/index.ts';
-import { decodeFilter, decodeView, usedTool } from '../packages/report/src/lib/filter.ts';
+import { aggregate } from '../packages/report/src/lib/aggregate.ts';
+import { extractEmbedded } from '../packages/report/src/lib/embed.ts';
+import { quantilesOf } from '../packages/report/src/lib/exec.ts';
+import { applyFilter, decodeFilter, decodeView, emptyFilter, usedTool } from '../packages/report/src/lib/filter.ts';
+import { highlights } from '../packages/report/src/lib/highlights.ts';
+import type { ReportData } from '../packages/report/src/lib/types.ts';
+import type { MetricsFile, SessionRecord, SessionsFile } from '../packages/report/src/shared/types.ts';
+import { openReadOnly, openWritable } from './sqlite.ts';
 import { buildFixtureHome, ROOT, cliCommand } from './fixture-home.ts';
+
+/**
+ * metrics.json の latency・toolDurations を、sessions.json の明細から数え直す(atlas の crates/atlas-core/src/metrics.rs の
+ * latency_by_model・tool_duration_stats と同じ決め方。中央値と p90 は昇順の ceil(p·n) 番目で、画面の quantilesOf と同じ)
+ */
+function latencyByModel(sessions: SessionRecord[]): MetricsFile['latency'] {
+  const g = new Map<string, { ttft: number[]; duration: number[] }>();
+  for (const s of sessions) {
+    for (const [m, l] of Object.entries(s.exec?.latency ?? {})) {
+      let a = g.get(m);
+      if (!a) g.set(m, (a = { ttft: [], duration: [] }));
+      a.ttft.push(...l.ttft);
+      a.duration.push(...l.duration);
+    }
+  }
+  return Object.fromEntries([...g.keys()].sort().map((m) => [m, { ttft: quantilesOf(g.get(m)!.ttft), duration: quantilesOf(g.get(m)!.duration) }]));
+}
+
+function toolDurationStats(sessions: SessionRecord[]): MetricsFile['toolDurations'] {
+  const g = new Map<string, { values: number[]; outliers: number }>();
+  const get = (k: string): { values: number[]; outliers: number } => {
+    let a = g.get(k);
+    if (!a) g.set(k, (a = { values: [], outliers: 0 }));
+    return a;
+  };
+  for (const s of sessions) {
+    for (const [k, v] of Object.entries(s.tools.durations ?? {})) get(k).values.push(...v);
+    for (const [k, n] of Object.entries(s.tools.durationOutliers ?? {})) get(k).outliers += n;
+  }
+  return Object.fromEntries([...g.keys()].sort().map((k) => [k, { ...quantilesOf(g.get(k)!.values), outliers: g.get(k)!.outliers }]));
+}
 
 const LIVE = process.env.ATLAS_LIVE === '1';
 const WORK = join(ROOT, 'out', 'e2e-phase7');
