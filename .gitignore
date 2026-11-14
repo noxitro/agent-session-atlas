@@ -16,3 +16,6 @@ atlas-notes/
 
 # impeccable critique のスナップショット(実データの件数を含むのでコミットしない)
 .impeccable/critique/
+
+# Rust のビルド出力
+/target/

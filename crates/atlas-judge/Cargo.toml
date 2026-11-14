@@ -1,0 +1,16 @@
+[package]
+name = "atlas-judge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+atlas-core = { version = "0.1.0", path = "../atlas-core" }
+atlas-report = { version = "0.1.0", path = "../atlas-report" }
+chrono = "0.4.45"
+regex = "1.13.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.154", features = ["preserve_order", "float_roundtrip"] }
+ureq = "3.5.2"

@@ -1,0 +1,28 @@
+[package]
+name = "atlas-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+chrono = "0.4.45"
+hex = "0.4.3"
+icu_collator = "2.4.0"
+icu_locale_core = "2.4.0"
+indexmap = "2.14.2"
+rayon = "1.12.0"
+regex = "1.13.1"
+rusqlite = { version = "0.42.0", features = ["bundled"] }
+ryu-js = "1.0.3"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.154", features = ["preserve_order", "float_roundtrip"] }
+sha1 = "0.11.0"
+sha2 = "0.11.1"
+thiserror = "2.0.21"
+unicode-normalization = "0.1.26"
+walkdir = "2.5.0"
+
+[dev-dependencies]
+tempfile = "3.27.0"

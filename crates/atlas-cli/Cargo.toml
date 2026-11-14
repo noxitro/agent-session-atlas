@@ -1,0 +1,22 @@
+[package]
+name = "atlas-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+atlas-core = { version = "0.1.0", path = "../atlas-core" }
+atlas-judge = { version = "0.1.0", path = "../atlas-judge" }
+atlas-report = { version = "0.1.0", path = "../atlas-report" }
+axum = "0.8.9"
+chrono = "0.4.45"
+rayon = "1.12.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.154", features = ["preserve_order", "float_roundtrip"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "fs", "process", "time", "sync", "signal"] }
+
+[[bin]]
+name = "atlas"
+path = "src/main.rs"

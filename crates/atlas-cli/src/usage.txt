@@ -1,0 +1,96 @@
+使い方: atlas <コマンド> [オプション]
+
+コマンド:
+  snapshot   ~/.copilot の必要部分を <out>/snapshot へ複製する(元は書き換えない)
+  extract    スナップショットから <out>/sessions.json を作る
+  metrics    sessions.json から <out>/metrics.json を作る
+  vcs        AI が作った変更が、その後の VCS(git / svn / p4)のファイルに残っているかを照合し、<out>/vcs-retention.json に書く。
+             VCS は読むだけ(書き込み・同期のコマンドは呼ばない)。アップロード先から集計したときは、送った側の PC の結果を読む
+  build      <out>/atlas.html と <out>/sessions/<id>.html を作る
+  export     build に加えて、各セッションの記録(経過・消費)を <out>/sessions/<id>.md に書く(LLM での振り返り用。共有するなら --anonymize)
+  all        snapshot → extract → vcs → metrics → export(セッション記録つき)を通しで実行する(コマンド省略時の既定)。
+             --anonymize のときは記録を作らず build にする
+  bundle     LLM に工数を判定させる評価バンドルを <out>/bundle に作る(LLM は呼ばない)。ZIP を渡せない相手用に、
+             指示とパケット数件を 1 ファイルにまとめた <out>/bundle/parts/part-<番号>.md も書く
+  judge run  バンドルの各セッションを LLM で判定し <out>/judgments.json に追記する(クレジットを消費します)
+  judge import <ファイル>
+             外部の LLM で作った判定(JSON か、JSON を含む Markdown)を検証して judgments.json に取り込む
+  judge m365 [--model <M365 のモデル>] [--limit <ファイル数>] [--timeout <秒>]
+  turns m365 [--model <M365 のモデル>] [--limit <ファイル数>] [--timeout <秒>]
+             開いている M365 Copilot のアプリ(Windows)を UI Automation で操作し、未判定の添付ファイル(bundle / turns bundle
+             で作ったもの)を 1 つずつ新しいチャットで送って、返答を取り込み、レポートに反映する。モデルの既定は Think Deeper、
+             1 ファイルの待ち時間の既定は 900 秒。判定するのは M365 Copilot(AI クレジットは使わない)。添付は OneDrive に入る
+  turns bundle [--unjudged] / turns run [--limit <n>] [--model <名前>] / turns import <ファイル>
+             依頼ごとの判定(採用・依頼の種類・合わなかった点・普段の工程名)。bundle は M365 Copilot などに添付する
+             <out>/turn-bundle/parts/ を作る(LLM は呼ばない)。run は GitHub Copilot CLI で判定する(AI クレジットを消費します)。
+             import はチャットの返答を <out>/turn-judgments.json に取り込む
+  group list / group add <名前> <id...> [--note <一文>] / group remove <名前> / group export <名前>
+  group upload <名前> [--to <基底フォルダ>] [--force]
+             名前付きグループ(<notes-dir>/groups.json)を一覧・追加(既存名なら id を追記)・削除する。
+             export はそのグループの表(CSV)・集計・記録を <out>/groups/<名前>/ に書き出す。
+             upload はそのグループのセッションの生ログ(前回の集計の複製)を <基底>/<名前>/<セッション id>/ に写す。
+             写す前に大きさと秘密らしい文字列(API キー・トークンなど)を調べ、見つかれば写さずに止まる(--force で写す)
+             (同じセッションは置き換え。基底は --to か atlas.config.json の uploadRoot)
+  memo list / memo show <id> / memo set <id> <本文...> / memo set <id> --file <path> / memo remove <id>
+             セッションごとのメモ(<notes-dir>/memos/<id>.md)を一覧・表示・保存・削除する(remove は画像を残す)
+  serve      out/ を 127.0.0.1 だけに配信してブラウザで開く(画面からグループとメモを書け、集計し直す・工数の判定・
+             記録と全文記録の表示ができる)。ブラウザを閉じると止まる(画面から動かした処理の実行中は終わるまで待つ)
+  open <フォルダ> / open --pick
+             いつもの集計(この PC のデータ)とは別に、指定したフォルダを集計して、別のサーバで開く。指定できるのは、
+             アップロード先(全員の分)・その下の人ごとのフォルダ(その人の分)・プロジェクトやタスクタグのフォルダ。
+             出力先は <out>-folders/<フォルダごとの名前>/out、メモは <notes-dir>/folders/<同じ名前>/ に分ける
+             (--out と --notes-dir は、いつもの集計の場所のまま指定する)。画面の「別のフォルダを開く…」と同じ。
+             --pick はフォルダを選ぶ画面(Windows のみ)を出し、選んだフォルダを開く(取り消したら何もしない)。
+             前に集計したときからフォルダの中身も atlas も変わっていなければ、作り直さずにそのときのレポートを開く
+             (--rebuild で必ず作り直す)
+  skill-draft <番号>
+             改善点の「スキル化の候補」(out/insights.json の番号)から SKILL.md の下書きを LLM に作らせ、
+             out/skill-drafts/ に書く(クレジットや従量課金を消費しうる。明示したときだけ動く。--backend は judge と同じ)
+
+オプション:
+  --home <dir>       Copilot のデータの場所(既定: 環境変数 ATLAS_COPILOT_HOME、無ければ ~/.copilot)
+  --out <dir>        出力先(既定: リポジトリ直下の out/)
+  --since <date>     この日時以降に更新されたセッションだけ(例: 2026-07-01)
+  --project <key>    プロジェクトで絞る(完全一致、無ければ部分一致)
+  --client <name>    クライアントで絞る(例: github/cli, github/autopilot)
+  --model <name>     そのモデルを使ったセッションだけ(judge run では判定に使うモデル)
+  --branch <name>    ブランチで絞る
+  --group <名前>     名前付きグループ(<notes-dir>/groups.json)のセッションだけ(他の絞り込みと AND)
+  --session <id,...> 特定のセッションだけ(カンマ区切り、複数回指定可。id は先頭一致で解決、曖昧ならエラー)
+  --notes-dir <dir>  メモとグループの置き場(既定: リポジトリ直下の atlas-notes/)
+  --file <path>      memo set: 本文をこのファイルから読む
+  --anonymize        プロジェクト名・パス・リポジトリ名・ブランチを伏せ字にして HTML を出す(共有用。メモは出さない)
+  --judgments <file> 判定結果 judgments.json の場所(既定: <out>/judgments.json)
+  --bundle <dir>     評価バンドルの場所(既定: <out>/bundle)
+  --include-empty    bundle: 依頼の記録が無いセッションもパケットにする
+  --per-part <n>     bundle: parts/ の 1 ファイルに入れるパケットの数(既定 5)
+  --unjudged         bundle: 判定済み(judgments.json にある)セッションを入れない
+  --temp-dir <dir>   extract: このフォルダ配下を「(一時フォルダ)」にまとめる(複数指定可)。指定すると既定の判定
+                     (%TEMP% と AppData\Local\Temp・/tmp のパターン)を使わない
+  --snapshot-all     snapshot: 既定で写さない大きなもの(rewind-snapshots、一覧に無い名前のもの、logs/)も写す
+  --snapshot-prune   snapshot: 前回 --snapshot-all で写したが今回は写さないものを消す(既定は残して manifest に日時を出す)
+  --config <file>    extract・vcs・all・serve・open・group upload: 設定ファイル(wiki の vault・アップロード先の指定)の場所
+                     (既定: 環境変数 ATLAS_CONFIG、無ければリポジトリ直下の atlas.config.json)
+  --vcs-mode <v>     vcs・all: 比べる版をどこで見るか。worktree(既定、今の作業ツリー)/ committed(最後に取り込んだ版)/
+                     fixed(セッションの終わりから決まった日数後の版。日数は設定の vcs.lagDays、既定 7)
+  -h, --help         この説明を出す
+
+export のオプション:
+  --tool-output <v>  ツールの結果を記録に入れる条件: fail(既定、失敗したときだけ)/ all / none
+  --max-chars <n>    依頼・応答・要約 1 件の上限(文字、既定 20000)。超えた分は中略して字数を書く
+  --full             解析用の全文記録(out/full/<id>.md、上限なし。暗号化データと base64 本体だけ除外)と
+                     out/coverage.json(網羅の検査)も書く。--anonymize とは併用できない。共有しないこと
+
+serve・open のオプション:
+  --port <n>         ポートを固定する(既定は空きポートを自動で取る)
+  --no-open          起動後にブラウザを開かない
+
+judge run のオプション:
+  --backend <name>   copilot-cli(既定、copilot -p)/ anthropic(従量課金、ANTHROPIC_API_KEY が必要)
+  --limit <n>        未判定のものから最大 n 件だけ判定する
+  --only <id,...>    指定したセッションだけ判定する
+  --concurrency <n>  同時に判定する数(既定 1)
+  --force            判定済みのセッションも判定し直す
+  --no-allow-tools   copilot に --allow-all-tools を付けない(既定は付ける)
+  --timeout <秒>     1 件あたりの制限時間(既定 600)
+  copilot の実行ファイルは環境変数 ATLAS_COPILOT_BIN で差し替えられます。
