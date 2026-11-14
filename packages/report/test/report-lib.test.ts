@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { computeMetrics } from '../../core/src/metrics.ts';
 import { normalizeSession } from '../../core/src/normalize.ts';
 import type { SessionRecord } from '../../core/src/types.ts';
-import { aggregate, coverageBreakdown, monthRange } from '../src/lib/aggregate.ts';
+import { aggregate, coverageBreakdown, effortSkew, monthRange } from '../src/lib/aggregate.ts';
 import { createAnonymizer, identityAnonymizer, shortProjectLabel } from '../src/lib/anonymize.ts';
 import { embedData, extractEmbedded, serializeForScript } from '../src/lib/embed.ts';
 import { applyFilter, sessionUpdated, currentGroupName, decodeFilter, effectiveIds, emptyFilter, encodeFilter, filterOptions, groupIds, hasPeople, isEmptyFilter, joinIds, knownSelection, NO_JUDGMENT, NO_SESSION, sameIds, splitIds, UNKNOWN } from '../src/lib/filter.ts';
@@ -227,6 +227,26 @@ describe('filter', () => {
     expect(o.judgedAi.activeMs).toBe(a.activeMs ?? 0);
     // HTML 本体に埋め込む要約には根拠(自由記述)を入れない
     expect(a.judgment?.rationale).toBeNull();
+  });
+
+  it('推定人手工数は中央値も出し、合計が上位 5% のセッションに偏っている(半分以上)ときだけ偏りを知らせる', async () => {
+    // 偏りは判定済み 5 件以上で見る(少ないと 1 件が半分を超えるのは珍しくない)。上位は 5%(1 件に満たなければ 1 件)
+    expect(effortSkew([100, 1, 1, 1])).toBeNull();
+    expect(effortSkew([100, 1, 1, 1, 1])).toEqual({ sessions: 1, hours: 100, share: 100 / 104 });
+    expect(effortSkew([2, 2, 2, 2, 2])).toBeNull();
+    expect(effortSkew([5, 1, 1, 1, 1, 1])).toEqual({ sessions: 1, hours: 5, share: 0.5 });
+    expect(effortSkew([4.9, 1, 1, 1, 1, 1])).toBeNull();
+    expect(effortSkew([0, 0, 0, 0, 0])).toBeNull();
+    // 60 件なら上位 3 件。大きい 2 件だけで合計のほとんどになる
+    const many = [2500, 1200, ...Array.from({ length: 58 }, () => 2)];
+    expect(effortSkew(many)).toMatchObject({ sessions: 3, hours: 3702 });
+    expect(effortSkew(many)!.share).toBeCloseTo(3702 / 3816);
+    // 集計: 判定済みのセッションだけの中央値と偏り
+    const rs = await fixture();
+    const hours: Record<string, number> = { a: 40, b: 1, c: 2 };
+    const s = rs.map((r) => summarize(r, identityAnonymizer(), hours[r.id] != null ? judgment({ hours: hours[r.id], low: hours[r.id], high: hours[r.id], confidence: 0.5 }) : null));
+    expect(aggregate(s).overall).toMatchObject({ judgedSessions: 3, humanHours: 43, humanMedian: 2, humanSkew: null });
+    expect(aggregate(rs.map((r) => summarize(r, identityAnonymizer(), null))).overall).toMatchObject({ judgedSessions: 0, humanMedian: null, humanSkew: null });
   });
 
   it('選択肢は件数の多い順で、件数付き', async () => {

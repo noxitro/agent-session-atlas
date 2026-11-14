@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Aggregate, Bucket } from '../../lib/aggregate.ts';
-  import { dateTime, dec, duration, int } from '../../lib/format.ts';
+  import { dateTime, dec, duration, int, percent } from '../../lib/format.ts';
   import { backendLabel, confidenceLabel } from '../../lib/judgment-labels.ts';
   import type { ReportData } from '../../lib/types.ts';
 
@@ -36,7 +36,7 @@
       <div class="field">
         <span class="k">推定人手工数(判定済みの合計)</span>
         <span class="v">{dec(o.humanHours)} 時間</span>
-        <span class="n">幅 {range(o)}・平均{confidenceLabel(o.judgedConfidence)}</span>
+        <span class="n">幅 {range(o)}・平均{confidenceLabel(o.judgedConfidence)}・中央値 {dec(o.humanMedian)} 時間 / セッション</span>
       </div>
       <div class="field">
         <span class="k">AI の実働時間(同じセッション)</span>
@@ -55,6 +55,12 @@
       </div>
     </div>
     <p class="note">判定済み {int(o.judgedSessions)} / {int(o.sessions)} セッション。未判定のセッションは両側の比較から除いています。</p>
+    {#if o.humanSkew}
+      <p class="note" data-testid="effort-skew-note">
+        <strong>合計の {percent(o.humanSkew.hours, o.humanHours)} は、推定の大きい上位 {int(o.humanSkew.sessions)} セッション(計 {dec(o.humanSkew.hours)} 時間)によるものです。</strong>
+        合計と「推定人手工数 ÷ AI の実働」はこの数件で大きく変わるので、中央値({dec(o.humanMedian)} 時間 / セッション)と合わせて読んでください。どのセッションかは、セッション一覧を「推定人手工数」の順に並べると確かめられます。
+      </p>
+    {/if}
 
     <h3 class="sub-h" id="judgments-proj-h">プロジェクトごとの比較(判定済みセッションのみ)</h3>
     <div class="table-scroll">
