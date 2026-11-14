@@ -14,11 +14,10 @@ import { chromium, type Browser, type Locator, type Page } from 'playwright';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { shotOnFailure } from './failure-shot.ts';
 import { clickableFindings } from '../scripts/ui-audit.ts';
-import { startServe, type ServeHandle } from '../packages/cli/src/serve.ts';
-import { buildFixtureHome, ROOT } from '../e2e/fixture-home.ts';
+import type { ServeHandle } from '../packages/cli/src/serve.ts';
+import { buildFixtureHome, ROOT, cliCommand, startServer } from '../e2e/fixture-home.ts';
 
 const WORK = join(ROOT, 'out', 'ui');
-const CLI = join(ROOT, 'packages', 'cli', 'src', 'main.ts');
 const MEMO = 'UI テストのメモ KESTREL-MEMO';
 
 describe('画面の操作', () => {
@@ -40,11 +39,11 @@ describe('画面の操作', () => {
   beforeAll(async () => {
     await rm(WORK, { recursive: true, force: true });
     ({ home, close } = await buildFixtureHome(join(WORK, 'home')));
-    const r = spawnSync(process.execPath, [CLI, 'all', '--home', home, '--out', out, '--notes-dir', notes], { cwd: ROOT, encoding: 'utf8', timeout: 120_000 });
+    const r = spawnSync(...cliCommand(['all', '--home', home, '--out', out, '--notes-dir', notes]), { cwd: ROOT, encoding: 'utf8', timeout: 120_000 });
     expect(r.status, r.stderr).toBe(0);
     // テスト中に heartbeat が途切れても止まらないよう、猶予を長くとる
     // 設定ファイルはテスト用の場所(リポジトリの atlas.config.json を書き換えない)。フォルダを選ぶ画面は出さずに pickAnswer を返す
-    server = await startServe({
+    server = await startServer({
       outDir: out,
       notesDir: notes,
       groupsPath,

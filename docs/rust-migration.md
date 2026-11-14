@@ -46,7 +46,11 @@ TS のファイル 1 つを Rust のモジュール 1 つに移す(`normalize.ts
 2. 出力の突き合わせ: `node scripts/parity.ts --stages <工程>`。TS 版と Rust 版を同じ入力で 1 工程ずつ動かし、出力ファイルを比べる。
    - 既定は架空の fixture(e2e と同じもの)。実データでは `--home ~/.copilot --config <atlas.config.json>`(実データの出力は out/parity/ に置き、コミットしない)。
    - 実行のたびに変わる値(時刻・所要時間)は比べない(`IGNORE_KEYS`)。
-3. 最後に e2e(`npm run e2e`)と画面のテスト(`npm run ui`)を Rust 版の実行ファイルに向けて通す(環境変数 `ATLAS_CLI` で切り替える。移行の最後の段で入れる)。
+3. サーバの突き合わせ: `node scripts/parity-serve.ts`。架空の fixture の出力先を 2 つに写し、TS 版と Rust 版の atlas serve に同じ要求(静的ファイル・/view・GET の API・書き込み・ジョブ・チャットの判定・失敗する要求)を送って、状態コード・見出し・本文を比べる。
+4. e2e(`npm run e2e`)と画面のテスト(`npm run ui`)を Rust 版の実行ファイルに向けて通す。環境変数 `ATLAS_CLI` に Rust 版の atlas の実行ファイルを指定すると、
+   テストは `e2e/fixture-home.ts` の `cliCommand`(CLI)と `startServer`(サーバ。atlas serve を別のプロセスで動かす)を通して Rust 版を動かす。
+   テストが TS 版の startServe に直接渡していた設定は、環境変数で渡す(`ATLAS_SERVE_IDLE_MS`・`ATLAS_SERVE_BYE_GRACE_MS`・`ATLAS_SERVE_FIRST_HEARTBEAT_MS`・
+   `ATLAS_SERVE_MEMO_IMAGE_LIMIT`・`ATLAS_SERVE_VIEW_LIMIT`・`ATLAS_SERVE_CODE_STAMP`・`ATLAS_SERVE_CAN_PICK`、フォルダを選ぶ画面の代わりは `ATLAS_TEST_HOOK_URL`。テスト専用で、ふだんは設定しない)。
 
 ## 進め方と状況
 
@@ -58,7 +62,7 @@ TS のファイル 1 つを Rust のモジュール 1 つに移す(`normalize.ts
 | 2 | ai-changes・vcs・vcs-retention・vcs-step(`atlas vcs`) | |
 | 3 | turns・metrics・tables(`atlas metrics`、表の CSV と atlas.sqlite) | |
 | 4 | report の Node 側と build が使う lib(`atlas build` / `export`) | |
-| 5 | serve・jobs・viewer・memo・groups・folders・open | |
+| 5 | serve・jobs・viewer・memo・groups・folders・open | 済 |
 | 6 | judge・turns(bundle・run・import・m365)・skill-draft | |
 | 7 | config・setup・self-update・upload 系・group export / upload・schedule | |
 | 8 | 起動用の .bat を Rust 版に切り替え、e2e と画面のテストを Rust 版で通し、TS のサーバー側のコードを消す | |

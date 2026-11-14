@@ -5,15 +5,14 @@ import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { extractEmbedded, type ReportData } from '../packages/report/src/index.ts';
-import { buildFixtureHome, ROOT } from './fixture-home.ts';
+import { buildFixtureHome, ROOT, cliCommand } from './fixture-home.ts';
 
 const WORK = join(ROOT, 'out', 'e2e-phase13');
-const CLI = join(ROOT, 'packages', 'cli', 'src', 'main.ts');
 const MEMO_TEXT = '# 調べた理由\n\n固有のメモ本文 ZEBRA-MEMO を残す\n\n![図](__ID__/one.png)\n\n[外部](https://example.test/page)';
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]);
 
 function atlas(args: string[]): { status: number | null; stdout: string; stderr: string } {
-  return spawnSync(process.execPath, [CLI, ...args], { cwd: ROOT, encoding: 'utf8', timeout: 600_000 });
+  return spawnSync(...cliCommand(args), { cwd: ROOT, encoding: 'utf8', timeout: 600_000 });
 }
 
 function mtimes(dir: string): string {

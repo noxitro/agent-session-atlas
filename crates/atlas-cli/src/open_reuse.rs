@@ -7,8 +7,6 @@
 //! 出力(atlas.html・sessions.json・metrics.json と、あれば vcs-retention.json)が built.json に書いたものと違えば作り直す。
 //! TS 版と同じ built.json を読み書きする(印の作り方も同じ)。
 
-#![allow(dead_code)] // open(段 5)が使う。今は all のテストだけ
-
 use atlas_core::js::{self, JsMap};
 use atlas_core::snapshot::{SNAPSHOT_MANIFEST, SNAPSHOT_SOURCE};
 use serde::{Deserialize, Serialize};
@@ -16,7 +14,6 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
-pub const BUILT_FILE: &str = "built.json";
 const VCS_RETENTION_FILE: &str = crate::paths::VCS_RETENTION_FILE;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -32,7 +29,6 @@ pub struct BuiltStamp {
 
 /// 入力の印と出力を確かめるのに使う場所
 pub struct ReusePaths<'a> {
-    pub out: &'a Path,
     pub snapshot: &'a Path,
     pub judgments: &'a Path,
     pub turn_judgments: &'a Path,
@@ -185,7 +181,7 @@ mod tests {
             std::fs::write(out.join(f), "x").unwrap();
         }
         let none = d.path().join("none");
-        let rp = ReusePaths { out: &out, snapshot: &snap, judgments: &none, turn_judgments: &none, groups: &none };
+        let rp = ReusePaths { snapshot: &snap, judgments: &none, turn_judgments: &none, groups: &none };
         let opts = serde_json::json!({ "since": null, "anonymize": false });
         let key = inputs_key(&rp, &opts, &none, "code1").unwrap();
         assert_eq!(key, inputs_key(&rp, &opts, &none, "code1").unwrap());
@@ -193,7 +189,7 @@ mod tests {
         // manifest の作った日時と写した数は印に入れない
         std::fs::write(snap.join(SNAPSHOT_MANIFEST), r#"{"createdAt":"y","sessions":{"dirs":1,"copiedFiles":9},"uploads":{"p":{"uploadedAt":"2026-01-02T09:00:00Z"}}}"#).unwrap();
         assert_eq!(key, inputs_key(&rp, &opts, &none, "code1").unwrap());
-        let built = d.path().join(BUILT_FILE);
+        let built = d.path().join(crate::folders::BUILT_FILE);
         write_built(&built, &key, &out).unwrap();
         let prev = read_built(&built).unwrap();
         assert!(can_reuse(Some(&prev), &key, &out));

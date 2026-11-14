@@ -7,11 +7,10 @@ import { readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { chromium, type Browser } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { startServe, type ServeHandle } from '../packages/cli/src/serve.ts';
-import { buildFixtureHome, ROOT } from '../e2e/fixture-home.ts';
+import type { ServeHandle } from '../packages/cli/src/serve.ts';
+import { buildFixtureHome, ROOT, cliCommand, startServer } from '../e2e/fixture-home.ts';
 
 const WORK = join(ROOT, 'out', 'ui-heartbeat');
-const CLI = join(ROOT, 'packages', 'cli', 'src', 'main.ts');
 
 describe('サーバの止まり方', () => {
   const out = join(WORK, 'out');
@@ -23,7 +22,7 @@ describe('サーバの止まり方', () => {
     await rm(WORK, { recursive: true, force: true });
     let home: string;
     ({ home, close } = await buildFixtureHome(join(WORK, 'home')));
-    const r = spawnSync(process.execPath, [CLI, 'all', '--home', home, '--out', out, '--notes-dir', notes], { cwd: ROOT, encoding: 'utf8', timeout: 120_000 });
+    const r = spawnSync(...cliCommand(['all', '--home', home, '--out', out, '--notes-dir', notes]), { cwd: ROOT, encoding: 'utf8', timeout: 120_000 });
     expect(r.status, r.stderr).toBe(0);
     browser = await chromium.launch();
   }, 180_000);
@@ -34,7 +33,7 @@ describe('サーバの止まり方', () => {
 
   it('一覧 → 詳細 → 戻る → 進むと移っても止まらず、すべて閉じたら猶予の後に止まる', async () => {
     const logs: string[] = [];
-    const server: ServeHandle = await startServe({
+    const server: ServeHandle = await startServer({
       outDir: out,
       notesDir: notes,
       groupsPath: join(notes, 'groups.json'),
@@ -96,7 +95,7 @@ describe('サーバの止まり方', () => {
       ['old-version', true],
       [null, true],
     ] as const) {
-      const server = await startServe({
+      const server = await startServer({
         outDir: out,
         notesDir: notes,
         groupsPath: join(notes, 'groups.json'),

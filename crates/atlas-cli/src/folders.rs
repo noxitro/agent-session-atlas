@@ -6,7 +6,6 @@
 //!   <キー>/out/        … 集計の出力先(atlas.html など)
 //!   <キー>/built.json  … 前に集計したときの入力の印(open-reuse)
 //! メモとタスクタグは <notes-dir>/folders/<キー>/ に分ける。設定ファイル(atlas.config.json)には書かない。
-//! TODO(段 5): open コマンドと serve の API(GET/POST /api/folders)はここの関数を使って移す。
 
 use crate::jobs::{alive, JOB_ENV, JOB_LOCK_FILE};
 use atlas_core::js;

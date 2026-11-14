@@ -16,11 +16,10 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ATLAS_JUDGE_PROJECT, HOME_PROJECT, projectKey, TEMP_PROJECT, type MetricsFile, type SessionRecord, type SessionsFile } from '../packages/core/src/index.ts';
 import { aggregate, applyFilter, emptyFilter, extractEmbedded, type ReportData } from '../packages/report/src/index.ts';
 import { failureRate, unusedSkills } from '../packages/report/src/lib/aggregate.ts';
-import { buildFixtureHome, ROOT } from './fixture-home.ts';
+import { buildFixtureHome, ROOT, cliCommand } from './fixture-home.ts';
 
 const LIVE = process.env.ATLAS_LIVE === '1';
 const WORK = join(ROOT, 'out', 'e2e-phase6');
-const CLI = join(ROOT, 'packages', 'cli', 'src', 'main.ts');
 const LIMIT = 5 * 1024 * 1024;
 const id = (n: number): string => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const P6 = 'X:\\synthetic-p6';
@@ -47,7 +46,7 @@ async function gitFiles(repos: Record<string, string>): Promise<Record<string, {
 
 function atlas(args: string[]): { status: number | null; stdout: string; stderr: string; ms: number } {
   const t = performance.now();
-  const r = spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8', cwd: ROOT, timeout: 600_000 });
+  const r = spawnSync(...cliCommand(args), { encoding: 'utf8', cwd: ROOT, timeout: 600_000 });
   return { status: r.status, stdout: r.stdout, stderr: r.stderr, ms: performance.now() - t };
 }
 

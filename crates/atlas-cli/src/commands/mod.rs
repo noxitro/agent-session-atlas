@@ -13,9 +13,13 @@ mod all;
 pub mod build;
 mod bundle;
 mod extract;
+mod group;
 pub(crate) mod judge;
 pub mod judge_flow;
+mod memo;
 mod metrics;
+pub mod open;
+pub mod serve;
 mod skill_draft;
 mod snapshot;
 pub(crate) mod turns;
@@ -43,32 +47,30 @@ pub struct JudgeSummary {
     pub failed: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RunResult {
-    pub paths: Paths,
     pub build: Option<BuildResult>,
     pub judge: Option<JudgeSummary>,
-}
-
-impl RunResult {
-    pub fn of(paths: &Paths) -> Self {
-        RunResult { paths: paths.clone(), build: None, judge: None }
-    }
-}
-
-/// まだ Rust に移していないコマンド
-pub fn not_ported(what: &str) -> anyhow::Error {
-    anyhow::anyhow!("{what} はまだ Rust 版に移していません(docs/rust-migration.md)")
 }
 
 pub fn paths_of(o: &CliOptions) -> Paths {
     resolve_paths(PathInputs { home: o.home.as_deref(), out: o.out.as_deref(), judgments: o.judgments.as_deref(), bundle: o.bundle.as_deref(), notes_dir: o.notes_dir.as_deref() })
 }
 
+/// out/ に書くコマンド。実行中は out/.job.json に印を置き、他のプロセス(画面のジョブ・別の atlas)と並行して書かない
+const WRITES_OUT: [&str; 10] = ["snapshot", "extract", "metrics", "build", "export", "bundle", "judge", "turns", "skill-draft", "all"];
+
 pub fn run(o: &CliOptions, log: Log<'_>) -> Result<RunResult> {
-    // TODO(serve の移植): open は自分で出力先を決める。out/ に書くコマンドは acquireOutLock(jobs.ts)で排他する
+    if o.command == "open" {
+        return open::run_open(o, log, None);
+    }
     let p = paths_of(o);
-    run_command(o, &p, log)
+    let lock = if WRITES_OUT.contains(&o.command.as_str()) { Some(crate::jobs::acquire_out_lock(&p.out, &o.command, "cli")?) } else { None };
+    let r = run_command(o, &p, log);
+    if let Some(l) = lock {
+        l.release();
+    }
+    r
 }
 
 /// judge m365 / turns m365: 開いている M365 Copilot のアプリを操作して未判定の添付ファイルを判定し(m365.rs)、
@@ -81,7 +83,6 @@ fn run_m365_command(o: &CliOptions, p: &Paths, target: ChatTarget, model: Option
         &powershell_driver,
         cfg!(windows),
     )?;
-    // TODO(段 4): export を移したら、ここで run_command(export) がレポートを作り直す(今は not_ported のエラーになる)
     let build = if s.imported > 0 { run_command(&CliOptions { command: "export".into(), model: None, judge: None, turns: None, ..o.clone() }, p, log)?.build } else { None };
     if !s.failed.is_empty() {
         anyhow::bail!(
@@ -90,35 +91,35 @@ fn run_m365_command(o: &CliOptions, p: &Paths, target: ChatTarget, model: Option
             s.failed.iter().map(|f| format!("{}({})", f.name, f.reason)).collect::<Vec<_>>().join(" / ")
         );
     }
-    Ok(RunResult { build, ..RunResult::of(p) })
+    Ok(RunResult { build, ..RunResult::default() })
 }
 
 pub fn run_command(o: &CliOptions, p: &Paths, log: Log<'_>) -> Result<RunResult> {
     match o.command.as_str() {
         "snapshot" => {
             snapshot::run_snapshot(p, o.since.as_deref(), log, o.snapshot_all, o.snapshot_prune)?;
-            Ok(RunResult::of(p))
+            Ok(RunResult::default())
         }
         "extract" => {
             extract::run_extract(p, o.since.as_deref(), log, o.temp_dirs.as_deref(), o.config.as_deref())?;
-            Ok(RunResult::of(p))
+            Ok(RunResult::default())
         }
         "metrics" => {
             metrics::run_metrics(p, &metrics::SessionFilter::from_cli(o), log, true)?;
-            Ok(RunResult::of(p))
+            Ok(RunResult::default())
         }
         "vcs" => {
             vcs::run_vcs(p, log, o.vcs_mode.as_deref(), o.config.as_deref())?;
-            Ok(RunResult::of(p))
+            Ok(RunResult::default())
         }
         "build" | "export" => {
             let transcripts = (o.command == "export").then(|| build::TranscriptCli { tool_output: o.tool_output, max_chars: o.max_chars, full: o.full });
             let b = build::run_build(p, &build::BuildOptions { filter: metrics::SessionFilter::from_cli(o), anonymize: o.anonymize, transcripts }, log)?;
-            Ok(RunResult { build: Some(b), ..RunResult::of(p) })
+            Ok(RunResult { build: Some(b), ..RunResult::default() })
         }
         "bundle" => {
             bundle::run_bundle(p, &metrics::SessionFilter::from_cli(o), &bundle::BundleCliOptions { include_empty: o.include_empty, per_part: o.per_part, unjudged: o.unjudged }, log)?;
-            Ok(RunResult::of(p))
+            Ok(RunResult::default())
         }
         "turns" => {
             let t = o.turns.as_ref().ok_or_else(|| anyhow::anyhow!("turns の操作がありません"))?;
@@ -126,33 +127,39 @@ pub fn run_command(o: &CliOptions, p: &Paths, log: Log<'_>) -> Result<RunResult>
                 return run_m365_command(o, p, ChatTarget::Turns, t.model.as_deref(), t.limit, t.timeout_sec, log);
             }
             turns::run_turns(p, &metrics::SessionFilter { model: None, ..metrics::SessionFilter::from_cli(o) }, t, log)?;
-            Ok(RunResult::of(p))
+            Ok(RunResult::default())
         }
         "judge" => {
             let j = o.judge.as_ref().ok_or_else(|| anyhow::anyhow!("judge の操作がありません"))?;
             if j.action == "m365" {
                 return run_m365_command(o, p, ChatTarget::Effort, j.model.as_deref(), j.limit, j.timeout_sec, log);
             }
-            Ok(RunResult { judge: judge::run_judge_command(p, j, log)?, ..RunResult::of(p) })
+            Ok(RunResult { judge: judge::run_judge_command(p, j, log)?, ..RunResult::default() })
         }
         "group" => {
-            // TODO(段 5): list / add / remove / export も移す
             let g = o.group_cmd.as_ref().ok_or_else(|| anyhow::anyhow!("group の操作がありません"))?;
-            if g.action != "upload" {
-                return Err(not_ported(&format!("group {}", g.action)));
-            }
-            crate::group_upload::run_group_upload(p, g.name.as_deref().unwrap_or(""), g.to.as_deref(), g.force, o.config.as_deref(), log)?;
-            Ok(RunResult::of(p))
+            group::run_group(p, g, o.config.as_deref(), log)?;
+            Ok(RunResult::default())
         }
-        "memo" => Err(not_ported("memo")),
-        "serve" => Err(not_ported("serve")),
+        "memo" => {
+            let m = o.memo_cmd.as_ref().ok_or_else(|| anyhow::anyhow!("memo の操作がありません"))?;
+            memo::run_memo(p, m, log)?;
+            Ok(RunResult::default())
+        }
+        "serve" => {
+            serve::run_serve(p, serve::ServeCli { port: o.port, open: o.open, config: o.config.clone(), home: None, reports: None }, log)?;
+            Ok(RunResult::default())
+        }
         "skill-draft" => {
             let sd = o.skill_draft.as_ref().ok_or_else(|| anyhow::anyhow!("skill-draft の番号がありません"))?;
             skill_draft::run_skill_draft(p, sd, log)?;
-            Ok(RunResult::of(p))
+            Ok(RunResult::default())
         }
-        "open" => Err(not_ported("open")),
-        "all" => Ok(RunResult { build: Some(all::run_all(o, p, log)?), ..RunResult::of(p) }),
+        "open" => open::run_open(o, log, None),
+        "all" => Ok(RunResult { build: Some(all::run_all(o, p, log)?), ..RunResult::default() }),
         other => Err(anyhow::anyhow!("不明なコマンドです: {other}")),
     }
 }
+
+#[cfg(test)]
+mod tests;

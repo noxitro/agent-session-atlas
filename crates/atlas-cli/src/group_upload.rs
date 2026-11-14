@@ -412,25 +412,8 @@ const SNIFF_BYTES: usize = 8192;
 const SCAN_OVERLAP: usize = 16 * 1024;
 const SCAN_CHUNK: usize = 4 * 1024 * 1024;
 
-/// API キー・トークンらしい形(種類名, 正規表現)。report の transcript の SECRET_PATTERNS と同じ形。
-/// JS の \b は ASCII の語の境目、\s は JS の空白なので、そのとおりに書く
-/// TODO(段 4-2 の後): atlas-report に transcript の SECRET_PATTERNS が移ったら、そちらを使う
-pub static SECRET_PATTERNS: LazyLock<Vec<(&'static str, Regex)>> = LazyLock::new(|| {
-    let b = r"(?-u:\b)";
-    [
-        ("GitHub トークン", format!(r"{b}(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{{36,}}{b}|{b}github_pat_[A-Za-z0-9_]{{22,}}{b}")),
-        ("OpenAI / Anthropic 系キー", format!(r"{b}sk-(?:ant-)?[A-Za-z0-9_-]{{20,}}{b}")),
-        ("AWS アクセスキー", format!(r"{b}(?:AKIA|ASIA)[0-9A-Z]{{16}}{b}")),
-        ("Slack トークン", format!(r"{b}xox[abprs]-[A-Za-z0-9-]{{10,}}{b}")),
-        ("Google API キー", format!(r"{b}AIza[0-9A-Za-z_-]{{35}}{b}")),
-        ("秘密鍵", r"-----BEGIN [A-Z ]*PRIVATE KEY-----(?s:.)*?-----END [A-Z ]*PRIVATE KEY-----|-----BEGIN [A-Z ]*PRIVATE KEY-----".to_string()),
-        ("JWT", format!(r"{b}eyJ[A-Za-z0-9_-]{{10,}}\.[A-Za-z0-9_-]{{10,}}\.[A-Za-z0-9_-]{{10,}}{b}")),
-        ("Bearer トークン", format!(r"{b}Bearer{RE_S}+[A-Za-z0-9._~+/=-]{{24,}}")),
-    ]
-    .into_iter()
-    .map(|(l, re)| (l, Regex::new(&re).expect("正規表現")))
-    .collect()
-});
+/// API キー・トークンらしい形(種類名, 正規表現)。セッション記録の伏せ字と同じもの
+use atlas_report::transcript::SECRET_PATTERNS;
 
 /// 種類ごとの数(見つかった種類の順。JS の Map と同じく、最初に見つかった順)
 pub type SecretCounts = Vec<(String, usize)>;
@@ -1012,18 +995,9 @@ impl UploadContext {
     }
 }
 
-/// メモの本文を読む(report の memo-io.ts の readMemo。<dir>/<id>.md。BOM は取り除く)
-/// TODO(段 4-2 の後): atlas-report に memo-io が移ったら、そちらの read_memo を使う
+/// メモの本文を読む(<dir>/<id>.md。BOM は取り除く)
 fn read_memo_text(dir: &Path, id: &str) -> Result<Option<String>> {
-    if !atlas_report::memo::is_safe_memo_id(id) {
-        bail!("メモに使えないセッション id です: {id}");
-    }
-    let path = dir.join(format!("{id}.md"));
-    if !path.exists() {
-        return Ok(None);
-    }
-    let t = String::from_utf8_lossy(&std::fs::read(path)?).into_owned();
-    Ok(Some(t.strip_prefix('\u{feff}').map(str::to_string).unwrap_or(t)))
+    Ok(atlas_report::memo_io::read_memo(dir, id)?.map(|m| m.text))
 }
 
 /// 写す前の点検(大きさと秘密らしい文字列)。何も写さない。ctx は共有する読む口

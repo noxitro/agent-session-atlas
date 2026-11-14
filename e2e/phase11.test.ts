@@ -12,14 +12,13 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { SessionsFile, SnapshotManifest } from '../packages/core/src/index.ts';
 import type { CoverageFile } from '../packages/report/src/coverage.ts';
 import { extractEmbedded, type ReportData } from '../packages/report/src/index.ts';
-import { buildFixtureHome, FAKE_SECRETS, P11_SESSION, ROOT, UNLISTED_VALUES } from './fixture-home.ts';
+import { buildFixtureHome, FAKE_SECRETS, P11_SESSION, ROOT, UNLISTED_VALUES, cliCommand } from './fixture-home.ts';
 const LEAK_VALUES = [...Object.values(FAKE_SECRETS), ...Object.values(UNLISTED_VALUES), 'failure-event-json-FAKE-2b3c', 'activity-metadata-json-FAKE-3c4d', 'workspace-bootstrap-config-FAKE-6f7a'];
 
 const WORK = join(ROOT, 'out', 'e2e-phase11');
-const CLI = join(ROOT, 'packages', 'cli', 'src', 'main.ts');
 
 function atlas(args: string[]): { status: number | null; stdout: string; stderr: string } {
-  const r = spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8', cwd: ROOT, timeout: 600_000 });
+  const r = spawnSync(...cliCommand(args), { encoding: 'utf8', cwd: ROOT, timeout: 600_000 });
   return { status: r.status, stdout: r.stdout, stderr: r.stderr };
 }
 async function mtimes(dir: string): Promise<Record<string, number>> {

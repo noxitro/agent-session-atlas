@@ -42,18 +42,6 @@ pub struct BuildOptions {
     pub transcripts: Option<TranscriptCli>,
 }
 
-/// 別のフォルダを開いた(atlas open)ときの出力先か。<置き場>/<キー>/out で、隣に folder.json がある(TS 版の folders.ts の isOpenedFolderOut)。
-/// TODO: 並行して移している folders.rs(is_opened_folder_out・is_read_only_view)ができたら、そちらを使うようにしてこれを消す
-fn is_opened_folder_out(out_dir: &Path) -> bool {
-    let dir = crate::paths::resolve(out_dir);
-    dir.file_name().is_some_and(|n| n == "out") && dir.parent().is_some_and(|p| p.join("folder.json").exists())
-}
-
-/// 読むだけの画面にするか(送り先から集計した、または別のフォルダを開いた出力先。TS 版の isReadOnlyView)
-pub(crate) fn is_read_only_view(out_dir: &Path, layout: Option<atlas_core::types::UploadLayout>) -> bool {
-    layout.is_some() || is_opened_folder_out(out_dir)
-}
-
 /// レポートで見るフォルダごとの記録。絞り込んだときは、対象のセッションを数えたフォルダだけにする
 pub fn uploads_for(uploads: Option<&JsMap<FolderUpload>>, sessions: &[&SessionRecord], filtered: bool) -> Option<JsMap<FolderUpload>> {
     let uploads = uploads?;
@@ -156,7 +144,12 @@ pub fn run_build(p: &Paths, o: &BuildOptions, log: Log<'_>) -> Result<BuildResul
     let report_root = REPO_ROOT.join("packages").join("report");
     let template = ensure_template(Some(&report_root), Some(&REPO_ROOT), &|m: &str| log(m))?;
     let unknown: i64 = s.warnings.unknown_event_types.values().sum();
-    let read_only = is_read_only_view(&p.out, s.source.layout);
+    let layout = s.source.layout.map(|l| match l {
+        atlas_core::types::UploadLayout::Flat => "flat",
+        atlas_core::types::UploadLayout::Merged => "merged",
+    });
+    // 読むだけの画面にするか(送り先から集計した、または別のフォルダを開いた出力先。サーバと同じ判定)
+    let read_only = crate::folders::is_read_only_view(&p.out.to_string_lossy(), layout);
     let (groups, memos, member_memos) = if read_only {
         let src: Vec<MemberSource<'_>> = s.sessions.iter().map(MemberSource::from).collect();
         (member_groups(&src), None, Some(p.snapshot.join("session-state")))

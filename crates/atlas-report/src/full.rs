@@ -792,6 +792,81 @@ pub fn finish_full_file(path: &Path, tail: &str) -> Result<()> {
     Ok(())
 }
 
+/// 1 件だけ書いた全文記録(write_full_record の結果)
+#[derive(Debug, Clone)]
+pub struct FullRecordResult {
+    pub path: PathBuf,
+    pub bytes: u64,
+    pub events: u64,
+    pub secret_hits: u64,
+    pub assets: Counted,
+    pub excluded: Excluded,
+    pub unclassified: Vec<String>,
+}
+
+/// write_full_record の入力(TS 版の FullRecordInput)
+pub struct FullRecordInput<'a> {
+    pub record: &'a SessionRecord,
+    /// out/snapshot(session-state/<id>/ と session-store.db)
+    pub snapshot_dir: &'a Path,
+    /// out/(書くのは out/full/<id>.md と out/full/assets/<id>/ だけ)
+    pub out_dir: &'a Path,
+    /// sessions.json の desktop.wal.note
+    pub wal_note: Option<&'a str>,
+    /// 止めるか(描く前と、書き終える前に確かめ、tmp を消してエラーにする)
+    pub canceled: &'a (dyn Fn() -> bool + Sync),
+    pub generated_at: Option<&'a str>,
+}
+
+/// Phase 14: 1 件だけ全文記録を書く(atlas serve の「全文を作って読む」)。
+/// export --full と同じ render_full_body を使うが、atlas.html・詳細ページ・coverage.json・他のセッションの全文は触らない
+/// (網羅の集計はこの 1 件の中だけで数えて捨てる。coverage.json は全件の export --full だけが書く)。
+/// TS 版はイベントの間でも止める操作を確かめるが、Rust 版は 1 件をまとめて描くので、描く前と書き終える前に確かめる
+pub fn write_full_record(o: &FullRecordInput<'_>) -> Result<FullRecordResult> {
+    let r = o.record;
+    let full_dir = o.out_dir.join("full");
+    let folder = safe_name(&r.id);
+    let session_dir = o.snapshot_dir.join("session-state").join(&r.id);
+    let events_path = session_dir.join("events.jsonl");
+    let store = atlas_core::extract::load_store(&o.snapshot_dir.join("session-store.db"))?;
+    std::fs::create_dir_all(&full_dir).with_context(|| format!("{} を作れません", full_dir.display()))?;
+    let path = full_dir.join(full_file_name(&r.id));
+    if (o.canceled)() {
+        anyhow::bail!("取り消しました");
+    }
+    let events = if events_path.exists() { crate::raw_events::read_raw_events(&events_path).with_context(|| format!("{} を読めません", events_path.display()))? } else { Vec::new() };
+    let empty: Vec<DbUsageRow> = Vec::new();
+    let usage = store.usage.get(&r.id).unwrap_or(&empty);
+    let now = jsdate::now_iso();
+    let has_dir = session_dir.exists();
+    let mut coverage = CoverageCounter::new();
+    let body = render_full_body(
+        r,
+        &events,
+        usage,
+        &FullOptions {
+            generated_at: o.generated_at.unwrap_or(&now),
+            assets_dir: full_dir.join("assets").join(&folder),
+            assets_href: format!("assets/{folder}"),
+            session_dir: has_dir.then(|| session_dir.clone()),
+            session_dir_href: has_dir.then(|| format!("../snapshot/session-state/{}", encode_uri_component(&r.id))),
+            wal_note: o.wal_note,
+        },
+        &mut coverage,
+    );
+    write_full_body(&path, &body.text)?;
+    if (o.canceled)() {
+        let _ = std::fs::remove_file(tmp_of(&path));
+        anyhow::bail!("取り消しました");
+    }
+    let mut uc: Vec<String> = coverage.unclassified_keys();
+    uc.sort_by(|a, b| js::cmp_utf16(a, b));
+    uc.dedup();
+    finish_full_file(&path, &full_tail(body.secret_hits, body.excluded, body.assets, &uc))?;
+    let bytes = std::fs::metadata(&path)?.len();
+    Ok(FullRecordResult { path, bytes, events: body.events, secret_hits: body.secret_hits, assets: body.assets, excluded: body.excluded, unclassified: uc })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

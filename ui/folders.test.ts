@@ -13,11 +13,10 @@ import { chromium, type Browser, type Page } from 'playwright';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { shotOnFailure } from './failure-shot.ts';
 import { folderPaths, foldersRootOf, type FolderPaths } from '../packages/cli/src/folders.ts';
-import { startServe, type ServeHandle } from '../packages/cli/src/serve.ts';
-import { buildFixtureHome, ROOT } from '../e2e/fixture-home.ts';
+import type { ServeHandle } from '../packages/cli/src/serve.ts';
+import { buildFixtureHome, ROOT, cliCommand, startServer } from '../e2e/fixture-home.ts';
 
 const WORK = join(ROOT, 'out', 'ui-folders');
-const CLI = join(ROOT, 'packages', 'cli', 'src', 'main.ts');
 
 describe('別のフォルダを開く', () => {
   const out = join(WORK, 'out');
@@ -56,7 +55,7 @@ describe('別のフォルダを開く', () => {
     let home: string;
     ({ home, close } = await buildFixtureHome(join(WORK, 'home')));
     const atlas = (args: string[]): void => {
-      const r = spawnSync(process.execPath, [CLI, ...args], { cwd: ROOT, encoding: 'utf8', timeout: 120_000 });
+      const r = spawnSync(...cliCommand(args), { cwd: ROOT, encoding: 'utf8', timeout: 120_000 });
       expect(r.status, r.stdout + r.stderr).toBe(0);
     };
     atlas(['all', '--home', home, '--out', out, '--notes-dir', notes]);
@@ -75,7 +74,7 @@ describe('別のフォルダを開く', () => {
     await cp(join(upload, 'proj-a'), join(logs, 'person-b', 'proj-a'), { recursive: true });
     fp = folderPaths(root, notes, person);
 
-    server = await startServe({ outDir: out, notesDir: notes, groupsPath: join(notes, 'groups.json'), port: 0, open: false, idleMs: 600_000, firstHeartbeatMs: 600_000 });
+    server = await startServer({ outDir: out, notesDir: notes, groupsPath: join(notes, 'groups.json'), port: 0, open: false, idleMs: 600_000, firstHeartbeatMs: 600_000 });
     browser = await chromium.launch();
     page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
     watch(page);
@@ -240,9 +239,9 @@ describe('別のフォルダを開く', () => {
     await cp(join(WORK, 'upload', 'proj-b'), join(everyone, 'person-b', 'proj-b'), { recursive: true });
     const outAll = join(WORK, 'out-everyone');
     const notesAll = join(WORK, 'notes-everyone');
-    const r = spawnSync(process.execPath, [CLI, 'all', '--home', everyone, '--out', outAll, '--notes-dir', notesAll], { cwd: ROOT, encoding: 'utf8', timeout: 120_000 });
+    const r = spawnSync(...cliCommand(['all', '--home', everyone, '--out', outAll, '--notes-dir', notesAll]), { cwd: ROOT, encoding: 'utf8', timeout: 120_000 });
     expect(r.status, r.stdout + r.stderr).toBe(0);
-    const all = await startServe({ outDir: outAll, notesDir: notesAll, groupsPath: join(notesAll, 'groups.json'), port: 0, open: false, idleMs: 600_000, firstHeartbeatMs: 600_000 });
+    const all = await startServer({ outDir: outAll, notesDir: notesAll, groupsPath: join(notesAll, 'groups.json'), port: 0, open: false, idleMs: 600_000, firstHeartbeatMs: 600_000 });
     other = await browser.newPage({ viewport: { width: 1440, height: 900 } });
     watch(other);
     try {

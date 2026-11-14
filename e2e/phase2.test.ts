@@ -22,17 +22,15 @@ import type { SessionsFile } from '../packages/core/src/index.ts';
 import { buildReport, extractEmbedded, type ReportData } from '../packages/report/src/index.ts';
 import { GLOSSARY, GLOSSARY_GROUPS } from '../packages/report/src/lib/glossary.ts';
 import { computeMetrics, GROUPED_PROJECTS } from '../packages/core/src/index.ts';
-import { buildFixtureHome, FIXTURES, readFixtureStore, ROOT } from './fixture-home.ts';
-import { startServe } from '../packages/cli/src/serve.ts';
+import { buildFixtureHome, FIXTURES, readFixtureStore, ROOT, cliCommand, startServer } from './fixture-home.ts';
 
 const LIVE = process.env.ATLAS_LIVE === '1';
 const WORK = join(ROOT, 'out', 'e2e-phase2');
-const CLI = join(ROOT, 'packages', 'cli', 'src', 'main.ts');
 const LIMIT = 5 * 1024 * 1024;
 
 function atlas(args: string[]): { status: number | null; stdout: string; stderr: string; ms: number } {
   const t = performance.now();
-  const r = spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8', cwd: ROOT, timeout: 600_000 });
+  const r = spawnSync(...cliCommand(args), { encoding: 'utf8', cwd: ROOT, timeout: 600_000 });
   return { status: r.status, stdout: r.stdout, stderr: r.stderr, ms: performance.now() - t };
 }
 
@@ -384,7 +382,7 @@ describe('Phase 2 E2E: fixtures', () => {
 
     const notes = join(WORK, 'notes-serve');
     await rm(notes, { recursive: true, force: true });
-    const child = spawn(process.execPath, [CLI, 'serve', '--out', out, '--notes-dir', notes, '--no-open'], { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(...cliCommand(['serve', '--out', out, '--notes-dir', notes, '--no-open']), { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     child.stdout.on('data', (d) => (stdout += String(d)));
     let stderr = '';
@@ -454,11 +452,11 @@ describe('Phase 2 E2E: fixtures', () => {
 
   it('動いているサーバが今の atlas と違う版なら、二重起動のときにターミナルへ知らせる', async () => {
     const notes = join(WORK, 'notes-serve');
-    const old = await startServe({ outDir: out, notesDir: notes, groupsPath: join(notes, 'groups.json'), port: 0, open: false, codeStamp: 'old-version' });
+    const old = await startServer({ outDir: out, notesDir: notes, groupsPath: join(notes, 'groups.json'), port: 0, open: false, codeStamp: 'old-version' });
     try {
       // 同じプロセスのサーバが応えられるよう、spawnSync ではなく待てる形で起動する
       const again = await new Promise<{ status: number | null; stdout: string; stderr: string }>((ok) => {
-        const c = spawn(process.execPath, [CLI, 'serve', '--out', out, '--notes-dir', notes, '--no-open'], { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] });
+        const c = spawn(...cliCommand(['serve', '--out', out, '--notes-dir', notes, '--no-open']), { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] });
         let so = '';
         let se = '';
         c.stdout.on('data', (d) => (so += String(d)));

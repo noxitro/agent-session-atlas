@@ -14,19 +14,17 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { SessionsFile } from '../packages/core/src/index.ts';
 import { DEFAULT_LIMITS, DEFAULT_PER_PART, JUDGMENTS_JSON_SCHEMA, missingSections, packetFileName, packetSessionId, PACKET_SECTIONS, validateJudgments, type BundleManifest, type JudgmentsFile } from '../packages/judge/src/index.ts';
 import { aggregate, extractEmbedded, type ReportData } from '../packages/report/src/index.ts';
-import { buildFixtureHome, FIXTURE_CODE, FIXTURES, ROOT } from './fixture-home.ts';
+import { buildFixtureHome, FIXTURE_CODE, FIXTURES, ROOT, cliCommand } from './fixture-home.ts';
 
 const LIVE = process.env.ATLAS_LIVE === '1';
 const WORK = join(ROOT, 'out', 'e2e-phase3');
-const CLI = join(ROOT, 'packages', 'cli', 'src', 'main.ts');
 const FAKE = join(FIXTURE_CODE, 'fake-copilot.mjs');
-const FLOW = join(ROOT, 'packages', 'cli', 'src', 'judge-flow.ts');
 /** 手書きの judgments サンプル(架空の判定。globalSetup が scripts/synthetic-base.ts の judgmentsSample() から書く) */
 const SAMPLE = join(FIXTURES, 'judgments-sample.json');
 
 function atlas(args: string[], env: Record<string, string> = {}): { status: number | null; stdout: string; stderr: string; ms: number } {
   const t = performance.now();
-  const r = spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8', cwd: ROOT, timeout: 600_000, env: { ...process.env, ...env } });
+  const r = spawnSync(...cliCommand(args), { encoding: 'utf8', cwd: ROOT, timeout: 600_000, env: { ...process.env, ...env } });
   return { status: r.status, stdout: r.stdout, stderr: r.stderr, ms: performance.now() - t };
 }
 
@@ -274,7 +272,7 @@ describe('Phase 3 E2E: fixtures', () => {
     const env = { ATLAS_COPILOT_BIN: FAKE, FAKE_COPILOT_LOG: join(WORK, 'fake-copilot-flow.log') };
     const flow = (args: string[]): ReturnType<typeof atlas> => {
       const t = performance.now();
-      const r = spawnSync(process.execPath, [FLOW, ...args], { encoding: 'utf8', cwd: ROOT, timeout: 600_000, env: { ...process.env, ...env } });
+      const r = spawnSync(...cliCommand(args, 'judge-flow'), { encoding: 'utf8', cwd: ROOT, timeout: 600_000, env: { ...process.env, ...env } });
       return { status: r.status, stdout: r.stdout, stderr: r.stderr, ms: performance.now() - t };
     };
     const mds = async (): Promise<number> => (await readdir(join(flowOut, 'sessions'))).filter((f) => f.endsWith('.md')).length;

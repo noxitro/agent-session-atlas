@@ -3,11 +3,13 @@
 // session-store.db は別プロセスの書き手が WAL モード(自動チェックポイント無効)で作る。
 // → 実環境と同じく本体 + -wal + -shm が並び、行は WAL にだけある状態になる。
 import { spawn } from 'node:child_process';
+import { createServer, type Server } from 'node:http';
 import { appendFile, cp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openWritable, type Database } from '../packages/core/src/sqlite.ts';
 import { FIXTURES_DIR } from '../scripts/synthetic-fixtures.ts';
+import type { ServeHandle, ServeOptions } from '../packages/cli/src/serve.ts';
 
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 /** 生成した fixture のデータ(.fixtures/) */
@@ -256,6 +258,126 @@ export async function addPhase12Fixtures(home: string): Promise<void> {
       [`id: ${id}`, 'cwd: X:\\synthetic-p12', 'git_root: X:\\synthetic-p12', 'repository: zz-owner/zz-p12', 'host_type: github', 'branch: main', 'client_name: github/cli', `name: "合成 P12 ${i + 1}"`, 'user_named: false', `created_at: ${ts(0)}`, `updated_at: ${ts(k)}`, ''].join('\n'),
     );
   }
+}
+
+// ---------- Rust 版への切り替え(docs/rust-migration.md の段 5・8) ----------
+// 環境変数 ATLAS_CLI に Rust 版の atlas の実行ファイルを指定すると、e2e と画面のテストは TS 版の入口(packages/cli/src/*.ts)の代わりに
+// それを動かす。サーバも別のプロセス(atlas serve)として動かし、テストが TS 版の startServe に直接渡していた設定は環境変数で渡す。
+
+/** Rust 版の atlas の実行ファイル(無ければ TS 版を動かす) */
+export const ATLAS_CLI = process.env.ATLAS_CLI || null;
+
+/** CLI の入口。main は atlas のコマンド、ほかは TS 版では別のファイル(Rust 版ではサブコマンド) */
+export type CliEntry = 'main' | 'judge-flow' | 'setup' | 'upload-project' | 'upload-schedule' | 'upload-auto';
+
+/** CLI を動かすコマンドと引数([コマンド, 引数])。spawn / spawnSync にそのまま渡す */
+export function cliCommand(args: string[], entry: CliEntry = 'main'): [string, string[]] {
+  if (ATLAS_CLI) return [ATLAS_CLI, entry === 'main' ? args : [entry, ...args]];
+  return [process.execPath, [join(ROOT, 'packages', 'cli', 'src', `${entry}.ts`), ...args]];
+}
+
+/**
+ * サーバを起動する。ATLAS_CLI が無ければ TS 版の startServe、あれば Rust 版の atlas serve を別のプロセスで動かして、同じ形の handle を返す。
+ * Rust 版で渡せないもの(ジョブの spawn・runFull の差し替え、別のフォルダを開く起動の差し替え)は渡せばエラーにする。
+ * フォルダを選ぶ画面とエクスプローラーで開く操作の差し替えは、テストの側に小さなサーバを立てて Rust 版から尋ねさせる(ATLAS_TEST_HOOK_URL)
+ */
+export async function startServer(o: ServeOptions): Promise<ServeHandle> {
+  if (!ATLAS_CLI) {
+    const { startServe } = await import('../packages/cli/src/serve.ts');
+    return startServe(o);
+  }
+  if (o.jobs?.spawn || o.jobs?.runFull || o.reports || o.home || o.m365 !== undefined || o.viewLimit !== undefined) throw new Error('startServer: Rust 版には渡せない設定です');
+  if (resolve(o.groupsPath) !== resolve(join(o.notesDir, 'groups.json'))) throw new Error('startServer: Rust 版の groups.json は notesDir の直下だけです');
+  const env: NodeJS.ProcessEnv = { ...process.env, ...o.jobs?.env };
+  const ms = (k: string, v: number | undefined): void => {
+    if (v !== undefined) env[k] = String(v);
+  };
+  ms('ATLAS_SERVE_IDLE_MS', o.idleMs);
+  ms('ATLAS_SERVE_BYE_GRACE_MS', o.byeGraceMs);
+  ms('ATLAS_SERVE_FIRST_HEARTBEAT_MS', o.firstHeartbeatMs);
+  ms('ATLAS_SERVE_MEMO_IMAGE_LIMIT', o.memoImageLimit);
+  if (o.codeStamp !== undefined) env.ATLAS_SERVE_CODE_STAMP = o.codeStamp ?? 'null';
+  if (o.copilotHome) env.ATLAS_COPILOT_HOME = o.copilotHome;
+  if (o.folders?.canPick !== undefined) env.ATLAS_SERVE_CAN_PICK = o.folders.canPick ? '1' : '0';
+  let hook: Server | null = null;
+  if (o.folders?.pick || o.folders?.open) {
+    const f = o.folders;
+    hook = createServer((req, res) => {
+      let body = '';
+      req.setEncoding('utf8');
+      req.on('data', (c: string) => (body += c));
+      req.on('end', () => {
+        void (async () => {
+          const j = JSON.parse(body || '{}') as { title?: string; initial?: string | null; dir?: string };
+          if (req.url === '/pick') {
+            const path = f.pick ? await f.pick(j.title ?? '', j.initial ?? null) : null;
+            res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ path }));
+          } else {
+            f.open?.(j.dir ?? '');
+            res.writeHead(200, { 'content-type': 'application/json' }).end('{}');
+          }
+        })().catch((e: unknown) => res.writeHead(500).end(String(e)));
+      });
+    });
+    await new Promise<void>((ok) => hook!.listen(0, '127.0.0.1', () => ok()));
+    env.ATLAS_TEST_HOOK_URL = `http://127.0.0.1:${(hook.address() as { port: number }).port}`;
+  }
+  // TS 版の startServe は、同じ出力先で動いているサーバがあっても起動する(atlas serve は開くだけにする)ので、その印を外してから起動する
+  await rm(join(o.outDir, '.serve.json'), { force: true });
+  const args = ['serve', '--out', o.outDir, '--notes-dir', o.notesDir, '--port', String(o.port ?? 0), ...(o.open === false ? ['--no-open'] : []), ...(o.configPath ? ['--config', o.configPath] : [])];
+  const child = spawn(ATLAS_CLI, args, { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const log = o.log ?? (() => {});
+  let reason: string | null = null;
+  let closing: string | null = null;
+  const exited = new Promise<void>((r) => child.once('exit', () => r()));
+  let rest = '';
+  let started!: (port: number) => void;
+  let failed!: (e: Error) => void;
+  const ready = new Promise<number>((ok, ng) => ((started = ok), (failed = ng)));
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', (d: string) => {
+    const lines = (rest + d).split(/\r?\n/);
+    rest = lines.pop() ?? '';
+    for (const l of lines) {
+      const m = /^serve: http:\/\/127\.0\.0\.1:(\d+)\/atlas\.html/.exec(l);
+      if (m) started(Number(m[1]));
+      const end = /^serve: 終了\((.*)\)$/.exec(l);
+      if (end) reason = end[1];
+      log(l);
+    }
+  });
+  let stderr = '';
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', (d: string) => (stderr += d));
+  void exited.then(() => {
+    hook?.close();
+    failed(new Error(`atlas serve が起動前に終わりました: ${stderr}`));
+  });
+  const port = await ready;
+  const url = `http://127.0.0.1:${port}/atlas.html`;
+  const page = await (await fetch(url)).text();
+  const token = /<meta name="atlas-token" content="([^"]*)"/.exec(page)?.[1] ?? '';
+  const done = exited.then(() => closing ?? reason ?? '停止');
+  return {
+    port,
+    url,
+    token,
+    done,
+    async close(r = '停止') {
+      if (child.exitCode !== null || closing) return void (await exited);
+      closing = r;
+      child.kill();
+      await exited;
+      // 止めたプロセスは後始末をしないので、TS 版の close と同じく .serve.json と自分の実行中の印を消す
+      await rm(join(o.outDir, '.serve.json'), { force: true });
+      try {
+        const j = JSON.parse(await readFile(join(o.outDir, '.job.json'), 'utf8')) as { pid?: number };
+        if (j.pid === child.pid) await rm(join(o.outDir, '.job.json'), { force: true });
+      } catch {
+        /* 印が無い */
+      }
+    },
+  };
 }
 
 const THIS_FILE = fileURLToPath(import.meta.url);

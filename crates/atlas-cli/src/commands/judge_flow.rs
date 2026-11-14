@@ -28,8 +28,9 @@ fn turns_flow(argv: &[String]) -> u8 {
     let log: Log<'_> = &stdout_log;
     let common = CliOptions { model: None, turns: None, judge: None, ..o.clone() };
     let p = super::paths_of(&o);
-    // TODO(段 5): acquireOutLock(jobs.ts)で out/ を排他する(serve の移植で足す)
     let r = (|| -> anyhow::Result<u8> {
+        // bundle → run → export の間ずっと印を持つ(中の run_command は印を取らない)
+        let _lock = crate::jobs::acquire_out_lock(&p.out, "turns", "cli")?;
         let mut t = o.turns.clone().expect("turns run");
         t.action = "bundle".into();
         t.unjudged = true;
@@ -74,8 +75,9 @@ pub fn main(argv: &[String]) -> u8 {
     // 判定の --model は判定モデルなので、bundle / build の絞り込みには使わない
     let common = CliOptions { model: None, judge: None, ..judge_opts.clone() };
     let p = super::paths_of(&judge_opts);
-    // TODO(段 5): bundle → judge run → export の間ずっと acquireOutLock(jobs.ts)の印を持つ(serve の移植で足す)
     let r = (|| -> anyhow::Result<u8> {
+        // bundle → judge run → export の間ずっと印を持つ(切れ目に画面の判定や atlas.bat の all が入らないように。中の run_command は印を取らない)
+        let _lock = crate::jobs::acquire_out_lock(&p.out, "judge", "cli")?;
         run_command(&CliOptions { command: "bundle".into(), ..common.clone() }, &p, log)?;
         let failed = match run_command(&judge_opts, &p, log) {
             Ok(r) => r.judge.map_or(0, |j| j.failed.len()),

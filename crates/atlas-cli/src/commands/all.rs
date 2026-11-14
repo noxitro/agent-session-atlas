@@ -57,8 +57,7 @@ fn ja_locale(iso: &str) -> String {
 }
 
 /// open の集計: 共有フォルダから写した後、前に集計したときから何も変わっていなければ(open_reuse.rs)、作り直さずにそのときのレポートを使う。
-/// 使い回したときは None(レポートは前のまま)。TODO(段 5): open を移すときに使う
-#[allow(dead_code)]
+/// 使い回したときは None(レポートは前のまま)
 pub fn run_all_or_reuse(o: &CliOptions, p: &Paths, built_file: &Path, log: Log<'_>) -> Result<Option<BuildResult>> {
     let t = Instant::now();
     run_snapshot(p, o.since.as_deref(), log, o.snapshot_all, o.snapshot_prune)?;
@@ -72,7 +71,7 @@ pub fn run_all_or_reuse(o: &CliOptions, p: &Paths, built_file: &Path, log: Log<'
         "anonymize": o.anonymize, "toolOutput": o.tool_output.as_str(), "maxChars": o.max_chars, "tempDirs": o.temp_dirs, "vcsMode": o.vcs_mode,
     });
     let code = atlas_report::build::code_stamp(Some(&REPO_ROOT.join("packages")))?;
-    let key = inputs_key(&ReusePaths { out: &p.out, snapshot: &p.snapshot, judgments: &p.judgments, turn_judgments: &p.turn_judgments, groups: &p.groups }, &options, &config_file, &code)?;
+    let key = inputs_key(&ReusePaths { snapshot: &p.snapshot, judgments: &p.judgments, turn_judgments: &p.turn_judgments, groups: &p.groups }, &options, &config_file, &code)?;
     let prev = read_built(built_file);
     // 使い回すのは、アップロードしたフォルダ(送った側が添えた記録だけで集計が決まる)のときだけ
     let layout = read_snapshot_manifest(&p.snapshot)?.and_then(|m| m.layout);

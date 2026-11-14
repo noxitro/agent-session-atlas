@@ -12,14 +12,13 @@ import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { sessionStoreRows, type SessionRecord, type SessionsFile, type SessionStoreJson } from '../packages/core/src/index.ts';
-import { buildFixtureHome, FAKE_SECRETS, P11_SESSION, ROOT, UNLISTED_VALUES } from './fixture-home.ts';
+import { buildFixtureHome, FAKE_SECRETS, P11_SESSION, ROOT, UNLISTED_VALUES, cliCommand } from './fixture-home.ts';
 
 const WORK = join(ROOT, 'out', 'e2e-phase15');
-const CLI = join(ROOT, 'packages', 'cli', 'src', 'main.ts');
 const GROUP = 'Player-Weapon';
 
 function atlas(args: string[], env: NodeJS.ProcessEnv = {}): { status: number | null; stdout: string; stderr: string; out: string } {
-  const r = spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8', cwd: ROOT, timeout: 600_000, env: { ...process.env, ...env } });
+  const r = spawnSync(...cliCommand(args), { encoding: 'utf8', cwd: ROOT, timeout: 600_000, env: { ...process.env, ...env } });
   // ログは標準出力、エラーは標準エラー。どちらに出ても見られるよう out に両方を入れる
   return { status: r.status, stdout: r.stdout, stderr: r.stderr, out: r.stdout + r.stderr };
 }

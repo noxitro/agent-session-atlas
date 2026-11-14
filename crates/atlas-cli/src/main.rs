@@ -4,17 +4,16 @@ mod args;
 mod chat_parts;
 mod commands;
 mod config;
-// 段 5(serve の画面・open)が使う関数を含む。今はまだ呼ばれないものがある
-#[allow(dead_code)]
 mod folder_picker;
-#[allow(dead_code)]
 mod folders;
+mod group_export;
 mod group_upload;
 mod jobs;
 mod m365;
 mod open_reuse;
 mod paths;
 mod self_update;
+mod serve;
 mod setup;
 mod sys;
 mod tables;
