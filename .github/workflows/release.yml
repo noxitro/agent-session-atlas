@@ -1,8 +1,11 @@
-# リリース: v<version> のタグを push すると、Windows 用の atlas.exe を作り、sha256 と一緒にそのタグの GitHub Release に付ける。
-# 利用者の起動用の .bat(scripts/ensure-atlas.ps1)は、チェックアウトの Cargo.toml の version と同じ v<version> のリリースから
-# atlas.exe と atlas.exe.sha256 を取ってきて照らし合わせる。タグの版と Cargo.toml の version が違えば止める。
-# 手順は docs/development.md の「リリース」(Cargo.toml の version を上げてコミット → v<version> のタグ → タグを push)。
-# 作り直すときは、Actions の画面からタグを指定して動かす(workflow_dispatch。同じ名前のファイルは置き換える)。
+# リリース: main に入ったコミットの Cargo.toml の version に、まだリリース v<version> が無ければ、Windows 用の atlas.exe を作り、
+# sha256 と一緒にリリース v<version> を作って付ける(タグ v<version> もこのとき、そのコミットに付く)。手でタグを push しなくてよい。
+# 版を上げていないコミット(リリースがもうある)では、確かめるだけですぐ終わる。
+# マージはこのワークフローを待たない(マージの条件は CI の ci-ok だけ)。版を上げたコミットからリリースができるまでの間に git pull した利用者は、
+# 起動用の .bat(scripts/ensure-atlas.ps1 -KeepOlder)が今ある atlas.exe のまま続け、次に開いたときに取り直す。
+# 利用者の起動用の .bat は、チェックアウトの Cargo.toml の version と同じ v<version> のリリースから atlas.exe と atlas.exe.sha256 を取ってきて照らし合わせる。
+# 手順は docs/development.md の「リリース」(Cargo.toml の version を上げる PR を main に入れるだけ)。
+# 失敗したときや作り直すときは、Actions の画面からタグを指定して動かす(workflow_dispatch。タグが要る。同じ名前のファイルは置き換える)。
 # atlas.exe には GitHub の artifact attestation(ビルドの来歴。Sigstore で署名され、どのリポジトリ・ワークフロー・コミットで
 # 作ったかを示す)も付ける。利用者は gh attestation verify で確かめられる(ensure-atlas.ps1 は gh があれば確かめる。README)。
 # 既定の機能だけでビルドする(従量課金の API を直接呼ぶ anthropic-backend は入れない)。
@@ -11,7 +14,7 @@ name: Release
 
 on:
   push:
-    tags: ['v*']
+    branches: [main]
   workflow_dispatch:
     inputs:
       tag:
@@ -21,16 +24,62 @@ on:
 permissions:
   contents: read
 
+# 同じリリースを 2 回作らないよう、1 本ずつ動かす(後から来たものは、前のものがリリースを作った後に「もうある」で終わる)
 concurrency:
-  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  group: release
   cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: never
 
 jobs:
+  plan:
+    name: 作るリリースを決める
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.plan.outputs.tag }}
+      ref: ${{ steps.plan.outputs.ref }}
+      build: ${{ steps.plan.outputs.build }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.inputs.tag || github.sha }}
+          persist-credentials: false
+      - id: plan
+        name: Cargo.toml の version と、リリースがもうあるか
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          version=$(awk '/^\[workspace\.package\]/{s=1;next} /^\[/{s=0} s && /^version *=/{gsub(/.*= *"|".*/,"");print;exit}' Cargo.toml)
+          test -n "$version"
+          if [ -n "$INPUT_TAG" ]; then
+            # 作り直す: タグのコミットの version とタグが同じでなければ止める
+            echo "Cargo.toml: $version / タグ: $INPUT_TAG"
+            test "v$version" = "$INPUT_TAG"
+            { echo "tag=$INPUT_TAG"; echo "ref=$INPUT_TAG"; echo "build=true"; } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          tag="v$version"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "リリース $tag はもうあります(版を上げていないコミット)。作りません"
+            { echo "tag=$tag"; echo "build=false"; } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # リリースが無いのにタグだけある(手で付けた・前の実行が途中で止まった)。別のコミットを指していれば、黙って作らずに止める
+          if tagged=$(gh api "repos/$GITHUB_REPOSITORY/commits/$tag" --jq .sha 2>/dev/null) && [ "$tagged" != "$GITHUB_SHA" ]; then
+            echo "::error::タグ $tag が別のコミット($tagged)を指していて、リリースがありません。version を上げるか、Actions の画面からタグ $tag を指定して作り直してください"
+            exit 1
+          fi
+          echo "リリース $tag を $GITHUB_SHA から作ります"
+          { echo "tag=$tag"; echo "ref=$GITHUB_SHA"; echo "build=true"; } >> "$GITHUB_OUTPUT"
+
   windows:
     name: atlas.exe(Windows)
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
     runs-on: windows-latest
     timeout-minutes: 40
     # リリースを作ってファイルを付けるので、このジョブだけ書き込める。id-token と attestations は来歴(attestation)の署名と保存に使う
@@ -39,11 +88,11 @@ jobs:
       id-token: write
       attestations: write
     env:
-      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      TAG: ${{ needs.plan.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ env.TAG }}
+          ref: ${{ needs.plan.outputs.ref }}
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -55,18 +104,12 @@ jobs:
           rustup toolchain install stable --profile minimal --no-self-update
           rustup default stable
           rustc --version
-      - name: タグと Cargo.toml の version が同じか
-        shell: bash
-        run: |
-          version=$(awk '/^\[workspace\.package\]/{s=1;next} /^\[/{s=0} s && /^version *=/{gsub(/.*= *"|".*/,"");print;exit}' Cargo.toml)
-          echo "Cargo.toml: $version / タグ: $TAG"
-          test "v$version" = "$TAG"
       - run: npm ci
       - run: npm run build:report
       - name: atlas.exe をビルドする
         shell: bash
         env:
-          # 画面のテンプレートが無ければ止める。--version に出すコミットはタグのもの
+          # 画面のテンプレートが無ければ止める。--version に出すコミットはビルドしたもの
           ATLAS_REQUIRE_TEMPLATE: '1'
         run: |
           ATLAS_BUILD_COMMIT=$(git rev-parse HEAD)
@@ -90,8 +133,16 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REF: ${{ needs.plan.outputs.ref }}
         run: |
-          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" --notes "Windows 用の atlas.exe と、その sha256(atlas.exe.sha256)。起動用の .bat が自動で取ってきます。"
+          notes="Windows 用の atlas.exe と、その sha256(atlas.exe.sha256)。起動用の .bat が自動で取ってきます。"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$TAG" dist/atlas.exe dist/atlas.exe.sha256 --repo "$GITHUB_REPOSITORY" --clobber
+          elif [ "$REF" = "$TAG" ]; then
+            # 作り直し(タグはある)
+            gh release create "$TAG" dist/atlas.exe dist/atlas.exe.sha256 --repo "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" --notes "$notes"
+          else
+            # main に入ったコミットにタグを付けて作る。ファイルを付けるときは、下書きで作ってファイルを上げてから公開するので、
+            # ファイルの無いリリースを利用者が取りに行くことはない
+            gh release create "$TAG" dist/atlas.exe dist/atlas.exe.sha256 --repo "$GITHUB_REPOSITORY" --target "$REF" --title "$TAG" --notes "$notes"
           fi
-          gh release upload "$TAG" dist/atlas.exe dist/atlas.exe.sha256 --repo "$GITHUB_REPOSITORY" --clobber

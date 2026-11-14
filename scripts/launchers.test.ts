@@ -92,7 +92,7 @@ describe('*.bat', () => {
   it.each(BATS)('%s は最初に scripts\\ensure-atlas.ps1 を動かし、失敗したら止まる。node と npm は呼ばない', (f) => {
     const lines = codeLines(f);
     const i = lines.findIndex((l) => /ensure-atlas\.ps1/i.test(l));
-    expect(lines[i]).toBe('powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\ensure-atlas.ps1');
+    expect(lines[i]).toBe('powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\ensure-atlas.ps1 -KeepOlder');
     expect(lines.slice(i + 1, i + 5)).toEqual(['if errorlevel 1 (', 'echo.', 'pause', 'exit /b 1']);
     expect(lines.findIndex((l) => /^bin\\atlas\.exe\b/i.test(l))).toBeGreaterThan(i);
     expect(lines.filter((l) => /^(where )?node\b|\bnpm\b|deps-fresh|packages\\cli/i.test(l))).toEqual([]);
