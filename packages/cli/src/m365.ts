@@ -33,6 +33,9 @@ export interface M365Request {
 /** 画面を操作して 1 ファイルを判定させ、返答を outFile に書く。失敗は例外(理由はそのまま利用者に出す) */
 export type M365Driver = (req: M365Request) => Promise<void>;
 
+/** やり直しても同じ失敗(M365 Copilot の画面が無いなど)。残りのファイルを送らずに止まる */
+export class M365FatalError extends Error {}
+
 /** m365-uia.ps1 を Windows PowerShell で動かす */
 export const powershellDriver: M365Driver = (req) =>
   new Promise((resolvePromise, reject) => {
@@ -65,8 +68,10 @@ export const powershellDriver: M365Driver = (req) =>
     child.on('close', (code) => {
       clearTimeout(timer);
       if (buf) onLine(buf);
-      if (code === 0) resolvePromise();
-      else reject(new Error(error || stderr.trim().split('\n').slice(-3).join(' / ') || `画面の操作が終了コード ${code} で止まりました`));
+      if (code === 0) return resolvePromise();
+      const message = error || stderr.trim().split('\n').slice(-3).join(' / ') || `画面の操作が終了コード ${code} で止まりました`;
+      // 終了コード 3 は画面が見つからないとき(やり直しても同じ)
+      reject(code === 3 ? new M365FatalError(message) : new Error(message));
     });
   });
 
@@ -85,6 +90,8 @@ export interface M365Options {
   /** 送るファイルの数の上限(null は全部) */
   limit: number | null;
   timeoutSec: number;
+  /** 画面の操作が途中で崩れたとき、同じファイルを新しいチャットでやり直す回数(既定 2) */
+  retries?: number;
 }
 
 export interface M365Summary {
@@ -99,7 +106,7 @@ export interface M365Summary {
   stopped: boolean;
 }
 
-export async function runM365Judge(p: M365Paths, o: M365Options, log: (msg: string) => void, driver: M365Driver = powershellDriver, platform: NodeJS.Platform = process.platform): Promise<M365Summary> {
+export async function runM365Judge(p: M365Paths, o: M365Options, log: (msg: string) => void, driver: M365Driver = powershellDriver, platform: NodeJS.Platform = process.platform, pause: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms))): Promise<M365Summary> {
   if (platform !== 'win32') throw new Error('M365 Copilot の自動操作は Windows でだけ使えます(ほかの OS では、添付ファイルを手で渡してください)');
   const label = o.target === 'turns' ? '依頼' : 'セッション';
   const info = await listChatParts(p.out, o.target);
@@ -129,13 +136,30 @@ export async function runM365Judge(p: M365Paths, o: M365Options, log: (msg: stri
       await rm(reply, { force: true });
       log(`m365: [${i + 1}/${todo.length}] ${name}(${label} ${part.sessions - part.judged} 件が未判定)を送ります`);
       summary.attempted++;
-      try {
-        await driver({ attach, prompt: CHAT_REQUEST, model: o.model, timeoutSec: o.timeoutSec, outFile: reply, onProgress: (m) => log(`m365:   ${m}`) });
-      } catch (e) {
+      // 利用者がほかのアプリで作業していると、画面の操作が途中で崩れることがある。新しいチャットからやり直す(画面が無いときはやり直さない)
+      const tries = 1 + Math.max(0, o.retries ?? 2);
+      let failure: Error | null = null;
+      for (let t = 1; t <= tries; t++) {
+        if (t > 1) {
+          log(`m365:   ${name} をやり直します(${t}/${tries} 回目)`);
+          await pause(5000);
+          await rm(reply, { force: true });
+        }
+        try {
+          await driver({ attach, prompt: CHAT_REQUEST, model: o.model, timeoutSec: o.timeoutSec, outFile: reply, onProgress: (m) => log(`m365:   ${m}`) });
+          failure = null;
+          break;
+        } catch (e) {
+          failure = e as Error;
+          if (e instanceof M365FatalError) break;
+          if (t < tries) log(`m365:   画面の操作が崩れました: ${failure.message}`);
+        }
+      }
+      if (failure) {
         // 画面の状態が分からないので、残りは送らない
-        summary.failed.push({ name, reason: (e as Error).message });
+        summary.failed.push({ name, reason: failure.message });
         summary.stopped = todo.length > i + 1;
-        log(`m365: ${name} で画面の操作が止まりました: ${(e as Error).message}`);
+        log(`m365: ${name} で画面の操作が止まりました: ${failure.message}`);
         break;
       }
       // 画面から読んだ文字はコードブロックの囲みが無く、行番号とボタンの名前が混じる。組み立て直したものを残して取り込む(読んだままの文字も残す)
@@ -209,7 +233,8 @@ export function cleanCopilotReply(text: string): string {
       k++;
       const body: string[] = [];
       while (k < lines.length && !ends(lines[k])) body.push(lines[k++]);
-      code.push(indent + body.join(''));
+      // 画面のコードには、ノーブレークスペース(U+00A0)だけの行が混じることがある。JSON の空白として読めないので普通の空白にする
+      code.push((indent + body.join('')).replace(/ /g, ' '));
       n++;
     }
     out.push(`\`\`\`${lang}`, ...code, '```');
