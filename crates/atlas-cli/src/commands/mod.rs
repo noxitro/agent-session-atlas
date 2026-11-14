@@ -6,6 +6,9 @@ use crate::paths::{resolve_paths, PathInputs, Paths};
 use anyhow::Result;
 use std::path::PathBuf;
 
+mod extract;
+mod snapshot;
+
 /// 進み具合を 1 行ずつ出す先(TS 版の Log)
 pub type Log<'a> = &'a (dyn Fn(&str) + Sync);
 
@@ -52,8 +55,14 @@ pub fn run(o: &CliOptions, log: Log<'_>) -> Result<RunResult> {
 pub fn run_command(o: &CliOptions, p: &Paths, log: Log<'_>) -> Result<RunResult> {
     let _ = (p, log);
     match o.command.as_str() {
-        "snapshot" => Err(not_ported("snapshot")),
-        "extract" => Err(not_ported("extract")),
+        "snapshot" => {
+            snapshot::run_snapshot(p, o.since.as_deref(), log, o.snapshot_all, o.snapshot_prune)?;
+            Ok(RunResult::of(p))
+        }
+        "extract" => {
+            extract::run_extract(p, o.since.as_deref(), log, o.temp_dirs.as_deref(), o.config.as_deref())?;
+            Ok(RunResult::of(p))
+        }
         "metrics" => Err(not_ported("metrics")),
         "vcs" => Err(not_ported("vcs")),
         "build" | "export" => Err(not_ported(&o.command)),

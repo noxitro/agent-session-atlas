@@ -20,10 +20,31 @@ fn write_js_number<W: ?Sized + Write>(writer: &mut W, value: f64) -> io::Result<
     writer.write_all(buf.format_finite(value).as_bytes())
 }
 
+/// 文字列の中身を書く。サロゲートの片割れ(js.rs が私用領域の文字 U+10F800〜U+10FFFF で持つもの)は、JS と同じく `\udXXX` に戻す
+fn write_js_fragment<W: ?Sized + Write>(writer: &mut W, fragment: &str) -> io::Result<()> {
+    let bytes = fragment.as_bytes();
+    // U+10F800〜U+10FFFF は UTF-8 で F4 8F から始まる
+    if memchr::memchr(0xF4, bytes).is_none() {
+        return writer.write_all(bytes);
+    }
+    let mut last = 0;
+    for (i, c) in fragment.char_indices() {
+        if let Some(u) = crate::js::lone_surrogate_unit(c) {
+            writer.write_all(&bytes[last..i])?;
+            write!(writer, "\\u{u:04x}")?;
+            last = i + c.len_utf8();
+        }
+    }
+    writer.write_all(&bytes[last..])
+}
+
 /// `JSON.stringify(v)` と同じ形(空白なし)
 pub struct JsCompact;
 
 impl Formatter for JsCompact {
+    fn write_string_fragment<W: ?Sized + Write>(&mut self, writer: &mut W, fragment: &str) -> io::Result<()> {
+        write_js_fragment(writer, fragment)
+    }
     fn write_f64<W: ?Sized + Write>(&mut self, writer: &mut W, value: f64) -> io::Result<()> {
         write_js_number(writer, value)
     }
@@ -42,6 +63,9 @@ impl<'a> JsPretty<'a> {
 }
 
 impl Formatter for JsPretty<'_> {
+    fn write_string_fragment<W: ?Sized + Write>(&mut self, writer: &mut W, fragment: &str) -> io::Result<()> {
+        write_js_fragment(writer, fragment)
+    }
     fn write_f64<W: ?Sized + Write>(&mut self, writer: &mut W, value: f64) -> io::Result<()> {
         write_js_number(writer, value)
     }

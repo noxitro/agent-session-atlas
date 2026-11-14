@@ -13,6 +13,7 @@ atlas-report = { version = "0.1.0", path = "../atlas-report" }
 axum = "0.8.9"
 chrono = "0.4.45"
 rayon = "1.12.0"
+regex = "1.13.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order", "float_roundtrip"] }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "fs", "process", "time", "sync", "signal"] }

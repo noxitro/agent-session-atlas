@@ -2,6 +2,7 @@
 
 mod args;
 mod commands;
+mod config;
 mod paths;
 
 use std::io::Write;
