@@ -2,7 +2,7 @@
 // 推論強度はリクエストごとに決まるが、効果の記録(セッションの判定・依頼の判定・残存・ツールの失敗)はセッションや依頼ごとにしか無い。
 // そこで、セッションの効果を、そのセッションのリクエストに占める モデル × 強度 の割合で按分して足す(1 セッションの重みの合計は 1)。
 // コスト(リクエスト・トークン・AIU)は按分せず、その モデル × 強度 のリクエストの実数を足す。
-import { OUTCOMES, type Outcome } from '../../../core/src/turns.ts';
+import { OUTCOMES, type Outcome } from '../shared/turns.ts';
 import { EFFORT_ORDER, orderBy } from './exec.ts';
 import { modelLabel } from './format.ts';
 import type { SessionSummary } from './types.ts';

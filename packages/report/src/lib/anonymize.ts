@@ -3,7 +3,7 @@
 // 伏せ字モードでは、依頼本文・セッション名・指示ファイルの見出しなどの自由記述は出さない
 // (本文中にどんな固有名が含まれるかを機械的に保証できないため)。
 // まとめたプロジェクト((ホーム)・(一時フォルダ)・(atlas の判定))は固有名を含まないので、そのまま出す。
-import { GROUPED_PROJECTS } from '../../../core/src/project-keys.ts';
+import { GROUPED_PROJECTS } from '../shared/project-keys.ts';
 
 export interface AnonSource {
   project: string;

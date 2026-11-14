@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { OUTCOMES } from '../../core/src/turns.ts';
+import { OUTCOMES } from '../src/shared/turns.ts';
 import { effortFindings, mean, modelValue, ratio } from '../src/lib/model-value.ts';
 import type { EffortTuple, JudgmentSummary, SessionSummary } from '../src/lib/types.ts';
 

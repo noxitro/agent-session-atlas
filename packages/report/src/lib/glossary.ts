@@ -1,5 +1,5 @@
 // 共有読者向けの用語説明。out/glossary.html(別ページ)に載せ、atlas.html と詳細ページからリンクする。
-import { FAILURE_CAUSES, FAILURE_CAUSE_HINTS, FAILURE_CAUSE_LABELS } from '../../../core/src/tool-failure.ts';
+import { FAILURE_CAUSES, FAILURE_CAUSE_HINTS, FAILURE_CAUSE_LABELS } from '../shared/tool-failure.ts';
 
 export type GroupId = 'units' | 'time' | 'records' | 'mechanics' | 'effort' | 'vcs' | 'insights';
 

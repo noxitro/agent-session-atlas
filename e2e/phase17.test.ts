@@ -8,12 +8,13 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { openReadOnly, type VcsRetentionFile } from '../packages/core/src/index.ts';
-import { extractEmbedded, type ReportData } from '../packages/report/src/index.ts';
-import { ROOT } from './fixture-home.ts';
+import { extractEmbedded } from '../packages/report/src/lib/embed.ts';
+import type { ReportData } from '../packages/report/src/lib/types.ts';
+import { ROOT, cliCommand } from './fixture-home.ts';
+import type { VcsRetentionFile } from './output-types.ts';
+import { openReadOnly } from './sqlite.ts';
 
 const WORK = join(ROOT, 'out', 'e2e-phase17');
-const CLI = join(ROOT, 'packages', 'cli', 'src', 'main.ts');
 const HOME = join(WORK, 'copilot-home');
 const OUT = join(WORK, 'out');
 const NOTES = join(WORK, 'notes');
@@ -31,7 +32,7 @@ function git(args: string[]): string {
 }
 
 function atlas(args: string[]): { status: number | null; out: string } {
-  const r = spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8', cwd: ROOT, timeout: 600_000 });
+  const r = spawnSync(...cliCommand(args), { encoding: 'utf8', cwd: ROOT, timeout: 600_000 });
   return { status: r.status, out: r.stdout + r.stderr };
 }
 

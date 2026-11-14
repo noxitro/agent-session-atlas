@@ -1,0 +1,24 @@
+
+/* 依頼ごとの経過: 詰まりのあった行に左の印、0 は薄く、依頼文は折り返して読ませる */
+.ledger.turns tr.stuck > :first-child{box-shadow:inset 3px 0 0 var(--warn)}
+.ledger.turns .zero{color:var(--ink-3)}
+.ledger.turns td.req{min-width:16em;max-width:32em;white-space:normal;overflow-wrap:anywhere}
+.ledger.turns .why{display:block;font-size:.6875rem;color:var(--ink-2);white-space:normal;min-width:12em}
+.ledger.turns td.st{white-space:nowrap;min-width:9em}
+/* このセッションの skill の表: 呼んだ行の名前を太く(使えただけの行と見分ける) */
+.ledger tr.called td:first-child{font-weight:600}
+.meta{display:flex;flex-wrap:wrap;gap:6px 8px;margin-top:8px}
+section h3{margin:14px 0 6px}
+h3.gap{margin-top:16px}
+.field .small{font-size:.875rem;font-weight:600;line-height:1.4}
+.tag.id{font-family:var(--mono);border-color:var(--rule);color:var(--ink-3)}
+.barcol{width:40%;min-width:80px}
+.bar{display:block;height:10px;background:var(--s1);min-width:2px}
+.kind{font-size:.75rem;color:var(--form);white-space:nowrap}
+tr.k-user td{background:var(--form-wash)}
+tr.k-error td,tr.k-abort td{background:var(--warn-wash)}
+blockquote.msg{margin:8px 0 0;padding:10px 12px;background:var(--surface);border:1px solid var(--rule);white-space:pre-wrap;overflow-wrap:anywhere;font-size:.8125rem;max-height:24em;overflow:auto}
+.two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}
+.three{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:24px}
+.three ul{overflow-wrap:anywhere}
+@media (max-width:720px){.two,.three{grid-template-columns:minmax(0,1fr)}}

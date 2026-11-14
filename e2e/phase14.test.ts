@@ -12,13 +12,12 @@ import { existsSync } from 'node:fs';
 import { readdir, readFile, rm, stat } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { SessionsFile } from '../packages/core/src/index.ts';
-import { startServe, type ServeHandle } from '../packages/cli/src/serve.ts';
-import { extractEmbedded, type ReportData } from '../packages/report/src/index.ts';
-import { buildFixtureHome, FIXTURE_CODE, P11_SESSION, ROOT } from './fixture-home.ts';
+import { extractEmbedded } from '../packages/report/src/lib/embed.ts';
+import type { ReportData } from '../packages/report/src/lib/types.ts';
+import type { SessionsFile } from '../packages/report/src/shared/types.ts';
+import { buildFixtureHome, FIXTURE_CODE, P11_SESSION, ROOT, cliCommand, startServer, type ServeHandle } from './fixture-home.ts';
 
 const WORK = join(ROOT, 'out', 'e2e-phase14');
-const CLI = join(ROOT, 'packages', 'cli', 'src', 'main.ts');
 const FAKE = join(FIXTURE_CODE, 'fake-copilot.mjs');
 
 async function listFiles(dir: string, skip: (rel: string) => boolean): Promise<Map<string, string>> {
@@ -50,10 +49,10 @@ describe('Phase 14 E2E: 画面からの操作(jobs)', () => {
   beforeAll(async () => {
     await rm(WORK, { recursive: true, force: true });
     ({ home, close } = await buildFixtureHome(join(WORK, 'home'), { phase11: true }));
-    const r = spawnSync(process.execPath, [CLI, 'all', '--home', home, '--out', out, '--notes-dir', notes], { cwd: ROOT, encoding: 'utf8', timeout: 300_000 });
+    const r = spawnSync(...cliCommand(['all', '--home', home, '--out', out, '--notes-dir', notes]), { cwd: ROOT, encoding: 'utf8', timeout: 300_000 });
     if (r.status !== 0) throw new Error(`atlas all が失敗: ${r.stderr}\n${r.stdout}`);
     // 子プロセスの all は --home を付けない(atlas.bat の serve と同じ形)ので、fixture の場所は環境変数で渡す
-    h = await startServe({
+    h = await startServer({
       outDir: out,
       notesDir: notes,
       groupsPath: join(notes, 'groups.json'),
@@ -255,7 +254,7 @@ describe('Phase 14 E2E: 画面からの操作(jobs)', () => {
   });
 
   it('d2. cancel は子プロセス(と孫の copilot)を本当に止める: 1 件 30 秒かかる判定を止めると数秒で終わる', async () => {
-    const h3 = await startServe({
+    const h3 = await startServer({
       outDir: out,
       notesDir: notes,
       groupsPath: join(notes, 'groups.json'),
@@ -288,7 +287,7 @@ describe('Phase 14 E2E: 画面からの操作(jobs)', () => {
   });
 
   it('e. ジョブの実行中は heartbeat が途切れてもサーバが止まらず、終わってから止まる', async () => {
-    const h2 = await startServe({
+    const h2 = await startServer({
       outDir: out,
       notesDir: notes,
       groupsPath: join(notes, 'groups.json'),

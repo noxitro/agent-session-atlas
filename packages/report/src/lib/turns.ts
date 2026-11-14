@@ -1,6 +1,6 @@
 // 依頼(ターン)単位の分析をレポートに載せる形(段階 1)。
 // 埋め込みは 1 ターン 1 つの数値の組(TurnTuple)にして小さくし、画面で絞り込みに合わせて工程別・依頼の種類別に集計し直す。
-// 分類の規則(工程・依頼の種類)と集計の足し方は core/src/turns.ts と同じものを使う。
+// 分類の規則(工程・依頼の種類)と集計の足し方は shared/turns.ts と同じものを使う(サーバーの側は crates/atlas-core/src/turns.rs)。
 import {
   addTurn,
   emptyTurnBucket,
@@ -11,8 +11,8 @@ import {
   type RequestKind,
   type TurnBucket,
   type TurnRow,
-} from '../../../core/src/turns.ts';
-import type { SessionRecord } from '../../../core/src/types.ts';
+} from '../shared/turns.ts';
+import type { SessionRecord } from '../shared/types.ts';
 
 /**
  * [工程, 依頼の種類, 次の依頼の種類(無ければ null), 実働 ms, ツール, 失敗, 拒否, 中断, エラー, うち利用上限, 文脈圧縮, 再編集, nano AIU, サブエージェント失敗, 編集]。

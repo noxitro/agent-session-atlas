@@ -1,0 +1,34 @@
+//! atlas-core: packages/core の移植(記録の写し・抽出・正規化・VCS 照合・集計)。
+//! 移植の方針は docs/rust-migration.md。
+
+pub mod ai_changes;
+pub mod atlas_build;
+pub mod atlas_version;
+pub mod classify;
+pub mod collate;
+pub mod desktop;
+pub mod event_types;
+pub mod events;
+pub mod extract;
+pub mod fs_retry;
+pub mod instructions;
+pub mod js;
+pub mod jsdate;
+pub mod jsfs;
+pub mod jsnum;
+pub mod json;
+pub mod metrics;
+pub mod nodepath;
+pub mod normalize;
+pub mod project;
+pub mod project_keys;
+pub mod snapshot;
+pub mod sqlite;
+pub mod tables;
+pub mod tool_failure;
+pub mod turns;
+pub mod types;
+pub mod vcs;
+pub mod vcs_retention;
+pub mod vcs_step;
+pub mod wiki;

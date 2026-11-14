@@ -13,14 +13,28 @@ import { readFile, readdir, mkdir, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { ATLAS_JUDGE_PROJECT, HOME_PROJECT, projectKey, TEMP_PROJECT, type MetricsFile, type SessionRecord, type SessionsFile } from '../packages/core/src/index.ts';
-import { aggregate, applyFilter, emptyFilter, extractEmbedded, type ReportData } from '../packages/report/src/index.ts';
-import { failureRate, unusedSkills } from '../packages/report/src/lib/aggregate.ts';
-import { buildFixtureHome, ROOT } from './fixture-home.ts';
+import { aggregate, failureRate, unusedSkills } from '../packages/report/src/lib/aggregate.ts';
+import { extractEmbedded } from '../packages/report/src/lib/embed.ts';
+import { applyFilter, emptyFilter } from '../packages/report/src/lib/filter.ts';
+import type { ReportData } from '../packages/report/src/lib/types.ts';
+import { ATLAS_JUDGE_PROJECT, HOME_PROJECT, TEMP_PROJECT } from '../packages/report/src/shared/project-keys.ts';
+import type { MetricsFile, SessionRecord, SessionsFile } from '../packages/report/src/shared/types.ts';
+import { buildFixtureHome, ROOT, cliCommand } from './fixture-home.ts';
+
+/**
+ * 統合する前のプロジェクトのキー(リポジトリ名、無ければ git のルートか作業フォルダのパス)。
+ * atlas の crates/atlas-core/src/normalize.rs の project_key と同じ決め方(\ 区切り・末尾の \ を落とす・ドライブ名は大文字)
+ */
+function projectKey(repository: string | null, gitRoot: string | null, cwd: string | null): string {
+  if (repository) return repository;
+  const p = gitRoot ?? cwd;
+  if (!p) return '(unknown)';
+  const n = p.replace(/\//g, '\\').replace(/\\+$/, '');
+  return /^[a-z]:/i.test(n) ? n[0].toUpperCase() + n.slice(1) : n;
+}
 
 const LIVE = process.env.ATLAS_LIVE === '1';
 const WORK = join(ROOT, 'out', 'e2e-phase6');
-const CLI = join(ROOT, 'packages', 'cli', 'src', 'main.ts');
 const LIMIT = 5 * 1024 * 1024;
 const id = (n: number): string => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const P6 = 'X:\\synthetic-p6';
@@ -47,7 +61,7 @@ async function gitFiles(repos: Record<string, string>): Promise<Record<string, {
 
 function atlas(args: string[]): { status: number | null; stdout: string; stderr: string; ms: number } {
   const t = performance.now();
-  const r = spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8', cwd: ROOT, timeout: 600_000 });
+  const r = spawnSync(...cliCommand(args), { encoding: 'utf8', cwd: ROOT, timeout: 600_000 });
   return { status: r.status, stdout: r.stdout, stderr: r.stderr, ms: performance.now() - t };
 }
 

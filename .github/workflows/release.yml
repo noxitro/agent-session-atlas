@@ -1,0 +1,88 @@
+# リリース: v<version> のタグを push すると、Windows 用の atlas.exe を作り、sha256 と一緒にそのタグの GitHub Release に付ける。
+# 利用者の起動用の .bat(scripts/ensure-atlas.ps1)は、チェックアウトの Cargo.toml の version と同じ v<version> のリリースから
+# atlas.exe と atlas.exe.sha256 を取ってきて照らし合わせる。タグの版と Cargo.toml の version が違えば止める。
+# 手順は docs/development.md の「リリース」(Cargo.toml の version を上げてコミット → v<version> のタグ → タグを push)。
+# 作り直すときは、Actions の画面からタグを指定して動かす(workflow_dispatch。同じ名前のファイルは置き換える)。
+# 外部の Action はコミット SHA で固定する(ci.yml と同じ)。Rust はランナーに入っている rustup で入れる。
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 作り直すリリースのタグ(例 v0.1.0)
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: never
+
+jobs:
+  windows:
+    name: atlas.exe(Windows)
+    runs-on: windows-latest
+    timeout-minutes: 40
+    # リリースを作ってファイルを付けるので、このジョブだけ書き込める
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TAG }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Rust を入れる
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          rustc --version
+      - name: タグと Cargo.toml の version が同じか
+        shell: bash
+        run: |
+          version=$(awk '/^\[workspace\.package\]/{s=1;next} /^\[/{s=0} s && /^version *=/{gsub(/.*= *"|".*/,"");print;exit}' Cargo.toml)
+          echo "Cargo.toml: $version / タグ: $TAG"
+          test "v$version" = "$TAG"
+      - run: npm ci
+      - run: npm run build:report
+      - name: atlas.exe をビルドする
+        shell: bash
+        env:
+          # 画面のテンプレートが無ければ止める。--version に出すコミットはタグのもの
+          ATLAS_REQUIRE_TEMPLATE: '1'
+        run: |
+          ATLAS_BUILD_COMMIT=$(git rev-parse HEAD)
+          export ATLAS_BUILD_COMMIT
+          cargo build --release --locked -p atlas-cli
+          mkdir -p dist
+          cp target/release/atlas.exe dist/atlas.exe
+          ./dist/atlas.exe --version
+          ./dist/atlas.exe --version | grep -q "^atlas ${TAG#v} ("
+      - name: sha256 を書く
+        shell: bash
+        working-directory: dist
+        run: |
+          sha256sum atlas.exe > atlas.exe.sha256
+          cat atlas.exe.sha256
+      - name: リリースに付ける
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" --notes "Windows 用の atlas.exe と、その sha256(atlas.exe.sha256)。起動用の .bat が自動で取ってきます。"
+          fi
+          gh release upload "$TAG" dist/atlas.exe dist/atlas.exe.sha256 --repo "$GITHUB_REPOSITORY" --clobber

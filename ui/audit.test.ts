@@ -6,10 +6,9 @@ import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { audit, summarize } from '../scripts/ui-audit.ts';
-import { buildFixtureHome, ROOT } from '../e2e/fixture-home.ts';
+import { buildFixtureHome, ROOT, cliCommand } from '../e2e/fixture-home.ts';
 
 const WORK = join(ROOT, 'out', 'ui-audit');
-const CLI = join(ROOT, 'packages', 'cli', 'src', 'main.ts');
 
 const page = (body: string, head = ''): string => `<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>t</title><style>body{margin:0;background:#fff;color:#111;font:16px sans-serif}${head}</style></head><body><h1>見出し</h1>${body}</body></html>`;
 
@@ -149,7 +148,7 @@ describe('網羅チェック', () => {
     let home: string;
     ({ home, close } = await buildFixtureHome(join(WORK, 'home')));
     const out = join(WORK, 'out');
-    const res = spawnSync(process.execPath, [CLI, 'all', '--home', home, '--out', out, '--notes-dir', join(WORK, 'notes')], { cwd: ROOT, encoding: 'utf8', timeout: 120_000 });
+    const res = spawnSync(...cliCommand(['all', '--home', home, '--out', out, '--notes-dir', join(WORK, 'notes')]), { cwd: ROOT, encoding: 'utf8', timeout: 120_000 });
     expect(res.status, res.stderr).toBe(0);
     const r = await audit(out, { layoutSessions: 6 });
     expect(r.pages).toBeGreaterThan(4);

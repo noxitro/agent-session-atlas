@@ -3,11 +3,13 @@
 // session-store.db は別プロセスの書き手が WAL モード(自動チェックポイント無効)で作る。
 // → 実環境と同じく本体 + -wal + -shm が並び、行は WAL にだけある状態になる。
 import { spawn } from 'node:child_process';
+import { createServer, type Server } from 'node:http';
+import { existsSync } from 'node:fs';
 import { appendFile, cp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { openWritable, type Database } from '../packages/core/src/sqlite.ts';
 import { FIXTURES_DIR } from '../scripts/synthetic-fixtures.ts';
+import { openWritable, type Database } from './sqlite.ts';
 
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 /** 生成した fixture のデータ(.fixtures/) */
@@ -256,6 +258,184 @@ export async function addPhase12Fixtures(home: string): Promise<void> {
       [`id: ${id}`, 'cwd: X:\\synthetic-p12', 'git_root: X:\\synthetic-p12', 'repository: zz-owner/zz-p12', 'host_type: github', 'branch: main', 'client_name: github/cli', `name: "合成 P12 ${i + 1}"`, 'user_named: false', `created_at: ${ts(0)}`, `updated_at: ${ts(k)}`, ''].join('\n'),
     );
   }
+}
+
+// ---------- atlas の実行ファイル ----------
+// e2e と画面のテストは atlas の実行ファイル(Rust 版)を動かす。サーバも別のプロセス(atlas serve)として動かし、
+// テスト用の設定は環境変数で渡す(docs/rust-migration.md の「確かめ方」)。
+
+const EXE = process.platform === 'win32' ? 'atlas.exe' : 'atlas';
+
+/**
+ * テストで動かす atlas の実行ファイル。環境変数 ATLAS_CLI → bin/atlas(.exe)(起動用の .bat が置くもの)→ target/release → target/debug の順に探す。
+ * どれも無ければ止める
+ */
+export function resolveAtlasCli(): string {
+  const env = process.env.ATLAS_CLI;
+  if (env) {
+    if (!existsSync(env)) throw new Error(`ATLAS_CLI の実行ファイルがありません: ${env}`);
+    return resolve(env);
+  }
+  const candidates = [join(ROOT, 'bin', EXE), join(ROOT, 'target', 'release', EXE), join(ROOT, 'target', 'debug', EXE)];
+  const found = candidates.find((p) => existsSync(p));
+  if (!found) {
+    throw new Error(
+      `atlas の実行ファイルが見つかりません(${candidates.join('、')})。npm run build:report の後に cargo build --release -p atlas-cli を実行するか、環境変数 ATLAS_CLI で指定してください`,
+    );
+  }
+  return found;
+}
+
+let atlasCli_: string | null = null;
+/** テストで動かす atlas の実行ファイル(最初に使うときに 1 度だけ探す。fixture の書き手のプロセスでは探さない) */
+export function atlasCli(): string {
+  return (atlasCli_ ??= resolveAtlasCli());
+}
+
+/** CLI の入口。main は atlas のコマンド、ほかはサブコマンド(起動用の .bat から呼ぶもの) */
+export type CliEntry = 'main' | 'judge-flow' | 'setup' | 'upload-project' | 'upload-schedule' | 'upload-auto';
+
+/** CLI を動かすコマンドと引数([コマンド, 引数])。spawn / spawnSync にそのまま渡す */
+export function cliCommand(args: string[], entry: CliEntry = 'main'): [string, string[]] {
+  return [atlasCli(), entry === 'main' ? args : [entry, ...args]];
+}
+
+/** startServer に渡す設定(atlas serve の引数と、テスト用の環境変数になるもの) */
+export interface ServeOptions {
+  outDir: string;
+  notesDir: string;
+  /** groups.json のパス(notesDir の直下だけ) */
+  groupsPath: string;
+  /** 0 なら空きポート */
+  port?: number;
+  /** 起動後に既定のブラウザで開く */
+  open?: boolean;
+  log?: (msg: string) => void;
+  /** 最後の heartbeat からこの時間で終了(ATLAS_SERVE_IDLE_MS) */
+  idleMs?: number;
+  /** 開いている画面がすべて bye を送ってから、この時間で終了(ATLAS_SERVE_BYE_GRACE_MS) */
+  byeGraceMs?: number;
+  /** 最初の heartbeat をこの時間待つ(ATLAS_SERVE_FIRST_HEARTBEAT_MS) */
+  firstHeartbeatMs?: number;
+  /** メモの画像 1 枚の上限(ATLAS_SERVE_MEMO_IMAGE_LIMIT) */
+  memoImageLimit?: number;
+  /** ジョブ(画面からの処理)に足す環境変数 */
+  jobs?: { env?: NodeJS.ProcessEnv };
+  /** 設定ファイル */
+  configPath?: string;
+  /** フォルダを選ぶ画面とエクスプローラーで開く操作の差し替え(テストの側に小さなサーバを立てて、atlas から尋ねさせる) */
+  folders?: { canPick?: boolean; pick?: (title: string, initial: string | null) => Promise<string | null>; open?: (dir: string) => void };
+  /** Copilot のデータの場所(ATLAS_COPILOT_HOME) */
+  copilotHome?: string;
+  /** 応答の x-atlas-code で返す版の目印(ATLAS_SERVE_CODE_STAMP)。null なら返さない(目印を返す前の古いサーバの代わり) */
+  codeStamp?: string | null;
+}
+
+export interface ServeHandle {
+  port: number;
+  url: string;
+  token: string;
+  /** 終了したときに解決する(理由つき) */
+  done: Promise<string>;
+  close(reason?: string): Promise<void>;
+}
+
+/**
+ * atlas serve を別のプロセスで動かし、起動を待って handle を返す。
+ * フォルダを選ぶ画面とエクスプローラーで開く操作の差し替えは、テストの側に小さなサーバを立てて atlas から尋ねさせる(ATLAS_TEST_HOOK_URL)
+ */
+export async function startServer(o: ServeOptions): Promise<ServeHandle> {
+  if (resolve(o.groupsPath) !== resolve(join(o.notesDir, 'groups.json'))) throw new Error('startServer: groups.json は notesDir の直下だけです');
+  const env: NodeJS.ProcessEnv = { ...process.env, ...o.jobs?.env };
+  const ms = (k: string, v: number | undefined): void => {
+    if (v !== undefined) env[k] = String(v);
+  };
+  ms('ATLAS_SERVE_IDLE_MS', o.idleMs);
+  ms('ATLAS_SERVE_BYE_GRACE_MS', o.byeGraceMs);
+  ms('ATLAS_SERVE_FIRST_HEARTBEAT_MS', o.firstHeartbeatMs);
+  ms('ATLAS_SERVE_MEMO_IMAGE_LIMIT', o.memoImageLimit);
+  if (o.codeStamp !== undefined) env.ATLAS_SERVE_CODE_STAMP = o.codeStamp ?? 'null';
+  if (o.copilotHome) env.ATLAS_COPILOT_HOME = o.copilotHome;
+  if (o.folders?.canPick !== undefined) env.ATLAS_SERVE_CAN_PICK = o.folders.canPick ? '1' : '0';
+  let hook: Server | null = null;
+  if (o.folders?.pick || o.folders?.open) {
+    const f = o.folders;
+    hook = createServer((req, res) => {
+      let body = '';
+      req.setEncoding('utf8');
+      req.on('data', (c: string) => (body += c));
+      req.on('end', () => {
+        void (async () => {
+          const j = JSON.parse(body || '{}') as { title?: string; initial?: string | null; dir?: string };
+          if (req.url === '/pick') {
+            const path = f.pick ? await f.pick(j.title ?? '', j.initial ?? null) : null;
+            res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ path }));
+          } else {
+            f.open?.(j.dir ?? '');
+            res.writeHead(200, { 'content-type': 'application/json' }).end('{}');
+          }
+        })().catch((e: unknown) => res.writeHead(500).end(String(e)));
+      });
+    });
+    await new Promise<void>((ok) => hook!.listen(0, '127.0.0.1', () => ok()));
+    env.ATLAS_TEST_HOOK_URL = `http://127.0.0.1:${(hook.address() as { port: number }).port}`;
+  }
+  // atlas serve は、同じ出力先で動いているサーバがあれば開くだけにするので、前のテストの印を外してから起動する
+  await rm(join(o.outDir, '.serve.json'), { force: true });
+  const args = ['serve', '--out', o.outDir, '--notes-dir', o.notesDir, '--port', String(o.port ?? 0), ...(o.open === false ? ['--no-open'] : []), ...(o.configPath ? ['--config', o.configPath] : [])];
+  const child = spawn(atlasCli(), args, { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const log = o.log ?? (() => {});
+  let reason: string | null = null;
+  let closing: string | null = null;
+  const exited = new Promise<void>((r) => child.once('exit', () => r()));
+  let rest = '';
+  let started!: (port: number) => void;
+  let failed!: (e: Error) => void;
+  const ready = new Promise<number>((ok, ng) => ((started = ok), (failed = ng)));
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', (d: string) => {
+    const lines = (rest + d).split(/\r?\n/);
+    rest = lines.pop() ?? '';
+    for (const l of lines) {
+      const m = /^serve: http:\/\/127\.0\.0\.1:(\d+)\/atlas\.html/.exec(l);
+      if (m) started(Number(m[1]));
+      const end = /^serve: 終了\((.*)\)$/.exec(l);
+      if (end) reason = end[1];
+      log(l);
+    }
+  });
+  let stderr = '';
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', (d: string) => (stderr += d));
+  void exited.then(() => {
+    hook?.close();
+    failed(new Error(`atlas serve が起動前に終わりました: ${stderr}`));
+  });
+  const port = await ready;
+  const url = `http://127.0.0.1:${port}/atlas.html`;
+  const page = await (await fetch(url)).text();
+  const token = /<meta name="atlas-token" content="([^"]*)"/.exec(page)?.[1] ?? '';
+  const done = exited.then(() => closing ?? reason ?? '停止');
+  return {
+    port,
+    url,
+    token,
+    done,
+    async close(r = '停止') {
+      if (child.exitCode !== null || closing) return void (await exited);
+      closing = r;
+      child.kill();
+      await exited;
+      // 止めたプロセスは後始末をしないので、.serve.json と自分の実行中の印を消す
+      await rm(join(o.outDir, '.serve.json'), { force: true });
+      try {
+        const j = JSON.parse(await readFile(join(o.outDir, '.job.json'), 'utf8')) as { pid?: number };
+        if (j.pid === child.pid) await rm(join(o.outDir, '.job.json'), { force: true });
+      } catch {
+        /* 印が無い */
+      }
+    },
+  };
 }
 
 const THIS_FILE = fileURLToPath(import.meta.url);

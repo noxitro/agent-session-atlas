@@ -16,3 +16,9 @@ atlas-notes/
 
 # impeccable critique のスナップショット(実データの件数を含むのでコミットしない)
 .impeccable/critique/
+
+# Rust のビルド出力
+/target/
+
+# atlas の実行ファイル(scripts/ensure-atlas.ps1 がリリースから取ってくるか、この PC でビルドして置く)
+/bin/

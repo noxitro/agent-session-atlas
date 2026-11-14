@@ -11,20 +11,21 @@ import { existsSync } from 'node:fs';
 import { cp, mkdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { sessionStoreRows, type SessionRecord, type SessionsFile, type SessionStoreJson } from '../packages/core/src/index.ts';
-import { folderPaths, foldersRootOf } from '../packages/cli/src/folders.ts';
-import { extractEmbedded } from '../packages/report/src/index.ts';
-import { buildFixtureHome, ROOT } from './fixture-home.ts';
+import type { SessionRecord, SessionsFile } from '../packages/report/src/shared/types.ts';
+import type { SessionStoreJson } from './output-types.ts';
+import { hasUsageRows } from './sqlite.ts';
+import { extractEmbedded } from '../packages/report/src/lib/embed.ts';
+import { buildFixtureHome, ROOT, cliCommand } from './fixture-home.ts';
+import { folderPaths, foldersRootOf } from './folders.ts';
 
 const WORK = join(ROOT, 'out', 'e2e-phase16');
-const CLI = join(ROOT, 'packages', 'cli', 'src', 'main.ts');
 const GROUP_A = 'Read-Side-A';
 const GROUP_B = 'Read-Side-B';
 /** 作業フォルダの .git/config からプロジェクト名が決まるセッション(ログに repository の記録が無い) */
 const GIT_SESSION = '00000000-0000-4000-8000-000000160001';
 
 function atlas(args: string[]): { status: number | null; out: string } {
-  const r = spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8', cwd: ROOT, timeout: 600_000 });
+  const r = spawnSync(...cliCommand(args), { encoding: 'utf8', cwd: ROOT, timeout: 600_000 });
   return { status: r.status, out: r.stdout + r.stderr };
 }
 
@@ -41,7 +42,7 @@ const tokens = (ss: SessionRecord[]): number => ss.reduce((n, s) => n + (s.token
 
 /** atlas open を起動し、サーバが応え始めるまで待つ。返すのは、それまでの出力と、止める関数 */
 async function openUntilServing(args: string[]): Promise<{ url: string; output: () => string; pid: number | undefined; stop: () => Promise<void> }> {
-  const child = spawn(process.execPath, [CLI, 'open', ...args], { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(...cliCommand(['open', ...args]), { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] });
   let output = '';
   child.stdout.on('data', (d) => (output += String(d)));
   child.stderr.on('data', (d) => (output += String(d)));
@@ -112,8 +113,7 @@ describe('Phase 16 E2E: アップロード先から集計し直す(読む側)', 
     for (const x of original.sessions) {
       if (ids.length === 2) break;
       if (x.sources.length !== 2 || !existsSync(join(out1, 'snapshot', 'session-state', x.id, 'events.jsonl'))) continue;
-      const rows = await sessionStoreRows(join(out1, 'snapshot', 'session-store.db'), x.id);
-      if (rows?.usage.length) ids.push(x.id);
+      if (await hasUsageRows(join(out1, 'snapshot', 'session-store.db'), x.id)) ids.push(x.id);
     }
     expect(ids).toHaveLength(2);
     other = original.sessions.find((x) => !ids.includes(x.id) && x.id !== GIT_SESSION && existsSync(join(out1, 'snapshot', 'session-state', x.id, 'events.jsonl')))!.id;

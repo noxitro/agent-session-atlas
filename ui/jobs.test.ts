@@ -15,11 +15,9 @@ import { pathToFileURL } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { shotOnFailure } from './failure-shot.ts';
-import { startServe, type ServeHandle } from '../packages/cli/src/serve.ts';
-import { buildFixtureHome, FIXTURE_CODE, ROOT } from '../e2e/fixture-home.ts';
+import { buildFixtureHome, FIXTURE_CODE, ROOT, cliCommand, startServer, type ServeHandle } from '../e2e/fixture-home.ts';
 
 const WORK = join(ROOT, 'out', 'ui-jobs');
-const CLI = join(ROOT, 'packages', 'cli', 'src', 'main.ts');
 const FAKE = join(FIXTURE_CODE, 'fake-copilot.mjs');
 const EVIL = '\n\n<script>window.__pwned = 1</script>\n\n<img src=x onerror="window.__pwned = 2">\n\n[危ない](javascript:window.__pwned=3)\n';
 
@@ -39,11 +37,11 @@ describe('画面からの操作(Phase 14)', () => {
     await rm(WORK, { recursive: true, force: true });
     let home: string;
     ({ home, close } = await buildFixtureHome(join(WORK, 'home'), { phase11: true }));
-    const r = spawnSync(process.execPath, [CLI, 'all', '--home', home, '--out', out, '--notes-dir', notes], { cwd: ROOT, encoding: 'utf8', timeout: 120_000 });
+    const r = spawnSync(...cliCommand(['all', '--home', home, '--out', out, '--notes-dir', notes]), { cwd: ROOT, encoding: 'utf8', timeout: 120_000 });
     expect(r.status, r.stderr).toBe(0);
     // 設定ファイルはテスト用の場所(リポジトリの atlas.config.json を読まない)。判定には自分の API キーのモデル(BYOK)を使う設定にする
     await writeFile(configPath, JSON.stringify({ judgeModel: 'anthropic/claude-sonnet-5-5' }));
-    server = await startServe({
+    server = await startServer({
       outDir: out,
       notesDir: notes,
       groupsPath: join(notes, 'groups.json'),

@@ -13,7 +13,7 @@ import {
   type Phase,
   type RequestKind,
   type TurnBucket,
-} from '../../../core/src/turns.ts';
+} from '../shared/turns.ts';
 import { fromTuple, type TurnTuple } from './turns.ts';
 
 export interface TurnVerdict {

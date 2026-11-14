@@ -2,25 +2,14 @@
 chcp 65001 >nul
 cd /d "%~dp0"
 
-where node >nul 2>nul
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ensure-atlas.ps1
 if errorlevel 1 (
-  echo Node.js が見つかりません。Node.js 24 以上をインストールしてください。
+  echo.
   pause
   exit /b 1
 )
 
-node scripts\deps-fresh.mjs
-if errorlevel 1 (
-  echo 依存を入れます: npm install を実行します...
-  call npm install
-  if errorlevel 1 (
-    echo npm install に失敗しました。
-    pause
-    exit /b 1
-  )
-)
-
-node packages\cli\src\upload-project.ts
+bin\atlas.exe upload-project
 set "code=%errorlevel%"
 echo. & pause & exit /b %code%
 
@@ -29,5 +18,5 @@ rem プロジェクトのセッションをまとめて送る: 集計し直し�
 rem (印が無ければ番号で選んだプロジェクト。複数選べる)のセッションの生ログを
 rem <送り先>\<プロジェクト名>\<セッション ID>\ に写します。送り先は一度選ぶと覚えます(atlas.config.json の uploadRoot。画面のアップロードと共通)
 rem 送る前に毎回、送り先・セッション数・大きさ・秘密らしい文字列を見せて確かめます。送り先はエクスプローラーで選びます
-rem 集計と送る操作は upload-project.ts が続けて行う。集計の経過はファイルに書き、注意と失敗の理由だけを窓に出す
+rem 集計と送る操作は atlas upload-project が続けて行う。集計の経過はファイルに書き、注意と失敗の理由だけを窓に出す
 rem 集計を別のプログラムにすると、集計を待つ間に押した Enter が、送る操作の最初の答えになるため

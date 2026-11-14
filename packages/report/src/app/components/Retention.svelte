@@ -1,7 +1,7 @@
 <script lang="ts">
   import { dateTime, dec, int, percent } from '../../lib/format.ts';
   import { aggregateRetention, DEFAULT_LAG_DAYS, measuredOf, median, MODE_LABEL, REASON_LABEL, REASONS, retentionByPhase, STATUS_LABEL, STATUSES, UNKNOWN_PHASE, VCS_LABEL, type RetentionMeta } from '../../lib/retention.ts';
-  import { PHASE_LABEL, PHASES } from '../../../../core/src/turns.ts';
+  import { PHASE_LABEL, PHASES } from '../../shared/turns.ts';
   import type { SessionSummary } from '../../lib/types.ts';
 
   let { sessions, meta }: { sessions: SessionSummary[]; meta: RetentionMeta } = $props();

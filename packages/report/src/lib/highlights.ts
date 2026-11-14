@@ -1,6 +1,6 @@
 // Phase 7: 要点欄。絞り込んだ集計から機械的に短い一覧を作る(LLM は使わない)。
 // 各項目は根拠のリンクを持つ: セッション詳細ページ(sessions/<id>.html)か、絞り込み状態の URL(#...)。
-import { FAILURE_CAUSE_LABELS, sortedCauses } from '../../../core/src/tool-failure.ts';
+import { FAILURE_CAUSE_LABELS, sortedCauses } from '../shared/tool-failure.ts';
 import { failureRate, unusedSkills, type UsageRanking } from './aggregate.ts';
 import { filterHref, type FilterState } from './filter.ts';
 import { date, dec, int, percent, truncate } from './format.ts';

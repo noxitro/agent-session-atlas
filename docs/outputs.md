@@ -7,10 +7,10 @@
 セッションの経過を 1 ファイルの Markdown にして、LLM に渡して振り返ったり、自分で経過を読んだりするための出力です。依頼文や応答がそのまま入るので、人に渡すなら `--anonymize` で作り、中身を確かめてからにしてください。集計と同じスナップショットから作り、LLM は呼びません。
 
 ```
-npm run atlas -- export                          # build と同じ絞り込みで、全セッションの .md を out/sessions/ に書く
-npm run atlas -- export --since 2026-10-01       # 期間で絞る(--project / --client / --model / --branch も同じ)
-npm run atlas -- export --tool-output all        # 成功したツールの結果も入れる(容量が数倍になる)
-npm run atlas -- export --anonymize              # 伏せ字版(下の注意を読んでください)
+bin\atlas.exe export                     # build と同じ絞り込みで、全セッションの .md を out/sessions/ に書く
+bin\atlas.exe export --since 2026-10-01  # 期間で絞る(--project / --client / --model / --branch も同じ)
+bin\atlas.exe export --tool-output all   # 成功したツールの結果も入れる(容量が数倍になる)
+bin\atlas.exe export --anonymize         # 伏せ字版(下の注意を読んでください)
 ```
 
 `atlas.bat`(`all`)は既定の中身(`--tool-output fail`、上限 20,000 字)で記録も作ります。`atlas.bat` から開いた詳細ページの「記録を読む」で、その場で読めます([screen.md の「画面からの操作」](screen.md#画面からの操作))。中身を変えたいとき(`--tool-output all`、`--max-chars`、伏せ字版の記録 `--anonymize`)は上のコマンドで作り直します。
@@ -32,7 +32,7 @@ npm run atlas -- export --anonymize              # 伏せ字版(下の注意を�
 - **秘密情報**: API キーやトークンらしい文字列(GitHub / OpenAI・Anthropic / AWS / Slack / Google のキー、秘密鍵、JWT、Bearer)は形式で見つけて `[伏せました: 種類]` に置き換え、件数を記録の末尾と `export` のログに出します。形式で探しているだけなので偽陽性・見逃しがあります。本物が見つかったら元の記録(`~/.copilot`)にも残っているので鍵を作り直してください。共有する前に中身は必ず確認してください。
 - **伏せ字モード(`--anonymize`)の記録**は、プロジェクト名・パス・リポジトリ名・ブランチを仮名に、絶対パスを `<path>` に置き換え、ファイル一覧を出しません。ただし依頼文や応答などの自由記述は機械的に置き換えるだけなので、本文中の相対パス・ファイル名・人名などは残りえます。HTML の伏せ字版(本文を出さない)より弱い保証です。記録の先頭にもその注意を書きます。
 - スナップショットに `events.jsonl` が無いセッション(`session-store.db` にだけあるもの、`--since` で複製対象外だったもの)は、`sessions.json` に残る最初の依頼と最後の応答だけの記録になり、その旨を書きます。
-- `export` は `build` を含むので、レポートと詳細ページも作り直されます。逆に素の `build` を実行すると `.md` は消え、詳細ページのリンクも消えます(フィルタで減ったセッションの古い記録を残さないため)。`all`(`atlas.bat`・`npm run atlas`・画面の「集計し直す」)と判定(画面の「工数を判定する」・`npm run atlas:judge`)は記録も作るので消えません。伏せ字版(`--anonymize`)の `all` は記録を作りません。
+- `export` は `build` を含むので、レポートと詳細ページも作り直されます。逆に素の `build` を実行すると `.md` は消え、詳細ページのリンクも消えます(フィルタで減ったセッションの古い記録を残さないため)。`all`(`atlas.bat`・`bin\atlas.exe`・画面の「集計し直す」)と判定(画面の「工数を判定する」・`bin\atlas.exe judge-flow`)は記録も作るので消えません。伏せ字版(`--anonymize`)の `all` は記録を作りません。
 - 同じ目的の既存ツールとの関係: agent-toolkit の `copilot-session-export`(アプリの中から `/export` `/export-usage` でその場で書き出す)と `copilot-usage-export`(PowerShell だけで動く日次バッチ)は、1 セッションをその場で・自動で書き出すためのものです。atlas の `export` は、集計と同じ絞り込みと伏せ字でまとめて出すためのもので、節の構成は揃えていますが同じファイルにはなりません。
 
 ## 表(CSV)
@@ -71,8 +71,8 @@ AI がセッションの中で足した行が、その後の VCS(Git / SVN / Per
 出力データだけでローカルと同等の解析ができるようにするための出力です。**外部に出さない前提**で、原本の文字列をそのまま含みます。
 
 ```
-npm run atlas -- export --full                   # snapshot / extract 済みの状態から、全件の全文記録と coverage.json を書く
-npm run atlas -- snapshot --snapshot-all         # rewind-snapshots / 一覧に無いフォルダ / logs/ も写す
+bin\atlas.exe export --full            # snapshot / extract 済みの状態から、全件の全文記録と coverage.json を書く
+bin\atlas.exe snapshot --snapshot-all  # rewind-snapshots / 一覧に無いフォルダ / logs/ も写す
 ```
 
 1 セッションだけなら、`atlas.bat` から開いた詳細ページの「全文を作って読む」で、そのセッションの `out/full/<id>.md`(と `out/full/assets/<id>/`)だけを作ってその場で読めます。このときは `atlas.html`・詳細ページ・他のセッションの全文・`coverage.json` は作り直しません(網羅の検査は全件の `export --full` だけが書きます)。
@@ -108,7 +108,7 @@ npm run atlas -- snapshot --snapshot-all         # rewind-snapshots / 一覧に�
 ### スキルの下書き(`atlas skill-draft`、任意)
 
 ```
-npm run atlas -- skill-draft <番号>            # out/insights.json の候補の番号。--backend copilot-cli(既定)/ anthropic、--model、--timeout
+bin\atlas.exe skill-draft <番号>  # out/insights.json の候補の番号。--backend copilot-cli(既定)/ anthropic、--model、--timeout
 ```
 
 候補の繰り返し回数・代表の依頼文・ツールの並びを LLM に渡し、SKILL.md の形の下書きを `out/skill-drafts/<番号>-<名前>.md` に書きます。**明示したときだけ動き、`build` / `export` / `all` では呼びません**。費用は 1 回の実行で判定 1 件と同じです。`copilot-cli` はモデル 1 リクエスト相当の AI クレジット、`anthropic` は Anthropic API の従量課金(`ANTHROPIC_API_KEY` が必要)を消費します。`copilot-cli` は判定と同じ安全策(`--no-custom-instructions`、`shell` / `write` / `url` の拒否、`--add-dir` なし)で動きます。下書きの作業フォルダは判定と同じ接頭辞にしており、次回の集計では「(atlas の判定)」に分類されて候補に戻りません。テストは偽の CLI(`ATLAS_COPILOT_BIN`)と fetch の差し替えで行い、本物は呼びません。伏せ字版の `out/` では拒否します(本文が無いため)。下書きは案なので、使う前に読んで直してください。

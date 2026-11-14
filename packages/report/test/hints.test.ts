@@ -2,7 +2,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_TURN_LIMITS } from '../../judge/src/index.ts';
 import { judgeHint, refreshHint } from '../src/lib/hints.ts';
 
 describe('操作への案内', () => {
@@ -17,6 +16,10 @@ describe('操作への案内', () => {
 
   it('判定ダイアログの「約 N 回以上の判定」に使う塊の大きさは judge の chunkTurns と同じ', () => {
     const src = readFileSync(join(import.meta.dirname, '../src/app/components/JobActions.svelte'), 'utf8');
-    expect(Number(/const TURN_CHUNK = (\d+);/.exec(src)?.[1])).toBe(DEFAULT_TURN_LIMITS.chunkTurns);
+    // 判定の本体は Rust(crates/atlas-judge/src/turn_bundle.rs の DEFAULT_TURN_LIMITS)
+    const rust = readFileSync(join(import.meta.dirname, '../../../crates/atlas-judge/src/turn_bundle.rs'), 'utf8');
+    const chunkTurns = Number(/pub const DEFAULT_TURN_LIMITS: TurnLimits = TurnLimits \{[^}]*chunk_turns: (\d+)/.exec(rust)?.[1]);
+    expect(chunkTurns).toBeGreaterThan(0);
+    expect(Number(/const TURN_CHUNK = (\d+);/.exec(src)?.[1])).toBe(chunkTurns);
   });
 });

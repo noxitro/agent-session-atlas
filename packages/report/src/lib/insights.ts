@@ -2,7 +2,7 @@
 // - 指示文の版・skill・時間の使われ方は SessionSummary から求め、ブラウザで絞り込みに従って再計算する
 // - スキル化の候補は依頼文とターンごとのツールの列(sessions.json の analysis)から build 時に求め、結果だけ埋め込む
 // - 分かるのは相関まで。閾値は定数にして docs/PLAN.md に根拠を書く。閾値未満は件数を添えて「傾向」には出さない
-import type { SessionAnalysis } from '../../../core/src/types.ts';
+import type { SessionAnalysis } from '../shared/types.ts';
 import type { SessionSummary } from './types.ts';
 
 export const THRESHOLDS = {

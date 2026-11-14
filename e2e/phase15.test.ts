@@ -11,15 +11,16 @@ import { existsSync } from 'node:fs';
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { sessionStoreRows, type SessionRecord, type SessionsFile, type SessionStoreJson } from '../packages/core/src/index.ts';
-import { buildFixtureHome, FAKE_SECRETS, P11_SESSION, ROOT, UNLISTED_VALUES } from './fixture-home.ts';
+import type { SessionRecord, SessionsFile } from '../packages/report/src/shared/types.ts';
+import type { SessionStoreJson } from './output-types.ts';
+import { hasUsageRows } from './sqlite.ts';
+import { buildFixtureHome, FAKE_SECRETS, P11_SESSION, ROOT, UNLISTED_VALUES, cliCommand } from './fixture-home.ts';
 
 const WORK = join(ROOT, 'out', 'e2e-phase15');
-const CLI = join(ROOT, 'packages', 'cli', 'src', 'main.ts');
 const GROUP = 'Player-Weapon';
 
 function atlas(args: string[], env: NodeJS.ProcessEnv = {}): { status: number | null; stdout: string; stderr: string; out: string } {
-  const r = spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8', cwd: ROOT, timeout: 600_000, env: { ...process.env, ...env } });
+  const r = spawnSync(...cliCommand(args), { encoding: 'utf8', cwd: ROOT, timeout: 600_000, env: { ...process.env, ...env } });
   // ログは標準出力、エラーは標準エラー。どちらに出ても見られるよう out に両方を入れる
   return { status: r.status, stdout: r.stdout, stderr: r.stderr, out: r.stdout + r.stderr };
 }
@@ -54,8 +55,7 @@ describe('Phase 15 E2E: グループのアップロード', () => {
     for (const x of original.sessions) {
       if (ids.length === 2) break;
       if (x.sources.length !== 2 || !existsSync(join(out1, 'snapshot', 'session-state', x.id, 'events.jsonl'))) continue;
-      const rows = await sessionStoreRows(join(out1, 'snapshot', 'session-store.db'), x.id);
-      if (rows?.usage.length) ids.push(x.id);
+      if (await hasUsageRows(join(out1, 'snapshot', 'session-store.db'), x.id)) ids.push(x.id);
     }
     expect(ids).toHaveLength(2);
     await mkdir(notes, { recursive: true });
@@ -164,7 +164,7 @@ describe('Phase 15 E2E: グループのアップロード', () => {
     for (const id of [...ids, desk]) expect((await readdir(join(dest, id))).some((f) => f.endsWith('.md') && f !== 'atlas-memo.md' && f !== 'plan.md')).toBe(false);
     const readme = await readFile(join(dest, 'README.md'), 'utf8');
     expect(readme).toContain('sessions\\<セッション ID>.md');
-    expect(readme).toContain(`npm run atlas -- all --home "${dest}" --out "<出力先>"`);
+    expect(readme).toContain(`bin\\atlas.exe all --home "${dest}" --out "<出力先>"`);
     // README のとおりに集計し直すと、送ったセッションごとに記録ができる
     const out3 = join(WORK, 'out-records');
     const r = atlas(['all', '--home', dest, '--out', out3]);

@@ -1,0 +1,26 @@
+
+.lib-group{margin-top:28px}.lib-group:first-child{margin-top:0}
+.lib-group .section-head p{max-width:none}
+.versions{margin-top:10px}
+.ver{margin-top:14px;border:1px solid var(--rule-strong);background:var(--surface)}
+.ver>summary{padding:6px 10px;font-size:.8125rem;color:var(--form);display:flex;flex-wrap:wrap;gap:4px 14px;align-items:baseline}
+.ver>summary b{color:var(--ink)}
+.ver>summary .tag.latest{border-color:var(--form);color:var(--form)}
+.ver>summary .hash{margin-left:auto;font:.6875rem var(--mono);color:var(--ink-3)}
+.lib-group .section-head .latest{flex-basis:100%;margin:4px 0 0;max-width:none}
+.ver .cap{margin:0;padding:6px 10px 0;border-top:1px solid var(--rule);font-size:.6875rem;color:var(--form);letter-spacing:.04em}
+.ver .body{margin:0;padding:6px 10px 10px;font:.75rem/1.5 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;max-height:60vh;overflow:auto}
+.ver .body:focus-visible{outline:2px solid var(--form);outline-offset:-2px}
+.ver .diff{background:var(--form-wash)}
+.ver .diff .sign{display:inline-block;width:1.4em;color:var(--ink-3)}
+.ver .diff .add .sign,.ver .diff .add{color:var(--form)}.ver .diff .del .sign,.ver .diff .del{color:var(--warn)}
+.ver .links{padding:6px 10px;border-top:1px solid var(--rule);font-size:.75rem;overflow-wrap:anywhere}
+.ver .uses{padding:6px 10px;border-top:1px solid var(--rule);font-size:.75rem;color:var(--ink-2)}
+.ver .uses ul{display:inline;margin:0;padding:0;list-style:none}
+.ver .uses li{display:inline}
+.ver .uses li+li::before{content:' · ';color:var(--ink-3)}
+.lib-note{font-size:.8125rem;color:var(--ink-2);margin:8px 0 0;max-width:80ch}
+.lib-filter{margin-top:14px;padding:8px 12px;border:1px solid var(--rule);border-top:2px solid var(--form);background:var(--surface);font-size:.8125rem;color:var(--ink-2)}
+.lib-filter b{color:var(--ink)}
+.lib-filter a{margin-left:10px}
+.lib-group[hidden],.ver[hidden],.in-session[hidden],.rail li[hidden],.toc li[hidden]{display:none}
