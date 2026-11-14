@@ -123,7 +123,8 @@ pub fn system_time(ms: i64) -> SystemTime {
 }
 
 /// `fs.utimes(p, atime, mtime)`(Date を渡したときと同じく、ミリ秒の精度で書く)。
-/// Windows では libuv と同じく属性の書き込みだけで開く(読み取り専用のファイルでも書ける)
+/// Windows では libuv と同じく属性の書き込みだけで開く(読み取り専用のファイルでも書ける)。
+/// ほかでは読み取りで開く(futimens は持ち主なら開き方を問わないので、読み取り専用のファイルでも書ける)
 pub fn utimes(p: &Path, atime_ms: i64, mtime_ms: i64) -> io::Result<()> {
     let mut o = fs::OpenOptions::new();
     #[cfg(windows)]
@@ -133,7 +134,7 @@ pub fn utimes(p: &Path, atime_ms: i64, mtime_ms: i64) -> io::Result<()> {
         o.access_mode(FILE_WRITE_ATTRIBUTES);
     }
     #[cfg(not(windows))]
-    o.write(true);
+    o.read(true);
     let f = o.open(p)?;
     f.set_times(fs::FileTimes::new().set_accessed(system_time(atime_ms)).set_modified(system_time(mtime_ms)))
 }

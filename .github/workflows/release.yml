@@ -64,7 +64,8 @@ jobs:
           # 画面のテンプレートが無ければ止める。--version に出すコミットはタグのもの
           ATLAS_REQUIRE_TEMPLATE: '1'
         run: |
-          export ATLAS_BUILD_COMMIT=$(git rev-parse HEAD)
+          ATLAS_BUILD_COMMIT=$(git rev-parse HEAD)
+          export ATLAS_BUILD_COMMIT
           cargo build --release --locked -p atlas-cli
           mkdir -p dist
           cp target/release/atlas.exe dist/atlas.exe

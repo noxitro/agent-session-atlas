@@ -9,8 +9,10 @@ import type { TurnTuple } from '../src/lib/turns.ts';
 
 // 照合の本体は Rust(crates/atlas-core/src/vcs_retention.rs・vcs.rs)。画面の lib はその並びと名前を写しているので、Rust のソースから読んで比べる
 const CORE = join(import.meta.dirname, '..', '..', '..', 'crates', 'atlas-core', 'src');
-const RETENTION_RS = readFileSync(join(CORE, 'vcs_retention.rs'), 'utf8');
-const VCS_RS = readFileSync(join(CORE, 'vcs.rs'), 'utf8');
+// Windows の checkout(core.autocrlf)では CRLF になるので、改行をそろえてから読む
+const readRs = (name: string): string => readFileSync(join(CORE, name), 'utf8').replace(/\r\n/g, '\n');
+const RETENTION_RS = readRs('vcs_retention.rs');
+const VCS_RS = readRs('vcs.rs');
 
 /** `pub const NAME: [Enum; n] = [Enum::A, …];` の並び(列挙子の名前) */
 function rustList(src: string, name: string, en: string): string[] {
