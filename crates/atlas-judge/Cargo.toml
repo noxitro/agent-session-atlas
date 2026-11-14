@@ -10,7 +10,11 @@ anyhow = "1.0.104"
 atlas-core = { version = "0.1.0", path = "../atlas-core" }
 atlas-report = { version = "0.1.0", path = "../atlas-report" }
 chrono = "0.4.45"
+getrandom = "0.4.3"
+indexmap = "2.14.2"
+rayon = "1.12.0"
 regex = "1.13.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order", "float_roundtrip"] }
+tempfile = "3.27.0"
 ureq = "3.5.2"

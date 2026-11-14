@@ -2,15 +2,22 @@
 //! 元データ(~/.copilot)は snapshot 経由でだけ読む(コピーしてから開く)。
 
 use crate::args::CliOptions;
+use crate::chat_parts::ChatTarget;
+use crate::m365::{powershell_driver, run_m365_judge, M365Options, M365Paths, M365_DEFAULT_MODEL};
 use crate::paths::{resolve_paths, PathInputs, Paths};
 use anyhow::Result;
 use atlas_core::jsnum::to_fixed;
 use std::path::PathBuf;
 use std::time::Duration;
 
+mod bundle;
 mod extract;
+pub(crate) mod judge;
+pub mod judge_flow;
 mod metrics;
+mod skill_draft;
 mod snapshot;
+pub(crate) mod turns;
 mod vcs;
 
 /// 進み具合を 1 行ずつ出す先(TS 版の Log)
@@ -66,8 +73,29 @@ pub fn run(o: &CliOptions, log: Log<'_>) -> Result<RunResult> {
     run_command(o, &p, log)
 }
 
+/// judge m365 / turns m365: 開いている M365 Copilot のアプリを操作して未判定の添付ファイルを判定し(m365.rs)、
+/// 1 件でも取り込めたらレポートに反映する(export)。送れなかった・取り込めなかったファイルがあれば、反映した後に失敗にする
+fn run_m365_command(o: &CliOptions, p: &Paths, target: ChatTarget, model: Option<&str>, limit: Option<u64>, timeout_sec: u64, log: Log<'_>) -> Result<RunResult> {
+    let s = run_m365_judge(
+        &M365Paths { out: p.out.clone(), sessions: p.sessions.clone(), judgments: p.judgments.clone(), turn_judgments: p.turn_judgments.clone(), turn_bundle: p.turn_bundle.clone() },
+        &M365Options { target, model: model.unwrap_or(M365_DEFAULT_MODEL).to_string(), limit, timeout_sec },
+        &|m: &str| log(m),
+        &powershell_driver,
+        cfg!(windows),
+    )?;
+    // TODO(段 4): export を移したら、ここで run_command(export) がレポートを作り直す(今は not_ported のエラーになる)
+    let build = if s.imported > 0 { run_command(&CliOptions { command: "export".into(), model: None, judge: None, turns: None, ..o.clone() }, p, log)?.build } else { None };
+    if !s.failed.is_empty() {
+        anyhow::bail!(
+            "M365 Copilot で判定できなかったファイルが {} 個あります: {}",
+            s.failed.len(),
+            s.failed.iter().map(|f| format!("{}({})", f.name, f.reason)).collect::<Vec<_>>().join(" / ")
+        );
+    }
+    Ok(RunResult { build, ..RunResult::of(p) })
+}
+
 pub fn run_command(o: &CliOptions, p: &Paths, log: Log<'_>) -> Result<RunResult> {
-    let _ = (p, log);
     match o.command.as_str() {
         "snapshot" => {
             snapshot::run_snapshot(p, o.since.as_deref(), log, o.snapshot_all, o.snapshot_prune)?;
@@ -86,13 +114,33 @@ pub fn run_command(o: &CliOptions, p: &Paths, log: Log<'_>) -> Result<RunResult>
             Ok(RunResult::of(p))
         }
         "build" | "export" => Err(not_ported(&o.command)),
-        "bundle" => Err(not_ported("bundle")),
-        "turns" => Err(not_ported("turns")),
-        "judge" => Err(not_ported("judge")),
+        "bundle" => {
+            bundle::run_bundle(p, &metrics::SessionFilter::from_cli(o), &bundle::BundleCliOptions { include_empty: o.include_empty, per_part: o.per_part, unjudged: o.unjudged }, log)?;
+            Ok(RunResult::of(p))
+        }
+        "turns" => {
+            let t = o.turns.as_ref().ok_or_else(|| anyhow::anyhow!("turns の操作がありません"))?;
+            if t.action == "m365" {
+                return run_m365_command(o, p, ChatTarget::Turns, t.model.as_deref(), t.limit, t.timeout_sec, log);
+            }
+            turns::run_turns(p, &metrics::SessionFilter { model: None, ..metrics::SessionFilter::from_cli(o) }, t, log)?;
+            Ok(RunResult::of(p))
+        }
+        "judge" => {
+            let j = o.judge.as_ref().ok_or_else(|| anyhow::anyhow!("judge の操作がありません"))?;
+            if j.action == "m365" {
+                return run_m365_command(o, p, ChatTarget::Effort, j.model.as_deref(), j.limit, j.timeout_sec, log);
+            }
+            Ok(RunResult { judge: judge::run_judge_command(p, j, log)?, ..RunResult::of(p) })
+        }
         "group" => Err(not_ported("group")),
         "memo" => Err(not_ported("memo")),
         "serve" => Err(not_ported("serve")),
-        "skill-draft" => Err(not_ported("skill-draft")),
+        "skill-draft" => {
+            let sd = o.skill_draft.as_ref().ok_or_else(|| anyhow::anyhow!("skill-draft の番号がありません"))?;
+            skill_draft::run_skill_draft(p, sd, log)?;
+            Ok(RunResult::of(p))
+        }
         "open" => Err(not_ported("open")),
         "all" => Err(not_ported("all")),
         other => Err(anyhow::anyhow!("不明なコマンドです: {other}")),

@@ -1,7 +1,6 @@
-//! judgments.json のスキーマ(schemaVersion 1)と検証(packages/judge/src/schema.ts の移植のうち、読む側)。
+//! judgments.json のスキーマ(schemaVersion 1)と検証(packages/judge/src/schema.ts の移植)。
 //! 外部 LLM の出力も内部バックエンドの出力も、ここを通ったものだけを judgments.json に入れる。
 //! 形が合わないものは黙って直さず、どこが違うかを列挙して落とす。
-//! TODO(段 6): mergeJudgments・numericLeaves・addUsage・jsonCandidates・itemsFromCandidates・JSON スキーマは judge の移植で足す
 
 use atlas_core::js;
 use serde::{Deserialize, Serialize};
@@ -310,6 +309,293 @@ pub fn validate_judgments(v: &Value) -> Result<JudgmentsFile, JudgmentValidation
         },
         items,
         failures: o.get("failures").and_then(Value::as_array).filter(|f| !f.is_empty()).cloned(),
+    })
+}
+
+/// 判定自体のトークン消費(バックエンドの usage を数値の葉ごとに合計したもの)
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct JudgeUsage {
+    /// usage を取れた判定の回数
+    pub runs: i64,
+    /// usage が取れなかった判定の回数
+    pub missing: i64,
+    /// "a.b.c" 形式の経路 → 合計値
+    pub totals: js::JsMap<f64>,
+}
+
+pub fn empty_judgments(backend: &str, model: Option<&str>, ran_at: &str) -> JudgmentsFile {
+    JudgmentsFile {
+        schema_version: 1,
+        judge: FileJudge { backend: backend.to_string(), model: model.map(str::to_string), ran_at: ran_at.to_string(), usage: None },
+        items: Vec::new(),
+        failures: None,
+    }
+}
+
+/// 失敗の記録の sessionId(形は検証しないので Value のまま持つ)
+fn failure_session(f: &Value) -> Option<&str> {
+    f.get("sessionId").and_then(Value::as_str)
+}
+
+/// sessionId 単位で上書きマージ(新しい方が勝つ)。成功した項目の failures は消す
+pub fn merge_judgments(base: &JudgmentsFile, add: &[JudgmentItem], judge: FileJudge) -> JudgmentsFile {
+    let mut by: indexmap::IndexMap<String, JudgmentItem> = base.items.iter().map(|i| (i.session_id.clone(), i.clone())).collect();
+    for it in add {
+        by.insert(it.session_id.clone(), it.clone());
+    }
+    let done: HashSet<&str> = add.iter().map(|i| i.session_id.as_str()).collect();
+    let failures: Vec<Value> = base.failures.iter().flatten().filter(|f| !failure_session(f).is_some_and(|id| done.contains(id))).cloned().collect();
+    JudgmentsFile { schema_version: 1, judge, items: by.into_values().collect(), failures: if failures.is_empty() { None } else { Some(failures) } }
+}
+
+/// オブジェクトのキーを `Object.entries` の順(配列の添字の形のキーが先)で返す
+pub fn js_object_entries(m: &Map<String, Value>) -> Vec<(&String, &Value)> {
+    let mut idx: Vec<(u32, &String)> = Vec::new();
+    let mut rest: Vec<&String> = Vec::new();
+    for k in m.keys() {
+        match js::array_index(k) {
+            Some(n) => idx.push((n, k)),
+            None => rest.push(k),
+        }
+    }
+    idx.sort_by_key(|x| x.0);
+    idx.into_iter().map(|x| x.1).chain(rest).map(|k| (k, &m[k])).collect()
+}
+
+/// usage の JSON(形は問わない)から数値の葉を "a.b" 経路で集める
+pub fn numeric_leaves(v: &Value, prefix: &str, out: &mut js::JsMap<f64>) {
+    match v {
+        Value::Number(_) => {
+            if let Some(n) = js::num(Some(v)) {
+                out.add(if prefix.is_empty() { "value" } else { prefix }, n);
+            }
+        }
+        Value::Array(a) => {
+            for x in a {
+                numeric_leaves(x, prefix, out);
+            }
+        }
+        Value::Object(o) => {
+            for (k, x) in js_object_entries(o) {
+                let p = if prefix.is_empty() { k.clone() } else { format!("{prefix}.{k}") };
+                numeric_leaves(x, &p, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+pub fn add_usage(u: Option<&JudgeUsage>, raw: Option<&Value>) -> JudgeUsage {
+    let mut out = u.cloned().unwrap_or_default();
+    let Some(raw) = raw.filter(|r| !r.is_null()) else {
+        out.missing += 1;
+        return out;
+    };
+    out.runs += 1;
+    let mut leaves = js::JsMap::new();
+    numeric_leaves(raw, "", &mut leaves);
+    for (k, n) in leaves.js_entries() {
+        out.totals.add(k, *n);
+    }
+    out
+}
+
+// ---------- LLM 出力から JSON を取り出す ----------
+
+/// `/(`{3,}|~{3,})[ \t]*(json|jsonc|javascript|js)?[ \t]*\r?\n([\s\S]*?)\r?\n[ \t]*\1/gi` の 1 つの一致(言語名・本文・終わりの位置)。
+/// regex クレートは後方参照(\1)を持たないので、同じ順で後戻りする照合を手で書く
+fn fence_at(t: &[u8], s: usize) -> Option<(String, std::ops::Range<usize>, usize)> {
+    let c = *t.get(s)?;
+    if c != b'`' && c != b'~' {
+        return None;
+    }
+    let run = t[s..].iter().take_while(|&&x| x == c).count();
+    if run < 3 {
+        return None;
+    }
+    let spaces = |mut p: usize| {
+        while p < t.len() && (t[p] == b' ' || t[p] == b'\t') {
+            p += 1;
+        }
+        p
+    };
+    let newline = |p: usize| -> Option<usize> {
+        if t.get(p) == Some(&b'\r') && t.get(p + 1) == Some(&b'\n') {
+            Some(p + 2)
+        } else if t.get(p) == Some(&b'\n') {
+            Some(p + 1)
+        } else {
+            None
+        }
+    };
+    for f in (3..=run).rev() {
+        let p1 = spaces(s + f);
+        // 言語名の選択肢は正規表現の並び(json → jsonc → javascript → js → なし)
+        for lang in ["json", "jsonc", "javascript", "js", ""] {
+            let l = lang.len();
+            if l > 0 && !(p1 + l <= t.len() && t[p1..p1 + l].eq_ignore_ascii_case(lang.as_bytes())) {
+                continue;
+            }
+            let Some(p4) = newline(spaces(p1 + l)) else { continue };
+            // 本文は最短一致: 改行・空白の後に同じ囲みが来る最初の位置
+            for end in p4..t.len() {
+                let Some(q) = newline(end) else { continue };
+                let q = spaces(q);
+                if q + f <= t.len() && t[q..q + f].iter().all(|&x| x == c) {
+                    let lang_text = String::from_utf8_lossy(&t[p1..p1 + l]).into_owned();
+                    return Some((lang_text, p4..end, q + f));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// `JSON.parse`(読めなければ None)
+fn try_parse(s: &str) -> Option<Value> {
+    js::parse_json(s).ok()
+}
+
+/// テキスト中の JSON 候補(```json フェンス → 全体 → 最外の {…} / […])を順に返す
+pub fn json_candidates(text: &str) -> Vec<Value> {
+    let mut out: Vec<Value> = Vec::new();
+    let t = text.as_bytes();
+    let mut fenced = 0;
+    let mut i = 0;
+    while i < t.len() {
+        let Some((lang, body, end)) = fence_at(t, i) else {
+            i += 1;
+            continue;
+        };
+        i = end;
+        let lang = lang.to_ascii_lowercase();
+        let body = js::trim(&text[body]);
+        if lang.is_empty() && !(body.starts_with('[') || body.starts_with('{')) {
+            continue;
+        }
+        if let Some(v) = try_parse(body) {
+            out.push(v);
+            fenced += 1;
+        }
+    }
+    if fenced > 0 {
+        return out;
+    }
+    let t = js::trim(text);
+    if let Some(v) = try_parse(t) {
+        out.push(v);
+        return out;
+    }
+    for (open, close) in [('{', '}'), ('[', ']')] {
+        if let (Some(a), Some(b)) = (t.find(open), t.rfind(close))
+            && b > a
+            && let Some(v) = try_parse(&t[a..=b])
+        {
+            out.push(v);
+            return out;
+        }
+    }
+    out
+}
+
+/// JSON 候補を項目の配列に平らにする({items:[…]} / […] / 単一項目のいずれも受ける)
+pub fn items_from_candidates(cands: &[Value]) -> Vec<Value> {
+    let mut items = Vec::new();
+    for c in cands {
+        match c {
+            Value::Array(a) => items.extend(a.iter().cloned()),
+            Value::Object(o) => match o.get("items") {
+                Some(Value::Array(a)) => items.extend(a.iter().cloned()),
+                _ => items.push(c.clone()),
+            },
+            _ => {}
+        }
+    }
+    items
+}
+
+// ---------- JSON Schema(外部 LLM と人が読む用。検証の正典は上の関数) ----------
+
+fn effect_schema() -> Value {
+    serde_json::json!({
+        "type": "object",
+        "required": ["score", "evidence"],
+        "additionalProperties": false,
+        "properties": {
+            "score": { "type": "integer", "minimum": -2, "maximum": 2, "description": "-2: 逆効果 / 0: 影響なし・使われていない / +2: 大いに役立った" },
+            "evidence": { "type": "string", "description": "パケット内の根拠(使われていなければ「参照なし」など)" }
+        }
+    })
+}
+
+pub fn item_json_schema() -> Value {
+    serde_json::json!({
+        "type": "object",
+        "required": ["sessionId", "taskCategory", "taskSummary", "humanEffort", "aiOutcome", "instructionsEffect", "wikiEffect", "skillsAgentsEffect"],
+        "additionalProperties": false,
+        "properties": {
+            "sessionId": { "type": "string", "description": "パケット冒頭の「セッション ID」をそのまま" },
+            "taskCategory": { "type": "string", "enum": TASK_CATEGORIES },
+            "taskSummary": { "type": "string", "description": "タスクの要約(日本語 1〜2 文)" },
+            "humanEffort": {
+                "type": "object",
+                "required": ["hours", "low", "high", "confidence", "rationale"],
+                "additionalProperties": false,
+                "description": "同じ成果を熟練した人が AI なしで出す場合の作業時間(low ≤ hours ≤ high)",
+                "properties": {
+                    "hours": { "type": "number", "minimum": 0 },
+                    "low": { "type": "number", "minimum": 0 },
+                    "high": { "type": "number", "minimum": 0 },
+                    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+                    "rationale": { "type": "string" }
+                }
+            },
+            "aiOutcome": {
+                "type": "object",
+                "required": ["completed", "quality", "rework", "rationale"],
+                "additionalProperties": false,
+                "properties": {
+                    "completed": { "type": "boolean" },
+                    "quality": { "type": "integer", "minimum": 1, "maximum": 5 },
+                    "rework": { "type": "integer", "minimum": 0, "maximum": 5, "description": "手戻り・やり直しの多さ(0: なし〜5: 大半がやり直し)" },
+                    "rationale": { "type": "string" }
+                }
+            },
+            "instructionsEffect": effect_schema(),
+            "wikiEffect": effect_schema(),
+            "skillsAgentsEffect": effect_schema(),
+            "notes": { "type": "string" },
+            "judge": {
+                "type": "object",
+                "description": "ツールが付ける出所情報(LLM は出力しない)",
+                "properties": { "backend": { "type": "string", "enum": BACKENDS }, "model": { "type": ["string", "null"] }, "ranAt": { "type": "string" } }
+            }
+        }
+    })
+}
+
+/// JUDGMENTS_JSON_SCHEMA(評価バンドルの schema.json と分割ファイルに載せる)
+pub fn judgments_json_schema() -> Value {
+    serde_json::json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "agent-session-atlas judgments.json (schemaVersion 1)",
+        "type": "object",
+        "required": ["schemaVersion", "judge", "items"],
+        "properties": {
+            "schemaVersion": { "const": 1 },
+            "judge": {
+                "type": "object",
+                "required": ["backend", "ranAt"],
+                "properties": {
+                    "backend": { "type": "string", "enum": BACKENDS },
+                    "model": { "type": ["string", "null"] },
+                    "ranAt": { "type": "string", "description": "ISO 8601" },
+                    "usage": { "type": "object" }
+                }
+            },
+            "items": { "type": "array", "items": item_json_schema() },
+            "failures": { "type": "array" }
+        }
     })
 }
 

@@ -1,8 +1,10 @@
 //! atlas コマンドの入口(packages/cli/src/main.ts の移植): atlas <command> [options]
 
 mod args;
+mod chat_parts;
 mod commands;
 mod config;
+mod m365;
 mod paths;
 mod tables;
 
@@ -11,6 +13,10 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
+    // 判定の通し(TS 版の judge-flow.ts / npm run atlas:judge)。引数の解釈が違うので、先に振り分ける
+    if argv.first().is_some_and(|a| a == "judge-flow") {
+        return ExitCode::from(commands::judge_flow::main(&argv[1..]));
+    }
     let opts = match args::parse_cli(&argv) {
         Ok(o) => o,
         Err(e) => {

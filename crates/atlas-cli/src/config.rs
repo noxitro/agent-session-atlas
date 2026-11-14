@@ -66,7 +66,6 @@ static WIN_ABS_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z]:[\\
 static TILDE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^~[\\/]").unwrap());
 static WIKI_PATH_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r"[^./\\~{}]", &js::RE_S[1..js::RE_S.len() - 1])).unwrap());
 static MODEL_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r#"^[^"{}]+$"#, &js::RE_S[1..js::RE_S.len() - 1])).unwrap());
-#[allow(dead_code)]
 static BYOK_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r"^[^/{s}]+/[^/{s}]+$", s = &js::RE_S[1..js::RE_S.len() - 1])).unwrap());
 static QUOTED_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"^"([^\n\r\x{2028}\x{2029}]*)"$"#).unwrap());
 
@@ -264,7 +263,6 @@ pub fn parse_config(v: &Value) -> R<AtlasConfig> {
 }
 
 /// Copilot CLI の BYOK のモデル(<プロバイダー名>/<モデル ID>)か
-#[allow(dead_code)] // judge・turns・serve の移植で使う
 pub fn is_byok_model(model: Option<&str>) -> bool {
     model.is_some_and(|m| !m.is_empty() && BYOK_RE.is_match(m))
 }
@@ -284,7 +282,6 @@ pub fn parse_upload_root(v: &Value) -> R<String> {
 }
 
 /// 設定ファイルの既定の場所(環境変数 ATLAS_CONFIG、無ければリポジトリ直下の atlas.config.json)
-#[allow(dead_code)] // judge・turns・serve の移植で使う
 pub fn default_config_path() -> String {
     match std::env::var("ATLAS_CONFIG").ok().filter(|v| !v.is_empty()) {
         Some(p) => resolve(&p).to_string_lossy().into_owned(),
@@ -315,17 +312,34 @@ pub fn load_config(path: &str, required: bool) -> anyhow::Result<AtlasConfig> {
 }
 
 /// 依頼ごとの判定に使う普段の工程名(設定の phases、無ければ既定)
-#[allow(dead_code)] // judge・turns・serve の移植で使う
 pub fn phase_names() -> anyhow::Result<Vec<String>> {
     let explicit = std::env::var_os("ATLAS_CONFIG").is_some();
     Ok(load_config(&default_config_path(), explicit)?.phases.unwrap_or_else(|| DEFAULT_PHASE_NAMES.iter().map(|s| s.to_string()).collect()))
 }
 
 /// 判定に使うモデル(設定の judgeModel、無ければ None)
-#[allow(dead_code)] // judge・turns・serve の移植で使う
 pub fn judge_model_setting() -> anyhow::Result<Option<String>> {
     let explicit = std::env::var_os("ATLAS_CONFIG").is_some();
     Ok(load_config(&default_config_path(), explicit)?.judge_model)
+}
+
+/// 判定に使うモデルを決めて、どこから来たかをログに書く。指定(--model)> 設定の judgeModel > なし(Copilot の既定のモデル)。
+/// 設定は copilot-cli のときだけ使う(anthropic バックエンドのモデル名は形が違う)
+pub fn resolve_judge_model(explicit: Option<&str>, label: &str, log: &(dyn Fn(&str) + Sync)) -> anyhow::Result<Option<String>> {
+    if let Some(e) = explicit.filter(|e| !e.is_empty()) {
+        return Ok(Some(e.to_string()));
+    }
+    let m = judge_model_setting()?;
+    match m.as_deref().filter(|m| !m.is_empty()) {
+        Some(m) => log(&format!(
+            "{label}: 判定に使うモデル {m}(atlas.config.json の judgeModel{})",
+            if is_byok_model(Some(m)) { "。自分の API キーのモデル(BYOK)なので、Copilot の AI クレジットは使いません" } else { "" }
+        )),
+        None => log(&format!(
+            "{label}: 注意 モデルを指定していないので、Copilot の既定のモデルで判定します(AI クレジットを使います)。自分の API キーのモデル(BYOK)を使うときは、atlas.config.json に \"judgeModel\": \"anthropic/claude-sonnet-5-5\" のように書きます"
+        )),
+    }
+    Ok(m)
 }
 
 #[cfg(test)]
