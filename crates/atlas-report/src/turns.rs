@@ -9,7 +9,56 @@ use serde::Serialize;
 
 /// [工程, 依頼の種類, 次の依頼の種類(無ければ null), 実働 ms, ツール, 失敗, 拒否, 中断, エラー, うち利用上限, 文脈圧縮, 再編集, nano AIU, サブエージェント失敗, 編集]。
 /// 工程と依頼の種類は PHASES / REQUEST_KINDS の番号
-pub type TurnTuple = (i64, i64, Option<i64>, Option<f64>, i64, i64, i64, i64, i64, i64, i64, i64, Option<f64>, i64, i64);
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct TurnTuple {
+    pub phase: i64,
+    pub kind: i64,
+    pub next: Option<i64>,
+    pub active_ms: Option<f64>,
+    pub tools: i64,
+    pub tool_failures: i64,
+    pub denied: i64,
+    pub aborts: i64,
+    pub errors: i64,
+    pub external_errors: i64,
+    pub compactions: i64,
+    pub re_edits: i64,
+    pub nano_aiu: Option<f64>,
+    pub subagent_failures: i64,
+    pub edits: i64,
+}
+
+type Raw = (i64, i64, Option<i64>, Option<f64>, i64, i64, i64, i64, i64, i64, i64, i64, Option<f64>, i64, i64);
+
+impl Serialize for TurnTuple {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let t = self;
+        (t.phase, t.kind, t.next, t.active_ms, t.tools, t.tool_failures, t.denied, t.aborts, t.errors, t.external_errors, t.compactions, t.re_edits, t.nano_aiu, t.subagent_failures, t.edits).serialize(s)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for TurnTuple {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let r: Raw = serde::Deserialize::deserialize(d)?;
+        Ok(TurnTuple {
+            phase: r.0,
+            kind: r.1,
+            next: r.2,
+            active_ms: r.3,
+            tools: r.4,
+            tool_failures: r.5,
+            denied: r.6,
+            aborts: r.7,
+            errors: r.8,
+            external_errors: r.9,
+            compactions: r.10,
+            re_edits: r.11,
+            nano_aiu: r.12,
+            subagent_failures: r.13,
+            edits: r.14,
+        })
+    }
+}
 
 fn index_of(list: &[&str], x: &str) -> i64 {
     list.iter().position(|k| *k == x).map_or(-1, |i| i as i64)
@@ -20,23 +69,23 @@ pub fn turn_tuples(r: &SessionRecord) -> Vec<TurnTuple> {
         .iter()
         .map(|t| {
             let s = t.stats;
-            (
-                index_of(&PHASES, t.phase),
-                index_of(&REQUEST_KINDS, t.kind),
-                t.next_kind.map(|k| index_of(&REQUEST_KINDS, k)),
-                t.active_ms,
-                s.tools,
-                s.tool_failures,
-                s.denied,
-                s.aborts,
-                s.errors,
-                s.external_errors,
-                s.compactions,
-                s.re_edits,
-                s.nano_aiu,
-                s.subagent_failures,
-                s.edits,
-            )
+            TurnTuple {
+                phase: index_of(&PHASES, t.phase),
+                kind: index_of(&REQUEST_KINDS, t.kind),
+                next: t.next_kind.map(|k| index_of(&REQUEST_KINDS, k)),
+                active_ms: t.active_ms,
+                tools: s.tools,
+                tool_failures: s.tool_failures,
+                denied: s.denied,
+                aborts: s.aborts,
+                errors: s.errors,
+                external_errors: s.external_errors,
+                compactions: s.compactions,
+                re_edits: s.re_edits,
+                nano_aiu: s.nano_aiu,
+                subagent_failures: s.subagent_failures,
+                edits: s.edits,
+            }
         })
         .collect()
 }
@@ -47,22 +96,22 @@ fn at<'a>(list: &[&'a str], i: i64) -> Option<&'a str> {
 
 /// 埋め込みの組を集計に使う形に戻す(工程と、集計に使う項目。依頼文・時刻・使用量の入力 / 出力は持たない)
 pub fn from_tuple(x: &TurnTuple) -> (&'static str, TurnFacts) {
-    let phase = at(&PHASES, x.0).unwrap_or("research");
+    let phase = at(&PHASES, x.phase).unwrap_or("research");
     let facts = TurnFacts {
-        kind: at(&REQUEST_KINDS, x.1).unwrap_or("task"),
-        next_kind: x.2.and_then(|k| at(&REQUEST_KINDS, k)),
-        active_ms: x.3,
-        tools: x.4,
-        tool_failures: x.5,
-        denied: x.6,
-        aborts: x.7,
-        errors: x.8,
-        external_errors: x.9,
-        compactions: x.10,
-        re_edits: x.11,
-        nano_aiu: x.12,
-        subagent_failures: x.13,
-        edits: x.14,
+        kind: at(&REQUEST_KINDS, x.kind).unwrap_or("task"),
+        next_kind: x.next.and_then(|k| at(&REQUEST_KINDS, k)),
+        active_ms: x.active_ms,
+        tools: x.tools,
+        tool_failures: x.tool_failures,
+        denied: x.denied,
+        aborts: x.aborts,
+        errors: x.errors,
+        external_errors: x.external_errors,
+        compactions: x.compactions,
+        re_edits: x.re_edits,
+        nano_aiu: x.nano_aiu,
+        subagent_failures: x.subagent_failures,
+        edits: x.edits,
         ask_user: 0,
         input: None,
         output: None,

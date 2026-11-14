@@ -200,13 +200,14 @@ pub fn num_to_string(v: f64) -> String {
     buf.format_finite(v).to_string()
 }
 
-/// `Math.round(x)`(0.5 は +∞ の方へ)
+/// `Math.round(x)`(0.5 は +∞ の方へ。-0.5 以上の負の数は -0。`Intl.NumberFormat` は -0 を「-0」と書くので区別する)
 pub fn round(x: f64) -> f64 {
     if !x.is_finite() {
         return x;
     }
     let f = x.floor();
-    if x - f >= 0.5 { f + 1.0 } else { f }
+    let r = if x - f >= 0.5 { f + 1.0 } else { f };
+    if r == 0.0 && x < 0.0 { -0.0 } else { r }
 }
 
 /// `typeof v === 'number' && Number.isFinite(v)` なら数値
@@ -522,6 +523,8 @@ mod tests {
         assert_eq!(trim("\u{85}a"), "\u{85}a");
         assert_eq!(round(2.5), 3.0);
         assert_eq!(round(0.49999999999999994), 0.0);
+        assert!(round(-0.25).is_sign_negative() && round(-0.5).is_sign_negative());
+        assert!(round(0.25).is_sign_positive());
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! 名前付きグループ(atlas-notes/groups.json)の形と読み取り。
 //! packages/report/src/lib/groups.ts(純関数)と groups-io.ts の読み取り側の移植。
 //! 壊れていてもエラーにせず、読めた分だけ返して理由を warnings に残す(build / export / judge を止めない)。
-//! TODO(段 5): memberGroups・safeDirName・serializeGroups・addIds・removeIds・saveGroups・loadGroupsForWrite は group コマンドの移植で足す
+//! 書き込み側(loadGroupsForWrite・saveGroups)は groups_io.rs。
 
 use anyhow::{bail, Result};
 use atlas_core::js;
@@ -142,6 +142,112 @@ pub fn load_groups(path: &Path) -> LoadedGroups {
     }
 }
 
+/// 送った人のタスクタグのグループ名の、人とタグの区切り
+pub const MEMBER_TAG_SEP: &str = " / ";
+
+/// memberGroups に渡すセッションの項目
+#[derive(Debug, Clone, Copy)]
+pub struct MemberSource<'a> {
+    pub id: &'a str,
+    pub person: Option<&'a str>,
+    pub upload_tags: &'a [String],
+}
+
+impl<'a> From<&'a atlas_core::types::SessionRecord> for MemberSource<'a> {
+    fn from(r: &'a atlas_core::types::SessionRecord) -> Self {
+        MemberSource { id: &r.id, person: r.person.as_ref().and_then(|p| p.as_deref()), upload_tags: r.upload_tags.as_deref().unwrap_or(&[]) }
+    }
+}
+
+/// 送り先から集計したセッションの、送った人が付けていたタスクタグ(uploadTags)をグループにする。
+/// 人ごとに分ける。名前は「<人> / <タグ>」、人のフォルダが無ければタグだけ。並びは人の名前、タグの名前の順(ja の照合)
+pub fn member_groups(sessions: &[MemberSource<'_>]) -> Vec<SessionGroup> {
+    // 人とタグの組で分ける(名前をつないだ文字列で分けると、「a」の「b / c」と「a / b」の「c」が 1 つになる)
+    let mut by_key: indexmap::IndexMap<(String, String), indexmap::IndexSet<String>> = indexmap::IndexMap::new();
+    for s in sessions {
+        for tag in s.upload_tags {
+            let person = s.person.unwrap_or("").to_string();
+            by_key.entry((person, tag.clone())).or_default().insert(s.id.to_string());
+        }
+    }
+    let mut sorted: Vec<((String, String), indexmap::IndexSet<String>)> = by_key.into_iter().collect();
+    sorted.sort_by(|a, b| atlas_core::collate::locale_compare(&a.0.0, &b.0.0).then_with(|| atlas_core::collate::locale_compare(&a.0.1, &b.0.1)));
+    // 表示名が重なったら、後のものに番号を付けて分ける(名前はグループの鍵なので重ねない)
+    let mut used: HashSet<String> = HashSet::new();
+    sorted
+        .into_iter()
+        .map(|((person, tag), ids)| {
+            let base = if person.is_empty() { tag } else { format!("{person}{MEMBER_TAG_SEP}{tag}") };
+            let mut name = base.clone();
+            let mut n = 2;
+            while used.contains(&name) {
+                name = format!("{base} ({n})");
+                n += 1;
+            }
+            used.insert(name.clone());
+            SessionGroup { name, note: String::new(), ids: ids.into_iter().collect() }
+        })
+        .collect()
+}
+
+/// グループ名をフォルダ名にする。フォルダ名に使えない文字は _ にし、Windows の予約名・末尾の点と空白も避ける
+pub fn safe_dir_name(name: &str) -> String {
+    let replaced: String = name.chars().map(|c| if matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') || (c as u32) < 0x20 { '_' } else { c }).collect();
+    let mut s = js::trim(replaced.trim_end_matches(['.', ' '])).to_string();
+    // 拡張子が付いても予約名(nul.log など)。memo.rs の RESERVED_NAME と同じ
+    if crate::memo::is_reserved_name(&s) {
+        s = format!("_{s}");
+    }
+    if s.is_empty() { "group".into() } else { s }
+}
+
+#[derive(serde::Serialize)]
+struct GroupsFile<'a> {
+    version: i64,
+    groups: &'a [SessionGroup],
+}
+
+/// 書き出す形(キーの順を固定し、空の note も書いて雛形になるようにする)
+pub fn serialize_groups(groups: &[SessionGroup]) -> String {
+    let file = GroupsFile { version: GROUPS_VERSION, groups };
+    format!("{}\n", atlas_core::json::to_js_string_pretty(&file).expect("groups.json は JSON にできる"))
+}
+
+/// addIds の戻り
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Added {
+    pub group: SessionGroup,
+    /// 実際に増えた数
+    pub added: usize,
+    /// 既に入っていた数
+    pub dup: usize,
+}
+
+/// グループに id を足す(重複は足さない、順序は元のまま + 足した順)
+pub fn add_ids<'a>(group: &SessionGroup, ids: impl IntoIterator<Item = &'a str>) -> Added {
+    let mut have: HashSet<String> = group.ids.iter().cloned().collect();
+    let mut next = group.ids.clone();
+    let (mut added, mut dup) = (0, 0);
+    for id in unique_ids(ids) {
+        if have.contains(&id) {
+            dup += 1;
+        } else {
+            have.insert(id.clone());
+            next.push(id);
+            added += 1;
+        }
+    }
+    Added { group: SessionGroup { ids: next, ..group.clone() }, added, dup }
+}
+
+/// グループから id を外す(0 件になっても消さない)。戻りの数は実際に減った数
+pub fn remove_ids<'a>(group: &SessionGroup, ids: impl IntoIterator<Item = &'a str>) -> (SessionGroup, usize) {
+    let drop: HashSet<String> = unique_ids(ids).into_iter().collect();
+    let next: Vec<String> = group.ids.iter().filter(|id| !drop.contains(*id)).cloned().collect();
+    let removed = group.ids.len() - next.len();
+    (SessionGroup { ids: next, ..group.clone() }, removed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,5 +310,56 @@ mod tests {
         std::fs::write(&p, r#"{"version":1,"groups":[{"name":"g","ids":["1"]}]}"#).unwrap();
         assert_eq!(load_groups(&p).groups[0].ids, ["1"]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+    // report-lib.test.ts の「addIds は重複を足さず順序を保ち、removeIds は 0 件になっても消さない」
+    #[test]
+    fn add_and_remove() {
+        let g = SessionGroup { name: "g".into(), note: "".into(), ids: vec!["a".into(), "b".into()] };
+        let r = add_ids(&g, ["b", "c", "c", " ", "a"]);
+        assert_eq!((r.group.ids.clone(), r.added, r.dup), (vec!["a".to_string(), "b".into(), "c".into()], 1, 2));
+        assert_eq!(g.ids, ["a", "b"]);
+        assert_eq!(add_ids(&g, []).added, 0);
+        let (d, n) = remove_ids(&g, ["a", "zzz"]);
+        assert_eq!((d.ids.clone(), n), (vec!["b".to_string()], 1));
+        let (e, n) = remove_ids(&d, ["b"]);
+        assert_eq!((e.ids.len(), n), (0, 1));
+        assert_eq!(remove_ids(&e, ["a"]).1, 0);
+    }
+
+    #[test]
+    fn serialize_like_json_stringify() {
+        let r = parse_groups(&json!({ "version": 1, "groups": [{ "name": " 調査 ", "note": "x", "ids": ["a", "b", "a", " "] }, { "name": "空", "ids": [] }] }), GROUPS_FILE_NAME);
+        assert_eq!(serialize_groups(&r.groups), "{\n  \"version\": 1,\n  \"groups\": [\n    {\n      \"name\": \"調査\",\n      \"note\": \"x\",\n      \"ids\": [\n        \"a\",\n        \"b\"\n      ]\n    },\n    {\n      \"name\": \"空\",\n      \"note\": \"\",\n      \"ids\": []\n    }\n  ]\n}\n");
+    }
+
+    // report-lib.test.ts の memberGroups
+    #[test]
+    fn member_groups_by_person_and_tag() {
+        let t = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        let (a, b, c, d, e) = (t(&["武器"]), t(&["武器", "UI"]), t(&["武器"]), t(&["共有"]), t(&[]));
+        let src = [
+            MemberSource { id: "s1", person: Some("person-b"), upload_tags: &a },
+            MemberSource { id: "s2", person: Some("person-a"), upload_tags: &b },
+            MemberSource { id: "s3", person: Some("person-a"), upload_tags: &c },
+            MemberSource { id: "s4", person: None, upload_tags: &d },
+            MemberSource { id: "s5", person: Some("person-a"), upload_tags: &e },
+            MemberSource { id: "s6", person: None, upload_tags: &[] },
+        ];
+        let g = member_groups(&src);
+        assert_eq!(g.iter().map(|x| (x.name.as_str(), x.ids.join(","))).collect::<Vec<_>>(), [("共有", "s4".into()), ("person-a / UI", "s2".into()), ("person-a / 武器", "s2,s3".into()), ("person-b / 武器", "s1".to_string())]);
+        assert!(member_groups(&[]).is_empty());
+        let (x, y) = (t(&["b / c"]), t(&["c"]));
+        let z = t(&["b / c", "b / c"]);
+        let g = member_groups(&[MemberSource { id: "s1", person: Some("a"), upload_tags: &x }, MemberSource { id: "s2", person: Some("a / b"), upload_tags: &y }, MemberSource { id: "s3", person: Some("a"), upload_tags: &z }]);
+        assert_eq!(g.iter().map(|x| (x.name.as_str(), x.ids.join(","))).collect::<Vec<_>>(), [("a / b / c", "s1,s3".to_string()), ("a / b / c (2)", "s2".into())]);
+    }
+
+    #[test]
+    fn dir_names() {
+        assert_eq!(safe_dir_name("a/b:c"), "a_b_c");
+        assert_eq!(safe_dir_name("nul.log"), "_nul.log");
+        assert_eq!(safe_dir_name("x. . "), "x");
+        assert_eq!(safe_dir_name("..."), "group");
+        assert_eq!(safe_dir_name(" 調査 "), "調査");
     }
 }
