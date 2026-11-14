@@ -3,6 +3,8 @@
 [README](../README.md) に戻る。
 
 前提: Node.js 24 以上(画面の Svelte のビルドと、テスト・スクリプトで `node:sqlite` と TypeScript の型除去を使うため)と Rust(rustup の stable。`cargo`)。
+Windows では、Rust の既定(MSVC 向け)のリンカーと、`rusqlite` が同梱する SQLite の C のコンパイルに、Visual Studio Build Tools の「C++ によるデスクトップ開発」(MSVC と Windows SDK。<https://visualstudio.microsoft.com/visual-cpp-build-tools/>)も要ります。
+Visual Studio 本体に C++ のワークロードを入れてあれば、それで足ります。`scripts/ensure-atlas.ps1` は、ビルドの前に `vswhere.exe` で `Microsoft.VisualStudio.Component.VC.Tools.x86.x64` を探し(無ければ PATH の `cl.exe` と `link.exe`)、無ければ入れるよう案内します。
 
 atlas の本体(集計・レポートのページ・サーバ・判定・アップロード)は Rust の実行ファイル 1 つ(`crates/atlas-cli`、実行ファイルの名前は `atlas`)です。
 画面(`packages/report/src/app/`。Svelte)と、画面が使う `packages/report/src/lib/`・`shared/`・`styles/` は TypeScript のまま残し、Vite で `packages/report/dist/template.html` にまとめます。
@@ -24,7 +26,29 @@ npm run audit:ui -- out   # 生成したレポートの全ページの網羅チ�
 # 画面の操作の検査を、CI の遅い機械に近い速さで(Chromium の CPU を N 倍遅くする。待ちの切れ方を手元で再現したいとき)
 ATLAS_UI_CPU_SLOWDOWN=20 npm run ui
 npm run fixtures    # fixture(.fixtures/)を手で作り直す(中身を見たいとき。E2E は毎回自動で作り直す)
+cargo deny check    # Rust の依存の検査(下記「依存の検査」。cargo install cargo-deny --locked で入れておく)
+# 従量課金の Anthropic API を直接呼ぶ判定(--backend anthropic)を入れたビルドとテスト(既定では入らない。下記)
+cargo build --release -p atlas-cli --features anthropic-backend
+cargo test --workspace --features atlas-cli/anthropic-backend
 ```
+
+### 機能 anthropic-backend(従量課金の API を直接呼ぶ判定)
+
+判定のバックエンド `anthropic`(`crates/atlas-judge/src/backends/anthropic.rs`。Anthropic Messages API を直接呼ぶ。従量課金)は、cargo の機能 `anthropic-backend`(`atlas-judge` の機能を `atlas-cli` が同じ名前で渡す)を付けたときだけ入ります。
+HTTP と TLS のクライアント(`ureq`・`rustls`・`ring`・`webpki-roots` など)がこれだけのために要るので、既定のビルドとリリースの `atlas.exe`、`scripts/ensure-atlas.ps1` のこの PC でのビルドには入れません。
+入れていないビルドでも `--backend anthropic` は引数として受け付け、`judge run` と `skill-draft` が、入っていないことと上のビルドの仕方を出して止まります(`atlas_judge::backends::ensure_backend_built`)。
+テストは両方で回します(`cargo test --workspace` と、上の `--features` を付けたもの)。片方だけで動くテストは `#[cfg(feature = "anthropic-backend")]` で分けます。
+
+### 依存の検査
+
+- **Rust**: `cargo deny check`(設定はリポジトリ直下の `deny.toml`)。入れるのは `cargo install cargo-deny --locked`。見るのは次の 4 つです。
+  - `advisories`: RustSec の既知の脆弱性(常に止める)・保守終了(unmaintained)・健全でない(unsound)・crates.io で取り下げられた版(yanked)。どれも止めます。直せるものは `cargo update -p <クレート>` で上げ、直せないものだけ `deny.toml` の `ignore` に理由と一緒に書きます。
+  - `licenses`: MIT と両立する寛容なライセンスだけを許します(`deny.toml` の `allow`。Unicode のデータのライセンスなど、許した理由はそこに書いてあります)。新しい依存が別のライセンスなら、両立するか確かめてから足します。
+  - `bans`: 同じクレートの版が複数あるのは警告だけ。版を `*` で指定した依存は止めます。
+  - `sources`: crates.io 以外(ほかのレジストリ・git)からの依存は止めます。
+  - 機能 `anthropic-backend` の依存も含めて見ます(`[graph] all-features = true`)。
+- **npm**: push と PR の CI は `dependencies` だけを `npm audit --omit=dev --audit-level=high` で見ます(今は 0 件。atlas の実行に npm の依存は要りません)。画面のビルドに使う `devDependencies`(Vite・Svelte など。出力は `atlas.exe` に埋め込まれます)は、毎週の検査で high 以上なら落とします。
+- **毎週**(`.github/workflows/deny-schedule.yml`): 新しい advisory はコードを変えなくても出るので、毎週月曜に `cargo deny check advisories` と `npm audit --audit-level=high`(`devDependencies` も含む)を回します。Actions の画面から手動でも回せます。CI と毎週の検査が入れる cargo-deny の版は、ワークフローの `CARGO_DENY_VERSION` で固定しています(Dependabot は上げないので、手で上げます)。
 
 e2e・画面の検査・`npm run atlas` が動かす atlas は、環境変数 `ATLAS_CLI` → `bin/atlas(.exe)` → `target/release/atlas(.exe)` → `target/debug/atlas(.exe)` の順に探します(`e2e/fixture-home.ts`)。
 `bin/` は起動用の `.bat` が置くもの(古い版のことがある)なので、手元で直したものを試すときは `bin/` を消すか `ATLAS_CLI` で指定します。
@@ -67,17 +91,17 @@ npm run audit:ui -- out --json audit.json --shots shots
   - 画面の操作の検査(`ui/`、Node.js 24 の 2 通りだけ): Playwright の Chromium で、一覧のチェックで集計し直す・タスクタグの作成 / 選択 / 名前と説明の編集 / 削除・詳細ページでのタスクタグの付け外しとメモ・アップロード・別のフォルダを開く(`ui/folders.test.ts`。開いた先の別のサーバまで)・戻る / 進む・サーバの止まり方・用語ページとの行き来を実際に押して確かめ、どの画面でもページ内の例外とコンソールのエラーが無いことを見ます。ブラウザの本体は Playwright の版ごとにキャッシュします。落ちたテストはその時点の画面を `out/ui-failures/<テスト名>.png` に残し(`ui/failure-shot.ts`)、CI では成果物 `ui-failures-<OS>` として 7 日間残します(Actions の実行結果の画面から落とせます)。
   - clone した状態での動作確認: clone した直後と同じ中身(`scripts/fresh-checkout.ts`。git archive HEAD だけで、`bin/` もレポートのテンプレートも入れない)を作り、起動用の `.bat` と同じ順で動かします(`scripts/checkout-smoke.ts`。`*.bat` と `ensure-atlas.ps1` が CRLF か → `scripts/ensure-atlas.ps1` が、リリースを探せない(origin が無い)のでこの PC でビルドするか(`npm ci` → `build:report` → `cargo build --release`)→ もう一度動かすと使い回すか → 初期設定(`atlas setup`)が書かずに終わるか → 架空の fixture で `atlas all` → プロジェクトを送る操作 → Windows では `upload-project.bat`・`schedule-upload.bat`・`setup.bat`・`open-folder.bat` を cmd で実際に起動する。Linux では `ensure-atlas.ps1` を pwsh で動かす)。ビルドはリポジトリの `target/` を使います(`CARGO_TARGET_DIR`。依存のクレートのビルドを使い回す)。手元では `npm run smoke` で同じことを試せます(`scripts/smoke-local.ts`。置き場はリポジトリの外の一時フォルダ(OS の一時フォルダの `atlas-ci-pkg-XXXXXX/`。回すたびに別の名前で、通ったら消し、落ちたら残す。中に作ると、入れ忘れた依存もリポジトリの `node_modules` から読めて見逃すため)。コミット済みの内容だけが入るので、コミットしていない変更があれば注意を出します)。
   - **push の前に手元で CI と同じ順に回す**: `npm run ci`(`typecheck` → `build:report` → `test` → `build:atlas` → `parity:fixture` → `e2e` → `ui` → `smoke`。最初に落ちたところで止まります)。画面の操作の検査には `npx playwright install chromium` が 1 回要ります。
-  - 依存の脆弱性: `package.json` の `dependencies` に high 以上の警告があると止まります(`npm audit --omit=dev`。今は画面のビルドに使う `devDependencies` だけで、atlas の実行に npm の依存は要りません)。PR では、その PR で新しく入る・上がる `dependencies` も同じ基準で見ます(ジョブ `dependency-review`。`actions/dependency-review-action`)。`devDependencies` は止めず、Dependabot の PR で追います。
+  - 依存の脆弱性: Rust はジョブ `cargo-deny`(`cargo deny --locked check`。上の「依存の検査」)で見ます。npm は `package.json` の `dependencies` に high 以上の警告があると止まります(`npm audit --omit=dev`。今は画面のビルドに使う `devDependencies` だけで、atlas の実行に npm の依存は要りません)。PR では、その PR で新しく入る・上がる `dependencies` も同じ基準で見ます(ジョブ `dependency-review`。`actions/dependency-review-action`)。`devDependencies` は止めず、Dependabot の PR で追います。
   - まとめのジョブ `ci-ok`: 上のジョブがどれか落ちたか取り消されたら落ちます。`main` のルール(リポジトリの Settings → Rules)で必須にするのはこれだけです(行列の組み合わせを変えても、必須チェックの名前を変えずに済むため)。`main` へは PR を通してだけ入れ、`ci-ok` が通るまでマージできません。
   - 外部の Action はコミット SHA で固定し、行末の `# v7.0.1` のような注記で版を示します(タグが付け替えられても中身が変わらないため)。更新は Dependabot が SHA と注記をまとめて行います。Rust は Action を使わず、ランナーに入っている rustup で入れます。
 - **依存の更新**(`.github/dependabot.yml`): npm・Cargo・GitHub Actions の更新を週 1 回 PR で出します。npm と Cargo の minor / patch はそれぞれ 1 本にまとめ、major は個別の PR になります。どの PR も CI が通ってから取り込みます。公開されてすぐの版は取り込みません(`cooldown`。npm と Cargo は patch 3 日・minor 7 日・major 14 日、Actions は 7 日。乗っ取られた版が公開直後に見つかって取り下げられる間を待つため)。脆弱性の修正(セキュリティ更新)には `cooldown` が効かないので、すぐ PR になります。
-- **リリース**(`.github/workflows/release.yml`): `v<version>` のタグを push すると、Windows のランナーで `npm ci` → `build:report` → `cargo build --release`(テンプレートが無ければ止める `ATLAS_REQUIRE_TEMPLATE=1`)で `atlas.exe` を作り、`atlas.exe.sha256` と一緒にそのタグの GitHub Release に付けます(`gh release`。書き込みの権限 `contents: write` はこのジョブだけ)。タグと `Cargo.toml` の `version` が違えば止めます。Actions の画面からタグを指定して作り直すこともできます(同じ名前のファイルは置き換えます)。利用者の起動用の `.bat` は、`scripts/ensure-atlas.ps1` でこれを取ってきます(README の「atlas.exe の用意と更新」)。
+- **リリース**(`.github/workflows/release.yml`): `v<version>` のタグを push すると、Windows のランナーで `npm ci` → `build:report` → `cargo build --release`(テンプレートが無ければ止める `ATLAS_REQUIRE_TEMPLATE=1`)で `atlas.exe` を作り(既定の機能だけ。`anthropic-backend` は入れない)、`atlas.exe.sha256` と一緒にそのタグの GitHub Release に付けます(`gh release`)。`atlas.exe` にはビルドの来歴(GitHub の artifact attestation。`actions/attest-build-provenance`)も付けます。書き込みの権限(`contents: write`、来歴の署名と保存の `id-token: write`・`attestations: write`)はこのジョブだけです。タグと `Cargo.toml` の `version` が違えば止めます。Actions の画面からタグを指定して作り直すこともできます(同じ名前のファイルは置き換えます)。利用者の起動用の `.bat` は、`scripts/ensure-atlas.ps1` でこれを取ってきます(README の「atlas.exe の用意と更新」)。
 
 ### リリースの手順
 
 1. ワークスペースの `Cargo.toml` の `[workspace.package]` の `version` を上げ、`cargo build` で `Cargo.lock` も更新して、PR を通して `main` に入れる。
 2. `main` のそのコミットに `v<version>` のタグを付けて push する(`git tag v0.2.0 && git push origin v0.2.0`)。
-3. Actions の「Release」が通り、リリースに `atlas.exe` と `atlas.exe.sha256` が付いたことを確かめる。
+3. Actions の「Release」が通り、リリースに `atlas.exe` と `atlas.exe.sha256` が付いたことを確かめる。来歴は `gh attestation verify atlas.exe --repo <owner>/<repo>` で確かめられる(README の「リリースの atlas.exe を自分で確かめる」)。
 
 `version` を上げたコミットが `main` に入ってからリリースが出るまでの間に `git pull` した利用者は、Node.js と Rust が無いと atlas.exe を用意できません(自動で送るタスクは前の版に戻して送り、次の回にもう一度試します)。`version` を上げたら、間を空けずにタグを push してください。
 `version` を上げずに `main` を進めても、リリースから取ってきた利用者の `atlas.exe` は変わりません(この PC でビルドした人は、次に `.bat` を開いたときにビルドし直します)。利用者に届けたい変更は、`version` を上げてリリースします。

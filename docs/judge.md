@@ -97,7 +97,14 @@ bin\atlas.exe judge run --model anthropic/claude-haiku-5-5  # Copilot に保存�
 | バックエンド | 中身 | 費用 |
 |---|---|---|
 | `copilot-cli`(既定) | `copilot -p` を空の作業フォルダで起動し、パケットをプロンプトに埋め込んで渡す | GitHub Copilot のサブスクリプション内で AI クレジット(旧課金では premium request)を消費します(1 セッション 1 回以上) |
-| `anthropic` | Anthropic Messages API を直接呼ぶ(既定モデル `claude-sonnet-5-5`、環境変数 `ANTHROPIC_API_KEY` が必要) | **従量課金**です。明示的に `--backend anthropic` を指定したときだけ使います |
+| `anthropic` | Anthropic Messages API を直接呼ぶ(既定モデル `claude-sonnet-5-5`、環境変数 `ANTHROPIC_API_KEY` が必要)。**既定のビルドとリリースの `atlas.exe` には入っていません**(下記) | **従量課金**です。明示的に `--backend anthropic` を指定したときだけ使います |
+
+- `anthropic` は、cargo の機能 `anthropic-backend` を付けてビルドした atlas にだけ入っています。HTTP と TLS の依存(ureq・rustls・ring・webpki-roots など 20 ほどのクレート)がこれだけのために要るので、既定のビルド・リリースの `atlas.exe`・起動用の `.bat` がこの PC でするビルドには入れていません。入っていない atlas で `--backend anthropic` を付けると、`judge run` と `skill-draft` は何もせずに、入っていないことと次のビルドの仕方を出して止まります。使うときは、このリポジトリで次を実行し、できた `target\release\atlas.exe` を使います(ビルドに要るものは [development.md](development.md))。
+
+  ```
+  npm run build:report
+  cargo build --release -p atlas-cli --features anthropic-backend
+  ```
 
 - `copilot-cli` は `--add-dir` を使いません(そのフォルダの `.github/skills` / `agents` を信頼設定として読むため、他セッションの本文を含むバンドルが指示の注入口になりうるからです)。ユーザーの AGENTS.md 等も読ませません(`--no-custom-instructions`)。`--allow-all-tools` は既定で付けます(付けたくないときは `--no-allow-tools`)が、判定にツールは要らないので、シェル・ファイルの作成と変更・URL アクセス(`shell` / `write` / `url`)は常に `--deny-tool` で拒否します(`copilot help permissions` によれば拒否は `--allow-all-tools` より優先されます。パケット本文に「コマンドを実行せよ」のような文が含まれていても動かないようにするためです)。MCP のツールはこの 3 種類のどれにも当たらない(`copilot help permissions` で別の種類 `<サーバー名>(ツール名)`)ので、モデルに見せるツールを `--available-tools=view` に絞り(作業フォルダは空で、copilot は既定でその外のパスを読ませません)、組み込みの MCP を `--disable-builtin-mcps` で止め、`copilot mcp list --json`(LLM は呼びません)で得た各サーバーを `--disable-mcp-server` と `--deny-tool <サーバー名>` で止めます。一覧を取れなかったときはサーバーごとの指定を付けずに続け、その旨を判定の notes に残します(copilot 1.0.109 での実走を 2026-11-11 に確認しました。架空のデータで、判定の間にツールの呼び出しは 0 回でした。同じ引数で起動してモデルに尋ねると、使えるツールは `view` だけと答え、作業フォルダの外のファイルを `view` で読もうとすると拒否されました)。プロンプト中のパケットの境界には依頼ごとの乱数を付け、本文側で境界を偽装できないようにしています。
 - **Copilot に保存した自分のモデル(BYOK)を使う**: Copilot CLI の `/model` で自分の API キーのモデルを保存してあれば(`~/.copilot/providers.json`。`copilot help providers`)、`--model <プロバイダー名>/<モデル ID>` で指定できます(例: `--model anthropic/claude-haiku-5-5`)。モデル ID だけを書くと `Model "…" is not available` で失敗します(copilot 1.0.109 で確認)。このとき GitHub の AI クレジットは使わず、**提供元の従量課金**になります(工数 2 件の判定で入力 1.3 万・出力 0.3 万トークンほどでした)。`turns run --model` と `bin\atlas.exe judge-flow --model` でも同じです。

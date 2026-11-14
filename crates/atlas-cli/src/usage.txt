@@ -87,7 +87,8 @@ serve・open のオプション:
   --no-open          起動後にブラウザを開かない
 
 judge run のオプション:
-  --backend <name>   copilot-cli(既定、copilot -p)/ anthropic(従量課金、ANTHROPIC_API_KEY が必要)
+  --backend <name>   copilot-cli(既定、copilot -p)/ anthropic(従量課金、ANTHROPIC_API_KEY が必要。
+                     --features anthropic-backend を付けてビルドした atlas だけ。リリースの atlas.exe には無い)
   --limit <n>        未判定のものから最大 n 件だけ判定する
   --only <id,...>    指定したセッションだけ判定する
   --concurrency <n>  同時に判定する数(既定 1)

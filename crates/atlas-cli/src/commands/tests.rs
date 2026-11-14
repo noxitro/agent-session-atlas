@@ -157,3 +157,30 @@ fn group_and_memo_commands() {
     assert!(take().contains("のメモを削除しました"));
     assert!(run(&cli(&["memo", "show", "abc-1", "--out", &o, "--notes-dir", &n]), &log).unwrap_err().to_string().contains("のメモはありません"));
 }
+
+// 従量課金の anthropic は機能 anthropic-backend を付けたビルドだけに入る。名前は受け付け、入っていなければ入れ方を書いて止める
+#[test]
+fn anthropic_backend_needs_the_feature() {
+    let d = tempfile::tempdir().unwrap();
+    let out = d.path().join("out");
+    let notes = d.path().join("notes");
+    fs::create_dir_all(&out).unwrap();
+    let (o, n) = (out.to_string_lossy().into_owned(), notes.to_string_lossy().into_owned());
+    let logs: Mutex<Vec<String>> = Mutex::new(vec![]);
+    let log = |m: &str| logs.lock().unwrap().push(m.to_string());
+    for args in [vec!["judge", "run", "--backend", "anthropic"], vec!["skill-draft", "1", "--backend", "anthropic"]] {
+        let mut args = args;
+        args.extend(["--out", &o, "--notes-dir", &n]);
+        let e = run(&cli(&args), &log).unwrap_err().to_string();
+        if cfg!(feature = "anthropic-backend") {
+            // 入っていれば先へ進む(キーかバンドル・候補が無くて止まる。HTTP は送らない)
+            assert!(!e.contains("この atlas には入っていません"), "{e}");
+        } else {
+            assert!(e.contains("この atlas には入っていません") && e.contains("cargo build --release -p atlas-cli --features anthropic-backend"), "{e}");
+        }
+    }
+    if !cfg!(feature = "anthropic-backend") {
+        // 従量課金の注意も出さない(使えないので)
+        assert!(logs.lock().unwrap().iter().all(|l| !l.contains("従量課金")), "{:?}", logs.lock().unwrap());
+    }
+}

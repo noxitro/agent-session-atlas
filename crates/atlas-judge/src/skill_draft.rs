@@ -1,11 +1,13 @@
 //! Phase 12: スキル化の候補から SKILL.md の下書きを LLM に作らせる(任意。明示したときだけ動く。packages/judge/src/skill-draft.ts の移植)。
-//! 判定と同じバックエンド(copilot-cli / anthropic)の経路を使う。copilot-cli は空の作業ディレクトリ、
+//! 判定と同じバックエンド(copilot-cli / anthropic)の経路を使う(anthropic は機能 anthropic-backend を付けてビルドしたときだけ)。copilot-cli は空の作業ディレクトリ、
 //! --no-custom-instructions、shell / write / url と MCP の拒否まで判定と同じ。
 //! クレジットや従量課金を消費しうるので既定の処理では呼ばず、テストは偽の CLI と HTTP の差し替えで行う。
 
+#[cfg(feature = "anthropic-backend")]
 use crate::backends::anthropic::{anthropic_message, AnthropicOptions};
 use crate::backends::copilot_cli::{code_str, copilot_args, copilot_mcp_servers, mkdtemp, JUDGE_WORK_DIR_PREFIX};
 use crate::backends::output::parse_agent_jsonl;
+use crate::backends::ensure_backend_built;
 use crate::backends::proc::{command_line_length, resolve_command, run_process, tail, ResolvedCommand, MAX_COMMAND_LINE};
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
@@ -69,6 +71,7 @@ pub struct SkillDraftOptions {
     pub timeout_ms: Option<u64>,
     /// テスト用
     pub copilot_bin: Option<String>,
+    #[cfg(feature = "anthropic-backend")]
     pub anthropic: AnthropicOptions,
 }
 
@@ -121,8 +124,11 @@ fn draft_with_copilot(prompt: &str, o: &SkillDraftOptions) -> Result<SkillDraftR
 
 /// 選んだバックエンドで下書きを作る(クレジットや従量課金を消費しうる。明示されたときだけ呼ぶ)
 pub fn draft_skill(c: &DraftCandidate, index: u64, o: &SkillDraftOptions) -> Result<SkillDraftResult> {
+    let backend = o.backend.as_deref().unwrap_or("copilot-cli");
+    ensure_backend_built(backend)?;
     let prompt = build_skill_draft_prompt(c, index);
-    match o.backend.as_deref().unwrap_or("copilot-cli") {
+    match backend {
+        #[cfg(feature = "anthropic-backend")]
         "anthropic" => {
             let r = anthropic_message(&prompt, &AnthropicOptions { model: o.model.clone(), timeout_ms: o.timeout_ms, ..o.anthropic.clone() })?;
             Ok(SkillDraftResult { markdown: require_text(&r.texts, "Anthropic API")?, usage: r.usage, notes: r.notes })
@@ -134,13 +140,27 @@ pub fn draft_skill(c: &DraftCandidate, index: u64, o: &SkillDraftOptions) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backends::anthropic::{HttpPost, HttpResponse};
-    use serde_json::json;
-    use std::sync::{Arc, Mutex};
 
+    fn candidate() -> DraftCandidate {
+        DraftCandidate { kind: "request".into(), key: "k".into(), count: 3, sessions: vec!["a".into(), "b".into(), "c".into()], median_ms: Some(1000.0), representative: Some("代表の依頼".into()), examples: vec![], tools: None }
+    }
+
+    // 機能 anthropic-backend なしのビルドでは、copilot を探す前に、入れ方を書いたエラーで止まる
+    #[cfg(not(feature = "anthropic-backend"))]
+    #[test]
+    fn anthropic_is_not_in_the_default_build() {
+        let o = SkillDraftOptions { backend: Some("anthropic".into()), copilot_bin: Some("atlas-test-no-such-copilot".into()), ..Default::default() };
+        let e = draft_skill(&candidate(), 1, &o).err().unwrap().to_string();
+        assert!(e.contains("--features anthropic-backend"), "{e}");
+    }
+
+    #[cfg(feature = "anthropic-backend")]
     #[test]
     fn anthropic_returns_text_and_requires_key() {
-        let candidate = DraftCandidate { kind: "request".into(), key: "k".into(), count: 3, sessions: vec!["a".into(), "b".into(), "c".into()], median_ms: Some(1000.0), representative: Some("代表の依頼".into()), examples: vec![], tools: None };
+        use crate::backends::anthropic::{HttpPost, HttpResponse};
+        use serde_json::json;
+        use std::sync::{Arc, Mutex};
+        let candidate = candidate();
         let sent = Arc::new(Mutex::new(String::new()));
         let s2 = sent.clone();
         let post: HttpPost = Arc::new(move |_, _, body, _| {
@@ -157,6 +177,10 @@ mod tests {
         assert!(draft_skill(&candidate, 1, &opts(Some("k"), empty)).err().unwrap().to_string().contains("本文がありません"));
         // キーが空ならエラー(環境変数は読まない形で確かめる)
         assert!(draft_skill(&candidate, 1, &opts(Some(""), post)).err().unwrap().to_string().contains("ANTHROPIC_API_KEY"));
-        assert!(build_skill_draft_prompt(&candidate, 2).contains("1 回の所要の中央値: 1 秒"));
+    }
+
+    #[test]
+    fn prompt_has_the_median_duration() {
+        assert!(build_skill_draft_prompt(&candidate(), 2).contains("1 回の所要の中央値: 1 秒"));
     }
 }

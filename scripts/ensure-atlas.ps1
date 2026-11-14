@@ -5,9 +5,11 @@
 #  1. bin\atlas.exe があり、atlas --version の版が Cargo.toml の version と同じなら、何もしない
 #     (この PC でビルドしたものは、作ったときのコミットが今のコミットと違い、Node.js と Rust があれば、ビルドし直す)
 #  2. このリポジトリ(git remote get-url origin の GitHub)のリリース v<version> から atlas.exe を取ってきて、
-#     同じリリースの atlas.exe.sha256 と照らし合わせてから bin\ に置く(取れなければ gh release download も試す)
-#  3. リリースが無いか取れなければ、Node.js と Rust があれば、ここでビルドして bin\ に置く
-#     (npm ci → npm run build:report → cargo build --release。経過は bin\build.log)
+#     同じリリースの atlas.exe.sha256 と照らし合わせてから bin\ に置く(取れなければ gh release download も試す)。
+#     gh(GitHub CLI)があってログインしていれば、ビルドの来歴(GitHub の artifact attestation。このリポジトリのリリースの
+#     ワークフローが作ったものか)も gh attestation verify で確かめ、合わなければ使わない。gh が無ければ sha256 だけで確かめる
+#  3. リリースが無いか取れなければ、Node.js と Rust(Windows では Visual Studio の C++ のビルドツールも)があれば、
+#     ここでビルドして bin\ に置く(npm ci → npm run build:report → cargo build --release。経過は bin\build.log)
 #  4. どれもできなければ、何を入れればよいかを出して、終了コード 1 で終わる
 #
 # 管理者の権限は要らない(書くのは bin\ と target\ と node_modules\ だけ)。
@@ -78,12 +80,35 @@ function Get-Source {
   return ''
 }
 
+# Rust の MSVC 向けのツールチェーン(Windows の既定)が使う、Visual Studio の C++ のビルドツール(リンカーと、同梱の SQLite を
+# コンパイルする cl.exe。Windows SDK と一緒に入れる)があるか。Windows 以外と、MSVC 向けでない Rust(gnu など)では要らない
+function Test-MsvcTools {
+  if (-not $OnWindows) { return $true }
+  $ErrorActionPreference = 'Continue'
+  if (Test-Tool 'rustc') {
+    $rustHost = [regex]::Match([string]((& rustc -vV 2>$null) -join "`n"), '(?m)^host:\s*(\S+)').Groups[1].Value
+    if ($rustHost -and $rustHost -notlike '*-msvc') { return $true }
+  }
+  # Visual Studio(Build Tools を含む)に付く vswhere.exe で、x64 の C++ のビルドツールが入っているものを探す
+  $x86 = ${env:ProgramFiles(x86)}
+  if ($x86) {
+    $vswhere = Join-Path $x86 'Microsoft Visual Studio\Installer\vswhere.exe'
+    if (Test-Path -LiteralPath $vswhere -PathType Leaf) {
+      $found = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
+      if ($LASTEXITCODE -eq 0 -and $found) { return $true }
+    }
+  }
+  # 開発者用のコマンド プロンプトなどで PATH に通っていれば、それで足りる(Git に付く別の link.exe と取り違えないよう cl.exe も見る)
+  return ((Test-Tool 'cl.exe') -and (Test-Tool 'link.exe'))
+}
+
 # この PC でビルドするのに足りないもの(無ければ空)
 function Get-MissingTools {
   $missing = @()
   if (-not (Test-Tool 'node')) { $missing += 'Node.js' }
   if (-not (Test-Tool 'npm')) { $missing += 'npm' }
   if (-not (Test-Tool 'cargo')) { $missing += 'Rust(cargo)' }
+  if (-not (Test-MsvcTools)) { $missing += 'Visual Studio の C++ のビルドツール(MSVC)' }
   return ,$missing
 }
 
@@ -133,6 +158,32 @@ function Install-Exe([string]$src, [string]$source) {
 }
 
 $script:DownloadReason = ''
+# ビルドの来歴を確かめたか('ok' / 'skip')と、確かめなかったときの理由
+$script:Attestation = ''
+$script:AttestationNote = ''
+
+# 取ってきた atlas.exe のビルドの来歴(GitHub の artifact attestation)を gh attestation verify で確かめる。
+# このリポジトリのリリースのワークフロー(.github/workflows/release.yml)が作ったものでなければ失敗にする。
+# 戻り値: 'ok'(確かめた)/ 'skip'(gh が無いかログインしていないので確かめられない。理由は AttestationNote)/ 'fail'(合わない。理由は DownloadReason)
+function Test-Attestation([string]$file, [string]$slug) {
+  $ErrorActionPreference = 'Continue'
+  if (-not (Test-Tool 'gh')) {
+    $script:AttestationNote = 'gh(GitHub CLI)が無いので、ビルドの来歴(attestation)は確かめず、sha256 だけで確かめました'
+    return 'skip'
+  }
+  & gh auth status *> $null
+  if ($LASTEXITCODE -ne 0) {
+    $script:AttestationNote = 'gh にログインしていないので、ビルドの来歴(attestation)は確かめず、sha256 だけで確かめました(gh auth login で確かめるようになります)'
+    return 'skip'
+  }
+  $out = & gh attestation verify $file --repo $slug --signer-workflow "$slug/.github/workflows/release.yml" 2>&1
+  if ($LASTEXITCODE -ne 0) {
+    $why = @($out | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ }) | Select-Object -Last 1
+    $script:DownloadReason = "取ってきた atlas.exe のビルドの来歴を確かめられません(gh attestation verify: $why)。使いません"
+    return 'fail'
+  }
+  return 'ok'
+}
 
 # リリース v<version> の atlas.exe を取ってきて、sha256 と版を確かめる。確かめた実行ファイルのパス(だめなら $null。理由は DownloadReason)
 function Get-ReleaseExe([string]$want, [string]$work) {
@@ -161,6 +212,9 @@ function Get-ReleaseExe([string]$want, [string]$work) {
   $expect = [regex]::Match([IO.File]::ReadAllText($sum), '\b[0-9a-fA-F]{64}\b').Value.ToLowerInvariant()
   $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $file).Hash.ToLowerInvariant()
   if (-not $expect -or $expect -ne $actual) { $script:DownloadReason = "取ってきた atlas.exe の sha256 がリリースの atlas.exe.sha256 と合いません(使いません)"; return $null }
+  # 来歴は、取ってきたものを動かす(版を確かめる atlas --version)前に確かめる
+  $script:Attestation = Test-Attestation $file $slug
+  if ($script:Attestation -eq 'fail') { return $null }
   $info = Get-ExeInfo $file
   if (-not $info -or $info.Version -ne $want) { $script:DownloadReason = "取ってきた atlas.exe の版が $want ではありません(使いません)"; return $null }
   return $file
@@ -225,7 +279,12 @@ try {
       $got = Get-ReleaseExe $want $work
       if ($got) {
         Install-Exe $got "release v$want"
-        Say "  リリース v$want の atlas.exe を置きました(sha256 を確かめました)"
+        if ($script:Attestation -eq 'ok') {
+          Say "  リリース v$want の atlas.exe を置きました(sha256 とビルドの来歴を確かめました)"
+        } else {
+          Say "  リリース v$want の atlas.exe を置きました(sha256 を確かめました)"
+          Say "  $($script:AttestationNote)"
+        }
         exit 0
       }
       Say "  $($script:DownloadReason)"
@@ -245,7 +304,9 @@ try {
     }
     Say ''
     Say "atlas.exe を用意できませんでした(版 v$want)。次のどちらかをしてから、もう一度実行してください:"
-    Say "  - Node.js 24 以上(https://nodejs.org/)と Rust(https://rustup.rs/)を入れる。この PC でビルドします(足りないもの: $($missing -join '、'))"
+    $tools = 'Node.js 24 以上(https://nodejs.org/)と Rust(https://rustup.rs/)'
+    if ($OnWindows) { $tools += '、Visual Studio Build Tools の「C++ によるデスクトップ開発」(MSVC と Windows SDK。https://visualstudio.microsoft.com/visual-cpp-build-tools/)' }
+    Say "  - $tools を入れる。この PC でビルドします(足りないもの: $($missing -join '、'))"
     Say "  - 版 v$want のリリースが出るのを待つ(出ていなければ、atlas を作っている人に知らせてください)"
     exit 1
   } finally {

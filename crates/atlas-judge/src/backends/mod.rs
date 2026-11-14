@@ -1,5 +1,7 @@
 //! 判定バックエンド(packages/judge/src/backends/ の移植)。types.ts の共通の形はここに置く。
 
+// 従量課金の Anthropic API を直接呼ぶバックエンド。機能 anthropic-backend を付けてビルドしたときだけ入る(Cargo.toml)
+#[cfg(feature = "anthropic-backend")]
 pub mod anthropic;
 pub mod copilot_cli;
 pub mod output;
@@ -8,6 +10,21 @@ pub mod proc;
 use crate::schema::JudgmentItem;
 use anyhow::{bail, Result};
 use serde_json::Value;
+
+/// このビルドに anthropic バックエンドが入っているか
+pub const ANTHROPIC_BACKEND_BUILT: bool = cfg!(feature = "anthropic-backend");
+
+/// anthropic を選んだのに、このビルドに入っていないときの文言(入れ方まで書く)
+pub const ANTHROPIC_NOT_BUILT: &str = "anthropic バックエンド(Anthropic API を直接呼ぶ。従量課金)は、この atlas には入っていません(既定のビルドとリリースの atlas.exe には入れていません)。使うときは、このリポジトリで npm run build:report の後に cargo build --release -p atlas-cli --features anthropic-backend を実行し、できた target/release/atlas(.exe)を使ってください(docs/judge.md)。GitHub Copilot CLI で判定するなら --backend を付けません(既定の copilot-cli)";
+
+/// 選んだバックエンドがこのビルドで使えるか確かめる(使えなければ、入れ方を書いたエラー)。
+/// 引数の解釈では anthropic の名前を受け付け、実行するときにここで止める(不明な名前とは別の、分かる文言にするため)
+pub fn ensure_backend_built(name: &str) -> Result<()> {
+    if name == "anthropic" && !ANTHROPIC_BACKEND_BUILT {
+        bail!("{ANTHROPIC_NOT_BUILT}");
+    }
+    Ok(())
+}
 
 pub struct JudgePacket<'a> {
     pub session_id: &'a str,
@@ -43,5 +60,23 @@ pub trait JudgeBackend: Sync {
     /// プロンプトをそのまま渡す(label は生の出力を残すときのファイル名)
     fn ask(&self, _prompt: &str, _label: &str) -> Result<AskResult> {
         bail!("{} では ask を使えません", self.name())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn anthropic_is_usable_only_when_built_with_the_feature() {
+        assert!(ensure_backend_built("copilot-cli").is_ok());
+        let r = ensure_backend_built("anthropic");
+        if cfg!(feature = "anthropic-backend") {
+            assert!(r.is_ok());
+        } else {
+            let e = r.unwrap_err().to_string();
+            assert!(e.contains("この atlas には入っていません"), "{e}");
+            assert!(e.contains("cargo build --release -p atlas-cli --features anthropic-backend"), "{e}");
+        }
     }
 }

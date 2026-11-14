@@ -7,6 +7,7 @@ use crate::config::resolve_judge_model;
 use crate::paths::Paths;
 use anyhow::{anyhow, bail, Result};
 use atlas_core::js;
+use atlas_judge::backends::ensure_backend_built;
 use atlas_judge::skill_draft::{draft_skill, DraftCandidate, SkillDraftOptions as DraftOptions};
 use regex::Regex;
 use serde::Deserialize;
@@ -36,6 +37,8 @@ fn slug(c: &DraftCandidate) -> String {
 }
 
 pub fn run_skill_draft(p: &Paths, o: &SkillDraftOptions, log: Log<'_>) -> Result<PathBuf> {
+    // このビルドに入っていないバックエンド(機能 anthropic-backend なしの anthropic)なら、入力を読む前に入れ方を書いて止める
+    ensure_backend_built(&o.backend)?;
     let path = p.out.join("insights.json");
     if !path.exists() {
         bail!("{} がありません。先に atlas build(または export)を実行してください。", path.display());

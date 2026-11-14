@@ -6,9 +6,10 @@ use crate::args::JudgeCliOptions;
 use crate::config::resolve_judge_model;
 use crate::paths::{resolve, Paths};
 use anyhow::{bail, Result};
+#[cfg(feature = "anthropic-backend")]
 use atlas_judge::backends::anthropic::{anthropic_backend, AnthropicOptions};
 use atlas_judge::backends::copilot_cli::{copilot_cli_backend, CopilotCliOptions};
-use atlas_judge::backends::JudgeBackend;
+use atlas_judge::backends::{ensure_backend_built, JudgeBackend};
 use atlas_judge::judgments_io::{import_judgments, ImportOptions};
 use atlas_judge::run::{run_judge, RunOptions};
 use serde_json::Value;
@@ -25,10 +26,13 @@ pub(crate) fn read_sessions_value(path: &Path) -> Result<Vec<Value>> {
     }
 }
 
+/// 判定のバックエンドを作る。anthropic は機能 anthropic-backend を付けてビルドしたときだけ(なければ入れ方を書いたエラー)
 pub fn make_backend(j: &JudgeCliOptions, model: Option<String>) -> Result<Box<dyn JudgeBackend>> {
+    ensure_backend_built(&j.backend)?;
     let timeout_ms = j.timeout_sec * 1000;
     match j.backend.as_str() {
         "copilot-cli" => Ok(Box::new(copilot_cli_backend(CopilotCliOptions { bin: None, model, allow_tools: Some(j.allow_tools), timeout_ms: Some(timeout_ms) }))),
+        #[cfg(feature = "anthropic-backend")]
         "anthropic" => Ok(Box::new(anthropic_backend(AnthropicOptions { model, timeout_ms: Some(timeout_ms), ..Default::default() })?)),
         other => bail!("不明なバックエンドです: {other}"),
     }
@@ -61,6 +65,8 @@ pub fn run_judge_command(p: &Paths, j: &JudgeCliOptions, log: Log<'_>) -> Result
         }
         return Ok(None);
     }
+    // 入っていないバックエンドなら、従量課金の注意を出す前に止める
+    ensure_backend_built(&j.backend)?;
     if j.backend == "anthropic" {
         log("judge: 注意 anthropic バックエンドは Anthropic API の従量課金です");
     }
