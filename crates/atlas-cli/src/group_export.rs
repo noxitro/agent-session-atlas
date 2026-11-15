@@ -209,6 +209,12 @@ mod tests {
         export_group(&GroupExportPaths { out: &e.out, sessions: &s, judgments: &j, groups: &g, turn_judgments: None }, name, log)
     }
 
+    /// sessions.json のどのセッションにも失敗の台帳(analysis.failures)があるか
+    fn all_have_ledgers(sessions: &Path) -> bool {
+        let v: Value = serde_json::from_str(&fs::read_to_string(sessions).unwrap()).unwrap();
+        v["sessions"].as_array().unwrap().iter().all(|s| s["analysis"]["failures"].is_array())
+    }
+
     fn names(d: &Path) -> Vec<String> {
         let mut v: Vec<String> = fs::read_dir(d).unwrap().map(|x| x.unwrap().file_name().to_string_lossy().into_owned()).collect();
         v.sort();
@@ -223,6 +229,13 @@ mod tests {
         let dir = PathBuf::from(&r.dir);
         assert_eq!(dir, e.out.join("groups").join("調査_ A_B"));
         assert_eq!(names(&dir), vec!["README.md", "atlas.sqlite", "metrics.json", "records", "sessions.csv", "turns.csv"]);
+        // ツールの失敗と拒否ごとの表(failures)は out/tables/ だけ。失敗の台帳のある記録でも、グループの書き出しの SQLite には入れない
+        assert!(all_have_ledgers(&e.out.join("sessions.json")));
+        {
+            let db = rusqlite::Connection::open(dir.join(SQLITE_FILE)).unwrap();
+            let tables: Vec<String> = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+            assert_eq!(tables, ["sessions", "turns"]);
+        }
         let turns = fs::read_to_string(dir.join("turns.csv")).unwrap();
         let lines: Vec<&str> = turns.trim_end().split("\r\n").collect();
         assert_eq!(lines.len(), 4);
