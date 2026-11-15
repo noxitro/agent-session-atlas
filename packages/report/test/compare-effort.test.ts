@@ -7,9 +7,9 @@ import {
   effortChoices,
   effortModels,
   effortSplit,
-  effortWeeks,
   newcombeDiff,
   reworkOfTurns,
+  t975,
   weekStart,
   welchDiff,
   wilson,
@@ -18,11 +18,9 @@ import {
 import { MAIN_EFFORT_SHARE, mainEffortOf } from '../src/lib/main-effort.ts';
 import { PHASES, REQUEST_KINDS } from '../src/shared/turns.ts';
 import type { TurnTuple } from '../src/lib/turns.ts';
-import type { EffortTuple } from '../src/lib/types.ts';
 
 /** 依頼の行(種類と中断だけを決める。ほかは 0) */
 const turn = (kind: (typeof REQUEST_KINDS)[number], aborts = 0): TurnTuple => [PHASES.indexOf('implement'), REQUEST_KINDS.indexOf(kind), null, 1000, 1, 0, 0, aborts, 0, 0, 0, 0, null, 0, 1];
-const eff = (n: number): EffortTuple => [n, 0, 0, 0];
 
 const s = (id: string, o: Partial<CompareSession> = {}): CompareSession =>
   ({
@@ -44,10 +42,10 @@ const s = (id: string, o: Partial<CompareSession> = {}): CompareSession =>
 describe('mainEffortOf: 本体の (モデル, 推論強度)', () => {
   it(`本体のリクエストの ${MAIN_EFFORT_SHARE * 100}% 以上が同じ組ならその組、届かなければ混在、記録が無ければ記録なし`, () => {
     expect(MAIN_EFFORT_SHARE).toBe(0.9);
-    expect(mainEffortOf({ m: { xhigh: eff(9), medium: eff(1) } })).toEqual({ kind: 'decided', model: 'm', effort: 'xhigh' });
+    expect(mainEffortOf({ m: { xhigh: 9, medium: 1 } })).toEqual({ kind: 'decided', model: 'm', effort: 'xhigh' });
     // モデルが違う組も分母に入る(8 / 10 は届かない)
-    expect(mainEffortOf({ m: { xhigh: eff(8) }, n: { xhigh: eff(2) } })).toEqual({ kind: 'mixed' });
-    expect(mainEffortOf({ m: { '(unknown)': eff(10) } })).toEqual({ kind: 'none' });
+    expect(mainEffortOf({ m: { xhigh: 8 }, n: { xhigh: 2 } })).toEqual({ kind: 'mixed' });
+    expect(mainEffortOf({ m: { '(unknown)': 10 } })).toEqual({ kind: 'none' });
     expect(mainEffortOf({})).toEqual({ kind: 'none' });
     expect(mainEffortOf(undefined)).toEqual({ kind: 'none' });
   });
@@ -79,11 +77,26 @@ describe('差の幅(95%)', () => {
     expect(newcombeDiff(1, 0, 1, 1)).toBeNull();
   });
 
-  it('welchDiff: 平均の差 ± 1.96 × 標準誤差(手計算: [1,2,3] と [2,4,6] は 2 ± 1.96 × √(1/3 + 4/3))', () => {
+  it('t975: t 分布の 97.5% の点(表の値: 自由度 4 は 2.776、10 は 2.228、30 は 2.042。大きい自由度では 1.96 に近づく)', () => {
+    expect(Math.abs(t975(4) - 2.776)).toBeLessThan(0.002);
+    expect(Math.abs(t975(10) - 2.228)).toBeLessThan(0.001);
+    expect(Math.abs(t975(30) - 2.042)).toBeLessThan(0.001);
+    expect(Math.abs(t975(1e6) - 1.96)).toBeLessThan(0.001);
+  });
+
+  it('welchDiff: 平均の差 ± t × 標準誤差(手計算: [1,2,3] と [2,4,6] は標準誤差 √(1/3 + 4/3)、自由度 (5/3)² ÷ ((1/3)²/2 + (4/3)²/2) = 50/17)', () => {
     const [lo, hi] = welchDiff([1, 2, 3], [2, 4, 6])!;
     const se = Math.sqrt(1 / 3 + 4 / 3);
-    expect(lo).toBeCloseTo(2 - 1.96 * se, 10);
-    expect(hi).toBeCloseTo(2 + 1.96 * se, 10);
+    const t = t975(50 / 17);
+    expect(lo).toBeCloseTo(2 - t * se, 10);
+    expect(hi).toBeCloseTo(2 + t * se, 10);
+    // 件数が少ないので、1.96 で作る幅より広い
+    expect(t).toBeGreaterThan(2.5);
+    // 5 件ずつで同じばらつきなら自由度は 8(t は 2.306)
+    const [l5, h5] = welchDiff([1, 2, 3, 4, 5], [3, 4, 5, 6, 7])!;
+    expect((h5 - l5) / 2 / Math.sqrt(2.5 / 5 + 2.5 / 5)).toBeCloseTo(2.306, 2);
+    // どちらもばらつきが無ければ、幅は差そのもの
+    expect(welchDiff([2, 2], [5, 5])).toEqual([3, 3]);
     expect(welchDiff([1], [1, 2])).toBeNull();
   });
 });
@@ -107,8 +120,11 @@ describe('手戻りのないセッション', () => {
     // A: 10 件中 5 件が手戻りなし(依頼 2 件)、B: 10 件中 8 件(依頼 5 件が 4 件、2 件が 6 件)。1 件だけのセッションは分母に入らない
     const A = [...Array.from({ length: 10 }, (_, i) => s(`a${i}`, { turnRows: i < 5 ? clean2 : fix2 })), s('a-one', { turnRows: [turn('task')] })];
     const B = Array.from({ length: 10 }, (_, i) => s(`b${i}`, { turnRows: i < 4 ? clean5 : i < 8 ? clean2 : fix2 }));
-    const rows = compareRows(compareSide(A), compareSide(B));
+    const rows = compareRows(compareSide(A), compareSide(B), { byTurnCount: true });
     const r = (k: string) => rows.find((x) => x.key === k)!;
+    // 依頼の数で分けた 2 行は、頼んだとき(推論強度どうしの比較)だけ出す
+    expect(compareRows(compareSide(A), compareSide(B)).map((x) => x.key).filter((k) => k.startsWith('no-rework'))).toEqual(['no-rework']);
+    expect(rows.map((x) => x.key).filter((k) => k.startsWith('no-rework'))).toEqual(['no-rework', 'no-rework-short', 'no-rework-long']);
     expect(r('scored')).toMatchObject({ a: 10, b: 10 });
     expect(r('no-rework')).toMatchObject({ a: 0.5, b: 0.8 });
     expect(r('no-rework').ci![0]).toBeCloseTo(-0.1067, 4);
@@ -138,11 +154,16 @@ describe('手戻りのないセッション', () => {
     // 片側が 5 件未満なら —
     const few = compareRows(compareSide(A.slice(0, 4)), compareSide(B));
     expect(few.find((x) => x.key === 'aiu')!.ci).toBeNull();
+    // AIU / リクエストは、両方の記録があるセッションが 5 件未満なら —(AIU の記録だけが 5 件あっても出さない)
+    const noReq = A.map((x, i) => (i === 0 ? x : { ...x, tokens: { ...x.tokens, requests: null } }));
+    const one = compareRows(compareSide(noReq), compareSide(B));
+    expect(one.find((x) => x.key === 'aiu')!.a).toBe(3);
+    expect(one.find((x) => x.key === 'aiu-per-request')).toMatchObject({ a: null, b: 30 / 20 });
   });
 });
 
 describe('推論強度どうしの母集団と、利用者 × 週', () => {
-  const main = (rows: Record<string, Record<string, number>>) => ({ mainModelEfforts: Object.fromEntries(Object.entries(rows).map(([m, by]) => [m, Object.fromEntries(Object.entries(by).map(([e, n]) => [e, eff(n)]))])) });
+  const main = (rows: Record<string, Record<string, number>>) => ({ mainModelEfforts: rows });
   // 2026-11-02 は月曜、2026-11-08 は日曜(ローカルの日付で作る)
   const local = (d: number, h = 10) => new Date(2026, 10, d, h).toISOString();
   const list = [
@@ -179,14 +200,20 @@ describe('推論強度どうしの母集団と、利用者 × 週', () => {
     expect([all.a.map((x) => x.id), all.b.map((x) => x.id), all.mixed, all.none]).toEqual([['m1', 'm2'], ['x1', 'x2'], 1, 1]);
     const firstWeek = effortSplit(list, 'm', 'medium', 'xhigh', '2026-11-02', '2026-11-08');
     expect([firstWeek.a.map((x) => x.id), firstWeek.b.map((x) => x.id), firstWeek.mixed, firstWeek.none]).toEqual([['m1', 'm2'], ['x1'], 0, 1]);
+    // A と B に同じ強度を選ぶと、両側に同じセッションが入る(B だけ空にしない)
+    const same = effortSplit(list, 'm', 'xhigh', 'xhigh', '', '');
+    expect([same.a.map((x) => x.id), same.b.map((x) => x.id)]).toEqual([['x1', 'x2'], ['x1', 'x2']]);
+    expect(same.weeks.filter((w) => w.person === 'zz-b').map((w) => [w.a, w.b])).toEqual([[1, 1], [1, 1]]);
   });
 
-  it('effortWeeks: 利用者 × 週(月曜始まり)。利用者の記録が無ければ週だけ', () => {
+  it('effortSplit の weeks: 利用者 × 週(月曜始まり)。利用者の記録が無ければ週だけ。件数は母集団と同じ分類から', () => {
     expect(weekStart(Date.parse(local(8, 23)))).toBe('2026-11-02');
     expect(weekStart(Date.parse(local(9, 0)))).toBe('2026-11-09');
-    const w = effortWeeks(list, 'm', 'medium', 'xhigh', '', '');
+    const w = effortSplit(list, 'm', 'medium', 'xhigh', '', '');
     expect(w.byPerson).toBe(true);
-    expect(w.rows).toEqual([
+    const sum = (k: 'a' | 'b' | 'mixed' | 'none'): number => w.weeks.reduce((n, r) => n + r[k], 0);
+    expect([sum('a'), sum('b'), sum('mixed'), sum('none')]).toEqual([w.a.length, w.b.length, w.mixed, w.none]);
+    expect(w.weeks).toEqual([
       { person: 'zz-a', week: '2026-11-02', a: 2, b: 0, mixed: 0, none: 0 },
       { person: 'zz-a', week: '2026-11-09', a: 0, b: 0, mixed: 1, none: 0 },
       // high のセッション(zz-b の 11-02 の週)は A・B・混在・記録なしのどれにも数えない
@@ -194,7 +221,7 @@ describe('推論強度どうしの母集団と、利用者 × 週', () => {
       { person: 'zz-b', week: '2026-11-09', a: 0, b: 1, mixed: 0, none: 0 },
       { person: null, week: '2026-11-02', a: 0, b: 0, mixed: 0, none: 1 },
     ]);
-    const anon = effortWeeks(
+    const anon = effortSplit(
       list.map((x) => ({ ...x, person: null })),
       'm',
       'medium',
@@ -203,7 +230,7 @@ describe('推論強度どうしの母集団と、利用者 × 週', () => {
       '',
     );
     expect(anon.byPerson).toBe(false);
-    expect(anon.rows).toEqual([
+    expect(anon.weeks).toEqual([
       { person: null, week: '2026-11-02', a: 2, b: 1, mixed: 0, none: 1 },
       { person: null, week: '2026-11-09', a: 0, b: 1, mixed: 1, none: 0 },
     ]);

@@ -34,21 +34,23 @@ fn exec_summary(r: &SessionRecord) -> ExecSummary {
     for (k, v) in e.efforts.js_entries() {
         efforts.insert(k.clone(), tuple(v));
     }
-    let by_model = |src: &Option<JsMap<JsMap<atlas_core::types::EffortStat>>>| {
-        let mut out = JsMap::new();
-        if let Some(me) = src {
-            for (m, by) in me.js_entries() {
-                let mut to = JsMap::new();
-                for (k, v) in by.js_entries() {
-                    to.insert(k.clone(), tuple(v));
-                }
-                out.insert(m.clone(), to);
-            }
+    let mut model_efforts = JsMap::new();
+    let mut main_model_efforts = JsMap::new();
+    for (m, by) in e.model_efforts.iter().flat_map(|me| me.js_entries()) {
+        let mut to = JsMap::new();
+        for (k, v) in by.js_entries() {
+            to.insert(k.clone(), tuple(v));
         }
-        out
-    };
-    let model_efforts = by_model(&e.model_efforts);
-    let main_model_efforts = by_model(&e.main_model_efforts);
+        model_efforts.insert(m.clone(), to);
+    }
+    // 本体だけの内訳は、リクエスト数だけを埋め込む(本体の推論強度を決めるのに使うのはそれだけ)
+    for (m, by) in e.main_model_efforts.iter().flat_map(|me| me.js_entries()) {
+        let mut to = JsMap::new();
+        for (k, v) in by.js_entries() {
+            to.insert(k.clone(), v.requests);
+        }
+        main_model_efforts.insert(m.clone(), to);
+    }
     let c = &e.context;
     let any = c.system_tokens.is_some() || c.conversation_tokens.is_some() || c.tool_definitions_tokens.is_some() || c.available_tool_count.is_some();
     let mut latency = JsMap::new();

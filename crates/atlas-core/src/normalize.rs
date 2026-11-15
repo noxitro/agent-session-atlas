@@ -51,7 +51,7 @@ const ABORT_PAIR_WINDOW_MS: i64 = 2000;
 const FILE_EDIT_TOOLS: &[&str] = &["create", "edit", "str_replace_editor", "apply_patch"];
 const ANALYSIS_TURNS: usize = 200;
 const ANALYSIS_TOOLS_PER_TURN: usize = 40;
-const UNKNOWN_KEY: &str = "(unknown)";
+pub(crate) const UNKNOWN_KEY: &str = "(unknown)";
 /// 1 時間を超えるツールの所要時間は外れ値として除く
 pub const TOOL_DURATION_OUTLIER_MS: i64 = 3_600_000;
 

@@ -46,27 +46,19 @@ export interface ScoredCount {
 
 export interface CompareSide {
   sessions: number;
-  turns: number;
-  /** 実働の合計と、記録のあったセッション数 */
-  activeMs: number;
-  activeKnown: number;
   tools: number;
   toolFailures: number;
   /** 同じファイルを依頼をまたいで編集し直したセッション */
   reworkSessions: number;
-  nanoAiu: number;
-  aiuKnown: number;
-  /** リクエストの合計と、記録のあったセッション数 */
-  requests: number;
-  requestsKnown: number;
-  /** AIU とリクエストの両方の記録があるセッションの、AIU とリクエストの合計(AIU / リクエストの分子と分母) */
+  /** AIU とリクエストの両方の記録があるセッションの数と、その AIU とリクエストの合計(AIU / リクエストの分子と分母) */
+  aiuRequestSessions: number;
   aiuForRequests: number;
   requestsWithAiu: number;
   /** 手戻りのないセッション(依頼の行が 2 件以上のもの。全体・2〜4 件・5 件以上) */
   noRework: ScoredCount;
   noReworkShort: ScoredCount;
   noReworkLong: ScoredCount;
-  /** セッションごとの値(平均の差の幅に使う。記録の無いセッションは入れない) */
+  /** セッションごとの値(平均と、その差の幅に使う。記録の無いセッションは入れない) */
   values: { turns: number[]; activeMs: number[]; aiu: number[]; requests: number[] };
   retention: RetentionAgg;
 }
@@ -74,16 +66,10 @@ export interface CompareSide {
 export function compareSide(list: readonly CompareSession[]): CompareSide {
   const s: CompareSide = {
     sessions: list.length,
-    turns: 0,
-    activeMs: 0,
-    activeKnown: 0,
     tools: 0,
     toolFailures: 0,
     reworkSessions: 0,
-    nanoAiu: 0,
-    aiuKnown: 0,
-    requests: 0,
-    requestsKnown: 0,
+    aiuRequestSessions: 0,
     aiuForRequests: 0,
     requestsWithAiu: 0,
     noRework: { scored: 0, clean: 0 },
@@ -93,29 +79,17 @@ export function compareSide(list: readonly CompareSession[]): CompareSide {
     retention: aggregateRetention(list),
   };
   for (const x of list) {
-    s.turns += x.turns;
     s.values.turns.push(x.turns);
-    if (x.activeMs != null) {
-      s.activeMs += x.activeMs;
-      s.activeKnown++;
-      s.values.activeMs.push(x.activeMs);
-    }
+    if (x.activeMs != null) s.values.activeMs.push(x.activeMs);
     s.tools += x.tools.total;
     s.toolFailures += x.friction.toolFailures;
     if ((x.analysis?.filesReedited ?? 0) > 0) s.reworkSessions++;
     const aiu = x.tokens.nanoAiu;
     const req = x.tokens.requests;
-    if (aiu != null) {
-      s.nanoAiu += aiu;
-      s.aiuKnown++;
-      s.values.aiu.push(aiu / 1e9);
-    }
-    if (req != null) {
-      s.requests += req;
-      s.requestsKnown++;
-      s.values.requests.push(req);
-    }
+    if (aiu != null) s.values.aiu.push(aiu / 1e9);
+    if (req != null) s.values.requests.push(req);
     if (aiu != null && req != null) {
+      s.aiuRequestSessions++;
       s.aiuForRequests += aiu;
       s.requestsWithAiu += req;
     }
@@ -137,16 +111,16 @@ export function rate(part: number, whole: number, sessions: number): number | nu
   return part / whole;
 }
 
-/** 差の幅に使う z(95%) */
-export const Z95 = 1.96;
+/** 正規分布の 97.5% の点(両側 95%。画面と用語の説明に書いている 1.96) */
+const Z95 = 1.96;
 
-/** 割合 x / n の Wilson の区間(n が 0 なら null) */
-export function wilson(x: number, n: number, z = Z95): [lo: number, hi: number] | null {
+/** 割合 x / n の Wilson の区間(95%。n が 0 なら null) */
+export function wilson(x: number, n: number): [lo: number, hi: number] | null {
   if (n <= 0) return null;
   const p = x / n;
-  const z2 = z * z;
+  const z2 = Z95 * Z95;
   const center = (p + z2 / (2 * n)) / (1 + z2 / n);
-  const half = (z / (1 + z2 / n)) * Math.sqrt((p * (1 - p)) / n + z2 / (4 * n * n));
+  const half = (Z95 / (1 + z2 / n)) * Math.sqrt((p * (1 - p)) / n + z2 / (4 * n * n));
   return [Math.max(0, center - half), Math.min(1, center + half)];
 }
 
@@ -154,9 +128,9 @@ export function wilson(x: number, n: number, z = Z95): [lo: number, hi: number] 
  * 2 つの割合の差(B − A = xb / nb − xa / na)の 95% の幅。Newcombe の方法(それぞれの Wilson の区間から作る。Newcombe 1998 の method 10)。
  * どちらかの分母が 0 なら null
  */
-export function newcombeDiff(xa: number, na: number, xb: number, nb: number, z = Z95): [lo: number, hi: number] | null {
-  const wa = wilson(xa, na, z);
-  const wb = wilson(xb, nb, z);
+export function newcombeDiff(xa: number, na: number, xb: number, nb: number): [lo: number, hi: number] | null {
+  const wa = wilson(xa, na);
+  const wb = wilson(xb, nb);
   if (!wa || !wb) return null;
   const pa = xa / na;
   const pb = xb / nb;
@@ -171,13 +145,40 @@ const variance = (v: readonly number[]): number => {
   return v.reduce((a, b) => a + (b - m) ** 2, 0) / (v.length - 1);
 };
 
-/** 平均の差(B − A)の 95% の幅。Welch の近似(差 ± 1.96 × 標準誤差。等分散を仮定しない)。どちらかが 2 件未満なら null */
-export function welchDiff(a: readonly number[], b: readonly number[], z = Z95): [lo: number, hi: number] | null {
+/**
+ * t 分布の 97.5% の点(両側 95%)。自由度が小さいほど 1.96 より大きい(自由度 4 で 2.78、10 で 2.23、30 で 2.04)。
+ * 正規分布の点からの展開(Cornish–Fisher)で、自由度 4 以上なら誤差は 0.001 ほど。それより小さい自由度では実際より小さく出る
+ */
+export function t975(df: number): number {
+  const z = Z95;
+  const z3 = z ** 3;
+  const z5 = z ** 5;
+  const z7 = z ** 7;
+  const z9 = z ** 9;
+  return (
+    z +
+    (z3 + z) / (4 * df) +
+    (5 * z5 + 16 * z3 + 3 * z) / (96 * df ** 2) +
+    (3 * z7 + 19 * z5 + 17 * z3 - 15 * z) / (384 * df ** 3) +
+    (79 * z9 + 776 * z7 + 1482 * z5 - 1920 * z3 - 945 * z) / (92160 * df ** 4)
+  );
+}
+
+/**
+ * 平均の差(B − A)の 95% の幅。Welch の方法(差 ± t × 標準誤差。等分散を仮定せず、t は Welch–Satterthwaite の自由度での 97.5% の点。
+ * 件数が少ないほど 1.96 より大きい)。どちらかが 2 件未満なら null。どちらもばらつきが無ければ、幅は差そのもの
+ */
+export function welchDiff(a: readonly number[], b: readonly number[]): [lo: number, hi: number] | null {
   if (a.length < 2 || b.length < 2) return null;
   const d = mean(b) - mean(a);
-  const se = Math.sqrt(variance(a) / a.length + variance(b) / b.length);
+  const ea = variance(a) / a.length;
+  const eb = variance(b) / b.length;
+  const se = Math.sqrt(ea + eb);
   if (!Number.isFinite(se)) return null;
-  return [d - z * se, d + z * se];
+  if (se === 0) return [d, d];
+  const df = (ea + eb) ** 2 / (ea ** 2 / (a.length - 1) + eb ** 2 / (b.length - 1));
+  const half = t975(df) * se;
+  return [d - half, d + half];
 }
 
 /** 比べる指標の行。value は表示する値(null は「—」)。note は数え方 */
@@ -193,22 +194,15 @@ export interface CompareRow {
   ci?: [lo: number, hi: number] | null;
 }
 
-/** 平均。分母(記録のあったセッションの数)が少なすぎるときは null(全セッションの数ではなく、実際に割る数で決める) */
-const perSession = (v: number, n: number): number | null => (n < COMPARE_MIN_SESSIONS ? null : v / n);
-
 /** 両側の分母が足りるときだけ幅を出す */
 const enough = (na: number, nb: number): boolean => na >= COMPARE_MIN_SESSIONS && nb >= COMPARE_MIN_SESSIONS;
 
-export function compareRows(a: CompareSide, b: CompareSide): CompareRow[] {
-  const row = (key: string, label: string, unit: CompareRow['unit'], f: (s: CompareSide) => number | null, note: string, ci?: CompareRow['ci']): CompareRow => ({
-    key,
-    label,
-    unit,
-    a: f(a),
-    b: f(b),
-    note,
-    ...(ci === undefined ? {} : { ci }),
-  });
+/**
+ * セッションの単位の行。byTurnCount を付けると、手戻りのないセッションの割合を依頼の数で分けた 2 行も出す
+ * (推論強度どうしの比較で使う。依頼の数が違うだけで割合が動くのを見分ける)
+ */
+export function compareRows(a: CompareSide, b: CompareSide, o: { byTurnCount?: boolean } = {}): CompareRow[] {
+  const row = (key: string, label: string, unit: CompareRow['unit'], f: (s: CompareSide) => number | null, note: string): CompareRow => ({ key, label, unit, a: f(a), b: f(b), note });
   /** 割合の行(分母がセッション)。値と、Newcombe の幅 */
   const share = (key: string, label: string, c: (s: CompareSide) => ScoredCount, note: string): CompareRow => {
     const ca = c(a);
@@ -216,11 +210,11 @@ export function compareRows(a: CompareSide, b: CompareSide): CompareRow[] {
     const v = (x: ScoredCount): number | null => (x.scored < COMPARE_MIN_SESSIONS ? null : x.clean / x.scored);
     return { key, label, unit: 'rate', a: v(ca), b: v(cb), note, ci: enough(ca.scored, cb.scored) ? newcombeDiff(ca.clean, ca.scored, cb.clean, cb.scored) : null };
   };
-  /** 平均の行。値と、Welch の幅 */
+  /** 平均の行。値と、Welch の幅。記録のあったセッションが少なすぎるときは null(全セッションの数ではなく、実際に割る数で決める) */
   const avg = (key: string, label: string, unit: CompareRow['unit'], v: (s: CompareSide) => number[], note: string): CompareRow => {
     const va = v(a);
     const vb = v(b);
-    const m = (x: number[]): number | null => perSession(x.reduce((p, q) => p + q, 0), x.length);
+    const m = (x: number[]): number | null => (x.length < COMPARE_MIN_SESSIONS ? null : mean(x));
     return { key, label, unit, a: m(va), b: m(vb), note, ci: enough(va.length, vb.length) ? welchDiff(va, vb) : null };
   };
   const keptShare = (s: CompareSide): number | null => (s.retention.measured < COMPARE_MIN_SESSIONS ? null : measuredOf(s.retention.hunks) ? (s.retention.hunks[0] + s.retention.hunks[1]) / measuredOf(s.retention.hunks) : null);
@@ -228,14 +222,18 @@ export function compareRows(a: CompareSide, b: CompareSide): CompareRow[] {
   return [
     row('sessions', 'セッション', 'count', (s) => s.sessions, ''),
     share('no-rework', '手戻りのないセッションの割合', (s) => s.noRework, '採点できたセッションのうち、2 件目以降の依頼に直し・差し戻しが無く、どの依頼にも中断が無かったもの'),
-    share('no-rework-short', '手戻りのないセッションの割合(依頼 2〜4 件)', (s) => s.noReworkShort, '依頼の数が違うだけで割合が動くため、依頼の数で分けたもの'),
-    share('no-rework-long', `手戻りのないセッションの割合(依頼 ${COMPARE_LONG_TURNS} 件以上)`, (s) => s.noReworkLong, '同上'),
+    ...(o.byTurnCount
+      ? [
+          share('no-rework-short', `手戻りのないセッションの割合(依頼 2〜${COMPARE_LONG_TURNS - 1} 件)`, (s) => s.noReworkShort, '依頼の数が違うだけで割合が動くため、依頼の数で分けたもの'),
+          share('no-rework-long', `手戻りのないセッションの割合(依頼 ${COMPARE_LONG_TURNS} 件以上)`, (s) => s.noReworkLong, '同上'),
+        ]
+      : []),
     row('scored', '採点できたセッション', 'count', (s) => s.noRework.scored, '依頼の記録が 2 件以上あるセッション(手戻りのないセッションの割合の分母)。1 件だけのセッションは採点できない'),
     avg('turns', '依頼 / セッション', 'mean', (s) => s.values.turns, '平均'),
     avg('active', '実働 / セッション', 'minutes', (s) => s.values.activeMs, '実働の記録があるセッションの平均(5 件未満なら —)'),
     avg('requests', 'リクエスト / セッション', 'mean', (s) => s.values.requests, 'リクエストの記録があるセッションの平均'),
     avg('aiu', 'AIU / セッション', 'aiu', (s) => s.values.aiu, '記録があるセッションの平均(5 件未満なら —)。ばらつきが大きいので、AIU / リクエストとリクエスト / セッションに分けて読む'),
-    row('aiu-per-request', 'AIU / リクエスト', 'aiu', (s) => (s.aiuKnown < COMPARE_MIN_SESSIONS || s.requestsWithAiu <= 0 ? null : s.aiuForRequests / 1e9 / s.requestsWithAiu), 'AIU の記録があるセッションの、AIU の合計 ÷ リクエストの合計'),
+    row('aiu-per-request', 'AIU / リクエスト', 'aiu', (s) => (s.aiuRequestSessions < COMPARE_MIN_SESSIONS || s.requestsWithAiu <= 0 ? null : s.aiuForRequests / 1e9 / s.requestsWithAiu), 'AIU とリクエストの両方の記録があるセッションの、AIU の合計 ÷ リクエストの合計(5 件未満なら —)'),
     row('failure', 'ツールの失敗・拒否の率', 'rate', (s) => rate(s.toolFailures, s.tools, s.sessions), '失敗・拒否 ÷ ツール呼び出し(呼び出しの単位なので差の幅は出さない)'),
     {
       ...row('rework', '同じファイルを編集し直したセッションの割合', 'rate', (s) => rate(s.reworkSessions, s.sessions, s.sessions), '依頼をまたいで同じファイルを編集し直した(手戻りのないセッションとは別の数え方)'),
@@ -319,31 +317,6 @@ function effortClass(s: EffortSource, model: string): EffortClass | null {
   return inModel ? m : null;
 }
 
-export interface EffortSplit<T> {
-  a: T[];
-  b: T[];
-  /** 選んだモデル・期間の中で、本体の強度が混在のセッションと、記録の無いセッションの数 */
-  mixed: number;
-  none: number;
-}
-
-/** 推論強度どうしの母集団: 期間に開始し、本体が (model, a) と決まったセッションと (model, b) と決まったセッション */
-export function effortSplit<T extends EffortSource>(sessions: readonly T[], model: string, a: string, b: string, from: string, to: string): EffortSplit<T> {
-  const out: EffortSplit<T> = { a: [], b: [], mixed: 0, none: 0 };
-  for (const s of sessions) {
-    if (!inPeriod(s, from, to)) continue;
-    const c = effortClass(s, model);
-    if (!c) continue;
-    if (c.kind === 'mixed') out.mixed++;
-    else if (c.kind === 'none') out.none++;
-    else {
-      if (c.effort === a) out.a.push(s);
-      if (c.effort === b && b !== a) out.b.push(s);
-    }
-  }
-  return out;
-}
-
 /** その日を含む週の月曜(ローカルの日付の YYYY-MM-DD) */
 export function weekStart(ms: number): string {
   const d = new Date(ms);
@@ -362,32 +335,59 @@ export interface EffortWeekRow {
   none: number;
 }
 
+export interface EffortSplit<T> {
+  a: T[];
+  b: T[];
+  /** 選んだモデル・期間の中で、本体の強度が混在のセッションと、記録の無いセッションの数 */
+  mixed: number;
+  none: number;
+  /** 利用者の記録が 1 件でもあるか(無ければ weeks は週ごとの行だけ) */
+  byPerson: boolean;
+  /** 利用者 × 週ごとの、A・B・混在・記録なしのセッション数(割り当てどおりに使われたかを見る)。利用者の名前の順(記録の無いものは最後)、同じ人は週の順 */
+  weeks: EffortWeekRow[];
+}
+
 /**
- * 利用者 × 週ごとの、A の強度・B の強度・混在・記録なしのセッション数(選んだモデルと期間の中。割り当てどおりに使われたかを見る)。
- * 利用者の記録が 1 件も無ければ、週ごとの行だけにする
+ * 推論強度どうしの母集団: 期間に開始し、本体が (model, a) と決まったセッションと (model, b) と決まったセッション。
+ * 同じ分類から、混在・記録なしの件数と、利用者 × 週の表も作る(A・B のどちらでもない強度のセッションは、どれにも数えない)。
+ * a と b が同じなら、両側に同じセッションが入る(タスクタグやプロジェクトで同じものを選んだときと同じ)
  */
-export function effortWeeks(sessions: readonly EffortSource[], model: string, a: string, b: string, from: string, to: string): { byPerson: boolean; rows: EffortWeekRow[] } {
+export function effortSplit<T extends EffortSource>(sessions: readonly T[], model: string, a: string, b: string, from: string, to: string): EffortSplit<T> {
   const byPerson = sessions.some((s) => s.person != null && s.person !== '');
-  const rows = new Map<string, EffortWeekRow>();
+  const out: EffortSplit<T> = { a: [], b: [], mixed: 0, none: 0, byPerson, weeks: [] };
+  const weeks = new Map<string, EffortWeekRow>();
   for (const s of sessions) {
-    if (!inPeriod(s, from, to)) continue;
+    // 期間に入るセッションには、開始の時刻が必ずある
     const t = sessionTime(s);
+    if (t == null || !inPeriod(s, from, to)) continue;
     const c = effortClass(s, model);
-    if (t == null || !c) continue;
+    if (!c) continue;
+    const isA = c.kind === 'decided' && c.effort === a;
+    const isB = c.kind === 'decided' && c.effort === b;
+    if (c.kind === 'decided' && !isA && !isB) continue;
     const person = byPerson ? (s.person || null) : null;
     const week = weekStart(t);
     const key = `${person ?? ''}\0${week}`;
-    let r = rows.get(key);
-    if (!r) rows.set(key, (r = { person, week, a: 0, b: 0, mixed: 0, none: 0 }));
-    if (c.kind === 'mixed') r.mixed++;
-    else if (c.kind === 'none') r.none++;
-    else if (c.effort === a) r.a++;
-    else if (c.effort === b) r.b++;
+    let r = weeks.get(key);
+    if (!r) weeks.set(key, (r = { person, week, a: 0, b: 0, mixed: 0, none: 0 }));
+    if (c.kind === 'mixed') {
+      out.mixed++;
+      r.mixed++;
+    } else if (c.kind === 'none') {
+      out.none++;
+      r.none++;
+    }
+    if (isA) {
+      out.a.push(s);
+      r.a++;
+    }
+    if (isB) {
+      out.b.push(s);
+      r.b++;
+    }
   }
-  const list = [...rows.values()].filter((r) => r.a + r.b + r.mixed + r.none > 0);
-  // 利用者の名前の順(記録の無いものは最後)、同じ人は週の順
-  list.sort((x, y) => (x.person == null ? 1 : 0) - (y.person == null ? 1 : 0) || (x.person ?? '').localeCompare(y.person ?? '') || x.week.localeCompare(y.week));
-  return { byPerson, rows: list };
+  out.weeks = [...weeks.values()].sort((x, y) => (x.person == null ? 1 : 0) - (y.person == null ? 1 : 0) || (x.person ?? '').localeCompare(y.person ?? '') || x.week.localeCompare(y.week));
+  return out;
 }
 
 /** 割合や平均を出す最小の依頼の数(セッションの 5 と同じ考え方) */

@@ -571,6 +571,20 @@ fn fake_svn_and_p4() {
         assert_eq!((w.hunks[0].lines.kept, w.hunks[0].lines.missing), (1, 1));
         assert_eq!((c.hunks[0].lines.kept, c.hunks[0].lines.missing, c.hunks[0].status), (1, 1, RetentionStatus::Modified));
 
+        // committed で、今の版の印が基準と同じとき。p4 は取り込みが無いので照合不可(no_commits)。
+        // svn の印は作業コピーのルートの版で、ファイルを取り込んでも進まないので、この判定をせず BASE を読んで照合する
+        let root = tmp.dir();
+        let f = join(&root, &["a.c"]);
+        let (runner, _) = fake_vcs(kind, &root, vec![rev(1, at(8, 0), &[("a.c", &["base"])])]);
+        let ev = session(&root, None, None, (10, 0), (11, 0), vec![ed(&f, &["local only"])]);
+        write(&f, &["base", "local only"]);
+        let c = &measure(&[extract_ai_changes("s1", &ev, None)], &RetentionOptions { runner, mode: EvalMode::Committed, ..opts() })[0];
+        if kind == VcsKind::Svn {
+            assert_eq!((c.outcome, c.reason, c.counts.missing), (Outcome::Measured, None, 1));
+        } else {
+            assert_eq!((c.outcome, c.reason, c.counts.missing), (Outcome::Unattributable, Some(UnattributableReason::NoCommits), 0));
+        }
+
         // 開始時刻より前の版が無ければ照合不可(baseline_missing)。欠測として数え、未確認にはしない
         let root = tmp.dir();
         let f = join(&root, &["a.c"]);
