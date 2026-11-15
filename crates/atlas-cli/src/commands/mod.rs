@@ -78,10 +78,11 @@ pub fn run(o: &CliOptions, log: Log<'_>) -> Result<RunResult> {
 fn run_m365_command(o: &CliOptions, p: &Paths, target: ChatTarget, model: Option<&str>, limit: Option<u64>, timeout_sec: u64, log: Log<'_>) -> Result<RunResult> {
     let s = run_m365_judge(
         &M365Paths { out: p.out.clone(), sessions: p.sessions.clone(), judgments: p.judgments.clone(), turn_judgments: p.turn_judgments.clone(), turn_bundle: p.turn_bundle.clone() },
-        &M365Options { target, model: model.unwrap_or(M365_DEFAULT_MODEL).to_string(), limit, timeout_sec },
+        &M365Options { target, model: model.unwrap_or(M365_DEFAULT_MODEL).to_string(), limit, timeout_sec, retries: None },
         &|m: &str| log(m),
         &powershell_driver,
         cfg!(windows),
+        &std::thread::sleep,
     )?;
     let build = if s.imported > 0 { run_command(&CliOptions { command: "export".into(), model: None, judge: None, turns: None, ..o.clone() }, p, log)?.build } else { None };
     if !s.failed.is_empty() {
