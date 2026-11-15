@@ -100,7 +100,7 @@ pub fn render_insights_html(o: &InsightsPageOptions<'_>) -> String {
         };
         match o.library_href {
             Some(h) => format!("<a href=\"{}#v-{}\">{name}</a>", esc(h), esc(&v.hash)),
-            _ => name,
+            None => name,
         }
     };
 
@@ -276,20 +276,17 @@ pub fn render_insights_html(o: &InsightsPageOptions<'_>) -> String {
             } else {
                 esc(&clip(&WS.replace_all(c.representative.as_deref().unwrap_or(&c.key), " "), 80))
             };
-            let body = {
-                let mut b = String::new();
-                if let Some(r) = c.representative.as_deref().filter(|r| !r.is_empty()) {
-                    b.push_str(&format!(
-                        "<p class=\"cap\">{}</p><pre class=\"body\" tabindex=\"0\">{}</pre>",
-                        if c.kind == "tools" { "この並びが最初に出たターンの依頼文(例)" } else { "代表の依頼文" },
-                        esc(r)
-                    ));
-                }
-                if !c.examples.is_empty() {
-                    b.push_str(&format!("<p class=\"cap\">他の例({})</p><pre class=\"body\" tabindex=\"0\">{}</pre>", c.examples.len(), esc(&c.examples.join("\n— — —\n"))));
-                }
-                b
-            };
+            let mut body = String::new();
+            if let Some(r) = c.representative.as_deref().filter(|r| !r.is_empty()) {
+                body.push_str(&format!(
+                    "<p class=\"cap\">{}</p><pre class=\"body\" tabindex=\"0\">{}</pre>",
+                    if c.kind == "tools" { "この並びが最初に出たターンの依頼文(例)" } else { "代表の依頼文" },
+                    esc(r)
+                ));
+            }
+            if !c.examples.is_empty() {
+                body.push_str(&format!("<p class=\"cap\">他の例({})</p><pre class=\"body\" tabindex=\"0\">{}</pre>", c.examples.len(), esc(&c.examples.join("\n— — —\n"))));
+            }
             let uses: String = c.sessions.iter().take(30).map(|id| format!("<li>{}</li>", sess(id))).collect();
             format!(
                 "<details class=\"cand\" id=\"c-{n}\"{open}><summary><b>{n}.</b> {head} <span>{kind}</span> <span>{count} 回</span> <span>{ns} セッション</span> <span>実働 中央値 {med}</span> <span>スコア {score}</span></summary>{body}<div class=\"uses\">関係セッション: <ul>{uses}</ul>{more}</div></details>",

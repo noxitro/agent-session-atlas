@@ -101,8 +101,6 @@ export function summarize(r: SessionRecord, judgment: JudgmentSummary | null): S
     if (!res || res.failure > 0 || res.denied > 0 || completed !== calls) issues[tool] = [res?.failure ?? 0, res?.denied ?? 0, completed];
     if (res?.causes && Object.keys(res.causes).length) causes[tool] = res.causes;
   }
-  const name = r.name;
-  const first = r.firstUserMessage;
   const t = r.tokens;
   return {
     id: r.id,
@@ -112,8 +110,8 @@ export function summarize(r: SessionRecord, judgment: JudgmentSummary | null): S
     projectSource: r.projectSource ?? 'path',
     branch: r.branch,
     person: r.person ?? null,
-    name: name ? truncate(name, SUMMARY_TEXT_CHARS) : null,
-    firstUserMessage: first ? truncate(first, SUMMARY_TEXT_CHARS) : null,
+    name: r.name ? truncate(r.name, SUMMARY_TEXT_CHARS) : null,
+    firstUserMessage: r.firstUserMessage ? truncate(r.firstUserMessage, SUMMARY_TEXT_CHARS) : null,
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
     durationMs: r.durationMs,

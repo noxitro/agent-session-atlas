@@ -116,6 +116,15 @@ describe('Phase 2 E2E: fixtures', () => {
     expect(md3).toMatch(/_依頼 1 の本体の消費: リクエスト 2、/);
     // --tool-output none なので結果の囲みは無い
     expect(md3).not.toMatch(/\n```\n/);
+    // 出力先に sessions.json が無ければ export も build も失敗する(自分では snapshot・extract をしない。だから上では --out を同じにしている)
+    const outEmpty = join(WORK, 'out-empty');
+    await rm(outEmpty, { recursive: true, force: true });
+    for (const cmd of ['export', 'build']) {
+      const ne = atlas([cmd, '--home', home, '--out', outEmpty]);
+      expect(ne.status, ne.stdout).toBe(1);
+      expect(ne.stderr).toContain('sessions.json がありません');
+    }
+    await rm(outEmpty, { recursive: true, force: true });
     // 素の build に戻すと .md は消え、リンクも無い
     const rb = atlas(['build', '--home', home, '--out', out]);
     expect(rb.status, rb.stderr).toBe(0);
@@ -164,7 +173,6 @@ describe('Phase 2 E2E: fixtures', () => {
     expect(data.metrics.emptySessions).toBe(empties);
     expect(data.metrics.overall.sessions).toBe(ids.size - empties);
     expect(data.totalSessionsInSource).toBe(ids.size);
-    expect(data).not.toHaveProperty('anonymized');
     expect(data.judgments.available).toBe(false);
     // 要約だけ: 生イベント・timeline は埋め込まない。1 セッションあたり数 KB 以内
     for (const s of data.sessions) {
@@ -251,7 +259,7 @@ describe('Phase 2 E2E: fixtures', () => {
     expect(d.groups).toEqual([]);
     expect(d.warnings.notes).toHaveLength(1);
     expect(d.warnings.notes[0]).toMatch(/JSON として読めない/);
-    expect(d.warnings.notes[0]).toContain(notes); // 通常版は場所が分かるよう絶対パスを含む
+    expect(d.warnings.notes[0]).toContain(notes); // 場所が分かるよう絶対パスを含む
     await writeFile(join(notes, 'groups.json'), JSON.stringify({ version: 1, groups: [{ name: 'ok', ids: [ids[0]] }, { name: 'ok', ids: [] }, { name: 'x', ids: 'bad' }] }));
     const partial = atlas(['build', '--out', out, '--notes-dir', notes]);
     expect(partial.status, partial.stderr).toBe(0);

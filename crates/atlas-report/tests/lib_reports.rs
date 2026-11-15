@@ -8,7 +8,7 @@ use atlas_report::aggregate::*;
 use atlas_report::embed::{embed_data, extract_embedded};
 use atlas_report::exec::{exec_aggregate, quantiles_of, tool_share, QuantileRow};
 use atlas_report::filter::*;
-use atlas_report::highlights::{highlights, HighlightOptions, InstalledView};
+use atlas_report::highlights::{highlights, session_label, HighlightOptions, InstalledView};
 use atlas_report::pack::{pack_summary, unpack_data, unpack_summary};
 use atlas_report::summarize::{permission_group, summarize};
 use atlas_report::types::{JudgmentSummary, SessionSummary};
@@ -617,8 +617,10 @@ fn highlights_phase7() {
     assert_eq!(ids(&apply_filter(&all, &decode_filter("#tool=grep"))), ["a"]);
     assert!(apply_filter(&all, &decode_filter("#tool=mcp%3Anone")).is_empty());
 
-    // AIU の記録が無ければ出力トークンで並べる
+    // AIU の記録が無ければ出力トークンの多い順に並べる。名前も最初の依頼も無いセッションは「プロジェクト・日付(id の先頭 8 字)」で呼ぶ
     let mut recs = phase7();
+    // 時刻は時差の指定なし(その PC の時刻)にして、どの時間帯で走らせても同じ日付になるようにする
+    recs.push(output_only("0123456789abcdef", Ws { repository: Some("quokka/c"), created_at: Some("2026-10-03T12:00:00"), ..Default::default() }, "gpt-5.5", 7.0));
     for r in &mut recs {
         r.tokens.nano_aiu = None;
     }
@@ -626,7 +628,15 @@ fn highlights_phase7() {
     let agg = aggregate(&refs(&all), None);
     let g = highlights(&refs(&all), &agg.usage, &HighlightOptions { filter: &filter, installed: None });
     assert_eq!(g[0].title, "出力トークンの多いセッション");
-    assert!(g[0].items[0].text.contains(": 出力 "), "{}", g[0].items[0].text);
+    assert_eq!(
+        g[0].items.iter().map(|i| (i.text.as_str(), i.href.as_str())).collect::<Vec<_>>(),
+        [
+            ("session A: 出力 10 トークン(この条件の合計の 45%)", "sessions/a.html"),
+            ("quokka/c・2026-10-03(01234567): 出力 7 トークン(この条件の合計の 32%)", "sessions/0123456789abcdef.html"),
+            ("b: 出力 5 トークン(この条件の合計の 23%)", "sessions/b.html"),
+        ]
+    );
+    assert_eq!(session_label(&all[2]), "quokka/c・2026-10-03(01234567)");
     assert!(g.iter().all(|x| x.kind != "unused-skill"));
 }
 

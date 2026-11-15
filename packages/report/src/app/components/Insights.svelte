@@ -3,7 +3,6 @@
   // 絞り込みに従う群: 指示文の傾向・skill の傾向・止まっている箇所(sessions で再計算)。
   // 全記録の群: 「長いのに注入が少ない」(全体での希少さの話なので allSessions)と、スキル化の候補
   // (依頼文の本文が要るので build 時に全セッションで計算して埋め込んだもの。全件は insights.html)
-  import { shortProjectLabel } from '../../lib/project-label.ts';
   import { date, dec, duration, int } from '../../lib/format.ts';
   import { cleanHeading, instructionFindings, instructionVersions, skillStats, stuckByProject, stuckSessions, THRESHOLDS, type Candidate, type VersionMeta } from '../../lib/insights.ts';
   import type { SessionSummary } from '../../lib/types.ts';
@@ -137,7 +136,7 @@
           {/each}
         </ol>
         {#if byProject.length}
-          <p class="basis">プロジェクト別(該当 / 全セッション。{THRESHOLDS.MIN_SESSIONS} セッション以上のもの): {byProject.slice(0, TOP).map((p) => `${shortProjectLabel(p.projectLabel)} ${int(p.stuck)} / ${int(p.total)}`).join('、')}</p>
+          <p class="basis">プロジェクト別(該当 / 全セッション。{THRESHOLDS.MIN_SESSIONS} セッション以上のもの): {byProject.slice(0, TOP).map((p) => `${p.projectLabel} ${int(p.stuck)} / ${int(p.total)}`).join('、')}</p>
         {/if}
       {/if}
     </div>

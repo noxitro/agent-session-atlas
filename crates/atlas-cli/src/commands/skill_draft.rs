@@ -34,6 +34,11 @@ fn slug(c: &DraftCandidate) -> String {
     if s.is_empty() { "draft".into() } else { s }
 }
 
+/// LLM に渡せる中身(ツールの並び・代表の依頼文・ほかの例)が候補にあるか。無ければプロンプトは回数だけになる
+fn has_material(c: &DraftCandidate) -> bool {
+    c.tools.as_ref().is_some_and(|t| !t.is_empty()) || c.representative.as_deref().is_some_and(|r| !r.is_empty()) || !c.examples.is_empty()
+}
+
 pub fn run_skill_draft(p: &Paths, o: &SkillDraftOptions, log: Log<'_>) -> Result<PathBuf> {
     // このビルドに入っていないバックエンド(機能 anthropic-backend なしの anthropic)なら、入力を読む前に入れ方を書いて止める
     ensure_backend_built(&o.backend)?;
@@ -46,6 +51,10 @@ pub fn run_skill_draft(p: &Paths, o: &SkillDraftOptions, log: Log<'_>) -> Result
     let Some(c) = j.candidates.get((o.index as usize).wrapping_sub(1)) else {
         bail!("候補 {} はありません(候補は {} 件)", o.index, j.candidates.len());
     };
+    // 回数しか渡せない候補は、LLM を呼ぶ前に止める(クレジットや従量課金を使わない)
+    if !has_material(c) {
+        bail!("候補 {} には依頼文もツールの並びも無いので下書きを作れません。atlas build(または export)で {} を作り直してください。", o.index, path.display());
+    }
     let label = if c.kind == "tools" { c.key.clone() } else { js::head(c.representative.as_deref().unwrap_or(&c.key), 60).into_owned() };
     log(&format!(
         "skill-draft: 候補 {}({label})を {} で下書きします{}",
@@ -73,12 +82,20 @@ pub fn run_skill_draft(p: &Paths, o: &SkillDraftOptions, log: Log<'_>) -> Result
 mod tests {
     use super::*;
 
-    // 前の版の build が書いた insights.json(今は書かない項目を含む)も読める
+    // 依頼文もツールの並びも無い候補は、下書きの材料が無い。ツールの並びだけの候補(代表の依頼文なし)は材料がある
     #[test]
-    fn reads_insights_with_unknown_fields() {
-        let text = r#"{"version":1,"generatedAt":"2026-01-01T00:00:00.000Z","anonymized":false,"sessions":2,"candidates":[{"kind":"request","key":"k","count":3,"sessions":["a","b"],"medianMs":null,"score":1,"representative":"r","examples":[],"tools":null}]}"#;
-        let j: Insights = js::parse_json_as(text).unwrap();
-        assert_eq!(j.candidates.len(), 1);
-        assert_eq!(j.candidates[0].representative.as_deref(), Some("r"));
+    fn material_needs_text_or_tools() {
+        let parse = |candidate: &str| -> DraftCandidate {
+            let text = format!(r#"{{"version":1,"sessions":2,"candidates":[{candidate}]}}"#);
+            let j: Insights = js::parse_json_as(&text).unwrap();
+            j.candidates.into_iter().next().unwrap()
+        };
+        let request = |rep: &str, examples: &str| parse(&format!(r#"{{"kind":"request","key":"k","count":3,"sessions":["a","b"],"medianMs":null,"score":1,"representative":{rep},"examples":{examples},"tools":null}}"#));
+        assert!(has_material(&request(r#""r""#, "[]")));
+        assert!(has_material(&request("null", r#"["e"]"#)));
+        assert!(!has_material(&request("null", "[]")));
+        assert!(!has_material(&request(r#""""#, "[]")));
+        let tools = parse(r#"{"kind":"tools","key":"view → apply_patch","count":3,"sessions":["a","b"],"medianMs":null,"score":1,"representative":null,"examples":[],"tools":["view","apply_patch"]}"#);
+        assert!(has_material(&tools));
     }
 }

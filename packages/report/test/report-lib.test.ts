@@ -6,11 +6,13 @@ import { effortSkew, isLowConfidence, monthRange } from '../src/lib/aggregate.ts
 import { embedData, extractEmbedded, serializeForScript } from '../src/lib/embed.ts';
 import { decodeFilter, emptyFilter, encodeFilter, groupIds, isEmptyFilter } from '../src/lib/filter.ts';
 import { addIds, memberGroups, parseGroups, removeIds, resolveIdPrefixes, serializeGroups } from '../src/lib/groups.ts';
+import { sessionLabel } from '../src/lib/highlights.ts';
 import { parseJudgments } from '../src/lib/judgments.ts';
 import { shortProjectLabel } from '../src/lib/project-label.ts';
 import { niceTicks } from '../src/lib/scale.ts';
 import { modelLabel, sharedLeads, splitLead } from '../src/lib/format.ts';
 import { GLOSSARY, GLOSSARY_GROUPS, termsByGroup } from '../src/lib/glossary.ts';
+import type { SessionSummary } from '../src/lib/types.ts';
 
 describe('aggregate', () => {
   it('monthRange は年をまたいで欠けなく並べる', () => {
@@ -101,9 +103,27 @@ describe('groups(atlas-notes/groups.json)', () => {
 
 describe('shortProjectLabel', () => {
   it('ホームディレクトリは ~ に短縮して表示する', () => {
-    // Windows 形式(C:\Users\<name>)は実データの E2E(ATLAS_LIVE)で検証する。ここでは POSIX 形式で ~ 短縮を確かめる
     expect(shortProjectLabel('/home/me/.copilot/chats/c1')).toBe('~/.copilot/chats/c1');
     expect(shortProjectLabel('quokka/x')).toBe('quokka/x');
+    // Windows 形式。区切りは文字コードから作り、ホームの親フォルダの名前は分けて組み立てる
+    // (Rust の project_label.rs のテストと同じ入力と期待値)
+    const sep = String.fromCharCode(92);
+    const win = ['C:', 'Users', 'someone', 'proj'].join(sep);
+    expect(shortProjectLabel(win)).toBe(`~${sep}proj`);
+    expect(shortProjectLabel(win.replace('Users', 'USERS'))).toBe(`~${sep}proj`);
+    // ホームの外のドライブ付きのパスはそのまま
+    const other = ['D:', 'work', 'proj'].join(sep);
+    expect(shortProjectLabel(other)).toBe(other);
+  });
+});
+
+describe('sessionLabel(要点欄での呼び名)', () => {
+  it('セッション名、無ければ最初の依頼。どちらも無ければ「プロジェクト・日付(id の先頭 8 文字)」', () => {
+    // 時刻は時差の指定なし(その PC の時刻)にして、どの時間帯で走らせても同じ日付になるようにする
+    const bare = { id: '0123456789abcdef', name: null, firstUserMessage: null, projectLabel: 'quokka/c', createdAt: '2026-10-03T12:00:00' } as unknown as SessionSummary;
+    expect(sessionLabel(bare)).toBe('quokka/c・2026-10-03(01234567)');
+    expect(sessionLabel({ ...bare, firstUserMessage: 'b' })).toBe('b');
+    expect(sessionLabel({ ...bare, name: 'session A', firstUserMessage: 'a' })).toBe('session A');
   });
 });
 

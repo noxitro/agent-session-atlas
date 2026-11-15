@@ -216,7 +216,7 @@
       .catch(() => {});
     return stop;
   });
-  // Phase 14: 画面からの操作(集計し直す・工数を判定する)。編集できるとき(serve から開いた通常版)だけ。サーバが止まったら読むのもやめる
+  // Phase 14: 画面からの操作(集計し直す・工数を判定する)。編集できるとき(serve から開いた画面)だけ。サーバが止まったら読むのもやめる
   const jobStore = token ? new JobStore(token) : null;
   $effect(() => {
     if (!jobStore || !editable || serverDown) return;

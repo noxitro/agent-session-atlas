@@ -274,13 +274,6 @@ struct TurnJudgmentsOut {
 }
 
 #[derive(Serialize)]
-struct GroupOut {
-    name: String,
-    note: String,
-    ids: Vec<String>,
-}
-
-#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct InsightsOut {
     meta: JsMap<VersionMeta>,
@@ -310,7 +303,7 @@ struct ReportData<'a> {
     read_only: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     atlas_builds: Option<AtlasBuildsOut>,
-    metrics: Value,
+    metrics: &'a Value,
     sessions: Vec<Value>,
     judgments: JudgmentsOut,
     turn_judgments: TurnJudgmentsOut,
@@ -318,7 +311,7 @@ struct ReportData<'a> {
     installed: Option<&'a InstalledView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     installed_by_person: Option<JsMap<InstalledView>>,
-    groups: Vec<GroupOut>,
+    groups: &'a [SessionGroup],
     library: bool,
     insights: InsightsOut,
     warnings: WarningsOut,
@@ -449,7 +442,7 @@ pub fn build_report(input: BuildInput<'_>) -> Result<BuildResult> {
         source: input.source.as_ref(),
         read_only: input.read_only.then_some(true),
         atlas_builds,
-        metrics: input.metrics.clone(),
+        metrics: &input.metrics,
         sessions: packed,
         judgments: JudgmentsOut {
             available: j.is_some(),
@@ -469,7 +462,7 @@ pub fn build_report(input: BuildInput<'_>) -> Result<BuildResult> {
         installed: installed.as_ref(),
         // 人に絞ったときに、その人のインストール済みの skill で「未使用」を出す
         installed_by_person: input.installed_by_person.map(|m| JsMap(m.js_entries().into_iter().map(|(k, v)| (k.clone(), installed_view(v))).collect())),
-        groups: input.groups.iter().map(|g| GroupOut { name: g.name.clone(), note: g.note.clone(), ids: g.ids.clone() }).collect(),
+        groups: &input.groups,
         library: library_on,
         insights: InsightsOut { meta: meta_for_page.clone(), candidates: embedded_candidates(&candidates), candidate_total: candidates.len(), computed_over: input.sessions.len() },
         warnings: WarningsOut { unknown_event_types: input.warnings.unknown_event_types, bad_lines: input.warnings.bad_lines, notes: input.warnings.notes.clone() },
@@ -481,17 +474,19 @@ pub fn build_report(input: BuildInput<'_>) -> Result<BuildResult> {
     write_text(&html_path, &html)?;
     // 用語の説明は 1 枚だけ別ページ
     write_text(&input.out_dir.join(GLOSSARY_FILE), &render_glossary_html(&GlossaryPageOptions { css, generated_at: &generated_at, code }))?;
+    // ページに出すセッションの呼び名(名前、無ければ最初の依頼、無ければ id の先頭 8 字。空白を 1 つにまとめて 60 字まで)。
+    // 改善点のページと、指示文と skill のページで同じものを使う
+    let names: HashMap<&str, String> = sessions
+        .iter()
+        .map(|s| {
+            let base = s.name.as_deref().filter(|x| !x.is_empty()).or(s.first_user_message.as_deref().filter(|x| !x.is_empty())).map(str::to_string).unwrap_or_else(|| js::utf16_slice(&s.id, 0, 8).into_owned());
+            let n = js::utf16_slice(&WS.replace_all(&base, " "), 0, 60).into_owned();
+            (s.id.as_str(), n)
+        })
+        .collect();
     // Phase 12: 改善点の全件(insights.html)と候補の JSON(skill-draft が読む)
     {
         let versions = instruction_versions(&summaries);
-        let names: HashMap<&str, String> = sessions
-            .iter()
-            .map(|s| {
-                let base = s.name.as_deref().filter(|x| !x.is_empty()).or(s.first_user_message.as_deref().filter(|x| !x.is_empty())).map(str::to_string).unwrap_or_else(|| js::utf16_slice(&s.id, 0, 8).into_owned());
-                let n = js::utf16_slice(&WS.replace_all(&base, " "), 0, 60).into_owned();
-                (s.id.as_str(), n)
-            })
-            .collect();
         let stuck = stuck_sessions(&summaries);
         let page = render_insights_html(&InsightsPageOptions {
             css,
@@ -719,10 +714,6 @@ pub fn build_report(input: BuildInput<'_>) -> Result<BuildResult> {
         Some(lib) => {
             let groups = lib.result();
             let w = write_library(&input.out_dir.join(LIBRARY_DIR), &groups)?;
-            let names: HashMap<&str, String> = sessions
-                .iter()
-                .map(|s| (s.id.as_str(), s.name.as_deref().filter(|x| !x.is_empty()).or(s.first_user_message.as_deref().filter(|x| !x.is_empty())).map(str::to_string).unwrap_or_else(|| js::utf16_slice(&s.id, 0, 8).into_owned())))
-                .collect();
             let projects: HashMap<&str, &str> = sessions.iter().map(|s| (s.id.as_str(), s.project_label.as_str())).collect();
             // 版ごとのファイルと範囲は、全セッションを見て特定した値を多い順に採る
             let mut votes: HashMap<&str, IndexMap<(InstructionFile, &str), i64>> = HashMap::new();
@@ -749,7 +740,7 @@ pub fn build_report(input: BuildInput<'_>) -> Result<BuildResult> {
                 generated_at: &generated_at,
                 code,
                 groups: &groups,
-                session_name: &|id: &str| js::utf16_slice(&WS.replace_all(names.get(id).map(String::as_str).unwrap_or(id), " "), 0, 60).into_owned(),
+                session_name: &|id: &str| names.get(id).cloned().unwrap_or_else(|| js::utf16_slice(&WS.replace_all(id, " "), 0, 60).into_owned()),
                 session_project: &|id: &str| projects.get(id).map(|s| s.to_string()),
                 resolve_instruction: &resolve,
             });

@@ -118,7 +118,7 @@ fn main() -> Result<()> {
 
     // 要約(build.ts と同じ: summarize に判定・依頼ごとの判定・照合の結果を足す)
     let retention_by_id: HashMap<&str, &atlas_core::vcs_retention::SessionRetention> = rx.iter().flat_map(|x| x.sessions.iter()).map(|r| (r.session_id.as_str(), r)).collect();
-    let summarize_all = || -> Vec<SessionSummary> {
+    let plain = d.timed("summarize", || -> Vec<SessionSummary> {
         records
             .iter()
             .map(|r| {
@@ -135,8 +135,7 @@ fn main() -> Result<()> {
                 s
             })
             .collect()
-    };
-    let plain = d.timed("summarize", summarize_all);
+    });
     d.write("summaries", &plain)?;
     let packed: Vec<Value> = d.timed("pack", || plain.iter().map(pack_summary).collect());
     d.write("packed", &packed)?;

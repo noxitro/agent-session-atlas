@@ -575,6 +575,32 @@ fn transcript_tool_output_and_limits() {
 }
 
 #[test]
+fn transcript_redacts_title_and_abort_reason() {
+    // 見出しのセッション名と中断の理由も、本文と同じ検査に通して件数に入れる(鍵らしい文字列は架空のもの)
+    let token = format!("ghp_{}", "t".repeat(36));
+    let key = format!("sk-{}", "k".repeat(24));
+    let events = vec![
+        json!({ "type": "session.start", "timestamp": at(0), "data": { "sessionId": "tr2", "copilotVersion": "1.0.100" } }),
+        json!({ "type": "user.message", "timestamp": at(1), "data": { "content": "鍵の無い依頼", "agentMode": "interactive" } }),
+        json!({ "type": "abort", "timestamp": at(2), "data": { "reason": format!("stopped while using {key}") } }),
+    ];
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("events.jsonl");
+    std::fs::write(&path, events.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n") + "\n").unwrap();
+    let ws = WorkspaceInfo { created_at: Some(at(0)), name: Some(format!("{token} を使う作業")), ..Default::default() };
+    let rec = normalize("tr2", to_events(&events), Some(ws), &[], None);
+    let raw = read_raw_events(&path).unwrap();
+    let gen_at = at(1000);
+    let r = render_transcript(&rec, Some(&raw), &[], &topts(&gen_at, ToolOutputMode::Fail, 20_000, 4_000));
+    let md = &r.markdown;
+    assert!(md.starts_with("# セッション記録: [伏せました: GitHub トークン] を使う作業\n"), "{md}");
+    assert!(md.contains("**中断** stopped while using [伏せました: "), "{md}");
+    assert!(!md.contains(&token) && !md.contains(&key), "{md}");
+    assert_eq!(r.secret_hits, 2);
+    assert!(md.contains("2 件伏せました"), "{md}");
+}
+
+#[test]
 fn transcript_record_only() {
     let (rec, _raw, _dir) = transcript_setup();
     let gen_at = at(1000);

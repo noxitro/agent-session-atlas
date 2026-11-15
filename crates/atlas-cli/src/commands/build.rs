@@ -195,7 +195,7 @@ pub fn run_build(p: &Paths, o: &BuildOptions, log: Log<'_>) -> Result<BuildResul
         desktop_meta: s.desktop.as_ref().and_then(|d| d.as_ref()),
     })?;
     if let Some(at) = &r.stale.full {
-        log(&format!("build: 前回の --full の出力(out/full/ と coverage.json、生成 {at})が残っています。フォルダを手で消してください"));
+        log(&format!("build: 前回の --full の出力(out/full/ と out/coverage.json、生成 {at})が残っています。消したいときは、out/full/ フォルダと out/coverage.json を手で消してください"));
     }
     if let Some(at) = &r.stale.library {
         log(&format!(

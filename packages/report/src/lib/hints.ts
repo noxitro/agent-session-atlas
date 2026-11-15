@@ -1,4 +1,4 @@
-// 操作への案内の文。ボタンがあるのは atlas serve で開いた通常版だけなので、開き方で文を分ける
+// 操作への案内の文。ボタンがあるのは atlas serve から開いた画面だけなので、開き方で文を分ける
 // (surface brief の EDIT MODE: 編集できないときは操作の代わりに 1 行の案内)。
 export interface HintContext {
   /** serve から開き、操作できる */

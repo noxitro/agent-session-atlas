@@ -400,10 +400,7 @@ fn turn_table(r: &SessionRecord, verdicts: Option<&TurnVerdicts>) -> String {
             return format!("<td>{}</td><td>{}</td><td>{}</td>", missing("未判定"), missing("—"), missing("—"));
         };
         // 判定の理由は全文を出す
-        let why = match Some(v.note.as_str()).filter(|s| !s.is_empty()) {
-            Some(t) => format!(" <span class=\"why\">{}</span>", esc(t)),
-            None => String::new(),
-        };
+        let why = if v.note.is_empty() { String::new() } else { format!(" <span class=\"why\">{}</span>", esc(&v.note)) };
         format!(
             "<td><span class=\"tag{}\">{}</span>{why}</td><td>{}</td><td>{}</td>",
             if v.outcome == "rejected" || v.outcome == "off_target" { " warn" } else { "" },
@@ -463,7 +460,6 @@ fn turn_table(r: &SessionRecord, verdicts: Option<&TurnVerdicts>) -> String {
 fn timeline_row(e: &TimelineEntry) -> String {
     let label = match e.kind {
         TimelineKind::User if js::trim(&e.label).is_empty() => missing("(本文なし)"),
-        TimelineKind::User | TimelineKind::TaskComplete | TimelineKind::Abort => esc(&truncate(Some(&e.label), 400)),
         TimelineKind::Tools => {
             let mut tools: Vec<(&String, &i64)> = e.tools.as_ref().map(|t| t.js_entries()).unwrap_or_default();
             tools.sort_by(|a, b| b.1.cmp(a.1));
@@ -963,14 +959,14 @@ pub fn render_detail_html(r: &SessionRecord, o: &DetailOptions<'_>) -> String {
         parts.push(retention_section(&mut sec, rt, o.retention_meta));
     }
 
-    let first = r.first_user_message.clone().filter(|s| !s.is_empty());
-    let last = r.last_assistant_message.clone().filter(|s| !s.is_empty());
+    let first = opt_str(&r.first_user_message);
+    let last = opt_str(&r.last_assistant_message);
     if first.is_some() || last.is_some() {
-        let msg = |x: &Option<String>| match x {
+        let msg = |x: Option<&str>| match x {
             Some(t) => format!("<blockquote class=\"msg\">{}</blockquote>", esc(t)),
             None => format!("<p class=\"note\">{}</p>", missing("記録なし")),
         };
-        parts.push(sec.section("最初の依頼と最後の応答", &format!("<div class=\"two\"><div><h3>最初の依頼</h3>{}</div><div><h3>最後の応答</h3>{}</div></div>", msg(&first), msg(&last)), ""));
+        parts.push(sec.section("最初の依頼と最後の応答", &format!("<div class=\"two\"><div><h3>最初の依頼</h3>{}</div><div><h3>最後の応答</h3>{}</div></div>", msg(first), msg(last)), ""));
     }
 
     let models: Vec<(String, &TokenCounts)> = t.by_model.js_entries().into_iter().map(|(k, v)| (model_label(k), v)).collect();

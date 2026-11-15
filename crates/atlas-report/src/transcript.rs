@@ -344,8 +344,13 @@ pub fn render_transcript(r: &SessionRecord, events: Option<&[RawEvent]>, db_usag
 
     // ---------- 見出し・概要 ----------
     let (failure, denied) = r.tools.results.values().fold((0i64, 0i64), |a, x| (a.0 + x.failure, a.1 + x.denied));
+    // セッション名も秘密情報の検査に通す(切る前に伏せ、件数に入れる)
     let title = match r.name.as_deref().filter(|s| !s.is_empty()) {
-        Some(n) => js::utf16_slice(&WS_RUN.replace_all(n, " "), 0, 120).into_owned(),
+        Some(n) => {
+            let (red, hits) = redact_secrets(&WS_RUN.replace_all(n, " "));
+            w.secret_hits += hits;
+            js::utf16_slice(&red, 0, 120).into_owned()
+        }
         None => r.id.clone(),
     };
     let mut l: Vec<String> = Vec::new();
@@ -515,11 +520,11 @@ pub fn render_transcript(r: &SessionRecord, events: Option<&[RawEvent]>, db_usag
         push!("スナップショットに events.jsonl が無いため、sessions.json に残る最初の依頼と最後の応答だけです。", "");
         let first = r.first_user_message.as_deref().filter(|s| !s.is_empty());
         let last = r.last_assistant_message.as_deref().filter(|s| !s.is_empty());
-        if let Some(f) = &first {
+        if let Some(f) = first {
             let t = w.text(f, o.max_text_chars);
             push!("### 最初の依頼", "", quote(&t), "");
         }
-        if let Some(x) = &last {
+        if let Some(x) = last {
             let t = w.text(x, o.max_text_chars);
             push!("### 最後の応答", "", quote(&t), "");
         }
@@ -754,7 +759,15 @@ pub fn render_transcript(r: &SessionRecord, events: Option<&[RawEvent]>, db_usag
                     );
                 }
                 "abort" => {
-                    let reason = e.d_str("reason").map(|r| js::utf16_slice(r, 0, 300).into_owned()).unwrap_or_default();
+                    // 中断の理由も秘密情報の検査に通す(切る前に伏せ、件数に入れる)
+                    let reason = match e.d_str("reason") {
+                        Some(raw) => {
+                            let (red, hits) = redact_secrets(raw);
+                            w.secret_hits += hits;
+                            js::utf16_slice(&red, 0, 300).into_owned()
+                        }
+                        None => String::new(),
+                    };
                     line(&mut l, ts, &format!("**中断** {reason}"));
                 }
                 "session.mode_changed" => line(&mut l, ts, &format!("モード変更 {} → {}", str_or(e.d("previousMode"), "?"), str_or(e.d("newMode"), "?"))),
