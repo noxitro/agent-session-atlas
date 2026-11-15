@@ -1,0 +1,12 @@
+.ins{margin-top:28px}.ins:first-child{margin-top:0}
+.ins .section-head p{max-width:none}
+.weak{color:var(--ink-3)}
+.lead{font-size:.8125rem;color:var(--ink-2);margin:8px 0 0;max-width:80ch}
+/* 行の見出し(1 列目の名前)は太くせず、長い名前は折り返す */
+.ledger tbody th{font-weight:400;text-align:left}
+.ledger th.name{white-space:normal;overflow-wrap:anywhere;min-width:9em;max-width:20em}
+/* 長い文の入る欄(要因・エラー文・例)は折り返して読ませる。内訳は 1 つずつ行を分ける */
+.ledger td.txt{white-space:normal;overflow-wrap:anywhere;min-width:9em;max-width:28em}
+/* そろえたエラー文は記号を落とした形なので、等幅で文と見分ける */
+.ledger .gl{display:block;font-family:var(--mono);font-size:.75rem}
+.ledger .ex{display:block;color:var(--ink-3)}

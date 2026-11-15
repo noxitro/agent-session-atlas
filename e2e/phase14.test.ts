@@ -176,7 +176,7 @@ describe('Phase 14 E2E: 画面からの操作(jobs)', () => {
       '次のツール',
       '次の結果',
       '呼び直し',
-      'まとまり',
+      'そろえたエラー文',
     ]);
     expect(rows.every((r) => r.length === header.length)).toBe(true);
     const col = (name: string): number => header.indexOf(name);
