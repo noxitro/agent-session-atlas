@@ -269,7 +269,7 @@ pub fn aggregate_retention<'a>(sessions: impl IntoIterator<Item = Option<&'a Ret
         }
         a.with_ai += 1;
         if r.outcome == "unattributable" {
-            a.unattributable.inc(r.reason.as_deref().unwrap_or("read_error"), 1);
+            a.unattributable.inc(r.reason.as_deref().unwrap_or("unknown"), 1);
             a.unattributable_total += 1;
             continue;
         }
@@ -368,7 +368,7 @@ mod tests {
         ];
         let a = aggregate_retention(list.iter().map(Option::as_ref));
         assert_eq!((a.sessions, a.not_checked, a.none, a.with_ai, a.measured, a.unattributable_total), (8, 2, 1, 5, 3, 2));
-        assert_eq!(atlas_core::json::to_js_string(&a.unattributable).unwrap(), r#"{"no_vcs":1,"read_error":1}"#);
+        assert_eq!(atlas_core::json::to_js_string(&a.unattributable).unwrap(), r#"{"no_vcs":1,"unknown":1}"#);
         assert_eq!(a.baseline, BaselineCounts { observed: 2, estimated: 1 });
         assert_eq!(atlas_core::json::to_js_string(&a.by_vcs).unwrap(), r#"{"git":2,"p4":1}"#);
         assert_eq!((a.sender, a.mapped, a.hunks, a.lines), (1, 1, [4, 1, 3, 1], [12, 2, 7, 4]));

@@ -70,7 +70,7 @@
   <div class="section-head">
     <h2 id="retention-h">AI の変更の残存(VCS)</h2>
     <p>
-      AI が足した行が、その後の VCS のファイルに残っているかを数えます。{meta.note ?? ''}
+      AI が足した行が、その後の VCS のファイルに残っているかを数えます。残っているかの記録で、採用の意図や良し悪しではありません。「{L.missing}」「{L.unattributable}」を不採用とはみなしません。{meta.note ?? ''}
       {#if meta.computedOn === 'sender'}
         送った側の PC で照合した結果です{senderText ? `(${senderText})` : '(添えられた結果はありません)'}。
       {:else}

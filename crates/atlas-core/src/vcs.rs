@@ -127,9 +127,9 @@ fn global_flag(cmd: VcsKind, a: &str) -> Option<usize> {
     }
 }
 
-/// どこにあっても許さない引数(ファイルへの書き出し)
-fn forbidden_arg(a: &str) -> bool {
-    a == "--output" || a.starts_with("--output=")
+/// どこにあっても許さない引数(ファイルへの書き出し。p4 print -o はファイルに書き出す)
+fn forbidden_arg(cmd: VcsKind, a: &str) -> bool {
+    a == "--output" || a.starts_with("--output=") || (cmd == VcsKind::P4 && a.starts_with("-o"))
 }
 
 /// 読む系の副コマンドか確かめる。違えば Err
@@ -149,7 +149,7 @@ pub fn assert_read_only(cmd: VcsKind, args: &[String]) -> Result<(), String> {
     if cmd == VcsKind::Git && args.iter().enumerate().any(|(j, a)| j < i && a == "-c" && !args.get(j + 1).is_some_and(|v| v.starts_with("core.quotepath="))) {
         return Err("git -c は core.quotepath だけ許します".into());
     }
-    if let Some(bad) = args.iter().find(|a| forbidden_arg(a)) {
+    if let Some(bad) = args.iter().find(|a| forbidden_arg(cmd, a)) {
         return Err(format!("書き出しの引数を止めました: {bad}"));
     }
     Ok(())
@@ -172,8 +172,12 @@ pub fn vcs_env(get: impl Fn(&str) -> Option<String>) -> Vec<(&'static str, Optio
 const RUN_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_BUFFER: usize = 64 * 1024 * 1024;
 
-/// 既定の実行(シェルを通さない。30 秒で打ち切る。出力が 64MB を超えたら失敗)
+/// 既定の実行(シェルを通さない。30 秒で打ち切る。出力が 64MB を超えたら失敗)。
+/// 呼ぶ側が確かめ忘れても VCS を書き換えないよう、ここでも読む系の副コマンドか確かめる
 pub fn default_run(cmd: VcsKind, args: &[String], cwd: &str) -> RunResult {
+    if let Err(e) = assert_read_only(cmd, args) {
+        return RunResult { code: 1, stdout: String::new(), stderr: e };
+    }
     let mut c = Command::new(cmd.as_str());
     c.args(args).current_dir(cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     for (k, v) in vcs_env(|k| std::env::var(k).ok()) {
@@ -272,6 +276,19 @@ static DIGITS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[0-9]+$").unwrap
 static P4_CHANGE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|[\n\r\x{2028}\x{2029}])Change ([0-9]+) ").unwrap());
 static P4_CLIENT_ROOT: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r"(?:^|[\n\r\x{{2028}}\x{{2029}}])\.\.\. clientRoot ({}+)", js::RE_DOT)).unwrap());
 static P4_CLIENT_NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r"(?:^|[\n\r\x{{2028}}\x{{2029}}])\.\.\. clientName ({}+)", js::RE_DOT)).unwrap());
+/// p4 -ztag info の serverDate(... serverDate 2026/11/12 10:02:03 +0900 JST)のずれ
+static P4_SERVER_DATE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|[\n\r\x{2028}\x{2029}])\.\.\. serverDate [0-9/]+ [0-9:]+ ([+-])([0-9]{2})([0-9]{2})").unwrap());
+
+/// p4 のサーバの UTC からのずれ(分)。serverDate が無い・読めなければ None
+pub(crate) fn p4_server_offset(info: &str) -> Option<i32> {
+    let m = P4_SERVER_DATE.captures(info)?;
+    let (h, mi): (i32, i32) = (m[2].parse().ok()?, m[3].parse().ok()?);
+    if h > 23 || mi > 59 {
+        return None;
+    }
+    let off = h * 60 + mi;
+    Some(if &m[1] == "-" { -off } else { off })
+}
 
 /// svn の日付指定({2026-11-12T01:02:03Z})。読めない時刻は Err(JS の toISOString が投げるのと同じ)
 fn svn_date(iso: &str) -> Result<String, String> {
@@ -284,10 +301,12 @@ fn svn_date(iso: &str) -> Result<String, String> {
     Ok(format!("{{{s}}}"))
 }
 
-/// p4 の日時指定(@2026/11/12:01:02:03)。p4 はサーバの地方時で解釈するため、推定として扱う。読めない時刻は NaN のまま(JS と同じ)
-fn p4_date(iso: &str) -> String {
-    use chrono::{Datelike, TimeZone, Timelike, Utc};
-    let Some(d) = jsdate::parse_ms(iso).and_then(|ms| Utc.timestamp_millis_opt(ms).single()) else { return "@NaN/NaN/NaN:NaN:NaN:NaN".into() };
+/// p4 の日時指定(@2026/11/12:01:02:03)。p4 はサーバの地方時で解釈するので、サーバの UTC からのずれ(分)で直す。
+/// ずれがわからなければ UTC のまま(推定)。読めない時刻は NaN のまま(JS と同じ)
+fn p4_date(iso: &str, offset_min: i32) -> String {
+    use chrono::{Datelike, FixedOffset, TimeZone, Timelike};
+    let tz = FixedOffset::east_opt(offset_min * 60).unwrap_or_else(|| FixedOffset::east_opt(0).expect("UTC"));
+    let Some(d) = jsdate::parse_ms(iso).and_then(|ms| tz.timestamp_millis_opt(ms).single()) else { return "@NaN/NaN/NaN:NaN:NaN:NaN".into() };
     let pad = |n: u32| format!("{n:02}");
     format!("@{}/{}/{}:{}:{}:{}", d.year(), pad(d.month()), pad(d.day()), pad(d.hour()), pad(d.minute()), pad(d.second()))
 }
@@ -304,6 +323,8 @@ pub struct VcsRepo {
     pub kind: VcsKind,
     /// 作業ツリーの根(絶対パス。Windows は \ 区切り)
     pub root: String,
+    /// p4 のサーバの UTC からのずれ(分。p4 info の serverDate から)。わからなければ None(日時を UTC として渡す)
+    pub p4_offset_min: Option<i32>,
     run: VcsRunner,
 }
 
@@ -384,11 +405,16 @@ impl VcsRepo {
     }
 
     fn p4_last_change(&self, spec: &str) -> Result<Option<String>, String> {
-        let r = self.p4(&["changes", "-m1", "-s", "submitted", spec])?;
-        Ok(match P4_CHANGE.captures(&r.stdout) {
-            Some(m) if r.code == 0 => Some(m[1].to_string()),
-            _ => None,
-        })
+        let args = ["changes", "-m1", "-s", "submitted", spec];
+        let r = self.p4(&args)?;
+        if let Some(m) = P4_CHANGE.captures(&r.stdout).filter(|_| r.code == 0) {
+            return Ok(Some(m[1].to_string()));
+        }
+        // 当てはまる変更が無いだけなら None。つながらない・コマンドが無いなどの失敗は Err(版が無いと取り違えない)
+        if r.code == 0 || P4_MISSING.is_match(&r.stderr) {
+            return Ok(None);
+        }
+        Err(failed(VcsKind::P4, &strings(&args), &r))
     }
 
     fn p4_tree(&self) -> String {
@@ -406,22 +432,36 @@ impl VcsRepo {
                     _ => vec!["HEAD".into()],
                 };
                 let before = format!("--before={at}");
+                let mut last = None;
                 for r in &refs {
-                    let res = self.git(&["rev-list", "-1", &before, r])?;
+                    let args = ["rev-list", "-1", &before, r];
+                    let res = self.git(&args)?;
                     let rev = js::trim(&res.stdout);
                     if res.code == 0 && !rev.is_empty() {
                         return Ok(Some(rev.to_string()));
                     }
+                    last = Some((args.map(String::from), res));
                 }
-                Ok(None)
+                // 最後に試した HEAD が、版が無いのではなく失敗したなら Err
+                match last {
+                    Some((args, res)) if res.code != 0 && !GIT_MISSING.is_match(&res.stderr) => Err(failed(VcsKind::Git, &args, &res)),
+                    _ => Ok(None),
+                }
             }
             VcsKind::Svn => {
                 let d = svn_date(at)?;
-                let r = self.svn(&["info", "--show-item", "revision", "-r", &d, &self.root])?;
+                let args = ["info", "--show-item", "revision", "-r", &d, &self.root];
+                let r = self.svn(&args)?;
                 let rev = js::trim(&r.stdout);
-                Ok((r.code == 0 && DIGITS.is_match(rev)).then(|| rev.to_string()))
+                if r.code == 0 && DIGITS.is_match(rev) {
+                    return Ok(Some(rev.to_string()));
+                }
+                if r.code == 0 || SVN_MISSING.is_match(&r.stderr) {
+                    return Ok(None);
+                }
+                Err(failed(VcsKind::Svn, &strings(&args), &r))
             }
-            VcsKind::P4 => self.p4_last_change(&format!("{}{}", self.p4_tree(), p4_date(at))),
+            VcsKind::P4 => self.p4_last_change(&format!("{}{}", self.p4_tree(), p4_date(at, self.p4_offset_min.unwrap_or(0)))),
         }
     }
 
@@ -442,12 +482,21 @@ impl VcsRepo {
 
     /// 照合時の版の印(git: HEAD、svn: 作業コピーの版、p4: have の最新の変更番号)
     pub fn current_revision(&self) -> Result<Option<String>, String> {
-        let r = match self.kind {
-            VcsKind::Git => self.git(&["rev-parse", "HEAD"])?,
-            VcsKind::Svn => self.svn(&["info", "--show-item", "revision", &self.root])?,
+        let (args, missing): (Vec<String>, &Regex) = match self.kind {
+            VcsKind::Git => (strings(&["rev-parse", "HEAD"]), &GIT_MISSING),
+            VcsKind::Svn => (strings(&["info", "--show-item", "revision", &self.root]), &SVN_MISSING),
             VcsKind::P4 => return self.p4_last_change(&format!("{}#have", self.p4_tree())),
         };
-        Ok(if r.code == 0 { Some(js::trim(&r.stdout).to_string()).filter(|s| !s.is_empty()) } else { None })
+        let a: Vec<&str> = args.iter().map(String::as_str).collect();
+        let r = if self.kind == VcsKind::Git { self.git(&a)? } else { self.svn(&a)? };
+        if r.code == 0 {
+            return Ok(Some(js::trim(&r.stdout).to_string()).filter(|s| !s.is_empty()));
+        }
+        // まだ版が無い(コミットの無いリポジトリなど)は None。それ以外の失敗は Err
+        if missing.is_match(&r.stderr) {
+            return Ok(None);
+        }
+        Err(failed(self.kind, &args, &r))
     }
 
     /// 版 rev のファイル。その版に無ければ None。読めないときは Err
@@ -533,14 +582,14 @@ fn detect(dir: &str, runner: &VcsRunner) -> OpenRepoResult {
         assert_read_only(cmd, &a).expect("読む系のコマンド");
         runner(cmd, &a, dir)
     };
-    let repo = |kind: VcsKind, root: &str| Ok(Arc::new(VcsRepo { kind, root: resolve_file_path(root, None), run: runner.clone() }));
+    let repo = |kind: VcsKind, root: &str, p4_offset_min: Option<i32>| Ok(Arc::new(VcsRepo { kind, root: resolve_file_path(root, None), p4_offset_min, run: runner.clone() }));
     let g = run(VcsKind::Git, &["--no-optional-locks", "-C", dir, "rev-parse", "--show-toplevel"]);
     if g.code == 0 && !js::trim(&g.stdout).is_empty() {
-        return repo(VcsKind::Git, js::trim(&g.stdout));
+        return repo(VcsKind::Git, js::trim(&g.stdout), None);
     }
     let s = run(VcsKind::Svn, &["--non-interactive", "info", "--show-item", "wc-root", dir]);
     if s.code == 0 && !js::trim(&s.stdout).is_empty() {
-        return repo(VcsKind::Svn, js::trim(&s.stdout));
+        return repo(VcsKind::Svn, js::trim(&s.stdout), None);
     }
     let p = run(VcsKind::P4, &["-d", dir, "-ztag", "info"]);
     if p.code == 0 {
@@ -548,7 +597,7 @@ fn detect(dir: &str, runner: &VcsRunner) -> OpenRepoResult {
         let client = P4_CLIENT_NAME.captures(&p.stdout).map(|m| js::trim(&m[1]).to_string()).filter(|s| !s.is_empty());
         if let (Some(root), Some(client)) = (root, client) {
             if client != "*unknown*" && (relative_inside(&root, dir).is_some() || file_path_key(&resolve_file_path(&root, None)) == file_path_key(&resolve_file_path(dir, None))) {
-                return repo(VcsKind::P4, &root);
+                return repo(VcsKind::P4, &root, p4_server_offset(&p.stdout));
             }
         }
     }
