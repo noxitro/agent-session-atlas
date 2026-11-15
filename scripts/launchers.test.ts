@@ -232,6 +232,25 @@ describe('配る中身の一覧(scripts/release-shipped.txt)', () => {
     const rust = readFileSync(join(ROOT, 'crates/atlas-cli/src/self_update.rs'), 'utf8');
     expect(rust).toContain(`pub const SHIPPED_LIST: &str = "${LIST}";`);
   });
+  it('リリースは、依存の脆弱性の検査を通ってからビルドする(devDependencies も含めて見る)', () => {
+    const workflow = readFileSync(join(ROOT, '.github/workflows/release.yml'), 'utf8');
+    const job = (name: string) => {
+      const m = workflow.match(new RegExp(`\\n  ${name}:\\n([\\s\\S]*?)(?=\\n  [a-z][\\w-]*:\\n|$)`));
+      expect(m, `ジョブ ${name}`).not.toBeNull();
+      return m![1];
+    };
+    expect(job('windows')).toMatch(/needs: \[plan, audit\]/);
+    const audit = job('audit');
+    expect(audit).toContain('ref: ${{ needs.plan.outputs.ref }}');
+    expect(audit).toContain('cargo deny --locked check');
+    expect(audit).toMatch(/npm audit --audit-level=high/);
+    expect(audit).not.toContain('--omit=dev');
+    // cargo-deny の版は 3 つのワークフローでそろえる
+    const version = (f: string) => readFileSync(join(ROOT, '.github/workflows', f), 'utf8').match(/CARGO_DENY_VERSION: (\S+)/)?.[1];
+    expect(version('release.yml')).toBeDefined();
+    expect(version('release.yml')).toBe(version('ci.yml'));
+    expect(version('release.yml')).toBe(version('deny-schedule.yml'));
+  });
   it('実行ファイルを作る入力を入れ、テストは除く', () => {
     expect(specs).toEqual(expect.arrayContaining(['crates', 'Cargo.toml', 'Cargo.lock', 'packages/report', 'package-lock.json', ':(exclude)crates/*/tests/*']));
     // 一覧そのものと、説明書・スクリプトは入れない(変えてもリリースを作らない)
