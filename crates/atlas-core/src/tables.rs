@@ -541,7 +541,7 @@ pub fn failures_table(sessions: &[&SessionRecord]) -> Option<Table> {
         "次のツール",
         "次の結果",
         "呼び直し",
-        "まとまり",
+        "そろえたエラー文",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -718,7 +718,7 @@ mod tests {
         "次のツール",
         "次の結果",
         "呼び直し",
-        "まとまり",
+        "そろえたエラー文",
     ];
 
     /// 失敗・拒否ごとの表: 1 件 1 行、依頼番号は turns.csv と同じ 1 からの番号、サブエージェントへの依頼は agents[] から引く
@@ -786,7 +786,7 @@ mod tests {
         assert_eq!(column("次の結果"), [s(""), s("拒否"), s("成功"), s("成功"), s("")]);
         // 呼び直しは、その後がツールのときだけ値を持つ
         assert_eq!(column("呼び直し"), [Cell::Null, Cell::Bool(false), Cell::Bool(false), Cell::Bool(true), Cell::Null]);
-        assert_eq!(column("まとまり"), r.analysis.failures.as_ref().unwrap().iter().map(|f| s(&f.group)).collect::<Vec<_>>());
+        assert_eq!(column("そろえたエラー文"), r.analysis.failures.as_ref().unwrap().iter().map(|f| s(&f.group)).collect::<Vec<_>>());
         // agents[] に同じ id が無ければ、依頼文は空
         let mut no_agent = r.clone();
         no_agent.agents.clear();

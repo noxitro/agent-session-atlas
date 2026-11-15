@@ -14,7 +14,7 @@ use atlas_core::types::{Friction, LineChanges, ProjectSource, TodoSummary, Token
 use serde::{Deserialize, Serialize};
 
 /// 埋め込みデータの版(lib/types.ts の REPORT_DATA_VERSION。版の履歴はそちらの先頭のコメントを参照)
-pub const REPORT_DATA_VERSION: i64 = 15;
+pub const REPORT_DATA_VERSION: i64 = 16;
 
 /// 推論強度別の [リクエスト, 入力, 出力, nano AIU]
 pub type EffortTuple = [f64; 4];
