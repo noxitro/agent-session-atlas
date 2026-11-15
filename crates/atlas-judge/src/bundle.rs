@@ -1,6 +1,6 @@
 //! 評価バンドルの生成(packages/judge/src/bundle.ts の移植):
 //! <bundleDir>/sessions/<id>.md + manifest.json + INSTRUCTIONS.md + schema.json + parts/part-<番号>.md。
-//! ZIP は作らない。フォルダごと ZIP にして外部 LLM に渡すか、ZIP を渡せない相手(M365 Copilot のようにテキストの添付だけ)には
+//! ZIP は zip.rs が作る(atlas bundle --zip)。ZIP かフォルダごと外部 LLM に渡すか、ZIP を渡せない相手(M365 Copilot のようにテキストの添付だけ)には
 //! parts/ のファイルを 1 つずつ渡す。
 
 use crate::packet::{collect_texts, excerpt_texts, has_request, render_packet, PacketLimits, SessionTexts, TextSource, DEFAULT_LIMITS};

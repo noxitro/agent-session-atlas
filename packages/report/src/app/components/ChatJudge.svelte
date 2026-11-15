@@ -2,7 +2,8 @@
   // 判定ダイアログの「チャットに貼る」(M365 Copilot など、ファイルの添付と貼り付けしかできない相手)。
   // 1. 未判定のセッションだけで添付ファイル(bundle/parts/)を作る(bundle のジョブ。LLM は呼ばない)
   // 2. 次のファイルを保存(またはコピー)して、依頼文と一緒にチャットへ渡す
-  // 3. 返答をまるごと貼って取り込む(judgments.json。形が合わなければ何も書かず、どこが違うかを出す)
+  // 3. 返答をまるごと貼って取り込む(judgments.json。形が合わなければ何も書かず、どこが違うかを出す)。
+  //    返答をファイルに保存してあるとき(エージェントやローカルの LLM に書かせた JSON など)は、ファイルを選ぶと中身が欄に入る
   // 4. レポートに反映する(export のジョブ)
   // 2 と 3 は、サーバが Windows なら「M365 Copilot で自動で判定する」(m365 のジョブ)でまとめて行える(取り込めたらレポートにも反映する)
   // どの手順も AI クレジットを使わない(判定するのはチャットの側)。
@@ -25,6 +26,8 @@
   const REQUEST = '添付したファイルの指示に従って判定し、JSON を返してください。';
   /** 取り込みの失敗で並べる項目の上限 */
   const PROBLEMS_MAX = 8;
+  /** 返答のファイルとして読む大きさの上限(判定 1 件は数 KB。これを超えるのは選び間違い) */
+  const REPLY_FILE_MAX = 5 * 1024 * 1024;
 
   let info = $state<ChatParts | null>(null);
   let pending = $state<number | null>(null);
@@ -34,6 +37,8 @@
   let importing = $state(false);
   let result = $state('');
   let importError = $state<{ message: string; problems: string[] } | null>(null);
+  let fileNote = $state('');
+  let fileError = $state('');
   let imported = $state(0);
   let copied = $state('');
   let copyError = $state('');
@@ -141,6 +146,7 @@
       imported += r.imported;
       if (pending != null) pending = Math.max(0, pending - (r.imported - r.overwritten));
       reply = '';
+      fileNote = '';
       const extra = [r.overwritten ? `判定し直し ${int(r.overwritten)} 件` : '', r.unknownIds.length ? `集計に無い${unit} ${int(r.unknownIds.length)} 件(レポートには出ません)` : ''].filter(Boolean).join('、');
       result = `${int(r.imported)} 件を取り込みました${extra ? `(${extra})` : ''}。`;
       // 送信ボタンが無効になって焦点が消えるので、結果の文へ移す(続けて Tab で次の手順へ進める)
@@ -150,6 +156,29 @@
       importError = { message: (err as Error).message, problems: err instanceof ChatImportError ? err.problems : [] };
     } finally {
       importing = false;
+    }
+  }
+
+  /** 選んだファイルの中身を返答の欄に入れる(取り込むのは「取り込む」を押したとき。中身を見てから取り込める) */
+  async function loadReplyFile(e: Event): Promise<void> {
+    const input = e.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+    fileNote = '';
+    fileError = '';
+    try {
+      if (file.size > REPLY_FILE_MAX) throw new Error(`大きすぎます(${kb(file.size)}。上限 ${kb(REPLY_FILE_MAX)})`);
+      const text = await file.text();
+      if (!text.trim()) throw new Error('中身が空です');
+      reply = text;
+      result = '';
+      importError = null;
+      fileNote = `${file.name} を読み込みました(${kb(file.size)})。「取り込む」を押してください。`;
+    } catch (err) {
+      fileError = `${file.name} を読み込めませんでした: ${(err as Error).message}`;
+    } finally {
+      // 同じファイルを選び直しても読み直せるようにする
+      input.value = '';
     }
   }
 
@@ -268,6 +297,10 @@
       <form onsubmit={importReply} aria-busy={importing}>
         <label class="fld" for="chat-reply">チャットの返答をまるごと貼り付けます(説明文が混じっていてもかまいません。JSON のコードブロックだけを読みます)</label>
         <textarea id="chat-reply" name="chat-reply" rows="5" autocomplete="off" spellcheck="false" bind:value={reply} aria-invalid={importError ? 'true' : undefined} aria-describedby="chat-import-msg" data-testid="chat-reply"></textarea>
+        <label class="fld file" for="chat-reply-file">返答をファイルに保存してあるとき(.json / .md / .txt)は、選ぶと中身が上の欄に入ります</label>
+        <input id="chat-reply-file" name="chat-reply-file" type="file" accept=".json,.md,.txt,application/json,text/plain,text/markdown" onchange={loadReplyFile} data-testid="chat-reply-file" />
+        <p class="copied" role="status" data-testid="chat-reply-file-note">{fileNote}</p>
+        {#if fileError}<p class="err" role="alert" data-testid="chat-reply-file-error">{fileError}</p>{/if}
         <div class="acts">
           <button type="submit" class="btn" disabled={!reply.trim() || importing || jobs.running} data-testid="chat-import">{importing ? '取り込んでいます…' : '取り込む'}</button>
         </div>
@@ -491,6 +524,16 @@
     margin-bottom: 4px;
     font-size: 0.75rem;
     color: var(--ink-2);
+  }
+  .fld.file {
+    margin-top: 8px;
+  }
+  input[type='file'] {
+    max-width: 100%;
+    min-height: 32px;
+    font: inherit;
+    font-size: 0.8125rem;
+    color: var(--ink);
   }
   textarea {
     display: block;

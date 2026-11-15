@@ -13,5 +13,6 @@ pub mod turn_bundle;
 pub mod turn_run;
 pub mod turn_schema;
 mod util;
+pub mod zip;
 
 pub use util::read_text;

@@ -7,6 +7,7 @@ use anyhow::Result;
 use atlas_core::jsnum::to_fixed;
 use atlas_judge::bundle::{build_bundle, BundleManifest, BundleOptions};
 use atlas_judge::judgments_io::read_judgments;
+use atlas_judge::zip::{write_bundle_zip, DosTime};
 use indexmap::IndexMap;
 use std::collections::HashSet;
 use std::time::Instant;
@@ -16,10 +17,19 @@ pub(crate) fn kb(b: i64) -> String {
     format!("{} KB", to_fixed(b as f64 / 1024.0, 1))
 }
 
+/// --zip の出力先(バンドルのフォルダの隣。out/bundle なら out/bundle.zip)
+pub(crate) fn zip_path(bundle: &std::path::Path) -> std::path::PathBuf {
+    let mut name = bundle.file_name().map(|n| n.to_os_string()).unwrap_or_else(|| "bundle".into());
+    name.push(".zip");
+    bundle.with_file_name(name)
+}
+
 pub struct BundleCliOptions {
     pub include_empty: bool,
     pub per_part: Option<u64>,
     pub unjudged: bool,
+    /// バンドルを 1 つの ZIP にもまとめる(<bundle>.zip)
+    pub zip: bool,
 }
 
 pub fn run_bundle(p: &Paths, f: &SessionFilter, o: &BundleCliOptions, log: Log<'_>) -> Result<BundleManifest> {
@@ -68,7 +78,15 @@ pub fn run_bundle(p: &Paths, f: &SessionFilter, o: &BundleCliOptions, log: Log<'
         p.bundle.display(),
         ms(t.elapsed())
     ));
-    log("bundle: 外部の LLM に渡すときは bundle フォルダごと ZIP にして、INSTRUCTIONS.md を最初に読ませてください");
+    if o.zip {
+        let zip = zip_path(&p.bundle);
+        let root = p.bundle.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "bundle".into());
+        let z = write_bundle_zip(&p.bundle, &m, &zip, &root, DosTime::now())?;
+        log(&format!("bundle: ZIP にまとめました({} ファイル、{}、無圧縮。parts/ は入れていません)→ {}", z.files, mb(z.bytes), zip.display()));
+        log("bundle: フォルダやファイルを読めるエージェントに渡し、INSTRUCTIONS.md を最初に読ませてください。返ってきた JSON は atlas judge import <ファイル> で取り込みます");
+    } else {
+        log("bundle: 外部の LLM に渡すときは --zip を付けて作った ZIP(またはフォルダごと)を渡し、INSTRUCTIONS.md を最初に読ませてください");
+    }
     if let Some(parts) = m.parts.as_ref().filter(|x| !x.is_empty()) {
         let max_part = parts.iter().map(|x| x.bytes).max().unwrap_or(0);
         log(&format!(

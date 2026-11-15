@@ -131,6 +131,37 @@ describe('Phase 3 E2E: fixtures', () => {
     expect(boundaries.size).toBe(parts.length);
   });
 
+  it('a3. --zip でバンドルを 1 つの ZIP にまとめる(parts/ は入れない)', async () => {
+    const out3 = join(WORK, 'out-zip');
+    expect(atlas(['all', '--home', home, '--out', out3]).status).toBe(0);
+    const r = atlas(['bundle', '--out', out3, '--zip']);
+    expect(r.status, r.stderr).toBe(0);
+    const m = await readJson<BundleManifest>(join(out3, 'bundle', 'manifest.json'));
+    const zip = await readFile(join(out3, 'bundle.zip'));
+    expect(r.stdout + r.stderr).toContain(`ZIP にまとめました(${m.count + 3} ファイル`);
+    // 末尾のレコード: ファイルの数と、中央ディレクトリの場所
+    const end = zip.length - 22;
+    expect(zip.readUInt32LE(end)).toBe(0x06054b50);
+    expect(zip.readUInt16LE(end + 10)).toBe(m.count + 3);
+    const names: string[] = [];
+    let at = zip.readUInt32LE(end + 16);
+    for (let i = 0; i < m.count + 3; i++) {
+      expect(zip.readUInt32LE(at)).toBe(0x02014b50);
+      const [size, len, local] = [zip.readUInt32LE(at + 24), zip.readUInt16LE(at + 28), zip.readUInt32LE(at + 42)];
+      const name = zip.subarray(at + 46, at + 46 + len).toString('utf8');
+      names.push(name);
+      // 無圧縮なので、中身は元のファイルと同じ
+      expect(zip.subarray(local + 30 + len, local + 30 + len + size).equals(await readFile(join(out3, name)))).toBe(true);
+      at += 46 + len;
+    }
+    expect(at).toBe(end);
+    expect(names.sort()).toEqual(['bundle/INSTRUCTIONS.md', 'bundle/manifest.json', 'bundle/schema.json', ...m.sessions.map((s) => `bundle/${s.path}`)].sort());
+    // bundle 以外では使えない
+    const t = atlas(['turns', 'bundle', '--out', out3, '--zip']);
+    expect(t.status).not.toBe(0);
+    expect(t.stdout + t.stderr).toContain('--zip は bundle でだけ使えます');
+  });
+
   it('a2. CLI のフィルタ(--client)でパケットが絞られ、前回のパケットは消える', async () => {
     const out2 = join(WORK, 'out-cli');
     const s = atlas(['all', '--home', home, '--out', out2]);
