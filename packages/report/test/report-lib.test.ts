@@ -2,7 +2,7 @@
 // 記録(sessions.json の形)から集計・絞り込み・伏せ字を確かめるテストは、記録を作る normalize が Rust(crates/atlas-core)に移ったので、
 // Rust の lib の移植(crates/atlas-report/tests/lib_reports.rs)と、TS の lib との突き合わせ(scripts/parity-lib.ts)が受け持つ。
 import { describe, expect, it } from 'vitest';
-import { monthRange } from '../src/lib/aggregate.ts';
+import { effortSkew, isLowConfidence, monthRange } from '../src/lib/aggregate.ts';
 import { shortProjectLabel } from '../src/lib/anonymize.ts';
 import { embedData, extractEmbedded, serializeForScript } from '../src/lib/embed.ts';
 import { decodeFilter, emptyFilter, encodeFilter, groupIds, isEmptyFilter } from '../src/lib/filter.ts';
@@ -15,6 +15,27 @@ import { GLOSSARY, GLOSSARY_GROUPS, termsByGroup } from '../src/lib/glossary.ts'
 describe('aggregate', () => {
   it('monthRange は年をまたいで欠けなく並べる', () => {
     expect(monthRange('2025-11', '2026-02')).toEqual(['2025-11', '2025-12', '2026-01', '2026-02']);
+  });
+
+  it('推定人手工数の合計が上位 5% のセッションに偏っている(半分以上)ときだけ偏りを知らせる', () => {
+    // 偏りは判定済み 5 件以上で見る(少ないと 1 件が半分を超えるのは珍しくない)。上位は 5%(1 件に満たなければ 1 件)
+    expect(effortSkew([100, 1, 1, 1])).toBeNull();
+    expect(effortSkew([100, 1, 1, 1, 1])).toEqual({ sessions: 1, hours: 100, share: 100 / 104 });
+    expect(effortSkew([2, 2, 2, 2, 2])).toBeNull();
+    expect(effortSkew([5, 1, 1, 1, 1, 1])).toEqual({ sessions: 1, hours: 5, share: 0.5 });
+    expect(effortSkew([4.9, 1, 1, 1, 1, 1])).toBeNull();
+    expect(effortSkew([0, 0, 0, 0, 0])).toBeNull();
+    // 60 件なら上位 3 件。大きい 2 件だけで合計のほとんどになる
+    const many = [2500, 1200, ...Array.from({ length: 58 }, () => 2)];
+    expect(effortSkew(many)).toMatchObject({ sessions: 3, hours: 3702 });
+    expect(effortSkew(many)!.share).toBeCloseTo(3702 / 3816);
+  });
+
+  it('確信度の低い推定は 0.3 以下。確信度の記録が無い古い判定は、低いとはみなさない', () => {
+    expect(isLowConfidence({ confidence: 0.3 })).toBe(true);
+    expect(isLowConfidence({ confidence: 0.31 })).toBe(false);
+    expect(isLowConfidence({ confidence: null })).toBe(false);
+    expect(isLowConfidence(null)).toBe(false);
   });
 });
 

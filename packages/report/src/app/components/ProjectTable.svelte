@@ -225,8 +225,8 @@
               <td class="num">{int(b.friction)}{#if b.friction > 0}<span class="part">{frictionNote(b)}</span>{/if}</td>
               <td class="num">{duration(b.activeMedianMs, '—')}</td>
               {#if judged}
-                <td class="num" title={b.judgedSessions ? `LLM による推定。判定済み ${b.judgedSessions} / ${b.sessions} セッション、幅 ${dec(b.humanLow)}〜${dec(b.humanHigh)} 時間` : ''}>
-                  {#if b.judgedSessions}{dec(b.humanHours)} 時間<span class="part">{b.judgedSessions}/{b.sessions}・{confidenceLabel(b.judgedConfidence)}</span>{:else}<span class="missing-value">未判定</span>{/if}
+                <td class="num" title={b.judgedSessions ? `LLM による推定。判定済み ${b.judgedSessions} / ${b.sessions} セッション${b.humanSessions ? `、幅 ${dec(b.humanLow)}〜${dec(b.humanHigh)} 時間` : ''}${b.humanUncertain.sessions ? `。確信度の低い推定 ${b.humanUncertain.sessions} セッション(計 ${dec(b.humanUncertain.hours)} 時間)は入れていません` : ''}` : ''}>
+                  {#if b.humanSessions}{dec(b.humanHours)} 時間<span class="part">{b.judgedSessions}/{b.sessions}・{confidenceLabel(b.judgedConfidence)}</span>{:else if b.judgedSessions}—<span class="part">{b.judgedSessions}/{b.sessions}・確信度の低い推定のみ</span>{:else}<span class="missing-value">未判定</span>{/if}
                 </td>
               {/if}
             </tr>

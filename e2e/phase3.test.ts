@@ -11,7 +11,7 @@ import { readFile, readdir, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { aggregate } from '../packages/report/src/lib/aggregate.ts';
+import { aggregate, isLowConfidence } from '../packages/report/src/lib/aggregate.ts';
 import { extractEmbedded } from '../packages/report/src/lib/embed.ts';
 import type { ReportData } from '../packages/report/src/lib/types.ts';
 import type { SessionsFile } from '../packages/report/src/shared/types.ts';
@@ -175,12 +175,18 @@ describe('Phase 3 E2E: fixtures', () => {
     }
     // 全体とプロジェクト別の集計(画面と同じ aggregate)
     const agg = aggregate(data.sessions);
-    const total = sample.items.reduce((a, i) => a + i.humanEffort.hours, 0);
+    // 確信度の低い推定(サンプルの 5 件目。確信度 0.3)は合計に入れず、別枠で数える
+    const counted = sample.items.filter((i) => !isLowConfidence(i.humanEffort));
+    const uncertain = sample.items.filter((i) => isLowConfidence(i.humanEffort));
+    expect(uncertain.map((i) => i.humanEffort.hours)).toEqual([8]);
+    const total = counted.reduce((a, i) => a + i.humanEffort.hours, 0);
     expect(agg.overall.humanHours).toBeCloseTo(total);
     expect(agg.overall.judgedSessions).toBe(sample.items.length);
-    expect(agg.overall.judgedConfidence).toBeCloseTo(sample.items.reduce((a, i) => a + i.humanEffort.confidence, 0) / sample.items.length);
+    expect(agg.overall.humanSessions).toBe(counted.length);
+    expect(agg.overall.humanUncertain).toEqual({ sessions: 1, hours: 8, low: 5, high: 12 });
+    expect(agg.overall.judgedConfidence).toBeCloseTo(counted.reduce((a, i) => a + i.humanEffort.confidence, 0) / counted.length);
     const byProject = new Map<string, number>();
-    for (const it of sample.items) {
+    for (const it of counted) {
       const p = data.sessions.find((x) => x.id === it.sessionId)!.project;
       byProject.set(p, (byProject.get(p) ?? 0) + it.humanEffort.hours);
     }

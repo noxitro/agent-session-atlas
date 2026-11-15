@@ -49,6 +49,23 @@ pub struct JudgedAi {
     pub premium_requests: f64,
 }
 
+/// 確信度の低い推定(is_low_confidence)。合計に入れず、別枠で出す
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct HumanUncertain {
+    pub sessions: i64,
+    pub hours: f64,
+    pub low: f64,
+    pub high: f64,
+}
+
+/// 推定人手工数の合計の偏り: 推定の大きい上位 sessions 件(計 hours 時間)が、合計の share(0〜1)を占める
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct EffortSkew {
+    pub sessions: i64,
+    pub hours: f64,
+    pub share: f64,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Bucket {
@@ -86,12 +103,25 @@ pub struct Bucket {
     pub last_at: Option<String>,
     /// 最終更新(更新日時のいちばん後。更新日時の無いセッションは開始日時で数える)
     pub updated_at: Option<String>,
-    /// judgments の推定人手工数(判定済みセッションだけの和)
+    /// 判定済みのセッション数(確信度の低い推定も含む)
     pub judged_sessions: i64,
+    /// 合計に入れた判定済みセッションの数(確信度の低い推定を除く)。
+    /// 下の human_hours・human_low・human_high・human_median・human_skew・judged_confidence・judged_ai は、このセッションだけの値
+    pub human_sessions: i64,
+    /// 確信度の低い推定(is_low_confidence)。合計に入れず、別枠で出す
+    pub human_uncertain: HumanUncertain,
+    /// judgments の推定人手工数の和
     pub human_hours: f64,
+    /// 推定の幅(low / high の和)
     pub human_low: f64,
     pub human_high: f64,
+    /// 推定人手工数の中央値(合計に入れたセッションが無ければ None)
+    pub human_median: Option<f64>,
+    /// 推定人手工数の合計が少数のセッションに偏っているときの、その偏り(偏っていなければ None)
+    pub human_skew: Option<EffortSkew>,
+    /// 確信度の平均(合計に入れたセッションが無ければ None)
     pub judged_confidence: Option<f64>,
+    /// 同じセッションに AI が使った量(AI 投入量 vs 推定人手工数の比較用)
     pub judged_ai: JudgedAi,
 }
 
@@ -246,6 +276,37 @@ fn round_to(x: f64, k: f64) -> f64 {
     js::round(x * k) / k
 }
 
+/// 確信度がこれ以下の推定は、合計に入れずに別枠で出す。判定の指示(judge の rubric)が、本文が抜粋だけ・成果が不明のとき、
+/// 大量に生成されて動くかを確かめられないときに求める値(0.3 以下)と同じ
+pub const LOW_CONFIDENCE: f64 = 0.3;
+
+/// 確信度の低い推定か(確信度の記録が無い古い判定は、低いとはみなさない)
+pub fn is_low_confidence(confidence: Option<f64>) -> bool {
+    confidence.is_some_and(|c| c <= LOW_CONFIDENCE)
+}
+
+/// 偏りを見る判定済みセッションの数の下限(これより少ないと、1 件が半分を超えるのは珍しくない)
+pub const SKEW_MIN_SESSIONS: usize = 5;
+/// 上位として数える割合(判定済みセッションの 5%。1 件に満たなければ 1 件)
+pub const SKEW_TOP_RATE: f64 = 0.05;
+/// 上位がこの割合以上を占めたら「偏っている」とする
+pub const SKEW_SHARE: f64 = 0.5;
+
+/// 推定人手工数(セッションごとの時間)の偏り。上位 5% のセッションが合計の半分以上を占めるときだけ返す。
+/// 合計は和なので、AI が大量に生成したセッションの大きな推定が数件あるだけで、ほぼその値になる
+pub fn effort_skew(hours: &[f64]) -> Option<EffortSkew> {
+    let total = hours.iter().fold(0.0, |a, h| a + h);
+    if hours.len() < SKEW_MIN_SESSIONS || total <= 0.0 {
+        return None;
+    }
+    let n = (js::round(hours.len() as f64 * SKEW_TOP_RATE) as usize).max(1);
+    let mut sorted = hours.to_vec();
+    sorted.sort_by(|a, b| b.partial_cmp(a).unwrap_or(Ordering::Equal));
+    let top = sorted.iter().take(n).fold(0.0, |a, h| a + h);
+    let share = top / total;
+    if share >= SKEW_SHARE { Some(EffortSkew { sessions: n as i64, hours: round_to(top, 100.0), share }) } else { None }
+}
+
 /// 空でない文字列(JS の真偽)
 fn nonempty(s: Option<&str>) -> Option<&str> {
     s.filter(|x| !x.is_empty())
@@ -255,6 +316,7 @@ pub fn bucket(key: &str, label: &str, sessions: &[&SessionSummary]) -> Bucket {
     let mut b = Bucket { key: key.into(), label: label.into(), sessions: sessions.len() as i64, ..Default::default() };
     let (mut conf_sum, mut conf_n) = (0.0, 0);
     let mut actives: Vec<f64> = Vec::new();
+    let mut humans: Vec<f64> = Vec::new();
     for s in sessions {
         let t = &s.tokens;
         if t.input.is_some() {
@@ -336,31 +398,48 @@ pub fn bucket(key: &str, label: &str, sessions: &[&SessionSummary]) -> Bucket {
         if let Some(j) = s.judgment.as_ref()
             && let Some(hours) = j.hours {
                 b.judged_sessions += 1;
-                b.human_hours += hours;
-                b.human_low += j.low.unwrap_or(hours);
-                b.human_high += j.high.unwrap_or(hours);
-                if let Some(c) = j.confidence {
-                    conf_sum += c;
-                    conf_n += 1;
+                if is_low_confidence(j.confidence) {
+                    // 根拠の弱い推定は合計に入れない(大量に生成されたセッションの大きな推定が、数件で合計を決めてしまうため)
+                    let u = &mut b.human_uncertain;
+                    u.sessions += 1;
+                    u.hours += hours;
+                    u.low += j.low.unwrap_or(hours);
+                    u.high += j.high.unwrap_or(hours);
+                } else {
+                    b.human_sessions += 1;
+                    humans.push(hours);
+                    b.human_hours += hours;
+                    b.human_low += j.low.unwrap_or(hours);
+                    b.human_high += j.high.unwrap_or(hours);
+                    if let Some(c) = j.confidence {
+                        conf_sum += c;
+                        conf_n += 1;
+                    }
+                    let ai = &mut b.judged_ai;
+                    if let Some(a) = s.active_ms {
+                        ai.active_ms += a;
+                        ai.active_known += 1;
+                    }
+                    ai.output += t.output;
+                    if let Some(i) = t.input {
+                        ai.input += i;
+                        ai.input_known += 1;
+                    }
+                    ai.premium_requests += t.premium_requests.unwrap_or(0.0);
                 }
-                let ai = &mut b.judged_ai;
-                if let Some(a) = s.active_ms {
-                    ai.active_ms += a;
-                    ai.active_known += 1;
-                }
-                ai.output += t.output;
-                if let Some(i) = t.input {
-                    ai.input += i;
-                    ai.input_known += 1;
-                }
-                ai.premium_requests += t.premium_requests.unwrap_or(0.0);
             }
     }
     b.active_median_ms = median(&actives);
     b.judged_confidence = if conf_n > 0 { Some(conf_sum / conf_n as f64) } else { None };
+    b.human_median = median(&humans);
+    b.human_skew = effort_skew(&humans);
     b.human_hours = round_to(b.human_hours, 100.0);
     b.human_low = round_to(b.human_low, 100.0);
     b.human_high = round_to(b.human_high, 100.0);
+    let u = &mut b.human_uncertain;
+    u.hours = round_to(u.hours, 100.0);
+    u.low = round_to(u.low, 100.0);
+    u.high = round_to(u.high, 100.0);
     b.judged_ai.premium_requests = round_to(b.judged_ai.premium_requests, 1000.0);
     // 浮動小数の誤差(premium request は 0.33 倍などの和)を丸める
     b.tokens.premium_requests = round_to(b.tokens.premium_requests, 1000.0);

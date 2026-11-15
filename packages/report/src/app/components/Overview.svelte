@@ -80,7 +80,11 @@
     <div class="field">
       <span class="k">推定人手工数</span>
       {#if judged && o.judgedSessions > 0}
-        <span class="v">{dec(o.humanHours)} 時間</span><span class="n">LLM の推定。判定済み {int(o.judgedSessions)} セッション、幅 {dec(o.humanLow)}〜{dec(o.humanHigh)} 時間</span>
+        {#if o.humanSessions > 0}
+          <span class="v">{dec(o.humanHours)} 時間</span><span class="n">LLM の推定。判定済み {int(o.judgedSessions)} セッション{#if o.humanUncertain.sessions > 0}のうち {int(o.humanSessions)} セッションの合計{/if}、幅 {dec(o.humanLow)}〜{dec(o.humanHigh)} 時間、中央値 {dec(o.humanMedian)} 時間 / セッション{#if o.humanSkew}。<span data-testid="effort-skew">合計の {percent(o.humanSkew.hours, o.humanHours)} は上位 {int(o.humanSkew.sessions)} セッションの推定です</span>{/if}{#if o.humanUncertain.sessions > 0}。<span data-testid="effort-uncertain">確信度の低い推定 {int(o.humanUncertain.sessions)} セッション(計 {dec(o.humanUncertain.hours)} 時間)は入れていません</span>{/if}</span>
+        {:else}
+          <span class="v missing">—</span><span class="n" data-testid="effort-uncertain">LLM の推定。判定済み {int(o.judgedSessions)} セッションはどれも確信度の低い推定(計 {dec(o.humanUncertain.hours)} 時間)なので、合計にしていません</span>
+        {/if}
       {:else}
         <span class="v missing">未判定</span><span class="n">LLM による推定はまだありません。{judgeHint('工数', { editable, anonymized })}{#if editable}Copilot の AI クレジットを使う方法と、M365 Copilot などのチャットに貼る方法があります。{/if}</span>
       {/if}

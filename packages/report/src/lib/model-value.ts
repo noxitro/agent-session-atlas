@@ -3,6 +3,7 @@
 // そこで、セッションの効果を、そのセッションのリクエストに占める モデル × 強度 の割合で按分して足す(1 セッションの重みの合計は 1)。
 // コスト(リクエスト・トークン・AIU)は按分せず、その モデル × 強度 のリクエストの実数を足す。
 import { OUTCOMES, type Outcome } from '../shared/turns.ts';
+import { isLowConfidence } from './aggregate.ts';
 import { EFFORT_ORDER, orderBy } from './exec.ts';
 import { modelLabel } from './format.ts';
 import type { SessionSummary } from './types.ts';
@@ -39,7 +40,7 @@ export interface ValueRow {
   quality: Weighted;
   rework: Weighted;
   hours: Weighted;
-  /** 推定人手工数のある判定済みセッションの、このモデル(× 強度)の AIU(nano)。人手工数あたりのコストの分母 */
+  /** 推定人手工数を数えた判定済みセッション(確信度の低い推定を除く)の、このモデル(× 強度)の AIU(nano)。人手工数あたりのコストの分母 */
   judgedNanoAiu: number;
   /** 依頼の判定(判定不能を除く依頼の数を按分): 採用・そのまま・使えなかった。weight は判定した依頼のあるセッションの重み */
   turns: { judged: number; adopted: number; asIs: number; rejected: number; weight: number };
@@ -133,8 +134,10 @@ export function modelValue(sessions: readonly SessionSummary[], split: boolean):
         addW(row.completed, j.completed == null ? null : j.completed ? 1 : 0, w);
         addW(row.quality, j.quality, w);
         addW(row.rework, j.rework, w);
-        addW(row.hours, j.hours, w);
-        if (j.hours != null) row.judgedNanoAiu += nanoAiu;
+        // 確信度の低い推定は、全体の合計と同じく人手工数に入れない(達成・品質・手戻りは時間の推定ではないので入れる)
+        const hours = isLowConfidence(j) ? null : j.hours;
+        addW(row.hours, hours, w);
+        if (hours != null) row.judgedNanoAiu += nanoAiu;
       }
       row.turns.judged += turns.judged * w;
       row.turns.adopted += turns.adopted * w;

@@ -28,5 +28,11 @@ if (all.status !== 0) {
   console.error(`parity-fixture: atlas all が終了コード ${all.status} で失敗しました`);
   process.exit(1);
 }
+// 推定人手工数の集計(確信度の低い推定の別枠・中央値・偏り)も比べるよう、手書きの judgments サンプル(架空の判定)を取り込む
+const imp = spawnSync(exe, ['judge', 'import', join(FIXTURES_DIR, 'judgments-sample.json'), '--out', out], { cwd: ROOT, stdio: ['ignore', 'ignore', 'inherit'] });
+if (imp.status !== 0) {
+  console.error(`parity-fixture: atlas judge import が終了コード ${imp.status} で失敗しました`);
+  process.exit(1);
+}
 const cmp = spawnSync(process.execPath, [join(ROOT, 'scripts', 'parity-lib.ts'), out, '--compare', '--notes', notes, '--work', join(ROOT, 'out', 'parity-fixture-dump')], { cwd: ROOT, stdio: 'inherit' });
 process.exit(cmp.status ?? 1);
