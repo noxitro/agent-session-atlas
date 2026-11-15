@@ -183,6 +183,21 @@ describe('scripts/ensure-atlas.ps1', () => {
     expect(text).toMatch(/function Get-WantVersion \{\r\n {2}\$tag = Get-TagVersion\r\n {2}if \(\$tag\) \{ return \$tag \}\r\n {2}return Get-CargoVersion\r\n\}/);
   });
 
+  // タグを取らずに取得したフォルダ(git clone --no-tags)は、上げなくなった Cargo.toml の version に固定されないよう、一度タグを取ってくる。
+  // 待つのは 20 秒まで。-Check は何も変えないので取りに行かない
+  it('HEAD から辿れるタグが無ければ、-Check でないときだけ、時間を区切って origin からタグを取ってくる', () => {
+    expect(text).toContain("if (-not $best -and -not $Check -and (Invoke-TagFetch)) { $best = Find-NewestTag }");
+    expect(text).toMatch(/Start-Process -FilePath 'git' -ArgumentList @\('fetch', '--quiet', '--tags', 'origin'\)/);
+    expect(text).toContain('$p.WaitForExit(20000)');
+    expect(text).toContain("$env:GIT_TERMINAL_PROMPT = '0'");
+  });
+
+  // 取り下げた版の番号で別のコミットからリリースを作り直したら、前のものを使い続けない
+  it('リリースの実行ファイルは、版に加えて、作ったコミットがタグのコミットと同じかも見る(置いてあるものと、取ってきたもの)', () => {
+    expect(text).toContain('& git -C $Repo rev-list -n 1 "refs/tags/v$best"');
+    expect(text.match(/\$script:WantCommit -and \$info\.Commit -and \$info\.Commit -ne \$script:WantCommit/g)).toHaveLength(2);
+  });
+
   it('管理者の権限が要る操作をしない', () => {
     expect(text).not.toMatch(/RunAs|Set-ExecutionPolicy|-Scope\s+(LocalMachine|AllUsers)|Program Files/i);
   });
@@ -199,5 +214,27 @@ describe('TS 版で登録したタスクのための互換の入口(packages/cli
     expect(text).toContain("join(ROOT, 'scripts', 'ensure-atlas.ps1')");
     expect(text).toContain("['upload-auto', ...process.argv.slice(2)]");
     expect(text).toContain('schedule-upload.bat を開くと');
+  });
+});
+
+// 配る atlas.exe に入るものの一覧は 1 つのファイルにだけ書く。リリースのワークフロー(リリースを作るか)と自動の更新(リリースを待つか)が
+// 同じ一覧で決めないと、リリースの出ないコミットを待ち続けたり、リリースより先に進んだりする
+describe('配る中身の一覧(scripts/release-shipped.txt)', () => {
+  const LIST = 'scripts/release-shipped.txt';
+  const specs = readFileSync(join(ROOT, LIST), 'utf8')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith('#'));
+  it('リリースのワークフローと自動の更新が、同じファイルを読む(ワークフローに一覧を書かない)', () => {
+    const workflow = readFileSync(join(ROOT, '.github/workflows/release.yml'), 'utf8');
+    expect(workflow).toContain(`< ${LIST} |`);
+    expect(workflow).not.toMatch(/shipped=\(/);
+    const rust = readFileSync(join(ROOT, 'crates/atlas-cli/src/self_update.rs'), 'utf8');
+    expect(rust).toContain(`pub const SHIPPED_LIST: &str = "${LIST}";`);
+  });
+  it('実行ファイルを作る入力を入れ、テストは除く', () => {
+    expect(specs).toEqual(expect.arrayContaining(['crates', 'Cargo.toml', 'Cargo.lock', 'packages/report', 'package-lock.json', ':(exclude)crates/*/tests/*']));
+    // 一覧そのものと、説明書・スクリプトは入れない(変えてもリリースを作らない)
+    expect(specs.filter((s) => /^(scripts|docs|README)/.test(s))).toEqual([]);
   });
 });

@@ -1,13 +1,14 @@
-# リリース: main に入ったコミットで、配る atlas.exe の中身(下の shipped)がいちばん新しいリリースのタグから変わっていれば、
+# リリース: main に入ったコミットで、配る atlas.exe の中身(scripts/release-shipped.txt)がいちばん新しいリリースのタグから変わっていれば、
 # 次の版 v<x.y.z> の atlas.exe を Windows で作り、sha256 と一緒にリリースを作って付ける(タグもこのとき、そのコミットに付く)。
 # version を上げる PR も、手でタグを push することも要らない。配る中身が変わっていないコミット(説明書・テスト・スクリプト・ワークフローだけ)では、
 # 確かめるだけですぐ終わる。
 # 次の版: Cargo.toml の [workspace.package] の version のタグがまだ無く、いちばん新しいタグより大きければ、その版(minor や major を
 # 上げたいときは Cargo.toml の version を上げる)。そうでなければ、いちばん新しいタグのパッチ版を 1 つ上げる。
 # 実行ファイルの版(atlas --version)は、ビルドのときに環境変数 ATLAS_VERSION で渡す(crates/atlas-cli/build.rs)。
-# マージはこのワークフローを待たない(マージの条件は CI の ci-ok だけ)。マージからリリースができるまでの間に新しいコミットを取り込んだ利用者は、
+# マージはこのワークフローを待たない(マージの条件は CI の ci-ok だけ)。起動用の .bat と自動で送るタスクの自動の更新は、配る中身が変わったのに
+# リリースがまだ無いコミットには進まず、リリースのタグが届いてから取り込む(crates/atlas-cli/src/self_update.rs)。手で git pull した利用者は、
 # 前のタグのリリースの atlas.exe のまま続け、タグが届いたら取り直す(scripts/ensure-atlas.ps1 は、HEAD から辿れるいちばん新しいタグの
-# リリースを使う。起動用の .bat と自動で送るタスクは、git fetch でタグも取ってくる。crates/atlas-cli/src/self_update.rs)。
+# リリースを使う)。
 # 手順は docs/development.md の「リリースの手順」。
 # 失敗したときや作り直すときは、Actions の画面からタグを指定して動かす(workflow_dispatch。タグが要る。同じ名前のファイルは置き換える)。
 # atlas.exe には GitHub の artifact attestation(ビルドの来歴。Sigstore で署名され、どのリポジトリ・ワークフロー・コミットで
@@ -70,11 +71,9 @@ jobs:
             { echo "tag=$INPUT_TAG"; echo "ref=$INPUT_TAG"; echo "build=true"; } >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # 配る atlas.exe に入るもの(ビルドが読むもの)。テスト・例・説明書・スクリプト・ワークフローは入れない。
-          # crates/atlas-cli/build.rs の版の目印(ATLAS_CODE_STAMP)の材料に、画面のテンプレートを作る packages/report(と、その tsconfig が継ぐ
-          # ルートの tsconfig.json)と npm の依存を足したもの
-          shipped=(crates Cargo.toml Cargo.lock packages/report package.json package-lock.json tsconfig.json
-            ':(exclude)crates/*/tests/*' ':(exclude)crates/*/examples/*' ':(exclude)packages/report/test/*' ':(exclude)packages/report/.impeccable/*')
+          # 配る atlas.exe に入るもの(git の pathspec。自動の更新も同じファイルを読む。説明はファイルの先頭)
+          mapfile -t shipped < <(tr -d '\r' < scripts/release-shipped.txt | grep -vE '^[[:space:]]*(#|$)')
+          test "${#shipped[@]}" -gt 0
           latest=$(git tag --list 'v*' | grep -E "$semver" | sort -V | tail -n 1 || true)
           cargo_version=$(awk '/^\[workspace\.package\]/{s=1;next} /^\[/{s=0} s && /^version *=/{gsub(/.*= *"|".*/,"");print;exit}' Cargo.toml)
           test -n "$cargo_version"
@@ -113,16 +112,9 @@ jobs:
             IFS=. read -r major minor patch <<< "${latest#v}"
             tag="v$major.$minor.$((patch + 1))"
           fi
-          # リリースが無いのにタグだけある(手で付けた・前の実行が途中で止まった)。別のコミットを指していれば、黙って作らずに止める
-          if tagged=$(git rev-list -n 1 "refs/tags/$tag" 2>/dev/null) && [ "$tagged" != "$GITHUB_SHA" ]; then
-            echo "::error::タグ $tag が別のコミット($tagged)を指していて、リリースがありません。Actions の画面からタグ $tag を指定して作り直すか、タグを消してください"
-            exit 1
-          fi
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-            echo "リリース $tag はもうあります。作りません"
-            { echo "tag=$tag"; echo "build=false"; } >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+          # 次の版は、まだ無いタグ(タグの無い Cargo.toml の version か、いちばん新しいタグより大きい版)なので、そのタグやリリースが
+          # もうあることは無い(リリースの無いタグは、上でいちばん新しいタグとして止める)。前の実行が残した下書きのリリースは、
+          # この権限では見えないので、ファイルを付けるジョブが片付ける
           echo "リリース $tag を $GITHUB_SHA から作ります"
           { echo "tag=$tag"; echo "ref=$GITHUB_SHA"; echo "build=true"; } >> "$GITHUB_OUTPUT"
 
@@ -187,9 +179,22 @@ jobs:
           REF: ${{ needs.plan.outputs.ref }}
         run: |
           notes="Windows 用の atlas.exe と、その sha256(atlas.exe.sha256)。起動用の .bat が自動で取ってきます。"
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-            gh release upload "$TAG" dist/atlas.exe dist/atlas.exe.sha256 --repo "$GITHUB_REPOSITORY" --clobber
-          elif [ "$REF" = "$TAG" ]; then
+          if draft=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [ "$draft" = "true" ]; then
+              # 前の実行が、下書きで作ってファイルを上げている途中で止まった(gh release create は下書きで作り、ファイルを上げてから公開する)。
+              # 下書きは利用者に見えず、タグもまだ無い。別のコミットを指しているかもしれないので、消してから作り直す
+              echo "前の実行が残した下書きのリリース $TAG を消して、作り直します"
+              gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes
+            elif [ "$REF" = "$TAG" ]; then
+              # 作り直し(公開してあるリリースのファイルを置き換える)
+              gh release upload "$TAG" dist/atlas.exe dist/atlas.exe.sha256 --repo "$GITHUB_REPOSITORY" --clobber
+              exit 0
+            else
+              echo "::error::リリース $TAG はもう公開されています。別のコミット($REF)のファイルで置き換えません"
+              exit 1
+            fi
+          fi
+          if [ "$REF" = "$TAG" ]; then
             # 作り直し(タグはある)
             gh release create "$TAG" dist/atlas.exe dist/atlas.exe.sha256 --repo "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" --notes "$notes"
           else

@@ -1,11 +1,13 @@
 ﻿# atlas の実行ファイル(bin\atlas.exe)を、このチェックアウトの版にそろえる。
 # このチェックアウトの版は、HEAD から辿れるタグ v<x.y.z> のうち、いちばん新しいもの(リリースのワークフローが、配る中身が変わったマージごとに
-# 付ける。.github/workflows/release.yml)。git が無いかタグが無ければ、Cargo.toml の [workspace.package] の version。
+# 付ける。.github/workflows/release.yml)。HEAD から辿れるタグが無ければ(タグを取らずに取得したフォルダなど)、一度 origin からタグを取ってくる。
+# git が無いか、それでもタグが無ければ、Cargo.toml の [workspace.package] の version。
 # 起動用の .bat がすべて最初に呼ぶ。.bat と自動で送るタスク(atlas upload-auto)は、git fetch で新しい版にした後にも呼ぶ(crates/atlas-cli/src/self_update.rs)。
 #
 # 順に試す:
 #  1. bin\atlas.exe があり、そのまま使えるなら、何もしない。使えるのは:
-#     - リリースから取ったもの: atlas --version の版が、このチェックアウトの版と同じ
+#     - リリースから取ったもの: atlas --version の版が、このチェックアウトの版と同じで、作ったときのコミットがそのタグのコミットと同じ
+#       (取り下げた版の番号で、別のコミットからリリースを作り直したときに、前のものを使い続けないように)
 #     - この PC でビルドしたもの: Node.js と Rust があれば、作ったときのコミットが今のコミットと同じ(違えばビルドし直す)。
 #       無ければ、リリースから取ったものと同じく版で比べる(一度ビルドした人も、ビルドに要るものを消せばリリースに移る)
 #  2. このリポジトリ(git remote get-url origin の GitHub)のリリース v<version> から atlas.exe を取ってきて、
@@ -87,10 +89,9 @@ function Compare-SemVer([string]$a, [string]$b) {
   return ($xa.Count).CompareTo($xb.Count)
 }
 
-# HEAD から辿れるタグ v<x.y.z> のうち、いちばん新しいものの版(v を除く)。git が無いかタグが無ければ $null
-function Get-TagVersion {
+# HEAD から辿れるタグ v<x.y.z> のうち、いちばん新しいものの版(v を除く)。無ければ $null
+function Find-NewestTag {
   $ErrorActionPreference = 'Continue'
-  if (-not (Test-Path -LiteralPath (Join-Path $Repo '.git')) -or -not (Test-Tool 'git')) { return $null }
   $tags = & git -C $Repo tag --list 'v*' --merged HEAD 2>$null
   if ($LASTEXITCODE -ne 0) { return $null }
   $best = $null
@@ -100,6 +101,43 @@ function Get-TagVersion {
     $v = $Matches[1]
     if (-not $best -or (Compare-SemVer $v $best) -gt 0) { $best = $v }
   }
+  return $best
+}
+
+# origin からタグを取ってくる(20 秒まで。資格情報は尋ねない)。取れたら $true
+function Invoke-TagFetch {
+  $ErrorActionPreference = 'Continue'
+  $err = [IO.Path]::GetTempFileName()
+  $out = [IO.Path]::GetTempFileName()
+  $prompt = $env:GIT_TERMINAL_PROMPT
+  try {
+    $env:GIT_TERMINAL_PROMPT = '0'
+    $p = Start-Process -FilePath 'git' -ArgumentList @('fetch', '--quiet', '--tags', 'origin') -WorkingDirectory $Repo -NoNewWindow -PassThru -RedirectStandardError $err -RedirectStandardOutput $out
+    # 終わった後に終了コードを読めるよう、先にハンドルを取っておく(Windows PowerShell 5.1)
+    $null = $p.Handle
+    if (-not $p.WaitForExit(20000)) { try { $p.Kill() } catch { }; return $false }
+    return ($p.ExitCode -eq 0)
+  } catch {
+    return $false
+  } finally {
+    $env:GIT_TERMINAL_PROMPT = $prompt
+    Remove-Item -LiteralPath $err, $out -Force -ErrorAction SilentlyContinue
+  }
+}
+
+# このチェックアウトの版のタグのコミット(全桁。分からなければ空)。Get-TagVersion が決める
+$script:WantCommit = ''
+
+# このチェックアウトの版のタグ(v を除く)。git が無いかタグが無ければ $null
+function Get-TagVersion {
+  $ErrorActionPreference = 'Continue'
+  if (-not (Test-Path -LiteralPath (Join-Path $Repo '.git')) -or -not (Test-Tool 'git')) { return $null }
+  $best = Find-NewestTag
+  # タグを取らずに取得したフォルダ(git clone --no-tags など)。-Check は何も変えないので取りに行かない
+  if (-not $best -and -not $Check -and (Invoke-TagFetch)) { $best = Find-NewestTag }
+  if (-not $best) { return $null }
+  $c = & git -C $Repo rev-list -n 1 "refs/tags/v$best" 2>$null
+  if ($LASTEXITCODE -eq 0) { $script:WantCommit = ([string]$c).Trim() }
   return $best
 }
 
@@ -184,6 +222,9 @@ function Get-StaleReason([string]$want) {
     return $null
   }
   if ($info.Version -ne $want) { return "bin\atlas.exe の版($($info.Version))が、このフォルダの版($want)と違います" }
+  if ($script:WantCommit -and $info.Commit -and $info.Commit -ne $script:WantCommit) {
+    return "bin\atlas.exe は、リリース v$want のタグのコミットから作ったものではありません(リリースが作り直されたなど)"
+  }
   return $null
 }
 
@@ -276,6 +317,10 @@ function Get-ReleaseExe([string]$want, [string]$work) {
   if ($script:Attestation -eq 'fail') { return $null }
   $info = Get-ExeInfo $file
   if (-not $info -or $info.Version -ne $want) { $script:DownloadReason = "取ってきた atlas.exe の版が $want ではありません(使いません)"; return $null }
+  if ($script:WantCommit -and $info.Commit -and $info.Commit -ne $script:WantCommit) {
+    $script:DownloadReason = "取ってきた atlas.exe が、タグ $tag のコミットから作ったものではありません(使いません。次に開いたときに、タグを取り直してからもう一度試します)"
+    return $null
+  }
   return $file
 }
 
