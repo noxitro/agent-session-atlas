@@ -96,12 +96,13 @@ jobs:
       # 画面(Svelte)を先に作る: atlas のビルドが packages/report/dist/template.html を実行ファイルに埋め込む
       - run: npm run build:report
       - run: npm test
-      # parity:fixture の Rust の側(examples/libdump)も同じ cargo build で作る(scripts/parity-lib.ts の buildLibdump と同じ指定。
-      # atlas-cli の長いビルドと並んで作られ、parity:fixture ではビルドが済んでいる)。
+      # parity:fixture の Rust の側(examples/libdump)も同じ cargo build で作る(パッケージの指定を scripts/parity-lib.ts の
+      # buildLibdump とそろえ、依存の features を同じにする。atlas-cli の長いビルドと並んで作られ、parity:fixture ではビルドが済んでいる)。
+      # --bins が要る: --example のように作るものを指定すると、cargo はそれだけを作り、atlas の bin を作らない(古い bin が残る)。
       # bash で動かす(Windows の pwsh では npm.ps1 が -- を取り除き、後ろの指定が npm に渡ってしまうことがある)
       - name: npm run build:atlas(libdump も)
         shell: bash
-        run: npm run build:atlas -- -p atlas-report --example libdump
+        run: npm run build:atlas -- -p atlas-report --bins --example libdump
       # 画面の TS の lib と、build が使う Rust の lib の突き合わせ(架空の fixture)
       - run: npm run parity:fixture
       - run: npm run e2e
