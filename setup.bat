@@ -1,4 +1,5 @@
 @echo off
+setlocal
 chcp 65001 >nul
 cd /d "%~dp0"
 
@@ -8,6 +9,8 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
+
+if not "%ATLAS_NO_AUTO_UPDATE%"=="1" if not defined ATLAS_SELF_UPDATED bin\atlas.exe self-update 2>nul & if errorlevel 10 if not errorlevel 11 set "ATLAS_SELF_UPDATED=1" & cmd /d /c call "%~f0" %* & call exit /b %%errorlevel%%
 
 bin\atlas.exe setup
 if errorlevel 1 (

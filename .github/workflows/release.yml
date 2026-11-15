@@ -1,10 +1,14 @@
-# リリース: main に入ったコミットの Cargo.toml の version に、まだリリース v<version> が無ければ、Windows 用の atlas.exe を作り、
-# sha256 と一緒にリリース v<version> を作って付ける(タグ v<version> もこのとき、そのコミットに付く)。手でタグを push しなくてよい。
-# 版を上げていないコミット(リリースがもうある)では、確かめるだけですぐ終わる。
-# マージはこのワークフローを待たない(マージの条件は CI の ci-ok だけ)。版を上げたコミットからリリースができるまでの間に git pull した利用者は、
-# 起動用の .bat(scripts/ensure-atlas.ps1 -KeepOlder)が今ある atlas.exe のまま続け、次に開いたときに取り直す。
-# 利用者の起動用の .bat は、チェックアウトの Cargo.toml の version と同じ v<version> のリリースから atlas.exe と atlas.exe.sha256 を取ってきて照らし合わせる。
-# 手順は docs/development.md の「リリース」(Cargo.toml の version を上げる PR を main に入れるだけ)。
+# リリース: main に入ったコミットで、配る atlas.exe の中身(下の shipped)がいちばん新しいリリースのタグから変わっていれば、
+# 次の版 v<x.y.z> の atlas.exe を Windows で作り、sha256 と一緒にリリースを作って付ける(タグもこのとき、そのコミットに付く)。
+# version を上げる PR も、手でタグを push することも要らない。配る中身が変わっていないコミット(説明書・テスト・スクリプト・ワークフローだけ)では、
+# 確かめるだけですぐ終わる。
+# 次の版: Cargo.toml の [workspace.package] の version のタグがまだ無く、いちばん新しいタグより大きければ、その版(minor や major を
+# 上げたいときは Cargo.toml の version を上げる)。そうでなければ、いちばん新しいタグのパッチ版を 1 つ上げる。
+# 実行ファイルの版(atlas --version)は、ビルドのときに環境変数 ATLAS_VERSION で渡す(crates/atlas-cli/build.rs)。
+# マージはこのワークフローを待たない(マージの条件は CI の ci-ok だけ)。マージからリリースができるまでの間に新しいコミットを取り込んだ利用者は、
+# 前のタグのリリースの atlas.exe のまま続け、タグが届いたら取り直す(scripts/ensure-atlas.ps1 は、HEAD から辿れるいちばん新しいタグの
+# リリースを使う。起動用の .bat と自動で送るタスクは、git fetch でタグも取ってくる。crates/atlas-cli/src/self_update.rs)。
+# 手順は docs/development.md の「リリースの手順」。
 # 失敗したときや作り直すときは、Actions の画面からタグを指定して動かす(workflow_dispatch。タグが要る。同じ名前のファイルは置き換える)。
 # atlas.exe には GitHub の artifact attestation(ビルドの来歴。Sigstore で署名され、どのリポジトリ・ワークフロー・コミットで
 # 作ったかを示す)も付ける。利用者は gh attestation verify で確かめられる(ensure-atlas.ps1 は gh があれば確かめる。README)。
@@ -42,36 +46,82 @@ jobs:
       ref: ${{ steps.plan.outputs.ref }}
       build: ${{ steps.plan.outputs.build }}
     steps:
+      # 前のタグとの差を見るので、履歴とタグを全部取る
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.inputs.tag || github.sha }}
+          fetch-depth: 0
           persist-credentials: false
       - id: plan
-        name: Cargo.toml の version と、リリースがもうあるか
+        name: 配る中身が前のリリースから変わったかと、次の版
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           INPUT_TAG: ${{ github.event.inputs.tag }}
         run: |
-          version=$(awk '/^\[workspace\.package\]/{s=1;next} /^\[/{s=0} s && /^version *=/{gsub(/.*= *"|".*/,"");print;exit}' Cargo.toml)
-          test -n "$version"
+          semver='^v[0-9]+\.[0-9]+\.[0-9]+$'
           if [ -n "$INPUT_TAG" ]; then
-            # 作り直す: タグのコミットの version とタグが同じでなければ止める
-            echo "Cargo.toml: $version / タグ: $INPUT_TAG"
-            test "v$version" = "$INPUT_TAG"
+            # 作り直す: タグのコミットから、タグの版でビルドする
+            if ! [[ "$INPUT_TAG" =~ $semver ]]; then
+              echo "::error::タグ $INPUT_TAG が v<x.y.z> の形ではありません"
+              exit 1
+            fi
+            echo "タグ $INPUT_TAG のリリースを作り直します"
             { echo "tag=$INPUT_TAG"; echo "ref=$INPUT_TAG"; echo "build=true"; } >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          tag="v$version"
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-            echo "リリース $tag はもうあります(版を上げていないコミット)。作りません"
-            { echo "tag=$tag"; echo "build=false"; } >> "$GITHUB_OUTPUT"
-            exit 0
+          # 配る atlas.exe に入るもの(ビルドが読むもの)。テスト・例・説明書・スクリプト・ワークフローは入れない。
+          # crates/atlas-cli/build.rs の版の目印(ATLAS_CODE_STAMP)の材料に、画面のテンプレートを作る packages/report(と、その tsconfig が継ぐ
+          # ルートの tsconfig.json)と npm の依存を足したもの
+          shipped=(crates Cargo.toml Cargo.lock packages/report package.json package-lock.json tsconfig.json
+            ':(exclude)crates/*/tests/*' ':(exclude)crates/*/examples/*' ':(exclude)packages/report/test/*' ':(exclude)packages/report/.impeccable/*')
+          latest=$(git tag --list 'v*' | grep -E "$semver" | sort -V | tail -n 1 || true)
+          cargo_version=$(awk '/^\[workspace\.package\]/{s=1;next} /^\[/{s=0} s && /^version *=/{gsub(/.*= *"|".*/,"");print;exit}' Cargo.toml)
+          test -n "$cargo_version"
+          echo "いちばん新しいタグ: ${latest:-(無し)} / Cargo.toml の version: $cargo_version"
+          if [ -n "$latest" ]; then
+            if ! gh release view "$latest" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+              echo "::error::タグ $latest にリリースがありません。Actions の画面からタグ $latest を指定して作り直すか、タグを消してください"
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor "$latest" "$GITHUB_SHA"; then
+              # 古いコミットの実行をやり直したときなど。新しいリリースの後に、それより前のコミットからリリースを作らない
+              echo "このコミットは、いちばん新しいリリース $latest のコミットを含んでいません。作りません"
+              { echo "tag=$latest"; echo "build=false"; } >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if git diff --quiet "$latest" "$GITHUB_SHA" -- "${shipped[@]}"; then
+              echo "配る中身は $latest から変わっていません。作りません"
+              { echo "tag=$latest"; echo "build=false"; } >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "$latest から変わった、配るもの(先頭 50 件):"
+            git diff --name-only "$latest" "$GITHUB_SHA" -- "${shipped[@]}" | head -n 50
+          fi
+          # 次の版: Cargo.toml の version のタグがまだ無く、いちばん新しいタグより大きければそれ。そうでなければパッチ版を 1 つ上げる
+          tag=""
+          if [[ "v$cargo_version" =~ $semver ]] && [ -z "$(git tag --list "v$cargo_version")" ]; then
+            if [ -z "$latest" ] || [ "$(printf '%s\n%s\n' "${latest#v}" "$cargo_version" | sort -V | tail -n 1)" = "$cargo_version" ]; then
+              tag="v$cargo_version"
+            fi
+          fi
+          if [ -z "$tag" ]; then
+            if [ -z "$latest" ]; then
+              echo "::error::タグがまだ無く、Cargo.toml の version($cargo_version)も x.y.z の形ではありません"
+              exit 1
+            fi
+            IFS=. read -r major minor patch <<< "${latest#v}"
+            tag="v$major.$minor.$((patch + 1))"
           fi
           # リリースが無いのにタグだけある(手で付けた・前の実行が途中で止まった)。別のコミットを指していれば、黙って作らずに止める
-          if tagged=$(gh api "repos/$GITHUB_REPOSITORY/commits/$tag" --jq .sha 2>/dev/null) && [ "$tagged" != "$GITHUB_SHA" ]; then
-            echo "::error::タグ $tag が別のコミット($tagged)を指していて、リリースがありません。version を上げるか、Actions の画面からタグ $tag を指定して作り直してください"
+          if tagged=$(git rev-list -n 1 "refs/tags/$tag" 2>/dev/null) && [ "$tagged" != "$GITHUB_SHA" ]; then
+            echo "::error::タグ $tag が別のコミット($tagged)を指していて、リリースがありません。Actions の画面からタグ $tag を指定して作り直すか、タグを消してください"
             exit 1
+          fi
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "リリース $tag はもうあります。作りません"
+            { echo "tag=$tag"; echo "build=false"; } >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           echo "リリース $tag を $GITHUB_SHA から作ります"
           { echo "tag=$tag"; echo "ref=$GITHUB_SHA"; echo "build=true"; } >> "$GITHUB_OUTPUT"
@@ -109,11 +159,12 @@ jobs:
       - name: atlas.exe をビルドする
         shell: bash
         env:
-          # 画面のテンプレートが無ければ止める。--version に出すコミットはビルドしたもの
+          # 画面のテンプレートが無ければ止める。--version に出すコミットはビルドしたもの、版は付けるタグの版
           ATLAS_REQUIRE_TEMPLATE: '1'
         run: |
           ATLAS_BUILD_COMMIT=$(git rev-parse HEAD)
-          export ATLAS_BUILD_COMMIT
+          ATLAS_VERSION=${TAG#v}
+          export ATLAS_BUILD_COMMIT ATLAS_VERSION
           cargo build --release --locked -p atlas-cli
           mkdir -p dist
           cp target/release/atlas.exe dist/atlas.exe

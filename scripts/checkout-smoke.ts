@@ -81,7 +81,7 @@ if (up.status !== 0 || !up.stdout.includes('集計しました') || !/プロジ�
 // 入力を流し込んでも bat の中の前のプログラムが先に読むことがあるので、答えて進むところまでは見ず、bat が止まらずに中のコマンドまで進むことを見る。
 // atlas.bat は最後にサーバを開いたまま待つので起動しない(中の集計とサーバは上と E2E で見ている)
 if (WINDOWS) {
-  const { ATLAS_CONFIG: _ignored, ...env } = process.env;
+  const { ATLAS_CONFIG: _ignored, ATLAS_NO_AUTO_UPDATE: _noUpdate, ATLAS_SELF_UPDATED: _updated, ...env } = process.env;
   const launchBat = (bat: string, args: string[], input: string) => {
     // 置き場所をはっきり書く(NoDefaultCurrentDirectoryInExePath が効いている環境では、名前だけだと今のフォルダの bat を探さない)
     const r = spawnSync('cmd.exe', ['/d', '/c', `.\\${bat}`, ...args], { cwd: pkg, input, env: { ...env, ATLAS_COPILOT_HOME: join(FIXTURES_DIR, 'copilot-home') }, timeout: 300_000 });
@@ -101,6 +101,8 @@ if (WINDOWS) {
     if (code !== 0) fail(`${bat} が終了コード ${code} で終わりました:\n${text}`);
     // 実行ファイルはもう置いてあるので、ensure-atlas.ps1 は何も出さない
     if (stdout.includes('atlas を用意します')) fail(`${bat} が、置いてある実行ファイルを使い回しませんでした:\n${stdout}`);
+    // 開くたびの更新(atlas self-update)まで進み、git で取得したフォルダではないので何もせずに続ける
+    if (!stdout.includes('atlas の更新: git で取得したフォルダではないので、更新しません')) fail(`${bat} が、開くたびの更新(atlas self-update)を通りませんでした:\n${stdout}`);
     return stdout;
   };
   // open-folder.bat: 引数(エクスプローラーで bat に重ねたフォルダ)を open にそのまま渡す。無いフォルダは理由を出し、

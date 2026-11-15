@@ -32,7 +32,7 @@ bin\atlas.exe --help                  # 使い方
 | `turns bundle [--unjudged]` / `turns run [--limit <n>] [--model <名前>]` / `turns import <ファイル>` | 依頼ごとの採用の判定(段階 2。[judge.md の 3](judge.md#3-依頼ごとの採用段階-2))。`bundle` は M365 Copilot などに添付する `<out>/turn-bundle/parts/` と、GitHub Copilot CLI に渡す塊を作る(LLM は呼ばない)。`run` は GitHub Copilot CLI で判定する(AI クレジットを消費。従量課金の API を直接呼ぶ `anthropic` は使わない)。`import` はチャットの返答を `<out>/turn-judgments.json` に取り込む |
 | `group list` / `group add <名前> <id...> [--note <一文>]` / `group remove <名前>` / `group export <名前>` / `group upload <名前> [--to <基底フォルダ>] [--force]` | 名前付きグループ(`atlas-notes/groups.json`)を一覧・追加・削除する。`export` はそのグループの表(CSV)・集計・記録を `<out>/groups/<名前>/` に書き出す([outputs.md の「表(CSV)」](outputs.md#表csv))。`upload` はそのグループのセッションの生ログ(前回の集計で `<out>/snapshot/` に複製したもの)と `session-store.db`・`data.db`(許可リストの列だけ)のそのセッションの行(`atlas-session-store.json`)を `<基底>/<名前>/<セッション id>/` に写し、メモがあれば `atlas-memo.md`(画像は `atlas-memo/`)を添え、`<基底>/<名前>/README.md` にグループの説明とセッションの一覧を書き、送った人がインストールしている skill・プラグインの名前を `<基底>/<名前>/atlas-installed.json` に添える。同じセッションは置き換え、ほかのフォルダには触れない。前に送ったときから中身が変わっていないセッション(`atlas-session.json` に残した要約 `contents` が同じで、送り先のフォルダのファイルの並びと大きさもそのままのもの)は写し直さず、点検にも入れない([README の「2 回目からは変わったものだけを送る」](../README.md#2-回目からは変わったものだけを送る))。写す前に合計の大きさと秘密らしい文字列(API キー・トークンなど)を調べ、見つかれば写さずに止まる(`--force` で写す)。基底は `--to` か設定の `uploadRoot`(無いフォルダは作らずに止まる。[screen.md の「タスクタグを作る・直す」](screen.md#タスクタグを作る直すatlasbat-から開いたときだけ))。`add` は既存の名前なら id を追記(重複は除く)。id は先頭の数文字でよい(1 つに決まらなければエラー)。壊れたファイルは上書きしない([screen.md の「タスクタグとセッションの選択」](screen.md#タスクタグとセッションの選択)) |
 
-起動用の `.bat` から動かす入口も、同じ実行ファイルのサブコマンドです(使い方には出しません): `judge-flow`(判定の通し。[judge.md](judge.md))・`setup`(`setup.bat`)・`upload-project`(`upload-project.bat`)・`upload-schedule`(`schedule-upload.bat`)・`upload-auto`(`schedule-upload.bat` で登録したタスク)。
+起動用の `.bat` から動かす入口も、同じ実行ファイルのサブコマンドです(使い方には出しません): `judge-flow`(判定の通し。[judge.md](judge.md))・`setup`(`setup.bat`)・`upload-project`(`upload-project.bat`)・`upload-schedule`(`schedule-upload.bat`)・`upload-auto`(`schedule-upload.bat` で登録したタスク)・`self-update`(すべての `.bat` が開くたびに動かす更新。`git fetch --tags` と早送りで新しい版を取り込み、その版の実行ファイルを用意する。コミットが変わったら終了コード 10、それ以外はいつも 0。環境変数 `ATLAS_NO_AUTO_UPDATE=1` なら何もしない)。
 
 ## オプション
 
@@ -62,7 +62,7 @@ bin\atlas.exe --help                  # 使い方
 | `--config <file>` | `extract`・`vcs`・`all`・`serve`・`open`・`group upload` で読む設定ファイル(既定: 環境変数 `ATLAS_CONFIG`、無ければリポジトリ直下の `atlas.config.json`。下記「[wiki の指定](#wiki-の指定)」と「[アップロード先の指定](#アップロード先の指定)」)。`serve` は画面で決めたアップロード先をこのファイルに書く |
 | `--vcs-mode <v>` | `vcs` / `all` で、比べる版をどこで見るか。`worktree`(既定。照合した時点の作業ツリーで、まだ取り込んでいない変更も含む)/ `committed`(最後に取り込んだ版。git は HEAD、svn は BASE、p4 は手元の版)/ `fixed`(セッションの終わりから決まった日数後の時点で取り込まれていた版。日数は設定の `vcs.lagDays`、既定 7)。設定の `vcs.mode` より優先する |
 | `--to <dir>` | `group upload` で、アップロード先の基底フォルダ(フルパス)。省略すると設定の `uploadRoot` |
-| `-V`, `--version` | 版を出す(`atlas 0.1.0 (commit <作ったときのコミット>, code <版の目印>)`)。版はワークスペースの `Cargo.toml` の `version`(リリースのタグは `v<version>`)。`scripts/ensure-atlas.ps1` が、置いてある実行ファイルの版を確かめるのに使う |
+| `-V`, `--version` | 版を出す(`atlas 0.1.3 (commit <作ったときのコミット>, code <版の目印>)`)。リリースの `atlas.exe` はリリースのタグ `v<版>` の版(ビルドのときに環境変数 `ATLAS_VERSION` で渡す)、渡さずに作ったもの(この PC でのビルド)はワークスペースの `Cargo.toml` の `version`。`scripts/ensure-atlas.ps1` が、置いてある実行ファイルの版を確かめるのに使う |
 
 `judge run` 専用のオプション(`--backend` `--limit` `--only` `--concurrency` `--force` `--no-allow-tools` `--timeout`)は [judge.md](judge.md) を見てください。`judge run` では `--model` は判定に使うモデルの指定になります。
 

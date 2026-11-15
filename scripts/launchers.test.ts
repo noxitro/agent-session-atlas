@@ -98,6 +98,24 @@ describe('*.bat', () => {
     expect(lines.filter((l) => /^(where )?node\b|\bnpm\b|deps-fresh|packages\\cli/i.test(l))).toEqual([]);
   });
 
+  // 開くたびに atlas を新しい版にする(atlas self-update。git fetch と早送り。crates/atlas-cli/src/self_update.rs)。git が .bat を書き換えると、
+  // cmd は読んだところまでの位置(バイト数)から続きを読むので、ずれた位置から読んでしまう。コミットが変わったら(終了コード 10)、
+  // 同じ 1 行の中で書き換わった後の自分を最初から動かし直して終わる(cmd は 1 行を読み切ってから動かす)。動かし直した側は ATLAS_SELF_UPDATED で
+  // 更新を飛ばす(繰り返さない)。終わり方は「& exit /b」ではなく call exit /b %%errorlevel%%(番号の無い exit /b だと、cmd /c で開いたときの
+  // 終了コードが 0 になる。実測)。atlas の出力のエラーは捨てる(self-update を知らない前の版の atlas.exe が、使い方を出さないように)。
+  // ATLAS_NO_AUTO_UPDATE=1 なら更新しない。ATLAS_SELF_UPDATED が開いた窓に残らないよう、setlocal で始める
+  const UPDATE_LINE =
+    'if not "%ATLAS_NO_AUTO_UPDATE%"=="1" if not defined ATLAS_SELF_UPDATED bin\\atlas.exe self-update 2>nul & if errorlevel 10 if not errorlevel 11 set "ATLAS_SELF_UPDATED=1" & cmd /d /c call "%~f0" %* & call exit /b %%errorlevel%%';
+  it.each(BATS)('%s は setlocal で始め、ensure-atlas.ps1 の後に atlas self-update を 1 行で動かし、コミットが変わったら同じ行の中で自分を動かし直す', (f) => {
+    const lines = codeLines(f);
+    expect(lines.slice(0, 2)).toEqual(['@echo off', 'setlocal']);
+    const ensure = lines.findIndex((l) => /ensure-atlas\.ps1/i.test(l));
+    expect(lines.filter((l) => /self-update/.test(l))).toEqual([UPDATE_LINE]);
+    // ensure-atlas の失敗の囲みの直後(実行ファイルがある状態で動かす)で、atlas の本来のサブコマンドより前
+    expect(lines.indexOf(UPDATE_LINE)).toBe(ensure + 6);
+    expect(lines.indexOf(UPDATE_LINE)).toBeLessThan(lines.findIndex((l) => /^bin\\atlas\.exe\b/i.test(l)));
+  });
+
   // 最後に動かす atlas の終了コードを、bat の終了コードとして返す(「& exit /b」で終えると、cmd の終了コードは常に 0 になる)。
   // 同じ行に %errorlevel% を書くと行を読んだとき(atlas の前)の値になるので、次の行で調べるか取っておく
   it.each(BATS)('%s は最後に bin\\atlas.exe <サブコマンド> を動かし、その終了コードを次の行で調べるか取っておく', (f) => {
@@ -154,6 +172,15 @@ describe('scripts/ensure-atlas.ps1', () => {
     expect(text).toContain("(Test-Tool 'cl.exe') -and (Test-Tool 'link.exe')");
     expect(text).toContain("if (-not (Test-MsvcTools)) { $missing += 'Visual Studio の C++ のビルドツール(MSVC)' }");
     expect(text).toContain('https://visualstudio.microsoft.com/visual-cpp-build-tools/');
+  });
+
+  // リリースのワークフローは、配る中身が変わったマージごとにパッチ版のタグを付ける(Cargo.toml の version は上げない)。
+  // 取ってくる版は、HEAD から辿れるいちばん新しいタグ(semver で比べる。git の --sort=-v:refname はプレリリースを後ろに並べるので使わない)
+  it('取ってくる版は HEAD から辿れるいちばん新しいタグ v<x.y.z> で決め、タグが無ければ Cargo.toml の version にする', () => {
+    expect(text).toContain("& git -C $Repo tag --list 'v*' --merged HEAD");
+    expect(text).not.toMatch(/& git [^\r\n]*--sort=/);
+    expect(text).toContain('function Compare-SemVer');
+    expect(text).toMatch(/function Get-WantVersion \{\r\n {2}\$tag = Get-TagVersion\r\n {2}if \(\$tag\) \{ return \$tag \}\r\n {2}return Get-CargoVersion\r\n\}/);
   });
 
   it('管理者の権限が要る操作をしない', () => {

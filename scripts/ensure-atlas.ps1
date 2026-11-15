@@ -1,9 +1,13 @@
-﻿# atlas の実行ファイル(bin\atlas.exe)を、このチェックアウトの版(Cargo.toml の [workspace.package] の version)にそろえる。
-# 起動用の .bat がすべて最初に呼ぶ。自動で送るタスク(atlas upload-auto)も、git pull で新しい版にした後に呼ぶ(crates/atlas-cli/src/self_update.rs)。
+﻿# atlas の実行ファイル(bin\atlas.exe)を、このチェックアウトの版にそろえる。
+# このチェックアウトの版は、HEAD から辿れるタグ v<x.y.z> のうち、いちばん新しいもの(リリースのワークフローが、配る中身が変わったマージごとに
+# 付ける。.github/workflows/release.yml)。git が無いかタグが無ければ、Cargo.toml の [workspace.package] の version。
+# 起動用の .bat がすべて最初に呼ぶ。.bat と自動で送るタスク(atlas upload-auto)は、git fetch で新しい版にした後にも呼ぶ(crates/atlas-cli/src/self_update.rs)。
 #
 # 順に試す:
-#  1. bin\atlas.exe があり、atlas --version の版が Cargo.toml の version と同じなら、何もしない
-#     (この PC でビルドしたものは、作ったときのコミットが今のコミットと違い、Node.js と Rust があれば、ビルドし直す)
+#  1. bin\atlas.exe があり、そのまま使えるなら、何もしない。使えるのは:
+#     - リリースから取ったもの: atlas --version の版が、このチェックアウトの版と同じ
+#     - この PC でビルドしたもの: Node.js と Rust があれば、作ったときのコミットが今のコミットと同じ(違えばビルドし直す)。
+#       無ければ、リリースから取ったものと同じく版で比べる(一度ビルドした人も、ビルドに要るものを消せばリリースに移る)
 #  2. このリポジトリ(git remote get-url origin の GitHub)のリリース v<version> から atlas.exe を取ってきて、
 #     同じリリースの atlas.exe.sha256 と照らし合わせてから bin\ に置く(取れなければ gh release download も試す)。
 #     gh(GitHub CLI)があってログインしていれば、ビルドの来歴(GitHub の artifact attestation。このリポジトリのリリースの
@@ -17,8 +21,8 @@
 #
 #   -Check      何も変えずに、bin\atlas.exe が今の版のものかだけを終了コードで返す(0 = そのまま使える、1 = 用意し直す)
 #   -KeepOlder  新しい版を用意できなくても、前の版の bin\atlas.exe が動けば、それで続ける(終了コード 0)。起動用の .bat が付ける。
-#               版を上げたコミットが main に入ってからリリースができるまで(数分から十数分)や、リリースのワークフローが失敗したままの間に
-#               git pull しても、開けなくならないように。自動で送るタスク(self_update.rs)は付けない(用意できなければ前の版に戻す)
+#               リリースのワークフローが失敗したままの間や、手で付けたタグのリリースが無いときに、開けなくならないように。
+#               .bat と自動で送るタスクの更新(self_update.rs)は付けない(用意できなければ前の版に戻す)
 #
 # 環境変数(ふだんは要らない):
 #   ATLAS_BUILD_LOCAL=1   リリースを取りに行かず、この PC でビルドする(開発用)
@@ -46,12 +50,64 @@ try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }
 # 関数の戻り値に混ざらないよう、Write-Output ではなく Write-Host で出す(パイプで読まれたときも標準出力に出る)
 function Say([string]$m) { Write-Host $m }
 
-function Get-WantVersion {
+function Get-CargoVersion {
   $text = [IO.File]::ReadAllText((Join-Path $Repo 'Cargo.toml'))
   $section = [regex]::Match($text, '(?ms)^\[workspace\.package\][ \t]*\r?$(.*?)(?=^\[|\z)')
   $v = [regex]::Match($section.Groups[1].Value, '(?m)^version\s*=\s*"([^"]+)"')
   if (-not $v.Success) { throw 'Cargo.toml の [workspace.package] に version がありません' }
   return $v.Groups[1].Value
+}
+
+# semver の版(1.2.3 と 1.2.3-rc.1)を比べる。a が後なら正、前なら負、同じなら 0。
+# git tag --sort=-v:refname は、プレリリース(-rc.1)を後ろに並べることがあるので使わない。ビルドの印(+...)は比べない
+function Compare-SemVer([string]$a, [string]$b) {
+  $pa = [regex]::Match($a, '^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$')
+  $pb = [regex]::Match($b, '^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$')
+  for ($i = 1; $i -le 3; $i++) {
+    $c = ([decimal]$pa.Groups[$i].Value).CompareTo([decimal]$pb.Groups[$i].Value)
+    if ($c -ne 0) { return $c }
+  }
+  $ra = $pa.Groups[4].Value
+  $rb = $pb.Groups[4].Value
+  # プレリリースの無いほうが後(1.0.0-rc.1 < 1.0.0)
+  if ($ra -eq $rb) { return 0 }
+  if (-not $ra) { return 1 }
+  if (-not $rb) { return -1 }
+  $xa = $ra.Split('.')
+  $xb = $rb.Split('.')
+  for ($i = 0; $i -lt [Math]::Min($xa.Count, $xb.Count); $i++) {
+    $na = $xa[$i] -match '^\d+$'
+    $nb = $xb[$i] -match '^\d+$'
+    if ($na -and $nb) { $c = ([decimal]$xa[$i]).CompareTo([decimal]$xb[$i]) }
+    elseif ($na) { $c = -1 }
+    elseif ($nb) { $c = 1 }
+    else { $c = [string]::CompareOrdinal($xa[$i], $xb[$i]) }
+    if ($c -ne 0) { return [Math]::Sign($c) }
+  }
+  return ($xa.Count).CompareTo($xb.Count)
+}
+
+# HEAD から辿れるタグ v<x.y.z> のうち、いちばん新しいものの版(v を除く)。git が無いかタグが無ければ $null
+function Get-TagVersion {
+  $ErrorActionPreference = 'Continue'
+  if (-not (Test-Path -LiteralPath (Join-Path $Repo '.git')) -or -not (Test-Tool 'git')) { return $null }
+  $tags = & git -C $Repo tag --list 'v*' --merged HEAD 2>$null
+  if ($LASTEXITCODE -ne 0) { return $null }
+  $best = $null
+  foreach ($t in @($tags)) {
+    $t = ([string]$t).Trim()
+    if ($t -notmatch '^v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$') { continue }
+    $v = $Matches[1]
+    if (-not $best -or (Compare-SemVer $v $best) -gt 0) { $best = $v }
+  }
+  return $best
+}
+
+# このチェックアウトの版(取ってくるリリースは v<この版>)
+function Get-WantVersion {
+  $tag = Get-TagVersion
+  if ($tag) { return $tag }
+  return Get-CargoVersion
 }
 
 # atlas --version の 1 行(atlas 0.1.0 (commit <全桁>, code <目印>))から版とコミットを読む。動かせなければ $null
@@ -119,15 +175,15 @@ function Get-MissingTools {
 function Get-StaleReason([string]$want) {
   $info = Get-ExeInfo $Exe
   if (-not $info) { return 'bin\atlas.exe がありません' }
-  if ($info.Version -ne $want) { return "bin\atlas.exe の版($($info.Version))が、このフォルダの版($want)と違います" }
-  # この PC でビルドしたものは、ソースが変わっていて、ビルドし直せるなら、し直す(リリースから取ったものは、同じ版ならそのまま使う)
-  $source = Get-Source
-  if ($source -like 'local *') {
-    $head = Get-Head
-    if ($head -and $info.Commit -and $info.Commit -ne $head -and (Get-MissingTools).Count -eq 0) {
-      return 'この PC でビルドした bin\atlas.exe より、ソースが新しくなっています'
-    }
+  # この PC でビルドしたものは、ビルドし直せるなら、作ったときのコミットで比べる(版は Cargo.toml の version なので、タグの版とは比べない)。
+  # ソースが変わっていれば、し直す。ビルドに要るものが無ければ、リリースから取ったものと同じく版で比べる
+  # (git が無くてコミットが分からなければ、版で比べる。そのときの版は Cargo.toml の version)
+  $head = Get-Head
+  if ($head -and $info.Commit -and (Get-Source) -like 'local *' -and (Get-MissingTools).Count -eq 0) {
+    if ($info.Commit -ne $head) { return 'この PC でビルドした bin\atlas.exe より、ソースが新しくなっています' }
+    return $null
   }
+  if ($info.Version -ne $want) { return "bin\atlas.exe の版($($info.Version))が、このフォルダの版($want)と違います" }
   return $null
 }
 

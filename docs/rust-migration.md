@@ -15,7 +15,7 @@
 ## 置き場所
 
 ```
-Cargo.toml                 ワークスペース。[workspace.package] の version が配る版(リリースのタグは v<version>)
+Cargo.toml                 ワークスペース。[workspace.package] の version は、この PC でビルドしたときの版と、minor・major を上げるときの次のリリースの版
 crates/atlas-core/         TS 版の packages/core の移植(types・events・snapshot・desktop・extract・normalize・classify・project・
                            instructions・wiki・metrics・turns・tables・ai-changes・vcs・vcs-retention・vcs-step・tool-failure・
                            atlas-build・atlas-version・fs-retry)と、共通の json.rs・jsdate.rs・collate.rs
@@ -77,6 +77,10 @@ TS のファイル 1 つを Rust のモジュール 1 つに移した(`normalize
 
 ## 決めたこと(段 8)
 
+- **その後に変えたこと(マージごとのリリース)**: 版を上げる PR を要らなくした。リリースのワークフローは、配る中身が前のリリースのタグから変わったマージごとに、パッチ版のタグとリリースを作る(実行ファイルの版はビルドのときに `ATLAS_VERSION` で渡す)。
+  `ensure-atlas.ps1` が取ってくる版は、`Cargo.toml` の `version` ではなく、HEAD から辿れるいちばん新しいタグ `v<x.y.z>`(git もタグも無ければ `Cargo.toml` の `version`)。
+  起動用の .bat は、開くたびに `atlas self-update`(自動で送る前の更新と同じ `self_update.rs`。タグも取ってくる)で新しい版を取り込み、コミットが変わったら 1 行の中で自分を動かし直す。
+  下の段 8 の説明のうち、版を `Cargo.toml` と比べるところと、リリースを作る条件は、この形に置き換わった(詳しくは README の「atlas.exe の用意と更新」と docs/development.md の「リリースの手順」)。
 - **配り方は「両方」**: 利用者は、チェックアウトの版(`Cargo.toml` の `version`)と同じ `v<version>` の GitHub Release があれば、そこから `atlas.exe` を取ってくる(Node も Rust も要らない)。
   無ければ、Node.js と Rust があればその PC でビルドする。どちらもできなければ、何を入れればよいかを出して止まる。
 - **`scripts/ensure-atlas.ps1`**(起動用の .bat がすべて最初に呼ぶ。Windows PowerShell 5.1 で動くよう BOM 付き UTF-8・CRLF):
@@ -104,6 +108,7 @@ TS のファイル 1 つを Rust のモジュール 1 つに移した(`normalize
 - **テンプレート**: 実行するときは実行ファイルに埋め込んだものだけを使う(リポジトリの `dist/` は読まず、古ければ Vite で作り直すこともしない)。
   置いてある `dist/` が別の版のものでも、実行ファイルと同じ版の画面を書くため。画面を変えたら `npm run build:report` の後に `cargo build` し直す。
 - **`atlas --version`**: `atlas <version> (commit <作ったときのコミット>, code <目印>)`。コミットは build.rs が `git rev-parse HEAD` で読む(環境変数 `ATLAS_BUILD_COMMIT` で渡せる)。
+  版は環境変数 `ATLAS_VERSION`(リリースのワークフローが付けるタグの版。semver の形でなければビルドを止める)、無ければ `Cargo.toml` の `version`。
 - **CI**: Windows と Linux × Node 24・26 で `typecheck` → `build:report` → `test`(`cargo test` と TS の単体テスト)→ `build:atlas` → `parity:fixture` → `e2e` → `ui` → `smoke`。
   Rust はランナーの rustup で入れる(SHA で固定する Action を増やさない)。`smoke` は clone した直後の中身で `ensure-atlas.ps1` のビルドの道を通す。
 - **リリース**(`.github/workflows/release.yml`): `main` への push で、`Cargo.toml` の版のリリース `v<version>` がまだ無ければ、Windows のランナーが `atlas.exe` と `atlas.exe.sha256` を作り、そのコミットにタグを付けてリリースを作る。マージはこれを待たない(版を上げてからリリースができるまでは、起動用の .bat が今ある実行ファイルで続ける `-KeepOlder`)。
