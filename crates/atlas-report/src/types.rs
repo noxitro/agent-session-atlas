@@ -14,7 +14,7 @@ use atlas_core::types::{Friction, LineChanges, ProjectSource, TodoSummary, Token
 use serde::{Deserialize, Serialize};
 
 /// 埋め込みデータの版(lib/types.ts の REPORT_DATA_VERSION。版の履歴はそちらの先頭のコメントを参照)
-pub const REPORT_DATA_VERSION: i64 = 13;
+pub const REPORT_DATA_VERSION: i64 = 14;
 
 /// 推論強度別の [リクエスト, 入力, 出力, nano AIU]
 pub type EffortTuple = [f64; 4];
@@ -39,6 +39,9 @@ pub struct ExecSummary {
     /// モデル → 推論強度 → [リクエスト, 入力, 出力, nano AIU](記録の無い古い sessions.json からは空)
     #[serde(default)]
     pub model_efforts: JsMap<JsMap<EffortTuple>>,
+    /// model_efforts のうち本体(サブエージェントでない)のリクエストだけ(記録の無いセッション・古い sessions.json からは空)
+    #[serde(default)]
+    pub main_model_efforts: JsMap<JsMap<EffortTuple>>,
     pub initiators: JsMap<i64>,
     /// 記録が全く無ければ null
     pub context: Option<ContextTuple>,

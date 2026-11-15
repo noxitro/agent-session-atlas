@@ -292,6 +292,12 @@ describe('Phase 7 E2E: fixtures', () => {
     });
     // 明細が無く終了時の累計だけ: モデル別の累計を、セッション中の設定(high)に入れる
     expect(rec(15).exec.modelEfforts).toEqual({ 'gpt-5.5': { high: { requests: 3, input: 3000, output: 300, nanoAiu: 400_000_000 } } });
+    // 本体だけの内訳: サブエージェントの無いセッションは modelEfforts と同じ。終了時の累計だけのセッションは本体とサブエージェントを分けられないので持たない
+    expect(rec(14).exec.mainModelEfforts).toEqual(rec(14).exec.modelEfforts);
+    expect(rec(15).exec.mainModelEfforts).toBeUndefined();
+    // 00…003 は本体(gpt-5.5 の medium)とサブエージェント(gpt-5.6-terra の low)がある。本体の内訳にはサブエージェントを入れない
+    expect(Object.keys(rec(3).exec.modelEfforts ?? {}).sort()).toEqual(['gpt-5.5', 'gpt-5.6-terra']);
+    expect(Object.fromEntries(Object.entries(rec(3).exec.mainModelEfforts ?? {}).map(([m, by]) => [m, Object.fromEntries(Object.entries(by).map(([k, v]) => [k, v.requests]))]))).toEqual({ 'gpt-5.5': { medium: 2 } });
     expect(p7().byModel.map((r) => [r.model, r.efforts.map((e) => [e.key, e.sessions, e.requests, e.output])])).toEqual([
       // 強度の順(low < medium < high < xhigh)
       ['claude-sonnet-5.5', [['high', 1, 1, 50], ['xhigh', 1, 1, 300]]],

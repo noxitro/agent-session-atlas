@@ -54,6 +54,7 @@ import { detailFileName, summarize } from '../packages/report/src/lib/summarize.
 import { turnAggregate } from '../packages/report/src/lib/turns.ts';
 import { parseVerdicts, verdictAggregate, verdictTuples } from '../packages/report/src/lib/verdicts.ts';
 import { REPORT_DATA_VERSION } from '../packages/report/src/lib/types.ts';
+import { mainEffortOf } from '../packages/report/src/lib/main-effort.ts';
 import { PHASES, sessionTurns } from '../packages/report/src/shared/turns.ts';
 import type { SessionRecord } from '../packages/report/src/shared/types.ts';
 import { cmpJson, firstTextDiff } from './parity-common.ts';
@@ -297,6 +298,14 @@ function dumpWith(
   write('anonymize', { scrubbed, warnings: groups.warnings.map((w) => anon.scrub(w)) });
   const keys = (m: Record<string, unknown>): string[] => Object.keys(m);
   const all2 = execAggregate(plain);
+  // 本体の (モデル, 推論強度)。画面は要約から、Rust(sessions.csv)は sessions.json の記録から決める
+  write(
+    'main-effort',
+    plain.map((s) => {
+      const m = mainEffortOf(s.exec.mainModelEfforts);
+      return [s.id, m.kind, m.kind === 'decided' ? m.model : '', m.kind === 'decided' ? m.effort : ''];
+    }),
+  );
   write('labels', {
     modes: [...all2.modes.rows.map((r) => r.key), '(unknown)', 'x'].map(modeLabel),
     initiators: [...all2.initiators.rows.map((r) => r.key), '(unknown)', 'x'].map(initiatorLabel),

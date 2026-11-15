@@ -17,6 +17,7 @@ pub mod jsdate;
 pub mod jsfs;
 pub mod jsnum;
 pub mod json;
+pub mod main_effort;
 pub mod metrics;
 pub mod nodepath;
 pub mod normalize;

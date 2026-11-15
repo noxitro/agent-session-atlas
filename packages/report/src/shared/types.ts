@@ -23,7 +23,8 @@ import type { AtlasBuild, FolderUpload } from './atlas-version.ts';
 // 14: uploadAtlas(送り先から集計したときの、そのセッションのフォルダを写した atlas の版)
 // 15: uploadFolder(送り先から集計したときの、そのセッションの送り先のフォルダ)・source.uploads(フォルダごとの最後に送った日時と版)
 // 16: exec.modelEfforts(モデル別 × 推論強度別のリクエスト数・トークン)
-export const SESSIONS_SCHEMA_VERSION = 16;
+// 17: exec.mainModelEfforts(本体のリクエストだけの モデル別 × 推論強度別。サブエージェントを除く)
+export const SESSIONS_SCHEMA_VERSION = 17;
 // 5: turns(依頼単位の工程 × 詰まり・依頼の種類の集計)
 // 6: tools.results[].causes(ツールの失敗の要因別の回数)
 export const METRICS_SCHEMA_VERSION = 6;
@@ -416,6 +417,11 @@ export interface ExecProfile {
    * schema 15 以前の sessions.json には無い
    */
   modelEfforts?: Record<string, Record<string, EffortStat>>;
+  /**
+   * modelEfforts のうち、本体(agentId が無いか空)のリクエストだけ。サブエージェントは本体と別の推論強度で動くため分けて持つ。
+   * 終了時の累計しか無いセッション(本体とサブエージェントを分けられない)と、schema 16 以前の sessions.json には無い
+   */
+  mainModelEfforts?: Record<string, Record<string, EffortStat>>;
   /** リクエストの起点(DB / usage_record の initiator: user / agent / sub-agent / compaction / (unknown))。明細のあるリクエストだけ */
   initiators: Record<string, number>;
   context: ContextBreakdown;

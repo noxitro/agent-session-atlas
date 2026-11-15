@@ -302,9 +302,50 @@ fn git_committed_mode_ignores_uncommitted() {
     write(&f, &["base", "uncommitted"]);
     let sets = [extract_ai_changes("s1", &ev, None)];
     assert_eq!(measure(&sets, &opts())[0].counts.kept, 1);
+    // 開始時から何も取り込んでいなければ、比べる版が基準と同じなので照合不可(見つからないに数えない)
     let c = &measure(&sets, &RetentionOptions { mode: EvalMode::Committed, ..opts() })[0];
-    assert_eq!(c.counts.missing, 1);
+    assert_eq!((c.outcome, c.reason, c.counts.missing, c.counts.unattributable), (Outcome::Unattributable, Some(UnattributableReason::NoCommits), 0, 1));
     assert_eq!(c.evaluated.as_ref().unwrap().mode, EvalMode::Committed);
+    assert_eq!(serde_json::to_value(&summarize_retention(std::slice::from_ref(c)).unattributable).unwrap(), json!({"no_commits": 1}));
+    // 別のファイルだけを取り込んだ後なら、取り込まれていない AI の行は見つからない
+    write(&join(&root, &["other.txt"]), &["other"]);
+    git(&root, &["add", "other.txt"], &at(12, 0));
+    git(&root, &["commit", "-q", "-m", "other"], &at(12, 0));
+    let c = &measure(&sets, &RetentionOptions { mode: EvalMode::Committed, ..opts() })[0];
+    assert_eq!((c.outcome, c.counts.missing), (Outcome::Measured, 1));
+    assert_eq!(c.evaluated.as_ref().unwrap().mode, EvalMode::Committed);
+}
+
+#[test]
+fn fixed_mode_without_commits_is_unattributable() {
+    let mut tmp = Tmp::new();
+    let (root, head) = git_repo(&mut tmp, &[("a.txt", &["base"])]);
+    let f = join(&root, &["a.txt"]);
+    let ev = session(&root, Some(&root), Some(&head), (10, 0), (11, 0), vec![ed(&f, &["never committed"])]);
+    write(&f, &["base", "never committed"]);
+    let sets = [extract_ai_changes("s1", &ev, None)];
+    let now = Some(ms_of(&at(24 * 20, 0)));
+    let r = &measure(&sets, &RetentionOptions { mode: EvalMode::Fixed, lag_days: 7, now_ms: now, ..opts() })[0];
+    assert_eq!((r.outcome, r.reason, r.hunks[0].reason), (Outcome::Unattributable, Some(UnattributableReason::NoCommits), Some(UnattributableReason::NoCommits)));
+    // 推定の基準(headCommit の記録が無い)でも同じ
+    let ev2 = session(&root, Some(&root), None, (10, 0), (11, 0), vec![ed(&f, &["never committed"])]);
+    let r2 = &measure(&[extract_ai_changes("s2", &ev2, None)], &RetentionOptions { mode: EvalMode::Fixed, lag_days: 7, now_ms: now, ..opts() })[0];
+    assert_eq!((r2.outcome, r2.reason), (Outcome::Unattributable, Some(UnattributableReason::NoCommits)));
+    // worktree は今のまま(ディスクのファイルと比べる)
+    let w = &measure(&sets, &RetentionOptions { now_ms: now, ..opts() })[0];
+    assert_eq!((w.outcome, w.counts.kept), (Outcome::Measured, 1));
+}
+
+#[test]
+fn same_revision_prefix() {
+    let full = "0123456789abcdef0123456789abcdef01234567";
+    assert!(same_revision(VcsKind::Git, full, full));
+    assert!(same_revision(VcsKind::Git, "0123456", full));
+    assert!(same_revision(VcsKind::Git, &full.to_uppercase(), full));
+    assert!(!same_revision(VcsKind::Git, "012345", full)); // 短すぎる印は同じとみなさない
+    assert!(!same_revision(VcsKind::Git, "", full));
+    assert!(same_revision(VcsKind::Svn, "7", " 7"));
+    assert!(!same_revision(VcsKind::P4, "7", "70"));
 }
 
 #[test]

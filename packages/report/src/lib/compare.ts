@@ -1,19 +1,48 @@
-// 「比べる」の節: 2 つの条件(タスクタグ・期間・プロジェクト)のセッションの指標を並べる。工程は依頼(ターン)の単位で並べる。
-// 差は相関で、条件の違いが原因とは限らない。
+// 「比べる」の節: 2 つの条件(タスクタグ・期間・プロジェクト・推論強度)のセッションの指標を並べる。工程は依頼(ターン)の単位で並べる。
+// 差は相関で、条件の違いが原因とは限らない。差の幅(95%)は、セッションを互いに独立とみなした近似(同じ人のセッションの似かたは入れていない)。
+import { EFFORT_ORDER, orderBy } from './exec.ts';
 import { localDayStart, sessionTime } from './filter.ts';
-import { PHASES, type Phase, type TurnBucket } from '../shared/turns.ts';
+import { mainEffortOf, mainModelsOf } from './main-effort.ts';
+import { PHASES, REQUEST_KINDS, type Phase, type TurnBucket } from '../shared/turns.ts';
 import { aggregateRetention, measuredOf, median, retentionByPhase, type RetentionAgg, type StatusTuple } from './retention.ts';
-import { turnAggregate } from './turns.ts';
+import { turnAggregate, type TurnTuple } from './turns.ts';
 import type { SessionSummary } from './types.ts';
 
 /** 割合を出す最小のセッション数(改善点の率と同じ 5) */
 export const COMPARE_MIN_SESSIONS = 5;
 
-export const COMPARE_KINDS = ['tag', 'period', 'project', 'phase'] as const;
+export const COMPARE_KINDS = ['tag', 'period', 'project', 'phase', 'effort'] as const;
 export type CompareKind = (typeof COMPARE_KINDS)[number];
-export const COMPARE_KIND_LABEL: Record<CompareKind, string> = { tag: 'タスクタグ', period: '期間', project: 'プロジェクト', phase: '工程' };
+export const COMPARE_KIND_LABEL: Record<CompareKind, string> = { tag: 'タスクタグ', period: '期間', project: 'プロジェクト', phase: '工程', effort: '推論強度' };
 
-export type CompareSession = Pick<SessionSummary, 'id' | 'turns' | 'activeMs' | 'tools' | 'friction' | 'analysis' | 'tokens' | 'retention' | 'createdAt' | 'updatedAt' | 'project' | 'turnRows'>;
+export type CompareSession = Pick<
+  SessionSummary,
+  'id' | 'turns' | 'activeMs' | 'tools' | 'friction' | 'analysis' | 'tokens' | 'retention' | 'createdAt' | 'updatedAt' | 'project' | 'turnRows' | 'person' | 'models'
+> & {
+  /** 推論強度の比較に使う(古い埋め込み・テストの作りかけの値では無いことがある) */
+  exec?: Pick<SessionSummary['exec'], 'mainModelEfforts'>;
+};
+
+/** 依頼の数で分けるときの境目(この数以上を「多い」側に入れる) */
+export const COMPARE_LONG_TURNS = 5;
+
+const FIX_KIND = REQUEST_KINDS.indexOf('fix');
+const REVERT_KIND = REQUEST_KINDS.indexOf('revert');
+
+/**
+ * 依頼の行からの手戻りの有無。null は採点できない(依頼の行が 2 件未満)。
+ * 手戻りあり = 2 件目以降の依頼の種類が直し(fix)か差し戻し(revert)、または、どれかの依頼に中断がある
+ */
+export function reworkOfTurns(rows: readonly TurnTuple[] | undefined): boolean | null {
+  if (!rows || rows.length < 2) return null;
+  return rows.some((x, i) => (i > 0 && (x[1] === FIX_KIND || x[1] === REVERT_KIND)) || x[7] > 0);
+}
+
+/** 採点できたセッションの数と、そのうち手戻りの無かった数 */
+export interface ScoredCount {
+  scored: number;
+  clean: number;
+}
 
 export interface CompareSide {
   sessions: number;
@@ -23,27 +52,80 @@ export interface CompareSide {
   activeKnown: number;
   tools: number;
   toolFailures: number;
-  /** 同じファイルを依頼をまたいで編集し直したセッション(手戻り) */
+  /** 同じファイルを依頼をまたいで編集し直したセッション */
   reworkSessions: number;
   nanoAiu: number;
   aiuKnown: number;
+  /** リクエストの合計と、記録のあったセッション数 */
+  requests: number;
+  requestsKnown: number;
+  /** AIU とリクエストの両方の記録があるセッションの、AIU とリクエストの合計(AIU / リクエストの分子と分母) */
+  aiuForRequests: number;
+  requestsWithAiu: number;
+  /** 手戻りのないセッション(依頼の行が 2 件以上のもの。全体・2〜4 件・5 件以上) */
+  noRework: ScoredCount;
+  noReworkShort: ScoredCount;
+  noReworkLong: ScoredCount;
+  /** セッションごとの値(平均の差の幅に使う。記録の無いセッションは入れない) */
+  values: { turns: number[]; activeMs: number[]; aiu: number[]; requests: number[] };
   retention: RetentionAgg;
 }
 
 export function compareSide(list: readonly CompareSession[]): CompareSide {
-  const s: CompareSide = { sessions: list.length, turns: 0, activeMs: 0, activeKnown: 0, tools: 0, toolFailures: 0, reworkSessions: 0, nanoAiu: 0, aiuKnown: 0, retention: aggregateRetention(list) };
+  const s: CompareSide = {
+    sessions: list.length,
+    turns: 0,
+    activeMs: 0,
+    activeKnown: 0,
+    tools: 0,
+    toolFailures: 0,
+    reworkSessions: 0,
+    nanoAiu: 0,
+    aiuKnown: 0,
+    requests: 0,
+    requestsKnown: 0,
+    aiuForRequests: 0,
+    requestsWithAiu: 0,
+    noRework: { scored: 0, clean: 0 },
+    noReworkShort: { scored: 0, clean: 0 },
+    noReworkLong: { scored: 0, clean: 0 },
+    values: { turns: [], activeMs: [], aiu: [], requests: [] },
+    retention: aggregateRetention(list),
+  };
   for (const x of list) {
     s.turns += x.turns;
+    s.values.turns.push(x.turns);
     if (x.activeMs != null) {
       s.activeMs += x.activeMs;
       s.activeKnown++;
+      s.values.activeMs.push(x.activeMs);
     }
     s.tools += x.tools.total;
     s.toolFailures += x.friction.toolFailures;
     if ((x.analysis?.filesReedited ?? 0) > 0) s.reworkSessions++;
-    if (x.tokens.nanoAiu != null) {
-      s.nanoAiu += x.tokens.nanoAiu;
+    const aiu = x.tokens.nanoAiu;
+    const req = x.tokens.requests;
+    if (aiu != null) {
+      s.nanoAiu += aiu;
       s.aiuKnown++;
+      s.values.aiu.push(aiu / 1e9);
+    }
+    if (req != null) {
+      s.requests += req;
+      s.requestsKnown++;
+      s.values.requests.push(req);
+    }
+    if (aiu != null && req != null) {
+      s.aiuForRequests += aiu;
+      s.requestsWithAiu += req;
+    }
+    const rework = reworkOfTurns(x.turnRows);
+    if (rework != null) {
+      const n = x.turnRows!.length;
+      for (const c of [s.noRework, n >= COMPARE_LONG_TURNS ? s.noReworkLong : s.noReworkShort]) {
+        c.scored++;
+        if (!rework) c.clean++;
+      }
     }
   }
   return s;
@@ -55,6 +137,49 @@ export function rate(part: number, whole: number, sessions: number): number | nu
   return part / whole;
 }
 
+/** 差の幅に使う z(95%) */
+export const Z95 = 1.96;
+
+/** 割合 x / n の Wilson の区間(n が 0 なら null) */
+export function wilson(x: number, n: number, z = Z95): [lo: number, hi: number] | null {
+  if (n <= 0) return null;
+  const p = x / n;
+  const z2 = z * z;
+  const center = (p + z2 / (2 * n)) / (1 + z2 / n);
+  const half = (z / (1 + z2 / n)) * Math.sqrt((p * (1 - p)) / n + z2 / (4 * n * n));
+  return [Math.max(0, center - half), Math.min(1, center + half)];
+}
+
+/**
+ * 2 つの割合の差(B − A = xb / nb − xa / na)の 95% の幅。Newcombe の方法(それぞれの Wilson の区間から作る。Newcombe 1998 の method 10)。
+ * どちらかの分母が 0 なら null
+ */
+export function newcombeDiff(xa: number, na: number, xb: number, nb: number, z = Z95): [lo: number, hi: number] | null {
+  const wa = wilson(xa, na, z);
+  const wb = wilson(xb, nb, z);
+  if (!wa || !wb) return null;
+  const pa = xa / na;
+  const pb = xb / nb;
+  const d = pb - pa;
+  return [d - Math.sqrt((pb - wb[0]) ** 2 + (wa[1] - pa) ** 2), d + Math.sqrt((wb[1] - pb) ** 2 + (pa - wa[0]) ** 2)];
+}
+
+const mean = (v: readonly number[]): number => v.reduce((a, b) => a + b, 0) / v.length;
+/** 標本分散(n − 1 で割る) */
+const variance = (v: readonly number[]): number => {
+  const m = mean(v);
+  return v.reduce((a, b) => a + (b - m) ** 2, 0) / (v.length - 1);
+};
+
+/** 平均の差(B − A)の 95% の幅。Welch の近似(差 ± 1.96 × 標準誤差。等分散を仮定しない)。どちらかが 2 件未満なら null */
+export function welchDiff(a: readonly number[], b: readonly number[], z = Z95): [lo: number, hi: number] | null {
+  if (a.length < 2 || b.length < 2) return null;
+  const d = mean(b) - mean(a);
+  const se = Math.sqrt(variance(a) / a.length + variance(b) / b.length);
+  if (!Number.isFinite(se)) return null;
+  return [d - z * se, d + z * se];
+}
+
 /** 比べる指標の行。value は表示する値(null は「—」)。note は数え方 */
 export interface CompareRow {
   key: string;
@@ -64,22 +189,58 @@ export interface CompareRow {
   a: number | null;
   b: number | null;
   note: string;
+  /** 差(B − A)の 95% の幅(値の単位は a・b と同じ)。null は件数が足りない(「—」)、無いのはその行には出さない */
+  ci?: [lo: number, hi: number] | null;
 }
 
 /** 平均。分母(記録のあったセッションの数)が少なすぎるときは null(全セッションの数ではなく、実際に割る数で決める) */
 const perSession = (v: number, n: number): number | null => (n < COMPARE_MIN_SESSIONS ? null : v / n);
 
+/** 両側の分母が足りるときだけ幅を出す */
+const enough = (na: number, nb: number): boolean => na >= COMPARE_MIN_SESSIONS && nb >= COMPARE_MIN_SESSIONS;
+
 export function compareRows(a: CompareSide, b: CompareSide): CompareRow[] {
-  const row = (key: string, label: string, unit: CompareRow['unit'], f: (s: CompareSide) => number | null, note: string): CompareRow => ({ key, label, unit, a: f(a), b: f(b), note });
+  const row = (key: string, label: string, unit: CompareRow['unit'], f: (s: CompareSide) => number | null, note: string, ci?: CompareRow['ci']): CompareRow => ({
+    key,
+    label,
+    unit,
+    a: f(a),
+    b: f(b),
+    note,
+    ...(ci === undefined ? {} : { ci }),
+  });
+  /** 割合の行(分母がセッション)。値と、Newcombe の幅 */
+  const share = (key: string, label: string, c: (s: CompareSide) => ScoredCount, note: string): CompareRow => {
+    const ca = c(a);
+    const cb = c(b);
+    const v = (x: ScoredCount): number | null => (x.scored < COMPARE_MIN_SESSIONS ? null : x.clean / x.scored);
+    return { key, label, unit: 'rate', a: v(ca), b: v(cb), note, ci: enough(ca.scored, cb.scored) ? newcombeDiff(ca.clean, ca.scored, cb.clean, cb.scored) : null };
+  };
+  /** 平均の行。値と、Welch の幅 */
+  const avg = (key: string, label: string, unit: CompareRow['unit'], v: (s: CompareSide) => number[], note: string): CompareRow => {
+    const va = v(a);
+    const vb = v(b);
+    const m = (x: number[]): number | null => perSession(x.reduce((p, q) => p + q, 0), x.length);
+    return { key, label, unit, a: m(va), b: m(vb), note, ci: enough(va.length, vb.length) ? welchDiff(va, vb) : null };
+  };
   const keptShare = (s: CompareSide): number | null => (s.retention.measured < COMPARE_MIN_SESSIONS ? null : measuredOf(s.retention.hunks) ? (s.retention.hunks[0] + s.retention.hunks[1]) / measuredOf(s.retention.hunks) : null);
   const missingShare = (s: CompareSide): number | null => (s.retention.measured < COMPARE_MIN_SESSIONS ? null : measuredOf(s.retention.hunks) ? s.retention.hunks[2] / measuredOf(s.retention.hunks) : null);
   return [
     row('sessions', 'セッション', 'count', (s) => s.sessions, ''),
-    row('turns', '依頼 / セッション', 'mean', (s) => perSession(s.turns, s.sessions), '平均'),
-    row('active', '実働 / セッション', 'minutes', (s) => perSession(s.activeMs, s.activeKnown), '実働の記録があるセッションの平均(5 件未満なら —)'),
-    row('failure', 'ツールの失敗・拒否の率', 'rate', (s) => rate(s.toolFailures, s.tools, s.sessions), '失敗・拒否 ÷ ツール呼び出し'),
-    row('rework', '手戻りのあったセッションの割合', 'rate', (s) => rate(s.reworkSessions, s.sessions, s.sessions), '依頼をまたいで同じファイルを編集し直した'),
-    row('aiu', 'AIU / セッション', 'aiu', (s) => perSession(s.nanoAiu / 1e9, s.aiuKnown), '記録があるセッションの平均(5 件未満なら —)'),
+    share('no-rework', '手戻りのないセッションの割合', (s) => s.noRework, '採点できたセッションのうち、2 件目以降の依頼に直し・差し戻しが無く、どの依頼にも中断が無かったもの'),
+    share('no-rework-short', '手戻りのないセッションの割合(依頼 2〜4 件)', (s) => s.noReworkShort, '依頼の数が違うだけで割合が動くため、依頼の数で分けたもの'),
+    share('no-rework-long', `手戻りのないセッションの割合(依頼 ${COMPARE_LONG_TURNS} 件以上)`, (s) => s.noReworkLong, '同上'),
+    row('scored', '採点できたセッション', 'count', (s) => s.noRework.scored, '依頼の記録が 2 件以上あるセッション(手戻りのないセッションの割合の分母)。1 件だけのセッションは採点できない'),
+    avg('turns', '依頼 / セッション', 'mean', (s) => s.values.turns, '平均'),
+    avg('active', '実働 / セッション', 'minutes', (s) => s.values.activeMs, '実働の記録があるセッションの平均(5 件未満なら —)'),
+    avg('requests', 'リクエスト / セッション', 'mean', (s) => s.values.requests, 'リクエストの記録があるセッションの平均'),
+    avg('aiu', 'AIU / セッション', 'aiu', (s) => s.values.aiu, '記録があるセッションの平均(5 件未満なら —)。ばらつきが大きいので、AIU / リクエストとリクエスト / セッションに分けて読む'),
+    row('aiu-per-request', 'AIU / リクエスト', 'aiu', (s) => (s.aiuKnown < COMPARE_MIN_SESSIONS || s.requestsWithAiu <= 0 ? null : s.aiuForRequests / 1e9 / s.requestsWithAiu), 'AIU の記録があるセッションの、AIU の合計 ÷ リクエストの合計'),
+    row('failure', 'ツールの失敗・拒否の率', 'rate', (s) => rate(s.toolFailures, s.tools, s.sessions), '失敗・拒否 ÷ ツール呼び出し(呼び出しの単位なので差の幅は出さない)'),
+    {
+      ...row('rework', '同じファイルを編集し直したセッションの割合', 'rate', (s) => rate(s.reworkSessions, s.sessions, s.sessions), '依頼をまたいで同じファイルを編集し直した(手戻りのないセッションとは別の数え方)'),
+      ci: enough(a.sessions, b.sessions) ? newcombeDiff(a.reworkSessions, a.sessions, b.reworkSessions, b.sessions) : null,
+    },
     row('retention-measured', '照合できたセッション(AI の変更の残存の分母)', 'count', (s) => s.retention.measured, 'AI の変更があったセッションのうち'),
     row('retention-kept', '残っている(そのまま + 直されて)割合', 'rate', keptShare, '照合できたまとまりに対する割合。照合できたセッションが 5 未満なら —'),
     row('retention-missing', '見つからない割合', 'rate', missingShare, '照合できたまとまりに対する割合'),
@@ -108,6 +269,125 @@ export function defaultPeriods(lastAt: string | null, days = 30): { a: { from: s
   const day = (offset: number): string => localDay(new Date(end.getFullYear(), end.getMonth(), end.getDate() - offset));
   // A が前の期間、B が後の期間(左から右へ時間が進む)
   return { a: { from: day(days * 2 - 1), to: day(days) }, b: { from: day(days - 1), to: day(0) } };
+}
+
+// ---------- 推論強度どうし ----------
+
+type EffortSource = Pick<CompareSession, 'exec' | 'models' | 'createdAt' | 'updatedAt' | 'person'>;
+
+/** 本体のリクエストがあるモデルと、そのセッションの数(多い順。同数は名前の順) */
+export function effortModels(sessions: readonly EffortSource[]): { model: string; sessions: number }[] {
+  const n = new Map<string, number>();
+  for (const s of sessions) for (const m of mainModelsOf(s.exec?.mainModelEfforts)) n.set(m, (n.get(m) ?? 0) + 1);
+  return [...n].map(([model, c]) => ({ model, sessions: c })).sort((a, b) => b.sessions - a.sessions || a.model.localeCompare(b.model));
+}
+
+/** モデルの本体が、その強度と決まったセッションの数(強度の並び: none → max) */
+export function effortChoices(sessions: readonly EffortSource[], model: string): { effort: string; sessions: number }[] {
+  const n = new Map<string, number>();
+  for (const s of sessions) {
+    const m = mainEffortOf(s.exec?.mainModelEfforts);
+    if (m.kind === 'decided' && m.model === model) n.set(m.effort, (n.get(m.effort) ?? 0) + 1);
+  }
+  const order = orderBy(EFFORT_ORDER);
+  return [...n].map(([effort, c]) => ({ effort, sessions: c })).sort((a, b) => order(a.effort, b.effort));
+}
+
+/** 既定の A と B: medium と xhigh があればそれ、無ければセッションの多い順の 2 つ(並びは弱い順) */
+export function defaultEfforts(choices: readonly { effort: string; sessions: number }[]): [a: string, b: string] {
+  const has = (e: string): boolean => choices.some((c) => c.effort === e);
+  if (has('medium') && has('xhigh')) return ['medium', 'xhigh'];
+  const top = [...choices].sort((x, y) => y.sessions - x.sessions).slice(0, 2).map((c) => c.effort);
+  const order = orderBy(EFFORT_ORDER);
+  top.sort(order);
+  return [top[0] ?? '', top[1] ?? top[0] ?? ''];
+}
+
+/** 本体の強度の決まり方(選んだモデルの中での)。null はそのモデルのセッションでない */
+type EffortClass = { kind: 'decided'; effort: string } | { kind: 'mixed' } | { kind: 'none' };
+
+/**
+ * 選んだモデルのセッションか、どの強度と決まったか。
+ * そのモデルのセッション = 本体のリクエストにそのモデルがある(記録が無ければ、セッションのモデルの一覧にある)
+ */
+function effortClass(s: EffortSource, model: string): EffortClass | null {
+  const main = s.exec?.mainModelEfforts;
+  const m = mainEffortOf(main);
+  if (m.kind === 'decided') return m.model === model ? { kind: 'decided', effort: m.effort } : null;
+  const models = mainModelsOf(main);
+  const inModel = models.length > 0 ? models.includes(model) : (s.models ?? []).includes(model);
+  return inModel ? m : null;
+}
+
+export interface EffortSplit<T> {
+  a: T[];
+  b: T[];
+  /** 選んだモデル・期間の中で、本体の強度が混在のセッションと、記録の無いセッションの数 */
+  mixed: number;
+  none: number;
+}
+
+/** 推論強度どうしの母集団: 期間に開始し、本体が (model, a) と決まったセッションと (model, b) と決まったセッション */
+export function effortSplit<T extends EffortSource>(sessions: readonly T[], model: string, a: string, b: string, from: string, to: string): EffortSplit<T> {
+  const out: EffortSplit<T> = { a: [], b: [], mixed: 0, none: 0 };
+  for (const s of sessions) {
+    if (!inPeriod(s, from, to)) continue;
+    const c = effortClass(s, model);
+    if (!c) continue;
+    if (c.kind === 'mixed') out.mixed++;
+    else if (c.kind === 'none') out.none++;
+    else {
+      if (c.effort === a) out.a.push(s);
+      if (c.effort === b && b !== a) out.b.push(s);
+    }
+  }
+  return out;
+}
+
+/** その日を含む週の月曜(ローカルの日付の YYYY-MM-DD) */
+export function weekStart(ms: number): string {
+  const d = new Date(ms);
+  const back = (d.getDay() + 6) % 7;
+  return localDay(new Date(d.getFullYear(), d.getMonth(), d.getDate() - back));
+}
+
+export interface EffortWeekRow {
+  /** 利用者(byPerson のときだけ。記録の無いセッションは null) */
+  person: string | null;
+  /** 週の月曜(YYYY-MM-DD) */
+  week: string;
+  a: number;
+  b: number;
+  mixed: number;
+  none: number;
+}
+
+/**
+ * 利用者 × 週ごとの、A の強度・B の強度・混在・記録なしのセッション数(選んだモデルと期間の中。割り当てどおりに使われたかを見る)。
+ * 利用者の記録が 1 件も無ければ、週ごとの行だけにする
+ */
+export function effortWeeks(sessions: readonly EffortSource[], model: string, a: string, b: string, from: string, to: string): { byPerson: boolean; rows: EffortWeekRow[] } {
+  const byPerson = sessions.some((s) => s.person != null && s.person !== '');
+  const rows = new Map<string, EffortWeekRow>();
+  for (const s of sessions) {
+    if (!inPeriod(s, from, to)) continue;
+    const t = sessionTime(s);
+    const c = effortClass(s, model);
+    if (t == null || !c) continue;
+    const person = byPerson ? (s.person || null) : null;
+    const week = weekStart(t);
+    const key = `${person ?? ''}\0${week}`;
+    let r = rows.get(key);
+    if (!r) rows.set(key, (r = { person, week, a: 0, b: 0, mixed: 0, none: 0 }));
+    if (c.kind === 'mixed') r.mixed++;
+    else if (c.kind === 'none') r.none++;
+    else if (c.effort === a) r.a++;
+    else if (c.effort === b) r.b++;
+  }
+  const list = [...rows.values()].filter((r) => r.a + r.b + r.mixed + r.none > 0);
+  // 利用者の名前の順(記録の無いものは最後)、同じ人は週の順
+  list.sort((x, y) => (x.person == null ? 1 : 0) - (y.person == null ? 1 : 0) || (x.person ?? '').localeCompare(y.person ?? '') || x.week.localeCompare(y.week));
+  return { byPerson, rows: list };
 }
 
 /** 割合や平均を出す最小の依頼の数(セッションの 5 と同じ考え方) */

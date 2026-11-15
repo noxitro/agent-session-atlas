@@ -8,7 +8,7 @@ function sess(id: string, modelEfforts: Record<string, Record<string, EffortTupl
   return {
     id,
     byModel: {},
-    exec: { modes: {}, modesInferred: 0, efforts: {}, modelEfforts, initiators: {}, context: null, latency: {} },
+    exec: { modes: {}, modesInferred: 0, efforts: {}, modelEfforts, mainModelEfforts: {}, initiators: {}, context: null, latency: {} },
     tools: { total: 10, byName: {}, internal: 0, mcp: {}, issues: {}, durations: {}, outliers: {} },
     friction: { compactions: 0, aborts: 0, errors: 0, permissionRequests: 0, askUser: 0, modelChanges: 0, modeChanges: 0, toolFailures: 0, subagentFailures: 0 },
     judgment: null,

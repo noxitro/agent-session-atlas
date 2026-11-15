@@ -1571,6 +1571,8 @@ fn add_effort(to: &mut JsMap<EffortStat>, key: &str, s: &EffortStat) {
 fn build_exec(items: &[UsageItem], effort_changes: &[EffortChange], tokens: &SessionTokens, modes: ModeCounts, context: ContextBreakdown) -> ExecProfile {
     let mut efforts: JsMap<EffortStat> = JsMap::new();
     let mut model_efforts: JsMap<JsMap<EffortStat>> = JsMap::new();
+    // 本体(agent_id が無いか空)のリクエストだけ。サブエージェントは本体と別の推論強度で動くため、分けて持つ
+    let mut main_model_efforts: JsMap<JsMap<EffortStat>> = JsMap::new();
     let mut initiators: JsMap<i64> = JsMap::new();
     let mut latency: JsMap<Latency> = JsMap::new();
     for u in items {
@@ -1578,6 +1580,9 @@ fn build_exec(items: &[UsageItem], effort_changes: &[EffortChange], tokens: &Ses
         let s = EffortStat { requests: 1.0, input: u.input, output: u.output, nano_aiu: u.nano_aiu.unwrap_or(0.0) };
         add_effort(&mut efforts, &key, &s);
         add_effort(model_efforts.entry(u.model.clone()).or_default(), &key, &s);
+        if u.agent_id.as_deref().is_none_or(str::is_empty) {
+            add_effort(main_model_efforts.entry(u.model.clone()).or_default(), &key, &s);
+        }
         initiators.inc(u.initiator.as_deref().unwrap_or(UNKNOWN_KEY), 1);
         if u.ttft.is_some() || u.duration.is_some() {
             let l = latency.entry(u.model.clone()).or_default();
@@ -1589,7 +1594,8 @@ fn build_exec(items: &[UsageItem], effort_changes: &[EffortChange], tokens: &Ses
             }
         }
     }
-    if items.is_empty() && tokens.source == TokenSource::Shutdown {
+    let shutdown_only = items.is_empty() && tokens.source == TokenSource::Shutdown;
+    if shutdown_only {
         // 明細が無く終了時の累計だけ: セッション中の設定が 1 種類ならその強度、それ以外は不明
         let distinct: IndexSet<&str> = effort_changes.iter().map(|c| c.effort.as_str()).collect();
         let key = if distinct.len() == 1 { distinct[0].to_string() } else { UNKNOWN_KEY.to_string() };
@@ -1609,7 +1615,9 @@ fn build_exec(items: &[UsageItem], effort_changes: &[EffortChange], tokens: &Ses
             add_effort(model_efforts.entry(m.clone()).or_default(), &key, &stat(t));
         }
     }
-    ExecProfile { modes, context, efforts, model_efforts: Some(model_efforts), initiators, latency }
+    // 終了時の累計だけのセッションは、本体とサブエージェントを分けられないので持たない
+    let main_model_efforts = (!shutdown_only).then_some(main_model_efforts);
+    ExecProfile { modes, context, efforts, model_efforts: Some(model_efforts), main_model_efforts, initiators, latency }
 }
 
 /// null は「不明」を保つ(どちらかが null なら、もう一方の値)

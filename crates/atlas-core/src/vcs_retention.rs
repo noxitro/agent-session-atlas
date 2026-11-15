@@ -81,9 +81,11 @@ pub enum UnattributableReason {
     NotMeasured,
     TooRecent,
     AfterMissing,
+    /// 比べる版(fixed・committed)が開始時の基準と同じ(その間に取り込まれた変更が無い)。worktree では使わない
+    NoCommits,
 }
 
-pub const UNATTRIBUTABLE_REASONS: [UnattributableReason; 10] = [
+pub const UNATTRIBUTABLE_REASONS: [UnattributableReason; 11] = [
     UnattributableReason::RepoNotFound,
     UnattributableReason::NoVcs,
     UnattributableReason::BaselineMissing,
@@ -94,6 +96,7 @@ pub const UNATTRIBUTABLE_REASONS: [UnattributableReason; 10] = [
     UnattributableReason::NotMeasured,
     UnattributableReason::TooRecent,
     UnattributableReason::AfterMissing,
+    UnattributableReason::NoCommits,
 ];
 
 impl UnattributableReason {
@@ -109,6 +112,7 @@ impl UnattributableReason {
             UnattributableReason::NotMeasured => "not_measured",
             UnattributableReason::TooRecent => "too_recent",
             UnattributableReason::AfterMissing => "after_missing",
+            UnattributableReason::NoCommits => "no_commits",
         }
     }
 
@@ -129,6 +133,7 @@ impl UnattributableReason {
             UnattributableReason::NotMeasured => "送った側で照合していない",
             UnattributableReason::TooRecent => "決まった日数がまだ経っていない",
             UnattributableReason::AfterMissing => "比べる版を決められない",
+            UnattributableReason::NoCommits => "開始時から取り込まれた変更が無い",
         }
     }
 }
@@ -850,6 +855,20 @@ fn repo_key(repo: &VcsRepo) -> String {
     format!("{}\0{}", repo.kind.as_str(), file_path_key(&repo.root))
 }
 
+/// 2 つの版の印が同じ版か。git はログの短い印(7 字以上)でも、前方が一致すれば同じとみなす(大文字小文字は区別しない)
+pub(crate) fn same_revision(kind: VcsKind, a: &str, b: &str) -> bool {
+    let (a, b) = (a.trim(), b.trim());
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    if kind != VcsKind::Git {
+        return a == b;
+    }
+    let (a, b) = (a.to_ascii_lowercase(), b.to_ascii_lowercase());
+    let (short, long) = if a.len() <= b.len() { (&a, &b) } else { (&b, &a) };
+    short.len() >= 7 && long.starts_with(short.as_str())
+}
+
 fn same(a: &Arc<VcsRepo>, b: Option<&Arc<VcsRepo>>) -> bool {
     b.is_some_and(|b| Arc::ptr_eq(a, b))
 }
@@ -978,13 +997,26 @@ fn measure_one(sh: &Shared<'_>, me: usize) -> SessionRetention {
                 result.baseline = Some(b.clone());
             }
             let rk = repo_key(&repo);
+            // 比べる版(fixed: 終わりから決まった日数後の版、committed: 最後に取り込んだ版。worktree はディスクなので無い)
+            let after_rev: Option<String> = match mode {
+                EvalMode::Fixed => {
+                    let Some(r) = after_rev_of(&repo) else {
+                        result.hunks.extend(hunks.iter().map(|h| unattributed(h, UnattributableReason::AfterMissing)));
+                        return Ok(());
+                    };
+                    Some(r)
+                }
+                EvalMode::Committed => sh.caches.revs.get_or_init(rk.clone(), || repo.current_revision().unwrap_or(None)),
+                EvalMode::Worktree => None,
+            };
+            // 比べる版が開始時の基準と同じなら、その間に取り込まれた変更が無い(AI の行は必ず見つからない)ので、照合不可にする
+            if after_rev.as_deref().is_some_and(|r| same_revision(repo.kind, r, &b.rev)) {
+                result.hunks.extend(hunks.iter().map(|h| unattributed(h, UnattributableReason::NoCommits)));
+                return Ok(());
+            }
             let base = read(format!("{rk}\0at\0{}\0{fk}", b.rev), &|| repo.read_at(&b.rev, path))?;
-            let after = if mode == EvalMode::Fixed {
-                let Some(after_rev) = after_rev_of(&repo) else {
-                    result.hunks.extend(hunks.iter().map(|h| unattributed(h, UnattributableReason::AfterMissing)));
-                    return Ok(());
-                };
-                read(format!("{rk}\0at\0{after_rev}\0{fk}"), &|| repo.read_at(&after_rev, path))?
+            let after = if let (EvalMode::Fixed, Some(after_rev)) = (mode, after_rev.as_deref()) {
+                read(format!("{rk}\0at\0{after_rev}\0{fk}"), &|| repo.read_at(after_rev, path))?
             } else {
                 read(format!("{rk}\0after\0{}\0{fk}", mode.as_str()), &|| repo.read_after(mode, path))?
             };
