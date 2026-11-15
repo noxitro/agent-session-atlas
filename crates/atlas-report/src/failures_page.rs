@@ -127,7 +127,7 @@ fn row_head(html: &str) -> String {
     format!("<th scope=\"row\" class=\"name\">{html}</th>")
 }
 
-const GROUP_NOTE: &str = "「そろえた形」は、エラー文の 1 行目のパス・URL・数字・引用した部分を印に置き換え、記号を落としたものです(同じ文の失敗をまとめるため)。";
+const GROUP_NOTE: &str = "「そろえた形」は、エラー文の 1 行目のパス・URL・数字・引用した部分を印に置き換え、記号を落としたものです(同じ文の失敗をまとめるため。<a href=\"glossary.html#failure-group\">用語の説明</a>)。";
 
 fn unit_rows(units: &[UnitStat]) -> String {
     units
@@ -187,7 +187,7 @@ pub fn render_failures_html(o: &FailuresPageOptions<'_>) -> String {
     let overview = section(
         "f-overview",
         "対象",
-        "空でないセッションのうち、失敗の台帳(失敗と拒否を 1 件ずつ残した記録)のあるものを集計しています。台帳の無い記録は以前の版で集計したもので、失敗が 0 件という意味ではありません(集計し直すと付きます)。",
+        "空でないセッションのうち、失敗の台帳(失敗と拒否を 1 件ずつ残した記録)のあるものを集計しています。台帳の無い記録は以前の版で集計したもので、失敗が 0 件という意味ではありません(集計し直すと付きます。<a href=\"glossary.html#failure-ledger\">用語の説明</a>)。",
         &format!(
             "<div class=\"fields\" style=\"--cols:3\">{}{}{}{}{}{}</div>",
             field("台帳のあるセッション", &int(c.with_ledger), &format!("空でないセッション {} 件のうち", int(c.sessions))),
@@ -209,7 +209,7 @@ pub fn render_failures_html(o: &FailuresPageOptions<'_>) -> String {
             "<p class=\"note\">台帳の行がありません。</p>".to_string()
         } else {
             format!(
-                "<div class=\"fields\" style=\"--cols:4\">{}{}{}{}</div><p class=\"note\">呼び直し: 失敗の後に、同じツールを同じ引数で呼んだもの。下の表の「呼び直し」「うち成功」も同じ数え方です。</p>",
+                "<div class=\"fields\" style=\"--cols:4\">{}{}{}{}</div><p class=\"note\">呼び直し: 失敗の後に、同じツールを同じ引数で呼んだもの。下の表の「呼び直し」「うち成功」も同じ数え方です(<a href=\"glossary.html#failure-next\">用語の説明</a>)。</p>",
                 field("同じ引数で呼び直した", &int(n.retries), &format!("うち成功 {}", int(n.retries_ok))),
                 field("別の呼び出しで続けた", &int(n.moved_on), &format!("次の呼び出しが成功 {}", int(n.moved_on_ok))),
                 field("利用者の次の依頼", &int(n.user), "次のツールより先に依頼が来た"),
