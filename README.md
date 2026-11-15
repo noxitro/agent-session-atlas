@@ -19,7 +19,7 @@ GitHub Copilot のセッションログ(`%USERPROFILE%\.copilot`)を手元で集
 - 推定人手工数(任意。LLM に判定させたときだけ)
 - AI が作った変更が、その後の VCS(Git / SVN / Perforce)のファイルに残っているか。VCS は読むだけで、LLM は使いません([docs/outputs.md](docs/outputs.md#ai-の変更の残存vcs-の照合))
 - 2 つの条件(タスクタグ・期間・プロジェクト)の並べ比べ
-- テストの合否と件数(テストの実行ファイルが印つきの 1 行 JSON を標準出力に書いたときだけ。セッションの記録に持つ。[docs/outputs.md](docs/outputs.md#テストの結果印つきの-1-行-json))
+- テストの合否と件数、1 セッションの中の推移(何回目の実行で全部通ったか、そこまでの実働と AI 使用量、最後まで通らなかった「未達」)。テストの実行ファイルが印つきの 1 行 JSON を標準出力に書いたときだけ([docs/outputs.md](docs/outputs.md#テストの結果印つきの-1-行-json))
 - 表は CSV に加えて、同じ中身の SQLite(`out/tables/atlas.sqlite`)でも書きます
 
 ## 使い方

@@ -9,13 +9,17 @@
 //! - 行頭に印がある行だけを読む(テストのソースを読んだ結果の `print("ATLAS_TEST_RESULT …")` や、行番号・ファイル名の付いた検索の結果は拾わない)。
 //! - 同じ行が 2 回出たとき(後から読む非同期のシェルや、保存したログを表示したとき): `at` のある行は 1 回だけ数え、重ねた数を残す。
 //!   `at` の無い行は、別の実行と見分けられないので重ねても数える。
+//! - 推移: 実行(結果を出したツールの呼び出し)ごとに、その時点までの実働と AI 使用量の累計、まだ通っていないテストの数(failing)を持つ。
+//!   「全部通った」は、これまでに出たテストの名前ごとのいちばん新しい結果が、すべて合格のこと(failing が 0)。
+//!   一部のテストだけを走らせ直した実行でも、前に通ったテストは通ったままとみなす(走らせていないテストの結果はログから分からない)。
+//!   名前の無い結果は、まとめて 1 つのテストとして扱う。
 //! - 値は元のログに書かれたものだけで決める(LLM は使わない)。
 
 use crate::js;
 use crate::jsdate;
 use crate::types::{SessionTests, TestResult, TestRun};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// 行頭の印
 pub const TEST_MARKER: &str = "ATLAS_TEST_RESULT";
@@ -127,12 +131,18 @@ pub struct CompleteInfo<'a> {
     pub tool: Option<&'a str>,
     pub tool_call_id: Option<&'a str>,
     pub subagent: bool,
+    /// ツールの完了の時刻(ミリ秒)
+    pub at_ms: Option<i64>,
+    /// セッションの始まりからここまでの実働(ミリ秒)
+    pub active_ms: i64,
 }
 
 /// セッションのテストの結果を集める
 #[derive(Default)]
 pub struct TestCollector {
     runs: Vec<TestRun>,
+    /// runs と同じ並びの、完了の時刻(ミリ秒)
+    run_ms: Vec<Option<i64>>,
     invalid: i64,
     duplicates: i64,
     dropped: i64,
@@ -173,22 +183,40 @@ impl TestCollector {
         if results.is_empty() {
             return;
         }
+        self.run_ms.push(info.at_ms);
         self.runs.push(TestRun {
             at: info.at,
             turn: info.turn,
             tool: info.tool.map(str::to_string),
             tool_call_id: info.tool_call_id.map(str::to_string),
             subagent: info.subagent,
+            active_ms: info.active_ms as f64,
+            nano_aiu: None,
+            failing: 0,
             results,
         });
     }
 
-    /// 印の行が 1 つも無ければ None(記録にキーを置かない)
-    pub fn result(self) -> Option<SessionTests> {
+    /// 印の行が 1 つも無ければ None(記録にキーを置かない)。
+    /// aiu_until は、その時刻(ミリ秒)までに記録されたリクエストの nano AIU の累計(リクエストごとの記録が無ければ None)
+    pub fn finish(mut self, aiu_until: impl Fn(i64) -> Option<f64>) -> Option<SessionTests> {
         if self.runs.is_empty() && self.invalid == 0 && self.duplicates == 0 && self.dropped == 0 {
             return None;
         }
-        Some(SessionTests { runs: self.runs, invalid: self.invalid, duplicates: self.duplicates, dropped: self.dropped })
+        // テストの名前 → いちばん新しい結果(名前の無い結果は 1 つのテスト)
+        let mut latest: HashMap<String, bool> = HashMap::new();
+        let mut first_pass = None;
+        for (i, run) in self.runs.iter_mut().enumerate() {
+            for r in &run.results {
+                latest.insert(r.name.clone().unwrap_or_default(), r.passed);
+            }
+            run.failing = latest.values().filter(|p| !**p).count() as i64;
+            if run.failing == 0 && first_pass.is_none() {
+                first_pass = Some(i as i64 + 1);
+            }
+            run.nano_aiu = self.run_ms[i].and_then(&aiu_until);
+        }
+        Some(SessionTests { runs: self.runs, invalid: self.invalid, duplicates: self.duplicates, dropped: self.dropped, first_pass })
     }
 }
 
@@ -198,7 +226,7 @@ mod tests {
     use serde_json::json;
 
     fn info(turn: Option<i64>) -> CompleteInfo<'static> {
-        CompleteInfo { at: Some("2026-11-16T00:00:01.000Z".into()), turn, tool: Some("powershell"), tool_call_id: Some("c1"), subagent: false }
+        CompleteInfo { at: Some("2026-11-16T00:00:01.000Z".into()), turn, tool: Some("powershell"), tool_call_id: Some("c1"), subagent: false, at_ms: turn.map(|t| t * 1000), active_ms: turn.unwrap_or(0) * 500 }
     }
 
     #[test]
@@ -246,7 +274,7 @@ mod tests {
         c.add_complete(None, Some(&json!({ "code": "failure", "message": "exit 1\nATLAS_TEST_RESULT {\"name\":\"c\",\"passed\":false}" })), info(None));
         // 印の無い結果は数えない
         c.add_complete(Some(&json!("ok")), None, info(Some(3)));
-        let s = c.result().unwrap();
+        let s = c.finish(|_| None).unwrap();
         assert_eq!(s.runs.iter().map(|r| (r.turn, r.results.iter().map(|x| x.name.clone().unwrap()).collect::<Vec<_>>())).collect::<Vec<_>>(), [
             (Some(1), vec!["a".to_string(), "b".to_string()]),
             (Some(2), vec!["b".to_string()]),
@@ -254,7 +282,36 @@ mod tests {
         ]);
         assert_eq!((s.invalid, s.duplicates, s.dropped), (1, 1, 0));
         assert_eq!(s.runs[0].tool.as_deref(), Some("powershell"));
-        assert!(TestCollector::new().result().is_none());
+        assert!(TestCollector::new().finish(|_| None).is_none());
+    }
+
+    #[test]
+    fn progress_until_all_pass() {
+        let line = |name: &str, passed: bool| format!(r#"ATLAS_TEST_RESULT {{"name":"{name}","passed":{passed}}}"#);
+        let mut c = TestCollector::new();
+        // 1: a・b とも落ちる → 2: a だけ走らせ直して通る(b は落ちたまま)→ 3: b だけ通る(全部通った)→ 4: a がまた落ちる
+        c.add_complete(Some(&json!(format!("{}\n{}", line("a", false), line("b", false)))), None, info(Some(1)));
+        c.add_complete(Some(&json!(line("a", true))), None, info(Some(2)));
+        c.add_complete(Some(&json!(line("b", true))), None, info(Some(3)));
+        c.add_complete(Some(&json!(line("a", false))), None, info(None));
+        // 時刻 t までの累計は t(時刻の無い実行は null)
+        let s = c.finish(|t| Some(t as f64)).unwrap();
+        assert_eq!(s.runs.iter().map(|r| r.failing).collect::<Vec<_>>(), [2, 1, 0, 1]);
+        assert_eq!(s.first_pass, Some(3));
+        assert_eq!(s.runs.iter().map(|r| r.nano_aiu).collect::<Vec<_>>(), [Some(1000.0), Some(2000.0), Some(3000.0), None]);
+        assert_eq!(s.runs.iter().map(|r| r.active_ms).collect::<Vec<_>>(), [500.0, 1000.0, 1500.0, 0.0]);
+        // 一度も通らなければ null。読めない行だけのセッションは実行が無い
+        let mut never = TestCollector::new();
+        never.add_complete(Some(&json!(line("a", false))), None, info(Some(1)));
+        assert_eq!(never.finish(|_| None).unwrap().first_pass, None);
+        let mut broken = TestCollector::new();
+        broken.add_complete(Some(&json!("ATLAS_TEST_RESULT x")), None, info(Some(1)));
+        let b = broken.finish(|_| None).unwrap();
+        assert_eq!((b.runs.len(), b.invalid, b.first_pass), (0, 1, None));
+        // 名前の無い結果は 1 つのテスト
+        let mut unnamed = TestCollector::new();
+        unnamed.add_complete(Some(&json!("ATLAS_TEST_RESULT {\"passed\":false}\nATLAS_TEST_RESULT {\"passed\":true}")), None, info(Some(1)));
+        assert_eq!(unnamed.finish(|_| None).unwrap().first_pass, Some(1));
     }
 
     #[test]
@@ -262,7 +319,7 @@ mod tests {
         let mut c = TestCollector::new();
         let text = (0..MAX_TEST_RESULTS + 3).map(|_| r#"ATLAS_TEST_RESULT {"passed":true}"#).collect::<Vec<_>>().join("\n");
         c.add_complete(Some(&json!(text)), None, info(Some(1)));
-        let s = c.result().unwrap();
+        let s = c.finish(|_| None).unwrap();
         assert_eq!(s.runs[0].results.len(), MAX_TEST_RESULTS);
         assert_eq!(s.dropped, 3);
     }

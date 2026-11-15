@@ -954,7 +954,7 @@ pub fn normalize_session(input: NormalizeInput<'_>) -> std::io::Result<SessionRe
                     if !is_internal_call {
                         let subagent = agent_truthy || truthy(g("parentToolCallId"));
                         let turn = cur_turn.map(|i| i as i64 + 1);
-                        tests.add_complete(g("result"), error, CompleteInfo { at: at.clone(), turn, tool: call_name.as_deref(), tool_call_id: call_id, subagent });
+                        tests.add_complete(g("result"), error, CompleteInfo { at: at.clone(), turn, tool: call_name.as_deref(), tool_call_id: call_id, subagent, at_ms: t, active_ms });
                     }
                     if let (Some(cn), Some(ok)) = (&call_name, success) {
                         let r = results.entry(cn.clone()).or_default();
@@ -1361,6 +1361,12 @@ pub fn normalize_session(input: NormalizeInput<'_>) -> std::io::Result<SessionRe
     tokens.subagent_total_tokens = subagent_total_tokens;
     attribute_usage(&items, &turn_start_ms, overflow_ms, &mut turn_stats);
     tokens.max_pre_compaction_tokens = max_pre_compaction;
+    // テストの実行ごとの AI 使用量の累計。AIU の記録があるリクエストのすべてに時刻があるときだけ出す(時刻の無いものがあると、どの実行より前か決められない)
+    let aiu_times: Option<Vec<(i64, f64)>> = {
+        let with: Vec<&UsageItem> = items.iter().filter(|u| u.nano_aiu.is_some()).collect();
+        if with.is_empty() { None } else { with.iter().map(|u| u.at.zip(u.nano_aiu)).collect() }
+    };
+    let tests = tests.finish(|until| aiu_times.as_ref().map(|v| v.iter().filter(|(at, _)| *at <= until).map(|(_, n)| n).sum()));
     for u in &items {
         models.insert(u.model.clone());
     }
@@ -1493,7 +1499,7 @@ pub fn normalize_session(input: NormalizeInput<'_>) -> std::io::Result<SessionRe
         files: SessionFiles { changed: files_result.changed, created: files_result.created, deleted: files_result.deleted, session_state: files_result.session_state },
         timeline,
         analysis,
-        tests: tests.result(),
+        tests,
         unknown_event_types: unknown,
         events: EventCounts { total, bad_lines: 0, by_type },
         person: None,

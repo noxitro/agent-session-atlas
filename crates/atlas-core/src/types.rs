@@ -342,6 +342,8 @@ pub struct SessionTests {
     pub duplicates: i64,
     /// 1 セッションの上限を超えたので持たなかった結果の数
     pub dropped: i64,
+    /// 最初に全部通った実行の番号(runs の 1 からの番号。failing が初めて 0 になった実行)。一度も通っていなければ null
+    pub first_pass: Option<i64>,
 }
 
 /// テストの結果を出したツールの呼び出し 1 回
@@ -357,6 +359,13 @@ pub struct TestRun {
     /// サブエージェントの呼び出し
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub subagent: bool,
+    /// セッションの始まりからこの実行の完了までの実働(5 分を超える無イベント区間を除く。セッションの実働時間と同じ数え方)
+    pub active_ms: f64,
+    /// この実行の完了までに記録されたリクエストの AI 使用量の累計(nano AIU。サブエージェントの分を含む)。
+    /// リクエストごとの記録(時刻つき)が無いセッションと、完了の時刻が無い実行は null
+    pub nano_aiu: Option<f64>,
+    /// この実行の後で、まだ通っていないテストの数(これまでに出た名前ごとの、いちばん新しい結果が不合格のもの)。0 なら全部通っている
+    pub failing: i64,
     pub results: Vec<TestResult>,
 }
 

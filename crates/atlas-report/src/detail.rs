@@ -23,7 +23,7 @@ use atlas_core::jsnum::to_fixed;
 use atlas_core::tables::TurnVerdicts;
 use atlas_core::tool_failure::{failure_cause_label, sorted_causes};
 use atlas_core::turns::{mismatch_label, outcome_label, phase_label, request_kind_label, session_turns};
-use atlas_core::types::{AgentStatus, InstructionFile, InstructionInjection, InstructionScope, LineChanges, LineNote, LineSource, ProjectSource, SessionRecord, SessionTokens, SkillTrigger, SkillVia, TimelineEntry, TimelineKind, TokenCounts, TokenSource};
+use atlas_core::types::{AgentStatus, InstructionFile, InstructionInjection, InstructionScope, LineChanges, LineNote, LineSource, ProjectSource, SessionRecord, SessionTests, SessionTokens, SkillTrigger, SkillVia, TimelineEntry, TimelineKind, TokenCounts, TokenSource};
 use atlas_core::vcs_retention::{Outcome, SessionRetention};
 use regex::Regex;
 use serde_json::Value;
@@ -478,6 +478,136 @@ fn turn_table(r: &SessionRecord, anon: &Anonymizer, verdicts: Option<&TurnVerdic
         "<div class=\"table-scroll\"><table class=\"ledger small turns\"><thead><tr><th scope=\"col\" class=\"num\">#</th><th scope=\"col\">開始</th><th scope=\"col\">依頼</th><th scope=\"col\">種類</th><th scope=\"col\">工程</th><th scope=\"col\" class=\"num\">実働</th><th scope=\"col\" class=\"num\">ツール呼び出し</th><th scope=\"col\" class=\"num\">ツールの失敗</th><th scope=\"col\" class=\"num\">拒否</th><th scope=\"col\" class=\"num\">中断</th><th scope=\"col\" class=\"num\">エラー</th><th scope=\"col\" class=\"num\">再編集</th><th scope=\"col\" class=\"num\">文脈圧縮</th><th scope=\"col\" class=\"num\">AIU</th>{}</tr></thead><tbody>{body}</tbody></table></div>",
         if judged { "<th scope=\"col\">採用(LLM)</th><th scope=\"col\">合わなかった点</th><th scope=\"col\">工程(普段)</th>" } else { "" }
     )
+}
+
+/// 数の表示(整数はそのまま、小数は 3 桁まで)
+fn count_value(v: f64) -> String {
+    if v.fract() == 0.0 { esc(&int_n(v)) } else { esc(&js::num_to_string(js::round(v * 1000.0) / 1000.0)) }
+}
+
+/// テストの推移(テストの実行ファイルが書いた印つきの行を読めたセッションだけ)。
+/// 実行(結果を出したツールの呼び出し)ごとに、合格の数・まだ通っていないテストの数・件数の合計と、そこまでの実働と AI 使用量を並べる
+fn tests_section(sec: &mut Sections, t: &SessionTests, anon: &Anonymizer) -> String {
+    /// 件数の列の上限(これより多い名前は、数だけ断る)
+    const MAX_KEYS: usize = 8;
+    /// 1 行に出す、落ちたテストの名前の上限
+    const MAX_NAMES: usize = 3;
+    let lead = "テストの実行ファイルが標準出力に書いた印つきの行(<code>ATLAS_TEST_RESULT</code>)を、ツールの結果から読んだものです。「全部通った」は、これまでに出たテストごとのいちばん新しい結果がすべて合格のことです(一部だけ走らせ直した実行では、前に通ったテストは通ったままとみなします)。実働と AIU は、セッションの始まりからその実行までの累計です。";
+    let runs = &t.runs;
+    let first = t.first_pass.and_then(|n| runs.get((n as usize).wrapping_sub(1)));
+    let outcome = match (runs.last(), t.first_pass) {
+        (None, _) => (missing("実行なし"), "読めた結果がありません"),
+        (Some(_), None) => ("<span class=\"tag warn\">未達</span>".to_string(), "最後まで、全部は通っていません"),
+        (Some(last), Some(_)) if last.failing > 0 => ("<span class=\"tag warn\">通った後に不合格</span>".to_string(), "一度は全部通りましたが、最後の実行の後に通っていないテストがあります"),
+        (Some(_), Some(_)) => ("<span class=\"tag\">全部通った</span>".to_string(), ""),
+    };
+    let aiu = |v: Option<f64>| match v {
+        Some(v) => esc(&dec_n(v / 1e9)),
+        None => missing("記録なし"),
+    };
+    let fields = [
+        field("結果", &outcome.0, outcome.1),
+        field("テストの実行", &format!("{} 回", int_i(runs.len() as i64)), "結果を出したツールの呼び出しの数"),
+        field(
+            "最初に全部通るまで",
+            &match t.first_pass {
+                Some(n) => format!("{} 回目", int_i(n)),
+                None => missing("—"),
+            },
+            &first.and_then(|r| r.turn).map(|n| format!("依頼 {} 件目", int_i(n))).unwrap_or_default(),
+        ),
+        field(
+            "通るまでの実働",
+            &match first {
+                Some(r) => esc(&duration(Some(r.active_ms), "不明")),
+                None => missing("—"),
+            },
+            "",
+        ),
+        field(
+            "通るまでの AIU",
+            &match first {
+                Some(r) => aiu(r.nano_aiu),
+                None => missing("—"),
+            },
+            "そこまでに記録されたリクエストの合計(サブエージェントの分を含む)",
+        ),
+    ]
+    .join("");
+    let skipped: Vec<String> = [("読めなかった印の行", t.invalid), ("前にも出たので数えなかった行", t.duplicates), ("上限を超えたので持たなかった結果", t.dropped)]
+        .iter()
+        .filter(|(_, n)| *n > 0)
+        .map(|(k, n)| format!("{k} {} 件", int_i(*n)))
+        .collect();
+    let skipped = if skipped.is_empty() { String::new() } else { format!("<p class=\"note\">{}</p>", skipped.join("・")) };
+    if runs.is_empty() {
+        return sec.section("テストの推移", &format!("<div class=\"fields\" style=\"--cols:5\">{fields}</div>{skipped}"), lead);
+    }
+    // 件数の名前(出た順)
+    let mut keys: Vec<&String> = Vec::new();
+    for r in runs.iter().flat_map(|r| &r.results) {
+        for k in r.counts.keys() {
+            if !keys.contains(&k) {
+                keys.push(k);
+            }
+        }
+    }
+    let more_keys = keys.len().saturating_sub(MAX_KEYS);
+    keys.truncate(MAX_KEYS);
+    // 伏せ字モードでは、識別子の形でない名前を番号にする
+    let key_heads: Vec<String> = keys.iter().enumerate().map(|(i, k)| if anon.enabled && !IDENTIFIER_RE.is_match(k) { format!("数 {}", i + 1) } else { esc(&truncate(Some(k), 40)) }).collect();
+    let day0 = runs[0].at.as_deref().filter(|s| !s.is_empty()).map(|s| js::utf16_slice(&date_time_n(Some(s)), 0, 10).into_owned()).unwrap_or_default();
+    let mut body = String::new();
+    for (i, r) in runs.iter().enumerate() {
+        let dt = r.at.as_deref().filter(|x| !x.is_empty()).map(|x| date_time_n(Some(x))).unwrap_or_default();
+        let time = if dt.is_empty() { missing("—") } else { esc(&if js::utf16_slice(&dt, 0, 10) == day0 { js::utf16_slice(&dt, 11, usize::MAX).into_owned() } else { js::utf16_slice(&dt, 5, usize::MAX).into_owned() }) };
+        let passed = r.results.iter().filter(|x| x.passed).count() as i64;
+        let failed: Vec<&str> = r.results.iter().filter(|x| !x.passed).map(|x| x.name.as_deref().unwrap_or("(名前なし)")).collect();
+        let failed_cell = if failed.is_empty() {
+            "<span class=\"zero\">—</span>".to_string()
+        } else if anon.enabled {
+            format!("{} 件", int_i(failed.len() as i64))
+        } else {
+            let shown: Vec<String> = failed.iter().take(MAX_NAMES).map(|n| esc(&truncate(Some(n), 60))).collect();
+            format!("{}{}", shown.join("、"), if failed.len() > MAX_NAMES { format!(" ほか {} 件", int_i((failed.len() - MAX_NAMES) as i64)) } else { String::new() })
+        };
+        let sums: String = keys
+            .iter()
+            .map(|k| {
+                let vals: Vec<f64> = r.results.iter().filter_map(|x| x.counts.get(*k).copied()).collect();
+                if vals.is_empty() { format!("<td class=\"num\">{}</td>", missing("—")) } else { format!("<td class=\"num\">{}</td>", count_value(vals.iter().sum())) }
+            })
+            .collect();
+        body.push_str(&format!(
+            "<tr><th scope=\"row\" class=\"num\">{}</th><td>{time}</td><td class=\"num\">{}</td><td>{}{}</td><td class=\"num\">{} / {}</td><td>{failed_cell}</td><td class=\"num\">{}</td>{sums}<td class=\"num\">{}</td><td class=\"num\">{}</td></tr>",
+            i + 1,
+            match r.turn {
+                Some(n) => int_i(n),
+                None => missing("—"),
+            },
+            esc(r.tool.as_deref().unwrap_or("(不明)")),
+            if r.subagent { " <span class=\"tag\">サブエージェント</span>" } else { "" },
+            int_i(passed),
+            int_i(r.results.len() as i64),
+            if r.failing == 0 { "<span class=\"tag\">全部通った</span>".to_string() } else { int_i(r.failing) },
+            esc(&duration(Some(r.active_ms), "不明")),
+            aiu(r.nano_aiu),
+        ));
+    }
+    let heads: String = key_heads.iter().map(|h| format!("<th scope=\"col\" class=\"num\">{h}</th>")).collect();
+    let keys_note = if keys.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<p class=\"note\">{}は、その実行で出た結果の値の合計です(テストの実行ファイルが書いた名前のまま)。{}</p>",
+            if key_heads.len() == 1 { format!("「{}」", key_heads[0]) } else { format!("「{}」から右の {} 列", key_heads[0], int_i(key_heads.len() as i64)) },
+            if more_keys > 0 { format!("ほかに {} 種類の値がありますが、列には出していません。", int_i(more_keys as i64)) } else { String::new() }
+        )
+    };
+    let table = format!(
+        "<div class=\"table-scroll\"><table class=\"ledger small\"><thead><tr><th scope=\"col\" class=\"num\">#</th><th scope=\"col\">完了</th><th scope=\"col\" class=\"num\">依頼</th><th scope=\"col\">ツール</th><th scope=\"col\" class=\"num\">合格 / 結果</th><th scope=\"col\">落ちたテスト</th><th scope=\"col\" class=\"num\">通っていないテスト</th>{heads}<th scope=\"col\" class=\"num\">実働(累計)</th><th scope=\"col\" class=\"num\">AIU(累計)</th></tr></thead><tbody>{body}</tbody></table></div>"
+    );
+    sec.section("テストの推移", &format!("<div class=\"fields\" style=\"--cols:5\">{fields}</div>{table}{keys_note}{skipped}"), lead)
 }
 
 fn timeline_row(e: &TimelineEntry, anon: &Anonymizer) -> String {
@@ -1209,6 +1339,9 @@ pub fn render_detail_html(r: &SessionRecord, o: &DetailOptions<'_>) -> String {
     let judged = o.verdicts.is_some_and(|v| !v.is_empty());
     let turns = turn_table(r, anon, o.verdicts);
     parts.push(sec.section("依頼ごとの経過", &turns, &turn_lead(r, judged)));
+    if let Some(t) = &r.tests {
+        parts.push(tests_section(&mut sec, t, anon));
+    }
 
     let f = &r.friction;
     parts.push(sec.section(

@@ -24,7 +24,7 @@ import type { AtlasBuild, FolderUpload } from './atlas-version.ts';
 // 15: uploadFolder(送り先から集計したときの、そのセッションの送り先のフォルダ)・source.uploads(フォルダごとの最後に送った日時と版)
 // 16: exec.modelEfforts(モデル別 × 推論強度別のリクエスト数・トークン)
 // 17: exec.mainModelEfforts(本体のリクエストだけの モデル別 × 推論強度別。サブエージェントを除く)
-// 18: tests(テストの実行ファイルが書いた印つきの 1 行 JSON。印の行があるセッションだけ)
+// 18: tests(テストの実行ファイルが書いた印つきの 1 行 JSON と、実行ごとの推移。印の行があるセッションだけ)
 export const SESSIONS_SCHEMA_VERSION = 18;
 // 5: turns(依頼単位の工程 × 詰まり・依頼の種類の集計)
 // 6: tools.results[].causes(ツールの失敗の要因別の回数)
@@ -265,6 +265,8 @@ export interface SessionTests {
   duplicates: number;
   /** 1 セッションの上限(5000)を超えたので持たなかった結果の数 */
   dropped: number;
+  /** 最初に全部通った実行の番号(runs の 1 からの番号。failing が初めて 0 になった実行)。一度も通っていなければ null(runs が 1 件以上あれば「未達」) */
+  firstPass: number | null;
 }
 
 /** テストの結果を出したツールの呼び出し 1 回 */
@@ -277,6 +279,12 @@ export interface TestRun {
   toolCallId: string | null;
   /** サブエージェントの呼び出し(本体なら無い) */
   subagent?: true;
+  /** セッションの始まりからこの実行の完了までの実働(ミリ秒。セッションの実働時間と同じ数え方) */
+  activeMs: number;
+  /** この実行の完了までに記録されたリクエストの AI 使用量の累計(nano AIU。サブエージェントの分を含む)。リクエストごとの記録が無いセッションは null */
+  nanoAiu: number | null;
+  /** この実行の後で、まだ通っていないテストの数(これまでに出た名前ごとの、いちばん新しい結果が不合格のもの)。0 なら全部通っている */
+  failing: number;
   results: TestResult[];
 }
 
