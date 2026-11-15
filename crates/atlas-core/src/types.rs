@@ -868,6 +868,10 @@ pub struct SessionsSource {
     pub folders: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uploads: Option<JsMap<FolderUpload>>,
+    /// 参照を数えた llm-wiki の vault の数(集計した PC の設定の wikis)。0 なら wiki は数えていない(どのセッションも 0 件)。
+    /// schema 17 以前の sessions.json には無い
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wikis: Option<i64>,
 }
 
 /// Phase 11: data.db の読み取りの状態(wal・coverage は desktop.rs の DesktopData のもの)

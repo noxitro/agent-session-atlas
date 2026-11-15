@@ -22,7 +22,7 @@ import type { VerdictTuple } from './verdicts.ts';
 // 13: exec.modelEfforts(モデル別 × 推論強度別)
 // 14: exec.mainModelEfforts(本体のリクエストだけの モデル別 × 推論強度別)
 // 15: exec.mainModelEfforts をリクエスト数だけにした(トークンと AIU は modelEfforts にある)
-// 16: tests(テストの結果の要約。テストの実行があるセッションだけ)
+// 16: tests(テストの結果の要約。テストの実行があるセッションだけ)・groups[].tag(送り先の元のタグ)・wikiVaults(参照を数えた vault の数)・wiki.otherCalls(vault の検索・一覧など)
 export const REPORT_DATA_VERSION = 16;
 
 /**
@@ -211,7 +211,8 @@ export interface SessionSummary {
   instructions: Record<string, number>;
   /** 変更行数(shutdown の累計、無ければツールの合計) */
   lines: LineChanges;
-  wiki: { indexReads: number; pageReads: number; skillCalls: number; writes: number };
+  /** otherCalls: vault に触れたそのほかの呼び出し(検索・一覧など。版 15 以前の埋め込みでは 0 で埋め戻す) */
+  wiki: { indexReads: number; pageReads: number; skillCalls: number; writes: number; otherCalls: number };
   friction: {
     compactions: number;
     aborts: number;
@@ -245,6 +246,8 @@ export interface ReportData {
    * layout: flat はセッションのフォルダが並ぶ 1 つのフォルダ、merged は下のフォルダをまとめたもの(folders はその数)
    */
   source?: { name: string; path: string; layout: 'flat' | 'merged'; folders: number } | null;
+  /** 参照を数えた llm-wiki の vault の数。0 なら wiki の参照は数えていない(どのセッションも 0 件)。古い集計では無い */
+  wikiVaults?: number;
   /** 読むだけの画面として作った(送り先から集計した・別のフォルダを開いた)。タスクタグとメモは送った人のもの。古い埋め込みには無い */
   readOnly?: boolean;
   /**

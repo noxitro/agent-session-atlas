@@ -24,7 +24,7 @@ import type { AtlasBuild, FolderUpload } from './atlas-version.ts';
 // 15: uploadFolder(送り先から集計したときの、そのセッションの送り先のフォルダ)・source.uploads(フォルダごとの最後に送った日時と版)
 // 16: exec.modelEfforts(モデル別 × 推論強度別のリクエスト数・トークン)
 // 17: exec.mainModelEfforts(本体のリクエストだけの モデル別 × 推論強度別。サブエージェントを除く)
-// 18: tests(テストの実行ファイルが書いた印つきの 1 行 JSON と、実行ごとの推移。印の行があるセッションだけ)
+// 18: tests(テストの実行ファイルが書いた印つきの 1 行 JSON と、実行ごとの推移。印の行があるセッションだけ)・source.wikis(参照を数えた vault の数)
 export const SESSIONS_SCHEMA_VERSION = 18;
 // 5: turns(依頼単位の工程 × 詰まり・依頼の種類の集計)
 // 6: tools.results[].causes(ツールの失敗の要因別の回数)
@@ -628,6 +628,8 @@ export interface SessionsFile {
     folders?: string[];
     /** フォルダごとの、最後に送ったときの日時と atlas の版(snapshot の manifest の uploads)。送り先から集計したときだけある */
     uploads?: Record<string, FolderUpload>;
+    /** 参照を数えた llm-wiki の vault の数(集計した PC の設定の wikis)。0 なら wiki は数えていない。schema 17 以前には無い */
+    wikis?: number;
   };
   /** Phase 11: data.db の読み取りの状態(WAL の注意、表ごとの列の扱い)。無ければ null */
   desktop?: { readAt: string; wal: DesktopData['wal']; coverage: DesktopData['coverage']; warnings: string[]; sessions: number } | null;

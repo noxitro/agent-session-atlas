@@ -4,6 +4,8 @@
 //  - セッションの中では「リクエスト 1 回 → テストの実行 1 回」を繰り返す。テストの実行は、印つきの行(ATLAS_TEST_RESULT)を
 //    出すシェルの呼び出しで、落ちた実行はツールの失敗として残る(終了コードが 0 でない実行と同じ形)
 //  - 何回目で全部通るかは PLAN の表のとおり(null は最後まで通らない)。1 件だけ、通った後にもう一度走らせて落ちる
+//  - 利用の確認: wiki の条件のセッションは、テストの後に llm-wiki の索引を読む(1 件だけ読まない)。素の条件の 1 件も読む(条件の漏れ)。
+//    コード参照の条件のセッションは、テストの後に MCP サーバーのツールを呼ぶ。wiki を数えるには、設定の wikis に COND_WIKI を入れて集計する
 //  - 端の場合: テストの印の無いセッション(課題・条件のタグはある)、条件が 1 つしか無い課題(ほかの条件は 0 件の行になる。
 //    テストの印も無い)、課題と条件の違うタグが 2 つ付いたセッション、決まりに合わないタグ(区切りなし / 区切りはあるが形が違う)のセッション
 // 書き出す形は 2 つ: ~/.copilot の形(タスクタグは groups.json で渡す)と、送り先をまとめて集計する形(タスクタグは各セッションの atlas-session.json)。
@@ -39,6 +41,15 @@ export const AIU_PER_REQUEST: Record<Condition, number> = { '0-plain': 1, wiki: 
 export const AIU_AFTER = 0.5;
 /** 通った後にもう一度走らせて落ちるセッション(通った後に不合格) */
 export const REGRESSED = { task: 'zz-render', condition: 'coderef', rep: 2 } as const;
+/** 利用の確認: llm-wiki の vault の名前(設定の wikis に入れる)と、コード参照の MCP サーバー */
+export const COND_WIKI = 'zz-wiki';
+export const COND_MCP = 'zz-code';
+/** wiki の条件なのに wiki を読まないセッションと、素の条件なのに wiki を読むセッション */
+export const WIKI_MISSING = { task: 'zz-input', condition: 'wiki', rep: 2 } as const;
+export const WIKI_LEAK = { task: 'zz-render', condition: '0-plain', rep: 1 } as const;
+/** この fixture を集計するときの設定(wiki の参照を数える) */
+export const conditionConfig = (): { wikis: string[] } => ({ wikis: [COND_WIKI] });
+
 /** 最後まで通らないセッションが走らせる回数 */
 const UNREACHED_RUNS = 3;
 
@@ -71,7 +82,17 @@ function run(start: number, before: (Ev | Gap)[], call: string, aiu: number, fai
   return [...head.slice(before.length), done, { gapMs: 57_000 }];
 }
 
-function testedSession(id: string, start: number, cwd: string, firstPass: number | null, aiu: number, regress: boolean): (Ev | Gap)[] {
+/** テストの後の、条件に応じたツールの呼び出し(wiki の索引を読む / MCP サーバーのツール) */
+const wikiRead = (n: number): Ev[] => [
+  { type: 'tool.execution_start', data: { toolCallId: `call_wiki_${n}`, toolName: 'view', arguments: { path: `X:\\synthetic-notes\\${COND_WIKI}\\index.md` } } },
+  { type: 'tool.execution_complete', data: { toolCallId: `call_wiki_${n}`, success: true, result: { content: '(合成の索引)' } } },
+];
+const mcpCall = (n: number): Ev[] => [
+  { type: 'tool.execution_start', data: { toolCallId: `call_mcp_${n}`, toolName: `${COND_MCP}-find`, mcpServerName: COND_MCP, arguments: { query: 'zz' } } },
+  { type: 'tool.execution_complete', data: { toolCallId: `call_mcp_${n}`, success: true, result: { content: '(合成の検索結果)' } } },
+];
+
+function testedSession(id: string, start: number, cwd: string, firstPass: number | null, aiu: number, regress: boolean, after: Ev[] = []): (Ev | Gap)[] {
   const ev: (Ev | Gap)[] = [
     { type: 'session.start', data: { sessionId: id, version: 1, copilotVersion: '1.0.110', selectedModel: MODEL, context: { cwd } } },
     { type: 'user.message', data: { content: '合成の課題を実装して、テストが通るまで直して' } },
@@ -79,6 +100,7 @@ function testedSession(id: string, start: number, cwd: string, firstPass: number
   const runs = firstPass ?? UNREACHED_RUNS;
   for (let k = 1; k <= runs; k++) ev.push(...run(start, ev, `call_synth_${k}`, aiu, firstPass === k ? 0 : 2));
   if (regress) ev.push(...run(start, ev, `call_synth_${runs + 1}`, aiu, 1));
+  ev.push(...after);
   ev.push(usage(AIU_AFTER), { type: 'assistant.message', data: { messageId: 'm1', content: '合成の応答', model: MODEL } }, { type: 'assistant.turn_end', data: { turnId: 't1' } });
   return ev;
 }
@@ -107,7 +129,9 @@ export function conditionPlans(): Plan[] {
         // 1・2 回目は 1 人目、3 回目は 2 人目(送り先の形では、同じ課題・条件を 2 人が実行したことになる)
         const person = COND_PEOPLE[rep === COND_REPS ? 1 : 0];
         const regress = task === REGRESSED.task && condition === REGRESSED.condition && rep === REGRESSED.rep;
-        next(person, [condTag(task, condition, rep)], (id, start, cwd) => testedSession(id, start, cwd, PLAN[condition][task][rep - 1], AIU_PER_REQUEST[condition], regress));
+        const is = (x: { task: string; condition: string; rep: number }): boolean => task === x.task && condition === x.condition && rep === x.rep;
+        const after = (condition === 'wiki' && !is(WIKI_MISSING)) || is(WIKI_LEAK) ? wikiRead(rep) : condition === 'coderef' ? mcpCall(rep) : [];
+        next(person, [condTag(task, condition, rep)], (id, start, cwd) => testedSession(id, start, cwd, PLAN[condition][task][rep - 1], AIU_PER_REQUEST[condition], regress, after));
       }
     }
   }
@@ -173,6 +197,7 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(import.meta.filename
   const n = await writeConditionStudy(join(root, 'copilot-home'));
   await mkdir(join(root, 'notes'), { recursive: true });
   await writeFile(join(root, 'notes', 'groups.json'), JSON.stringify(conditionGroups(), null, 2) + '\n');
+  await writeFile(join(root, 'atlas.config.json'), JSON.stringify(conditionConfig(), null, 2) + '\n');
   await writeConditionUpload(join(root, 'upload'));
-  console.log(`synthetic-conditions: ${n} セッションを ${root} に書きました(copilot-home と notes/groups.json、送り先の形の upload)`);
+  console.log(`synthetic-conditions: ${n} セッションを ${root} に書きました(copilot-home・notes/groups.json・atlas.config.json と、送り先の形の upload)`);
 }

@@ -173,7 +173,7 @@ export function summarize(r: SessionRecord, anon: Anonymizer, judgment: Judgment
     hooks: { total: r.hooks.total, byType: r.hooks.byType },
     instructions,
     lines: r.lines ?? { added: 0, removed: 0, source: 'none' },
-    wiki: { indexReads: r.wiki.indexReads, pageReads: r.wiki.pageReads.length, skillCalls: r.wiki.skillCalls.length, writes: r.wiki.writes },
+    wiki: { indexReads: r.wiki.indexReads, pageReads: r.wiki.pageReads.length, skillCalls: r.wiki.skillCalls.length, writes: r.wiki.writes, otherCalls: r.wiki.otherCalls },
     friction: { ...r.friction },
     skillChars,
     instructionVersions: r.instructions.map((i) => [i.contentHash, i.chars, i.injections]),

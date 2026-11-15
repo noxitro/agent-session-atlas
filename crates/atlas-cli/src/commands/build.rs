@@ -172,6 +172,7 @@ pub fn run_build(p: &Paths, o: &BuildOptions, log: Log<'_>) -> Result<BuildResul
             }),
             _ => None,
         },
+        wiki_vaults: s.source.wikis,
         warnings: BuildWarnings { unknown_event_types: unknown, bad_lines: s.warnings.bad_lines, notes: sel.groups.warnings.clone() },
         judgments: judgments.as_ref(),
         verdicts: verdicts.as_ref(),

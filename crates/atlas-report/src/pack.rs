@@ -35,7 +35,7 @@ static DEFAULTS: LazyLock<Value> = LazyLock::new(|| {
         "hooks": { "total": 0, "byType": {} },
         "instructions": {},
         "lines": { "added": 0, "removed": 0, "source": "none" },
-        "wiki": { "indexReads": 0, "pageReads": 0, "skillCalls": 0, "writes": 0 },
+        "wiki": { "indexReads": 0, "pageReads": 0, "skillCalls": 0, "writes": 0, "otherCalls": 0 },
         "friction": { "compactions": 0, "aborts": 0, "errors": 0, "permissionRequests": 0, "askUser": 0, "modelChanges": 0, "modeChanges": 0, "toolFailures": 0, "subagentFailures": 0 },
         "skillChars": {},
         "instructionVersions": [],

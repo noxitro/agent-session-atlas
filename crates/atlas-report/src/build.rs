@@ -148,6 +148,8 @@ pub struct BuildInput<'a> {
     /// sessions.json の総件数(フィルタ前)
     pub total_sessions_in_source: usize,
     pub source: Option<ReportSource>,
+    /// 参照を数えた llm-wiki の vault の数(sessions.json の source.wikis。古い集計では None)
+    pub wiki_vaults: Option<i64>,
     pub warnings: BuildWarnings,
     pub judgments: Option<&'a JudgmentsIndex>,
     /// 段階 2: 依頼ごとの LLM 判定
@@ -348,6 +350,9 @@ struct ReportData<'a> {
     source: Option<&'a ReportSource>,
     #[serde(skip_serializing_if = "Option::is_none")]
     read_only: Option<bool>,
+    /// 参照を数えた llm-wiki の vault の数。0 なら wiki の参照は数えていない(古い集計では無い)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wiki_vaults: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     atlas_builds: Option<AtlasBuildsOut>,
     metrics: Value,
@@ -500,6 +505,7 @@ pub fn build_report(input: BuildInput<'_>) -> Result<BuildResult> {
         total_sessions_in_source: input.total_sessions_in_source,
         source: if anon.enabled { None } else { input.source.as_ref() },
         read_only: input.read_only.then_some(true),
+        wiki_vaults: input.wiki_vaults,
         atlas_builds,
         metrics: anonymize_metrics(input.metrics.clone(), &anon),
         sessions: packed,

@@ -161,6 +161,9 @@ pub struct WikiSummary {
     pub page_reads: i64,
     pub skill_calls: i64,
     pub writes: i64,
+    /// vault に触れたそのほかの呼び出し(検索・一覧など)。埋め込みの版 15 以前には無い
+    #[serde(default)]
+    pub other_calls: i64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

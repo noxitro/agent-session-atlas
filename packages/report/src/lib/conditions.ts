@@ -29,7 +29,16 @@ export function parseConditionTag(raw: string): ConditionKey | null {
   return { task, condition, rep: rep ?? null };
 }
 
-export type ConditionSession = Pick<SessionSummary, 'id' | 'activeMs' | 'tools' | 'friction' | 'tokens' | 'tests' | 'person'>;
+export type ConditionSession = Pick<SessionSummary, 'id' | 'activeMs' | 'tools' | 'friction' | 'tokens' | 'tests' | 'person'> &
+  // 利用の確認(condition-usage.ts)で使う。古い単体テストの作りかけの値では無いことがある
+  Partial<Pick<SessionSummary, 'name' | 'firstUserMessage' | 'href' | 'wiki' | 'skills'>>;
+
+/** 表の行に入ったセッション 1 つと、その課題・条件 */
+export interface ConditionMember {
+  session: ConditionSession;
+  task: string;
+  condition: string;
+}
 
 /** タスクタグ 1 つ。tag は送り先から集計したときの元のタグ(無ければ name がそのままタグ) */
 export interface ConditionGroup {
@@ -100,6 +109,8 @@ export interface ConditionTable {
   matchedTags: number;
   /** 行に入ったセッションの数 */
   counted: number;
+  /** 行に入ったセッション(母集団の並び) */
+  members: ConditionMember[];
   /** 区切りを含むのに決まりに合わない、セッションのあるタスクタグの名前 */
   unmatched: string[];
   /** 課題か条件の違うタグが 2 つ以上付いていて、どの行にも入れなかったセッションの数 */
@@ -251,7 +262,7 @@ export function conditionTable(sessions: readonly ConditionSession[], groups: re
   const conditionSet = new Set<string>();
   const people = new Set<string>();
   let ambiguous = 0;
-  let counted = 0;
+  const members: ConditionMember[] = [];
   // 母集団の並びのまま入れる(同じ入力なら同じ結果)
   for (const s of sessions) {
     const m = keysOf.get(s.id);
@@ -268,7 +279,7 @@ export function conditionTable(sessions: readonly ConditionSession[], groups: re
     list.push(s);
     conditionSet.add(key.condition);
     if (s.person) people.add(s.person);
-    counted++;
+    members.push({ session: s, task: key.task, condition: key.condition });
   }
   const tasks = [...cells.keys()].sort(compareNames);
   const conditions = [...conditionSet].sort(compareNames);
@@ -286,7 +297,8 @@ export function conditionTable(sessions: readonly ConditionSession[], groups: re
     rows,
     pooled,
     matchedTags,
-    counted,
+    counted: members.length,
+    members,
     unmatched: [...new Set(unmatched)].sort(compareNames),
     ambiguous,
     people: people.size,

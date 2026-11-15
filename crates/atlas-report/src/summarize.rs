@@ -229,7 +229,7 @@ pub fn summarize(r: &SessionRecord, anon: &Anonymizer, judgment: Option<&Judgmen
         hooks: HooksSummary { total: r.hooks.total, by_type: r.hooks.by_type.clone() },
         instructions,
         lines: r.lines.clone(),
-        wiki: WikiSummary { index_reads: r.wiki.index_reads, page_reads: r.wiki.page_reads.len() as i64, skill_calls: r.wiki.skill_calls.len() as i64, writes: r.wiki.writes },
+        wiki: WikiSummary { index_reads: r.wiki.index_reads, page_reads: r.wiki.page_reads.len() as i64, skill_calls: r.wiki.skill_calls.len() as i64, writes: r.wiki.writes, other_calls: r.wiki.other_calls },
         friction: r.friction.clone(),
         skill_chars,
         instruction_versions: r.instructions.iter().map(|i| (i.content_hash.clone(), i.chars, i.injections)).collect(),

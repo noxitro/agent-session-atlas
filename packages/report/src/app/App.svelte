@@ -660,7 +660,7 @@
         {#if judged}<JudgmentPanel {agg} meta={data.judgments} />{/if}
         {#if data.retention}<Retention sessions={filtered} meta={data.retention} />{/if}
         <Compare sessions={scoped} groups={groupOptions} projects={options.project} lastAt={all.overall.lastAt} retention={!!data.retention} />
-        {#if hasConditions}<Conditions table={conditions} />{/if}
+        {#if hasConditions}<Conditions table={conditions} wikiVaults={data.wikiVaults} />{/if}
         <UsageRanking usage={agg.usage} {installed} bind:tab={usageTab} />
         <ExecProfile exec={agg.exec} sessions={filtered.length} />
         <!-- 人別は、送り先(<人>/<プロジェクト>)をまとめて集計したレポートだけ -->

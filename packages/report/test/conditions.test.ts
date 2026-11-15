@@ -2,6 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { COMPARE_MIN_SESSIONS } from '../src/lib/compare.ts';
 import { compareNames, conditionCell, conditionTable, parseConditionTag, untilPass, type ConditionGroup, type ConditionSession } from '../src/lib/conditions.ts';
+import { usageCount, usageItems, usageMismatches, usageRows } from '../src/lib/condition-usage.ts';
 import { testsSummary } from '../src/lib/summarize.ts';
 import type { TestsSummary } from '../src/lib/types.ts';
 import type { SessionTests, TestRun } from '../src/shared/types.ts';
@@ -213,5 +214,75 @@ describe('testsSummary: 埋め込むテストの結果の要約', () => {
   });
   it('番号が実行の数を外れていれば、通っていないものとして扱う', () => {
     for (const n of [0, 5, -1, 1.5]) expect(testsSummary(tests([run(0, 1000, 1)], n))).toMatchObject({ firstPass: null, passActiveMs: null, passNanoAiu: null });
+  });
+});
+
+describe('利用の確認: 条件ごとに、選んだものを使ったセッションと、食い違ったセッション', () => {
+  /** wiki の参照の回数・skill・MCP サーバー・ツールを決めたセッション */
+  const u = (id: string, o: { wiki?: number; writes?: number; other?: number; skills?: Record<string, number>; mcp?: Record<string, Record<string, number>>; tools?: Record<string, number> } = {}): ConditionSession =>
+    s(id, undefined, {
+      name: `合成 ${id}`,
+      href: `sessions/${id}.html`,
+      wiki: { indexReads: o.wiki ?? 0, pageReads: 0, skillCalls: 0, writes: o.writes ?? 0, otherCalls: o.other ?? 0 },
+      skills: Object.fromEntries(Object.entries(o.skills ?? {}).map(([k, n]) => [k, [n, 0, 0]])),
+      tools: { total: 1, byName: { ...(o.tools ?? {}), ...Object.fromEntries(Object.values(o.mcp ?? {}).flatMap((t) => Object.entries(t))) }, mcp: o.mcp ?? {} },
+    } as unknown as Partial<ConditionSession>);
+  const list = [
+    u('p1'),
+    u('p2', { wiki: 2 }),
+    u('w1', { wiki: 3, skills: { 'zz-notes': 1 } }),
+    u('w2', { writes: 1 }),
+    u('w3', { wiki: 1 }),
+    u('c1', { mcp: { 'zz-code': { 'zz-code-find': 2 } }, tools: { view: 4 } }),
+    u('c2', { mcp: { 'zz-code': { 'zz-code-find': 1 } } }),
+  ];
+  const table = conditionTable(list, [g('t__plain', ['p1', 'p2']), g('t__wiki', ['w1', 'w2', 'w3']), g('t__coderef', ['c1', 'c2'])]);
+
+  it('選べるものは llm-wiki が先頭で、続けて使われた skill・MCP サーバー・ツール(MCP のツールはサーバーにまとめる)', () => {
+    expect(usageItems(table.members).map((i) => [i.key, i.sessions])).toEqual([
+      ['wiki', 3],
+      ['skill:zz-notes', 1],
+      ['mcp:zz-code', 2],
+      ['tool:view', 1],
+    ]);
+    // 使われていなくても llm-wiki は選べる
+    expect(usageItems(conditionTable([u('a')], [g('t__x', ['a'])]).members)).toEqual([{ key: 'wiki', kind: 'wiki', name: 'llm-wiki', sessions: 0 }]);
+  });
+  it('wiki の参照は読んだ回数と skill の呼び出しで、書き込みだけのセッションは使わなかったに入る', () => {
+    expect(list.map((x) => usageCount(x, 'wiki'))).toEqual([0, 2, 3, 0, 1, 0, 0]);
+    expect(usageCount(list[5], 'mcp:zz-code')).toBe(2);
+    expect(usageCount(list[5], 'tool:view')).toBe(4);
+    expect(usageCount(list[2], 'skill:zz-notes')).toBe(1);
+    expect(usageCount(list[0], 'skill:zz-none')).toBe(0);
+    // vault の検索・一覧だけでも使ったに入る(詳細ページの「llm-wiki の参照」と同じ)
+    expect(usageCount(u('x', { other: 2 }), 'wiki')).toBe(2);
+    // 古い埋め込み(otherCalls が無い)でも数えられる
+    expect(usageCount(s('old', undefined, { wiki: { indexReads: 1, pageReads: 0, skillCalls: 0, writes: 0 } } as unknown as Partial<ConditionSession>), 'wiki')).toBe(1);
+    // 組み込みの名前を、記録と取り違えない
+    for (const k of ['tool:constructor', 'skill:toString', 'mcp:__proto__']) expect(usageCount(list[0], k), k).toBe(0);
+  });
+  it(`条件ごとの使ったセッションの数。割合は ${MIN} 件未満なら null`, () => {
+    expect(usageRows(table, 'wiki')).toEqual([
+      { condition: 'coderef', sessions: 2, used: 0, share: null },
+      { condition: 'plain', sessions: 2, used: 1, share: null },
+      { condition: 'wiki', sessions: 3, used: 2, share: null },
+    ]);
+    const many = conditionTable(Array.from({ length: MIN }, (_, i) => u(`m${i}`, { wiki: i % 2 })), [g('t__wiki', Array.from({ length: MIN }, (_, i) => `m${i}`))]);
+    expect(usageRows(many, 'wiki')[0].share).toBe(2 / MIN);
+  });
+  it('使うはずの条件で使わなかったセッションと、ほかの条件で使ったセッション(使うはずの条件が無ければ、使ったものは全部ほか)', () => {
+    const r = usageMismatches(table, 'wiki', new Set(['wiki']));
+    expect(r.missing.map((m) => [m.member.session.id, m.member.condition, m.count])).toEqual([['w2', 'wiki', 0]]);
+    expect(r.leaked.map((m) => [m.member.session.id, m.member.condition, m.count])).toEqual([['p2', 'plain', 2]]);
+    // 使うはずの条件を 2 つ選べる
+    const two = usageMismatches(table, 'mcp:zz-code', new Set(['coderef', 'wiki']));
+    expect(two.missing.map((m) => m.member.session.id)).toEqual(['w1', 'w2', 'w3']);
+    expect(two.leaked).toEqual([]);
+    expect(usageMismatches(table, 'wiki', new Set()).leaked.map((m) => m.member.session.id)).toEqual(['p2', 'w1', 'w3']);
+  });
+  it('行に入らなかったセッション(複数の条件のタグ)は、利用の確認にも入れない', () => {
+    const t = conditionTable([u('a', { wiki: 1 }), u('b')], [g('t__wiki', ['a', 'b']), g('t__plain', ['a'])]);
+    expect(t.members.map((m) => m.session.id)).toEqual(['b']);
+    expect(usageMismatches(t, 'wiki', new Set(['plain'])).leaked).toEqual([]);
   });
 });
