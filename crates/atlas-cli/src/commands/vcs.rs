@@ -79,5 +79,19 @@ pub fn run_vcs(p: &Paths, log: Log<'_>, mode: Option<&str>, config: Option<&str>
             .collect();
         log(&format!("vcs: 変更のまとまり {}", parts.join("、")));
     }
+    // 推定を含む範囲と、数えなかったもの(観測した事実と分けて見られるように)
+    let mut est: Vec<String> = Vec::new();
+    if s.similar_lines != 0 {
+        est.push(format!("似た本文で当てた行 {}", s.similar_lines));
+    }
+    if s.evaluated_estimated != 0 {
+        est.push(format!("比べた版を日時から推定 {} 件", s.evaluated_estimated));
+    }
+    if s.excluded_hunks != 0 {
+        est.push(format!("基準にもともとあった行だけで数えなかったまとまり {}", s.excluded_hunks));
+    }
+    if !est.is_empty() {
+        log(&format!("vcs: 推定・除外 {}", est.join("、")));
+    }
     Ok(r)
 }

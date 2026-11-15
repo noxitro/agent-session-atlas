@@ -215,7 +215,7 @@ fn uploaded_keeps_sender_times_and_modes() {
     let s = r.senders.clone().unwrap().unwrap();
     assert_eq!((s.sessions, s.from.clone(), s.to.clone()), (2, Some(at(7, 0)), Some(at(9, 0))));
     assert_eq!(serde_json::to_value(&s.modes).unwrap(), json!({"committed": 2}));
-    assert_eq!(r.sessions.iter().find(|x| x.session_id == "c2").unwrap().evaluated, Some(Evaluated { mode: EvalMode::Committed, rev: None, at: at(9, 0) }));
+    assert_eq!(r.sessions.iter().find(|x| x.session_id == "c2").unwrap().evaluated, Some(Evaluated { mode: EvalMode::Committed, rev: None, at: at(9, 0), source: None }));
     // 送った側の結果が 1 つも無ければ senders は null、見方は指定のまま
     let none = tmp.dir();
     flat_manifest(&none);
@@ -272,17 +272,41 @@ fn sender_validation() {
     let mut cvs = ok.clone();
     cvs["result"]["vcs"] = json!("cvs");
     assert_eq!(parse_sender_vcs(&cvs, "s").unwrap().vcs, None);
-    // 照合不可の理由が無ければ read_error。キーは id, path, status, lines, reason の順
+    // 照合不可の理由が無ければ unknown(読めなかったと決めつけない)。キーは id, path, status, lines, reason の順
     let mut u = patched("status", json!("unattributable"));
     u["lines"] = json!({"kept": 0, "modified": 0, "missing": 0, "unattributable": 2});
     let r = parse_sender_vcs(&with_hunks(json!([u])), "s").unwrap();
-    assert_eq!((r.outcome, r.reason), (Outcome::Unattributable, Some(UnattributableReason::ReadError)));
+    assert_eq!((r.outcome, r.reason), (Outcome::Unattributable, Some(UnattributableReason::Unknown)));
     assert_eq!(serde_json::to_value(&r.hunks[0]).unwrap().as_object().unwrap().keys().collect::<Vec<_>>(), ["id", "path", "status", "lines", "reason"]);
-    // 新しい理由(開始時から取り込まれた変更が無い)を書いた結果も読める。理由の無い古い結果は上のとおり read_error
+    assert_eq!(summarize_retention(std::slice::from_ref(&r)).unattributable.get("unknown"), Some(&1));
+    // 新しい理由(開始時から取り込まれた変更が無い)を書いた結果も読める。理由の無い古い結果は上のとおり unknown
     let mut n = u.clone();
     n["reason"] = json!("no_commits");
     let r = parse_sender_vcs(&with_hunks(json!([n])), "s").unwrap();
     assert_eq!((r.outcome, r.reason, r.hunks[0].reason), (Outcome::Unattributable, Some(UnattributableReason::NoCommits), Some(UnattributableReason::NoCommits)));
+}
+
+#[test]
+fn sender_evidence_and_provenance() {
+    let mut res = result_of("s");
+    res["evaluated"]["source"] = json!("estimated");
+    res["provenance"]["context"] = json!({"cwd": "events", "branch": "workspace", "headCommit": "guessed", "extra": "events"});
+    res["hunks"][0]["status"] = json!("modified");
+    res["hunks"][0]["lines"] = json!({"kept": 1, "modified": 2, "missing": 0, "unattributable": 0});
+    res["hunks"][0]["similarLines"] = json!(1);
+    res["hunks"][0]["toolCallId"] = json!("call_1");
+    res["hunks"][0]["from"] = json!("args");
+    // 内訳を超える similarLines・知らない from は使わない(まとまり自体は読む)
+    res["hunks"][1]["similarLines"] = json!(5);
+    res["hunks"][1]["from"] = json!("guess");
+    let r = parse_sender_vcs(&json!({"version": 1, "sessionId": "s", "computedAt": at(11, 0), "mode": "fixed", "result": res}), "s").unwrap();
+    assert_eq!(r.evaluated.as_ref().unwrap().source, Some(RevisionSource::Estimated));
+    // 知っている項目と値だけ残す
+    assert_eq!(serde_json::to_value(&r.provenance.context).unwrap(), json!({"cwd": "events", "branch": "workspace"}));
+    assert_eq!((r.hunks[0].similar_lines, r.hunks[0].tool_call_id.as_deref(), r.hunks[0].from), (1, Some("call_1"), Some(HunkFrom::Args)));
+    assert_eq!((r.hunks[1].similar_lines, r.hunks[1].from), (0, None));
+    let s = summarize_retention(std::slice::from_ref(&r));
+    assert_eq!((s.similar_lines, s.evaluated_estimated), (1, 1));
 }
 
 #[test]
