@@ -13,7 +13,7 @@ use crate::js::JsMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const SESSIONS_SCHEMA_VERSION: i64 = 18;
+pub const SESSIONS_SCHEMA_VERSION: i64 = 19;
 pub const METRICS_SCHEMA_VERSION: i64 = 6;
 
 // ---------- 入力(生データ) ----------
@@ -298,6 +298,96 @@ pub struct SessionAnalysis {
     /// 段階 1: ターンごとの出来事(turnTools と同じ並び)。古い sessions.json には無い
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_stats: Option<Vec<TurnStats>>,
+    /// 失敗の台帳: ツールの失敗と拒否を 1 件 1 行で(tools.results の failure + denied と同じ条件。時刻の早い順に
+    /// failure_ledger::MAX_ROWS 件まで)。新しく集計した記録は 0 件でも空の配列を持つ。古い sessions.json には無い(台帳なし)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failures: Option<Vec<ToolFailure>>,
+    /// 行数の上限を超えて残さなかった行の数(failures と一緒に持つ)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failures_dropped: Option<i64>,
+}
+
+/// 失敗の台帳の 1 行の種類
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FailureKind {
+    /// success: false で error.code が denied・rejected 以外
+    Failure,
+    /// error.code: denied・rejected(利用者・権限設定による拒否)
+    Denied,
+}
+
+/// ツール呼び出しの結果(失敗の後の呼び出しの結果に使う)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CallOutcome {
+    Success,
+    Failure,
+    Denied,
+    /// complete が無い・success が真偽値でない
+    Unknown,
+}
+
+/// 失敗の後に何が起きたか
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NextKind {
+    /// 同じエージェントが次のツールを呼んだ
+    Tool,
+    /// (本体のみ)次のツールより先に、利用者の新しい依頼が来た
+    User,
+    /// 同じエージェントの呼び出しがその後に無い(セッション・サブエージェントの終わり)
+    End,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FailureNext {
+    pub kind: NextKind,
+    /// kind が tool のときの、次のツール名
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+    /// kind が tool のときの、次の呼び出しの結果
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<CallOutcome>,
+    /// kind が tool のときの、同じツールを同じ引数で呼び直したか
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry: Option<bool>,
+}
+
+/// 失敗の台帳の 1 行(ツールの失敗か拒否 1 件)。文の項目は秘密らしい文字列を伏せてから上限で切る(failure_ledger.rs)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolFailure {
+    /// 開始イベントの toolName(tools.results のキーと同じ)
+    pub tool: String,
+    pub kind: FailureKind,
+    /// 失敗の要因(tool_failure.rs の classify_tool_failure)。拒否は null
+    pub cause: Option<String>,
+    /// error の文(code があれば「code: message」)
+    pub error: String,
+    /// 開始イベントの arguments(1 行の JSON。文字列ならそのまま)。開始イベントが無い・引数が無ければ null
+    pub args: Option<String>,
+    /// 開始イベントの mcpServerName・mcpToolName・mcpConfigSource
+    pub mcp_server: Option<String>,
+    pub mcp_tool: Option<String>,
+    pub mcp_config_source: Option<String>,
+    /// complete の model、無ければ start の model
+    pub model: Option<String>,
+    /// 開始イベントの時刻
+    pub started_at: Option<String>,
+    /// 開始から完了まで(ミリ秒)
+    pub duration_ms: Option<f64>,
+    /// 本体の依頼の通し番号(0 から。完了の時点の依頼。analysis.turnStats の添字と同じ。200 件を超えても数える)。
+    /// 最初の依頼より前は null
+    pub turn: Option<i64>,
+    /// サブエージェントの名前(本体は null。名前が分からなければ (unknown))
+    pub agent: Option<String>,
+    /// サブエージェントを起動した親の呼び出しの toolCallId(agents[].id と同じ。agents[].prompt を引く鍵。親の呼び出しが分からなければ agentId)。本体は null
+    pub agent_call: Option<String>,
+    pub next: FailureNext,
+    /// 似たエラー文をまとめる鍵(伏せた後の文の最初の行を正規化したもの)
+    pub group: String,
 }
 
 /// ツールの種類(turns.rs の tool_kind)
@@ -493,6 +583,10 @@ pub struct AgentRun {
     pub model: Option<String>,
     /// subagent.failed の error(先頭 200 字)。失敗以外は null
     pub error: Option<String>,
+    /// 起動した親の呼び出しの引数 prompt(秘密らしい文字列を伏せ、先頭 500 字)。失敗の台帳の agentCall から引く。
+    /// 分からなければ無い。古い sessions.json にも無い
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -733,6 +827,10 @@ pub struct SessionTools {
     pub mcp: JsMap<JsMap<i64>>,
     /// ツール別の結果
     pub results: JsMap<ToolResult>,
+    /// モデル別 × ツール別の結果(results と同じ条件で数える。モデルは complete の model、無ければ start の model、
+    /// どちらも無ければ (unknown))。古い sessions.json には無い(読むと空)
+    #[serde(default)]
+    pub results_by_model: JsMap<JsMap<ToolResult>>,
     /// ツール別の所要時間(ミリ秒の整数)
     pub durations: JsMap<Vec<f64>>,
     /// 1 時間を超えて外した呼び出しの数

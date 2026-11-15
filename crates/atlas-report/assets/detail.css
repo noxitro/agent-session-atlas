@@ -4,7 +4,13 @@
 .ledger.turns .zero{color:var(--ink-3)}
 .ledger.turns td.req{min-width:16em;max-width:32em;white-space:normal;overflow-wrap:anywhere}
 .ledger.turns .why{display:block;font-size:.6875rem;color:var(--ink-2);white-space:normal;min-width:12em}
+.ledger.turns .fb{display:block;white-space:normal;min-width:12em}
 .ledger.turns td.st{white-space:nowrap;min-width:9em}
+/* 失敗と拒否(1 件ごと): エラー文と引数は折り返して読ませる(引数は等幅で控えめに) */
+.ledger.fails td.msg{min-width:16em;max-width:32em;white-space:normal;overflow-wrap:anywhere}
+.ledger.fails td.fkind{white-space:nowrap}
+.ledger.fails td.next{min-width:9em}
+.ledger.fails td.args{min-width:12em;max-width:24em;white-space:normal;overflow-wrap:anywhere;font-family:var(--mono);font-size:.75rem;color:var(--ink-2)}
 /* このセッションの skill の表: 呼んだ行の名前を太く(使えただけの行と見分ける) */
 .ledger tr.called td:first-child{font-weight:600}
 .meta{display:flex;flex-wrap:wrap;gap:6px 8px;margin-top:8px}

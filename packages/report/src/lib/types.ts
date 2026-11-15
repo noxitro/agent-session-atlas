@@ -22,8 +22,9 @@ import type { VerdictTuple } from './verdicts.ts';
 // 13: exec.modelEfforts(モデル別 × 推論強度別)
 // 14: exec.mainModelEfforts(本体のリクエストだけの モデル別 × 推論強度別)
 // 15: exec.mainModelEfforts をリクエスト数だけにした(トークンと AIU は modelEfforts にある)
-// 16: tests(テストの結果の要約。テストの実行があるセッションだけ)・groups[].tag(送り先の元のタグ)・wikiVaults(参照を数えた vault の数)・wiki.otherCalls(vault の検索・一覧など)
-export const REPORT_DATA_VERSION = 16;
+// 16: failures(失敗の台帳の集計のページ failures.html を書いたか)
+// 17: tests(テストの結果の要約。テストの実行があるセッションだけ)・groups[].tag(送り先の元のタグ)・wikiVaults(参照を数えた vault の数)・wiki.otherCalls(vault の検索・一覧など)
+export const REPORT_DATA_VERSION = 17;
 
 /**
  * テストの結果の要約(テストの実行ファイルが書いた印つきの行から。crates/atlas-core/src/test_results.rs)。
@@ -270,6 +271,8 @@ export interface ReportData {
   groups: ReportGroup[];
   /** Phase 11: 指示文と skill の閲覧ページ(instructions.html)を作ったか(export のとき。伏せ字版では false) */
   library: boolean;
+  /** 失敗の台帳の集計のページ(failures.html)を作ったか(伏せ字版では false。古い版で作った atlas.html には無い) */
+  failures?: boolean;
   /** Phase 12: 改善点(build 時に全セッションで計算したもの)。meta は伏せ字版では空 */
   insights: {
     meta: Record<string, { heading: string; file: string; series: string; order: number; firstAt: string | null; lastAt?: string | null }>;

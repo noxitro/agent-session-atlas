@@ -178,6 +178,7 @@ fn summarizes_tokens_skills_agents_hooks_friction_unknown() {
             "internal": {"byName": {}, "total": 0},
             "mcp": {},
             "results": {"view": {"success": 0, "failure": 1, "denied": 0, "causes": {"other": 1}}},
+            "resultsByModel": {"(unknown)": {"view": {"success": 0, "failure": 1, "denied": 0, "causes": {"other": 1}}}},
             "durations": {"view": [100.0]},
             "durationOutliers": {}
         })

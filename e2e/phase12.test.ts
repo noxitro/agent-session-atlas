@@ -66,11 +66,43 @@ describe('Phase 12 E2E: fixtures', () => {
     expect(withTurns.analysis.requests.length).toBe(withTurns.analysis.turnTools.length);
     expect(withTurns.analysis.turnMs.length).toBe(withTurns.analysis.turnTools.length);
     expect(withTurns.analysis.turnActiveMs.length).toBe(withTurns.analysis.turnTools.length);
-    expect(s.schemaVersion).toBe(18);
-    expect(data.version).toBe(16);
+    expect(s.schemaVersion).toBe(19);
+    expect(data.version).toBe(17);
     expect(Buffer.byteLength(await readFile(join(out, 'atlas.html'), 'utf8'))).toBeLessThan(LIMIT);
     // 詳細ページから改善点のページへは不要(atlas.html の節から)。atlas.html の目次に「改善点」
     expect(await readFile(join(out, 'atlas.html'), 'utf8')).toMatch(/改善点/);
+  });
+
+  it('a2. failures.html と failures.json ができ、台帳の行数が sessions.json と合い、atlas.html から行ける', async () => {
+    const html = await readFile(join(out, 'failures.html'), 'utf8');
+    expect(html).toContain('<h1>失敗の台帳の集計</h1>');
+    for (const id of ['f-overview', 'f-groups', 'f-tools', 'f-mcp', 'f-agents', 'f-skills', 'f-instructions', 'f-next']) expect(html).toContain(`id="${id}"`);
+    expect(html).toContain('<nav class="toc"');
+    expect(externalRefs(html)).toEqual([]);
+    const j = JSON.parse(await readFile(join(out, 'failures.json'), 'utf8')) as {
+      version: number;
+      thresholds: { minCalls: number };
+      coverage: { sessions: number; withLedger: number; withoutLedger: number; failures: number; denied: number; rows: number; dropped: number };
+      tools: { key: string; completed: number; failures: number; denied: number; rate: number | null }[];
+      next: { rows: number; retries: number; movedOn: number; user: number; end: number };
+    };
+    expect(j.version).toBe(1);
+    // 集計の対象は空でないセッション。行数と失敗・拒否の数は sessions.json と合う
+    const s = JSON.parse(await readFile(join(out, 'sessions.json'), 'utf8')) as SessionsFile;
+    const live = s.sessions.filter((x) => !x.empty);
+    expect(j.coverage).toMatchObject({ sessions: live.length, withLedger: live.length, withoutLedger: 0, dropped: 0 });
+    const sum = (f: (r: { failure: number; denied: number }) => number): number => live.reduce((n, x) => n + Object.values(x.tools.results).reduce((m, r) => m + f(r), 0), 0);
+    expect(j.coverage.failures).toBe(sum((r) => r.failure));
+    expect(j.coverage.denied).toBe(sum((r) => r.denied));
+    expect(j.coverage.rows).toBe(live.reduce((n, x) => n + (x.analysis.failures?.length ?? 0), 0));
+    expect(j.coverage.rows).toBeGreaterThan(0);
+    expect(j.next.rows).toBe(j.coverage.rows);
+    expect(j.next.retries + j.next.movedOn + j.next.user + j.next.end).toBe(j.next.rows);
+    // 率は、結果のある呼び出しが閾値に届いたものだけ
+    for (const t of j.tools) expect(t.rate === null).toBe(t.completed < j.thresholds.minCalls);
+    // atlas.html に埋め込んだ印と、付録の目次のリンク
+    expect(data.failures).toBe(true);
+    expect(await readFile(join(out, 'atlas.html'), 'utf8')).toMatch(/href:\s*["'`]failures\.html["'`]/);
   });
 
   it('b. 伏せ字版では依頼文の本文と指示文の見出しを出さず、件数とスコアだけ', async () => {
@@ -78,6 +110,10 @@ describe('Phase 12 E2E: fixtures', () => {
     expect(r.status, r.stderr).toBe(0);
     const d = extractEmbedded<ReportData>(await readFile(join(outAnon, 'atlas.html'), 'utf8'));
     expect(d.insights.meta).toEqual({});
+    // 失敗の台帳のページ(エラー文と引数を載せる)は作らない
+    expect(d.failures).toBe(false);
+    expect(existsSync(join(outAnon, 'failures.html'))).toBe(false);
+    expect(existsSync(join(outAnon, 'failures.json'))).toBe(false);
     for (const c of d.insights.candidates) {
       expect(c.representative).toBeNull();
       expect(c.examples).toEqual([]);

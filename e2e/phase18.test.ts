@@ -96,7 +96,7 @@ describe('Phase 18: テストの結果の取り込み', () => {
     const r = atlas(['all', '--home', HOME, '--out', OUT, '--notes-dir', NOTES]);
     expect(r.status, r.out).toBe(0);
     original = JSON.parse(await readFile(join(OUT, 'sessions.json'), 'utf8')) as SessionsFile;
-    expect(original.schemaVersion).toBe(18);
+    expect(original.schemaVersion).toBe(19);
     expect(testsOf(original, S_TESTS)).toEqual({
       runs: [
         {
@@ -189,7 +189,7 @@ describe('Phase 18: テストの結果の取り込み', () => {
 
   it('d. レポートには、テストの実行があるセッションだけに要約を埋め込む', async () => {
     const data = extractEmbedded<ReportData>(await readFile(join(OUT, 'atlas.html'), 'utf8'));
-    expect(data.version).toBe(16);
+    expect(data.version).toBe(17);
     const tests = (id: string) => data.sessions.find((s) => s.id === id)?.tests;
     // 2 回目で通った。そこまでの実働は 5 分、AI 使用量は 5 AIU(通った後の分は入らない)。項目はこの 6 つだけで、実行ごとの結果やテストの名前は埋め込まない
     expect(tests(S_TESTS)).toEqual({ runs: 2, firstPass: 2, lastFailing: 0, passActiveMs: 300_000, passNanoAiu: 5e9, lastNanoAiu: 5e9 });

@@ -1,15 +1,21 @@
 // 利用者がダブルクリックで起動する *.bat と、その最初に動く scripts/ensure-atlas.ps1、TS 版で登録したタスクのための互換の入口の形式。
 // LF だけの改行だと cmd が goto のラベルを読めずに失敗する(a3527a5 で atlas-export.bat に実際に起きた)。
 // BOM があると先頭の @echo off がコマンド名として読まれる。.gitattributes の eol=crlf が外れたらここで止める。
-import { execFileSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { type ChildProcess, execFileSync, spawn, spawnSync } from 'node:child_process';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { decodeConsole } from './console-text.ts';
 
 const ROOT = resolve(import.meta.dirname, '..');
 const BATS = readdirSync(ROOT).filter((f) => f.endsWith('.bat'));
 const ENSURE = 'scripts/ensure-atlas.ps1';
+/** atlas を止める bat(実行ファイルの用意・更新も atlas の実行もしない。scripts/stop-atlas.ps1 だけを動かす) */
+const STOP = 'stop.bat';
+const STOP_PS1 = 'scripts/stop-atlas.ps1';
+/** 実行ファイルを用意して atlas を動かす bat */
+const LAUNCHERS = BATS.filter((f) => f !== STOP);
 const SHIM = 'packages/cli/src/upload-auto.ts';
 const BOM = Buffer.from([0xef, 0xbb, 0xbf]);
 /** 各 bat が最後に動かす atlas のサブコマンド */
@@ -43,8 +49,8 @@ describe('cmd の出力を読む(scripts/console-text.ts)', () => {
 });
 
 describe('*.bat', () => {
-  it('リポジトリ直下にあるのは atlas.bat(集計と画面)・open-folder.bat(選んだフォルダを集計して開く)・schedule-upload.bat(毎日自動で送る登録)・setup.bat(初期設定)・upload-project.bat(プロジェクトのセッションを送る)だけ(他の操作は画面とコマンドから)', () => {
-    expect(BATS).toEqual(Object.keys(FINAL));
+  it('リポジトリ直下にあるのは atlas.bat(集計と画面)・open-folder.bat(選んだフォルダを集計して開く)・schedule-upload.bat(毎日自動で送る登録)・setup.bat(初期設定)・upload-project.bat(プロジェクトのセッションを送る)と、止める stop.bat だけ(他の操作は画面とコマンドから)', () => {
+    expect([...BATS].sort()).toEqual([...Object.keys(FINAL), STOP].sort());
   });
 
   it.each(BATS)('%s は改行がすべて CRLF で、BOM が無い', (f) => {
@@ -89,7 +95,7 @@ describe('*.bat', () => {
   });
 
   // 実行ファイルを用意してから動かす。Node.js の確かめと npm install はもうしない(Node.js が無くても、リリースがあれば動く)
-  it.each(BATS)('%s は最初に scripts\\ensure-atlas.ps1 を動かし、失敗したら止まる。node と npm は呼ばない', (f) => {
+  it.each(LAUNCHERS)('%s は最初に scripts\\ensure-atlas.ps1 を動かし、失敗したら止まる。node と npm は呼ばない', (f) => {
     const lines = codeLines(f);
     const i = lines.findIndex((l) => /ensure-atlas\.ps1/i.test(l));
     expect(lines[i]).toBe('powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\ensure-atlas.ps1 -KeepOlder');
@@ -106,7 +112,7 @@ describe('*.bat', () => {
   // ATLAS_NO_AUTO_UPDATE=1 なら更新しない。ATLAS_SELF_UPDATED が開いた窓に残らないよう、setlocal で始める
   const UPDATE_LINE =
     'if not "%ATLAS_NO_AUTO_UPDATE%"=="1" if not defined ATLAS_SELF_UPDATED bin\\atlas.exe self-update 2>nul & if errorlevel 10 if not errorlevel 11 set "ATLAS_SELF_UPDATED=1" & cmd /d /c call "%~f0" %* & call exit /b %%errorlevel%%';
-  it.each(BATS)('%s は setlocal で始め、ensure-atlas.ps1 の後に atlas self-update を 1 行で動かし、コミットが変わったら同じ行の中で自分を動かし直す', (f) => {
+  it.each(LAUNCHERS)('%s は setlocal で始め、ensure-atlas.ps1 の後に atlas self-update を 1 行で動かし、コミットが変わったら同じ行の中で自分を動かし直す', (f) => {
     const lines = codeLines(f);
     expect(lines.slice(0, 2)).toEqual(['@echo off', 'setlocal']);
     const ensure = lines.findIndex((l) => /ensure-atlas\.ps1/i.test(l));
@@ -118,7 +124,7 @@ describe('*.bat', () => {
 
   // 最後に動かす atlas の終了コードを、bat の終了コードとして返す(「& exit /b」で終えると、cmd の終了コードは常に 0 になる)。
   // 同じ行に %errorlevel% を書くと行を読んだとき(atlas の前)の値になるので、次の行で調べるか取っておく
-  it.each(BATS)('%s は最後に bin\\atlas.exe <サブコマンド> を動かし、その終了コードを次の行で調べるか取っておく', (f) => {
+  it.each(LAUNCHERS)('%s は最後に bin\\atlas.exe <サブコマンド> を動かし、その終了コードを次の行で調べるか取っておく', (f) => {
     const lines = codeLines(f);
     const last = lines.findLastIndex((l) => /^bin\\atlas\.exe\b/i.test(l));
     expect(lines[last]).toMatch(FINAL[f]);
@@ -127,7 +133,7 @@ describe('*.bat', () => {
   });
 
   // git の無い場所(git archive で作ったフォルダなど)では git check-attr が使えないので見ない
-  it.skipIf(!existsSync(join(ROOT, '.git'))).each([...BATS, ENSURE])('%s は .gitattributes で eol=crlf が効いている', (f) => {
+  it.skipIf(!existsSync(join(ROOT, '.git'))).each([...BATS, ENSURE, STOP_PS1])('%s は .gitattributes で eol=crlf が効いている', (f) => {
     expect(execFileSync('git', ['check-attr', 'eol', '--', f], { cwd: ROOT, encoding: 'utf8' }).trim()).toBe(`${f.replaceAll('\\', '/')}: eol: crlf`);
   });
 });
@@ -200,6 +206,138 @@ describe('scripts/ensure-atlas.ps1', () => {
 
   it('管理者の権限が要る操作をしない', () => {
     expect(text).not.toMatch(/RunAs|Set-ExecutionPolicy|-Scope\s+(LocalMachine|AllUsers)|Program Files/i);
+  });
+});
+
+// stop.bat は、どこかのタブが開いたままのサーバや、窓の無い別のフォルダのサーバを止める。実行ファイルが壊れていても・前の版でも止められるよう、
+// atlas.exe を動かさず(ensure-atlas.ps1 と self-update も通らない)、PowerShell の scripts/stop-atlas.ps1 だけを動かす
+describe('stop.bat と scripts/stop-atlas.ps1', () => {
+  it('stop.bat は stop-atlas.ps1 に引数を渡して動かし、結果を読めるよう pause してから、その終了コードで終わる。atlas.exe・ensure-atlas.ps1・self-update は動かさない', () => {
+    const lines = codeLines(STOP);
+    expect(lines.slice(0, 4)).toEqual(['@echo off', 'setlocal', 'chcp 65001 >nul', 'cd /d "%~dp0"']);
+    expect(lines.slice(4)).toEqual(['powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\stop-atlas.ps1 %*', 'set "code=%errorlevel%"', 'echo.', 'pause', 'exit /b %code%']);
+  });
+
+  const buf = readFileSync(join(ROOT, STOP_PS1));
+  const text = buf.subarray(3).toString('utf8');
+  it('stop-atlas.ps1 は BOM 付きの UTF-8 で、改行はすべて CRLF。管理者の権限が要る操作をしない', () => {
+    expect(buf.subarray(0, 3).equals(BOM)).toBe(true);
+    expect(text.match(/(^|[^\r])\n/g)).toBeNull();
+    expect(text).not.toMatch(/RunAs|Set-ExecutionPolicy|-Scope\s+(LocalMachine|AllUsers)|Program Files/i);
+    // 止める相手は実行ファイルの場所で決める(印の pid は使い回されるので、止める相手を決めるのに使わない)。taskkill /T は親子を pid だけで辿るので使わない
+    expect(text).not.toMatch(/taskkill/i);
+  });
+
+  // 実際に止める。atlas.exe の代わりに、node の実行ファイルを <フォルダ>\bin\atlas.exe に写して動かす
+  // (node は、サブコマンドと同じ名前のファイル serve・all を、今のフォルダのスクリプトとして動かす)
+  describe.skipIf(process.platform !== 'win32')('Windows で実際に止める', () => {
+    const SLEEP = 'setTimeout(() => {}, 120000);';
+    // serve は子(cmd → ping)を動かし、その pid を書いてから待つ。all は待つだけ
+    const SCRIPTS = {
+      serve: `const c = require('node:child_process').spawn('cmd.exe', ['/d', '/c', 'ping -n 120 127.0.0.1 >nul'], { stdio: 'ignore' }); require('node:fs').writeFileSync('child-' + process.pid, String(c.pid)); ${SLEEP}`,
+      all: SLEEP,
+    };
+    const started: ChildProcess[] = [];
+    let tmp = '';
+    beforeAll(() => {
+      tmp = mkdtempSync(join(tmpdir(), 'atlas-stop-'));
+      for (const [name, body] of Object.entries(SCRIPTS)) writeFileSync(join(tmp, name), body);
+    });
+    const repos: string[] = [];
+    afterAll(() => {
+      // 止めずに残したもの(別のフォルダのサーバとその子)も、子孫ごと止める(子の cmd と ping が一時フォルダを今のフォルダにしている)
+      for (const repo of repos) stop(repo, ['-Yes']);
+      for (const c of started) c.kill();
+      // 止めたプロセスが実行ファイルを掴んだままのことがあるので、少し待ってもう一度試す
+      rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+    });
+
+    const makeRepo = (name: string): string => {
+      const repo = join(tmp, name);
+      mkdirSync(join(repo, 'bin'), { recursive: true });
+      copyFileSync(process.execPath, join(repo, 'bin', 'atlas.exe'));
+      repos.push(repo);
+      return repo;
+    };
+    const start = (repo: string, sub: string): ChildProcess => {
+      const c = spawn(join(repo, 'bin', 'atlas.exe'), [sub], { cwd: tmp, stdio: 'ignore' });
+      started.push(c);
+      return c;
+    };
+    const alive = (pid: number): boolean => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const waitFor = async (ok: () => boolean, what: string): Promise<void> => {
+      for (let i = 0; i < 100 && !ok(); i++) await new Promise((r) => setTimeout(r, 100));
+      if (!ok()) throw new Error(`${what} を待ちきれませんでした`);
+    };
+    const { ATLAS_OUT: _out, ...env } = process.env;
+    const stop = (repo: string, args: string[], input = '') => {
+      const r = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(ROOT, STOP_PS1), '-Repo', repo, ...args], { input, env, timeout: 60_000 });
+      return { status: r.status, text: `${decodeConsole(r.stdout)}${decodeConsole(r.stderr)}` };
+    };
+
+    it('動いていなければ、そう出して 0 で終わる', () => {
+      const r = stop(makeRepo('empty'), []);
+      expect(r.text).toContain('動いている atlas はありません');
+      expect(r.status).toBe(0);
+    });
+
+    it('画面のサーバだけなら尋ねずに、子孫ごと止める。別のフォルダの atlas は止めない。残った印と前の実行ファイルを消す', async () => {
+      const a = makeRepo('a');
+      const b = makeRepo('b');
+      const serveA = start(a, 'serve');
+      const serveB = start(b, 'serve');
+      const childFile = join(tmp, `child-${serveA.pid}`);
+      await waitFor(() => existsSync(childFile) && existsSync(join(tmp, `child-${serveB.pid}`)), 'サーバの子');
+      const child = Number(readFileSync(childFile, 'utf8'));
+      expect(alive(child)).toBe(true);
+      // 印: 止めるサーバのもの・もう無い pid のもの・別のフォルダで動いている pid のもの(このフォルダの atlas ではないので残さない)
+      mkdirSync(join(a, 'out'), { recursive: true });
+      mkdirSync(join(a, 'out-folders', 'k', 'out'), { recursive: true });
+      writeFileSync(join(a, 'out', '.serve.json'), JSON.stringify({ port: 1, pid: serveA.pid }));
+      writeFileSync(join(a, 'out', '.job.json'), JSON.stringify({ pid: serveB.pid }));
+      writeFileSync(join(a, 'out-folders', 'k', 'out', '.serve.json'), JSON.stringify({ port: 1, pid: 4_000_000 }));
+      writeFileSync(join(a, 'bin', 'atlas.old-0123abcd.exe'), '');
+
+      const r = stop(a, []);
+      expect(r.text).toContain('画面のサーバ');
+      expect(r.text).toContain('止めました');
+      expect(r.text).not.toContain('止めますか');
+      expect(r.status).toBe(0);
+      await waitFor(() => !alive(serveA.pid!) && !alive(child), 'サーバと子が止まる');
+      expect(alive(serveB.pid!)).toBe(true);
+      expect(existsSync(join(a, 'out', '.serve.json'))).toBe(false);
+      expect(existsSync(join(a, 'out', '.job.json'))).toBe(false);
+      expect(existsSync(join(a, 'out-folders', 'k', 'out', '.serve.json'))).toBe(false);
+      expect(existsSync(join(a, 'bin', 'atlas.old-0123abcd.exe'))).toBe(false);
+    }, 60_000);
+
+    it('集計などが動いていれば尋ね、y でなければ止めない。y なら止める。-Yes なら尋ねない', async () => {
+      const c = makeRepo('c');
+      const all = start(c, 'all');
+      await waitFor(() => all.pid !== undefined && alive(all.pid), '集計の起動');
+      const no = stop(c, [], 'n\r\n');
+      expect(no.text).toContain('集計');
+      expect(no.text).toContain('止めませんでした');
+      expect(no.status).toBe(0);
+      expect(alive(all.pid!)).toBe(true);
+      const yes = stop(c, [], 'y\r\n');
+      expect(yes.text).toContain('止めました');
+      await waitFor(() => !alive(all.pid!), '集計が止まる');
+
+      const again = start(c, 'all');
+      await waitFor(() => again.pid !== undefined && alive(again.pid), '集計の起動');
+      const forced = stop(c, ['-Yes']);
+      expect(forced.text).not.toContain('止めますか');
+      expect(forced.text).toContain('止めました');
+      await waitFor(() => !alive(again.pid!), '集計が止まる');
+    }, 60_000);
   });
 });
 

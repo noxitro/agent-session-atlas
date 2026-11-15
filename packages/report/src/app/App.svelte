@@ -439,7 +439,7 @@
       ],
     },
     { title: '一覧', items: [{ id: 'sessions', label: 'セッション一覧' }] },
-    { title: '付録', items: [...(data?.library ? [{ href: 'instructions.html', label: '指示文と skill' }] : []), { href: 'glossary.html', label: '用語の説明' }] },
+    { title: '付録', items: [...(data?.failures ? [{ href: 'failures.html', label: '失敗の台帳の集計' }] : []), ...(data?.library ? [{ href: 'instructions.html', label: '指示文と skill' }] : []), { href: 'glossary.html', label: '用語の説明' }] },
   ]);
 
   /** 読んでいる節(目次の現在地の印)。見出しが画面上部 1/3(固定行の下)を越えた最後の節 */
@@ -661,7 +661,7 @@
         {#if data.retention}<Retention sessions={filtered} meta={data.retention} />{/if}
         <Compare sessions={scoped} groups={groupOptions} projects={options.project} lastAt={all.overall.lastAt} retention={!!data.retention} />
         {#if hasConditions}<Conditions table={conditions} wikiVaults={data.wikiVaults} />{/if}
-        <UsageRanking usage={agg.usage} {installed} bind:tab={usageTab} />
+        <UsageRanking usage={agg.usage} {installed} failuresPage={data.failures === true} bind:tab={usageTab} />
         <ExecProfile exec={agg.exec} sessions={filtered.length} />
         <!-- 人別は、送り先(<人>/<プロジェクト>)をまとめて集計したレポートだけ -->
         {#if options.person.length > 0}<ProjectTable kind="person" rows={agg.byPerson} {judged} current={filter.person} onpick={(p) => setFilter({ person: p })} />{/if}
