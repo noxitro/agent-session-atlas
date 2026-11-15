@@ -67,16 +67,28 @@ export interface Bucket {
   lastAt: string | null;
   /** 最終更新(セッションの更新日時のうち、いちばん後のもの。更新日時の無いセッションは開始日時で数える)。lastAt は開始日時のいちばん後 */
   updatedAt: string | null;
-  /** judgments の推定人手工数(判定済みセッションだけの和) */
+  /** 判定済みのセッション数(確信度の低い推定も含む) */
   judgedSessions: number;
+  /**
+   * 合計に入れた判定済みセッションの数(確信度の低い推定を除く)。
+   * 下の humanHours・humanLow・humanHigh・humanMedian・humanSkew・judgedConfidence・judgedAi は、このセッションだけの値
+   */
+  humanSessions: number;
+  /** judgments の推定人手工数の和 */
   humanHours: number;
-  /** 推定の幅(判定済みセッションの low / high の和) */
+  /** 推定の幅(low / high の和) */
   humanLow: number;
   humanHigh: number;
-  /** 判定済みセッションの確信度の平均(判定が無ければ null) */
+  /** 推定人手工数の中央値(合計に入れたセッションが無ければ null) */
+  humanMedian: number | null;
+  /** 推定人手工数の合計が少数のセッションに偏っているときの、その偏り(偏っていなければ null) */
+  humanSkew: EffortSkew | null;
+  /** 確信度の平均(合計に入れたセッションが無ければ null) */
   judgedConfidence: number | null;
-  /** 判定済みセッションに AI が使った量(AI 投入量 vs 推定人手工数の比較用) */
+  /** 同じセッションに AI が使った量(AI 投入量 vs 推定人手工数の比較用) */
   judgedAi: { activeMs: number; activeKnown: number; output: number; input: number; inputKnown: number; premiumRequests: number };
+  /** 確信度の低い推定(isLowConfidence)。合計に入れず、別枠で出す */
+  humanUncertain: { sessions: number; hours: number; low: number; high: number };
 }
 
 /** モデルの推論強度別の行(key は推論強度。記録の無いものは (unknown)) */
@@ -210,6 +222,45 @@ function median(values: number[]): number | null {
   return s[Math.min(s.length - 1, Math.max(0, Math.ceil(0.5 * s.length) - 1))];
 }
 
+/**
+ * 確信度がこれ以下の推定は、合計に入れずに別枠で出す。判定の指示(judge の rubric)が、本文が抜粋だけ・成果が不明のとき、
+ * 大量に生成されて動くかを確かめられないときに求める値(0.3 以下)と同じ
+ */
+export const LOW_CONFIDENCE = 0.3;
+
+/** 確信度の低い推定か(確信度の記録が無い古い判定は、低いとはみなさない) */
+export const isLowConfidence = (j: { confidence: number | null } | null | undefined): boolean => j?.confidence != null && j.confidence <= LOW_CONFIDENCE;
+
+/** 推定人手工数の合計の偏り: 推定の大きい上位 sessions 件(計 hours 時間)が、合計の share(0〜1)を占める */
+export interface EffortSkew {
+  sessions: number;
+  hours: number;
+  share: number;
+}
+
+/** 偏りを見る判定済みセッションの数の下限(これより少ないと、1 件が半分を超えるのは珍しくない) */
+export const SKEW_MIN_SESSIONS = 5;
+/** 上位として数える割合(判定済みセッションの 5%。1 件に満たなければ 1 件) */
+export const SKEW_TOP_RATE = 0.05;
+/** 上位がこの割合以上を占めたら「偏っている」とする */
+export const SKEW_SHARE = 0.5;
+
+/**
+ * 推定人手工数(セッションごとの時間)の偏り。上位 5% のセッションが合計の半分以上を占めるときだけ返す。
+ * 合計は和なので、AI が大量に生成したセッションの大きな推定が数件あるだけで、ほぼその値になる
+ */
+export function effortSkew(hours: number[]): EffortSkew | null {
+  const total = hours.reduce((a, h) => a + h, 0);
+  if (hours.length < SKEW_MIN_SESSIONS || total <= 0) return null;
+  const n = Math.max(1, Math.round(hours.length * SKEW_TOP_RATE));
+  const top = [...hours]
+    .sort((a, b) => b - a)
+    .slice(0, n)
+    .reduce((a, h) => a + h, 0);
+  const share = top / total;
+  return share >= SKEW_SHARE ? { sessions: n, hours: Math.round(top * 100) / 100, share } : null;
+}
+
 export function bucket(key: string, label: string, sessions: SessionSummary[]): Bucket {
   const b: Bucket = {
     key,
@@ -242,15 +293,20 @@ export function bucket(key: string, label: string, sessions: SessionSummary[]): 
     lastAt: null,
     updatedAt: null,
     judgedSessions: 0,
+    humanSessions: 0,
+    humanUncertain: { sessions: 0, hours: 0, low: 0, high: 0 },
     humanHours: 0,
     humanLow: 0,
     humanHigh: 0,
+    humanMedian: null,
+    humanSkew: null,
     judgedConfidence: null,
     judgedAi: { activeMs: 0, activeKnown: 0, output: 0, input: 0, inputKnown: 0, premiumRequests: 0 },
   };
   let confSum = 0;
   let confN = 0;
   const actives: number[] = [];
+  const humans: number[] = [];
   for (const s of sessions) {
     const t = s.tokens;
     if (t.input != null) b.sessionsWithInput++;
@@ -294,8 +350,17 @@ export function bucket(key: string, label: string, sessions: SessionSummary[]): 
     const up = s.updatedAt ?? s.createdAt;
     if (up && (!b.updatedAt || Date.parse(up) > Date.parse(b.updatedAt))) b.updatedAt = up;
     const j = s.judgment;
-    if (j?.hours != null) {
-      b.judgedSessions++;
+    if (j?.hours != null) b.judgedSessions++;
+    if (j?.hours != null && isLowConfidence(j)) {
+      // 根拠の弱い推定は合計に入れない(大量に生成されたセッションの大きな推定が、数件で合計を決めてしまうため)
+      const u = b.humanUncertain;
+      u.sessions++;
+      u.hours += j.hours;
+      u.low += j.low ?? j.hours;
+      u.high += j.high ?? j.hours;
+    } else if (j?.hours != null) {
+      b.humanSessions++;
+      humans.push(j.hours);
       b.humanHours += j.hours;
       b.humanLow += j.low ?? j.hours;
       b.humanHigh += j.high ?? j.hours;
@@ -318,9 +383,12 @@ export function bucket(key: string, label: string, sessions: SessionSummary[]): 
   }
   b.activeMedianMs = median(actives);
   b.judgedConfidence = confN ? confSum / confN : null;
+  b.humanMedian = median(humans);
+  b.humanSkew = effortSkew(humans);
   b.humanHours = Math.round(b.humanHours * 100) / 100;
   b.humanLow = Math.round(b.humanLow * 100) / 100;
   b.humanHigh = Math.round(b.humanHigh * 100) / 100;
+  for (const k of ['hours', 'low', 'high'] as const) b.humanUncertain[k] = Math.round(b.humanUncertain[k] * 100) / 100;
   b.judgedAi.premiumRequests = Math.round(b.judgedAi.premiumRequests * 1000) / 1000;
   // 浮動小数の誤差(premium request は 0.33 倍などの和)を丸める
   b.tokens.premiumRequests = Math.round(b.tokens.premiumRequests * 1000) / 1000;

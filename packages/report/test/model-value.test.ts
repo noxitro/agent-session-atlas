@@ -53,6 +53,17 @@ describe('モデルと推論強度の効果', () => {
     expect(m.weight).toBeCloseTo(1);
   });
 
+  it('確信度の低い推定(0.3 以下)は人手工数とその分母の AIU に入れない(達成・品質は入れる)', () => {
+    const sure = sess('sure', { m: { high: [2, 0, 0, 4e9] } }, { judgment: judged({ completed: true, quality: 4, hours: 3, confidence: 0.8 }) });
+    const unsure = sess('unsure', { m: { high: [2, 0, 0, 6e9] } }, { judgment: judged({ completed: true, quality: 2, hours: 2500, confidence: 0.2 }) });
+    const [m] = modelValue([sure, unsure], false);
+    expect(m.hours).toEqual({ sum: 3, weight: 1 });
+    expect(m.judgedNanoAiu).toBe(4e9);
+    expect(m.nanoAiu).toBe(10e9);
+    expect(mean(m.quality)).toBeCloseTo(3);
+    expect(m.completed.weight).toBe(2);
+  });
+
   it('並びはリクエストの多いモデルから、同じモデルは強度の順(記録なしは最後)。強度の内訳が無いセッションはモデル別の記録から「強度の記録なし」にする', () => {
     const old = sess('old', {}, { byModel: { a: { input: 10, output: 1, cacheRead: null, premiumRequests: null, requests: 2 } } });
     const rows = modelValue([sess('x', { a: { high: [1, 0, 0, 0], low: [1, 0, 0, 0] }, b: { medium: [9, 0, 0, 0] } }), old], true);

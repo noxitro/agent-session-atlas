@@ -57,7 +57,7 @@
               <th scope="col" class="num" title="セッションの判定で、依頼を達成したとされた割合">達成率</th>
               <th scope="col" class="num" title="セッションの判定の成果の質(1〜5)の平均">品質</th>
               <th scope="col" class="num" title="セッションの判定の手戻りの多さ(0〜5)の平均。小さいほど良い">手戻り</th>
-              <th scope="col" class="num" title="推定人手工数(時間)÷ AIU。1 AIU で何時間分の作業をしたか">人手工数 / AIU</th>
+              <th scope="col" class="num" title="推定人手工数(時間)÷ AIU。1 AIU で何時間分の作業をしたか。確信度の低い推定は入れていません">人手工数 / AIU</th>
             {/if}
             {#if hasVerdicts}
               <th scope="col" class="num" title="依頼の判定で、そのまま・修正して採用、または役に立ったとされた割合(判定不能を除く)">依頼の採用率</th>

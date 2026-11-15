@@ -1,6 +1,6 @@
 <script lang="ts">
-  import type { Aggregate, Bucket } from '../../lib/aggregate.ts';
-  import { dateTime, dec, duration, int } from '../../lib/format.ts';
+  import { LOW_CONFIDENCE, type Aggregate, type Bucket } from '../../lib/aggregate.ts';
+  import { dateTime, dec, duration, int, percent } from '../../lib/format.ts';
   import { backendLabel, confidenceLabel } from '../../lib/judgment-labels.ts';
   import type { ReportData } from '../../lib/types.ts';
 
@@ -18,6 +18,7 @@
   }
   const fmtRatio = (r: number | null): string => (r == null ? '—' : `${dec(Math.round(r * 10) / 10)} 倍`);
   const range = (b: Bucket): string => `${dec(b.humanLow)}〜${dec(b.humanHigh)} 時間`;
+  const lowPercent = `${Math.round(LOW_CONFIDENCE * 100)}%`;
 </script>
 
 <section class="section" id="judgments" aria-labelledby="judgments-h">
@@ -35,13 +36,18 @@
     <div class="fields" style="--cols:4">
       <div class="field">
         <span class="k">推定人手工数(判定済みの合計)</span>
-        <span class="v">{dec(o.humanHours)} 時間</span>
-        <span class="n">幅 {range(o)}・平均{confidenceLabel(o.judgedConfidence)}</span>
+        {#if o.humanSessions > 0}
+          <span class="v">{dec(o.humanHours)} 時間</span>
+          <span class="n">{int(o.humanSessions)} セッション・幅 {range(o)}・平均{confidenceLabel(o.judgedConfidence)}・中央値 {dec(o.humanMedian)} 時間 / セッション</span>
+        {:else}
+          <span class="v">—</span>
+          <span class="n">合計に入れる推定がありません(下の注記)</span>
+        {/if}
       </div>
       <div class="field">
         <span class="k">AI の実働時間(同じセッション)</span>
         <span class="v">{duration(o.judgedAi.activeMs, '—')}</span>
-        <span class="n">実働の記録あり {int(o.judgedAi.activeKnown)} / {int(o.judgedSessions)} セッション</span>
+        <span class="n">実働の記録あり {int(o.judgedAi.activeKnown)} / {int(o.humanSessions)} セッション</span>
       </div>
       <div class="field">
         <span class="k">推定人手工数 ÷ AI の実働</span>
@@ -55,6 +61,18 @@
       </div>
     </div>
     <p class="note">判定済み {int(o.judgedSessions)} / {int(o.sessions)} セッション。未判定のセッションは両側の比較から除いています。</p>
+    {#if o.humanUncertain.sessions > 0}
+      <p class="note" data-testid="effort-uncertain-note">
+        <strong>確信度が {lowPercent} 以下の推定 {int(o.humanUncertain.sessions)} セッション(計 {dec(o.humanUncertain.hours)} 時間、幅 {dec(o.humanUncertain.low)}〜{dec(o.humanUncertain.high)} 時間)は、合計にも「推定人手工数 ÷ AI の実働」にも入れていません。</strong>
+        AI が大量に生成して動くかを確かめられないセッションなど、推定の根拠が弱いものです。それぞれの値は、セッション一覧と詳細ページにそのまま出ています(一覧を「推定人手工数」の順に並べると見つかります)。
+      </p>
+    {/if}
+    {#if o.humanSkew}
+      <p class="note" data-testid="effort-skew-note">
+        <strong>合計の {percent(o.humanSkew.hours, o.humanHours)} は、推定の大きい上位 {int(o.humanSkew.sessions)} セッション(計 {dec(o.humanSkew.hours)} 時間)によるものです。</strong>
+        合計と「推定人手工数 ÷ AI の実働」はこの数件で大きく変わるので、中央値({dec(o.humanMedian)} 時間 / セッション)と合わせて読んでください。どのセッションかは、セッション一覧を「推定人手工数」の順に並べると確かめられます。
+      </p>
+    {/if}
 
     <h3 class="sub-h" id="judgments-proj-h">プロジェクトごとの比較(判定済みセッションのみ)</h3>
     <div class="table-scroll">
@@ -77,8 +95,11 @@
               <td class="num">{int(b.judgedSessions)} / {int(b.sessions)}</td>
               <td class="num">{duration(b.judgedAi.activeMs, '—')}</td>
               <td class="num">{int(b.judgedAi.output)}</td>
-              <td class="num">{dec(b.humanHours)} 時間<span class="part">{range(b)}</span></td>
-              <td class="num">{fmtRatio(ratio(b))}</td>
+              <td class="num">
+                {#if b.humanSessions > 0}{dec(b.humanHours)} 時間<span class="part">{range(b)}</span>{:else}—{/if}
+                {#if b.humanUncertain.sessions > 0}<span class="part">別枠 {dec(b.humanUncertain.hours)} 時間(確信度の低い {int(b.humanUncertain.sessions)} 件)</span>{/if}
+              </td>
+              <td class="num">{b.humanSessions > 0 ? fmtRatio(ratio(b)) : '—'}</td>
               <td class="num">{b.judgedConfidence == null ? '—' : `${Math.round(b.judgedConfidence * 100)}%`}</td>
             </tr>
           {/each}

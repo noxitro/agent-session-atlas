@@ -248,6 +248,71 @@ fn judgments_and_task_category() {
     assert_eq!(a.judgment.as_ref().unwrap().rationale, None);
 }
 
+fn effort(hours: f64, low: f64, high: f64, confidence: f64) -> JudgmentSummary {
+    JudgmentSummary { hours: Some(hours), low: Some(low), high: Some(high), confidence: Some(confidence), backend: Some("external".into()), ..Default::default() }
+}
+
+#[test]
+fn effort_median_and_skew() {
+    // 偏りは判定済み 5 件以上で見る(少ないと 1 件が半分を超えるのは珍しくない)。上位は 5%(1 件に満たなければ 1 件)
+    assert_eq!(effort_skew(&[100.0, 1.0, 1.0, 1.0]), None);
+    assert_eq!(effort_skew(&[100.0, 1.0, 1.0, 1.0, 1.0]), Some(EffortSkew { sessions: 1, hours: 100.0, share: 100.0 / 104.0 }));
+    assert_eq!(effort_skew(&[2.0, 2.0, 2.0, 2.0, 2.0]), None);
+    assert_eq!(effort_skew(&[5.0, 1.0, 1.0, 1.0, 1.0, 1.0]), Some(EffortSkew { sessions: 1, hours: 5.0, share: 0.5 }));
+    assert_eq!(effort_skew(&[4.9, 1.0, 1.0, 1.0, 1.0, 1.0]), None);
+    assert_eq!(effort_skew(&[0.0, 0.0, 0.0, 0.0, 0.0]), None);
+    // 60 件なら上位 3 件。大きい 2 件だけで合計のほとんどになる
+    let many: Vec<f64> = [2500.0, 1200.0].into_iter().chain(std::iter::repeat_n(2.0, 58)).collect();
+    let k = effort_skew(&many).unwrap();
+    assert_eq!((k.sessions, k.hours), (3, 3702.0));
+    assert!((k.share - 3702.0 / 3816.0).abs() < 1e-9);
+    // 集計: 判定済みのセッションだけの中央値と偏り
+    let rs = fixture();
+    let js: Vec<(&str, JudgmentSummary)> = vec![("a", effort(40.0, 40.0, 40.0, 0.5)), ("b", effort(1.0, 1.0, 1.0, 0.5)), ("c", effort(2.0, 2.0, 2.0, 0.5))];
+    let s: Vec<SessionSummary> = rs.iter().map(|r| summarize(r, &identity_anonymizer(), js.iter().find(|(id, _)| *id == r.id).map(|(_, j)| j))).collect();
+    let o = aggregate(&refs(&s), None).overall;
+    assert_eq!((o.judged_sessions, o.human_sessions, o.human_hours, o.human_median, o.human_skew), (3, 3, 43.0, Some(2.0), None));
+    assert_eq!((o.human_uncertain.sessions, o.human_uncertain.hours), (0, 0.0));
+    let none = aggregate(&refs(&summaries(&rs)), None).overall;
+    assert_eq!((none.judged_sessions, none.human_sessions, none.human_median, none.human_skew), (0, 0, None, None));
+}
+
+#[test]
+fn low_confidence_effort_kept_apart() {
+    assert!(is_low_confidence(Some(0.3)));
+    assert!(!is_low_confidence(Some(0.31)));
+    // 確信度の記録が無い古い判定は、低いとはみなさない
+    assert!(!is_low_confidence(None));
+    let rs = fixture();
+    let js: Vec<(&str, JudgmentSummary)> = vec![
+        ("a", effort(2500.0, 1000.0, 6000.0, 0.2)),
+        ("b", effort(3.0, 2.0, 5.0, 0.8)),
+        ("c", effort(1.0, 0.5, 2.0, 0.6)),
+        ("d", effort(1200.0, 500.0, 3000.0, 0.3)),
+    ];
+    let pick = |id: &str| js.iter().find(|(k, _)| *k == id).map(|(_, j)| j);
+    let s: Vec<SessionSummary> = rs.iter().map(|r| summarize(r, &identity_anonymizer(), pick(&r.id))).collect();
+    let o = aggregate(&refs(&s), None).overall;
+    assert_eq!((o.judged_sessions, o.human_sessions, o.human_hours, o.human_low, o.human_high, o.human_median, o.human_skew), (4, 2, 4.0, 2.5, 7.0, Some(1.0), None));
+    assert!((o.judged_confidence.unwrap() - 0.7).abs() < 1e-9);
+    assert_eq!(o.human_uncertain, HumanUncertain { sessions: 2, hours: 3700.0, low: 1500.0, high: 9000.0 });
+    // AI の投入量(人手 ÷ AI の実働の分母)も、合計に入れたセッションだけ
+    let counted: Vec<&SessionSummary> = s.iter().filter(|x| x.id == "b" || x.id == "c").collect();
+    assert_eq!(o.judged_ai.output, counted.iter().fold(0.0, |n, x| n + x.tokens.output));
+    assert_eq!(o.judged_ai.active_ms, counted.iter().fold(0.0, |n, x| n + x.active_ms.unwrap_or(0.0)));
+    // 確信度の低い推定しか無いときは、合計が 0 件
+    let only: Vec<SessionSummary> = rs.iter().map(|r| summarize(r, &identity_anonymizer(), if r.id == "a" { pick("a") } else { None })).collect();
+    let o = aggregate(&refs(&only), None).overall;
+    assert_eq!((o.judged_sessions, o.human_sessions, o.human_hours, o.human_median, o.judged_confidence), (1, 0, 0.0, None, None));
+    assert_eq!((o.human_uncertain.sessions, o.human_uncertain.hours), (1, 2500.0));
+    // 書き出す JSON のキーと形は画面の TS(aggregate.ts)と同じ
+    let v = serde_json::to_value(&o).unwrap();
+    let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).skip_while(|k| *k != "judgedSessions").collect();
+    assert_eq!(keys, ["judgedSessions", "humanSessions", "humanUncertain", "humanHours", "humanLow", "humanHigh", "humanMedian", "humanSkew", "judgedConfidence", "judgedAi"]);
+    assert_eq!(v["humanUncertain"], json!({ "sessions": 1, "hours": 2500.0, "low": 1000.0, "high": 6000.0 }));
+    assert_eq!(v["humanSkew"], Value::Null);
+}
+
 #[test]
 fn filter_options_order() {
     let o = filter_options(&summaries(&fixture()));

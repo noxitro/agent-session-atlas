@@ -41,9 +41,14 @@
   $effect(() => {
     if (jobs.running && jobs.job?.kind === 'refresh') needsRefresh = false;
   });
-  /** 足す・やめる・外すで押したものが消えたら、焦点を vault の入力欄へ戻す(本文の先頭に落ちないように) */
+  /** 足す・やめる・外すで押したものが消えたら、焦点を vault の入力欄へ戻す(本文の先頭に落ちないように)。
+   *  答えを待つ間にほかの欄へ移っていたら、打っている途中の焦点を奪わない */
   function focusVaultEntry(): void {
-    void tick().then(() => dlg?.querySelector<HTMLElement>('[data-testid="settings-vault-input"]')?.focus());
+    void tick().then(() => {
+      const active = document.activeElement;
+      if (dlg && active && active !== dlg && dlg.contains(active)) return;
+      dlg?.querySelector<HTMLElement>('[data-testid="settings-vault-input"]')?.focus();
+    });
   }
 
   /** 「a / b, c」や改行で区切った入力を一覧にする(setup.bat と同じ区切り) */
