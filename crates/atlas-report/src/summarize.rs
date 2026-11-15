@@ -7,7 +7,7 @@ use crate::format::truncate;
 use crate::turns::turn_tuples;
 use crate::types::*;
 use atlas_core::js::JsMap;
-use atlas_core::types::{AgentStatus, InstructionScope, SessionRecord, SkillTrigger};
+use atlas_core::types::{AgentStatus, InstructionScope, SessionRecord, SessionTests, SkillTrigger};
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -107,6 +107,22 @@ pub fn detail_file_name(id: &str) -> String {
 
 pub fn detail_href(id: &str) -> String {
     format!("sessions/{}", detail_file_name(id))
+}
+
+/// テストの結果の要約。テストの実行が無ければ None(印はあるが読めなかった行だけのセッションを、実行 0 回として分母に入れない)。
+/// 通るまでの実働と AI 使用量は、最初に全部通った実行の累計(求め方は atlas-core の test_results.rs)
+pub fn tests_summary(t: &SessionTests) -> Option<TestsSummary> {
+    let last = t.runs.last()?;
+    let first = t.first_pass.and_then(|n| usize::try_from(n).ok()).and_then(|n| t.runs.get(n.wrapping_sub(1)));
+    Some(TestsSummary {
+        runs: t.runs.len() as i64,
+        // 番号が実行の数を外れている記録(手で直した sessions.json など)は、通っていないものとして扱う
+        first_pass: first.and(t.first_pass),
+        last_failing: last.failing,
+        pass_active_ms: first.map(|r| r.active_ms),
+        pass_nano_aiu: first.and_then(|r| r.nano_aiu),
+        last_nano_aiu: last.nano_aiu,
+    })
 }
 
 pub fn summarize(r: &SessionRecord, anon: &Anonymizer, judgment: Option<&JudgmentSummary>) -> SessionSummary {
@@ -219,6 +235,7 @@ pub fn summarize(r: &SessionRecord, anon: &Anonymizer, judgment: Option<&Judgmen
         instruction_versions: r.instructions.iter().map(|i| (i.content_hash.clone(), i.chars, i.injections)).collect(),
         analysis: AnalysisSummary { files_reedited: a.files_reedited, extra_edits: a.extra_edits, max_consecutive_failures: a.max_consecutive_failures, turns: a.turn_tools.len() as i64 },
         turn_rows: a.turn_stats.as_ref().filter(|x| !x.is_empty()).map(|_| turn_tuples(r)),
+        tests: r.tests.as_ref().and_then(tests_summary),
         files: FilesSummary { changed: r.files.changed.len() as i64, created: r.files.created.len() as i64, deleted: r.files.deleted.len() as i64, session_state: r.files.session_state },
         href: detail_href(&r.id),
         // 根拠の自由記述は HTML 本体に埋め込まない(詳細ページだけ)。伏せ字モードでは要約も出さない

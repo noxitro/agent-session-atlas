@@ -24,7 +24,7 @@ use atlas_report::judgments::parse_judgments;
 use atlas_report::memo::{is_safe_file_name, is_safe_memo_id, memo_excerpt, memo_summary};
 use atlas_report::pack::pack_summary;
 use atlas_report::retention::{aggregate_retention, retention_by_phase, retention_item, retention_meta, turn_starts};
-use atlas_report::summarize::{detail_file_name, summarize};
+use atlas_report::summarize::{detail_file_name, summarize, tests_summary};
 use atlas_report::turns::turn_aggregate;
 use atlas_report::types::{SessionSummary, REPORT_DATA_VERSION};
 use atlas_report::verdicts::{parse_verdicts, verdict_aggregate, verdict_tuples};
@@ -69,6 +69,18 @@ const NUMBERS: [f64; 31] = [
     f64::NAN,
 ];
 const FILE_NAMES: [&str; 15] = ["メモ.md", "a b.txt", "x", "", ".x", "..", "a/b", "x.", "x ", "CON", "nul.log", "Com1", "a:b", "abc-1_2.x", "あ"];
+
+/// テストの結果の要約を確かめる形(実行なし / 未達 / 1 回目で通る / 通った後に不合格で AI 使用量の記録なし / 番号が実行の数を外れている / 番号が 0 / 番号が負)。
+/// scripts/parity-lib.ts の TESTS_CASES と同じ中身
+const TESTS_CASES: &str = r#"[
+  { "runs": [], "invalid": 1, "duplicates": 0, "dropped": 0, "firstPass": null },
+  { "runs": [{ "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 1000, "nanoAiu": 1500000000, "failing": 1, "results": [] }, { "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 2000, "nanoAiu": 2500000000, "failing": 1, "results": [] }], "invalid": 0, "duplicates": 0, "dropped": 0, "firstPass": null },
+  { "runs": [{ "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 1500, "nanoAiu": 2500000000, "failing": 0, "results": [] }], "invalid": 0, "duplicates": 0, "dropped": 0, "firstPass": 1 },
+  { "runs": [{ "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 1000, "nanoAiu": null, "failing": 1, "results": [] }, { "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 60000.5, "nanoAiu": null, "failing": 0, "results": [] }, { "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 90000, "nanoAiu": null, "failing": 2, "results": [] }], "invalid": 0, "duplicates": 2, "dropped": 0, "firstPass": 2 },
+  { "runs": [{ "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 1000, "nanoAiu": 1, "failing": 0, "results": [] }], "invalid": 0, "duplicates": 0, "dropped": 0, "firstPass": 5 },
+  { "runs": [{ "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 1000, "nanoAiu": 1, "failing": 0, "results": [] }], "invalid": 0, "duplicates": 0, "dropped": 0, "firstPass": 0 },
+  { "runs": [{ "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 1000, "nanoAiu": 1, "failing": 0, "results": [] }], "invalid": 0, "duplicates": 0, "dropped": 0, "firstPass": -1 }
+]"#;
 
 struct Dump {
     dir: PathBuf,
@@ -327,6 +339,9 @@ fn main() -> Result<()> {
         })
         .collect();
     d.write("main-effort", &main)?;
+    // テストの結果の要約(scripts/parity-lib.ts の TESTS_CASES と同じ並び)
+    let cases: Vec<atlas_core::types::SessionTests> = serde_json::from_str(TESTS_CASES)?;
+    d.write("tests-summary", &cases.iter().map(tests_summary).collect::<Vec<_>>())?;
     let x = exec_aggregate(&plain_refs);
     let with = |a: Vec<String>, extra: &[&str]| -> Vec<String> { a.into_iter().chain(extra.iter().map(|s| s.to_string())).collect() };
     let cats: Vec<Option<&str>> = [None, Some(""), Some("feature"), Some("docs"), Some("x")].into_iter().chain(plain.iter().map(|s| s.judgment.as_ref().and_then(|j| j.task_category.as_deref()))).collect();

@@ -159,9 +159,23 @@ impl<'a> From<&'a atlas_core::types::SessionRecord> for MemberSource<'a> {
     }
 }
 
+/// 送り先から集計したグループ 1 つと、その元のタグ(送った人が付けた名前そのまま)。
+/// 表示名(name)は「<人> / <タグ>」で、重なると番号が付くので、タグの名前の決まり(条件の表)は表示名ではなく tag から読む
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct MemberGroup {
+    #[serde(flatten)]
+    pub group: SessionGroup,
+    pub tag: String,
+}
+
 /// 送り先から集計したセッションの、送った人が付けていたタスクタグ(uploadTags)をグループにする。
 /// 人ごとに分ける。名前は「<人> / <タグ>」、人のフォルダが無ければタグだけ。並びは人の名前、タグの名前の順(ja の照合)
 pub fn member_groups(sessions: &[MemberSource<'_>]) -> Vec<SessionGroup> {
+    member_groups_keyed(sessions).into_iter().map(|m| m.group).collect()
+}
+
+/// member_groups と同じグループに、元のタグを添えたもの
+pub fn member_groups_keyed(sessions: &[MemberSource<'_>]) -> Vec<MemberGroup> {
     // 人とタグの組で分ける(名前をつないだ文字列で分けると、「a」の「b / c」と「a / b」の「c」が 1 つになる)
     let mut by_key: indexmap::IndexMap<(String, String), indexmap::IndexSet<String>> = indexmap::IndexMap::new();
     for s in sessions {
@@ -177,7 +191,7 @@ pub fn member_groups(sessions: &[MemberSource<'_>]) -> Vec<SessionGroup> {
     sorted
         .into_iter()
         .map(|((person, tag), ids)| {
-            let base = if person.is_empty() { tag } else { format!("{person}{MEMBER_TAG_SEP}{tag}") };
+            let base = if person.is_empty() { tag.clone() } else { format!("{person}{MEMBER_TAG_SEP}{tag}") };
             let mut name = base.clone();
             let mut n = 2;
             while used.contains(&name) {
@@ -185,7 +199,7 @@ pub fn member_groups(sessions: &[MemberSource<'_>]) -> Vec<SessionGroup> {
                 n += 1;
             }
             used.insert(name.clone());
-            SessionGroup { name, note: String::new(), ids: ids.into_iter().collect() }
+            MemberGroup { group: SessionGroup { name, note: String::new(), ids: ids.into_iter().collect() }, tag }
         })
         .collect()
 }
@@ -352,6 +366,10 @@ mod tests {
         let z = t(&["b / c", "b / c"]);
         let g = member_groups(&[MemberSource { id: "s1", person: Some("a"), upload_tags: &x }, MemberSource { id: "s2", person: Some("a / b"), upload_tags: &y }, MemberSource { id: "s3", person: Some("a"), upload_tags: &z }]);
         assert_eq!(g.iter().map(|x| (x.name.as_str(), x.ids.join(","))).collect::<Vec<_>>(), [("a / b / c", "s1,s3".to_string()), ("a / b / c (2)", "s2".into())]);
+        // 元のタグは、表示名(人の前置きと、重なったときの番号)とは別に持つ
+        let keyed = member_groups_keyed(&[MemberSource { id: "s1", person: Some("a"), upload_tags: &x }, MemberSource { id: "s2", person: Some("a / b"), upload_tags: &y }, MemberSource { id: "s3", person: None, upload_tags: &y }]);
+        assert_eq!(keyed.iter().map(|m| (m.group.name.as_str(), m.tag.as_str())).collect::<Vec<_>>(), [("c", "c"), ("a / b / c", "b / c"), ("a / b / c (2)", "c")]);
+        assert_eq!(serde_json::to_value(&keyed[1]).unwrap(), serde_json::json!({ "name": "a / b / c", "note": "", "ids": ["s1"], "tag": "b / c" }));
     }
 
     #[test]

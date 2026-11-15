@@ -8,7 +8,7 @@ use serde_json::{json, Map, Value};
 use std::sync::LazyLock;
 
 /// 項目ごとの既定値。入れ子のオブジェクトは項目ごとに比べる。中身の決まっていない辞書は {} を既定値にし、空のときだけ落とす。
-/// 省略可能な項目(turnRows・turnVerdicts・memo)は既定値を持たない
+/// 省略可能な項目(turnRows・tests・turnVerdicts・memo)は既定値を持たない
 static DEFAULTS: LazyLock<Value> = LazyLock::new(|| {
     json!({
         "client": null,

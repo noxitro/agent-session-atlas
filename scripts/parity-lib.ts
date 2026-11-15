@@ -50,13 +50,13 @@ import { backendLabel, categoryLabel, confidenceLabel, effectLabel } from '../pa
 import { isSafeFileName, isSafeMemoId, memoExcerpt, memoSummary } from '../packages/report/src/lib/memo.ts';
 import { packSummary } from '../packages/report/src/lib/pack.ts';
 import { aggregateRetention, retentionByPhase, retentionItem, UNKNOWN_PHASE, type TurnStart } from '../packages/report/src/lib/retention.ts';
-import { detailFileName, summarize } from '../packages/report/src/lib/summarize.ts';
+import { detailFileName, summarize, testsSummary } from '../packages/report/src/lib/summarize.ts';
 import { turnAggregate } from '../packages/report/src/lib/turns.ts';
 import { parseVerdicts, verdictAggregate, verdictTuples } from '../packages/report/src/lib/verdicts.ts';
 import { REPORT_DATA_VERSION } from '../packages/report/src/lib/types.ts';
 import { mainEffortOf } from '../packages/report/src/lib/main-effort.ts';
 import { PHASES, sessionTurns } from '../packages/report/src/shared/turns.ts';
-import type { SessionRecord } from '../packages/report/src/shared/types.ts';
+import type { SessionRecord, SessionTests } from '../packages/report/src/shared/types.ts';
 import { cmpJson, firstTextDiff } from './parity-common.ts';
 
 /** vcs-retention.json(atlas vcs の出力)。突き合わせに使う項目だけ */
@@ -126,6 +126,16 @@ function turnStarts(r: SessionRecord): TurnStart[] {
 /** 数の表示の確かめに使う値(Rust 側と同じ並び) */
 const NUMBERS = [0, -0, 0.5, 1.005, 0.125, 2.5, -2.5, 1.45, 0.015, 8.345, 1234567.891, 1e21, 2 ** 70, 999.995, 1e-7, 12345, 99999, 1e8 + 5, -123456789, 59_499, 59_500, 3_599_000, 172_800_000, 86_399_999, 850, 1234, 125_000, 7_200_000, Infinity, -Infinity, NaN];
 const MEMO_TEXTS = ['\n\n# 見出し\n本文', '- [ ] **やること** と [リンク](x)', '```\ncode\n```\n\nあと', '![図](a/b.png)', '   \n\n', 'session_id の調査、2*3、~/.copilot', '---\ntitle: x\n---\n\n本文', '---\n\n本文', '> 引用 `code` ~~消し~~ __強調__', '1. 番号付き\n2. 次', '***\n\n___\n本文\r\n次', `${'あ'.repeat(100)}\n![a](x/1.png) ![b](x/2.png)`];
+/** テストの結果の要約を確かめる形(実行なし / 未達 / 1 回目で通る / 通った後に不合格で AI 使用量の記録なし / 番号が実行の数を外れている / 番号が 0 / 番号が負)。crates/atlas-report/examples/libdump.rs の TESTS_CASES と同じ中身 */
+const TESTS_CASES = `[
+  { "runs": [], "invalid": 1, "duplicates": 0, "dropped": 0, "firstPass": null },
+  { "runs": [{ "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 1000, "nanoAiu": 1500000000, "failing": 1, "results": [] }, { "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 2000, "nanoAiu": 2500000000, "failing": 1, "results": [] }], "invalid": 0, "duplicates": 0, "dropped": 0, "firstPass": null },
+  { "runs": [{ "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 1500, "nanoAiu": 2500000000, "failing": 0, "results": [] }], "invalid": 0, "duplicates": 0, "dropped": 0, "firstPass": 1 },
+  { "runs": [{ "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 1000, "nanoAiu": null, "failing": 1, "results": [] }, { "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 60000.5, "nanoAiu": null, "failing": 0, "results": [] }, { "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 90000, "nanoAiu": null, "failing": 2, "results": [] }], "invalid": 0, "duplicates": 2, "dropped": 0, "firstPass": 2 },
+  { "runs": [{ "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 1000, "nanoAiu": 1, "failing": 0, "results": [] }], "invalid": 0, "duplicates": 0, "dropped": 0, "firstPass": 5 },
+  { "runs": [{ "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 1000, "nanoAiu": 1, "failing": 0, "results": [] }], "invalid": 0, "duplicates": 0, "dropped": 0, "firstPass": 0 },
+  { "runs": [{ "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 1000, "nanoAiu": 1, "failing": 0, "results": [] }], "invalid": 0, "duplicates": 0, "dropped": 0, "firstPass": -1 }
+]`;
 const FILE_NAMES = ['メモ.md', 'a b.txt', 'x', '', '.x', '..', 'a/b', 'x.', 'x ', 'CON', 'nul.log', 'Com1', 'a:b', 'abc-1_2.x', 'あ'];
 
 async function dumpTs(outDir: string): Promise<void> {
@@ -306,6 +316,8 @@ function dumpWith(
       return [s.id, m.kind, m.kind === 'decided' ? m.model : '', m.kind === 'decided' ? m.effort : ''];
     }),
   );
+  // テストの結果の要約(架空の fixture には印つきの行が無いので、決まった形を両側で同じに読む。Rust は examples/libdump.rs の TESTS_CASES)
+  write('tests-summary', (JSON.parse(TESTS_CASES) as SessionTests[]).map(testsSummary));
   write('labels', {
     modes: [...all2.modes.rows.map((r) => r.key), '(unknown)', 'x'].map(modeLabel),
     initiators: [...all2.initiators.rows.map((r) => r.key), '(unknown)', 'x'].map(initiatorLabel),

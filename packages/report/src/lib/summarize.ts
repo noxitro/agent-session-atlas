@@ -1,17 +1,36 @@
 // SessionRecord → SessionSummary(HTML に埋め込む要約)。生イベント・timeline・長文は落とす。
 import type { FailureCauses } from '../shared/tool-failure.ts';
-import type { SessionRecord } from '../shared/types.ts';
+import type { SessionRecord, SessionTests } from '../shared/types.ts';
 import type { Anonymizer } from './anonymize.ts';
 import { coverageOf } from './filter.ts';
 import { truncate } from './format.ts';
 import { turnTuples } from './turns.ts';
-import type { AgentStat, EffortTuple, ExecSummary, FrictionDetailSummary, JudgmentSummary, ModelTokenSummary, SessionSummary, SkillTriggers, ToolIssue } from './types.ts';
+import type { AgentStat, EffortTuple, ExecSummary, FrictionDetailSummary, JudgmentSummary, ModelTokenSummary, SessionSummary, SkillTriggers, TestsSummary, ToolIssue } from './types.ts';
 
 /** permission.completed の result.kind を承認・拒否・その他にまとめる(approved-for-location などは承認) */
 export function permissionGroup(kind: string): 0 | 1 | 2 {
   if (/^approved/i.test(kind)) return 0;
   if (/^denied|^rejected/i.test(kind)) return 1;
   return 2;
+}
+
+/**
+ * テストの結果の要約。テストの実行が無ければ null(印はあるが読めなかった行だけのセッションを、実行 0 回として分母に入れない)。
+ * 通るまでの実働と AI 使用量は、最初に全部通った実行の累計
+ */
+export function testsSummary(t: SessionTests): TestsSummary | null {
+  const last = t.runs.at(-1);
+  if (!last) return null;
+  // 番号が実行の数を外れている記録(手で直した sessions.json など)は、通っていないものとして扱う
+  const first = t.firstPass != null && Number.isInteger(t.firstPass) ? t.runs[t.firstPass - 1] : undefined;
+  return {
+    runs: t.runs.length,
+    firstPass: first ? t.firstPass : null,
+    lastFailing: last.failing,
+    passActiveMs: first ? first.activeMs : null,
+    passNanoAiu: first ? first.nanoAiu : null,
+    lastNanoAiu: last.nanoAiu,
+  };
 }
 
 function execSummary(r: SessionRecord): ExecSummary {
@@ -104,6 +123,7 @@ export function summarize(r: SessionRecord, anon: Anonymizer, judgment: Judgment
   const name = anon.freeText(r.name);
   const first = anon.freeText(r.firstUserMessage);
   const t = r.tokens;
+  const tests = r.tests ? testsSummary(r.tests) : null;
   return {
     id: r.id,
     client: r.client,
@@ -164,6 +184,7 @@ export function summarize(r: SessionRecord, anon: Anonymizer, judgment: Judgment
       turns: r.analysis?.turnTools.length ?? 0,
     },
     ...(r.analysis?.turnStats?.length ? { turnRows: turnTuples(r) } : {}),
+    ...(tests ? { tests } : {}),
     files: { changed: r.files.changed.length, created: r.files.created.length, deleted: r.files.deleted?.length ?? 0, sessionState: r.files.sessionState ?? 0 },
     href: detailHref(r.id),
     // 根拠の自由記述は HTML 本体に埋め込まない(詳細ページだけ)。伏せ字モードでは要約も出さない

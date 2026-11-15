@@ -547,7 +547,8 @@ fn read_only_view_for_uploaded_out() {
     let s = e.get("/api/state");
     assert_eq!(s.0, 200);
     assert_eq!(s.1["readOnly"], true);
-    assert_eq!(s.1["groups"], json!([{ "name": "person-a / 武器", "note": "", "ids": ["s1"] }]));
+    // 表示名は「人 / タグ」。元のタグを別に持つ(課題 × 条件の表が、名前の決まりを元のタグから読む)
+    assert_eq!(s.1["groups"], json!([{ "name": "person-a / 武器", "note": "", "ids": ["s1"], "tag": "武器" }]));
     assert_eq!(e.json("POST", "/api/groups", Some(json!({ "name": "x", "note": "", "ids": ["s1"] }))).0, 403);
     assert_eq!(e.json("PUT", "/api/memos/s1", Some(json!({ "text": "x", "rev": "" }))).0, 403);
     assert!(e.req("GET", "/api/memo-editor.js", None, &[], b"").text().contains("読むだけ"));

@@ -22,7 +22,27 @@ import type { VerdictTuple } from './verdicts.ts';
 // 13: exec.modelEfforts(モデル別 × 推論強度別)
 // 14: exec.mainModelEfforts(本体のリクエストだけの モデル別 × 推論強度別)
 // 15: exec.mainModelEfforts をリクエスト数だけにした(トークンと AIU は modelEfforts にある)
-export const REPORT_DATA_VERSION = 15;
+// 16: tests(テストの結果の要約。テストの実行があるセッションだけ)
+export const REPORT_DATA_VERSION = 16;
+
+/**
+ * テストの結果の要約(テストの実行ファイルが書いた印つきの行から。crates/atlas-core/src/test_results.rs)。
+ * テストの実行(結果を出したツールの呼び出し)が 1 回以上あるセッションだけ。実行ごとの結果やテストの名前は埋め込まない
+ */
+export interface TestsSummary {
+  /** テストの実行の数 */
+  runs: number;
+  /** 最初に全部通った実行の番号(1 から)。一度も通っていなければ null(未達) */
+  firstPass: number | null;
+  /** 最後の実行の後で、まだ通っていないテストの数(0 なら最後は全部通っている) */
+  lastFailing: number;
+  /** 最初に全部通った実行までの実働(ミリ秒)。未達なら null */
+  passActiveMs: number | null;
+  /** 最初に全部通った実行までの AI 使用量(nano AIU)。未達か、リクエストごとの記録が無ければ null */
+  passNanoAiu: number | null;
+  /** 最後の実行までの AI 使用量(nano AIU)。リクエストごとの記録が無ければ null(未達のセッションに、AI 使用量の記録があるかを見分けるのに使う) */
+  lastNanoAiu: number | null;
+}
 
 /** 推論強度別の [リクエスト, 入力, 出力, nano AIU] */
 export type EffortTuple = [requests: number, input: number, output: number, nanoAiu: number];
@@ -181,6 +201,8 @@ export interface SessionSummary {
   analysis: { filesReedited: number; extraEdits: number; maxConsecutiveFailures: number; turns: number };
   /** 依頼(ターン)ごとの工程・種類・詰まり(lib/turns.ts の TurnTuple)。ターンの記録が無いセッション・古い埋め込みには無い */
   turnRows?: TurnTuple[];
+  /** テストの結果の要約。テストの実行が無いセッション・古い埋め込みには無い */
+  tests?: TestsSummary;
   /** 段階 2: 依頼ごとの LLM 判定(lib/verdicts.ts の VerdictTuple)。判定済みの依頼があるセッションだけ */
   turnVerdicts?: VerdictTuple[];
   agents: { total: number; failed: number; byName: Record<string, AgentStat> };
@@ -276,4 +298,9 @@ export interface ReportGroup {
   note: string;
   /** 記録に無い id も含む(そのまま) */
   ids: string[];
+  /**
+   * 送り先から集計したグループの、元のタグ(送った人が付けた名前そのまま。name は「<人> / <タグ>」で、重なると番号が付く)。
+   * 手元のタスクタグ(name がそのままタグ)と伏せ字版には無い
+   */
+  tag?: string;
 }

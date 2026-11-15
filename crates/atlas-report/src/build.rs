@@ -155,6 +155,8 @@ pub struct BuildInput<'a> {
     /// AI の変更がその後の VCS のファイルに残っているか
     pub retention: Option<&'a VcsRetentionFile>,
     pub groups: Vec<SessionGroup>,
+    /// 送り先から集計したときの、グループごとの元のタグ(groups と同じ並び)。手元のタスクタグでは None
+    pub group_tags: Option<Vec<String>>,
     /// Phase 13: メモの置き場(<notes-dir>/memos)
     pub memos_dir: Option<PathBuf>,
     /// 送り先から集計したとき: 送った人のメモを読む、写したセッションのフォルダ(<snapshot>/session-state)。あれば memos_dir より優先する
@@ -312,6 +314,9 @@ struct GroupOut {
     name: String,
     note: String,
     ids: Vec<String>,
+    /// 送り先から集計したグループの、元のタグ(名前は「<人> / <タグ>」なので別に持つ)。手元のタスクタグと伏せ字版には無い
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tag: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -524,7 +529,13 @@ pub fn build_report(input: BuildInput<'_>) -> Result<BuildResult> {
             .groups
             .iter()
             .enumerate()
-            .map(|(i, g)| if anon.enabled { GroupOut { name: format!("タスクタグ {}", i + 1), note: String::new(), ids: g.ids.clone() } } else { GroupOut { name: g.name.clone(), note: g.note.clone(), ids: g.ids.clone() } })
+            .map(|(i, g)| {
+                if anon.enabled {
+                    GroupOut { name: format!("タスクタグ {}", i + 1), note: String::new(), ids: g.ids.clone(), tag: None }
+                } else {
+                    GroupOut { name: g.name.clone(), note: g.note.clone(), ids: g.ids.clone(), tag: input.group_tags.as_ref().and_then(|t| t.get(i).cloned()) }
+                }
+            })
             .collect(),
         library: library_on,
         insights: InsightsOut { meta: meta_for_page.clone(), candidates: embedded_candidates(&candidates), candidate_total: candidates.len(), computed_over: input.sessions.len() },

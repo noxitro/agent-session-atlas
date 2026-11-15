@@ -4,11 +4,14 @@
 //     実行ごとに、そこまでの実働と AI 使用量の累計・まだ通っていないテストの数を持ち、最初に全部通った実行の番号を残す
 //  b. タスクタグのセッションを送り(group upload)、送り先から集計し直しても同じ結果になる(生ログから読むので、別のファイルを添えない)
 //  c. 詳細ページに「テストの推移」の節が出る(印の行が無いセッションには出ない)。最後まで通らなかったセッションは「未達」
+//  d. レポート(atlas.html)には、テストの実行があるセッションだけに要約(何回目で通ったか・そこまでの実働と AI 使用量)を埋め込む
 // ログ・パス・本文はすべて架空のもの
 import { spawnSync } from 'node:child_process';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { extractEmbedded } from '../packages/report/src/lib/embed.ts';
+import type { ReportData } from '../packages/report/src/lib/types.ts';
 import type { SessionsFile } from '../packages/report/src/shared/types.ts';
 import { ROOT, cliCommand } from './fixture-home.ts';
 
@@ -182,5 +185,18 @@ describe('Phase 18: テストの結果の取り込み', () => {
     // 2 回目は入力だけを走らせ直した。通っていないテストは 1 件のまま、AIU は記録なし
     expect(un).toMatch(/0 \/ 1 入力 1 1 3分 記録なし/);
     expect(await page(S_PLAIN)).toBe('');
+  });
+
+  it('d. レポートには、テストの実行があるセッションだけに要約を埋め込む', async () => {
+    const data = extractEmbedded<ReportData>(await readFile(join(OUT, 'atlas.html'), 'utf8'));
+    expect(data.version).toBe(16);
+    const tests = (id: string) => data.sessions.find((s) => s.id === id)?.tests;
+    // 2 回目で通った。そこまでの実働は 5 分、AI 使用量は 5 AIU(通った後の分は入らない)。項目はこの 6 つだけで、実行ごとの結果やテストの名前は埋め込まない
+    expect(tests(S_TESTS)).toEqual({ runs: 2, firstPass: 2, lastFailing: 0, passActiveMs: 300_000, passNanoAiu: 5e9, lastNanoAiu: 5e9 });
+    // 未達: 通るまでの値は無い。リクエストごとの使用量の記録が無いので、最後の実行までの AI 使用量も null
+    expect(tests(S_UNREACHED)).toEqual({ runs: 2, firstPass: null, lastFailing: 1, passActiveMs: null, passNanoAiu: null, lastNanoAiu: null });
+    const plain = data.sessions.find((s) => s.id === S_PLAIN)!;
+    expect(plain).toBeDefined();
+    expect('tests' in plain).toBe(false);
   });
 });

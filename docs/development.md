@@ -125,6 +125,7 @@ npm run audit:ui -- out --json audit.json --shots shots
 **サンプルデータはリポジトリに置かず、テスト時に架空の値だけで生成します。実データは読みません。**
 
 - 規則: fixtures に実データ(匿名化したものも含む)を使わない。セッション ID・ツール呼び出し ID・パス・時刻・本文はすべて作った値です(`00000000-0000-4000-8000-0000000000NN`、`call_synth_…`、`X:\synthetic-…` など)。
+- 「課題 × 条件」の節の画面の検査(`ui/conditions.test.ts`)は、別の生成器 `scripts/synthetic-conditions.ts` で、課題 2 つ × 条件 3 つ × 3 回の架空のログ(テストの実行ファイルの印つきの行を含む)を作って集計します。~/.copilot の形(タスクタグは `groups.json`)と、送り先をまとめて集計する形(タスクタグは各セッションの `atlas-session.json`)の両方を書けます。中身を見たいときは `node scripts/synthetic-conditions.ts <フォルダ>`。
 - 推論強度どうしの比較の画面の検査(`ui/effort-compare.test.ts`)は、別の生成器 `scripts/synthetic-effort.ts` で、送り先をまとめて集計する形(利用者 3 人 × 4 週、週ごとに medium と xhigh を入れ替える)の架空のログを作って集計します。中身を見たいときは `node scripts/synthetic-effort.ts <フォルダ>` で書き出せます。
 - 生成器は `scripts/synthetic-fixtures.ts`(001〜006・099 は `scripts/synthetic-base.ts`)で、何度実行しても同じ結果になります。E2E は `e2e/global-setup.ts`(vitest の globalSetup)から毎回これを呼び、`.fixtures/` を作り直してから走ります。新しく clone した状態でも `npm ci && npm test && npm run e2e` だけで動きます(CI も同じ)。
 - `.fixtures/` は `.gitignore` 済みです。中身を見たいときは `npm run fixtures` で作れます。
