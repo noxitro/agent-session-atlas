@@ -1,4 +1,6 @@
 //! 実行ファイルに入れる版の情報を、ビルドのときに決める。
+//!  - ATLAS_VERSION: 配る版(semver)。atlas --version が出す。環境変数 ATLAS_VERSION があればそれを使い(リリースのワークフローが、
+//!    付けるタグ v<版> の版を渡す)、無ければワークスペースの Cargo.toml の version。semver の形でなければビルドを止める
 //!  - ATLAS_BUILD_COMMIT: 作ったときの git のコミット(全桁。git で取得したフォルダでなければ空)。atlas --version が出す。
 //!    環境変数 ATLAS_BUILD_COMMIT があればそれを使う(git の無いところで作るとき用)
 //!  - ATLAS_CODE_STAMP: 版の目印(16 桁)。画面とサーバの版のずれを見つけるのに使う(ページの <meta name="atlas-code"> と応答の x-atlas-code)。
@@ -6,6 +8,9 @@
 //!    埋め込む画面のテンプレート(packages/report/dist/template.html)と共通スタイル(packages/report/src/styles/base.css)。
 //!    テスト(tests/)・例(examples/)・説明書は入れない。改行は LF にそろえ、エディタや OS が置く作業ファイルは数えない。
 //!    同じ中身から作った実行ファイルは同じ目印になり、ページを書いた実行ファイルとサーバの実行ファイルが違えば目印も違う。
+
+#[path = "src/version_format.rs"]
+mod version_format;
 
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -129,4 +134,15 @@ fn main() {
         }
     };
     println!("cargo::rustc-env=ATLAS_BUILD_COMMIT={commit}");
+
+    // 配る版
+    println!("cargo::rerun-if-env-changed=ATLAS_VERSION");
+    let version = match std::env::var("ATLAS_VERSION") {
+        Ok(v) if !v.trim().is_empty() => v.trim().to_string(),
+        _ => std::env::var("CARGO_PKG_VERSION").unwrap(),
+    };
+    if !version_format::is_semver(&version) {
+        panic!("版 {version:?} が semver の形(例 0.1.2。先頭に v を付けない)ではありません(環境変数 ATLAS_VERSION か、Cargo.toml の version)");
+    }
+    println!("cargo::rustc-env=ATLAS_VERSION={version}");
 }

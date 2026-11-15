@@ -30,7 +30,7 @@ GitHub Copilot のセッションログ(`%USERPROFILE%\.copilot`)を手元で集
 2. 集計が終わると、既定のブラウザにレポートが開きます。約 800 セッションで十数秒かかります。2 回目以降は、変わっていないファイルの複製を省きます。
 3. 読み終わったらブラウザを閉じます。黒い窓とローカルサーバ(`127.0.0.1` だけに公開)も止まります。
 
-もう一度 `atlas.bat` を実行すると集計し直します。新しい版にするには `git pull` してから `atlas.bat` を実行します(版が変わっていれば、その版の `bin\atlas.exe` を用意し直します)。前の `atlas.bat` の黒い窓が開いたままだと、更新前のサーバが動き続け、画面の上に「画面とサーバの版が違います」と出ます。その黒い窓を閉じてから、もう一度 `atlas.bat` を実行し、新しく開いた画面を使ってください(前の版で作ったページを開いたときも同じ帯が出ます。直し方は同じです)。
+もう一度 `atlas.bat` を実行すると集計し直します。新しい版は、`.bat` を開いたときに自動で取り込みます(`git pull` は要りません。下記「[atlas.exe の用意と更新](#atlasexe-の用意と更新)」)。前の `atlas.bat` の黒い窓が開いたままだと、更新前のサーバが動き続け、画面の上に「画面とサーバの版が違います」と出ます。その黒い窓を閉じてから、もう一度 `atlas.bat` を実行し、新しく開いた画面を使ってください(前の版で作ったページを開いたときも同じ帯が出ます。直し方は同じです)。
 
 ### 初期設定(setup.bat)
 
@@ -65,11 +65,17 @@ GitHub Copilot のセッションログ(`%USERPROFILE%\.copilot`)を手元で集
 
 ## atlas.exe の用意と更新
 
-起動用の `.bat`(`atlas.bat`・`setup.bat`・`upload-project.bat`・`schedule-upload.bat`・`open-folder.bat`)は、最初に `scripts\ensure-atlas.ps1` を動かして、`bin\atlas.exe` がこのフォルダの版(`Cargo.toml` の `version`)のものかを確かめます。違えば次の順に用意します(管理者の権限は要りません)。
+起動用の `.bat`(`atlas.bat`・`setup.bat`・`upload-project.bat`・`schedule-upload.bat`・`open-folder.bat`)は、最初に `scripts\ensure-atlas.ps1` を動かして、`bin\atlas.exe` がこのフォルダの版のものかを確かめます。このフォルダの版は、今のコミットから辿れるリリースのタグ `v<x.y.z>` のうち、いちばん新しいものです(git が無いかタグが無ければ `Cargo.toml` の `version`)。違えば次の順に用意します(管理者の権限は要りません)。
 
-1. このリポジトリの GitHub のリリース `v<version>` から `atlas.exe` を取ってきて、同じリリースの `atlas.exe.sha256` と照らし合わせてから `bin\` に置きます(リポジトリは `git remote get-url origin` から決めます)。GitHub CLI(`gh`)が入っていてログインしていれば、ビルドの来歴(下記)も `gh attestation verify` で確かめ、合わなければ使いません。`gh` が無いかログインしていなければ、sha256 だけで確かめ、そのことを 1 行出します。
+1. このリポジトリの GitHub のリリース `v<版>` から `atlas.exe` を取ってきて、同じリリースの `atlas.exe.sha256` と照らし合わせてから `bin\` に置きます(リポジトリは `git remote get-url origin` から決めます)。GitHub CLI(`gh`)が入っていてログインしていれば、ビルドの来歴(下記)も `gh attestation verify` で確かめ、合わなければ使いません。`gh` が無いかログインしていなければ、sha256 だけで確かめ、そのことを 1 行出します。
 2. リリースが無いか取れなければ、ビルドに要るもの(下記)があれば、この PC でビルドします(`npm ci` → `npm run build:report` → `cargo build --release`。経過は `bin\build.log`。初めては数分かかります)。
-3. どちらもできなければ、何を入れればよいかを出します。前の版の `bin\atlas.exe` があれば、今回はそれで開き、次に開いたときにもう一度用意します(新しい版のリリースができるまでの間に `git pull` したときなど)。前の版も無ければ止まります。ビルドに要るものを入れるか、その版のリリースが出るのを待ってください。
+3. どちらもできなければ、何を入れればよいかを出します。前の版の `bin\atlas.exe` があれば、今回はそれで開き、次に開いたときにもう一度用意します(リリースを作るのに失敗したままのときなど)。前の版も無ければ止まります。ビルドに要るものを入れるか、その版のリリースが出るのを待ってください。
+
+続けて、atlas を新しい版にします(`bin\atlas.exe self-update`。毎日自動で送るタスクの「送る前に、atlas を新しい版にします」と同じ確かめ方です。下記「[毎日自動で送る](#毎日自動で送るschedule-uploadbat)」)。`git fetch` で新しいコミットとリリースのタグを取ってきて、早送りで取り込めるときだけ取り込み、その版の `bin\atlas.exe` を用意します。コミットが変わったら、git が書き換えたかもしれない `.bat` を最初から開き直します。
+
+- 次のときは新しい版にせず、今の版のまま開きます(理由を 1 行出します): `main` 以外のブランチにいる・手元にだけあるコミットがある・git が管理しているファイルを手で変えている・`atlas.bat` の画面など atlas が動いている・ネットワークにつながっていない・git で取得したフォルダではない。新しい版の `bin\atlas.exe` を用意できなければ、前の版に戻して開きます。
+- 最新なら何も出しません。
+- 開くたびの更新をしないなら、環境変数 `ATLAS_NO_AUTO_UPDATE` を `1` にします(例: `set ATLAS_NO_AUTO_UPDATE=1` の後に、同じ黒い窓から `atlas.bat` を実行する。ずっとしないなら、Windows の「環境変数を編集」でユーザーの環境変数に足します)。毎日自動で送るタスクの更新は、`schedule-upload.bat` の `u` で切り替えます。
 
 この PC でビルドするのに要るもの:
 
@@ -77,17 +83,18 @@ GitHub Copilot のセッションログ(`%USERPROFILE%\.copilot`)を手元で集
 - Rust(<https://rustup.rs/>。stable の `cargo`)
 - Windows では、Visual Studio Build Tools(<https://visualstudio.microsoft.com/visual-cpp-build-tools/>)の「C++ によるデスクトップ開発」(MSVC と Windows SDK)。Rust のリンカーと、atlas に入れる SQLite のコンパイルに使います。Visual Studio を入れてあって C++ のワークロードがあれば、それで足ります(rustup の Windows 用のインストーラーも、無ければ入れるよう案内します)。`scripts\ensure-atlas.ps1` は `vswhere.exe` で x64 の C++ のビルドツール(`Microsoft.VisualStudio.Component.VC.Tools.x86.x64`)を探し、見つからなければ PATH の `cl.exe` と `link.exe` を見ます。
 
-- 何も要らないのは、その版のリリースがあるときです。無い版(リリースの前のコミットなど)を使うときは、上のビルドに要るものが要ります。
-- 新しい版にするのは `git pull` です。`Cargo.toml` の `version` が変わっていれば、次に `.bat` を開いたときに、その版の `bin\atlas.exe` を用意し直します。同じ版のうちは、リリースから取ってきた `bin\atlas.exe` をそのまま使います(この PC でビルドしたものは、ソースが変わっていればビルドし直します)。
+- 何も要らないのは、その版のリリースがあるときです。
+- リリースは、`main` に入った変更のうち、`atlas.exe` の中身(`crates/` や画面のソースなど)が変わったものごとに、パッチ版(`v0.1.1` → `v0.1.2` …)が自動で出ます(マージから十数分)。説明書やテストだけの変更では出ません。リリースが出る前に新しいコミットを取り込んだときは、前のリリースの `bin\atlas.exe` のまま開き、リリースのタグが届いたら(次に `.bat` を開いたとき)その版にします。
+- 同じ版のうちは、リリースから取ってきた `bin\atlas.exe` をそのまま使います。この PC でビルドしたものは、ビルドに要るものがあれば、ソースが変わっていればビルドし直します(版では比べません)。ビルドに要るものが無ければ、リリースから取ってきたものと同じく版で比べるので、次のリリースに移ります。
 - 画面のサーバが前の `bin\atlas.exe` で動いたままでも置き換えられます(動いているものは別の名前に移し、次に用意するときに消します)。
 - `bin\` は git に入れません(消しても、次に `.bat` を開くと用意し直します)。
 
 ### リリースの atlas.exe を自分で確かめる
 
-リリースの `atlas.exe` は、このリポジトリの GitHub Actions(`.github/workflows/release.yml`)が、`version` を上げて `main` に入ったコミットからビルドしたものです。同じリリースに sha256 を付け、ビルドの来歴(GitHub の artifact attestation。Sigstore で署名され、どのリポジトリ・ワークフロー・コミットで作ったかを示します)を GitHub に保存しています。起動用の `.bat` はこれを自動で確かめますが、手で確かめるときは次のとおりです(`<owner>/<repo>` は取ってきたリポジトリ)。
+リリースの `atlas.exe` は、このリポジトリの GitHub Actions(`.github/workflows/release.yml`)が、`main` に入ったコミットからビルドしたものです。同じリリースに sha256 を付け、ビルドの来歴(GitHub の artifact attestation。Sigstore で署名され、どのリポジトリ・ワークフロー・コミットで作ったかを示します)を GitHub に保存しています。起動用の `.bat` はこれを自動で確かめますが、手で確かめるときは次のとおりです(`<owner>/<repo>` は取ってきたリポジトリ)。
 
 ```
-gh release download v<version> -R <owner>/<repo> -p atlas.exe -p atlas.exe.sha256
+gh release download v<版> -R <owner>/<repo> -p atlas.exe -p atlas.exe.sha256
 certutil -hashfile atlas.exe SHA256
 type atlas.exe.sha256
 gh attestation verify atlas.exe --repo <owner>/<repo> --signer-workflow <owner>/<repo>/.github/workflows/release.yml
@@ -230,7 +237,7 @@ E:\dev\atlas-logs\Player-Weapon\<セッション ID>\atlas-memo.md     そのセ
 
 自動で送るときの決まり:
 
-- **送る前に、atlas を新しい版にします**(`git pull` と同じ。版が変わっていれば、`atlas.bat` と同じく、その版の `bin\atlas.exe` をリリースから取ってくるか、この PC でビルドします)。作業メンバーは `atlas.bat` を開かなくても、新しい版で送れます。ただし、次のときは新しい版にせず、今の版のまま送ります(記録と、`schedule-upload.bat` の前回の結果に、理由とどうすれば新しい版になるかを出します):
+- **送る前に、atlas を新しい版にします**(`git pull` と同じ。リリースのタグも取ってきます。版が変わっていれば、`atlas.bat` と同じく、その版の `bin\atlas.exe` をリリースから取ってくるか、この PC でビルドします。`.bat` を開いたときにも同じ更新をします)。作業メンバーは `atlas.bat` を開かなくても、新しい版で送れます。ただし、次のときは新しい版にせず、今の版のまま送ります(記録と、`schedule-upload.bat` の前回の結果に、理由とどうすれば新しい版になるかを出します):
   - atlas のファイルを手で変えている(`git status` に出る変更がある。`out\` や `atlas.config.json` のような git が管理していないファイルは見ません。`package-lock.json` だけが変わっているときは、npm が書き換えたものとして元に戻してから新しい版にします)
   - `atlas.bat` の画面や「集計し直す」・別のフォルダを開いた画面が動いている(動いているもののコードを入れ替えないため。次の回に新しい版にします)
   - `main` 以外のブランチにいる、または手元にだけあるコミットがある(早送りで新しい版にできない)。手元にだけあるコミットが無く、`main` の履歴が書き換えられた(force push)ために早送りできないだけなら、新しい `main` に合わせ直します

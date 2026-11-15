@@ -22,6 +22,9 @@ mod upload_auto_files;
 mod upload_project;
 mod upload_schedule;
 mod version;
+// 版の形を確かめる(build.rs が使う。ここではテストだけ)
+#[cfg(test)]
+mod version_format;
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -44,6 +47,8 @@ fn main() -> ExitCode {
         Some("upload-project") => return ExitCode::from(upload_project::main(&argv[1..])),
         Some("upload-schedule") => return ExitCode::from(upload_schedule::main(&argv[1..])),
         Some("upload-auto") => return ExitCode::from(upload_auto::main(&argv[1..])),
+        // 開くたびに atlas を新しい版にする(起動用の .bat がすべて、scripts/ensure-atlas.ps1 の後に動かす。self_update.rs)
+        Some("self-update") => return ExitCode::from(self_update::main(&argv[1..])),
         _ => {}
     }
     let opts = match args::parse_cli(&argv) {
