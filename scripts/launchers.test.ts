@@ -233,7 +233,8 @@ describe('配る中身の一覧(scripts/release-shipped.txt)', () => {
     expect(rust).toContain(`pub const SHIPPED_LIST: &str = "${LIST}";`);
   });
   it('リリースは、依存の脆弱性の検査を通ってからビルドする(devDependencies も含めて見る)', () => {
-    const workflow = readFileSync(join(ROOT, '.github/workflows/release.yml'), 'utf8');
+    // Windows のランナーは core.autocrlf=true で取り出すので、改行をそろえてからジョブを切り出す
+    const workflow = readFileSync(join(ROOT, '.github/workflows/release.yml'), 'utf8').replace(/\r\n/g, '\n');
     const job = (name: string) => {
       const m = workflow.match(new RegExp(`\\n  ${name}:\\n([\\s\\S]*?)(?=\\n  [a-z][\\w-]*:\\n|$)`));
       expect(m, `ジョブ ${name}`).not.toBeNull();
