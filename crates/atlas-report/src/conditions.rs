@@ -298,7 +298,7 @@ pub fn condition_table(sessions: &[CondSession], groups: &[CondGroup]) -> Condit
         let key = m.values().next().expect("鍵が 1 つ");
         cells.entry(key.task.clone()).or_default().entry(key.condition.clone()).or_default().push(s);
         condition_set.insert(key.condition.clone());
-        if let Some(p) = s.person.as_deref() {
+        if let Some(p) = s.person.as_deref().filter(|p| !p.is_empty()) {
             people.insert(p);
         }
         members.push(Member { id: s.id.clone(), task: key.task.clone(), condition: key.condition.clone() });
@@ -332,7 +332,7 @@ pub fn condition_table(sessions: &[CondSession], groups: &[CondGroup]) -> Condit
     let shared_rows = cells
         .values()
         .flat_map(|m| m.values())
-        .filter(|list| list.iter().filter_map(|s| s.person.as_deref()).collect::<HashSet<_>>().len() > 1)
+        .filter(|list| list.iter().filter_map(|s| s.person.as_deref().filter(|p| !p.is_empty())).collect::<HashSet<_>>().len() > 1)
         .count();
     let uneven_tasks = rows.iter().filter(|r| r.iter().map(|c| c.sessions).collect::<HashSet<_>>().len() > 1).count();
     let has_tests = pooled.iter().any(|c| c.with_tests > 0);
@@ -353,6 +353,184 @@ pub fn condition_table(sessions: &[CondSession], groups: &[CondGroup]) -> Condit
         uneven_tasks,
         has_tests,
     }
+}
+
+// ---------- 表(out/tables/ の conditions.csv・test-runs.csv・test-results.csv・test-counts.csv と、sessions.csv の列) ----------
+
+use atlas_core::tables::{Cell, Table};
+
+/// 秒(整数に丸める。turns.csv の「実働(秒)」と同じ)
+fn sec(ms: Option<f64>) -> Cell {
+    ms.map_or(Cell::Null, |m| Cell::Num(js::round(m / 1000.0)))
+}
+/// nano AIU → AIU(小数 3 桁。sessions.csv の AIU と同じ)
+fn aiu_cell(nano: Option<f64>) -> Cell {
+    nano.map_or(Cell::Null, |n| Cell::Num(js::round((n / 1e9) * 1000.0) / 1000.0))
+}
+/// 割合(小数 4 桁)
+fn ratio(v: Option<f64>) -> Cell {
+    v.map_or(Cell::Null, |x| Cell::Num(js::round(x * 10000.0) / 10000.0))
+}
+/// 最初に全部通るまでの中央値のセル(数だけ。件数が足りないときと、通ったセッションが半分以下(未達)のときは空。
+/// SQLite で文字と数が混ざって、平均や比較で文字が 0 などに読まれないようにする)
+fn until(u: &UntilPass, f: impl Fn(f64) -> Cell) -> Cell {
+    match u.value {
+        Some(UntilValue::Num(v)) => f(v),
+        _ => Cell::Null,
+    }
+}
+/// 中央値が未達か(1 / 0。件数が足りなければ空)
+fn until_unreached(u: &UntilPass) -> Cell {
+    match u.value {
+        None => Cell::Null,
+        Some(v) => Cell::Bool(v == UntilValue::Unreached),
+    }
+}
+fn header(names: &[&str]) -> Vec<String> {
+    names.iter().map(|s| s.to_string()).collect()
+}
+
+/// conditions.csv の見出し
+pub const CONDITIONS_HEADER: [&str; 27] = [
+    "行",
+    "課題",
+    "条件",
+    "課題の数",
+    "件数",
+    "テストの記録なし",
+    "テストの記録あり",
+    "最後に全部通った",
+    "通った後に不合格",
+    "未達",
+    "最後に全部通った割合",
+    "通るまでの実行(中央値)",
+    "通るまでの実行が未達",
+    "通るまでの実行の母数",
+    "通るまでの実働(秒、中央値)",
+    "通るまでの実働が未達",
+    "通るまでの実働の母数",
+    "通るまでの AIU(中央値)",
+    "通るまでの AIU が未達",
+    "通るまでの AIU の母数",
+    "実働(秒、中央値)",
+    "実働の母数",
+    "AIU(中央値)",
+    "AIU の母数",
+    "ツール呼び出し",
+    "ツールの失敗・拒否",
+    "ツールの失敗・拒否の割合",
+];
+
+fn condition_row(kind: &str, c: &ConditionCell) -> Vec<Cell> {
+    vec![
+        kind.into(),
+        c.task.as_deref().unwrap_or("").into(),
+        c.condition.as_str().into(),
+        c.tasks.into(),
+        c.sessions.into(),
+        (c.sessions - c.with_tests).into(),
+        c.with_tests.into(),
+        c.passed.into(),
+        c.regressed.into(),
+        c.unreached.into(),
+        ratio(c.pass_rate),
+        until(&c.runs_to_pass, Cell::Num),
+        until_unreached(&c.runs_to_pass),
+        c.runs_to_pass.n.into(),
+        until(&c.active_to_pass, |v| sec(Some(v))),
+        until_unreached(&c.active_to_pass),
+        c.active_to_pass.n.into(),
+        until(&c.aiu_to_pass, |v| Cell::Num(js::round(v * 1000.0) / 1000.0)),
+        until_unreached(&c.aiu_to_pass),
+        c.aiu_to_pass.n.into(),
+        sec(c.active.value),
+        c.active.n.into(),
+        c.aiu.value.map_or(Cell::Null, |v| Cell::Num(js::round(v * 1000.0) / 1000.0)),
+        c.aiu.n.into(),
+        c.tools.into(),
+        c.tool_failures.into(),
+        ratio(c.failure_rate),
+    ]
+}
+
+/// 課題 × 条件の表(conditions.csv)。課題ごとの行(課題の名前の順、どの課題にも全部の条件)のあとに、条件ごとの(課題をまとめた)行。
+/// 割合と中央値は、件数が足りなければ空(画面の「—」)。最初に全部通るまでの中央値が未達なら、中央値は空で「…が未達」が 1。
+/// 母数の列で、何件から取ったかが分かる
+pub fn conditions_csv_table(t: &ConditionTable) -> Table {
+    let mut rows: Vec<Vec<Cell>> = t.rows.iter().flatten().map(|c| condition_row("課題ごと", c)).collect();
+    rows.extend(t.pooled.iter().map(|c| condition_row("条件ごと", c)));
+    Table { header: header(&CONDITIONS_HEADER), rows }
+}
+
+/// セッション id → (課題, 条件)(表の行に入ったものだけ)
+pub fn assignments(t: &ConditionTable) -> HashMap<&str, (&str, &str)> {
+    t.members.iter().map(|m| (m.id.as_str(), (m.task.as_str(), m.condition.as_str()))).collect()
+}
+
+/// sessions.csv に足す列の見出し(最初の依頼の列の前に入れる)
+pub const SESSION_COLUMNS: [&str; 9] = ["課題", "条件", "テストの実行", "最初に全部通った実行", "最後に通っていないテスト", "通るまでの実働(秒)", "通るまでの AIU", "読めなかったテストの印の行", "上限で持たなかったテストの結果"];
+
+/// sessions.csv に足す列の値(課題・条件は表の行に入ったセッションだけ。テストの列は、テストの実行があるセッションだけ。
+/// 読めなかった印の行と、1 セッションの上限で持たなかった結果は、印の行があったセッションだけ(test-*.csv に入っていないものがあると分かるように))
+pub fn session_cells(r: &SessionRecord, assign: &HashMap<&str, (&str, &str)>) -> Vec<Cell> {
+    let (task, condition) = assign.get(r.id.as_str()).copied().unwrap_or(("", ""));
+    let t = r.tests.as_ref().and_then(tests_summary);
+    vec![
+        task.into(),
+        condition.into(),
+        t.as_ref().map(|t| t.runs).into(),
+        t.as_ref().and_then(|t| t.first_pass).into(),
+        t.as_ref().map(|t| t.last_failing).into(),
+        sec(t.as_ref().and_then(|t| t.pass_active_ms)),
+        aiu_cell(t.as_ref().and_then(|t| t.pass_nano_aiu)),
+        r.tests.as_ref().map(|x| x.invalid).into(),
+        r.tests.as_ref().map(|x| x.dropped).into(),
+    ]
+}
+
+/// テストの実行・結果・件数の表(test-runs.csv・test-results.csv・test-counts.csv)
+pub struct TestTables {
+    pub runs: Table,
+    pub results: Table,
+    pub counts: Table,
+}
+
+/// テストの実行が 1 回もなければ None(見出しだけの表を書かない)
+pub fn test_tables(sessions: &[&SessionRecord], assign: &HashMap<&str, (&str, &str)>) -> Option<TestTables> {
+    let mut runs = Table { header: header(&["セッションID", "セッション名", "課題", "条件", "実行", "完了", "依頼番号", "ツール", "サブエージェント", "結果", "合格", "通っていないテスト", "実働(秒)", "AIU"]), rows: Vec::new() };
+    let mut results = Table { header: header(&["セッションID", "実行", "結果", "テスト名", "合否", "時刻"]), rows: Vec::new() };
+    let mut counts = Table { header: header(&["セッションID", "実行", "結果", "テスト名", "名前", "値"]), rows: Vec::new() };
+    for r in sessions {
+        let Some(t) = &r.tests else { continue };
+        let (task, condition) = assign.get(r.id.as_str()).copied().unwrap_or(("", ""));
+        for (i, run) in t.runs.iter().enumerate() {
+            let n = i + 1;
+            runs.rows.push(vec![
+                r.id.as_str().into(),
+                r.name.as_deref().unwrap_or("").into(),
+                task.into(),
+                condition.into(),
+                n.into(),
+                run.at.as_deref().into(),
+                run.turn.into(),
+                run.tool.as_deref().unwrap_or("").into(),
+                run.subagent.into(),
+                run.results.len().into(),
+                run.results.iter().filter(|x| x.passed).count().into(),
+                run.failing.into(),
+                sec(Some(run.active_ms)),
+                aiu_cell(run.nano_aiu),
+            ]);
+            for (j, x) in run.results.iter().enumerate() {
+                let name = x.name.as_deref().unwrap_or("");
+                results.rows.push(vec![r.id.as_str().into(), n.into(), (j + 1).into(), name.into(), x.passed.into(), x.at.as_deref().into()]);
+                for (k, v) in x.counts.iter() {
+                    counts.rows.push(vec![r.id.as_str().into(), n.into(), (j + 1).into(), name.into(), k.as_str().into(), Cell::Num(*v)]);
+                }
+            }
+        }
+    }
+    (!runs.rows.is_empty()).then_some(TestTables { runs, results, counts })
 }
 
 #[cfg(test)]
@@ -405,5 +583,42 @@ mod tests {
         assert_eq!(t.pooled.iter().map(|c| (c.sessions, c.tasks)).collect::<Vec<_>>(), [(1, 1), (4, 2)]);
         assert_eq!(t.unmatched, ["x__b__z"]);
         assert!(t.has_tests);
+    }
+
+    fn col(name: &str) -> usize {
+        CONDITIONS_HEADER.iter().position(|h| *h == name).unwrap()
+    }
+
+    #[test]
+    fn csv_rows_follow_the_table() {
+        let mut list: Vec<CondSession> = ["a", "b", "c", "d", "e"].iter().map(|id| s(id, Some(pass(2)))).collect();
+        list.push(s("f", Some(TestsSummary { runs: 3, first_pass: None, last_failing: 1, pass_active_ms: None, pass_nano_aiu: None, last_nano_aiu: None })));
+        let t = condition_table(&list, &[g("x__wiki", &["a", "b", "c", "d", "e", "f"])]);
+        let csv = conditions_csv_table(&t);
+        // 課題ごとの 1 行と、条件ごとの 1 行
+        assert_eq!(csv.rows.len(), 2);
+        let row = &csv.rows[1];
+        assert_eq!(row.len(), CONDITIONS_HEADER.len());
+        assert_eq!(row[col("行")], Cell::Str("条件ごと".into()));
+        assert_eq!(row[col("件数")], Cell::Num(6.0));
+        assert_eq!(row[col("最後に全部通った割合")], Cell::Num(0.8333));
+        // 6 件のうち 5 件が通った(どれも 2 回目): 未達を最後に並べた中央値は 2
+        assert_eq!(row[col("通るまでの実行(中央値)")], Cell::Num(2.0));
+        assert_eq!(row[col("通るまでの実行の母数")], Cell::Num(6.0));
+        // AI 使用量は、未達のセッションに記録が無いので 5 件
+        assert_eq!(row[col("通るまでの AIU の母数")], Cell::Num(5.0));
+        assert_eq!(row[col("通るまでの AIU(中央値)")], Cell::Num(2.0));
+        assert_eq!(row[col("通るまでの実働(秒、中央値)")], Cell::Num(120.0));
+        // 件数が足りない行は空、半分以下しか通っていない行は「未達」
+        let few = condition_table(&list[3..], &[g("y__plain", &["d", "e", "f"])]);
+        assert_eq!(conditions_csv_table(&few).rows[0][col("通るまでの実行(中央値)")], Cell::Null);
+        let many: Vec<CondSession> = (0..6).map(|i| s(&format!("u{i}"), Some(TestsSummary { runs: 1, first_pass: if i < 2 { Some(1) } else { None }, last_failing: 0, pass_active_ms: Some(1.0), pass_nano_aiu: None, last_nano_aiu: None }))).collect();
+        let ids: Vec<String> = (0..6).map(|i| format!("u{i}")).collect();
+        let un = condition_table(&many, &[CondGroup { raw: "z__wiki".into(), ids }]);
+        let un_row = &conditions_csv_table(&un).rows[0];
+        assert_eq!(un_row[col("通るまでの実行(中央値)")], Cell::Null);
+        assert_eq!(un_row[col("通るまでの実行が未達")], Cell::Bool(true));
+        assert_eq!(row[col("通るまでの実行が未達")], Cell::Bool(false));
+        assert_eq!(conditions_csv_table(&few).rows[0][col("通るまでの実行が未達")], Cell::Null);
     }
 }

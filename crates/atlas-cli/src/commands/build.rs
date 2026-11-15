@@ -135,7 +135,7 @@ pub fn run_build(p: &Paths, o: &BuildOptions, log: Log<'_>) -> Result<BuildResul
     // 伏せ字版では表を書かない(依頼文とパスがそのまま入るため)。前に書いた表も消す
     let tables = p.out.join("tables");
     if !o.anonymize {
-        write_tables(p, &sessions, cmd, log)?;
+        write_tables(p, &sessions, &super::metrics::condition_groups(p, &sel), cmd, log)?;
     } else if tables.exists() {
         atlas_core::fs_retry::remove_tree(&tables)?;
         log("build: 伏せ字版なので、依頼文の入った表(out/tables/)を消しました");

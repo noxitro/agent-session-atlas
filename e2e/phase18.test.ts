@@ -5,8 +5,11 @@
 //  b. タスクタグのセッションを送り(group upload)、送り先から集計し直しても同じ結果になる(生ログから読むので、別のファイルを添えない)
 //  c. 詳細ページに「テストの推移」の節が出る(印の行が無いセッションには出ない)。最後まで通らなかったセッションは「未達」
 //  d. レポート(atlas.html)には、テストの実行があるセッションだけに要約(何回目で通ったか・そこまでの実働と AI 使用量)を埋め込む
+//  e. 表(out/tables/ の CSV と atlas.sqlite)に、テストの実行・結果・件数と、課題 × 条件の表、sessions.csv の課題・条件・テストの列を書く。
+//     名前の決まりに合うタスクタグが無いときは conditions.csv を書かず、前のものも残さない
 // ログ・パス・本文はすべて架空のもの
 import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -14,6 +17,7 @@ import { extractEmbedded } from '../packages/report/src/lib/embed.ts';
 import type { ReportData } from '../packages/report/src/lib/types.ts';
 import type { SessionsFile } from '../packages/report/src/shared/types.ts';
 import { ROOT, cliCommand } from './fixture-home.ts';
+import { openReadOnly } from './sqlite.ts';
 
 const WORK = join(ROOT, 'out', 'e2e-phase18');
 const HOME = join(WORK, 'copilot-home');
@@ -198,5 +202,86 @@ describe('Phase 18: テストの結果の取り込み', () => {
     const plain = data.sessions.find((s) => s.id === S_PLAIN)!;
     expect(plain).toBeDefined();
     expect('tests' in plain).toBe(false);
+  });
+
+  it('e. 表(CSV と SQLite)に、テストの実行・結果・件数と、課題 × 条件の表を書く', async () => {
+    const tables = join(OUT, 'tables');
+    /** CSV を行と列に(この fixture の値には , と " が入らない) */
+    const read = async (f: string): Promise<string[][]> => (await readFile(join(tables, f), 'utf8')).replace(/^\uFEFF/, '').trimEnd().split('\r\n').map((l) => l.split(','));
+    // a の集計(名前の決まりに合うタスクタグが無い): テストの表は書くが、課題 × 条件の表は書かない
+    expect(existsSync(join(tables, 'test-runs.csv'))).toBe(true);
+    expect(existsSync(join(tables, 'conditions.csv'))).toBe(false);
+
+    const notes = join(WORK, 'notes-tables');
+    await mkdir(notes, { recursive: true });
+    await writeFile(join(notes, 'groups.json'), JSON.stringify({ version: 1, groups: [{ name: 'zz-task__plain__1', note: '', ids: [S_TESTS] }, { name: 'zz-task__wiki', note: '', ids: [S_UNREACHED] }, { name: 'zz-misc', note: '', ids: [S_PLAIN] }] }));
+    const r = atlas(['metrics', '--out', OUT, '--notes-dir', notes]);
+    expect(r.status, r.out).toBe(0);
+    expect(r.out).toContain('・conditions.csv・test-runs.csv・test-results.csv・test-counts.csv・atlas.sqlite');
+
+    // テストの実行 1 回 1 行(S_TESTS が 2 回、S_UNREACHED が 2 回)
+    const runs = await read('test-runs.csv');
+    expect(runs[0]).toEqual(['セッションID', 'セッション名', '課題', '条件', '実行', '完了', '依頼番号', 'ツール', 'サブエージェント', '結果', '合格', '通っていないテスト', '実働(秒)', 'AIU']);
+    expect(runs.slice(1).map((x) => x[0])).toEqual([S_TESTS, S_TESTS, S_UNREACHED, S_UNREACHED]);
+    // 1 回目: 2 分・2 AIU の時点で、2 件のうち 1 件が合格。リクエストごとの使用量の記録が無いセッションの AIU は空
+    expect(runs[1].slice(2)).toEqual(['zz-task', 'plain', '1', at(2), '1', 'powershell', '0', '2', '1', '1', '120', '2']);
+    expect(runs[4].slice(2)).toEqual(['zz-task', 'wiki', '2', at(23), '1', 'powershell', '0', '1', '0', '1', '180', '']);
+    // 結果 1 件 1 行と、件数 1 つ 1 行(名前は書いた側のまま)
+    const results = await read('test-results.csv');
+    expect(results.length - 1).toBe(7);
+    expect(results[1]).toEqual([S_TESTS, '1', '1', '描画', '0', at(2)]);
+    const counts = await read('test-counts.csv');
+    expect(counts.length - 1).toBe(10);
+    expect(counts.slice(1, 4)).toEqual([
+      [S_TESTS, '1', '1', '描画', 'assertFailures', '2'],
+      [S_TESTS, '1', '1', '描画', 'shaderErrors', '1'],
+      [S_TESTS, '1', '1', '描画', 'diffRate', '0.25'],
+    ]);
+
+    // 課題 × 条件の表: 課題ごとの行のあとに条件ごとの行。件数が足りないので、割合と中央値は空で、母数は出る
+    const cond = await read('conditions.csv');
+    expect(cond.slice(1).map((x) => x.slice(0, 5))).toEqual([
+      ['課題ごと', 'zz-task', 'plain', '1', '1'],
+      ['課題ごと', 'zz-task', 'wiki', '1', '1'],
+      ['条件ごと', '', 'plain', '1', '1'],
+      ['条件ごと', '', 'wiki', '1', '1'],
+    ]);
+    const h = cond[0];
+    const plain = cond[3];
+    expect(plain[h.indexOf('最後に全部通った')]).toBe('1');
+    expect(plain[h.indexOf('最後に全部通った割合')]).toBe('');
+    expect(plain[h.indexOf('通るまでの実行の母数')]).toBe('1');
+    expect(cond[4][h.indexOf('未達')]).toBe('1');
+    // 件数が足りない行は、未達かどうかも空
+    expect(cond[4][h.indexOf('通るまでの実行が未達')]).toBe('');
+
+    // sessions.csv に課題・条件とテストの列。決まりに合わないタグのセッションは空
+    const sessions = await read('sessions.csv');
+    const sh = sessions[0];
+    const col = (id: string, name: string): string => sessions.find((x) => x[0] === id)![sh.indexOf(name)];
+    expect(sh.indexOf('課題')).toBe(sh.indexOf('最初の依頼(先頭)') - 9);
+    expect(['課題', '条件', 'テストの実行', '最初に全部通った実行', '最後に通っていないテスト', '通るまでの実働(秒)', '通るまでの AIU'].map((n) => col(S_TESTS, n))).toEqual(['zz-task', 'plain', '2', '2', '0', '300', '5']);
+    expect(['課題', '条件', 'テストの実行', '最初に全部通った実行'].map((n) => col(S_UNREACHED, n))).toEqual(['zz-task', 'wiki', '2', '']);
+    expect(['課題', 'テストの実行'].map((n) => col(S_PLAIN, n))).toEqual(['', '']);
+    // 印の行はすべて読めて、上限にも届いていない
+    expect(['読めなかったテストの印の行', '上限で持たなかったテストの結果'].map((n) => col(S_TESTS, n))).toEqual(['0', '0']);
+    expect(col(S_PLAIN, '読めなかったテストの印の行')).toBe('');
+
+    // 同じ中身の SQLite
+    const db = await openReadOnly(join(tables, 'atlas.sqlite'));
+    try {
+      const names = db.prepare("select name from sqlite_master where type = 'table' order by 1").all().map((x) => (x as { name: string }).name);
+      for (const t of ['conditions', 'test_runs', 'test_results', 'test_counts']) expect(names).toContain(t);
+      expect(db.prepare('select count(*) n from test_counts').get()).toEqual({ n: 10 });
+      expect({ ...db.prepare('select "条件" c, "未達" u from conditions where "行" = \'条件ごと\' and "条件" = \'wiki\'').get() }).toEqual({ c: 'wiki', u: 1 });
+    } finally {
+      db.close();
+    }
+
+    // タスクタグを外して集計し直すと、前の conditions.csv を残さない
+    await writeFile(join(notes, 'groups.json'), JSON.stringify({ version: 1, groups: [] }));
+    expect(atlas(['metrics', '--out', OUT, '--notes-dir', notes]).status).toBe(0);
+    expect(existsSync(join(tables, 'conditions.csv'))).toBe(false);
+    expect(existsSync(join(tables, 'test-runs.csv'))).toBe(true);
   });
 });
