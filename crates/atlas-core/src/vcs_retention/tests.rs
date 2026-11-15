@@ -4,7 +4,7 @@
 use super::*;
 use crate::ai_changes::extract_ai_changes;
 use crate::types::CopilotEvent;
-use crate::vcs::{assert_read_only, default_run, p4_escape, p4_server_offset, vcs_env, RunResult};
+use crate::vcs::{assert_read_only, default_runner, p4_escape, p4_server_offset, run_read_only, vcs_env, RunResult};
 use serde_json::{json, Value};
 use std::path::Path;
 use std::process::Command;
@@ -465,6 +465,11 @@ type Calls = Arc<Mutex<Vec<(VcsKind, Vec<String>)>>>;
 
 /// 架空の版の履歴に、svn / p4 の読む系のコマンドだけで答える。呼ばれたコマンドは calls に残す
 fn fake_vcs(kind: VcsKind, root: &str, revs: Vec<FakeRev>) -> (VcsRunner, Calls) {
+    fake_vcs_tz(kind, root, revs, 0)
+}
+
+/// p4 の日時指定(@2026/11/01:19:00:00)を、UTC から tz_min 分ずれた地方時として読む fake_vcs(サーバの地方時を真似る)
+fn fake_vcs_tz(kind: VcsKind, root: &str, revs: Vec<FakeRev>, tz_min: i64) -> (VcsRunner, Calls) {
     let calls: Calls = Arc::new(Mutex::new(Vec::new()));
     let c2 = calls.clone();
     let root = root.to_string();
@@ -489,6 +494,7 @@ fn fake_vcs(kind: VcsKind, root: &str, revs: Vec<FakeRev>) -> (VcsRunner, Calls)
         if cmd != kind {
             return RunResult { code: -1, stdout: String::new(), stderr: format!("{} が見つかりません", cmd.as_str()) };
         }
+        let ztag = args.iter().any(|x| x == "-ztag");
         let mut a: Vec<String> = args.iter().filter(|x| !["--non-interactive", "-q", "-ztag"].contains(&x.as_str())).cloned().collect();
         if a.first().map(String::as_str) == Some("-d") {
             a.drain(0..2);
@@ -521,13 +527,23 @@ fn fake_vcs(kind: VcsKind, root: &str, revs: Vec<FakeRev>) -> (VcsRunner, Calls)
             }
             if g(0) == "changes" {
                 let spec = a.last().unwrap();
-                let r = if spec.ends_with("#have") {
-                    last
-                } else {
-                    let m = regex::Regex::new(r"@(\d+)/(\d+)/(\d+):(\d+):(\d+):(\d+)$").unwrap().captures(spec).unwrap();
-                    rev_at(&format!("{}-{}-{}T{}:{}:{}.000Z", &m[1], &m[2], &m[3], &m[4], &m[5], &m[6]))
-                };
-                return ok(r.map(|r| format!("Change {} on 2026/11/01 by zz@zz-ws 'x'\n", r.rev)).unwrap_or_default());
+                let change = |r: Option<FakeRev>| ok(r.map(|r| format!("Change {} on 2026/11/01 by zz@zz-ws 'x'\n", r.rev)).unwrap_or_default());
+                if spec.ends_with("#have") {
+                    return change(last);
+                }
+                // 地方時の日時を UTC の ISO に
+                let dates: Vec<String> = regex::Regex::new(r"@(\d+)/(\d+)/(\d+):(\d+):(\d+):(\d+)")
+                    .unwrap()
+                    .captures_iter(spec)
+                    .map(|m| jsdate::to_iso(ms_of(&format!("{}-{}-{}T{}:{}:{}.000Z", &m[1], &m[2], &m[3], &m[4], &m[5], &m[6])) - tz_min * 60_000))
+                    .collect();
+                if let [from, to] = dates.as_slice() {
+                    // 範囲(@a,@b)は -ztag で、取り込んだ時刻(UTC の秒)つき。新しい順
+                    assert!(ztag, "範囲は -ztag で読む");
+                    let out: String = revs.iter().rev().filter(|r| r.at >= *from && r.at <= *to).map(|r| format!("... change {}\n... time {}\n... user zz\n\n", r.rev, ms_of(&r.at) / 1000)).collect();
+                    return ok(out);
+                }
+                return change(rev_at(&dates[0]));
             }
             if g(0) == "print" {
                 let m = regex::Regex::new(r"^(.*)(?:@(\d+)|#have)$").unwrap().captures(g(1)).unwrap();
@@ -706,35 +722,67 @@ fn fixed_mode_and_unread_edits() {
 
 #[test]
 fn read_only_runner_and_p4_timezone() {
-    // 書く系のコマンドは実行する前に止める
+    // 書く系のコマンドは呼ぶ前に止める。run_read_only は差し替えた runner を呼ばずに止め、
+    // 既定の runner は run_read_only を通らずに直接呼ばれても起動しない(止まらなかったときに備えて、空の一時フォルダで呼ぶ)
+    let mut tmp = Tmp::new();
+    let empty = tmp.dir();
+    let called = Arc::new(Mutex::new(0));
+    let c2 = called.clone();
+    let counting: VcsRunner = Arc::new(move |_, _, _| {
+        *c2.lock().unwrap() += 1;
+        RunResult::default()
+    });
     for (kind, args) in [(VcsKind::Git, vec!["commit", "-m", "x"]), (VcsKind::Svn, vec!["update"]), (VcsKind::P4, vec!["print", "-o", "out.txt", "//d/a.c"])] {
-        let r = default_run(kind, &args.iter().map(|s| s.to_string()).collect::<Vec<_>>(), ".");
+        let a = args.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(run_read_only(&counting, kind, &a, &empty).is_err(), "{kind:?} {args:?}");
+        let r = default_runner()(kind, &a, &empty);
         assert_eq!((r.code, r.stdout.as_str()), (1, ""), "{kind:?} {args:?}");
-        assert!(!r.stderr.is_empty());
+        assert!(r.stderr.contains("止めました"), "{kind:?} {args:?}: {}", r.stderr);
     }
+    assert_eq!(*called.lock().unwrap(), 0);
 
     assert_eq!(p4_server_offset("... serverDate 2026/11/01 19:00:00 +0900 JST\n"), Some(540));
     assert_eq!(p4_server_offset("... clientName zz\n... serverDate 2026/11/01 05:00:00 -0500 EST\n"), Some(-300));
     assert_eq!(p4_server_offset("... clientName zz\n"), None);
-    // サーバの時刻(+0900)で版を探す。UTC の 10:00 はサーバの 19:00
-    let mut tmp = Tmp::new();
-    let root = tmp.dir();
-    let f = join(&root, &["a.c"]);
-    let (inner, calls) = fake_vcs(VcsKind::P4, &root, vec![rev(1, at(8, 0), &[("a.c", &["base"])])]);
-    let runner: VcsRunner = Arc::new(move |cmd, args, cwd| {
-        let mut r = inner(cmd, args, cwd);
-        if cmd == VcsKind::P4 && args.last().map(String::as_str) == Some("info") {
-            r.stdout.push_str("... serverDate 2026/11/01 19:00:00 +0900 JST\n");
-        }
-        r
-    });
-    write(&f, &["base", "ai"]);
-    let ev = session(&root, None, None, (10, 0), (11, 0), vec![ed(&f, &["ai"])]);
-    let r = &measure(&[extract_ai_changes("s1", &ev, None)], &RetentionOptions { runner, ..opts() })[0];
-    assert_eq!((r.outcome, r.counts.kept), (Outcome::Measured, 1));
-    let specs: Vec<String> = calls.lock().unwrap().iter().filter(|c| c.1.iter().any(|a| a == "changes")).filter_map(|c| c.1.last().cloned()).collect();
-    assert!(specs.iter().any(|s| s.ends_with("@2026/11/01:19:00:00")), "{specs:?}");
-    assert!(!specs.iter().any(|s| s.ends_with("@2026/11/01:10:00:00")), "{specs:?}");
+
+    // サーバの時差(p4 info の serverDate)で日時を直し、取り込んだ時刻で確かめる。
+    // 照合したときの時差と、セッションのころの時差(夏時間)が 1 時間違っても、開始時刻 10:00(UTC)の直前の版 2 を基準にする
+    let base_of = |now_min: i64, then_min: i64, timeless: bool| -> (Option<String>, Vec<String>) {
+        let mut tmp = Tmp::new();
+        let root = tmp.dir();
+        let f = join(&root, &["a.c"]);
+        let revs = vec![rev(1, at(8, 0), &[("a.c", &["old"])]), rev(2, at(9, 30), &[("a.c", &["base"])]), rev(3, at(10, 30), &[("a.c", &["base", "later"])])];
+        let (inner, calls) = fake_vcs_tz(VcsKind::P4, &root, revs, then_min);
+        let date = format!("... serverDate 2026/11/01 19:00:00 {}{:02}{:02} ZZ\n", if now_min < 0 { '-' } else { '+' }, now_min.abs() / 60, now_min.abs() % 60);
+        let runner: VcsRunner = Arc::new(move |cmd, args, cwd| {
+            let mut r = inner(cmd, args, cwd);
+            if cmd == VcsKind::P4 && args.last().map(String::as_str) == Some("info") {
+                r.stdout.push_str(&date);
+            }
+            // 取り込んだ時刻を出さないサーバを真似る
+            if timeless {
+                r.stdout = r.stdout.lines().filter(|l| !l.starts_with("... time ")).map(|l| format!("{l}\n")).collect();
+            }
+            r
+        });
+        write(&f, &["base", "ai"]);
+        let ev = session(&root, None, None, (10, 0), (11, 0), vec![ed(&f, &["ai"])]);
+        let r = &measure(&[extract_ai_changes("s1", &ev, None)], &RetentionOptions { runner, ..opts() })[0];
+        assert_eq!((r.outcome, r.counts.kept), (Outcome::Measured, 1), "{now_min} {then_min}");
+        let specs = calls.lock().unwrap().iter().filter(|c| c.1.iter().any(|a| a == "changes")).filter_map(|c| c.1.last().cloned()).collect();
+        (r.baseline.as_ref().map(|b| b.rev.clone()), specs)
+    };
+    let (rev_same, specs) = base_of(540, 540, false);
+    assert_eq!(rev_same.as_deref(), Some("2"));
+    // UTC の 10:00 はサーバの 19:00。前後 1 時間を範囲で読む
+    assert!(specs.iter().any(|s| s.ends_with("@2026/11/01:18:00:00,@2026/11/01:20:00:00")), "{specs:?}");
+    // 時差だけで決めると、+0900 → +1000 では 9:00 の版 1、+1000 → +0900 では 11:00 の版 3 になる
+    assert_eq!(base_of(540, 600, false).0.as_deref(), Some("2"));
+    assert_eq!(base_of(600, 540, false).0.as_deref(), Some("2"));
+    // 取り込んだ時刻を読めなければ確かめず、時差だけで決めた日時(サーバの 19:00)で探す。窓の前(18:00)の版 1 にはしない
+    let (rev_timeless, specs) = base_of(540, 540, true);
+    assert_eq!(rev_timeless.as_deref(), Some("2"));
+    assert!(specs.iter().any(|s| s.ends_with("...@2026/11/01:19:00:00")), "{specs:?}");
 }
 
 #[test]
@@ -774,6 +822,59 @@ fn unknown_reason_and_revision_errors() {
     let ev = session(&root, None, None, (10, 0), (11, 0), vec![ed(&f, &["ai"])]);
     let r = &measure(&[extract_ai_changes("s1", &ev, None)], &RetentionOptions { runner, ..opts() })[0];
     assert_eq!((r.outcome, r.reason), (Outcome::Unattributable, Some(UnattributableReason::ReadError)));
+
+    // 環境の失敗(ファイルが開けない)を、版が無いと取り違えない。「その版・変更が無い」と答えたときだけ baseline_missing
+    for (stderr, want) in [("open for read: zz.p4tickets: No such file or directory", UnattributableReason::ReadError), ("//zz/... - no such file(s).", UnattributableReason::BaselineMissing)] {
+        let root = tmp.dir();
+        let f = join(&root, &["a.c"]);
+        let (inner, _) = fake_vcs(VcsKind::P4, &root, vec![rev(1, at(8, 0), &[("a.c", &["base"])])]);
+        let runner: VcsRunner = Arc::new(move |cmd, args, cwd| {
+            if args.iter().any(|a| a == "changes") && !args.last().is_some_and(|a| a.ends_with("#have")) {
+                return RunResult { code: 1, stdout: String::new(), stderr: stderr.into() };
+            }
+            inner(cmd, args, cwd)
+        });
+        write(&f, &["base", "ai"]);
+        let ev = session(&root, None, None, (10, 0), (11, 0), vec![ed(&f, &["ai"])]);
+        let r = &measure(&[extract_ai_changes("s1", &ev, None)], &RetentionOptions { runner, ..opts() })[0];
+        assert_eq!((r.outcome, r.reason), (Outcome::Unattributable, Some(want)), "{stderr}");
+    }
+
+    // git: ログの開始時のコミットが無ければ baseline_missing、確かめるコマンドが失敗したら読めなかった
+    let (root, _) = git_repo(&mut tmp, &[("a.txt", &["base"])]);
+    let f = join(&root, &["a.txt"]);
+    write(&f, &["base", "ai"]);
+    let gone = "0123456789abcdef0123456789abcdef01234567";
+    let ev = session(&root, Some(&root), Some(gone), (10, 0), (11, 0), vec![ed(&f, &["ai"])]);
+    let sets = [extract_ai_changes("s1", &ev, None)];
+    assert_eq!(measure(&sets, &opts())[0].reason, Some(UnattributableReason::BaselineMissing));
+    let timeout: VcsRunner = Arc::new(|cmd, args, cwd| {
+        if args.iter().any(|a| a == "cat-file") {
+            return RunResult { code: 1, stdout: String::new(), stderr: "git が時間内に終わりませんでした".into() };
+        }
+        crate::vcs::default_run(cmd, args, cwd)
+    });
+    assert_eq!(measure(&sets, &RetentionOptions { runner: timeout, ..opts() })[0].reason, Some(UnattributableReason::ReadError));
+}
+
+#[test]
+fn evaluated_without_session_repo() {
+    // 作業フォルダに VCS が無く、ファイルの場所のリポジトリだけで照合したときも、比べた時点と見方を残す(版の印は付けない)
+    let mut tmp = Tmp::new();
+    let plain = tmp.dir();
+    let (root, _) = git_repo(&mut tmp, &[("a.txt", &["base"])]);
+    let f = join(&root, &["a.txt"]);
+    write(&f, &["base", "ai line"]);
+    git(&root, &["commit", "-q", "-am", "take ai line"], &at(24, 0));
+    let ev = session(&plain, None, None, (10, 0), (11, 0), vec![ed(&f, &["ai line"])]);
+    let sets = [extract_ai_changes("s1", &ev, None)];
+    let now = Some(ms_of(&at(24 * 20, 0)));
+    let w = &measure(&sets, &RetentionOptions { now_ms: now, ..opts() })[0];
+    assert_eq!((w.outcome, w.vcs, w.evaluated.clone()), (Outcome::Measured, None, Some(Evaluated { mode: EvalMode::Worktree, rev: None, at: at(24 * 20, 0), source: None })));
+    let fx = &measure(&sets, &RetentionOptions { mode: EvalMode::Fixed, lag_days: 7, now_ms: now, ..opts() })[0];
+    assert_eq!((fx.outcome, fx.hunks[0].status), (Outcome::Measured, RetentionStatus::Kept));
+    assert_eq!(fx.evaluated, Some(Evaluated { mode: EvalMode::Fixed, rev: None, at: at(11 + 24 * 7, 0), source: Some(RevisionSource::Estimated) }));
+    assert_eq!(summarize_retention(std::slice::from_ref(fx)).evaluated_estimated, 1);
 }
 
 fn not_measured_session() -> SessionRetention {

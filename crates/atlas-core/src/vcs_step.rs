@@ -237,11 +237,7 @@ fn hunk_of(v: &Value) -> Option<HunkRetention> {
     // 似た本文で当てた行は、直されて残った行の内訳。超えるものは使わない
     let similar_lines = count(o.get("similarLines")).filter(|n| *n <= lines.modified).unwrap_or(0);
     let tool_call_id = safe_str(o.get("toolCallId"), 200).filter(|s| !s.is_empty()).map(str::to_string);
-    let from = match o.get("from").and_then(Value::as_str) {
-        Some("diff") => Some(HunkFrom::Diff),
-        Some("args") => Some(HunkFrom::Args),
-        _ => None,
-    };
+    let from = o.get("from").and_then(Value::as_str).and_then(HunkFrom::parse);
     Some(HunkRetention { id, path: path.to_string(), status, reason, lines, at: iso_or_null(o.get("at")).map(str::to_string), similar_lines, tool_call_id, from, reason_last: true })
 }
 
@@ -288,25 +284,19 @@ pub fn parse_sender_vcs(json: &Value, id: &str) -> Option<SessionRetention> {
     let vcs = r.get("vcs").and_then(Value::as_str).and_then(VcsKind::parse);
     let baseline = obj(r.get("baseline")).and_then(|b| {
         let rev = safe_str(b.get("rev"), 200).filter(|s| !s.is_empty())?;
-        let source = match b.get("source").and_then(Value::as_str) {
-            Some("observed") => RevisionSource::Observed,
-            Some("estimated") => RevisionSource::Estimated,
-            _ => return None,
-        };
+        let source = b.get("source").and_then(Value::as_str).and_then(RevisionSource::parse)?;
         Some(Revision { rev: rev.to_string(), source })
     });
     // 照合した日時と見方は送った側のもの(この PC で集計した日時・既定の見方で埋めない)。セッションの記録に無ければ、添えたファイルの値を使う
     let sender_mode = j.get("mode").and_then(Value::as_str).and_then(EvalMode::parse);
     let sender_at = iso_or_null(j.get("computedAt"));
     let evaluated = match obj(r.get("evaluated")).and_then(|e| Some((e, e.get("mode").and_then(Value::as_str).and_then(EvalMode::parse)?))) {
-        Some((e, mode)) => {
-            let source = match e.get("source").and_then(Value::as_str) {
-                Some("observed") => Some(RevisionSource::Observed),
-                Some("estimated") => Some(RevisionSource::Estimated),
-                _ => None,
-            };
-            Some(Evaluated { mode, rev: safe_str(e.get("rev"), 200).map(str::to_string), at: iso_or_null(e.get("at")).or(sender_at).unwrap_or("").to_string(), source })
-        }
+        Some((e, mode)) => Some(Evaluated {
+            mode,
+            rev: safe_str(e.get("rev"), 200).map(str::to_string),
+            at: iso_or_null(e.get("at")).or(sender_at).unwrap_or("").to_string(),
+            source: e.get("source").and_then(Value::as_str).and_then(RevisionSource::parse),
+        }),
         None => sender_mode.map(|mode| Evaluated { mode, rev: None, at: sender_at.unwrap_or("").to_string(), source: None }),
     };
     let context = obj(r.get("provenance")).map(|p| context_sources(p.get("context"))).unwrap_or_default();

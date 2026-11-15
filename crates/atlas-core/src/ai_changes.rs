@@ -26,6 +26,19 @@ pub enum HunkFrom {
     Args,
 }
 
+impl HunkFrom {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HunkFrom::Diff => "diff",
+            HunkFrom::Args => "args",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<HunkFrom> {
+        [HunkFrom::Diff, HunkFrom::Args].into_iter().find(|k| k.as_str() == s)
+    }
+}
+
 /// AI の変更 1 まとまり(diff の連続した +/- の塊)のうち、セッションの終わりまで AI が残した追加行
 #[derive(Debug, Clone, PartialEq)]
 pub struct AiHunk {
