@@ -34,7 +34,7 @@ pub struct Term {
 /// 失敗の要因の用語の本文(要因の名前と当たる語を並べる)
 fn failure_cause_body() -> String {
     let list: Vec<String> = FAILURE_CAUSES.iter().map(|c| format!("{}({})", failure_cause_label(c), failure_cause_hint(c))).collect();
-    format!("ツールの失敗(拒否を除く)を、エラーの種類と文の 1 行目から決まった規則で分けた種類です(LLM は使いません)。エラーの文そのものは記録に残しません。上から順に見て、最初に当たったものにします: {}。以前の版で集計したセッションの失敗には要因の記録がありません(集計し直すと付きます)。", list.join("、"))
+    format!("ツールの失敗(拒否を除く)を、エラーの種類と文の 1 行目から決まった規則で分けた種類です(LLM は使いません)。エラーの文は、秘密らしい文字列を伏せたうえで先頭 1000 字までを、失敗 1 件ごとの記録(sessions.json の失敗の台帳)に残します。上から順に見て、最初に当たったものにします: {}。以前の版で集計したセッションの失敗には要因の記録がありません(集計し直すと付きます)。", list.join("、"))
 }
 
 pub static GLOSSARY: LazyLock<Vec<Term>> = LazyLock::new(|| {
@@ -50,6 +50,9 @@ pub static GLOSSARY: LazyLock<Vec<Term>> = LazyLock::new(|| {
         Term { id: "mcp", group: "mechanics", term: "MCP サーバー", body: "Model Context Protocol で外部の機能(GitHub の検索、IDE の診断など)をツールとして提供するサーバー。ツール名は「サーバー名-ツール名」で記録されるため、利用ランキングではサーバーごとに 1 行にまとめています。".into() },
         Term { id: "tool-failure-rate", group: "effort", term: "ツールの失敗率", body: "(失敗 + 拒否)÷ 結果の記録がある回数。失敗はツールがエラーを返したもの(error.code が failure など)、拒否は利用者や権限設定が実行を断ったもの(denied)です。中断などで結果の記録が無い呼び出しは分母に含めません。".into() },
         Term { id: "tool-failure-cause", group: "effort", term: "失敗の要因", body: failure_cause_body() },
+        Term { id: "failure-ledger", group: "effort", term: "失敗の台帳", body: "ツールの失敗と拒否を 1 件ずつ残した記録です(sessions.json の analysis.failures)。1 件ごとに、ツール、失敗か拒否か、失敗の要因、エラー文と引数(秘密らしい文字列を置き換え、先頭 1000 字まで)、MCP サーバー、モデル、開始時刻と所要時間、依頼の番号、エージェント、失敗の後に何をしたか、そろえたエラー文を持ちます。数え方は「ツールの失敗率」の失敗・拒否と同じです。1 セッション 500 件までで、超えた分は数だけを残します。以前の版で集計したセッションには台帳がありません(失敗が 0 件という意味ではなく、集計し直すと付きます)。詳細ページの「失敗と拒否(1 件ごと)」、out/tables/failures.csv、失敗の台帳の集計のページ(failures.html)で見られます。".into() },
+        Term { id: "failure-group", group: "effort", term: "そろえたエラー文", body: "同じ文の失敗をまとめるために、エラー文の 1 行目をそろえた形です。小文字にし、URL・パス・16 進の ID・数字・引用した部分を印に置き換え、記号を落とします。パスや数字だけが違う失敗が同じ形になります。失敗の台帳の集計のページの「繰り返している失敗」は、この形が同じものを数えています。".into() },
+        Term { id: "failure-next", group: "effort", term: "失敗の後・呼び直し", body: "失敗の台帳の 1 件ごとに、同じエージェントが失敗の後に最初に呼んだツールと、その結果を見たものです。同じツールを同じ引数で呼んだものを「呼び直し」と数えます。失敗が終わる前に始まっていた呼び出し(並行)と、失敗と同じ応答でまとめて要求された呼び出しは数えません。本体では、次のツールより先に利用者の次の依頼が来ることがあり、その後に呼び出しが無ければ「続きなし」です。".into() },
         Term { id: "lines", group: "records", term: "変更行数", body: "エージェントがファイルに加えた変更の行数(追加 / 削除)。セッション終了時の累計(session.shutdown の codeChanges)を優先し、無ければツールごとの行数(toolTelemetry)を合計します。どちらも無いセッションは「記録なし」で、合計には含めません。終了時の codeChanges が 0 行・0 件なのにファイルの変更があるときは、ツールごとの行数で数えます。サブエージェントが行った編集は行数が残らないため「記録なし(サブエージェントの変更は数えられない)」です。".into() },
         Term { id: "project-merge", group: "records", term: "プロジェクトのまとめ方", body: "ログの repository を使い、無ければ作業フォルダの git の設定(.git/config。worktree は共有の設定)の origin から「所有者/リポジトリ」を読んで束ねます。一時フォルダでの試行は「(一時フォルダ)」、ホームディレクトリそのもので開いたものは「(ホーム)」、このツール自身の工数判定の実行は「(atlas の判定)」に 1 つずつまとめます。".into() },
         Term { id: "agent", group: "mechanics", term: "agent(サブエージェント)", body: "メインのエージェントが調査や実装の一部を任せるために起動する別のエージェント。独自の文脈とトークン消費を持ちます。".into() },
@@ -125,6 +128,6 @@ mod tests {
         assert!(GLOSSARY_GROUPS.iter().all(|g| !terms_by_group(g.id).is_empty()));
         assert_eq!(GLOSSARY.iter().map(|t| t.id).collect::<HashSet<_>>().len(), GLOSSARY.len());
         assert_eq!(GLOSSARY_GROUPS.iter().map(|g| terms_by_group(g.id).len()).sum::<usize>(), GLOSSARY.len());
-        assert_eq!(GLOSSARY.iter().find(|t| t.id == "tool-failure-cause").unwrap().body, "ツールの失敗(拒否を除く)を、エラーの種類と文の 1 行目から決まった規則で分けた種類です(LLM は使いません)。エラーの文そのものは記録に残しません。上から順に見て、最初に当たったものにします: 時間切れ(timed out・timeout・タイムアウト)、上限・回数制限(quota・rate limit・too many requests・exceeded your … limit)、通信・取得の失敗(取得の失敗(status code)・リダイレクト・DNS・接続の拒否や切断)、アクセス権・禁止(アクセスが拒否・permission denied・EACCES・not allowed・blocked・unauthorized・forbidden)、一致なし(no match・置換や差分の対象の行が見つからない)、対象が見つからない(does not exist・not found・no such file・ENOENT・見つかりません)、既にある(already exists・既に存在)、引数・書式の誤り(parse error・unrecognized・invalid・required・expected・validation・out of bounds・構文)、道具が使えない(… available が無い・not running・not connected・unavailable)、応答なし(no response(応答が返らなかった))、ツール内部のエラー(exception・KeyError や TypeError などの例外・internal error・traceback・panic)、その他(上のどれにも当たらないもの(文が無いものを含む))。以前の版で集計したセッションの失敗には要因の記録がありません(集計し直すと付きます)。");
+        assert_eq!(GLOSSARY.iter().find(|t| t.id == "tool-failure-cause").unwrap().body, "ツールの失敗(拒否を除く)を、エラーの種類と文の 1 行目から決まった規則で分けた種類です(LLM は使いません)。エラーの文は、秘密らしい文字列を伏せたうえで先頭 1000 字までを、失敗 1 件ごとの記録(sessions.json の失敗の台帳)に残します。上から順に見て、最初に当たったものにします: 時間切れ(timed out・timeout・タイムアウト)、上限・回数制限(quota・rate limit・too many requests・exceeded your … limit)、通信・取得の失敗(取得の失敗(status code)・リダイレクト・DNS・接続の拒否や切断)、アクセス権・禁止(アクセスが拒否・permission denied・EACCES・not allowed・blocked・unauthorized・forbidden)、一致なし(no match・置換や差分の対象の行が見つからない)、対象が見つからない(does not exist・not found・no such file・ENOENT・見つかりません)、既にある(already exists・既に存在)、引数・書式の誤り(parse error・unrecognized・invalid・required・expected・validation・out of bounds・構文)、道具が使えない(… available が無い・not running・not connected・unavailable)、応答なし(no response(応答が返らなかった))、ツール内部のエラー(exception・KeyError や TypeError などの例外・internal error・traceback・panic)、その他(上のどれにも当たらないもの(文が無いものを含む))。以前の版で集計したセッションの失敗には要因の記録がありません(集計し直すと付きます)。");
     }
 }
