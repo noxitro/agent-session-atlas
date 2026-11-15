@@ -50,6 +50,18 @@ pub struct M365Request<'a> {
 /// 画面を操作して 1 ファイルを判定させ、返答を out_file に書く。失敗はエラー(理由はそのまま利用者に出す)
 pub type M365Driver<'a> = &'a dyn Fn(&M365Request<'_>) -> Result<()>;
 
+/// やり直しても同じ失敗(M365 Copilot の画面が無いなど)。残りのファイルを送らずに止まる
+#[derive(Debug)]
+pub struct M365FatalError(pub String);
+
+impl std::fmt::Display for M365FatalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for M365FatalError {}
+
 /// m365-uia.ps1 を Windows PowerShell で動かす
 pub fn powershell_driver(req: &M365Request<'_>) -> Result<()> {
     let args: Vec<String> = vec![
@@ -140,15 +152,20 @@ pub fn powershell_driver(req: &M365Request<'_>) -> Result<()> {
     if status.success() {
         return Ok(());
     }
-    if !error.is_empty() {
-        bail!("{error}");
-    }
     let lines: Vec<&str> = atlas_core::js::trim(&stderr).split('\n').collect();
     let tail = lines[lines.len().saturating_sub(3)..].join(" / ");
-    if !tail.is_empty() {
-        bail!("{tail}");
+    let message = if !error.is_empty() {
+        error
+    } else if !tail.is_empty() {
+        tail
+    } else {
+        format!("画面の操作が終了コード {} で止まりました", status.code().map_or_else(|| "null".into(), |c| c.to_string()))
+    };
+    // 終了コード 3 は画面が見つからないとき(やり直しても同じ)
+    if status.code() == Some(3) {
+        return Err(M365FatalError(message).into());
     }
-    bail!("画面の操作が終了コード {} で止まりました", status.code().map_or_else(|| "null".into(), |c| c.to_string()))
+    Err(anyhow!(message))
 }
 
 pub struct M365Paths {
@@ -166,6 +183,8 @@ pub struct M365Options {
     /// 送るファイルの数の上限(None は全部)
     pub limit: Option<u64>,
     pub timeout_sec: u64,
+    /// 画面の操作が途中で崩れたとき、同じファイルを新しいチャットでやり直す回数(None は既定の 2)
+    pub retries: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -187,7 +206,8 @@ pub struct M365Summary {
     pub stopped: bool,
 }
 
-pub fn run_m365_judge(p: &M365Paths, o: &M365Options, log: &dyn Fn(&str), driver: M365Driver<'_>, windows: bool) -> Result<M365Summary> {
+/// pause はやり直す前に待つ(テストでは待たない)
+pub fn run_m365_judge(p: &M365Paths, o: &M365Options, log: &dyn Fn(&str), driver: M365Driver<'_>, windows: bool, pause: &dyn Fn(Duration)) -> Result<M365Summary> {
     if !windows {
         bail!("M365 Copilot の自動操作は Windows でだけ使えます(ほかの OS では、添付ファイルを手で渡してください)");
     }
@@ -229,7 +249,33 @@ pub fn run_m365_judge(p: &M365Paths, o: &M365Options, log: &dyn Fn(&str), driver
         log(&format!("m365: [{}/{}] {name}({label} {} 件が未判定)を送ります", i + 1, todo.len(), part.sessions - part.judged));
         summary.attempted += 1;
         let progress = |m: &str| log(&format!("m365:   {m}"));
-        if let Err(e) = driver(&M365Request { attach: attach.clone(), prompt: CHAT_REQUEST, model: &o.model, timeout_sec: o.timeout_sec, out_file: reply.clone(), on_progress: &progress, script: &script }) {
+        // 利用者がほかのアプリで作業していると、画面の操作が途中で崩れることがある。新しいチャットからやり直す(画面が無いときはやり直さない)
+        let tries = 1 + o.retries.unwrap_or(2);
+        let mut failure: Option<anyhow::Error> = None;
+        for t in 1..=tries {
+            if t > 1 {
+                log(&format!("m365:   {name} をやり直します({t}/{tries} 回目)"));
+                pause(Duration::from_millis(5000));
+                atlas_core::jsfs::rm_force(&reply)?;
+            }
+            match driver(&M365Request { attach: attach.clone(), prompt: CHAT_REQUEST, model: &o.model, timeout_sec: o.timeout_sec, out_file: reply.clone(), on_progress: &progress, script: &script }) {
+                Ok(()) => {
+                    failure = None;
+                    break;
+                }
+                Err(e) => {
+                    let fatal = e.downcast_ref::<M365FatalError>().is_some();
+                    if !fatal && t < tries {
+                        log(&format!("m365:   画面の操作が崩れました: {e}"));
+                    }
+                    failure = Some(e);
+                    if fatal {
+                        break;
+                    }
+                }
+            }
+        }
+        if let Some(e) = failure {
             // 画面の状態が分からないので、残りは送らない
             summary.failed.push(M365Failure { name: name.clone(), reason: e.to_string() });
             summary.stopped = todo.len() > i + 1;
@@ -336,7 +382,8 @@ pub fn clean_copilot_reply(text: &str) -> String {
                 body.push(lines[k]);
                 k += 1;
             }
-            code.push(format!("{indent}{}", body.join("")));
+            // 画面のコードには、ノーブレークスペース(U+00A0)だけの行が混じることがある。JSON の空白として読めないので普通の空白にする
+            code.push(format!("{indent}{}", body.join("")).replace('\u{00A0}', " "));
             n += 1;
         }
         out.push(format!("```{lang}"));
@@ -419,9 +466,9 @@ mod tests {
         let calls = RefCell::new(vec![]);
         let logs = RefCell::new(Vec::<String>::new());
         let log = |m: &str| logs.borrow_mut().push(m.to_string());
-        let o = |model: &str, limit: Option<u64>| M365Options { target: ChatTarget::Effort, model: model.into(), limit, timeout_sec: 60 };
+        let o = |model: &str, limit: Option<u64>| M365Options { target: ChatTarget::Effort, model: model.into(), limit, timeout_sec: 60, retries: None };
         let rec = recorder(&calls, &["part-02.txt"]);
-        let s = run_m365_judge(&p, &o(M365_DEFAULT_MODEL, None), &log, &rec, true).unwrap();
+        let s = run_m365_judge(&p, &o(M365_DEFAULT_MODEL, None), &log, &rec, true, &|_| {}).unwrap();
         let names: Vec<String> = calls.borrow().iter().map(|c| c.0.clone()).collect();
         assert_eq!(names, ["part-01.txt", "part-02.txt", "part-03.txt"]);
         assert_eq!(calls.borrow()[0].1, CHAT_REQUEST);
@@ -439,34 +486,77 @@ mod tests {
         // 2 回目は、まだ判定できていない part-02 だけを送る
         let again = RefCell::new(vec![]);
         let rec2 = recorder(&again, &[]);
-        let s2 = run_m365_judge(&p, &o("Auto", None), &|_| {}, &rec2, true).unwrap();
+        let s2 = run_m365_judge(&p, &o("Auto", None), &|_| {}, &rec2, true, &|_| {}).unwrap();
         assert_eq!(again.borrow().iter().map(|c| c.0.clone()).collect::<Vec<_>>(), ["part-02.txt"]);
         assert_eq!((s2.attempted, s2.succeeded, s2.imported, s2.failed.len()), (1, 1, 1, 0));
         let none = RefCell::new(vec![]);
         let rec3 = recorder(&none, &[]);
-        assert_eq!(run_m365_judge(&p, &o("Auto", None), &|_| {}, &rec3, true).unwrap().attempted, 0);
+        assert_eq!(run_m365_judge(&p, &o("Auto", None), &|_| {}, &rec3, true, &|_| {}).unwrap().attempted, 0);
         assert!(none.borrow().is_empty());
     }
 
+    /// 画面が見つからないときはやり直さず、残りのファイルも送らない。--limit で送る数を絞れる。Windows 以外と、添付ファイルが無いときは止まる
     #[test]
-    fn stops_after_driver_failure_and_limits() {
+    fn stops_after_fatal_driver_failure_and_limits() {
         let (_d, p) = setup();
         let calls = RefCell::new(Vec::<String>::new());
         let broken = |req: &M365Request<'_>| -> Result<()> {
             calls.borrow_mut().push(base(&req.attach));
-            bail!("M365 Copilot の画面が見つかりません")
+            Err(M365FatalError("M365 Copilot の画面が見つかりません".into()).into())
         };
-        let o = |target, limit| M365Options { target, model: "Think Deeper".into(), limit, timeout_sec: 60 };
-        let s = run_m365_judge(&p, &o(ChatTarget::Effort, None), &|_| {}, &broken, true).unwrap();
+        let o = |target, limit| M365Options { target, model: "Think Deeper".into(), limit, timeout_sec: 60, retries: None };
+        let s = run_m365_judge(&p, &o(ChatTarget::Effort, None), &|_| {}, &broken, true, &|_| {}).unwrap();
         assert_eq!(*calls.borrow(), ["part-01.txt"]);
         assert_eq!((s.attempted, s.succeeded, s.stopped), (1, 0, true));
         assert_eq!(s.failed, vec![M365Failure { name: "part-01.txt".into(), reason: "M365 Copilot の画面が見つかりません".into() }]);
         let limited = RefCell::new(vec![]);
         let rec = recorder(&limited, &[]);
-        let s = run_m365_judge(&p, &o(ChatTarget::Effort, Some(1)), &|_| {}, &rec, true).unwrap();
+        let s = run_m365_judge(&p, &o(ChatTarget::Effort, Some(1)), &|_| {}, &rec, true, &|_| {}).unwrap();
         assert_eq!((s.attempted, s.succeeded), (1, 1));
-        assert!(run_m365_judge(&p, &o(ChatTarget::Effort, None), &|_| {}, &rec, false).unwrap_err().to_string().contains("Windows でだけ"));
-        assert!(run_m365_judge(&p, &o(ChatTarget::Turns, None), &|_| {}, &rec, true).unwrap_err().to_string().contains("添付ファイルがまだありません"));
+        assert!(run_m365_judge(&p, &o(ChatTarget::Effort, None), &|_| {}, &rec, false, &|_| {}).unwrap_err().to_string().contains("Windows でだけ"));
+        assert!(run_m365_judge(&p, &o(ChatTarget::Turns, None), &|_| {}, &rec, true, &|_| {}).unwrap_err().to_string().contains("添付ファイルがまだありません"));
+    }
+
+    /// 画面の操作が途中で崩れたら、同じファイルを既定で 2 回までやり直す。やり直しても崩れたら残りを送らない
+    #[test]
+    fn retries_part_when_driver_breaks_midway() {
+        let (_d, p) = setup();
+        let o = |retries| M365Options { target: ChatTarget::Effort, model: "Think Deeper".into(), limit: None, timeout_sec: 60, retries };
+        // part-01 は 1 回目だけ崩れる → やり直しで通り、次へ進む
+        let calls = RefCell::new(Vec::<String>::new());
+        let logs = RefCell::new(Vec::<String>::new());
+        let paused = RefCell::new(Vec::<Duration>::new());
+        let ok_calls = RefCell::new(vec![]);
+        let ok = recorder(&ok_calls, &[]);
+        let flaky = |req: &M365Request<'_>| -> Result<()> {
+            calls.borrow_mut().push(base(&req.attach));
+            if calls.borrow().len() == 1 {
+                bail!("添付した part-01.txt が 120 秒たっても見つかりません");
+            }
+            ok(req)
+        };
+        let s = run_m365_judge(&p, &o(None), &|m| logs.borrow_mut().push(m.to_string()), &flaky, true, &|d| paused.borrow_mut().push(d)).unwrap();
+        assert_eq!(*calls.borrow(), ["part-01.txt", "part-01.txt", "part-02.txt", "part-03.txt"]);
+        assert_eq!((s.attempted, s.succeeded, s.imported, s.stopped), (3, 3, 4, false));
+        assert!(s.failed.is_empty());
+        assert!(logs.borrow().iter().any(|l| l.contains("やり直します(2/3 回目)")));
+        assert!(logs.borrow().iter().any(|l| l.contains("画面の操作が崩れました: 添付した part-01.txt が 120 秒たっても見つかりません")));
+        assert_eq!(*paused.borrow(), [Duration::from_millis(5000)]);
+
+        // 毎回崩れる → 3 回送って止まる。retries: Some(0) ならやり直さない
+        std::fs::remove_file(&p.judgments).unwrap();
+        let always = RefCell::new(Vec::<String>::new());
+        let broken = |req: &M365Request<'_>| -> Result<()> {
+            always.borrow_mut().push(base(&req.attach));
+            bail!("送ってから 180 秒たっても返答が始まりません")
+        };
+        let s = run_m365_judge(&p, &o(None), &|_| {}, &broken, true, &|_| {}).unwrap();
+        assert_eq!((s.attempted, s.stopped), (1, true));
+        assert_eq!(s.failed.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["part-01.txt"]);
+        assert_eq!(*always.borrow(), ["part-01.txt", "part-01.txt", "part-01.txt"]);
+        always.borrow_mut().clear();
+        run_m365_judge(&p, &o(Some(0)), &|_| {}, &broken, true, &|_| {}).unwrap();
+        assert_eq!(*always.borrow(), ["part-01.txt"]);
     }
 
     #[test]
@@ -476,6 +566,10 @@ mod tests {
         assert!(md.contains("判定しました。"));
         assert!(md.contains("```json\n{\n  \"items\": [\n    7,\n    8\n  ]\n}\n```"), "{md}");
         assert!(!md.contains('\u{FFFC}'));
+        // ノーブレークスペースだけの行(画面のコードに混じる)は、JSON として読めるように普通の空白にする
+        let nbsp = clean_copilot_reply(&["コードをコピー", "1", "[", "2  ", "7,", "3", "\u{00A0}", "4  ", "8", "5", "]"].join("\n"));
+        let body = nbsp.split("```\n").nth(1).and_then(|b| b.split("\n```").next()).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(body).unwrap(), json!([7, 8]), "{nbsp}");
         assert_eq!(clean_copilot_reply("すみません、判定できません。"), "すみません、判定できません。\n");
     }
 
