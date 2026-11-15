@@ -1,5 +1,5 @@
 // ツールの失敗(tool.execution_complete の success: false)を、error の種類と文の 1 行目から要因に分ける。
-// 文そのものは残さない(パス・URL・秘密が入りうるため)。分類は決まった規則で、LLM は使わない。
+// 文そのものはここでは扱わない(sessions.json の失敗の台帳に、秘密らしい文字列を伏せてから残す。Rust の failure_ledger.rs)。分類は決まった規則で、LLM は使わない。
 // 規則は上から順に見て、最初に当たったものにする(「MCP error: Request timed out」は時間切れ、のように、
 // 具体的な要因を先に、どのツールにも出る言い回しを後に置く)。どれにも当たらなければ other。
 

@@ -1,5 +1,5 @@
 //! ツールの失敗(tool.execution_complete の success: false)を、error の種類と文の 1 行目から要因に分ける
-//! (packages/core/src/tool-failure.ts の移植)。文そのものは残さない。規則は上から順に見て、最初に当たったものにする。
+//! (packages/core/src/tool-failure.ts の移植)。ここでは種類だけを決める(文そのものは、失敗の台帳 failure_ledger.rs が秘密を伏せてから残す)。規則は上から順に見て、最初に当たったものにする。
 
 use crate::js::{self, JsMap};
 use crate::turns::js_re;
