@@ -11,11 +11,14 @@
 //!  - git が管理しているファイルを手で変えていない。ただし package-lock.json だけが変わっているときは、npm が書き換えたものとして元に戻してから進める
 //!  - 早送り(fast-forward)だけで新しい版になる。ただし、origin の履歴が書き換えられた(force push)だけで、手元にだけあるコミットが無いときは、新しい main に合わせ直す
 //!  - 新しい版が、前にこの PC で動かなかった版(avoid)ではない
+//!  - 新しい版のリリースが出ている(配る atlas.exe の中身が変わったのにリリースがまだ無いコミットには進めない。scripts/release-shipped.txt。
+//!    その手前の、リリースのあるコミットまでは進める)
 //!
 //! 取ってくるときは、タグも取ってくる(リリースのタグはマージの後にできるので、前に取り込んだコミットに後から付くことがある)。
 //! 実行ファイル(bin/atlas.exe)は git pull では新しくならない。取り込んだ版の実行ファイルは、起動用の .bat と同じ scripts/ensure-atlas.ps1 で用意する
 //! (HEAD から辿れるいちばん新しいタグ v<版> のリリースを取ってきて sha256 を確かめ、取れなければ Node と Rust があればここでビルドする)。
-//! コミットは変わらなくても、取り込んであるコミットに新しいタグが届いたら、その版の実行ファイルを用意する。
+//! コミットは変わらなくても、取り込んであるコミットに新しいタグが届いたら、その版の実行ファイルを用意する(前の回に用意できなかったときも、
+//! 自動で送るタスクは次の回にもう一度用意する。起動用の .bat は、毎回 ensure-atlas.ps1 が用意する)。
 //! 用意できなければ、前の版に戻して前の版の実行ファイルを用意し直す(rollback)。
 //! ダウンロードと検証とビルドの手順は .bat と同じものを使いたいので、Rust で書き直さずにスクリプトを呼ぶ(HTTP と TLS のクレートを実行ファイルに入れずに済む)。
 //! どれかで止まっても、送ること・開くことは止めない(今の版のまま続ける)。何をしたか・しなかった理由と、どうすれば新しい版になるかは、記録と結果に残す。
@@ -98,13 +101,18 @@ pub struct UpdateOptions<'a> {
     pub avoid: Option<String>,
     /// 新しい版にできなかったときに、この後どうするか(結果の文に入れる。既定は自動で送るタスクの「今の版のまま送ります」)
     pub carry_on: &'a str,
-    /// もう最新だったときは、結果を記録に書かない(起動用の .bat が開くたびに動かすので、何もしなかったときは何も出さない)
+    /// もう最新で何もしなかったときは、結果を記録に書かない(起動用の .bat が開くたびに動かすので、何もしなかったときは何も出さない)
     pub quiet_latest: bool,
+    /// 直前に scripts/ensure-atlas.ps1 で実行ファイルを今のコミットの版にそろえたか(起動用の .bat)。そろえたなら、コミットが同じときは、
+    /// 新しいリリースのタグが届いたときだけ実行ファイルを確かめる。そろえていなければ(自動で送るタスク)、毎回確かめる
+    pub exe_just_ensured: bool,
+    /// git fetch を待つ長さ(起動用の .bat は、窓の前で待つので短くする)
+    pub fetch_timeout: Duration,
 }
 
 impl<'a> UpdateOptions<'a> {
     pub fn new(repo: &'a Path, log: &'a dyn Fn(&str)) -> Self {
-        UpdateOptions { repo, log, run: None, exe_fresh: None, install_exe: None, busy: None, avoid: None, carry_on: "今の版のまま送ります", quiet_latest: false }
+        UpdateOptions { repo, log, run: None, exe_fresh: None, install_exe: None, busy: None, avoid: None, carry_on: "今の版のまま送ります", quiet_latest: false, exe_just_ensured: false, fetch_timeout: FETCH_TIMEOUT }
     }
     fn runner(&self) -> CmdRunner<'a> {
         self.run.unwrap_or(&run_cmd)
@@ -112,6 +120,10 @@ impl<'a> UpdateOptions<'a> {
 }
 
 const FETCH_TIMEOUT: Duration = Duration::from_secs(2 * 60);
+/// 起動用の .bat から開いたときの git fetch の長さ(つながらない環境で、開くたびに長く待たせない)
+const LAUNCHER_FETCH_TIMEOUT: Duration = Duration::from_secs(20);
+/// 配る atlas.exe に入るものの一覧(git の pathspec。リリースのワークフローと同じファイルを、比べるコミットから読む)
+pub const SHIPPED_LIST: &str = "scripts/release-shipped.txt";
 const GIT_TIMEOUT: Duration = Duration::from_secs(60);
 /// 実行ファイルを用意する長さ(リリースが無くてここでビルドするときは、初めてなら数分かかる)
 const ENSURE_TIMEOUT: Duration = Duration::from_secs(40 * 60);
@@ -195,22 +207,73 @@ pub fn rollback(o: &UpdateOptions<'_>, from_sha: &str) -> RollbackResult {
     RollbackResult { ok: false, reverted: true, note: format!("前の版({s})に戻しましたが、実行ファイルを前の版にできませんでした。atlas.bat を開くと用意し直します") }
 }
 
+/// v<x.y.z> の形のタグのうち、いちばん新しいもの(リリースのワークフローが付けるのはこの形だけ)。無ければ None
+fn newest_release_tag(list: &str) -> Option<String> {
+    list.lines()
+        .map(str::trim)
+        .filter_map(|t| {
+            let nums = t.strip_prefix('v')?.split('.').map(|p| if !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) { p.parse::<u64>().ok() } else { None }).collect::<Option<Vec<_>>>()?;
+            (nums.len() == 3).then(|| ((nums[0], nums[1], nums[2]), t.to_string()))
+        })
+        .max_by_key(|(k, _)| *k)
+        .map(|(_, t)| t)
+}
+
+/// コミット to のリリースがまだ無い(配る中身が、to から辿れるいちばん新しいリリースのタグより後で変わっている)とき、
+/// そのタグと、タグのコミット。待たなくてよければ None(to に配る中身の一覧が無い前の版のコミット・タグが無い・確かめられないときも None)
+fn pending_release(o: &UpdateOptions<'_>, to: &str) -> Option<(String, String)> {
+    let run = o.runner();
+    let git = |args: &[&str]| run("git", args, o.repo, GIT_TIMEOUT);
+    let list = git(&["show", &format!("{to}:{SHIPPED_LIST}")]);
+    if list.code != 0 {
+        return None;
+    }
+    let specs: Vec<&str> = list.stdout.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).collect();
+    if specs.is_empty() {
+        return None;
+    }
+    let tags = git(&["tag", "--list", "v*", "--merged", to]);
+    if tags.code != 0 {
+        return None;
+    }
+    let tag = newest_release_tag(&tags.stdout)?;
+    let mut args = vec!["diff", "--quiet", tag.as_str(), to, "--"];
+    args.extend(specs);
+    // 1 = 違いがある(リリースを待っている)。0 は同じ、ほかは確かめられない
+    if git(&args).code != 1 {
+        return None;
+    }
+    let at = git(&["rev-list", "-n", "1", &format!("refs/tags/{tag}")]);
+    let at = atlas_core::js::trim(&at.stdout).to_string();
+    (!at.is_empty()).then_some((tag, at))
+}
+
+/// コミットはそのままのときに、今のコミットの版の実行ファイルにする。しなくてよければ None、したら用意できたか。
+/// 新しいリリースのタグが届いたときと、前の回に用意できなかったときに用意する(起動用の .bat からは、直前に ensure-atlas.ps1 が
+/// 同じ確かめをしたので、新しいタグが届いたときだけ)
+fn refresh_head_exe(o: &UpdateOptions<'_>, tags_changed: bool) -> Option<bool> {
+    if (o.exe_just_ensured && !tags_changed) || exe_fresh(o) {
+        return None;
+    }
+    (o.log)(if tags_changed { "atlas の更新: 新しいリリースが出たので、その版の実行ファイルを用意します" } else { "atlas の更新: 今の版の実行ファイルを用意し直します" });
+    Some(install_exe(o))
+}
+
 /// atlas 自身を新しい版にする(できるときだけ)。失敗は結果に書き、止めない
 pub fn self_update(o: &UpdateOptions<'_>) -> AutoUpdateResult {
     let run = o.runner();
     let git = |args: &[&str]| run("git", args, o.repo, GIT_TIMEOUT);
+    let make = |outcome: &str, from: Option<&str>, to: Option<&str>, note: String| AutoUpdateResult {
+        outcome: outcome.into(),
+        from: short(from),
+        to: short(to),
+        from_sha: Some(from.map(str::to_string)),
+        to_sha: Some(to.map(str::to_string)),
+        note,
+    };
     let result = |outcome: &str, from: Option<&str>, to: Option<&str>, note: String| -> AutoUpdateResult {
-        let r = AutoUpdateResult {
-            outcome: outcome.into(),
-            from: short(from),
-            to: short(to),
-            from_sha: Some(from.map(str::to_string)),
-            to_sha: Some(to.map(str::to_string)),
-            note,
-        };
-        if !(o.quiet_latest && r.outcome == "latest") {
-            (o.log)(&format!("atlas の更新: {}", r.note));
-        }
+        let r = make(outcome, from, to, note);
+        (o.log)(&format!("atlas の更新: {}", r.note));
         r
     };
     let carry = o.carry_on;
@@ -271,7 +334,7 @@ pub fn self_update(o: &UpdateOptions<'_>) -> AutoUpdateResult {
     // タグも取ってくる(--tags)。リリースのタグは、マージの後にできる(.github/workflows/release.yml)ので、前に取り込んだコミットに
     // 後から付くことがある。ふつうの fetch も取り込むコミットに付いたタグは取ってくるが、タグを取らない設定(git clone --no-tags の
     // remote.origin.tagOpt)だと届かない。付け替えられたタグも合わせる(--force。リリースのタグはふだん付け替えない)
-    let fetch = run("git", &["fetch", "--quiet", "--tags", "--force", "origin"], o.repo, FETCH_TIMEOUT);
+    let fetch = run("git", &["fetch", "--quiet", "--tags", "--force", "origin"], o.repo, o.fetch_timeout);
     if fetch.code != 0 {
         return result("failed", from, None, format!("新しい版を取りに行けなかったので、{carry}({}。次の回にもう一度試します)", reason_of(&fetch)));
     }
@@ -281,62 +344,93 @@ pub fn self_update(o: &UpdateOptions<'_>) -> AutoUpdateResult {
     }
     let to = atlas_core::js::trim(&target.stdout).to_string();
     let from_s = from.unwrap_or_default();
+    // 取り込んであるコミットに、新しいリリースのタグが付いたか(確かめられなければ、付いたものとして扱う)
+    let tags_after = release_tags();
+    let tags_changed = tags_before.code != 0 || tags_after.code != 0 || tags_before.stdout != tags_after.stdout;
+    // コミットは変えないとき(最新・待つ・使わない)の、今の版の実行ファイルの結果(結果の文の後ろに足す)
+    let head_exe_note = |r: Option<bool>| match r {
+        None => String::new(),
+        Some(true) => "。今の版の実行ファイルは、新しいリリースのものにしました".to_string(),
+        Some(false) => "。今の版の新しいリリースの実行ファイルも用意できませんでした(次の回にもう一度試します)".to_string(),
+    };
     if to == from_s {
-        // コミットは同じでも、取り込んであるコミットに新しいリリースのタグが付いたら、その版の実行ファイルにする
-        let tags_after = release_tags();
-        if tags_before.code == 0 && tags_after.code == 0 && tags_before.stdout != tags_after.stdout && !exe_fresh(o) {
-            (o.log)("atlas の更新: 新しいリリースが出たので、その版の実行ファイルを用意します");
-            if !install_exe(o) {
-                return result("failed", from, from, format!("最新です({})が、新しいリリースの実行ファイルを用意できなかったので、{carry}(次の回にもう一度試します)", short_s(from_s)));
+        return match refresh_head_exe(o, tags_changed) {
+            None => {
+                // 何もしなかった。起動用の .bat から開くたびに動かすので、そのときは何も出さない
+                let r = make("latest", from, from, format!("最新です({})", short_s(from_s)));
+                if !o.quiet_latest {
+                    (o.log)(&format!("atlas の更新: {}", r.note));
+                }
+                r
             }
-            return result("latest", from, from, format!("最新です({})。新しいリリースの実行ファイルにしました", short_s(from_s)));
-        }
-        return result("latest", from, from, format!("最新です({})", short_s(from_s)));
-    }
-    if o.avoid.as_deref().is_some_and(|a| !a.is_empty() && a == to) {
-        return result("skipped", from, None, format!("新しい版({})は前にこの PC で動かなかったので、使いません(もっと新しい版が出たら、それにします)", short_s(&to)));
+            Some(true) => result("latest", from, from, format!("最新です({})。新しいリリースの実行ファイルにしました", short_s(from_s))),
+            Some(false) => result("failed", from, from, format!("最新です({})が、新しいリリースの実行ファイルを用意できなかったので、{carry}(次の回にもう一度試します)", short_s(from_s))),
+        };
     }
     let is_ancestor = |a: &str, b: &str| git(&["merge-base", "--is-ancestor", a, b]).code == 0;
+    // 配る中身が変わったのにリリースがまだ無いコミット(マージからリリースができるまでの数分と、リリースのワークフローが失敗したまま)には
+    // 進めない。前の版の実行ファイルで、新しい版の .bat やスクリプトを動かさないように。リリースのある、いちばん新しいコミットまでは進める
+    let waiting = pending_release(o, &to);
+    let target = waiting.as_ref().map_or(to.clone(), |(_, at)| at.clone());
+    if waiting.is_some() && (target == from_s || !is_ancestor(from_s, &target)) {
+        let tag = waiting.as_ref().map_or("", |(t, _)| t.as_str());
+        let exe = head_exe_note(refresh_head_exe(o, tags_changed));
+        return result(
+            "skipped",
+            from,
+            None,
+            format!("新しい版({})のリリースがまだ出ていない(いちばん新しいリリースは {tag})ので、まだ取り込みません。{carry}(リリースが出たら、次の回に取り込みます){exe}", short_s(&to)),
+        );
+    }
+    if o.avoid.as_deref().is_some_and(|a| !a.is_empty() && a == target) {
+        let exe = head_exe_note(refresh_head_exe(o, tags_changed));
+        return result("skipped", from, None, format!("新しい版({})は前にこの PC で動かなかったので、使いません(もっと新しい版が出たら、それにします){exe}", short_s(&target)));
+    }
     // origin の履歴が書き換えられていて(force push)、新しい main に合わせ直したか
     let mut rewritten = false;
-    if is_ancestor(from_s, &to) {
-        let merge = git(&["merge", "--ff-only", "--quiet", &to]);
+    if is_ancestor(from_s, &target) {
+        let merge = git(&["merge", "--ff-only", "--quiet", &target]);
         if merge.code != 0 {
             return result("skipped", from, None, format!("新しい版を取り込めないので、更新しません({})", reason_of(&merge)));
         }
-    } else if !before.is_empty() && before != to && is_ancestor(from_s, &before) && !is_ancestor(&before, &to) {
+    } else if !before.is_empty() && before != target && is_ancestor(from_s, &before) && !is_ancestor(&before, &target) {
         // 早送りできないのが、origin の履歴が書き換えられたためだけのとき。手で変えたファイルが無いことは確かめてあるので、
         // 新しい main に合わせ直す(--keep は、手元の変更を消さない。前の版のコミットも手元には残る)
-        let reset = git(&["reset", "--keep", &to]);
+        let reset = git(&["reset", "--keep", &target]);
         if reset.code != 0 {
             return result("skipped", from, None, format!("origin の履歴が書き換えられていて、新しい版に合わせられないので、更新しません({})", reason_of(&reset)));
         }
         rewritten = true;
         (o.log)(&format!("atlas の更新: origin の {main} の履歴が書き換えられていたので、新しい {main} に合わせました"));
     } else {
-        return result("skipped", from, None, format!("早送りだけでは新しい版にできないので、更新しません(手元にだけあるコミットがあるなど。git log {main}..HEAD で確かめられます)"));
+        let exe = head_exe_note(refresh_head_exe(o, tags_changed));
+        return result("skipped", from, None, format!("早送りだけでは新しい版にできないので、更新しません(手元にだけあるコミットがあるなど。git log {main}..HEAD で確かめられます){exe}"));
     }
-    (o.log)(&format!("atlas の更新: 新しい版({})を取り込みました", short_s(&to)));
+    (o.log)(&format!("atlas の更新: 新しい版({})を取り込みました", short_s(&target)));
     if !exe_fresh(o) {
         (o.log)("atlas の更新: 版が変わったので、新しい版の実行ファイルを用意します");
         if !install_exe(o) {
             // 新しい版のソースを、前の版の実行ファイルで動かさない(設定やファイルの形が合わないことがある)
             let back = rollback(o, from_s);
             let note = if back.ok {
-                format!("新しい版({})の実行ファイルを用意できなかったので、{}。{carry}(次の回にもう一度試します)", short_s(&to), back.note)
+                format!("新しい版({})の実行ファイルを用意できなかったので、{}。{carry}(次の回にもう一度試します)", short_s(&target), back.note)
             } else {
-                format!("新しい版({})の実行ファイルを用意できず、{}", short_s(&to), back.note)
+                format!("新しい版({})の実行ファイルを用意できず、{}", short_s(&target), back.note)
             };
-            return result("failed", from, Some(if back.reverted { from_s } else { &to }), note);
+            return result("failed", from, Some(if back.reverted { from_s } else { &target }), note);
         }
     }
     let note = format!(
-        "{} から {} に更新しました{}",
+        "{} から {} に更新しました{}{}",
         short_s(from_s),
-        short_s(&to),
-        if rewritten { format!("(origin の {main} の履歴が書き換えられていたので、新しい {main} に合わせました)") } else { String::new() }
+        short_s(&target),
+        if rewritten { format!("(origin の {main} の履歴が書き換えられていたので、新しい {main} に合わせました)") } else { String::new() },
+        match &waiting {
+            Some((tag, _)) => format!("(その先の {} はリリースがまだ出ていないので、リリース {tag} の版まで)", short_s(&to)),
+            None => String::new(),
+        }
     );
-    result("updated", from, Some(&to), note)
+    result("updated", from, Some(&target), note)
 }
 
 /// `atlas self-update` の終了コード: チェックアウトのコミットが変わった(起動用の .bat は、自分を動かし直す)
@@ -360,10 +454,7 @@ pub fn main(_argv: &[String]) -> u8 {
     if std::env::var(NO_AUTO_UPDATE_ENV).is_ok_and(|v| v == "1") {
         return 0;
     }
-    let out_dir = match std::env::var("ATLAS_OUT").ok().filter(|s| !s.is_empty()) {
-        Some(o) => crate::paths::resolve(o),
-        None => crate::paths::resolve(crate::paths::REPO_ROOT.join("out")),
-    };
+    let out_dir = crate::paths::auto_out_dir();
     let repo = crate::paths::REPO_ROOT.clone();
     let log = |line: &str| {
         use std::io::Write;
@@ -377,6 +468,8 @@ pub fn main(_argv: &[String]) -> u8 {
     o.avoid = crate::upload_auto::read_avoid(&out_dir);
     o.carry_on = "今の版のまま開きます";
     o.quiet_latest = true;
+    o.exe_just_ensured = true;
+    o.fetch_timeout = LAUNCHER_FETCH_TIMEOUT;
     let r = self_update(&o);
     let head = run_cmd("git", &["rev-parse", "HEAD"], &repo, GIT_TIMEOUT);
     let head = (head.code == 0).then(|| atlas_core::js::trim(&head.stdout).to_string());
@@ -443,6 +536,10 @@ mod tests {
         }
         /// 偽の実行ファイルの口で更新する(git は本物。この PC の設定は使わない)
         fn update(&self, fresh: bool, installs: &dyn Fn() -> bool, avoid: Option<String>, busy: Option<&dyn Fn() -> Option<String>>) -> (AutoUpdateResult, Vec<String>) {
+            self.update_as(fresh, installs, avoid, busy, false)
+        }
+        /// launcher: 起動用の .bat から(直前に ensure-atlas.ps1 で実行ファイルをそろえてある)
+        fn update_as(&self, fresh: bool, installs: &dyn Fn() -> bool, avoid: Option<String>, busy: Option<&dyn Fn() -> Option<String>>, launcher: bool) -> (AutoUpdateResult, Vec<String>) {
             let logs = RefCell::new(Vec::new());
             let log = |l: &str| logs.borrow_mut().push(l.to_string());
             let cfg = self.cfg.clone();
@@ -457,6 +554,7 @@ mod tests {
             o.install_exe = Some(installs);
             o.avoid = avoid;
             o.busy = busy;
+            o.exe_just_ensured = launcher;
             let r = self_update(&o);
             (r, logs.into_inner())
         }
@@ -574,8 +672,8 @@ mod tests {
         assert!(logs.iter().any(|l| l == "atlas の更新: 新しいリリースが出たので、その版の実行ファイルを用意します"), "{logs:?}");
         assert_eq!(*n.borrow(), 1);
         assert_eq!(r.git(&r.member, &["tag", "--list", "v*", "--merged", "HEAD"]), "v0.1.1");
-        // タグが変わらなければ、実行ファイルを確かめ直さない(開くたびに動かすので、何もしないときは速く終わる)
-        let (u, _) = r.update(false, &installs, None, None);
+        // 起動用の .bat からは、タグが変わらなければ実行ファイルを確かめ直さない(直前に ensure-atlas.ps1 が確かめた。開くたびに速く終わる)
+        let (u, _) = r.update_as(false, &installs, None, None, true);
         assert_eq!((u.outcome.as_str(), u.note.as_str()), ("latest", format!("最新です({})", &next[..7]).as_str()));
         assert_eq!(*n.borrow(), 1);
         // 付いたタグの実行ファイルを用意できなければ、今の実行ファイルのまま続ける(戻すコミットは無い)
@@ -586,12 +684,63 @@ mod tests {
         assert_eq!(u.outcome, "failed");
         assert_eq!(u.note, format!("最新です({})が、新しいリリースの実行ファイルを用意できなかったので、今の版のまま送ります(次の回にもう一度試します)", &next[..7]));
         assert_eq!(r.head(&r.member), next);
+        // 自動で送るタスクは、タグがもう届いていても、次の回にもう一度用意する(届いた回に用意できなかったら、そのままにしない)
+        let (u, logs) = r.update(false, &installs, None, None);
+        assert_eq!((u.outcome.as_str(), u.note.as_str()), ("latest", format!("最新です({})。新しいリリースの実行ファイルにしました", &next[..7]).as_str()));
+        assert!(logs.iter().any(|l| l == "atlas の更新: 今の版の実行ファイルを用意し直します"), "{logs:?}");
+        assert_eq!(*n.borrow(), 2);
         // 新しいタグがあっても、実行ファイルがもうその版なら用意しない
         r.git(&r.dev, &["tag", "v0.1.3", &next]);
         r.git(&r.dev, &["push", "-q", "origin", "v0.1.3"]);
         let (u, _) = r.update(true, &installs, None, None);
         assert_eq!(u.note, format!("最新です({})", &next[..7]));
-        assert_eq!(*n.borrow(), 1);
+        assert_eq!(*n.borrow(), 2);
+    }
+
+    #[test]
+    fn newest_release_tag_compares_numbers_and_ignores_other_tags() {
+        assert_eq!(newest_release_tag("v0.1.9\nv0.1.10\nv0.2.0-rc.1\nv1\nvx.1.2\n").as_deref(), Some("v0.1.10"));
+        assert_eq!(newest_release_tag("v0.9.0\r\nv0.10.0\r\n").as_deref(), Some("v0.10.0"));
+        assert_eq!(newest_release_tag(""), None);
+    }
+
+    #[test]
+    fn commits_whose_release_is_not_out_yet_are_not_pulled() {
+        let r = Repos::new();
+        let yes = || true;
+        // 配る中身の一覧と、そのリリース
+        fs::create_dir_all(r.dev.join("scripts")).unwrap();
+        fs::write(r.dev.join(SHIPPED_LIST), "# 配るもの\r\ncrates\r\n:(exclude)crates/*/tests/*\r\n").unwrap();
+        fs::create_dir_all(r.dev.join("crates/x/tests")).unwrap();
+        fs::write(r.dev.join("crates/x/lib.rs"), "1").unwrap();
+        let released = r.release("crates/x/lib.rs", "1");
+        r.git(&r.dev, &["tag", "v0.1.1", &released]);
+        r.git(&r.dev, &["push", "-q", "origin", "v0.1.1"]);
+        // 説明書だけのコミットは、リリースが無くても取り込む
+        let docs = r.release("README.md", "docs");
+        let (u, _) = r.update(true, &yes, None, None);
+        assert_eq!((u.outcome.as_str(), u.to_sha()), ("updated", Some(docs.as_str())));
+        // テストだけの変更も、配る中身ではない
+        let tests = r.release("crates/x/tests/t.rs", "t");
+        let (u, _) = r.update(true, &yes, None, None);
+        assert_eq!((u.outcome.as_str(), u.to_sha()), ("updated", Some(tests.as_str())));
+        // 配る中身が変わったのにリリースがまだ無いコミットには進めない(取り込んだコミットのリリースのほうが新しい)
+        let pending = r.release("crates/x/lib.rs", "2");
+        let (u, _) = r.update(true, &yes, None, None);
+        assert_eq!(u.outcome, "skipped");
+        assert_eq!(u.note, format!("新しい版({})のリリースがまだ出ていない(いちばん新しいリリースは v0.1.1)ので、まだ取り込みません。今の版のまま送ります(リリースが出たら、次の回に取り込みます)", &pending[..7]));
+        assert_eq!(r.head(&r.member), tests);
+        // リリースが出たら取り込む
+        r.git(&r.dev, &["tag", "v0.1.2", &pending]);
+        r.git(&r.dev, &["push", "-q", "origin", "v0.1.2"]);
+        let (u, _) = r.update(true, &yes, None, None);
+        assert_eq!((u.outcome.as_str(), u.to_sha()), ("updated", Some(pending.as_str())));
+        // 前のほうのコミットにいる人は、リリースのあるコミットまでは進める
+        r.git(&r.member, &["reset", "-q", "--hard", &docs]);
+        r.release("crates/x/lib.rs", "3");
+        let (u, _) = r.update(true, &yes, None, None);
+        assert_eq!((u.outcome.as_str(), u.to_sha()), ("updated", Some(pending.as_str())));
+        assert!(u.note.ends_with("はリリースがまだ出ていないので、リリース v0.1.2 の版まで)"), "{}", u.note);
     }
 
     #[test]

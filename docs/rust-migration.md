@@ -80,6 +80,7 @@ TS のファイル 1 つを Rust のモジュール 1 つに移した(`normalize
 - **その後に変えたこと(マージごとのリリース)**: 版を上げる PR を要らなくした。リリースのワークフローは、配る中身が前のリリースのタグから変わったマージごとに、パッチ版のタグとリリースを作る(実行ファイルの版はビルドのときに `ATLAS_VERSION` で渡す)。
   `ensure-atlas.ps1` が取ってくる版は、`Cargo.toml` の `version` ではなく、HEAD から辿れるいちばん新しいタグ `v<x.y.z>`(git もタグも無ければ `Cargo.toml` の `version`)。
   起動用の .bat は、開くたびに `atlas self-update`(自動で送る前の更新と同じ `self_update.rs`。タグも取ってくる)で新しい版を取り込み、コミットが変わったら 1 行の中で自分を動かし直す。
+  自動の更新は、配る中身(`scripts/release-shipped.txt`。リリースのワークフローと同じ一覧)が変わったのにリリースがまだ無いコミットには進めない。
   下の段 8 の説明のうち、版を `Cargo.toml` と比べるところと、リリースを作る条件は、この形に置き換わった(詳しくは README の「atlas.exe の用意と更新」と docs/development.md の「リリースの手順」)。
 - **配り方は「両方」**: 利用者は、チェックアウトの版(`Cargo.toml` の `version`)と同じ `v<version>` の GitHub Release があれば、そこから `atlas.exe` を取ってくる(Node も Rust も要らない)。
   無ければ、Node.js と Rust があればその PC でビルドする。どちらもできなければ、何を入れればよいかを出して止まる。

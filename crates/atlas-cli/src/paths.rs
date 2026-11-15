@@ -34,6 +34,15 @@ pub fn installed_exe() -> Option<PathBuf> {
     p.is_file().then_some(p)
 }
 
+/// 自動で送るタスク・その登録・開くたびの更新が見る出力先(atlas.bat と同じ既定の out/。環境変数 ATLAS_OUT は試すとき用)。
+/// 動いている atlas(atlas_running)を探す場所なので、3 つで同じ場所を見る
+pub fn auto_out_dir() -> PathBuf {
+    match std::env::var("ATLAS_OUT").ok().filter(|s| !s.is_empty()) {
+        Some(o) => resolve(o),
+        None => resolve(REPO_ROOT.join("out")),
+    }
+}
+
 /// Windows の canonicalize が付ける \\?\ を外す(ログやパスの比較が TS 版とずれないように)
 pub fn strip_verbatim(p: PathBuf) -> PathBuf {
     let s = p.to_string_lossy();

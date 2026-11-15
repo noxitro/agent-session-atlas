@@ -623,10 +623,7 @@ pub fn main(_argv: &[String]) -> u8 {
             Ok(ScheduleConfig { upload_root: c.upload_root, upload_projects: c.upload_projects })
         };
         // ATLAS_OUT は試すとき用(upload-auto と同じ出力先を見る)
-        let out_dir = match std::env::var("ATLAS_OUT").ok().filter(|s| !s.is_empty()) {
-            Some(o) => crate::paths::resolve(o),
-            None => crate::paths::resolve_paths(crate::paths::PathInputs { home: None, out: None, judgments: None, bundle: None, notes_dir: None }).out,
-        };
+        let out_dir = crate::paths::auto_out_dir();
         match run_schedule(&c, &ScheduleOptions::new(&sched, &config, out_dir)) {
             Ok(()) => 0,
             Err(e) => {

@@ -316,10 +316,7 @@ fn toast(title: &str, body: &str) -> Result<()> {
 /// タスクから(`atlas upload-auto [--no-update]`)
 pub fn main(argv: &[String]) -> u8 {
     // 置き場は atlas.bat と同じ既定(out/)。ATLAS_OUT は試すとき用
-    let out_dir = match std::env::var("ATLAS_OUT").ok().filter(|s| !s.is_empty()) {
-        Some(o) => crate::paths::resolve(o),
-        None => crate::paths::resolve(crate::paths::REPO_ROOT.join("out")),
-    };
+    let out_dir = crate::paths::auto_out_dir();
     let _ = std::fs::create_dir_all(&out_dir);
     let log_path = out_dir.join(AUTO_LOG_FILE);
     let env: HashMap<String, String> = std::env::vars().collect();
