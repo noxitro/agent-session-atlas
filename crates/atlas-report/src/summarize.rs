@@ -1,9 +1,9 @@
 //! SessionRecord → SessionSummary(HTML に埋め込む要約)。packages/report/src/lib/summarize.ts の移植。
 //! 生イベント・timeline・長文は落とす。
 
-use crate::anonymize::Anonymizer;
 use crate::filter::coverage_of;
 use crate::format::truncate;
+use crate::project_label::short_project_label;
 use crate::turns::turn_tuples;
 use crate::types::*;
 use atlas_core::js::JsMap;
@@ -109,7 +109,7 @@ pub fn detail_href(id: &str) -> String {
     format!("sessions/{}", detail_file_name(id))
 }
 
-pub fn summarize(r: &SessionRecord, anon: &Anonymizer, judgment: Option<&JudgmentSummary>) -> SessionSummary {
+pub fn summarize(r: &SessionRecord, judgment: Option<&JudgmentSummary>) -> SessionSummary {
     let mut by_model = JsMap::new();
     for (m, t) in r.tokens.by_model.js_entries() {
         by_model.insert(m.clone(), ModelTokenSummary { input: t.input, output: t.output, cache_read: t.cache_read, premium_requests: t.premium_requests, requests: t.requests });
@@ -160,20 +160,18 @@ pub fn summarize(r: &SessionRecord, anon: &Anonymizer, judgment: Option<&Judgmen
             causes.insert(tool.clone(), c.clone());
         }
     }
-    let name = anon.free_text(r.name.as_deref());
-    let first = anon.free_text(r.first_user_message.as_deref());
     let t = &r.tokens;
     let a = &r.analysis;
     SessionSummary {
         id: r.id.clone(),
         client: r.client.clone(),
-        project: anon.project(&r.project),
-        project_label: anon.project_label(&r.project),
+        project: r.project.clone(),
+        project_label: short_project_label(&r.project),
         project_source: r.project_source,
-        branch: anon.branch(r.branch.as_deref()),
-        person: anon.person(r.person.as_ref().and_then(|p| p.as_deref())),
-        name: name.filter(|x| !x.is_empty()).map(|x| truncate(Some(&x), SUMMARY_TEXT_CHARS)),
-        first_user_message: first.filter(|x| !x.is_empty()).map(|x| truncate(Some(&x), SUMMARY_TEXT_CHARS)),
+        branch: r.branch.clone(),
+        person: r.person.as_ref().and_then(|p| p.clone()),
+        name: r.name.as_deref().filter(|x| !x.is_empty()).map(|x| truncate(Some(x), SUMMARY_TEXT_CHARS)),
+        first_user_message: r.first_user_message.as_deref().filter(|x| !x.is_empty()).map(|x| truncate(Some(x), SUMMARY_TEXT_CHARS)),
         created_at: r.created_at.clone(),
         updated_at: r.updated_at.clone(),
         duration_ms: r.duration_ms,
@@ -221,8 +219,8 @@ pub fn summarize(r: &SessionRecord, anon: &Anonymizer, judgment: Option<&Judgmen
         turn_rows: a.turn_stats.as_ref().filter(|x| !x.is_empty()).map(|_| turn_tuples(r)),
         files: FilesSummary { changed: r.files.changed.len() as i64, created: r.files.created.len() as i64, deleted: r.files.deleted.len() as i64, session_state: r.files.session_state },
         href: detail_href(&r.id),
-        // 根拠の自由記述は HTML 本体に埋め込まない(詳細ページだけ)。伏せ字モードでは要約も出さない
-        judgment: judgment.map(|j| JudgmentSummary { rationale: None, task_summary: if anon.enabled { None } else { j.task_summary.clone() }, ..j.clone() }),
+        // 根拠の自由記述は HTML 本体に埋め込まない(詳細ページだけ)
+        judgment: judgment.map(|j| JudgmentSummary { rationale: None, ..j.clone() }),
         turn_verdicts: None,
         retention: None,
         memo: None,

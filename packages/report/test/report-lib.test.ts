@@ -1,13 +1,13 @@
 // report の画面の lib(ブラウザで動く TS)のうち、セッションの記録を作らずに確かめられるもの。
-// 記録(sessions.json の形)から集計・絞り込み・伏せ字を確かめるテストは、記録を作る normalize が Rust(crates/atlas-core)に移ったので、
+// 記録(sessions.json の形)から集計・絞り込みを確かめるテストは、記録を作る normalize が Rust(crates/atlas-core)に移ったので、
 // Rust の lib の移植(crates/atlas-report/tests/lib_reports.rs)と、TS の lib との突き合わせ(scripts/parity-lib.ts)が受け持つ。
 import { describe, expect, it } from 'vitest';
 import { effortSkew, isLowConfidence, monthRange } from '../src/lib/aggregate.ts';
-import { shortProjectLabel } from '../src/lib/anonymize.ts';
 import { embedData, extractEmbedded, serializeForScript } from '../src/lib/embed.ts';
 import { decodeFilter, emptyFilter, encodeFilter, groupIds, isEmptyFilter } from '../src/lib/filter.ts';
 import { addIds, memberGroups, parseGroups, removeIds, resolveIdPrefixes, serializeGroups } from '../src/lib/groups.ts';
 import { parseJudgments } from '../src/lib/judgments.ts';
+import { shortProjectLabel } from '../src/lib/project-label.ts';
 import { niceTicks } from '../src/lib/scale.ts';
 import { modelLabel, sharedLeads, splitLead } from '../src/lib/format.ts';
 import { GLOSSARY, GLOSSARY_GROUPS, termsByGroup } from '../src/lib/glossary.ts';
@@ -99,7 +99,7 @@ describe('groups(atlas-notes/groups.json)', () => {
   });
 });
 
-describe('anonymize', () => {
+describe('shortProjectLabel', () => {
   it('ホームディレクトリは ~ に短縮して表示する', () => {
     // Windows 形式(C:\Users\<name>)は実データの E2E(ATLAS_LIVE)で検証する。ここでは POSIX 形式で ~ 短縮を確かめる
     expect(shortProjectLabel('/home/me/.copilot/chats/c1')).toBe('~/.copilot/chats/c1');

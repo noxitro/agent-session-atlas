@@ -11,7 +11,7 @@
 // 欠測の件数・クライアント不明の残数をログに出す(out/live に atlas.html を作り直す)。
 import { spawnSync } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
-import { readFile, readdir, rm } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -188,18 +188,8 @@ describe('Phase 5 E2E: fixtures', () => {
     expect(m.byClient).not.toHaveProperty('(unknown)');
   });
 
-  it('HTML は 5MB 未満で、--anonymize では新しく出したファイルパスも出ない', async () => {
+  it('HTML は 5MB 未満', () => {
     expect(Buffer.byteLength(html)).toBeLessThan(LIMIT);
-    const anonOut = join(WORK, 'out-anon');
-    const r2 = atlas(['all', '--home', home, '--out', anonOut, '--anonymize']);
-    expect(r2.status, r2.stderr).toBe(0);
-    const files = [join(anonOut, 'atlas.html'), ...(await readdir(join(anonOut, 'sessions'))).map((f) => join(anonOut, 'sessions', f))];
-    for (const f of files) {
-      const h = await readFile(f, 'utf8');
-      for (const secret of ['synthetic-new', 'synthetic-missing', 'synthetic-empty', 'synthetic-dbonly', 'app.ts', 'old.txt', 'someone']) {
-        expect({ f, secret, found: h.includes(secret) }).toEqual({ f, secret, found: false });
-      }
-    }
   });
 });
 

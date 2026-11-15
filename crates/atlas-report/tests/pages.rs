@@ -5,7 +5,6 @@ use atlas_core::instructions::content_hash;
 use atlas_core::normalize::{normalize_session, DbInput, NormalizeInput};
 use atlas_core::types::{CopilotEvent, DbUsageRow, SessionRecord, WorkspaceInfo};
 use atlas_core::wiki::{WikiClassifier, WikiSpec};
-use atlas_report::anonymize::{create_anonymizer, identity_anonymizer, AnonSource};
 use atlas_report::build::embed_code_stamp;
 use atlas_report::coverage::{coverage_file, desktop_coverage, rule_for, CoverageCounter, Treatment};
 use atlas_report::detail::{merge_instruction_rows, render_detail_html, DetailOptions};
@@ -39,11 +38,9 @@ fn normalize(id: &str, events: Vec<CopilotEvent>, workspace: Option<WorkspaceInf
 }
 
 fn html(r: &SessionRecord) -> String {
-    let anon = identity_anonymizer();
     render_detail_html(
         r,
         &DetailOptions {
-            anon: &anon,
             css: "",
             code: "c0de",
             judgment: None,
@@ -511,8 +508,8 @@ fn transcript_setup() -> (SessionRecord, Vec<RawEvent>, tempfile::TempDir) {
     (rec, raw, dir)
 }
 
-fn topts<'a>(anon: &'a atlas_report::anonymize::Anonymizer, gen_at: &'a str, tool: ToolOutputMode, max_text: usize, max_tool: usize) -> TranscriptOptions<'a> {
-    TranscriptOptions { anon, generated_at: gen_at, tool_output: tool, max_text_chars: max_text, max_tool_chars: max_tool, gap_ms: 5 * 60_000 }
+fn topts(gen_at: &str, tool: ToolOutputMode, max_text: usize, max_tool: usize) -> TranscriptOptions<'_> {
+    TranscriptOptions { generated_at: gen_at, tool_output: tool, max_text_chars: max_text, max_tool_chars: max_tool, gap_ms: 5 * 60_000 }
 }
 
 #[test]
@@ -534,9 +531,8 @@ fn transcript_helpers() {
 fn transcript_body() {
     let (rec, raw, _dir) = transcript_setup();
     let usage = usage_rows();
-    let anon = identity_anonymizer();
     let gen_at = at(1000);
-    let r = render_transcript(&rec, Some(&raw), &usage, &topts(&anon, &gen_at, ToolOutputMode::Fail, 20_000, 4_000));
+    let r = render_transcript(&rec, Some(&raw), &usage, &topts(&gen_at, ToolOutputMode::Fail, 20_000, 4_000));
     let md = &r.markdown;
     assert_eq!(r.source, TranscriptSource::Events);
     assert_eq!(r.events, transcript_events().len());
@@ -565,35 +561,25 @@ fn transcript_body() {
 fn transcript_tool_output_and_limits() {
     let (rec, raw, _dir) = transcript_setup();
     let usage = usage_rows();
-    let anon = identity_anonymizer();
     let gen_at = at(1000);
-    let all = render_transcript(&rec, Some(&raw), &usage, &topts(&anon, &gen_at, ToolOutputMode::All, 20_000, 4_000)).markdown;
+    let all = render_transcript(&rec, Some(&raw), &usage, &topts(&gen_at, ToolOutputMode::All, 20_000, 4_000)).markdown;
     assert!(all.contains("SUCCESS_RESULT_BODY"));
     // 本文に ``` があっても囲みが壊れない(4 つ以上のバッククォートで囲む)
     assert!(all.contains("````\nSUCCESS_RESULT_BODY ```inner``` ok\n````"));
-    let none = render_transcript(&rec, Some(&raw), &usage, &topts(&anon, &gen_at, ToolOutputMode::None, 20_000, 4_000)).markdown;
+    let none = render_transcript(&rec, Some(&raw), &usage, &topts(&gen_at, ToolOutputMode::None, 20_000, 4_000)).markdown;
     assert!(!none.contains("FAILED_RESULT_BODY") && none.contains("✖ `powershell`"));
-    assert_eq!(render_transcript(&rec, Some(&raw), &usage, &topts(&anon, &gen_at, ToolOutputMode::All, 200, 4_000)).truncated, 0);
-    let tiny = render_transcript(&rec, Some(&raw), &usage, &topts(&anon, &gen_at, ToolOutputMode::All, 200, 10));
+    assert_eq!(render_transcript(&rec, Some(&raw), &usage, &topts(&gen_at, ToolOutputMode::All, 200, 4_000)).truncated, 0);
+    let tiny = render_transcript(&rec, Some(&raw), &usage, &topts(&gen_at, ToolOutputMode::All, 200, 10));
     assert!(tiny.truncated > 0);
     assert!(Regex::new(r"…\(中略 \d+ 字\)…").unwrap().is_match(&tiny.markdown));
 }
 
 #[test]
-fn transcript_anonymized_and_record_only() {
-    let (rec, raw, _dir) = transcript_setup();
-    let usage = usage_rows();
-    let anon = create_anonymizer(&[AnonSource::from(&rec)]);
+fn transcript_record_only() {
+    let (rec, _raw, _dir) = transcript_setup();
     let gen_at = at(1000);
-    let md = render_transcript(&rec, Some(&raw), &usage, &topts(&anon, &gen_at, ToolOutputMode::Fail, 20_000, 4_000)).markdown;
-    assert!(md.contains("伏せ字モード"));
-    for s in ["secret-proj", "quokka", "feature/x1", "C:\\work"] {
-        assert!(!md.contains(s), "{s}");
-    }
-    assert!(md.contains("project-01") && md.contains("branch-01") && md.contains("<path>") && md.contains("伏せ字モードのためパスは出しません") && md.contains("を直して"));
     // スナップショットに events.jsonl が無ければ sessions.json の抜粋だけで組む
-    let id = identity_anonymizer();
-    let r = render_transcript(&rec, None, &[], &topts(&id, &gen_at, ToolOutputMode::Fail, 20_000, 4_000));
+    let r = render_transcript(&rec, None, &[], &topts(&gen_at, ToolOutputMode::Fail, 20_000, 4_000));
     assert_eq!((r.source, r.events), (TranscriptSource::Record, 0));
     assert!(r.markdown.contains("### 最初の依頼") && r.markdown.contains("### 最後の応答") && r.markdown.contains("リクエスト単位の明細はありません"));
 }

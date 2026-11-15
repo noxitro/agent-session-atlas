@@ -17,8 +17,6 @@ use std::sync::LazyLock;
 #[derive(Deserialize)]
 struct Insights {
     #[serde(default)]
-    anonymized: bool,
-    #[serde(default)]
     candidates: Vec<DraftCandidate>,
 }
 
@@ -45,9 +43,6 @@ pub fn run_skill_draft(p: &Paths, o: &SkillDraftOptions, log: Log<'_>) -> Result
     }
     let text = atlas_judge::read_text(&path)?;
     let j: Insights = js::parse_json_as(&text).map_err(|e| anyhow!("{} を読めません: {e}", path.display()))?;
-    if j.anonymized {
-        bail!("伏せ字版の out/ には候補の本文が無いので下書きを作れません(通常の build で作り直してください)");
-    }
     let Some(c) = j.candidates.get((o.index as usize).wrapping_sub(1)) else {
         bail!("候補 {} はありません(候補は {} 件)", o.index, j.candidates.len());
     };
@@ -72,4 +67,18 @@ pub fn run_skill_draft(p: &Paths, o: &SkillDraftOptions, log: Log<'_>) -> Result
         if r.notes.is_empty() { String::new() } else { format!("、補足 {}", r.notes.join(" / ")) }
     ));
     Ok(file)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 前の版の build が書いた insights.json(今は書かない項目を含む)も読める
+    #[test]
+    fn reads_insights_with_unknown_fields() {
+        let text = r#"{"version":1,"generatedAt":"2026-01-01T00:00:00.000Z","anonymized":false,"sessions":2,"candidates":[{"kind":"request","key":"k","count":3,"sessions":["a","b"],"medianMs":null,"score":1,"representative":"r","examples":[],"tools":null}]}"#;
+        let j: Insights = js::parse_json_as(text).unwrap();
+        assert_eq!(j.candidates.len(), 1);
+        assert_eq!(j.candidates[0].representative.as_deref(), Some("r"));
+    }
 }

@@ -13,7 +13,6 @@
     lastDay,
     onchange,
     editable = false,
-    anonymized = false,
   }: {
     filter: FilterState;
     options: { project: Option[]; person: Option[]; client: Option[]; model: Option[]; branch: Option[]; taskCategory: Option[] };
@@ -27,7 +26,6 @@
     onchange: (patch: Partial<FilterState>) => void;
     /** serve から開き、判定のボタンがある(案内の文を分ける) */
     editable?: boolean;
-    anonymized?: boolean;
   } = $props();
 
   const label = (v: string): string => (v === UNKNOWN ? '不明' : v === NO_JUDGMENT ? '未判定' : categoryLabel(v));
@@ -147,7 +145,7 @@
           {/each}
         {/if}
       </select>
-      {#if !judged}<span class="why" id="task-category-why">工数の判定をまだ実行していないため選べません。{judgeHint('工数', { editable, anonymized })}</span>{/if}
+      {#if !judged}<span class="why" id="task-category-why">工数の判定をまだ実行していないため選べません。{judgeHint('工数', { editable })}</span>{/if}
     </label>
 
     <label class="check">

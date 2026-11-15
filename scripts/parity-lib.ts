@@ -20,7 +20,6 @@ import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import type { SessionsFile } from '../packages/report/src/shared/types.ts';
 import { aggregate, coverageBreakdown, monthRange, unusedSkills } from '../packages/report/src/lib/aggregate.ts';
-import { createAnonymizer, identityAnonymizer, shortProjectLabel } from '../packages/report/src/lib/anonymize.ts';
 import { embedData, extractEmbedded, serializeForScript } from '../packages/report/src/lib/embed.ts';
 import { execAggregate, quantilesOf } from '../packages/report/src/lib/exec.ts';
 import { effortLabel, errorTypeLabel, initiatorLabel, modeLabel, subagentFailureLabel, todoStatusLabel } from '../packages/report/src/lib/exec-labels.ts';
@@ -49,6 +48,7 @@ import { parseJudgments } from '../packages/report/src/lib/judgments.ts';
 import { backendLabel, categoryLabel, confidenceLabel, effectLabel } from '../packages/report/src/lib/judgment-labels.ts';
 import { isSafeFileName, isSafeMemoId, memoExcerpt, memoSummary } from '../packages/report/src/lib/memo.ts';
 import { packSummary } from '../packages/report/src/lib/pack.ts';
+import { shortProjectLabel } from '../packages/report/src/lib/project-label.ts';
 import { aggregateRetention, retentionByPhase, retentionItem, UNKNOWN_PHASE, type TurnStart } from '../packages/report/src/lib/retention.ts';
 import { detailFileName, summarize } from '../packages/report/src/lib/summarize.ts';
 import { turnAggregate } from '../packages/report/src/lib/turns.ts';
@@ -160,18 +160,15 @@ function dumpWith(
 
   // 要約(build.ts と同じ: summarize に判定・依頼ごとの判定・照合の結果を足す)
   const retentionById = new Map((rx?.sessions ?? []).map((r) => [r.sessionId, r]));
-  const summarizeAll = (anon: ReturnType<typeof identityAnonymizer>) =>
+  const plain = timed('summarize', () =>
     records.map((r) => {
-      const base = summarize(r, anon, judgments?.bySession.get(r.id) ?? null);
+      const base = summarize(r, judgments?.bySession.get(r.id) ?? null);
       const vt = verdicts ? verdictTuples(verdicts.bySession.get(r.id), verdicts.phases) : [];
       const rt = retentionById.get(r.id);
       return { ...base, ...(vt.length ? { turnVerdicts: vt } : {}), ...(rt ? { retention: retentionItem(rt, turnStarts(r)) } : {}) };
-    });
-  const plain = timed('summarize', () => summarizeAll(identityAnonymizer()));
-  const anon = timed('createAnonymizer', () => createAnonymizer(records));
-  const hidden = timed('summarize', () => summarizeAll(anon));
+    }),
+  );
   write('summaries', plain);
-  write('summaries-anon', hidden);
   write('packed', timed('pack', () => plain.map(packSummary)));
   const tpl = '<!doctype html><script type="application/json" id="atlas-data">__ATLAS_DATA__</script>';
   const html = timed('embed', () => embedData(tpl, { version: REPORT_DATA_VERSION, sessions: plain.map(packSummary) }));
@@ -210,14 +207,10 @@ function dumpWith(
     const xs = applyFilter(plain, f);
     const agg = timed('aggregate', () => aggregate(xs, people));
     write(`aggregate-${name}`, agg);
-    write(`highlights-${name}`, timed('highlights', () => highlights(xs, agg.usage, { filter: f, anonymized: false, installed })));
+    write(`highlights-${name}`, timed('highlights', () => highlights(xs, agg.usage, { filter: f, installed })));
     write(`turns-${name}`, { turns: turnAggregate(xs), verdicts: verdictAggregate(xs, phases), retention: aggregateRetention(xs), byPhase: [...retentionByPhase(xs).byPhase], withoutPhases: retentionByPhase(xs).withoutPhases, coverage: coverageBreakdown(xs) });
     write(`filter-${name}`, { encoded: encodeFilter(f), href: filterHref(f, 'unused-skills'), decoded: decodeFilter(encodeFilter(f)), view: decodeView(filterHref(f, 'unused-skills')), state: isStateHash(filterHref(f)), ids: xs.map((s) => s.id) });
   }
-  const hiddenScoped = applyFilter(hidden, emptyFilter());
-  const hiddenAgg = aggregate(hiddenScoped);
-  write('aggregate-anon', hiddenAgg);
-  write('highlights-anon', highlights(hiddenScoped, hiddenAgg.usage, { filter: emptyFilter(), anonymized: true, installed }));
   write('exec', execAggregate(plain));
   write('misc', {
     monthRange: monthRange('2025-11', '2026-02'),
@@ -255,12 +248,11 @@ function dumpWith(
   write('insights-stuck', stuck);
   write('insights-stuck-projects', stuckByProject(stuck, plain));
   const sources = records.map((r) => ({ id: r.id, project: r.project, analysis: r.analysis ?? { requests: [], turnTools: [], turnActiveMs: [] } }));
-  const cands = timed('skillCandidates', () => skillCandidates(sources, false));
+  const cands = timed('skillCandidates', () => skillCandidates(sources));
   write('insights-candidates', cands);
   write('insights-candidates-embedded', cands.slice(0, 30).map((c) => ({ ...c, representative: c.representative?.slice(0, 300) ?? null, examples: c.examples.slice(0, 3).map((e) => e.slice(0, 300)) })));
-  write('insights-candidates-anon', timed('skillCandidates', () => skillCandidates(sources, true)));
-  write('insights-requests', timed('requestCandidates', () => requestCandidates(sources, false)));
-  write('insights-tools', timed('toolSequenceCandidates', () => toolSequenceCandidates(sources, false)));
+  write('insights-requests', timed('requestCandidates', () => requestCandidates(sources)));
+  write('insights-tools', timed('toolSequenceCandidates', () => toolSequenceCandidates(sources)));
   const reqs = records.flatMap((r) => r.analysis?.requests ?? []);
   write(
     'insights-normalize',
@@ -285,17 +277,7 @@ function dumpWith(
     records.map((r) => [truncate(r.firstUserMessage, 48), r.cwd ? pathParts(r.cwd) : null, detailFileName(r.id), r.models.map(modelLabel), shortProjectLabel(r.project)]),
   );
 
-  // 伏せ字・表示名・メモ・グループ・用語
-  const scrubbed = records.map((r) => [
-    anon.scrub(r.cwd ?? ''),
-    anon.scrub(`failed at ${r.cwd ?? ''}\\src\\a.ts in ${r.project} on ${r.branch ?? 'main'}`),
-    anon.scrub(`${(r.repository ?? r.project).toUpperCase()} and ${r.gitRoot ?? ''}/x y.txt`),
-    anon.project(r.project),
-    anon.projectLabel(r.project),
-    anon.branch(r.branch),
-    anon.person(r.person ?? null),
-  ]);
-  write('anonymize', { scrubbed, warnings: groups.warnings.map((w) => anon.scrub(w)) });
+  // 表示名・メモ・グループ・用語
   const keys = (m: Record<string, unknown>): string[] => Object.keys(m);
   const all2 = execAggregate(plain);
   // 本体の (モデル, 推論強度)。画面は要約から、Rust(sessions.csv)は sessions.json の記録から決める

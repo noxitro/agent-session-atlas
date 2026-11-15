@@ -30,19 +30,19 @@ export const HIGHLIGHT_TOP = 3;
 /** 失敗率の高いツールに挙げる下限(結果の記録がある回数) */
 export const HIGHLIGHT_RATE_MIN = 5;
 
-/** 一覧での呼び名(伏せ字モードでは本文を使わない) */
-export function sessionLabel(s: SessionSummary, anonymized: boolean): string {
-  if (anonymized || (!s.name && !s.firstUserMessage)) return `${s.projectLabel}・${date(s.createdAt)}(${s.id.slice(0, 8)})`;
+/** 一覧での呼び名(セッション名か最初の依頼。どちらも無ければプロジェクトと日付) */
+export function sessionLabel(s: SessionSummary): string {
+  if (!s.name && !s.firstUserMessage) return `${s.projectLabel}・${date(s.createdAt)}(${s.id.slice(0, 8)})`;
   return truncate(s.name || s.firstUserMessage || '', 48);
 }
 
 export function highlights(
   sessions: SessionSummary[],
   usage: UsageRanking,
-  opts: { filter: FilterState; anonymized: boolean; installed: { skills: string[]; disabled: string[] } | null },
+  opts: { filter: FilterState; installed: { skills: string[]; disabled: string[] } | null },
 ): HighlightGroup[] {
   const out: HighlightGroup[] = [];
-  const label = (s: SessionSummary): string => sessionLabel(s, opts.anonymized);
+  const label = (s: SessionSummary): string => sessionLabel(s);
 
   // 1. コストの大きいセッション: AIU、無ければ出力トークン
   const aiuTotal = sessions.reduce((a, s) => a + (s.tokens.nanoAiu ?? 0), 0);

@@ -189,7 +189,7 @@ Phase 3 での追加(互換): `items[].judge = {backend, model, ranAt}`(項目�
 
 実データのレポートをレビューした結果(2026-10-28)、(1) 空セッションのノイズ、(2) 「何を使ったか」の内訳が無い、(3) 新しいログ形式への追従漏れ、の 3 点で振り返りツールとしての価値が落ちていた。以下の 3 フェーズで直す。進め方は Phase 1〜4 と同じ(Opus 実装 → Fable レビュー + E2E 合格で次へ)。各フェーズで README の該当箇所も同じ変更で更新する。
 
-共通の制約: 元の `~/.copilot` は書かない(mtime 不変の E2E を維持)。HTML は 5MB 未満・外部参照なし。`--anonymize` で新しく出す固有名(MCP サーバー名を除くパス・リポジトリ名・ファイル名)も伏せる。fixture に新しい記録形式を足すときは生成器に架空の値で足す(実データ・匿名化した実データは使わない)。
+共通の制約: 元の `~/.copilot` は書かない(mtime 不変の E2E を維持)。HTML は 5MB 未満・外部参照なし。fixture に新しい記録形式を足すときは生成器に架空の値で足す(実データ・匿名化した実データは使わない)。
 
 ### Phase 5: 正しさとノイズ(P0)
 
@@ -218,7 +218,7 @@ E2E(`e2e/phase5.test.ts`): fixture に上の各形式(空セッション、`-5-5
 5. **プロジェクトの統合**: `repository` が無いとき、`gitRoot` の `.git/config` から origin の URL を読んで `owner/repo` を得る(worktree は `.git` ファイル → gitdir → commondir を辿る)。読み取りのみ。読めない・リモート無しはパスのまま。ホーム直下と一時フォルダ(`%TEMP%`、scratchpad)は「(ホーム)」「(一時フォルダ)」にまとめる。
 6. **AI 使用量の表示**: nano AIU は 10^9 で割った AIU で表示し(桁区切り、単位の説明を用語集に)、金額には換算しない。premium request を全体サマリと月別推移に戻す(記録のあるセッションだけの合計と明記)。
 
-E2E(`e2e/phase6.test.ts`): fixture でランキング・成功率・行数・未使用 skill・プロジェクト統合(合成の `.git/config` と worktree)の値が手計算と一致し、HTML に欄が出る。`--anonymize` でリポジトリ名・パス・ファイル名が出ない。HTML 5MB 未満。組み込みブラウザで絞り込みに追従することをオーケストレータが確認。
+E2E(`e2e/phase6.test.ts`): fixture でランキング・成功率・行数・未使用 skill・プロジェクト統合(合成の `.git/config` と worktree)の値が手計算と一致し、HTML に欄が出る。HTML 5MB 未満。組み込みブラウザで絞り込みに追従することをオーケストレータが確認。
 
 ### Phase 7: 実行の性質と要点(P2)
 
@@ -245,12 +245,12 @@ E2E(`e2e/phase7.test.ts`): fixture で各集計が手計算と一致し、todo �
 2. `atlas export`(= `build` + 記録)。`--tool-output fail|all|none`(既定 fail)、`--max-chars`。`build` の `sessions/` 削除に乗るので、素の `build` では `.md` も詳細ページのリンクも消える(古い記録を残さない)。
 3. 詳細ページの上部に「セッション記録(Markdown)を開く / 保存」(`.md` があるときだけ)。
 4. 秘密情報は形式(GitHub / OpenAI・Anthropic / AWS / Slack / Google のキー、秘密鍵、JWT、Bearer)で見つけて `[伏せました: 種類]` に置き換え、件数を出す(元の記録は書き換えない)。
-5. 伏せ字モードでは本文に scrub(仮名・`<path>`)を掛け、ファイル一覧を出さず、先頭に「自由記述の固有名は機械的に保証できない」注意を書く。
+5. 伏せ字モードでは本文に scrub(仮名・`<path>`)を掛け、ファイル一覧を出さず、先頭に「自由記述の固有名は機械的に保証できない」注意を書く(伏せ字版は後に廃止した)。
 6. `atlas-export.bat`。
 
 決めたこと: HTML に本文を埋め込まない(5MB と file:// の制約。実データの events.jsonl は 202 本で 538MB)。`.md` の生成は `build` の既定にしない(容量と時間が増えるため別コマンド。2026-11-03 に `all` は記録を作るよう改めた。下の「`all` でもセッション記録を作る」)。ブラウザ側でのファイル生成はしない(埋め込みが要るため)。
 
-E2E(`e2e/phase2.test.ts` g): fixture で全セッションに `.md` ができ、詳細ページからリンクされ、本体とサブエージェントの役 × モデルの表と依頼ごとの消費が出る。`--tool-output none` で結果の囲みが無い。`--anonymize` で fixture の固有名が出ない。素の `build` で `.md` とリンクが消える。単体(`packages/report/test/transcript.test.ts`): 架空のイベント列で経過・消費・待ち・秘密情報の伏せ字・内部ツールの除外・上限の中略・抜粋のみの形。
+E2E(`e2e/phase2.test.ts` g): fixture で全セッションに `.md` ができ、詳細ページからリンクされ、本体とサブエージェントの役 × モデルの表と依頼ごとの消費が出る。`--tool-output none` で結果の囲みが無い。素の `build` で `.md` とリンクが消える。単体(`packages/report/test/transcript.test.ts`): 架空のイベント列で経過・消費・待ち・秘密情報の伏せ字・内部ツールの除外・上限の中略・抜粋のみの形。
 
 ### Phase 9: UI/UX の磨き込み(2026-11-01)
 
@@ -275,7 +275,6 @@ E2E(`e2e/phase2.test.ts` g): fixture で全セッションに `.md` ができ、
 
 - 絞り込み行の固定表示を外し、表示中の件数だけを固定する案。
 - `.seg` の押下状態(緑ベタ)を帳票らしい印(✓ や下線)に替える案(識別性が落ちる)。
-- 伏せ字ビルドの要点を「セッション名」ではなく「規模の分布」の文に変える案。伏せ字の仮名を辞書順ではなくセッション数順(project-01 が最大)に振る案(単体テスト 5 箇所の期待値と README の記述が変わる)。
 - 詳細ページから戻ると絞り込みが消える点(`file://` では referrer が無く、`history.back()` 相当のスクリプトを静的ページに足す必要がある)。
 - 日付入力が Tab を 3 打ずつ消費する点(ブラウザの `<input type="date">` の仕様。置き換えは契約外)。
 - 用語ページを別ファイルにしたままにする(HTML 1 枚だけ渡されるとリンク切れ。共有時は `glossary.html` も渡す運用で対応)。
@@ -329,8 +328,6 @@ ui-ux-pro-max(`~/.agents/skills/ui-ux-pro-max`、`scripts/search.py --domain ux`
 | 絞り込み行の固定表示を外し、表示中の件数(と解除)だけを固定する | 実施(2026-11-01 夕、下の追記) | 第一画面の 2 行分が本文に戻る。条件の変更はページ上部に戻れば済み、件数の印は残る |
 | 詳細ページから戻るときに絞り込みを保つ | 実施(2026-11-01 夕、下の追記) | `file://` では referrer が無いので、atlas.html が別ページへ移るときに sessionStorage に印を残し、詳細・用語ページの「戻る」が印を見て `history.back()` にする。直接開いたときは今のリンクのまま |
 | atlas.html の節の目次を広い画面ではサイドバーにする | 実施(2026-11-01 夕、下の追記) | 10 項目を 1 行に並べると主従が無く、表題帯が消えると欄の移動に先頭へ戻る必要があり、現在地の印も無かった |
-| 伏せ字の仮名をセッション数順に振る(project-01 が最大) | 推奨しない(保留) | 単体テスト 5 箇所と README の記述が変わる割に、伏せ字版を見せる相手には順序が無くても困らない |
-| 伏せ字ビルドの要点を「規模の分布」の文に変える | 推奨しない | 要点は根拠のセッションへのリンクが価値で、伏せ字でも project-NN で辿れる |
 | `.seg` の押下状態を帳票らしい印(✓ や下線)に替える | 推奨しない | 緑ベタの方が識別しやすく、契約の「色だけに頼らない」は `aria-pressed` + 文字で満たしている |
 | 用語ページの分類目次を atlas.html のマストヘッドにも出す(用語へ直接飛ぶ) | 推奨しない | マストヘッドの目次が 11 → 16 項目になり第一画面を圧迫する |
 | 日付入力の Tab 3 打(`<input type="date">` の仕様) | 推奨しない | 置き換えは契約外で、ブラウザ標準の方がキーボード・読み上げに強い |
@@ -348,7 +345,7 @@ ui-ux-pro-max(`~/.agents/skills/ui-ux-pro-max`、`scripts/search.py --domain ux`
 
 表の幅の扱い: 1280px 未満でサイドバーを出さないのは、13 列のセッション一覧(1360px)と 9 列のプロジェクト別が本文 1008px ではさらに窮屈になるため(brief に明記)。1280〜1440px では本文 1008〜1168px で、セッション一覧は横スクロール(`.table-scroll` の両端の影が手掛かり)、プロジェクト別も 1280px では僅かに横スクロールする。列幅は変えていない(1280px 未満の見え方と同じに保つ)。
 
-確認: 1920 / 1440 / 1280 / 1024 / 375px、ライト / ダーク、伏せ字版。typecheck 0、unit・E2E 通過。
+確認: 1920 / 1440 / 1280 / 1024 / 375px、ライト / ダーク。typecheck 0、unit・E2E 通過。
 
 ui-ux-pro-max の照合(前回と同じ要領。`--domain ux` を 7 観点、`--stack svelte` を 2 観点):
 
@@ -408,10 +405,10 @@ ui-ux-pro-max の照合(`--domain ux` 4 観点、`--stack svelte` 1 観点):
 4. **CLI**: `--group <名前>` を既存の絞り込み(`--since` / `--project` / …)と同列に追加(build / export / metrics / bundle に効く。AND。無い名前はエラー)。`--session <id>`(カンマ区切り、複数回指定可)で特定のセッションだけ。id は先頭一致で解決してよいが、曖昧なら(複数に当たれば)エラー、どれにも当たらなければエラー。さらに `atlas group list`、`atlas group add <名前> <id...> [--note <一文>]`(既存名なら ids を追記、重複は除く)、`atlas group remove <名前>` を足す。add / remove は壊れた `groups.json` を上書きしない(エラーにして直してもらう)。
 5. **埋め込みデータ**: `ReportData.groups[]`(name, note, ids)を入れ(`REPORT_DATA_VERSION` 5)、絞り込み行に「グループ」の選択肢を足す。選ぶと `filter.ids` にそのグループの ids が入る(表示上はグループ名と「n 件」、記録に無い id があれば「n 件(うち記録にあるのは m 件)」。壊れない)。手でチェックを変えて集計すると、`ids` の集合がどのグループとも一致しなくなるのでグループ名の表示は外れて「選んだ N 件」になる。グループが 1 つも無く `ids` も空のときはこの選択肢は出さない。
 6. **画面から保存**: 選択中に「グループとして保存」を押すと、`{ "name": "", "note": "", "ids": [...] }` の JSON 片をクリップボードにコピーし(`file://` でクリップボードが使えないときに備えて同じ内容を読み取り専用の textarea にも出す)、`atlas-notes/groups.json` の `groups` に貼る旨と `atlas group add` の例を添える。HTML からファイルは書けないのでこれが上限。
-7. **伏せ字**: `--anonymize` ではグループ名と note を出さず「グループ 1, 2, …」にする(自由記述のため。番号はファイルの順)。ids は不透明な id なのでそのまま。
+7. **伏せ字**: `--anonymize` ではグループ名と note を出さず「グループ 1, 2, …」にする(自由記述のため。番号はファイルの順)。ids は不透明な id なのでそのまま(伏せ字版は後に廃止した)。
 8. **容量**: atlas.html の増分は小さい(チェック欄と埋め込みグループ)。5MB 制約・外部参照なしは従来どおり。
 
-検査: 単体(filter の `ids` の encode / decode 往復と `matches`、`groups.json` の読み取りの正常・壊れた形・重複名、CLI の `--group` / `--session` / `group add` の解釈と先頭一致の解決)。E2E(phase2 系: fixture に `groups.json` を置いて `--group` で件数が変わる、`--session` で 1〜2 件になる、埋め込みデータにグループがある、`--anonymize` で名前が仮名になる、壊れたファイルで警告が出て build は成功する)。impeccable critique / audit と web-design-guidelines は従来どおりゲート。surface brief に「選択」の軸と「グループ」の選択肢を追記。ui-ux-pro-max の照合は「選択 / 一括操作 / フィルタ」の語で 1 回。ブラウザで 1024 と 1440 の幅で チェック → 集計 → サイドバーの件数と印 → 解除 → グループの選択 → 保存の textarea を一通り確認してスクリーンショットを残す(`.impeccable/critique/` 配下。コミットしない)。README の絞り込みの節に「選んだセッションだけ集計」「グループ(groups.json、--group、atlas group)」「--session」を追記。atlas.bat 系は変更不要。
+検査: 単体(filter の `ids` の encode / decode 往復と `matches`、`groups.json` の読み取りの正常・壊れた形・重複名、CLI の `--group` / `--session` / `group add` の解釈と先頭一致の解決)。E2E(phase2 系: fixture に `groups.json` を置いて `--group` で件数が変わる、`--session` で 1〜2 件になる、埋め込みデータにグループがある、壊れたファイルで警告が出て build は成功する)。impeccable critique / audit と web-design-guidelines は従来どおりゲート。surface brief に「選択」の軸と「グループ」の選択肢を追記。ui-ux-pro-max の照合は「選択 / 一括操作 / フィルタ」の語で 1 回。ブラウザで 1024 と 1440 の幅で チェック → 集計 → サイドバーの件数と印 → 解除 → グループの選択 → 保存の textarea を一通り確認してスクリーンショットを残す(`.impeccable/critique/` 配下。コミットしない)。README の絞り込みの節に「選んだセッションだけ集計」「グループ(groups.json、--group、atlas group)」「--session」を追記。atlas.bat 系は変更不要。
 
 #### 実施(2026-11-01 夜、第 1 段)
 
@@ -420,12 +417,12 @@ ui-ux-pro-max の照合(`--domain ux` 4 観点、`--stack svelte` 1 観点):
 1. **純関数と読み書き**: `packages/report/src/lib/groups.ts`(`parseGroups` / `serializeGroups` / `groupSnippet` / `resolveIdPrefixes`。ブラウザと Node の両方から使う)と `packages/report/src/groups-io.ts`(`loadGroups` / `loadGroupsForWrite` / `saveGroups`。Node だけ)。`filter.ts` に `ids` と `splitIds` / `joinIds` / `sameIds`。`matches` / `applyFilter` は ids の集合を 1 回だけ作る。
 2. **CLI**: `args.ts` に `--group` / `--session`(複数回・カンマ区切り)/ `--notes-dir` / `--note` と `group list | add | remove`。`commands.ts` は sessions.json と groups.json を読んで絞り込む共通の `selectSessions`(metrics / build / export / bundle が使う)と `resolveIdFilter`、`runGroup`。`Paths` に `notes` / `groups`。bundle の manifest の scope にも `group` / `session` を入れる。
 3. **埋め込みと画面**: `ReportData.groups` と `warnings.notes`(`REPORT_DATA_VERSION` 5)。`FilterBar` の「グループ」(グループがあるか ids が効いているときだけ出る。選ぶと記録にある id だけを ids に入れ、記録に無い id は「うち記録にあるのは m 件」で知らせる。1 件も記録に無いグループは元の ids を入れて 0 件にする = 「すべて」と区別)。`SessionTable` のチェック欄(見出し行で 50 件まとめて、`indeterminate` も出す)と操作列、`groupSnippet` の textarea(焦点を当てると全選択)。`App` が選択の集合を持ち、`filter.ids` が変わるたびに記録にある id に揃える。「選択を解除」は選択で集計中ならその条件も外す(チェックが無いのに「選んだ N 件」で絞られたままにしない)。
-4. **伏せ字**: `build.ts` で name を「グループ N」(ファイルの順)、note を '' にする。E2E で名前と note が HTML に出ないことを見る。
+4. **伏せ字**: `build.ts` で name を「グループ N」(ファイルの順)、note を '' にする。E2E で名前と note が HTML に出ないことを見る(伏せ字版は後に廃止した)。
 5. **警告の経路**: `warnings.notes[]` を全体サマリ(集計明細の注記)と脚注に出す。CLI の標準出力にも「注意」で出す。
 
 自分で決めたこと(戻し方は git): 見出し行のチェックで「このページの 50 件」をまとめて選べるようにした(ui-ux-pro-max の Bulk Actions の「Checkbox column + Action bar」に沿う。全件選択は、絞り込み自体が全件を表すので付けていない)。`group add` に `--note` を足した(形式に note があるのに CLI から書けないのは半端なため)。「グループとして保存」の JSON は記録にある id だけを出す(記録に無い id を引き継がない)。クリップボードに書けたかどうかを文で知らせ、書けなくても同じ内容を textarea に出す(Feedback / Confirmation Messages)。
 
-容量: atlas.html は伏せ字版の同じデータで 1,673,895 → 1,683,786 バイト(+9.9KB、+0.6%。うち埋め込みのグループは 2 件で 424 バイト、残りはチェック欄・操作列・保存欄・グループの選択肢の markup と script)。実データ 200 件(空を除く)の 1.68MB で 5MB 制約に遠く、外部参照の検査も通る。
+容量: atlas.html は伏せ字版(後に廃止した)の同じデータで 1,673,895 → 1,683,786 バイト(+9.9KB、+0.6%。うち埋め込みのグループは 2 件で 424 バイト、残りはチェック欄・操作列・保存欄・グループの選択肢の markup と script)。実データ 200 件(空を除く)の 1.68MB で 5MB 制約に遠く、外部参照の検査も通る。
 
 ui-ux-pro-max の照合(`--domain ux`、検索語「selection bulk actions filter」、1 回):
 
@@ -456,10 +453,10 @@ ui-ux-pro-max の照合(`--domain ux`、検索語「selection bulk actions filte
 5. **画面の編集モード**: 読み込み時に http(s) かつ token があり `GET /api/state` が成功したら編集モード。グループの一覧は埋め込みではなく API の結果を使う(CLI で足したグループも再読み込みで出る。埋め込みの groups は file:// 用に残す)。
    - セッション一覧の操作列: 「選んだ N 件だけ集計」「選択を解除」はそのまま。「グループを作成」を押すと名前と一文の入力欄がインラインで開き(ダイアログにしない)、「作成」で POST → 成功したら絞り込み行の「グループ」に即座に出て、そのグループで絞り込んだ状態にする。失敗は入力欄の下に理由を出す。
    - 絞り込み行の「グループ」で選択中のグループに「名前の変更」(インライン編集)と「削除」(確認は 1 回、インライン)を付ける。
-   - 編集モードでないとき: 「グループを作成」の代わりに「グループの作成は atlas.bat から開いたときにできます」の 1 行(伏せ字版では何も出さない)。第 1 段の JSON 片の textarea・クリップボード・コマンド例は全部外す(CSS・テスト・README・surface brief も)。
+   - 編集モードでないとき: 「グループを作成」の代わりに「グループの作成は atlas.bat から開いたときにできます」の 1 行。第 1 段の JSON 片の textarea・クリップボード・コマンド例は全部外す(CSS・テスト・README・surface brief も)。
 6. **bat**: atlas.bat / atlas-export.bat / atlas-judge.bat は最後の `start out\atlas.html` をやめ、`atlas serve` で終える(窓はサーバが終わるまで残る。失敗時の pause は従来どおり)。
 7. **設計契約の文言**: 「サーバ無しで開ける 1 ファイル」は共有用の out/atlas.html として維持(閲覧のみ)。「外部参照なし」の検査(e2e の externalRefs)は、同一オリジンの相対パス `api/…`(詳細ページからは `../api/…`)への fetch だけ許し、http(s) の参照は従来どおり禁止、に改める。file:// で開いたときに fetch の失敗で console にエラーを出さない(try/catch、1 回だけ試す)。
-8. **伏せ字版**(--anonymize)では編集モードにしない(serve されていても編集の操作を出さず、`/api/state` と groups の API は 403。heartbeat だけ受ける)。共有用なので。
+8. **伏せ字版**(--anonymize)では編集モードにしない(serve されていても編集の操作を出さず、`/api/state` と groups の API は 403。heartbeat だけ受ける)。共有用なので(伏せ字版は後に廃止した)。
 
 検査: 単体(サーバを port 0 で起動して API: token の有無、409、パスの正規化、Sec-Fetch-Site、heartbeat による終了と .serve.json の削除)。E2E(build → serve → /api/state → POST → groups.json が書かれる → GET に出る → PUT → DELETE。静的な atlas.html は改定後の外部参照の検査を通る)。ブラウザ(Playwright、http://127.0.0.1、1440 / 1024): 「グループを作成」→ 名前入力 → 作成 → 絞り込み行に出る・絞り込まれる → 名前の変更 → 削除 → ブラウザを閉じて約 10 秒でプロセスが終わる、をスクリーンショット付きで。impeccable critique / audit、web-design-guidelines、ui-ux-pro-max(「inline create form feedback」で 1 回)は従来どおり。surface brief の SELECTION を更新。README の「起動方法」(bat がサーバを立ててブラウザを開く、閉じれば止まる、共有は out/atlas.html)、`serve` と `--port`、グループの節を書き換える。
 
@@ -467,16 +464,16 @@ ui-ux-pro-max の照合(`--domain ux`、検索語「selection bulk actions filte
 
 作ったもの・直したこと:
 
-1. **サーバ** `packages/cli/src/serve.ts`(`startServe` / `findRunningServer` / `openInBrowser`)。node:http だけで、127.0.0.1 に bind。静的配信は `resolve(out, '.' + path)` が out/ 配下か(と `.serve.json` でないか)を見て、ディレクトリと外は 404、`/` は atlas.html へ 302。HTML は配信時に `__ATLAS_TOKEN__` を起動ごとの token(24 バイトの base64url)に置き換える。API は `/api/state`(GET)、`/api/groups`(POST)、`/api/groups/<name>`(PUT / DELETE)、`/api/heartbeat`(POST)。`/api/*` は `Sec-Fetch-Site`(same-origin / none 以外は 403)と `Origin`(自分のオリジン以外は 403)を見て、書き込み系(heartbeat も)は `X-Atlas-Token` を要求する。伏せ字版(atlas.html の埋め込みデータの `anonymized`。mtime が変わるまで覚える)では heartbeat 以外の API を 403。終了は「最初の heartbeat から、最後の heartbeat の 8 秒後」か「最初の heartbeat が 60 秒来ない」で、`.serve.json` を消してから閉じる。
+1. **サーバ** `packages/cli/src/serve.ts`(`startServe` / `findRunningServer` / `openInBrowser`)。node:http だけで、127.0.0.1 に bind。静的配信は `resolve(out, '.' + path)` が out/ 配下か(と `.serve.json` でないか)を見て、ディレクトリと外は 404、`/` は atlas.html へ 302。HTML は配信時に `__ATLAS_TOKEN__` を起動ごとの token(24 バイトの base64url)に置き換える。API は `/api/state`(GET)、`/api/groups`(POST)、`/api/groups/<name>`(PUT / DELETE)、`/api/heartbeat`(POST)。`/api/*` は `Sec-Fetch-Site`(same-origin / none 以外は 403)と `Origin`(自分のオリジン以外は 403)を見て、書き込み系(heartbeat も)は `X-Atlas-Token` を要求する。終了は「最初の heartbeat から、最後の heartbeat の 8 秒後」か「最初の heartbeat が 60 秒来ない」で、`.serve.json` を消してから閉じる。
 2. **CLI**: `serve [--port <n>] [--no-open]`(`--port` / `--no-open` は serve 以外で UsageError)。`runServe` は atlas.html が無ければエラー、`.serve.json` のサーバが `X-Atlas-Serve` 付きで応えればブラウザを開くだけ、そうでなければ起動して `done` を待つ(SIGINT / SIGTERM で閉じる)。atlas.bat / atlas-export.bat / atlas-judge.bat は末尾の `start out\atlas.html` を `node packages\cli\src\main.ts serve` にした(atlas.bat の追加引数は `all` にだけ渡す)。
-3. **画面**: `packages/report/src/app/api.ts`(`serveToken` / `api.state|create|update|remove` / `startHeartbeat`。fetch の宛先は相対パス `api/…` の文字列だけ。接続できないときは「サーバに接続できません」の日本語に変える)。`App.svelte` は token があれば heartbeat を始め、伏せ字版でなければ `api/state` を 1 回だけ試して成功したら編集モード(`liveGroups` を使う)。`createGroup` / `renameGroup` / `deleteGroup` は API の返す groups で差し替え、作成後はそのグループで絞り込み、削除後は `ids` を外す。heartbeat が失敗したら `serverDown`(帯 `.down-band` を sticky で上に貼り、編集を消す)。`SessionTable` の「グループを作成」は入力欄をインラインで開く(名前 / 一文 / 作成 / 取消。空の名前でも送れて理由を下に出す。送信中は `readonly` + `aria-busy`。成功で「グループを作成」に、失敗で名前の欄にフォーカスを戻す。`editable` が外れたら閉じる)。`FilterBar` の「グループ」の欄と操作(名前の変更・削除)は 1 つの固まり `.group-field`(折り返しても離れない)。削除の確認は初期フォーカスを「取消」に置く(Enter の連打で消さない)。成功したら「グループ」の select に、失敗したら入力欄に戻す。編集できないときの 1 行は「このファイルは閲覧用です。グループの作成は atlas.bat から開いたときにできます」(伏せ字版では出さない)。
+3. **画面**: `packages/report/src/app/api.ts`(`serveToken` / `api.state|create|update|remove` / `startHeartbeat`。fetch の宛先は相対パス `api/…` の文字列だけ。接続できないときは「サーバに接続できません」の日本語に変える)。`App.svelte` は token があれば heartbeat を始め、`api/state` を 1 回だけ試して成功したら編集モード(`liveGroups` を使う)。`createGroup` / `renameGroup` / `deleteGroup` は API の返す groups で差し替え、作成後はそのグループで絞り込み、削除後は `ids` を外す。heartbeat が失敗したら `serverDown`(帯 `.down-band` を sticky で上に貼り、編集を消す)。`SessionTable` の「グループを作成」は入力欄をインラインで開く(名前 / 一文 / 作成 / 取消。空の名前でも送れて理由を下に出す。送信中は `readonly` + `aria-busy`。成功で「グループを作成」に、失敗で名前の欄にフォーカスを戻す。`editable` が外れたら閉じる)。`FilterBar` の「グループ」の欄と操作(名前の変更・削除)は 1 つの固まり `.group-field`(折り返しても離れない)。削除の確認は初期フォーカスを「取消」に置く(Enter の連打で消さない)。成功したら「グループ」の select に、失敗したら入力欄に戻す。編集できないときの 1 行は「このファイルは閲覧用です。グループの作成は atlas.bat から開いたときにできます」。
 4. **静的ページ**: template.html・詳細・用語の head に `<meta name="atlas-token" content="__ATLAS_TOKEN__">`。`page-nav.ts` の NAV_JS に heartbeat(http(s) で token がプレースホルダでないときだけ。詳細は `../api/heartbeat`、用語は `api/heartbeat`。失敗したら帯を出して止める)。
 5. **撤去**: 第 1 段の JSON 片(`groupSnippet`・textarea・クリップボード・コマンド例・その CSS と単体テスト・README・brief の記述)。
 6. **検査の改定**: e2e の `externalRefs` は `fetch(` の直後が `"api/` か `"../api/` の文字列のときだけ許す(それ以外の `fetch(` と http(s) は従来どおり不可)。
 
-自分で決めたこと(戻し方は git): heartbeat にも token を要求した(書き込み系の規則をそのまま適用。静的ページにも meta を入れたので困らない)。`.serve.json` のサーバ確認は `X-Atlas-Serve` ヘッダで見分ける(伏せ字版は `/api/state` が 403 でも生きている)。`--no-open` を足した(テストと、既にブラウザを開いているとき用)。`PUT` の改名先が既にあれば 409。サーバが止まった帯は 3 画面とも同じ文言と見た目にし、詳細・用語ページでも出す。削除の確認の初期フォーカスは「取消」。
+自分で決めたこと(戻し方は git): heartbeat にも token を要求した(書き込み系の規則をそのまま適用。静的ページにも meta を入れたので困らない)。`.serve.json` のサーバ確認は `X-Atlas-Serve` ヘッダで見分ける。`--no-open` を足した(テストと、既にブラウザを開いているとき用)。`PUT` の改名先が既にあれば 409。サーバが止まった帯は 3 画面とも同じ文言と見た目にし、詳細・用語ページでも出す。削除の確認の初期フォーカスは「取消」。
 
-容量: atlas.html は伏せ字版の同じデータで 1,683,786 → 1,691,558 バイト(+7.8KB。作成の入力欄・操作・API の script)。詳細ページは meta と heartbeat の script で 1 件 +0.9KB、797 件で 20.12MB → 20.88MB。
+容量: atlas.html は伏せ字版(後に廃止した)の同じデータで 1,683,786 → 1,691,558 バイト(+7.8KB。作成の入力欄・操作・API の script)。詳細ページは meta と heartbeat の script で 1 件 +0.9KB、797 件で 20.12MB → 20.88MB。
 
 ui-ux-pro-max の照合(`--domain ux`、検索語「inline create form feedback」、1 回):
 
@@ -486,7 +483,7 @@ ui-ux-pro-max の照合(`--domain ux`、検索語「inline create form feedback�
 | Accessibility / Form Labels(label で包む、placeholder だけにしない) | 採用: 名前・一文・新しい名前はすべて label で包み、placeholder は例だけ |
 | Forms / Inline Validation(blur で検証) | 一部採用: 空の名前は送信時にその場で理由を出す(blur では出さない。名前以外に検証する項目が無く、同名の重複はサーバしか分からないため) |
 
-検査: typecheck 0 / 0、単体 105 通過(17 ファイル)(`serve.test.ts` 4 件を追加: 配信・token の差し込み・パスの正規化・API の作成 / 改名 / 削除・409・壊れたファイル・Sec-Fetch-Site と Origin・伏せ字版の 403・heartbeat による終了と .serve.json の削除)、E2E 50 通過 / 8 skipped(6 ファイル)(phase2 に j. を追加: build の HTML がプレースホルダのまま、serve の API で groups.json が書かれる、`--group` が同じファイルを読む、二重起動)。impeccable の検出器(静的)0 件。設計契約 + web-design-guidelines の照合(読み取り専用のサブエージェント)は初回 FAIL(停止の帯の証跡が無い、brief 未更新、停止後も作成欄が送れる、処理後にフォーカスが落ちる、1440px で削除の確認が欄から離れる)→ 全て直して撮り直した。残した P2: 同じ id 集合のグループが 2 つあると後の方は名前の変更・削除ができない(`currentGroup` を ids の一致で決めているため。同じ集合を 2 つ作る動機が薄いので保留)。ブラウザ(Playwright、実データ、1440 ライト / 1024 ダーク): 「グループを作成」→ 名前と一文 → 作成(groups.json に書かれ、絞り込み行に「画面の調査(3 件)」、表示中 3、フォーカスは「グループを作成」に戻る)→ 同名で 409 の理由が欄の下に出る → 名前の変更(「改名した調査」)→ 削除(確認 1 回 → groups.json が空、表示中 200)→ 詳細ページに移って 9 秒後もサーバが生きている → ブラウザを閉じて 5.2 秒で終了し `.serve.json` が消える。サーバを止めると約 5 秒で帯が出て「グループを作成」が消える。file:// では作成の操作が無く案内の 1 行だけで、console にエラーは出ない。スクリーンショットは `.impeccable/critique/phase10-serve/`(コミットしない)。
+検査: typecheck 0 / 0、単体 105 通過(17 ファイル)(`serve.test.ts` 4 件を追加: 配信・token の差し込み・パスの正規化・API の作成 / 改名 / 削除・409・壊れたファイル・Sec-Fetch-Site と Origin・heartbeat による終了と .serve.json の削除)、E2E 50 通過 / 8 skipped(6 ファイル)(phase2 に j. を追加: build の HTML がプレースホルダのまま、serve の API で groups.json が書かれる、`--group` が同じファイルを読む、二重起動)。impeccable の検出器(静的)0 件。設計契約 + web-design-guidelines の照合(読み取り専用のサブエージェント)は初回 FAIL(停止の帯の証跡が無い、brief 未更新、停止後も作成欄が送れる、処理後にフォーカスが落ちる、1440px で削除の確認が欄から離れる)→ 全て直して撮り直した。残した P2: 同じ id 集合のグループが 2 つあると後の方は名前の変更・削除ができない(`currentGroup` を ids の一致で決めているため。同じ集合を 2 つ作る動機が薄いので保留)。ブラウザ(Playwright、実データ、1440 ライト / 1024 ダーク): 「グループを作成」→ 名前と一文 → 作成(groups.json に書かれ、絞り込み行に「画面の調査(3 件)」、表示中 3、フォーカスは「グループを作成」に戻る)→ 同名で 409 の理由が欄の下に出る → 名前の変更(「改名した調査」)→ 削除(確認 1 回 → groups.json が空、表示中 200)→ 詳細ページに移って 9 秒後もサーバが生きている → ブラウザを閉じて 5.2 秒で終了し `.serve.json` が消える。サーバを止めると約 5 秒で帯が出て「グループを作成」が消える。file:// では作成の操作が無く案内の 1 行だけで、console にエラーは出ない。スクリーンショットは `.impeccable/critique/phase10-serve/`(コミットしない)。
 
 未実施: atlas.bat をダブルクリックして通す確認(ブラウザを開いて窓が残るため、非対話では確認できない。bat の変更は末尾の 1 行だけ)。impeccable の URL スキャンは puppeteer が無く未実施。
 
@@ -500,11 +497,11 @@ ui-ux-pro-max の照合(`--domain ux`、検索語「inline create form feedback�
 2. **操作の集約**: 改名・一文(note)の編集・削除はサイドバーの現在のグループの行に寄せ(行の下にインラインで「改名 / 一文 / 削除」、入力欄もその場。確認は 1 回、初期フォーカスは取消)、絞り込み行の「グループ」select と `.group-field` の操作は外す。理由: グループの居場所を 1 か所(サイドバー、狭い幅ではその中身を開く一覧)にし、絞り込み行は属性の軸(期間・プロジェクト・クライアント・モデル)だけにする。select は件数も一文も見せられず、同じ一覧を 2 か所に持つことになるため。
 3. **選択の操作列**(一覧の見出し直下): 「選んだ N 件だけ集計」「選択を解除」に加えて「グループに追加 ▾」(既存グループの一覧を開いて 1 回で追加。末尾に「新しいグループ…」で今のインライン作成)。グループで絞り込み中は「このグループから外す」も出す。外して 0 件になったグループは消さず 0 件のまま残す。API は既存の `PUT /api/groups/<name>` の ids で足りる。追加後は絞り込みを変えず「N 件を「名前」に追加しました(既に入っていた K 件を除く)」を role=status で短く出す。重複は足さない。
 4. **1280px 未満**: 固定目次行の末尾に「グループ」の 1 項目(ボタン、件数つき)を足し、押すと目次行の下に一覧が開く(サイドバーと同じ中身。外を押す / Esc で閉じ、焦点はボタンに戻る)。ダイアログ扱いにせず、キーボードで閉じられる。1024px で目次行の右端が切れている既知の点を悪化させない(項目は 1 つ増えるだけ。横に流れる)。
-5. **選択を名前で持つ**: `FilterState` に `group: string`(名前)を足す。グループを選ぶと `group` に名前、`ids` にその時点の id(記録にあるもの)を両方書く。集計は「`group` の名前がグループにあればその今の ids、無ければ `ids`」で決める(共有した hash の相手にその名前が無ければ `ids` に落ちて「選んだ N 件」になる。グループを編集すれば絞り込みも追従する)。同じ id 集合のグループが 2 つあっても名前で区別できる。伏せ字版では名前を hash に出さず `ids` だけ(仮名でも出さない)。
-6. **閲覧専用**(file://、伏せ字版): サイドバーの一覧は埋め込みの groups で出し、選んで絞り込める。作成・改名・一文・削除・追加・除外の操作は出さない。伏せ字版の名前は「グループ N」のまま。「グループに追加」の代わりの案内は 1 行だけ(伏せ字版では出さない)。
+5. **選択を名前で持つ**: `FilterState` に `group: string`(名前)を足す。グループを選ぶと `group` に名前、`ids` にその時点の id(記録にあるもの)を両方書く。集計は「`group` の名前がグループにあればその今の ids、無ければ `ids`」で決める(共有した hash の相手にその名前が無ければ `ids` に落ちて「選んだ N 件」になる。グループを編集すれば絞り込みも追従する)。同じ id 集合のグループが 2 つあっても名前で区別できる。
+6. **閲覧専用**(file://): サイドバーの一覧は埋め込みの groups で出し、選んで絞り込める。作成・改名・一文・削除・追加・除外の操作は出さない。「グループに追加」の代わりの案内は 1 行だけ。
 7. CLI と groups.json の形式は変えない。
 
-検査: 単体(追加・除外の純関数: 重複・0 件、hash の往復: グループ名・相手に無い名前・伏せ字、serve.test に ids の更新)。E2E(API で追加 → groups.json に反映、0 件のグループが残る)。ブラウザ(Playwright、実データ、1440 ライト / 1024 ダーク): 0 件の案内 → 新しいグループ作成 → サイドバーに出る → 別のセッションを既存グループに追加 → 絞り込み → 外す → 改名 → 一文の編集 → 削除 → 同じ集合のグループ 2 つで改名できる → file:// で閲覧のみ。スクリーンショットは `.impeccable/critique/phase10-groups-rail/`(コミットしない)。impeccable critique / audit、web-design-guidelines、ui-ux-pro-max(「sidebar saved views labels」で 1 回)は従来どおり。surface brief の SELECTION と FIRST VIEWPORT を更新。README の絞り込みの節。
+検査: 単体(追加・除外の純関数: 重複・0 件、hash の往復: グループ名・相手に無い名前、serve.test に ids の更新)。E2E(API で追加 → groups.json に反映、0 件のグループが残る)。ブラウザ(Playwright、実データ、1440 ライト / 1024 ダーク): 0 件の案内 → 新しいグループ作成 → サイドバーに出る → 別のセッションを既存グループに追加 → 絞り込み → 外す → 改名 → 一文の編集 → 削除 → 同じ集合のグループ 2 つで改名できる → file:// で閲覧のみ。スクリーンショットは `.impeccable/critique/phase10-groups-rail/`(コミットしない)。impeccable critique / audit、web-design-guidelines、ui-ux-pro-max(「sidebar saved views labels」で 1 回)は従来どおり。surface brief の SELECTION と FIRST VIEWPORT を更新。README の絞り込みの節。
 
 #### 実施(2026-11-01 深夜、第 3 段)
 
@@ -513,21 +510,21 @@ ui-ux-pro-max の照合(`--domain ux`、検索語「inline create form feedback�
 1. **居場所**: `GroupRail.svelte`(新規)。「すべて」→ 各グループ(button。名前・件数「m / n」・一文)、現在に aria-current。現在のグループの行の下に 改名 / 一文 / 削除(インライン、確認 1 回、初期フォーカスは取消、成功で行の先頭の操作に、失敗で入力欄に戻す)。0 件は案内の 1 行、閲覧専用でグループがあれば「このファイルは閲覧用です」の 1 行。多いときは群の中だけ 40vh で縦に流す。`App.svelte` は 1280px 以上でサイドバーの目次の下に「グループ」の群として出し、1280px 未満では目次行の末尾に「グループ N」ボタン(aria-expanded)を足して同じ中身を目次行の下に開く(tabindex=-1 の枠に焦点、Esc / 外を押すで閉じて焦点はボタンに戻す。ダイアログにしない)。
 2. **操作の集約**: 絞り込み行の「グループ」select と `.group-field` の操作を外した(`FilterBar` は属性の軸だけに戻る)。理由: 居場所を 1 か所にし、同じ一覧を 2 か所に持たない。select は件数と一文を見せられず、狭い幅でも目次行の一覧で同じものに届くので残す必要が無い。
 3. **選択の操作列**: 「グループに追加 ▾」(既存グループの一覧 + 末尾の「新しいグループ…」。Esc / 外を押す / ↑↓ で移動)と、グループで絞り込み中の「このグループから外す」。追加・除外は純関数 `addIds` / `removeIds`(`groups.ts`)で次の ids を決めて既存の `PUT /api/groups/<name>` の ids で保存する(API の追加は不要だった)。結果は「N 件を「名前」に追加しました(既に入っていた K 件を除く)」「N 件を「名前」から外しました(グループは 0 件のまま残ります)」を role=status で。追加では絞り込みを変えない(現在のグループに足したときだけ ids を追従させる)。
-4. **名前で持つ**: `FilterState.group`(名前)。グループを選ぶと `group` と `ids`(その時点の記録にある id)の両方を hash に書く。集計は `effectiveIds`(名前が今のグループにあればその ids、無ければ `ids`)。現在のグループ名は名前で決め、決まらないとき(伏せ字版、相手に無い名前)だけ ids の一致で探す。0 件のグループは `NO_SESSION`('(none)')を ids にして「制限なし」と区別する(`groupIds`)。伏せ字版では名前を hash に出さない(Playwright で `#ids=(none)` だけになるのを確認)。同じ id 集合のグループが 2 つあっても名前で区別でき、後の方も改名・削除できる(第 2 段の残り P2 を解消)。
+4. **名前で持つ**: `FilterState.group`(名前)。グループを選ぶと `group` と `ids`(その時点の記録にある id)の両方を hash に書く。集計は `effectiveIds`(名前が今のグループにあればその ids、無ければ `ids`)。現在のグループ名は名前で決め、決まらないとき(相手に無い名前)だけ ids の一致で探す。0 件のグループは `NO_SESSION`('(none)')を ids にして「制限なし」と区別する(`groupIds`)。同じ id 集合のグループが 2 つあっても名前で区別でき、後の方も改名・削除できる(第 2 段の残り P2 を解消)。
 5. **閲覧専用**: 埋め込みの groups で同じ一覧を出し、選んで絞り込める。操作は出さない。
 
 自分で決めたこと(戻し方は git): 群の位置は目次の下・件数の帯の上(目次と同じ「縦に並ぶ行」の作法で、件数の帯がグループの絞り込みの結果を受ける形になる)。「グループに追加 ▾」は既存グループが 0 件でも「新しいグループ…」だけの一覧として出す(作成の入口を 1 つにする)。「選択を解除」は第 2 段と同じく集計中ならその条件も外す。hash の `group` は `ids` の後ろ(順序は `FilterState` のキー順)。
 
-容量: atlas.html は伏せ字版の同じデータで 1,691,558 → 1,702,814 バイト(+11.3KB。GroupRail・目次行のボタンと一覧・追加の一覧)。詳細ページは変わらない。
+容量: atlas.html は伏せ字版(後に廃止した)の同じデータで 1,691,558 → 1,702,814 バイト(+11.3KB。GroupRail・目次行のボタンと一覧・追加の一覧)。詳細ページは変わらない。
 
 ui-ux-pro-max の照合(`--domain ux`、検索語「sidebar saved views labels」、1 回): Accessibility / Form Labels、Accessibility / ARIA Labels、Forms / Input Labels の 3 件(saved views そのものの規則はデータベースに無い)。採用: 改名・一文の入力欄は label で包み項目名を上に出す、▾ は aria-hidden でボタン自体に文字がある、件数には aria-label「N 件」。設計契約(同じ幅で同じ場所)は目次の作法を借りて判断した。
 
-検査: typecheck 0 / 0、単体 107 通過(17 ファイル)(追加・除外の純関数、hash の往復と名前の解決・0 件のグループ、serve の ids の更新)、E2E 50 通過 / 8 skipped(6 ファイル)(j. に ids の PUT と 0 件のまま残ることを追加)。impeccable の検出器(静的)0 件。設計契約 + web-design-guidelines の照合(読み取り専用のサブエージェント): 初回 FAIL(P1 2 件: 狭い幅の一覧で削除した後の焦点が document から探した隠れた側の一覧に当たって消える、role=status を文と同時に挿入していて読み上げられない)→ 直した(戻し先は自分のルート要素の中、live 領域は常に置いて文だけ差し替え)。P2 も直した: 目次行の「グループ N」を先頭に置く(1024px で右端に隠れない)、一覧の枠に role=region と焦点の印、入力欄の Esc は編集の取消だけ(一覧は閉じない)、Tab で外へ出たら一覧・メニューを閉じる、件数は sr-only の文で「n 件のうち記録にあるのは m 件」、追加の一覧の件数もサイドバーと同じ「m / n」、処理中は取消を押せない、2 つの一覧で id が重ならないよう接頭辞、「選んだ N 件」の行に「押すと外す」、閲覧用の案内は操作列の 1 か所だけ、伏せ字版で 0 件のときは案内を出さない、状態の行は常に高さを確保して表を押し下げない。ブラウザ(Playwright、実データ、1440 ライト / 1024 ダーク): 0 件の案内 → 「グループに追加 ▾」→「新しいグループ…」で 3 件の「調査 A」(サイドバー / 一覧に出て絞り込まれる、表示中 3)→「すべて」→ 別の 3 件(1 件は重複)を追加(「2 件を「調査 A」に追加しました(既に入っていた 1 件を除く)」、絞り込みは 200 のまま)→ 絞り込み(5、全行チェック済み)→ 2 件を外す(3)→ 改名(hash も追従)→ 一文の編集(行の下に出る)→ 同じ集合のグループをもう 1 つ作り後の方を改名できる → 削除(初期フォーカスは「取消」)→ ブラウザを閉じて 5 秒で終了。1024px では目次行の「グループ N」から一覧が開き、焦点が枠に移る。file:// は埋め込みのグループを選んで絞り込めるだけ(操作無し、console エラー 0)。伏せ字版は「グループ 1」で hash に名前が出ない。スクリーンショットは `.impeccable/critique/phase10-groups-rail/`(コミットしない)。
+検査: typecheck 0 / 0、単体 107 通過(17 ファイル)(追加・除外の純関数、hash の往復と名前の解決・0 件のグループ、serve の ids の更新)、E2E 50 通過 / 8 skipped(6 ファイル)(j. に ids の PUT と 0 件のまま残ることを追加)。impeccable の検出器(静的)0 件。設計契約 + web-design-guidelines の照合(読み取り専用のサブエージェント): 初回 FAIL(P1 2 件: 狭い幅の一覧で削除した後の焦点が document から探した隠れた側の一覧に当たって消える、role=status を文と同時に挿入していて読み上げられない)→ 直した(戻し先は自分のルート要素の中、live 領域は常に置いて文だけ差し替え)。P2 も直した: 目次行の「グループ N」を先頭に置く(1024px で右端に隠れない)、一覧の枠に role=region と焦点の印、入力欄の Esc は編集の取消だけ(一覧は閉じない)、Tab で外へ出たら一覧・メニューを閉じる、件数は sr-only の文で「n 件のうち記録にあるのは m 件」、追加の一覧の件数もサイドバーと同じ「m / n」、処理中は取消を押せない、2 つの一覧で id が重ならないよう接頭辞、「選んだ N 件」の行に「押すと外す」、閲覧用の案内は操作列の 1 か所だけ、状態の行は常に高さを確保して表を押し下げない。ブラウザ(Playwright、実データ、1440 ライト / 1024 ダーク): 0 件の案内 → 「グループに追加 ▾」→「新しいグループ…」で 3 件の「調査 A」(サイドバー / 一覧に出て絞り込まれる、表示中 3)→「すべて」→ 別の 3 件(1 件は重複)を追加(「2 件を「調査 A」に追加しました(既に入っていた 1 件を除く)」、絞り込みは 200 のまま)→ 絞り込み(5、全行チェック済み)→ 2 件を外す(3)→ 改名(hash も追従)→ 一文の編集(行の下に出る)→ 同じ集合のグループをもう 1 つ作り後の方を改名できる → 削除(初期フォーカスは「取消」)→ ブラウザを閉じて 5 秒で終了。1024px では目次行の「グループ N」から一覧が開き、焦点が枠に移る。file:// は埋め込みのグループを選んで絞り込めるだけ(操作無し、console エラー 0)。スクリーンショットは `.impeccable/critique/phase10-groups-rail/`(コミットしない)。
 
 #### 見直し(2026-11-01 深夜、第 3 段のレビュー: P1 1 件・P2 4 件を直した)
 
 1. **P1 lost update**: 画面の追加・除外が起動時の一覧から ids 全体を作って `PUT` し、サーバが全置換していたため、画面を開いたまま CLI の `group add` で足した id が消えていた。`PUT /api/groups/<name>` に差分 `{ add, remove }` を足し(`ids` との同時指定は 400)、サーバが `loadGroupsForWrite` で読み直した最新の ids に `addIds` / `removeIds` を適用して保存し、`added / dup / removed` を返す。画面は差分だけを送り、件数と一覧はサーバの応答から作る。groups.json の形式は変えない。serve.test で「CLI が足した x が画面の add / remove で消えない」ことを見る。
-2. **P2 0 件のグループの印**: 現在のグループを ids の一致で探す fallback が、0 件のグループ(全て `NO_SESSION`)で最初の 0 件グループに当たっていた。`currentGroupName`(filter.ts の純関数)にし、追加・除外・作成の `setFilter` に `group`(伏せ字版は '')を含め、fallback は `NO_SESSION` や同じ集合が 2 つ以上のときは null(伏せ字版で同じ集合が 2 つなら印を付けない)。
+2. **P2 0 件のグループの印**: 現在のグループを ids の一致で探す fallback が、0 件のグループ(全て `NO_SESSION`)で最初の 0 件グループに当たっていた。`currentGroupName`(filter.ts の純関数)にし、追加・除外・作成の `setFilter` に `group` を含め、fallback は `NO_SESSION` や同じ集合が 2 つ以上のときは null。
 3. **P2 選んだ件数**: `#ids=a,b,zzz` で「選んだ 3 件」になっていた。`knownSelection`(記録にある id だけ)の件数にした。
 4. **P2 チェックの同期**: グループで絞り込み中に一覧(liveGroups)が変わるたびに eff が新しいオブジェクトになり、選択を同期する effect が走ってチェックが全件に戻っていた。依存を `eff.ids` の文字列(`$derived`)に切り出した。Playwright で「1 件外す → 別グループの一文を編集 → 外れたまま」を確認。
 5. **P2 無い名前の `#group=X`**: ids 無しの `group` だけが残ると 0 条件なのに「解除」が押せて hash に残っていた。effect で、名前があればその ids を補い、無ければ(グループの一覧が揃ってから)`group` を捨てる。
@@ -543,11 +540,11 @@ ui-ux-pro-max の照合(`--domain ux`、検索語「sidebar saved views labels�
 契約:
 
 1. **原本の保全はスナップショットの拡張で行う**(二重に持たない)。`out/snapshot/session-state/<id>/` に plan.md・vscode.metadata.json・checkpoints/・files/・rewind-file-snapshots/・policies/ を足す(ファイルは mtime とサイズで再利用)。rewind-snapshots/ と、一覧に無い名前のもの(fake-solution 等)とロックファイルは既定で写さず、`--snapshot-all` で写す(ロックは写さない)。写さなかったものは名前と容量を manifest(`sessions.skipped[]`)に残す。~/.copilot 直下は plans/(写す)、attachments/(写す)、chats/(`*.md` だけ写す。他は解析に使えないので名前と容量だけ)、logs/(既定で写さない。資格情報を含みうるアプリのログで、セッション解析には使わない。`--snapshot-all` で写す)、repos/(写さない。ソースのチェックアウトで記録ではない。名前と容量だけ)。~/.copilot には書き込まない(読むだけ。data.db は immutable で開く)。
-2. **全文記録** `atlas export --full`: `out/full/<id>.md`。上限なしで、依頼・応答・reasoningText・ツールの引数と結果(成功含む)・hook の入出力・system.message・compaction の要約・skill の本文・チェックポイント・plan を時系列で出す。除くのは暗号化・不透明データ(encryptedContent、reasoningOpaque、reasoningBlocks の中の base64 らしい値)と base64 本体(session.binary_asset.data は `out/full/assets/<id>/<assetId>.<ext>` に書き出してリンクにする)だけで、除いた箇所に種別とサイズを書く。reasoningBlocks は要素ごとに読めるか(base64 でない文字列か)を見て、読めるものは出す。hook の結果(toolResult.textResultForLlm)がツールの結果と同一なら参照にする。秘密情報の形式検査(redactSecrets)は全文記録にも掛け、件数を末尾に出す。`--anonymize` との併用はエラー。チェックポイントと plan はイベントに時刻が無いので、時系列の後に節として置き、compaction の行からチェックポイント番号で参照する。
-3. **指示文・skill の閲覧ページ**: 重複なしで版ごと(contentHash)に `out/library/<hash>.md` に本文を置き、`out/instructions.html`(見出しごとの版一覧、本文、使われたセッション、初回と最終の利用日、前の版との差分)を作る。詳細ページの指示ファイルの行と skill からリンクする。本文は atlas.html に埋め込まない。伏せ字版では作らない。サイドバーの付録に入れる(export のときだけ。build だけでは作らない)。
+2. **全文記録** `atlas export --full`: `out/full/<id>.md`。上限なしで、依頼・応答・reasoningText・ツールの引数と結果(成功含む)・hook の入出力・system.message・compaction の要約・skill の本文・チェックポイント・plan を時系列で出す。除くのは暗号化・不透明データ(encryptedContent、reasoningOpaque、reasoningBlocks の中の base64 らしい値)と base64 本体(session.binary_asset.data は `out/full/assets/<id>/<assetId>.<ext>` に書き出してリンクにする)だけで、除いた箇所に種別とサイズを書く。reasoningBlocks は要素ごとに読めるか(base64 でない文字列か)を見て、読めるものは出す。hook の結果(toolResult.textResultForLlm)がツールの結果と同一なら参照にする。秘密情報の形式検査(redactSecrets)は全文記録にも掛け、件数を末尾に出す。チェックポイントと plan はイベントに時刻が無いので、時系列の後に節として置き、compaction の行からチェックポイント番号で参照する。
+3. **指示文・skill の閲覧ページ**: 重複なしで版ごと(contentHash)に `out/library/<hash>.md` に本文を置き、`out/instructions.html`(見出しごとの版一覧、本文、使われたセッション、初回と最終の利用日、前の版との差分)を作る。詳細ページの指示ファイルの行と skill からリンクする。本文は atlas.html に埋め込まない。サイドバーの付録に入れる(export のときだけ。build だけでは作らない)。
 4. **data.db**: 設計の変更(ユーザー了承済み。「読まない」を改める)。ファイルは複製せず、`file:///…/data.db?immutable=1` の読み取り専用で開く(node:sqlite 24 で動くことを確認した)。読むのは名前で固定した許可リストの列だけ(`select *` は禁止): sessions(id, title, session_type, mode, model, reasoning_effort, is_running, was_interrupted, interruption_reason, created_at, updated_at, remote_control_enabled, auto_approve, enabled_experiments_json, forked_from_session_id, fork_original_history_event_count, total_*, context_*, agent, provider_id, execution_location, title_source, archived_at, permission_mode, sandbox_enabled, provisional, agent_scope)、session_context_usage(全列)、session_checkpoints(全列)、activity_items(id, workspace_id, session_id, activity_type, preview, is_read, created_at, updated_at)、projects(id, name, container_kind, main_repo_path, default_branch, github_owner, github_repo, created_at, last_opened_at, auto_approve, sandbox_enabled, branch_prefix, show_in_sidebar, remote_default_branch)、workspaces(id, project_id, worktree_id, workspace_type, branch, name, created_at, updated_at, session_id, archived_at, created_pr_*(url / number / state)、source_pr_*(repo / number / state)、last_diff_*、total_*)。accounts / settings / app_state / model_providers / remote_environments は開かない。許可リストに列が無くても落ちない(その列は null)。許可外の列は名前だけ数える(値は読まない)。結果はスナップショット時に `out/snapshot/desktop.json` に書き、extract が sessions.json の `desktop` 欄に合成し、全文記録と詳細ページに出す。immutable では -wal の未反映分を読めないので、WAL のサイズ・更新日時と「最近の行が欠ける可能性」を desktop.json と全文記録に書く。単体テストで fixture の資格情報の値(合成)が out/ のどこにも出ないことを見る。
 5. **網羅の検査** `out/coverage.json`: 元データの event type × data のキー(トップレベルのキーは `^` 付き)ごとに、件数・バイト数・扱い(full = 全文に出した / ref = 参照や要約にした / excluded = 理由付きで除外)を出す。扱いの表(`coverage.ts`)に無いキーは「未分類」(unclassified)として数え、export のログと全文記録の末尾に出す。E2E で fixture の全キーが分類済みであること、実データでは未分類の件数を報告する。同じ表を data.db の列にも適用し(許可 / 許可外 / 未分類)、未分類の列を数える(値は読まない)。
-6. **bat と README**: `atlas-export-full.bat` を足す(`export --full`。atlas-export.bat は従来どおり共有向けの既定)。README に、out/ は原本と秘密情報を含みうるので共有しないこと、共有は伏せ字版を使うことを書く。容量の実測を PLAN.md に。5MB 制約は atlas.html の話で変えない。
+6. **bat と README**: `atlas-export-full.bat` を足す(`export --full`。atlas-export.bat は従来どおり共有向けの既定)。README に、out/ は原本と秘密情報を含みうるので共有しないことを書く。容量の実測を PLAN.md に。5MB 制約は atlas.html の話で変えない。
 
 検査: typecheck、unit、E2E(元データにある文字列が全文記録に現れること、除外キーが出ないこと、coverage、data.db の資格情報の非出力、~/.copilot を書き換えないこと)。実データで `export --full` を流して容量と未分類を報告。画面は instructions.html を 1440 / 1024 で確認。impeccable と web-design-guidelines は画面の追加分について従来どおり。
 
@@ -557,14 +554,14 @@ ui-ux-pro-max の照合(`--domain ux`、検索語「sidebar saved views labels�
 
 1. **スナップショットの拡張**(`core/snapshot.ts`): セッションフォルダの plan.md・vscode.metadata.json・checkpoints/・files/・rewind-file-snapshots/・policies/・research/・sandbox-denials/ を写す(`copyTree`、サイズと mtime で再利用)。rewind-snapshots/ と一覧に無い名前のもの(fake-solution 等)・ロック以外の未知のファイルは `--snapshot-all` のときだけ写し、写さなかったものは `extras.skipped[]`(相対パス・バイト数・理由)。直下は plans/・attachments/ を写し、chats/ は `*.md` だけ、logs/ は `--snapshot-all` のときだけ、repos/ は写さない。判断: chats/ の `*.md` 以外は 2026-10-28 のフォルダに入った無関係なファイル群(idx / cs / cpp / dll / exe、76MB)で解析に使えない。logs/ はアプリのログで DB のパスなどを含み、セッションの解析には使わないので既定で写さない。repos/ はソースのチェックアウトで記録ではない。plans/ と attachments/ は小さく、セッションから参照されうるので写す。
 2. **data.db**(`core/desktop.ts` と型 `desktop-types.ts`): `file:///…?immutable=1` + readOnly で開く(node 24 の node:sqlite で URI が通ることを実測。-shm / -wal の mtime は不変)。`DESKTOP_ALLOWLIST`(表 → 列)の列だけ `SELECT` し、`DESKTOP_FORBIDDEN_TABLES` は開かない。許可リストに無い列は `coverage.tables[表].unlisted` に名前だけ。結果は snapshot が `out/snapshot/desktop.json` に書き、extract が `desktopForSession` で sessions.json の `desktop` 欄(session / contextUsage / checkpoints / activity / workspace / project)に合成し、`SessionsFile.desktop`(WAL の注意と列の扱い)も持つ(`SESSIONS_SCHEMA_VERSION` 5)。詳細ページに「デスクトップアプリの記録(data.db)」の欄、全文記録に節。
-3. **全文記録**(`report/full.ts`): events.jsonl を全件読み、イベントごとに種別・id・親 id・agentId の 1 行と、本文・引数・結果・hook の入力・system.message・skill 本文・compaction の要約を囲みで出す。扱いは `coverage.ts` の表(`ruleFor`)で決め、`excluded` は「除外: 種別、バイト数」、`ref` は 1 行に短く、表に無いキーは落とさず全文に出して「未分類」に数える。不透明な文字列(base64 らしい 100 字以上)は JSON の中でも印に置き換える(reasoningBlocks の中の値もこれで除外)。hook の `toolResult.textResultForLlm` / `sessionLog` がツールの結果と同一なら「ツールの結果と同一: call …」に置き換える。binary_asset は `out/full/assets/<id>/<assetId>.<ext>` に書き出してリンク。plan.md・checkpoints/*.md は本文を節に、files/・rewind-file-snapshots/・policies/ は一覧(policies の JSON は本文も)。secret の形式検査は全文字列に掛ける。`--anonymize` との併用は args と build の両方で拒む。
+3. **全文記録**(`report/full.ts`): events.jsonl を全件読み、イベントごとに種別・id・親 id・agentId の 1 行と、本文・引数・結果・hook の入力・system.message・skill 本文・compaction の要約を囲みで出す。扱いは `coverage.ts` の表(`ruleFor`)で決め、`excluded` は「除外: 種別、バイト数」、`ref` は 1 行に短く、表に無いキーは落とさず全文に出して「未分類」に数える。不透明な文字列(base64 らしい 100 字以上)は JSON の中でも印に置き換える(reasoningBlocks の中の値もこれで除外)。hook の `toolResult.textResultForLlm` / `sessionLog` がツールの結果と同一なら「ツールの結果と同一: call …」に置き換える。binary_asset は `out/full/assets/<id>/<assetId>.<ext>` に書き出してリンク。plan.md・checkpoints/*.md は本文を節に、files/・rewind-file-snapshots/・policies/ は一覧(policies の JSON は本文も)。secret の形式検査は全文字列に掛ける。
 4. **網羅の検査**(`report/coverage.ts`): `COVERAGE_RULES`(event type → キー → full / ref / excluded。`*` は既定)と共通のトップレベルキー(`^id` / `^parentId` は ref、`^timestamp` / `^agentId` は full)。`CoverageCounter` が全イベントのキーごとに件数とバイト数を数え、`out/coverage.json` に種別別・キー別・扱い別の合計と、data.db の列の扱い(`desktopCoverage`)を書く。未分類は export のログと各全文記録の末尾。単体テストで既知の全イベント種別に表があることを見る。
-5. **閲覧ページ**(`report/library.ts`): `LibraryCollector` が system.message の指示ブロック(`extractInstructionBlocks` に本文 `body` を足した)と skill.invoked の本文を、見出し(skill は名前)→ 版(contentHash)に束ね、`out/library/<hash>.md` と `out/instructions.html`(版ごとの details: ハッシュ・字数・セッション数・初回・最終・本文 .md、前の版との行差分(LCS、変化の無い行は前後 2 行だけ)、使われたセッションへのリンク)を書く。export のときだけ作り、伏せ字版では作らない。詳細ページの指示ファイルの見出しと skill 名からリンク、サイドバーの付録に「指示文と skill」(`ReportData.library`、`REPORT_DATA_VERSION` 6)。
+5. **閲覧ページ**(`report/library.ts`): `LibraryCollector` が system.message の指示ブロック(`extractInstructionBlocks` に本文 `body` を足した)と skill.invoked の本文を、見出し(skill は名前)→ 版(contentHash)に束ね、`out/library/<hash>.md` と `out/instructions.html`(版ごとの details: ハッシュ・字数・セッション数・初回・最終・本文 .md、前の版との行差分(LCS、変化の無い行は前後 2 行だけ)、使われたセッションへのリンク)を書く。export のときだけ作る。詳細ページの指示ファイルの見出しと skill 名からリンク、サイドバーの付録に「指示文と skill」(`ReportData.library`、`REPORT_DATA_VERSION` 6)。
 6. **CLI / bat / README**: `--full`(export だけ)、`--snapshot-all`(snapshot / all / export)。`atlas-export-full.bat`(snapshot → extract → export --full → serve)。README に「解析用の完全出力」の節と、out/ を共有しない注意、data.db の設計変更。
 
 容量の実測(2026-11-02、実データ 800 セッション): スナップショットの付随物 1,106 ファイル 19.2MB、直下 plans 31 / attachments 4 / chats 2(`*.md`)。写さなかったもの 46 件 916MB(fake-solution 534MB、chats の `*.md` 以外 76MB、rewind-snapshots 26 セッション 296MB、logs 23MB、repos 3MB)。desktop.json 0.36MB(32 セッション、WAL 3.4MB は未反映 = 10/31 以降の更新は欠ける)。全文記録 800 件 309MB(イベント 144,302 件、画像など 26 ファイル 8.6MB)。coverage: full 407 キー 353MB、ref 137 キー 21.5MB、excluded 3 キー 91.4MB(encryptedContent 61.9MB、reasoningOpaque 18.1MB、binary_asset.data 11.4MB)、未分類 0。data.db の列 274 のうち許可 200、許可外 74(値は読んでいない)。閲覧ページ 30 項目・55 版(本文 0.37MB、instructions.html 0.62MB)。export --full の所要は 10.9 秒(build 全体)。reasoningBlocks は実データのスナップショットで中身を確かめられなかった(集計には 2,228 件 25MB と出るが、行の読み直しで見つからず。要素ごとに base64 らしい値だけを除外する実装にし、読めるものは出る)。
 
-検査: typecheck 0 / 0、単体 113 通過(19 ファイル)(desktop の許可リストと資格情報の非出力・-shm を作らない、coverage の表と未分類、renderFull の出力と除外と秘密情報、library の束ねと差分とページ)、E2E 54 通過 / 8 skipped(7 ファイル。phase1 / phase2 のスキーマ版の期待値を 5 / 6 に更新)(phase11: スナップショットの拡張と --snapshot-all と元の不変、desktop.json と sessions.json と詳細ページ、export --full の文字列の出現と除外キーの非出現と coverage と assets と --anonymize との併用エラー、instructions.html と library と伏せ字版での非生成)。fixture の資格情報の合成値(accounts / settings / app_state / model_providers / logs)が out/ のどこにも出ないことを E2E で見る。実データで `export --full` を流し、~/.copilot の data.db-shm / -wal の mtime が変わらないことを確認。画面(instructions.html)は Playwright で 1440 ライト / 1024 ダーク(目次 30 項目、版 55、横あふれ 0、エラー 0)。impeccable の検出器(静的)は em-dash の advisory 1 件だけ(指示文の本文に由来)。設計契約 + web-design-guidelines の照合(読み取り専用のサブエージェント): 初回 FAIL(P0: 差分に秘密情報が伏せられずに出る。P1: summary の中のリンク、差分と本文を色だけで区別、見出しだけで束ねるので別リポジトリの同名ファイルが 1 つの系列になる、等幅フォントの直書き、1440px の証跡が .md を撮っていた)→ 全て直した(差分も伏せた本文で計算、リンクは details の中の行に、差分と本文に見出し、項目は見出し + 出所のパス、最後に使われた版に印と説明、`var(--mono)`、撮り直し)。P2 も直した: 目次の件数は「版」、項目名から # と HTML コメントの印を外して省略記号、差分の印を欄に分ける、pre に tabindex、skill の id にハッシュ、セッションの区切り。残した P2: 「ファイル不明」の項目(注入の形から特定できないもの。説明を添えた)。
+検査: typecheck 0 / 0、単体 113 通過(19 ファイル)(desktop の許可リストと資格情報の非出力・-shm を作らない、coverage の表と未分類、renderFull の出力と除外と秘密情報、library の束ねと差分とページ)、E2E 54 通過 / 8 skipped(7 ファイル。phase1 / phase2 のスキーマ版の期待値を 5 / 6 に更新)(phase11: スナップショットの拡張と --snapshot-all と元の不変、desktop.json と sessions.json と詳細ページ、export --full の文字列の出現と除外キーの非出現と coverage と assets、instructions.html と library)。fixture の資格情報の合成値(accounts / settings / app_state / model_providers / logs)が out/ のどこにも出ないことを E2E で見る。実データで `export --full` を流し、~/.copilot の data.db-shm / -wal の mtime が変わらないことを確認。画面(instructions.html)は Playwright で 1440 ライト / 1024 ダーク(目次 30 項目、版 55、横あふれ 0、エラー 0)。impeccable の検出器(静的)は em-dash の advisory 1 件だけ(指示文の本文に由来)。設計契約 + web-design-guidelines の照合(読み取り専用のサブエージェント): 初回 FAIL(P0: 差分に秘密情報が伏せられずに出る。P1: summary の中のリンク、差分と本文を色だけで区別、見出しだけで束ねるので別リポジトリの同名ファイルが 1 つの系列になる、等幅フォントの直書き、1440px の証跡が .md を撮っていた)→ 全て直した(差分も伏せた本文で計算、リンクは details の中の行に、差分と本文に見出し、項目は見出し + 出所のパス、最後に使われた版に印と説明、`var(--mono)`、撮り直し)。P2 も直した: 目次の件数は「版」、項目名から # と HTML コメントの印を外して省略記号、差分の印を欄に分ける、pre に tabindex、skill の id にハッシュ、セッションの区切り。残した P2: 「ファイル不明」の項目(注入の形から特定できないもの。説明を添えた)。
 
 #### 見直し(2026-11-02、Phase 11 のレビュー: P1 2 件・P2 7 件を直した)
 
@@ -574,7 +571,7 @@ ui-ux-pro-max の照合(`--domain ux`、検索語「sidebar saved views labels�
 4. **P2 シンボリックリンク・ジャンクション**: `walk` で辿らず、`extras.skipped` に「シンボリックリンク / ジャンクション(辿らない)」で残す(fixture のジャンクションで検査)。
 5. **P2 削除の同期**: 元に無いファイルは複製先から消す(`copyTree` と追加のファイル、直下のフォルダ、chats の `*.md`。session.db と同じ作法)。`--snapshot-all` を外したときも写さなくなったものを消す。
 6. **P2 ファイル単位の失敗**: `copyTree` / 追加のファイル / chats は 1 ファイルずつ catch し、`複製できなかった (EBUSY 等)` で skipped に積む(全体は止めない)。
-7. **P2 生成物を黙って消さない**: `out/full/`・`coverage.json`・`instructions.html`・`library/` は、作り直すときと伏せ字モードのときだけ消す。素の build や --full なしの export では残し、「前回の … が残っています(生成日時)」をログに出す(`BuildResult.stale`)。README に古い全文記録が残る点を書いた。E2E d. を改めた。
+7. **P2 生成物を黙って消さない**: `out/full/`・`coverage.json`・`instructions.html`・`library/` は、作り直すときだけ消す。素の build や --full なしの export では残し、「前回の … が残っています(生成日時)」をログに出す(`BuildResult.stale`)。README に古い全文記録が残る点を書いた。E2E d. を改めた。
 8. **P2 テストの穴**: fixture の資格情報にトークンの形でない値(accounts / settings / model_providers / logs)を足し、許可外の列の値(remote_connect_target、empty_execution_failure_event_json、activity_items.metadata_json、projects.setup_script / instructions、workspaces.session_bootstrap_config)も out/ に出ないことを E2E で見る。
 9. **P2 メモリ**: events.jsonl は `parseEvents`(1 行ずつ)で 1 回だけ走査し、閲覧ページの収集と全文記録の書き出しを同じ走査で行う。全文記録は `renderFullTo` が 64KB ごとに sink へ渡し、build は `createWriteStream` の `write` の戻り値で drain を待つ(backpressure)。`JSON.stringify` は値 1 つ単位(最大はツール結果 1 件)。出力の形は変えていない(明細の件数は末尾の「明細」の節に移した)。
 
@@ -601,10 +598,10 @@ ui-ux-pro-max の照合(`--domain ux`、検索語「sidebar saved views labels�
 4. **時間の使われ方**: セッションごとに、待ち時間(TTFT と全体の中央値、記録のあるモデル)、失敗の連続(ツール失敗の最長連続回数)、同じファイルの再編集(2 回以上編集したファイル数と余分な編集回数)、権限確認の数、compaction の数を並べ、止まっている箇所(閾値以上のもの)をセッション単位とプロジェクト単位(該当セッション数 / セッション数)で出す。
 5. **スキル化の候補**: (a) 似た依頼文の繰り返し: 依頼文を正規化(小文字、パス・URL・数字・記号を印に置換、空白を詰める)して文字 3-gram の集合を作り、Jaccard 類似度 ≥ 0.6 のものを貪欲に束ねる(LLM なし)。(b) 同じツールの並びの繰り返し: 本体のターンごとのツール名の列から、長さ 3〜6 の部分列で 3 回以上(2 セッション以上)現れるものを数え、長い方を優先して重なりを除く。どちらも繰り返し回数、関係セッション、推定の所要時間(各出現のターンの所要の中央値 × 回数)、代表の依頼文(最も中央に近いもの)を持ち、スコア(回数 × 所要時間の中央値)の順に出す。
 6. **統計の誠実さ**: 分かるのは相関までなので、画面と README に「傾向」と書き、指示文の効果は直接測れない(同じ版でも依頼が違う)と明記する。閾値は `lib/insights.ts` の定数: `MIN_SESSIONS = 5`(率を出す最小のセッション数。5 件未満の率は 1 件で 20 ポイント動くため結論にしない)、`MIN_REPEAT = 3`(候補の最小の繰り返し。2 回は偶然でも起きる)、`SIMILARITY = 0.6`(3-gram の Jaccard。言い回しの違いを許しつつ別の依頼を混ぜない値として実データで確かめる)、`WORSE_POINTS = 10`(悪化とみなす差。MIN_SESSIONS=5 での 1 件分 20 ポイントの半分)、`STUCK` の各閾値(TTFT 中央値 ≥ 20 秒、連続失敗 ≥ 3、再編集 ≥ 3 回、権限確認 ≥ 10、compaction ≥ 3。実データの分布の上位 10% 付近)。閾値未満の項目は件数を添えて「傾向」の表には出さない。欠測は既存の語(記録なし / 推計不可 / —)で区別する。
-7. **伏せ字版**: 依頼文の本文と指示文の見出し、skill 名以外の自由記述は出さない。件数とスコアだけは出す。候補の代表文は出さない。insights.html も伏せ字版では候補の本文を持たない。
+7. **伏せ字版**: 依頼文の本文と指示文の見出し、skill 名以外の自由記述は出さない。件数とスコアだけは出す。候補の代表文は出さない。insights.html も伏せ字版では候補の本文を持たない(伏せ字版は後に廃止した)。
 8. **LLM による下書き(任意)**: `atlas skill-draft <番号>` は `out/insights.json` の候補(番号)からスキルの下書き(SKILL.md の形)を作る。判定と同じバックエンド経路(copilot-cli / opencode / anthropic、`--backend` / `--model`)を使い、明示したときだけ動く(既定の処理では呼ばない)。クレジットを消費する実行はテストでも実データでも行わず、偽の copilot(fixtures/fake-copilot.mjs、`ATLAS_COPILOT_BIN`)で検査する。出力は `out/skill-drafts/<番号>-<名前>.md`。費用(1 回の生成で 1 リクエスト相当)は README に書く。
 
-検査: 単体(各規則の境界、閾値未満の扱い、版の前後比較、正規化と類似度、部分列の数え方と重なりの除外、スコア順)。E2E(fixture で insights.html と insights.json ができる、伏せ字で本文が出ない、外部参照なし、atlas.html 5MB 未満、skill-draft が偽の copilot で下書きを書く)。実データで生成して候補の上位を自分で読み、役に立たない候補(定型の Reply OK、判定の繰り返しなど)が上に来るなら除外の規則を足して結果を PLAN.md に書く(本文は転記しない)。画面は 1440 / 1024、impeccable critique / audit、web-design-guidelines、ui-ux-pro-max(「actionable insights」で 1 回)。README と surface brief を更新。
+検査: 単体(各規則の境界、閾値未満の扱い、版の前後比較、正規化と類似度、部分列の数え方と重なりの除外、スコア順)。E2E(fixture で insights.html と insights.json ができる、外部参照なし、atlas.html 5MB 未満、skill-draft が偽の copilot で下書きを書く)。実データで生成して候補の上位を自分で読み、役に立たない候補(定型の Reply OK、判定の繰り返しなど)が上に来るなら除外の規則を足して結果を PLAN.md に書く(本文は転記しない)。画面は 1440 / 1024、impeccable critique / audit、web-design-guidelines、ui-ux-pro-max(「actionable insights」で 1 回)。README と surface brief を更新。
 
 #### Phase 12 の実施(2026-11-02)
 
@@ -612,10 +609,10 @@ ui-ux-pro-max の照合(`--domain ux`、検索語「sidebar saved views labels�
 - 実データ(800 セッション)での候補の見直し。最初の上位は役に立たないものだった: (1) 動作確認の定型文(行頭が reply with / respond with など)が依頼文の候補の上位 → `PROBE_REQUEST` で除外。(2) ツールの並びは `view → task → view` や `sql → rg → view` など閲覧中心の汎用の手順が上位を独占 → 閲覧系(`EXPLORE_TOOLS`)以外のツールが 2 種類以上(`SEQ_MIN_WORK = 2`)でないと候補にしない。連続の重複は潰し(`collapseRuns`)、`a → b → a → b` の周期的な繰り返しは除く(`isPeriodic`)。(3) ターンの所要に次の依頼までの待ちが入って数時間になっていた → ターンの最後のイベントまでに変更し、スコアの所要は 2 時間で頭打ち(`SCORE_MS_CAP`。自律実行の長いターンが回数より効きすぎないように)。(4) 同じセッションの同じ依頼文が例に重複 → 例は重複なし。(5) 「長いのに注入が少ない」に同じ見出しの旧版が並んだ → 見出しごとに最新の版だけ。見直し後の候補は 78 件(依頼文 4、ツールの並び 74)で、上位は `ask_user → apply_patch → sql` の繰り返し(4 セッションで 24 回)や編集と実行の往復など、作業の手順として読めるものになった。本文は転記しない。
 - 残る限界: ツールの並びの候補は「手順の繰り返し」であって「スキルにすべき」とは限らない(スコア順は目安)。依頼文の候補は本文の先頭 300 字の 3-gram なので、長い依頼の後半の違いは見ない。指示文の「前後比較」は同じ見出しの連続する版だけで、同時期の他の変化(モデル・依頼の種類)は切り分けない(画面に明記)。
 - Fable レビューの P2 への対応: `skill-draft` の作業フォルダを `atlas-judge-cwd-` に揃えて「(atlas の判定)」に分類させた。バックエンドは契約どおり copilot-cli / opencode / anthropic の 3 つにした(anthropic の呼び出しは `anthropicMessage` に切り出して判定と共有。本物の実行は未確認)。「長いのに注入が少ない」は全体での希少さなので、画面の絞り込みに関わらず全セッションで計算し、母集団が MIN_SESSIONS 未満なら出さない。
-- 検査: 単体 120 件(Phase 12 は 6 件: 版と前後比較の境界、skill の率と未使用、止まっている箇所の理由と順序、正規化と Jaccard、依頼文の候補と伏せ字、並びの重なりとスコア順)。E2E 65 件中 57 通過・8 skip(Phase 12 は 3 件: 生成物と埋め込み、伏せ字、偽 copilot での skill-draft と拒否)。fixture に繰り返し用の 3 セッション(`addPhase12Fixtures`)を足した。
+- 検査: 単体 120 件(Phase 12 は 6 件: 版と前後比較の境界、skill の率と未使用、止まっている箇所の理由と順序、正規化と Jaccard、依頼文の候補、並びの重なりとスコア順)。E2E 65 件中 57 通過・8 skip(Phase 12 は 3 件: 生成物と埋め込み、伏せ字(伏せ字版は後に廃止した)、偽 copilot での skill-draft と拒否)。fixture に繰り返し用の 3 セッション(`addPhase12Fixtures`)を足した。
 - 画面: 1440 ライト / 1024 ダークで横はみ出し 0、ページエラー 0(`.impeccable/critique/phase12-insights/`)。ui-ux-pro-max は「actionable insights」で 0 件、「data table dashboard insight」で表の横スクロール(既存の `.ledger` の包みで対応済み)。impeccable critique / audit と web-design-guidelines の結果は下の「見直し」に。
 - サイズ: 実データで atlas.html 1.85 MB(埋め込み 1.64 MB)、insights.html 0.5 MB、insights.json 0.33 MB。
-- 見直し(reviewer の critique / audit + WDG、同日): P1 を 3 件直した。(1) 伏せ字版で依頼文の候補の `key`(正規化した本文)が埋め込みデータと insights.json に残っていた → `request-<n>` にし、E2E で通常版の key が伏せ字版の両方に無いことを見る。(2) insights.html の指示文の見出しを esc していなかった → esc(ハッシュも)。(3) 止まっている箇所のプロジェクト別が 1 / 1 のプロジェクトで埋まっていた → 総数 5 未満は出さず、該当数の順。P2: 件数不足の率は全件ページでも「—」(README も揃えた)、スコアの「2 時間で頭打ち」を説明に、閾値の単位、「詳しく →」に aria-label、箱の最小幅 480px(1440 で 2 列)、プロジェクト別は短いラベル。P3 のうち周期 3 の往復の除外(isPeriodic maxPeriod 3)だけ採った。残した P3(率の小数桁、行見出しの th、.table-scroll の tabindex、「失敗率(呼ばない)」の情報量)は帳票の作法を全体で揃える話なので保留。
+- 見直し(reviewer の critique / audit + WDG、同日): P1 を 3 件直した。(1) 伏せ字版で依頼文の候補の `key`(正規化した本文)が埋め込みデータと insights.json に残っていた → `request-<n>` にし、E2E で通常版の key が伏せ字版の両方に無いことを見る(伏せ字版は後に廃止した)。(2) insights.html の指示文の見出しを esc していなかった → esc(ハッシュも)。(3) 止まっている箇所のプロジェクト別が 1 / 1 のプロジェクトで埋まっていた → 総数 5 未満は出さず、該当数の順。P2: 件数不足の率は全件ページでも「—」(README も揃えた)、スコアの「2 時間で頭打ち」を説明に、閾値の単位、「詳しく →」に aria-label、箱の最小幅 480px(1440 で 2 列)、プロジェクト別は短いラベル。P3 のうち周期 3 の往復の除外(isPeriodic maxPeriod 3)だけ採った。残した P3(率の小数桁、行見出しの th、.table-scroll の tabindex、「失敗率(呼ばない)」の情報量)は帳票の作法を全体で揃える話なので保留。
 
 ### Phase 13: セッションごとのメモ(2026-11-03)
 
@@ -630,10 +627,10 @@ ui-ux-pro-max の照合(`--domain ux`、検索語「sidebar saved views labels�
 5. **API**: `GET /api/memos/<id>` → `{ text, rev, html, updatedAt }`。`PUT /api/memos/<id>` `{ text, rev }`(rev は本文の sha256 の先頭 16 桁、無ければ '')。手元の rev と違えば 409 と最新の rev を返し、画面は入力を残して「別の場所で更新されました」と「上書きして保存」を出す(Obsidian や CLI と同時に触っても黙って消さない)。`POST /api/memos/<id>/images`(本文は画像そのもの、上限 10MB。形式は Content-Type ではなく先頭のバイトで判定。svg は通さない)→ `{ name, markdown }`。ファイル名は内容の sha256 の先頭 16 桁。`GET /api/state` に `memos`(id → 概要)を足す。書き込みの token・Origin の検査はグループと同じ。本文の書き込みは一時ファイル → rename。
 6. **一覧**: `SessionSummary.memo`(先頭 80 字の抜粋・字数・画像数・更新日時。全文は atlas.html に埋め込まない)。セッション名の下に「メモ: 抜粋」を 1 行。「その他の条件」に「メモのあるセッションだけ」(`FilterState.memo`、hash に載せる)。メモが 1 件も無ければ出さない。編集モードでは `api/state` の値を使う。
 7. **CLI**: `atlas memo list` / `show <id>` / `set <id> <本文...>` または `--file <path>` / `remove <id>`。id は先頭一致で解決(sessions.json があるとき)。`remove` は `.md` だけを消す(画像は残す。誤操作で戻せなくなるものを広げない)。
-8. **伏せ字**: `--anonymize` ではメモを一切出さない(節・目次・一覧の抜粋・件数・絞り込み)。API は既存の判定で 403、エディタも配らない。
+8. **伏せ字**: `--anonymize` ではメモを一切出さない(節・目次・一覧の抜粋・件数・絞り込み)。API は既存の判定で 403、エディタも配らない(伏せ字版は後に廃止した)。
 9. **判定には渡さない**: メモは bundle / judge / セッション記録 / 全文記録に入れない。利用者の自由記述を LLM や共有用の出力に黙って流さないため。
 
-検査: 単体(描画の安全性: script・イベント属性・javascript: リンク・外部画像・`..` を含む画像・無い画像、見出しの段、`://` の実体参照、抜粋、読み書きと rev の競合、画像の判定、一覧の読み取り、filter の hash と matches、serve の API と token・400・409・413・415・403、CLI の解釈と runMemo)。E2E(fixture のメモで詳細ページ・埋め込み・外部参照の検査・伏せ字での非出力、CLI の往復、~/.copilot を書き換えないこと)。ブラウザ(架空データ、別の out / notes-dir で): 書く → 保存 → 再読み込み → 画像の貼り付け → 一覧の抜粋 → 絞り込み → 競合 → 削除 → サーバ停止、1440 ライト / 1024 ダーク。impeccable の検出器、設計契約 + web-design-guidelines の照合、ui-ux-pro-max(「inline editor markdown notes」で 1 回)は従来どおり。README と surface brief を更新。
+検査: 単体(描画の安全性: script・イベント属性・javascript: リンク・外部画像・`..` を含む画像・無い画像、見出しの段、`://` の実体参照、抜粋、読み書きと rev の競合、画像の判定、一覧の読み取り、filter の hash と matches、serve の API と token・400・409・413・415・403、CLI の解釈と runMemo)。E2E(fixture のメモで詳細ページ・埋め込み・外部参照の検査、CLI の往復、~/.copilot を書き換えないこと)。ブラウザ(架空データ、別の out / notes-dir で): 書く → 保存 → 再読み込み → 画像の貼り付け → 一覧の抜粋 → 絞り込み → 競合 → 削除 → サーバ停止、1440 ライト / 1024 ダーク。impeccable の検出器、設計契約 + web-design-guidelines の照合、ui-ux-pro-max(「inline editor markdown notes」で 1 回)は従来どおり。README と surface brief を更新。
 
 #### 実施(2026-11-03)
 
@@ -651,9 +648,9 @@ ui-ux-pro-max の照合(`--domain ux`、検索語「sidebar saved views labels�
 3. **P2 古い serve**: 古い serve の `/api/state` には memos が無く、空のマップが埋め込みを上書きしていた(`atlas.bat` は動いているサーバを使い回すので起きうる)。無ければ埋め込みのまま。
 4. **P2 手で置いた画像の名前**: 英数字だけの許可リストで、`Pasted image 1.png` や日本語の名前が読めなかった。Windows で使えない文字・先頭の `.`・末尾の `.` と空白・予約名を拒否する形に改めた(`isSafeFileName`)。
 5. **P2 既存の node_modules**: bat は node_modules が無いときだけ npm install するので、`marked` を足すと既存の環境で起動しなくなる。`scripts/deps-fresh.mjs`(lock と `node_modules/.package-lock.json` の版を比べる。node: だけで動く)で判定する形に 4 つの bat を変えた。mtime の比較は git の checkout で毎回 install になるので採らなかった。
-6. **P3 で直したもの**: 画像の追加中は保存と取消を止める、保存の失敗時にテキスト欄へ焦点を戻す、Ctrl+S は欄の外でも効く、サーバ停止後の取消で未処理の例外を出さない、伏せ字版で `#memo=1` を捨てる、抜粋が語の中の `_` `*` `~` を消さず front matter と区切り線を飛ばす、h4〜h6 の大きさ、手で置いた画像にも 10MB の上限、id と画像名の Windows の予約名、Host の検査(DNS rebinding。静的ページも API も)。
+6. **P3 で直したもの**: 画像の追加中は保存と取消を止める、保存の失敗時にテキスト欄へ焦点を戻す、Ctrl+S は欄の外でも効く、サーバ停止後の取消で未処理の例外を出さない、抜粋が語の中の `_` `*` `~` を消さず front matter と区切り線を飛ばす、h4〜h6 の大きさ、手で置いた画像にも 10MB の上限、id と画像名の Windows の予約名、Host の検査(DNS rebinding。静的ページも API も)。
 7. **検査**: typecheck 0 / 0、単体 163 通過(22 ファイル、連続 3 回)、E2E 63 通過 / 8 skipped(9 ファイル)。ブラウザで編集の流れを撮り直した(開いたままのページから「編集」を押すと外で更新された本文から始まる、空白を含む名前の手で置いた画像が出る、ボタンに焦点があっても Ctrl+S が効く)。`atlas.bat` のダブルクリックでの確認は未実施(`scripts/deps-fresh.mjs` の判定は単体で見た)。
-   実データ(801 セッション、うち非空 201)でも、`--out` と `--notes-dir` を一時フォルダにして確認した: 全 id がメモの条件を満たす、書く→画像→Ctrl+S→表示(生の script は文字のまま)、一覧の抜粋と `#memo=1`(2 / 201)、`atlas memo` の先頭一致と曖昧な id の拒否、CLI の更新と画面の保存の競合(古い本文からの削除も止まる)、再 build でメモが残る、伏せ字版・bundle・metrics にメモが入らない、タブを閉じると serve が止まる。本物の `atlas-notes/` と `out/` は変更なし。`file://` の表示は確認環境で見られず、ファイルの内容の検査まで。
+   実データ(801 セッション、うち非空 201)でも、`--out` と `--notes-dir` を一時フォルダにして確認した: 全 id がメモの条件を満たす、書く→画像→Ctrl+S→表示(生の script は文字のまま)、一覧の抜粋と `#memo=1`(2 / 201)、`atlas memo` の先頭一致と曖昧な id の拒否、CLI の更新と画面の保存の競合(古い本文からの削除も止まる)、再 build でメモが残る、bundle・metrics にメモが入らない、タブを閉じると serve が止まる。本物の `atlas-notes/` と `out/` は変更なし。`file://` の表示は確認環境で見られず、ファイルの内容の検査まで。
 8. **残した P3**: 詳細ページの目次はメモの有無に追従しない(ビルド後に書いたメモは節に出るが目次には次の build まで出ない。削除しても項目が残る。節は表題の直下で常に見えるので目次の項目が無くても届く)。
 
 ### `all` でもセッション記録を作る(2026-11-03)
@@ -664,12 +661,12 @@ ui-ux-pro-max の照合(`--domain ux`、検索語「sidebar saved views labels�
 
 決めたこと:
 1. `all` の最後を build から export(既定の `--tool-output fail`、上限 20,000 字、`--full` なし)にする。`atlas.bat`・`npm run atlas` が記録を作る。
-2. 伏せ字版(`all --anonymize`)は記録を作らず build のまま。記録の伏せ字は自由記述を機械的に置き換えるだけで HTML より弱く、共有する `sessions/` に混ざるため。必要なら `export --anonymize` を明示する。
-3. `atlas-judge.bat`(judge-flow)の最後の build も、伏せ字版でなければ export にする(直前の `all` が作った記録を消さない)。
+2. 伏せ字版(`all --anonymize`)は記録を作らず build のまま。記録の伏せ字は自由記述を機械的に置き換えるだけで HTML より弱く、共有する `sessions/` に混ざるため。必要なら `export --anonymize` を明示する(伏せ字版は後に廃止した)。
+3. `atlas-judge.bat`(judge-flow)の最後の build も export にする(直前の `all` が作った記録を消さない)。
 4. `atlas-export.bat` は残す(`export` の引数を渡す入口)。素の `build` が `.md` を消す規則は変えない(絞り込みで外れたセッションの古い記録を残さないため)。
 5. README の共有の説明を、`.md` を渡さない形に直す(`out/sessions/` に生の記録が常にあるため)。配布物の確認(`release-smoke.ts`)に記録ができることを足す。
 
-見直し(独立レビュー PASS、P1 なし): P2 として、README の「伏せ字でない HTML はそのまま渡せる」が事実と違う(詳細ページと atlas.html にも最初の依頼と最後の応答が入る)ことと、記録の用途が「共有用」のままだったことを直した(共有は伏せ字版だけ)。P3 として、judge-flow の最後が export で記録を消さないこと・伏せ字版で消えること(phase3 c2)と、同じ out/ で通常版の後に伏せ字版を作っても生の記録が残らないこと(phase2 c)を E2E に足し、README の所要時間と PRODUCT.md の手順を直した。atlas-judge.bat は all と judge-flow で export を 2 回走らせる(+5 秒ほど)が、判定の後に記録を作り直す必要があるので残した。
+見直し(独立レビュー PASS、P1 なし): P2 として、README の「伏せ字でない HTML はそのまま渡せる」が事実と違う(詳細ページと atlas.html にも最初の依頼と最後の応答が入る)ことと、記録の用途が「共有用」のままだったことを直した(共有は伏せ字版だけ。伏せ字版は後に廃止した)。P3 として、judge-flow の最後が export で記録を消さないこと・伏せ字版で消えること(phase3 c2)と、同じ out/ で通常版の後に伏せ字版を作っても生の記録が残らないこと(phase2 c)を E2E に足し、README の所要時間と PRODUCT.md の手順を直した。atlas-judge.bat は all と judge-flow で export を 2 回走らせる(+5 秒ほど)が、判定の後に記録を作り直す必要があるので残した。
 
 採らなかった案: 詳細ページを開いたときに serve がその場で記録を作る(起動は速いままだが file:// で使えず、作りも複雑)。記録が無いときの案内だけを足す(つまずく場面が残る)。
 
@@ -679,7 +676,7 @@ ui-ux-pro-max の照合(`--domain ux`、検索語「sidebar saved views labels�
 
 **目標**: 利用者が起動するのは `atlas.bat` だけ。起動後の操作はすべて画面から。CLI(`npm run atlas -- <コマンド>`)は今のまま残す(自動化と細かい指定はこちら)。
 
-**調べた前提**(コードで確認): serve の API は `heartbeat` / `state` / `groups` / `memos` / `memo-editor.js` だけ(`packages/cli/src/serve.ts`)。書き込みは token(`X-Atlas-Token`)・`Sec-Fetch-Site` / `Origin`・`Host` を検査し、伏せ字版の out/ では 403。記録は `renderTranscript`、全文は `renderFullTo` がセッション 1 件ずつ呼べる(`packages/report/src/transcript.ts`・`full.ts`。ただし今は `buildReport` の中からしか呼んでいない)。判定は 1 件ごとに judgments.json を一時ファイル + rename で確定する(`judge/src/run.ts`・`judgments-io.ts`)ので、途中で止めても判定済みの分は残る。`export --session <id>` は atlas.html もそのセッションだけで作り直すので、1 件の全文を作る用途には使えない。
+**調べた前提**(コードで確認): serve の API は `heartbeat` / `state` / `groups` / `memos` / `memo-editor.js` だけ(`packages/cli/src/serve.ts`)。書き込みは token(`X-Atlas-Token`)・`Sec-Fetch-Site` / `Origin`・`Host` を検査する。記録は `renderTranscript`、全文は `renderFullTo` がセッション 1 件ずつ呼べる(`packages/report/src/transcript.ts`・`full.ts`。ただし今は `buildReport` の中からしか呼んでいない)。判定は 1 件ごとに judgments.json を一時ファイル + rename で確定する(`judge/src/run.ts`・`judgments-io.ts`)ので、途中で止めても判定済みの分は残る。`export --session <id>` は atlas.html もそのセッションだけで作り直すので、1 件の全文を作る用途には使えない。
 
 #### 契約
 
@@ -701,11 +698,10 @@ ui-ux-pro-max の照合(`--domain ux`、検索語「sidebar saved views labels�
 5. **安全**
    - 実行系の API(jobs)はすべて token・Origin / Sec-Fetch-Site・Host を検査する(既存の書き込みと同じ)。GET の `/api/jobs/current` と `/view/` も token を要求する(ログと本文に生の文字列が入るため)。
    - 子プロセスの引数はサーバが固定の配列で組み立て、`shell: false` で `process.execPath` を起動する。画面からの文字列をコマンドラインに入れない。`id` は `isSafeMemoId` と sessions.json にあることを確かめる。`limit` は 0〜500 の整数、`backend` は `copilot-cli` / `opencode` の列挙。
-   - 伏せ字版の out/ を配信しているときは、実行系も 403(既存の規則のまま)。
 
 6. **費用**: 判定は GitHub Copilot の AI クレジット(既存サブスクの範囲)を消費する。opencode は利用者の opencode の既定のモデル。画面の確認ダイアログに対象の件数(未判定のうち limit まで)・バックエンド・「AI クレジットを消費します」を出し、既定の limit は 10。従量課金の anthropic は画面に出さない(CLI の `--backend anthropic` だけ)。
 
-7. **bat**(利用者が決定): `atlas.bat` だけを残し、`atlas-export.bat` / `atlas-export-full.bat` / `atlas-judge.bat` は消す。README・release-smoke(bat の数)・launchers.test を直す。CLI のコマンドはすべて残す。全件の全文と coverage.json(解析用の一括出力)は `npm run atlas -- export --full`、伏せ字版は `npm run atlas -- all --anonymize` で作る(画面からは作らない。下の「決めたこと」)。
+7. **bat**(利用者が決定): `atlas.bat` だけを残し、`atlas-export.bat` / `atlas-export-full.bat` / `atlas-judge.bat` は消す。README・release-smoke(bat の数)・launchers.test を直す。CLI のコマンドはすべて残す。全件の全文と coverage.json(解析用の一括出力)は `npm run atlas -- export --full` で作る。
 
 #### ゲート
 
@@ -719,7 +715,7 @@ ui-ux-pro-max の照合(`--domain ux`、検索語「sidebar saved views labels�
 
 - bat は `atlas.bat` 1 つにする(上の 7)。
 - 判定は画面から実行できるようにする。確認ダイアログ付きで、既定は 10 件、従量課金の anthropic は出さない(上の 6)。
-- 共有用の伏せ字版を画面から書き出す機能は作らない(不要)。CLI の `--anonymize` は今のまま残す。
+- 共有用の伏せ字版を画面から書き出す機能は作らない(不要)。CLI の `--anonymize` は今のまま残す(伏せ字版は後に廃止した)。
 
 後回しにした案: atlas.bat を「前回の out/ があれば先に画面を開き、集計は画面の中で走らせる」形にする(起動直後から見られるが、古い集計を見せる時間ができ、画面の状態が増える。上の契約が動いてから検討する)。採らなかった案: 記録を開くたびにサーバがその場で作る(Phase 13 の後の計測で、全件を先に作っても +5 秒・+13MB と小さかった。.md は LLM に渡す用途にも要る)。
 
@@ -728,15 +724,15 @@ ui-ux-pro-max の照合(`--domain ux`、検索語「sidebar saved views labels�
 作ったもの:
 
 1. **ジョブ**(`packages/cli/src/jobs.ts`、serve から使う): `JobRunner`(同時に 1 つ。2 つ目は 409)、`parseJobRequest`(kind の列挙、知らないキーは 400、judge は `limit` が 0〜500 の整数で必須・`backend` は `copilot-cli` / `opencode` で必須、full は `isSafeMemoId` と sessions.json にあること(無ければ 404))、`jobArgs`(固定の配列: `main.ts all --out <out> --notes-dir <notes>` / `judge-flow.ts --limit <n> --backend <b> --out <out> --notes-dir <notes>`)。既定の起動は `spawn(process.execPath, args, { shell: false, windowsHide: true })`。止めるときは Windows では `%SystemRoot%\System32\taskkill.exe /PID <pid> /T /F`(judge-flow が起動した copilot を残さない)、他は SIGTERM。stdout / stderr は行に分けて末尾 200 行を残し、serve の窓(atlas.bat の窓)にも `[集計し直す] …` の形で流す。起動(`spawn`)・環境変数の追加(`env`)・全文の書き出し(`runFull`)は `ServeOptions.jobs` で差し替えられる。
-2. **API**(`serve.ts`): `POST /api/jobs`(202 でジョブを返す)、`GET /api/jobs/current`(最後のジョブ。まだ無ければ `null`)、`POST /api/jobs/current/cancel`(動いていなければ 409)、`GET /api/jobs/judge-preview`(確認ダイアログの件数)。どれも token・Origin / Sec-Fetch-Site・Host を検査し、伏せ字版では 403。heartbeat が途切れてもジョブの実行中は止めず(`expire` が待つ。最初の heartbeat の待ちも同じ)、ジョブが終わってから猶予(idleMs)を測り直す。集計し直している間の 404(静的ページと記録の表示)は「集計し直している最中です…」の文面。
+2. **API**(`serve.ts`): `POST /api/jobs`(202 でジョブを返す)、`GET /api/jobs/current`(最後のジョブ。まだ無ければ `null`)、`POST /api/jobs/current/cancel`(動いていなければ 409)、`GET /api/jobs/judge-preview`(確認ダイアログの件数)。どれも token・Origin / Sec-Fetch-Site・Host を検査する。heartbeat が途切れてもジョブの実行中は止めず(`expire` が待つ。最初の heartbeat の待ちも同じ)、ジョブが終わってから猶予(idleMs)を測り直す。集計し直している間の 404(静的ページと記録の表示)は「集計し直している最中です…」の文面。
 3. **全文 1 件**(`report/src/full.ts` の `writeFullRecord`): export --full と同じ `renderFullTo` / `createFileSink` で `out/full/<id>.md` と `out/full/assets/<id>/` だけを書く。網羅の集計はこの 1 件の中で数えて捨てる(`coverage.json` は書かない)。止めるときは AbortSignal をイベントの間で見て tmp を消す。
 4. **記録の表示**(`report/src/viewer.ts`): `GET /view/<id>?kind=transcript|full` は殻(本文なし)、本文は `GET /api/view/<id>?kind=…`(token)が JSON で返す(下の「契約からのずれ」1)。描き方は `memo-render.ts` を `renderSafeMarkdown` に一般化して共用(メモの出力は変えない)。生の HTML は文字のまま、リンクは http / https / mailto だけ、外部の画像は読まない、全文記録だけ `assets/<id>/<名前>` の実在するファイル(画像は img、他はリンク)を `../full/assets/<id>/<名前>` で通す。先頭の `# 表題` はページの h1、`##` を h2 にして id を付け目次に(読んでいる節に印)。20MB を超えたら描かず大きさと「.md を開く」。見た目は詳細ページと同じ(page-nav、base.css、`.doc`)。
-5. **画面**: atlas.html のマストヘッドに「集計し直す」「工数を判定する…」(`JobActions.svelte`)、本文の上に帯(`JobBand.svelte`、状態は `jobs.svelte.ts` の `JobStore` で共有。実行中は 1 秒、それ以外は 5 秒ごとに `api/jobs/current` を読む)。完了で「新しい集計ができました」+「再読み込み」(自動では読み直さない)。この画面のデータ(埋め込みの generatedAt)より後に始まった処理だけを出す。判定は `<dialog>`(件数の上限 既定 10、copilot -p / opencode、件数の行、「AI クレジットを消費します」、初期フォーカスは「やめる」、Esc・「やめる」では API を呼ばない)。詳細ページは NAV_JS が serve のときだけ `api/session-tools.js` を読み込み、表題の下に「記録を読む」「全文を作って読む」(`session-tools.ts`)。file:// と伏せ字版には何も出ない(静的な生成物は NAV_JS の読み込み先が 1 つ増えただけ)。
+5. **画面**: atlas.html のマストヘッドに「集計し直す」「工数を判定する…」(`JobActions.svelte`)、本文の上に帯(`JobBand.svelte`、状態は `jobs.svelte.ts` の `JobStore` で共有。実行中は 1 秒、それ以外は 5 秒ごとに `api/jobs/current` を読む)。完了で「新しい集計ができました」+「再読み込み」(自動では読み直さない)。この画面のデータ(埋め込みの generatedAt)より後に始まった処理だけを出す。判定は `<dialog>`(件数の上限 既定 10、copilot -p / opencode、件数の行、「AI クレジットを消費します」、初期フォーカスは「やめる」、Esc・「やめる」では API を呼ばない)。詳細ページは NAV_JS が serve のときだけ `api/session-tools.js` を読み込み、表題の下に「記録を読む」「全文を作って読む」(`session-tools.ts`)。file:// には何も出ない(静的な生成物は NAV_JS の読み込み先が 1 つ増えただけ)。
 6. **bat と文書**: `atlas-export.bat` / `atlas-export-full.bat` / `atlas-judge.bat` を消した。`launchers.test.ts` は「直下の bat は atlas.bat だけ」、`release-smoke.ts` も同じ検査に。README(起動方法・新しい節「画面からの操作」・記録 / 完全出力 / 判定の節の bat の記述)、PRODUCT.md、CLI の USAGE(serve)、judge-flow の説明、atlas.bat の注記、surface brief(OPERATIONS)を直した。
 
 契約からのずれ(どれも最小限。理由つき):
 
-1. **`/view/<id>` は本文を持たない殻を返し、本文は token の要る `GET /api/view/<id>` から取る**。ページへの移動(リンク)には `X-Atlas-Token` ヘッダを付けられず、URL に token を載せると履歴と Referer に残り、cookie はポートを区別しないため。殻自体も Host・Origin / Sec-Fetch-Site・伏せ字版を検査する(他サイトからの移動は 403)。表題(セッション名)も API から取る。
+1. **`/view/<id>` は本文を持たない殻を返し、本文は token の要る `GET /api/view/<id>` から取る**。ページへの移動(リンク)には `X-Atlas-Token` ヘッダを付けられず、URL に token を載せると履歴と Referer に残り、cookie はポートを区別しないため。殻自体も Host・Origin / Sec-Fetch-Site を検査する(他サイトからの移動は 403)。表題(セッション名)も API から取る。
 2. **API を 2 つ足した**: `GET /api/jobs/judge-preview`(確認ダイアログに「未判定 N 件のうち M 件」を出すため。sessions.json の「依頼の記録がある」セッション(`turns > 0 || firstUserMessage`、bundle の hasRequest の近似)と judgments.json から数える)と `GET /api/session-tools.js`(詳細ページの操作の script。memo-editor.js と同じ配り方)。
 3. **記録の表示で、属性の無い `<small>` `<details>` `<summary>` だけはタグとして描く**。atlas 自身が記録(compaction の要約の折りたたみ)と全文記録(各イベントの id の行)に書くもので、文字のままだと全文記録の全行に `<small>…</small>` が見えて読めないため。esc した後で `&lt;small&gt;` の形そのものだけを戻すので、属性・イベント・大文字の変形は入らない(単体で確認)。メモの描画は変えていない。
 4. **見出しの段**: メモは 2 段下げだが、表示は先頭の `# 表題` をページの h1 に回し `##` を h2 にした(ページの h1 と本文の h1 が重ならないように)。
@@ -749,7 +745,7 @@ ui-ux-pro-max の照合(`--domain ux`、検索語「sidebar saved views labels�
 検査(このワークツリーで実行):
 
 - `npm run typecheck`: tsc 0 件、svelte-check 0 errors / 0 warnings(121 files)。
-- `npm test`(単体): 24 ファイル 179 件通過。Phase 14 の `packages/cli/test/jobs.test.ts` は 13 件(固定の引数と 409・ログの行分けと 200 行、引数の検証 17 通り(何も起動しない)、403(token なし・違う token・他オリジン・Sec-Fetch-Site・別の Host・伏せ字版)、cancel(子プロセスと全文)、full の成功と失敗、judge-preview、ジョブ中は idle で止まらない、集計中の 404 の文面、殻に本文が無いこと、記録の描画(script・イベント属性・javascript: リンク・相対リンク・外部画像・コードの中)、全文の assets(他のセッション・`..`・無いファイル)と許可したタグ、上限超え)。`launchers.test.ts` は bat が 1 つになったので 8 件 → 2 件(差し引きで総数は 185 → 179)。
+- `npm test`(単体): 24 ファイル 179 件通過。Phase 14 の `packages/cli/test/jobs.test.ts` は 13 件(固定の引数と 409・ログの行分けと 200 行、引数の検証 17 通り(何も起動しない)、403(token なし・違う token・他オリジン・Sec-Fetch-Site・別の Host)、cancel(子プロセスと全文)、full の成功と失敗、judge-preview、ジョブ中は idle で止まらない、集計中の 404 の文面、殻に本文が無いこと、記録の描画(script・イベント属性・javascript: リンク・相対リンク・外部画像・コードの中)、全文の assets(他のセッション・`..`・無いファイル)と許可したタグ、上限超え)。`launchers.test.ts` は bat が 1 つになったので 8 件 → 2 件(差し引きで総数は 185 → 179)。
 - `npm run e2e`: 10 ファイル 69 件通過 / 8 skipped。新しい `e2e/phase14.test.ts` 5 件(本物の子プロセスで refresh → atlas.html の generatedAt が新しくなり記録がある / full で `out/full/<id>.md` と assets だけができ、他のファイル(サイズ・mtime・sha1)は全て不変、coverage.json なし、表示の API で描ける / judge は件数なし・anthropic を 400、偽 copilot で 2 件だけ判定され atlas.html に反映 / cancel で canceled、次を受け付ける / 判定 1 件に 2.5 秒かかる偽 copilot で、猶予 300ms の serve がジョブ中に止まらず終わってから止まる)。偽 copilot に `FAKE_COPILOT_DELAY_MS` を足した。
 - `npm run ui`(Playwright): 2 ファイル 8 件通過。新しい `ui/jobs.test.ts` 4 件(「集計し直す」→ 帯が完了 →「再読み込み」で generatedAt が新しくなり帯が消える / 判定のダイアログで「やめる」と Esc は POST 0 回・judgments.json なし、上限 2 で実行すると POST の本文が `{kind:"judge",limit:2,backend:"copilot-cli"}` で 2 件判定 / 詳細ページの「記録を読む」で記録に混ぜた script・img onerror・javascript: リンクが実行されず文字のまま、「全文を作って読む」で全文を表示、coverage.json は作らない / file:// の atlas.html と詳細ページには操作が出ない)。全画面で pageerror と console.error が 0。
 - 陽性コントロール(壊して落ちることを確かめ、戻した): (a) `renderSafeMarkdown` の html を esc しないと単体 3 件(メモ 1・記録の表示 2)が落ちる。(b) `expire` のジョブ中の待ちを外すと「ジョブの実行中は heartbeat が途切れても止まらず…」が落ちる。(c) 判定ダイアログの「やめる」が API を呼ぶようにすると ui の f. が落ちる。
@@ -829,8 +825,8 @@ ui-ux-pro-max の照合(`--domain ux`、検索語「sidebar saved views labels�
 利用者の問い「詳細ページから指示文のページを開くと全部が出る。そのセッションに効いている指示や skill だけを一覧で見られないか」への答え。
 
 - **調べたこと(実測)**: 詳細ページには以前から注入された指示ファイルの表と、呼んだ skill の表があったが、節が分かれ、サイドバーの「指示文と skill」は全部(実データで 36 項目・61 版)を開いていた。使えた skill はシステムメッセージの `<skill><available_skills><skill><name/><description/><location/></skill>…` に並ぶ。実データ(スナップショットの events.jsonl 245 件、システムメッセージのあるもの 225 件)では 89 件にあり、Copilot CLI 1.0.77 より前の版(1.0.25〜1.0.71)と `copilot -p`(producer: copilot-agent)のセッションには無かった。location は user / project / custom / builtin。1 セッションの中で一覧が変わったものが 4 件あったので和集合にする。閉じタグの無い(途中で切れた)ものが 1 件。
-- **作ったもの**: `SessionRecord.availableSkills`(sessions.json の schemaVersion 7。一覧が無いセッションは null)。詳細ページの「指示ファイル」の節を「指示文と skill」にし、指示文の表と skill の表(使えた skill + 一覧に無い呼び出し、置き場所、呼んだ回数。呼んだものが先)を置く。伏せ字版では使えた skill の名前を出さず件数だけ(呼ばなかったプロジェクトの skill 名も含むため)。目次の「指示文と skill」と節の見出しの横のリンクは `instructions.html#session=<id>` を開き、指示文のページはそのセッションで使われた版だけを残す(版に `data-sessions`、帯に件数と「すべて表示」「セッションの詳細に戻る」)。
-- **検査**: 単体(抽出: 名前と置き場所、一覧なしは null、切れた一覧、複数のシステムメッセージの和集合 / 詳細ページ: 並び・回数・一覧に無し・一覧なしの文言・伏せ字 / 指示文のページ: data-sessions と名前の表)、E2E(fixture に指示文と使えた skill の一覧を足した。schemaVersion 7、詳細ページの件数の文)、ui に e(詳細ページから開くと他のセッションだけの項目と版が隠れ、「すべて表示」で戻り、詳細に戻れる)。陽性対照: 項目を隠す処理を外すと e が落ちる、版を隠す処理を外すと e が落ちる、抽出を常に null にすると単体 3 件が落ちる。実データの一時コピーで 1440 / 390px を撮り、横にはみ出さず、ページの例外・コンソールのエラーが無いことを見た。
+- **作ったもの**: `SessionRecord.availableSkills`(sessions.json の schemaVersion 7。一覧が無いセッションは null)。詳細ページの「指示ファイル」の節を「指示文と skill」にし、指示文の表と skill の表(使えた skill + 一覧に無い呼び出し、置き場所、呼んだ回数。呼んだものが先)を置く。目次の「指示文と skill」と節の見出しの横のリンクは `instructions.html#session=<id>` を開き、指示文のページはそのセッションで使われた版だけを残す(版に `data-sessions`、帯に件数と「すべて表示」「セッションの詳細に戻る」)。
+- **検査**: 単体(抽出: 名前と置き場所、一覧なしは null、切れた一覧、複数のシステムメッセージの和集合 / 詳細ページ: 並び・回数・一覧に無し・一覧なしの文言 / 指示文のページ: data-sessions と名前の表)、E2E(fixture に指示文と使えた skill の一覧を足した。schemaVersion 7、詳細ページの件数の文)、ui に e(詳細ページから開くと他のセッションだけの項目と版が隠れ、「すべて表示」で戻り、詳細に戻れる)。陽性対照: 項目を隠す処理を外すと e が落ちる、版を隠す処理を外すと e が落ちる、抽出を常に null にすると単体 3 件が落ちる。実データの一時コピーで 1440 / 390px を撮り、横にはみ出さず、ページの例外・コンソールのエラーが無いことを見た。
 - **残したもの**: `custom` の意味(どこに置いた skill か)は公式の説明を確かめていないので、ログの値のまま出す。使えたが呼ばなかった skill の本文は記録に無いので指示文のページには出ない。
 
 ### 初期設定の setup.bat(2026-11-08)
@@ -851,7 +847,7 @@ ui-ux-pro-max の照合(`--domain ux`、検索語「sidebar saved views labels�
 - **前回のレビューで残していた 5 件**: 画面の「書き出す」の間は out/ の印を取り、同じ serve の集計などのジョブも始めない(書きかけの sessions.json を読まない)。turn-judgments.json が壊れていても、判定の列なしで書き出して注意を出す。表(turns.csv・sessions.csv)を作る処理を `cli/src/tables.ts` の 1 つにした(集計の表とグループの書き出し)。依頼の塊の文字数を測る描画を使い回す(最後の 1 回を描き直さない)。リクエストのターンへの振り分けを二分探索にした(開始の時刻が前後していても先頭から見るのと同じ結果になる。乱数で 20 万通りを突き合わせた)。
 - **全ページの網羅チェック**: 架空 16 ページ・実データ 2,216 ページで要修正 0。要確認のうち、詳細ページの目次の「メモ」(2 文字)が 375px で 19px 幅だったので、目次のリンクに最小幅を付けた。もう 1 件は本文に引用された C++ のコード(問題なし)。
 - **impeccable の検出器**: 段階 1・2 で変えた UI のソース 18 ファイルで 0 件。生成物の 1 件は判定ダイアログの上の罫(角丸が無いので誤検出、前回と同じ)、注意は詳細ページの表の空欄の印「—」(文章ではない)。
-- **web-design-guidelines と設計契約の照合**(段階 1・2 で足した画面。P0 なし、P1 1・P2 11・P3 14): 直したもの — 「工程(普段)」の説明が無い(節の注記・表の読み方・詳細ページの説明と用語ページ `turn-verdict` に書いた)、file:// の共有版と伏せ字版でもボタンの場所を案内していた(`lib/hints.ts` で開き方ごとに文を分け、Overview・絞り込み・工程と詰まりで使う)、「最後の判定: モデル X、。」、合わなかった点が全部 0 でも見出しだけの表、colgroup の無い scope=colgroup、「表の読み方」が 2 つ下の表のさらに後ろ(工程別の表の直後へ)、採用率・判定不能の説明、グループの書き出しの結果を live 領域ごと差し込んでいた(常に置いて文だけ差し替え)、ボタン名「書き出す」(「表と記録を書き出す」)、件数の言い方、書き出し中に押すと結果が消える、チャットの手順で表示の名前と保存の名前が違う(turns-part-NN にそろえた)、詳細ページの判定の理由を 60 字で切って全文は title だけ(全文を出す)、依頼の判定の回数の目安、0 件を「—」で出していた(薄い 0。「—」は欠測と分母 0 だけ)、上限の桁区切り、判定するものを切り替えると上限が既定値に戻り前のエラーが残る、チャットに貼りかけた返答が消える(判定するものごとに親で持つ)、帯の「の」の連続、詳細ページの # を行の見出しに・「失敗」「ツール」の列名、未判定の行の空欄、説明文の句点と「工程と詰まり」・用語へのリンク、surface brief の OPERATIONS・目次の記述(TURNS を足した)。ブラウザ(serve、架空の判定入り)で 640px と 1440px を見て、工程別の表の名前の列が 1〜2 文字ずつ折り返していたので最小幅を付けた。残したもの: 伏せ字版でも普段の工程名(利用者の設定)がそのまま出る(グループ名と違い、作業の流れの一般的な名前なので出してよいと判断。伏せるなら設定の側で判断が要る)。列の定義を th の title に持たせている件は、表の直後に「表の読み方」を置いたのでそのまま。
+- **web-design-guidelines と設計契約の照合**(段階 1・2 で足した画面。P0 なし、P1 1・P2 11・P3 14): 直したもの — 「工程(普段)」の説明が無い(節の注記・表の読み方・詳細ページの説明と用語ページ `turn-verdict` に書いた)、file:// の共有版でもボタンの場所を案内していた(`lib/hints.ts` で開き方ごとに文を分け、Overview・絞り込み・工程と詰まりで使う)、「最後の判定: モデル X、。」、合わなかった点が全部 0 でも見出しだけの表、colgroup の無い scope=colgroup、「表の読み方」が 2 つ下の表のさらに後ろ(工程別の表の直後へ)、採用率・判定不能の説明、グループの書き出しの結果を live 領域ごと差し込んでいた(常に置いて文だけ差し替え)、ボタン名「書き出す」(「表と記録を書き出す」)、件数の言い方、書き出し中に押すと結果が消える、チャットの手順で表示の名前と保存の名前が違う(turns-part-NN にそろえた)、詳細ページの判定の理由を 60 字で切って全文は title だけ(全文を出す)、依頼の判定の回数の目安、0 件を「—」で出していた(薄い 0。「—」は欠測と分母 0 だけ)、上限の桁区切り、判定するものを切り替えると上限が既定値に戻り前のエラーが残る、チャットに貼りかけた返答が消える(判定するものごとに親で持つ)、帯の「の」の連続、詳細ページの # を行の見出しに・「失敗」「ツール」の列名、未判定の行の空欄、説明文の句点と「工程と詰まり」・用語へのリンク、surface brief の OPERATIONS・目次の記述(TURNS を足した)。ブラウザ(serve、架空の判定入り)で 640px と 1440px を見て、工程別の表の名前の列が 1〜2 文字ずつ折り返していたので最小幅を付けた。残したもの: 列の定義を th の title に持たせている件は、表の直後に「表の読み方」を置いたのでそのまま。
 - **Windows の画面テスト b3 が時々落ちる件**: CI(run 42120805755)では最初のグループの作成で、10 秒待っても groups.json に出なかった。手元で Chromium の CPU を 20 倍遅くし、前のテストから続けて 3 回流しても再現しなかったので、原因は特定できていない。次に落ちたときに原因が分かるよう、作成を押す前に入力が残っているかを確かめ、待ちが切れたら「作成の失敗: 理由」「入力欄が開いたまま」「入力欄が閉じたのに groups.json に無い」のどれかを出すようにした。CPU を遅くして流す `ATLAS_UI_CPU_SLOWDOWN` を足した(docs/development.md)。
 
 ### グループのアップロード(2026-11-08)
@@ -1133,7 +1129,7 @@ CI の画面テスト `ui/heartbeat.test.ts`(外へ移ると猶予の後に止�
   - 操作の結果(開いた・もう開いている・一覧から外した)は、一覧の見出しの下に目に見える形で出す(`role="status"`)。読み上げだけにしていたのを、デザインの見直しで改めた。知らせた後でそのフォルダの状態が変わったら(開いていたサーバが止まった、など)、合わなくなった知らせは消す。
   - 狭い幅(34rem 以下)では、一覧の操作(表示する・一覧から外す)をパスの下の段に回す。
   - 起動用の bat は足さない(`atlas.bat` の画面から使う。コマンドは `atlas open`)。
-  - `open` では `--home`・`--judgments`・`--bundle`・`--anonymize` を受け付けない。絞り込み(`--since` など)は集計に渡す。
+  - `open` では `--home`・`--judgments`・`--bundle` を受け付けない。絞り込み(`--since` など)は集計に渡す。
   - 索引の無いフォルダ(前の版が写したもの)が 2 段下にあるかは、直下のフォルダごとに先頭の 3 個だけを見る(関係のない大きなフォルダを指したときに、下を全部読まないため)。`~/.copilot` の形のフォルダは、人ごとのフォルダとしては扱わない。
 - **採らなかった案**:
   - `atlas.config.json` に開いたフォルダの一覧を書く(`parseConfig` は知らない項目があると読めないので、前の版の atlas が設定を読めなくなる)。
@@ -1204,7 +1200,6 @@ CI の画面テスト `ui/heartbeat.test.ts`(外へ移ると猶予の後に止�
 
 - **読む側**: `snapshot` が、まとめて集計したときに、セッション id ごとの数えたフォルダ(元からの相対パス)を `snapshot-manifest.json` の `merged.owners` に書く。作業用のフォルダ(`.<id>.uploading`)から写したセッションは、そのフォルダ。元から消えて出力先に複製だけが残ったセッションは、前の manifest の値を引き継ぐ(今の元にあれば、そちらを先に見る)。`extract` は、数えたフォルダが 2 段(`<名前>/<プロジェクト>`)のときだけ、1 段目を `SessionRecord.person` に入れる(`personOfFolder`)。1 段のフォルダ・`~/.copilot` の形・古い manifest では `null`。
 - **レポート**: `SessionSummary.person`(既定値の `null` は埋め込みから落とす)。絞り込み `FilterState.person`(URL は `#person=`。`(unknown)` は人のフォルダの下に無いセッション)、選択肢 `filterOptions().person`、集計 `Aggregate.byPerson`。画面は、絞り込みの「人」、「人別」の表(`ProjectTable.svelte` を `kind="person"` で使う)、目次の「人別」、詳細ページの「人: <名前>」の札。どれも、人のフォルダの名前が 1 件でも付いているレポートだけに出す。
-- **伏せ字**: 人のフォルダの名前は、辞書順に `person-01` などの仮名にする。本文に同じ名前が出てきたときも置き換える(`scrub`)。
 - **版**: `SESSIONS_SCHEMA_VERSION` 10 → 11、`REPORT_DATA_VERSION` 9 → 10。
 - **決めたこと**:
   - `person` は、`SessionRecord` でも `SessionSummary` でも省ける項目にする(人の軸が無い集計がほとんどで、前の版の `sessions.json` や埋め込みをそのまま読めるようにするため)。
@@ -1218,7 +1213,7 @@ CI の画面テスト `ui/heartbeat.test.ts`(外へ移ると猶予の後に止�
   - `tables` の CSV / xlsx に人の列を足す(列の並びを変えると、前の版の表を読む側が崩れる)。
   - プロジェクト名から人を決める(送った側の記録の名前には、人のフォルダの名前は入っていない)。
   - 人別の表を別の部品として写して作る(同じ表が 2 つになる)。
-- **検査**: 単体 `packages/core/test/upload-read.test.ts`(数えたフォルダの記録、作業用のフォルダから写したもの、元から消えたものの引き継ぎ、別の人のフォルダに移したとき、古い manifest)、`packages/report/test/report-lib.test.ts`(絞り込み・選択肢・URL・人別の集計・伏せ字・詳細ページの札)、`pack.test.ts`(付いているときだけ埋め込む)。画面 `ui/folders.test.ts` の d(この PC のレポートには出ない、送り先の全体では出る、名前を押す・選ぶ・外す・URL から開く、詳細ページの札)。
+- **検査**: 単体 `packages/core/test/upload-read.test.ts`(数えたフォルダの記録、作業用のフォルダから写したもの、元から消えたものの引き継ぎ、別の人のフォルダに移したとき、古い manifest)、`packages/report/test/report-lib.test.ts`(絞り込み・選択肢・URL・人別の集計・詳細ページの札)、`pack.test.ts`(付いているときだけ埋め込む)。画面 `ui/folders.test.ts` の d(この PC のレポートには出ない、送り先の全体では出る、名前を押す・選ぶ・外す・URL から開く、詳細ページの札)。
 - **未検証**: 本物の送り先(NAS)での人数の多い集計。人のフォルダの名前に、フォルダ名として使えるがレポートで読みにくい文字(とても長い名前など)があるときの見え方。
 
 ### デザインの記録 DESIGN.md(2026-11-12)
@@ -1339,3 +1334,9 @@ AI がセッションの中で足した行が、その後の VCS(Git / SVN / Per
 - **文書**: フォルダを読めるエージェントやローカルの LLM に渡す手順と、パケットの本文が指示の注入口になる注意を judge.md に書いた。
 - **採らなかった案**: Copilot CLI の判定をやめる(BYOK での無人の判定と `skill-draft` がこの上にあり、ツールを絞って起動する守りも失う)。圧縮する(deflate の依存が要る)。ZIP で結果を返してもらう(展開の依存が要り、LLM に ZIP を作らせるのも安定しない)。画面の「添付ファイルを作る」で ZIP も作る(チャットに貼る流れでは使わず、作る時間と容量が倍になる)。依頼ごとの判定の ZIP(`turn-bundle` は 1 ファイルで完結する `parts/` だけなので、まとめる意味が薄い)。ローカルの LLM を HTTP で直接呼ぶバックエンド(HTTP の依存が要る)。
 - **確かめていないこと**: ローカルの LLM での実際の判定。M365 Copilot が ZIP の添付を受け付けるか。
+
+### 伏せ字版の廃止(2026-11-16)
+
+- **決めたこと**(利用者の判断): 共有用の伏せ字版(`--anonymize`)を廃止した。オプションと、伏せ字版だけの出し分けを除く。秘密情報の検査(API キーらしい文字列を `[伏せました: 種類]` に置き換えて件数を出すもの)は別の機能なので残す。
+- **共有**: atlas には名前やパスを伏せて出す機能が無い。人に渡すときは、名前やパスがそのまま入る前提で中身を確かめ、渡してよいファイルだけを渡す(README の「共有するときの注意」)。
+- 上の各段に残る伏せ字版の記述は、廃止の前の経緯として残した(今の仕様ではない)。

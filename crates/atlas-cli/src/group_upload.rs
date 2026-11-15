@@ -412,7 +412,7 @@ const SNIFF_BYTES: usize = 8192;
 const SCAN_OVERLAP: usize = 16 * 1024;
 const SCAN_CHUNK: usize = 4 * 1024 * 1024;
 
-/// API キー・トークンらしい形(種類名, 正規表現)。セッション記録の伏せ字と同じもの
+/// API キー・トークンらしい形(種類名, 正規表現)。セッション記録の秘密情報の検査と同じもの
 use atlas_report::transcript::SECRET_PATTERNS;
 
 /// 種類ごとの数(見つかった種類の順。JS の Map と同じく、最初に見つかった順)

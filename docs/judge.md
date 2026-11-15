@@ -114,7 +114,7 @@ bin\atlas.exe bundle --unjudged --zip  # out/bundle/ と out/bundle.zip を作�
 `atlas.bat` から開いた画面の「判定する…」を押し、判定するものに「工数」、判定の方法に「このツールが判定する」を選ぶと、件数の上限(既定 10)を決める確認が出ます(判定には GitHub Copilot CLI の `copilot -p` を使います)。「〜件を判定する」を押すと、バンドルを作り直し、未判定のセッションを上限まで判定して、レポートを作り直します([screen.md の「画面からの操作」](screen.md#画面からの操作))。従量課金の `anthropic` とモデルの指定は画面からはできません(コマンドの `--backend anthropic` と `--model` だけ。画面からの判定は Copilot に設定してある既定のモデルを使います)。コマンドでは次のとおりです。
 
 ```
-bin\atlas.exe judge-flow                                    # bundle → judge run → export(画面の「工数を判定する」と同じ。伏せ字版は build)
+bin\atlas.exe judge-flow                                    # bundle → judge run → export(画面の「工数を判定する」と同じ)
 bin\atlas.exe judge run --limit 5                           # まず 5 件だけ試す
 bin\atlas.exe judge run --only <id>,<id>                    # 指定したセッションだけ
 bin\atlas.exe judge run --force                             # 判定済みも判定し直す

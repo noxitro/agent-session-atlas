@@ -376,7 +376,7 @@ pub fn request_kind_of(text: &str) -> &'static str {
     if asks { "question" } else { "task" }
 }
 
-/// 1 ターン 1 行(CSV・集計・画面で使う)。text は依頼文の先頭(伏せ字版では使わない)。
+/// 1 ターン 1 行(CSV・集計・画面で使う)。text は依頼文の先頭。
 /// TS 版の TurnRow は TurnStats を展開したものなので、ここでは stats を借りて持つ
 #[derive(Debug, Clone, Copy)]
 pub struct TurnRow<'a> {

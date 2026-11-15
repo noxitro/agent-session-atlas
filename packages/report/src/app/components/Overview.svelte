@@ -7,7 +7,6 @@
   let {
     agg,
     judged,
-    anonymized,
     warnings,
     filtered,
     includeEmpty,
@@ -18,7 +17,6 @@
   }: {
     agg: Aggregate;
     judged: boolean;
-    anonymized: boolean;
     warnings: { unknownEventTypes: number; badLines: number; notes: string[] };
     filtered: boolean;
     /** 空のセッションを含めているか */
@@ -86,7 +84,7 @@
           <span class="v missing">—</span><span class="n" data-testid="effort-uncertain">LLM の推定。判定済み {int(o.judgedSessions)} セッションはどれも確信度の低い推定(計 {dec(o.humanUncertain.hours)} 時間)なので、合計にしていません</span>
         {/if}
       {:else}
-        <span class="v missing">未判定</span><span class="n">LLM による推定はまだありません。{judgeHint('工数', { editable, anonymized })}{#if editable}Copilot の AI クレジットを使う方法と、M365 Copilot などのチャットに貼る方法があります。{/if}</span>
+        <span class="v missing">未判定</span><span class="n">LLM による推定はまだありません。{judgeHint('工数', { editable })}{#if editable}Copilot の AI クレジットを使う方法と、M365 Copilot などのチャットに貼る方法があります。{/if}</span>
       {/if}
     </div>
   </div>
@@ -194,9 +192,6 @@
     </ul>
   </div>
 
-  {#if anonymized}
-    <p class="note">伏せ字モード: プロジェクト名・パス・ブランチは仮名(project-01 など)に置き換え、依頼本文・セッション名は表示していません。</p>
-  {/if}
   {#if warnings.unknownEventTypes > 0}
     <p class="note">ログに未知のイベント種別が {int(warnings.unknownEventTypes)} 件ありました(集計からは除外し、件数だけ数えています)。</p>
   {/if}

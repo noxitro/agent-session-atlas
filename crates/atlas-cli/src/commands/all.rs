@@ -34,16 +34,9 @@ pub fn run_all_after_snapshot(o: &CliOptions, p: &Paths, log: Log<'_>, t: Instan
         atlas_core::jsfs::rm_force(&p.vcs_retention)?;
         log(&format!("vcs: 注意 照合できませんでした({e})。レポートの「AI の変更の残存」は出しません"));
     }
-    run_metrics(p, &f, log, !o.anonymize)?;
-    // セッション記録(.md)も作る。伏せ字版は作らない
-    let build = run_build(
-        p,
-        &BuildOptions { filter: f, anonymize: o.anonymize, transcripts: if o.anonymize { None } else { Some(TranscriptCli { tool_output: o.tool_output, max_chars: o.max_chars, full: false }) } },
-        log,
-    )?;
-    if o.anonymize {
-        log("all: 伏せ字版なのでセッション記録(.md)は作りません(必要なら atlas export --anonymize)");
-    }
+    run_metrics(p, &f, log)?;
+    // セッション記録(.md)も作る
+    let build = run_build(p, &BuildOptions { filter: f, transcripts: Some(TranscriptCli { tool_output: o.tool_output, max_chars: o.max_chars, full: false }) }, log)?;
     log(&format!("all: 完了 {}", elapsed(t)));
     Ok(build)
 }
@@ -68,7 +61,7 @@ pub fn run_all_or_reuse(o: &CliOptions, p: &Paths, built_file: &Path, log: Log<'
     };
     let options = json!({
         "since": o.since, "project": o.project, "client": o.client, "model": o.model, "branch": o.branch, "group": o.group, "sessions": o.sessions,
-        "anonymize": o.anonymize, "toolOutput": o.tool_output.as_str(), "maxChars": o.max_chars, "tempDirs": o.temp_dirs, "vcsMode": o.vcs_mode,
+        "toolOutput": o.tool_output.as_str(), "maxChars": o.max_chars, "tempDirs": o.temp_dirs, "vcsMode": o.vcs_mode,
     });
     let code = crate::version::CODE_STAMP.to_string();
     let key = inputs_key(&ReusePaths { snapshot: &p.snapshot, judgments: &p.judgments, turn_judgments: &p.turn_judgments, groups: &p.groups }, &options, &config_file, &code)?;

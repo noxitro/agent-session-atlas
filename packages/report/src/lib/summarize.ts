@@ -1,9 +1,9 @@
 // SessionRecord → SessionSummary(HTML に埋め込む要約)。生イベント・timeline・長文は落とす。
 import type { FailureCauses } from '../shared/tool-failure.ts';
 import type { SessionRecord } from '../shared/types.ts';
-import type { Anonymizer } from './anonymize.ts';
 import { coverageOf } from './filter.ts';
 import { truncate } from './format.ts';
+import { shortProjectLabel } from './project-label.ts';
 import { turnTuples } from './turns.ts';
 import type { AgentStat, EffortTuple, ExecSummary, FrictionDetailSummary, JudgmentSummary, ModelTokenSummary, SessionSummary, SkillTriggers, ToolIssue } from './types.ts';
 
@@ -67,7 +67,7 @@ export function detailHref(id: string): string {
   return `sessions/${detailFileName(id)}`;
 }
 
-export function summarize(r: SessionRecord, anon: Anonymizer, judgment: JudgmentSummary | null): SessionSummary {
+export function summarize(r: SessionRecord, judgment: JudgmentSummary | null): SessionSummary {
   const byModel: Record<string, ModelTokenSummary> = {};
   for (const [m, t] of Object.entries(r.tokens.byModel)) {
     byModel[m] = { input: t.input, output: t.output, cacheRead: t.cacheRead, premiumRequests: t.premiumRequests, requests: t.requests };
@@ -101,17 +101,17 @@ export function summarize(r: SessionRecord, anon: Anonymizer, judgment: Judgment
     if (!res || res.failure > 0 || res.denied > 0 || completed !== calls) issues[tool] = [res?.failure ?? 0, res?.denied ?? 0, completed];
     if (res?.causes && Object.keys(res.causes).length) causes[tool] = res.causes;
   }
-  const name = anon.freeText(r.name);
-  const first = anon.freeText(r.firstUserMessage);
+  const name = r.name;
+  const first = r.firstUserMessage;
   const t = r.tokens;
   return {
     id: r.id,
     client: r.client,
-    project: anon.project(r.project),
-    projectLabel: anon.projectLabel(r.project),
+    project: r.project,
+    projectLabel: shortProjectLabel(r.project),
     projectSource: r.projectSource ?? 'path',
-    branch: anon.branch(r.branch),
-    person: anon.person(r.person ?? null),
+    branch: r.branch,
+    person: r.person ?? null,
     name: name ? truncate(name, SUMMARY_TEXT_CHARS) : null,
     firstUserMessage: first ? truncate(first, SUMMARY_TEXT_CHARS) : null,
     createdAt: r.createdAt,
@@ -166,7 +166,7 @@ export function summarize(r: SessionRecord, anon: Anonymizer, judgment: Judgment
     ...(r.analysis?.turnStats?.length ? { turnRows: turnTuples(r) } : {}),
     files: { changed: r.files.changed.length, created: r.files.created.length, deleted: r.files.deleted?.length ?? 0, sessionState: r.files.sessionState ?? 0 },
     href: detailHref(r.id),
-    // 根拠の自由記述は HTML 本体に埋め込まない(詳細ページだけ)。伏せ字モードでは要約も出さない
-    judgment: judgment ? { ...judgment, rationale: null, taskSummary: anon.enabled ? null : judgment.taskSummary } : null,
+    // 根拠の自由記述は HTML 本体に埋め込まない(詳細ページだけ)
+    judgment: judgment ? { ...judgment, rationale: null } : null,
   };
 }

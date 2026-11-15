@@ -1,6 +1,6 @@
 //! Phase 11: 指示文(AGENTS.md 等の注入)と skill の本文の閲覧ページ(packages/report/src/library.ts の移植)。
 //! 重複なしで版ごと(contentHash)に out/library/<hash>.md に本文を置き、out/instructions.html に
-//! 見出しごとの版一覧(使われたセッション、初回と最終の利用日、前の版との差分)を出す。伏せ字版では作らない。
+//! 見出しごとの版一覧(使われたセッション、初回と最終の利用日、前の版との差分)を出す。
 
 use crate::format::{date_n, date_time_n, int_n};
 use crate::html::{byte_length, esc, write_text};

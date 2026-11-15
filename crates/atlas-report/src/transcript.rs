@@ -2,11 +2,11 @@
 //! - 本文はスナップショットの events.jsonl から読み直す(呼び元が読んだイベントを渡す。sessions.json には先頭・末尾 2000 字しか無い)
 //! - トークン・AIU・待ち時間は session-store.db の明細(assistant_usage_events)と usage_record を core の merge_usage で合わせる
 //! - 既定では成功したツールの結果は入れない(--tool-output all で入れる)
-//! - API キーらしい文字列は伏せて件数を出す。伏せ字モードでは本文にも scrub を掛ける
+//! - API キーらしい文字列は伏せて件数を出す
 
-use crate::anonymize::Anonymizer;
 use crate::format::{date_time_n, dec_n, duration, int_n};
 use crate::jssort::js_sort_by;
+use crate::project_label::short_project_label;
 use crate::raw_events::RawEvent;
 use atlas_core::classify::{is_internal_tool, is_user_turn, normalize_model};
 use atlas_core::collate::locale_compare;
@@ -29,7 +29,6 @@ pub enum ToolOutputMode {
 }
 
 pub struct TranscriptOptions<'a> {
-    pub anon: &'a Anonymizer,
     pub generated_at: &'a str,
     /// ツールの結果を入れる条件(既定 fail = 失敗したときだけ)
     pub tool_output: ToolOutputMode,
@@ -267,14 +266,13 @@ fn str_or(v: Option<&Value>, fallback: &str) -> String {
     }
 }
 
-struct Writer<'a> {
-    o: &'a TranscriptOptions<'a>,
+struct Writer {
     truncated: u64,
     secret_hits: u64,
 }
 
-impl Writer<'_> {
-    /// 本文(自由記述)の整形: 上限で中略 → 秘密情報を伏せる → 伏せ字モードなら scrub
+impl Writer {
+    /// 本文(自由記述)の整形: 上限で中略 → 秘密情報を伏せる
     fn text(&mut self, s: &str, limit: usize) -> String {
         let len = js::utf16_len(s);
         let cut;
@@ -289,19 +287,14 @@ impl Writer<'_> {
         };
         let (red, hits) = redact_secrets(t);
         self.secret_hits += hits;
-        if self.o.anon.enabled { self.o.anon.scrub(&red) } else { red }
-    }
-
-    fn short(&self, s: &str) -> String {
-        if self.o.anon.enabled { self.o.anon.scrub(s) } else { s.to_string() }
+        red
     }
 }
 
 /// セッション記録を Markdown にする。events が None(スナップショットに無い)・空のときは sessions.json の抜粋だけで組む。
 /// db_usage は session-store.db の assistant_usage_events のうちこのセッションの行
 pub fn render_transcript(r: &SessionRecord, events: Option<&[RawEvent]>, db_usage: &[DbUsageRow], o: &TranscriptOptions<'_>) -> TranscriptResult {
-    let anon = o.anon;
-    let mut w = Writer { o, truncated: 0, secret_hits: 0 };
+    let mut w = Writer { truncated: 0, secret_hits: 0 };
     let events: &[RawEvent] = events.unwrap_or(&[]);
     let source = if events.is_empty() { TranscriptSource::Record } else { TranscriptSource::Events };
 
@@ -351,51 +344,37 @@ pub fn render_transcript(r: &SessionRecord, events: Option<&[RawEvent]>, db_usag
 
     // ---------- 見出し・概要 ----------
     let (failure, denied) = r.tools.results.values().fold((0i64, 0i64), |a, x| (a.0 + x.failure, a.1 + x.denied));
-    let name = anon.free_text(r.name.as_deref()).filter(|s| !s.is_empty());
-    let title = match &name {
+    let title = match r.name.as_deref().filter(|s| !s.is_empty()) {
         Some(n) => js::utf16_slice(&WS_RUN.replace_all(n, " "), 0, 120).into_owned(),
-        None => {
-            if anon.enabled {
-                "セッション(伏せ字)".into()
-            } else {
-                r.id.clone()
-            }
-        }
+        None => r.id.clone(),
     };
     let mut l: Vec<String> = Vec::new();
     macro_rules! push {
         ($($e:expr),* $(,)?) => { $( l.push($e.to_string()); )* };
     }
-    push!(format!("# セッション記録: {}", w.short(&title)), "");
+    push!(format!("# セッション記録: {title}"), "");
     push!(format!(
         "生成 {} · agent-session-atlas `atlas export` · 本文の出所: {}",
         date_time_n(Some(o.generated_at)),
         if source == TranscriptSource::Events { "events.jsonl(スナップショット)" } else { "sessions.json の抜粋のみ(スナップショットに記録が無い)" }
     ));
-    if anon.enabled {
-        push!("", "> **伏せ字モード。** プロジェクト名・パス・リポジトリ名・ブランチは仮名に、絶対パスは `<path>` に置き換えてあります。依頼文や応答などの自由記述は機械的に置き換えただけで、本文中の固有名(相対パス、ファイル名、人名など)が残っている可能性があります。共有する前に中身を確認してください。");
-    }
     push!("");
 
     push!("## 概要", "");
     let opt_i = |v: Option<f64>, miss: &str| v.map(int_n).unwrap_or_else(|| miss.to_string());
     let meta: Vec<(&str, String)> = vec![
         ("セッション ID", r.id.clone()),
-        ("プロジェクト", anon.project_label(&r.project)),
+        ("プロジェクト", short_project_label(&r.project)),
         ("クライアント", r.client.clone().unwrap_or_else(|| "不明".into())),
         (
             "リポジトリ / ブランチ",
             format!(
                 "{} / {}",
-                if anon.enabled {
-                    if r.repository.as_deref().is_some_and(|s| !s.is_empty()) { anon.project(&r.project) } else { "—".into() }
-                } else {
-                    r.repository.clone().unwrap_or_else(|| "—".into())
-                },
-                anon.branch(r.branch.as_deref()).unwrap_or_else(|| "—".into())
+                r.repository.clone().unwrap_or_else(|| "—".into()),
+                r.branch.clone().unwrap_or_else(|| "—".into())
             ),
         ),
-        ("作業フォルダ", anon.path(r.cwd.as_deref()).unwrap_or_else(|| if anon.enabled { "(伏せ字)".into() } else { "—".into() })),
+        ("作業フォルダ", r.cwd.clone().unwrap_or_else(|| "—".into())),
         ("Copilot", r.copilot_version.clone().unwrap_or_else(|| "不明".into())),
         ("開始 / 更新", format!("{} / {}", date_time_n(r.created_at.as_deref()), date_time_n(r.updated_at.as_deref()))),
         ("所要時間 / 実働", format!("{} / {}", duration(r.duration_ms, "不明"), duration(r.active_ms, "不明"))),
@@ -534,8 +513,8 @@ pub fn render_transcript(r: &SessionRecord, events: Option<&[RawEvent]>, db_usag
     push!("## 経過", "");
     if source == TranscriptSource::Record {
         push!("スナップショットに events.jsonl が無いため、sessions.json に残る最初の依頼と最後の応答だけです。", "");
-        let first = anon.free_text(r.first_user_message.as_deref()).filter(|s| !s.is_empty());
-        let last = anon.free_text(r.last_assistant_message.as_deref()).filter(|s| !s.is_empty());
+        let first = r.first_user_message.as_deref().filter(|s| !s.is_empty());
+        let last = r.last_assistant_message.as_deref().filter(|s| !s.is_empty());
         if let Some(f) = &first {
             let t = w.text(f, o.max_text_chars);
             push!("### 最初の依頼", "", quote(&t), "");
@@ -615,7 +594,7 @@ pub fn render_transcript(r: &SessionRecord, events: Option<&[RawEvent]>, db_usag
                 prev_at = at;
             }
             let agent = agent_of(e);
-            let tag = agent.as_ref().map(|a| format!("[agent:{}] ", w.short(a))).unwrap_or_default();
+            let tag = agent.as_ref().map(|a| format!("[agent:{a}] ")).unwrap_or_default();
             let ts = e.timestamp();
             match e.kind() {
                 "user.message" => {
@@ -679,15 +658,15 @@ pub fn render_transcript(r: &SessionRecord, events: Option<&[RawEvent]>, db_usag
                     let err = if ok { String::new() } else { error_text(e.d("error")) };
                     let mcp = start_ev.and_then(|s| s.d_str("mcpServerName")).filter(|s| !s.is_empty()).map(|s| format!(" (MCP {s})")).unwrap_or_default();
                     let who = match st.and_then(|s| s.agent.as_ref()) {
-                        Some(a) => format!("[agent:{}] ", w.short(a)),
+                        Some(a) => format!("[agent:{a}] "),
                         None => tag.clone(),
                     };
                     let body = format!(
                         "{who}{} `{nm}`{mcp}{}{}{}",
                         if ok { "✔" } else { "✖" },
-                        if args.is_empty() { String::new() } else { format!(" {}", w.short(&redact_secrets(&args).0)) },
+                        if args.is_empty() { String::new() } else { format!(" {}", redact_secrets(&args).0) },
                         dur.map(|d| format!("({d})")).unwrap_or_default(),
-                        if err.is_empty() { String::new() } else { format!(" — 失敗: {}", w.short(&redact_secrets(&err).0)) }
+                        if err.is_empty() { String::new() } else { format!(" — 失敗: {}", redact_secrets(&err).0) }
                     );
                     line(&mut l, ts, &body);
                     let show = o.tool_output == ToolOutputMode::All || (o.tool_output == ToolOutputMode::Fail && !ok);
@@ -707,7 +686,7 @@ pub fn render_transcript(r: &SessionRecord, events: Option<&[RawEvent]>, db_usag
                         Some(v) => js::to_js_string(v),
                         None => "agent".into(),
                     };
-                    line(&mut l, ts, &format!("**サブエージェント開始** `{}`", w.short(&nm)));
+                    line(&mut l, ts, &format!("**サブエージェント開始** `{}`", nm));
                 }
                 "subagent.completed" => {
                     let mut parts: Vec<String> = Vec::new();
@@ -720,15 +699,15 @@ pub fn render_transcript(r: &SessionRecord, events: Option<&[RawEvent]>, db_usag
                     if e.d("totalToolCalls").is_some_and(|v| !v.is_null()) {
                         parts.push(format!("ツール {} 回", int_n(number(e.d("totalToolCalls")))));
                     }
-                    line(&mut l, ts, &format!("サブエージェント完了 `{}`{}", w.short(&str_or(e.d("agentName"), "agent")), if parts.is_empty() { String::new() } else { format!("({})", parts.join("、")) }));
+                    line(&mut l, ts, &format!("サブエージェント完了 `{}`{}", str_or(e.d("agentName"), "agent"), if parts.is_empty() { String::new() } else { format!("({})", parts.join("、")) }));
                 }
                 "subagent.failed" => {
                     let msg = match e.d("error").filter(|v| !v.is_null()).or_else(|| e.d("message").filter(|v| !v.is_null())) {
                         Some(v) => js::to_js_string(v),
                         None => String::new(),
                     };
-                    let s = w.short(&redact_secrets(&msg).0);
-                    line(&mut l, ts, &format!("**サブエージェント失敗** `{}`: {}", w.short(&str_or(e.d("agentName"), "agent")), js::utf16_slice(&s, 0, 300)));
+                    let s = redact_secrets(&msg).0;
+                    line(&mut l, ts, &format!("**サブエージェント失敗** `{}`: {}", str_or(e.d("agentName"), "agent"), js::utf16_slice(&s, 0, 300)));
                 }
                 "session.compaction_start" => {
                     let num0 = |k: &str| int_n(number(Some(e.d(k).filter(|v| !v.is_null()).unwrap_or(&Value::from(0)))));
@@ -767,7 +746,7 @@ pub fn render_transcript(r: &SessionRecord, events: Option<&[RawEvent]>, db_usag
                     line(&mut l, ts, &format!("権限の確認の結果: {kind}"));
                 }
                 "session.error" => {
-                    let msg = e.d_str("message").map(|m| format!(": {}", js::utf16_slice(&w.short(&redact_secrets(m).0), 0, 300))).unwrap_or_default();
+                    let msg = e.d_str("message").map(|m| format!(": {}", js::utf16_slice(&redact_secrets(m).0, 0, 300))).unwrap_or_default();
                     line(
                         &mut l,
                         ts,
@@ -775,7 +754,7 @@ pub fn render_transcript(r: &SessionRecord, events: Option<&[RawEvent]>, db_usag
                     );
                 }
                 "abort" => {
-                    let reason = e.d_str("reason").map(|r| js::utf16_slice(&w.short(r), 0, 300).into_owned()).unwrap_or_default();
+                    let reason = e.d_str("reason").map(|r| js::utf16_slice(r, 0, 300).into_owned()).unwrap_or_default();
                     line(&mut l, ts, &format!("**中断** {reason}"));
                 }
                 "session.mode_changed" => line(&mut l, ts, &format!("モード変更 {} → {}", str_or(e.d("previousMode"), "?"), str_or(e.d("newMode"), "?"))),
@@ -817,22 +796,18 @@ pub fn render_transcript(r: &SessionRecord, events: Option<&[RawEvent]>, db_usag
     let files = &r.files;
     if !files.changed.is_empty() || !files.created.is_empty() || !files.deleted.is_empty() {
         push!("## 変更したファイル", "");
-        if anon.enabled {
-            push!(format!("変更 {} / 作成 {} / 削除 {} 件(伏せ字モードのためパスは出しません)", int_n(files.changed.len() as f64), int_n(files.created.len() as f64), int_n(files.deleted.len() as f64)), "");
-        } else {
-            for (label, xs) in [("変更", &files.changed), ("作成", &files.created), ("削除", &files.deleted)] {
-                if xs.is_empty() {
-                    continue;
-                }
-                push!(format!("### {label}({})", int_n(xs.len() as f64)), "");
-                for f in xs.iter().take(200) {
-                    push!(format!("- `{f}`"));
-                }
-                if xs.len() > 200 {
-                    push!(format!("- …他 {} 件", int_n((xs.len() - 200) as f64)));
-                }
-                push!("");
+        for (label, xs) in [("変更", &files.changed), ("作成", &files.created), ("削除", &files.deleted)] {
+            if xs.is_empty() {
+                continue;
             }
+            push!(format!("### {label}({})", int_n(xs.len() as f64)), "");
+            for f in xs.iter().take(200) {
+                push!(format!("- `{f}`"));
+            }
+            if xs.len() > 200 {
+                push!(format!("- …他 {} 件", int_n((xs.len() - 200) as f64)));
+            }
+            push!("");
         }
     }
 
