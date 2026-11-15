@@ -8,7 +8,7 @@
 //  6. 摩擦の詳細(権限の結果・エラーの種別・サブエージェント失敗の理由・compaction 自体のトークン)
 //  7. todo が snapshot(session.db の VACUUM INTO)から読め、状態別件数と完了率が出る
 //  8. 要点欄が機械的に出て、各項目が詳細ページか絞り込み(#...)へのリンクを持つ
-//  ほか: 元ファイルの mtime 不変、HTML 5MB 未満、HTML と詳細ページに欄が出る、--anonymize で固有名が出ない
+//  ほか: 元ファイルの mtime 不変、HTML 5MB 未満、HTML と詳細ページに欄が出る
 // ATLAS_LIVE=1 のときは実データで out/live を作り直し、モード別・推論強度別・起点の比率・ツール定義の平均・
 // モデル別の TTFT・遅いツール・todo の完了率・要点・atlas.html のサイズをログに出す。
 import { spawnSync } from 'node:child_process';
@@ -415,7 +415,7 @@ describe('Phase 7 E2E: fixtures', () => {
   it('8. 要点欄: 機械的に選び、各項目は詳細ページか絞り込み(#...)へのリンクを持つ', () => {
     const filter = { ...emptyFilter(), project: P7 };
     const sessions = applyFilter(data.sessions, filter);
-    const g = highlights(sessions, aggregate(sessions).usage, { filter, anonymized: false, installed: data.installed });
+    const g = highlights(sessions, aggregate(sessions).usage, { filter, installed: data.installed });
     expect(g.map((x) => x.kind)).toEqual(['cost', 'tool-failure', 'compaction', 'unused-skill']);
     const [cost, tool, comp, unused] = g;
     expect(cost.items).toEqual([{ text: expect.stringContaining('first request: 4.2 AIU(この条件の合計の 100%)'), href: `sessions/${id(14)}.html`, linkLabel: 'セッションの詳細' }]);
@@ -446,22 +446,6 @@ describe('Phase 7 E2E: fixtures', () => {
       expect(detail).toContain(t);
     expect(detail).not.toContain('secret-todo-title');
   });
-
-  it('--anonymize で固有名(パス・プロジェクト名)が出ない', async () => {
-    const anonOut = join(WORK, 'out-anon');
-    const r = atlas(['all', '--home', home, '--out', anonOut, '--anonymize', '--temp-dir', TEMP_DIR]);
-    expect(r.status, r.stderr).toBe(0);
-    const files = [join(anonOut, 'atlas.html'), join(anonOut, 'sessions', `${id(14)}.html`), join(anonOut, 'sessions', `${id(15)}.html`)];
-    for (const f of files) {
-      const h = await readFile(f, 'utf8');
-      const leaked = ['synthetic-p7', 'secret-todo-title', 'first request', 'make a plan'].filter((x) => h.includes(x));
-      expect({ f, leaked }).toEqual({ f, leaked: [] });
-    }
-    const d = extractEmbedded<ReportData>(await readFile(files[0], 'utf8'));
-    const x = d.sessions.find((y) => y.id === id(14))!;
-    expect(x.exec.modes).toEqual({ interactive: 1, plan: 1, autopilot: 1 });
-    expect(x.todos?.total).toBe(5);
-  });
 });
 
 describe.skipIf(!LIVE)('Phase 7 E2E: 実データ(ATLAS_LIVE=1)', () => {
@@ -486,7 +470,7 @@ describe.skipIf(!LIVE)('Phase 7 E2E: 実データ(ATLAS_LIVE=1)', () => {
     const agg = aggregate(sessions);
     const x = agg.exec;
     const pct = (a: number, b: number): string => (b ? `${((a / b) * 100).toFixed(1)}%` : '—');
-    const g = highlights(sessions, agg.usage, { filter, anonymized: false, installed: data.installed });
+    const g = highlights(sessions, agg.usage, { filter, installed: data.installed });
     const embedded = Buffer.byteLength(JSON.stringify(data));
     const slow = x.toolDurations.rows.filter((t) => t.n >= 5).slice(0, 8);
     console.log(

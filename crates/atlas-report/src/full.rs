@@ -250,7 +250,7 @@ pub fn render_full_body(r: &SessionRecord, events: &[RawEvent], db_usage: &[DbUs
         int_n(r.events.total as f64)
     ));
     l.push(String::new());
-    l.extend(["> **解析用の完全出力。** 原本の文字列をそのまま含みます(秘密情報の形式検査で伏せた箇所を除く)。共有しないでください。共有には伏せ字版(`--anonymize`)を使います。".to_string(), String::new()]);
+    l.extend(["> **解析用の完全出力。** 原本の文字列をそのまま含みます(秘密情報の形式検査で伏せた箇所を除く)。共有しないでください。".to_string(), String::new()]);
     l.extend(["## 概要".to_string(), String::new()]);
     l.extend(["| 項目 | 値 |".to_string(), "|---|---|".to_string()]);
     let meta: Vec<(&str, String)> = vec![

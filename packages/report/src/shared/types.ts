@@ -26,7 +26,7 @@ import type { AtlasBuild, FolderUpload } from './atlas-version.ts';
 // 17: exec.mainModelEfforts(本体のリクエストだけの モデル別 × 推論強度別。サブエージェントを除く)
 // 18: analysis.failures・failuresDropped(失敗の台帳: ツールの失敗と拒否を 1 件 1 行で)・tools.resultsByModel・agents[].prompt
 // 19: tests(テストの実行ファイルが書いた印つきの 1 行 JSON と、実行ごとの推移。印の行があるセッションだけ)・source.wikis(参照を数えた vault の数)
-export const SESSIONS_SCHEMA_VERSION = 18;
+export const SESSIONS_SCHEMA_VERSION = 19;
 // 5: turns(依頼単位の工程 × 詰まり・依頼の種類の集計)
 // 6: tools.results[].causes(ツールの失敗の要因別の回数)
 export const METRICS_SCHEMA_VERSION = 6;
@@ -207,7 +207,7 @@ export interface SessionAnalysis {
   turnMs: (number | null)[];
   /** ターンごとの実働(ms。ターンの中で 5 分を超えてイベントが無かった区間を除く。返答待ちや放置を含めない。分からなければ null) */
   turnActiveMs: (number | null)[];
-  /** 依頼文の先頭 300 字(ターンごと、先頭 200 件。伏せ字版の HTML には埋め込まない) */
+  /** 依頼文の先頭 300 字(ターンごと、先頭 200 件) */
   requests: string[];
   /**
    * 段階 1(依頼単位の分析): ターンごとの出来事(turnTools と同じ並び・同じ件数)。

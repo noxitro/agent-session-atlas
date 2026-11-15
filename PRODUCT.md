@@ -13,7 +13,7 @@ TypeScript / Node 24 / npm workspaces。レポートは Vite + Svelte 5 を単�
 ## Users
 
 - 主利用者: GitHub Copilot(デスクトップ autopilot / CLI / SDK)を主軸に複数プロジェクトを開発しており、自分の AI 活用を定量的に振り返りたい開発者。
-- 二次読者: 利用者がレポートを見せる相手(発表の聴衆など)。元セッションを知らないため、文脈なしで読める説明が要る。プロジェクト名や経路を伏せて共有する場合がある。
+- 二次読者: 利用者がレポートを見せる相手(発表の聴衆など)。元セッションを知らないため、文脈なしで読める説明が要る。
 - 閲覧環境は PC ブラウザが主。モバイルは崩れなければよい。
 
 ## Product Purpose
@@ -31,9 +31,9 @@ TypeScript / Node 24 / npm workspaces。レポートは Vite + Svelte 5 を単�
 ## Operating Context
 
 - 入力: `~/.copilot`(Windows では `%USERPROFILE%\.copilot`)。Copilot が並行して書いている可能性がある。
-- 実行: 利用者が起動するのは `atlas.bat` だけ(snapshot → extract → metrics → export(セッション記録つき)→ serve)。起動後の操作(集計し直す・工数の判定・記録と全文記録の表示・グループ・メモ)は serve の画面から。判定は確認ダイアログ(件数・バックエンド・AI クレジットの消費)を通す。細かい指定と伏せ字版・全件の全文記録はコマンド(`npm run atlas -- <コマンド>`)。
+- 実行: 利用者が起動するのは `atlas.bat` だけ(snapshot → extract → metrics → export(セッション記録つき)→ serve)。起動後の操作(集計し直す・工数の判定・記録と全文記録の表示・グループ・メモ)は serve の画面から。判定は確認ダイアログ(件数・バックエンド・AI クレジットの消費)を通す。細かい指定と全件の全文記録はコマンド(`npm run atlas -- <コマンド>`)。
 - 出力: `out/atlas.html`(単一ファイル、集計と要約のみ埋め込み)、`out/sessions/<id>.html`(詳細)、`out/sessions.json` / `metrics.json` / `bundle/` / `judgments.json`。
-- 共有: HTML をそのまま相手に渡す。共有時はプロジェクト名・パスを伏せ字にするオプションを使う。
+- 共有: HTML をそのまま相手に渡す。名前やパスを伏せる機能は持たない(渡す前に利用者が中身を確かめる)。
 
 ## Capabilities and Constraints
 
@@ -56,7 +56,7 @@ TypeScript / Node 24 / npm workspaces。レポートは Vite + Svelte 5 を単�
 1. 欠測を隠さない。推定は推定、記録なしは記録なしと表示する。
 2. 元データを汚さない。読むだけ、複製してから開く。
 3. 一画面で全体 → 絞り込み → 根拠のセッション、の順に辿れる。
-4. 共有可能。文脈を知らない読者が用語の説明を見つけられ、固有名を伏せられる。
+4. 共有可能。文脈を知らない読者が用語の説明を見つけられる。
 5. 判定(LLM)は差し替え可能で、集計(機械)の正しさに依存させない。
 
 ## Accessibility & Inclusion

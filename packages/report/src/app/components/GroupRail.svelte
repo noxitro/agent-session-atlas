@@ -11,7 +11,6 @@
     selectedCount,
     editable,
     readOnly = false,
-    anonymized,
     onpick,
   }: {
     groups: Group[];
@@ -22,7 +21,6 @@
     editable: boolean;
     /** 読むだけの画面(タスクタグは送った人が付けたもの。ここでは作れない) */
     readOnly?: boolean;
-    anonymized: boolean;
     /** null で「すべて」 */
     onpick: (name: string | null) => void;
   } = $props();
@@ -32,7 +30,7 @@
 
 <div class="group-rail" data-testid="group-rail">
   {#if groups.length === 0 && selectedCount === 0}
-    {#if editable}<p class="empty">タスクタグはまだありません。一覧でセッションを選ぶと作れます。</p>{:else if readOnly}<p class="empty" data-testid="readonly-no-tags">送った人が付けたタスクタグはありません。</p>{:else if !anonymized}<p class="empty">タスクタグは atlas.bat から開くと作れます。</p>{/if}
+    {#if editable}<p class="empty">タスクタグはまだありません。一覧でセッションを選ぶと作れます。</p>{:else if readOnly}<p class="empty" data-testid="readonly-no-tags">送った人が付けたタスクタグはありません。</p>{:else}<p class="empty">タスクタグは atlas.bat から開くと作れます。</p>{/if}
   {:else}
     <ul class="list" role="list">
       <li><button type="button" class="row" aria-current={!current && selectedCount === 0 ? 'true' : undefined} onclick={() => onpick(null)}>すべて</button></li>

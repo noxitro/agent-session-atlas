@@ -104,7 +104,6 @@ pub struct JudgmentSummary {
     pub high: Option<f64>,
     /// 推定の確信度(0〜1)
     pub confidence: Option<f64>,
-    /// 伏せ字モードでは null
     pub task_summary: Option<String>,
     /// AI が依頼を達成したか
     pub completed: Option<bool>,
@@ -114,7 +113,7 @@ pub struct JudgmentSummary {
     pub rework: Option<f64>,
     /// 指示ファイル / llm-wiki / skill・agent の効果(-2〜+2)
     pub effects: JudgmentEffects,
-    /// 工数推定の根拠。HTML 本体には埋め込まず詳細ページだけに出す。伏せ字モードでは null
+    /// 工数推定の根拠。HTML 本体には埋め込まず詳細ページだけに出す
     pub rationale: Option<String>,
     /// この判定を出したバックエンド
     pub backend: Option<String>,
@@ -213,18 +212,18 @@ pub struct TestsSummary {
 pub struct SessionSummary {
     pub id: String,
     pub client: Option<String>,
-    /// 集計キー(伏せ字モードでは project-01 など)
+    /// 集計キー
     pub project: String,
     /// 表示用の短い名前
     pub project_label: String,
     pub project_source: ProjectSource,
     pub branch: Option<String>,
-    /// 送り先をまとめて集計したときの、人のフォルダの名前(伏せ字モードでは person-01 など)。それ以外は null
+    /// 送り先をまとめて集計したときの、人のフォルダの名前。それ以外は null
     #[serde(default)]
     pub person: Option<String>,
-    /// セッション名(伏せ字モードでは null)
+    /// セッション名
     pub name: Option<String>,
-    /// 最初の依頼の先頭(伏せ字モードでは null)
+    /// 最初の依頼の先頭
     pub first_user_message: Option<String>,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
@@ -276,7 +275,7 @@ pub struct SessionSummary {
     /// AI の変更がその後の VCS のファイルに残っているか(build が足す)。照合していないセッション・古い埋め込みには無い
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retention: Option<RetentionItem>,
-    /// Phase 13: メモの概要(build が足す)。無ければ省略。伏せ字版では常に無し
+    /// Phase 13: メモの概要(build が足す)。無ければ省略
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memo: Option<MemoSummary>,
 }

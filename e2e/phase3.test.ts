@@ -309,7 +309,7 @@ describe('Phase 3 E2E: fixtures', () => {
     expect(r4.stderr).toMatch(/バンドルに無い/);
   });
 
-  it('c2. atlas-judge の入口(judge-flow): 最後は export で、直前の all が作ったセッション記録を消さない。伏せ字版は build で記録を残さない', async () => {
+  it('c2. atlas-judge の入口(judge-flow): 最後は export で、直前の all が作ったセッション記録を消さない', async () => {
     const flowOut = join(WORK, 'out-flow');
     const env = { ATLAS_COPILOT_BIN: FAKE, FAKE_COPILOT_LOG: join(WORK, 'fake-copilot-flow.log') };
     const flow = (args: string[]): ReturnType<typeof atlas> => {
@@ -323,10 +323,6 @@ describe('Phase 3 E2E: fixtures', () => {
     expect(r.status, `${r.stderr}\n${r.stdout}`).toBe(0);
     expect(r.stdout).toMatch(/export: セッション記録 \d+ 件/);
     expect(await mds()).toBe(sessions.sessions.length);
-    // 同じ out/ で伏せ字版: 生の記録が残らない
-    const ra = flow(['--out', flowOut, '--limit', '0', '--anonymize']);
-    expect(ra.status, `${ra.stderr}\n${ra.stdout}`).toBe(0);
-    expect(await mds()).toBe(0);
   });
 });
 

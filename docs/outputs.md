@@ -4,16 +4,15 @@
 
 ## セッション記録(Markdown)
 
-セッションの経過を 1 ファイルの Markdown にして、LLM に渡して振り返ったり、自分で経過を読んだりするための出力です。依頼文や応答がそのまま入るので、人に渡すなら `--anonymize` で作り、中身を確かめてからにしてください。集計と同じスナップショットから作り、LLM は呼びません。
+セッションの経過を 1 ファイルの Markdown にして、LLM に渡して振り返ったり、自分で経過を読んだりするための出力です。依頼文や応答・パスがそのまま入るので、人に渡すなら中身を確かめてからにしてください。集計と同じスナップショットから作り、LLM は呼びません。
 
 ```
 bin\atlas.exe export                     # build と同じ絞り込みで、全セッションの .md を out/sessions/ に書く
 bin\atlas.exe export --since 2026-10-01  # 期間で絞る(--project / --client / --model / --branch も同じ)
 bin\atlas.exe export --tool-output all   # 成功したツールの結果も入れる(容量が数倍になる)
-bin\atlas.exe export --anonymize         # 伏せ字版(下の注意を読んでください)
 ```
 
-`atlas.bat`(`all`)は既定の中身(`--tool-output fail`、上限 20,000 字)で記録も作ります。`atlas.bat` から開いた詳細ページの「記録を読む」で、その場で読めます([screen.md の「画面からの操作」](screen.md#画面からの操作))。中身を変えたいとき(`--tool-output all`、`--max-chars`、伏せ字版の記録 `--anonymize`)は上のコマンドで作り直します。
+`atlas.bat`(`all`)は既定の中身(`--tool-output fail`、上限 20,000 字)で記録も作ります。`atlas.bat` から開いた詳細ページの「記録を読む」で、その場で読めます([screen.md の「画面からの操作」](screen.md#画面からの操作))。中身を変えたいとき(`--tool-output all`、`--max-chars`)は上のコマンドで作り直します。
 
 記録 1 件(`out/sessions/<セッション ID>.md`)の中身:
 
@@ -30,14 +29,13 @@ bin\atlas.exe export --anonymize         # 伏せ字版(下の注意を読んで
 - **既定ではツールの結果は失敗したときだけ入れます**(`--tool-output fail`)。成功した結果はログの容量の大半を占めるためで、必要なら `--tool-output all`。内部ツール(`report_intent`)は書きません。
 - 長い本文は上限(`--max-chars`、既定 20,000 字。ツールの結果は 4,000 字)で中略し、中略した箇所に字数を書きます。LLM に渡す前に全体の長さを確認してください(長いセッションは 1 件で数十万字になります)。
 - **秘密情報**: API キーやトークンらしい文字列(GitHub / OpenAI・Anthropic / AWS / Slack / Google のキー、秘密鍵、JWT、Bearer)は形式で見つけて `[伏せました: 種類]` に置き換え、件数を記録の末尾と `export` のログに出します。形式で探しているだけなので偽陽性・見逃しがあります。本物が見つかったら元の記録(`~/.copilot`)にも残っているので鍵を作り直してください。共有する前に中身は必ず確認してください。
-- **伏せ字モード(`--anonymize`)の記録**は、プロジェクト名・パス・リポジトリ名・ブランチを仮名に、絶対パスを `<path>` に置き換え、ファイル一覧を出しません。ただし依頼文や応答などの自由記述は機械的に置き換えるだけなので、本文中の相対パス・ファイル名・人名などは残りえます。HTML の伏せ字版(本文を出さない)より弱い保証です。記録の先頭にもその注意を書きます。
 - スナップショットに `events.jsonl` が無いセッション(`session-store.db` にだけあるもの、`--since` で複製対象外だったもの)は、`sessions.json` に残る最初の依頼と最後の応答だけの記録になり、その旨を書きます。
-- `export` は `build` を含むので、レポートと詳細ページも作り直されます。逆に素の `build` を実行すると `.md` は消え、詳細ページのリンクも消えます(フィルタで減ったセッションの古い記録を残さないため)。`all`(`atlas.bat`・`bin\atlas.exe`・画面の「集計し直す」)と判定(画面の「工数を判定する」・`bin\atlas.exe judge-flow`)は記録も作るので消えません。伏せ字版(`--anonymize`)の `all` は記録を作りません。
-- 同じ目的の既存ツールとの関係: agent-toolkit の `copilot-session-export`(アプリの中から `/export` `/export-usage` でその場で書き出す)と `copilot-usage-export`(PowerShell だけで動く日次バッチ)は、1 セッションをその場で・自動で書き出すためのものです。atlas の `export` は、集計と同じ絞り込みと伏せ字でまとめて出すためのもので、節の構成は揃えていますが同じファイルにはなりません。
+- `export` は `build` を含むので、レポートと詳細ページも作り直されます。逆に素の `build` を実行すると `.md` は消え、詳細ページのリンクも消えます(フィルタで減ったセッションの古い記録を残さないため)。`all`(`atlas.bat`・`bin\atlas.exe`・画面の「集計し直す」)と判定(画面の「工数を判定する」・`bin\atlas.exe judge-flow`)は記録も作るので消えません。
+- 同じ目的の既存ツールとの関係: agent-toolkit の `copilot-session-export`(アプリの中から `/export` `/export-usage` でその場で書き出す)と `copilot-usage-export`(PowerShell だけで動く日次バッチ)は、1 セッションをその場で・自動で書き出すためのものです。atlas の `export` は、集計と同じ絞り込みでまとめて出すためのもので、節の構成は揃えていますが同じファイルにはなりません。
 
 ## 表(CSV)
 
-依頼(ターン)ごと・セッションごと・ツールの失敗と拒否ごとの表を、表計算ソフトで開ける CSV(UTF-8、BOM 付き、行末 CRLF)で書きます。集計(`metrics`、`atlas.bat`・`all` を含む)のたびに `out/tables/` に、グループの書き出し(画面のグループの見出しの「表と記録を書き出す」、`atlas group export <名前>`)では `out/groups/<名前>/` に書きます(`failures.csv` と、テストの結果・課題 × 条件の表(`test-runs.csv`・`test-results.csv`・`test-counts.csv`・`conditions.csv`、`sessions.csv` の課題・条件・テストの列)は `out/tables/` だけで、グループの書き出しには入れません)。空のセッションは入れません。依頼文の先頭(200 字)・パス・エラー文・ツールの引数がそのまま入るので、共有する前に中身を確かめてください。伏せ字版(`--anonymize`)の `build`・`export`・`all` では `out/tables/` を書かず、前に書いた表も消します。`=` `+` `-` `@` で始まる文字列のセルには、表計算ソフトが式として読まないよう先頭に `'` を足します。
+依頼(ターン)ごと・セッションごと・ツールの失敗と拒否ごとの表を、表計算ソフトで開ける CSV(UTF-8、BOM 付き、行末 CRLF)で書きます。集計(`metrics`、`atlas.bat`・`all` を含む)のたびに `out/tables/` に、グループの書き出し(画面のグループの見出しの「表と記録を書き出す」、`atlas group export <名前>`)では `out/groups/<名前>/` に書きます(`failures.csv` と、テストの結果・課題 × 条件の表(`test-runs.csv`・`test-results.csv`・`test-counts.csv`・`conditions.csv`、`sessions.csv` の課題・条件・テストの列)は `out/tables/` だけで、グループの書き出しには入れません)。空のセッションは入れません。依頼文の先頭(200 字)・パス・エラー文・ツールの引数がそのまま入るので、共有する前に中身を確かめてください。`=` `+` `-` `@` で始まる文字列のセルには、表計算ソフトが式として読まないよう先頭に `'` を足します。
 
 | ファイル | 1 行 | 主な列 |
 |---|---|---|
@@ -92,7 +90,7 @@ AI がセッションの中で足した行が、その後の VCS(Git / SVN / Per
 | `out/vcs-retention.json` | 照合の条件(比べる版 `mode`・似た行の下限 `similarity`・パスの読み替えの数・照合した場所と日時・設定の `labels` と `note`)、全体の集計(`summary`。下の「記録の範囲」)、セッションごとの結果(`sessions`: 結果・照合不可の理由・VCS・開始時の基準と出所・比べた版と出所(`evaluated.source`)・値の出所(`provenance`)・まとまりごとの状態と行数。まとまりには、似た本文で当てた行数 `similarLines`、ログのツール呼び出しの ID `toolCallId`、行の取り出し元 `from`(`diff` / `args`)も、あるときだけ入る)。パスが入るので共有しないでください |
 | `sessions.csv` の列 | 照合の結果・照合不可の理由・VCS・開始時の基準(記録 / 推定)・照合した場所・状態別のまとまりと行の数。照合していないセッションは空にします |
 | `vcs-hunks.csv`・`atlas.sqlite` の `vcs_hunks` | まとまりごとの状態(上の「表」) |
-| レポート | 「AI の変更の残存」の節と、詳細ページの同じ名前の節([screen.md](screen.md#画面の見方))。伏せ字版では詳細ページのパスを出しません |
+| レポート | 「AI の変更の残存」の節と、詳細ページの同じ名前の節([screen.md](screen.md#画面の見方)) |
 
 - **取り出し方**: ログの編集の完了イベントの diff(無ければ編集の引数)から、AI が足した行を取ります。同じセッションで後から書き直した行は最後の形だけ、失敗した編集・`session-state` の中・空白だけの行は数えません。
 - **照合の仕方**: 開始時の基準のファイルと照合した時点のファイルを読み、基準から増えた行と AI の行を突き合わせます(同じ本文 → 空白を除いて同じ → 似た本文の順)。基準は Git ではログに残った開始時のコミット(記録)、無いときと SVN・Perforce は開始時刻の直前の版(推定)です。比べる版は既定で照合した時点の作業ツリーで、`fixed` ではセッションの終わりから決まった日数後の版です。セッションの終わりから比べた時点までの日数を、セッションごとに残します(`sessionEnd` と `evaluated.at`)。
@@ -124,9 +122,9 @@ bin\atlas.exe snapshot --snapshot-all  # rewind-snapshots / 一覧に無いフ�
 | `out/snapshot/desktop.json` | デスクトップアプリの `data.db` から、名前で固定した許可リストの列だけを読んだもの(下記) |
 | `out/full/<id>.md` | 全文記録。依頼、応答、reasoningText、ツールの引数と結果(成功含む)、hook の入出力、system.message、compaction の要約、skill の本文、plan.md、チェックポイント、`files/` などの一覧、data.db の列を時系列で、上限なしで書く。除くのは暗号化・不透明データ(`encryptedContent`、`reasoningOpaque`、`reasoningBlocks` の中の base64 らしい値)と base64 の本体(画像などは `out/full/assets/<id>/` に書き出してリンク)だけで、除いた箇所に種別とバイト数を書く。hook の入力に入っているツールの結果がツールの結果と同一なら参照にする。API キーらしい文字列は形式検査で伏せて件数を末尾に書く |
 | `out/coverage.json` | 網羅の検査。元データの event type × data のキーごとに件数・バイト数・扱い(`full` = 全文に出した / `ref` = 参照にした / `excluded` = 理由付きで除外)。扱いの表(`packages/report/src/coverage.ts`)に無いキーは `unclassified` として数え、`export` のログと全文記録の末尾にも出す(0 件なら欠損なし)。`data.db` の列も同じ表で(許可 = `full`、許可外 = `unclassified`、開かない表 = `excluded`) |
-| `out/instructions.html` と `out/library/` | 指示文(AGENTS.md / CLAUDE.md / copilot-instructions.md 等の注入)と skill の本文を、重複なしで版(内容のハッシュ)ごとに置いたもの。見出しごとの版一覧、本文、使われたセッション、使われた期間・プロジェクト、前の版との差分。「版 N」は初回の利用日の順の通し番号(改善点の「版 N」と同じ)で、別のリポジトリの同じ見出しのファイルも同じ項目に入るため、番号が大きい版が今の版とは限らない。そのため最後に使われた版に印を付けて開き、項目の見出しにプロジェクトごとの最後の版を、期間が重なる版に「並行して使用」を出す。差分は同じプロジェクトで前に使われた版と比べる(無ければ 1 つ前の版と比べ、そう書く)。詳細ページの指示ファイルの行と skill からリンクし、サイドバーの付録にも入る。`instructions.html#session=<セッション ID>` で開くと(詳細ページの「このセッションの指示文と skill」)、そのセッションで使われた版だけを残し、上の帯に件数と「すべて表示」「セッションの詳細に戻る」が出る(使えただけで呼ばなかった skill は本文が無いので、詳細ページの表にだけ出る)。`--full` でなくても `export` で作る。伏せ字版では作らない |
+| `out/instructions.html` と `out/library/` | 指示文(AGENTS.md / CLAUDE.md / copilot-instructions.md 等の注入)と skill の本文を、重複なしで版(内容のハッシュ)ごとに置いたもの。見出しごとの版一覧、本文、使われたセッション、使われた期間・プロジェクト、前の版との差分。「版 N」は初回の利用日の順の通し番号(改善点の「版 N」と同じ)で、別のリポジトリの同じ見出しのファイルも同じ項目に入るため、番号が大きい版が今の版とは限らない。そのため最後に使われた版に印を付けて開き、項目の見出しにプロジェクトごとの最後の版を、期間が重なる版に「並行して使用」を出す。差分は同じプロジェクトで前に使われた版と比べる(無ければ 1 つ前の版と比べ、そう書く)。詳細ページの指示ファイルの行と skill からリンクし、サイドバーの付録にも入る。`instructions.html#session=<セッション ID>` で開くと(詳細ページの「このセッションの指示文と skill」)、そのセッションで使われた版だけを残し、上の帯に件数と「すべて表示」「セッションの詳細に戻る」が出る(使えただけで呼ばなかった skill は本文が無いので、詳細ページの表にだけ出る)。`--full` でなくても `export` で作る |
 
-`--full` を付けない `export` や素の `build` は、前回の `out/full/` と `out/coverage.json`(と `instructions.html` / `out/library/`)を消しません(ユーザーの生成物を黙って消さないため。残っているときはログに生成日時を出します)。古い全文記録が残っている点に注意し、消したいときはフォルダを手で消すか、`--anonymize` で作ります(伏せ字版の `out/` には残しません)。
+`--full` を付けない `export` や素の `build` は、前回の `out/full/` と `out/coverage.json`(と `instructions.html` / `out/library/`)を消しません(ユーザーの生成物を黙って消さないため。残っているときはログに生成日時を出します)。古い全文記録が残っている点に注意し、消したいときは `out/full/` フォルダと `out/coverage.json` を手で消してください(どちらかが残っている間は、ログに出ます)。
 
 **data.db(デスクトップアプリ)**: 資格情報の列を含むため、次の形で読みます。ファイルは複製せず、`file:///…/data.db?immutable=1` の読み取り専用で開きます(`-shm` / `-wal` に触れません)。読むのは名前で固定した許可リストの列だけで(`sessions` の非資格情報の列、`session_context_usage`、`session_checkpoints`、`activity_items`、`projects` と `workspaces` の非資格情報の列)、`select *` はせず、`accounts` / `settings` / `app_state` / `model_providers` / `remote_environments` は開きません。許可リストに無い列は名前だけ数えます(値は読みません)。immutable で開くため `-wal` の未反映分は読めず、最近の更新が欠けることがあります(`desktop.json` と全文記録に WAL の大きさと更新日時を書きます)。結果は `sessions.json` の `desktop` 欄、全文記録、詳細ページの「デスクトップアプリの記録(data.db)」に出ます。
 
@@ -168,8 +166,6 @@ bin\atlas.exe snapshot --snapshot-all  # rewind-snapshots / 一覧に無いフ�
 
 回数と率の分母は `tools.results` から、要因・エラー文・呼び直しは台帳の行から数えます(台帳は 1 セッション 500 行までなので、回数は行からは数えません)。率は、結果の記録がある呼び出しが 20 回以上のものだけ出します(これより少ないと、1 回の失敗で率が 5 ポイントを超えて動きます)。skill と指示文の版の率は、さらに 5 セッション以上のものだけで、比べる 2 つの率は片方が出せないときは両方「—」にします。ページの表は多い順に 50 行までで、`failures.json` には全件を書きます。閾値は `crates/atlas-report/src/failure_stats.rs` の `thresholds` にまとめています。
 
-伏せ字版(`--anonymize`)には、集計のページと `failures.json` を作りません(前に作ったものが残っていれば消します)。
-
 ## 改善点(規則による分析)
 レポートの「改善点」の節(目次「概況」の「要点」の次)と、全件のページ `out/insights.html`、機械可読の `out/insights.json` です。LLM は使わず、決まった規則で集計します。**分かるのは相関まで**なので画面でも「傾向」と書いています。指示文の効果は直接は測れません(同じ版でも依頼が違う)。率は 5 セッション以上のものだけ出し、未満は「—」です(セッション数の列で分かります)。閾値は `packages/report/src/lib/insights.ts` の `THRESHOLDS` にまとめ、根拠は `docs/PLAN.md` の Phase 12 にあります。
 
@@ -183,12 +179,10 @@ bin\atlas.exe snapshot --snapshot-all  # rewind-snapshots / 一覧に無いフ�
 | 長いのに注入が少ない指示文 | 字数が全版の上位 25% で、注入されたのが 3 セッション未満の版(項目ごとに今の版=最後に読み込まれた版だけ、最後の読み込み日を添える)。全体での希少さの話なので絞り込みに従わない | レポート内で全記録から計算 |
 | スキル化の候補 | (a) 似た依頼文の繰り返し: 依頼文を正規化(小文字、パス・URL・数字・id を印に)して文字 3-gram の Jaccard 類似度 0.6 以上を束ねる。(b) 同じツールの並びの繰り返し: 本体のターンごとのツール列から長さ 3〜6 の部分列(連続の重複は潰し、閲覧系以外のツールが 2 種類以上、周期的な繰り返しは除く)。どちらも 3 回以上・2 セッション以上。スコア = 回数 × 1 回の実働の中央値(分。1 分未満は 1 分、2 時間で頭打ち。実働はターンの中で 5 分を超えて出来事が無かった区間(返答待ちや放置)を除いた時間で、セッションの実働時間と同じ数え方)。相づち(OK / 続けて)と動作確認の定型文(行頭の reply with 等)、20 字未満は除く | `build` / `export` 時に全セッションで計算し、上位 30 件を埋め込む(箱には全件数を出す。全件は `insights.html`) |
 
-伏せ字版(`--anonymize`)では依頼文の本文・指示文の見出し・代表文を出さず、件数とスコアだけになります(`insights.json` も同じ)。
-
 ### スキルの下書き(`atlas skill-draft`、任意)
 
 ```
 bin\atlas.exe skill-draft <番号>  # out/insights.json の候補の番号。--backend copilot-cli(既定)/ anthropic、--model、--timeout
 ```
 
-候補の繰り返し回数・代表の依頼文・ツールの並びを LLM に渡し、SKILL.md の形の下書きを `out/skill-drafts/<番号>-<名前>.md` に書きます。**明示したときだけ動き、`build` / `export` / `all` では呼びません**。費用は 1 回の実行で判定 1 件と同じです。`copilot-cli` はモデル 1 リクエスト相当の AI クレジット、`anthropic` は Anthropic API の従量課金(`ANTHROPIC_API_KEY` が必要)を消費します(`anthropic` は機能 `anthropic-backend` を付けてビルドした atlas だけ。リリースの `atlas.exe` には入っていません。[judge.md](judge.md))。`copilot-cli` は判定と同じ安全策(`--no-custom-instructions`、`shell` / `write` / `url` の拒否、`--add-dir` なし)で動きます。下書きの作業フォルダは判定と同じ接頭辞にしており、次回の集計では「(atlas の判定)」に分類されて候補に戻りません。テストは偽の CLI(`ATLAS_COPILOT_BIN`)と fetch の差し替えで行い、本物は呼びません。伏せ字版の `out/` では拒否します(本文が無いため)。下書きは案なので、使う前に読んで直してください。
+候補の繰り返し回数・代表の依頼文・ツールの並びを LLM に渡し、SKILL.md の形の下書きを `out/skill-drafts/<番号>-<名前>.md` に書きます。**明示したときだけ動き、`build` / `export` / `all` では呼びません**。費用は 1 回の実行で判定 1 件と同じです。`copilot-cli` はモデル 1 リクエスト相当の AI クレジット、`anthropic` は Anthropic API の従量課金(`ANTHROPIC_API_KEY` が必要)を消費します(`anthropic` は機能 `anthropic-backend` を付けてビルドした atlas だけ。リリースの `atlas.exe` には入っていません。[judge.md](judge.md))。`copilot-cli` は判定と同じ安全策(`--no-custom-instructions`、`shell` / `write` / `url` の拒否、`--add-dir` なし)で動きます。下書きの作業フォルダは判定と同じ接頭辞にしており、次回の集計では「(atlas の判定)」に分類されて候補に戻りません。テストは偽の CLI(`ATLAS_COPILOT_BIN`)と fetch の差し替えで行い、本物は呼びません。下書きは案なので、使う前に読んで直してください。

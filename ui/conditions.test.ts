@@ -8,9 +8,8 @@
 //  e. 利用の確認: 確かめるものを選び、使うはずの条件に印を付けると、使わなかったセッションとほかの条件で使ったセッションを並べる
 //  f. 送り先をまとめて集計した出力(タスクタグの表示名が「人 / タグ」)でも、元のタグから読んで同じ表になり、人をまたいでまとめる
 //  g. テストの記録が無い古い集計でも開き、テストの結果の列を出さずに理由を書く
-//  h. 伏せ字版には節を出さず、課題と条件の名前も出さない
-//  i. 全ページの網羅チェック(この節が出ている出力)に要修正の指摘が無い
-//  j. llm-wiki の vault を指定しないで集計したときは、wiki の参照を数えていないと書く
+//  h. 全ページの網羅チェック(この節が出ている出力)に要修正の指摘が無い
+//  i. llm-wiki の vault を指定しないで集計したときは、wiki の参照を数えていないと書く
 // a〜e は atlas serve の画面、f 以降はファイルを直接開く(サーバは開いている画面が無くなると止まるので、サーバの画面を使うものを先に置く)。
 // どの画面でもページ内の例外とコンソールのエラーが無いこと。
 import { spawnSync } from 'node:child_process';
@@ -234,25 +233,13 @@ describe('課題 × 条件', () => {
     expect(await section().innerText()).not.toContain('最後に全部通った');
   });
 
-  it('h. 伏せ字版には節を出さず、課題と条件の名前も出さない', async () => {
-    const anon = join(WORK, 'out-anon');
-    atlas(['all', '--anonymize', '--home', logs, '--out', anon, '--notes-dir', notes]);
-    // 埋め込んだデータに、課題と条件の名前(タスクタグの名前)が残っていない(画面のコードには例示の名前があるので、データだけを見る)
-    const data = JSON.stringify(extractEmbedded<ReportData>(await readFile(join(anon, 'atlas.html'), 'utf8')));
-    for (const name of [...TASKS, 'coderef', '0-plain', '__']) expect(data.includes(name), name).toBe(false);
-    await page.goto(fileUrl(join(anon, 'atlas.html')));
-    await expect.poll(() => page.locator('#compare').count()).toBe(1);
-    expect(await section().count()).toBe(0);
-    expect(await page.locator('nav.toc a[href="#conditions"]').count()).toBe(0);
-  });
-
-  it('i. この節が出ている出力の全ページに、要修正の指摘が無い', async () => {
+  it('h. この節が出ている出力の全ページに、要修正の指摘が無い', async () => {
     const r = await audit(out, { layoutSessions: 0 });
     const errors = r.findings.filter((f) => f.severity === 'error');
     expect(errors, summarize({ pages: r.pages, findings: errors })).toEqual([]);
   });
 
-  it('j. llm-wiki の vault を指定しないで集計したときは、wiki の参照を数えていないと書く', async () => {
+  it('i. llm-wiki の vault を指定しないで集計したときは、wiki の参照を数えていないと書く', async () => {
     const plain = join(WORK, 'out-no-wiki');
     // vault を指定していない設定(wikis の無い空の設定)
     const empty = join(WORK, 'atlas.config.empty.json');

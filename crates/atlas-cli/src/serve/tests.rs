@@ -9,8 +9,8 @@ use std::io::{Read, Write};
 use std::sync::mpsc;
 use std::time::Instant;
 
-fn atlas_html(anonymized: bool) -> String {
-    format!(r#"<!doctype html><html><head><meta name="atlas-token" content="{TOKEN_PLACEHOLDER}"></head><body><script type="application/json" id="atlas-data">{{"version":5,"anonymized":{anonymized},"groups":[]}}</script></body></html>"#)
+fn atlas_html() -> String {
+    format!(r#"<!doctype html><html><head><meta name="atlas-token" content="{TOKEN_PLACEHOLDER}"></head><body><script type="application/json" id="atlas-data">{{"version":5,"groups":[]}}</script></body></html>"#)
 }
 
 pub(crate) struct Res {
@@ -257,7 +257,7 @@ impl Env {
         let out = dir.join("out");
         let notes = dir.join("atlas-notes");
         fs::create_dir_all(out.join("sessions")).unwrap();
-        fs::write(out.join("atlas.html"), atlas_html(false)).unwrap();
+        fs::write(out.join("atlas.html"), atlas_html()).unwrap();
         fs::write(out.join("sessions").join("a.html"), "<p>a</p>").unwrap();
         fs::write(dir.join("secret.txt"), "x").unwrap();
         Env { _t: t, dir, out, notes, h: None, logs: Arc::new(Mutex::new(vec![])), conn: Mutex::new(None) }
@@ -561,18 +561,13 @@ fn read_only_view_for_uploaded_out() {
 }
 
 #[test]
-fn anonymized_blocks_editing() {
+fn memo_editor_js() {
     let mut e = Env::new();
     e.start(|_| {});
     let js = e.req("GET", "/api/memo-editor.js", None, &[], b"");
     assert_eq!(js.status, 200);
     assert!(js.header("content-type").unwrap().contains("javascript"));
     assert!(js.text().contains("../api/memos/"));
-    fs::write(e.out.join("atlas.html"), atlas_html(true)).unwrap();
-    e.start(|_| {});
-    assert_eq!(e.req("GET", "/api/memo-editor.js", None, &[], b"").status, 403);
-    assert_eq!(e.get("/api/memos/s1").0, 403);
-    assert_eq!(e.json("PUT", "/api/memos/s1", Some(json!({ "text": "x", "rev": "" }))).0, 403);
 }
 
 #[test]
@@ -667,11 +662,6 @@ fn same_origin_only() {
     assert_eq!(st(&[("origin", &format!("http://127.0.0.1:{p}"))]), 200);
     let t = e.token();
     assert_eq!(e.req("POST", "/api/heartbeat", None, &[], b"").status, 403);
-    assert_eq!(e.req("POST", "/api/heartbeat", Some(&t), &[], b"").status, 204);
-    sleep(20);
-    fs::write(e.out.join("atlas.html"), atlas_html(true)).unwrap();
-    assert_eq!(e.get("/api/state").0, 403);
-    assert_eq!(e.json("POST", "/api/groups", Some(json!({ "name": "a", "ids": [] }))).0, 403);
     assert_eq!(e.req("POST", "/api/heartbeat", Some(&t), &[], b"").status, 204);
 }
 
@@ -1168,7 +1158,7 @@ fn chat_judge_parts_and_import() {
 }
 
 #[test]
-fn jobs_need_token_origin_host_and_not_anonymized() {
+fn jobs_need_token_origin_and_host() {
     let mut j = JobEnv::new();
     j.start(|_| {});
     let body = json!({ "kind": "refresh" }).to_string();
@@ -1185,14 +1175,6 @@ fn jobs_need_token_origin_host_and_not_anonymized() {
     let p = j.e.port();
     assert_eq!(raw(p, "POST", "/api/jobs", &format!("evil.example:{p}"), &[("x-atlas-token", &t)], body.as_bytes()).status, 403);
     assert_eq!(raw(p, "GET", "/view/s1", &format!("evil.example:{p}"), &[], b"").status, 403);
-    assert!(lock(&j.calls).is_empty());
-    fs::write(j.e.out.join("atlas.html"), atlas_html(true)).unwrap();
-    j.start(|_| {});
-    assert_eq!(j.post(json!({ "kind": "refresh" })).0, 403);
-    assert_eq!(j.e.json("GET", "/api/jobs/current", None).0, 403);
-    assert_eq!(j.e.json("GET", "/api/view/s1?kind=transcript", None).0, 403);
-    assert_eq!(j.e.req("GET", "/view/s1?kind=transcript", None, &[], b"").status, 403);
-    assert_eq!(j.e.req("GET", "/api/session-tools.js", None, &[], b"").status, 403);
     assert!(lock(&j.calls).is_empty());
 }
 

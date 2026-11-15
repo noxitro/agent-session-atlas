@@ -56,7 +56,7 @@ export function effectiveIds<G extends { name: string; ids: string[] }>(f: Pick<
 }
 
 /**
- * 現在のグループ名。名前で決まればそれ。決まらないとき(伏せ字版は名前を hash に出さない、相手に無い名前)は ids の一致で探すが、
+ * 現在のグループ名。名前で決まればそれ。決まらないとき(相手に無い名前)は ids の一致で探すが、
  * NO_SESSION(0 件のグループは全て同じ ids になる)や、同じ集合のグループが 2 つ以上あるときは決めない(null)
  */
 export function currentGroupName<G extends { name: string; ids: string[] }>(f: Pick<FilterState, 'ids' | 'group'>, groups: G[], known: Set<string>): string | null {

@@ -11,8 +11,7 @@
     model,
     ranAt,
     editable = false,
-    anonymized = false,
-  }: { agg: VerdictAggregate | null; model: string | null; ranAt: string | null; editable?: boolean; anonymized?: boolean } = $props();
+  }: { agg: VerdictAggregate | null; model: string | null; ranAt: string | null; editable?: boolean } = $props();
 
   const rows = $derived(agg ? agg.phases.map((name, i) => ({ name, c: agg.byPhase[i] })).filter((r) => r.c.judged > 0) : []);
   const pct = (part: number, whole: number): string => (whole > 0 ? percent(part, whole) : '—');
@@ -38,7 +37,7 @@
 <h3 class="sub" id="verdicts-h">採用(LLM の判定)<a class="term" href="glossary.html#turn-verdict">用語の説明</a></h3>
 {#if !agg || agg.judged === 0}
   <p class="note" data-testid="verdicts-none">
-    {#if agg}この条件の依頼はまだ判定していません。{:else}依頼ごとの採用はまだ判定していません。{/if}{judgeHint('依頼ごとの採用', { editable, anonymized })}{#if editable}M365 Copilot に貼る方法と GitHub Copilot CLI で判定する方法があります。{/if}
+    {#if agg}この条件の依頼はまだ判定していません。{:else}依頼ごとの採用はまだ判定していません。{/if}{judgeHint('依頼ごとの採用', { editable })}{#if editable}M365 Copilot に貼る方法と GitHub Copilot CLI で判定する方法があります。{/if}
   </p>
 {:else}
   <p class="note">

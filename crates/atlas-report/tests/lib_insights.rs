@@ -163,15 +163,13 @@ fn request_candidates_rules() {
     let s3 = analysis(&["リポジトリの README を更新して下さい。章立ては変えない", "短い"], vec![vec![], vec![]], &[Some(180_000.0), None]);
     let s4 = analysis(&["OK", "OK", "OK"], vec![vec![], vec![], vec![]], &[Some(1.0), Some(1.0), Some(1.0)]);
     let src = [("s1", &s1), ("s2", &s2), ("s3", &s3), ("s4", &s4)].map(|(id, a)| CandidateSource { id, project: "p", analysis: a });
-    let r = request_candidates(&src, false);
+    let r = request_candidates(&src);
     assert_eq!(r.len(), 1);
     assert_eq!((r[0].kind, r[0].count, r[0].sessions.clone(), r[0].median_ms, r[0].score), ("request", 3, vec!["s1".to_string(), "s2".into(), "s3".into()], Some(120_000.0), 6.0));
     assert!(r[0].representative.as_deref().unwrap().contains("README"));
     assert_eq!(r[0].examples.len(), 2);
     let one = analysis(&["リポジトリの README を更新してください。章立ては変えない"; 4], vec![vec![]; 4], &[Some(1.0); 4]);
-    assert!(request_candidates(&[CandidateSource { id: "x", project: "p", analysis: &one }], false).is_empty());
-    let an = &request_candidates(&src, true)[0];
-    assert_eq!((an.representative.clone(), an.examples.len(), an.key.as_str()), (None, 0, "request-1"));
+    assert!(request_candidates(&[CandidateSource { id: "x", project: "p", analysis: &one }]).is_empty());
 }
 
 #[test]
@@ -185,7 +183,7 @@ fn tool_sequence_candidates_rules() {
     let c = analysis(&["依頼 C の本文です(十分な長さ)"], vec![[seq.clone(), vec!["rg", "view", "rg", "view"]].concat()], &[Some(900_000.0)]);
     let d = analysis(&["閲覧だけ"], vec![vec!["view", "rg", "view", "glob", "rg", "view", "rg", "view", "glob"]], &[Some(100.0)]);
     let src = [("a", &a), ("b", &b), ("c", &c), ("d", &d)].map(|(id, a)| CandidateSource { id, project: "p", analysis: a });
-    let r = tool_sequence_candidates(&src, false);
+    let r = tool_sequence_candidates(&src);
     assert_eq!((r[0].kind, r[0].key.clone(), r[0].count, r[0].median_ms, r[0].score), ("tools", seq.join(" → "), 3, Some(600_000.0), 30.0));
     assert_eq!(r[0].sessions, ["a", "b", "c"]);
     assert_eq!(r.iter().filter(|x| x.key.contains("apply_patch")).count(), 1);
@@ -193,7 +191,7 @@ fn tool_sequence_candidates_rules() {
     let j = analysis(&["判定の依頼文です。十分な長さ"; 5], vec![vec![]; 5], &[Some(1.0); 5]);
     let mut with_judge = src.to_vec();
     with_judge.push(CandidateSource { id: "j", project: atlas_core::project_keys::ATLAS_JUDGE_PROJECT, analysis: &j });
-    let all = skill_candidates(&with_judge, false);
+    let all = skill_candidates(&with_judge);
     let mut sorted: Vec<f64> = all.iter().map(|c| c.score).collect();
     sorted.sort_by(|x, y| y.partial_cmp(x).unwrap());
     assert_eq!(all.iter().map(|c| c.score).collect::<Vec<_>>(), sorted);
@@ -203,7 +201,7 @@ fn tool_sequence_candidates_rules() {
 // ---------- request-clusters.test.ts: 索引で数えても、1 件ずつ全部のまとまりと比べたときと同じ候補になる ----------
 
 /// 変える前の requestCandidates(先に作ったまとまりから順に、代表との類似度がしきい値以上の最初のまとまりに入れる)
-fn naive(sources: &[CandidateSource], anonymized: bool) -> Vec<Candidate> {
+fn naive(sources: &[CandidateSource]) -> Vec<Candidate> {
     struct Item<'a> {
         id: &'a str,
         text: &'a str,
@@ -259,17 +257,12 @@ fn naive(sources: &[CandidateSource], anonymized: bool) -> Vec<Candidate> {
             sessions,
             median_ms: med,
             score: c.len() as f64 * med.map_or(1.0, |m| 1f64.max(m.min(SCORE_MS_CAP) / 60_000.0)),
-            representative: (!anonymized).then(|| items[rep].text.to_string()),
-            examples: if anonymized { vec![] } else { c.iter().filter(|&&m| m != rep).take(3).map(|&m| items[m].text.to_string()).collect() },
+            representative: Some(items[rep].text.to_string()),
+            examples: c.iter().filter(|&&m| m != rep).take(3).map(|&m| items[m].text.to_string()).collect(),
             tools: None,
         });
     }
     out.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap().then(b.count.cmp(&a.count)));
-    if anonymized {
-        for (i, c) in out.iter_mut().enumerate() {
-            c.key = format!("request-{}", i + 1);
-        }
-    }
     out
 }
 
@@ -317,10 +310,9 @@ fn indexed_clustering_matches_naive() {
     for seed in [1u32, 42, 12345, 987654] {
         let data = random_sources(300, seed);
         let src: Vec<CandidateSource> = data.iter().map(|(id, a)| CandidateSource { id, project: "p", analysis: a }).collect();
-        let got = request_candidates(&src, false);
+        let got = request_candidates(&src);
         assert!(got.len() > 3);
-        assert_eq!(got, naive(&src, false));
-        assert_eq!(request_candidates(&src, true), naive(&src, true));
+        assert_eq!(got, naive(&src));
     }
 }
 

@@ -2,8 +2,8 @@
 //  a. スナップショットの拡張: plan.md / checkpoints / files / policies を写し、rewind-snapshots と一覧に無いフォルダ・logs/・repos/ は既定で写さず manifest に名前と容量。
 //     --snapshot-all で写す。chats/ は *.md だけ。~/.copilot(fixture の home)は書き換えない(mtime 不変、-shm を作らない)
 //  b. data.db: 複製せず desktop.json に許可リストの列だけ。資格情報の合成値が out/ のどこにも出ない。sessions.json の desktop 欄と詳細ページに出る
-//  c. export --full: 元データの文字列が全文記録に現れ、暗号化キーと base64 本体は出ない。coverage.json の未分類が 0。画像は assets に。--anonymize との併用はエラー
-//  d. instructions.html と library/: 指示文の版と skill の本文。詳細ページからリンク。伏せ字版では作らない
+//  c. export --full: 元データの文字列が全文記録に現れ、暗号化キーと base64 本体は出ない。coverage.json の未分類が 0。画像は assets に
+//  d. instructions.html と library/: 指示文の版と skill の本文。詳細ページからリンク
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { readdir, readFile, stat } from 'node:fs/promises';
@@ -167,10 +167,7 @@ describe('Phase 11 E2E: fixtures', () => {
     }
   });
 
-  it('c. export --full: 元データの文字列が全文記録に現れ、除外キーは出ず、coverage の未分類が 0。画像は assets に。--anonymize とは併用できない', async () => {
-    const bad = atlas(['export', '--home', home, '--out', out, '--full', '--anonymize']);
-    expect(bad.status).toBe(2);
-    expect(bad.stderr).toMatch(/併用できません/);
+  it('c. export --full: 元データの文字列が全文記録に現れ、除外キーは出ず、coverage の未分類が 0。画像は assets に', async () => {
     const r = atlas(['export', '--home', home, '--out', out, '--full']);
     expect(r.status, r.stderr).toBe(0);
     expect(r.stdout).toMatch(/export: 全文記録 \d+ 件/);
@@ -239,7 +236,7 @@ describe('Phase 11 E2E: fixtures', () => {
     expect(await mtimes(home)).toEqual(before);
   });
 
-  it('d. instructions.html と library/: 指示文の版と skill の本文。詳細ページからリンク。伏せ字版では作らない', async () => {
+  it('d. instructions.html と library/: 指示文の版と skill の本文。詳細ページからリンク', async () => {
     const html = await readFile(join(out, 'instructions.html'), 'utf8');
     expect(html).toContain('指示文と skill');
     expect(html).toContain('<nav class="toc"');
@@ -262,18 +259,6 @@ describe('Phase 11 E2E: fixtures', () => {
     // atlas.html のサイドバー(付録)にも入る
     const data = extractEmbedded<ReportData>(await readFile(join(out, 'atlas.html'), 'utf8'));
     expect(data.library).toBe(true);
-    // 伏せ字版では作らない(素の build でも消える)
-    const anonOut = join(WORK, 'out-anon');
-    const r0 = atlas(['all', '--home', home, '--out', anonOut, '--anonymize']);
-    expect(r0.status, r0.stderr).toBe(0);
-    const ra = atlas(['export', '--home', home, '--out', anonOut, '--anonymize']);
-    expect(ra.status, ra.stderr).toBe(0);
-    expect(existsSync(join(anonOut, 'instructions.html'))).toBe(false);
-    expect(existsSync(join(anonOut, 'library'))).toBe(false);
-    expect(existsSync(join(anonOut, 'full'))).toBe(false);
-    // 依頼文の入った表(out/tables/)も、伏せ字版の all では書かない
-    expect(existsSync(join(anonOut, 'tables'))).toBe(false);
-    expect(extractEmbedded<ReportData>(await readFile(join(anonOut, 'atlas.html'), 'utf8')).library).toBe(false);
     // 素の build は前回の生成物(instructions.html / full / coverage.json)を消さず、残っていることをログに出す
     const rb = atlas(['build', '--home', home, '--out', out]);
     expect(rb.status, rb.stderr).toBe(0);
@@ -284,13 +269,5 @@ describe('Phase 11 E2E: fixtures', () => {
     expect(rb.stdout).toMatch(/前回の --full の出力/);
     expect(rb.stdout).toMatch(/前回の export の閲覧ページ/);
     expect(extractEmbedded<ReportData>(await readFile(join(out, 'atlas.html'), 'utf8')).library).toBe(false);
-    // 伏せ字版で作ると消える
-    const rc = atlas(['build', '--home', home, '--out', out, '--anonymize']);
-    expect(rc.status, rc.stderr).toBe(0);
-    expect(existsSync(join(out, 'instructions.html'))).toBe(false);
-    expect(existsSync(join(out, 'full'))).toBe(false);
-    expect(existsSync(join(out, 'coverage.json'))).toBe(false);
-    expect(existsSync(join(out, 'tables'))).toBe(false);
-    expect(rc.stdout).toMatch(/依頼文の入った表\(out\/tables\/\)を消しました/);
   });
 });

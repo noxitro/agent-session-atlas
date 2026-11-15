@@ -79,7 +79,7 @@
   const all = $derived(aggregate(sessions));
   // インストール済みの skill: 人に絞っていれば、その人が添えた記録(無ければ全員分)
   const installed = $derived((filter.person && data?.installedByPerson?.[filter.person]) || (data?.installed ?? null));
-  const points = $derived(highlights(filtered, agg.usage, { filter, anonymized: !!data?.anonymized, installed }));
+  const points = $derived(highlights(filtered, agg.usage, { filter, installed }));
   /** 利用ランキングの表示中の種類(要点欄の「未使用の skill」から skill に切り替える) */
   let usageTab = $state<'tools' | 'mcp' | 'causes' | 'skills' | 'agents' | 'hooks' | 'instructions'>('tools');
 
@@ -117,11 +117,6 @@
 
   // あふれてスクロールする表の枠にキーボードで届くようにする(描画が変わるたびに付け直す)
   $effect(() => watchScrollFocus(document.body));
-
-  // 伏せ字版にはメモが無いので、共有された #memo=1 で 0 件にしない
-  $effect(() => {
-    if (data?.anonymized && filter.memo) setFilter({ memo: '' });
-  });
 
   $effect(() => {
     const h = encodeFilter(filter);
@@ -174,7 +169,7 @@
   // --- 編集モード(atlas serve から開いたとき)。画面と保存の境界は api.ts の小さな API だけ ---
   /** serve が meta に入れた token(file:// や共有用の 1 ファイルでは null) */
   const token = serveToken();
-  /** http(s) で開かれ、token があり、GET api/state が成功し、伏せ字版でない */
+  /** http(s) で開かれ、token があり、GET api/state が成功した */
   let editable = $state(false);
   /** 別のフォルダを開いた画面(サーバが読むだけと答えた)。集計し直す・判定は使えるが、タスクタグ・メモ・アップロードは書き換えない */
   let readOnly = $state(false);
@@ -205,27 +200,25 @@
       },
       { onStale: () => (serverStale = true) },
     );
-    if (!data?.anonymized) {
-      // 1 回だけ試す。失敗しても(古い serve、伏せ字版の 403 など)黙って閲覧専用にする
-      api
-        .state()
-        .then((s) => {
-          liveGroups = s.groups;
-          liveMemos = s.memos ?? null; // 古い serve には無い(埋め込みの抜粋を残す)
-          uploadSetting = s.upload ?? null; // 古い serve には無い(アップロードの操作を出さない)
-          readOnly = s.readOnly === true;
-          editable = true;
-          // 古い serve には無い(失敗しても、埋め込みの source だけで出す)
-          foldersApi
-            .list(token)
-            .then((l) => (liveSource = l.current))
-            .catch(() => {});
-        })
-        .catch(() => {});
-    }
+    // 1 回だけ試す。失敗しても(古い serve など)黙って閲覧専用にする
+    api
+      .state()
+      .then((s) => {
+        liveGroups = s.groups;
+        liveMemos = s.memos ?? null; // 古い serve には無い(埋め込みの抜粋を残す)
+        uploadSetting = s.upload ?? null; // 古い serve には無い(アップロードの操作を出さない)
+        readOnly = s.readOnly === true;
+        editable = true;
+        // 古い serve には無い(失敗しても、埋め込みの source だけで出す)
+        foldersApi
+          .list(token)
+          .then((l) => (liveSource = l.current))
+          .catch(() => {});
+      })
+      .catch(() => {});
     return stop;
   });
-  // Phase 14: 画面からの操作(集計し直す・工数を判定する)。編集できるとき(serve から開いた通常版)だけ。サーバが止まったら読むのもやめる
+  // Phase 14: 画面からの操作(集計し直す・工数を判定する)。編集できるとき(serve から開いた画面)だけ。サーバが止まったら読むのもやめる
   const jobStore = token ? new JobStore(token) : null;
   $effect(() => {
     if (!jobStore || !editable || serverDown) return;
@@ -240,9 +233,9 @@
     }),
   );
   // 「課題 × 条件」の表(タスクタグの名前の決まりに合うものから)。母集団は「比べる」と同じで、上の絞り込みには従わない。
-  // 節を出すかどうかは、目次と本文の両方でこの 1 つから決める(伏せ字版はタグの名前が番号になるので出さない)
+  // 節を出すかどうかは、目次と本文の両方でこの 1 つから決める
   const conditions = $derived(conditionTable(scoped, groupOptions));
-  const hasConditions = $derived(!data?.anonymized && conditions.matchedTags > 0);
+  const hasConditions = $derived(conditions.matchedTags > 0);
   /** group(名前)→ 今のグループの ids、無ければ ids(共有した相手にその名前が無くても壊れない) */
   const eff = $derived(effectiveIds(filter, groupOptions, knownIds));
   // 今の絞り込み(空を含めるかの条件を除く)に当てはまる空のセッション数。表紙の「除外」の件数に使う
@@ -252,28 +245,27 @@
   const currentGroup = $derived(currentName ? (groupOptions.find((g) => g.name === currentName) ?? null) : null);
   /** 一覧のチェックから集計しているときの件数(記録にある id だけ。グループで絞り込み中は 0) */
   const adhocCount = $derived(currentName ? 0 : knownSelection(eff.ids, knownIds).size);
-  const groupKey = (name: string): string => (data?.anonymized ? '' : name);
   // #group=X だけが残ったとき(手で編集した hash、相手に無い名前): あればその ids を補い、無ければ(グループの一覧が揃ってから)捨てる
   $effect(() => {
     if (!filter.group || filter.ids) return;
     if (eff.group) setFilter({ ids: groupIds(eff.group, knownIds) });
     else if (liveGroups !== null || !token) setFilter({ group: '' });
   });
-  /** グループを選ぶ(null で「すべて」)。名前と、その時点の ids の両方を hash に書く。伏せ字版では名前を出さない */
+  /** グループを選ぶ(null で「すべて」)。名前と、その時点の ids の両方を hash に書く */
   function pickGroup(name: string | null): void {
     if (!name) {
       setFilter({ ids: '', group: '' });
       return;
     }
     const g = groupOptions.find((x) => x.name === name);
-    if (g) setFilter({ ids: groupIds(g, knownIds), group: groupKey(name) });
+    if (g) setFilter({ ids: groupIds(g, knownIds), group: name });
   }
   const selectedKnown = (): string[] => sessions.filter((s) => selected.has(s.id)).map((s) => s.id);
   /** 選んだセッションで新しいグループを作り、そのグループで絞り込む(失敗は呼び元が入力欄の下に出す) */
   async function createGroup(name: string, note: string): Promise<void> {
     const r = await api.create(token!, { name, note, ids: selectedKnown() });
     liveGroups = r.groups;
-    setFilter({ ids: groupIds(r.group, knownIds), group: groupKey(name) });
+    setFilter({ ids: groupIds(r.group, knownIds), group: name });
   }
   /** 名前と説明を 1 回で直す(本文の見出しの「編集」)。改名したら hash の名前も追従させる */
   async function saveGroup(oldName: string, patch: { name?: string; note?: string }): Promise<void> {
@@ -350,7 +342,7 @@
     liveGroups = res.groups;
     const msg = `${int(res.added)} 件を「${name}」に追加しました${res.dup ? `(既に入っていた ${int(res.dup)} 件を除く)` : ''}`;
     if (currentName === name) {
-      setFilter({ ids: groupIds(res.group, knownIds), group: groupKey(name) });
+      setFilter({ ids: groupIds(res.group, knownIds), group: name });
       return msg;
     }
     // 足し終えたチェックは外す(続けて別のグループに足すときに前の分が混ざらないように)。選んだ N 件で集計中なら条件は残す
@@ -366,7 +358,7 @@
     if (!name) throw new Error('タスクタグで絞り込んでいるときだけ外せます');
     const res = await api.update(token!, name, { remove: selectedKnown() });
     liveGroups = res.groups;
-    setFilter({ ids: groupIds(res.group, knownIds), group: groupKey(name) });
+    setFilter({ ids: groupIds(res.group, knownIds), group: name });
     return `${int(res.removed)} 件を「${name}」から外しました${res.group.ids.length === 0 ? '(タスクタグは 0 件のまま残ります)' : ''}`;
   }
   // 狭い幅(768px 未満)では目次行の「グループ」から一覧を開く。外を押す / Esc で閉じ、焦点はボタンに戻す
@@ -574,7 +566,6 @@
         {#if sourceLabel}<span class="tag" title={sourceLabel.path} data-testid="source-tag">対象: {sourceLabel.name}</span>{/if}
         {#if readOnly}<span class="tag" title="タスクタグとメモは、送った人が付けたものを出します。この画面では書き換えません(集計し直す・判定はできます)" data-testid="readonly-tag">読むだけ</span>{/if}
         {#if data.atlasBuilds}<span class={data.atlasBuilds.ok ? 'tag' : 'tag warn'} title={[data.atlasBuilds.headline, ...data.atlasBuilds.lines].join('\n')} data-testid="atlas-builds-tag">atlas の版: {data.atlasBuilds.short}</span>{/if}
-        {#if data.anonymized}<span class="tag">伏せ字モード</span>{/if}
         {#if scopeNotes.length}<span class="tag" title="atlas build の実行時に絞り込んだ条件">出力時の絞り込み: {scopeNotes.join('、')}</span>{/if}
         <div class="seg" role="group" aria-label="配色">
           {#each [['auto', '自動'], ['light', 'ライト'], ['dark', 'ダーク']] as [v, label]}
@@ -612,11 +603,11 @@
         <!-- サイドバー(768px 以上)の「グループ」の群。狭い幅では目次行の「グループ」から同じ中身を開く -->
         <div class="rail-groups" role="group" aria-label="タスクタグ">
           <span class="toc-title" aria-hidden="true">タスクタグ</span>
-          <GroupRail groups={groupOptions} current={currentName} selectedCount={adhocCount} editable={canEdit} readOnly={readOnlyView} anonymized={data.anonymized} onpick={pickGroup} />
+          <GroupRail groups={groupOptions} current={currentName} selectedCount={adhocCount} editable={canEdit} readOnly={readOnlyView} onpick={pickGroup} />
         </div>
         {#if groupsOpen}
           <div class="group-pop" id="group-pop" role="region" bind:this={groupsPop} tabindex="-1" aria-label="タスクタグ" data-testid="group-pop" onfocusout={(e) => { const t = e.relatedTarget as Node | null; if (t && !groupsPop?.contains(t) && !groupsBtn?.contains(t)) closeGroups(false); }}>
-            <GroupRail groups={groupOptions} current={currentName} selectedCount={adhocCount} editable={canEdit} readOnly={readOnlyView} anonymized={data.anonymized} onpick={(n) => { pickGroup(n); closeGroups(); }} />
+            <GroupRail groups={groupOptions} current={currentName} selectedCount={adhocCount} editable={canEdit} readOnly={readOnlyView} onpick={(n) => { pickGroup(n); closeGroups(); }} />
           </div>
         {/if}
         <div class="status">
@@ -638,7 +629,7 @@
         <div class="down-band stale-band" role="alert">{STALE_MESSAGE}</div>
       {/if}
       {#if editable && jobStore}<JobBand jobs={jobStore} generatedAt={data.generatedAt} />{/if}
-      <FilterBar {filter} {options} {judged} {emptyCount} {memoCount} lastDay={all.overall.lastAt ? date(all.overall.lastAt) : null} onchange={setFilter} {editable} anonymized={data.anonymized} />
+      <FilterBar {filter} {options} {judged} {emptyCount} {memoCount} lastDay={all.overall.lastAt ? date(all.overall.lastAt) : null} onchange={setFilter} {editable} />
 
       <main class="wrap" id="main" tabindex="-1">
         {#if currentGroup}
@@ -652,11 +643,11 @@
         </div>
 
         <!-- 帳票の順: 表紙(規模の 4 欄)→ 摘要(要点)→ 明細 -->
-        <Overview part="cover" {agg} {judged} anonymized={data.anonymized} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} {emptyInFilter} {editable} />
+        <Overview part="cover" {agg} {judged} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} {emptyInFilter} {editable} />
         <Highlights groups={points} />
-        <Insights sessions={filtered} allSessions={data.sessions} installed={installed?.skills ?? null} disabled={installed?.disabled ?? []} meta={data.insights?.meta ?? {}} candidates={data.insights?.candidates ?? []} candidateTotal={data.insights?.candidateTotal ?? data.insights?.candidates.length ?? 0} computedOver={data.insights?.computedOver ?? sessions.length} anonymized={data.anonymized} hasPage={true} libraryHref={data.library ? 'instructions.html' : null} />
-        <TurnPhases agg={turnAgg} verdicts={verdictAgg} verdictModel={data.turnJudgments?.model ?? null} verdictRanAt={data.turnJudgments?.ranAt ?? null} {editable} anonymized={data.anonymized} />
-        <Overview part="detail" {agg} {judged} anonymized={data.anonymized} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} {emptyInFilter} />
+        <Insights sessions={filtered} allSessions={data.sessions} installed={installed?.skills ?? null} disabled={installed?.disabled ?? []} meta={data.insights?.meta ?? {}} candidates={data.insights?.candidates ?? []} candidateTotal={data.insights?.candidateTotal ?? data.insights?.candidates.length ?? 0} computedOver={data.insights?.computedOver ?? sessions.length} hasPage={true} libraryHref={data.library ? 'instructions.html' : null} />
+        <TurnPhases agg={turnAgg} verdicts={verdictAgg} verdictModel={data.turnJudgments?.model ?? null} verdictRanAt={data.turnJudgments?.ranAt ?? null} {editable} />
+        <Overview part="detail" {agg} {judged} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} {emptyInFilter} />
         {#if judged}<JudgmentPanel {agg} meta={data.judgments} />{/if}
         {#if data.retention}<Retention sessions={filtered} meta={data.retention} />{/if}
         <Compare sessions={scoped} groups={groupOptions} projects={options.project} lastAt={all.overall.lastAt} retention={!!data.retention} />
@@ -672,7 +663,6 @@
         <SessionTable
           sessions={filtered}
           {judged}
-          anonymized={data.anonymized}
           {selected}
           idsActive={eff.ids !== ''}
           editable={canEdit}

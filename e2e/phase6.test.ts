@@ -5,11 +5,11 @@
 //  3. 変更行数(shutdown を優先、無ければツール側の合計)と、途中で削除したファイルが「変更」に戻らないこと
 //  4. インストール済みで未使用の skill(名前だけを snapshot で記録)
 //  5. プロジェクトの統合(git の origin・worktree・cwd から上へ探す・ホーム・一時フォルダ・atlas の判定)
-//  6. premium request と AIU の表示、HTML に欄が出る、--anonymize で固有名が出ない、HTML 5MB 未満
+//  6. premium request と AIU の表示、HTML に欄が出る、HTML 5MB 未満
 // ATLAS_LIVE=1 のときは実データで out/live を作り直し、プロジェクト数(統合前 → 後)・上位のツール / MCP / skill / agent・
 // 未使用の skill・変更行数・ツール失敗率の上位・atlas.html のサイズをログに出す。
 import { spawnSync } from 'node:child_process';
-import { readFile, readdir, mkdir, rm, stat, writeFile } from 'node:fs/promises';
+import { readFile, mkdir, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -295,23 +295,6 @@ describe('Phase 6 E2E: fixtures', () => {
     // 用語の説明は別ページ(glossary.html)にある
     expect(await readFile(join(out, 'glossary.html'), 'utf8')).toContain('プロジェクトのまとめ方');
     expect(Buffer.byteLength(html)).toBeLessThan(LIMIT);
-  });
-
-  it('--anonymize でリポジトリ名・パス・ファイル名が出ない(MCP サーバー名と skill 名は出してよい)', async () => {
-    const anonOut = join(WORK, 'out-anon');
-    const r = atlas(['all', '--home', home, '--out', anonOut, '--anonymize', '--temp-dir', TEMP_DIR]);
-    expect(r.status, r.stderr).toBe(0);
-    const files = [join(anonOut, 'atlas.html'), ...(await readdir(join(anonOut, 'sessions'))).map((f) => join(anonOut, 'sessions', f))];
-    const secrets = ['zz-owner-qq', 'zz-alpha-repo', 'zz-beta-repo', 'zz-local-repo', 'zz-alpha-wt', 'zz-someone', 'synthetic-p6', 'gone.txt', 'main.ts', 'new.ts', 'secret.env', 'X--synthetic', 'atlas-judge-cwd-AbC123'];
-    for (const f of files) {
-      const h = await readFile(f, 'utf8');
-      const leaked = secrets.filter((x) => h.includes(x));
-      expect({ f, leaked }).toEqual({ f, leaked: [] });
-    }
-    const d = extractEmbedded<ReportData>(await readFile(files[0], 'utf8'));
-    expect(d.sessions.find((x) => x.id === id(11))?.tools.mcp).toEqual({ 'github-mcp-server': { 'github-mcp-server-search_code': 1, 'github-mcp-server-get_file_contents': 1 }, ide: { 'ide-get_diagnostics': 1 } });
-    expect(new Set(d.sessions.map((x) => x.project))).toEqual(new Set([...d.sessions.map((x) => x.project)].filter((p) => /^project-\d+$/.test(p) || p.startsWith('('))));
-    expect(d.sessions.find((x) => x.id === id(12))?.project).toBe(TEMP_PROJECT);
   });
 });
 
