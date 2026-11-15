@@ -21,7 +21,8 @@ import type { VerdictTuple } from './verdicts.ts';
 // 12: retention(AI の変更がその後の VCS のファイルに残っているか。atlas vcs の結果)
 // 13: exec.modelEfforts(モデル別 × 推論強度別)
 // 14: exec.mainModelEfforts(本体のリクエストだけの モデル別 × 推論強度別)
-export const REPORT_DATA_VERSION = 14;
+// 15: exec.mainModelEfforts をリクエスト数だけにした(トークンと AIU は modelEfforts にある)
+export const REPORT_DATA_VERSION = 15;
 
 /** 推論強度別の [リクエスト, 入力, 出力, nano AIU] */
 export type EffortTuple = [requests: number, input: number, output: number, nanoAiu: number];
@@ -37,8 +38,11 @@ export interface ExecSummary {
   efforts: Record<string, EffortTuple>;
   /** モデル → 推論強度 → [リクエスト, 入力, 出力, nano AIU](記録の無い古い sessions.json からは空) */
   modelEfforts: Record<string, Record<string, EffortTuple>>;
-  /** modelEfforts のうち本体(サブエージェントでない)のリクエストだけ(記録の無いセッション・古い sessions.json からは空) */
-  mainModelEfforts: Record<string, Record<string, EffortTuple>>;
+  /**
+   * 本体(サブエージェントでない)のリクエスト数だけの モデル → 推論強度 → リクエスト数(記録の無いセッション・古い sessions.json からは空)。
+   * 本体の推論強度を決めるのに使うのはリクエスト数だけなので、トークンと AIU は埋め込まない
+   */
+  mainModelEfforts: Record<string, Record<string, number>>;
   /** リクエストの起点 → 回数 */
   initiators: Record<string, number>;
   /** 記録が全く無ければ null */

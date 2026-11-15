@@ -2,13 +2,11 @@
 //! 画面の packages/report/src/lib/main-effort.ts と同じ決め方(npm run parity:fixture で突き合わせる)。
 
 use crate::js::JsMap;
+use crate::normalize::UNKNOWN_KEY;
 use crate::types::EffortStat;
 
 /// 本体のリクエストのうち、同じ (モデル, 推論強度) がこの割合以上なら、その組をセッションの本体の強度とみなす
 pub const MAIN_EFFORT_SHARE: f64 = 0.9;
-
-/// 強度の記録が無いリクエストの印(normalize の UNKNOWN_KEY と同じ)
-const UNKNOWN_EFFORT: &str = "(unknown)";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MainEffort {
@@ -53,7 +51,7 @@ pub fn main_effort_of(main: Option<&JsMap<JsMap<EffortStat>>>) -> MainEffort {
     }
     match best {
         Some((m, e, n)) if total > 0.0 && n / total >= MAIN_EFFORT_SHARE => {
-            if e == UNKNOWN_EFFORT {
+            if e == UNKNOWN_KEY {
                 MainEffort::None
             } else {
                 MainEffort::Decided { model: m.clone(), effort: e.clone() }
@@ -86,7 +84,7 @@ mod tests {
         // 8 / 10 は届かない(モデルが違う組も分母に入る)
         assert_eq!(main_effort_of(Some(&map(&[("m", "xhigh", 8.0), ("n", "xhigh", 2.0)]))), MainEffort::Mixed);
         // いちばん多い組の強度が不明なら、記録なし
-        assert_eq!(main_effort_of(Some(&map(&[("m", UNKNOWN_EFFORT, 10.0)]))), MainEffort::None);
+        assert_eq!(main_effort_of(Some(&map(&[("m", UNKNOWN_KEY, 10.0)]))), MainEffort::None);
         assert_eq!(main_effort_of(Some(&map(&[]))), MainEffort::None);
         assert_eq!(main_effort_of(Some(&map(&[("m", "low", 0.0)]))), MainEffort::None);
         assert_eq!(main_effort_of(None), MainEffort::None);

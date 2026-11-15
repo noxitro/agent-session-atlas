@@ -81,7 +81,7 @@ pub enum UnattributableReason {
     NotMeasured,
     TooRecent,
     AfterMissing,
-    /// 比べる版(fixed・committed)が開始時の基準と同じ(その間に取り込まれた変更が無い)。worktree では使わない
+    /// 比べる版(fixed・committed)が開始時の基準と同じ(その間に取り込まれた変更が無い)。worktree と、svn の committed では使わない
     NoCommits,
 }
 
@@ -1006,8 +1006,10 @@ fn measure_one(sh: &Shared<'_>, me: usize) -> SessionRetention {
                     };
                     Some(r)
                 }
-                EvalMode::Committed => sh.caches.revs.get_or_init(rk.clone(), || repo.current_revision().unwrap_or(None)),
-                EvalMode::Worktree => None,
+                // svn の「今の版」は作業コピーのルートの版で、ファイルを取り込んだだけでは進まない(update するまで古いまま)。
+                // 基準と同じに見えても取り込みが無いとは言えないので、svn の committed ではこの判定をしない(BASE を読んで照合する)
+                EvalMode::Committed if repo.kind != VcsKind::Svn => sh.caches.revs.get_or_init(rk.clone(), || repo.current_revision().unwrap_or(None)),
+                EvalMode::Committed | EvalMode::Worktree => None,
             };
             // 比べる版が開始時の基準と同じなら、その間に取り込まれた変更が無い(AI の行は必ず見つからない)ので、照合不可にする
             if after_rev.as_deref().is_some_and(|r| same_revision(repo.kind, r, &b.rev)) {

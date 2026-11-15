@@ -13,7 +13,6 @@
     effortChoices,
     effortModels,
     effortSplit,
-    effortWeeks,
     inPeriod,
     type CompareKind,
     type CompareRow,
@@ -109,12 +108,12 @@
     const key = side === 'a' ? projA : projB;
     return key ? sessions.filter((s) => s.project === key) : [];
   }
+  // 推論強度どうしの母集団と、表の下に出す件数・利用者 × 週の表(同じ分類から作る)
   const split = $derived(effortSplit(sessions, effModel, effA, effB, effFrom, effTo));
-  const weeks = $derived(kind === 'effort' && effModel ? effortWeeks(sessions, effModel, effA, effB, effFrom, effTo) : null);
   const a = $derived(compareSide(pick('a')));
   const b = $derived(compareSide(pick('b')));
   // 工程は依頼の単位で並べる(セッションの単位の行とは別の表になる)
-  const rows = $derived((kind === 'phase' ? comparePhaseRows(sessions, phaseA, phaseB) : compareRows(a, b)).filter((r) => retention || !r.key.startsWith('retention')));
+  const rows = $derived((kind === 'phase' ? comparePhaseRows(sessions, phaseA, phaseB) : compareRows(a, b, { byTurnCount: kind === 'effort' })).filter((r) => retention || !r.key.startsWith('retention')));
   const sideLabel = (side: 'a' | 'b'): string => {
     if (kind === 'period') {
       const p = side === 'a' ? periodA : periodB;
@@ -175,7 +174,7 @@
   <div class="section-head">
     <h2 id="compare-h">比べる</h2>
     <p>
-      2 つの条件(タスクタグ・期間・プロジェクト・工程・推論強度)を並べます。上の絞り込みには従わず、全セッション(空のセッションを含めるかの条件だけ)から選びます。セッションが {COMPARE_MIN_SESSIONS} 件未満の側の割合と、割る数(記録のあるセッション)が {COMPARE_MIN_SESSIONS} 件未満の平均は「—」です。工程は依頼(ターン)の単位で並べ、依頼かまとまりが {COMPARE_MIN_TURNS} 件未満の割合と平均を「—」にします。差は相関で、条件の違いが原因とは限りません。差の幅(95%)はセッションを互いに独立とみなした近似で、同じ人のセッションは結果が似るため、実際の幅はこれより広くなります。
+      2 つの条件(タスクタグ・期間・プロジェクト・工程・推論強度)を並べます。上の絞り込みには従わず、全セッション(空のセッションを含めるかの条件だけ)から選びます。セッションが {COMPARE_MIN_SESSIONS} 件未満の側の割合と、割る数(記録のあるセッション)が {COMPARE_MIN_SESSIONS} 件未満の平均は「—」です。工程は依頼(ターン)の単位で並べ、依頼かまとまりが {COMPARE_MIN_TURNS} 件未満の割合と平均を「—」にします。差は相関で、条件の違いが原因とは限りません。差の幅(95%)はセッションを互いに独立とみなした近似で、同じ人のセッションは結果が似るため、実際の幅はこれより広くなります。手戻りのないセッションの割合を依頼の数で分けた行は、推論強度を比べるときだけ出します。
     </p>
   </div>
 
@@ -286,13 +285,13 @@
     <p class="note" data-testid="compare-effort-excluded">
       {modelLabel(effModel)} の本体の推論強度が混在のセッション {int(split.mixed)} 件・記録なし {int(split.none)} 件は、A と B のどちらにも入れていません(本体のリクエストの {Math.round(MAIN_EFFORT_SHARE * 100)}% 以上が同じ強度のセッションだけを数えます。期間の中の件数)。
     </p>
-    {#if weeks && weeks.rows.length > 0}
+    {#if split.weeks.length > 0}
       <div class="table-scroll weeks">
         <table class="ledger" aria-labelledby="compare-weeks-h" data-testid="compare-effort-weeks">
-          <caption id="compare-weeks-h" class="cap">{weeks.byPerson ? '利用者 × 週' : '週'}ごとのセッション数({modelLabel(effModel)}。週は月曜から)</caption>
+          <caption id="compare-weeks-h" class="cap">{split.byPerson ? '利用者 × 週' : '週'}ごとのセッション数({modelLabel(effModel)}。週は月曜から)</caption>
           <thead>
             <tr>
-              {#if weeks.byPerson}<th scope="col">利用者</th>{/if}
+              {#if split.byPerson}<th scope="col">利用者</th>{/if}
               <th scope="col">週</th>
               <th scope="col" class="num">A: {effA ? effortLabel(effA) : '(未選択)'}</th>
               <th scope="col" class="num">B: {effB ? effortLabel(effB) : '(未選択)'}</th>
@@ -301,9 +300,9 @@
             </tr>
           </thead>
           <tbody>
-            {#each weeks.rows as w (`${w.person ?? ''}\u0000${w.week}`)}
+            {#each split.weeks as w (`${w.person ?? ''}\u0000${w.week}`)}
               <tr>
-                {#if weeks.byPerson}<td class="nowrap">{w.person ?? '(記録なし)'}</td>{/if}
+                {#if split.byPerson}<td class="nowrap">{w.person ?? '(記録なし)'}</td>{/if}
                 <td class="nowrap">{w.week}〜</td>
                 <td class="num">{int(w.a)}</td>
                 <td class="num">{int(w.b)}</td>
