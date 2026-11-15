@@ -5,11 +5,10 @@ use atlas_core::metrics::compute_metrics;
 use atlas_core::normalize::{normalize_session, DbInput, NormalizeInput};
 use atlas_core::types::{CopilotEvent, SessionRecord, TodoSummary, WorkspaceInfo};
 use atlas_report::aggregate::*;
-use atlas_report::anonymize::{create_anonymizer, identity_anonymizer, AnonSource};
 use atlas_report::embed::{embed_data, extract_embedded};
 use atlas_report::exec::{exec_aggregate, quantiles_of, tool_share, QuantileRow};
 use atlas_report::filter::*;
-use atlas_report::highlights::{highlights, HighlightOptions, InstalledView};
+use atlas_report::highlights::{highlights, session_label, HighlightOptions, InstalledView};
 use atlas_report::pack::{pack_summary, unpack_data, unpack_summary};
 use atlas_report::summarize::{permission_group, summarize};
 use atlas_report::types::{JudgmentSummary, SessionSummary};
@@ -54,7 +53,7 @@ fn norm(id: &str, ws: Option<Ws>, events: Vec<CopilotEvent>) -> SessionRecord {
 }
 
 fn summaries(rs: &[SessionRecord]) -> Vec<SessionSummary> {
-    rs.iter().map(|r| summarize(r, &identity_anonymizer(), None)).collect()
+    rs.iter().map(|r| summarize(r, None)).collect()
 }
 
 fn ids(xs: &[&SessionSummary]) -> Vec<String> {
@@ -236,7 +235,7 @@ fn empty_sessions_are_excluded_by_default() {
 fn judgments_and_task_category() {
     let rs = fixture();
     let j = JudgmentSummary { task_category: Some("bugfix".into()), hours: Some(2.0), low: Some(1.0), high: Some(3.0), confidence: Some(0.5), task_summary: Some("修正".into()), rationale: Some("根拠".into()), backend: Some("external".into()), ..Default::default() };
-    let s: Vec<SessionSummary> = rs.iter().map(|r| summarize(r, &identity_anonymizer(), (r.id == "a").then_some(&j))).collect();
+    let s: Vec<SessionSummary> = rs.iter().map(|r| summarize(r, (r.id == "a").then_some(&j))).collect();
     assert_eq!(ids(&apply_filter(&s, &FilterState { task_category: "bugfix".into(), ..empty_filter() })), ["a"]);
     assert_eq!(apply_filter(&s, &FilterState { task_category: NO_JUDGMENT.into(), ..empty_filter() }).len(), 3);
     let o = aggregate(&refs(&s), None).overall;
@@ -269,7 +268,7 @@ fn effort_median_and_skew() {
     // 集計: 判定済みのセッションだけの中央値と偏り
     let rs = fixture();
     let js: Vec<(&str, JudgmentSummary)> = vec![("a", effort(40.0, 40.0, 40.0, 0.5)), ("b", effort(1.0, 1.0, 1.0, 0.5)), ("c", effort(2.0, 2.0, 2.0, 0.5))];
-    let s: Vec<SessionSummary> = rs.iter().map(|r| summarize(r, &identity_anonymizer(), js.iter().find(|(id, _)| *id == r.id).map(|(_, j)| j))).collect();
+    let s: Vec<SessionSummary> = rs.iter().map(|r| summarize(r, js.iter().find(|(id, _)| *id == r.id).map(|(_, j)| j))).collect();
     let o = aggregate(&refs(&s), None).overall;
     assert_eq!((o.judged_sessions, o.human_sessions, o.human_hours, o.human_median, o.human_skew), (3, 3, 43.0, Some(2.0), None));
     assert_eq!((o.human_uncertain.sessions, o.human_uncertain.hours), (0, 0.0));
@@ -291,7 +290,7 @@ fn low_confidence_effort_kept_apart() {
         ("d", effort(1200.0, 500.0, 3000.0, 0.3)),
     ];
     let pick = |id: &str| js.iter().find(|(k, _)| *k == id).map(|(_, j)| j);
-    let s: Vec<SessionSummary> = rs.iter().map(|r| summarize(r, &identity_anonymizer(), pick(&r.id))).collect();
+    let s: Vec<SessionSummary> = rs.iter().map(|r| summarize(r, pick(&r.id))).collect();
     let o = aggregate(&refs(&s), None).overall;
     assert_eq!((o.judged_sessions, o.human_sessions, o.human_hours, o.human_low, o.human_high, o.human_median, o.human_skew), (4, 2, 4.0, 2.5, 7.0, Some(1.0), None));
     assert!((o.judged_confidence.unwrap() - 0.7).abs() < 1e-9);
@@ -301,7 +300,7 @@ fn low_confidence_effort_kept_apart() {
     assert_eq!(o.judged_ai.output, counted.iter().fold(0.0, |n, x| n + x.tokens.output));
     assert_eq!(o.judged_ai.active_ms, counted.iter().fold(0.0, |n, x| n + x.active_ms.unwrap_or(0.0)));
     // 確信度の低い推定しか無いときは、合計が 0 件
-    let only: Vec<SessionSummary> = rs.iter().map(|r| summarize(r, &identity_anonymizer(), if r.id == "a" { pick("a") } else { None })).collect();
+    let only: Vec<SessionSummary> = rs.iter().map(|r| summarize(r, if r.id == "a" { pick("a") } else { None })).collect();
     let o = aggregate(&refs(&only), None).overall;
     assert_eq!((o.judged_sessions, o.human_sessions, o.human_hours, o.human_median, o.judged_confidence), (1, 0, 0.0, None, None));
     assert_eq!((o.human_uncertain.sessions, o.human_uncertain.hours), (1, 2500.0));
@@ -381,24 +380,6 @@ fn groups_in_filter() {
     assert_eq!(current_group_name("a,b", "", &groups, &known), None);
     assert_eq!(current_group_name("a,b", "D", &groups, &known).as_deref(), Some("D"));
     assert_eq!(current_group_name("", "", &groups, &known), None);
-}
-
-#[test]
-fn anonymized_summaries() {
-    let mut rs = fixture();
-    let anon = create_anonymizer(&rs.iter().map(AnonSource::from).collect::<Vec<_>>());
-    let s: Vec<SessionSummary> = rs.iter().map(|r| summarize(r, &anon, None)).collect();
-    assert_eq!(s.iter().map(|x| x.project.as_str()).collect::<Vec<_>>(), ["project-03", "project-02", "project-03", "project-01"]);
-    assert_eq!(s.iter().map(|x| x.branch.as_deref()).collect::<Vec<_>>(), [Some("branch-01"), None, Some("branch-02"), None]);
-    assert!(s.iter().all(|x| x.name.is_none() && x.first_user_message.is_none()));
-    let text = atlas_core::json::to_js_string(&s).unwrap();
-    for secret in ["secret-proj", "quokka", "feature/x1", "C:\\\\work", ".copilot", "D:\\\\other"] {
-        assert!(!text.contains(secret), "{secret}");
-    }
-    assert_eq!(anon.scrub("failed at C:\\work\\secret-proj\\src\\a.ts in secret-proj on feature/x1"), "failed at <path> in project-03 on branch-01");
-    with_people(&mut rs);
-    let anon = create_anonymizer(&rs.iter().map(AnonSource::from).collect::<Vec<_>>());
-    assert_eq!(rs.iter().map(|r| summarize(r, &anon, None).person).collect::<Vec<_>>(), [Some("person-01".to_string()), Some("person-02".into()), Some("person-01".into()), None]);
 }
 
 #[test]
@@ -508,7 +489,7 @@ fn phase6() -> Vec<SessionRecord> {
 
 #[test]
 fn summarize_phase6_shape() {
-    let s = summarize(&phase6()[0], &identity_anonymizer(), None);
+    let s = summarize(&phase6()[0], None);
     let v = serde_json::to_value(&s).unwrap();
     assert_eq!(v["tools"]["mcp"], json!({ "gh": { "gh-search": 1, "gh-get": 1 } }));
     assert_eq!(v["tools"]["issues"], json!({ "gh-get": [1, 0, 1], "view": [0, 1, 2] }));
@@ -622,7 +603,7 @@ fn highlights_phase7() {
     let filter = empty_filter();
     let inst = InstalledView { skills: vec!["grep-skill".into(), "zz".into()], disabled: vec![] };
     let agg = aggregate(&refs(&all), None);
-    let g = highlights(&refs(&all), &agg.usage, &HighlightOptions { filter: &filter, anonymized: false, installed: Some(&inst) });
+    let g = highlights(&refs(&all), &agg.usage, &HighlightOptions { filter: &filter, installed: Some(&inst) });
     assert_eq!(g.iter().map(|x| x.kind).collect::<Vec<_>>(), ["cost", "tool-failure", "compaction", "unused-skill"]);
     assert_eq!(
         g[0].items.iter().map(|i| (i.text.as_str(), i.href.as_str())).collect::<Vec<_>>(),
@@ -636,18 +617,26 @@ fn highlights_phase7() {
     assert_eq!(ids(&apply_filter(&all, &decode_filter("#tool=grep"))), ["a"]);
     assert!(apply_filter(&all, &decode_filter("#tool=mcp%3Anone")).is_empty());
 
-    // AIU の記録が無ければ出力トークンで並べる。伏せ字モードでは本文を出さない
+    // AIU の記録が無ければ出力トークンの多い順に並べる。名前も最初の依頼も無いセッションは「プロジェクト・日付(id の先頭 8 字)」で呼ぶ
     let mut recs = phase7();
+    // 時刻は時差の指定なし(その PC の時刻)にして、どの時間帯で走らせても同じ日付になるようにする
+    recs.push(output_only("0123456789abcdef", Ws { repository: Some("quokka/c"), created_at: Some("2026-10-03T12:00:00"), ..Default::default() }, "gpt-5.5", 7.0));
     for r in &mut recs {
         r.tokens.nano_aiu = None;
     }
-    let anon = create_anonymizer(&recs.iter().map(AnonSource::from).collect::<Vec<_>>());
-    let all: Vec<SessionSummary> = recs.iter().map(|r| summarize(r, &anon, None)).collect();
+    let all: Vec<SessionSummary> = recs.iter().map(|r| summarize(r, None)).collect();
     let agg = aggregate(&refs(&all), None);
-    let g = highlights(&refs(&all), &agg.usage, &HighlightOptions { filter: &filter, anonymized: true, installed: None });
+    let g = highlights(&refs(&all), &agg.usage, &HighlightOptions { filter: &filter, installed: None });
     assert_eq!(g[0].title, "出力トークンの多いセッション");
-    assert!(g[0].items[0].text.starts_with("project-01・2026-10-01"));
-    assert!(!g[0].items[0].text.contains("session A"));
+    assert_eq!(
+        g[0].items.iter().map(|i| (i.text.as_str(), i.href.as_str())).collect::<Vec<_>>(),
+        [
+            ("session A: 出力 10 トークン(この条件の合計の 45%)", "sessions/a.html"),
+            ("quokka/c・2026-10-03(01234567): 出力 7 トークン(この条件の合計の 32%)", "sessions/0123456789abcdef.html"),
+            ("b: 出力 5 トークン(この条件の合計の 23%)", "sessions/b.html"),
+        ]
+    );
+    assert_eq!(session_label(&all[2]), "quokka/c・2026-10-03(01234567)");
     assert!(g.iter().all(|x| x.kind != "unused-skill"));
 }
 
@@ -694,7 +683,7 @@ fn cause_records() -> Vec<SessionRecord> {
 #[test]
 fn failure_causes_in_summary_and_ranking() {
     let rs = cause_records();
-    let s = summarize(&rs[0], &identity_anonymizer(), None);
+    let s = summarize(&rs[0], None);
     assert_eq!(atlas_core::json::to_js_string(&s.tools.causes).unwrap(), r#"{"zz-srv-find":{"timeout":2},"zz-srv-read":{"not_found":1},"view":{"not_found":1}}"#);
     assert_eq!(unpack_summary(&pack_summary(&s)).unwrap().tools.causes, s.tools.causes);
 
@@ -717,7 +706,7 @@ fn failure_causes_in_summary_and_ranking() {
 
     let agg = aggregate(&refs(&ss), None);
     let f = empty_filter();
-    let g = highlights(&refs(&ss), &agg.usage, &HighlightOptions { filter: &f, anonymized: false, installed: None });
+    let g = highlights(&refs(&ss), &agg.usage, &HighlightOptions { filter: &f, installed: None });
     let tf = g.iter().find(|x| x.kind == "tool-failure").unwrap();
     assert_eq!(
         tf.items.iter().map(|i| i.text.as_str()).collect::<Vec<_>>(),

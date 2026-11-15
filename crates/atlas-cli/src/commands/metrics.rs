@@ -226,8 +226,8 @@ pub fn select_sessions(p: &Paths, f: &SessionFilter, cmd: &str, hint: &str, log:
     Ok(Selected { file, index, groups })
 }
 
-/// tables: out/tables/ に表も書く(伏せ字版の all では書かない。依頼文とパスがそのまま入るため)
-pub fn run_metrics(p: &Paths, f: &SessionFilter, log: Log<'_>, tables: bool) -> Result<MetricsFile> {
+/// out/tables/ に表も書く
+pub fn run_metrics(p: &Paths, f: &SessionFilter, log: Log<'_>) -> Result<MetricsFile> {
     let sel = select_sessions(p, f, "metrics", "先に atlas extract を実行してください。", log)?;
     let sessions = sel.sessions();
     let m = compute_metrics(&sessions, sel.file.installed.as_ref());
@@ -244,9 +244,7 @@ pub fn run_metrics(p: &Paths, f: &SessionFilter, log: Log<'_>, tables: bool) -> 
     if let Some(s) = &m.installed_skills {
         log(&format!("metrics: インストール済みで未使用の skill {} / {} 件", s.unused.len(), s.installed.len()));
     }
-    if tables {
-        write_tables(p, &sessions, "metrics", log)?;
-    }
+    write_tables(p, &sessions, "metrics", log)?;
     Ok(m)
 }
 

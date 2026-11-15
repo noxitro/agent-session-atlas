@@ -38,7 +38,6 @@ pub struct TranscriptCli {
 #[derive(Debug, Clone, Default)]
 pub struct BuildOptions {
     pub filter: SessionFilter,
-    pub anonymize: bool,
     pub transcripts: Option<TranscriptCli>,
 }
 
@@ -132,14 +131,7 @@ pub fn run_build(p: &Paths, o: &BuildOptions, log: Log<'_>) -> Result<BuildResul
         None => {}
     }
 
-    // 伏せ字版では表を書かない(依頼文とパスがそのまま入るため)。前に書いた表も消す
-    let tables = p.out.join("tables");
-    if !o.anonymize {
-        write_tables(p, &sessions, cmd, log)?;
-    } else if tables.exists() {
-        atlas_core::fs_retry::remove_tree(&tables)?;
-        log("build: 伏せ字版なので、依頼文の入った表(out/tables/)を消しました");
-    }
+    write_tables(p, &sessions, cmd, log)?;
 
     let unknown: i64 = s.warnings.unknown_event_types.values().sum();
     let layout = s.source.layout.map(|l| match l {
@@ -183,7 +175,6 @@ pub fn run_build(p: &Paths, o: &BuildOptions, log: Log<'_>) -> Result<BuildResul
         // フォルダごとの、最後に送ったときの日時と版。絞り込んだときは、対象のセッションがあるフォルダだけ
         atlas_uploads: uploads_for(s.source.uploads.as_ref(), &sessions, has_filter(f)),
         out_dir: p.out.clone(),
-        anonymize: o.anonymize,
         scope: BuildScope { since: f.since.clone(), project: f.project.clone(), client: f.client.clone(), model: f.model.clone(), branch: f.branch.clone() },
         template: template()?.to_string(),
         css: page_css(),
@@ -204,7 +195,7 @@ pub fn run_build(p: &Paths, o: &BuildOptions, log: Log<'_>) -> Result<BuildResul
         desktop_meta: s.desktop.as_ref().and_then(|d| d.as_ref()),
     })?;
     if let Some(at) = &r.stale.full {
-        log(&format!("build: 前回の --full の出力(out/full/ と coverage.json、生成 {at})が残っています。消すには --anonymize で作るか、フォルダを手で消してください"));
+        log(&format!("build: 前回の --full の出力(out/full/ と out/coverage.json、生成 {at})が残っています。消したいときは、out/full/ フォルダと out/coverage.json を手で消してください"));
     }
     if let Some(at) = &r.stale.library {
         log(&format!(
@@ -250,18 +241,14 @@ pub fn run_build(p: &Paths, o: &BuildOptions, log: Log<'_>) -> Result<BuildResul
         if t.secret_hits > 0 {
             log(&format!("export: 注意 API キーやトークンらしい文字列を {} 件伏せました。本物なら元の記録にも残っているので鍵を作り直してください", t.secret_hits));
         }
-        if o.anonymize {
-            log("export: 注意 伏せ字モードの記録は自由記述を機械的に置き換えただけです。共有する前に中身を確認してください");
-        }
     }
     log(&format!(
-        "build: {}({}、うち埋め込みデータ {})、詳細ページ {} 件(計 {}){}、{}",
+        "build: {}({}、うち埋め込みデータ {})、詳細ページ {} 件(計 {})、{}",
         r.html_path.display(),
         mb(r.html_bytes),
         mb_i(r.embedded_bytes),
         r.detail_pages,
         mb(r.detail_bytes),
-        if o.anonymize { "、伏せ字モード" } else { "" },
         ms(secs(r.ms))
     ));
     if r.oversized {

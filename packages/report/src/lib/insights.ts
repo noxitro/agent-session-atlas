@@ -119,7 +119,7 @@ export function seriesKey(heading: string, file: string): string {
 export interface VersionMeta {
   heading: string;
   file: string;
-  /** 系列の識別子(伏せ字版でも見出しを漏らさない不透明な値)。同じ系列の版どうしで前後を比べる */
+  /** 系列の識別子(見出しを含まない不透明な値)。同じ系列の版どうしで前後を比べる */
   series: string;
   /** 同じ系列の中での順(初回の利用日の順)。指示文のページの「版 N」と同じ */
   order: number;
@@ -374,9 +374,9 @@ export interface Candidate {
   medianMs: number | null;
   /** 回数 × 実働の中央値(分)。実働が無ければ回数 × 1 */
   score: number;
-  /** 代表の依頼文(原文の先頭 300 字)。伏せ字版では null */
+  /** 代表の依頼文(原文の先頭 300 字)。ツールの並びで依頼文が無いときは null */
   representative: string | null;
-  /** 代表以外の例(最大 3)。伏せ字版では空 */
+  /** 代表以外の例(最大 3) */
   examples: string[];
   /** 並びの場合のツール名 */
   tools: string[] | null;
@@ -413,7 +413,7 @@ export function collapseRuns(tools: string[]): string[] {
   return out;
 }
 
-export function requestCandidates(sources: CandidateSource[], anonymized: boolean): Candidate[] {
+export function requestCandidates(sources: CandidateSource[]): Candidate[] {
   type Item = { id: string; text: string; norm: string; grams: Set<string>; ms: number | null };
   const items: Item[] = [];
   for (const s of sources) {
@@ -460,17 +460,15 @@ export function requestCandidates(sources: CandidateSource[], anonymized: boolea
       sessions,
       medianMs,
       score: scoreOf(c.members.length, medianMs),
-      representative: anonymized ? null : rep.text,
-      examples: anonymized ? [] : c.members.filter((m) => m !== rep).slice(0, 3).map((m) => m.text),
+      representative: rep.text,
+      examples: c.members.filter((m) => m !== rep).slice(0, 3).map((m) => m.text),
       tools: null,
     });
   }
-  out.sort((a, b) => b.score - a.score || b.count - a.count);
-  // 伏せ字版では key(正規化した依頼文)も出さない(埋め込みデータと insights.json に残るため)
-  return anonymized ? out.map((c, i) => ({ ...c, key: `request-${i + 1}` })) : out;
+  return out.sort((a, b) => b.score - a.score || b.count - a.count);
 }
 
-export function toolSequenceCandidates(sources: CandidateSource[], anonymized: boolean): Candidate[] {
+export function toolSequenceCandidates(sources: CandidateSource[]): Candidate[] {
   type Occ = { id: string; turn: number; start: number; ms: number | null; request: string };
   const turns: { id: string; tools: string[]; ms: number | null; request: string }[] = [];
   for (const s of sources) s.analysis.turnTools.forEach((tools, i) => turns.push({ id: s.id, tools: collapseRuns(tools), ms: s.analysis.turnActiveMs?.[i] ?? null, request: s.analysis.requests[i] ?? '' }));
@@ -510,8 +508,8 @@ export function toolSequenceCandidates(sources: CandidateSource[], anonymized: b
         sessions,
         medianMs,
         score: scoreOf(fresh.length, medianMs),
-        representative: anonymized ? null : (reqs[0] ?? null),
-        examples: anonymized ? [] : reqs.slice(1, 4),
+        representative: reqs[0] ?? null,
+        examples: reqs.slice(1, 4),
         tools: key.split(' → '),
       });
     }
@@ -519,8 +517,8 @@ export function toolSequenceCandidates(sources: CandidateSource[], anonymized: b
   return out.sort((a, b) => b.score - a.score || b.count - a.count);
 }
 
-export function skillCandidates(sources: CandidateSource[], anonymized: boolean): Candidate[] {
+export function skillCandidates(sources: CandidateSource[]): Candidate[] {
   // atlas 自身の判定セッションは定型の繰り返しなので除く
   const src = sources.filter((s) => s.project !== '(atlas の判定)');
-  return [...requestCandidates(src, anonymized), ...toolSequenceCandidates(src, anonymized)].sort((a, b) => b.score - a.score || b.count - a.count);
+  return [...requestCandidates(src), ...toolSequenceCandidates(src)].sort((a, b) => b.score - a.score || b.count - a.count);
 }

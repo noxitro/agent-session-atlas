@@ -5,13 +5,11 @@ import { describe, expect, it } from 'vitest';
 import { judgeHint, refreshHint } from '../src/lib/hints.ts';
 
 describe('操作への案内', () => {
-  it('serve の通常版はボタンの場所、共有用の file:// は atlas.bat、伏せ字版は何も出さない', () => {
-    expect(judgeHint('工数', { editable: true, anonymized: false })).toBe('右上の「判定する…」で「工数」を選ぶと実行できます。');
-    expect(judgeHint('依頼ごとの採用', { editable: false, anonymized: false })).toMatch(/atlas\.bat で開いた画面/);
-    expect(judgeHint('工数', { editable: false, anonymized: true })).toBe('');
-    expect(refreshHint({ editable: true, anonymized: false })).toMatch(/右上の「集計し直す」/);
-    expect(refreshHint({ editable: false, anonymized: false })).toMatch(/atlas\.bat で集計し直す/);
-    expect(refreshHint({ editable: false, anonymized: true })).toBe('');
+  it('serve から開いた画面はボタンの場所、file:// で開いたファイルは atlas.bat', () => {
+    expect(judgeHint('工数', { editable: true })).toBe('右上の「判定する…」で「工数」を選ぶと実行できます。');
+    expect(judgeHint('依頼ごとの採用', { editable: false })).toMatch(/atlas\.bat で開いた画面/);
+    expect(refreshHint({ editable: true })).toMatch(/右上の「集計し直す」/);
+    expect(refreshHint({ editable: false })).toMatch(/atlas\.bat で集計し直す/);
   });
 
   it('判定ダイアログの「約 N 回以上の判定」に使う塊の大きさは judge の chunkTurns と同じ', () => {

@@ -344,7 +344,6 @@ struct Server {
     jobs: Arc<JobRunner>,
     port: AtomicU16,
     clock: Arc<Clock>,
-    anon_cache: Mutex<Option<(f64, bool)>>,
     sessions_cache: Mutex<Option<(f64, Arc<SessionIndex>)>>,
     /// タスクタグの書き出し・写す前の点検・アップロードのどれかをしている最中なら、その内容。その間はほかの書き出し・点検・アップロード・ジョブを始めない
     busy_with: Mutex<Option<String>>,
@@ -622,7 +621,6 @@ pub fn start_serve(o: ServeOptions) -> anyhow::Result<ServeHandle> {
             jobs,
             port: AtomicU16::new(0),
             clock: clock.clone(),
-            anon_cache: Mutex::new(None),
             sessions_cache: Mutex::new(None),
             busy_with: Mutex::new(None),
             uploading: Mutex::new(None),
@@ -1008,26 +1006,6 @@ impl Server {
 
     // ---------- 集計の読み取り ----------
 
-    /// 伏せ字版かどうかは atlas.html の埋め込みデータで判断(mtime が変わるまで覚える)
-    fn is_anonymized(&self) -> bool {
-        let p = self.out_dir.join("atlas.html");
-        let Ok(m) = std::fs::metadata(&p) else { return false };
-        let mt = atlas_core::jsfs::mtime_ms(&m);
-        let mut c = lock(&self.anon_cache);
-        if let Some((at, a)) = *c
-            && at == mt
-        {
-            return a;
-        }
-        // 読めなければ通常版とみなす(編集できるだけで、壊れはしない)
-        let anonymized = std::fs::read(&p)
-            .ok()
-            .and_then(|b| atlas_report::embed::extract_embedded(&String::from_utf8_lossy(&b)).ok())
-            .is_some_and(|v| js::truthy(v.get("anonymized")));
-        *c = Some((mt, anonymized));
-        anonymized
-    }
-
     /// sessions.json の id → 表題と判定の対象か(mtime が変わるまで覚える。本文は持たない)
     fn session_index(&self) -> R<Option<Arc<SessionIndex>>> {
         let p = self.out_dir.join("sessions.json");
@@ -1197,9 +1175,6 @@ impl Server {
             self.check_token(req)?;
             self.bye(client_of(req), seq_of(req));
             return Ok(Resp { status: 204, headers: vec![], body: Vec::new() });
-        }
-        if self.is_anonymized() {
-            return Err(HttpError::new(403, "伏せ字版では編集できません"));
         }
         let (read_only, members) = self.view_state();
         if read_only && blocked_when_read_only(path, &method) {
@@ -1675,9 +1650,6 @@ impl Server {
     /// GET /view/<id>?kind=…: 表示の殻(本文は持たない。token は HTML の meta で渡し、本文は殻の script が API から取る)
     fn view_shell(&self, req: &mut Req, raw_id: &str) -> R<Resp> {
         self.check_origin(req)?;
-        if self.is_anonymized() {
-            return Err(HttpError::new(403, "伏せ字版では記録を表示しません"));
-        }
         let (id, kind, _, md_href) = self.view_target(raw_id, req.url.param("kind"))?;
         let css = self.page_css()?;
         let detail_href = format!("../sessions/{}", encode_uri_component(&atlas_report::summarize::detail_file_name(&id)));

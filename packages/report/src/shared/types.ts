@@ -206,7 +206,7 @@ export interface SessionAnalysis {
   turnMs: (number | null)[];
   /** ターンごとの実働(ms。ターンの中で 5 分を超えてイベントが無かった区間を除く。返答待ちや放置を含めない。分からなければ null) */
   turnActiveMs: (number | null)[];
-  /** 依頼文の先頭 300 字(ターンごと、先頭 200 件。伏せ字版の HTML には埋め込まない) */
+  /** 依頼文の先頭 300 字(ターンごと、先頭 200 件) */
   requests: string[];
   /**
    * 段階 1(依頼単位の分析): ターンごとの出来事(turnTools と同じ並び・同じ件数)。

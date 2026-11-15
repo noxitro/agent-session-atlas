@@ -212,20 +212,6 @@ function staleByOwner(stale: readonly StaleFolder[]): string[] {
 }
 
 /**
- * 伏せ字版に出すために、人の名前とフォルダの名前(人とプロジェクトの名前を含む)を消す。フォルダは「フォルダ 1」のように番号にする
- * (どれだけのフォルダが最新でないかは残す)
- */
-export function anonymizeAtlasBuilds(s: AtlasBuildSummary): AtlasBuildSummary {
-  return {
-    ...s,
-    unknownPersons: [],
-    olderPersons: [],
-    builds: s.builds.map((g) => ({ ...g, persons: [] })),
-    ...(s.folders ? { folders: s.folders.map((f, i) => ({ ...f, folder: `フォルダ ${i + 1}` })) } : {}),
-  };
-}
-
-/**
  * 集計した版を、CLI のログと画面の見出しに出す言葉にする。
  * ok = すべていちばん新しい版で、手で変えた版も記録の無いものも無い。short は画面の見出しのタグ、headline は 1 行、lines は版ごとの内訳
  */

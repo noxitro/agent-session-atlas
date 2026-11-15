@@ -3,7 +3,6 @@
   // 絞り込みに従う群: 指示文の傾向・skill の傾向・止まっている箇所(sessions で再計算)。
   // 全記録の群: 「長いのに注入が少ない」(全体での希少さの話なので allSessions)と、スキル化の候補
   // (依頼文の本文が要るので build 時に全セッションで計算して埋め込んだもの。全件は insights.html)
-  import { shortProjectLabel } from '../../lib/anonymize.ts';
   import { date, dec, duration, int } from '../../lib/format.ts';
   import { cleanHeading, instructionFindings, instructionVersions, skillStats, stuckByProject, stuckSessions, THRESHOLDS, type Candidate, type VersionMeta } from '../../lib/insights.ts';
   import type { SessionSummary } from '../../lib/types.ts';
@@ -17,7 +16,6 @@
     candidates,
     candidateTotal,
     computedOver,
-    anonymized,
     hasPage,
     libraryHref,
   }: {
@@ -27,14 +25,13 @@
     installed: string[] | null;
     /** 設定で無効にしてある skill(settings.json の disabledSkills。今の設定) */
     disabled?: string[];
-    /** 指示文の版の見出し等(伏せ字版では空) */
+    /** 指示文の版の見出し等 */
     meta: Record<string, VersionMeta>;
     /** 上位 30 件(埋め込み) */
     candidates: Candidate[];
     /** 候補の全件数 */
     candidateTotal: number;
     computedOver: number;
-    anonymized: boolean;
     /** insights.html を作ったか(export / build どちらでも作る) */
     hasPage: boolean;
     libraryHref: string | null;
@@ -57,13 +54,13 @@
   const clip = (t: string, n: number): string => (t.length > n ? `${t.slice(0, n - 1)}…` : t);
   const vname = (hash: string): string => {
     const m = meta[hash];
-    return m && !anonymized ? `${cleanHeading(m.heading, 40) || '(見出しなし)'} 版 ${m.order + 1}` : hash;
+    return m ? `${cleanHeading(m.heading, 40) || '(見出しなし)'} 版 ${m.order + 1}` : hash;
   };
-  const vhref = (hash: string): string | null => (libraryHref && !anonymized ? `${libraryHref}#v-${hash}` : null);
+  const vhref = (hash: string): string | null => (libraryHref ? `${libraryHref}#v-${hash}` : null);
   const sessionLabel = (id: string): string => {
     const s = sessions.find((x) => x.id === id);
     if (!s) return id.slice(0, 8);
-    return anonymized ? `セッション ${id.slice(0, 8)}` : (s.name || s.firstUserMessage || id.slice(0, 8)).replace(/\s+/g, ' ').slice(0, 50);
+    return (s.name || s.firstUserMessage || id.slice(0, 8)).replace(/\s+/g, ' ').slice(0, 50);
   };
 </script>
 
@@ -139,7 +136,7 @@
           {/each}
         </ol>
         {#if byProject.length}
-          <p class="basis">プロジェクト別(該当 / 全セッション。{THRESHOLDS.MIN_SESSIONS} セッション以上のもの): {byProject.slice(0, TOP).map((p) => `${anonymized ? p.project : shortProjectLabel(p.projectLabel)} ${int(p.stuck)} / ${int(p.total)}`).join('、')}</p>
+          <p class="basis">プロジェクト別(該当 / 全セッション。{THRESHOLDS.MIN_SESSIONS} セッション以上のもの): {byProject.slice(0, TOP).map((p) => `${p.projectLabel} ${int(p.stuck)} / ${int(p.total)}`).join('、')}</p>
         {/if}
       {/if}
     </div>
@@ -171,7 +168,7 @@
         <ol>
           {#each candidates.slice(0, TOP) as c, i (c.key)}
             <li>
-              {#if c.kind === 'tools'}<span class="seq">{c.key}</span>{:else if anonymized}依頼文の繰り返し{:else}{clip((c.representative ?? c.key).replace(/\s+/g, ' '), 70)}{/if}
+              {#if c.kind === 'tools'}<span class="seq">{c.key}</span>{:else}{clip((c.representative ?? c.key).replace(/\s+/g, ' '), 70)}{/if}
               <span class="meta">{int(c.count)} 回 · {int(c.sessions.length)} セッション · スコア {dec(c.score)}</span>
               {#if hasPage}<a class="go" href="insights.html#c-{i + 1}" aria-label="候補 {i + 1} を詳しく">詳しく →</a>{/if}
             </li>

@@ -1,7 +1,7 @@
 //! 判定の通し(packages/cli/src/judge-flow.ts の移植)。TS 版は別の入口(npm run atlas:judge)だったが、Rust 版は実行ファイルを 1 つに
 //! 保つため、同じ atlas の隠しサブコマンド `atlas judge-flow [judge run のオプション]` にする(main.rs が引数の解釈より前に振り分ける)。
 //! 画面の「工数を判定する」(serve の jobs)も、子プロセスとして `atlas judge-flow …` を起動する。
-//!   atlas judge-flow [judge run のオプション]           bundle → judge run → export(伏せ字版は build)
+//!   atlas judge-flow [judge run のオプション]           bundle → judge run → export
 //!   atlas judge-flow --turns [--limit <n>] [--model <名前>]   turns bundle --unjudged → turns run(GitHub Copilot CLI)→ export
 //! 判定に失敗したセッションがあってもレポートは作り直す(判定済みの分は反映する)。終了コードは 1 にする。
 
@@ -57,9 +57,7 @@ pub fn main(argv: &[String]) -> u8 {
     if argv.iter().any(|a| a == "--turns") {
         return turns_flow(argv);
     }
-    // --anonymize は最後に作り直すレポートだけに効く(judge run 自体は伏せ字に対応しないので、judge run の解析には渡さない)
-    let anonymize = argv.iter().any(|a| a == "--anonymize");
-    let rest: Vec<String> = ["judge".to_string(), "run".to_string()].into_iter().chain(argv.iter().filter(|a| *a != "--anonymize").cloned()).collect();
+    let rest: Vec<String> = ["judge".to_string(), "run".to_string()].into_iter().chain(argv.iter().cloned()).collect();
     let judge_opts = match parse_cli(&rest) {
         Ok(o) => o,
         Err(e) => {
@@ -68,7 +66,7 @@ pub fn main(argv: &[String]) -> u8 {
         }
     };
     if judge_opts.help {
-        print!("使い方: atlas judge-flow [judge run のオプション]\nbundle → judge run → export(伏せ字版は build)を順に実行します。\n\n{USAGE}");
+        print!("使い方: atlas judge-flow [judge run のオプション]\nbundle → judge run → export を順に実行します。\n\n{USAGE}");
         return 0;
     }
     let log: Log<'_> = &stdout_log;
@@ -86,8 +84,8 @@ pub fn main(argv: &[String]) -> u8 {
                 return Ok(1);
             }
         };
-        // 直前の all が作ったセッション記録を消さないよう、伏せ字版でなければ export で作り直す
-        let b = run_command(&CliOptions { anonymize, command: if anonymize { "build".into() } else { "export".into() }, ..common.clone() }, &p, log)?;
+        // 直前の all が作ったセッション記録を消さないよう、export で作り直す
+        let b = run_command(&CliOptions { command: "export".into(), ..common.clone() }, &p, log)?;
         if let Some(b) = b.build {
             log(&format!("\nレポート: {}", b.html_path.display()));
         }

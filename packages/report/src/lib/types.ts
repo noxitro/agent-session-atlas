@@ -100,7 +100,7 @@ export interface JudgmentSummary {
   high: number | null;
   /** 推定の確信度(0〜1) */
   confidence: number | null;
-  /** 伏せ字モードでは null */
+  /** 作業の要約。無ければ null */
   taskSummary: string | null;
   /** AI が依頼を達成したか */
   completed: boolean | null;
@@ -110,7 +110,7 @@ export interface JudgmentSummary {
   rework: number | null;
   /** 指示ファイル / llm-wiki / skill・agent の効果(-2〜+2) */
   effects: { instructions: number | null; wiki: number | null; skillsAgents: number | null };
-  /** 工数推定の根拠(自由記述)。HTML 本体には埋め込まず詳細ページだけに出す。伏せ字モードでは null */
+  /** 工数推定の根拠(自由記述)。HTML 本体には埋め込まず詳細ページだけに出す(埋め込みでは null) */
   rationale: string | null;
   /** この判定を出したバックエンド(external / copilot-cli など) */
   backend: string | null;
@@ -118,10 +118,10 @@ export interface JudgmentSummary {
 
 export interface SessionSummary {
   id: string;
-  /** Phase 13: メモの概要(全文は埋め込まない)。無ければ省略。伏せ字版では常に無し */
+  /** Phase 13: メモの概要(全文は埋め込まない)。無ければ省略 */
   memo?: MemoSummary | null;
   client: string | null;
-  /** 集計キー(伏せ字モードでは project-01 など) */
+  /** 集計キー */
   project: string;
   /** 表示用の短い名前 */
   projectLabel: string;
@@ -129,13 +129,13 @@ export interface SessionSummary {
   projectSource: ProjectSource;
   branch: string | null;
   /**
-   * 送り先(<送り先>/<人>/<プロジェクト>)をまとめて集計したときの、人のフォルダの名前(伏せ字モードでは person-01 など)。
+   * 送り先(<送り先>/<人>/<プロジェクト>)をまとめて集計したときの、人のフォルダの名前。
    * それ以外の集計・古い埋め込みでは null か省略
    */
   person?: string | null;
-  /** セッション名(伏せ字モードでは null) */
+  /** セッション名(無ければ null) */
   name: string | null;
-  /** 最初の依頼の先頭(伏せ字モードでは null) */
+  /** 最初の依頼の先頭(無ければ null) */
   firstUserMessage: string | null;
   createdAt: string | null;
   updatedAt: string | null;
@@ -214,13 +214,12 @@ export interface SessionSummary {
 export interface ReportData {
   version: number;
   generatedAt: string;
-  anonymized: boolean;
   /** CLI で絞った条件(画面に表示するだけ) */
   scope: { since: string | null; project: string | null; client: string | null; model: string | null; branch: string | null };
   /** sessions.json の総件数(CLI フィルタ前) */
   totalSessionsInSource: number;
   /**
-   * アップロードしたフォルダを集計したときの、そのフォルダ(この PC の Copilot のデータを集計したときと、伏せ字版には無い)。
+   * アップロードしたフォルダを集計したときの、そのフォルダ(この PC の Copilot のデータを集計したときには無い)。
    * layout: flat はセッションのフォルダが並ぶ 1 つのフォルダ、merged は下のフォルダをまとめたもの(folders はその数)
    */
   source?: { name: string; path: string; layout: 'flat' | 'merged'; folders: number } | null;
@@ -228,7 +227,7 @@ export interface ReportData {
   readOnly?: boolean;
   /**
    * 送り先から集計したときの、送った atlas の版(core の describeAtlasBuilds)。ok = すべていちばん新しい版。
-   * この PC の記録だけを集計したとき・古い埋め込みには無い。伏せ字版では人の名前を出さない
+   * この PC の記録だけを集計したとき・古い埋め込みには無い
    */
   atlasBuilds?: { ok: boolean; short: string; headline: string; lines: string[] } | null;
   metrics: MetricsFile;
@@ -240,15 +239,15 @@ export interface ReportData {
   retention?: RetentionMeta | null;
   /** インストール済みの skill(snapshot で名前だけ記録)。記録が無ければ null */
   installed: { skills: string[]; disabled: string[] } | null;
-  /** 人のフォルダの名前ごとのインストール済みの skill(送り先の全体を集計したとき。伏せ字版と古い埋め込みには無い) */
+  /** 人のフォルダの名前ごとのインストール済みの skill(送り先の全体を集計したとき。古い埋め込みには無い) */
   installedByPerson?: Record<string, { skills: string[]; disabled: string[] }>;
-  /** 名前付きグループ(atlas-notes/groups.json)。無ければ空。伏せ字モードでは name は「グループ 1」など、note は '' */
+  /** 名前付きグループ(atlas-notes/groups.json)。無ければ空 */
   groups: ReportGroup[];
-  /** Phase 11: 指示文と skill の閲覧ページ(instructions.html)を作ったか(export のとき。伏せ字版では false) */
+  /** Phase 11: 指示文と skill の閲覧ページ(instructions.html)を作ったか(export のとき) */
   library: boolean;
-  /** 失敗の台帳の集計のページ(failures.html)を作ったか(伏せ字版では false。古い版で作った atlas.html には無い) */
+  /** 失敗の台帳の集計のページ(failures.html)を作ったか(古い版で作った atlas.html には無い) */
   failures?: boolean;
-  /** Phase 12: 改善点(build 時に全セッションで計算したもの)。meta は伏せ字版では空 */
+  /** Phase 12: 改善点(build 時に全セッションで計算したもの) */
   insights: {
     meta: Record<string, { heading: string; file: string; series: string; order: number; firstAt: string | null; lastAt?: string | null }>;
     /** 上位 30 件(全件は insights.html と insights.json) */
