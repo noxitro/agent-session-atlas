@@ -296,6 +296,16 @@ describe('画面からの操作(Phase 14)', () => {
       wikiEffect: { score: 0, evidence: '参照なし' },
       skillsAgentsEffect: { score: 0, evidence: '参照なし' },
     });
+    // 返答を保存したファイルを選ぶと、中身が欄に入る(取り込むのは「取り込む」を押してから)
+    const saved = JSON.stringify({ items: [item(ids[0])] });
+    await page.getByTestId('chat-reply-file').setInputFiles({ name: 'judgments.json', mimeType: 'application/json', buffer: Buffer.from(saved) });
+    await expect.poll(() => reply.inputValue()).toBe(saved);
+    expect(await page.getByTestId('chat-reply-file-note').innerText()).toContain('judgments.json を読み込みました');
+    expect(await page.getByTestId('chat-import-error').count()).toBe(0);
+    await page.getByTestId('chat-reply-file').setInputFiles({ name: 'empty.txt', mimeType: 'text/plain', buffer: Buffer.from('  ') });
+    await expect.poll(() => page.getByTestId('chat-reply-file-error').innerText()).toBe('empty.txt を読み込めませんでした: 中身が空です');
+    expect(await reply.inputValue()).toBe(saved);
+
     await reply.fill(`判定しました。\n\`\`\`json\n${JSON.stringify({ schemaVersion: 1, judge: { backend: 'external', model: null, ranAt: null }, items: ids.map(item) })}\n\`\`\``);
     await page.getByTestId('chat-import').click();
     await expect.poll(() => page.getByTestId('chat-import-result').innerText()).toBe(`${ids.length} 件を取り込みました。`);

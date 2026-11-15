@@ -102,6 +102,7 @@ pub struct CliOptions {
     pub include_empty: bool,
     pub per_part: Option<u64>,
     pub unjudged: bool,
+    pub zip: bool,
     pub temp_dirs: Option<Vec<String>>,
     pub config: Option<String>,
     pub tool_output: ToolOutput,
@@ -168,6 +169,7 @@ const OPTIONS: &[(&str, Kind)] = &[
     ("include-empty", Kind::Bool),
     ("per-part", Kind::Str),
     ("unjudged", Kind::Bool),
+    ("zip", Kind::Bool),
     ("temp-dir", Kind::StrMulti),
     ("config", Kind::Str),
     ("tool-output", Kind::Str),
@@ -563,6 +565,9 @@ pub fn parse_cli(argv: &[String]) -> Result<CliOptions, UsageError> {
     if values.b("unjudged", false) && cmd != "bundle" && cmd != "turns" {
         return err("--unjudged は bundle と turns bundle でだけ使えます");
     }
+    if values.b("zip", false) && cmd != "bundle" {
+        return err("--zip は bundle でだけ使えます");
+    }
     let full = values.b("full", false);
     let anonymize = values.b("anonymize", false);
     if full && cmd != "export" {
@@ -636,6 +641,7 @@ pub fn parse_cli(argv: &[String]) -> Result<CliOptions, UsageError> {
         include_empty: values.b("include-empty", false),
         per_part: pos_int(values.s("per-part"), "--per-part", 1)?,
         unjudged: values.b("unjudged", false),
+        zip: values.b("zip", false),
         temp_dirs,
         config: values.s("config").cloned(),
         tool_output,
