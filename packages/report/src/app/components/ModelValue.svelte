@@ -1,7 +1,7 @@
 <script lang="ts">
   import { effortLabel } from '../../lib/exec-labels.ts';
   import { dec, int, modelLabel, percent } from '../../lib/format.ts';
-  import { aiu, effortFindings, MIN_SESSIONS, mean, modelValue, ratio, type ValueRow } from '../../lib/model-value.ts';
+  import { aiu, effortFindings, keptShare, MIN_SESSIONS, mean, modelValue, ratio, type ValueRow } from '../../lib/model-value.ts';
   import type { SessionSummary } from '../../lib/types.ts';
 
   let { sessions }: { sessions: readonly SessionSummary[] } = $props();
@@ -12,13 +12,14 @@
   // 記録の無い効果の列は出さない
   const hasJudged = $derived(rows.some((r) => r.completed.weight > 0 || r.quality.weight > 0 || r.hours.weight > 0));
   const hasVerdicts = $derived(rows.some((r) => r.turns.judged > 0));
-  const hasRetention = $derived(rows.some((r) => r.lines.measured > 0));
-  const effects = $derived((hasJudged ? 4 : 0) + (hasVerdicts ? 2 : 0) + (hasRetention ? 1 : 0) + 1);
+  const hasRetention = $derived(rows.some((r) => r.retention.withAi > 0));
+  const effects = $derived((hasJudged ? 4 : 0) + (hasVerdicts ? 2 : 0) + (hasRetention ? 2 : 0) + 1);
 
   const perRequest = (r: ValueRow): number | null => (r.nanoAiu > 0 ? ratio(aiu(r.nanoAiu), r.requests) : null);
   const perSession = (r: ValueRow): number | null => (r.nanoAiu > 0 ? ratio(aiu(r.nanoAiu), r.weight) : null);
   const hoursPerAiu = (r: ValueRow): number | null => ratio(r.hours.sum, aiu(r.judgedNanoAiu));
   const pct = (part: number, whole: number): string => (whole > 0 ? percent(part, whole) : '—');
+  const shareText = (x: number | null): string => (x == null ? '—' : percent(x, 1));
   const w = (x: number): string => dec(Math.round(x * 10) / 10);
   const effortName = (r: ValueRow): string => (r.effort == null ? '強度の記録なし' : effortLabel(r.effort));
 </script>
@@ -64,7 +65,8 @@
               <th scope="col" class="num" title="依頼の判定で、手を入れずに使えた(そのまま採用・役に立った)割合">そのまま</th>
             {/if}
             {#if hasRetention}
-              <th scope="col" class="num" title="照合できた AI の変更の行のうち、そのまま残っている割合">残存率</th>
+              <th scope="col" class="num" title="AI の変更があったセッションのうち、VCS と照合できたセッションの数(残っている割合の分母になるセッション)">照合できた / AI の変更あり</th>
+              <th scope="col" class="num" title="照合できたまとまり(照合不可を除く)のうち、残っている(そのまま + 直されて)割合。まとまりの単位で、「比べる」と同じ数え方。照合できたセッションが {MIN_SESSIONS} 件未満なら —">残っている割合</th>
             {/if}
             <th scope="col" class="num" title="ツールの呼び出しのうち失敗した割合。小さいほど良い">ツール失敗率</th>
           </tr>
@@ -89,7 +91,8 @@
                 <td class="num">{pct(r.turns.asIs, r.turns.judged)}</td>
               {/if}
               {#if hasRetention}
-                <td class="num" title="照合できた行 {w(r.lines.measured)}・そのセッション {w(r.lines.weight)}(按分)">{pct(r.lines.kept, r.lines.measured)}</td>
+                <td class="num" title="照合できたセッション {int(r.retention.sessions)} / AI の変更があったセッション {int(r.retention.withAi)}">{r.retention.withAi > 0 ? `${int(r.retention.sessions)} / ${int(r.retention.withAi)}` : '—'}</td>
+                <td class="num" title="照合できたまとまり {w(r.retention.measured)}・そのセッション {w(r.retention.weight)}(按分){r.retention.sessions < MIN_SESSIONS ? `。照合できたセッションが ${MIN_SESSIONS} 件未満なので出しません` : ''}">{shareText(keptShare(r))}</td>
               {/if}
               <td class="num" title="ツールの呼び出し {w(r.tools.calls)}(按分)">{pct(r.tools.failures, r.tools.calls)}</td>
             </tr>
@@ -98,7 +101,7 @@
       </table>
     </div>
     <p class="note">
-      推論強度はリクエストごとに決まりますが、効果の記録(セッションの判定・依頼の判定・AI の変更の残存・ツールの失敗)はセッションごとにしかありません。そこで、セッションの効果を、そのセッションのリクエストに占めるモデル{split ? ' × 推論強度' : ''}の割合で按分して数えています(1 セッションの重みの合計は 1)。コスト(リクエスト・AIU)は按分せず、そのモデル{split ? ' × 推論強度' : ''}のリクエストの実数です。難しい作業ほど強い推論強度や上位のモデルを選びやすいので、差がそのまま強度やモデルの効果とは限りません。※ はセッションが {MIN_SESSIONS} 件未満の行です。{#if !hasJudged}セッションの判定(atlas judge)をすると、達成率・品質・手戻り・人手工数あたりのコストも出ます。{/if}{#if !hasVerdicts}依頼の判定をすると、依頼の採用率も出ます。{/if}
+      推論強度はリクエストごとに決まりますが、効果の記録(セッションの判定・依頼の判定・AI の変更の残存・ツールの失敗)はセッションごとにしかありません。そこで、セッションの効果を、そのセッションのリクエストに占めるモデル{split ? ' × 推論強度' : ''}の割合で按分して数えています(1 セッションの重みの合計は 1)。コスト(リクエスト・AIU)は按分せず、そのモデル{split ? ' × 推論強度' : ''}のリクエストの実数です。{#if hasRetention}AI の変更の残存は、照合できたまとまり(照合不可を除く)のうち残っている(そのまま + 直されて)割合で、「比べる」と同じ数え方です。照合できたセッションが {MIN_SESSIONS} 件未満の行は割合を出しません。{/if}難しい作業ほど強い推論強度や上位のモデルを選びやすいので、差がそのまま強度やモデルの効果とは限りません。※ はセッションが {MIN_SESSIONS} 件未満の行です。{#if !hasJudged}セッションの判定(atlas judge)をすると、達成率・品質・手戻り・人手工数あたりのコストも出ます。{/if}{#if !hasVerdicts}依頼の判定をすると、依頼の採用率も出ます。{/if}
     </p>
   {/if}
 </section>

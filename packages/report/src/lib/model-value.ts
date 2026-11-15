@@ -6,6 +6,7 @@ import { OUTCOMES, type Outcome } from '../shared/turns.ts';
 import { isLowConfidence } from './aggregate.ts';
 import { EFFORT_ORDER, orderBy } from './exec.ts';
 import { modelLabel } from './format.ts';
+import { measuredOf } from './retention.ts';
 import type { SessionSummary } from './types.ts';
 
 /** 採用した扱い(そのまま・修正して・役に立った) */
@@ -44,8 +45,12 @@ export interface ValueRow {
   judgedNanoAiu: number;
   /** 依頼の判定(判定不能を除く依頼の数を按分): 採用・そのまま・使えなかった。weight は判定した依頼のあるセッションの重み */
   turns: { judged: number; adopted: number; asIs: number; rejected: number; weight: number };
-  /** AI の変更の残存(行。按分): 照合できた行・そのまま残った行。weight は照合できたセッションの重み */
-  lines: { measured: number; kept: number; weight: number };
+  /**
+   * AI の変更の残存(まとまりの単位。「比べる」の「残っている割合」と同じ数え方)。
+   * measured = 照合できたまとまり(照合不可を除く)、kept = 残っている(そのまま + 直されて)まとまり。どちらも按分。
+   * weight は照合できたセッションの重み。sessions は照合できたセッションの数、withAi は AI の変更があったセッションの数(どちらも按分しない)
+   */
+  retention: { measured: number; kept: number; weight: number; sessions: number; withAi: number };
   /** ツールの呼び出しと失敗(按分) */
   tools: { calls: number; failures: number };
 }
@@ -66,7 +71,7 @@ const emptyRow = (key: string, model: string, effort?: string | null): ValueRow 
   hours: { sum: 0, weight: 0 },
   judgedNanoAiu: 0,
   turns: { judged: 0, adopted: 0, asIs: 0, rejected: 0, weight: 0 },
-  lines: { measured: 0, kept: 0, weight: 0 },
+  retention: { measured: 0, kept: 0, weight: 0, sessions: 0, withAi: 0 },
   tools: { calls: 0, failures: 0 },
 });
 
@@ -125,7 +130,9 @@ export function modelValue(sessions: readonly SessionSummary[], split: boolean):
     const outcomes = verdicts.map((v) => OUTCOMES[v[2]]).filter((o) => o != null && o !== 'unknown');
     const count = (set: readonly Outcome[]): number => outcomes.filter((o) => set.includes(o)).length;
     const turns = { judged: outcomes.length, adopted: count(ADOPTED), asIs: count(AS_IS), rejected: count(REJECTED) };
-    const r = s.retention?.outcome === 'measured' ? s.retention.lines : null;
+    const ret = s.retention;
+    const r = ret?.outcome === 'measured' ? ret.hunks : null;
+    const withAi = ret != null && ret.outcome !== 'none';
     for (const { row, requests, nanoAiu } of mine.values()) {
       const w = requests / total;
       row.sessions++;
@@ -144,10 +151,12 @@ export function modelValue(sessions: readonly SessionSummary[], split: boolean):
       row.turns.asIs += turns.asIs * w;
       row.turns.rejected += turns.rejected * w;
       if (turns.judged > 0) row.turns.weight += w;
+      if (withAi) row.retention.withAi++;
       if (r) {
-        row.lines.weight += w;
-        row.lines.measured += (r[0] + r[1] + r[2]) * w;
-        row.lines.kept += r[0] * w;
+        row.retention.sessions++;
+        row.retention.weight += w;
+        row.retention.measured += measuredOf(r) * w;
+        row.retention.kept += (r[0] + r[1]) * w;
       }
       row.tools.calls += s.tools.total * w;
       row.tools.failures += s.friction.toolFailures * w;
@@ -177,6 +186,9 @@ export const MIN_SESSIONS = 3;
 /** 読み取りで効果を比べるのは、その効果の記録があるセッションの重み(按分)がこれ以上のときだけ */
 const MIN_EFFECT_WEIGHT = 1;
 const enough = (weight: number, value: number | null): number | null => (weight >= MIN_EFFECT_WEIGHT ? value : null);
+
+/** 残っている割合(照合できたまとまりのうち、そのまま + 直されて)。照合できたセッションが MIN_SESSIONS 未満なら null */
+export const keptShare = (r: ValueRow): number | null => (r.retention.sessions < MIN_SESSIONS ? null : ratio(r.retention.kept, r.retention.measured));
 
 const pctText = (x: number): string => `${Math.round(x * 100)}%`;
 const numText = (x: number): string => (Math.round(x * 100) / 100).toString();
@@ -208,7 +220,7 @@ export function effortFindings(split: readonly ValueRow[], models: readonly Valu
       ['達成率', enough(lo.completed.weight, mean(lo.completed)), enough(hi.completed.weight, mean(hi.completed)), pctText],
       ['品質', enough(lo.quality.weight, mean(lo.quality)), enough(hi.quality.weight, mean(hi.quality)), numText],
       ['依頼の採用率', enough(lo.turns.weight, ratio(lo.turns.adopted, lo.turns.judged)), enough(hi.turns.weight, ratio(hi.turns.adopted, hi.turns.judged)), pctText],
-      ['残存率', enough(lo.lines.weight, ratio(lo.lines.kept, lo.lines.measured)), enough(hi.lines.weight, ratio(hi.lines.kept, hi.lines.measured)), pctText],
+      ['残っている割合', enough(lo.retention.weight, keptShare(lo)), enough(hi.retention.weight, keptShare(hi)), pctText],
       ['ツール失敗率', ratio(lo.tools.failures, lo.tools.calls), ratio(hi.tools.failures, hi.tools.calls), pctText],
     ];
     for (const [label, a, b, f] of pairs) if (a != null && b != null) parts.push(`${label} ${f(a)} → ${f(b)}`);
