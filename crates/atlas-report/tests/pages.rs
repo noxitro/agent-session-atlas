@@ -680,6 +680,72 @@ fn transcript_redacts_title_and_abort_reason() {
     assert!(md.contains("2 件伏せました"), "{md}");
 }
 
+/// イベントの並びから記録を作る(ツールの結果は入れない。数えるのは引数と 1 行の文で伏せた分だけになる)
+fn render_events_without_tool_output(id: &str, events: &[Value]) -> atlas_report::transcript::TranscriptResult {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("events.jsonl");
+    std::fs::write(&path, events.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n") + "\n").unwrap();
+    let ws = WorkspaceInfo { created_at: Some(at(0)), ..Default::default() };
+    let rec = normalize(id, to_events(events), Some(ws), &[], None);
+    let raw = read_raw_events(&path).unwrap();
+    let gen_at = at(1000);
+    render_transcript(&rec, Some(&raw), &[], &topts(&gen_at, ToolOutputMode::None, 20_000, 4_000))
+}
+
+#[test]
+fn transcript_counts_secrets_in_tool_and_error_lines() {
+    // ツールの引数・ツールの失敗の文・サブエージェントの失敗・エラーの文で伏せた数も、記録の末尾の件数に入れる。
+    // 鍵らしい文字列は架空のもので、実行時に組み立てる
+    let bearer = format!("{} {}", "Bearer", "r".repeat(32));
+    let token = format!("ghp_{}", "t".repeat(36));
+    let key = format!("sk-{}", "k".repeat(24));
+    let aws = format!("AKIA{}", "W".repeat(16));
+    let events = vec![
+        json!({ "type": "session.start", "timestamp": at(0), "data": { "sessionId": "tr3", "copilotVersion": "1.0.100" } }),
+        json!({ "type": "user.message", "timestamp": at(1), "data": { "content": "鍵の無い依頼", "agentMode": "interactive" } }),
+        json!({ "type": "tool.execution_start", "timestamp": at(2), "data": { "toolCallId": "c1", "toolName": "powershell", "arguments": { "command": format!("curl -H \"Authorization: {bearer}\" https://example.invalid/") } } }),
+        json!({ "type": "tool.execution_complete", "timestamp": at(4), "data": { "toolCallId": "c1", "success": false, "error": { "code": "failure", "message": format!("remote rejected {token}") }, "result": { "content": "RESULT_BODY" } } }),
+        json!({ "type": "subagent.failed", "timestamp": at(5), "data": { "agentName": "explore", "error": format!("auth failed with {key}") } }),
+        json!({ "type": "session.error", "timestamp": at(6), "data": { "errorType": "auth", "message": format!("credential {aws} was rejected") } }),
+    ];
+    let r = render_events_without_tool_output("tr3", &events);
+    let md = &r.markdown;
+    assert!(md.contains("✖ `powershell` curl -H \"Authorization: [伏せました: Bearer トークン]\" https://example.invalid/(2秒) — 失敗: failure: remote rejected [伏せました: GitHub トークン]"), "{md}");
+    assert!(md.contains("**サブエージェント失敗** `explore`: auth failed with [伏せました: OpenAI / Anthropic 系キー]"), "{md}");
+    assert!(md.contains("**エラー** auth: credential [伏せました: AWS アクセスキー] was rejected"), "{md}");
+    for secret in [&bearer, &token, &key, &aws] {
+        assert!(!md.contains(secret.as_str()), "{secret} が残っています\n{md}");
+    }
+    assert!(!md.contains("RESULT_BODY"), "{md}");
+    assert_eq!(r.secret_hits, 4);
+    assert!(md.contains("4 件伏せました") && !md.contains("見つかりませんでした"), "{md}");
+}
+
+#[test]
+fn transcript_counts_secret_past_the_args_cut() {
+    // ツールの引数は 160 字で切る。切れ目より後ろの鍵は要約に出ないが、切る前の全文で伏せているので数に入る
+    let token = format!("ghp_{}", "f".repeat(36));
+    let events_with = |command: String| {
+        vec![
+            json!({ "type": "session.start", "timestamp": at(0), "data": { "sessionId": "tr4", "copilotVersion": "1.0.100" } }),
+            json!({ "type": "user.message", "timestamp": at(1), "data": { "content": "鍵の無い依頼", "agentMode": "interactive" } }),
+            json!({ "type": "tool.execution_start", "timestamp": at(2), "data": { "toolCallId": "c1", "toolName": "powershell", "arguments": { "command": command } } }),
+            json!({ "type": "tool.execution_complete", "timestamp": at(3), "data": { "toolCallId": "c1", "success": true, "result": { "content": "ok" } } }),
+        ]
+    };
+    let r = render_events_without_tool_output("tr4", &events_with(format!("echo {} {token}", "x".repeat(200))));
+    let md = &r.markdown;
+    assert!(md.contains(&format!("✔ `powershell` echo {}…", "x".repeat(155))), "{md}");
+    assert!(!md.contains(&token) && !md.contains("ffff"), "{md}");
+    assert_eq!(r.secret_hits, 1);
+    assert!(md.contains("1 件伏せました") && !md.contains("見つかりませんでした"), "{md}");
+
+    // 鍵の無い同じ形のセッションは 0 件で、「見つかりませんでした」と書く
+    let r = render_events_without_tool_output("tr4", &events_with(format!("echo {}", "x".repeat(200))));
+    assert_eq!(r.secret_hits, 0);
+    assert!(r.markdown.contains("見つかりませんでした") && !r.markdown.contains("件伏せました"), "{}", r.markdown);
+}
+
 #[test]
 fn transcript_record_only() {
     let (rec, _raw, _dir) = transcript_setup();

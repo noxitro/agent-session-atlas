@@ -129,11 +129,16 @@ pub fn json_string(v: &Value) -> String {
 }
 
 /// ツール引数の 1 行要約。秘密情報は切る前の全文で伏せる(切った後だと、上限に掛かった鍵の一部が形に当たらず残る)。
-/// 伏せた件数は今までどおり secret_hits に入れない
-pub fn summarize_args(_name: &str, args: Option<&Value>) -> String {
+/// 伏せた件数は返さない(セッション記録は summarize_args_counted で受け取り、secret_hits に足す)
+pub fn summarize_args(name: &str, args: Option<&Value>) -> String {
+    summarize_args_counted(name, args).0
+}
+
+/// summarize_args の本体。2 つめは切る前の全文で伏せた数(160 字より後ろにあって要約に出ない鍵も数える)
+fn summarize_args_counted(_name: &str, args: Option<&Value>) -> (String, u64) {
     let a = match args {
         Some(v @ (Value::Object(_) | Value::Array(_))) => v,
-        _ => return String::new(),
+        _ => return (String::new(), 0),
     };
     const KEYS: [&str; 13] = ["command", "path", "file_path", "filePath", "pattern", "query", "url", "skill", "agent_type", "agentType", "description", "prompt", "intent"];
     let one = a.as_object().and_then(|o| KEYS.iter().find_map(|k| o.get(*k).and_then(Value::as_str).filter(|s| !s.is_empty())));
@@ -141,9 +146,9 @@ pub fn summarize_args(_name: &str, args: Option<&Value>) -> String {
         Some(x) => x.to_string(),
         None => json_string(a),
     };
-    let s = redact_secrets(&s).0;
+    let (s, hits) = redact_secrets(&s);
     let squashed = WS_RUN.replace_all(&s, " ");
-    format!("{}{}", js::utf16_slice(&squashed, 0, 160), if js::utf16_len(&s) > 160 { "…" } else { "" })
+    (format!("{}{}", js::utf16_slice(&squashed, 0, 160), if js::utf16_len(&s) > 160 { "…" } else { "" }), hits)
 }
 
 fn result_text(result: Option<&Value>) -> String {
@@ -237,12 +242,21 @@ struct Writer {
 }
 
 impl Writer {
+    /// 秘密情報を伏せ、伏せた数を secret_hits に足す。記録に書く自由記述(本文・見出しのセッション名・
+    /// ツールやサブエージェントの失敗の文・エラーの文・中断の理由)はどれもこれを通す
+    /// (ツールの引数だけは summarize_args_counted が伏せ、返した数を呼び元で足す)。
+    /// 切る前の全文を渡す(切った後だと、切れ目に掛かった鍵の一部が形に当たらず残り、切れた先の鍵も数に入らない)
+    fn redact(&mut self, s: &str) -> String {
+        let (red, hits) = redact_secrets(s);
+        self.secret_hits += hits;
+        red
+    }
+
     /// 本文(自由記述)の整形: 全文で秘密情報を伏せる → 上限で中略。
     /// 伏せてから切るのは、切った後だと中略の位置に掛かった鍵の一部が形に当たらず残るため。
     /// secret_hits は伏せた数(中略で落ちる部分の鍵も伏せたので数える)、truncated は中略した本文の数
     fn text(&mut self, s: &str, limit: usize) -> String {
-        let (red, hits) = redact_secrets(s);
-        self.secret_hits += hits;
+        let red = self.redact(s);
         let len = js::utf16_len(&red);
         if len > limit {
             let head = (limit as f64 * 0.7).floor() as usize;
@@ -310,11 +324,7 @@ pub fn render_transcript(r: &SessionRecord, events: Option<&[RawEvent]>, db_usag
     let (failure, denied) = r.tools.results.values().fold((0i64, 0i64), |a, x| (a.0 + x.failure, a.1 + x.denied));
     // セッション名も秘密情報の検査に通す(切る前に伏せ、件数に入れる)
     let title = match r.name.as_deref().filter(|s| !s.is_empty()) {
-        Some(n) => {
-            let (red, hits) = redact_secrets(&WS_RUN.replace_all(n, " "));
-            w.secret_hits += hits;
-            js::utf16_slice(&red, 0, 120).into_owned()
-        }
+        Some(n) => js::utf16_slice(&w.redact(&WS_RUN.replace_all(n, " ")), 0, 120).into_owned(),
         None => r.id.clone(),
     };
     let mut l: Vec<String> = Vec::new();
@@ -618,13 +628,15 @@ pub fn render_transcript(r: &SessionRecord, events: Option<&[RawEvent]>, db_usag
                         continue;
                     }
                     let start_ev = call.and_then(|c| start_event.get(c).copied());
-                    let args = summarize_args(&nm, start_ev.and_then(|s| s.d("arguments")));
+                    // 引数と失敗の文で伏せた数も、記録の末尾の件数に入れる
+                    let (args, arg_hits) = summarize_args_counted(&nm, start_ev.and_then(|s| s.d("arguments")));
+                    w.secret_hits += arg_hits;
                     let dur = match (st.and_then(|s| s.at), at) {
                         (Some(a), Some(b)) => Some(duration(Some((b - a) as f64), "不明")),
                         _ => None,
                     };
                     let ok = e.d("success") != Some(&Value::Bool(false));
-                    let err = if ok { String::new() } else { error_text(e.d("error")) };
+                    let err = if ok { String::new() } else { w.redact(&error_text(e.d("error"))) };
                     let mcp = start_ev.and_then(|s| s.d_str("mcpServerName")).filter(|s| !s.is_empty()).map(|s| format!(" (MCP {s})")).unwrap_or_default();
                     let who = match st.and_then(|s| s.agent.as_ref()) {
                         Some(a) => format!("[agent:{a}] "),
@@ -635,7 +647,7 @@ pub fn render_transcript(r: &SessionRecord, events: Option<&[RawEvent]>, db_usag
                         if ok { "✔" } else { "✖" },
                         if args.is_empty() { String::new() } else { format!(" {args}") },
                         dur.map(|d| format!("({d})")).unwrap_or_default(),
-                        if err.is_empty() { String::new() } else { format!(" — 失敗: {}", redact_secrets(&err).0) }
+                        if err.is_empty() { String::new() } else { format!(" — 失敗: {err}") }
                     );
                     line(&mut l, ts, &body);
                     let show = o.tool_output == ToolOutputMode::All || (o.tool_output == ToolOutputMode::Fail && !ok);
@@ -675,7 +687,7 @@ pub fn render_transcript(r: &SessionRecord, events: Option<&[RawEvent]>, db_usag
                         Some(v) => js::to_js_string(v),
                         None => String::new(),
                     };
-                    let s = redact_secrets(&msg).0;
+                    let s = w.redact(&msg);
                     line(&mut l, ts, &format!("**サブエージェント失敗** `{}`: {}", str_or(e.d("agentName"), "agent"), js::utf16_slice(&s, 0, 300)));
                 }
                 "session.compaction_start" => {
@@ -715,7 +727,7 @@ pub fn render_transcript(r: &SessionRecord, events: Option<&[RawEvent]>, db_usag
                     line(&mut l, ts, &format!("権限の確認の結果: {kind}"));
                 }
                 "session.error" => {
-                    let msg = e.d_str("message").map(|m| format!(": {}", js::utf16_slice(&redact_secrets(m).0, 0, 300))).unwrap_or_default();
+                    let msg = e.d_str("message").map(|m| format!(": {}", js::utf16_slice(&w.redact(m), 0, 300))).unwrap_or_default();
                     line(
                         &mut l,
                         ts,
@@ -724,14 +736,7 @@ pub fn render_transcript(r: &SessionRecord, events: Option<&[RawEvent]>, db_usag
                 }
                 "abort" => {
                     // 中断の理由も秘密情報の検査に通す(切る前に伏せ、件数に入れる)
-                    let reason = match e.d_str("reason") {
-                        Some(raw) => {
-                            let (red, hits) = redact_secrets(raw);
-                            w.secret_hits += hits;
-                            js::utf16_slice(&red, 0, 300).into_owned()
-                        }
-                        None => String::new(),
-                    };
+                    let reason = e.d_str("reason").map(|raw| js::utf16_slice(&w.redact(raw), 0, 300).into_owned()).unwrap_or_default();
                     line(&mut l, ts, &format!("**中断** {reason}"));
                 }
                 "session.mode_changed" => line(&mut l, ts, &format!("モード変更 {} → {}", str_or(e.d("previousMode"), "?"), str_or(e.d("newMode"), "?"))),
@@ -847,6 +852,11 @@ mod tests {
         let s = summarize_args("bash", Some(&v));
         assert!(!s.contains("ghp_") && !s.contains("dddd"), "{s}");
         assert!(s.starts_with(&format!("{} [伏せました", "x".repeat(150))), "{s}");
+        // 伏せた数は切る前の全文で数える(160 字より後ろの鍵も入る)
+        assert_eq!(summarize_args_counted("bash", Some(&v)).1, 1);
+        let v = serde_json::json!({ "command": format!("{} {} {}", key("e"), "x".repeat(200), key("f")) });
+        assert_eq!(summarize_args_counted("bash", Some(&v)).1, 2);
+        assert_eq!(summarize_args_counted("bash", None), (String::new(), 0));
     }
 
     #[test]
