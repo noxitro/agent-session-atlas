@@ -1,12 +1,15 @@
-//! 表計算ソフトで開く CSV(依頼ごと・セッションごと・VCS の照合のまとまりごと。packages/core/src/tables.ts の移植)。
+//! 表計算ソフトで開く CSV(依頼ごと・セッションごと・VCS の照合のまとまりごと。packages/core/src/tables.ts の移植)と、
+//! ツールの失敗・拒否 1 件ごとの表(failures_table。失敗の台帳から作る。TS 版には無い)。
 //! Excel が UTF-8 と判断できるよう先頭に BOM を付け、行末は CRLF。
-//! 列の並びと見出しはここだけで決める(atlas metrics の out/tables/ と、グループの書き出しが同じものを使う)。
+//! 列の並びと見出しはここだけで決める(atlas metrics の out/tables/ と、グループの書き出しが同じものを使う。
+//! 失敗・拒否ごとの表は out/tables/ だけ)。
 
 use crate::js;
 use crate::main_effort::main_effort_of;
 use crate::metrics::is_empty_session;
+use crate::tool_failure::failure_cause_label;
 use crate::turns::{js_re, mismatch_label, outcome_label, phase_label, request_kind_label, session_turns};
-use crate::types::{SessionRecord, TOOL_KINDS};
+use crate::types::{CallOutcome, FailureKind, NextKind, SessionRecord, TOOL_KINDS};
 use crate::vcs_retention::{ComputedOn, Outcome, RetentionStatus, SessionRetention, RETENTION_STATUSES};
 use crate::vcs::RevisionSource;
 use indexmap::IndexMap;
@@ -478,6 +481,115 @@ pub fn sessions_table(sessions: &[&SessionRecord], human_hours: &HashMap<String,
     Table { header, rows }
 }
 
+pub fn failure_kind_label(k: FailureKind) -> &'static str {
+    match k {
+        FailureKind::Failure => "失敗",
+        FailureKind::Denied => "拒否",
+    }
+}
+
+/// 失敗の後に何が起きたか(その後の列。詳細ページも同じ語を使う)
+pub fn next_kind_label(k: NextKind) -> &'static str {
+    match k {
+        NextKind::Tool => "ツール",
+        NextKind::User => "利用者の次の依頼",
+        NextKind::End => "続きなし",
+    }
+}
+
+/// 失敗の後の呼び出しの結果(終わりの記録が無いものは、ツールの表と同じ「結果なし」)
+pub fn call_outcome_label(o: CallOutcome) -> &'static str {
+    match o {
+        CallOutcome::Success => "成功",
+        CallOutcome::Failure => "失敗",
+        CallOutcome::Denied => "拒否",
+        CallOutcome::Unknown => "結果なし",
+    }
+}
+
+/// ツールの失敗・拒否 1 件ごとの CSV(failures_table の中身)。台帳のある記録が 1 件も無ければ None
+pub fn failures_csv(sessions: &[&SessionRecord]) -> Option<String> {
+    failures_table(sessions).map(|t| to_csv(&t.header, &t.rows))
+}
+
+/// ツールの失敗・拒否 1 件ごとの表(失敗の台帳 analysis.failures の 1 行が 1 行。セッションは渡した順、その中は台帳の順)。
+/// 空のセッションは除く。依頼番号は turns_table と同じ 1 からの番号(台帳の turn + 1。最初の依頼より前の失敗は空)。
+/// エラー文・引数・エージェントへの依頼は記録のまま(台帳を作るときに秘密らしい文字列を伏せ、上限で切ってある。ここでは切らず、改行も残す)。
+/// 台帳の無い古い記録は行にならない。載せるセッションのどれにも台帳が無ければ None
+/// (見出しだけの表を書くと「失敗が 0 件」と読めてしまうので、呼ぶ側は表を書かない)
+pub fn failures_table(sessions: &[&SessionRecord]) -> Option<Table> {
+    let header: Vec<String> = [
+        "セッションID",
+        "セッション名",
+        "プロジェクト",
+        "依頼番号",
+        "開始",
+        "種類",
+        "要因",
+        "ツール",
+        "MCP サーバー",
+        "MCP のツール",
+        "MCP の設定元",
+        "モデル",
+        "エージェント",
+        "エージェントの呼び出し",
+        "エージェントへの依頼",
+        "所要(ミリ秒)",
+        "エラー文",
+        "引数",
+        "その後",
+        "次のツール",
+        "次の結果",
+        "呼び直し",
+        "そろえたエラー文",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    let mut any_ledger = false;
+    let mut rows: Vec<Vec<Cell>> = Vec::new();
+    for s in sessions {
+        if is_empty_session(s) {
+            continue;
+        }
+        let Some(ledger) = &s.analysis.failures else {
+            continue;
+        };
+        any_ledger = true;
+        for f in ledger {
+            // サブエージェントへの依頼文は agents[] に 1 回だけ持つので、呼び出しの id で引く(同じ id が 2 つあれば先のもの)
+            let prompt = f.agent_call.as_deref().and_then(|call| s.agents.iter().find(|a| a.id.as_deref() == Some(call))).and_then(|a| a.prompt.as_deref());
+            let by_tool = f.next.kind == NextKind::Tool;
+            rows.push(vec![
+                s.id.as_str().into(),
+                s.name.as_deref().unwrap_or("").into(),
+                s.project.as_str().into(),
+                f.turn.map(|t| t + 1).into(),
+                f.started_at.as_deref().into(),
+                failure_kind_label(f.kind).into(),
+                f.cause.as_deref().map_or("", failure_cause_label).into(),
+                f.tool.as_str().into(),
+                f.mcp_server.as_deref().unwrap_or("").into(),
+                f.mcp_tool.as_deref().unwrap_or("").into(),
+                f.mcp_config_source.as_deref().unwrap_or("").into(),
+                f.model.as_deref().unwrap_or("").into(),
+                f.agent.as_deref().unwrap_or("").into(),
+                f.agent_call.as_deref().unwrap_or("").into(),
+                prompt.unwrap_or("").into(),
+                f.duration_ms.into(),
+                f.error.as_str().into(),
+                f.args.as_deref().unwrap_or("").into(),
+                next_kind_label(f.next.kind).into(),
+                f.next.tool.as_deref().filter(|_| by_tool).unwrap_or("").into(),
+                f.next.outcome.filter(|_| by_tool).map_or("", call_outcome_label).into(),
+                f.next.retry.filter(|_| by_tool).into(),
+                f.group.as_str().into(),
+            ]);
+        }
+    }
+    any_ledger.then_some(Table { header, rows })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -561,6 +673,195 @@ mod tests {
         let rc: HashMap<String, &SessionRetention> = [("c".to_string(), &not_measured)].into_iter().collect();
         let t2 = sessions_table(&[&c], &HashMap::new(), Some(&rc), None);
         assert_eq!(t2.rows[0][t2.header.iter().position(|h| h == "照合した場所").unwrap()], Cell::from("照合していない"));
+    }
+
+    const LEDGER_T0: i64 = 1_790_812_800_000; // 2026-10-01T00:00:00.000Z
+
+    fn ledger_ev(kind: &str, data: serde_json::Value, s: i64) -> crate::types::CopilotEvent {
+        crate::types::CopilotEvent { kind: kind.into(), data: Some(data), timestamp: Some(serde_json::json!(crate::jsdate::to_iso(LEDGER_T0 + s * 1000))), ..Default::default() }
+    }
+
+    fn ledger_rec(id: &str, events: Vec<crate::types::CopilotEvent>) -> SessionRecord {
+        use crate::normalize::{normalize_session, NormalizeInput};
+        let mut it = events.into_iter().map(Ok);
+        normalize_session(NormalizeInput { id: id.into(), has_dir: None, workspace: None, db: Default::default(), events: Some(&mut it), wiki_classifier: None }).unwrap()
+    }
+
+    /// 台帳の無い古い記録(sessions.json に failures・failuresDropped が無い)
+    fn without_ledger(mut r: SessionRecord, id: &str) -> SessionRecord {
+        r.id = id.into();
+        r.analysis.failures = None;
+        r.analysis.failures_dropped = None;
+        r
+    }
+
+    const LEDGER_HEADER: [&str; 23] = [
+        "セッションID",
+        "セッション名",
+        "プロジェクト",
+        "依頼番号",
+        "開始",
+        "種類",
+        "要因",
+        "ツール",
+        "MCP サーバー",
+        "MCP のツール",
+        "MCP の設定元",
+        "モデル",
+        "エージェント",
+        "エージェントの呼び出し",
+        "エージェントへの依頼",
+        "所要(ミリ秒)",
+        "エラー文",
+        "引数",
+        "その後",
+        "次のツール",
+        "次の結果",
+        "呼び直し",
+        "そろえたエラー文",
+    ];
+
+    /// 失敗・拒否ごとの表: 1 件 1 行、依頼番号は turns.csv と同じ 1 からの番号、サブエージェントへの依頼は agents[] から引く
+    #[test]
+    fn failures_rows() {
+        use serde_json::json;
+        let id = "00000000-0000-4000-8000-000000000001";
+        let start = |call: &str, tool: &str, args: serde_json::Value, s: i64| ledger_ev("tool.execution_start", json!({ "toolCallId": call, "toolName": tool, "arguments": args }), s);
+        let r = ledger_rec(
+            id,
+            vec![
+                // 最初の依頼より前の失敗(依頼番号は空。その後は利用者の次の依頼)
+                start("p", "view", json!({ "path": "X:\\synthetic-p\\none.ts" }), 0),
+                ledger_ev("tool.execution_complete", json!({ "toolCallId": "p", "success": false, "error": "boom" }), 1),
+                ledger_ev("user.message", json!({ "content": "直して" }), 10),
+                start("a", "view", json!({ "path": "X:\\synthetic-p\\a.ts" }), 11),
+                ledger_ev("tool.execution_complete", json!({ "toolCallId": "a", "success": false, "error": { "code": "failure", "message": "Path does not exist" }, "model": "synthetic-model" }), 12),
+                start("b", "edit", json!({ "path": "X:\\synthetic-p\\b.ts" }), 13),
+                ledger_ev("tool.execution_complete", json!({ "toolCallId": "b", "success": false, "error": { "code": "denied", "message": "denied by user" } }), 14),
+                // サブエージェントの中の失敗と、同じ引数での呼び直し
+                start("t1", "task", json!({ "agent_type": "explore", "prompt": "呼び出し元を調べて" }), 15),
+                ledger_ev("subagent.started", json!({ "toolCallId": "t1", "agentName": "explore" }), 16),
+                ledger_ev("tool.execution_start", json!({ "toolCallId": "x1", "toolName": "grep", "arguments": { "pattern": "foo" }, "parentToolCallId": "t1" }), 17),
+                ledger_ev("tool.execution_complete", json!({ "toolCallId": "x1", "success": false, "error": "timed out", "parentToolCallId": "t1" }), 18),
+                ledger_ev("tool.execution_start", json!({ "toolCallId": "x2", "toolName": "grep", "arguments": { "pattern": "foo" }, "parentToolCallId": "t1" }), 19),
+                ledger_ev("tool.execution_complete", json!({ "toolCallId": "x2", "success": true, "parentToolCallId": "t1" }), 20),
+                ledger_ev("subagent.completed", json!({ "toolCallId": "t1", "agentName": "explore" }), 21),
+                ledger_ev("tool.execution_complete", json!({ "toolCallId": "t1", "success": true }), 22),
+                ledger_ev("user.message", json!({ "content": "次は検索" }), 30),
+                // MCP のツールの失敗(その後の呼び出しなし)
+                ledger_ev("tool.execution_start", json!({ "toolCallId": "m", "toolName": "srv-search", "mcpServerName": "srv", "mcpToolName": "search", "mcpConfigSource": "user", "arguments": { "q": "x" } }), 31),
+                ledger_ev("tool.execution_complete", json!({ "toolCallId": "m", "success": false, "error": { "code": "failure", "message": "rate limit" } }), 32),
+            ],
+        );
+        let t = failures_table(&[&r]).unwrap();
+        assert_eq!(t.header, LEDGER_HEADER);
+        assert!(t.rows.iter().all(|row| row.len() == t.header.len()));
+        // 行の数は tools.results の failure + denied と同じ(上限で切っていないとき)
+        assert_eq!(t.rows.len() as i64, r.tools.results.values().map(|x| x.failure + x.denied).sum::<i64>());
+        let col = |name: &str| t.header.iter().position(|h| h == name).unwrap();
+        let column = |name: &str| t.rows.iter().map(|row| row[col(name)].clone()).collect::<Vec<_>>();
+        let s = |v: &str| Cell::from(v);
+        assert_eq!(column("セッションID"), vec![s(id); 5]);
+        assert_eq!(column("プロジェクト"), vec![s(&r.project); 5]);
+        // analysis.turnStats の添字(0 から)に 1 を足して、turns.csv の依頼番号に合わせる
+        assert_eq!(column("依頼番号"), [Cell::Null, Cell::Num(1.0), Cell::Num(1.0), Cell::Num(1.0), Cell::Num(2.0)]);
+        assert_eq!(turns_table(&[&r], None).rows.iter().map(|row| row[3].clone()).collect::<Vec<_>>(), [Cell::Num(1.0), Cell::Num(2.0)]);
+        assert_eq!(t.rows[1][col("開始")], s(&crate::jsdate::to_iso(LEDGER_T0 + 11_000)));
+        assert_eq!(column("種類"), [s("失敗"), s("失敗"), s("拒否"), s("失敗"), s("失敗")]);
+        assert_eq!(column("要因"), [s("その他"), s("対象が見つからない"), s(""), s("時間切れ"), s("上限・回数制限")]);
+        assert_eq!(column("ツール"), [s("view"), s("view"), s("edit"), s("grep"), s("srv-search")]);
+        assert_eq!(column("MCP サーバー")[4], s("srv"));
+        assert_eq!(column("MCP のツール")[4], s("search"));
+        assert_eq!(column("MCP の設定元")[4], s("user"));
+        assert_eq!(column("MCP サーバー")[0], s(""));
+        assert_eq!(column("モデル")[1], s("synthetic-model"));
+        assert_eq!(column("エージェント"), [s(""), s(""), s(""), s("explore"), s("")]);
+        assert_eq!(column("エージェントの呼び出し"), [s(""), s(""), s(""), s("t1"), s("")]);
+        assert_eq!(column("エージェントへの依頼"), [s(""), s(""), s(""), s("呼び出し元を調べて"), s("")]);
+        assert_eq!(column("所要(ミリ秒)"), vec![Cell::Num(1000.0); 5]);
+        assert_eq!(column("エラー文"), [s("boom"), s("failure: Path does not exist"), s("denied: denied by user"), s("timed out"), s("failure: rate limit")]);
+        assert_eq!(column("引数")[1], s(r#"{"path":"X:\\synthetic-p\\a.ts"}"#));
+        assert_eq!(column("その後"), [s("利用者の次の依頼"), s("ツール"), s("ツール"), s("ツール"), s("続きなし")]);
+        assert_eq!(column("次のツール"), [s(""), s("edit"), s("task"), s("grep"), s("")]);
+        assert_eq!(column("次の結果"), [s(""), s("拒否"), s("成功"), s("成功"), s("")]);
+        // 呼び直しは、その後がツールのときだけ値を持つ
+        assert_eq!(column("呼び直し"), [Cell::Null, Cell::Bool(false), Cell::Bool(false), Cell::Bool(true), Cell::Null]);
+        assert_eq!(column("そろえたエラー文"), r.analysis.failures.as_ref().unwrap().iter().map(|f| s(&f.group)).collect::<Vec<_>>());
+        // agents[] に同じ id が無ければ、依頼文は空
+        let mut no_agent = r.clone();
+        no_agent.agents.clear();
+        assert_eq!(failures_table(&[&no_agent]).unwrap().rows[3][col("エージェントへの依頼")], s(""));
+    }
+
+    /// 台帳の無い古い記録だけなら表を作らない(0 件の表と区別する)。混ざっていれば、台帳のある記録の行だけの表
+    #[test]
+    fn failures_table_needs_a_ledger() {
+        use serde_json::json;
+        let failing = |id: &str| {
+            ledger_rec(
+                id,
+                vec![
+                    ledger_ev("user.message", json!({ "content": "x" }), 0),
+                    ledger_ev("tool.execution_start", json!({ "toolCallId": "a", "toolName": "view", "arguments": {} }), 1),
+                    ledger_ev("tool.execution_complete", json!({ "toolCallId": "a", "success": false, "error": "boom" }), 2),
+                ],
+            )
+        };
+        let new = failing("00000000-0000-4000-8000-000000000011");
+        let old = without_ledger(failing("x"), "00000000-0000-4000-8000-000000000012");
+        let clean = ledger_rec("00000000-0000-4000-8000-000000000013", vec![ledger_ev("user.message", json!({ "content": "x" }), 0)]);
+        assert_eq!(clean.analysis.failures.as_deref(), Some(&[][..]));
+        assert_eq!(failures_table(&[]), None);
+        assert_eq!(failures_table(&[&old]), None);
+        assert_eq!(failures_csv(&[&old]), None);
+        // 失敗が 0 件でも、台帳があれば見出しだけの表にする
+        let zero = failures_table(&[&clean]).unwrap();
+        assert_eq!((zero.header.len(), zero.rows.len()), (LEDGER_HEADER.len(), 0));
+        // 渡した順。古い記録は行にならない
+        let mixed = failures_table(&[&old, &new, &clean, &new]).unwrap();
+        assert_eq!(mixed.rows.iter().map(|r| r[0].clone()).collect::<Vec<_>>(), vec![Cell::from(new.id.as_str()); 2]);
+        // 空のセッションは turns.csv・sessions.csv と同じく除く(台帳があっても数に入れない)
+        let mut empty = new.clone();
+        empty.empty = true;
+        assert_eq!(failures_table(&[&empty]), None);
+        assert_eq!(failures_table(&[&empty, &clean]).unwrap().rows.len(), 0);
+    }
+
+    /// エラー文は切らず、改行もそのまま CSV に入れる。= や - で始まる文には、表計算ソフトが式として読まないよう ' が付く
+    #[test]
+    fn failures_csv_guards_formulas_and_keeps_newlines() {
+        use serde_json::json;
+        let fail = |call: &str, error: &str, s: i64| {
+            [
+                ledger_ev("tool.execution_start", json!({ "toolCallId": call, "toolName": "bash", "arguments": "-rf X:\\synthetic-tmp" }), s),
+                ledger_ev("tool.execution_complete", json!({ "toolCallId": call, "success": false, "error": error }), s + 1),
+            ]
+        };
+        let mut events = vec![ledger_ev("user.message", json!({ "content": "x" }), 0)];
+        events.extend(fail("a", "=1+1 を評価できません\r\n2 行目, \"引用\" つき\n3 行目", 1));
+        events.extend(fail("b", "-n は使えません", 3));
+        let r = ledger_rec("00000000-0000-4000-8000-000000000021", events);
+        let t = failures_table(&[&r]).unwrap();
+        let col = |name: &str| t.header.iter().position(|h| h == name).unwrap();
+        // 表の値は記録のまま(' を足すのは CSV にするときだけ。SQLite には足さない)
+        assert_eq!(t.rows[0][col("エラー文")], Cell::from("=1+1 を評価できません\r\n2 行目, \"引用\" つき\n3 行目"));
+        assert_eq!(t.rows[0][col("引数")], Cell::from("-rf X:\\synthetic-tmp"));
+        let csv = failures_csv(&[&r]).unwrap();
+        assert!(csv.starts_with("\u{feff}セッションID,セッション名,プロジェクト,依頼番号,"));
+        assert!(csv.contains(",\"'=1+1 を評価できません\r\n2 行目, \"\"引用\"\" つき\n3 行目\",'-rf X:\\synthetic-tmp,"), "{csv}");
+        assert!(csv.contains(",'-n は使えません,'-rf X:\\synthetic-tmp,"), "{csv}");
+        // 引用符の外の行の区切りは、見出し + 2 行 + 末尾の分だけ(エラー文の中の改行は引用符の中に残る)
+        let mut quoted = false;
+        let mut records = 0;
+        let chars: Vec<char> = csv.chars().collect();
+        for (i, c) in chars.iter().enumerate() {
+            match c {
+                '"' => quoted = !quoted,
+                '\n' if !quoted && i > 0 && chars[i - 1] == '\r' => records += 1,
+                _ => {}
+            }
+        }
+        assert_eq!(records, 3);
     }
 
     #[test]

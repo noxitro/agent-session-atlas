@@ -205,7 +205,7 @@ const HTML_HEADERS: [(&str, &str); 3] = [NOSNIFF, ("x-frame-options", "DENY"), (
 /// script を動かさない(svg などがサーバのオリジンで動くと token を読めてしまう)
 const FILE_HEADERS: [(&str, &str); 2] = [NOSNIFF, ("content-security-policy", "sandbox")];
 /// atlas 自身が作る HTML(token を差し込み、操作を出す)。out/ の直下のこれらと sessions/<id>.html だけ
-const APP_PAGES: [&str; 4] = ["atlas.html", "glossary.html", "insights.html", "instructions.html"];
+const APP_PAGES: [&str; 5] = ["atlas.html", "failures.html", "glossary.html", "insights.html", "instructions.html"];
 
 static SESSION_PAGE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^sessions/[^/]+\.html$").unwrap());
 

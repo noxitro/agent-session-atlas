@@ -1,13 +1,15 @@
 //! atlas metrics(packages/cli/src/commands.ts の runMetrics・writeTables と、CLI の絞り込み
 //! SessionFilter・hasFilter・filterSessions・resolveIdFilter・describeFilter・selectSessions の移植)。
-//! ログの文言は TS 版と同じ。
+//! ログの文言は TS 版と同じ(out/tables/ の failures.csv と、その件数の注記は TS 版に無い)。
 
 use super::Log;
 use crate::paths::Paths;
 use crate::tables::{build_tables, write_sqlite, TablePaths, SQLITE_FILE};
 use anyhow::{anyhow, bail, Result};
+use atlas_core::failure_ledger::MAX_ROWS;
 use atlas_core::jsdate;
-use atlas_core::metrics::compute_metrics;
+use atlas_core::metrics::{compute_metrics, is_empty_session};
+use atlas_core::tables::{failures_table, to_csv};
 use atlas_core::types::{MetricsFile, SessionRecord, SessionsFile};
 use atlas_report::filter::{matches_base, BaseFilter};
 use atlas_report::groups::{load_groups, resolve_id_prefixes, LoadedGroups};
@@ -246,12 +248,13 @@ pub fn run_metrics(p: &Paths, f: &SessionFilter, log: Log<'_>) -> Result<Metrics
     Ok(m)
 }
 
-/// 表計算ソフトで開く表(依頼ごと・セッションごと)を out/tables/ に書く。metrics・build・export が、それぞれの絞り込みのセッションで書く
-/// (判定を取り込んだ後の export でも、判定の列が表に入るように)
+/// 表計算ソフトで開く表(依頼ごと・セッションごと・VCS の照合のまとまりごと・ツールの失敗と拒否ごと)を out/tables/ に書く。
+/// metrics・build・export が、それぞれの絞り込みのセッションで書く(判定を取り込んだ後の export でも、判定の列が表に入るように)。
+/// ツールの失敗と拒否ごとの表(failures.csv と SQLite の failures)は、ここでだけ足す(グループの書き出しには入れない)
 pub fn write_tables(p: &Paths, sessions: &[&SessionRecord], cmd: &str, log: Log<'_>) -> Result<()> {
     let dir = p.out.join("tables");
     std::fs::create_dir_all(&dir)?;
-    let t = build_tables(sessions, &TablePaths { judgments: &p.judgments, turn_judgments: &p.turn_judgments, vcs_retention: Some(&p.vcs_retention) });
+    let mut t = build_tables(sessions, &TablePaths { judgments: &p.judgments, turn_judgments: &p.turn_judgments, vcs_retention: Some(&p.vcs_retention) });
     for w in &t.warnings {
         log(&format!("{cmd}: 注意 {w}"));
     }
@@ -262,6 +265,21 @@ pub fn write_tables(p: &Paths, sessions: &[&SessionRecord], cmd: &str, log: Log<
         Some(h) => std::fs::write(dir.join("vcs-hunks.csv"), h)?,
         None => atlas_core::jsfs::rm_force(&dir.join("vcs-hunks.csv"))?,
     }
+    // 失敗の台帳の無い古い記録だけのときは、表を書かず、前の failures.csv も残さない(見出しだけの表は「失敗が 0 件」と読めてしまう)。
+    // SQLite には、この関数の中の t.data に足して入れる(build_tables の返す中身は変えないので、グループの書き出しには入らない)
+    let failures = failures_table(sessions);
+    match &failures {
+        Some(f) => std::fs::write(dir.join("failures.csv"), to_csv(&f.header, &f.rows))?,
+        None => atlas_core::jsfs::rm_force(&dir.join("failures.csv"))?,
+    }
+    let with_failures = failures.is_some();
+    if let Some(f) = failures {
+        t.data.push(("failures".to_string(), f));
+    }
+    // 表に載せるセッション(空のセッションを除く)のうち、行数の上限で載せなかった失敗・拒否の数と、台帳の無い記録の数
+    let listed = || sessions.iter().filter(|s| !is_empty_session(s));
+    let dropped: i64 = listed().filter(|s| s.analysis.failures.is_some()).filter_map(|s| s.analysis.failures_dropped).sum();
+    let no_ledger = listed().filter(|s| s.analysis.failures.is_none()).count();
     let sqlite = match write_sqlite(&dir.join(SQLITE_FILE), &t.data) {
         Ok(()) => format!("・{SQLITE_FILE}"),
         Err(e) => {
@@ -270,11 +288,14 @@ pub fn write_tables(p: &Paths, sessions: &[&SessionRecord], cmd: &str, log: Log<
         }
     };
     log(&format!(
-        "{cmd}: 表 → {}・sessions.csv{}{sqlite}{}{}",
+        "{cmd}: 表 → {}・sessions.csv{}{}{sqlite}{}{}{}{}",
         dir.join("turns.csv").display(),
         if t.vcs_hunks.is_some() { "・vcs-hunks.csv" } else { "" },
+        if with_failures { "・failures.csv" } else { "" },
         if t.with_verdicts { "(依頼ごとの判定の列つき)" } else { "" },
-        if t.with_retention { "(VCS の照合の列つき)" } else { "" }
+        if t.with_retention { "(VCS の照合の列つき)" } else { "" },
+        if dropped > 0 { format!("(1 セッション {MAX_ROWS} 行の上限で failures.csv に載せていない失敗・拒否 {dropped} 件)") } else { String::new() },
+        if no_ledger > 0 { format!("(失敗の台帳が無い古い記録 {no_ledger} セッションは failures.csv に入りません。集計し直すと付きます)") } else { String::new() }
     ));
     Ok(())
 }
@@ -342,5 +363,102 @@ mod tests {
             describe_filter(&both, &[], Some(&ResolvedIds { set: HashSet::new(), group_total: 3, group_known: 2, session_ids: vec!["1".into()] })),
             "group=g(2 / 3 件が記録にある), session=1 件"
         );
+    }
+
+    /// 失敗 1 件と拒否 1 件のあるセッション(イベントは架空のもの)
+    fn failing(id: &str) -> SessionRecord {
+        use atlas_core::types::CopilotEvent;
+        use serde_json::json;
+        const T0: i64 = 1_794_009_600_000; // 2026-11-06T00:00:00.000Z
+        let ev = |dt: i64, kind: &str, data: serde_json::Value| -> std::io::Result<CopilotEvent> {
+            Ok(CopilotEvent { kind: kind.into(), data: Some(data), timestamp: Some(json!(jsdate::to_iso(T0 + dt))), ..Default::default() })
+        };
+        let events = vec![
+            ev(0, "session.start", json!({ "context": { "cwd": "X:\\synthetic-p" } })),
+            ev(1000, "user.message", json!({ "content": "直して" })),
+            ev(1100, "tool.execution_start", json!({ "toolCallId": "a", "toolName": "view", "arguments": { "path": "X:\\synthetic-p\\a.ts" } })),
+            ev(1350, "tool.execution_complete", json!({ "toolCallId": "a", "success": false, "error": { "code": "failure", "message": "Path does not exist" } })),
+            ev(1400, "tool.execution_start", json!({ "toolCallId": "b", "toolName": "edit", "arguments": { "path": "X:\\synthetic-p\\a.ts" } })),
+            ev(1500, "tool.execution_complete", json!({ "toolCallId": "b", "success": false, "error": { "code": "denied", "message": "denied by user" } })),
+        ];
+        let mut it = events.into_iter();
+        normalize_session(NormalizeInput { id: id.into(), has_dir: None, workspace: None, db: Default::default(), events: Some(&mut it), wiki_classifier: None }).unwrap()
+    }
+
+    fn sqlite_tables(path: &Path) -> Vec<String> {
+        let db = rusqlite::Connection::open(path).unwrap();
+        let names = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+        names
+    }
+
+    /// out/tables/ には failures.csv と SQLite の failures を書く。台帳の無い古い記録だけなら書かず、前のファイルも残さない
+    #[test]
+    fn write_tables_adds_failures_when_there_is_a_ledger() {
+        use crate::paths::{resolve_paths, PathInputs};
+        let tmp = tempfile::tempdir().unwrap();
+        let (home, out, notes) = (tmp.path().join("home"), tmp.path().join("out"), tmp.path().join("notes"));
+        let p = resolve_paths(PathInputs { home: Some(&home.to_string_lossy()), out: Some(&out.to_string_lossy()), judgments: None, bundle: None, notes_dir: Some(&notes.to_string_lossy()) });
+        let logs = std::sync::Mutex::new(Vec::<String>::new());
+        let log = |m: &str| logs.lock().unwrap().push(m.to_string());
+        let last = || logs.lock().unwrap().last().cloned().unwrap();
+        let dir = p.out.join("tables");
+        let csv = dir.join("failures.csv");
+
+        let rec = failing("00000000-0000-4000-8000-000000000031");
+        write_tables(&p, &[&rec], "metrics", &log).unwrap();
+        let text = std::fs::read_to_string(&csv).unwrap();
+        let lines: Vec<&str> = text.trim_end().split("\r\n").collect();
+        assert!(lines[0].starts_with("\u{feff}セッションID,セッション名,プロジェクト,依頼番号,開始,種類,要因,ツール,"), "{}", lines[0]);
+        assert_eq!(lines.len(), 3);
+        assert!(last().contains("・sessions.csv・failures.csv・atlas.sqlite"), "{}", last());
+        assert!(!last().contains("古い記録") && !last().contains("上限"), "{}", last());
+        assert_eq!(sqlite_tables(&dir.join(SQLITE_FILE)), ["failures", "sessions", "turns"]);
+        {
+            let db = rusqlite::Connection::open(dir.join(SQLITE_FILE)).unwrap();
+            // 列名は CSV の見出しと同じ
+            let cols: Vec<String> = db.prepare("SELECT name FROM pragma_table_info('failures')").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+            assert_eq!(cols, lines[0].trim_start_matches('\u{feff}').split(',').collect::<Vec<_>>());
+            // 数と真偽は REAL、文は TEXT、値の無いところは NULL(呼び直しは、その後がツールのときだけ)
+            let types: Vec<Vec<String>> = db
+                .prepare(r#"SELECT typeof("依頼番号"), typeof("開始"), typeof("所要(ミリ秒)"), typeof("エラー文"), typeof("要因"), typeof("呼び直し") FROM failures ORDER BY rowid"#)
+                .unwrap()
+                .query_map([], |r| (0..6).map(|i| r.get(i)).collect())
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            assert_eq!(types, [["real", "text", "real", "text", "text", "real"], ["real", "text", "real", "text", "text", "null"]]);
+            let rows: Vec<(f64, String, String, f64, String, Option<f64>)> = db
+                .prepare(r#"SELECT "依頼番号", "種類", "要因", "所要(ミリ秒)", "その後", "呼び直し" FROM failures ORDER BY rowid"#)
+                .unwrap()
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            assert_eq!(rows, [(1.0, "失敗".to_string(), "対象が見つからない".to_string(), 250.0, "ツール".to_string(), Some(0.0)), (1.0, "拒否".to_string(), String::new(), 100.0, "続きなし".to_string(), None)]);
+            // 依頼番号で turns と結べる
+            let joined: i64 = db.query_row(r#"SELECT count(*) FROM failures f JOIN turns t ON t."セッションID" = f."セッションID" AND t."依頼番号" = f."依頼番号""#, [], |r| r.get(0)).unwrap();
+            assert_eq!(joined, 2);
+        }
+
+        // 台帳の無い古い記録だけ: 表を書かず、前の failures.csv を消す。SQLite にも入れない
+        let mut old = rec.clone();
+        old.analysis.failures = None;
+        old.analysis.failures_dropped = None;
+        write_tables(&p, &[&old], "metrics", &log).unwrap();
+        assert!(!csv.exists());
+        assert_eq!(sqlite_tables(&dir.join(SQLITE_FILE)), ["sessions", "turns"]);
+        assert!(!last().contains("・failures.csv"), "{}", last());
+        assert!(last().contains("(失敗の台帳が無い古い記録 1 セッションは failures.csv に入りません。集計し直すと付きます)"), "{}", last());
+
+        // 混ざっているとき: 台帳のある記録の行だけを書き、載せていない件数を知らせる
+        let mut capped = failing("00000000-0000-4000-8000-000000000032");
+        capped.analysis.failures_dropped = Some(3);
+        write_tables(&p, &[&old, &capped], "build", &log).unwrap();
+        let text = std::fs::read_to_string(&csv).unwrap();
+        assert_eq!(text.trim_end().split("\r\n").skip(1).map(|l| l.split(',').next().unwrap()).collect::<Vec<_>>(), vec![capped.id.as_str(); 2]);
+        assert_eq!(sqlite_tables(&dir.join(SQLITE_FILE)), ["failures", "sessions", "turns"]);
+        assert!(last().starts_with("build: 表 → "), "{}", last());
+        assert!(last().contains(&format!("(1 セッション {MAX_ROWS} 行の上限で failures.csv に載せていない失敗・拒否 3 件)")), "{}", last());
+        assert!(last().contains("(失敗の台帳が無い古い記録 1 セッション"), "{}", last());
     }
 }

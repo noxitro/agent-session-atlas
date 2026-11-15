@@ -15,6 +15,8 @@ pub mod detail;
 pub mod embed;
 pub mod exec;
 pub mod exec_labels;
+pub mod failure_stats;
+pub mod failures_page;
 pub mod filter;
 pub mod format;
 pub mod full;

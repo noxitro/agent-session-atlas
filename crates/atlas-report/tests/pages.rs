@@ -71,6 +71,86 @@ fn pair(v: &str, n: &str) -> Option<(String, String)> {
     Some((v.into(), n.into()))
 }
 
+// ---------- 失敗の台帳(依頼ごとの表の欄と、1 件ごとの節) ----------
+
+fn ledger_events() -> Vec<CopilotEvent> {
+    let none = || json!({});
+    vec![
+        // 最初の依頼より前の失敗(依頼は「—」)
+        ev("tool.execution_start", json!({ "toolName": "view", "toolCallId": "p", "arguments": { "path": "x" } }), &t(0), none()),
+        ev("tool.execution_complete", json!({ "toolCallId": "p", "success": false, "error": { "code": "failure", "message": "<script>alert(1)</script> & does not exist" } }), &t(1), none()),
+        ev("user.message", json!({ "content": "直して" }), &t(2), none()),
+        ev("tool.execution_start", json!({ "toolName": "view", "toolCallId": "a", "arguments": { "path": "a.ts" } }), &t(3), none()),
+        ev("tool.execution_complete", json!({ "toolCallId": "a", "success": false, "error": { "code": "failure", "message": "Path does not exist" } }), &t(4), none()),
+        // 同じ引数で呼び直して、また失敗
+        ev("tool.execution_start", json!({ "toolName": "view", "toolCallId": "b", "arguments": { "path": "a.ts" } }), &t(5), none()),
+        ev("tool.execution_complete", json!({ "toolCallId": "b", "success": false, "error": { "code": "failure", "message": "Path does not exist" } }), &t(6), none()),
+        ev("tool.execution_start", json!({ "toolName": "srv-run", "toolCallId": "c", "mcpServerName": "srv", "arguments": {} }), &t(7), none()),
+        ev("tool.execution_complete", json!({ "toolCallId": "c", "success": false, "error": { "code": "denied" } }), &t(8), none()),
+        // サブエージェントの失敗(親の呼び出しの prompt は agents[] に 1 回だけ)
+        ev("tool.execution_start", json!({ "toolName": "task", "toolCallId": "t1", "arguments": { "agent_type": "explore", "prompt": "合成の依頼 <b>" } }), &t(9), none()),
+        ev("subagent.started", json!({ "toolCallId": "t1", "agentName": "explore" }), &t(10), none()),
+        ev("tool.execution_start", json!({ "toolName": "grep", "toolCallId": "s1", "arguments": { "pattern": "x" }, "parentToolCallId": "t1" }), &t(11), none()),
+        ev("tool.execution_complete", json!({ "toolCallId": "s1", "success": false, "error": "timed out", "parentToolCallId": "t1" }), &t(12), none()),
+        ev("subagent.completed", json!({ "toolCallId": "t1", "agentName": "explore" }), &t(13), none()),
+        ev("tool.execution_complete", json!({ "toolCallId": "t1", "success": true }), &t(14), none()),
+    ]
+}
+
+#[test]
+fn detail_failure_ledger_column_and_section() {
+    let r = normalize("l", ledger_events(), None, &[], None);
+    let page = html(&r);
+    // 依頼ごとの表: 失敗の内訳の欄(ツール・要因か拒否・回数。多い順)
+    assert!(page.contains("<th scope=\"col\">失敗・拒否の内訳</th>"));
+    assert!(page.contains("<td><span class=\"fb\">view 対象が見つからない ×2</span><span class=\"fb\">srv-run 拒否 ×1</span><span class=\"fb\">grep 時間切れ ×1</span></td>"), "{page}");
+    // 1 件ごとの節: 台帳の順に 5 行
+    assert!(page.contains(">失敗と拒否(1 件ごと)</h2>"));
+    let rows = Regex::new(r#"(?s)<table class="ledger small fails">.*?<tbody>(.*?)</tbody>"#).unwrap().captures(&page).unwrap()[1].to_string();
+    assert_eq!(rows.matches("<tr>").count(), 5);
+    // 最初の依頼より前の失敗は依頼が「—」。エラー文は HTML として解釈されない
+    assert!(rows.starts_with("<tr><td class=\"num\"><span class=\"missing-value\">—</span></td>"));
+    assert!(rows.contains("failure: &lt;script&gt;alert(1)&lt;/script&gt; &amp; does not exist"));
+    assert!(!page.contains("<script>alert(1)"));
+    // その後: 同じ引数で呼び直して失敗 / 拒否 / サブエージェントは続きなし
+    assert!(rows.contains("<td class=\"next\">view → 失敗 <span class=\"tag\">同じ引数で呼び直し</span></td>"));
+    assert!(rows.contains("<td>srv-run <span class=\"tag\">MCP: srv</span></td><td class=\"fkind\">拒否</td>"));
+    assert!(rows.contains("<td>grep <span class=\"tag\">サブエージェント: explore</span></td><td class=\"fkind\">失敗: 時間切れ</td>"));
+    assert!(rows.contains("<span class=\"missing-value\">続きなし</span>"));
+    assert!(rows.contains("<td class=\"args\">{&quot;path&quot;:&quot;a.ts&quot;}</td>"));
+    // サブエージェントへの依頼文は 1 回だけ
+    assert_eq!(page.matches("<li>explore: 合成の依頼 &lt;b&gt;</li>").count(), 1);
+    assert!(!page.contains("「失敗と拒否(1 件ごと)」がありません"));
+    assert!(!page.contains("件は載っていません"));
+}
+
+#[test]
+fn detail_failure_ledger_old_record_and_dropped() {
+    // 古い記録(台帳なし): 欄も節も出さず、失敗があるときだけ断りを出す
+    let mut old = normalize("o", ledger_events(), None, &[], None);
+    old.analysis.failures = None;
+    old.analysis.failures_dropped = None;
+    let page = html(&old);
+    assert!(!page.contains("失敗・拒否の内訳") && !page.contains(">失敗と拒否(1 件ごと)</h2>"));
+    assert!(page.contains("「失敗と拒否(1 件ごと)」がありません"));
+    // 失敗の無い古い記録には断りも出さない
+    let mut quiet = normalize("q", vec![ev("user.message", json!({ "content": "x" }), &t(0), json!({}))], None, &[], None);
+    quiet.analysis.failures = None;
+    assert!(!html(&quiet).contains("「失敗と拒否(1 件ごと)」がありません"));
+    // 台帳が 0 件: 欄は出す(どの依頼も「—」)、節は出さない
+    let empty = normalize("e", vec![ev("user.message", json!({ "content": "x" }), &t(0), json!({}))], None, &[], None);
+    let page = html(&empty);
+    assert!(page.contains("失敗・拒否の内訳") && !page.contains(">失敗と拒否(1 件ごと)</h2>"));
+    // 失敗の数はあるのに台帳の行が無い依頼(上限で落ちた分など)は「—」ではなく「記録なし」
+    let mut lost = normalize("n", ledger_events(), None, &[], None);
+    lost.analysis.failures = Some(Vec::new());
+    assert!(html(&lost).contains("<td><span class=\"missing-value\">記録なし</span></td><td class=\"num\">"));
+    // 上限で載せなかった件数
+    let mut cut = normalize("c", ledger_events(), None, &[], None);
+    cut.analysis.failures_dropped = Some(3);
+    assert!(html(&cut).contains("1 セッション 500 行の上限を超えた 3 件は載っていません。"));
+}
+
 // ---------- detail-fixes.test.ts ----------
 
 #[test]

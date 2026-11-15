@@ -20,10 +20,11 @@ use atlas_core::collate::locale_compare;
 use atlas_core::js::{self, JsMap};
 use atlas_core::jsdate;
 use atlas_core::jsnum::to_fixed;
-use atlas_core::tables::TurnVerdicts;
+use atlas_core::tables::{call_outcome_label, next_kind_label, TurnVerdicts};
 use atlas_core::tool_failure::{failure_cause_label, sorted_causes};
 use atlas_core::turns::{mismatch_label, outcome_label, phase_label, request_kind_label, session_turns};
-use atlas_core::types::{AgentStatus, InstructionFile, InstructionInjection, InstructionScope, LineChanges, LineNote, LineSource, ProjectSource, SessionRecord, SessionTokens, SkillTrigger, SkillVia, TimelineEntry, TimelineKind, TokenCounts, TokenSource};
+use atlas_core::failure_ledger::MAX_ROWS;
+use atlas_core::types::{AgentStatus, CallOutcome, FailureKind, NextKind, ToolFailure, InstructionFile, InstructionInjection, InstructionScope, LineChanges, LineNote, LineSource, ProjectSource, SessionRecord, SessionTokens, SkillTrigger, SkillVia, TimelineEntry, TimelineKind, TokenCounts, TokenSource};
 use atlas_core::vcs_retention::{Outcome, SessionRetention};
 use serde_json::Value;
 use std::cmp::Ordering;
@@ -388,10 +389,9 @@ fn turn_table(r: &SessionRecord, verdicts: Option<&TurnVerdicts>) -> String {
     if rows.is_empty() {
         return "<p class=\"note\">依頼ごとの記録がありません(イベントログが無いか、古い集計です。atlas.bat で集計し直すと入ります)。</p>".into();
     }
-    let day0 = match rows[0].stats.started_at.as_deref().filter(|s| !s.is_empty()) {
-        Some(s) => js::utf16_slice(&date_time_n(Some(s)), 0, 10).into_owned(),
-        None => String::new(),
-    };
+    let day0 = day_of(rows[0].stats.started_at.as_deref());
+    // 失敗・拒否の内訳の欄は、失敗の台帳のある記録にだけ出す(古い記録には台帳が無い)
+    let breakdown = r.analysis.failures.as_deref().map(failure_breakdown);
     let verdict_cells = |n: usize| -> String {
         if !judged {
             return String::new();
@@ -415,19 +415,26 @@ fn turn_table(r: &SessionRecord, verdicts: Option<&TurnVerdicts>) -> String {
         let req = if js::trim(t.text).is_empty() { missing("(本文なし)") } else { esc(&truncate(Some(t.text), 80)) };
         let stuck = t.is_stuck();
         let next = if t.followed_by_fix() { format!(" <span class=\"tag warn\">次で{}</span>", esc(request_kind_label(t.next_kind.unwrap_or("")))) } else { String::new() };
-        // 時刻だけ(最初の依頼と日付が違うときは月日も)
-        let dt = match s.started_at.as_deref().filter(|x| !x.is_empty()) {
-            Some(x) => date_time_n(Some(x)),
+        let time = clock(s.started_at.as_deref(), &day0);
+        let fails = match &breakdown {
             None => String::new(),
-        };
-        let time = if dt.is_empty() {
-            missing("—")
-        } else {
-            esc(&if js::utf16_slice(&dt, 0, 10) == day0 { js::utf16_slice(&dt, 11, usize::MAX).into_owned() } else { js::utf16_slice(&dt, 5, usize::MAX).into_owned() })
+            Some(b) => match b.get(&(t.index as i64 - 1)) {
+                // 失敗か拒否の数があるのに台帳の行が無い(行数の上限で落ちた・開始の記録が無い)ときは、無いのではなく記録が無い
+                None => format!("<td>{}</td>", missing(if s.tool_failures + s.denied > 0 { "記録なし" } else { "—" })),
+                Some(lines) => {
+                    let listed: i64 = lines.iter().map(|l| l.2).sum();
+                    let rest = s.tool_failures + s.denied - listed;
+                    format!(
+                        "<td>{}{}</td>",
+                        lines.iter().map(|(tool, label, n)| format!("<span class=\"fb\">{} {} ×{}</span>", esc(tool), esc(label), int_i(*n))).collect::<String>(),
+                        if rest > 0 { format!("<span class=\"fb\">{}</span>", missing(&format!("ほか {} 件は記録なし", int_n(rest as f64)))) } else { String::new() }
+                    )
+                }
+            },
         };
         let num = |v: i64| -> String { if v != 0 { int_i(v) } else { "<span class=\"zero\">0</span>".into() } };
         body.push_str(&format!(
-            "<tr{}><th scope=\"row\" class=\"num\">{}</th><td>{time}</td><td class=\"req\">{req}{next}</td><td>{}</td><td>{}{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td>{}</tr>",
+            "<tr{}><th scope=\"row\" class=\"num\">{}</th><td>{time}</td><td class=\"req\">{req}{next}</td><td>{}</td><td>{}{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td>{fails}<td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td>{}</tr>",
             if stuck { " class=\"stuck\"" } else { "" },
             esc(&t.index.to_string()),
             esc(request_kind_label(t.kind)),
@@ -452,9 +459,126 @@ fn turn_table(r: &SessionRecord, verdicts: Option<&TurnVerdicts>) -> String {
         ));
     }
     format!(
-        "<div class=\"table-scroll\"><table class=\"ledger small turns\"><thead><tr><th scope=\"col\" class=\"num\">#</th><th scope=\"col\">開始</th><th scope=\"col\">依頼</th><th scope=\"col\">種類</th><th scope=\"col\">工程</th><th scope=\"col\" class=\"num\">実働</th><th scope=\"col\" class=\"num\">ツール呼び出し</th><th scope=\"col\" class=\"num\">ツールの失敗</th><th scope=\"col\" class=\"num\">拒否</th><th scope=\"col\" class=\"num\">中断</th><th scope=\"col\" class=\"num\">エラー</th><th scope=\"col\" class=\"num\">再編集</th><th scope=\"col\" class=\"num\">文脈圧縮</th><th scope=\"col\" class=\"num\">AIU</th>{}</tr></thead><tbody>{body}</tbody></table></div>",
-        if judged { "<th scope=\"col\">採用(LLM)</th><th scope=\"col\">合わなかった点</th><th scope=\"col\">工程(普段)</th>" } else { "" }
+        "<div class=\"table-scroll\"><table class=\"ledger small turns\"><thead><tr><th scope=\"col\" class=\"num\">#</th><th scope=\"col\">開始</th><th scope=\"col\">依頼</th><th scope=\"col\">種類</th><th scope=\"col\">工程</th><th scope=\"col\" class=\"num\">実働</th><th scope=\"col\" class=\"num\">ツール呼び出し</th><th scope=\"col\" class=\"num\">ツールの失敗</th><th scope=\"col\" class=\"num\">拒否</th>{}<th scope=\"col\" class=\"num\">中断</th><th scope=\"col\" class=\"num\">エラー</th><th scope=\"col\" class=\"num\">再編集</th><th scope=\"col\" class=\"num\">文脈圧縮</th><th scope=\"col\" class=\"num\">AIU</th>{}</tr></thead><tbody>{body}</tbody></table></div>{}",
+        if breakdown.is_some() { "<th scope=\"col\">失敗・拒否の内訳</th>" } else { "" },
+        if judged { "<th scope=\"col\">採用(LLM)</th><th scope=\"col\">合わなかった点</th><th scope=\"col\">工程(普段)</th>" } else { "" },
+        no_ledger_note(r)
     )
+}
+
+/// 日時の日付の部分(YYYY-MM-DD の 10 字。無ければ空)
+fn day_of(at: Option<&str>) -> String {
+    match at.filter(|s| !s.is_empty()) {
+        Some(s) => js::utf16_slice(&date_time_n(Some(s)), 0, 10).into_owned(),
+        None => String::new(),
+    }
+}
+
+/// 表の中の時刻: 時刻だけ(day0 と日付が違うときは月日も)。無ければ「—」
+fn clock(at: Option<&str>, day0: &str) -> String {
+    let dt = match at.filter(|x| !x.is_empty()) {
+        Some(x) => date_time_n(Some(x)),
+        None => String::new(),
+    };
+    if dt.is_empty() {
+        missing("—")
+    } else {
+        esc(&if js::utf16_slice(&dt, 0, 10) == day0 { js::utf16_slice(&dt, 11, usize::MAX).into_owned() } else { js::utf16_slice(&dt, 5, usize::MAX).into_owned() })
+    }
+}
+
+/// 失敗の台帳の 1 行の種類と要因(失敗は要因の名前、拒否は「拒否」)
+fn failure_label(f: &ToolFailure) -> &'static str {
+    match f.kind {
+        FailureKind::Denied => "拒否",
+        FailureKind::Failure => failure_cause_label(f.cause.as_deref().unwrap_or("other")),
+    }
+}
+
+/// 依頼ごとの失敗の内訳: 台帳の turn(0 からの依頼の番号)→「ツール・要因(か拒否)・回数」。多い順、同じ回数は出た順
+fn failure_breakdown(ledger: &[ToolFailure]) -> std::collections::HashMap<i64, Vec<(&str, &'static str, i64)>> {
+    let mut by_turn: std::collections::HashMap<i64, Vec<(&str, &'static str, i64)>> = std::collections::HashMap::new();
+    for f in ledger {
+        let Some(turn) = f.turn else { continue };
+        let lines = by_turn.entry(turn).or_default();
+        let label = failure_label(f);
+        match lines.iter_mut().find(|l| l.0 == f.tool && l.1 == label) {
+            Some(l) => l.2 += 1,
+            None => lines.push((f.tool.as_str(), label, 1)),
+        }
+    }
+    for lines in by_turn.values_mut() {
+        lines.sort_by(|a, b| b.2.cmp(&a.2));
+    }
+    by_turn
+}
+
+/// 失敗の台帳の無い古い記録で、ツールの失敗か拒否があるときの断り
+fn no_ledger_note(r: &SessionRecord) -> &'static str {
+    let failed: i64 = r.tools.results.values().map(|x| x.failure + x.denied).sum();
+    if r.analysis.failures.is_none() && failed > 0 {
+        "<p class=\"note\">この記録には「失敗と拒否(1 件ごと)」がありません(古い集計です。atlas.bat で集計し直すと入ります)。</p>"
+    } else {
+        ""
+    }
+}
+
+/// 詳細ページに載せるエラー文と引数の長さ(字数。空白と改行は 1 つにまとめる。全文は sessions.json と failures.csv にある。表の行が縦に伸びすぎない長さ)
+const LEDGER_ERROR_CHARS: usize = 400;
+const LEDGER_ARGS_CHARS: usize = 200;
+
+/// 失敗と拒否(1 件ごと)の節(本文, 説明)。台帳が無い・0 件なら None
+fn failure_ledger(r: &SessionRecord) -> Option<(String, String)> {
+    let ledger = r.analysis.failures.as_deref().filter(|l| !l.is_empty())?;
+    let day0 = day_of(session_turns(r).first().and_then(|t| t.stats.started_at.as_deref()).or(ledger[0].started_at.as_deref()));
+    let text = |s: &str, chars: usize| -> String { if js::trim(s).is_empty() { missing("—") } else { esc(&truncate(Some(s), chars)) } };
+    let mut body = String::new();
+    for f in ledger {
+        let mcp = f.mcp_server.as_deref().filter(|s| !s.is_empty()).map(|s| format!(" <span class=\"tag\">MCP: {}</span>", esc(s))).unwrap_or_default();
+        let agent = f.agent.as_deref().filter(|s| !s.is_empty()).map(|a| format!(" <span class=\"tag\">サブエージェント: {}</span>", esc(a))).unwrap_or_default();
+        let kind = match f.kind {
+            FailureKind::Denied => "拒否".to_string(),
+            FailureKind::Failure => format!("失敗: {}", esc(failure_label(f))),
+        };
+        let next = match f.next.kind {
+            NextKind::Tool => format!(
+                "{} → {}{}",
+                esc(f.next.tool.as_deref().unwrap_or("(unknown)")),
+                call_outcome_label(f.next.outcome.unwrap_or(CallOutcome::Unknown)),
+                if f.next.retry == Some(true) { " <span class=\"tag\">同じ引数で呼び直し</span>" } else { "" }
+            ),
+            NextKind::User => esc(next_kind_label(NextKind::User)),
+            NextKind::End => missing(next_kind_label(NextKind::End)),
+        };
+        body.push_str(&format!(
+            "<tr><td class=\"num\">{}</td><td>{}</td><td>{}{mcp}{agent}</td><td class=\"fkind\">{kind}</td><td class=\"msg\">{}</td><td class=\"args\">{}</td><td class=\"next\">{next}</td></tr>",
+            f.turn.map_or_else(|| missing("—"), |t| int_i(t + 1)),
+            clock(f.started_at.as_deref(), &day0),
+            esc(&f.tool),
+            text(&f.error, LEDGER_ERROR_CHARS),
+            f.args.as_deref().map_or_else(|| missing("—"), |a| text(a, LEDGER_ARGS_CHARS)),
+        ));
+    }
+    // サブエージェントへの依頼文は、エージェントごとに 1 回だけ(台帳の行の agentCall から agents[] を引く)
+    let mut seen: HashSet<&str> = HashSet::new();
+    let prompts: String = ledger
+        .iter()
+        .filter_map(|f| f.agent_call.as_deref())
+        .filter(|call| seen.insert(call))
+        .filter_map(|call| r.agents.iter().find(|a| a.id.as_deref() == Some(call)))
+        .filter_map(|a| a.prompt.as_deref().filter(|p| !js::trim(p).is_empty()).map(|p| (a.name.as_str(), p)))
+        .map(|(name, p)| format!("<li>{}: {}</li>", esc(name), esc(p)))
+        .collect();
+    let prompts = if prompts.is_empty() { String::new() } else { format!("<h3>失敗・拒否のあったサブエージェントへの依頼文</h3><ul class=\"note\">{prompts}</ul>") };
+    let dropped = r.analysis.failures_dropped.unwrap_or(0);
+    let cut = if dropped > 0 { format!("1 セッション {} 行の上限を超えた {} 件は載っていません。", int_i(MAX_ROWS as i64), int_i(dropped)) } else { String::new() };
+    let table = format!(
+        "<div class=\"table-scroll\"><table class=\"ledger small fails\"><thead><tr><th scope=\"col\" class=\"num\">依頼</th><th scope=\"col\">開始</th><th scope=\"col\">ツール</th><th scope=\"col\">種類・要因</th><th scope=\"col\">エラー文</th><th scope=\"col\">引数</th><th scope=\"col\">その後</th></tr></thead><tbody>{body}</tbody></table></div><p class=\"note\">「依頼」は「依頼ごとの経過」の番号です(最初の依頼より前は —)。「その後」は、同じエージェントが失敗の後に最初に呼んだツールとその結果です(並行して動いていた呼び出しと、同じ応答でまとめて要求された呼び出しは数えません)。</p>{prompts}"
+    );
+    let lead = format!(
+        "{cut}ツールの失敗と拒否を 1 件ずつ載せています(「ツール内訳」の「失敗」「拒否」と同じ数え方)。エラー文と引数は、秘密らしい文字列を置き換えたもので、長いものは先頭だけです(全文は sessions.json と failures.csv にあります)。"
+    );
+    Some((table, lead))
 }
 
 fn timeline_row(e: &TimelineEntry) -> String {
@@ -1166,6 +1290,9 @@ pub fn render_detail_html(r: &SessionRecord, o: &DetailOptions<'_>) -> String {
     let judged = o.verdicts.is_some_and(|v| !v.is_empty());
     let turns = turn_table(r, o.verdicts);
     parts.push(sec.section("依頼ごとの経過", &turns, &turn_lead(r, judged)));
+    if let Some((table, lead)) = failure_ledger(r) {
+        parts.push(sec.section("失敗と拒否(1 件ごと)", &table, &lead));
+    }
 
     let f = &r.friction;
     parts.push(sec.section(

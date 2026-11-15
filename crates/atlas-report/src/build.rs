@@ -16,6 +16,8 @@ use crate::groups::SessionGroup;
 use crate::highlights::{installed_view, InstalledView};
 use crate::html::{byte_length, write_text};
 use crate::insights::{embedded_candidates, insight_meta, instruction_findings, instruction_versions, skill_candidates, skill_stats, stuck_by_project, stuck_sessions, Candidate, CandidateSource, VersionMeta};
+use crate::failure_stats::failure_stats;
+use crate::failures_page::{failures_json, render_failures_html, FailuresPageOptions, FAILURES_FILE, FAILURES_JSON};
 use crate::insights_page::{render_insights_html, InsightsPageOptions, INSIGHTS_FILE, INSIGHTS_JSON};
 use crate::judgments::JudgmentsIndex;
 use crate::library::{instruction_events, render_instructions_html, write_library, BodyInterner, InstructionsPageOptions, LibraryCollector, LibraryEvent, ResolvedInstruction, INSTRUCTIONS_FILE, LIBRARY_DIR};
@@ -313,6 +315,8 @@ struct ReportData<'a> {
     installed_by_person: Option<JsMap<InstalledView>>,
     groups: &'a [SessionGroup],
     library: bool,
+    /// 失敗の台帳の集計のページ(failures.html)を書いたか
+    failures: bool,
     insights: InsightsOut,
     warnings: WarningsOut,
 }
@@ -464,6 +468,7 @@ pub fn build_report(input: BuildInput<'_>) -> Result<BuildResult> {
         installed_by_person: input.installed_by_person.map(|m| JsMap(m.js_entries().into_iter().map(|(k, v)| (k.clone(), installed_view(v))).collect())),
         groups: &input.groups,
         library: library_on,
+        failures: true,
         insights: InsightsOut { meta: meta_for_page.clone(), candidates: embedded_candidates(&candidates), candidate_total: candidates.len(), computed_over: input.sessions.len() },
         warnings: WarningsOut { unknown_event_types: input.warnings.unknown_event_types, bad_lines: input.warnings.bad_lines, notes: input.warnings.notes.clone() },
     };
@@ -508,6 +513,19 @@ pub fn build_report(input: BuildInput<'_>) -> Result<BuildResult> {
         write_text(&input.out_dir.join(INSIGHTS_FILE), &page)?;
         let json = atlas_core::json::to_js_string_indent(&InsightsJson { version: 1, generated_at: &generated_at, sessions: sessions.len(), candidates: &candidates }, b" ")?;
         write_text(&input.out_dir.join(INSIGHTS_JSON), &json)?;
+        // 失敗の台帳の集計(failures.html)と、同じ中身の JSON
+        let stats = failure_stats(&input.sessions);
+        let page = render_failures_html(&FailuresPageOptions {
+            css,
+            generated_at: &generated_at,
+            code,
+            stats: &stats,
+            meta: &meta_for_page,
+            session_name: &|id: &str| names.get(id).cloned().unwrap_or_else(|| id.to_string()),
+            library_href: library_on.then_some(INSTRUCTIONS_FILE),
+        });
+        write_text(&input.out_dir.join(FAILURES_FILE), &page)?;
+        write_text(&input.out_dir.join(FAILURES_JSON), &atlas_core::json::to_js_string_indent(&failures_json(&stats, &generated_at), b" ")?)?;
     }
 
     // 詳細ページ: 前回の生成物を消してから書く(フィルタで減ったセッションのページを残さない)
