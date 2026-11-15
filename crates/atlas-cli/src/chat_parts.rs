@@ -27,6 +27,16 @@ pub struct ChatPart {
     /// そのうち判定済みの数
     pub judged: i64,
     pub bytes: i64,
+    /// 依頼の判定で、セッションの最後の依頼だけのファイルか(採用は判定不能で、種類と工程だけが決まる)。古い添付には無い
+    #[serde(rename = "lastOnly", skip_serializing_if = "Option::is_none")]
+    pub last_only: Option<bool>,
+}
+
+/// 依頼の判定で、採用を判定できる依頼の数(turns)と、それが入っている先頭のファイルの数(parts)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ChatDecidable {
+    pub turns: i64,
+    pub parts: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -41,11 +51,14 @@ pub struct ChatParts {
     pub count: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parts: Option<Vec<ChatPart>>,
+    /// 依頼の判定で、採用を判定できる依頼が先頭の何ファイルまでか。古い添付には無い
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decidable: Option<ChatDecidable>,
 }
 
 impl ChatParts {
     fn none() -> Self {
-        ChatParts { exists: false, generated_at: None, unjudged_only: None, count: None, parts: None }
+        ChatParts { exists: false, generated_at: None, unjudged_only: None, count: None, parts: None, decidable: None }
     }
 }
 
@@ -83,19 +96,30 @@ pub fn list_chat_parts(out_dir: &Path, target: ChatTarget) -> Result<ChatParts> 
         }
         let m = read_turn_bundle_manifest(&dir)?;
         let judged = judged_turn_keys(out_dir)?;
+        let d = m.decidable;
         let parts = m
             .parts
             .iter()
-            .filter(|p| atlas_core::jsfs::join_slash(&dir, &p.path).exists())
-            .map(|p| ChatPart {
+            .enumerate()
+            // 先頭の d.parts ファイルが採用を判定できる依頼で、その後ろは最後の依頼だけ(消えたファイルを除く前の番号で決める)
+            .filter(|(_, p)| atlas_core::jsfs::join_slash(&dir, &p.path).exists())
+            .map(|(i, p)| ChatPart {
                 path: format!("turn-bundle/{}", p.path),
                 name: name_of(&p.path),
                 sessions: p.turns,
                 judged: p.chunks.iter().map(|c| c.turns.iter().filter(|t| judged.contains(&format!("{}#{t}", c.session_id))).count() as i64).sum(),
                 bytes: p.bytes,
+                last_only: d.map(|d| i as i64 >= d.parts),
             })
             .collect();
-        return Ok(ChatParts { exists: true, generated_at: Some(m.generated_at), unjudged_only: Some(m.unjudged_only), count: Some(m.count), parts: Some(parts) });
+        return Ok(ChatParts {
+            exists: true,
+            generated_at: Some(m.generated_at),
+            unjudged_only: Some(m.unjudged_only),
+            count: Some(m.count),
+            parts: Some(parts),
+            decidable: d.map(|d| ChatDecidable { turns: d.turns, parts: d.parts }),
+        });
     }
     let dir = out_dir.join("bundle");
     if !dir.join("manifest.json").exists() {
@@ -108,10 +132,10 @@ pub fn list_chat_parts(out_dir: &Path, target: ChatTarget) -> Result<ChatParts> 
         .iter()
         .flatten()
         .filter(|p| atlas_core::jsfs::join_slash(&dir, &p.path).exists())
-        .map(|p| ChatPart { path: format!("bundle/{}", p.path), name: name_of(&p.path), sessions: p.sessions.len() as i64, judged: p.sessions.iter().filter(|id| judged.contains(*id)).count() as i64, bytes: p.bytes })
+        .map(|p| ChatPart { path: format!("bundle/{}", p.path), name: name_of(&p.path), sessions: p.sessions.len() as i64, judged: p.sessions.iter().filter(|id| judged.contains(*id)).count() as i64, bytes: p.bytes, last_only: None })
         .collect();
     let unjudged = m.scope.get("unjudged").and_then(|v| v.as_deref()) == Some("yes");
-    Ok(ChatParts { exists: true, generated_at: Some(m.generated_at), unjudged_only: Some(unjudged), count: Some(m.count), parts: Some(parts) })
+    Ok(ChatParts { exists: true, generated_at: Some(m.generated_at), unjudged_only: Some(unjudged), count: Some(m.count), parts: Some(parts), decidable: None })
 }
 
 /// 保存・添付するときの名前(相手のチャットが .md を添付として受け付けるか分からないので .txt にする。中身は同じ)。画面の ChatJudge と同じ

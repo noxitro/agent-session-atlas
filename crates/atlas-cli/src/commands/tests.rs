@@ -184,3 +184,54 @@ fn anthropic_backend_needs_the_feature() {
         assert!(logs.lock().unwrap().iter().all(|l| !l.contains("従量課金")), "{:?}", logs.lock().unwrap());
     }
 }
+
+/// 依頼ごとの判定の添付ファイルの一覧(manifest と、残すファイルの番号)を書く
+fn write_turn_parts(out: &std::path::Path, extra: serde_json::Value, files: &[usize]) {
+    let dir = out.join("turn-bundle");
+    fs::create_dir_all(dir.join("parts")).unwrap();
+    let part = |n: usize, sid: &str, turns: Vec<i64>| json!({ "path": format!("parts/part-0{n}.md"), "chunks": [{ "sessionId": sid, "turns": turns }], "turns": turns.len(), "bytes": 10 * n });
+    let mut m = json!({
+        "version": 1,
+        "generatedAt": "2026-11-14T00:00:00.000Z",
+        "phases": ["実装"],
+        "count": 5,
+        "unjudgedOnly": true,
+        "chunks": [],
+        "parts": [part(1, "s1", vec![1, 2]), part(2, "s2", vec![1]), part(3, "s1", vec![3]), part(4, "s2", vec![2])],
+        "skipped": []
+    });
+    for (k, v) in extra.as_object().unwrap() {
+        m[k] = v.clone();
+    }
+    fs::write(dir.join("manifest.json"), m.to_string()).unwrap();
+    for n in files {
+        fs::write(dir.join("parts").join(format!("part-0{n}.md")), "# 指示").unwrap();
+    }
+}
+
+#[test]
+fn turn_chat_parts_mark_last_only_files() {
+    use crate::chat_parts::{list_chat_parts, ChatDecidable, ChatTarget};
+    // 採用を判定できる依頼の数と先頭のファイル数を返し、その後ろのファイルに「最後の依頼だけ」の印を付ける(消えたファイルがあっても番号はずれない)
+    let d = tempfile::tempdir().unwrap();
+    // 先頭の 2 ファイルが判定できる依頼。part-02 は消えている
+    write_turn_parts(d.path(), json!({ "decidable": { "turns": 3, "chunks": 2, "parts": 2 } }), &[1, 3, 4]);
+    let r = list_chat_parts(d.path(), ChatTarget::Turns).unwrap();
+    assert_eq!((r.exists, r.unjudged_only, r.count, r.decidable), (true, Some(true), Some(5), Some(ChatDecidable { turns: 3, parts: 2 })));
+    let marks: Vec<(String, Option<bool>)> = r.parts.as_ref().unwrap().iter().map(|p| (p.name.clone(), p.last_only)).collect();
+    assert_eq!(marks, [("part-01.md".to_string(), Some(false)), ("part-03.md".to_string(), Some(true)), ("part-04.md".to_string(), Some(true))]);
+    // 画面に渡す形(lastOnly と decidable)
+    let v = serde_json::to_value(&r).unwrap();
+    assert_eq!(v["decidable"], json!({ "turns": 3, "parts": 2 }));
+    assert_eq!(v["parts"][1]["lastOnly"], json!(true));
+
+    // 古い添付(decidable が無い)では、数も印も返さない
+    let d = tempfile::tempdir().unwrap();
+    write_turn_parts(d.path(), json!({}), &[1, 2, 3, 4]);
+    let r = list_chat_parts(d.path(), ChatTarget::Turns).unwrap();
+    assert_eq!(r.decidable, None);
+    assert_eq!(r.parts.as_ref().unwrap().len(), 4);
+    let v = serde_json::to_value(&r).unwrap();
+    assert!(v.get("decidable").is_none());
+    assert!(v["parts"].as_array().unwrap().iter().all(|p| p.get("lastOnly").is_none()));
+}
