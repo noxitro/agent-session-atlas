@@ -98,7 +98,7 @@ export const GLOSSARY: Term[] = [
     id: 'tool-failure-cause',
     group: 'effort',
     term: '失敗の要因',
-    body: `ツールの失敗(拒否を除く)を、エラーの種類と文の 1 行目から決まった規則で分けた種類です(LLM は使いません)。エラーの文そのものは記録に残しません。上から順に見て、最初に当たったものにします: ${FAILURE_CAUSES.map((c) => `${FAILURE_CAUSE_LABELS[c]}(${FAILURE_CAUSE_HINTS[c]})`).join('、')}。以前の版で集計したセッションの失敗には要因の記録がありません(集計し直すと付きます)。`,
+    body: `ツールの失敗(拒否を除く)を、エラーの種類と文の 1 行目から決まった規則で分けた種類です(LLM は使いません)。エラーの文は、秘密らしい文字列を伏せたうえで先頭 1000 字までを、失敗 1 件ごとの記録(sessions.json の失敗の台帳)に残します。上から順に見て、最初に当たったものにします: ${FAILURE_CAUSES.map((c) => `${FAILURE_CAUSE_LABELS[c]}(${FAILURE_CAUSE_HINTS[c]})`).join('、')}。以前の版で集計したセッションの失敗には要因の記録がありません(集計し直すと付きます)。`,
   },
   {
     id: 'lines',

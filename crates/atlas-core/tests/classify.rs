@@ -93,7 +93,7 @@ fn phase5_shapes() {
     assert_eq!(r.models, vec!["claude-haiku-5.5"]);
     assert_eq!(
         v(&r.tools),
-        json!({"byName": {"powershell": 1}, "total": 1, "internal": {"byName": {"report_intent": 1}, "total": 1}, "mcp": {}, "results": {"powershell": {"success": 1, "failure": 0, "denied": 0}}, "durations": {"powershell": [1000.0]}, "durationOutliers": {}})
+        json!({"byName": {"powershell": 1}, "total": 1, "internal": {"byName": {"report_intent": 1}, "total": 1}, "mcp": {}, "results": {"powershell": {"success": 1, "failure": 0, "denied": 0}}, "resultsByModel": {"(unknown)": {"powershell": {"success": 1, "failure": 0, "denied": 0}}}, "durations": {"powershell": [1000.0]}, "durationOutliers": {}})
     );
     assert_eq!(r.friction.tool_failures, 0);
     assert_eq!(v(&r.files), json!({"changed": [], "created": [], "deleted": ["C:\\w\\gone.txt"], "sessionState": 0}));

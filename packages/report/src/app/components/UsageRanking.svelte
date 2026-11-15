@@ -154,7 +154,7 @@
     {:else if tab === 'mcp'}
       MCP サーバー(tool.execution_start の mcpServerName)ごとの呼び出し数と、よく使ったツール。
     {:else if tab === 'causes'}
-      ツールの失敗(拒否を除く)を、エラーの種類と文の 1 行目から決まった規則で分けた要因の多い順。右に、その要因で失敗したツール(MCP はサーバーの中のツール)を多い順に出します。エラーの文そのものは記録に残していません。{#if usage.causesUnrecorded > 0}要因の記録が無い失敗 {int(usage.causesUnrecorded)} 回(以前の版で集計したセッション)は数えていません。{/if}
+      ツールの失敗(拒否を除く)を、エラーの種類と文の 1 行目から決まった規則で分けた要因の多い順。右に、その要因で失敗したツール(MCP はサーバーの中のツール)を多い順に出します。エラーの文は、秘密らしい文字列を伏せて、失敗 1 件ごとの記録(sessions.json の失敗の台帳)に残しています。{#if usage.causesUnrecorded > 0}要因の記録が無い失敗 {int(usage.causesUnrecorded)} 回(以前の版で集計したセッション)は数えていません。{/if}
     {:else if tab === 'skills'}
       skill の呼び出し回数。「利用者が呼んだ」は skill.invoked の trigger が user-invoked のもの、「エージェントが呼んだ」は agent-invoked と skill ツールの呼び出しです。
     {:else if tab === 'agents'}

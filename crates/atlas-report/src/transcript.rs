@@ -80,45 +80,8 @@ pub fn transcript_href(id: &str) -> String {
 
 // ---------- 秘密情報 ----------
 
-/// API キー・トークンらしい形(種類名, 正規表現)。JS の \b は ASCII の語の境目なので (?-u:\b) にする
-pub static SECRET_PATTERNS: LazyLock<Vec<(&'static str, Regex)>> = LazyLock::new(|| {
-    let b = r"(?-u:\b)";
-    let s = js::RE_S;
-    vec![
-        ("GitHub トークン", format!(r"{b}(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{{36,}}{b}|{b}github_pat_[A-Za-z0-9_]{{22,}}{b}")),
-        ("OpenAI / Anthropic 系キー", format!(r"{b}sk-(?:ant-)?[A-Za-z0-9_-]{{20,}}{b}")),
-        ("AWS アクセスキー", format!(r"{b}(?:AKIA|ASIA)[0-9A-Z]{{16}}{b}")),
-        ("Slack トークン", format!(r"{b}xox[abprs]-[A-Za-z0-9-]{{10,}}{b}")),
-        ("Google API キー", format!(r"{b}AIza[0-9A-Za-z_-]{{35}}{b}")),
-        ("秘密鍵", r"-----BEGIN [A-Z ]*PRIVATE KEY-----(?s:.)*?-----END [A-Z ]*PRIVATE KEY-----|-----BEGIN [A-Z ]*PRIVATE KEY-----".to_string()),
-        ("JWT", format!(r"{b}eyJ[A-Za-z0-9_-]{{10,}}\.[A-Za-z0-9_-]{{10,}}\.[A-Za-z0-9_-]{{10,}}{b}")),
-        ("Bearer トークン", format!(r"{b}Bearer{s}+[A-Za-z0-9._~+/=-]{{24,}}")),
-    ]
-    .into_iter()
-    .map(|(l, re)| (l, Regex::new(&re).unwrap()))
-    .collect()
-});
-
-/// 秘密情報らしい文字列を [伏せました: 種類] に置き換え、件数を返す
-pub fn redact_secrets(text: &str) -> (String, u64) {
-    let mut hits = 0u64;
-    let mut out: Option<String> = None;
-    for (label, re) in SECRET_PATTERNS.iter() {
-        let cur = out.as_deref().unwrap_or(text);
-        if !re.is_match(cur) {
-            continue;
-        }
-        let rep = format!("[伏せました: {label}]");
-        let replaced = re
-            .replace_all(cur, |_: &regex::Captures| {
-                hits += 1;
-                rep.clone()
-            })
-            .into_owned();
-        out = Some(replaced);
-    }
-    (out.unwrap_or_else(|| text.to_string()), hits)
-}
+/// 秘密情報を伏せる処理は atlas-core に移した(失敗の台帳でも使うため)。前の名前のまま使えるよう再公開する
+pub use atlas_core::secrets::{redact_secrets, SECRET_PATTERNS};
 
 // ---------- 補助 ----------
 

@@ -34,7 +34,7 @@ pub struct Term {
 /// 失敗の要因の用語の本文(要因の名前と当たる語を並べる)
 fn failure_cause_body() -> String {
     let list: Vec<String> = FAILURE_CAUSES.iter().map(|c| format!("{}({})", failure_cause_label(c), failure_cause_hint(c))).collect();
-    format!("ツールの失敗(拒否を除く)を、エラーの種類と文の 1 行目から決まった規則で分けた種類です(LLM は使いません)。エラーの文そのものは記録に残しません。上から順に見て、最初に当たったものにします: {}。以前の版で集計したセッションの失敗には要因の記録がありません(集計し直すと付きます)。", list.join("、"))
+    format!("ツールの失敗(拒否を除く)を、エラーの種類と文の 1 行目から決まった規則で分けた種類です(LLM は使いません)。エラーの文は、秘密らしい文字列を伏せたうえで先頭 1000 字までを、失敗 1 件ごとの記録(sessions.json の失敗の台帳)に残します。上から順に見て、最初に当たったものにします: {}。以前の版で集計したセッションの失敗には要因の記録がありません(集計し直すと付きます)。", list.join("、"))
 }
 
 pub static GLOSSARY: LazyLock<Vec<Term>> = LazyLock::new(|| {
@@ -125,6 +125,6 @@ mod tests {
         assert!(GLOSSARY_GROUPS.iter().all(|g| !terms_by_group(g.id).is_empty()));
         assert_eq!(GLOSSARY.iter().map(|t| t.id).collect::<HashSet<_>>().len(), GLOSSARY.len());
         assert_eq!(GLOSSARY_GROUPS.iter().map(|g| terms_by_group(g.id).len()).sum::<usize>(), GLOSSARY.len());
-        assert_eq!(GLOSSARY.iter().find(|t| t.id == "tool-failure-cause").unwrap().body, "ツールの失敗(拒否を除く)を、エラーの種類と文の 1 行目から決まった規則で分けた種類です(LLM は使いません)。エラーの文そのものは記録に残しません。上から順に見て、最初に当たったものにします: 時間切れ(timed out・timeout・タイムアウト)、上限・回数制限(quota・rate limit・too many requests・exceeded your … limit)、通信・取得の失敗(取得の失敗(status code)・リダイレクト・DNS・接続の拒否や切断)、アクセス権・禁止(アクセスが拒否・permission denied・EACCES・not allowed・blocked・unauthorized・forbidden)、一致なし(no match・置換や差分の対象の行が見つからない)、対象が見つからない(does not exist・not found・no such file・ENOENT・見つかりません)、既にある(already exists・既に存在)、引数・書式の誤り(parse error・unrecognized・invalid・required・expected・validation・out of bounds・構文)、道具が使えない(… available が無い・not running・not connected・unavailable)、応答なし(no response(応答が返らなかった))、ツール内部のエラー(exception・KeyError や TypeError などの例外・internal error・traceback・panic)、その他(上のどれにも当たらないもの(文が無いものを含む))。以前の版で集計したセッションの失敗には要因の記録がありません(集計し直すと付きます)。");
+        assert_eq!(GLOSSARY.iter().find(|t| t.id == "tool-failure-cause").unwrap().body, "ツールの失敗(拒否を除く)を、エラーの種類と文の 1 行目から決まった規則で分けた種類です(LLM は使いません)。エラーの文は、秘密らしい文字列を伏せたうえで先頭 1000 字までを、失敗 1 件ごとの記録(sessions.json の失敗の台帳)に残します。上から順に見て、最初に当たったものにします: 時間切れ(timed out・timeout・タイムアウト)、上限・回数制限(quota・rate limit・too many requests・exceeded your … limit)、通信・取得の失敗(取得の失敗(status code)・リダイレクト・DNS・接続の拒否や切断)、アクセス権・禁止(アクセスが拒否・permission denied・EACCES・not allowed・blocked・unauthorized・forbidden)、一致なし(no match・置換や差分の対象の行が見つからない)、対象が見つからない(does not exist・not found・no such file・ENOENT・見つかりません)、既にある(already exists・既に存在)、引数・書式の誤り(parse error・unrecognized・invalid・required・expected・validation・out of bounds・構文)、道具が使えない(… available が無い・not running・not connected・unavailable)、応答なし(no response(応答が返らなかった))、ツール内部のエラー(exception・KeyError や TypeError などの例外・internal error・traceback・panic)、その他(上のどれにも当たらないもの(文が無いものを含む))。以前の版で集計したセッションの失敗には要因の記録がありません(集計し直すと付きます)。");
     }
 }
