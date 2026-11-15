@@ -91,7 +91,7 @@ GitHub Copilot のセッションログ(`%USERPROFILE%\.copilot`)を手元で集
 
 ### リリースの atlas.exe を自分で確かめる
 
-リリースの `atlas.exe` は、このリポジトリの GitHub Actions(`.github/workflows/release.yml`)が、`main` に入ったコミットからビルドしたものです。同じリリースに sha256 を付け、ビルドの来歴(GitHub の artifact attestation。Sigstore で署名され、どのリポジトリ・ワークフロー・コミットで作ったかを示します)を GitHub に保存しています。起動用の `.bat` はこれを自動で確かめますが、手で確かめるときは次のとおりです(`<owner>/<repo>` は取ってきたリポジトリ)。
+リリースの `atlas.exe` は、このリポジトリの GitHub Actions(`.github/workflows/release.yml`)が、`main` に入ったコミットからビルドしたものです。ビルドの前に依存の既知の脆弱性を検査し(Rust は `cargo deny`、npm は `npm audit`)、見つかればリリースを作りません。同じリリースに sha256 を付け、ビルドの来歴(GitHub の artifact attestation。Sigstore で署名され、どのリポジトリ・ワークフロー・コミットで作ったかを示します)を GitHub に保存しています。起動用の `.bat` はこれを自動で確かめますが、手で確かめるときは次のとおりです(`<owner>/<repo>` は取ってきたリポジトリ)。
 
 ```
 gh release download v<版> -R <owner>/<repo> -p atlas.exe -p atlas.exe.sha256
