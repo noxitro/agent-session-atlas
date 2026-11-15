@@ -22,10 +22,10 @@ const exe = join(pkg, 'bin', WINDOWS ? 'atlas.exe' : 'atlas');
 
 const bats = readdirSync(pkg).filter((f) => f.endsWith('.bat'));
 // 利用者が起動するのは atlas.bat(集計と画面)・open-folder.bat(選んだフォルダを集計して開く)・schedule-upload.bat(毎日自動で送る登録)・
-// setup.bat(初期設定)・upload-project.bat(プロジェクトのセッションを送る)だけ(他の操作は画面とコマンドから)
-const BATS = 'atlas.bat,open-folder.bat,schedule-upload.bat,setup.bat,upload-project.bat';
+// setup.bat(初期設定)・upload-project.bat(プロジェクトのセッションを送る)と、止める stop.bat だけ(他の操作は画面とコマンドから)
+const BATS = 'atlas.bat,open-folder.bat,schedule-upload.bat,setup.bat,stop.bat,upload-project.bat';
 if (bats.sort().join(',') !== BATS) fail(`*.bat は ${BATS.split(',').join('・')} だけのはずです(入っているもの: ${bats.join(', ') || 'なし'})`);
-for (const f of [...bats, join('scripts', 'ensure-atlas.ps1')]) {
+for (const f of [...bats, join('scripts', 'ensure-atlas.ps1'), join('scripts', 'stop-atlas.ps1')]) {
   if (/(^|[^\r])\n/.test(readFileSync(join(pkg, f), 'utf8'))) fail(`${f} に CRLF でない改行があります(.gitattributes の eol を確認)`);
 }
 // *.bat と *.ps1 以外はリポジトリのまま LF(手元の core.autocrlf で変わっていない = Linux で作るリリースと同じ中身)
@@ -121,8 +121,13 @@ if (WINDOWS) {
   const setupBat = runBat('setup.bat', '\n\n\nn\n\n');
   if (!setupBat.includes('agent-session-atlas の初期設定')) fail(`setup.bat が、初期設定まで進みませんでした:\n${setupBat}`);
   if (existsSync(join(pkg, 'atlas.config.json'))) fail('setup.bat で書かない答えをしたのに atlas.config.json ができました');
+  // stop.bat: このフォルダの atlas は何も動いていないので、そう出して 0 で終わる(止める動きは scripts/launchers.test.ts)。
+  // 実行ファイルの用意と更新は通らない
+  const stopBat = launchBat('stop.bat', [], '\n');
+  if (stopBat.status !== 0 || !stopBat.text.includes('動いている atlas はありません') || stopBat.text.includes('atlas の更新'))
+    fail(`stop.bat が、動いていないことを出して終わりませんでした(終了コード ${stopBat.status}):\n${stopBat.text}`);
 }
 
 console.log(
-  `checkout-smoke: 通過(${bats.length} 本の *.bat、ensure-atlas.ps1 のビルドと使い回し、atlas all、プロジェクトを送る操作${WINDOWS ? '、upload-project.bat と schedule-upload.bat と setup.bat と open-folder.bat の起動' : ''})`,
+  `checkout-smoke: 通過(${bats.length} 本の *.bat、ensure-atlas.ps1 のビルドと使い回し、atlas all、プロジェクトを送る操作${WINDOWS ? '、upload-project.bat と schedule-upload.bat と setup.bat と open-folder.bat と stop.bat の起動' : ''})`,
 );
