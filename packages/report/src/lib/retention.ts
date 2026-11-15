@@ -3,7 +3,7 @@
 // core の vcs-retention.ts は node: を読むので、型も読まずに同じ形をここで持つ(ブラウザ側の型検査は Node の型を持たないため)。
 // 名前の並びは core と同じ(vcs-retention.ts の RETENTION_STATUSES・UNATTRIBUTABLE_REASONS、vcs.ts の VCS_KINDS)。
 export type RetentionStatus = 'kept' | 'modified' | 'missing' | 'unattributable';
-export type UnattributableReason = 'repo_not_found' | 'no_vcs' | 'baseline_missing' | 'outside_repo' | 'read_error' | 'concurrent_session' | 'later_session' | 'not_measured' | 'too_recent' | 'after_missing' | 'no_commits';
+export type UnattributableReason = 'repo_not_found' | 'no_vcs' | 'baseline_missing' | 'outside_repo' | 'read_error' | 'concurrent_session' | 'later_session' | 'not_measured' | 'too_recent' | 'after_missing' | 'no_commits' | 'unknown';
 export type VcsKind = 'git' | 'svn' | 'p4';
 
 /** core の SessionRetention のうち、埋め込みに使う項目 */
@@ -67,7 +67,7 @@ export const STATUS_LABEL: Record<RetentionStatus, string> = {
   unattributable: '照合不可',
 };
 
-export const REASONS = ['repo_not_found', 'no_vcs', 'baseline_missing', 'outside_repo', 'read_error', 'concurrent_session', 'later_session', 'not_measured', 'too_recent', 'after_missing', 'no_commits'] as const satisfies readonly UnattributableReason[];
+export const REASONS = ['repo_not_found', 'no_vcs', 'baseline_missing', 'outside_repo', 'read_error', 'concurrent_session', 'later_session', 'not_measured', 'too_recent', 'after_missing', 'no_commits', 'unknown'] as const satisfies readonly UnattributableReason[];
 
 export const REASON_LABEL: Record<UnattributableReason, string> = {
   repo_not_found: '作業フォルダがこの PC に無い',
@@ -81,6 +81,7 @@ export const REASON_LABEL: Record<UnattributableReason, string> = {
   too_recent: '決まった日数がまだ経っていない',
   after_missing: '比べる版を決められない',
   no_commits: '開始時から取り込まれた変更が無い',
+  unknown: '理由が記録されていない',
 };
 
 export const VCS_LABEL: Record<VcsKind, string> = { git: 'Git', svn: 'SVN', p4: 'Perforce' };
@@ -237,7 +238,7 @@ export function aggregateRetention(sessions: readonly { retention?: RetentionIte
     }
     a.withAi++;
     if (r.outcome === 'unattributable') {
-      const k = r.reason ?? 'read_error';
+      const k = r.reason ?? 'unknown';
       a.unattributable[k] = (a.unattributable[k] ?? 0) + 1;
       a.unattributableTotal++;
       continue;

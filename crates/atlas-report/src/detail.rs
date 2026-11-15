@@ -561,7 +561,12 @@ fn lag_text(end: Option<&str>, at: Option<&str>) -> String {
 fn retention_section(sec: &mut Sections, r: &SessionRetention, meta: Option<&RetentionMeta>, anon: &Anonymizer) -> String {
     // 状態の名前は、設定(vcs.labels)で差し替えたものがあればそれ
     let label = |k: &str| -> String { meta.and_then(|m| m.labels.as_ref()).and_then(|l| l.get(k)).cloned().unwrap_or_else(|| status_label(k).to_string()) };
-    let lead = esc(&format!("AI が足した行が、その後の VCS のファイルに残っているかを数えます。{}", meta.and_then(|m| m.note.as_deref()).unwrap_or("")));
+    let lead = esc(&format!(
+        "AI が足した行が、その後の VCS のファイルに残っているかを数えます。残っているかの記録で、採用の意図や良し悪しではありません。「{}」「{}」を不採用とはみなしません。{}",
+        label("missing"),
+        label("unattributable"),
+        meta.and_then(|m| m.note.as_deref()).unwrap_or("")
+    ));
     let unread = match r.unread_edits {
         Some(n) if n != 0 => format!("<p class=\"note\">ログから変更を取り出せなかった AI の編集 {} 件は数えていません(diff も編集の引数も読めなかったもの)。</p>", int_i(n)),
         _ => String::new(),

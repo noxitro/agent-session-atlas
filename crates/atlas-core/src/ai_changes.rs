@@ -19,7 +19,8 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 
 /// 材料の種類。diff = 完了イベントの unified diff、args = 開始イベントの引数から作った
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum HunkFrom {
     Diff,
     Args,

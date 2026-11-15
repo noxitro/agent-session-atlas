@@ -82,7 +82,7 @@ describe('lib/retention', () => {
       none: 1,
       withAi: 5,
       measured: 3,
-      unattributable: { no_vcs: 1, read_error: 1 },
+      unattributable: { no_vcs: 1, unknown: 1 },
       unattributableTotal: 2,
       baseline: { observed: 2, estimated: 1 },
       byVcs: { git: 2, p4: 1 },
