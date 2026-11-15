@@ -3,6 +3,7 @@
 //! 列の並びと見出しはここだけで決める(atlas metrics の out/tables/ と、グループの書き出しが同じものを使う)。
 
 use crate::js;
+use crate::main_effort::main_effort_of;
 use crate::metrics::is_empty_session;
 use crate::turns::{js_re, mismatch_label, outcome_label, phase_label, request_kind_label, session_turns};
 use crate::types::{SessionRecord, TOOL_KINDS};
@@ -385,6 +386,7 @@ pub fn sessions_table(sessions: &[&SessionRecord], human_hours: &HashMap<String,
         "プロジェクト",
         "クライアント",
         "ブランチ",
+        "利用者",
         "開始",
         "終了",
         "所要(分)",
@@ -395,6 +397,8 @@ pub fn sessions_table(sessions: &[&SessionRecord], human_hours: &HashMap<String,
         "次の依頼で直し・差し戻し",
         "応答",
         "モデル",
+        "本体のモデル",
+        "本体の推論強度",
         "入力トークン",
         "出力トークン",
         "AIU",
@@ -428,12 +432,14 @@ pub fn sessions_table(sessions: &[&SessionRecord], human_hours: &HashMap<String,
         let turns = session_turns(s);
         let lines = &s.lines;
         let no_lines = lines.source == crate::types::LineSource::None;
+        let main = main_effort_of(s.exec.main_model_efforts.as_ref());
         let mut row: Vec<Cell> = vec![
             s.id.as_str().into(),
             s.name.as_deref().unwrap_or("").into(),
             s.project.as_str().into(),
             s.client.as_deref().unwrap_or("").into(),
             s.branch.as_deref().unwrap_or("").into(),
+            s.person.clone().flatten().unwrap_or_default().into(),
             s.created_at.as_deref().into(),
             s.updated_at.as_deref().into(),
             min(s.duration_ms),
@@ -444,6 +450,8 @@ pub fn sessions_table(sessions: &[&SessionRecord], human_hours: &HashMap<String,
             turns.iter().filter(|t| t.followed_by_fix()).count().into(),
             s.assistant_messages.into(),
             s.models.join(" ").into(),
+            main.model_cell().into(),
+            main.effort_cell().into(),
             s.tokens.input.into(),
             s.tokens.output.into(),
             aiu(s.tokens.nano_aiu),

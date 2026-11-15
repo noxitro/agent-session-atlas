@@ -311,6 +311,22 @@ fn main() -> Result<()> {
         })
         .collect();
     d.write("anonymize", &json!({ "scrubbed": scrubbed, "warnings": groups.warnings.iter().map(|w| anon.scrub(w)).collect::<Vec<_>>() }))?;
+    // 本体の (モデル, 推論強度)。画面は要約から、Rust(sessions.csv)は sessions.json の記録から決める
+    let by_id: std::collections::HashMap<&str, &SessionRecord> = records.iter().map(|r| (r.id.as_str(), *r)).collect();
+    let main: Vec<Value> = plain
+        .iter()
+        .map(|s| {
+            let m = atlas_core::main_effort::main_effort_of(by_id.get(s.id.as_str()).and_then(|r| r.exec.main_model_efforts.as_ref()));
+            let kind = match m {
+                atlas_core::main_effort::MainEffort::Decided { .. } => "decided",
+                atlas_core::main_effort::MainEffort::Mixed => "mixed",
+                atlas_core::main_effort::MainEffort::None => "none",
+            };
+            let effort = if kind == "decided" { m.effort_cell() } else { "" };
+            json!([s.id, kind, m.model_cell(), effort])
+        })
+        .collect();
+    d.write("main-effort", &main)?;
     let x = exec_aggregate(&plain_refs);
     let with = |a: Vec<String>, extra: &[&str]| -> Vec<String> { a.into_iter().chain(extra.iter().map(|s| s.to_string())).collect() };
     let cats: Vec<Option<&str>> = [None, Some(""), Some("feature"), Some("docs"), Some("x")].into_iter().chain(plain.iter().map(|s| s.judgment.as_ref().and_then(|j| j.task_category.as_deref()))).collect();

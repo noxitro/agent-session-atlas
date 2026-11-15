@@ -91,7 +91,17 @@ describe('Phase 14 E2E: 画面からの操作(jobs)', () => {
     const turns = await lines('turns.csv');
     expect(turns[0].startsWith(`${String.fromCharCode(0xfeff)}セッションID,`)).toBe(true);
     expect(turns.length - 1).toBe(m.turns.turns);
-    expect((await lines('sessions.csv')).length - 1).toBe(m.overall.sessions);
+    const sess = await lines('sessions.csv');
+    expect(sess.length - 1).toBe(m.overall.sessions);
+    // 本体のモデルと推論強度(サブエージェントを除いて決める)・利用者の列。00…003 の本体は gpt-5.5 の medium(サブエージェントは low)
+    const header = sess[0].replace(/^﻿/, '').split(',');
+    expect(header.slice(header.indexOf('モデル'), header.indexOf('モデル') + 3)).toEqual(['モデル', '本体のモデル', '本体の推論強度']);
+    expect(header[header.indexOf('ブランチ') + 1]).toBe('利用者');
+    const row3 = sess.find((l) => l.startsWith('00000000-0000-4000-8000-000000000003,'))!.split(',');
+    expect([row3[header.indexOf('本体のモデル')], row3[header.indexOf('本体の推論強度')], row3[header.indexOf('利用者')]]).toEqual(['gpt-5.5', 'medium', '']);
+    // 終了時の累計だけのセッション(00…001)は本体の記録なし
+    const row1 = sess.find((l) => l.startsWith('00000000-0000-4000-8000-000000000001,'))!.split(',');
+    expect(row1[header.indexOf('本体の推論強度')]).toBe('記録なし');
   });
 
   it('a. refresh: 集計し直すと atlas.html が作り直され、記録(.md)もある', async () => {

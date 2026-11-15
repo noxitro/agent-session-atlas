@@ -1,6 +1,6 @@
 // SessionRecord → SessionSummary(HTML に埋め込む要約)。生イベント・timeline・長文は落とす。
 import type { FailureCauses } from '../shared/tool-failure.ts';
-import type { SessionRecord } from '../shared/types.ts';
+import type { EffortStat, SessionRecord } from '../shared/types.ts';
 import type { Anonymizer } from './anonymize.ts';
 import { coverageOf } from './filter.ts';
 import { truncate } from './format.ts';
@@ -16,14 +16,19 @@ export function permissionGroup(kind: string): 0 | 1 | 2 {
 
 function execSummary(r: SessionRecord): ExecSummary {
   const e = r.exec;
-  if (!e) return { modes: {}, modesInferred: 0, efforts: {}, modelEfforts: {}, initiators: {}, context: null, latency: {} };
+  if (!e) return { modes: {}, modesInferred: 0, efforts: {}, modelEfforts: {}, mainModelEfforts: {}, initiators: {}, context: null, latency: {} };
   const efforts: Record<string, EffortTuple> = {};
   for (const [k, v] of Object.entries(e.efforts)) efforts[k] = [v.requests, v.input, v.output, v.nanoAiu];
-  const modelEfforts: Record<string, Record<string, EffortTuple>> = {};
-  for (const [m, byEffort] of Object.entries(e.modelEfforts ?? {})) {
-    const to: Record<string, EffortTuple> = (modelEfforts[m] = {});
-    for (const [k, v] of Object.entries(byEffort)) to[k] = [v.requests, v.input, v.output, v.nanoAiu];
-  }
+  const byModel = (src: Record<string, Record<string, EffortStat>> | undefined): Record<string, Record<string, EffortTuple>> => {
+    const out: Record<string, Record<string, EffortTuple>> = {};
+    for (const [m, byEffort] of Object.entries(src ?? {})) {
+      const to: Record<string, EffortTuple> = (out[m] = {});
+      for (const [k, v] of Object.entries(byEffort)) to[k] = [v.requests, v.input, v.output, v.nanoAiu];
+    }
+    return out;
+  };
+  const modelEfforts = byModel(e.modelEfforts);
+  const mainModelEfforts = byModel(e.mainModelEfforts);
   const c = e.context;
   const anyCtx = c.systemTokens != null || c.conversationTokens != null || c.toolDefinitionsTokens != null || c.availableToolCount != null;
   const latency: ExecSummary['latency'] = {};
@@ -33,6 +38,7 @@ function execSummary(r: SessionRecord): ExecSummary {
     modesInferred: e.modes.inferred,
     efforts,
     modelEfforts,
+    mainModelEfforts,
     initiators: e.initiators,
     context: anyCtx ? [c.systemTokens, c.conversationTokens, c.toolDefinitionsTokens, c.availableToolCount] : null,
     latency,

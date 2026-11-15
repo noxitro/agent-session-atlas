@@ -600,6 +600,8 @@ impl JobRunner {
             if j.state != "running" {
                 return;
             }
+            // 終わりを見せる前に印を外す(画面や API が終わりを見た時点で、CLI が同じ out/ を使えるように)
+            self.drop_lock();
             // 止める操作の後でも、間に合って最後まで終わった(終了コード 0)ものは完了として扱う(結果は書かれている。「止めました」と出すと作り直しを促してしまう)
             j.state = if canceling && state != "done" { "canceled".into() } else { state.into() };
             j.exit_code = exit_code;
@@ -608,7 +610,6 @@ impl JobRunner {
             st.stop = None;
             snap
         };
-        self.drop_lock();
         let how = match snap.state.as_str() {
             "done" => "完了".to_string(),
             "canceled" => "止めました".to_string(),

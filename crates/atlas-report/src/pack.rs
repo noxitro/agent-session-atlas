@@ -27,7 +27,7 @@ static DEFAULTS: LazyLock<Value> = LazyLock::new(|| {
         "coverage": "none",
         "byModel": {},
         "tools": { "total": 0, "byName": {}, "internal": 0, "mcp": {}, "issues": {}, "causes": {}, "durations": {}, "outliers": {} },
-        "exec": { "modes": {}, "modesInferred": 0, "efforts": {}, "modelEfforts": {}, "initiators": {}, "context": null, "latency": {} },
+        "exec": { "modes": {}, "modesInferred": 0, "efforts": {}, "modelEfforts": {}, "mainModelEfforts": {}, "initiators": {}, "context": null, "latency": {} },
         "frictionDetail": { "permissions": [0, 0, 0], "errorTypes": {}, "subagentFailures": {}, "compaction": [0, 0, 0, 0, 0] },
         "todos": null,
         "skills": {},

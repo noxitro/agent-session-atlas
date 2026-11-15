@@ -278,6 +278,11 @@ fn sender_validation() {
     let r = parse_sender_vcs(&with_hunks(json!([u])), "s").unwrap();
     assert_eq!((r.outcome, r.reason), (Outcome::Unattributable, Some(UnattributableReason::ReadError)));
     assert_eq!(serde_json::to_value(&r.hunks[0]).unwrap().as_object().unwrap().keys().collect::<Vec<_>>(), ["id", "path", "status", "lines", "reason"]);
+    // 新しい理由(開始時から取り込まれた変更が無い)を書いた結果も読める。理由の無い古い結果は上のとおり read_error
+    let mut n = u.clone();
+    n["reason"] = json!("no_commits");
+    let r = parse_sender_vcs(&with_hunks(json!([n])), "s").unwrap();
+    assert_eq!((r.outcome, r.reason, r.hunks[0].reason), (Outcome::Unattributable, Some(UnattributableReason::NoCommits), Some(UnattributableReason::NoCommits)));
 }
 
 #[test]

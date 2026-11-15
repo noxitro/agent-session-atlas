@@ -199,7 +199,7 @@ fn summarizes_tokens_skills_agents_hooks_friction_unknown() {
     let keys: Vec<String> = v(&r).as_object().unwrap().keys().cloned().collect();
     assert_eq!(keys[..5], ["id", "sources", "client", "cwd", "gitRoot"]);
     let exec_keys: Vec<String> = v(&r.exec).as_object().unwrap().keys().cloned().collect();
-    assert_eq!(exec_keys, ["modes", "context", "efforts", "modelEfforts", "initiators", "latency"]);
+    assert_eq!(exec_keys, ["modes", "context", "efforts", "modelEfforts", "mainModelEfforts", "initiators", "latency"]);
 }
 
 #[test]
@@ -464,6 +464,36 @@ fn tool_results_mcp_and_skill_triggers() {
 }
 
 // ---------- phase7 ----------
+
+/// 本体の推論強度(mainModelEfforts)は、サブエージェント(agentId のある明細)を除いて数える
+#[test]
+fn main_model_efforts_exclude_subagents() {
+    let r = run(vec![
+        ev("session.start", json!({"reasoningEffort": "xhigh", "context": {"cwd": "X:\\p"}}), &t(0)),
+        ur(json!({"model": "m1", "reasoningEffort": "xhigh"}), &t(1), json!({})),
+        ur(json!({"model": "m1", "reasoningEffort": "low", "initiator": "sub-agent"}), &t(2), json!({"agentId": "a1"})),
+        ur(json!({"model": "m1", "reasoningEffort": "low", "initiator": "sub-agent"}), &t(3), json!({"agentId": "a1"})),
+        // agentId が空の文字列は本体
+        ur(json!({"model": "m1", "reasoningEffort": "xhigh"}), &t(4), json!({"agentId": ""})),
+    ]);
+    let me = r.exec.model_efforts.as_ref().unwrap();
+    assert_eq!((me["m1"]["xhigh"].requests, me["m1"]["low"].requests), (2.0, 2.0));
+    let main = r.exec.main_model_efforts.as_ref().unwrap();
+    assert_eq!(v(main), json!({"m1": {"xhigh": {"requests": 2.0, "input": 200.0, "output": 20.0, "nanoAiu": 2000.0}}}));
+    assert_eq!(
+        atlas_core::main_effort::main_effort_of(r.exec.main_model_efforts.as_ref()),
+        atlas_core::main_effort::MainEffort::Decided { model: "m1".into(), effort: "xhigh".into() }
+    );
+    // 終了時の累計だけのセッションは、本体とサブエージェントを分けられないので持たない
+    let shutdown = run(vec![
+        ev("session.start", json!({"reasoningEffort": "medium"}), &t(0)),
+        ev("session.shutdown", json!({"modelMetrics": {"m1": {"requests": {"count": 3, "cost": 1}, "usage": {"inputTokens": 30, "outputTokens": 3}}}, "codeChanges": {"linesAdded": 0, "linesRemoved": 0, "filesModified": []}}), &t(5)),
+    ]);
+    assert_eq!(shutdown.tokens.source, TokenSource::Shutdown);
+    assert!(shutdown.exec.model_efforts.as_ref().is_some_and(|m| !m.is_empty()));
+    assert_eq!(shutdown.exec.main_model_efforts, None);
+    assert!(v(&shutdown.exec).get("mainModelEfforts").is_none());
+}
 
 fn p7(dt: i64, kind: &str, data: Value) -> CopilotEvent {
     CopilotEvent { kind: kind.into(), data: Some(data), id: None, timestamp: Some(json!(atlas_core::jsdate::to_iso(1_792_972_800_000 + dt))), parent_id: None, agent_id: None }

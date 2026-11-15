@@ -13,7 +13,7 @@ use crate::js::JsMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const SESSIONS_SCHEMA_VERSION: i64 = 16;
+pub const SESSIONS_SCHEMA_VERSION: i64 = 17;
 pub const METRICS_SCHEMA_VERSION: i64 = 6;
 
 // ---------- 入力(生データ) ----------
@@ -587,7 +587,7 @@ pub struct Latency {
     pub duration: Vec<f64>,
 }
 
-/// Phase 7: 実行の性質(JSON の並びは modes・context・efforts・modelEfforts・initiators・latency)
+/// Phase 7: 実行の性質(JSON の並びは modes・context・efforts・modelEfforts・mainModelEfforts・initiators・latency)
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecProfile {
@@ -597,6 +597,10 @@ pub struct ExecProfile {
     /// schema 15 以前の sessions.json には無い
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_efforts: Option<JsMap<JsMap<EffortStat>>>,
+    /// 本体(サブエージェントでない)のリクエストだけの モデル → 推論強度。
+    /// schema 16 以前の sessions.json と、明細が無く終了時の累計だけのセッションには無い
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub main_model_efforts: Option<JsMap<JsMap<EffortStat>>>,
     pub initiators: JsMap<i64>,
     pub latency: JsMap<Latency>,
 }
