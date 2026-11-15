@@ -427,6 +427,23 @@ describe('画面の操作', () => {
     await page.getByTestId('shown-count').waitFor({ state: 'visible' });
   });
 
+  it('d2. 失敗の台帳の集計のページへ移動でき、用語の説明へのリンクとパンくずが効く', async () => {
+    await page.goto(server.url);
+    await page.locator('a[href="failures.html"]:visible').first().click();
+    await page.waitForURL('**/failures.html');
+    expect(await page.locator('h1').innerText()).toBe('失敗の台帳の集計');
+    await page.locator('#f-overview .fields').waitFor({ state: 'visible' });
+    // 用語の説明の、その語の位置へ
+    await page.locator('a[href="glossary.html#failure-ledger"]').first().click();
+    await page.waitForURL('**/glossary.html#failure-ledger');
+    await page.locator('#failure-ledger').waitFor({ state: 'visible' });
+    await page.goBack();
+    await page.waitForURL('**/failures.html');
+    await page.locator('a.crumb:visible').first().click();
+    await page.waitForURL('**/atlas.html');
+    await page.getByTestId('shown-count').waitFor({ state: 'visible' });
+  });
+
   it('e. 詳細ページの「このセッションの指示文と skill」から、そのセッションで使われた版だけに絞った指示文のページを開き、「すべて表示」で戻せる', async () => {
     const s = JSON.parse(await readFile(join(out, 'sessions.json'), 'utf8')) as { sessions: { id: string; instructions: unknown[]; availableSkills?: unknown[] | null }[] };
     const id = s.sessions.find((x) => x.instructions.length > 0 && x.availableSkills)!.id;
