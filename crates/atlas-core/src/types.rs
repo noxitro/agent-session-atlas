@@ -13,7 +13,7 @@ use crate::js::JsMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const SESSIONS_SCHEMA_VERSION: i64 = 17;
+pub const SESSIONS_SCHEMA_VERSION: i64 = 18;
 pub const METRICS_SCHEMA_VERSION: i64 = 6;
 
 // ---------- 入力(生データ) ----------
@@ -328,6 +328,48 @@ pub struct TurnStats {
     pub input: Option<f64>,
     pub output: Option<f64>,
     pub nano_aiu: Option<f64>,
+}
+
+/// セッションの中で読めたテストの結果(印つきの 1 行 JSON。test_results.rs)
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionTests {
+    /// 結果を出したツールの呼び出し 1 回を 1 つ(出た順)
+    pub runs: Vec<TestRun>,
+    /// 印はあるが読めなかった行(JSON のオブジェクトでない・passed が真偽でない)
+    pub invalid: i64,
+    /// 同じ行(at のあるもの)が前にも出たので数えなかった数
+    pub duplicates: i64,
+    /// 1 セッションの上限を超えたので持たなかった結果の数
+    pub dropped: i64,
+}
+
+/// テストの結果を出したツールの呼び出し 1 回
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TestRun {
+    /// ツールの完了の時刻
+    pub at: Option<String>,
+    /// 依頼の番号(1 から)。最初の依頼より前と、記録する依頼の数(先頭 200)を超えた後は null
+    pub turn: Option<i64>,
+    pub tool: Option<String>,
+    pub tool_call_id: Option<String>,
+    /// サブエージェントの呼び出し
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub subagent: bool,
+    pub results: Vec<TestResult>,
+}
+
+/// テストの結果 1 行
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct TestResult {
+    pub name: Option<String>,
+    pub passed: bool,
+    /// 名前 → 数(件数・割合など。書いた側の名前のまま)
+    pub counts: JsMap<f64>,
+    /// テストの実行ファイルが書いた時刻(書いていなければキーが無い)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
 }
 
 /// ツール 1 種類の結果
@@ -776,6 +818,9 @@ pub struct SessionRecord {
     pub files: SessionFiles,
     pub timeline: Vec<TimelineEntry>,
     pub analysis: SessionAnalysis,
+    /// テストの実行ファイルが書いた印つきの 1 行 JSON(test_results.rs)。印の行が無いセッションと schema 17 以前の sessions.json には無い
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tests: Option<SessionTests>,
     pub unknown_event_types: JsMap<i64>,
     pub events: EventCounts,
     /// 送り先をまとめて集計したときの、人のフォルダの名前

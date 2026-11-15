@@ -546,3 +546,43 @@ fn lone_surrogates_survive_truncation() {
     let json = atlas_core::json::to_js_string(&r.first_user_message).unwrap();
     assert!(json.ends_with("a\\ud83d\""), "{}", &json[json.len() - 20..]);
 }
+
+// ---------- テストの結果(印つきの 1 行 JSON) ----------
+
+/// ツールの結果の、行頭に印がある 1 行 JSON を、呼び出しごと・依頼の番号つきで持つ。印の行が無ければキーを置かない
+#[test]
+fn test_results_from_tool_output() {
+    let line = |name: &str, passed: bool, n: i64| format!(r#"ATLAS_TEST_RESULT {{"v":1,"name":"{name}","passed":{passed},"counts":{{"assertFailures":{n}}}}}"#);
+    let start = |id: &str, name: &str, ts: &str| ev("tool.execution_start", json!({"toolCallId": id, "toolName": name, "arguments": {"command": "./run-tests"}}), ts);
+    let r = run(vec![
+        ev("user.message", json!({"content": "実装して"}), &t(0)),
+        start("c1", "powershell", &t(1)),
+        ev("tool.execution_complete", json!({"toolCallId": "c1", "success": true, "result": {"content": format!("{}\n{}\n", line("a", false, 2), line("b", true, 0))}}), &t(2)),
+        ev("user.message", json!({"content": "直して"}), &t(3)),
+        // サブエージェントが走らせたテスト
+        ev_x("tool.execution_start", json!({"toolCallId": "c2", "toolName": "bash", "arguments": {"command": "./run-tests"}}), &t(4), json!({"agentId": "a1"})),
+        ev_x("tool.execution_complete", json!({"toolCallId": "c2", "success": true, "result": {"content": line("a", true, 0)}}), &t(5), json!({"agentId": "a1"})),
+        // テストのソースを読んだだけ(行頭に印が無い)は数えない
+        start("c3", "view", &t(6)),
+        ev("tool.execution_complete", json!({"toolCallId": "c3", "success": true, "result": {"content": "1. print(\"ATLAS_TEST_RESULT {}\")"}}), &t(7)),
+    ]);
+    let tests = r.tests.as_ref().unwrap();
+    assert_eq!(
+        v(tests),
+        json!({
+            "runs": [
+                {"at": t(2), "turn": 1, "tool": "powershell", "toolCallId": "c1", "results": [
+                    {"name": "a", "passed": false, "counts": {"assertFailures": 2.0}},
+                    {"name": "b", "passed": true, "counts": {"assertFailures": 0.0}},
+                ]},
+                {"at": t(5), "turn": 2, "tool": "bash", "toolCallId": "c2", "subagent": true, "results": [
+                    {"name": "a", "passed": true, "counts": {"assertFailures": 0.0}},
+                ]},
+            ],
+            "invalid": 0, "duplicates": 0, "dropped": 0,
+        })
+    );
+    let none = run(vec![ev("user.message", json!({"content": "x"}), &t(0))]);
+    assert_eq!(none.tests, None);
+    assert!(v(&none).get("tests").is_none());
+}

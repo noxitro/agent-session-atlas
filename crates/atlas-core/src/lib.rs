@@ -26,6 +26,7 @@ pub mod project_keys;
 pub mod snapshot;
 pub mod sqlite;
 pub mod tables;
+pub mod test_results;
 pub mod tool_failure;
 pub mod turns;
 pub mod types;

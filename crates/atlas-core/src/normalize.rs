@@ -9,6 +9,7 @@ use crate::event_types::is_known_event_type;
 use crate::instructions::InstructionCollector;
 use crate::js::{self, cmp_utf16, head, num, present, str_of, string_or_null, tail, truthy, JsMap};
 use crate::jsdate;
+use crate::test_results::{CompleteInfo, TestCollector};
 use crate::tool_failure::{classify_tool_failure, is_denied_error};
 use crate::turns::tool_kind;
 use crate::types::*;
@@ -597,6 +598,7 @@ pub fn normalize_session(input: NormalizeInput<'_>) -> std::io::Result<SessionRe
         }
     };
     let mut friction = Friction::default();
+    let mut tests = TestCollector::new();
     let mut files = FileTracker::new();
     let mut shutdown_files: Vec<Value> = Vec::new();
     let mut timeline: Vec<TimelineEntry> = Vec::new();
@@ -948,6 +950,12 @@ pub fn normalize_session(input: NormalizeInput<'_>) -> std::io::Result<SessionRe
                         }
                     }
                     let call_name = call_id.and_then(|id| tool_name_by_call.get(id)).cloned();
+                    // テストの実行ファイルが書いた印つきの行(内部ツールの結果は見ない)
+                    if !is_internal_call {
+                        let subagent = agent_truthy || truthy(g("parentToolCallId"));
+                        let turn = cur_turn.map(|i| i as i64 + 1);
+                        tests.add_complete(g("result"), error, CompleteInfo { at: at.clone(), turn, tool: call_name.as_deref(), tool_call_id: call_id, subagent });
+                    }
                     if let (Some(cn), Some(ok)) = (&call_name, success) {
                         let r = results.entry(cn.clone()).or_default();
                         if ok {
@@ -1485,6 +1493,7 @@ pub fn normalize_session(input: NormalizeInput<'_>) -> std::io::Result<SessionRe
         files: SessionFiles { changed: files_result.changed, created: files_result.created, deleted: files_result.deleted, session_state: files_result.session_state },
         timeline,
         analysis,
+        tests: tests.result(),
         unknown_event_types: unknown,
         events: EventCounts { total, bad_lines: 0, by_type },
         person: None,

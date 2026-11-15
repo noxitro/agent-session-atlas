@@ -19,6 +19,7 @@ GitHub Copilot のセッションログ(`%USERPROFILE%\.copilot`)を手元で集
 - 推定人手工数(任意。LLM に判定させたときだけ)
 - AI が作った変更が、その後の VCS(Git / SVN / Perforce)のファイルに残っているか。VCS は読むだけで、LLM は使いません([docs/outputs.md](docs/outputs.md#ai-の変更の残存vcs-の照合))
 - 2 つの条件(タスクタグ・期間・プロジェクト)の並べ比べ
+- テストの合否と件数(テストの実行ファイルが印つきの 1 行 JSON を標準出力に書いたときだけ。セッションの記録に持つ。[docs/outputs.md](docs/outputs.md#テストの結果印つきの-1-行-json))
 - 表は CSV に加えて、同じ中身の SQLite(`out/tables/atlas.sqlite`)でも書きます
 
 ## 使い方
@@ -314,7 +315,7 @@ Windows 以外では登録できません。cron などから `bin/atlas upload-
 |---|---|
 | [docs/screen.md](docs/screen.md) | 画面の見方(各欄の意味)、画面からの操作、タスクタグ、セッションのメモ |
 | [docs/cli.md](docs/cli.md) | コマンドとオプションの全一覧、snapshot / extract が読むもの、wiki の指定 |
-| [docs/outputs.md](docs/outputs.md) | セッション記録(Markdown)、解析用の完全出力、改善点の分析、スキルの下書き |
+| [docs/outputs.md](docs/outputs.md) | セッション記録(Markdown)、表(CSV)、テストの結果の取り込み、AI の変更の残存、解析用の完全出力、改善点の分析、スキルの下書き |
 | [docs/judge.md](docs/judge.md) | 推定人手工数の判定の回し方(評価バンドル、外部の LLM、バックエンドと費用。自分の API キーのモデル(BYOK)をいつも使うときは、`atlas.config.json` の `judgeModel`) |
 | [docs/development.md](docs/development.md) | 開発・テスト・全ページの網羅チェック・CI・fixtures・元データを書き換えない仕組み |
 | [docs/PLAN.md](docs/PLAN.md) | 計画と、各フェーズの設計判断 |
