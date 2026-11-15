@@ -129,7 +129,8 @@ pub fn json_string(v: &Value) -> String {
     atlas_core::json::to_js_string(v).unwrap_or_default()
 }
 
-/// ツール引数の 1 行要約
+/// ツール引数の 1 行要約。秘密情報は切る前の全文で伏せる(切った後だと、上限に掛かった鍵の一部が形に当たらず残る)。
+/// 伏せた件数は今までどおり secret_hits に入れない
 pub fn summarize_args(_name: &str, args: Option<&Value>) -> String {
     let a = match args {
         Some(v @ (Value::Object(_) | Value::Array(_))) => v,
@@ -141,6 +142,7 @@ pub fn summarize_args(_name: &str, args: Option<&Value>) -> String {
         Some(x) => x.to_string(),
         None => json_string(a),
     };
+    let s = redact_secrets(&s).0;
     let squashed = WS_RUN.replace_all(&s, " ");
     format!("{}{}", js::utf16_slice(&squashed, 0, 160), if js::utf16_len(&s) > 160 { "…" } else { "" })
 }
@@ -237,22 +239,22 @@ struct Writer<'a> {
 }
 
 impl Writer<'_> {
-    /// 本文(自由記述)の整形: 上限で中略 → 秘密情報を伏せる → 伏せ字モードなら scrub
+    /// 本文(自由記述)の整形: 全文で秘密情報を伏せる → 上限で中略 → 伏せ字モードなら scrub。
+    /// 伏せてから切るのは、切った後だと中略の位置に掛かった鍵の一部が形に当たらず残るため。
+    /// secret_hits は伏せた数(中略で落ちる部分の鍵も伏せたので数える)、truncated は中略した本文の数
     fn text(&mut self, s: &str, limit: usize) -> String {
-        let len = js::utf16_len(s);
-        let cut;
-        let t: &str = if len > limit {
+        let (red, hits) = redact_secrets(s);
+        self.secret_hits += hits;
+        let len = js::utf16_len(&red);
+        let t = if len > limit {
             let head = (limit as f64 * 0.7).floor() as usize;
             let tail = limit - head;
-            cut = format!("{}\n\n…(中略 {} 字)…\n\n{}", js::utf16_slice(s, 0, head), int_n((len - limit) as f64), js::utf16_slice(s, len - tail, len));
             self.truncated += 1;
-            &cut
+            format!("{}\n\n…(中略 {} 字)…\n\n{}", js::utf16_slice(&red, 0, head), int_n((len - limit) as f64), js::utf16_slice(&red, len - tail, len))
         } else {
-            s
+            red
         };
-        let (red, hits) = redact_secrets(t);
-        self.secret_hits += hits;
-        if self.o.anon.enabled { self.o.anon.scrub(&red) } else { red }
+        if self.o.anon.enabled { self.o.anon.scrub(&t) } else { t }
     }
 
     fn short(&self, s: &str) -> String {
@@ -648,7 +650,7 @@ pub fn render_transcript(r: &SessionRecord, events: Option<&[RawEvent]>, db_usag
                     let body = format!(
                         "{who}{} `{nm}`{mcp}{}{}{}",
                         if ok { "✔" } else { "✖" },
-                        if args.is_empty() { String::new() } else { format!(" {}", w.short(&redact_secrets(&args).0)) },
+                        if args.is_empty() { String::new() } else { format!(" {}", w.short(&args)) },
                         dur.map(|d| format!("({d})")).unwrap_or_default(),
                         if err.is_empty() { String::new() } else { format!(" — 失敗: {}", w.short(&redact_secrets(&err).0)) }
                     );
@@ -833,6 +835,34 @@ pub fn render_transcript(r: &SessionRecord, events: Option<&[RawEvent]>, db_usag
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 上限の位置に鍵が掛かっても、鍵の一部が残らない(全文を伏せてから切る)
+    #[test]
+    fn redacts_before_cutting() {
+        let anon = crate::anonymize::identity_anonymizer();
+        let o = TranscriptOptions { anon: &anon, generated_at: "", tool_output: ToolOutputMode::Fail, max_text_chars: 100, max_tool_chars: 100, gap_ms: DEFAULT_GAP_MS };
+        let mut w = Writer { o: &o, truncated: 0, secret_hits: 0 };
+        // 上限 100 字なら頭 70 字・尻 30 字を残す。鍵の形の見本は実行時に組み立てる
+        let key = |c: &str| format!("ghp_{}", c.repeat(40));
+        // 頭の切れ目(70 字目)に鍵(41〜84 字目)が掛かる
+        let t = w.text(&format!("{} {} {}", "x".repeat(40), key("a"), "y".repeat(200)), 100);
+        assert!(!t.contains("ghp_") && !t.contains("aaaa"), "{t}");
+        assert!(t.contains("[伏せました: GitHub トークン]") && t.contains("(中略"), "{t}");
+        // 尻の切れ目(後ろから 30 字目)に鍵が掛かる
+        let t = w.text(&format!("{} {} {}", "y".repeat(200), key("b"), "z".repeat(10)), 100);
+        assert!(!t.contains("bbbb"), "{t}");
+        // 伏せた数・中略した本文の数は今までどおり 1 件ずつ数える
+        assert_eq!((w.secret_hits, w.truncated), (2, 2));
+        // 上限に届かない本文は切らない
+        assert_eq!(w.text(&format!("鍵 {}", key("c")), 100), "鍵 [伏せました: GitHub トークン]");
+        assert_eq!((w.secret_hits, w.truncated), (3, 2));
+
+        // ツール引数の要約(160 字で切る)の切れ目に鍵が掛かる
+        let v = serde_json::json!({ "command": format!("{} {}", "x".repeat(150), key("d")) });
+        let s = summarize_args("bash", Some(&v));
+        assert!(!s.contains("ghp_") && !s.contains("dddd"), "{s}");
+        assert!(s.starts_with(&format!("{} [伏せました", "x".repeat(150))), "{s}");
+    }
 
     #[test]
     fn redacts_like_ts() {
