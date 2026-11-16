@@ -2,6 +2,7 @@
 // 架空の ~/.copilot と一時フォルダの git リポジトリ 2 つ(repo-a に 5 セッション、repo-b に 1 セッション)を atlas all し、atlas serve で開く。
 //  a. 全体(照合できた 6 セッション)は割合と帯を出す。プロジェクトごとの表は、5 セッションの行に割合、1 セッションの行は件数だけ
 //  b. 1 セッションのプロジェクトに絞ると、割合と帯を出さずに件数だけ出し、そのことを書く
+//  c. 「比べる」の工程どうしで、その工程に照合できたまとまりのあるセッションの数の行が出て、足りる側だけ残存の割合が出る
 // どの画面でもページ内の例外とコンソールのエラーが無いこと。ログ・パス・本文はすべて架空のもの
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
@@ -101,7 +102,8 @@ describe('AI の変更の残存: 割合を出す条件', () => {
   afterAll(async () => {
     await browser?.close();
     await server?.close('テスト終了');
-    await rm(WORK, { recursive: true, force: true });
+    // 止めたサーバや git がファイルを掴んだままのことがあるので、少し待ってもう一度試す
+    await rm(WORK, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
   });
   beforeEach((ctx) => shotOnFailure(ctx, () => page));
   afterEach(() => {
@@ -115,6 +117,8 @@ describe('AI の変更の残存: 割合を出す条件', () => {
   it('a. 照合できたセッションが足りれば割合と帯を出す。プロジェクトごとの表は、足りない行だけ件数にする', async () => {
     await page.goto(server.url);
     await expect.poll(() => field(0).textContent()).toBe(String(N + 1));
+    // AI の変更があったセッションが足りるので、照合できた割合も出す
+    expect(await section().locator('.fields .field').nth(0).locator('.n').textContent()).toContain(`${N + 1} セッションのうち ${percent(N + 1, N + 1)}。`);
     expect(await field(1).textContent()).toBe(percent(N, N + 1));
     expect(await field(3).textContent()).toBe(percent(1, N + 1));
     expect(await section().locator('.stack').count()).toBe(1);
@@ -133,6 +137,10 @@ describe('AI の変更の残存: 割合を出す条件', () => {
     await page.goto(`${server.url}${filterHref({ ...emptyFilter(), project: projectB })}`);
     await expect.poll(() => field(0).textContent()).toBe('1');
     for (const i of [1, 2, 3]) expect(await field(i).textContent()).toBe('—');
+    // 照合できた割合も出さず、件数で書く
+    const note = await section().locator('.fields .field').nth(0).locator('.n').textContent();
+    expect(note).toContain('1 セッションのうち 1 件。');
+    expect(note).not.toContain('%');
     expect(await section().locator('.fields .field').nth(1).locator('.n').textContent()).toContain('1 / 1 まとまり');
     expect(await section().locator('.stack').count()).toBe(0);
     expect(await section().locator('#ret-legend').textContent()).not.toContain('%');
@@ -141,5 +149,21 @@ describe('AI の変更の残存: 割合を出す条件', () => {
     expect(await phase.nth(0).textContent()).toBe('1');
     expect(await phase.nth(1).textContent()).toBe('1');
     expect(await cells('ret-proj-h', 'repo-b').nth(1).textContent()).toBe('1');
+  });
+
+  it('c. 「比べる」の工程どうし: 照合できたセッションの数を並べ、足りる側だけ残存の割合を出す', async () => {
+    await page.goto(server.url);
+    const compare = page.locator('#compare');
+    await compare.getByRole('button', { name: '工程', exact: true }).click();
+    // 既定は A: 実装、B: 調査。編集はどれも実装の依頼なので、調査の側にはまとまりが無い
+    const cell = (key: string, col: number) => compare.locator(`[data-testid="compare-table"] tr[data-key="${key}"] td`).nth(col);
+    await expect.poll(() => cell('retention-measured', 0).textContent()).toBe(String(N + 1));
+    expect(await cell('retention-measured', 1).textContent()).toBe('0');
+    // 件数の行に差は出さない
+    expect(await cell('retention-measured', 2).textContent()).toBe('');
+    expect(await cell('retention-hunks', 0).textContent()).toBe(String(N + 1));
+    expect(await cell('retention-kept', 0).textContent()).toBe(percent(N, N + 1));
+    expect(await cell('retention-kept', 1).textContent()).toBe('—');
+    expect(await cell('retention-missing', 0).textContent()).toBe(percent(1, N + 1));
   });
 });

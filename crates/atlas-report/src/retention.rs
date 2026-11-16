@@ -302,16 +302,6 @@ pub fn measured_of(t: &StatusTuple) -> i64 {
     t[0] + t[1] + t[2]
 }
 
-/// 割合を出す最小の、照合できたセッションの数(画面の lib/retention.ts の RETENTION_MIN_SESSIONS と同じ値)
-pub const RETENTION_MIN_SESSIONS: i64 = 5;
-
-/// 照合できたまとまりに対する割合。分母が 0 のときと、照合できたセッション(measured_sessions)が
-/// RETENTION_MIN_SESSIONS に届かないときは None
-pub fn share_of(t: &StatusTuple, i: usize, measured_sessions: i64) -> Option<f64> {
-    let d = measured_of(t);
-    if d > 0 && measured_sessions >= RETENTION_MIN_SESSIONS { Some(t[i] as f64 / d as f64) } else { None }
-}
-
 /// 工程ごとの集計(retention_by_phase の結果)
 pub struct RetentionByPhase {
     /// 工程ごとのまとまりの数(状態別)
@@ -334,13 +324,11 @@ pub fn retention_by_phase<'a>(sessions: impl IntoIterator<Item = Option<&'a Rete
         match r.phases.as_ref().filter(|p| !p.is_empty()) {
             None => without += 1,
             Some(ps) => {
-                // 同じ工程が 2 行あっても 1 セッションと数える
-                let mut seen: Vec<i64> = Vec::new();
+                // phases は工程ごとに 1 行(retention_item が工程でまとめて書く)なので、行の数がそのままセッションの数になる
                 for p in ps {
                     let t = [p[1], p[2], p[3], p[4]];
                     add(by.entry(p[0]).or_insert([0; 4]), &t);
-                    if measured_of(&t) > 0 && !seen.contains(&p[0]) {
-                        seen.push(p[0]);
+                    if measured_of(&t) > 0 {
                         *per_phase.entry(p[0]).or_insert(0) += 1;
                     }
                 }
@@ -394,11 +382,8 @@ mod tests {
         assert_eq!(a.baseline, BaselineCounts { observed: 2, estimated: 1 });
         assert_eq!(atlas_core::json::to_js_string(&a.by_vcs).unwrap(), r#"{"git":2,"p4":1}"#);
         assert_eq!((a.sender, a.mapped, a.hunks, a.lines), (1, 1, [4, 1, 3, 1], [12, 2, 7, 4]));
-        // 照合できたセッションが RETENTION_MIN_SESSIONS に届かなければ割合を出さない(ここは 3 件)
-        assert_eq!(share_of(&a.hunks, 0, a.measured), None);
-        assert_eq!(share_of(&a.hunks, 0, RETENTION_MIN_SESSIONS - 1), None);
-        assert_eq!(share_of(&a.hunks, 0, RETENTION_MIN_SESSIONS), Some(4.0 / 8.0));
-        assert_eq!(share_of(&[0, 0, 0, 5], 0, RETENTION_MIN_SESSIONS), None);
+        // 割合の分母は照合できたまとまり(照合不可を除く 8)。割合と、出すかどうかの閾値は画面(lib/retention.ts)だけが持つ
+        assert_eq!(measured_of(&a.hunks), 8);
     }
 
     #[test]

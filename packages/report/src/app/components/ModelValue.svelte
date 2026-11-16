@@ -2,6 +2,7 @@
   import { effortLabel } from '../../lib/exec-labels.ts';
   import { dec, int, modelLabel, percent } from '../../lib/format.ts';
   import { aiu, effortFindings, keptShare, MIN_SESSIONS, mean, modelValue, ratio, type ValueRow } from '../../lib/model-value.ts';
+  import { enoughMeasured, RETENTION_MIN_SESSIONS } from '../../lib/retention.ts';
   import type { SessionSummary } from '../../lib/types.ts';
 
   let { sessions }: { sessions: readonly SessionSummary[] } = $props();
@@ -66,7 +67,7 @@
             {/if}
             {#if hasRetention}
               <th scope="col" class="num" title="AI の変更があったセッションのうち、VCS と照合できたセッションの数(残っている割合の分母になるセッション)">照合できた / AI の変更あり</th>
-              <th scope="col" class="num" title="照合できたまとまり(照合不可を除く)のうち、残っている(そのまま + 直されて)割合。まとまりの単位で、「比べる」と同じ数え方。照合できたセッションが {MIN_SESSIONS} 件未満なら —">残っている割合</th>
+              <th scope="col" class="num" title="照合できたまとまり(照合不可を除く)のうち、残っている(そのまま + 直されて)割合。まとまりの単位で、「比べる」と同じ数え方。照合できたセッションが {RETENTION_MIN_SESSIONS} 件未満なら —">残っている割合</th>
             {/if}
             <th scope="col" class="num" title="ツールの呼び出しのうち失敗した割合。小さいほど良い">ツール失敗率</th>
           </tr>
@@ -92,7 +93,7 @@
               {/if}
               {#if hasRetention}
                 <td class="num" title="照合できたセッション {int(r.retention.sessions)} / AI の変更があったセッション {int(r.retention.withAi)}">{r.retention.withAi > 0 ? `${int(r.retention.sessions)} / ${int(r.retention.withAi)}` : '—'}</td>
-                <td class="num" title="照合できたまとまり {w(r.retention.measured)}・そのセッション {w(r.retention.weight)}(按分){r.retention.sessions < MIN_SESSIONS ? `。照合できたセッションが ${MIN_SESSIONS} 件未満なので出しません` : ''}">{shareText(keptShare(r))}</td>
+                <td class="num" title="照合できたまとまり {w(r.retention.measured)}・そのセッション {w(r.retention.weight)}(按分){enoughMeasured(r.retention.sessions) ? '' : `。照合できたセッションが ${RETENTION_MIN_SESSIONS} 件未満なので出しません`}">{shareText(keptShare(r))}</td>
               {/if}
               <td class="num" title="ツールの呼び出し {w(r.tools.calls)}(按分)">{pct(r.tools.failures, r.tools.calls)}</td>
             </tr>

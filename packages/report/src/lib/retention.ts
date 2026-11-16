@@ -260,7 +260,7 @@ export function aggregateRetention(sessions: readonly { retention?: RetentionIte
 export const measuredOf = (t: StatusTuple): number => t[0] + t[1] + t[2];
 
 /**
- * 割合を出す最小の、照合できたセッションの数(「比べる」の COMPARE_MIN_SESSIONS と同じ値)。
+ * 残存の割合を出す最小の、照合できたセッションの数。残存の節・「比べる」・「モデルと推論強度の効果」が同じこの値を使う。
  * これより少ないと、1 つのセッションのまとまりだけで割合が大きく動く。件数はいつも出す
  */
 export const RETENTION_MIN_SESSIONS = 5;
@@ -293,14 +293,10 @@ export function retentionByPhase(sessions: readonly { retention?: RetentionItem 
       withoutPhases++;
       continue;
     }
-    // 同じ工程が 2 行あっても 1 セッションと数える
-    const seen = new Set<number>();
+    // phases は工程ごとに 1 行(retentionItem が工程でまとめて書く)なので、行の数がそのままセッションの数になる
     for (const [p, ...t] of r.phases) {
       add(byPhase.get(p) ?? byPhase.set(p, zero()).get(p)!, t as StatusTuple);
-      if (measuredOf(t as StatusTuple) > 0 && !seen.has(p)) {
-        seen.add(p);
-        perPhase.set(p, (perPhase.get(p) ?? 0) + 1);
-      }
+      if (measuredOf(t as StatusTuple) > 0) perPhase.set(p, (perPhase.get(p) ?? 0) + 1);
     }
   }
   return { byPhase, sessions: perPhase, withoutPhases };
