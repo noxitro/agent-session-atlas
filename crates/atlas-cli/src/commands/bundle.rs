@@ -85,6 +85,19 @@ pub fn run_bundle(p: &Paths, f: &SessionFilter, o: &BundleCliOptions, log: Log<'
         log(&format!("bundle: ZIP にまとめました({} ファイル、{}、無圧縮。parts/ は入れていません)→ {}", z.files, mb(z.bytes), zip.display()));
         log("bundle: フォルダやファイルを読めるエージェントに渡し、INSTRUCTIONS.md を最初に読ませてください。返ってきた JSON は atlas judge import <ファイル> で取り込みます");
     } else {
+        // 前に作った ZIP は中身がこの束と合わなくなるので消す(古い材料を渡させない)。
+        // 消すのは出力先の既定の場所(<out>/bundle.zip。画面が見るのもここ)だけ。--bundle で指した先の隣は、利用者が別に置いたファイルかもしれないので触らない
+        let zip = zip_path(&p.bundle);
+        if zip.is_file() {
+            if p.bundle == p.out.join("bundle") {
+                match std::fs::remove_file(&zip) {
+                    Ok(()) => log(&format!("bundle: 前に作った ZIP は中身が古くなったので消しました({})", zip.display())),
+                    Err(e) => log(&format!("bundle: 前に作った ZIP を消せませんでした(中身は前の束のままです。{}): {e}", zip.display())),
+                }
+            } else {
+                log(&format!("bundle: 注意 {} は今の束より前のものです(--zip を付けて作り直すと作り直します。消していません)", zip.display()));
+            }
+        }
         log("bundle: 外部の LLM に渡すときは --zip を付けて作った ZIP(またはフォルダごと)を渡し、INSTRUCTIONS.md を最初に読ませてください");
     }
     if let Some(parts) = m.parts.as_ref().filter(|x| !x.is_empty()) {

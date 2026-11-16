@@ -21,7 +21,7 @@ bin\atlas.exe --help                  # 使い方
 | `build` | `out/atlas.html` と `out/sessions/<id>.html`(セッション詳細)を作る。失敗の台帳の集計のページ `out/failures.html` と `out/failures.json`([outputs.md の「失敗の台帳」](outputs.md#失敗の台帳))も作る |
 | `export` | `build` に加えて、各セッションの記録(経過・消費)を `out/sessions/<id>.md` に書く。LLM での振り返り用(依頼文や応答がそのまま入るので、人に渡すなら中身を確かめてから。[outputs.md の「セッション記録」](outputs.md#セッション記録markdown))。指示文と skill の閲覧ページ `out/instructions.html` も作る。`--full` で解析用の全文記録([outputs.md](outputs.md#解析用の完全出力))。LLM は呼ばない |
 | `all` | `snapshot` → `extract` → `vcs` → `metrics` → `export` を順に実行する(コマンド省略時の既定) |
-| `bundle` | LLM に工数を判定させる評価バンドル `out/bundle/` を作る(LLM は呼ばない)。ZIP を渡せない相手用に、指示とパケット数件を 1 ファイルにまとめた `out/bundle/parts/part-<番号>.md` も書く。`--zip` を付けると `out/bundle.zip` にもまとめる |
+| `bundle` | LLM に工数を判定させる評価バンドル `out/bundle/` を作る(LLM は呼ばない)。ZIP を渡せない相手用に、指示とパケット数件を 1 ファイルにまとめた `out/bundle/parts/part-<番号>.md` も書く。`--zip` を付けると `out/bundle.zip` にもまとめる。付けずに作り直すと、前に作った `out/bundle.zip` は消す(中身が今のバンドルと合わなくなるため。`--bundle` で別の場所に作ったときの `<dir>.zip` は消さず、古いことを知らせる) |
 | `judge run` | バンドルの各セッションを LLM で判定し `out/judgments.json` に追記する(**クレジットを消費します**) |
 | `judge import <ファイル>` | 外部の LLM で作った判定(JSON か、JSON を含む Markdown)を検証して `out/judgments.json` に取り込む |
 | `judge m365` / `turns m365` `[--model <名前>] [--limit <ファイル数>] [--timeout <秒>]` | 開いている M365 Copilot のアプリ(Windows)を UI Automation で操作し、未判定の添付ファイル(`bundle` / `turns bundle` で作ったもの)を 1 つずつ新しいチャットで送って、返答を取り込み、レポートに反映する。`--model` は M365 Copilot のモデルの選択の名前(既定 `Think Deeper`)、`--timeout` は 1 ファイルの待ち時間(既定 900 秒)。AI クレジットは使わない。添付は OneDrive に入る([judge.md の「M365 Copilot のアプリを自動で操作する」](judge.md#m365-copilot-のアプリを自動で操作するwindows)) |
@@ -51,7 +51,7 @@ bin\atlas.exe --help                  # 使い方
 | `--include-empty` | `bundle` で、依頼の記録が無いセッションもパケットにする |
 | `--per-part <n>` | `bundle` で、`parts/` の 1 ファイルに入れるパケットの数(既定 5) |
 | `--unjudged` | `bundle` で、判定済み(`judgments.json` にある)セッションを入れない(画面の「チャットに貼って判定する」の「添付ファイルを作る」はこれを付ける) |
-| `--zip` | `bundle` で、バンドル(`parts/` を除く)を 1 つの ZIP(`out/bundle.zip`。無圧縮)にもまとめる。フォルダを読めるエージェントやローカルの LLM に渡すとき用([judge.md の「エージェントやローカルの LLM に渡す」](judge.md#エージェントやローカルの-llm-に渡す)) |
+| `--zip` | `bundle` で、バンドル(`parts/` を除く)を 1 つの ZIP(`out/bundle.zip`。無圧縮)にもまとめる。フォルダを読めるエージェントやローカルの LLM に渡すとき用([judge.md の「エージェントやローカルの LLM に渡す」](judge.md#エージェントやローカルの-llm-に渡す))。画面の「ZIP にまとめてエージェントに渡す」の「ZIP を作る」は `bundle --unjudged --zip` を実行する |
 | `--tool-output <v>` | `export` で、ツールの結果を記録に入れる条件。`fail`(既定。失敗したときだけ)/ `all` / `none` |
 | `--max-chars <n>` | `export` で、依頼・応答・要約 1 件の上限(文字、既定 20000)。超えた分は中略して字数を書く |
 | `--full` | `export` で、解析用の全文記録 `out/full/<id>.md`(上限なし)と `out/coverage.json`(網羅の検査)も書く |

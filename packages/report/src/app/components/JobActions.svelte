@@ -2,7 +2,8 @@
   // Phase 14: マストヘッドの操作「集計し直す」「判定する…」(atlas serve から開いたときだけ)。
   // 判定は AI クレジットを消費するので、必ず確認ダイアログ(件数・バックエンド・費用)を通す。「やめる」では API を呼ばない。
   // ダイアログでは判定するもの(工数 = セッションごと / 依頼ごとの採用)と、判定の方法を選べる:
-  // このツールから(copilot -p)か、チャットに貼る(M365 Copilot など。ChatJudge)。選んだものはこのブラウザに覚える。
+  // このツールから(copilot -p)か、チャットに貼る(M365 Copilot など。ChatJudge)か、ZIP にまとめてエージェントに渡す(工数の判定だけ。ChatJudge の via=zip)。
+  // 選んだものはこのブラウザに覚える。
   import { tick } from 'svelte';
   import { jobsApi, type JudgePreview, type JudgeTarget } from '../api.ts';
   import type { JobStore } from '../jobs.svelte.ts';
@@ -45,15 +46,19 @@
   let opener = $state<HTMLButtonElement | null>(null);
   let open = $state(false);
   const METHOD_KEY = 'atlas.judge-method';
-  type Method = 'tool' | 'chat';
+  type Method = 'tool' | 'chat' | 'zip';
   let method = $state<Method>(readMethod());
   function readMethod(): Method {
     try {
-      return localStorage.getItem(METHOD_KEY) === 'chat' ? 'chat' : 'tool';
+      const m = localStorage.getItem(METHOD_KEY);
+      return m === 'chat' || m === 'zip' ? m : 'tool';
     } catch {
       return 'tool';
     }
   }
+  /** 依頼ごとの判定には ZIP が無い。ZIP を選んだまま切り替えたときはチャットの手順を出す(工数に戻すと ZIP に戻る) */
+  const zipOff = $derived(target === 'turns');
+  const shown = $derived<Method>(method === 'zip' && zipOff ? 'chat' : method);
   function setMethod(m: Method): void {
     method = m;
     try {
@@ -115,9 +120,9 @@
 <dialog
   bind:this={dlg}
   class="judge-dialog"
-  class:wide={method === 'chat'}
+  class:wide={shown !== 'tool'}
   aria-labelledby="judge-h"
-  aria-describedby={method === 'tool' ? 'judge-cost' : undefined}
+  aria-describedby={shown === 'tool' ? 'judge-cost' : undefined}
   data-testid="judge-dialog"
   onclose={() => {
     open = false;
@@ -127,7 +132,7 @@
   <div class="head">
     <h2 id="judge-h">LLM で判定する</h2>
     <!-- 手順の長いチャット側では一番下の「閉じる」が画面の外になる(スマホには Esc が無い)ので、表題の横にも置く -->
-    <button type="button" class="btn close" data-autofocus={method === 'chat' ? '' : undefined} data-testid="judge-close" onclick={() => dlg?.close()}>閉じる</button>
+    <button type="button" class="btn close" data-autofocus={shown !== 'tool' ? '' : undefined} data-testid="judge-close" onclick={() => dlg?.close()}>閉じる</button>
   </div>
   <fieldset class="fld method">
     <legend class="k">判定するもの</legend>
@@ -136,11 +141,13 @@
   </fieldset>
   <fieldset class="fld method">
     <legend class="k">判定の方法</legend>
-    <label class="opt"><input type="radio" name="judge-method" value="tool" checked={method === 'tool'} onchange={() => setMethod('tool')} data-testid="judge-method-tool" />このツールが判定する(GitHub Copilot CLI を手元で動かす)</label>
-    <label class="opt"><input type="radio" name="judge-method" value="chat" checked={method === 'chat'} onchange={() => setMethod('chat')} data-testid="judge-method-chat" />チャットに貼って判定する(M365 Copilot など。添付と貼り付けだけで使える)</label>
+    <label class="opt"><input type="radio" name="judge-method" value="tool" checked={shown === 'tool'} onchange={() => setMethod('tool')} data-testid="judge-method-tool" />このツールが判定する(GitHub Copilot CLI を手元で動かす)</label>
+    <label class="opt"><input type="radio" name="judge-method" value="chat" checked={shown === 'chat'} onchange={() => setMethod('chat')} data-testid="judge-method-chat" />チャットに貼って判定する(M365 Copilot など。ファイルの添付か貼り付けができる LLM なら使える)</label>
+    <label class="opt" class:off={zipOff}><input type="radio" name="judge-method" value="zip" checked={shown === 'zip'} disabled={zipOff} aria-describedby={zipOff ? 'judge-zip-off' : undefined} onchange={() => setMethod('zip')} data-testid="judge-method-zip" />ZIP にまとめてエージェントに渡す(フォルダを読める LLM 向け。工数の判定だけ)</label>
+    {#if zipOff}<p class="why" id="judge-zip-off" data-testid="judge-zip-off">依頼ごとの判定には ZIP がありません。「チャットに貼って判定する」で作るファイルは 1 つで完結するので、どの LLM にもそのまま渡せます。</p>{/if}
   </fieldset>
-  {#if method === 'chat'}
-    {#if open}{#key target}<ChatJudge {jobs} {target} bind:reply={replies[target]} onclose={() => dlg?.close()} />{/key}{/if}
+  {#if shown !== 'tool'}
+    {#if open}{#key target}<ChatJudge {jobs} {target} via={shown === 'zip' ? 'zip' : 'chat'} bind:reply={replies[target]} onclose={() => dlg?.close()} />{/key}{/if}
   {:else}
     <form onsubmit={runJudge} aria-busy={jobs.busy}>
       <p class="lead">
@@ -195,6 +202,8 @@
     width: min(36rem, calc(100vw - 32px));
     max-height: calc(100vh - 32px);
     overflow: auto;
+    /* 手順の長い方法では中を縦に流す。端まで流しても、後ろのページは動かさない */
+    overscroll-behavior: contain;
     padding: 16px 20px 18px;
     color: var(--ink);
     background: var(--surface);
@@ -282,6 +291,16 @@
   .opt input {
     margin: 0;
     accent-color: var(--form);
+  }
+  /* 選べない方法: 文字を淡墨にして、理由をすぐ下に書く */
+  .opt.off {
+    color: var(--ink-3);
+  }
+  .why {
+    margin: 0 0 2px;
+    padding-left: 19px;
+    font-size: 0.75rem;
+    color: var(--ink-2);
   }
   .model {
     margin: 8px 0 0;

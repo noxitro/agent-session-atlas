@@ -119,7 +119,7 @@ const INSTRUCTIONS_TPL: &str = "# Copilot セッション工数判定の指示
 - `manifest.json`: パケットの一覧(`sessions[].id` と `sessions[].path`)
 - `schema.json`: 返す JSON の JSON Schema
 - `sessions/<セッション ID>.md`: 評価パケット(1 セッション 1 ファイル)
-- `parts/part-<番号>.md`: この指示と数件のパケットを 1 ファイルにまとめたもの(ZIP やフォルダを渡せないとき用。中身は `sessions/` と同じなので、このフォルダごと読むときは読まなくてかまいません)
+- `parts/part-<番号>.md`: この指示と数件のパケットを 1 ファイルにまとめたもの(ZIP やフォルダを渡せないとき用。ZIP には入っていません。中身は `sessions/` と同じなので、あっても読まなくてかまいません)
 
 ## 守ること
 

@@ -276,9 +276,11 @@ export const foldersApi = {
   },
 };
 
-export type JobKind = 'refresh' | 'judge' | 'full' | 'bundle' | 'export' | 'turn-bundle' | 'turn-judge' | 'm365' | 'turn-m365';
+export type JobKind = 'refresh' | 'judge' | 'full' | 'bundle' | 'bundle-zip' | 'export' | 'turn-bundle' | 'turn-judge' | 'm365' | 'turn-m365';
 /** 何を判定するか: 工数(セッションごと)/ 依頼ごとの採用・種類・工程 */
 export type JudgeTarget = 'effort' | 'turns';
+/** 外の LLM への渡し方: チャットに添付ファイルを貼る / ZIP にまとめてエージェントに渡す(工数の判定だけ) */
+export type JudgeVia = 'chat' | 'zip';
 export type JobBackend = 'copilot-cli';
 export interface JobInfo {
   id: string;
@@ -294,6 +296,7 @@ export type JobRequest =
   | { kind: 'refresh' }
   | { kind: 'judge'; limit: number }
   | { kind: 'bundle' }
+  | { kind: 'bundle-zip' }
   | { kind: 'export' }
   | { kind: 'turn-bundle' }
   | { kind: 'turn-judge'; limit: number }
@@ -351,6 +354,8 @@ export interface ChatParts {
   decidable?: { turns: number; parts: number };
   /** M365 Copilot のアプリを自動で操作できるか(サーバが Windows のとき) */
   canAutomate?: boolean;
+  /** 今の束をまとめた ZIP(工数の判定で、あるときだけ)。path は atlas.html からの相対パス */
+  zip?: { path: string; bytes: number; modifiedAt: string };
 }
 export interface ChatImportResult {
   imported: number;

@@ -1,5 +1,6 @@
 //! チャットで判定する添付ファイル(bundle/parts/・turn-bundle/parts/)の一覧と、その中の判定済みの数(packages/cli/src/chat-parts.ts の移植)。
 //! 画面の「チャットに貼って判定する」(serve の /api/judge/parts)と、M365 Copilot の自動操作(m365.rs)が使う。
+//! 工数の判定では、同じ束をまとめた ZIP(bundle.zip。画面の「ZIP にまとめてエージェントに渡す」)があるかも返す。
 
 use anyhow::{anyhow, Result};
 use atlas_judge::bundle::read_bundle_manifest;
@@ -39,6 +40,17 @@ pub struct ChatDecidable {
     pub parts: i64,
 }
 
+/// 束をまとめた ZIP(工数の判定だけ。今の束と同じ回に作ったものだけを返す)
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatZip {
+    /// 出力先からの相対パス(bundle.zip)
+    pub path: String,
+    pub bytes: i64,
+    /// ZIP を書いた日時
+    pub modified_at: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatParts {
@@ -54,11 +66,14 @@ pub struct ChatParts {
     /// 依頼の判定で、採用を判定できる依頼が先頭の何ファイルまでか。古い添付には無い
     #[serde(skip_serializing_if = "Option::is_none")]
     pub decidable: Option<ChatDecidable>,
+    /// 今の束をまとめた ZIP(工数の判定で、あるときだけ)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zip: Option<ChatZip>,
 }
 
 impl ChatParts {
     fn none() -> Self {
-        ChatParts { exists: false, generated_at: None, unjudged_only: None, count: None, parts: None, decidable: None }
+        ChatParts { exists: false, generated_at: None, unjudged_only: None, count: None, parts: None, decidable: None, zip: None }
     }
 }
 
@@ -119,6 +134,7 @@ pub fn list_chat_parts(out_dir: &Path, target: ChatTarget) -> Result<ChatParts> 
             count: Some(m.count),
             parts: Some(parts),
             decidable: d.map(|d| ChatDecidable { turns: d.turns, parts: d.parts }),
+            zip: None,
         });
     }
     let dir = out_dir.join("bundle");
@@ -135,7 +151,21 @@ pub fn list_chat_parts(out_dir: &Path, target: ChatTarget) -> Result<ChatParts> 
         .map(|p| ChatPart { path: format!("bundle/{}", p.path), name: name_of(&p.path), sessions: p.sessions.len() as i64, judged: p.sessions.iter().filter(|id| judged.contains(*id)).count() as i64, bytes: p.bytes, last_only: None })
         .collect();
     let unjudged = m.scope.get("unjudged").and_then(|v| v.as_deref()) == Some("yes");
-    Ok(ChatParts { exists: true, generated_at: Some(m.generated_at), unjudged_only: Some(unjudged), count: Some(m.count), parts: Some(parts), decidable: None })
+    Ok(ChatParts { exists: true, generated_at: Some(m.generated_at), unjudged_only: Some(unjudged), count: Some(m.count), parts: Some(parts), decidable: None, zip: bundle_zip(out_dir, &dir) })
+}
+
+/// ZIP の名前(出力先の直下。atlas bundle --zip が既定の束の隣に書くもの)
+const BUNDLE_ZIP_NAME: &str = "bundle.zip";
+
+/// 今の束をまとめた ZIP。束の一覧(manifest.json)より前に書かれた ZIP は、前の束の中身なので無いものとして扱う
+/// (--zip なしで束を作り直すと ZIP は消すが、消せなかったときと、消さなかった古い版が残したものに備える)
+fn bundle_zip(out_dir: &Path, bundle_dir: &Path) -> Option<ChatZip> {
+    let zip = std::fs::metadata(out_dir.join(BUNDLE_ZIP_NAME)).ok().filter(|m| m.is_file())?;
+    let manifest = std::fs::metadata(bundle_dir.join("manifest.json")).ok()?;
+    if atlas_core::jsfs::mtime_ms(&zip) < atlas_core::jsfs::mtime_ms(&manifest) {
+        return None;
+    }
+    Some(ChatZip { path: BUNDLE_ZIP_NAME.into(), bytes: zip.len() as i64, modified_at: atlas_core::jsfs::mtime_iso(&zip) })
 }
 
 /// 保存・添付するときの名前(相手のチャットが .md を添付として受け付けるか分からないので .txt にする。中身は同じ)。画面の ChatJudge と同じ

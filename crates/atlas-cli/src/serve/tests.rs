@@ -1078,6 +1078,8 @@ fn job_request_validation() {
         (json!({ "kind": "judge", "limit": 10, "backend": "copilot-cli", "only": "s1" }), 400),
         (json!({ "kind": "full" }), 400),
         (json!({ "kind": "bundle", "perPart": 2 }), 400),
+        (json!({ "kind": "bundle-zip", "zip": false }), 400),
+        (json!({ "kind": "turn-bundle-zip" }), 400),
         (json!({ "kind": "export", "id": "s1" }), 400),
         (json!({ "kind": "full", "id": ".." }), 400),
         (json!({ "kind": "full", "id": "a/b" }), 400),
@@ -1109,8 +1111,12 @@ fn chat_judge_parts_and_import() {
     j.child(0).exit(Some(0));
     j.wait_not_running();
     assert_eq!(j.post(json!({ "kind": "export" })).0, 202);
-    assert_eq!(j.args(1), vec!["export".to_string(), "--out".into(), out, "--notes-dir".into(), notes]);
+    assert_eq!(j.args(1), vec!["export".to_string(), "--out".into(), out.clone(), "--notes-dir".into(), notes.clone()]);
     j.child(1).exit(Some(0));
+    j.wait_not_running();
+    assert_eq!(j.post(json!({ "kind": "bundle-zip" })).0, 202);
+    assert_eq!(j.args(2), vec!["bundle".to_string(), "--unjudged".into(), "--zip".into(), "--out".into(), out, "--notes-dir".into(), notes]);
+    j.child(2).exit(Some(0));
     j.wait_not_running();
     assert_eq!(j.e.json("GET", "/api/judge/parts", None).1, json!({ "exists": false, "canAutomate": cfg!(windows) }));
     let b = j.e.out.join("bundle");
@@ -1128,6 +1134,19 @@ fn chat_judge_parts_and_import() {
         json!({ "exists": true, "generatedAt": "2026-11-05T00:00:00.000Z", "unjudgedOnly": true, "count": 2, "parts": [{ "path": "bundle/parts/part-01.md", "name": "part-01.md", "sessions": 2, "judged": 0, "bytes": 30 }], "canAutomate": cfg!(windows) })
     );
     assert_eq!(j.e.json("GET", "/api/judge/parts/part-01.md", None).1, json!({ "name": "part-01.md", "text": "# 指示\nパケット s1 s2" }));
+    // ZIP: 束の一覧より後に書いたものだけを返す(出力先からの相対パスだけ。フルパスは返さない)。前の束の ZIP は返さない
+    let zip = j.e.out.join("bundle.zip");
+    fs::write(&zip, b"PK-fake").unwrap();
+    let z = j.e.json("GET", "/api/judge/parts", None).1["zip"].clone();
+    assert_eq!((z["path"].clone(), z["bytes"].clone(), z.get("file")), (json!("bundle.zip"), json!(7), None));
+    assert!(z["modifiedAt"].as_str().is_some_and(|t| t.ends_with('Z')));
+    // ZIP は out/ の下のファイルとして取れる(保存のリンク)
+    let got = j.e.req("GET", "/bundle.zip", None, &[], b"");
+    assert_eq!((got.status, got.header("content-type"), got.body.as_slice()), (200, Some("application/zip"), b"PK-fake".as_slice()));
+    let old = atlas_core::jsfs::mtime_ms(&fs::metadata(b.join("manifest.json")).unwrap()) as i64 - 60_000;
+    atlas_core::jsfs::utimes(&zip, old, old).unwrap();
+    assert_eq!(j.e.json("GET", "/api/judge/parts", None).1.get("zip"), None);
+    fs::remove_file(&zip).unwrap();
     for bad in ["part-02.md", "..%2Fsecret.md", "secret.md"] {
         assert_eq!((bad, j.e.json("GET", &format!("/api/judge/parts/{bad}"), None).0), (bad, 404));
     }
@@ -1152,6 +1171,8 @@ fn chat_judge_parts_and_import() {
     assert_eq!(ok.0, 200);
     assert_eq!((ok.1["imported"].clone(), ok.1["overwritten"].clone(), ok.1["unknownIds"].clone(), ok.1["total"].clone()), (json!(2), json!(0), json!(["zz"]), json!(2)));
     assert_eq!((ok.1["parts"]["parts"][0]["name"].clone(), ok.1["parts"]["parts"][0]["judged"].clone()), (json!("part-01.md"), json!(1)));
+    // 取り込んだ後の一覧も、読んだときと同じ形(M365 Copilot を自動で操作できるかが入る)
+    assert_eq!(ok.1["parts"]["canAutomate"], json!(cfg!(windows)));
     let pv = j.e.json("GET", "/api/jobs/judge-preview", None).1;
     assert_eq!((pv["eligible"].clone(), pv["judged"].clone(), pv["pending"].clone()), (json!(2), json!(1), json!(1)));
     assert_eq!(j.e.get("/api/judge/parts").0, 403);
