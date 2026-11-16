@@ -73,6 +73,8 @@ fn refresh_args_follow_the_opened_folder() {
     assert_eq!(job_args(&JobRequest::Export, &h), Some(v(&["export", "--out", "o", "--notes-dir", "n"])));
     assert_eq!(job_args(&JobRequest::TurnJudge { limit: 7 }, &h), Some(v(&["judge-flow", "--turns", "--limit", "7", "--out", "o", "--notes-dir", "n"])));
     assert_eq!(job_args(&JobRequest::TurnBundle, &h), Some(v(&["turns", "bundle", "--unjudged", "--out", "o", "--notes-dir", "n"])));
+    // ZIP は束と同じ回に作る(--zip を付けた bundle。依頼ごとの判定には無い)
+    assert_eq!(job_args(&JobRequest::BundleZip, &h), Some(v(&["bundle", "--unjudged", "--zip", "--out", "o", "--notes-dir", "n"])));
     assert_eq!(job_args(&JobRequest::M365, &h), Some(v(&["judge", "m365", "--out", "o", "--notes-dir", "n"])));
     assert_eq!(job_args(&JobRequest::TurnM365, &h), Some(v(&["turns", "m365", "--out", "o", "--notes-dir", "n"])));
     assert_eq!(job_args(&JobRequest::Full { id: "s1".into() }, &h), None);

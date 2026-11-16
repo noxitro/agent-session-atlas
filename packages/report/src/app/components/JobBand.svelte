@@ -13,6 +13,7 @@
     judge: '工数の判定',
     full: '全文記録の作成',
     bundle: '添付ファイルの作成',
+    'bundle-zip': 'ZIP の作成',
     export: 'レポートへの反映',
     'turn-bundle': '依頼判定用の添付ファイルの作成',
     'turn-judge': '依頼の判定',
@@ -28,8 +29,8 @@
     const j = job;
     if (!j || jobs.dismissed === j.id) return null;
     if (j.state === 'running') return j;
-    // 全文記録の作成(詳細ページから)と添付ファイルの作成(判定ダイアログの中から)は、終わったことを始めた画面が示すので帯には出さない
-    if (j.kind === 'full' || j.kind === 'bundle' || j.kind === 'turn-bundle') return null;
+    // 全文記録の作成(詳細ページから)と添付ファイル・ZIP の作成(判定ダイアログの中から)は、終わったことを始めた画面が示すので帯には出さない
+    if (j.kind === 'full' || j.kind === 'bundle' || j.kind === 'bundle-zip' || j.kind === 'turn-bundle') return null;
     return Date.parse(j.startedAt) >= Date.parse(generatedAt) ? j : null;
   });
   function elapsed(j: JobInfo, now: number): string {

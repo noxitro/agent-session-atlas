@@ -3,6 +3,7 @@
 //! - judge:   子プロセス `atlas judge-flow --limit <n> --backend <b> --out <out> --notes-dir <notes>`(bundle → judge run → export)
 //! - full:    サーバ内で 1 件だけ全文記録を書く(write_full_record。atlas.html・coverage.json・他のセッションは触らない)
 //! - bundle:  子プロセス `atlas bundle --unjudged …`(チャットに添付する評価バンドルを未判定のセッションだけで作る。LLM は呼ばない)
+//! - bundle-zip: 子プロセス `atlas bundle --unjudged --zip …`(同じ評価バンドルを作り、1 つの ZIP にもまとめる。フォルダを読めるエージェントに渡す用。LLM は呼ばない)
 //! - export:  子プロセス `atlas export …`(チャットの返答を取り込んだ後、判定をレポートに反映する)
 //! - turn-bundle: 子プロセス `atlas turns bundle --unjudged …`(依頼ごとの判定でチャットに添付するファイルを作る。LLM は呼ばない)
 //! - turn-judge:  子プロセス `atlas judge-flow --turns --limit <n> …`(依頼ごとの判定を GitHub Copilot CLI で回し、レポートを作り直す)
@@ -179,7 +180,7 @@ pub fn release_out_lock(out_dir: &Path) {
 
 // ---------- ジョブ ----------
 
-pub const JOB_KINDS: [&str; 9] = ["refresh", "judge", "full", "bundle", "export", "turn-bundle", "turn-judge", "m365", "turn-m365"];
+pub const JOB_KINDS: [&str; 10] = ["refresh", "judge", "full", "bundle", "bundle-zip", "export", "turn-bundle", "turn-judge", "m365", "turn-m365"];
 /// 画面から始める判定のバックエンド(従量課金の anthropic は CLI だけ)
 pub const JOB_BACKENDS: [&str; 1] = ["copilot-cli"];
 pub const JOB_LIMIT_MAX: i64 = 500;
@@ -194,6 +195,7 @@ pub enum JobRequest {
     Judge { limit: i64, backend: String },
     Full { id: String },
     Bundle,
+    BundleZip,
     Export,
     TurnBundle,
     TurnJudge { limit: i64 },
@@ -208,6 +210,7 @@ impl JobRequest {
             JobRequest::Judge { .. } => "judge",
             JobRequest::Full { .. } => "full",
             JobRequest::Bundle => "bundle",
+            JobRequest::BundleZip => "bundle-zip",
             JobRequest::Export => "export",
             JobRequest::TurnBundle => "turn-bundle",
             JobRequest::TurnJudge { .. } => "turn-judge",
@@ -295,6 +298,7 @@ pub fn parse_job_request(body: &Map<String, Value>, known_id: &dyn Fn(&str) -> b
     match kind {
         "refresh" => return Ok(JobRequest::Refresh),
         "bundle" => return Ok(JobRequest::Bundle),
+        "bundle-zip" => return Ok(JobRequest::BundleZip),
         "export" => return Ok(JobRequest::Export),
         "turn-bundle" => return Ok(JobRequest::TurnBundle),
         "m365" => return Ok(JobRequest::M365),
@@ -349,6 +353,8 @@ pub fn job_args(req: &JobRequest, p: &JobArgsInput<'_>) -> Option<Vec<String>> {
         }
         JobRequest::Judge { limit, backend } => vec!["judge-flow".into(), "--limit".into(), limit.to_string(), "--backend".into(), backend.clone()],
         JobRequest::Bundle => vec!["bundle".into(), "--unjudged".into()],
+        // 束と ZIP を同じ回に作る(前の束から作った ZIP を渡させない)
+        JobRequest::BundleZip => vec!["bundle".into(), "--unjudged".into(), "--zip".into()],
         JobRequest::Export => vec!["export".into()],
         JobRequest::TurnBundle => vec!["turns".into(), "bundle".into(), "--unjudged".into()],
         JobRequest::TurnJudge { limit } => vec!["judge-flow".into(), "--turns".into(), "--limit".into(), limit.to_string()],
@@ -525,6 +531,7 @@ fn label(kind: &str) -> &'static str {
         "judge" => "工数を判定する",
         "full" => "全文を作る",
         "bundle" => "添付ファイルを作る",
+        "bundle-zip" => "ZIP を作る",
         "export" => "レポートに反映する",
         "turn-bundle" => "依頼の判定の添付ファイルを作る",
         "turn-judge" => "依頼を判定する",

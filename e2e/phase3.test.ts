@@ -7,7 +7,7 @@
 // 実際の copilot -p の 1 回実行(ATLAS_LIVE_JUDGE=1)はユーザー許可のうえでオーケストレータが行うため、ここには含めない。
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { readFile, readdir, rm } from 'node:fs/promises';
+import { readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -160,6 +160,20 @@ describe('Phase 3 E2E: fixtures', () => {
     const t = atlas(['turns', 'bundle', '--out', out3, '--zip']);
     expect(t.status).not.toBe(0);
     expect(t.stdout + t.stderr).toContain('--zip は bundle でだけ使えます');
+    // INSTRUCTIONS.md は、parts/ が ZIP に無いことを書く
+    expect(await readFile(join(out3, 'bundle', 'INSTRUCTIONS.md'), 'utf8')).toContain('ZIP には入っていません');
+    // --zip なしで作り直すと、中身が合わなくなる前の ZIP は消す
+    const again = atlas(['bundle', '--out', out3]);
+    expect(again.status, again.stderr).toBe(0);
+    expect(again.stdout + again.stderr).toContain('前に作った ZIP は中身が古くなったので消しました');
+    expect(existsSync(join(out3, 'bundle.zip'))).toBe(false);
+    // --bundle で別の場所に作るときは、隣の <dir>.zip に触らない(利用者が置いたファイルかもしれない)
+    const custom = join(WORK, 'custom-bundle');
+    await writeFile(`${custom}.zip`, '利用者のファイル');
+    const other = atlas(['bundle', '--out', out3, '--bundle', custom]);
+    expect(other.status, other.stderr).toBe(0);
+    expect(await readFile(`${custom}.zip`, 'utf8')).toBe('利用者のファイル');
+    expect(other.stdout + other.stderr).toContain('消していません');
   });
 
   it('a2. CLI のフィルタ(--client)でパケットが絞られ、前回のパケットは消える', async () => {

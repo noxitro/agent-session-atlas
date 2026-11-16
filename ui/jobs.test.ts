@@ -5,6 +5,7 @@
 //  f1b. 「チャットに貼る」: 作るのを止めたら、止めたことと、使える添付ファイルがあるかが出る。この画面で動くのを見ていない処理は出ない
 //  f2. 「チャットに貼る」: 添付ファイルを作り、保存のリンクと本文のコピーが働き、形の違う返答は理由を出して取り込まず、正しい返答を取り込んで反映できる
 //  f2b. 「チャットに貼る」(依頼ごとの採用): 採用を判定できる依頼が先頭の何ファイルまでかが出て、一覧の最後の依頼だけのファイルに印が付く
+//  f2c. 「ZIP にまとめてエージェントに渡す」: 依頼ごとの判定では選べない。工数では ZIP を作って保存でき、結果のファイルを選んで取り込める。添付ファイルを作り直すと ZIP は消える
 //  g. 詳細ページの「記録を読む」「全文を作って読む」で本文が描かれ、記録に混ぜた script やイベント属性は実行されない
 //  h. file:// で開いた atlas.html と詳細ページには操作が出ない
 // どの画面でもページ内の例外とコンソールのエラーが無いこと。
@@ -314,6 +315,8 @@ describe('画面からの操作(Phase 14)', () => {
     // 送信ボタンが無効になっても焦点は消えず、結果の文に移る
     expect(await page.evaluate<string | undefined>('document.activeElement?.dataset.testid')).toBe('chat-import-result');
     await expect.poll(() => page.getByTestId('chat-bundle-state').innerText()).toMatch(/取り込み済み 1 \//);
+    // 取り込んだ後も、M365 Copilot の自動の判定の欄は残る(サーバが Windows で、まだ渡すファイルがあるとき)
+    if (process.platform === 'win32' && (await page.getByTestId('chat-save').count()) > 0) expect(await page.getByTestId('chat-m365').count()).toBe(1);
 
     await page.getByTestId('chat-reflect').click();
     await dialog.waitFor({ state: 'hidden' });
@@ -361,6 +364,106 @@ describe('画面からの操作(Phase 14)', () => {
     const marked = (await rows.allInnerTexts()).map((t) => t.includes('最後の依頼だけ'));
     expect(marked).toEqual(m.parts.map((_, i) => i >= m.decidable.parts));
     await page.getByTestId('chat-close').click();
+    await dialog.waitFor({ state: 'hidden' });
+  });
+
+  it('f2c. 「ZIP にまとめてエージェントに渡す」: 依頼ごとの判定では選べない。工数では ZIP を作って保存でき、結果のファイルを取り込める', async () => {
+    jobPosts.length = 0;
+    await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin: new URL(server.url).origin });
+    await page.goto(server.url);
+    const dialog = page.getByTestId('judge-dialog');
+    await page.getByTestId('job-judge').click();
+    await dialog.waitFor({ state: 'visible' });
+    // 依頼ごとの判定には ZIP が無い: 選べず、理由をすぐ下に出す
+    await page.getByTestId('judge-target-turns').check();
+    const zipMethod = page.getByTestId('judge-method-zip');
+    expect(await zipMethod.isDisabled()).toBe(true);
+    expect(await zipMethod.getAttribute('aria-describedby')).toBe('judge-zip-off');
+    expect(await page.getByTestId('judge-zip-off').innerText()).toContain('どの LLM にもそのまま渡せます');
+    await page.getByTestId('judge-target-effort').check();
+    expect(await page.getByTestId('judge-zip-off').count()).toBe(0);
+    await zipMethod.check();
+    await page.getByTestId('chat-judge').waitFor({ state: 'visible' });
+    // 注意: 渡してよい相手かと、エージェントに許可しないもの。クレジットの注意は出さない
+    expect(await page.getByTestId('chat-zip-caution').innerText()).toContain('シェルの実行・ファイルの変更・Web へのアクセスを許可せず');
+    expect(await dialog.innerText()).not.toContain('AI クレジットを消費します');
+    // 添付ファイルはあっても(f2)、ZIP はまだ作っていない。M365 の自動の判定とファイルの一覧は出さない
+    await expect.poll(() => page.getByTestId('chat-bundle-state').innerText()).toBe('まだ作っていません。');
+    expect(await page.getByTestId('chat-next').innerText()).toBe('先に ZIP を作ってください。');
+    expect(await page.getByTestId('chat-zip-save').count()).toBe(0);
+    expect(await page.getByTestId('chat-m365').count()).toBe(0);
+    await expect.poll(() => page.getByTestId('chat-bundle').innerText()).toMatch(/^未判定 \d+ 件で ZIP を作る$/);
+    expect(await page.getByTestId('chat-zip-side').innerText()).toContain('添付ファイルも、同じ未判定のセッションで作り直されます');
+    await page.getByTestId('chat-bundle').click();
+    await expect
+      .poll(() => page.getByTestId('chat-bundle-state').innerText(), { timeout: 60_000 })
+      .toMatch(/^作成済み: .+\(未判定だけ、\d+ 件、[\d.]+\s(KB|MB)\)。取り込み済み 0 \/ \d+ 件。次の手順 2 へ進んでください。$/);
+    expect(jobPosts.map((b) => JSON.parse(b))).toEqual([{ kind: 'bundle-zip' }]);
+    expect(await page.getByTestId('chat-bundle-failed').count()).toBe(0);
+    // 終わったことは手順 1 が示すので、裏の帯には出さない
+    await expect.poll(() => band().getAttribute('data-state')).toBe('');
+
+    // 保存のリンク。保存したものは ZIP。出力先の中の場所(フルパス)は出さない
+    const save = page.getByTestId('chat-zip-save');
+    expect([await save.getAttribute('href'), await save.getAttribute('download')]).toEqual(['bundle.zip', 'bundle.zip']);
+    const [download] = await Promise.all([page.waitForEvent('download'), save.click()]);
+    expect(download.suggestedFilename()).toBe('bundle.zip');
+    const zipBytes = await readFile(await download.path());
+    expect(zipBytes.readUInt32LE(0)).toBe(0x04034b50);
+    expect(zipBytes.equals(await readFile(join(out, 'bundle.zip')))).toBe(true);
+    expect(await page.getByTestId('chat-judge').innerText()).not.toContain(join('ui-jobs', 'out'));
+    // 依頼文は、展開も書き込みも頼まない(注意と両立する)。ファイルに書かせるときの頼み方は補足に出す
+    const request = 'bundle フォルダの INSTRUCTIONS.md に従って判定し、JSON を返してください。';
+    expect(await page.getByTestId('chat-request').innerText()).toBe(request);
+    await page.getByRole('button', { name: '依頼文をコピー' }).click();
+    await expect.poll(() => page.getByText('依頼文をコピーしました。').count()).toBe(1);
+    expect(await page.evaluate<string>('navigator.clipboard.readText()')).toBe(request);
+    expect(await page.getByTestId('chat-zip-file-hint').innerText()).toContain('結果は bundle フォルダの中の judgments.json に書いてください。');
+
+    // 結果のファイルを選ぶ欄は、貼り付けの欄より先にある
+    expect(await page.evaluate<boolean>("!!(document.getElementById('chat-reply-file').compareDocumentPosition(document.getElementById('chat-reply')) & Node.DOCUMENT_POSITION_FOLLOWING)")).toBe(true);
+    const m = JSON.parse(await readFile(join(out, 'bundle', 'manifest.json'), 'utf8')) as { count: number; sessions: { id: string }[] };
+    expect(m.count).toBeGreaterThan(0);
+    const saved = JSON.stringify({
+      items: [
+        {
+          sessionId: m.sessions[0]!.id,
+          taskCategory: 'docs',
+          taskSummary: 'エージェントが判定',
+          humanEffort: { hours: 1, low: 0.5, high: 2, confidence: 0.4, rationale: '根拠' },
+          aiOutcome: { completed: true, quality: 3, rework: 1, rationale: '成果' },
+          instructionsEffect: { score: 0, evidence: '参照なし' },
+          wikiEffect: { score: 0, evidence: '参照なし' },
+          skillsAgentsEffect: { score: 0, evidence: '参照なし' },
+        },
+      ],
+    });
+    const reply = page.getByTestId('chat-reply');
+    await page.getByTestId('chat-reply-file').setInputFiles({ name: 'judgments.json', mimeType: 'application/json', buffer: Buffer.from(saved) });
+    await expect.poll(() => reply.inputValue()).toBe(saved);
+    await page.getByTestId('chat-import').click();
+    await expect.poll(() => page.getByTestId('chat-import-result').innerText()).toBe('1 件を取り込みました。');
+    // 取り込んだ後も、保存のリンクと進み具合が出ている
+    await expect.poll(() => page.getByTestId('chat-bundle-state').innerText()).toContain(`取り込み済み 1 / ${m.count} 件。`);
+    expect(await page.getByTestId('chat-zip-save').count()).toBe(1);
+
+    // チャットの方法に切り替えると、作り直すと ZIP が消えることを知らせる。作り直すと ZIP は消える
+    await page.getByTestId('judge-method-chat').check();
+    await expect.poll(() => page.getByTestId('chat-zip-stale').count()).toBe(1);
+    await expect.poll(() => page.getByTestId('chat-bundle').isEnabled()).toBe(true);
+    await page.getByTestId('chat-bundle').click();
+    // 作り直している間に ZIP の方法へ切り替えても、終わったら一覧を読み直して、消えた ZIP を出したままにしない
+    await zipMethod.check();
+    await expect.poll(() => existsSync(join(out, 'bundle.zip')), { timeout: 60_000 }).toBe(false);
+    await expect.poll(() => page.getByTestId('chat-bundle-state').innerText(), { timeout: 60_000 }).toBe('まだ作っていません。');
+    expect(await page.getByTestId('chat-zip-save').count()).toBe(0);
+    // この画面で取り込んだ件数は、方法を切り替えても残る
+    expect(await page.getByTestId('chat-reflect').innerText()).toBe('レポートに反映する(この画面で 1 件)');
+    await page.getByTestId('judge-method-chat').check();
+    await expect.poll(() => page.getByTestId('chat-zip-stale').count()).toBe(0);
+    // 後のテストのために、方法をチャットに戻しておく
+    await page.getByTestId('judge-method-chat').check();
+    await page.getByTestId('judge-close').click();
     await dialog.waitFor({ state: 'hidden' });
   });
 

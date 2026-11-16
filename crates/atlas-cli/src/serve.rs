@@ -193,6 +193,7 @@ fn mime(ext: &str) -> Option<&'static str> {
         ".webp" => "image/webp",
         ".svg" => "image/svg+xml",
         ".txt" => "text/plain; charset=utf-8",
+        ".zip" => "application/zip",
         _ => return None,
     })
 }
@@ -1511,9 +1512,17 @@ impl Server {
         list_chat_parts(&self.out_dir, target).map_err(|e| HttpError::new(409, format!("{e:#}")))
     }
 
+    /// 画面に返す添付ファイルの一覧(M365 Copilot を自動で操作できるかを足す。一覧を読んだときも、取り込んだ後も同じ形)
+    fn parts_json(&self, target: ChatTarget) -> R<Value> {
+        let mut v = obj(to_value(&self.parts_for(target)?));
+        v.insert("canAutomate".into(), json!(self.m365));
+        Ok(Value::Object(v))
+    }
+
     /// チャットでの判定。読みも書きも token が要る(進み具合にセッション id が入るため)。
     /// ?target=turns は依頼ごとの判定(turn-bundle/・turn-judgments.json)、それ以外は工数の判定。
-    /// GET  /api/judge/parts:  bundle/parts/ の各ファイルと、その中のセッションのうち判定済みの数(bundle が無ければ exists: false)
+    /// GET  /api/judge/parts:  bundle/parts/ の各ファイルと、その中のセッションのうち判定済みの数(bundle が無ければ exists: false)。
+    ///      工数の判定で今の束の ZIP(bundle.zip)があれば zip: { path, bytes, modifiedAt }(保存は out/ の下のファイルとして GET /bundle.zip。フルパスは返さない)
     /// GET  /api/judge/parts/<名前>: そのファイルの本文 { text }(画面の「本文をコピー」。manifest にある名前だけ)
     /// POST /api/judge/import: { text } 貼った返答を検証して judgments.json に取り込む(1 件でも形が合わなければ何も書かない)。
     ///      レポートへの反映は別(export のジョブ)。判定・集計のジョブや CLI が out/ に書いている間は 409
@@ -1523,9 +1532,7 @@ impl Server {
             if method != "GET" {
                 return Err(HttpError::new(405, "この方法では使えません"));
             }
-            let mut v = obj(to_value(&self.parts_for(target)?));
-            v.insert("canAutomate".into(), json!(self.m365));
-            return Ok(send_json(200, &Value::Object(v)));
+            return Ok(send_json(200, &self.parts_json(target)?));
         }
         if let Some(c) = JUDGE_PART.captures(path) {
             if method != "GET" {
@@ -1547,7 +1554,7 @@ impl Server {
             if method != "POST" {
                 return Err(HttpError::new(405, "この方法では使えません"));
             }
-            let body = self.read_json_body(req, 4 * 1024 * 1024)?;
+            let body = self.read_json_body(req, IMPORT_BODY_MAX)?;
             let text = match body.get("text") {
                 Some(Value::String(t)) if !js::trim(t).is_empty() => t.clone(),
                 _ => return Err(HttpError::new(400, "返答を貼り付けてください")),
@@ -1585,7 +1592,7 @@ impl Server {
                 }
             };
             (self.log)(&format!("{}(画面): {imported} 件を取り込みました(既存の上書き {overwritten} 件)", if target == ChatTarget::Turns { "turns import" } else { "judge import" }));
-            let parts = to_value(&self.parts_for(target)?);
+            let parts = self.parts_json(target)?;
             return Ok(send_json(200, &json!({ "imported": imported, "overwritten": overwritten, "duplicates": duplicates, "unknownIds": unknown_ids, "total": total, "parts": parts })));
         }
         Err(HttpError::new(404, "無い API です"))
@@ -2049,6 +2056,9 @@ static MEMO_API: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^/api/memos/([^
 static GROUP_UPLOAD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^/api/groups/([^/]+)/upload(?:/(open|check|progress))?$").unwrap());
 static GROUP_EXPORT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^/api/groups/([^/]+)/export$").unwrap());
 static GROUPS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^/api/groups(?:/(.+))?$").unwrap());
+/// 取り込む返答の本文の上限。画面はファイルを 5 MB まで読み、JSON の文字列にすると引用符と改行の分だけ増える(多くて 2 倍)ので、それが収まる大きさにする
+const IMPORT_BODY_MAX: u64 = 12 * 1024 * 1024;
+
 static JUDGE_PART: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^/api/judge/parts/([^/]+)$").unwrap());
 static NO_TAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^タスクタグ「.*」はありません").unwrap());
 /// フォルダ名として読める(. / \ ~ と空白だけではない)
