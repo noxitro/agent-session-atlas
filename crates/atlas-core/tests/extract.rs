@@ -128,7 +128,7 @@ fn manifest(root: &Path, layout: &str, extra: Value) {
 #[test]
 fn copies_kept_for_gone_sessions_are_warned() {
     use atlas_core::snapshot::{KEPT_BUSY_REASON, KEPT_UNKNOWN_REASON, KEPT_UNREADABLE_REASON};
-    // 元のフォルダに見当たらないのに複製を消さなかったセッションは、前に写した複製で数えていることを、理由ごとに警告に出す
+    // 今回は元から読まなかったのに複製を消さなかったセッションは、前に写した複製で数えていることを、理由ごとに警告に出す
     let dir = tempfile::tempdir().unwrap();
     let snap = dir.path().join("snap");
     for id in ["g1", "g2", "g3"] {
@@ -141,14 +141,14 @@ fn copies_kept_for_gone_sessions_are_warned() {
     opts.projects = Some(no_grouping());
     let s = extract(&snap, &opts).unwrap();
     assert_eq!(s.sessions.len(), 3);
-    let about: Vec<&String> = s.warnings.messages.iter().filter(|m| m.contains("元のフォルダに見当たらないセッション")).collect();
+    let about: Vec<&String> = s.warnings.messages.iter().filter(|m| m.contains("今回は元から読まなかったセッション")).collect();
     // 複製が無いもの(not-copied)は数えていないので出さない
     assert_eq!(about.len(), 2, "{:?}", s.warnings.messages);
     assert!(about[0].contains("1 件") && about[0].contains(KEPT_UNREADABLE_REASON) && about[0].contains("g3"), "{}", about[0]);
     assert!(about[1].contains("1 件") && about[1].contains(KEPT_BUSY_REASON) && about[1].contains("g2"), "{}", about[1]);
     // 消さなかったものが無ければ出さない
     manifest(&snap, "flat", json!({}));
-    assert!(extract(&snap, &opts).unwrap().warnings.messages.iter().all(|m| !m.contains("元のフォルダに見当たらない")));
+    assert!(extract(&snap, &opts).unwrap().warnings.messages.iter().all(|m| !m.contains("今回は元から読まなかった")));
 }
 
 #[test]

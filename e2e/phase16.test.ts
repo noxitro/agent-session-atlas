@@ -435,11 +435,11 @@ describe('Phase 16 E2E: アップロード先から集計し直す(読む側)', 
     expect(unreadable).not.toContain('複製を消しました');
     const keptAll = JSON.parse(await readFile(join(fp.out, 'sessions.json'), 'utf8')) as SessionsFile;
     expect(keptAll.sessions.map((x) => x.id).sort()).toEqual(onlyA.sessions.map((x) => x.id).sort());
-    expect(keptAll.warnings.messages.join('\n')).toMatch(/元のフォルダに見当たらないセッション \d+ 件は、前に写した複製で数えている/);
+    expect(keptAll.warnings.messages.join('\n')).toMatch(/今回は元から読まなかったセッション \d+ 件は、前に写した複製で数えている/);
     // 読めるようになれば、警告は消える
     await rm(join(everyone, 'person-a', GROUP_B), { force: true });
     await rename(hidden, join(everyone, 'person-a', GROUP_B));
     expect(await open()).not.toContain('複製を消さず');
-    expect((JSON.parse(await readFile(join(fp.out, 'sessions.json'), 'utf8')) as SessionsFile).warnings.messages.join('\n')).not.toContain('元のフォルダに見当たらない');
+    expect((JSON.parse(await readFile(join(fp.out, 'sessions.json'), 'utf8')) as SessionsFile).warnings.messages.join('\n')).not.toContain('今回は元から読まなかった');
   }, 600_000);
 });

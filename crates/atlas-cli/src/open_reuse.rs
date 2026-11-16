@@ -72,6 +72,10 @@ fn files_recursive(root: &Path) -> std::io::Result<Vec<std::path::PathBuf>> {
     while let Some((path, entries)) = stack.pop() {
         for d in entries {
             let p = path.join(&d.name);
+            // 消す前に退けた複製の消し残り(次の集計で消す)は、集計に使わないのでたどらない
+            if d.is_dir() && path == root && d.name == SNAPSHOT_REMOVED_DIR {
+                continue;
+            }
             if d.is_dir() {
                 let sub = atlas_core::jsfs::read_dir(&p)?;
                 stack.push((p, sub));
@@ -123,8 +127,7 @@ pub fn inputs_key(p: &ReusePaths<'_>, options: &Value, config_path: &Path, code:
     let mut files: Vec<String> = Vec::new();
     for path in files_recursive(p.snapshot)? {
         let rel = path.strip_prefix(p.snapshot).unwrap_or(&path).components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join("/");
-        // 消す前に退けた複製の消し残り(次の集計で消す)は、集計に使わないので入れない
-        if rel == SNAPSHOT_MANIFEST || rel == SNAPSHOT_SOURCE || rel.starts_with(&format!("{SNAPSHOT_REMOVED_DIR}/")) {
+        if rel == SNAPSHOT_MANIFEST || rel == SNAPSHOT_SOURCE {
             continue;
         }
         files.push(format!("{rel}\0{}", stat_key(&path).unwrap_or_default()));

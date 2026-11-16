@@ -893,6 +893,8 @@ fn copy_that_cannot_be_moved_does_not_stop_the_run() {
     // 動かせなかった複製は、丸ごと残して理由を残す(半分だけ消えた複製にしない)。動かせた環境では消えている
     if state.join("g2").exists() {
         assert_eq!((m.sessions.removed, kept(&m)), (Some(1), pairs(&[("g2", KEPT_BUSY_REASON)])));
+        // 次の集計が確かめる場所(元のルート)を持ち越す
+        assert_eq!(kept_folders(&m), vec![("g2".to_string(), Some(String::new()))]);
         assert!(state.join("g2").join("events.jsonl").exists());
     } else {
         assert_eq!((m.sessions.removed, kept(&m)), (Some(2), vec![]));
@@ -918,6 +920,29 @@ fn sessions_gone_from_copilot_home_keep_their_copy() {
     let m = snap(&home, &dest).unwrap();
     assert_eq!((m.sessions.removed, kept(&m)), (None, vec![]));
     assert_eq!(names(&dest.join("session-state")), ["s1", "s2"]);
+    // セッションが 1 件も見つからない回(session-state が一時的に無い)でも、アップロード先の決まり(記録の持ち越し・警告)は掛けない
+    let away = base.path().join("session-state-away");
+    fs::rename(home.join("session-state"), &away).unwrap();
+    assert_eq!(describe_source(&home), SourceShape::None);
+    let none = snap(&home, &dest).unwrap();
+    assert_eq!((none.sessions.removed, kept(&none)), (None, vec![]));
+    assert_eq!(names(&dest.join("session-state")), ["s1", "s2"]);
+}
+
+#[test]
+fn copilot_shaped_run_does_not_carry_upload_records() {
+    // アップロード先として読んでいた場所が、~/.copilot の形として読まれた回(直下に session-state ができた)は、
+    // セッションが見つかっているので、「見つからなかった」という記録を複製に付けない
+    let base = work();
+    let proj = base.path().join("proj");
+    let dest = base.path().join("out").join("snapshot");
+    session(&proj.join("p1"), &[]);
+    assert_eq!(snap(&proj, &dest).unwrap().layout, Some(SourceLayout::Flat));
+    session(&proj.join("session-state").join("c1"), &[]);
+    assert_eq!(describe_source(&proj), SourceShape::Copilot);
+    let m = snap(&proj, &dest).unwrap();
+    assert_eq!((m.layout, m.sessions.removed, kept(&m)), (Some(SourceLayout::Copilot), None, vec![]));
+    assert_eq!(names(&dest.join("session-state")), ["c1", "p1"]);
 }
 
 #[test]

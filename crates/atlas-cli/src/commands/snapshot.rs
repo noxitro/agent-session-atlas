@@ -34,13 +34,13 @@ pub fn run_snapshot(p: &Paths, since: Option<&str>, log: Log<'_>, all: bool, pru
     if let Some(n) = s.removed.filter(|n| *n > 0) {
         log(&format!("snapshot: 元のフォルダから無くなっていたセッション {n} 件の複製を消しました(アップロード先を読むときは、今あるセッションだけを集計します)"));
     }
-    // 元のフォルダに見当たらないのに、複製を消さなかったもの(理由ごと)
+    // 今回は元から読まなかったのに、複製を消さなかったもの(理由ごと)
     if let Some(kept) = m.extras.as_ref().and_then(|x| x.gone_kept.as_ref()) {
         for (reason, hint) in KEPT_REASONS {
             let ids: Vec<&str> = kept.iter().filter(|k| k.reason == reason).map(|k| k.id.as_str()).collect();
             if !ids.is_empty() {
                 let more = if ids.len() > 3 { " ほか" } else { "" };
-                log(&format!("snapshot: 注意 元のフォルダに見当たらないセッション {} 件は、複製を消さず、前に写した複製で数えます({reason}: {}{more})。{hint}", ids.len(), ids.iter().take(3).copied().collect::<Vec<_>>().join(" / ")));
+                log(&format!("snapshot: 注意 今回は元から読まなかったセッション {} 件は、複製を消さず、前に写した複製で数えます({reason}: {}{more})。{hint}", ids.len(), ids.iter().take(3).copied().collect::<Vec<_>>().join(" / ")));
             }
         }
     }

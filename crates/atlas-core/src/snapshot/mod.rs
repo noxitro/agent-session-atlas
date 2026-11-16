@@ -239,7 +239,7 @@ pub struct Extras {
     /// 今回写したセッション(path は元のルートからの相対パス)。無ければ項目ごと無い
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovered: Option<Vec<Recovered>>,
-    /// アップロード先を読んだとき、元のフォルダに見当たらないのに複製を消さなかったセッションと理由。無ければ項目ごと無い
+    /// アップロード先を読んだとき、今回は元から読まなかったのに複製を消さなかったセッションと理由。無ければ項目ごと無い
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gone_kept: Option<Vec<KeptCopy>>,
 }
@@ -770,6 +770,8 @@ struct Previous {
     /// セッションの id ごとの、あったフォルダ(元のルートからの相対パス。/ 区切り。直下なら空)。manifest に書いた順。
     /// 数えたフォルダ(merged.owners)と、消さなかった複製が持ち越した記録(extras.goneKept の folder)を合わせたもの
     folders: Vec<(String, String)>,
+    /// folders を id で引く表(複製が多いとき、1 件ごとに全件を見ない)
+    by_id: HashMap<String, String>,
 }
 
 impl Previous {
@@ -780,8 +782,8 @@ impl Previous {
 
     /// id のセッションが前にあったフォルダ。記録が無ければ、前の集計が直下にセッションが並ぶ形だったときだけ、元のルート
     fn folder_of(&self, id: &str) -> Option<&str> {
-        match self.folders.iter().find(|(i, _)| i == id) {
-            Some((_, f)) => Some(f.as_str()),
+        match self.by_id.get(id) {
+            Some(f) => Some(f.as_str()),
             None if self.layout == Some(SourceLayout::Flat) => Some(""),
             None => None,
         }
@@ -807,7 +809,8 @@ fn read_previous(dest: &Path) -> Previous {
             }
         }
     }
-    Previous { layout, folders }
+    let by_id = folders.iter().cloned().collect();
+    Previous { layout, folders, by_id }
 }
 
 /// 複製先のセッションのフォルダの名前(作業用のフォルダの名前のものは除く。名前の順)。読めなければ空
