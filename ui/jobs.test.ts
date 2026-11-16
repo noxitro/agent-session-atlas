@@ -385,7 +385,8 @@ describe('画面からの操作(Phase 14)', () => {
     await zipMethod.check();
     await page.getByTestId('chat-judge').waitFor({ state: 'visible' });
     // 注意: 渡してよい相手かと、エージェントに許可しないもの。クレジットの注意は出さない
-    expect(await page.getByTestId('chat-zip-caution').innerText()).toContain('シェルの実行・ファイルの変更・Web へのアクセスを許可せず');
+    expect(await page.getByTestId('chat-zip-caution').innerText()).toContain('シェルの実行と Web へのアクセスを許可せず');
+    expect(await page.getByTestId('chat-zip-caution').innerText()).toContain('ファイルの書き込みを許可するのは、結果を書く judgments.json だけ');
     expect(await dialog.innerText()).not.toContain('AI クレジットを消費します');
     // 添付ファイルはあっても(f2)、ZIP はまだ作っていない。M365 の自動の判定とファイルの一覧は出さない
     await expect.poll(() => page.getByTestId('chat-bundle-state').innerText()).toBe('まだ作っていません。');
@@ -412,13 +413,13 @@ describe('画面からの操作(Phase 14)', () => {
     expect(zipBytes.readUInt32LE(0)).toBe(0x04034b50);
     expect(zipBytes.equals(await readFile(join(out, 'bundle.zip')))).toBe(true);
     expect(await page.getByTestId('chat-judge').innerText()).not.toContain(join('ui-jobs', 'out'));
-    // 依頼文は、展開も書き込みも頼まない(注意と両立する)。ファイルに書かせるときの頼み方は補足に出す
-    const request = 'bundle フォルダの INSTRUCTIONS.md に従って判定し、JSON を返してください。';
+    // 依頼文は、結果を展開したフォルダの中のファイルに書かせる(ターミナルの返答を写すと、行の折り返しで JSON が壊れる)。書けない相手への頼み方は補足に出す
+    const request = 'bundle フォルダの INSTRUCTIONS.md に従って判定し、結果を bundle フォルダの中の judgments.json に書いてください。';
     expect(await page.getByTestId('chat-request').innerText()).toBe(request);
     await page.getByRole('button', { name: '依頼文をコピー' }).click();
     await expect.poll(() => page.getByText('依頼文をコピーしました。').count()).toBe(1);
     expect(await page.evaluate<string>('navigator.clipboard.readText()')).toBe(request);
-    expect(await page.getByTestId('chat-zip-file-hint').innerText()).toContain('結果は bundle フォルダの中の judgments.json に書いてください。');
+    expect(await page.getByTestId('chat-zip-file-hint').innerText()).toContain('「JSON を返してください」に変えて頼み');
 
     // 結果のファイルを選ぶ欄は、貼り付けの欄より先にある
     expect(await page.evaluate<boolean>("!!(document.getElementById('chat-reply-file').compareDocumentPosition(document.getElementById('chat-reply')) & Node.DOCUMENT_POSITION_FOLLOWING)")).toBe(true);
