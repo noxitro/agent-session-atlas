@@ -2,7 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { aggregateRetention, DEFAULT_LAG_DAYS, median, phaseAt, REASON_LABEL, REASONS, retentionByPhase, retentionItem, shareOf, STATUS_LABEL, STATUSES, UNKNOWN_PHASE, VCS_LABEL, type RetentionItem } from '../src/lib/retention.ts';
+import { aggregateRetention, DEFAULT_LAG_DAYS, enoughMeasured, median, phaseAt, REASON_LABEL, REASONS, RETENTION_MIN_SESSIONS, retentionByPhase, retentionItem, shareOf, STATUS_LABEL, STATUSES, UNKNOWN_PHASE, VCS_LABEL, type RetentionItem } from '../src/lib/retention.ts';
 import { comparePhaseRows, compareRows, compareSide, COMPARE_MIN_SESSIONS, defaultPeriods, inPeriod, type CompareSession } from '../src/lib/compare.ts';
 import { PHASES } from '../src/shared/turns.ts';
 import type { TurnTuple } from '../src/lib/turns.ts';
@@ -92,8 +92,12 @@ describe('lib/retention', () => {
       lines: [12, 2, 7, 4],
     });
     // 割合の分母は照合できたまとまり(照合不可を除く 8)
-    expect(shareOf(a.hunks, 0)).toBe(4 / 8);
-    expect(shareOf([0, 0, 0, 5], 0)).toBeNull();
+    expect(shareOf(a.hunks, 0, RETENTION_MIN_SESSIONS)).toBe(4 / 8);
+    expect(shareOf([0, 0, 0, 5], 0, RETENTION_MIN_SESSIONS)).toBeNull();
+    // 照合できたセッションが RETENTION_MIN_SESSIONS に届かなければ割合を出さない(ここは 3 件)
+    expect(shareOf(a.hunks, 0, a.measured)).toBeNull();
+    expect(shareOf(a.hunks, 0, RETENTION_MIN_SESSIONS - 1)).toBeNull();
+    expect(enoughMeasured(RETENTION_MIN_SESSIONS)).toBe(true);
   });
 });
 
@@ -195,6 +199,12 @@ describe('工程ごと(まとまりを作った依頼の工程)', () => {
     const agg = retentionByPhase([{ retention: r }, { retention: r }, { retention: { ...r, outcome: 'unattributable' } }, { retention: { ...r, phases: undefined } }]);
     expect(agg.byPhase.get(implement)).toEqual([2, 0, 2, 0]);
     expect(agg.withoutPhases).toBe(1);
+    // その工程に照合できたまとまりがあるセッションの数(照合不可のまとまりだけの工程は数えない)
+    expect([agg.sessions.get(research), agg.sessions.get(implement)]).toEqual([2, 2]);
+    const onlyUnattributable = { ...r, phases: [[implement, 0, 0, 0, 3]] as RetentionItem['phases'] };
+    const mixed = retentionByPhase([{ retention: r }, { retention: onlyUnattributable }]);
+    expect(mixed.byPhase.get(implement)).toEqual([1, 0, 1, 3]);
+    expect(mixed.sessions.get(implement)).toBe(1);
   });
 
   it('comparePhaseRows: 工程どうしを依頼の単位で並べる(5 件未満の割合は —)', () => {
@@ -209,9 +219,18 @@ describe('工程ごと(まとまりを作った依頼の工程)', () => {
     expect(r('failure')).toMatchObject({ a: 0.1, b: null });
     expect(r('stuck')).toMatchObject({ a: 1, b: null });
     expect(r('retention-hunks')).toMatchObject({ a: 6, b: 0 });
-    expect(r('retention-kept').a).toBe(5 / 6);
-    expect(r('retention-missing').a).toBe(1 / 6);
-    expect(r('retention-kept').b).toBeNull();
+    // まとまりが 5 つ以上あっても、照合できたセッションが 1 件なら残存の割合は出さない
+    expect(r('retention-measured')).toMatchObject({ a: 1, b: 0 });
+    expect(r('retention-kept').a).toBeNull();
+    expect(r('retention-missing').a).toBeNull();
+    // その工程にまとまりのあるセッションが 5 件あれば出す
+    const five = comparePhaseRows([...Array.from({ length: RETENTION_MIN_SESSIONS }, () => sess(impl, ret)), sess([t(research, 0)])], 'implement', 'research');
+    const f = (k: string) => five.find((x) => x.key === k)!;
+    expect(f('retention-measured')).toMatchObject({ a: 5, b: 0 });
+    expect(f('retention-hunks').a).toBe(30);
+    expect(f('retention-kept').a).toBe(25 / 30);
+    expect(f('retention-missing').a).toBe(5 / 30);
+    expect(f('retention-kept').b).toBeNull();
   });
 });
 

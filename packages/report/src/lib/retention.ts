@@ -259,18 +259,32 @@ export function aggregateRetention(sessions: readonly { retention?: RetentionIte
 /** 照合できたまとまり(未変更・変更後・未確認。照合不可は除く)の数 */
 export const measuredOf = (t: StatusTuple): number => t[0] + t[1] + t[2];
 
-/** 照合できたまとまりに対する割合(分母が 0 なら null) */
-export function shareOf(t: StatusTuple, i: 0 | 1 | 2): number | null {
+/**
+ * 割合を出す最小の、照合できたセッションの数(「比べる」の COMPARE_MIN_SESSIONS と同じ値)。
+ * これより少ないと、1 つのセッションのまとまりだけで割合が大きく動く。件数はいつも出す
+ */
+export const RETENTION_MIN_SESSIONS = 5;
+
+/** 照合できたセッションが、割合を出せる数だけあるか */
+export const enoughMeasured = (measuredSessions: number): boolean => measuredSessions >= RETENTION_MIN_SESSIONS;
+
+/**
+ * 照合できたまとまりに対する割合。分母が 0 のときと、照合できたセッション(measuredSessions)が
+ * RETENTION_MIN_SESSIONS に届かないときは null
+ */
+export function shareOf(t: StatusTuple, i: 0 | 1 | 2, measuredSessions: number): number | null {
   const d = measuredOf(t);
-  return d > 0 ? t[i] / d : null;
+  return d > 0 && enoughMeasured(measuredSessions) ? t[i] / d : null;
 }
 
 /**
  * 照合できたセッションのまとまりを、工程(PHASES の番号。UNKNOWN_PHASE は不明)ごとに数える。
+ * sessions は、その工程に照合できたまとまり(照合不可を除く)が 1 つ以上あるセッションの数(工程ごとの割合を出すかを決める)。
  * 工程の記録が無いセッション(古い埋め込み・依頼の記録が無いもの)は数えず、その数を返す
  */
-export function retentionByPhase(sessions: readonly { retention?: RetentionItem | null }[]): { byPhase: Map<number, StatusTuple>; withoutPhases: number } {
+export function retentionByPhase(sessions: readonly { retention?: RetentionItem | null }[]): { byPhase: Map<number, StatusTuple>; sessions: Map<number, number>; withoutPhases: number } {
   const byPhase = new Map<number, StatusTuple>();
+  const perPhase = new Map<number, number>();
   let withoutPhases = 0;
   for (const s of sessions) {
     const r = s.retention;
@@ -279,7 +293,15 @@ export function retentionByPhase(sessions: readonly { retention?: RetentionItem 
       withoutPhases++;
       continue;
     }
-    for (const [p, ...t] of r.phases) add(byPhase.get(p) ?? byPhase.set(p, zero()).get(p)!, t as StatusTuple);
+    // 同じ工程が 2 行あっても 1 セッションと数える
+    const seen = new Set<number>();
+    for (const [p, ...t] of r.phases) {
+      add(byPhase.get(p) ?? byPhase.set(p, zero()).get(p)!, t as StatusTuple);
+      if (measuredOf(t as StatusTuple) > 0 && !seen.has(p)) {
+        seen.add(p);
+        perPhase.set(p, (perPhase.get(p) ?? 0) + 1);
+      }
+    }
   }
-  return { byPhase, withoutPhases };
+  return { byPhase, sessions: perPhase, withoutPhases };
 }

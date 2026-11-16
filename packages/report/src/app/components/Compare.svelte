@@ -20,6 +20,7 @@
   } from '../../lib/compare.ts';
   import { effortLabel } from '../../lib/exec-labels.ts';
   import { MAIN_EFFORT_SHARE } from '../../lib/main-effort.ts';
+  import { RETENTION_MIN_SESSIONS } from '../../lib/retention.ts';
   import { PHASE_LABEL, PHASES, type Phase } from '../../shared/turns.ts';
   import { dec, int, modelLabel, percent } from '../../lib/format.ts';
   import type { Option } from '../../lib/filter.ts';
@@ -174,7 +175,7 @@
   <div class="section-head">
     <h2 id="compare-h">比べる</h2>
     <p>
-      2 つの条件(タスクタグ・期間・プロジェクト・工程・推論強度)を並べます。上の絞り込みには従わず、全セッション(空のセッションを含めるかの条件だけ)から選びます。セッションが {COMPARE_MIN_SESSIONS} 件未満の側の割合と、割る数(記録のあるセッション)が {COMPARE_MIN_SESSIONS} 件未満の平均は「—」です。工程は依頼(ターン)の単位で並べ、依頼かまとまりが {COMPARE_MIN_TURNS} 件未満の割合と平均を「—」にします。差は相関で、条件の違いが原因とは限りません。差の幅(95%)はセッションを互いに独立とみなした近似で、同じ人のセッションは結果が似るため、実際の幅はこれより広くなります。手戻りのないセッションの割合を依頼の数で分けた行は、推論強度を比べるときだけ出します。
+      2 つの条件(タスクタグ・期間・プロジェクト・工程・推論強度)を並べます。上の絞り込みには従わず、全セッション(空のセッションを含めるかの条件だけ)から選びます。セッションが {COMPARE_MIN_SESSIONS} 件未満の側の割合と、割る数(記録のあるセッション)が {COMPARE_MIN_SESSIONS} 件未満の平均は「—」です。工程は依頼(ターン)の単位で並べ、依頼が {COMPARE_MIN_TURNS} 件未満の割合と平均を「—」にします(AI の変更の残存の割合は、その工程に照合できたまとまりのあるセッションが {RETENTION_MIN_SESSIONS} 件未満なら「—」)。差は相関で、条件の違いが原因とは限りません。差の幅(95%)はセッションを互いに独立とみなした近似で、同じ人のセッションは結果が似るため、実際の幅はこれより広くなります。手戻りのないセッションの割合を依頼の数で分けた行は、推論強度を比べるときだけ出します。
     </p>
   </div>
 

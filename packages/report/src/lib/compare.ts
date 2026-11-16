@@ -4,7 +4,7 @@ import { EFFORT_ORDER, orderBy } from './exec.ts';
 import { localDayStart, sessionTime } from './filter.ts';
 import { mainEffortOf, mainModelsOf } from './main-effort.ts';
 import { PHASES, REQUEST_KINDS, type Phase, type TurnBucket } from '../shared/turns.ts';
-import { aggregateRetention, measuredOf, median, retentionByPhase, type RetentionAgg, type StatusTuple } from './retention.ts';
+import { aggregateRetention, enoughMeasured, measuredOf, median, retentionByPhase, type RetentionAgg, type StatusTuple } from './retention.ts';
 import { turnAggregate, type TurnTuple } from './turns.ts';
 import type { SessionSummary } from './types.ts';
 
@@ -399,16 +399,19 @@ export const COMPARE_MIN_TURNS = 5;
  */
 export function comparePhaseRows(sessions: readonly CompareSession[], a: Phase, b: Phase): CompareRow[] {
   const agg = turnAggregate(sessions);
-  const ret = retentionByPhase(sessions).byPhase;
+  const byPhase = retentionByPhase(sessions);
+  const ret = byPhase.byPhase;
   const bucket = (p: Phase): TurnBucket => agg.byPhase[p];
   const hunks = (p: Phase): StatusTuple => ret.get(PHASES.indexOf(p)) ?? [0, 0, 0, 0];
+  /** その工程に照合できたまとまりがあるセッションの数(残存の割合を出すかは、まとまりの数でなくこの数で決める) */
+  const retSessions = (p: Phase): number => byPhase.sessions.get(PHASES.indexOf(p)) ?? 0;
   const perTurn = (v: number, n: number): number | null => (n < COMPARE_MIN_TURNS ? null : v / n);
   const share = (part: number, whole: number, n: number): number | null => (n < COMPARE_MIN_TURNS || whole <= 0 ? null : part / whole);
   const row = (key: string, label: string, unit: CompareRow['unit'], f: (p: Phase) => number | null, note: string): CompareRow => ({ key, label, unit, a: f(a), b: f(b), note });
   const retShare = (p: Phase, i: 'kept' | 'missing'): number | null => {
     const t = hunks(p);
     const m = measuredOf(t);
-    if (m < COMPARE_MIN_TURNS) return null;
+    if (m <= 0 || !enoughMeasured(retSessions(p))) return null;
     return i === 'kept' ? (t[0] + t[1]) / m : t[2] / m;
   };
   return [
@@ -418,8 +421,9 @@ export function comparePhaseRows(sessions: readonly CompareSession[], a: Phase, 
     row('stuck', '詰まりのあった依頼の割合', 'rate', (p) => share(bucket(p).stuck, bucket(p).turns, bucket(p).turns), '失敗・拒否・中断・エラー・再編集・文脈圧縮のどれかがあった'),
     row('fix', '次の依頼で直し・差し戻しの割合', 'rate', (p) => share(bucket(p).followedByFix, bucket(p).withNext, bucket(p).turns), '次の依頼があった依頼に対する割合'),
     row('aiu', 'AIU / 依頼', 'aiu', (p) => perTurn(bucket(p).nanoAiu / 1e9, bucket(p).turns), '平均(5 件未満なら —)'),
+    row('retention-measured', '照合できたセッション(その工程にまとまりがあるもの)', 'count', retSessions, 'AI の変更の残存の割合を出すかを決める数(5 件未満なら割合は —)'),
     row('retention-hunks', '照合できたまとまり', 'count', (p) => measuredOf(hunks(p)), '照合できたセッションの、その工程の依頼で AI が足したまとまり'),
-    row('retention-kept', '残っている(そのまま + 直されて)割合', 'rate', (p) => retShare(p, 'kept'), '照合できたまとまりに対する割合(5 件未満なら —)'),
+    row('retention-kept', '残っている(そのまま + 直されて)割合', 'rate', (p) => retShare(p, 'kept'), '照合できたまとまりに対する割合(照合できたセッションが 5 件未満なら —)'),
     row('retention-missing', '見つからない割合', 'rate', (p) => retShare(p, 'missing'), '照合できたまとまりに対する割合'),
   ];
 }
