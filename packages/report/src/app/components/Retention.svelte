@@ -96,7 +96,7 @@
       <div class="field">
         <span class="k">照合できたセッション(分母)</span>
         <span class="v">{int(a.measured)}</span>
-        <span class="n">AI の変更があった {int(a.withAi)} セッションのうち {percent(a.measured, a.withAi)}。{L.unattributable} {int(a.unattributableTotal)}{showShare ? '' : `。割合は ${RETENTION_MIN_SESSIONS} 件から出します`}</span>
+        <span class="n">AI の変更があった {int(a.withAi)} セッションのうち{enoughMeasured(a.withAi) ? ` ${percent(a.measured, a.withAi)}` : ''}。{L.unattributable} {int(a.unattributableTotal)}{showShare ? '' : `。残存の割合は、照合できたセッションが ${RETENTION_MIN_SESSIONS} 件から出します`}</span>
       </div>
       {#each [0, 1, 2] as i (i)}
         <div class="field">

@@ -4,7 +4,7 @@ import { EFFORT_ORDER, orderBy } from './exec.ts';
 import { localDayStart, sessionTime } from './filter.ts';
 import { mainEffortOf, mainModelsOf } from './main-effort.ts';
 import { PHASES, REQUEST_KINDS, type Phase, type TurnBucket } from '../shared/turns.ts';
-import { aggregateRetention, enoughMeasured, measuredOf, median, retentionByPhase, type RetentionAgg, type StatusTuple } from './retention.ts';
+import { aggregateRetention, enoughMeasured, measuredOf, median, RETENTION_MIN_SESSIONS, retentionByPhase, shareOf, type RetentionAgg, type StatusTuple } from './retention.ts';
 import { turnAggregate, type TurnTuple } from './turns.ts';
 import type { SessionSummary } from './types.ts';
 
@@ -194,6 +194,12 @@ export interface CompareRow {
   ci?: [lo: number, hi: number] | null;
 }
 
+/** 残っている(そのまま + 直されて)割合。分母が 0 のときと、照合できたセッションが足りないときは null */
+function keptOf(t: StatusTuple, measuredSessions: number): number | null {
+  const m = measuredOf(t);
+  return m > 0 && enoughMeasured(measuredSessions) ? (t[0] + t[1]) / m : null;
+}
+
 /** 両側の分母が足りるときだけ幅を出す */
 const enough = (na: number, nb: number): boolean => na >= COMPARE_MIN_SESSIONS && nb >= COMPARE_MIN_SESSIONS;
 
@@ -217,8 +223,9 @@ export function compareRows(a: CompareSide, b: CompareSide, o: { byTurnCount?: b
     const m = (x: number[]): number | null => (x.length < COMPARE_MIN_SESSIONS ? null : mean(x));
     return { key, label, unit, a: m(va), b: m(vb), note, ci: enough(va.length, vb.length) ? welchDiff(va, vb) : null };
   };
-  const keptShare = (s: CompareSide): number | null => (s.retention.measured < COMPARE_MIN_SESSIONS ? null : measuredOf(s.retention.hunks) ? (s.retention.hunks[0] + s.retention.hunks[1]) / measuredOf(s.retention.hunks) : null);
-  const missingShare = (s: CompareSide): number | null => (s.retention.measured < COMPARE_MIN_SESSIONS ? null : measuredOf(s.retention.hunks) ? s.retention.hunks[2] / measuredOf(s.retention.hunks) : null);
+  // 残存の割合を出すかは、残存の節と同じ決まり(照合できたセッションが RETENTION_MIN_SESSIONS 以上)
+  const keptShare = (s: CompareSide): number | null => keptOf(s.retention.hunks, s.retention.measured);
+  const missingShare = (s: CompareSide): number | null => shareOf(s.retention.hunks, 2, s.retention.measured);
   return [
     row('sessions', 'セッション', 'count', (s) => s.sessions, ''),
     share('no-rework', '手戻りのないセッションの割合', (s) => s.noRework, '採点できたセッションのうち、2 件目以降の依頼に直し・差し戻しが無く、どの依頼にも中断が無かったもの'),
@@ -240,9 +247,9 @@ export function compareRows(a: CompareSide, b: CompareSide, o: { byTurnCount?: b
       ci: enough(a.sessions, b.sessions) ? newcombeDiff(a.reworkSessions, a.sessions, b.reworkSessions, b.sessions) : null,
     },
     row('retention-measured', '照合できたセッション(AI の変更の残存の分母)', 'count', (s) => s.retention.measured, 'AI の変更があったセッションのうち'),
-    row('retention-kept', '残っている(そのまま + 直されて)割合', 'rate', keptShare, '照合できたまとまりに対する割合。照合できたセッションが 5 未満なら —'),
+    row('retention-kept', '残っている(そのまま + 直されて)割合', 'rate', keptShare, `照合できたまとまりに対する割合。照合できたセッションが ${RETENTION_MIN_SESSIONS} 件未満なら —`),
     row('retention-missing', '見つからない割合', 'rate', missingShare, '照合できたまとまりに対する割合'),
-    row('retention-lag', 'セッションの終わりから比べた時点まで(中央値)', 'days', (s) => (s.retention.measured < COMPARE_MIN_SESSIONS ? null : median(s.retention.lags)), '照合できたセッション。両側で大きく違うと、後から人が手を入れた時間が違うので残存の割合を比べにくい'),
+    row('retention-lag', 'セッションの終わりから比べた時点まで(中央値)', 'days', (s) => (enoughMeasured(s.retention.measured) ? median(s.retention.lags) : null), '照合できたセッション。両側で大きく違うと、後から人が手を入れた時間が違うので残存の割合を比べにくい'),
   ];
 }
 
@@ -408,12 +415,7 @@ export function comparePhaseRows(sessions: readonly CompareSession[], a: Phase, 
   const perTurn = (v: number, n: number): number | null => (n < COMPARE_MIN_TURNS ? null : v / n);
   const share = (part: number, whole: number, n: number): number | null => (n < COMPARE_MIN_TURNS || whole <= 0 ? null : part / whole);
   const row = (key: string, label: string, unit: CompareRow['unit'], f: (p: Phase) => number | null, note: string): CompareRow => ({ key, label, unit, a: f(a), b: f(b), note });
-  const retShare = (p: Phase, i: 'kept' | 'missing'): number | null => {
-    const t = hunks(p);
-    const m = measuredOf(t);
-    if (m <= 0 || !enoughMeasured(retSessions(p))) return null;
-    return i === 'kept' ? (t[0] + t[1]) / m : t[2] / m;
-  };
+  const retShare = (p: Phase, i: 'kept' | 'missing'): number | null => (i === 'kept' ? keptOf(hunks(p), retSessions(p)) : shareOf(hunks(p), 2, retSessions(p)));
   return [
     row('turns', '依頼', 'count', (p) => bucket(p).turns, '依頼(ターン)の数'),
     row('active', '実働 / 依頼', 'minutes', (p) => perTurn(bucket(p).activeMs, bucket(p).turns), '平均(記録の無い依頼は 0 として足す。5 件未満なら —)'),
@@ -421,9 +423,9 @@ export function comparePhaseRows(sessions: readonly CompareSession[], a: Phase, 
     row('stuck', '詰まりのあった依頼の割合', 'rate', (p) => share(bucket(p).stuck, bucket(p).turns, bucket(p).turns), '失敗・拒否・中断・エラー・再編集・文脈圧縮のどれかがあった'),
     row('fix', '次の依頼で直し・差し戻しの割合', 'rate', (p) => share(bucket(p).followedByFix, bucket(p).withNext, bucket(p).turns), '次の依頼があった依頼に対する割合'),
     row('aiu', 'AIU / 依頼', 'aiu', (p) => perTurn(bucket(p).nanoAiu / 1e9, bucket(p).turns), '平均(5 件未満なら —)'),
-    row('retention-measured', '照合できたセッション(その工程にまとまりがあるもの)', 'count', retSessions, 'AI の変更の残存の割合を出すかを決める数(5 件未満なら割合は —)'),
+    row('retention-measured', '照合できたセッション(その工程にまとまりがあるもの)', 'count', retSessions, `AI の変更の残存の割合を出すかを決める数(${RETENTION_MIN_SESSIONS} 件未満なら割合は —)`),
     row('retention-hunks', '照合できたまとまり', 'count', (p) => measuredOf(hunks(p)), '照合できたセッションの、その工程の依頼で AI が足したまとまり'),
-    row('retention-kept', '残っている(そのまま + 直されて)割合', 'rate', (p) => retShare(p, 'kept'), '照合できたまとまりに対する割合(照合できたセッションが 5 件未満なら —)'),
+    row('retention-kept', '残っている(そのまま + 直されて)割合', 'rate', (p) => retShare(p, 'kept'), `照合できたまとまりに対する割合(照合できたセッションが ${RETENTION_MIN_SESSIONS} 件未満なら —)`),
     row('retention-missing', '見つからない割合', 'rate', (p) => retShare(p, 'missing'), '照合できたまとまりに対する割合'),
   ];
 }

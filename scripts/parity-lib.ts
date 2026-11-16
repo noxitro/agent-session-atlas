@@ -223,7 +223,8 @@ function dumpWith(
     const agg = timed('aggregate', () => aggregate(xs, people));
     write(`aggregate-${name}`, agg);
     write(`highlights-${name}`, timed('highlights', () => highlights(xs, agg.usage, { filter: f, installed })));
-    write(`turns-${name}`, { turns: turnAggregate(xs), verdicts: verdictAggregate(xs, phases), retention: aggregateRetention(xs), byPhase: [...retentionByPhase(xs).byPhase], phaseSessions: [...retentionByPhase(xs).sessions], withoutPhases: retentionByPhase(xs).withoutPhases, coverage: coverageBreakdown(xs) });
+    const byPhase = retentionByPhase(xs);
+    write(`turns-${name}`, { turns: turnAggregate(xs), verdicts: verdictAggregate(xs, phases), retention: aggregateRetention(xs), byPhase: [...byPhase.byPhase], phaseSessions: [...byPhase.sessions], withoutPhases: byPhase.withoutPhases, coverage: coverageBreakdown(xs) });
     write(`filter-${name}`, { encoded: encodeFilter(f), href: filterHref(f, 'unused-skills'), decoded: decodeFilter(encodeFilter(f)), view: decodeView(filterHref(f, 'unused-skills')), state: isStateHash(filterHref(f)), ids: xs.map((s) => s.id) });
   }
   write('exec', execAggregate(plain));

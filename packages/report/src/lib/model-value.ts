@@ -6,7 +6,7 @@ import { OUTCOMES, type Outcome } from '../shared/turns.ts';
 import { isLowConfidence } from './aggregate.ts';
 import { EFFORT_ORDER, orderBy } from './exec.ts';
 import { modelLabel } from './format.ts';
-import { measuredOf } from './retention.ts';
+import { enoughMeasured, measuredOf } from './retention.ts';
 import type { SessionSummary } from './types.ts';
 
 /** 採用した扱い(そのまま・修正して・役に立った) */
@@ -187,8 +187,8 @@ export const MIN_SESSIONS = 3;
 const MIN_EFFECT_WEIGHT = 1;
 const enough = (weight: number, value: number | null): number | null => (weight >= MIN_EFFECT_WEIGHT ? value : null);
 
-/** 残っている割合(照合できたまとまりのうち、そのまま + 直されて)。照合できたセッションが MIN_SESSIONS 未満なら null */
-export const keptShare = (r: ValueRow): number | null => (r.retention.sessions < MIN_SESSIONS ? null : ratio(r.retention.kept, r.retention.measured));
+/** 残っている割合(照合できたまとまりのうち、そのまま + 直されて)。照合できたセッションが RETENTION_MIN_SESSIONS(残存の節・「比べる」と同じ値)未満なら null */
+export const keptShare = (r: ValueRow): number | null => (enoughMeasured(r.retention.sessions) ? ratio(r.retention.kept, r.retention.measured) : null);
 
 const pctText = (x: number): string => `${Math.round(x * 100)}%`;
 const numText = (x: number): string => (Math.round(x * 100) / 100).toString();
