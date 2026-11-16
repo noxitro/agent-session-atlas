@@ -2,7 +2,8 @@
 //!
 //!   cargo run --release -p atlas-report --example libdump -- <out> <dump> <notes>
 //!
-//! scripts/parity-lib.ts --compare は、atlas-cli と一緒に作る(cargo build --release -p atlas-cli -p atlas-report --example libdump)。
+//! scripts/parity-lib.ts --compare は、npm test(cargo test --workspace)と同じ選び方の debug で作る(cargo build --workspace --example libdump。
+//! cargo test が作ったものをそのまま使う)。--release では atlas-cli と一緒に作る(cargo build --release -p atlas-cli -p atlas-report --example libdump)。
 //! 上の cargo run は atlas-report だけで依存の features を決めるので、atlas-cli のビルドを使い回せず release を作り直す。
 //!
 //! <out> は atlas の出力先(sessions.json。あれば judgments.json・turn-judgments.json・vcs-retention.json)、<notes> は groups.json の置き場。

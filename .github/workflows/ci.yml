@@ -1,8 +1,9 @@
-# push / PR ごとに型検査・レポートの画面のビルド・単体テスト(Rust と TS)・atlas のビルド・TS と Rust の lib の突き合わせ・
-# E2E(テスト時に生成する架空の fixture のみ)を回す(ジョブ check)。画面の操作(ジョブ ui)と、clone した直後と同じ中身を作って
-# atlas.bat と同じ順で動かす確認(ジョブ smoke。npm run smoke = scripts/fresh-checkout.ts → scripts/checkout-smoke.ts。
-# リリースが無いときの、この PC でビルドする道)は、check と並べて別のジョブで回す(どれも release のビルドが要り、1 つのジョブで
-# 順に回すと待ち時間がそれぞれの和になるため。ui と smoke はそれぞれ atlas を作り直す)。
+# push / PR ごとに型検査・レポートの画面のビルド・単体テスト(Rust と TS)・TS と Rust の lib の突き合わせを回す(ジョブ check。
+# Rust はテスト用の debug だけを作る)。E2E(テスト時に生成する架空の fixture のみ。ジョブ e2e)・画面の操作(ジョブ ui)・clone した
+# 直後と同じ中身を作って atlas.bat と同じ順で動かす確認(ジョブ smoke。npm run smoke = scripts/fresh-checkout.ts →
+# scripts/checkout-smoke.ts。リリースが無いときの、この PC でビルドする道)は、どれも atlas を release で作ってから動かすので、check と
+# 並べて別のジョブで回す(1 つのジョブで順に回すと待ち時間がそれぞれの和になるため。e2e・ui・smoke はそれぞれ atlas を作り直す)。
+# 文書だけを変えた PR では、この 4 つを飛ばす(ジョブ changes)。
 # 手元で同じ順に回すのは npm run ci(docs/development.md の「CI」)。
 # fixture は e2e の globalSetup(e2e/global-setup.ts)と checkout-smoke.ts が作るので、ここに生成の手順は要らない。
 # 実データ(ATLAS_LIVE)と実 LLM 判定は CI では動かさない。
@@ -35,19 +36,48 @@ env:
     ~/.cargo/git/db/
     target/
 
-# Rust のキャッシュ(check・ui・smoke で同じ):
+# Rust のキャッシュ:
+# - テスト用の debug(check が作る。キーは rust-debug-)と release(e2e・ui・smoke が作る。キーは rust-release-)に分ける
+#   (1 つにまとめると、どのジョブも自分では使わない側の分まで取り出すことになる)。
 # - キーは OS・rustc の版・Cargo.lock。rustc の版が変わると依存のビルドは使えないので、キーに入れて取り直す
 #   (入れないと、新しい stable が出た後もキーが一致し続けて保存されず、Cargo.lock が変わるまで毎回依存を全部作り直す)。
-# - 保存するのは main の check(node 24)だけ。PR と ui・smoke は取り出すだけ(PR で保存すると、PR ごとに main と同じ大きさの
-#   キャッシュができ、リポジトリのキャッシュの上限で main のキャッシュが追い出される)。check の target/ には、テスト用(debug)と
-#   release の両方の依存が入る。
-#   新しい stable が出た後と Cargo.lock を変えた後は、次に main で check が通るまで PR は依存を作り直す(急ぐときは main で手動で 1 回動かす)。
-# - 「Rust を入れる」と取り出すキャッシュ(キーと restore-keys)は check・ui・smoke の 3 か所で同じ形にする(1 か所だけ変えると、
+# - 保存するのは main の check(node 24。debug)と e2e(node 24。release)だけ。PR と ui・smoke は取り出すだけ(PR で保存すると、
+#   PR ごとに main と同じ大きさのキャッシュができ、リポジトリのキャッシュの上限で main のキャッシュが追い出される)。
+#   新しい stable が出た後と Cargo.lock を変えた後は、次に main でこの 2 つが通るまで PR は依存を作り直す(急ぐときは main で手動で 1 回動かす)。
+# - 「Rust を入れる」と取り出すキャッシュ(キーと restore-keys)は、release の 3 か所(e2e・ui・smoke)で同じ形にする(1 か所だけ変えると、
 #   残りが黙ってキャッシュを外す)。
-# - 最後の restore-keys(cargo-<OS>-)は、キーの形を変える前の古いキャッシュを使うための移行用。古いキーには rustc の版が無く、
-#   同じ版で作ったとは限らない(違えば依存を作り直し、古い成果物ごと新しいキーで保存して大きくなる)。main で新しいキーのキャッシュが
-#   保存されたら消す。
+# - release の最後の restore-keys(rust-<OS>-<版>-)は、debug と release を分ける前のキャッシュ(両方が入っている)を使うための移行用。
+#   それを取り出したときは debug の分も入っているので、e2e は保存の前に target/debug を消す。main で rust-release- のキャッシュが
+#   保存されたら、移行用のキーと、この消す手順を一緒に消す。debug の側は、check がデバッグ情報を減らした(CARGO_PROFILE_DEV_DEBUG)ため
+#   前のキャッシュの依存を使えないので、移行用のキーを置かない。
 jobs:
+  # 文書だけを変えた PR では、ビルドとテストのジョブ(check・e2e・ui・smoke)を飛ばす(ci-ok は skipped を通す)。
+  # 文書とみなすのは docs/ の下と、どこかの *.md。テストもビルドも、リポジトリの *.md を読まない(読むようにしたら、ここで外す)。
+  # main への push と手動の実行では、いつも全部を回す(キャッシュを保存するのは main なので)
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      # PR の CI が動かすのは base とマージした結果のコミットで、1 つ目の親が base の先端。親まで取れば PR の変更が出せる
+      - if: github.event_name == 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" != pull_request ]; then echo "code=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          # --no-renames: 名前を変えたものは、前の名前(消したもの)も出す(コードを docs/ に移したときに見逃さない)
+          files=$(git -c core.quotePath=false diff --no-renames --name-only HEAD^1 HEAD)
+          echo "$files"
+          # 文書でないファイルが 1 つでもあれば(何も出ないときも)回す
+          if [ -z "$files" ] || grep -qvE '^docs/|\.md$' <<< "$files"; then code=true; else code=false; fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+
   check:
     name: check (${{ matrix.os }}, node ${{ matrix.node }})
     strategy:
@@ -57,13 +87,17 @@ jobs:
         os: [windows-latest, ubuntu-latest]
         # engines は >=24。下限の 24 と、新しく入れる人が選ぶ現行 LTS の 26(e2e が fixture を作る node:sqlite は実験的 API なので版で変わりうる)
         node: [24, 26]
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ${{ matrix.os }}
-    # Rust のビルド(テスト用と release)があるので、キャッシュが無いと 20 分ほどかかる
+    # Rust のテスト用のビルドがあるので、キャッシュが無いと 10 分ほどかかる
     timeout-minutes: 45
     env:
-      # build:atlas と parity:fixture(libdump を atlas-cli と一緒に作る。scripts/parity-lib.ts)で同じ値にする。
-      # 違うと atlas-report の build.rs が走り直し、parity で release を作り直す
+      # このジョブの Rust のビルド(npm test の cargo test と、parity:fixture が動かす atlas・libdump)で同じ値にする。
+      # 違うと atlas-report の build.rs や依存が作り直しになる(scripts/parity-lib.ts の buildLibdump)
       ATLAS_REQUIRE_TEMPLATE: '1'
+      # テスト用のビルドのデバッグ情報を行番号だけにする(コンパイルとリンクが速くなる。バックトレースの行番号は残る)
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -84,10 +118,9 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.CARGO_CACHE_PATHS }}
-          key: rust-${{ runner.os }}-${{ steps.rust.outputs.version }}-${{ hashFiles('Cargo.lock') }}
+          key: rust-debug-${{ runner.os }}-${{ steps.rust.outputs.version }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            rust-${{ runner.os }}-${{ steps.rust.outputs.version }}-
-            cargo-${{ runner.os }}-
+            rust-debug-${{ runner.os }}-${{ steps.rust.outputs.version }}-
       - run: npm ci
       # package.json の dependencies だけを見る(画面のビルドの devDependencies の警告はここでは止めず Dependabot の PR で追う)
       - if: matrix.os == 'ubuntu-latest' && matrix.node == 24
@@ -96,16 +129,17 @@ jobs:
       # 画面(Svelte)を先に作る: atlas のビルドが packages/report/dist/template.html を実行ファイルに埋め込む
       - run: npm run build:report
       - run: npm test
-      # parity:fixture の Rust の側(examples/libdump)も同じ cargo build で作る(パッケージの指定を scripts/parity-lib.ts の
-      # buildLibdump とそろえ、依存の features を同じにする。atlas-cli の長いビルドと並んで作られ、parity:fixture ではビルドが済んでいる)。
-      # --bins が要る: --example のように作るものを指定すると、cargo はそれだけを作り、atlas の bin を作らない(古い bin が残る)。
-      # bash で動かす(Windows の pwsh では npm.ps1 が -- を取り除き、後ろの指定が npm に渡ってしまうことがある)
-      - name: npm run build:atlas(libdump も)
-        shell: bash
-        run: npm run build:atlas -- -p atlas-report --bins --example libdump
-      # 画面の TS の lib と、build が使う Rust の lib の突き合わせ(架空の fixture)
+      # parity:fixture が動かす atlas を debug で作る。parity の Rust の側(examples/libdump)は npm test の cargo test が debug で
+      # 作っている(scripts/parity-lib.ts の buildLibdump はそれを使う)。--workspace と --example libdump は cargo test と依存の
+      # features をそろえるため(例を作るときは dev-dependencies の features も入る。そろわないと依存から作り直す)。
+      # --bins が要る: --example のように作るものを指定すると、cargo はそれだけを作り、atlas の bin を作らない
+      - name: atlas を debug で作る
+        run: cargo build --locked --workspace --bins --example libdump
+      # 画面の TS の lib と、build が使う Rust の lib の突き合わせ(架空の fixture)。atlas は上で作った debug を指す
+      # (探す順では target/release が先なので、そこに古いものがあっても使わないように)
       - run: npm run parity:fixture
-      - run: npm run e2e
+        env:
+          ATLAS_CLI: ${{ github.workspace }}/target/debug/atlas${{ runner.os == 'Windows' && '.exe' || '' }}
       # 上のキャッシュの説明のとおり、main の node 24 だけが保存する(キーが一致して取り出せたときは、変わっていないので保存しない)
       - if: github.ref == 'refs/heads/main' && matrix.node == 24 && steps.cargo-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -113,10 +147,68 @@ jobs:
           path: ${{ env.CARGO_CACHE_PATHS }}
           key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
+  # E2E(e2e/。テスト時に生成する架空の fixture だけを使う)。atlas を release で作ってから動かす。fixture を作る node:sqlite は
+  # 実験的 API で版で変わりうるので、Node 24 と 26 で回す
+  e2e:
+    name: e2e (${{ matrix.os }}, node ${{ matrix.node }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        node: [24, 26]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - name: Rust を入れる
+        id: rust
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          rustc --version
+          echo "version=$(rustc -vV | sed -n 's/^release: //p')" >> "$GITHUB_OUTPUT"
+      - id: cargo-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CARGO_CACHE_PATHS }}
+          key: rust-release-${{ runner.os }}-${{ steps.rust.outputs.version }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            rust-release-${{ runner.os }}-${{ steps.rust.outputs.version }}-
+            rust-${{ runner.os }}-${{ steps.rust.outputs.version }}-
+      - run: npm ci
+      # 画面(Svelte)を先に作る: atlas のビルドが packages/report/dist/template.html を実行ファイルに埋め込む
+      - run: npm run build:report
+      - run: npm run build:atlas
+        env:
+          ATLAS_REQUIRE_TEMPLATE: '1'
+      - run: npm run e2e
+      # 上のキャッシュの説明のとおり、main の node 24 だけが保存する(キーが一致して取り出せたときは、変わっていないので保存しない)。
+      # 移行用のキーで取り出した前のキャッシュには debug の分も入っているので、保存の前に消す(移行用のキーと一緒に消す)
+      - if: github.ref == 'refs/heads/main' && matrix.node == 24 && steps.cargo-cache.outputs.cache-hit != 'true'
+        name: 保存の前に debug の分を消す
+        shell: bash
+        run: rm -rf target/debug
+      - if: github.ref == 'refs/heads/main' && matrix.node == 24 && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CARGO_CACHE_PATHS }}
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+
   # 画面の操作(Playwright の Chromium、ui/)。ブラウザは OS ごとに見れば足りるので Node 24 だけで回す。
-  # atlas serve を動かすので、atlas を release で作る(check と同じキャッシュから依存を取り出す)
+  # atlas serve を動かすので、atlas を release で作る(e2e と同じキャッシュから依存を取り出す)
   ui:
     name: ui (${{ matrix.os }}, node 24)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -142,10 +234,10 @@ jobs:
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.CARGO_CACHE_PATHS }}
-          key: rust-${{ runner.os }}-${{ steps.rust.outputs.version }}-${{ hashFiles('Cargo.lock') }}
+          key: rust-release-${{ runner.os }}-${{ steps.rust.outputs.version }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
+            rust-release-${{ runner.os }}-${{ steps.rust.outputs.version }}-
             rust-${{ runner.os }}-${{ steps.rust.outputs.version }}-
-            cargo-${{ runner.os }}-
       - run: npm ci
       - run: npm run build:report
       - run: npm run build:atlas
@@ -180,11 +272,13 @@ jobs:
 
   # clone した状態での動作確認(手元の npm run smoke と同じ。scripts/smoke-local.ts)。リリースは探さず(origin が無い)、
   # scripts/ensure-atlas.ps1 がこの PC でビルドする道を通る(Linux は pwsh で動かす)。OS ごとに Node 24 で回す
-  # (Node 26 での npm ci・画面のビルド・atlas のビルドは check が見る)。
+  # (Node 26 での npm ci・画面のビルド・atlas のビルドは check と e2e が見る)。
   # ビルドはこのリポジトリの target/ を使う(CARGO_TARGET_DIR。キャッシュの依存のビルドを使い回す)。中身は clone した先のものなので、
   # ワークスペースのクレートは作り直す。root の npm ci は、checkout-smoke.ts が fixture を作るのに使う(yaml)
   smoke:
     name: smoke (${{ matrix.os }}, node 24)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -210,10 +304,10 @@ jobs:
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.CARGO_CACHE_PATHS }}
-          key: rust-${{ runner.os }}-${{ steps.rust.outputs.version }}-${{ hashFiles('Cargo.lock') }}
+          key: rust-release-${{ runner.os }}-${{ steps.rust.outputs.version }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
+            rust-release-${{ runner.os }}-${{ steps.rust.outputs.version }}-
             rust-${{ runner.os }}-${{ steps.rust.outputs.version }}-
-            cargo-${{ runner.os }}-
       - run: npm ci
       - name: clone した状態での動作確認
         run: npm run smoke
@@ -261,16 +355,16 @@ jobs:
       - run: cargo deny --locked check
 
   # main のルールで必須にするのはこのジョブだけ(行列の組み合わせやジョブの分け方を変えても、必須チェックの名前を変えずに済む)。
-  # 上のどれかが落ちたか取り消されたら落ちる。push では dependency-review が飛ばされる(skipped)が、それは通す
+  # 上のどれかが落ちたか取り消されたら落ちる。push では dependency-review が、文書だけの PR では check・e2e・ui・smoke が飛ばされる(skipped)が、それは通す
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [check, ui, smoke, cargo-deny, dependency-review]
+    needs: [changes, check, e2e, ui, smoke, cargo-deny, dependency-review]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
       - env:
           FAILED: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
         run: |
-          echo "check=${{ needs.check.result }} ui=${{ needs.ui.result }} smoke=${{ needs.smoke.result }} cargo-deny=${{ needs.cargo-deny.result }} dependency-review=${{ needs.dependency-review.result }}"
+          echo "changes=${{ needs.changes.result }} check=${{ needs.check.result }} e2e=${{ needs.e2e.result }} ui=${{ needs.ui.result }} smoke=${{ needs.smoke.result }} cargo-deny=${{ needs.cargo-deny.result }} dependency-review=${{ needs.dependency-review.result }}"
           test "$FAILED" != "true"
