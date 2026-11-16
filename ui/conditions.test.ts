@@ -6,11 +6,12 @@
 //  c. 表に入れなかったもの(決まりに合わないタグ・複数の条件のタグが付いたセッション)の件数と、数え方の説明
 //  d. 375px の幅で横にはみ出さない
 //  e. 利用の確認: 確かめるものを選び、使うはずの条件に印を付けると、使わなかったセッションとほかの条件で使ったセッションを並べる
+//  e2. タスクタグの名前を画面で変えると、集計し直さなくても、読み込み直さなくても、表がその場で変わる
 //  f. 送り先をまとめて集計した出力(タスクタグの表示名が「人 / タグ」)でも、元のタグから読んで同じ表になり、人をまたいでまとめる
 //  g. テストの記録が無い古い集計でも開き、テストの結果の列を出さずに理由を書く
 //  h. 全ページの網羅チェック(この節が出ている出力)に要修正の指摘が無い
 //  i. llm-wiki の vault を指定しないで集計したときは、wiki の参照を数えていないと書く
-// a〜e は atlas serve の画面、f 以降はファイルを直接開く(サーバは開いている画面が無くなると止まるので、サーバの画面を使うものを先に置く)。
+// a〜e2 は atlas serve の画面、f 以降はファイルを直接開く(サーバは開いている画面が無くなると止まるので、サーバの画面を使うものを先に置く)。
 // どの画面でもページ内の例外とコンソールのエラーが無いこと。
 import { spawnSync } from 'node:child_process';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
@@ -197,6 +198,38 @@ describe('課題 × 条件', () => {
     // wiki に戻すと、wiki の印が残っている
     await item.selectOption('wiki');
     await expect.poll(() => section().getByRole('checkbox', { name: 'wiki で使うはず' }).isChecked()).toBe(true);
+  });
+
+  it('e2. タスクタグの名前を画面で変えると、集計し直さなくても表がその場で変わる', async () => {
+    await page.goto(server.url);
+    const count = async (row: Locator): Promise<string> => (await texts(row))[0];
+    const pooledCount = async (condition: string): Promise<string> => (await texts(pooled(condition)))[1];
+    await expect.poll(() => count(taskRow(COND_SOLO_TASK, 'wiki'))).toBe('1');
+    expect(await count(taskRow(COND_SOLO_TASK, 'coderef'))).toBe('0');
+    expect([await pooledCount('wiki'), await pooledCount('coderef')]).toEqual(['7', '7']);
+    // 条件が 1 つしか無い課題のタグ(課題__条件)の条件を、wiki から coderef に変える
+    const from = `${COND_SOLO_TASK}__wiki`;
+    const to = `${COND_SOLO_TASK}__coderef`;
+    const rail = page.locator('[data-testid="group-rail"]:visible');
+    const head = page.getByTestId('group-head');
+    const rename = async (before: string, after: string): Promise<void> => {
+      await rail.getByRole('button', { name: new RegExp(before) }).click();
+      await head.getByTestId('group-edit').click();
+      // 開いた欄は少し遅れて名前へ焦点を移す。移る前に打つと、打つ途中で焦点が移って文字が欠ける
+      await expect.poll(() => head.getByLabel('名前').evaluate((el) => el.matches(':focus'))).toBe(true);
+      await head.getByLabel('名前').fill(after);
+      await head.getByRole('button', { name: '保存' }).click();
+      await expect.poll(async () => (JSON.parse(await readFile(join(notes, 'groups.json'), 'utf8')) as { groups: { name: string }[] }).groups.map((g) => g.name)).toContain(after);
+    };
+    await rename(from, to);
+    // 読み込み直していないのに、その課題の行が wiki から coderef に移り、条件ごとの件数も変わる
+    await expect.poll(() => count(taskRow(COND_SOLO_TASK, 'coderef'))).toBe('1');
+    expect(await count(taskRow(COND_SOLO_TASK, 'wiki'))).toBe('0');
+    expect([await pooledCount('wiki'), await pooledCount('coderef')]).toEqual(['6', '8']);
+    // 元に戻すと、表も元に戻る
+    await rename(to, from);
+    await expect.poll(() => count(taskRow(COND_SOLO_TASK, 'wiki'))).toBe('1');
+    for (const c of COND_CONDITIONS) expect(await texts(pooled(c)), c).toEqual(POOLED[c]);
   });
 
   it('f. 送り先をまとめて集計した出力でも、元のタグから読んで同じ表になる', async () => {
