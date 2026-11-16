@@ -1121,6 +1121,14 @@ fn measure_one(sh: &Shared<'_>, me: usize) -> SessionRetention {
     result.hunks.sort_by_key(|h| h.id);
     tally(&mut result);
     let measured = result.counts.kept + result.counts.modified + result.counts.missing;
+    // 作業フォルダに VCS が無く、ファイルの場所のリポジトリだけで照合できたときも、比べた時点と見方は残す
+    // (版はリポジトリごとに違いうるので印は付けない)。無いと、日数や推定した版の数から外れる
+    if result.evaluated.is_none() && measured > 0 {
+        result.evaluated = Some(match (mode, &fixed_at) {
+            (EvalMode::Fixed, Some(at)) => Evaluated { mode, rev: None, at: at.clone(), source: Some(RevisionSource::Estimated) },
+            _ => Evaluated { mode, rev: None, at: sh.now.clone(), source: None },
+        });
+    }
     if measured > 0 {
         result.outcome = Outcome::Measured;
     } else if result.counts.unattributable > 0 {
@@ -1187,7 +1195,8 @@ pub fn summarize_retention(results: &[SessionRetention]) -> RetentionSummary {
         if r.baseline.as_ref().is_some_and(|b| b.source == RevisionSource::Estimated) {
             s.baseline_estimated += 1;
         }
-        if r.evaluated.as_ref().is_some_and(|e| e.source == Some(RevisionSource::Estimated)) {
+        // fixed の版はいつも日時から決めた推定(source の無い古い送った側の結果も、見方で数える)
+        if r.evaluated.as_ref().is_some_and(|e| e.mode == EvalMode::Fixed || e.source == Some(RevisionSource::Estimated)) {
             s.evaluated_estimated += 1;
         }
         s.excluded_hunks += r.excluded_hunks;

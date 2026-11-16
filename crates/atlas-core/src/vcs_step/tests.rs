@@ -307,6 +307,12 @@ fn sender_evidence_and_provenance() {
     assert_eq!((r.hunks[1].similar_lines, r.hunks[1].from), (0, None));
     let s = summarize_retention(std::slice::from_ref(&r));
     assert_eq!((s.similar_lines, s.evaluated_estimated), (1, 1));
+
+    // 比べた版の出所を書かない古い結果も、fixed なら推定した版として数える
+    let mut old = result_of("s");
+    old["evaluated"] = json!({"mode": "fixed", "rev": "42", "at": at(11, 0)});
+    let r = parse_sender_vcs(&json!({"version": 1, "sessionId": "s", "computedAt": at(11, 0), "mode": "fixed", "result": old}), "s").unwrap();
+    assert_eq!((r.evaluated.as_ref().unwrap().source, summarize_retention(std::slice::from_ref(&r)).evaluated_estimated), (None, 1));
 }
 
 #[test]

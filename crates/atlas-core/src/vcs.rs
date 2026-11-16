@@ -58,6 +58,10 @@ impl RevisionSource {
             RevisionSource::Estimated => "estimated",
         }
     }
+
+    pub fn parse(s: &str) -> Option<RevisionSource> {
+        [RevisionSource::Observed, RevisionSource::Estimated].into_iter().find(|k| k.as_str() == s)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -172,12 +176,16 @@ pub fn vcs_env(get: impl Fn(&str) -> Option<String>) -> Vec<(&'static str, Optio
 const RUN_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_BUFFER: usize = 64 * 1024 * 1024;
 
-/// 既定の実行(シェルを通さない。30 秒で打ち切る。出力が 64MB を超えたら失敗)。
-/// 呼ぶ側が確かめ忘れても VCS を書き換えないよう、ここでも読む系の副コマンドか確かめる
-pub fn default_run(cmd: VcsKind, args: &[String], cwd: &str) -> RunResult {
-    if let Err(e) = assert_read_only(cmd, args) {
-        return RunResult { code: 1, stdout: String::new(), stderr: e };
-    }
+/// 許可リストを通してから runner で呼ぶ。VCS を呼ぶところ(VcsRepo と detect)はすべてここを通るので、
+/// 差し替えた runner でも、書く系のコマンドは呼ぶ前に止まる
+pub(crate) fn run_read_only(runner: &VcsRunner, cmd: VcsKind, args: &[String], cwd: &str) -> Result<RunResult, String> {
+    assert_read_only(cmd, args)?;
+    Ok(runner(cmd, args, cwd))
+}
+
+/// 既定の実行(シェルを通さない。30 秒で打ち切る。出力が 64MB を超えたら失敗)。許可リストは確かめないので、
+/// 外へは default_runner(確かめてから呼ぶ)として渡す
+pub(crate) fn default_run(cmd: VcsKind, args: &[String], cwd: &str) -> RunResult {
     let mut c = Command::new(cmd.as_str());
     c.args(args).current_dir(cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     for (k, v) in vcs_env(|k| std::env::var(k).ok()) {
@@ -237,8 +245,13 @@ pub fn default_run(cmd: VcsKind, args: &[String], cwd: &str) -> RunResult {
     RunResult { code, stdout: String::from_utf8_lossy(&stdout).into_owned(), stderr: String::from_utf8_lossy(&stderr).into_owned() }
 }
 
+/// 既定の runner。実際にプロセスを起動するので、run_read_only を通らずに直接呼ばれても書く系のコマンドは起動しない
+/// (run_read_only と二重に確かめる。止めたときは終了コード 1 と理由)
 pub fn default_runner() -> VcsRunner {
-    Arc::new(default_run)
+    Arc::new(|cmd, args, cwd| match assert_read_only(cmd, args) {
+        Ok(()) => default_run(cmd, args, cwd),
+        Err(e) => RunResult { code: 1, stdout: String::new(), stderr: e },
+    })
 }
 
 /// 本文を比べられる形にする(BOM を落とし、改行を LF に)
@@ -269,6 +282,11 @@ static GIT_MISSING: LazyLock<Regex> = LazyLock::new(|| {
 });
 static SVN_MISSING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)E200009|E160013|E195012|W160013|E155010|path not found|is not under version control|was not found|no such file").unwrap());
 static P4_MISSING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)no such file|no file\(s\) at that|file\(s\) not on client|not in client view|- delete change").unwrap());
+// 版を調べるコマンド(rev-list・rev-parse・cat-file -e、svn info -r、p4 changes)が「その版が無い」と答えたときの文。
+// ファイルを読むときの *_MISSING より狭くする(No such file or directory などの環境の失敗を、版が無いと取り違えない)
+static GIT_NO_REV: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)unknown revision|bad revision|invalid object name|not a valid object name").unwrap());
+static SVN_NO_REV: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"E200009|E160013|E195012|W160013|W170000").unwrap());
+static P4_NO_REV: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)no such file\(s\)|no file\(s\) at that|file\(s\) not on client|not in client view").unwrap());
 /// ログの値のブランチ名のうち、ref の名前として素直なもの(JS の \w は ASCII だけ)
 static PLAIN_BRANCH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z0-9_./-]+$").unwrap());
 static DIGITS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[0-9]+$").unwrap());
@@ -302,13 +320,45 @@ fn svn_date(iso: &str) -> Result<String, String> {
 }
 
 /// p4 の日時指定(@2026/11/12:01:02:03)。p4 はサーバの地方時で解釈するので、サーバの UTC からのずれ(分)で直す。
-/// ずれがわからなければ UTC のまま(推定)。読めない時刻は NaN のまま(JS と同じ)
-fn p4_date(iso: &str, offset_min: i32) -> String {
+/// 読めない時刻は NaN のまま(JS と同じ)
+fn p4_date(ms: Option<i64>, offset_min: i32) -> String {
     use chrono::{Datelike, FixedOffset, TimeZone, Timelike};
     let tz = FixedOffset::east_opt(offset_min * 60).unwrap_or_else(|| FixedOffset::east_opt(0).expect("UTC"));
-    let Some(d) = jsdate::parse_ms(iso).and_then(|ms| tz.timestamp_millis_opt(ms).single()) else { return "@NaN/NaN/NaN:NaN:NaN:NaN".into() };
+    let Some(d) = ms.and_then(|ms| tz.timestamp_millis_opt(ms).single()) else { return "@NaN/NaN/NaN:NaN:NaN:NaN".into() };
     let pad = |n: u32| format!("{n:02}");
     format!("@{}/{}/{}:{}:{}:{}", d.year(), pad(d.month()), pad(d.day()), pad(d.hour()), pad(d.minute()), pad(d.second()))
+}
+
+/// p4 -ztag changes の出力の (変更番号, 取り込んだ時刻(UTC の秒))
+fn p4_ztag_changes(out: &str) -> Vec<(u64, Option<i64>)> {
+    let mut v: Vec<(u64, Option<i64>)> = Vec::new();
+    for line in out.lines() {
+        if let Some(n) = line.strip_prefix("... change ").and_then(|n| n.trim().parse().ok()) {
+            v.push((n, None));
+        } else if let (Some(t), Some(last)) = (line.strip_prefix("... time ").and_then(|t| t.trim().parse().ok()), v.last_mut()) {
+            last.1.get_or_insert(t);
+        }
+    }
+    v
+}
+
+/// サーバの時差が夏時間で変わっても版を取り違えないよう、前後に見る幅
+const P4_DATE_SLACK_MS: i64 = 60 * 60 * 1000;
+
+/// 版を調べたコマンドの結果。成功なら value(stdout)、版が無いと答えたなら None、それ以外の失敗は Err(版が無いと取り違えない)
+fn revision_of(cmd: VcsKind, args: &[&str], r: &RunResult, no_rev: &Regex, value: impl FnOnce(&str) -> Option<String>) -> Result<Option<String>, String> {
+    if r.code == 0 {
+        return Ok(value(&r.stdout));
+    }
+    if no_rev.is_match(&r.stderr) {
+        return Ok(None);
+    }
+    Err(failed(cmd, &strings(args), r))
+}
+
+/// 空でなければ前後の空白を除いた stdout
+fn nonempty(out: &str) -> Option<String> {
+    Some(js::trim(out).to_string()).filter(|s| !s.is_empty())
 }
 
 /// p4 のファイル指定で特別な意味を持つ文字(@ # % *)を逃がす(% を先に)
@@ -341,8 +391,7 @@ fn strings(a: &[&str]) -> Vec<String> {
 impl VcsRepo {
     /// 許可リストを通してから呼ぶ
     fn call(&self, cmd: VcsKind, args: Vec<String>) -> Result<RunResult, String> {
-        assert_read_only(cmd, &args)?;
-        Ok((self.run)(cmd, &args, &self.root))
+        run_read_only(&self.run, cmd, &args, &self.root)
     }
 
     fn git(&self, args: &[&str]) -> Result<RunResult, String> {
@@ -404,17 +453,32 @@ impl VcsRepo {
         Err(failed(VcsKind::P4, &strings(&["-q", "print", spec]), &r))
     }
 
+    /// spec に当てはまる最後の変更。当てはまる変更が無いだけなら None
     fn p4_last_change(&self, spec: &str) -> Result<Option<String>, String> {
         let args = ["changes", "-m1", "-s", "submitted", spec];
         let r = self.p4(&args)?;
-        if let Some(m) = P4_CHANGE.captures(&r.stdout).filter(|_| r.code == 0) {
-            return Ok(Some(m[1].to_string()));
+        revision_of(VcsKind::P4, &args, &r, &P4_NO_REV, |out| P4_CHANGE.captures(out).map(|m| m[1].to_string()))
+    }
+
+    /// 時刻 t(ミリ秒)までに取り込まれた最後の変更。p4 の日時はサーバの地方時で、今の時差で直しても、夏時間をまたぐ過去の日時は
+    /// 1 時間ずれうる。そこで前後 1 時間の変更を、取り込んだ時刻(UTC)で確かめる。窓に t 以前の変更が無ければ、窓の前の最後の変更
+    fn p4_change_at(&self, t: i64, offset_min: i32) -> Result<Option<String>, String> {
+        let tree = self.p4_tree();
+        let range = format!("{tree}{},{}", p4_date(Some(t - P4_DATE_SLACK_MS), offset_min), p4_date(Some(t + P4_DATE_SLACK_MS), offset_min));
+        let args = ["-ztag", "changes", "-s", "submitted", &range];
+        let r = self.p4(&args)?;
+        // 取り込んだ時刻を読めない変更があれば確かめられないので、時差だけで決めた日時で探す(推定。夏時間のずれは補えない)
+        let mut timeless = false;
+        let found = revision_of(VcsKind::P4, &args, &r, &P4_NO_REV, |out| {
+            let changes = p4_ztag_changes(out);
+            timeless = changes.iter().any(|(_, s)| s.is_none());
+            changes.into_iter().filter(|(_, s)| s.is_some_and(|s| s * 1000 <= t)).map(|(n, _)| n).max().map(|n| n.to_string())
+        })?;
+        match found {
+            _ if timeless => self.p4_last_change(&format!("{tree}{}", p4_date(Some(t), offset_min))),
+            Some(n) => Ok(Some(n)),
+            None => self.p4_last_change(&format!("{tree}{}", p4_date(Some(t - P4_DATE_SLACK_MS), offset_min))),
         }
-        // 当てはまる変更が無いだけなら None。つながらない・コマンドが無いなどの失敗は Err(版が無いと取り違えない)
-        if r.code == 0 || P4_MISSING.is_match(&r.stderr) {
-            return Ok(None);
-        }
-        Err(failed(VcsKind::P4, &strings(&args), &r))
     }
 
     fn p4_tree(&self) -> String {
@@ -432,36 +496,29 @@ impl VcsRepo {
                     _ => vec!["HEAD".into()],
                 };
                 let before = format!("--before={at}");
-                let mut last = None;
+                // ブランチで見つからなければ HEAD で探す。結果は最後に試した HEAD のもの(版が無いのではなく失敗したなら Err)
+                let mut last = Ok(None);
                 for r in &refs {
                     let args = ["rev-list", "-1", &before, r];
                     let res = self.git(&args)?;
-                    let rev = js::trim(&res.stdout);
-                    if res.code == 0 && !rev.is_empty() {
-                        return Ok(Some(rev.to_string()));
+                    match revision_of(VcsKind::Git, &args, &res, &GIT_NO_REV, nonempty) {
+                        Ok(Some(rev)) => return Ok(Some(rev)),
+                        other => last = other,
                     }
-                    last = Some((args.map(String::from), res));
                 }
-                // 最後に試した HEAD が、版が無いのではなく失敗したなら Err
-                match last {
-                    Some((args, res)) if res.code != 0 && !GIT_MISSING.is_match(&res.stderr) => Err(failed(VcsKind::Git, &args, &res)),
-                    _ => Ok(None),
-                }
+                last
             }
             VcsKind::Svn => {
                 let d = svn_date(at)?;
                 let args = ["info", "--show-item", "revision", "-r", &d, &self.root];
                 let r = self.svn(&args)?;
-                let rev = js::trim(&r.stdout);
-                if r.code == 0 && DIGITS.is_match(rev) {
-                    return Ok(Some(rev.to_string()));
-                }
-                if r.code == 0 || SVN_MISSING.is_match(&r.stderr) {
-                    return Ok(None);
-                }
-                Err(failed(VcsKind::Svn, &strings(&args), &r))
+                revision_of(VcsKind::Svn, &args, &r, &SVN_NO_REV, |out| Some(js::trim(out).to_string()).filter(|v| DIGITS.is_match(v)))
             }
-            VcsKind::P4 => self.p4_last_change(&format!("{}{}", self.p4_tree(), p4_date(at, self.p4_offset_min.unwrap_or(0)))),
+            // サーバの時差がわかれば、取り込んだ時刻で確かめる。わからなければ UTC のまま渡す(推定)
+            VcsKind::P4 => match (self.p4_offset_min, jsdate::parse_ms(at)) {
+                (Some(off), Some(t)) => self.p4_change_at(t, off),
+                (off, t) => self.p4_last_change(&format!("{}{}", self.p4_tree(), p4_date(t, off.unwrap_or(0)))),
+            },
         }
     }
 
@@ -469,9 +526,12 @@ impl VcsRepo {
     pub fn baseline(&self, head_commit: Option<&str>, start: Option<&str>, branch: Option<&str>) -> Result<Option<Revision>, String> {
         if self.kind == VcsKind::Git {
             if let Some(h) = head_commit.filter(|h| !h.is_empty()) {
-                let r = self.git(&["cat-file", "-e", &format!("{h}^{{commit}}")])?;
-                // ログに記録された版がもう無い(履歴の書き換え・別の複製)なら、推定で置き換えない
-                return Ok((r.code == 0).then(|| Revision { rev: h.to_string(), source: RevisionSource::Observed }));
+                let spec = format!("{h}^{{commit}}");
+                let args = ["cat-file", "-e", &spec];
+                let r = self.git(&args)?;
+                // ログに記録された版がもう無い(履歴の書き換え・別の複製)なら None で、推定で置き換えない。
+                // 調べるコマンドの失敗(打ち切り・読めないリポジトリなど)は Err(版が無いと取り違えない)
+                return Ok(revision_of(VcsKind::Git, &args, &r, &GIT_NO_REV, |_| Some(h.to_string()))?.map(|rev| Revision { rev, source: RevisionSource::Observed }));
             }
         }
         // svn と p4 はログに版が残らないので、開始時刻の版を推定する
@@ -481,22 +541,19 @@ impl VcsRepo {
     }
 
     /// 照合時の版の印(git: HEAD、svn: 作業コピーの版、p4: have の最新の変更番号)
+    /// まだ版が無い(コミットの無いリポジトリなど)は None。それ以外の失敗は Err
     pub fn current_revision(&self) -> Result<Option<String>, String> {
-        let (args, missing): (Vec<String>, &Regex) = match self.kind {
-            VcsKind::Git => (strings(&["rev-parse", "HEAD"]), &GIT_MISSING),
-            VcsKind::Svn => (strings(&["info", "--show-item", "revision", &self.root]), &SVN_MISSING),
-            VcsKind::P4 => return self.p4_last_change(&format!("{}#have", self.p4_tree())),
-        };
-        let a: Vec<&str> = args.iter().map(String::as_str).collect();
-        let r = if self.kind == VcsKind::Git { self.git(&a)? } else { self.svn(&a)? };
-        if r.code == 0 {
-            return Ok(Some(js::trim(&r.stdout).to_string()).filter(|s| !s.is_empty()));
+        match self.kind {
+            VcsKind::Git => {
+                let args = ["rev-parse", "HEAD"];
+                revision_of(VcsKind::Git, &args, &self.git(&args)?, &GIT_NO_REV, nonempty)
+            }
+            VcsKind::Svn => {
+                let args = ["info", "--show-item", "revision", &self.root];
+                revision_of(VcsKind::Svn, &args, &self.svn(&args)?, &SVN_NO_REV, nonempty)
+            }
+            VcsKind::P4 => self.p4_last_change(&format!("{}#have", self.p4_tree())),
         }
-        // まだ版が無い(コミットの無いリポジトリなど)は None。それ以外の失敗は Err
-        if missing.is_match(&r.stderr) {
-            return Ok(None);
-        }
-        Err(failed(self.kind, &args, &r))
     }
 
     /// 版 rev のファイル。その版に無ければ None。読めないときは Err
@@ -576,12 +633,8 @@ fn detect(dir: &str, runner: &VcsRunner) -> OpenRepoResult {
     if !jsfs::exists(Path::new(dir)) {
         return Err(NoRepo::RepoNotFound);
     }
-    let run = |cmd: VcsKind, args: &[&str]| -> RunResult {
-        let a = strings(args);
-        // ここで呼ぶのは読む系だけ(rev-parse・info)
-        assert_read_only(cmd, &a).expect("読む系のコマンド");
-        runner(cmd, &a, dir)
-    };
+    // ここで呼ぶのは読む系だけ(rev-parse・info)
+    let run = |cmd: VcsKind, args: &[&str]| -> RunResult { run_read_only(runner, cmd, &strings(args), dir).expect("読む系のコマンド") };
     let repo = |kind: VcsKind, root: &str, p4_offset_min: Option<i32>| Ok(Arc::new(VcsRepo { kind, root: resolve_file_path(root, None), p4_offset_min, run: runner.clone() }));
     let g = run(VcsKind::Git, &["--no-optional-locks", "-C", dir, "rev-parse", "--show-toplevel"]);
     if g.code == 0 && !js::trim(&g.stdout).is_empty() {

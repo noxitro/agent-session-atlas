@@ -67,10 +67,8 @@ pub fn run_vcs(p: &Paths, log: Log<'_>, mode: Option<&str>, config: Option<&str>
         p.vcs_retention.display()
     ));
     // ログの形が変わると、AI の編集から変更を取り出せなくなる(黙って 0 件にならないよう、数を出す)
-    let unread: i64 = r.sessions.iter().map(|x| x.unread_edits.unwrap_or(0)).sum();
-    if unread != 0 {
-        let n = r.sessions.iter().filter(|x| x.unread_edits.is_some_and(|u| u != 0)).count();
-        log(&format!("vcs: 注意 ログから変更を取り出せなかった AI の編集 {unread} 件({n} セッション)。Copilot のログの形が変わった可能性があります"));
+    if s.unread_edits != 0 {
+        log(&format!("vcs: 注意 ログから変更を取り出せなかった AI の編集 {} 件({} セッション)。Copilot のログの形が変わった可能性があります", s.unread_edits, s.unread_sessions));
     }
     if s.measured != 0 {
         let parts: Vec<String> = RETENTION_STATUSES
