@@ -244,13 +244,14 @@ describe('stop.bat と scripts/stop-atlas.ps1', () => {
       for (const [name, body] of Object.entries(SCRIPTS)) writeFileSync(join(tmp, name), body);
     });
     const repos: string[] = [];
+    // フォルダごとに powershell.exe を起動するので、既定の 10 秒では足りないことがある(下のテストの上限と同じ理由)
     afterAll(() => {
       // 止めずに残したもの(別のフォルダのサーバとその子)も、子孫ごと止める(子の cmd と ping が一時フォルダを今のフォルダにしている)
       for (const repo of repos) stop(repo, ['-Yes']);
       for (const c of started) c.kill();
       // 止めたプロセスが実行ファイルを掴んだままのことがあるので、少し待ってもう一度試す
       rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
-    });
+    }, 120_000);
 
     const makeRepo = (name: string): string => {
       const repo = join(tmp, name);
@@ -282,11 +283,12 @@ describe('stop.bat と scripts/stop-atlas.ps1', () => {
       return { status: r.status, text: `${decodeConsole(r.stdout)}${decodeConsole(r.stderr)}` };
     };
 
+    // powershell.exe の起動だけで、CI の Windows では既定の 5 秒を超えることがある(下の 2 つと同じ上限にする)
     it('動いていなければ、そう出して 0 で終わる', () => {
       const r = stop(makeRepo('empty'), []);
       expect(r.text).toContain('動いている atlas はありません');
       expect(r.status).toBe(0);
-    });
+    }, 60_000);
 
     it('画面のサーバだけなら尋ねずに、子孫ごと止める。別のフォルダの atlas は止めない。残った印と前の実行ファイルを消す', async () => {
       const a = makeRepo('a');

@@ -46,10 +46,7 @@ env:
 #   新しい stable が出た後と Cargo.lock を変えた後は、次に main でこの 2 つが通るまで PR は依存を作り直す(急ぐときは main で手動で 1 回動かす)。
 # - 「Rust を入れる」と取り出すキャッシュ(キーと restore-keys)は、release の 3 か所(e2e・ui・smoke)で同じ形にする(1 か所だけ変えると、
 #   残りが黙ってキャッシュを外す)。
-# - release の最後の restore-keys(rust-<OS>-<版>-)は、debug と release を分ける前のキャッシュ(両方が入っている)を使うための移行用。
-#   それを取り出したときは debug の分も入っているので、e2e は保存の前に target/debug を消す。main で rust-release- のキャッシュが
-#   保存されたら、移行用のキーと、この消す手順を一緒に消す。debug の側は、check がデバッグ情報を減らした(CARGO_PROFILE_DEV_DEBUG)ため
-#   前のキャッシュの依存を使えないので、移行用のキーを置かない。
+# - check に release のビルドを、e2e・ui・smoke に debug のビルドを足さない(足すと、保存するキャッシュにもう一方の側の分が混ざる)。
 jobs:
   # 文書だけを変えた PR では、ビルドとテストのジョブ(check・e2e・ui・smoke)を飛ばす(ci-ok は skipped を通す)。
   # 文書とみなすのは docs/ の下と、どこかの *.md。テストもビルドも、リポジトリの *.md を読まない(読むようにしたら、ここで外す)。
@@ -183,7 +180,6 @@ jobs:
           key: rust-release-${{ runner.os }}-${{ steps.rust.outputs.version }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             rust-release-${{ runner.os }}-${{ steps.rust.outputs.version }}-
-            rust-${{ runner.os }}-${{ steps.rust.outputs.version }}-
       - run: npm ci
       # 画面(Svelte)を先に作る: atlas のビルドが packages/report/dist/template.html を実行ファイルに埋め込む
       - run: npm run build:report
@@ -191,12 +187,7 @@ jobs:
         env:
           ATLAS_REQUIRE_TEMPLATE: '1'
       - run: npm run e2e
-      # 上のキャッシュの説明のとおり、main の node 24 だけが保存する(キーが一致して取り出せたときは、変わっていないので保存しない)。
-      # 移行用のキーで取り出した前のキャッシュには debug の分も入っているので、保存の前に消す(移行用のキーと一緒に消す)
-      - if: github.ref == 'refs/heads/main' && matrix.node == 24 && steps.cargo-cache.outputs.cache-hit != 'true'
-        name: 保存の前に debug の分を消す
-        shell: bash
-        run: rm -rf target/debug
+      # 上のキャッシュの説明のとおり、main の node 24 だけが保存する(キーが一致して取り出せたときは、変わっていないので保存しない)
       - if: github.ref == 'refs/heads/main' && matrix.node == 24 && steps.cargo-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -237,7 +228,6 @@ jobs:
           key: rust-release-${{ runner.os }}-${{ steps.rust.outputs.version }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             rust-release-${{ runner.os }}-${{ steps.rust.outputs.version }}-
-            rust-${{ runner.os }}-${{ steps.rust.outputs.version }}-
       - run: npm ci
       - run: npm run build:report
       - run: npm run build:atlas
@@ -307,7 +297,6 @@ jobs:
           key: rust-release-${{ runner.os }}-${{ steps.rust.outputs.version }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             rust-release-${{ runner.os }}-${{ steps.rust.outputs.version }}-
-            rust-${{ runner.os }}-${{ steps.rust.outputs.version }}-
       - run: npm ci
       - name: clone した状態での動作確認
         run: npm run smoke
