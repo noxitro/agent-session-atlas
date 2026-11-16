@@ -8,7 +8,7 @@
 //   --notes はメモと名前付きグループの置き場(groups.json を読む)。既定は <out> と同じ階層の atlas-notes。
 // - 結果は lib の入口ごとに 1 つの JSON(summaries.json・aggregate-<条件>.json・insights-*.json・format.json など)。
 //   build.ts と同じ呼び方(全セッションの要約、絞り込みの条件ごとの集計、改善点の候補)で呼ぶ。
-// - --compare は TS 版を <work>/ts に、Rust 版(crates/atlas-report/examples/libdump.rs。既定は cargo run --release で動かす)を
+// - --compare は TS 版を <work>/ts に、Rust 版(crates/atlas-report/examples/libdump.rs。既定は atlas-cli と一緒に cargo build --release で作って動かす。buildLibdump)を
 //   <work>/rs に書き、ファイルごとに比べる(parity-common.ts の cmpJson。数値は相対 1e-9 まで同じとみなし、キーの順も見る)。
 //   重い入口(要約・集計・候補)の所要時間を両方について出す。<work> の既定は out/parity-lib-dump。
 // - 実データの結果には依頼文がそのまま入る。比べ終わったら <work> を消すこと(コミットしない)。
@@ -380,6 +380,34 @@ function compareDirs(ts: string, rs: string, maxDiffs: number): string[] {
   return diffs;
 }
 
+/**
+ * Rust 版(examples/libdump)を release で作り、実行ファイルのパスを返す。
+ * atlas-cli と同じ cargo build で作る(-p atlas-cli も付ける)。cargo は選んだパッケージだけから依存の features を決めるので、
+ * -p atlas-report だけで作ると、atlas-cli が有効にする features(Windows は windows-sys の一部、Linux は libc の default など)が外れ、
+ * atlas-core・atlas-report から release で作り直すことになる。atlas-cli と一緒に作れば features がそろい、npm run build:atlas の
+ * 結果をそのまま使える(作るのは例だけ)。環境変数(ATLAS_REQUIRE_TEMPLATE など)も build:atlas と同じにしておくこと
+ * (atlas-report の build.rs は ATLAS_REQUIRE_TEMPLATE が変わると作り直す)。
+ */
+function buildLibdump(): string {
+  const r = spawnSync('cargo', ['build', '--release', '--locked', '-p', 'atlas-cli', '-p', 'atlas-report', '--example', 'libdump', '--message-format=json-render-diagnostics'], {
+    cwd: ROOT,
+    stdio: ['ignore', 'pipe', 'inherit'],
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  if (r.status !== 0) {
+    console.error(`parity-lib: libdump のビルドに失敗しました(${r.error ? `cargo を起動できません: ${r.error.message}` : `終了コード ${r.status}`})`);
+    process.exit(1);
+  }
+  for (const line of r.stdout.split('\n')) {
+    if (!line.startsWith('{')) continue;
+    const m = JSON.parse(line) as { reason?: string; target?: { name?: string; kind?: string[] }; executable?: string | null };
+    if (m.reason === 'compiler-artifact' && m.target?.name === 'libdump' && m.target.kind?.includes('example') && m.executable) return m.executable;
+  }
+  console.error('parity-lib: cargo build の出力に libdump の実行ファイルがありません');
+  process.exit(1);
+}
+
 if (!values.compare) {
   const dump = positionals[1];
   if (!dump) {
@@ -397,16 +425,14 @@ if (!values.compare) {
   const tsMs = performance.now() - t0;
   if (ts.status !== 0) process.exit(1);
   rmSync(rsDir, { recursive: true, force: true });
-  const exe = values.rs;
+  const exe = values.rs ?? buildLibdump();
   const t1 = performance.now();
-  const rs = exe
-    ? spawnSync(exe, [inDir, rsDir, notesDir], { stdio: 'inherit' })
-    : spawnSync('cargo', ['run', '--quiet', '--release', '-p', 'atlas-report', '--example', 'libdump', '--', inDir, rsDir, notesDir], { cwd: ROOT, stdio: 'inherit' });
+  const rs = spawnSync(exe, [inDir, rsDir, notesDir], { stdio: 'inherit' });
   const rsMs = performance.now() - t1;
   if (rs.status !== 0) process.exit(1);
   const tt = JSON.parse(readFileSync(join(tsDir, 'timings.txt'), 'utf8')) as Record<string, number>;
   const rt = JSON.parse(readFileSync(join(rsDir, 'timings.txt'), 'utf8')) as Record<string, number>;
-  console.log(`全体: TS ${(tsMs / 1000).toFixed(1)} 秒 / Rust ${(rsMs / 1000).toFixed(1)} 秒(Rust はビルド済みなら起動と読み込みを含む)`);
+  console.log(`全体: TS ${(tsMs / 1000).toFixed(1)} 秒 / Rust ${(rsMs / 1000).toFixed(1)} 秒(どちらも起動と読み込みを含む。Rust のビルドは含まない)`);
   for (const k of Object.keys(tt)) console.log(`  ${k}: TS ${tt[k].toFixed(0)} ms / Rust ${(rt[k] ?? NaN).toFixed(0)} ms`);
   const diffs = compareDirs(tsDir, rsDir, Number(values['max-diffs']));
   const n = readdirSync(tsDir).filter((x) => x.endsWith('.json')).length;
