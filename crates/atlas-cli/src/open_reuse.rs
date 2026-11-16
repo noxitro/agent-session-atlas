@@ -8,7 +8,7 @@
 //! TS 版と同じ built.json を読み書きする(印の作り方も同じ)。
 
 use atlas_core::js::{self, JsMap};
-use atlas_core::snapshot::{SNAPSHOT_MANIFEST, SNAPSHOT_SOURCE};
+use atlas_core::snapshot::{SNAPSHOT_MANIFEST, SNAPSHOT_REMOVED_DIR, SNAPSHOT_SOURCE};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -123,7 +123,8 @@ pub fn inputs_key(p: &ReusePaths<'_>, options: &Value, config_path: &Path, code:
     let mut files: Vec<String> = Vec::new();
     for path in files_recursive(p.snapshot)? {
         let rel = path.strip_prefix(p.snapshot).unwrap_or(&path).components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join("/");
-        if rel == SNAPSHOT_MANIFEST || rel == SNAPSHOT_SOURCE {
+        // 消す前に退けた複製の消し残り(次の集計で消す)は、集計に使わないので入れない
+        if rel == SNAPSHOT_MANIFEST || rel == SNAPSHOT_SOURCE || rel.starts_with(&format!("{SNAPSHOT_REMOVED_DIR}/")) {
             continue;
         }
         files.push(format!("{rel}\0{}", stat_key(&path).unwrap_or_default()));
@@ -196,6 +197,10 @@ mod tests {
         std::fs::write(snap.join(SNAPSHOT_MANIFEST), r#"{"createdAt":"y","sessions":{"dirs":1,"copiedFiles":9},"uploads":{"p":{"uploadedAt":"2026-01-02T09:00:00Z"}},"extras":{"goneKept":[{"id":"a","reason":"x"}]}}"#).unwrap();
         assert_ne!(key, inputs_key(&rp, &opts, &none, "code1").unwrap());
         std::fs::write(snap.join(SNAPSHOT_MANIFEST), r#"{"createdAt":"y","sessions":{"dirs":1,"copiedFiles":9},"uploads":{"p":{"uploadedAt":"2026-01-02T09:00:00Z"}}}"#).unwrap();
+        // 消す前に退けた複製の消し残りは印に入れない(次の集計で片付いたときに、余計に作り直さない)
+        std::fs::create_dir_all(snap.join(SNAPSHOT_REMOVED_DIR).join("1").join("gone")).unwrap();
+        std::fs::write(snap.join(SNAPSHOT_REMOVED_DIR).join("1").join("gone").join("events.jsonl"), "{}\n").unwrap();
+        assert_eq!(key, inputs_key(&rp, &opts, &none, "code1").unwrap());
         let built = d.path().join(crate::folders::BUILT_FILE);
         write_built(&built, &key, &out).unwrap();
         let prev = read_built(&built).unwrap();

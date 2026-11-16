@@ -28,7 +28,7 @@ export interface SnapshotManifest {
     desktop: { written: boolean; sessions: number; warnings: string[] } | null;
     leftover: { path: string; mtime: string }[];
     recovered?: { id: string; path: string }[];
-    goneKept?: { id: string; reason: string }[];
+    goneKept?: { id: string; reason: string; folder?: string }[];
   };
 }
 

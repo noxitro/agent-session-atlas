@@ -632,6 +632,11 @@ fn owners_come_from_counted_folders() {
     assert_eq!(m3.merged.as_ref().unwrap().owners.as_ref().unwrap()["s2"], "person-a/proj-a");
 }
 
+/// 消さなかった複製が持ち越した、フォルダの記録(id, folder)
+fn kept_folders(m: &SnapshotManifest) -> Vec<(String, Option<String>)> {
+    m.extras.as_ref().unwrap().gone_kept.as_ref().map(|k| k.iter().map(|x| (x.id.clone(), x.folder.clone())).collect()).unwrap_or_default()
+}
+
 fn kept(m: &SnapshotManifest) -> Vec<(String, String)> {
     m.extras.as_ref().unwrap().gone_kept.as_ref().map(|k| k.iter().map(|x| (x.id.clone(), x.reason.clone())).collect()).unwrap_or_default()
 }
@@ -670,8 +675,10 @@ fn sessions_gone_from_upload_folder_are_removed_from_copy() {
     assert!(state.join(upload_old_name("zz")).join("events.jsonl").exists());
     // 退けた場所は、消し終えたら残さない
     assert!(!dest.join(SNAPSHOT_REMOVED_DIR).exists());
-    // 消した後は、消す分が無い
+    // 前の集計で消し切れなかった分が退けた場所に残っていれば、消す分が無い回でも片付ける
+    session(&dest.join(SNAPSHOT_REMOVED_DIR).join("1").join("zz-left"), &[]);
     assert_eq!(snap(&proj, &dest).unwrap().sessions.removed, None);
+    assert!(!dest.join(SNAPSHOT_REMOVED_DIR).exists());
 }
 
 #[test]
@@ -709,6 +716,7 @@ fn unreadable_source_folder_keeps_copy_and_owner() {
     let m = snap(&root, &dest).unwrap();
     assert_eq!(m.sessions.removed, None);
     assert_eq!(kept(&m), pairs(&[("s2", KEPT_UNREADABLE_REASON), ("s3", KEPT_UNREADABLE_REASON)]));
+    assert_eq!(kept_folders(&m), vec![("s2".to_string(), Some("person-b/proj-b".to_string())), ("s3".to_string(), Some("person-b/proj-b".to_string()))]);
     assert_eq!(names(&dest.join("session-state")), ["s1", "s2", "s3"]);
     // 数えたフォルダは前の集計から引き継ぐ(人ごとの内訳から外さない。次に確かめるときにも要る)
     let mut got = owners(&m);
@@ -748,6 +756,7 @@ fn copies_without_a_record_of_their_folder_are_kept() {
     session(&dest.join("session-state").join("old9"), &[]);
     let m = snap(&root, &dest).unwrap();
     assert_eq!((m.sessions.removed, kept(&m)), (None, pairs(&[("old9", KEPT_UNKNOWN_REASON)])));
+    assert_eq!(kept_folders(&m), vec![("old9".to_string(), None)]);
     assert!(dest.join("session-state").join("old9").exists());
     // 直下にセッションが並ぶ形: 最後まで終わった集計の記録が無いうち(1 回目が途中で止まった)は消さず、記録ができた次の回に消す
     let proj = base.path().join("proj");
@@ -764,19 +773,102 @@ fn copies_without_a_record_of_their_folder_are_kept() {
 #[test]
 fn layout_change_does_not_wipe_copies() {
     // 人ごとのフォルダが並ぶ場所の直下に、セッションのフォルダが 1 つ紛れると、直下にセッションが並ぶ形として読まれる。
-    // そのときも、前の集計で数えたフォルダにまだあるセッションの複製は消さない
+    // そのときも、前の集計で数えたフォルダにまだあるセッションの複製は消さず、理由を残す。何回集計しても同じ
+    // (直下に並ぶ形の回の manifest には数えたフォルダの記録が無いので、消さなかった複製の記録として持ち越す)
     let base = work();
     let root = base.path().join("logs");
     let dest = base.path().join("out").join("snapshot");
     session(&root.join("person-a").join("proj-a").join("s1"), &[]);
-    session(&root.join("person-a").join("proj-a").join("s2"), &[]);
+    session(&root.join("person-b").join("proj-b").join("s2"), &[]);
     snap(&root, &dest).unwrap();
     session(&root.join("stray"), &[]);
     assert_eq!(describe_source(&root), SourceShape::Flat);
+    for round in 1..=3 {
+        let m = snap(&root, &dest).unwrap();
+        assert_eq!(m.sessions.removed, None, "{round} 回目");
+        assert_eq!(kept(&m), pairs(&[("s1", KEPT_PRESENT_REASON), ("s2", KEPT_PRESENT_REASON)]), "{round} 回目");
+        assert_eq!(kept_folders(&m), vec![("s1".to_string(), Some("person-a/proj-a".to_string())), ("s2".to_string(), Some("person-b/proj-b".to_string()))], "{round} 回目");
+        assert_eq!(names(&dest.join("session-state")), ["s1", "s2", "stray"], "{round} 回目");
+    }
+    // 形が変わっている間に、元から本当に無くなったものは消す
+    fs::remove_dir_all(root.join("person-b").join("proj-b").join("s2")).unwrap();
     let m = snap(&root, &dest).unwrap();
-    assert_eq!((m.sessions.removed, kept(&m)), (None, vec![]));
-    for id in ["s1", "s2"] {
-        assert!(dest.join("session-state").join(id).join("events.jsonl").exists(), "{id}");
+    assert_eq!((m.sessions.removed, kept(&m)), (Some(1), pairs(&[("s1", KEPT_PRESENT_REASON)])));
+    // 紛れたフォルダを除くと、元の形に戻る: 残した複製はそのまま数え、紛れたフォルダの複製は消す
+    fs::remove_dir_all(root.join("stray")).unwrap();
+    let back = snap(&root, &dest).unwrap();
+    assert_eq!((back.sessions.removed, kept(&back)), (Some(1), vec![]));
+    assert_eq!(owners(&back), pairs(&[("s1", "person-a/proj-a")]));
+    assert_eq!(names(&dest.join("session-state")), ["s1"]);
+}
+
+#[test]
+fn run_that_finds_no_sessions_keeps_copies_and_their_records() {
+    // 前はアップロード先として読んだ場所に、集計できるセッションが 1 件も見つからない回(共有フォルダが空に見える、など)は、
+    // 何も消さず、複製ごとのフォルダの記録を持ち越す。次に読めたときに、無くなったものだけを消せる
+    let base = work();
+    // まとめて読む形
+    let root = base.path().join("logs");
+    let dest = base.path().join("out").join("snapshot");
+    session(&root.join("person-a").join("proj-a").join("a1"), &[]);
+    session(&root.join("person-a").join("proj-a").join("a2"), &[]);
+    snap(&root, &dest).unwrap();
+    let away = base.path().join("person-a-away");
+    fs::rename(root.join("person-a"), &away).unwrap();
+    assert_eq!(describe_source(&root), SourceShape::None);
+    for round in 1..=2 {
+        let none = snap(&root, &dest).unwrap();
+        assert_eq!(none.sessions.removed, None, "{round} 回目");
+        assert_eq!(kept(&none), pairs(&[("a1", KEPT_NO_SOURCE_REASON), ("a2", KEPT_NO_SOURCE_REASON)]), "{round} 回目");
+        assert_eq!(kept_folders(&none), vec![("a1".to_string(), Some("person-a/proj-a".to_string())), ("a2".to_string(), Some("person-a/proj-a".to_string()))], "{round} 回目");
+    }
+    fs::rename(&away, root.join("person-a")).unwrap();
+    fs::remove_dir_all(root.join("person-a").join("proj-a").join("a2")).unwrap();
+    let back = snap(&root, &dest).unwrap();
+    assert_eq!((back.sessions.removed, kept(&back)), (Some(1), vec![]));
+    assert_eq!(names(&dest.join("session-state")), ["a1"]);
+    assert_eq!(owners(&back), pairs(&[("a1", "person-a/proj-a")]));
+    // 直下にセッションが並ぶ形
+    let proj = base.path().join("proj");
+    let dest2 = base.path().join("out2").join("snapshot");
+    session(&proj.join("p1"), &[]);
+    session(&proj.join("p2"), &[]);
+    snap(&proj, &dest2).unwrap();
+    let away2 = base.path().join("p-away");
+    fs::create_dir_all(&away2).unwrap();
+    fs::rename(proj.join("p1"), away2.join("p1")).unwrap();
+    fs::rename(proj.join("p2"), away2.join("p2")).unwrap();
+    let none = snap(&proj, &dest2).unwrap();
+    assert_eq!(kept_folders(&none), vec![("p1".to_string(), Some(String::new())), ("p2".to_string(), Some(String::new()))]);
+    assert_eq!(names(&dest2.join("session-state")), ["p1", "p2"]);
+    fs::rename(away2.join("p1"), proj.join("p1")).unwrap();
+    let back2 = snap(&proj, &dest2).unwrap();
+    assert_eq!((back2.sessions.removed, kept(&back2)), (Some(1), vec![]));
+    assert_eq!(names(&dest2.join("session-state")), ["p1"]);
+}
+
+#[test]
+fn root_record_is_not_written_as_counted_folder() {
+    // 直下にセッションが並ぶ形だった場所が、人ごとのフォルダが並ぶ形に変わった。直下にフォルダだけが残ったセッション(中身は無い)の複製は、
+    // 「元のルートにあった」という記録で持ち越す。その記録は、数えたフォルダ(人ごとの内訳に使う merged.owners)には書かない
+    let base = work();
+    let root = base.path().join("logs");
+    let dest = base.path().join("out").join("snapshot");
+    session(&root.join("p8"), &[]);
+    session(&root.join("p9"), &[]);
+    assert_eq!(describe_source(&root), SourceShape::Flat);
+    snap(&root, &dest).unwrap();
+    fs::remove_dir_all(root.join("p8")).unwrap();
+    fs::remove_file(root.join("p9").join("events.jsonl")).unwrap();
+    session(&root.join("person-a").join("proj-a").join("s1"), &[]);
+    assert_eq!(describe_source(&root), merged_of(&["person-a/proj-a"]));
+    for round in 1..=2 {
+        let m = snap(&root, &dest).unwrap();
+        assert_eq!(m.sessions.removed, if round == 1 { Some(1) } else { None }, "{round} 回目");
+        assert_eq!(kept(&m), pairs(&[("p9", KEPT_PRESENT_REASON)]), "{round} 回目");
+        assert_eq!(kept_folders(&m), vec![("p9".to_string(), Some(String::new()))], "{round} 回目");
+        assert_eq!(owners(&m), pairs(&[("s1", "person-a/proj-a")]), "{round} 回目");
+        assert_eq!(names(&dest.join("session-state")), ["p9", "s1"], "{round} 回目");
     }
 }
 
