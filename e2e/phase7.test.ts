@@ -23,7 +23,7 @@ import { quantilesOf } from '../packages/report/src/lib/exec.ts';
 import { applyFilter, decodeFilter, decodeView, emptyFilter, usedTool } from '../packages/report/src/lib/filter.ts';
 import { highlights } from '../packages/report/src/lib/highlights.ts';
 import type { ReportData } from '../packages/report/src/lib/types.ts';
-import type { MetricsFile, SessionRecord, SessionsFile } from '../packages/report/src/shared/types.ts';
+import type { MetricsFile, SessionRecord, SessionsFile } from '../packages/core/src/types.ts';
 import { openReadOnly, openWritable } from './sqlite.ts';
 import { buildFixtureHome, ROOT, cliCommand } from './fixture-home.ts';
 

@@ -11,7 +11,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { SessionRecord, SessionsFile } from '../packages/report/src/shared/types.ts';
+import type { SessionRecord, SessionsFile } from '../packages/core/src/types.ts';
 import type { SessionStoreJson } from './output-types.ts';
 import { hasUsageRows } from './sqlite.ts';
 import { buildFixtureHome, FAKE_SECRETS, P11_SESSION, ROOT, UNLISTED_VALUES, cliCommand } from './fixture-home.ts';

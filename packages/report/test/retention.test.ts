@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { aggregateRetention, DEFAULT_LAG_DAYS, enoughMeasured, median, phaseAt, REASON_LABEL, REASONS, RETENTION_MIN_SESSIONS, retentionByPhase, retentionItem, shareOf, STATUS_LABEL, STATUSES, UNKNOWN_PHASE, VCS_LABEL, type RetentionItem } from '../src/lib/retention.ts';
 import { comparePhaseRows, compareRows, compareSide, COMPARE_MIN_SESSIONS, defaultPeriods, inPeriod, type CompareSession } from '../src/lib/compare.ts';
-import { PHASES } from '../src/shared/turns.ts';
+import { PHASES } from '../../core/src/turns.ts';
 import type { TurnTuple } from '../src/lib/turns.ts';
 
 // 照合の本体は Rust(crates/atlas-core/src/vcs_retention.rs・vcs.rs)。画面の lib はその並びと名前を写しているので、Rust のソースから読んで比べる

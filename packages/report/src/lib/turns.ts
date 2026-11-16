@@ -11,8 +11,8 @@ import {
   type RequestKind,
   type TurnBucket,
   type TurnRow,
-} from '../shared/turns.ts';
-import type { SessionRecord } from '../shared/types.ts';
+} from '../../../core/src/turns.ts';
+import type { SessionRecord } from '../../../core/src/types.ts';
 
 /**
  * [工程, 依頼の種類, 次の依頼の種類(無ければ null), 実働 ms, ツール, 失敗, 拒否, 中断, エラー, うち利用上限, 文脈圧縮, 再編集, nano AIU, サブエージェント失敗, 編集]。

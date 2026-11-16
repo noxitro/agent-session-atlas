@@ -16,7 +16,7 @@ import {
   type CompareSession,
 } from '../src/lib/compare.ts';
 import { MAIN_EFFORT_SHARE, mainEffortOf } from '../src/lib/main-effort.ts';
-import { PHASES, REQUEST_KINDS } from '../src/shared/turns.ts';
+import { PHASES, REQUEST_KINDS } from '../../core/src/turns.ts';
 import type { TurnTuple } from '../src/lib/turns.ts';
 
 /** 依頼の行(種類と中断だけを決める。ほかは 0) */

@@ -1,9 +1,9 @@
 // テストが読む atlas の出力ファイルの形(テストが見るところだけ)。atlas の本体は Rust(crates/)で、
 // sessions.json・metrics.json・画面のデータの形は packages/report/src/shared/types.ts と lib/types.ts にある。
 // ここは、それ以外の出力(スナップショットの記録・coverage.json・atlas-session-store.json・vcs-retention.json)の形。
-import type { DesktopSessionInfo } from '../packages/report/src/shared/desktop-types.ts';
-import type { DbFileRow, DbSessionRow, DbTurnRow, DbUsageRow, InstalledInventory } from '../packages/report/src/shared/types.ts';
-import type { FolderUpload } from '../packages/report/src/shared/atlas-version.ts';
+import type { DesktopSessionInfo } from '../packages/core/src/desktop-types.ts';
+import type { DbFileRow, DbSessionRow, DbTurnRow, DbUsageRow, InstalledInventory } from '../packages/core/src/types.ts';
+import type { FolderUpload } from '../packages/core/src/atlas-version.ts';
 
 /** out/snapshot/snapshot-manifest.json(crates/atlas-core/src/snapshot) */
 export interface SnapshotManifest {

@@ -19,7 +19,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import type { SessionsFile } from '../packages/report/src/shared/types.ts';
+import type { SessionsFile } from '../packages/core/src/types.ts';
 import { aggregate, coverageBreakdown, monthRange, unusedSkills } from '../packages/report/src/lib/aggregate.ts';
 import { embedData, extractEmbedded, serializeForScript } from '../packages/report/src/lib/embed.ts';
 import { execAggregate, quantilesOf } from '../packages/report/src/lib/exec.ts';
@@ -57,8 +57,8 @@ import { turnAggregate } from '../packages/report/src/lib/turns.ts';
 import { parseVerdicts, verdictAggregate, verdictTuples } from '../packages/report/src/lib/verdicts.ts';
 import { REPORT_DATA_VERSION } from '../packages/report/src/lib/types.ts';
 import { mainEffortOf } from '../packages/report/src/lib/main-effort.ts';
-import { PHASES, sessionTurns } from '../packages/report/src/shared/turns.ts';
-import type { SessionRecord, SessionTests } from '../packages/report/src/shared/types.ts';
+import { PHASES, sessionTurns } from '../packages/core/src/turns.ts';
+import type { SessionRecord, SessionTests } from '../packages/core/src/types.ts';
 import { cmpJson, firstTextDiff } from './parity-common.ts';
 
 /** vcs-retention.json(atlas vcs の出力)。突き合わせに使う項目だけ */

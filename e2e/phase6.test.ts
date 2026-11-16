@@ -17,8 +17,8 @@ import { aggregate, failureRate, unusedSkills } from '../packages/report/src/lib
 import { extractEmbedded } from '../packages/report/src/lib/embed.ts';
 import { applyFilter, emptyFilter } from '../packages/report/src/lib/filter.ts';
 import type { ReportData } from '../packages/report/src/lib/types.ts';
-import { ATLAS_JUDGE_PROJECT, HOME_PROJECT, TEMP_PROJECT } from '../packages/report/src/shared/project-keys.ts';
-import type { MetricsFile, SessionRecord, SessionsFile } from '../packages/report/src/shared/types.ts';
+import { ATLAS_JUDGE_PROJECT, HOME_PROJECT, TEMP_PROJECT } from '../packages/core/src/project-keys.ts';
+import type { MetricsFile, SessionRecord, SessionsFile } from '../packages/core/src/types.ts';
 import { buildFixtureHome, ROOT, cliCommand } from './fixture-home.ts';
 
 /**

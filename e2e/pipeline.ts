@@ -3,7 +3,7 @@
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { MetricsFile, SessionsFile } from '../packages/report/src/shared/types.ts';
+import type { MetricsFile, SessionsFile } from '../packages/core/src/types.ts';
 import { ROOT, cliCommand } from './fixture-home.ts';
 
 export interface PipelineResult {
