@@ -149,6 +149,9 @@ pub struct SessionCounts {
     pub db_copied: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub db_reused: Option<u64>,
+    /// アップロード先を読んだとき、元のフォルダから無くなっていたので複製を消したセッションの数(0 のときは書かない)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub removed: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -451,7 +454,7 @@ pub fn snapshot(src: &Path, dest: &Path, opts: &SnapshotOptions) -> Result<Snaps
             marks.iter().map(|(_, f)| f.display().to_string()).collect::<Vec<_>>().join(" と ")
         );
     }
-    // 前の集計で、セッションごとに数えたフォルダ(元から消えたセッションの複製が出力先に残っているときに引き継ぐ)。
+    // 前の集計で、セッションごとに数えたフォルダ(元に本体が無いセッションの複製が出力先に残っているときに引き継ぐ)。
     // 別の元の manifest は上で消してあるので、ここで読めるのは同じ元のものだけ
     let previous_owners: Vec<(String, Value)> = if merged.is_some() { read_previous_owners(dest) } else { Vec::new() };
     fs::create_dir_all(dest)?;
@@ -525,8 +528,12 @@ pub fn snapshot(src: &Path, dest: &Path, opts: &SnapshotOptions) -> Result<Snaps
     // 写すのは後でまとめて並べて行う。写さなかったものの記録は、枠の順に manifest へ移す(並べて写しても順が変わらないように)
     let mut slots: Vec<(Vec<SkippedEntry>, Option<usize>)> = Vec::new();
     let mut tasks: Vec<SessionTask> = Vec::new();
+    // 元にフォルダがあるセッションの id(小文字にそろえる)。作業用のフォルダ(置き換えの途中・消し残し)しか無い id も入れる:
+    // 置き換えの途中か、共有から消した後の消し残しかを見分けられないので、その複製は消さない
+    let mut in_source: HashSet<String> = HashSet::new();
     for state_src in &state_srcs {
         for (ent_name, ents) in listing.remove(state_src).unwrap_or_default() {
+            in_source.insert(upload_work_dir_id(&ent_name).unwrap_or_else(|| ent_name.clone()).to_lowercase());
             let mut skipped: Vec<SkippedEntry> = Vec::new();
             let dir_src = state_src.join(&ent_name);
             let rel = jsfs::rel_slash(src, &dir_src);
@@ -639,6 +646,13 @@ pub fn snapshot(src: &Path, dest: &Path, opts: &SnapshotOptions) -> Result<Snaps
         }
     }
 
+    // アップロード先を読むときは、元のフォルダから無くなったセッションの複製を消す(送り先から消したセッションを、前の複製から数え続けない)。
+    // ~/.copilot を読むときは消さない(Copilot が消したログの、最後の複製かもしれない)
+    if (flat || merged.is_some()) && !taken.is_empty() {
+        let removed = remove_gone_sessions(&ctx.state_dest, &in_source)?;
+        manifest.sessions.removed = (removed > 0).then_some(removed);
+    }
+
     // Phase 11: ~/.copilot 直下の plans/・attachments/(と chats/ の *.md)。logs/ は --snapshot-all、repos/ は写さない。
     // 直下にセッションが並ぶ形・そのフォルダが並ぶ形では、直下のフォルダはセッションかその入れ物なので写さない(写したものとして一覧に出さない)
     if !flat && merged.is_none() {
@@ -675,7 +689,8 @@ pub fn snapshot(src: &Path, dest: &Path, opts: &SnapshotOptions) -> Result<Snaps
         manifest.installed = Some(read_inventory(src));
     }
 
-    // 元から消えたセッションの複製が出力先に残っていれば、前の集計で数えたフォルダを引き継ぐ(人ごとの内訳から外さない)
+    // 元に本体が無いセッションの複製が出力先に残っていれば(作業用のフォルダだけが元に残っているもの。上で消さなかったもの)、
+    // 前の集計で数えたフォルダを引き継ぐ(人ごとの内訳から外さない)
     for (id, folder) in previous_owners {
         if let Value::String(folder) = folder {
             if !owner_folders.contains_key(&id) && jsfs::exists(&ctx.state_dest.join(&id)) {
@@ -689,6 +704,27 @@ pub fn snapshot(src: &Path, dest: &Path, opts: &SnapshotOptions) -> Result<Snaps
 
     fs::write(dest.join(SNAPSHOT_MANIFEST), crate::json::to_js_string_pretty(&manifest)?)?;
     Ok(manifest)
+}
+
+/// 複製先のセッションのフォルダのうち、元に同じ id のフォルダが無いものを消し、消した数を返す。
+/// 名前は大文字小文字を区別せずに比べる(Windows で、元の名前の大文字小文字だけが変わったときに、写したばかりの複製を消さない)。
+/// 作業用のフォルダの名前のもの(前の版が写したもの)には触れない(数えていないことは extract が警告に出す)。
+/// 呼ぶのは、元から 1 件以上のセッションを読めたときだけ(共有フォルダが一時的に空に見えたときに、複製を全部消さない)
+fn remove_gone_sessions(state_dest: &Path, in_source: &HashSet<String>) -> Result<u64> {
+    let ents = match jsfs::read_dir(state_dest) {
+        Ok(e) => e,
+        Err(e) if jsfs::is_not_found(&e) => return Ok(0),
+        Err(e) => return Err(e.into()),
+    };
+    let mut removed = 0;
+    for d in ents {
+        if !d.is_dir() || is_upload_work_dir(&d.name) || in_source.contains(&d.name.to_lowercase()) {
+            continue;
+        }
+        jsfs::rm_rf(&state_dest.join(&d.name))?;
+        removed += 1;
+    }
+    Ok(removed)
 }
 
 /// 1 セッション分を写す(workspace.yaml / events.jsonl・session.db・追加のファイル)。since より前のもので写さなかったら false。

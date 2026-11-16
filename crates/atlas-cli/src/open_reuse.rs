@@ -42,7 +42,7 @@ const OPTIONAL_OUTPUT_FILES: [&str; 1] = [VCS_RETENTION_FILE];
 /// 無いファイルの印
 const ABSENT: &str = "none";
 /// manifest の sessions のうち、元が同じでも変わる項目
-const VOLATILE_SESSION_COUNTS: [&str; 4] = ["copiedFiles", "reusedFiles", "dbCopied", "dbReused"];
+const VOLATILE_SESSION_COUNTS: [&str; 5] = ["copiedFiles", "reusedFiles", "dbCopied", "dbReused", "removed"];
 
 /// ファイルの「大きさ:更新日時」。無ければ None
 fn stat_key(path: &Path) -> Option<String> {

@@ -614,17 +614,73 @@ fn owners_come_from_counted_folders() {
     let all4 = pairs(&[("s1", "person-a/proj-a"), ("s2", "person-b/proj-a"), ("s3", "shared"), ("s4", "person-b/proj-b")]);
     let m = snap(&root, &dest).unwrap();
     assert_eq!(owners(&m), all4);
-    // 元から消えたセッションの複製は出力先に残る。前の集計で数えたフォルダを引き継ぐ
+    assert_eq!(m.sessions.removed, None);
+    // 元から消えたセッションは、複製も消し、数えたフォルダの記録からも外す(送り先から消したセッションを数え続けない)
     fs::remove_dir_all(root.join("person-b").join("proj-a").join("s2")).unwrap();
     let again = snap(&root, &dest).unwrap();
-    assert!(dest.join("session-state").join("s2").exists());
+    assert!(!dest.join("session-state").join("s2").exists());
+    assert_eq!(again.sessions.removed, Some(1));
     let mut got = owners(&again);
     got.sort();
-    assert_eq!(got, all4);
+    assert_eq!(got, pairs(&[("s1", "person-a/proj-a"), ("s3", "shared"), ("s4", "person-b/proj-b")]));
+    // 消した後は、消す分が無いので件数を書かない
+    assert_eq!(snap(&root, &dest).unwrap().sessions.removed, None);
     // 別の人のフォルダに移したら、今あるほうの人になる(前の値より、今の元を先に見る)
     session(&root.join("person-a").join("proj-a").join("s2"), &[]);
     let m3 = snap(&root, &dest).unwrap();
     assert_eq!(m3.merged.as_ref().unwrap().owners.as_ref().unwrap()["s2"], "person-a/proj-a");
+}
+
+#[test]
+fn sessions_gone_from_upload_folder_are_removed_from_copy() {
+    let base = work();
+    // プロジェクトのフォルダ(直下にセッションが並ぶ形)
+    let proj = base.path().join("logs").join("proj-a");
+    let dest = base.path().join("out").join("snapshot");
+    let state = dest.join("session-state");
+    for id in ["s1", "s2", "s3", "s4"] {
+        session(&proj.join(id), &[]);
+    }
+    assert_eq!(snap(&proj, &dest).unwrap().sessions.removed, None);
+    assert_eq!(names(&state), ["s1", "s2", "s3", "s4"]);
+    // s2 は消した。s3 は本体が無く、置き換えで退けた前のフォルダだけが残っている(消したのか、置き換えの途中かを見分けられないので、複製は消さない)。
+    // s4 は名前の大文字小文字だけが変わった(Windows では同じフォルダなので、写したばかりの複製を消さない)
+    fs::remove_dir_all(proj.join("s2")).unwrap();
+    fs::rename(proj.join("s3"), proj.join(upload_old_name("s3"))).unwrap();
+    fs::rename(proj.join("s4"), proj.join("S4-tmp")).unwrap();
+    fs::rename(proj.join("S4-tmp"), proj.join("S4")).unwrap();
+    let m = snap(&proj, &dest).unwrap();
+    assert_eq!(m.sessions.removed, Some(1));
+    let left: Vec<String> = names(&state).into_iter().map(|n| n.to_lowercase()).filter(|n| n != "s2").collect();
+    assert!(!state.join("s2").exists());
+    assert!(left.contains(&"s1".to_string()) && left.contains(&"s3".to_string()) && left.contains(&"s4".to_string()), "{left:?}");
+    assert!(state.join("s3").join("events.jsonl").exists());
+    // 元から 1 件も読めなかったとき(索引はあるのにセッションのフォルダが 1 つも見えない。共有フォルダが一時的に空に見えたなど)は、複製を消さない
+    let people = base.path().join("people");
+    let dest2 = base.path().join("out2").join("snapshot");
+    session(&people.join("person-a").join("proj-a").join("t1"), &[]);
+    fs::write(people.join("person-a").join("proj-a").join(UPLOAD_INDEX), "{}").unwrap();
+    assert_eq!(snap(&people, &dest2).unwrap().sessions.dirs, 1);
+    fs::remove_dir_all(people.join("person-a").join("proj-a").join("t1")).unwrap();
+    assert_eq!(describe_source(&people), merged_of(&["person-a/proj-a"]));
+    let none = snap(&people, &dest2).unwrap();
+    assert_eq!((none.sessions.dirs, none.sessions.removed), (0, None));
+    assert!(dest2.join("session-state").join("t1").exists());
+}
+
+#[test]
+fn sessions_gone_from_copilot_home_keep_their_copy() {
+    // ~/.copilot を読むときは、元から消えたセッションの複製を残す(Copilot が消したログの、最後の複製かもしれない)
+    let base = work();
+    let home = base.path().join("home");
+    let dest = base.path().join("out").join("snapshot");
+    session(&home.join("session-state").join("s1"), &[]);
+    session(&home.join("session-state").join("s2"), &[]);
+    snap(&home, &dest).unwrap();
+    fs::remove_dir_all(home.join("session-state").join("s2")).unwrap();
+    let m = snap(&home, &dest).unwrap();
+    assert_eq!(m.sessions.removed, None);
+    assert_eq!(names(&dest.join("session-state")), ["s1", "s2"]);
 }
 
 #[test]

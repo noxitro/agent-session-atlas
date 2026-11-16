@@ -394,5 +394,27 @@ describe('Phase 16 E2E: アップロード先から集計し直す(読む側)', 
     expect(touched).toMatch(/build: /);
     // 作り直した後は、また使い回す
     expect(await open()).toMatch(REUSED);
+    // 送り先からセッションのフォルダを消した: 前に写した複製も消し、レポートから外す(前の複製を数え続けない)
+    const gone = '00000000-0000-4000-8000-000000169999';
+    const before = JSON.parse(await readFile(join(fp.out, 'sessions.json'), 'utf8')) as SessionsFile;
+    expect(before.sessions.map((x) => x.id)).toContain(gone);
+    expect(existsSync(join(fp.out, 'snapshot', 'session-state', gone))).toBe(true);
+    await rm(join(everyone, 'person-a', GROUP_A, gone), { recursive: true, force: true });
+    const removed = await open();
+    expect(removed).toContain('元のフォルダから無くなっていたセッション 1 件の複製を消しました');
+    expect(removed).not.toMatch(REUSED);
+    expect(existsSync(join(fp.out, 'snapshot', 'session-state', gone))).toBe(false);
+    const after = JSON.parse(await readFile(join(fp.out, 'sessions.json'), 'utf8')) as SessionsFile;
+    expect(after.sessions.map((x) => x.id).sort()).toEqual(before.sessions.map((x) => x.id).filter((id) => id !== gone).sort());
+    expect(extractEmbedded<{ sessions: { id: string }[] }>(await readFile(join(fp.out, 'atlas.html'), 'utf8')).sessions.map((x) => x.id)).not.toContain(gone);
+    // 消した後は、また使い回す(消した件数は入力の印に入れない)
+    const settled = await open();
+    expect(settled).toMatch(REUSED);
+    expect(settled).not.toContain('複製を消しました');
+    // 人ごとのフォルダを丸ごと消した: その人のフォルダを読まなくなる
+    await rm(join(everyone, 'person-b'), { recursive: true, force: true });
+    expect(await open()).not.toMatch(REUSED);
+    const onlyA = JSON.parse(await readFile(join(fp.out, 'sessions.json'), 'utf8')) as SessionsFile;
+    expect(onlyA.source).toMatchObject({ folders: [`person-a/${GROUP_A}`, `person-a/${GROUP_B}`] });
   }, 480_000);
 });

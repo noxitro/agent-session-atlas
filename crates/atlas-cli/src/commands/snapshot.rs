@@ -31,6 +31,9 @@ pub fn run_snapshot(p: &Paths, since: Option<&str>, log: Log<'_>, all: bool, pru
         s.db_reused.unwrap_or(0),
         ms(t.elapsed())
     ));
+    if let Some(n) = s.removed.filter(|n| *n > 0) {
+        log(&format!("snapshot: 元のフォルダから無くなっていたセッション {n} 件の複製を消しました(アップロード先を読むときは、今あるセッションだけを集計します)"));
+    }
     // 集計できる形のフォルダではなかったとき(0 件のまま黙って空のレポートを作らないように、指定のしかたを出す)
     if s.dirs == 0 && s.skipped_by_since == 0 && describe_source(&p.home) == SourceShape::None {
         log(&format!(
