@@ -2,15 +2,16 @@
 // (Rust 移行の段 4-1 の確認用。docs/rust-migration.md)。build の移植の前に、lib を直接比べるためのもの。
 //
 //   node scripts/parity-lib.ts <out> <dump> [--notes <dir>]            TS 版の結果を <dump> に書く
-//   node scripts/parity-lib.ts <out> --compare [--notes <dir>] [--work <dir>] [--rs <exe>] [--max-diffs <n>]
+//   node scripts/parity-lib.ts <out> --compare [--notes <dir>] [--work <dir>] [--rs <exe> | --release] [--max-diffs <n>]
 //
 // - <out> は atlas の出力先(sessions.json。あれば judgments.json・turn-judgments.json・vcs-retention.json も読む)。
 //   --notes はメモと名前付きグループの置き場(groups.json を読む)。既定は <out> と同じ階層の atlas-notes。
 // - 結果は lib の入口ごとに 1 つの JSON(summaries.json・aggregate-<条件>.json・insights-*.json・format.json など)。
 //   build.ts と同じ呼び方(全セッションの要約、絞り込みの条件ごとの集計、改善点の候補)で呼ぶ。
-// - --compare は TS 版を <work>/ts に、Rust 版(crates/atlas-report/examples/libdump.rs。既定は atlas-cli と一緒に cargo build --release で作って動かす。buildLibdump)を
-//   <work>/rs に書き、ファイルごとに比べる(parity-common.ts の cmpJson。数値は相対 1e-9 まで同じとみなし、キーの順も見る)。
-//   重い入口(要約・集計・候補)の所要時間を両方について出す。<work> の既定は out/parity-lib-dump。
+// - --compare は TS 版を <work>/ts に、Rust 版(crates/atlas-report/examples/libdump.rs。既定は npm test と同じ選び方の debug で作って動かす。
+//   buildLibdump)を <work>/rs に書き、ファイルごとに比べる(parity-common.ts の cmpJson。数値は相対 1e-9 まで同じとみなし、キーの順も見る)。
+//   重い入口(要約・集計・候補)の所要時間を両方について出す。Rust の所要時間を release で比べるときは --release(atlas-cli と一緒に
+//   cargo build --release で作る)。<work> の既定は out/parity-lib-dump。
 // - 実データの結果には依頼文がそのまま入る。比べ終わったら <work> を消すこと(コミットしない)。
 // - TS のサーバー側を消した後も、画面が使う TS の lib と、build が使う Rust の lib がずれていないかを見るために残す(npm run parity:lib)。
 import { spawnSync } from 'node:child_process';
@@ -96,6 +97,7 @@ const { values, positionals } = parseArgs({
     compare: { type: 'boolean', default: false },
     work: { type: 'string' },
     rs: { type: 'string' },
+    release: { type: 'boolean', default: false },
     'max-diffs': { type: 'string', default: '30' },
   },
 });
@@ -381,15 +383,18 @@ function compareDirs(ts: string, rs: string, maxDiffs: number): string[] {
 }
 
 /**
- * Rust 版(examples/libdump)を release で作り、実行ファイルのパスを返す。
- * atlas-cli と同じ cargo build で作る(-p atlas-cli も付ける)。cargo は選んだパッケージだけから依存の features を決めるので、
- * -p atlas-report だけで作ると、atlas-cli が有効にする features(Windows は windows-sys の一部、Linux は libc の default など)が外れ、
- * atlas-core・atlas-report から release で作り直すことになる。atlas-cli と一緒に作れば features がそろい、npm run build:atlas の
- * 結果をそのまま使える(作るのは例だけ)。環境変数(ATLAS_REQUIRE_TEMPLATE など)も build:atlas と同じにしておくこと
- * (atlas-report の build.rs は ATLAS_REQUIRE_TEMPLATE が変わると作り直す)。
+ * Rust 版(examples/libdump)を作り、実行ファイルのパスを返す。
+ * cargo は選んだパッケージ(と、例やテストを作るときは dev-dependencies)から依存の features を決めるので、先に作ったものと同じ
+ * 選び方にして、その結果を使い回す(作り直さない)。
+ * - 既定(debug): npm test の cargo test --workspace と同じく --workspace で選ぶ。cargo test は例も作るので、npm test の後なら作り直しは無い。
+ * - --release: npm run build:atlas と同じく atlas-cli と一緒に作る(-p atlas-report だけだと、atlas-cli が有効にする features
+ *   (Windows は windows-sys の一部、Linux は libc の default など)が外れ、atlas-core・atlas-report から release で作り直す)。
+ * どちらも環境変数(ATLAS_REQUIRE_TEMPLATE・CARGO_PROFILE_* など)を先に作ったときと同じにしておくこと(atlas-report の build.rs は
+ * ATLAS_REQUIRE_TEMPLATE が変わると作り直し、CARGO_PROFILE_* が変わると依存から作り直す)。
  */
-function buildLibdump(): string {
-  const r = spawnSync('cargo', ['build', '--release', '--locked', '-p', 'atlas-cli', '-p', 'atlas-report', '--example', 'libdump', '--message-format=json-render-diagnostics'], {
+function buildLibdump(release: boolean): string {
+  const select = release ? ['--release', '-p', 'atlas-cli', '-p', 'atlas-report'] : ['--workspace'];
+  const r = spawnSync('cargo', ['build', ...select, '--locked', '--example', 'libdump', '--message-format=json-render-diagnostics'], {
     cwd: ROOT,
     stdio: ['ignore', 'pipe', 'inherit'],
     encoding: 'utf8',
@@ -425,14 +430,15 @@ if (!values.compare) {
   const tsMs = performance.now() - t0;
   if (ts.status !== 0) process.exit(1);
   rmSync(rsDir, { recursive: true, force: true });
-  const exe = values.rs ?? buildLibdump();
+  const exe = values.rs ?? buildLibdump(values.release);
   const t1 = performance.now();
   const rs = spawnSync(exe, [inDir, rsDir, notesDir], { stdio: 'inherit' });
   const rsMs = performance.now() - t1;
   if (rs.status !== 0) process.exit(1);
   const tt = JSON.parse(readFileSync(join(tsDir, 'timings.txt'), 'utf8')) as Record<string, number>;
   const rt = JSON.parse(readFileSync(join(rsDir, 'timings.txt'), 'utf8')) as Record<string, number>;
-  console.log(`全体: TS ${(tsMs / 1000).toFixed(1)} 秒 / Rust ${(rsMs / 1000).toFixed(1)} 秒(どちらも起動と読み込みを含む。Rust のビルドは含まない)`);
+  const profile = values.rs ? '' : values.release ? '。Rust は release' : '。Rust は debug(release で比べるときは --release)';
+  console.log(`全体: TS ${(tsMs / 1000).toFixed(1)} 秒 / Rust ${(rsMs / 1000).toFixed(1)} 秒(どちらも起動と読み込みを含む。Rust のビルドは含まない${profile})`);
   for (const k of Object.keys(tt)) console.log(`  ${k}: TS ${tt[k].toFixed(0)} ms / Rust ${(rt[k] ?? NaN).toFixed(0)} ms`);
   const diffs = compareDirs(tsDir, rsDir, Number(values['max-diffs']));
   const n = readdirSync(tsDir).filter((x) => x.endsWith('.json')).length;
