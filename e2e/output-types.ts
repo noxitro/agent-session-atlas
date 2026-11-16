@@ -13,7 +13,7 @@ export interface SnapshotManifest {
   merged?: { folders: string[]; duplicates: number; owners?: Record<string, string> };
   since: string | null;
   databases: Record<string, { copied: boolean; bytes: number; attempts: number; error?: string }>;
-  sessions: { dirs: number; copiedFiles: number; reusedFiles: number; skippedBySince: number; bytes: number; dbCopied?: number; dbReused?: number };
+  sessions: { dirs: number; copiedFiles: number; reusedFiles: number; skippedBySince: number; bytes: number; dbCopied?: number; dbReused?: number; removed?: number };
   sessionDbErrors?: string[];
   installed?: InstalledInventory;
   installedByPerson?: Record<string, InstalledInventory>;
@@ -28,6 +28,7 @@ export interface SnapshotManifest {
     desktop: { written: boolean; sessions: number; warnings: string[] } | null;
     leftover: { path: string; mtime: string }[];
     recovered?: { id: string; path: string }[];
+    goneKept?: { id: string; reason: string; folder?: string }[];
   };
 }
 
