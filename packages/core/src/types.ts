@@ -1,4 +1,3 @@
-// 画面(app/・lib/)が読む型と定数。もとは TS 版のサーバー側(packages/core)にあり、サーバー側を Rust に移した後もここに残す(Rust 版は crates/atlas-core/src/types.rs)。
 import type { FailureCause, FailureCauses } from './tool-failure.ts';
 import type { DesktopData, DesktopSessionInfo } from './desktop-types.ts';
 import type { TurnMetrics } from './turns.ts';

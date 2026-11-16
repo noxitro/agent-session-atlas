@@ -1,8 +1,8 @@
 // atlas 自身の版の形と集計。アップロードしたフォルダに添え(atlas-index.json・atlas-session.json の atlas)、送り先から集計するときに、
 // 古い版で送ったものが混ざっていないかを数える。
 // 版の新旧は git のコミットの日時で決める(package.json の version は上げていないので使えない)。
-// git で取得していないフォルダでも、コードの目印(実行ファイルを作ったときに決まる。crates/atlas-report/build.rs)で「同じコードか」は分かる。
-// 画面(ブラウザ)からも読むので node: に依存しない。git から読むのは crates/atlas-core/src/atlas_build.rs
+// git で取得していないフォルダでも、コードの目印(code-stamp.ts)で「同じコードか」は分かる。
+// 画面(ブラウザ)からも読むので node: に依存しない。git から読むのは atlas-build.ts
 export interface AtlasBuild {
   /** git のコミット(全桁)。git で取得したフォルダでない・git を使えないときは null */
   commit: string | null;
@@ -10,7 +10,7 @@ export interface AtlasBuild {
   committedAt: string | null;
   /** git が管理しているファイルを手で変えていた(package-lock.json だけの変更は数えない。npm が書き換えるため)。分からなければ null */
   dirty: boolean | null;
-  /** コードの目印(同じなら同じ実行ファイルのコード) */
+  /** コードの目印(code-stamp.ts。同じなら同じコード) */
   code: string;
 }
 

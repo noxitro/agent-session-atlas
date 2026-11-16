@@ -132,7 +132,7 @@ describe('measureRetention(git)', () => {
     expect(r.counts).toEqual({ kept: 1, modified: 1, missing: 1, unattributable: 0 });
     expect(r.lines).toEqual({ kept: 2, modified: 1, missing: 1, unattributable: 0 });
     expect(r.provenance).toMatchObject({ aiChanges: 'events', baseline: 'observed' });
-    // JSON のキーの順(Rust 版と同じ)。照合したときに VCS で見た版には source を付けない
+    // JSON のキーの順(画面の lib/retention.ts が読む形)。照合したときに VCS で見た版には source を付けない
     const v = JSON.parse(JSON.stringify(r));
     expect(Object.keys(v)).toEqual(['sessionId', 'outcome', 'vcs', 'root', 'baseline', 'evaluated', 'hunks', 'excludedHunks', 'counts', 'lines', 'provenance', 'sessionEnd']);
     expect(Object.keys(v.evaluated)).toEqual(['mode', 'rev', 'at']);

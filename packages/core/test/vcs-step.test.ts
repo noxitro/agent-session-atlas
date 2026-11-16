@@ -224,7 +224,7 @@ describe('runVcsStep(アップロード先から集計し直したとき)', () =
     const u = { ...resultOf('s').hunks[0], status: 'unattributable', lines: { kept: 0, modified: 0, missing: 0, unattributable: 2 } };
     const r = parseSenderVcs({ ...ok, result: { ...resultOf('s'), hunks: [u] } }, 's')!;
     expect([r.outcome, r.reason]).toEqual(['unattributable', 'unknown']);
-    // キーは id, path, status, lines, reason の順(Rust 版と同じ)
+    // キーは id, path, status, lines, reason の順(atlas-vcs.json の形)
     expect(Object.keys(r.hunks[0])).toEqual(['id', 'path', 'status', 'lines', 'reason']);
     expect(summarizeRetention([r]).unattributable).toEqual({ unknown: 1 });
     const n = parseSenderVcs({ ...ok, result: { ...resultOf('s'), hunks: [{ ...u, reason: 'no_commits' }] } }, 's')!;
