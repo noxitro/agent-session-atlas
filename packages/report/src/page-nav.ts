@@ -94,7 +94,7 @@ export function renderRail(o: PageNavOptions): string {
  *   タブが表に戻ったとき・戻る / 進むで戻ったときはすぐ送る。宛先は同一オリジンの相対パス(詳細ページは ../api/、用語ページは api/)
  * - 版のずれ: 最初に成功した heartbeat の応答の x-atlas-code を、ページの meta atlas-code(codeMeta)と比べ、違えば(返さない古いサーバも)「画面とサーバの版が違います」の帯を出す(lib/code-check.ts の isStaleServer と同じ決まり)
  * - メモの編集: atlas serve のときだけ、メモの節(#memo)があるページに編集の script を読み込む。止まったら atlas-down を知らせる
- * - Phase 14: 同じ条件で「記録を読む」「全文を作って読む」の script(api/session-tools.js)も読み込む(伏せ字版には #memo が無いので出ない)
+ * - Phase 14: 同じ条件で「記録を読む」「全文を作って読む」の script(api/session-tools.js)も読み込む
  */
 /** 版の目印(core の code-stamp.ts)。serve から開いたとき、NAV_JS が heartbeat の x-atlas-code と比べる */
 export const codeMeta = (): string => `<meta name="atlas-code" content="${codeStamp()}">`;

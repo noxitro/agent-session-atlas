@@ -1,10 +1,8 @@
-// Phase 6: 利用ランキング(絞り込み後のセッションから)・未使用の skill・要約の形・伏せ字
+// Phase 6: 利用ランキング(絞り込み後のセッションから)・未使用の skill・要約の形
 import { describe, expect, it } from 'vitest';
 import { normalizeSession } from '../../core/src/normalize.ts';
-import { HOME_PROJECT, TEMP_PROJECT } from '../../core/src/project-keys.ts';
 import type { CopilotEvent, SessionRecord } from '../../core/src/types.ts';
 import { aggregate, failureRate, unusedSkills, usageRanking } from '../src/lib/aggregate.ts';
-import { createAnonymizer, identityAnonymizer } from '../src/lib/anonymize.ts';
 import { applyFilter, emptyFilter } from '../src/lib/filter.ts';
 import { summarize } from '../src/lib/summarize.ts';
 
@@ -66,7 +64,7 @@ async function sessions(): Promise<SessionRecord[]> {
 describe('summarize(Phase 6 の形)', () => {
   it('失敗・拒否・結果なしのあったツールだけ issues に持ち、skill / agent は内訳つき', async () => {
     const [a] = await sessions();
-    const s = summarize(a, identityAnonymizer(), null);
+    const s = summarize(a, null);
     expect(s.tools.mcp).toEqual({ gh: { 'gh-search': 1, 'gh-get': 1 } });
     // view: 3 回のうち結果 2(成功 1・拒否 1)。gh-search は全部成功なので持たない
     expect(s.tools.issues).toEqual({ 'gh-get': [1, 0, 1], view: [0, 1, 2] });
@@ -80,7 +78,7 @@ describe('summarize(Phase 6 の形)', () => {
 
 describe('usageRanking', () => {
   it('MCP ツールはサーバーごとに 1 行、失敗率は(失敗 + 拒否)÷ 結果のあった回数', async () => {
-    const summaries = (await sessions()).map((r) => summarize(r, identityAnonymizer(), null));
+    const summaries = (await sessions()).map((r) => summarize(r, null));
     const u = usageRanking(summaries);
     expect(u.tools.map((t) => [t.key, t.calls, t.completed, t.success, t.failure, t.denied, t.sessions])).toEqual([
       ['view', 4, 3, 2, 0, 1, 2],
@@ -103,7 +101,7 @@ describe('usageRanking', () => {
   });
 
   it('絞り込みに追従する(プロジェクトで絞ると、そのセッションの分だけになる)', async () => {
-    const summaries = (await sessions()).map((r) => summarize(r, identityAnonymizer(), null));
+    const summaries = (await sessions()).map((r) => summarize(r, null));
     const only = aggregate(applyFilter(summaries, { ...emptyFilter(), project: 'quokka/b' }));
     expect(only.usage.tools.map((t) => [t.key, t.calls])).toEqual([
       ['mcp:gh', 1],
@@ -119,21 +117,5 @@ describe('usageRanking', () => {
   it('未使用の skill は大文字小文字を区別せずに突き合わせる', () => {
     expect(unusedSkills(['Wiki-Query', 'impeccable', 'pptx'], ['wiki-query', 'other'])).toEqual(['impeccable', 'pptx']);
     expect(unusedSkills([], ['x'])).toEqual([]);
-  });
-});
-
-describe('伏せ字(Phase 6)', () => {
-  it('まとめたプロジェクト名はそのまま、git の origin で決めた owner/repo は伏せる', () => {
-    const anon = createAnonymizer([
-      { project: HOME_PROJECT, cwd: 'X:\\home\\someone', gitRoot: null, repository: null, branch: null },
-      { project: TEMP_PROJECT, cwd: 'X:\\home\\someone\\AppData\\Local\\Temp\\probe', gitRoot: null, repository: null, branch: null },
-      { project: 'secret-owner/secret-repo', cwd: 'X:\\code\\secret-repo', gitRoot: 'X:\\code\\secret-repo', repository: null, branch: 'main' },
-    ]);
-    expect(anon.project(HOME_PROJECT)).toBe(HOME_PROJECT);
-    expect(anon.projectLabel(TEMP_PROJECT)).toBe(TEMP_PROJECT);
-    expect(anon.project('secret-owner/secret-repo')).toBe('project-01');
-    const scrubbed = anon.scrub('cloned secret-owner/secret-repo into X:\\code\\secret-repo; secret-owner wrote it');
-    expect(scrubbed).not.toContain('secret-owner');
-    expect(scrubbed).not.toContain('secret-repo');
   });
 });

@@ -9,8 +9,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { codeStamp } from '../../core/src/code-stamp.ts';
 import { BYE_GRACE_MS, DEFAULT_IDLE_MS, findRunningServer, SERVE_STATE_FILE, startServe, TOKEN_PLACEHOLDER, type ServeHandle } from '../src/serve.ts';
 
-const ATLAS = (anonymized: boolean): string =>
-  `<!doctype html><html><head><meta name="atlas-token" content="${TOKEN_PLACEHOLDER}"></head><body><script type="application/json" id="atlas-data">{"version":5,"anonymized":${anonymized},"groups":[]}</script></body></html>`;
+const ATLAS = (): string =>
+  `<!doctype html><html><head><meta name="atlas-token" content="${TOKEN_PLACEHOLDER}"></head><body><script type="application/json" id="atlas-data">{"version":5,"groups":[]}</script></body></html>`;
 
 describe('serve', () => {
   let dir: string;
@@ -22,7 +22,7 @@ describe('serve', () => {
     out = join(dir, 'out');
     notes = join(dir, 'atlas-notes');
     await mkdir(join(out, 'sessions'), { recursive: true });
-    await writeFile(join(out, 'atlas.html'), ATLAS(false));
+    await writeFile(join(out, 'atlas.html'), ATLAS());
     await writeFile(join(out, 'sessions', 'a.html'), '<p>a</p>');
     await writeFile(join(dir, 'secret.txt'), 'x');
   });
@@ -172,18 +172,12 @@ describe('serve', () => {
     expect(t.body.groups.map((g: { name: string }) => g.name)).toEqual(['この PC の']);
   });
 
-  it('編集の script は serve だけが配り、伏せ字版ではメモの API も script も 403', async () => {
+  it('編集の script は serve だけが配る', async () => {
     await start();
     const js = await fetch(`${base()}/api/memo-editor.js`);
     expect(js.status).toBe(200);
     expect(js.headers.get('content-type')).toContain('javascript');
     expect(await js.text()).toContain('../api/memos/');
-    await h!.close();
-    await writeFile(join(out, 'atlas.html'), ATLAS(true));
-    await start();
-    expect((await fetch(`${base()}/api/memo-editor.js`)).status).toBe(403);
-    expect((await json('/api/memos/s1')).status).toBe(403);
-    expect((await json('/api/memos/s1', { method: 'PUT', body: JSON.stringify({ text: 'x', rev: '' }) })).status).toBe(403);
   });
 
   it('API: 読みは token 無しで可、書きは token が要る。作成 / 改名 / 削除が groups.json に反映され、同名は 409、壊れたファイルは上書きしない', async () => {
@@ -259,7 +253,7 @@ describe('serve', () => {
     expect((await readdir(notes)).filter((f) => f.endsWith('.tmp'))).toEqual([]);
   });
 
-  it('同一オリジン以外(Sec-Fetch-Site / Origin)は 403。伏せ字版では heartbeat 以外の API が 403', async () => {
+  it('同一オリジン以外(Sec-Fetch-Site / Origin)は 403', async () => {
     await start();
     expect((await json('/api/state', { headers: { 'sec-fetch-site': 'cross-site' } }, null)).status).toBe(403);
     expect((await json('/api/state', { headers: { 'sec-fetch-site': 'same-site' } }, null)).status).toBe(403);
@@ -267,12 +261,6 @@ describe('serve', () => {
     expect((await json('/api/state', { headers: { origin: 'http://evil.example' } }, null)).status).toBe(403);
     expect((await json('/api/state', { headers: { origin: `http://127.0.0.1:${h!.port}` } }, null)).status).toBe(200);
     expect((await fetch(`${base()}/api/heartbeat`, { method: 'POST' })).status).toBe(403);
-    expect((await fetch(`${base()}/api/heartbeat`, { method: 'POST', headers: { 'x-atlas-token': h!.token } })).status).toBe(204);
-    // 伏せ字版に差し替える(mtime で読み直す)
-    await new Promise((r) => setTimeout(r, 20));
-    await writeFile(join(out, 'atlas.html'), ATLAS(true));
-    expect((await json('/api/state', {}, null)).status).toBe(403);
-    expect((await json('/api/groups', { method: 'POST', body: JSON.stringify({ name: 'a', ids: [] }) })).status).toBe(403);
     expect((await fetch(`${base()}/api/heartbeat`, { method: 'POST', headers: { 'x-atlas-token': h!.token } })).status).toBe(204);
   });
 

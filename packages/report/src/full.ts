@@ -3,7 +3,7 @@
 //   除いた箇所には種別とサイズを書く。扱いは coverage.ts の表で決め、表に無いキーは「未分類」として末尾に出す(=欠損の有無の根拠)。
 //   不透明データの判定(looksOpaque)は reasoningBlocks の配下だけに掛ける(ツールの引数やファイルの内容にある長い英数字列は除外しない)
 // - hook の入力に入っているツールの結果がツールの結果と同一なら参照にする(容量の重複)
-// - 秘密情報の形式検査(redactSecrets)を全ての文字列に掛け、件数を末尾に出す。伏せ字(--anonymize)とは併用しない
+// - 秘密情報の形式検査(redactSecrets)を全ての文字列に掛け、件数を末尾に出す
 // - チェックポイントと plan.md(スナップショットのセッションフォルダ)、data.db の許可列(desktop)も節として出す
 // - イベントは AsyncIterable で受け取り、出力は sink に逐次書く(セッション全体をメモリに載せない。backpressure は sink 側)
 import { createWriteStream, existsSync } from 'node:fs';
@@ -228,7 +228,7 @@ export async function renderFullTo(r: SessionRecord, events: Iterable<CopilotEve
   L.push(`# 全文記録: ${text(r.name ?? r.id)}`, '');
   L.push(`生成 ${dateTime(o.generatedAt)} · agent-session-atlas \`atlas export --full\` · セッション ID \`${r.id}\` · イベント ${int(r.events.total)} 件(extract 時)`);
   L.push('');
-  L.push('> **解析用の完全出力。** 原本の文字列をそのまま含みます(秘密情報の形式検査で伏せた箇所を除く)。共有しないでください。共有には伏せ字版(`--anonymize`)を使います。', '');
+  L.push('> **解析用の完全出力。** 原本の文字列をそのまま含みます(秘密情報の形式検査で伏せた箇所を除く)。共有しないでください。', '');
   L.push('## 概要', '');
   L.push('| 項目 | 値 |', '|---|---|');
   const meta: [string, string][] = [

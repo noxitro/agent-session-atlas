@@ -13,7 +13,6 @@ import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { spawn } from 'node:child_process';
 import {
   addIds,
-  extractEmbedded,
   imageExt,
   isSafeMemoId,
   loadGroups,
@@ -44,7 +43,6 @@ import {
   saveMemoImage,
   uniqueIds,
   type MemoFile,
-  type ReportData,
   type SessionGroup,
 } from '../../report/src/index.ts';
 import type { SessionRecord, SessionsFile, WikiSpec } from '../../core/src/index.ts';
@@ -272,24 +270,6 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
   const idleMs = o.idleMs ?? DEFAULT_IDLE_MS;
   const byeGraceMs = o.byeGraceMs ?? BYE_GRACE_MS;
   const firstMs = o.firstHeartbeatMs ?? DEFAULT_FIRST_HEARTBEAT_MS;
-
-  // 伏せ字版かどうかは atlas.html の埋め込みデータで判断(mtime が変わるまで覚える)
-  let anonCache: { mtime: number; anonymized: boolean } | null = null;
-  async function isAnonymized(): Promise<boolean> {
-    const p = join(outDir, 'atlas.html');
-    if (!existsSync(p)) return false;
-    const m = (await stat(p)).mtimeMs;
-    if (!anonCache || anonCache.mtime !== m) {
-      let anonymized = false;
-      try {
-        anonymized = !!extractEmbedded<ReportData>(await readFile(p, 'utf8')).anonymized;
-      } catch {
-        /* 読めなければ通常版とみなす(編集できるだけで、壊れはしない) */
-      }
-      anonCache = { mtime: m, anonymized };
-    }
-    return anonCache.anonymized;
-  }
 
   // Phase 14: sessions.json の id → 表題と判定の対象か(mtime が変わるまで覚える。本文は持たない)。
   // 集計元(読むだけの画面かを決める)と、送った人のタスクタグ(読むだけの画面の /api/state)も一緒に覚える
@@ -660,7 +640,6 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
       res.end();
       return;
     }
-    if (await isAnonymized()) throw new HttpError(403, '伏せ字版では編集できません');
     const vs = await viewState();
     const readOnly = vs.readOnly;
     if (readOnly && blockedWhenReadOnly(path, method)) throw new HttpError(403, READ_ONLY_MESSAGE);
@@ -1270,7 +1249,6 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
   /** GET /view/<id>?kind=…: 表示の殻(本文は持たない。token は HTML の meta で渡し、本文は殻の script が API から取る) */
   async function viewShell(req: IncomingMessage, res: ServerResponse, rawId: string, url: URL): Promise<void> {
     checkOrigin(req);
-    if (await isAnonymized()) throw new HttpError(403, '伏せ字版では記録を表示しません');
     const t = viewTarget(rawId, url.searchParams.get('kind'));
     const html = renderViewerShell({ css: await pageCss(), id: t.id, kind: t.kind, detailHref: `../sessions/${encodeURIComponent(detailFileName(t.id))}`, mdHref: t.mdHref }).replace(TOKEN_PLACEHOLDER, token);
     res.writeHead(200, { 'content-type': MIME['.html'], 'cache-control': 'no-store', 'x-atlas-serve': '1', ...HTML_HEADERS });

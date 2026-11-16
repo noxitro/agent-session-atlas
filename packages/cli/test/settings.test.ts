@@ -28,7 +28,7 @@ describe('画面の設定(serve の API)', () => {
     await writeFile(join(vault, 'index.md'), '# index');
     await mkdir(out, { recursive: true });
     await mkdir(notes, { recursive: true });
-    await writeFile(join(out, 'atlas.html'), `<!doctype html><meta name="atlas-token" content="${TOKEN_PLACEHOLDER}"><script type="application/json" id="atlas-data">{"version":9,"anonymized":false,"groups":[]}</script>`);
+    await writeFile(join(out, 'atlas.html'), `<!doctype html><meta name="atlas-token" content="${TOKEN_PLACEHOLDER}"><script type="application/json" id="atlas-data">{"version":9,"groups":[]}</script>`);
     picks = [];
   });
   afterEach(async () => {

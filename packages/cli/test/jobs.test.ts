@@ -12,8 +12,8 @@ import { run } from '../src/commands.ts';
 import { jobArgs, acquireOutLock, JOB_ENV, JOB_LOCK_FILE, JUDGE_FLOW_TS, MAIN_TS, OutBusyError, parseJobRequest, runningJobIn, type ChildLike, type RunFullFn } from '../src/jobs.ts';
 import { startServe, TOKEN_PLACEHOLDER, type ServeHandle } from '../src/serve.ts';
 
-const ATLAS = (anonymized: boolean): string =>
-  `<!doctype html><html><head><meta name="atlas-token" content="${TOKEN_PLACEHOLDER}"></head><body><script type="application/json" id="atlas-data">{"version":8,"anonymized":${anonymized},"groups":[]}</script></body></html>`;
+const ATLAS = (): string =>
+  `<!doctype html><html><head><meta name="atlas-token" content="${TOKEN_PLACEHOLDER}"></head><body><script type="application/json" id="atlas-data">{"version":8,"groups":[]}</script></body></html>`;
 
 class FakeChild extends EventEmitter implements ChildLike {
   stdout = new PassThrough();
@@ -48,7 +48,7 @@ describe('serve の jobs と記録の表示(Phase 14)', () => {
     await mkdir(join(out, 'sessions'), { recursive: true });
     await mkdir(join(out, 'full', 'assets', 's1'), { recursive: true });
     await mkdir(join(out, 'full', 'assets', 's2'), { recursive: true });
-    await writeFile(join(out, 'atlas.html'), ATLAS(false));
+    await writeFile(join(out, 'atlas.html'), ATLAS());
     await writeFile(
       join(out, 'sessions.json'),
       JSON.stringify({
@@ -295,7 +295,7 @@ describe('serve の jobs と記録の表示(Phase 14)', () => {
     expect((await json('/api/judge/parts', {}, null)).status).toBe(403);
   });
 
-  it('403: token なし・違う token・他オリジン・別の Host。伏せ字版では jobs も表示も 403', async () => {
+  it('403: token なし・違う token・他オリジン・別の Host', async () => {
     await start();
     expect((await post({ kind: 'refresh' }, null)).status).toBe(403);
     expect((await post({ kind: 'refresh' }, 'wrong')).status).toBe(403);
@@ -317,16 +317,6 @@ describe('serve の jobs と記録の表示(Phase 14)', () => {
       });
     expect(await hostStatus('/api/jobs', 'POST')).toBe(403);
     expect(await hostStatus('/view/s1')).toBe(403);
-    expect(calls).toEqual([]);
-
-    await h!.close();
-    await writeFile(join(out, 'atlas.html'), ATLAS(true));
-    await start();
-    expect((await post({ kind: 'refresh' })).status).toBe(403);
-    expect((await json('/api/jobs/current')).status).toBe(403);
-    expect((await json('/api/view/s1?kind=transcript')).status).toBe(403);
-    expect((await fetch(`${base()}/view/s1?kind=transcript`)).status).toBe(403);
-    expect((await fetch(`${base()}/api/session-tools.js`)).status).toBe(403);
     expect(calls).toEqual([]);
   });
 

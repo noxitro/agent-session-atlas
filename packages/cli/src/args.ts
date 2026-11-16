@@ -93,7 +93,6 @@ export interface CliOptions {
   sessions: string[] | null;
   /** atlas-notes/ の場所(既定はリポジトリ直下の atlas-notes/) */
   notesDir: string | null;
-  anonymize: boolean;
   /** judgments.json の場所(既定は <out>/judgments.json があれば使う) */
   judgments: string | null;
   /** 評価バンドルの場所(既定は <out>/bundle) */
@@ -149,9 +148,8 @@ export const USAGE = `使い方: atlas <コマンド> [オプション]
   vcs        AI が作った変更が、その後の VCS(git / svn / p4)のファイルに残っているかを照合し、<out>/vcs-retention.json に書く。
              VCS は読むだけ(書き込み・同期のコマンドは呼ばない)。アップロード先から集計したときは、送った側の PC の結果を読む
   build      <out>/atlas.html と <out>/sessions/<id>.html を作る
-  export     build に加えて、各セッションの記録(経過・消費)を <out>/sessions/<id>.md に書く(LLM での振り返り用。共有するなら --anonymize)
-  all        snapshot → extract → vcs → metrics → export(セッション記録つき)を通しで実行する(コマンド省略時の既定)。
-             --anonymize のときは記録を作らず build にする
+  export     build に加えて、各セッションの記録(経過・消費)を <out>/sessions/<id>.md に書く(LLM での振り返り用)
+  all        snapshot → extract → vcs → metrics → export(セッション記録つき)を通しで実行する(コマンド省略時の既定)
   bundle     LLM に工数を判定させる評価バンドルを <out>/bundle に作る(LLM は呼ばない)。ZIP を渡せない相手用に、
              指示とパケット数件を 1 ファイルにまとめた <out>/bundle/parts/part-<番号>.md も書く
   judge run  バンドルの各セッションを LLM で判定し <out>/judgments.json に追記する(クレジットを消費します)
@@ -201,7 +199,6 @@ export const USAGE = `使い方: atlas <コマンド> [オプション]
   --session <id,...> 特定のセッションだけ(カンマ区切り、複数回指定可。id は先頭一致で解決、曖昧ならエラー)
   --notes-dir <dir>  メモとグループの置き場(既定: リポジトリ直下の atlas-notes/)
   --file <path>      memo set: 本文をこのファイルから読む
-  --anonymize        プロジェクト名・パス・リポジトリ名・ブランチを伏せ字にして HTML を出す(共有用。メモは出さない)
   --judgments <file> 判定結果 judgments.json の場所(既定: <out>/judgments.json)
   --bundle <dir>     評価バンドルの場所(既定: <out>/bundle)
   --include-empty    bundle: 依頼の記録が無いセッションもパケットにする
@@ -221,7 +218,7 @@ export のオプション:
   --tool-output <v>  ツールの結果を記録に入れる条件: fail(既定、失敗したときだけ)/ all / none
   --max-chars <n>    依頼・応答・要約 1 件の上限(文字、既定 20000)。超えた分は中略して字数を書く
   --full             解析用の全文記録(out/full/<id>.md、上限なし。暗号化データと base64 本体だけ除外)と
-                     out/coverage.json(網羅の検査)も書く。--anonymize とは併用できない。共有しないこと
+                     out/coverage.json(網羅の検査)も書く。共有しないこと
 
 serve・open のオプション:
   --port <n>         ポートを固定する(既定は空きポートを自動で取る)
@@ -269,7 +266,6 @@ export function parseCli(argv: string[]): CliOptions {
         note: { type: 'string' },
         to: { type: 'string' },
         file: { type: 'string' },
-        anonymize: { type: 'boolean', default: false },
         judgments: { type: 'string' },
         bundle: { type: 'string' },
         'include-empty': { type: 'boolean', default: false },
@@ -421,10 +417,6 @@ export function parseCli(argv: string[]): CliOptions {
   if (values['per-part'] != null && cmd !== 'bundle') throw new UsageError('--per-part は bundle でだけ使えます');
   if (values.unjudged && cmd !== 'bundle' && cmd !== 'turns') throw new UsageError('--unjudged は bundle と turns bundle でだけ使えます');
   if (values.full && cmd !== 'export') throw new UsageError('--full は export でだけ使えます');
-  if (values.full && values.anonymize) throw new UsageError('--full(解析用の全文記録)は --anonymize と併用できません');
-  // 伏せ字に対応していないコマンドで黙って無視すると、伏せたつもりの評価バンドル(依頼文の全文・パス入り)を外部へ渡してしまう
-  if (values.anonymize && !['build', 'export', 'all'].includes(cmd))
-    throw new UsageError(`--anonymize は build / export / all でだけ使えます(${cmd} の出力は伏せ字になりません。評価バンドルを外部の LLM に渡すときは中身を確認してください)`);
   if ((values['snapshot-all'] || values['snapshot-prune']) && !['snapshot', 'all', 'export', 'open'].includes(cmd)) throw new UsageError('--snapshot-all と --snapshot-prune は snapshot / all / export / open で使えます');
   const vcsMode = values['vcs-mode'] ?? null;
   if (vcsMode != null && cmd !== 'vcs' && cmd !== 'all') throw new UsageError('--vcs-mode は vcs と all でだけ使えます');
@@ -452,7 +444,6 @@ export function parseCli(argv: string[]): CliOptions {
     group: values.group?.trim() ?? null,
     sessions,
     notesDir: values['notes-dir'] ?? null,
-    anonymize: values.anonymize ?? false,
     judgments: values.judgments ?? null,
     bundle: values.bundle ?? null,
     includeEmpty: values['include-empty'] ?? false,

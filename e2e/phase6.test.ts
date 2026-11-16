@@ -17,21 +17,10 @@ import { aggregate, failureRate, unusedSkills } from '../packages/report/src/lib
 import { extractEmbedded } from '../packages/report/src/lib/embed.ts';
 import { applyFilter, emptyFilter } from '../packages/report/src/lib/filter.ts';
 import type { ReportData } from '../packages/report/src/lib/types.ts';
+import { projectKey } from '../packages/core/src/normalize.ts';
 import { ATLAS_JUDGE_PROJECT, HOME_PROJECT, TEMP_PROJECT } from '../packages/core/src/project-keys.ts';
 import type { MetricsFile, SessionRecord, SessionsFile } from '../packages/core/src/types.ts';
 import { buildFixtureHome, ROOT, cliCommand } from './fixture-home.ts';
-
-/**
- * 統合する前のプロジェクトのキー(リポジトリ名、無ければ git のルートか作業フォルダのパス)。
- * atlas の crates/atlas-core/src/normalize.rs の project_key と同じ決め方(\ 区切り・末尾の \ を落とす・ドライブ名は大文字)
- */
-function projectKey(repository: string | null, gitRoot: string | null, cwd: string | null): string {
-  if (repository) return repository;
-  const p = gitRoot ?? cwd;
-  if (!p) return '(unknown)';
-  const n = p.replace(/\//g, '\\').replace(/\\+$/, '');
-  return /^[a-z]:/i.test(n) ? n[0].toUpperCase() + n.slice(1) : n;
-}
 
 const LIVE = process.env.ATLAS_LIVE === '1';
 const WORK = join(ROOT, 'out', 'e2e-phase6');

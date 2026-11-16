@@ -5,7 +5,6 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { normalizeSession } from '../../core/src/normalize.ts';
 import type { CopilotEvent, DbUsageRow } from '../../core/src/types.ts';
-import { createAnonymizer, identityAnonymizer } from '../src/lib/anonymize.ts';
 import { DEFAULT_TRANSCRIPT_OPTIONS, redactSecrets, rel, renderTranscript, summarizeArgs, transcriptFileName } from '../src/transcript.ts';
 
 const T0 = Date.parse('2026-10-01T00:00:00Z');
@@ -54,7 +53,7 @@ async function setup(): Promise<{ record: Awaited<ReturnType<typeof normalizeSes
   return { record, eventsPath };
 }
 
-const opts = (over: Partial<typeof DEFAULT_TRANSCRIPT_OPTIONS> = {}) => ({ ...DEFAULT_TRANSCRIPT_OPTIONS, ...over, anon: identityAnonymizer(), generatedAt: at(1000) });
+const opts = (over: Partial<typeof DEFAULT_TRANSCRIPT_OPTIONS> = {}) => ({ ...DEFAULT_TRANSCRIPT_OPTIONS, ...over, generatedAt: at(1000) });
 
 describe('transcript', () => {
   it('redactSecrets はキーらしい文字列を伏せて数える(偽陽性は許容)', () => {
@@ -127,19 +126,27 @@ describe('transcript', () => {
     expect(tiny.markdown).toMatch(/…\(中略 \d+ 字\)…/);
   });
 
-  it('伏せ字モード: 仮名とパスの置換、ファイル一覧とパスを出さない、先頭に注意', async () => {
-    const { record, eventsPath } = await setup();
-    const anon = createAnonymizer([record]);
-    const r = await renderTranscript(record, eventsPath, USAGE, { ...opts(), anon });
+  it('見出しのセッション名と中断の理由も秘密情報の検査に通し、伏せた件数に入れる', async () => {
+    // 鍵らしい文字列は架空のもの
+    const token = `ghp_${'t'.repeat(36)}`;
+    const key = `sk-${'k'.repeat(24)}`;
+    const events: CopilotEvent[] = [
+      { type: 'session.start', timestamp: at(0), data: { sessionId: 'tr2', copilotVersion: '1.0.100' } },
+      { type: 'user.message', timestamp: at(1), data: { content: '鍵の無い依頼', agentMode: 'interactive' } },
+      { type: 'abort', timestamp: at(2), data: { reason: `stopped while using ${key}` } },
+    ];
+    const dir = await mkdtemp(join(tmpdir(), 'atlas-transcript-'));
+    const eventsPath = join(dir, 'events.jsonl');
+    await writeFile(eventsPath, events.map((e) => JSON.stringify(e)).join('\n') + '\n');
+    const record = await normalizeSession({ id: 'tr2', workspace: { created_at: at(0), name: `${token} を使う作業` }, events });
+    const r = await renderTranscript(record, eventsPath, [], opts());
     const md = r.markdown;
-    expect(md).toContain('伏せ字モード');
-    for (const secret of ['secret-proj', 'quokka', 'feature/x1', 'C:\\work']) expect(md).not.toContain(secret);
-    expect(md).toContain('project-01');
-    expect(md).toContain('branch-01');
-    expect(md).toContain('<path>');
-    expect(md).toContain('伏せ字モードのためパスは出しません');
-    // 本文自体は(置換のうえで)残る
-    expect(md).toContain('を直して');
+    expect(md.startsWith('# セッション記録: [伏せました: GitHub トークン] を使う作業\n')).toBe(true);
+    expect(md).toContain('**中断** stopped while using [伏せました: ');
+    expect(md).not.toContain(token);
+    expect(md).not.toContain(key);
+    expect(r.secretHits).toBe(2);
+    expect(md).toContain('2 件伏せました');
   });
 
   it('スナップショットに events.jsonl が無ければ sessions.json の抜粋だけで組む', async () => {

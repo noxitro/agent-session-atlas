@@ -34,7 +34,7 @@ describe('グループのアップロード', () => {
     await mkdir(join(out, 'snapshot', 'session-state', 's1', 'files'), { recursive: true });
     await writeFile(join(out, 'snapshot', 'session-state', 's1', 'files', 'a.txt'), 'a');
     await writeFile(join(out, 'snapshot', 'snapshot-manifest.json'), JSON.stringify({ createdAt: '2026-11-08T01:02:03.000Z' }));
-    await writeFile(join(out, 'atlas.html'), `<!doctype html><meta name="atlas-token" content="${TOKEN_PLACEHOLDER}"><script type="application/json" id="atlas-data">{"version":9,"anonymized":false,"groups":[]}</script>`);
+    await writeFile(join(out, 'atlas.html'), `<!doctype html><meta name="atlas-token" content="${TOKEN_PLACEHOLDER}"><script type="application/json" id="atlas-data">{"version":9,"groups":[]}</script>`);
     await mkdir(notes, { recursive: true });
     await writeFile(join(notes, 'groups.json'), JSON.stringify({ version: 1, groups: [{ name: 'Player/Weapon', note: '', ids: ['s1', 's2', 'gone', '../s1'] }, { name: '空', note: '', ids: [] }] }));
     await mkdir(root);

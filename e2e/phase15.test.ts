@@ -164,7 +164,7 @@ describe('Phase 15 E2E: グループのアップロード', () => {
     for (const id of [...ids, desk]) expect((await readdir(join(dest, id))).some((f) => f.endsWith('.md') && f !== 'atlas-memo.md' && f !== 'plan.md')).toBe(false);
     const readme = await readFile(join(dest, 'README.md'), 'utf8');
     expect(readme).toContain('sessions\\<セッション ID>.md');
-    expect(readme).toContain(`bin\\atlas.exe all --home "${dest}" --out "<出力先>"`);
+    expect(readme).toContain(`npm run atlas -- all --home "${dest}" --out "<出力先>"`);
     // README のとおりに集計し直すと、送ったセッションごとに記録ができる
     const out3 = join(WORK, 'out-records');
     const r = atlas(['all', '--home', dest, '--out', out3]);

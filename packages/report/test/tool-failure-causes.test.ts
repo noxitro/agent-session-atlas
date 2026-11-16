@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest';
 import { normalizeSession } from '../../core/src/normalize.ts';
 import type { CopilotEvent, SessionRecord } from '../../core/src/types.ts';
 import { aggregate, usageRanking } from '../src/lib/aggregate.ts';
-import { identityAnonymizer } from '../src/lib/anonymize.ts';
 import { emptyFilter } from '../src/lib/filter.ts';
 import { highlights } from '../src/lib/highlights.ts';
 import { packSummary, unpackSummary } from '../src/lib/pack.ts';
@@ -50,15 +49,15 @@ async function records(): Promise<SessionRecord[]> {
 describe('失敗の要因', () => {
   it('要約は失敗のあったツールだけ要因を持ち、埋め込みの縮小と埋め戻しで変わらない', async () => {
     const [a] = await records();
-    const s = summarize(a!, identityAnonymizer(), null);
+    const s = summarize(a!, null);
     expect(s.tools.causes).toEqual({ 'zz-srv-find': { timeout: 2 }, 'zz-srv-read': { not_found: 1 }, view: { not_found: 1 } });
     expect(unpackSummary(packSummary(s)).tools.causes).toEqual(s.tools.causes);
-    const ok = summarize(await normalizeSession({ id: 'c', workspace: { cwd: 'X:\\zz-c' }, events: [ev('user.message', { content: 'c' }), ...call('1', 'view', null)] }), identityAnonymizer(), null);
+    const ok = summarize(await normalizeSession({ id: 'c', workspace: { cwd: 'X:\\zz-c' }, events: [ev('user.message', { content: 'c' }), ...call('1', 'view', null)] }), null);
     expect(ok.tools.causes).toEqual({});
   });
 
   it('要因ごとの行は多い順で、その要因で失敗したツール(MCP はサーバーの中のツール)を持つ。ツールと MCP の行にも要因を足す', async () => {
-    const u = usageRanking((await records()).map((r) => summarize(r, identityAnonymizer(), null)));
+    const u = usageRanking((await records()).map((r) => summarize(r, null)));
     expect(u.causes).toEqual([
       {
         cause: 'not_found',
@@ -82,7 +81,7 @@ describe('失敗の要因', () => {
   });
 
   it('要因の記録が無い失敗(以前の版で集計したセッション)は、要因の行に入れずに数だけ残す', async () => {
-    const summaries = (await records()).map((r) => summarize(r, identityAnonymizer(), null));
+    const summaries = (await records()).map((r) => summarize(r, null));
     const old = { ...summaries[0]!, tools: { ...summaries[0]!.tools, causes: undefined } };
     const u = usageRanking([old, summaries[1]!]);
     expect(u.causesUnrecorded).toBe(4);
@@ -93,8 +92,8 @@ describe('失敗の要因', () => {
   });
 
   it('要点欄の「失敗率の高いツール」に、いちばん多い要因を添える', async () => {
-    const all = (await records()).map((r) => summarize(r, identityAnonymizer(), null));
-    const g = highlights(all, aggregate(all).usage, { filter: emptyFilter(), anonymized: false, installed: null });
+    const all = (await records()).map((r) => summarize(r, null));
+    const g = highlights(all, aggregate(all).usage, { filter: emptyFilter(), installed: null });
     const tf = g.find((x) => x.kind === 'tool-failure')!;
     expect(tf.items.map((i) => i.text)).toEqual([
       'MCP zz-srv: 失敗率 80%(失敗 4・拒否 0 / 5 回、2 セッション)。主な要因: 時間切れ 3 回',

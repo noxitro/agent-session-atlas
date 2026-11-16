@@ -7,7 +7,7 @@ import { projectKey } from './normalize.ts';
 import { ATLAS_JUDGE_PROJECT, HOME_PROJECT, TEMP_PROJECT } from './project-keys.ts';
 import type { ProjectSource, SessionRecord } from './types.ts';
 
-export { ATLAS_JUDGE_PROJECT, GROUPED_PROJECTS, HOME_PROJECT, TEMP_PROJECT } from './project-keys.ts';
+export { ATLAS_JUDGE_PROJECT, HOME_PROJECT, TEMP_PROJECT } from './project-keys.ts';
 
 /** このツールの判定(judge)が copilot を起動する作業フォルダ(mkdtemp の atlas-judge-cwd-XXXXXX) */
 const ATLAS_JUDGE_RE = /(?:^|[\\/])atlas-judge-cwd-[^\\/]+[\\/]*$/;

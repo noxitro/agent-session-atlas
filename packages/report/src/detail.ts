@@ -1,7 +1,7 @@
 // セッション詳細ページ(out/sessions/<id>.html)。軽量な静的 HTML(スクリプトは配色の選択を読む数行だけ)。
 // atlas.html と同じ base.css を埋め込み、同じ「様式」の見た目にする。
 import type { InstructionInjection, LineChanges, ProjectSource, SessionRecord, SessionTokens, TimelineEntry, TokenCounts, TokenSource } from '../../core/src/types.ts';
-import type { Anonymizer } from './lib/anonymize.ts';
+import { shortProjectLabel } from './lib/project-label.ts';
 import { frictionTotal } from './lib/aggregate.ts';
 import { FAILURE_CAUSE_LABELS, sortedCauses } from '../../core/src/tool-failure.ts';
 import { coverageOf } from './lib/filter.ts';
@@ -76,13 +76,6 @@ const KIND_LABEL: Record<TimelineEntry['kind'], string> = {
 
 const missing = (text = '記録なし'): string => `<span class="missing-value">${esc(text)}</span>`;
 
-/** 種別名のような短い識別子(quota / rate_limit など)だけが入る欄(エラー種別・サブエージェント失敗の理由)。
- *  実際には自由記述のメッセージが入っていることもあるので、伏せ字モードでは識別子の形のときだけ出す */
-const IDENTIFIER_RE = /^[\w.:-]{1,64}$/;
-function identifierOrHidden(text: string, anon: Anonymizer): string {
-  if (!anon.enabled) return esc(truncate(text, 400));
-  return IDENTIFIER_RE.test(text) ? esc(text) : missing('伏せ字モードのため本文を表示しません');
-}
 const n = (v: number | null | undefined): string => (v == null ? missing() : esc(int(v)));
 const field = (k: string, v: string, note = ''): string =>
   `<div class="field"><span class="k">${esc(k)}</span><span class="v">${v}</span>${note ? `<span class="n">${note}</span>` : ''}</div>`;
@@ -99,9 +92,9 @@ function section(title: string, body: string, lead = ''): string {
 const SKILL_LOCATION: Record<string, string> = { user: 'ユーザー', project: 'プロジェクト', builtin: '組み込み' };
 /**
  * このセッションの skill の表: 使えたもの(<available_skills>)と、一覧に無いが呼んだもの。呼んだものを先に、回数の多い順。
- * 一覧が記録に無い版では呼んだものだけ。伏せ字版では使えた skill の名前を出さず件数だけ(呼ばなかったプロジェクトの skill 名も含むため)
+ * 一覧が記録に無い版では呼んだものだけ
  */
-function skillsInSession(r: SessionRecord, anon: Anonymizer, libraryHref: string | null, hasPage: (name: string) => boolean): string {
+function skillsInSession(r: SessionRecord, libraryHref: string | null, hasPage: (name: string) => boolean): string {
   const calls = new Map<string, number>();
   for (const s of r.skills) calls.set(s.name, (calls.get(s.name) ?? 0) + 1);
   const avail = r.availableSkills ?? null;
@@ -116,7 +109,6 @@ function skillsInSession(r: SessionRecord, anon: Anonymizer, libraryHref: string
     ? `<p class="note">使えた skill ${esc(int(avail.length))} 件(システムメッセージの一覧)、うち呼んだもの ${esc(int(used))} 件。${outside ? `一覧に無い skill を ${esc(int(outside))} 件呼んでいます。` : ''}</p>`
     : `<p class="note">使えた skill の一覧はこのセッションの記録にありません(Copilot CLI 1.0.77 より前の版や copilot -p では残りません)。${calls.size ? '呼んだ skill だけを載せます。' : 'skill の呼び出しもありません。'}</p>`;
   if (!rows.length) return head;
-  if (anon.enabled) return head;
   const link = (name: string, n: number): string => (libraryHref && n > 0 && hasPage(name) ? `<a href="${esc(libraryHref)}#${esc(skillAnchor(name))}">${esc(name)}</a>` : esc(name));
   return `${head}<div class="table-scroll"><table class="ledger" data-testid="session-skills"><thead><tr><th scope="col">skill</th><th scope="col">置き場所</th><th scope="col" class="num">呼んだ回数</th></tr></thead><tbody>${rows
     .map((x) => `<tr${x.n > 0 ? ' class="called"' : ''}><td>${link(x.name, x.n)}</td><td>${esc(x.where)}</td><td class="num">${x.n > 0 ? esc(int(x.n)) : '<span class="missing-value">—</span>'}</td></tr>`)
@@ -227,7 +219,7 @@ function turnLead(r: SessionRecord, judged: boolean): string {
 }
 
 /** 依頼(ターン)ごとの工程・種類・詰まり・使用量の表 */
-function turnTable(r: SessionRecord, anon: Anonymizer, verdicts: Map<number, TurnVerdict> | null): string {
+function turnTable(r: SessionRecord, verdicts: Map<number, TurnVerdict> | null): string {
   const rows = sessionTurns(r);
   const judged = !!verdicts?.size;
   const day0 = rows[0]?.startedAt ? dateTime(rows[0].startedAt).slice(0, 10) : '';
@@ -235,16 +227,14 @@ function turnTable(r: SessionRecord, anon: Anonymizer, verdicts: Map<number, Tur
     if (!judged) return '';
     const v = verdicts!.get(n);
     if (!v) return `<td>${missing('未判定')}</td><td>${missing('—')}</td><td>${missing('—')}</td>`;
-    const note = anon.freeText(v.note);
     // 判定の理由は全文を出す(title だけだとキーボードとタッチで読めない。判定の指示で 80 字程度までにしている)
-    const why = note ? ` <span class="why">${esc(note)}</span>` : '';
+    const why = v.note ? ` <span class="why">${esc(v.note)}</span>` : '';
     return `<td><span class="tag${v.outcome === 'rejected' || v.outcome === 'off_target' ? ' warn' : ''}">${esc(OUTCOME_LABEL[v.outcome])}</span>${why}</td><td>${v.mismatch ? esc(MISMATCH_LABEL[v.mismatch]) : ''}</td><td>${esc(v.phase)}</td>`;
   };
   if (!rows.length) return `<p class="note">依頼ごとの記録がありません(イベントログが無いか、古い集計です。atlas.bat で集計し直すと入ります)。</p>`;
   const body = rows
     .map((t) => {
-      const text = anon.freeText(t.text);
-      const req = t.text.trim() === '' ? missing('(本文なし)') : text == null ? missing('伏せ字') : esc(truncate(text, 80));
+      const req = t.text.trim() === '' ? missing('(本文なし)') : esc(truncate(t.text, 80));
       const stuck = isStuck(t);
       const next = followedByFix(t) ? ` <span class="tag warn">次で${esc(REQUEST_KIND_LABEL[t.nextKind!])}</span>` : '';
       // 時刻だけ(最初の依頼と日付が違うときは月日も)
@@ -257,28 +247,19 @@ function turnTable(r: SessionRecord, anon: Anonymizer, verdicts: Map<number, Tur
   return `<div class="table-scroll"><table class="ledger small turns"><thead><tr><th scope="col" class="num">#</th><th scope="col">開始</th><th scope="col">依頼</th><th scope="col">種類</th><th scope="col">工程</th><th scope="col" class="num">実働</th><th scope="col" class="num">ツール呼び出し</th><th scope="col" class="num">ツールの失敗</th><th scope="col" class="num">拒否</th><th scope="col" class="num">中断</th><th scope="col" class="num">エラー</th><th scope="col" class="num">再編集</th><th scope="col" class="num">文脈圧縮</th><th scope="col" class="num">AIU</th>${judged ? '<th scope="col">採用(LLM)</th><th scope="col">合わなかった点</th><th scope="col">工程(普段)</th>' : ''}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
-function timelineRow(e: TimelineEntry, anon: Anonymizer): string {
+function timelineRow(e: TimelineEntry): string {
   let label: string;
   if (e.kind === 'user' && e.label.trim() === '') {
     // 本文が空の依頼(content: "" のものが実データにある)
     label = missing('(本文なし)');
-  } else if (e.kind === 'user') {
-    const t = anon.freeText(e.label);
-    label = t == null ? missing('伏せ字モードのため本文を表示しません') : esc(truncate(t, 400));
   } else if (e.kind === 'tools') {
     const tools = Object.entries(e.tools ?? {})
       .sort((a, b) => b[1] - a[1])
       .map(([k, v]) => `${k} ×${v}`)
       .join('、');
     label = `${esc(int(e.count ?? 0))} 回: ${esc(tools)}`;
-  } else if (e.kind === 'task_complete' || e.kind === 'abort') {
-    // 要約・中断理由は自由記述(相対パスやファイル名を含みうる)。伏せ字モードでは出さない
-    const t = anon.freeText(e.label);
-    label = t == null ? missing('伏せ字モードのため本文を表示しません') : esc(truncate(t, 400));
-  } else if (e.kind === 'error') {
-    label = identifierOrHidden(e.label, anon);
   } else {
-    label = esc(anon.scrub(truncate(e.label, 400)));
+    label = esc(truncate(e.label, 400));
   }
   return `<tr class="k-${e.kind}"><td class="num">${esc(dateTime(e.at))}</td><td><span class="kind">${esc(KIND_LABEL[e.kind] ?? e.kind)}</span></td><td>${label}</td></tr>`;
 }
@@ -308,11 +289,8 @@ function judgmentSection(j: JudgmentSummary, activeMs: number | null): string {
   return section('LLM による判定(推定)', `${fields}${summary}${rationale}`, '人が AI なしで同じ成果を出す場合の工数を LLM に推定させた値です。実測ではありません。');
 }
 
-/**
- * AI の変更がその後の VCS のファイルに残っているか(atlas vcs の結果)。まとまりごとの状態の表を付ける。
- * 伏せ字版ではパスを出さない(まとまりの番号と状態だけ)
- */
-function retentionSection(r: SessionRetention, meta: RetentionMeta | null, anon: Anonymizer): string {
+/** AI の変更がその後の VCS のファイルに残っているか(atlas vcs の結果)。まとまりごとの状態の表を付ける */
+function retentionSection(r: SessionRetention, meta: RetentionMeta | null): string {
   // 状態の名前は、設定(vcs.labels)で差し替えたものがあればそれ。節の一文(vcs.note)も足す
   const L = { ...STATUS_LABEL, ...(meta?.labels ?? {}) };
   const lead = esc(`AI が足した行が、その後の VCS のファイルに残っているかを数えます。${meta?.note ?? ''}`);
@@ -345,10 +323,10 @@ function retentionSection(r: SessionRetention, meta: RetentionMeta | null, anon:
   const root = r.root;
   const rel = (p: string): string => (root ? relativeInside(root, p) : null) ?? p;
   const rows = r.hunks
-    .map((h) => {
-      const path = anon.path(rel(h.path));
-      return `<tr><td class="num">${esc(int(h.id))}</td><td>${path ? `<code>${esc(path)}</code>` : missing('伏せ字')}</td><td class="st">${esc(L[h.status])}${h.reason ? `<span class="why">${esc(REASON_LABEL[h.reason])}</span>` : ''}</td>${STATUSES.map((k) => `<td class="num">${esc(int(h.lines[k]))}</td>`).join('')}</tr>`;
-    })
+    .map(
+      (h) =>
+        `<tr><td class="num">${esc(int(h.id))}</td><td><code>${esc(rel(h.path))}</code></td><td class="st">${esc(L[h.status])}${h.reason ? `<span class="why">${esc(REASON_LABEL[h.reason])}</span>` : ''}</td>${STATUSES.map((k) => `<td class="num">${esc(int(h.lines[k]))}</td>`).join('')}</tr>`,
+    )
     .join('');
   const table = r.hunks.length
     ? `<h3 class="gap">まとまりごと</h3><div class="table-scroll"><table class="ledger turns"><thead><tr><th scope="col" class="num">番号</th><th scope="col">ファイル</th><th scope="col">状態</th>${STATUSES.map((k) => `<th scope="col" class="num">${esc(L[k])}(行)</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div>`
@@ -373,7 +351,7 @@ function ordered(keys: string[], order: string[]): string[] {
 }
 
 /** Phase 7: 実行の性質(モード・推論強度・起点・文脈・待ち時間・ツールの所要時間・摩擦の詳細・todo) */
-function execSection(r: SessionRecord, anon: Anonymizer): string {
+function execSection(r: SessionRecord): string {
   const e = r.exec;
   if (!e) return '';
   const modes = ordered(Object.keys(e.modes.byMode), MODE_ORDER);
@@ -482,7 +460,7 @@ function execSection(r: SessionRecord, anon: Anonymizer): string {
       }</p>`
     : '';
 
-  // 失敗したサブエージェントの理由(本文は短く。伏せ字モードでは種別のような識別子のときだけ出す)
+  // 失敗したサブエージェントの理由(本文は短く)
   // 同じ名前・同じ理由は 1 行にまとめて ×N を添える(実データで同じ 402 / 429 の行が 9〜15 行並んだ)
   const failedGroups = new Map<string, { name: string; error: string; count: number }>();
   for (const a of r.agents) {
@@ -494,7 +472,7 @@ function execSection(r: SessionRecord, anon: Anonymizer): string {
   }
   const reasons = failedGroups.size
     ? `<h3>失敗したサブエージェント</h3><ul class="note">${[...failedGroups.values()]
-        .map((g) => `<li>${esc(g.name)}: ${anon.enabled ? identifierOrHidden(g.error, anon) : esc(truncate(g.error, 160))}${g.count > 1 ? ` <span class="tag">×${esc(int(g.count))}</span>` : ''}</li>`)
+        .map((g) => `<li>${esc(g.name)}: ${esc(truncate(g.error, 160))}${g.count > 1 ? ` <span class="tag">×${esc(int(g.count))}</span>` : ''}</li>`)
         .join('')}</ul>`
     : '';
 
@@ -506,7 +484,6 @@ function execSection(r: SessionRecord, anon: Anonymizer): string {
 }
 
 export interface DetailOptions {
-  anon: Anonymizer;
   css: string;
   judgment: JudgmentSummary | null;
   /** 段階 2: このセッションの依頼ごとの LLM 判定(依頼番号 → 判定)。無ければ null */
@@ -555,7 +532,7 @@ blockquote.msg{margin:8px 0 0;padding:10px 12px;background:var(--surface);border
 @media (max-width:720px){.two,.three{grid-template-columns:minmax(0,1fr)}}
 `;
 
-/** Phase 13: メモの節。無ければ hidden の空の節を置く(atlas serve では編集の script がここに描く)。伏せ字版では節ごと出さない */
+/** Phase 13: メモの節。無ければ hidden の空の節を置く(atlas serve では編集の script がここに描く) */
 function memoSection(id: string, memo: DetailOptions['memo']): string {
   const body = memo ? `<div class="memo-body">${memo.html}</div>` : '';
   const when = memo ? `<p>更新 ${esc(dateTime(memo.updatedAt))}</p>` : '';
@@ -565,15 +542,13 @@ function memoSection(id: string, memo: DetailOptions['memo']): string {
 export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
   sectionSeq = 0;
   sectionIndex = [];
-  const { anon } = o;
   const hasPage = o.skillHasPage ?? ((): boolean => true);
   const t = r.tokens;
   const lines = r.lines ?? { added: 0, removed: 0, source: 'none' as const };
-  const name = anon.freeText(r.name);
-  const title = name ? truncate(name, 120) : anon.enabled ? 'セッション(伏せ字)' : '(名前なし)';
-  const project = anon.projectLabel(r.project);
-  const branch = anon.branch(r.branch);
-  const person = anon.person(r.person ?? null);
+  const title = r.name ? truncate(r.name, 120) : '(名前なし)';
+  const project = shortProjectLabel(r.project);
+  const branch = r.branch;
+  const person = r.person ?? null;
 
   const meta = [
     person ? `<span class="tag" title="送り先の、人のフォルダの名前">人: ${esc(person)}</span>` : '',
@@ -615,16 +590,14 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
   ].join('')}</div>`;
 
   const parts: string[] = [];
-  if (!anon.enabled) {
-    parts.push(memoSection(r.id, o.memo));
-    if (o.memo) sectionIndex.push({ id: 'memo', title: 'メモ' });
-  }
+  parts.push(memoSection(r.id, o.memo));
+  if (o.memo) sectionIndex.push({ id: 'memo', title: 'メモ' });
   parts.push(section('概要', overview));
   if (o.judgment) parts.push(judgmentSection(o.judgment, r.activeMs));
-  if (o.retention) parts.push(retentionSection(o.retention, o.retentionMeta ?? null, anon));
+  if (o.retention) parts.push(retentionSection(o.retention, o.retentionMeta ?? null));
 
-  const first = anon.freeText(r.firstUserMessage);
-  const last = anon.freeText(r.lastAssistantMessage);
+  const first = r.firstUserMessage;
+  const last = r.lastAssistantMessage;
   if (first || last) {
     parts.push(
       section(
@@ -659,7 +632,7 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
     ? `<div class="table-scroll"><table class="ledger"><thead><tr><th scope="col">skill</th><th scope="col">時刻</th><th scope="col">呼んだ側</th><th scope="col">記録の形</th></tr></thead><tbody>${r.skills
         .map(
           (s) =>
-            `<tr><td>${o.libraryHref && !anon.enabled && hasPage(s.name) ? `<a href="${esc(o.libraryHref)}#${esc(skillAnchor(s.name))}">${esc(s.name)}</a>` : esc(s.name)}</td><td class="num">${esc(dateTime(s.at))}</td><td>${esc(s.trigger === 'user' ? '利用者' : s.trigger === 'agent' ? 'エージェント' : '不明')}</td><td>${esc(s.via === 'both' ? 'ツール + イベント' : s.via === 'tool' ? 'ツール' : 'イベント')}</td></tr>`,
+            `<tr><td>${o.libraryHref && hasPage(s.name) ? `<a href="${esc(o.libraryHref)}#${esc(skillAnchor(s.name))}">${esc(s.name)}</a>` : esc(s.name)}</td><td class="num">${esc(dateTime(s.at))}</td><td>${esc(s.trigger === 'user' ? '利用者' : s.trigger === 'agent' ? 'エージェント' : '不明')}</td><td>${esc(s.via === 'both' ? 'ツール + イベント' : s.via === 'tool' ? 'ツール' : 'イベント')}</td></tr>`,
         )
         .join('')}</tbody></table></div>`
     : `<p class="note">skill の呼び出しはありません。</p>`;
@@ -677,25 +650,25 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
     '実行回数',
     'hook の実行はありません。',
   );
-  parts.push(execSection(r, anon));
+  parts.push(execSection(r));
 
   parts.push(section('skills / agents / hooks', `<div class="two"><div><h3>skills</h3>${skills}</div><div><h3>agents</h3>${agents}</div></div><h3 class="gap">hooks</h3>${hooks}`));
 
   const instRows = mergeInstructionRows(r.instructions);
   const inst = instRows.length
-    ? `<div class="table-scroll"><table class="ledger"><thead><tr><th scope="col">ファイル</th><th scope="col">範囲</th><th scope="col" class="num">文字数</th><th scope="col" class="num">注入回数</th><th scope="col">初出</th>${anon.enabled ? '' : '<th scope="col">先頭の見出し</th>'}</tr></thead><tbody>${instRows
+    ? `<div class="table-scroll"><table class="ledger"><thead><tr><th scope="col">ファイル</th><th scope="col">範囲</th><th scope="col" class="num">文字数</th><th scope="col" class="num">注入回数</th><th scope="col">初出</th><th scope="col">先頭の見出し</th></tr></thead><tbody>${instRows
         .map(
           (i) =>
-            `<tr><td>${esc(i.file === 'unknown' ? '不明(特定できず)' : i.file)}</td><td>${esc(i.scope === 'repo' ? 'リポジトリ' : i.scope === 'user' ? 'ユーザー' : '不明')}</td><td class="num">${esc(int(i.chars))}</td><td class="num">${esc(int(i.injections))}</td><td class="num">${esc(dateTime(i.firstSeenAt))}</td>${anon.enabled ? '' : `<td>${o.libraryHref ? `<a href="${esc(o.libraryHref)}#v-${esc(i.contentHash)}">${esc(cleanHeading(i.heading, 80) || '(見出しなし)')}</a>` : esc(cleanHeading(i.heading, 80) || '(見出しなし)')}</td>`}</tr>`,
+            `<tr><td>${esc(i.file === 'unknown' ? '不明(特定できず)' : i.file)}</td><td>${esc(i.scope === 'repo' ? 'リポジトリ' : i.scope === 'user' ? 'ユーザー' : '不明')}</td><td class="num">${esc(int(i.chars))}</td><td class="num">${esc(int(i.injections))}</td><td class="num">${esc(dateTime(i.firstSeenAt))}</td><td>${o.libraryHref ? `<a href="${esc(o.libraryHref)}#v-${esc(i.contentHash)}">${esc(cleanHeading(i.heading, 80) || '(見出しなし)')}</a>` : esc(cleanHeading(i.heading, 80) || '(見出しなし)')}</td></tr>`,
         )
         .join('')}</tbody></table></div>`
     : `<p class="note">指示ファイルの注入は見つかりませんでした。</p>`;
   // このセッションの指示文と skill を 1 か所に: 指示文は注入されたもの、skill は使えたもの(<available_skills>)に呼んだ回数を添える
-  const libSession = o.libraryHref && !anon.enabled && o.libraryHasSession !== false ? `${o.libraryHref}#session=${encodeURIComponent(r.id)}` : null;
+  const libSession = o.libraryHref && o.libraryHasSession !== false ? `${o.libraryHref}#session=${encodeURIComponent(r.id)}` : null;
   parts.push(
     section(
       '指示文と skill',
-      `<h3>指示文</h3>${inst}<h3 class="gap">skill</h3>${skillsInSession(r, anon, o.libraryHref ?? null, hasPage)}`,
+      `<h3>指示文</h3>${inst}<h3 class="gap">skill</h3>${skillsInSession(r, o.libraryHref ?? null, hasPage)}`,
       libSession ? `<a href="${esc(libSession)}">このセッションの分だけを「指示文と skill」のページで開く</a>(本文と版の差分)` : '',
     ),
   );
@@ -716,7 +689,7 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
           field('権限 / 自動承認 / sandbox', v(s.permission_mode), `自動承認 ${v(s.auto_approve)}・sandbox ${v(s.sandbox_enabled)}`),
           field('入力 / 出力トークン(アプリの累計)', s.total_input_tokens == null ? '—' : esc(int(Number(s.total_input_tokens))), s.total_output_tokens == null ? '' : `出力 ${esc(int(Number(s.total_output_tokens)))}`),
           field('fork 元', v(s.forked_from_session_id)),
-          field('workspace / ブランチ', anon.enabled ? '(伏せ字)' : v(w.name), anon.enabled ? '' : v(w.branch)),
+          field('workspace / ブランチ', v(w.name), v(w.branch)),
           field('コミット(checkpoints)/ 文脈の計測点', esc(int(dk.checkpoints.length)), `文脈 ${esc(int(dk.contextUsage.length))} 点・activity ${esc(int(dk.activity.length))}`),
         ].join('')}</div>`,
         'デスクトップアプリ(data.db)から許可リストの列だけを読んだもの。資格情報の列と表は開いていません。-wal の未反映分は読めないので、最近の更新は欠けることがあります。',
@@ -730,7 +703,7 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
   const pageCounts = new Map<string, number>();
   for (const p of w.pageReads) pageCounts.set(p, (pageCounts.get(p) ?? 0) + 1);
   const pages =
-    !anon.enabled && pageCounts.size
+    pageCounts.size
       ? `<ul class="note">${[...pageCounts].map(([p, c]) => `<li>${esc(p)}${c > 1 ? ` <span class="tag">×${esc(int(c))}</span>` : ''}</li>`).join('')}</ul>`
       : '';
   parts.push(
@@ -748,7 +721,7 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
     ),
   );
 
-  parts.push(section('依頼ごとの経過', turnTable(r, anon, o.verdicts ?? null), turnLead(r, !!o.verdicts?.size)));
+  parts.push(section('依頼ごとの経過', turnTable(r, o.verdicts ?? null), turnLead(r, !!o.verdicts?.size)));
 
   const f = r.friction;
   parts.push(
@@ -777,7 +750,7 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
   const deleted = r.files.deleted ?? [];
   const sessionState = r.files.sessionState ?? 0;
   const fileList = (xs: string[]): string =>
-    anon.enabled ? `<p class="note">${esc(int(xs.length))} 件(伏せ字モードのためパスは表示しません)</p>` : xs.length ? `<ul class="note">${xs.map((p) => `<li>${esc(p)}</li>`).join('')}</ul>` : `<p class="note">なし</p>`;
+    xs.length ? `<ul class="note">${xs.map((p) => `<li>${esc(p)}</li>`).join('')}</ul>` : `<p class="note">なし</p>`;
   parts.push(
     section(
       '変更したファイル',
@@ -792,7 +765,7 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
     section(
       '時系列',
       r.timeline.length
-        ? `<div class="table-scroll"><table class="ledger"><thead><tr><th scope="col">時刻</th><th scope="col">種類</th><th scope="col">内容</th></tr></thead><tbody>${r.timeline.map((e) => timelineRow(e, anon)).join('')}</tbody></table></div>`
+        ? `<div class="table-scroll"><table class="ledger"><thead><tr><th scope="col">時刻</th><th scope="col">種類</th><th scope="col">内容</th></tr></thead><tbody>${r.timeline.map((e) => timelineRow(e)).join('')}</tbody></table></div>`
         : `<p class="note">イベントログ(events.jsonl)が無いため時系列はありません。</p>`,
       '依頼の区切り・ツール群・エージェント・文脈圧縮などを粗くまとめたもの',
     ),
@@ -836,7 +809,7 @@ ${codeMeta()}
 <meta name="theme-color" content="#0e1110" media="(prefers-color-scheme: dark)">
 <title>${esc(truncate(title, 60))} | Copilot Session Atlas</title>
 <script>try{var t=localStorage.getItem('atlas-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t}catch(e){}</script>
-<style>${o.css}${DETAIL_CSS}${o.memo && !anon.enabled ? MEMO_CSS : ''}</style>
+<style>${o.css}${DETAIL_CSS}${o.memo ? MEMO_CSS : ''}</style>
 </head>
 <body>
 ${renderTop(nav)}
@@ -847,7 +820,7 @@ ${renderRail(nav)}
 <div class="title"><h1>${esc(title)}</h1><div class="meta">${meta}</div></div>
 ${parts.join('\n')}
 </main>
-<footer class="wrap page-foot">Copilot Session Atlas が ${esc(dateTime(o.generatedAt))} に生成。${anon.enabled ? '伏せ字モード(プロジェクト・パス・ブランチ・本文を伏せています)。' : ''}</footer>
+<footer class="wrap page-foot">Copilot Session Atlas が ${esc(dateTime(o.generatedAt))} に生成。</footer>
 </div>
 </div>
 <script>${NAV_JS}</script>

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { readAtlasBuild } from '../src/atlas-build.ts';
-import { anonymizeAtlasBuilds, describeAtlasBuilds, folderOwner, parseAtlasBuild, staleFolders, summarizeAtlasBuilds, type AtlasBuild } from '../src/atlas-version.ts';
+import { describeAtlasBuilds, folderOwner, parseAtlasBuild, staleFolders, summarizeAtlasBuilds, type AtlasBuild } from '../src/atlas-version.ts';
 
 const b = (c: string, at: string | null, o: Partial<AtlasBuild> = {}): AtlasBuild => ({ commit: c.repeat(40), committedAt: at, dirty: false, code: `${c.repeat(8)}00000000`, ...o });
 
@@ -120,25 +120,6 @@ describe('atlas の版', () => {
     expect(s.latest).toMatchObject({ commit: 'b'.repeat(40) });
     // 持ち主: <人>/<プロジェクト> なら人、人のフォルダの下に無いものはフォルダそのもの
     expect([folderOwner('person-a/app'), folderOwner('app'), folderOwner('.')]).toEqual(['person-a', 'app', '(このフォルダ)']);
-  });
-
-  it('伏せ字版: 人の名前とフォルダの名前を消し、フォルダは番号にする(どれだけ最新でないかは残す)', () => {
-    const s = summarizeAtlasBuilds(
-      [
-        { person: 'person-a', uploadAtlas: b('a', '2026-11-01T00:00:00.000Z') },
-        { person: 'person-b', uploadAtlas: null },
-      ],
-      b('b', '2026-11-10T00:00:00.000Z'),
-      { 'person-a/secret-app': { uploadedAt: '2026-11-02T00:00:00.000Z', atlas: b('a', '2026-11-01T00:00:00.000Z') } },
-    )!;
-    const a = anonymizeAtlasBuilds(s);
-    expect(a.olderPersons).toEqual([]);
-    expect(a.unknownPersons).toEqual([]);
-    expect(a.builds.every((g) => g.persons.length === 0)).toBe(true);
-    expect(a.folders?.map((f) => f.folder)).toEqual(['フォルダ 1']);
-    const text = JSON.stringify(describeAtlasBuilds(a));
-    for (const name of ['person-a', 'person-b', 'secret-app']) expect(text).not.toContain(name);
-    expect(describeAtlasBuilds(a).short).toBe(describeAtlasBuilds(s).short);
   });
 });
 

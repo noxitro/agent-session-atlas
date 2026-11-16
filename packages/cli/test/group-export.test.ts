@@ -40,7 +40,7 @@ describe('グループの書き出し', () => {
     await writeFile(join(out, 'sessions.json'), JSON.stringify(file));
     await writeFile(join(out, 'sessions', 's1.md'), '# 記録 s1');
     await writeFile(join(out, 'metrics.json'), 'いつもの集計');
-    await writeFile(join(out, 'atlas.html'), `<!doctype html><meta name="atlas-token" content="${TOKEN_PLACEHOLDER}"><script type="application/json" id="atlas-data">{"version":9,"anonymized":false,"groups":[]}</script>`);
+    await writeFile(join(out, 'atlas.html'), `<!doctype html><meta name="atlas-token" content="${TOKEN_PLACEHOLDER}"><script type="application/json" id="atlas-data">{"version":9,"groups":[]}</script>`);
     await writeFile(join(notes, 'groups.json'), JSON.stringify({ version: 1, groups: [{ name: '調査: A/B', note: '比べる', ids: ['s1', 's2', 'gone'] }] }));
   });
   afterEach(async () => {

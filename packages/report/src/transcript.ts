@@ -3,17 +3,15 @@
 // - トークン・AIU・待ち時間は session-store.db の明細(assistant_usage_events)と usage_record を core の mergeUsage で合わせる
 // - 既定では成功したツールの結果は入れない(容量の大半を占めるため)。--tool-output all で入れる
 // - API キーらしい文字列は伏せて件数を出す(共有が目的のため。元の記録は書き換えない)
-// - 伏せ字モードでは本文にも scrub(パスと既知の固有名の置換)を掛けるが、自由記述の固有名を機械的に保証はできないので先頭に注意を出す
 import { existsSync } from 'node:fs';
 import { isInternalTool, isUserTurn, mergeUsage, normalizeModel, parseEvents, type CopilotEvent, type DbUsageRow, type SessionRecord } from '../../core/src/index.ts';
-import type { Anonymizer } from './lib/anonymize.ts';
+import { shortProjectLabel } from './lib/project-label.ts';
 import { dateTime, dec, duration, int } from './lib/format.ts';
 
 export type ToolOutputMode = 'fail' | 'all' | 'none';
 export const TOOL_OUTPUT_MODES: readonly ToolOutputMode[] = ['fail', 'all', 'none'];
 
 export interface TranscriptOptions {
-  anon: Anonymizer;
   generatedAt: string;
   /** ツールの結果を入れる条件(既定 fail = 失敗したときだけ) */
   toolOutput: ToolOutputMode;
@@ -30,7 +28,7 @@ export interface TranscriptOptions {
   onEvent?: (e: CopilotEvent) => void;
 }
 
-export const DEFAULT_TRANSCRIPT_OPTIONS: Omit<TranscriptOptions, 'anon' | 'generatedAt'> = {
+export const DEFAULT_TRANSCRIPT_OPTIONS: Omit<TranscriptOptions, 'generatedAt'> = {
   toolOutput: 'fail',
   maxTextChars: 20_000,
   maxToolChars: 4_000,
@@ -189,11 +187,10 @@ const sec = (v: number | null): string => (v == null ? '—' : `${(v / 1000).toF
  * dbUsage は session-store.db の assistant_usage_events のうちこのセッションの行。
  */
 export async function renderTranscript(r: SessionRecord, eventsPath: string | null, dbUsage: DbUsageRow[], o: TranscriptOptions): Promise<TranscriptResult> {
-  const { anon } = o;
   let truncated = 0;
   let secretHits = 0;
 
-  /** 本文(自由記述)の整形: 上限で中略 → 秘密情報を伏せる → 伏せ字モードなら scrub */
+  /** 本文(自由記述)の整形: 上限で中略 → 秘密情報を伏せる */
   const text = (s: string, limit = o.maxTextChars): string => {
     let t = s;
     if (t.length > limit) {
@@ -204,9 +201,8 @@ export async function renderTranscript(r: SessionRecord, eventsPath: string | nu
     }
     const red = redactSecrets(t);
     secretHits += red.hits;
-    return anon.enabled ? anon.scrub(red.text) : red.text;
+    return red.text;
   };
-  const short = (s: string): string => (anon.enabled ? anon.scrub(s) : s);
 
   const events: CopilotEvent[] = [];
   const usageRecords: CopilotEvent[] = [];
@@ -246,25 +242,25 @@ export async function renderTranscript(r: SessionRecord, eventsPath: string | nu
 
   // ---------- 見出し・概要 ----------
   const toolTotals = Object.values(r.tools.results ?? {}).reduce((a, x) => ({ failure: a.failure + x.failure, denied: a.denied + x.denied }), { failure: 0, denied: 0 });
-  const name = anon.freeText(r.name);
-  const title = name ? name.replace(/\s+/g, ' ').slice(0, 120) : anon.enabled ? 'セッション(伏せ字)' : r.id;
+  // セッション名も秘密情報の検査に通す(切る前に伏せ、件数に入れる)
+  let title = r.id;
+  if (r.name) {
+    const red = redactSecrets(r.name.replace(/\s+/g, ' '));
+    secretHits += red.hits;
+    title = red.text.slice(0, 120);
+  }
   const L: string[] = [];
-  L.push(`# セッション記録: ${short(title)}`, '');
+  L.push(`# セッション記録: ${title}`, '');
   L.push(`生成 ${dateTime(o.generatedAt)} · agent-session-atlas \`atlas export\` · 本文の出所: ${source === 'events' ? 'events.jsonl(スナップショット)' : 'sessions.json の抜粋のみ(スナップショットに記録が無い)'}`);
-  if (anon.enabled)
-    L.push(
-      '',
-      '> **伏せ字モード。** プロジェクト名・パス・リポジトリ名・ブランチは仮名に、絶対パスは `<path>` に置き換えてあります。依頼文や応答などの自由記述は機械的に置き換えただけで、本文中の固有名(相対パス、ファイル名、人名など)が残っている可能性があります。共有する前に中身を確認してください。',
-    );
   L.push('');
 
   L.push('## 概要', '');
   const meta: [string, string][] = [
     ['セッション ID', r.id],
-    ['プロジェクト', anon.projectLabel(r.project)],
+    ['プロジェクト', shortProjectLabel(r.project)],
     ['クライアント', r.client ?? '不明'],
-    ['リポジトリ / ブランチ', `${anon.enabled ? (r.repository ? anon.project(r.project) : '—') : (r.repository ?? '—')} / ${anon.branch(r.branch) ?? '—'}`],
-    ['作業フォルダ', anon.path(r.cwd) ?? (anon.enabled ? '(伏せ字)' : '—')],
+    ['リポジトリ / ブランチ', `${r.repository ?? '—'} / ${r.branch ?? '—'}`],
+    ['作業フォルダ', r.cwd ?? '—'],
     ['Copilot', r.copilotVersion ?? '不明'],
     ['開始 / 更新', `${dateTime(r.createdAt)} / ${dateTime(r.updatedAt)}`],
     ['所要時間 / 実働', `${duration(r.durationMs)} / ${duration(r.activeMs)}`],
@@ -329,8 +325,8 @@ export async function renderTranscript(r: SessionRecord, eventsPath: string | nu
   L.push('## 経過', '');
   if (source === 'record') {
     L.push('スナップショットに events.jsonl が無いため、sessions.json に残る最初の依頼と最後の応答だけです。', '');
-    const first = anon.freeText(r.firstUserMessage);
-    const last = anon.freeText(r.lastAssistantMessage);
+    const first = r.firstUserMessage;
+    const last = r.lastAssistantMessage;
     if (first) L.push('### 最初の依頼', '', quote(text(first)), '');
     if (last) L.push('### 最後の応答', '', quote(text(last)), '');
     if (!first && !last) L.push('(本文の記録がありません)', '');
@@ -365,7 +361,7 @@ export async function renderTranscript(r: SessionRecord, eventsPath: string | nu
       if (prevAt != null && at != null && at - prevAt >= o.gapMs) L.push('', `_(待ち ${duration(at - prevAt)})_`, '');
       if (at != null) prevAt = at;
       const agent = agentOf(e);
-      const tag = agent ? `[agent:${short(agent)}] ` : '';
+      const tag = agent ? `[agent:${agent}] ` : '';
       switch (e.type) {
         case 'user.message': {
           if (!agent && isUserTurn(d)) {
@@ -418,7 +414,7 @@ export async function renderTranscript(r: SessionRecord, eventsPath: string | nu
           const mcp = typeof startEv?.data?.mcpServerName === 'string' && startEv.data.mcpServerName ? ` (MCP ${startEv.data.mcpServerName})` : '';
           line(
             e.timestamp,
-            `${st?.agent ? `[agent:${short(st.agent)}] ` : tag}${ok ? '✔' : '✖'} \`${nm}\`${mcp}${args ? ` ${short(redactSecrets(args).text)}` : ''}${dur ? `(${dur})` : ''}${err ? ` — 失敗: ${short(redactSecrets(err).text)}` : ''}`,
+            `${st?.agent ? `[agent:${st.agent}] ` : tag}${ok ? '✔' : '✖'} \`${nm}\`${mcp}${args ? ` ${redactSecrets(args).text}` : ''}${dur ? `(${dur})` : ''}${err ? ` — 失敗: ${redactSecrets(err).text}` : ''}`,
           );
           const show = o.toolOutput === 'all' || (o.toolOutput === 'fail' && !ok);
           if (show) {
@@ -429,19 +425,19 @@ export async function renderTranscript(r: SessionRecord, eventsPath: string | nu
           break;
         }
         case 'subagent.started':
-          line(e.timestamp, `**サブエージェント開始** \`${short(String(d.agentName ?? d.agentDisplayName ?? 'agent'))}\``);
+          line(e.timestamp, `**サブエージェント開始** \`${String(d.agentName ?? d.agentDisplayName ?? 'agent')}\``);
           break;
         case 'subagent.completed':
           line(
             e.timestamp,
-            `サブエージェント完了 \`${short(String(d.agentName ?? 'agent'))}\`${(() => {
+            `サブエージェント完了 \`${String(d.agentName ?? 'agent')}\`${(() => {
               const parts = [d.durationMs != null ? duration(Number(d.durationMs)) : null, d.totalTokens != null ? `トークン ${int(Number(d.totalTokens))}` : null, d.totalToolCalls != null ? `ツール ${int(Number(d.totalToolCalls))} 回` : null].filter(Boolean);
               return parts.length ? `(${parts.join('、')})` : '';
             })()}`,
           );
           break;
         case 'subagent.failed':
-          line(e.timestamp, `**サブエージェント失敗** \`${short(String(d.agentName ?? 'agent'))}\`: ${short(redactSecrets(String(d.error ?? d.message ?? '')).text).slice(0, 300)}`);
+          line(e.timestamp, `**サブエージェント失敗** \`${String(d.agentName ?? 'agent')}\`: ${redactSecrets(String(d.error ?? d.message ?? '')).text.slice(0, 300)}`);
           break;
         case 'session.compaction_start':
           line(e.timestamp, `compaction 開始(文脈 ${int(Number(d.conversationTokens ?? 0))} + system ${int(Number(d.systemTokens ?? 0))} + ツール定義 ${int(Number(d.toolDefinitionsTokens ?? 0))} トークン)`);
@@ -463,11 +459,19 @@ export async function renderTranscript(r: SessionRecord, eventsPath: string | nu
           break;
         }
         case 'session.error':
-          line(e.timestamp, `**エラー** ${String(d.errorType ?? '')}${d.statusCode != null ? ` (HTTP ${d.statusCode})` : ''}${typeof d.message === 'string' ? `: ${short(redactSecrets(d.message).text).slice(0, 300)}` : ''}`);
+          line(e.timestamp, `**エラー** ${String(d.errorType ?? '')}${d.statusCode != null ? ` (HTTP ${d.statusCode})` : ''}${typeof d.message === 'string' ? `: ${redactSecrets(d.message).text.slice(0, 300)}` : ''}`);
           break;
-        case 'abort':
-          line(e.timestamp, `**中断** ${typeof d.reason === 'string' ? short(d.reason).slice(0, 300) : ''}`);
+        case 'abort': {
+          // 中断の理由も秘密情報の検査に通す(切る前に伏せ、件数に入れる)
+          let reason = '';
+          if (typeof d.reason === 'string') {
+            const red = redactSecrets(d.reason);
+            secretHits += red.hits;
+            reason = red.text.slice(0, 300);
+          }
+          line(e.timestamp, `**中断** ${reason}`);
           break;
+        }
         case 'session.mode_changed':
           line(e.timestamp, `モード変更 ${String(d.previousMode ?? '?')} → ${String(d.newMode ?? '?')}`);
           break;
@@ -503,19 +507,16 @@ export async function renderTranscript(r: SessionRecord, eventsPath: string | nu
   const files = r.files;
   if (files && (files.changed.length || files.created.length || (files.deleted?.length ?? 0))) {
     L.push('## 変更したファイル', '');
-    if (anon.enabled) L.push(`変更 ${int(files.changed.length)} / 作成 ${int(files.created.length)} / 削除 ${int(files.deleted?.length ?? 0)} 件(伏せ字モードのためパスは出しません)`, '');
-    else {
-      const list = (label: string, xs: string[]): void => {
-        if (!xs.length) return;
-        L.push(`### ${label}(${int(xs.length)})`, '');
-        for (const f of xs.slice(0, 200)) L.push(`- \`${f}\``);
-        if (xs.length > 200) L.push(`- …他 ${int(xs.length - 200)} 件`);
-        L.push('');
-      };
-      list('変更', files.changed);
-      list('作成', files.created);
-      list('削除', files.deleted ?? []);
-    }
+    const list = (label: string, xs: string[]): void => {
+      if (!xs.length) return;
+      L.push(`### ${label}(${int(xs.length)})`, '');
+      for (const f of xs.slice(0, 200)) L.push(`- \`${f}\``);
+      if (xs.length > 200) L.push(`- …他 ${int(xs.length - 200)} 件`);
+      L.push('');
+    };
+    list('変更', files.changed);
+    list('作成', files.created);
+    list('削除', files.deleted ?? []);
   }
 
   // ---------- 秘密情報・分析の観点 ----------

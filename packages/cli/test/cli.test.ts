@@ -34,10 +34,9 @@ describe('deps-fresh(bat が npm install するかの判定)', () => {
 
 describe('parseCli', () => {
   it('コマンド省略時は all、オプションを読む', () => {
-    expect(parseCli([])).toMatchObject({ command: 'all', anonymize: false, home: null });
-    expect(parseCli(['build', '--anonymize', '--out', 'o', '--project', 'p', '--client', 'github/cli', '--model', 'm', '--branch', 'b', '--since', '2026-07-01'])).toMatchObject({
+    expect(parseCli([])).toMatchObject({ command: 'all', home: null });
+    expect(parseCli(['build', '--out', 'o', '--project', 'p', '--client', 'github/cli', '--model', 'm', '--branch', 'b', '--since', '2026-07-01'])).toMatchObject({
       command: 'build',
-      anonymize: true,
       out: 'o',
       project: 'p',
       client: 'github/cli',
@@ -54,7 +53,7 @@ describe('parseCli', () => {
     expect(() => parseCli(['build', 'extra'])).toThrow(/1 つだけ/);
   });
 
-  it('open: 集計して開くフォルダを 1 つ取る。--home・判定の指定・伏せ字は受け付けず、serve のオプションと絞り込みは通す', () => {
+  it('open: 集計して開くフォルダを 1 つ取る。--home・判定の指定は受け付けず、serve のオプションと絞り込みは通す', () => {
     expect(parseCli(['open', 'D:\\logs\\person-a'])).toMatchObject({ command: 'open', target: 'D:\\logs\\person-a', open: true, port: null });
     expect(parseCli(['open', '/srv/logs', '--no-open', '--port', '0', '--out', 'o', '--notes-dir', 'n', '--since', '2026-07-01', '--config', 'c.json'])).toMatchObject({
       command: 'open',
@@ -72,7 +71,6 @@ describe('parseCli', () => {
     expect(() => parseCli(['open', 'D:\\my', 'logs'])).toThrow(/余分な引数.*logs.*"…" で囲んで/);
     expect(() => parseCli(['open', '/srv/logs', '--home', '/x'])).toThrow(/open では --home を使えません/);
     expect(() => parseCli(['open', '/srv/logs', '--judgments', 'j.json'])).toThrow(/--judgments は open では使えません/);
-    expect(() => parseCli(['open', '/srv/logs', '--anonymize'])).toThrow(UsageError);
     expect(() => parseCli(['build', '--no-open'])).toThrow(/serve と open でだけ/);
     // --pick: フォルダは選ぶ画面で決める(open-folder.bat)。フォルダの指定とは一緒に使えない
     expect(parseCli(['open', '--pick'])).toMatchObject({ command: 'open', target: null, pick: true });
@@ -97,7 +95,7 @@ describe('parseCli', () => {
 
   it('export と --tool-output / --max-chars を読む(export 以外では UsageError)', () => {
     expect(parseCli(['export'])).toMatchObject({ command: 'export', toolOutput: 'fail', maxChars: null });
-    expect(parseCli(['export', '--tool-output', 'all', '--max-chars', '500', '--anonymize'])).toMatchObject({ command: 'export', toolOutput: 'all', maxChars: 500, anonymize: true });
+    expect(parseCli(['export', '--tool-output', 'all', '--max-chars', '500'])).toMatchObject({ command: 'export', toolOutput: 'all', maxChars: 500 });
     expect(() => parseCli(['export', '--tool-output', 'maybe'])).toThrow(/tool-output/);
     expect(() => parseCli(['export', '--max-chars', '10'])).toThrow(/max-chars/);
     expect(() => parseCli(['build', '--tool-output', 'all'])).toThrow(/export でだけ/);
@@ -110,10 +108,8 @@ describe('parseCli', () => {
     expect(() => parseCli(['export', '--unjudged'])).toThrow(/bundle でだけ/);
     expect(() => parseCli(['bundle', '--per-part', '0'])).toThrow(/per-part/);
     expect(() => parseCli(['export', '--per-part', '3'])).toThrow(/bundle でだけ/);
-    // 伏せ字に対応しないコマンドでは黙って無視せずエラー(評価バンドルを伏せたつもりで外部へ渡さないように)
-    for (const argv of [['bundle'], ['judge', 'run'], ['judge', 'import', 'x.json'], ['serve'], ['skill-draft', '1']]) expect(() => parseCli([...argv, '--anonymize'])).toThrow(/build \/ export \/ all でだけ/);
-    expect(parseCli(['all', '--anonymize'])).toMatchObject({ command: 'all', anonymize: true });
-    expect(parseCli(['--anonymize'])).toMatchObject({ command: 'all', anonymize: true });
+    // 伏せ字版(--anonymize)はなくしたので、知らないオプションとして止める
+    for (const argv of [['build'], ['export'], ['all'], ['bundle']]) expect(() => parseCli([...argv, '--anonymize'])).toThrow(UsageError);
     expect(parseCli(['judge', 'run'])).toMatchObject({
       command: 'judge',
       judge: { action: 'run', backend: 'copilot-cli', model: null, limit: null, only: null, concurrency: 1, force: false, allowTools: true, timeoutSec: 600 },

@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest';
 import { normalizeSession } from '../../core/src/normalize.ts';
 import type { CopilotEvent, SessionRecord } from '../../core/src/types.ts';
 import { aggregate } from '../src/lib/aggregate.ts';
-import { identityAnonymizer, createAnonymizer } from '../src/lib/anonymize.ts';
 import { execAggregate, quantilesOf, toolShare } from '../src/lib/exec.ts';
 import { applyFilter, decodeFilter, decodeView, emptyFilter, encodeFilter, filterHref, isStateHash } from '../src/lib/filter.ts';
 import { msLabel } from '../src/lib/format.ts';
@@ -54,7 +53,7 @@ async function records(): Promise<SessionRecord[]> {
 
 describe('Phase 7: 実行の性質の集計', () => {
   it('絞り込み後のセッションから、モード・推論強度・起点・文脈・待ち時間・所要時間・摩擦の詳細・todo を出す', async () => {
-    const all = (await records()).map((r) => summarize(r, identityAnonymizer(), null));
+    const all = (await records()).map((r) => summarize(r, null));
     const x = execAggregate(all);
     expect(x.modes).toEqual({ rows: [{ key: 'interactive', turns: 1 }, { key: 'autopilot', turns: 1 }], inferred: 1, total: 2 });
     expect(x.efforts.map((e) => [e.key, e.requests])).toEqual([
@@ -94,9 +93,9 @@ describe('Phase 7: 実行の性質の集計', () => {
 
 describe('Phase 7: 要点欄とツールの絞り込み', () => {
   it('AIU 上位・失敗率の高いツール・compaction の多いセッション・未使用の skill。リンクは詳細ページか #…', async () => {
-    const all = (await records()).map((r) => summarize(r, identityAnonymizer(), null));
+    const all = (await records()).map((r) => summarize(r, null));
     const filter = emptyFilter();
-    const g = highlights(all, aggregate(all).usage, { filter, anonymized: false, installed: { skills: ['grep-skill', 'zz'], disabled: [] } });
+    const g = highlights(all, aggregate(all).usage, { filter, installed: { skills: ['grep-skill', 'zz'], disabled: [] } });
     expect(g.map((x) => x.kind)).toEqual(['cost', 'tool-failure', 'compaction', 'unused-skill']);
     expect(g[0].items.map((i) => [i.text, i.href])).toEqual([
       ['session A: 3 AIU(この条件の合計の 75%)', 'sessions/a.html'],
@@ -110,15 +109,16 @@ describe('Phase 7: 要点欄とツールの絞り込み', () => {
     expect(applyFilter(all, decodeFilter('#tool=mcp%3Anone')).map((s) => s.id)).toEqual([]);
   });
 
-  it('AIU の記録が無ければ出力トークンで並べる。伏せ字モードでは本文を出さない', async () => {
+  it('AIU の記録が無ければ出力トークンで並べる', async () => {
     const recs = await records();
     for (const r of recs) r.tokens.nanoAiu = null;
-    const anon = createAnonymizer(recs);
-    const all = recs.map((r) => summarize(r, anon, null));
-    const g = highlights(all, aggregate(all).usage, { filter: emptyFilter(), anonymized: true, installed: null });
+    const all = recs.map((r) => summarize(r, null));
+    const g = highlights(all, aggregate(all).usage, { filter: emptyFilter(), installed: null });
     expect(g[0].title).toBe('出力トークンの多いセッション');
-    expect(g[0].items[0].text.startsWith('project-01・2026-10-01')).toBe(true);
-    expect(g[0].items[0].text).not.toContain('session A');
+    expect(g[0].items.map((i) => [i.text, i.href])).toEqual([
+      ['session A: 出力 10 トークン(この条件の合計の 67%)', 'sessions/a.html'],
+      ['b: 出力 5 トークン(この条件の合計の 33%)', 'sessions/b.html'],
+    ]);
     expect(g.map((x) => x.kind)).not.toContain('unused-skill');
   });
 

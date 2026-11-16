@@ -2,7 +2,6 @@
 import { describe, expect, it } from 'vitest';
 import { normalizeSession } from '../../core/src/normalize.ts';
 import type { CopilotEvent } from '../../core/src/types.ts';
-import { identityAnonymizer } from '../src/lib/anonymize.ts';
 import { embedData, extractEmbedded } from '../src/lib/embed.ts';
 import { packSummary, unpackData, unpackSummary } from '../src/lib/pack.ts';
 import { summarize } from '../src/lib/summarize.ts';
@@ -25,7 +24,7 @@ async function summaries(): Promise<SessionSummary[]> {
       ev(2100, 'assistant.message', { content: '直しました', outputTokens: 0 }),
     ],
   });
-  return [empty, busy].map((r) => summarize(r, identityAnonymizer(), null));
+  return [empty, busy].map((r) => summarize(r, null));
 }
 
 /** JSON を通した往復(埋め込みと同じ) */

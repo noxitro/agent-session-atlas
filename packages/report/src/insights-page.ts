@@ -1,5 +1,5 @@
 // Phase 12: 改善点の別ページ(out/insights.html)。atlas.html の「改善点」の節に載せきれない全件(指示文の版、skill、止まっているセッション、
-// スキル化の候補の全文)を、用語ページと同じ作法で置く。本文は atlas.html に埋め込まない。伏せ字版では依頼文と見出しを出さない。
+// スキル化の候補の全文)を、用語ページと同じ作法で置く。本文は atlas.html に埋め込まない。
 import { esc } from './detail.ts';
 import { date, dateTime, dec, duration, int } from './lib/format.ts';
 import { cleanHeading, THRESHOLDS, type Candidate, type InstructionFindings, type SkillStat, type StuckSession, type VersionMeta, type VersionStat } from './lib/insights.ts';
@@ -11,7 +11,6 @@ export const INSIGHTS_JSON = 'insights.json';
 export interface InsightsPageOptions {
   css: string;
   generatedAt: string;
-  anonymized: boolean;
   sessions: number;
   /** sessions のうち空のセッションの数 */
   emptySessions: number;
@@ -55,7 +54,6 @@ const pct = (v: number | null, enough = true): string => (v == null || !enough ?
 const ms = (v: number | null): string => (v == null ? '<span class="missing-value">記録なし</span>' : esc(duration(v)));
 
 export function renderInsightsHtml(o: InsightsPageOptions): string {
-  const anon = o.anonymized;
   const nav = {
     crumbHref: 'atlas.html',
     crumbLabel: '← レポートに戻る',
@@ -75,8 +73,8 @@ export function renderInsightsHtml(o: InsightsPageOptions): string {
   const sess = (id: string): string => `<a href="sessions/${esc(id.replace(/[^A-Za-z0-9._-]/g, '_'))}.html">${esc(o.sessionName(id))}</a>`;
   const vlabel = (v: VersionStat): string => {
     const m = o.meta[v.hash];
-    const name = anon || !m ? esc(v.hash) : `${esc(cleanHeading(m.heading, 60) || '(見出しなし)')} <span class="weak">版 ${m.order + 1}</span>`;
-    return o.libraryHref && !anon ? `<a href="${esc(o.libraryHref)}#v-${esc(v.hash)}">${name}</a>` : name;
+    const name = !m ? esc(v.hash) : `${esc(cleanHeading(m.heading, 60) || '(見出しなし)')} <span class="weak">版 ${m.order + 1}</span>`;
+    return o.libraryHref ? `<a href="${esc(o.libraryHref)}#v-${esc(v.hash)}">${name}</a>` : name;
   };
 
   // 指示文
@@ -90,7 +88,7 @@ export function renderInsightsHtml(o: InsightsPageOptions): string {
     ...o.findings.longRare.map((v) => `<li>長いのに注入が少ない: ${vlabel(v)}(${esc(int(v.chars))} 字、${esc(int(v.sessions))} セッション${o.meta[v.hash]?.lastAt ? `、最後に読み込んだのは ${esc(date(o.meta[v.hash].lastAt ?? null))}` : ''})</li>`),
     ...o.findings.worsened.map(
       (w) =>
-        `<li>版を変えた前後で悪化: ${anon ? w.after.hash : esc(cleanHeading(w.heading, 60) || '(見出しなし)')}(${vlabel(w.before)} → ${vlabel(w.after)}。失敗率 ${w.failureDelta == null ? '—' : `${w.failureDelta >= 0 ? '+' : ''}${esc(dec(w.failureDelta))} pt`}、手戻り率 ${w.reworkDelta >= 0 ? '+' : ''}${esc(dec(w.reworkDelta))} pt)</li>`,
+        `<li>版を変えた前後で悪化: ${esc(cleanHeading(w.heading, 60) || '(見出しなし)')}(${vlabel(w.before)} → ${vlabel(w.after)}。失敗率 ${w.failureDelta == null ? '—' : `${w.failureDelta >= 0 ? '+' : ''}${esc(dec(w.failureDelta))} pt`}、手戻り率 ${w.reworkDelta >= 0 ? '+' : ''}${esc(dec(w.reworkDelta))} pt)</li>`,
     ),
   ];
   const instructions = `<section class="section ins" id="i-instructions" aria-labelledby="h-i-instructions"><div class="section-head"><h2 id="h-i-instructions">指示文の傾向</h2><p>版(内容のハッシュ)ごとの、注入されたセッションでの傾向。指示文の効果は直接測れない(同じ版でも依頼が違う)ので、相関として読む。率は ${THRESHOLDS.MIN_SESSIONS} セッション以上のものだけ結論に使う。「長いのに注入が少ない」は字数が全版の上位 25%(${esc(int(o.findings.longChars))} 字以上)で注入 ${THRESHOLDS.RARE_SESSIONS} セッション未満の、系列ごとの今の版(最後に読み込まれた版)。「悪化」は失敗率か手戻り率が ${THRESHOLDS.WORSE_POINTS} ポイント以上上がったもの。</p></div><p class="note">版を変えた前後の比較: ${esc(int(o.findings.compared))} 組を判定、悪化 ${esc(int(o.findings.worsened.length))}${o.findings.comparedInsufficient ? `。${esc(int(o.findings.comparedInsufficient))} 組はどちらかが ${THRESHOLDS.MIN_SESSIONS} セッション未満で判定できません` : ''}。</p>${
@@ -117,14 +115,14 @@ export function renderInsightsHtml(o: InsightsPageOptions): string {
   const stRows = o.stuck
     .map(
       (x) =>
-        `<tr><td>${sess(x.id)}</td><td>${anon ? esc(x.project) : esc(x.projectLabel)}</td><td>${esc(x.reasons.join('、'))}</td><td class="num">${ms(x.ttftMedian)}</td><td class="num">${ms(x.durationMedian)}</td><td class="num">${esc(int(x.consecutiveFailures))}</td><td class="num">${esc(int(x.extraEdits))}</td><td class="num">${esc(int(x.permissions))}</td><td class="num">${esc(int(x.compactions))}</td></tr>`,
+        `<tr><td>${sess(x.id)}</td><td>${esc(x.projectLabel)}</td><td>${esc(x.reasons.join('、'))}</td><td class="num">${ms(x.ttftMedian)}</td><td class="num">${ms(x.durationMedian)}</td><td class="num">${esc(int(x.consecutiveFailures))}</td><td class="num">${esc(int(x.extraEdits))}</td><td class="num">${esc(int(x.permissions))}</td><td class="num">${esc(int(x.compactions))}</td></tr>`,
     )
     .join('');
   const T = THRESHOLDS.STUCK;
   const stuck = `<section class="section ins" id="i-stuck" aria-labelledby="h-i-stuck"><div class="section-head"><h2 id="h-i-stuck">止まっている箇所</h2><p>閾値(最初のトークンまでの待ち(TTFT)の中央値 ${esc(duration(T.ttftMs))} 以上、ツールの失敗の連続 ${T.consecutiveFailures} 回以上、余分な編集 ${T.extraEdits} 回以上、権限確認 ${T.permissions} 回以上、compaction ${T.compactions} 回以上)を超えたセッション。理由の数の多い順、同数なら余分な編集・失敗の連続の多い順。待ち時間はリクエスト単位の記録があるセッションだけ判定できます(無ければ「記録なし」)。</p></div><p class="note">待ち(TTFT): 最初のトークンまでの時間、全体: リクエストの開始から応答の終わりまでの時間(どちらもセッション内の中央値)。失敗の連続: ツールの失敗・拒否が続いた最長の回数。余分な編集: 同じファイルの 2 回目以降の編集を全ファイルで合計した数。</p><div class="table-scroll"><table class="ledger"><thead><tr><th scope="col">セッション</th><th scope="col">プロジェクト</th><th scope="col">理由</th><th scope="col" class="num">待ち(TTFT)中央値</th><th scope="col" class="num">全体 中央値</th><th scope="col" class="num">失敗の連続</th><th scope="col" class="num">余分な編集</th><th scope="col" class="num">権限確認</th><th scope="col" class="num">compaction</th></tr></thead><tbody>${stRows || '<tr><td colspan="9">閾値を超えたセッションはありません。</td></tr>'}</tbody></table></div>${
     o.stuckProjects.length
       ? `<h3 class="gap">プロジェクト別(${THRESHOLDS.MIN_SESSIONS} セッション以上のプロジェクト)</h3><div class="table-scroll"><table class="ledger"><thead><tr><th scope="col">プロジェクト</th><th scope="col" class="num">該当</th><th scope="col" class="num">全セッション</th><th scope="col">理由の内訳</th></tr></thead><tbody>${o.stuckProjects
-          .map((p) => `<tr><td>${anon ? esc(p.project) : esc(p.projectLabel)}</td><td class="num">${esc(int(p.stuck))}</td><td class="num">${esc(int(p.total))}</td><td>${esc(Object.entries(p.reasons).map(([k, n]) => `${k} ${int(n)}`).join('、'))}</td></tr>`)
+          .map((p) => `<tr><td>${esc(p.projectLabel)}</td><td class="num">${esc(int(p.stuck))}</td><td class="num">${esc(int(p.total))}</td><td>${esc(Object.entries(p.reasons).map(([k, n]) => `${k} ${int(n)}`).join('、'))}</td></tr>`)
           .join('')}</tbody></table></div>`
       : ''
   }</section>`;
@@ -132,10 +130,8 @@ export function renderInsightsHtml(o: InsightsPageOptions): string {
   // 候補
   const cands = o.candidates
     .map((c, i) => {
-      const head = c.kind === 'tools' ? `<span class="seq">${esc(c.key)}</span>` : anon ? `依頼文の繰り返し(本文は伏せ字版では出しません)` : esc(clip((c.representative ?? c.key).replace(/\s+/g, ' '), 80));
-      const body = anon
-        ? ''
-        : `${c.representative ? `<p class="cap">${c.kind === 'tools' ? 'この並びが最初に出たターンの依頼文(例)' : '代表の依頼文'}</p><pre class="body" tabindex="0">${esc(c.representative)}</pre>` : ''}${c.examples.length ? `<p class="cap">他の例(${c.examples.length})</p><pre class="body" tabindex="0">${esc(c.examples.join('\n— — —\n'))}</pre>` : ''}`;
+      const head = c.kind === 'tools' ? `<span class="seq">${esc(c.key)}</span>` : esc(clip((c.representative ?? c.key).replace(/\s+/g, ' '), 80));
+      const body = `${c.representative ? `<p class="cap">${c.kind === 'tools' ? 'この並びが最初に出たターンの依頼文(例)' : '代表の依頼文'}</p><pre class="body" tabindex="0">${esc(c.representative)}</pre>` : ''}${c.examples.length ? `<p class="cap">他の例(${c.examples.length})</p><pre class="body" tabindex="0">${esc(c.examples.join('\n— — —\n'))}</pre>` : ''}`;
       return `<details class="cand" id="c-${i + 1}"${i < 3 ? ' open' : ''}><summary><b>${i + 1}.</b> ${head} <span>${c.kind === 'tools' ? 'ツールの並び' : '似た依頼文'}</span> <span>${esc(int(c.count))} 回</span> <span>${esc(int(c.sessions.length))} セッション</span> <span>実働 中央値 ${ms(c.medianMs)}</span> <span>スコア ${esc(dec(c.score))}</span></summary>${body}<div class="uses">関係セッション: <ul>${c.sessions
         .slice(0, 30)
         .map((id) => `<li>${sess(id)}</li>`)
@@ -166,7 +162,7 @@ ${renderTop(nav)}
 ${renderRail(nav)}
 <div class="content">
 <main class="wrap">
-<div class="title"><h1>改善点(全件)</h1><p class="lead">LLM を呼ばない規則の集計。分かるのは相関までで、「傾向」として読んでください。全記録 ${esc(int(o.sessions))} 件(絞り込み前。空のセッション ${esc(int(o.emptySessions))} 件を含みますが、空のセッションは結果に影響しません)で計算。生成 ${esc(dateTime(o.generatedAt))}。${anon ? '伏せ字版: 依頼文の本文と指示文の見出しは出さず、件数とスコアだけ。' : ''}</p></div>
+<div class="title"><h1>改善点(全件)</h1><p class="lead">LLM を呼ばない規則の集計。分かるのは相関までで、「傾向」として読んでください。全記録 ${esc(int(o.sessions))} 件(絞り込み前。空のセッション ${esc(int(o.emptySessions))} 件を含みますが、空のセッションは結果に影響しません)で計算。生成 ${esc(dateTime(o.generatedAt))}。</p></div>
 ${instructions}
 ${skills}
 ${stuck}

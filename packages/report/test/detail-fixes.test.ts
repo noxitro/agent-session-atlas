@@ -4,12 +4,11 @@ import { normalizeSession } from '../../core/src/normalize.ts';
 import type { CopilotEvent, SessionRecord } from '../../core/src/types.ts';
 import { WikiClassifier } from '../../core/src/wiki.ts';
 import { mergeInstructionRows, renderDetailHtml } from '../src/detail.ts';
-import { identityAnonymizer } from '../src/lib/anonymize.ts';
 
 let n = 0;
 const ev = (type: string, data: unknown, timestamp: string, extra: Partial<CopilotEvent> = {}): CopilotEvent => ({ type, data, timestamp, id: `d${n++}`, ...extra });
 const T = (s: number): string => new Date(Date.UTC(2026, 9, 1, 0, 0, s)).toISOString();
-const html = (r: SessionRecord): string => renderDetailHtml(r, { anon: identityAnonymizer(), css: '', judgment: null, generatedAt: T(0) });
+const html = (r: SessionRecord): string => renderDetailHtml(r, { css: '', judgment: null, generatedAt: T(0) });
 /** 概要などの 1 項目(見出し・値・注記)をタグを外した文字列で取り出す */
 function fieldOf(page: string, key: string): { v: string; n: string } | null {
   const re = new RegExp(`<div class="field"><span class="k">${key.replace(/[()]/g, '\\$&')}</span><span class="v">([\\s\\S]*?)</span>(?:<span class="n">([\\s\\S]*?)</span>)?</div>`);

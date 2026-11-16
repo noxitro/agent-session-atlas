@@ -4,7 +4,7 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join, posix, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { codeStamp, computeMetrics, currentAtlasBuild, describeAtlasBuilds, summarizeAtlasBuilds, describeSource, extract, readSnapshotManifest, METRICS_SCHEMA_VERSION, readVcsRetention, removeTree, runVcsStep, snapshot, VCS_RETENTION_FILE, RETENTION_STATUS_LABEL, UNATTRIBUTABLE_REASON_LABEL, type VcsRetentionFile, UPLOAD_OLD_ONLY_REASON, UPLOAD_PROBE_HINT, uploadWorkDirId, type MetricsFile, type SessionRecord, type SessionsFile, type SnapshotManifest } from '../../core/src/index.ts';
+import { codeStamp, computeMetrics, currentAtlasBuild, describeAtlasBuilds, summarizeAtlasBuilds, describeSource, extract, readSnapshotManifest, METRICS_SCHEMA_VERSION, readVcsRetention, runVcsStep, snapshot, VCS_RETENTION_FILE, RETENTION_STATUS_LABEL, UNATTRIBUTABLE_REASON_LABEL, type VcsRetentionFile, UPLOAD_OLD_ONLY_REASON, UPLOAD_PROBE_HINT, uploadWorkDirId, type MetricsFile, type SessionRecord, type SessionsFile, type SnapshotManifest } from '../../core/src/index.ts';
 import {
   buildReport,
   DEFAULT_TRANSCRIPT_OPTIONS,
@@ -361,8 +361,8 @@ export async function runVcs(p: Paths, log: Log, o: { mode?: 'worktree' | 'commi
   return r;
 }
 
-/** tables: out/tables/ に表も書く(伏せ字版の all では書かない。依頼文とパスがそのまま入るため) */
-export async function runMetrics(p: Paths, f: SessionFilter, log: Log, o: { tables?: boolean } = {}): Promise<MetricsFile> {
+/** out/tables/ に表も書く */
+export async function runMetrics(p: Paths, f: SessionFilter, log: Log): Promise<MetricsFile> {
   const { file: s, sessions } = await selectSessions(p, f, 'metrics', '先に atlas extract を実行してください。', log);
   const m = computeMetrics(sessions, { installed: s.installed });
   await writeFile(p.metrics, JSON.stringify(m, null, 2));
@@ -370,7 +370,7 @@ export async function runMetrics(p: Paths, f: SessionFilter, log: Log, o: { tabl
     `metrics: ${m.overall.sessions} セッション(空のセッション ${m.emptySessions} 件を除外)、${Object.keys(m.byProject).length} プロジェクト、${Object.keys(m.byModel).length} モデル、トークン記録なし(欠測)${m.overall.sessionsMissingTokens} セッション → ${p.metrics}`,
   );
   if (m.installedSkills) log(`metrics: インストール済みで未使用の skill ${m.installedSkills.unused.length} / ${m.installedSkills.installed.length} 件`);
-  if (o.tables ?? true) await writeTables(p, sessions, 'metrics', log);
+  await writeTables(p, sessions, 'metrics', log);
   return m;
 }
 
@@ -399,7 +399,6 @@ async function writeTables(p: Paths, sessions: SessionRecord[], cmd: string, log
 }
 
 export interface BuildOptions extends SessionFilter {
-  anonymize: boolean;
   /** export: セッション記録(Markdown)も書く */
   transcripts?: { toolOutput: ToolOutputMode; maxChars: number | null; full?: boolean } | null;
 }
@@ -440,12 +439,7 @@ export async function runBuild(p: Paths, o: BuildOptions, log: Log): Promise<Bui
   if (retention) log(`build: VCS の照合 ${retention.sessions.length} 件を合成(${p.vcsRetention}、照合 ${retention.generatedAt})`);
   else if (existsSync(p.vcsRetention)) log(`build: 注意 ${p.vcsRetention} を読めないため、AI の変更の残存は出しません(atlas vcs で作り直せます)`);
 
-  // 伏せ字版では表を書かない(依頼文とパスがそのまま入るため)。前に書いた表も、共有用の out/ に残さないよう消す(out/full/ と同じ扱い)
-  if (!o.anonymize) await writeTables(p, sessions, o.transcripts ? 'export' : 'build', log);
-  else if (existsSync(join(p.out, 'tables'))) {
-    await removeTree(join(p.out, 'tables'));
-    log('build: 伏せ字版なので、依頼文の入った表(out/tables/)を消しました');
-  }
+  await writeTables(p, sessions, o.transcripts ? 'export' : 'build', log);
 
   await ensureTemplate(log);
   const unknown = Object.values(s.warnings.unknownEventTypes).reduce((a, n) => a + n, 0);
@@ -471,7 +465,6 @@ export async function runBuild(p: Paths, o: BuildOptions, log: Log): Promise<Bui
       ? { groups: memberGroups(s.sessions), memberMemosDir: join(p.snapshot, 'session-state'), readOnly: true }
       : { groups: groups.groups, memosDir: memosDir(p.notes) }),
     outDir: p.out,
-    anonymize: o.anonymize,
     scope: { since: o.since, project: o.project, client: o.client, model: o.model, branch: o.branch },
     transcripts: o.transcripts
       ? { ...DEFAULT_TRANSCRIPT_OPTIONS, toolOutput: o.transcripts.toolOutput, maxTextChars: o.transcripts.maxChars ?? DEFAULT_TRANSCRIPT_OPTIONS.maxTextChars, snapshotDir: p.snapshot }
@@ -479,7 +472,7 @@ export async function runBuild(p: Paths, o: BuildOptions, log: Log): Promise<Bui
     full: !!o.transcripts?.full,
     desktopMeta: s.desktop ?? null,
   });
-  if (r.stale.full) log(`build: 前回の --full の出力(out/full/ と coverage.json、生成 ${r.stale.full})が残っています。消すには --anonymize で作るか、フォルダを手で消してください`);
+  if (r.stale.full) log(`build: 前回の --full の出力(out/full/ と out/coverage.json、生成 ${r.stale.full})が残っています。消したいときは、out/full/ フォルダと out/coverage.json を手で消してください`);
   if (r.stale.library) log(`build: 前回の export の閲覧ページ(instructions.html と library/、生成 ${r.stale.library})が残っています(前の版の atlas で作ったものなら、開くと「画面とサーバの版が違います」と出ます。atlas export か atlas all で作り直せます)`);
   if (r.library) log(`export: 指示文と skill の閲覧ページ ${r.library.path}(${r.library.groups} 項目・${r.library.versions} 版、本文 ${r.library.files} ファイル ${mb(r.library.bytes)})`);
   if (r.full) {
@@ -495,10 +488,9 @@ export async function runBuild(p: Paths, o: BuildOptions, log: Log): Promise<Bui
       `export: セッション記録 ${t.files} 件(計 ${mb(t.bytes)})→ ${join(r.detailDir, '<id>.md')}${t.fromRecordOnly ? `、うちスナップショットに本文が無く抜粋のみ ${t.fromRecordOnly} 件` : ''}${t.truncated ? `、中略した本文 ${t.truncated} 件` : ''}`,
     );
     if (t.secretHits) log(`export: 注意 API キーやトークンらしい文字列を ${t.secretHits} 件伏せました。本物なら元の記録にも残っているので鍵を作り直してください`);
-    if (o.anonymize) log('export: 注意 伏せ字モードの記録は自由記述を機械的に置き換えただけです。共有する前に中身を確認してください');
   }
   log(
-    `build: ${r.htmlPath}(${mb(r.htmlBytes)}、うち埋め込みデータ ${mb(r.embeddedBytes)})、詳細ページ ${r.detailPages} 件(計 ${mb(r.detailBytes)})${o.anonymize ? '、伏せ字モード' : ''}、${ms(r.ms)}`,
+    `build: ${r.htmlPath}(${mb(r.htmlBytes)}、うち埋め込みデータ ${mb(r.embeddedBytes)})、詳細ページ ${r.detailPages} 件(計 ${mb(r.detailBytes)})、${ms(r.ms)}`,
   );
   if (r.oversized)
     log(
@@ -759,13 +751,19 @@ export async function runServe(
   return reason;
 }
 
+/** LLM に渡せる中身(ツールの並び・代表の依頼文・ほかの例)が候補にあるか。無ければプロンプトは回数だけになる */
+export function hasDraftMaterial(c: DraftCandidate): boolean {
+  return !!c.tools?.length || !!c.representative || (c.examples?.length ?? 0) > 0;
+}
+
 /** skill-draft: out/insights.json の候補(番号)から SKILL.md の下書きを copilot -p で作る(クレジットを消費。明示したときだけ) */
 export async function runSkillDraft(p: Paths, o: NonNullable<CliOptions['skillDraft']>, log: Log): Promise<string> {
   const path = join(p.out, 'insights.json');
-  const j = await readJson<{ anonymized: boolean; candidates: DraftCandidate[] }>(path, '先に atlas build(または export)を実行してください。');
-  if (j.anonymized) throw new Error('伏せ字版の out/ には候補の本文が無いので下書きを作れません(通常の build で作り直してください)');
+  const j = await readJson<{ candidates: DraftCandidate[] }>(path, '先に atlas build(または export)を実行してください。');
   const c = j.candidates[o.index - 1];
   if (!c) throw new Error(`候補 ${o.index} はありません(候補は ${j.candidates.length} 件)`);
+  // 回数しか渡せない候補は、LLM を呼ぶ前に止める(クレジットや従量課金を使わない)
+  if (!hasDraftMaterial(c)) throw new Error(`候補 ${o.index} には依頼文もツールの並びも無いので下書きを作れません。atlas build(または export)で ${path} を作り直してください。`);
   log(`skill-draft: 候補 ${o.index}(${c.kind === 'tools' ? c.key : (c.representative ?? c.key).slice(0, 60)})を ${o.backend} で下書きします${o.backend === 'anthropic' ? '(Anthropic API の従量課金です)' : '(クレジットを消費する場合があります)'}`);
   const model = o.backend === 'copilot-cli' ? await resolveJudgeModel(o.model, 'skill-draft', log) : o.model;
   const r = await draftSkill(c, o.index, { backend: o.backend, model, timeoutMs: o.timeoutSec * 1000 });
@@ -870,7 +868,7 @@ async function runAllOrReuse(o: CliOptions, p: Paths, builtFile: string, log: Lo
   const configPath = o.config ?? process.env.ATLAS_CONFIG ?? null;
   const key = inputsKey(
     p,
-    { since: o.since, project: o.project, client: o.client, model: o.model, branch: o.branch, group: o.group, sessions: o.sessions, anonymize: o.anonymize, toolOutput: o.toolOutput, maxChars: o.maxChars, tempDirs: o.tempDirs, vcsMode: o.vcsMode },
+    { since: o.since, project: o.project, client: o.client, model: o.model, branch: o.branch, group: o.group, sessions: o.sessions, toolOutput: o.toolOutput, maxChars: o.maxChars, tempDirs: o.tempDirs, vcsMode: o.vcsMode },
     configPath ? resolve(configPath) : join(REPO_ROOT, CONFIG_FILE),
   );
   const prev = readBuilt(builtFile);
@@ -899,11 +897,9 @@ async function runAllAfterSnapshot(o: CliOptions, p: Paths, log: Log, t: number)
     await rm(p.vcsRetention, { force: true });
     log(`vcs: 注意 照合できませんでした(${(e as Error).message})。レポートの「AI の変更の残存」は出しません`);
   }
-  await runMetrics(p, f, log, { tables: !o.anonymize });
-  // セッション記録(.md)も作る(build と export で作るものが違うと、どちらで作ったかで経過が見えたり消えたりするため)。
-  // 伏せ字版は作らない: 記録の伏せ字は自由記述を機械的に置き換えるだけで、共有する sessions/ に HTML より弱い保証のものが混ざる
-  const build = await runBuild(p, { ...f, anonymize: o.anonymize, transcripts: o.anonymize ? null : { toolOutput: o.toolOutput, maxChars: o.maxChars } }, log);
-  if (o.anonymize) log('all: 伏せ字版なのでセッション記録(.md)は作りません(必要なら atlas export --anonymize)');
+  await runMetrics(p, f, log);
+  // セッション記録(.md)も作る(build と export で作るものが違うと、どちらで作ったかで経過が見えたり消えたりするため)
+  const build = await runBuild(p, { ...f, transcripts: { toolOutput: o.toolOutput, maxChars: o.maxChars } }, log);
   log(`all: 完了 ${ms(performance.now() - t)}`);
   return build;
 }
@@ -951,9 +947,9 @@ async function runCommand(o: CliOptions, p: Paths, log: Log): Promise<RunResult>
       await runVcs(p, log, { mode: o.vcsMode, config: o.config });
       return { paths: p };
     case 'build':
-      return { paths: p, build: await runBuild(p, { ...f, anonymize: o.anonymize }, log) };
+      return { paths: p, build: await runBuild(p, f, log) };
     case 'export':
-      return { paths: p, build: await runBuild(p, { ...f, anonymize: o.anonymize, transcripts: { toolOutput: o.toolOutput, maxChars: o.maxChars, full: o.full } }, log) };
+      return { paths: p, build: await runBuild(p, { ...f, transcripts: { toolOutput: o.toolOutput, maxChars: o.maxChars, full: o.full } }, log) };
     case 'bundle':
       await runBundle(p, f, { includeEmpty: o.includeEmpty, perPart: o.perPart, unjudged: o.unjudged }, log);
       return { paths: p };
