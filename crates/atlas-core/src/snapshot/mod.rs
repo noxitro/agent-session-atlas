@@ -149,6 +149,9 @@ pub struct SessionCounts {
     pub db_copied: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub db_reused: Option<u64>,
+    /// アップロード先を読んだとき、元のフォルダから無くなったと確かめられたので複製を消したセッションの数(0 のときは書かない)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub removed: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -185,6 +188,40 @@ pub struct Recovered {
     pub path: String,
 }
 
+/// 今回の一覧に無いのに、複製を消さなかったセッション(manifest の extras.goneKept)。reason は下の KEPT_* のどれか
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeptCopy {
+    pub id: String,
+    pub reason: String,
+    /// 前の集計までに分かっていた、そのセッションのフォルダ(元のルートからの相対パス。/ 区切り。直下なら空)。分からなければ項目ごと無い。
+    /// 次の集計が、どこにあったかを確かめるのに使う(元の形が変わって数えたフォルダの記録が書かれない回でも、記録を持ち越す)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+}
+
+/// 元の場所を読めなかったので、無くなったのか読めないだけなのかを決められない(アクセス権・つながっていない共有フォルダなど)
+pub const KEPT_UNREADABLE_REASON: &str = "元のフォルダを読めなかったので、無くなったかを確かめられない";
+/// 前の集計に、どのフォルダのセッションだったかの記録が無い(前の版が写した複製・途中で止まった集計の複製など)
+pub const KEPT_UNKNOWN_REASON: &str = "前の集計に、どのフォルダのセッションかの記録が無い";
+/// 複製のフォルダを動かせなかった(ほかのプログラムが中のファイルを開いている、など)。次の集計でもう一度試す
+pub const KEPT_BUSY_REASON: &str = "複製を消せなかった(ほかのプログラムが開いている、など)";
+/// 前にあった場所にフォルダがあるのに、今回の一覧には出なかった(元のフォルダの並びが変わって別の形として読まれた・リンクになった、など)
+pub const KEPT_PRESENT_REASON: &str = "元にフォルダはあるが、今回の集計では読まなかった(フォルダの並びが前の集計と変わった・リンクになった、など)";
+/// 前はアップロード先として読んだ場所に、今回は集計できるセッションが 1 件も見つからなかった
+pub const KEPT_NO_SOURCE_REASON: &str = "元のフォルダに、集計できるセッションが見つからなかった";
+
+/// 複製を消さなかった理由と、そのとき利用者ができること(ログとレポートの警告に出す順)
+pub const KEPT_REASONS: [(&str, &str); 5] = [
+    (KEPT_NO_SOURCE_REASON, "元のフォルダ(つながっているか・場所が合っているか)を確かめてから、集計し直してください"),
+    (KEPT_UNREADABLE_REASON, "読めるようになってから集計し直すと、無くなっていたものは出なくなります"),
+    (KEPT_PRESENT_REASON, "元のフォルダの並びを確かめてください(人ごとのフォルダが並ぶ場所の直下に、セッションのフォルダが紛れていないか、など)"),
+    (KEPT_UNKNOWN_REASON, "出なくするには、出力先の snapshot/session-state にある同じ名前のフォルダを消してください"),
+    (KEPT_BUSY_REASON, "開いているプログラムを閉じてから集計し直すと、出なくなります"),
+];
+
+/// 元から無くなったセッションの複製を、消す前に退ける場所(複製先の直下)。退けた後で消す。消し切れなかった分は次の集計で消す
+pub const SNAPSHOT_REMOVED_DIR: &str = ".removed";
+
 /// Phase 11: 追加で写したもの(セッションフォルダの中身と ~/.copilot 直下)と、写さなかったもの
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -202,6 +239,9 @@ pub struct Extras {
     /// 今回写したセッション(path は元のルートからの相対パス)。無ければ項目ごと無い
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovered: Option<Vec<Recovered>>,
+    /// アップロード先を読んだとき、今回は元から読まなかったのに複製を消さなかったセッションと理由。無ければ項目ごと無い
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gone_kept: Option<Vec<KeptCopy>>,
 }
 
 /// 元の形。copilot は ~/.copilot、flat はセッションのフォルダが直下に並ぶもの、merged はそのフォルダが下(2 段下まで)に並ぶもの
@@ -425,6 +465,8 @@ pub fn snapshot(src: &Path, dest: &Path, opts: &SnapshotOptions) -> Result<Snaps
     // そのフォルダが並ぶ場所(人ごとのフォルダ)と、もう 1 段上(送り先そのもの。全員の分)は、下のフォルダをまとめて読む
     let shape = describe_source(src);
     let flat = shape == SourceShape::Flat;
+    // 集計できるセッションが 1 件も見つからない(どの形でもない)
+    let no_source = shape == SourceShape::None;
     let merged: Option<Vec<String>> = match &shape {
         SourceShape::Merged { folders } => Some(folders.clone()),
         _ => None,
@@ -451,9 +493,10 @@ pub fn snapshot(src: &Path, dest: &Path, opts: &SnapshotOptions) -> Result<Snaps
             marks.iter().map(|(_, f)| f.display().to_string()).collect::<Vec<_>>().join(" と ")
         );
     }
-    // 前の集計で、セッションごとに数えたフォルダ(元から消えたセッションの複製が出力先に残っているときに引き継ぐ)。
+    // 前の集計の形と、セッションごとに数えたフォルダ。元に本体が無いセッションの複製が出力先に残っているときに引き継ぎ、
+    // 元から無くなったセッションの複製を消すときに、どこにあったかを確かめるのにも使う。
     // 別の元の manifest は上で消してあるので、ここで読めるのは同じ元のものだけ
-    let previous_owners: Vec<(String, Value)> = if merged.is_some() { read_previous_owners(dest) } else { Vec::new() };
+    let previous = read_previous(dest);
     fs::create_dir_all(dest)?;
     let src_str = src.to_string_lossy().into_owned();
     let mark = serde_json::json!({ "sourceRoot": src_str, "startedAt": jsdate::now_iso() });
@@ -525,8 +568,12 @@ pub fn snapshot(src: &Path, dest: &Path, opts: &SnapshotOptions) -> Result<Snaps
     // 写すのは後でまとめて並べて行う。写さなかったものの記録は、枠の順に manifest へ移す(並べて写しても順が変わらないように)
     let mut slots: Vec<(Vec<SkippedEntry>, Option<usize>)> = Vec::new();
     let mut tasks: Vec<SessionTask> = Vec::new();
+    // 元にフォルダがあるセッションの id(fold_id で大文字小文字をそろえる。source_id_of)。写している途中の作業用のフォルダ
+    // (.<id>.uploading)しか無い id は入れ、退けた前のフォルダ(.<id>.old)しか無い id は入れない
+    let mut in_source: HashSet<String> = HashSet::new();
     for state_src in &state_srcs {
         for (ent_name, ents) in listing.remove(state_src).unwrap_or_default() {
+            in_source.extend(source_id_of(&ent_name));
             let mut skipped: Vec<SkippedEntry> = Vec::new();
             let dir_src = state_src.join(&ent_name);
             let rel = jsfs::rel_slash(src, &dir_src);
@@ -639,6 +686,21 @@ pub fn snapshot(src: &Path, dest: &Path, opts: &SnapshotOptions) -> Result<Snaps
         }
     }
 
+    // アップロード先を読むときは、元のフォルダから無くなったセッションの複製を消す(送り先から消したセッションを、前の複製から数え続けない)。
+    // 消すのは、前にあった場所を読めて、そこに無いと確かめられたものだけ(読めないフォルダのセッションを、無くなったものとして消さない)。
+    // ~/.copilot を読むときは消さない(Copilot が消したログの、最後の複製かもしれない)
+    if flat || merged.is_some() {
+        let gone = remove_gone_sessions(src, dest, &ctx.state_dest, &in_source, &previous);
+        manifest.sessions.removed = (gone.removed > 0).then_some(gone.removed);
+        extras.gone_kept = (!gone.kept.is_empty()).then_some(gone.kept);
+    } else if no_source && previous.was_upload() {
+        // 前はアップロード先として読んだ場所に、今回は集計できるセッションが見つからない(共有フォルダが空に見える・場所が変わった、など)。
+        // 何も消さず、複製ごとのフォルダの記録を持ち越す(この回の manifest には数えたフォルダの記録が無いので、持ち越さないと、
+        // 次に読めたときに、どこにあったかを確かめられなくなる)
+        let kept = carry_all(&ctx.state_dest, &previous);
+        extras.gone_kept = (!kept.is_empty()).then_some(kept);
+    }
+
     // Phase 11: ~/.copilot 直下の plans/・attachments/(と chats/ の *.md)。logs/ は --snapshot-all、repos/ は写さない。
     // 直下にセッションが並ぶ形・そのフォルダが並ぶ形では、直下のフォルダはセッションかその入れ物なので写さない(写したものとして一覧に出さない)
     if !flat && merged.is_none() {
@@ -675,11 +737,14 @@ pub fn snapshot(src: &Path, dest: &Path, opts: &SnapshotOptions) -> Result<Snaps
         manifest.installed = Some(read_inventory(src));
     }
 
-    // 元から消えたセッションの複製が出力先に残っていれば、前の集計で数えたフォルダを引き継ぐ(人ごとの内訳から外さない)
-    for (id, folder) in previous_owners {
-        if let Value::String(folder) = folder {
-            if !owner_folders.contains_key(&id) && jsfs::exists(&ctx.state_dest.join(&id)) {
-                owner_folders.insert(id, folder);
+    // 元に本体が無いセッションの複製が出力先に残っていれば(上で消さなかったもの: 作業用のフォルダだけが元に残っている、
+    // 元のフォルダを読めなかった、複製を消せなかった、フォルダはあるが中身が無い、など)、前の集計で数えたフォルダを引き継ぐ
+    // (人ごとの内訳から外さない。次に消すときに、どこにあったかを確かめるのにも要る)
+    if merged.is_some() {
+        for (id, folder) in &previous.folders {
+            // 直下にあった(空)という記録は、数えたフォルダにはしない(記録は extras.goneKept が持ち越す)
+            if !folder.is_empty() && !owner_folders.contains_key(id) && jsfs::exists(&ctx.state_dest.join(id)) {
+                owner_folders.insert(id.clone(), folder.clone());
             }
         }
     }
@@ -689,6 +754,193 @@ pub fn snapshot(src: &Path, dest: &Path, opts: &SnapshotOptions) -> Result<Snaps
 
     fs::write(dest.join(SNAPSHOT_MANIFEST), crate::json::to_js_string_pretty(&manifest)?)?;
     Ok(manifest)
+}
+
+/// セッションの id を、大文字小文字を区別せずに比べるための形にする。Windows が名前を比べるのと同じく大文字にそろえる
+/// (小文字にそろえると、語末かどうかで形が変わる文字があり、大文字小文字だけ変えた名前が別の名前になる)
+fn fold_id(name: &str) -> String {
+    name.to_uppercase()
+}
+
+/// 前の集計の manifest から読むもの(読めなければ空)
+#[derive(Debug, Default)]
+struct Previous {
+    /// 前の集計の元の形
+    layout: Option<SourceLayout>,
+    /// セッションの id ごとの、あったフォルダ(元のルートからの相対パス。/ 区切り。直下なら空)。manifest に書いた順。
+    /// 数えたフォルダ(merged.owners)と、消さなかった複製が持ち越した記録(extras.goneKept の folder)を合わせたもの
+    folders: Vec<(String, String)>,
+    /// folders を id で引く表(複製が多いとき、1 件ごとに全件を見ない)
+    by_id: HashMap<String, String>,
+}
+
+impl Previous {
+    /// 前の集計が、アップロード先として読んだものか(形がそうだったか、そのときの記録を持ち越しているか)
+    fn was_upload(&self) -> bool {
+        matches!(self.layout, Some(SourceLayout::Flat | SourceLayout::Merged)) || !self.folders.is_empty()
+    }
+
+    /// id のセッションが前にあったフォルダ。記録が無ければ、前の集計が直下にセッションが並ぶ形だったときだけ、元のルート
+    fn folder_of(&self, id: &str) -> Option<&str> {
+        match self.by_id.get(id) {
+            Some(f) => Some(f.as_str()),
+            None if self.layout == Some(SourceLayout::Flat) => Some(""),
+            None => None,
+        }
+    }
+}
+
+fn read_previous(dest: &Path) -> Previous {
+    let Ok(text) = fs::read_to_string(dest.join(SNAPSHOT_MANIFEST)) else { return Previous::default() };
+    let Ok(v) = serde_json::from_str::<Value>(&text) else { return Previous::default() };
+    let layout = v.get("layout").and_then(|l| serde_json::from_value::<SourceLayout>(l.clone()).ok());
+    let mut folders: Vec<(String, String)> = match v.get("merged").and_then(|m| m.get("owners")) {
+        Some(Value::Object(o)) => o.iter().filter_map(|(k, v)| v.as_str().map(|f| (k.clone(), f.to_string()))).collect(),
+        _ => Vec::new(),
+    };
+    // 消さなかった複製が持ち越した記録(数えたフォルダの記録があれば、そちらを使う)
+    if let Some(Value::Array(kept)) = v.get("extras").and_then(|x| x.get("goneKept")) {
+        let known: HashSet<String> = folders.iter().map(|(id, _)| id.clone()).collect();
+        for k in kept {
+            if let (Some(id), Some(folder)) = (k.get("id").and_then(Value::as_str), k.get("folder").and_then(Value::as_str)) {
+                if !known.contains(id) {
+                    folders.push((id.to_string(), folder.to_string()));
+                }
+            }
+        }
+    }
+    let by_id = folders.iter().cloned().collect();
+    Previous { layout, folders, by_id }
+}
+
+/// 複製先のセッションのフォルダの名前(作業用のフォルダの名前のものは除く。名前の順)。読めなければ空
+fn copied_ids(state_dest: &Path) -> Vec<String> {
+    let mut ids: Vec<String> = jsfs::read_dir(state_dest).map(|ents| ents.into_iter().filter(|d| d.is_dir() && !is_upload_work_dir(&d.name)).map(|d| d.name).collect()).unwrap_or_default();
+    sort_utf16(&mut ids);
+    ids
+}
+
+/// 元がアップロード先の形に見えない回: 複製を全部残し、複製ごとのフォルダの記録を持ち越す
+fn carry_all(state_dest: &Path, previous: &Previous) -> Vec<KeptCopy> {
+    copied_ids(state_dest).into_iter().map(|id| KeptCopy { folder: previous.folder_of(&id).map(str::to_string), id, reason: KEPT_NO_SOURCE_REASON.to_string() }).collect()
+}
+
+#[derive(Debug, Default)]
+struct GoneOutcome {
+    /// 複製を消した数
+    removed: u64,
+    /// 元に見当たらないが、複製を消さなかったもの
+    kept: Vec<KeptCopy>,
+}
+
+/// 元のフォルダを読み直して確かめた結果
+enum Gone {
+    /// 前にあった場所(かその上のフォルダ)を読めて、そこに無い
+    Confirmed,
+    /// 元にフォルダがある(数えない形になっただけ・一覧の後で戻った)。消さない
+    Present,
+    /// 読めなかった
+    Unreadable,
+}
+
+/// セッションのフォルダが並ぶ場所にある名前が、どの id のセッションが元にあることを示すか(fold_id の形。示さなければ None)。
+/// - ふつうのフォルダ(<id>)と、写している途中の作業用のフォルダ(.<id>.uploading)は、その id
+/// - 退けた前のフォルダ(.<id>.old)は示さない: 本体も写している途中のものも無く、これだけが残っているのは、共有から消した
+///   セッションの消し残し。snapshot はこのセッションを写さない(古い中身で戻さない)ので、前に写した複製も数え続けない
+fn source_id_of(name: &str) -> Option<String> {
+    match upload_work_dir_id(name) {
+        Some(id) if name == upload_old_name(&id) => None,
+        Some(id) => Some(fold_id(&id)),
+        None => Some(fold_id(name)),
+    }
+}
+
+/// フォルダの中の名前から、元にあると分かる id(source_id_of)と、名前そのもの(fold_id の形。上のフォルダをたどるのに使う)。読めなければ None。
+/// jsfs::read_dir と違い、どんな理由でも読めなければ「読めなかった」にする(無いことの証拠にしない)
+fn strict_names(dir: &Path) -> Option<(HashSet<String>, HashSet<String>)> {
+    let (mut ids, mut names) = (HashSet::new(), HashSet::new());
+    for e in fs::read_dir(dir).ok()? {
+        let name = e.ok()?.file_name().to_string_lossy().into_owned();
+        ids.extend(source_id_of(&name));
+        names.insert(fold_id(&name));
+    }
+    Some((ids, names))
+}
+
+/// confirm_gone が読んだフォルダの覚え書き(同じフォルダを 2 度読まない)。読めなかったフォルダは None
+type StrictCache = HashMap<PathBuf, Option<(HashSet<String>, HashSet<String>)>>;
+
+/// folder(元のルートからの相対パス。/ 区切り。直下なら空)にあったセッション id が、元から無くなったかを、上のフォルダから順に読み直して確かめる。
+/// 読むだけで、元には触れない
+fn confirm_gone(src: &Path, folder: &str, id: &str, cache: &mut StrictCache) -> Gone {
+    let mut dir = src.to_path_buf();
+    for part in folder.split('/').filter(|c| !c.is_empty()) {
+        let Some((_, names)) = cache.entry(dir.clone()).or_insert_with(|| strict_names(&dir)) else { return Gone::Unreadable };
+        if !names.contains(&fold_id(part)) {
+            // 上のフォルダ(プロジェクト・人のフォルダ)ごと無くなった
+            return Gone::Confirmed;
+        }
+        dir.push(part);
+    }
+    match cache.entry(dir.clone()).or_insert_with(|| strict_names(&dir)) {
+        None => Gone::Unreadable,
+        Some((ids, _)) if ids.contains(&fold_id(id)) => Gone::Present,
+        Some(_) => Gone::Confirmed,
+    }
+}
+
+/// 複製先のセッションのフォルダのうち、元に同じ id のフォルダが無いもの(in_source に無いもの)を、元から無くなったと確かめてから消す。
+/// - どこにあったかは、前の集計の記録(Previous::folder_of)から決める。記録が無ければ消さない
+/// - 消さなかった複製は、理由と、分かっているフォルダを残す(KeptCopy)。次の集計がそのフォルダを確かめる
+/// - その場所を読み直し、読めなければ消さない(アクセス権が無い・共有フォルダが切れた、を「無くなった」とみなさない)
+/// - 名前は大文字小文字を区別せずに比べる(元の名前の大文字小文字だけが変わったときに、写したばかりの複製を消さない)
+/// - 複製は、まず SNAPSHOT_REMOVED_DIR へフォルダごと動かしてから消す。動かせなければ(中のファイルをほかのプログラムが開いている、など)
+///   そのまま残す: 半分だけ消えた複製を数えることが無く、消せない複製が 1 つあっても集計は止まらない
+/// - 作業用のフォルダの名前のもの(前の版が写したもの)には触れない(数えていないことは extract が警告に出す)
+fn remove_gone_sessions(src: &Path, dest: &Path, state_dest: &Path, in_source: &HashSet<String>, previous: &Previous) -> GoneOutcome {
+    let mut out = GoneOutcome::default();
+    let trash = dest.join(SNAPSHOT_REMOVED_DIR);
+    // 前の集計で消し切れなかった分(消せなくても続ける)
+    let _ = crate::fs_retry::remove_tree(&trash);
+    let gone: Vec<String> = copied_ids(state_dest).into_iter().filter(|id| !in_source.contains(&fold_id(id))).collect();
+    if gone.is_empty() {
+        return out;
+    }
+    let mut cache = StrictCache::new();
+    // 動かせない複製は、少し待ってやり直す(ウイルス対策などが一時的に開いていることがある)。待つのは 1 件目だけ:
+    // 待っても動かせなかったら、残りは待たずに試す(開いたままの複製がいくつあっても、待ち時間を積み重ねない)
+    let mut patient = true;
+    // 1 回の集計ごとに別のフォルダへ動かす(前の分を消し切れていなくても、同じ名前でぶつからない)
+    let batch = trash.join(format!("{}", jsdate::now_ms()));
+    for id in gone {
+        let Some(folder) = previous.folder_of(&id).map(str::to_string) else {
+            out.kept.push(KeptCopy { id, reason: KEPT_UNKNOWN_REASON.to_string(), folder: None });
+            continue;
+        };
+        let keep = |reason: &str, folder: String| KeptCopy { id: id.clone(), reason: reason.to_string(), folder: Some(folder) };
+        match confirm_gone(src, &folder, &id, &mut cache) {
+            Gone::Confirmed => {}
+            Gone::Present => {
+                out.kept.push(keep(KEPT_PRESENT_REASON, folder));
+                continue;
+            }
+            Gone::Unreadable => {
+                out.kept.push(keep(KEPT_UNREADABLE_REASON, folder));
+                continue;
+            }
+        }
+        let (from, to) = (state_dest.join(&id), batch.join(&id));
+        let moved = fs::create_dir_all(&batch).and_then(|()| if patient { crate::fs_retry::rename_replacing(&from, &to) } else { fs::rename(&from, &to) });
+        match moved {
+            Ok(()) => out.removed += 1,
+            Err(_) => {
+                patient = false;
+                out.kept.push(keep(KEPT_BUSY_REASON, folder));
+            }
+        }
+    }
+    let _ = crate::fs_retry::remove_tree(&trash);
+    out
 }
 
 /// 1 セッション分を写す(workspace.yaml / events.jsonl・session.db・追加のファイル)。since より前のもので写さなかったら false。
@@ -927,18 +1179,6 @@ fn previous_sources(dest: &Path) -> Vec<(String, PathBuf)> {
         }
     }
     out
-}
-
-/// 前の manifest の merged.owners(読めなければ空)
-fn read_previous_owners(dest: &Path) -> Vec<(String, Value)> {
-    let Ok(text) = fs::read_to_string(dest.join(SNAPSHOT_MANIFEST)) else { return Vec::new() };
-    match serde_json::from_str::<Value>(&text) {
-        Ok(v) => match v.get("merged").and_then(|m| m.get("owners")) {
-            Some(Value::Object(o)) => o.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
-            _ => Vec::new(),
-        },
-        Err(_) => Vec::new(),
-    }
 }
 
 /// 同じ場所を指すパスか。書き方の違い(相対・末尾の区切り・Windows の大文字小文字)のほか、実際の場所が同じもの

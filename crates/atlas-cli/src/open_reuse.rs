@@ -8,7 +8,7 @@
 //! TS 版と同じ built.json を読み書きする(印の作り方も同じ)。
 
 use atlas_core::js::{self, JsMap};
-use atlas_core::snapshot::{SNAPSHOT_MANIFEST, SNAPSHOT_SOURCE};
+use atlas_core::snapshot::{SNAPSHOT_MANIFEST, SNAPSHOT_REMOVED_DIR, SNAPSHOT_SOURCE};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -42,7 +42,7 @@ const OPTIONAL_OUTPUT_FILES: [&str; 1] = [VCS_RETENTION_FILE];
 /// 無いファイルの印
 const ABSENT: &str = "none";
 /// manifest の sessions のうち、元が同じでも変わる項目
-const VOLATILE_SESSION_COUNTS: [&str; 4] = ["copiedFiles", "reusedFiles", "dbCopied", "dbReused"];
+const VOLATILE_SESSION_COUNTS: [&str; 5] = ["copiedFiles", "reusedFiles", "dbCopied", "dbReused", "removed"];
 
 /// ファイルの「大きさ:更新日時」。無ければ None
 fn stat_key(path: &Path) -> Option<String> {
@@ -72,6 +72,10 @@ fn files_recursive(root: &Path) -> std::io::Result<Vec<std::path::PathBuf>> {
     while let Some((path, entries)) = stack.pop() {
         for d in entries {
             let p = path.join(&d.name);
+            // 消す前に退けた複製の消し残り(次の集計で消す)は、集計に使わないのでたどらない
+            if d.is_dir() && path == root && d.name == SNAPSHOT_REMOVED_DIR {
+                continue;
+            }
             if d.is_dir() {
                 let sub = atlas_core::jsfs::read_dir(&p)?;
                 stack.push((p, sub));
@@ -188,6 +192,17 @@ mod tests {
         assert_ne!(key, inputs_key(&rp, &opts, &none, "code2").unwrap());
         // manifest の作った日時と写した数は印に入れない
         std::fs::write(snap.join(SNAPSHOT_MANIFEST), r#"{"createdAt":"y","sessions":{"dirs":1,"copiedFiles":9},"uploads":{"p":{"uploadedAt":"2026-01-02T09:00:00Z"}}}"#).unwrap();
+        assert_eq!(key, inputs_key(&rp, &opts, &none, "code1").unwrap());
+        // 元から無くなったセッションの複製を消した数は印に入れない(消した次の回に、何も変わっていないのに作り直さない)
+        std::fs::write(snap.join(SNAPSHOT_MANIFEST), r#"{"createdAt":"y","sessions":{"dirs":1,"copiedFiles":9,"removed":2},"uploads":{"p":{"uploadedAt":"2026-01-02T09:00:00Z"}}}"#).unwrap();
+        assert_eq!(key, inputs_key(&rp, &opts, &none, "code1").unwrap());
+        // 消さなかったセッションの記録はレポートの警告に出るので、印に入れる
+        std::fs::write(snap.join(SNAPSHOT_MANIFEST), r#"{"createdAt":"y","sessions":{"dirs":1,"copiedFiles":9},"uploads":{"p":{"uploadedAt":"2026-01-02T09:00:00Z"}},"extras":{"goneKept":[{"id":"a","reason":"x"}]}}"#).unwrap();
+        assert_ne!(key, inputs_key(&rp, &opts, &none, "code1").unwrap());
+        std::fs::write(snap.join(SNAPSHOT_MANIFEST), r#"{"createdAt":"y","sessions":{"dirs":1,"copiedFiles":9},"uploads":{"p":{"uploadedAt":"2026-01-02T09:00:00Z"}}}"#).unwrap();
+        // 消す前に退けた複製の消し残りは印に入れない(次の集計で片付いたときに、余計に作り直さない)
+        std::fs::create_dir_all(snap.join(SNAPSHOT_REMOVED_DIR).join("1").join("gone")).unwrap();
+        std::fs::write(snap.join(SNAPSHOT_REMOVED_DIR).join("1").join("gone").join("events.jsonl"), "{}\n").unwrap();
         assert_eq!(key, inputs_key(&rp, &opts, &none, "code1").unwrap());
         let built = d.path().join(crate::folders::BUILT_FILE);
         write_built(&built, &key, &out).unwrap();
