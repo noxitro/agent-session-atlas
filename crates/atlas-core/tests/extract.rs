@@ -126,6 +126,32 @@ fn manifest(root: &Path, layout: &str, extra: Value) {
 }
 
 #[test]
+fn copies_kept_for_gone_sessions_are_warned() {
+    use atlas_core::snapshot::{KEPT_BUSY_REASON, KEPT_UNKNOWN_REASON, KEPT_UNREADABLE_REASON};
+    // 元のフォルダに見当たらないのに複製を消さなかったセッションは、前に写した複製で数えていることを、理由ごとに警告に出す
+    let dir = tempfile::tempdir().unwrap();
+    let snap = dir.path().join("snap");
+    for id in ["g1", "g2", "g3"] {
+        write(&snap.join("session-state").join(id).join("events.jsonl"), "{\"type\":\"session.start\",\"data\":{\"version\":1},\"id\":\"e1\",\"timestamp\":\"2026-07-02T09:00:00.000Z\"}\n");
+    }
+    let extras = json!({"all": false, "sessionFiles": 0, "sessionBytes": 0, "topLevel": {}, "skipped": [], "desktop": null, "leftover": [],
+        "goneKept": [{"id": "g2", "reason": KEPT_BUSY_REASON}, {"id": "g3", "reason": KEPT_UNREADABLE_REASON}, {"id": "not-copied", "reason": KEPT_UNKNOWN_REASON}]});
+    manifest(&snap, "flat", json!({ "extras": extras }));
+    let mut opts = ExtractOptions::new();
+    opts.projects = Some(no_grouping());
+    let s = extract(&snap, &opts).unwrap();
+    assert_eq!(s.sessions.len(), 3);
+    let about: Vec<&String> = s.warnings.messages.iter().filter(|m| m.contains("元のフォルダに見当たらないセッション")).collect();
+    // 複製が無いもの(not-copied)は数えていないので出さない
+    assert_eq!(about.len(), 2, "{:?}", s.warnings.messages);
+    assert!(about[0].contains("1 件") && about[0].contains(KEPT_UNREADABLE_REASON) && about[0].contains("g3"), "{}", about[0]);
+    assert!(about[1].contains("1 件") && about[1].contains(KEPT_BUSY_REASON) && about[1].contains("g2"), "{}", about[1]);
+    // 消さなかったものが無ければ出さない
+    manifest(&snap, "flat", json!({}));
+    assert!(extract(&snap, &opts).unwrap().warnings.messages.iter().all(|m| !m.contains("元のフォルダに見当たらない")));
+}
+
+#[test]
 fn uploaded_folders_use_sender_records_not_disk() {
     let dir = tempfile::tempdir().unwrap();
     // 読む側の PC に、ログと同じパスで別のリポジトリがある

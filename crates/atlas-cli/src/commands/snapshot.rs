@@ -3,7 +3,7 @@
 use super::{mb, ms, Log};
 use crate::paths::Paths;
 use anyhow::{Result, bail};
-use atlas_core::snapshot::{self, SnapshotManifest, SnapshotOptions, SourceShape, UPLOAD_OLD_ONLY_REASON, UPLOAD_PROBE_HINT, describe_source, upload_work_dir_id};
+use atlas_core::snapshot::{self, KEPT_REASONS, SnapshotManifest, SnapshotOptions, SourceShape, UPLOAD_OLD_ONLY_REASON, UPLOAD_PROBE_HINT, describe_source, upload_work_dir_id};
 use std::collections::HashSet;
 use std::time::Instant;
 
@@ -33,6 +33,16 @@ pub fn run_snapshot(p: &Paths, since: Option<&str>, log: Log<'_>, all: bool, pru
     ));
     if let Some(n) = s.removed.filter(|n| *n > 0) {
         log(&format!("snapshot: 元のフォルダから無くなっていたセッション {n} 件の複製を消しました(アップロード先を読むときは、今あるセッションだけを集計します)"));
+    }
+    // 元のフォルダに見当たらないのに、複製を消さなかったもの(理由ごと)
+    if let Some(kept) = m.extras.as_ref().and_then(|x| x.gone_kept.as_ref()) {
+        for (reason, hint) in KEPT_REASONS {
+            let ids: Vec<&str> = kept.iter().filter(|k| k.reason == reason).map(|k| k.id.as_str()).collect();
+            if !ids.is_empty() {
+                let more = if ids.len() > 3 { " ほか" } else { "" };
+                log(&format!("snapshot: 注意 元のフォルダに見当たらないセッション {} 件は、複製を消さず、前に写した複製で数えます({reason}: {}{more})。{hint}", ids.len(), ids.iter().take(3).copied().collect::<Vec<_>>().join(" / ")));
+            }
+        }
     }
     // 集計できる形のフォルダではなかったとき(0 件のまま黙って空のレポートを作らないように、指定のしかたを出す)
     if s.dirs == 0 && s.skipped_by_since == 0 && describe_source(&p.home) == SourceShape::None {

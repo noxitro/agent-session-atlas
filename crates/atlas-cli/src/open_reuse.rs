@@ -189,6 +189,13 @@ mod tests {
         // manifest の作った日時と写した数は印に入れない
         std::fs::write(snap.join(SNAPSHOT_MANIFEST), r#"{"createdAt":"y","sessions":{"dirs":1,"copiedFiles":9},"uploads":{"p":{"uploadedAt":"2026-01-02T09:00:00Z"}}}"#).unwrap();
         assert_eq!(key, inputs_key(&rp, &opts, &none, "code1").unwrap());
+        // 元から無くなったセッションの複製を消した数は印に入れない(消した次の回に、何も変わっていないのに作り直さない)
+        std::fs::write(snap.join(SNAPSHOT_MANIFEST), r#"{"createdAt":"y","sessions":{"dirs":1,"copiedFiles":9,"removed":2},"uploads":{"p":{"uploadedAt":"2026-01-02T09:00:00Z"}}}"#).unwrap();
+        assert_eq!(key, inputs_key(&rp, &opts, &none, "code1").unwrap());
+        // 消さなかったセッションの記録はレポートの警告に出るので、印に入れる
+        std::fs::write(snap.join(SNAPSHOT_MANIFEST), r#"{"createdAt":"y","sessions":{"dirs":1,"copiedFiles":9},"uploads":{"p":{"uploadedAt":"2026-01-02T09:00:00Z"}},"extras":{"goneKept":[{"id":"a","reason":"x"}]}}"#).unwrap();
+        assert_ne!(key, inputs_key(&rp, &opts, &none, "code1").unwrap());
+        std::fs::write(snap.join(SNAPSHOT_MANIFEST), r#"{"createdAt":"y","sessions":{"dirs":1,"copiedFiles":9},"uploads":{"p":{"uploadedAt":"2026-01-02T09:00:00Z"}}}"#).unwrap();
         let built = d.path().join(crate::folders::BUILT_FILE);
         write_built(&built, &key, &out).unwrap();
         let prev = read_built(&built).unwrap();

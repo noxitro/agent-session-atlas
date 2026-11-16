@@ -601,6 +601,14 @@ pub fn extract(snapshot_dir: &Path, opts: &ExtractOptions<'_>) -> Result<Session
             join_names(&old_only, "、")
         ));
     }
+    // 元のフォルダに見当たらないのに、複製を消さなかったもの(前に写した複製で数えている)
+    let gone_kept = manifest.as_ref().and_then(|m| m.extras.as_ref()).and_then(|x| x.gone_kept.as_deref()).unwrap_or(&[]);
+    for (reason, hint) in crate::snapshot::KEPT_REASONS {
+        let ids: Vec<String> = gone_kept.iter().filter(|k| k.reason == reason && dirs.contains(&k.id)).map(|k| k.id.clone()).collect();
+        if !ids.is_empty() {
+            messages.push(format!("元のフォルダに見当たらないセッション {} 件は、前に写した複製で数えている({reason}: {})。{hint}", ids.len(), join_names(&ids, "、")));
+        }
+    }
     // 前の版が写した作業用のフォルダが出力先に残っているとき
     if !listed_work.is_empty() {
         messages.push(format!(
