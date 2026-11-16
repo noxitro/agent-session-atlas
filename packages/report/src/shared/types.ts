@@ -25,7 +25,8 @@ import type { AtlasBuild, FolderUpload } from './atlas-version.ts';
 // 16: exec.modelEfforts(モデル別 × 推論強度別のリクエスト数・トークン)
 // 17: exec.mainModelEfforts(本体のリクエストだけの モデル別 × 推論強度別。サブエージェントを除く)
 // 18: analysis.failures・failuresDropped(失敗の台帳: ツールの失敗と拒否を 1 件 1 行で)・tools.resultsByModel・agents[].prompt
-export const SESSIONS_SCHEMA_VERSION = 18;
+// 19: tests(テストの実行ファイルが書いた印つきの 1 行 JSON と、実行ごとの推移。印の行があるセッションだけ)・source.wikis(参照を数えた vault の数)
+export const SESSIONS_SCHEMA_VERSION = 19;
 // 5: turns(依頼単位の工程 × 詰まり・依頼の種類の集計)
 // 6: tools.results[].causes(ツールの失敗の要因別の回数)
 export const METRICS_SCHEMA_VERSION = 6;
@@ -305,6 +306,49 @@ export interface TurnStats {
 }
 
 export type SkillTrigger = 'user' | 'agent';
+
+/** セッションの中で読めたテストの結果(ツールの結果の、行頭に ATLAS_TEST_RESULT の印がある 1 行 JSON) */
+export interface SessionTests {
+  /** 結果を出したツールの呼び出し 1 回を 1 つ(出た順) */
+  runs: TestRun[];
+  /** 印はあるが読めなかった行(JSON のオブジェクトでない・passed が真偽でない) */
+  invalid: number;
+  /** 同じ行(at のあるもの)が前にも出たので数えなかった数 */
+  duplicates: number;
+  /** 1 セッションの上限(5000)を超えたので持たなかった結果の数 */
+  dropped: number;
+  /** 最初に全部通った実行の番号(runs の 1 からの番号。failing が初めて 0 になった実行)。一度も通っていなければ null(runs が 1 件以上あれば「未達」) */
+  firstPass: number | null;
+}
+
+/** テストの結果を出したツールの呼び出し 1 回 */
+export interface TestRun {
+  /** ツールの完了の時刻 */
+  at: string | null;
+  /** 依頼の番号(1 から)。最初の依頼より前と、記録する依頼の数(先頭 200)を超えた後は null */
+  turn: number | null;
+  tool: string | null;
+  toolCallId: string | null;
+  /** サブエージェントの呼び出し(本体なら無い) */
+  subagent?: true;
+  /** セッションの始まりからこの実行の完了までの実働(ミリ秒。セッションの実働時間と同じ数え方) */
+  activeMs: number;
+  /** この実行の完了までに記録されたリクエストの AI 使用量の累計(nano AIU。サブエージェントの分を含む)。リクエストごとの記録が無いセッションは null */
+  nanoAiu: number | null;
+  /** この実行の後で、まだ通っていないテストの数(これまでに出た名前ごとの、いちばん新しい結果が不合格のもの)。0 なら全部通っている */
+  failing: number;
+  results: TestResult[];
+}
+
+/** テストの結果 1 行 */
+export interface TestResult {
+  name: string | null;
+  passed: boolean;
+  /** 名前 → 数(件数・割合など。書いた側の名前のまま) */
+  counts: Record<string, number>;
+  /** テストの実行ファイルが書いた時刻(書いていなければ無い) */
+  at?: string;
+}
 
 /** ツール 1 種類の結果(tool.execution_complete の success と error.code) */
 export interface ToolResult {
@@ -619,6 +663,8 @@ export interface SessionRecord {
    */
   files: { changed: string[]; created: string[]; deleted: string[]; sessionState: number };
   timeline: TimelineEntry[];
+  /** テストの実行ファイルが書いた印つきの 1 行 JSON(crates/atlas-core/src/test_results.rs)。印の行が無いセッションと schema 17 以前の sessions.json には無い */
+  tests?: SessionTests;
   unknownEventTypes: Record<string, number>;
   events: { total: number; badLines: number; byType: Record<string, number> };
 }
@@ -638,6 +684,8 @@ export interface SessionsFile {
     folders?: string[];
     /** フォルダごとの、最後に送ったときの日時と atlas の版(snapshot の manifest の uploads)。送り先から集計したときだけある */
     uploads?: Record<string, FolderUpload>;
+    /** 参照を数えた llm-wiki の vault の数(集計した PC の設定の wikis)。0 なら wiki は数えていない。schema 17 以前には無い */
+    wikis?: number;
   };
   /** Phase 11: data.db の読み取りの状態(WAL の注意、表ごとの列の扱い)。無ければ null */
   desktop?: { readAt: string; wal: DesktopData['wal']; coverage: DesktopData['coverage']; warnings: string[]; sessions: number } | null;

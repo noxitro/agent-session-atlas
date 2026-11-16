@@ -10,6 +10,7 @@
 
 pub mod aggregate;
 pub mod build;
+pub mod conditions;
 pub mod coverage;
 pub mod detail;
 pub mod embed;

@@ -9,10 +9,11 @@ use anyhow::{anyhow, bail, Result};
 use atlas_core::failure_ledger::MAX_ROWS;
 use atlas_core::jsdate;
 use atlas_core::metrics::{compute_metrics, is_empty_session};
-use atlas_core::tables::{failures_table, to_csv};
+use atlas_core::tables::{failures_table, to_csv, Cell};
 use atlas_core::types::{MetricsFile, SessionRecord, SessionsFile};
 use atlas_report::filter::{matches_base, BaseFilter};
-use atlas_report::groups::{load_groups, resolve_id_prefixes, LoadedGroups};
+use atlas_report::conditions::{assignments, condition_table, conditions_csv_table, session_cells, test_tables, CondGroup, CondSession, SESSION_COLUMNS};
+use atlas_report::groups::{load_groups, member_groups_keyed, resolve_id_prefixes, LoadedGroups, MemberSource};
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -200,7 +201,7 @@ pub struct Selected {
     pub file: SessionsFile,
     /// file.sessions の中の位置(元の順)
     pub index: Vec<usize>,
-    #[allow(dead_code)] // build の移植(段 4)で使う
+    /// groups.json(build のタスクタグと、課題 × 条件の表に使う)
     pub groups: LoadedGroups,
 }
 
@@ -244,14 +245,30 @@ pub fn run_metrics(p: &Paths, f: &SessionFilter, log: Log<'_>) -> Result<Metrics
     if let Some(s) = &m.installed_skills {
         log(&format!("metrics: インストール済みで未使用の skill {} / {} 件", s.unused.len(), s.installed.len()));
     }
-    write_tables(p, &sessions, "metrics", log)?;
+    write_tables(p, &sessions, &condition_groups(p, &sel), "metrics", log)?;
     Ok(m)
+}
+
+/// 課題 × 条件の表に使うタスクタグ(build と同じ選び方: 読むだけの画面にする出力先(送り先から集計したもの)は、送った人のタグ(元の名前)。
+/// それ以外は groups.json)
+pub fn condition_groups(p: &Paths, sel: &Selected) -> Vec<CondGroup> {
+    let layout = sel.file.source.layout.map(|l| match l {
+        atlas_core::types::UploadLayout::Flat => "flat",
+        atlas_core::types::UploadLayout::Merged => "merged",
+    });
+    if crate::folders::is_read_only_view(&p.out.to_string_lossy(), layout) {
+        let src: Vec<MemberSource<'_>> = sel.file.sessions.iter().map(MemberSource::from).collect();
+        member_groups_keyed(&src).into_iter().map(|m| CondGroup { raw: m.tag, ids: m.group.ids }).collect()
+    } else {
+        sel.groups.groups.iter().map(|g| CondGroup { raw: g.name.clone(), ids: g.ids.clone() }).collect()
+    }
 }
 
 /// 表計算ソフトで開く表(依頼ごと・セッションごと・VCS の照合のまとまりごと・ツールの失敗と拒否ごと)を out/tables/ に書く。
 /// metrics・build・export が、それぞれの絞り込みのセッションで書く(判定を取り込んだ後の export でも、判定の列が表に入るように)。
 /// ツールの失敗と拒否ごとの表(failures.csv と SQLite の failures)は、ここでだけ足す(グループの書き出しには入れない)
-pub fn write_tables(p: &Paths, sessions: &[&SessionRecord], cmd: &str, log: Log<'_>) -> Result<()> {
+/// 表(out/tables/)を書く。groups は課題 × 条件の表に使うタスクタグ(condition_groups)
+pub fn write_tables(p: &Paths, sessions: &[&SessionRecord], groups: &[CondGroup], cmd: &str, log: Log<'_>) -> Result<()> {
     let dir = p.out.join("tables");
     std::fs::create_dir_all(&dir)?;
     let mut t = build_tables(sessions, &TablePaths { judgments: &p.judgments, turn_judgments: &p.turn_judgments, vcs_retention: Some(&p.vcs_retention) });
@@ -259,7 +276,6 @@ pub fn write_tables(p: &Paths, sessions: &[&SessionRecord], cmd: &str, log: Log<
         log(&format!("{cmd}: 注意 {w}"));
     }
     std::fs::write(dir.join("turns.csv"), &t.turns)?;
-    std::fs::write(dir.join("sessions.csv"), &t.sessions)?;
     // 照合の結果が無くなったとき(vcs が失敗した等)は、前の vcs-hunks.csv を残さない
     match &t.vcs_hunks {
         Some(h) => std::fs::write(dir.join("vcs-hunks.csv"), h)?,
@@ -276,6 +292,52 @@ pub fn write_tables(p: &Paths, sessions: &[&SessionRecord], cmd: &str, log: Log<
     if let Some(f) = failures {
         t.data.push(("failures".to_string(), f));
     }
+    // 課題 × 条件の表とテストの結果(画面の「課題 × 条件」と同じ数え方。母集団は空のセッションを除いたもの)
+    let cond_sessions: Vec<CondSession> = sessions.iter().filter(|s| !is_empty_session(s)).map(|s| CondSession::from_record(s)).collect();
+    let cond = condition_table(&cond_sessions, groups);
+    let assign = assignments(&cond);
+    // sessions.csv(と SQLite の sessions)に、課題・条件とテストの列を、最初の依頼の列の前に足す
+    if let Some((_, sess)) = t.data.iter_mut().find(|(n, _)| n == "sessions") {
+        let at = sess.header.iter().position(|h| h == "最初の依頼(先頭)").unwrap_or(sess.header.len());
+        sess.header.splice(at..at, SESSION_COLUMNS.iter().map(|h| h.to_string()));
+        let by_id: std::collections::HashMap<&str, &SessionRecord> = sessions.iter().map(|s| (s.id.as_str(), *s)).collect();
+        for row in &mut sess.rows {
+            let cells = match &row[0] {
+                Cell::Str(id) => by_id.get(id.as_str()).map(|r| session_cells(r, &assign)),
+                _ => None,
+            }
+            .unwrap_or_else(|| SESSION_COLUMNS.iter().map(|_| Cell::Null).collect());
+            row.splice(at..at, cells);
+        }
+        t.sessions = to_csv(&sess.header, &sess.rows);
+    }
+    // 課題・条件とテストの列を足してから書く
+    std::fs::write(dir.join("sessions.csv"), &t.sessions)?;
+    // 名前の決まりに合うタスクタグが無ければ書かず、前のものも残さない
+    let with_conditions = cond.matched_tags > 0;
+    let conditions = with_conditions.then(|| conditions_csv_table(&cond));
+    match &conditions {
+        Some(c) => std::fs::write(dir.join("conditions.csv"), to_csv(&c.header, &c.rows))?,
+        None => atlas_core::jsfs::rm_force(&dir.join("conditions.csv"))?,
+    }
+    if let Some(c) = conditions {
+        t.data.push(("conditions".to_string(), c));
+    }
+    // テストの実行が 1 回も無ければ書かず、前のものも残さない(見出しだけの表は「0 件」と読めてしまう)
+    let listed_sessions: Vec<&SessionRecord> = sessions.iter().filter(|s| !is_empty_session(s)).copied().collect();
+    let tests = test_tables(&listed_sessions, &assign);
+    for (file, table) in [("test-runs.csv", tests.as_ref().map(|x| &x.runs)), ("test-results.csv", tests.as_ref().map(|x| &x.results)), ("test-counts.csv", tests.as_ref().map(|x| &x.counts))] {
+        match table {
+            Some(tb) => std::fs::write(dir.join(file), to_csv(&tb.header, &tb.rows))?,
+            None => atlas_core::jsfs::rm_force(&dir.join(file))?,
+        }
+    }
+    let with_tests = tests.is_some();
+    if let Some(x) = tests {
+        t.data.push(("test_runs".to_string(), x.runs));
+        t.data.push(("test_results".to_string(), x.results));
+        t.data.push(("test_counts".to_string(), x.counts));
+    }
     // 表に載せるセッション(空のセッションを除く)のうち、行数の上限で載せなかった失敗・拒否の数と、台帳の無い記録の数
     let listed = || sessions.iter().filter(|s| !is_empty_session(s));
     let dropped: i64 = listed().filter(|s| s.analysis.failures.is_some()).filter_map(|s| s.analysis.failures_dropped).sum();
@@ -288,10 +350,12 @@ pub fn write_tables(p: &Paths, sessions: &[&SessionRecord], cmd: &str, log: Log<
         }
     };
     log(&format!(
-        "{cmd}: 表 → {}・sessions.csv{}{}{sqlite}{}{}{}{}",
+        "{cmd}: 表 → {}・sessions.csv{}{}{}{}{sqlite}{}{}{}{}",
         dir.join("turns.csv").display(),
         if t.vcs_hunks.is_some() { "・vcs-hunks.csv" } else { "" },
         if with_failures { "・failures.csv" } else { "" },
+        if with_conditions { "・conditions.csv" } else { "" },
+        if with_tests { "・test-runs.csv・test-results.csv・test-counts.csv" } else { "" },
         if t.with_verdicts { "(依頼ごとの判定の列つき)" } else { "" },
         if t.with_retention { "(VCS の照合の列つき)" } else { "" },
         if dropped > 0 { format!("(1 セッション {MAX_ROWS} 行の上限で failures.csv に載せていない失敗・拒否 {dropped} 件)") } else { String::new() },
@@ -405,7 +469,7 @@ mod tests {
         let csv = dir.join("failures.csv");
 
         let rec = failing("00000000-0000-4000-8000-000000000031");
-        write_tables(&p, &[&rec], "metrics", &log).unwrap();
+        write_tables(&p, &[&rec], &[], "metrics", &log).unwrap();
         let text = std::fs::read_to_string(&csv).unwrap();
         let lines: Vec<&str> = text.trim_end().split("\r\n").collect();
         assert!(lines[0].starts_with("\u{feff}セッションID,セッション名,プロジェクト,依頼番号,開始,種類,要因,ツール,"), "{}", lines[0]);
@@ -444,7 +508,7 @@ mod tests {
         let mut old = rec.clone();
         old.analysis.failures = None;
         old.analysis.failures_dropped = None;
-        write_tables(&p, &[&old], "metrics", &log).unwrap();
+        write_tables(&p, &[&old], &[], "metrics", &log).unwrap();
         assert!(!csv.exists());
         assert_eq!(sqlite_tables(&dir.join(SQLITE_FILE)), ["sessions", "turns"]);
         assert!(!last().contains("・failures.csv"), "{}", last());
@@ -453,7 +517,7 @@ mod tests {
         // 混ざっているとき: 台帳のある記録の行だけを書き、載せていない件数を知らせる
         let mut capped = failing("00000000-0000-4000-8000-000000000032");
         capped.analysis.failures_dropped = Some(3);
-        write_tables(&p, &[&old, &capped], "build", &log).unwrap();
+        write_tables(&p, &[&old, &capped], &[], "build", &log).unwrap();
         let text = std::fs::read_to_string(&csv).unwrap();
         assert_eq!(text.trim_end().split("\r\n").skip(1).map(|l| l.split(',').next().unwrap()).collect::<Vec<_>>(), vec![capped.id.as_str(); 2]);
         assert_eq!(sqlite_tables(&dir.join(SQLITE_FILE)), ["failures", "sessions", "turns"]);

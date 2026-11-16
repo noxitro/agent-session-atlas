@@ -14,7 +14,7 @@ use atlas_core::types::{Friction, LineChanges, ProjectSource, TodoSummary, Token
 use serde::{Deserialize, Serialize};
 
 /// 埋め込みデータの版(lib/types.ts の REPORT_DATA_VERSION。版の履歴はそちらの先頭のコメントを参照)
-pub const REPORT_DATA_VERSION: i64 = 16;
+pub const REPORT_DATA_VERSION: i64 = 17;
 
 /// 推論強度別の [リクエスト, 入力, 出力, nano AIU]
 pub type EffortTuple = [f64; 4];
@@ -160,6 +160,9 @@ pub struct WikiSummary {
     pub page_reads: i64,
     pub skill_calls: i64,
     pub writes: i64,
+    /// vault に触れたそのほかの呼び出し(検索・一覧など)。埋め込みの版 15 以前には無い
+    #[serde(default)]
+    pub other_calls: i64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -183,6 +186,25 @@ pub struct AnalysisSummary {
 
 /// 入力トークン記録の有無を UI 向けに 3 区分にしたもの(input / output-only / none)
 pub type InputCoverage = &'static str;
+
+/// テストの結果の要約(lib/types.ts の TestsSummary)。テストの実行(結果を出したツールの呼び出し)が 1 回以上あるセッションだけ。
+/// 実行ごとの結果やテストの名前は埋め込まない(数だけ)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TestsSummary {
+    /// テストの実行の数
+    pub runs: i64,
+    /// 最初に全部通った実行の番号(1 から)。一度も通っていなければ null(未達)
+    pub first_pass: Option<i64>,
+    /// 最後の実行の後で、まだ通っていないテストの数(0 なら最後は全部通っている)
+    pub last_failing: i64,
+    /// 最初に全部通った実行までの実働(ミリ秒)。未達なら null
+    pub pass_active_ms: Option<f64>,
+    /// 最初に全部通った実行までの AI 使用量(nano AIU)。未達か、リクエストごとの記録が無ければ null
+    pub pass_nano_aiu: Option<f64>,
+    /// 最後の実行までの AI 使用量(nano AIU)。リクエストごとの記録が無ければ null(未達のセッションに、AI 使用量の記録があるかを見分けるのに使う)
+    pub last_nano_aiu: Option<f64>,
+}
 
 /// 埋め込むセッションの要約(lib/types.ts の SessionSummary)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -239,6 +261,9 @@ pub struct SessionSummary {
     /// 依頼(ターン)ごとの工程・種類・詰まり。ターンの記録が無いセッション・古い埋め込みには無い
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_rows: Option<Vec<TurnTuple>>,
+    /// テストの結果の要約。テストの実行が無いセッション・古い埋め込みには無い
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tests: Option<TestsSummary>,
     /// sessionState: ~/.copilot/session-state/ 配下で一覧から外したファイル数
     pub files: FilesSummary,
     /// 詳細ページへの相対リンク

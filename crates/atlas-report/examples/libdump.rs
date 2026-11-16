@@ -24,7 +24,7 @@ use atlas_report::memo::{is_safe_file_name, is_safe_memo_id, memo_excerpt, memo_
 use atlas_report::pack::pack_summary;
 use atlas_report::project_label::short_project_label;
 use atlas_report::retention::{aggregate_retention, retention_by_phase, retention_item, retention_meta, turn_starts};
-use atlas_report::summarize::{detail_file_name, summarize};
+use atlas_report::summarize::{detail_file_name, summarize, tests_summary};
 use atlas_report::turns::turn_aggregate;
 use atlas_report::types::{SessionSummary, REPORT_DATA_VERSION};
 use atlas_report::verdicts::{parse_verdicts, verdict_aggregate, verdict_tuples};
@@ -69,6 +69,58 @@ const NUMBERS: [f64; 31] = [
     f64::NAN,
 ];
 const FILE_NAMES: [&str; 15] = ["メモ.md", "a b.txt", "x", "", ".x", "..", "a/b", "x.", "x ", "CON", "nul.log", "Com1", "a:b", "abc-1_2.x", "あ"];
+
+/// テストの結果の要約を確かめる形(実行なし / 未達 / 1 回目で通る / 通った後に不合格で AI 使用量の記録なし / 番号が実行の数を外れている / 番号が 0 / 番号が負)。
+/// scripts/parity-lib.ts の TESTS_CASES と同じ中身
+const TESTS_CASES: &str = r#"[
+  { "runs": [], "invalid": 1, "duplicates": 0, "dropped": 0, "firstPass": null },
+  { "runs": [{ "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 1000, "nanoAiu": 1500000000, "failing": 1, "results": [] }, { "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 2000, "nanoAiu": 2500000000, "failing": 1, "results": [] }], "invalid": 0, "duplicates": 0, "dropped": 0, "firstPass": null },
+  { "runs": [{ "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 1500, "nanoAiu": 2500000000, "failing": 0, "results": [] }], "invalid": 0, "duplicates": 0, "dropped": 0, "firstPass": 1 },
+  { "runs": [{ "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 1000, "nanoAiu": null, "failing": 1, "results": [] }, { "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 60000.5, "nanoAiu": null, "failing": 0, "results": [] }, { "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 90000, "nanoAiu": null, "failing": 2, "results": [] }], "invalid": 0, "duplicates": 2, "dropped": 0, "firstPass": 2 },
+  { "runs": [{ "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 1000, "nanoAiu": 1, "failing": 0, "results": [] }], "invalid": 0, "duplicates": 0, "dropped": 0, "firstPass": 5 },
+  { "runs": [{ "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 1000, "nanoAiu": 1, "failing": 0, "results": [] }], "invalid": 0, "duplicates": 0, "dropped": 0, "firstPass": 0 },
+  { "runs": [{ "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 1000, "nanoAiu": 1, "failing": 0, "results": [] }], "invalid": 0, "duplicates": 0, "dropped": 0, "firstPass": -1 }
+]"#;
+
+/// 課題 × 条件の表を確かめる形(scripts/parity-lib.ts の CONDITION_CASES と同じ中身)
+const CONDITION_CASES: &str = r#"{"sessions":[{"id":"s01","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":1,"firstPass":1,"lastFailing":0,"passActiveMs":60000.5,"passNanoAiu":1500000000.0,"lastNanoAiu":2000000000.0},"person":null},{"id":"s02","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":2,"firstPass":2,"lastFailing":0,"passActiveMs":120001.0,"passNanoAiu":3000000000.0,"lastNanoAiu":4000000000.0},"person":null},{"id":"s03","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":3,"firstPass":3,"lastFailing":0,"passActiveMs":180001.5,"passNanoAiu":4500000000.0,"lastNanoAiu":6000000000.0},"person":null},{"id":"s04","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":2,"firstPass":1,"lastFailing":1,"passActiveMs":60000.5,"passNanoAiu":1500000000.0,"lastNanoAiu":2000000000.0},"person":null},{"id":"s05","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":3,"firstPass":null,"lastFailing":2,"passActiveMs":null,"passNanoAiu":null,"lastNanoAiu":7000000000.0},"person":null},{"id":"s06","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":3,"firstPass":null,"lastFailing":2,"passActiveMs":null,"passNanoAiu":null,"lastNanoAiu":null},"person":null},{"id":"s07","activeMs":null,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":null},"tests":{"runs":2,"firstPass":2,"lastFailing":0,"passActiveMs":120001.0,"passNanoAiu":3000000000.0,"lastNanoAiu":4000000000.0},"person":null},{"id":"s08","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":4,"firstPass":4,"lastFailing":0,"passActiveMs":240002.0,"passNanoAiu":null,"lastNanoAiu":null},"person":null},{"id":"s09","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"person":null},{"id":"s10","activeMs":600000,"tools":{"total":0},"friction":{"toolFailures":0},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":1,"firstPass":1,"lastFailing":0,"passActiveMs":60000.5,"passNanoAiu":1500000000.0,"lastNanoAiu":2000000000.0},"person":null},{"id":"s11","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":2,"firstPass":2,"lastFailing":0,"passActiveMs":120001.0,"passNanoAiu":3000000000.0,"lastNanoAiu":4000000000.0},"person":"zz-a"},{"id":"s12","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":3,"firstPass":3,"lastFailing":0,"passActiveMs":180001.5,"passNanoAiu":4500000000.0,"lastNanoAiu":6000000000.0},"person":"zz-b"},{"id":"s13","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":3,"firstPass":null,"lastFailing":2,"passActiveMs":null,"passNanoAiu":null,"lastNanoAiu":7000000000.0},"person":"zz-b"},{"id":"s14","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":1,"firstPass":1,"lastFailing":0,"passActiveMs":60000.5,"passNanoAiu":1500000000.0,"lastNanoAiu":2000000000.0},"person":null},{"id":"s15","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":1,"firstPass":1,"lastFailing":0,"passActiveMs":60000.5,"passNanoAiu":1500000000.0,"lastNanoAiu":2000000000.0},"person":null},{"id":"s16","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":3,"firstPass":null,"lastFailing":2,"passActiveMs":null,"passNanoAiu":null,"lastNanoAiu":7000000000.0},"person":null},{"id":"s17","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":2,"firstPass":2,"lastFailing":0,"passActiveMs":120001.0,"passNanoAiu":3000000000.0,"lastNanoAiu":4000000000.0},"person":null},{"id":"s18","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":2,"firstPass":2,"lastFailing":0,"passActiveMs":120001.0,"passNanoAiu":3000000000.0,"lastNanoAiu":4000000000.0},"person":null}],"groups":[{"name":"t10__wiki__1","presentIds":["s01","s02","s03"]},{"name":"t10__wiki__2","presentIds":["s03","s04","s05","s06"]},{"name":"t2__wiki","presentIds":["s07","s08","s09"]},{"name":"t2__0-plain","presentIds":["s10","s14","s15","s16","s17"]},{"name":"zz-a / t2__coderef__1","tag":"t2__coderef__1","presentIds":["s11"]},{"name":"zz-b / t2__coderef__1","tag":"t2__coderef__1","presentIds":["s12","s13"]},{"name":"描画__wiki","presentIds":["s18"]},{"name":"描画__0-plain","presentIds":["s18"]},{"name":"zz-misc","presentIds":["s09"]},{"name":"x__y__v2","presentIds":["s09"]},{"name":"gone__wiki","presentIds":["not-in-records"]}],"names":["render__wiki","render__wiki__1"," 描画 __ wiki あり __ 007 ","Player-Weapon__code_ref__12","render","render__","__wiki","render____1","a__b__c__1","render__wiki__v2","render__wiki__１","a___b","a__b_",""],"order":["c10","c2","B","a","c1","0-plain","wiki","Wiki","描画","あ","ア","t10","t2","x_1","x-1","c01","c001","c1","c１０","v1.10","v1.9","v1.9a","Z","z"]}"#;
+
+/// CONDITION_CASES のセッションとタスクタグを、表の計算の形にする(画面の ConditionSession・ConditionGroup と同じ項目を読む)
+fn condition_cases() -> Result<(Vec<atlas_report::conditions::CondSession>, Vec<atlas_report::conditions::CondGroup>, Vec<String>, Vec<String>)> {
+    use atlas_report::conditions::{CondGroup, CondSession};
+    let v: Value = serde_json::from_str(CONDITION_CASES)?;
+    let num = |x: &Value, path: &[&str]| path.iter().fold(Some(x), |a, k| a.and_then(|a| a.get(*k))).and_then(Value::as_f64);
+    let sessions = v["sessions"]
+        .as_array()
+        .context("sessions")?
+        .iter()
+        .map(|s| -> Result<CondSession> {
+            Ok(CondSession {
+                id: s["id"].as_str().context("id")?.to_string(),
+                active_ms: num(s, &["activeMs"]),
+                tools: num(s, &["tools", "total"]).unwrap_or(0.0) as i64,
+                tool_failures: num(s, &["friction", "toolFailures"]).unwrap_or(0.0) as i64,
+                nano_aiu: num(s, &["tokens", "nanoAiu"]),
+                tests: match s.get("tests") {
+                    Some(t) if !t.is_null() => Some(serde_json::from_value(t.clone())?),
+                    _ => None,
+                },
+                person: s["person"].as_str().map(str::to_string),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let groups = v["groups"]
+        .as_array()
+        .context("groups")?
+        .iter()
+        .map(|g| CondGroup {
+            raw: g.get("tag").and_then(Value::as_str).or(g["name"].as_str()).unwrap_or("").to_string(),
+            ids: g["presentIds"].as_array().map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default(),
+        })
+        .collect();
+    let strs = |k: &str| v[k].as_array().map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect::<Vec<_>>()).unwrap_or_default();
+    Ok((sessions, groups, strs("names"), strs("order")))
+}
 
 struct Dump {
     dir: PathBuf,
@@ -299,6 +351,38 @@ fn main() -> Result<()> {
         })
         .collect();
     d.write("main-effort", &main)?;
+    // テストの結果の要約(scripts/parity-lib.ts の TESTS_CASES と同じ並び)
+    let cases: Vec<atlas_core::types::SessionTests> = serde_json::from_str(TESTS_CASES)?;
+    d.write("tests-summary", &cases.iter().map(tests_summary).collect::<Vec<_>>())?;
+    // 課題 × 条件の表(scripts/parity-lib.ts と同じ形で書く)
+    {
+        use atlas_report::conditions::{compare_names, condition_table, parse_condition_tag};
+        let (cs, cg, names, mut order) = condition_cases()?;
+        let t = condition_table(&cs, &cg);
+        order.sort_by(|a, b| compare_names(a, b));
+        d.write(
+            "conditions",
+            &json!({
+                "names": names.iter().map(|n| parse_condition_tag(n)).collect::<Vec<_>>(),
+                "order": order,
+                "table": {
+                    "tasks": t.tasks,
+                    "conditions": t.conditions,
+                    "rows": t.rows,
+                    "pooled": t.pooled,
+                    "matchedTags": t.matched_tags,
+                    "counted": t.counted,
+                    "members": t.members.iter().map(|m| json!([m.id, m.task, m.condition])).collect::<Vec<_>>(),
+                    "unmatched": t.unmatched,
+                    "ambiguous": t.ambiguous,
+                    "people": t.people,
+                    "sharedRows": t.shared_rows,
+                    "unevenTasks": t.uneven_tasks,
+                    "hasTests": t.has_tests,
+                },
+            }),
+        )?;
+    }
     let x = exec_aggregate(&plain_refs);
     let with = |a: Vec<String>, extra: &[&str]| -> Vec<String> { a.into_iter().chain(extra.iter().map(|s| s.to_string())).collect() };
     let cats: Vec<Option<&str>> = [None, Some(""), Some("feature"), Some("docs"), Some("x")].into_iter().chain(plain.iter().map(|s| s.judgment.as_ref().and_then(|j| j.task_category.as_deref()))).collect();

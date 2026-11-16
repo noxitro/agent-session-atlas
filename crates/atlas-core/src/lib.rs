@@ -28,6 +28,7 @@ pub mod secrets;
 pub mod snapshot;
 pub mod sqlite;
 pub mod tables;
+pub mod test_results;
 pub mod text;
 pub mod tool_failure;
 pub mod turns;

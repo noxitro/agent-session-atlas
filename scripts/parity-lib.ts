@@ -50,13 +50,14 @@ import { isSafeFileName, isSafeMemoId, memoExcerpt, memoSummary } from '../packa
 import { packSummary } from '../packages/report/src/lib/pack.ts';
 import { shortProjectLabel } from '../packages/report/src/lib/project-label.ts';
 import { aggregateRetention, retentionByPhase, retentionItem, UNKNOWN_PHASE, type TurnStart } from '../packages/report/src/lib/retention.ts';
-import { detailFileName, summarize } from '../packages/report/src/lib/summarize.ts';
+import { detailFileName, summarize, testsSummary } from '../packages/report/src/lib/summarize.ts';
+import { compareNames, conditionTable, parseConditionTag, type ConditionGroup, type ConditionSession } from '../packages/report/src/lib/conditions.ts';
 import { turnAggregate } from '../packages/report/src/lib/turns.ts';
 import { parseVerdicts, verdictAggregate, verdictTuples } from '../packages/report/src/lib/verdicts.ts';
 import { REPORT_DATA_VERSION } from '../packages/report/src/lib/types.ts';
 import { mainEffortOf } from '../packages/report/src/lib/main-effort.ts';
 import { PHASES, sessionTurns } from '../packages/report/src/shared/turns.ts';
-import type { SessionRecord } from '../packages/report/src/shared/types.ts';
+import type { SessionRecord, SessionTests } from '../packages/report/src/shared/types.ts';
 import { cmpJson, firstTextDiff } from './parity-common.ts';
 
 /** vcs-retention.json(atlas vcs の出力)。突き合わせに使う項目だけ */
@@ -126,6 +127,18 @@ function turnStarts(r: SessionRecord): TurnStart[] {
 /** 数の表示の確かめに使う値(Rust 側と同じ並び) */
 const NUMBERS = [0, -0, 0.5, 1.005, 0.125, 2.5, -2.5, 1.45, 0.015, 8.345, 1234567.891, 1e21, 2 ** 70, 999.995, 1e-7, 12345, 99999, 1e8 + 5, -123456789, 59_499, 59_500, 3_599_000, 172_800_000, 86_399_999, 850, 1234, 125_000, 7_200_000, Infinity, -Infinity, NaN];
 const MEMO_TEXTS = ['\n\n# 見出し\n本文', '- [ ] **やること** と [リンク](x)', '```\ncode\n```\n\nあと', '![図](a/b.png)', '   \n\n', 'session_id の調査、2*3、~/.copilot', '---\ntitle: x\n---\n\n本文', '---\n\n本文', '> 引用 `code` ~~消し~~ __強調__', '1. 番号付き\n2. 次', '***\n\n___\n本文\r\n次', `${'あ'.repeat(100)}\n![a](x/1.png) ![b](x/2.png)`];
+/** テストの結果の要約を確かめる形(実行なし / 未達 / 1 回目で通る / 通った後に不合格で AI 使用量の記録なし / 番号が実行の数を外れている / 番号が 0 / 番号が負)。crates/atlas-report/examples/libdump.rs の TESTS_CASES と同じ中身 */
+const TESTS_CASES = `[
+  { "runs": [], "invalid": 1, "duplicates": 0, "dropped": 0, "firstPass": null },
+  { "runs": [{ "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 1000, "nanoAiu": 1500000000, "failing": 1, "results": [] }, { "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 2000, "nanoAiu": 2500000000, "failing": 1, "results": [] }], "invalid": 0, "duplicates": 0, "dropped": 0, "firstPass": null },
+  { "runs": [{ "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 1500, "nanoAiu": 2500000000, "failing": 0, "results": [] }], "invalid": 0, "duplicates": 0, "dropped": 0, "firstPass": 1 },
+  { "runs": [{ "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 1000, "nanoAiu": null, "failing": 1, "results": [] }, { "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 60000.5, "nanoAiu": null, "failing": 0, "results": [] }, { "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 90000, "nanoAiu": null, "failing": 2, "results": [] }], "invalid": 0, "duplicates": 2, "dropped": 0, "firstPass": 2 },
+  { "runs": [{ "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 1000, "nanoAiu": 1, "failing": 0, "results": [] }], "invalid": 0, "duplicates": 0, "dropped": 0, "firstPass": 5 },
+  { "runs": [{ "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 1000, "nanoAiu": 1, "failing": 0, "results": [] }], "invalid": 0, "duplicates": 0, "dropped": 0, "firstPass": 0 },
+  { "runs": [{ "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 1000, "nanoAiu": 1, "failing": 0, "results": [] }], "invalid": 0, "duplicates": 0, "dropped": 0, "firstPass": -1 }
+]`;
+/** 課題 × 条件の表を確かめる形(セッション・タスクタグ・名前の読み取り・並び)。crates/atlas-report/examples/libdump.rs の CONDITION_CASES と同じ中身 */
+const CONDITION_CASES = `{"sessions":[{"id":"s01","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":1,"firstPass":1,"lastFailing":0,"passActiveMs":60000.5,"passNanoAiu":1500000000.0,"lastNanoAiu":2000000000.0},"person":null},{"id":"s02","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":2,"firstPass":2,"lastFailing":0,"passActiveMs":120001.0,"passNanoAiu":3000000000.0,"lastNanoAiu":4000000000.0},"person":null},{"id":"s03","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":3,"firstPass":3,"lastFailing":0,"passActiveMs":180001.5,"passNanoAiu":4500000000.0,"lastNanoAiu":6000000000.0},"person":null},{"id":"s04","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":2,"firstPass":1,"lastFailing":1,"passActiveMs":60000.5,"passNanoAiu":1500000000.0,"lastNanoAiu":2000000000.0},"person":null},{"id":"s05","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":3,"firstPass":null,"lastFailing":2,"passActiveMs":null,"passNanoAiu":null,"lastNanoAiu":7000000000.0},"person":null},{"id":"s06","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":3,"firstPass":null,"lastFailing":2,"passActiveMs":null,"passNanoAiu":null,"lastNanoAiu":null},"person":null},{"id":"s07","activeMs":null,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":null},"tests":{"runs":2,"firstPass":2,"lastFailing":0,"passActiveMs":120001.0,"passNanoAiu":3000000000.0,"lastNanoAiu":4000000000.0},"person":null},{"id":"s08","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":4,"firstPass":4,"lastFailing":0,"passActiveMs":240002.0,"passNanoAiu":null,"lastNanoAiu":null},"person":null},{"id":"s09","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"person":null},{"id":"s10","activeMs":600000,"tools":{"total":0},"friction":{"toolFailures":0},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":1,"firstPass":1,"lastFailing":0,"passActiveMs":60000.5,"passNanoAiu":1500000000.0,"lastNanoAiu":2000000000.0},"person":null},{"id":"s11","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":2,"firstPass":2,"lastFailing":0,"passActiveMs":120001.0,"passNanoAiu":3000000000.0,"lastNanoAiu":4000000000.0},"person":"zz-a"},{"id":"s12","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":3,"firstPass":3,"lastFailing":0,"passActiveMs":180001.5,"passNanoAiu":4500000000.0,"lastNanoAiu":6000000000.0},"person":"zz-b"},{"id":"s13","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":3,"firstPass":null,"lastFailing":2,"passActiveMs":null,"passNanoAiu":null,"lastNanoAiu":7000000000.0},"person":"zz-b"},{"id":"s14","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":1,"firstPass":1,"lastFailing":0,"passActiveMs":60000.5,"passNanoAiu":1500000000.0,"lastNanoAiu":2000000000.0},"person":null},{"id":"s15","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":1,"firstPass":1,"lastFailing":0,"passActiveMs":60000.5,"passNanoAiu":1500000000.0,"lastNanoAiu":2000000000.0},"person":null},{"id":"s16","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":3,"firstPass":null,"lastFailing":2,"passActiveMs":null,"passNanoAiu":null,"lastNanoAiu":7000000000.0},"person":null},{"id":"s17","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":2,"firstPass":2,"lastFailing":0,"passActiveMs":120001.0,"passNanoAiu":3000000000.0,"lastNanoAiu":4000000000.0},"person":null},{"id":"s18","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":2,"firstPass":2,"lastFailing":0,"passActiveMs":120001.0,"passNanoAiu":3000000000.0,"lastNanoAiu":4000000000.0},"person":null}],"groups":[{"name":"t10__wiki__1","presentIds":["s01","s02","s03"]},{"name":"t10__wiki__2","presentIds":["s03","s04","s05","s06"]},{"name":"t2__wiki","presentIds":["s07","s08","s09"]},{"name":"t2__0-plain","presentIds":["s10","s14","s15","s16","s17"]},{"name":"zz-a / t2__coderef__1","tag":"t2__coderef__1","presentIds":["s11"]},{"name":"zz-b / t2__coderef__1","tag":"t2__coderef__1","presentIds":["s12","s13"]},{"name":"描画__wiki","presentIds":["s18"]},{"name":"描画__0-plain","presentIds":["s18"]},{"name":"zz-misc","presentIds":["s09"]},{"name":"x__y__v2","presentIds":["s09"]},{"name":"gone__wiki","presentIds":["not-in-records"]}],"names":["render__wiki","render__wiki__1"," 描画 __ wiki あり __ 007 ","Player-Weapon__code_ref__12","render","render__","__wiki","render____1","a__b__c__1","render__wiki__v2","render__wiki__１","a___b","a__b_",""],"order":["c10","c2","B","a","c1","0-plain","wiki","Wiki","描画","あ","ア","t10","t2","x_1","x-1","c01","c001","c1","c１０","v1.10","v1.9","v1.9a","Z","z"]}`;
 const FILE_NAMES = ['メモ.md', 'a b.txt', 'x', '', '.x', '..', 'a/b', 'x.', 'x ', 'CON', 'nul.log', 'Com1', 'a:b', 'abc-1_2.x', 'あ'];
 
 async function dumpTs(outDir: string): Promise<void> {
@@ -288,6 +301,32 @@ function dumpWith(
       return [s.id, m.kind, m.kind === 'decided' ? m.model : '', m.kind === 'decided' ? m.effort : ''];
     }),
   );
+  // テストの結果の要約(架空の fixture には印つきの行が無いので、決まった形を両側で同じに読む。Rust は examples/libdump.rs の TESTS_CASES)
+  write('tests-summary', (JSON.parse(TESTS_CASES) as SessionTests[]).map(testsSummary));
+  // 課題 × 条件の表(画面は TS、表(conditions.csv)は Rust で計算する。行・まとめた行・数え方を突き合わせる。lookalikes は画面だけ)
+  {
+    const c = JSON.parse(CONDITION_CASES) as { sessions: ConditionSession[]; groups: ConditionGroup[]; names: string[]; order: string[] };
+    const t = conditionTable(c.sessions, c.groups);
+    write('conditions', {
+      names: c.names.map(parseConditionTag),
+      order: [...c.order].sort(compareNames),
+      table: {
+        tasks: t.tasks,
+        conditions: t.conditions,
+        rows: t.rows,
+        pooled: t.pooled,
+        matchedTags: t.matchedTags,
+        counted: t.counted,
+        members: t.members.map((m) => [m.session.id, m.task, m.condition]),
+        unmatched: t.unmatched,
+        ambiguous: t.ambiguous,
+        people: t.people,
+        sharedRows: t.sharedRows,
+        unevenTasks: t.unevenTasks,
+        hasTests: t.hasTests,
+      },
+    });
+  }
   write('labels', {
     modes: [...all2.modes.rows.map((r) => r.key), '(unknown)', 'x'].map(modeLabel),
     initiators: [...all2.initiators.rows.map((r) => r.key), '(unknown)', 'x'].map(initiatorLabel),

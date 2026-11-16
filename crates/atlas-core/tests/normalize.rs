@@ -547,3 +547,57 @@ fn lone_surrogates_survive_truncation() {
     let json = atlas_core::json::to_js_string(&r.first_user_message).unwrap();
     assert!(json.ends_with("a\\ud83d\""), "{}", &json[json.len() - 20..]);
 }
+
+// ---------- テストの結果(印つきの 1 行 JSON) ----------
+
+/// ツールの結果の、行頭に印がある 1 行 JSON を、呼び出しごと・依頼の番号つきで持つ。印の行が無ければキーを置かない。
+/// 実行ごとに、そこまでの実働と AI 使用量の累計、まだ通っていないテストの数を持ち、最初に全部通った実行の番号を残す
+#[test]
+fn test_results_from_tool_output() {
+    let line = |name: &str, passed: bool, n: i64| format!(r#"ATLAS_TEST_RESULT {{"v":1,"name":"{name}","passed":{passed},"counts":{{"assertFailures":{n}}}}}"#);
+    let start = |id: &str, name: &str, ts: &str| ev("tool.execution_start", json!({"toolCallId": id, "toolName": name, "arguments": {"command": "./run-tests"}}), ts);
+    let r = run(vec![
+        ev("user.message", json!({"content": "実装して"}), &t(0)),
+        ur(json!({}), &t(1), json!({})),
+        start("c1", "powershell", &t(1)),
+        ev("tool.execution_complete", json!({"toolCallId": "c1", "success": true, "result": {"content": format!("{}\n{}\n", line("a", false, 2), line("b", true, 0))}}), &t(2)),
+        ev("user.message", json!({"content": "直して"}), &t(3)),
+        ur(json!({}), &t(4), json!({"agentId": "a1"})),
+        // サブエージェントが走らせたテスト
+        ev_x("tool.execution_start", json!({"toolCallId": "c2", "toolName": "bash", "arguments": {"command": "./run-tests"}}), &t(4), json!({"agentId": "a1"})),
+        ev_x("tool.execution_complete", json!({"toolCallId": "c2", "success": true, "result": {"content": line("a", true, 0)}}), &t(5), json!({"agentId": "a1"})),
+        // テストのソースを読んだだけ(行頭に印が無い)は数えない
+        start("c3", "view", &t(6)),
+        ev("tool.execution_complete", json!({"toolCallId": "c3", "success": true, "result": {"content": "1. print(\"ATLAS_TEST_RESULT {}\")"}}), &t(7)),
+        // 最後のテストの後のリクエストは、どの実行の累計にも入らない
+        ur(json!({}), &t(8), json!({})),
+    ]);
+    let tests = r.tests.as_ref().unwrap();
+    assert_eq!(
+        v(tests),
+        json!({
+            "runs": [
+                {"at": t(2), "turn": 1, "tool": "powershell", "toolCallId": "c1", "activeMs": 2000.0, "nanoAiu": 1000.0, "failing": 1, "results": [
+                    {"name": "a", "passed": false, "counts": {"assertFailures": 2.0}},
+                    {"name": "b", "passed": true, "counts": {"assertFailures": 0.0}},
+                ]},
+                {"at": t(5), "turn": 2, "tool": "bash", "toolCallId": "c2", "subagent": true, "activeMs": 5000.0, "nanoAiu": 2000.0, "failing": 0, "results": [
+                    {"name": "a", "passed": true, "counts": {"assertFailures": 0.0}},
+                ]},
+            ],
+            "invalid": 0, "duplicates": 0, "dropped": 0, "firstPass": 2,
+        })
+    );
+    // リクエストごとの AI 使用量の記録が無いセッションは、累計を出さない(0 にしない)
+    let no_usage = run(vec![
+        ev("user.message", json!({"content": "実装して"}), &t(0)),
+        start("c1", "powershell", &t(1)),
+        ev("tool.execution_complete", json!({"toolCallId": "c1", "success": true, "result": {"content": line("a", false, 1)}}), &t(2)),
+    ]);
+    let nt = no_usage.tests.as_ref().unwrap();
+    assert_eq!((nt.runs[0].nano_aiu, nt.runs[0].failing, nt.first_pass), (None, 1, None));
+    assert_eq!(v(nt)["runs"][0]["nanoAiu"], json!(null));
+    let none = run(vec![ev("user.message", json!({"content": "x"}), &t(0))]);
+    assert_eq!(none.tests, None);
+    assert!(v(&none).get("tests").is_none());
+}

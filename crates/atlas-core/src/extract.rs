@@ -781,6 +781,7 @@ pub fn extract(snapshot_dir: &Path, opts: &ExtractOptions<'_>) -> Result<Session
             layout: layout.map(|l| if l == SourceLayout::Flat { UploadLayout::Flat } else { UploadLayout::Merged }),
             folders: layout.and(merged).map(|m| m.folders.clone()),
             uploads: layout.and(manifest.as_ref().and_then(|m| m.uploads.clone())),
+            wikis: Some(opts.wikis.len() as i64),
         },
         desktop: Some(desktop.as_ref().map(|d| SessionsDesktop {
             read_at: d.read_at.clone(),

@@ -22,7 +22,7 @@ use crate::group_upload::{check_upload, upload_dir, upload_group, uploaded_at, G
 use crate::jobs::{acquire_out_lock, parse_job_request, running_job_in, FullCtx, JobRunner, JobRunnerOptions, RunFullFn, SpawnFn};
 use atlas_core::js;
 use atlas_core::nodepath::platform;
-use atlas_report::groups::{add_ids, member_groups, remove_ids, unique_ids, MemberSource, SessionGroup};
+use atlas_report::groups::{add_ids, member_groups_keyed, remove_ids, unique_ids, MemberGroup, MemberSource, SessionGroup};
 use atlas_report::groups_io::{load_groups, load_groups_for_write, save_groups};
 use atlas_report::memo::{is_safe_memo_id, memo_summary};
 use atlas_report::memo_io::{image_ext, load_memo_index, memos_dir, read_memo, render_memo, save_memo, save_memo_image, MemoFile, MEMO_IMAGE_LIMIT};
@@ -285,7 +285,7 @@ struct SessionEntry {
 struct SessionIndex {
     ids: IndexMap<String, SessionEntry>,
     layout: Option<String>,
-    members: Vec<SessionGroup>,
+    members: Vec<MemberGroup>,
 }
 
 struct LastUpload {
@@ -1036,7 +1036,7 @@ impl Server {
             let tags: Vec<String> = r.get("uploadTags").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
             owners.push((id, r.get("person").and_then(Value::as_str).map(str::to_string), tags));
         }
-        let members = member_groups(&owners.iter().map(|(id, person, tags)| MemberSource { id, person: person.as_deref(), upload_tags: tags }).collect::<Vec<_>>());
+        let members = member_groups_keyed(&owners.iter().map(|(id, person, tags)| MemberSource { id, person: person.as_deref(), upload_tags: tags }).collect::<Vec<_>>());
         let layout = file.get("source").and_then(|s| s.get("layout")).and_then(Value::as_str).map(str::to_string);
         let ix = Arc::new(SessionIndex { ids, layout, members });
         *lock(&self.sessions_cache) = Some((mt, ix.clone()));
@@ -1045,7 +1045,7 @@ impl Server {
 
     /// 読むだけの画面か(build と同じ is_read_only_view)と、送った人のタスクタグ。sessions.json を読めないとき(集計の途中など)は前に読んだものを使う。
     /// atlas open が立てたサーバ(reports.current)は、まだ集計していなくても読むだけ
-    fn view_state(&self) -> (bool, Vec<SessionGroup>) {
+    fn view_state(&self) -> (bool, Vec<MemberGroup>) {
         let _ = self.session_index();
         let cache = lock(&self.sessions_cache).as_ref().map(|(_, ix)| ix.clone());
         let read_only = self.current.is_some() || is_read_only_view(&self.out_s, cache.as_ref().and_then(|c| c.layout.as_deref()));

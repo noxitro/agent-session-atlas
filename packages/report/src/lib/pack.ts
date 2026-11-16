@@ -10,7 +10,7 @@ type Plain = Record<string, unknown>;
 /**
  * 項目ごとの既定値。入れ子のオブジェクトは項目ごとに比べる(一部だけ既定値と違えば、違う項目だけ残す)。
  * 中身の決まっていない辞書(byName など)は {} を既定値にし、空のときだけ落とす。
- * 省略可能な項目(turnRows・turnVerdicts・memo)は既定値を持たない(無いことに意味があるため)
+ * 省略可能な項目(turnRows・tests・turnVerdicts・memo)は既定値を持たない(無いことに意味があるため)
  */
 const DEFAULTS: Plain = {
   client: null,
@@ -37,7 +37,7 @@ const DEFAULTS: Plain = {
   hooks: { total: 0, byType: {} },
   instructions: {},
   lines: { added: 0, removed: 0, source: 'none' },
-  wiki: { indexReads: 0, pageReads: 0, skillCalls: 0, writes: 0 },
+  wiki: { indexReads: 0, pageReads: 0, skillCalls: 0, writes: 0, otherCalls: 0 },
   friction: { compactions: 0, aborts: 0, errors: 0, permissionRequests: 0, askUser: 0, modelChanges: 0, modeChanges: 0, toolFailures: 0, subagentFailures: 0 },
   skillChars: {},
   instructionVersions: [],

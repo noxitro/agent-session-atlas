@@ -18,8 +18,10 @@ GitHub Copilot のセッションログ(`%USERPROFILE%\.copilot`)を手元で集
 - セッションごとの詳細ページ・経過の記録(Markdown)・自分用のメモ
 - 推定人手工数(任意。LLM に判定させたときだけ)
 - AI が作った変更が、その後の VCS(Git / SVN / Perforce)のファイルに残っているか。VCS は読むだけで、LLM は使いません([docs/outputs.md](docs/outputs.md#ai-の変更の残存vcs-の照合))
-- 2 つの条件(タスクタグ・期間・プロジェクト)の並べ比べ
-- 表は CSV に加えて、同じ中身の SQLite(`out/tables/atlas.sqlite`)でも書きます
+- 2 つの条件(タスクタグ・期間・プロジェクト・工程・推論強度)の並べ比べ
+- 同じ課題を条件を変えて何度も実行したときの、課題 × 条件ごとの表(回数・最後に全部通った割合・最初に全部通るまでの実行の数と AI 使用量・ツールの失敗率・実働)。タスクタグの名前を `課題__条件` にするだけで並びます。条件が実際に効いたか(wiki ありの条件で wiki を読んだか、など)を、使わなかったセッションの一覧で確かめられます([docs/screen.md](docs/screen.md#画面の見方))
+- テストの合否と件数、1 セッションの中の推移(何回目の実行で全部通ったか、そこまでの実働と AI 使用量、最後まで通らなかった「未達」)。テストの実行ファイルが印つきの 1 行 JSON を標準出力に書いたときだけ([docs/outputs.md](docs/outputs.md#テストの結果印つきの-1-行-json))
+- 表は CSV に加えて、同じ中身の SQLite(`out/tables/atlas.sqlite`)でも書きます。テストの実行・結果・件数と、課題 × 条件の表も入ります
 
 ## 使い方
 
@@ -319,7 +321,7 @@ Windows 以外では登録できません。cron などから `bin/atlas upload-
 |---|---|
 | [docs/screen.md](docs/screen.md) | 画面の見方(各欄の意味)、画面からの操作、タスクタグ、セッションのメモ |
 | [docs/cli.md](docs/cli.md) | コマンドとオプションの全一覧、snapshot / extract が読むもの、wiki の指定 |
-| [docs/outputs.md](docs/outputs.md) | セッション記録(Markdown)、解析用の完全出力、失敗の台帳、改善点の分析、スキルの下書き |
+| [docs/outputs.md](docs/outputs.md) | セッション記録(Markdown)、表(CSV)、テストの結果の取り込み、AI の変更の残存、解析用の完全出力、失敗の台帳、改善点の分析、スキルの下書き |
 | [docs/judge.md](docs/judge.md) | 推定人手工数の判定の回し方(評価バンドル、外部の LLM、バックエンドと費用。自分の API キーのモデル(BYOK)をいつも使うときは、`atlas.config.json` の `judgeModel`) |
 | [docs/development.md](docs/development.md) | 開発・テスト・全ページの網羅チェック・CI・fixtures・元データを書き換えない仕組み |
 | [docs/PLAN.md](docs/PLAN.md) | 計画と、各フェーズの設計判断 |

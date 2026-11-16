@@ -149,6 +149,8 @@ pub struct BuildInput<'a> {
     /// sessions.json の総件数(フィルタ前)
     pub total_sessions_in_source: usize,
     pub source: Option<ReportSource>,
+    /// 参照を数えた llm-wiki の vault の数(sessions.json の source.wikis。古い集計では None)
+    pub wiki_vaults: Option<i64>,
     pub warnings: BuildWarnings,
     pub judgments: Option<&'a JudgmentsIndex>,
     /// 段階 2: 依頼ごとの LLM 判定
@@ -156,6 +158,8 @@ pub struct BuildInput<'a> {
     /// AI の変更がその後の VCS のファイルに残っているか
     pub retention: Option<&'a VcsRetentionFile>,
     pub groups: Vec<SessionGroup>,
+    /// 送り先から集計したときの、グループごとの元のタグ(groups と同じ並び)。手元のタスクタグでは None
+    pub group_tags: Option<Vec<String>>,
     /// Phase 13: メモの置き場(<notes-dir>/memos)
     pub memos_dir: Option<PathBuf>,
     /// 送り先から集計したとき: 送った人のメモを読む、写したセッションのフォルダ(<snapshot>/session-state)。あれば memos_dir より優先する
@@ -276,6 +280,16 @@ struct TurnJudgmentsOut {
 }
 
 #[derive(Serialize)]
+struct GroupOut<'a> {
+    name: &'a str,
+    note: &'a str,
+    ids: &'a [String],
+    /// 送り先から集計したグループの、元のタグ(名前は「<人> / <タグ>」なので別に持つ)。手元のタスクタグには無い
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tag: Option<&'a str>,
+}
+
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct InsightsOut {
     meta: JsMap<VersionMeta>,
@@ -303,6 +317,9 @@ struct ReportData<'a> {
     source: Option<&'a ReportSource>,
     #[serde(skip_serializing_if = "Option::is_none")]
     read_only: Option<bool>,
+    /// 参照を数えた llm-wiki の vault の数。0 なら wiki の参照は数えていない(古い集計では無い)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wiki_vaults: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     atlas_builds: Option<AtlasBuildsOut>,
     metrics: &'a Value,
@@ -313,7 +330,7 @@ struct ReportData<'a> {
     installed: Option<&'a InstalledView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     installed_by_person: Option<JsMap<InstalledView>>,
-    groups: &'a [SessionGroup],
+    groups: Vec<GroupOut<'a>>,
     library: bool,
     /// 失敗の台帳の集計のページ(failures.html)を書いたか
     failures: bool,
@@ -445,6 +462,7 @@ pub fn build_report(input: BuildInput<'_>) -> Result<BuildResult> {
         total_sessions_in_source: input.total_sessions_in_source,
         source: input.source.as_ref(),
         read_only: input.read_only.then_some(true),
+        wiki_vaults: input.wiki_vaults,
         atlas_builds,
         metrics: &input.metrics,
         sessions: packed,
@@ -466,7 +484,12 @@ pub fn build_report(input: BuildInput<'_>) -> Result<BuildResult> {
         installed: installed.as_ref(),
         // 人に絞ったときに、その人のインストール済みの skill で「未使用」を出す
         installed_by_person: input.installed_by_person.map(|m| JsMap(m.js_entries().into_iter().map(|(k, v)| (k.clone(), installed_view(v))).collect())),
-        groups: &input.groups,
+        groups: input
+            .groups
+            .iter()
+            .enumerate()
+            .map(|(i, g)| GroupOut { name: &g.name, note: &g.note, ids: &g.ids, tag: input.group_tags.as_ref().and_then(|t| t.get(i)).map(String::as_str) })
+            .collect(),
         library: library_on,
         failures: true,
         insights: InsightsOut { meta: meta_for_page.clone(), candidates: embedded_candidates(&candidates), candidate_total: candidates.len(), computed_over: input.sessions.len() },
