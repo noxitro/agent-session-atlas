@@ -3,7 +3,7 @@
 // LF だけの改行だと cmd が goto のラベルを読めずに失敗する(a3527a5 で atlas-export.bat に実際に起きた)。
 // BOM があると先頭の @echo off がコマンド名として読まれる。.gitattributes の eol=crlf が外れたらここで止める。
 import { type ChildProcess, execFileSync, spawn, spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -217,7 +217,8 @@ describe('scripts/ensure-atlas.ps1(前の版の atlas.exe から移るための�
     let tmp = '';
     let wrapper = '';
     beforeAll(() => {
-      tmp = mkdtempSync(join(tmpdir(), 'atlas-ensure-'));
+      // TEMP が 8.3 の短い名前(RUNNER~1 のような形)でも、スクリプトは自分の場所を長い名前で見るので、長い名前にそろえる
+      tmp = realpathSync.native(mkdtempSync(join(tmpdir(), 'atlas-ensure-')));
       wrapper = join(tmp, 'wrapper.ps1');
       writeFileSync(
         wrapper,
