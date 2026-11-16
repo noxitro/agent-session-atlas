@@ -848,6 +848,30 @@ fn run_that_finds_no_sessions_keeps_copies_and_their_records() {
 }
 
 #[test]
+fn first_record_wins_when_an_id_is_recorded_twice() {
+    // 消さなかった複製の記録に、同じ id が 2 回あっても(atlas は書かないが、手で書き換えた manifest など)、先の記録の場所を確かめる
+    let base = work();
+    let root = base.path().join("logs");
+    let dest = base.path().join("out").join("snapshot");
+    session(&root.join("person-a").join("proj-a").join("s1"), &[]);
+    session(&root.join("person-b").join("proj-b").join("d1"), &[]);
+    snap(&root, &dest).unwrap();
+    // 直下にフォルダが紛れて形が変わった回の manifest に、d1 の記録を 2 つ書く(先は今もある場所、後は無い場所)
+    session(&root.join("stray"), &[]);
+    snap(&root, &dest).unwrap();
+    let file = dest.join(SNAPSHOT_MANIFEST);
+    let mut m: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+    let kept_list = m["extras"]["goneKept"].as_array_mut().unwrap();
+    assert!(kept_list.iter().any(|k| k["id"] == "d1" && k["folder"] == "person-b/proj-b"));
+    kept_list.push(json!({ "id": "d1", "reason": KEPT_PRESENT_REASON, "folder": "person-a/proj-a" }));
+    fs::write(&file, m.to_string()).unwrap();
+    let again = snap(&root, &dest).unwrap();
+    assert_eq!(again.sessions.removed, None);
+    assert!(dest.join("session-state").join("d1").exists());
+    assert_eq!(kept_folders(&again), vec![("d1".to_string(), Some("person-b/proj-b".to_string())), ("s1".to_string(), Some("person-a/proj-a".to_string()))]);
+}
+
+#[test]
 fn root_record_is_not_written_as_counted_folder() {
     // 直下にセッションが並ぶ形だった場所が、人ごとのフォルダが並ぶ形に変わった。直下にフォルダだけが残ったセッション(中身は無い)の複製は、
     // 「元のルートにあった」という記録で持ち越す。その記録は、数えたフォルダ(人ごとの内訳に使う merged.owners)には書かない
@@ -870,6 +894,28 @@ fn root_record_is_not_written_as_counted_folder() {
         assert_eq!(owners(&m), pairs(&[("s1", "person-a/proj-a")]), "{round} 回目");
         assert_eq!(names(&dest.join("session-state")), ["p9", "s1"], "{round} 回目");
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn copy_with_an_open_file_is_removed_on_unix() {
+    // Linux・macOS では、複製の中のファイルをほかのプログラムが開いていても、フォルダごと動かして消せる(消せずに残るのは Windows だけ)
+    let base = work();
+    let proj = base.path().join("proj");
+    let dest = base.path().join("out").join("snapshot");
+    let state = dest.join("session-state");
+    for id in ["g1", "keep"] {
+        session(&proj.join(id), &[]);
+    }
+    snap(&proj, &dest).unwrap();
+    fs::remove_dir_all(proj.join("g1")).unwrap();
+    let held = fs::File::open(state.join("g1").join("events.jsonl")).unwrap();
+    let m = snap(&proj, &dest).unwrap();
+    assert_eq!((m.sessions.removed, kept(&m)), (Some(1), vec![]));
+    assert_eq!(names(&state), ["keep"]);
+    // 開かれていても、退けた場所ごと消える
+    assert!(!dest.join(SNAPSHOT_REMOVED_DIR).exists());
+    drop(held);
 }
 
 #[cfg(windows)]

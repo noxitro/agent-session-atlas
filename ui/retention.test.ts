@@ -3,6 +3,7 @@
 //  a. 全体(照合できた 6 セッション)は割合と帯を出す。プロジェクトごとの表は、5 セッションの行に割合、1 セッションの行は件数だけ
 //  b. 1 セッションのプロジェクトに絞ると、割合と帯を出さずに件数だけ出し、そのことを書く
 //  c. 「比べる」の工程どうしで、その工程に照合できたまとまりのあるセッションの数の行が出て、足りる側だけ残存の割合が出る
+// repo-b のセッションは、最初の依頼より前に編集している(工程が決まらないまとまり)。工程ごとの表に、照合できたセッションが 1 件だけの行ができる
 // どの画面でもページ内の例外とコンソールのエラーが無いこと。ログ・パス・本文はすべて架空のもの
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
@@ -28,20 +29,23 @@ function git(repo: string, args: string[]): string {
   }).trim();
 }
 
-/** 1 セッション分のログ(依頼 → 編集 1 回 → 応答)。start は開始の分(セッションどうしの時間を重ねない) */
-async function writeSession(id: string, repo: string, head: string, name: string, line: string, start: number): Promise<void> {
+/** 1 セッション分のログ(依頼 → 編集 1 回 → 応答)。start は開始の分(セッションどうしの時間を重ねない)。editFirst なら、編集を最初の依頼より前に置く */
+async function writeSession(id: string, repo: string, head: string, name: string, line: string, start: number, editFirst = false): Promise<void> {
   const dir = join(HOME, 'session-state', id);
   await mkdir(dir, { recursive: true });
   const file = join(repo, name);
   const p = file.replace(/\\/g, '/');
   const diff = [`diff --git a/${p} b/${p}`, `--- a/${p}`, `+++ b/${p}`, '@@ -1,1 +1,2 @@', ' base', `+${line}`, ''].join('\n');
+  const ask = { type: 'user.message', timestamp: at(start + (editFirst ? 3 : 1)), data: { content: '関数を足して' } };
+  const edit = [
+    { type: 'tool.execution_start', timestamp: at(start + (editFirst ? 1 : 2)), data: { toolCallId: 'c1', toolName: 'edit', arguments: { path: file, old_str: 'base', new_str: `base\n${line}` } } },
+    { type: 'tool.execution_complete', timestamp: at(start + (editFirst ? 1 : 2)), data: { toolCallId: 'c1', success: true, result: { content: 'ok', detailedContent: diff } } },
+  ];
   const ev = [
     { type: 'session.start', timestamp: at(start), data: { sessionId: id, context: { cwd: repo, gitRoot: repo, branch: 'main', headCommit: head } } },
-    { type: 'user.message', timestamp: at(start + 1), data: { content: '関数を足して' } },
-    { type: 'tool.execution_start', timestamp: at(start + 2), data: { toolCallId: 'c1', toolName: 'edit', arguments: { path: file, old_str: 'base', new_str: `base\n${line}` } } },
-    { type: 'tool.execution_complete', timestamp: at(start + 2), data: { toolCallId: 'c1', success: true, result: { content: 'ok', detailedContent: diff } } },
-    { type: 'assistant.message', timestamp: at(start + 3), data: { content: '足しました' } },
-    { type: 'assistant.turn_end', timestamp: at(start + 4), data: {} },
+    ...(editFirst ? [...edit, ask] : [ask, ...edit]),
+    { type: 'assistant.message', timestamp: at(start + 4), data: { content: '足しました' } },
+    { type: 'assistant.turn_end', timestamp: at(start + 5), data: {} },
   ];
   await writeFile(join(dir, 'events.jsonl'), ev.map((e) => JSON.stringify(e)).join('\n') + '\n');
   await writeFile(join(dir, 'workspace.yaml'), `id: ${id}\ncwd: ${JSON.stringify(repo)}\n`);
@@ -83,7 +87,7 @@ describe('AI の変更の残存: 割合を出す条件', () => {
     }
     const lineB = 'export const b1 = 1;';
     const idB = '00000000-0000-4000-8000-000000190099';
-    await writeSession(idB, repoB, headB, 'g.ts', lineB, 10 + N * 10);
+    await writeSession(idB, repoB, headB, 'g.ts', lineB, 10 + N * 10, true);
     await writeFile(join(repoB, 'g.ts'), `base\n${lineB}\n`);
 
     const r = spawnSync(...cliCommand(['all', '--home', HOME, '--out', out, '--notes-dir', notes]), { cwd: ROOT, encoding: 'utf8', timeout: 120_000 });
@@ -124,10 +128,16 @@ describe('AI の変更の残存: 割合を出す条件', () => {
     expect(await section().locator('.stack').count()).toBe(1);
     expect(await section().locator('#ret-legend li').first().textContent()).toContain(`(${percent(N, N + 1)})`);
     expect(await section().textContent()).not.toContain('件未満なので');
-    // 工程ごと: 照合できたセッションの数を並べ、割合を出す
+    // 工程ごと: 照合できたセッションの数を並べ、足りる行は割合を出す
     const phase = cells('ret-phase-h', '実装');
-    expect(await phase.nth(0).textContent()).toBe(String(N + 1));
-    expect(await phase.nth(1).textContent()).toBe(`${N}(${percent(N, N + 1)})`);
+    expect(await phase.nth(0).textContent()).toBe(String(N));
+    expect(await phase.nth(1).textContent()).toBe(`${N - 1}(${percent(N - 1, N)})`);
+    expect(await phase.nth(3).textContent()).toBe(`1(${percent(1, N)})`);
+    // 全体では割合を出していても、照合できたセッションが足りない工程の行(最初の依頼より前の編集。1 セッション)は件数だけ
+    const early = cells('ret-phase-h', '不明');
+    expect(await early.nth(0).textContent()).toBe('1');
+    expect(await early.nth(1).textContent()).toBe('1');
+    expect(await early.nth(3).textContent()).toBe('0');
     // プロジェクトごと: repo-a は割合つき、repo-b(1 セッション)は件数だけ
     expect(await cells('ret-proj-h', 'repo-a').nth(1).textContent()).toBe(`${N - 1}(${percent(N - 1, N)})`);
     expect(await cells('ret-proj-h', 'repo-b').nth(1).textContent()).toBe('1');
@@ -145,9 +155,10 @@ describe('AI の変更の残存: 割合を出す条件', () => {
     expect(await section().locator('.stack').count()).toBe(0);
     expect(await section().locator('#ret-legend').textContent()).not.toContain('%');
     expect(await section().textContent()).toContain(`照合できたセッションが ${RETENTION_MIN_SESSIONS} 件未満なので`);
-    const phase = cells('ret-phase-h', '実装');
+    const phase = cells('ret-phase-h', '不明');
     expect(await phase.nth(0).textContent()).toBe('1');
     expect(await phase.nth(1).textContent()).toBe('1');
+    expect(await cells('ret-phase-h', '実装').count()).toBe(0);
     expect(await cells('ret-proj-h', 'repo-b').nth(1).textContent()).toBe('1');
   });
 
@@ -155,15 +166,15 @@ describe('AI の変更の残存: 割合を出す条件', () => {
     await page.goto(server.url);
     const compare = page.locator('#compare');
     await compare.getByRole('button', { name: '工程', exact: true }).click();
-    // 既定は A: 実装、B: 調査。編集はどれも実装の依頼なので、調査の側にはまとまりが無い
+    // 既定は A: 実装、B: 調査。repo-a の編集はどれも実装の依頼(repo-b の編集は依頼の前なので、どの工程にも入らない)。調査の側にはまとまりが無い
     const cell = (key: string, col: number) => compare.locator(`[data-testid="compare-table"] tr[data-key="${key}"] td`).nth(col);
-    await expect.poll(() => cell('retention-measured', 0).textContent()).toBe(String(N + 1));
+    await expect.poll(() => cell('retention-measured', 0).textContent()).toBe(String(N));
     expect(await cell('retention-measured', 1).textContent()).toBe('0');
     // 件数の行に差は出さない
     expect(await cell('retention-measured', 2).textContent()).toBe('');
-    expect(await cell('retention-hunks', 0).textContent()).toBe(String(N + 1));
-    expect(await cell('retention-kept', 0).textContent()).toBe(percent(N, N + 1));
+    expect(await cell('retention-hunks', 0).textContent()).toBe(String(N));
+    expect(await cell('retention-kept', 0).textContent()).toBe(percent(N - 1, N));
     expect(await cell('retention-kept', 1).textContent()).toBe('—');
-    expect(await cell('retention-missing', 0).textContent()).toBe(percent(1, N + 1));
+    expect(await cell('retention-missing', 0).textContent()).toBe(percent(1, N));
   });
 });

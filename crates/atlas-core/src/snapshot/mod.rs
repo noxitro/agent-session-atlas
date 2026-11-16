@@ -800,10 +800,11 @@ fn read_previous(dest: &Path) -> Previous {
     };
     // 消さなかった複製が持ち越した記録(数えたフォルダの記録があれば、そちらを使う)
     if let Some(Value::Array(kept)) = v.get("extras").and_then(|x| x.get("goneKept")) {
-        let known: HashSet<String> = folders.iter().map(|(id, _)| id.clone()).collect();
+        // 同じ id の記録が 2 つあっても(手で書き換えた manifest など)、先のものだけを使う。順に見る引き継ぎと、表で引く folder_of が食い違わない
+        let mut known: HashSet<String> = folders.iter().map(|(id, _)| id.clone()).collect();
         for k in kept {
             if let (Some(id), Some(folder)) = (k.get("id").and_then(Value::as_str), k.get("folder").and_then(Value::as_str)) {
-                if !known.contains(id) {
+                if known.insert(id.to_string()) {
                     folders.push((id.to_string(), folder.to_string()));
                 }
             }
@@ -829,7 +830,7 @@ fn carry_all(state_dest: &Path, previous: &Previous) -> Vec<KeptCopy> {
 struct GoneOutcome {
     /// 複製を消した数
     removed: u64,
-    /// 元に見当たらないが、複製を消さなかったもの
+    /// 今回の一覧に無いが、複製を消さなかったもの
     kept: Vec<KeptCopy>,
 }
 
