@@ -1,11 +1,13 @@
 // 自動で送る前に atlas 自身を新しい版にする(self-update.ts)。一時フォルダに本物の git のリポジトリ(送り元の origin と、
 // 作る人のチェックアウトと、作業メンバーのチェックアウト)を作って確かめる。npm install は偽物に替える
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { exitCode, LAUNCHER_FETCH_TIMEOUT_MS, launcherUpdate, UPDATED_EXIT, type LauncherUpdateOptions } from '../src/launcher-update.ts';
 import { rollback, runCmd, selfUpdate, type CmdRunner, type UpdateOptions } from '../src/self-update.ts';
+import { AUTO_UPDATE_STATE_FILE, SERVE_STATE_NAME } from '../src/upload-auto-files.ts';
 
 // 1 つのテストと準備で、本物の git(clone・commit・push)を何度も動かす。Windows の CI では既定の待ち時間
 // (テスト 5 秒・準備 10 秒)を超えることがあるので、このファイルだけ延ばす
@@ -282,5 +284,132 @@ describe('selfUpdate: 手で触っているチェックアウトは変えない'
     const { r } = update({ run: () => ({ code: -1, stdout: '', stderr: 'spawn git ENOENT' }) });
     expect(r.outcome).toBe('skipped');
     expect(r.note).toMatch(/git を使えない.*ENOENT/);
+  });
+});
+
+// 起動用の .bat が開くたびに動かす更新(launcher-update.ts)。自動で送るタスクと同じ確かめで、出し方・終了コード・待つ長さだけが違う
+describe('launcherUpdate: 起動用の .bat を開いたときの更新', () => {
+  function open(extra: Partial<LauncherUpdateOptions> = {}): { code: number; logs: string[] } {
+    const logs: string[] = [];
+    const code = launcherUpdate({
+      repo: member,
+      // 出力先は ATLAS_OUT が無ければ <リポジトリ>/out(git は管理していないので、手で変えたとはみなさない)
+      env: {},
+      log: (l) => logs.push(l),
+      depsFresh: () => true,
+      installDeps: () => true,
+      ...extra,
+    });
+    return { code, logs };
+  }
+
+  it('最新なら何も出さずに 0 で終わる', () => {
+    expect(open()).toEqual({ code: 0, logs: [] });
+  });
+
+  it('新しい版にしたら、したことを出して 10 で終わる(.bat が自分を動かし直す)', () => {
+    const before = head(member);
+    const next = release();
+    const { code, logs } = open();
+    expect(code).toBe(UPDATED_EXIT);
+    expect(head(member)).toBe(next);
+    expect(logs.at(-1)).toBe(`atlas の更新: ${before.slice(0, 7)} から ${next.slice(0, 7)} に更新しました`);
+    // 動かし直した後は最新なので、何も出さない
+    expect(open()).toEqual({ code: 0, logs: [] });
+  });
+
+  it('取りに行けなければ、開く側の言い方で 1 行だけ出して 0 で終わる', () => {
+    git(member, 'remote', 'set-url', 'origin', join(base, 'no-such-origin.git'));
+    const { code, logs } = open();
+    expect(code).toBe(0);
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toMatch(/^atlas の更新: 新しい版を取りに行けなかったので、今の版のまま開きます\(/);
+  });
+
+  it('しなかったとき(main を追っていないブランチ)は理由を 1 行で出して 0 で終わる', () => {
+    git(member, 'checkout', '-q', '-b', 'feature');
+    release();
+    const { code, logs } = open();
+    expect(code).toBe(0);
+    expect(logs).toEqual(['atlas の更新: origin/main を追っていないブランチ(feature)なので、更新しません(git switch main で戻すと、次の回から新しい版にします)']);
+  });
+
+  it('新しい版の依存を入れられず前の版に戻したら、コミットは変わらないので 0。開く側の言い方で知らせる', () => {
+    const before = head(member);
+    release('package-lock.json', '{"v":2}');
+    let installs = 0;
+    const { code, logs } = open({ depsFresh: () => false, installDeps: () => ++installs > 1 });
+    expect(code).toBe(0);
+    expect(head(member)).toBe(before);
+    expect(logs.at(-1)).toMatch(/依存を入れられなかったので、前の版\(.{7}\)に戻し、依存も入れ直しました。今の版のまま開きます\(次の回にもう一度試します\)$/);
+  });
+
+  it('git fetch は 20 秒まで待つ(自動で送るタスクは 2 分)', () => {
+    const fetches: number[] = [];
+    const run: CmdRunner = (cmd, args, o) => {
+      if (args[0] === 'fetch') fetches.push(o.timeoutMs);
+      return runCmd(cmd, args, o);
+    };
+    open({ run });
+    expect(fetches).toEqual([LAUNCHER_FETCH_TIMEOUT_MS]);
+    expect(LAUNCHER_FETCH_TIMEOUT_MS).toBe(20_000);
+    fetches.length = 0;
+    update({ run });
+    expect(fetches).toEqual([2 * 60_000]);
+  });
+
+  it('atlas がこのチェックアウトで動いていれば(出力先の印のプロセスが生きていれば)、取りに行かずに 0 で終わる。出力先は ATLAS_OUT', () => {
+    const before = head(member);
+    release();
+    const out = join(base, 'elsewhere-out');
+    mkdirSync(out, { recursive: true });
+    // 生きているプロセス(このテストを動かしている親)の印
+    writeFileSync(join(out, SERVE_STATE_NAME), JSON.stringify({ port: 1, pid: process.ppid }));
+    const seen: string[] = [];
+    const run: CmdRunner = (cmd, args, o) => (seen.push(args[0] ?? ''), runCmd(cmd, args, o));
+    const { code, logs } = open({ run, env: { ATLAS_OUT: out } });
+    expect(code).toBe(0);
+    expect(logs).toEqual([`atlas の更新: atlas が動いている(画面のサーバ。${out})ので、今回は更新しません(次の回に新しい版にします)`]);
+    expect(seen).not.toContain('fetch');
+    expect(head(member)).toBe(before);
+    // ATLAS_OUT が無ければ <リポジトリ>/out を見るので、そちらに印が無ければ更新する
+    expect(open().code).toBe(UPDATED_EXIT);
+  });
+
+  it('前にこの PC で動かなかった版(<リポジトリ>/out の auto-update.json)は使わない', () => {
+    const before = head(member);
+    const bad = release();
+    mkdirSync(join(member, 'out'), { recursive: true });
+    writeFileSync(join(member, 'out', AUTO_UPDATE_STATE_FILE), JSON.stringify({ avoid: bad }));
+    const { code, logs } = open();
+    expect(code).toBe(0);
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toMatch(/前にこの PC で動かなかったので、使いません/);
+    expect(head(member)).toBe(before);
+  });
+
+  it('ATLAS_NO_AUTO_UPDATE=1 なら、git も動かさずに 0 で終わる', () => {
+    release();
+    const seen: string[] = [];
+    const run: CmdRunner = (cmd, args, o) => (seen.push(cmd), runCmd(cmd, args, o));
+    expect(open({ run, env: { ATLAS_NO_AUTO_UPDATE: '1' } })).toEqual({ code: 0, logs: [] });
+    expect(seen).toEqual([]);
+  });
+
+  it('git で取得したフォルダでなければ、理由を 1 行出して 0 で終わる', () => {
+    const plain = mkdtempSync(join(base, 'plain-'));
+    const { code, logs } = open({ repo: plain });
+    expect(code).toBe(0);
+    expect(logs).toEqual(['atlas の更新: git で取得したフォルダではないので、更新しません(git clone し直すと、自動で新しい版にできます)']);
+  });
+
+  it('終了コードは、コミットが変わったときだけ 10', () => {
+    const a = 'a'.repeat(40);
+    const b = 'b'.repeat(40);
+    expect(exitCode(a, b)).toBe(UPDATED_EXIT);
+    expect(exitCode(a, a)).toBe(0);
+    expect(exitCode(null, a)).toBe(0);
+    expect(exitCode(a, null)).toBe(0);
+    expect(exitCode(undefined, undefined)).toBe(0);
   });
 });

@@ -7,8 +7,8 @@ import { join, relative } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { extractAiChanges } from '../src/ai-changes.ts';
 import type { CopilotEvent } from '../src/types.ts';
-import { assertReadOnly, p4Escape, vcsEnv, type RunResult, type VcsRunner } from '../src/vcs.ts';
-import { measureRetention, summarizeRetention } from '../src/vcs-retention.ts';
+import { assertReadOnly, defaultRunner, p4Escape, p4ServerOffset, readOnlyRunner, vcsEnv, type RunResult, type VcsRunner } from '../src/vcs.ts';
+import { measureRetention, sameRevision, summarizeRetention } from '../src/vcs-retention.ts';
 
 const at = (h: number, m = 0) => new Date(Date.UTC(2026, 10, 1, h, m)).toISOString();
 let callSeq = 0;
@@ -70,6 +70,9 @@ describe('assertReadOnly', () => {
     expect(() => assertReadOnly(cmd, [...args])).not.toThrow();
   });
   it.each([
+    // ファイルに書き出す(-o)
+    ['p4', ['-d', 'x', '-q', 'print', '-o', 'out.txt', 'x@3']],
+    ['p4', ['-d', 'x', '-q', 'print', '-oout.txt', 'x@3']],
     ['git', ['commit', '-m', 'x']],
     ['git', ['-C', 'x', 'checkout', 'HEAD']],
     ['git', ['-c', 'user.name=x', 'show', 'HEAD']],
@@ -129,6 +132,18 @@ describe('measureRetention(git)', () => {
     expect(r.counts).toEqual({ kept: 1, modified: 1, missing: 1, unattributable: 0 });
     expect(r.lines).toEqual({ kept: 2, modified: 1, missing: 1, unattributable: 0 });
     expect(r.provenance).toMatchObject({ aiChanges: 'events', baseline: 'observed' });
+    // JSON のキーの順(Rust 版と同じ)。照合したときに VCS で見た版には source を付けない
+    const v = JSON.parse(JSON.stringify(r));
+    expect(Object.keys(v)).toEqual(['sessionId', 'outcome', 'vcs', 'root', 'baseline', 'evaluated', 'hunks', 'excludedHunks', 'counts', 'lines', 'provenance', 'sessionEnd']);
+    expect(Object.keys(v.evaluated)).toEqual(['mode', 'rev', 'at']);
+    // 出所(どのツールの呼び出しの、ログのどこから取った変更か)を添える。似た本文で当てた行は推定として別に数える
+    expect(Object.keys(v.hunks[0])).toEqual(['id', 'path', 'status', 'lines', 'at', 'toolCallId', 'from']);
+    expect([v.hunks[0].from, typeof v.hunks[0].toolCallId]).toEqual(['diff', 'string']);
+    expect(Object.keys(v.hunks[1])).toEqual(['id', 'path', 'status', 'lines', 'at', 'similarLines', 'toolCallId', 'from']);
+    expect([r.hunks[0].similarLines, r.hunks[1].similarLines]).toEqual([undefined, 1]);
+    const s = summarizeRetention([r]);
+    expect([s.similarLines, s.excludedHunks, s.evaluatedEstimated, s.unreadEdits]).toEqual([1, 1, undefined, undefined]);
+    expect(Object.keys(s)).toEqual(['sessions', 'withAiChanges', 'measured', 'unattributable', 'baselineEstimated', 'hunks', 'lines', 'byVcs', 'excludedHunks', 'similarLines']);
   });
 
   it('基準にもある本文でも、新しく足した分(増えた分)は数える。消されていれば未確認', async () => {
@@ -230,7 +245,34 @@ describe('measureRetention(git)', () => {
     const sets = [extractAiChanges('s1', ev)];
     expect((await measureRetention(sets, { mode: 'worktree' }))[0].counts.kept).toBe(1);
     const [c] = await measureRetention(sets, { mode: 'committed' });
-    expect(c).toMatchObject({ counts: { missing: 1 }, evaluated: { mode: 'committed' } });
+    // 開始時から何も取り込んでいなければ、比べる版が基準と同じなので照合不可(見つからないに数えない)
+    expect(c).toMatchObject({ outcome: 'unattributable', reason: 'no_commits', counts: { missing: 0, unattributable: 1 }, evaluated: { mode: 'committed' } });
+    expect(summarizeRetention([c]).unattributable).toEqual({ no_commits: 1 });
+    // 別のファイルだけを取り込んだ後なら、取り込まれていない AI の行は見つからない
+    write(join(root, 'other.txt'), ['other']);
+    git(root, ['add', 'other.txt'], at(12));
+    git(root, ['commit', '-q', '-m', 'other'], at(12));
+    const [c2] = await measureRetention(sets, { mode: 'committed' });
+    expect(c2).toMatchObject({ outcome: 'measured', counts: { missing: 1 }, evaluated: { mode: 'committed' } });
+  });
+
+  it('fixed でも、比べる版が開始時の基準と同じなら照合不可(no_commits)。推定の基準でも同じで、worktree はディスクと比べる', async () => {
+    const { root, head } = gitRepo({ 'a.txt': ['base'] });
+    const f = join(root, 'a.txt');
+    const ev = session({ cwd: root, gitRoot: root, headCommit: head, start: [10, 0], end: [11, 0], edits: [{ path: f, added: ['never committed'] }] });
+    write(f, ['base', 'never committed']);
+    const sets = [extractAiChanges('s1', ev)];
+    const now = () => new Date(at(24 * 20));
+    const [r] = await measureRetention(sets, { mode: 'fixed', lagDays: 7, now });
+    expect(r).toMatchObject({ outcome: 'unattributable', reason: 'no_commits' });
+    expect(r.hunks[0].reason).toBe('no_commits');
+    // 推定の基準(headCommit の記録が無い)でも同じ
+    const ev2 = session({ cwd: root, gitRoot: root, start: [10, 0], end: [11, 0], edits: [{ path: f, added: ['never committed'] }] });
+    const [r2] = await measureRetention([extractAiChanges('s2', ev2)], { mode: 'fixed', lagDays: 7, now });
+    expect(r2).toMatchObject({ outcome: 'unattributable', reason: 'no_commits' });
+    // worktree は今のまま(ディスクのファイルと比べる)
+    const [w] = await measureRetention(sets, { now });
+    expect(w).toMatchObject({ outcome: 'measured', counts: { kept: 1 } });
   });
 
   it('headCommit が無ければ、開始時刻から基準を推定し、推定と印を付ける', async () => {
@@ -342,8 +384,11 @@ interface FakeRev {
   files: Record<string, string[]>;
 }
 
-/** 架空の版の履歴に、svn / p4 の読む系のコマンドだけで答える。呼ばれたコマンドは calls に残す */
-function fakeVcs(kind: 'svn' | 'p4', root: string, revs: FakeRev[]) {
+/**
+ * 架空の版の履歴に、svn / p4 の読む系のコマンドだけで答える。呼ばれたコマンドは calls に残す。
+ * tzMin: p4 の日時指定(@2026/11/01:19:00:00)を、UTC から tzMin 分ずれた地方時として読む(サーバの地方時を真似る)
+ */
+function fakeVcs(kind: 'svn' | 'p4', root: string, revs: FakeRev[], tzMin = 0) {
   const calls: { cmd: string; args: string[] }[] = [];
   const rel = (p: string) => relative(root, p).replace(/\\/g, '/');
   const revAt = (iso: string) => [...revs].reverse().find((r) => r.at <= iso);
@@ -357,6 +402,7 @@ function fakeVcs(kind: 'svn' | 'p4', root: string, revs: FakeRev[]) {
     calls.push({ cmd, args });
     if (cmd === 'git') return { code: 128, stdout: '', stderr: 'fatal: not a git repository' };
     if (cmd !== kind) return { code: -1, stdout: '', stderr: `${cmd} が見つかりません` };
+    const ztag = args.includes('-ztag');
     const a = args.filter((x) => !['--non-interactive', '-q', '-ztag'].includes(x));
     if (a[0] === '-d') a.splice(0, 2);
     if (kind === 'svn') {
@@ -375,13 +421,23 @@ function fakeVcs(kind: 'svn' | 'p4', root: string, revs: FakeRev[]) {
       if (a[0] === 'info') return ok(`... clientName zz-ws\n... clientRoot ${root}\n`);
       if (a[0] === 'changes') {
         const spec = a[a.length - 1];
-        let r: FakeRev | undefined;
-        if (spec.endsWith('#have')) r = revs[revs.length - 1];
-        else {
-          const m = /@(\d+)\/(\d+)\/(\d+):(\d+):(\d+):(\d+)$/.exec(spec)!;
-          r = revAt(new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6])).toISOString());
+        const change = (r: FakeRev | undefined) => ok(r ? `Change ${r.rev} on 2026/11/01 by zz@zz-ws 'x'\n` : '');
+        if (spec.endsWith('#have')) return change(revs[revs.length - 1]);
+        // 地方時の日時を UTC の ISO に
+        const dates = [...spec.matchAll(/@(\d+)\/(\d+)\/(\d+):(\d+):(\d+):(\d+)/g)].map((m) => new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]) - tzMin * 60_000).toISOString());
+        if (dates.length === 2) {
+          // 範囲(@a,@b)は -ztag で、取り込んだ時刻(UTC の秒)つき。新しい順
+          expect(ztag).toBe(true);
+          const [from, to] = dates;
+          return ok(
+            [...revs]
+              .reverse()
+              .filter((r) => r.at >= from && r.at <= to)
+              .map((r) => `... change ${r.rev}\n... time ${Date.parse(r.at) / 1000}\n... user zz\n\n`)
+              .join(''),
+          );
         }
-        return ok(r ? `Change ${r.rev} on 2026/11/01 by zz@zz-ws 'x'\n` : '');
+        return change(revAt(dates[0]));
       }
       if (a[0] === 'print') {
         const spec = a[1];
@@ -434,6 +490,18 @@ describe.each(['svn', 'p4'] as const)('measureRetention(%s。偽の CLI)', (kind
     expect(w.hunks[0].lines).toMatchObject({ kept: 1, missing: 1 });
     expect(c.hunks[0].lines).toMatchObject({ kept: 1, missing: 1 });
     expect(c.hunks[0]).toMatchObject({ status: 'modified' });
+
+    // committed で、今の版の印が基準と同じとき。p4 は取り込みが無いので照合不可(no_commits)。
+    // svn の印は作業コピーのルートの版で、ファイルを取り込んでも進まないので、この判定をせず BASE を読んで照合する
+    const root2 = tmp();
+    const f2 = join(root2, 'a.c');
+    const { runner: r2 } = fakeVcs(kind, root2, [{ rev: 1, at: at(8), files: { 'a.c': ['base'] } }]);
+    const ev2 = session({ cwd: root2, start: [10, 0], end: [11, 0], edits: [{ path: f2, added: ['local only'] }] });
+    write(f2, ['base', 'local only']);
+    const [same] = await measureRetention([extractAiChanges('s1', ev2)], { runner: r2, mode: 'committed' });
+    if (kind === 'svn') expect(same).toMatchObject({ outcome: 'measured', counts: { missing: 1 } });
+    else expect(same).toMatchObject({ outcome: 'unattributable', reason: 'no_commits', counts: { missing: 0 } });
+    if (kind === 'svn') expect(same.reason).toBeUndefined();
   });
 
   it('開始時刻より前の版が無ければ照合不可(baseline_missing)。欠測として数え、未確認にはしない', async () => {
@@ -511,6 +579,11 @@ describe('比べる版: セッションの終わりから決まった日数後(f
     const [fixed] = await measureRetention([set], { mode: 'fixed', lagDays: 7, now: () => new Date(at(24 * 20)) });
     expect(fixed).toMatchObject({ outcome: 'measured', evaluated: { mode: 'fixed', at: at(11 + 24 * 7) }, sessionEnd: at(11, 0) });
     expect(fixed.hunks[0].status).toBe('kept');
+    // fixed の版は日時から推定したもの。今の版を見る worktree には印を付けない
+    expect(fixed.evaluated?.source).toBe('estimated');
+    expect(summarizeRetention([fixed]).evaluatedEstimated).toBe(1);
+    expect(worktree.evaluated?.source).toBeUndefined();
+    expect('source' in JSON.parse(JSON.stringify(worktree)).evaluated).toBe(false);
     // セッションの終わりから 3 日しか経っていなければ、照合しない
     const [early] = await measureRetention([set], { mode: 'fixed', lagDays: 7, now: () => new Date(at(24 * 3)) });
     expect(early).toMatchObject({ outcome: 'unattributable', reason: 'too_recent', evaluated: null });
@@ -523,5 +596,234 @@ describe('比べる版: セッションの終わりから決まった日数後(f
     ev.push({ type: 'tool.execution_complete', timestamp: at(10, 5), data: { toolCallId: 'odd', success: true, result: { content: 'ok' } } });
     const [r] = await measureRetention([extractAiChanges('s1', ev)]);
     expect(r).toMatchObject({ outcome: 'no_ai_changes', unreadEdits: 1 });
+    // AI の変更を取り出せなかったセッションの読めない編集も、集計に残す(記録の欠けを隠さない)
+    expect(summarizeRetention([r])).toMatchObject({ withAiChanges: 0, unreadEdits: 1, unreadSessions: 1 });
   });
+
+  it('作業フォルダに VCS が無く、ファイルの場所のリポジトリだけで照合したときも、比べた時点と見方を残す(版の印は付けない)', async () => {
+    const plain = tmp();
+    const { root } = gitRepo({ 'a.txt': ['base'] });
+    const f = join(root, 'a.txt');
+    write(f, ['base', 'ai line']);
+    git(root, ['commit', '-q', '-am', 'take ai line'], at(24));
+    const ev = session({ cwd: plain, start: [10, 0], end: [11, 0], edits: [{ path: f, added: ['ai line'] }] });
+    const sets = [extractAiChanges('s1', ev)];
+    const now = () => new Date(at(24 * 20));
+    const [w] = await measureRetention(sets, { now });
+    expect([w.outcome, w.vcs, w.evaluated]).toEqual(['measured', null, { mode: 'worktree', rev: null, at: at(24 * 20) }]);
+    const [fx] = await measureRetention(sets, { mode: 'fixed', lagDays: 7, now });
+    expect([fx.outcome, fx.hunks[0].status]).toEqual(['measured', 'kept']);
+    expect(fx.evaluated).toEqual({ mode: 'fixed', rev: null, at: at(11 + 24 * 7), source: 'estimated' });
+    expect(summarizeRetention([fx]).evaluatedEstimated).toBe(1);
+  });
+});
+
+describe('版の印と、版を調べるコマンドの失敗', () => {
+  it('sameRevision: git は短い印(7 字以上)でも前方が一致すれば同じ。svn・p4 は同じ文字列だけ', () => {
+    const full = '0123456789abcdef0123456789abcdef01234567';
+    expect(sameRevision('git', full, full)).toBe(true);
+    expect(sameRevision('git', '0123456', full)).toBe(true);
+    expect(sameRevision('git', full.toUpperCase(), full)).toBe(true);
+    expect(sameRevision('git', '012345', full)).toBe(false); // 短すぎる印は同じとみなさない
+    expect(sameRevision('git', '', full)).toBe(false);
+    expect(sameRevision('svn', '7', ' 7')).toBe(true);
+    expect(sameRevision('p4', '7', '70')).toBe(false);
+  });
+
+  it('理由の無い照合不可は unknown として数える(読めなかったとは決めつけない)', async () => {
+    const gone = join(tmp(), 'gone');
+    const ev = session({ cwd: gone, start: [10, 0], end: [11, 0], edits: [{ path: join(gone, 'x.txt'), added: ['zz'] }] });
+    const [r] = await measureRetention([extractAiChanges('s1', ev)]);
+    expect(r.outcome).toBe('unattributable');
+    delete r.reason;
+    expect(summarizeRetention([r]).unattributable).toEqual({ unknown: 1 });
+  });
+
+  it('今の版・開始時の版を調べるコマンドが失敗したら、版が無いではなく読めなかった(read_error)', async () => {
+    // committed で今の版を調べる p4 changes が失敗
+    const root = tmp();
+    const f = join(root, 'a.c');
+    const p4 = fakeVcs('p4', root, [{ rev: 1, at: at(8), files: { 'a.c': ['base'] } }]);
+    const failHave: VcsRunner = async (cmd, args, opts) =>
+      args.includes('changes') && args[args.length - 1].endsWith('#have') ? { code: 1, stdout: '', stderr: 'Perforce client error: connect failed' } : p4.runner(cmd, args, opts);
+    write(f, ['base', 'ai']);
+    const ev = session({ cwd: root, start: [10, 0], end: [11, 0], edits: [{ path: f, added: ['ai'] }] });
+    const [r] = await measureRetention([extractAiChanges('s1', ev)], { runner: failHave, mode: 'committed' });
+    expect(r).toMatchObject({ outcome: 'unattributable', reason: 'read_error' });
+
+    // 開始時の版の推定(svn info -r {日時})が失敗
+    const root2 = tmp();
+    const f2 = join(root2, 'a.c');
+    const svn = fakeVcs('svn', root2, [{ rev: 1, at: at(8), files: { 'a.c': ['base'] } }]);
+    const failDate: VcsRunner = async (cmd, args, opts) =>
+      args.includes('-r') && args.some((a) => a.startsWith('{')) ? { code: 1, stdout: '', stderr: 'svn: E170013: Unable to connect to a repository' } : svn.runner(cmd, args, opts);
+    write(f2, ['base', 'ai']);
+    const ev2 = session({ cwd: root2, start: [10, 0], end: [11, 0], edits: [{ path: f2, added: ['ai'] }] });
+    const [r2] = await measureRetention([extractAiChanges('s1', ev2)], { runner: failDate });
+    expect(r2).toMatchObject({ outcome: 'unattributable', reason: 'read_error' });
+  });
+
+  it.each([
+    ['open for read: zz.p4tickets: No such file or directory', 'read_error'],
+    ['//zz/... - no such file(s).', 'baseline_missing'],
+  ] as const)('環境の失敗を版が無いと取り違えない。「その版・変更が無い」と答えたときだけ baseline_missing: %s', async (stderr, want) => {
+    const root = tmp();
+    const f = join(root, 'a.c');
+    const p4 = fakeVcs('p4', root, [{ rev: 1, at: at(8), files: { 'a.c': ['base'] } }]);
+    const runner: VcsRunner = async (cmd, args, opts) => (args.includes('changes') && !args[args.length - 1].endsWith('#have') ? { code: 1, stdout: '', stderr } : p4.runner(cmd, args, opts));
+    write(f, ['base', 'ai']);
+    const ev = session({ cwd: root, start: [10, 0], end: [11, 0], edits: [{ path: f, added: ['ai'] }] });
+    const [r] = await measureRetention([extractAiChanges('s1', ev)], { runner });
+    expect(r).toMatchObject({ outcome: 'unattributable', reason: want });
+  });
+
+  it('git: ログの開始時のコミットが無ければ baseline_missing、確かめるコマンドが失敗したら読めなかった', async () => {
+    const { root } = gitRepo({ 'a.txt': ['base'] });
+    const f = join(root, 'a.txt');
+    write(f, ['base', 'ai']);
+    const ev = session({ cwd: root, gitRoot: root, headCommit: '0123456789abcdef0123456789abcdef01234567', start: [10, 0], end: [11, 0], edits: [{ path: f, added: ['ai'] }] });
+    const sets = [extractAiChanges('s1', ev)];
+    expect((await measureRetention(sets))[0].reason).toBe('baseline_missing');
+    const timeout: VcsRunner = async (cmd, args, opts) => (args.includes('cat-file') ? { code: 1, stdout: '', stderr: 'git が時間内に終わりませんでした' } : defaultRunner(cmd, args, opts));
+    expect((await measureRetention(sets, { runner: timeout }))[0].reason).toBe('read_error');
+  });
+});
+
+describe('読み取り専用の確認と、p4 のサーバの時差', () => {
+  it('書く系のコマンドは呼ぶ前に止める。readOnlyRunner は差し替えた runner を呼ばず、既定の runner は直接呼ばれても起動しない', async () => {
+    // 止まらなかったときに備えて、空の一時フォルダで呼ぶ
+    const empty = tmp();
+    let called = 0;
+    const counting: VcsRunner = async () => (called++, { code: 0, stdout: '', stderr: '' });
+    for (const [kind, args] of [
+      ['git', ['commit', '-m', 'x']],
+      ['svn', ['update']],
+      ['p4', ['print', '-o', 'out.txt', '//d/a.c']],
+    ] as const) {
+      expect(() => readOnlyRunner(counting)(kind, [...args], { cwd: empty })).toThrow();
+      const r = await defaultRunner(kind, [...args], { cwd: empty });
+      expect([r.code, r.stdout]).toEqual([1, '']);
+      expect(r.stderr).toContain('止めました');
+    }
+    expect(called).toBe(0);
+  });
+
+  it('p4ServerOffset: p4 info の serverDate から UTC からのずれ(分)を読む', () => {
+    expect(p4ServerOffset('... serverDate 2026/11/01 19:00:00 +0900 JST\n')).toBe(540);
+    expect(p4ServerOffset('... clientName zz\n... serverDate 2026/11/01 05:00:00 -0500 EST\n')).toBe(-300);
+    expect(p4ServerOffset('... clientName zz\n')).toBeNull();
+  });
+
+  // サーバの時差(p4 info の serverDate)で日時を直し、取り込んだ時刻で確かめる。
+  // 照合したときの時差と、セッションのころの時差(夏時間)が 1 時間違っても、開始時刻 10:00(UTC)の直前の版 2 を基準にする
+  async function baseOf(nowMin: number, thenMin: number, timeless: boolean): Promise<{ rev: string | undefined; specs: string[] }> {
+    const root = tmp();
+    const f = join(root, 'a.c');
+    const revs: FakeRev[] = [
+      { rev: 1, at: at(8), files: { 'a.c': ['old'] } },
+      { rev: 2, at: at(9, 30), files: { 'a.c': ['base'] } },
+      { rev: 3, at: at(10, 30), files: { 'a.c': ['base', 'later'] } },
+    ];
+    const { runner: inner, calls } = fakeVcs('p4', root, revs, thenMin);
+    const abs = Math.abs(nowMin);
+    const date = `... serverDate 2026/11/01 19:00:00 ${nowMin < 0 ? '-' : '+'}${String(Math.floor(abs / 60)).padStart(2, '0')}${String(abs % 60).padStart(2, '0')} ZZ\n`;
+    const runner: VcsRunner = async (cmd, args, opts) => {
+      const r = await inner(cmd, args, opts);
+      if (cmd === 'p4' && args[args.length - 1] === 'info') r.stdout += date;
+      // 取り込んだ時刻を出さないサーバを真似る
+      if (timeless) r.stdout = r.stdout.split('\n').filter((l) => !l.startsWith('... time ')).join('\n');
+      return r;
+    };
+    write(f, ['base', 'ai']);
+    const ev = session({ cwd: root, start: [10, 0], end: [11, 0], edits: [{ path: f, added: ['ai'] }] });
+    const [r] = await measureRetention([extractAiChanges('s1', ev)], { runner });
+    expect([r.outcome, r.counts.kept]).toEqual(['measured', 1]);
+    return { rev: r.baseline?.rev, specs: calls.filter((c) => c.args.includes('changes')).map((c) => c.args[c.args.length - 1]) };
+  }
+
+  it('p4 の日時はサーバの時差で直し、前後 1 時間の変更を取り込んだ時刻で確かめる(夏時間で時差が変わっても版を取り違えない)', async () => {
+    const same = await baseOf(540, 540, false);
+    expect(same.rev).toBe('2');
+    // UTC の 10:00 はサーバの 19:00。前後 1 時間を範囲で読む
+    expect(same.specs.some((s) => s.endsWith('@2026/11/01:18:00:00,@2026/11/01:20:00:00'))).toBe(true);
+    // 時差だけで決めると、+0900 → +1000 では 9:00 の版 1、+1000 → +0900 では 11:00 の版 3 になる
+    expect((await baseOf(540, 600, false)).rev).toBe('2');
+    expect((await baseOf(600, 540, false)).rev).toBe('2');
+    // 取り込んだ時刻を読めなければ確かめず、時差だけで決めた日時(サーバの 19:00)で探す。窓の前(18:00)の版 1 にはしない
+    const timeless = await baseOf(540, 540, true);
+    expect(timeless.rev).toBe('2');
+    expect(timeless.specs.some((s) => s.endsWith('...@2026/11/01:19:00:00'))).toBe(true);
+  });
+});
+
+// ---- 実物の svn(ローカルのリポジトリ。svn が無ければ飛ばす) ----
+
+const hasSvn = (() => {
+  try {
+    execFileSync('svn', ['--version', '--quiet'], { stdio: 'ignore' });
+    execFileSync('svnadmin', ['--version', '--quiet'], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+describe.skipIf(!hasSvn)('measureRetention(実物の svn。ローカルのリポジトリ)', () => {
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  it('開始時刻から基準を推定し、出所を残す。取り込んだ後の committed は作業コピーの BASE と比べる', async () => {
+    const repo = tmp();
+    const wc = tmp();
+    execFileSync('svnadmin', ['create', repo]);
+    const p = repo.replace(/\\/g, '/');
+    const url = p.startsWith('/') ? `file://${p}` : `file:///${p}`;
+    // 準備の書き込みは svn を直接呼ぶ(atlas の実行経路は書く系を止める)
+    const svn = (...args: string[]) => execFileSync('svn', ['--non-interactive', '-q', ...args], { encoding: 'utf8' });
+    svn('checkout', url, wc);
+    const f = join(wc, 'src', 'a.c');
+    write(f, ['int base = 0;']);
+    svn('add', join(wc, 'src'));
+    svn('commit', '-m', 'base', wc);
+    // 取り込んだだけでは作業コピーの根の版は 0 のまま(版の混ざった作業コピー)なので、普段どおり更新しておく
+    svn('update', wc);
+    await sleep(1100);
+
+    const start = new Date().toISOString();
+    const ev: CopilotEvent[] = [{ type: 'session.start', timestamp: start, data: { context: { cwd: wc } } }];
+    for (const [id, added] of [
+      ['k', 'int kept = 1;'],
+      ['m', 'int computeTotal(int a, int b) { return a + b; }'],
+      ['x', 'int removedLater = 3;'],
+    ]) {
+      const t = new Date().toISOString();
+      ev.push({ type: 'tool.execution_start', timestamp: t, data: { toolCallId: id, toolName: 'edit', arguments: { path: f, old_str: '', new_str: '' } } });
+      ev.push({ type: 'tool.execution_complete', timestamp: t, data: { toolCallId: id, success: true, result: { content: 'ok', detailedContent: diffOf(f, [added], []) } } });
+    }
+    await sleep(50);
+    ev.push({ type: 'assistant.turn_end', timestamp: new Date().toISOString(), data: {} });
+    write(f, ['int base = 0;', 'int kept = 1;', 'int computeTotal(int a, int b) { return a + b + 1; }']);
+    const sets = [extractAiChanges('s1', ev)];
+
+    const [r] = await measureRetention(sets);
+    expect(r).toMatchObject({ outcome: 'measured', vcs: 'svn', baseline: { rev: '1', source: 'estimated' } });
+    expect(r.reason).toBeUndefined();
+    expect(r.hunks.map((h) => h.status)).toEqual(['kept', 'modified', 'missing']);
+    expect(r.hunks.map((h) => [h.similarLines ?? 0, h.toolCallId, h.from])).toEqual([
+      [0, 'k', 'diff'],
+      [1, 'm', 'diff'],
+      [0, 'x', 'diff'],
+    ]);
+    expect([r.evaluated?.rev, r.evaluated?.source]).toEqual(['1', undefined]);
+
+    // 取り込んだ後の committed は、作業コピーの BASE(取り込んだ本文)と比べる
+    await sleep(1100);
+    svn('commit', '-m', 'take', wc);
+    write(f, ['int base = 0;']);
+    const [c] = await measureRetention(sets, { mode: 'committed' });
+    expect(c.outcome).toBe('measured');
+    expect(c.reason).toBeUndefined();
+    expect(c.hunks.map((h) => h.status)).toEqual(['kept', 'modified', 'missing']);
+    // 作業コピーの今の本文(AI の行を消した)では見つからない
+    const [w] = await measureRetention(sets);
+    expect(w.hunks.map((h) => h.status)).toEqual(['missing', 'missing', 'missing']);
+  }, 60_000);
 });

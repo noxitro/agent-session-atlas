@@ -3,7 +3,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { SNAPSHOT_MANIFEST, SNAPSHOT_SOURCE, VCS_RETENTION_FILE, type SessionRecord } from '../../core/src/index.ts';
+import { SNAPSHOT_MANIFEST, SNAPSHOT_REMOVED_DIR, SNAPSHOT_SOURCE, VCS_RETENTION_FILE, type SessionRecord } from '../../core/src/index.ts';
 import { uploadsFor } from '../src/commands.ts';
 import { canReuse, clearBuilt, inputsKey, outputsOf, readBuilt, writeBuilt, type ReusePaths } from '../src/open-reuse.ts';
 
@@ -46,6 +46,30 @@ describe('open-reuse: 入力の印', () => {
       JSON.stringify({ createdAt: '2026-11-12T00:00:00.000Z', sourceRoot: 'X:\\logs', sessions: { dirs: 1, copiedFiles: 0, reusedFiles: 2, dbCopied: 0, dbReused: 1 } }),
     );
     writeFileSync(join(p.snapshot, SNAPSHOT_SOURCE), JSON.stringify({ sourceRoot: 'X:\\logs', startedAt: '2026-11-12T00:00:00.000Z' }));
+    expect(inputsKey(p, OPTS, config)).toBe(key);
+  });
+
+  it('元から無くなったセッションの複製を消した数と、消す前に退けた複製の消し残りでは変わらない。消さなかったセッションの記録では変わる', () => {
+    const { p, config } = setup();
+    const manifest = (extra: Record<string, unknown>): void =>
+      writeFileSync(join(p.snapshot, SNAPSHOT_MANIFEST), JSON.stringify({ createdAt: 'y', sourceRoot: 'X:\\logs', sessions: { dirs: 1, copiedFiles: 9, ...extra }, uploads: { p: { uploadedAt: '2026-01-02T09:00:00Z' } } }));
+    const withKept = (): void =>
+      writeFileSync(
+        join(p.snapshot, SNAPSHOT_MANIFEST),
+        JSON.stringify({ createdAt: 'y', sourceRoot: 'X:\\logs', sessions: { dirs: 1, copiedFiles: 9 }, uploads: { p: { uploadedAt: '2026-01-02T09:00:00Z' } }, extras: { goneKept: [{ id: 'a', reason: 'x' }] } }),
+      );
+    manifest({});
+    const key = inputsKey(p, OPTS, config);
+    // 消した数は印に入れない(消した次の回に、何も変わっていないのに作り直さない)
+    manifest({ removed: 2 });
+    expect(inputsKey(p, OPTS, config)).toBe(key);
+    // 消さなかったセッションの記録はレポートの警告に出るので、印に入れる
+    withKept();
+    expect(inputsKey(p, OPTS, config)).not.toBe(key);
+    manifest({});
+    // 消す前に退けた複製の消し残りは印に入れない(次の集計で片付いたときに、余計に作り直さない)
+    mkdirSync(join(p.snapshot, SNAPSHOT_REMOVED_DIR, '1', 'gone'), { recursive: true });
+    writeFileSync(join(p.snapshot, SNAPSHOT_REMOVED_DIR, '1', 'gone', 'events.jsonl'), '{}\n');
     expect(inputsKey(p, OPTS, config)).toBe(key);
   });
 

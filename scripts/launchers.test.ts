@@ -1,4 +1,5 @@
-// 利用者がダブルクリックで起動する *.bat と、その最初に動く scripts/ensure-atlas.ps1、TS 版で登録したタスクのための互換の入口の形式。
+// 利用者がダブルクリックで起動する *.bat と、そこから動く入口(開くたびの更新 packages/cli/src/launcher-update.ts)、
+// 止める stop.bat と scripts/stop-atlas.ps1、前の版(bin\atlas.exe で動いていた版)から移るときに呼ばれる scripts/ensure-atlas.ps1 の形式と動き。
 // LF だけの改行だと cmd が goto のラベルを読めずに失敗する(a3527a5 で atlas-export.bat に実際に起きた)。
 // BOM があると先頭の @echo off がコマンド名として読まれる。.gitattributes の eol=crlf が外れたらここで止める。
 import { type ChildProcess, execFileSync, spawn, spawnSync } from 'node:child_process';
@@ -6,26 +7,29 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFile
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { COMMANDS } from '../packages/cli/src/args.ts';
 import { decodeConsole } from './console-text.ts';
 
 const ROOT = resolve(import.meta.dirname, '..');
+const CLI_SRC = join(ROOT, 'packages', 'cli', 'src');
 const BATS = readdirSync(ROOT).filter((f) => f.endsWith('.bat'));
 const ENSURE = 'scripts/ensure-atlas.ps1';
-/** atlas を止める bat(実行ファイルの用意・更新も atlas の実行もしない。scripts/stop-atlas.ps1 だけを動かす) */
+/** atlas を止める bat(更新も依存の用意も atlas の実行もしない。scripts/stop-atlas.ps1 だけを動かす) */
 const STOP = 'stop.bat';
 const STOP_PS1 = 'scripts/stop-atlas.ps1';
-/** 実行ファイルを用意して atlas を動かす bat */
+/** node で atlas を動かす bat */
 const LAUNCHERS = BATS.filter((f) => f !== STOP);
-const SHIM = 'packages/cli/src/upload-auto.ts';
 const BOM = Buffer.from([0xef, 0xbb, 0xbf]);
-/** 各 bat が最後に動かす atlas のサブコマンド */
-const FINAL: Record<string, RegExp> = {
-  'atlas.bat': /^bin\\atlas\.exe serve$/,
-  'open-folder.bat': /^bin\\atlas\.exe open %\*$/,
-  'schedule-upload.bat': /^bin\\atlas\.exe upload-schedule$/,
-  'setup.bat': /^bin\\atlas\.exe setup$/,
-  'upload-project.bat': /^bin\\atlas\.exe upload-project$/,
+/** 各 bat が最後に node で動かすもの(packages\cli\src の .ts と、main.ts ならそのサブコマンド) */
+const FINAL: Record<string, { entry: string; args: string }> = {
+  'atlas.bat': { entry: 'main.ts', args: 'serve' },
+  'open-folder.bat': { entry: 'main.ts', args: 'open %*' },
+  'schedule-upload.bat': { entry: 'upload-schedule.ts', args: '' },
+  'setup.bat': { entry: 'setup.ts', args: '' },
+  'upload-project.bat': { entry: 'upload-project.ts', args: '' },
 };
+/** packages\cli\src の .ts を node で動かす行(stop-atlas.ps1 が、このフォルダの atlas と見分けられるよう、%~dp0 から始まる絶対パスで書く) */
+const NODE_LINE = /^node "%~dp0packages\\cli\\src\\([\w-]+\.ts)"(?: (.*))?$/;
 
 const codeLines = (f: string): string[] =>
   readFileSync(join(ROOT, f), 'utf8')
@@ -33,8 +37,11 @@ const codeLines = (f: string): string[] =>
     .map((l) => l.trim())
     .filter((l) => l && !/^rem\b/i.test(l));
 
+/** 静的な import だけ(動かすときに読む import('…') は含まない) */
+const staticImports = (file: string): string[] => [...readFileSync(file, 'utf8').matchAll(/^import\s[^;]*?from '([^']+)'/gm)].map((m) => m[1]!);
+
 describe('cmd の出力を読む(scripts/console-text.ts)', () => {
-  it('cp932 の行(cmd の文言)と UTF-8 の行(中の atlas の出力)が混ざっていても、1 行ずつ合うほうで読む', () => {
+  it('cp932 の行(cmd の文言)と UTF-8 の行(中の node の出力)が混ざっていても、1 行ずつ合うほうで読む', () => {
     // 「) は予期されていません。」(cp932。「予」の 2 バイト目は 0x5C)
     const cmd = Buffer.from([0x29, 0x20, 0x82, 0xcd, 0x97, 0x5c, 0x8a, 0xfa, 0x82, 0xb3, 0x82, 0xea, 0x82, 0xc4, 0x82, 0xa2, 0x82, 0xdc, 0x82, 0xb9, 0x82, 0xf1, 0x81, 0x42]);
     const mixed = Buffer.concat([Buffer.from('== 集計 ==\r\n  最新のログを集計しています。\r\n'), cmd, Buffer.from('\r\n続行するには何かキーを押してください . . .')]);
@@ -77,7 +84,7 @@ describe('*.bat', () => {
     expect(bad).toEqual([]);
   });
 
-  // 日本語の説明の rem が冒頭(chcp 65001 の前)にあった upload-project.bat と setup.bat は、中のプログラムや pause から戻ったときに、
+  // 日本語の説明の rem が冒頭(chcp 65001 の前)にあった upload-project.bat と setup.bat は、node や pause から戻ったときに、
   // cmd が前の行の途中(「'r' is not recognized」「'pm' is not recognized」など)を毎回実行していた。
   // 実測で分かったこと: chcp 65001 の前の日本語を無くし、説明の rem を最後に実行する行より後ろに移すと起きない
   // (説明を chcp の後ろに移しただけでは、パイプで入力を渡したときにときどき起きた)。原因の細かい仕組みは確かめていない
@@ -94,42 +101,72 @@ describe('*.bat', () => {
     expect(early).toEqual([]);
   });
 
-  // 実行ファイルを用意してから動かす。Node.js の確かめと npm install はもうしない(Node.js が無くても、リリースがあれば動く)
-  it.each(LAUNCHERS)('%s は最初に scripts\\ensure-atlas.ps1 を動かし、失敗したら止まる。node と npm は呼ばない', (f) => {
+  // 起動の順: Node.js の確かめ → 開くたびの更新 → 依存の確かめ(足りなければ npm install)→ atlas。前の版の atlas.exe と ensure-atlas.ps1 は使わない
+  it.each(LAUNCHERS)('%s は setlocal で始め、Node.js が無ければ入れ方を出して止まる。bin\\atlas.exe・ensure-atlas.ps1 は使わない', (f) => {
     const lines = codeLines(f);
-    const i = lines.findIndex((l) => /ensure-atlas\.ps1/i.test(l));
-    expect(lines[i]).toBe('powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\ensure-atlas.ps1 -KeepOlder');
-    expect(lines.slice(i + 1, i + 5)).toEqual(['if errorlevel 1 (', 'echo.', 'pause', 'exit /b 1']);
-    expect(lines.findIndex((l) => /^bin\\atlas\.exe\b/i.test(l))).toBeGreaterThan(i);
-    expect(lines.filter((l) => /^(where )?node\b|\bnpm\b|deps-fresh|packages\\cli/i.test(l))).toEqual([]);
+    expect(lines.slice(0, 4)).toEqual(['@echo off', 'setlocal', 'chcp 65001 >nul', 'cd /d "%~dp0"']);
+    const node = lines.indexOf('where node >nul 2>nul');
+    expect(node).toBeGreaterThan(-1);
+    expect(lines.slice(node + 1, node + 6)).toEqual(['if errorlevel 1 (', 'echo Node.js が見つかりません。Node.js 24 以上をインストールしてください。', 'pause', 'exit /b 1', ')']);
+    expect(lines.filter((l) => /atlas\.exe|ensure-atlas|self-update|cargo/i.test(l))).toEqual([]);
   });
 
-  // 開くたびに atlas を新しい版にする(atlas self-update。git fetch と早送り。crates/atlas-cli/src/self_update.rs)。git が .bat を書き換えると、
+  // 開くたびに atlas を新しい版にする(launcher-update.ts。git fetch と早送り)。git が .bat を書き換えると、
   // cmd は読んだところまでの位置(バイト数)から続きを読むので、ずれた位置から読んでしまう。コミットが変わったら(終了コード 10)、
   // 同じ 1 行の中で書き換わった後の自分を最初から動かし直して終わる(cmd は 1 行を読み切ってから動かす)。動かし直した側は ATLAS_SELF_UPDATED で
   // 更新を飛ばす(繰り返さない)。終わり方は「& exit /b」ではなく call exit /b %%errorlevel%%(番号の無い exit /b だと、cmd /c で開いたときの
-  // 終了コードが 0 になる。実測)。atlas の出力のエラーは捨てる(self-update を知らない前の版の atlas.exe が、使い方を出さないように)。
-  // ATLAS_NO_AUTO_UPDATE=1 なら更新しない。ATLAS_SELF_UPDATED が開いた窓に残らないよう、setlocal で始める
+  // 終了コードが 0 になる。実測)。ATLAS_NO_AUTO_UPDATE=1 なら更新しない。ATLAS_SELF_UPDATED が開いた窓に残らないよう、setlocal で始める。
+  // 依存の確かめより前に動かす(更新で package-lock.json が変わったら、動かし直した側が入れ直す)
   const UPDATE_LINE =
-    'if not "%ATLAS_NO_AUTO_UPDATE%"=="1" if not defined ATLAS_SELF_UPDATED bin\\atlas.exe self-update 2>nul & if errorlevel 10 if not errorlevel 11 set "ATLAS_SELF_UPDATED=1" & cmd /d /c call "%~f0" %* & call exit /b %%errorlevel%%';
-  it.each(LAUNCHERS)('%s は setlocal で始め、ensure-atlas.ps1 の後に atlas self-update を 1 行で動かし、コミットが変わったら同じ行の中で自分を動かし直す', (f) => {
+    'if not "%ATLAS_NO_AUTO_UPDATE%"=="1" if not defined ATLAS_SELF_UPDATED node "%~dp0packages\\cli\\src\\launcher-update.ts" & if errorlevel 10 if not errorlevel 11 set "ATLAS_SELF_UPDATED=1" & cmd /d /c call "%~f0" %* & call exit /b %%errorlevel%%';
+  it.each(LAUNCHERS)('%s は Node.js の確かめの直後に launcher-update.ts を 1 行で動かし、コミットが変わったら同じ行の中で自分を動かし直す', (f) => {
     const lines = codeLines(f);
-    expect(lines.slice(0, 2)).toEqual(['@echo off', 'setlocal']);
-    const ensure = lines.findIndex((l) => /ensure-atlas\.ps1/i.test(l));
-    expect(lines.filter((l) => /self-update/.test(l))).toEqual([UPDATE_LINE]);
-    // ensure-atlas の失敗の囲みの直後(実行ファイルがある状態で動かす)で、atlas の本来のサブコマンドより前
-    expect(lines.indexOf(UPDATE_LINE)).toBe(ensure + 6);
-    expect(lines.indexOf(UPDATE_LINE)).toBeLessThan(lines.findIndex((l) => /^bin\\atlas\.exe\b/i.test(l)));
+    const node = lines.indexOf('where node >nul 2>nul');
+    expect(lines.filter((l) => /launcher-update/.test(l))).toEqual([UPDATE_LINE]);
+    expect(lines.indexOf(UPDATE_LINE)).toBe(node + 6);
+    expect(lines.indexOf(UPDATE_LINE)).toBeLessThan(lines.indexOf('node scripts\\deps-fresh.mjs'));
   });
 
-  // 最後に動かす atlas の終了コードを、bat の終了コードとして返す(「& exit /b」で終えると、cmd の終了コードは常に 0 になる)。
-  // 同じ行に %errorlevel% を書くと行を読んだとき(atlas の前)の値になるので、次の行で調べるか取っておく
-  it.each(LAUNCHERS)('%s は最後に bin\\atlas.exe <サブコマンド> を動かし、その終了コードを次の行で調べるか取っておく', (f) => {
+  it.each(LAUNCHERS)('%s は依存が package-lock.json とそろっていなければ npm install し、失敗したら止まる', (f) => {
     const lines = codeLines(f);
-    const last = lines.findLastIndex((l) => /^bin\\atlas\.exe\b/i.test(l));
-    expect(lines[last]).toMatch(FINAL[f]);
+    const deps = lines.indexOf('node scripts\\deps-fresh.mjs');
+    expect(deps).toBeGreaterThan(-1);
+    expect(lines.slice(deps + 1, deps + 10)).toEqual([
+      'if errorlevel 1 (',
+      'echo 依存を入れます: npm install を実行します...',
+      'call npm install',
+      'if errorlevel 1 (',
+      'echo npm install に失敗しました。',
+      'pause',
+      'exit /b 1',
+      ')',
+      ')',
+    ]);
+    // atlas を動かすのは、依存をそろえた後
+    expect(lines.findIndex((l) => NODE_LINE.test(l) && !l.includes('launcher-update'))).toBeGreaterThan(deps);
+  });
+
+  // 最後に動かす node の終了コードを、bat の終了コードとして返す(「& exit /b」で終えると、cmd の終了コードは常に 0 になる)。
+  // 同じ行に %errorlevel% を書くと行を読んだとき(node の前)の値になるので、次の行で調べるか取っておく
+  it.each(LAUNCHERS)('%s は最後に packages\\cli\\src の入口を動かし、その終了コードを次の行で調べるか取っておく', (f) => {
+    const lines = codeLines(f);
+    const last = lines.findLastIndex((l) => NODE_LINE.test(l));
+    const m = NODE_LINE.exec(lines[last]!)!;
+    expect({ entry: m[1], args: m[2] ?? '' }).toEqual(FINAL[f]);
     expect(lines[last]).not.toContain('&');
     expect(lines[last + 1]).toMatch(/^(if errorlevel 1 \(|set "code=%errorlevel%"|exit \/b %errorlevel%)$/i);
+  });
+
+  // main.ts が知らないサブコマンドを渡すと、使い方を出して止まる(setup・upload-project・upload-schedule は main.ts のコマンドではなく、それぞれの .ts が入口)
+  it.each(LAUNCHERS)('%s が node で動かす入口はどれもあり、main.ts に渡すのは main.ts のコマンド、ほかの .ts は直接動かしたときに動く入口を持つ', (f) => {
+    for (const line of codeLines(f)) {
+      const m = NODE_LINE.exec(line.split(' & ')[0]!.replace(/^if not .*? if not defined ATLAS_SELF_UPDATED /, ''));
+      if (!m) continue;
+      const file = join(CLI_SRC, m[1]!);
+      expect(existsSync(file), file).toBe(true);
+      if (m[1] === 'main.ts') expect(COMMANDS as readonly string[]).toContain(m[2]!.split(' ')[0]);
+      else expect(readFileSync(file, 'utf8')).toMatch(/if \(process\.argv\[1\] && resolve\(process\.argv\[1\]\) === fileURLToPath\(import\.meta\.url\)\)/);
+    }
   });
 
   // git の無い場所(git archive で作ったフォルダなど)では git check-attr が使えないので見ない
@@ -138,7 +175,25 @@ describe('*.bat', () => {
   });
 });
 
-describe('scripts/ensure-atlas.ps1', () => {
+// 起動用の .bat は、依存を確かめる前に launcher-update.ts を動かし、自動で送るタスクは npm install の前でも upload-auto.ts で記録を残す。
+// どちらも依存が欠けていても読めるよう、静的に読むのは node: の標準モジュールと、同じく標準モジュールだけを読むファイルだけにする
+describe('依存が欠けていても動く入口', () => {
+  it('launcher-update.ts が読むのは node: と self-update.ts・upload-auto-files.ts だけ(main.ts を読まない)', () => {
+    expect(staticImports(join(CLI_SRC, 'launcher-update.ts')).filter((m) => !m.startsWith('node:'))).toEqual(['./self-update.ts', './upload-auto-files.ts']);
+  });
+  it('upload-auto.ts は node: と upload-auto-files.ts だけ、self-update.ts と upload-auto-files.ts は node: だけを読む(型だけの import は除く)', () => {
+    expect(staticImports(join(CLI_SRC, 'upload-auto.ts')).filter((m) => !m.startsWith('node:'))).toEqual(['./upload-auto-files.ts']);
+    const valueImports = (f: string) => [...readFileSync(join(CLI_SRC, f), 'utf8').matchAll(/^import\s(?!type\s)[^;]*?from '([^']+)'/gm)].map((m) => m[1]!);
+    expect(valueImports('self-update.ts').filter((m) => !m.startsWith('node:'))).toEqual([]);
+    expect(valueImports('upload-auto-files.ts').filter((m) => !m.startsWith('node:'))).toEqual([]);
+  });
+  it('ATLAS_NO_AUTO_UPDATE=1 なら、launcher-update.ts は何も出さずに 0 で終わる', () => {
+    const r = spawnSync(process.execPath, [join(CLI_SRC, 'launcher-update.ts')], { cwd: ROOT, encoding: 'utf8', env: { ...process.env, ATLAS_NO_AUTO_UPDATE: '1' }, timeout: 60_000 });
+    expect({ status: r.status, stdout: r.stdout, stderr: r.stderr }).toEqual({ status: 0, stdout: '', stderr: '' });
+  });
+});
+
+describe('scripts/ensure-atlas.ps1(前の版の atlas.exe から移るための入口)', () => {
   const buf = readFileSync(join(ROOT, ENSURE));
   const text = buf.subarray(3).toString('utf8');
 
@@ -148,71 +203,104 @@ describe('scripts/ensure-atlas.ps1', () => {
     expect(text.match(/(^|[^\r])\n/g)).toBeNull();
   });
 
-  it('リリースを探すリポジトリは決め打ちせず、origin から決める。取ってきたものは sha256 と版を確かめてから置く', () => {
-    expect(text).toContain('git -C $Repo remote get-url origin');
-    expect(text).not.toMatch(/github\.com\/[A-Za-z0-9-]+\/agent-session-atlas/);
-    expect(text).toContain('atlas.exe.sha256');
-    expect(text).toContain('Get-FileHash -Algorithm SHA256');
-    // 置く前に、取ってきたものの版を atlas --version で確かめる
-    expect(text).toContain('Get-ExeInfo $file');
-    // PowerShell の変数は大文字小文字を区別しない: 置き場所の $Exe を、取ってきた・作ったファイルの $exe で上書きしない(上書きして、置く前に消していた)
-    expect(text.match(/\$exe\b/g) ?? []).toEqual([]);
-  });
-
-  // sha256 はリリースと同じ場所から取るので、リリースを差し替えられると一緒に差し替わる。来歴(attestation)は GitHub の署名で、
-  // このリポジトリのリリースのワークフローが作ったものかを確かめる。gh が無いときは sha256 だけで続け、そのことを出す
-  it('gh があってログインしていれば、取ってきたものを動かす前にビルドの来歴を gh attestation verify で確かめ、合わなければ使わない', () => {
-    expect(text).toContain('gh attestation verify $file --repo $slug --signer-workflow "$slug/.github/workflows/release.yml"');
-    expect(text).toContain('& gh auth status');
-    expect(text.indexOf('Test-Attestation $file $slug')).toBeGreaterThan(text.indexOf('Get-FileHash -Algorithm SHA256'));
-    expect(text.indexOf('Test-Attestation $file $slug')).toBeLessThan(text.indexOf('Get-ExeInfo $file'));
-    expect(text).toContain("if ($script:Attestation -eq 'fail') { return $null }");
-    expect(text).toContain('gh(GitHub CLI)が無いので、ビルドの来歴(attestation)は確かめず、sha256 だけで確かめました');
-  });
-
-  // Windows の Rust(MSVC 向け)はリンカーと、同梱の SQLite のコンパイルに Visual Studio の C++ のビルドツールを使う。
-  // 無いまま cargo build に進むと、分かりにくいリンクのエラーで止まるので、先に足りないものとして案内する
-  it('Windows でビルドする前に、Visual Studio の C++ のビルドツールを vswhere(無ければ PATH の cl.exe と link.exe)で確かめ、無ければ入れるよう案内する', () => {
-    expect(text).toContain("'Microsoft Visual Studio\\Installer\\vswhere.exe'");
-    expect(text).toContain('-requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64');
-    expect(text).toContain("(Test-Tool 'cl.exe') -and (Test-Tool 'link.exe')");
-    expect(text).toContain("if (-not (Test-MsvcTools)) { $missing += 'Visual Studio の C++ のビルドツール(MSVC)' }");
-    expect(text).toContain('https://visualstudio.microsoft.com/visual-cpp-build-tools/');
-  });
-
-  // リリースのワークフローは、配る中身が変わったマージごとにパッチ版のタグを付ける(Cargo.toml の version は上げない)。
-  // 取ってくる版は、HEAD から辿れるいちばん新しいタグ(semver で比べる。git の --sort=-v:refname はプレリリースを後ろに並べるので使わない)
-  it('取ってくる版は HEAD から辿れるいちばん新しいタグ v<x.y.z> で決め、タグが無ければ Cargo.toml の version にする', () => {
-    expect(text).toContain("& git -C $Repo tag --list 'v*' --merged HEAD");
-    expect(text).not.toMatch(/& git [^\r\n]*--sort=/);
-    expect(text).toContain('function Compare-SemVer');
-    expect(text).toMatch(/function Get-WantVersion \{\r\n {2}\$tag = Get-TagVersion\r\n {2}if \(\$tag\) \{ return \$tag \}\r\n {2}return Get-CargoVersion\r\n\}/);
-  });
-
-  // タグを取らずに取得したフォルダ(git clone --no-tags)は、上げなくなった Cargo.toml の version に固定されないよう、一度タグを取ってくる。
-  // 待つのは 20 秒まで。-Check は何も変えないので取りに行かない
-  it('HEAD から辿れるタグが無ければ、-Check でないときだけ、時間を区切って origin からタグを取ってくる', () => {
-    expect(text).toContain("if (-not $best -and -not $Check -and (Invoke-TagFetch)) { $best = Find-NewestTag }");
-    expect(text).toMatch(/Start-Process -FilePath 'git' -ArgumentList @\('fetch', '--quiet', '--tags', 'origin'\)/);
-    expect(text).toContain('$p.WaitForExit(20000)');
-    expect(text).toContain("$env:GIT_TERMINAL_PROMPT = '0'");
-  });
-
-  // 取り下げた版の番号で別のコミットからリリースを作り直したら、前のものを使い続けない
-  it('リリースの実行ファイルは、版に加えて、作ったコミットがタグのコミットと同じかも見る(置いてあるものと、取ってきたもの)', () => {
-    expect(text).toContain('& git -C $Repo rev-list -n 1 "refs/tags/v$best"');
-    expect(text.match(/\$script:WantCommit -and \$info\.Commit -and \$info\.Commit -ne \$script:WantCommit/g)).toHaveLength(2);
-  });
-
-  it('管理者の権限が要る操作をしない', () => {
+  it('管理者の権限が要る操作をしない。この版の .bat と atlas は呼ばない。依存は package-lock.json を書き換えない npm ci で入れる', () => {
     expect(text).not.toMatch(/RunAs|Set-ExecutionPolicy|-Scope\s+(LocalMachine|AllUsers)|Program Files/i);
+    // 文言で .bat の名前を案内するのはよい。動かすのは node(deps-fresh.mjs)と npm と、タスクの操作だけ
+    expect(text).not.toMatch(/main\.ts|launcher-update|^\s*&[^\r\n]*\.bat\b|cmd(\.exe)?\s+\/[cd]/im);
+    expect(text).toContain('ci --no-audit --no-fund');
+    expect(text).not.toMatch(/npm install/);
+  });
+
+  // 偽の Get-ScheduledTask・Set-ScheduledTask・New-ScheduledTaskAction(PowerShell は関数を同じ名前のコマンドより先に使う)で、
+  // 一時フォルダに写したスクリプトを動かす(この PC のタスク スケジューラは読みも書きもしない)。依存の確かめ(deps-fresh.mjs)も偽物
+  describe.skipIf(process.platform !== 'win32')('Windows で、自動で送るタスクを Node の形に登録し直す', () => {
+    let tmp = '';
+    let wrapper = '';
+    beforeAll(() => {
+      tmp = mkdtempSync(join(tmpdir(), 'atlas-ensure-'));
+      wrapper = join(tmp, 'wrapper.ps1');
+      writeFileSync(
+        wrapper,
+        [
+          'param([string]$Script, [string]$TaskArgs, [switch]$Check)',
+          '$global:Calls = @()',
+          'function Get-ScheduledTask { [CmdletBinding()] param($TaskName, $TaskPath) if (-not $TaskArgs) { return $null }; [pscustomobject]@{ TaskName = $TaskName; Actions = @([pscustomobject]@{ Execute = "conhost.exe"; Arguments = $TaskArgs }) } }',
+          'function New-ScheduledTaskAction { [CmdletBinding()] param($Execute, $Argument, $WorkingDirectory) [pscustomobject]@{ Execute = $Execute; Arguments = $Argument; WorkingDirectory = $WorkingDirectory } }',
+          'function Set-ScheduledTask { [CmdletBinding()] param($TaskName, $TaskPath, $Action) $global:Calls += [pscustomobject]@{ TaskName = $TaskName; TaskPath = $TaskPath; Execute = $Action.Execute; Arguments = $Action.Arguments; WorkingDirectory = $Action.WorkingDirectory } }',
+          'if ($Check) { & $Script -Check } else { & $Script }',
+          '$code = $LASTEXITCODE',
+          "[Console]::Out.WriteLine('@@' + (ConvertTo-Json -Compress -Depth 4 -InputObject @{ code = $code; calls = @($global:Calls) }))",
+          '',
+        ].join('\r\n'),
+      );
+    });
+    afterAll(() => rmSync(tmp, { recursive: true, force: true }));
+
+    let n = 0;
+    /** 一時フォルダに、スクリプトと偽の deps-fresh.mjs だけのリポジトリを作る */
+    const makeRepo = (depsOk: boolean): string => {
+      const repo = join(tmp, `repo${n++}`);
+      mkdirSync(join(repo, 'scripts'), { recursive: true });
+      copyFileSync(join(ROOT, ENSURE), join(repo, ENSURE));
+      writeFileSync(join(repo, 'scripts', 'deps-fresh.mjs'), `process.exit(${depsOk ? 0 : 1});\n`);
+      return repo;
+    };
+    const ensure = (repo: string, taskArgs: string, check: boolean) => {
+      const args = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', wrapper, '-Script', join(repo, ENSURE)];
+      // 空の引数は powershell.exe -File が落とすことがあるので、タスクが無いときは渡さない
+      if (taskArgs) args.push('-TaskArgs', taskArgs);
+      if (check) args.push('-Check');
+      const r = spawnSync('powershell.exe', args, { cwd: repo, timeout: 60_000 });
+      const out = decodeConsole(r.stdout);
+      const line = out.split(/\r?\n/).find((l) => l.startsWith('@@'));
+      expect(line, `${out}${decodeConsole(r.stderr)}`).toBeDefined();
+      const j = JSON.parse(line!.slice(2)) as { code: number; calls: Record<string, string>[] | Record<string, string> | null };
+      return { code: j.code, calls: j.calls == null ? [] : Array.isArray(j.calls) ? j.calls : [j.calls], text: out };
+    };
+
+    it('前の版の形(conhost --headless "<このフォルダ>\\bin\\atlas.exe" upload-auto)なら、-Check は 1。引数なしで、自動更新の設定はそのままで node と upload-auto.ts に差し替える', () => {
+      const repo = makeRepo(true);
+      for (const [old, tail] of [
+        [`--headless "${repo}\\bin\\atlas.exe" upload-auto --no-update`, ' --no-update'],
+        [`--headless "${repo}\\bin\\atlas.old-0123abcd.exe" upload-auto`, ''],
+      ] as const) {
+        expect(ensure(repo, old, true)).toMatchObject({ code: 1, calls: [] });
+        const r = ensure(repo, old, false);
+        expect(r.code).toBe(0);
+        expect(r.calls).toHaveLength(1);
+        const call = r.calls[0]!;
+        expect(call).toMatchObject({ TaskName: 'agent-session-atlas-upload', TaskPath: '\\', Execute: 'conhost.exe', WorkingDirectory: repo });
+        const entry = join(repo, 'packages', 'cli', 'src', 'upload-auto.ts').replaceAll('\\', '\\\\');
+        expect(call.Arguments).toMatch(new RegExp(`^--headless "[^"]*node(\\.exe)?" "${entry}"${tail}$`, 'i'));
+        expect(r.text).toContain('自動で送るタスクを、Node.js で動かす形に登録し直しました');
+      }
+    }, 120_000);
+
+    it('もう Node の形のタスク・別のフォルダの atlas.exe のタスク・タスクが無いときは変えない。依存がそろっていれば -Check は 0', () => {
+      const repo = makeRepo(true);
+      for (const args of [
+        `--headless "C:\\node\\node.exe" "${repo}\\packages\\cli\\src\\upload-auto.ts"`,
+        `--headless "${join(tmp, 'other')}\\bin\\atlas.exe" upload-auto`,
+        '',
+      ]) {
+        expect(ensure(repo, args, true)).toMatchObject({ code: 0, calls: [] });
+        expect(ensure(repo, args, false)).toMatchObject({ code: 0, calls: [] });
+      }
+    }, 120_000);
+
+    it('依存がそろっていなければ -Check は 1(何も入れない・変えない)', () => {
+      const repo = makeRepo(false);
+      const r = ensure(repo, `--headless "${repo}\\bin\\atlas.exe" upload-auto`, true);
+      expect(r).toMatchObject({ code: 1, calls: [] });
+      expect(existsSync(join(repo, 'node_modules'))).toBe(false);
+    }, 60_000);
   });
 });
 
-// stop.bat は、どこかのタブが開いたままのサーバや、窓の無い別のフォルダのサーバを止める。実行ファイルが壊れていても・前の版でも止められるよう、
-// atlas.exe を動かさず(ensure-atlas.ps1 と self-update も通らない)、PowerShell の scripts/stop-atlas.ps1 だけを動かす
+// stop.bat は、どこかのタブが開いたままのサーバや、窓の無い別のフォルダのサーバを止める。node や依存が壊れていても止められるよう、
+// atlas を動かさず(launcher-update.ts も npm install も通らない)、PowerShell の scripts/stop-atlas.ps1 だけを動かす
 describe('stop.bat と scripts/stop-atlas.ps1', () => {
-  it('stop.bat は stop-atlas.ps1 に引数を渡して動かし、結果を読めるよう pause してから、その終了コードで終わる。atlas.exe・ensure-atlas.ps1・self-update は動かさない', () => {
+  it('stop.bat は stop-atlas.ps1 に引数を渡して動かし、結果を読めるよう pause してから、その終了コードで終わる。node・更新は動かさない', () => {
     const lines = codeLines(STOP);
     expect(lines.slice(0, 4)).toEqual(['@echo off', 'setlocal', 'chcp 65001 >nul', 'cd /d "%~dp0"']);
     expect(lines.slice(4)).toEqual(['powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\stop-atlas.ps1 %*', 'set "code=%errorlevel%"', 'echo.', 'pause', 'exit /b %code%']);
@@ -224,24 +312,34 @@ describe('stop.bat と scripts/stop-atlas.ps1', () => {
     expect(buf.subarray(0, 3).equals(BOM)).toBe(true);
     expect(text.match(/(^|[^\r])\n/g)).toBeNull();
     expect(text).not.toMatch(/RunAs|Set-ExecutionPolicy|-Scope\s+(LocalMachine|AllUsers)|Program Files/i);
-    // 止める相手は実行ファイルの場所で決める(印の pid は使い回されるので、止める相手を決めるのに使わない)。taskkill /T は親子を pid だけで辿るので使わない
+    // 止める相手は実行ファイル・スクリプトの場所で決める(印の pid は使い回されるので、止める相手を決めるのに使わない)。taskkill /T は親子を pid だけで辿るので使わない
     expect(text).not.toMatch(/taskkill/i);
   });
 
-  // 実際に止める。atlas.exe の代わりに、node の実行ファイルを <フォルダ>\bin\atlas.exe に写して動かす
-  // (node は、サブコマンドと同じ名前のファイル serve・all を、今のフォルダのスクリプトとして動かす)
+  it('stop-atlas.ps1 は、起動用の .bat が動かす入口(main.ts のコマンドと、直接動かす .ts)に名前を付けている', () => {
+    for (const f of LAUNCHERS) {
+      for (const line of codeLines(f)) {
+        const m = NODE_LINE.exec(line.replace(/^if not .*? if not defined ATLAS_SELF_UPDATED /, '').split(' & ')[0]!);
+        if (!m) continue;
+        const sub = m[1] === 'main.ts' ? m[2]!.split(' ')[0]! : m[1]!.replace(/\.ts$/, '');
+        expect(text, `${f}: ${sub}`).toMatch(new RegExp(`'${sub}'\\s+=`));
+      }
+    }
+  });
+
+  // 実際に止める。このフォルダの packages\cli\src の .ts を node で動かしたもの(今の版)と、node の実行ファイルを
+  // <フォルダ>\bin\atlas.exe に写して動かしたもの(前の版。node は、サブコマンドと同じ名前のファイル serve・all を、今のフォルダのスクリプトとして動かす)
   describe.skipIf(process.platform !== 'win32')('Windows で実際に止める', () => {
     const SLEEP = 'setTimeout(() => {}, 120000);';
     // serve は子(cmd → ping)を動かし、その pid を書いてから待つ。all は待つだけ
-    const SCRIPTS = {
-      serve: `const c = require('node:child_process').spawn('cmd.exe', ['/d', '/c', 'ping -n 120 127.0.0.1 >nul'], { stdio: 'ignore' }); require('node:fs').writeFileSync('child-' + process.pid, String(c.pid)); ${SLEEP}`,
-      all: SLEEP,
-    };
+    const SERVE = `const c = require('node:child_process').spawn('cmd.exe', ['/d', '/c', 'ping -n 120 127.0.0.1 >nul'], { stdio: 'ignore' }); require('node:fs').writeFileSync('child-' + process.pid, String(c.pid)); ${SLEEP}`;
+    const MAIN_TS = `import { spawn } from 'node:child_process';\nimport { writeFileSync } from 'node:fs';\nif (process.argv[2] === 'serve') {\n  const c = spawn('cmd.exe', ['/d', '/c', 'ping -n 120 127.0.0.1 >nul'], { stdio: 'ignore' });\n  writeFileSync('child-' + process.pid, String(c.pid));\n}\n${SLEEP}\n`;
     const started: ChildProcess[] = [];
     let tmp = '';
     beforeAll(() => {
       tmp = mkdtempSync(join(tmpdir(), 'atlas-stop-'));
-      for (const [name, body] of Object.entries(SCRIPTS)) writeFileSync(join(tmp, name), body);
+      writeFileSync(join(tmp, 'serve'), SERVE);
+      writeFileSync(join(tmp, 'all'), SLEEP);
     });
     const repos: string[] = [];
     // フォルダごとに powershell.exe を起動するので、既定の 10 秒では足りないことがある(下のテストの上限と同じ理由)
@@ -256,12 +354,17 @@ describe('stop.bat と scripts/stop-atlas.ps1', () => {
     const makeRepo = (name: string): string => {
       const repo = join(tmp, name);
       mkdirSync(join(repo, 'bin'), { recursive: true });
+      mkdirSync(join(repo, 'packages', 'cli', 'src'), { recursive: true });
       copyFileSync(process.execPath, join(repo, 'bin', 'atlas.exe'));
+      writeFileSync(join(repo, 'packages', 'cli', 'src', 'main.ts'), MAIN_TS);
       repos.push(repo);
       return repo;
     };
-    const start = (repo: string, sub: string): ChildProcess => {
-      const c = spawn(join(repo, 'bin', 'atlas.exe'), [sub], { cwd: tmp, stdio: 'ignore' });
+    /** 今の版: node "<フォルダ>\packages\cli\src\main.ts" <sub>。legacy なら前の版: <フォルダ>\bin\atlas.exe <sub> */
+    const start = (repo: string, sub: string, legacy = false): ChildProcess => {
+      const c = legacy
+        ? spawn(join(repo, 'bin', 'atlas.exe'), [sub], { cwd: tmp, stdio: 'ignore' })
+        : spawn(process.execPath, [join(repo, 'packages', 'cli', 'src', 'main.ts'), sub], { cwd: tmp, stdio: 'ignore' });
       started.push(c);
       return c;
     };
@@ -290,7 +393,7 @@ describe('stop.bat と scripts/stop-atlas.ps1', () => {
       expect(r.status).toBe(0);
     }, 60_000);
 
-    it('画面のサーバだけなら尋ねずに、子孫ごと止める。別のフォルダの atlas は止めない。残った印と前の実行ファイルを消す', async () => {
+    it('画面のサーバ(node で main.ts serve)だけなら尋ねずに、子孫ごと止める。別のフォルダの atlas は止めない。残った印と前の実行ファイルを消す', async () => {
       const a = makeRepo('a');
       const b = makeRepo('b');
       const serveA = start(a, 'serve');
@@ -317,12 +420,14 @@ describe('stop.bat と scripts/stop-atlas.ps1', () => {
       expect(existsSync(join(a, 'out', '.serve.json'))).toBe(false);
       expect(existsSync(join(a, 'out', '.job.json'))).toBe(false);
       expect(existsSync(join(a, 'out-folders', 'k', 'out', '.serve.json'))).toBe(false);
+      // 前の版の実行ファイル(bin\atlas*.exe)は、この版は使わないので消す
       expect(existsSync(join(a, 'bin', 'atlas.old-0123abcd.exe'))).toBe(false);
+      expect(existsSync(join(a, 'bin', 'atlas.exe'))).toBe(false);
     }, 60_000);
 
-    it('集計などが動いていれば尋ね、y でなければ止めない。y なら止める。-Yes なら尋ねない', async () => {
+    it('前の版の bin\\atlas.exe の集計も止める。動いていれば尋ね、y でなければ止めない。y なら止める。-Yes なら尋ねない', async () => {
       const c = makeRepo('c');
-      const all = start(c, 'all');
+      const all = start(c, 'all', true);
       await waitFor(() => all.pid !== undefined && alive(all.pid), '集計の起動');
       const no = stop(c, [], 'n\r\n');
       expect(no.text).toContain('集計');
@@ -333,68 +438,14 @@ describe('stop.bat と scripts/stop-atlas.ps1', () => {
       expect(yes.text).toContain('止めました');
       await waitFor(() => !alive(all.pid!), '集計が止まる');
 
+      // 今の版の集計(node で main.ts all)も同じ
       const again = start(c, 'all');
       await waitFor(() => again.pid !== undefined && alive(again.pid), '集計の起動');
       const forced = stop(c, ['-Yes']);
+      expect(forced.text).toContain('集計');
       expect(forced.text).not.toContain('止めますか');
       expect(forced.text).toContain('止めました');
       await waitFor(() => !alive(again.pid!), '集計が止まる');
     }, 60_000);
-  });
-});
-
-describe('TS 版で登録したタスクのための互換の入口(packages/cli/src/upload-auto.ts)', () => {
-  const text = readFileSync(join(ROOT, SHIM), 'utf8');
-  it('node: の標準モジュールだけを読み込む(npm install していなくても動く)', () => {
-    const imports = [...text.matchAll(/from '([^']+)'/g)].map((m) => m[1]);
-    expect(imports.length).toBeGreaterThan(0);
-    expect(imports.filter((m) => !m.startsWith('node:'))).toEqual([]);
-  });
-  it('ensure-atlas.ps1 で実行ファイルを用意してから bin の atlas upload-auto を同じ引数で動かし、登録し直すよう知らせる', () => {
-    expect(text).toContain("join(ROOT, 'scripts', 'ensure-atlas.ps1')");
-    expect(text).toContain("['upload-auto', ...process.argv.slice(2)]");
-    expect(text).toContain('schedule-upload.bat を開くと');
-  });
-});
-
-// 配る atlas.exe に入るものの一覧は 1 つのファイルにだけ書く。リリースのワークフロー(リリースを作るか)と自動の更新(リリースを待つか)が
-// 同じ一覧で決めないと、リリースの出ないコミットを待ち続けたり、リリースより先に進んだりする
-describe('配る中身の一覧(scripts/release-shipped.txt)', () => {
-  const LIST = 'scripts/release-shipped.txt';
-  const specs = readFileSync(join(ROOT, LIST), 'utf8')
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter((l) => l && !l.startsWith('#'));
-  it('リリースのワークフローと自動の更新が、同じファイルを読む(ワークフローに一覧を書かない)', () => {
-    const workflow = readFileSync(join(ROOT, '.github/workflows/release.yml'), 'utf8');
-    expect(workflow).toContain(`< ${LIST} |`);
-    expect(workflow).not.toMatch(/shipped=\(/);
-    const rust = readFileSync(join(ROOT, 'crates/atlas-cli/src/self_update.rs'), 'utf8');
-    expect(rust).toContain(`pub const SHIPPED_LIST: &str = "${LIST}";`);
-  });
-  it('リリースは、依存の脆弱性の検査を通ってからビルドする(devDependencies も含めて見る)', () => {
-    // Windows のランナーは core.autocrlf=true で取り出すので、改行をそろえてからジョブを切り出す
-    const workflow = readFileSync(join(ROOT, '.github/workflows/release.yml'), 'utf8').replace(/\r\n/g, '\n');
-    const job = (name: string) => {
-      const m = workflow.match(new RegExp(`\\n  ${name}:\\n([\\s\\S]*?)(?=\\n  [a-z][\\w-]*:\\n|$)`));
-      expect(m, `ジョブ ${name}`).not.toBeNull();
-      return m![1];
-    };
-    expect(job('windows')).toMatch(/needs: \[plan, audit\]/);
-    const audit = job('audit');
-    expect(audit).toContain('ref: ${{ needs.plan.outputs.ref }}');
-    expect(audit).toContain('cargo deny --locked check');
-    expect(audit).toMatch(/npm audit --audit-level=high/);
-    expect(audit).not.toContain('--omit=dev');
-    // cargo-deny の版は 3 つのワークフローでそろえる
-    const version = (f: string) => readFileSync(join(ROOT, '.github/workflows', f), 'utf8').match(/CARGO_DENY_VERSION: (\S+)/)?.[1];
-    expect(version('release.yml')).toBeDefined();
-    expect(version('release.yml')).toBe(version('ci.yml'));
-    expect(version('release.yml')).toBe(version('deny-schedule.yml'));
-  });
-  it('実行ファイルを作る入力を入れ、テストは除く', () => {
-    expect(specs).toEqual(expect.arrayContaining(['crates', 'Cargo.toml', 'Cargo.lock', 'packages/report', 'package-lock.json', ':(exclude)crates/*/tests/*']));
-    // 一覧そのものと、説明書・スクリプトは入れない(変えてもリリースを作らない)
-    expect(specs.filter((s) => /^(scripts|docs|README)/.test(s))).toEqual([]);
   });
 });

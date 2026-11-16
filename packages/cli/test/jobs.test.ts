@@ -1,7 +1,7 @@
 // Phase 14: atlas serve の画面からの操作(jobs)と記録の表示(/view/)。子プロセスは差し替えて速く回す(本物の起動は e2e/phase14)。
 import { EventEmitter } from 'node:events';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -216,6 +216,8 @@ describe('serve の jobs と記録の表示(Phase 14)', () => {
       [{ kind: 'judge', limit: 10, backend: 'copilot-cli', only: 's1' }, 400],
       [{ kind: 'full' }, 400],
       [{ kind: 'bundle', perPart: 2 }, 400],
+      [{ kind: 'bundle-zip', zip: false }, 400],
+      [{ kind: 'turn-bundle-zip' }, 400],
       [{ kind: 'export', id: 's1' }, 400],
       [{ kind: 'full', id: '..' }, 400],
       [{ kind: 'full', id: 'a/b' }, 400],
@@ -245,6 +247,11 @@ describe('serve の jobs と記録の表示(Phase 14)', () => {
     expect(calls[1].args).toEqual([MAIN_TS, 'export', '--out', out, '--notes-dir', notes]);
     children[1].exit(0);
     await until(async () => (await current()).state !== 'running');
+    // ZIP は束と同じ回に作る(--zip を付けた bundle。依頼ごとの判定には無い)
+    expect((await post({ kind: 'bundle-zip' })).status).toBe(202);
+    expect(calls[2].args).toEqual([MAIN_TS, 'bundle', '--unjudged', '--zip', '--out', out, '--notes-dir', notes]);
+    children[2].exit(0);
+    await until(async () => (await current()).state !== 'running');
 
     // canAutomate: M365 Copilot の自動操作を出すか(サーバが Windows のとき)
     expect((await json('/api/judge/parts')).body).toEqual({ exists: false, canAutomate: process.platform === 'win32' });
@@ -265,6 +272,19 @@ describe('serve の jobs と記録の表示(Phase 14)', () => {
       canAutomate: process.platform === 'win32',
     });
     expect((await json('/api/judge/parts/part-01.md')).body).toEqual({ name: 'part-01.md', text: '# 指示\nパケット s1 s2' });
+    // ZIP: 束の一覧より後に書いたものだけを返す(出力先からの相対パスだけ。フルパスは返さない)。前の束の ZIP は返さない
+    const zip = join(out, 'bundle.zip');
+    await writeFile(zip, 'PK-fake');
+    const z = (await json('/api/judge/parts')).body.zip;
+    expect([z.path, z.bytes, z.file]).toEqual(['bundle.zip', 7, undefined]);
+    expect(z.modifiedAt).toMatch(/Z$/);
+    // ZIP は out/ の下のファイルとして取れる(保存のリンク)
+    const got = await fetch(`${base()}/bundle.zip`);
+    expect([got.status, got.headers.get('content-type'), await got.text()]).toEqual([200, 'application/zip', 'PK-fake']);
+    const old = (await stat(join(out, 'bundle', 'manifest.json'))).mtimeMs - 60_000;
+    await utimes(zip, old / 1000, old / 1000);
+    expect('zip' in (await json('/api/judge/parts')).body).toBe(false);
+    await rm(zip);
     for (const bad of ['part-02.md', '..%2Fsecret.md', 'secret.md']) expect({ bad, status: (await json(`/api/judge/parts/${bad}`)).status }).toEqual({ bad, status: 404 });
 
     const importText = (text: unknown, token: string | null = h!.token) => json('/api/judge/import', { method: 'POST', body: JSON.stringify({ text }) }, token);
@@ -291,6 +311,8 @@ describe('serve の jobs と記録の表示(Phase 14)', () => {
     expect(ok.status).toBe(200);
     expect(ok.body).toMatchObject({ imported: 2, overwritten: 0, unknownIds: ['zz'], total: 2 });
     expect(ok.body.parts.parts[0]).toMatchObject({ name: 'part-01.md', judged: 1 });
+    // 取り込んだ後の一覧も、読んだときと同じ形(M365 Copilot を自動で操作できるかが入る)
+    expect(ok.body.parts.canAutomate).toBe(process.platform === 'win32');
     expect((await json('/api/jobs/judge-preview')).body).toMatchObject({ eligible: 2, judged: 1, pending: 1 });
     expect((await json('/api/judge/parts', {}, null)).status).toBe(403);
   });

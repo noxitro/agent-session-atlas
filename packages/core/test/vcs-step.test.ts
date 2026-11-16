@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { SNAPSHOT_MANIFEST, UPLOAD_VCS_META } from '../src/snapshot.ts';
 import { sessionsTable, retentionHunksTable } from '../src/tables.ts';
 import { applyPathMap, mapPath, parseSenderVcs, runVcsStep, senderVcsJson } from '../src/vcs-step.ts';
+import { summarizeRetention } from '../src/vcs-retention.ts';
 import { extractAiChanges } from '../src/ai-changes.ts';
 import type { SessionRecord } from '../src/types.ts';
 
@@ -216,6 +217,41 @@ describe('runVcsStep(アップロード先から集計し直したとき)', () =
     expect(parseSenderVcs({ ...ok, result: { ...resultOf('s'), hunks: [{ ...resultOf('s').hunks[0], lines: { kept: -1, modified: 0, missing: 0, unattributable: 0 } }] } }, 's')).toBeNull();
     // 知らない VCS の名前は null にして使う
     expect(parseSenderVcs({ ...ok, result: { ...resultOf('s'), vcs: 'cvs' } }, 's')?.vcs).toBeNull();
+  });
+
+  it('照合不可の理由が無ければ unknown(読めなかったと決めつけない)。新しい理由(no_commits)も読める', () => {
+    const ok = { version: 1, sessionId: 's', computedAt: at(11), mode: 'worktree' };
+    const u = { ...resultOf('s').hunks[0], status: 'unattributable', lines: { kept: 0, modified: 0, missing: 0, unattributable: 2 } };
+    const r = parseSenderVcs({ ...ok, result: { ...resultOf('s'), hunks: [u] } }, 's')!;
+    expect([r.outcome, r.reason]).toEqual(['unattributable', 'unknown']);
+    // キーは id, path, status, lines, reason の順(Rust 版と同じ)
+    expect(Object.keys(r.hunks[0])).toEqual(['id', 'path', 'status', 'lines', 'reason']);
+    expect(summarizeRetention([r]).unattributable).toEqual({ unknown: 1 });
+    const n = parseSenderVcs({ ...ok, result: { ...resultOf('s'), hunks: [{ ...u, reason: 'no_commits' }] } }, 's')!;
+    expect([n.outcome, n.reason, n.hunks[0].reason]).toEqual(['unattributable', 'no_commits', 'no_commits']);
+  });
+
+  it('送った側の推定の印・値の出所・まとまりの出所を読む(知っている項目と値だけ)', () => {
+    const res = resultOf('s') as Record<string, any>;
+    res.evaluated = { ...res.evaluated, source: 'estimated' };
+    res.provenance = { ...res.provenance, context: { cwd: 'events', branch: 'workspace', headCommit: 'guessed', extra: 'events' } };
+    res.hunks = [
+      { ...res.hunks[0], status: 'modified', lines: { kept: 1, modified: 2, missing: 0, unattributable: 0 }, similarLines: 1, toolCallId: 'call_1', from: 'args' },
+      // 内訳を超える similarLines・知らない from は使わない(まとまり自体は読む)
+      { ...res.hunks[1], similarLines: 5, from: 'guess' },
+    ];
+    const r = parseSenderVcs({ version: 1, sessionId: 's', computedAt: at(11), mode: 'fixed', result: res }, 's')!;
+    expect(r.evaluated?.source).toBe('estimated');
+    expect(r.provenance.context).toEqual({ cwd: 'events', branch: 'workspace' });
+    expect([r.hunks[0].similarLines, r.hunks[0].toolCallId, r.hunks[0].from]).toEqual([1, 'call_1', 'args']);
+    expect([r.hunks[1].similarLines, r.hunks[1].from]).toEqual([undefined, undefined]);
+    expect(Object.keys(r.hunks[0])).toEqual(['id', 'path', 'status', 'lines', 'similarLines', 'toolCallId', 'from']);
+    expect(summarizeRetention([r])).toMatchObject({ similarLines: 1, evaluatedEstimated: 1 });
+
+    // 比べた版の出所を書かない古い結果も、fixed なら推定した版として数える
+    const old = { ...resultOf('s'), evaluated: { mode: 'fixed', rev: '42', at: at(11) } };
+    const o = parseSenderVcs({ version: 1, sessionId: 's', computedAt: at(11), mode: 'fixed', result: old }, 's')!;
+    expect([o.evaluated?.source, summarizeRetention([o]).evaluatedEstimated]).toEqual([undefined, 1]);
   });
 
   it('送る側の中身(senderVcsJson)は、そのまま読み戻せる', async () => {

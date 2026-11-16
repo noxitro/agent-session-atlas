@@ -1115,6 +1115,8 @@ function buildExec(
 ): ExecProfile {
   const efforts: Record<string, EffortStat> = {};
   const modelEfforts: Record<string, Record<string, EffortStat>> = {};
+  // 本体(agentId が無いか空)のリクエストだけ。サブエージェントは本体と別の推論強度で動くため、分けて持つ
+  const mainModelEfforts: Record<string, Record<string, EffortStat>> = {};
   const initiators: Record<string, number> = {};
   const latency: ExecProfile['latency'] = {};
   const add = (to: Record<string, EffortStat>, key: string, s: EffortStat): void => {
@@ -1129,6 +1131,7 @@ function buildExec(
     const s = { requests: 1, input: u.input, output: u.output, nanoAiu: u.nanoAiu ?? 0 };
     add(efforts, key, s);
     add((modelEfforts[u.model] ??= {}), key, s);
+    if (!u.agentId) add((mainModelEfforts[u.model] ??= {}), key, s);
     inc(initiators, u.initiator ?? UNKNOWN_KEY);
     if (u.ttft != null || u.duration != null) {
       const l = (latency[u.model] ??= { ttft: [], duration: [] });
@@ -1136,7 +1139,8 @@ function buildExec(
       if (u.duration != null) l.duration.push(Math.round(u.duration));
     }
   }
-  if (items.length === 0 && tokens.source === 'shutdown') {
+  const shutdownOnly = items.length === 0 && tokens.source === 'shutdown';
+  if (shutdownOnly) {
     // 明細が無く終了時の累計だけ: セッション中の設定が 1 種類ならその強度、それ以外は不明
     const distinct = new Set(effortChanges.map((c) => c.effort));
     const key = distinct.size === 1 ? [...distinct][0] : UNKNOWN_KEY;
@@ -1144,7 +1148,8 @@ function buildExec(
     add(efforts, key, stat(tokens));
     for (const [m, t] of Object.entries(tokens.byModel)) add((modelEfforts[m] ??= {}), key, stat(t));
   }
-  return { ...rest, efforts, modelEfforts, initiators, latency };
+  // 終了時の累計だけのセッションは、本体とサブエージェントを分けられないので持たない
+  return { ...rest, efforts, modelEfforts, ...(shutdownOnly ? {} : { mainModelEfforts }), initiators, latency };
 }
 
 /** null は「不明」を保つ(どちらかが null なら、もう一方の値) */

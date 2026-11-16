@@ -12,7 +12,7 @@
 import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
-import { codeStamp, SNAPSHOT_MANIFEST, SNAPSHOT_SOURCE, VCS_RETENTION_FILE } from '../../core/src/index.ts';
+import { codeStamp, SNAPSHOT_MANIFEST, SNAPSHOT_REMOVED_DIR, SNAPSHOT_SOURCE, VCS_RETENTION_FILE } from '../../core/src/index.ts';
 
 export const BUILT_FILE = 'built.json';
 
@@ -41,8 +41,11 @@ const OPTIONAL_OUTPUT_FILES = [VCS_RETENTION_FILE] as const;
 /** 無いファイルの印 */
 const ABSENT = 'none';
 
-/** manifest の sessions のうち、元が同じでも変わる項目(1 回目は写した数、2 回目からは前の複製を使った数に入る) */
-const VOLATILE_SESSION_COUNTS = ['copiedFiles', 'reusedFiles', 'dbCopied', 'dbReused'] as const;
+/**
+ * manifest の sessions のうち、元が同じでも変わる項目(1 回目は写した数、2 回目からは前の複製を使った数に入る。
+ * removed は元から無くなったセッションの複製を消した数で、消した次の回に、何も変わっていないのに作り直さないように除く)
+ */
+const VOLATILE_SESSION_COUNTS = ['copiedFiles', 'reusedFiles', 'dbCopied', 'dbReused', 'removed'] as const;
 
 /** ファイルの「大きさ:更新日時」。無ければ null */
 function statKey(path: string): string | null {
@@ -104,7 +107,11 @@ export function inputsKey(p: ReusePaths, options: unknown, configPath: string): 
   }
   add('manifest', manifest);
   const files: string[] = [];
-  for (const e of readdirSync(p.snapshot, { withFileTypes: true, recursive: true })) {
+  // 消す前に退けた複製の消し残り(次の集計で消す)は、集計に使わないのでたどらない(片付いたときに、余計に作り直さない)
+  const entries = readdirSync(p.snapshot, { withFileTypes: true }).flatMap((e) =>
+    e.isDirectory() ? (e.name === SNAPSHOT_REMOVED_DIR ? [] : readdirSync(join(p.snapshot, e.name), { withFileTypes: true, recursive: true })) : [e],
+  );
+  for (const e of entries) {
     if (!e.isFile()) continue;
     const path = join(e.parentPath, e.name);
     const rel = relative(p.snapshot, path).split(sep).join('/');

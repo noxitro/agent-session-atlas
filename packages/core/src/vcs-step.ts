@@ -8,7 +8,7 @@
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { extractAiChanges, type AiChangeSet, type WorkspaceHints } from './ai-changes.ts';
+import { extractAiChanges, type AiChangeSet, type ValueSource, type WorkspaceHints } from './ai-changes.ts';
 import { resolveFilePath } from './classify.ts';
 import { readEvents } from './events.ts';
 import { listSessionDirs, readWorkspaceYaml } from './extract.ts';
@@ -19,8 +19,12 @@ import {
   DEFAULT_LAG_DAYS,
   measureRetention,
   RETENTION_STATUSES,
+  statusOfLines,
   summarizeRetention,
+  tallyRetention,
+  unattributed,
   UNATTRIBUTABLE_REASONS,
+  type Evaluated,
   type HunkRetention,
   type LineCounts,
   type RetentionOptions,
@@ -162,11 +166,6 @@ function lineCounts(v: unknown): LineCounts | null {
   return o;
 }
 
-function statusOfLines(l: LineCounts): RetentionStatus {
-  const counted = l.kept + l.modified + l.missing;
-  return counted === 0 ? 'unattributable' : l.kept === counted ? 'kept' : l.kept + l.modified > 0 ? 'modified' : 'missing';
-}
-
 function hunkOf(v: unknown): HunkRetention | null {
   if (!isObj(v)) return null;
   const id = count(v.id);
@@ -180,10 +179,25 @@ function hunkOf(v: unknown): HunkRetention | null {
   const at = isoOrNull(v.at);
   if (at) h.at = at;
   if (status === 'unattributable') {
-    const reason = typeof v.reason === 'string' && (UNATTRIBUTABLE_REASONS as readonly string[]).includes(v.reason) ? (v.reason as UnattributableReason) : 'read_error';
+    // 理由が無い・読めないときは「読めなかった」と決めつけない
+    const reason = typeof v.reason === 'string' && (UNATTRIBUTABLE_REASONS as readonly string[]).includes(v.reason) ? (v.reason as UnattributableReason) : 'unknown';
     h.reason = reason;
   }
+  // 似た本文で当てた行は、直されて残った行の内訳。超えるものは使わない
+  const similar = count(v.similarLines);
+  if (similar && similar <= lines.modified) h.similarLines = similar;
+  const toolCallId = safeStr(v.toolCallId, 200);
+  if (toolCallId) h.toolCallId = toolCallId;
+  if (v.from === 'diff' || v.from === 'args') h.from = v.from;
   return h;
+}
+
+/** 送った側の、セッションの値(cwd など)をどこから取ったかの記録。知っている項目と値だけ残す */
+function contextSources(v: unknown): Partial<Record<string, ValueSource>> {
+  const out: Partial<Record<string, ValueSource>> = {};
+  if (!isObj(v)) return out;
+  for (const k of ['cwd', 'gitRoot', 'branch', 'headCommit']) if (v[k] === 'events' || v[k] === 'workspace') out[k] = v[k] as ValueSource;
+  return out;
 }
 
 /**
@@ -211,9 +225,9 @@ export function parseSenderVcs(json: unknown, id: string): SessionRetention | nu
   const senderMode = typeof json.mode === 'string' && (EVAL_MODES as readonly string[]).includes(json.mode) ? (json.mode as EvalMode) : null;
   const senderAt = isoOrNull(json.computedAt);
   const e = isObj(r.evaluated) ? r.evaluated : null;
-  const evaluated =
+  const evaluated: Evaluated | null =
     e && typeof e.mode === 'string' && (EVAL_MODES as readonly string[]).includes(e.mode)
-      ? { mode: e.mode as EvalMode, rev: safeStr(e.rev, 200), at: isoOrNull(e.at) ?? senderAt ?? '' }
+      ? { mode: e.mode as EvalMode, rev: safeStr(e.rev, 200), at: isoOrNull(e.at) ?? senderAt ?? '', ...(e.source === 'observed' || e.source === 'estimated' ? { source: e.source } : {}) }
       : senderMode
         ? { mode: senderMode, rev: null, at: senderAt ?? '' }
         : null;
@@ -228,7 +242,7 @@ export function parseSenderVcs(json: unknown, id: string): SessionRetention | nu
     excludedHunks: count(r.excludedHunks) ?? 0,
     counts: { kept: 0, modified: 0, missing: 0, unattributable: 0 },
     lines: { kept: 0, modified: 0, missing: 0, unattributable: 0 },
-    provenance: { aiChanges: 'events', baseline: baseline?.source ?? null, context: {} },
+    provenance: { aiChanges: 'events', baseline: baseline?.source ?? null, context: contextSources(isObj(r.provenance) ? r.provenance.context : null) },
     computedOn: 'sender',
     ...(r.pathMapped === true ? { pathMapped: true } : {}),
     ...(isoOrNull(r.sessionEnd) ? { sessionEnd: isoOrNull(r.sessionEnd) } : {}),
@@ -239,22 +253,9 @@ export function parseSenderVcs(json: unknown, id: string): SessionRetention | nu
   return out;
 }
 
-/** まとまりから件数・行数・結果を数え直す(measureRetention と同じ決め方) */
+/** まとまりから件数・行数・結果を数え直す(measureRetention と同じ決め方。理由が無ければ unknown) */
 function finishCounts(r: SessionRetention): void {
-  r.counts = { kept: 0, modified: 0, missing: 0, unattributable: 0 };
-  r.lines = { kept: 0, modified: 0, missing: 0, unattributable: 0 };
-  for (const h of r.hunks) {
-    r.counts[h.status]++;
-    for (const k of RETENTION_STATUSES) r.lines[k] += h.lines[k];
-  }
-  delete r.reason;
-  if (r.counts.kept + r.counts.modified + r.counts.missing > 0) r.outcome = 'measured';
-  else if (r.counts.unattributable > 0) {
-    r.outcome = 'unattributable';
-    const by = new Map<UnattributableReason, number>();
-    for (const h of r.hunks) if (h.reason) by.set(h.reason, (by.get(h.reason) ?? 0) + 1);
-    r.reason = [...by].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'read_error';
-  } else r.outcome = 'no_ai_changes';
+  tallyRetention(r, 'unknown');
 }
 
 /**
@@ -269,7 +270,7 @@ function notMeasured(set: AiChangeSet): SessionRetention {
     root: null,
     baseline: null,
     evaluated: null,
-    hunks: set.hunks.map((h) => ({ id: h.id, path: h.path, status: 'unattributable', reason: 'not_measured', lines: { kept: 0, modified: 0, missing: 0, unattributable: h.lines.length }, ...(h.at ? { at: h.at } : {}) })),
+    hunks: set.hunks.map((h) => unattributed(h, 'not_measured')),
     excludedHunks: 0,
     counts: { kept: 0, modified: 0, missing: 0, unattributable: 0 },
     lines: { kept: 0, modified: 0, missing: 0, unattributable: 0 },

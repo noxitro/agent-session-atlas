@@ -24,7 +24,7 @@ if errorlevel 1 (
   )
 )
 
-node "%~dp0packages\cli\src\main.ts" setup
+node "%~dp0packages\cli\src\setup.ts"
 if errorlevel 1 (
   echo.
   echo 初期設定に失敗しました。上のメッセージを確認してください。

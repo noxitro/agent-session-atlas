@@ -82,6 +82,40 @@ describe('Phase 7: normalizeSession の実行の性質', () => {
     expect(r.todos).toBeNull();
   });
 
+  it('本体の推論強度(mainModelEfforts)は、サブエージェント(agentId のある明細)を除いて数える。終了時の累計だけなら持たない', async () => {
+    const ur = (dt: number, usage: Record<string, unknown>, agentId?: string): CopilotEvent => ({
+      ...ev(dt, 'session.usage_record', { usage: { inputTokens: 100, outputTokens: 10, copilotUsage: { totalNanoAiu: 1000 }, ...usage } }),
+      ...(agentId != null ? { agentId } : {}),
+    });
+    const r = await normalizeSession({
+      id: 's',
+      events: [
+        ev(0, 'session.start', { reasoningEffort: 'xhigh', context: { cwd: 'X:\\p' } }),
+        ur(1000, { model: 'm1', reasoningEffort: 'xhigh' }),
+        ur(2000, { model: 'm1', reasoningEffort: 'low', initiator: 'sub-agent' }, 'a1'),
+        ur(3000, { model: 'm1', reasoningEffort: 'low', initiator: 'sub-agent' }, 'a1'),
+        // agentId が空の文字列は本体
+        ur(4000, { model: 'm1', reasoningEffort: 'xhigh' }, ''),
+      ],
+    });
+    expect([r.exec.modelEfforts?.m1.xhigh.requests, r.exec.modelEfforts?.m1.low.requests]).toEqual([2, 2]);
+    expect(r.exec.mainModelEfforts).toEqual({ m1: { xhigh: { requests: 2, input: 200, output: 20, nanoAiu: 2000 } } });
+    // JSON の並びは modes・context・efforts・modelEfforts・mainModelEfforts・initiators・latency
+    expect(Object.keys(r.exec)).toEqual(['modes', 'context', 'efforts', 'modelEfforts', 'mainModelEfforts', 'initiators', 'latency']);
+
+    const shutdown = await normalizeSession({
+      id: 'x',
+      events: [
+        ev(0, 'session.start', { reasoningEffort: 'medium' }),
+        ev(5000, 'session.shutdown', { modelMetrics: { m1: { requests: { count: 3, cost: 1 }, usage: { inputTokens: 30, outputTokens: 3 } } }, codeChanges: { linesAdded: 0, linesRemoved: 0, filesModified: [] } }),
+      ],
+    });
+    expect(shutdown.tokens.source).toBe('shutdown');
+    expect(Object.keys(shutdown.exec.modelEfforts ?? {})).not.toHaveLength(0);
+    expect(shutdown.exec.mainModelEfforts).toBeUndefined();
+    expect('mainModelEfforts' in shutdown.exec).toBe(false);
+  });
+
   it('文脈の内訳が usage_record の toolTokenCount しか無いときは source: usage。DB だけのターンのモードは (unknown)', async () => {
     const u = await normalizeSession({
       id: 'u',

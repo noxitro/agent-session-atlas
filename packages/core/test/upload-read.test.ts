@@ -449,12 +449,17 @@ describe('アップロード先から集計し直す: snapshot', () => {
     const people = async (): Promise<Record<string, string | null | undefined>> =>
       Object.fromEntries((await extract(dest, { projects: false })).sessions.map((r) => [r.id, r.person]));
     expect(await people()).toEqual({ s1: 'person-a', s2: 'person-b', s3: null, s4: 'person-b' });
-    // 元から消えたセッションの複製は出力先に残る。前の集計で数えたフォルダを引き継ぐ(人ごとの内訳から外れない)
+    expect(m.sessions.removed).toBeUndefined();
+    // 元から消えたセッションは、複製も消し、数えたフォルダの記録からも外す(送り先から消したセッションを数え続けない)
     await rm(join(root, 'person-b', 'proj-a', 's2'), { recursive: true });
     const again = await snapshot(root, dest);
-    expect(existsSync(join(dest, 'session-state', 's2'))).toBe(true);
-    expect(again.merged?.owners).toEqual({ s1: 'person-a/proj-a', s2: 'person-b/proj-a', s3: 'shared', s4: 'person-b/proj-b' });
-    expect(await people()).toEqual({ s1: 'person-a', s2: 'person-b', s3: null, s4: 'person-b' });
+    expect(existsSync(join(dest, 'session-state', 's2'))).toBe(false);
+    expect(again.sessions.removed).toBe(1);
+    expect(again.merged?.owners).toEqual({ s1: 'person-a/proj-a', s3: 'shared', s4: 'person-b/proj-b' });
+    expect(again.extras?.goneKept).toBeUndefined();
+    expect(await people()).toEqual({ s1: 'person-a', s3: null, s4: 'person-b' });
+    // 消した後は、消す分が無いので件数を書かない
+    expect((await snapshot(root, dest)).sessions.removed).toBeUndefined();
     // 別の人のフォルダに移したら、今あるほうの人になる(前の値より、今の元を先に見る)
     await session(join(root, 'person-a', 'proj-a', 's2'));
     expect((await snapshot(root, dest)).merged?.owners?.s2).toBe('person-a/proj-a');

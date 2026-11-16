@@ -1,9 +1,9 @@
-import { access, copyFile, lstat, mkdir, open, readdir, readFile, realpath, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { access, copyFile, lstat, mkdir, open, readdir, readFile, realpath, rename, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { readDesktopDb } from './desktop.ts';
 import { openWritable, sqlString } from './sqlite.ts';
-import { renameReplacing } from './fs-retry.ts';
+import { removeTree, renameReplacing } from './fs-retry.ts';
 import { parseAtlasBuild, type FolderUpload } from './atlas-version.ts';
 import type { InstalledInventory } from './types.ts';
 
@@ -118,13 +118,14 @@ export interface SnapshotManifest {
    * layout が 'merged' のとき、まとめて読んだフォルダ(元のルートからの相対パス。/ 区切り。1 段下なら名前だけ、2 段下なら <人>/<プロジェクト>。
    * 名前の順)と、同じ id のセッションが複数のフォルダにあって 1 つだけ数えたときに、数えなかったほうの数。
    * owners は、セッションの id ごとの、数えたフォルダ(folders と同じ書き方)。人ごとの内訳に使う。
-   * 元から消えたセッションの複製が出力先に残っているときは、前の集計の値を引き継ぐ。古いマニフェストには無い
+   * 元に本体が無いのに複製を消さなかったセッション(extras.goneKept など)は、前の集計の値を引き継ぐ。古いマニフェストには無い
    */
   merged?: { folders: string[]; duplicates: number; owners?: Record<string, string> };
   since: string | null;
   /** copied が false なら今回は複製できず、前回の複製(bytes が 0 なら無し)を使っている。理由は error */
   databases: Record<string, { copied: boolean; bytes: number; attempts: number; error?: string }>;
-  sessions: { dirs: number; copiedFiles: number; reusedFiles: number; skippedBySince: number; bytes: number; dbCopied?: number; dbReused?: number };
+  /** removed は、アップロード先を読んだとき、元のフォルダから無くなったと確かめられたので複製を消したセッションの数(0 のときは書かない) */
+  sessions: { dirs: number; copiedFiles: number; reusedFiles: number; skippedBySince: number; bytes: number; dbCopied?: number; dbReused?: number; removed?: number };
   /** session.db を複製できなかったセッションと理由(Phase 7) */
   sessionDbErrors?: string[];
   /** インストール済みの skill / プラグインの名前(Phase 6。古いマニフェストには無い) */
@@ -152,8 +153,44 @@ export interface SnapshotManifest {
      * 今回写したセッション(path は元のルートからの相対パス)。無ければ項目ごと無い
      */
     recovered?: { id: string; path: string }[];
+    /** アップロード先を読んだとき、今回は元から読まなかったのに複製を消さなかったセッションと理由。無ければ項目ごと無い */
+    goneKept?: KeptCopy[];
   };
 }
+
+/** 今回の一覧に無いのに、複製を消さなかったセッション(manifest の extras.goneKept)。reason は下の KEPT_* のどれか */
+export interface KeptCopy {
+  id: string;
+  reason: string;
+  /**
+   * 前の集計までに分かっていた、そのセッションのフォルダ(元のルートからの相対パス。/ 区切り。直下なら空)。分からなければ項目ごと無い。
+   * 次の集計が、どこにあったかを確かめるのに使う(元の形が変わって数えたフォルダの記録が書かれない回でも、記録を持ち越す)
+   */
+  folder?: string;
+}
+
+/** 元の場所を読めなかったので、無くなったのか読めないだけなのかを決められない(アクセス権・つながっていない共有フォルダなど) */
+export const KEPT_UNREADABLE_REASON = '元のフォルダを読めなかったので、無くなったかを確かめられない';
+/** 前の集計に、どのフォルダのセッションだったかの記録が無い(前の版が写した複製・途中で止まった集計の複製など) */
+export const KEPT_UNKNOWN_REASON = '前の集計に、どのフォルダのセッションかの記録が無い';
+/** 複製のフォルダを動かせなかった(ほかのプログラムが中のファイルを開いている、など)。次の集計でもう一度試す */
+export const KEPT_BUSY_REASON = '複製を消せなかった(ほかのプログラムが開いている、など)';
+/** 前にあった場所にフォルダがあるのに、今回の一覧には出なかった(元のフォルダの並びが変わって別の形として読まれた・リンクになった、など) */
+export const KEPT_PRESENT_REASON = '元にフォルダはあるが、今回の集計では読まなかった(フォルダの並びが前の集計と変わった・リンクになった、など)';
+/** 前はアップロード先として読んだ場所に、今回は集計できるセッションが 1 件も見つからなかった */
+export const KEPT_NO_SOURCE_REASON = '元のフォルダに、集計できるセッションが見つからなかった';
+
+/** 複製を消さなかった理由と、そのとき利用者ができること(ログとレポートの警告に出す順) */
+export const KEPT_REASONS: readonly (readonly [reason: string, hint: string])[] = [
+  [KEPT_NO_SOURCE_REASON, '元のフォルダ(つながっているか・場所が合っているか)を確かめてから、集計し直してください'],
+  [KEPT_UNREADABLE_REASON, '読めるようになってから集計し直すと、無くなっていたものは出なくなります'],
+  [KEPT_PRESENT_REASON, '元のフォルダの並びを確かめてください(人ごとのフォルダが並ぶ場所の直下に、セッションのフォルダが紛れていないか、など)'],
+  [KEPT_UNKNOWN_REASON, '出なくするには、出力先の snapshot/session-state にある同じ名前のフォルダを消してください'],
+  [KEPT_BUSY_REASON, '開いているプログラムを閉じてから集計し直すと、出なくなります'],
+];
+
+/** 元から無くなったセッションの複製を、消す前に退ける場所(複製先の直下)。退けた後で消す。消し切れなかった分は次の集計で消す */
+export const SNAPSHOT_REMOVED_DIR = '.removed';
 
 export type SourceLayout = 'copilot' | 'flat' | 'merged';
 
@@ -219,6 +256,8 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
   // そのフォルダが並ぶ場所(人ごとのフォルダ)と、もう 1 段上(送り先そのもの。全員の分)は、下のフォルダをまとめて読む
   const shape = await describeSource(src);
   const flat = shape.kind === 'flat';
+  // 集計できるセッションが 1 件も見つからない(どの形でもない)
+  const noSource = shape.kind === 'none';
   const merged = shape.kind === 'merged' ? shape.folders : null;
   // 出力先が別の元から作ったものなら、足さずに止める(前の元のセッションと session-store.db が残っていて、黙って混ざるため)。
   // 前の複製は消さない(元で消したログの、最後の複製かもしれない)
@@ -239,17 +278,10 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
         `フォルダを移したなど、元が同じものだと分かっているなら、${marks.map((x) => x.file).join(' と ')} を消してからやり直すと、今の出力先を使い続けます`,
     );
   }
-  // 前の集計で、セッションごとに数えたフォルダ(元から消えたセッションの複製が出力先に残っているときに引き継ぐ)。
+  // 前の集計の形と、セッションごとに数えたフォルダ。元に本体が無いセッションの複製が出力先に残っているときに引き継ぎ、
+  // 元から無くなったセッションの複製を消すときに、どこにあったかを確かめるのにも使う。
   // 別の元の manifest は上で消してあるので、ここで読めるのは同じ元のものだけ
-  let previousOwners: Record<string, string> = {};
-  if (merged) {
-    try {
-      const o = (await readSnapshotManifest(dest))?.merged?.owners;
-      if (o && typeof o === 'object') previousOwners = o;
-    } catch {
-      /* 前の manifest が読めない(引き継がない) */
-    }
-  }
+  const previous = await readPrevious(dest);
   await mkdir(dest, { recursive: true });
   await writeFile(join(dest, SNAPSHOT_SOURCE), `${JSON.stringify({ sourceRoot: src, startedAt: new Date().toISOString() })}\n`);
 
@@ -345,8 +377,15 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
    * 写すのは後でまとめて並べて行う。写さなかったものの記録は、枠の順に manifest へ移す(並べて写しても順が変わらないように)
    */
   const slots: { pre: SkippedEntry[]; task: SessionTask | null }[] = [];
+  /**
+   * 元にフォルダがあるセッションの id(foldId で大文字小文字をそろえる。sourceIdOf)。写している途中の作業用のフォルダ
+   * (.<id>.uploading)しか無い id は入れ、退けた前のフォルダ(.<id>.old)しか無い id は入れない
+   */
+  const inSource = new Set<string>();
   for (const stateSrc of stateSrcs) {
     for (const ent of listing.get(stateSrc) ?? []) {
+      const sourceId = sourceIdOf(ent.name);
+      if (sourceId != null) inSource.add(sourceId);
       const slot: (typeof slots)[number] = { pre: [], task: null };
       slots.push(slot);
       const skipped = slot.pre;
@@ -428,6 +467,21 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
     if (merged && t.done && t.recoveredFrom != null) ownerFolders[t.name] = folderOf(t.stateSrc);
   }
 
+  // アップロード先を読むときは、元のフォルダから無くなったセッションの複製を消す(送り先から消したセッションを、前の複製から数え続けない)。
+  // 消すのは、前にあった場所を読めて、そこに無いと確かめられたものだけ(読めないフォルダのセッションを、無くなったものとして消さない)。
+  // ~/.copilot を読むときは消さない(Copilot が消したログの、最後の複製かもしれない)
+  if (flat || merged) {
+    const gone = await removeGoneSessions(src, dest, stateDest, inSource, previous);
+    if (gone.removed > 0) manifest.sessions.removed = gone.removed;
+    if (gone.kept.length) extras.goneKept = gone.kept;
+  } else if (noSource && previous.wasUpload()) {
+    // 前はアップロード先として読んだ場所に、今回は集計できるセッションが見つからない(共有フォルダが空に見える・場所が変わった、など)。
+    // 何も消さず、複製ごとのフォルダの記録を持ち越す(この回の manifest には数えたフォルダの記録が無いので、持ち越さないと、
+    // 次に読めたときに、どこにあったかを確かめられなくなる)
+    const kept = await carryAll(stateDest, previous);
+    if (kept.length) extras.goneKept = kept;
+  }
+
   // Phase 11: ~/.copilot 直下の plans/・attachments/(と chats/ の *.md)。logs/ は --snapshot-all、repos/ は写さない。
   // 直下にセッションが並ぶ形・そのフォルダが並ぶ形では、直下のフォルダはセッションかその入れ物なので写さない(写したものとして一覧に出さない)
   if (!flat && !merged) await copyTopLevel(src, dest, all, prune, extras);
@@ -455,13 +509,223 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
     manifest.uploads = await readUploadIndexes(src, flat ? ['.'] : merged!);
   } else manifest.installed = await readInventory(src);
 
-  // 元から消えたセッションの複製が出力先に残っていれば、前の集計で数えたフォルダを引き継ぐ(人ごとの内訳から外さない)
-  for (const [id, folder] of Object.entries(previousOwners)) {
-    if (!(id in ownerFolders) && typeof folder === 'string' && existsSync(join(stateDest, id))) ownerFolders[id] = folder;
+  // 元に本体が無いセッションの複製が出力先に残っていれば(上で消さなかったもの: 作業用のフォルダだけが元に残っている、
+  // 元のフォルダを読めなかった、複製を消せなかった、フォルダはあるが中身が無い、など)、前の集計で数えたフォルダを引き継ぐ
+  // (人ごとの内訳から外さない。次に消すときに、どこにあったかを確かめるのにも要る)
+  if (merged) {
+    for (const [id, folder] of previous.folders) {
+      // 直下にあった(空)という記録は、数えたフォルダにはしない(記録は extras.goneKept が持ち越す)
+      if (folder !== '' && !Object.hasOwn(ownerFolders, id) && existsSync(join(stateDest, id))) ownerFolders[id] = folder;
+    }
   }
 
   await writeFile(join(dest, SNAPSHOT_MANIFEST), JSON.stringify(manifest, null, 2));
   return manifest;
+}
+
+/**
+ * セッションの id を、大文字小文字を区別せずに比べるための形にする。Windows が名前を比べるのと同じく大文字にそろえる
+ * (小文字にそろえると、語末かどうかで形が変わる文字があり、大文字小文字だけ変えた名前が別の名前になる)
+ */
+const foldId = (name: string): string => name.toUpperCase();
+
+/** 前の集計の manifest から読むもの(読めなければ空) */
+class Previous {
+  /** 前の集計の元の形 */
+  readonly layout: SourceLayout | null;
+  /**
+   * セッションの id ごとの、あったフォルダ(元のルートからの相対パス。/ 区切り。直下なら空)。manifest に書いた順。
+   * 数えたフォルダ(merged.owners)と、消さなかった複製が持ち越した記録(extras.goneKept の folder)を合わせたもの
+   */
+  readonly folders: readonly (readonly [id: string, folder: string])[];
+  /** folders を id で引く表(複製が多いとき、1 件ごとに全件を見ない) */
+  private readonly byId: Map<string, string>;
+
+  constructor(layout: SourceLayout | null = null, folders: readonly (readonly [string, string])[] = []) {
+    this.layout = layout;
+    this.folders = folders;
+    this.byId = new Map(folders);
+  }
+
+  /** 前の集計が、アップロード先として読んだものか(形がそうだったか、そのときの記録を持ち越しているか) */
+  wasUpload(): boolean {
+    return this.layout === 'flat' || this.layout === 'merged' || this.folders.length > 0;
+  }
+
+  /** id のセッションが前にあったフォルダ。記録が無ければ、前の集計が直下にセッションが並ぶ形だったときだけ、元のルート */
+  folderOf(id: string): string | null {
+    const f = this.byId.get(id);
+    if (f != null) return f;
+    return this.layout === 'flat' ? '' : null;
+  }
+}
+
+async function readPrevious(dest: string): Promise<Previous> {
+  let v: unknown;
+  try {
+    v = JSON.parse(await readFile(join(dest, SNAPSHOT_MANIFEST), 'utf8'));
+  } catch {
+    return new Previous();
+  }
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return new Previous();
+  const m = v as { layout?: unknown; merged?: { owners?: unknown } | null; extras?: { goneKept?: unknown } | null };
+  const layout = m.layout === 'copilot' || m.layout === 'flat' || m.layout === 'merged' ? m.layout : null;
+  const folders: [string, string][] = [];
+  const owners = m.merged && typeof m.merged === 'object' ? m.merged.owners : undefined;
+  if (owners && typeof owners === 'object' && !Array.isArray(owners)) {
+    for (const [id, f] of Object.entries(owners)) if (typeof f === 'string') folders.push([id, f]);
+  }
+  // 消さなかった複製が持ち越した記録(数えたフォルダの記録があれば、そちらを使う)
+  const kept = m.extras && typeof m.extras === 'object' ? m.extras.goneKept : undefined;
+  if (Array.isArray(kept)) {
+    // 同じ id の記録が 2 つあっても(手で書き換えた manifest など)、先のものだけを使う。順に見る引き継ぎと、表で引く folderOf が食い違わない
+    const known = new Set(folders.map(([id]) => id));
+    for (const k of kept as unknown[]) {
+      if (!k || typeof k !== 'object') continue;
+      const { id, folder } = k as { id?: unknown; folder?: unknown };
+      if (typeof id === 'string' && typeof folder === 'string' && !known.has(id)) {
+        known.add(id);
+        folders.push([id, folder]);
+      }
+    }
+  }
+  return new Previous(layout, folders);
+}
+
+/** 複製先のセッションのフォルダの名前(作業用のフォルダの名前のものは除く。名前の順)。読めなければ空 */
+async function copiedIds(stateDest: string): Promise<string[]> {
+  try {
+    return (await readdir(stateDest, { withFileTypes: true }))
+      .filter((e) => e.isDirectory() && !isUploadWorkDir(e.name))
+      .map((e) => e.name)
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
+/** 元がアップロード先の形に見えない回: 複製を全部残し、複製ごとのフォルダの記録を持ち越す */
+async function carryAll(stateDest: string, previous: Previous): Promise<KeptCopy[]> {
+  return (await copiedIds(stateDest)).map((id) => keptCopy(id, KEPT_NO_SOURCE_REASON, previous.folderOf(id)));
+}
+
+/** KeptCopy を manifest に書く順(id・reason・folder)で作る。フォルダが分からなければ folder を書かない */
+function keptCopy(id: string, reason: string, folder: string | null): KeptCopy {
+  return folder == null ? { id, reason } : { id, reason, folder };
+}
+
+/**
+ * 元のフォルダを読み直して確かめた結果。
+ * - confirmed: 前にあった場所(かその上のフォルダ)を読めて、そこに無い
+ * - present: 元にフォルダがある(数えない形になっただけ・一覧の後で戻った)。消さない
+ * - unreadable: 読めなかった
+ */
+type Gone = 'confirmed' | 'present' | 'unreadable';
+
+/**
+ * セッションのフォルダが並ぶ場所にある名前が、どの id のセッションが元にあることを示すか(foldId の形。示さなければ null)。
+ * - ふつうのフォルダ(<id>)と、写している途中の作業用のフォルダ(.<id>.uploading)は、その id
+ * - 退けた前のフォルダ(.<id>.old)は示さない: 本体も写している途中のものも無く、これだけが残っているのは、共有から消した
+ *   セッションの消し残し。snapshot はこのセッションを写さない(古い中身で戻さない)ので、前に写した複製も数え続けない
+ */
+function sourceIdOf(name: string): string | null {
+  const id = uploadWorkDirId(name);
+  if (id == null) return foldId(name);
+  return name === uploadOldName(id) ? null : foldId(id);
+}
+
+/** フォルダの中の名前から、元にあると分かる id(sourceIdOf)と、名前そのもの(foldId の形。上のフォルダをたどるのに使う) */
+interface StrictNames {
+  ids: Set<string>;
+  names: Set<string>;
+}
+
+/** フォルダの中の名前を読む。subDirs と違い、どんな理由でも読めなければ null(「読めなかった」。無いことの証拠にしない) */
+async function strictNames(dir: string): Promise<StrictNames | null> {
+  let list: string[];
+  try {
+    list = await readdir(dir);
+  } catch {
+    return null;
+  }
+  const out: StrictNames = { ids: new Set(), names: new Set() };
+  for (const name of list) {
+    const id = sourceIdOf(name);
+    if (id != null) out.ids.add(id);
+    out.names.add(foldId(name));
+  }
+  return out;
+}
+
+/**
+ * folder(元のルートからの相対パス。/ 区切り。直下なら空)にあったセッション id が、元から無くなったかを、上のフォルダから順に読み直して確かめる。
+ * 読むだけで、元には触れない。cache は読んだフォルダの覚え書き(同じフォルダを 2 度読まない。読めなかったフォルダは null)
+ */
+async function confirmGone(src: string, folder: string, id: string, cache: Map<string, StrictNames | null>): Promise<Gone> {
+  const read = async (dir: string): Promise<StrictNames | null> => {
+    if (!cache.has(dir)) cache.set(dir, await strictNames(dir));
+    return cache.get(dir)!;
+  };
+  let dir = src;
+  for (const part of folder.split('/').filter((c) => c !== '')) {
+    const here = await read(dir);
+    if (here == null) return 'unreadable';
+    // 上のフォルダ(プロジェクト・人のフォルダ)ごと無くなった
+    if (!here.names.has(foldId(part))) return 'confirmed';
+    dir = join(dir, part);
+  }
+  const here = await read(dir);
+  if (here == null) return 'unreadable';
+  return here.ids.has(foldId(id)) ? 'present' : 'confirmed';
+}
+
+/**
+ * 複製先のセッションのフォルダのうち、元に同じ id のフォルダが無いもの(inSource に無いもの)を、元から無くなったと確かめてから消す。
+ * - どこにあったかは、前の集計の記録(Previous.folderOf)から決める。記録が無ければ消さない
+ * - 消さなかった複製は、理由と、分かっているフォルダを残す(KeptCopy)。次の集計がそのフォルダを確かめる
+ * - その場所を読み直し、読めなければ消さない(アクセス権が無い・共有フォルダが切れた、を「無くなった」とみなさない)
+ * - 名前は大文字小文字を区別せずに比べる(元の名前の大文字小文字だけが変わったときに、写したばかりの複製を消さない)
+ * - 複製は、まず SNAPSHOT_REMOVED_DIR へフォルダごと動かしてから消す。動かせなければ(中のファイルをほかのプログラムが開いている、など)
+ *   そのまま残す: 半分だけ消えた複製を数えることが無く、消せない複製が 1 つあっても集計は止まらない
+ * - 作業用のフォルダの名前のもの(前の版が写したもの)には触れない(数えていないことは extract が警告に出す)
+ */
+async function removeGoneSessions(src: string, dest: string, stateDest: string, inSource: ReadonlySet<string>, previous: Previous): Promise<{ removed: number; kept: KeptCopy[] }> {
+  const out = { removed: 0, kept: [] as KeptCopy[] };
+  const trash = join(dest, SNAPSHOT_REMOVED_DIR);
+  // 前の集計で消し切れなかった分(消せなくても続ける)
+  await removeTree(trash).catch(() => {});
+  const gone = (await copiedIds(stateDest)).filter((id) => !inSource.has(foldId(id)));
+  if (gone.length === 0) return out;
+  const cache = new Map<string, StrictNames | null>();
+  // 動かせない複製は、少し待ってやり直す(ウイルス対策などが一時的に開いていることがある)。待つのは 1 件目だけ:
+  // 待っても動かせなかったら、残りは待たずに試す(開いたままの複製がいくつあっても、待ち時間を積み重ねない)
+  let patient = true;
+  // 1 回の集計ごとに別のフォルダへ動かす(前の分を消し切れていなくても、同じ名前でぶつからない)
+  const batch = join(trash, String(Date.now()));
+  for (const id of gone) {
+    const folder = previous.folderOf(id);
+    if (folder == null) {
+      out.kept.push(keptCopy(id, KEPT_UNKNOWN_REASON, null));
+      continue;
+    }
+    const state = await confirmGone(src, folder, id, cache);
+    if (state === 'present' || state === 'unreadable') {
+      out.kept.push(keptCopy(id, state === 'present' ? KEPT_PRESENT_REASON : KEPT_UNREADABLE_REASON, folder));
+      continue;
+    }
+    try {
+      await mkdir(batch, { recursive: true });
+      const [from, to] = [join(stateDest, id), join(batch, id)];
+      if (patient) await renameReplacing(from, to);
+      else await rename(from, to);
+      out.removed++;
+    } catch {
+      patient = false;
+      out.kept.push(keptCopy(id, KEPT_BUSY_REASON, folder));
+    }
+  }
+  await removeTree(trash).catch(() => {});
+  return out;
 }
 
 /**

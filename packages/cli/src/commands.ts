@@ -1,10 +1,10 @@
 // atlas の各コマンド。元データ(~/.copilot)は core の snapshot 経由でだけ読む(コピーしてから開く)。
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join, posix, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { codeStamp, computeMetrics, currentAtlasBuild, describeAtlasBuilds, summarizeAtlasBuilds, describeSource, extract, readSnapshotManifest, METRICS_SCHEMA_VERSION, readVcsRetention, runVcsStep, snapshot, VCS_RETENTION_FILE, RETENTION_STATUS_LABEL, UNATTRIBUTABLE_REASON_LABEL, type VcsRetentionFile, UPLOAD_OLD_ONLY_REASON, UPLOAD_PROBE_HINT, uploadWorkDirId, type MetricsFile, type SessionRecord, type SessionsFile, type SnapshotManifest } from '../../core/src/index.ts';
+import { codeStamp, computeMetrics, currentAtlasBuild, describeAtlasBuilds, summarizeAtlasBuilds, describeSource, extract, readSnapshotManifest, METRICS_SCHEMA_VERSION, readVcsRetention, runVcsStep, snapshot, VCS_RETENTION_FILE, RETENTION_STATUS_LABEL, UNATTRIBUTABLE_REASON_LABEL, type VcsRetentionFile, UPLOAD_OLD_ONLY_REASON, UPLOAD_PROBE_HINT, uploadWorkDirId, KEPT_REASONS, type MetricsFile, type SessionRecord, type SessionsFile, type SnapshotManifest } from '../../core/src/index.ts';
 import {
   buildReport,
   DEFAULT_TRANSCRIPT_OPTIONS,
@@ -41,11 +41,13 @@ import {
   importJudgments,
   readJudgments,
   buildTurnBundle,
+  decidableNote,
   importTurnJudgmentsText,
   readTurnJudgments,
   runTurnJudge,
   turnImportPhases,
   runJudge,
+  writeBundleZip,
   type BundleManifest,
   type JudgeBackend,
   type RunSummary,
@@ -180,6 +182,14 @@ export async function runSnapshot(p: Paths, since: string | null, log: Log, all 
   log(
     `snapshot: セッションディレクトリ ${m.sessions.dirs}(複製 ${m.sessions.copiedFiles} / 再利用 ${m.sessions.reusedFiles} ファイル、${mb(m.sessions.bytes)}、session.db 複製 ${m.sessions.dbCopied ?? 0} / 再利用 ${m.sessions.dbReused ?? 0})、${ms(performance.now() - t)}`,
   );
+  if (m.sessions.removed) log(`snapshot: 元のフォルダから無くなっていたセッション ${m.sessions.removed} 件の複製を消しました(アップロード先を読むときは、今あるセッションだけを集計します)`);
+  // 今回は元から読まなかったのに、複製を消さなかったもの(理由ごと)
+  const goneKept = m.extras?.goneKept ?? [];
+  for (const [reason, hint] of KEPT_REASONS) {
+    const ids = goneKept.filter((k) => k.reason === reason).map((k) => k.id);
+    if (ids.length)
+      log(`snapshot: 注意 今回は元から読まなかったセッション ${ids.length} 件は、複製を消さず、前に写した複製で数えます(${reason}: ${ids.slice(0, 3).join(' / ')}${ids.length > 3 ? ' ほか' : ''})。${hint}`);
+  }
   // 集計できる形のフォルダではなかったとき(0 件のまま黙って空のレポートを作らないように、指定のしかたを出す)
   if (m.sessions.dirs === 0 && m.sessions.skippedBySince === 0 && (await describeSource(p.home)).kind === 'none')
     log(
@@ -355,9 +365,15 @@ export async function runVcs(p: Paths, log: Log, o: { mode?: 'worktree' | 'commi
       `(${r.computedOn === 'sender' ? `送った側の PC の結果を読んだ${r.senders ? ` ${r.senders.sessions} 件、照合 ${r.senders.from ?? '不明'}〜${r.senders.to ?? '不明'}` : '(添えた結果なし)'}` : `比べる版: ${mode === 'worktree' ? '今の作業ツリー' : mode === 'committed' ? '最後に取り込んだ版' : `セッションの終わりから ${r.lagDays} 日後の版`}`}${r.pathMap ? `、パスの読み替え ${r.pathMap} 件` : ''}、${ms(performance.now() - t)})→ ${p.vcsRetention}`,
   );
   // ログの形が変わると、AI の編集から変更を取り出せなくなる(黙って 0 件にならないよう、数を出す)
-  const unread = r.sessions.reduce((n, x) => n + (x.unreadEdits ?? 0), 0);
-  if (unread) log(`vcs: 注意 ログから変更を取り出せなかった AI の編集 ${unread} 件(${r.sessions.filter((x) => x.unreadEdits).length} セッション)。Copilot のログの形が変わった可能性があります`);
+  if (s.unreadEdits) log(`vcs: 注意 ログから変更を取り出せなかった AI の編集 ${s.unreadEdits} 件(${s.unreadSessions ?? 0} セッション)。Copilot のログの形が変わった可能性があります`);
   if (s.measured) log(`vcs: 変更のまとまり ${(['kept', 'modified', 'missing', 'unattributable'] as const).map((k) => `${r.labels?.[k] ?? RETENTION_STATUS_LABEL[k]} ${s.hunks[k]}`).join('、')}`);
+  // 推定を含む範囲と、数えなかったもの(観測した事実と分けて見られるように)
+  const est = [
+    ...(s.similarLines ? [`似た本文で当てた行 ${s.similarLines}`] : []),
+    ...(s.evaluatedEstimated ? [`比べた版を日時から推定 ${s.evaluatedEstimated} 件`] : []),
+    ...(s.excludedHunks ? [`基準にもともとあった行だけで数えなかったまとまり ${s.excludedHunks}`] : []),
+  ];
+  if (est.length) log(`vcs: 推定・除外 ${est.join('、')}`);
   return r;
 }
 
@@ -501,7 +517,24 @@ export async function runBuild(p: Paths, o: BuildOptions, log: Log): Promise<Bui
 
 const kb = (b: number): string => `${(b / 1024).toFixed(1)} KB`;
 
-export async function runBundle(p: Paths, f: SessionFilter, o: { includeEmpty: boolean; perPart?: number | null; unjudged?: boolean }, log: Log): Promise<BundleManifest> {
+/** --zip の出力先(バンドルのフォルダの隣。out/bundle なら out/bundle.zip) */
+export const bundleZipPath = (bundle: string): string => `${bundle}.zip`;
+
+const isFile = (p: string): boolean => {
+  try {
+    return statSync(p).isFile();
+  } catch {
+    return false;
+  }
+};
+
+export async function runBundle(
+  p: Paths,
+  f: SessionFilter,
+  /** zip: バンドルを 1 つの ZIP にもまとめる(<bundle>.zip) */
+  o: { includeEmpty: boolean; perPart?: number | null; unjudged?: boolean; zip?: boolean },
+  log: Log,
+): Promise<BundleManifest> {
   let { sessions } = await selectSessions(p, f, 'bundle', '先に atlas extract(または atlas all)を実行してください。', log);
   if (o.unjudged) {
     const judged = new Set((await readJudgments(p.judgments))?.items.map((i) => i.sessionId) ?? []);
@@ -523,7 +556,26 @@ export async function runBundle(p: Paths, f: SessionFilter, o: { includeEmpty: b
   log(
     `bundle: パケット ${m.count} 件(依頼の記録が無く対象外 ${m.skipped.length} 件)、合計 ${mb(m.totalBytes)}、最大 ${kb(m.maxBytes)}、本文を中略したもの ${truncated} 件${excerpt ? `、抜粋のみ ${excerpt} 件` : ''} → ${p.bundle}、${ms(performance.now() - t)}`,
   );
-  log('bundle: 外部の LLM に渡すときは bundle フォルダごと ZIP にして、INSTRUCTIONS.md を最初に読ませてください');
+  const zip = bundleZipPath(p.bundle);
+  if (o.zip) {
+    const z = await writeBundleZip(p.bundle, m, zip, basename(p.bundle) || 'bundle');
+    log(`bundle: ZIP にまとめました(${z.files} ファイル、${mb(z.bytes)}、無圧縮。parts/ は入れていません)→ ${zip}`);
+    log('bundle: フォルダやファイルを読めるエージェントに渡し、INSTRUCTIONS.md を最初に読ませてください。返ってきた JSON は atlas judge import <ファイル> で取り込みます');
+  } else {
+    // 前に作った ZIP は中身がこの束と合わなくなるので消す(古い材料を渡させない)。
+    // 消すのは出力先の既定の場所(<out>/bundle.zip。画面が見るのもここ)だけ。--bundle で指した先の隣は、利用者が別に置いたファイルかもしれないので触らない
+    if (isFile(zip)) {
+      if (p.bundle === join(p.out, 'bundle')) {
+        try {
+          await rm(zip);
+          log(`bundle: 前に作った ZIP は中身が古くなったので消しました(${zip})`);
+        } catch (e) {
+          log(`bundle: 前に作った ZIP を消せませんでした(中身は前の束のままです。${zip}): ${(e as Error).message}`);
+        }
+      } else log(`bundle: 注意 ${zip} は今の束より前のものです(--zip を付けて作り直すと作り直します。消していません)`);
+    }
+    log('bundle: 外部の LLM に渡すときは --zip を付けて作った ZIP(またはフォルダごと)を渡し、INSTRUCTIONS.md を最初に読ませてください');
+  }
   if (m.parts?.length) {
     const maxPart = m.parts.reduce((a, x) => Math.max(a, x.bytes), 0);
     log(`bundle: ZIP を渡せないときは parts/ の ${m.parts.length} ファイル(${m.perPart} 件ずつ、最大 ${kb(maxPart)})を 1 つずつ添付してください(指示と JSON Schema も中に入っています)`);
@@ -547,6 +599,8 @@ export async function runTurns(p: Paths, f: SessionFilter, t: TurnsCliOptions, l
     log(
       `turns bundle: 依頼 ${m.count} 件${t.unjudged ? '(判定済みを除く)' : ''}を、M365 Copilot などに添付する ${m.parts.length} ファイル(parts/)と、GitHub Copilot CLI で 1 回ずつ渡す ${m.chunks.length} 個の塊にしました → ${p.turnBundle}${m.skipped.length ? `。本文が読めず外したセッション ${m.skipped.length} 件` : ''}`,
     );
+    const note = decidableNote(m.count, m.decidable);
+    if (note) log(`turns bundle: ${note}`);
     log(`turns bundle: 工程名 ${phases.join(' / ')}(atlas.config.json の phases で変えられます)`);
     return;
   }
@@ -951,7 +1005,7 @@ async function runCommand(o: CliOptions, p: Paths, log: Log): Promise<RunResult>
     case 'export':
       return { paths: p, build: await runBuild(p, { ...f, transcripts: { toolOutput: o.toolOutput, maxChars: o.maxChars, full: o.full } }, log) };
     case 'bundle':
-      await runBundle(p, f, { includeEmpty: o.includeEmpty, perPart: o.perPart, unjudged: o.unjudged }, log);
+      await runBundle(p, f, { includeEmpty: o.includeEmpty, perPart: o.perPart, unjudged: o.unjudged, zip: o.zip }, log);
       return { paths: p };
     case 'turns':
       if (o.turns!.action === 'm365') return runM365Command(o, p, 'turns', o.turns!, log);

@@ -4,7 +4,9 @@
 // - kept(そのまま残る): 数えた行がすべて、照合した時点のファイルに同じ本文である
 // - modified(直されて残る): 一部の行が残っている、または空白の違い・似た本文(文字の 2 字組の重なり)で残っている
 // - missing(見つからない): ファイルは照合できたが、どの行も照合した時点のファイルに見つからない
-// - unattributable(照合不可): リポジトリが無い・基準が決まらない・読めない・ほかのセッションと行が重なる
+// - unattributable(照合不可): リポジトリが無い・基準が決まらない・読めない・ほかのセッションと行が重なる・
+//   比べる版が開始時の基準と同じ(開始時から取り込まれた変更が無い。fixed・committed)
+// 似た本文で当てた行は推定なので、まとまりごとに similarLines として分けて残す。まとまりには出所(toolCallId・from)も添える
 // 数える行: 空白だけの行と、開始時の基準のファイルにもともとあった行は除く(多重集合で数える)。
 // 比べる相手: 照合した時点のファイルから基準のファイルの行を除いた「差分で増えた行」(多重集合)。1 つの行は 1 回しか使わない。
 // 二重計上を防ぐ:
@@ -24,7 +26,25 @@ export const RETENTION_STATUS_LABEL: Record<RetentionStatus, string> = {
   unattributable: '照合不可',
 };
 
-export const UNATTRIBUTABLE_REASONS = ['repo_not_found', 'no_vcs', 'baseline_missing', 'outside_repo', 'read_error', 'concurrent_session', 'later_session', 'not_measured', 'too_recent', 'after_missing'] as const;
+/**
+ * 照合不可の理由(並びは画面の packages/report/src/lib/retention.ts の REASONS と同じ)。
+ * - no_commits: 比べる版(fixed・committed)が開始時の基準と同じ(その間に取り込まれた変更が無い)。worktree と、svn の committed では使わない
+ * - unknown: 照合不可だが理由が記録されていない(送った側の結果に理由が無い・読めない)。読めなかった(read_error)とは決めない
+ */
+export const UNATTRIBUTABLE_REASONS = [
+  'repo_not_found',
+  'no_vcs',
+  'baseline_missing',
+  'outside_repo',
+  'read_error',
+  'concurrent_session',
+  'later_session',
+  'not_measured',
+  'too_recent',
+  'after_missing',
+  'no_commits',
+  'unknown',
+] as const;
 export type UnattributableReason = (typeof UNATTRIBUTABLE_REASONS)[number];
 export const UNATTRIBUTABLE_REASON_LABEL: Record<UnattributableReason, string> = {
   repo_not_found: '作業フォルダがこの PC に無い',
@@ -37,6 +57,8 @@ export const UNATTRIBUTABLE_REASON_LABEL: Record<UnattributableReason, string> =
   not_measured: '送った側で照合していない',
   too_recent: '決まった日数がまだ経っていない',
   after_missing: '比べる版を決められない',
+  no_commits: '開始時から取り込まれた変更が無い',
+  unknown: '理由が記録されていない',
 };
 
 export interface LineCounts {
@@ -55,6 +77,20 @@ export interface HunkRetention {
   lines: LineCounts;
   /** そのまとまりを作った編集の時刻(ISO。工程ごとの集計で、どの依頼のものかを決めるのに使う)。記録が無ければ省略 */
   at?: string;
+  /** lines.modified のうち、空白の違いでなく「似た本文」(2 字組の重なりが下限以上)で当てた行(推定。0 なら省略) */
+  similarLines?: number;
+  /** そのまとまりを作ったツールの呼び出しの ID(ログの toolCallId。どの編集の変更かをたどる)。記録が無ければ省略 */
+  toolCallId?: string;
+  /** 変更をログのどこから取り出したか(diff = 完了イベントの diff、args = 開始イベントの引数)。記録が無ければ省略 */
+  from?: AiHunk['from'];
+}
+
+/** 比べた版。source は比べた版をどう決めたか(estimated = 日時から推定した。fixed)。無ければ、照合したときに VCS で見た版 */
+export interface Evaluated {
+  mode: EvalMode;
+  rev: string | null;
+  at: string;
+  source?: Revision['source'];
 }
 
 export interface SessionRetention {
@@ -67,7 +103,7 @@ export interface SessionRetention {
   root: string | null;
   /** 開始時の基準(observed = ログの記録、estimated = 時刻から推定) */
   baseline: Revision | null;
-  evaluated: { mode: EvalMode; rev: string | null; at: string } | null;
+  evaluated: Evaluated | null;
   hunks: HunkRetention[];
   /** 基準にあった行だけでできていて、数えなかったまとまり */
   excludedHunks: number;
@@ -215,7 +251,8 @@ function classifyFile(
     const b = multiset(fileLines(base));
     for (const l of fileLines(after)) if (l.trim() !== '' && !take(b, l)) added.push(l);
   }
-  type Line = { text: string; state: 'pending' | 'kept' | 'modified' | 'missing' | 'excluded' | UnattributableReason };
+  // similar = 似た本文で当てた行(書き換えたとみなす。数えるのは modified と同じで、推定した行として別にも数える)
+  type Line = { text: string; state: 'pending' | 'kept' | 'modified' | 'similar' | 'missing' | 'excluded' | UnattributableReason };
   const per: { h: AiHunk; lines: Line[]; concurrent: boolean }[] = [];
   for (const h of hunks) {
     const lines: Line[] = [];
@@ -270,7 +307,7 @@ function classifyFile(
       const score = diceGrams(grams, la, g, lb);
       if (score >= bestScore) ((best = j), (bestScore = score));
     }
-    if (best >= 0) ((used[best] = true), (l.state = 'modified'));
+    if (best >= 0) ((used[best] = true), (l.state = 'similar'));
   }
   for (const l of pending()) l.state = 'missing';
 
@@ -283,16 +320,28 @@ function classifyFile(
       continue;
     }
     const lines = emptyLines();
+    let similarLines = 0;
     let reason: UnattributableReason | undefined;
     for (const l of countedLines) {
       if (l.state === 'kept' || l.state === 'modified' || l.state === 'missing') lines[l.state]++;
+      else if (l.state === 'similar') ((lines.modified += 1), (similarLines += 1));
       else ((lines.unattributable += 1), (reason ??= l.state as UnattributableReason));
     }
-    const counted = lines.kept + lines.modified + lines.missing;
-    const status: RetentionStatus = counted === 0 ? 'unattributable' : lines.kept === counted ? 'kept' : lines.kept + lines.modified > 0 ? 'modified' : 'missing';
-    results.push({ id: p.h.id, path: p.h.path, status, ...(status === 'unattributable' ? { reason } : {}), lines, ...(p.h.at ? { at: p.h.at } : {}) });
+    const status = statusOfLines(lines);
+    results.push({ id: p.h.id, path: p.h.path, status, ...(status === 'unattributable' ? { reason } : {}), lines, ...(p.h.at ? { at: p.h.at } : {}), ...(similarLines ? { similarLines } : {}), ...evidence(p.h) });
   }
   return { results, excluded };
+}
+
+/** 行の内訳から決まる状態 */
+export function statusOfLines(l: LineCounts): RetentionStatus {
+  const counted = l.kept + l.modified + l.missing;
+  return counted === 0 ? 'unattributable' : l.kept === counted ? 'kept' : l.kept + l.modified > 0 ? 'modified' : 'missing';
+}
+
+/** まとまりの出所(どのツールの呼び出しの、ログのどこから取った変更か) */
+export function evidence(h: AiHunk): Pick<HunkRetention, 'toolCallId' | 'from'> {
+  return { ...(h.toolCallId ? { toolCallId: h.toolCallId } : {}), from: h.from };
 }
 
 /** 決まった数だけ同時に進める(結果は items の順) */
@@ -319,8 +368,38 @@ function memo<T>(cache: Map<string, Promise<T>>, key: string, load: () => Promis
   return p;
 }
 
-function unattributed(h: AiHunk, reason: UnattributableReason): HunkRetention {
-  return { id: h.id, path: h.path, status: 'unattributable', reason, lines: { ...emptyLines(), unattributable: h.lines.length }, ...(h.at ? { at: h.at } : {}) };
+/** まとまりを丸ごと照合不可にしたもの(vcs-step.ts の照合していないセッションも同じ形) */
+export function unattributed(h: AiHunk, reason: UnattributableReason): HunkRetention {
+  return { id: h.id, path: h.path, status: 'unattributable', reason, lines: { ...emptyLines(), unattributable: h.lines.length }, ...(h.at ? { at: h.at } : {}), ...evidence(h) };
+}
+
+/** 2 つの版の印が同じ版か。git はログの短い印(7 字以上)でも、前方が一致すれば同じとみなす(大文字小文字は区別しない) */
+export function sameRevision(kind: VcsKind, a: string, b: string): boolean {
+  const x = a.trim();
+  const y = b.trim();
+  if (!x || !y) return false;
+  if (kind !== 'git') return x === y;
+  const [short, long] = x.length <= y.length ? [x.toLowerCase(), y.toLowerCase()] : [y.toLowerCase(), x.toLowerCase()];
+  return short.length >= 7 && long.startsWith(short);
+}
+
+/** まとまりから件数・行数を数え直し、結果(measured / unattributable / no_ai_changes)と理由を決める。理由はいちばん多いもの(同じ数なら先に出たもの) */
+export function tallyRetention(r: SessionRetention, fallback?: UnattributableReason): void {
+  r.counts = emptyCounts();
+  r.lines = emptyLines();
+  for (const h of r.hunks) {
+    r.counts[h.status]++;
+    for (const k of RETENTION_STATUSES) r.lines[k] += h.lines[k];
+  }
+  delete r.reason;
+  if (r.counts.kept + r.counts.modified + r.counts.missing > 0) r.outcome = 'measured';
+  else if (r.counts.unattributable > 0) {
+    r.outcome = 'unattributable';
+    const byReason = new Map<UnattributableReason, number>();
+    for (const h of r.hunks) if (h.reason) byReason.set(h.reason, (byReason.get(h.reason) ?? 0) + 1);
+    const top = [...byReason].sort((a, b) => b[1] - a[1])[0]?.[0] ?? fallback;
+    if (top) r.reason = top;
+  } else r.outcome = 'no_ai_changes';
 }
 
 /**
@@ -366,16 +445,19 @@ export async function measureRetention(sets: readonly AiChangeSet[], opts: Reten
     const endMs = toMs(ctx.end);
     const fixedAt = mode === 'fixed' && endMs != null ? new Date(endMs + lagDays * DAY_MS).toISOString() : null;
     const tooRecent = mode === 'fixed' && (endMs == null || endMs + lagDays * DAY_MS > nowMs);
+    // 版を調べるコマンドが失敗したら例外(読めなかった)。版が無い(null)とは分ける
     const afters = new Map<VcsRepo, Promise<string | null>>();
     const afterRevOf = (repo: VcsRepo): Promise<string | null> => {
       let r = afters.get(repo);
       if (!r) {
         const branch = repo.kind === 'git' && sessionRepo?.repo === repo ? ctx.branch : null;
-        r = memo(revCache, `${repoKey(repo)}\0at\0${fixedAt}\0${branch ?? ''}`, () => repo.revisionAt(fixedAt!, branch).catch(() => null));
+        r = memo(revCache, `${repoKey(repo)}\0at\0${fixedAt}\0${branch ?? ''}`, () => repo.revisionAt(fixedAt!, branch));
         afters.set(repo, r);
       }
       return r;
     };
+    // 照合した時点の版(committed の比べる版と、evaluated の印)
+    const currentRevOf = (repo: VcsRepo): Promise<string | null> => memo(revCache, repoKey(repo), () => repo.currentRevision());
 
     // セッションの作業フォルダの VCS(ファイルが別のリポジトリにあれば、そのファイルの場所で探し直す)
     const sessionDir = ctx.gitRoot ?? ctx.cwd;
@@ -443,15 +525,29 @@ export async function measureRetention(sets: readonly AiChangeSet[], opts: Reten
         }
         const rev = b.revision.rev;
         const fk = filePathKey(path);
-        const base = await memo(readCache, `${repoKey(repo)}\0at\0${rev}\0${fk}`, () => repo.readAt(rev, path));
-        let after: string | null;
+        // 比べる版(fixed: 終わりから決まった日数後の版、committed: 最後に取り込んだ版。worktree はディスクなので無い)
+        let afterRev: string | null = null;
         if (mode === 'fixed') {
-          const afterRev = await afterRevOf(repo);
+          afterRev = await afterRevOf(repo);
           if (!afterRev) {
             result.hunks.push(...hunks.map((h) => unattributed(h, 'after_missing')));
             continue;
           }
-          after = await memo(readCache, `${repoKey(repo)}\0at\0${afterRev}\0${fk}`, () => repo.readAt(afterRev, path));
+        } else if (mode === 'committed' && repo.kind !== 'svn') {
+          // svn の「今の版」は作業コピーのルートの版で、ファイルを取り込んだだけでは進まない(update するまで古いまま)。
+          // 基準と同じに見えても取り込みが無いとは言えないので、svn の committed ではこの判定をしない(BASE を読んで照合する)
+          afterRev = await currentRevOf(repo);
+        }
+        // 比べる版が開始時の基準と同じなら、その間に取り込まれた変更が無い(AI の行は必ず見つからない)ので、照合不可にする
+        if (afterRev != null && sameRevision(repo.kind, afterRev, rev)) {
+          result.hunks.push(...hunks.map((h) => unattributed(h, 'no_commits')));
+          continue;
+        }
+        const base = await memo(readCache, `${repoKey(repo)}\0at\0${rev}\0${fk}`, () => repo.readAt(rev, path));
+        let after: string | null;
+        if (mode === 'fixed') {
+          const r = afterRev!;
+          after = await memo(readCache, `${repoKey(repo)}\0at\0${r}\0${fk}`, () => repo.readAt(r, path));
         } else {
           const m = mode;
           after = await memo(readCache, `${repoKey(repo)}\0after\0${m}\0${fk}`, () => repo.readAfter(m, path));
@@ -468,24 +564,18 @@ export async function measureRetention(sets: readonly AiChangeSet[], opts: Reten
       const repo = sessionRepo.repo;
       if (mode === 'fixed') {
         // 比べた時点は、セッションの終わりから決まった日数後(照合した日ではない)
-        if (fixedAt && !tooRecent) result.evaluated = { mode, rev: await afterRevOf(repo), at: fixedAt };
+        // その時点の版は、取り込みの日時から推定したもの(日時の後に取り込みが遅れて記録された版などは外れうる)
+        if (fixedAt && !tooRecent) result.evaluated = { mode, rev: await afterRevOf(repo).catch(() => null), at: fixedAt, source: 'estimated' };
       } else {
-        const rev = await memo(revCache, repoKey(repo), () => repo.currentRevision().catch(() => null));
-        result.evaluated = { mode, rev, at: now };
+        result.evaluated = { mode, rev: await currentRevOf(repo).catch(() => null), at: now };
       }
     }
     result.hunks.sort((a, b) => a.id - b.id);
-    for (const h of result.hunks) {
-      result.counts[h.status]++;
-      for (const k of RETENTION_STATUSES) result.lines[k] += h.lines[k];
-    }
-    const measured = result.counts.kept + result.counts.modified + result.counts.missing;
-    if (measured > 0) result.outcome = 'measured';
-    else if (result.counts.unattributable > 0) {
-      result.outcome = 'unattributable';
-      const byReason = new Map<UnattributableReason, number>();
-      for (const h of result.hunks) if (h.reason) byReason.set(h.reason, (byReason.get(h.reason) ?? 0) + 1);
-      result.reason = [...byReason].sort((a, b) => b[1] - a[1])[0]?.[0];
+    tallyRetention(result);
+    // 作業フォルダに VCS が無く、ファイルの場所のリポジトリだけで照合できたときも、比べた時点と見方は残す
+    // (版はリポジトリごとに違いうるので印は付けない)。無いと、日数や推定した版の数から外れる
+    if (!result.evaluated && result.outcome === 'measured') {
+      result.evaluated = mode === 'fixed' && fixedAt ? { mode, rev: null, at: fixedAt, source: 'estimated' } : { mode, rev: null, at: now };
     }
     return result;
   });
@@ -506,26 +596,46 @@ export interface RetentionSummary {
   hunks: Record<RetentionStatus, number>;
   lines: LineCounts;
   byVcs: Partial<Record<VcsKind, number>>;
+  // 以下は記録の欠け・推定の範囲(0 なら省略。古い結果には無い)
+  /** 編集はあったが、変更の中身がログに無く取り出せなかった数(渡したすべてのセッション。分母に入らない欠測) */
+  unreadEdits?: number;
+  /** unreadEdits のあるセッションの数 */
+  unreadSessions?: number;
+  /** 照合できたセッションで、基準のファイルにもともとある行だけだったので数えなかったまとまり */
+  excludedHunks?: number;
+  /** 照合できたセッションの lines.modified のうち、似た本文で当てた(推定した)行 */
+  similarLines?: number;
+  /** 照合できたセッションのうち、比べた版を日時から推定したもの(fixed) */
+  evaluatedEstimated?: number;
 }
 
 /** 照合の範囲と、照合できたセッションでの内訳 */
 export function summarizeRetention(results: readonly SessionRetention[]): RetentionSummary {
   const s: RetentionSummary = { sessions: results.length, withAiChanges: 0, measured: 0, unattributable: {}, baselineEstimated: 0, hunks: emptyCounts(), lines: emptyLines(), byVcs: {} };
+  const extra = { unreadEdits: 0, unreadSessions: 0, excludedHunks: 0, similarLines: 0, evaluatedEstimated: 0 };
   for (const r of results) {
+    // 中身を取り出せなかった編集は、ほかに AI の変更が無いセッションでも数える(欠測の範囲)
+    if (r.unreadEdits && r.unreadEdits > 0) ((extra.unreadEdits += r.unreadEdits), (extra.unreadSessions += 1));
     if (r.outcome === 'no_ai_changes') continue;
     s.withAiChanges++;
     if (r.outcome === 'unattributable') {
-      const k = r.reason ?? 'read_error';
+      // 理由が無いときは「読めなかった」と決めつけない
+      const k = r.reason ?? 'unknown';
       s.unattributable[k] = (s.unattributable[k] ?? 0) + 1;
       continue;
     }
     s.measured++;
     if (r.baseline?.source === 'estimated') s.baselineEstimated++;
+    // fixed の版はいつも日時から決めた推定(source の無い古い送った側の結果も、見方で数える)
+    if (r.evaluated && (r.evaluated.mode === 'fixed' || r.evaluated.source === 'estimated')) extra.evaluatedEstimated++;
+    extra.excludedHunks += r.excludedHunks;
+    for (const h of r.hunks) extra.similarLines += h.similarLines ?? 0;
     if (r.vcs) s.byVcs[r.vcs] = (s.byVcs[r.vcs] ?? 0) + 1;
     for (const k of RETENTION_STATUSES) {
       s.hunks[k] += r.counts[k];
       s.lines[k] += r.lines[k];
     }
   }
+  for (const [k, v] of Object.entries(extra) as [keyof typeof extra, number][]) if (v) s[k] = v;
   return s;
 }

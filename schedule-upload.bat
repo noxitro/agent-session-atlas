@@ -24,7 +24,7 @@ if errorlevel 1 (
   )
 )
 
-node "%~dp0packages\cli\src\main.ts" upload-schedule
+node "%~dp0packages\cli\src\upload-schedule.ts"
 set "code=%errorlevel%"
 echo. & pause & exit /b %code%
 

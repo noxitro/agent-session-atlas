@@ -1,5 +1,6 @@
 // 表計算ソフトで開く CSV(依頼ごと・セッションごと)。Excel が UTF-8 と判断できるよう先頭に BOM を付け、行末は CRLF。
 // 列の並びと見出しはここだけで決める(atlas metrics の out/tables/ と、グループの書き出しが同じものを使う)。
+import { mainEffortCell, mainEffortOf, mainModelCell } from './main-effort.ts';
 import { isEmptySession } from './metrics.ts';
 import { followedByFix, isStuck, MISMATCH_LABEL, OUTCOME_LABEL, PHASE_LABEL, REQUEST_KIND_LABEL, sessionTurns, type Mismatch, type Outcome, type RequestKind } from './turns.ts';
 import { TOOL_KINDS, type SessionRecord, type ToolKind } from './types.ts';
@@ -207,6 +208,7 @@ export function sessionsTable(sessions: SessionRecord[], humanHours: Map<string,
     'プロジェクト',
     'クライアント',
     'ブランチ',
+    '利用者',
     '開始',
     '終了',
     '所要(分)',
@@ -217,6 +219,8 @@ export function sessionsTable(sessions: SessionRecord[], humanHours: Map<string,
     '次の依頼で直し・差し戻し',
     '応答',
     'モデル',
+    '本体のモデル',
+    '本体の推論強度',
     '入力トークン',
     '出力トークン',
     'AIU',
@@ -241,12 +245,14 @@ export function sessionsTable(sessions: SessionRecord[], humanHours: Map<string,
   for (const s of sessions) {
     if (isEmptySession(s)) continue;
     const turns = sessionTurns(s);
+    const main = mainEffortOf(s.exec?.mainModelEfforts);
     rows.push([
       s.id,
       s.name ?? '',
       s.project,
       s.client ?? '',
       s.branch ?? '',
+      s.person ?? '',
       s.createdAt,
       s.updatedAt,
       min(s.durationMs),
@@ -257,6 +263,8 @@ export function sessionsTable(sessions: SessionRecord[], humanHours: Map<string,
       turns.filter(followedByFix).length,
       s.assistantMessages,
       s.models.join(' '),
+      mainModelCell(main),
+      mainEffortCell(main),
       s.tokens.input,
       s.tokens.output,
       aiu(s.tokens.nanoAiu),

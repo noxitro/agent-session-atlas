@@ -24,7 +24,7 @@ if errorlevel 1 (
   )
 )
 
-node "%~dp0packages\cli\src\main.ts" upload-project
+node "%~dp0packages\cli\src\upload-project.ts"
 set "code=%errorlevel%"
 echo. & pause & exit /b %code%
 

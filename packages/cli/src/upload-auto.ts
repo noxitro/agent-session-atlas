@@ -6,22 +6,27 @@
 // (新しい版がこの PC で動かない)、その版を覚えて前の版に戻し、前の版で動かし直して送る(runUpdateFlow)。
 // 依存が欠けていても(npm install の前など)記録と通知が残るよう、ここで読むのは node: の標準モジュールだけにし、ほかは動かすときに読む
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  alive,
+  atlasRunning,
   AUTO_AGGREGATE_LOG_FILE,
   AUTO_LOG_FILE,
   AUTO_STATUS_FILE,
-  AUTO_UPDATE_STATE_FILE,
-  JOB_LOCK_NAME,
+  autoOutDir,
   NO_UPDATE_FLAG,
   PARENT_ENV,
-  SERVE_STATE_NAME,
+  readAvoid,
   UPDATED_ENV,
+  writeAvoid,
   type AutoStatusFile,
   type AutoUpdateResult,
 } from './upload-auto-files.ts';
+
+// 動いているかの判定と、この PC で動かなかった版の覚え方は、開くたびの更新(launcher-update.ts)と共通にするため upload-auto-files.ts に置いた
+export { atlasRunning, readAvoid, writeAvoid };
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -112,62 +117,6 @@ $x.LoadXml("<toast><visual><binding template=""ToastGeneric""><text>$(& $esc $en
 const REPO_ROOT = resolve(HERE, '..', '..', '..');
 /** 呼び出し元が止められていないかを見る間隔 */
 const PARENT_POLL_MS = 30_000;
-
-/** プロセスがあるか(jobs.ts の alive と同じ。依存を読まずに確かめるので、ここにも置く) */
-function alive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return (e as NodeJS.ErrnoException).code === 'EPERM';
-  }
-}
-
-/**
- * このチェックアウトで atlas の処理が動いているか(動いていれば、その説明)。見るのは、いつもの出力先と、別のフォルダを開いた出力先
- * (<out>-folders/<キー>/out)の、集計の印(.job.json)とサーバの印(.serve.json)。印のプロセスが無ければ、動いていないとみなす
- */
-export function atlasRunning(outDir: string): string | null {
-  const dirs = [outDir];
-  try {
-    const root = `${outDir}-folders`;
-    for (const e of readdirSync(root, { withFileTypes: true })) if (e.isDirectory()) dirs.push(join(root, e.name, 'out'));
-  } catch {
-    /* 別のフォルダを開いたことが無い */
-  }
-  for (const dir of dirs) {
-    for (const [file, what] of [
-      [JOB_LOCK_NAME, '集計など'],
-      [SERVE_STATE_NAME, '画面のサーバ'],
-    ] as const) {
-      try {
-        const pid = (JSON.parse(readFileSync(join(dir, file), 'utf8')) as { pid?: unknown }).pid;
-        if (typeof pid === 'number' && pid !== process.pid && alive(pid)) return `${what}。${dir}`;
-      } catch {
-        /* 印が無い・読めない */
-      }
-    }
-  }
-  return null;
-}
-
-/** 前にこの PC で動かなかった版(もっと新しい版が出るまで使わない) */
-export function readAvoid(outDir: string): string | null {
-  try {
-    const j = JSON.parse(readFileSync(join(outDir, AUTO_UPDATE_STATE_FILE), 'utf8')) as { avoid?: unknown };
-    return typeof j.avoid === 'string' && j.avoid ? j.avoid : null;
-  } catch {
-    return null;
-  }
-}
-
-export function writeAvoid(outDir: string, sha: string, note: string): void {
-  try {
-    writeFileSync(join(outDir, AUTO_UPDATE_STATE_FILE), `${JSON.stringify({ avoid: sha, at: new Date().toISOString(), note }, null, 2)}\n`);
-  } catch {
-    /* 覚えられないだけ(次の回も新しい版を試し、同じように前の版に戻す) */
-  }
-}
 
 export interface UpdateFlowDeps {
   env: Record<string, string | undefined>;
@@ -261,7 +210,7 @@ export async function runUpdateFlow(d: UpdateFlowDeps): Promise<{ update: AutoUp
 
 async function main(): Promise<void> {
   // 置き場は atlas.bat と同じ既定(out/)。依存を読む前に決める(読めなくても記録を残すため)。ATLAS_OUT は試すとき用
-  const outDir = process.env.ATLAS_OUT ? resolve(process.env.ATLAS_OUT) : resolve(HERE, '..', '..', '..', 'out');
+  const outDir = autoOutDir(REPO_ROOT);
   mkdirSync(outDir, { recursive: true });
   const logPath = join(outDir, AUTO_LOG_FILE);
   // 記録は回ごとに書き直す。新しい版にして動かし直した側は、前の側が書いた記録(更新の経過)に続けて書く

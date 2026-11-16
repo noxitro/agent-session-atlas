@@ -9,7 +9,7 @@ import { resolveInstructions } from './instructions.ts';
 import { normalizeSession } from './normalize.ts';
 import { ProjectResolver, type ProjectResolverOptions } from './project.ts';
 import { ATLAS_JUDGE_PROJECT, HOME_PROJECT, TEMP_PROJECT } from './project-keys.ts';
-import { DESKTOP_JSON, hasSessionFile, isUploadWorkDir, mapLimit, personOfFolder, readSnapshotManifest, SESSION_STORE_JSON, SNAPSHOT_SESSION_DB, UPLOAD_OLD_ONLY_REASON, UPLOAD_SESSION_META, UPLOAD_WORK_REASON, uploadWorkDirId } from './snapshot.ts';
+import { DESKTOP_JSON, hasSessionFile, isUploadWorkDir, KEPT_REASONS, mapLimit, personOfFolder, readSnapshotManifest, SESSION_STORE_JSON, SNAPSHOT_SESSION_DB, UPLOAD_OLD_ONLY_REASON, UPLOAD_SESSION_META, UPLOAD_WORK_REASON, uploadWorkDirId } from './snapshot.ts';
 import { desktopForSession, type DesktopData, type DesktopSessionInfo } from './desktop.ts';
 import { openReadOnly } from './sqlite.ts';
 import { WikiClassifier, type WikiSpec } from './wiki.ts';
@@ -444,6 +444,12 @@ export async function extract(snapshotDir: string, opts: ExtractOptions = {}): P
       `本体のフォルダが無く、アップロードの置き換えで退けた前のフォルダだけが残っているセッション ${new Set(oldOnlyRows.map(oldOnlyId)).size} 件は、数えていない(${oldOnly.slice(0, 3).join('、')}${oldOnly.length > 3 ? ' ほか' : ''})。` +
         '共有から消したセッションなら、このフォルダも消すと出なくなる。消した覚えが無ければ、送った PC でもう一度アップロードすると戻る',
     );
+  }
+  // 今回は元から読まなかったのに、複製を消さなかったもの(前に写した複製で数えている)
+  const goneKept = manifest?.extras?.goneKept ?? [];
+  for (const [reason, hint] of KEPT_REASONS) {
+    const ids = goneKept.filter((k) => k.reason === reason && dirs.has(k.id)).map((k) => k.id);
+    if (ids.length) messages.push(`今回は元から読まなかったセッション ${ids.length} 件は、前に写した複製で数えている(${reason}: ${ids.slice(0, 3).join('、')}${ids.length > 3 ? ' ほか' : ''})。${hint}`);
   }
   // 前の版が写した作業用のフォルダが出力先に残っているとき(今の版は写さない)。数えないので、前の集計より件数が減った理由を出す
   const stale = listed.work;

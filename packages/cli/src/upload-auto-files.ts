@@ -1,5 +1,11 @@
 // 自動で送ったときに残すファイルの名前と、結果の形(upload-auto.ts が書き、upload-schedule.ts が読んで見せる)。
-// upload-auto.ts は依存が欠けていても記録を残すため、ここには import を置かない(互いに読み合うと、起動したときに止まるため、両方からここを読む)
+// 自動で送るタスク(upload-auto.ts)・その登録(upload-schedule.ts)・起動用の .bat が開くたびの更新(launcher-update.ts)が
+// 同じものを見る出力先・atlas が動いているかの判定・この PC で動かなかった版も、ここに置く。
+// upload-auto.ts と launcher-update.ts は依存が欠けていても動くため、ここで読むのは node: の標準モジュールだけにする
+// (互いに読み合うと、起動したときに止まるため、どちらからもここを読む)
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+
 /** タスクが動かすもの(packages/cli/src/ の中) */
 export const AUTO_ENTRY_NAME = 'upload-auto.ts';
 
@@ -52,3 +58,67 @@ export const AUTO_UPDATE_STATE_FILE = 'auto-update.json';
  */
 export const JOB_LOCK_NAME = '.job.json';
 export const SERVE_STATE_NAME = '.serve.json';
+
+/**
+ * 自動で送るタスク・その登録・開くたびの更新が見る出力先(atlas.bat と同じ既定の <リポジトリ>/out。環境変数 ATLAS_OUT は試すとき用)。
+ * 動いている atlas(atlasRunning)と、この PC で動かなかった版(readAvoid)を探す場所なので、3 つで同じ場所を見る
+ */
+export function autoOutDir(repoRoot: string, env: Record<string, string | undefined> = process.env): string {
+  return env.ATLAS_OUT ? resolve(env.ATLAS_OUT) : resolve(repoRoot, 'out');
+}
+
+/** プロセスがあるか(jobs.ts の alive と同じ。依存を読まずに確かめるので、ここにも置く) */
+export function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/**
+ * このチェックアウトで atlas の処理が動いているか(動いていれば、その説明)。見るのは、いつもの出力先と、別のフォルダを開いた出力先
+ * (<out>-folders/<キー>/out)の、集計の印(.job.json)とサーバの印(.serve.json)。印のプロセスが無ければ、動いていないとみなす
+ */
+export function atlasRunning(outDir: string): string | null {
+  const dirs = [outDir];
+  try {
+    const root = `${outDir}-folders`;
+    for (const e of readdirSync(root, { withFileTypes: true })) if (e.isDirectory()) dirs.push(join(root, e.name, 'out'));
+  } catch {
+    /* 別のフォルダを開いたことが無い */
+  }
+  for (const dir of dirs) {
+    for (const [file, what] of [
+      [JOB_LOCK_NAME, '集計など'],
+      [SERVE_STATE_NAME, '画面のサーバ'],
+    ] as const) {
+      try {
+        const pid = (JSON.parse(readFileSync(join(dir, file), 'utf8')) as { pid?: unknown }).pid;
+        if (typeof pid === 'number' && pid !== process.pid && alive(pid)) return `${what}。${dir}`;
+      } catch {
+        /* 印が無い・読めない */
+      }
+    }
+  }
+  return null;
+}
+
+/** 前にこの PC で動かなかった版(もっと新しい版が出るまで使わない) */
+export function readAvoid(outDir: string): string | null {
+  try {
+    const j = JSON.parse(readFileSync(join(outDir, AUTO_UPDATE_STATE_FILE), 'utf8')) as { avoid?: unknown };
+    return typeof j.avoid === 'string' && j.avoid ? j.avoid : null;
+  } catch {
+    return null;
+  }
+}
+
+export function writeAvoid(outDir: string, sha: string, note: string): void {
+  try {
+    writeFileSync(join(outDir, AUTO_UPDATE_STATE_FILE), `${JSON.stringify({ avoid: sha, at: new Date().toISOString(), note }, null, 2)}\n`);
+  } catch {
+    /* 覚えられないだけ(次の回も新しい版を試し、同じように前の版に戻す) */
+  }
+}

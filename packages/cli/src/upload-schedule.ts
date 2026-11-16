@@ -9,11 +9,13 @@
 //    (「ログオンしていなくても動かす」にすると、パスワードを預けるか、ネットワークに出られない動かし方になる)
 //  - 電池で動いているときも動かし、電池に切り替わっても止めない(ノート PC で毎回飛ばされないように)
 //  - 窓は出さない(conhost.exe --headless)。2 時間で打ち切り、前の回が動いていれば重ねない
+// 開いたときに、このフォルダの前の版(bin\atlas.exe で動いていた版)の形で登録したタスクだと分かれば、時刻と自動更新の設定はそのままで、
+// node で upload-auto.ts を動かす形に登録し直す(別のフォルダの atlas.exe のタスクは、尋ねずに付け替えない)。
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AUTO_ENTRY_NAME, AUTO_LOG_FILE, AUTO_STATUS_FILE, NO_UPDATE_FLAG, type AutoStatusFile } from './upload-auto-files.ts';
+import { AUTO_ENTRY_NAME, AUTO_LOG_FILE, AUTO_STATUS_FILE, autoOutDir, NO_UPDATE_FLAG, type AutoStatusFile } from './upload-auto-files.ts';
 
 /** タスク スケジューラでの名前(ライブラリの直下。サブフォルダは、作る権限が無い PC があるため使わない) */
 export const TASK_NAME = 'agent-session-atlas-upload';
@@ -159,6 +161,27 @@ export function nodeOf(args: string): string | null {
   return /^--headless "([^"]+)"/.exec(args)?.[1] ?? null;
 }
 
+/**
+ * 前の版(Rust で作った bin\atlas.exe で動いていた版)で登録したタスクか。その版は、conhost に
+ * `--headless "<フォルダ>\bin\atlas.exe" upload-auto [--no-update]` を渡していた(置き換えで移した atlas.old-<…>.exe のこともある)
+ */
+export function isExeTask(args: string): boolean {
+  return exeTaskFolder(args) != null;
+}
+
+/** 前の版で登録したタスクが動かしていたフォルダ(<フォルダ>\bin\atlas.exe の <フォルダ>)。前の版の形でなければ null */
+export function exeTaskFolder(args: string): string | null {
+  const exe = /^\s*--headless\s+"([^"]+)"\s+upload-auto(?:\s|$)/.exec(args)?.[1];
+  if (exe == null || !/(^|[\\/])atlas(\.old-[0-9a-f]+)?\.exe$/i.test(exe)) return null;
+  return exe.replace(/[\\/]+[^\\/]+$/, '').replace(/[\\/]+[^\\/]+$/, '');
+}
+
+/** 同じフォルダか(Windows のパスは大文字と小文字を区別しない。末尾の区切りは見ない) */
+function sameFolder(a: string, b: string): boolean {
+  const norm = (p: string): string => resolve(p).replace(/[\\/]+$/, '').toLowerCase();
+  return norm(a) === norm(b);
+}
+
 export interface Scheduler {
   query(): Promise<TaskState>;
   /** update: 送る前に atlas を新しい版にするか(既定はする) */
@@ -255,6 +278,8 @@ export interface ScheduleOptions {
   pollMs?: number;
   /** ファイルがあるか(テストでは偽物を渡す) */
   exists?: (p: string) => boolean;
+  /** このリポジトリの直下(前の版のタスクが、このフォルダのものかを見る。既定はこのファイルから決める) */
+  repo?: string;
 }
 
 const yes = (a: string): boolean => /^(?:y|yes|はい)$/i.test(a.normalize('NFKC'));
@@ -313,8 +338,23 @@ export async function runSchedule(io: ScheduleIo, o: ScheduleOptions): Promise<v
   if (task.exists) {
     io.print(`  毎日 ${task.times.length ? listTimes(task.times) : '(時刻不明)'} に送ります${task.nextRun ? `(次: ${when(task.nextRun)})` : ''}。`);
     if (task.state === 'Disabled') io.print('  ただし、タスク スケジューラで「無効」になっています。t で登録し直すと有効に戻ります。');
-    const node = nodeOf(task.arguments);
-    if (node && !exists(node)) io.print(`  登録したときの Node.js が見つかりません(${node})。t で登録し直してください。`);
+    const exeFolder = exeTaskFolder(task.arguments);
+    if (exeFolder != null) {
+      // 前の版(atlas.exe で動いていた版)で登録したタスク。時刻と自動更新の設定はそのままで、node で upload-auto.ts を動かす形にする
+      // (前の版の atlas.exe は、この版を取り込んだときに scripts/ensure-atlas.ps1 で登録し直すが、それができなかった PC のため)。
+      // 別のフォルダの atlas で登録したタスクは、尋ねずに付け替えない(そのフォルダの schedule-upload.bat か、ここで t)
+      if (!sameFolder(exeFolder, o.repo ?? REPO_ROOT)) {
+        io.print(`  前の版(atlas.exe で動かす版)で、別のフォルダ(${exeFolder})の atlas が登録したタスクです。t で登録し直すと、このフォルダの atlas を Node.js で動かすようにします。`);
+      } else if (!task.times.length) {
+        io.print('  前の版(atlas.exe で動かす版)で登録したタスクです。t で時刻を入れて登録し直してください(Node.js で動くようにします)。');
+      } else {
+        await o.scheduler.register(task.times, updatesOf(task.arguments));
+        io.print('  前の版(atlas.exe で動かす版)で登録したタスクだったので、Node.js で動くように登録し直しました(時刻と自動更新はそのままです)。');
+      }
+    } else {
+      const node = nodeOf(task.arguments);
+      if (node && !exists(node)) io.print(`  登録したときの Node.js が見つかりません(${node})。t で登録し直してください。`);
+    }
     io.print(`  atlas の自動更新: ${updatesOf(task.arguments) ? '送る前に、atlas を新しい版にします' : 'しません(u で、送る前に新しい版にするよう切り替えられます)'}`);
     if (last) {
       io.print(`  ${describeStatus(last)}`);
@@ -398,7 +438,6 @@ export async function runSchedule(io: ScheduleIo, o: ScheduleOptions): Promise<v
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const { consoleIo } = await import('./upload-project.ts');
   const { defaultConfigPath, loadConfig } = await import('./config.ts');
-  const { resolvePaths } = await import('./commands.ts');
   const c = consoleIo(async () => null);
   try {
     if (process.platform !== 'win32') {
@@ -409,8 +448,8 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       await runSchedule(c.io, {
         scheduler: taskScheduler(),
         config: () => loadConfig(defaultConfigPath(), false),
-        // ATLAS_OUT は試すとき用(upload-auto.ts と同じ出力先を見る)
-        outDir: process.env.ATLAS_OUT ? resolve(process.env.ATLAS_OUT) : resolvePaths({ home: null, out: null, judgments: null }).out,
+        // upload-auto.ts と同じ出力先を見る(ATLAS_OUT は試すとき用)
+        outDir: autoOutDir(REPO_ROOT),
       });
       process.exitCode = 0;
     }

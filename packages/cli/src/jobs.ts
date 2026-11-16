@@ -3,6 +3,7 @@
 // - judge:   子プロセス `judge-flow.ts --limit <n> --backend <b> --out <out> --notes-dir <notes>`(bundle → judge run → export)
 // - full:    サーバ内で 1 件だけ全文記録を書く(writeFullRecord。atlas.html・coverage.json・他のセッションは触らない)
 // - bundle:  子プロセス `main.ts bundle --unjudged …`(チャットに添付する評価バンドルを未判定のセッションだけで作る。LLM は呼ばない)
+// - bundle-zip: 子プロセス `main.ts bundle --unjudged --zip …`(同じ評価バンドルを作り、1 つの ZIP にもまとめる。フォルダを読めるエージェントに渡す用。LLM は呼ばない)
 // - export:  子プロセス `main.ts export …`(チャットの返答を取り込んだ後、判定をレポートに反映する)
 // - turn-bundle: 子プロセス `main.ts turns bundle --unjudged …`(依頼ごとの判定でチャットに添付するファイルを作る。LLM は呼ばない)
 // - turn-judge:  子プロセス `judge-flow.ts --turns --limit <n> …`(依頼ごとの判定を GitHub Copilot CLI で回し、レポートを作り直す)
@@ -14,7 +15,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isSafeMemoId } from '../../report/src/index.ts';
 
-export const JOB_KINDS = ['refresh', 'judge', 'full', 'bundle', 'export', 'turn-bundle', 'turn-judge', 'm365', 'turn-m365'] as const;
+export const JOB_KINDS = ['refresh', 'judge', 'full', 'bundle', 'bundle-zip', 'export', 'turn-bundle', 'turn-judge', 'm365', 'turn-m365'] as const;
 export type JobKind = (typeof JOB_KINDS)[number];
 /** 画面から始める判定のバックエンド(従量課金の anthropic は CLI だけ) */
 export const JOB_BACKENDS = ['copilot-cli'] as const;
@@ -130,6 +131,7 @@ export type JobRequest =
   | { kind: 'judge'; limit: number; backend: JobBackend }
   | { kind: 'full'; id: string }
   | { kind: 'bundle' }
+  | { kind: 'bundle-zip' }
   | { kind: 'export' }
   | { kind: 'turn-bundle' }
   | { kind: 'turn-judge'; limit: number }
@@ -163,6 +165,7 @@ const KEYS: Record<JobKind, string[]> = {
   judge: ['kind', 'limit', 'backend'],
   full: ['kind', 'id'],
   bundle: ['kind'],
+  'bundle-zip': ['kind'],
   export: ['kind'],
   'turn-bundle': ['kind'],
   'turn-judge': ['kind', 'limit'],
@@ -180,7 +183,7 @@ export function parseJobRequest(body: Record<string, unknown>, knownId: (id: str
   if (typeof kind !== 'string' || !(JOB_KINDS as readonly string[]).includes(kind)) throw new JobError(400, `kind は ${JOB_KINDS.join(' / ')} のどれかです`);
   const extra = Object.keys(body).filter((k) => !KEYS[kind as JobKind].includes(k));
   if (extra.length) throw new JobError(400, `${kind} では使えない項目です: ${extra.join(', ')}`);
-  if (kind === 'refresh' || kind === 'bundle' || kind === 'export' || kind === 'turn-bundle' || kind === 'm365' || kind === 'turn-m365') return { kind };
+  if (kind === 'refresh' || kind === 'bundle' || kind === 'bundle-zip' || kind === 'export' || kind === 'turn-bundle' || kind === 'm365' || kind === 'turn-m365') return { kind };
   if (kind === 'turn-judge') {
     const { limit } = body;
     if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 0 || limit > TURN_LIMIT_MAX) throw new JobError(400, `limit には 0〜${TURN_LIMIT_MAX} の整数を指定してください(判定する依頼の数の上限)`);
@@ -210,6 +213,8 @@ export function jobArgs(req: JobRequest, p: { outDir: string; notesDir: string; 
   if (req.kind === 'refresh') return [p.main ?? MAIN_TS, 'all', ...(p.home ? ['--home', p.home] : []), ...common];
   if (req.kind === 'judge') return [p.judgeFlow ?? JUDGE_FLOW_TS, '--limit', String(req.limit), '--backend', req.backend, ...common];
   if (req.kind === 'bundle') return [p.main ?? MAIN_TS, 'bundle', '--unjudged', ...common];
+  // 束と ZIP を同じ回に作る(前の束から作った ZIP を渡させない)
+  if (req.kind === 'bundle-zip') return [p.main ?? MAIN_TS, 'bundle', '--unjudged', '--zip', ...common];
   if (req.kind === 'export') return [p.main ?? MAIN_TS, 'export', ...common];
   if (req.kind === 'turn-bundle') return [p.main ?? MAIN_TS, 'turns', 'bundle', '--unjudged', ...common];
   if (req.kind === 'turn-judge') return [p.judgeFlow ?? JUDGE_FLOW_TS, '--turns', '--limit', String(req.limit), ...common];
@@ -275,6 +280,7 @@ const LABEL: Record<JobKind, string> = {
   judge: '工数を判定する',
   full: '全文を作る',
   bundle: '添付ファイルを作る',
+  'bundle-zip': 'ZIP を作る',
   export: 'レポートに反映する',
   'turn-bundle': '依頼の判定の添付ファイルを作る',
   'turn-judge': '依頼を判定する',

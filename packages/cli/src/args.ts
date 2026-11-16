@@ -103,6 +103,8 @@ export interface CliOptions {
   perPart: number | null;
   /** bundle: judgments.json で判定済みのセッションを入れない */
   unjudged: boolean;
+  /** bundle: バンドルを 1 つの ZIP(<bundle>.zip)にもまとめる */
+  zip: boolean;
   /** extract: 一時フォルダとみなすフォルダ(指定すると既定の一時フォルダの判定を置き換える)。未指定は null */
   tempDirs: string[] | null;
   /** extract: 設定ファイルの場所。未指定は null(環境変数 ATLAS_CONFIG、無ければリポジトリ直下の atlas.config.json) */
@@ -204,6 +206,8 @@ export const USAGE = `使い方: atlas <コマンド> [オプション]
   --include-empty    bundle: 依頼の記録が無いセッションもパケットにする
   --per-part <n>     bundle: parts/ の 1 ファイルに入れるパケットの数(既定 5)
   --unjudged         bundle: 判定済み(judgments.json にある)セッションを入れない
+  --zip              bundle: バンドルを 1 つの ZIP(<out>/bundle.zip。無圧縮)にもまとめる。フォルダを読めるエージェントや
+                     ローカルの LLM に渡すとき用(parts/ は入れない)
   --temp-dir <dir>   extract: このフォルダ配下を「(一時フォルダ)」にまとめる(複数指定可)。指定すると既定の判定
                      (%TEMP% と AppData\\Local\\Temp・/tmp のパターン)を使わない
   --snapshot-all     snapshot: 既定で写さない大きなもの(rewind-snapshots、一覧に無い名前のもの、logs/)も写す
@@ -271,6 +275,7 @@ export function parseCli(argv: string[]): CliOptions {
         'include-empty': { type: 'boolean', default: false },
         'per-part': { type: 'string' },
         unjudged: { type: 'boolean', default: false },
+        zip: { type: 'boolean', default: false },
         'temp-dir': { type: 'string', multiple: true },
         config: { type: 'string' },
         'tool-output': { type: 'string' },
@@ -416,6 +421,7 @@ export function parseCli(argv: string[]): CliOptions {
   if ((values['tool-output'] != null || values['max-chars'] != null) && cmd !== 'export') throw new UsageError('--tool-output と --max-chars は export でだけ使えます');
   if (values['per-part'] != null && cmd !== 'bundle') throw new UsageError('--per-part は bundle でだけ使えます');
   if (values.unjudged && cmd !== 'bundle' && cmd !== 'turns') throw new UsageError('--unjudged は bundle と turns bundle でだけ使えます');
+  if (values.zip && cmd !== 'bundle') throw new UsageError('--zip は bundle でだけ使えます');
   if (values.full && cmd !== 'export') throw new UsageError('--full は export でだけ使えます');
   if ((values['snapshot-all'] || values['snapshot-prune']) && !['snapshot', 'all', 'export', 'open'].includes(cmd)) throw new UsageError('--snapshot-all と --snapshot-prune は snapshot / all / export / open で使えます');
   const vcsMode = values['vcs-mode'] ?? null;
@@ -449,6 +455,7 @@ export function parseCli(argv: string[]): CliOptions {
     includeEmpty: values['include-empty'] ?? false,
     perPart: posInt(values['per-part'], '--per-part', 1),
     unjudged: values.unjudged ?? false,
+    zip: values.zip ?? false,
     tempDirs: values['temp-dir'] && values['temp-dir'].length ? values['temp-dir'] : null,
     config: values.config ?? null,
     toolOutput: toolOutput as 'fail' | 'all' | 'none',

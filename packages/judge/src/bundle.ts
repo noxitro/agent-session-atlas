@@ -1,5 +1,5 @@
 // 評価バンドルの生成: <bundleDir>/sessions/<id>.md + manifest.json + INSTRUCTIONS.md + schema.json + parts/part-<番号>.md
-// ZIP は作らない(Node 標準で作れず、依存を増やさないため)。フォルダごと ZIP にして外部 LLM に渡すか、
+// ZIP は zip.ts が作る(atlas bundle --zip)。ZIP かフォルダごと外部 LLM に渡すか、
 // ZIP を渡せない相手(M365 Copilot のようにテキストの添付だけ)には parts/ のファイルを 1 つずつ渡す。
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';

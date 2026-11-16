@@ -24,9 +24,7 @@ for (const [script, args] of [
   ['fresh-checkout.ts', [NAME, BASE]],
   ['checkout-smoke.ts', [join(BASE, NAME)]],
 ] as const) {
-  // clone した状態でのビルド(scripts/ensure-atlas.ps1)は、このリポジトリの target/ を使う(依存のクレートのビルドを使い回す。CARGO_TARGET_DIR があればそれ)
-  const env = { ...process.env, CARGO_TARGET_DIR: process.env.CARGO_TARGET_DIR ?? join(ROOT, 'target') };
-  const r = spawnSync(process.execPath, [join(ROOT, 'scripts', script), ...args], { cwd: ROOT, stdio: 'inherit', env });
+  const r = spawnSync(process.execPath, [join(ROOT, 'scripts', script), ...args], { cwd: ROOT, stdio: 'inherit' });
   if (r.status !== 0) {
     console.log(`smoke: 確かめたフォルダは ${BASE} に残しました`);
     process.exit(r.status ?? 1);

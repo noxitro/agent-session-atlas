@@ -8,7 +8,7 @@ import { normalizeSession } from '../../core/src/normalize.ts';
 import type { CopilotEvent, SessionRecord } from '../../core/src/types.ts';
 import type { JudgeBackend } from '../src/backends/types.ts';
 import { buildBundle } from '../src/bundle.ts';
-import { buildTurnBundle, buildTurnPrompt, chunksOf, collectTurnTexts, DEFAULT_TURN_LIMITS } from '../src/turn-bundle.ts';
+import { buildTurnBundle, buildTurnPrompt, chunksOf, collectTurnTexts, decidableNote, DEFAULT_TURN_LIMITS } from '../src/turn-bundle.ts';
 import { runTurnJudge, turnImportPhases, turnItemsFromTexts } from '../src/turn-run.ts';
 import { importTurnJudgmentsText, readTurnJudgments, turnItemProblems } from '../src/turn-schema.ts';
 
@@ -64,21 +64,29 @@ describe('依頼の判定の形', () => {
   });
 });
 
+/** 依頼 n 件のセッションを作り、スナップショットに events.jsonl を書く(extras なら自動継続とサブエージェントの発言も混ぜる) */
+async function sessionWithTurns(snap: string, id: string, n: number, extras: boolean): Promise<SessionRecord> {
+  const events: CopilotEvent[] = [ev(0, 'session.start', { context: { cwd: 'X:\\p' } })];
+  for (let i = 1; i <= n; i++) {
+    events.push(ev(i * 1000, 'user.message', { content: `依頼 ${i} の本文` }));
+    if (extras && i === 3) events.push(ev(i * 1000 + 50, 'user.message', { content: '(自動継続)', isAutopilotContinuation: true }));
+    events.push(ev(i * 1000 + 100, 'assistant.message', { content: `応答 ${i}` }));
+    if (extras) events.push(ev(i * 1000 + 200, 'assistant.message', { content: 'サブエージェントの発言', parentToolCallId: 'x' }));
+  }
+  await mkdir(join(snap, 'session-state', id), { recursive: true });
+  await writeFile(join(snap, 'session-state', id, 'events.jsonl'), events.map((e) => JSON.stringify(e)).join('\n'));
+  return normalizeSession({ id, events });
+}
+
+/** 塊の並び(「セッション ID:依頼番号,…」) */
+const chunkLabels = (xs: { sessionId: string; turns: number[] }[]): string[] => xs.map((c) => `${c.sessionId}:${c.turns.join(',')}`);
+
 describe('判定に渡すファイル', () => {
   let d: string;
   let s: SessionRecord;
   beforeEach(async () => {
     d = await mkdtemp(join(tmpdir(), 'atlas-turnb-'));
-    const events: CopilotEvent[] = [ev(0, 'session.start', { context: { cwd: 'X:\\p' } })];
-    for (let i = 1; i <= 8; i++) {
-      events.push(ev(i * 1000, 'user.message', { content: `依頼 ${i} の本文` }));
-      if (i === 3) events.push(ev(i * 1000 + 50, 'user.message', { content: '(自動継続)', isAutopilotContinuation: true }));
-      events.push(ev(i * 1000 + 100, 'assistant.message', { content: `応答 ${i}` }));
-      events.push(ev(i * 1000 + 200, 'assistant.message', { content: 'サブエージェントの発言', parentToolCallId: 'x' }));
-    }
-    s = await normalizeSession({ id: 's1', events });
-    await mkdir(join(d, 'snapshot', 'session-state', 's1'), { recursive: true });
-    await writeFile(join(d, 'snapshot', 'session-state', 's1', 'events.jsonl'), events.map((e) => JSON.stringify(e)).join('\n'));
+    s = await sessionWithTurns(join(d, 'snapshot'), 's1', 8, true);
   });
   afterEach(async () => {
     await rm(d, { recursive: true, force: true });
@@ -90,19 +98,21 @@ describe('判定に渡すファイル', () => {
     expect(t.responses[0]).toBe('応答 1');
     expect(s.analysis.turnStats).toHaveLength(8);
     const chunks = chunksOf(s, t, null);
-    expect(chunks.map((c) => c.turns)).toEqual([
-      [1, 2, 3, 4, 5, 6],
-      [7, 8],
-    ]);
+    // 最後の依頼 8 は、前の依頼 7 と同じ塊に入れない(どのセッションでも、最後の依頼は 1 件だけの塊)
+    expect(chunks.map((c) => c.turns)).toEqual([[1, 2, 3, 4, 5, 6], [7], [8]]);
     expect(chunks[0].markdown).toContain('## 依頼 7(判定しない。依頼 6 の成果の扱いを読むための参考)');
-    expect(chunks[1].markdown).toContain('次の依頼はありません(セッションの最後)。依頼 8 の outcome は unknown(判定不能)にしてください。');
-    // 塊の先頭の依頼が何への反応かを読めるよう、前の依頼文を参考に添える
+    expect(chunks[1].markdown).toContain('## 依頼 8(判定しない。依頼 7 の成果の扱いを読むための参考)');
+    expect(chunks[1].markdown).not.toContain('次の依頼はありません');
+    expect(chunks[2].markdown).toContain('次の依頼はありません(セッションの最後)。依頼 8 の outcome は unknown(判定不能)にしてください。');
+    // 塊の先頭の依頼が何への反応かを読めるよう、前の依頼文を参考に添える(最後の依頼だけの塊にも)
     expect(chunks[1].markdown).toContain('## 依頼 6(判定しない。依頼 7 が何への反応かを読むための参考)');
+    expect(chunks[2].markdown).toContain('## 依頼 7(判定しない。依頼 8 が何への反応かを読むための参考)');
     expect(chunks[0].markdown).not.toContain('何への反応か');
-    // 未判定だけ: 続いた番号ごとに区切る
+    // 未判定だけ: 続いた番号ごとに区切る。最後の依頼は、続いていても分ける
     expect(chunksOf(s, t, new Set([2, 3, 6])).map((c) => c.turns)).toEqual([[2, 3], [6]]);
+    expect(chunksOf(s, t, new Set([6, 7, 8])).map((c) => c.turns)).toEqual([[6, 7], [8]]);
     // プロンプトに判定する依頼番号と sessionId を書く(偽 copilot もここを読む)
-    expect(buildTurnPrompt(chunks[1], PHASES)).toContain('items には依頼 7, 8 の 2 件をすべて入れ、sessionId は "s1" にしてください');
+    expect(buildTurnPrompt(chunks[0], PHASES)).toContain('items には依頼 1, 2, 3, 4, 5, 6 の 6 件をすべて入れ、sessionId は "s1" にしてください');
   });
 
   it('依頼が上限(200 件)を超えるセッションは、200 件目に 201 件目の文を参考に添える(セッションの最後とは書かない)', async () => {
@@ -133,14 +143,73 @@ describe('判定に渡すファイル', () => {
   it('分割ファイルと塊を書き、判定済みを除ける', async () => {
     const m = await buildTurnBundle([s], { bundleDir: join(d, 'tb'), snapshotDir: join(d, 'snapshot'), phases: PHASES, judged: new Map([['s1', new Set([1, 2])]]), limits: { ...DEFAULT_TURN_LIMITS, partTurns: 4 } });
     expect(m).toMatchObject({ count: 6, unjudgedOnly: true, skipped: [] });
-    expect(m.chunks.map((c) => c.turns)).toEqual([
-      [3, 4, 5, 6, 7, 8],
-    ]);
-    expect(m.parts).toHaveLength(1);
+    expect(m.chunks.map((c) => c.turns)).toEqual([[3, 4, 5, 6, 7], [8]]);
+    // 最後の依頼だけの塊は、判定できる依頼と同じ分割ファイルに混ぜない
+    expect(m.parts.map((p) => p.turns)).toEqual([5, 1]);
     const part = await readFile(join(d, 'tb', m.parts[0].path), 'utf8');
-    expect(part).toContain('# Copilot の依頼ごとの判定の指示(分割 1 / 1)');
+    expect(part).toContain('# Copilot の依頼ごとの判定の指示(分割 1 / 2)');
     expect(part).toContain('`要件定義` / `設計` / `実装` / `テスト`');
-    expect(await readdir(join(d, 'tb', 'chunks'))).toEqual(['0001.md']);
+    expect((await readdir(join(d, 'tb', 'chunks'))).sort()).toEqual(['0001.md', '0002.md']);
+  });
+
+  it('採用を判定できる依頼を先に、セッションの最後の依頼を後ろに並べ、どこまでかを manifest.json の decidable に書く', async () => {
+    const snap = join(d, 'snapshot');
+    // 1 依頼だけのセッション 2 つ(s0・s9)で、8 依頼のセッション s1 を挟む
+    const s0 = await sessionWithTurns(snap, 's0', 1, false);
+    const s9 = await sessionWithTurns(snap, 's9', 1, false);
+    const tb = join(d, 'tb');
+    const o = { bundleDir: tb, snapshotDir: snap, phases: PHASES, limits: { ...DEFAULT_TURN_LIMITS, partTurns: 6 } };
+    const m = await buildTurnBundle([s0, s, s9], o);
+    // 判定できるのは s1 の依頼 1〜7。最後の依頼(s0 の 1、s1 の 8、s9 の 1)は、渡したセッションの順のまま後ろに並ぶ
+    expect(chunkLabels(m.chunks)).toEqual(['s1:1,2,3,4,5,6', 's1:7', 's0:1', 's1:8', 's9:1']);
+    expect([m.count, m.decidable]).toEqual([10, { turns: 7, chunks: 2, parts: 2 }]);
+    // 分割ファイルは [s1 の 1〜6] [s1 の 7] と、最後の依頼だけの [s0、s1 の 8、s9]。先頭の 2 ファイルには判定できる依頼だけが入る
+    expect(m.parts.map((p) => chunkLabels(p.chunks).join(' '))).toEqual(['s1:1,2,3,4,5,6', 's1:7', 's0:1 s1:8 s9:1']);
+    // 塊の本文の番号(copilot -p が読む)も同じ並び
+    expect(await readFile(join(tb, 'chunks', '0001.md'), 'utf8')).toContain('セッション s1');
+    expect(await readFile(join(tb, 'chunks', '0003.md'), 'utf8')).toContain('セッション s0');
+    // manifest.json には count の次に decidable を書く
+    const raw = await readFile(join(tb, 'manifest.json'), 'utf8');
+    expect(JSON.parse(raw).decidable).toEqual({ turns: 7, chunks: 2, parts: 2 });
+    const at = (k: string): number => raw.indexOf(`"${k}"`);
+    expect(at('count') < at('decidable') && at('decidable') < at('unjudgedOnly')).toBe(true);
+
+    // turns run --limit に decidable.turns を渡すと、判定できる依頼の塊だけをちょうど回す
+    const labels: string[] = [];
+    const backend: JudgeBackend = {
+      name: 'copilot-cli',
+      model: 'm',
+      judge: async () => {
+        throw new Error('使わない');
+      },
+      ask: async (prompt, label) => {
+        labels.push(label);
+        const sid = /sessionId は "([^"]+)"/.exec(prompt)![1];
+        const turns = /items には依頼 ([\d, ]+) の/.exec(prompt)![1].split(',').map((x) => Number(x.trim()));
+        return { texts: ['```json\n' + JSON.stringify({ items: turns.map((t) => item(t, { sessionId: sid })) }) + '\n```'], usage: null, notes: [] };
+      },
+    };
+    const dd = m.decidable!;
+    const r = await runTurnJudge({ bundleDir: tb, path: join(d, 'turn-judgments.json'), backend, limit: dd.turns });
+    expect([r.attempted, r.turns, r.failed.length]).toEqual([dd.chunks, 7, 0]);
+    expect(labels).toEqual(['s1-1', 's1-7']);
+
+    // 判定済みを除いた結果、最後の依頼だけが残ったときは、判定できる依頼は 0 件
+    const rest = await buildTurnBundle([s, s0], { ...o, judged: new Map([['s1', new Set([1, 2, 3, 4, 5, 6, 7])]]) });
+    expect(chunkLabels(rest.chunks)).toEqual(['s1:8', 's0:1']);
+    expect(rest.decidable).toEqual({ turns: 0, chunks: 0, parts: 0 });
+  });
+
+  it('添付を作ったときに、採用を判定できる依頼が先頭のどこまでかを知らせる', () => {
+    const some = decidableNote(10, { turns: 7, chunks: 2, parts: 2 })!;
+    expect(some).toContain('採用を判定できる依頼(次の依頼がある依頼)は 7 件で、先頭の 2 ファイルと先頭の 2 個の塊に入れました');
+    expect(some).toContain('turns run --limit 7');
+    expect(some).toContain('残りの 3 件はセッションの最後の依頼');
+    expect(decidableNote(2, { turns: 0, chunks: 0, parts: 0 })).toBe('2 件はどれもセッションの最後の依頼で、種類と工程だけが決まります(採用は判定不能)');
+    // 全部が判定できる(最後の依頼が判定済みで除かれた、など)・判定する依頼が無い・古い一覧(decidable が無い)
+    expect(decidableNote(7, { turns: 7, chunks: 2, parts: 1 })).toBeNull();
+    expect(decidableNote(0, { turns: 0, chunks: 0, parts: 0 })).toBeNull();
+    expect(decidableNote(5, undefined)).toBeNull();
   });
 
   it('作り直しが途中で失敗しても、前に作ったもの(一覧と、それが指すファイル)はそのまま使える。作りかけは残さない', async () => {
@@ -185,22 +254,22 @@ describe('判定に渡すファイル', () => {
       ask: async (prompt) => {
         prompts.push(prompt);
         const turns = /items には依頼 ([\d, ]+) の/.exec(prompt)![1].split(',').map((x) => Number(x.trim()));
-        // 2 回目の塊(依頼 7, 8)は依頼 8 を返さない
-        const items = turns.filter((t) => t !== 8).map((t) => item(t));
+        // 依頼 8 の代わりに依頼 7 の判定を返す(頼んだ依頼が欠ける)
+        const items = turns.map((t) => item(t === 8 ? 7 : t));
         return { texts: ['```json\n' + JSON.stringify({ items }) + '\n```'], usage: null, notes: [] };
       },
     };
     const path = join(d, 'turn-judgments.json');
     const r = await runTurnJudge({ bundleDir: join(d, 'tb'), path, backend });
-    expect(r).toMatchObject({ chunks: 2, attempted: 2, succeeded: 1, turns: 6 });
-    expect(r.failed[0]).toMatchObject({ sessionId: 's1', turns: [7, 8], error: expect.stringMatching(/依頼 8 の判定がありません/) });
+    expect(r).toMatchObject({ chunks: 3, attempted: 3, succeeded: 2, turns: 7 });
+    expect(r.failed[0]).toMatchObject({ sessionId: 's1', turns: [8], error: expect.stringMatching(/依頼 8 の判定がありません/) });
     const j = (await readTurnJudgments(path))!;
-    expect(j.items.map((i) => i.turn)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(j.items.map((i) => i.turn)).toEqual([1, 2, 3, 4, 5, 6, 7]);
     expect(j.failures).toHaveLength(1);
     // 上限: 判定済みの塊は飛ばし、残りだけ
     const again = await runTurnJudge({ bundleDir: join(d, 'tb'), path, backend, limit: 1 });
     expect(again.attempted).toBe(1);
-    expect(prompts).toHaveLength(3);
+    expect(prompts).toHaveLength(4);
 
     // 塊の中で判定済みの依頼は判定し直さない: 依頼 1 の判定を書き換えておき、塊 1〜6 を判定し直させても残る
     const j2 = (await readTurnJudgments(path))!;

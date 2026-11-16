@@ -134,7 +134,11 @@ const MIME: Record<string, string> = {
   '.webp': 'image/webp',
   '.svg': 'image/svg+xml',
   '.txt': 'text/plain; charset=utf-8',
+  '.zip': 'application/zip',
 };
+
+/** 取り込む返答の本文の上限。画面はファイルを 5 MB まで読み、JSON の文字列にすると引用符と改行の分だけ増える(多くて 2 倍)ので、それが収まる大きさにする */
+const IMPORT_BODY_MAX = 12 * 1024 * 1024;
 
 /** 応答の種類を取り違えさせない(どの応答にも付ける) */
 const NOSNIFF = { 'x-content-type-options': 'nosniff' } as const;
@@ -1142,7 +1146,8 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
   /**
    * チャットでの判定。読みも書きも token が要る(進み具合にセッション id が入るため)。
    * ?target=turns は依頼ごとの判定(turn-bundle/・turn-judgments.json)、それ以外は工数の判定。
-   * GET  /api/judge/parts:  bundle/parts/ の各ファイルと、その中のセッションのうち判定済みの数(bundle が無ければ exists: false)
+   * GET  /api/judge/parts:  bundle/parts/ の各ファイルと、その中のセッションのうち判定済みの数(bundle が無ければ exists: false)。
+   *      工数の判定で今の束の ZIP(bundle.zip)があれば zip: { path, bytes, modifiedAt }(保存は out/ の下のファイルとして GET /bundle.zip。フルパスは返さない)
    * GET  /api/judge/parts/<名前>: そのファイルの本文 { text }(画面の「本文をコピー」。manifest にある名前だけ)
    * POST /api/judge/import: { text } 貼った返答を検証して judgments.json に取り込む(1 件でも形が合わなければ何も書かない)。
    *      レポートへの反映は別(export のジョブ)。判定・集計のジョブや CLI が out/ に書いている間は 409
@@ -1150,9 +1155,11 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
   async function chatJudgeApi(req: IncomingMessage, res: ServerResponse, method: string, path: string, target: 'effort' | 'turns'): Promise<void> {
     checkToken(req);
     const partsOf = () => partsFor(target === 'turns' ? 'turns' : 'effort');
+    // 画面に返す添付ファイルの一覧(M365 Copilot を自動で操作できるかを足す。一覧を読んだときも、取り込んだ後も同じ形)
+    const partsJson = async () => ({ ...(await partsOf()), canAutomate: o.m365 ?? process.platform === 'win32' });
     if (path === '/api/judge/parts') {
       if (method !== 'GET') throw new HttpError(405, 'この方法では使えません');
-      sendJson(res, 200, { ...(await partsOf()), canAutomate: o.m365 ?? process.platform === 'win32' });
+      sendJson(res, 200, await partsJson());
       return;
     }
     const one = /^\/api\/judge\/parts\/([^/]+)$/.exec(path);
@@ -1171,7 +1178,7 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     }
     if (path === '/api/judge/import') {
       if (method !== 'POST') throw new HttpError(405, 'この方法では使えません');
-      const body = await readJsonBody(req, 4 * 1024 * 1024);
+      const body = await readJsonBody(req, IMPORT_BODY_MAX);
       if (typeof body.text !== 'string' || !body.text.trim()) throw new HttpError(400, '返答を貼り付けてください');
       if (jobs.running()) throw new HttpError(409, `ほかの処理が動いています。終わってから取り込んでください`);
       const other = runningJobIn(outDir);
@@ -1192,7 +1199,7 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
       }
       log(`${target === 'turns' ? 'turns import' : 'judge import'}(画面): ${r.imported} 件を取り込みました(既存の上書き ${r.overwritten} 件)`);
       const unknownIds = 'unknownIds' in r ? r.unknownIds : r.unknown;
-      sendJson(res, 200, { imported: r.imported, overwritten: r.overwritten, duplicates: 'duplicates' in r ? r.duplicates : 0, unknownIds, total: r.total, parts: await partsOf() });
+      sendJson(res, 200, { imported: r.imported, overwritten: r.overwritten, duplicates: 'duplicates' in r ? r.duplicates : 0, unknownIds, total: r.total, parts: await partsJson() });
       return;
     }
     throw new HttpError(404, '無い API です');

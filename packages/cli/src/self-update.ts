@@ -1,5 +1,7 @@
-// 自動で送る前に、atlas 自身を新しい版にする(schedule-upload.bat で登録したタスクが、upload-auto.ts から呼ぶ)。
-// 作業メンバーは定期の自動送信しか使わず、atlas.bat を開かないので、git pull しないままだと古い版で送り続けてしまうため。
+// atlas 自身を新しい版にする。次の 2 か所から呼ぶ:
+//  - 自動で送る前(schedule-upload.bat で登録したタスクが、upload-auto.ts から)。作業メンバーは定期の自動送信しか使わず、
+//    atlas.bat を開かないので、git pull しないままだと古い版で送り続けてしまうため
+//  - 起動用の .bat を開いたとき(launcher-update.ts)。マージした変更が、git pull しなくても利用者に届くように
 //
 // 新しい版にするのは、次をすべて満たすときだけ(手で触っているチェックアウトを壊さない):
 //  - git で取得したフォルダ(.git がある)で、git が使える
@@ -58,9 +60,18 @@ export interface UpdateOptions {
   busy?: () => string | null;
   /** 使わない版(前にこの PC で動かなかった版。コミットの全桁) */
   avoid?: string | null;
+  /** 新しい版にできなかったときに、この後どうするか(結果の文に入れる。既定は自動で送るタスクの「今の版のまま送ります」) */
+  carryOn?: string;
+  /** もう最新で何もしなかったときは、記録に書かない(起動用の .bat が開くたびに動かすので、何もしなかったときは何も出さない) */
+  quietLatest?: boolean;
+  /** git fetch を待つ長さ(既定 2 分。起動用の .bat は、窓の前で待つので短くする) */
+  fetchTimeoutMs?: number;
 }
 
-const FETCH_TIMEOUT_MS = 2 * 60_000;
+/** 自動で送るタスクの git fetch を待つ長さ */
+export const FETCH_TIMEOUT_MS = 2 * 60_000;
+/** 自動で送るタスクの、新しい版にできなかったときの続け方 */
+const CARRY_ON_SEND = '今の版のまま送ります';
 const GIT_TIMEOUT_MS = 60_000;
 const NPM_TIMEOUT_MS = 15 * 60_000;
 /** npm が書き換えることのある、git が管理しているファイル(これだけが変わっているときは、元に戻してから進める) */
@@ -123,8 +134,9 @@ export function selfUpdate(o: UpdateOptions): UpdateResult {
     o.log(`atlas の更新: ${r.note}`);
     return r;
   };
-  const result = (outcome: UpdateResult['outcome'], fromSha: string | null, toSha: string | null, note: string): UpdateResult =>
-    done({ outcome, from: short(fromSha), to: short(toSha), fromSha, toSha, note });
+  const make = (outcome: UpdateResult['outcome'], fromSha: string | null, toSha: string | null, note: string): UpdateResult => ({ outcome, from: short(fromSha), to: short(toSha), fromSha, toSha, note });
+  const result = (outcome: UpdateResult['outcome'], fromSha: string | null, toSha: string | null, note: string): UpdateResult => done(make(outcome, fromSha, toSha, note));
+  const carry = o.carryOn ?? CARRY_ON_SEND;
   if (!existsSync(join(o.repo, '.git'))) return result('skipped', null, null, 'git で取得したフォルダではないので、更新しません(git clone し直すと、自動で新しい版にできます)');
   const head = git(['rev-parse', 'HEAD']);
   if (head.code !== 0) return result('skipped', null, null, `git を使えないので、更新しません(${reasonOf(head)})`);
@@ -152,12 +164,16 @@ export function selfUpdate(o: UpdateOptions): UpdateResult {
   }
   // 取りに行く前の origin の main(前に取りに行ったときのもの)。origin の履歴が書き換えられたかを見分けるのに使う
   const before = git(['rev-parse', '@{u}']).stdout.trim();
-  const fetch = git(['fetch', '--quiet', 'origin'], FETCH_TIMEOUT_MS);
-  if (fetch.code !== 0) return result('failed', from, null, `新しい版を取りに行けなかったので、今の版のまま送ります(${reasonOf(fetch)}。次の回にもう一度試します)`);
+  const fetch = git(['fetch', '--quiet', 'origin'], o.fetchTimeoutMs ?? FETCH_TIMEOUT_MS);
+  if (fetch.code !== 0) return result('failed', from, null, `新しい版を取りに行けなかったので、${carry}(${reasonOf(fetch)}。次の回にもう一度試します)`);
   const target = git(['rev-parse', '@{u}']);
-  if (target.code !== 0) return result('failed', from, null, `新しい版を確かめられなかったので、今の版のまま送ります(${reasonOf(target)})`);
+  if (target.code !== 0) return result('failed', from, null, `新しい版を確かめられなかったので、${carry}(${reasonOf(target)})`);
   const to = target.stdout.trim();
-  if (to === from) return result('latest', from, from, `最新です(${short(from)})`);
+  if (to === from) {
+    const latest = make('latest', from, from, `最新です(${short(from)})`);
+    // 何もしなかった。起動用の .bat から開くたびに動かすので、そのときは何も出さない
+    return o.quietLatest ? latest : done(latest);
+  }
   if (o.avoid && to === o.avoid) return result('skipped', from, null, `新しい版(${short(to)})は前にこの PC で動かなかったので、使いません(もっと新しい版が出たら、それにします)`);
   const isAncestor = (a: string, b: string): boolean => git(['merge-base', '--is-ancestor', a, b]).code === 0;
   /** origin の履歴が書き換えられていて(force push)、新しい main に合わせ直したか */
@@ -188,7 +204,7 @@ export function selfUpdate(o: UpdateOptions): UpdateResult {
         from,
         back.reverted ? from : to,
         back.ok
-          ? `新しい版(${short(to)})の依存を入れられなかったので、${back.note}。今の版のまま送ります(次の回にもう一度試します)`
+          ? `新しい版(${short(to)})の依存を入れられなかったので、${back.note}。${carry}(次の回にもう一度試します)`
           : `新しい版(${short(to)})の依存を入れられず、${back.note}`,
       );
     }

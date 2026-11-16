@@ -293,7 +293,7 @@ function judgmentSection(j: JudgmentSummary, activeMs: number | null): string {
 function retentionSection(r: SessionRetention, meta: RetentionMeta | null): string {
   // 状態の名前は、設定(vcs.labels)で差し替えたものがあればそれ。節の一文(vcs.note)も足す
   const L = { ...STATUS_LABEL, ...(meta?.labels ?? {}) };
-  const lead = esc(`AI が足した行が、その後の VCS のファイルに残っているかを数えます。${meta?.note ?? ''}`);
+  const lead = esc(`AI が足した行が、その後の VCS のファイルに残っているかを数えます。残っているかの記録で、採用の意図や良し悪しではありません。「${L.missing}」「${L.unattributable}」を不採用とはみなしません。${meta?.note ?? ''}`);
   const unread = r.unreadEdits ? `<p class="note">ログから変更を取り出せなかった AI の編集 ${esc(int(r.unreadEdits))} 件は数えていません(diff も編集の引数も読めなかったもの)。</p>` : '';
   if (r.outcome === 'no_ai_changes') return section('AI の変更の残存(VCS)', `<p class="note">このセッションには、数える AI の変更(編集・作成で足した行)がありません。</p>${unread}`, lead);
   const measuredHunks = r.counts.kept + r.counts.modified + r.counts.missing;

@@ -9,6 +9,7 @@ import type { AutoStatusFile } from '../src/upload-auto-files.ts';
 import {
   describeStatus,
   describeUpdate,
+  isExeTask,
   MAX_TIMES,
   nodeOf,
   parseTime,
@@ -78,6 +79,22 @@ describe('送る時刻と、タスクの中身', () => {
     expect(updatesOf(off)).toBe(false);
     expect(nodeOf(off)).toBe('C:\\node\\node.exe');
     expect(updatesOf('--headless "C:\\node\\node.exe" "E:\\a\\upload-auto.ts"')).toBe(true);
+  });
+
+  it('前の版(bin\\atlas.exe で動いていた版)で登録したタスクの引数を見分ける。この版の形や、ほかのものは見分けない', () => {
+    expect(isExeTask('--headless "E:\\atlas\\bin\\atlas.exe" upload-auto')).toBe(true);
+    expect(isExeTask('--headless "E:\\atlas\\bin\\atlas.exe" upload-auto --no-update')).toBe(true);
+    // 置き換えで移した前の実行ファイル
+    expect(isExeTask('--headless "E:\\atlas\\bin\\atlas.old-0123abcd.exe" upload-auto')).toBe(true);
+    expect(isExeTask('--headless "E:\\atlas\\bin\\ATLAS.EXE" upload-auto')).toBe(true);
+    // この版の形(node で upload-auto.ts)
+    expect(isExeTask(taskArguments('C:\\node\\node.exe', 'E:\\atlas\\packages\\cli\\src\\upload-auto.ts'))).toBe(false);
+    expect(isExeTask(taskArguments('C:\\node\\node.exe', 'E:\\atlas\\packages\\cli\\src\\upload-auto.ts', false))).toBe(false);
+    // 別の実行ファイル・別のサブコマンド・空
+    expect(isExeTask('--headless "E:\\x\\notatlas.exe" upload-auto')).toBe(false);
+    expect(isExeTask('--headless "E:\\atlas\\bin\\atlas.exe" upload-autos')).toBe(false);
+    expect(isExeTask('--headless "E:\\atlas\\bin\\atlas.exe" serve')).toBe(false);
+    expect(isExeTask('')).toBe(false);
   });
 
   it('登録のスクリプトは、PC が止まっていた回を次に動かし、電池でも動かし、ログオン中の自分のユーザーで動かす(値は環境変数で渡す)', () => {
@@ -319,6 +336,61 @@ describe('登録の対話(runSchedule)', () => {
     const d = fakeScheduler(off);
     await runSchedule(fakeIo(['t', '17:30']).io, { scheduler: d.s, config: ready, outDir: dir, exists: () => true });
     expect(d.log).toEqual(['register 17:30 no-update']);
+  });
+
+  it('前の版(atlas.exe)で登録したタスクは、開いたときに、時刻と自動更新の設定はそのままで Node.js で動く形に登録し直す', async () => {
+    // 自動更新しない設定・1 日 2 回
+    const exeOff: TaskState = { ...registered, times: ['09:00', '18:00'], arguments: '--headless "E:\\a\\bin\\atlas.exe" upload-auto --no-update' };
+    const a = fakeScheduler(exeOff);
+    const f = fakeIo(['']);
+    // 前の版の atlas.exe はもう無い(消してある)。node のパスとして読んで「見つかりません」と出さない
+    await runSchedule(f.io, { scheduler: a.s, config: ready, outDir: dir, exists: (p) => p === dir, repo: 'E:\\a' });
+    expect(a.log).toEqual(['register 09:00,18:00 no-update']);
+    expect(f.text()).toContain('前の版(atlas.exe で動かす版)で登録したタスクだったので、Node.js で動くように登録し直しました(時刻と自動更新はそのままです)。');
+    expect(f.text()).not.toContain('見つかりません');
+    expect(f.text()).toContain('atlas の自動更新: しません');
+
+    // 自動更新する設定(--no-update なし)は、そのまま更新する形で
+    const b = fakeScheduler({ ...registered, arguments: '--headless "E:\\a\\bin\\atlas.exe" upload-auto' });
+    await runSchedule(fakeIo(['']).io, { scheduler: b.s, config: ready, outDir: dir, exists: () => true, repo: 'e:\\A\\' });
+    expect(b.log).toEqual(['register 18:00']);
+
+    // 時刻が分からなければ登録し直さず、t で時刻を入れるよう知らせる
+    const c = fakeScheduler({ ...registered, times: [], arguments: '--headless "E:\\a\\bin\\atlas.exe" upload-auto' });
+    const h = fakeIo(['']);
+    await runSchedule(h.io, { scheduler: c.s, config: ready, outDir: dir, exists: () => true, repo: 'E:\\a' });
+    expect(c.log).toEqual([]);
+    expect(h.text()).toContain('前の版(atlas.exe で動かす版)で登録したタスクです。t で時刻を入れて登録し直してください');
+
+    // 別のフォルダの atlas.exe で登録したタスクは、尋ねずに付け替えない(t で登録し直せる)
+    const e = fakeScheduler({ ...registered, arguments: '--headless "E:\\other\\bin\\atlas.exe" upload-auto' });
+    const k = fakeIo(['']);
+    await runSchedule(k.io, { scheduler: e.s, config: ready, outDir: dir, exists: () => true, repo: 'E:\\a' });
+    expect(e.log).toEqual([]);
+    expect(k.text()).toContain('前の版(atlas.exe で動かす版)で、別のフォルダ(E:\\other)の atlas が登録したタスクです。t で登録し直すと');
+
+    // この版の形のタスクは登録し直さない
+    const d = fakeScheduler(registered);
+    await runSchedule(fakeIo(['']).io, { scheduler: d.s, config: ready, outDir: dir, exists: () => true });
+    expect(d.log).toEqual([]);
+  });
+
+  it('登録し直す中身: 前の版の引数から読んだ自動更新の設定で、今の node と upload-auto.ts を登録する(PowerShell は偽物)', async () => {
+    const calls: Record<string, string>[] = [];
+    const exeTask = { exists: true, state: 'Ready', times: ['07:30'], arguments: '--headless "E:\\a\\bin\\atlas.exe" upload-auto --no-update', lastRun: null, lastResult: null, nextRun: null };
+    const run: PsRunner = async (script, env) => {
+      calls.push(env);
+      return script === QUERY_SCRIPT ? { code: 0, stdout: JSON.stringify(exeTask), stderr: '' } : { code: 0, stdout: '', stderr: '' };
+    };
+    const s = taskScheduler(run, { node: 'C:\\node\\node.exe', entry: 'E:\\a\\packages\\cli\\src\\upload-auto.ts', cwd: 'E:\\a' });
+    await runSchedule(fakeIo(['']).io, { scheduler: s, config: ready, outDir: dir, exists: () => true, repo: 'E:\\a' });
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toMatchObject({
+      ATLAS_TASK_NAME: TASK_NAME,
+      ATLAS_TASK_TIMES: '07:30',
+      ATLAS_TASK_ARGS: '--headless "C:\\node\\node.exe" "E:\\a\\packages\\cli\\src\\upload-auto.ts" --no-update',
+      ATLAS_TASK_CWD: 'E:\\a',
+    });
   });
 
   it('登録したときの Node.js が無くなっていたり、タスクが無効になっていたりしたら、登録し直すよう知らせる', async () => {
