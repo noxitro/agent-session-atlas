@@ -117,6 +117,8 @@ describe('AI の変更の残存: 割合を出す条件', () => {
   it('a. 照合できたセッションが足りれば割合と帯を出す。プロジェクトごとの表は、足りない行だけ件数にする', async () => {
     await page.goto(server.url);
     await expect.poll(() => field(0).textContent()).toBe(String(N + 1));
+    // AI の変更があったセッションが足りるので、照合できた割合も出す
+    expect(await section().locator('.fields .field').nth(0).locator('.n').textContent()).toContain(`${N + 1} セッションのうち ${percent(N + 1, N + 1)}。`);
     expect(await field(1).textContent()).toBe(percent(N, N + 1));
     expect(await field(3).textContent()).toBe(percent(1, N + 1));
     expect(await section().locator('.stack').count()).toBe(1);
@@ -135,6 +137,10 @@ describe('AI の変更の残存: 割合を出す条件', () => {
     await page.goto(`${server.url}${filterHref({ ...emptyFilter(), project: projectB })}`);
     await expect.poll(() => field(0).textContent()).toBe('1');
     for (const i of [1, 2, 3]) expect(await field(i).textContent()).toBe('—');
+    // 照合できた割合も出さず、件数で書く
+    const note = await section().locator('.fields .field').nth(0).locator('.n').textContent();
+    expect(note).toContain('1 セッションのうち 1 件。');
+    expect(note).not.toContain('%');
     expect(await section().locator('.fields .field').nth(1).locator('.n').textContent()).toContain('1 / 1 まとまり');
     expect(await section().locator('.stack').count()).toBe(0);
     expect(await section().locator('#ret-legend').textContent()).not.toContain('%');
