@@ -9,7 +9,7 @@ use crate::config::{phase_names, resolve_judge_model};
 use crate::paths::{resolve, Paths};
 use anyhow::{bail, Result};
 use atlas_judge::backends::copilot_cli::{copilot_cli_backend, CopilotCliOptions};
-use atlas_judge::turn_bundle::{build_turn_bundle, TurnBundleOptions};
+use atlas_judge::turn_bundle::{build_turn_bundle, decidable_note, TurnBundleOptions};
 use atlas_judge::turn_run::{run_turn_judge, turn_import_phases, TurnRunOptions};
 use atlas_judge::turn_schema::{import_turn_judgments_text, read_turn_judgments, TurnImportOptions};
 use serde_json::Value;
@@ -49,6 +49,9 @@ pub fn run_turns(p: &Paths, f: &SessionFilter, t: &TurnsCliOptions, log: Log<'_>
             p.turn_bundle.display(),
             if m.skipped.is_empty() { String::new() } else { format!("。本文が読めず外したセッション {} 件", m.skipped.len()) }
         ));
+        if let Some(note) = decidable_note(m.count, m.decidable.as_ref()) {
+            log(&format!("turns bundle: {note}"));
+        }
         log(&format!("turns bundle: 工程名 {}(atlas.config.json の phases で変えられます)", phases.join(" / ")));
         return Ok(());
     }

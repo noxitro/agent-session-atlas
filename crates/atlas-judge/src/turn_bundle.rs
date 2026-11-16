@@ -2,6 +2,8 @@
 //!   chunks: 1 セッションの続いた依頼を数件ずつ(copilot -p に 1 回で渡せる大きさ)。次の依頼の文は、成果の扱いを決める材料として必ず添える
 //!   parts/part-<番号>.md: 判定の指示・JSON Schema と、塊を数個まとめたもの(M365 Copilot などに 1 ファイルずつ添付する)
 //!   manifest.json: 塊と分割ファイルの一覧
+//! セッションの最後の依頼(次の依頼の文が無く、成果の扱いは必ず判定不能)は 1 件だけの塊にして、塊も分割ファイルも後ろへ回す。
+//! 先頭には、成果の扱いを判定できる依頼だけが並ぶ(どこまでかは manifest.json の decidable)。
 //! 依頼の区切りは core の normalize と同じ(本体の依頼。autopilot の自動継続・サブエージェントは除く。先頭 200 依頼まで)。
 
 use crate::bundle::Skipped;
@@ -165,7 +167,13 @@ pub fn render_turn_chunk(s: &SessionRecord, texts: &TurnTexts, rows: &[TurnRow<'
     out.join("\n")
 }
 
+/// 次の依頼の文があるか(成果の扱いを判定できる依頼か。turn は 1 から)。無いのは、読めた範囲でセッションの最後の依頼だけ
+fn has_next(texts: &TurnTexts, turn: usize) -> bool {
+    turn < texts.requests.len()
+}
+
 /// セッションの依頼を塊に分ける。only は判定する依頼番号(未判定だけを渡すとき)。続いた番号ごとに区切り、上限で分ける。
+/// セッションの最後の依頼は前の依頼と同じ塊に入れず、1 件だけの塊にする(どのセッションでも同じ扱いにして、後ろへ回せるように)。
 /// 依頼の記録(turnStats)が無いセッション・本文の読めないセッションは空
 pub fn chunks_of(s: &SessionRecord, texts: &TurnTexts, only: Option<&HashSet<usize>>, limits: &TurnLimits) -> Vec<TurnChunk> {
     let mut rows = session_turns(s);
@@ -178,7 +186,7 @@ pub fn chunks_of(s: &SessionRecord, texts: &TurnTexts, only: Option<&HashSet<usi
         let mut size = 1;
         let mut markdown = render_turn_chunk(s, texts, &rows, from, from, limits);
         // 続いた番号を上限まで伸ばし、文字数の上限を超えたら 1 つ戻す(上限に収まった最後の描画をそのまま使う)
-        while i + size < want.len() && size < limits.chunk_turns && want[i + size] == from + size {
+        while i + size < want.len() && size < limits.chunk_turns && want[i + size] == from + size && has_next(texts, from + size) {
             let longer = render_turn_chunk(s, texts, &rows, from, from + size, limits);
             if js::utf16_len(&longer) > limits.chunk_chars {
                 break;
@@ -386,12 +394,44 @@ pub struct TurnBundleManifest {
     pub phases: Vec<String>,
     /// 判定する依頼の数
     pub count: i64,
+    /// 次の依頼の文があり、成果の扱いを判定できる依頼の数(turns)と、それが入っている先頭の塊の数(chunks)・分割ファイルの数(parts)。
+    /// 先頭の塊と分割ファイルには、判定できる依頼だけが入る(turns run --limit に turns を渡すと、ちょうど先頭の塊を回す)。
+    /// 残りはセッションの最後の依頼で、扱いは判定不能になる(種類と工程だけが決まる)。古い manifest には無い
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decidable: Option<Decidable>,
     /// 判定済みを除いて作ったか
     pub unjudged_only: bool,
     pub chunks: Vec<ChunkEntry>,
     pub parts: Vec<TurnPart>,
     /// 本文が読めず外したセッション
     pub skipped: Vec<Skipped>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Decidable {
+    pub turns: i64,
+    pub chunks: i64,
+    pub parts: i64,
+}
+
+/// 添付を作ったときに知らせる文(採用を判定できる依頼が、先頭のどこまでか)。
+/// 全部が判定できるとき・判定する依頼が無いとき・古い manifest(decidable が無い)は None
+pub fn decidable_note(count: i64, decidable: Option<&Decidable>) -> Option<String> {
+    let d = decidable?;
+    if d.turns >= count {
+        return None;
+    }
+    if d.turns == 0 {
+        return Some(format!("{count} 件はどれもセッションの最後の依頼で、種類と工程だけが決まります(採用は判定不能)"));
+    }
+    Some(format!(
+        "採用を判定できる依頼(次の依頼がある依頼)は {} 件で、先頭の {} ファイルと先頭の {} 個の塊に入れました(GitHub Copilot CLI では turns run --limit {} でそこまでを回せます)。残りの {} 件はセッションの最後の依頼で、種類と工程だけが決まります(採用は判定不能)",
+        d.turns,
+        d.parts,
+        d.chunks,
+        d.turns,
+        count - d.turns
+    ))
 }
 
 pub struct TurnBundleOptions<'a> {
@@ -422,7 +462,8 @@ fn write_turn_bundle(sessions: &[&SessionRecord], o: &TurnBundleOptions<'_>, dir
     enum Got {
         None,
         Skip(Skipped),
-        Chunks(Vec<TurnChunk>),
+        /// 成果の扱いを判定できる依頼の塊(front)と、セッションの最後の依頼だけの塊(tail)
+        Chunks(Vec<TurnChunk>, Vec<TurnChunk>),
     }
     let (snapshot_dir, judged) = (&o.snapshot_dir, &o.judged);
     let per: Vec<Got> = sessions
@@ -439,26 +480,43 @@ fn write_turn_bundle(sessions: &[&SessionRecord], o: &TurnBundleOptions<'_>, dir
             if only.as_ref().is_some_and(|x| x.is_empty()) {
                 return Ok(Got::None);
             }
-            Ok(Got::Chunks(chunks_of(s, &texts, only.as_ref(), &limits)))
+            // 最後の依頼は必ず 1 件だけの塊(chunks_of)なので、塊の先頭の依頼で決まる
+            let (front, tail) = chunks_of(s, &texts, only.as_ref(), &limits).into_iter().partition(|c| has_next(&texts, c.turns[0] as usize));
+            Ok(Got::Chunks(front, tail))
         })
         .collect::<Result<_>>()?;
-    let mut chunks: Vec<TurnChunk> = Vec::new();
+    // 1 依頼だけのセッションが多いと先頭のファイルが判定不能ばかりになるので、最後の依頼だけの塊(tail)は後ろへ回す。
+    // それぞれの中の並びは sessions のまま
+    let mut front: Vec<TurnChunk> = Vec::new();
+    let mut tail: Vec<TurnChunk> = Vec::new();
     let mut skipped: Vec<Skipped> = Vec::new();
     for g in per {
         match g {
             Got::None => {}
             Got::Skip(s) => skipped.push(s),
-            Got::Chunks(c) => chunks.extend(c),
+            Got::Chunks(f, t) => {
+                front.extend(f);
+                tail.extend(t);
+            }
         }
     }
-    // 分割ファイル: 塊を順に詰め、依頼の数の上限で区切る(塊は分けない)
-    let mut groups: Vec<Vec<&TurnChunk>> = Vec::new();
-    for c in &chunks {
-        match groups.last_mut() {
-            Some(g) if g.iter().map(|x| x.turns.len()).sum::<usize>() + c.turns.len() <= limits.part_turns => g.push(c),
-            _ => groups.push(vec![c]),
+    let front_chunks = front.len();
+    let front_turns: usize = front.iter().map(|c| c.turns.len()).sum();
+    let chunks: Vec<TurnChunk> = front.into_iter().chain(tail).collect();
+    // 分割ファイル: 塊を順に詰め、依頼の数の上限で区切る(塊は分けない)。front と tail は同じファイルに混ぜない
+    fn pack(cs: &[TurnChunk], part_turns: usize) -> Vec<Vec<&TurnChunk>> {
+        let mut out: Vec<Vec<&TurnChunk>> = Vec::new();
+        for c in cs {
+            match out.last_mut() {
+                Some(g) if g.iter().map(|x| x.turns.len()).sum::<usize>() + c.turns.len() <= part_turns => g.push(c),
+                _ => out.push(vec![c]),
+            }
         }
+        out
     }
+    let mut groups = pack(&chunks[..front_chunks], limits.part_turns);
+    let front_parts = groups.len();
+    groups.extend(pack(&chunks[front_chunks..], limits.part_turns));
     let total: usize = chunks.iter().map(|c| c.turns.len()).sum();
     let width = 2.max(groups.len().to_string().len());
     let mut parts: Vec<TurnPart> = Vec::new();
@@ -485,6 +543,7 @@ fn write_turn_bundle(sessions: &[&SessionRecord], o: &TurnBundleOptions<'_>, dir
         generated_at,
         phases: o.phases.clone(),
         count: total as i64,
+        decidable: Some(Decidable { turns: front_turns as i64, chunks: front_chunks as i64, parts: front_parts as i64 }),
         unjudged_only: o.judged.is_some(),
         chunks: chunks.iter().map(|c| ChunkEntry { session_id: c.session_id.clone(), turns: c.turns.clone(), chars: js::utf16_len(&c.markdown) as i64 }).collect(),
         parts,

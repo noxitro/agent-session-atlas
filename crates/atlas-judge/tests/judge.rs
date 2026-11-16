@@ -6,7 +6,7 @@ use atlas_core::types::{CopilotEvent, SessionRecord, WorkspaceInfo};
 use atlas_judge::backends::{AskResult, JudgeBackend, JudgePacket, JudgeResult};
 use atlas_judge::bundle::{build_bundle, BundleOptions};
 use atlas_judge::packet::{missing_sections, packet_session_id, render_packet, SessionTexts, TextEntry, TextSource, DEFAULT_LIMITS};
-use atlas_judge::turn_bundle::{build_turn_bundle, build_turn_prompt, chunks_of, collect_turn_texts, TurnBundleOptions, DEFAULT_TURN_LIMITS};
+use atlas_judge::turn_bundle::{build_turn_bundle, build_turn_prompt, chunks_of, collect_turn_texts, decidable_note, Decidable, TurnBundleOptions, DEFAULT_TURN_LIMITS};
 use atlas_judge::turn_run::{run_turn_judge, turn_import_phases, turn_items_from_texts, TurnRunOptions};
 use atlas_judge::turn_schema::read_turn_judgments;
 use indexmap::IndexMap;
@@ -135,14 +135,21 @@ fn turn_chunks_follow_normalize_and_attach_next_request() {
     assert_eq!(t.responses[0].as_deref(), Some("応答 1"));
     assert_eq!(s.analysis.turn_stats.as_ref().unwrap().len(), 8);
     let chunks = chunks_of(&s, &t, None, &DEFAULT_TURN_LIMITS);
-    assert_eq!(chunks.iter().map(|c| c.turns.clone()).collect::<Vec<_>>(), vec![vec![1, 2, 3, 4, 5, 6], vec![7, 8]]);
+    // 最後の依頼 8 は、前の依頼 7 と同じ塊に入れない(どのセッションでも、最後の依頼は 1 件だけの塊)
+    assert_eq!(chunks.iter().map(|c| c.turns.clone()).collect::<Vec<_>>(), vec![vec![1, 2, 3, 4, 5, 6], vec![7], vec![8]]);
     assert!(chunks[0].markdown.contains("## 依頼 7(判定しない。依頼 6 の成果の扱いを読むための参考)"));
-    assert!(chunks[1].markdown.contains("次の依頼はありません(セッションの最後)。依頼 8 の outcome は unknown(判定不能)にしてください。"));
+    assert!(chunks[1].markdown.contains("## 依頼 8(判定しない。依頼 7 の成果の扱いを読むための参考)"));
+    assert!(!chunks[1].markdown.contains("次の依頼はありません"));
+    assert!(chunks[2].markdown.contains("次の依頼はありません(セッションの最後)。依頼 8 の outcome は unknown(判定不能)にしてください。"));
+    // 塊の先頭の依頼が何への反応かを読めるよう、前の依頼文を参考に添える(最後の依頼だけの塊にも)
     assert!(chunks[1].markdown.contains("## 依頼 6(判定しない。依頼 7 が何への反応かを読むための参考)"));
+    assert!(chunks[2].markdown.contains("## 依頼 7(判定しない。依頼 8 が何への反応かを読むための参考)"));
     assert!(!chunks[0].markdown.contains("何への反応か"));
-    let only: HashSet<usize> = [2, 3, 6].into_iter().collect();
-    assert_eq!(chunks_of(&s, &t, Some(&only), &DEFAULT_TURN_LIMITS).iter().map(|c| c.turns.clone()).collect::<Vec<_>>(), vec![vec![2, 3], vec![6]]);
-    assert!(build_turn_prompt(&chunks[1], &phases(), None).contains("items には依頼 7, 8 の 2 件をすべて入れ、sessionId は \"s1\" にしてください"));
+    // 未判定だけ: 続いた番号ごとに区切る。最後の依頼は、続いていても分ける
+    let turns_of = |only: &[usize]| chunks_of(&s, &t, Some(&only.iter().copied().collect::<HashSet<usize>>()), &DEFAULT_TURN_LIMITS).iter().map(|c| c.turns.clone()).collect::<Vec<_>>();
+    assert_eq!(turns_of(&[2, 3, 6]), vec![vec![2, 3], vec![6]]);
+    assert_eq!(turns_of(&[6, 7, 8]), vec![vec![6, 7], vec![8]]);
+    assert!(build_turn_prompt(&chunks[0], &phases(), None).contains("items には依頼 1, 2, 3, 4, 5, 6 の 6 件をすべて入れ、sessionId は \"s1\" にしてください"));
 }
 
 #[test]
@@ -180,12 +187,76 @@ fn turn_bundle_parts_and_import_phases() {
     let judged: HashMap<String, HashSet<i64>> = [("s1".to_string(), [1, 2].into_iter().collect())].into_iter().collect();
     let m = build_turn_bundle(&[&s], &TurnBundleOptions { judged: Some(judged), limits: Some(atlas_judge::turn_bundle::TurnLimits { part_turns: 4, ..DEFAULT_TURN_LIMITS }), ..turn_opts(&tb, &snap, phases()) }).unwrap();
     assert_eq!((m.count, m.unjudged_only, m.skipped.len()), (6, true, 0));
-    assert_eq!(m.chunks.iter().map(|c| c.turns.clone()).collect::<Vec<_>>(), vec![vec![3, 4, 5, 6, 7, 8]]);
-    assert_eq!(m.parts.len(), 1);
+    assert_eq!(m.chunks.iter().map(|c| c.turns.clone()).collect::<Vec<_>>(), vec![vec![3, 4, 5, 6, 7], vec![8]]);
+    // 最後の依頼だけの塊は、判定できる依頼と同じ分割ファイルに混ぜない
+    assert_eq!(m.parts.iter().map(|p| p.turns).collect::<Vec<_>>(), [5, 1]);
     let part = std::fs::read_to_string(tb.join("parts").join("part-01.md")).unwrap();
-    assert!(part.contains("# Copilot の依頼ごとの判定の指示(分割 1 / 1)"));
+    assert!(part.contains("# Copilot の依頼ごとの判定の指示(分割 1 / 2)"));
     assert!(part.contains("`要件定義` / `設計` / `実装` / `テスト`"));
-    assert_eq!(atlas_core::jsfs::read_dir_names(&tb.join("chunks")).unwrap(), ["0001.md"]);
+    let mut names = atlas_core::jsfs::read_dir_names(&tb.join("chunks")).unwrap();
+    names.sort();
+    assert_eq!(names, ["0001.md", "0002.md"]);
+}
+
+/// 塊の並び(「セッション ID:依頼番号,…」)
+fn chunk_labels<'a>(xs: impl IntoIterator<Item = (&'a str, &'a [i64])>) -> Vec<String> {
+    xs.into_iter().map(|(id, turns)| format!("{id}:{}", turns.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(","))).collect()
+}
+
+#[test]
+fn decidable_turns_come_first_and_last_requests_go_to_the_back() {
+    let d = tempfile::tempdir().unwrap();
+    let snap = d.path().join("snapshot");
+    // 1 依頼だけのセッション 2 つ(s0・s9)で、8 依頼のセッション s1 を挟む
+    let s0 = session_with_turns(&snap, "s0", 1, false);
+    let s = session_with_turns(&snap, "s1", 8, true);
+    let s9 = session_with_turns(&snap, "s9", 1, false);
+    let tb = d.path().join("tb");
+    let o = || TurnBundleOptions { limits: Some(atlas_judge::turn_bundle::TurnLimits { part_turns: 6, ..DEFAULT_TURN_LIMITS }), ..turn_opts(&tb, &snap, phases()) };
+    let m = build_turn_bundle(&[&s0, &s, &s9], &o()).unwrap();
+    // 判定できるのは s1 の依頼 1〜7。最後の依頼(s0 の 1、s1 の 8、s9 の 1)は、渡したセッションの順のまま後ろに並ぶ
+    assert_eq!(chunk_labels(m.chunks.iter().map(|c| (c.session_id.as_str(), c.turns.as_slice()))), ["s1:1,2,3,4,5,6", "s1:7", "s0:1", "s1:8", "s9:1"]);
+    assert_eq!((m.count, m.decidable), (10, Some(Decidable { turns: 7, chunks: 2, parts: 2 })));
+    // 分割ファイルは [s1 の 1〜6] [s1 の 7] と、最後の依頼だけの [s0、s1 の 8、s9]。先頭の 2 ファイルには判定できる依頼だけが入る
+    let parts: Vec<String> = m.parts.iter().map(|p| chunk_labels(p.chunks.iter().map(|c| (c.session_id.as_str(), c.turns.as_slice()))).join(" ")).collect();
+    assert_eq!(parts, ["s1:1,2,3,4,5,6", "s1:7", "s0:1 s1:8 s9:1"]);
+    // 塊の本文の番号(copilot -p が読む)も同じ並び
+    assert!(std::fs::read_to_string(tb.join("chunks").join("0001.md")).unwrap().contains("セッション s1"));
+    assert!(std::fs::read_to_string(tb.join("chunks").join("0003.md")).unwrap().contains("セッション s0"));
+    // manifest.json には count の次に decidable を書く
+    let raw = std::fs::read_to_string(tb.join("manifest.json")).unwrap();
+    let v: Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(v["decidable"], json!({ "turns": 7, "chunks": 2, "parts": 2 }));
+    let at = |k: &str| raw.find(&format!("\"{k}\"")).unwrap();
+    assert!(at("count") < at("decidable") && at("decidable") < at("unjudgedOnly"));
+
+    // turns run --limit に decidable.turns を渡すと、判定できる依頼の塊だけをちょうど回す
+    let backend = FakeAsk { prompts: Mutex::new(vec![]), labels: Mutex::new(vec![]), swap_last: false };
+    let path = d.path().join("turn-judgments.json");
+    let log = |_: &str| {};
+    let dd = m.decidable.unwrap();
+    let r = run_turn_judge(&TurnRunOptions { bundle_dir: tb.clone(), path: path.clone(), backend: &backend, limit: Some(dd.turns as u64), log: &log, now: None }).unwrap();
+    assert_eq!((r.attempted as i64, r.turns, r.failed.len()), (dd.chunks, 7, 0));
+    assert_eq!(*backend.labels.lock().unwrap(), ["s1-1", "s1-7"]);
+
+    // 判定済みを除いた結果、最後の依頼だけが残ったときは、判定できる依頼は 0 件
+    let judged: HashMap<String, HashSet<i64>> = [("s1".to_string(), (1..=7).collect())].into_iter().collect();
+    let rest = build_turn_bundle(&[&s, &s0], &TurnBundleOptions { judged: Some(judged), ..o() }).unwrap();
+    assert_eq!(chunk_labels(rest.chunks.iter().map(|c| (c.session_id.as_str(), c.turns.as_slice()))), ["s1:8", "s0:1"]);
+    assert_eq!(rest.decidable, Some(Decidable { turns: 0, chunks: 0, parts: 0 }));
+}
+
+#[test]
+fn decidable_note_tells_where_the_decidable_turns_end() {
+    let some = decidable_note(10, Some(&Decidable { turns: 7, chunks: 2, parts: 2 })).unwrap();
+    assert!(some.contains("採用を判定できる依頼(次の依頼がある依頼)は 7 件で、先頭の 2 ファイルと先頭の 2 個の塊に入れました"), "{some}");
+    assert!(some.contains("turns run --limit 7"));
+    assert!(some.contains("残りの 3 件はセッションの最後の依頼"));
+    assert_eq!(decidable_note(2, Some(&Decidable { turns: 0, chunks: 0, parts: 0 })).as_deref(), Some("2 件はどれもセッションの最後の依頼で、種類と工程だけが決まります(採用は判定不能)"));
+    // 全部が判定できる(最後の依頼が判定済みで除かれた、など)・判定する依頼が無い・古い一覧(decidable が無い)
+    assert_eq!(decidable_note(7, Some(&Decidable { turns: 7, chunks: 2, parts: 1 })), None);
+    assert_eq!(decidable_note(0, Some(&Decidable { turns: 0, chunks: 0, parts: 0 })), None);
+    assert_eq!(decidable_note(5, None), None);
 }
 
 #[test]
@@ -240,9 +311,11 @@ fn rebuild_failure_keeps_previous_bundle() {
     assert!(atlas_core::jsfs::read_dir_names(&b.join("sessions")).unwrap().is_empty());
 }
 
-/// ask だけを持つ偽のバックエンド(依頼 8 の判定を返さない)
+/// ask だけを持つ偽のバックエンド(swap_last なら、依頼 8 の代わりに依頼 7 の判定を返す = 頼んだ依頼が欠ける)
 struct FakeAsk {
     prompts: Mutex<Vec<String>>,
+    labels: Mutex<Vec<String>>,
+    swap_last: bool,
 }
 
 impl JudgeBackend for FakeAsk {
@@ -258,11 +331,13 @@ impl JudgeBackend for FakeAsk {
     fn can_ask(&self) -> bool {
         true
     }
-    fn ask(&self, prompt: &str, _label: &str) -> Result<AskResult> {
+    fn ask(&self, prompt: &str, label: &str) -> Result<AskResult> {
         self.prompts.lock().unwrap().push(prompt.to_string());
+        self.labels.lock().unwrap().push(label.to_string());
+        let sid = Regex::new(r#"sessionId は "([^"]+)""#).unwrap().captures(prompt).unwrap()[1].to_string();
         let caps = Regex::new(r"items には依頼 ([\d, ]+) の").unwrap().captures(prompt).unwrap()[1].to_string();
         let turns: Vec<i64> = caps.split(',').map(|x| x.trim().parse().unwrap()).collect();
-        let items: Vec<Value> = turns.iter().filter(|t| **t != 8).map(|t| json!({ "sessionId": "s1", "turn": t, "kind": "task", "outcome": "as_is", "mismatch": null, "phase": "実装", "confidence": 0.8, "note": "理由" })).collect();
+        let items: Vec<Value> = turns.iter().map(|t| if self.swap_last && *t == 8 { 7 } else { *t }).map(|t| json!({ "sessionId": sid, "turn": t, "kind": "task", "outcome": "as_is", "mismatch": null, "phase": "実装", "confidence": 0.8, "note": "理由" })).collect();
         Ok(AskResult { texts: vec![format!("```json\n{}\n```", json!({ "items": items }))], usage: None, notes: vec![] })
     }
 }
@@ -274,20 +349,20 @@ fn turn_run_commits_per_chunk_and_records_failures() {
     let s = session_with_turns(&snap, "s1", 8, true);
     let tb = d.path().join("tb");
     build_turn_bundle(&[&s], &turn_opts(&tb, &snap, phases())).unwrap();
-    let backend = FakeAsk { prompts: Mutex::new(vec![]) };
+    let backend = FakeAsk { prompts: Mutex::new(vec![]), labels: Mutex::new(vec![]), swap_last: true };
     let path = d.path().join("turn-judgments.json");
     let log = |_: &str| {};
     let o = |limit| TurnRunOptions { bundle_dir: tb.clone(), path: path.clone(), backend: &backend, limit, log: &log, now: None };
     let r = run_turn_judge(&o(None)).unwrap();
-    assert_eq!((r.chunks, r.attempted, r.succeeded, r.turns), (2, 2, 1, 6));
-    assert_eq!((r.failed[0].session_id.as_str(), r.failed[0].turns.clone()), ("s1", vec![7, 8]));
+    assert_eq!((r.chunks, r.attempted, r.succeeded, r.turns), (3, 3, 2, 7));
+    assert_eq!((r.failed[0].session_id.as_str(), r.failed[0].turns.clone()), ("s1", vec![8]));
     assert!(r.failed[0].error.contains("依頼 8 の判定がありません"), "{}", r.failed[0].error);
     let j = read_turn_judgments(&path).unwrap().unwrap();
-    assert_eq!(j.items.iter().map(|i| i.turn).collect::<Vec<_>>(), [1, 2, 3, 4, 5, 6]);
+    assert_eq!(j.items.iter().map(|i| i.turn).collect::<Vec<_>>(), [1, 2, 3, 4, 5, 6, 7]);
     assert_eq!(j.failures.len(), 1);
     // 上限: 判定済みの塊は飛ばし、残りだけ
     assert_eq!(run_turn_judge(&o(Some(1))).unwrap().attempted, 1);
-    assert_eq!(backend.prompts.lock().unwrap().len(), 3);
+    assert_eq!(backend.prompts.lock().unwrap().len(), 4);
 
     // 塊の中で判定済みの依頼は判定し直さない: 依頼 1 の判定を書き換えておき、塊 1〜6 を判定し直させても残る
     let mut j2: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
