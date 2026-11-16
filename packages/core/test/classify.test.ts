@@ -77,6 +77,8 @@ describe('normalizeSession(Phase 5 の形式)', () => {
       internal: { byName: { report_intent: 1 }, total: 1 },
       mcp: {},
       results: { powershell: { success: 1, failure: 0, denied: 0 } },
+      // モデル別 × ツール別(モデルの記録が無いので (unknown))
+      resultsByModel: { '(unknown)': { powershell: { success: 1, failure: 0, denied: 0 } } },
       // Phase 7: 所要時間(内部ツールは除く。start → complete が 1 秒)
       durations: { powershell: [1000] },
       durationOutliers: {},

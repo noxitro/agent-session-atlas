@@ -5,6 +5,7 @@
 // - API キーらしい文字列は伏せて件数を出す(共有が目的のため。元の記録は書き換えない)
 import { existsSync } from 'node:fs';
 import { isInternalTool, isUserTurn, mergeUsage, normalizeModel, parseEvents, type CopilotEvent, type DbUsageRow, type SessionRecord } from '../../core/src/index.ts';
+import { redactSecrets, SECRET_PATTERNS } from '../../core/src/secrets.ts';
 import { shortProjectLabel } from './lib/project-label.ts';
 import { dateTime, dec, duration, int } from './lib/format.ts';
 
@@ -57,29 +58,8 @@ export function transcriptHref(id: string): string {
 
 // ---------- 秘密情報 ----------
 
-/** API キー・トークンらしい形(種類名, 正規表現)。偽陽性はありうるので、伏せたうえで件数を出す */
-export const SECRET_PATTERNS: readonly [string, RegExp][] = [
-  ['GitHub トークン', /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}\b|\bgithub_pat_[A-Za-z0-9_]{22,}\b/g],
-  ['OpenAI / Anthropic 系キー', /\bsk-(?:ant-)?[A-Za-z0-9_-]{20,}\b/g],
-  ['AWS アクセスキー', /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g],
-  ['Slack トークン', /\bxox[abprs]-[A-Za-z0-9-]{10,}\b/g],
-  ['Google API キー', /\bAIza[0-9A-Za-z_-]{35}\b/g],
-  ['秘密鍵', /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----|-----BEGIN [A-Z ]*PRIVATE KEY-----/g],
-  ['JWT', /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g],
-  ['Bearer トークン', /\bBearer\s+[A-Za-z0-9._~+/=-]{24,}/g],
-];
-
-export function redactSecrets(text: string): { text: string; hits: number } {
-  let hits = 0;
-  let out = text;
-  for (const [label, re] of SECRET_PATTERNS) {
-    out = out.replace(re, () => {
-      hits++;
-      return `[伏せました: ${label}]`;
-    });
-  }
-  return { text: out, hits };
-}
+/** 秘密情報を伏せる処理は packages/core/src/secrets.ts に移した(失敗の台帳でも使うため)。前の名前のまま使えるよう再公開する */
+export { redactSecrets, SECRET_PATTERNS };
 
 // ---------- 補助 ----------
 
@@ -115,17 +95,26 @@ function quote(text: string): string {
     .join('\n');
 }
 
-/** ツール引数の 1 行要約 */
+/**
+ * ツール引数の 1 行要約。秘密情報は切る前の全文で伏せる(切った後だと、上限に掛かった鍵の一部が形に当たらず残る)。
+ * 伏せた件数は返さない(セッション記録は summarizeArgsCounted で受け取り、secretHits に足す)
+ */
 export function summarizeArgs(name: string, args: unknown): string {
-  if (!args || typeof args !== 'object') return '';
+  return summarizeArgsCounted(name, args).text;
+}
+
+/** summarizeArgs の本体。hits は切る前の全文で伏せた数(160 字より後ろにあって要約に出ない鍵も数える) */
+export function summarizeArgsCounted(_name: string, args: unknown): { text: string; hits: number } {
+  if (!args || typeof args !== 'object') return { text: '', hits: 0 };
   const a = args as Record<string, unknown>;
   const pick = (keys: string[]): string | null => {
     for (const k of keys) if (typeof a[k] === 'string' && a[k] !== '') return a[k] as string;
     return null;
   };
   const one = pick(['command', 'path', 'file_path', 'filePath', 'pattern', 'query', 'url', 'skill', 'agent_type', 'agentType', 'description', 'prompt', 'intent']);
-  const s = one ?? JSON.stringify(a);
-  return s.replace(/\s+/g, ' ').slice(0, 160) + (s.length > 160 ? '…' : '');
+  const red = redactSecrets(one ?? JSON.stringify(a));
+  const s = red.text;
+  return { text: s.replace(/\s+/g, ' ').slice(0, 160) + (s.length > 160 ? '…' : ''), hits: red.hits };
 }
 
 function resultText(result: unknown): string {
@@ -190,18 +179,30 @@ export async function renderTranscript(r: SessionRecord, eventsPath: string | nu
   let truncated = 0;
   let secretHits = 0;
 
-  /** 本文(自由記述)の整形: 上限で中略 → 秘密情報を伏せる */
-  const text = (s: string, limit = o.maxTextChars): string => {
-    let t = s;
-    if (t.length > limit) {
-      const head = Math.floor(limit * 0.7);
-      const tail = limit - head;
-      t = `${t.slice(0, head)}\n\n…(中略 ${int(t.length - limit)} 字)…\n\n${t.slice(t.length - tail)}`;
-      truncated++;
-    }
-    const red = redactSecrets(t);
+  /**
+   * 秘密情報を伏せ、伏せた数を secretHits に足す。記録に書く自由記述(本文・見出しのセッション名・
+   * ツールやサブエージェントの失敗の文・エラーの文・中断の理由)はどれもこれを通す
+   * (ツールの引数だけは summarizeArgsCounted が伏せ、返した数を呼び元で足す)。
+   * 切る前の全文を渡す(切った後だと、切れ目に掛かった鍵の一部が形に当たらず残り、切れた先の鍵も数に入らない)
+   */
+  const redact = (s: string): string => {
+    const red = redactSecrets(s);
     secretHits += red.hits;
     return red.text;
+  };
+
+  /**
+   * 本文(自由記述)の整形: 全文で秘密情報を伏せる → 上限で中略。
+   * 伏せてから切るのは、切った後だと中略の位置に掛かった鍵の一部が形に当たらず残るため。
+   * secretHits は伏せた数(中略で落ちる部分の鍵も伏せたので数える)、truncated は中略した本文の数
+   */
+  const text = (s: string, limit = o.maxTextChars): string => {
+    const t = redact(s);
+    if (t.length <= limit) return t;
+    const head = Math.floor(limit * 0.7);
+    const tail = limit - head;
+    truncated++;
+    return `${t.slice(0, head)}\n\n…(中略 ${int(t.length - limit)} 字)…\n\n${t.slice(t.length - tail)}`;
   };
 
   const events: CopilotEvent[] = [];
@@ -243,12 +244,7 @@ export async function renderTranscript(r: SessionRecord, eventsPath: string | nu
   // ---------- 見出し・概要 ----------
   const toolTotals = Object.values(r.tools.results ?? {}).reduce((a, x) => ({ failure: a.failure + x.failure, denied: a.denied + x.denied }), { failure: 0, denied: 0 });
   // セッション名も秘密情報の検査に通す(切る前に伏せ、件数に入れる)
-  let title = r.id;
-  if (r.name) {
-    const red = redactSecrets(r.name.replace(/\s+/g, ' '));
-    secretHits += red.hits;
-    title = red.text.slice(0, 120);
-  }
+  const title = r.name ? redact(r.name.replace(/\s+/g, ' ')).slice(0, 120) : r.id;
   const L: string[] = [];
   L.push(`# セッション記録: ${title}`, '');
   L.push(`生成 ${dateTime(o.generatedAt)} · agent-session-atlas \`atlas export\` · 本文の出所: ${source === 'events' ? 'events.jsonl(スナップショット)' : 'sessions.json の抜粋のみ(スナップショットに記録が無い)'}`);
@@ -407,15 +403,15 @@ export async function renderTranscript(r: SessionRecord, eventsPath: string | nu
           const nm = st?.name ?? String(d.toolName ?? '(unknown)');
           if (isInternalTool(nm)) break;
           const startEv = call ? events.find((x) => x.type === 'tool.execution_start' && x.data?.toolCallId === call) : undefined;
-          const args = summarizeArgs(nm, startEv?.data?.arguments);
+          // 引数と失敗の文で伏せた数も、記録の末尾の件数に入れる
+          const sa = summarizeArgsCounted(nm, startEv?.data?.arguments);
+          secretHits += sa.hits;
+          const args = sa.text;
           const dur = st?.at != null && at != null ? duration(at - st.at) : null;
           const ok = d.success !== false;
-          const err = ok ? '' : errorText(d.error);
+          const err = ok ? '' : redact(errorText(d.error));
           const mcp = typeof startEv?.data?.mcpServerName === 'string' && startEv.data.mcpServerName ? ` (MCP ${startEv.data.mcpServerName})` : '';
-          line(
-            e.timestamp,
-            `${st?.agent ? `[agent:${st.agent}] ` : tag}${ok ? '✔' : '✖'} \`${nm}\`${mcp}${args ? ` ${redactSecrets(args).text}` : ''}${dur ? `(${dur})` : ''}${err ? ` — 失敗: ${redactSecrets(err).text}` : ''}`,
-          );
+          line(e.timestamp, `${st?.agent ? `[agent:${st.agent}] ` : tag}${ok ? '✔' : '✖'} \`${nm}\`${mcp}${args ? ` ${args}` : ''}${dur ? `(${dur})` : ''}${err ? ` — 失敗: ${err}` : ''}`);
           const show = o.toolOutput === 'all' || (o.toolOutput === 'fail' && !ok);
           if (show) {
             const rt = resultText(d.result);
@@ -437,7 +433,7 @@ export async function renderTranscript(r: SessionRecord, eventsPath: string | nu
           );
           break;
         case 'subagent.failed':
-          line(e.timestamp, `**サブエージェント失敗** \`${String(d.agentName ?? 'agent')}\`: ${redactSecrets(String(d.error ?? d.message ?? '')).text.slice(0, 300)}`);
+          line(e.timestamp, `**サブエージェント失敗** \`${String(d.agentName ?? 'agent')}\`: ${redact(String(d.error ?? d.message ?? '')).slice(0, 300)}`);
           break;
         case 'session.compaction_start':
           line(e.timestamp, `compaction 開始(文脈 ${int(Number(d.conversationTokens ?? 0))} + system ${int(Number(d.systemTokens ?? 0))} + ツール定義 ${int(Number(d.toolDefinitionsTokens ?? 0))} トークン)`);
@@ -459,16 +455,11 @@ export async function renderTranscript(r: SessionRecord, eventsPath: string | nu
           break;
         }
         case 'session.error':
-          line(e.timestamp, `**エラー** ${String(d.errorType ?? '')}${d.statusCode != null ? ` (HTTP ${d.statusCode})` : ''}${typeof d.message === 'string' ? `: ${redactSecrets(d.message).text.slice(0, 300)}` : ''}`);
+          line(e.timestamp, `**エラー** ${String(d.errorType ?? '')}${d.statusCode != null ? ` (HTTP ${d.statusCode})` : ''}${typeof d.message === 'string' ? `: ${redact(d.message).slice(0, 300)}` : ''}`);
           break;
         case 'abort': {
           // 中断の理由も秘密情報の検査に通す(切る前に伏せ、件数に入れる)
-          let reason = '';
-          if (typeof d.reason === 'string') {
-            const red = redactSecrets(d.reason);
-            secretHits += red.hits;
-            reason = red.text.slice(0, 300);
-          }
+          const reason = typeof d.reason === 'string' ? redact(d.reason).slice(0, 300) : '';
           line(e.timestamp, `**中断** ${reason}`);
           break;
         }

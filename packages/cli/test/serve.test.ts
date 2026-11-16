@@ -161,7 +161,9 @@ describe('serve', () => {
     await start();
     const s = await json('/api/state');
     expect(s.status).toBe(200);
-    expect(s.body).toMatchObject({ readOnly: true, groups: [{ name: 'person-a / 武器', note: '', ids: ['s1'] }] });
+    expect(s.body).toMatchObject({ readOnly: true });
+    // 表示名は「人 / タグ」。元のタグを別に持つ(課題 × 条件の表が、名前の決まりを元のタグから読む)
+    expect(s.body.groups).toEqual([{ name: 'person-a / 武器', note: '', ids: ['s1'], tag: '武器' }]);
     expect((await json('/api/groups', { method: 'POST', body: JSON.stringify({ name: 'x', note: '', ids: ['s1'] }) })).status).toBe(403);
     expect((await json('/api/memos/s1', { method: 'PUT', body: JSON.stringify({ text: 'x', rev: '' }) })).status).toBe(403);
     expect(await (await fetch(`${base()}/api/memo-editor.js`)).text()).toContain('読むだけ');

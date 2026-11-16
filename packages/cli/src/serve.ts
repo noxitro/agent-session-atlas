@@ -32,7 +32,7 @@ import {
   writeFullRecord,
   detailFileName,
   type ViewKind,
-  memberGroups,
+  memberGroupsKeyed,
   memosDir,
   memoSummary,
   readMemo,
@@ -44,6 +44,7 @@ import {
   uniqueIds,
   type MemoFile,
   type SessionGroup,
+  type MemberGroup,
 } from '../../report/src/index.ts';
 import type { SessionRecord, SessionsFile, WikiSpec } from '../../core/src/index.ts';
 import { codeStamp, DEFAULT_PHASE_NAMES } from '../../core/src/index.ts';
@@ -150,7 +151,7 @@ const HTML_HEADERS = { ...NOSNIFF, 'x-frame-options': 'DENY', 'content-security-
  */
 const FILE_HEADERS = { ...NOSNIFF, 'content-security-policy': 'sandbox' } as const;
 /** atlas 自身が作る HTML(token を差し込み、操作を出す)。out/ の直下のこれらと sessions/<id>.html だけ */
-const APP_PAGES = new Set(['atlas.html', 'glossary.html', 'insights.html', 'instructions.html']);
+const APP_PAGES = new Set(['atlas.html', 'failures.html', 'glossary.html', 'insights.html', 'instructions.html']);
 /**
  * out/ からの相対パス(/ 区切り)が atlas の画面か。snapshot/(原本の files/ などの写し)・full/・library/ の下の .html は
  * セッション由来でありうるので、token を入れず静的ファイルとして(sandbox で)返す
@@ -281,7 +282,8 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
     mtime: number;
     ids: Map<string, { title: string; eligible: boolean; turns: number }>;
     source: SessionsFile['source'] | null;
-    members: SessionGroup[];
+    /** 送った人のタスクタグ(元のタグを添える。課題 × 条件の表が、名前の決まりを元のタグから読む) */
+    members: MemberGroup[];
   } | null = null;
   async function sessionIndex(): Promise<Map<string, { title: string; eligible: boolean; turns: number }> | null> {
     const p = join(outDir, 'sessions.json');
@@ -300,7 +302,7 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
         mtime: m,
         ids: new Map(file.sessions.map((r) => [r.id, { title: r.name?.trim() || '(名前なし)', eligible: r.turns > 0 || !!r.firstUserMessage, turns: r.analysis?.turnStats?.length ?? 0 }])),
         source: file.source ?? null,
-        members: memberGroups(file.sessions),
+        members: memberGroupsKeyed(file.sessions),
       };
     }
     return sessionsCache.ids;
@@ -310,7 +312,7 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
    * 読むだけの画面か(build と同じ isReadOnlyView)と、送った人のタスクタグ。sessions.json を読めないとき(集計の途中など)は前に読んだものを使う。
    * atlas open が立てたサーバ(reports.current)は、まだ集計していなくても読むだけ
    */
-  async function viewState(): Promise<{ readOnly: boolean; members: SessionGroup[] }> {
+  async function viewState(): Promise<{ readOnly: boolean; members: MemberGroup[] }> {
     try {
       await sessionIndex();
     } catch {

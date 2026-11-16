@@ -1,6 +1,6 @@
 // 依頼(ターン)単位の分析をレポートに載せる形(段階 1)。
 // 埋め込みは 1 ターン 1 つの数値の組(TurnTuple)にして小さくし、画面で絞り込みに合わせて工程別・依頼の種類別に集計し直す。
-// 分類の規則(工程・依頼の種類)と集計の足し方は shared/turns.ts と同じものを使う(サーバーの側は crates/atlas-core/src/turns.rs)。
+// 分類の規則(工程・依頼の種類)と集計の足し方は、サーバーの側と同じ packages/core/src/turns.ts を使う。
 import {
   addTurn,
   emptyTurnBucket,

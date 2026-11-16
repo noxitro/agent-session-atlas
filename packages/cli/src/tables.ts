@@ -1,5 +1,7 @@
 // 表計算ソフトで開く表(依頼ごとの turns.csv・セッションごとの sessions.csv・VCS の照合のまとまりごとの vcs-hunks.csv)と、
 // 同じ中身の SQLite(atlas.sqlite)を作る。out/tables/(metrics・build・export)とグループの書き出し(out/groups/<名前>/)が同じものを使う。
+// ツールの失敗と拒否ごとの表(failures.csv と SQLite の failures)は out/tables/ だけなので、ここでは作らない
+// (commands.ts の writeTables が、writeSqlite に渡す表に足す)。
 import { existsSync } from 'node:fs';
 import { readFile, rm } from 'node:fs/promises';
 import {

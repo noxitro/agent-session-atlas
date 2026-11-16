@@ -1,7 +1,9 @@
 import { FileTracker, isAutopilotContinuation, isInternalTool, isMainAssistantMessage, isUserTurn, normalizeModel, type FileOp } from './classify.ts';
 import { KNOWN_EVENT_TYPES } from './event-types.ts';
 import { classifyToolFailure, isDeniedError } from './tool-failure.ts';
+import { argsText, buildRow, finishLedger, MAX_ROWS, PROMPT_LIMIT, redactCap, type CallRec, type PendingRow } from './failure-ledger.ts';
 import { InstructionCollector } from './instructions.ts';
+import { TestCollector } from './test-results.ts';
 import { toolKind } from './turns.ts';
 import { emptyWiki, WikiClassifier } from './wiki.ts';
 import type {
@@ -321,6 +323,18 @@ function patchFiles(patch: string): { op: FileOp; path: string }[] {
   return out;
 }
 
+/** 失敗の台帳: 開始イベントで覚え、complete で捨てる呼び出しの材料 */
+interface PendingCall {
+  args: string | null;
+  mcpServer: string | null;
+  mcpTool: string | null;
+  mcpConfigSource: string | null;
+  model: string | null;
+  startedAt: string | null;
+  /** 引数 prompt(サブエージェントを起動する呼び出しなら、subagent.started で agents[].prompt に写す) */
+  prompt: string | null;
+}
+
 function argsOf(e: CopilotEvent): any {
   const a = e.data?.arguments;
   if (typeof a === 'string') {
@@ -392,6 +406,23 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
   const toolStartMs = new Map<string, number>();
   const toolDurations: Record<string, number[]> = {};
   const toolDurationOutliers: Record<string, number> = {};
+  // 失敗の台帳: 完了するまでの呼び出しの材料(complete で捨てる)・呼び出しの並び・行・要求の束・依頼の始まり
+  const pendingCalls = new Map<string, PendingCall>();
+  const callRecs: CallRec[] = [];
+  const callRecById = new Map<string, number>();
+  const ledgerRows: PendingRow[] = [];
+  let failuresDropped = 0;
+  /** toolCallId → それを要求した assistant.message の通し番号 */
+  const batchOf = new Map<string, number>();
+  let batchSeq = 0;
+  /** agentId → そのサブエージェントを起動した親の呼び出しの toolCallId */
+  const callByAgentId = new Map<string, string>();
+  /** 本体の依頼が始まったイベントの番号 */
+  const userTurnIdx: number[] = [];
+  /** 本体の依頼の通し番号(0 から。200 件を超えても数える) */
+  let turnOrd: number | null = null;
+  /** モデル別 × ツール別の結果 */
+  const resultsByModel: Record<string, Record<string, ToolResult>> = {};
   // ---- Phase 7: モード・推論強度・文脈・摩擦の詳細 ----
   const modeCounts: Record<string, number> = {};
   let currentMode: string | null = null;
@@ -437,6 +468,7 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
   const wiki = emptyWiki();
   const wikiClassifier = input.wikiClassifier ?? new WikiClassifier();
   const friction = emptyFriction();
+  const tests = new TestCollector();
   const files = new FileTracker();
   let shutdownFiles: string[] = [];
   /** その時点の cwd(相対パスの解決に使う) */
@@ -517,6 +549,15 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
       const d = e.data ?? {};
       // 新しいユーザーのターンの始まり(その前の空白はどのターンにも入れない)
       const startsTurn = e.type === 'user.message' && !e.agentId && !isAutopilotContinuation(d) && isUserTurn(d);
+      // 失敗の台帳: イベントの番号・依頼の通し番号・エージェントの手掛かり
+      const evIdx = total;
+      if (startsTurn) {
+        userTurnIdx.push(evIdx);
+        turnOrd = turnOrd == null ? 0 : turnOrd + 1;
+      }
+      const parentCall: string | null = typeof d.parentToolCallId === 'string' && d.parentToolCallId !== '' ? d.parentToolCallId : null;
+      const aid: string | null = e.agentId != null && String(e.agentId) !== '' ? String(e.agentId) : null;
+      if (aid && parentCall) callByAgentId.set(aid, parentCall);
       if (t != null) {
         if (lastTs != null && t > lastTs) {
           const gap = t - lastTs;
@@ -578,6 +619,11 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
             legacyOutput += d.outputTokens;
             inc(legacyOutputByModel, d.model ? normalizeModel(d.model) : '(unknown)', d.outputTokens);
           }
+          // 失敗の台帳: 同じ応答で要求された呼び出しを 1 つの束にする(失敗への反応と、まとめて要求された呼び出しを分ける)
+          if (Array.isArray(d.toolRequests)) {
+            batchSeq++;
+            for (const r of d.toolRequests) if (typeof r?.toolCallId === 'string' && r.toolCallId !== '') batchOf.set(r.toolCallId, batchSeq);
+          }
           if (isMainAssistantMessage(e)) {
             assistantMessages++;
             if (typeof d.content === 'string' && d.content.trim() !== '') lastAssistantMessage = tail(d.content);
@@ -597,6 +643,9 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
           break;
         case 'tool.execution_start': {
           const name: string = d.toolName ?? '(unknown)';
+          const callId: string | null = typeof d.toolCallId === 'string' ? d.toolCallId : null;
+          const batch = callId != null ? (batchOf.get(callId) ?? null) : null;
+          if (callId != null) batchOf.delete(callId);
           if (isInternalTool(name)) {
             inc(internalTools, name);
             internalTotal++;
@@ -616,6 +665,26 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
           }
           if (typeof d.mcpServerName === 'string' && d.mcpServerName !== '') inc((mcp[d.mcpServerName] ??= {}), name);
           const args = argsOf(e);
+          {
+            // 失敗の台帳: 引数などは complete まで覚え、呼び出しの並びは next のために残す
+            const rawArgs = d.arguments != null ? argsText(d.arguments) : null;
+            const str = (k: string): string | null => (typeof d[k] === 'string' && d[k] !== '' ? d[k] : null);
+            if (callId != null) {
+              const prompt = args && typeof args === 'object' && !Array.isArray(args) && typeof args.prompt === 'string' && args.prompt !== '' ? (args.prompt as string) : null;
+              const model = str('model');
+              pendingCalls.set(callId, {
+                args: rawArgs,
+                mcpServer: str('mcpServerName'),
+                mcpTool: str('mcpToolName'),
+                mcpConfigSource: str('mcpConfigSource'),
+                model: model != null ? normalizeModel(model) : null,
+                startedAt: at,
+                prompt,
+              });
+              callRecById.set(callId, callRecs.length);
+            }
+            callRecs.push({ parent: parentCall, aid, startIdx: evIdx, batch, tool: name, outcome: 'unknown', argKey: rawArgs ?? '' });
+          }
           {
             const ts = cur();
             const k = ts ? toolKind(name, args) : null;
@@ -659,6 +728,9 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
         }
         case 'tool.execution_complete': {
           const isInternalCall = typeof d.toolCallId === 'string' && internalCalls.has(d.toolCallId);
+          // 失敗の台帳: 覚えた引数などは、成否にかかわらずここで捨てる
+          const pend = typeof d.toolCallId === 'string' ? pendingCalls.get(d.toolCallId) : undefined;
+          if (pend) pendingCalls.delete(d.toolCallId);
           if (d.success === false && !isInternalCall) friction.toolFailures++;
           if (!isInternalCall && typeof d.success === 'boolean') {
             consecutiveFailures = d.success ? 0 : consecutiveFailures + 1;
@@ -675,16 +747,62 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
             }
           }
           const callName = typeof d.toolCallId === 'string' ? toolNameByCall.get(d.toolCallId) : undefined;
+          // テストの実行ファイルが書いた印つきの行(内部ツールの結果は見ない)
+          if (!isInternalCall) {
+            tests.addComplete(d.result, d.error, {
+              at,
+              turn: curTurn != null ? curTurn + 1 : null,
+              tool: callName ?? null,
+              toolCallId: typeof d.toolCallId === 'string' ? d.toolCallId : null,
+              subagent: !!e.agentId || !!d.parentToolCallId,
+              atMs: t,
+              activeMs,
+            });
+          }
           if (callName != null && typeof d.success === 'boolean') {
-            const r = (results[callName] ??= { success: 0, failure: 0, denied: 0 });
-            if (d.success) r.success++;
-            else if (isDeniedError(d.error)) r.denied++;
-            else {
-              r.failure++;
-              // 失敗の要因(文は残さず、決まった規則で分けた種類だけ)
-              const cause = classifyToolFailure(d.error);
-              const causes = (r.causes ??= {});
-              causes[cause] = (causes[cause] ?? 0) + 1;
+            const ok = d.success;
+            const denied = !ok && isDeniedError(d.error);
+            // 失敗の要因(決まった規則で分けた種類。文そのものは失敗の台帳に残す)
+            const cause = !ok && !denied ? classifyToolFailure(d.error) : null;
+            const model = typeof d.model === 'string' && d.model !== '' ? normalizeModel(d.model) : (pend?.model ?? null);
+            const byModel = (resultsByModel[model ?? UNKNOWN_KEY] ??= {});
+            for (const r of [(results[callName] ??= { success: 0, failure: 0, denied: 0 }), (byModel[callName] ??= { success: 0, failure: 0, denied: 0 })]) {
+              if (ok) r.success++;
+              else if (denied) r.denied++;
+              else {
+                r.failure++;
+                const causes = (r.causes ??= {});
+                causes[cause!] = (causes[cause!] ?? 0) + 1;
+              }
+            }
+            const ri = callRecById.get(d.toolCallId);
+            if (ri != null) callRecs[ri].outcome = ok ? 'success' : denied ? 'denied' : 'failure';
+            if (!ok) {
+              if (ledgerRows.length < MAX_ROWS) {
+                const st = toolStartMs.get(d.toolCallId);
+                const rc = ri != null ? callRecs[ri] : undefined;
+                ledgerRows.push({
+                  row: buildRow({
+                    tool: callName,
+                    error: d.error,
+                    denied,
+                    cause,
+                    args: pend?.args ?? null,
+                    mcpServer: pend?.mcpServer ?? null,
+                    mcpTool: pend?.mcpTool ?? null,
+                    mcpConfigSource: pend?.mcpConfigSource ?? null,
+                    model,
+                    startedAt: pend?.startedAt ?? null,
+                    durationMs: st != null && t != null && t >= st ? t - st : null,
+                    turn: turnOrd,
+                  }),
+                  parent: rc ? rc.parent : parentCall,
+                  aid: rc ? rc.aid : aid,
+                  completeIdx: evIdx,
+                  batch: rc ? rc.batch : null,
+                  argKey: rc ? rc.argKey : null,
+                });
+              } else failuresDropped++;
             }
           }
           if (callName != null && t != null) {
@@ -740,6 +858,12 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
         case 'subagent.started': {
           const a = agentFor(e);
           a.startedAt = at;
+          // 起動した親の呼び出し(まだ完了していない)の引数 prompt を、エージェントごとに 1 回だけ写す
+          if (a.prompt == null) {
+            const id = d.toolCallId ?? e.agentId ?? null;
+            const p = id != null ? pendingCalls.get(String(id))?.prompt : null;
+            if (p) a.prompt = redactCap(p, PROMPT_LIMIT);
+          }
           a.name = d.agentName ?? a.name;
           a.model = typeof d.model === 'string' ? normalizeModel(d.model) : a.model;
           pushTimeline({ at: at ?? '', kind: 'agent', label: a.name });
@@ -923,11 +1047,18 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
 
   // ---- トークン ----
   for (const a of agents.values()) if (a.id) agentNameById.set(a.id, a.name);
+  // 失敗の台帳を仕上げる(エージェントの名前と next)。DB の行の agent_id → parent_tool_call_id も親の呼び出しの手掛かりにする
+  for (const row of dbUsage) if (row.agent_id && row.parent_tool_call_id && !callByAgentId.has(row.agent_id)) callByAgentId.set(row.agent_id, row.parent_tool_call_id);
+  const failures = finishLedger(ledgerRows, callRecs, userTurnIdx, callByAgentId, (k) => agentNameById.get(k));
   const { items, duplicates } = mergeUsage(dbUsage, usageRecords);
   const tokens = buildTokens(items, duplicates, legacyOutput, legacyOutputByModel, agentNameById, lastShutdown);
   tokens.subagentTotalTokens = subagentTotalTokens;
   attributeUsage(items, turnStartMs, overflowMs, turnStats);
   tokens.maxPreCompactionTokens = maxPreCompaction;
+  // テストの実行ごとの AI 使用量の累計。AIU の記録があるリクエストのすべてに時刻があるときだけ出す(時刻の無いものがあると、どの実行より前か決められない)
+  const withAiu = items.filter((u) => u.nanoAiu != null);
+  const aiuTimes: [number, number][] | null = withAiu.length && withAiu.every((u) => u.at != null) ? withAiu.map((u) => [u.at!, u.nanoAiu!]) : null;
+  const testResults = tests.finish((until) => (aiuTimes ? aiuTimes.reduce((a, [at, n]) => (at <= until ? a + n : a), 0) : null));
   for (const u of items) models.add(u.model);
   for (const m of Object.keys(tokens.byModel)) if (m !== '(unknown)') models.add(m);
 
@@ -996,6 +1127,7 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
       internal: { byName: internalTools, total: internalTotal },
       mcp,
       results,
+      resultsByModel,
       durations: toolDurations,
       durationOutliers: toolDurationOutliers,
     },
@@ -1024,7 +1156,10 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
       turnActiveMs: turnStartMs.map((st, i) => (st != null ? turnActive[i] : null)),
       requests,
       turnStats,
+      failures,
+      failuresDropped,
     },
+    ...(testResults ? { tests: testResults } : {}),
     unknownEventTypes: unknown,
     events: { total, badLines: input.eventStats?.badLines ?? 0, byType },
   };

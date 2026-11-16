@@ -16,6 +16,19 @@ export const MEMBER_TAG_SEP = ' / ';
  * 並びは人の名前、タグの名前の順。タグの無いセッションは入らない
  */
 export function memberGroups(sessions: readonly { id: string; person?: string | null; uploadTags?: readonly string[] }[]): SessionGroup[] {
+  return memberGroupsKeyed(sessions).map(({ name, note, ids }) => ({ name, note, ids }));
+}
+
+/**
+ * 送り先から集計したグループ 1 つと、その元のタグ(送った人が付けた名前そのまま)。
+ * 表示名(name)は「<人> / <タグ>」で、重なると番号が付くので、タグの名前の決まり(課題 × 条件の表)は表示名ではなく tag から読む
+ */
+export interface MemberGroup extends SessionGroup {
+  tag: string;
+}
+
+/** memberGroups と同じグループに、元のタグを添えたもの */
+export function memberGroupsKeyed(sessions: readonly { id: string; person?: string | null; uploadTags?: readonly string[] }[]): MemberGroup[] {
   // 人とタグの組で分ける(名前をつないだ文字列で分けると、「a」の「b / c」と「a / b」の「c」が 1 つになる)
   const byKey = new Map<string, { person: string; tag: string; ids: Set<string> }>();
   for (const s of sessions) {
@@ -37,7 +50,7 @@ export function memberGroups(sessions: readonly { id: string; person?: string | 
     let name = base;
     for (let n = 2; used.has(name); n++) name = `${base} (${n})`;
     used.add(name);
-    return { name, note: '', ids: [...g.ids] };
+    return { name, note: '', ids: [...g.ids], tag: g.tag };
   });
 }
 

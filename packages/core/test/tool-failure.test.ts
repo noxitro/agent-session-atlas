@@ -79,7 +79,7 @@ describe('normalizeSession の失敗の要因', () => {
     ev('tool.execution_complete', error === null ? { toolCallId: id, success: true } : { toolCallId: id, success: false, error }),
   ];
 
-  it('ツールごとに、失敗を要因別に数える。文は残さない。rejected は拒否に数える', async () => {
+  it('ツールごとに、失敗を要因別に数える。tools には文を残さない(文は失敗の台帳に残す)。rejected は拒否に数える', async () => {
     const r = await normalizeSession({
       id: 'zz-cause',
       workspace: { cwd: 'X:\\zz', created_at: '2026-10-01T00:00:00Z' },

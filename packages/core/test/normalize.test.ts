@@ -135,6 +135,7 @@ describe('normalizeSession', () => {
       mcp: {},
       // 失敗の文が無いので、要因は「その他」
       results: { view: { success: 0, failure: 1, denied: 0, causes: { other: 1 } } },
+      resultsByModel: { '(unknown)': { view: { success: 0, failure: 1, denied: 0, causes: { other: 1 } } } },
       // Phase 7: 所要時間(complete があるのは view だけ)
       durations: { view: [100] },
       durationOutliers: {},
@@ -238,6 +239,75 @@ ${cut}`)).toEqual([
     ]);
     const none = await normalizeSession({ id: 'nv', events: [ev('system.message', { role: 'system', content: 'You are a skilled engineer.' }, '2026-10-01T00:00:00Z')] });
     expect(none.availableSkills).toBeNull();
+  });
+});
+
+describe('テストの結果(印つきの 1 行 JSON)', () => {
+  const t = (s: number): string => new Date(Date.UTC(2026, 10, 16, 0, 0, s)).toISOString();
+  const line = (name: string, passed: boolean, n: number) => `ATLAS_TEST_RESULT {"v":1,"name":"${name}","passed":${passed},"counts":{"assertFailures":${n}}}`;
+  const start = (id: string, name: string, ts: string) => ev('tool.execution_start', { toolCallId: id, toolName: name, arguments: { command: './run-tests' } }, ts);
+
+  it('ツールの結果の、行頭に印がある 1 行 JSON を、呼び出しごと・依頼の番号つきで持つ。実行ごとに実働と AI 使用量の累計・まだ通っていない数を持つ', async () => {
+    const r = await normalizeSession({
+      id: 'tr',
+      events: [
+        ev('user.message', { content: '実装して' }, t(0)),
+        ur({}, t(1)),
+        start('c1', 'powershell', t(1)),
+        ev('tool.execution_complete', { toolCallId: 'c1', success: true, result: { content: `${line('a', false, 2)}\n${line('b', true, 0)}\n` } }, t(2)),
+        ev('user.message', { content: '直して' }, t(3)),
+        ur({}, t(4), { agentId: 'a1' }),
+        // サブエージェントが走らせたテスト
+        ev('tool.execution_start', { toolCallId: 'c2', toolName: 'bash', arguments: { command: './run-tests' } }, t(4), { agentId: 'a1' }),
+        ev('tool.execution_complete', { toolCallId: 'c2', success: true, result: { content: line('a', true, 0) } }, t(5), { agentId: 'a1' }),
+        // テストのソースを読んだだけ(行頭に印が無い)は数えない
+        start('c3', 'view', t(6)),
+        ev('tool.execution_complete', { toolCallId: 'c3', success: true, result: { content: '1. print("ATLAS_TEST_RESULT {}")' } }, t(7)),
+        // 最後のテストの後のリクエストは、どの実行の累計にも入らない
+        ur({}, t(8)),
+      ],
+    });
+    expect(r.tests).toEqual({
+      runs: [
+        {
+          at: t(2),
+          turn: 1,
+          tool: 'powershell',
+          toolCallId: 'c1',
+          activeMs: 2000,
+          nanoAiu: 1000,
+          failing: 1,
+          results: [
+            { name: 'a', passed: false, counts: { assertFailures: 2 } },
+            { name: 'b', passed: true, counts: { assertFailures: 0 } },
+          ],
+        },
+        { at: t(5), turn: 2, tool: 'bash', toolCallId: 'c2', subagent: true, activeMs: 5000, nanoAiu: 2000, failing: 0, results: [{ name: 'a', passed: true, counts: { assertFailures: 0 } }] },
+      ],
+      invalid: 0,
+      duplicates: 0,
+      dropped: 0,
+      firstPass: 2,
+    });
+    // sessions.json のキーの順(analysis の後、unknownEventTypes の前)
+    const keys = Object.keys(r);
+    expect(keys.indexOf('tests')).toBe(keys.indexOf('analysis') + 1);
+    expect(keys.indexOf('unknownEventTypes')).toBe(keys.indexOf('tests') + 1);
+  });
+
+  it('リクエストごとの AI 使用量の記録が無いセッションは、累計を出さない(0 にしない)。印の行が無ければキーを置かない', async () => {
+    const r = await normalizeSession({
+      id: 'tn',
+      events: [
+        ev('user.message', { content: '実装して' }, t(0)),
+        start('c1', 'powershell', t(1)),
+        ev('tool.execution_complete', { toolCallId: 'c1', success: true, result: { content: line('a', false, 1) } }, t(2)),
+      ],
+    });
+    expect([r.tests!.runs[0].nanoAiu, r.tests!.runs[0].failing, r.tests!.firstPass]).toEqual([null, 1, null]);
+    expect(JSON.parse(JSON.stringify(r.tests)).runs[0].nanoAiu).toBeNull();
+    const none = await normalizeSession({ id: 'tx', events: [ev('user.message', { content: 'x' }, t(0))] });
+    expect('tests' in none).toBe(false);
   });
 });
 

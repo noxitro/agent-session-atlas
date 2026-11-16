@@ -49,6 +49,10 @@ export { commandKind, toolKind, phaseOf, requestKindOf, sessionTurns, followedBy
 export type { Phase, RequestKind, TurnRow, TurnBucket, TurnMetrics, TurnFacts, Outcome, Mismatch } from './turns.ts';
 export { turnsCsv, sessionsCsv, toCsv, csvCell, turnsTable, sessionsTable, retentionHunksTable } from './tables.ts';
 export type { TurnVerdictLike, VerdictMap, Table, Cell, RetentionLabels } from './tables.ts';
+export { failuresTable, failuresCsv, FAILURE_KIND_LABEL, NEXT_KIND_LABEL, CALL_OUTCOME_LABEL } from './tables.ts';
+export { MAX_ROWS as FAILURE_LEDGER_MAX_ROWS } from './failure-ledger.ts';
+export { redactSecrets, SECRET_PATTERNS } from './secrets.ts';
+export { normalizeRequest } from './text.ts';
 export { mainEffortOf, mainEffortCell, mainModelCell, MAIN_EFFORT_SHARE } from './main-effort.ts';
 export type { MainEffort } from './main-effort.ts';
 export { extractAiChanges, parseUnifiedDiff, parseApplyPatch, lineText } from './ai-changes.ts';

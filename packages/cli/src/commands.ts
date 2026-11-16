@@ -4,7 +4,7 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join, posix, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { codeStamp, computeMetrics, currentAtlasBuild, describeAtlasBuilds, summarizeAtlasBuilds, describeSource, extract, readSnapshotManifest, METRICS_SCHEMA_VERSION, readVcsRetention, runVcsStep, snapshot, VCS_RETENTION_FILE, RETENTION_STATUS_LABEL, UNATTRIBUTABLE_REASON_LABEL, type VcsRetentionFile, UPLOAD_OLD_ONLY_REASON, UPLOAD_PROBE_HINT, uploadWorkDirId, KEPT_REASONS, type MetricsFile, type SessionRecord, type SessionsFile, type SnapshotManifest } from '../../core/src/index.ts';
+import { codeStamp, computeMetrics, isEmptySession, toCsv, failuresTable, FAILURE_LEDGER_MAX_ROWS,currentAtlasBuild, describeAtlasBuilds, summarizeAtlasBuilds, describeSource, extract, readSnapshotManifest, METRICS_SCHEMA_VERSION, readVcsRetention, runVcsStep, snapshot, VCS_RETENTION_FILE, RETENTION_STATUS_LABEL, UNATTRIBUTABLE_REASON_LABEL, type VcsRetentionFile, UPLOAD_OLD_ONLY_REASON, UPLOAD_PROBE_HINT, uploadWorkDirId, KEPT_REASONS, type MetricsFile, type SessionRecord, type SessionsFile, type SnapshotManifest } from '../../core/src/index.ts';
 import {
   buildReport,
   DEFAULT_TRANSCRIPT_OPTIONS,
@@ -18,7 +18,14 @@ import {
   memosDir,
   memoSummary,
   NOTES_DIR_NAME,
-  memberGroups,
+  memberGroupsKeyed,
+  conditionAssignments,
+  conditionsCsvTable,
+  conditionTableOf,
+  sessionConditionCells,
+  SESSION_CONDITION_COLUMNS,
+  testTables,
+  type CondGroup,
   parseJudgments,
   parseVerdicts,
   type VerdictIndex,
@@ -379,31 +386,85 @@ export async function runVcs(p: Paths, log: Log, o: { mode?: 'worktree' | 'commi
 
 /** out/tables/ に表も書く */
 export async function runMetrics(p: Paths, f: SessionFilter, log: Log): Promise<MetricsFile> {
-  const { file: s, sessions } = await selectSessions(p, f, 'metrics', '先に atlas extract を実行してください。', log);
+  const sel = await selectSessions(p, f, 'metrics', '先に atlas extract を実行してください。', log);
+  const { file: s, sessions } = sel;
   const m = computeMetrics(sessions, { installed: s.installed });
   await writeFile(p.metrics, JSON.stringify(m, null, 2));
   log(
     `metrics: ${m.overall.sessions} セッション(空のセッション ${m.emptySessions} 件を除外)、${Object.keys(m.byProject).length} プロジェクト、${Object.keys(m.byModel).length} モデル、トークン記録なし(欠測)${m.overall.sessionsMissingTokens} セッション → ${p.metrics}`,
   );
   if (m.installedSkills) log(`metrics: インストール済みで未使用の skill ${m.installedSkills.unused.length} / ${m.installedSkills.installed.length} 件`);
-  await writeTables(p, sessions, 'metrics', log);
+  await writeTables(p, sessions, conditionGroups(p, sel), 'metrics', log);
   return m;
 }
 
 /**
- * 表計算ソフトで開く表(依頼ごと・セッションごと)を out/tables/ に書く。metrics・build・export が、それぞれの絞り込みのセッションで書く
- * (判定を取り込んだ後の export でも、判定の列が表に入るように)
+ * 課題 × 条件の表に使うタスクタグ(build と同じ選び方: 読むだけの画面にする出力先(送り先から集計したもの)は、送った人のタグ(元の名前)。
+ * それ以外は groups.json)
  */
-async function writeTables(p: Paths, sessions: SessionRecord[], cmd: string, log: Log): Promise<void> {
+function conditionGroups(p: Paths, sel: Selected): CondGroup[] {
+  if (isReadOnlyView(p.out, sel.file.source)) return memberGroupsKeyed(sel.file.sessions).map((m) => ({ raw: m.tag, ids: m.ids }));
+  return sel.groups.groups.map((g) => ({ raw: g.name, ids: g.ids }));
+}
+
+/**
+ * 表計算ソフトで開く表(依頼ごと・セッションごと・VCS の照合のまとまりごと・ツールの失敗と拒否ごと)を out/tables/ に書く。
+ * metrics・build・export が、それぞれの絞り込みのセッションで書く(判定を取り込んだ後の export でも、判定の列が表に入るように)。
+ * ツールの失敗と拒否ごとの表(failures.csv と SQLite の failures)は、ここでだけ足す(グループの書き出しには入れない)
+ */
+async function writeTables(p: Paths, sessions: SessionRecord[], groups: CondGroup[], cmd: string, log: Log): Promise<void> {
   const tables = join(p.out, 'tables');
   await mkdir(tables, { recursive: true });
   const t = await buildTables(sessions, p);
   for (const w of t.warnings) log(`${cmd}: 注意 ${w}`);
   await writeFile(join(tables, 'turns.csv'), t.turns);
-  await writeFile(join(tables, 'sessions.csv'), t.sessions);
   // 照合の結果が無くなったとき(vcs が失敗した等)は、前の vcs-hunks.csv を残さない
   if (t.vcsHunks != null) await writeFile(join(tables, 'vcs-hunks.csv'), t.vcsHunks);
   else await rm(join(tables, 'vcs-hunks.csv'), { force: true });
+  // 失敗の台帳の無い古い記録だけのときは、表を書かず、前の failures.csv も残さない(見出しだけの表は「失敗が 0 件」と読めてしまう)。
+  // SQLite には、この関数の中の t.data に足して入れる(buildTables の返す中身は変えないので、グループの書き出しには入らない)
+  const failures = failuresTable(sessions);
+  if (failures) {
+    await writeFile(join(tables, 'failures.csv'), toCsv(failures.header, failures.rows));
+    t.data.failures = failures;
+  } else await rm(join(tables, 'failures.csv'), { force: true });
+  // 表に載せるセッション(空のセッションを除く)のうち、行数の上限で載せなかった失敗・拒否の数と、台帳の無い記録の数
+  const ledgerSessions = sessions.filter((s) => !isEmptySession(s));
+  const dropped = ledgerSessions.reduce((a, s) => a + (s.analysis?.failures ? (s.analysis.failuresDropped ?? 0) : 0), 0);
+  const noLedger = ledgerSessions.filter((s) => !s.analysis?.failures).length;
+  // 課題 × 条件の表とテストの結果(画面の「課題 × 条件」と同じ数え方。母集団は空のセッションを除いたもの)
+  const listed = sessions.filter((s) => !isEmptySession(s));
+  const cond = conditionTableOf(listed, groups);
+  const assign = conditionAssignments(cond);
+  // sessions.csv(と SQLite の sessions)に、課題・条件とテストの列を、最初の依頼の列の前に足す
+  const sess = t.data.sessions;
+  if (sess) {
+    const i = sess.header.indexOf('最初の依頼(先頭)');
+    const at = i >= 0 ? i : sess.header.length;
+    sess.header.splice(at, 0, ...SESSION_CONDITION_COLUMNS);
+    const byId = new Map(sessions.map((s) => [s.id, s]));
+    for (const row of sess.rows) {
+      const r = typeof row[0] === 'string' ? byId.get(row[0]) : undefined;
+      row.splice(at, 0, ...(r ? sessionConditionCells(r, assign) : SESSION_CONDITION_COLUMNS.map(() => null)));
+    }
+    t.sessions = toCsv(sess.header, sess.rows);
+  }
+  // 課題・条件とテストの列を足してから書く
+  await writeFile(join(tables, 'sessions.csv'), t.sessions);
+  // 名前の決まりに合うタスクタグが無ければ書かず、前のものも残さない
+  const withConditions = cond.matchedTags > 0;
+  if (withConditions) {
+    const c = conditionsCsvTable(cond);
+    await writeFile(join(tables, 'conditions.csv'), toCsv(c.header, c.rows));
+    t.data.conditions = c;
+  } else await rm(join(tables, 'conditions.csv'), { force: true });
+  // テストの実行が 1 回も無ければ書かず、前のものも残さない(見出しだけの表は「0 件」と読めてしまう)
+  const tests = testTables(listed, assign);
+  for (const [file, table] of [['test-runs.csv', tests?.runs], ['test-results.csv', tests?.results], ['test-counts.csv', tests?.counts]] as const) {
+    if (table) await writeFile(join(tables, file), toCsv(table.header, table.rows));
+    else await rm(join(tables, file), { force: true });
+  }
+  if (tests) Object.assign(t.data, { test_runs: tests.runs, test_results: tests.results, test_counts: tests.counts });
   let sqlite = '';
   try {
     await writeSqlite(join(tables, SQLITE_FILE), t.data);
@@ -411,7 +472,11 @@ async function writeTables(p: Paths, sessions: SessionRecord[], cmd: string, log
   } catch (e) {
     log(`${cmd}: 注意 ${SQLITE_FILE} を書けませんでした(${(e as Error).message})。CSV は書きました`);
   }
-  log(`${cmd}: 表 → ${join(tables, 'turns.csv')}・sessions.csv${t.vcsHunks != null ? '・vcs-hunks.csv' : ''}${sqlite}${t.withVerdicts ? '(依頼ごとの判定の列つき)' : ''}${t.withRetention ? '(VCS の照合の列つき)' : ''}`);
+  log(
+    `${cmd}: 表 → ${join(tables, 'turns.csv')}・sessions.csv${t.vcsHunks != null ? '・vcs-hunks.csv' : ''}${failures ? '・failures.csv' : ''}${withConditions ? '・conditions.csv' : ''}${tests ? '・test-runs.csv・test-results.csv・test-counts.csv' : ''}${sqlite}${t.withVerdicts ? '(依頼ごとの判定の列つき)' : ''}${t.withRetention ? '(VCS の照合の列つき)' : ''}${
+      dropped > 0 ? `(1 セッション ${FAILURE_LEDGER_MAX_ROWS} 行の上限で failures.csv に載せていない失敗・拒否 ${dropped} 件)` : ''
+    }${noLedger > 0 ? `(失敗の台帳が無い古い記録 ${noLedger} セッションは failures.csv に入りません。集計し直すと付きます)` : ''}`,
+  );
 }
 
 export interface BuildOptions extends SessionFilter {
@@ -420,7 +485,8 @@ export interface BuildOptions extends SessionFilter {
 }
 
 export async function runBuild(p: Paths, o: BuildOptions, log: Log): Promise<BuildResult> {
-  const { file: s, sessions, groups } = await selectSessions(p, o, o.transcripts ? 'export' : 'build', '先に atlas extract を実行してください。', log);
+  const sel = await selectSessions(p, o, o.transcripts ? 'export' : 'build', '先に atlas extract を実行してください。', log);
+  const { file: s, sessions, groups } = sel;
   if (sessions.length === 0) log('build: 注意 条件に合うセッションが 0 件です(空のレポートを出します)');
 
   // metrics.json が同じセッション集合のものなら使い、違えば(フィルタ違い・古い)作り直す
@@ -455,7 +521,7 @@ export async function runBuild(p: Paths, o: BuildOptions, log: Log): Promise<Bui
   if (retention) log(`build: VCS の照合 ${retention.sessions.length} 件を合成(${p.vcsRetention}、照合 ${retention.generatedAt})`);
   else if (existsSync(p.vcsRetention)) log(`build: 注意 ${p.vcsRetention} を読めないため、AI の変更の残存は出しません(atlas vcs で作り直せます)`);
 
-  await writeTables(p, sessions, o.transcripts ? 'export' : 'build', log);
+  await writeTables(p, sessions, conditionGroups(p, sel), o.transcripts ? 'export' : 'build', log);
 
   await ensureTemplate(log);
   const unknown = Object.values(s.warnings.unknownEventTypes).reduce((a, n) => a + n, 0);
@@ -467,6 +533,8 @@ export async function runBuild(p: Paths, o: BuildOptions, log: Log): Promise<Bui
     totalSessionsInSource: s.sessions.length,
     // アップロードしたフォルダを集計したとき(--home や atlas open)は、どのフォルダの集計かを画面に出す
     source: s.source.root && s.source.layout ? { name: basename(s.source.root) || s.source.root, path: s.source.root, layout: s.source.layout, folders: s.source.folders?.length ?? 1 } : null,
+    // 参照を数えた llm-wiki の vault の数(古い集計では無い)
+    wikiVaults: s.source.wikis ?? null,
     warnings: { unknownEventTypes: unknown, badLines: s.warnings.badLines, notes: groups.warnings },
     judgments,
     verdicts,
@@ -478,7 +546,7 @@ export async function runBuild(p: Paths, o: BuildOptions, log: Log): Promise<Bui
     // 読むだけの画面(送り先から集計した・別のフォルダを開いた)は、送った人が付けていたタスクタグ(人ごと)とメモを出す。
     // この PC の置き場(groups.json・memos/)のものは混ぜない。判定はサーバと同じ isReadOnlyView
     ...(isReadOnlyView(p.out, s.source)
-      ? { groups: memberGroups(s.sessions), memberMemosDir: join(p.snapshot, 'session-state'), readOnly: true }
+      ? { groups: memberGroupsKeyed(s.sessions), memberMemosDir: join(p.snapshot, 'session-state'), readOnly: true }
       : { groups: groups.groups, memosDir: memosDir(p.notes) }),
     outDir: p.out,
     scope: { since: o.since, project: o.project, client: o.client, model: o.model, branch: o.branch },

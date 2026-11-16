@@ -575,6 +575,8 @@ export async function extract(snapshotDir: string, opts: ExtractOptions = {}): P
       snapshotDir,
       since,
       ...(layout ? { layout, ...(manifest?.merged ? { folders: manifest.merged.folders } : {}), ...(manifest?.uploads ? { uploads: manifest.uploads } : {}) } : {}),
+      // 参照を数えた llm-wiki の vault の数(0 なら wiki は数えていない)
+      wikis: opts.wikis?.length ?? 0,
     },
     desktop: desktop ? { readAt: desktop.readAt, wal: desktop.wal, coverage: desktop.coverage, warnings: desktop.warnings, sessions: desktop.tables.sessions?.length ?? 0 } : null,
     counts: { sessions: sessions.length, dbOnly, dirOnly: sessions.length - both - dbOnly, both, empty: sessions.filter((s) => s.empty).length },

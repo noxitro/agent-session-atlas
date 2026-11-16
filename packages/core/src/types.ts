@@ -663,7 +663,7 @@ export interface SessionRecord {
    */
   files: { changed: string[]; created: string[]; deleted: string[]; sessionState: number };
   timeline: TimelineEntry[];
-  /** テストの実行ファイルが書いた印つきの 1 行 JSON(crates/atlas-core/src/test_results.rs)。印の行が無いセッションと schema 17 以前の sessions.json には無い */
+  /** テストの実行ファイルが書いた印つきの 1 行 JSON(test-results.ts)。印の行が無いセッションと schema 17 以前の sessions.json には無い */
   tests?: SessionTests;
   unknownEventTypes: Record<string, number>;
   events: { total: number; badLines: number; byType: Record<string, number> };

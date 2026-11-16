@@ -10,6 +10,8 @@ import { createFileSink, fullFileName, renderFullTo } from './full.ts';
 import { INSTRUCTIONS_FILE, LIBRARY_DIR, LibraryCollector, renderInstructionsHtml, writeLibrary } from './library.ts';
 import { instructionFindings, instructionVersions, seriesKey, skillCandidates, skillStats, stuckByProject, stuckSessions, type VersionMeta } from './lib/insights.ts';
 import { INSIGHTS_FILE, INSIGHTS_JSON, renderInsightsHtml } from './insights-page.ts';
+import { failureStats } from './failure-stats.ts';
+import { FAILURES_FILE, FAILURES_JSON, failuresJson, renderFailuresHtml } from './failures-page.ts';
 import { renderDetailHtml } from './detail.ts';
 import { GLOSSARY_FILE, renderGlossaryHtml } from './glossary-page.ts';
 import { embedData } from './lib/embed.ts';
@@ -103,14 +105,19 @@ export interface BuildInput {
   verdicts?: VerdictIndex | null;
   /** AI の変更がその後の VCS のファイルに残っているか(vcs-retention.json)。無ければ null / 省略 */
   retention?: VcsRetentionFile | null;
-  /** 名前付きグループ(atlas-notes/groups.json)。無ければ省略 */
-  groups?: SessionGroup[];
+  /**
+   * 名前付きグループ(atlas-notes/groups.json)。無ければ省略。
+   * 送り先から集計したグループ(memberGroupsKeyed)は、元のタグ(tag)を添える(課題 × 条件の表が、名前の決まりを元のタグから読む)
+   */
+  groups?: (SessionGroup & { tag?: string })[];
   /** Phase 13: メモの置き場(<notes-dir>/memos)。無ければメモなし */
   memosDir?: string;
   /** 送り先から集計したとき: 送った人のメモを読む、写したセッションのフォルダ(<snapshot>/session-state)。あれば memosDir より優先する */
   memberMemosDir?: string;
   /** 読むだけの画面として作る(画面の文言を変える。タスクタグとメモは groups・memberMemosDir で渡す) */
   readOnly?: boolean;
+  /** 参照を数えた llm-wiki の vault の数(sessions.json の source.wikis。古い集計では null / 省略) */
+  wikiVaults?: number | null;
   /** 集計したこの PC の atlas の版(送った版と比べる。省略・null なら送った版どうしだけで比べる) */
   atlasLocal?: AtlasBuild | null;
   /** 送り先から集計したときの、フォルダごとの最後に送ったときの日時と版(sessions.json の source.uploads)。無ければフォルダの検知はしない */
@@ -214,6 +221,8 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
     totalSessionsInSource: input.totalSessionsInSource,
     ...(input.source ? { source: input.source } : {}),
     ...(input.readOnly ? { readOnly: true } : {}),
+    // 参照を数えた llm-wiki の vault の数。0 なら wiki の参照は数えていない(古い集計では無い)
+    ...(input.wikiVaults != null ? { wikiVaults: input.wikiVaults } : {}),
     ...(atlasBuilds ? { atlasBuilds } : {}),
     metrics: input.metrics,
     sessions,
@@ -237,8 +246,11 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
     ...(input.installedByPerson
       ? { installedByPerson: Object.fromEntries(Object.entries(input.installedByPerson).map(([person, inv]) => [person, installedView(inv)])) }
       : {}),
-    groups: (input.groups ?? []).map((g) => ({ name: g.name, note: g.note, ids: [...g.ids] })),
+    // 送り先から集計したグループは、元のタグを添える(名前は「<人> / <タグ>」なので別に持つ)
+    groups: (input.groups ?? []).map((g) => ({ name: g.name, note: g.note, ids: [...g.ids], ...(g.tag !== undefined ? { tag: g.tag } : {}) })),
     library: !!(input.transcripts && (input.library ?? true)),
+    // 失敗の台帳の集計のページ(failures.html)は毎回書く
+    failures: true,
     insights: { meta: {}, candidates: [], computedOver: input.sessions.length },
     warnings: { unknownEventTypes: input.warnings.unknownEventTypes, badLines: input.warnings.badLines, notes: [...(input.warnings.notes ?? [])] },
   };
@@ -308,6 +320,13 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
       }),
     );
     await writeFile(join(input.outDir, INSIGHTS_JSON), JSON.stringify({ version: 1, generatedAt, sessions: sessions.length, candidates }, null, 1));
+    // 失敗の台帳の集計(failures.html)と、同じ中身の JSON
+    const stats = failureStats(input.sessions);
+    await writeFile(
+      join(input.outDir, FAILURES_FILE),
+      renderFailuresHtml({ css, generatedAt, stats, meta: insightMeta, sessionName: (id) => names.get(id) ?? id, libraryHref: data.library ? INSTRUCTIONS_FILE : null }),
+    );
+    await writeFile(join(input.outDir, FAILURES_JSON), JSON.stringify(failuresJson(stats, generatedAt), null, 1));
   }
 
   // 詳細ページ: 前回の生成物を消してから書く(フィルタで減ったセッションのページを残さない)

@@ -27,7 +27,7 @@ import type { VerdictTuple } from './verdicts.ts';
 export const REPORT_DATA_VERSION = 17;
 
 /**
- * テストの結果の要約(テストの実行ファイルが書いた印つきの行から。crates/atlas-core/src/test_results.rs)。
+ * テストの結果の要約(テストの実行ファイルが書いた印つきの行から。packages/core/src/test-results.ts)。
  * テストの実行(結果を出したツールの呼び出し)が 1 回以上あるセッションだけ。実行ごとの結果やテストの名前は埋め込まない
  */
 export interface TestsSummary {

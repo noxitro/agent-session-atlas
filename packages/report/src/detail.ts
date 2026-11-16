@@ -1,9 +1,11 @@
 // セッション詳細ページ(out/sessions/<id>.html)。軽量な静的 HTML(スクリプトは配色の選択を読む数行だけ)。
 // atlas.html と同じ base.css を埋め込み、同じ「様式」の見た目にする。
-import type { InstructionInjection, LineChanges, ProjectSource, SessionRecord, SessionTokens, TimelineEntry, TokenCounts, TokenSource } from '../../core/src/types.ts';
+import type { InstructionInjection, LineChanges, ProjectSource, SessionRecord, SessionTests, SessionTokens, TimelineEntry, TokenCounts, TokenSource, ToolFailure } from '../../core/src/types.ts';
 import { shortProjectLabel } from './lib/project-label.ts';
 import { frictionTotal } from './lib/aggregate.ts';
 import { FAILURE_CAUSE_LABELS, sortedCauses } from '../../core/src/tool-failure.ts';
+import { CALL_OUTCOME_LABEL, NEXT_KIND_LABEL } from '../../core/src/tables.ts';
+import { MAX_ROWS as FAILURE_LEDGER_MAX_ROWS } from '../../core/src/failure-ledger.ts';
 import { coverageOf } from './lib/filter.ts';
 import { MEMO_CSS } from './memo-render.ts';
 import { codeMeta, NAV_JS, renderRail, renderTop } from './page-nav.ts';
@@ -222,7 +224,9 @@ function turnLead(r: SessionRecord, judged: boolean): string {
 function turnTable(r: SessionRecord, verdicts: Map<number, TurnVerdict> | null): string {
   const rows = sessionTurns(r);
   const judged = !!verdicts?.size;
-  const day0 = rows[0]?.startedAt ? dateTime(rows[0].startedAt).slice(0, 10) : '';
+  const day0 = dayOf(rows[0]?.startedAt);
+  // 失敗・拒否の内訳の欄は、失敗の台帳のある記録にだけ出す(古い記録には台帳が無い)
+  const breakdown = r.analysis?.failures ? failureBreakdown(r.analysis.failures) : null;
   const verdictCells = (n: number): string => {
     if (!judged) return '';
     const v = verdicts!.get(n);
@@ -237,14 +241,181 @@ function turnTable(r: SessionRecord, verdicts: Map<number, TurnVerdict> | null):
       const req = t.text.trim() === '' ? missing('(本文なし)') : esc(truncate(t.text, 80));
       const stuck = isStuck(t);
       const next = followedByFix(t) ? ` <span class="tag warn">次で${esc(REQUEST_KIND_LABEL[t.nextKind!])}</span>` : '';
-      // 時刻だけ(最初の依頼と日付が違うときは月日も)
-      const dt = t.startedAt ? dateTime(t.startedAt) : '';
-      const time = dt ? esc(dt.slice(0, 10) === day0 ? dt.slice(11) : dt.slice(5)) : missing('—');
+      const time = clock(t.startedAt, day0);
+      let fails = '';
+      if (breakdown) {
+        const lines = breakdown.get(t.index - 1);
+        if (!lines) {
+          // 失敗か拒否の数があるのに台帳の行が無い(行数の上限で落ちた・開始の記録が無い)ときは、無いのではなく記録が無い
+          fails = `<td>${missing(t.toolFailures + t.denied > 0 ? '記録なし' : '—')}</td>`;
+        } else {
+          const listed = lines.reduce((a, l) => a + l.n, 0);
+          const rest = t.toolFailures + t.denied - listed;
+          fails = `<td>${lines.map((l) => `<span class="fb">${esc(l.tool)} ${esc(l.label)} ×${esc(int(l.n))}</span>`).join('')}${rest > 0 ? `<span class="fb">${missing(`ほか ${int(rest)} 件は記録なし`)}</span>` : ''}</td>`;
+        }
+      }
       const num = (v: number): string => (v ? esc(int(v)) : '<span class="zero">0</span>');
-      return `<tr${stuck ? ' class="stuck"' : ''}><th scope="row" class="num">${esc(String(t.index))}</th><td>${time}</td><td class="req">${req}${next}</td><td>${esc(REQUEST_KIND_LABEL[t.kind])}</td><td>${esc(PHASE_LABEL[t.phase])}${stuck ? ' <span class="tag warn">詰まり</span>' : ''}</td><td class="num">${t.activeMs == null ? missing('—') : esc(duration(t.activeMs))}</td><td class="num">${num(t.tools)}</td><td class="num">${num(t.toolFailures)}</td><td class="num">${num(t.denied)}</td><td class="num">${num(t.aborts)}</td><td class="num">${num(t.errors)}</td><td class="num">${num(t.reEdits)}</td><td class="num">${num(t.compactions)}</td><td class="num">${t.nanoAiu ? esc(dec(t.nanoAiu / 1e9)) : missing('—')}</td>${verdictCells(t.index)}</tr>`;
+      return `<tr${stuck ? ' class="stuck"' : ''}><th scope="row" class="num">${esc(String(t.index))}</th><td>${time}</td><td class="req">${req}${next}</td><td>${esc(REQUEST_KIND_LABEL[t.kind])}</td><td>${esc(PHASE_LABEL[t.phase])}${stuck ? ' <span class="tag warn">詰まり</span>' : ''}</td><td class="num">${t.activeMs == null ? missing('—') : esc(duration(t.activeMs))}</td><td class="num">${num(t.tools)}</td><td class="num">${num(t.toolFailures)}</td><td class="num">${num(t.denied)}</td>${fails}<td class="num">${num(t.aborts)}</td><td class="num">${num(t.errors)}</td><td class="num">${num(t.reEdits)}</td><td class="num">${num(t.compactions)}</td><td class="num">${t.nanoAiu ? esc(dec(t.nanoAiu / 1e9)) : missing('—')}</td>${verdictCells(t.index)}</tr>`;
     })
     .join('');
-  return `<div class="table-scroll"><table class="ledger small turns"><thead><tr><th scope="col" class="num">#</th><th scope="col">開始</th><th scope="col">依頼</th><th scope="col">種類</th><th scope="col">工程</th><th scope="col" class="num">実働</th><th scope="col" class="num">ツール呼び出し</th><th scope="col" class="num">ツールの失敗</th><th scope="col" class="num">拒否</th><th scope="col" class="num">中断</th><th scope="col" class="num">エラー</th><th scope="col" class="num">再編集</th><th scope="col" class="num">文脈圧縮</th><th scope="col" class="num">AIU</th>${judged ? '<th scope="col">採用(LLM)</th><th scope="col">合わなかった点</th><th scope="col">工程(普段)</th>' : ''}</tr></thead><tbody>${body}</tbody></table></div>`;
+  return `<div class="table-scroll"><table class="ledger small turns"><thead><tr><th scope="col" class="num">#</th><th scope="col">開始</th><th scope="col">依頼</th><th scope="col">種類</th><th scope="col">工程</th><th scope="col" class="num">実働</th><th scope="col" class="num">ツール呼び出し</th><th scope="col" class="num">ツールの失敗</th><th scope="col" class="num">拒否</th>${breakdown ? '<th scope="col">失敗・拒否の内訳</th>' : ''}<th scope="col" class="num">中断</th><th scope="col" class="num">エラー</th><th scope="col" class="num">再編集</th><th scope="col" class="num">文脈圧縮</th><th scope="col" class="num">AIU</th>${judged ? '<th scope="col">採用(LLM)</th><th scope="col">合わなかった点</th><th scope="col">工程(普段)</th>' : ''}</tr></thead><tbody>${body}</tbody></table></div>${noLedgerNote(r)}`;
+}
+
+/** 日時の日付の部分(YYYY-MM-DD の 10 字。無ければ空) */
+function dayOf(at: string | null | undefined): string {
+  return at ? dateTime(at).slice(0, 10) : '';
+}
+
+/** 表の中の時刻: 時刻だけ(day0 と日付が違うときは月日も)。無ければ「—」 */
+function clock(at: string | null | undefined, day0: string): string {
+  const dt = at ? dateTime(at) : '';
+  return dt ? esc(dt.slice(0, 10) === day0 ? dt.slice(11) : dt.slice(5)) : missing('—');
+}
+
+/** 失敗の台帳の 1 行の種類と要因(失敗は要因の名前、拒否は「拒否」) */
+function failureLabel(f: ToolFailure): string {
+  return f.kind === 'denied' ? '拒否' : (FAILURE_CAUSE_LABELS[f.cause ?? 'other'] ?? f.cause ?? '');
+}
+
+/** 依頼ごとの失敗の内訳: 台帳の turn(0 からの依頼の番号)→「ツール・要因(か拒否)・回数」。多い順、同じ回数は出た順 */
+function failureBreakdown(ledger: ToolFailure[]): Map<number, { tool: string; label: string; n: number }[]> {
+  const byTurn = new Map<number, { tool: string; label: string; n: number }[]>();
+  for (const f of ledger) {
+    if (f.turn == null) continue;
+    const lines = byTurn.get(f.turn) ?? byTurn.set(f.turn, []).get(f.turn)!;
+    const label = failureLabel(f);
+    const cur = lines.find((l) => l.tool === f.tool && l.label === label);
+    if (cur) cur.n++;
+    else lines.push({ tool: f.tool, label, n: 1 });
+  }
+  for (const lines of byTurn.values()) lines.sort((a, b) => b.n - a.n);
+  return byTurn;
+}
+
+/** 失敗の台帳の無い古い記録で、ツールの失敗か拒否があるときの断り */
+function noLedgerNote(r: SessionRecord): string {
+  const failed = Object.values(r.tools.results ?? {}).reduce((a, x) => a + x.failure + x.denied, 0);
+  return !r.analysis?.failures && failed > 0 ? '<p class="note">この記録には「失敗と拒否(1 件ごと)」がありません(古い集計です。atlas.bat で集計し直すと入ります)。</p>' : '';
+}
+
+/** 詳細ページに載せるエラー文と引数の長さ(字数。空白と改行は 1 つにまとめる。全文は sessions.json と failures.csv にある。表の行が縦に伸びすぎない長さ) */
+const LEDGER_ERROR_CHARS = 400;
+const LEDGER_ARGS_CHARS = 200;
+
+/** 失敗と拒否(1 件ごと)の節(本文と説明)。台帳が無い・0 件なら null */
+function failureLedger(r: SessionRecord): { table: string; lead: string } | null {
+  const ledger = r.analysis?.failures;
+  if (!ledger?.length) return null;
+  const day0 = dayOf(sessionTurns(r)[0]?.startedAt ?? ledger[0].startedAt);
+  const text = (s: string, chars: number): string => (s.trim() === '' ? missing('—') : esc(truncate(s, chars)));
+  const body = ledger
+    .map((f) => {
+      const mcp = f.mcpServer ? ` <span class="tag">MCP: ${esc(f.mcpServer)}</span>` : '';
+      const agent = f.agent ? ` <span class="tag">サブエージェント: ${esc(f.agent)}</span>` : '';
+      const kind = f.kind === 'denied' ? '拒否' : `失敗: ${esc(failureLabel(f))}`;
+      const next =
+        f.next.kind === 'tool'
+          ? `${esc(f.next.tool ?? '(unknown)')} → ${CALL_OUTCOME_LABEL[f.next.outcome ?? 'unknown']}${f.next.retry === true ? ' <span class="tag">同じ引数で呼び直し</span>' : ''}`
+          : f.next.kind === 'user'
+            ? esc(NEXT_KIND_LABEL.user)
+            : missing(NEXT_KIND_LABEL.end);
+      return `<tr><td class="num">${f.turn == null ? missing('—') : esc(int(f.turn + 1))}</td><td>${clock(f.startedAt, day0)}</td><td>${esc(f.tool)}${mcp}${agent}</td><td class="fkind">${kind}</td><td class="msg">${text(f.error, LEDGER_ERROR_CHARS)}</td><td class="args">${f.args == null ? missing('—') : text(f.args, LEDGER_ARGS_CHARS)}</td><td class="next">${next}</td></tr>`;
+    })
+    .join('');
+  // サブエージェントへの依頼文は、エージェントごとに 1 回だけ(台帳の行の agentCall から agents[] を引く)
+  const seen = new Set<string>();
+  const prompts = ledger
+    .map((f) => f.agentCall)
+    .filter((call): call is string => call != null && !seen.has(call) && !!seen.add(call))
+    .map((call) => r.agents.find((a) => a.id === call))
+    .filter((a) => a?.prompt != null && a.prompt.trim() !== '')
+    .map((a) => `<li>${esc(a!.name)}: ${esc(a!.prompt)}</li>`)
+    .join('');
+  const promptsHtml = prompts ? `<h3>失敗・拒否のあったサブエージェントへの依頼文</h3><ul class="note">${prompts}</ul>` : '';
+  const dropped = r.analysis?.failuresDropped ?? 0;
+  const cut = dropped > 0 ? `1 セッション ${esc(int(FAILURE_LEDGER_MAX_ROWS))} 行の上限を超えた ${esc(int(dropped))} 件は載っていません。` : '';
+  const table = `<div class="table-scroll"><table class="ledger small fails"><thead><tr><th scope="col" class="num">依頼</th><th scope="col">開始</th><th scope="col">ツール</th><th scope="col">種類・要因</th><th scope="col">エラー文</th><th scope="col">引数</th><th scope="col">その後</th></tr></thead><tbody>${body}</tbody></table></div><p class="note">「依頼」は「依頼ごとの経過」の番号です(最初の依頼より前は —)。「その後」は、同じエージェントが失敗の後に最初に呼んだツールとその結果です(並行して動いていた呼び出しと、同じ応答でまとめて要求された呼び出しは数えません)。</p>${promptsHtml}`;
+  const lead = `${cut}ツールの失敗と拒否を 1 件ずつ載せています(「ツール内訳」の「失敗」「拒否」と同じ数え方)。エラー文と引数は、秘密らしい文字列を置き換えたもので、長いものは先頭だけです(全文は sessions.json と failures.csv にあります)。`;
+  return { table, lead };
+}
+
+/** 数の表示(整数はそのまま、小数は 3 桁まで) */
+const countValue = (v: number): string => (Number.isInteger(v) ? esc(int(v)) : esc(String(Math.round(v * 1000) / 1000)));
+
+/**
+ * テストの推移(テストの実行ファイルが書いた印つきの行を読めたセッションだけ)。
+ * 実行(結果を出したツールの呼び出し)ごとに、合格の数・まだ通っていないテストの数・件数の合計と、そこまでの実働と AI 使用量を並べる
+ */
+function testsSection(t: SessionTests): string {
+  /** 件数の列の上限(これより多い名前は、数だけ断る) */
+  const MAX_KEYS = 8;
+  /** 1 行に出す、落ちたテストの名前の上限 */
+  const MAX_NAMES = 3;
+  const lead =
+    'テストの実行ファイルが標準出力に書いた印つきの行(<code>ATLAS_TEST_RESULT</code>)を、ツールの結果から読んだものです。「全部通った」は、これまでに出たテストごとのいちばん新しい結果がすべて合格のことです(一部だけ走らせ直した実行では、前に通ったテストは通ったままとみなします)。実働と AIU は、セッションの始まりからその実行までの累計です。';
+  const runs = t.runs;
+  const first = t.firstPass != null ? runs[t.firstPass - 1] : undefined;
+  const last = runs.at(-1);
+  const [outcome, outcomeNote] = !last
+    ? [missing('実行なし'), '読めた結果がありません']
+    : t.firstPass == null
+      ? ['<span class="tag warn">未達</span>', '最後まで、全部は通っていません']
+      : last.failing > 0
+        ? ['<span class="tag warn">通った後に不合格</span>', '一度は全部通りましたが、最後の実行の後に通っていないテストがあります']
+        : ['<span class="tag">全部通った</span>', ''];
+  const aiu = (v: number | null): string => (v != null ? esc(dec(v / 1e9)) : missing('記録なし'));
+  const fields = [
+    field('結果', outcome, outcomeNote),
+    field('テストの実行', `${esc(int(runs.length))} 回`, '結果を出したツールの呼び出しの数'),
+    field('最初に全部通るまで', t.firstPass != null ? `${esc(int(t.firstPass))} 回目` : missing('—'), first?.turn != null ? `依頼 ${esc(int(first.turn))} 件目` : ''),
+    field('通るまでの実働', first ? esc(duration(first.activeMs, '不明')) : missing('—')),
+    field('通るまでの AIU', first ? aiu(first.nanoAiu) : missing('—'), 'そこまでに記録されたリクエストの合計(サブエージェントの分を含む)'),
+  ].join('');
+  const skippedList = (
+    [
+      ['読めなかった印の行', t.invalid],
+      ['前にも出たので数えなかった行', t.duplicates],
+      ['上限を超えたので持たなかった結果', t.dropped],
+    ] as const
+  )
+    .filter(([, v]) => v > 0)
+    .map(([k, v]) => `${k} ${esc(int(v))} 件`);
+  const skipped = skippedList.length ? `<p class="note">${skippedList.join('・')}</p>` : '';
+  if (!runs.length) return section('テストの推移', `<div class="fields" style="--cols:5">${fields}</div>${skipped}`, lead);
+  // 件数の名前(出た順)
+  const allKeys: string[] = [];
+  for (const run of runs) for (const x of run.results) for (const k of Object.keys(x.counts)) if (!allKeys.includes(k)) allKeys.push(k);
+  const moreKeys = Math.max(0, allKeys.length - MAX_KEYS);
+  const keys = allKeys.slice(0, MAX_KEYS);
+  const keyHeads = keys.map((k) => esc(truncate(k, 40)));
+  const day0 = runs[0].at ? dateTime(runs[0].at).slice(0, 10) : '';
+  const body = runs
+    .map((r, i) => {
+      const dt = r.at ? dateTime(r.at) : '';
+      const time = dt ? esc(dt.slice(0, 10) === day0 ? dt.slice(11) : dt.slice(5)) : missing('—');
+      const passed = r.results.filter((x) => x.passed).length;
+      const failed = r.results.filter((x) => !x.passed).map((x) => x.name ?? '(名前なし)');
+      const failedCell = !failed.length
+        ? '<span class="zero">—</span>'
+        : `${failed
+            .slice(0, MAX_NAMES)
+            .map((name) => esc(truncate(name, 60)))
+            .join('、')}${failed.length > MAX_NAMES ? ` ほか ${esc(int(failed.length - MAX_NAMES))} 件` : ''}`;
+      const sums = keys
+        .map((k) => {
+          const vals = r.results.filter((x) => Object.hasOwn(x.counts, k)).map((x) => x.counts[k]);
+          return `<td class="num">${vals.length ? countValue(vals.reduce((a, v) => a + v, 0)) : missing('—')}</td>`;
+        })
+        .join('');
+      return `<tr><th scope="row" class="num">${i + 1}</th><td>${time}</td><td class="num">${r.turn != null ? esc(int(r.turn)) : missing('—')}</td><td>${esc(r.tool ?? '(不明)')}${r.subagent ? ' <span class="tag">サブエージェント</span>' : ''}</td><td class="num">${esc(int(passed))} / ${esc(int(r.results.length))}</td><td>${failedCell}</td><td class="num">${r.failing === 0 ? '<span class="tag">全部通った</span>' : esc(int(r.failing))}</td>${sums}<td class="num">${esc(duration(r.activeMs, '不明'))}</td><td class="num">${aiu(r.nanoAiu)}</td></tr>`;
+    })
+    .join('');
+  const heads = keyHeads.map((h) => `<th scope="col" class="num">${h}</th>`).join('');
+  const keysNote = keys.length
+    ? `<p class="note">${keyHeads.length === 1 ? `「${keyHeads[0]}」` : `「${keyHeads[0]}」から右の ${esc(int(keyHeads.length))} 列`}は、その実行で出た結果の値の合計です(テストの実行ファイルが書いた名前のまま)。${moreKeys > 0 ? `ほかに ${esc(int(moreKeys))} 種類の値がありますが、列には出していません。` : ''}</p>`
+    : '';
+  const table = `<div class="table-scroll"><table class="ledger small"><thead><tr><th scope="col" class="num">#</th><th scope="col">完了</th><th scope="col" class="num">依頼</th><th scope="col">ツール</th><th scope="col" class="num">合格 / 結果</th><th scope="col">落ちたテスト</th><th scope="col" class="num">通っていないテスト</th>${heads}<th scope="col" class="num">実働(累計)</th><th scope="col" class="num">AIU(累計)</th></tr></thead><tbody>${body}</tbody></table></div>`;
+  return section('テストの推移', `<div class="fields" style="--cols:5">${fields}</div>${table}${keysNote}${skipped}`, lead);
 }
 
 function timelineRow(e: TimelineEntry): string {
@@ -512,7 +683,13 @@ const DETAIL_CSS = `
 .ledger.turns .zero{color:var(--ink-3)}
 .ledger.turns td.req{min-width:16em;max-width:32em;white-space:normal;overflow-wrap:anywhere}
 .ledger.turns .why{display:block;font-size:.6875rem;color:var(--ink-2);white-space:normal;min-width:12em}
+.ledger.turns .fb{display:block;white-space:normal;min-width:12em}
 .ledger.turns td.st{white-space:nowrap;min-width:9em}
+/* 失敗と拒否(1 件ごと): エラー文と引数は折り返して読ませる(引数は等幅で控えめに) */
+.ledger.fails td.msg{min-width:16em;max-width:32em;white-space:normal;overflow-wrap:anywhere}
+.ledger.fails td.fkind{white-space:nowrap}
+.ledger.fails td.next{min-width:9em}
+.ledger.fails td.args{min-width:12em;max-width:24em;white-space:normal;overflow-wrap:anywhere;font-family:var(--mono);font-size:.75rem;color:var(--ink-2)}
 /* このセッションの skill の表: 呼んだ行の名前を太く(使えただけの行と見分ける) */
 .ledger tr.called td:first-child{font-weight:600}
 .meta{display:flex;flex-wrap:wrap;gap:6px 8px;margin-top:8px}
@@ -722,6 +899,11 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
   );
 
   parts.push(section('依頼ごとの経過', turnTable(r, o.verdicts ?? null), turnLead(r, !!o.verdicts?.size)));
+  if (r.tests) parts.push(testsSection(r.tests));
+  {
+    const fl = failureLedger(r);
+    if (fl) parts.push(section('失敗と拒否(1 件ごと)', fl.table, fl.lead));
+  }
 
   const f = r.friction;
   parts.push(

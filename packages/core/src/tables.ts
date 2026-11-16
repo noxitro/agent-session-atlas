@@ -3,7 +3,8 @@
 import { mainEffortCell, mainEffortOf, mainModelCell } from './main-effort.ts';
 import { isEmptySession } from './metrics.ts';
 import { followedByFix, isStuck, MISMATCH_LABEL, OUTCOME_LABEL, PHASE_LABEL, REQUEST_KIND_LABEL, sessionTurns, type Mismatch, type Outcome, type RequestKind } from './turns.ts';
-import { TOOL_KINDS, type SessionRecord, type ToolKind } from './types.ts';
+import { TOOL_KINDS, type CallOutcome, type FailureNext, type SessionRecord, type ToolFailure, type ToolKind } from './types.ts';
+import { FAILURE_CAUSE_LABELS } from './tool-failure.ts';
 import { RETENTION_STATUS_LABEL, RETENTION_STATUSES, UNATTRIBUTABLE_REASON_LABEL, type RetentionStatus, type SessionRetention } from './vcs-retention.ts';
 
 const TOOL_KIND_LABEL: Record<ToolKind, string> = { read: '読む', edit: '編集', verify: '検証', git: 'git', shell: 'シェル', plan: '計画', web: 'Web', delegate: '委任', other: 'その他' };
@@ -286,4 +287,91 @@ export function sessionsTable(sessions: SessionRecord[], humanHours: Map<string,
     ]);
   }
   return { header, rows };
+}
+
+export const FAILURE_KIND_LABEL: Record<ToolFailure['kind'], string> = { failure: '失敗', denied: '拒否' };
+/** 失敗の後に何が起きたか(その後の列。詳細ページも同じ語を使う) */
+export const NEXT_KIND_LABEL: Record<FailureNext['kind'], string> = { tool: 'ツール', user: '利用者の次の依頼', end: '続きなし' };
+/** 失敗の後の呼び出しの結果(終わりの記録が無いものは、ツールの表と同じ「結果なし」) */
+export const CALL_OUTCOME_LABEL: Record<CallOutcome, string> = { success: '成功', failure: '失敗', denied: '拒否', unknown: '結果なし' };
+
+/** ツールの失敗・拒否 1 件ごとの CSV(failuresTable の中身)。台帳のある記録が 1 件も無ければ null */
+export function failuresCsv(sessions: SessionRecord[]): string | null {
+  const t = failuresTable(sessions);
+  return t ? toCsv(t.header, t.rows) : null;
+}
+
+/**
+ * ツールの失敗・拒否 1 件ごとの表(失敗の台帳 analysis.failures の 1 行が 1 行。セッションは渡した順、その中は台帳の順)。
+ * 空のセッションは除く。依頼番号は turnsTable と同じ 1 からの番号(台帳の turn + 1。最初の依頼より前の失敗は空)。
+ * エラー文・引数・エージェントへの依頼は記録のまま(台帳を作るときに秘密らしい文字列を伏せ、上限で切ってある。ここでは切らず、改行も残す)。
+ * 台帳の無い古い記録は行にならない。載せるセッションのどれにも台帳が無ければ null
+ * (見出しだけの表を書くと「失敗が 0 件」と読めてしまうので、呼ぶ側は表を書かない)。
+ * out/tables/ だけに書く(グループの書き出しには入れない)
+ */
+export function failuresTable(sessions: SessionRecord[]): Table | null {
+  const header = [
+    'セッションID',
+    'セッション名',
+    'プロジェクト',
+    '依頼番号',
+    '開始',
+    '種類',
+    '要因',
+    'ツール',
+    'MCP サーバー',
+    'MCP のツール',
+    'MCP の設定元',
+    'モデル',
+    'エージェント',
+    'エージェントの呼び出し',
+    'エージェントへの依頼',
+    '所要(ミリ秒)',
+    'エラー文',
+    '引数',
+    'その後',
+    '次のツール',
+    '次の結果',
+    '呼び直し',
+    'そろえたエラー文',
+  ];
+  let anyLedger = false;
+  const rows: Cell[][] = [];
+  for (const s of sessions) {
+    if (isEmptySession(s)) continue;
+    const ledger = s.analysis?.failures;
+    if (!ledger) continue;
+    anyLedger = true;
+    for (const f of ledger) {
+      // サブエージェントへの依頼文は agents[] に 1 回だけ持つので、呼び出しの id で引く(同じ id が 2 つあれば先のもの)
+      const prompt = f.agentCall != null ? s.agents.find((a) => a.id === f.agentCall)?.prompt : undefined;
+      const byTool = f.next.kind === 'tool';
+      rows.push([
+        s.id,
+        s.name ?? '',
+        s.project,
+        f.turn != null ? f.turn + 1 : null,
+        f.startedAt,
+        FAILURE_KIND_LABEL[f.kind],
+        f.cause ? (FAILURE_CAUSE_LABELS[f.cause] ?? f.cause) : '',
+        f.tool,
+        f.mcpServer ?? '',
+        f.mcpTool ?? '',
+        f.mcpConfigSource ?? '',
+        f.model ?? '',
+        f.agent ?? '',
+        f.agentCall ?? '',
+        prompt ?? '',
+        f.durationMs,
+        f.error,
+        f.args ?? '',
+        NEXT_KIND_LABEL[f.next.kind],
+        byTool ? (f.next.tool ?? '') : '',
+        byTool && f.next.outcome ? CALL_OUTCOME_LABEL[f.next.outcome] : '',
+        byTool ? (f.next.retry ?? null) : null,
+        f.group,
+      ]);
+    }
+  }
+  return anyLedger ? { header, rows } : null;
 }
