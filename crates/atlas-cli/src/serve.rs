@@ -22,7 +22,7 @@ use crate::group_upload::{check_upload, upload_dir, upload_group, uploaded_at, G
 use crate::jobs::{acquire_out_lock, parse_job_request, running_job_in, FullCtx, JobRunner, JobRunnerOptions, RunFullFn, SpawnFn};
 use atlas_core::js;
 use atlas_core::nodepath::platform;
-use atlas_report::groups::{add_ids, member_groups, remove_ids, unique_ids, MemberSource, SessionGroup};
+use atlas_report::groups::{add_ids, member_groups_keyed, remove_ids, unique_ids, MemberGroup, MemberSource, SessionGroup};
 use atlas_report::groups_io::{load_groups, load_groups_for_write, save_groups};
 use atlas_report::memo::{is_safe_memo_id, memo_summary};
 use atlas_report::memo_io::{image_ext, load_memo_index, memos_dir, read_memo, render_memo, save_memo, save_memo_image, MemoFile, MEMO_IMAGE_LIMIT};
@@ -205,7 +205,7 @@ const HTML_HEADERS: [(&str, &str); 3] = [NOSNIFF, ("x-frame-options", "DENY"), (
 /// script を動かさない(svg などがサーバのオリジンで動くと token を読めてしまう)
 const FILE_HEADERS: [(&str, &str); 2] = [NOSNIFF, ("content-security-policy", "sandbox")];
 /// atlas 自身が作る HTML(token を差し込み、操作を出す)。out/ の直下のこれらと sessions/<id>.html だけ
-const APP_PAGES: [&str; 4] = ["atlas.html", "glossary.html", "insights.html", "instructions.html"];
+const APP_PAGES: [&str; 5] = ["atlas.html", "failures.html", "glossary.html", "insights.html", "instructions.html"];
 
 static SESSION_PAGE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^sessions/[^/]+\.html$").unwrap());
 
@@ -285,7 +285,7 @@ struct SessionEntry {
 struct SessionIndex {
     ids: IndexMap<String, SessionEntry>,
     layout: Option<String>,
-    members: Vec<SessionGroup>,
+    members: Vec<MemberGroup>,
 }
 
 struct LastUpload {
@@ -344,7 +344,6 @@ struct Server {
     jobs: Arc<JobRunner>,
     port: AtomicU16,
     clock: Arc<Clock>,
-    anon_cache: Mutex<Option<(f64, bool)>>,
     sessions_cache: Mutex<Option<(f64, Arc<SessionIndex>)>>,
     /// タスクタグの書き出し・写す前の点検・アップロードのどれかをしている最中なら、その内容。その間はほかの書き出し・点検・アップロード・ジョブを始めない
     busy_with: Mutex<Option<String>>,
@@ -622,7 +621,6 @@ pub fn start_serve(o: ServeOptions) -> anyhow::Result<ServeHandle> {
             jobs,
             port: AtomicU16::new(0),
             clock: clock.clone(),
-            anon_cache: Mutex::new(None),
             sessions_cache: Mutex::new(None),
             busy_with: Mutex::new(None),
             uploading: Mutex::new(None),
@@ -1008,26 +1006,6 @@ impl Server {
 
     // ---------- 集計の読み取り ----------
 
-    /// 伏せ字版かどうかは atlas.html の埋め込みデータで判断(mtime が変わるまで覚える)
-    fn is_anonymized(&self) -> bool {
-        let p = self.out_dir.join("atlas.html");
-        let Ok(m) = std::fs::metadata(&p) else { return false };
-        let mt = atlas_core::jsfs::mtime_ms(&m);
-        let mut c = lock(&self.anon_cache);
-        if let Some((at, a)) = *c
-            && at == mt
-        {
-            return a;
-        }
-        // 読めなければ通常版とみなす(編集できるだけで、壊れはしない)
-        let anonymized = std::fs::read(&p)
-            .ok()
-            .and_then(|b| atlas_report::embed::extract_embedded(&String::from_utf8_lossy(&b)).ok())
-            .is_some_and(|v| js::truthy(v.get("anonymized")));
-        *c = Some((mt, anonymized));
-        anonymized
-    }
-
     /// sessions.json の id → 表題と判定の対象か(mtime が変わるまで覚える。本文は持たない)
     fn session_index(&self) -> R<Option<Arc<SessionIndex>>> {
         let p = self.out_dir.join("sessions.json");
@@ -1058,7 +1036,7 @@ impl Server {
             let tags: Vec<String> = r.get("uploadTags").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
             owners.push((id, r.get("person").and_then(Value::as_str).map(str::to_string), tags));
         }
-        let members = member_groups(&owners.iter().map(|(id, person, tags)| MemberSource { id, person: person.as_deref(), upload_tags: tags }).collect::<Vec<_>>());
+        let members = member_groups_keyed(&owners.iter().map(|(id, person, tags)| MemberSource { id, person: person.as_deref(), upload_tags: tags }).collect::<Vec<_>>());
         let layout = file.get("source").and_then(|s| s.get("layout")).and_then(Value::as_str).map(str::to_string);
         let ix = Arc::new(SessionIndex { ids, layout, members });
         *lock(&self.sessions_cache) = Some((mt, ix.clone()));
@@ -1067,7 +1045,7 @@ impl Server {
 
     /// 読むだけの画面か(build と同じ is_read_only_view)と、送った人のタスクタグ。sessions.json を読めないとき(集計の途中など)は前に読んだものを使う。
     /// atlas open が立てたサーバ(reports.current)は、まだ集計していなくても読むだけ
-    fn view_state(&self) -> (bool, Vec<SessionGroup>) {
+    fn view_state(&self) -> (bool, Vec<MemberGroup>) {
         let _ = self.session_index();
         let cache = lock(&self.sessions_cache).as_ref().map(|(_, ix)| ix.clone());
         let read_only = self.current.is_some() || is_read_only_view(&self.out_s, cache.as_ref().and_then(|c| c.layout.as_deref()));
@@ -1197,9 +1175,6 @@ impl Server {
             self.check_token(req)?;
             self.bye(client_of(req), seq_of(req));
             return Ok(Resp { status: 204, headers: vec![], body: Vec::new() });
-        }
-        if self.is_anonymized() {
-            return Err(HttpError::new(403, "伏せ字版では編集できません"));
         }
         let (read_only, members) = self.view_state();
         if read_only && blocked_when_read_only(path, &method) {
@@ -1675,9 +1650,6 @@ impl Server {
     /// GET /view/<id>?kind=…: 表示の殻(本文は持たない。token は HTML の meta で渡し、本文は殻の script が API から取る)
     fn view_shell(&self, req: &mut Req, raw_id: &str) -> R<Resp> {
         self.check_origin(req)?;
-        if self.is_anonymized() {
-            return Err(HttpError::new(403, "伏せ字版では記録を表示しません"));
-        }
         let (id, kind, _, md_href) = self.view_target(raw_id, req.url.param("kind"))?;
         let css = self.page_css()?;
         let detail_href = format!("../sessions/{}", encode_uri_component(&atlas_report::summarize::detail_file_name(&id)));

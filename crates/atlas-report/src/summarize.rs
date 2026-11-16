@@ -1,13 +1,13 @@
 //! SessionRecord → SessionSummary(HTML に埋め込む要約)。packages/report/src/lib/summarize.ts の移植。
 //! 生イベント・timeline・長文は落とす。
 
-use crate::anonymize::Anonymizer;
 use crate::filter::coverage_of;
 use crate::format::truncate;
+use crate::project_label::short_project_label;
 use crate::turns::turn_tuples;
 use crate::types::*;
 use atlas_core::js::JsMap;
-use atlas_core::types::{AgentStatus, InstructionScope, SessionRecord, SkillTrigger};
+use atlas_core::types::{AgentStatus, InstructionScope, SessionRecord, SessionTests, SkillTrigger};
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -109,7 +109,23 @@ pub fn detail_href(id: &str) -> String {
     format!("sessions/{}", detail_file_name(id))
 }
 
-pub fn summarize(r: &SessionRecord, anon: &Anonymizer, judgment: Option<&JudgmentSummary>) -> SessionSummary {
+/// テストの結果の要約。テストの実行が無ければ None(印はあるが読めなかった行だけのセッションを、実行 0 回として分母に入れない)。
+/// 通るまでの実働と AI 使用量は、最初に全部通った実行の累計(求め方は atlas-core の test_results.rs)
+pub fn tests_summary(t: &SessionTests) -> Option<TestsSummary> {
+    let last = t.runs.last()?;
+    let first = t.first_pass.and_then(|n| usize::try_from(n).ok()).and_then(|n| t.runs.get(n.wrapping_sub(1)));
+    Some(TestsSummary {
+        runs: t.runs.len() as i64,
+        // 番号が実行の数を外れている記録(手で直した sessions.json など)は、通っていないものとして扱う
+        first_pass: first.and(t.first_pass),
+        last_failing: last.failing,
+        pass_active_ms: first.map(|r| r.active_ms),
+        pass_nano_aiu: first.and_then(|r| r.nano_aiu),
+        last_nano_aiu: last.nano_aiu,
+    })
+}
+
+pub fn summarize(r: &SessionRecord, judgment: Option<&JudgmentSummary>) -> SessionSummary {
     let mut by_model = JsMap::new();
     for (m, t) in r.tokens.by_model.js_entries() {
         by_model.insert(m.clone(), ModelTokenSummary { input: t.input, output: t.output, cache_read: t.cache_read, premium_requests: t.premium_requests, requests: t.requests });
@@ -160,20 +176,18 @@ pub fn summarize(r: &SessionRecord, anon: &Anonymizer, judgment: Option<&Judgmen
             causes.insert(tool.clone(), c.clone());
         }
     }
-    let name = anon.free_text(r.name.as_deref());
-    let first = anon.free_text(r.first_user_message.as_deref());
     let t = &r.tokens;
     let a = &r.analysis;
     SessionSummary {
         id: r.id.clone(),
         client: r.client.clone(),
-        project: anon.project(&r.project),
-        project_label: anon.project_label(&r.project),
+        project: r.project.clone(),
+        project_label: short_project_label(&r.project),
         project_source: r.project_source,
-        branch: anon.branch(r.branch.as_deref()),
-        person: anon.person(r.person.as_ref().and_then(|p| p.as_deref())),
-        name: name.filter(|x| !x.is_empty()).map(|x| truncate(Some(&x), SUMMARY_TEXT_CHARS)),
-        first_user_message: first.filter(|x| !x.is_empty()).map(|x| truncate(Some(&x), SUMMARY_TEXT_CHARS)),
+        branch: r.branch.clone(),
+        person: r.person.as_ref().and_then(|p| p.clone()),
+        name: r.name.as_deref().filter(|x| !x.is_empty()).map(|x| truncate(Some(x), SUMMARY_TEXT_CHARS)),
+        first_user_message: r.first_user_message.as_deref().filter(|x| !x.is_empty()).map(|x| truncate(Some(x), SUMMARY_TEXT_CHARS)),
         created_at: r.created_at.clone(),
         updated_at: r.updated_at.clone(),
         duration_ms: r.duration_ms,
@@ -213,16 +227,17 @@ pub fn summarize(r: &SessionRecord, anon: &Anonymizer, judgment: Option<&Judgmen
         hooks: HooksSummary { total: r.hooks.total, by_type: r.hooks.by_type.clone() },
         instructions,
         lines: r.lines.clone(),
-        wiki: WikiSummary { index_reads: r.wiki.index_reads, page_reads: r.wiki.page_reads.len() as i64, skill_calls: r.wiki.skill_calls.len() as i64, writes: r.wiki.writes },
+        wiki: WikiSummary { index_reads: r.wiki.index_reads, page_reads: r.wiki.page_reads.len() as i64, skill_calls: r.wiki.skill_calls.len() as i64, writes: r.wiki.writes, other_calls: r.wiki.other_calls },
         friction: r.friction.clone(),
         skill_chars,
         instruction_versions: r.instructions.iter().map(|i| (i.content_hash.clone(), i.chars, i.injections)).collect(),
         analysis: AnalysisSummary { files_reedited: a.files_reedited, extra_edits: a.extra_edits, max_consecutive_failures: a.max_consecutive_failures, turns: a.turn_tools.len() as i64 },
         turn_rows: a.turn_stats.as_ref().filter(|x| !x.is_empty()).map(|_| turn_tuples(r)),
+        tests: r.tests.as_ref().and_then(tests_summary),
         files: FilesSummary { changed: r.files.changed.len() as i64, created: r.files.created.len() as i64, deleted: r.files.deleted.len() as i64, session_state: r.files.session_state },
         href: detail_href(&r.id),
-        // 根拠の自由記述は HTML 本体に埋め込まない(詳細ページだけ)。伏せ字モードでは要約も出さない
-        judgment: judgment.map(|j| JudgmentSummary { rationale: None, task_summary: if anon.enabled { None } else { j.task_summary.clone() }, ..j.clone() }),
+        // 根拠の自由記述は HTML 本体に埋め込まない(詳細ページだけ)
+        judgment: judgment.map(|j| JudgmentSummary { rationale: None, ..j.clone() }),
         turn_verdicts: None,
         retention: None,
         memo: None,

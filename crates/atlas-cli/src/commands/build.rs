@@ -14,7 +14,7 @@ use atlas_core::metrics::compute_metrics;
 use atlas_core::types::{SessionRecord, SessionsFile, METRICS_SCHEMA_VERSION};
 use atlas_core::vcs_step::read_vcs_retention;
 use atlas_report::build::{build_report, page_css, template, BuildInput, BuildScope, BuildWarnings, ReportSource, TranscriptSettings, HTML_SIZE_LIMIT};
-use atlas_report::groups::{member_groups, MemberSource};
+use atlas_report::groups::{member_groups_keyed, MemberSource};
 use atlas_report::judgments::parse_judgments;
 use atlas_report::memo_io::memos_dir;
 use atlas_report::transcript::{ToolOutputMode, DEFAULT_GAP_MS, DEFAULT_MAX_TEXT_CHARS, DEFAULT_MAX_TOOL_CHARS};
@@ -38,7 +38,6 @@ pub struct TranscriptCli {
 #[derive(Debug, Clone, Default)]
 pub struct BuildOptions {
     pub filter: SessionFilter,
-    pub anonymize: bool,
     pub transcripts: Option<TranscriptCli>,
 }
 
@@ -132,14 +131,7 @@ pub fn run_build(p: &Paths, o: &BuildOptions, log: Log<'_>) -> Result<BuildResul
         None => {}
     }
 
-    // 伏せ字版では表を書かない(依頼文とパスがそのまま入るため)。前に書いた表も消す
-    let tables = p.out.join("tables");
-    if !o.anonymize {
-        write_tables(p, &sessions, cmd, log)?;
-    } else if tables.exists() {
-        atlas_core::fs_retry::remove_tree(&tables)?;
-        log("build: 伏せ字版なので、依頼文の入った表(out/tables/)を消しました");
-    }
+    write_tables(p, &sessions, &super::metrics::condition_groups(p, &sel), cmd, log)?;
 
     let unknown: i64 = s.warnings.unknown_event_types.values().sum();
     let layout = s.source.layout.map(|l| match l {
@@ -148,11 +140,12 @@ pub fn run_build(p: &Paths, o: &BuildOptions, log: Log<'_>) -> Result<BuildResul
     });
     // 読むだけの画面にするか(送り先から集計した、または別のフォルダを開いた出力先。サーバと同じ判定)
     let read_only = crate::folders::is_read_only_view(&p.out.to_string_lossy(), layout);
-    let (groups, memos, member_memos) = if read_only {
+    let (groups, group_tags, memos, member_memos) = if read_only {
         let src: Vec<MemberSource<'_>> = s.sessions.iter().map(MemberSource::from).collect();
-        (member_groups(&src), None, Some(p.snapshot.join("session-state")))
+        let (groups, tags) = member_groups_keyed(&src).into_iter().map(|m| (m.group, m.tag)).unzip();
+        (groups, Some(tags), None, Some(p.snapshot.join("session-state")))
     } else {
-        (sel.groups.groups.clone(), Some(memos_dir(&p.notes)), None)
+        (sel.groups.groups.clone(), None, Some(memos_dir(&p.notes)), None)
     };
     let f = &o.filter;
     let r = build_report(BuildInput {
@@ -171,11 +164,13 @@ pub fn run_build(p: &Paths, o: &BuildOptions, log: Log<'_>) -> Result<BuildResul
             }),
             _ => None,
         },
+        wiki_vaults: s.source.wikis,
         warnings: BuildWarnings { unknown_event_types: unknown, bad_lines: s.warnings.bad_lines, notes: sel.groups.warnings.clone() },
         judgments: judgments.as_ref(),
         verdicts: verdicts.as_ref(),
         retention: retention.as_ref(),
         groups,
+        group_tags,
         memos_dir: memos,
         member_memos_dir: member_memos,
         read_only,
@@ -183,7 +178,6 @@ pub fn run_build(p: &Paths, o: &BuildOptions, log: Log<'_>) -> Result<BuildResul
         // フォルダごとの、最後に送ったときの日時と版。絞り込んだときは、対象のセッションがあるフォルダだけ
         atlas_uploads: uploads_for(s.source.uploads.as_ref(), &sessions, has_filter(f)),
         out_dir: p.out.clone(),
-        anonymize: o.anonymize,
         scope: BuildScope { since: f.since.clone(), project: f.project.clone(), client: f.client.clone(), model: f.model.clone(), branch: f.branch.clone() },
         template: template()?.to_string(),
         css: page_css(),
@@ -204,7 +198,7 @@ pub fn run_build(p: &Paths, o: &BuildOptions, log: Log<'_>) -> Result<BuildResul
         desktop_meta: s.desktop.as_ref().and_then(|d| d.as_ref()),
     })?;
     if let Some(at) = &r.stale.full {
-        log(&format!("build: 前回の --full の出力(out/full/ と coverage.json、生成 {at})が残っています。消すには --anonymize で作るか、フォルダを手で消してください"));
+        log(&format!("build: 前回の --full の出力(out/full/ と out/coverage.json、生成 {at})が残っています。消したいときは、out/full/ フォルダと out/coverage.json を手で消してください"));
     }
     if let Some(at) = &r.stale.library {
         log(&format!(
@@ -250,18 +244,14 @@ pub fn run_build(p: &Paths, o: &BuildOptions, log: Log<'_>) -> Result<BuildResul
         if t.secret_hits > 0 {
             log(&format!("export: 注意 API キーやトークンらしい文字列を {} 件伏せました。本物なら元の記録にも残っているので鍵を作り直してください", t.secret_hits));
         }
-        if o.anonymize {
-            log("export: 注意 伏せ字モードの記録は自由記述を機械的に置き換えただけです。共有する前に中身を確認してください");
-        }
     }
     log(&format!(
-        "build: {}({}、うち埋め込みデータ {})、詳細ページ {} 件(計 {}){}、{}",
+        "build: {}({}、うち埋め込みデータ {})、詳細ページ {} 件(計 {})、{}",
         r.html_path.display(),
         mb(r.html_bytes),
         mb_i(r.embedded_bytes),
         r.detail_pages,
         mb(r.detail_bytes),
-        if o.anonymize { "、伏せ字モード" } else { "" },
         ms(secs(r.ms))
     ));
     if r.oversized {

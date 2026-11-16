@@ -15,7 +15,6 @@
     verdictModel = null,
     verdictRanAt = null,
     editable = false,
-    anonymized = false,
   }: {
     agg: TurnAggregate;
     verdicts?: VerdictAggregate | null;
@@ -23,7 +22,6 @@
     verdictRanAt?: string | null;
     /** serve から開き、操作のボタンがある(案内の文を分ける) */
     editable?: boolean;
-    anonymized?: boolean;
   } = $props();
 
   const PHASE_NOTE: Record<Phase, string> = {
@@ -46,7 +44,7 @@
     </p>
   </div>
   {#if agg.sessionsWithoutTurns > 0}
-    <p class="note" data-testid="phases-missing">依頼があるのに依頼ごとの記録が無いセッションが {int(agg.sessionsWithoutTurns)} 件あります(古い集計か、イベントのログが無く記録が DB にしか無いもの)。{refreshHint({ editable, anonymized })}</p>
+    <p class="note" data-testid="phases-missing">依頼があるのに依頼ごとの記録が無いセッションが {int(agg.sessionsWithoutTurns)} 件あります(古い集計か、イベントのログが無く記録が DB にしか無いもの)。{refreshHint({ editable })}</p>
   {/if}
   {#if agg.turns === 0}
     <p class="note">依頼ごとの記録がありません。</p>
@@ -146,7 +144,7 @@
         </tbody>
       </table>
     </div>
-    <TurnVerdicts agg={verdicts} model={verdictModel} ranAt={verdictRanAt} {editable} {anonymized} />
+    <TurnVerdicts agg={verdicts} model={verdictModel} ranAt={verdictRanAt} {editable} />
   {/if}
 </section>
 

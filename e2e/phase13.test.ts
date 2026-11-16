@@ -1,7 +1,7 @@
-// Phase 13 の E2E: メモが詳細ページと atlas.html に出る、伏せ字版に出ない、CLI で往復できる、~/.copilot を書き換えない
+// Phase 13 の E2E: メモが詳細ページと atlas.html に出る、CLI で往復できる、~/.copilot を書き換えない
 import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, statSync } from 'node:fs';
-import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { extractEmbedded } from '../packages/report/src/lib/embed.ts';
@@ -73,25 +73,12 @@ describe('Phase 13: メモ', () => {
   it('b. atlas.html には抜粋だけを埋め込み、全文は入れない', async () => {
     const raw = await readFile(join(out, 'atlas.html'), 'utf8');
     const data = extractEmbedded<ReportData>(raw);
-    expect(data.version).toBe(15);
+    expect(data.version).toBe(17);
     const s = data.sessions.find((x) => x.id === id)!;
     expect(s.memo).toMatchObject({ excerpt: '調べた理由', images: 1 });
     expect(data.sessions.find((x) => x.id === other)?.memo ?? null).toBeNull();
     expect(raw).not.toContain('ZEBRA-MEMO');
   });
-
-  it('c. 伏せ字版にはメモを一切出さない', async () => {
-    const anonOut = join(dir, 'anon');
-    expect(atlas(['all', '--home', home, '--out', anonOut, '--notes-dir', notes, '--anonymize']).status).toBe(0);
-    const data = extractEmbedded<ReportData>(await readFile(join(anonOut, 'atlas.html'), 'utf8'));
-    expect(data.sessions.every((s) => !s.memo)).toBe(true);
-    for (const f of await readdir(join(anonOut, 'sessions'))) {
-      const html = await readFile(join(anonOut, 'sessions', f), 'utf8');
-      expect(html).not.toContain('ZEBRA-MEMO');
-      expect(html).not.toContain('id="memo"');
-      expect(html).not.toContain('data:image/png');
-    }
-  }, 120_000);
 
   it('d. CLI で保存・一覧・表示・削除ができ、曖昧な id はエラーにする', async () => {
     const p = ['--out', out, '--notes-dir', notes];

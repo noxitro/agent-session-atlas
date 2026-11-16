@@ -1,5 +1,5 @@
 //! Phase 12: 改善点の別ページ(out/insights.html。packages/report/src/insights-page.ts の移植)。atlas.html の「改善点」の節に載せきれない全件
-//! (指示文の版、skill、止まっているセッション、スキル化の候補の全文)を、用語ページと同じ作法で置く。伏せ字版では依頼文と見出しを出さない。
+//! (指示文の版、skill、止まっているセッション、スキル化の候補の全文)を、用語ページと同じ作法で置く。
 
 use crate::format::{date_n, date_time_n, dec_n, duration, int_n};
 use crate::html::esc;
@@ -21,7 +21,6 @@ pub struct InsightsPageOptions<'a> {
     pub css: &'a str,
     pub generated_at: &'a str,
     pub code: &'a str,
-    pub anonymized: bool,
     pub sessions: usize,
     /// sessions のうち空のセッションの数
     pub empty_sessions: usize,
@@ -67,7 +66,6 @@ fn signed(v: f64) -> String {
 static WS: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!("{}+", js::RE_S)).unwrap());
 
 pub fn render_insights_html(o: &InsightsPageOptions<'_>) -> String {
-    let anon = o.anonymized;
     let num = js::num_to_string;
     let mut links = Vec::new();
     if let Some(h) = o.library_href {
@@ -94,15 +92,15 @@ pub fn render_insights_html(o: &InsightsPageOptions<'_>) -> String {
     let vlabel = |v: &VersionStat| -> String {
         let m = o.meta.get(&v.hash);
         let name = match m {
-            Some(m) if !anon => {
+            Some(m) => {
                 let h = clean_heading(&m.heading, Some(60));
                 format!("{} <span class=\"weak\">版 {}</span>", esc(if h.is_empty() { "(見出しなし)" } else { &h }), m.order + 1)
             }
-            _ => esc(&v.hash),
+            None => esc(&v.hash),
         };
         match o.library_href {
-            Some(h) if !anon => format!("<a href=\"{}#v-{}\">{name}</a>", esc(h), esc(&v.hash)),
-            _ => name,
+            Some(h) => format!("<a href=\"{}#v-{}\">{name}</a>", esc(h), esc(&v.hash)),
+            None => name,
         }
     };
 
@@ -142,7 +140,7 @@ pub fn render_insights_html(o: &InsightsPageOptions<'_>) -> String {
         let h = clean_heading(&w.heading, Some(60));
         findings.push(format!(
             "<li>版を変えた前後で悪化: {}({} → {}。失敗率 {}、手戻り率 {} pt)</li>",
-            if anon { w.after.hash.clone() } else { esc(if h.is_empty() { "(見出しなし)" } else { &h }) },
+            esc(if h.is_empty() { "(見出しなし)" } else { &h }),
             vlabel(&w.before),
             vlabel(&w.after),
             match w.failure_delta {
@@ -224,7 +222,7 @@ pub fn render_insights_html(o: &InsightsPageOptions<'_>) -> String {
             format!(
                 "<tr><td>{}</td><td>{}</td><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td></tr>",
                 sess(&x.id),
-                if anon { esc(&x.project) } else { esc(&x.project_label) },
+                esc(&x.project_label),
                 esc(&x.reasons.join("、")),
                 ms(x.ttft_median),
                 ms(x.duration_median),
@@ -245,7 +243,7 @@ pub fn render_insights_html(o: &InsightsPageOptions<'_>) -> String {
                 let reasons: Vec<String> = p.reasons.js_entries().iter().map(|(k, n)| format!("{k} {}", int_n(**n as f64))).collect();
                 format!(
                     "<tr><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td>{}</td></tr>",
-                    if anon { esc(&p.project) } else { esc(&p.project_label) },
+                    esc(&p.project_label),
                     esc(&int_n(p.stuck as f64)),
                     esc(&int_n(p.total as f64)),
                     esc(&reasons.join("、"))
@@ -275,27 +273,20 @@ pub fn render_insights_html(o: &InsightsPageOptions<'_>) -> String {
         .map(|(i, c)| {
             let head = if c.kind == "tools" {
                 format!("<span class=\"seq\">{}</span>", esc(&c.key))
-            } else if anon {
-                "依頼文の繰り返し(本文は伏せ字版では出しません)".to_string()
             } else {
                 esc(&clip(&WS.replace_all(c.representative.as_deref().unwrap_or(&c.key), " "), 80))
             };
-            let body = if anon {
-                String::new()
-            } else {
-                let mut b = String::new();
-                if let Some(r) = c.representative.as_deref().filter(|r| !r.is_empty()) {
-                    b.push_str(&format!(
-                        "<p class=\"cap\">{}</p><pre class=\"body\" tabindex=\"0\">{}</pre>",
-                        if c.kind == "tools" { "この並びが最初に出たターンの依頼文(例)" } else { "代表の依頼文" },
-                        esc(r)
-                    ));
-                }
-                if !c.examples.is_empty() {
-                    b.push_str(&format!("<p class=\"cap\">他の例({})</p><pre class=\"body\" tabindex=\"0\">{}</pre>", c.examples.len(), esc(&c.examples.join("\n— — —\n"))));
-                }
-                b
-            };
+            let mut body = String::new();
+            if let Some(r) = c.representative.as_deref().filter(|r| !r.is_empty()) {
+                body.push_str(&format!(
+                    "<p class=\"cap\">{}</p><pre class=\"body\" tabindex=\"0\">{}</pre>",
+                    if c.kind == "tools" { "この並びが最初に出たターンの依頼文(例)" } else { "代表の依頼文" },
+                    esc(r)
+                ));
+            }
+            if !c.examples.is_empty() {
+                body.push_str(&format!("<p class=\"cap\">他の例({})</p><pre class=\"body\" tabindex=\"0\">{}</pre>", c.examples.len(), esc(&c.examples.join("\n— — —\n"))));
+            }
             let uses: String = c.sessions.iter().take(30).map(|id| format!("<li>{}</li>", sess(id))).collect();
             format!(
                 "<details class=\"cand\" id=\"c-{n}\"{open}><summary><b>{n}.</b> {head} <span>{kind}</span> <span>{count} 回</span> <span>{ns} セッション</span> <span>実働 中央値 {med}</span> <span>スコア {score}</span></summary>{body}<div class=\"uses\">関係セッション: <ul>{uses}</ul>{more}</div></details>",
@@ -320,13 +311,12 @@ pub fn render_insights_html(o: &InsightsPageOptions<'_>) -> String {
     );
 
     format!(
-        "{head}<body>\n{top}\n<div class=\"shell\">\n{rail}\n<div class=\"content\">\n<main class=\"wrap\">\n<div class=\"title\"><h1>改善点(全件)</h1><p class=\"lead\">LLM を呼ばない規則の集計。分かるのは相関までで、「傾向」として読んでください。全記録 {n} 件(絞り込み前。空のセッション {empty} 件を含みますが、空のセッションは結果に影響しません)で計算。生成 {at}。{anon}</p></div>\n{instructions}\n{skills}\n{stuck}\n{candidates}\n</main>\n<footer class=\"wrap page-foot\"><p>atlas.html の「改善点」の節は、絞り込みに従って同じ規則で再計算したもの(スキル化の候補だけは全セッションで計算)。</p></footer>\n</div>\n</div>\n<script>{NAV_JS}</script>\n</body>\n</html>\n",
+        "{head}<body>\n{top}\n<div class=\"shell\">\n{rail}\n<div class=\"content\">\n<main class=\"wrap\">\n<div class=\"title\"><h1>改善点(全件)</h1><p class=\"lead\">LLM を呼ばない規則の集計。分かるのは相関までで、「傾向」として読んでください。全記録 {n} 件(絞り込み前。空のセッション {empty} 件を含みますが、空のセッションは結果に影響しません)で計算。生成 {at}。</p></div>\n{instructions}\n{skills}\n{stuck}\n{candidates}\n</main>\n<footer class=\"wrap page-foot\"><p>atlas.html の「改善点」の節は、絞り込みに従って同じ規則で再計算したもの(スキル化の候補だけは全セッションで計算)。</p></footer>\n</div>\n</div>\n<script>{NAV_JS}</script>\n</body>\n</html>\n",
         head = page_head(o.code, "改善点 | Copilot Session Atlas", &format!("{}{CSS}", o.css)),
         top = render_top(&nav),
         rail = render_rail(&nav),
         n = esc(&int_n(o.sessions as f64)),
         empty = esc(&int_n(o.empty_sessions as f64)),
         at = esc(&date_time_n(Some(o.generated_at))),
-        anon = if anon { "伏せ字版: 依頼文の本文と指示文の見出しは出さず、件数とスコアだけ。" } else { "" },
     )
 }

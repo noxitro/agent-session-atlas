@@ -9,13 +9,15 @@
 //! assets/ に書き出したもの(TS と違えば tests/assets_drift.rs が失敗する)。
 
 pub mod aggregate;
-pub mod anonymize;
 pub mod build;
+pub mod conditions;
 pub mod coverage;
 pub mod detail;
 pub mod embed;
 pub mod exec;
 pub mod exec_labels;
+pub mod failure_stats;
+pub mod failures_page;
 pub mod filter;
 pub mod format;
 pub mod full;
@@ -37,6 +39,7 @@ pub mod memo_io;
 pub mod memo_render;
 pub mod pack;
 pub mod page_nav;
+pub mod project_label;
 pub mod raw_events;
 pub mod retention;
 pub mod session_tools;

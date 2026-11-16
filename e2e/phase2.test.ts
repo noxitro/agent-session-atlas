@@ -3,9 +3,8 @@
 //  g. `atlas export` で各セッションの記録(Markdown)ができ、詳細ページからリンクされる。素の build では作らない
 //  h. 用語の説明は out/glossary.html の 1 枚だけで、atlas.html と詳細ページには本文を載せずリンクする
 //  b. 埋め込み JSON のセッション数が fixtures の件数(DB ∪ ディレクトリ)と一致し、詳細ページが揃う
-//  c. --anonymize で fixture の cwd / git_root / repository / branch の文字列が HTML に出ない
 //  d. ATLAS_LIVE=1 のとき実データで HTML を作り、サイズとプロジェクト数をログに出して 5MB 未満
-//  i. Phase 10: groups.json(--notes-dir)の --group / --session で件数が変わり、埋め込みデータにグループが入り、--anonymize で仮名になる。
+//  i. Phase 10: groups.json(--notes-dir)の --group / --session で件数が変わり、埋め込みデータにグループが入る。
 //     壊れたファイルは警告して無視する。atlas group add / list / remove でファイルを作って直せる
 //  j. Phase 10 第 2 段: atlas serve が out/ を配信し、API でグループを作成・改名・削除すると groups.json が書かれる。
 //     build 時の HTML は token のプレースホルダのままで、改定後の外部参照の検査(相対パス api/ への fetch だけ許す)を通る
@@ -17,13 +16,10 @@ import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { parse as parseYaml } from 'yaml';
 import { extractEmbedded } from '../packages/report/src/lib/embed.ts';
 import { GLOSSARY, GLOSSARY_GROUPS } from '../packages/report/src/lib/glossary.ts';
 import type { ReportData } from '../packages/report/src/lib/types.ts';
-import { GROUPED_PROJECTS } from '../packages/report/src/shared/project-keys.ts';
-import type { SessionsFile } from '../packages/report/src/shared/types.ts';
-import { buildFixtureHome, FIXTURES, readFixtureStore, ROOT, cliCommand, startServer } from './fixture-home.ts';
+import { buildFixtureHome, readFixtureStore, ROOT, cliCommand, startServer } from './fixture-home.ts';
 
 const LIVE = process.env.ATLAS_LIVE === '1';
 const WORK = join(ROOT, 'out', 'e2e-phase2');
@@ -56,27 +52,6 @@ async function readAllHtml(out: string): Promise<{ path: string; html: string }[
   return Promise.all(files.map(async (path) => ({ path, html: await readFile(path, 'utf8') })));
 }
 
-/** fixture の workspace.yaml と session-store から、伏せるべき固有の文字列を集める */
-async function fixtureSecrets(): Promise<string[]> {
-  const out = new Set<string>();
-  const state = join(FIXTURES, 'copilot-home', 'session-state');
-  for (const d of readdirSync(state)) {
-    const p = join(state, d, 'workspace.yaml');
-    if (!existsSync(p)) continue;
-    const w = parseYaml(await readFile(p, 'utf8')) as Record<string, unknown>;
-    for (const k of ['cwd', 'git_root', 'repository', 'branch']) if (typeof w[k] === 'string') out.add(w[k] as string);
-  }
-  const store = await readFixtureStore();
-  for (const r of store.sessions) for (const k of ['cwd', 'repository', 'branch']) if (typeof r[k] === 'string') out.add(r[k] as string);
-  return [...out];
-}
-
-/** HTML の中での現れ方(生の文字列、JSON 埋め込み、HTML エスケープ)をすべて調べる */
-function appearances(html: string, s: string): boolean {
-  const forms = new Set([s, JSON.stringify(s).slice(1, -1), JSON.stringify(s).slice(1, -1).replace(/\//g, '\\/'), s.replace(/'/g, '&#39;')]);
-  return [...forms].some((f) => html.includes(f));
-}
-
 describe('Phase 2 E2E: fixtures', () => {
   let close: () => Promise<void>;
   let home: string;
@@ -84,7 +59,6 @@ describe('Phase 2 E2E: fixtures', () => {
   let data: ReportData;
   let html: string;
   const out = join(WORK, 'out');
-  const outAnon = join(WORK, 'out-anon');
 
   beforeAll(async () => {
     ({ home, close } = await buildFixtureHome(join(WORK, 'home')));
@@ -120,7 +94,6 @@ describe('Phase 2 E2E: fixtures', () => {
     expect(all.stdout).toMatch(/export: セッション記録 \d+ 件/);
     expect((await readdir(join(out, 'sessions'))).filter((f) => f.endsWith('.md')).length).toBe(data.sessions.length);
     expect(await readFile(join(out, 'sessions', `${data.sessions[0].id}.html`), 'utf8')).toContain(`href="${data.sessions[0].id}.md"`);
-    const outExp = join(WORK, 'out-export');
     // export は build を含む(snapshot と sessions.json は out/ のものを使うため、--out は同じにして export → build の順で確かめる)
     const r = atlas(['export', '--home', home, '--out', out, '--tool-output', 'none']);
     expect(r.status, r.stderr).toBe(0);
@@ -143,18 +116,15 @@ describe('Phase 2 E2E: fixtures', () => {
     expect(md3).toMatch(/_依頼 1 の本体の消費: リクエスト 2、/);
     // --tool-output none なので結果の囲みは無い
     expect(md3).not.toMatch(/\n```\n/);
-    // 伏せ字版: 固有の文字列が出ない
-    const ra = atlas(['export', '--home', home, '--out', outExp, '--anonymize']);
-    // outExp には sessions.json が無いので失敗する(export は build と同じ前提)
-    expect(ra.status).not.toBe(0);
-    const ra2 = atlas(['export', '--home', home, '--out', out, '--anonymize']);
-    expect(ra2.status, ra2.stderr).toBe(0);
-    const secrets = await fixtureSecrets();
-    for (const f of mds) {
-      const md = await readFile(join(out, 'sessions', f), 'utf8');
-      for (const sec of secrets) if (sec.length >= 3) expect({ f, sec, leaked: md.includes(sec) }).toEqual({ f, sec, leaked: false });
-      expect(md).toContain('伏せ字モード');
+    // 出力先に sessions.json が無ければ export も build も失敗する(自分では snapshot・extract をしない。だから上では --out を同じにしている)
+    const outEmpty = join(WORK, 'out-empty');
+    await rm(outEmpty, { recursive: true, force: true });
+    for (const cmd of ['export', 'build']) {
+      const ne = atlas([cmd, '--home', home, '--out', outEmpty]);
+      expect(ne.status, ne.stdout).toBe(1);
+      expect(ne.stderr).toContain('sessions.json がありません');
     }
+    await rm(outEmpty, { recursive: true, force: true });
     // 素の build に戻すと .md は消え、リンクも無い
     const rb = atlas(['build', '--home', home, '--out', out]);
     expect(rb.status, rb.stderr).toBe(0);
@@ -203,7 +173,6 @@ describe('Phase 2 E2E: fixtures', () => {
     expect(data.metrics.emptySessions).toBe(empties);
     expect(data.metrics.overall.sessions).toBe(ids.size - empties);
     expect(data.totalSessionsInSource).toBe(ids.size);
-    expect(data.anonymized).toBe(false);
     expect(data.judgments.available).toBe(false);
     // 要約だけ: 生イベント・timeline は埋め込まない。1 セッションあたり数 KB 以内
     for (const s of data.sessions) {
@@ -216,36 +185,6 @@ describe('Phase 2 E2E: fixtures', () => {
     expect((await readdir(join(out, 'sessions'))).filter((f) => f.endsWith('.html')).length).toBe(ids.size);
     // 入力トークン記録の有無が欠測込みで入っている
     expect(data.sessions.filter((s) => s.coverage === 'input').length).toBe(data.metrics.overall.sessionsWithInputTokens);
-  });
-
-  it('c. --anonymize で fixture の cwd / git_root / repository / branch の文字列が HTML に出ない', async () => {
-    // 同じ out/ に通常版の記録がある状態から作り直す(伏せ字版で生の記録が残らないこと)
-    expect(atlas(['all', '--home', home, '--out', outAnon]).status).toBe(0);
-    expect((await readdir(join(outAnon, 'sessions'))).some((f) => f.endsWith('.md'))).toBe(true);
-    const r = atlas(['all', '--home', home, '--out', outAnon, '--anonymize']);
-    expect(r.status, r.stderr).toBe(0);
-    // 伏せ字版の all は記録(自由記述を機械的に伏せるだけで HTML より弱い)を作らない
-    expect(r.stdout).toContain('伏せ字版なのでセッション記録(.md)は作りません');
-    expect((await readdir(join(outAnon, 'sessions'))).some((f) => f.endsWith('.md'))).toBe(false);
-    const secrets = await fixtureSecrets();
-    expect(secrets.length).toBeGreaterThan(5);
-    // 伏せ字なしの HTML には実際に出ている(検査が空振りしていないことの確認)
-    const plainFiles = await readAllHtml(out);
-    expect(secrets.filter((s) => plainFiles.some((f) => appearances(f.html, s))).length).toBeGreaterThan(0);
-
-    const files = await readAllHtml(outAnon);
-    for (const f of files) {
-      const leaked = secrets.filter((s) => appearances(f.html, s));
-      expect({ path: f.path, leaked }).toEqual({ path: f.path, leaked: [] });
-    }
-    const anon = extractEmbedded<ReportData>(files[0].html);
-    expect(anon.anonymized).toBe(true);
-    expect(anon.sessions.length).toBe(data.sessions.length);
-    // Phase 6: まとめたプロジェクト((一時フォルダ)・(atlas の判定) など)は固有名を含まないのでそのまま出る
-    const anonKey = (k: string): boolean => /^project-\d+$/.test(k) || GROUPED_PROJECTS.has(k);
-    expect(anon.sessions.every((s) => anonKey(s.project) && s.name === null && s.firstUserMessage === null)).toBe(true);
-    expect(Object.keys(anon.metrics.byProject).every(anonKey)).toBe(true);
-    expect(externalRefs(files[0].html)).toEqual([]);
   });
 
   it('CLI フィルタ(--client)で埋め込まれるセッションが絞られる', async () => {
@@ -261,7 +200,7 @@ describe('Phase 2 E2E: fixtures', () => {
     expect((await readdir(join(out, 'sessions'))).length).toBe(expected);
   });
 
-  it('i. Phase 10: groups.json の --group / --session で絞れ、埋め込みデータにグループが入り、伏せ字では仮名になる。壊れたファイルは警告して無視する', async () => {
+  it('i. Phase 10: groups.json の --group / --session で絞れ、埋め込みデータにグループが入る。壊れたファイルは警告して無視する', async () => {
     const notes = join(WORK, 'notes');
     const notes2 = join(WORK, 'notes2');
     await rm(notes, { recursive: true, force: true });
@@ -283,7 +222,7 @@ describe('Phase 2 E2E: fixtures', () => {
     expect((await readdir(join(out, 'sessions'))).length).toBe(3);
     expect(d.groups).toEqual([{ name: '甲の調べ', note: '甲の覚え書き', ids: [...g1, ghost] }, { name: '乙の一件', note: '', ids: [ids[3]] }]);
     expect(d.warnings.notes).toEqual([]);
-    expect(d.version).toBe(15);
+    expect(d.version).toBe(17);
     // 他の条件と AND
     const client = data.sessions.find((s) => g1.includes(s.id))!.client!;
     const r1 = atlas(['build', '--out', out, '--notes-dir', notes, '--group', '甲の調べ', '--client', client]);
@@ -311,15 +250,6 @@ describe('Phase 2 E2E: fixtures', () => {
     expect(rb.stdout).toMatch(/bundle: 絞り込み group=乙の一件\(1 \/ 1 件が記録にある\) → 1 \/ \d+ セッション/);
     expect(rb.stdout).toMatch(/パケット 1 件/);
 
-    // --anonymize: グループ名と note は出さず「グループ 1, 2」、ids はそのまま
-    const ra = atlas(['build', '--out', outAnon, '--notes-dir', notes, '--anonymize']);
-    expect(ra.status, ra.stderr).toBe(0);
-    const anonHtml = await readFile(join(outAnon, 'atlas.html'), 'utf8');
-    const da = extractEmbedded<ReportData>(anonHtml);
-    expect(da.groups).toEqual([{ name: 'タスクタグ 1', note: '', ids: [...g1, ghost] }, { name: 'タスクタグ 2', note: '', ids: [ids[3]] }]);
-    expect(anonHtml).not.toContain('甲の調べ');
-    expect(anonHtml).not.toContain('甲の覚え書き');
-
     // 壊れたファイル: build は成功し、警告が標準出力と埋め込みデータ(warnings.notes)に出る。1 件だけ壊れていればその 1 件を飛ばす
     await writeFile(join(notes, 'groups.json'), '{ "version": 1, "groups": [ oops');
     const broken = atlas(['build', '--out', out, '--notes-dir', notes]);
@@ -329,14 +259,7 @@ describe('Phase 2 E2E: fixtures', () => {
     expect(d.groups).toEqual([]);
     expect(d.warnings.notes).toHaveLength(1);
     expect(d.warnings.notes[0]).toMatch(/JSON として読めない/);
-    expect(d.warnings.notes[0]).toContain(notes); // 通常版は場所が分かるよう絶対パスを含む
-    // 伏せ字版では警告文の絶対パスも <path> にする(ホームのパスを共有用 HTML に残さない)
-    const brokenAnon = atlas(['build', '--out', outAnon, '--notes-dir', notes, '--anonymize']);
-    expect(brokenAnon.status, brokenAnon.stderr).toBe(0);
-    const dan = extractEmbedded<ReportData>(await readFile(join(outAnon, 'atlas.html'), 'utf8'));
-    expect(dan.warnings.notes).toHaveLength(1);
-    expect(dan.warnings.notes[0]).not.toContain(notes);
-    expect(dan.warnings.notes[0]).toContain('<path>');
+    expect(d.warnings.notes[0]).toContain(notes); // 場所が分かるよう絶対パスを含む
     await writeFile(join(notes, 'groups.json'), JSON.stringify({ version: 1, groups: [{ name: 'ok', ids: [ids[0]] }, { name: 'ok', ids: [] }, { name: 'x', ids: 'bad' }] }));
     const partial = atlas(['build', '--out', out, '--notes-dir', notes]);
     expect(partial.status, partial.stderr).toBe(0);
@@ -525,28 +448,5 @@ describe.skipIf(!LIVE)('Phase 2 E2E: 実データ(ATLAS_LIVE=1)', () => {
     expect(projects).toBeGreaterThan(1);
     expect(details).toBe(data.sessions.length);
     expect(externalRefs(html)).toEqual([]);
-  });
-
-  it('実データの伏せ字版に cwd / リポジトリ名 / ブランチが出ない', async () => {
-    const s = JSON.parse(await readFile(join(out, 'sessions.json'), 'utf8')) as SessionsFile;
-    const anonOut = join(ROOT, 'out', 'e2e-phase2-live-anon');
-    // 伏せ字版は atlas all --anonymize で作る(実データを別の出力先に集計し直す)
-    const ra = atlas(['all', '--home', src, '--out', anonOut, '--anonymize']);
-    expect(ra.status, ra.stderr).toBe(0);
-    // 一般的な語と衝突しない程度に長い固有名だけを調べる(短いブランチ名 main 等は仮名の文脈では区別できない)
-    const secrets = [...new Set(s.sessions.flatMap((x) => [x.cwd, x.gitRoot, x.repository, x.branch && x.branch.length >= 8 ? x.branch : null]))].filter(
-      (v): v is string => !!v && v.length >= 8,
-    );
-    const anonHtml = await readFile(join(anonOut, 'atlas.html'), 'utf8');
-    const leaked = secrets.filter((x) => appearances(anonHtml, x));
-    console.log(`[live-anon] secrets=${secrets.length} leakedInIndex=${leaked.length}`);
-    expect(leaked).toEqual([]);
-    // 詳細ページは件数が多いので先頭 100 件を検査
-    const pages = (await readdir(join(anonOut, 'sessions'))).slice(0, 100);
-    for (const p of pages) {
-      const h = await readFile(join(anonOut, 'sessions', p), 'utf8');
-      const l = secrets.filter((x) => appearances(h, x));
-      expect({ p, l }).toEqual({ p, l: [] });
-    }
   });
 });

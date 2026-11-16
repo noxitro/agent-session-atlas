@@ -47,15 +47,14 @@ pub struct InstalledView {
 
 pub struct HighlightOptions<'a> {
     pub filter: &'a FilterState,
-    pub anonymized: bool,
     pub installed: Option<&'a InstalledView>,
 }
 
-/// 一覧での呼び名(伏せ字モードでは本文を使わない)
-pub fn session_label(s: &SessionSummary, anonymized: bool) -> String {
+/// 一覧での呼び名
+pub fn session_label(s: &SessionSummary) -> String {
     let name = s.name.as_deref().filter(|x| !x.is_empty());
     let first = s.first_user_message.as_deref().filter(|x| !x.is_empty());
-    if anonymized || (name.is_none() && first.is_none()) {
+    if name.is_none() && first.is_none() {
         return format!("{}・{}({})", s.project_label, date_n(s.created_at.as_deref()), js::head(&s.id, 8));
     }
     truncate(name.or(first), 48)
@@ -76,7 +75,6 @@ fn rate(t: &ToolRow) -> f64 {
 
 pub fn highlights(sessions: &[&SessionSummary], usage: &UsageRanking, opts: &HighlightOptions<'_>) -> Vec<HighlightGroup> {
     let mut out = Vec::new();
-    let label = |s: &SessionSummary| session_label(s, opts.anonymized);
     let detail = |s: &SessionSummary, text: String| HighlightItem { text, href: s.href.clone(), link_label: "セッションの詳細".into() };
 
     // 1. コストの大きいセッション: AIU、無ければ出力トークン
@@ -88,7 +86,7 @@ pub fn highlights(sessions: &[&SessionSummary], usage: &UsageRanking, opts: &Hig
             kind: "cost",
             title: "AI 使用量(AIU)の大きいセッション".into(),
             basis: format!("AIU の記録があるセッションを多い順に上位 {HIGHLIGHT_TOP} 件"),
-            items: top.iter().take(HIGHLIGHT_TOP).map(|s| detail(s, format!("{}: {} AIU(この条件の合計の {})", label(s), dec_n(nano(s) / 1e9), percent(nano(s), aiu_total)))).collect(),
+            items: top.iter().take(HIGHLIGHT_TOP).map(|s| detail(s, format!("{}: {} AIU(この条件の合計の {})", session_label(s), dec_n(nano(s) / 1e9), percent(nano(s), aiu_total)))).collect(),
         });
     } else {
         let out_total = sessions.iter().fold(0.0, |a, s| a + s.tokens.output);
@@ -99,7 +97,7 @@ pub fn highlights(sessions: &[&SessionSummary], usage: &UsageRanking, opts: &Hig
                 kind: "cost",
                 title: "出力トークンの多いセッション".into(),
                 basis: format!("この条件に AIU の記録が無いため、出力トークンの多い順に上位 {HIGHLIGHT_TOP} 件"),
-                items: top.iter().take(HIGHLIGHT_TOP).map(|s| detail(s, format!("{}: 出力 {} トークン(この条件の合計の {})", label(s), int_n(s.tokens.output), percent(s.tokens.output, out_total)))).collect(),
+                items: top.iter().take(HIGHLIGHT_TOP).map(|s| detail(s, format!("{}: 出力 {} トークン(この条件の合計の {})", session_label(s), int_n(s.tokens.output), percent(s.tokens.output, out_total)))).collect(),
             });
         }
     }
@@ -153,7 +151,7 @@ pub fn highlights(sessions: &[&SessionSummary], usage: &UsageRanking, opts: &Hig
                 .map(|s| {
                     let removed = s.friction_detail.compaction[4];
                     let extra = if removed > 0.0 { format!("(減ったトークン {})", int_n(removed)) } else { String::new() };
-                    detail(s, format!("{}: compaction {} 回{extra}", label(s), int_n(s.friction.compactions as f64)))
+                    detail(s, format!("{}: compaction {} 回{extra}", session_label(s), int_n(s.friction.compactions as f64)))
                 })
                 .collect(),
         });

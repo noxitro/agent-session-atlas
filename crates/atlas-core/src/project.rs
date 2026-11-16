@@ -17,7 +17,6 @@ use std::sync::LazyLock;
 pub const HOME_PROJECT: &str = "(ホーム)";
 pub const TEMP_PROJECT: &str = "(一時フォルダ)";
 pub const ATLAS_JUDGE_PROJECT: &str = "(atlas の判定)";
-pub const GROUPED_PROJECTS: [&str; 3] = [HOME_PROJECT, TEMP_PROJECT, ATLAS_JUDGE_PROJECT];
 
 /// このツールの判定(judge)が copilot を起動する作業フォルダ
 static ATLAS_JUDGE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|[\\/])atlas-judge-cwd-[^\\/]+[\\/]*$").unwrap());

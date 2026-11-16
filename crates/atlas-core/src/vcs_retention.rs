@@ -13,7 +13,7 @@
 //! - 同じファイルの同じ本文の行を、時間の重なる別のセッションの AI も足していたら、そのまとまりは照合不可(concurrent_session)
 //! - 後のセッションの AI も同じ本文の行を足していたら、その行は後のセッションの分として数え、前のセッションでは照合不可(later_session)にする
 
-use crate::ai_changes::{AiChangeSet, AiHunk};
+use crate::ai_changes::{AiChangeSet, AiHunk, HunkFrom};
 use crate::classify::file_path_key;
 use crate::js::{self, lone_surrogate_unit, JsMap};
 use crate::jsdate;
@@ -83,9 +83,11 @@ pub enum UnattributableReason {
     AfterMissing,
     /// 比べる版(fixed・committed)が開始時の基準と同じ(その間に取り込まれた変更が無い)。worktree と、svn の committed では使わない
     NoCommits,
+    /// 照合不可だが理由が記録されていない(送った側の結果に理由が無い・読めない)。読めなかった(read_error)とは決めない
+    Unknown,
 }
 
-pub const UNATTRIBUTABLE_REASONS: [UnattributableReason; 11] = [
+pub const UNATTRIBUTABLE_REASONS: [UnattributableReason; 12] = [
     UnattributableReason::RepoNotFound,
     UnattributableReason::NoVcs,
     UnattributableReason::BaselineMissing,
@@ -97,6 +99,7 @@ pub const UNATTRIBUTABLE_REASONS: [UnattributableReason; 11] = [
     UnattributableReason::TooRecent,
     UnattributableReason::AfterMissing,
     UnattributableReason::NoCommits,
+    UnattributableReason::Unknown,
 ];
 
 impl UnattributableReason {
@@ -113,6 +116,7 @@ impl UnattributableReason {
             UnattributableReason::TooRecent => "too_recent",
             UnattributableReason::AfterMissing => "after_missing",
             UnattributableReason::NoCommits => "no_commits",
+            UnattributableReason::Unknown => "unknown",
         }
     }
 
@@ -134,6 +138,7 @@ impl UnattributableReason {
             UnattributableReason::TooRecent => "決まった日数がまだ経っていない",
             UnattributableReason::AfterMissing => "比べる版を決められない",
             UnattributableReason::NoCommits => "開始時から取り込まれた変更が無い",
+            UnattributableReason::Unknown => "理由が記録されていない",
         }
     }
 }
@@ -184,6 +189,12 @@ pub struct HunkRetention {
     pub lines: LineCounts,
     /// そのまとまりを作った編集の時刻(ISO。工程ごとの集計で、どの依頼のものかを決めるのに使う)。記録が無ければ省略
     pub at: Option<String>,
+    /// lines.modified のうち、空白の違いでなく「似た本文」(2 字組の重なりが下限以上)で当てた行(推定。0 なら省略)
+    pub similar_lines: i64,
+    /// そのまとまりを作ったツールの呼び出しの ID(ログの toolCallId。どの編集の変更かをたどる)。記録が無ければ省略
+    pub tool_call_id: Option<String>,
+    /// 変更をログのどこから取り出したか(diff = 完了イベントの diff、args = 開始イベントの引数)。記録が無ければ省略
+    pub from: Option<HunkFrom>,
     /// キーの順(TS がオブジェクトを組み立てた順)。true = id, path, status, lines, at, reason(送った側の結果を読み直したもの)
     pub reason_last: bool,
 }
@@ -207,6 +218,15 @@ impl Serialize for HunkRetention {
             if let Some(r) = &self.reason {
                 m.serialize_entry("reason", r)?;
             }
+        }
+        if self.similar_lines != 0 {
+            m.serialize_entry("similarLines", &self.similar_lines)?;
+        }
+        if let Some(t) = &self.tool_call_id {
+            m.serialize_entry("toolCallId", t)?;
+        }
+        if let Some(f) = &self.from {
+            m.serialize_entry("from", f)?;
         }
         m.end()
     }
@@ -263,6 +283,9 @@ pub struct Evaluated {
     pub mode: EvalMode,
     pub rev: Option<String>,
     pub at: String,
+    /// 比べた版をどう決めたか。estimated = 日時から推定した(fixed)。無ければ、照合したときに VCS で見た版(observed)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<RevisionSource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -397,9 +420,26 @@ impl HunkRetention {
             lines: LineCounts,
             #[serde(default)]
             at: Option<String>,
+            #[serde(default, rename = "similarLines")]
+            similar_lines: i64,
+            #[serde(default, rename = "toolCallId")]
+            tool_call_id: Option<String>,
+            #[serde(default)]
+            from: Option<HunkFrom>,
         }
         let r: Raw = serde_json::from_value(v)?;
-        Ok(HunkRetention { id: r.id, path: r.path, status: r.status, reason: r.reason, lines: r.lines, at: r.at, reason_last })
+        Ok(HunkRetention {
+            id: r.id,
+            path: r.path,
+            status: r.status,
+            reason: r.reason,
+            lines: r.lines,
+            at: r.at,
+            similar_lines: r.similar_lines,
+            tool_call_id: r.tool_call_id,
+            from: r.from,
+            reason_last,
+        })
     }
 }
 
@@ -457,6 +497,26 @@ pub struct RetentionSummary {
     pub lines: LineCounts,
     /// VCS ごとの照合できたセッションの数(キーは VcsKind の名前)
     pub by_vcs: JsMap<i64>,
+    // 以下は記録の欠け・推定の範囲(0 なら省略。古い結果には無い)
+    /// 編集はあったが、変更の中身がログに無く取り出せなかった数(渡したすべてのセッション。分母に入らない欠測)
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub unread_edits: i64,
+    /// unread_edits のあるセッションの数
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub unread_sessions: i64,
+    /// 照合できたセッションで、基準のファイルにもともとある行だけだったので数えなかったまとまり
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub excluded_hunks: i64,
+    /// 照合できたセッションの lines.modified のうち、似た本文で当てた(推定した)行
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub similar_lines: i64,
+    /// 照合できたセッションのうち、比べた版を日時から推定したもの(fixed)
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub evaluated_estimated: i64,
+}
+
+fn is_zero(n: &i64) -> bool {
+    *n == 0
 }
 
 /// fixed の既定の日数
@@ -640,6 +700,8 @@ enum LineState {
     Pending,
     Kept,
     Modified,
+    /// 似た本文で当てた行(書き換えたとみなす。数えるのは Modified と同じで、推定した行として別にも数える)
+    Similar,
     Missing,
     Excluded,
     Reason(UnattributableReason),
@@ -752,7 +814,7 @@ fn classify_file(hunks: &[&AiHunk], base: Option<&str>, after: Option<&str>, cla
         }
         let j = best?;
         used[j] = true;
-        Some(LineState::Modified)
+        Some(LineState::Similar)
     });
     for_pending(&mut per, &mut |_| Some(LineState::Missing));
 
@@ -765,11 +827,16 @@ fn classify_file(hunks: &[&AiHunk], base: Option<&str>, after: Option<&str>, cla
             continue;
         }
         let mut lines = LineCounts::default();
+        let mut similar_lines = 0;
         let mut reason: Option<UnattributableReason> = None;
         for s in counted {
             match s {
                 LineState::Kept => lines.kept += 1,
                 LineState::Modified => lines.modified += 1,
+                LineState::Similar => {
+                    lines.modified += 1;
+                    similar_lines += 1;
+                }
                 LineState::Missing => lines.missing += 1,
                 LineState::Reason(r) => {
                     lines.unattributable += 1;
@@ -786,6 +853,9 @@ fn classify_file(hunks: &[&AiHunk], base: Option<&str>, after: Option<&str>, cla
             reason: if status == RetentionStatus::Unattributable { reason } else { None },
             lines,
             at: p.h.at.clone().filter(|a| !a.is_empty()),
+            similar_lines,
+            tool_call_id: p.h.tool_call_id.clone().filter(|t| !t.is_empty()),
+            from: Some(p.h.from),
             reason_last: false,
         });
     }
@@ -814,6 +884,9 @@ fn unattributed(h: &AiHunk, reason: UnattributableReason) -> HunkRetention {
         reason: Some(reason),
         lines: LineCounts { unattributable: h.lines.len() as i64, ..Default::default() },
         at: h.at.clone().filter(|a| !a.is_empty()),
+        similar_lines: 0,
+        tool_call_id: h.tool_call_id.clone().filter(|t| !t.is_empty()),
+        from: Some(h.from),
         reason_last: false,
     }
 }
@@ -848,7 +921,7 @@ struct Caches {
     repos: RepoCache,
     baselines: Memo<Result<Option<Revision>, String>>,
     reads: Memo<Result<Option<Arc<String>>, String>>,
-    revs: Memo<Option<String>>,
+    revs: Memo<Result<Option<String>, String>>,
 }
 
 fn repo_key(repo: &VcsRepo) -> String {
@@ -928,10 +1001,11 @@ fn measure_one(sh: &Shared<'_>, me: usize) -> SessionRetention {
         result.root = Some(r.root.clone());
     }
 
-    let after_rev_of = |repo: &Arc<VcsRepo>| -> Option<String> {
+    // 版を調べるコマンドが失敗したら Err(読めなかった)。版が無い(Ok(None))とは分ける
+    let after_rev_of = |repo: &Arc<VcsRepo>| -> Result<Option<String>, String> {
         let branch = if repo.kind == VcsKind::Git && same(repo, s_repo) { ctx.branch.as_deref() } else { None };
         let at = fixed_at.as_deref().unwrap_or("null");
-        sh.caches.revs.get_or_init(format!("{}\0at\0{at}\0{}", repo_key(repo), branch.unwrap_or("")), || repo.revision_at(at, branch).unwrap_or(None))
+        sh.caches.revs.get_or_init(format!("{}\0at\0{at}\0{}", repo_key(repo), branch.unwrap_or("")), || repo.revision_at(at, branch))
     };
     // リポジトリごとの基準(同じものは 1 度だけ調べる)
     let baseline_of = |repo: &Arc<VcsRepo>| -> Result<Option<Revision>, String> {
@@ -1000,7 +1074,7 @@ fn measure_one(sh: &Shared<'_>, me: usize) -> SessionRetention {
             // 比べる版(fixed: 終わりから決まった日数後の版、committed: 最後に取り込んだ版。worktree はディスクなので無い)
             let after_rev: Option<String> = match mode {
                 EvalMode::Fixed => {
-                    let Some(r) = after_rev_of(&repo) else {
+                    let Some(r) = after_rev_of(&repo)? else {
                         result.hunks.extend(hunks.iter().map(|h| unattributed(h, UnattributableReason::AfterMissing)));
                         return Ok(());
                     };
@@ -1008,7 +1082,7 @@ fn measure_one(sh: &Shared<'_>, me: usize) -> SessionRetention {
                 }
                 // svn の「今の版」は作業コピーのルートの版で、ファイルを取り込んだだけでは進まない(update するまで古いまま)。
                 // 基準と同じに見えても取り込みが無いとは言えないので、svn の committed ではこの判定をしない(BASE を読んで照合する)
-                EvalMode::Committed if repo.kind != VcsKind::Svn => sh.caches.revs.get_or_init(rk.clone(), || repo.current_revision().unwrap_or(None)),
+                EvalMode::Committed if repo.kind != VcsKind::Svn => sh.caches.revs.get_or_init(rk.clone(), || repo.current_revision())?,
                 EvalMode::Committed | EvalMode::Worktree => None,
             };
             // 比べる版が開始時の基準と同じなら、その間に取り込まれた変更が無い(AI の行は必ず見つからない)ので、照合不可にする
@@ -1035,17 +1109,26 @@ fn measure_one(sh: &Shared<'_>, me: usize) -> SessionRetention {
     if let Some(repo) = s_repo {
         if mode == EvalMode::Fixed {
             // 比べた時点は、セッションの終わりから決まった日数後(照合した日ではない)
+            // その時点の版は、取り込みの日時から推定したもの(日時の後に取り込みが遅れて記録された版などは外れうる)
             if let (Some(at), false) = (&fixed_at, too_recent) {
-                result.evaluated = Some(Evaluated { mode, rev: after_rev_of(repo), at: at.clone() });
+                result.evaluated = Some(Evaluated { mode, rev: after_rev_of(repo).ok().flatten(), at: at.clone(), source: Some(RevisionSource::Estimated) });
             }
         } else {
-            let rev = sh.caches.revs.get_or_init(repo_key(repo), || repo.current_revision().unwrap_or(None));
-            result.evaluated = Some(Evaluated { mode, rev, at: sh.now.clone() });
+            let rev = sh.caches.revs.get_or_init(repo_key(repo), || repo.current_revision()).ok().flatten();
+            result.evaluated = Some(Evaluated { mode, rev, at: sh.now.clone(), source: None });
         }
     }
     result.hunks.sort_by_key(|h| h.id);
     tally(&mut result);
     let measured = result.counts.kept + result.counts.modified + result.counts.missing;
+    // 作業フォルダに VCS が無く、ファイルの場所のリポジトリだけで照合できたときも、比べた時点と見方は残す
+    // (版はリポジトリごとに違いうるので印は付けない)。無いと、日数や推定した版の数から外れる
+    if result.evaluated.is_none() && measured > 0 {
+        result.evaluated = Some(match (mode, &fixed_at) {
+            (EvalMode::Fixed, Some(at)) => Evaluated { mode, rev: None, at: at.clone(), source: Some(RevisionSource::Estimated) },
+            _ => Evaluated { mode, rev: None, at: sh.now.clone(), source: None },
+        });
+    }
     if measured > 0 {
         result.outcome = Outcome::Measured;
     } else if result.counts.unattributable > 0 {
@@ -1093,12 +1176,18 @@ pub fn measure_retention(sets: &[AiChangeSet], opts: &RetentionOptions) -> Vec<S
 pub fn summarize_retention(results: &[SessionRetention]) -> RetentionSummary {
     let mut s = RetentionSummary { sessions: results.len() as i64, ..Default::default() };
     for r in results {
+        // 中身を取り出せなかった編集は、ほかに AI の変更が無いセッションでも数える(欠測の範囲)
+        if let Some(n) = r.unread_edits.filter(|n| *n > 0) {
+            s.unread_edits += n;
+            s.unread_sessions += 1;
+        }
         if r.outcome == Outcome::NoAiChanges {
             continue;
         }
         s.with_ai_changes += 1;
         if r.outcome == Outcome::Unattributable {
-            let k = r.reason.unwrap_or(UnattributableReason::ReadError);
+            // 理由が無いときは「読めなかった」と決めつけない
+            let k = r.reason.unwrap_or(UnattributableReason::Unknown);
             s.unattributable.inc(k.as_str(), 1);
             continue;
         }
@@ -1106,6 +1195,12 @@ pub fn summarize_retention(results: &[SessionRetention]) -> RetentionSummary {
         if r.baseline.as_ref().is_some_and(|b| b.source == RevisionSource::Estimated) {
             s.baseline_estimated += 1;
         }
+        // fixed の版はいつも日時から決めた推定(source の無い古い送った側の結果も、見方で数える)
+        if r.evaluated.as_ref().is_some_and(|e| e.mode == EvalMode::Fixed || e.source == Some(RevisionSource::Estimated)) {
+            s.evaluated_estimated += 1;
+        }
+        s.excluded_hunks += r.excluded_hunks;
+        s.similar_lines += r.hunks.iter().map(|h| h.similar_lines).sum::<i64>();
         if let Some(v) = r.vcs {
             s.by_vcs.inc(v.as_str(), 1);
         }

@@ -96,7 +96,6 @@ pub struct CliOptions {
     pub group: Option<String>,
     pub sessions: Option<Vec<String>>,
     pub notes_dir: Option<String>,
-    pub anonymize: bool,
     pub judgments: Option<String>,
     pub bundle: Option<String>,
     pub include_empty: bool,
@@ -163,7 +162,6 @@ const OPTIONS: &[(&str, Kind)] = &[
     ("note", Kind::Str),
     ("to", Kind::Str),
     ("file", Kind::Str),
-    ("anonymize", Kind::Bool),
     ("judgments", Kind::Str),
     ("bundle", Kind::Str),
     ("include-empty", Kind::Bool),
@@ -569,16 +567,8 @@ pub fn parse_cli(argv: &[String]) -> Result<CliOptions, UsageError> {
         return err("--zip は bundle でだけ使えます");
     }
     let full = values.b("full", false);
-    let anonymize = values.b("anonymize", false);
     if full && cmd != "export" {
         return err("--full は export でだけ使えます");
-    }
-    if full && anonymize {
-        return err("--full(解析用の全文記録)は --anonymize と併用できません");
-    }
-    // 伏せ字に対応していないコマンドで黙って無視すると、伏せたつもりの評価バンドル(依頼文の全文・パス入り)を外部へ渡してしまう
-    if anonymize && !matches!(cmd.as_str(), "build" | "export" | "all") {
-        return err(format!("--anonymize は build / export / all でだけ使えます({cmd} の出力は伏せ字になりません。評価バンドルを外部の LLM に渡すときは中身を確認してください)"));
     }
     if (values.b("snapshot-all", false) || values.b("snapshot-prune", false)) && !matches!(cmd.as_str(), "snapshot" | "all" | "export" | "open") {
         return err("--snapshot-all と --snapshot-prune は snapshot / all / export / open で使えます");
@@ -635,7 +625,6 @@ pub fn parse_cli(argv: &[String]) -> Result<CliOptions, UsageError> {
         group: values.s("group").map(|g| g.trim().to_string()),
         sessions,
         notes_dir: values.s("notes-dir").cloned(),
-        anonymize,
         judgments: values.s("judgments").cloned(),
         bundle: values.s("bundle").cloned(),
         include_empty: values.b("include-empty", false),

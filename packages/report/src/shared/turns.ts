@@ -182,7 +182,7 @@ export function requestKindOf(text: string): RequestKind {
   return asks ? 'question' : 'task';
 }
 
-/** 1 ターン 1 行(CSV・集計・画面で使う)。text は依頼文の先頭(伏せ字版では使わない) */
+/** 1 ターン 1 行(CSV・集計・画面で使う)。text は依頼文の先頭 */
 export interface TurnRow extends TurnStats {
   sessionId: string;
   /** セッションの中の通し番号(1 から) */

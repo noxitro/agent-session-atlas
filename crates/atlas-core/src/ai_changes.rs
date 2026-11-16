@@ -19,10 +19,24 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 
 /// 材料の種類。diff = 完了イベントの unified diff、args = 開始イベントの引数から作った
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum HunkFrom {
     Diff,
     Args,
+}
+
+impl HunkFrom {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HunkFrom::Diff => "diff",
+            HunkFrom::Args => "args",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<HunkFrom> {
+        [HunkFrom::Diff, HunkFrom::Args].into_iter().find(|k| k.as_str() == s)
+    }
 }
 
 /// AI の変更 1 まとまり(diff の連続した +/- の塊)のうち、セッションの終わりまで AI が残した追加行

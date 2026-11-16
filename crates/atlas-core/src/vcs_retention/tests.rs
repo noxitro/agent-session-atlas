@@ -4,7 +4,7 @@
 use super::*;
 use crate::ai_changes::extract_ai_changes;
 use crate::types::CopilotEvent;
-use crate::vcs::{assert_read_only, p4_escape, vcs_env, RunResult};
+use crate::vcs::{assert_read_only, default_runner, p4_escape, p4_server_offset, run_read_only, vcs_env, RunResult};
 use serde_json::{json, Value};
 use std::path::Path;
 use std::process::Command;
@@ -160,7 +160,10 @@ fn read_only_guard() {
         let a: Vec<String> = args.iter().map(|s| s.to_string()).collect();
         assert!(assert_read_only(cmd, &a).is_ok(), "{cmd:?} {args:?}");
     }
-    let bad: [(VcsKind, &[&str]); 10] = [
+    let bad: [(VcsKind, &[&str]); 12] = [
+        // ファイルに書き出す(-o)
+        (VcsKind::P4, &["-d", "x", "-q", "print", "-o", "out.txt", "x@3"]),
+        (VcsKind::P4, &["-d", "x", "-q", "print", "-oout.txt", "x@3"]),
         (VcsKind::Git, &["commit", "-m", "x"]),
         (VcsKind::Git, &["-C", "x", "checkout", "HEAD"]),
         (VcsKind::Git, &["-c", "user.name=x", "show", "HEAD"]),
@@ -205,7 +208,7 @@ fn git_kept_modified_missing_and_baseline_lines() {
     assert_eq!(r.outcome, Outcome::Measured);
     assert_eq!(r.vcs, Some(VcsKind::Git));
     assert_eq!(r.baseline, Some(Revision { rev: head.clone(), source: RevisionSource::Observed }));
-    assert_eq!(r.evaluated, Some(Evaluated { mode: EvalMode::Worktree, rev: Some(head.clone()), at: at(12, 0) }));
+    assert_eq!(r.evaluated, Some(Evaluated { mode: EvalMode::Worktree, rev: Some(head.clone()), at: at(12, 0), source: None }));
     assert_eq!(r.excluded_hunks, 1);
     assert_eq!(statuses(r), [RetentionStatus::Kept, RetentionStatus::Modified, RetentionStatus::Missing]);
     assert_eq!(r.counts, lc(1, 1, 1, 0));
@@ -215,7 +218,15 @@ fn git_kept_modified_missing_and_baseline_lines() {
     let v = serde_json::to_value(r).unwrap();
     let keys: Vec<&String> = v.as_object().unwrap().keys().collect();
     assert_eq!(keys, ["sessionId", "outcome", "vcs", "root", "baseline", "evaluated", "hunks", "excludedHunks", "counts", "lines", "provenance", "sessionEnd"]);
-    assert_eq!(v["hunks"][0].as_object().unwrap().keys().collect::<Vec<_>>(), ["id", "path", "status", "lines", "at"]);
+    // 出所(どのツールの呼び出しの、ログのどこから取った変更か)を添える。似た本文で当てた行は推定として別に数える
+    assert_eq!(v["hunks"][0].as_object().unwrap().keys().collect::<Vec<_>>(), ["id", "path", "status", "lines", "at", "toolCallId", "from"]);
+    assert_eq!((v["hunks"][0]["from"].as_str(), v["hunks"][0]["toolCallId"].is_string()), (Some("diff"), true));
+    assert_eq!(v["hunks"][1].as_object().unwrap().keys().collect::<Vec<_>>(), ["id", "path", "status", "lines", "at", "similarLines", "toolCallId", "from"]);
+    assert_eq!((r.hunks[0].similar_lines, r.hunks[1].similar_lines), (0, 1));
+    let s = summarize_retention(std::slice::from_ref(r));
+    assert_eq!((s.similar_lines, s.excluded_hunks, s.evaluated_estimated, s.unread_edits), (1, 1, 0, 0));
+    let sv = serde_json::to_value(&s).unwrap();
+    assert_eq!((sv.get("similarLines"), sv.get("excludedHunks"), sv.get("evaluatedEstimated"), sv.get("unreadEdits")), (Some(&json!(1)), Some(&json!(1)), None, None));
 }
 
 #[test]
@@ -454,6 +465,11 @@ type Calls = Arc<Mutex<Vec<(VcsKind, Vec<String>)>>>;
 
 /// 架空の版の履歴に、svn / p4 の読む系のコマンドだけで答える。呼ばれたコマンドは calls に残す
 fn fake_vcs(kind: VcsKind, root: &str, revs: Vec<FakeRev>) -> (VcsRunner, Calls) {
+    fake_vcs_tz(kind, root, revs, 0)
+}
+
+/// p4 の日時指定(@2026/11/01:19:00:00)を、UTC から tz_min 分ずれた地方時として読む fake_vcs(サーバの地方時を真似る)
+fn fake_vcs_tz(kind: VcsKind, root: &str, revs: Vec<FakeRev>, tz_min: i64) -> (VcsRunner, Calls) {
     let calls: Calls = Arc::new(Mutex::new(Vec::new()));
     let c2 = calls.clone();
     let root = root.to_string();
@@ -478,6 +494,7 @@ fn fake_vcs(kind: VcsKind, root: &str, revs: Vec<FakeRev>) -> (VcsRunner, Calls)
         if cmd != kind {
             return RunResult { code: -1, stdout: String::new(), stderr: format!("{} が見つかりません", cmd.as_str()) };
         }
+        let ztag = args.iter().any(|x| x == "-ztag");
         let mut a: Vec<String> = args.iter().filter(|x| !["--non-interactive", "-q", "-ztag"].contains(&x.as_str())).cloned().collect();
         if a.first().map(String::as_str) == Some("-d") {
             a.drain(0..2);
@@ -510,13 +527,23 @@ fn fake_vcs(kind: VcsKind, root: &str, revs: Vec<FakeRev>) -> (VcsRunner, Calls)
             }
             if g(0) == "changes" {
                 let spec = a.last().unwrap();
-                let r = if spec.ends_with("#have") {
-                    last
-                } else {
-                    let m = regex::Regex::new(r"@(\d+)/(\d+)/(\d+):(\d+):(\d+):(\d+)$").unwrap().captures(spec).unwrap();
-                    rev_at(&format!("{}-{}-{}T{}:{}:{}.000Z", &m[1], &m[2], &m[3], &m[4], &m[5], &m[6]))
-                };
-                return ok(r.map(|r| format!("Change {} on 2026/11/01 by zz@zz-ws 'x'\n", r.rev)).unwrap_or_default());
+                let change = |r: Option<FakeRev>| ok(r.map(|r| format!("Change {} on 2026/11/01 by zz@zz-ws 'x'\n", r.rev)).unwrap_or_default());
+                if spec.ends_with("#have") {
+                    return change(last);
+                }
+                // 地方時の日時を UTC の ISO に
+                let dates: Vec<String> = regex::Regex::new(r"@(\d+)/(\d+)/(\d+):(\d+):(\d+):(\d+)")
+                    .unwrap()
+                    .captures_iter(spec)
+                    .map(|m| jsdate::to_iso(ms_of(&format!("{}-{}-{}T{}:{}:{}.000Z", &m[1], &m[2], &m[3], &m[4], &m[5], &m[6])) - tz_min * 60_000))
+                    .collect();
+                if let [from, to] = dates.as_slice() {
+                    // 範囲(@a,@b)は -ztag で、取り込んだ時刻(UTC の秒)つき。新しい順
+                    assert!(ztag, "範囲は -ztag で読む");
+                    let out: String = revs.iter().rev().filter(|r| r.at >= *from && r.at <= *to).map(|r| format!("... change {}\n... time {}\n... user zz\n\n", r.rev, ms_of(&r.at) / 1000)).collect();
+                    return ok(out);
+                }
+                return change(rev_at(&dates[0]));
             }
             if g(0) == "print" {
                 let m = regex::Regex::new(r"^(.*)(?:@(\d+)|#have)$").unwrap().captures(g(1)).unwrap();
@@ -672,6 +699,12 @@ fn fixed_mode_and_unread_edits() {
     assert_eq!((e.mode, e.at.clone()), (EvalMode::Fixed, at(11 + 24 * 7, 0)));
     assert_eq!(fixed.session_end, Some(Some(at(11, 0))));
     assert_eq!(fixed.hunks[0].status, RetentionStatus::Kept);
+    // fixed の版は日時から推定したもの。今の版を見る worktree には印を付けない
+    assert_eq!(e.source, Some(RevisionSource::Estimated));
+    assert_eq!(summarize_retention(std::slice::from_ref(fixed)).evaluated_estimated, 1);
+    let w = &measure(&sets, &RetentionOptions { now_ms: now, ..opts() })[0];
+    assert_eq!(w.evaluated.as_ref().unwrap().source, None);
+    assert!(serde_json::to_value(w).unwrap()["evaluated"].get("source").is_none());
     // セッションの終わりから 3 日しか経っていなければ、照合しない
     let early = &measure(&sets, &RetentionOptions { mode: EvalMode::Fixed, lag_days: 7, now_ms: Some(ms_of(&at(24 * 3, 0))), ..opts() })[0];
     assert_eq!((early.outcome, early.reason, early.evaluated.clone()), (Outcome::Unattributable, Some(UnattributableReason::TooRecent), None));
@@ -682,6 +715,246 @@ fn fixed_mode_and_unread_edits() {
     ev.push(ev_odd("tool.execution_complete", json!({"toolCallId": "odd", "success": true, "result": {"content": "ok"}})));
     let r = &measure(&[extract_ai_changes("s1", &ev, None)], &opts())[0];
     assert_eq!((r.outcome, r.unread_edits), (Outcome::NoAiChanges, Some(1)));
+    // AI の変更を取り出せなかったセッションの読めない編集も、集計に残す(記録の欠けを隠さない)
+    let s = summarize_retention(std::slice::from_ref(r));
+    assert_eq!((s.with_ai_changes, s.unread_edits, s.unread_sessions), (0, 1, 1));
+}
+
+#[test]
+fn read_only_runner_and_p4_timezone() {
+    // 書く系のコマンドは呼ぶ前に止める。run_read_only は差し替えた runner を呼ばずに止め、
+    // 既定の runner は run_read_only を通らずに直接呼ばれても起動しない(止まらなかったときに備えて、空の一時フォルダで呼ぶ)
+    let mut tmp = Tmp::new();
+    let empty = tmp.dir();
+    let called = Arc::new(Mutex::new(0));
+    let c2 = called.clone();
+    let counting: VcsRunner = Arc::new(move |_, _, _| {
+        *c2.lock().unwrap() += 1;
+        RunResult::default()
+    });
+    for (kind, args) in [(VcsKind::Git, vec!["commit", "-m", "x"]), (VcsKind::Svn, vec!["update"]), (VcsKind::P4, vec!["print", "-o", "out.txt", "//d/a.c"])] {
+        let a = args.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(run_read_only(&counting, kind, &a, &empty).is_err(), "{kind:?} {args:?}");
+        let r = default_runner()(kind, &a, &empty);
+        assert_eq!((r.code, r.stdout.as_str()), (1, ""), "{kind:?} {args:?}");
+        assert!(r.stderr.contains("止めました"), "{kind:?} {args:?}: {}", r.stderr);
+    }
+    assert_eq!(*called.lock().unwrap(), 0);
+
+    assert_eq!(p4_server_offset("... serverDate 2026/11/01 19:00:00 +0900 JST\n"), Some(540));
+    assert_eq!(p4_server_offset("... clientName zz\n... serverDate 2026/11/01 05:00:00 -0500 EST\n"), Some(-300));
+    assert_eq!(p4_server_offset("... clientName zz\n"), None);
+
+    // サーバの時差(p4 info の serverDate)で日時を直し、取り込んだ時刻で確かめる。
+    // 照合したときの時差と、セッションのころの時差(夏時間)が 1 時間違っても、開始時刻 10:00(UTC)の直前の版 2 を基準にする
+    let base_of = |now_min: i64, then_min: i64, timeless: bool| -> (Option<String>, Vec<String>) {
+        let mut tmp = Tmp::new();
+        let root = tmp.dir();
+        let f = join(&root, &["a.c"]);
+        let revs = vec![rev(1, at(8, 0), &[("a.c", &["old"])]), rev(2, at(9, 30), &[("a.c", &["base"])]), rev(3, at(10, 30), &[("a.c", &["base", "later"])])];
+        let (inner, calls) = fake_vcs_tz(VcsKind::P4, &root, revs, then_min);
+        let date = format!("... serverDate 2026/11/01 19:00:00 {}{:02}{:02} ZZ\n", if now_min < 0 { '-' } else { '+' }, now_min.abs() / 60, now_min.abs() % 60);
+        let runner: VcsRunner = Arc::new(move |cmd, args, cwd| {
+            let mut r = inner(cmd, args, cwd);
+            if cmd == VcsKind::P4 && args.last().map(String::as_str) == Some("info") {
+                r.stdout.push_str(&date);
+            }
+            // 取り込んだ時刻を出さないサーバを真似る
+            if timeless {
+                r.stdout = r.stdout.lines().filter(|l| !l.starts_with("... time ")).map(|l| format!("{l}\n")).collect();
+            }
+            r
+        });
+        write(&f, &["base", "ai"]);
+        let ev = session(&root, None, None, (10, 0), (11, 0), vec![ed(&f, &["ai"])]);
+        let r = &measure(&[extract_ai_changes("s1", &ev, None)], &RetentionOptions { runner, ..opts() })[0];
+        assert_eq!((r.outcome, r.counts.kept), (Outcome::Measured, 1), "{now_min} {then_min}");
+        let specs = calls.lock().unwrap().iter().filter(|c| c.1.iter().any(|a| a == "changes")).filter_map(|c| c.1.last().cloned()).collect();
+        (r.baseline.as_ref().map(|b| b.rev.clone()), specs)
+    };
+    let (rev_same, specs) = base_of(540, 540, false);
+    assert_eq!(rev_same.as_deref(), Some("2"));
+    // UTC の 10:00 はサーバの 19:00。前後 1 時間を範囲で読む
+    assert!(specs.iter().any(|s| s.ends_with("@2026/11/01:18:00:00,@2026/11/01:20:00:00")), "{specs:?}");
+    // 時差だけで決めると、+0900 → +1000 では 9:00 の版 1、+1000 → +0900 では 11:00 の版 3 になる
+    assert_eq!(base_of(540, 600, false).0.as_deref(), Some("2"));
+    assert_eq!(base_of(600, 540, false).0.as_deref(), Some("2"));
+    // 取り込んだ時刻を読めなければ確かめず、時差だけで決めた日時(サーバの 19:00)で探す。窓の前(18:00)の版 1 にはしない
+    let (rev_timeless, specs) = base_of(540, 540, true);
+    assert_eq!(rev_timeless.as_deref(), Some("2"));
+    assert!(specs.iter().any(|s| s.ends_with("...@2026/11/01:19:00:00")), "{specs:?}");
+}
+
+#[test]
+fn unknown_reason_and_revision_errors() {
+    // 理由の無い照合不可は unknown として数える(読めなかったとは決めつけない)
+    let r = SessionRetention { reason: None, ..not_measured_session() };
+    let s = summarize_retention(std::slice::from_ref(&r));
+    assert_eq!(serde_json::to_value(&s.unattributable).unwrap(), json!({"unknown": 1}));
+
+    // 今の版を調べるコマンドが失敗したら、版が無い(no_commits)ではなく読めなかった(read_error)
+    let mut tmp = Tmp::new();
+    let root = tmp.dir();
+    let f = join(&root, &["a.c"]);
+    let (inner, _) = fake_vcs(VcsKind::P4, &root, vec![rev(1, at(8, 0), &[("a.c", &["base"])])]);
+    let runner: VcsRunner = Arc::new(move |cmd, args, cwd| {
+        if args.iter().any(|a| a == "changes") && args.last().is_some_and(|a| a.ends_with("#have")) {
+            return RunResult { code: 1, stdout: String::new(), stderr: "Perforce client error: connect failed".into() };
+        }
+        inner(cmd, args, cwd)
+    });
+    write(&f, &["base", "ai"]);
+    let ev = session(&root, None, None, (10, 0), (11, 0), vec![ed(&f, &["ai"])]);
+    let r = &measure(&[extract_ai_changes("s1", &ev, None)], &RetentionOptions { runner, mode: EvalMode::Committed, ..opts() })[0];
+    assert_eq!((r.outcome, r.reason), (Outcome::Unattributable, Some(UnattributableReason::ReadError)));
+
+    // 開始時の版の推定が失敗したら、基準を決められない(baseline_missing)ではなく読めなかった
+    let root = tmp.dir();
+    let f = join(&root, &["a.c"]);
+    let (inner, _) = fake_vcs(VcsKind::Svn, &root, vec![rev(1, at(8, 0), &[("a.c", &["base"])])]);
+    let runner: VcsRunner = Arc::new(move |cmd, args, cwd| {
+        if args.iter().any(|a| a == "-r") && args.iter().any(|a| a.starts_with('{')) {
+            return RunResult { code: 1, stdout: String::new(), stderr: "svn: E170013: Unable to connect to a repository".into() };
+        }
+        inner(cmd, args, cwd)
+    });
+    write(&f, &["base", "ai"]);
+    let ev = session(&root, None, None, (10, 0), (11, 0), vec![ed(&f, &["ai"])]);
+    let r = &measure(&[extract_ai_changes("s1", &ev, None)], &RetentionOptions { runner, ..opts() })[0];
+    assert_eq!((r.outcome, r.reason), (Outcome::Unattributable, Some(UnattributableReason::ReadError)));
+
+    // 環境の失敗(ファイルが開けない)を、版が無いと取り違えない。「その版・変更が無い」と答えたときだけ baseline_missing
+    for (stderr, want) in [("open for read: zz.p4tickets: No such file or directory", UnattributableReason::ReadError), ("//zz/... - no such file(s).", UnattributableReason::BaselineMissing)] {
+        let root = tmp.dir();
+        let f = join(&root, &["a.c"]);
+        let (inner, _) = fake_vcs(VcsKind::P4, &root, vec![rev(1, at(8, 0), &[("a.c", &["base"])])]);
+        let runner: VcsRunner = Arc::new(move |cmd, args, cwd| {
+            if args.iter().any(|a| a == "changes") && !args.last().is_some_and(|a| a.ends_with("#have")) {
+                return RunResult { code: 1, stdout: String::new(), stderr: stderr.into() };
+            }
+            inner(cmd, args, cwd)
+        });
+        write(&f, &["base", "ai"]);
+        let ev = session(&root, None, None, (10, 0), (11, 0), vec![ed(&f, &["ai"])]);
+        let r = &measure(&[extract_ai_changes("s1", &ev, None)], &RetentionOptions { runner, ..opts() })[0];
+        assert_eq!((r.outcome, r.reason), (Outcome::Unattributable, Some(want)), "{stderr}");
+    }
+
+    // git: ログの開始時のコミットが無ければ baseline_missing、確かめるコマンドが失敗したら読めなかった
+    let (root, _) = git_repo(&mut tmp, &[("a.txt", &["base"])]);
+    let f = join(&root, &["a.txt"]);
+    write(&f, &["base", "ai"]);
+    let gone = "0123456789abcdef0123456789abcdef01234567";
+    let ev = session(&root, Some(&root), Some(gone), (10, 0), (11, 0), vec![ed(&f, &["ai"])]);
+    let sets = [extract_ai_changes("s1", &ev, None)];
+    assert_eq!(measure(&sets, &opts())[0].reason, Some(UnattributableReason::BaselineMissing));
+    let timeout: VcsRunner = Arc::new(|cmd, args, cwd| {
+        if args.iter().any(|a| a == "cat-file") {
+            return RunResult { code: 1, stdout: String::new(), stderr: "git が時間内に終わりませんでした".into() };
+        }
+        crate::vcs::default_run(cmd, args, cwd)
+    });
+    assert_eq!(measure(&sets, &RetentionOptions { runner: timeout, ..opts() })[0].reason, Some(UnattributableReason::ReadError));
+}
+
+#[test]
+fn evaluated_without_session_repo() {
+    // 作業フォルダに VCS が無く、ファイルの場所のリポジトリだけで照合したときも、比べた時点と見方を残す(版の印は付けない)
+    let mut tmp = Tmp::new();
+    let plain = tmp.dir();
+    let (root, _) = git_repo(&mut tmp, &[("a.txt", &["base"])]);
+    let f = join(&root, &["a.txt"]);
+    write(&f, &["base", "ai line"]);
+    git(&root, &["commit", "-q", "-am", "take ai line"], &at(24, 0));
+    let ev = session(&plain, None, None, (10, 0), (11, 0), vec![ed(&f, &["ai line"])]);
+    let sets = [extract_ai_changes("s1", &ev, None)];
+    let now = Some(ms_of(&at(24 * 20, 0)));
+    let w = &measure(&sets, &RetentionOptions { now_ms: now, ..opts() })[0];
+    assert_eq!((w.outcome, w.vcs, w.evaluated.clone()), (Outcome::Measured, None, Some(Evaluated { mode: EvalMode::Worktree, rev: None, at: at(24 * 20, 0), source: None })));
+    let fx = &measure(&sets, &RetentionOptions { mode: EvalMode::Fixed, lag_days: 7, now_ms: now, ..opts() })[0];
+    assert_eq!((fx.outcome, fx.hunks[0].status), (Outcome::Measured, RetentionStatus::Kept));
+    assert_eq!(fx.evaluated, Some(Evaluated { mode: EvalMode::Fixed, rev: None, at: at(11 + 24 * 7, 0), source: Some(RevisionSource::Estimated) }));
+    assert_eq!(summarize_retention(std::slice::from_ref(fx)).evaluated_estimated, 1);
+}
+
+fn not_measured_session() -> SessionRetention {
+    let mut tmp = Tmp::new();
+    let gone = join(&tmp.dir(), &["gone"]);
+    let ev = session(&gone, None, None, (10, 0), (11, 0), vec![ed(&join(&gone, &["x.txt"]), &["zz"])]);
+    let r = measure(&[extract_ai_changes("s1", &ev, None)], &opts()).remove(0);
+    assert_eq!(r.outcome, Outcome::Unattributable);
+    r
+}
+
+fn svn_cmd(bin: &str, args: &[&str]) -> Option<String> {
+    let out = Command::new(bin).args(args).output().ok()?;
+    assert!(out.status.success(), "{bin} {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+fn now_iso() -> String {
+    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+    jsdate::to_iso(ms)
+}
+
+/// 実物の svn で、ローカルのリポジトリ(file://)を作って照合する。svn が無ければ飛ばす
+#[test]
+fn real_svn_local_repository() {
+    if Command::new("svn").arg("--version").output().map(|o| !o.status.success()).unwrap_or(true) || Command::new("svnadmin").arg("--version").output().is_err() {
+        eprintln!("svn が無いので飛ばす");
+        return;
+    }
+    let mut tmp = Tmp::new();
+    let repo = tmp.dir();
+    let wc = tmp.dir();
+    svn_cmd("svnadmin", &["create", &repo]).unwrap();
+    let p = repo.replace('\\', "/");
+    let url = if p.starts_with('/') { format!("file://{p}") } else { format!("file:///{p}") };
+    // 準備の書き込みは svn を直接呼ぶ(atlas の実行経路は書く系を止める)
+    let svn = |args: &[&str]| svn_cmd("svn", &[&["--non-interactive", "-q"], args].concat()).unwrap();
+    svn(&["checkout", &url, &wc]);
+    let f = join(&wc, &["src", "a.c"]);
+    write(&f, &["int base = 0;"]);
+    svn(&["add", &join(&wc, &["src"])]);
+    svn(&["commit", "-m", "base", &wc]);
+    // 取り込んだだけでは作業コピーの根の版は 0 のまま(版の混ざった作業コピー)なので、普段どおり更新しておく
+    svn(&["update", &wc]);
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+
+    let start = now_iso();
+    let call = |id: &str, added: &str| {
+        let t = now_iso();
+        [
+            ev("tool.execution_start", &t, json!({"toolCallId": id, "toolName": "edit", "arguments": {"path": f, "old_str": "", "new_str": ""}})),
+            ev("tool.execution_complete", &t, json!({"toolCallId": id, "success": true, "result": {"content": "ok", "detailedContent": diff_of(&f, &[added], &[])}})),
+        ]
+    };
+    let mut events = vec![ev("session.start", &start, json!({"context": {"cwd": wc}}))];
+    events.extend(call("k", "int kept = 1;"));
+    events.extend(call("m", "int computeTotal(int a, int b) { return a + b; }"));
+    events.extend(call("x", "int removedLater = 3;"));
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    events.push(ev("assistant.turn_end", &now_iso(), json!({})));
+    write(&f, &["int base = 0;", "int kept = 1;", "int computeTotal(int a, int b) { return a + b + 1; }"]);
+    let sets = [extract_ai_changes("s1", &events, None)];
+
+    let r = &measure(&sets, &opts())[0];
+    assert_eq!((r.outcome, r.vcs, r.reason), (Outcome::Measured, Some(VcsKind::Svn), None));
+    assert_eq!(r.baseline, Some(Revision { rev: "1".into(), source: RevisionSource::Estimated }));
+    assert_eq!(statuses(r), [RetentionStatus::Kept, RetentionStatus::Modified, RetentionStatus::Missing]);
+    assert_eq!(r.hunks.iter().map(|h| (h.similar_lines, h.tool_call_id.as_deref(), h.from)).collect::<Vec<_>>(), [(0, Some("k"), Some(HunkFrom::Diff)), (1, Some("m"), Some(HunkFrom::Diff)), (0, Some("x"), Some(HunkFrom::Diff))]);
+    assert_eq!(r.evaluated.as_ref().map(|e| (e.rev.as_deref(), e.source)), Some((Some("1"), None)));
+
+    // 取り込んだ後の committed は、作業コピーの BASE(取り込んだ本文)と比べる
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    svn(&["commit", "-m", "take", &wc]);
+    write(&f, &["int base = 0;"]);
+    let c = &measure(&sets, &RetentionOptions { mode: EvalMode::Committed, ..opts() })[0];
+    assert_eq!((c.outcome, c.reason), (Outcome::Measured, None));
+    assert_eq!(statuses(c), [RetentionStatus::Kept, RetentionStatus::Modified, RetentionStatus::Missing]);
+    // 作業コピーの今の本文(AI の行を消した)では未確認になる
+    let w = &measure(&sets, &opts())[0];
+    assert_eq!(statuses(w), [RetentionStatus::Missing; 3]);
 }
 
 fn ev_odd(kind: &str, data: Value) -> CopilotEvent {

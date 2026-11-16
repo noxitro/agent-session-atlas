@@ -30,19 +30,18 @@ export const HIGHLIGHT_TOP = 3;
 /** 失敗率の高いツールに挙げる下限(結果の記録がある回数) */
 export const HIGHLIGHT_RATE_MIN = 5;
 
-/** 一覧での呼び名(伏せ字モードでは本文を使わない) */
-export function sessionLabel(s: SessionSummary, anonymized: boolean): string {
-  if (anonymized || (!s.name && !s.firstUserMessage)) return `${s.projectLabel}・${date(s.createdAt)}(${s.id.slice(0, 8)})`;
+/** 一覧での呼び名(セッション名か最初の依頼。どちらも無ければプロジェクトと日付) */
+export function sessionLabel(s: SessionSummary): string {
+  if (!s.name && !s.firstUserMessage) return `${s.projectLabel}・${date(s.createdAt)}(${s.id.slice(0, 8)})`;
   return truncate(s.name || s.firstUserMessage || '', 48);
 }
 
 export function highlights(
   sessions: SessionSummary[],
   usage: UsageRanking,
-  opts: { filter: FilterState; anonymized: boolean; installed: { skills: string[]; disabled: string[] } | null },
+  opts: { filter: FilterState; installed: { skills: string[]; disabled: string[] } | null },
 ): HighlightGroup[] {
   const out: HighlightGroup[] = [];
-  const label = (s: SessionSummary): string => sessionLabel(s, opts.anonymized);
 
   // 1. コストの大きいセッション: AIU、無ければ出力トークン
   const aiuTotal = sessions.reduce((a, s) => a + (s.tokens.nanoAiu ?? 0), 0);
@@ -56,7 +55,7 @@ export function highlights(
       title: 'AI 使用量(AIU)の大きいセッション',
       basis: `AIU の記録があるセッションを多い順に上位 ${HIGHLIGHT_TOP} 件`,
       items: top.map((s) => ({
-        text: `${label(s)}: ${dec((s.tokens.nanoAiu ?? 0) / 1e9)} AIU(この条件の合計の ${percent(s.tokens.nanoAiu ?? 0, aiuTotal)})`,
+        text: `${sessionLabel(s)}: ${dec((s.tokens.nanoAiu ?? 0) / 1e9)} AIU(この条件の合計の ${percent(s.tokens.nanoAiu ?? 0, aiuTotal)})`,
         href: s.href,
         linkLabel: 'セッションの詳細',
       })),
@@ -73,7 +72,7 @@ export function highlights(
         title: '出力トークンの多いセッション',
         basis: `この条件に AIU の記録が無いため、出力トークンの多い順に上位 ${HIGHLIGHT_TOP} 件`,
         items: top.map((s) => ({
-          text: `${label(s)}: 出力 ${int(s.tokens.output)} トークン(この条件の合計の ${percent(s.tokens.output, outTotal)})`,
+          text: `${sessionLabel(s)}: 出力 ${int(s.tokens.output)} トークン(この条件の合計の ${percent(s.tokens.output, outTotal)})`,
           href: s.href,
           linkLabel: 'セッションの詳細',
         })),
@@ -113,7 +112,7 @@ export function highlights(
       title: 'compaction(文脈圧縮)の多いセッション',
       basis: `compaction の回数が多い順に上位 ${HIGHLIGHT_TOP} 件`,
       items: comp.map((s) => ({
-        text: `${label(s)}: compaction ${int(s.friction.compactions)} 回${s.frictionDetail.compaction[4] > 0 ? `(減ったトークン ${int(s.frictionDetail.compaction[4])})` : ''}`,
+        text: `${sessionLabel(s)}: compaction ${int(s.friction.compactions)} 回${s.frictionDetail.compaction[4] > 0 ? `(減ったトークン ${int(s.frictionDetail.compaction[4])})` : ''}`,
         href: s.href,
         linkLabel: 'セッションの詳細',
       })),

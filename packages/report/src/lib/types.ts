@@ -22,7 +22,28 @@ import type { VerdictTuple } from './verdicts.ts';
 // 13: exec.modelEfforts(モデル別 × 推論強度別)
 // 14: exec.mainModelEfforts(本体のリクエストだけの モデル別 × 推論強度別)
 // 15: exec.mainModelEfforts をリクエスト数だけにした(トークンと AIU は modelEfforts にある)
-export const REPORT_DATA_VERSION = 15;
+// 16: failures(失敗の台帳の集計のページ failures.html を書いたか)
+// 17: tests(テストの結果の要約。テストの実行があるセッションだけ)・groups[].tag(送り先の元のタグ)・wikiVaults(参照を数えた vault の数)・wiki.otherCalls(vault の検索・一覧など)
+export const REPORT_DATA_VERSION = 17;
+
+/**
+ * テストの結果の要約(テストの実行ファイルが書いた印つきの行から。crates/atlas-core/src/test_results.rs)。
+ * テストの実行(結果を出したツールの呼び出し)が 1 回以上あるセッションだけ。実行ごとの結果やテストの名前は埋め込まない
+ */
+export interface TestsSummary {
+  /** テストの実行の数 */
+  runs: number;
+  /** 最初に全部通った実行の番号(1 から)。一度も通っていなければ null(未達) */
+  firstPass: number | null;
+  /** 最後の実行の後で、まだ通っていないテストの数(0 なら最後は全部通っている) */
+  lastFailing: number;
+  /** 最初に全部通った実行までの実働(ミリ秒)。未達なら null */
+  passActiveMs: number | null;
+  /** 最初に全部通った実行までの AI 使用量(nano AIU)。未達か、リクエストごとの記録が無ければ null */
+  passNanoAiu: number | null;
+  /** 最後の実行までの AI 使用量(nano AIU)。リクエストごとの記録が無ければ null(未達のセッションに、AI 使用量の記録があるかを見分けるのに使う) */
+  lastNanoAiu: number | null;
+}
 
 /** 推論強度別の [リクエスト, 入力, 出力, nano AIU] */
 export type EffortTuple = [requests: number, input: number, output: number, nanoAiu: number];
@@ -99,7 +120,7 @@ export interface JudgmentSummary {
   high: number | null;
   /** 推定の確信度(0〜1) */
   confidence: number | null;
-  /** 伏せ字モードでは null */
+  /** 作業の要約。無ければ null */
   taskSummary: string | null;
   /** AI が依頼を達成したか */
   completed: boolean | null;
@@ -109,7 +130,7 @@ export interface JudgmentSummary {
   rework: number | null;
   /** 指示ファイル / llm-wiki / skill・agent の効果(-2〜+2) */
   effects: { instructions: number | null; wiki: number | null; skillsAgents: number | null };
-  /** 工数推定の根拠(自由記述)。HTML 本体には埋め込まず詳細ページだけに出す。伏せ字モードでは null */
+  /** 工数推定の根拠(自由記述)。HTML 本体には埋め込まず詳細ページだけに出す(埋め込みでは null) */
   rationale: string | null;
   /** この判定を出したバックエンド(external / copilot-cli など) */
   backend: string | null;
@@ -117,10 +138,10 @@ export interface JudgmentSummary {
 
 export interface SessionSummary {
   id: string;
-  /** Phase 13: メモの概要(全文は埋め込まない)。無ければ省略。伏せ字版では常に無し */
+  /** Phase 13: メモの概要(全文は埋め込まない)。無ければ省略 */
   memo?: MemoSummary | null;
   client: string | null;
-  /** 集計キー(伏せ字モードでは project-01 など) */
+  /** 集計キー */
   project: string;
   /** 表示用の短い名前 */
   projectLabel: string;
@@ -128,13 +149,13 @@ export interface SessionSummary {
   projectSource: ProjectSource;
   branch: string | null;
   /**
-   * 送り先(<送り先>/<人>/<プロジェクト>)をまとめて集計したときの、人のフォルダの名前(伏せ字モードでは person-01 など)。
+   * 送り先(<送り先>/<人>/<プロジェクト>)をまとめて集計したときの、人のフォルダの名前。
    * それ以外の集計・古い埋め込みでは null か省略
    */
   person?: string | null;
-  /** セッション名(伏せ字モードでは null) */
+  /** セッション名(無ければ null) */
   name: string | null;
-  /** 最初の依頼の先頭(伏せ字モードでは null) */
+  /** 最初の依頼の先頭(無ければ null) */
   firstUserMessage: string | null;
   createdAt: string | null;
   updatedAt: string | null;
@@ -181,6 +202,8 @@ export interface SessionSummary {
   analysis: { filesReedited: number; extraEdits: number; maxConsecutiveFailures: number; turns: number };
   /** 依頼(ターン)ごとの工程・種類・詰まり(lib/turns.ts の TurnTuple)。ターンの記録が無いセッション・古い埋め込みには無い */
   turnRows?: TurnTuple[];
+  /** テストの結果の要約。テストの実行が無いセッション・古い埋め込みには無い */
+  tests?: TestsSummary;
   /** 段階 2: 依頼ごとの LLM 判定(lib/verdicts.ts の VerdictTuple)。判定済みの依頼があるセッションだけ */
   turnVerdicts?: VerdictTuple[];
   agents: { total: number; failed: number; byName: Record<string, AgentStat> };
@@ -189,7 +212,8 @@ export interface SessionSummary {
   instructions: Record<string, number>;
   /** 変更行数(shutdown の累計、無ければツールの合計) */
   lines: LineChanges;
-  wiki: { indexReads: number; pageReads: number; skillCalls: number; writes: number };
+  /** otherCalls: vault に触れたそのほかの呼び出し(検索・一覧など。版 15 以前の埋め込みでは 0 で埋め戻す) */
+  wiki: { indexReads: number; pageReads: number; skillCalls: number; writes: number; otherCalls: number };
   friction: {
     compactions: number;
     aborts: number;
@@ -213,21 +237,22 @@ export interface SessionSummary {
 export interface ReportData {
   version: number;
   generatedAt: string;
-  anonymized: boolean;
   /** CLI で絞った条件(画面に表示するだけ) */
   scope: { since: string | null; project: string | null; client: string | null; model: string | null; branch: string | null };
   /** sessions.json の総件数(CLI フィルタ前) */
   totalSessionsInSource: number;
   /**
-   * アップロードしたフォルダを集計したときの、そのフォルダ(この PC の Copilot のデータを集計したときと、伏せ字版には無い)。
+   * アップロードしたフォルダを集計したときの、そのフォルダ(この PC の Copilot のデータを集計したときには無い)。
    * layout: flat はセッションのフォルダが並ぶ 1 つのフォルダ、merged は下のフォルダをまとめたもの(folders はその数)
    */
   source?: { name: string; path: string; layout: 'flat' | 'merged'; folders: number } | null;
+  /** 参照を数えた llm-wiki の vault の数。0 なら wiki の参照は数えていない(どのセッションも 0 件)。古い集計では無い */
+  wikiVaults?: number;
   /** 読むだけの画面として作った(送り先から集計した・別のフォルダを開いた)。タスクタグとメモは送った人のもの。古い埋め込みには無い */
   readOnly?: boolean;
   /**
    * 送り先から集計したときの、送った atlas の版(core の describeAtlasBuilds)。ok = すべていちばん新しい版。
-   * この PC の記録だけを集計したとき・古い埋め込みには無い。伏せ字版では人の名前を出さない
+   * この PC の記録だけを集計したとき・古い埋め込みには無い
    */
   atlasBuilds?: { ok: boolean; short: string; headline: string; lines: string[] } | null;
   metrics: MetricsFile;
@@ -239,13 +264,15 @@ export interface ReportData {
   retention?: RetentionMeta | null;
   /** インストール済みの skill(snapshot で名前だけ記録)。記録が無ければ null */
   installed: { skills: string[]; disabled: string[] } | null;
-  /** 人のフォルダの名前ごとのインストール済みの skill(送り先の全体を集計したとき。伏せ字版と古い埋め込みには無い) */
+  /** 人のフォルダの名前ごとのインストール済みの skill(送り先の全体を集計したとき。古い埋め込みには無い) */
   installedByPerson?: Record<string, { skills: string[]; disabled: string[] }>;
-  /** 名前付きグループ(atlas-notes/groups.json)。無ければ空。伏せ字モードでは name は「グループ 1」など、note は '' */
+  /** 名前付きグループ(atlas-notes/groups.json)。無ければ空 */
   groups: ReportGroup[];
-  /** Phase 11: 指示文と skill の閲覧ページ(instructions.html)を作ったか(export のとき。伏せ字版では false) */
+  /** Phase 11: 指示文と skill の閲覧ページ(instructions.html)を作ったか(export のとき) */
   library: boolean;
-  /** Phase 12: 改善点(build 時に全セッションで計算したもの)。meta は伏せ字版では空 */
+  /** 失敗の台帳の集計のページ(failures.html)を作ったか(古い版で作った atlas.html には無い) */
+  failures?: boolean;
+  /** Phase 12: 改善点(build 時に全セッションで計算したもの) */
   insights: {
     meta: Record<string, { heading: string; file: string; series: string; order: number; firstAt: string | null; lastAt?: string | null }>;
     /** 上位 30 件(全件は insights.html と insights.json) */
@@ -276,4 +303,9 @@ export interface ReportGroup {
   note: string;
   /** 記録に無い id も含む(そのまま) */
   ids: string[];
+  /**
+   * 送り先から集計したグループの、元のタグ(送った人が付けた名前そのまま。name は「<人> / <タグ>」で、重なると番号が付く)。
+   * 手元のタスクタグ(name がそのままタグ)と伏せ字版には無い
+   */
+  tag?: string;
 }

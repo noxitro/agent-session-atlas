@@ -6,7 +6,7 @@
 //!   送った側の PC が照合してセッションのフォルダに添えた結果(UPLOAD_VCS_META)を読む。無ければ「送った側で照合していない」
 //! - リポジトリを別の場所へ移したときは、設定の対応づけ(pathMap)でログのパスを今の場所に読み替えてから照合する
 
-use crate::ai_changes::{AiChangeBuilder, AiChangeSet, WorkspaceHints};
+use crate::ai_changes::{AiChangeBuilder, AiChangeSet, HunkFrom, WorkspaceHints};
 use crate::classify::resolve_file_path;
 use crate::events::EventReader;
 use crate::extract::{list_session_dirs, read_workspace_yaml};
@@ -17,7 +17,7 @@ use crate::snapshot::{SNAPSHOT_MANIFEST, UPLOAD_VCS_META};
 use crate::vcs::{EvalMode, Revision, RevisionSource, VcsKind};
 use crate::vcs_retention::{
     measure_retention, status_of_lines, summarize_retention, tally, top_reason, ComputedOn, Evaluated, HunkRetention, LineCounts, Outcome, Provenance, RetentionOptions, RetentionStatus,
-    RetentionSummary, SessionRetention, UnattributableReason, RETENTION_STATUSES,
+    RetentionSummary, SessionRetention, UnattributableReason, ValueSource, RETENTION_STATUSES,
 };
 use rayon::prelude::*;
 use regex::Regex;
@@ -232,8 +232,28 @@ fn hunk_of(v: &Value) -> Option<HunkRetention> {
     if lines.kept + lines.modified + lines.missing + lines.unattributable == 0 || status_of_lines(&lines) != status {
         return None;
     }
-    let reason = (status == RetentionStatus::Unattributable).then(|| o.get("reason").and_then(Value::as_str).and_then(UnattributableReason::parse).unwrap_or(UnattributableReason::ReadError));
-    Some(HunkRetention { id, path: path.to_string(), status, reason, lines, at: iso_or_null(o.get("at")).map(str::to_string), reason_last: true })
+    // 理由が無い・読めないときは「読めなかった」と決めつけない
+    let reason = (status == RetentionStatus::Unattributable).then(|| o.get("reason").and_then(Value::as_str).and_then(UnattributableReason::parse).unwrap_or(UnattributableReason::Unknown));
+    // 似た本文で当てた行は、直されて残った行の内訳。超えるものは使わない
+    let similar_lines = count(o.get("similarLines")).filter(|n| *n <= lines.modified).unwrap_or(0);
+    let tool_call_id = safe_str(o.get("toolCallId"), 200).filter(|s| !s.is_empty()).map(str::to_string);
+    let from = o.get("from").and_then(Value::as_str).and_then(HunkFrom::parse);
+    Some(HunkRetention { id, path: path.to_string(), status, reason, lines, at: iso_or_null(o.get("at")).map(str::to_string), similar_lines, tool_call_id, from, reason_last: true })
+}
+
+/// 送った側の、セッションの値(cwd など)をどこから取ったかの記録。知っている項目と値だけ残す
+fn context_sources(v: Option<&Value>) -> JsMap<ValueSource> {
+    let mut out = JsMap::new();
+    let Some(o) = obj(v) else { return out };
+    for k in ["cwd", "gitRoot", "branch", "headCommit"] {
+        let s = match o.get(k).and_then(Value::as_str) {
+            Some("events") => ValueSource::Events,
+            Some("workspace") => ValueSource::Workspace,
+            _ => continue,
+        };
+        out.insert(k.to_string(), s);
+    }
+    out
 }
 
 /// 送った側の結果(UPLOAD_VCS_META の中身)を読む。形が違う・ほかのセッションのものなら None。
@@ -264,27 +284,29 @@ pub fn parse_sender_vcs(json: &Value, id: &str) -> Option<SessionRetention> {
     let vcs = r.get("vcs").and_then(Value::as_str).and_then(VcsKind::parse);
     let baseline = obj(r.get("baseline")).and_then(|b| {
         let rev = safe_str(b.get("rev"), 200).filter(|s| !s.is_empty())?;
-        let source = match b.get("source").and_then(Value::as_str) {
-            Some("observed") => RevisionSource::Observed,
-            Some("estimated") => RevisionSource::Estimated,
-            _ => return None,
-        };
+        let source = b.get("source").and_then(Value::as_str).and_then(RevisionSource::parse)?;
         Some(Revision { rev: rev.to_string(), source })
     });
     // 照合した日時と見方は送った側のもの(この PC で集計した日時・既定の見方で埋めない)。セッションの記録に無ければ、添えたファイルの値を使う
     let sender_mode = j.get("mode").and_then(Value::as_str).and_then(EvalMode::parse);
     let sender_at = iso_or_null(j.get("computedAt"));
     let evaluated = match obj(r.get("evaluated")).and_then(|e| Some((e, e.get("mode").and_then(Value::as_str).and_then(EvalMode::parse)?))) {
-        Some((e, mode)) => Some(Evaluated { mode, rev: safe_str(e.get("rev"), 200).map(str::to_string), at: iso_or_null(e.get("at")).or(sender_at).unwrap_or("").to_string() }),
-        None => sender_mode.map(|mode| Evaluated { mode, rev: None, at: sender_at.unwrap_or("").to_string() }),
+        Some((e, mode)) => Some(Evaluated {
+            mode,
+            rev: safe_str(e.get("rev"), 200).map(str::to_string),
+            at: iso_or_null(e.get("at")).or(sender_at).unwrap_or("").to_string(),
+            source: e.get("source").and_then(Value::as_str).and_then(RevisionSource::parse),
+        }),
+        None => sender_mode.map(|mode| Evaluated { mode, rev: None, at: sender_at.unwrap_or("").to_string(), source: None }),
     };
+    let context = obj(r.get("provenance")).map(|p| context_sources(p.get("context"))).unwrap_or_default();
     let mut out = SessionRetention {
         session_id: id.to_string(),
         outcome: Outcome::NoAiChanges,
         reason: None,
         vcs,
         root: safe_str(r.get("root"), STR_MAX).map(str::to_string),
-        provenance: Provenance { ai_changes: "events".into(), baseline: baseline.as_ref().map(|b| b.source), context: JsMap::new() },
+        provenance: Provenance { ai_changes: "events".into(), baseline: baseline.as_ref().map(|b| b.source), context },
         baseline,
         evaluated,
         hunks,
@@ -310,7 +332,7 @@ fn finish_counts(r: &mut SessionRetention) {
         r.outcome = Outcome::Measured;
     } else if r.counts.unattributable > 0 {
         r.outcome = Outcome::Unattributable;
-        r.reason = Some(top_reason(&r.hunks).unwrap_or(UnattributableReason::ReadError));
+        r.reason = Some(top_reason(&r.hunks).unwrap_or(UnattributableReason::Unknown));
     } else {
         r.outcome = Outcome::NoAiChanges;
     }
@@ -329,6 +351,9 @@ fn not_measured(set: AiChangeSet) -> SessionRetention {
             reason: Some(UnattributableReason::NotMeasured),
             lines: LineCounts { unattributable: h.lines.len() as i64, ..Default::default() },
             at: h.at.clone().filter(|a| !a.is_empty()),
+            similar_lines: 0,
+            tool_call_id: h.tool_call_id.clone().filter(|t| !t.is_empty()),
+            from: Some(h.from),
             reason_last: false,
         })
         .collect();

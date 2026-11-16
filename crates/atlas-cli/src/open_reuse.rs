@@ -182,7 +182,7 @@ mod tests {
         }
         let none = d.path().join("none");
         let rp = ReusePaths { snapshot: &snap, judgments: &none, turn_judgments: &none, groups: &none };
-        let opts = serde_json::json!({ "since": null, "anonymize": false });
+        let opts = serde_json::json!({ "since": null });
         let key = inputs_key(&rp, &opts, &none, "code1").unwrap();
         assert_eq!(key, inputs_key(&rp, &opts, &none, "code1").unwrap());
         assert_ne!(key, inputs_key(&rp, &opts, &none, "code2").unwrap());

@@ -2,7 +2,6 @@
 //! atlas.html と同じ base.css を埋め込み、同じ「様式」の見た目にする。
 
 use crate::aggregate::friction_total;
-use crate::anonymize::Anonymizer;
 use crate::exec::{quantiles_of, EFFORT_ORDER, INITIATOR_ORDER, MODE_ORDER, UNKNOWN_KEY};
 use crate::exec_labels::{effort_label, error_type_label, initiator_label, mode_label, subagent_failure_label, todo_status_label, TODO_STATUS_ORDER};
 use crate::filter::{coverage_of, encode_uri_component};
@@ -13,6 +12,7 @@ use crate::judgment_labels::{backend_label, category_label, confidence_label, ef
 use crate::library::skill_anchor;
 use crate::memo_render::MEMO_CSS;
 use crate::page_nav::{page_head, render_rail, render_top, NavGroup, NavItem, NavLink, PageNavOptions, NAV_JS};
+use crate::project_label::short_project_label;
 use crate::retention::{mode_label as eval_mode_label, place_label, reason_label, status_label, vcs_label, RetentionMeta, STATUSES};
 use crate::types::JudgmentSummary;
 use atlas_core::classify::relative_inside;
@@ -20,16 +20,15 @@ use atlas_core::collate::locale_compare;
 use atlas_core::js::{self, JsMap};
 use atlas_core::jsdate;
 use atlas_core::jsnum::to_fixed;
-use atlas_core::tables::TurnVerdicts;
+use atlas_core::tables::{call_outcome_label, next_kind_label, TurnVerdicts};
 use atlas_core::tool_failure::{failure_cause_label, sorted_causes};
 use atlas_core::turns::{mismatch_label, outcome_label, phase_label, request_kind_label, session_turns};
-use atlas_core::types::{AgentStatus, InstructionFile, InstructionInjection, InstructionScope, LineChanges, LineNote, LineSource, ProjectSource, SessionRecord, SessionTokens, SkillTrigger, SkillVia, TimelineEntry, TimelineKind, TokenCounts, TokenSource};
+use atlas_core::failure_ledger::MAX_ROWS;
+use atlas_core::types::{AgentStatus, CallOutcome, FailureKind, NextKind, ToolFailure, InstructionFile, InstructionInjection, InstructionScope, LineChanges, LineNote, LineSource, ProjectSource, SessionRecord, SessionTests, SessionTokens, SkillTrigger, SkillVia, TimelineEntry, TimelineKind, TokenCounts, TokenSource};
 use atlas_core::vcs_retention::{Outcome, SessionRetention};
-use regex::Regex;
 use serde_json::Value;
 use std::cmp::Ordering;
 use std::collections::HashSet;
-use std::sync::LazyLock;
 
 pub fn source_label(s: TokenSource) -> &'static str {
     match s {
@@ -110,15 +109,6 @@ fn missing(text: &str) -> String {
     format!("<span class=\"missing-value\">{}</span>", esc(text))
 }
 
-/// 種別名のような短い識別子だけが入る欄。伏せ字モードでは識別子の形のときだけ出す
-static IDENTIFIER_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z0-9_.:-]{1,64}$").unwrap());
-fn identifier_or_hidden(text: &str, anon: &Anonymizer) -> String {
-    if !anon.enabled {
-        return esc(&truncate(Some(text), 400));
-    }
-    if IDENTIFIER_RE.is_match(text) { esc(text) } else { missing("伏せ字モードのため本文を表示しません") }
-}
-
 fn n(v: Option<f64>) -> String {
     match v {
         None => missing("記録なし"),
@@ -164,8 +154,8 @@ fn skill_location(l: &str) -> &str {
 }
 
 /// このセッションの skill の表: 使えたもの(<available_skills>)と、一覧に無いが呼んだもの。呼んだものを先に、回数の多い順。
-/// 一覧が記録に無い版では呼んだものだけ。伏せ字版では使えた skill の名前を出さず件数だけ
-fn skills_in_session(r: &SessionRecord, anon: &Anonymizer, library_href: Option<&str>, has_page: &dyn Fn(&str) -> bool) -> String {
+/// 一覧が記録に無い版では呼んだものだけ
+fn skills_in_session(r: &SessionRecord, library_href: Option<&str>, has_page: &dyn Fn(&str) -> bool) -> String {
     let mut calls: JsMap<i64> = JsMap::new();
     for s in &r.skills {
         calls.inc(&s.name, 1);
@@ -205,7 +195,7 @@ fn skills_in_session(r: &SessionRecord, anon: &Anonymizer, library_href: Option<
             if calls.is_empty() { "skill の呼び出しもありません。" } else { "呼んだ skill だけを載せます。" }
         ),
     };
-    if rows.is_empty() || anon.enabled {
+    if rows.is_empty() {
         return head;
     }
     let link = |name: &str, n: i64| -> String {
@@ -393,16 +383,15 @@ fn turn_lead(r: &SessionRecord, judged: bool) -> String {
 }
 
 /// 依頼(ターン)ごとの工程・種類・詰まり・使用量の表
-fn turn_table(r: &SessionRecord, anon: &Anonymizer, verdicts: Option<&TurnVerdicts>) -> String {
+fn turn_table(r: &SessionRecord, verdicts: Option<&TurnVerdicts>) -> String {
     let rows = session_turns(r);
     let judged = verdicts.is_some_and(|v| !v.is_empty());
     if rows.is_empty() {
         return "<p class=\"note\">依頼ごとの記録がありません(イベントログが無いか、古い集計です。atlas.bat で集計し直すと入ります)。</p>".into();
     }
-    let day0 = match rows[0].stats.started_at.as_deref().filter(|s| !s.is_empty()) {
-        Some(s) => js::utf16_slice(&date_time_n(Some(s)), 0, 10).into_owned(),
-        None => String::new(),
-    };
+    let day0 = day_of(rows[0].stats.started_at.as_deref());
+    // 失敗・拒否の内訳の欄は、失敗の台帳のある記録にだけ出す(古い記録には台帳が無い)
+    let breakdown = r.analysis.failures.as_deref().map(failure_breakdown);
     let verdict_cells = |n: usize| -> String {
         if !judged {
             return String::new();
@@ -410,12 +399,8 @@ fn turn_table(r: &SessionRecord, anon: &Anonymizer, verdicts: Option<&TurnVerdic
         let Some(v) = verdicts.and_then(|m| m.get(&atlas_core::tables::turn_key(n as f64))) else {
             return format!("<td>{}</td><td>{}</td><td>{}</td>", missing("未判定"), missing("—"), missing("—"));
         };
-        let note = anon.free_text(Some(&v.note));
         // 判定の理由は全文を出す
-        let why = match note.as_deref().filter(|s| !s.is_empty()) {
-            Some(t) => format!(" <span class=\"why\">{}</span>", esc(t)),
-            None => String::new(),
-        };
+        let why = if v.note.is_empty() { String::new() } else { format!(" <span class=\"why\">{}</span>", esc(&v.note)) };
         format!(
             "<td><span class=\"tag{}\">{}</span>{why}</td><td>{}</td><td>{}</td>",
             if v.outcome == "rejected" || v.outcome == "off_target" { " warn" } else { "" },
@@ -427,30 +412,29 @@ fn turn_table(r: &SessionRecord, anon: &Anonymizer, verdicts: Option<&TurnVerdic
     let mut body = String::new();
     for t in &rows {
         let s = t.stats;
-        let text = anon.free_text(Some(t.text));
-        let req = if js::trim(t.text).is_empty() {
-            missing("(本文なし)")
-        } else {
-            match text {
-                None => missing("伏せ字"),
-                Some(x) => esc(&truncate(Some(&x), 80)),
-            }
-        };
+        let req = if js::trim(t.text).is_empty() { missing("(本文なし)") } else { esc(&truncate(Some(t.text), 80)) };
         let stuck = t.is_stuck();
         let next = if t.followed_by_fix() { format!(" <span class=\"tag warn\">次で{}</span>", esc(request_kind_label(t.next_kind.unwrap_or("")))) } else { String::new() };
-        // 時刻だけ(最初の依頼と日付が違うときは月日も)
-        let dt = match s.started_at.as_deref().filter(|x| !x.is_empty()) {
-            Some(x) => date_time_n(Some(x)),
+        let time = clock(s.started_at.as_deref(), &day0);
+        let fails = match &breakdown {
             None => String::new(),
-        };
-        let time = if dt.is_empty() {
-            missing("—")
-        } else {
-            esc(&if js::utf16_slice(&dt, 0, 10) == day0 { js::utf16_slice(&dt, 11, usize::MAX).into_owned() } else { js::utf16_slice(&dt, 5, usize::MAX).into_owned() })
+            Some(b) => match b.get(&(t.index as i64 - 1)) {
+                // 失敗か拒否の数があるのに台帳の行が無い(行数の上限で落ちた・開始の記録が無い)ときは、無いのではなく記録が無い
+                None => format!("<td>{}</td>", missing(if s.tool_failures + s.denied > 0 { "記録なし" } else { "—" })),
+                Some(lines) => {
+                    let listed: i64 = lines.iter().map(|l| l.2).sum();
+                    let rest = s.tool_failures + s.denied - listed;
+                    format!(
+                        "<td>{}{}</td>",
+                        lines.iter().map(|(tool, label, n)| format!("<span class=\"fb\">{} {} ×{}</span>", esc(tool), esc(label), int_i(*n))).collect::<String>(),
+                        if rest > 0 { format!("<span class=\"fb\">{}</span>", missing(&format!("ほか {} 件は記録なし", int_n(rest as f64)))) } else { String::new() }
+                    )
+                }
+            },
         };
         let num = |v: i64| -> String { if v != 0 { int_i(v) } else { "<span class=\"zero\">0</span>".into() } };
         body.push_str(&format!(
-            "<tr{}><th scope=\"row\" class=\"num\">{}</th><td>{time}</td><td class=\"req\">{req}{next}</td><td>{}</td><td>{}{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td>{}</tr>",
+            "<tr{}><th scope=\"row\" class=\"num\">{}</th><td>{time}</td><td class=\"req\">{req}{next}</td><td>{}</td><td>{}{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td>{fails}<td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td>{}</tr>",
             if stuck { " class=\"stuck\"" } else { "" },
             esc(&t.index.to_string()),
             esc(request_kind_label(t.kind)),
@@ -475,27 +459,265 @@ fn turn_table(r: &SessionRecord, anon: &Anonymizer, verdicts: Option<&TurnVerdic
         ));
     }
     format!(
-        "<div class=\"table-scroll\"><table class=\"ledger small turns\"><thead><tr><th scope=\"col\" class=\"num\">#</th><th scope=\"col\">開始</th><th scope=\"col\">依頼</th><th scope=\"col\">種類</th><th scope=\"col\">工程</th><th scope=\"col\" class=\"num\">実働</th><th scope=\"col\" class=\"num\">ツール呼び出し</th><th scope=\"col\" class=\"num\">ツールの失敗</th><th scope=\"col\" class=\"num\">拒否</th><th scope=\"col\" class=\"num\">中断</th><th scope=\"col\" class=\"num\">エラー</th><th scope=\"col\" class=\"num\">再編集</th><th scope=\"col\" class=\"num\">文脈圧縮</th><th scope=\"col\" class=\"num\">AIU</th>{}</tr></thead><tbody>{body}</tbody></table></div>",
-        if judged { "<th scope=\"col\">採用(LLM)</th><th scope=\"col\">合わなかった点</th><th scope=\"col\">工程(普段)</th>" } else { "" }
+        "<div class=\"table-scroll\"><table class=\"ledger small turns\"><thead><tr><th scope=\"col\" class=\"num\">#</th><th scope=\"col\">開始</th><th scope=\"col\">依頼</th><th scope=\"col\">種類</th><th scope=\"col\">工程</th><th scope=\"col\" class=\"num\">実働</th><th scope=\"col\" class=\"num\">ツール呼び出し</th><th scope=\"col\" class=\"num\">ツールの失敗</th><th scope=\"col\" class=\"num\">拒否</th>{}<th scope=\"col\" class=\"num\">中断</th><th scope=\"col\" class=\"num\">エラー</th><th scope=\"col\" class=\"num\">再編集</th><th scope=\"col\" class=\"num\">文脈圧縮</th><th scope=\"col\" class=\"num\">AIU</th>{}</tr></thead><tbody>{body}</tbody></table></div>{}",
+        if breakdown.is_some() { "<th scope=\"col\">失敗・拒否の内訳</th>" } else { "" },
+        if judged { "<th scope=\"col\">採用(LLM)</th><th scope=\"col\">合わなかった点</th><th scope=\"col\">工程(普段)</th>" } else { "" },
+        no_ledger_note(r)
     )
 }
 
-fn timeline_row(e: &TimelineEntry, anon: &Anonymizer) -> String {
-    let hidden = || missing("伏せ字モードのため本文を表示しません");
+/// 数の表示(整数はそのまま、小数は 3 桁まで)
+fn count_value(v: f64) -> String {
+    if v.fract() == 0.0 { esc(&int_n(v)) } else { esc(&js::num_to_string(js::round(v * 1000.0) / 1000.0)) }
+}
+
+/// テストの推移(テストの実行ファイルが書いた印つきの行を読めたセッションだけ)。
+/// 実行(結果を出したツールの呼び出し)ごとに、合格の数・まだ通っていないテストの数・件数の合計と、そこまでの実働と AI 使用量を並べる
+fn tests_section(sec: &mut Sections, t: &SessionTests) -> String {
+    /// 件数の列の上限(これより多い名前は、数だけ断る)
+    const MAX_KEYS: usize = 8;
+    /// 1 行に出す、落ちたテストの名前の上限
+    const MAX_NAMES: usize = 3;
+    let lead = "テストの実行ファイルが標準出力に書いた印つきの行(<code>ATLAS_TEST_RESULT</code>)を、ツールの結果から読んだものです。「全部通った」は、これまでに出たテストごとのいちばん新しい結果がすべて合格のことです(一部だけ走らせ直した実行では、前に通ったテストは通ったままとみなします)。実働と AIU は、セッションの始まりからその実行までの累計です。";
+    let runs = &t.runs;
+    let first = t.first_pass.and_then(|n| runs.get((n as usize).wrapping_sub(1)));
+    let outcome = match (runs.last(), t.first_pass) {
+        (None, _) => (missing("実行なし"), "読めた結果がありません"),
+        (Some(_), None) => ("<span class=\"tag warn\">未達</span>".to_string(), "最後まで、全部は通っていません"),
+        (Some(last), Some(_)) if last.failing > 0 => ("<span class=\"tag warn\">通った後に不合格</span>".to_string(), "一度は全部通りましたが、最後の実行の後に通っていないテストがあります"),
+        (Some(_), Some(_)) => ("<span class=\"tag\">全部通った</span>".to_string(), ""),
+    };
+    let aiu = |v: Option<f64>| match v {
+        Some(v) => esc(&dec_n(v / 1e9)),
+        None => missing("記録なし"),
+    };
+    let fields = [
+        field("結果", &outcome.0, outcome.1),
+        field("テストの実行", &format!("{} 回", int_i(runs.len() as i64)), "結果を出したツールの呼び出しの数"),
+        field(
+            "最初に全部通るまで",
+            &match t.first_pass {
+                Some(n) => format!("{} 回目", int_i(n)),
+                None => missing("—"),
+            },
+            &first.and_then(|r| r.turn).map(|n| format!("依頼 {} 件目", int_i(n))).unwrap_or_default(),
+        ),
+        field(
+            "通るまでの実働",
+            &match first {
+                Some(r) => esc(&duration(Some(r.active_ms), "不明")),
+                None => missing("—"),
+            },
+            "",
+        ),
+        field(
+            "通るまでの AIU",
+            &match first {
+                Some(r) => aiu(r.nano_aiu),
+                None => missing("—"),
+            },
+            "そこまでに記録されたリクエストの合計(サブエージェントの分を含む)",
+        ),
+    ]
+    .join("");
+    let skipped: Vec<String> = [("読めなかった印の行", t.invalid), ("前にも出たので数えなかった行", t.duplicates), ("上限を超えたので持たなかった結果", t.dropped)]
+        .iter()
+        .filter(|(_, n)| *n > 0)
+        .map(|(k, n)| format!("{k} {} 件", int_i(*n)))
+        .collect();
+    let skipped = if skipped.is_empty() { String::new() } else { format!("<p class=\"note\">{}</p>", skipped.join("・")) };
+    if runs.is_empty() {
+        return sec.section("テストの推移", &format!("<div class=\"fields\" style=\"--cols:5\">{fields}</div>{skipped}"), lead);
+    }
+    // 件数の名前(出た順)
+    let mut keys: Vec<&String> = Vec::new();
+    for r in runs.iter().flat_map(|r| &r.results) {
+        for k in r.counts.keys() {
+            if !keys.contains(&k) {
+                keys.push(k);
+            }
+        }
+    }
+    let more_keys = keys.len().saturating_sub(MAX_KEYS);
+    keys.truncate(MAX_KEYS);
+    let key_heads: Vec<String> = keys.iter().map(|k| esc(&truncate(Some(k), 40))).collect();
+    let day0 = runs[0].at.as_deref().filter(|s| !s.is_empty()).map(|s| js::utf16_slice(&date_time_n(Some(s)), 0, 10).into_owned()).unwrap_or_default();
+    let mut body = String::new();
+    for (i, r) in runs.iter().enumerate() {
+        let dt = r.at.as_deref().filter(|x| !x.is_empty()).map(|x| date_time_n(Some(x))).unwrap_or_default();
+        let time = if dt.is_empty() { missing("—") } else { esc(&if js::utf16_slice(&dt, 0, 10) == day0 { js::utf16_slice(&dt, 11, usize::MAX).into_owned() } else { js::utf16_slice(&dt, 5, usize::MAX).into_owned() }) };
+        let passed = r.results.iter().filter(|x| x.passed).count() as i64;
+        let failed: Vec<&str> = r.results.iter().filter(|x| !x.passed).map(|x| x.name.as_deref().unwrap_or("(名前なし)")).collect();
+        let failed_cell = if failed.is_empty() {
+            "<span class=\"zero\">—</span>".to_string()
+        } else {
+            let shown: Vec<String> = failed.iter().take(MAX_NAMES).map(|n| esc(&truncate(Some(n), 60))).collect();
+            format!("{}{}", shown.join("、"), if failed.len() > MAX_NAMES { format!(" ほか {} 件", int_i((failed.len() - MAX_NAMES) as i64)) } else { String::new() })
+        };
+        let sums: String = keys
+            .iter()
+            .map(|k| {
+                let vals: Vec<f64> = r.results.iter().filter_map(|x| x.counts.get(*k).copied()).collect();
+                if vals.is_empty() { format!("<td class=\"num\">{}</td>", missing("—")) } else { format!("<td class=\"num\">{}</td>", count_value(vals.iter().sum())) }
+            })
+            .collect();
+        body.push_str(&format!(
+            "<tr><th scope=\"row\" class=\"num\">{}</th><td>{time}</td><td class=\"num\">{}</td><td>{}{}</td><td class=\"num\">{} / {}</td><td>{failed_cell}</td><td class=\"num\">{}</td>{sums}<td class=\"num\">{}</td><td class=\"num\">{}</td></tr>",
+            i + 1,
+            match r.turn {
+                Some(n) => int_i(n),
+                None => missing("—"),
+            },
+            esc(r.tool.as_deref().unwrap_or("(不明)")),
+            if r.subagent { " <span class=\"tag\">サブエージェント</span>" } else { "" },
+            int_i(passed),
+            int_i(r.results.len() as i64),
+            if r.failing == 0 { "<span class=\"tag\">全部通った</span>".to_string() } else { int_i(r.failing) },
+            esc(&duration(Some(r.active_ms), "不明")),
+            aiu(r.nano_aiu),
+        ));
+    }
+    let heads: String = key_heads.iter().map(|h| format!("<th scope=\"col\" class=\"num\">{h}</th>")).collect();
+    let keys_note = if keys.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<p class=\"note\">{}は、その実行で出た結果の値の合計です(テストの実行ファイルが書いた名前のまま)。{}</p>",
+            if key_heads.len() == 1 { format!("「{}」", key_heads[0]) } else { format!("「{}」から右の {} 列", key_heads[0], int_i(key_heads.len() as i64)) },
+            if more_keys > 0 { format!("ほかに {} 種類の値がありますが、列には出していません。", int_i(more_keys as i64)) } else { String::new() }
+        )
+    };
+    let table = format!(
+        "<div class=\"table-scroll\"><table class=\"ledger small\"><thead><tr><th scope=\"col\" class=\"num\">#</th><th scope=\"col\">完了</th><th scope=\"col\" class=\"num\">依頼</th><th scope=\"col\">ツール</th><th scope=\"col\" class=\"num\">合格 / 結果</th><th scope=\"col\">落ちたテスト</th><th scope=\"col\" class=\"num\">通っていないテスト</th>{heads}<th scope=\"col\" class=\"num\">実働(累計)</th><th scope=\"col\" class=\"num\">AIU(累計)</th></tr></thead><tbody>{body}</tbody></table></div>"
+    );
+    sec.section("テストの推移", &format!("<div class=\"fields\" style=\"--cols:5\">{fields}</div>{table}{keys_note}{skipped}"), lead)
+}
+
+/// 日時の日付の部分(YYYY-MM-DD の 10 字。無ければ空)
+fn day_of(at: Option<&str>) -> String {
+    match at.filter(|s| !s.is_empty()) {
+        Some(s) => js::utf16_slice(&date_time_n(Some(s)), 0, 10).into_owned(),
+        None => String::new(),
+    }
+}
+
+/// 表の中の時刻: 時刻だけ(day0 と日付が違うときは月日も)。無ければ「—」
+fn clock(at: Option<&str>, day0: &str) -> String {
+    let dt = match at.filter(|x| !x.is_empty()) {
+        Some(x) => date_time_n(Some(x)),
+        None => String::new(),
+    };
+    if dt.is_empty() {
+        missing("—")
+    } else {
+        esc(&if js::utf16_slice(&dt, 0, 10) == day0 { js::utf16_slice(&dt, 11, usize::MAX).into_owned() } else { js::utf16_slice(&dt, 5, usize::MAX).into_owned() })
+    }
+}
+
+/// 失敗の台帳の 1 行の種類と要因(失敗は要因の名前、拒否は「拒否」)
+fn failure_label(f: &ToolFailure) -> &'static str {
+    match f.kind {
+        FailureKind::Denied => "拒否",
+        FailureKind::Failure => failure_cause_label(f.cause.as_deref().unwrap_or("other")),
+    }
+}
+
+/// 依頼ごとの失敗の内訳: 台帳の turn(0 からの依頼の番号)→「ツール・要因(か拒否)・回数」。多い順、同じ回数は出た順
+fn failure_breakdown(ledger: &[ToolFailure]) -> std::collections::HashMap<i64, Vec<(&str, &'static str, i64)>> {
+    let mut by_turn: std::collections::HashMap<i64, Vec<(&str, &'static str, i64)>> = std::collections::HashMap::new();
+    for f in ledger {
+        let Some(turn) = f.turn else { continue };
+        let lines = by_turn.entry(turn).or_default();
+        let label = failure_label(f);
+        match lines.iter_mut().find(|l| l.0 == f.tool && l.1 == label) {
+            Some(l) => l.2 += 1,
+            None => lines.push((f.tool.as_str(), label, 1)),
+        }
+    }
+    for lines in by_turn.values_mut() {
+        lines.sort_by(|a, b| b.2.cmp(&a.2));
+    }
+    by_turn
+}
+
+/// 失敗の台帳の無い古い記録で、ツールの失敗か拒否があるときの断り
+fn no_ledger_note(r: &SessionRecord) -> &'static str {
+    let failed: i64 = r.tools.results.values().map(|x| x.failure + x.denied).sum();
+    if r.analysis.failures.is_none() && failed > 0 {
+        "<p class=\"note\">この記録には「失敗と拒否(1 件ごと)」がありません(古い集計です。atlas.bat で集計し直すと入ります)。</p>"
+    } else {
+        ""
+    }
+}
+
+/// 詳細ページに載せるエラー文と引数の長さ(字数。空白と改行は 1 つにまとめる。全文は sessions.json と failures.csv にある。表の行が縦に伸びすぎない長さ)
+const LEDGER_ERROR_CHARS: usize = 400;
+const LEDGER_ARGS_CHARS: usize = 200;
+
+/// 失敗と拒否(1 件ごと)の節(本文, 説明)。台帳が無い・0 件なら None
+fn failure_ledger(r: &SessionRecord) -> Option<(String, String)> {
+    let ledger = r.analysis.failures.as_deref().filter(|l| !l.is_empty())?;
+    let day0 = day_of(session_turns(r).first().and_then(|t| t.stats.started_at.as_deref()).or(ledger[0].started_at.as_deref()));
+    let text = |s: &str, chars: usize| -> String { if js::trim(s).is_empty() { missing("—") } else { esc(&truncate(Some(s), chars)) } };
+    let mut body = String::new();
+    for f in ledger {
+        let mcp = f.mcp_server.as_deref().filter(|s| !s.is_empty()).map(|s| format!(" <span class=\"tag\">MCP: {}</span>", esc(s))).unwrap_or_default();
+        let agent = f.agent.as_deref().filter(|s| !s.is_empty()).map(|a| format!(" <span class=\"tag\">サブエージェント: {}</span>", esc(a))).unwrap_or_default();
+        let kind = match f.kind {
+            FailureKind::Denied => "拒否".to_string(),
+            FailureKind::Failure => format!("失敗: {}", esc(failure_label(f))),
+        };
+        let next = match f.next.kind {
+            NextKind::Tool => format!(
+                "{} → {}{}",
+                esc(f.next.tool.as_deref().unwrap_or("(unknown)")),
+                call_outcome_label(f.next.outcome.unwrap_or(CallOutcome::Unknown)),
+                if f.next.retry == Some(true) { " <span class=\"tag\">同じ引数で呼び直し</span>" } else { "" }
+            ),
+            NextKind::User => esc(next_kind_label(NextKind::User)),
+            NextKind::End => missing(next_kind_label(NextKind::End)),
+        };
+        body.push_str(&format!(
+            "<tr><td class=\"num\">{}</td><td>{}</td><td>{}{mcp}{agent}</td><td class=\"fkind\">{kind}</td><td class=\"msg\">{}</td><td class=\"args\">{}</td><td class=\"next\">{next}</td></tr>",
+            f.turn.map_or_else(|| missing("—"), |t| int_i(t + 1)),
+            clock(f.started_at.as_deref(), &day0),
+            esc(&f.tool),
+            text(&f.error, LEDGER_ERROR_CHARS),
+            f.args.as_deref().map_or_else(|| missing("—"), |a| text(a, LEDGER_ARGS_CHARS)),
+        ));
+    }
+    // サブエージェントへの依頼文は、エージェントごとに 1 回だけ(台帳の行の agentCall から agents[] を引く)
+    let mut seen: HashSet<&str> = HashSet::new();
+    let prompts: String = ledger
+        .iter()
+        .filter_map(|f| f.agent_call.as_deref())
+        .filter(|call| seen.insert(call))
+        .filter_map(|call| r.agents.iter().find(|a| a.id.as_deref() == Some(call)))
+        .filter_map(|a| a.prompt.as_deref().filter(|p| !js::trim(p).is_empty()).map(|p| (a.name.as_str(), p)))
+        .map(|(name, p)| format!("<li>{}: {}</li>", esc(name), esc(p)))
+        .collect();
+    let prompts = if prompts.is_empty() { String::new() } else { format!("<h3>失敗・拒否のあったサブエージェントへの依頼文</h3><ul class=\"note\">{prompts}</ul>") };
+    let dropped = r.analysis.failures_dropped.unwrap_or(0);
+    let cut = if dropped > 0 { format!("1 セッション {} 行の上限を超えた {} 件は載っていません。", int_i(MAX_ROWS as i64), int_i(dropped)) } else { String::new() };
+    let table = format!(
+        "<div class=\"table-scroll\"><table class=\"ledger small fails\"><thead><tr><th scope=\"col\" class=\"num\">依頼</th><th scope=\"col\">開始</th><th scope=\"col\">ツール</th><th scope=\"col\">種類・要因</th><th scope=\"col\">エラー文</th><th scope=\"col\">引数</th><th scope=\"col\">その後</th></tr></thead><tbody>{body}</tbody></table></div><p class=\"note\">「依頼」は「依頼ごとの経過」の番号です(最初の依頼より前は —)。「その後」は、同じエージェントが失敗の後に最初に呼んだツールとその結果です(並行して動いていた呼び出しと、同じ応答でまとめて要求された呼び出しは数えません)。</p>{prompts}"
+    );
+    let lead = format!(
+        "{cut}ツールの失敗と拒否を 1 件ずつ載せています(「ツール内訳」の「失敗」「拒否」と同じ数え方)。エラー文と引数は、秘密らしい文字列を置き換えたもので、長いものは先頭だけです(全文は sessions.json と failures.csv にあります)。"
+    );
+    Some((table, lead))
+}
+
+fn timeline_row(e: &TimelineEntry) -> String {
     let label = match e.kind {
         TimelineKind::User if js::trim(&e.label).is_empty() => missing("(本文なし)"),
-        TimelineKind::User | TimelineKind::TaskComplete | TimelineKind::Abort => match anon.free_text(Some(&e.label)) {
-            None => hidden(),
-            Some(t) => esc(&truncate(Some(&t), 400)),
-        },
         TimelineKind::Tools => {
             let mut tools: Vec<(&String, &i64)> = e.tools.as_ref().map(|t| t.js_entries()).unwrap_or_default();
             tools.sort_by(|a, b| b.1.cmp(a.1));
             let s: Vec<String> = tools.iter().map(|(k, v)| format!("{k} ×{v}")).collect();
             format!("{} 回: {}", esc(&int_n(e.count.unwrap_or(0) as f64)), esc(&s.join("、")))
         }
-        TimelineKind::Error => identifier_or_hidden(&e.label, anon),
-        _ => esc(&anon.scrub(&truncate(Some(&e.label), 400))),
+        _ => esc(&truncate(Some(&e.label), 400)),
     };
     format!("<tr class=\"k-{}\"><td class=\"num\">{}</td><td><span class=\"kind\">{}</span></td><td>{label}</td></tr>", kind_name(e.kind), esc(&date_time_n(Some(&e.at))), esc(kind_label(e.kind)))
 }
@@ -557,11 +779,16 @@ fn lag_text(end: Option<&str>, at: Option<&str>) -> String {
     format!("・セッションの終わりから {} 日後", esc(&dec_n(d)))
 }
 
-/// AI の変更がその後の VCS のファイルに残っているか(atlas vcs の結果)。伏せ字版ではパスを出さない
-fn retention_section(sec: &mut Sections, r: &SessionRetention, meta: Option<&RetentionMeta>, anon: &Anonymizer) -> String {
+/// AI の変更がその後の VCS のファイルに残っているか(atlas vcs の結果)
+fn retention_section(sec: &mut Sections, r: &SessionRetention, meta: Option<&RetentionMeta>) -> String {
     // 状態の名前は、設定(vcs.labels)で差し替えたものがあればそれ
     let label = |k: &str| -> String { meta.and_then(|m| m.labels.as_ref()).and_then(|l| l.get(k)).cloned().unwrap_or_else(|| status_label(k).to_string()) };
-    let lead = esc(&format!("AI が足した行が、その後の VCS のファイルに残っているかを数えます。{}", meta.and_then(|m| m.note.as_deref()).unwrap_or("")));
+    let lead = esc(&format!(
+        "AI が足した行が、その後の VCS のファイルに残っているかを数えます。残っているかの記録で、採用の意図や良し悪しではありません。「{}」「{}」を不採用とはみなしません。{}",
+        label("missing"),
+        label("unattributable"),
+        meta.and_then(|m| m.note.as_deref()).unwrap_or("")
+    ));
     let unread = match r.unread_edits {
         Some(n) if n != 0 => format!("<p class=\"note\">ログから変更を取り出せなかった AI の編集 {} 件は数えていません(diff も編集の引数も読めなかったもの)。</p>", int_i(n)),
         _ => String::new(),
@@ -611,11 +838,10 @@ fn retention_section(sec: &mut Sections, r: &SessionRetention, meta: Option<&Ret
         .hunks
         .iter()
         .map(|h| {
-            let path = anon.path(Some(&rel(&h.path)));
             format!(
-                "<tr><td class=\"num\">{}</td><td>{}</td><td class=\"st\">{}{}</td>{}</tr>",
+                "<tr><td class=\"num\">{}</td><td><code>{}</code></td><td class=\"st\">{}{}</td>{}</tr>",
                 int_i(h.id),
-                path.map_or_else(|| missing("伏せ字"), |p| format!("<code>{}</code>", esc(&p))),
+                esc(&rel(&h.path)),
                 esc(&label(h.status.as_str())),
                 h.reason.map(|x| format!("<span class=\"why\">{}</span>", esc(reason_label(x.as_str())))).unwrap_or_default(),
                 STATUSES.iter().map(|k| format!("<td class=\"num\">{}</td>", int_i(count_of(&h.lines, k)))).collect::<String>()
@@ -658,7 +884,7 @@ fn ordered<'a>(keys: Vec<&'a String>, order: &[&str]) -> Vec<&'a String> {
 }
 
 /// Phase 7: 実行の性質(モード・推論強度・起点・文脈・待ち時間・ツールの所要時間・摩擦の詳細・todo)
-fn exec_section(sec: &mut Sections, r: &SessionRecord, anon: &Anonymizer) -> String {
+fn exec_section(sec: &mut Sections, r: &SessionRecord) -> String {
     let e = &r.exec;
     let modes = ordered(e.modes.by_mode.js_keys(), &MODE_ORDER);
     let mode_text = modes.iter().map(|k| format!("{} {}", mode_label(k), int_n(e.modes.by_mode[k.as_str()] as f64))).collect::<Vec<_>>().join("・");
@@ -837,7 +1063,7 @@ fn exec_section(sec: &mut Sections, r: &SessionRecord, anon: &Anonymizer) -> Str
                 format!(
                     "<li>{}: {}{}</li>",
                     esc(name),
-                    if anon.enabled { identifier_or_hidden(err, anon) } else { esc(&truncate(Some(err), 160)) },
+                    esc(&truncate(Some(err), 160)),
                     if *count > 1 { format!(" <span class=\"tag\">×{}</span>", int_i(*count)) } else { String::new() }
                 )
             })
@@ -855,7 +1081,6 @@ pub struct DetailMemo {
 }
 
 pub struct DetailOptions<'a> {
-    pub anon: &'a Anonymizer,
     pub css: &'a str,
     pub code: &'a str,
     pub judgment: Option<&'a JudgmentSummary>,
@@ -880,7 +1105,7 @@ pub struct DetailOptions<'a> {
 
 const DETAIL_CSS: &str = include_str!("../assets/detail.css");
 
-/// Phase 13: メモの節。無ければ hidden の空の節を置く(atlas serve では編集の script がここに描く)。伏せ字版では節ごと出さない
+/// Phase 13: メモの節。無ければ hidden の空の節を置く(atlas serve では編集の script がここに描く)
 fn memo_section(id: &str, memo: Option<&DetailMemo>) -> String {
     let body = memo.map(|m| format!("<div class=\"memo-body\">{}</div>", m.html)).unwrap_or_default();
     let when = memo.map(|m| format!("<p>更新 {}</p>", esc(&date_time_n(Some(&m.updated_at))))).unwrap_or_default();
@@ -897,18 +1122,16 @@ fn opt_str<'a>(v: &'a Option<String>) -> Option<&'a str> {
 
 pub fn render_detail_html(r: &SessionRecord, o: &DetailOptions<'_>) -> String {
     let mut sec = Sections::default();
-    let anon = o.anon;
     let has_page = o.skill_has_page;
     let t = &r.tokens;
     let lines = &r.lines;
-    let name = anon.free_text(r.name.as_deref()).filter(|s| !s.is_empty());
-    let title = match &name {
+    let title = match opt_str(&r.name) {
         Some(n) => truncate(Some(n), 120),
-        None => if anon.enabled { "セッション(伏せ字)" } else { "(名前なし)" }.to_string(),
+        None => "(名前なし)".to_string(),
     };
-    let project = anon.project_label(&r.project);
-    let branch = anon.branch(r.branch.as_deref()).filter(|s| !s.is_empty());
-    let person = anon.person(r.person.as_ref().and_then(|p| p.as_deref())).filter(|s| !s.is_empty());
+    let project = short_project_label(&r.project);
+    let branch = opt_str(&r.branch);
+    let person = r.person.as_ref().and_then(|p| p.as_deref()).filter(|s| !s.is_empty());
 
     let record_source = |s: &atlas_core::types::SessionSource| match s {
         atlas_core::types::SessionSource::Db => ("db", "データベース"),
@@ -916,10 +1139,10 @@ pub fn render_detail_html(r: &SessionRecord, o: &DetailOptions<'_>) -> String {
     };
     let coverage = coverage_of(t.input, t.output, t.source.as_str());
     let meta = [
-        person.map(|p| format!("<span class=\"tag\" title=\"送り先の、人のフォルダの名前\">人: {}</span>", esc(&p))).unwrap_or_default(),
+        person.map(|p| format!("<span class=\"tag\" title=\"送り先の、人のフォルダの名前\">人: {}</span>", esc(p))).unwrap_or_default(),
         format!("<span class=\"tag\" title=\"{}\">プロジェクト: {}</span>", esc(project_source_label(r.project_source)), esc(&project)),
         format!("<span class=\"tag\">クライアント: {}</span>", esc(r.client.as_deref().unwrap_or("不明"))),
-        branch.map(|b| format!("<span class=\"tag\">ブランチ: {}</span>", esc(&b))).unwrap_or_default(),
+        branch.map(|b| format!("<span class=\"tag\">ブランチ: {}</span>", esc(b))).unwrap_or_default(),
         opt_str(&r.copilot_version).map(|v| format!("<span class=\"tag\">Copilot {}</span>", esc(v))).unwrap_or_default(),
         format!(
             "<span class=\"tag\" title=\"{}\">記録の出所: {}</span>",
@@ -975,28 +1198,26 @@ pub fn render_detail_html(r: &SessionRecord, o: &DetailOptions<'_>) -> String {
     let overview = format!("<div class=\"fields\" style=\"--cols:4\">{overview}</div>");
 
     let mut parts: Vec<String> = Vec::new();
-    if !anon.enabled {
-        parts.push(memo_section(&r.id, o.memo));
-        if o.memo.is_some() {
-            sec.index.push(("memo".into(), "メモ".into()));
-        }
+    parts.push(memo_section(&r.id, o.memo));
+    if o.memo.is_some() {
+        sec.index.push(("memo".into(), "メモ".into()));
     }
     parts.push(sec.section("概要", &overview, ""));
     if let Some(j) = o.judgment {
         parts.push(judgment_section(&mut sec, j, r.active_ms));
     }
     if let Some(rt) = o.retention {
-        parts.push(retention_section(&mut sec, rt, o.retention_meta, anon));
+        parts.push(retention_section(&mut sec, rt, o.retention_meta));
     }
 
-    let first = anon.free_text(r.first_user_message.as_deref()).filter(|s| !s.is_empty());
-    let last = anon.free_text(r.last_assistant_message.as_deref()).filter(|s| !s.is_empty());
+    let first = opt_str(&r.first_user_message);
+    let last = opt_str(&r.last_assistant_message);
     if first.is_some() || last.is_some() {
-        let msg = |x: &Option<String>| match x {
+        let msg = |x: Option<&str>| match x {
             Some(t) => format!("<blockquote class=\"msg\">{}</blockquote>", esc(t)),
             None => format!("<p class=\"note\">{}</p>", missing("記録なし")),
         };
-        parts.push(sec.section("最初の依頼と最後の応答", &format!("<div class=\"two\"><div><h3>最初の依頼</h3>{}</div><div><h3>最後の応答</h3>{}</div></div>", msg(&first), msg(&last)), ""));
+        parts.push(sec.section("最初の依頼と最後の応答", &format!("<div class=\"two\"><div><h3>最初の依頼</h3>{}</div><div><h3>最後の応答</h3>{}</div></div>", msg(first), msg(last)), ""));
     }
 
     let models: Vec<(String, &TokenCounts)> = t.by_model.js_entries().into_iter().map(|(k, v)| (model_label(k), v)).collect();
@@ -1032,7 +1253,7 @@ pub fn render_detail_html(r: &SessionRecord, o: &DetailOptions<'_>) -> String {
                 format!(
                     "<tr><td>{}</td><td class=\"num\">{}</td><td>{}</td><td>{}</td></tr>",
                     match o.library_href {
-                        Some(h) if !anon.enabled && has_page(&s.name) => format!("<a href=\"{}#{}\">{}</a>", esc(h), esc(&skill_anchor(&s.name)), esc(&s.name)),
+                        Some(h) if has_page(&s.name) => format!("<a href=\"{}#{}\">{}</a>", esc(h), esc(&skill_anchor(&s.name)), esc(&s.name)),
                         _ => esc(&s.name),
                     },
                     esc(&date_time_n(s.at.as_deref())),
@@ -1077,7 +1298,7 @@ pub fn render_detail_html(r: &SessionRecord, o: &DetailOptions<'_>) -> String {
     let mut hook_rows: Vec<(String, i64)> = r.hooks.by_type.js_entries().into_iter().map(|(k, v)| (k.clone(), *v)).collect();
     hook_rows.sort_by(|a, b| b.1.cmp(&a.1));
     let hooks = count_table(&hook_rows, "hook の種類", "実行回数", "hook の実行はありません。");
-    parts.push(exec_section(&mut sec, r, anon));
+    parts.push(exec_section(&mut sec, r));
 
     parts.push(sec.section("skills / agents / hooks", &format!("<div class=\"two\"><div><h3>skills</h3>{skills}</div><div><h3>agents</h3>{agents}</div></div><h3 class=\"gap\">hooks</h3>{hooks}"), ""));
 
@@ -1091,7 +1312,7 @@ pub fn render_detail_html(r: &SessionRecord, o: &DetailOptions<'_>) -> String {
                 let heading = clean_heading(&i.heading, Some(80));
                 let heading = if heading.is_empty() { "(見出しなし)".to_string() } else { heading };
                 format!(
-                    "<tr><td>{}</td><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td>{}</tr>",
+                    "<tr><td>{}</td><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td>{}</td></tr>",
                     esc(if i.file == InstructionFile::Unknown { "不明(特定できず)" } else { i.file.as_str() }),
                     esc(match i.scope {
                         InstructionScope::Repo => "リポジトリ",
@@ -1101,33 +1322,25 @@ pub fn render_detail_html(r: &SessionRecord, o: &DetailOptions<'_>) -> String {
                     int_i(i.chars),
                     int_i(i.injections),
                     esc(&date_time_n(i.first_seen_at.as_deref())),
-                    if anon.enabled {
-                        String::new()
-                    } else {
-                        format!(
-                            "<td>{}</td>",
-                            match o.library_href {
-                                Some(h) => format!("<a href=\"{}#v-{}\">{}</a>", esc(h), esc(&i.content_hash), esc(&heading)),
-                                None => esc(&heading),
-                            }
-                        )
+                    match o.library_href {
+                        Some(h) => format!("<a href=\"{}#v-{}\">{}</a>", esc(h), esc(&i.content_hash), esc(&heading)),
+                        None => esc(&heading),
                     }
                 )
             })
             .collect();
         format!(
-            "<div class=\"table-scroll\"><table class=\"ledger\"><thead><tr><th scope=\"col\">ファイル</th><th scope=\"col\">範囲</th><th scope=\"col\" class=\"num\">文字数</th><th scope=\"col\" class=\"num\">注入回数</th><th scope=\"col\">初出</th>{}</tr></thead><tbody>{rows}</tbody></table></div>",
-            if anon.enabled { "" } else { "<th scope=\"col\">先頭の見出し</th>" }
+            "<div class=\"table-scroll\"><table class=\"ledger\"><thead><tr><th scope=\"col\">ファイル</th><th scope=\"col\">範囲</th><th scope=\"col\" class=\"num\">文字数</th><th scope=\"col\" class=\"num\">注入回数</th><th scope=\"col\">初出</th><th scope=\"col\">先頭の見出し</th></tr></thead><tbody>{rows}</tbody></table></div>"
         )
     };
     // このセッションの指示文と skill を 1 か所に
     let lib_session = match o.library_href {
-        Some(h) if !anon.enabled && o.library_has_session => Some(format!("{h}#session={}", encode_uri_component(&r.id))),
+        Some(h) if o.library_has_session => Some(format!("{h}#session={}", encode_uri_component(&r.id))),
         _ => None,
     };
     parts.push(sec.section(
         "指示文と skill",
-        &format!("<h3>指示文</h3>{inst}<h3 class=\"gap\">skill</h3>{}", skills_in_session(r, anon, o.library_href, has_page)),
+        &format!("<h3>指示文</h3>{inst}<h3 class=\"gap\">skill</h3>{}", skills_in_session(r, o.library_href, has_page)),
         &lib_session.as_ref().map(|l| format!("<a href=\"{}\">このセッションの分だけを「指示文と skill」のページで開く</a>(本文と版の差分)", esc(l))).unwrap_or_default(),
     ));
 
@@ -1158,7 +1371,7 @@ pub fn render_detail_html(r: &SessionRecord, o: &DetailOptions<'_>) -> String {
             field("権限 / 自動承認 / sandbox", &v(s.get("permission_mode")), &format!("自動承認 {}・sandbox {}", v(s.get("auto_approve")), v(s.get("sandbox_enabled")))),
             field("入力 / 出力トークン(アプリの累計)", &numv(s.get("total_input_tokens")).unwrap_or_else(|| "—".into()), &numv(s.get("total_output_tokens")).map(|x| format!("出力 {x}")).unwrap_or_default()),
             field("fork 元", &v(s.get("forked_from_session_id")), ""),
-            field("workspace / ブランチ", &if anon.enabled { "(伏せ字)".into() } else { v(w.get("name")) }, &if anon.enabled { String::new() } else { v(w.get("branch")) }),
+            field("workspace / ブランチ", &v(w.get("name")), &v(w.get("branch"))),
             field("コミット(checkpoints)/ 文脈の計測点", &int_i(dk.checkpoints.len() as i64), &format!("文脈 {} 点・activity {}", int_i(dk.context_usage.len() as i64), int_i(dk.activity.len() as i64))),
         ]
         .join("");
@@ -1176,7 +1389,7 @@ pub fn render_detail_html(r: &SessionRecord, o: &DetailOptions<'_>) -> String {
     for p in &w.page_reads {
         *page_counts.entry(p.as_str()).or_insert(0) += 1;
     }
-    let pages = if !anon.enabled && !page_counts.is_empty() {
+    let pages = if !page_counts.is_empty() {
         format!("<ul class=\"note\">{}</ul>", page_counts.iter().map(|(p, c)| format!("<li>{}{}</li>", esc(p), if *c > 1 { format!(" <span class=\"tag\">×{}</span>", int_i(*c)) } else { String::new() })).collect::<String>())
     } else {
         String::new()
@@ -1202,8 +1415,14 @@ pub fn render_detail_html(r: &SessionRecord, o: &DetailOptions<'_>) -> String {
     ));
 
     let judged = o.verdicts.is_some_and(|v| !v.is_empty());
-    let turns = turn_table(r, anon, o.verdicts);
+    let turns = turn_table(r, o.verdicts);
     parts.push(sec.section("依頼ごとの経過", &turns, &turn_lead(r, judged)));
+    if let Some(t) = &r.tests {
+        parts.push(tests_section(&mut sec, t));
+    }
+    if let Some((table, lead)) = failure_ledger(r) {
+        parts.push(sec.section("失敗と拒否(1 件ごと)", &table, &lead));
+    }
 
     let f = &r.friction;
     parts.push(sec.section(
@@ -1238,9 +1457,7 @@ pub fn render_detail_html(r: &SessionRecord, o: &DetailOptions<'_>) -> String {
 
     let files = &r.files;
     let file_list = |xs: &[String]| -> String {
-        if anon.enabled {
-            format!("<p class=\"note\">{} 件(伏せ字モードのためパスは表示しません)</p>", int_i(xs.len() as i64))
-        } else if xs.is_empty() {
+        if xs.is_empty() {
             "<p class=\"note\">なし</p>".into()
         } else {
             format!("<ul class=\"note\">{}</ul>", xs.iter().map(|p| format!("<li>{}</li>", esc(p))).collect::<String>())
@@ -1266,7 +1483,7 @@ pub fn render_detail_html(r: &SessionRecord, o: &DetailOptions<'_>) -> String {
         &if r.timeline.is_empty() {
             "<p class=\"note\">イベントログ(events.jsonl)が無いため時系列はありません。</p>".into()
         } else {
-            format!("<div class=\"table-scroll\"><table class=\"ledger\"><thead><tr><th scope=\"col\">時刻</th><th scope=\"col\">種類</th><th scope=\"col\">内容</th></tr></thead><tbody>{}</tbody></table></div>", r.timeline.iter().map(|e| timeline_row(e, anon)).collect::<String>())
+            format!("<div class=\"table-scroll\"><table class=\"ledger\"><thead><tr><th scope=\"col\">時刻</th><th scope=\"col\">種類</th><th scope=\"col\">内容</th></tr></thead><tbody>{}</tbody></table></div>", r.timeline.iter().map(timeline_row).collect::<String>())
         },
         "依頼の区切り・ツール群・エージェント・文脈圧縮などを粗くまとめたもの",
     ));
@@ -1303,17 +1520,16 @@ pub fn render_detail_html(r: &SessionRecord, o: &DetailOptions<'_>) -> String {
         groups: vec![NavGroup { title: None, items: sec.index.iter().map(|(id, title)| NavItem { href: format!("#{id}"), label: title.clone(), ..Default::default() }).collect() }],
         links,
     };
-    let style = format!("{}{DETAIL_CSS}{}", o.css, if o.memo.is_some() && !anon.enabled { MEMO_CSS } else { "" });
+    let style = format!("{}{DETAIL_CSS}{}", o.css, if o.memo.is_some() { MEMO_CSS } else { "" });
     let page_title = format!("{} | Copilot Session Atlas", esc(&truncate(Some(&title), 60)));
     let mut out = page_head(o.code, &page_title, &style);
     out.push_str(&format!(
-        "<body>\n{}\n<div class=\"shell\">\n{}\n<div class=\"content\">\n<main class=\"wrap\">\n<div class=\"title\"><h1>{}</h1><div class=\"meta\">{meta}</div></div>\n{}\n</main>\n<footer class=\"wrap page-foot\">Copilot Session Atlas が {} に生成。{}</footer>\n</div>\n</div>\n<script>{NAV_JS}</script>\n</body>\n</html>\n",
+        "<body>\n{}\n<div class=\"shell\">\n{}\n<div class=\"content\">\n<main class=\"wrap\">\n<div class=\"title\"><h1>{}</h1><div class=\"meta\">{meta}</div></div>\n{}\n</main>\n<footer class=\"wrap page-foot\">Copilot Session Atlas が {} に生成。</footer>\n</div>\n</div>\n<script>{NAV_JS}</script>\n</body>\n</html>\n",
         render_top(&nav),
         render_rail(&nav),
         esc(&title),
         parts.join("\n"),
         esc(&date_time_n(Some(o.generated_at))),
-        if anon.enabled { "伏せ字モード(プロジェクト・パス・ブランチ・本文を伏せています)。" } else { "" }
     ));
     out
 }

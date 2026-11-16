@@ -52,7 +52,7 @@ function sess(p: Partial<SessionSummary> & { id: string }): SessionSummary {
     hooks: { total: 0, byType: {} },
     instructions: {},
     lines: { added: 0, removed: 0, source: 'none' },
-    wiki: { indexReads: 0, pageReads: 0, skillCalls: 0, writes: 0 },
+    wiki: { indexReads: 0, pageReads: 0, skillCalls: 0, writes: 0, otherCalls: 0 },
     friction: { compactions: 0, aborts: 0, errors: 0, permissionRequests: 0, askUser: 0, modelChanges: 0, modeChanges: 0, toolFailures: 0, subagentFailures: 0 },
     files: { changed: 0, created: 0, deleted: 0, sessionState: 0 },
     href: `sessions/${p.id}.html`,
@@ -154,18 +154,14 @@ describe('スキル化の候補', () => {
       { id: 's3', project: 'p', analysis: { requests: ['リポジトリの README を更新して下さい。章立ては変えない', '短い'], turnTools: [[], []], turnActiveMs: [180_000, null] } },
       { id: 's4', project: 'p', analysis: { requests: ['OK', 'OK', 'OK'], turnTools: [[], [], []], turnActiveMs: [1, 1, 1] } },
     ];
-    const r = requestCandidates(src, false);
+    const r = requestCandidates(src);
     expect(r).toHaveLength(1);
     expect(r[0]).toMatchObject({ kind: 'request', count: 3, sessions: ['s1', 's2', 's3'], medianMs: 120_000, score: 6 });
     expect(r[0].representative).toContain('README');
     expect(r[0].examples).toHaveLength(2);
     // 1 セッションだけの繰り返しは候補にしない
     const one: CandidateSource[] = [{ id: 'x', project: 'p', analysis: { requests: Array(4).fill('リポジトリの README を更新してください。章立ては変えない'), turnTools: [[], [], [], []], turnActiveMs: [1, 1, 1, 1] } }];
-    expect(requestCandidates(one, false)).toHaveLength(0);
-    // 伏せ字では本文を出さない
-    const an = requestCandidates(src, true)[0];
-    expect(an.representative).toBeNull();
-    expect(an.examples).toEqual([]);
+    expect(requestCandidates(one)).toHaveLength(0);
   });
 
   it('ツールの並びは連続の重複を潰し、2 種類以上で閲覧だけでなく周期的でないものを、長い方から重なりなく数える', () => {
@@ -179,13 +175,13 @@ describe('スキル化の候補', () => {
       { id: 'c', project: 'p', analysis: { requests: ['依頼 C の本文です(十分な長さ)'], turnTools: [[...seq, 'rg', 'view', 'rg', 'view']], turnActiveMs: [900_000] } },
       { id: 'd', project: 'p', analysis: { requests: ['閲覧だけ'], turnTools: [['view', 'rg', 'view', 'glob', 'rg', 'view', 'rg', 'view', 'glob']], turnActiveMs: [100] } },
     ];
-    const r = toolSequenceCandidates(src, false);
+    const r = toolSequenceCandidates(src);
     expect(r[0]).toMatchObject({ kind: 'tools', key: seq.join(' → '), count: 3, sessions: ['a', 'b', 'c'], medianMs: 600_000, score: 30 });
     // 長い並びに含まれる短い並び(apply_patch → powershell → apply_patch)は重なるので別に数えない。閲覧だけの並びは出ない
     expect(r.filter((x) => x.key.includes('apply_patch'))).toHaveLength(1);
     expect(r.every((x) => x.tools!.some((t) => !['view', 'rg', 'glob'].includes(t)))).toBe(true);
     // 全体はスコア順。判定セッションは除く
-    const all = skillCandidates([...src, { id: 'j', project: '(atlas の判定)', analysis: { requests: Array(5).fill('判定の依頼文です。十分な長さ'), turnTools: [[], [], [], [], []], turnActiveMs: [1, 1, 1, 1, 1] } }], false);
+    const all = skillCandidates([...src, { id: 'j', project: '(atlas の判定)', analysis: { requests: Array(5).fill('判定の依頼文です。十分な長さ'), turnTools: [[], [], [], [], []], turnActiveMs: [1, 1, 1, 1, 1] } }]);
     expect(all.map((c) => c.score)).toEqual([...all.map((c) => c.score)].sort((x, y) => y - x));
     expect(all.some((c) => c.representative?.includes('判定の依頼文'))).toBe(false);
   });

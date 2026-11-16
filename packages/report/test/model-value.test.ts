@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { OUTCOMES } from '../src/shared/turns.ts';
-import { effortFindings, mean, modelValue, ratio } from '../src/lib/model-value.ts';
+import { effortFindings, keptShare, mean, modelValue, ratio } from '../src/lib/model-value.ts';
 import type { EffortTuple, JudgmentSummary, SessionSummary } from '../src/lib/types.ts';
 
 /** 効果の集計に使う欄だけ持つ SessionSummary */
@@ -78,10 +78,10 @@ describe('モデルと推論強度の効果', () => {
   });
 
   it('読み取り: 件数の足りる強度が 2 つ以上あるモデルだけ、弱い強度と強い強度を比べる', () => {
-    const kept = (n: number) => ({ retention: { outcome: 'measured', lines: [n, 0, 10 - n, 0] } }) as Partial<SessionSummary>;
+    const kept = (n: number) => ({ retention: { outcome: 'measured', hunks: [n, 0, 10 - n, 0] } }) as Partial<SessionSummary>;
     const lows = Array.from({ length: 3 }, (_, i) => sess(`l${i}`, { m: { low: [2, 0, 0, 2e9] } }, { judgment: judged({ completed: i < 2, hours: 1 }), ...kept(10) }));
     const highs = Array.from({ length: 3 }, (_, i) => sess(`h${i}`, { m: { high: [2, 0, 0, 6e9] } }, { judgment: judged({ completed: true, hours: 3 }) }));
-    // high の残存は、ほかのモデルが 9 割のセッション 1 件だけ(按分して 0.1 件分)なので、残存率は比べない
+    // high の残存は、ほかのモデルが 9 割のセッション 1 件だけ(按分して 0.1 件分)なので、残っている割合は比べない
     highs.push(sess('mix', { m: { high: [1, 0, 0, 1e9] }, z: { medium: [9, 0, 0, 0] } }, kept(0)));
     // n は 2 件しか無いので比べない
     const few = Array.from({ length: 2 }, (_, i) => sess(`n${i}`, { n: { low: [1, 0, 0, 1e9], high: [1, 0, 0, 1e9] } }));
@@ -89,5 +89,31 @@ describe('モデルと推論強度の効果', () => {
     const f = effortFindings(modelValue(all, true), modelValue(all, false));
     expect(f[0]).toBe('m: high は low に比べて、1 リクエストの AIU が 2.71 倍、達成率 67% → 100%、ツール失敗率 0% → 0%(セッション 3 件 / 4 件)。');
     expect(f).toHaveLength(1);
+  });
+
+  it('残存: まとまりの単位で、残っている(そのまま + 直されて)÷ 照合できたまとまり(照合不可を除く)。照合できたセッションの数と AI の変更があったセッションの数も持つ', () => {
+    const ret = (outcome: string, hunks: number[]) => ({ retention: { outcome, hunks, lines: [100, 100, 100, 100] } }) as Partial<SessionSummary>;
+    const all = [
+      sess('a', { m: { low: [1, 0, 0, 0] } }, ret('measured', [2, 1, 1, 6])),
+      sess('b', { m: { low: [1, 0, 0, 0] } }, ret('measured', [0, 0, 4, 0])),
+      sess('c', { m: { low: [1, 0, 0, 0] } }, ret('unattributable', [0, 0, 0, 5])),
+      sess('d', { m: { low: [1, 0, 0, 0] } }, ret('none', [0, 0, 0, 0])),
+      sess('e', { m: { low: [1, 0, 0, 0] } }),
+    ];
+    const [r] = modelValue(all, true);
+    // 照合不可(6)は分母に入れず、行の数(lines)ではなくまとまりの数を使う
+    expect(r.retention).toEqual({ measured: 8, kept: 3, weight: 2, sessions: 2, withAi: 3 });
+    // 照合できたセッションが 2 件(MIN_SESSIONS 未満)なので割合は出さない
+    expect(keptShare(r)).toBeNull();
+    const [r3] = modelValue([...all, sess('f', { m: { low: [1, 0, 0, 0] } }, ret('measured', [1, 1, 0, 0]))], true);
+    expect(keptShare(r3)).toBeCloseTo(5 / 10);
+  });
+
+  it('読み取り: 照合できたセッションが両方の強度で足りれば、残っている割合を比べる', () => {
+    const ret = (hunks: number[]) => ({ retention: { outcome: 'measured', hunks } }) as Partial<SessionSummary>;
+    const lows = Array.from({ length: 3 }, (_, i) => sess(`l${i}`, { m: { low: [1, 0, 0, 0] } }, ret([1, 0, 1, 0])));
+    const highs = Array.from({ length: 3 }, (_, i) => sess(`h${i}`, { m: { high: [1, 0, 0, 0] } }, ret([1, 1, 0, 3])));
+    const f = effortFindings(modelValue([...lows, ...highs], true));
+    expect(f).toEqual(['m: high は low に比べて、残っている割合 50% → 100%、ツール失敗率 0% → 0%(セッション 3 件 / 3 件)。']);
   });
 });

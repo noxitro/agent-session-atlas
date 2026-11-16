@@ -13,6 +13,8 @@
 # 失敗したときや作り直すときは、Actions の画面からタグを指定して動かす(workflow_dispatch。タグが要る。同じ名前のファイルは置き換える)。
 # atlas.exe には GitHub の artifact attestation(ビルドの来歴。Sigstore で署名され、どのリポジトリ・ワークフロー・コミットで
 # 作ったかを示す)も付ける。利用者は gh attestation verify で確かめられる(ensure-atlas.ps1 は gh があれば確かめる。README)。
+# ビルドの前に、依存の既知の脆弱性をもう一度見る(ジョブ audit)。落ちたらリリースを作らない。マージの条件の CI を通っていても、
+# その後に出た advisory はここで止まる。利用者の自動の更新はリリースの無いコミットには進まないので、検査を通っていない atlas.exe は届かない。
 # 既定の機能だけでビルドする(従量課金の API を直接呼ぶ anthropic-backend は入れない)。
 # 外部の Action はコミット SHA で固定する(ci.yml と同じ)。Rust はランナーに入っている rustup で入れる。
 name: Release
@@ -118,9 +120,48 @@ jobs:
           echo "リリース $tag を $GITHUB_SHA から作ります"
           { echo "tag=$tag"; echo "ref=$GITHUB_SHA"; echo "build=true"; } >> "$GITHUB_OUTPUT"
 
+  # 依存の既知の脆弱性の検査。ビルドするコミット(作り直しならタグのコミット)を見る。落ちたら windows のジョブは動かない。
+  # - Rust: cargo deny --locked check(ci.yml と同じ。設定は deny.toml)
+  # - npm: devDependencies も含めて high 以上で落とす(deny-schedule.yml と同じ。画面のビルドに使う道具の出力は atlas.exe に埋め込まれるため)。
+  #   package-lock.json だけを見る(npm ci はしない。スクリプトを動かさない)
+  # 直し方は docs/development.md の「依存の検査」。cargo-deny の版は ci.yml・deny-schedule.yml と同じものに固定する
+  audit:
+    name: 依存の脆弱性の検査
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CARGO_DENY_VERSION: 0.20.2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
+          persist-credentials: false
+      - name: Rust を入れる
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          rustc --version
+      - id: deny-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/cargo-deny
+          key: cargo-deny-${{ runner.os }}-${{ env.CARGO_DENY_VERSION }}
+      - if: steps.deny-cache.outputs.cache-hit != 'true'
+        run: cargo install cargo-deny --locked --version "$CARGO_DENY_VERSION"
+      - name: Rust の依存(cargo deny)
+        run: cargo deny --locked check
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: npm の依存(devDependencies も含む)
+        run: npm audit --audit-level=high
+
   windows:
     name: atlas.exe(Windows)
-    needs: plan
+    needs: [plan, audit]
     if: needs.plan.outputs.build == 'true'
     runs-on: windows-latest
     timeout-minutes: 40

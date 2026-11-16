@@ -11,7 +11,7 @@
 // 欠測の件数・クライアント不明の残数をログに出す(out/live に atlas.html を作り直す)。
 import { spawnSync } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
-import { readFile, readdir, rm } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -114,6 +114,8 @@ describe('Phase 5 E2E: fixtures', () => {
       internal: { byName: { report_intent: 2 }, total: 2 },
       mcp: {},
       results: { edit: { success: 1, failure: 0, denied: 0 }, create: { success: 2, failure: 0, denied: 0 }, powershell: { success: 1, failure: 0, denied: 0 }, apply_patch: { success: 0, failure: 1, denied: 0, causes: { other: 1 } } },
+      // スキーマ 18 でモデル別を足した(この fixture のツールのイベントには model が無い)
+      resultsByModel: { '(unknown)': { edit: { success: 1, failure: 0, denied: 0 }, create: { success: 2, failure: 0, denied: 0 }, powershell: { success: 1, failure: 0, denied: 0 }, apply_patch: { success: 0, failure: 1, denied: 0, causes: { other: 1 } } } },
       // Phase 7 で所要時間を足した(合成 fixture はイベントが 1 秒間隔。内部ツールは除く)
       durations: { edit: [1000], create: [1000, 1000], powershell: [1000], apply_patch: [1000] },
       durationOutliers: {},
@@ -188,18 +190,8 @@ describe('Phase 5 E2E: fixtures', () => {
     expect(m.byClient).not.toHaveProperty('(unknown)');
   });
 
-  it('HTML は 5MB 未満で、--anonymize では新しく出したファイルパスも出ない', async () => {
+  it('HTML は 5MB 未満', () => {
     expect(Buffer.byteLength(html)).toBeLessThan(LIMIT);
-    const anonOut = join(WORK, 'out-anon');
-    const r2 = atlas(['all', '--home', home, '--out', anonOut, '--anonymize']);
-    expect(r2.status, r2.stderr).toBe(0);
-    const files = [join(anonOut, 'atlas.html'), ...(await readdir(join(anonOut, 'sessions'))).map((f) => join(anonOut, 'sessions', f))];
-    for (const f of files) {
-      const h = await readFile(f, 'utf8');
-      for (const secret of ['synthetic-new', 'synthetic-missing', 'synthetic-empty', 'synthetic-dbonly', 'app.ts', 'old.txt', 'someone']) {
-        expect({ f, secret, found: h.includes(secret) }).toEqual({ f, secret, found: false });
-      }
-    }
   });
 });
 

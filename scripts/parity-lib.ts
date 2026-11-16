@@ -8,7 +8,7 @@
 //   --notes はメモと名前付きグループの置き場(groups.json を読む)。既定は <out> と同じ階層の atlas-notes。
 // - 結果は lib の入口ごとに 1 つの JSON(summaries.json・aggregate-<条件>.json・insights-*.json・format.json など)。
 //   build.ts と同じ呼び方(全セッションの要約、絞り込みの条件ごとの集計、改善点の候補)で呼ぶ。
-// - --compare は TS 版を <work>/ts に、Rust 版(crates/atlas-report/examples/libdump.rs。既定は cargo run --release で動かす)を
+// - --compare は TS 版を <work>/ts に、Rust 版(crates/atlas-report/examples/libdump.rs。既定は atlas-cli と一緒に cargo build --release で作って動かす。buildLibdump)を
 //   <work>/rs に書き、ファイルごとに比べる(parity-common.ts の cmpJson。数値は相対 1e-9 まで同じとみなし、キーの順も見る)。
 //   重い入口(要約・集計・候補)の所要時間を両方について出す。<work> の既定は out/parity-lib-dump。
 // - 実データの結果には依頼文がそのまま入る。比べ終わったら <work> を消すこと(コミットしない)。
@@ -20,7 +20,6 @@ import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import type { SessionsFile } from '../packages/report/src/shared/types.ts';
 import { aggregate, coverageBreakdown, monthRange, unusedSkills } from '../packages/report/src/lib/aggregate.ts';
-import { createAnonymizer, identityAnonymizer, shortProjectLabel } from '../packages/report/src/lib/anonymize.ts';
 import { embedData, extractEmbedded, serializeForScript } from '../packages/report/src/lib/embed.ts';
 import { execAggregate, quantilesOf } from '../packages/report/src/lib/exec.ts';
 import { effortLabel, errorTypeLabel, initiatorLabel, modeLabel, subagentFailureLabel, todoStatusLabel } from '../packages/report/src/lib/exec-labels.ts';
@@ -49,14 +48,16 @@ import { parseJudgments } from '../packages/report/src/lib/judgments.ts';
 import { backendLabel, categoryLabel, confidenceLabel, effectLabel } from '../packages/report/src/lib/judgment-labels.ts';
 import { isSafeFileName, isSafeMemoId, memoExcerpt, memoSummary } from '../packages/report/src/lib/memo.ts';
 import { packSummary } from '../packages/report/src/lib/pack.ts';
+import { shortProjectLabel } from '../packages/report/src/lib/project-label.ts';
 import { aggregateRetention, retentionByPhase, retentionItem, UNKNOWN_PHASE, type TurnStart } from '../packages/report/src/lib/retention.ts';
-import { detailFileName, summarize } from '../packages/report/src/lib/summarize.ts';
+import { detailFileName, summarize, testsSummary } from '../packages/report/src/lib/summarize.ts';
+import { compareNames, conditionTable, parseConditionTag, type ConditionGroup, type ConditionSession } from '../packages/report/src/lib/conditions.ts';
 import { turnAggregate } from '../packages/report/src/lib/turns.ts';
 import { parseVerdicts, verdictAggregate, verdictTuples } from '../packages/report/src/lib/verdicts.ts';
 import { REPORT_DATA_VERSION } from '../packages/report/src/lib/types.ts';
 import { mainEffortOf } from '../packages/report/src/lib/main-effort.ts';
 import { PHASES, sessionTurns } from '../packages/report/src/shared/turns.ts';
-import type { SessionRecord } from '../packages/report/src/shared/types.ts';
+import type { SessionRecord, SessionTests } from '../packages/report/src/shared/types.ts';
 import { cmpJson, firstTextDiff } from './parity-common.ts';
 
 /** vcs-retention.json(atlas vcs の出力)。突き合わせに使う項目だけ */
@@ -126,6 +127,18 @@ function turnStarts(r: SessionRecord): TurnStart[] {
 /** 数の表示の確かめに使う値(Rust 側と同じ並び) */
 const NUMBERS = [0, -0, 0.5, 1.005, 0.125, 2.5, -2.5, 1.45, 0.015, 8.345, 1234567.891, 1e21, 2 ** 70, 999.995, 1e-7, 12345, 99999, 1e8 + 5, -123456789, 59_499, 59_500, 3_599_000, 172_800_000, 86_399_999, 850, 1234, 125_000, 7_200_000, Infinity, -Infinity, NaN];
 const MEMO_TEXTS = ['\n\n# 見出し\n本文', '- [ ] **やること** と [リンク](x)', '```\ncode\n```\n\nあと', '![図](a/b.png)', '   \n\n', 'session_id の調査、2*3、~/.copilot', '---\ntitle: x\n---\n\n本文', '---\n\n本文', '> 引用 `code` ~~消し~~ __強調__', '1. 番号付き\n2. 次', '***\n\n___\n本文\r\n次', `${'あ'.repeat(100)}\n![a](x/1.png) ![b](x/2.png)`];
+/** テストの結果の要約を確かめる形(実行なし / 未達 / 1 回目で通る / 通った後に不合格で AI 使用量の記録なし / 番号が実行の数を外れている / 番号が 0 / 番号が負)。crates/atlas-report/examples/libdump.rs の TESTS_CASES と同じ中身 */
+const TESTS_CASES = `[
+  { "runs": [], "invalid": 1, "duplicates": 0, "dropped": 0, "firstPass": null },
+  { "runs": [{ "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 1000, "nanoAiu": 1500000000, "failing": 1, "results": [] }, { "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 2000, "nanoAiu": 2500000000, "failing": 1, "results": [] }], "invalid": 0, "duplicates": 0, "dropped": 0, "firstPass": null },
+  { "runs": [{ "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 1500, "nanoAiu": 2500000000, "failing": 0, "results": [] }], "invalid": 0, "duplicates": 0, "dropped": 0, "firstPass": 1 },
+  { "runs": [{ "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 1000, "nanoAiu": null, "failing": 1, "results": [] }, { "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 60000.5, "nanoAiu": null, "failing": 0, "results": [] }, { "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 90000, "nanoAiu": null, "failing": 2, "results": [] }], "invalid": 0, "duplicates": 2, "dropped": 0, "firstPass": 2 },
+  { "runs": [{ "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 1000, "nanoAiu": 1, "failing": 0, "results": [] }], "invalid": 0, "duplicates": 0, "dropped": 0, "firstPass": 5 },
+  { "runs": [{ "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 1000, "nanoAiu": 1, "failing": 0, "results": [] }], "invalid": 0, "duplicates": 0, "dropped": 0, "firstPass": 0 },
+  { "runs": [{ "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 1000, "nanoAiu": 1, "failing": 0, "results": [] }], "invalid": 0, "duplicates": 0, "dropped": 0, "firstPass": -1 }
+]`;
+/** 課題 × 条件の表を確かめる形(セッション・タスクタグ・名前の読み取り・並び)。crates/atlas-report/examples/libdump.rs の CONDITION_CASES と同じ中身 */
+const CONDITION_CASES = `{"sessions":[{"id":"s01","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":1,"firstPass":1,"lastFailing":0,"passActiveMs":60000.5,"passNanoAiu":1500000000.0,"lastNanoAiu":2000000000.0},"person":null},{"id":"s02","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":2,"firstPass":2,"lastFailing":0,"passActiveMs":120001.0,"passNanoAiu":3000000000.0,"lastNanoAiu":4000000000.0},"person":null},{"id":"s03","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":3,"firstPass":3,"lastFailing":0,"passActiveMs":180001.5,"passNanoAiu":4500000000.0,"lastNanoAiu":6000000000.0},"person":null},{"id":"s04","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":2,"firstPass":1,"lastFailing":1,"passActiveMs":60000.5,"passNanoAiu":1500000000.0,"lastNanoAiu":2000000000.0},"person":null},{"id":"s05","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":3,"firstPass":null,"lastFailing":2,"passActiveMs":null,"passNanoAiu":null,"lastNanoAiu":7000000000.0},"person":null},{"id":"s06","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":3,"firstPass":null,"lastFailing":2,"passActiveMs":null,"passNanoAiu":null,"lastNanoAiu":null},"person":null},{"id":"s07","activeMs":null,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":null},"tests":{"runs":2,"firstPass":2,"lastFailing":0,"passActiveMs":120001.0,"passNanoAiu":3000000000.0,"lastNanoAiu":4000000000.0},"person":null},{"id":"s08","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":4,"firstPass":4,"lastFailing":0,"passActiveMs":240002.0,"passNanoAiu":null,"lastNanoAiu":null},"person":null},{"id":"s09","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"person":null},{"id":"s10","activeMs":600000,"tools":{"total":0},"friction":{"toolFailures":0},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":1,"firstPass":1,"lastFailing":0,"passActiveMs":60000.5,"passNanoAiu":1500000000.0,"lastNanoAiu":2000000000.0},"person":null},{"id":"s11","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":2,"firstPass":2,"lastFailing":0,"passActiveMs":120001.0,"passNanoAiu":3000000000.0,"lastNanoAiu":4000000000.0},"person":"zz-a"},{"id":"s12","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":3,"firstPass":3,"lastFailing":0,"passActiveMs":180001.5,"passNanoAiu":4500000000.0,"lastNanoAiu":6000000000.0},"person":"zz-b"},{"id":"s13","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":3,"firstPass":null,"lastFailing":2,"passActiveMs":null,"passNanoAiu":null,"lastNanoAiu":7000000000.0},"person":"zz-b"},{"id":"s14","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":1,"firstPass":1,"lastFailing":0,"passActiveMs":60000.5,"passNanoAiu":1500000000.0,"lastNanoAiu":2000000000.0},"person":null},{"id":"s15","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":1,"firstPass":1,"lastFailing":0,"passActiveMs":60000.5,"passNanoAiu":1500000000.0,"lastNanoAiu":2000000000.0},"person":null},{"id":"s16","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":3,"firstPass":null,"lastFailing":2,"passActiveMs":null,"passNanoAiu":null,"lastNanoAiu":7000000000.0},"person":null},{"id":"s17","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":2,"firstPass":2,"lastFailing":0,"passActiveMs":120001.0,"passNanoAiu":3000000000.0,"lastNanoAiu":4000000000.0},"person":null},{"id":"s18","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":2,"firstPass":2,"lastFailing":0,"passActiveMs":120001.0,"passNanoAiu":3000000000.0,"lastNanoAiu":4000000000.0},"person":null}],"groups":[{"name":"t10__wiki__1","presentIds":["s01","s02","s03"]},{"name":"t10__wiki__2","presentIds":["s03","s04","s05","s06"]},{"name":"t2__wiki","presentIds":["s07","s08","s09"]},{"name":"t2__0-plain","presentIds":["s10","s14","s15","s16","s17"]},{"name":"zz-a / t2__coderef__1","tag":"t2__coderef__1","presentIds":["s11"]},{"name":"zz-b / t2__coderef__1","tag":"t2__coderef__1","presentIds":["s12","s13"]},{"name":"描画__wiki","presentIds":["s18"]},{"name":"描画__0-plain","presentIds":["s18"]},{"name":"zz-misc","presentIds":["s09"]},{"name":"x__y__v2","presentIds":["s09"]},{"name":"gone__wiki","presentIds":["not-in-records"]}],"names":["render__wiki","render__wiki__1"," 描画 __ wiki あり __ 007 ","Player-Weapon__code_ref__12","render","render__","__wiki","render____1","a__b__c__1","render__wiki__v2","render__wiki__１","a___b","a__b_",""],"order":["c10","c2","B","a","c1","0-plain","wiki","Wiki","描画","あ","ア","t10","t2","x_1","x-1","c01","c001","c1","c１０","v1.10","v1.9","v1.9a","Z","z"]}`;
 const FILE_NAMES = ['メモ.md', 'a b.txt', 'x', '', '.x', '..', 'a/b', 'x.', 'x ', 'CON', 'nul.log', 'Com1', 'a:b', 'abc-1_2.x', 'あ'];
 
 async function dumpTs(outDir: string): Promise<void> {
@@ -160,18 +173,15 @@ function dumpWith(
 
   // 要約(build.ts と同じ: summarize に判定・依頼ごとの判定・照合の結果を足す)
   const retentionById = new Map((rx?.sessions ?? []).map((r) => [r.sessionId, r]));
-  const summarizeAll = (anon: ReturnType<typeof identityAnonymizer>) =>
+  const plain = timed('summarize', () =>
     records.map((r) => {
-      const base = summarize(r, anon, judgments?.bySession.get(r.id) ?? null);
+      const base = summarize(r, judgments?.bySession.get(r.id) ?? null);
       const vt = verdicts ? verdictTuples(verdicts.bySession.get(r.id), verdicts.phases) : [];
       const rt = retentionById.get(r.id);
       return { ...base, ...(vt.length ? { turnVerdicts: vt } : {}), ...(rt ? { retention: retentionItem(rt, turnStarts(r)) } : {}) };
-    });
-  const plain = timed('summarize', () => summarizeAll(identityAnonymizer()));
-  const anon = timed('createAnonymizer', () => createAnonymizer(records));
-  const hidden = timed('summarize', () => summarizeAll(anon));
+    }),
+  );
   write('summaries', plain);
-  write('summaries-anon', hidden);
   write('packed', timed('pack', () => plain.map(packSummary)));
   const tpl = '<!doctype html><script type="application/json" id="atlas-data">__ATLAS_DATA__</script>';
   const html = timed('embed', () => embedData(tpl, { version: REPORT_DATA_VERSION, sessions: plain.map(packSummary) }));
@@ -210,14 +220,10 @@ function dumpWith(
     const xs = applyFilter(plain, f);
     const agg = timed('aggregate', () => aggregate(xs, people));
     write(`aggregate-${name}`, agg);
-    write(`highlights-${name}`, timed('highlights', () => highlights(xs, agg.usage, { filter: f, anonymized: false, installed })));
+    write(`highlights-${name}`, timed('highlights', () => highlights(xs, agg.usage, { filter: f, installed })));
     write(`turns-${name}`, { turns: turnAggregate(xs), verdicts: verdictAggregate(xs, phases), retention: aggregateRetention(xs), byPhase: [...retentionByPhase(xs).byPhase], withoutPhases: retentionByPhase(xs).withoutPhases, coverage: coverageBreakdown(xs) });
     write(`filter-${name}`, { encoded: encodeFilter(f), href: filterHref(f, 'unused-skills'), decoded: decodeFilter(encodeFilter(f)), view: decodeView(filterHref(f, 'unused-skills')), state: isStateHash(filterHref(f)), ids: xs.map((s) => s.id) });
   }
-  const hiddenScoped = applyFilter(hidden, emptyFilter());
-  const hiddenAgg = aggregate(hiddenScoped);
-  write('aggregate-anon', hiddenAgg);
-  write('highlights-anon', highlights(hiddenScoped, hiddenAgg.usage, { filter: emptyFilter(), anonymized: true, installed }));
   write('exec', execAggregate(plain));
   write('misc', {
     monthRange: monthRange('2025-11', '2026-02'),
@@ -255,12 +261,11 @@ function dumpWith(
   write('insights-stuck', stuck);
   write('insights-stuck-projects', stuckByProject(stuck, plain));
   const sources = records.map((r) => ({ id: r.id, project: r.project, analysis: r.analysis ?? { requests: [], turnTools: [], turnActiveMs: [] } }));
-  const cands = timed('skillCandidates', () => skillCandidates(sources, false));
+  const cands = timed('skillCandidates', () => skillCandidates(sources));
   write('insights-candidates', cands);
   write('insights-candidates-embedded', cands.slice(0, 30).map((c) => ({ ...c, representative: c.representative?.slice(0, 300) ?? null, examples: c.examples.slice(0, 3).map((e) => e.slice(0, 300)) })));
-  write('insights-candidates-anon', timed('skillCandidates', () => skillCandidates(sources, true)));
-  write('insights-requests', timed('requestCandidates', () => requestCandidates(sources, false)));
-  write('insights-tools', timed('toolSequenceCandidates', () => toolSequenceCandidates(sources, false)));
+  write('insights-requests', timed('requestCandidates', () => requestCandidates(sources)));
+  write('insights-tools', timed('toolSequenceCandidates', () => toolSequenceCandidates(sources)));
   const reqs = records.flatMap((r) => r.analysis?.requests ?? []);
   write(
     'insights-normalize',
@@ -285,17 +290,7 @@ function dumpWith(
     records.map((r) => [truncate(r.firstUserMessage, 48), r.cwd ? pathParts(r.cwd) : null, detailFileName(r.id), r.models.map(modelLabel), shortProjectLabel(r.project)]),
   );
 
-  // 伏せ字・表示名・メモ・グループ・用語
-  const scrubbed = records.map((r) => [
-    anon.scrub(r.cwd ?? ''),
-    anon.scrub(`failed at ${r.cwd ?? ''}\\src\\a.ts in ${r.project} on ${r.branch ?? 'main'}`),
-    anon.scrub(`${(r.repository ?? r.project).toUpperCase()} and ${r.gitRoot ?? ''}/x y.txt`),
-    anon.project(r.project),
-    anon.projectLabel(r.project),
-    anon.branch(r.branch),
-    anon.person(r.person ?? null),
-  ]);
-  write('anonymize', { scrubbed, warnings: groups.warnings.map((w) => anon.scrub(w)) });
+  // 表示名・メモ・グループ・用語
   const keys = (m: Record<string, unknown>): string[] => Object.keys(m);
   const all2 = execAggregate(plain);
   // 本体の (モデル, 推論強度)。画面は要約から、Rust(sessions.csv)は sessions.json の記録から決める
@@ -306,6 +301,32 @@ function dumpWith(
       return [s.id, m.kind, m.kind === 'decided' ? m.model : '', m.kind === 'decided' ? m.effort : ''];
     }),
   );
+  // テストの結果の要約(架空の fixture には印つきの行が無いので、決まった形を両側で同じに読む。Rust は examples/libdump.rs の TESTS_CASES)
+  write('tests-summary', (JSON.parse(TESTS_CASES) as SessionTests[]).map(testsSummary));
+  // 課題 × 条件の表(画面は TS、表(conditions.csv)は Rust で計算する。行・まとめた行・数え方を突き合わせる。lookalikes は画面だけ)
+  {
+    const c = JSON.parse(CONDITION_CASES) as { sessions: ConditionSession[]; groups: ConditionGroup[]; names: string[]; order: string[] };
+    const t = conditionTable(c.sessions, c.groups);
+    write('conditions', {
+      names: c.names.map(parseConditionTag),
+      order: [...c.order].sort(compareNames),
+      table: {
+        tasks: t.tasks,
+        conditions: t.conditions,
+        rows: t.rows,
+        pooled: t.pooled,
+        matchedTags: t.matchedTags,
+        counted: t.counted,
+        members: t.members.map((m) => [m.session.id, m.task, m.condition]),
+        unmatched: t.unmatched,
+        ambiguous: t.ambiguous,
+        people: t.people,
+        sharedRows: t.sharedRows,
+        unevenTasks: t.unevenTasks,
+        hasTests: t.hasTests,
+      },
+    });
+  }
   write('labels', {
     modes: [...all2.modes.rows.map((r) => r.key), '(unknown)', 'x'].map(modeLabel),
     initiators: [...all2.initiators.rows.map((r) => r.key), '(unknown)', 'x'].map(initiatorLabel),
@@ -359,6 +380,34 @@ function compareDirs(ts: string, rs: string, maxDiffs: number): string[] {
   return diffs;
 }
 
+/**
+ * Rust 版(examples/libdump)を release で作り、実行ファイルのパスを返す。
+ * atlas-cli と同じ cargo build で作る(-p atlas-cli も付ける)。cargo は選んだパッケージだけから依存の features を決めるので、
+ * -p atlas-report だけで作ると、atlas-cli が有効にする features(Windows は windows-sys の一部、Linux は libc の default など)が外れ、
+ * atlas-core・atlas-report から release で作り直すことになる。atlas-cli と一緒に作れば features がそろい、npm run build:atlas の
+ * 結果をそのまま使える(作るのは例だけ)。環境変数(ATLAS_REQUIRE_TEMPLATE など)も build:atlas と同じにしておくこと
+ * (atlas-report の build.rs は ATLAS_REQUIRE_TEMPLATE が変わると作り直す)。
+ */
+function buildLibdump(): string {
+  const r = spawnSync('cargo', ['build', '--release', '--locked', '-p', 'atlas-cli', '-p', 'atlas-report', '--example', 'libdump', '--message-format=json-render-diagnostics'], {
+    cwd: ROOT,
+    stdio: ['ignore', 'pipe', 'inherit'],
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  if (r.status !== 0) {
+    console.error(`parity-lib: libdump のビルドに失敗しました(${r.error ? `cargo を起動できません: ${r.error.message}` : `終了コード ${r.status}`})`);
+    process.exit(1);
+  }
+  for (const line of r.stdout.split('\n')) {
+    if (!line.startsWith('{')) continue;
+    const m = JSON.parse(line) as { reason?: string; target?: { name?: string; kind?: string[] }; executable?: string | null };
+    if (m.reason === 'compiler-artifact' && m.target?.name === 'libdump' && m.target.kind?.includes('example') && m.executable) return m.executable;
+  }
+  console.error('parity-lib: cargo build の出力に libdump の実行ファイルがありません');
+  process.exit(1);
+}
+
 if (!values.compare) {
   const dump = positionals[1];
   if (!dump) {
@@ -376,16 +425,14 @@ if (!values.compare) {
   const tsMs = performance.now() - t0;
   if (ts.status !== 0) process.exit(1);
   rmSync(rsDir, { recursive: true, force: true });
-  const exe = values.rs;
+  const exe = values.rs ?? buildLibdump();
   const t1 = performance.now();
-  const rs = exe
-    ? spawnSync(exe, [inDir, rsDir, notesDir], { stdio: 'inherit' })
-    : spawnSync('cargo', ['run', '--quiet', '--release', '-p', 'atlas-report', '--example', 'libdump', '--', inDir, rsDir, notesDir], { cwd: ROOT, stdio: 'inherit' });
+  const rs = spawnSync(exe, [inDir, rsDir, notesDir], { stdio: 'inherit' });
   const rsMs = performance.now() - t1;
   if (rs.status !== 0) process.exit(1);
   const tt = JSON.parse(readFileSync(join(tsDir, 'timings.txt'), 'utf8')) as Record<string, number>;
   const rt = JSON.parse(readFileSync(join(rsDir, 'timings.txt'), 'utf8')) as Record<string, number>;
-  console.log(`全体: TS ${(tsMs / 1000).toFixed(1)} 秒 / Rust ${(rsMs / 1000).toFixed(1)} 秒(Rust はビルド済みなら起動と読み込みを含む)`);
+  console.log(`全体: TS ${(tsMs / 1000).toFixed(1)} 秒 / Rust ${(rsMs / 1000).toFixed(1)} 秒(どちらも起動と読み込みを含む。Rust のビルドは含まない)`);
   for (const k of Object.keys(tt)) console.log(`  ${k}: TS ${tt[k].toFixed(0)} ms / Rust ${(rt[k] ?? NaN).toFixed(0)} ms`);
   const diffs = compareDirs(tsDir, rsDir, Number(values['max-diffs']));
   const n = readdirSync(tsDir).filter((x) => x.endsWith('.json')).length;

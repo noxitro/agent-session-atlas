@@ -16,6 +16,7 @@ import { extractEmbedded } from '../packages/report/src/lib/embed.ts';
 import type { ReportData } from '../packages/report/src/lib/types.ts';
 import type { SessionsFile } from '../packages/report/src/shared/types.ts';
 import { buildFixtureHome, FIXTURE_CODE, P11_SESSION, ROOT, cliCommand, startServer, type ServeHandle } from './fixture-home.ts';
+import { openReadOnly } from './sqlite.ts';
 
 const WORK = join(ROOT, 'out', 'e2e-phase14');
 const FAKE = join(FIXTURE_CODE, 'fake-copilot.mjs');
@@ -36,6 +37,37 @@ async function listFiles(dir: string, skip: (rel: string) => boolean): Promise<M
   };
   await walk(dir);
   return out;
+}
+
+/** CSV を行と列に分ける(引用符の中の改行・カンマ・"" を読む。failures.csv はエラー文や引数に改行が入るので、行末では分けられない) */
+function parseCsv(text: string): string[][] {
+  const s = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = '';
+  let quoted = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (quoted) {
+      if (c === '"' && s[i + 1] === '"') {
+        cell += '"';
+        i++;
+      } else if (c === '"') quoted = false;
+      else cell += c;
+    } else if (c === '"') quoted = true;
+    else if (c === ',') {
+      row.push(cell);
+      cell = '';
+    } else if (c === '\r' && s[i + 1] === '\n') {
+      row.push(cell);
+      rows.push(row);
+      row = [];
+      cell = '';
+      i++;
+    } else cell += c;
+  }
+  if (cell !== '' || row.length > 0) rows.push([...row, cell]);
+  return rows;
 }
 
 describe('Phase 14 E2E: 画面からの操作(jobs)', () => {
@@ -102,6 +134,85 @@ describe('Phase 14 E2E: 画面からの操作(jobs)', () => {
     // 終了時の累計だけのセッション(00…001)は本体の記録なし
     const row1 = sess.find((l) => l.startsWith('00000000-0000-4000-8000-000000000001,'))!.split(',');
     expect(row1[header.indexOf('本体の推論強度')]).toBe('記録なし');
+  });
+
+  it('0b. ツールの失敗・拒否 1 件ごとの表(failures.csv と atlas.sqlite の failures)も書く。行の数はセッションごとに tools.results の失敗 + 拒否と同じ', async () => {
+    const file = JSON.parse(await readFile(join(out, 'sessions.json'), 'utf8')) as SessionsFile;
+    // 表に載るのは空でないセッション。fixture には、行数の上限で台帳に残らなかった失敗(failuresDropped)は無い
+    const listed = file.sessions.filter((s) => !s.empty);
+    const want = new Map<string, number>();
+    for (const s of listed) {
+      expect(s.analysis.failuresDropped, s.id).toBe(0);
+      const n = Object.values(s.tools.results).reduce((a, r) => a + r.failure + r.denied, 0);
+      expect(s.analysis.failures, s.id).toHaveLength(n);
+      if (n > 0) want.set(s.id, n);
+    }
+    expect(want.size).toBeGreaterThan(0);
+
+    expect(existsSync(join(out, 'tables', 'failures.csv'))).toBe(true);
+    const text = await readFile(join(out, 'tables', 'failures.csv'), 'utf8');
+    expect(text.startsWith(`${String.fromCharCode(0xfeff)}セッションID,セッション名,プロジェクト,依頼番号,開始,種類,要因,ツール,`)).toBe(true);
+    const [header, ...rows] = parseCsv(text);
+    expect(header).toEqual([
+      'セッションID',
+      'セッション名',
+      'プロジェクト',
+      '依頼番号',
+      '開始',
+      '種類',
+      '要因',
+      'ツール',
+      'MCP サーバー',
+      'MCP のツール',
+      'MCP の設定元',
+      'モデル',
+      'エージェント',
+      'エージェントの呼び出し',
+      'エージェントへの依頼',
+      '所要(ミリ秒)',
+      'エラー文',
+      '引数',
+      'その後',
+      '次のツール',
+      '次の結果',
+      '呼び直し',
+      'そろえたエラー文',
+    ]);
+    expect(rows.every((r) => r.length === header.length)).toBe(true);
+    const col = (name: string): number => header.indexOf(name);
+    const countBy = (ids: string[]): Map<string, number> => {
+      const m = new Map<string, number>();
+      for (const id of ids) m.set(id, (m.get(id) ?? 0) + 1);
+      return m;
+    };
+    expect(countBy(rows.map((r) => r[0]))).toEqual(want);
+    // セッションの中は台帳の順。種類と、turns.csv の依頼番号に合わせた番号(台帳の turn は 0 から、表は 1 から。最初の依頼より前は空)
+    for (const s of listed) {
+      const mine = rows.filter((r) => r[0] === s.id);
+      const ledger = s.analysis.failures ?? [];
+      expect(mine.map((r) => r[col('種類')]), s.id).toEqual(ledger.map((f) => (f.kind === 'denied' ? '拒否' : '失敗')));
+      expect(mine.map((r) => r[col('依頼番号')]), s.id).toEqual(ledger.map((f) => (f.turn === null ? '' : String(f.turn + 1))));
+      expect(mine.map((r) => r[col('ツール')]), s.id).toEqual(ledger.map((f) => f.tool));
+    }
+    // synthetic-usage の MCP の失敗と、拒否
+    const mcp = rows.find((r) => r[col('ツール')] === 'github-mcp-server-get_file_contents')!;
+    expect([mcp[col('種類')], mcp[col('要因')], mcp[col('MCP サーバー')], mcp[col('MCP のツール')], mcp[col('エラー文')]]).toEqual(['失敗', '対象が見つからない', 'github-mcp-server', 'get_file_contents', 'failure: not found']);
+    const denied = rows.find((r) => r[col('エラー文')] === 'denied: denied by user')!;
+    expect([denied[col('種類')], denied[col('要因')], denied[col('ツール')]]).toEqual(['拒否', '', 'view']);
+
+    // SQLite にも同じ行が入り、依頼番号で turns と結べる(turnStats に載っていない依頼の分を除く)
+    const beyond = listed.flatMap((s) => (s.analysis.failures ?? []).filter((f) => f.turn !== null && f.turn >= (s.analysis.turnStats?.length ?? 0))).length;
+    const db = await openReadOnly(join(out, 'tables', 'atlas.sqlite'));
+    try {
+      const got = new Map(db.prepare('select "セッションID" id, count(*) n from failures group by 1').all().map((x) => [String(x.id), Number(x.n)] as const));
+      expect(got).toEqual(want);
+      const unjoined = db
+        .prepare('select count(*) n from failures f where f."依頼番号" is not null and not exists (select 1 from turns t where t."セッションID" = f."セッションID" and t."依頼番号" = f."依頼番号")')
+        .get();
+      expect(Number(unjoined?.n)).toBe(beyond);
+    } finally {
+      db.close();
+    }
   });
 
   it('a. refresh: 集計し直すと atlas.html が作り直され、記録(.md)もある', async () => {

@@ -19,7 +19,7 @@ const sum = (xs: number[]): number => xs.reduce((a, b) => a + b, 0);
 const scoreOf = (count: number, medianMs: number | null): number => count * (medianMs != null ? Math.max(1, Math.min(medianMs, SCORE_MS_CAP) / 60_000) : 1);
 
 /** 変える前の requestCandidates(先に作ったまとまりから順に、代表との類似度がしきい値以上の最初のまとまりに入れる) */
-function naiveRequestCandidates(sources: CandidateSource[], anonymized: boolean): Candidate[] {
+function naiveRequestCandidates(sources: CandidateSource[]): Candidate[] {
   type Item = { id: string; text: string; norm: string; grams: Set<string>; ms: number | null };
   const items: Item[] = [];
   for (const s of sources) {
@@ -49,13 +49,12 @@ function naiveRequestCandidates(sources: CandidateSource[], anonymized: boolean)
       sessions,
       medianMs,
       score: scoreOf(c.members.length, medianMs),
-      representative: anonymized ? null : rep.text,
-      examples: anonymized ? [] : c.members.filter((m) => m !== rep).slice(0, 3).map((m) => m.text),
+      representative: rep.text,
+      examples: c.members.filter((m) => m !== rep).slice(0, 3).map((m) => m.text),
       tools: null,
     });
   }
-  out.sort((a, b) => b.score - a.score || b.count - a.count);
-  return anonymized ? out.map((c, i) => ({ ...c, key: `request-${i + 1}` })) : out;
+  return out.sort((a, b) => b.score - a.score || b.count - a.count);
 }
 
 /** 決まった種から作る、似たもの(0〜1 語の差し替え)と似ていないものが混ざった依頼文 */
@@ -89,13 +88,12 @@ function sources(n: number, seed0: number): CandidateSource[] {
 }
 
 describe('requestCandidates: 似た依頼のまとめ方', () => {
-  it('索引で数えても、1 件ずつ全部のまとまりと比べたときと同じ候補になる(伏せ字版も)', () => {
+  it('索引で数えても、1 件ずつ全部のまとまりと比べたときと同じ候補になる', () => {
     for (const seed of [1, 42, 12345, 987654]) {
       const src = sources(300, seed);
-      const got = requestCandidates(src, false);
+      const got = requestCandidates(src);
       expect(got.length).toBeGreaterThan(3);
-      expect(got).toEqual(naiveRequestCandidates(src, false));
-      expect(requestCandidates(src, true)).toEqual(naiveRequestCandidates(src, true));
+      expect(got).toEqual(naiveRequestCandidates(src));
     }
   });
 });

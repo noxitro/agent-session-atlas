@@ -10,7 +10,6 @@
   let {
     sessions,
     judged,
-    anonymized,
     selected,
     idsActive,
     editable,
@@ -26,7 +25,6 @@
   }: {
     sessions: SessionSummary[];
     judged: boolean;
-    anonymized: boolean;
     /** チェックしたセッション id(画面内だけ。保存しない) */
     selected: Set<string>;
     /** 「選んだセッションだけ集計」が効いているか(filter.ids) */
@@ -114,7 +112,6 @@
 
   const rawTitle = (s: SessionSummary): string => s.name || s.firstUserMessage || `(名前なし) ${s.id.slice(0, 8)}`;
   function title(s: SessionSummary): string {
-    if (anonymized) return `セッション ${s.id.slice(0, 8)}`;
     return truncate(rawTitle(s), 80);
   }
 
@@ -124,7 +121,6 @@
    */
   const leads = $derived.by(() => {
     const m = new Map<string, { lead: string | null; rest: string; same: number }>();
-    if (anonymized) return m;
     const texts = sessions.map(rawTitle);
     sharedLeads(texts).forEach((x, i) => {
       if (x.cut === 0 && x.same < 2) return;
@@ -133,10 +129,9 @@
     return m;
   });
 
-  /** セッション id → 入っているグループの名前(行の下に「グループ: …」と出す。伏せ字版では出さない) */
+  /** セッション id → 入っているグループの名前(行の下に「グループ: …」と出す) */
   const groupsOf = $derived.by(() => {
     const m = new Map<string, string[]>();
-    if (anonymized) return m;
     for (const g of groups) for (const id of g.ids) m.set(id, [...(m.get(id) ?? []), g.name]);
     return m;
   });
@@ -309,7 +304,7 @@
         {/if}
       {:else if readOnly}
         <span class="how" data-testid="readonly-how">読むだけの画面です。タスクタグは送った人が付けたものを出し、ここでは付けられません</span>
-      {:else if !anonymized}
+      {:else}
         <span class="how">このファイルは閲覧用です。タスクタグは atlas.bat から開いたときに付けられます</span>
       {/if}
     </div>

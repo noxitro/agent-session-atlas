@@ -5,7 +5,6 @@ use atlas_core::instructions::content_hash;
 use atlas_core::normalize::{normalize_session, DbInput, NormalizeInput};
 use atlas_core::types::{CopilotEvent, DbUsageRow, SessionRecord, WorkspaceInfo};
 use atlas_core::wiki::{WikiClassifier, WikiSpec};
-use atlas_report::anonymize::{create_anonymizer, identity_anonymizer, AnonSource};
 use atlas_report::build::embed_code_stamp;
 use atlas_report::coverage::{coverage_file, desktop_coverage, rule_for, CoverageCounter, Treatment};
 use atlas_report::detail::{merge_instruction_rows, render_detail_html, DetailOptions};
@@ -39,11 +38,9 @@ fn normalize(id: &str, events: Vec<CopilotEvent>, workspace: Option<WorkspaceInf
 }
 
 fn html(r: &SessionRecord) -> String {
-    let anon = identity_anonymizer();
     render_detail_html(
         r,
         &DetailOptions {
-            anon: &anon,
             css: "",
             code: "c0de",
             judgment: None,
@@ -72,6 +69,86 @@ fn field_of(page: &str, key: &str) -> Option<(String, String)> {
 
 fn pair(v: &str, n: &str) -> Option<(String, String)> {
     Some((v.into(), n.into()))
+}
+
+// ---------- 失敗の台帳(依頼ごとの表の欄と、1 件ごとの節) ----------
+
+fn ledger_events() -> Vec<CopilotEvent> {
+    let none = || json!({});
+    vec![
+        // 最初の依頼より前の失敗(依頼は「—」)
+        ev("tool.execution_start", json!({ "toolName": "view", "toolCallId": "p", "arguments": { "path": "x" } }), &t(0), none()),
+        ev("tool.execution_complete", json!({ "toolCallId": "p", "success": false, "error": { "code": "failure", "message": "<script>alert(1)</script> & does not exist" } }), &t(1), none()),
+        ev("user.message", json!({ "content": "直して" }), &t(2), none()),
+        ev("tool.execution_start", json!({ "toolName": "view", "toolCallId": "a", "arguments": { "path": "a.ts" } }), &t(3), none()),
+        ev("tool.execution_complete", json!({ "toolCallId": "a", "success": false, "error": { "code": "failure", "message": "Path does not exist" } }), &t(4), none()),
+        // 同じ引数で呼び直して、また失敗
+        ev("tool.execution_start", json!({ "toolName": "view", "toolCallId": "b", "arguments": { "path": "a.ts" } }), &t(5), none()),
+        ev("tool.execution_complete", json!({ "toolCallId": "b", "success": false, "error": { "code": "failure", "message": "Path does not exist" } }), &t(6), none()),
+        ev("tool.execution_start", json!({ "toolName": "srv-run", "toolCallId": "c", "mcpServerName": "srv", "arguments": {} }), &t(7), none()),
+        ev("tool.execution_complete", json!({ "toolCallId": "c", "success": false, "error": { "code": "denied" } }), &t(8), none()),
+        // サブエージェントの失敗(親の呼び出しの prompt は agents[] に 1 回だけ)
+        ev("tool.execution_start", json!({ "toolName": "task", "toolCallId": "t1", "arguments": { "agent_type": "explore", "prompt": "合成の依頼 <b>" } }), &t(9), none()),
+        ev("subagent.started", json!({ "toolCallId": "t1", "agentName": "explore" }), &t(10), none()),
+        ev("tool.execution_start", json!({ "toolName": "grep", "toolCallId": "s1", "arguments": { "pattern": "x" }, "parentToolCallId": "t1" }), &t(11), none()),
+        ev("tool.execution_complete", json!({ "toolCallId": "s1", "success": false, "error": "timed out", "parentToolCallId": "t1" }), &t(12), none()),
+        ev("subagent.completed", json!({ "toolCallId": "t1", "agentName": "explore" }), &t(13), none()),
+        ev("tool.execution_complete", json!({ "toolCallId": "t1", "success": true }), &t(14), none()),
+    ]
+}
+
+#[test]
+fn detail_failure_ledger_column_and_section() {
+    let r = normalize("l", ledger_events(), None, &[], None);
+    let page = html(&r);
+    // 依頼ごとの表: 失敗の内訳の欄(ツール・要因か拒否・回数。多い順)
+    assert!(page.contains("<th scope=\"col\">失敗・拒否の内訳</th>"));
+    assert!(page.contains("<td><span class=\"fb\">view 対象が見つからない ×2</span><span class=\"fb\">srv-run 拒否 ×1</span><span class=\"fb\">grep 時間切れ ×1</span></td>"), "{page}");
+    // 1 件ごとの節: 台帳の順に 5 行
+    assert!(page.contains(">失敗と拒否(1 件ごと)</h2>"));
+    let rows = Regex::new(r#"(?s)<table class="ledger small fails">.*?<tbody>(.*?)</tbody>"#).unwrap().captures(&page).unwrap()[1].to_string();
+    assert_eq!(rows.matches("<tr>").count(), 5);
+    // 最初の依頼より前の失敗は依頼が「—」。エラー文は HTML として解釈されない
+    assert!(rows.starts_with("<tr><td class=\"num\"><span class=\"missing-value\">—</span></td>"));
+    assert!(rows.contains("failure: &lt;script&gt;alert(1)&lt;/script&gt; &amp; does not exist"));
+    assert!(!page.contains("<script>alert(1)"));
+    // その後: 同じ引数で呼び直して失敗 / 拒否 / サブエージェントは続きなし
+    assert!(rows.contains("<td class=\"next\">view → 失敗 <span class=\"tag\">同じ引数で呼び直し</span></td>"));
+    assert!(rows.contains("<td>srv-run <span class=\"tag\">MCP: srv</span></td><td class=\"fkind\">拒否</td>"));
+    assert!(rows.contains("<td>grep <span class=\"tag\">サブエージェント: explore</span></td><td class=\"fkind\">失敗: 時間切れ</td>"));
+    assert!(rows.contains("<span class=\"missing-value\">続きなし</span>"));
+    assert!(rows.contains("<td class=\"args\">{&quot;path&quot;:&quot;a.ts&quot;}</td>"));
+    // サブエージェントへの依頼文は 1 回だけ
+    assert_eq!(page.matches("<li>explore: 合成の依頼 &lt;b&gt;</li>").count(), 1);
+    assert!(!page.contains("「失敗と拒否(1 件ごと)」がありません"));
+    assert!(!page.contains("件は載っていません"));
+}
+
+#[test]
+fn detail_failure_ledger_old_record_and_dropped() {
+    // 古い記録(台帳なし): 欄も節も出さず、失敗があるときだけ断りを出す
+    let mut old = normalize("o", ledger_events(), None, &[], None);
+    old.analysis.failures = None;
+    old.analysis.failures_dropped = None;
+    let page = html(&old);
+    assert!(!page.contains("失敗・拒否の内訳") && !page.contains(">失敗と拒否(1 件ごと)</h2>"));
+    assert!(page.contains("「失敗と拒否(1 件ごと)」がありません"));
+    // 失敗の無い古い記録には断りも出さない
+    let mut quiet = normalize("q", vec![ev("user.message", json!({ "content": "x" }), &t(0), json!({}))], None, &[], None);
+    quiet.analysis.failures = None;
+    assert!(!html(&quiet).contains("「失敗と拒否(1 件ごと)」がありません"));
+    // 台帳が 0 件: 欄は出す(どの依頼も「—」)、節は出さない
+    let empty = normalize("e", vec![ev("user.message", json!({ "content": "x" }), &t(0), json!({}))], None, &[], None);
+    let page = html(&empty);
+    assert!(page.contains("失敗・拒否の内訳") && !page.contains(">失敗と拒否(1 件ごと)</h2>"));
+    // 失敗の数はあるのに台帳の行が無い依頼(上限で落ちた分など)は「—」ではなく「記録なし」
+    let mut lost = normalize("n", ledger_events(), None, &[], None);
+    lost.analysis.failures = Some(Vec::new());
+    assert!(html(&lost).contains("<td><span class=\"missing-value\">記録なし</span></td><td class=\"num\">"));
+    // 上限で載せなかった件数
+    let mut cut = normalize("c", ledger_events(), None, &[], None);
+    cut.analysis.failures_dropped = Some(3);
+    assert!(html(&cut).contains("1 セッション 500 行の上限を超えた 3 件は載っていません。"));
 }
 
 // ---------- detail-fixes.test.ts ----------
@@ -511,8 +588,8 @@ fn transcript_setup() -> (SessionRecord, Vec<RawEvent>, tempfile::TempDir) {
     (rec, raw, dir)
 }
 
-fn topts<'a>(anon: &'a atlas_report::anonymize::Anonymizer, gen_at: &'a str, tool: ToolOutputMode, max_text: usize, max_tool: usize) -> TranscriptOptions<'a> {
-    TranscriptOptions { anon, generated_at: gen_at, tool_output: tool, max_text_chars: max_text, max_tool_chars: max_tool, gap_ms: 5 * 60_000 }
+fn topts(gen_at: &str, tool: ToolOutputMode, max_text: usize, max_tool: usize) -> TranscriptOptions<'_> {
+    TranscriptOptions { generated_at: gen_at, tool_output: tool, max_text_chars: max_text, max_tool_chars: max_tool, gap_ms: 5 * 60_000 }
 }
 
 #[test]
@@ -534,9 +611,8 @@ fn transcript_helpers() {
 fn transcript_body() {
     let (rec, raw, _dir) = transcript_setup();
     let usage = usage_rows();
-    let anon = identity_anonymizer();
     let gen_at = at(1000);
-    let r = render_transcript(&rec, Some(&raw), &usage, &topts(&anon, &gen_at, ToolOutputMode::Fail, 20_000, 4_000));
+    let r = render_transcript(&rec, Some(&raw), &usage, &topts(&gen_at, ToolOutputMode::Fail, 20_000, 4_000));
     let md = &r.markdown;
     assert_eq!(r.source, TranscriptSource::Events);
     assert_eq!(r.events, transcript_events().len());
@@ -565,35 +641,117 @@ fn transcript_body() {
 fn transcript_tool_output_and_limits() {
     let (rec, raw, _dir) = transcript_setup();
     let usage = usage_rows();
-    let anon = identity_anonymizer();
     let gen_at = at(1000);
-    let all = render_transcript(&rec, Some(&raw), &usage, &topts(&anon, &gen_at, ToolOutputMode::All, 20_000, 4_000)).markdown;
+    let all = render_transcript(&rec, Some(&raw), &usage, &topts(&gen_at, ToolOutputMode::All, 20_000, 4_000)).markdown;
     assert!(all.contains("SUCCESS_RESULT_BODY"));
     // 本文に ``` があっても囲みが壊れない(4 つ以上のバッククォートで囲む)
     assert!(all.contains("````\nSUCCESS_RESULT_BODY ```inner``` ok\n````"));
-    let none = render_transcript(&rec, Some(&raw), &usage, &topts(&anon, &gen_at, ToolOutputMode::None, 20_000, 4_000)).markdown;
+    let none = render_transcript(&rec, Some(&raw), &usage, &topts(&gen_at, ToolOutputMode::None, 20_000, 4_000)).markdown;
     assert!(!none.contains("FAILED_RESULT_BODY") && none.contains("✖ `powershell`"));
-    assert_eq!(render_transcript(&rec, Some(&raw), &usage, &topts(&anon, &gen_at, ToolOutputMode::All, 200, 4_000)).truncated, 0);
-    let tiny = render_transcript(&rec, Some(&raw), &usage, &topts(&anon, &gen_at, ToolOutputMode::All, 200, 10));
+    assert_eq!(render_transcript(&rec, Some(&raw), &usage, &topts(&gen_at, ToolOutputMode::All, 200, 4_000)).truncated, 0);
+    let tiny = render_transcript(&rec, Some(&raw), &usage, &topts(&gen_at, ToolOutputMode::All, 200, 10));
     assert!(tiny.truncated > 0);
     assert!(Regex::new(r"…\(中略 \d+ 字\)…").unwrap().is_match(&tiny.markdown));
 }
 
 #[test]
-fn transcript_anonymized_and_record_only() {
-    let (rec, raw, _dir) = transcript_setup();
-    let usage = usage_rows();
-    let anon = create_anonymizer(&[AnonSource::from(&rec)]);
+fn transcript_redacts_title_and_abort_reason() {
+    // 見出しのセッション名と中断の理由も、本文と同じ検査に通して件数に入れる(鍵らしい文字列は架空のもの)
+    let token = format!("ghp_{}", "t".repeat(36));
+    let key = format!("sk-{}", "k".repeat(24));
+    let events = vec![
+        json!({ "type": "session.start", "timestamp": at(0), "data": { "sessionId": "tr2", "copilotVersion": "1.0.100" } }),
+        json!({ "type": "user.message", "timestamp": at(1), "data": { "content": "鍵の無い依頼", "agentMode": "interactive" } }),
+        json!({ "type": "abort", "timestamp": at(2), "data": { "reason": format!("stopped while using {key}") } }),
+    ];
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("events.jsonl");
+    std::fs::write(&path, events.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n") + "\n").unwrap();
+    let ws = WorkspaceInfo { created_at: Some(at(0)), name: Some(format!("{token} を使う作業")), ..Default::default() };
+    let rec = normalize("tr2", to_events(&events), Some(ws), &[], None);
+    let raw = read_raw_events(&path).unwrap();
     let gen_at = at(1000);
-    let md = render_transcript(&rec, Some(&raw), &usage, &topts(&anon, &gen_at, ToolOutputMode::Fail, 20_000, 4_000)).markdown;
-    assert!(md.contains("伏せ字モード"));
-    for s in ["secret-proj", "quokka", "feature/x1", "C:\\work"] {
-        assert!(!md.contains(s), "{s}");
+    let r = render_transcript(&rec, Some(&raw), &[], &topts(&gen_at, ToolOutputMode::Fail, 20_000, 4_000));
+    let md = &r.markdown;
+    assert!(md.starts_with("# セッション記録: [伏せました: GitHub トークン] を使う作業\n"), "{md}");
+    assert!(md.contains("**中断** stopped while using [伏せました: "), "{md}");
+    assert!(!md.contains(&token) && !md.contains(&key), "{md}");
+    assert_eq!(r.secret_hits, 2);
+    assert!(md.contains("2 件伏せました"), "{md}");
+}
+
+/// イベントの並びから記録を作る(ツールの結果は入れない。数えるのは引数と 1 行の文で伏せた分だけになる)
+fn render_events_without_tool_output(id: &str, events: &[Value]) -> atlas_report::transcript::TranscriptResult {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("events.jsonl");
+    std::fs::write(&path, events.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n") + "\n").unwrap();
+    let ws = WorkspaceInfo { created_at: Some(at(0)), ..Default::default() };
+    let rec = normalize(id, to_events(events), Some(ws), &[], None);
+    let raw = read_raw_events(&path).unwrap();
+    let gen_at = at(1000);
+    render_transcript(&rec, Some(&raw), &[], &topts(&gen_at, ToolOutputMode::None, 20_000, 4_000))
+}
+
+#[test]
+fn transcript_counts_secrets_in_tool_and_error_lines() {
+    // ツールの引数・ツールの失敗の文・サブエージェントの失敗・エラーの文で伏せた数も、記録の末尾の件数に入れる。
+    // 鍵らしい文字列は架空のもので、実行時に組み立てる
+    let bearer = format!("{} {}", "Bearer", "r".repeat(32));
+    let token = format!("ghp_{}", "t".repeat(36));
+    let key = format!("sk-{}", "k".repeat(24));
+    let aws = format!("AKIA{}", "W".repeat(16));
+    let events = vec![
+        json!({ "type": "session.start", "timestamp": at(0), "data": { "sessionId": "tr3", "copilotVersion": "1.0.100" } }),
+        json!({ "type": "user.message", "timestamp": at(1), "data": { "content": "鍵の無い依頼", "agentMode": "interactive" } }),
+        json!({ "type": "tool.execution_start", "timestamp": at(2), "data": { "toolCallId": "c1", "toolName": "powershell", "arguments": { "command": format!("curl -H \"Authorization: {bearer}\" https://example.invalid/") } } }),
+        json!({ "type": "tool.execution_complete", "timestamp": at(4), "data": { "toolCallId": "c1", "success": false, "error": { "code": "failure", "message": format!("remote rejected {token}") }, "result": { "content": "RESULT_BODY" } } }),
+        json!({ "type": "subagent.failed", "timestamp": at(5), "data": { "agentName": "explore", "error": format!("auth failed with {key}") } }),
+        json!({ "type": "session.error", "timestamp": at(6), "data": { "errorType": "auth", "message": format!("credential {aws} was rejected") } }),
+    ];
+    let r = render_events_without_tool_output("tr3", &events);
+    let md = &r.markdown;
+    assert!(md.contains("✖ `powershell` curl -H \"Authorization: [伏せました: Bearer トークン]\" https://example.invalid/(2秒) — 失敗: failure: remote rejected [伏せました: GitHub トークン]"), "{md}");
+    assert!(md.contains("**サブエージェント失敗** `explore`: auth failed with [伏せました: OpenAI / Anthropic 系キー]"), "{md}");
+    assert!(md.contains("**エラー** auth: credential [伏せました: AWS アクセスキー] was rejected"), "{md}");
+    for secret in [&bearer, &token, &key, &aws] {
+        assert!(!md.contains(secret.as_str()), "{secret} が残っています\n{md}");
     }
-    assert!(md.contains("project-01") && md.contains("branch-01") && md.contains("<path>") && md.contains("伏せ字モードのためパスは出しません") && md.contains("を直して"));
+    assert!(!md.contains("RESULT_BODY"), "{md}");
+    assert_eq!(r.secret_hits, 4);
+    assert!(md.contains("4 件伏せました") && !md.contains("見つかりませんでした"), "{md}");
+}
+
+#[test]
+fn transcript_counts_secret_past_the_args_cut() {
+    // ツールの引数は 160 字で切る。切れ目より後ろの鍵は要約に出ないが、切る前の全文で伏せているので数に入る
+    let token = format!("ghp_{}", "f".repeat(36));
+    let events_with = |command: String| {
+        vec![
+            json!({ "type": "session.start", "timestamp": at(0), "data": { "sessionId": "tr4", "copilotVersion": "1.0.100" } }),
+            json!({ "type": "user.message", "timestamp": at(1), "data": { "content": "鍵の無い依頼", "agentMode": "interactive" } }),
+            json!({ "type": "tool.execution_start", "timestamp": at(2), "data": { "toolCallId": "c1", "toolName": "powershell", "arguments": { "command": command } } }),
+            json!({ "type": "tool.execution_complete", "timestamp": at(3), "data": { "toolCallId": "c1", "success": true, "result": { "content": "ok" } } }),
+        ]
+    };
+    let r = render_events_without_tool_output("tr4", &events_with(format!("echo {} {token}", "x".repeat(200))));
+    let md = &r.markdown;
+    assert!(md.contains(&format!("✔ `powershell` echo {}…", "x".repeat(155))), "{md}");
+    assert!(!md.contains(&token) && !md.contains("ffff"), "{md}");
+    assert_eq!(r.secret_hits, 1);
+    assert!(md.contains("1 件伏せました") && !md.contains("見つかりませんでした"), "{md}");
+
+    // 鍵の無い同じ形のセッションは 0 件で、「見つかりませんでした」と書く
+    let r = render_events_without_tool_output("tr4", &events_with(format!("echo {}", "x".repeat(200))));
+    assert_eq!(r.secret_hits, 0);
+    assert!(r.markdown.contains("見つかりませんでした") && !r.markdown.contains("件伏せました"), "{}", r.markdown);
+}
+
+#[test]
+fn transcript_record_only() {
+    let (rec, _raw, _dir) = transcript_setup();
+    let gen_at = at(1000);
     // スナップショットに events.jsonl が無ければ sessions.json の抜粋だけで組む
-    let id = identity_anonymizer();
-    let r = render_transcript(&rec, None, &[], &topts(&id, &gen_at, ToolOutputMode::Fail, 20_000, 4_000));
+    let r = render_transcript(&rec, None, &[], &topts(&gen_at, ToolOutputMode::Fail, 20_000, 4_000));
     assert_eq!((r.source, r.events), (TranscriptSource::Record, 0));
     assert!(r.markdown.contains("### 最初の依頼") && r.markdown.contains("### 最後の応答") && r.markdown.contains("リクエスト単位の明細はありません"));
 }

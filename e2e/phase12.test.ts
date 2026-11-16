@@ -1,10 +1,9 @@
 // Phase 12 E2E(docs/PLAN.md「Phase 12: 改善点の分析」)
 //  a. fixture で insights.html と insights.json ができ、atlas.html に改善点が埋め込まれる(5MB 未満、外部参照なし)
-//  b. 伏せ字版では依頼文の本文と指示文の見出しが出ない(件数とスコアだけ)
-//  c. skill-draft が偽の copilot で下書きを書く(本物は呼ばない)。伏せ字版の out では拒む
+//  c. skill-draft が偽の copilot で下書きを書く(本物は呼ばない)。依頼文もツールの並びも無い候補は、呼ぶ前に止める
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { readdir, readFile, rm } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { extractEmbedded } from '../packages/report/src/lib/embed.ts';
@@ -30,7 +29,6 @@ describe('Phase 12 E2E: fixtures', () => {
   let home: string;
   let close: () => Promise<void>;
   const out = join(WORK, 'out');
-  const outAnon = join(WORK, 'out-anon');
   let data: ReportData;
 
   beforeAll(async () => {
@@ -47,8 +45,8 @@ describe('Phase 12 E2E: fixtures', () => {
     for (const id of ['i-instructions', 'i-skills', 'i-stuck', 'i-candidates']) expect(html).toContain(`id="${id}"`);
     expect(html).toContain('<nav class="toc"');
     expect(externalRefs(html)).toEqual([]);
-    const j = JSON.parse(await readFile(join(out, 'insights.json'), 'utf8')) as { version: number; anonymized: boolean; sessions: number; candidates: { kind: string; count: number; sessions: string[]; representative: string | null }[] };
-    expect(j).toMatchObject({ version: 1, anonymized: false, sessions: data.sessions.length });
+    const j = JSON.parse(await readFile(join(out, 'insights.json'), 'utf8')) as { version: number; sessions: number; candidates: { kind: string; count: number; sessions: string[]; representative: string | null }[] };
+    expect(j).toMatchObject({ version: 1, sessions: data.sessions.length });
     // 埋め込み: 候補(上位 30 件まで)と、指示文の版の見出し
     expect(data.insights.candidates.length).toBe(Math.min(30, j.candidates.length));
     expect(data.insights.computedOver).toBe(data.sessions.length);
@@ -66,47 +64,46 @@ describe('Phase 12 E2E: fixtures', () => {
     expect(withTurns.analysis.requests.length).toBe(withTurns.analysis.turnTools.length);
     expect(withTurns.analysis.turnMs.length).toBe(withTurns.analysis.turnTools.length);
     expect(withTurns.analysis.turnActiveMs.length).toBe(withTurns.analysis.turnTools.length);
-    expect(s.schemaVersion).toBe(17);
-    expect(data.version).toBe(15);
+    expect(s.schemaVersion).toBe(19);
+    expect(data.version).toBe(17);
     expect(Buffer.byteLength(await readFile(join(out, 'atlas.html'), 'utf8'))).toBeLessThan(LIMIT);
     // 詳細ページから改善点のページへは不要(atlas.html の節から)。atlas.html の目次に「改善点」
     expect(await readFile(join(out, 'atlas.html'), 'utf8')).toMatch(/改善点/);
   });
 
-  it('b. 伏せ字版では依頼文の本文と指示文の見出しを出さず、件数とスコアだけ', async () => {
-    const r = atlas(['all', '--home', home, '--out', outAnon, '--anonymize']);
-    expect(r.status, r.stderr).toBe(0);
-    const d = extractEmbedded<ReportData>(await readFile(join(outAnon, 'atlas.html'), 'utf8'));
-    expect(d.insights.meta).toEqual({});
-    for (const c of d.insights.candidates) {
-      expect(c.representative).toBeNull();
-      expect(c.examples).toEqual([]);
-      expect(c.count).toBeGreaterThanOrEqual(3);
-    }
-    const j = JSON.parse(await readFile(join(outAnon, 'insights.json'), 'utf8')) as { anonymized: boolean; candidates: { representative: string | null; examples: string[] }[] };
-    expect(j.anonymized).toBe(true);
-    for (const c of j.candidates) expect(c.representative).toBeNull();
-    // 通常版の依頼文の候補の key(正規化した本文)が伏せ字版の埋め込みデータにも insights.json にも無く、key は不透明な値
-    const plainKeys = (JSON.parse(await readFile(join(out, 'insights.json'), 'utf8')) as { candidates: { kind: string; key: string }[] }).candidates.filter((c) => c.kind === 'request').map((c) => c.key);
-    expect(plainKeys.length).toBeGreaterThan(0);
-    const anonAtlas = await readFile(join(outAnon, 'atlas.html'), 'utf8');
-    const anonJson = await readFile(join(outAnon, 'insights.json'), 'utf8');
-    for (const k of plainKeys) {
-      expect(anonAtlas).not.toContain(k.slice(0, 20));
-      expect(anonJson).not.toContain(k.slice(0, 20));
-    }
-    const anonReq = (JSON.parse(anonJson) as { candidates: { kind: string; key: string }[] }).candidates.filter((c) => c.kind === 'request');
-    expect(anonReq.length).toBe(plainKeys.length);
-    for (const c of anonReq) expect(c.key).toMatch(/^request-\d+$/);
-    const html = await readFile(join(outAnon, 'insights.html'), 'utf8');
-    expect(html).toContain('伏せ字版');
-    // 通常版の候補の代表文が伏せ字版の出力に無い
-    const plain = JSON.parse(await readFile(join(out, 'insights.json'), 'utf8')) as { candidates: { representative: string | null }[] };
-    for (const c of plain.candidates) if (c.representative && c.representative.length > 10) expect(html).not.toContain(c.representative.slice(0, 30));
+  it('a2. failures.html と failures.json ができ、台帳の行数が sessions.json と合い、atlas.html から行ける', async () => {
+    const html = await readFile(join(out, 'failures.html'), 'utf8');
+    expect(html).toContain('<h1>失敗の台帳の集計</h1>');
+    for (const id of ['f-overview', 'f-groups', 'f-tools', 'f-mcp', 'f-agents', 'f-skills', 'f-instructions', 'f-next']) expect(html).toContain(`id="${id}"`);
+    expect(html).toContain('<nav class="toc"');
     expect(externalRefs(html)).toEqual([]);
+    const j = JSON.parse(await readFile(join(out, 'failures.json'), 'utf8')) as {
+      version: number;
+      thresholds: { minCalls: number };
+      coverage: { sessions: number; withLedger: number; withoutLedger: number; failures: number; denied: number; rows: number; dropped: number };
+      tools: { key: string; completed: number; failures: number; denied: number; rate: number | null }[];
+      next: { rows: number; retries: number; movedOn: number; user: number; end: number };
+    };
+    expect(j.version).toBe(1);
+    // 集計の対象は空でないセッション。行数と失敗・拒否の数は sessions.json と合う
+    const s = JSON.parse(await readFile(join(out, 'sessions.json'), 'utf8')) as SessionsFile;
+    const live = s.sessions.filter((x) => !x.empty);
+    expect(j.coverage).toMatchObject({ sessions: live.length, withLedger: live.length, withoutLedger: 0, dropped: 0 });
+    const sum = (f: (r: { failure: number; denied: number }) => number): number => live.reduce((n, x) => n + Object.values(x.tools.results).reduce((m, r) => m + f(r), 0), 0);
+    expect(j.coverage.failures).toBe(sum((r) => r.failure));
+    expect(j.coverage.denied).toBe(sum((r) => r.denied));
+    expect(j.coverage.rows).toBe(live.reduce((n, x) => n + (x.analysis.failures?.length ?? 0), 0));
+    expect(j.coverage.rows).toBeGreaterThan(0);
+    expect(j.next.rows).toBe(j.coverage.rows);
+    expect(j.next.retries + j.next.movedOn + j.next.user + j.next.end).toBe(j.next.rows);
+    // 率は、結果のある呼び出しが閾値に届いたものだけ
+    for (const t of j.tools) expect(t.rate === null).toBe(t.completed < j.thresholds.minCalls);
+    // atlas.html に埋め込んだ印と、付録の目次のリンク
+    expect(data.failures).toBe(true);
+    expect(await readFile(join(out, 'atlas.html'), 'utf8')).toMatch(/href:\s*["'`]failures\.html["'`]/);
   });
 
-  it('c. skill-draft は偽の copilot で候補から下書きを書く(本物は呼ばない)。番号が無い・伏せ字版の out は拒む', async () => {
+  it('c. skill-draft は偽の copilot で候補から下書きを書く(本物は呼ばない)。番号が無いもの・材料の無い候補は拒む', async () => {
     const j = JSON.parse(await readFile(join(out, 'insights.json'), 'utf8')) as { candidates: { kind: string; key: string; count: number; sessions: string[]; representative: string | null }[] };
     // fixture の繰り返し: 依頼文(3 セッション × 1)と、ツールの並び(3 セッション × 2 ターン)
     const req = j.candidates.find((c) => c.kind === 'request')!;
@@ -139,11 +136,20 @@ describe('Phase 12 E2E: fixtures', () => {
     for (const k of ['shell', 'write', 'url']) expect(argv.join(' ')).toContain(`--deny-tool ${k}`);
     expect(argv).toEqual(expect.arrayContaining(['--available-tools=view', '--disable-builtin-mcps']));
     expect(argv.join(' ')).toContain('--disable-mcp-server fake-mcp --deny-tool fake-mcp');
-    // 番号が無い / 伏せ字版
+    // 番号が無い
     expect(atlas(['skill-draft', '999', '--out', out], env).stderr).toMatch(/候補 999 はありません/);
-    expect(atlas(['skill-draft', '1', '--out', outAnon], env).stderr).toMatch(/伏せ字版/);
     expect(atlas(['skill-draft'], env).status).toBe(2);
     expect(atlas(['skill-draft', '1', '--backend', 'nope'], env).stderr).toMatch(/不明なバックエンド/);
-    expect(existsSync(join(outAnon, 'skill-drafts'))).toBe(false);
+    // 依頼文もツールの並びも無い候補は、LLM を呼ぶ前に止める(偽の copilot も呼ばれず、下書きも書かない)
+    const bare = join(WORK, 'out-bare');
+    await rm(bare, { recursive: true, force: true });
+    await mkdir(bare, { recursive: true });
+    await writeFile(join(bare, 'insights.json'), JSON.stringify({ version: 1, sessions: 2, candidates: [{ kind: 'request', key: 'k', count: 3, sessions: ['a', 'b'], medianMs: null, score: 3, representative: null, examples: [], tools: null }] }));
+    const rb = atlas(['skill-draft', '1', '--out', bare], env);
+    expect(rb.status).toBe(1);
+    expect(rb.stderr).toMatch(/下書きを作れません/);
+    expect(existsSync(join(bare, 'skill-drafts'))).toBe(false);
+    expect((await readFile(log, 'utf8')).trim().split('\n')).toHaveLength(1);
+    await rm(bare, { recursive: true, force: true });
   });
 });

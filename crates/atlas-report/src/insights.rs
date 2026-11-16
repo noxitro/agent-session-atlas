@@ -172,7 +172,7 @@ pub fn series_key(heading: &str, file: &str) -> String {
 pub struct VersionMeta {
     pub heading: String,
     pub file: String,
-    /// 系列の識別子(伏せ字版でも見出しを漏らさない不透明な値)
+    /// 系列の識別子(s0・s1 … の不透明な値。見出しからは作らない)
     pub series: String,
     /// 同じ系列の中での順(初回の利用日の順)
     pub order: i64,
@@ -187,7 +187,7 @@ fn truthy(s: &Option<String>) -> Option<&str> {
 }
 
 /// 改善点の版の情報(build.ts の insightMeta を作るところ)。系列は指示文のページと同じ鍵で束ね、同じ「版 N」になるようにする
-pub fn insight_meta(records: &[&SessionRecord], anonymized: bool) -> JsMap<VersionMeta> {
+pub fn insight_meta(records: &[&SessionRecord]) -> JsMap<VersionMeta> {
     struct Item {
         hash: String,
         heading: String,
@@ -224,7 +224,7 @@ pub fn insight_meta(records: &[&SessionRecord], anonymized: bool) -> JsMap<Versi
             meta.insert(
                 v.hash.clone(),
                 VersionMeta {
-                    heading: if anonymized { String::new() } else { v.heading.clone() },
+                    heading: v.heading.clone(),
                     file: v.file.to_string(),
                     series: series.clone(),
                     order: order as i64,
@@ -516,24 +516,10 @@ pub fn stuck_by_project(stuck: &[StuckSession], sessions: &[&SessionSummary]) ->
 
 // ---------- スキル化の候補(build 時) ----------
 
-static NR_URL: LazyLock<Regex> = LazyLock::new(|| Regex::new(&js_re(r"https?:\/\/\S+")).unwrap());
-static NR_PATH: LazyLock<Regex> = LazyLock::new(|| Regex::new(&js_re(r#"(?:[a-z]:[\\/]|\\\\)[^\s"'<>|]*|(?:^|[\s(])(?:\/[\w.-]+){2,}"#)).unwrap());
-static NR_ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(&js_re(r"\b[0-9a-f]{8,}\b")).unwrap());
-static NR_NUM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[0-9]+").unwrap());
-static NR_SYMBOL: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r"[^\p{{L}}\p{{N}}<>{}]", &js::RE_S[1..js::RE_S.len() - 1])).unwrap());
 static WS_RUN: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!("{}+", js::RE_S)).unwrap());
 
-/// 依頼文の正規化: 小文字、URL・パス・数字・16 進 id を印に、記号を落とし、空白を詰める
-pub fn normalize_request(text: &str) -> String {
-    let t = js::to_lower(text);
-    let t = NR_URL.replace_all(&t, " <url> ");
-    let t = NR_PATH.replace_all(&t, " <path> ");
-    let t = NR_ID.replace_all(&t, " <id> ");
-    let t = NR_NUM.replace_all(&t, " <n> ");
-    let t = NR_SYMBOL.replace_all(&t, " ");
-    let t = WS_RUN.replace_all(&t, " ");
-    js::trim(&t).to_string()
-}
+/// 依頼文の正規化は atlas-core に移した(失敗の台帳の group でも使うため)。前の名前のまま使えるよう再公開する
+pub use atlas_core::text::normalize_request;
 
 /// 3 文字(UTF-16 の単位)の組の集合。3 つの単位を 1 つの数にまとめ、昇順に重複なく持つ(共通部分を併合で数えるため)
 pub type Trigrams = Vec<u64>;
@@ -639,9 +625,9 @@ pub struct Candidate {
     pub median_ms: Option<f64>,
     /// 回数 × 実働の中央値(分)
     pub score: f64,
-    /// 代表の依頼文。伏せ字版では None
+    /// 代表の依頼文
     pub representative: Option<String>,
-    /// 代表以外の例(最大 3)。伏せ字版では空
+    /// 代表以外の例(最大 3)
     pub examples: Vec<String>,
     /// 並びの場合のツール名
     pub tools: Option<Vec<String>>,
@@ -690,7 +676,7 @@ fn uniq<'a>(it: impl IntoIterator<Item = &'a str>) -> Vec<String> {
     it.into_iter().filter(|x| seen.insert(*x)).map(str::to_string).collect()
 }
 
-pub fn request_candidates(sources: &[CandidateSource<'_>], anonymized: bool) -> Vec<Candidate> {
+pub fn request_candidates(sources: &[CandidateSource<'_>]) -> Vec<Candidate> {
     struct Item<'a> {
         id: &'a str,
         text: &'a str,
@@ -799,22 +785,16 @@ pub fn request_candidates(sources: &[CandidateSource<'_>], anonymized: bool) -> 
             sessions,
             median_ms,
             score: score_of(ms.len(), median_ms),
-            representative: if anonymized { None } else { Some(items[rep].text.to_string()) },
-            examples: if anonymized { vec![] } else { ms.iter().filter(|&&m| m != rep).take(3).map(|&m| items[m].text.to_string()).collect() },
+            representative: Some(items[rep].text.to_string()),
+            examples: ms.iter().filter(|&&m| m != rep).take(3).map(|&m| items[m].text.to_string()).collect(),
             tools: None,
         });
     }
     out.sort_by(|a, b| num_cmp(b.score, a.score).then(b.count.cmp(&a.count)));
-    // 伏せ字版では key(正規化した依頼文)も出さない
-    if anonymized {
-        for (i, c) in out.iter_mut().enumerate() {
-            c.key = format!("request-{}", i + 1);
-        }
-    }
     out
 }
 
-pub fn tool_sequence_candidates(sources: &[CandidateSource<'_>], anonymized: bool) -> Vec<Candidate> {
+pub fn tool_sequence_candidates(sources: &[CandidateSource<'_>]) -> Vec<Candidate> {
     struct Turn<'a> {
         id: &'a str,
         tools: Vec<&'a str>,
@@ -880,8 +860,8 @@ pub fn tool_sequence_candidates(sources: &[CandidateSource<'_>], anonymized: boo
                 sessions,
                 median_ms,
                 score: score_of(fresh.len(), median_ms),
-                representative: if anonymized { None } else { reqs.first().cloned() },
-                examples: if anonymized { vec![] } else { reqs.iter().skip(1).take(3).cloned().collect() },
+                representative: reqs.first().cloned(),
+                examples: reqs.iter().skip(1).take(3).cloned().collect(),
             });
         }
     }
@@ -889,10 +869,10 @@ pub fn tool_sequence_candidates(sources: &[CandidateSource<'_>], anonymized: boo
     out
 }
 
-pub fn skill_candidates(sources: &[CandidateSource<'_>], anonymized: bool) -> Vec<Candidate> {
+pub fn skill_candidates(sources: &[CandidateSource<'_>]) -> Vec<Candidate> {
     // atlas 自身の判定セッションは定型の繰り返しなので除く
     let src: Vec<CandidateSource> = sources.iter().copied().filter(|s| s.project != ATLAS_JUDGE_PROJECT).collect();
-    let (mut a, b) = rayon::join(|| request_candidates(&src, anonymized), || tool_sequence_candidates(&src, anonymized));
+    let (mut a, b) = rayon::join(|| request_candidates(&src), || tool_sequence_candidates(&src));
     a.extend(b);
     a.sort_by(|x, y| num_cmp(y.score, x.score).then(y.count.cmp(&x.count)));
     a

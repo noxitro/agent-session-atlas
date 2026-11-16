@@ -6,9 +6,11 @@
 
 use crate::classify::{is_autopilot_continuation, is_internal_tool, is_main_assistant_message, is_user_turn, normalize_model, FileOp, FileTracker};
 use crate::event_types::is_known_event_type;
+use crate::failure_ledger::{self as ledger, CallRec, PendingRow, RowInput};
 use crate::instructions::InstructionCollector;
 use crate::js::{self, cmp_utf16, head, num, present, str_of, string_or_null, tail, truthy, JsMap};
 use crate::jsdate;
+use crate::test_results::{CompleteInfo, TestCollector};
 use crate::tool_failure::{classify_tool_failure, is_denied_error};
 use crate::turns::tool_kind;
 use crate::types::*;
@@ -426,6 +428,18 @@ fn patch_files(patch: &str) -> Vec<(FileOp, String)> {
         .collect()
 }
 
+/// 失敗の台帳: 開始イベントで覚え、complete で捨てる呼び出しの材料
+struct PendingCall {
+    args: Option<String>,
+    mcp_server: Option<String>,
+    mcp_tool: Option<String>,
+    mcp_config_source: Option<String>,
+    model: Option<String>,
+    started_at: Option<String>,
+    /// 引数 prompt(サブエージェントを起動する呼び出しなら、subagent.started で agents[].prompt に写す)
+    prompt: Option<String>,
+}
+
 fn args_of(d: Option<&Value>) -> Option<Value> {
     let a = d?.get("arguments")?;
     if let Value::String(s) = a {
@@ -597,6 +611,7 @@ pub fn normalize_session(input: NormalizeInput<'_>) -> std::io::Result<SessionRe
         }
     };
     let mut friction = Friction::default();
+    let mut tests = TestCollector::new();
     let mut files = FileTracker::new();
     let mut shutdown_files: Vec<Value> = Vec::new();
     let mut timeline: Vec<TimelineEntry> = Vec::new();
@@ -614,6 +629,18 @@ pub fn normalize_session(input: NormalizeInput<'_>) -> std::io::Result<SessionRe
     let mut turn_consecutive: i64 = 0;
     let mut turn_edited: HashSet<String> = HashSet::new();
     let mut overflow_ms: Option<i64> = None;
+    // 失敗の台帳: 完了するまでの呼び出しの材料(complete で捨てる)・呼び出しの並び・行・要求の束・依頼の始まり
+    let mut pending_calls: HashMap<String, PendingCall> = HashMap::new();
+    let mut call_recs: Vec<CallRec> = Vec::new();
+    let mut call_rec_by_id: HashMap<String, usize> = HashMap::new();
+    let mut ledger_rows: Vec<PendingRow> = Vec::new();
+    let mut failures_dropped: i64 = 0;
+    let mut batch_of: HashMap<String, usize> = HashMap::new();
+    let mut batch_seq: usize = 0;
+    let mut call_by_agent_id: HashMap<String, String> = HashMap::new();
+    let mut user_turn_idx: Vec<usize> = Vec::new();
+    let mut turn_ord: Option<i64> = None;
+    let mut results_by_model: JsMap<JsMap<ToolResult>> = JsMap::new();
 
     macro_rules! cur {
         () => {
@@ -654,6 +681,17 @@ pub fn normalize_session(input: NormalizeInput<'_>) -> std::io::Result<SessionRe
             let agent_truthy = truthy(e.agent_id.as_ref());
             // 新しいユーザーのターンの始まり(その前の空白はどのターンにも入れない)
             let starts_turn = e.kind == "user.message" && !agent_truthy && !is_autopilot_continuation(Some(d)) && is_user_turn(Some(d));
+            // 失敗の台帳: イベントの番号・依頼の通し番号・エージェントの手掛かり
+            let ev_idx = total as usize;
+            if starts_turn {
+                user_turn_idx.push(ev_idx);
+                turn_ord = Some(turn_ord.map_or(0, |n| n + 1));
+            }
+            let parent_call = str_of(g("parentToolCallId")).filter(|s| !s.is_empty()).map(str::to_string);
+            let aid = present(e.agent_id.as_ref()).map(js::key_of).filter(|s| !s.is_empty());
+            if let (Some(a), Some(p)) = (&aid, &parent_call) {
+                call_by_agent_id.insert(a.clone(), p.clone());
+            }
             if let Some(t) = t {
                 if let Some(lt) = last_ts {
                     if t > lt {
@@ -762,6 +800,15 @@ pub fn normalize_session(input: NormalizeInput<'_>) -> std::io::Result<SessionRe
                         legacy_output += v;
                         legacy_output_by_model.add(model.as_deref().unwrap_or(UNKNOWN_KEY), v);
                     }
+                    // 失敗の台帳: 同じ応答で要求された呼び出しを 1 つの束にする(失敗への反応と、まとめて要求された呼び出しを分ける)
+                    if let Some(Value::Array(reqs)) = g("toolRequests") {
+                        batch_seq += 1;
+                        for r in reqs {
+                            if let Some(id) = str_of(r.get("toolCallId")).filter(|s| !s.is_empty()) {
+                                batch_of.insert(id.to_string(), batch_seq);
+                            }
+                        }
+                    }
                     if is_main_assistant_message(e.agent_id.as_ref(), e.data.as_ref()) {
                         assistant_messages += 1;
                         if let Some(c) = str_of(g("content")) {
@@ -802,6 +849,7 @@ pub fn normalize_session(input: NormalizeInput<'_>) -> std::io::Result<SessionRe
                 "tool.execution_start" => {
                     let name = js::key_or(g("toolName"), "(unknown)");
                     let call_id = str_of(g("toolCallId"));
+                    let batch = call_id.and_then(|id| batch_of.remove(id));
                     if is_internal_tool(&name) {
                         internal_tools.inc(&name, 1);
                         internal_total += 1;
@@ -833,6 +881,24 @@ pub fn normalize_session(input: NormalizeInput<'_>) -> std::io::Result<SessionRe
                     }
                     let args = args_of(Some(d));
                     let args_ref = args.as_ref();
+                    {
+                        // 失敗の台帳: 引数などは complete まで覚え、呼び出しの並びは next のために残す
+                        let raw_args = g("arguments").filter(|v| !v.is_null()).map(ledger::args_text);
+                        let arg_hash = ledger::hash_text(raw_args.as_deref().unwrap_or(""));
+                        if let Some(id) = call_id {
+                            let s = |k: &str| str_of(g(k)).filter(|s| !s.is_empty()).map(str::to_string);
+                            let prompt = match args_ref {
+                                Some(Value::Object(o)) => str_of(o.get("prompt")).filter(|s| !s.is_empty()).map(str::to_string),
+                                _ => None,
+                            };
+                            pending_calls.insert(
+                                id.to_string(),
+                                PendingCall { args: raw_args, mcp_server: s("mcpServerName"), mcp_tool: s("mcpToolName"), mcp_config_source: s("mcpConfigSource"), model: s("model").map(|m| normalize_model(&m)), started_at: at.clone(), prompt },
+                            );
+                            call_rec_by_id.insert(id.to_string(), call_recs.len());
+                        }
+                        call_recs.push(CallRec { parent: parent_call.clone(), aid: aid.clone(), start_idx: ev_idx, batch, tool: name.clone(), outcome: CallOutcome::Unknown, arg_hash });
+                    }
                     if let Some(ts) = cur!() {
                         if let Some(k) = tool_kind(&name, args_ref) {
                             ts.kinds.inc(k, 1);
@@ -923,6 +989,8 @@ pub fn normalize_session(input: NormalizeInput<'_>) -> std::io::Result<SessionRe
                         _ => None,
                     };
                     let error = g("error");
+                    // 失敗の台帳: 覚えた引数などは、成否にかかわらずここで捨てる
+                    let pend = call_id.and_then(|id| pending_calls.remove(id));
                     if success == Some(false) && !is_internal_call {
                         friction.tool_failures += 1;
                     }
@@ -948,17 +1016,65 @@ pub fn normalize_session(input: NormalizeInput<'_>) -> std::io::Result<SessionRe
                         }
                     }
                     let call_name = call_id.and_then(|id| tool_name_by_call.get(id)).cloned();
+                    // テストの実行ファイルが書いた印つきの行(内部ツールの結果は見ない)
+                    if !is_internal_call {
+                        let subagent = agent_truthy || truthy(g("parentToolCallId"));
+                        let turn = cur_turn.map(|i| i as i64 + 1);
+                        tests.add_complete(g("result"), error, CompleteInfo { at: at.clone(), turn, tool: call_name.as_deref(), tool_call_id: call_id, subagent, at_ms: t, active_ms });
+                    }
                     if let (Some(cn), Some(ok)) = (&call_name, success) {
-                        let r = results.entry(cn.clone()).or_default();
-                        if ok {
-                            r.success += 1;
-                        } else if is_denied_error(error) {
-                            r.denied += 1;
-                        } else {
-                            r.failure += 1;
-                            // 失敗の要因(文は残さず、決まった規則で分けた種類だけ)
-                            let cause = classify_tool_failure(error);
-                            r.causes.get_or_insert_with(JsMap::new).inc(cause, 1);
+                        let denied = !ok && is_denied_error(error);
+                        // 失敗の要因(決まった規則で分けた種類。文そのものは失敗の台帳に残す)
+                        let cause = (!ok && !denied).then(|| classify_tool_failure(error));
+                        let model = str_of(g("model")).filter(|s| !s.is_empty()).map(normalize_model).or_else(|| pend.as_ref().and_then(|p| p.model.clone()));
+                        let by_model = results_by_model.entry(model.clone().unwrap_or_else(|| UNKNOWN_KEY.into())).or_default();
+                        for r in [results.entry(cn.clone()).or_default(), by_model.entry(cn.clone()).or_default()] {
+                            if ok {
+                                r.success += 1;
+                            } else if denied {
+                                r.denied += 1;
+                            } else {
+                                r.failure += 1;
+                                r.causes.get_or_insert_with(JsMap::new).inc(cause.unwrap(), 1);
+                            }
+                        }
+                        let rec = call_id.and_then(|id| call_rec_by_id.get(id)).copied();
+                        if let Some(ri) = rec {
+                            call_recs[ri].outcome = if ok { CallOutcome::Success } else if denied { CallOutcome::Denied } else { CallOutcome::Failure };
+                        }
+                        if !ok {
+                            if ledger_rows.len() < ledger::MAX_ROWS {
+                                let duration_ms = match (call_id.and_then(|id| tool_start_ms.get(id)), t) {
+                                    (Some(&st), Some(t)) if t >= st => Some((t - st) as f64),
+                                    _ => None,
+                                };
+                                let p = pend.as_ref();
+                                let row = ledger::build_row(RowInput {
+                                    tool: cn,
+                                    error,
+                                    denied,
+                                    cause,
+                                    args: p.and_then(|p| p.args.as_deref()),
+                                    mcp_server: p.and_then(|p| p.mcp_server.clone()),
+                                    mcp_tool: p.and_then(|p| p.mcp_tool.clone()),
+                                    mcp_config_source: p.and_then(|p| p.mcp_config_source.clone()),
+                                    model,
+                                    started_at: p.and_then(|p| p.started_at.clone()),
+                                    duration_ms,
+                                    turn: turn_ord,
+                                });
+                                let rc = rec.map(|ri| &call_recs[ri]);
+                                ledger_rows.push(PendingRow {
+                                    row,
+                                    parent: rc.map_or_else(|| parent_call.clone(), |c| c.parent.clone()),
+                                    aid: rc.map_or_else(|| aid.clone(), |c| c.aid.clone()),
+                                    complete_idx: ev_idx,
+                                    batch: rc.and_then(|c| c.batch),
+                                    arg_hash: rc.map(|c| c.arg_hash),
+                                });
+                            } else {
+                                failures_dropped += 1;
+                            }
                         }
                     }
                     if let (Some(cn), Some(t), Some(id)) = (&call_name, t, call_id) {
@@ -1063,6 +1179,7 @@ pub fn normalize_session(input: NormalizeInput<'_>) -> std::io::Result<SessionRe
                         total_tool_calls: None,
                         model: str_of(g("model")).map(normalize_model),
                         error: None,
+                        prompt: None,
                     });
                     if truthy(agent_name) {
                         let n = js::key_of(agent_name.unwrap());
@@ -1075,6 +1192,12 @@ pub fn normalize_session(input: NormalizeInput<'_>) -> std::io::Result<SessionRe
                     }
                     if e.kind == "subagent.started" {
                         a.started_at = at.clone();
+                        // 起動した親の呼び出し(まだ完了していない)の引数 prompt を、エージェントごとに 1 回だけ写す
+                        if a.prompt.is_none() {
+                            if let Some(p) = id.as_ref().and_then(|i| pending_calls.get(i)).and_then(|pc| pc.prompt.as_deref()) {
+                                a.prompt = Some(ledger::redact_cap(p, ledger::PROMPT_LIMIT));
+                            }
+                        }
                         if let Some(n) = agent_name {
                             a.name = js::key_of(n);
                         }
@@ -1348,11 +1471,24 @@ pub fn normalize_session(input: NormalizeInput<'_>) -> std::io::Result<SessionRe
             agent_name_by_id.insert(id.clone(), a.name.clone());
         }
     }
+    // 失敗の台帳を仕上げる(エージェントの名前と next)。DB の行の agent_id → parent_tool_call_id も親の呼び出しの手掛かりにする
+    for row in db_usage {
+        if let (Some(a), Some(c)) = (row.agent_id.as_deref().filter(|s| !s.is_empty()), row.parent_tool_call_id.as_deref().filter(|s| !s.is_empty())) {
+            call_by_agent_id.entry(a.to_string()).or_insert_with(|| c.to_string());
+        }
+    }
+    let failures = ledger::finish(ledger_rows, &call_recs, &user_turn_idx, &call_by_agent_id, |k| agent_name_by_id.get(k).cloned());
     let (items, duplicates) = merge_usage(db_usage, usage_records);
     let mut tokens = build_tokens(&items, duplicates, legacy_output, &legacy_output_by_model, &agent_name_by_id, last_shutdown.as_ref());
     tokens.subagent_total_tokens = subagent_total_tokens;
     attribute_usage(&items, &turn_start_ms, overflow_ms, &mut turn_stats);
     tokens.max_pre_compaction_tokens = max_pre_compaction;
+    // テストの実行ごとの AI 使用量の累計。AIU の記録があるリクエストのすべてに時刻があるときだけ出す(時刻の無いものがあると、どの実行より前か決められない)
+    let aiu_times: Option<Vec<(i64, f64)>> = {
+        let with: Vec<&UsageItem> = items.iter().filter(|u| u.nano_aiu.is_some()).collect();
+        if with.is_empty() { None } else { with.iter().map(|u| u.at.zip(u.nano_aiu)).collect() }
+    };
+    let tests = tests.finish(|until| aiu_times.as_ref().map(|v| v.iter().filter(|(at, _)| *at <= until).map(|(_, n)| n).sum()));
     for u in &items {
         models.insert(u.model.clone());
     }
@@ -1435,6 +1571,8 @@ pub fn normalize_session(input: NormalizeInput<'_>) -> std::io::Result<SessionRe
         turn_tools,
         requests,
         turn_stats: Some(turn_stats),
+        failures: Some(failures),
+        failures_dropped: Some(failures_dropped),
     };
 
     Ok(SessionRecord {
@@ -1468,6 +1606,7 @@ pub fn normalize_session(input: NormalizeInput<'_>) -> std::io::Result<SessionRe
             internal: InternalTools { by_name: internal_tools, total: internal_total },
             mcp,
             results,
+            results_by_model,
             durations: tool_durations,
             duration_outliers: tool_duration_outliers,
         },
@@ -1485,6 +1624,7 @@ pub fn normalize_session(input: NormalizeInput<'_>) -> std::io::Result<SessionRe
         files: SessionFiles { changed: files_result.changed, created: files_result.created, deleted: files_result.deleted, session_state: files_result.session_state },
         timeline,
         analysis,
+        tests,
         unknown_event_types: unknown,
         events: EventCounts { total, bad_lines: 0, by_type },
         person: None,

@@ -7,7 +7,6 @@
 //!   3. 順に: 網羅の集計を足し、全文記録の末尾(それまでのセッションで出た未分類のキーを含む)を書き足し、閲覧ページの収集を進める
 //!   4. 詳細ページを並べて書く(閲覧ページへのリンクは、TS 版がそのセッションを書いた時点の収集の状態で決める)
 
-use crate::anonymize::{create_anonymizer, identity_anonymizer, AnonSource, Anonymizer};
 use crate::coverage::{coverage_file, desktop_coverage, CoverageCounter};
 use crate::detail::{render_detail_html, DetailMemo, DetailOptions};
 use crate::embed::embed_data;
@@ -17,6 +16,8 @@ use crate::groups::SessionGroup;
 use crate::highlights::{installed_view, InstalledView};
 use crate::html::{byte_length, write_text};
 use crate::insights::{embedded_candidates, insight_meta, instruction_findings, instruction_versions, skill_candidates, skill_stats, stuck_by_project, stuck_sessions, Candidate, CandidateSource, VersionMeta};
+use crate::failure_stats::failure_stats;
+use crate::failures_page::{failures_json, render_failures_html, FailuresPageOptions, FAILURES_FILE, FAILURES_JSON};
 use crate::insights_page::{render_insights_html, InsightsPageOptions, INSIGHTS_FILE, INSIGHTS_JSON};
 use crate::judgments::JudgmentsIndex;
 use crate::library::{instruction_events, render_instructions_html, write_library, BodyInterner, InstructionsPageOptions, LibraryCollector, LibraryEvent, ResolvedInstruction, INSTRUCTIONS_FILE, LIBRARY_DIR};
@@ -31,7 +32,7 @@ use crate::types::{SessionSummary, REPORT_DATA_VERSION};
 use crate::verdicts::{verdict_tuples, VerdictIndex};
 use crate::viewer::encode_uri_component;
 use anyhow::{anyhow, bail, Context, Result};
-use atlas_core::atlas_version::{describe_atlas_builds, summarize_atlas_builds, AtlasBuild, AtlasBuildSummary, FolderUpload, SentSession};
+use atlas_core::atlas_version::{describe_atlas_builds, summarize_atlas_builds, AtlasBuild, FolderUpload, SentSession};
 use atlas_core::instructions::content_hash;
 use atlas_core::js::{self, JsMap};
 use atlas_core::types::{DbUsageRow, InstalledInventory, InstructionFile, SessionRecord, SessionsDesktop};
@@ -103,7 +104,7 @@ pub fn template() -> Result<&'static str> {
     }
 }
 
-/// アップロードしたフォルダを集計したときの、そのフォルダ(画面の見出しに出す。伏せ字版には入れない)
+/// アップロードしたフォルダを集計したときの、そのフォルダ(画面の見出しに出す)
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ReportSource {
     pub name: String,
@@ -148,6 +149,8 @@ pub struct BuildInput<'a> {
     /// sessions.json の総件数(フィルタ前)
     pub total_sessions_in_source: usize,
     pub source: Option<ReportSource>,
+    /// 参照を数えた llm-wiki の vault の数(sessions.json の source.wikis。古い集計では None)
+    pub wiki_vaults: Option<i64>,
     pub warnings: BuildWarnings,
     pub judgments: Option<&'a JudgmentsIndex>,
     /// 段階 2: 依頼ごとの LLM 判定
@@ -155,6 +158,8 @@ pub struct BuildInput<'a> {
     /// AI の変更がその後の VCS のファイルに残っているか
     pub retention: Option<&'a VcsRetentionFile>,
     pub groups: Vec<SessionGroup>,
+    /// 送り先から集計したときの、グループごとの元のタグ(groups と同じ並び)。手元のタスクタグでは None
+    pub group_tags: Option<Vec<String>>,
     /// Phase 13: メモの置き場(<notes-dir>/memos)
     pub memos_dir: Option<PathBuf>,
     /// 送り先から集計したとき: 送った人のメモを読む、写したセッションのフォルダ(<snapshot>/session-state)。あれば memos_dir より優先する
@@ -166,7 +171,6 @@ pub struct BuildInput<'a> {
     /// 送り先から集計したときの、フォルダごとの最後に送ったときの日時と版
     pub atlas_uploads: Option<JsMap<FolderUpload>>,
     pub out_dir: PathBuf,
-    pub anonymize: bool,
     pub scope: BuildScope,
     /// テンプレート(ensure_template の結果を読んだもの)
     pub template: String,
@@ -175,9 +179,9 @@ pub struct BuildInput<'a> {
     /// 版の目印(code_stamp)
     pub code: String,
     pub transcripts: Option<TranscriptSettings>,
-    /// Phase 11: 全文記録(out/full/)と coverage.json も書く(伏せ字とは併用しない)
+    /// Phase 11: 全文記録(out/full/)と coverage.json も書く
     pub full: bool,
-    /// Phase 11: 指示文・skill の閲覧ページ。transcripts のときの既定は true(伏せ字版では作らない)
+    /// Phase 11: 指示文・skill の閲覧ページ。transcripts のときの既定は true
     pub library: Option<bool>,
     /// sessions.json の desktop(data.db の読み取りの状態)
     pub desktop_meta: Option<&'a SessionsDesktop>,
@@ -238,38 +242,6 @@ pub struct BuildResult {
     pub ms: f64,
 }
 
-/// metrics の byProject を伏せ字のプロジェクト名にする(TS 版の anonymizeMetrics)
-pub fn anonymize_metrics(mut m: Value, anon: &Anonymizer) -> Value {
-    if !anon.enabled {
-        return m;
-    }
-    if let Some(Value::Object(by)) = m.get_mut("byProject") {
-        let old = std::mem::take(by);
-        let mut out = serde_json::Map::new();
-        for (k, v) in old {
-            out.insert(anon.project(&k), v);
-        }
-        *by = out;
-    }
-    m
-}
-
-/// 伏せ字版の送った版の集計(人の名前とフォルダを出さない。TS 版の anonymizeAtlasBuilds)
-fn anonymize_atlas_builds(s: &AtlasBuildSummary) -> AtlasBuildSummary {
-    let mut s = s.clone();
-    s.unknown_persons.clear();
-    s.older_persons.clear();
-    for g in &mut s.builds {
-        g.persons.clear();
-    }
-    if let Some(f) = &mut s.folders {
-        for (i, x) in f.iter_mut().enumerate() {
-            x.folder = format!("フォルダ {}", i + 1);
-        }
-    }
-    s
-}
-
 #[derive(Serialize)]
 struct AtlasBuildsOut {
     ok: bool,
@@ -308,10 +280,13 @@ struct TurnJudgmentsOut {
 }
 
 #[derive(Serialize)]
-struct GroupOut {
-    name: String,
-    note: String,
-    ids: Vec<String>,
+struct GroupOut<'a> {
+    name: &'a str,
+    note: &'a str,
+    ids: &'a [String],
+    /// 送り先から集計したグループの、元のタグ(名前は「<人> / <タグ>」なので別に持つ)。手元のタスクタグには無い
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tag: Option<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -336,16 +311,18 @@ struct WarningsOut {
 struct ReportData<'a> {
     version: i64,
     generated_at: &'a str,
-    anonymized: bool,
     scope: ScopeOut,
     total_sessions_in_source: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     source: Option<&'a ReportSource>,
     #[serde(skip_serializing_if = "Option::is_none")]
     read_only: Option<bool>,
+    /// 参照を数えた llm-wiki の vault の数。0 なら wiki の参照は数えていない(古い集計では無い)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wiki_vaults: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     atlas_builds: Option<AtlasBuildsOut>,
-    metrics: Value,
+    metrics: &'a Value,
     sessions: Vec<Value>,
     judgments: JudgmentsOut,
     turn_judgments: TurnJudgmentsOut,
@@ -353,8 +330,10 @@ struct ReportData<'a> {
     installed: Option<&'a InstalledView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     installed_by_person: Option<JsMap<InstalledView>>,
-    groups: Vec<GroupOut>,
+    groups: Vec<GroupOut<'a>>,
     library: bool,
+    /// 失敗の台帳の集計のページ(failures.html)を書いたか
+    failures: bool,
     insights: InsightsOut,
     warnings: WarningsOut,
 }
@@ -364,7 +343,6 @@ struct ReportData<'a> {
 struct InsightsJson<'a> {
     version: i64,
     generated_at: &'a str,
-    anonymized: bool,
     sessions: usize,
     candidates: &'a [Candidate],
 }
@@ -411,15 +389,11 @@ pub fn build_report(input: BuildInput<'_>) -> Result<BuildResult> {
     let t0 = Instant::now();
     let css = input.css.as_str();
     let code = input.code.as_str();
-    let anon = if input.anonymize { create_anonymizer(&input.sessions.iter().map(|r| AnonSource::from(*r)).collect::<Vec<_>>()) } else { identity_anonymizer() };
     let generated_at = atlas_core::jsdate::now_iso();
     let j = input.judgments;
 
-    // 伏せ字版にはメモを一切出さない(自由記述のため。抜粋も件数も持たない)
     let member_dir = input.member_memos_dir.as_deref();
-    let memos: IndexMap<String, MemoFile> = if anon.enabled {
-        IndexMap::new()
-    } else if let Some(d) = member_dir {
+    let memos: IndexMap<String, MemoFile> = if let Some(d) = member_dir {
         load_member_memos(d, input.sessions.iter().map(|s| s.id.as_str()))
     } else if let Some(d) = &input.memos_dir {
         load_memo_index(d)
@@ -439,7 +413,7 @@ pub fn build_report(input: BuildInput<'_>) -> Result<BuildResult> {
         .sessions
         .par_iter()
         .map(|r| {
-            let mut s = summarize(r, &anon, j.and_then(|j| j.by_session.get(&r.id)));
+            let mut s = summarize(r, j.and_then(|j| j.by_session.get(&r.id)));
             if let Some(vx) = vx {
                 let vt = verdict_tuples(vx.by_session.get(&r.id), &vx.phases);
                 if !vt.is_empty() {
@@ -457,46 +431,40 @@ pub fn build_report(input: BuildInput<'_>) -> Result<BuildResult> {
         .collect();
     let summaries: Vec<&SessionSummary> = sessions.iter().collect();
 
-    // 送り先から集計したときの、送った atlas の版。伏せ字版では人の名前を出さない
+    // 送り先から集計したときの、送った atlas の版
     let sent: Vec<SentSession<'_>> = input.sessions.iter().map(|x| SentSession { person: x.person.as_ref().and_then(|p| p.as_deref()), upload_atlas: x.upload_atlas.as_ref().map(|a| a.as_ref()) }).collect();
     let atlas_builds = summarize_atlas_builds(&sent, input.atlas_local.as_ref(), input.atlas_uploads.as_ref()).map(|b| {
-        let d = describe_atlas_builds(&if anon.enabled { anonymize_atlas_builds(&b) } else { b });
+        let d = describe_atlas_builds(&b);
         AtlasBuildsOut { ok: d.ok, short: d.short, headline: d.headline, lines: d.lines }
     });
     let retention_out = rx.map(retention_meta);
     let installed = input.installed.map(installed_view);
-    let library_on = input.transcripts.is_some() && input.library.unwrap_or(true) && !anon.enabled;
-    let masked = |v: &Option<String>| -> Option<String> {
-        match v.as_deref().filter(|s| !s.is_empty()) {
-            Some(x) => Some(if anon.enabled { "(伏せ字)".to_string() } else { x.to_string() }),
-            None => None,
-        }
-    };
+    let library_on = input.transcripts.is_some() && input.library.unwrap_or(true);
+    let non_empty = |v: &Option<String>| -> Option<String> { v.clone().filter(|s| !s.is_empty()) };
 
     // Phase 12: 改善点。候補は本文(依頼文・ツールの列)から build 時に求め、結果だけ埋め込む
-    let insight_meta_all = insight_meta(&input.sessions, false);
+    let meta_for_page = insight_meta(&input.sessions);
     let cand_src: Vec<CandidateSource<'_>> = input.sessions.iter().map(|r| CandidateSource { id: &r.id, project: &r.project, analysis: &r.analysis }).collect();
-    let candidates = skill_candidates(&cand_src, anon.enabled);
-    let meta_for_page: JsMap<VersionMeta> = if anon.enabled { JsMap::new() } else { insight_meta_all.clone() };
+    let candidates = skill_candidates(&cand_src);
 
     std::fs::create_dir_all(&input.out_dir)?;
     let packed: Vec<Value> = sessions.par_iter().map(pack_summary).collect();
     let data = ReportData {
         version: REPORT_DATA_VERSION,
         generated_at: &generated_at,
-        anonymized: anon.enabled,
         scope: ScopeOut {
             since: input.scope.since.clone(),
-            project: masked(&input.scope.project),
+            project: non_empty(&input.scope.project),
             client: input.scope.client.clone(),
             model: input.scope.model.clone(),
-            branch: masked(&input.scope.branch),
+            branch: non_empty(&input.scope.branch),
         },
         total_sessions_in_source: input.total_sessions_in_source,
-        source: if anon.enabled { None } else { input.source.as_ref() },
+        source: input.source.as_ref(),
         read_only: input.read_only.then_some(true),
+        wiki_vaults: input.wiki_vaults,
         atlas_builds,
-        metrics: anonymize_metrics(input.metrics.clone(), &anon),
+        metrics: &input.metrics,
         sessions: packed,
         judgments: JudgmentsOut {
             available: j.is_some(),
@@ -514,22 +482,18 @@ pub fn build_report(input: BuildInput<'_>) -> Result<BuildResult> {
         },
         retention: retention_out.as_ref(),
         installed: installed.as_ref(),
-        // 人に絞ったときに、その人のインストール済みの skill で「未使用」を出す。伏せ字版では入れない
-        installed_by_person: match input.installed_by_person {
-            Some(m) if !anon.enabled => Some(JsMap(m.js_entries().into_iter().map(|(k, v)| (k.clone(), installed_view(v))).collect())),
-            _ => None,
-        },
-        // 伏せ字モードではグループ名と note は出さず、ファイルの順で「タスクタグ 1, 2, …」にする
+        // 人に絞ったときに、その人のインストール済みの skill で「未使用」を出す
+        installed_by_person: input.installed_by_person.map(|m| JsMap(m.js_entries().into_iter().map(|(k, v)| (k.clone(), installed_view(v))).collect())),
         groups: input
             .groups
             .iter()
             .enumerate()
-            .map(|(i, g)| if anon.enabled { GroupOut { name: format!("タスクタグ {}", i + 1), note: String::new(), ids: g.ids.clone() } } else { GroupOut { name: g.name.clone(), note: g.note.clone(), ids: g.ids.clone() } })
+            .map(|(i, g)| GroupOut { name: &g.name, note: &g.note, ids: &g.ids, tag: input.group_tags.as_ref().and_then(|t| t.get(i)).map(String::as_str) })
             .collect(),
         library: library_on,
+        failures: true,
         insights: InsightsOut { meta: meta_for_page.clone(), candidates: embedded_candidates(&candidates), candidate_total: candidates.len(), computed_over: input.sessions.len() },
-        // 警告文には groups.json の絶対パスが入るので、伏せ字モードでは <path> に置き換える
-        warnings: WarningsOut { unknown_event_types: input.warnings.unknown_event_types, bad_lines: input.warnings.bad_lines, notes: input.warnings.notes.iter().map(|n| anon.scrub(n)).collect() },
+        warnings: WarningsOut { unknown_event_types: input.warnings.unknown_event_types, bad_lines: input.warnings.bad_lines, notes: input.warnings.notes.clone() },
     };
 
     // 版の目印はデータを埋める前に置き換える(記録の本文に同じ文字列があっても触れない)
@@ -538,27 +502,24 @@ pub fn build_report(input: BuildInput<'_>) -> Result<BuildResult> {
     write_text(&html_path, &html)?;
     // 用語の説明は 1 枚だけ別ページ
     write_text(&input.out_dir.join(GLOSSARY_FILE), &render_glossary_html(&GlossaryPageOptions { css, generated_at: &generated_at, code }))?;
+    // ページに出すセッションの呼び名(名前、無ければ最初の依頼、無ければ id の先頭 8 字。空白を 1 つにまとめて 60 字まで)。
+    // 改善点のページと、指示文と skill のページで同じものを使う
+    let names: HashMap<&str, String> = sessions
+        .iter()
+        .map(|s| {
+            let base = s.name.as_deref().filter(|x| !x.is_empty()).or(s.first_user_message.as_deref().filter(|x| !x.is_empty())).map(str::to_string).unwrap_or_else(|| js::utf16_slice(&s.id, 0, 8).into_owned());
+            let n = js::utf16_slice(&WS.replace_all(&base, " "), 0, 60).into_owned();
+            (s.id.as_str(), n)
+        })
+        .collect();
     // Phase 12: 改善点の全件(insights.html)と候補の JSON(skill-draft が読む)
     {
         let versions = instruction_versions(&summaries);
-        let names: HashMap<&str, String> = sessions
-            .iter()
-            .map(|s| {
-                let n = if anon.enabled {
-                    format!("セッション {}", js::utf16_slice(&s.id, 0, 8))
-                } else {
-                    let base = s.name.as_deref().filter(|x| !x.is_empty()).or(s.first_user_message.as_deref().filter(|x| !x.is_empty())).map(str::to_string).unwrap_or_else(|| js::utf16_slice(&s.id, 0, 8).into_owned());
-                    js::utf16_slice(&WS.replace_all(&base, " "), 0, 60).into_owned()
-                };
-                (s.id.as_str(), n)
-            })
-            .collect();
         let stuck = stuck_sessions(&summaries);
         let page = render_insights_html(&InsightsPageOptions {
             css,
             generated_at: &generated_at,
             code,
-            anonymized: anon.enabled,
             sessions: sessions.len(),
             empty_sessions: sessions.iter().filter(|s| s.empty).count(),
             versions: &versions,
@@ -573,8 +534,21 @@ pub fn build_report(input: BuildInput<'_>) -> Result<BuildResult> {
             library_href: library_on.then_some(INSTRUCTIONS_FILE),
         });
         write_text(&input.out_dir.join(INSIGHTS_FILE), &page)?;
-        let json = atlas_core::json::to_js_string_indent(&InsightsJson { version: 1, generated_at: &generated_at, anonymized: anon.enabled, sessions: sessions.len(), candidates: &candidates }, b" ")?;
+        let json = atlas_core::json::to_js_string_indent(&InsightsJson { version: 1, generated_at: &generated_at, sessions: sessions.len(), candidates: &candidates }, b" ")?;
         write_text(&input.out_dir.join(INSIGHTS_JSON), &json)?;
+        // 失敗の台帳の集計(failures.html)と、同じ中身の JSON
+        let stats = failure_stats(&input.sessions);
+        let page = render_failures_html(&FailuresPageOptions {
+            css,
+            generated_at: &generated_at,
+            code,
+            stats: &stats,
+            meta: &meta_for_page,
+            session_name: &|id: &str| names.get(id).cloned().unwrap_or_else(|| id.to_string()),
+            library_href: library_on.then_some(INSTRUCTIONS_FILE),
+        });
+        write_text(&input.out_dir.join(FAILURES_FILE), &page)?;
+        write_text(&input.out_dir.join(FAILURES_JSON), &atlas_core::json::to_js_string_indent(&failures_json(&stats, &generated_at), b" ")?)?;
     }
 
     // 詳細ページ: 前回の生成物を消してから書く(フィルタで減ったセッションのページを残さない)
@@ -588,16 +562,13 @@ pub fn build_report(input: BuildInput<'_>) -> Result<BuildResult> {
     };
     // Phase 11: 全文記録と閲覧ページ(どちらも events.jsonl を読み直す)
     let want_full = tr.is_some() && input.full;
-    if want_full && anon.enabled {
-        bail!("--full(全文記録)は --anonymize と併用できません(解析用の完全出力は共有しない前提のため)");
-    }
     let want_library = library_on;
     let full_dir = input.out_dir.join("full");
     let coverage_path = input.out_dir.join("coverage.json");
     let instructions_path = input.out_dir.join(INSTRUCTIONS_FILE);
-    // ユーザーの生成物を黙って消さない: 作り直すときと伏せ字モードだけ消す。それ以外は残して日時を返す
+    // ユーザーの生成物を黙って消さない: 作り直すときだけ消す。それ以外は残して日時を返す
     let mut stale = Stale::default();
-    if want_full || anon.enabled {
+    if want_full {
         atlas_core::fs_retry::remove_tree(&full_dir)?;
         atlas_core::jsfs::rm_force(&coverage_path)?;
     } else if coverage_path.exists() {
@@ -605,7 +576,7 @@ pub fn build_report(input: BuildInput<'_>) -> Result<BuildResult> {
     } else if full_dir.exists() {
         stale.full = Some(mtime_iso(&full_dir)?);
     }
-    if want_library || anon.enabled {
+    if want_library {
         atlas_core::fs_retry::remove_tree(&input.out_dir.join(LIBRARY_DIR))?;
         atlas_core::jsfs::rm_force(&instructions_path)?;
     } else if instructions_path.exists() {
@@ -636,7 +607,7 @@ pub fn build_report(input: BuildInput<'_>) -> Result<BuildResult> {
             if want_library && let Some(ev) = &events {
                 w.library = ev.iter().flat_map(|e| library_events(e, &interner)).collect();
             }
-            let tres = render_transcript(r, events.as_deref(), usage, &TranscriptOptions { anon: &anon, generated_at: &generated_at, tool_output: t.tool_output, max_text_chars: t.max_text_chars, max_tool_chars: t.max_tool_chars, gap_ms: t.gap_ms });
+            let tres = render_transcript(r, events.as_deref(), usage, &TranscriptOptions { generated_at: &generated_at, tool_output: t.tool_output, max_text_chars: t.max_text_chars, max_tool_chars: t.max_tool_chars, gap_ms: t.gap_ms });
             w.transcript = Some((byte_length(&tres.markdown), tres.secret_hits, tres.truncated, tres.source == TranscriptSource::Record));
             tr_writer.write(detail_dir.join(transcript_file_name(&r.id)), tres.markdown);
             if want_full {
@@ -739,23 +710,17 @@ pub fn build_report(input: BuildInput<'_>) -> Result<BuildResult> {
         .par_iter()
         .enumerate()
         .map(|(k, r)| -> u64 {
-            // 詳細ページには根拠も出す(伏せ字モードでは自由記述を出さない)
-            let judgment = j.and_then(|j| j.by_session.get(&r.id)).map(|full| {
-                let mut x = full.clone();
-                x.task_summary = anon.free_text(full.task_summary.as_deref());
-                x.rationale = anon.free_text(full.rationale.as_deref());
-                x
-            });
+            // 詳細ページには根拠も出す
+            let judgment = j.and_then(|j| j.by_session.get(&r.id));
             let memo = memos.get(&r.id).map(|m| DetailMemo { html: memo_html(&r.id, &m.text), updated_at: m.updated_at.clone() });
             let transcript_href = tr.map(|_| transcript_file_name(&r.id));
             let has_page = |name: &str| lib.is_some() && skill_first.get(name).is_some_and(|i| *i <= k);
             let page = render_detail_html(
                 r,
                 &DetailOptions {
-                    anon: &anon,
                     css,
                     code,
-                    judgment: judgment.as_ref(),
+                    judgment,
                     verdicts: vx.and_then(|v| v.by_session.get(&r.id)),
                     generated_at: &generated_at,
                     transcript_href: transcript_href.as_deref(),
@@ -790,10 +755,6 @@ pub fn build_report(input: BuildInput<'_>) -> Result<BuildResult> {
         Some(lib) => {
             let groups = lib.result();
             let w = write_library(&input.out_dir.join(LIBRARY_DIR), &groups)?;
-            let names: HashMap<&str, String> = sessions
-                .iter()
-                .map(|s| (s.id.as_str(), s.name.as_deref().filter(|x| !x.is_empty()).or(s.first_user_message.as_deref().filter(|x| !x.is_empty())).map(str::to_string).unwrap_or_else(|| js::utf16_slice(&s.id, 0, 8).into_owned())))
-                .collect();
             let projects: HashMap<&str, &str> = sessions.iter().map(|s| (s.id.as_str(), s.project_label.as_str())).collect();
             // 版ごとのファイルと範囲は、全セッションを見て特定した値を多い順に採る
             let mut votes: HashMap<&str, IndexMap<(InstructionFile, &str), i64>> = HashMap::new();
@@ -820,7 +781,7 @@ pub fn build_report(input: BuildInput<'_>) -> Result<BuildResult> {
                 generated_at: &generated_at,
                 code,
                 groups: &groups,
-                session_name: &|id: &str| js::utf16_slice(&WS.replace_all(names.get(id).map(String::as_str).unwrap_or(id), " "), 0, 60).into_owned(),
+                session_name: &|id: &str| names.get(id).cloned().unwrap_or_else(|| js::utf16_slice(&WS.replace_all(id, " "), 0, 60).into_owned()),
                 session_project: &|id: &str| projects.get(id).map(|s| s.to_string()),
                 resolve_instruction: &resolve,
             });
