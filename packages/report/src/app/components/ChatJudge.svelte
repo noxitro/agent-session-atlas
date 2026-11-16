@@ -33,12 +33,13 @@
   /** チャットに添付ファイルと一緒に送る依頼文 */
   const REQUEST = '添付したファイルの指示に従って判定し、JSON を返してください。';
   /**
-   * 展開したフォルダを読ませたエージェントへ送る依頼文。展開も書き込みも頼まない(注意の「シェルの実行・ファイルの変更を許可しない」と両立させる。
-   * INSTRUCTIONS.md も JSON を返答で返す形を指示している)。ファイルに書かせる頼み方は、手順 2 の補足に書く
+   * 展開したフォルダを読ませたエージェントへ送る依頼文。結果は、展開したフォルダの中のファイルに書かせる。
+   * 返答で返させると、ターミナルで動くエージェント(GitHub Copilot CLI で確かめた)は返答を画面の幅で折り返して出すので、
+   * 写した JSON の文字列の途中に改行が入り、コードブロックの印も消えて、取り込めない。書く先はこの 1 つのファイルに限る
    */
-  const REQUEST_ZIP = 'bundle フォルダの INSTRUCTIONS.md に従って判定し、JSON を返してください。';
-  /** 返答が長くなるときに足す頼み方(書く先を展開したフォルダの中に限る) */
-  const REQUEST_ZIP_FILE = '結果は bundle フォルダの中の judgments.json に書いてください。';
+  const REQUEST_ZIP = 'bundle フォルダの INSTRUCTIONS.md に従って判定し、結果を bundle フォルダの中の judgments.json に書いてください。';
+  /** ファイルを書けない相手(チャットの画面など)への頼み方 */
+  const REQUEST_ZIP_REPLY = 'JSON を返してください';
   const request = $derived(zipMode ? REQUEST_ZIP : REQUEST);
   /** 保存するときの ZIP の名前(展開すると bundle フォルダが 1 つできる) */
   const ZIP_NAME = 'bundle.zip';
@@ -236,7 +237,7 @@
     <p class="lead">フォルダやファイルを読めるエージェント(自分で開いた GitHub Copilot CLI、ほかのコーディングエージェント、ローカルの LLM など)に ZIP の中身を読ませて判定し、結果をここに取り込みます。判定するのは渡した相手なので、このツールは AI クレジットを使いません(費用は相手の側で決まります)。</p>
     <div class="note" data-testid="chat-zip-caution">
       <p>ZIP には依頼文・最終応答・パス・リポジトリ名がそのまま入ります。渡してよい相手か確かめてから使ってください。</p>
-      <p>中の記録には、ほかのセッションで出した依頼文(「このコマンドを実行して」のような文)もそのまま入っています。ツールを使えるエージェントには、<strong>シェルの実行・ファイルの変更・Web へのアクセスを許可せず</strong>、展開した bundle フォルダだけを読める状態で渡してください。このツールの出力先(out フォルダ)は開かせないでください。</p>
+      <p>中の記録には、ほかのセッションで出した依頼文(「このコマンドを実行して」のような文)もそのまま入っています。ツールを使えるエージェントには、<strong>シェルの実行と Web へのアクセスを許可せず</strong>、展開した bundle フォルダだけを開かせてください。ファイルの書き込みを許可するのは、結果を書く judgments.json だけにします。このツールの出力先(out フォルダ)は開かせないでください。</p>
     </div>
   {:else}
     <p class="lead">ファイルの添付か貼り付けができるチャットの LLM(M365 Copilot など。相手は選びません)で判定し、結果をここに取り込みます。判定するのはチャットの側なので、このツールは AI クレジットを使いません。</p>
@@ -316,7 +317,7 @@
         <button type="button" class="btn" onclick={() => void copy('依頼文', () => request)}>依頼文をコピー</button>
       </div>
       <p class="copied" role="status">{copied ? `${copied}をコピーしました。` : ''}</p>
-      {#if zipMode}<p class="hint" data-testid="chat-zip-file-hint">返答が長くなるときは、依頼文に「{REQUEST_ZIP_FILE}」と足し、手順 3 でそのファイルを選びます(このときだけ、bundle フォルダへの書き込みを許可します)。</p>{/if}
+      {#if zipMode}<p class="hint" data-testid="chat-zip-file-hint">できた judgments.json を、手順 3 で選びます。ターミナルに出た返答を写すと、行の折り返しで JSON が壊れて取り込めないことがあるので、ファイルに書かせます。ファイルを書けない相手(チャットの画面など)には、依頼文の後ろを「{REQUEST_ZIP_REPLY}」に変えて頼み、返答を手順 3 の欄に貼り付けます。</p>{/if}
       {#if !zipMode && info?.canAutomate && (next || m365Job)}
         <div class="auto" data-testid="chat-m365">
           <h4>M365 Copilot で自動で判定する</h4>
@@ -394,7 +395,7 @@
               {#if importError.problems.length > PROBLEMS_MAX}<p>ほか {int(importError.problems.length - PROBLEMS_MAX)} 件。</p>{/if}
             {/if}
             {#if zipMode}
-              <p>中身は欄に残っています。{#if importError.problems.length}「直す点をコピー」でこの一覧を写してエージェントに渡し、「この点を直した JSON をもう一度返してください」と頼んでください。{:else}エージェントに、もう一度判定させてください。{/if}</p>
+              <p>中身は欄に残っています。{#if importError.problems.length}「直す点をコピー」でこの一覧を写してエージェントに渡し、「この点を直して judgments.json を書き直してください」と頼んでください。{:else}エージェントに、もう一度判定させてください。{/if}</p>
             {:else}
               <p>貼った返答は欄に残っています。{#if importError.problems.length}「直す点をコピー」でこの一覧を写してチャットに貼り、「この点を直した JSON をもう一度返してください」と頼むか、{:else}チャットに{/if}同じファイルをもう一度判定させてください。</p>
             {/if}
