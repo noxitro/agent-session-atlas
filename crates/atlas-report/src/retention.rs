@@ -302,15 +302,30 @@ pub fn measured_of(t: &StatusTuple) -> i64 {
     t[0] + t[1] + t[2]
 }
 
-/// 照合できたまとまりに対する割合(分母が 0 なら None)
-pub fn share_of(t: &StatusTuple, i: usize) -> Option<f64> {
+/// 割合を出す最小の、照合できたセッションの数(画面の lib/retention.ts の RETENTION_MIN_SESSIONS と同じ値)
+pub const RETENTION_MIN_SESSIONS: i64 = 5;
+
+/// 照合できたまとまりに対する割合。分母が 0 のときと、照合できたセッション(measured_sessions)が
+/// RETENTION_MIN_SESSIONS に届かないときは None
+pub fn share_of(t: &StatusTuple, i: usize, measured_sessions: i64) -> Option<f64> {
     let d = measured_of(t);
-    if d > 0 { Some(t[i] as f64 / d as f64) } else { None }
+    if d > 0 && measured_sessions >= RETENTION_MIN_SESSIONS { Some(t[i] as f64 / d as f64) } else { None }
+}
+
+/// 工程ごとの集計(retention_by_phase の結果)
+pub struct RetentionByPhase {
+    /// 工程ごとのまとまりの数(状態別)
+    pub by_phase: IndexMap<i64, StatusTuple>,
+    /// その工程に照合できたまとまり(照合不可を除く)が 1 つ以上あるセッションの数(工程ごとの割合を出すかを決める)
+    pub sessions: IndexMap<i64, i64>,
+    /// 工程の記録が無く、数えなかったセッションの数
+    pub without_phases: i64,
 }
 
 /// 照合できたセッションのまとまりを、工程ごとに数える。工程の記録が無いセッションは数えず、その数を返す
-pub fn retention_by_phase<'a>(sessions: impl IntoIterator<Item = Option<&'a RetentionItem>>) -> (IndexMap<i64, StatusTuple>, i64) {
+pub fn retention_by_phase<'a>(sessions: impl IntoIterator<Item = Option<&'a RetentionItem>>) -> RetentionByPhase {
     let mut by: IndexMap<i64, StatusTuple> = IndexMap::new();
+    let mut per_phase: IndexMap<i64, i64> = IndexMap::new();
     let mut without = 0;
     for r in sessions.into_iter().flatten() {
         if r.outcome != "measured" {
@@ -319,13 +334,20 @@ pub fn retention_by_phase<'a>(sessions: impl IntoIterator<Item = Option<&'a Rete
         match r.phases.as_ref().filter(|p| !p.is_empty()) {
             None => without += 1,
             Some(ps) => {
+                // 同じ工程が 2 行あっても 1 セッションと数える
+                let mut seen: Vec<i64> = Vec::new();
                 for p in ps {
-                    add(by.entry(p[0]).or_insert([0; 4]), &[p[1], p[2], p[3], p[4]]);
+                    let t = [p[1], p[2], p[3], p[4]];
+                    add(by.entry(p[0]).or_insert([0; 4]), &t);
+                    if measured_of(&t) > 0 && !seen.contains(&p[0]) {
+                        seen.push(p[0]);
+                        *per_phase.entry(p[0]).or_insert(0) += 1;
+                    }
                 }
             }
         }
     }
-    (by, without)
+    RetentionByPhase { by_phase: by, sessions: per_phase, without_phases: without }
 }
 
 #[cfg(test)]
@@ -372,8 +394,33 @@ mod tests {
         assert_eq!(a.baseline, BaselineCounts { observed: 2, estimated: 1 });
         assert_eq!(atlas_core::json::to_js_string(&a.by_vcs).unwrap(), r#"{"git":2,"p4":1}"#);
         assert_eq!((a.sender, a.mapped, a.hunks, a.lines), (1, 1, [4, 1, 3, 1], [12, 2, 7, 4]));
-        assert_eq!(share_of(&a.hunks, 0), Some(4.0 / 8.0));
-        assert_eq!(share_of(&[0, 0, 0, 5], 0), None);
+        // 照合できたセッションが RETENTION_MIN_SESSIONS に届かなければ割合を出さない(ここは 3 件)
+        assert_eq!(share_of(&a.hunks, 0, a.measured), None);
+        assert_eq!(share_of(&a.hunks, 0, RETENTION_MIN_SESSIONS - 1), None);
+        assert_eq!(share_of(&a.hunks, 0, RETENTION_MIN_SESSIONS), Some(4.0 / 8.0));
+        assert_eq!(share_of(&[0, 0, 0, 5], 0, RETENTION_MIN_SESSIONS), None);
+    }
+
+    #[test]
+    fn by_phase_counts_sessions_with_measured_hunks() {
+        let with = |ps: Vec<[i64; 5]>| item(|r| r.phases = Some(ps));
+        let list = [
+            Some(with(vec![[0, 1, 0, 0, 0], [2, 1, 0, 1, 0]])),
+            Some(with(vec![[2, 0, 1, 0, 0]])),
+            // 照合不可のまとまりだけの工程は、セッションに数えない(まとまりは足す)
+            Some(with(vec![[2, 0, 0, 0, 3]])),
+            // すべて照合不可のセッションと、工程の記録が無いセッションは入れない
+            Some(item(|r| {
+                r.outcome = "unattributable".into();
+                r.phases = Some(vec![[2, 0, 0, 0, 1]]);
+            })),
+            Some(item(|_| {})),
+            None,
+        ];
+        let p = retention_by_phase(list.iter().map(Option::as_ref));
+        assert_eq!(p.by_phase.get(&2), Some(&[1, 1, 1, 3]));
+        assert_eq!((p.sessions.get(&0), p.sessions.get(&2)), (Some(&1), Some(&2)));
+        assert_eq!(p.without_phases, 1);
     }
 
     #[test]

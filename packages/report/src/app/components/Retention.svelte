@@ -1,6 +1,6 @@
 <script lang="ts">
   import { dateTime, dec, int, percent } from '../../lib/format.ts';
-  import { aggregateRetention, DEFAULT_LAG_DAYS, measuredOf, median, MODE_LABEL, REASON_LABEL, REASONS, retentionByPhase, STATUS_LABEL, STATUSES, UNKNOWN_PHASE, VCS_LABEL, type RetentionMeta } from '../../lib/retention.ts';
+  import { aggregateRetention, DEFAULT_LAG_DAYS, enoughMeasured, measuredOf, median, MODE_LABEL, REASON_LABEL, REASONS, RETENTION_MIN_SESSIONS, retentionByPhase, shareOf, STATUS_LABEL, STATUSES, UNKNOWN_PHASE, VCS_LABEL, type RetentionMeta } from '../../lib/retention.ts';
   import { PHASE_LABEL, PHASES } from '../../shared/turns.ts';
   import type { SessionSummary } from '../../lib/types.ts';
 
@@ -9,6 +9,13 @@
   const a = $derived(aggregateRetention(sessions));
   const hunksMeasured = $derived(measuredOf(a.hunks));
   const linesMeasured = $derived(measuredOf(a.lines));
+  /** 割合を出すか(照合できたセッションが RETENTION_MIN_SESSIONS 以上)。届かなければ件数だけ出す */
+  const showShare = $derived(enoughMeasured(a.measured));
+  /** 割合の文字(照合できたセッションが足りない・分母が 0 なら null) */
+  const share = (t: [number, number, number, number], i: number, measuredSessions: number): string | null => {
+    const v = shareOf(t, i as 0 | 1 | 2, measuredSessions);
+    return v == null ? null : percent(t[i], measuredOf(t));
+  };
   /** 状態の色。色だけにしない(凡例の言葉と、照合不可は斜線) */
   const COLORS = ['var(--s1)', 'var(--s3)', 'var(--s4)', 'var(--missing)'] as const;
   /** 状態の名前(設定の vcs.labels で差し替えたものがあればそれ) */
@@ -47,8 +54,8 @@
   /** 工程ごと(照合できたセッションのまとまりを、作った依頼の工程で分ける。まとまりのある工程だけ、PHASES の順、不明は最後) */
   const phaseRet = $derived(retentionByPhase(sessions));
   const phaseRows = $derived(
-    [...PHASES.map((ph, i) => ({ key: ph as string, label: PHASE_LABEL[ph], t: phaseRet.byPhase.get(i) })), { key: 'unknown', label: '不明(最初の依頼より前など)', t: phaseRet.byPhase.get(UNKNOWN_PHASE) }].filter(
-      (r): r is { key: string; label: string; t: [number, number, number, number] } => !!r.t && r.t.some((n) => n > 0),
+    [...PHASES.map((ph, i) => ({ key: ph as string, label: PHASE_LABEL[ph], t: phaseRet.byPhase.get(i), n: phaseRet.sessions.get(i) ?? 0 })), { key: 'unknown', label: '不明(最初の依頼より前など)', t: phaseRet.byPhase.get(UNKNOWN_PHASE), n: phaseRet.sessions.get(UNKNOWN_PHASE) ?? 0 }].filter(
+      (r): r is { key: string; label: string; t: [number, number, number, number]; n: number } => !!r.t && r.t.some((n) => n > 0),
     ),
   );
 
@@ -89,12 +96,12 @@
       <div class="field">
         <span class="k">照合できたセッション(分母)</span>
         <span class="v">{int(a.measured)}</span>
-        <span class="n">AI の変更があった {int(a.withAi)} セッションのうち {percent(a.measured, a.withAi)}。{L.unattributable} {int(a.unattributableTotal)}</span>
+        <span class="n">AI の変更があった {int(a.withAi)} セッションのうち {percent(a.measured, a.withAi)}。{L.unattributable} {int(a.unattributableTotal)}{showShare ? '' : `。割合は ${RETENTION_MIN_SESSIONS} 件から出します`}</span>
       </div>
       {#each [0, 1, 2] as i (i)}
         <div class="field">
           <span class="k">{L[STATUSES[i]]}(まとまり)</span>
-          <span class="v">{hunksMeasured ? percent(a.hunks[i], hunksMeasured) : '—'}</span>
+          <span class="v">{share(a.hunks, i, a.measured) ?? '—'}</span>
           <span class="n">{int(a.hunks[i])} / {int(hunksMeasured)} まとまり・{int(a.lines[i])} / {int(linesMeasured)} 行</span>
         </div>
       {/each}
@@ -103,9 +110,9 @@
     <div class="coverage">
       <div class="cov-head">
         <h3 id="ret-dist-h">まとまりの内訳(照合できたセッション)</h3>
-        <p class="muted">割合の分母は、照合できたまとまり(「{L.unattributable}」を除いたもの)です。「{L.unattributable}」のまとまりは件数だけ出します。</p>
+        <p class="muted">割合の分母は、照合できたまとまり(「{L.unattributable}」を除いたもの)です。「{L.unattributable}」のまとまりは件数だけ出します。{#if !showShare}照合できたセッションが {RETENTION_MIN_SESSIONS} 件未満なので、割合と帯は出さず、件数だけ出します。{/if}</p>
       </div>
-      {#if totalHunks > 0}
+      {#if totalHunks > 0 && showShare}
         <div class="stack" role="img" aria-labelledby="ret-dist-h" aria-describedby="ret-legend">
           {#each segments as s (s.key)}
             {#if s.n > 0}
@@ -126,7 +133,7 @@
             <span class="sw" class:hatch={s.key === 'unattributable'} style="background-color:{s.color}" aria-hidden="true"></span>
             <span class="lab">{s.label}</span>
             <strong>{int(s.n)}</strong>
-            <span class="muted">{s.key === 'unattributable' ? '(分母に入れない)' : `(${percent(s.n, hunksMeasured)})`}</span>
+            <span class="muted">{s.key === 'unattributable' ? '(分母に入れない)' : showShare ? `(${percent(s.n, hunksMeasured)})` : ''}</span>
             <span class="src muted">{int(s.lines)} 行</span>
           </li>
         {/each}
@@ -166,16 +173,18 @@
           <thead>
             <tr>
               <th scope="col">工程</th>
+              <th scope="col" class="num">照合できたセッション</th>
               {#each STATUSES as k (k)}<th scope="col" class="num">{L[k]}</th>{/each}
             </tr>
           </thead>
           <tbody>
             {#each phaseRows as r (r.key)}
-              {@const m = measuredOf(r.t)}
               <tr>
                 <th scope="row" class="proj">{r.label}</th>
+                <td class="num">{int(r.n)}</td>
                 {#each [0, 1, 2] as i (i)}
-                  <td class="num">{m ? `${int(r.t[i])}(${percent(r.t[i], m)})` : '—'}</td>
+                  {@const sh = share(r.t, i, r.n)}
+                  <td class="num">{int(r.t[i])}{sh ? `(${sh})` : ''}</td>
                 {/each}
                 <td class="num">{int(r.t[3])}</td>
               </tr>
@@ -183,7 +192,7 @@
           </tbody>
         </table>
       </div>
-      <p class="note">まとまりを作った編集の時刻から、その時に進んでいた依頼の工程に分けています(工程の決め方は「工程と詰まり」と同じ)。括弧は、その工程の照合できたまとまりに対する割合です。{phaseRet.withoutPhases ? `依頼の記録が無く工程に分けられないセッション ${int(phaseRet.withoutPhases)} 件は入れていません。` : ''}</p>
+      <p class="note">まとまりを作った編集の時刻から、その時に進んでいた依頼の工程に分けています(工程の決め方は「工程と詰まり」と同じ)。括弧は、その工程の照合できたまとまりに対する割合です(その工程に照合できたまとまりのあるセッションが {RETENTION_MIN_SESSIONS} 件未満なら、件数だけ出します)。{phaseRet.withoutPhases ? `依頼の記録が無く工程に分けられないセッション ${int(phaseRet.withoutPhases)} 件は入れていません。` : ''}</p>
     {/if}
 
     {#if rows.length > 0}
@@ -199,12 +208,12 @@
           </thead>
           <tbody>
             {#each rows as r (r.key)}
-              {@const m = measuredOf(r.agg.hunks)}
               <tr>
                 <th scope="row" class="proj" title={r.key}>{r.label}</th>
                 <td class="num">{int(r.agg.measured)} / {int(r.agg.withAi)}</td>
                 {#each [0, 1, 2] as i (i)}
-                  <td class="num">{m ? `${int(r.agg.hunks[i])}(${percent(r.agg.hunks[i], m)})` : '—'}</td>
+                  {@const sh = share(r.agg.hunks, i, r.agg.measured)}
+                  <td class="num">{r.agg.measured ? `${int(r.agg.hunks[i])}${sh ? `(${sh})` : ''}` : '—'}</td>
                 {/each}
                 <td class="num">{int(r.agg.hunks[3])}{r.agg.unattributableTotal ? `・${L.unattributable}のセッション ${int(r.agg.unattributableTotal)}` : ''}</td>
               </tr>
@@ -212,7 +221,7 @@
           </tbody>
         </table>
       </div>
-      <p class="note">件数はまとまり(AI の 1 回の編集の、連続して足した行)の数で、括弧はそのプロジェクトの照合できたまとまりに対する割合です。</p>
+      <p class="note">件数はまとまり(AI の 1 回の編集の、連続して足した行)の数で、括弧はそのプロジェクトの照合できたまとまりに対する割合です(照合できたセッションが {RETENTION_MIN_SESSIONS} 件未満のプロジェクトは、件数だけ出します)。</p>
     {/if}
   {/if}
 </section>

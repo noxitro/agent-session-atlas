@@ -252,15 +252,16 @@ fn main() -> Result<()> {
         d.write(&format!("aggregate-{name}"), &agg)?;
         let hl = d.timed("highlights", || highlights(&xs, &agg.usage, &HighlightOptions { filter: flt, installed: installed.as_ref() }));
         d.write(&format!("highlights-{name}"), &hl)?;
-        let (by_phase, without) = retention_by_phase(xs.iter().map(|s| s.retention.as_ref()));
+        let by_phase = retention_by_phase(xs.iter().map(|s| s.retention.as_ref()));
         d.write(
             &format!("turns-{name}"),
             &json!({
                 "turns": turn_aggregate(xs.iter().map(|s| (s.turns, s.turn_rows.as_deref()))),
                 "verdicts": verdict_aggregate(xs.iter().map(|s| (s.turn_rows.as_deref(), s.turn_verdicts.as_deref())), &phases),
                 "retention": aggregate_retention(xs.iter().map(|s| s.retention.as_ref())),
-                "byPhase": by_phase.into_iter().collect::<Vec<_>>(),
-                "withoutPhases": without,
+                "byPhase": by_phase.by_phase.into_iter().collect::<Vec<_>>(),
+                "phaseSessions": by_phase.sessions.into_iter().collect::<Vec<_>>(),
+                "withoutPhases": by_phase.without_phases,
                 "coverage": coverage_breakdown(&xs),
             }),
         )?;
