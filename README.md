@@ -325,3 +325,5 @@ Windows 以外では登録できません。cron などから `bin/atlas upload-
 | [docs/judge.md](docs/judge.md) | 推定人手工数の判定の回し方(評価バンドル、外部の LLM、バックエンドと費用。自分の API キーのモデル(BYOK)をいつも使うときは、`atlas.config.json` の `judgeModel`) |
 | [docs/development.md](docs/development.md) | 開発・テスト・全ページの網羅チェック・CI・fixtures・元データを書き換えない仕組み |
 | [docs/PLAN.md](docs/PLAN.md) | 計画と、各フェーズの設計判断 |
+
+<!-- CI の確認用の変更(文書だけの PR で重いジョブが飛ぶかを見る。マージしない) -->
