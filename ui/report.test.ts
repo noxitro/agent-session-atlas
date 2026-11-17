@@ -1023,7 +1023,6 @@ describe('画面の操作', () => {
     const first = await firstName();
     await page.locator('#sessions').scrollIntoViewIfNeeded();
     // 字の読み込みなどで上の高さが変わり終わってから、整数の位置にスクロールし、位置が落ち着いてから覚える
-    // (変わる途中で覚えると、ブラウザがスクロール位置を 1px ずらして、離れるときの位置と食い違う)
     await page.evaluate('document.fonts.ready.then(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))');
     await page.evaluate("window.scrollTo({ top: Math.round(document.getElementById('sessions').getBoundingClientRect().top + window.scrollY - 40), behavior: 'instant' })");
     const scrollY = (): Promise<number> => page.evaluate<number>('Math.round(window.scrollY)');
@@ -1036,7 +1035,9 @@ describe('画面の操作', () => {
       .toBe(true);
     const y = await scrollY();
     expect(y).toBeGreaterThan(1000);
-    await page.locator('#sessions table.ledger tbody tr td.name a').first().click();
+    // Playwright の click() は、押す前に要素を見える位置へスクロールし直す(要素の位置が端数の px だと 1px 動く)。
+    // ここで確かめたいのは画面が戻す位置なので、スクロールを動かさずにリンクを押す
+    await page.locator('#sessions table.ledger tbody tr td.name a').first().dispatchEvent('click');
     await page.waitForURL('**/sessions/*.html');
     await page.goBack();
     await page.waitForURL('**/atlas.html*');
