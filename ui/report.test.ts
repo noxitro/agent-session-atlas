@@ -1022,15 +1022,30 @@ describe('画面の操作', () => {
     const firstName = async (): Promise<string> => page.locator('#sessions table.ledger tbody tr td.name a').first().innerText();
     const first = await firstName();
     await page.locator('#sessions').scrollIntoViewIfNeeded();
-    // 整数の位置にする(端数の位置だと、戻した位置が丸めで 1px ずれることがある)
+    // 字の読み込みなどで上の高さが変わり終わってから、整数の位置にスクロールし、位置が落ち着いてから覚える
+    // (変わる途中で覚えると、ブラウザがスクロール位置を 1px ずらして、離れるときの位置と食い違う)
+    await page.evaluate('document.fonts.ready.then(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))');
     await page.evaluate("window.scrollTo({ top: Math.round(document.getElementById('sessions').getBoundingClientRect().top + window.scrollY - 40), behavior: 'instant' })");
-    const y = await page.evaluate<number>('Math.round(window.scrollY)');
+    const scrollY = (): Promise<number> => page.evaluate<number>('Math.round(window.scrollY)');
+    await expect
+      .poll(async () => {
+        const a = await scrollY();
+        await page.waitForTimeout(200);
+        return a === (await scrollY());
+      })
+      .toBe(true);
+    const y = await scrollY();
     expect(y).toBeGreaterThan(1000);
     await page.locator('#sessions table.ledger tbody tr td.name a').first().click();
     await page.waitForURL('**/sessions/*.html');
     await page.goBack();
     await page.waitForURL('**/atlas.html*');
-    await expect.poll(() => page.evaluate<number>('Math.round(window.scrollY)')).toBe(y);
+    try {
+      await expect.poll(scrollY).toBe(y);
+    } catch (e) {
+      // 落ちたら、画面が離れるときに覚えた位置(history.state)も出す(覚えた位置と戻した位置のどちらがずれたかを分けるため)
+      throw new Error(`${(e as Error).message}\n${await page.evaluate<string>("JSON.stringify({ now: window.scrollY, saved: history.state && history.state.atlasView })")}`);
+    }
     expect(await startHead.getAttribute('aria-sort')).toBe('ascending');
     expect(await firstName()).toBe(first);
     // 要点の「このツールを使ったセッションに絞り込む→」は履歴に残る移動。戻ると絞り込みが外れ、進むとまた絞り込む
