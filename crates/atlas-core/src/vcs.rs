@@ -2,6 +2,8 @@
 //! - 呼ぶのは、読む系の副コマンドだけ(許可リスト。ほかは呼ぶ前に例外にする)。作業ツリー・索引・サーバの状態を変えない
 //!   - git は --no-optional-locks と GIT_OPTIONAL_LOCKS=0 で、索引の書き戻しもさせない
 //! - 照合した時点のファイルは、ディスクから直接読む(fs の読み取りだけ)
+//! - 同じフォルダを複数の VCS が管理していることがある(ファイルごとに管理する VCS が違う)。フォルダの VCS はすべて見つけ、
+//!   どれで照合するかはファイルごとに決める(vcs_retention.rs。VcsRepo::tracks)
 //! - 開始時の基準は、git ではログの headCommit を使う(記録)。無いとき・p4 と svn では、開始時刻から履歴をたどって推定する(推定と印を付ける)
 
 use crate::classify::{file_path_key, relative_inside, resolve_file_path};
@@ -113,9 +115,9 @@ pub type VcsRunner = Arc<dyn Fn(VcsKind, &[String], &str) -> RunResult + Send + 
 /// 許可する副コマンド(読むものだけ)
 fn read_only(cmd: VcsKind) -> &'static [&'static str] {
     match cmd {
-        VcsKind::Git => &["rev-parse", "cat-file", "show", "rev-list"],
+        VcsKind::Git => &["rev-parse", "cat-file", "show", "rev-list", "ls-files"],
         VcsKind::Svn => &["info", "cat"],
-        VcsKind::P4 => &["info", "where", "changes", "print"],
+        VcsKind::P4 => &["info", "where", "changes", "print", "fstat"],
     }
 }
 
@@ -293,6 +295,8 @@ static DIGITS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[0-9]+$").unwrap
 /// JS の /^Change (\d+) /m(行の頭は \n・\r・U+2028・U+2029 の後)
 static P4_CHANGE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|[\n\r\x{2028}\x{2029}])Change ([0-9]+) ").unwrap());
 static P4_CLIENT_ROOT: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r"(?:^|[\n\r\x{{2028}}\x{{2029}}])\.\.\. clientRoot ({}+)", js::RE_DOT)).unwrap());
+/// p4 fstat の出力の depotFile の行
+static P4_DEPOT_FILE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|[\n\r])\.\.\. depotFile \S").unwrap());
 static P4_CLIENT_NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r"(?:^|[\n\r\x{{2028}}\x{{2029}}])\.\.\. clientName ({}+)", js::RE_DOT)).unwrap());
 /// p4 -ztag info の serverDate(... serverDate 2026/11/12 10:02:03 +0900 JST)のずれ
 static P4_SERVER_DATE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|[\n\r\x{2028}\x{2029}])\.\.\. serverDate [0-9/]+ [0-9:]+ ([+-])([0-9]{2})([0-9]{2})").unwrap());
@@ -485,6 +489,49 @@ impl VcsRepo {
         format!("{}{}...", p4_escape(&self.root), if is_win(&self.root) { "\\" } else { "/" })
     }
 
+    /// このファイルをこの VCS が管理しているか(git: 索引にある、svn: 版管理の下にある(追加の予定を含む)、p4: depot にあるか追加で開いている)。
+    /// 同じフォルダを複数の VCS が管理していて、ファイルごとに管理する VCS が違うときに、どれで照合するかを決めるのに使う。
+    /// 調べるコマンドが失敗したら Err(管理していないと取り違えない)
+    pub fn tracks(&self, abs_path: &str) -> Result<bool, String> {
+        let Some(rel) = self.relative(abs_path) else { return Ok(false) };
+        match self.kind {
+            VcsKind::Git => {
+                // :(literal) で、パスの * や ? をパターンとして読ませない
+                let spec = format!(":(literal){rel}");
+                let args = ["ls-files", "--", &spec];
+                let r = self.git(&args)?;
+                if r.code == 0 {
+                    return Ok(!js::trim(&r.stdout).is_empty());
+                }
+                Err(failed(VcsKind::Git, &strings(&args), &r))
+            }
+            VcsKind::Svn => {
+                let target = format!("{abs_path}@");
+                let args = ["info", "--show-item", "kind", &target];
+                let r = self.svn(&args)?;
+                if r.code == 0 {
+                    return Ok(!js::trim(&r.stdout).is_empty());
+                }
+                if SVN_MISSING.is_match(&r.stderr) {
+                    return Ok(false);
+                }
+                Err(failed(VcsKind::Svn, &strings(&args), &r))
+            }
+            VcsKind::P4 => {
+                let spec = p4_escape(abs_path);
+                let args = ["fstat", "-T", "depotFile", &spec];
+                let r = self.p4(&args)?;
+                if P4_DEPOT_FILE.is_match(&r.stdout) {
+                    return Ok(true);
+                }
+                if P4_MISSING.is_match(&r.stderr) || (r.code == 0 && js::trim(&r.stderr).is_empty()) {
+                    return Ok(false);
+                }
+                Err(failed(VcsKind::P4, &strings(&args), &r))
+            }
+        }
+    }
+
     /// 時刻 at の時点で取り込まれていた最後の版(git はブランチの履歴、無ければ HEAD)。無ければ None
     pub fn revision_at(&self, at: &str, branch: Option<&str>) -> Result<Option<String>, String> {
         match self.kind {
@@ -600,8 +647,9 @@ pub enum NoRepo {
     NoVcs,
 }
 
-/// 開いた結果。見つからなければ Err(理由)
-pub type OpenRepoResult = Result<Arc<VcsRepo>, NoRepo>;
+/// 開いた結果。見つからなければ Err(理由)。見つかれば 1 つ以上(git → svn → p4 の順)。
+/// 同じフォルダを複数の VCS が管理していることがある(ファイルごとに管理する VCS が違う)ので、見つかったものはすべて返す
+pub type OpenRepoResult = Result<Vec<Arc<VcsRepo>>, NoRepo>;
 
 /// open_repo の結果を作業フォルダごとに残す(同じフォルダは 1 度だけ調べる。並べて呼んでもよい)
 pub type RepoCache = Memo<OpenRepoResult>;
@@ -622,8 +670,8 @@ pub fn nearest_existing_dir(p: &str) -> Option<String> {
     None
 }
 
-/// dir を含む作業ツリーを探す(git → svn → p4 の順)。dir がディスクに無ければ RepoNotFound。
-/// 結果は cache に dir ごとに残す
+/// dir を含む作業ツリーを、git・svn・p4 のそれぞれで探す(見つかったものをすべて、git → svn → p4 の順に)。
+/// dir がディスクに無ければ RepoNotFound、どれも無ければ NoVcs。結果は cache に dir ごとに残す
 pub fn open_repo(dir: &str, runner: &VcsRunner, cache: &RepoCache) -> OpenRepoResult {
     let key = file_path_key(&resolve_file_path(dir, None));
     cache.get_or_init(key, || detect(dir, runner))
@@ -635,14 +683,15 @@ fn detect(dir: &str, runner: &VcsRunner) -> OpenRepoResult {
     }
     // ここで呼ぶのは読む系だけ(rev-parse・info)
     let run = |cmd: VcsKind, args: &[&str]| -> RunResult { run_read_only(runner, cmd, &strings(args), dir).expect("読む系のコマンド") };
-    let repo = |kind: VcsKind, root: &str, p4_offset_min: Option<i32>| Ok(Arc::new(VcsRepo { kind, root: resolve_file_path(root, None), p4_offset_min, run: runner.clone() }));
+    let repo = |kind: VcsKind, root: &str, p4_offset_min: Option<i32>| Arc::new(VcsRepo { kind, root: resolve_file_path(root, None), p4_offset_min, run: runner.clone() });
+    let mut found = Vec::new();
     let g = run(VcsKind::Git, &["--no-optional-locks", "-C", dir, "rev-parse", "--show-toplevel"]);
     if g.code == 0 && !js::trim(&g.stdout).is_empty() {
-        return repo(VcsKind::Git, js::trim(&g.stdout), None);
+        found.push(repo(VcsKind::Git, js::trim(&g.stdout), None));
     }
     let s = run(VcsKind::Svn, &["--non-interactive", "info", "--show-item", "wc-root", dir]);
     if s.code == 0 && !js::trim(&s.stdout).is_empty() {
-        return repo(VcsKind::Svn, js::trim(&s.stdout), None);
+        found.push(repo(VcsKind::Svn, js::trim(&s.stdout), None));
     }
     let p = run(VcsKind::P4, &["-d", dir, "-ztag", "info"]);
     if p.code == 0 {
@@ -650,11 +699,14 @@ fn detect(dir: &str, runner: &VcsRunner) -> OpenRepoResult {
         let client = P4_CLIENT_NAME.captures(&p.stdout).map(|m| js::trim(&m[1]).to_string()).filter(|s| !s.is_empty());
         if let (Some(root), Some(client)) = (root, client) {
             if client != "*unknown*" && (relative_inside(&root, dir).is_some() || file_path_key(&resolve_file_path(&root, None)) == file_path_key(&resolve_file_path(dir, None))) {
-                return repo(VcsKind::P4, &root, p4_server_offset(&p.stdout));
+                found.push(repo(VcsKind::P4, &root, p4_server_offset(&p.stdout)));
             }
         }
     }
-    Err(NoRepo::NoVcs)
+    if found.is_empty() {
+        return Err(NoRepo::NoVcs);
+    }
+    Ok(found)
 }
 
 // ---------- 使い回し ----------

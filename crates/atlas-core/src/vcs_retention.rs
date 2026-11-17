@@ -195,6 +195,8 @@ pub struct HunkRetention {
     pub tool_call_id: Option<String>,
     /// 変更をログのどこから取り出したか(diff = 完了イベントの diff、args = 開始イベントの引数)。記録が無ければ省略
     pub from: Option<HunkFrom>,
+    /// 照合に使った VCS(ファイルごとに決める。同じフォルダでもファイルによって違うことがある)。VCS を決められなかったまとまりと、古い atlas の結果では省略
+    pub vcs: Option<VcsKind>,
     /// キーの順(TS がオブジェクトを組み立てた順)。true = id, path, status, lines, at, reason(送った側の結果を読み直したもの)
     pub reason_last: bool,
 }
@@ -227,6 +229,9 @@ impl Serialize for HunkRetention {
         }
         if let Some(f) = &self.from {
             m.serialize_entry("from", f)?;
+        }
+        if let Some(v) = &self.vcs {
+            m.serialize_entry("vcs", v)?;
         }
         m.end()
     }
@@ -426,6 +431,8 @@ impl HunkRetention {
             tool_call_id: Option<String>,
             #[serde(default)]
             from: Option<HunkFrom>,
+            #[serde(default)]
+            vcs: Option<VcsKind>,
         }
         let r: Raw = serde_json::from_value(v)?;
         Ok(HunkRetention {
@@ -438,6 +445,7 @@ impl HunkRetention {
             similar_lines: r.similar_lines,
             tool_call_id: r.tool_call_id,
             from: r.from,
+            vcs: r.vcs,
             reason_last,
         })
     }
@@ -856,6 +864,7 @@ fn classify_file(hunks: &[&AiHunk], base: Option<&str>, after: Option<&str>, cla
             similar_lines,
             tool_call_id: p.h.tool_call_id.clone().filter(|t| !t.is_empty()),
             from: Some(p.h.from),
+            vcs: None,
             reason_last: false,
         });
     }
@@ -876,6 +885,12 @@ pub fn status_of_lines(l: &LineCounts) -> RetentionStatus {
     }
 }
 
+fn set_vcs(hunks: &mut [HunkRetention], kind: VcsKind) {
+    for h in hunks {
+        h.vcs = Some(kind);
+    }
+}
+
 fn unattributed(h: &AiHunk, reason: UnattributableReason) -> HunkRetention {
     HunkRetention {
         id: h.id,
@@ -887,6 +902,7 @@ fn unattributed(h: &AiHunk, reason: UnattributableReason) -> HunkRetention {
         similar_lines: 0,
         tool_call_id: h.tool_call_id.clone().filter(|t| !t.is_empty()),
         from: Some(h.from),
+        vcs: None,
         reason_last: false,
     }
 }
@@ -922,6 +938,8 @@ struct Caches {
     baselines: Memo<Result<Option<Revision>, String>>,
     reads: Memo<Result<Option<Arc<String>>, String>>,
     revs: Memo<Result<Option<String>, String>>,
+    /// (リポジトリ, ファイル) ごとの、その VCS がファイルを管理しているか
+    tracked: Memo<Result<bool, String>>,
 }
 
 fn repo_key(repo: &VcsRepo) -> String {
@@ -944,6 +962,45 @@ pub(crate) fn same_revision(kind: VcsKind, a: &str, b: &str) -> bool {
 
 fn same(a: &Arc<VcsRepo>, b: Option<&Arc<VcsRepo>>) -> bool {
     b.is_some_and(|b| Arc::ptr_eq(a, b))
+}
+
+fn kind_order(k: VcsKind) -> usize {
+    match k {
+        VcsKind::Git => 0,
+        VcsKind::Svn => 1,
+        VcsKind::P4 => 2,
+    }
+}
+
+/// 根のいちばん深いもの(同じ深さなら git → svn → p4)
+fn deepest(v: &[Arc<VcsRepo>]) -> Option<Arc<VcsRepo>> {
+    v.iter().min_by_key(|r| (std::cmp::Reverse(file_path_key(&r.root).len()), kind_order(r.kind))).cloned()
+}
+
+/// ファイルを照合する VCS を、ファイルのある場所の VCS(cands。どれもファイルを含む)から選ぶ。
+/// 1 つならそれ。複数(同じフォルダを複数の VCS が管理している・リポジトリが入れ子)なら、ファイルを管理しているもの。
+/// どれも管理していなければ(まだ追加していない新しいファイルなど)、根のいちばん深いもの。
+/// 管理しているかを調べられないものがあり、ほかに管理しているものも無ければ Err(取り違えて照合しない)
+fn choose_repo(cands: &[Arc<VcsRepo>], path: &str, fk: &str, caches: &Caches) -> Result<Option<Arc<VcsRepo>>, ()> {
+    if cands.len() <= 1 {
+        return Ok(cands.first().cloned());
+    }
+    let mut tracked = Vec::new();
+    let mut failed = false;
+    for r in cands {
+        match caches.tracked.get_or_init(format!("{}\0{fk}", repo_key(r)), || r.tracks(path)) {
+            Ok(true) => tracked.push(r.clone()),
+            Ok(false) => {}
+            Err(_) => failed = true,
+        }
+    }
+    if !tracked.is_empty() {
+        return Ok(deepest(&tracked));
+    }
+    if failed {
+        return Err(());
+    }
+    Ok(deepest(cands))
 }
 
 struct Shared<'a> {
@@ -992,10 +1049,15 @@ fn measure_one(sh: &Shared<'_>, me: usize) -> SessionRetention {
     };
     let too_recent = mode == EvalMode::Fixed && end_ms.is_none_or(|e| e + opts.lag_days * DAY_MS > sh.now_ms);
 
-    // セッションの作業フォルダの VCS(ファイルが別のリポジトリにあれば、そのファイルの場所で探し直す)
+    // セッションの作業フォルダの VCS(同じフォルダに複数あれば、すべて。セッションの VCS は git → svn → p4 の順で最初のもの)。
+    // どれで照合するかはファイルごとに決める(ファイルのある場所の VCS も合わせて、ファイルを管理しているもの)
     let session_dir = ctx.git_root.as_deref().or(ctx.cwd.as_deref()).filter(|d| !d.is_empty());
     let session_repo: Option<OpenRepoResult> = session_dir.map(|d| open_repo(d, &opts.runner, &sh.caches.repos));
-    let s_repo: Option<&Arc<VcsRepo>> = session_repo.as_ref().and_then(|r| r.as_ref().ok());
+    let s_repos: &[Arc<VcsRepo>] = match &session_repo {
+        Some(Ok(v)) => v,
+        _ => &[],
+    };
+    let s_repo: Option<&Arc<VcsRepo>> = s_repos.first();
     if let Some(r) = s_repo {
         result.vcs = Some(r.kind);
         result.root = Some(r.root.clone());
@@ -1030,26 +1092,31 @@ fn measure_one(sh: &Shared<'_>, me: usize) -> SessionRetention {
         let path = hunks[0].path.as_str();
         let mut repo: Option<Arc<VcsRepo>> = None;
         let mut reason = UnattributableReason::RepoNotFound;
-        match (&session_repo, s_repo) {
-            (_, Some(r)) if r.relative(path).is_some() => repo = Some(r.clone()),
+        if matches!(session_repo, Some(Err(NoRepo::RepoNotFound))) {
             // 作業フォルダがこの PC に無い。上のフォルダをたどると別のリポジトリに当たりうるので、探さない
-            (Some(Err(NoRepo::RepoNotFound)), _) => reason = UnattributableReason::RepoNotFound,
-            _ => {
-                // セッションの作業フォルダの外のファイル。ファイルのある場所(消えていれば、ディスクにある上のフォルダ)で VCS を探す
-                let opened = nearest_existing_dir(&platform::dirname(path)).map(|d| open_repo(&d, &opts.runner, &sh.caches.repos));
-                match &opened {
-                    Some(Ok(o)) if o.relative(path).is_some() => repo = Some(o.clone()),
-                    _ if s_repo.is_some() || matches!(opened, Some(Ok(_))) => reason = UnattributableReason::OutsideRepo,
-                    _ => {
-                        let no = match (&opened, &session_repo) {
-                            (Some(Err(n)), _) | (_, Some(Err(n))) => *n,
-                            _ => NoRepo::RepoNotFound,
-                        };
-                        reason = match no {
-                            NoRepo::RepoNotFound => UnattributableReason::RepoNotFound,
-                            NoRepo::NoVcs => UnattributableReason::NoVcs,
-                        };
-                    }
+        } else {
+            // ファイルのある場所(消えていれば、ディスクにある上のフォルダ)の VCS も探す。作業フォルダの外のファイルと、入れ子のリポジトリのため
+            let opened = nearest_existing_dir(&platform::dirname(path)).map(|d| open_repo(&d, &opts.runner, &sh.caches.repos));
+            let mut cands: Vec<Arc<VcsRepo>> = Vec::new();
+            // 作業フォルダのものを先に(同じリポジトリは作業フォルダで開いたものを使う。headCommit とブランチを当てるため)
+            for r in s_repos.iter().chain(opened.iter().flat_map(|o| o.iter().flatten())) {
+                if r.relative(path).is_some() && !cands.iter().any(|c| repo_key(c) == repo_key(r)) {
+                    cands.push(r.clone());
+                }
+            }
+            match choose_repo(&cands, path, fk, &sh.caches) {
+                Ok(Some(r)) => repo = Some(r),
+                Err(()) => reason = UnattributableReason::ReadError,
+                Ok(None) if !s_repos.is_empty() || matches!(opened, Some(Ok(_))) => reason = UnattributableReason::OutsideRepo,
+                Ok(None) => {
+                    let no = match (&opened, &session_repo) {
+                        (Some(Err(n)), _) | (_, Some(Err(n))) => *n,
+                        _ => NoRepo::RepoNotFound,
+                    };
+                    reason = match no {
+                        NoRepo::RepoNotFound => UnattributableReason::RepoNotFound,
+                        NoRepo::NoVcs => UnattributableReason::NoVcs,
+                    };
                 }
             }
         }
@@ -1057,8 +1124,10 @@ fn measure_one(sh: &Shared<'_>, me: usize) -> SessionRetention {
             result.hunks.extend(hunks.iter().map(|h| unattributed(h, reason)));
             continue;
         };
+        let first = result.hunks.len();
         if too_recent {
             result.hunks.extend(hunks.iter().map(|h| unattributed(h, UnattributableReason::TooRecent)));
+            set_vcs(&mut result.hunks[first..], repo.kind);
             continue;
         }
         let outcome = (|| -> Result<(), String> {
@@ -1104,6 +1173,7 @@ fn measure_one(sh: &Shared<'_>, me: usize) -> SessionRetention {
         if outcome.is_err() {
             result.hunks.extend(hunks.iter().map(|h| unattributed(h, UnattributableReason::ReadError)));
         }
+        set_vcs(&mut result.hunks[first..], repo.kind);
     }
 
     if let Some(repo) = s_repo {
@@ -1148,7 +1218,7 @@ pub fn measure_retention(sets: &[AiChangeSet], opts: &RetentionOptions) -> Vec<S
         sets,
         index,
         owners,
-        caches: Caches { repos: RepoCache::new(), baselines: Memo::new(), reads: Memo::new(), revs: Memo::new() },
+        caches: Caches { repos: RepoCache::new(), baselines: Memo::new(), reads: Memo::new(), revs: Memo::new(), tracked: Memo::new() },
         opts,
         now_ms: jsdate::parse_ms(&now).unwrap_or(now_ms),
         now,

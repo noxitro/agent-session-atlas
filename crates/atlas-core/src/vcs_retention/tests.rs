@@ -219,9 +219,10 @@ fn git_kept_modified_missing_and_baseline_lines() {
     let keys: Vec<&String> = v.as_object().unwrap().keys().collect();
     assert_eq!(keys, ["sessionId", "outcome", "vcs", "root", "baseline", "evaluated", "hunks", "excludedHunks", "counts", "lines", "provenance", "sessionEnd"]);
     // 出所(どのツールの呼び出しの、ログのどこから取った変更か)を添える。似た本文で当てた行は推定として別に数える
-    assert_eq!(v["hunks"][0].as_object().unwrap().keys().collect::<Vec<_>>(), ["id", "path", "status", "lines", "at", "toolCallId", "from"]);
-    assert_eq!((v["hunks"][0]["from"].as_str(), v["hunks"][0]["toolCallId"].is_string()), (Some("diff"), true));
-    assert_eq!(v["hunks"][1].as_object().unwrap().keys().collect::<Vec<_>>(), ["id", "path", "status", "lines", "at", "similarLines", "toolCallId", "from"]);
+    // まとまりごとに、照合に使った VCS も残す(同じフォルダでもファイルによって VCS が違うことがある)
+    assert_eq!(v["hunks"][0].as_object().unwrap().keys().collect::<Vec<_>>(), ["id", "path", "status", "lines", "at", "toolCallId", "from", "vcs"]);
+    assert_eq!((v["hunks"][0]["from"].as_str(), v["hunks"][0]["toolCallId"].is_string(), v["hunks"][0]["vcs"].as_str()), (Some("diff"), true, Some("git")));
+    assert_eq!(v["hunks"][1].as_object().unwrap().keys().collect::<Vec<_>>(), ["id", "path", "status", "lines", "at", "similarLines", "toolCallId", "from", "vcs"]);
     assert_eq!((r.hunks[0].similar_lines, r.hunks[1].similar_lines), (0, 1));
     let s = summarize_retention(std::slice::from_ref(r));
     assert_eq!((s.similar_lines, s.excluded_hunks, s.evaluated_estimated, s.unread_edits), (1, 1, 0, 0));
@@ -501,6 +502,16 @@ fn fake_vcs_tz(kind: VcsKind, root: &str, revs: Vec<FakeRev>, tz_min: i64) -> (V
         }
         let g = |i: usize| a.get(i).map(String::as_str).unwrap_or("");
         let last = revs.last().cloned();
+        // どれかの版にあるファイルを、管理しているファイルとみなす
+        let tracked = |p: &str| revs.iter().any(|r| r.files.iter().any(|f| f.0 == rel(p)));
+        if kind == VcsKind::Svn && g(0) == "info" && g(2) == "kind" {
+            let p = &g(3)[..g(3).len() - 1];
+            return if tracked(p) { ok("file\n".into()) } else { RunResult { code: 1, stdout: String::new(), stderr: format!("svn: warning: W155010: The node '{p}' was not found.") } };
+        }
+        if kind == VcsKind::P4 && g(0) == "fstat" {
+            let p = a.last().unwrap();
+            return if tracked(p) { ok(format!("... depotFile //depot/{}\n", rel(p))) } else { RunResult { code: 0, stdout: String::new(), stderr: format!("{p} - no such file(s).") } };
+        }
         if kind == VcsKind::Svn {
             if g(0) == "info" && g(2) == "wc-root" {
                 return ok(format!("{root}\n"));
@@ -968,4 +979,80 @@ fn dice_on_utf16_units() {
     assert_eq!(dice("abcd", "abce"), 2.0 * 2.0 / 6.0);
     // サロゲートペアは 2 単位として数える(JS と同じ)
     assert_eq!(dice("😀", "😀"), 1.0);
+}
+
+/// git は本物、ほかの 1 つは架空の履歴で答える(同じフォルダを両方が管理している形)
+fn git_and_fake(fake: VcsRunner) -> VcsRunner {
+    Arc::new(move |cmd, args, cwd| if cmd == VcsKind::Git { crate::vcs::default_run(cmd, args, cwd) } else { fake(cmd, args, cwd) })
+}
+
+#[test]
+fn mixed_vcs_in_same_folder_per_file() {
+    for kind in [VcsKind::P4, VcsKind::Svn] {
+        for mode in [EvalMode::Worktree, EvalMode::Committed] {
+            let mut tmp = Tmp::new();
+            // 同じフォルダの a.txt は git、b.txt は p4(か svn)が管理している(git では無視)
+            let (root, head) = git_repo(&mut tmp, &[("a.txt", &["base"]), (".gitignore", &["b.txt"])]);
+            write(&join(&root, &["b.txt"]), &["pb"]);
+            let (fake, calls) = fake_vcs(kind, &root, vec![rev(1, at(9, 0), &[("b.txt", &["pb"])]), rev(2, at(12, 0), &[("b.txt", &["pb", "by ai in b"])])]);
+            let runner = git_and_fake(fake);
+            let ev = session(&root, Some(&root), Some(&head), (10, 0), (11, 0), vec![ed(&join(&root, &["a.txt"]), &["by ai in a"]), ed(&join(&root, &["b.txt"]), &["by ai in b"])]);
+            write(&join(&root, &["a.txt"]), &["base", "by ai in a"]);
+            write(&join(&root, &["b.txt"]), &["pb", "by ai in b"]);
+            git(&root, &["commit", "-q", "-am", "ai"], &at(12, 0));
+            let r = &measure(&[extract_ai_changes("s1", &ev, None)], &RetentionOptions { runner, mode, ..opts() })[0];
+            assert_eq!((r.outcome, r.vcs), (Outcome::Measured, Some(VcsKind::Git)), "{kind:?} {mode:?}");
+            // ファイルごとに、管理している VCS で照合する
+            assert_eq!(r.hunks.iter().map(|h| (h.status, h.reason, h.vcs)).collect::<Vec<_>>(), [(RetentionStatus::Kept, None, Some(VcsKind::Git)), (RetentionStatus::Kept, None, Some(kind))], "{kind:?} {mode:?}");
+            // 呼んだのは読む系だけ
+            for (c, a) in calls.lock().unwrap().iter() {
+                assert!(assert_read_only(*c, a).is_ok(), "{c:?} {a:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn mixed_vcs_untracked_check_fails_is_read_error() {
+    let mut tmp = Tmp::new();
+    let (root, head) = git_repo(&mut tmp, &[("a.txt", &["base"]), (".gitignore", &["b.txt"])]);
+    write(&join(&root, &["b.txt"]), &["pb"]);
+    let r2 = root.clone();
+    // p4 は見つかるが、管理しているかを調べる fstat が失敗する
+    let fake: VcsRunner = Arc::new(move |cmd, args, _| {
+        if cmd != VcsKind::P4 {
+            return RunResult { code: -1, ..Default::default() };
+        }
+        if args.iter().any(|a| a == "info") {
+            return RunResult { code: 0, stdout: format!("... clientName zz-ws\n... clientRoot {r2}\n"), stderr: String::new() };
+        }
+        RunResult { code: 1, stdout: String::new(), stderr: "Perforce client error: Connect to server failed".into() }
+    });
+    let ev = session(&root, Some(&root), Some(&head), (10, 0), (11, 0), vec![ed(&join(&root, &["b.txt"]), &["by ai"])]);
+    write(&join(&root, &["b.txt"]), &["pb", "by ai"]);
+    let r = &measure(&[extract_ai_changes("s1", &ev, None)], &RetentionOptions { runner: git_and_fake(fake), ..opts() })[0];
+    // git は管理していないと答え、p4 は調べられない。取り違えて git で照合しない
+    assert_eq!(r.hunks.iter().map(|h| (h.status, h.reason)).collect::<Vec<_>>(), [(RetentionStatus::Unattributable, Some(UnattributableReason::ReadError))]);
+}
+
+#[test]
+fn nested_repo_uses_inner_repo() {
+    for mode in [EvalMode::Worktree, EvalMode::Committed] {
+        let mut tmp = Tmp::new();
+        let (root, head) = git_repo(&mut tmp, &[("a.txt", &["base"])]);
+        // 作業フォルダのリポジトリの中に、別のリポジトリ(inner)がある
+        let inner = join(&root, &["inner"]);
+        std::fs::create_dir_all(&inner).unwrap();
+        git9(&inner, &["init", "-q", "-b", "main"]);
+        write(&join(&inner, &["b.txt"]), &["ib"]);
+        git9(&inner, &["add", "-A"]);
+        git9(&inner, &["commit", "-q", "-m", "ibase"]);
+        let ev = session(&root, Some(&root), Some(&head), (10, 0), (11, 0), vec![ed(&join(&inner, &["b.txt"]), &["by ai"])]);
+        write(&join(&inner, &["b.txt"]), &["ib", "by ai"]);
+        git(&inner, &["commit", "-q", "-am", "ai"], &at(12, 0));
+        let runner: VcsRunner = Arc::new(|cmd, args, cwd| if cmd == VcsKind::Git { crate::vcs::default_run(cmd, args, cwd) } else { RunResult { code: -1, ..Default::default() } });
+        let r = &measure(&[extract_ai_changes("s1", &ev, None)], &RetentionOptions { runner, mode, ..opts() })[0];
+        // 外側のリポジトリの HEAD は変わっていないが、内側で取り込んだので残っている
+        assert_eq!(r.hunks.iter().map(|h| (h.status, h.reason, h.vcs)).collect::<Vec<_>>(), [(RetentionStatus::Kept, None, Some(VcsKind::Git))], "{mode:?}");
+    }
 }

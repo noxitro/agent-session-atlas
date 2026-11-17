@@ -272,6 +272,13 @@ fn sender_validation() {
     let mut cvs = ok.clone();
     cvs["result"]["vcs"] = json!("cvs");
     assert_eq!(parse_sender_vcs(&cvs, "s").unwrap().vcs, None);
+    // まとまりごとの VCS(ファイルごとに違うことがある)は読む。知らない名前と、書いていない古い結果は None
+    let with_id = |mut h: Value, id: i64| {
+        h["id"] = json!(id);
+        h
+    };
+    let r = parse_sender_vcs(&with_hunks(json!([with_id(patched("vcs", json!("p4")), 1), with_id(h0.clone(), 2), with_id(patched("vcs", json!("cvs")), 3)])), "s").unwrap();
+    assert_eq!(r.hunks.iter().map(|h| h.vcs).collect::<Vec<_>>(), [Some(VcsKind::P4), None, None]);
     // 照合不可の理由が無ければ unknown(読めなかったと決めつけない)。キーは id, path, status, lines, reason の順
     let mut u = patched("status", json!("unattributable"));
     u["lines"] = json!({"kept": 0, "modified": 0, "missing": 0, "unattributable": 2});

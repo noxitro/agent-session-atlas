@@ -365,7 +365,8 @@ pub fn retention_hunks_table(retention: &[&SessionRetention], labels: Option<&Re
                 h.path.as_str().into(),
                 label_of(labels, h.status).into(),
                 h.reason.map_or("", |x| x.label()).into(),
-                r.vcs.map_or("", |v| v.as_str()).into(),
+                // まとまりの VCS(ファイルごとに違うことがある)。古い atlas の結果には無いので、セッションの VCS
+                h.vcs.or(r.vcs).map_or("", |v| v.as_str()).into(),
                 baseline_cell(r).into(),
             ];
             row.extend(RETENTION_STATUSES.iter().map(|k| Cell::from(h.lines.get(*k))));
