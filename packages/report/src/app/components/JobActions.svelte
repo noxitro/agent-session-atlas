@@ -134,10 +134,11 @@
     <!-- 手順の長いチャット側では一番下の「閉じる」が画面の外になる(スマホには Esc が無い)ので、表題の横にも置く -->
     <button type="button" class="btn close" data-autofocus={shown !== 'tool' ? '' : undefined} data-testid="judge-close" onclick={() => dlg?.close()}>閉じる</button>
   </div>
-  <fieldset class="fld method">
+  <fieldset class="fld method" aria-describedby="judge-target-note">
     <legend class="k">判定するもの</legend>
-    <label class="opt"><input type="radio" name="judge-target" value="effort" checked={target === 'effort'} onchange={() => setTarget('effort')} data-testid="judge-target-effort" />工数(セッションごとの推定人手工数)</label>
-    <label class="opt"><input type="radio" name="judge-target" value="turns" checked={target === 'turns'} onchange={() => setTarget('turns')} data-testid="judge-target-turns" />依頼ごとの採用(そのまま・修正・不採用、合わなかった点、工程)</label>
+    <label class="opt"><input type="radio" name="judge-target" value="effort" checked={target === 'effort'} onchange={() => setTarget('effort')} data-testid="judge-target-effort" />工数(セッションごとの推定人手工数と、成果の質・手戻り)</label>
+    <label class="opt"><input type="radio" name="judge-target" value="turns" checked={target === 'turns'} onchange={() => setTarget('turns')} data-testid="judge-target-turns" />依頼ごとの採用(任意。どの依頼が直されたか・合わなかった点・工程まで見たいとき)</label>
+    <p class="both" id="judge-target-note" data-testid="judge-target-note">2 つは別の判定で、片方だけでも使えます。迷ったら工数だけで足ります。</p>
   </fieldset>
   <fieldset class="fld method">
     <legend class="k">判定の方法</legend>
@@ -295,6 +296,11 @@
   /* 選べない方法: 文字を淡墨にして、理由をすぐ下に書く */
   .opt.off {
     color: var(--ink-3);
+  }
+  .both {
+    margin: 2px 0 0;
+    font-size: 0.75rem;
+    color: var(--ink-2);
   }
   .why {
     margin: 0 0 2px;
