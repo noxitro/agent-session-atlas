@@ -1,0 +1,12 @@
+
+.memo-body{padding:10px 12px;background:var(--surface);border:1px solid var(--rule);overflow-wrap:anywhere;font-size:.875rem;line-height:1.7}
+.memo-body>:first-child{margin-top:0}
+.memo-body>:last-child{margin-bottom:0}
+.memo-body h3,.memo-body h4,.memo-body h5,.memo-body h6{margin:12px 0 4px;font-size:.875rem;line-height:1.5}
+.memo-body h3{font-size:1rem}
+.memo-body img{display:block;max-width:100%;height:auto;margin:8px 0;border:1px solid var(--rule)}
+.memo-body pre{overflow:auto;padding:8px 10px;border:1px solid var(--rule);font-family:var(--mono);font-size:.8125rem}
+.memo-body code{font-family:var(--mono)}
+.memo-body blockquote{margin:8px 0;padding-left:10px;border-left:2px solid var(--rule-strong);color:var(--ink-2)}
+.memo-body table{border-collapse:collapse}
+.memo-body th,.memo-body td{border:1px solid var(--rule);padding:3px 8px}

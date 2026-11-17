@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { extractEmbedded } from '../packages/report/src/lib/embed.ts';
 import type { ReportData } from '../packages/report/src/lib/types.ts';
-import type { SessionsFile } from '../packages/core/src/types.ts';
+import type { SessionsFile } from '../packages/report/src/shared/types.ts';
 import type { CoverageFile, SnapshotManifest } from './output-types.ts';
 import { buildFixtureHome, FAKE_SECRETS, P11_SESSION, ROOT, UNLISTED_VALUES, cliCommand } from './fixture-home.ts';
 const LEAK_VALUES = [...Object.values(FAKE_SECRETS), ...Object.values(UNLISTED_VALUES), 'failure-event-json-FAKE-2b3c', 'activity-metadata-json-FAKE-3c4d', 'workspace-bootstrap-config-FAKE-6f7a'];

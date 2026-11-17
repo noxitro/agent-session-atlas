@@ -8,7 +8,7 @@ import { readFile, readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { SessionRecord, SessionsFile } from '../packages/core/src/types.ts';
+import type { SessionRecord, SessionsFile } from '../packages/report/src/shared/types.ts';
 import { buildFixtureHome, readFixtureStore, ROOT } from './fixture-home.ts';
 import { runPipeline, type PipelineResult } from './pipeline.ts';
 import { openReadOnly } from './sqlite.ts';

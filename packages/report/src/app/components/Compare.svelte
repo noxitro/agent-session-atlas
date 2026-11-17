@@ -21,7 +21,7 @@
   import { effortLabel } from '../../lib/exec-labels.ts';
   import { MAIN_EFFORT_SHARE } from '../../lib/main-effort.ts';
   import { RETENTION_MIN_SESSIONS } from '../../lib/retention.ts';
-  import { PHASE_LABEL, PHASES, type Phase } from '../../../../core/src/turns.ts';
+  import { PHASE_LABEL, PHASES, type Phase } from '../../shared/turns.ts';
   import { dec, int, modelLabel, percent } from '../../lib/format.ts';
   import type { Option } from '../../lib/filter.ts';
 
