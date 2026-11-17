@@ -498,7 +498,8 @@
     const y = restoredView()?.y;
     // scrollRestoration は 'auto' のままにする('manual' にすると、目次や要点のリンクで移ってからの「戻る」でブラウザが位置を戻さなくなる)
     // effect の時点で本文は描き終わっているので、その場で戻す。後から高さが変わる(タスクタグの見出しが出るなど)ときのため、
-    // 少し後にもう一度だけ合わせる(その間に自分でスクロールしたら合わせない)
+    // 少し後にもう一度だけ合わせる(その間に自分でスクロールしたら合わせない)。1px のずれでも合わせる
+    // (ブラウザが戻す位置や、端数の高さの要素によるずれが、ちょうど 1px のことがある)
     if (y != null && y > 0) {
       const go = (): void => window.scrollTo({ top: y, behavior: 'instant' });
       go();
@@ -508,7 +509,7 @@
       addEventListener('keydown', stop, { once: true });
       addEventListener('touchstart', stop, { once: true, passive: true });
       setTimeout(() => {
-        if (!moved && Math.abs(window.scrollY - y) > 1) go();
+        if (!moved && Math.abs(window.scrollY - y) >= 1) go();
         removeEventListener('wheel', stop);
         removeEventListener('keydown', stop);
         removeEventListener('touchstart', stop);

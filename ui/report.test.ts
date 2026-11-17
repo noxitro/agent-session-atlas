@@ -1022,7 +1022,7 @@ describe('画面の操作', () => {
     const firstName = async (): Promise<string> => page.locator('#sessions table.ledger tbody tr td.name a').first().innerText();
     const first = await firstName();
     await page.locator('#sessions').scrollIntoViewIfNeeded();
-    // 整数の位置にする(端数の位置は、戻したときに 1px の丸めでずれることがある。画面は 1px までのずれを戻したとみなす)
+    // 整数の位置にする(端数の位置だと、戻した位置が丸めで 1px ずれることがある)
     await page.evaluate("window.scrollTo({ top: Math.round(document.getElementById('sessions').getBoundingClientRect().top + window.scrollY - 40), behavior: 'instant' })");
     const y = await page.evaluate<number>('Math.round(window.scrollY)');
     expect(y).toBeGreaterThan(1000);
