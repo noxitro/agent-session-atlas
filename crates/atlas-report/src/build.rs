@@ -701,6 +701,8 @@ pub fn build_report(input: BuildInput<'_>) -> Result<BuildResult> {
     drop(works);
 
     // 4. 詳細ページを並べて書く
+    // wiki を数えた集計か(画面の wikiState と同じく、埋め込む全セッションで 1 度だけ決める)
+    let wiki_state = atlas_core::wiki::wiki_state(input.sessions.iter().map(|r| &r.wiki), input.wiki_vaults);
     let library_href = library_on.then(|| format!("../{INSTRUCTIONS_FILE}"));
     let retention_meta_ref = retention_out.as_ref();
     // 描くのは並べ、書くのは 1 本のスレッドに任せる(Windows では同じフォルダへ並べて書くと遅くなる)
@@ -731,7 +733,7 @@ pub fn build_report(input: BuildInput<'_>) -> Result<BuildResult> {
                     memo: memo.as_ref(),
                     retention: retention_by_id.get(r.id.as_str()).copied(),
                     retention_meta: retention_meta_ref,
-                    wiki_vaults: input.wiki_vaults,
+                    wiki_state,
                 },
             );
             let bytes = byte_length(&page);

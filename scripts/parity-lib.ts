@@ -21,7 +21,7 @@ import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import type { SessionsFile } from '../packages/report/src/shared/types.ts';
 import { aggregate, bucket, coverageBreakdown, monthRange, unusedSkills } from '../packages/report/src/lib/aggregate.ts';
-import { WIKI_NOT_COUNTED } from '../packages/report/src/lib/wiki.ts';
+import { WIKI_NO_RECORD, WIKI_NOT_COUNTED } from '../packages/report/src/lib/wiki.ts';
 import type { SessionSummary } from '../packages/report/src/lib/types.ts';
 import { embedData, extractEmbedded, serializeForScript } from '../packages/report/src/lib/embed.ts';
 import { execAggregate, quantilesOf } from '../packages/report/src/lib/exec.ts';
@@ -328,6 +328,7 @@ function dumpWith(
     const withWiki = (wiki: SessionSummary['wiki']): SessionSummary => ({ ...base, wiki });
     write('wiki', {
       notCounted: WIKI_NOT_COUNTED,
+      noRecord: WIKI_NO_RECORD,
       sessionsWithWiki: base ? cases.map((c) => bucket('w', 'w', [withWiki(c)]).sessionsWithWiki) : null,
       all: base ? bucket('w', 'w', cases.map(withWiki)).sessionsWithWiki : null,
     });

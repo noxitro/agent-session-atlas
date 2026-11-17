@@ -25,6 +25,11 @@ export function wikiReferenced(w: WikiCounts | null | undefined): boolean {
   return wikiReferenceCount(w) > 0;
 }
 
+/** vault に触れたか(参照か書き込みが 1 回以上)。Rust の WikiUsage::touched と同じ */
+export function wikiTouched(w: WikiCounts | null | undefined): boolean {
+  return wikiReferenced(w) || n(w?.writes) > 0;
+}
+
 /** セッションの扱い: 参照した(書き込みもあってよい)/ 書き込みだけ / 参照なし(vault に触れていない) */
 export type WikiKind = 'referenced' | 'write-only' | 'none';
 
@@ -35,7 +40,9 @@ export function wikiKind(w: WikiCounts | null | undefined): WikiKind {
 
 /**
  * 集計の状態。counted = 数えた、not-counted = vault を指定せずに集計した(どのセッションも 0 だが「参照していない」の意味ではない)、
- * no-record = vault を指定していたかの記録が無い古い集計で、参照したセッションも無い(数えていないのか、参照していないのか分からない)
+ * no-record = vault を指定していたかの記録が無い古い集計で、vault に触れた(参照か書き込みをした)セッションも無い(数えていないのか、使っていないのか分からない)。
+ * 書き込みだけのセッションがあれば vault は指定されていた(数えた)と分かるので counted。
+ * Rust の同じ判定は crates/atlas-core/src/wiki.rs の wiki_state(詳細ページ・判定パケットで使う)
  */
 export type WikiState = 'counted' | 'not-counted' | 'no-record';
 
@@ -45,15 +52,15 @@ export type WikiState = 'counted' | 'not-counted' | 'no-record';
  */
 export function wikiState(sessions: readonly { wiki?: WikiCounts | null }[], wikiVaults: number | undefined): WikiState {
   if (wikiVaults === 0) return 'not-counted';
-  if (wikiVaults === undefined && !sessions.some((s) => wikiReferenced(s.wiki))) return 'no-record';
+  if (wikiVaults === undefined && !sessions.some((s) => wikiTouched(s.wiki))) return 'no-record';
   return 'counted';
 }
 
 /** vault を指定せずに集計したときの理由(crates/atlas-core/src/wiki.rs の WIKI_NOT_COUNTED と同じ文) */
 export const WIKI_NOT_COUNTED = 'この集計では llm-wiki の vault を指定していないので、wiki の参照は数えていません(0 件という意味ではありません)。atlas.config.json の wikis で vault を指定して集計し直すと数えます。';
 
-/** vault を指定していたかの記録が無く、参照したセッションも無いときの理由 */
-export const WIKI_NO_RECORD = 'この集計には、llm-wiki の vault を指定していたかの記録がありません(集計し直すと記録されます)。wiki を参照したセッションが無いので、数えていないのか、参照していないのかは分かりません。';
+/** vault を指定していたかの記録が無く、vault に触れたセッションも無いときの理由(crates/atlas-core/src/wiki.rs の WIKI_NO_RECORD と同じ文) */
+export const WIKI_NO_RECORD = 'この集計には、llm-wiki の vault を指定していたかの記録がありません(集計し直すと記録されます)。wiki を参照・書き込みしたセッションが無いので、数えていないのか、使っていないのかは分かりません。';
 
 /** 表(プロジェクト別・人別)で wiki の列を出さないときの短い断り。全文は集計明細などに出す */
 export const WIKI_NOT_COUNTED_SHORT = 'wiki の列は出していません(この集計では wiki の参照を数えていません。理由は集計明細)。';

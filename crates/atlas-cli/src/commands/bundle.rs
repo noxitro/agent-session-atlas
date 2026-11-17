@@ -64,7 +64,8 @@ pub fn run_bundle(p: &Paths, f: &SessionFilter, o: &BundleCliOptions, log: Log<'
             scope,
             log,
             now: None,
-            wiki_vaults: sel.file.source.wikis,
+            // 選んだセッションだけでなく集計の全セッションで決める(書き込みだけのセッションが選ばれていなくても、vault を指定していたと分かる)
+            wiki_state: atlas_core::wiki::wiki_state(sel.file.sessions.iter().map(|r| &r.wiki), sel.file.source.wikis),
         },
     )?;
     let excerpt = m.sessions.iter().filter(|e| e.text_source == atlas_judge::packet::TextSource::Excerpt).count();

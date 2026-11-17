@@ -380,7 +380,7 @@ fn main() -> Result<()> {
             let xs: Vec<SessionSummary> = cases.iter().map(|c| with_wiki(b, c)).collect();
             bucket("w", "w", &xs.iter().collect::<Vec<_>>()).sessions_with_wiki
         });
-        d.write("wiki", &json!({ "notCounted": atlas_core::wiki::WIKI_NOT_COUNTED, "sessionsWithWiki": per, "all": all }))?;
+        d.write("wiki", &json!({ "notCounted": atlas_core::wiki::WIKI_NOT_COUNTED, "noRecord": atlas_core::wiki::WIKI_NO_RECORD, "sessionsWithWiki": per, "all": all }))?;
     }
     // 課題 × 条件の表(scripts/parity-lib.ts と同じ形で書く)
     {

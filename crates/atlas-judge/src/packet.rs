@@ -11,6 +11,7 @@ use atlas_core::events::EventReader;
 use atlas_core::extract::{load_store, StoreData};
 use atlas_core::js::{self, JsMap};
 use atlas_core::types::{AgentStatus, InstructionScope, SessionRecord};
+use atlas_core::wiki::WikiState;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -336,7 +337,7 @@ fn enum_str<T: Serialize>(v: &T) -> String {
     }
 }
 
-fn render_once(s: &SessionRecord, t: &SessionTexts, l: &PacketLimits, wiki_vaults: Option<i64>) -> (String, i64) {
+fn render_once(s: &SessionRecord, t: &SessionTexts, l: &PacketLimits, wiki_state: WikiState) -> (String, i64) {
     let mut truncated = 0;
     let tok = &s.tokens;
     let mut lines: Vec<String> = Vec::new();
@@ -442,9 +443,12 @@ fn render_once(s: &SessionRecord, t: &SessionTexts, l: &PacketLimits, wiki_vault
     let ins: Vec<String> = s.instructions.iter().map(|i| format!("{}({}、{} 字、見出し「{}」)", i.file.as_str(), scope_label(i.scope), nf(i.chars), i.heading)).collect();
     push(list(&ins, l.list_items, "指示ファイルの注入: 記録なし"));
     let w = &s.wiki;
-    if wiki_vaults == Some(0) {
+    if wiki_state == WikiState::NotCounted {
         // vault を指定せずに集計した: 0 回は「参照なし」の意味にならない
         push("- llm-wiki: この集計では数えていません(vault の指定なし)".into());
+    } else if wiki_state == WikiState::NoRecord {
+        // 古い集計で、どのセッションも vault に触れていない: 数えていないのか、使っていないのか分からない
+        push("- llm-wiki: この集計では数えたか分かりません(vault の指定の記録なし)".into());
     } else if !w.touched() {
         push("- llm-wiki: 参照なし".into());
     } else {
@@ -512,13 +516,13 @@ fn render_once(s: &SessionRecord, t: &SessionTexts, l: &PacketLimits, wiki_vault
 
 /// パケットを描画する。max_chars を超えたら本文と列挙の上限を段階的に下げて収める。
 /// それでも収まらない(列挙だけで溢れる)ことは上限の設計上ほぼ無いが、起きたらエラーにする。
-/// wiki_vaults は参照を数えた llm-wiki の vault の数(sessions.json の source.wikis)。0 なら wiki の行を「数えていません」にする
-pub fn render_packet(s: &SessionRecord, t: &SessionTexts, limits: &PacketLimits, wiki_vaults: Option<i64>) -> Result<RenderedPacket> {
+/// wiki_state は llm-wiki の参照を数えた集計か(atlas_core::wiki::wiki_state)。数えていない・記録なしなら wiki の行にそう書く
+pub fn render_packet(s: &SessionRecord, t: &SessionTexts, limits: &PacketLimits, wiki_state: WikiState) -> Result<RenderedPacket> {
     let mut l = *limits;
     let k = 0.7_f64;
     let down = |x: i64| (x as f64 * k).floor() as i64;
     for _ in 0..8 {
-        let (md, truncated) = render_once(s, t, &l, wiki_vaults);
+        let (md, truncated) = render_once(s, t, &l, wiki_state);
         let chars = len(&md);
         if chars <= limits.max_chars {
             return Ok(RenderedPacket { markdown: md, chars, truncated, limits: l });
