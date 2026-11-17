@@ -237,3 +237,18 @@ fn turn_chat_parts_mark_last_only_files() {
     assert!(v.get("decidable").is_none());
     assert!(v["parts"].as_array().unwrap().iter().all(|p| p.get("lastOnly").is_none()));
 }
+
+/// judge に judge では効かない絞り込みを付けると、黙って添付の全体を判定せずに止め、judge-flow か bundle を案内する
+#[test]
+fn judge_rejects_filters_it_ignores() {
+    let d = tempfile::tempdir().unwrap();
+    let (o, n) = (d.path().join("out").to_string_lossy().into_owned(), d.path().join("notes").to_string_lossy().into_owned());
+    let e = run(&cli(&["judge", "run", "--project", "p", "--out", &o, "--notes-dir", &n]), &quiet).unwrap_err().to_string();
+    assert!(e.starts_with("--project は judge run では効きません。"), "{e}");
+    assert!(e.contains("judge-flow --project") && e.contains("--session か --only"), "{e}");
+    let e = run(&cli(&["judge", "import", "r.md", "--session", "ab", "--out", &o, "--notes-dir", &n]), &quiet).unwrap_err().to_string();
+    assert!(e.starts_with("--session は judge import では使えません"), "{e}");
+    let e = run(&cli(&["judge", "m365", "--group", "g", "--out", &o, "--notes-dir", &n]), &quiet).unwrap_err().to_string();
+    assert!(e.starts_with("--group は judge m365 では効きません。"), "{e}");
+    assert!(!e.contains("--session か --only"), "{e}");
+}

@@ -63,7 +63,7 @@ bin\atlas.exe --help                  # 使い方
 | `--to <dir>` | `group upload` で、アップロード先の基底フォルダ(フルパス)。省略すると設定の `uploadRoot` |
 | `-V`, `--version` | 版を出す(`atlas 0.1.3 (commit <作ったときのコミット>, code <版の目印>)`)。リリースの `atlas.exe` はリリースのタグ `v<版>` の版(ビルドのときに環境変数 `ATLAS_VERSION` で渡す)、渡さずに作ったもの(この PC でのビルド)はワークスペースの `Cargo.toml` の `version`。`scripts/ensure-atlas.ps1` が、置いてある実行ファイルの版を確かめるのに使う |
 
-`judge run` 専用のオプション(`--backend` `--limit` `--only` `--concurrency` `--force` `--no-allow-tools` `--timeout`)は [judge.md](judge.md) を見てください。`judge run` では `--model` は判定に使うモデルの指定になります。
+`judge run` 専用のオプション(`--backend` `--limit` `--only` `--concurrency` `--force` `--no-allow-tools` `--timeout`)は [judge.md](judge.md) を見てください。`judge` は作ってある添付(`out/bundle`)を判定するので、絞り込みのオプションは効きません。`--session` は `judge run` で `--only` と同じに扱い(先頭一致で添付から探す)、ほかの絞り込み(`--project`・`--since`・`--client`・`--branch`・`--group`)を付けると止まります(`judge-flow` では、添付を作る `bundle` に渡ります)。`judge run` では `--model` は判定に使うモデルの指定になります。
 
 ## snapshot と extract が読むもの
 

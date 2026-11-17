@@ -75,6 +75,18 @@ pub fn run(o: &CliOptions, log: Log<'_>) -> Result<RunResult> {
 
 /// judge m365 / turns m365: 開いている M365 Copilot のアプリを操作して未判定の添付ファイルを判定し(m365.rs)、
 /// 1 件でも取り込めたらレポートに反映する(export)。送れなかった・取り込めなかったファイルがあれば、反映した後に失敗にする
+/// judge に、judge では効かない絞り込みを付けたときの知らせ(黙って添付の全体を判定しないように止める)
+fn ignored_filters_message(action: &str, flags: &[String]) -> String {
+    let list = flags.join(" ");
+    match action {
+        "import" => format!("{list} は judge import では使えません(返答に入っているセッションをすべて取り込みます)"),
+        _ => format!(
+            "{list} は judge {action} では効きません。判定するのは、作ってある添付(out/bundle)のセッションです。\n絞り込んで判定するときは、bin\\atlas.exe judge-flow {list} … で添付を作るところから通すか、先に bin\\atlas.exe bundle {list} … で添付を作ってから judge {action} を実行してください{}",
+            if action == "run" { "(judge run で特定のセッションだけを判定するときは --session か --only に ID を指定します)" } else { "" }
+        ),
+    }
+}
+
 fn run_m365_command(o: &CliOptions, p: &Paths, target: ChatTarget, model: Option<&str>, limit: Option<u64>, timeout_sec: u64, log: Log<'_>) -> Result<RunResult> {
     let s = run_m365_judge(
         &M365Paths { out: p.out.clone(), sessions: p.sessions.clone(), judgments: p.judgments.clone(), turn_judgments: p.turn_judgments.clone(), turn_bundle: p.turn_bundle.clone() },
@@ -132,6 +144,9 @@ pub fn run_command(o: &CliOptions, p: &Paths, log: Log<'_>) -> Result<RunResult>
         }
         "judge" => {
             let j = o.judge.as_ref().ok_or_else(|| anyhow::anyhow!("judge の操作がありません"))?;
+            if !j.ignored_filters.is_empty() {
+                anyhow::bail!("{}", ignored_filters_message(&j.action, &j.ignored_filters));
+            }
             if j.action == "m365" {
                 return run_m365_command(o, p, ChatTarget::Effort, j.model.as_deref(), j.limit, j.timeout_sec, log);
             }

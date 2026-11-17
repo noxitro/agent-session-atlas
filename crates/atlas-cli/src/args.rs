@@ -27,6 +27,9 @@ pub struct JudgeCliOptions {
     pub allow_tools: bool,
     /// 1 件あたりの制限時間(秒)
     pub timeout_sec: u64,
+    /// judge では効かない絞り込みの指定(「--project」など)。judge は作ってある添付(out/bundle)を判定するので、
+    /// そのまま実行すると黙って添付の全体を判定してしまう。judge を直に実行したときは止める(judge-flow は添付を作るのに使うので消してから渡す)
+    pub ignored_filters: Vec<String>,
 }
 
 /// 依頼ごとの判定(段階 2)。run は GitHub Copilot CLI だけ(従量課金の anthropic は使わない)
@@ -374,7 +377,16 @@ pub fn parse_cli(argv: &[String]) -> Result<CliOptions, UsageError> {
             return err("--only にセッション ID を指定してください");
         }
         // JS の `values.only ? … : null`: 空文字は null
-        let only = if values.s("only").is_some_and(|o| !o.is_empty()) { only } else { None };
+        let mut only = if values.s("only").is_some_and(|o| !o.is_empty()) { only } else { None };
+        // 絞り込みは添付を作るときのもので、judge では効かない。--session だけは judge run で --only と同じに扱う(先頭一致で添付から探す)
+        let mut ignored_filters: Vec<String> = ["group", "project", "since", "client", "branch"].iter().filter(|k| values.has(k)).map(|k| format!("--{k}")).collect();
+        if let Some(ids) = values.multi.get("session").map(split_list).filter(|s| !s.is_empty()) {
+            if action == "run" {
+                only = Some(only.unwrap_or_default().into_iter().chain(ids).collect());
+            } else {
+                ignored_filters.insert(0, "--session".into());
+            }
+        }
         judge = Some(JudgeCliOptions {
             file,
             backend,
@@ -386,6 +398,7 @@ pub fn parse_cli(argv: &[String]) -> Result<CliOptions, UsageError> {
             allow_tools: values.b("allow-tools", true),
             // m365 は 1 ファイルの返答を待つ秒数(Think Deeper は数分かかることがあるので長め)
             timeout_sec: pos_int(values.s("timeout"), "--timeout", 1)?.unwrap_or(if action == "m365" { 900 } else { 600 }),
+            ignored_filters,
             action,
         });
     }
@@ -676,6 +689,20 @@ mod tests {
         assert_eq!(o.out.as_deref(), Some("o"));
         assert_eq!(o.sessions, Some(vec!["a".into(), "b".into(), "c".into()]));
         assert_eq!(o.temp_dirs, Some(vec!["t".into()]));
+    }
+
+    /// judge では効かない絞り込みは覚えておき(judge を直に実行したときに止める)、--session は judge run で --only に足す
+    #[test]
+    fn judge_session_and_ignored_filters() {
+        let j = p(&["judge", "run", "--session", "ab12,cd", "--only", "ef"]).unwrap().judge.unwrap();
+        assert_eq!(j.only, Some(vec!["ef".into(), "ab12".into(), "cd".into()]));
+        assert!(j.ignored_filters.is_empty());
+        let j = p(&["judge", "run", "--project", "x", "--since", "2026-01-01", "--group", "g"]).unwrap().judge.unwrap();
+        assert_eq!(j.ignored_filters, vec!["--group", "--project", "--since"]);
+        let j = p(&["judge", "import", "r.md", "--session", "ab12"]).unwrap().judge.unwrap();
+        assert_eq!((j.only, j.ignored_filters), (None, vec!["--session".to_string()]));
+        // judge 以外では今までどおり(絞り込みとして使う)
+        assert!(p(&["bundle", "--session", "ab12"]).unwrap().judge.is_none());
     }
 
     #[test]
