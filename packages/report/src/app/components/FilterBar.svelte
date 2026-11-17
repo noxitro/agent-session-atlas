@@ -10,6 +10,8 @@
     judged,
     emptyCount,
     memoCount,
+    wikiCount = 0,
+    wikiCounted = false,
     lastDay,
     onchange,
     editable = false,
@@ -21,6 +23,10 @@
     emptyCount: number;
     /** メモのあるセッションの件数(0 件なら絞り込みを出さない) */
     memoCount: number;
+    /** llm-wiki を参照したセッションの件数 */
+    wikiCount?: number;
+    /** llm-wiki を数えている(vault がある)。数えていなければ絞り込みを出さない */
+    wikiCounted?: boolean;
     /** 最終記録日(YYYY-MM-DD、ローカル)。期間の簡易指定の基準 */
     lastDay: string | null;
     onchange: (patch: Partial<FilterState>) => void;
@@ -44,10 +50,10 @@
 
   // 使う頻度の低い条件(ブランチ・入力トークン記録・タスク分類・空のセッション)は 2 行目に畳む。
   // どれかが効いているときは畳めない(効いている条件を隠さない)
-  const moreActive = $derived(filter.branch !== '' || filter.coverage !== '' || filter.taskCategory !== '' || filter.empty === '1' || filter.memo === '1');
+  const moreActive = $derived(filter.branch !== '' || filter.coverage !== '' || filter.taskCategory !== '' || filter.empty === '1' || filter.memo === '1' || filter.wiki === '1');
   let moreOpen = $state(false);
   const showMore = $derived(moreOpen || moreActive);
-  const moreCount = $derived([filter.branch !== '', filter.coverage !== '', filter.taskCategory !== '', filter.empty === '1', filter.memo === '1'].filter(Boolean).length);
+  const moreCount = $derived([filter.branch !== '', filter.coverage !== '', filter.taskCategory !== '', filter.empty === '1', filter.memo === '1', filter.wiki === '1'].filter(Boolean).length);
 
 </script>
 
@@ -157,6 +163,13 @@
       <label class="check">
         <input type="checkbox" data-testid="memo-filter" checked={filter.memo === '1'} onchange={(e) => onchange({ memo: e.currentTarget.checked ? '1' : '' })} />
         <span>メモのあるセッションだけ({int(memoCount)})</span>
+      </label>
+    {/if}
+
+    {#if (wikiCounted && wikiCount > 0) || filter.wiki === '1'}
+      <label class="check">
+        <input type="checkbox" data-testid="wiki-filter" checked={filter.wiki === '1'} onchange={(e) => onchange({ wiki: e.currentTarget.checked ? '1' : '' })} />
+        <span>wiki を参照したセッションだけ({int(wikiCount)})<span class="why">llm-wiki の索引・ページ・wiki の skill などを 1 回以上使ったセッション(書き込みだけのものは入れない)</span></span>
       </label>
     {/if}
   </div>

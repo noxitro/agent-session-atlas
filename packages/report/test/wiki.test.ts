@@ -2,6 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { bucket } from '../src/lib/aggregate.ts';
 import { usageCount } from '../src/lib/condition-usage.ts';
+import { applyFilter, decodeFilter, emptyFilter, encodeFilter } from '../src/lib/filter.ts';
 import type { ConditionSession } from '../src/lib/conditions.ts';
 import type { SessionSummary } from '../src/lib/types.ts';
 import {
@@ -22,7 +23,10 @@ import {
   wikiPageTable,
   wikiPageIndex,
   pageNumber,
+  shortPageNames,
+  sortWikiPageRows,
   type WikiCounts,
+  type WikiPageRow,
   type WikiPageSession,
   type WikiPageTable,
 } from '../src/lib/wiki.ts';
@@ -156,7 +160,25 @@ describe('llm-wiki のページごとの参照率と役立った率', () => {
       NAMES,
       MIN,
     );
-    expect(row(t, 'a.md')).toEqual({ page: 'a.md', sessions: 7, share: 1, yes: 2, no: 1, unknown: 1, unjudged: 3, helpfulRate: 2 / 3 });
+    expect(row(t, 'a.md')).toEqual({
+      page: 'a.md',
+      sessions: 7,
+      share: 1,
+      yes: 2,
+      no: 1,
+      unknown: 1,
+      unjudged: 3,
+      helpfulRate: 2 / 3,
+      readers: [
+        { index: 0, verdict: 'yes' },
+        { index: 1, verdict: 'yes' },
+        { index: 2, verdict: 'no' },
+        { index: 3, verdict: 'unknown' },
+        { index: 4, verdict: null },
+        { index: 5, verdict: null },
+        { index: 6, verdict: null },
+      ],
+    });
     // 役立った + 役立たなかった が閾値未満なら —(分からないが多くても数えない)
     const u = wikiPageTable([a([['a.md', 'yes']]), a([['a.md', 'unknown']]), a([['a.md', 'unknown']]), a([['a.md', 'no']])], NAMES, MIN);
     expect(row(u, 'a.md').helpfulRate).toBeNull();
@@ -165,6 +187,28 @@ describe('llm-wiki のページごとの参照率と役立った率', () => {
     expect(wikiPageTable([s(['a.md']), s(['b.md'])], NAMES, MIN).rows).toEqual([]);
     const t = wikiPageTable([withPages(s(['z.md', 'b.md']), ['z.md', 'b.md']), withPages(s(['b.md']), ['b.md']), withPages(s(['a.md']), ['a.md'])], NAMES, 1);
     expect(t.rows.map((r) => r.page)).toEqual(['b.md', 'a.md', 'z.md']);
+    // 読んだセッションは、渡したセッションの並びでの位置(読んでいないセッションは入らない)
+    const u = wikiPageTable([s([]), withPages(s(['b.md']), ['b.md']), { wiki: w() }, withPages(s(['b.md']), ['b.md'])], NAMES, 1);
+    expect(row(u, 'b.md').readers.map((r) => r.index)).toEqual([1, 3]);
+  });
+  it('並べ替え: 率の — は向きにかかわらず最後、同じ値は読んだセッションの多い順', () => {
+    const r = (page: string, sessions: number, helpfulRate: number | null, yes = 0): WikiPageRow => ({ page, sessions, share: null, yes, no: 0, unknown: 0, unjudged: 0, helpfulRate, readers: [] });
+    const rows = [r('a.md', 1, 0.5), r('b.md', 5, null), r('c.md', 3, 1), r('d.md', 2, 0.5)];
+    expect(sortWikiPageRows(rows, 'helpfulRate', false).map((x) => x.page)).toEqual(['c.md', 'd.md', 'a.md', 'b.md']);
+    expect(sortWikiPageRows(rows, 'helpfulRate', true).map((x) => x.page)).toEqual(['d.md', 'a.md', 'c.md', 'b.md']);
+    expect(sortWikiPageRows(rows, 'sessions', true).map((x) => x.page)).toEqual(['a.md', 'd.md', 'c.md', 'b.md']);
+    expect(sortWikiPageRows(rows, 'page', false).map((x) => x.page)).toEqual(['d.md', 'c.md', 'b.md', 'a.md']);
+    expect(sortWikiPageRows(rows, 'yes', false).map((x) => x.page)).toEqual(['b.md', 'c.md', 'd.md', 'a.md']);
+    expect(rows.map((x) => x.page)).toEqual(['a.md', 'b.md', 'c.md', 'd.md']);
+  });
+  it('短い名前: 共通のフォルダと .md を除く。除くと重なるなら .md は残す', () => {
+    const a = shortPageNames(['wiki/topics/x.md', 'wiki/topics/sub/y.md', 'wiki/topics/z.MD']);
+    expect([a.prefix, a.dropMd, [...a.short.values()]]).toEqual(['wiki/topics/', true, ['x', 'sub/y', 'z']]);
+    const b = shortPageNames(['wiki/a.md', 'notes/a.md']);
+    expect([b.prefix, [...b.short.values()]]).toEqual(['', ['wiki/a', 'notes/a']]);
+    const c = shortPageNames(['w/a.md', 'w/a']);
+    expect([c.prefix, c.dropMd, [...c.short.values()]]).toEqual(['w/', false, ['a.md', 'a']]);
+    expect(shortPageNames([]).prefix).toBe('');
   });
   it('ページの名前の辞書: セッションの並び・読んだ順に重複なく並べ、番号を引く', () => {
     const ix = wikiPageIndex([{ wiki: { pageReads: ['b.md', 'a.md', 'b.md'] } }, { wiki: { pageReads: [] } }, { wiki: { pageReads: ['a.md', 'c.md'] } }]);
@@ -215,5 +259,13 @@ describe('どこでも同じ数え方', () => {
     expect(wikiReferenced(c)).toBe(referenced);
     expect(bucket('all', '全体', [summary(c)]).sessionsWithWiki).toBe(referenced ? 1 : 0);
     expect(usageCount({ id: 'x', wiki: c } as unknown as ConditionSession, 'wiki') > 0).toBe(referenced);
+  });
+  it('絞り込みの wiki=1 も同じ数え方で残す。ハッシュで往復し、不正な値は捨てる', () => {
+    const ss = cases.map(([name, c]) => ({ ...summary(c), id: name, project: 'p', client: null, branch: null, models: [] }));
+    expect(applyFilter(ss, { ...emptyFilter(), wiki: '1' }).map((s) => s.id)).toEqual(cases.filter(([, c]) => wikiReferenced(c)).map(([name]) => name));
+    expect(applyFilter(ss, emptyFilter())).toHaveLength(cases.length);
+    expect(encodeFilter({ ...emptyFilter(), wiki: '1' })).toBe('wiki=1');
+    expect(decodeFilter('#wiki=1').wiki).toBe('1');
+    expect(decodeFilter('#wiki=x').wiki).toBe('');
   });
 });

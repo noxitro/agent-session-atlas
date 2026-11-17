@@ -174,6 +174,8 @@ pub struct FilterState {
     pub group: String,
     /// '1' ならメモのあるセッションだけ
     pub memo: String,
+    /// '1' なら llm-wiki を参照したセッションだけ(WikiSummary::referenced。書き込みだけは入れない)
+    pub wiki: String,
 }
 
 pub const NO_JUDGMENT: &str = "(none)";
@@ -181,7 +183,7 @@ pub const NO_JUDGMENT: &str = "(none)";
 pub const NO_SESSION: &str = "(none)";
 
 /// FilterState のキー(emptyFilter のキーの順。URL ハッシュの書き出しの順)
-pub const FILTER_KEYS: [&str; 14] = ["from", "to", "project", "person", "client", "model", "branch", "coverage", "taskCategory", "empty", "tool", "ids", "group", "memo"];
+pub const FILTER_KEYS: [&str; 15] = ["from", "to", "project", "person", "client", "model", "branch", "coverage", "taskCategory", "empty", "tool", "ids", "group", "memo", "wiki"];
 
 impl FilterState {
     pub fn get(&self, k: &str) -> &str {
@@ -200,6 +202,7 @@ impl FilterState {
             "ids" => &self.ids,
             "group" => &self.group,
             "memo" => &self.memo,
+            "wiki" => &self.wiki,
             _ => "",
         }
     }
@@ -220,6 +223,7 @@ impl FilterState {
             "ids" => &mut self.ids,
             "group" => &mut self.group,
             "memo" => &mut self.memo,
+            "wiki" => &mut self.wiki,
             _ => return None,
         })
     }
@@ -347,6 +351,9 @@ pub fn matches(s: &SessionSummary, f: &FilterState, ids: Option<&HashSet<String>
         return false;
     }
     if !f.memo.is_empty() && s.memo.is_none() {
+        return false;
+    }
+    if !f.wiki.is_empty() && !s.wiki.referenced() {
         return false;
     }
     if !f.task_category.is_empty() {
@@ -515,7 +522,7 @@ pub fn decode_filter(s: &str) -> FilterState {
         if k == "coverage" && !["", "input", "output-only", "none"].contains(&v.as_str()) {
             continue;
         }
-        if (k == "empty" || k == "memo") && !["", "1"].contains(&v.as_str()) {
+        if (k == "empty" || k == "memo" || k == "wiki") && !["", "1"].contains(&v.as_str()) {
             continue;
         }
         if k == "ids" {
