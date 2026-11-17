@@ -3,6 +3,7 @@
   import { conditionTable } from '../lib/conditions.ts';
   import { turnAggregate } from '../lib/turns.ts';
   import { verdictAggregate } from '../lib/verdicts.ts';
+  import { wikiState } from '../lib/wiki.ts';
   import { applyFilter, currentGroupName, decodeFilter, decodeView, effectiveIds, emptyFilter, encodeFilter, filterOptions, groupIds, inScope, isEmptyFilter, isStateHash, joinIds, knownSelection, type FilterState } from '../lib/filter.ts';
   import GroupRail from './components/GroupRail.svelte';
   import GroupHead from './components/GroupHead.svelte';
@@ -47,6 +48,8 @@
     const memos = liveMemos;
     return memos ? list.map((s) => ({ ...s, memo: memos[s.id] ?? null })) : list;
   });
+  /** llm-wiki の参照を数えた集計か。絞り込みで変わらないよう、絞り込み前の全セッションと vault の数で 1 度だけ決める(lib/wiki.ts) */
+  const wiki = $derived(wikiState(data?.sessions ?? [], data?.wikiVaults));
   const memoCount = $derived(sessions.filter((s) => s.memo).length);
   const emptyCount = $derived(sessions.filter((s) => s.empty).length);
   const judged = $derived(!!data?.judgments.available);
@@ -648,18 +651,18 @@
         <!-- 帳票の順: 表紙(規模の 4 欄)→ 摘要(要点)→ 明細 -->
         <Overview part="cover" {agg} {judged} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} {emptyInFilter} {editable} />
         <Highlights groups={points} />
-        <Insights sessions={filtered} allSessions={data.sessions} installed={installed?.skills ?? null} disabled={installed?.disabled ?? []} meta={data.insights?.meta ?? {}} candidates={data.insights?.candidates ?? []} candidateTotal={data.insights?.candidateTotal ?? data.insights?.candidates.length ?? 0} computedOver={data.insights?.computedOver ?? sessions.length} hasPage={true} libraryHref={data.library ? 'instructions.html' : null} />
+        <Insights sessions={filtered} allSessions={data.sessions} installed={installed?.skills ?? null} disabled={installed?.disabled ?? []} meta={data.insights?.meta ?? {}} candidates={data.insights?.candidates ?? []} candidateTotal={data.insights?.candidateTotal ?? data.insights?.candidates.length ?? 0} computedOver={data.insights?.computedOver ?? sessions.length} hasPage={true} libraryHref={data.library ? 'instructions.html' : null} {wiki} />
         <TurnPhases agg={turnAgg} verdicts={verdictAgg} verdictModel={data.turnJudgments?.model ?? null} verdictRanAt={data.turnJudgments?.ranAt ?? null} {editable} />
-        <Overview part="detail" {agg} {judged} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} {emptyInFilter} />
+        <Overview part="detail" {agg} {judged} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} {emptyInFilter} {wiki} />
         {#if judged}<JudgmentPanel {agg} meta={data.judgments} />{/if}
         {#if data.retention}<Retention sessions={filtered} meta={data.retention} />{/if}
         <Compare sessions={scoped} groups={groupOptions} projects={options.project} lastAt={all.overall.lastAt} retention={!!data.retention} />
-        {#if hasConditions}<Conditions table={conditions} wikiVaults={data.wikiVaults} />{/if}
+        {#if hasConditions}<Conditions table={conditions} {wiki} />{/if}
         <UsageRanking usage={agg.usage} {installed} failuresPage={data.failures === true} bind:tab={usageTab} />
         <ExecProfile exec={agg.exec} sessions={filtered.length} />
         <!-- 人別は、送り先(<人>/<プロジェクト>)をまとめて集計したレポートだけ -->
-        {#if options.person.length > 0}<ProjectTable kind="person" rows={agg.byPerson} {judged} current={filter.person} onpick={(p) => setFilter({ person: p })} />{/if}
-        <ProjectTable rows={agg.byProject} {judged} current={filter.project} onpick={(p) => setFilter({ project: p })} send={canEdit && !serverDown ? projectSend : undefined} />
+        {#if options.person.length > 0}<ProjectTable kind="person" rows={agg.byPerson} {judged} {wiki} current={filter.person} onpick={(p) => setFilter({ person: p })} />{/if}
+        <ProjectTable rows={agg.byProject} {judged} {wiki} current={filter.project} onpick={(p) => setFilter({ project: p })} send={canEdit && !serverDown ? projectSend : undefined} />
         <MonthlyChart months={agg.byMonth} lastAt={all.overall.lastAt} />
         <ModelChart rows={agg.byModel} />
         <ModelValue sessions={filtered} />

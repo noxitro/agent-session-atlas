@@ -165,6 +165,13 @@ pub struct WikiSummary {
     pub other_calls: i64,
 }
 
+impl WikiSummary {
+    /// wiki を参照したか(atlas_core::wiki::wiki_referenced。書き込みは入れない)
+    pub fn referenced(&self) -> bool {
+        atlas_core::wiki::wiki_referenced(self.index_reads, self.page_reads, self.skill_calls, self.other_calls)
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FilesSummary {

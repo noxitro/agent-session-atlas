@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use atlas_core::js::{self, JsMap};
 use atlas_core::types::{SessionRecord, SessionsFile};
 use atlas_core::vcs_step::read_vcs_retention;
-use atlas_report::aggregate::{aggregate, coverage_breakdown, month_range, unused_skills};
+use atlas_report::aggregate::{aggregate, bucket, coverage_breakdown, month_range, unused_skills};
 use atlas_report::embed::{embed_data, extract_embedded, serialize_for_script};
 use atlas_report::exec::{exec_aggregate, quantiles_of};
 use atlas_report::exec_labels::*;
@@ -30,7 +30,7 @@ use atlas_report::project_label::short_project_label;
 use atlas_report::retention::{aggregate_retention, retention_by_phase, retention_item, retention_meta, turn_starts};
 use atlas_report::summarize::{detail_file_name, summarize, tests_summary};
 use atlas_report::turns::turn_aggregate;
-use atlas_report::types::{SessionSummary, REPORT_DATA_VERSION};
+use atlas_report::types::{SessionSummary, WikiSummary, REPORT_DATA_VERSION};
 use atlas_report::verdicts::{parse_verdicts, verdict_aggregate, verdict_tuples};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -84,6 +84,17 @@ const TESTS_CASES: &str = r#"[
   { "runs": [{ "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 1000, "nanoAiu": 1, "failing": 0, "results": [] }], "invalid": 0, "duplicates": 0, "dropped": 0, "firstPass": 5 },
   { "runs": [{ "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 1000, "nanoAiu": 1, "failing": 0, "results": [] }], "invalid": 0, "duplicates": 0, "dropped": 0, "firstPass": 0 },
   { "runs": [{ "at": null, "turn": 1, "tool": "powershell", "toolCallId": null, "activeMs": 1000, "nanoAiu": 1, "failing": 0, "results": [] }], "invalid": 0, "duplicates": 0, "dropped": 0, "firstPass": -1 }
+]"#;
+
+/// llm-wiki の参照の数え方を確かめる形(参照した / 検索だけ / 書き込みだけ / 触れていない / skill だけ / otherCalls の無い古い形)。
+/// scripts/parity-lib.ts の WIKI_CASES と同じ中身
+const WIKI_CASES: &str = r#"[
+  { "indexReads": 1, "pageReads": 2, "skillCalls": 0, "writes": 1, "otherCalls": 0 },
+  { "indexReads": 0, "pageReads": 0, "skillCalls": 0, "writes": 0, "otherCalls": 3 },
+  { "indexReads": 0, "pageReads": 0, "skillCalls": 0, "writes": 2, "otherCalls": 0 },
+  { "indexReads": 0, "pageReads": 0, "skillCalls": 0, "writes": 0, "otherCalls": 0 },
+  { "indexReads": 0, "pageReads": 0, "skillCalls": 1, "writes": 0, "otherCalls": 0 },
+  { "indexReads": 1, "pageReads": 0, "skillCalls": 0, "writes": 0 }
 ]"#;
 
 /// 課題 × 条件の表を確かめる形(scripts/parity-lib.ts の CONDITION_CASES と同じ中身)
@@ -359,6 +370,18 @@ fn main() -> Result<()> {
     // テストの結果の要約(scripts/parity-lib.ts の TESTS_CASES と同じ並び)
     let cases: Vec<atlas_core::types::SessionTests> = serde_json::from_str(TESTS_CASES)?;
     d.write("tests-summary", &cases.iter().map(tests_summary).collect::<Vec<_>>())?;
+    // llm-wiki を参照したセッションの数え方(先頭のセッションの wiki だけを差し替えて集計する。scripts/parity-lib.ts と同じ形で書く)
+    {
+        let cases: Vec<WikiSummary> = serde_json::from_str(WIKI_CASES)?;
+        let with_wiki = |b: &SessionSummary, w: &WikiSummary| SessionSummary { wiki: w.clone(), ..b.clone() };
+        let base = plain.first();
+        let per: Option<Vec<i64>> = base.map(|b| cases.iter().map(|c| bucket("w", "w", &[&with_wiki(b, c)]).sessions_with_wiki).collect());
+        let all: Option<i64> = base.map(|b| {
+            let xs: Vec<SessionSummary> = cases.iter().map(|c| with_wiki(b, c)).collect();
+            bucket("w", "w", &xs.iter().collect::<Vec<_>>()).sessions_with_wiki
+        });
+        d.write("wiki", &json!({ "notCounted": atlas_core::wiki::WIKI_NOT_COUNTED, "sessionsWithWiki": per, "all": all }))?;
+    }
     // 課題 × 条件の表(scripts/parity-lib.ts と同じ形で書く)
     {
         use atlas_report::conditions::{compare_names, condition_table, parse_condition_tag};

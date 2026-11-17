@@ -38,6 +38,11 @@ fn normalize(id: &str, events: Vec<CopilotEvent>, workspace: Option<WorkspaceInf
 }
 
 fn html(r: &SessionRecord) -> String {
+    html_with(r, None)
+}
+
+/// wiki_vaults: 参照を数えた vault の数(0 なら数えていない集計)
+fn html_with(r: &SessionRecord, wiki_vaults: Option<i64>) -> String {
     render_detail_html(
         r,
         &DetailOptions {
@@ -54,6 +59,7 @@ fn html(r: &SessionRecord) -> String {
             memo: None,
             retention: None,
             retention_meta: None,
+            wiki_vaults,
         },
     )
 }
@@ -243,6 +249,22 @@ fn detail_merges_duplicate_rows() {
     assert_eq!(page.matches("<li>wiki/a.md").count(), 1);
     assert!(page.contains("<li>wiki/a.md <span class=\"tag\">×2</span></li>"));
     assert_eq!(field_of(&page, "個別ページ"), pair("3", "2 ページ"));
+    // 読んだセッションの扱いは「参照した」
+    assert!(page.contains("このセッションの扱い: 参照した</p>"));
+    // 書き込みだけのセッションも欄は出すが、参照したセッションには数えない
+    let write_only = normalize("wo", vec![ev("tool.execution_start", json!({ "toolName": "edit", "toolCallId": "e1", "arguments": { "path": "E:\\v\\my-wiki\\wiki\\a.md" } }), &t(1), json!({}))], None, &[], Some(&wiki));
+    let wp = html(&write_only);
+    assert_eq!(field_of(&wp, "書き込み"), pair("1", ""));
+    assert!(wp.contains("このセッションの扱い: 書き込みだけ(参照したセッションには数えません)</p>"));
+    // vault に触れていないセッション: 欄の代わりに「参照はありません」
+    let untouched = normalize("u", vec![ev("tool.execution_start", json!({ "toolName": "view", "toolCallId": "x1", "arguments": { "path": "E:\\v\\other\\a.md" } }), &t(1), json!({}))], None, &[], Some(&wiki));
+    assert!(html(&untouched).contains("llm-wiki の参照はありません。"));
+    // vault を指定せずに集計した(vault の数が 0): 「参照はありません」と言わずに、数えていない理由を出す
+    let off = html_with(&untouched, Some(0));
+    assert!(!off.contains("llm-wiki の参照はありません。"));
+    assert!(off.contains(atlas_core::wiki::WIKI_NOT_COUNTED));
+    // 古い集計(vault の数の記録なし)は今までどおり
+    assert!(html_with(&untouched, None).contains("llm-wiki の参照はありません。"));
 
     // (11) 同じ理由で失敗したサブエージェントは ×N でまとめ、結果の無いツール呼び出しは「結果なし」に数える
     let mut events = Vec::new();

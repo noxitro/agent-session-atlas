@@ -6,9 +6,11 @@
   import { usageItems, usageMismatches, usageRows, WIKI_ITEM, type UsageKind, type UsageMismatch } from '../../lib/condition-usage.ts';
   import { CONDITION_SEP, type ConditionCell, type ConditionTable, type Median, type UntilPass } from '../../lib/conditions.ts';
   import { dec, duration, int, percent, truncate } from '../../lib/format.ts';
+  import { wikiStateNote, type WikiState } from '../../lib/wiki.ts';
 
-  /** wikiVaults: 参照を数えた llm-wiki の vault の数(0 なら数えていない。古い集計では undefined) */
-  let { table, wikiVaults }: { table: ConditionTable; wikiVaults?: number } = $props();
+  /** wiki: llm-wiki の参照を数えた集計か(App.svelte が絞り込み前の全セッションで決める。数えていなければ llm-wiki の利用は理由だけにする) */
+  let { table, wiki = 'counted' }: { table: ConditionTable; wiki?: WikiState } = $props();
+  const wikiNote = $derived(wikiStateNote(wiki));
 
   const MIN = COMPARE_MIN_SESSIONS;
   const DASH = '—';
@@ -41,7 +43,6 @@
   $effect(() => {
     if (current !== item) item = current;
   });
-  const selected = $derived(items.find((i) => i.key === current) ?? items[0]);
   const expected = $derived(new Set((expectedBy[current] ?? []).filter((c) => table.conditions.includes(c))));
   const usage = $derived(usageRows(table, current));
   const mismatch = $derived(usageMismatches(table, current, expected));
@@ -256,49 +257,49 @@
           {#each USAGE_KINDS as k (k)}
             {#if items.some((i) => i.kind === k)}
               <optgroup label={USAGE_KIND_LABEL[k]}>
-                {#each items.filter((i) => i.kind === k) as i (i.key)}<option value={i.key}>{i.kind === 'wiki' ? 'llm-wiki の参照' : i.name}({int(i.sessions)})</option>{/each}
+                {#each items.filter((i) => i.kind === k) as i (i.key)}<option value={i.key}>{i.kind === 'wiki' ? 'llm-wiki の参照' : i.name}{i.kind === 'wiki' && wikiNote ? '(数えていません)' : `(${int(i.sessions)})`}</option>{/each}
               </optgroup>
             {/if}
           {/each}
         </select>
       </label>
     </div>
-    {#if current === WIKI_ITEM && wikiVaults === 0}
-      <p class="note caution" data-testid="conditions-usage-wiki-off">この集計では llm-wiki の vault を指定していないので、wiki の参照は数えていません(どのセッションも 0 です)。設定の wikis で vault を指定して集計し直すと数えます。</p>
-    {:else if current === WIKI_ITEM && wikiVaults === undefined && selected.sessions === 0}
-      <p class="note">この集計には、llm-wiki の vault を指定していたかの記録がありません(集計し直すと記録されます)。指定していなければ、wiki の参照はどのセッションも 0 です。</p>
-    {/if}
-    <div class="table-scroll">
-      <table class="ledger" aria-labelledby="conditions-usage-h" data-testid="conditions-usage">
-        <thead>
-          <tr>
-            <th scope="col">条件</th>
-            <th scope="col" class="chk">使うはず</th>
-            <th scope="col" class="num">件数</th>
-            <th scope="col" class="num">使った</th>
-            <th scope="col" class="num">使わなかった</th>
-            <th scope="col" class="num" title="使った ÷ 件数。件数が {MIN} 件未満なら —">使った割合</th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each usage as r (r.condition)}
-            <tr data-condition={r.condition}>
-              <th scope="row" class="cond" translate="no">{r.condition}</th>
-              <td class="chk"><label><input type="checkbox" aria-label="{r.condition} で使うはず" checked={expected.has(r.condition)} onchange={(e) => toggle(r.condition, e.currentTarget.checked)} /></label></td>
-              <td class="num">{@render count(r.sessions)}</td>
-              <td class="num">{@render count(r.used)}</td>
-              <td class="num">{@render count(r.sessions - r.used)}</td>
-              <td class="num">{#if r.share == null}<span class="dash">{DASH}</span>{:else}{percent(r.used, r.sessions)}{/if}</td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-    </div>
-    {#if expected.size === 0}
-      <p class="note" data-testid="conditions-usage-hint">使うはずの条件にチェックを付けると、食い違ったセッションを下に並べます。</p>
+    {#if current === WIKI_ITEM && wikiNote}
+      <!-- 数えていない(か、数えたか分からない)集計: 使った・使わなかった・割合も食い違いの一覧も出さず、理由だけ -->
+      <p class="note caution" data-testid="conditions-usage-wiki-off">{wikiNote}</p>
     {:else}
-      {@render mismatches('使うはずの条件で使わなかったセッション', mismatch.missing, 'missing')}
-      {@render mismatches('ほかの条件で使ったセッション', mismatch.leaked, 'leaked')}
+      <div class="table-scroll">
+        <table class="ledger" aria-labelledby="conditions-usage-h" data-testid="conditions-usage">
+          <thead>
+            <tr>
+              <th scope="col">条件</th>
+              <th scope="col" class="chk">使うはず</th>
+              <th scope="col" class="num">件数</th>
+              <th scope="col" class="num">使った</th>
+              <th scope="col" class="num">使わなかった</th>
+              <th scope="col" class="num" title="使った ÷ 件数。件数が {MIN} 件未満なら —">使った割合</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each usage as r (r.condition)}
+              <tr data-condition={r.condition}>
+                <th scope="row" class="cond" translate="no">{r.condition}</th>
+                <td class="chk"><label><input type="checkbox" aria-label="{r.condition} で使うはず" checked={expected.has(r.condition)} onchange={(e) => toggle(r.condition, e.currentTarget.checked)} /></label></td>
+                <td class="num">{@render count(r.sessions)}</td>
+                <td class="num">{@render count(r.used)}</td>
+                <td class="num">{@render count(r.sessions - r.used)}</td>
+                <td class="num">{#if r.share == null}<span class="dash">{DASH}</span>{:else}{percent(r.used, r.sessions)}{/if}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+      {#if expected.size === 0}
+        <p class="note" data-testid="conditions-usage-hint">使うはずの条件にチェックを付けると、食い違ったセッションを下に並べます。</p>
+      {:else}
+        {@render mismatches('使うはずの条件で使わなかったセッション', mismatch.missing, 'missing')}
+        {@render mismatches('ほかの条件で使ったセッション', mismatch.leaked, 'leaked')}
+      {/if}
     {/if}
 
     <details class="how" id="conditions-how">
@@ -312,7 +313,7 @@
           <li><strong>最初に全部通るまで</strong>: 最初に全部通った実行が何回目かと、そこまでの実働と AIU の累計です。AIU は、そこまでの量が分かるセッション(リクエストごとの記録があるもの)だけで取ります。下の小さい字は、中央値を取ったセッションの数です。テストをこまめに走らせるほど、実行の数は増えます。</li>
         {/if}
         <li><strong>セッション全体</strong>: 実働と AIU は、記録があるセッションの中央値です(「比べる」の節は平均なので、値は一致しません)。通った後の作業も、途中で終えたセッションも入ります。ツールの失敗・拒否は、失敗・拒否 ÷ ツール呼び出しで、セッションが {MIN} 件未満なら「—」です。テストが落ちてツールが失敗を返した実行も入るので、テストの結果と別々の証拠にはなりません。</li>
-        <li><strong>利用の確認</strong>: llm-wiki は参照(索引・個別ページを読んだ回数、wiki の skill の呼び出し、vault の検索・一覧などそのほかの呼び出し。書き込みだけのセッションは使わなかったに入ります)、skill は呼び出し、MCP サーバーはそのサーバーのツールの呼び出し、ツールは呼び出しを数えます。llm-wiki の参照は、集計した PC の設定で vault を指定したときだけ数えます。選べるのは、この表のセッションで使われたものだけです(llm-wiki はいつも選べます)。</li>
+        <li><strong>利用の確認</strong>: llm-wiki は参照(索引・個別ページを読んだ回数、wiki の skill の呼び出し、vault の検索・一覧などそのほかの呼び出し。書き込みだけのセッションは使わなかったに入ります。集計明細やプロジェクト別の「参照した」と同じ数え方です)、skill は呼び出し、MCP サーバーはそのサーバーのツールの呼び出し、ツールは呼び出しを数えます。llm-wiki の参照は、集計した PC の設定で vault を指定したときだけ数えます(指定せずに集計したレポートでは、llm-wiki を選んでも表を出さずに理由だけを出します)。選べるのは、この表のセッションで使われたものだけです(llm-wiki はいつも選べます)。</li>
         <li><strong>名前の決まり</strong>: タスクタグの名前を「課題{CONDITION_SEP}条件」か「課題{CONDITION_SEP}条件{CONDITION_SEP}番号」にします(区切りは半角の _ を 2 つ、番号は半角の数字だけ)。番号が違っても、課題と条件が同じなら同じ行です。並びは名前の順(数字は数として比べます)なので、先頭に置きたい条件は、名前の頭に数字を付けてください(例 0-plain)。</li>
       </ul>
     </details>

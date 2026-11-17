@@ -64,6 +64,7 @@ pub fn run_bundle(p: &Paths, f: &SessionFilter, o: &BundleCliOptions, log: Log<'
             scope,
             log,
             now: None,
+            wiki_vaults: sel.file.source.wikis,
         },
     )?;
     let excerpt = m.sessions.iter().filter(|e| e.text_source == atlas_judge::packet::TextSource::Excerpt).count();

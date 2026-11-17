@@ -10,7 +10,10 @@
 //  f. 送り先をまとめて集計した出力(タスクタグの表示名が「人 / タグ」)でも、元のタグから読んで同じ表になり、人をまたいでまとめる
 //  g. テストの記録が無い古い集計でも開き、テストの結果の列を出さずに理由を書く
 //  h. 全ページの網羅チェック(この節が出ている出力)に要修正の指摘が無い
-//  i. llm-wiki の vault を指定しないで集計したときは、wiki の参照を数えていないと書く
+//  i. llm-wiki の vault を指定しないで集計したときは、wiki の参照の件数を集計明細・プロジェクト別・改善点・利用の確認・詳細ページのどこにも出さず、
+//     数えていないと書く
+//  i2. vault を指定したときは、改善点の「llm-wiki の利用」の箱に件数だけを出す(率は並べない)
+//  j. vault を指定していたかの記録が無い古い集計で、参照したセッションも無ければ、数えていないのか分からないと書く
 // a〜e2 は atlas serve の画面、f 以降はファイルを直接開く(サーバは開いている画面が無くなると止まるので、サーバの画面を使うものを先に置く)。
 // どの画面でもページ内の例外とコンソールのエラーが無いこと。
 import { spawnSync } from 'node:child_process';
@@ -23,6 +26,8 @@ import { ROOT, cliCommand, startServer, type ServeHandle } from '../e2e/fixture-
 import { extractEmbedded } from '../packages/report/src/lib/embed.ts';
 import { COMPARE_MIN_SESSIONS } from '../packages/report/src/lib/compare.ts';
 import type { ReportData } from '../packages/report/src/lib/types.ts';
+import { WIKI_NO_RECORD, WIKI_NOT_COUNTED } from '../packages/report/src/lib/wiki.ts';
+import { emptyFilter, encodeFilter } from '../packages/report/src/lib/filter.ts';
 import { audit, summarize } from '../scripts/ui-audit.ts';
 import { COND_CONDITIONS, COND_MCP, COND_PEOPLE, COND_SOLO_TASK, COND_TASKS, conditionConfig, conditionGroups, condId, writeConditionStudy, writeConditionUpload } from '../scripts/synthetic-conditions.ts';
 
@@ -272,7 +277,35 @@ describe('課題 × 条件', () => {
     expect(errors, summarize({ pages: r.pages, findings: errors })).toEqual([]);
   });
 
-  it('i. llm-wiki の vault を指定しないで集計したときは、wiki の参照を数えていないと書く', async () => {
+  /** 数えていない・記録なしの集計で、wiki の件数をどこにも出さず、どこでも同じ理由の文を出すか */
+  const expectWikiOff = async (note: string): Promise<void> => {
+    // 集計明細: wiki の欄は出さず、指示ファイルだけの欄と、見出しの下の理由
+    await expect.poll(() => page.getByTestId('detail-wiki-off').innerText()).toBe(note);
+    expect(await page.getByTestId('instructions-field').count()).toBe(1);
+    expect(await page.getByTestId('instructions-wiki-field').count()).toBe(0);
+    // プロジェクト別: wiki の列を出さず(並べ替えもできない)、見出しの下の理由
+    const projects = page.locator('#projects');
+    expect(await page.getByTestId('projects-wiki-off').innerText()).toBe(note);
+    expect(await projects.locator('thead th').allInnerTexts()).not.toContain('wiki');
+    expect(await projects.getByRole('button', { name: /^wiki/ }).count()).toBe(0);
+    // 改善点の箱: 件数は出さず理由だけ
+    const box = page.getByTestId('insights-wiki');
+    expect(await box.getByTestId('insights-wiki-off').innerText()).toBe(note);
+    expect(await box.getByTestId('insights-wiki-counts').count()).toBe(0);
+    // 課題 × 条件の利用の確認: 使った・使わなかった・割合も食い違いの一覧も出さず、理由だけ
+    const item = section().getByTestId('conditions-usage-item');
+    await expect.poll(() => item.inputValue()).toBe('wiki');
+    expect(await item.locator('option').first().innerText()).toBe('llm-wiki の参照(数えていません)');
+    expect(await section().getByTestId('conditions-usage-wiki-off').innerText()).toBe(note);
+    expect(await section().getByTestId('conditions-usage').count()).toBe(0);
+    expect(await section().getByTestId('conditions-usage-hint').count()).toBe(0);
+    // ほかのもの(MCP サーバー)を選べば、表はいつもどおり出る
+    await item.selectOption(`mcp:${COND_MCP}`);
+    await expect.poll(() => section().getByTestId('conditions-usage').count()).toBe(1);
+    expect(await section().getByTestId('conditions-usage-wiki-off').count()).toBe(0);
+  };
+
+  it('i. llm-wiki の vault を指定しないで集計したときは、wiki の参照の件数を出さずに、数えていないと書く', async () => {
     const plain = join(WORK, 'out-no-wiki');
     // vault を指定していない設定(wikis の無い空の設定)
     const empty = join(WORK, 'atlas.config.empty.json');
@@ -281,8 +314,55 @@ describe('課題 × 条件', () => {
     const data = extractEmbedded<ReportData>(await readFile(join(plain, 'atlas.html'), 'utf8'));
     expect(data.wikiVaults).toBe(0);
     await page.goto(fileUrl(join(plain, 'atlas.html')));
-    await expect.poll(() => section().getByTestId('conditions-usage-wiki-off').innerText()).toContain('vault を指定していないので、wiki の参照は数えていません');
-    // 設定したときは、数えた vault の数が入り、この注意は出ない
+    await expectWikiOff(WIKI_NOT_COUNTED);
+    // 詳細ページも「参照はありません」と言わずに、同じ理由を出す
+    const detail = await readFile(join(plain, 'sessions', `${condId(1)}.html`), 'utf8');
+    expect(detail).toContain(WIKI_NOT_COUNTED);
+    expect(detail).not.toContain('llm-wiki の参照はありません。');
+    // 設定したときは、数えた vault の数が入り、理由の文は出ない
     expect(extractEmbedded<ReportData>(await readFile(join(out, 'atlas.html'), 'utf8')).wikiVaults).toBe(1);
+  });
+
+  it('i2. vault を指定したときは、改善点の箱に件数だけを出す(率は並べない)', async () => {
+    const data = extractEmbedded<ReportData>(await readFile(join(out, 'atlas.html'), 'utf8'));
+    const shown = data.sessions.filter((s) => !s.empty).length;
+    await page.goto(fileUrl(join(out, 'atlas.html')));
+    const box = page.getByTestId('insights-wiki');
+    // wiki の条件の 6 件のうち 5 件と、素の条件の 1 件が索引を読む。書き込みは無い
+    await expect.poll(() => box.getByTestId('insights-wiki-counts').innerText()).toBe(`wiki を参照した 6(うち書き込みもあり 0)/ 書き込みだけ 0 / 参照なし ${shown - 6} セッション`);
+    expect(await box.getByTestId('insights-wiki-breakdown').innerText()).toBe('参照の内訳(引数に vault の場所が現れた呼び出し): 索引 6 回、個別ページ 延べ 0、wiki の skill 0 回、検索・一覧など 0 回');
+    expect(await box.getByTestId('insights-wiki-why').innerText()).toContain('skill の箱にも同じ弱さがあります');
+    expect(await box.innerText()).not.toMatch(/%/);
+    expect(await box.getByTestId('insights-wiki-off').count()).toBe(0);
+    // 集計明細とプロジェクト別は、同じ数え方の件数を出す
+    expect(await page.getByTestId('instructions-wiki-field').innerText()).toMatch(/\/ 6\b/);
+    expect(await page.getByTestId('detail-wiki-off').count()).toBe(0);
+    expect(await page.locator('#projects thead th').allInnerTexts()).toContain('wiki');
+  });
+
+  it('j. vault を指定していたかの記録が無い古い集計で、参照したセッションも無ければ、分からないと書く。決めるのは絞り込む前の全セッション', async () => {
+    /** 集計して、sessions.json から vault の数の記録を消して作り直す(記録の版 18 以前の sessions.json には source.wikis が無い) */
+    const oldBuild = async (dir: string, cfg: string): Promise<void> => {
+      atlas(['all', '--home', logs, '--out', dir, '--notes-dir', notes, '--config', cfg]);
+      const path = join(dir, 'sessions.json');
+      const file = JSON.parse(await readFile(path, 'utf8')) as { source: { wikis?: number } };
+      delete file.source.wikis;
+      await writeFile(path, JSON.stringify(file));
+      atlas(['build', '--out', dir, '--notes-dir', notes]);
+      expect(extractEmbedded<ReportData>(await readFile(join(dir, 'atlas.html'), 'utf8')).wikiVaults).toBeUndefined();
+    };
+    const old = join(WORK, 'out-no-record');
+    await oldBuild(old, join(WORK, 'atlas.config.empty.json'));
+    await page.goto(fileUrl(join(old, 'atlas.html')));
+    await expectWikiOff(WIKI_NO_RECORD);
+
+    // 記録は無いが、参照したセッションがある集計は数えたとみなす。参照したセッションの無い絞り込み(MCP サーバーを使ったセッション)でも、
+    // 理由に変わらずに 0 を出す(絞り込みで出し方が変わらない)
+    const counted = join(WORK, 'out-old-counted');
+    await oldBuild(counted, config);
+    await page.goto(`${fileUrl(join(counted, 'atlas.html'))}#${encodeFilter({ ...emptyFilter(), tool: `mcp:${COND_MCP}` })}`);
+    await expect.poll(() => page.getByTestId('instructions-wiki-field').innerText()).toMatch(/\/ 0\b/);
+    expect(await page.getByTestId('detail-wiki-off').count()).toBe(0);
+    expect((await page.getByTestId('insights-wiki-counts').innerText()).startsWith('wiki を参照した 0(うち書き込みもあり 0)')).toBe(true);
   });
 });

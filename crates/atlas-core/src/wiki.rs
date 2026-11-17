@@ -84,6 +84,55 @@ pub fn empty_wiki() -> WikiUsage {
     WikiUsage::default()
 }
 
+/// vault を指定せずに集計したときの、wiki の参照を出さない理由(packages/report/src/lib/wiki.ts の WIKI_NOT_COUNTED と同じ文。
+/// npm run parity:fixture の wiki で突き合わせる)
+pub const WIKI_NOT_COUNTED: &str = "この集計では llm-wiki の vault を指定していないので、wiki の参照は数えていません(0 件という意味ではありません)。設定の wikis で vault を指定して集計し直すと数えます。";
+
+/// wiki を参照したか。索引の読み取り・個別ページの読み取り・wiki の skill の呼び出し・そのほかの呼び出し(vault の検索・一覧など)が
+/// 合わせて 1 回以上。書き込みは入れない(書き込みだけのセッションは参照していない)。
+/// 画面・表・ログで「参照した」と数えるのはこの判定だけ(画面は packages/report/src/lib/wiki.ts の wikiReferenced。並びをそろえる)
+pub fn wiki_referenced(index_reads: i64, page_reads: i64, skill_calls: i64, other_calls: i64) -> bool {
+    index_reads + page_reads + skill_calls + other_calls > 0
+}
+
+/// セッションの扱い(packages/report/src/lib/wiki.ts の WikiKind と同じ並び)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WikiKind {
+    /// 参照した(書き込みもあってもよい)
+    Referenced,
+    /// 書き込みだけ(参照したセッションには数えない)
+    WriteOnly,
+    /// vault に触れていない
+    None,
+}
+
+impl WikiUsage {
+    /// 参照の回数(索引・個別ページ・wiki の skill・そのほかの呼び出しの和。書き込みは入れない)
+    pub fn reference_count(&self) -> i64 {
+        self.index_reads + self.page_reads.len() as i64 + self.skill_calls.len() as i64 + self.other_calls
+    }
+
+    /// wiki を参照したか(wiki_referenced)
+    pub fn referenced(&self) -> bool {
+        wiki_referenced(self.index_reads, self.page_reads.len() as i64, self.skill_calls.len() as i64, self.other_calls)
+    }
+
+    /// vault に触れたか(参照か書き込みが 1 回以上)。詳細ページの欄を出すか・判定パケットの「参照なし」・metrics.json の sessionsWithAny だけに使う
+    pub fn touched(&self) -> bool {
+        self.referenced() || self.writes > 0
+    }
+
+    pub fn kind(&self) -> WikiKind {
+        if self.referenced() {
+            WikiKind::Referenced
+        } else if self.writes > 0 {
+            WikiKind::WriteOnly
+        } else {
+            WikiKind::None
+        }
+    }
+}
+
 /// ツール引数の文字列値だけをつなぐ
 fn arg_text(args: Option<&Value>) -> String {
     match args {
@@ -380,6 +429,39 @@ mod tests {
         let mut w = empty_wiki();
         assert!(c.classify(&mut w, "view", Some(&json!({"path": "b/x.mdx"}))));
         assert_eq!(w.other_calls, 1);
+    }
+
+    #[test]
+    fn referenced_and_kind() {
+        // 4 つの回数のどれか 1 つでも参照。書き込みは入れない
+        assert!(!wiki_referenced(0, 0, 0, 0));
+        assert!(wiki_referenced(1, 0, 0, 0));
+        assert!(wiki_referenced(0, 1, 0, 0));
+        assert!(wiki_referenced(0, 0, 1, 0));
+        assert!(wiki_referenced(0, 0, 0, 1));
+        let w = |index: i64, pages: usize, skills: usize, writes: i64, other: i64| WikiUsage {
+            index_reads: index,
+            page_reads: vec!["p.md".into(); pages],
+            skill_calls: vec!["wiki-query".into(); skills],
+            writes,
+            other_calls: other,
+        };
+        // 検索だけ(そのほかの呼び出し)も参照した
+        assert_eq!(w(0, 0, 0, 0, 2).kind(), WikiKind::Referenced);
+        assert_eq!(w(0, 0, 0, 0, 2).reference_count(), 2);
+        // skill だけも参照した
+        assert_eq!(w(0, 0, 1, 0, 0).kind(), WikiKind::Referenced);
+        // 書き込みだけは参照していないが、vault には触れた
+        let wo = w(0, 0, 0, 3, 0);
+        assert_eq!(wo.kind(), WikiKind::WriteOnly);
+        assert!(!wo.referenced());
+        assert!(wo.touched());
+        // 参照と書き込みの両方は参照した
+        assert_eq!(w(1, 2, 0, 1, 0).kind(), WikiKind::Referenced);
+        assert_eq!(w(1, 2, 0, 1, 0).reference_count(), 3);
+        // 触れていない
+        assert_eq!(empty_wiki().kind(), WikiKind::None);
+        assert!(!empty_wiki().touched());
     }
 
     #[test]

@@ -1,11 +1,15 @@
 <script lang="ts">
   // Phase 12: 改善点(LLM を呼ばない規則の集計)。カードは計算の対象で 2 つの群に分け、1 枚のカードに対象を混ぜない。
-  // 絞り込みに従う群: 指示文の傾向・skill の傾向・止まっている箇所(sessions で再計算)。
+  // 絞り込みに従う群: 指示文の傾向・skill の傾向・llm-wiki の利用(件数だけ。画面だけで insights.html には無い)・止まっている箇所(sessions で再計算)。
   // 全記録の群: 「長いのに注入が少ない」(全体での希少さの話なので allSessions)と、スキル化の候補
   // (依頼文の本文が要るので build 時に全セッションで計算して埋め込んだもの。全件は insights.html)
   import { date, dec, duration, int } from '../../lib/format.ts';
   import { cleanHeading, instructionFindings, instructionVersions, skillStats, stuckByProject, stuckSessions, THRESHOLDS, type Candidate, type VersionMeta } from '../../lib/insights.ts';
   import type { SessionSummary } from '../../lib/types.ts';
+  import { wikiStateNote, wikiUsageSummary, type WikiState } from '../../lib/wiki.ts';
+
+  /** skill の失敗率の差の読み方(insights.html の skill の節と同じ文。crates/atlas-report/src/insights_page.rs の SKILL_RATE_CAUSE) */
+  const SKILL_RATE_CAUSE = '呼ぶかどうかは作業の中身で決まるので、差は skill が原因とは限りません。';
 
   let {
     sessions,
@@ -18,6 +22,7 @@
     computedOver,
     hasPage,
     libraryHref,
+    wiki = 'counted',
   }: {
     sessions: SessionSummary[];
     /** 絞り込み前の全セッション */
@@ -35,6 +40,8 @@
     /** insights.html を作ったか(export / build どちらでも作る) */
     hasPage: boolean;
     libraryHref: string | null;
+    /** llm-wiki の参照を数えた集計か(App.svelte が絞り込み前の全セッションで決める) */
+    wiki?: WikiState;
   } = $props();
 
   const versions = $derived(instructionVersions(sessions));
@@ -46,6 +53,9 @@
   const disabledSet = $derived(new Set(disabled.map((n) => n.toLowerCase())));
   /** 呼んだときの失敗率が出せる skill があるか(無ければ失敗率の列を出さない) */
   const skillRates = $derived(skills.stats.some((s) => s.failureWith != null));
+  // llm-wiki の利用: 絞り込み後のセッションの件数だけ(率は出さない)
+  const wikiNote = $derived(wikiStateNote(wiki));
+  const wikiUse = $derived(wikiUsageSummary(sessions));
   const stuck = $derived(stuckSessions(sessions));
   const byProject = $derived(stuckByProject(stuck, sessions));
   const TOP = 5;
@@ -111,7 +121,7 @@
         <div class="table-scroll">
           <table class="ledger small">
             <caption class="cap">呼び出しの多い skill(上位 {Math.min(TOP, skills.stats.length)} / 全 {int(skills.stats.length)} 件)</caption>
-            <thead><tr><th scope="col">skill</th><th scope="col" class="num">呼び出し</th><th scope="col" class="num">字数</th>{#if skillRates}<th scope="col" class="num">失敗率(呼んだ / 呼ばない)</th>{/if}</tr></thead>
+            <thead><tr><th scope="col">skill</th><th scope="col" class="num">呼び出し</th><th scope="col" class="num">字数</th>{#if skillRates}<th scope="col" class="num">失敗率(ツール呼び出しのうち失敗・拒否。呼んだ / 呼ばない)</th>{/if}</tr></thead>
             <tbody>
               {#each skills.stats.slice(0, TOP) as s (s.name)}
                 <tr><td>{s.name}</td><td class="num">{int(s.calls)}</td><td class="num">{s.chars == null ? '記録なし' : int(s.chars)}</td>{#if skillRates}<td class="num">{pct(s.failureWith)} / {pct(s.failureWithout)}</td>{/if}</tr>
@@ -119,9 +129,25 @@
             </tbody>
           </table>
         </div>
-        {#if !skillRates}<p class="basis">{THRESHOLDS.MIN_SESSIONS} セッション以上で呼ばれた skill が無いので、呼んだときと呼ばないときの失敗率は比べられません。</p>{/if}
+        {#if skillRates}
+          <p class="basis">呼んだ / 呼ばない: その skill を呼んだセッションと、呼ばなかったセッション。— は {THRESHOLDS.MIN_SESSIONS} セッション未満。{SKILL_RATE_CAUSE}</p>
+        {:else}
+          <p class="basis">{THRESHOLDS.MIN_SESSIONS} セッション以上で呼ばれた skill が無いので、呼んだときと呼ばないときの失敗率は比べられません。</p>
+        {/if}
       {/if}
       {#if skills.unused.length}<p class="basis">インストール済みで未使用: {skills.unused.map((n) => (disabledSet.has(n.toLowerCase()) ? `${n}(無効)` : n)).join('、')}</p>{/if}
+    </div>
+
+    <div class="box" data-testid="insights-wiki">
+      <h3>llm-wiki の利用</h3>
+      {#if wikiNote}
+        <p class="basis" data-testid="insights-wiki-off">{wikiNote}</p>
+      {:else}
+        <p class="counts" data-testid="insights-wiki-counts">wiki を参照した <strong>{int(wikiUse.referenced)}</strong>(うち書き込みもあり {int(wikiUse.referencedWithWrites)})/ 書き込みだけ <strong>{int(wikiUse.writeOnly)}</strong> / 参照なし <strong>{int(wikiUse.none)}</strong> セッション</p>
+        <p class="basis" data-testid="insights-wiki-breakdown">参照の内訳(引数に vault の場所が現れた呼び出し): 索引 {int(wikiUse.indexReads)} 回、個別ページ 延べ {int(wikiUse.pageReads)}、wiki の skill {int(wikiUse.skillCalls)} 回、検索・一覧など {int(wikiUse.otherCalls)} 回</p>
+        <p class="basis">参照には、wiki の skill(取り込み・点検の skill も入ります)と、vault の場所が引数に出たそのほかの呼び出し(シェルを含む。失敗した読み取りも 1 回)が入るので、wiki の手入れをしたセッションの多くは「うち書き込みもあり」に入ります。書き込みに数えるのは編集のツールだけで(シェルで書いたものは参照のほうに入ります)、相対パスだけの読み・MCP 経由の読み・指定に入っていない vault は数えません。</p>
+        <p class="basis" data-testid="insights-wiki-why">参照したセッションとしないセッションの率は並べていません。参照するかどうかは作業の中身で決まる(調べものの始めにも、詰まった後にも読む)ので、差が出ても wiki が原因とは分かりません。相対パスや MCP 経由の読みは数えないので、「参照なし」にも参照したセッションが混ざります。wiki は 1 つなので、skill のように名前どうしを見比べることもできません。skill の箱にも同じ弱さがあります。選んだ課題で結果が変わるかは、同じ課題を wiki あり / なしで繰り返して「課題 × 条件」で確かめられます(普段の作業全体のことは分かりません。<a href="glossary.html#conditions">用語の説明</a>)。</p>
+      {/if}
     </div>
 
     <div class="box" data-testid="insights-stuck">
@@ -211,6 +237,10 @@
     margin: 0 0 6px;
     font-size: 0.75rem;
     color: var(--ink-2);
+  }
+  .counts {
+    margin: 0 0 6px;
+    font-size: 0.8125rem;
   }
   ol {
     margin: 0;

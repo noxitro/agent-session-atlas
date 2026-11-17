@@ -117,6 +117,8 @@ pub struct BundleOptions<'a> {
     pub log: &'a (dyn Fn(&str) + Sync),
     /// 生成時刻(ISO)。None なら今
     pub now: Option<String>,
+    /// 参照を数えた llm-wiki の vault の数(sessions.json の source.wikis)。0 ならパケットの wiki の行を「数えていません」にする。古い集計では None
+    pub wiki_vaults: Option<i64>,
 }
 
 /// `id.replace(/[^A-Za-z0-9._-]/g, '_') + '.md'`(UTF-16 の単位ごとに置き換える)
@@ -180,7 +182,7 @@ fn write_bundle(sessions: &[&SessionRecord], opts: &BundleOptions<'_>, dir: &Pat
             skipped.push(Skipped { id: s.id.clone(), reason: "ユーザーの依頼が記録されていない".into() });
             continue;
         }
-        let p = render_packet(s, t, &limits)?;
+        let p = render_packet(s, t, &limits, opts.wiki_vaults)?;
         let file = packet_file_name(&s.id);
         let bytes = p.markdown.len() as i64;
         std::fs::write(dir.join("sessions").join(&file), &p.markdown)?;

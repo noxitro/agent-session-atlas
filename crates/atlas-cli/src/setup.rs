@@ -234,7 +234,7 @@ pub fn run_setup(io: &dyn SetupIo, o: &SetupOptions) -> Result<SetupResult> {
     let mut config = ConfigJson::default();
 
     io.print("");
-    io.print("[1/3] llm-wiki の vault(参照を数える wiki のフォルダ。指定しないと wiki の参照は 0 件のままです)");
+    io.print("[1/3] llm-wiki の vault(参照を数える wiki のフォルダ。指定しないと wiki の参照は数えません)");
     let mut keep_wikis = false;
     if let Some(w) = current.as_ref().and_then(|c| c.wikis.as_ref()).filter(|w| !w.is_empty()) {
         io.print(&format!("  今の設定: {}", w.iter().map(|x| x.path.as_str()).collect::<Vec<_>>().join(", ")));

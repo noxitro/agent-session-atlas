@@ -4,6 +4,7 @@ import { EFFORT_ORDER, execAggregate, orderBy, type ExecAggregate } from './exec
 import { hasPeople, UNKNOWN } from './filter.ts';
 import { addCauses, FAILURE_CAUSE_LABELS, type FailureCause, type FailureCauses } from '../shared/tool-failure.ts';
 import type { SessionSummary } from './types.ts';
+import { wikiReferenced } from './wiki.ts';
 
 export interface TokenTotals {
   input: number;
@@ -57,6 +58,7 @@ export interface Bucket {
   agentFailures: number;
   hooks: number;
   sessionsWithInstructions: number;
+  /** wiki を参照したセッション(lib/wiki.ts の wikiReferenced。書き込みだけのセッションは入れない) */
   sessionsWithWiki: number;
   friction: number;
   frictionDetail: SessionSummary['friction'];
@@ -333,8 +335,8 @@ export function bucket(key: string, label: string, sessions: SessionSummary[]): 
     b.agentFailures += s.agents.failed;
     b.hooks += s.hooks.total;
     if (Object.keys(s.instructions).length > 0) b.sessionsWithInstructions++;
-    const w = s.wiki;
-    if (w.indexReads + w.pageReads + w.skillCalls + w.writes > 0) b.sessionsWithWiki++;
+    // wiki を参照したセッション(書き込みだけのセッションは入れない。lib/wiki.ts)
+    if (wikiReferenced(s.wiki)) b.sessionsWithWiki++;
     for (const k of Object.keys(b.frictionDetail) as (keyof SessionSummary['friction'])[]) b.frictionDetail[k] += s.friction[k];
     b.friction += frictionTotal(s.friction);
     if (s.activeMs != null) {

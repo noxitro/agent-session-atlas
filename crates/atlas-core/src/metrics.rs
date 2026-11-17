@@ -165,7 +165,8 @@ pub fn bucket_of(sessions: &[&SessionRecord]) -> MetricsBucket {
             }
         }
         let w = &s.wiki;
-        if w.index_reads + w.page_reads.len() as i64 + w.skill_calls.len() as i64 + w.writes + w.other_calls > 0 {
+        // sessionsWithAny は名前どおり「vault に触れた」(書き込みを含む)。画面の「参照した」(wiki::wiki_referenced)とは数え方が違う
+        if w.touched() {
             b.wiki.sessions_with_any += 1;
         }
         b.wiki.index_reads += w.index_reads;

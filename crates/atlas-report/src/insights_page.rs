@@ -17,6 +17,9 @@ pub const INSIGHTS_JSON: &str = "insights.json";
 
 const CSS: &str = include_str!("../assets/insights.css");
 
+/// skill の失敗率の差の読み方(画面の改善点の skill の箱と同じ文。packages/report/src/app/components/Insights.svelte)
+const SKILL_RATE_CAUSE: &str = "呼ぶかどうかは作業の中身で決まるので、差は skill が原因とは限りません。";
+
 pub struct InsightsPageOptions<'a> {
     pub css: &'a str,
     pub generated_at: &'a str,
@@ -203,8 +206,9 @@ pub fn render_insights_html(o: &InsightsPageOptions<'_>) -> String {
         )
     };
     let skills = format!(
-        "<section class=\"section ins\" id=\"i-skills\" aria-labelledby=\"h-i-skills\"><div class=\"section-head\"><h2 id=\"h-i-skills\">skill の傾向</h2><p>呼び出し回数(利用者 / エージェント)、本文の大きさ、呼んだセッションと呼ばなかったセッションの失敗率(それぞれ {min} セッション未満なら —)。</p></div>{norate}<div class=\"table-scroll\"><table class=\"ledger\"><thead><tr><th scope=\"col\">skill</th><th scope=\"col\" class=\"num\">呼び出し</th><th scope=\"col\" class=\"num\">利用者 / エージェント</th><th scope=\"col\" class=\"num\">本文の字数</th><th scope=\"col\" class=\"num\">セッション</th>{rate_head}<th scope=\"col\" class=\"num\">出力トークン / セッション</th></tr></thead><tbody>{rows}</tbody></table></div>{unused}</section>",
+        "<section class=\"section ins\" id=\"i-skills\" aria-labelledby=\"h-i-skills\"><div class=\"section-head\"><h2 id=\"h-i-skills\">skill の傾向</h2><p>呼び出し回数(利用者 / エージェント)、本文の大きさ、呼んだセッションと呼ばなかったセッションの失敗率(ツール呼び出しのうち失敗・拒否の割合。それぞれ {min} セッション未満なら —)。{cause}</p></div>{norate}<div class=\"table-scroll\"><table class=\"ledger\"><thead><tr><th scope=\"col\">skill</th><th scope=\"col\" class=\"num\">呼び出し</th><th scope=\"col\" class=\"num\">利用者 / エージェント</th><th scope=\"col\" class=\"num\">本文の字数</th><th scope=\"col\" class=\"num\">セッション</th>{rate_head}<th scope=\"col\" class=\"num\">出力トークン / セッション</th></tr></thead><tbody>{rows}</tbody></table></div>{unused}</section>",
         min = T::MIN_SESSIONS,
+        cause = SKILL_RATE_CAUSE,
         norate = if rates || o.skills.stats.is_empty() {
             String::new()
         } else {

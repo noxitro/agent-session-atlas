@@ -3,6 +3,7 @@
   import { date, dec, duration, int, percent } from '../../lib/format.ts';
   import { confidenceLabel } from '../../lib/judgment-labels.ts';
   import { judgeHint } from '../../lib/hints.ts';
+  import { wikiStateNote, type WikiState } from '../../lib/wiki.ts';
 
   let {
     agg,
@@ -14,6 +15,7 @@
     emptyInFilter,
     part = 'cover',
     editable = false,
+    wiki = 'counted',
   }: {
     agg: Aggregate;
     judged: boolean;
@@ -29,7 +31,10 @@
     part?: 'cover' | 'detail';
     /** serve から開き、判定のボタンがある(案内の文を分ける) */
     editable?: boolean;
+    /** llm-wiki の参照を数えた集計か(数えていなければ、wiki の欄を出さずに理由を出す) */
+    wiki?: WikiState;
   } = $props();
+  const wikiNote = $derived(wikiStateNote(wiki));
 
   const o = $derived(agg.overall);
   const c = $derived(agg.coverage);
@@ -95,6 +100,7 @@
     <h2 id="detail-h">集計明細</h2>
     <p>{filtered ? '絞り込み後の値' : '全セッションの値'}。入力トークン・AI 使用量(AIU)・premium request・変更行数は記録のあるセッションだけの合計です。</p>
   </div>
+  {#if wikiNote}<p class="wiki-off" data-testid="detail-wiki-off">{wikiNote}</p>{/if}
 
   <div class="fields" style="--cols:4">
     <div class="field">
@@ -142,10 +148,18 @@
       <span class="k">skill / agent / hook</span><span class="v">{int(o.skills)} / {int(o.agents)} / {int(o.hooks)}</span>
       <span class="n">呼び出し回数。agent の失敗 {int(o.agentFailures)}</span>
     </div>
-    <div class="field">
-      <span class="k">指示ファイル / llm-wiki</span><span class="v">{int(o.sessionsWithInstructions)} / {int(o.sessionsWithWiki)}</span>
-      <span class="n">注入された / 参照したセッション数</span>
-    </div>
+    {#if wikiNote}
+      <!-- wiki の参照を数えていない集計: 0 を並べず、指示ファイルだけにする(理由は見出しの下) -->
+      <div class="field" data-testid="instructions-field">
+        <span class="k">指示ファイル</span><span class="v">{int(o.sessionsWithInstructions)}</span>
+        <span class="n">注入されたセッション数</span>
+      </div>
+    {:else}
+      <div class="field" data-testid="instructions-wiki-field">
+        <span class="k">指示ファイル / llm-wiki</span><span class="v">{int(o.sessionsWithInstructions)} / {int(o.sessionsWithWiki)}</span>
+        <span class="n">注入された / 参照したセッション数</span>
+      </div>
+    {/if}
     <div class="field">
       <span class="k">摩擦</span><span class="v">{int(o.friction)}</span>
       <span class="n">ツールの失敗・拒否 {int(o.frictionDetail.toolFailures)}・エラー(session.error){int(o.frictionDetail.errors)}・compaction {int(o.frictionDetail.compactions)}・中断 {int(o.frictionDetail.aborts)}・権限確認 {int(o.frictionDetail.permissionRequests)}・ask_user {int(o.frictionDetail.askUser)}・サブエージェントの失敗 {int(o.frictionDetail.subagentFailures)}(<a href="#exec">詳細は実行の性質</a>)</span>
@@ -205,7 +219,8 @@
   .period {
     font-size: 1.0625rem;
   }
-  .excluded {
+  .excluded,
+  .wiki-off {
     margin: 0 0 8px;
     font-size: 0.8125rem;
     color: var(--ink-2);

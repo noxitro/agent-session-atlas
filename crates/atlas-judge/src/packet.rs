@@ -336,7 +336,7 @@ fn enum_str<T: Serialize>(v: &T) -> String {
     }
 }
 
-fn render_once(s: &SessionRecord, t: &SessionTexts, l: &PacketLimits) -> (String, i64) {
+fn render_once(s: &SessionRecord, t: &SessionTexts, l: &PacketLimits, wiki_vaults: Option<i64>) -> (String, i64) {
     let mut truncated = 0;
     let tok = &s.tokens;
     let mut lines: Vec<String> = Vec::new();
@@ -442,10 +442,20 @@ fn render_once(s: &SessionRecord, t: &SessionTexts, l: &PacketLimits) -> (String
     let ins: Vec<String> = s.instructions.iter().map(|i| format!("{}({}、{} 字、見出し「{}」)", i.file.as_str(), scope_label(i.scope), nf(i.chars), i.heading)).collect();
     push(list(&ins, l.list_items, "指示ファイルの注入: 記録なし"));
     let w = &s.wiki;
-    if w.index_reads + w.page_reads.len() as i64 + w.skill_calls.len() as i64 + w.writes + w.other_calls == 0 {
+    if wiki_vaults == Some(0) {
+        // vault を指定せずに集計した: 0 回は「参照なし」の意味にならない
+        push("- llm-wiki: この集計では数えていません(vault の指定なし)".into());
+    } else if !w.touched() {
         push("- llm-wiki: 参照なし".into());
     } else {
-        push(format!("- llm-wiki: 索引の読み取り {} 回 / ページ読み取り {} 件 / wiki skill {} 回 / 書き込み {} 回", w.index_reads, w.page_reads.len(), w.skill_calls.len(), w.writes));
+        push(format!(
+            "- llm-wiki: 索引の読み取り {} 回 / ページ読み取り {} 件 / wiki skill {} 回 / そのほかの呼び出し {} 回 / 書き込み {} 回",
+            w.index_reads,
+            w.page_reads.len(),
+            w.skill_calls.len(),
+            w.other_calls,
+            w.writes
+        ));
         if !w.page_reads.is_empty() {
             let pages: Vec<String> = w.page_reads.iter().map(|p| format!("読んだページ: {p}")).collect();
             push(list(&pages, 15.min(l.list_items), ""));
@@ -502,12 +512,13 @@ fn render_once(s: &SessionRecord, t: &SessionTexts, l: &PacketLimits) -> (String
 
 /// パケットを描画する。max_chars を超えたら本文と列挙の上限を段階的に下げて収める。
 /// それでも収まらない(列挙だけで溢れる)ことは上限の設計上ほぼ無いが、起きたらエラーにする。
-pub fn render_packet(s: &SessionRecord, t: &SessionTexts, limits: &PacketLimits) -> Result<RenderedPacket> {
+/// wiki_vaults は参照を数えた llm-wiki の vault の数(sessions.json の source.wikis)。0 なら wiki の行を「数えていません」にする
+pub fn render_packet(s: &SessionRecord, t: &SessionTexts, limits: &PacketLimits, wiki_vaults: Option<i64>) -> Result<RenderedPacket> {
     let mut l = *limits;
     let k = 0.7_f64;
     let down = |x: i64| (x as f64 * k).floor() as i64;
     for _ in 0..8 {
-        let (md, truncated) = render_once(s, t, &l);
+        let (md, truncated) = render_once(s, t, &l, wiki_vaults);
         let chars = len(&md);
         if chars <= limits.max_chars {
             return Ok(RenderedPacket { markdown: md, chars, truncated, limits: l });

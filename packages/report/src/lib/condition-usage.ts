@@ -4,6 +4,7 @@
 // どの条件で使うはずかは読む人が画面で選ぶ(条件の名前からは推測しない)。LLM は使わない。DOM や node: に依存しない。
 import { COMPARE_MIN_SESSIONS } from './compare.ts';
 import { compareNames, type ConditionMember, type ConditionSession, type ConditionTable } from './conditions.ts';
+import { wikiReferenceCount } from './wiki.ts';
 
 export type UsageKind = 'wiki' | 'skill' | 'mcp' | 'tool';
 
@@ -27,16 +28,14 @@ const sum = (v: Record<string, number> | readonly number[] | undefined): number 
 const own = <T>(o: Record<string, T> | undefined, name: string): T | undefined => (o && Object.hasOwn(o, name) ? o[name] : undefined);
 
 /**
- * そのセッションで使った回数。wiki は参照(索引・個別ページを読んだ回数、wiki の skill の呼び出し、vault の検索・一覧などそのほかの呼び出し。
- * 書き込みだけは数えない)、skill は呼び出し、MCP サーバーはそのサーバーのツールの呼び出し、ツールは呼び出し
+ * そのセッションで使った回数。wiki は参照の回数(lib/wiki.ts の wikiReferenceCount: 索引・個別ページを読んだ回数、wiki の skill の呼び出し、
+ * vault の検索・一覧などそのほかの呼び出し。書き込みだけは数えない)、skill は呼び出し、MCP サーバーはそのサーバーのツールの呼び出し、ツールは呼び出し
  */
 export function usageCount(s: ConditionSession, key: string): number {
   const name = nameOf(key);
   switch (kindOf(key)) {
-    case 'wiki': {
-      const w = s.wiki;
-      return w ? w.indexReads + w.pageReads + w.skillCalls + (w.otherCalls ?? 0) : 0;
-    }
+    case 'wiki':
+      return wikiReferenceCount(s.wiki);
     case 'skill':
       return sum(own(s.skills, name));
     case 'mcp':

@@ -12,6 +12,7 @@ use atlas_core::js::JsMap;
 use atlas_core::nodepath::{posix, win32};
 use atlas_core::project::ProjectResolverOptions;
 use atlas_core::types::SessionsFile;
+use atlas_core::wiki::WikiKind;
 use std::collections::HashSet;
 use std::io::{BufWriter, Write};
 use std::time::Instant;
@@ -90,9 +91,11 @@ pub fn run_extract(p: &Paths, since: Option<&str>, log: Log<'_>, temp_dirs: Opti
     }
     match cfg.wikis.as_ref().filter(|w| !w.is_empty()) {
         Some(w) => {
-            let used = s.sessions.iter().filter(|x| x.wiki.index_reads + x.wiki.page_reads.len() as i64 + x.wiki.skill_calls.len() as i64 + x.wiki.writes + x.wiki.other_calls > 0).count();
+            // 画面と同じ数え方(atlas_core::wiki::wiki_referenced)。書き込みだけのセッションは別に数える
+            let used = s.sessions.iter().filter(|x| x.wiki.kind() == WikiKind::Referenced).count();
+            let write_only = s.sessions.iter().filter(|x| x.wiki.kind() == WikiKind::WriteOnly).count();
             log(&format!(
-                "extract: wiki の対象 {}({})、参照のあったセッション {used} 件",
+                "extract: wiki の対象 {}({})、参照したセッション {used} 件・書き込みだけ {write_only} 件",
                 w.iter().map(|x| x.path.as_str()).collect::<Vec<_>>().join("、"),
                 cfg.path.as_deref().unwrap_or("null")
             ));
