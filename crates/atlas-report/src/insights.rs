@@ -587,6 +587,26 @@ fn intersection(a: &[u64], b: &[u64]) -> usize {
     n
 }
 
+/// 共通する組の数。ただし、残りを全部共有しても need に届かないと分かった時点で打ち切って None(どちらも昇順で重複なし)
+fn intersection_at_least(a: &[u64], b: &[u64], need: usize) -> Option<usize> {
+    let (mut i, mut j, mut n) = (0, 0, 0);
+    while i < a.len() && j < b.len() {
+        if n + (a.len() - i).min(b.len() - j) < need {
+            return None;
+        }
+        match a[i].cmp(&b[j]) {
+            Ordering::Less => i += 1,
+            Ordering::Greater => j += 1,
+            Ordering::Equal => {
+                n += 1;
+                i += 1;
+                j += 1;
+            }
+        }
+    }
+    Some(n)
+}
+
 pub fn jaccard(a: &Trigrams, b: &Trigrams) -> f64 {
     if a.is_empty() && b.is_empty() {
         return 1.0;
@@ -713,6 +733,13 @@ fn cluster_representative<'a>(ms: &[usize], grams: impl Fn(usize) -> &'a Trigram
     best
 }
 
+/// 接頭辞の長さ: 組が n 個の依頼文と類似度がしきい値以上になる相手は、珍しい順の先頭この個数のどこかを必ず共有する。
+/// しきい値は浮動小数の割り算と比べているので、わずかに小さく見て長めに取る(短すぎると取りこぼすが、長すぎても結果は同じ)
+fn prefix_len(n: usize) -> usize {
+    let need = ((T::SIMILARITY - 1e-9) * n as f64).ceil() as usize;
+    (n + 1).saturating_sub(need).clamp(1, n.max(1))
+}
+
 pub fn request_candidates(sources: &[CandidateSource<'_>]) -> Vec<Candidate> {
     struct Item<'a> {
         id: &'a str,
@@ -740,21 +767,95 @@ pub fn request_candidates(sources: &[CandidateSource<'_>]) -> Vec<Candidate> {
         })
         .collect();
     // 先に作ったまとまりから順に、代表との類似度がしきい値以上の最初のまとまりに入れる。
-    // 代表の 3 文字の組がどのまとまりにあるかの索引を持ち、共通する組の数を数えて類似度を出す(jaccard と同じ式)
+    //
+    // 代表の 3 文字の組をすべて索引に入れて共通する組を数えるだけだと、ありふれた組(「the」など)の行き先がまとまりの数だけ伸び、
+    // 依頼文がばらばらなとき(まとまりが依頼文の数ほどできる)に、依頼文の数の 2 乗の回数になる。
+    // そこで類似度での結合でよく使うやり方(PPJoin)で候補を絞る。組を全体で珍しい順に並べると、類似度が t 以上の 2 つは:
+    // - それぞれの先頭 |X| - ceil(t|X|) + 1 個(接頭辞)のどこかを必ず共有する(共有する組は ceil(t·max(|A|,|B|)) 個以上あるため)
+    // - 組の数の比が t 以上(類似度は 小さいほう / 大きいほう 以下)
+    // - 共有する組が ceil(t/(1+t)·(|A|+|B|)) 個以上。接頭辞で i 番目と j 番目が一致したとき、それより後で一致できるのは
+    //   min(|A|-i-1, |B|-j-1) 個までなので、それまでの一致の数に足しても届かなければ捨ててよい
+    // 代表の接頭辞を(位置つきで)索引に入れ、依頼文の接頭辞で引いて残った候補だけを、元と同じ式で確かめる(入るまとまりは元と同じ)。
+    // 架空の 9 万件の依頼文で、かなと漢字の語を偏って並べたもの(実際の文に近い)は 22 秒 → 2.4 秒。
+    // しきい値は浮動小数の割り算と比べているので、絞り込みではわずかに小さく見る(緩めても結果は同じ)
+    let t = T::SIMILARITY - 1e-9;
+    let mut df: HashMap<u64, u32, U64Build> = HashMap::default();
+    for it in &items {
+        for g in &it.grams {
+            *df.entry(*g).or_default() += 1;
+        }
+    }
+    let ordered: Vec<Vec<u64>> = items
+        .par_iter()
+        .map(|it| {
+            let mut v = it.grams.clone();
+            v.sort_unstable_by_key(|g| (df[g], *g));
+            v
+        })
+        .collect();
     let mut reps: Vec<usize> = Vec::new();
     let mut members: Vec<Vec<usize>> = Vec::new();
+    // 接頭辞の索引: 組 → (まとまり, 代表の並びでの位置, 代表の組の数)
+    let mut by_prefix: HashMap<u64, Vec<(u32, u32, u32)>, U64Build> = HashMap::default();
+    // 全部の組の索引: 組 → まとまり。どの組もありふれていて(珍しい組が無い)接頭辞で絞れないときは、
+    // 照合より、こちらで全部のまとまりとの共通する組を数えるほうが安いので、依頼文ごとに安いほうを使う(どちらも結果は同じ)。
+    // 組がまったく偏らない文(ランダムな英字の語)では、どちらの方法も 2 乗の回数になり、手間は元と同じ
     let mut by_gram: HashMap<u64, Vec<u32>, U64Build> = HashMap::default();
-    // まとまりごとの共通する組の数(触ったまとまりだけを覚えて戻す)
+    // まとまりごとの、接頭辞で一致した数(-1 は捨てた)と、共通する組の数。触ったまとまりだけを覚えて戻す
+    let mut count: Vec<i32> = Vec::new();
     let mut shared: Vec<u32> = Vec::new();
     let mut touched: Vec<u32> = Vec::new();
+    let mut probe_worth = 1.0f64;
+    let passes = |inter: usize, a: usize, b: usize| inter as f64 / (a + b - inter) as f64 >= T::SIMILARITY;
     for (ii, it) in items.iter().enumerate() {
         let mut found: Option<usize> = None;
-        if it.grams.is_empty() {
+        let a = it.grams.len();
+        if a == 0 {
             found = reps.iter().position(|&r| jaccard(&items[r].grams, &it.grams) >= T::SIMILARITY);
         } else {
-            for g in &it.grams {
-                if let Some(cs) = by_gram.get(g) {
-                    for &ci in cs {
+            let (min_b, max_b) = ((t * a as f64).ceil() as usize, (a as f64 / t).floor() as usize);
+            // 数える手間(全部の組の索引の行き先の長さの和)と、接頭辞で引く手間。引く手間が数える手間の 1/4 を超えるなら、
+            // 絞っても照合の分が上乗せになるので、引かずに数える(係数は上の 2 つの架空の依頼文で決めた)
+            let prefix = &ordered[ii][..prefix_len(a)];
+            let lists: Vec<&[u32]> = it.grams.iter().filter_map(|g| by_gram.get(g)).map(|v| v.as_slice()).collect();
+            let count_cost: usize = lists.iter().map(|l| l.len()).sum();
+            let probe_cost: usize = prefix.iter().map(|g| by_prefix.get(g).map_or(0, Vec::len)).sum();
+            // 直近で接頭辞が役に立ったか(引いて照合で済んだ割合)を覚え、役に立たない間は引かない(16 件に 1 件は試して覚え直す)
+            let probe = probe_cost.saturating_mul(4) <= count_cost && (probe_worth >= 0.2 || ii % 16 == 0);
+            for (i, g) in prefix.iter().enumerate().filter(|_| probe) {
+                let Some(cs) = by_prefix.get(g) else { continue };
+                for &(ci, j, b) in cs {
+                    let (j, b) = (j as usize, b as usize);
+                    let c = &mut count[ci as usize];
+                    if *c < 0 || b < min_b || b > max_b {
+                        continue;
+                    }
+                    if *c == 0 {
+                        touched.push(ci);
+                    }
+                    let need = (t / (1.0 + t) * (a + b) as f64).ceil() as usize;
+                    *c = if *c as usize + 1 + (a - i - 1).min(b - j - 1) >= need { *c + 1 } else { -1 };
+                }
+            }
+            touched.sort_unstable();
+            touched.retain(|&ci| std::mem::take(&mut count[ci as usize]) > 0);
+            // 照合の手間(残った候補 × 組の数。1 つずつ突き合わせるので、数えるより 3 倍ほど重い)と、数える手間の安いほう
+            let verify = probe && touched.len().saturating_mul(a).saturating_mul(3) <= count_cost;
+            if probe {
+                probe_worth = probe_worth * 0.9 + if verify { 0.1 } else { 0.0 };
+            }
+            if verify {
+                // 類似度がしきい値以上のまとまりのうち、いちばん先に作ったもの
+                found = touched.iter().map(|&ci| ci as usize).find(|&ci| {
+                    let rep = &items[reps[ci]].grams;
+                    let need = (t / (1.0 + t) * (rep.len() + a) as f64).ceil() as usize;
+                    intersection_at_least(rep, &it.grams, need).is_some_and(|inter| passes(inter, rep.len(), a))
+                });
+                touched.clear();
+            } else {
+                touched.clear();
+                for cs in &lists {
+                    for &ci in *cs {
                         let c = &mut shared[ci as usize];
                         if *c == 0 {
                             touched.push(ci);
@@ -762,20 +863,15 @@ pub fn request_candidates(sources: &[CandidateSource<'_>]) -> Vec<Candidate> {
                         *c += 1;
                     }
                 }
-            }
-            // 類似度がしきい値以上のまとまりのうち、いちばん先に作ったもの
-            for &ci in &touched {
-                let ci = ci as usize;
-                let inter = std::mem::take(&mut shared[ci]) as usize;
-                if found.is_some_and(|f| ci > f) {
-                    continue;
+                for &ci in &touched {
+                    let ci = ci as usize;
+                    let inter = std::mem::take(&mut shared[ci]) as usize;
+                    if found.is_none_or(|f| ci < f) && passes(inter, items[reps[ci]].grams.len(), a) {
+                        found = Some(ci);
+                    }
                 }
-                let rep = &items[reps[ci]].grams;
-                if inter as f64 / (rep.len() + it.grams.len() - inter) as f64 >= T::SIMILARITY {
-                    found = Some(ci);
-                }
+                touched.clear();
             }
-            touched.clear();
         }
         match found {
             Some(ci) => members[ci].push(ii),
@@ -783,7 +879,12 @@ pub fn request_candidates(sources: &[CandidateSource<'_>]) -> Vec<Candidate> {
                 let ci = reps.len();
                 reps.push(ii);
                 members.push(vec![ii]);
+                count.push(0);
                 shared.push(0);
+                let o = &ordered[ii];
+                for (j, g) in o[..prefix_len(o.len())].iter().enumerate() {
+                    by_prefix.entry(*g).or_default().push((ci as u32, j as u32, o.len() as u32));
+                }
                 for g in &it.grams {
                     by_gram.entry(*g).or_default().push(ci as u32);
                 }
