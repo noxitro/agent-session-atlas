@@ -432,7 +432,7 @@ pub fn build_report(input: BuildInput<'_>) -> Result<BuildResult> {
     let summaries: Vec<&SessionSummary> = sessions.iter().collect();
 
     // 送り先から集計したときの、送った atlas の版
-    let sent: Vec<SentSession<'_>> = input.sessions.iter().map(|x| SentSession { person: x.person.as_ref().and_then(|p| p.as_deref()), upload_atlas: x.upload_atlas.as_ref().map(|a| a.as_ref()) }).collect();
+    let sent: Vec<SentSession<'_>> = input.sessions.iter().map(|x| SentSession { person: x.person.as_ref().and_then(|p| p.as_deref()), folder: x.upload_folder.as_ref().and_then(|f| f.as_deref()), upload_atlas: x.upload_atlas.as_ref().map(|a| a.as_ref()) }).collect();
     let atlas_builds = summarize_atlas_builds(&sent, input.atlas_local.as_ref(), input.atlas_uploads.as_ref()).map(|b| {
         let d = describe_atlas_builds(&b);
         AtlasBuildsOut { ok: d.ok, short: d.short, headline: d.headline, lines: d.lines }

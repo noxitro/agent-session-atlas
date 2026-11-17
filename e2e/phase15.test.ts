@@ -112,8 +112,9 @@ describe('Phase 15 E2E: グループのアップロード', () => {
       expect(r.status, r.stderr).toBe(0);
       log = r.out;
     }
-    // 送った atlas の版(このチェックアウトで送り、このチェックアウトで集計したので、すべて最新)。ほかの PC から写したフォルダは記録なし
-    expect(log).toMatch(/extract: 注意 送った atlas の版: \d+ 件のうち 版の記録なし 1 件/);
+    // 送った atlas の版(このチェックアウトで送り、このチェックアウトで集計したので、最新)。ほかの PC から写したセッションは、版の記録が無い
+    // (手元のファイルを変えたまま試すと、送った 3 件は「書き換えた atlas で送った」にも数える)
+    expect(log).toMatch(/extract: 注意 送った atlas: \d+ セッションのうち (書き換えた atlas で送ったセッション 3 件・)?版の記録が無いセッション 1 件/);
     const again = JSON.parse(await readFile(join(out2, 'sessions.json'), 'utf8')) as SessionsFile;
     const manifest = JSON.parse(await readFile(join(out2, 'snapshot', 'snapshot-manifest.json'), 'utf8')) as { layout?: string; extras?: { skipped: { path: string }[] } };
     expect(manifest.layout).toBe('flat');
