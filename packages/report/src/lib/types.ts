@@ -251,7 +251,7 @@ export interface ReportData {
   /** 読むだけの画面として作った(送り先から集計した・別のフォルダを開いた)。タスクタグとメモは送った人のもの。古い埋め込みには無い */
   readOnly?: boolean;
   /**
-   * 送り先から集計したときの、送った atlas の版(core の describe_atlas_builds)。送った人ごとにまとめる。ok = 対応が要る人がいない。
+   * 送り先から集計したときの、送った atlas の版(crates/atlas-core/src/atlas_version.rs の describe_atlas_builds)。送った人ごとにまとめる。ok = 対応が要る人がいない。
    * short は見出しのタグ、headline は 1 行、lines は人ごとの内訳と頼むこと。
    * この PC の記録だけを集計したとき・古い埋め込みには無い
    */

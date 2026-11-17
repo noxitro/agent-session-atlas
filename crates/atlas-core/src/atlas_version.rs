@@ -1,4 +1,4 @@
-//! atlas 自身の版の形と集計(同じ計算を packages/report/src/shared/atlas-version.ts にも持つ)。アップロードしたフォルダに添え、
+//! atlas 自身の版の形と集計(画面が読む型は packages/report/src/shared/atlas-version.ts)。アップロードしたフォルダに添え、
 //! 送り先から集計するときに、古い版で送ったものが混ざっていないかを、送った人ごとに数える。版の新旧は git のコミットの日時で決める。
 //! 版をこの PC の git から読むのは atlas_build.rs。
 
