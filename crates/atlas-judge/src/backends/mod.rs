@@ -39,6 +39,8 @@ pub struct JudgeResult {
     pub usage: Option<Value>,
     /// 補足(usage が取れなかった理由など)
     pub notes: Vec<String>,
+    /// llm-wiki のページごとの判定(wikiPages)の形が崩れていて、一部を捨てたときの知らせ(run は件数の 1 行にまとめて出す)
+    pub wiki_notes: Vec<String>,
 }
 
 /// プロンプトを 1 回渡して返った本文(依頼ごとの判定など、セッションの判定以外に使う)

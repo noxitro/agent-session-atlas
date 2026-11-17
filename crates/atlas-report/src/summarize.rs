@@ -3,11 +3,13 @@
 
 use crate::filter::coverage_of;
 use crate::format::truncate;
+use crate::judgments::judgment_for_session;
 use crate::project_label::short_project_label;
 use crate::turns::turn_tuples;
 use crate::types::*;
 use atlas_core::js::JsMap;
 use atlas_core::types::{AgentStatus, InstructionScope, SessionRecord, SessionTests, SkillTrigger};
+use atlas_core::wiki::unique_pages;
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -125,7 +127,37 @@ pub fn tests_summary(t: &SessionTests) -> Option<TestsSummary> {
     })
 }
 
-pub fn summarize(r: &SessionRecord, judgment: Option<&JudgmentSummary>) -> SessionSummary {
+/// 埋め込みの llm-wiki のページの名前の辞書(ReportData.wikiPageNames)。全セッションの読んだページを、セッションの並び・読んだ順に重複なく並べる。
+/// セッションの要約は名前の代わりにこの番号を持つ(大きな vault を何度も読む使い方でも、名前は 1 回だけ埋め込む)。
+/// packages/report/src/lib/wiki.ts の wikiPageNames と同じ並び
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct WikiPageIndex {
+    pub names: Vec<String>,
+    by: std::collections::HashMap<String, i64>,
+}
+
+impl WikiPageIndex {
+    pub fn of<'a>(records: impl IntoIterator<Item = &'a SessionRecord>) -> Self {
+        let mut ix = WikiPageIndex::default();
+        for r in records {
+            for p in unique_pages(&r.wiki.page_reads) {
+                if !ix.by.contains_key(&p) {
+                    ix.by.insert(p.clone(), ix.names.len() as i64);
+                    ix.names.push(p);
+                }
+            }
+        }
+        ix
+    }
+
+    /// ページの番号。辞書は要約するセッション全部から作るので、無いのは呼び方の誤り
+    pub fn get(&self, page: &str) -> i64 {
+        *self.by.get(page).unwrap_or_else(|| panic!("llm-wiki のページの辞書に {page} がありません(辞書は要約するセッションすべてから作ること)"))
+    }
+}
+
+/// pages: 要約するセッションすべてから作ったページの辞書(WikiPageIndex::of)
+pub fn summarize(r: &SessionRecord, judgment: Option<&JudgmentSummary>, pages: &WikiPageIndex) -> SessionSummary {
     let mut by_model = JsMap::new();
     for (m, t) in r.tokens.by_model.js_entries() {
         by_model.insert(m.clone(), ModelTokenSummary { input: t.input, output: t.output, cache_read: t.cache_read, premium_requests: t.premium_requests, requests: t.requests });
@@ -227,7 +259,15 @@ pub fn summarize(r: &SessionRecord, judgment: Option<&JudgmentSummary>) -> Sessi
         hooks: HooksSummary { total: r.hooks.total, by_type: r.hooks.by_type.clone() },
         instructions,
         lines: r.lines.clone(),
-        wiki: WikiSummary { index_reads: r.wiki.index_reads, page_reads: r.wiki.page_reads.len() as i64, skill_calls: r.wiki.skill_calls.len() as i64, writes: r.wiki.writes, other_calls: r.wiki.other_calls },
+        wiki: WikiSummary {
+            index_reads: r.wiki.index_reads,
+            page_reads: r.wiki.page_reads.len() as i64,
+            skill_calls: r.wiki.skill_calls.len() as i64,
+            writes: r.wiki.writes,
+            other_calls: r.wiki.other_calls,
+            // ページの名前だけ(本文は入れない)。ページごとの参照率に使う
+            pages: unique_pages(&r.wiki.page_reads).iter().map(|p| pages.get(p)).collect(),
+        },
         friction: r.friction.clone(),
         skill_chars,
         instruction_versions: r.instructions.iter().map(|i| (i.content_hash.clone(), i.chars, i.injections)).collect(),
@@ -236,8 +276,13 @@ pub fn summarize(r: &SessionRecord, judgment: Option<&JudgmentSummary>) -> Sessi
         tests: r.tests.as_ref().and_then(tests_summary),
         files: FilesSummary { changed: r.files.changed.len() as i64, created: r.files.created.len() as i64, deleted: r.files.deleted.len() as i64, session_state: r.files.session_state },
         href: detail_href(&r.id),
-        // 根拠の自由記述は HTML 本体に埋め込まない(詳細ページだけ)
-        judgment: judgment.map(|j| JudgmentSummary { rationale: None, ..j.clone() }),
+        // 根拠の自由記述は HTML 本体に埋め込まない(詳細ページだけ)。llm-wiki のページの判定は、判定のパケットに載せたページの分だけ
+        // 見立ては番号に置き換え、理由は埋め込まない
+        judgment: judgment.map(|j| {
+            let j = judgment_for_session(j, &r.wiki.page_reads);
+            let marks = j.wiki_page_verdicts.as_ref().map(|v| v.iter().map(|(p, h, _)| (pages.get(p), h.clone())).collect());
+            JudgmentSummary { rationale: None, wiki_page_verdicts: None, wiki_pages: marks, ..j }
+        }),
         turn_verdicts: None,
         retention: None,
         memo: None,

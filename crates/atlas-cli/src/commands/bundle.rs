@@ -30,6 +30,25 @@ pub struct BundleCliOptions {
     pub unjudged: bool,
     /// バンドルを 1 つの ZIP にもまとめる(<bundle>.zip)
     pub zip: bool,
+    /// 設定ファイル(--config。無ければ環境変数 ATLAS_CONFIG かリポジトリ直下の atlas.config.json)
+    pub config: Option<String>,
+}
+
+/// llm-wiki の vault の指定を設定から読む(ページごとの判定の抜粋を、集計と同じ分類器で取るため)。
+/// 読めない設定は、束を作るのを止めずに、指定なしとして続けてログに書く
+fn wiki_specs(config: Option<&str>, log: Log<'_>) -> Vec<atlas_core::wiki::WikiSpec> {
+    let explicit = config.is_some() || std::env::var_os("ATLAS_CONFIG").is_some();
+    let path = match config {
+        Some(c) => crate::paths::resolve(c).to_string_lossy().into_owned(),
+        None => crate::config::default_config_path(),
+    };
+    match crate::config::load_config(&path, explicit) {
+        Ok(c) => c.wikis.unwrap_or_default(),
+        Err(e) => {
+            log(&format!("bundle: 注意 設定を読めないので、llm-wiki のページの抜粋はページの名前で探します: {e}"));
+            Vec::new()
+        }
+    }
 }
 
 pub fn run_bundle(p: &Paths, f: &SessionFilter, o: &BundleCliOptions, log: Log<'_>) -> Result<BundleManifest> {
@@ -66,6 +85,7 @@ pub fn run_bundle(p: &Paths, f: &SessionFilter, o: &BundleCliOptions, log: Log<'
             now: None,
             // 選んだセッションだけでなく集計の全セッションで決める(書き込みだけのセッションが選ばれていなくても、vault を指定していたと分かる)
             wiki_state: atlas_core::wiki::wiki_state(sel.file.sessions.iter().map(|r| &r.wiki), sel.file.source.wikis),
+            wiki_specs: wiki_specs(o.config.as_deref(), log),
         },
     )?;
     let excerpt = m.sessions.iter().filter(|e| e.text_source == atlas_judge::packet::TextSource::Excerpt).count();

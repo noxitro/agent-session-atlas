@@ -42,7 +42,7 @@ fn entry(at: Option<&str>, text: &str) -> TextEntry {
 #[test]
 fn packet_has_sections_and_fences_do_not_close() {
     let r = record();
-    let t = SessionTexts { source: TextSource::Snapshot, requests: vec![entry(None, "コード:\n```js\nx\n```\n## 最終応答")], final_response: Some(entry(None, "完了")), compactions: vec![], task_completes: vec![] };
+    let t = SessionTexts { source: TextSource::Snapshot, requests: vec![entry(None, "コード:\n```js\nx\n```\n## 最終応答")], final_response: Some(entry(None, "完了")), compactions: vec![], task_completes: vec![], wiki_reads: vec![], wiki_scanned: false };
     let p = render_packet(&r, &t, &DEFAULT_LIMITS, WikiState::Counted).unwrap();
     assert!(missing_sections(&p.markdown).is_empty());
     assert_eq!(packet_session_id(&p.markdown).as_deref(), Some("sess-1"));
@@ -60,6 +60,8 @@ fn long_texts_are_clipped_to_max_chars() {
         final_response: Some(entry(None, &long)),
         compactions: vec![entry(Some("2026-09-01T00:00:00Z"), &long)],
         task_completes: vec![],
+        wiki_reads: vec![],
+        wiki_scanned: false,
     };
     r.files.changed = (0..500).map(|i| format!("C:\\p\\f{i}.ts")).collect();
     let p = render_packet(&r, &t, &DEFAULT_LIMITS, WikiState::Counted).unwrap();
@@ -82,6 +84,8 @@ fn hundreds_of_short_texts_fit_with_one_omitted_line() {
         final_response: Some(entry(None, "完了")),
         compactions: (0..400).map(|i| entry(Some(&at(i)), &format!("要約 {i}"))).collect(),
         task_completes: (0..400).map(|i| entry(Some(&at(i)), &format!("完了 {i}"))).collect(),
+        wiki_reads: vec![],
+        wiki_scanned: false,
     };
     r.wiki.skill_calls = (0..2000).map(|i| format!("wiki-query-{}", i % 300)).collect();
     r.wiki.index_reads = 1;
@@ -100,7 +104,7 @@ fn hundreds_of_short_texts_fit_with_one_omitted_line() {
 /// vault に触れていなければ「参照なし」、vault を指定せずに集計したときは「数えていません」
 #[test]
 fn packet_wiki_line_counts_other_calls_and_not_counted() {
-    let t = SessionTexts { source: TextSource::Snapshot, requests: vec![entry(None, "調べて")], final_response: None, compactions: vec![], task_completes: vec![] };
+    let t = SessionTexts { source: TextSource::Snapshot, requests: vec![entry(None, "調べて")], final_response: None, compactions: vec![], task_completes: vec![], wiki_reads: vec![], wiki_scanned: false };
     let wiki_line = |md: &str| md.lines().find(|l| l.starts_with("- llm-wiki: ")).map(str::to_string);
     let mut r = record();
     r.wiki.other_calls = 2;
@@ -121,6 +125,164 @@ fn packet_wiki_line_counts_other_calls_and_not_counted() {
     let off = render_packet(&plain, &t, &DEFAULT_LIMITS, WikiState::NotCounted).unwrap();
     assert_eq!(wiki_line(&off.markdown).as_deref(), Some("- llm-wiki: この集計では数えていません(vault の指定なし)"));
     assert!(missing_sections(&off.markdown).is_empty());
+}
+
+/// 架空の vault のページを読むセッション(events.jsonl をスナップショットに書く)。ページの名前は集計の分類の代わりに直接入れる
+fn wiki_session(snap: &Path, pages: usize) -> SessionRecord {
+    let vault = "X:\\zz-notes\\zz-vault";
+    let mut events = vec![ev("session.start", json!({ "context": { "cwd": "X:\\p" } }), &ts(0)), ev("user.message", json!({ "content": "知見を探して直して" }), &ts(1000))];
+    for i in 0..pages {
+        let call = format!("c{i}");
+        let path = format!("{vault}\\wiki\\p{i}.md");
+        events.push(ev("tool.execution_start", json!({ "toolCallId": call, "toolName": "view", "arguments": { "path": path } }), &ts(2000 + i as i64 * 10)));
+        let body = match i {
+            // 秘密らしい文字列が抜粋の上限(400 字)の境目をまたぐ形と、上限を超える長さ
+            0 => format!("{}ghp_{} を使う\n{}", "い".repeat(390), "A".repeat(36), "う".repeat(1000)),
+            // 結果の本文が無い形
+            1 => String::new(),
+            _ => format!("ページ {i} の中身"),
+        };
+        let result = if body.is_empty() { json!({}) } else { json!({ "content": body }) };
+        events.push(ev("tool.execution_complete", json!({ "toolCallId": call, "success": true, "result": result }), &ts(2001 + i as i64 * 10)));
+    }
+    // 読んだ後の編集(読み取りとしては数えない)と、内部ツール(並べない)
+    events.push(ev("tool.execution_start", json!({ "toolCallId": "r", "toolName": "report_intent", "arguments": { "intent": "x" } }), &ts(5000)));
+    events.push(ev("tool.execution_start", json!({ "toolCallId": "e", "toolName": "edit", "arguments": { "path": format!("{vault}\\wiki\\p0.md") } }), &ts(5001)));
+    events.push(ev("assistant.message", json!({ "content": "直しました" }), &ts(6000)));
+    // 次の依頼の中のツールは「読んだ後のツール」に入れない
+    events.push(ev("user.message", json!({ "content": "ありがとう" }), &ts(7000)));
+    events.push(ev("tool.execution_start", json!({ "toolCallId": "n", "toolName": "grep", "arguments": { "pattern": "x" } }), &ts(7001)));
+    let dir = snap.join("session-state").join("w1");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("events.jsonl"), events.iter().map(|e| serde_json::to_string(e).unwrap()).collect::<Vec<_>>().join("\n")).unwrap();
+    let mut r = normalize("w1", None, events);
+    // 集計の分類が出す形(vault からの相対。同じページを 2 回読んだ記録を含む)
+    r.wiki.page_reads = (0..pages).map(|i| format!("wiki/p{i}.md")).chain(["wiki/p0.md".to_string()]).collect();
+    r.wiki.index_reads = 1;
+    r
+}
+
+/// 判定のパケットの「llm-wiki のページごとの判定」: 抜粋は秘密を伏せてから切り、ページ数と字数に上限があり、抜粋が無い形はそう書く
+#[test]
+fn packet_lists_wiki_pages_with_excerpts_and_limits() {
+    let d = tempfile::tempdir().unwrap();
+    let snap = d.path().join("snapshot");
+    let max = atlas_core::wiki::WIKI_JUDGED_PAGES_MAX;
+    let r = wiki_session(&snap, max + 2);
+    let texts = atlas_judge::packet::collect_texts(&snap, &[&r], None, None).unwrap();
+    let t = &texts["w1"];
+    assert!(t.wiki_scanned);
+    // 読んだ呼び出しはページごとに最初の 1 回。上限を超えたページは探さない
+    assert_eq!(t.wiki_reads.len(), max);
+    let p0 = &t.wiki_reads[0];
+    assert_eq!((p0.page.as_str(), p0.request), ("wiki/p0.md", Some(1)));
+    // 読んだ後のツール: 同じ依頼の中の、内部ツールを除いたもの(上限 5 件)
+    assert_eq!(p0.after_tools, ["view", "view", "view", "view", "view"]);
+    assert_eq!(t.wiki_reads[max - 1].after_tools, ["view", "view", "edit"]);
+    assert!(!p0.excerpt.as_ref().unwrap().contains("ghp_"), "秘密は伏せる");
+    // 結果の本文が無い呼び出しは抜粋にしない(読んだ時刻と依頼は残す)
+    assert_eq!((t.wiki_reads[1].excerpt.as_deref(), t.wiki_reads[1].request), (None, Some(1)));
+
+    let p = render_packet(&r, t, &DEFAULT_LIMITS, WikiState::Counted).unwrap();
+    let md = &p.markdown;
+    assert!(missing_sections(md).is_empty());
+    assert!(md.contains(&format!("判定するページ {max} 件(重複を除いて読んだ順の先頭から。残り 2 件は上限のため判定しません)")), "{md}");
+    assert!(md.contains("#### ページ 1: wiki/p0.md"));
+    assert!(!md.contains(&format!("wiki/p{max}.md")), "上限を超えたページは載せない");
+    // 伏せてから切る: 境目をまたいだ鍵が、切れた形で残らない
+    assert!(!md.contains("ghp_") && !md.contains("AAAAAAAA"), "{md}");
+    assert!(md.contains(&format!("{}[伏せました", "い".repeat(10))));
+    assert!(md.contains(&format!("- 抜粋(先頭 {} 字 / 全 ", DEFAULT_LIMITS.wiki_excerpt_chars)));
+    assert!(md.contains("- 抜粋なし(成功して結果の本文がある読み取りがログにありません。"));
+    assert!(md.contains("- 読んだ時刻: 2026-11-06T00:00:02.000Z(依頼 1 の中)"));
+    assert!(p.truncated >= 1);
+
+    // ログの全文が無い(抜粋で代用した)ときは、名前だけで判定させる
+    let ex = atlas_judge::packet::excerpt_texts(&r);
+    let pe = render_packet(&r, &ex, &DEFAULT_LIMITS, WikiState::Counted).unwrap();
+    assert!(pe.markdown.contains("- 抜粋なし(ログの全文が無く、読んだ呼び出しを確かめられません。"));
+    // ログが無く session-store.db から本文を取ったとき(呼び出しを探していない)も同じ文
+    let db = SessionTexts { source: TextSource::Snapshot, wiki_reads: vec![], wiki_scanned: false, ..t.clone() };
+    let pd = render_packet(&r, &db, &DEFAULT_LIMITS, WikiState::Counted).unwrap().markdown;
+    assert!(pd.contains("- 抜粋なし(ログの全文が無く、読んだ呼び出しを確かめられません。"));
+    assert!(!pd.contains("特定できませんでした"));
+    // 数えていない集計ではページの節を出さない
+    assert!(!render_packet(&r, t, &DEFAULT_LIMITS, WikiState::NotCounted).unwrap().markdown.contains("ページごとの判定"));
+    // 上限に収まらないときは、抜粋の字数も下げる(ページの並びは変えない)
+    let tight = atlas_judge::packet::PacketLimits { max_chars: p.chars - 50, ..DEFAULT_LIMITS };
+    let pt = render_packet(&r, t, &tight, WikiState::Counted).unwrap();
+    assert!(pt.chars <= p.chars - 50);
+    assert!(pt.limits.wiki_excerpt_chars < DEFAULT_LIMITS.wiki_excerpt_chars);
+    assert!(pt.markdown.contains(&format!("#### ページ {max}: wiki/p{}.md", max - 1)));
+    // 前の版の manifest(抜粋の字数の無い limits)も読める
+    let old: atlas_judge::packet::PacketLimits = serde_json::from_value(json!({ "maxChars": 24000, "requestChars": 6000, "requestsTotalChars": 12000, "finalResponseChars": 5000, "summaryChars": 5000, "listItems": 40 })).unwrap();
+    assert_eq!(old.wiki_excerpt_chars, DEFAULT_LIMITS.wiki_excerpt_chars);
+}
+
+/// events.jsonl だけを書いたセッション(ページの名前は集計の分類の代わりに直接入れる)
+fn session_with_events(snap: &Path, id: &str, events: Vec<CopilotEvent>, page_reads: &[&str]) -> SessionRecord {
+    let dir = snap.join("session-state").join(id);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("events.jsonl"), events.iter().map(|e| serde_json::to_string(e).unwrap()).collect::<Vec<_>>().join("\n")).unwrap();
+    let mut r = normalize(id, None, events);
+    r.wiki.page_reads = page_reads.iter().map(|s| s.to_string()).collect();
+    r
+}
+
+/// ツールの呼び出しの開始と完了(result が None なら結果の本文なし)
+fn call(id: &str, name: &str, args: Value, ok: bool, result: Option<&str>, at: i64) -> [CopilotEvent; 2] {
+    let mut done = json!({ "toolCallId": id, "success": ok });
+    if let Some(r) = result {
+        done["result"] = json!({ "content": r });
+    }
+    [ev("tool.execution_start", json!({ "toolCallId": id, "toolName": name, "arguments": args }), &ts(at)), ev("tool.execution_complete", done, &ts(at + 1))]
+}
+
+/// 抜粋を取る呼び出しが、そのページを読んだ呼び出しと違わないか。vault の指定(集計と同じ分類器)があるときと、無いとき(名前で探す)
+#[test]
+fn wiki_excerpt_comes_from_the_call_that_read_the_page() {
+    let d = tempfile::tempdir().unwrap();
+    let snap = d.path().join("snapshot");
+    let vault = "X:\\zz-notes\\zz-vault";
+    let mut events = vec![ev("user.message", json!({ "content": "調べて" }), &ts(0))];
+    // a. vault の直下のページ(AGENTS.md)と、プロジェクトの同じ名前のファイル
+    events.extend(call("a1", "view", json!({ "path": "X:\\p\\AGENTS.md" }), true, Some("プロジェクトの AGENTS"), 100));
+    events.extend(call("a2", "view", json!({ "path": format!("{vault}\\AGENTS.md") }), true, Some("vault の AGENTS"), 110));
+    // b. 区切りが二重(\\)の形
+    events.extend(call("b1", "view", json!({ "path": "X:\\\\zz-notes\\\\zz-vault\\\\wiki\\\\b.md" }), true, Some("b の中身"), 200));
+    // c. サブエージェントへの依頼文にページの場所がある・最初の読み取りは失敗 → 後の成功した読み取りから取る
+    events.extend(call("c0", "task", json!({ "prompt": format!("{vault}\\wiki\\c.md を読んで要約して") }), true, Some("サブエージェントの要約"), 300));
+    events.extend(call("c1", "view", json!({ "path": format!("{vault}\\wiki\\c.md") }), false, None, 310));
+    events.extend(call("c2", "view", json!({ "path": format!("{vault}\\wiki\\c.md") }), true, Some("c の中身"), 320));
+    // d. 名前の続きがあるファイル(d.md.bak)は d.md の読み取りではない
+    events.extend(call("d1", "view", json!({ "path": format!("{vault}\\wiki\\d.md.bak") }), true, Some("古い控え"), 400));
+    events.extend(call("d2", "view", json!({ "path": format!("{vault}\\wiki\\d.md") }), true, Some("d の中身"), 410));
+    // e. 1 回の呼び出しで 2 つのページを読む
+    events.extend(call("e1", "rg", json!({ "pattern": "x", "paths": [format!("{vault}\\wiki\\e1.md"), format!("{vault}\\wiki\\e2.md")] }), true, Some("e の検索結果"), 500));
+    let pages = ["AGENTS.md", "wiki/b.md", "wiki/c.md", "wiki/d.md", "wiki/e1.md", "wiki/e2.md"];
+    let r = session_with_events(&snap, "m1", events, &pages);
+    let c = atlas_core::wiki::WikiClassifier::new(&[atlas_core::wiki::WikiSpec { path: "zz-vault".into(), ..Default::default() }]);
+    let excerpts = |classifier: Option<&atlas_core::wiki::WikiClassifier>| -> HashMap<String, Option<String>> {
+        let t = &atlas_judge::packet::collect_texts(&snap, &[&r], None, classifier).unwrap()["m1"];
+        t.wiki_reads.iter().map(|w| (w.page.clone(), w.excerpt.clone())).collect()
+    };
+    let with = excerpts(Some(&c));
+    let without = excerpts(None);
+    let ex = |m: &HashMap<String, Option<String>>, p: &str| m.get(p).cloned().flatten();
+    // a: 分類器は vault の中のファイルだけを読み取りにする(名前で探すときは見分けられない。docs/judge.md に書いた限界)
+    assert_eq!(ex(&with, "AGENTS.md").as_deref(), Some("vault の AGENTS"));
+    assert_eq!(ex(&without, "AGENTS.md").as_deref(), Some("プロジェクトの AGENTS"));
+    for m in [&with, &without] {
+        assert_eq!(ex(m, "wiki/b.md").as_deref(), Some("b の中身"));
+        assert_eq!(ex(m, "wiki/c.md").as_deref(), Some("c の中身"));
+        assert_eq!(ex(m, "wiki/d.md").as_deref(), Some("d の中身"));
+        assert_eq!(ex(m, "wiki/e1.md").as_deref(), Some("e の検索結果"));
+    }
+    // 1 回の呼び出しで読んだページは、ほかのページと同じ抜粋だと書く
+    let t = &atlas_judge::packet::collect_texts(&snap, &[&r], None, Some(&c)).unwrap()["m1"];
+    let md = render_packet(&r, t, &DEFAULT_LIMITS, WikiState::Counted).unwrap().markdown;
+    assert_eq!(md.matches("ほかのページと同じ結果の抜粋").count(), 2, "{md}");
+    assert!(!md.contains("サブエージェントの要約") && !md.contains("古い控え") && !md.contains("プロジェクトの AGENTS"));
 }
 
 const PHASES: [&str; 4] = ["要件定義", "設計", "実装", "テスト"];
@@ -322,6 +484,7 @@ fn rebuild_failure_keeps_previous_bundle() {
         log: &log,
         now: None,
         wiki_state: WikiState::Counted,
+        wiki_specs: vec![],
     };
     let m = build_bundle(&[&s], &opts(None, None)).unwrap();
     assert!(build_bundle(&[&s], &opts(None, Some(0))).unwrap_err().to_string().contains("perPart"));

@@ -51,7 +51,7 @@ const SHELL_TOOLS: &[&str] = &["powershell", "bash", "shell", "write_powershell"
 /// 計画・確認(todo は session.db を sql ツールで書く)
 const PLAN_TOOLS: &[&str] = &["ask_user", "sql", "update_todo", "exit_plan_mode", "todo_write"];
 const WEB_TOOLS: &[&str] = &["web_fetch", "web_search", "fetch_copilot_cli_documentation"];
-const DELEGATE_TOOLS: &[&str] = &["task", "read_agent", "list_agents", "run_dynamic_workflow", "dynamic_workflows_manage"];
+pub const DELEGATE_TOOLS: &[&str] = &["task", "read_agent", "list_agents", "run_dynamic_workflow", "dynamic_workflows_manage"];
 /// 工程を決めるのに数えない
 const NEUTRAL_TOOLS: &[&str] = &["read_powershell", "read_bash", "stop_powershell", "stop_bash", "list_powershell", "list_bash", "rename_session", "store_memory", "vote_memory", "task_complete", "skill"];
 

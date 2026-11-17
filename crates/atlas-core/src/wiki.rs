@@ -29,6 +29,30 @@ pub struct WikiSpec {
 
 const WRITE_TOOLS: &[&str] = &["edit", "create", "apply_patch", "write", "str_replace_editor"];
 
+/// vault に書き込むツールか(書き込みは参照に数えない。判定のパケットの抜粋にも使わない)
+pub fn is_write_tool(name: &str) -> bool {
+    WRITE_TOOLS.contains(&name)
+}
+
+/// LLM にページごとの「役立ったか」を判定させるページの数の上限(1 セッション)。読んだ順に先頭からこの数だけ判定のパケットに載せ、
+/// 残りは判定しない(未判定)。判定のパケット(crates/atlas-judge の packet.rs)と、判定を読むレポート(パケットに無いページの判定を捨てる)の両方がこの数で決める。
+/// 画面の packages/report/src/lib/wiki.ts の WIKI_JUDGED_PAGES_MAX と同じ値にする(npm run parity:fixture の要約で突き合わせる)
+pub const WIKI_JUDGED_PAGES_MAX: usize = 10;
+
+/// 読んだページの名前を、重複を除いて読んだ順に(page_reads は呼び出しごとに足すので、同じページが何度も入る)
+pub fn unique_pages(page_reads: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    page_reads.iter().filter(|p| seen.insert(p.as_str())).cloned().collect()
+}
+
+/// 判定のパケットに載せるページ(重複を除いて読んだ順の先頭 WIKI_JUDGED_PAGES_MAX 件)と、上限のため載せないページの数
+pub fn judged_wiki_pages(page_reads: &[String]) -> (Vec<String>, usize) {
+    let mut all = unique_pages(page_reads);
+    let rest = all.len().saturating_sub(WIKI_JUDGED_PAGES_MAX);
+    all.truncate(WIKI_JUDGED_PAGES_MAX);
+    (all, rest)
+}
+
 static NAME_CHAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[\p{L}\p{N}_-]$").unwrap());
 static LETTER_OR_NUMBER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[\p{L}\p{N}]$").unwrap());
 static SEPS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\\/]+").unwrap());
@@ -385,7 +409,7 @@ impl WikiClassifier {
             return true;
         }
         let Some(vault) = vault else { return false };
-        if WRITE_TOOLS.contains(&tool_name) {
+        if is_write_tool(tool_name) {
             w.writes += 1;
             return true;
         }
@@ -503,6 +527,20 @@ mod tests {
         // 触れていない
         assert_eq!(empty_wiki().kind(), WikiKind::None);
         assert!(!empty_wiki().touched());
+    }
+
+    #[test]
+    fn judged_pages_unique_and_capped() {
+        let reads: Vec<String> = ["a.md", "b.md", "a.md", "c.md"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(unique_pages(&reads), vec!["a.md", "b.md", "c.md"]);
+        assert_eq!(judged_wiki_pages(&reads), (vec!["a.md".to_string(), "b.md".into(), "c.md".into()], 0));
+        // 上限を超えた分は載せず、その数を返す(読んだ順の先頭から)
+        let many: Vec<String> = (0..WIKI_JUDGED_PAGES_MAX + 3).map(|i| format!("p{i}.md")).collect();
+        let (pages, rest) = judged_wiki_pages(&many);
+        assert_eq!(pages.len(), WIKI_JUDGED_PAGES_MAX);
+        assert_eq!(pages[0], "p0.md");
+        assert_eq!(rest, 3);
+        assert!(is_write_tool("edit") && !is_write_tool("view"));
     }
 
     #[test]

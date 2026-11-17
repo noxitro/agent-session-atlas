@@ -28,7 +28,7 @@ use atlas_report::memo::{is_safe_file_name, is_safe_memo_id, memo_excerpt, memo_
 use atlas_report::pack::pack_summary;
 use atlas_report::project_label::short_project_label;
 use atlas_report::retention::{aggregate_retention, retention_by_phase, retention_item, retention_meta, turn_starts};
-use atlas_report::summarize::{detail_file_name, summarize, tests_summary};
+use atlas_report::summarize::{detail_file_name, summarize, tests_summary, WikiPageIndex};
 use atlas_report::turns::turn_aggregate;
 use atlas_report::types::{SessionSummary, WikiSummary, REPORT_DATA_VERSION};
 use atlas_report::verdicts::{parse_verdicts, verdict_aggregate, verdict_tuples};
@@ -185,11 +185,13 @@ fn main() -> Result<()> {
 
     // 要約(build.ts と同じ: summarize に判定・依頼ごとの判定・照合の結果を足す)
     let retention_by_id: HashMap<&str, &atlas_core::vcs_retention::SessionRetention> = rx.iter().flat_map(|x| x.sessions.iter()).map(|r| (r.session_id.as_str(), r)).collect();
+    // llm-wiki のページの名前の辞書(build と同じ: 全セッションから作り、要約は番号で持つ)
+    let wiki_pages = WikiPageIndex::of(records.iter().copied());
     let plain = d.timed("summarize", || -> Vec<SessionSummary> {
         records
             .iter()
             .map(|r| {
-                let mut s = summarize(r, judgments.as_ref().and_then(|j| j.by_session.get(&r.id)));
+                let mut s = summarize(r, judgments.as_ref().and_then(|j| j.by_session.get(&r.id)), &wiki_pages);
                 if let Some(v) = &verdicts {
                     let vt = verdict_tuples(v.by_session.get(&r.id), &v.phases);
                     if !vt.is_empty() {
@@ -383,6 +385,10 @@ fn main() -> Result<()> {
             bucket("w", "w", &xs.iter().collect::<Vec<_>>()).sessions_with_wiki
         });
         d.write("wiki", &json!({ "notCounted": atlas_core::wiki::WIKI_NOT_COUNTED, "noRecord": atlas_core::wiki::WIKI_NO_RECORD, "sessionsWithWiki": per, "all": all }))?;
+        // ページごとの判定に載せるページの上限と選び方(上限を超える決まった入力)・ページの名前の辞書(scripts/parity-lib.ts と同じ形で書く)
+        let many: Vec<String> = (0..13).map(|i| format!("wiki/p{}.md", i % 12)).collect();
+        let (judged, _) = atlas_core::wiki::judged_wiki_pages(&many);
+        d.write("wiki-pages", &json!({ "max": atlas_core::wiki::WIKI_JUDGED_PAGES_MAX, "judged": judged, "names": wiki_pages.names }))?;
     }
     // 課題 × 条件の表(scripts/parity-lib.ts と同じ形で書く)
     {

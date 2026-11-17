@@ -50,7 +50,13 @@ const AXES_TPL: &str = "### 評価軸
    - 数えていない(パケットの llm-wiki の行が「この集計では数えていません」)ときも wikiEffect は score 0、evidence に「数えていない」。
    - 数えたか分からない(パケットの llm-wiki の行が「この集計では数えたか分かりません」)ときも wikiEffect は score 0、evidence に「数えたか不明」。
    - evidence にはパケット内の根拠(どの依頼・応答・ツール記録から判断したか)を短く書く。
-6. **notes**(任意): 判定上の注意点。";
+6. **wikiPages**: パケットの「llm-wiki のページごとの判定」に挙がったページそれぞれについて 1 件ずつ、{ page, helpful, reason } を並べる。wikiEffect(セッション全体の効果)とは別に、ページ 1 つずつを見る。
+   - page: パケットに書いたページの名前をそのまま写す。挙がっていないページは書かない(書いても取り込みで捨てます)。
+   - helpful: `yes` = そのページの中身が後の作業(判断・コード・回答)に使われ、作業を進めた / `no` = 読んだが使われなかった、または誤った方向に導いた / `unknown` = 記録から判断できない。
+   - 抜粋(ページを読んだツールの結果の先頭)、読んだ後のツール、その後の依頼・最終応答・変更ファイルを照らして決める。抜粋が無いページ(「抜粋なし」)は名前と前後の流れだけで判断し、決め手が無ければ `unknown` にする。「ほかのページと同じ結果の抜粋」は 1 回の呼び出し(検索など)で複数のページを読んだときの共通の結果なので、どのページの中身が使われたかを流れから見分けて決める。
+   - reason: 根拠を 1 文で(どの抜粋・依頼・応答・変更から判断したか)。
+   - 挙がったページが無い(参照なし・数えていない・ページの読み取りが無い)ときは空の配列 [] にする。
+7. **notes**(任意): 判定上の注意点。";
 
 pub static AXES: LazyLock<String> = LazyLock::new(|| {
     let cats = TASK_CATEGORIES.iter().map(|c| format!("`{c}`")).collect::<Vec<_>>().join(" / ");
@@ -66,6 +72,7 @@ pub const OUTPUT_ITEM_EXAMPLE: &str = r#"{
   "instructionsEffect": { "score": 1, "evidence": "…" },
   "wikiEffect": { "score": 0, "evidence": "参照なし" },
   "skillsAgentsEffect": { "score": 0, "evidence": "参照なし" },
+  "wikiPages": [{ "page": "<パケットに挙がったページの名前をそのまま>", "helpful": "yes", "reason": "…" }],
   "notes": "…"
 }"#;
 
@@ -136,7 +143,7 @@ const INSTRUCTIONS_TPL: &str = "# Copilot セッション工数判定の指示
 
 ```json
 {
-  \"schemaVersion\": 1,
+  \"schemaVersion\": 2,
   \"judge\": { \"backend\": \"external\", \"model\": \"<あなたのモデル名。分からなければ null>\", \"ranAt\": \"<判定した日時 ISO 8601>\" },
   \"items\": [
 ⟦example⟧
@@ -181,7 +188,7 @@ const PART_TPL: &str = "# Copilot セッション工数判定の指示(分割 �
 
 ```json
 {
-  \"schemaVersion\": 1,
+  \"schemaVersion\": 2,
   \"judge\": { \"backend\": \"external\", \"model\": \"<あなたのモデル名。分からなければ null>\", \"ranAt\": \"<判定した日時 ISO 8601>\" },
   \"items\": [
 ⟦example⟧
@@ -265,5 +272,10 @@ mod tests {
         assert_eq!(forged.matches("<<<PACKET_BEGIN abc").count(), 1);
         // 差し込んだ値の中の印は置き換えない
         assert_eq!(fill("⟦a⟧-⟦b⟧", &[("a", "⟦b⟧"), ("b", "x")]), "⟦b⟧-x");
+        // llm-wiki のページごとの判定の基準と、返す形の例
+        for s in ["**wikiPages**", "`yes` = そのページの中身が後の作業", "`no` = 読んだが使われなかった、または誤った方向に導いた", "`unknown` = 記録から判断できない", "書いても取り込みで捨てます", "「抜粋なし」", "「ほかのページと同じ結果の抜粋」", "\"wikiPages\": [{"] {
+            assert!(prompt.contains(s), "{s}");
+        }
+        assert!(render_instructions(1, "x").contains("\"schemaVersion\": 2,"));
     }
 }

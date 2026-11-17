@@ -5,7 +5,8 @@ import { coverageOf } from './filter.ts';
 import { truncate } from './format.ts';
 import { shortProjectLabel } from './project-label.ts';
 import { turnTuples } from './turns.ts';
-import type { AgentStat, EffortTuple, ExecSummary, FrictionDetailSummary, JudgmentSummary, ModelTokenSummary, SessionSummary, SkillTriggers, TestsSummary, ToolIssue } from './types.ts';
+import { judgedWikiPages, pageNumber, uniquePages, type WikiPageIndex } from './wiki.ts';
+import type { AgentStat, EffortTuple, ExecSummary, FrictionDetailSummary, JudgmentSummary, ModelTokenSummary, SessionSummary, SkillTriggers, TestsSummary, ToolIssue, WikiPageMark } from './types.ts';
 
 /** permission.completed の result.kind を承認・拒否・その他にまとめる(approved-for-location などは承認) */
 export function permissionGroup(kind: string): 0 | 1 | 2 {
@@ -86,7 +87,24 @@ export function detailHref(id: string): string {
   return `sessions/${detailFileName(id)}`;
 }
 
-export function summarize(r: SessionRecord, judgment: JudgmentSummary | null): SessionSummary {
+/**
+ * セッションの判定から、判定のパケットに載せたページ(judgedWikiPages)の判定だけを残す。パケットに無いページの名前を LLM が返したら捨てる
+ * (crates/atlas-report/src/judgments.rs の judgment_for_session と同じ)
+ */
+export function judgmentForSession(j: JudgmentSummary, pageReads: readonly string[]): JudgmentSummary {
+  if (!j.wikiPageVerdicts) return j;
+  const judged = new Set(judgedWikiPages(pageReads));
+  return { ...j, wikiPageVerdicts: j.wikiPageVerdicts.filter(([p]) => judged.has(p)) };
+}
+
+/** 埋め込む判定: 根拠と見立ての理由は落とし、見立てはページの番号にする(crates/atlas-report/src/summarize.rs と同じ並び) */
+export function embeddedJudgment(j: JudgmentSummary, pageReads: readonly string[], pages: WikiPageIndex): JudgmentSummary {
+  const { wikiPageVerdicts: verdicts, ...rest } = judgmentForSession(j, pageReads);
+  return { ...rest, rationale: null, ...(verdicts ? { wikiPages: verdicts.map(([p, h]): WikiPageMark => [pageNumber(pages, p), h]) } : {}) };
+}
+
+/** pages: 要約するセッションすべてから作ったページの辞書(lib/wiki.ts の wikiPageIndex) */
+export function summarize(r: SessionRecord, judgment: JudgmentSummary | null, pages: WikiPageIndex): SessionSummary {
   const byModel: Record<string, ModelTokenSummary> = {};
   for (const [m, t] of Object.entries(r.tokens.byModel)) {
     byModel[m] = { input: t.input, output: t.output, cacheRead: t.cacheRead, premiumRequests: t.premiumRequests, requests: t.requests };
@@ -171,7 +189,8 @@ export function summarize(r: SessionRecord, judgment: JudgmentSummary | null): S
     hooks: { total: r.hooks.total, byType: r.hooks.byType },
     instructions,
     lines: r.lines ?? { added: 0, removed: 0, source: 'none' },
-    wiki: { indexReads: r.wiki.indexReads, pageReads: r.wiki.pageReads.length, skillCalls: r.wiki.skillCalls.length, writes: r.wiki.writes, otherCalls: r.wiki.otherCalls },
+    // ページの名前だけ(本文は入れない)。ページごとの参照率に使う
+    wiki: { indexReads: r.wiki.indexReads, pageReads: r.wiki.pageReads.length, skillCalls: r.wiki.skillCalls.length, writes: r.wiki.writes, otherCalls: r.wiki.otherCalls, pages: uniquePages(r.wiki.pageReads).map((p) => pageNumber(pages, p)) },
     friction: { ...r.friction },
     skillChars,
     instructionVersions: r.instructions.map((i) => [i.contentHash, i.chars, i.injections]),
@@ -185,7 +204,7 @@ export function summarize(r: SessionRecord, judgment: JudgmentSummary | null): S
     ...(tests ? { tests } : {}),
     files: { changed: r.files.changed.length, created: r.files.created.length, deleted: r.files.deleted?.length ?? 0, sessionState: r.files.sessionState ?? 0 },
     href: detailHref(r.id),
-    // 根拠の自由記述は HTML 本体に埋め込まない(詳細ページだけ)
-    judgment: judgment ? { ...judgment, rationale: null } : null,
+    // 根拠の自由記述は HTML 本体に埋め込まない(詳細ページだけ)。llm-wiki のページの判定は、判定のパケットに載せたページの分だけ
+    judgment: judgment ? embeddedJudgment(judgment, r.wiki.pageReads, pages) : null,
   };
 }
