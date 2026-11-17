@@ -1,4 +1,4 @@
-// Phase 7 E2E(docs/PLAN.md「改善フェーズ → Phase 7: 実行の性質と要点」)
+// 「実行の性質と要点」の E2E(docs/PLAN.md の同じ題の節)
 // fixture の ~/.copilot に、このテストで合成セッション 014・015 と session.db(todo)と session-store.db の明細行を足し、
 //  1. モード別のターン・推論強度別のリクエスト / トークン / AIU が手計算と一致する
 //  2. リクエストの起点(initiator)の比率

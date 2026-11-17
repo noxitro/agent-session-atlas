@@ -1,4 +1,4 @@
-// Phase 11 E2E(docs/PLAN.md「Phase 11: 解析用の完全出力」)
+// 「解析用の完全出力」の E2E(docs/PLAN.md の同じ題の節)
 //  a. スナップショットの拡張: plan.md / checkpoints / files / policies を写し、rewind-snapshots と一覧に無いフォルダ・logs/・repos/ は既定で写さず manifest に名前と容量。
 //     --snapshot-all で写す。chats/ は *.md だけ。~/.copilot(fixture の home)は書き換えない(mtime 不変、-shm を作らない)
 //  b. data.db: 複製せず desktop.json に許可リストの列だけ。資格情報の合成値が out/ のどこにも出ない。sessions.json の desktop 欄と詳細ページに出る

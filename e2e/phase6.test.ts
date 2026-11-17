@@ -1,4 +1,4 @@
-// Phase 6 E2E(docs/PLAN.md「改善フェーズ → Phase 6: 利用の内訳と成果量」)
+// 「利用の内訳と成果量」の E2E(docs/PLAN.md の同じ題の節)
 // 合成 fixture(scripts/synthetic-fixtures.ts の 011〜013)と、このテストで作る git リポジトリ・インストール済みの skill で、
 //  1. 利用ランキング(ツール / MCP / skill / agent / hook / 指示ファイル)が手計算と一致し、絞り込みに追従する
 //  2. ツール別の成功・失敗・拒否と失敗率

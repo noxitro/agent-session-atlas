@@ -1,4 +1,4 @@
-// Phase 2 E2E(docs/PLAN.md「Phase 2: cli + report」)
+// CLI とレポート(atlas all で out/atlas.html を作る)の E2E
 //  a. fixtures から `atlas all` で out/atlas.html を作り、5MB 未満で外部参照(http:// https:// fetch()が無い
 //  g. `atlas export` で各セッションの記録(Markdown)ができ、詳細ページからリンクされる。素の build では作らない
 //  h. 用語の説明は out/glossary.html の 1 枚だけで、atlas.html と詳細ページには本文を載せずリンクする

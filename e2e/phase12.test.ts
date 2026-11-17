@@ -1,4 +1,4 @@
-// Phase 12 E2E(docs/PLAN.md「Phase 12: 改善点の分析」)
+// 「改善点の分析」の E2E(docs/PLAN.md の同じ題の節)
 //  a. fixture で insights.html と insights.json ができ、atlas.html に改善点が埋め込まれる(5MB 未満、外部参照なし)
 //  c. skill-draft が偽の copilot で下書きを書く(本物は呼ばない)。依頼文もツールの並びも無い候補は、呼ぶ前に止める
 import { spawnSync } from 'node:child_process';
