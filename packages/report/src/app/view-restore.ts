@@ -1,4 +1,4 @@
-// ブラウザの「戻る」「進む」で atlas.html に戻ったとき、離れたときの見た目(スクロール位置・セッション一覧のページと並べ替え)に戻す。
+// ブラウザの「戻る」「進む」で atlas.html に戻ったとき、離れたときの見た目(スクロール位置・セッション一覧のページと並べ替えと検索語)に戻す。
 // 絞り込みは URL の # に残るので戻るが、スクロール位置はブラウザが戻そうとする時点ではまだ画面を描いておらず(ページが短い)、
 // 一覧のページと並べ替えはどこにも残していなかったため、詳細ページから戻ると先頭・1 ページ目に戻っていた。
 // 離れるとき(pagehide)にその履歴の項目(history.state)へ書き、戻る / 進むで開かれたときだけ読む(普通に開き直したときは使わない)。
@@ -7,8 +7,8 @@ const KEY = 'atlasView';
 export interface ViewState {
   /** 離れたときの縦のスクロール位置 */
   y?: number;
-  /** セッション一覧の並べ替えとページ */
-  table?: { sortKey: string; asc: boolean; page: number };
+  /** セッション一覧の並べ替えとページと検索語(検索語は、これを書く前の履歴には無い) */
+  table?: { sortKey: string; asc: boolean; page: number; query?: string };
 }
 
 function navType(): string | null {

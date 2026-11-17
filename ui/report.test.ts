@@ -1,6 +1,7 @@
 // 画面の操作の検査(Playwright の Chromium)。架空の fixture で atlas all → atlas serve(port 0)を立て、実際に押して確かめる。
 // e2e/ は生成した HTML の文字列と API を見る。ここは Svelte の画面と詳細ページの素の script が、ブラウザで動くかを見る。
 //  a. 一覧でチェック → 「選んだ N 件だけ集計」で表示中の件数が変わり、「選択を解除」で戻る
+//  a2. 一覧の検索(セッション ID・題名)で行が絞られ、上の集計は変わらない
 //  b. グループを作成 → groups.json に書かれる → サイドバーで選ぶと絞り込まれる → 削除で消える
 //  c. 詳細ページでメモを書いて保存 → atlas-notes/memos に書かれ、再読み込みしても表示される
 //  d. 用語ページへのリンクで移動でき、パンくずで戻れる
@@ -154,6 +155,70 @@ describe('画面の操作', () => {
     await expect.poll(shown).toBe(all);
     await expect.poll(turnsTotal).toBe(turnsAll);
     await expect.poll(() => page.getByTestId('selected-count').innerText()).toBe('0');
+  });
+
+  it('a2. 一覧の検索: ID・題名で行を絞り(上の集計は変えない)、合わなければ絞り込みの外の件数を出す。詳細から戻ると検索語も戻る', async () => {
+    const records = (JSON.parse(await readFile(join(out, 'sessions.json'), 'utf8')) as { sessions: { id: string; empty: boolean; name: string | null; firstUserMessage: string | null }[] }).sessions;
+    const target = records.find((s) => !s.empty && s.name?.includes('wiki-query'));
+    const empty = records.find((s) => s.empty);
+    // 名前には無く、最初の依頼にだけある語(「直して」)
+    const viaFirst = records.filter((s) => !s.empty && s.name && !s.name.includes('直して') && s.firstUserMessage?.includes('直して'));
+    expect(target && empty && viaFirst.length === 1, 'fixture に wiki-query の題名・空のセッション・最初の依頼にだけ「直して」がある 1 件がある').toBeTruthy();
+    await page.goto(server.url);
+    const all = await shown();
+    const box = page.getByTestId('session-search');
+    const result = page.getByTestId('session-search-result');
+    const rows = page.locator('#sessions table.ledger tbody tr');
+    expect(await result.innerText()).toBe('');
+    // ID(丸ごと)で 1 件。行に ID を出す。上の集計(表示中の件数)は変えない
+    await box.fill(target!.id);
+    await expect.poll(() => rows.count()).toBe(1);
+    expect(await rows.first().getByTestId('session-id').innerText()).toBe(`ID ${target!.id}`);
+    expect(await result.innerText()).toContain('1 件が合います');
+    expect(await shown()).toBe(all);
+    // 題名の一部(大文字と小文字はそろえる)。ID では当たっていないので ID は出さない
+    await box.fill('WIKI-QUERY');
+    await expect.poll(() => rows.count()).toBe(1);
+    expect(await rows.first().getByTestId('session-id').count()).toBe(0);
+    // 名前に無く最初の依頼にだけある語は、行にその辺りの文を出す(題名だけでは、なぜ合ったか分からないため)
+    await box.fill('直して');
+    await expect.poll(() => rows.count()).toBe(1);
+    expect(await rows.first().getByTestId('session-first-hit').innerText()).toContain('最初の依頼:');
+    expect(await rows.first().getByTestId('session-first-hit').innerText()).toContain('直して');
+    // Esc で検索語を消すと、全件に戻る。ブラウザの検索欄の Esc(中身を消す)に頼らず、欄の keydown の処理で消すことを確かめる
+    // (合成した keydown には既定の動きが無い)。Esc はページの他の処理(タスクタグのメニューを閉じる)には渡さない
+    await page.evaluate(`window.escSeen = 0; document.addEventListener('keydown', (e) => { if (e.key === 'Escape') window.escSeen++; });`);
+    // IME の変換を取り消す Esc では消さない
+    await box.dispatchEvent('keydown', { key: 'Escape', isComposing: true });
+    expect(await box.inputValue()).toBe('直して');
+    await box.dispatchEvent('keydown', { key: 'Escape' });
+    await expect.poll(() => box.inputValue()).toBe('');
+    await expect.poll(() => rows.count()).toBe(Math.min(all, 50));
+    expect(await page.evaluate<number>('window.escSeen')).toBe(1);
+    // 合わないときは表を出さず、そう知らせる。ID のつもりらしい短い語には、ID の探し方を添える
+    await box.fill('合うものが無い語 zzzz');
+    await expect.poll(() => result.innerText()).toBe('合うセッションはありません。');
+    expect(await rows.count()).toBe(0);
+    await box.fill(target!.id.slice(0, 3));
+    await expect.poll(() => result.innerText()).toContain('ID は先頭から 4 文字以上で探します');
+    // 空のセッション(既定で外している)は、「空のセッションを含める」で出ると知らせる(ほかの条件では外れていないので、絞り込みを外せとは言わない)
+    await box.fill(empty!.id);
+    await expect.poll(() => result.innerText()).toBe('合うセッションはありません。空のセッション 1 件は、「その他の条件」の「空のセッションを含める」で出ます。');
+    // ID を含むパス(空白入り)を貼っても当たる
+    await box.fill(`D:\\共有 フォルダ\\copilot logs\\${target!.id}\\events.jsonl`);
+    await expect.poll(() => rows.count()).toBe(1);
+    // 320px の幅でも、検索欄で横にはみ出さない
+    await page.setViewportSize({ width: 320, height: 800 });
+    await expect.poll(() => page.evaluate<number>('document.documentElement.scrollWidth - document.documentElement.clientWidth')).toBeLessThanOrEqual(0);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    // 詳細ページへ行って戻ると、検索語と絞った行が戻る
+    await box.fill(target!.id);
+    await expect.poll(() => rows.count()).toBe(1);
+    await rows.first().locator('td.name a').click();
+    await page.waitForURL((u) => u.pathname.includes(target!.id));
+    await page.goBack();
+    await expect.poll(() => page.getByTestId('session-search').inputValue()).toBe(target!.id);
+    await expect.poll(() => rows.count()).toBe(1);
   });
 
   it('b. グループを作成して選ぶと絞り込まれ、本文の見出しで名前と説明を直せて、削除すると groups.json からも消える', async () => {
@@ -957,14 +1022,30 @@ describe('画面の操作', () => {
     const firstName = async (): Promise<string> => page.locator('#sessions table.ledger tbody tr td.name a').first().innerText();
     const first = await firstName();
     await page.locator('#sessions').scrollIntoViewIfNeeded();
-    await page.evaluate("window.scrollTo({ top: document.getElementById('sessions').getBoundingClientRect().top + window.scrollY - 40, behavior: 'instant' })");
-    const y = await page.evaluate<number>('Math.round(window.scrollY)');
+    // 字の読み込みなどで上の高さが変わり終わってから、整数の位置にスクロールし、位置が落ち着いてから覚える
+    await page.evaluate('document.fonts.ready.then(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))');
+    await page.evaluate("window.scrollTo({ top: Math.round(document.getElementById('sessions').getBoundingClientRect().top + window.scrollY - 40), behavior: 'instant' })");
+    const scrollY = (): Promise<number> => page.evaluate<number>('Math.round(window.scrollY)');
+    await expect
+      .poll(async () => {
+        const a = await scrollY();
+        await page.waitForTimeout(200);
+        return a === (await scrollY());
+      })
+      .toBe(true);
+    const y = await scrollY();
     expect(y).toBeGreaterThan(1000);
     await page.locator('#sessions table.ledger tbody tr td.name a').first().click();
     await page.waitForURL('**/sessions/*.html');
     await page.goBack();
     await page.waitForURL('**/atlas.html*');
-    await expect.poll(() => page.evaluate<number>('Math.round(window.scrollY)')).toBe(y);
+    // 戻した位置は、画面が離れるときに覚えた位置(history.state)とぴったり同じ。覚えた位置は、テストがスクロールした位置と 1px まで違ってよい
+    // (CI では、離れるまでの間に端数の高さの要素でブラウザがスクロール位置を 1px 動かすことがある。手元では起きない)
+    const saved = (): Promise<number | null> => page.evaluate<number | null>('history.state && history.state.atlasView && typeof history.state.atlasView.y === "number" ? Math.round(history.state.atlasView.y) : null');
+    await expect.poll(saved).not.toBeNull();
+    const savedY = (await saved())!;
+    expect(Math.abs(savedY - y), `覚えた位置 ${savedY}、スクロールした位置 ${y}`).toBeLessThanOrEqual(1);
+    await expect.poll(scrollY).toBe(savedY);
     expect(await startHead.getAttribute('aria-sort')).toBe('ascending');
     expect(await firstName()).toBe(first);
     // 要点の「このツールを使ったセッションに絞り込む→」は履歴に残る移動。戻ると絞り込みが外れ、進むとまた絞り込む
