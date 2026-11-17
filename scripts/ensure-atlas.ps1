@@ -11,7 +11,8 @@
 #      前の版の形なら、引数なしの呼び出しで、動かすものだけを node と packages\cli\src\upload-auto.ts に差し替える
 #      (時刻・電池・ログオンなどの設定と、送る前に更新するか(--no-update)はそのまま)
 #
-# 前の版の atlas.exe(bin\)は、この後は使わない。動いていなければ、stop.bat が消す(消さなくても動きに差は無い)。
+# 前の版の atlas.exe(bin\)は、タスクを登録し直した後は使わない。動いていなければ、stop.bat が消す(消さなくても動きに差は無い。
+#   タスクが前の版の形のままの間は、stop.bat は消さない)。
 # 管理者の権限は要らない(書くのは node_modules\ と、自分のユーザーのタスクだけ)。
 # Windows PowerShell 5.1 が日本語を読めるよう、このファイルは BOM 付きの UTF-8 で置く(.gitattributes で改行は CRLF)。
 #
@@ -26,6 +27,16 @@ try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }
 
 function Say([string]$m) { Write-Host $m }
 
+# ネイティブのコマンド(node・npm)を動かし、終了コードと標準出力の行を返す。標準エラーは捨てる。
+# Windows PowerShell 5.1 は、標準エラーをリダイレクトしたネイティブのコマンドの出力を、エラーの記録に変える。
+# $ErrorActionPreference が Stop のままだと、警告の 1 行(npm warn・npm notice など)で NativeCommandError になって止まり、
+# 入れられたはずの依存を入れられない。この関数の中だけ Continue にして、成否は終了コードで見る
+function Invoke-Native([string]$exe, [string[]]$arguments) {
+  $ErrorActionPreference = 'Continue'
+  $out = & $exe @arguments 2>$null
+  return [pscustomobject]@{ Code = $LASTEXITCODE; Out = @($out) }
+}
+
 $Repo = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot)).TrimEnd('\', '/')
 $IsWin = $env:OS -eq 'Windows_NT'
 $TaskName = 'agent-session-atlas-upload'
@@ -36,16 +47,16 @@ function Find-Node {
   $cmd = Get-Command node -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
   if (-not $cmd) { return $null }
   try {
-    $v = (& $cmd.Source -p 'process.versions.node' 2>$null | Select-Object -First 1)
-    if ([int](([string]$v).Split('.')[0]) -ge 24) { return $cmd.Source }
+    $r = Invoke-Native $cmd.Source @('-p', 'process.versions.node')
+    $v = [string]($r.Out | Select-Object -First 1)
+    if ($r.Code -eq 0 -and [int]($v.Split('.')[0]) -ge 24) { return $cmd.Source }
   } catch { }
   return $null
 }
 
 # npm の依存がそろっているか(起動用の .bat と同じ判定。scripts\deps-fresh.mjs)
 function Test-Deps([string]$node) {
-  & $node (Join-Path $Repo 'scripts\deps-fresh.mjs') $Repo *> $null
-  return $LASTEXITCODE -eq 0
+  return (Invoke-Native $node @((Join-Path $Repo 'scripts\deps-fresh.mjs'), $Repo)).Code -eq 0
 }
 
 # 前の版の形で登録された自動で送るタスク。無ければ $null
@@ -84,8 +95,7 @@ try {
     if (-not (Test-Path -LiteralPath $npm)) { $npm = 'npm' }
     Push-Location $Repo
     try {
-      & $npm ci --no-audit --no-fund *> $null
-      $code = $LASTEXITCODE
+      $code = (Invoke-Native $npm @('ci', '--no-audit', '--no-fund')).Code
     } finally { Pop-Location }
     if ($code -ne 0 -or -not (Test-Deps $node)) {
       Say "npm の依存を入れられませんでした(npm ci の終了コード $code)。atlas.bat を開くと、もう一度入れます。"
