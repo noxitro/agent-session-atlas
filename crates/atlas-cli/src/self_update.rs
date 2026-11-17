@@ -1,5 +1,5 @@
 //! atlas 自身を新しい版にする(TS 版の packages/cli/src/self-update.ts の移植)。次の 2 か所から呼ぶ:
-//!  - 自動で送る前(schedule-upload.bat で登録したタスクが、upload_auto.rs から)。作業メンバーは定期の自動送信しか使わず、
+//!  - 自動で送る前(schedule-upload.bat で登録したタスクが、upload_auto.rs から)。定期の自動送信しか使わない PC では、
 //!    atlas.bat を開かないので、git pull しないままだと古い版で送り続けてしまうため
 //!  - 起動用の .bat を開いたとき(`atlas self-update`。下の main)。マージした変更が、git pull しなくても利用者に届くように。
 //!    環境変数 ATLAS_NO_AUTO_UPDATE=1 なら、しない
@@ -483,7 +483,7 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    /// 一時フォルダに本物の git のリポジトリ(origin・作る人・作業メンバー)を作る。この PC の git の設定は使わない
+    /// 一時フォルダに本物の git のリポジトリ(origin・作る側・自動で送る側)を作る。この PC の git の設定は使わない
     struct Repos {
         _d: tempfile::TempDir,
         dev: PathBuf,
