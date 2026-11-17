@@ -325,4 +325,4 @@ Windows 以外では登録できません。cron などから `bin/atlas upload-
 | [docs/outputs.md](docs/outputs.md) | セッション記録(Markdown)、表(CSV)、テストの結果の取り込み、AI の変更の残存、解析用の完全出力、失敗の台帳、改善点の分析、スキルの下書き |
 | [docs/judge.md](docs/judge.md) | 推定人手工数の判定の回し方(評価バンドル、外部の LLM、バックエンドと費用。自分の API キーのモデル(BYOK)をいつも使うときは、`atlas.config.json` の `judgeModel`) |
 | [docs/development.md](docs/development.md) | 開発・テスト・全ページの網羅チェック・CI・fixtures・元データを書き換えない仕組み |
-| [docs/PLAN.md](docs/PLAN.md) | 計画と、各フェーズの設計判断 |
+| [docs/PLAN.md](docs/PLAN.md) | 設計と、機能ごとに決めたこと・採らなかった案 |

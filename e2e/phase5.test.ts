@@ -1,4 +1,4 @@
-// Phase 5 E2E(docs/PLAN.md「改善フェーズ → Phase 5: 正しさとノイズ」)
+// 「正しさとノイズ」の E2E(docs/PLAN.md の同じ題の節)
 // fixture に合成した新しい記録形式(scripts/synthetic-fixtures.ts)で、件数が手計算値と一致することを確かめる。
 //  1. 空のセッション(006 DB のみ / 007 開いただけ / 010 DB のみ。いずれも合成)を empty にし、metrics から外して件数を持つ
 //  2. モデル名の表記揺れ(<UUID>/claude-haiku-5-5、claude-haiku-5-5、claude-haiku-5.5、claude-sonnet-5-5)を 1 つにする

@@ -1,4 +1,4 @@
-// Phase 1 E2E(docs/PLAN.md「Phase 1: 骨組み + core」の 4 項目)
+// 骨組みと core(snapshot → extract → metrics)の E2E。次の 4 項目
 //  1. fixtures から sessions.json を生成し、件数がフィクスチャ内の手計算値と一致する
 //  2. 実 ~/.copilot に対して snapshot → extract → metrics が完走し、セッション数が DB ∪ ディレクトリと一致する(ATLAS_LIVE=1 のときだけ)
 //  3. 未知イベント種別が unknownEventTypes に計上され、落ちない

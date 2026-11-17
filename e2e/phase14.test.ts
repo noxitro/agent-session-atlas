@@ -1,4 +1,4 @@
-// Phase 14 E2E(docs/PLAN.md「Phase 14: 画面からの操作」): 架空の fixture で atlas all → atlas serve(同じプロセス、port 0)を立て、
+// 「画面からの操作」の E2E(docs/PLAN.md の同じ題の節): 架空の fixture で atlas all → atlas serve(同じプロセス、port 0)を立て、
 // 本物の子プロセス(main.ts all / judge-flow.ts)とサーバ内の全文の書き出しを API から動かす。LLM は呼ばない(偽 copilot)。
 //  a. refresh: 集計し直すと atlas.html が作り直され(埋め込みの生成日時が変わる)、記録(.md)もある
 //  b. full: out/full/<id>.md(と assets/)だけができ、atlas.html・詳細ページ・他のファイルは 1 バイトも変わらず、coverage.json も作らない。表示の API で描ける

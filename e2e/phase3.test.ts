@@ -1,4 +1,4 @@
-// Phase 3 E2E(docs/PLAN.md「Phase 3: judge」)
+// 判定(bundle・judgments の取り込み・judge run)の E2E
 //  a. fixtures から bundle を生成し、manifest / INSTRUCTIONS / schema / 各 md の必須セクションが揃う
 //  b. 手書きの judgments サンプルを import → build で atlas.html に推定人手工数(一覧・プロジェクト別・全体)が出る
 //  c. 偽 copilot(fixtures/fake-copilot.mjs)で judge run が judgments を作り、--add-dir を渡さず、
