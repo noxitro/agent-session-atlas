@@ -5,7 +5,7 @@ use crate::aggregate::friction_total;
 use crate::exec::{quantiles_of, EFFORT_ORDER, INITIATOR_ORDER, MODE_ORDER, UNKNOWN_KEY};
 use crate::exec_labels::{effort_label, error_type_label, initiator_label, mode_label, subagent_failure_label, todo_status_label, TODO_STATUS_ORDER};
 use crate::filter::{coverage_of, encode_uri_component};
-use crate::format::{date_time_n, dec_n, duration, int_n, model_label, ms_label, percent, truncate};
+use crate::format::{date_time, date_time_n, dec_n, duration, int_n, model_label, ms_label, percent, truncate};
 use crate::html::esc;
 use crate::insights::clean_heading;
 use crate::judgment_labels::{backend_label, category_label, confidence_label, effect_label};
@@ -755,7 +755,7 @@ fn judgment_section(sec: &mut Sections, j: &JudgmentSummary, active_ms: Option<f
         field("指示ファイルの効果", &esc(&effect_label(j.effects.instructions)), ""),
         field("llm-wiki の効果", &esc(&effect_label(j.effects.wiki)), ""),
         field("skill・agent の効果", &esc(&effect_label(j.effects.skills_agents)), ""),
-        field("判定", &esc(&backend_label(j.backend.as_deref())), ""),
+        field("判定", &esc(&backend_label(j.backend.as_deref())), &judged_note(j)),
     ]
     .join("");
     let summary = match j.task_summary.as_deref().filter(|s| !s.is_empty()) {
@@ -768,6 +768,16 @@ fn judgment_section(sec: &mut Sections, j: &JudgmentSummary, active_ms: Option<f
     };
     let wiki_pages = wiki_pages_block(j);
     sec.section("LLM による判定(推定)", &format!("<div class=\"fields\" style=\"--cols:4\">{fields}</div>{summary}{rationale}{wiki_pages}"), "人が AI なしで同じ成果を出す場合の工数を LLM に推定させた値です。実測ではありません。")
+}
+
+/// 判定の欄の注: 判定したモデルと日時(「claude-sonnet-5-5・2026-11-14 10:23 に判定」)。どちらも分からなければ「判定した日時の記録なし」
+fn judged_note(j: &JudgmentSummary) -> String {
+    let model = j.model.as_deref().filter(|m| !m.is_empty()).map(esc);
+    let at = j.ran_at.as_deref().filter(|a| !a.is_empty()).map(|a| format!("{} に判定", esc(&date_time(Some(a), "日時不明"))));
+    match (model, at) {
+        (None, None) => "判定した日時の記録なし".into(),
+        (m, a) => [m, a].into_iter().flatten().collect::<Vec<_>>().join("・"),
+    }
 }
 
 /// llm-wiki のページごとの「役立ったか」(LLM の見立て)の表。判定に項目が無ければ空
@@ -806,6 +816,18 @@ mod wiki_pages_tests {
         assert!(html.contains("名前と、ログにあれば抜粋"));
         assert_eq!(wiki_pages_block(&JudgmentSummary::default()), "");
         assert_eq!(wiki_pages_block(&JudgmentSummary { wiki_page_verdicts: Some(vec![]), ..Default::default() }), "");
+    }
+
+    /// 判定の欄の注: モデルと判定した日時。片方だけでも出し、どちらも無ければ記録なしと書く
+    #[test]
+    fn judged_model_and_time() {
+        let j = |m: Option<&str>, at: Option<&str>| JudgmentSummary { model: m.map(str::to_string), ran_at: at.map(str::to_string), ..Default::default() };
+        let at = date_time(Some("2026-11-14T01:02:03Z"), "日時不明");
+        assert_eq!(judged_note(&j(Some("claude-sonnet-5-5"), Some("2026-11-14T01:02:03Z"))), format!("claude-sonnet-5-5・{at} に判定"));
+        assert_eq!(judged_note(&j(None, Some("2026-11-14T01:02:03Z"))), format!("{at} に判定"));
+        assert_eq!(judged_note(&j(Some("m365"), None)), "m365");
+        assert_eq!(judged_note(&j(None, None)), "判定した日時の記録なし");
+        assert_eq!(judged_note(&j(Some("<b>"), None)), "&lt;b&gt;");
     }
 }
 

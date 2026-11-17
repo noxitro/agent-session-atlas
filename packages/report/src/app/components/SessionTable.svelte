@@ -1,7 +1,7 @@
 <script lang="ts">
   import { frictionTotal } from '../../lib/aggregate.ts';
   import { sessionTime, sessionUpdated } from '../../lib/filter.ts';
-  import { dateTime, dec, duration, int, modelLabel, pathParts, sharedLeads, splitLead, truncate } from '../../lib/format.ts';
+  import { date, dateTime, dec, duration, int, modelLabel, pathParts, sharedLeads, splitLead, truncate } from '../../lib/format.ts';
   import type { ReportGroup, SessionSummary } from '../../lib/types.ts';
   import SortMark from './SortMark.svelte';
   import { restoredView, saveView } from '../view-restore.ts';
@@ -160,6 +160,12 @@
   const st = (k: Key): 'asc' | 'desc' | 'none' => (sortKey === k ? (asc ? 'asc' : 'desc') : 'none');
   const ariaSort = (k: Key): 'ascending' | 'descending' | 'none' => (sortKey === k ? (asc ? 'ascending' : 'descending') : 'none');
 
+  /** 推定人手工数の欄の title: 幅と、判定したモデル・日時 */
+  function judgmentTitle(j: NonNullable<SessionSummary['judgment']>): string {
+    const range = j.low != null && j.high != null ? `。幅 ${dec(j.low)}〜${dec(j.high)} 時間` : '';
+    const by = [j.model, j.ranAt ? `${dateTime(j.ranAt)} に判定` : ''].filter(Boolean).join('・');
+    return `LLM による推定${range}${by ? `(${by})` : ''}`;
+  }
   const rawTitle = (s: SessionSummary): string => s.name || s.firstUserMessage || `(名前なし) ${s.id.slice(0, 8)}`;
   function title(s: SessionSummary): string {
     return truncate(rawTitle(s), 80);
@@ -464,7 +470,7 @@
               <td class="num">{int(frictionTotal(s.friction))}</td>
               <td class="num">{duration(s.activeMs, '—')}</td>
               <td class="num">
-                {#if s.judgment?.hours != null}<span title={s.judgment.low != null && s.judgment.high != null ? `LLM による推定。幅 ${dec(s.judgment.low)}〜${dec(s.judgment.high)} 時間` : 'LLM による推定'}>{dec(s.judgment.hours)} 時間</span><span class="sub">{categoryLabel(s.judgment.taskCategory)}・{confidenceLabel(s.judgment.confidence)}</span>{:else}<span class="missing-value">未判定</span>{/if}
+                {#if s.judgment?.hours != null}<span title={judgmentTitle(s.judgment)}>{dec(s.judgment.hours)} 時間</span><span class="sub">{categoryLabel(s.judgment.taskCategory)}・{confidenceLabel(s.judgment.confidence)}</span>{#if s.judgment.ranAt}<span class="sub" data-testid="judged-at">判定 {date(s.judgment.ranAt)}</span>{/if}{:else}<span class="missing-value">未判定</span>{/if}
               </td>
             </tr>
           {/each}
