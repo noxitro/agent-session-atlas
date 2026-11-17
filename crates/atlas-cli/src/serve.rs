@@ -260,11 +260,17 @@ pub fn find_running_server(out_dir: &Path) -> Option<RunningServer> {
     let text = std::fs::read(out_dir.join(SERVE_STATE_FILE)).ok()?;
     let j = js::parse_json(&String::from_utf8_lossy(&text)).ok()?;
     let port = j.get("port").and_then(Value::as_f64).filter(|p| *p > 0.0 && *p <= 65535.0)? as u16;
+    let pid = j.get("pid").and_then(Value::as_f64).unwrap_or(0.0) as u32;
+    // 止められて(強制終了など).serve.json が残ったとき、そのポートには尋ねない。
+    // Windows は閉じたポートへの接続を断られても送り直すので、待ちの時間を使い切る
+    if pid != 0 && !crate::sys::alive(pid) {
+        return None;
+    }
     let r = simple_request(port, "GET", "/api/state", &[], &[], Duration::from_millis(1500)).ok()?;
     if r.header("x-atlas-serve") != Some("1") {
         return None;
     }
-    Some(RunningServer { port, pid: j.get("pid").and_then(Value::as_f64).unwrap_or(0.0) as u32, code: r.header("x-atlas-code").map(str::to_string) })
+    Some(RunningServer { port, pid, code: r.header("x-atlas-code").map(str::to_string) })
 }
 
 /// folders.rs の FolderContext に渡す「その出力先で動いているサーバのポート」

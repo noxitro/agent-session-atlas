@@ -395,6 +395,15 @@ fn binds_serves_and_injects_token() {
     assert_eq!(st["pid"], json!(std::process::id()));
     assert!(!st.to_string().contains(&e.token()));
     assert_eq!(find_running_server(&e.out), Some(RunningServer { port: e.port(), pid: std::process::id(), code: Some("test-code".into()) }));
+    // 印の pid のプロセスが無ければ、ポートに尋ねずに動いていないとみなす(強制終了で残った印)
+    let mut c = std::process::Command::new(if cfg!(windows) { "cmd" } else { "sh" }).args(if cfg!(windows) { ["/c", "exit 0"] } else { ["-c", "exit 0"] }).spawn().unwrap();
+    let dead = c.id();
+    c.wait().unwrap();
+    fs::write(e.out.join(SERVE_STATE_FILE), json!({ "port": e.port(), "pid": dead }).to_string()).unwrap();
+    assert_eq!(find_running_server(&e.out), None);
+    // pid の無い印は、今までどおりポートに尋ねる
+    fs::write(e.out.join(SERVE_STATE_FILE), json!({ "port": e.port() }).to_string()).unwrap();
+    assert_eq!(find_running_server(&e.out).map(|r| r.port), Some(e.port()));
 }
 
 #[test]

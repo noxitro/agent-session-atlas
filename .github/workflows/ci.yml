@@ -41,7 +41,7 @@ env:
 #   (1 つにまとめると、どのジョブも自分では使わない側の分まで取り出すことになる)。
 # - キーは OS・rustc の版・Cargo.lock。rustc の版が変わると依存のビルドは使えないので、キーに入れて取り直す
 #   (入れないと、新しい stable が出た後もキーが一致し続けて保存されず、Cargo.lock が変わるまで毎回依存を全部作り直す)。
-# - 保存するのは main の check(node 24。debug)と e2e(node 24。release)だけ。PR と ui・smoke は取り出すだけ(PR で保存すると、
+# - 保存するのは main の check(node 24。debug)と e2e(release)だけ。PR と ui・smoke は取り出すだけ(PR で保存すると、
 #   PR ごとに main と同じ大きさのキャッシュができ、リポジトリのキャッシュの上限で main のキャッシュが追い出される)。
 #   新しい stable が出た後と Cargo.lock を変えた後は、次に main でこの 2 つが通るまで PR は依存を作り直す(急ぐときは main で手動で 1 回動かす)。
 # - 「Rust を入れる」と取り出すキャッシュ(キーと restore-keys)は、release の 3 か所(e2e・ui・smoke)で同じ形にする(1 か所だけ変えると、
@@ -145,16 +145,18 @@ jobs:
           key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
   # E2E(e2e/。テスト時に生成する架空の fixture だけを使う)。atlas を release で作ってから動かす。fixture を作る node:sqlite は
-  # 実験的 API で版で変わりうるので、Node 24 と 26 で回す
+  # 実験的 API で版で変わりうるので、Node 24 と 26 で回す。atlas の中身は Node の版で変わらないので、OS ごとに 1 つのジョブで
+  # 1 回だけ作り、Node 24 → 26 の順に続けて回す(版ごとにジョブを分けると、release のビルドと準備を版の数だけ繰り返す)。
+  # Node 26 での npm ci と画面のビルドは check が見るので、ここでは Node 24 で入れた node_modules を使い回す
+  # (入れているネイティブのモジュールは Node-API で、版をまたいで動く)。Node 24 で落ちても、26 も回して両方の結果を出す
   e2e:
-    name: e2e (${{ matrix.os }}, node ${{ matrix.node }})
+    name: e2e (${{ matrix.os }}, node 24 + 26)
     needs: changes
     if: needs.changes.outputs.code == 'true'
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest]
-        node: [24, 26]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
@@ -163,7 +165,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: ${{ matrix.node }}
+          node-version: 24
           cache: npm
       - name: Rust を入れる
         id: rust
@@ -183,16 +185,29 @@ jobs:
       - run: npm ci
       # 画面(Svelte)を先に作る: atlas のビルドが packages/report/dist/template.html を実行ファイルに埋め込む
       - run: npm run build:report
-      - run: npm run build:atlas
+      - id: build-atlas
+        run: npm run build:atlas
         env:
           ATLAS_REQUIRE_TEMPLATE: '1'
-      - run: npm run e2e
-      # 上のキャッシュの説明のとおり、main の node 24 だけが保存する(キーが一致して取り出せたときは、変わっていないので保存しない)
-      - if: github.ref == 'refs/heads/main' && matrix.node == 24 && steps.cargo-cache.outputs.cache-hit != 'true'
+      - name: e2e (node 24)
+        run: npm run e2e
+      # 上のキャッシュの説明のとおり、main だけが保存する(キーが一致して取り出せたときは、変わっていないので保存しない)。
+      # Node 26 だけで落ちる間も保存が止まらないよう、Node 24 の E2E の後に置く(保存する target/ は atlas を作った時点で決まっている)
+      - if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.CARGO_CACHE_PATHS }}
           key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+      - id: node26
+        if: ${{ !cancelled() && steps.build-atlas.outcome == 'success' }}
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+      - name: e2e (node 26)
+        if: ${{ !cancelled() && steps.node26.outcome == 'success' }}
+        run: |
+          node --version
+          npm run e2e
 
   # 画面の操作(Playwright の Chromium、ui/)。ブラウザは OS ごとに見れば足りるので Node 24 だけで回す。
   # atlas serve を動かすので、atlas を release で作る(e2e と同じキャッシュから依存を取り出す)
@@ -262,7 +277,7 @@ jobs:
 
   # clone した状態での動作確認(手元の npm run smoke と同じ。scripts/smoke-local.ts)。リリースは探さず(origin が無い)、
   # scripts/ensure-atlas.ps1 がこの PC でビルドする道を通る(Linux は pwsh で動かす)。OS ごとに Node 24 で回す
-  # (Node 26 での npm ci・画面のビルド・atlas のビルドは check と e2e が見る)。
+  # (Node 26 での npm ci・画面のビルド・atlas のビルドは check が、Node 26 での E2E は e2e が見る)。
   # ビルドはこのリポジトリの target/ を使う(CARGO_TARGET_DIR。キャッシュの依存のビルドを使い回す)。中身は clone した先のものなので、
   # ワークスペースのクレートは作り直す。root の npm ci は、checkout-smoke.ts が fixture を作るのに使う(yaml)
   smoke:
