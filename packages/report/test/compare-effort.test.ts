@@ -16,7 +16,8 @@ import {
   type CompareSession,
 } from '../src/lib/compare.ts';
 import { MAIN_EFFORT_SHARE, mainEffortOf } from '../src/lib/main-effort.ts';
-import { PHASES, REQUEST_KINDS } from '../src/shared/turns.ts';
+import { MAIN_EFFORT_SHARE as CORE_MAIN_EFFORT_SHARE, mainEffortOf as coreMainEffortOf } from '../../core/src/main-effort.ts';
+import { PHASES, REQUEST_KINDS } from '../../core/src/turns.ts';
 import type { TurnTuple } from '../src/lib/turns.ts';
 
 /** 依頼の行(種類と中断だけを決める。ほかは 0) */
@@ -48,6 +49,23 @@ describe('mainEffortOf: 本体の (モデル, 推論強度)', () => {
     expect(mainEffortOf({ m: { '(unknown)': 10 } })).toEqual({ kind: 'none' });
     expect(mainEffortOf({})).toEqual({ kind: 'none' });
     expect(mainEffortOf(undefined)).toEqual({ kind: 'none' });
+  });
+
+  it('sessions.csv の列を決めるサーバー側(packages/core)と同じ決め方', () => {
+    expect(MAIN_EFFORT_SHARE).toBe(CORE_MAIN_EFFORT_SHARE);
+    const cases: Record<string, Record<string, number>>[] = [
+      { m: { xhigh: 9, medium: 1 } },
+      { m: { xhigh: 8 }, n: { xhigh: 2 } },
+      { m: { '(unknown)': 10 } },
+      { m: { low: 0 } },
+      { m: { high: 5 }, n: { high: 5 } },
+      { m: { medium: 1 }, n: { xhigh: 19 } },
+      {},
+    ];
+    // サーバー側はトークンと AIU も持つ(決めるのに使うのはリクエスト数だけ)
+    const withStats = (c: Record<string, Record<string, number>>) =>
+      Object.fromEntries(Object.entries(c).map(([m, by]) => [m, Object.fromEntries(Object.entries(by).map(([e, n]) => [e, { requests: n, input: 1, output: 1, nanoAiu: 1 }]))]));
+    for (const c of cases) expect(mainEffortOf(c), JSON.stringify(c)).toEqual(coreMainEffortOf(withStats(c)));
   });
 });
 

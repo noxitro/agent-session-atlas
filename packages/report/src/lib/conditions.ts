@@ -1,7 +1,6 @@
 // 「課題 × 条件」の節: 同じ課題を条件を変えて何度も実行したセッションを、タスクタグの名前(課題__条件、課題__条件__番号)で分けて並べる。
 // 差は相関で、条件の違いが原因とは限らない。課題をまとめた行には、課題の難しさと件数の偏りが混ざる(同じ課題の行どうしで読む)。
-// 画面はブラウザの中で計算する。表(out/tables/conditions.csv)を書くために、同じ計算を Rust(crates/atlas-report/src/conditions.rs)にも置いている。
-// 計算を変えたら両方を直す(npm run parity:fixture の conditions で突き合わせる)。DOM や node: に依存しない。
+// 画面はブラウザの中で計算する。表(out/tables/conditions.csv)を書く Node 側からも同じ計算を読み込めるよう、DOM や node: に依存しない。
 import { COMPARE_MIN_SESSIONS, rate } from './compare.ts';
 import { median } from './retention.ts';
 import type { SessionSummary } from './types.ts';

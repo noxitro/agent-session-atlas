@@ -1,7 +1,6 @@
 # 依存の既知の脆弱性を毎週見る。新しい advisory はコードを変えなくても出るので、push と PR だけでは気づけない。
-# - Rust: cargo deny check advisories(RustSec の脆弱性・保守終了・健全でないもの・取り下げられた版。設定は deny.toml)
-# - npm: npm audit(devDependencies も含める。画面のビルドに使う道具で、その出力は atlas.exe に埋め込まれるため。
-#   push と PR の CI は dependencies だけを見て、devDependencies では止めない(ci.yml)。ここは high 以上で落とす)
+# npm audit(devDependencies も含める。画面のビルドに使う道具で、その出力がレポートの HTML に入るため。
+# push と PR の CI は dependencies だけを見て、devDependencies では止めない(ci.yml)。ここは high 以上で落とす)
 # 落ちたら Actions の画面と通知で分かる。直し方は docs/development.md の「依存の検査」。
 # 外部の Action はコミット SHA で固定する(ci.yml と同じ)。
 name: Dependency audit (weekly)
@@ -15,34 +14,7 @@ on:
 permissions:
   contents: read
 
-env:
-  CARGO_TERM_COLOR: never
-
 jobs:
-  cargo-deny:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    env:
-      CARGO_DENY_VERSION: 0.20.2
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Rust を入れる
-        shell: bash
-        run: |
-          rustup toolchain install stable --profile minimal --no-self-update
-          rustup default stable
-          rustc --version
-      - id: deny-cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cargo/bin/cargo-deny
-          key: cargo-deny-${{ runner.os }}-${{ env.CARGO_DENY_VERSION }}
-      - if: steps.deny-cache.outputs.cache-hit != 'true'
-        run: cargo install cargo-deny --locked --version "$CARGO_DENY_VERSION"
-      - run: cargo deny --locked check advisories
-
   npm-audit:
     runs-on: ubuntu-latest
     timeout-minutes: 10

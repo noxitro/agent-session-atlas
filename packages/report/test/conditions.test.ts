@@ -5,7 +5,7 @@ import { compareNames, conditionCell, conditionTable, parseConditionTag, untilPa
 import { usageCount, usageItems, usageMismatches, usageRows } from '../src/lib/condition-usage.ts';
 import { testsSummary } from '../src/lib/summarize.ts';
 import type { TestsSummary } from '../src/lib/types.ts';
-import type { SessionTests, TestRun } from '../src/shared/types.ts';
+import type { SessionTests, TestRun } from '../../core/src/types.ts';
 
 const MIN = COMPARE_MIN_SESSIONS;
 
