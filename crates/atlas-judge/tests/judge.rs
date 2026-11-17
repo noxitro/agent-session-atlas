@@ -42,7 +42,7 @@ fn entry(at: Option<&str>, text: &str) -> TextEntry {
 fn packet_has_sections_and_fences_do_not_close() {
     let r = record();
     let t = SessionTexts { source: TextSource::Snapshot, requests: vec![entry(None, "コード:\n```js\nx\n```\n## 最終応答")], final_response: Some(entry(None, "完了")), compactions: vec![], task_completes: vec![] };
-    let p = render_packet(&r, &t, &DEFAULT_LIMITS).unwrap();
+    let p = render_packet(&r, &t, &DEFAULT_LIMITS, None).unwrap();
     assert!(missing_sections(&p.markdown).is_empty());
     assert_eq!(packet_session_id(&p.markdown).as_deref(), Some("sess-1"));
     assert!(p.markdown.contains("````text"));
@@ -61,7 +61,7 @@ fn long_texts_are_clipped_to_max_chars() {
         task_completes: vec![],
     };
     r.files.changed = (0..500).map(|i| format!("C:\\p\\f{i}.ts")).collect();
-    let p = render_packet(&r, &t, &DEFAULT_LIMITS).unwrap();
+    let p = render_packet(&r, &t, &DEFAULT_LIMITS, None).unwrap();
     assert!(p.chars <= DEFAULT_LIMITS.max_chars);
     assert!(p.truncated > 0);
     assert!(p.markdown.contains("中略"));
@@ -84,7 +84,7 @@ fn hundreds_of_short_texts_fit_with_one_omitted_line() {
     };
     r.wiki.skill_calls = (0..2000).map(|i| format!("wiki-query-{}", i % 300)).collect();
     r.wiki.index_reads = 1;
-    let p = render_packet(&r, &t, &DEFAULT_LIMITS).unwrap();
+    let p = render_packet(&r, &t, &DEFAULT_LIMITS, None).unwrap();
     assert!(p.chars <= DEFAULT_LIMITS.max_chars);
     assert!(missing_sections(&p.markdown).is_empty());
     assert!(p.markdown.contains("ユーザーの依頼 1500 件"));
@@ -93,6 +93,31 @@ fn hundreds_of_short_texts_fit_with_one_omitted_line() {
     assert!(Regex::new(r"### それより前の要約 [\d,]+ 件").unwrap().is_match(&p.markdown));
     assert!(p.markdown.contains("…ほか"));
     assert!(p.truncated > 1000);
+}
+
+/// パケットの llm-wiki の行: そのほかの呼び出し(vault の検索・一覧など)だけのセッションも参照として回数を出し、
+/// vault に触れていなければ「参照なし」、vault を指定せずに集計したときは「数えていません」
+#[test]
+fn packet_wiki_line_counts_other_calls_and_not_counted() {
+    let t = SessionTexts { source: TextSource::Snapshot, requests: vec![entry(None, "調べて")], final_response: None, compactions: vec![], task_completes: vec![] };
+    let wiki_line = |md: &str| md.lines().find(|l| l.starts_with("- llm-wiki: ")).map(str::to_string);
+    let mut r = record();
+    r.wiki.other_calls = 2;
+    let p = render_packet(&r, &t, &DEFAULT_LIMITS, Some(1)).unwrap();
+    assert_eq!(wiki_line(&p.markdown).as_deref(), Some("- llm-wiki: 索引の読み取り 0 回 / ページ読み取り 0 件 / wiki skill 0 回 / そのほかの呼び出し 2 回 / 書き込み 0 回"));
+    // 書き込みだけでも vault に触れたので回数を出す(「参照なし」にしない)
+    let mut wo = record();
+    wo.wiki.writes = 1;
+    assert_eq!(wiki_line(&render_packet(&wo, &t, &DEFAULT_LIMITS, Some(1)).unwrap().markdown).as_deref(), Some("- llm-wiki: 索引の読み取り 0 回 / ページ読み取り 0 件 / wiki skill 0 回 / そのほかの呼び出し 0 回 / 書き込み 1 回"));
+    // 触れていない
+    let plain = record();
+    assert_eq!(wiki_line(&render_packet(&plain, &t, &DEFAULT_LIMITS, Some(1)).unwrap().markdown).as_deref(), Some("- llm-wiki: 参照なし"));
+    // 古い集計(vault の数の記録なし)も「参照なし」
+    assert_eq!(wiki_line(&render_packet(&plain, &t, &DEFAULT_LIMITS, None).unwrap().markdown).as_deref(), Some("- llm-wiki: 参照なし"));
+    // vault を指定せずに集計した
+    let off = render_packet(&plain, &t, &DEFAULT_LIMITS, Some(0)).unwrap();
+    assert_eq!(wiki_line(&off.markdown).as_deref(), Some("- llm-wiki: この集計では数えていません(vault の指定なし)"));
+    assert!(missing_sections(&off.markdown).is_empty());
 }
 
 const PHASES: [&str; 4] = ["要件定義", "設計", "実装", "テスト"];
@@ -293,6 +318,7 @@ fn rebuild_failure_keeps_previous_bundle() {
         scope: IndexMap::new(),
         log: &log,
         now: None,
+        wiki_vaults: None,
     };
     let m = build_bundle(&[&s], &opts(None, None)).unwrap();
     assert!(build_bundle(&[&s], &opts(None, Some(0))).unwrap_err().to_string().contains("perPart"));

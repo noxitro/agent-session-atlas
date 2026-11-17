@@ -355,8 +355,8 @@ pub fn bucket(key: &str, label: &str, sessions: &[&SessionSummary]) -> Bucket {
         if !s.instructions.is_empty() {
             b.sessions_with_instructions += 1;
         }
-        let w = &s.wiki;
-        if w.index_reads + w.page_reads + w.skill_calls + w.writes > 0 {
+        // wiki を参照したセッション(書き込みだけのセッションは入れない。atlas_core::wiki::wiki_referenced)
+        if s.wiki.referenced() {
             b.sessions_with_wiki += 1;
         }
         let (fd, f) = (&mut b.friction_detail, &s.friction);

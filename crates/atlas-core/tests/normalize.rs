@@ -203,6 +203,38 @@ fn summarizes_tokens_skills_agents_hooks_friction_unknown() {
     assert_eq!(exec_keys, ["modes", "context", "efforts", "modelEfforts", "mainModelEfforts", "initiators", "latency"]);
 }
 
+/// skill ツールと対になった skill.invoked でも、path(skill のファイルの場所)が vault の中なら wiki の skill として数える。
+/// path が無ければ数えず、ツールの側で数えていれば二重に数えない
+#[test]
+fn paired_skill_invoked_counts_vault_path_once() {
+    let wiki = || Some(WikiClassifier::new(&[WikiSpec { path: "my-wiki".into(), skills: Some(vec!["wiki-query".into()]), ..Default::default() }]));
+    let run_wiki = |events: Vec<CopilotEvent>| norm_with(Some(events), Input { wiki: wiki(), ..Default::default() });
+    let start = |id: &str, skill: &str, s: i64| ev("tool.execution_start", json!({"toolName": "skill", "toolCallId": id, "arguments": {"skill": skill}}), &t(s));
+
+    // 名前が指定に無い skill を、vault の中から読んだ(path がある): 対になっても 1 回数える
+    let with_path = run_wiki(vec![start("t1", "wiki-lint", 1), ev("skill.invoked", json!({"name": "wiki-lint", "path": "D:\\notes\\my-wiki\\skills\\wiki-lint\\SKILL.md"}), &t(2))]);
+    assert_eq!(with_path.skills.iter().map(|s| (s.name.as_str(), s.via)).collect::<Vec<_>>(), vec![("wiki-lint", SkillVia::Both)]);
+    assert_eq!(with_path.wiki.skill_calls, vec!["wiki-lint"]);
+
+    // path が無い形: 名前が指定に無ければ数えない
+    let no_path = run_wiki(vec![start("t1", "wiki-lint", 1), ev("skill.invoked", json!({"name": "wiki-lint"}), &t(2))]);
+    assert_eq!(no_path.skills.iter().map(|s| s.via).collect::<Vec<_>>(), vec![SkillVia::Both]);
+    assert!(no_path.wiki.skill_calls.is_empty());
+
+    // path が vault の外: 数えない
+    let outside = run_wiki(vec![start("t1", "other", 1), ev("skill.invoked", json!({"name": "other", "path": "D:\\notes\\my-wiki-app\\skills\\other\\SKILL.md"}), &t(2))]);
+    assert!(outside.wiki.skill_calls.is_empty());
+
+    // 名前が指定にある skill: ツールの側で数えているので、path が vault の中でも足さない
+    let named = run_wiki(vec![start("t1", "wiki-query", 1), ev("skill.invoked", json!({"name": "wiki-query", "path": "D:\\notes\\my-wiki\\skills\\wiki-query\\SKILL.md"}), &t(2))]);
+    assert_eq!(named.wiki.skill_calls, vec!["wiki-query"]);
+
+    // 対にならない skill.invoked(ツールの呼び出しが無い): 従来どおり path から数える
+    let alone = run_wiki(vec![ev("skill.invoked", json!({"name": "wiki-lint", "path": "D:/notes/my-wiki/skills/wiki-lint/SKILL.md"}), &t(2))]);
+    assert_eq!(alone.skills.iter().map(|s| s.via).collect::<Vec<_>>(), vec![SkillVia::Event]);
+    assert_eq!(alone.wiki.skill_calls, vec!["wiki-lint"]);
+}
+
 #[test]
 fn legacy_and_db_only() {
     let legacy = run(vec![ev("assistant.message", json!({"content": "a", "model": "m", "outputTokens": 5}), "2026-01-01T00:00:00Z")]);

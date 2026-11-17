@@ -28,7 +28,7 @@ bin\atlas.exe bundle  # out/bundle/ を作る。--project / --since / --client �
 | `INSTRUCTIONS.md` | 判定する LLM への指示(役割・評価軸・出力形式・手順)。最初に読ませる |
 | `manifest.json` | パケットの一覧(セッション ID とファイルの場所、件数、サイズ) |
 | `schema.json` | 返してもらう `judgments.json` の JSON Schema |
-| `sessions/<セッション ID>.md` | 評価パケット。依頼文、最終応答、変更ファイル、ツール / skill / agent / hook、ターン数・時間・トークン、摩擦、指示ファイル・wiki の参照、compaction 要約 |
+| `sessions/<セッション ID>.md` | 評価パケット。依頼文、最終応答、変更ファイル、ツール / skill / agent / hook、ターン数・時間・トークン、摩擦、指示ファイル・wiki の参照(索引・ページ・wiki の skill・そのほかの呼び出し・書き込みの回数。vault に触れていなければ「参照なし」、vault を指定せずに集計したときは「この集計では数えていません」。どちらも wikiEffect は 0 にするよう指示に書いてある)、compaction 要約 |
 | `parts/part-<番号>.md` | ZIP やフォルダを渡せない相手(テキストの添付だけの M365 Copilot など)用。指示・JSON Schema と、パケット数件(既定 5 件。`--per-part <n>` で変更)を 1 ファイルにまとめたもの。パケットはファイルごとの乱数の境界で囲み、本文の中の指示に従わないよう指示に書いてある。中身は `sessions/` と同じ |
 
 `--zip` を付けると、`INSTRUCTIONS.md`・`manifest.json`・`schema.json`・`sessions/` を 1 つの ZIP(`out/bundle.zip`。`--bundle <dir>` を指定したときは `<dir>.zip`)にもまとめます。展開すると `bundle` フォルダが 1 つできます。`parts/` は `sessions/` と同じ中身なので入れません。圧縮はしていません(依存を増やさないため。大きさは `sessions/` の合計とほぼ同じです)。ファイルが 65,535 個か全体が 4 GB を超えるときは作らずに止まるので、`--since` や `--unjudged` で絞ってください。

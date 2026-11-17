@@ -47,6 +47,7 @@ const AXES_TPL: &str = "### 評価軸
 5. **instructionsEffect** / **wikiEffect** / **skillsAgentsEffect**: 指示ファイル(AGENTS.md 等)、llm-wiki(利用者の個人ナレッジ)、skill・サブエージェントがこのセッションの成果に与えた影響を -2〜+2 の整数で。
    - -2: 明確に悪影響 / -1: やや悪影響 / 0: 影響なし・使われていない / +1: やや役立った / +2: 明確に役立った
    - 使われていない(パケットに「参照なし」「なし」)なら score 0、evidence に「参照なし」。
+   - 数えていない(パケットの llm-wiki の行が「この集計では数えていません」)ときも wikiEffect は score 0、evidence に「数えていない」。
    - evidence にはパケット内の根拠(どの依頼・応答・ツール記録から判断したか)を短く書く。
 6. **notes**(任意): 判定上の注意点。";
 

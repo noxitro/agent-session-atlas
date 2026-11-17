@@ -731,6 +731,7 @@ pub fn build_report(input: BuildInput<'_>) -> Result<BuildResult> {
                     memo: memo.as_ref(),
                     retention: retention_by_id.get(r.id.as_str()).copied(),
                     retention_meta: retention_meta_ref,
+                    wiki_vaults: input.wiki_vaults,
                 },
             );
             let bytes = byte_length(&page);

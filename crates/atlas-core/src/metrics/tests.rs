@@ -284,6 +284,24 @@ fn metrics_by_project_client_month_model() {
     assert_eq!(j, r#"{"recorded":0,"input":0,"output":0,"nanoAiu":0,"tokensRemoved":0,"removedRecorded":0}"#);
 }
 
+/// metrics.json の wiki.sessionsWithAny は名前どおり「vault に触れた」セッション(書き込みだけのセッションも入る)。
+/// 画面の「参照した」とは数え方が違い、意味を変えていない
+#[test]
+fn wiki_sessions_with_any_counts_write_only() {
+    let mut write_only = normalize("w", None, vec![]);
+    write_only.wiki.writes = 1;
+    let mut read_write = normalize("rw", None, vec![]);
+    read_write.wiki.index_reads = 1;
+    read_write.wiki.writes = 2;
+    let untouched = normalize("n", None, vec![]);
+    let b = bucket_of(&[&write_only, &read_write, &untouched]);
+    assert_eq!(b.wiki.sessions_with_any, 2);
+    assert_eq!((b.wiki.index_reads, b.wiki.writes), (1, 3));
+    // 書き込みだけのセッション 1 件でも数える
+    assert_eq!(bucket_of(&[&write_only]).wiki.sessions_with_any, 1);
+    assert_eq!(bucket_of(&[&untouched]).wiki.sessions_with_any, 0);
+}
+
 #[test]
 fn distributions() {
     let d = distribution(&[]);

@@ -16,7 +16,7 @@ bin\atlas.exe --help                  # 使い方
 |---|---|
 | `snapshot` | `~/.copilot` の必要部分(`session-store.db`、各セッションの `workspace.yaml` / `events.jsonl` / `session.db` / `plan.md` / `checkpoints/` / `files/` / `rewind-file-snapshots/` / `policies/`、直下の `plans/` / `attachments/` / `chats/` の `*.md`)を `out/snapshot/` へ複製する。`data.db`(デスクトップアプリ)は複製せず、許可リストの列だけを `desktop.json` に書く([outputs.md](outputs.md#解析用の完全出力) の「data.db」)。大きいもの(`rewind-snapshots/`、一覧に無い名前のフォルダ、`logs/`)は既定で写さず名前と容量を `snapshot-manifest.json` に残す(`--snapshot-all` で写す)。インストール済みの skill・プラグインは**名前だけ**を記録する(下記) |
 | `extract` | スナップショットから `out/sessions.json` を作る。repository の記録が無いセッションは、作業フォルダの git の設定を読んでプロジェクトを束ねる(下記) |
-| `metrics` | `out/metrics.json` と、表計算ソフトで開く表 `out/tables/turns.csv`・`sessions.csv`・`failures.csv`(ツールの失敗と拒否 1 件ごと)・テストの結果の `test-runs.csv`・`test-results.csv`・`test-counts.csv`(テストの実行があるとき)・課題 × 条件の表の `conditions.csv`(名前の決まりに合うタスクタグがあるとき。[outputs.md の「表(CSV)」](outputs.md#表csv))を作る。metrics.json は(全体・プロジェクト・クライアント・月・モデル別の集計。空のセッションは除き、件数を `emptySessions` に、トークンの出所別・欠測の件数を各集計の `tokenSources` / `sessionsMissingTokens` に、ツールの成否と失敗の要因別の回数を `tools.results`(要因は `causes`)、MCP サーバー別を `tools.mcp`、skill の呼んだ側を `skills.byTrigger`、agent の失敗とトークンを `agents.byNameDetail`、変更行数を `lines`、インストール済みで未使用の skill を `installedSkills`、モード・推論強度・リクエストの起点・ツール定義のトークンを `exec`、権限の結果・エラーの種別・サブエージェント失敗の理由・compaction 自体のトークンを `frictionDetail`、todo を `todos`、モデル別の待ち時間を `latency`、ツール別の所要時間を `toolDurations` に、依頼(ターン)単位の工程別・依頼の種類別の集計を `turns` に持つ) |
+| `metrics` | `out/metrics.json` と、表計算ソフトで開く表 `out/tables/turns.csv`・`sessions.csv`・`failures.csv`(ツールの失敗と拒否 1 件ごと)・テストの結果の `test-runs.csv`・`test-results.csv`・`test-counts.csv`(テストの実行があるとき)・課題 × 条件の表の `conditions.csv`(名前の決まりに合うタスクタグがあるとき。[outputs.md の「表(CSV)」](outputs.md#表csv))を作る。metrics.json は(全体・プロジェクト・クライアント・月・モデル別の集計。空のセッションは除き、件数を `emptySessions` に、トークンの出所別・欠測の件数を各集計の `tokenSources` / `sessionsMissingTokens` に、ツールの成否と失敗の要因別の回数を `tools.results`(要因は `causes`)、MCP サーバー別を `tools.mcp`、skill の呼んだ側を `skills.byTrigger`、agent の失敗とトークンを `agents.byNameDetail`、変更行数を `lines`、llm-wiki の回数を `wiki`(`sessionsWithAny` は書き込みも入れた「vault に触れた」セッションの数で、画面の「参照した」セッションの数とは違う)、インストール済みで未使用の skill を `installedSkills`、モード・推論強度・リクエストの起点・ツール定義のトークンを `exec`、権限の結果・エラーの種別・サブエージェント失敗の理由・compaction 自体のトークンを `frictionDetail`、todo を `todos`、モデル別の待ち時間を `latency`、ツール別の所要時間を `toolDurations` に、依頼(ターン)単位の工程別・依頼の種類別の集計を `turns` に持つ) |
 | `vcs` | AI が作った変更(編集・作成で足した行)が、その後の VCS(Git / SVN / Perforce)のファイルに残っているかを照合し、`out/vcs-retention.json` に書く([outputs.md の「AI の変更の残存」](outputs.md#ai-の変更の残存vcs-の照合))。VCS は読むだけで、書き込みや同期のコマンドは呼ばない(呼ぶたびに許可リストで確かめて止める)。照合の後、取り出せなかった編集・推定した行や版・数えなかったまとまりの件数をログに出す。アップロード先から集計したときは、ディスクを読まず、送った側の PC が照合して添えた結果を読む。`all` にも入る(失敗しても止めない) |
 | `build` | `out/atlas.html` と `out/sessions/<id>.html`(セッション詳細)を作る。失敗の台帳の集計のページ `out/failures.html` と `out/failures.json`([outputs.md の「失敗の台帳」](outputs.md#失敗の台帳))も作る |
 | `export` | `build` に加えて、各セッションの記録(経過・消費)を `out/sessions/<id>.md` に書く。LLM での振り返り用(依頼文や応答がそのまま入るので、人に渡すなら中身を確かめてから。[outputs.md の「セッション記録」](outputs.md#セッション記録markdown))。指示文と skill の閲覧ページ `out/instructions.html` も作る。`--full` で解析用の全文記録([outputs.md](outputs.md#解析用の完全出力))。LLM は呼ばない |
@@ -130,7 +130,7 @@ bin\atlas.exe open --pick                         # フォルダを選ぶ画面�
 
 ## wiki の指定
 
-llm-wiki の参照は、ツール呼び出しの引数に vault の場所が現れたものを数えます。**vault を指定しないと wiki は集計せず、レポートの件数は 0 のままです。** 指定した vault の数は `sessions.json` の `source.wikis` に残り、レポートの「課題 × 条件」の節の利用の確認は、0 のときに wiki を数えていないと注意を出します。 集計するときは、リポジトリ直下に `atlas.config.json` を置いて vault を指定してください(`setup.bat` が尋ねながら書きます。雛形は `atlas.config.example.json`。`atlas.bat` と画面の「集計し直す」もこの設定を読みます)。
+llm-wiki の参照は、ツール呼び出しの引数に vault の場所が現れたもの(シェルや MCP サーバーのツールの呼び出しも含みます。失敗した呼び出しも 1 回)と、wiki の skill の呼び出し(`skills` に書いた名前か、vault の中に置いた skill)を数えます。「参照した」セッションは、索引・個別ページの読み取り、wiki の skill の呼び出し、その他の呼び出し(vault の検索・一覧など)が 1 回以上あったもので、書き込み(`edit`・`create` などの編集のツール)だけのセッションは入れません。画面・表・`extract` のログのどこでも同じ数え方です(`metrics.json` の `wiki.sessionsWithAny` だけは、書き込みも入れた「vault に触れた」セッションの数です)。**vault を指定しないと wiki は数えません。** 指定した vault の数は `sessions.json` の `source.wikis` に残り、0 のレポートでは、集計明細・プロジェクト別・人別・改善点・課題 × 条件の利用の確認・詳細ページに wiki の件数を出さず、数えていない理由(0 件という意味ではないこと)を出します。判定のパケットの llm-wiki の行も「この集計では数えていません」になります。集計するときは、リポジトリ直下に `atlas.config.json` を置いて vault を指定してください(`setup.bat` が尋ねながら書きます。雛形は `atlas.config.example.json`。`atlas.bat` と画面の「集計し直す」もこの設定を読みます)。
 
 ```json
 {
@@ -157,14 +157,15 @@ llm-wiki の参照は、ツール呼び出しの引数に vault の場所が現�
 
 - `wikis` の要素は文字列でも書けます。`path` だけの指定で、ほかは省略時の値です。
 - `index` と `pages` は別々に判定し、索引に当たるものは索引として数えます。`pages` の配下にも索引にも当たらないファイルは「その他」です。
-- vault の中に置いた skill は、`skills` に書かなくても skill のファイルの場所から判定します。
+- vault の中に置いた skill は、`skills` に書かなくても skill のファイルの場所(`skill.invoked` の `path`)から判定します。skill ツールの呼び出しと対になった `skill.invoked` でも、ツールの引数から wiki の skill と分からなかったときは、この場所で判定します(同じ呼び出しを 2 回は数えません)。
 - vault を複数挙げると、レポートの「個別ページ」の一覧には `my-notes/notes/a.md` のように vault 名が先頭に付きます。件数は全 vault の合計で、vault 別には分けていません。
 - **`path` はフォルダ名だけの指定が確実です。** フルパスにすると、エージェントが別の書き方(bash の `/e/notes`、`~/notes` など)で触った分は数えられません。逆にフォルダ名が短くて他と紛らわしいときは、`work/notes` のように親フォルダまで含めてください。`my-notes-app` や `notes.md` は `notes` とは別物として扱います。
 - `~/` で始まる `path` はホームフォルダに展開します(展開後はフルパスの扱いです)。
-- 相対パスだけで触った呼び出し(vault の中で作業していて `wiki/a.md` とだけ書いた場合など)は vault の場所が現れないので数えません。
+- 引数に vault の場所が出ない呼び出し(vault の中で作業していて `wiki/a.md` とだけ書いた相対パスだけの読み、vault の場所を渡さない MCP サーバー経由の読みなど)は数えません。MCP サーバーのツールでも、引数に vault の場所が出れば数えます。
+- 書き込みに数えるのは編集のツール(`edit`・`create`・`apply_patch`・`write`・`str_replace_editor`)だけです。シェルで vault に書いた呼び出しは、引数に vault の場所が現れれば、書き込みでなく参照に入ります(パスの形によって、索引・個別ページ・その他のどれかに数えます)。
 - 項目の書き間違いは、件数が 0 になって気付きにくいのでエラーで止めます。
 
-判定は `extract` で行うので、設定を変えたら `extract` からやり直してください(`atlas.bat` や `bin\atlas.exe` なら毎回行います)。`extract` のログに対象の vault と参照のあったセッション数が出ます(未設定のときはその旨が出ます)。0 件のときは、まず `path` が合っているか確かめてください。
+判定は `extract` で行うので、設定を変えたら `extract` からやり直してください(`atlas.bat` や `bin\atlas.exe` なら毎回行います)。`extract` のログに対象の vault と「参照したセッション N 件・書き込みだけ M 件」が出ます(未設定のときはその旨が出ます)。どちらも 0 件のときは、まず `path` が合っているか確かめてください。
 
 ## アップロード先の指定
 

@@ -1,5 +1,6 @@
 // 判定(bundle・judgments の取り込み・judge run)の E2E
 //  a. fixtures から bundle を生成し、manifest / INSTRUCTIONS / schema / 各 md の必須セクションが揃う
+//  a4. パケットの llm-wiki の行は sessions.json の source.wikis(参照を数えた vault の数)で決まる
 //  b. 手書きの judgments サンプルを import → build で atlas.html に推定人手工数(一覧・プロジェクト別・全体)が出る
 //  c. 偽 copilot(fixtures/fake-copilot.mjs)で judge run が judgments を作り、--add-dir を渡さず、
 //     プロンプトにパケットが含まれることを引数記録で確かめる(LLM は呼ばない)
@@ -7,7 +8,7 @@
 // 実際の copilot -p の 1 回実行(ATLAS_LIVE_JUDGE=1)はユーザー許可のうえでオーケストレータが行うため、ここには含めない。
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -174,6 +175,48 @@ describe('Phase 3 E2E: fixtures', () => {
     expect(other.status, other.stderr).toBe(0);
     expect(await readFile(`${custom}.zip`, 'utf8')).toBe('利用者のファイル');
     expect(other.stdout + other.stderr).toContain('消していません');
+  });
+
+  it('a4. パケットの llm-wiki の行は sessions.json の source.wikis で決まり、数えていない集計では「数えていません」と書く', async () => {
+    const lineOf = (md: string): string | undefined => md.split('\n').find((l) => l.startsWith('- llm-wiki: '));
+    /** バンドルのパケットごとの llm-wiki の行 */
+    const lines = async (dir: string): Promise<Map<string, string | undefined>> => {
+      const m = await readJson<BundleManifest>(join(dir, 'manifest.json'));
+      return new Map(await Promise.all(m.sessions.map(async (e) => [e.id, lineOf(await readFile(join(dir, e.path), 'utf8'))] as const)));
+    };
+    /** 今の集計の sessions.json の source.wikis だけを変えて(undefined は項目の無い古い形)、同じスナップショットからバンドルを作る */
+    const variant = async (name: string, wikis: number | undefined): Promise<Map<string, string | undefined>> => {
+      const dir = join(WORK, name);
+      await rm(dir, { recursive: true, force: true });
+      await mkdir(dir, { recursive: true });
+      await cp(join(out, 'snapshot'), join(dir, 'snapshot'), { recursive: true });
+      const file = structuredClone(sessions);
+      if (wikis === undefined) delete file.source.wikis;
+      else file.source.wikis = wikis;
+      await writeFile(join(dir, 'sessions.json'), JSON.stringify(file));
+      const r = atlas(['bundle', '--out', dir]);
+      expect(r.status, r.stderr).toBe(0);
+      return lines(join(dir, 'bundle'));
+    };
+    // fixture は vault を 1 つ指定して集計している。004 は索引・ページ・その他の読みと wiki の skill があり、011 は wiki の skill だけ。
+    // ほかは vault に触れていない
+    expect(sessions.source.wikis).toBe(1);
+    const base = await lines(bundle);
+    const id4 = '00000000-0000-4000-8000-000000000004';
+    expect(base.get(id4)).toBe('- llm-wiki: 索引の読み取り 1 回 / ページ読み取り 2 件 / wiki skill 1 回 / そのほかの呼び出し 1 回 / 書き込み 0 回');
+    expect(base.get('00000000-0000-4000-8000-000000000011')).toBe('- llm-wiki: 索引の読み取り 0 回 / ページ読み取り 0 件 / wiki skill 1 回 / そのほかの呼び出し 0 回 / 書き込み 0 回');
+    for (const s of sessions.sessions) {
+      const w = s.wiki;
+      if (base.has(s.id) && w.indexReads + w.pageReads.length + w.skillCalls.length + w.writes + w.otherCalls === 0) expect(base.get(s.id), s.id).toBe('- llm-wiki: 参照なし');
+    }
+    // vault を指定せずに集計した(source.wikis が 0): どのパケットも「数えていません」で、「参照なし」と書かない
+    const off = await variant('out-wiki-off', 0);
+    expect([...off.keys()]).toEqual([...base.keys()]);
+    expect(new Set(off.values())).toEqual(new Set(['- llm-wiki: この集計では数えていません(vault の指定なし)']));
+    // 項目の無い古い形: 今までどおり(回数か「参照なし」)
+    expect(await variant('out-wiki-old', undefined)).toEqual(base);
+    // 判定の指示は、数えていないときも wikiEffect を 0 にさせる
+    expect(await readFile(join(bundle, 'INSTRUCTIONS.md'), 'utf8')).toContain('数えていない(パケットの llm-wiki の行が「この集計では数えていません」)ときも wikiEffect は score 0、evidence に「数えていない」');
   });
 
   it('a2. CLI のフィルタ(--client)でパケットが絞られ、前回のパケットは消える', async () => {

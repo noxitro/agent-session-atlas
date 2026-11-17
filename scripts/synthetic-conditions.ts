@@ -8,6 +8,7 @@
 //    コード参照の条件のセッションは、テストの後に MCP サーバーのツールを呼ぶ。wiki を数えるには、設定の wikis に COND_WIKI を入れて集計する
 //  - 端の場合: テストの印の無いセッション(課題・条件のタグはある)、条件が 1 つしか無い課題(ほかの条件は 0 件の行になる。
 //    テストの印も無い)、課題と条件の違うタグが 2 つ付いたセッション、決まりに合わないタグ(区切りなし / 区切りはあるが形が違う)のセッション
+//  - wiki の手入れ(タスクタグなし。表には入らない): vault のページを編集するだけのセッション(書き込みだけ)と、索引を読んでから編集するセッション
 // 書き出す形は 2 つ: ~/.copilot の形(タスクタグは groups.json で渡す)と、送り先をまとめて集計する形(タスクタグは各セッションの atlas-session.json)。
 // 単独で書くとき: node scripts/synthetic-conditions.ts <書き出すフォルダ>
 import { mkdir, rm, writeFile } from 'node:fs/promises';
@@ -105,6 +106,20 @@ function testedSession(id: string, start: number, cwd: string, firstPass: number
   return ev;
 }
 
+/** wiki の手入れのセッション(タスクタグなし): vault のページを編集する。read なら先に索引を読む(参照と書き込みの両方)、でなければ書き込みだけ */
+function wikiWriteSession(id: string, cwd: string, read: boolean): Ev[] {
+  const n = read ? 92 : 91;
+  return [
+    { type: 'session.start', data: { sessionId: id, version: 1, copilotVersion: '1.0.110', selectedModel: MODEL, context: { cwd } } },
+    { type: 'user.message', data: { content: '合成の wiki のページを直して' } },
+    ...(read ? wikiRead(n) : []),
+    { type: 'tool.execution_start', data: { toolCallId: `call_wiki_edit_${n}`, toolName: 'edit', arguments: { path: `X:\\synthetic-notes\\${COND_WIKI}\\wiki\\zz-page.md`, old_str: '古い', new_str: '新しい' } } },
+    { type: 'tool.execution_complete', data: { toolCallId: `call_wiki_edit_${n}`, success: true, result: { content: '(合成の編集)' } } },
+    { type: 'assistant.message', data: { messageId: 'm1', content: '合成の応答', model: MODEL } },
+    { type: 'assistant.turn_end', data: { turnId: 't1' } },
+  ];
+}
+
 function plainSession(id: string, cwd: string): Ev[] {
   return [
     { type: 'session.start', data: { sessionId: id, version: 1, copilotVersion: '1.0.110', selectedModel: MODEL, context: { cwd } } },
@@ -144,6 +159,9 @@ export function conditionPlans(): Plan[] {
   // 決まりに合わないタグ: 区切りなし(普通のタスクタグ)と、区切りはあるが番号が数字でないもの
   next(COND_PEOPLE[1], ['zz-misc'], (id, _start, cwd) => plainSession(id, cwd));
   next(COND_PEOPLE[1], ['zz-a__b__x'], (id, _start, cwd) => plainSession(id, cwd));
+  // wiki の手入れ(タスクタグなし。課題 × 条件の表には入らない): 書き込みだけのセッションと、索引を読んでから書き込むセッション
+  next(COND_PEOPLE[1], [], (id, _start, cwd) => wikiWriteSession(id, cwd, false));
+  next(COND_PEOPLE[1], [], (id, _start, cwd) => wikiWriteSession(id, cwd, true));
   return out;
 }
 

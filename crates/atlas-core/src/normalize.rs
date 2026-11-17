@@ -595,6 +595,8 @@ pub fn normalize_session(input: NormalizeInput<'_>) -> std::io::Result<SessionRe
     let mut agent_model_changes: i64 = 0;
     let mut skills: Vec<SkillUse> = Vec::new();
     let mut skill_at_ms: Vec<Option<i64>> = Vec::new();
+    // skills と同じ並び: その呼び出しを wiki の skill として数えたか(skill ツールと skill.invoked を二重に数えないため)
+    let mut skill_wiki: Vec<bool> = Vec::new();
     let mut available_skills: Option<IndexMap<String, AvailableSkill>> = None;
     let mut agents: IndexMap<String, AgentRun> = IndexMap::new();
     let mut agent_name_by_id: HashMap<String, String> = HashMap::new();
@@ -916,6 +918,8 @@ pub fn normalize_session(input: NormalizeInput<'_>) -> std::io::Result<SessionRe
                         let skill = arg("skill").unwrap_or("(unknown)").to_string();
                         skills.push(SkillUse { name: skill.clone(), at: at.clone(), via: SkillVia::Tool, trigger: Some(SkillTrigger::Agent), chars: None });
                         skill_at_ms.push(t);
+                        // 下の classify で数えたら true にする
+                        skill_wiki.push(false);
                         push_timeline!(TimelineEntry { at: at_or_empty(), kind: TimelineKind::Skill, label: skill, count: None, tools: None });
                     } else {
                         match timeline.last_mut() {
@@ -936,7 +940,12 @@ pub fn normalize_session(input: NormalizeInput<'_>) -> std::io::Result<SessionRe
                             ts.ask_user += 1;
                         }
                     }
-                    wiki_classifier.classify(&mut wiki, &name, args_ref);
+                    let wiki_hit = wiki_classifier.classify(&mut wiki, &name, args_ref);
+                    if name == "skill" && wiki_hit {
+                        if let Some(x) = skill_wiki.last_mut() {
+                            *x = true;
+                        }
+                    }
                     let cwd = cur_cwd!();
                     let mut note_edit = |path: &str, turn_stats: &mut Vec<TurnStats>| {
                         if js::trim(path).is_empty() {
@@ -1152,12 +1161,20 @@ pub fn normalize_session(input: NormalizeInput<'_>) -> std::io::Result<SessionRe
                             if chars.is_some() {
                                 p.chars = Some(chars);
                             }
+                            // skill ツールの引数からは wiki の skill と分からなかった呼び出しでも、skill.invoked の path
+                            // (skill のファイルの場所)が vault の中なら数える。ツールの側で数えていれば足さない
+                            if !skill_wiki[i] && wiki_classifier.is_skill(&name, g("path")) {
+                                skill_wiki[i] = true;
+                                wiki.skill_calls.push(name);
+                            }
                         }
                         None => {
                             skills.push(SkillUse { name: name.clone(), at: at.clone(), via: SkillVia::Event, trigger, chars: Some(chars) });
                             skill_at_ms.push(t);
                             push_timeline!(TimelineEntry { at: at_or_empty(), kind: TimelineKind::Skill, label: name.clone(), count: None, tools: None });
-                            if wiki_classifier.is_skill(&name, g("path")) {
+                            let hit = wiki_classifier.is_skill(&name, g("path"));
+                            skill_wiki.push(hit);
+                            if hit {
                                 wiki.skill_calls.push(name);
                             }
                         }

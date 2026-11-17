@@ -11,7 +11,7 @@ use atlas_report::filter::*;
 use atlas_report::highlights::{highlights, session_label, HighlightOptions, InstalledView};
 use atlas_report::pack::{pack_summary, unpack_data, unpack_summary};
 use atlas_report::summarize::{permission_group, summarize};
-use atlas_report::types::{JudgmentSummary, SessionSummary};
+use atlas_report::types::{JudgmentSummary, SessionSummary, WikiSummary};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -120,6 +120,29 @@ fn aggregate_updated_at_is_latest_update() {
     assert_eq!(by("tool"), ("2026-11-05T00:00:00.000Z".into(), "2026-11-05T00:00:00.000Z".into()));
     assert_eq!(by("web"), ("2026-11-12T23:30:00.000Z".into(), "2026-11-01T00:00:00.000Z".into()));
     assert_eq!(a.overall.updated_at.as_deref(), Some("2026-11-12T23:30:00.000Z"));
+}
+
+/// wiki を参照したセッション(sessionsWithWiki)は、索引・個別ページ・wiki の skill・そのほかの呼び出しのどれかがあるもので、
+/// 書き込みだけのセッションは入れない。1 件ずつ集計して、ケースごとに確かめる(まとめて数えると、書き込みだけと検索だけが打ち消し合う)
+#[test]
+fn sessions_with_wiki_counts_references_not_writes() {
+    let base = summaries(&fixture()).remove(0);
+    let w = |index: i64, pages: i64, skills: i64, writes: i64, other: i64| WikiSummary { index_reads: index, page_reads: pages, skill_calls: skills, writes, other_calls: other };
+    let cases = [
+        ("書き込みだけ", w(0, 0, 0, 2, 0), false),
+        ("検索だけ", w(0, 0, 0, 0, 3), true),
+        ("参照と書き込み", w(1, 2, 0, 1, 0), true),
+        ("skill だけ", w(0, 0, 1, 0, 0), true),
+        ("触れていない", w(0, 0, 0, 0, 0), false),
+    ];
+    for (name, wiki, referenced) in cases {
+        assert_eq!(wiki.referenced(), referenced, "{name}");
+        let s = SessionSummary { wiki, ..base.clone() };
+        assert_eq!(bucket("k", "k", &[&s]).sessions_with_wiki, i64::from(referenced), "{name}");
+    }
+    // 埋め込みの版 15 以前(otherCalls が無い)は 0 として読む
+    let old: WikiSummary = serde_json::from_value(json!({ "indexReads": 0, "pageReads": 0, "skillCalls": 0, "writes": 1 })).unwrap();
+    assert_eq!((old.other_calls, old.referenced()), (0, false));
 }
 
 #[test]

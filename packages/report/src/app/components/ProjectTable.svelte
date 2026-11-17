@@ -2,6 +2,7 @@
   import type { Bucket } from '../../lib/aggregate.ts';
   import { dateTime, dec, duration, int, pathParts } from '../../lib/format.ts';
   import { confidenceLabel } from '../../lib/judgment-labels.ts';
+  import { wikiStateShortNote, type WikiState } from '../../lib/wiki.ts';
   import SortMark from './SortMark.svelte';
 
   let {
@@ -11,9 +12,12 @@
     onpick,
     send,
     kind = 'project',
+    wiki = 'counted',
   }: {
     rows: Bucket[];
     judged: boolean;
+    /** llm-wiki の参照を数えた集計か(数えていなければ、wiki の列を出さずに理由を出す) */
+    wiki?: WikiState;
     current: string;
     onpick: (project: string) => void;
     /** 何ごとの表か。person は、送り先をまとめて集計したときの人ごと(見出し・説明・絞り込みの先が変わる。まとめて送る印は出さない) */
@@ -95,7 +99,9 @@
       asc = k === 'label';
     }
   }
-  const cols: { key: Key; label: string; title?: string }[] = [
+  /** wiki の参照を数えていない集計の短い断り(このときは wiki の列を出さず、並べ替えの対象にもしない。理由の全文は集計明細) */
+  const wikiNote = $derived(wikiStateShortNote(wiki));
+  const cols: { key: Key; label: string; title?: string }[] = $derived([
     { key: 'updated', label: '最終更新', title: 'いちばん後に更新されたセッションの日時' },
     { key: 'sessions', label: 'セッション' },
     { key: 'input', label: '入力トークン', title: '記録のあるセッションだけの合計' },
@@ -106,10 +112,10 @@
     { key: 'agents', label: 'agent' },
     { key: 'hooks', label: 'hook' },
     { key: 'instructions', label: '指示', title: '指示ファイルが注入されたセッション数' },
-    { key: 'wiki', label: 'wiki', title: 'llm-wiki を参照したセッション数' },
+    ...(wikiNote ? [] : [{ key: 'wiki' as const, label: 'wiki', title: 'llm-wiki を参照したセッション数(書き込みだけのセッションは入れない)' }]),
     { key: 'friction', label: '摩擦' },
     { key: 'active', label: '実働(中央値)' },
-  ];
+  ]);
   const ariaSort = (k: Key): 'ascending' | 'descending' | 'none' => (sortKey === k ? (asc ? 'ascending' : 'descending') : 'none');
 
   /** 見出しの id・呼び名・絞り込みのキー(プロジェクトごとと人ごとで変わるところ) */
@@ -155,10 +161,11 @@
       </p>
     {:else}
       <p>
-        {int(rows.length)} プロジェクト。名前を押すとそのプロジェクトに絞り込みます(列見出しで並べ替え)。指示・wiki の列は「該当セッション数 / セッション数」、入力トークン・変更行の下の小さい分数は「記録のあるセッション数 / セッション数」(合計はその記録のあるセッションだけのもの)。リポジトリ名の記録が無いものは git のリモート(owner/repo)で束ね、ホーム・一時フォルダ・atlas の判定実行はそれぞれ 1 つにまとめています。
+        {int(rows.length)} プロジェクト。名前を押すとそのプロジェクトに絞り込みます(列見出しで並べ替え)。{wikiNote ? '指示の列' : '指示・wiki の列'}は「該当セッション数 / セッション数」、入力トークン・変更行の下の小さい分数は「記録のあるセッション数 / セッション数」(合計はその記録のあるセッションだけのもの)。リポジトリ名の記録が無いものは git のリモート(owner/repo)で束ね、ホーム・一時フォルダ・atlas の判定実行はそれぞれ 1 つにまとめています。
       </p>
     {/if}
   </div>
+  {#if wikiNote}<p class="wiki-off" data-testid="{t.id}-wiki-off">{wikiNote}</p>{/if}
   {#if send}
     {#if send.error}
       <!-- 読めない設定では今の印が分からないので、印を 0 件と見せずに理由を出し、押せないようにする -->
@@ -221,7 +228,7 @@
               <td class="num">{int(b.agents)}{#if b.agentFailures}<span class="part" title="失敗">失敗{b.agentFailures}</span>{/if}</td>
               <td class="num">{int(b.hooks)}</td>
               <td class="num">{int(b.sessionsWithInstructions)}/{int(b.sessions)}</td>
-              <td class="num">{int(b.sessionsWithWiki)}/{int(b.sessions)}</td>
+              {#if !wikiNote}<td class="num">{int(b.sessionsWithWiki)}/{int(b.sessions)}</td>{/if}
               <td class="num">{int(b.friction)}{#if b.friction > 0}<span class="part">{frictionNote(b)}</span>{/if}</td>
               <td class="num">{duration(b.activeMedianMs, '—')}</td>
               {#if judged}
@@ -292,6 +299,12 @@
   }
   .send-note {
     margin: 0 0 8px;
+    color: var(--ink-2);
+  }
+  /* 節の説明文(.section-head p)と同じ大きさ */
+  .wiki-off {
+    margin: 0 0 8px;
+    font-size: 0.8125rem;
     color: var(--ink-2);
   }
   .send-error {
