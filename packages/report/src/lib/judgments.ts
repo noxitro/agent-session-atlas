@@ -52,6 +52,10 @@ export function parseJudgments(raw: unknown): JudgmentsIndex {
     if (hours == null || hours < 0) throw new Error(`judgments.json の items[${i}](${id})の humanEffort.hours が数値ではありません`);
     const a = obj(x.aiOutcome);
     const wikiPageVerdicts = parseWikiPages(x.wikiPages);
+    // 項目ごとの判定の出所(judge run と取り込みが付ける)。無い古い判定は、モデルだけファイル全体のものを使う
+    const itemJudge = x.judge && typeof x.judge === 'object' && !Array.isArray(x.judge) ? (x.judge as Record<string, unknown>) : null;
+    const model = itemJudge ? str(itemJudge.model) : str(judge.model);
+    const ranAt = itemJudge ? str(itemJudge.ranAt) : null;
     bySession.set(id, {
       taskCategory: str(x.taskCategory),
       hours,
@@ -65,6 +69,8 @@ export function parseJudgments(raw: unknown): JudgmentsIndex {
       effects: { instructions: num(obj(x.instructionsEffect).score), wiki: num(obj(x.wikiEffect).score), skillsAgents: num(obj(x.skillsAgentsEffect).score) },
       rationale: str(h.rationale),
       backend: str(obj(x.judge).backend) ?? str(judge.backend),
+      ...(model ? { model } : {}),
+      ...(ranAt ? { ranAt } : {}),
       ...(wikiPageVerdicts ? { wikiPageVerdicts } : {}),
     });
   });

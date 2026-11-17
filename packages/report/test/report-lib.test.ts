@@ -221,6 +221,21 @@ describe('embed', () => {
 });
 
 describe('judgments', () => {
+  it('項目ごとの判定の日時とモデルは項目の judge から読む。judge の無い古い項目は、モデルだけファイル全体のもの(crates/atlas-report/src/judgments.rs と同じ)', () => {
+    const j = parseJudgments({
+      schemaVersion: 1,
+      judge: { backend: 'copilot-cli', model: 'file-model', ranAt: '2026-11-15T00:00:00Z' },
+      items: [
+        { sessionId: 'a', humanEffort: { hours: 1 }, judge: { backend: 'external', model: 'm365', ranAt: '2026-11-14T01:02:03Z' } },
+        { sessionId: 'b', humanEffort: { hours: 1 }, judge: { backend: 'copilot-cli', model: null, ranAt: '2026-11-13T00:00:00Z' } },
+        { sessionId: 'c', humanEffort: { hours: 1 } },
+      ],
+    });
+    const mr = (id: string) => [j.bySession.get(id)?.model ?? null, j.bySession.get(id)?.ranAt ?? null];
+    expect(mr('a')).toEqual(['m365', '2026-11-14T01:02:03Z']);
+    expect(mr('b')).toEqual([null, '2026-11-13T00:00:00Z']);
+    expect(mr('c')).toEqual(['file-model', null]);
+  });
   it('必要な項目だけ拾い、形が違えばエラーにする', () => {
     const j = parseJudgments({
       schemaVersion: 1,
@@ -241,6 +256,8 @@ describe('judgments', () => {
       effects: { instructions: null, wiki: null, skillsAgents: null },
       rationale: null,
       backend: 'external',
+      // 項目に judge が無いので、モデルはファイル全体のもの(日時は付けない)
+      model: 'm',
     });
     expect(() => parseJudgments({ schemaVersion: 1, items: [{ sessionId: 'x', humanEffort: {} }] })).toThrow(/hours/);
     expect(() => parseJudgments({ schemaVersion: 3, items: [] })).toThrow(/schemaVersion/);
