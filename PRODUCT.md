@@ -8,7 +8,7 @@ web
 
 ## Stack
 
-TypeScript / Node 24 / npm workspaces。レポートは Vite + Svelte 5 を単一 HTML(`out/atlas.html`)にビルドし、`file://` でサーバ無しに開く。CLI は `@atlas/cli`、抽出・集計は `@atlas/core`(docs/PLAN.md で確定済み)。
+レポートは Vite + Svelte 5 を単一 HTML(`out/atlas.html`)にビルドし、`file://` でサーバ無しに開く。
 
 ## Users
 
@@ -31,23 +31,23 @@ TypeScript / Node 24 / npm workspaces。レポートは Vite + Svelte 5 を単�
 ## Operating Context
 
 - 入力: `~/.copilot`(Windows では `%USERPROFILE%\.copilot`)。Copilot が並行して書いている可能性がある。
-- 実行: 利用者が起動するのは `atlas.bat` だけ(snapshot → extract → metrics → export(セッション記録つき)→ serve)。起動後の操作(集計し直す・工数の判定・記録と全文記録の表示・グループ・メモ)は serve の画面から。判定は確認ダイアログ(件数・バックエンド・AI クレジットの消費)を通す。細かい指定と全件の全文記録はコマンド(`npm run atlas -- <コマンド>`)。
+- 実行: 集計して開くのは `atlas.bat`(snapshot → extract → vcs → metrics → export(セッション記録つき)→ serve)。起動後の操作(集計し直す・工数の判定・記録と全文記録の表示・グループ・メモ)は serve の画面から。判定は確認ダイアログ(件数・バックエンド・AI クレジットの消費)を通す。細かい指定と全件の全文記録はコマンド(docs/cli.md)。
 - 出力: `out/atlas.html`(単一ファイル、集計と要約のみ埋め込み)、`out/sessions/<id>.html`(詳細)、`out/sessions.json` / `metrics.json` / `bundle/` / `judgments.json`。
 - 共有: HTML をそのまま相手に渡す。名前やパスを伏せる機能は持たない(渡す前に利用者が中身を確かめる)。
 
 ## Capabilities and Constraints
 
 - 実データは数百セッション・数百 MB 規模になりうる。入力トークンが分かるのは一部のセッションだけで、出力のみ・記録なしのセッションが多い。この欠測を UI で隠さない。
-- HTML に生イベントは埋め込まない(サイズ上限の目安 5MB)。`file://` で動くため fetch は使えない。
+- HTML に生イベントは埋め込まない(サイズ上限の目安 5MB)。`file://` でも開けるよう、集計のデータは HTML に埋め込む(fetch で読み込まない。serve から開いた画面だけが API を呼ぶ)。
 - フィルタ軸: プロジェクト、期間、クライアント、モデル、ブランチ、タスク分類(judgments があれば)、入力トークン記録の有無。
 - 用語: nano AIU(AI クレジットの内部単位)、compaction(文脈圧縮)、skill / agent / hook(Copilot の拡張機構)、指示ファイル(AGENTS.md / CLAUDE.md / copilot-instructions.md)、llm-wiki(利用者の個人ナレッジ vault。名前と形式は設定で指定する)。
 - 判定バックエンドは既存サブスク内(`copilot -p`)を既定にし、従量課金は明示指定のみ。
-- 未決: 判定結果の品質をどう検証するか(人手評価との突合せ)は Phase 3 以降で決める。
+- 未決: 判定結果の品質をどう検証するか(人手評価との突合せ)。
 
 ## Evidence on Hand
 
 - 実データ一式(手元のみ、リポジトリには入れない)。
-- テスト時に架空の値だけで生成する fixture(`scripts/synthetic-fixtures.ts` → `.fixtures/`。リポジトリには置かない)と、既知のイベント種別名の一覧(`packages/core/src/event-types.ts`)。
+- テスト時に架空の値だけで生成する fixture(`scripts/synthetic-fixtures.ts` → `.fixtures/`。リポジトリには置かない)と、既知のイベント種別名の一覧(`crates/atlas-core/src/event_types.rs`)。
 - 集計の実出力 `out/live/sessions.json` / `metrics.json`(gitignore)。
 - 存在しないもの: 人手工数の実測値、利用者の声、ベンチマーク。これらを捏造しない。
 

@@ -12,7 +12,7 @@
 //!   --disable-mcp-server と --deny-tool <サーバー名> で止める
 //! - 判定自体のトークン消費は --usage-output-file で受け取る
 
-use super::output::{item_from_texts, parse_agent_jsonl};
+use super::output::{item_and_notes_from_texts, parse_agent_jsonl};
 use super::proc::{command_line_length, resolve_command, run_process, tail, ResolvedCommand, MAX_COMMAND_LINE};
 use super::{AskResult, JudgeBackend, JudgePacket, JudgeResult};
 use crate::rubric::build_judge_prompt;
@@ -189,7 +189,8 @@ impl JudgeBackend for CopilotCliBackend {
     }
     fn judge(&self, packet: &JudgePacket<'_>) -> Result<JudgeResult> {
         let r = self.ask_inner(&build_judge_prompt(packet.markdown, packet.session_id, None), packet.session_id)?;
-        Ok(JudgeResult { item: item_from_texts(&r.texts, packet.session_id)?, usage: r.usage, notes: r.notes })
+        let (item, wiki_notes) = item_and_notes_from_texts(&r.texts, packet.session_id)?;
+        Ok(JudgeResult { item, usage: r.usage, notes: r.notes, wiki_notes })
     }
 }
 

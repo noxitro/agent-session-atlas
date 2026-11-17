@@ -320,6 +320,8 @@ struct ReportData<'a> {
     /// 参照を数えた llm-wiki の vault の数。0 なら wiki の参照は数えていない(古い集計では無い)
     #[serde(skip_serializing_if = "Option::is_none")]
     wiki_vaults: Option<i64>,
+    /// 読んだ llm-wiki のページの名前の辞書(要約の wiki.pages と judgment.wikiPages はこの番号)
+    wiki_page_names: &'a [String],
     #[serde(skip_serializing_if = "Option::is_none")]
     atlas_builds: Option<AtlasBuildsOut>,
     metrics: &'a Value,
@@ -409,11 +411,13 @@ pub fn build_report(input: BuildInput<'_>) -> Result<BuildResult> {
     let vx = input.verdicts;
     let rx = input.retention;
     let retention_by_id: HashMap<&str, &atlas_core::vcs_retention::SessionRetention> = rx.iter().flat_map(|x| x.sessions.iter()).map(|r| (r.session_id.as_str(), r)).collect();
+    // llm-wiki のページの名前は辞書に 1 回だけ置き、要約は番号で持つ
+    let wiki_pages = crate::summarize::WikiPageIndex::of(input.sessions.iter().copied());
     let sessions: Vec<SessionSummary> = input
         .sessions
         .par_iter()
         .map(|r| {
-            let mut s = summarize(r, j.and_then(|j| j.by_session.get(&r.id)));
+            let mut s = summarize(r, j.and_then(|j| j.by_session.get(&r.id)), &wiki_pages);
             if let Some(vx) = vx {
                 let vt = verdict_tuples(vx.by_session.get(&r.id), &vx.phases);
                 if !vt.is_empty() {
@@ -463,6 +467,7 @@ pub fn build_report(input: BuildInput<'_>) -> Result<BuildResult> {
         source: input.source.as_ref(),
         read_only: input.read_only.then_some(true),
         wiki_vaults: input.wiki_vaults,
+        wiki_page_names: &wiki_pages.names,
         atlas_builds,
         metrics: &input.metrics,
         sessions: packed,
@@ -701,6 +706,8 @@ pub fn build_report(input: BuildInput<'_>) -> Result<BuildResult> {
     drop(works);
 
     // 4. 詳細ページを並べて書く
+    // wiki を数えた集計か(画面の wikiState と同じく、埋め込む全セッションで 1 度だけ決める)
+    let wiki_state = atlas_core::wiki::wiki_state(input.sessions.iter().map(|r| &r.wiki), input.wiki_vaults);
     let library_href = library_on.then(|| format!("../{INSTRUCTIONS_FILE}"));
     let retention_meta_ref = retention_out.as_ref();
     // 描くのは並べ、書くのは 1 本のスレッドに任せる(Windows では同じフォルダへ並べて書くと遅くなる)
@@ -710,8 +717,9 @@ pub fn build_report(input: BuildInput<'_>) -> Result<BuildResult> {
         .par_iter()
         .enumerate()
         .map(|(k, r)| -> u64 {
-            // 詳細ページには根拠も出す
-            let judgment = j.and_then(|j| j.by_session.get(&r.id));
+            // 詳細ページには根拠も出す(llm-wiki のページの判定は、判定のパケットに載せたページの分だけ)
+            let judgment = j.and_then(|j| j.by_session.get(&r.id)).map(|x| crate::judgments::judgment_for_session(x, &r.wiki.page_reads));
+            let judgment = judgment.as_ref();
             let memo = memos.get(&r.id).map(|m| DetailMemo { html: memo_html(&r.id, &m.text), updated_at: m.updated_at.clone() });
             let transcript_href = tr.map(|_| transcript_file_name(&r.id));
             let has_page = |name: &str| lib.is_some() && skill_first.get(name).is_some_and(|i| *i <= k);
@@ -731,7 +739,7 @@ pub fn build_report(input: BuildInput<'_>) -> Result<BuildResult> {
                     memo: memo.as_ref(),
                     retention: retention_by_id.get(r.id.as_str()).copied(),
                     retention_meta: retention_meta_ref,
-                    wiki_vaults: input.wiki_vaults,
+                    wiki_state,
                 },
             );
             let bytes = byte_length(&page);

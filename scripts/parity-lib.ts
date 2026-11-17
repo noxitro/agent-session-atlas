@@ -21,7 +21,7 @@ import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import type { SessionsFile } from '../packages/report/src/shared/types.ts';
 import { aggregate, bucket, coverageBreakdown, monthRange, unusedSkills } from '../packages/report/src/lib/aggregate.ts';
-import { WIKI_NOT_COUNTED } from '../packages/report/src/lib/wiki.ts';
+import { judgedWikiPages, WIKI_JUDGED_PAGES_MAX, WIKI_NO_RECORD, WIKI_NOT_COUNTED, wikiPageIndex } from '../packages/report/src/lib/wiki.ts';
 import type { SessionSummary } from '../packages/report/src/lib/types.ts';
 import { embedData, extractEmbedded, serializeForScript } from '../packages/report/src/lib/embed.ts';
 import { execAggregate, quantilesOf } from '../packages/report/src/lib/exec.ts';
@@ -39,6 +39,7 @@ import {
   requestCandidates,
   seriesKey,
   skillCandidates,
+  SKILL_RATE_CAUSE,
   skillStats,
   stuckByProject,
   stuckSessions,
@@ -190,9 +191,11 @@ function dumpWith(
 
   // 要約(build.ts と同じ: summarize に判定・依頼ごとの判定・照合の結果を足す)
   const retentionById = new Map((rx?.sessions ?? []).map((r) => [r.sessionId, r]));
+  // llm-wiki のページの名前の辞書(build と同じ: 全セッションから作り、要約は番号で持つ)
+  const wikiPages = wikiPageIndex(records);
   const plain = timed('summarize', () =>
     records.map((r) => {
-      const base = summarize(r, judgments?.bySession.get(r.id) ?? null);
+      const base = summarize(r, judgments?.bySession.get(r.id) ?? null, wikiPages);
       const vt = verdicts ? verdictTuples(verdicts.bySession.get(r.id), verdicts.phases) : [];
       const rt = retentionById.get(r.id);
       return { ...base, ...(vt.length ? { turnVerdicts: vt } : {}), ...(rt ? { retention: retentionItem(rt, turnStarts(r)) } : {}) };
@@ -275,6 +278,8 @@ function dumpWith(
   write('insights-versions', versions);
   write('insights-findings', instructionFindings(versions, insightMeta, plain.length));
   write('insights-skills', skillStats(plain, installed?.skills ?? null));
+  // 画面と insights.html で同じにする文
+  write('insights-texts', { skillRateCause: SKILL_RATE_CAUSE });
   const stuck = stuckSessions(plain);
   write('insights-stuck', stuck);
   write('insights-stuck-projects', stuckByProject(stuck, plain));
@@ -328,9 +333,13 @@ function dumpWith(
     const withWiki = (wiki: SessionSummary['wiki']): SessionSummary => ({ ...base, wiki });
     write('wiki', {
       notCounted: WIKI_NOT_COUNTED,
+      noRecord: WIKI_NO_RECORD,
       sessionsWithWiki: base ? cases.map((c) => bucket('w', 'w', [withWiki(c)]).sessionsWithWiki) : null,
       all: base ? bucket('w', 'w', cases.map(withWiki)).sessionsWithWiki : null,
     });
+    // ページごとの判定に載せるページの上限と選び方(上限を超える決まった入力)・ページの名前の辞書。Rust は examples/libdump.rs の同じ名前の出力
+    const many = Array.from({ length: 13 }, (_, i) => `wiki/p${i % 12}.md`);
+    write('wiki-pages', { max: WIKI_JUDGED_PAGES_MAX, judged: judgedWikiPages(many), names: wikiPages.names });
   }
   // 課題 × 条件の表(画面は TS、表(conditions.csv)は Rust で計算する。行・まとめた行・数え方を突き合わせる。lookalikes は画面だけ)
   {

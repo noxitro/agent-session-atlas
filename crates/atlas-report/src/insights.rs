@@ -18,6 +18,10 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
+/// skill の失敗率の差の読み方(insights.html の skill の節と画面の改善点の skill の箱で同じ文。
+/// 画面は packages/report/src/lib/insights.ts の SKILL_RATE_CAUSE。npm run parity:fixture の insights-texts で突き合わせる)
+pub const SKILL_RATE_CAUSE: &str = "呼ぶかどうかは作業の中身で決まるので、差は skill が原因とは限りません。";
+
 /// 閾値(insights.ts の THRESHOLDS)
 pub mod thresholds {
     /// 率を出す最小のセッション数

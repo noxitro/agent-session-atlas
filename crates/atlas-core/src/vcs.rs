@@ -322,11 +322,12 @@ fn svn_date(iso: &str) -> Result<String, String> {
 /// p4 の日時指定(@2026/11/12:01:02:03)。p4 はサーバの地方時で解釈するので、サーバの UTC からのずれ(分)で直す。
 /// 読めない時刻は NaN のまま(JS と同じ)
 fn p4_date(ms: Option<i64>, offset_min: i32) -> String {
-    use chrono::{Datelike, FixedOffset, TimeZone, Timelike};
-    let tz = FixedOffset::east_opt(offset_min * 60).unwrap_or_else(|| FixedOffset::east_opt(0).expect("UTC"));
-    let Some(d) = ms.and_then(|ms| tz.timestamp_millis_opt(ms).single()) else { return "@NaN/NaN/NaN:NaN:NaN:NaN".into() };
+    // 1 日以上のずれは使えないので UTC にする
+    let secs = offset_min as i64 * 60;
+    let secs = if secs.abs() < 86_400 { secs } else { 0 };
+    let Some(d) = ms.and_then(|ms| jsdate::offset_parts(ms, secs)) else { return "@NaN/NaN/NaN:NaN:NaN:NaN".into() };
     let pad = |n: u32| format!("{n:02}");
-    format!("@{}/{}/{}:{}:{}:{}", d.year(), pad(d.month()), pad(d.day()), pad(d.hour()), pad(d.minute()), pad(d.second()))
+    format!("@{}/{}/{}:{}:{}:{}", d.year, pad(d.month), pad(d.day), pad(d.hour), pad(d.minute), pad(d.second))
 }
 
 /// p4 -ztag changes の出力の (変更番号, 取り込んだ時刻(UTC の秒))
@@ -678,5 +679,26 @@ impl<T: Clone> Memo<T> {
     pub fn get_or_init(&self, key: String, load: impl FnOnce() -> T) -> T {
         let cell = self.cells.lock().expect("memo").entry(key).or_default().clone();
         cell.get_or_init(load).clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn p4_date_uses_server_offset() {
+        let t = Some(1782864000123); // 2026-07-01T00:00:00.123Z
+        assert_eq!(p4_date(t, 540), "@2026/07/01:09:00:00");
+        assert_eq!(p4_date(t, -300), "@2026/06/30:19:00:00");
+        assert_eq!(p4_date(t, 0), "@2026/07/01:00:00:00");
+        assert_eq!(p4_date(t, 1439), "@2026/07/01:23:59:00");
+        // 1 日以上のずれは UTC
+        assert_eq!(p4_date(t, 100_000), "@2026/07/01:00:00:00");
+        assert_eq!(p4_date(t, -1440), "@2026/07/01:00:00:00");
+        // 年は詰めない
+        assert_eq!(p4_date(Some(-59042995200000), 0), "@99/01/01:00:00:00");
+        assert_eq!(p4_date(None, 540), "@NaN/NaN/NaN:NaN:NaN:NaN");
+        assert_eq!(p4_date(Some(8210266876800000), 0), "@NaN/NaN/NaN:NaN:NaN:NaN");
     }
 }

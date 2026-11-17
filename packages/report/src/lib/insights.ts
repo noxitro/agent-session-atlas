@@ -5,6 +5,10 @@
 import type { SessionAnalysis } from '../shared/types.ts';
 import type { SessionSummary } from './types.ts';
 
+/** skill の失敗率の差の読み方(画面の改善点の skill の箱と insights.html の skill の節で同じ文。
+ * Rust は crates/atlas-report/src/insights.rs の SKILL_RATE_CAUSE。npm run parity:fixture の insights-texts で突き合わせる) */
+export const SKILL_RATE_CAUSE = '呼ぶかどうかは作業の中身で決まるので、差は skill が原因とは限りません。';
+
 export const THRESHOLDS = {
   /** 率を出す最小のセッション数(5 件未満の率は 1 件で 20 ポイント動く) */
   MIN_SESSIONS: 5,

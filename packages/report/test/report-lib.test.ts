@@ -5,10 +5,12 @@ import { describe, expect, it } from 'vitest';
 import { effortSkew, isLowConfidence, monthRange } from '../src/lib/aggregate.ts';
 import { embedData, extractEmbedded, serializeForScript } from '../src/lib/embed.ts';
 import { decodeFilter, emptyFilter, encodeFilter, groupIds, isEmptyFilter } from '../src/lib/filter.ts';
-import { excerptAround, looksLikeId, searchSessions, searchTerms } from '../src/lib/session-search.ts';
+import { excerptAround, looksLikeId, searchIndex, searchSessions, searchTerms } from '../src/lib/session-search.ts';
 import { addIds, memberGroups, parseGroups, removeIds, resolveIdPrefixes, serializeGroups } from '../src/lib/groups.ts';
 import { sessionLabel } from '../src/lib/highlights.ts';
 import { parseJudgments } from '../src/lib/judgments.ts';
+import { embeddedJudgment, judgmentForSession } from '../src/lib/summarize.ts';
+import { WIKI_JUDGED_PAGES_MAX, wikiPageIndex } from '../src/lib/wiki.ts';
 import { shortProjectLabel } from '../src/lib/project-label.ts';
 import { niceTicks } from '../src/lib/scale.ts';
 import { modelLabel, sharedLeads, splitLead } from '../src/lib/format.ts';
@@ -58,6 +60,8 @@ describe('session-search(セッション一覧の検索)', () => {
     s('3f2b0000-aaaa-4bbb-8ccc-000000000002', null, 'README を Ｅｎｇｌｉｓｈ に訳す'),
     s('add00000-aaaa-4bbb-8ccc-000000000003', null, null),
     s('99990000-aaaa-4bbb-8ccc-000000000004', '11 月の調査', '数字を含む題名'),
+    s('cafe0000-aaaa-4bbb-8ccc-000000000005', null, null),
+    s('12340000-aaaa-4bbb-8ccc-000000000006', 'cafe の検索', '1234 件の記録を調べる'),
   ];
   const ids = (q: string): string[] | null => searchSessions(list, q)?.rows.map((x) => x.id.slice(0, 4)) ?? null;
 
@@ -92,12 +96,27 @@ describe('session-search(セッション一覧の検索)', () => {
     // ID の語と題名の語を混ぜてもよい(どちらかに当たれば、その語は合う)
     expect(ids('9999 調査')).toEqual(['9999']);
   });
+  it('題名にある語は、ID の先頭にもたまたま当たっても ID で当たった行にしない(題名を先に見る)', () => {
+    const r = searchSessions(list, 'cafe');
+    expect(r?.rows.map((x) => x.id.slice(0, 4))).toEqual(['cafe', '1234']);
+    expect([...(r?.byId ?? [])]).toEqual([list[4].id]); // 題名に無い行だけ ID で当たった
+    // 最初の依頼にある語も同じ(ID の行ではなく、その辺りの文を出す)
+    const n = searchSessions(list, '1234');
+    expect(n?.byId.size).toBe(0);
+    expect([...(n?.viaFirst ?? [])]).toEqual([[list[5].id, '1234']]);
+  });
+  it('searchIndex で下ごしらえしたものを渡しても同じ結果', () => {
+    const index = searchIndex(list);
+    for (const q of ['3f2a', 'english', 'readme 訳す', 'cafe', '9999 調査', 'add00000-aaaa-4bbb-8ccc-000000000003', '']) {
+      expect(searchSessions(index, q)).toEqual(searchSessions(list, q));
+    }
+  });
   it('名前に無く最初の依頼にだけあった語は viaFirst に残す(行にその辺りの文を出す)。名前の無い行は最初の依頼が題名なので残さない', () => {
     expect([...(searchSessions(list, '数字')?.viaFirst ?? [])]).toEqual([[list[3].id, '数字']]);
     expect(searchSessions(list, '調査')?.viaFirst.size).toBe(0);
     expect(searchSessions(list, 'english')?.viaFirst.size).toBe(0);
   });
-  it('excerptAround は語の辺りを切り出し、切ったところに「…」を付ける。looksLikeId は 16 進とハイフンだけの語', () => {
+  it('excerptAround は語の辺りを切り出し、切ったところに「…」を付ける。looksLikeId は ID の一部らしい 16 進の語', () => {
     const long = `${'あ'.repeat(40)}目当ての語${'い'.repeat(40)}`;
     const e = excerptAround(long, '目当て', 30);
     expect(e.startsWith('…') && e.endsWith('…') && e.includes('目当ての語')).toBe(true);
@@ -105,6 +124,8 @@ describe('session-search(セッション一覧の検索)', () => {
     expect(excerptAround('短い  ＡＢＣ 文', 'abc')).toBe('短い ABC 文');
     expect(excerptAround('見つからない', 'zzz')).toBe('見つからない');
     expect([looksLikeId('3f2a'), looksLikeId('3f2a-9c'), looksLikeId('readme'), looksLikeId('調査')]).toEqual([true, true, false, false]);
+    // a〜f だけの英単語は、ID を探したつもりとは限らないので添えない(8 文字以上なら ID らしい)。数字を含めば ID の一部らしい
+    expect(['add', 'face', 'cafe', 'deadbeef', '000', '3f2', '11'].map(looksLikeId)).toEqual([false, false, false, true, true, true, true]);
   });
 });
 
@@ -222,8 +243,46 @@ describe('judgments', () => {
       backend: 'external',
     });
     expect(() => parseJudgments({ schemaVersion: 1, items: [{ sessionId: 'x', humanEffort: {} }] })).toThrow(/hours/);
-    expect(() => parseJudgments({ schemaVersion: 2, items: [] })).toThrow(/schemaVersion/);
+    expect(() => parseJudgments({ schemaVersion: 3, items: [] })).toThrow(/schemaVersion/);
     expect(() => parseJudgments({ schemaVersion: 1, items: [{}] })).toThrow(/sessionId/);
+  });
+
+  it('版 2 の llm-wiki のページごとの判定を読む。壊れていても項目は捨てず、ページを未判定にする', () => {
+    const parse = (wikiPages: unknown) => parseJudgments({ schemaVersion: 2, items: [{ sessionId: 'a', humanEffort: { hours: 1 }, wikiPages }] }).bySession.get('a')!;
+    const j = parse([
+      { page: ' wiki/a.md ', helpful: 'yes', reason: '使った' },
+      { page: 'wiki/b.md', helpful: 'maybe' },
+      { page: 'wiki/c.md', helpful: 'no' },
+      { page: 'wiki/a.md', helpful: 'no' },
+      'wiki/d.md',
+    ]);
+    expect(j.wikiPageVerdicts).toEqual([
+      ['wiki/a.md', 'yes', '使った'],
+      ['wiki/c.md', 'no', ''],
+    ]);
+    // 配列でない・無い(版 1 の判定を含む): ページは未判定。ほかの判定は読む
+    expect(parse({ page: 'x' }).wikiPageVerdicts).toBeUndefined();
+    expect(parse('壊れた').hours).toBe(1);
+    expect('wikiPageVerdicts' in parseJudgments({ schemaVersion: 1, items: [{ sessionId: 'a', humanEffort: { hours: 1 } }] }).bySession.get('a')!).toBe(false);
+    // パケットに載せたページ(読んだ順の先頭から上限まで)に無い名前は捨てる。判定の無いものはそのまま
+    const reads = ['wiki/a.md', 'wiki/a.md', ...Array.from({ length: WIKI_JUDGED_PAGES_MAX }, (_, i) => `wiki/x${i}.md`), 'wiki/c.md'];
+    expect(judgmentForSession(j, reads).wikiPageVerdicts).toEqual([['wiki/a.md', 'yes', '使った']]);
+    expect(judgmentForSession(parse(undefined), reads).wikiPageVerdicts).toBeUndefined();
+  });
+
+  it('埋め込む判定: 見立てはページの辞書の番号にし、見立ての理由と根拠は落とす。パケットに無いページは捨てる', () => {
+    const ix = wikiPageIndex([{ wiki: { pageReads: ['wiki/b.md', 'wiki/b.md'] } }, { wiki: { pageReads: ['wiki/a.md', 'wiki/b.md'] } }]);
+    expect(ix.names).toEqual(['wiki/b.md', 'wiki/a.md']);
+    const j = parseJudgments({
+      schemaVersion: 2,
+      items: [{ sessionId: 's2', humanEffort: { hours: 1, rationale: '根拠' }, wikiPages: [{ page: 'wiki/a.md', helpful: 'no', reason: '使っていない' }, { page: 'wiki/z.md', helpful: 'yes' }] }],
+    }).bySession.get('s2')!;
+    const e = embeddedJudgment(j, ['wiki/a.md', 'wiki/b.md'], ix);
+    expect(e.wikiPages).toEqual([[1, 'no']]);
+    expect('wikiPageVerdicts' in e).toBe(false);
+    expect(e.rationale).toBeNull();
+    // 判定の無い(版 1 の)ものは wikiPages を持たない
+    expect('wikiPages' in embeddedJudgment(parseJudgments({ schemaVersion: 1, items: [{ sessionId: 'x', humanEffort: { hours: 1 } }] }).bySession.get('x')!, [], ix)).toBe(false);
   });
 });
 

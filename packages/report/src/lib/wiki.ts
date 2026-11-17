@@ -25,6 +25,11 @@ export function wikiReferenced(w: WikiCounts | null | undefined): boolean {
   return wikiReferenceCount(w) > 0;
 }
 
+/** vault に触れたか(参照か書き込みが 1 回以上)。Rust の WikiUsage::touched と同じ */
+export function wikiTouched(w: WikiCounts | null | undefined): boolean {
+  return wikiReferenced(w) || n(w?.writes) > 0;
+}
+
 /** セッションの扱い: 参照した(書き込みもあってよい)/ 書き込みだけ / 参照なし(vault に触れていない) */
 export type WikiKind = 'referenced' | 'write-only' | 'none';
 
@@ -35,7 +40,9 @@ export function wikiKind(w: WikiCounts | null | undefined): WikiKind {
 
 /**
  * 集計の状態。counted = 数えた、not-counted = vault を指定せずに集計した(どのセッションも 0 だが「参照していない」の意味ではない)、
- * no-record = vault を指定していたかの記録が無い古い集計で、参照したセッションも無い(数えていないのか、参照していないのか分からない)
+ * no-record = vault を指定していたかの記録が無い古い集計で、vault に触れた(参照か書き込みをした)セッションも無い(数えていないのか、使っていないのか分からない)。
+ * 書き込みだけのセッションがあれば vault は指定されていた(数えた)と分かるので counted。
+ * Rust の同じ判定は crates/atlas-core/src/wiki.rs の wiki_state(詳細ページ・判定パケットで使う)
  */
 export type WikiState = 'counted' | 'not-counted' | 'no-record';
 
@@ -45,15 +52,15 @@ export type WikiState = 'counted' | 'not-counted' | 'no-record';
  */
 export function wikiState(sessions: readonly { wiki?: WikiCounts | null }[], wikiVaults: number | undefined): WikiState {
   if (wikiVaults === 0) return 'not-counted';
-  if (wikiVaults === undefined && !sessions.some((s) => wikiReferenced(s.wiki))) return 'no-record';
+  if (wikiVaults === undefined && !sessions.some((s) => wikiTouched(s.wiki))) return 'no-record';
   return 'counted';
 }
 
 /** vault を指定せずに集計したときの理由(crates/atlas-core/src/wiki.rs の WIKI_NOT_COUNTED と同じ文) */
 export const WIKI_NOT_COUNTED = 'この集計では llm-wiki の vault を指定していないので、wiki の参照は数えていません(0 件という意味ではありません)。atlas.config.json の wikis で vault を指定して集計し直すと数えます。';
 
-/** vault を指定していたかの記録が無く、参照したセッションも無いときの理由 */
-export const WIKI_NO_RECORD = 'この集計には、llm-wiki の vault を指定していたかの記録がありません(集計し直すと記録されます)。wiki を参照したセッションが無いので、数えていないのか、参照していないのかは分かりません。';
+/** vault を指定していたかの記録が無く、vault に触れたセッションも無いときの理由(crates/atlas-core/src/wiki.rs の WIKI_NO_RECORD と同じ文) */
+export const WIKI_NO_RECORD = 'この集計には、llm-wiki の vault を指定していたかの記録がありません(集計し直すと記録されます)。wiki を参照・書き込みしたセッションが無いので、数えていないのか、使っていないのかは分かりません。';
 
 /** 表(プロジェクト別・人別)で wiki の列を出さないときの短い断り。全文は集計明細などに出す */
 export const WIKI_NOT_COUNTED_SHORT = 'wiki の列は出していません(この集計では wiki の参照を数えていません。理由は集計明細)。';
@@ -87,6 +94,117 @@ export interface WikiUsageSummary {
   skillCalls: number;
   otherCalls: number;
 }
+
+/**
+ * LLM にページごとの「役立ったか」を判定させるページの数の上限(1 セッション。読んだ順の先頭から)。
+ * crates/atlas-core/src/wiki.rs の WIKI_JUDGED_PAGES_MAX と同じ値(npm run parity:fixture の要約で突き合わせる)
+ */
+export const WIKI_JUDGED_PAGES_MAX = 10;
+
+/** 読んだページの名前を、重複を除いて読んだ順に(crates/atlas-core/src/wiki.rs の unique_pages) */
+export function uniquePages(pageReads: readonly string[]): string[] {
+  return [...new Set(pageReads)];
+}
+
+/** 判定のパケットに載せるページ(重複を除いて読んだ順の先頭 WIKI_JUDGED_PAGES_MAX 件。crates/atlas-core/src/wiki.rs の judged_wiki_pages) */
+export function judgedWikiPages(pageReads: readonly string[]): string[] {
+  return uniquePages(pageReads).slice(0, WIKI_JUDGED_PAGES_MAX);
+}
+
+/**
+ * 埋め込みの llm-wiki のページの名前の辞書(ReportData.wikiPageNames)。全セッションの読んだページを、セッションの並び・読んだ順に重複なく並べる。
+ * 要約は名前の代わりにこの番号を持つ(crates/atlas-report/src/summarize.rs の WikiPageIndex と同じ並び)
+ */
+export interface WikiPageIndex {
+  names: string[];
+  byName: ReadonlyMap<string, number>;
+}
+
+export function wikiPageIndex(records: readonly { wiki: { pageReads: readonly string[] } }[]): WikiPageIndex {
+  const byName = new Map<string, number>();
+  const names: string[] = [];
+  for (const r of records)
+    for (const p of uniquePages(r.wiki.pageReads))
+      if (!byName.has(p)) {
+        byName.set(p, names.length);
+        names.push(p);
+      }
+  return { names, byName };
+}
+
+/** ページの番号。辞書は要約するセッションすべてから作るので、無いのは呼び方の誤り */
+export function pageNumber(ix: WikiPageIndex, page: string): number {
+  const n = ix.byName.get(page);
+  if (n === undefined) throw new Error(`llm-wiki のページの辞書に ${page} がありません(辞書は要約するセッションすべてから作ること)`);
+  return n;
+}
+
+/** ページごとの表の 1 行 */
+export interface WikiPageRow {
+  page: string;
+  /** そのページを読んだセッション */
+  sessions: number;
+  /** 参照率(読んだセッション ÷ wiki を参照したセッション)。分母が閾値に届かなければ null */
+  share: number | null;
+  /** LLM の見立ての件数(セッションの数) */
+  yes: number;
+  no: number;
+  unknown: number;
+  /** 判定が無い(判定していない・版 1 の判定・判定のパケットに載らなかった・項目が壊れていた) */
+  unjudged: number;
+  /** 役立った率(yes ÷ (yes + no))。yes + no が閾値に届かなければ null */
+  helpfulRate: number | null;
+}
+
+/** ページごとの表 */
+export interface WikiPageTable {
+  /** wiki を参照したセッション(参照率の分母。wikiReferenced で数える) */
+  referenced: number;
+  /** 読んだセッションの多い順(同じならページの名前の順) */
+  rows: WikiPageRow[];
+}
+
+/** ページごとの表で、wiki と判定の欄だけを使うセッションの形(ページは辞書の番号) */
+export interface WikiPageSession {
+  wiki?: (WikiCounts & { pages?: readonly number[] }) | null;
+  judgment?: { wikiPages?: readonly (readonly [number, string])[] } | null;
+}
+
+/**
+ * 渡したセッション(絞り込み後)で、ページごとの参照率と役立った率を数える。names はページの名前の辞書(ReportData.wikiPageNames)。
+ * 参照率の分母は wiki を参照したセッション、役立った率の分母は役立った + 役立たなかった(分からない・未判定は入れない)。
+ * どちらも分母が minSessions に届かなければ率を null にする(閾値は呼ぶ側が既存の定数で渡す)。
+ * ログで数えた参照率と、LLM の見立ての役立った率は別の列のまま返す(1 つの点数にしない)
+ */
+export function wikiPageTable(sessions: readonly WikiPageSession[], names: readonly string[], minSessions: number): WikiPageTable {
+  const referenced = sessions.filter((s) => wikiReferenced(s.wiki)).length;
+  const rows = new Map<string, WikiPageRow>();
+  const nameOf = (n: number): string => names[n] ?? `(ページ ${n})`;
+  for (const s of sessions) {
+    const pages = s.wiki?.pages ?? [];
+    if (!pages.length) continue;
+    const verdicts = new Map((s.judgment?.wikiPages ?? []).map(([p, h]) => [nameOf(p), h] as const));
+    for (const page of new Set(pages.map(nameOf))) {
+      const r = rows.get(page) ?? rows.set(page, { page, sessions: 0, share: null, yes: 0, no: 0, unknown: 0, unjudged: 0, helpfulRate: null }).get(page)!;
+      r.sessions++;
+      const h = verdicts.get(page);
+      if (h === 'yes') r.yes++;
+      else if (h === 'no') r.no++;
+      else if (h === 'unknown') r.unknown++;
+      else r.unjudged++;
+    }
+  }
+  const list = [...rows.values()];
+  for (const r of list) {
+    r.share = referenced >= minSessions ? r.sessions / referenced : null;
+    r.helpfulRate = r.yes + r.no >= minSessions ? r.yes / (r.yes + r.no) : null;
+  }
+  list.sort((a, b) => b.sessions - a.sessions || (a.page < b.page ? -1 : a.page > b.page ? 1 : 0));
+  return { referenced, rows: list };
+}
+
+/** 埋め込みの版が古く(ページの名前が無い)、ページごとの表を出さないときの理由 */
+export const WIKI_PAGES_OLD_DATA = 'この画面のデータは、ページの名前を記録する前の版で作ったので、ページごとの表は出せません。集計し直すと出ます。';
 
 /** 渡したセッション(絞り込み後)の件数と参照の内訳 */
 export function wikiUsageSummary(sessions: readonly { wiki?: WikiCounts | null }[]): WikiUsageSummary {

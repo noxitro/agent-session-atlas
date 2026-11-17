@@ -309,6 +309,10 @@ describe('課題 × 条件', () => {
     const box = page.getByTestId('insights-wiki');
     expect(await box.getByTestId('insights-wiki-off').innerText()).toBe(note);
     expect(await box.getByTestId('insights-wiki-counts').count()).toBe(0);
+    // ページごとの箱も、表は出さず同じ理由だけ
+    const pages = page.getByTestId('insights-wiki-pages');
+    expect(await pages.getByTestId('insights-wiki-pages-off').innerText()).toBe(note);
+    expect(await pages.locator('table').count()).toBe(0);
     // 課題 × 条件の利用の確認: 既定は表の出る MCP サーバー。llm-wiki は件数の代わりの語つきで選択肢に残る
     const item = section().getByTestId('conditions-usage-item');
     await expect.poll(() => item.inputValue()).toBe(`mcp:${COND_MCP}`);

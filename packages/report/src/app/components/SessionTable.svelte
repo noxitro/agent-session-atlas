@@ -6,7 +6,7 @@
   import SortMark from './SortMark.svelte';
   import { restoredView, saveView } from '../view-restore.ts';
   import { categoryLabel, confidenceLabel } from '../../lib/judgment-labels.ts';
-  import { excerptAround, ID_PREFIX_MIN, looksLikeId, searchSessions, searchTerms } from '../../lib/session-search.ts';
+  import { excerptAround, ID_PREFIX_MIN, looksLikeId, searchIndex, searchSessions, searchTerms } from '../../lib/session-search.ts';
 
   let {
     sessions,
@@ -94,7 +94,10 @@
   });
   const PAGE = 50;
 
-  const found = $derived(searchSessions(sessions, query));
+  // 題名をそろえる(NFKC など)のは、セッションの並びが変わったときだけ。打つたびには、そろえた形と比べるだけにする
+  const index = $derived(searchIndex(sessions));
+  const allIndex = $derived(allSessions ? searchIndex(allSessions) : null);
+  const found = $derived(searchSessions(index, query));
   /** 一覧に出す行(検索していれば、合ったものだけ) */
   const rows = $derived(found ? found.rows : sessions);
   /** 空のセッションも含めたときに出るセッションの id(検索語によらないので、打つたびには作らない) */
@@ -104,9 +107,9 @@
    * rest はほかの条件(期間・プロジェクト・タスクタグなど)でも外れているもの(restEmpty はそのうち空のセッション)
    */
   const outside = $derived.by(() => {
-    if (!found || !allSessions) return null;
+    if (!found || !allIndex) return null;
     const shown = new Set(found.rows.map((s) => s.id));
-    const out = (searchSessions(allSessions, query)?.rows ?? []).filter((s) => !shown.has(s.id));
+    const out = (searchSessions(allIndex, query)?.rows ?? []).filter((s) => !shown.has(s.id));
     const onlyEmpty = (s: SessionSummary): boolean => !emptyIncluded && s.empty && relaxedIds.has(s.id);
     const rest = out.filter((s) => !onlyEmpty(s));
     return { emptyOnly: out.length - rest.length, rest: rest.length, restEmpty: emptyIncluded ? 0 : rest.filter((s) => s.empty).length };

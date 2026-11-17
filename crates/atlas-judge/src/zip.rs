@@ -6,6 +6,7 @@
 
 use crate::bundle::BundleManifest;
 use anyhow::{bail, Context, Result};
+use atlas_core::jsdate;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
@@ -42,10 +43,13 @@ pub struct DosTime {
 
 impl DosTime {
     pub fn now() -> Self {
-        use chrono::{Datelike, Timelike};
-        let n = chrono::Local::now();
-        let year = (n.year().clamp(1980, 2107) - 1980) as u16;
-        DosTime { date: (year << 9) | ((n.month() as u16) << 5) | n.day() as u16, time: ((n.hour() as u16) << 11) | ((n.minute() as u16) << 5) | (n.second() as u16 / 2) }
+        Self::from_civil(jsdate::local_parts(jsdate::now_ms()).expect("今の時刻は扱える範囲"))
+    }
+
+    /// ローカル時刻から(年は 1980〜2107 に収め、秒は 2 秒単位に切り捨てる)
+    pub fn from_civil(n: jsdate::Civil) -> Self {
+        let year = (n.year.clamp(1980, 2107) - 1980) as u16;
+        DosTime { date: (year << 9) | ((n.month as u16) << 5) | n.day as u16, time: ((n.hour as u16) << 11) | ((n.minute as u16) << 5) | (n.second as u16 / 2) }
     }
 }
 
@@ -160,6 +164,17 @@ mod tests {
     fn crc32_matches_the_standard_check_value() {
         assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
         assert_eq!(crc32(b""), 0);
+    }
+
+    #[test]
+    fn dos_time_from_local_parts() {
+        let c = |year, month, day, hour, minute, second| jsdate::Civil { year, month, day, hour, minute, second };
+        assert_eq!(DosTime::from_civil(c(2026, 7, 1, 9, 5, 7)), DosTime { date: (46 << 9) | (7 << 5) | 1, time: (9 << 11) | (5 << 5) | 3 });
+        // 年は 1980〜2107 に収める
+        assert_eq!(DosTime::from_civil(c(1970, 1, 1, 0, 0, 0)).date, (1 << 5) | 1);
+        assert_eq!(DosTime::from_civil(c(2200, 12, 31, 23, 59, 59)), DosTime { date: (127 << 9) | (12 << 5) | 31, time: (23 << 11) | (59 << 5) | 29 });
+        let t = jsdate::with_zone(&jsdate::TimeZone::fixed(jsdate::Offset::constant(9)), || jsdate::local_parts(1782864000123));
+        assert_eq!(t.map(DosTime::from_civil), Some(DosTime { date: (46 << 9) | (7 << 5) | 1, time: 9 << 11 }));
     }
 
     #[test]

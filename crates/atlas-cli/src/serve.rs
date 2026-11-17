@@ -1580,7 +1580,13 @@ impl Server {
             } else {
                 let known: Option<HashSet<String>> = ids.as_ref().map(|ix| ix.ids.keys().cloned().collect());
                 atlas_judge::judgments_io::import_judgments_text(&text, &self.out_dir.join("judgments.json"), atlas_judge::judgments_io::ImportOptions { known_ids: known.as_ref(), now: None, label: None })
-                    .map(|r| (r.imported, r.overwritten, r.duplicates, r.unknown_ids, r.total))
+                    .map(|r| {
+                        // llm-wiki のページごとの判定の一部を捨てた(そのページは未判定)
+                        for n in &r.notes {
+                            (self.log)(&format!("judge import(画面): 注意 {n}"));
+                        }
+                        (r.imported, r.overwritten, r.duplicates, r.unknown_ids, r.total)
+                    })
             };
             let (imported, overwritten, duplicates, unknown_ids, total) = match r {
                 Ok(r) => r,
