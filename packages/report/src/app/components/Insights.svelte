@@ -1,12 +1,13 @@
 <script lang="ts">
   // Phase 12: 改善点(LLM を呼ばない規則の集計)。カードは計算の対象で 2 つの群に分け、1 枚のカードに対象を混ぜない。
-  // 絞り込みに従う群: 指示文の傾向・skill の傾向・llm-wiki の利用(件数だけ。画面だけで insights.html には無い)・止まっている箇所(sessions で再計算)。
+  // 絞り込みに従う群: 指示文の傾向・skill の傾向・llm-wiki の利用(件数だけ。画面だけで insights.html には無い)・止まっている箇所(sessions で再計算)・
+  // llm-wiki のページごとの参照率と役立った率(画面だけ。役立ったかの列だけは、判定を回したときの LLM の見立て)。
   // 全記録の群: 「長いのに注入が少ない」(全体での希少さの話なので allSessions)と、スキル化の候補
   // (依頼文の本文が要るので build 時に全セッションで計算して埋め込んだもの。全件は insights.html)
   import { date, dec, duration, int } from '../../lib/format.ts';
   import { cleanHeading, instructionFindings, instructionVersions, skillStats, stuckByProject, stuckSessions, THRESHOLDS, type Candidate, type VersionMeta } from '../../lib/insights.ts';
   import type { SessionSummary } from '../../lib/types.ts';
-  import { wikiStateNote, wikiUsageSummary, type WikiState } from '../../lib/wiki.ts';
+  import { WIKI_JUDGED_PAGES_MAX, WIKI_PAGES_OLD_DATA, wikiPageTable, wikiStateNote, wikiUsageSummary, type WikiPageRow, type WikiState } from '../../lib/wiki.ts';
 
   /** skill の失敗率の差の読み方(insights.html の skill の節と同じ文。crates/atlas-report/src/insights_page.rs の SKILL_RATE_CAUSE) */
   const SKILL_RATE_CAUSE = '呼ぶかどうかは作業の中身で決まるので、差は skill が原因とは限りません。';
@@ -23,6 +24,8 @@
     hasPage,
     libraryHref,
     wiki = 'counted',
+    wikiPagesRecorded = true,
+    wikiPageNames = [],
   }: {
     sessions: SessionSummary[];
     /** 絞り込み前の全セッション */
@@ -42,6 +45,10 @@
     libraryHref: string | null;
     /** llm-wiki の参照を数えた集計か(App.svelte が絞り込み前の全セッションで決める) */
     wiki?: WikiState;
+    /** 埋め込みに読んだページの名前があるか(埋め込みの版 18 以降。App.svelte が ReportData.version で決める) */
+    wikiPagesRecorded?: boolean;
+    /** 読んだページの名前の辞書(ReportData.wikiPageNames。要約の wiki.pages はこの番号) */
+    wikiPageNames?: string[];
   } = $props();
 
   const versions = $derived(instructionVersions(sessions));
@@ -56,6 +63,10 @@
   // llm-wiki の利用: 絞り込み後のセッションの件数だけ(率は出さない)
   const wikiNote = $derived(wikiStateNote(wiki));
   const wikiUse = $derived(wikiUsageSummary(sessions));
+  // llm-wiki のページごと: 参照率(ログ)と役立った率(LLM の見立て)を別の列で並べる。率の閾値は改善点の他の率と同じ MIN_SESSIONS
+  const wikiPages = $derived(wikiPageTable(sessions, wikiPageNames, THRESHOLDS.MIN_SESSIONS));
+  /** 箱の中に並べる行の数(残りは「全件を表で見る」) */
+  const PAGE_ROWS = 10;
   const stuck = $derived(stuckSessions(sessions));
   const byProject = $derived(stuckByProject(stuck, sessions));
   const TOP = 5;
@@ -78,7 +89,7 @@
   <div class="section-head">
     <h2 id="insights-h">改善点</h2>
     <p>
-      LLM を呼ばない規則の集計。分かるのは相関までで、「傾向」として読んでください。指示文の効果は直接測れません(同じ版でも依頼が違う)。率は {THRESHOLDS.MIN_SESSIONS} セッション以上のものだけ。{#if hasPage}全件は <a href="insights.html">改善点のページ</a>。{/if}
+      LLM を呼ばない規則の集計(llm-wiki のページの「役立った」の列だけは、判定を回したときの LLM の見立て)。分かるのは相関までで、「傾向」として読んでください。指示文の効果は直接測れません(同じ版でも依頼が違う)。率は {THRESHOLDS.MIN_SESSIONS} セッション以上のものだけ。{#if hasPage}全件は <a href="insights.html">改善点のページ</a>。{/if}
     </p>
   </div>
   <p class="group" id="insights-g-filtered">絞り込みに従う: 上の絞り込みの {int(sessions.length)} セッションで計算します。</p>
@@ -178,7 +189,67 @@
       {/if}
     </div>
 
+    <div class="box wide" data-testid="insights-wiki-pages">
+      <h3>llm-wiki のページごとの参照率と役立った率</h3>
+      {#if wikiNote}
+        <p class="basis" data-testid="insights-wiki-pages-off">{wikiNote}</p>
+      {:else if !wikiPagesRecorded}
+        <p class="basis" data-testid="insights-wiki-pages-old">{WIKI_PAGES_OLD_DATA}</p>
+      {:else if wikiPages.rows.length === 0}
+        <p class="basis" data-testid="insights-wiki-pages-empty">この条件で、llm-wiki のページを読んだセッションはありません(wiki を参照したセッション {int(wikiPages.referenced)} 件)。</p>
+      {:else}
+        {@render pageTable(wikiPages.rows.slice(0, PAGE_ROWS), `読んだセッションの多い順(上位 ${Math.min(PAGE_ROWS, wikiPages.rows.length)} / 全 ${int(wikiPages.rows.length)} ページ)。参照率の分母は wiki を参照したセッション ${int(wikiPages.referenced)} 件`, 'insights-wiki-pages-table')}
+        {#if wikiPages.rows.length > PAGE_ROWS}
+          <details class="tableview">
+            <summary>全件を表で見る({int(wikiPages.rows.length)} ページ)</summary>
+            {@render pageTable(wikiPages.rows, `全 ${int(wikiPages.rows.length)} ページ`, 'insights-wiki-pages-all')}
+          </details>
+        {/if}
+        <p class="basis" data-testid="insights-wiki-pages-why">
+          参照率 = そのページを読んだセッション ÷ wiki を参照したセッション。ログで分かるのは「読んだ」ことまでで、回答の中で引用したかは見ていません。引数に vault の場所が出ない読み(相対パスなど)は数えません。
+        </p>
+        <p class="basis" data-testid="insights-wiki-pages-llm">
+          役立ったかは LLM の見立てで、判定役は読んだページの名前と、ログにあれば抜粋を見たうえで答えています。測った値ではありません。役立った率 = 役立った ÷(役立った + 役立たなかった)で、分からない・未判定は分母に入れません。未判定は、判定していないセッション・前の版の判定・判定に載せなかったページ(1 セッション {WIKI_JUDGED_PAGES_MAX} ページまで)です。
+        </p>
+        <p class="basis">— は分母が {THRESHOLDS.MIN_SESSIONS} セッション未満。参照率(ログ)と役立った率(LLM の見立て)は別の数で、1 つの点数にはまとめていません。</p>
+      {/if}
+    </div>
+
   </div>
+
+  {#snippet pageTable(rows: WikiPageRow[], caption: string, testid: string)}
+    <div class="table-scroll">
+      <table class="ledger small" data-testid={testid}>
+        <caption class="cap">{caption}</caption>
+        <thead>
+          <tr>
+            <th scope="col">ページ</th>
+            <th scope="col" class="num">読んだセッション</th>
+            <th scope="col" class="num">参照率</th>
+            <th scope="col" class="num">役立った</th>
+            <th scope="col" class="num">役立たなかった</th>
+            <th scope="col" class="num">分からない</th>
+            <th scope="col" class="num">未判定</th>
+            <th scope="col" class="num">役立った率</th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each rows as r (r.page)}
+            <tr>
+              <th scope="row" class="page">{r.page}</th>
+              <td class="num">{int(r.sessions)}</td>
+              <td class="num">{pct(r.share)}</td>
+              <td class="num">{int(r.yes)}</td>
+              <td class="num">{int(r.no)}</td>
+              <td class="num">{int(r.unknown)}</td>
+              <td class="num">{int(r.unjudged)}</td>
+              <td class="num">{pct(r.helpfulRate)}</td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
+  {/snippet}
 
   <p class="group" id="insights-g-all">全記録で計算: 絞り込みに関係なく、すべての記録で計算します。絞り込んでも変わりません。</p>
   <div class="grid" role="group" aria-labelledby="insights-g-all">
@@ -238,6 +309,17 @@
     border-bottom: 1px solid var(--rule);
     background: var(--surface);
     min-width: 0;
+  }
+  /* llm-wiki のページごとの表: 列が多いので、どの幅でも 1 行を使う */
+  .box.wide {
+    grid-column: 1 / -1;
+  }
+  /* 狭い幅でも名前を 1 字ずつに折らない(表は .table-scroll で横に流す) */
+  th.page {
+    min-width: 14em;
+    font-weight: 400;
+    text-align: left;
+    overflow-wrap: anywhere;
   }
   .box h3 {
     margin: 0 0 4px;

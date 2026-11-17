@@ -288,15 +288,19 @@ pub fn run_m365_judge(p: &M365Paths, o: &M365Options, log: &dyn Fn(&str), driver
         std::fs::write(replies_dir.join(format!("{}.raw.txt", name.strip_suffix(".txt").unwrap_or(&name))), &raw)?;
         std::fs::write(&reply, &text)?;
         let r = if turns {
-            import_turn_judgments_text(&text, &p.turn_judgments, TurnImportOptions { phases: &phases, turns_by_session: Some(&tbs), now: None, backend: None, model: None }).map(|r| (r.imported, r.overwritten))
+            import_turn_judgments_text(&text, &p.turn_judgments, TurnImportOptions { phases: &phases, turns_by_session: Some(&tbs), now: None, backend: None, model: None }).map(|r| (r.imported, r.overwritten, Vec::new()))
         } else {
-            import_judgments_text(&text, &p.judgments, ImportOptions { known_ids: Some(&known_ids), label: Some(name.clone()), now: None }).map(|r| (r.imported, r.overwritten))
+            import_judgments_text(&text, &p.judgments, ImportOptions { known_ids: Some(&known_ids), label: Some(name.clone()), now: None }).map(|r| (r.imported, r.overwritten, r.notes))
         };
         match r {
-            Ok((imported, overwritten)) => {
+            Ok((imported, overwritten, notes)) => {
                 summary.succeeded += 1;
                 summary.imported += imported;
                 log(&format!("m365: {name} の返答から {imported} 件を取り込みました(既存の上書き {overwritten} 件)"));
+                // llm-wiki のページごとの判定の一部を捨てた(そのページは未判定)
+                for n in notes {
+                    log(&format!("m365:   注意 {n}"));
+                }
             }
             Err(e) => {
                 let problems: Vec<String> = e.downcast_ref::<JudgmentValidationError>().map(|v| v.problems.iter().take(5).cloned().collect()).unwrap_or_default();

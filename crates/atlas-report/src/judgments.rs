@@ -1,8 +1,10 @@
 //! judgments.json(Phase 3 の judge が出す判定結果)の読み取り口。packages/report/src/lib/judgments.ts の移植。
 //! レポートに要る項目だけを拾う。report は judge に依存しないので、ここでは表示に必要な最低限を検査し、
 //! 形が合わない項目は捨てずにエラーにする(黙って欠損させない)。
+//! ただし llm-wiki のページごとの判定(wikiPages)だけは、壊れていても項目を捨てずに、そのページを未判定として読む
+//! (判定の指示でそう決めてある。docs/judge.md)。
 
-use crate::types::{JudgmentEffects, JudgmentSummary};
+use crate::types::{JudgmentEffects, JudgmentSummary, WikiPageVerdict};
 use anyhow::{bail, Result};
 use indexmap::IndexMap;
 use serde_json::{Map, Value};
@@ -38,14 +40,46 @@ fn js_string(v: Option<&Value>) -> String {
     }
 }
 
+/// 読める judgments.json のスキーマの版(1: wikiPages の無い版。2: llm-wiki のページごとの判定 wikiPages を足した版)
+pub const JUDGMENTS_SCHEMA_VERSIONS: [f64; 2] = [1.0, 2.0];
+
+/// llm-wiki のページごとの「役立ったか」の値
+pub const WIKI_HELPFUL: [&str; 3] = ["yes", "no", "unknown"];
+
+/// wikiPages を読む。配列でなければ None(そのセッションのページはすべて未判定)。形の合わない要素と、同じページの 2 回目以降は捨てる。
+/// 返すのは [ページ, 見立て, 理由](理由が無ければ空)
+pub fn parse_wiki_pages(v: Option<&Value>) -> Option<Vec<WikiPageVerdict>> {
+    let list = v?.as_array()?;
+    let mut pages: Vec<WikiPageVerdict> = Vec::new();
+    for x in list {
+        let o = obj(Some(x));
+        let Some(page) = o.get("page").and_then(Value::as_str).map(atlas_core::js::trim).filter(|p| !p.is_empty()) else { continue };
+        let Some(helpful) = o.get("helpful").and_then(Value::as_str).filter(|h| WIKI_HELPFUL.contains(h)) else { continue };
+        if pages.iter().any(|(p, _, _)| p == page) {
+            continue;
+        }
+        pages.push((page.to_string(), helpful.to_string(), o.get("reason").and_then(Value::as_str).unwrap_or("").to_string()));
+    }
+    Some(pages)
+}
+
+/// セッションの判定から、判定のパケットに載せたページ(atlas_core::wiki::judged_wiki_pages)の判定だけを残す。
+/// パケットに無いページの名前を LLM が返したら捨てる(packages/report/src/lib/summarize.ts の judgmentForSession と同じ)
+pub fn judgment_for_session(j: &JudgmentSummary, page_reads: &[String]) -> JudgmentSummary {
+    let Some(list) = &j.wiki_page_verdicts else { return j.clone() };
+    let (judged, _) = atlas_core::wiki::judged_wiki_pages(page_reads);
+    let kept = list.iter().filter(|v| judged.contains(&v.0)).cloned().collect();
+    JudgmentSummary { wiki_page_verdicts: Some(kept), ..j.clone() }
+}
+
 pub fn parse_judgments(raw: &Value) -> Result<JudgmentsIndex> {
     let truthy_obj = matches!(raw, Value::Object(_) | Value::Array(_));
     if !truthy_obj {
         bail!("judgments.json がオブジェクトではありません");
     }
     let o = obj(Some(raw));
-    if o.get("schemaVersion").and_then(Value::as_f64) != Some(1.0) {
-        bail!("judgments.json の schemaVersion が 1 ではありません({})", js_string(o.get("schemaVersion")));
+    if !o.get("schemaVersion").and_then(Value::as_f64).is_some_and(|v| JUDGMENTS_SCHEMA_VERSIONS.contains(&v)) {
+        bail!("judgments.json の schemaVersion が 1・2 のどちらでもありません({})", js_string(o.get("schemaVersion")));
     }
     let Some(items) = o.get("items").and_then(Value::as_array) else {
         bail!("judgments.json に items 配列がありません");
@@ -77,6 +111,8 @@ pub fn parse_judgments(raw: &Value) -> Result<JudgmentsIndex> {
             effects: JudgmentEffects { instructions: score("instructionsEffect"), wiki: score("wikiEffect"), skills_agents: score("skillsAgentsEffect") },
             rationale: str_of(h.get("rationale")),
             backend: str_of(obj(x.get("judge")).get("backend")).or_else(|| str_of(judge.get("backend"))),
+            wiki_page_verdicts: parse_wiki_pages(x.get("wikiPages")),
+            wiki_pages: None,
         };
         by_session.insert(id, j);
     }
@@ -112,8 +148,36 @@ mod tests {
             }
         );
         assert!(parse_judgments(&json!({ "schemaVersion": 1, "items": [{ "sessionId": "x", "humanEffort": {} }] })).unwrap_err().to_string().contains("hours"));
-        assert!(parse_judgments(&json!({ "schemaVersion": 2, "items": [] })).unwrap_err().to_string().contains("schemaVersion"));
+        assert!(parse_judgments(&json!({ "schemaVersion": 3, "items": [] })).unwrap_err().to_string().contains("schemaVersion"));
         assert!(parse_judgments(&json!({ "schemaVersion": 1, "items": [{}] })).unwrap_err().to_string().contains("sessionId"));
-        assert_eq!(parse_judgments(&json!({ "items": [] })).unwrap_err().to_string(), "judgments.json の schemaVersion が 1 ではありません(undefined)");
+        assert_eq!(parse_judgments(&json!({ "items": [] })).unwrap_err().to_string(), "judgments.json の schemaVersion が 1・2 のどちらでもありません(undefined)");
+    }
+
+    // llm-wiki のページごとの判定: 版 2 の項目を読み、壊れていても項目は捨てずにページを未判定にする
+    #[test]
+    fn wiki_pages() {
+        let item = |wp: Value| json!({ "sessionId": "a", "humanEffort": { "hours": 1 }, "wikiPages": wp });
+        let parse = |wp: Value| parse_judgments(&json!({ "schemaVersion": 2, "items": [item(wp)] })).unwrap().by_session["a"].clone();
+        let j = parse(json!([
+            { "page": " wiki/a.md ", "helpful": "yes", "reason": "手順に使った" },
+            { "page": "wiki/b.md", "helpful": "maybe", "reason": "値が違う" },
+            { "page": "wiki/c.md", "helpful": "no" },
+            { "page": "wiki/a.md", "helpful": "no", "reason": "重複" },
+            { "helpful": "yes" },
+            "wiki/d.md",
+        ]));
+        let v = |p: &str, h: &str, r: &str| (p.to_string(), h.to_string(), r.to_string());
+        assert_eq!(j.wiki_page_verdicts, Some(vec![v("wiki/a.md", "yes", "手順に使った"), v("wiki/c.md", "no", "")]));
+        // 配列でない・無い: ページは未判定(None)。ほかの判定は読む
+        assert_eq!(parse(json!({ "page": "x" })).wiki_page_verdicts, None);
+        assert_eq!(parse(json!("壊れた")).hours, Some(1.0));
+        let v1 = parse_judgments(&json!({ "schemaVersion": 1, "items": [{ "sessionId": "a", "humanEffort": { "hours": 1 } }] })).unwrap();
+        assert_eq!(v1.by_session["a"].wiki_page_verdicts, None);
+        // パケットに載せたページ(読んだページの先頭から上限まで)に無い名前は捨てる
+        let reads: Vec<String> = ["wiki/a.md", "wiki/a.md"].iter().map(|s| s.to_string()).collect();
+        let f = judgment_for_session(&j, &reads);
+        assert_eq!(f.wiki_page_verdicts, Some(vec![v("wiki/a.md", "yes", "手順に使った")]));
+        // 判定が無い(None)ものはそのまま
+        assert_eq!(judgment_for_session(&v1.by_session["a"], &reads).wiki_page_verdicts, None);
     }
 }

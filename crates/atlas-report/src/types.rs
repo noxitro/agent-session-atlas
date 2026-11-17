@@ -14,7 +14,13 @@ use atlas_core::types::{Friction, LineChanges, ProjectSource, TodoSummary, Token
 use serde::{Deserialize, Serialize};
 
 /// 埋め込みデータの版(lib/types.ts の REPORT_DATA_VERSION。版の履歴はそちらの先頭のコメントを参照)
-pub const REPORT_DATA_VERSION: i64 = 17;
+pub const REPORT_DATA_VERSION: i64 = 18;
+
+/// llm-wiki のページごとの LLM の見立て [ページの名前, yes | no | unknown, 理由](judgments.json から読んだ形。lib/types.ts の WikiPageVerdict)
+pub type WikiPageVerdict = (String, String, String);
+
+/// 埋め込みの llm-wiki のページごとの見立て [ページの番号(ReportData.wikiPageNames の添字), yes | no | unknown](lib/types.ts の WikiPageMark)
+pub type WikiPageMark = (i64, String);
 
 /// 推論強度別の [リクエスト, 入力, 出力, nano AIU]
 pub type EffortTuple = [f64; 4];
@@ -117,6 +123,13 @@ pub struct JudgmentSummary {
     pub rationale: Option<String>,
     /// この判定を出したバックエンド
     pub backend: Option<String>,
+    /// llm-wiki のページごとの「役立ったか」と理由(judgments.json から読んだ形。名前で持つ)。版 1 の判定・項目の無い判定・配列でない項目では None。
+    /// 詳細ページに出す。埋め込みの要約では None にして、番号の wiki_pages に置き換える
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wiki_page_verdicts: Option<Vec<WikiPageVerdict>>,
+    /// 埋め込みの要約だけ: 判定のパケットに載せたページの見立て(ページは ReportData.wikiPageNames の番号。理由は入れない)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wiki_pages: Option<Vec<WikiPageMark>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -163,6 +176,10 @@ pub struct WikiSummary {
     /// vault に触れたそのほかの呼び出し(検索・一覧など)。埋め込みの版 15 以前には無い
     #[serde(default)]
     pub other_calls: i64,
+    /// 読んだページ(重複を除いて読んだ順)の番号。名前は ReportData.wikiPageNames に 1 回だけ置く(atlas.html の大きさを抑えるため)。
+    /// 埋め込みの版 17 以前には無い(空で読む。ページごとの表を出すかは版で見分ける)
+    #[serde(default)]
+    pub pages: Vec<i64>,
 }
 
 impl WikiSummary {

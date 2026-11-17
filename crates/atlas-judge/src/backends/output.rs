@@ -2,7 +2,7 @@
 //! copilot -p --output-format json の行の形は版によって違いうるので、
 //! 既知の形を広く受け、どれにも当たらなければ出力全体を本文として扱う。
 
-use crate::schema::{item_problems, items_from_candidates, json_candidates, validate_judgment_item, JudgmentItem};
+use crate::schema::{item_problems, items_from_candidates, json_candidates, validate_judgment_item, wiki_pages_note, JudgmentItem};
 use anyhow::{bail, Result};
 use atlas_core::js;
 use indexmap::IndexMap;
@@ -77,6 +77,11 @@ pub fn parse_agent_jsonl(stdout: &str) -> AgentOutput {
 /// 本文の候補(後ろから)から判定項目を 1 つ取り出して検証する。
 /// sessionId が無ければパケットの ID を補い、違う ID ならエラーにする。
 pub fn item_from_texts(texts: &[String], session_id: &str) -> Result<JudgmentItem> {
+    item_and_notes_from_texts(texts, session_id).map(|x| x.0)
+}
+
+/// item_from_texts と同じく判定項目を取り出し、llm-wiki のページごとの判定(wikiPages)の一部を捨てたときはその知らせも返す
+pub fn item_and_notes_from_texts(texts: &[String], session_id: &str) -> Result<(JudgmentItem, Vec<String>)> {
     let mut problems: Vec<String> = Vec::new();
     for t in texts.iter().rev() {
         for raw in items_from_candidates(&json_candidates(t)) {
@@ -95,7 +100,7 @@ pub fn item_from_texts(texts: &[String], session_id: &str) -> Result<JudgmentIte
                 problems.extend(p);
                 continue;
             }
-            return Ok(validate_judgment_item(&v, "item")?);
+            return Ok((validate_judgment_item(&v, "item")?, wiki_pages_note(&v).into_iter().collect()));
         }
     }
     let Some(last) = texts.last() else { bail!("応答に assistant の本文がありません") };
@@ -140,6 +145,12 @@ mod tests {
         assert!(item_from_texts(&[item(Some("other")).to_string()], "S1").unwrap_err().to_string().contains("sessionId が違います"));
         assert!(item_from_texts(&["```json\n{\"sessionId\":\"S1\"}\n```".into()], "S1").unwrap_err().to_string().contains("スキーマに合いません"));
         assert!(item_from_texts(&["ただの文章".into()], "S1").unwrap_err().to_string().contains("取り出せません"));
+        // wikiPages が壊れていても判定は取り、知らせを返す
+        let mut w = item(Some("S1"));
+        w["wikiPages"] = json!([{ "page": "wiki/a.md", "helpful": "yes", "reason": "r" }, { "page": "wiki/b.md" }]);
+        let (it, notes) = item_and_notes_from_texts(&[w.to_string()], "S1").unwrap();
+        assert_eq!(it.wiki_pages.unwrap().len(), 1);
+        assert_eq!(notes.len(), 1);
         // JSONL でない出力は全体を本文として扱う
         assert_eq!(parse_agent_jsonl(&format!("text {}", item(Some("S1")))).texts.len(), 1);
         // Copilot の session.error はエラー本文として拾う

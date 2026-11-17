@@ -16,7 +16,15 @@ import {
   wikiStateNote,
   wikiStateShortNote,
   wikiUsageSummary,
+  judgedWikiPages,
+  uniquePages,
+  WIKI_JUDGED_PAGES_MAX,
+  wikiPageTable,
+  wikiPageIndex,
+  pageNumber,
   type WikiCounts,
+  type WikiPageSession,
+  type WikiPageTable,
 } from '../src/lib/wiki.ts';
 
 const w = (o: WikiCounts = {}): Required<WikiCounts> => ({ indexReads: 0, pageReads: 0, skillCalls: 0, writes: 0, otherCalls: 0, ...o });
@@ -91,6 +99,81 @@ describe('改善点の llm-wiki の利用の件数', () => {
   });
   it('セッションが無ければ全部 0', () => {
     expect(wikiUsageSummary([])).toEqual({ sessions: 0, referenced: 0, referencedWithWrites: 0, writeOnly: 0, none: 0, indexReads: 0, pageReads: 0, skillCalls: 0, otherCalls: 0 });
+  });
+});
+
+describe('llm-wiki のページごとの参照率と役立った率', () => {
+  const MIN = 3;
+  /** ページの名前の辞書(埋め込みの ReportData.wikiPageNames。要約は番号で持つ) */
+  const NAMES = ['a.md', 'b.md', 'z.md', 'other.md'];
+  const num = (p: string): number => NAMES.indexOf(p);
+  /** 読んだページと、その判定(無ければ未判定。judgment: null は判定していないセッション) */
+  const s = (pages: string[], verdicts?: [string, 'yes' | 'no' | 'unknown'][] | null): WikiPageSession => ({
+    wiki: w({ pageReads: pages.length, indexReads: pages.length ? 0 : 1 }),
+    judgment: verdicts === null ? null : { wikiPages: verdicts?.map(([p, h]) => [num(p), h] as const) },
+  });
+  const withPages = (x: WikiPageSession, pages: string[]): WikiPageSession => ({ ...x, wiki: { ...x.wiki, pages: pages.map(num) } });
+  const row = (t: WikiPageTable, page: string) => t.rows.find((r) => r.page === page)!;
+
+  it('参照率の分母は wiki を参照したセッション(ページを読んでいない参照も入る)。書き込みだけは入れない', () => {
+    const t = wikiPageTable(
+      [
+        withPages(s(['a.md']), ['a.md']),
+        withPages(s(['a.md', 'b.md']), ['a.md', 'b.md']),
+        s([]), // 索引だけ
+        { wiki: w({ writes: 1 }) }, // 書き込みだけ
+        withPages(s(['b.md']), ['b.md']),
+        { wiki: w() },
+      ],
+      NAMES,
+      MIN,
+    );
+    expect(t.referenced).toBe(4);
+    expect(t.rows.map((r) => [r.page, r.sessions, r.share])).toEqual([
+      ['a.md', 2, 0.5],
+      ['b.md', 2, 0.5],
+    ]);
+  });
+  it('分母が閾値に届かなければ率は null(—)', () => {
+    const t = wikiPageTable([withPages(s(['a.md'], [['a.md', 'yes']]), ['a.md']), withPages(s(['a.md'], [['a.md', 'yes']]), ['a.md'])], NAMES, MIN);
+    expect(t.referenced).toBe(2);
+    expect(row(t, 'a.md')).toMatchObject({ sessions: 2, share: null, yes: 2, helpfulRate: null });
+  });
+  it('役立った率 = 役立った ÷ (役立った + 役立たなかった)。分からない・未判定は分母に入れず、件数を並べる', () => {
+    const a = (v?: [string, 'yes' | 'no' | 'unknown'][] | null): WikiPageSession => withPages(s(['a.md'], v), ['a.md']);
+    const t = wikiPageTable(
+      [
+        a([['a.md', 'yes']]),
+        a([['a.md', 'yes']]),
+        a([['a.md', 'no']]),
+        a([['a.md', 'unknown']]),
+        a(null), // 判定していない
+        a(undefined), // 版 1 の判定(wikiPages なし)
+        a([['other.md', 'yes']]), // そのページの判定が無い(パケットに載らなかった等)
+      ],
+      NAMES,
+      MIN,
+    );
+    expect(row(t, 'a.md')).toEqual({ page: 'a.md', sessions: 7, share: 1, yes: 2, no: 1, unknown: 1, unjudged: 3, helpfulRate: 2 / 3 });
+    // 役立った + 役立たなかった が閾値未満なら —(分からないが多くても数えない)
+    const u = wikiPageTable([a([['a.md', 'yes']]), a([['a.md', 'unknown']]), a([['a.md', 'unknown']]), a([['a.md', 'no']])], NAMES, MIN);
+    expect(row(u, 'a.md').helpfulRate).toBeNull();
+  });
+  it('古い埋め込み(ページの名前が無い)では行が無い。並びは読んだセッションの多い順、同じなら名前の順', () => {
+    expect(wikiPageTable([s(['a.md']), s(['b.md'])], NAMES, MIN).rows).toEqual([]);
+    const t = wikiPageTable([withPages(s(['z.md', 'b.md']), ['z.md', 'b.md']), withPages(s(['b.md']), ['b.md']), withPages(s(['a.md']), ['a.md'])], NAMES, 1);
+    expect(t.rows.map((r) => r.page)).toEqual(['b.md', 'a.md', 'z.md']);
+  });
+  it('ページの名前の辞書: セッションの並び・読んだ順に重複なく並べ、番号を引く', () => {
+    const ix = wikiPageIndex([{ wiki: { pageReads: ['b.md', 'a.md', 'b.md'] } }, { wiki: { pageReads: [] } }, { wiki: { pageReads: ['a.md', 'c.md'] } }]);
+    expect(ix.names).toEqual(['b.md', 'a.md', 'c.md']);
+    expect(pageNumber(ix, 'c.md')).toBe(2);
+    expect(() => pageNumber(ix, 'x.md')).toThrow(/辞書に x.md がありません/);
+  });
+  it('判定に載せるページは重複を除いて読んだ順の先頭から上限まで', () => {
+    expect(uniquePages(['a', 'b', 'a'])).toEqual(['a', 'b']);
+    const many = Array.from({ length: WIKI_JUDGED_PAGES_MAX + 2 }, (_, i) => `p${i}`);
+    expect(judgedWikiPages([...many, 'p0'])).toEqual(many.slice(0, WIKI_JUDGED_PAGES_MAX));
   });
 });
 

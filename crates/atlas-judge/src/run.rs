@@ -47,6 +47,8 @@ pub struct RunSummary {
     pub failed: Vec<RunFailure>,
     pub usage: JudgeUsage,
     pub notes: Vec<String>,
+    /// llm-wiki のページごとの判定の一部を捨てたセッション(そのページは未判定。補足の先頭 5 件に埋もれないよう、件数の 1 行で出す)
+    pub wiki_page_drops: Vec<String>,
 }
 
 struct Shared {
@@ -126,6 +128,9 @@ pub fn run_judge(o: &RunOptions<'_>) -> Result<RunSummary> {
                     s.summary.usage = add_usage(Some(&s.summary.usage), r.usage.as_ref());
                     for n in &r.notes {
                         s.summary.notes.push(format!("{}: {n}", e.id));
+                    }
+                    if !r.wiki_notes.is_empty() {
+                        s.summary.wiki_page_drops.push(e.id.clone());
                     }
                     s.summary.succeeded += 1;
                     let m = meta(&s.summary);

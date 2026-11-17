@@ -738,7 +738,13 @@ export function baseStore(): SyntheticStore {
   };
 }
 
-/** 手書きの judgments サンプル(001〜005 の架空の判定。phase3 の import → build の確認用) */
+/** 004 が読んだ llm-wiki のページ(集計の分類が出す、vault からの相対の名前) */
+export const SAMPLE_WIKI_PAGES = ['wiki/topics/synthetic-page-a.md', 'wiki/topics/synthetic-page-b.md'] as const;
+
+/**
+ * 手書きの judgments サンプル(001〜005 の架空の判定。phase3 の import → build の確認用)。
+ * 004 は llm-wiki のページごとの判定(wikiPages)を持つ: 読んだ 2 ページと、読んでいない(パケットに無い)ページ 1 つ(レポートでは捨てる)
+ */
 export function judgmentsSample(): Record<string, unknown> {
   const item = (n: number, taskCategory: string, effort: [number, number, number, number], outcome: [boolean, number, number], scores: [number, number, number], wikiEvidence = '参照なし') => ({
     sessionId: fakeId(n),
@@ -752,13 +758,20 @@ export function judgmentsSample(): Record<string, unknown> {
     notes: 'E2E 用のサンプル',
   });
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     judge: { backend: 'external', model: 'hand-written-sample', ranAt: '2026-10-28T00:00:00Z' },
     items: [
       item(1, 'bugfix', [3, 2, 5, 0.6], [true, 4, 1], [1, 0, 0]),
       item(2, 'feature', [6, 4, 10, 0.4], [true, 3, 2], [0, 0, 0]),
       item(3, 'investigation', [1.5, 1, 3, 0.7], [true, 5, 0], [1, 0, 1]),
-      item(4, 'docs', [0.5, 0.25, 1, 0.8], [true, 4, 0], [0, 2, 1], 'index.md を読んでから該当ページを参照'),
+      {
+        ...item(4, 'docs', [0.5, 0.25, 1, 0.8], [true, 4, 0], [0, 2, 1], 'index.md を読んでから該当ページを参照'),
+        wikiPages: [
+          { page: SAMPLE_WIKI_PAGES[0], helpful: 'yes', reason: 'fixture 用(応答の 2 ページの片方に使った)' },
+          { page: SAMPLE_WIKI_PAGES[1], helpful: 'unknown', reason: 'fixture 用' },
+          { page: 'wiki/topics/synthetic-page-unread.md', helpful: 'yes', reason: 'fixture 用(パケットに無いページ)' },
+        ],
+      },
       item(5, 'refactor', [8, 5, 12, 0.3], [false, 2, 3], [-1, 0, -1]),
     ],
   };
