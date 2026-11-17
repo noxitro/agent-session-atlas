@@ -79,7 +79,7 @@ describe('session-search(セッション一覧の検索)', () => {
   });
   it('貼ったパスや URL の中に ID が丸ごと入っていれば当たる。パスに空白があっても、引用符で囲まれていても', () => {
     expect(ids('out\\sessions\\add00000-aaaa-4bbb-8ccc-000000000003.md')).toEqual(['add0']);
-    expect(ids('C:\\Users\\Taro Yamada\\.copilot\\session-state\\add00000-aaaa-4bbb-8ccc-000000000003\\events.jsonl')).toEqual(['add0']);
+    expect(ids('D:\\共有 フォルダ\\copilot logs\\add00000-aaaa-4bbb-8ccc-000000000003\\events.jsonl')).toEqual(['add0']);
     expect(ids('"D:\\OneDrive - 会社名\\atlas\\out\\sessions\\3F2A9C10-AAAA-4BBB-8CCC-000000000001.html"')).toEqual(['3f2a']);
     expect(searchSessions(list, 'file:///d:/x%20y/add00000-aaaa-4bbb-8ccc-000000000003.html')?.byId.has(list[2].id)).toBe(true);
   });

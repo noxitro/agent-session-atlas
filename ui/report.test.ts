@@ -205,7 +205,7 @@ describe('画面の操作', () => {
     await box.fill(empty!.id);
     await expect.poll(() => result.innerText()).toBe('合うセッションはありません。空のセッション 1 件は、「その他の条件」の「空のセッションを含める」で出ます。');
     // ID を含むパス(空白入り)を貼っても当たる
-    await box.fill(`C:\\Users\\Taro Yamada\\.copilot\\session-state\\${target!.id}\\events.jsonl`);
+    await box.fill(`D:\\共有 フォルダ\\copilot logs\\${target!.id}\\events.jsonl`);
     await expect.poll(() => rows.count()).toBe(1);
     // 320px の幅でも、検索欄で横にはみ出さない
     await page.setViewportSize({ width: 320, height: 800 });
