@@ -7,7 +7,8 @@
   import { date, dec, duration, int } from '../../lib/format.ts';
   import { cleanHeading, instructionFindings, instructionVersions, skillStats, stuckByProject, stuckSessions, SKILL_RATE_CAUSE, THRESHOLDS, type Candidate, type VersionMeta } from '../../lib/insights.ts';
   import type { SessionSummary } from '../../lib/types.ts';
-  import { WIKI_JUDGED_PAGES_MAX, WIKI_PAGES_OLD_DATA, wikiPageTable, wikiStateNote, wikiUsageSummary, type WikiPageRow, type WikiState } from '../../lib/wiki.ts';
+  import { WIKI_JUDGED_PAGES_MAX, WIKI_PAGES_OLD_DATA, shortPageNames, sortWikiPageRows, wikiPageTable, wikiStateNote, wikiUsageSummary, type WikiPageRow, type WikiPageSortKey, type WikiPageVerdictValue, type WikiState } from '../../lib/wiki.ts';
+  import SortMark from './SortMark.svelte';
 
 
   let {
@@ -65,6 +66,54 @@
   const wikiPages = $derived(wikiPageTable(sessions, wikiPageNames, THRESHOLDS.MIN_SESSIONS));
   /** 箱の中に並べる行の数(残りは「全件を表で見る」) */
   const PAGE_ROWS = 10;
+  /** ページの行を開いたときに並べるセッションの数(残りは件数だけ) */
+  const READERS_MAX = 50;
+  /** 数の列(参照率・役立った率は、どのページも — なら列ごと出さず、理由を注に書く) */
+  const PAGE_COLS: { key: Exclude<WikiPageSortKey, 'page'>; label: string; rate: boolean }[] = [
+    { key: 'sessions', label: '読んだセッション', rate: false },
+    { key: 'share', label: '参照率', rate: true },
+    { key: 'yes', label: '役立った', rate: false },
+    { key: 'no', label: '役立たなかった', rate: false },
+    { key: 'unknown', label: '分からない', rate: false },
+    { key: 'unjudged', label: '未判定', rate: false },
+    { key: 'helpfulRate', label: '役立った率', rate: true },
+  ];
+  const showShare = $derived(wikiPages.rows.some((r) => r.share != null));
+  const showHelpful = $derived(wikiPages.rows.some((r) => r.helpfulRate != null));
+  const pageCols = $derived(PAGE_COLS.filter((c) => (c.key !== 'share' || showShare) && (c.key !== 'helpfulRate' || showHelpful)));
+  /** 表に出すページの名前(共通のフォルダと .md を除く。元のパスは title と、行を開いた中に出す) */
+  const pageNames = $derived(shortPageNames(wikiPages.rows.map((r) => r.page)));
+  const pageNamesNote = $derived.by(() => {
+    const parts = [pageNames.prefix ? `${pageNames.prefix} からの相対` : '', pageNames.dropMd ? '.md を省いて' : ''].filter(Boolean);
+    return parts.length ? `ページは ${parts.join('、')}出しています(元の名前は、名前に重ねると出ます)。` : 'ページは読んだときの名前です。';
+  });
+  // 並べ替え(上位の表と全件の表で共通)。並べている列を出さなくなったら、読んだセッションの多い順に戻す
+  let pageSort = $state<WikiPageSortKey>('sessions');
+  let pageAsc = $state(false);
+  const sortKey = $derived<WikiPageSortKey>(pageSort === 'page' || pageCols.some((c) => c.key === pageSort) ? pageSort : 'sessions');
+  const sortAsc = $derived(sortKey === pageSort ? pageAsc : false);
+  const sortedPages = $derived(sortWikiPageRows(wikiPages.rows, sortKey, sortAsc));
+  const sortLabel = $derived.by(() => {
+    if (sortKey === 'page') return sortAsc ? 'ページの名前の順' : 'ページの名前の逆順';
+    const c = PAGE_COLS.find((x) => x.key === sortKey)!;
+    return `${c.label}の${c.rate ? (sortAsc ? '低い' : '高い') : sortAsc ? '少ない' : '多い'}順`;
+  });
+  function sortPages(k: WikiPageSortKey): void {
+    pageAsc = sortKey === k ? !sortAsc : k === 'page';
+    pageSort = k;
+  }
+  const pageMark = (k: WikiPageSortKey): 'asc' | 'desc' | 'none' => (sortKey === k ? (sortAsc ? 'asc' : 'desc') : 'none');
+  const pageAria = (k: WikiPageSortKey): 'ascending' | 'descending' | 'none' => (sortKey === k ? (sortAsc ? 'ascending' : 'descending') : 'none');
+  /** 開いているページの行(表の testid とページの名前) */
+  let openPages = $state<Record<string, boolean>>({});
+  const VERDICT_LABEL: Record<WikiPageVerdictValue | 'none', string> = { yes: '役立った', no: '役立たなかった', unknown: '分からない', none: '未判定' };
+  /** ページを読んだセッション(新しい順) */
+  const readersOf = (r: WikiPageRow): { s: SessionSummary; verdict: WikiPageVerdictValue | null }[] =>
+    r.readers
+      .map((x) => ({ s: sessions[x.index]!, verdict: x.verdict }))
+      .filter((x) => x.s)
+      .sort((a, b) => (b.s.updatedAt ?? b.s.createdAt ?? '').localeCompare(a.s.updatedAt ?? a.s.createdAt ?? ''));
+  const labelOf = (s: SessionSummary): string => (s.name || s.firstUserMessage || s.id.slice(0, 8)).replace(/\s+/g, ' ').slice(0, 60);
   const stuck = $derived(stuckSessions(sessions));
   const byProject = $derived(stuckByProject(stuck, sessions));
   const TOP = 5;
@@ -147,7 +196,25 @@
       {#if skills.unused.length}<p class="basis">インストール済みで未使用: {skills.unused.map((n) => (disabledSet.has(n.toLowerCase()) ? `${n}(無効)` : n)).join('、')}</p>{/if}
     </div>
 
-    <div class="box" data-testid="insights-wiki">
+    <div class="box" data-testid="insights-stuck">
+      <h3>止まっている箇所</h3>
+      {#if stuck.length === 0}
+        <p class="basis">閾値を超えたセッションはありません。</p>
+      {:else}
+        <p class="basis">{int(stuck.length)} セッションが閾値(最初のトークンまでの待ちの中央値 {duration(THRESHOLDS.STUCK.ttftMs)} 以上、ツールの失敗の連続 {THRESHOLDS.STUCK.consecutiveFailures} 回以上、余分な編集(同じファイルの 2 回目以降の編集の全ファイルの合計){THRESHOLDS.STUCK.extraEdits} 回以上、権限確認 {THRESHOLDS.STUCK.permissions} 件以上、compaction {THRESHOLDS.STUCK.compactions} 回以上)を超えています。理由の多い順に上位 {Math.min(TOP, stuck.length)} 件。</p>
+        <ol>
+          {#each stuck.slice(0, TOP) as x (x.id)}
+            <li><a href={x.href}>{sessionLabel(x.id)}</a>: {x.reasons.join('、')}{#if x.reasons.includes('待ち時間') && x.ttftMedian != null}(待ちの中央値 {duration(x.ttftMedian)}){/if}</li>
+          {/each}
+        </ol>
+        {#if byProject.length}
+          <p class="basis">プロジェクト別(該当 / 全セッション。{THRESHOLDS.MIN_SESSIONS} セッション以上のもの): {byProject.slice(0, TOP).map((p) => `${p.projectLabel} ${int(p.stuck)} / ${int(p.total)}`).join('、')}</p>
+        {/if}
+      {/if}
+    </div>
+
+    <!-- llm-wiki の 2 つの箱は並べる(目次の「llm-wiki」の飛び先) -->
+    <div class="box anchor" id="insights-wiki" data-testid="insights-wiki">
       <h3>llm-wiki の利用</h3>
       {#if wikiNote}
         <p class="basis" data-testid="insights-wiki-off">{wikiNote}</p>
@@ -166,24 +233,7 @@
             <tbody><tr><td class="num">{int(wikiUse.indexReads)}</td><td class="num">{int(wikiUse.pageReads)}</td><td class="num">{int(wikiUse.skillCalls)}</td><td class="num">{int(wikiUse.otherCalls)}</td></tr></tbody>
           </table>
         </div>
-        <p class="basis" data-testid="insights-wiki-why">率は並べていません。参照するかどうかは作業の中身で決まるので、差が出ても wiki が原因とは分かりません。引数に vault の場所が出ない読みは数えないので、「参照なし」にも参照したセッションが混ざります。数え方は<a href="glossary.html#llm-wiki">用語の説明</a>、wiki あり / なしで比べるときは<a href="glossary.html#conditions">課題 × 条件</a>。</p>
-      {/if}
-    </div>
-
-    <div class="box" data-testid="insights-stuck">
-      <h3>止まっている箇所</h3>
-      {#if stuck.length === 0}
-        <p class="basis">閾値を超えたセッションはありません。</p>
-      {:else}
-        <p class="basis">{int(stuck.length)} セッションが閾値(最初のトークンまでの待ちの中央値 {duration(THRESHOLDS.STUCK.ttftMs)} 以上、ツールの失敗の連続 {THRESHOLDS.STUCK.consecutiveFailures} 回以上、余分な編集(同じファイルの 2 回目以降の編集の全ファイルの合計){THRESHOLDS.STUCK.extraEdits} 回以上、権限確認 {THRESHOLDS.STUCK.permissions} 件以上、compaction {THRESHOLDS.STUCK.compactions} 回以上)を超えています。理由の多い順に上位 {Math.min(TOP, stuck.length)} 件。</p>
-        <ol>
-          {#each stuck.slice(0, TOP) as x (x.id)}
-            <li><a href={x.href}>{sessionLabel(x.id)}</a>: {x.reasons.join('、')}{#if x.reasons.includes('待ち時間') && x.ttftMedian != null}(待ちの中央値 {duration(x.ttftMedian)}){/if}</li>
-          {/each}
-        </ol>
-        {#if byProject.length}
-          <p class="basis">プロジェクト別(該当 / 全セッション。{THRESHOLDS.MIN_SESSIONS} セッション以上のもの): {byProject.slice(0, TOP).map((p) => `${p.projectLabel} ${int(p.stuck)} / ${int(p.total)}`).join('、')}</p>
-        {/if}
+        <p class="basis" data-testid="insights-wiki-why">率は並べていません。参照するかどうかは作業の中身で決まるので、差が出ても wiki が原因とは分かりません。引数に vault の場所が出ない読みは数えないので、「参照なし」にも参照したセッションが混ざります。数え方は<a href="glossary.html#llm-wiki">用語の説明</a>、wiki あり / なしで比べるときは<a href="glossary.html#conditions">課題 × 条件</a>。参照したセッションだけを見るときは、絞り込みの「その他の条件」の「wiki を参照したセッションだけ」。</p>
       {/if}
     </div>
 
@@ -196,20 +246,29 @@
       {:else if wikiPages.rows.length === 0}
         <p class="basis" data-testid="insights-wiki-pages-empty">この条件で、llm-wiki のページを読んだセッションはありません(wiki を参照したセッション {int(wikiPages.referenced)} 件)。</p>
       {:else}
-        {@render pageTable(wikiPages.rows.slice(0, PAGE_ROWS), `読んだセッションの多い順(上位 ${Math.min(PAGE_ROWS, wikiPages.rows.length)} / 全 ${int(wikiPages.rows.length)} ページ)。参照率の分母は wiki を参照したセッション ${int(wikiPages.referenced)} 件`, 'insights-wiki-pages-table')}
-        {#if wikiPages.rows.length > PAGE_ROWS}
+        {@render pageTable(sortedPages.slice(0, PAGE_ROWS), `${sortLabel}(上位 ${Math.min(PAGE_ROWS, sortedPages.length)} / 全 ${int(sortedPages.length)} ページ)。${showShare ? '参照率の分母は ' : ''}wiki を参照したセッション ${int(wikiPages.referenced)} 件`, 'insights-wiki-pages-table')}
+        {#if sortedPages.length > PAGE_ROWS}
           <details class="tableview">
-            <summary>全件を表で見る({int(wikiPages.rows.length)} ページ)</summary>
-            {@render pageTable(wikiPages.rows, `全 ${int(wikiPages.rows.length)} ページ`, 'insights-wiki-pages-all')}
+            <summary>全件を表で見る({int(sortedPages.length)} ページ)</summary>
+            {@render pageTable(sortedPages, `全 ${int(sortedPages.length)} ページ(${sortLabel})`, 'insights-wiki-pages-all')}
           </details>
         {/if}
+        <p class="basis" data-testid="insights-wiki-pages-names">
+          {pageNamesNote}ページの名前を押すと、そのページを読んだセッションの一覧と、それぞれの役立ったかの見立てが開きます。列の見出しを押すと並べ替えます。
+        </p>
         <p class="basis" data-testid="insights-wiki-pages-why">
           参照率 = そのページを読んだセッション ÷ wiki を参照したセッション。ログで分かるのは「読んだ」ことまでで、回答の中で引用したかは見ていません。引数に vault の場所が出ない読み(相対パスなど)は数えません。
         </p>
         <p class="basis" data-testid="insights-wiki-pages-llm">
           役立ったかは LLM の見立てで、判定役は読んだページの名前と、ログにあれば抜粋を見たうえで答えています。測った値ではありません。役立った率 = 役立った ÷(役立った + 役立たなかった)で、分からない・未判定は分母に入れません。未判定は、判定していないセッション・前の版の判定・判定に載せなかったページ(1 セッション {WIKI_JUDGED_PAGES_MAX} ページまで)です。
         </p>
-        <p class="basis">— は分母が {THRESHOLDS.MIN_SESSIONS} セッション未満。参照率(ログ)と役立った率(LLM の見立て)は別の数で、1 つの点数にはまとめていません。</p>
+        {#if !showShare}
+          <p class="basis" data-testid="insights-wiki-pages-no-share">参照率の列は出していません。wiki を参照したセッションが {int(wikiPages.referenced)} 件で、{THRESHOLDS.MIN_SESSIONS} セッションに届きません。</p>
+        {/if}
+        {#if !showHelpful}
+          <p class="basis" data-testid="insights-wiki-pages-no-helpful">役立った率の列は出していません。役立った + 役立たなかったが {THRESHOLDS.MIN_SESSIONS} セッションに届くページがありません(判定を回すと増えます)。</p>
+        {/if}
+        <p class="basis">{#if showShare || showHelpful}— は分母が {THRESHOLDS.MIN_SESSIONS} セッション未満。{/if}参照率(ログ)と役立った率(LLM の見立て)は別の数で、1 つの点数にはまとめていません。</p>
       {/if}
     </div>
 
@@ -221,28 +280,38 @@
         <caption class="cap">{caption}</caption>
         <thead>
           <tr>
-            <th scope="col">ページ</th>
-            <th scope="col" class="num">読んだセッション</th>
-            <th scope="col" class="num">参照率</th>
-            <th scope="col" class="num">役立った</th>
-            <th scope="col" class="num">役立たなかった</th>
-            <th scope="col" class="num">分からない</th>
-            <th scope="col" class="num">未判定</th>
-            <th scope="col" class="num">役立った率</th>
+            <th scope="col" aria-sort={pageAria('page')}><button type="button" class="sort" onclick={() => sortPages('page')}>ページ<SortMark state={pageMark('page')} /></button></th>
+            {#each pageCols as c (c.key)}
+              <th scope="col" class="num" aria-sort={pageAria(c.key)}><button type="button" class="sort" onclick={() => sortPages(c.key)}>{c.label}<SortMark state={pageMark(c.key)} /></button></th>
+            {/each}
           </tr>
         </thead>
         <tbody>
-          {#each rows as r (r.page)}
+          {#each rows as r, i (r.page)}
+            {@const key = `${testid}:${r.page}`}
+            {@const rid = `${testid}-r-${i}`}
             <tr>
-              <th scope="row" class="page">{r.page}</th>
-              <td class="num">{int(r.sessions)}</td>
-              <td class="num">{pct(r.share)}</td>
-              <td class="num">{int(r.yes)}</td>
-              <td class="num">{int(r.no)}</td>
-              <td class="num">{int(r.unknown)}</td>
-              <td class="num">{int(r.unjudged)}</td>
-              <td class="num">{pct(r.helpfulRate)}</td>
+              <th scope="row" class="page">
+                <button type="button" class="open" aria-expanded={!!openPages[key]} aria-controls={openPages[key] ? rid : undefined} title={r.page} onclick={() => (openPages[key] = !openPages[key])}>{pageNames.short.get(r.page) ?? r.page}</button>
+              </th>
+              {#each pageCols as c (c.key)}
+                <td class="num">{c.rate ? pct(r[c.key]) : int(r[c.key] ?? 0)}</td>
+              {/each}
             </tr>
+            {#if openPages[key]}
+              {@const list = readersOf(r)}
+              <tr class="readers" id={rid} data-testid="insights-wiki-pages-readers">
+                <td colspan={pageCols.length + 1}>
+                  <p class="basis"><span class="path">{r.page}</span> を読んだセッション {int(list.length)} 件(新しい順)。右は、役立ったかの LLM の見立て。</p>
+                  <ul>
+                    {#each list.slice(0, READERS_MAX) as x (x.s.id)}
+                      <li><a href={x.s.href}>{labelOf(x.s)}</a> <span class="meta">{date(x.s.updatedAt ?? x.s.createdAt)} · {VERDICT_LABEL[x.verdict ?? 'none']}</span></li>
+                    {/each}
+                  </ul>
+                  {#if list.length > READERS_MAX}<p class="basis">ほか {int(list.length - READERS_MAX)} セッション(絞り込みで狭めると全部出ます)</p>{/if}
+                </td>
+              </tr>
+            {/if}
           {/each}
         </tbody>
       </table>
@@ -312,11 +381,78 @@
   .box.wide {
     grid-column: 1 / -1;
   }
+  /* 目次の「llm-wiki」から飛んだとき、箱の上端に余白を空ける */
+  .anchor {
+    scroll-margin-top: 12px;
+  }
   /* 狭い幅でも名前を 1 字ずつに折らない(表は .table-scroll で横に流す) */
   th.page {
-    min-width: 14em;
+    min-width: 12em;
     font-weight: 400;
     text-align: left;
+    overflow-wrap: anywhere;
+  }
+  .sort {
+    display: inline-flex;
+    align-items: center;
+    min-height: 24px;
+    font: inherit;
+    color: inherit;
+    background: none;
+    border: 0;
+    padding: 0;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .sort:hover {
+    text-decoration: underline;
+  }
+  /* ページの名前: 押すと読んだセッションの一覧を開く(開閉は ▸ / ▾ と aria-expanded) */
+  .open {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 4px;
+    min-height: 24px;
+    padding: 2px 0;
+    font: inherit;
+    color: var(--form);
+    text-align: left;
+    background: none;
+    border: 0;
+    cursor: pointer;
+    overflow-wrap: anywhere;
+  }
+  .open::before {
+    content: '▸';
+    flex: none;
+    color: var(--ink-3);
+  }
+  .open[aria-expanded='true']::before {
+    content: '▾';
+  }
+  .open:hover {
+    text-decoration: underline;
+  }
+  tr.readers > td {
+    padding: 6px 10px 8px 22px;
+    text-align: left;
+    background: var(--page);
+  }
+  tr.readers ul {
+    margin: 0;
+    padding-left: 1.2em;
+    font-size: 0.75rem;
+  }
+  tr.readers li {
+    margin: 2px 0;
+  }
+  tr.readers li a {
+    display: inline-block;
+    min-height: 24px;
+    padding: 2px 0;
+  }
+  .path {
+    font-family: var(--mono);
     overflow-wrap: anywhere;
   }
   .box h3 {

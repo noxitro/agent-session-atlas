@@ -1,5 +1,6 @@
 // セッションの絞り込み(画面のフィルタ行と CLI の --project 等で共用する純関数)
 import type { InputCoverage, SessionSummary } from './types.ts';
+import { wikiReferenced } from './wiki.ts';
 
 /** 絞り込みに使う最小限の形(SessionRecord と SessionSummary の両方が満たす) */
 export interface Filterable {
@@ -37,12 +38,14 @@ export interface FilterState {
   group: string;
   /** '1' ならメモのあるセッションだけ */
   memo: '' | '1';
+  /** '1' なら llm-wiki を参照したセッションだけ(wikiReferenced。書き込みだけは入れない) */
+  wiki: '' | '1';
 }
 
 export const NO_JUDGMENT = '(none)';
 
 export function emptyFilter(): FilterState {
-  return { from: '', to: '', project: ALL, person: ALL, client: ALL, model: ALL, branch: ALL, coverage: '', taskCategory: ALL, empty: '', tool: ALL, ids: '', group: '', memo: '' };
+  return { from: '', to: '', project: ALL, person: ALL, client: ALL, model: ALL, branch: ALL, coverage: '', taskCategory: ALL, empty: '', tool: ALL, ids: '', group: '', memo: '', wiki: '' };
 }
 
 /**
@@ -163,6 +166,7 @@ export function matches(s: SessionSummary, f: FilterState, ids: Set<string> | nu
   if (f.tool && !usedTool(s, f.tool)) return false;
   if (f.coverage && s.coverage !== f.coverage) return false;
   if (f.memo && !s.memo) return false;
+  if (f.wiki && !wikiReferenced(s.wiki)) return false;
   if (f.taskCategory) {
     const c = s.judgment?.taskCategory ?? NO_JUDGMENT;
     if (c !== f.taskCategory) return false;
@@ -271,7 +275,7 @@ export function decodeFilter(s: string): FilterState {
       continue;
     }
     if (k === 'coverage' && !['', 'input', 'output-only', 'none'].includes(v)) continue;
-    if ((k === 'empty' || k === 'memo') && !['', '1'].includes(v)) continue;
+    if ((k === 'empty' || k === 'memo' || k === 'wiki') && !['', '1'].includes(v)) continue;
     if (k === 'ids') v = joinIds(splitIds(v));
     if (k === 'group') v = v.trim();
     (f as unknown as Record<string, string>)[k] = v;

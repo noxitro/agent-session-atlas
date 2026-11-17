@@ -232,6 +232,7 @@ function dumpWith(
     outputOnly: { ...emptyFilter(), coverage: 'output-only' },
     person: { ...emptyFilter(), person: UNKNOWN },
     unjudged: { ...emptyFilter(), taskCategory: NO_JUDGMENT },
+    wiki: { ...emptyFilter(), wiki: '1' },
     ids: { ...emptyFilter(), ids: [...plain.slice(0, 5).map((s) => s.id), 'zzz'].join(',') },
     group: { ...emptyFilter(), group: g0?.name ?? '', ids: g0 ? effectiveIds({ ids: '', group: g0.name }, groups.groups, new Set(plain.map((s) => s.id))).ids : '' },
   };
