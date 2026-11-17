@@ -5,7 +5,6 @@ use atlas_core::collate::locale_compare;
 use atlas_core::types::SessionRecord;
 use atlas_core::{js, jsdate};
 use std::collections::{HashMap, HashSet};
-use chrono::{Local, LocalResult, NaiveDate, TimeZone};
 
 pub const ALL: &str = "";
 pub const UNKNOWN: &str = "(unknown)";
@@ -83,14 +82,8 @@ pub fn local_day_start(day: &str) -> Option<i64> {
     let y = if (0..=99).contains(&y) { 1900 + y } else { y };
     // 月・日の繰り上がり(13 月 → 翌年 1 月、0 日 → 前月末)
     let months = y as i64 * 12 + (m - 1);
-    let first = NaiveDate::from_ymd_opt(months.div_euclid(12) as i32, (months.rem_euclid(12) + 1) as u32, 1)?;
-    let date = first.checked_add_signed(chrono::Duration::days(d - 1))?;
-    let dt = date.and_hms_opt(0, 0, 0)?;
-    match Local.from_local_datetime(&dt) {
-        LocalResult::Single(t) => Some(t.timestamp_millis()),
-        LocalResult::Ambiguous(a, _) => Some(a.timestamp_millis()),
-        LocalResult::None => Local.from_local_datetime(&(dt + chrono::Duration::hours(1))).earliest().map(|t| t.timestamp_millis()),
-    }
+    let first = jsdate::Civil::date(months.div_euclid(12) as i32, (months.rem_euclid(12) + 1) as u32, 1)?;
+    jsdate::local_ms(first.add_days(d - 1)?)
 }
 
 fn eq_or_unknown(value: Option<&str>, want: &str) -> bool {
@@ -548,5 +541,44 @@ mod tests {
         assert_eq!(local_day_start("2026-01-32"), local_day_start("2026-02-01"));
         assert_eq!(local_day_start("2026-13-01"), local_day_start("2027-01-01"));
         assert_eq!(local_day_start("2026-1-01"), None);
+    }
+
+    /// 前の実装の出力(時間帯は Asia/Tokyo)
+    #[test]
+    fn local_days_match_previous_output() {
+        let cases: &[(&str, Option<i64>)] = &[
+            ("2026-01-31", Some(1769785200000)),
+            ("2026-02-01", Some(1769871600000)),
+            ("2026-01-32", Some(1769871600000)),
+            ("2026-13-01", Some(1798729200000)),
+            ("2026-00-00", Some(1764428400000)),
+            ("2026-00-01", Some(1764514800000)),
+            ("2026-01-00", Some(1767106800000)),
+            ("0026-07-01", Some(-1372928400000)),
+            ("0099-12-31", Some(946566000000)),
+            ("0100-01-01", Some(-59011491600000)),
+            ("9999-12-31", Some(253402182000000)),
+            ("2026-99-99", Some(2033218800000)),
+            ("2026-1-01", None),
+            ("abcd-ef-gh", None),
+            ("2026-03-08", Some(1772895600000)),
+            ("2026-11-01", Some(1793458800000)),
+        ];
+        jsdate::with_zone(&jsdate::TimeZone::fixed(jsdate::Offset::constant(9)), || {
+            for &(day, ms) in cases {
+                assert_eq!(local_day_start(day), ms, "{day}");
+            }
+        });
+    }
+
+    /// 0 時が夏時間の飛びに入る日は 1 時(jsdate::local_ms と同じ扱い)
+    #[test]
+    fn local_day_start_in_gap() {
+        let tz = jsdate::TimeZone::posix("BRT3BRST,M10.3.0/0,M2.3.0/0").unwrap();
+        jsdate::with_zone(&tz, || {
+            assert_eq!(local_day_start("2026-10-18").map(jsdate::to_iso).as_deref(), Some("2026-10-18T03:00:00.000Z"));
+            assert_eq!(local_day_start("2026-10-17").map(jsdate::to_iso).as_deref(), Some("2026-10-17T03:00:00.000Z"));
+            assert_eq!(local_day_start("2026-10-19").map(jsdate::to_iso).as_deref(), Some("2026-10-19T02:00:00.000Z"));
+        });
     }
 }

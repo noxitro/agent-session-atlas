@@ -14,13 +14,8 @@ unmaintained = "all"
 unsound = "all"
 # crates.io で取り下げられた版も止める(cargo update -p <名前> で上げる)
 yanked = "deny"
-# 無視する advisory。足すときは { id = "RUSTSEC-…", reason = "…" } の形で理由を書く
-ignore = [
-  # chrono が保守されなくなった(脆弱性ではない。上げられる版は無い)。atlas は日時の計算と書式にだけ使い、日時の文字列を
-  # chrono で読むところは無い(読み取りは jsdate.rs の自前の処理)ので、すぐの害は無い。これで止まったままだとリリースが出ず、
-  # 利用者の PC が古い atlas.exe のままになる。外せる条件: chrono を jiff か time に置き換えたとき
-  { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained (not a vulnerability, no fixed version); remove after migrating to jiff or time" },
-]
+# 無視する advisory(今は無し)。足すときは { id = "RUSTSEC-…", reason = "…" } の形で理由を書く
+ignore = []
 
 [licenses]
 # このリポジトリは MIT。配る atlas.exe に入れても MIT と両立する、寛容なライセンスだけを許す

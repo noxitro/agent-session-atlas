@@ -8,7 +8,6 @@ publish.workspace = true
 [dependencies]
 anyhow = "1.0.104"
 atlas-core = { version = "0.1.0", path = "../atlas-core" }
-chrono = "0.4.45"
 comrak = { version = "0.59.0", default-features = false }
 hex = "0.4.3"
 indexmap = "2.14.2"
