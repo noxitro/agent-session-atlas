@@ -39,6 +39,7 @@ import {
   requestCandidates,
   seriesKey,
   skillCandidates,
+  SKILL_RATE_CAUSE,
   skillStats,
   stuckByProject,
   stuckSessions,
@@ -275,6 +276,8 @@ function dumpWith(
   write('insights-versions', versions);
   write('insights-findings', instructionFindings(versions, insightMeta, plain.length));
   write('insights-skills', skillStats(plain, installed?.skills ?? null));
+  // 画面と insights.html で同じにする文
+  write('insights-texts', { skillRateCause: SKILL_RATE_CAUSE });
   const stuck = stuckSessions(plain);
   write('insights-stuck', stuck);
   write('insights-stuck-projects', stuckByProject(stuck, plain));

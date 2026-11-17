@@ -3,7 +3,7 @@
 
 use crate::format::{date_n, date_time_n, dec_n, duration, int_n};
 use crate::html::esc;
-use crate::insights::{clean_heading, thresholds as T, Candidate, InstructionFindings, SkillStats, StuckProject, StuckSession, VersionMeta, VersionStat};
+use crate::insights::{clean_heading, thresholds as T, SKILL_RATE_CAUSE, Candidate, InstructionFindings, SkillStats, StuckProject, StuckSession, VersionMeta, VersionStat};
 use crate::page_nav::{page_head, render_rail, render_top, NavGroup, NavItem, NavLink, PageNavOptions, NAV_JS};
 use crate::viewer::asset_folder;
 use atlas_core::js::{self, JsMap};
@@ -16,9 +16,6 @@ pub const INSIGHTS_FILE: &str = "insights.html";
 pub const INSIGHTS_JSON: &str = "insights.json";
 
 const CSS: &str = include_str!("../assets/insights.css");
-
-/// skill の失敗率の差の読み方(画面の改善点の skill の箱と同じ文。packages/report/src/app/components/Insights.svelte)
-const SKILL_RATE_CAUSE: &str = "呼ぶかどうかは作業の中身で決まるので、差は skill が原因とは限りません。";
 
 pub struct InsightsPageOptions<'a> {
     pub css: &'a str,

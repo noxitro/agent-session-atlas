@@ -300,6 +300,8 @@ fn main() -> Result<()> {
     d.write("insights-versions", &versions)?;
     d.write("insights-findings", &instruction_findings(&versions, &meta, plain.len()))?;
     d.write("insights-skills", &skill_stats(&plain_refs, installed.as_ref().map(|i| i.skills.as_slice())))?;
+    // 画面と insights.html で同じにする文
+    d.write("insights-texts", &json!({ "skillRateCause": SKILL_RATE_CAUSE }))?;
     let stuck = stuck_sessions(&plain_refs);
     d.write("insights-stuck", &stuck)?;
     d.write("insights-stuck-projects", &stuck_by_project(&stuck, &plain_refs))?;

@@ -233,6 +233,21 @@ fn paired_skill_invoked_counts_vault_path_once() {
     let alone = run_wiki(vec![ev("skill.invoked", json!({"name": "wiki-lint", "path": "D:/notes/my-wiki/skills/wiki-lint/SKILL.md"}), &t(2))]);
     assert_eq!(alone.skills.iter().map(|s| s.via).collect::<Vec<_>>(), vec![SkillVia::Event]);
     assert_eq!(alone.wiki.skill_calls, vec!["wiki-lint"]);
+    // skill.invoked がツールの呼び出しより先に届いた: 逆の順でも 1 件にまとめ、二重に数えない
+    let rev_named = run_wiki(vec![ev("skill.invoked", json!({"name": "wiki-query", "path": "D:\\notes\\my-wiki\\skills\\wiki-query\\SKILL.md"}), &t(1)), start("t1", "wiki-query", 2)]);
+    assert_eq!(rev_named.skills.iter().map(|s| (s.name.as_str(), s.via)).collect::<Vec<_>>(), vec![("wiki-query", SkillVia::Both)]);
+    assert_eq!(rev_named.wiki.skill_calls, vec!["wiki-query"]);
+    // 逆の順で、skill.invoked に path が無い(ツールの側でだけ数える)
+    let rev_no_path = run_wiki(vec![ev("skill.invoked", json!({"name": "wiki-query"}), &t(1)), start("t1", "wiki-query", 2)]);
+    assert_eq!(rev_no_path.skills.iter().map(|s| s.via).collect::<Vec<_>>(), vec![SkillVia::Both]);
+    assert_eq!(rev_no_path.wiki.skill_calls, vec!["wiki-query"]);
+    // 逆の順で、path から数えた skill を、名前が指定に無いツールの呼び出しが受ける(ツールの側では数えない)
+    let rev_path = run_wiki(vec![ev("skill.invoked", json!({"name": "wiki-lint", "path": "D:/notes/my-wiki/skills/wiki-lint/SKILL.md"}), &t(1)), start("t1", "wiki-lint", 2)]);
+    assert_eq!(rev_path.skills.iter().map(|s| s.via).collect::<Vec<_>>(), vec![SkillVia::Both]);
+    assert_eq!(rev_path.wiki.skill_calls, vec!["wiki-lint"]);
+    // 窓(2 分)より後のツールの呼び出しは別の呼び出し
+    let apart = run_wiki(vec![ev("skill.invoked", json!({"name": "wiki-query"}), &t(1)), start("t1", "wiki-query", 1 + 121)]);
+    assert_eq!(apart.skills.iter().map(|s| s.via).collect::<Vec<_>>(), vec![SkillVia::Event, SkillVia::Tool]);
 }
 
 #[test]
