@@ -14,7 +14,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { aggregate, isLowConfidence } from '../packages/report/src/lib/aggregate.ts';
 import { extractEmbedded } from '../packages/report/src/lib/embed.ts';
 import type { ReportData } from '../packages/report/src/lib/types.ts';
-import type { SessionsFile } from '../packages/core/src/types.ts';
+import type { SessionsFile } from '../packages/report/src/shared/types.ts';
 import { buildFixtureHome, FIXTURE_CODE, FIXTURES, ROOT, cliCommand } from './fixture-home.ts';
 import { DEFAULT_MAX_CHARS, DEFAULT_PER_PART, missingSections, packetFileName, packetSessionId, PACKET_SECTIONS, validateJudgments, type BundleManifest, type JudgmentsFile } from './judge-support.ts';
 

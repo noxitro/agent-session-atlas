@@ -2,8 +2,7 @@
 // - 指示文の版・skill・時間の使われ方は SessionSummary から求め、ブラウザで絞り込みに従って再計算する
 // - スキル化の候補は依頼文とターンごとのツールの列(sessions.json の analysis)から build 時に求め、結果だけ埋め込む
 // - 分かるのは相関まで。閾値は定数にして docs/PLAN.md に根拠を書く。閾値未満は件数を添えて「傾向」には出さない
-import type { SessionAnalysis } from '../../../core/src/types.ts';
-import { normalizeRequest } from '../../../core/src/text.ts';
+import type { SessionAnalysis } from '../shared/types.ts';
 import type { SessionSummary } from './types.ts';
 
 export const THRESHOLDS = {
@@ -333,8 +332,18 @@ export function stuckByProject(stuck: StuckSession[], sessions: SessionSummary[]
 
 // ---------- スキル化の候補(build 時) ----------
 
-/** 依頼文の正規化は packages/core/src/text.ts に移した(失敗の台帳の group でも使うため)。前の名前のまま使えるよう再公開する */
-export { normalizeRequest };
+/** 依頼文の正規化: 小文字、URL・パス・数字・16 進 id を印に、記号を落とし、空白を詰める */
+export function normalizeRequest(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/https?:\/\/\S+/g, ' <url> ')
+    .replace(/(?:[a-z]:[\\/]|\\\\)[^\s"'<>|]*|(?:^|[\s(])(?:\/[\w.-]+){2,}/g, ' <path> ')
+    .replace(/\b[0-9a-f]{8,}\b/g, ' <id> ')
+    .replace(/\d+/g, ' <n> ')
+    .replace(/[^\p{L}\p{N}<>\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
 export function trigrams(s: string): Set<string> {
   const out = new Set<string>();

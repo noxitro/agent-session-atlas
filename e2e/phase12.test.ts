@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { extractEmbedded } from '../packages/report/src/lib/embed.ts';
 import type { ReportData } from '../packages/report/src/lib/types.ts';
-import type { SessionsFile } from '../packages/core/src/types.ts';
+import type { SessionsFile } from '../packages/report/src/shared/types.ts';
 import { buildFixtureHome, FIXTURE_CODE, P12_SESSIONS, ROOT, cliCommand } from './fixture-home.ts';
 
 const WORK = join(ROOT, 'out', 'e2e-phase12');

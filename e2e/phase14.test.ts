@@ -14,7 +14,7 @@ import { join, relative } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { extractEmbedded } from '../packages/report/src/lib/embed.ts';
 import type { ReportData } from '../packages/report/src/lib/types.ts';
-import type { SessionsFile } from '../packages/core/src/types.ts';
+import type { SessionsFile } from '../packages/report/src/shared/types.ts';
 import { buildFixtureHome, FIXTURE_CODE, P11_SESSION, ROOT, cliCommand, startServer, type ServeHandle } from './fixture-home.ts';
 import { openReadOnly } from './sqlite.ts';
 

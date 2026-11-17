@@ -3,7 +3,7 @@
 import { EFFORT_ORDER, orderBy } from './exec.ts';
 import { localDayStart, sessionTime } from './filter.ts';
 import { mainEffortOf, mainModelsOf } from './main-effort.ts';
-import { PHASES, REQUEST_KINDS, type Phase, type TurnBucket } from '../../../core/src/turns.ts';
+import { PHASES, REQUEST_KINDS, type Phase, type TurnBucket } from '../shared/turns.ts';
 import { aggregateRetention, enoughMeasured, measuredOf, median, RETENTION_MIN_SESSIONS, retentionByPhase, shareOf, type RetentionAgg, type StatusTuple } from './retention.ts';
 import { turnAggregate, type TurnTuple } from './turns.ts';
 import type { SessionSummary } from './types.ts';

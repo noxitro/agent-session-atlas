@@ -2,35 +2,23 @@
 setlocal
 chcp 65001 >nul
 cd /d "%~dp0"
-if not defined UV_THREADPOOL_SIZE set "UV_THREADPOOL_SIZE=16"
 
-where node >nul 2>nul
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ensure-atlas.ps1 -KeepOlder
 if errorlevel 1 (
-  echo Node.js が見つかりません。Node.js 24 以上をインストールしてください。
+  echo.
   pause
   exit /b 1
 )
 
-if not "%ATLAS_NO_AUTO_UPDATE%"=="1" if not defined ATLAS_SELF_UPDATED node "%~dp0packages\cli\src\launcher-update.ts" & if errorlevel 10 if not errorlevel 11 set "ATLAS_SELF_UPDATED=1" & cmd /d /c call "%~f0" %* & call exit /b %%errorlevel%%
-
-node scripts\deps-fresh.mjs
-if errorlevel 1 (
-  echo 依存を入れます: npm install を実行します...
-  call npm install
-  if errorlevel 1 (
-    echo npm install に失敗しました。
-    pause
-    exit /b 1
-  )
-)
+if not "%ATLAS_NO_AUTO_UPDATE%"=="1" if not defined ATLAS_SELF_UPDATED bin\atlas.exe self-update 2>nul & if errorlevel 10 if not errorlevel 11 set "ATLAS_SELF_UPDATED=1" & cmd /d /c call "%~f0" %* & call exit /b %%errorlevel%%
 
 if not "%~1"=="" goto given
-node "%~dp0packages\cli\src\main.ts" open --pick
+bin\atlas.exe open --pick
 set "code=%errorlevel%"
 goto done
 
 :given
-node "%~dp0packages\cli\src\main.ts" open %*
+bin\atlas.exe open %*
 set "code=%errorlevel%"
 
 :done

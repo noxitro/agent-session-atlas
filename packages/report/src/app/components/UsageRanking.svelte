@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { FAILURE_CAUSE_LABELS, sortedCauses, type FailureCauses } from '../../../../core/src/tool-failure.ts';
+  import { FAILURE_CAUSE_LABELS, sortedCauses, type FailureCauses } from '../../shared/tool-failure.ts';
   import { failureRate, unusedSkills, type UsageRanking } from '../../lib/aggregate.ts';
   import { compact, int, percent } from '../../lib/format.ts';
 
