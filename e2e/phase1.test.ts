@@ -134,7 +134,7 @@ describe('Phase 1 E2E: fixtures', () => {
     // Phase 5: metrics は空のセッションを除いた集計 + 空の件数(006 / 007 / 010 の 3 件)
     expect(m.overall.sessions + m.emptySessions).toBe(s.sessions.length);
     expect(m.emptySessions).toBe(3);
-    // 依頼単位の分析(段階 1)の集計(表の書き出しは CLI の metrics。e2e/phase14 で見る)
+    // 依頼単位の分析の集計(表の書き出しは CLI の metrics。e2e/phase14 で見る)
     expect(m.turns.turns).toBeGreaterThan(0);
   });
 
