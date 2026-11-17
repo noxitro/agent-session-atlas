@@ -2,7 +2,7 @@
 version: 1
 slug: "packages-report-src-app-app-svelte"
 primary_target: "packages/report/src/app/App.svelte"
-related_targets: ["packages/report/src/detail.ts", "packages/report/src/glossary-page.ts", "packages/report/src/library.ts", "packages/report/src/memo-editor.ts", "packages/report/src/app/components/JobActions.svelte", "packages/report/src/app/components/JobBand.svelte", "packages/report/src/session-tools.ts", "packages/report/src/viewer.ts"]
+related_targets: ["crates/atlas-report/src/detail.rs", "crates/atlas-report/src/glossary_page.rs", "crates/atlas-report/src/library.rs", "crates/atlas-report/assets/memo-editor.js", "packages/report/src/app/components/JobActions.svelte", "packages/report/src/app/components/JobBand.svelte", "crates/atlas-report/assets/session-tools.js", "crates/atlas-report/src/viewer.rs"]
 ---
 
 # Surface brief: atlas レポート(out/atlas.html と out/sessions/<id>.html)
