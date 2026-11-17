@@ -676,6 +676,43 @@ fn uniq<'a>(it: impl IntoIterator<Item = &'a str>) -> Vec<String> {
     it.into_iter().filter(|x| seen.insert(*x)).map(str::to_string).collect()
 }
 
+/// まとまりの代表: 他の全員(自分を含む)との類似度の和が最大の人。和が同じなら先の人。
+/// 和は ms の順に足す(TS 版と同じ)。
+///
+/// 全員どうしを比べると人数の 2 乗の回数になり、同じ依頼を何度も実行したまとまり(数千人)では集計の大半を占めていた。
+/// 類似度は 3 文字の組だけで決まるので、同じ組を持つ人どうしは、どの相手との類似度も、ms の順に足した和も、ビットまで同じになる。
+/// そこで、組ごとに 1 回だけ相手の組との類似度を求め(行ごとに並べる)、和はその値を ms の順に足して作る(結果は全員を比べたときと同じ)。
+fn cluster_representative<'a>(ms: &[usize], grams: impl Fn(usize) -> &'a Trigrams + Sync) -> usize {
+    // 人ごとの組の番号と、組ごとの最初の人
+    let mut first: Vec<usize> = Vec::new();
+    let mut kind_of: Vec<u32> = Vec::with_capacity(ms.len());
+    let mut seen: HashMap<&[u64], u32> = HashMap::new();
+    for &m in ms {
+        let k = *seen.entry(grams(m).as_slice()).or_insert_with(|| {
+            first.push(m);
+            (first.len() - 1) as u32
+        });
+        kind_of.push(k);
+    }
+    let sums: Vec<f64> = first
+        .par_iter()
+        .map(|&a| {
+            let row: Vec<f64> = first.iter().map(|&b| jaccard(grams(a), grams(b))).collect();
+            kind_of.iter().fold(0.0, |acc, &k| acc + row[k as usize])
+        })
+        .collect();
+    let mut best = ms[0];
+    let mut best_s = f64::NEG_INFINITY;
+    for (&m, &k) in ms.iter().zip(&kind_of) {
+        let s = sums[k as usize];
+        if s > best_s {
+            best_s = s;
+            best = m;
+        }
+    }
+    best
+}
+
 pub fn request_candidates(sources: &[CandidateSource<'_>]) -> Vec<Candidate> {
     struct Item<'a> {
         id: &'a str,
@@ -761,16 +798,7 @@ pub fn request_candidates(sources: &[CandidateSource<'_>]) -> Vec<Candidate> {
             if ms.len() < T::MIN_REPEAT || sessions.len() < 2 {
                 return None;
             }
-            let mut best = ms[0];
-            let mut best_s = f64::NEG_INFINITY;
-            for &m in ms {
-                let s = ms.iter().fold(0.0, |a, &o| a + jaccard(&items[m].grams, &items[o].grams));
-                if s > best_s {
-                    best_s = s;
-                    best = m;
-                }
-            }
-            Some((best, sessions))
+            Some((cluster_representative(ms, |m| &items[m].grams), sessions))
         })
         .collect();
     let mut out: Vec<Candidate> = Vec::new();

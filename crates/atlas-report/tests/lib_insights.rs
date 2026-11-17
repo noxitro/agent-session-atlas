@@ -316,6 +316,25 @@ fn indexed_clustering_matches_naive() {
     }
 }
 
+/// 同じ依頼を何度も実行したとき(同じ文がまとまりの大半を占める)も、代表は全員を比べたときと同じ。
+/// 代表は、同じ 3 文字の組を持つ人の和を 1 回だけ求めて選ぶので、重なりが多い形と、和が同じになる形を試す
+#[test]
+fn repeated_requests_pick_same_representative_as_naive() {
+    for seed in [7u32, 2024, 99999] {
+        let mut data = random_sources(120, seed);
+        // 3 つの文を、ずらした順で何度も繰り返す(どれも同じ回数なら和が同じ人が出る)
+        let reps = ["run the synthetic benchmark task alpha and report the totals", "run the synthetic benchmark task alpha and report all totals", "run the synthetic benchmark task alpha then report the totals"];
+        for (i, (_, a)) in data.iter_mut().enumerate() {
+            a.requests.push(reps[(i + seed as usize) % reps.len()].to_string());
+            a.turn_active_ms.push(Some((i * 1000) as f64));
+        }
+        let src: Vec<CandidateSource> = data.iter().map(|(id, a)| CandidateSource { id, project: "p", analysis: a }).collect();
+        let got = request_candidates(&src);
+        assert!(got.iter().any(|c| c.count >= 100));
+        assert_eq!(got, naive(&src));
+    }
+}
+
 // ---------- retention.test.ts: retentionItem ----------
 
 #[test]
