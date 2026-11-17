@@ -577,7 +577,7 @@ fn reason(status: u16) -> &'static str {
 
 /// date 見出しの値(IMF-fixdate)
 fn http_date() -> String {
-    chrono::Utc::now().format("%a, %d %b %Y %H:%M:%S GMT").to_string()
+    atlas_core::jsdate::http_date(atlas_core::jsdate::now_ms())
 }
 
 /// 応答を書く。見出しは hyper と同じ順(渡された順・connection・content-length・date)。HEAD と 204・304 には本文を付けない。

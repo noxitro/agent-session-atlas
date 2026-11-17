@@ -13,7 +13,6 @@ use crate::open_reuse::{can_reuse, clear_built, inputs_key, read_built, write_bu
 use crate::paths::{resolve, Paths, REPO_ROOT};
 use anyhow::Result;
 use atlas_core::snapshot::{read_snapshot_manifest, SourceLayout};
-use chrono::{Datelike, Local, TimeZone, Timelike};
 use serde_json::json;
 use std::path::Path;
 use std::time::Instant;
@@ -43,8 +42,8 @@ pub fn run_all_after_snapshot(o: &CliOptions, p: &Paths, log: Log<'_>, t: Instan
 
 /// `new Date(iso).toLocaleString('ja-JP')`(2026/1/5 9:03:07 の形)
 fn ja_locale(iso: &str) -> String {
-    match atlas_core::jsdate::parse_ms(iso).and_then(|ms| Local.timestamp_millis_opt(ms).earliest()) {
-        Some(d) => format!("{}/{}/{} {}:{:02}:{:02}", d.year(), d.month(), d.day(), d.hour(), d.minute(), d.second()),
+    match atlas_core::jsdate::parse_ms(iso).and_then(atlas_core::jsdate::local_parts) {
+        Some(d) => format!("{}/{}/{} {}:{:02}:{:02}", d.year, d.month, d.day, d.hour, d.minute, d.second),
         None => "Invalid Date".into(),
     }
 }
@@ -83,4 +82,24 @@ pub fn run_all_or_reuse(o: &CliOptions, p: &Paths, built_file: &Path, log: Log<'
         write_built(built_file, &key, &p.out)?;
     }
     Ok(Some(build))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use atlas_core::jsdate::{with_zone, Offset, TimeZone};
+
+    #[test]
+    fn ja_locale_form() {
+        with_zone(&TimeZone::fixed(Offset::constant(9)), || {
+            assert_eq!(ja_locale("2026-01-05T00:03:07.999Z"), "2026/1/5 9:03:07");
+            assert_eq!(ja_locale("2026-12-31T15:00:00Z"), "2027/1/1 0:00:00");
+            assert_eq!(ja_locale("nope"), "Invalid Date");
+            assert_eq!(ja_locale(""), "Invalid Date");
+        });
+        with_zone(&TimeZone::posix("EST5EDT,M3.2.0,M11.1.0").unwrap(), || {
+            assert_eq!(ja_locale("2026-07-01T14:05:09Z"), "2026/7/1 10:05:09");
+            assert_eq!(ja_locale("2026-01-15T15:05:09Z"), "2026/1/15 10:05:09");
+        });
+    }
 }

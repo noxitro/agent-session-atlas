@@ -7,11 +7,11 @@ publish.workspace = true
 
 [dependencies]
 anyhow = "1.0.104"
-chrono = "0.4.45"
 hex = "0.4.3"
 icu_collator = "2.4.0"
 icu_locale_core = "2.4.0"
 indexmap = { version = "2.14.2", features = ["serde"] }
+jiff = "1.0.0"
 memchr = "2.8.3"
 rayon = "1.12.0"
 regex = "1.13.1"
