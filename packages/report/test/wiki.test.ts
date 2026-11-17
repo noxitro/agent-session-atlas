@@ -4,7 +4,20 @@ import { bucket } from '../src/lib/aggregate.ts';
 import { usageCount } from '../src/lib/condition-usage.ts';
 import type { ConditionSession } from '../src/lib/conditions.ts';
 import type { SessionSummary } from '../src/lib/types.ts';
-import { WIKI_NO_RECORD, WIKI_NOT_COUNTED, wikiKind, wikiReferenceCount, wikiReferenced, wikiState, wikiStateNote, wikiUsageSummary, type WikiCounts } from '../src/lib/wiki.ts';
+import {
+  WIKI_NO_RECORD,
+  WIKI_NO_RECORD_SHORT,
+  WIKI_NOT_COUNTED,
+  WIKI_NOT_COUNTED_SHORT,
+  wikiKind,
+  wikiReferenceCount,
+  wikiReferenced,
+  wikiState,
+  wikiStateNote,
+  wikiStateShortNote,
+  wikiUsageSummary,
+  type WikiCounts,
+} from '../src/lib/wiki.ts';
 
 const w = (o: WikiCounts = {}): Required<WikiCounts> => ({ indexReads: 0, pageReads: 0, skillCalls: 0, writes: 0, otherCalls: 0, ...o });
 
@@ -54,6 +67,13 @@ describe('集計の状態', () => {
     // 0 件と読まれないように書く
     expect(WIKI_NOT_COUNTED).toMatch(/0 件という意味ではありません/);
   });
+  it('表で wiki の列を出さないときの短い断りも、数えていない・記録なしで分ける', () => {
+    expect(wikiStateShortNote('not-counted')).toBe(WIKI_NOT_COUNTED_SHORT);
+    expect(wikiStateShortNote('no-record')).toBe(WIKI_NO_RECORD_SHORT);
+    expect(wikiStateShortNote('counted')).toBeNull();
+    // 記録なしでは、数えていないと言い切らない
+    expect(WIKI_NO_RECORD_SHORT).not.toMatch(/数えていません/);
+  });
 });
 
 describe('改善点の llm-wiki の利用の件数', () => {
@@ -97,11 +117,18 @@ describe('どこでも同じ数え方', () => {
       updatedAt: null,
       judgment: null,
     }) as unknown as SessionSummary;
-  const cases = [w({ indexReads: 1 }), w({ otherCalls: 1 }), w({ writes: 1 }), w(), w({ skillCalls: 1 })];
-  it('集計の sessionsWithWiki と、課題 × 条件の利用の確認は、wikiReferenced と同じ', () => {
-    const b = bucket('all', '全体', cases.map(summary));
-    expect(b.sessionsWithWiki).toBe(cases.filter(wikiReferenced).length);
-    expect(b.sessionsWithWiki).toBe(3);
-    for (const c of cases) expect(usageCount({ id: 'x', wiki: c } as unknown as ConditionSession, 'wiki') > 0).toBe(wikiReferenced(c));
+  /** 名前・wiki の回数・参照したか(1 件ずつ集計する。まとめて数えると、書き込みだけと検索だけが打ち消し合って前の数え方でも通る) */
+  const cases: [string, Required<WikiCounts>, boolean][] = [
+    ['索引だけ', w({ indexReads: 1 }), true],
+    ['検索だけ', w({ otherCalls: 1 }), true],
+    ['書き込みだけ', w({ writes: 1 }), false],
+    ['触れていない', w(), false],
+    ['skill だけ', w({ skillCalls: 1 }), true],
+    ['参照と書き込み', w({ pageReads: 1, writes: 2 }), true],
+  ];
+  it.each(cases)('%s: 集計の sessionsWithWiki と、課題 × 条件の利用の確認は、wikiReferenced と同じ', (_name, c, referenced) => {
+    expect(wikiReferenced(c)).toBe(referenced);
+    expect(bucket('all', '全体', [summary(c)]).sessionsWithWiki).toBe(referenced ? 1 : 0);
+    expect(usageCount({ id: 'x', wiki: c } as unknown as ConditionSession, 'wiki') > 0).toBe(referenced);
   });
 });

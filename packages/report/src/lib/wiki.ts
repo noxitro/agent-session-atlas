@@ -50,14 +50,23 @@ export function wikiState(sessions: readonly { wiki?: WikiCounts | null }[], wik
 }
 
 /** vault を指定せずに集計したときの理由(crates/atlas-core/src/wiki.rs の WIKI_NOT_COUNTED と同じ文) */
-export const WIKI_NOT_COUNTED = 'この集計では llm-wiki の vault を指定していないので、wiki の参照は数えていません(0 件という意味ではありません)。設定の wikis で vault を指定して集計し直すと数えます。';
+export const WIKI_NOT_COUNTED = 'この集計では llm-wiki の vault を指定していないので、wiki の参照は数えていません(0 件という意味ではありません)。atlas.config.json の wikis で vault を指定して集計し直すと数えます。';
 
 /** vault を指定していたかの記録が無く、参照したセッションも無いときの理由 */
 export const WIKI_NO_RECORD = 'この集計には、llm-wiki の vault を指定していたかの記録がありません(集計し直すと記録されます)。wiki を参照したセッションが無いので、数えていないのか、参照していないのかは分かりません。';
 
+/** 表(プロジェクト別・人別)で wiki の列を出さないときの短い断り。全文は集計明細などに出す */
+export const WIKI_NOT_COUNTED_SHORT = 'wiki の列は出していません(この集計では wiki の参照を数えていません。理由は集計明細)。';
+export const WIKI_NO_RECORD_SHORT = 'wiki の列は出していません(この集計では wiki の参照を数えたかどうかが分かりません。理由は集計明細)。';
+
 /** 件数の代わりに出す理由の文。数えた集計では null */
 export function wikiStateNote(state: WikiState): string | null {
   return state === 'not-counted' ? WIKI_NOT_COUNTED : state === 'no-record' ? WIKI_NO_RECORD : null;
+}
+
+/** 表で wiki の列を出さないときの短い断り。数えた集計では null */
+export function wikiStateShortNote(state: WikiState): string | null {
+  return state === 'not-counted' ? WIKI_NOT_COUNTED_SHORT : state === 'no-record' ? WIKI_NO_RECORD_SHORT : null;
 }
 
 /** 改善点の「llm-wiki の利用」の箱の件数(率は出さない) */

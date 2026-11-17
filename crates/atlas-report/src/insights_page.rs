@@ -206,7 +206,7 @@ pub fn render_insights_html(o: &InsightsPageOptions<'_>) -> String {
         )
     };
     let skills = format!(
-        "<section class=\"section ins\" id=\"i-skills\" aria-labelledby=\"h-i-skills\"><div class=\"section-head\"><h2 id=\"h-i-skills\">skill の傾向</h2><p>呼び出し回数(利用者 / エージェント)、本文の大きさ、呼んだセッションと呼ばなかったセッションの失敗率(ツール呼び出しのうち失敗・拒否の割合。それぞれ {min} セッション未満なら —)。{cause}</p></div>{norate}<div class=\"table-scroll\"><table class=\"ledger\"><thead><tr><th scope=\"col\">skill</th><th scope=\"col\" class=\"num\">呼び出し</th><th scope=\"col\" class=\"num\">利用者 / エージェント</th><th scope=\"col\" class=\"num\">本文の字数</th><th scope=\"col\" class=\"num\">セッション</th>{rate_head}<th scope=\"col\" class=\"num\">出力トークン / セッション</th></tr></thead><tbody>{rows}</tbody></table></div>{unused}</section>",
+        "<section class=\"section ins\" id=\"i-skills\" aria-labelledby=\"h-i-skills\"><div class=\"section-head\"><h2 id=\"h-i-skills\">skill の傾向</h2><p>呼び出し回数(利用者 / エージェント)、本文の大きさ、呼んだセッションと呼ばなかったセッションの失敗率(ツールの失敗・拒否 / 呼び出し。それぞれ {min} セッション未満なら —)。{cause}</p></div>{norate}<div class=\"table-scroll\"><table class=\"ledger\"><thead><tr><th scope=\"col\">skill</th><th scope=\"col\" class=\"num\">呼び出し</th><th scope=\"col\" class=\"num\">利用者 / エージェント</th><th scope=\"col\" class=\"num\">本文の字数</th><th scope=\"col\" class=\"num\">セッション</th>{rate_head}<th scope=\"col\" class=\"num\">出力トークン / セッション</th></tr></thead><tbody>{rows}</tbody></table></div>{unused}</section>",
         min = T::MIN_SESSIONS,
         cause = SKILL_RATE_CAUSE,
         norate = if rates || o.skills.stats.is_empty() {

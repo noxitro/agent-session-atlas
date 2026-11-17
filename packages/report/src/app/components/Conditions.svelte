@@ -11,6 +11,8 @@
   /** wiki: llm-wiki の参照を数えた集計か(App.svelte が絞り込み前の全セッションで決める。数えていなければ llm-wiki の利用は理由だけにする) */
   let { table, wiki = 'counted' }: { table: ConditionTable; wiki?: WikiState } = $props();
   const wikiNote = $derived(wikiStateNote(wiki));
+  /** 件数の代わりに選択肢に添える語(記録なしは、数えていないとは言い切らない) */
+  const WIKI_STATE_LABEL: Record<WikiState, string> = { counted: '', 'not-counted': '(数えていません)', 'no-record': '(記録なし)' };
 
   const MIN = COMPARE_MIN_SESSIONS;
   const DASH = '—';
@@ -33,12 +35,15 @@
   const USAGE_KIND_LABEL: Record<UsageKind, string> = { wiki: 'llm-wiki', skill: 'skill', mcp: 'MCP サーバー', tool: 'ツール' };
   /** 食い違ったセッションの一覧に並べる数 */
   const LIST_MAX = 50;
-  let item = $state(WIKI_ITEM);
+  /** 選んだもの(まだ選んでいなければ null で、既定のものを出す) */
+  let item = $state<string | null>(null);
   /** 確かめるもの → 使うはずの条件(画面の中だけ。保存しない) */
   let expectedBy = $state<Record<string, string[]>>({});
   const items = $derived(usageItems(table.members));
-  // タスクタグを付け替えて選んでいたものが無くなったら、llm-wiki に戻す
-  const current = $derived(items.some((i) => i.key === item) ? item : WIKI_ITEM);
+  // 既定は llm-wiki。wiki の参照を数えていない(か分からない)集計では、表の出る wiki 以外の最初のもの(llm-wiki は選択肢に残す)
+  const fallback = $derived(wikiNote ? (items.find((i) => i.kind !== 'wiki')?.key ?? WIKI_ITEM) : WIKI_ITEM);
+  // タスクタグを付け替えて選んでいたものが無くなったら、既定に戻す
+  const current = $derived(item !== null && items.some((i) => i.key === item) ? item : fallback);
   // 戻したことを選択にも残す(後でその項目が表に戻っても、黙って選び直さない)
   $effect(() => {
     if (current !== item) item = current;
@@ -257,7 +262,7 @@
           {#each USAGE_KINDS as k (k)}
             {#if items.some((i) => i.kind === k)}
               <optgroup label={USAGE_KIND_LABEL[k]}>
-                {#each items.filter((i) => i.kind === k) as i (i.key)}<option value={i.key}>{i.kind === 'wiki' ? 'llm-wiki の参照' : i.name}{i.kind === 'wiki' && wikiNote ? '(数えていません)' : `(${int(i.sessions)})`}</option>{/each}
+                {#each items.filter((i) => i.kind === k) as i (i.key)}<option value={i.key}>{i.kind === 'wiki' ? 'llm-wiki の参照' : i.name}{i.kind === 'wiki' && wikiNote ? WIKI_STATE_LABEL[wiki] : `(${int(i.sessions)})`}</option>{/each}
               </optgroup>
             {/if}
           {/each}

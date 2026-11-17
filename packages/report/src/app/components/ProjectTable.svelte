@@ -2,7 +2,7 @@
   import type { Bucket } from '../../lib/aggregate.ts';
   import { dateTime, dec, duration, int, pathParts } from '../../lib/format.ts';
   import { confidenceLabel } from '../../lib/judgment-labels.ts';
-  import { wikiStateNote, type WikiState } from '../../lib/wiki.ts';
+  import { wikiStateShortNote, type WikiState } from '../../lib/wiki.ts';
   import SortMark from './SortMark.svelte';
 
   let {
@@ -99,8 +99,8 @@
       asc = k === 'label';
     }
   }
-  /** wiki の参照を数えていない集計の理由(このときは wiki の列を出さず、並べ替えの対象にもしない) */
-  const wikiNote = $derived(wikiStateNote(wiki));
+  /** wiki の参照を数えていない集計の短い断り(このときは wiki の列を出さず、並べ替えの対象にもしない。理由の全文は集計明細) */
+  const wikiNote = $derived(wikiStateShortNote(wiki));
   const cols: { key: Key; label: string; title?: string }[] = $derived([
     { key: 'updated', label: '最終更新', title: 'いちばん後に更新されたセッションの日時' },
     { key: 'sessions', label: 'セッション' },
@@ -297,9 +297,14 @@
   .more {
     margin: 8px 0 0;
   }
-  .send-note,
+  .send-note {
+    margin: 0 0 8px;
+    color: var(--ink-2);
+  }
+  /* 節の説明文(.section-head p)と同じ大きさ */
   .wiki-off {
     margin: 0 0 8px;
+    font-size: 0.8125rem;
     color: var(--ink-2);
   }
   .send-error {

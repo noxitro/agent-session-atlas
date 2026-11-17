@@ -121,7 +121,7 @@
         <div class="table-scroll">
           <table class="ledger small">
             <caption class="cap">呼び出しの多い skill(上位 {Math.min(TOP, skills.stats.length)} / 全 {int(skills.stats.length)} 件)</caption>
-            <thead><tr><th scope="col">skill</th><th scope="col" class="num">呼び出し</th><th scope="col" class="num">字数</th>{#if skillRates}<th scope="col" class="num">失敗率(ツール呼び出しのうち失敗・拒否。呼んだ / 呼ばない)</th>{/if}</tr></thead>
+            <thead><tr><th scope="col">skill</th><th scope="col" class="num">呼び出し</th><th scope="col" class="num">字数</th>{#if skillRates}<th scope="col" class="num">失敗率(呼んだ / 呼ばない)</th>{/if}</tr></thead>
             <tbody>
               {#each skills.stats.slice(0, TOP) as s (s.name)}
                 <tr><td>{s.name}</td><td class="num">{int(s.calls)}</td><td class="num">{s.chars == null ? '記録なし' : int(s.chars)}</td>{#if skillRates}<td class="num">{pct(s.failureWith)} / {pct(s.failureWithout)}</td>{/if}</tr>
@@ -130,7 +130,7 @@
           </table>
         </div>
         {#if skillRates}
-          <p class="basis">呼んだ / 呼ばない: その skill を呼んだセッションと、呼ばなかったセッション。— は {THRESHOLDS.MIN_SESSIONS} セッション未満。{SKILL_RATE_CAUSE}</p>
+          <p class="basis">失敗率: ツールの失敗・拒否 / 呼び出し(その skill を呼んだセッション / 呼ばなかったセッション)。— は {THRESHOLDS.MIN_SESSIONS} セッション未満。{SKILL_RATE_CAUSE}</p>
         {:else}
           <p class="basis">{THRESHOLDS.MIN_SESSIONS} セッション以上で呼ばれた skill が無いので、呼んだときと呼ばないときの失敗率は比べられません。</p>
         {/if}
@@ -143,10 +143,21 @@
       {#if wikiNote}
         <p class="basis" data-testid="insights-wiki-off">{wikiNote}</p>
       {:else}
-        <p class="counts" data-testid="insights-wiki-counts">wiki を参照した <strong>{int(wikiUse.referenced)}</strong>(うち書き込みもあり {int(wikiUse.referencedWithWrites)})/ 書き込みだけ <strong>{int(wikiUse.writeOnly)}</strong> / 参照なし <strong>{int(wikiUse.none)}</strong> セッション</p>
-        <p class="basis" data-testid="insights-wiki-breakdown">参照の内訳(引数に vault の場所が現れた呼び出し): 索引 {int(wikiUse.indexReads)} 回、個別ページ 延べ {int(wikiUse.pageReads)}、wiki の skill {int(wikiUse.skillCalls)} 回、検索・一覧など {int(wikiUse.otherCalls)} 回</p>
-        <p class="basis">参照には、wiki の skill(取り込み・点検の skill も入ります)と、vault の場所が引数に出たそのほかの呼び出し(シェルを含む。失敗した読み取りも 1 回)が入るので、wiki の手入れをしたセッションの多くは「うち書き込みもあり」に入ります。書き込みに数えるのは編集のツールだけで(シェルで書いたものは参照のほうに入ります)、相対パスだけの読み・MCP 経由の読み・指定に入っていない vault は数えません。</p>
-        <p class="basis" data-testid="insights-wiki-why">参照したセッションとしないセッションの率は並べていません。参照するかどうかは作業の中身で決まる(調べものの始めにも、詰まった後にも読む)ので、差が出ても wiki が原因とは分かりません。相対パスや MCP 経由の読みは数えないので、「参照なし」にも参照したセッションが混ざります。wiki は 1 つなので、skill のように名前どうしを見比べることもできません。skill の箱にも同じ弱さがあります。選んだ課題で結果が変わるかは、同じ課題を wiki あり / なしで繰り返して「課題 × 条件」で確かめられます(普段の作業全体のことは分かりません。<a href="glossary.html#conditions">用語の説明</a>)。</p>
+        <div class="table-scroll">
+          <table class="ledger small" data-testid="insights-wiki-counts">
+            <caption class="cap">セッションの数</caption>
+            <thead><tr><th scope="col" class="num">参照した</th><th scope="col" class="num">うち書き込みもあり</th><th scope="col" class="num">書き込みだけ</th><th scope="col" class="num">参照なし</th></tr></thead>
+            <tbody><tr><td class="num">{int(wikiUse.referenced)}</td><td class="num">{int(wikiUse.referencedWithWrites)}</td><td class="num">{int(wikiUse.writeOnly)}</td><td class="num">{int(wikiUse.none)}</td></tr></tbody>
+          </table>
+        </div>
+        <div class="table-scroll">
+          <table class="ledger small" data-testid="insights-wiki-breakdown">
+            <caption class="cap">参照の内訳(回。個別ページは読んだページの延べ)</caption>
+            <thead><tr><th scope="col" class="num">索引</th><th scope="col" class="num">個別ページ</th><th scope="col" class="num">wiki の skill</th><th scope="col" class="num">検索・一覧など</th></tr></thead>
+            <tbody><tr><td class="num">{int(wikiUse.indexReads)}</td><td class="num">{int(wikiUse.pageReads)}</td><td class="num">{int(wikiUse.skillCalls)}</td><td class="num">{int(wikiUse.otherCalls)}</td></tr></tbody>
+          </table>
+        </div>
+        <p class="basis" data-testid="insights-wiki-why">率は並べていません。参照するかどうかは作業の中身で決まるので、差が出ても wiki が原因とは分かりません。引数に vault の場所が出ない読みは数えないので、「参照なし」にも参照したセッションが混ざります。数え方は<a href="glossary.html#llm-wiki">用語の説明</a>、wiki あり / なしで比べるときは<a href="glossary.html#conditions">課題 × 条件</a>。</p>
       {/if}
     </div>
 
@@ -237,10 +248,6 @@
     margin: 0 0 6px;
     font-size: 0.75rem;
     color: var(--ink-2);
-  }
-  .counts {
-    margin: 0 0 6px;
-    font-size: 0.8125rem;
   }
   ol {
     margin: 0;

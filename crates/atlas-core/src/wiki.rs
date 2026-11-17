@@ -86,7 +86,7 @@ pub fn empty_wiki() -> WikiUsage {
 
 /// vault を指定せずに集計したときの、wiki の参照を出さない理由(packages/report/src/lib/wiki.ts の WIKI_NOT_COUNTED と同じ文。
 /// npm run parity:fixture の wiki で突き合わせる)
-pub const WIKI_NOT_COUNTED: &str = "この集計では llm-wiki の vault を指定していないので、wiki の参照は数えていません(0 件という意味ではありません)。設定の wikis で vault を指定して集計し直すと数えます。";
+pub const WIKI_NOT_COUNTED: &str = "この集計では llm-wiki の vault を指定していないので、wiki の参照は数えていません(0 件という意味ではありません)。atlas.config.json の wikis で vault を指定して集計し直すと数えます。";
 
 /// wiki を参照したか。索引の読み取り・個別ページの読み取り・wiki の skill の呼び出し・そのほかの呼び出し(vault の検索・一覧など)が
 /// 合わせて 1 回以上。書き込みは入れない(書き込みだけのセッションは参照していない)。
