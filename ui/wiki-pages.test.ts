@@ -3,6 +3,7 @@
 //     読んだセッション・LLM の見立ての件数・未判定を列に並べ、分母が閾値に届かない率は「—」。参照率の分母と注を出す
 //  b. 絞り込みに従う(ページを読んだセッションを外すと表が消え、理由の文を出す)
 //  c. ページの名前を埋め込む前の版(17)の atlas.html では、表を出さずに理由を出す
+//  d. 11 ページ以上を読んだときは上位 10 行と「全件を表で見る」(埋め込みのデータを差し替えて確かめる)
 import { spawnSync } from 'node:child_process';
 import { readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -10,7 +11,7 @@ import { chromium, type Browser, type Page } from 'playwright';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { shotOnFailure } from './failure-shot.ts';
 import { buildFixtureHome, FIXTURES, ROOT, cliCommand } from '../e2e/fixture-home.ts';
-import { extractEmbedded } from '../packages/report/src/lib/embed.ts';
+import { extractEmbedded, serializeForScript } from '../packages/report/src/lib/embed.ts';
 import { emptyFilter, encodeFilter } from '../packages/report/src/lib/filter.ts';
 import { THRESHOLDS } from '../packages/report/src/lib/insights.ts';
 import { REPORT_DATA_VERSION, type ReportData } from '../packages/report/src/lib/types.ts';
@@ -81,7 +82,7 @@ describe('llm-wiki のページごとの表', () => {
     expect(await table.locator('caption').innerText()).toContain(`参照率の分母は wiki を参照したセッション ${referenced} 件`);
     // 注: 引用は見ていない・LLM の見立て・1 つの点数にしない
     expect(await box().getByTestId('insights-wiki-pages-why').innerText()).toContain('回答の中で引用したかは見ていません');
-    expect(await box().getByTestId('insights-wiki-pages-llm').innerText()).toContain('役立ったかは LLM の見立てで、判定役は読んだページの名前と抜粋を見たうえで答えています。測った値ではありません');
+    expect(await box().getByTestId('insights-wiki-pages-llm').innerText()).toContain('役立ったかは LLM の見立てで、判定役は読んだページの名前と、ログにあれば抜粋を見たうえで答えています。測った値ではありません');
     expect(await box().innerText()).toContain(`— は分母が ${THRESHOLDS.MIN_SESSIONS} セッション未満`);
   });
 
@@ -92,6 +93,33 @@ describe('llm-wiki のページごとの表', () => {
     await expect.poll(() => box().getByTestId('insights-wiki-pages-empty').count()).toBe(1);
     expect(await box().locator('table').count()).toBe(0);
     expect(await box().getByTestId('insights-wiki-pages-empty').innerText()).toMatch(/^この条件で、llm-wiki のページを読んだセッションはありません/);
+  });
+
+  it('d. 11 ページ以上を読んだときは上位 10 行を出し、「全件を表で見る」で全ページの表を開ける', async () => {
+    // 埋め込みのデータの 004 だけを、12 ページを読んだ形に差し替える(名前は辞書に、要約は番号)
+    const html = await readFile(join(out, 'atlas.html'), 'utf8');
+    const d = extractEmbedded<ReportData>(html);
+    const names = Array.from({ length: 12 }, (_, i) => `wiki/topics/zz-page-${String(i).padStart(2, '0')}.md`);
+    d.wikiPageNames = names;
+    const s4 = d.sessions.find((s) => s.id === '00000000-0000-4000-8000-000000000004')!;
+    s4.wiki.pages = names.map((_, i) => i);
+    s4.judgment!.wikiPages = [[0, 'yes']];
+    const re = /(<script type="application\/json" id="atlas-data">)[\s\S]*?(<\/script>)/;
+    expect(re.test(html)).toBe(true);
+    const many = join(out, 'atlas-many.html');
+    await writeFile(many, html.replace(re, (_m, a: string, b: string) => `${a}${serializeForScript(d)}${b}`));
+    await page.goto(fileUrl(many));
+    const table = box().getByTestId('insights-wiki-pages-table');
+    await expect.poll(() => table.locator('tbody tr').count()).toBe(10);
+    expect(await table.locator('caption').innerText()).toContain('上位 10 / 全 12 ページ');
+    const all = box().locator('details.tableview');
+    expect(await all.locator('summary').innerText()).toBe('全件を表で見る(12 ページ)');
+    await all.locator('summary').click();
+    const full = box().getByTestId('insights-wiki-pages-all');
+    await expect.poll(() => full.locator('tbody tr').count()).toBe(12);
+    // 読んだセッションが同じなら名前の順。番号から名前に戻して並べる
+    expect((await full.locator('tbody th').allInnerTexts()).map((t) => t.trim())).toEqual(names);
+    expect((await full.locator('tbody tr').first().locator('td').allInnerTexts()).map((t) => t.trim())).toEqual(['1', '—', '1', '0', '0', '0', '—']);
   });
 
   it('c. ページの名前を埋め込む前の版の atlas.html では表を出さず、理由を出す', async () => {

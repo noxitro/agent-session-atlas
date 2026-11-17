@@ -11,7 +11,7 @@ export const JUDGMENTS_SCHEMA_VERSIONS: readonly number[] = [1, 2];
 
 const HELPFUL: readonly string[] = ['yes', 'no', 'unknown'] satisfies WikiHelpful[];
 
-/** wikiPages を読む。配列でなければ null(ページは未判定)。形の合わない要素と、同じページの 2 回目以降は捨てる */
+/** wikiPages を読む。配列でなければ null(ページは未判定)。形の合わない要素と、同じページの 2 回目以降は捨てる。理由が無ければ空 */
 export function parseWikiPages(v: unknown): WikiPageVerdict[] | null {
   if (!Array.isArray(v)) return null;
   const out: WikiPageVerdict[] = [];
@@ -20,7 +20,7 @@ export function parseWikiPages(v: unknown): WikiPageVerdict[] | null {
     const page = typeof o.page === 'string' ? o.page.trim() : '';
     if (!page || typeof o.helpful !== 'string' || !HELPFUL.includes(o.helpful)) continue;
     if (out.some(([p]) => p === page)) continue;
-    out.push([page, o.helpful as WikiHelpful]);
+    out.push([page, o.helpful as WikiHelpful, typeof o.reason === 'string' ? o.reason : '']);
   }
   return out;
 }
@@ -51,7 +51,7 @@ export function parseJudgments(raw: unknown): JudgmentsIndex {
     const hours = num(h.hours);
     if (hours == null || hours < 0) throw new Error(`judgments.json の items[${i}](${id})の humanEffort.hours が数値ではありません`);
     const a = obj(x.aiOutcome);
-    const wikiPages = parseWikiPages(x.wikiPages);
+    const wikiPageVerdicts = parseWikiPages(x.wikiPages);
     bySession.set(id, {
       taskCategory: str(x.taskCategory),
       hours,
@@ -65,7 +65,7 @@ export function parseJudgments(raw: unknown): JudgmentsIndex {
       effects: { instructions: num(obj(x.instructionsEffect).score), wiki: num(obj(x.wikiEffect).score), skillsAgents: num(obj(x.skillsAgentsEffect).score) },
       rationale: str(h.rationale),
       backend: str(obj(x.judge).backend) ?? str(judge.backend),
-      ...(wikiPages ? { wikiPages } : {}),
+      ...(wikiPageVerdicts ? { wikiPageVerdicts } : {}),
     });
   });
   return { backend: str(judge.backend), model: str(judge.model), ranAt: str(judge.ranAt), bySession };

@@ -25,6 +25,7 @@
     libraryHref,
     wiki = 'counted',
     wikiPagesRecorded = true,
+    wikiPageNames = [],
   }: {
     sessions: SessionSummary[];
     /** 絞り込み前の全セッション */
@@ -46,6 +47,8 @@
     wiki?: WikiState;
     /** 埋め込みに読んだページの名前があるか(埋め込みの版 18 以降。App.svelte が ReportData.version で決める) */
     wikiPagesRecorded?: boolean;
+    /** 読んだページの名前の辞書(ReportData.wikiPageNames。要約の wiki.pages はこの番号) */
+    wikiPageNames?: string[];
   } = $props();
 
   const versions = $derived(instructionVersions(sessions));
@@ -61,7 +64,7 @@
   const wikiNote = $derived(wikiStateNote(wiki));
   const wikiUse = $derived(wikiUsageSummary(sessions));
   // llm-wiki のページごと: 参照率(ログ)と役立った率(LLM の見立て)を別の列で並べる。率の閾値は改善点の他の率と同じ MIN_SESSIONS
-  const wikiPages = $derived(wikiPageTable(sessions, THRESHOLDS.MIN_SESSIONS));
+  const wikiPages = $derived(wikiPageTable(sessions, wikiPageNames, THRESHOLDS.MIN_SESSIONS));
   /** 箱の中に並べる行の数(残りは「全件を表で見る」) */
   const PAGE_ROWS = 10;
   const stuck = $derived(stuckSessions(sessions));
@@ -206,7 +209,7 @@
           参照率 = そのページを読んだセッション ÷ wiki を参照したセッション。ログで分かるのは「読んだ」ことまでで、回答の中で引用したかは見ていません。引数に vault の場所が出ない読み(相対パスなど)は数えません。
         </p>
         <p class="basis" data-testid="insights-wiki-pages-llm">
-          役立ったかは LLM の見立てで、判定役は読んだページの名前と抜粋を見たうえで答えています。測った値ではありません。役立った率 = 役立った ÷(役立った + 役立たなかった)で、分からない・未判定は分母に入れません。未判定は、判定していないセッション・前の版の判定・判定に載せなかったページ(1 セッション {WIKI_JUDGED_PAGES_MAX} ページまで)です。
+          役立ったかは LLM の見立てで、判定役は読んだページの名前と、ログにあれば抜粋を見たうえで答えています。測った値ではありません。役立った率 = 役立った ÷(役立った + 役立たなかった)で、分からない・未判定は分母に入れません。未判定は、判定していないセッション・前の版の判定・判定に載せなかったページ(1 セッション {WIKI_JUDGED_PAGES_MAX} ページまで)です。
         </p>
         <p class="basis">— は分母が {THRESHOLDS.MIN_SESSIONS} セッション未満。参照率(ログ)と役立った率(LLM の見立て)は別の数で、1 つの点数にはまとめていません。</p>
       {/if}

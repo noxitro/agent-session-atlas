@@ -1,6 +1,6 @@
 //! judgments.json の読み書き・外部判定の取り込み(packages/judge/src/judgments-io.ts の移植)。
 
-use crate::schema::{empty_judgments, item_problems, items_from_candidates, json_candidates, merge_judgments, validate_judgment_item, validate_judgments, wiki_pages_note, FileJudge, JudgeMeta, JudgmentItem, JudgmentValidationError, JudgmentsFile};
+use crate::schema::{empty_judgments, item_problems, items_from_candidates, json_candidates, merge_judgments, schema_version_for, validate_judgment_item, validate_judgments, wiki_pages_note, FileJudge, JudgeMeta, JudgmentItem, JudgmentValidationError, JudgmentsFile};
 use anyhow::{anyhow, bail, Result};
 use atlas_core::{jsdate, js};
 use indexmap::IndexMap;
@@ -33,9 +33,11 @@ pub fn write_json_atomic<T: serde::Serialize>(path: &Path, v: &T) -> Result<()> 
 }
 
 /// 一時ファイルに書いてから置き換える(途中で落ちても壊れたファイルを残さない)
+/// 版は項目で決める(どの項目も wikiPages を持たない間は 1。前の版の atlas.exe でも読めるように)
 pub fn write_judgments(path: &Path, j: &JudgmentsFile) -> Result<()> {
-    validate_judgments(&serde_json::to_value(j)?)?;
-    write_json_atomic(path, j)
+    let j = JudgmentsFile { schema_version: schema_version_for(&j.items), ..j.clone() };
+    validate_judgments(&serde_json::to_value(&j)?)?;
+    write_json_atomic(path, &j)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -236,5 +238,11 @@ mod tests {
         assert_eq!(by("a").unwrap()[0].helpful, "yes");
         assert_eq!(by("b"), None);
         assert_eq!(by("c"), None);
+
+        // wikiPages を持つ項目が無い間は版 1 で書く(前の版の atlas.exe でも読める)
+        let jp1 = d.path().join("v1.json");
+        import_judgments_text(&json!([item("x")]).to_string(), &jp1, ImportOptions::default()).unwrap();
+        let raw: Value = serde_json::from_str(&std::fs::read_to_string(&jp1).unwrap()).unwrap();
+        assert_eq!(raw["schemaVersion"], json!(1));
     }
 }

@@ -119,6 +119,9 @@ pub struct BundleOptions<'a> {
     pub now: Option<String>,
     /// 参照を数えた llm-wiki の vault の数(sessions.json の source.wikis)。0 ならパケットの wiki の行を「数えていません」にする。古い集計では None
     pub wiki_vaults: Option<i64>,
+    /// 今の設定の llm-wiki の vault の指定(atlas.config.json の wikis)。ページごとの判定の抜粋を、集計と同じ分類器で、そのページを読んだ呼び出しから取る。
+    /// 空なら、引数に出るページの名前で探す(vault の直下のページは、プロジェクトの同じ名前のファイルと見分けられない)
+    pub wiki_specs: Vec<atlas_core::wiki::WikiSpec>,
 }
 
 /// `id.replace(/[^A-Za-z0-9._-]/g, '_') + '.md'`(UTF-16 の単位ごとに置き換える)
@@ -157,7 +160,10 @@ fn write_bundle(sessions: &[&SessionRecord], opts: &BundleOptions<'_>, dir: &Pat
 
     let mut texts: HashMap<String, SessionTexts> = HashMap::new();
     match &opts.snapshot_dir {
-        Some(sd) if sd.join("session-state").exists() => texts = collect_texts(sd, sessions, None)?,
+        Some(sd) if sd.join("session-state").exists() => {
+            let classifier = (!opts.wiki_specs.is_empty()).then(|| atlas_core::wiki::WikiClassifier::new(&opts.wiki_specs));
+            texts = collect_texts(sd, sessions, None, classifier.as_ref())?
+        }
         _ => log(&format!(
             "bundle: 注意 スナップショット{}が無いため、本文は sessions.json の抜粋(先頭・末尾 2,000 字)で代用します",
             opts.snapshot_dir.as_ref().map(|d| format!("({})", d.display())).unwrap_or_default()

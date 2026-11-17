@@ -9,8 +9,8 @@ import { excerptAround, looksLikeId, searchSessions, searchTerms } from '../src/
 import { addIds, memberGroups, parseGroups, removeIds, resolveIdPrefixes, serializeGroups } from '../src/lib/groups.ts';
 import { sessionLabel } from '../src/lib/highlights.ts';
 import { parseJudgments } from '../src/lib/judgments.ts';
-import { judgmentForSession } from '../src/lib/summarize.ts';
-import { WIKI_JUDGED_PAGES_MAX } from '../src/lib/wiki.ts';
+import { embeddedJudgment, judgmentForSession } from '../src/lib/summarize.ts';
+import { WIKI_JUDGED_PAGES_MAX, wikiPageIndex } from '../src/lib/wiki.ts';
 import { shortProjectLabel } from '../src/lib/project-label.ts';
 import { niceTicks } from '../src/lib/scale.ts';
 import { modelLabel, sharedLeads, splitLead } from '../src/lib/format.ts';
@@ -237,18 +237,33 @@ describe('judgments', () => {
       { page: 'wiki/a.md', helpful: 'no' },
       'wiki/d.md',
     ]);
-    expect(j.wikiPages).toEqual([
-      ['wiki/a.md', 'yes'],
-      ['wiki/c.md', 'no'],
+    expect(j.wikiPageVerdicts).toEqual([
+      ['wiki/a.md', 'yes', '使った'],
+      ['wiki/c.md', 'no', ''],
     ]);
     // 配列でない・無い(版 1 の判定を含む): ページは未判定。ほかの判定は読む
-    expect(parse({ page: 'x' }).wikiPages).toBeUndefined();
+    expect(parse({ page: 'x' }).wikiPageVerdicts).toBeUndefined();
     expect(parse('壊れた').hours).toBe(1);
-    expect('wikiPages' in parseJudgments({ schemaVersion: 1, items: [{ sessionId: 'a', humanEffort: { hours: 1 } }] }).bySession.get('a')!).toBe(false);
+    expect('wikiPageVerdicts' in parseJudgments({ schemaVersion: 1, items: [{ sessionId: 'a', humanEffort: { hours: 1 } }] }).bySession.get('a')!).toBe(false);
     // パケットに載せたページ(読んだ順の先頭から上限まで)に無い名前は捨てる。判定の無いものはそのまま
     const reads = ['wiki/a.md', 'wiki/a.md', ...Array.from({ length: WIKI_JUDGED_PAGES_MAX }, (_, i) => `wiki/x${i}.md`), 'wiki/c.md'];
-    expect(judgmentForSession(j, reads).wikiPages).toEqual([['wiki/a.md', 'yes']]);
-    expect(judgmentForSession(parse(undefined), reads).wikiPages).toBeUndefined();
+    expect(judgmentForSession(j, reads).wikiPageVerdicts).toEqual([['wiki/a.md', 'yes', '使った']]);
+    expect(judgmentForSession(parse(undefined), reads).wikiPageVerdicts).toBeUndefined();
+  });
+
+  it('埋め込む判定: 見立てはページの辞書の番号にし、見立ての理由と根拠は落とす。パケットに無いページは捨てる', () => {
+    const ix = wikiPageIndex([{ wiki: { pageReads: ['wiki/b.md', 'wiki/b.md'] } }, { wiki: { pageReads: ['wiki/a.md', 'wiki/b.md'] } }]);
+    expect(ix.names).toEqual(['wiki/b.md', 'wiki/a.md']);
+    const j = parseJudgments({
+      schemaVersion: 2,
+      items: [{ sessionId: 's2', humanEffort: { hours: 1, rationale: '根拠' }, wikiPages: [{ page: 'wiki/a.md', helpful: 'no', reason: '使っていない' }, { page: 'wiki/z.md', helpful: 'yes' }] }],
+    }).bySession.get('s2')!;
+    const e = embeddedJudgment(j, ['wiki/a.md', 'wiki/b.md'], ix);
+    expect(e.wikiPages).toEqual([[1, 'no']]);
+    expect('wikiPageVerdicts' in e).toBe(false);
+    expect(e.rationale).toBeNull();
+    // 判定の無い(版 1 の)ものは wikiPages を持たない
+    expect('wikiPages' in embeddedJudgment(parseJudgments({ schemaVersion: 1, items: [{ sessionId: 'x', humanEffort: { hours: 1 } }] }).bySession.get('x')!, [], ix)).toBe(false);
   });
 });
 

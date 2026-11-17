@@ -14,6 +14,11 @@ pub const JUDGMENTS_SCHEMA_VERSION: i64 = 2;
 /// 読める版(1: wikiPages の無い版)
 pub const READABLE_SCHEMA_VERSIONS: [i64; 2] = [1, 2];
 
+/// 書くときの版。どの項目も wikiPages を持たない間は 1 で書く(前の版の atlas.exe は版 2 の judgments.json を読めず、build が止まるため)
+pub fn schema_version_for(items: &[JudgmentItem]) -> i64 {
+    if items.iter().any(|i| i.wiki_pages.is_some()) { JUDGMENTS_SCHEMA_VERSION } else { 1 }
+}
+
 /// llm-wiki のページごとの「役立ったか」の値
 pub const WIKI_HELPFUL: [&str; 3] = ["yes", "no", "unknown"];
 
@@ -351,7 +356,7 @@ pub fn validate_judgments(v: &Value) -> Result<JudgmentsFile, JudgmentValidation
     let jj = j.and_then(Value::as_object).expect("valid_judge で確かめた");
     let items = o["items"].as_array().expect("確かめた").iter().enumerate().map(|(i, it)| validate_judgment_item(it, &format!("items[{i}]"))).collect::<Result<Vec<_>, _>>()?;
     Ok(JudgmentsFile {
-        schema_version: JUDGMENTS_SCHEMA_VERSION,
+        schema_version: schema_version_for(&items),
         judge: FileJudge {
             backend: jj["backend"].as_str().unwrap_or("").to_string(),
             model: jj.get("model").and_then(Value::as_str).map(str::to_string),
@@ -376,7 +381,7 @@ pub struct JudgeUsage {
 
 pub fn empty_judgments(backend: &str, model: Option<&str>, ran_at: &str) -> JudgmentsFile {
     JudgmentsFile {
-        schema_version: JUDGMENTS_SCHEMA_VERSION,
+        schema_version: 1,
         judge: FileJudge { backend: backend.to_string(), model: model.map(str::to_string), ran_at: ran_at.to_string(), usage: None },
         items: Vec::new(),
         failures: None,
@@ -396,7 +401,8 @@ pub fn merge_judgments(base: &JudgmentsFile, add: &[JudgmentItem], judge: FileJu
     }
     let done: HashSet<&str> = add.iter().map(|i| i.session_id.as_str()).collect();
     let failures: Vec<Value> = base.failures.iter().flatten().filter(|f| !failure_session(f).is_some_and(|id| done.contains(id))).cloned().collect();
-    JudgmentsFile { schema_version: JUDGMENTS_SCHEMA_VERSION, judge, items: by.into_values().collect(), failures: if failures.is_empty() { None } else { Some(failures) } }
+    let items: Vec<JudgmentItem> = by.into_values().collect();
+    JudgmentsFile { schema_version: schema_version_for(&items), judge, items, failures: if failures.is_empty() { None } else { Some(failures) } }
 }
 
 /// オブジェクトのキーを `Object.entries` の順(配列の添字の形のキーが先)で返す
@@ -647,7 +653,7 @@ pub fn judgments_json_schema() -> Value {
         "type": "object",
         "required": ["schemaVersion", "judge", "items"],
         "properties": {
-            "schemaVersion": { "const": 2, "description": "版 1(wikiPages の無い版)の judgments.json も読めます" },
+            "schemaVersion": { "enum": [1, 2], "description": "2: llm-wiki のページごとの判定 wikiPages を持つ版。1: wikiPages の無い版(どちらも読めます)" },
             "judge": {
                 "type": "object",
                 "required": ["backend", "ranAt"],
@@ -700,11 +706,14 @@ mod tests {
         for w in ["low ≤ hours ≤ high を満たす必要があります(6 / 5 / 7)", "confidence", "taskCategory", "quality", "重複"] {
             assert!(p.contains(w), "{w}: {p}");
         }
-        // 版 1 も版 2 も読み、正規形は版 2
+        // 版 1 も版 2 も読む。書く版は項目で決め、wikiPages を持つ項目が無ければ 1(前の版の atlas.exe でも読める)
         let mut v2 = ok.clone();
         v2["schemaVersion"] = json!(2);
-        assert_eq!(validate_judgments(&v2).unwrap().schema_version, 2);
-        assert_eq!(validate_judgments(&ok).unwrap().schema_version, JUDGMENTS_SCHEMA_VERSION);
+        assert_eq!(validate_judgments(&v2).unwrap().schema_version, 1);
+        assert_eq!(validate_judgments(&ok).unwrap().schema_version, 1);
+        let mut with_pages = v2.clone();
+        with_pages["items"][0]["wikiPages"] = json!([]);
+        assert_eq!(validate_judgments(&with_pages).unwrap().schema_version, JUDGMENTS_SCHEMA_VERSION);
         let mut v3 = ok.clone();
         v3["schemaVersion"] = json!(3);
         assert!(validate_judgments(&v3).unwrap_err().to_string().contains("schemaVersion"));

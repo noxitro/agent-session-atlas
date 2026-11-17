@@ -47,38 +47,29 @@ pub const JUDGMENTS_SCHEMA_VERSIONS: [f64; 2] = [1.0, 2.0];
 pub const WIKI_HELPFUL: [&str; 3] = ["yes", "no", "unknown"];
 
 /// wikiPages を読む。配列でなければ None(そのセッションのページはすべて未判定)。形の合わない要素と、同じページの 2 回目以降は捨てる。
-/// 返すのは [ページ, 見立て] と、同じ並びの理由
-pub fn parse_wiki_pages(v: Option<&Value>) -> Option<(Vec<WikiPageVerdict>, Vec<String>)> {
+/// 返すのは [ページ, 見立て, 理由](理由が無ければ空)
+pub fn parse_wiki_pages(v: Option<&Value>) -> Option<Vec<WikiPageVerdict>> {
     let list = v?.as_array()?;
     let mut pages: Vec<WikiPageVerdict> = Vec::new();
-    let mut reasons: Vec<String> = Vec::new();
     for x in list {
         let o = obj(Some(x));
         let Some(page) = o.get("page").and_then(Value::as_str).map(atlas_core::js::trim).filter(|p| !p.is_empty()) else { continue };
         let Some(helpful) = o.get("helpful").and_then(Value::as_str).filter(|h| WIKI_HELPFUL.contains(h)) else { continue };
-        if pages.iter().any(|(p, _)| p == page) {
+        if pages.iter().any(|(p, _, _)| p == page) {
             continue;
         }
-        pages.push((page.to_string(), helpful.to_string()));
-        reasons.push(o.get("reason").and_then(Value::as_str).unwrap_or("").to_string());
+        pages.push((page.to_string(), helpful.to_string(), o.get("reason").and_then(Value::as_str).unwrap_or("").to_string()));
     }
-    Some((pages, reasons))
+    Some(pages)
 }
 
 /// セッションの判定から、判定のパケットに載せたページ(atlas_core::wiki::judged_wiki_pages)の判定だけを残す。
 /// パケットに無いページの名前を LLM が返したら捨てる(packages/report/src/lib/summarize.ts の judgmentForSession と同じ)
 pub fn judgment_for_session(j: &JudgmentSummary, page_reads: &[String]) -> JudgmentSummary {
-    let Some(list) = &j.wiki_pages else { return j.clone() };
+    let Some(list) = &j.wiki_page_verdicts else { return j.clone() };
     let (judged, _) = atlas_core::wiki::judged_wiki_pages(page_reads);
-    let mut pages = Vec::new();
-    let mut reasons = Vec::new();
-    for (i, v) in list.iter().enumerate() {
-        if judged.iter().any(|p| *p == v.0) {
-            pages.push(v.clone());
-            reasons.push(j.wiki_page_reasons.get(i).cloned().unwrap_or_default());
-        }
-    }
-    JudgmentSummary { wiki_pages: Some(pages), wiki_page_reasons: reasons, ..j.clone() }
+    let kept = list.iter().filter(|v| judged.contains(&v.0)).cloned().collect();
+    JudgmentSummary { wiki_page_verdicts: Some(kept), ..j.clone() }
 }
 
 pub fn parse_judgments(raw: &Value) -> Result<JudgmentsIndex> {
@@ -107,10 +98,6 @@ pub fn parse_judgments(raw: &Value) -> Result<JudgmentsIndex> {
         };
         let a = obj(x.get("aiOutcome"));
         let score = |k: &str| num(obj(x.get(k)).get("score"));
-        let (wiki_pages, wiki_page_reasons) = match parse_wiki_pages(x.get("wikiPages")) {
-            Some((p, r)) => (Some(p), r),
-            None => (None, Vec::new()),
-        };
         let j = JudgmentSummary {
             task_category: str_of(x.get("taskCategory")),
             hours: Some(hours),
@@ -124,8 +111,8 @@ pub fn parse_judgments(raw: &Value) -> Result<JudgmentsIndex> {
             effects: JudgmentEffects { instructions: score("instructionsEffect"), wiki: score("wikiEffect"), skills_agents: score("skillsAgentsEffect") },
             rationale: str_of(h.get("rationale")),
             backend: str_of(obj(x.get("judge")).get("backend")).or_else(|| str_of(judge.get("backend"))),
-            wiki_pages,
-            wiki_page_reasons,
+            wiki_page_verdicts: parse_wiki_pages(x.get("wikiPages")),
+            wiki_pages: None,
         };
         by_session.insert(id, j);
     }
@@ -179,19 +166,18 @@ mod tests {
             { "helpful": "yes" },
             "wiki/d.md",
         ]));
-        assert_eq!(j.wiki_pages, Some(vec![("wiki/a.md".into(), "yes".into()), ("wiki/c.md".into(), "no".into())]));
-        assert_eq!(j.wiki_page_reasons, vec!["手順に使った".to_string(), String::new()]);
+        let v = |p: &str, h: &str, r: &str| (p.to_string(), h.to_string(), r.to_string());
+        assert_eq!(j.wiki_page_verdicts, Some(vec![v("wiki/a.md", "yes", "手順に使った"), v("wiki/c.md", "no", "")]));
         // 配列でない・無い: ページは未判定(None)。ほかの判定は読む
-        assert_eq!(parse(json!({ "page": "x" })).wiki_pages, None);
+        assert_eq!(parse(json!({ "page": "x" })).wiki_page_verdicts, None);
         assert_eq!(parse(json!("壊れた")).hours, Some(1.0));
         let v1 = parse_judgments(&json!({ "schemaVersion": 1, "items": [{ "sessionId": "a", "humanEffort": { "hours": 1 } }] })).unwrap();
-        assert_eq!(v1.by_session["a"].wiki_pages, None);
+        assert_eq!(v1.by_session["a"].wiki_page_verdicts, None);
         // パケットに載せたページ(読んだページの先頭から上限まで)に無い名前は捨てる
         let reads: Vec<String> = ["wiki/a.md", "wiki/a.md"].iter().map(|s| s.to_string()).collect();
         let f = judgment_for_session(&j, &reads);
-        assert_eq!(f.wiki_pages, Some(vec![("wiki/a.md".into(), "yes".into())]));
-        assert_eq!(f.wiki_page_reasons, vec!["手順に使った".to_string()]);
+        assert_eq!(f.wiki_page_verdicts, Some(vec![v("wiki/a.md", "yes", "手順に使った")]));
         // 判定が無い(None)ものはそのまま
-        assert_eq!(judgment_for_session(&v1.by_session["a"], &reads).wiki_pages, None);
+        assert_eq!(judgment_for_session(&v1.by_session["a"], &reads).wiki_page_verdicts, None);
     }
 }

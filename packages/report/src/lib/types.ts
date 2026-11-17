@@ -24,7 +24,7 @@ import type { VerdictTuple } from './verdicts.ts';
 // 15: exec.mainModelEfforts をリクエスト数だけにした(トークンと AIU は modelEfforts にある)
 // 16: failures(失敗の台帳の集計のページ failures.html を書いたか)
 // 17: tests(テストの結果の要約。テストの実行があるセッションだけ)・groups[].tag(送り先の元のタグ)・wikiVaults(参照を数えた vault の数)・wiki.otherCalls(vault の検索・一覧など)
-// 18: wiki.pages(読んだ llm-wiki のページの名前。重複を除く)・judgment.wikiPages(ページごとの LLM の見立て)
+// 18: wikiPageNames(読んだ llm-wiki のページの名前の辞書)・wiki.pages(読んだページの番号。重複を除く)・judgment.wikiPages(ページごとの LLM の見立て)
 export const REPORT_DATA_VERSION = 18;
 
 /** wiki.pages を埋め込んだ最初の版(これより前の埋め込みでは、llm-wiki のページごとの表を出さない) */
@@ -32,8 +32,10 @@ export const WIKI_PAGES_DATA_VERSION = 18;
 
 /** llm-wiki のページごとの「役立ったか」(LLM の見立て) */
 export type WikiHelpful = 'yes' | 'no' | 'unknown';
-/** [ページ, 役立ったか]。判定のパケットに載せたページだけ */
-export type WikiPageVerdict = [page: string, helpful: WikiHelpful];
+/** [ページの名前, 役立ったか, 理由]。judgments.json から読んだ形(埋め込みには入れない) */
+export type WikiPageVerdict = [page: string, helpful: WikiHelpful, reason: string];
+/** [ページの番号(ReportData.wikiPageNames の添字), 役立ったか]。埋め込みの形。判定のパケットに載せたページだけ */
+export type WikiPageMark = [page: number, helpful: WikiHelpful];
 
 /**
  * テストの結果の要約(テストの実行ファイルが書いた印つきの行から。crates/atlas-core/src/test_results.rs)。
@@ -144,10 +146,12 @@ export interface JudgmentSummary {
   /** この判定を出したバックエンド(external / copilot-cli など) */
   backend: string | null;
   /**
-   * llm-wiki のページごとの「役立ったか」(判定のパケットに載せたページだけ。理由は埋め込まず詳細ページだけ)。
-   * judgments.json の版 1 の判定・項目の無い判定・配列でない項目では無い(そのセッションのページは未判定)
+   * llm-wiki のページごとの「役立ったか」と理由(judgments.json から読んだ形。名前で持つ)。
+   * 版 1 の判定・項目の無い判定・配列でない項目では無い(そのセッションのページは未判定)。埋め込みの要約では落とし、wikiPages に置き換える
    */
-  wikiPages?: WikiPageVerdict[];
+  wikiPageVerdicts?: WikiPageVerdict[];
+  /** 埋め込みの要約だけ: 判定のパケットに載せたページの見立て(ページは ReportData.wikiPageNames の番号。理由は入れない) */
+  wikiPages?: WikiPageMark[];
 }
 
 export interface SessionSummary {
@@ -228,9 +232,10 @@ export interface SessionSummary {
   lines: LineChanges;
   /**
    * otherCalls: vault に触れたそのほかの呼び出し(検索・一覧など。版 15 以前の埋め込みでは 0 で埋め戻す)。
-   * pages: 読んだページの名前(重複を除いて読んだ順。本文は入れない)。版 17 以前の埋め込みには無く [] で埋め戻すので、ページごとの表を出すかは ReportData.version で見分ける
+   * pages: 読んだページ(重複を除いて読んだ順)の番号。名前は ReportData.wikiPageNames に 1 回だけ置く(本文は入れない)。
+   * 版 17 以前の埋め込みには無く [] で埋め戻すので、ページごとの表を出すかは ReportData.version で見分ける
    */
-  wiki: { indexReads: number; pageReads: number; skillCalls: number; writes: number; otherCalls: number; pages: string[] };
+  wiki: { indexReads: number; pageReads: number; skillCalls: number; writes: number; otherCalls: number; pages: number[] };
   friction: {
     compactions: number;
     aborts: number;
@@ -265,6 +270,8 @@ export interface ReportData {
   source?: { name: string; path: string; layout: 'flat' | 'merged'; folders: number } | null;
   /** 参照を数えた llm-wiki の vault の数。0 なら wiki の参照は数えていない(どのセッションも 0 件)。古い集計では無い */
   wikiVaults?: number;
+  /** 読んだ llm-wiki のページの名前の辞書(セッションの wiki.pages と judgment.wikiPages はこの番号)。版 17 以前の埋め込みには無い */
+  wikiPageNames?: string[];
   /** 読むだけの画面として作った(送り先から集計した・別のフォルダを開いた)。タスクタグとメモは送った人のもの。古い埋め込みには無い */
   readOnly?: boolean;
   /**

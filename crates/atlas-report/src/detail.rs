@@ -772,7 +772,7 @@ fn judgment_section(sec: &mut Sections, j: &JudgmentSummary, active_ms: Option<f
 
 /// llm-wiki のページごとの「役立ったか」(LLM の見立て)の表。判定に項目が無ければ空
 fn wiki_pages_block(j: &JudgmentSummary) -> String {
-    let Some(list) = j.wiki_pages.as_ref().filter(|l| !l.is_empty()) else { return String::new() };
+    let Some(list) = j.wiki_page_verdicts.as_ref().filter(|l| !l.is_empty()) else { return String::new() };
     let label = |h: &str| match h {
         "yes" => "役立った",
         "no" => "役立たなかった",
@@ -780,15 +780,33 @@ fn wiki_pages_block(j: &JudgmentSummary) -> String {
     };
     let rows: String = list
         .iter()
-        .enumerate()
-        .map(|(i, (page, helpful))| {
-            let reason = j.wiki_page_reasons.get(i).map(String::as_str).filter(|r| !r.is_empty());
+        .map(|(page, helpful, reason)| {
+            let reason = Some(reason.as_str()).filter(|r| !r.is_empty());
             format!("<tr><td>{}</td><td>{}</td><td>{}</td></tr>", esc(page), label(helpful), reason.map_or_else(|| missing("記録なし"), esc))
         })
         .collect();
     format!(
-        "<h3>llm-wiki のページごとの見立て</h3><p class=\"note\">判定役が、読んだページの名前と抜粋を見たうえで答えた見立てです。測った値ではありません。</p><div class=\"table-scroll\"><table class=\"ledger\"><thead><tr><th scope=\"col\">ページ</th><th scope=\"col\">役立ったか</th><th scope=\"col\">理由</th></tr></thead><tbody>{rows}</tbody></table></div>"
+        "<h3>llm-wiki のページごとの見立て</h3><p class=\"note\">判定役が、読んだページの名前と、ログにあれば抜粋を見たうえで答えた見立てです。測った値ではありません。</p><div class=\"table-scroll\"><table class=\"ledger\"><thead><tr><th scope=\"col\">ページ</th><th scope=\"col\">役立ったか</th><th scope=\"col\">理由</th></tr></thead><tbody>{rows}</tbody></table></div>"
     )
+}
+
+#[cfg(test)]
+mod wiki_pages_tests {
+    use super::*;
+
+    /// 理由が空の見立ては「記録なし」と出し、見立てが無ければ節を出さない
+    #[test]
+    fn empty_reason_and_no_verdicts() {
+        let v = |p: &str, h: &str, r: &str| (p.to_string(), h.to_string(), r.to_string());
+        let j = JudgmentSummary { wiki_page_verdicts: Some(vec![v("wiki/a.md", "yes", "手順に使った"), v("wiki/b.md", "no", ""), v("wiki/c.md", "unknown", "")]), ..Default::default() };
+        let html = wiki_pages_block(&j);
+        assert!(html.contains("<td>wiki/a.md</td><td>役立った</td><td>手順に使った</td>"), "{html}");
+        assert!(html.contains(&format!("<td>wiki/b.md</td><td>役立たなかった</td><td>{}</td>", missing("記録なし"))), "{html}");
+        assert!(html.contains("<td>分からない</td>"));
+        assert!(html.contains("名前と、ログにあれば抜粋"));
+        assert_eq!(wiki_pages_block(&JudgmentSummary::default()), "");
+        assert_eq!(wiki_pages_block(&JudgmentSummary { wiki_page_verdicts: Some(vec![]), ..Default::default() }), "");
+    }
 }
 
 /// セッションの終わりから比べた時点までの日数(「・終わりから 3.5 日後」)。どちらかが無ければ空

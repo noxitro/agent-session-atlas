@@ -119,7 +119,7 @@ impl JudgeBackend for AnthropicBackend {
         let r = anthropic_message(&build_judge_prompt(packet.markdown, packet.session_id, None), &self.o)?;
         let texts = if r.texts.is_empty() { vec![] } else { vec![r.texts.join("\n")] };
         let (item, wiki_notes) = item_and_notes_from_texts(&texts, packet.session_id)?;
-        Ok(JudgeResult { item, usage: r.usage, notes: r.notes.into_iter().chain(wiki_notes).collect() })
+        Ok(JudgeResult { item, usage: r.usage, notes: r.notes, wiki_notes })
     }
 }
 

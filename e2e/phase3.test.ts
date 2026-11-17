@@ -290,19 +290,22 @@ describe('Phase 3 E2E: fixtures', () => {
       byProject.set(p, (byProject.get(p) ?? 0) + it.humanEffort.hours);
     }
     for (const [p, h] of byProject) expect(agg.byProject.find((b) => b.key === p)!.humanHours).toBeCloseTo(h);
-    // llm-wiki のページ: 埋め込みの版 18 は読んだページの名前を持ち、判定は読んだページの分だけ(パケットに無いページの判定は捨てる)。理由は埋め込まない
+    // llm-wiki のページ: 埋め込みの版 18 は、ページの名前を辞書(wikiPageNames)に 1 回だけ置き、要約は番号を持つ。
+    // 判定は読んだページの分だけ(パケットに無いページの判定は捨てる)。理由は埋め込まない
     expect(data.version).toBe(18);
+    expect(data.wikiPageNames).toEqual([...SAMPLE_WIKI_PAGES]);
     const id4 = '00000000-0000-4000-8000-000000000004';
     const s4 = data.sessions.find((x) => x.id === id4)!;
-    expect(s4.wiki.pages).toEqual([...SAMPLE_WIKI_PAGES]);
+    expect(s4.wiki.pages).toEqual([0, 1]);
     expect(s4.judgment?.wikiPages).toEqual([
-      [SAMPLE_WIKI_PAGES[0], 'yes'],
-      [SAMPLE_WIKI_PAGES[1], 'unknown'],
+      [0, 'yes'],
+      [1, 'unknown'],
     ]);
+    expect(s4.judgment && 'wikiPageVerdicts' in s4.judgment).toBe(false);
     expect(html).not.toContain('fixture 用(応答の 2 ページの片方に使った)');
     expect(data.sessions.filter((x) => x.id !== id4).every((x) => x.wiki.pages.length === 0 && !x.judgment?.wikiPages?.length)).toBe(true);
     // ページごとの表(画面と同じ集計): 参照率の分母は wiki を参照したセッション。閾値に届かない率は null(—)
-    const pages = wikiPageTable(data.sessions, THRESHOLDS.MIN_SESSIONS);
+    const pages = wikiPageTable(data.sessions, data.wikiPageNames ?? [], THRESHOLDS.MIN_SESSIONS);
     expect(pages.referenced).toBe(data.sessions.filter((x) => wikiReferenced(x.wiki)).length);
     expect(pages.rows.map((r) => [r.page, r.sessions, r.yes, r.no, r.unknown, r.unjudged, r.helpfulRate])).toEqual([
       [SAMPLE_WIKI_PAGES[0], 1, 1, 0, 0, 0, null],

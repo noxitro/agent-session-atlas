@@ -190,7 +190,7 @@ impl JudgeBackend for CopilotCliBackend {
     fn judge(&self, packet: &JudgePacket<'_>) -> Result<JudgeResult> {
         let r = self.ask_inner(&build_judge_prompt(packet.markdown, packet.session_id, None), packet.session_id)?;
         let (item, wiki_notes) = item_and_notes_from_texts(&r.texts, packet.session_id)?;
-        Ok(JudgeResult { item, usage: r.usage, notes: r.notes.into_iter().chain(wiki_notes).collect() })
+        Ok(JudgeResult { item, usage: r.usage, notes: r.notes, wiki_notes })
     }
 }
 

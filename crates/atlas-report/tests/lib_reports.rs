@@ -10,7 +10,12 @@ use atlas_report::exec::{exec_aggregate, quantiles_of, tool_share, QuantileRow};
 use atlas_report::filter::*;
 use atlas_report::highlights::{highlights, session_label, HighlightOptions, InstalledView};
 use atlas_report::pack::{pack_summary, unpack_data, unpack_summary};
-use atlas_report::summarize::{permission_group, summarize};
+use atlas_report::summarize::{permission_group, summarize, WikiPageIndex};
+
+/// 1 セッションを要約する(llm-wiki のページの辞書はそのセッションだけで作る)
+fn summ(r: &SessionRecord, j: Option<&JudgmentSummary>) -> SessionSummary {
+    summarize(r, j, &WikiPageIndex::of([r]))
+}
 use atlas_report::types::{JudgmentSummary, SessionSummary, WikiSummary};
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -53,7 +58,7 @@ fn norm(id: &str, ws: Option<Ws>, events: Vec<CopilotEvent>) -> SessionRecord {
 }
 
 fn summaries(rs: &[SessionRecord]) -> Vec<SessionSummary> {
-    rs.iter().map(|r| summarize(r, None)).collect()
+    rs.iter().map(|r| summ(r, None)).collect()
 }
 
 fn ids(xs: &[&SessionSummary]) -> Vec<String> {
@@ -258,7 +263,7 @@ fn empty_sessions_are_excluded_by_default() {
 fn judgments_and_task_category() {
     let rs = fixture();
     let j = JudgmentSummary { task_category: Some("bugfix".into()), hours: Some(2.0), low: Some(1.0), high: Some(3.0), confidence: Some(0.5), task_summary: Some("修正".into()), rationale: Some("根拠".into()), backend: Some("external".into()), ..Default::default() };
-    let s: Vec<SessionSummary> = rs.iter().map(|r| summarize(r, (r.id == "a").then_some(&j))).collect();
+    let s: Vec<SessionSummary> = rs.iter().map(|r| summ(r, (r.id == "a").then_some(&j))).collect();
     assert_eq!(ids(&apply_filter(&s, &FilterState { task_category: "bugfix".into(), ..empty_filter() })), ["a"]);
     assert_eq!(apply_filter(&s, &FilterState { task_category: NO_JUDGMENT.into(), ..empty_filter() }).len(), 3);
     let o = aggregate(&refs(&s), None).overall;
@@ -291,7 +296,7 @@ fn effort_median_and_skew() {
     // 集計: 判定済みのセッションだけの中央値と偏り
     let rs = fixture();
     let js: Vec<(&str, JudgmentSummary)> = vec![("a", effort(40.0, 40.0, 40.0, 0.5)), ("b", effort(1.0, 1.0, 1.0, 0.5)), ("c", effort(2.0, 2.0, 2.0, 0.5))];
-    let s: Vec<SessionSummary> = rs.iter().map(|r| summarize(r, js.iter().find(|(id, _)| *id == r.id).map(|(_, j)| j))).collect();
+    let s: Vec<SessionSummary> = rs.iter().map(|r| summ(r, js.iter().find(|(id, _)| *id == r.id).map(|(_, j)| j))).collect();
     let o = aggregate(&refs(&s), None).overall;
     assert_eq!((o.judged_sessions, o.human_sessions, o.human_hours, o.human_median, o.human_skew), (3, 3, 43.0, Some(2.0), None));
     assert_eq!((o.human_uncertain.sessions, o.human_uncertain.hours), (0, 0.0));
@@ -313,7 +318,7 @@ fn low_confidence_effort_kept_apart() {
         ("d", effort(1200.0, 500.0, 3000.0, 0.3)),
     ];
     let pick = |id: &str| js.iter().find(|(k, _)| *k == id).map(|(_, j)| j);
-    let s: Vec<SessionSummary> = rs.iter().map(|r| summarize(r, pick(&r.id))).collect();
+    let s: Vec<SessionSummary> = rs.iter().map(|r| summ(r, pick(&r.id))).collect();
     let o = aggregate(&refs(&s), None).overall;
     assert_eq!((o.judged_sessions, o.human_sessions, o.human_hours, o.human_low, o.human_high, o.human_median, o.human_skew), (4, 2, 4.0, 2.5, 7.0, Some(1.0), None));
     assert!((o.judged_confidence.unwrap() - 0.7).abs() < 1e-9);
@@ -323,7 +328,7 @@ fn low_confidence_effort_kept_apart() {
     assert_eq!(o.judged_ai.output, counted.iter().fold(0.0, |n, x| n + x.tokens.output));
     assert_eq!(o.judged_ai.active_ms, counted.iter().fold(0.0, |n, x| n + x.active_ms.unwrap_or(0.0)));
     // 確信度の低い推定しか無いときは、合計が 0 件
-    let only: Vec<SessionSummary> = rs.iter().map(|r| summarize(r, if r.id == "a" { pick("a") } else { None })).collect();
+    let only: Vec<SessionSummary> = rs.iter().map(|r| summ(r, if r.id == "a" { pick("a") } else { None })).collect();
     let o = aggregate(&refs(&only), None).overall;
     assert_eq!((o.judged_sessions, o.human_sessions, o.human_hours, o.human_median, o.judged_confidence), (1, 0, 0.0, None, None));
     assert_eq!((o.human_uncertain.sessions, o.human_uncertain.hours), (1, 2500.0));
@@ -510,9 +515,31 @@ fn phase6() -> Vec<SessionRecord> {
     ]
 }
 
+/// llm-wiki のページ: 名前は辞書に 1 回だけ置き、要約は番号を持つ。判定の見立ても番号にし、理由と名前の見立ては埋め込まない
+#[test]
+fn summarize_wiki_pages_as_numbers() {
+    let mut a = phase6()[0].clone();
+    let mut b = a.clone();
+    a.wiki.page_reads = vec!["wiki/b.md".into(), "wiki/b.md".into()];
+    b.id = "b".into();
+    b.wiki.page_reads = vec!["wiki/a.md".into(), "wiki/b.md".into()];
+    let ix = WikiPageIndex::of([&a, &b]);
+    assert_eq!(ix.names, ["wiki/b.md", "wiki/a.md"]);
+    let v = |p: &str, h: &str, r: &str| (p.to_string(), h.to_string(), r.to_string());
+    let j = JudgmentSummary { hours: Some(1.0), rationale: Some("根拠".into()), wiki_page_verdicts: Some(vec![v("wiki/a.md", "no", "使っていない"), v("wiki/z.md", "yes", "")]), ..Default::default() };
+    let s = summarize(&b, Some(&j), &ix);
+    assert_eq!(s.wiki.pages, [1, 0]);
+    let sj = s.judgment.as_ref().unwrap();
+    assert_eq!(sj.wiki_pages, Some(vec![(1, "no".to_string())]));
+    assert_eq!(sj.wiki_page_verdicts, None);
+    let out = serde_json::to_value(sj).unwrap();
+    assert_eq!(out["wikiPages"], json!([[1, "no"]]));
+    assert!(out.get("wikiPageVerdicts").is_none() && out["rationale"].is_null());
+}
+
 #[test]
 fn summarize_phase6_shape() {
-    let s = summarize(&phase6()[0], None);
+    let s = summ(&phase6()[0], None);
     let v = serde_json::to_value(&s).unwrap();
     assert_eq!(v["tools"]["mcp"], json!({ "gh": { "gh-search": 1, "gh-get": 1 } }));
     assert_eq!(v["tools"]["issues"], json!({ "gh-get": [1, 0, 1], "view": [0, 1, 2] }));
@@ -647,7 +674,7 @@ fn highlights_phase7() {
     for r in &mut recs {
         r.tokens.nano_aiu = None;
     }
-    let all: Vec<SessionSummary> = recs.iter().map(|r| summarize(r, None)).collect();
+    let all: Vec<SessionSummary> = recs.iter().map(|r| summ(r, None)).collect();
     let agg = aggregate(&refs(&all), None);
     let g = highlights(&refs(&all), &agg.usage, &HighlightOptions { filter: &filter, installed: None });
     assert_eq!(g[0].title, "出力トークンの多いセッション");
@@ -706,7 +733,7 @@ fn cause_records() -> Vec<SessionRecord> {
 #[test]
 fn failure_causes_in_summary_and_ranking() {
     let rs = cause_records();
-    let s = summarize(&rs[0], None);
+    let s = summ(&rs[0], None);
     assert_eq!(atlas_core::json::to_js_string(&s.tools.causes).unwrap(), r#"{"zz-srv-find":{"timeout":2},"zz-srv-read":{"not_found":1},"view":{"not_found":1}}"#);
     assert_eq!(unpack_summary(&pack_summary(&s)).unwrap().tools.causes, s.tools.causes);
 

@@ -101,6 +101,15 @@ pub fn run_judge_command(p: &Paths, j: &JudgeCliOptions, log: Log<'_>) -> Result
         if usage.is_empty() { String::new() } else { format!("({usage})") },
         if s.usage.missing > 0 { format!("、取得できなかった {} 回", s.usage.missing) } else { String::new() }
     ));
+    if !s.wiki_page_drops.is_empty() {
+        let ids = &s.wiki_page_drops;
+        log(&format!(
+            "judge: 注意 llm-wiki のページごとの判定(wikiPages)の形が崩れていて、一部か全部を捨てたセッション {} 件(そのページは未判定): {}{}",
+            ids.len(),
+            ids.iter().take(5).cloned().collect::<Vec<_>>().join(", "),
+            if ids.len() > 5 { " …" } else { "" }
+        ));
+    }
     for n in s.notes.iter().take(5) {
         log(&format!("judge: 補足 {n}"));
     }

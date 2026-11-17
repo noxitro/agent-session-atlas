@@ -119,7 +119,7 @@ pub fn run_command(o: &CliOptions, p: &Paths, log: Log<'_>) -> Result<RunResult>
             Ok(RunResult { build: Some(b), ..RunResult::default() })
         }
         "bundle" => {
-            bundle::run_bundle(p, &metrics::SessionFilter::from_cli(o), &bundle::BundleCliOptions { include_empty: o.include_empty, per_part: o.per_part, unjudged: o.unjudged, zip: o.zip }, log)?;
+            bundle::run_bundle(p, &metrics::SessionFilter::from_cli(o), &bundle::BundleCliOptions { include_empty: o.include_empty, per_part: o.per_part, unjudged: o.unjudged, zip: o.zip, config: o.config.clone() }, log)?;
             Ok(RunResult::default())
         }
         "turns" => {
