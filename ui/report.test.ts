@@ -158,10 +158,12 @@ describe('画面の操作', () => {
   });
 
   it('a2. 一覧の検索: ID・題名で行を絞り(上の集計は変えない)、合わなければ絞り込みの外の件数を出す。詳細から戻ると検索語も戻る', async () => {
-    const records = (JSON.parse(await readFile(join(out, 'sessions.json'), 'utf8')) as { sessions: { id: string; empty: boolean; name: string | null }[] }).sessions;
+    const records = (JSON.parse(await readFile(join(out, 'sessions.json'), 'utf8')) as { sessions: { id: string; empty: boolean; name: string | null; firstUserMessage: string | null }[] }).sessions;
     const target = records.find((s) => !s.empty && s.name?.includes('wiki-query'));
     const empty = records.find((s) => s.empty);
-    expect(target && empty, 'fixture に wiki-query の題名のセッションと空のセッションがある').toBeTruthy();
+    // 名前には無く、最初の依頼にだけある語(「直して」)
+    const viaFirst = records.filter((s) => !s.empty && s.name && !s.name.includes('直して') && s.firstUserMessage?.includes('直して'));
+    expect(target && empty && viaFirst.length === 1, 'fixture に wiki-query の題名・空のセッション・最初の依頼にだけ「直して」がある 1 件がある').toBeTruthy();
     await page.goto(server.url);
     const all = await shown();
     const box = page.getByTestId('session-search');
@@ -178,18 +180,37 @@ describe('画面の操作', () => {
     await box.fill('WIKI-QUERY');
     await expect.poll(() => rows.count()).toBe(1);
     expect(await rows.first().getByTestId('session-id').count()).toBe(0);
-    // Esc で検索語を消すと、全件に戻る
-    await box.press('Escape');
+    // 名前に無く最初の依頼にだけある語は、行にその辺りの文を出す(題名だけでは、なぜ合ったか分からないため)
+    await box.fill('直して');
+    await expect.poll(() => rows.count()).toBe(1);
+    expect(await rows.first().getByTestId('session-first-hit').innerText()).toContain('最初の依頼:');
+    expect(await rows.first().getByTestId('session-first-hit').innerText()).toContain('直して');
+    // Esc で検索語を消すと、全件に戻る。ブラウザの検索欄の Esc(中身を消す)に頼らず、欄の keydown の処理で消すことを確かめる
+    // (合成した keydown には既定の動きが無い)。Esc はページの他の処理(タスクタグのメニューを閉じる)には渡さない
+    await page.evaluate(`window.escSeen = 0; document.addEventListener('keydown', (e) => { if (e.key === 'Escape') window.escSeen++; });`);
+    // IME の変換を取り消す Esc では消さない
+    await box.dispatchEvent('keydown', { key: 'Escape', isComposing: true });
+    expect(await box.inputValue()).toBe('直して');
+    await box.dispatchEvent('keydown', { key: 'Escape' });
     await expect.poll(() => box.inputValue()).toBe('');
     await expect.poll(() => rows.count()).toBe(Math.min(all, 50));
-    // 合わないときは表を出さず、そう知らせる
+    expect(await page.evaluate<number>('window.escSeen')).toBe(1);
+    // 合わないときは表を出さず、そう知らせる。ID のつもりらしい短い語には、ID の探し方を添える
     await box.fill('合うものが無い語 zzzz');
-    await expect.poll(() => result.innerText()).toContain('合うセッションはありません');
+    await expect.poll(() => result.innerText()).toBe('合うセッションはありません。');
     expect(await rows.count()).toBe(0);
-    // 空のセッション(既定で外している)は、絞り込みの外にあると知らせる
+    await box.fill(target!.id.slice(0, 3));
+    await expect.poll(() => result.innerText()).toContain('ID は先頭から 4 文字以上で探します');
+    // 空のセッション(既定で外している)は、「空のセッションを含める」で出ると知らせる(ほかの条件では外れていないので、絞り込みを外せとは言わない)
     await box.fill(empty!.id);
-    await expect.poll(() => result.innerText()).toContain('今の絞り込みの外に、合うセッションがほかに 1 件あります');
-    expect(await result.innerText()).toContain('うち空のセッション 1 件は、「その他の条件」の「空のセッションを含める」で出ます');
+    await expect.poll(() => result.innerText()).toBe('合うセッションはありません。空のセッション 1 件は、「その他の条件」の「空のセッションを含める」で出ます。');
+    // ID を含むパス(空白入り)を貼っても当たる
+    await box.fill(`C:\\Users\\Taro Yamada\\.copilot\\session-state\\${target!.id}\\events.jsonl`);
+    await expect.poll(() => rows.count()).toBe(1);
+    // 320px の幅でも、検索欄で横にはみ出さない
+    await page.setViewportSize({ width: 320, height: 800 });
+    await expect.poll(() => page.evaluate<number>('document.documentElement.scrollWidth - document.documentElement.clientWidth')).toBeLessThanOrEqual(0);
+    await page.setViewportSize({ width: 1440, height: 900 });
     // 詳細ページへ行って戻ると、検索語と絞った行が戻る
     await box.fill(target!.id);
     await expect.poll(() => rows.count()).toBe(1);

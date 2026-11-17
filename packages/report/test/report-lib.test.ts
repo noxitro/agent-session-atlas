@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { effortSkew, isLowConfidence, monthRange } from '../src/lib/aggregate.ts';
 import { embedData, extractEmbedded, serializeForScript } from '../src/lib/embed.ts';
 import { decodeFilter, emptyFilter, encodeFilter, groupIds, isEmptyFilter } from '../src/lib/filter.ts';
-import { searchSessions, searchTerms } from '../src/lib/session-search.ts';
+import { excerptAround, looksLikeId, searchSessions, searchTerms } from '../src/lib/session-search.ts';
 import { addIds, memberGroups, parseGroups, removeIds, resolveIdPrefixes, serializeGroups } from '../src/lib/groups.ts';
 import { sessionLabel } from '../src/lib/highlights.ts';
 import { parseJudgments } from '../src/lib/judgments.ts';
@@ -77,8 +77,11 @@ describe('session-search(セッション一覧の検索)', () => {
     expect(ids('aaaa')).toEqual([]);
     expect(ids('11')).toEqual(['9999']); // 題名の「11 月」だけに当たる
   });
-  it('貼ったパスや URL の中に ID が丸ごと入っていれば当たる', () => {
+  it('貼ったパスや URL の中に ID が丸ごと入っていれば当たる。パスに空白があっても、引用符で囲まれていても', () => {
     expect(ids('out\\sessions\\add00000-aaaa-4bbb-8ccc-000000000003.md')).toEqual(['add0']);
+    expect(ids('C:\\Users\\Taro Yamada\\.copilot\\session-state\\add00000-aaaa-4bbb-8ccc-000000000003\\events.jsonl')).toEqual(['add0']);
+    expect(ids('"D:\\OneDrive - 会社名\\atlas\\out\\sessions\\3F2A9C10-AAAA-4BBB-8CCC-000000000001.html"')).toEqual(['3f2a']);
+    expect(searchSessions(list, 'file:///d:/x%20y/add00000-aaaa-4bbb-8ccc-000000000003.html')?.byId.has(list[2].id)).toBe(true);
   });
   it('題名は名前と最初の依頼の両方を見る。全角半角・大文字小文字をそろえ、空白で区切った語はすべて含む行だけ', () => {
     expect(ids('ログイン')).toEqual(['3f2a']);
@@ -88,6 +91,20 @@ describe('session-search(セッション一覧の検索)', () => {
     expect(searchSessions(list, 'ログイン')?.byId.size).toBe(0);
     // ID の語と題名の語を混ぜてもよい(どちらかに当たれば、その語は合う)
     expect(ids('9999 調査')).toEqual(['9999']);
+  });
+  it('名前に無く最初の依頼にだけあった語は viaFirst に残す(行にその辺りの文を出す)。名前の無い行は最初の依頼が題名なので残さない', () => {
+    expect([...(searchSessions(list, '数字')?.viaFirst ?? [])]).toEqual([[list[3].id, '数字']]);
+    expect(searchSessions(list, '調査')?.viaFirst.size).toBe(0);
+    expect(searchSessions(list, 'english')?.viaFirst.size).toBe(0);
+  });
+  it('excerptAround は語の辺りを切り出し、切ったところに「…」を付ける。looksLikeId は 16 進とハイフンだけの語', () => {
+    const long = `${'あ'.repeat(40)}目当ての語${'い'.repeat(40)}`;
+    const e = excerptAround(long, '目当て', 30);
+    expect(e.startsWith('…') && e.endsWith('…') && e.includes('目当ての語')).toBe(true);
+    expect([...e.replace(/…/g, '')].length).toBe(30);
+    expect(excerptAround('短い  ＡＢＣ 文', 'abc')).toBe('短い ABC 文');
+    expect(excerptAround('見つからない', 'zzz')).toBe('見つからない');
+    expect([looksLikeId('3f2a'), looksLikeId('3f2a-9c'), looksLikeId('readme'), looksLikeId('調査')]).toEqual([true, true, false, false]);
   });
 });
 

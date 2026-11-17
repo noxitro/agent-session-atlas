@@ -6,11 +6,12 @@
   import SortMark from './SortMark.svelte';
   import { restoredView, saveView } from '../view-restore.ts';
   import { categoryLabel, confidenceLabel } from '../../lib/judgment-labels.ts';
-  import { searchSessions } from '../../lib/session-search.ts';
+  import { excerptAround, ID_PREFIX_MIN, looksLikeId, searchSessions, searchTerms } from '../../lib/session-search.ts';
 
   let {
     sessions,
     allSessions = null,
+    emptyRelaxed = null,
     emptyIncluded = false,
     judged,
     selected,
@@ -29,7 +30,9 @@
     sessions: SessionSummary[];
     /** 絞り込む前の全セッション(検索で、今の絞り込みの外にも合うものがあるかを数える。無ければ数えない) */
     allSessions?: SessionSummary[] | null;
-    /** 空のセッションを含めているか(検索に合った空のセッションが外れている理由を知らせるため) */
+    /** 今の絞り込みで、空のセッションも含めたときに出るセッション(検索に合った空のセッションが「空のセッションを含める」だけで出るかを決める) */
+    emptyRelaxed?: SessionSummary[] | null;
+    /** 空のセッションを含めているか */
     emptyIncluded?: boolean;
     judged: boolean;
     /** チェックしたセッション id(画面内だけ。保存しない) */
@@ -94,20 +97,32 @@
   const found = $derived(searchSessions(sessions, query));
   /** 一覧に出す行(検索していれば、合ったものだけ) */
   const rows = $derived(found ? found.rows : sessions);
-  /** 検索に合ったが、今の絞り込みで外れているセッション(期間・プロジェクト・空のセッションなど) */
+  /** 空のセッションも含めたときに出るセッションの id(検索語によらないので、打つたびには作らない) */
+  const relaxedIds = $derived(new Set((emptyRelaxed ?? []).map((s) => s.id)));
+  /**
+   * 検索に合ったが、今の絞り込みで外れているセッション。emptyOnly は「空のセッションを含める」だけで出るもの、
+   * rest はほかの条件(期間・プロジェクト・タスクタグなど)でも外れているもの(restEmpty はそのうち空のセッション)
+   */
   const outside = $derived.by(() => {
     if (!found || !allSessions) return null;
     const shown = new Set(found.rows.map((s) => s.id));
     const out = (searchSessions(allSessions, query)?.rows ?? []).filter((s) => !shown.has(s.id));
-    return { count: out.length, empty: out.filter((s) => s.empty).length };
+    const onlyEmpty = (s: SessionSummary): boolean => !emptyIncluded && s.empty && relaxedIds.has(s.id);
+    const rest = out.filter((s) => !onlyEmpty(s));
+    return { emptyOnly: out.length - rest.length, rest: rest.length, restEmpty: emptyIncluded ? 0 : rest.filter((s) => s.empty).length };
   });
   /** 検索の結果の一文(検索していなければ空) */
   const findText = $derived.by(() => {
     if (!found) return '';
-    const head = found.rows.length ? `${int(found.rows.length)} 件が合います。` : '合うセッションはありません。';
-    if (!outside?.count) return head;
-    const empty = outside.empty && !emptyIncluded ? `うち空のセッション ${int(outside.empty)} 件は、「その他の条件」の「空のセッションを含める」で出ます。` : '';
-    return `${head}今の絞り込みの外に、合うセッションがほかに ${int(outside.count)} 件あります(上の絞り込みを外すと出ます)。${empty}`;
+    const parts = [found.rows.length ? `${int(found.rows.length)} 件が合います。` : '合うセッションはありません。'];
+    // ID の探し方は、絞り込みの外も含めてどこにも合わなかったときだけ添える(ID 全体で外のセッションに当たったときに出すと紛らわしい)
+    if (!found.rows.length && !outside?.emptyOnly && !outside?.rest && searchTerms(query).some(looksLikeId)) parts.push(`ID は先頭から ${ID_PREFIX_MIN} 文字以上で探します(途中の文字では探せません)。`);
+    if (outside?.emptyOnly) parts.push(`空のセッション ${int(outside.emptyOnly)} 件は、「その他の条件」の「空のセッションを含める」で出ます。`);
+    if (outside?.rest) {
+      const empty = outside.restEmpty ? `。うち空のセッション ${int(outside.restEmpty)} 件は「空のセッションを含める」も要ります` : '';
+      parts.push(`今の絞り込みで外れているセッションにも ${int(outside.rest)} 件合います(絞り込みを外すと出ます${empty})。`);
+    }
+    return parts.join('');
   });
   function onSearch(v: string): void {
     query = v;
@@ -153,10 +168,10 @@
    */
   const leads = $derived.by(() => {
     const m = new Map<string, { lead: string | null; rest: string; same: number }>();
-    const texts = sessions.map(rawTitle);
+    const texts = rows.map(rawTitle);
     sharedLeads(texts).forEach((x, i) => {
       if (x.cut === 0 && x.same < 2) return;
-      m.set(sessions[i].id, x.cut > 0 ? { ...splitLead(texts[i], x.cut, 70), same: x.same } : { lead: null, rest: title(sessions[i]), same: x.same });
+      m.set(rows[i].id, x.cut > 0 ? { ...splitLead(texts[i], x.cut, 70), same: x.same } : { lead: null, rest: title(rows[i]), same: x.same });
     });
     return m;
   });
@@ -261,7 +276,7 @@
     };
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') closeMenu();
-      else if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && menuEl) {
+      else if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && menuEl && (menuEl.contains(document.activeElement) || document.activeElement === menuBtn)) {
         const items = [...menuEl.querySelectorAll<HTMLButtonElement>('button')];
         const i = items.indexOf(document.activeElement as HTMLButtonElement);
         const n = (i + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
@@ -318,20 +333,23 @@
         value={query}
         oninput={(e) => onSearch(e.currentTarget.value)}
         onkeydown={(e) => {
-          if (e.key === 'Escape' && query) {
+          // IME の変換を取り消す Esc では消さない。開いているメニュー(タスクタグ)の Esc の処理にも渡さない
+          if (e.key === 'Escape' && !e.isComposing && e.keyCode !== 229 && query) {
             e.preventDefault();
+            e.stopPropagation();
             onSearch('');
           }
         }}
         spellcheck="false"
         autocomplete="off"
-        placeholder="セッション ID の先頭 4 文字以上か、題名の一部"
-        aria-describedby="session-find-result"
+        placeholder="セッション ID か題名の一部"
+        aria-describedby="session-find-hint session-find-result"
         data-testid="session-search"
       />
     </label>
     <!-- live 領域は常に置いておき、文だけ差し替える(後から挿入すると読み上げられない) -->
     <p class="find-result" id="session-find-result" role="status" data-testid="session-search-result">{findText}</p>
+    <p class="find-hint" id="session-find-hint">ID は先頭 {ID_PREFIX_MIN} 文字以上か ID 全体(ID を含むパスを貼ってもよい)。題名は、セッション名と最初の依頼の先頭 160 字から探します。上の集計は変えません。</p>
   </div>
 
   <!-- 選択の操作列: チェックした件数と、その件数だけで集計 / 解除 / グループとして保存 -->
@@ -427,7 +445,7 @@
               <td class="num when">{dateTime(s.createdAt ?? s.updatedAt)}</td>
               <td class="num when">{dateTime(s.updatedAt ?? s.createdAt)}</td>
               <td class="proj" title={s.project}>{#each pathParts(s.projectLabel) as seg, i (i)}{#if i}<wbr />{/if}{seg}{/each}{#if s.branch}<span class="sub">{s.branch}</span>{/if}</td>
-              <td class="name"><a href={s.href} title={title(s)}>{#if leads.get(s.id)?.lead}<span class="lead" title="ほかの行と同じ書き出し(縮めて表示)">{leads.get(s.id)?.lead}</span>{leads.get(s.id)?.rest}{:else}{title(s)}{/if}</a>{#if (leads.get(s.id)?.same ?? 1) > 1}<span class="tag" title="一覧の中に題名がまったく同じセッションが {leads.get(s.id)?.same} 件あります。開始時刻やプロジェクトで見分けてください">同じ題名 ×{leads.get(s.id)?.same}</span>{/if}{#if s.empty}<span class="tag" title="依頼・ツール呼び出し・応答がどれも無いセッション">空</span>{/if}{#if found?.byId.has(s.id)}<span class="sub sid" data-testid="session-id">ID {s.id}</span>{/if}{#if s.memo}<span class="sub" data-testid="memo-excerpt">メモ: {s.memo.excerpt || '(本文なし)'}</span>{/if}{#if groupsOf.has(s.id)}<span class="sub in-groups" data-testid="session-groups">タスクタグ: {groupsOf.get(s.id)?.join('、')}</span>{/if}</td>
+              <td class="name"><a href={s.href} title={title(s)}>{#if leads.get(s.id)?.lead}<span class="lead" title="ほかの行と同じ書き出し(縮めて表示)">{leads.get(s.id)?.lead}</span>{leads.get(s.id)?.rest}{:else}{title(s)}{/if}</a>{#if (leads.get(s.id)?.same ?? 1) > 1}<span class="tag" title="一覧の中に題名がまったく同じセッションが {leads.get(s.id)?.same} 件あります。開始時刻やプロジェクトで見分けてください">同じ題名 ×{leads.get(s.id)?.same}</span>{/if}{#if s.empty}<span class="tag" title="依頼・ツール呼び出し・応答がどれも無いセッション">空</span>{/if}{#if found?.byId.has(s.id)}<span class="sub sid" data-testid="session-id">ID {s.id}</span>{/if}{#if found?.viaFirst.has(s.id) && s.firstUserMessage}<span class="sub" data-testid="session-first-hit">最初の依頼: {excerptAround(s.firstUserMessage, found.viaFirst.get(s.id) ?? '')}</span>{/if}{#if s.memo}<span class="sub" data-testid="memo-excerpt">メモ: {s.memo.excerpt || '(本文なし)'}</span>{/if}{#if groupsOf.has(s.id)}<span class="sub in-groups" data-testid="session-groups">タスクタグ: {groupsOf.get(s.id)?.join('、')}</span>{/if}</td>
               <td class="nowrap">{s.client ?? '不明'}</td>
               <td class="models" title={s.models.join('、')}>{s.models.length ? s.models.map(modelLabel).join('、') : '不明'}</td>
               <td class="num">{int(s.turns)}</td>
@@ -533,8 +551,19 @@
     flex-wrap: wrap;
     padding-top: 4px;
   }
+  /* 狭い画面では欄が縮む(26em のままだと 320px の幅で横にはみ出す) */
+  .fld.find {
+    flex: 0 1 26em;
+    min-width: 0;
+  }
   .fld.find input {
-    width: 26em;
+    width: 100%;
+  }
+  .find-hint {
+    flex: 1 0 100%;
+    margin: 0;
+    font-size: 0.75rem;
+    color: var(--ink-3);
   }
   .find-result {
     margin: 0;

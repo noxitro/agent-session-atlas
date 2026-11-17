@@ -239,7 +239,9 @@
   /** group(名前)→ 今のグループの ids、無ければ ids(共有した相手にその名前が無くても壊れない) */
   const eff = $derived(effectiveIds(filter, groupOptions, knownIds));
   // 今の絞り込み(空を含めるかの条件を除く)に当てはまる空のセッション数。表紙の「除外」の件数に使う
-  const emptyInFilter = $derived(applyFilter(sessions, { ...filter, empty: '1', ids: eff.ids }).filter((s) => s.empty).length);
+  /** 今の絞り込みで、空のセッションも含めたときに出るセッション */
+  const emptyRelaxed = $derived(applyFilter(sessions, { ...filter, empty: '1', ids: eff.ids }));
+  const emptyInFilter = $derived(emptyRelaxed.filter((s) => s.empty).length);
   /** 現在のグループ名(名前で決まらないときは ids の一致。0 件のグループや同じ集合が複数あるときは決めない) */
   const currentName = $derived(currentGroupName(filter, groupOptions, knownIds));
   const currentGroup = $derived(currentName ? (groupOptions.find((g) => g.name === currentName) ?? null) : null);
@@ -663,6 +665,7 @@
         <SessionTable
           sessions={filtered}
           allSessions={sessions}
+          {emptyRelaxed}
           emptyIncluded={filter.empty === '1'}
           {judged}
           {selected}
