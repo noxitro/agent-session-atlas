@@ -83,7 +83,8 @@ pub fn run_bundle(p: &Paths, f: &SessionFilter, o: &BundleCliOptions, log: Log<'
             scope,
             log,
             now: None,
-            wiki_vaults: sel.file.source.wikis,
+            // 選んだセッションだけでなく集計の全セッションで決める(書き込みだけのセッションが選ばれていなくても、vault を指定していたと分かる)
+            wiki_state: atlas_core::wiki::wiki_state(sel.file.sessions.iter().map(|r| &r.wiki), sel.file.source.wikis),
             wiki_specs: wiki_specs(o.config.as_deref(), log),
         },
     )?;

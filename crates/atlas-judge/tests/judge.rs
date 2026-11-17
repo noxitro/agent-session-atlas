@@ -3,6 +3,7 @@
 use anyhow::Result;
 use atlas_core::normalize::{normalize_session, NormalizeInput};
 use atlas_core::types::{CopilotEvent, SessionRecord, WorkspaceInfo};
+use atlas_core::wiki::WikiState;
 use atlas_judge::backends::{AskResult, JudgeBackend, JudgePacket, JudgeResult};
 use atlas_judge::bundle::{build_bundle, BundleOptions};
 use atlas_judge::packet::{missing_sections, packet_session_id, render_packet, SessionTexts, TextEntry, TextSource, DEFAULT_LIMITS};
@@ -42,7 +43,7 @@ fn entry(at: Option<&str>, text: &str) -> TextEntry {
 fn packet_has_sections_and_fences_do_not_close() {
     let r = record();
     let t = SessionTexts { source: TextSource::Snapshot, requests: vec![entry(None, "コード:\n```js\nx\n```\n## 最終応答")], final_response: Some(entry(None, "完了")), compactions: vec![], task_completes: vec![], wiki_reads: vec![], wiki_scanned: false };
-    let p = render_packet(&r, &t, &DEFAULT_LIMITS, None).unwrap();
+    let p = render_packet(&r, &t, &DEFAULT_LIMITS, WikiState::Counted).unwrap();
     assert!(missing_sections(&p.markdown).is_empty());
     assert_eq!(packet_session_id(&p.markdown).as_deref(), Some("sess-1"));
     assert!(p.markdown.contains("````text"));
@@ -63,7 +64,7 @@ fn long_texts_are_clipped_to_max_chars() {
         wiki_scanned: false,
     };
     r.files.changed = (0..500).map(|i| format!("C:\\p\\f{i}.ts")).collect();
-    let p = render_packet(&r, &t, &DEFAULT_LIMITS, None).unwrap();
+    let p = render_packet(&r, &t, &DEFAULT_LIMITS, WikiState::Counted).unwrap();
     assert!(p.chars <= DEFAULT_LIMITS.max_chars);
     assert!(p.truncated > 0);
     assert!(p.markdown.contains("中略"));
@@ -88,7 +89,7 @@ fn hundreds_of_short_texts_fit_with_one_omitted_line() {
     };
     r.wiki.skill_calls = (0..2000).map(|i| format!("wiki-query-{}", i % 300)).collect();
     r.wiki.index_reads = 1;
-    let p = render_packet(&r, &t, &DEFAULT_LIMITS, None).unwrap();
+    let p = render_packet(&r, &t, &DEFAULT_LIMITS, WikiState::Counted).unwrap();
     assert!(p.chars <= DEFAULT_LIMITS.max_chars);
     assert!(missing_sections(&p.markdown).is_empty());
     assert!(p.markdown.contains("ユーザーの依頼 1500 件"));
@@ -107,19 +108,21 @@ fn packet_wiki_line_counts_other_calls_and_not_counted() {
     let wiki_line = |md: &str| md.lines().find(|l| l.starts_with("- llm-wiki: ")).map(str::to_string);
     let mut r = record();
     r.wiki.other_calls = 2;
-    let p = render_packet(&r, &t, &DEFAULT_LIMITS, Some(1)).unwrap();
+    let p = render_packet(&r, &t, &DEFAULT_LIMITS, WikiState::Counted).unwrap();
     assert_eq!(wiki_line(&p.markdown).as_deref(), Some("- llm-wiki: 索引の読み取り 0 回 / ページ読み取り 0 件 / wiki skill 0 回 / そのほかの呼び出し 2 回 / 書き込み 0 回"));
     // 書き込みだけでも vault に触れたので回数を出す(「参照なし」にしない)
     let mut wo = record();
     wo.wiki.writes = 1;
-    assert_eq!(wiki_line(&render_packet(&wo, &t, &DEFAULT_LIMITS, Some(1)).unwrap().markdown).as_deref(), Some("- llm-wiki: 索引の読み取り 0 回 / ページ読み取り 0 件 / wiki skill 0 回 / そのほかの呼び出し 0 回 / 書き込み 1 回"));
+    assert_eq!(wiki_line(&render_packet(&wo, &t, &DEFAULT_LIMITS, WikiState::Counted).unwrap().markdown).as_deref(), Some("- llm-wiki: 索引の読み取り 0 回 / ページ読み取り 0 件 / wiki skill 0 回 / そのほかの呼び出し 0 回 / 書き込み 1 回"));
     // 触れていない
     let plain = record();
-    assert_eq!(wiki_line(&render_packet(&plain, &t, &DEFAULT_LIMITS, Some(1)).unwrap().markdown).as_deref(), Some("- llm-wiki: 参照なし"));
-    // 古い集計(vault の数の記録なし)も「参照なし」
-    assert_eq!(wiki_line(&render_packet(&plain, &t, &DEFAULT_LIMITS, None).unwrap().markdown).as_deref(), Some("- llm-wiki: 参照なし"));
+    assert_eq!(wiki_line(&render_packet(&plain, &t, &DEFAULT_LIMITS, WikiState::Counted).unwrap().markdown).as_deref(), Some("- llm-wiki: 参照なし"));
+    // 古い集計(vault の数の記録なし)で、どのセッションも vault に触れていない: 「参照なし」と言い切らない
+    let unknown = render_packet(&plain, &t, &DEFAULT_LIMITS, WikiState::NoRecord).unwrap();
+    assert_eq!(wiki_line(&unknown.markdown).as_deref(), Some("- llm-wiki: この集計では数えたか分かりません(vault の指定の記録なし)"));
+    assert!(missing_sections(&unknown.markdown).is_empty());
     // vault を指定せずに集計した
-    let off = render_packet(&plain, &t, &DEFAULT_LIMITS, Some(0)).unwrap();
+    let off = render_packet(&plain, &t, &DEFAULT_LIMITS, WikiState::NotCounted).unwrap();
     assert_eq!(wiki_line(&off.markdown).as_deref(), Some("- llm-wiki: この集計では数えていません(vault の指定なし)"));
     assert!(missing_sections(&off.markdown).is_empty());
 }
@@ -180,7 +183,7 @@ fn packet_lists_wiki_pages_with_excerpts_and_limits() {
     // 結果の本文が無い呼び出しは抜粋にしない(読んだ時刻と依頼は残す)
     assert_eq!((t.wiki_reads[1].excerpt.as_deref(), t.wiki_reads[1].request), (None, Some(1)));
 
-    let p = render_packet(&r, t, &DEFAULT_LIMITS, Some(1)).unwrap();
+    let p = render_packet(&r, t, &DEFAULT_LIMITS, WikiState::Counted).unwrap();
     let md = &p.markdown;
     assert!(missing_sections(md).is_empty());
     assert!(md.contains(&format!("判定するページ {max} 件(重複を除いて読んだ順の先頭から。残り 2 件は上限のため判定しません)")), "{md}");
@@ -196,18 +199,18 @@ fn packet_lists_wiki_pages_with_excerpts_and_limits() {
 
     // ログの全文が無い(抜粋で代用した)ときは、名前だけで判定させる
     let ex = atlas_judge::packet::excerpt_texts(&r);
-    let pe = render_packet(&r, &ex, &DEFAULT_LIMITS, Some(1)).unwrap();
+    let pe = render_packet(&r, &ex, &DEFAULT_LIMITS, WikiState::Counted).unwrap();
     assert!(pe.markdown.contains("- 抜粋なし(ログの全文が無く、読んだ呼び出しを確かめられません。"));
     // ログが無く session-store.db から本文を取ったとき(呼び出しを探していない)も同じ文
     let db = SessionTexts { source: TextSource::Snapshot, wiki_reads: vec![], wiki_scanned: false, ..t.clone() };
-    let pd = render_packet(&r, &db, &DEFAULT_LIMITS, Some(1)).unwrap().markdown;
+    let pd = render_packet(&r, &db, &DEFAULT_LIMITS, WikiState::Counted).unwrap().markdown;
     assert!(pd.contains("- 抜粋なし(ログの全文が無く、読んだ呼び出しを確かめられません。"));
     assert!(!pd.contains("特定できませんでした"));
     // 数えていない集計ではページの節を出さない
-    assert!(!render_packet(&r, t, &DEFAULT_LIMITS, Some(0)).unwrap().markdown.contains("ページごとの判定"));
+    assert!(!render_packet(&r, t, &DEFAULT_LIMITS, WikiState::NotCounted).unwrap().markdown.contains("ページごとの判定"));
     // 上限に収まらないときは、抜粋の字数も下げる(ページの並びは変えない)
     let tight = atlas_judge::packet::PacketLimits { max_chars: p.chars - 50, ..DEFAULT_LIMITS };
-    let pt = render_packet(&r, t, &tight, Some(1)).unwrap();
+    let pt = render_packet(&r, t, &tight, WikiState::Counted).unwrap();
     assert!(pt.chars <= p.chars - 50);
     assert!(pt.limits.wiki_excerpt_chars < DEFAULT_LIMITS.wiki_excerpt_chars);
     assert!(pt.markdown.contains(&format!("#### ページ {max}: wiki/p{}.md", max - 1)));
@@ -277,7 +280,7 @@ fn wiki_excerpt_comes_from_the_call_that_read_the_page() {
     }
     // 1 回の呼び出しで読んだページは、ほかのページと同じ抜粋だと書く
     let t = &atlas_judge::packet::collect_texts(&snap, &[&r], None, Some(&c)).unwrap()["m1"];
-    let md = render_packet(&r, t, &DEFAULT_LIMITS, Some(1)).unwrap().markdown;
+    let md = render_packet(&r, t, &DEFAULT_LIMITS, WikiState::Counted).unwrap().markdown;
     assert_eq!(md.matches("ほかのページと同じ結果の抜粋").count(), 2, "{md}");
     assert!(!md.contains("サブエージェントの要約") && !md.contains("古い控え") && !md.contains("プロジェクトの AGENTS"));
 }
@@ -480,7 +483,7 @@ fn rebuild_failure_keeps_previous_bundle() {
         scope: IndexMap::new(),
         log: &log,
         now: None,
-        wiki_vaults: None,
+        wiki_state: WikiState::Counted,
         wiki_specs: vec![],
     };
     let m = build_bundle(&[&s], &opts(None, None)).unwrap();

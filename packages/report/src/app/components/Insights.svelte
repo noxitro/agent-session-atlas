@@ -5,12 +5,10 @@
   // 全記録の群: 「長いのに注入が少ない」(全体での希少さの話なので allSessions)と、スキル化の候補
   // (依頼文の本文が要るので build 時に全セッションで計算して埋め込んだもの。全件は insights.html)
   import { date, dec, duration, int } from '../../lib/format.ts';
-  import { cleanHeading, instructionFindings, instructionVersions, skillStats, stuckByProject, stuckSessions, THRESHOLDS, type Candidate, type VersionMeta } from '../../lib/insights.ts';
+  import { cleanHeading, instructionFindings, instructionVersions, skillStats, stuckByProject, stuckSessions, SKILL_RATE_CAUSE, THRESHOLDS, type Candidate, type VersionMeta } from '../../lib/insights.ts';
   import type { SessionSummary } from '../../lib/types.ts';
   import { WIKI_JUDGED_PAGES_MAX, WIKI_PAGES_OLD_DATA, wikiPageTable, wikiStateNote, wikiUsageSummary, type WikiPageRow, type WikiState } from '../../lib/wiki.ts';
 
-  /** skill の失敗率の差の読み方(insights.html の skill の節と同じ文。crates/atlas-report/src/insights_page.rs の SKILL_RATE_CAUSE) */
-  const SKILL_RATE_CAUSE = '呼ぶかどうかは作業の中身で決まるので、差は skill が原因とは限りません。';
 
   let {
     sessions,

@@ -914,13 +914,34 @@ pub fn normalize_session(input: NormalizeInput<'_>) -> std::io::Result<SessionRe
                         Some(Value::Object(o)) => str_of(o.get(k)),
                         _ => None,
                     };
+                    // skills の何番目の呼び出しか(下の classify で wiki の skill と数えたかを skill_wiki に残す)
+                    let mut skill_idx: Option<usize> = None;
                     if name == "skill" {
                         let skill = arg("skill").unwrap_or("(unknown)").to_string();
-                        skills.push(SkillUse { name: skill.clone(), at: at.clone(), via: SkillVia::Tool, trigger: Some(SkillTrigger::Agent), chars: None });
-                        skill_at_ms.push(t);
-                        // 下の classify で数えたら true にする
-                        skill_wiki.push(false);
-                        push_timeline!(TimelineEntry { at: at_or_empty(), kind: TimelineKind::Skill, label: skill, count: None, tools: None });
+                        // 直前の skill.invoked(ツールより先に届いたもの)と同じ呼び出しなら 1 件にまとめる(skill.invoked の側の逆の順)
+                        let pair = (0..skills.len()).rev().find(|&i| {
+                            let s = &skills[i];
+                            s.via == SkillVia::Event
+                                && s.name == skill
+                                && match (t, skill_at_ms[i]) {
+                                    (Some(t), Some(sa)) => t - sa <= SKILL_PAIR_WINDOW_MS && t >= sa,
+                                    _ => false,
+                                }
+                        });
+                        match pair {
+                            Some(i) => {
+                                skills[i].via = SkillVia::Both;
+                                skill_idx = Some(i);
+                            }
+                            None => {
+                                skills.push(SkillUse { name: skill.clone(), at: at.clone(), via: SkillVia::Tool, trigger: Some(SkillTrigger::Agent), chars: None });
+                                skill_at_ms.push(t);
+                                // 下の classify で数えたら true にする
+                                skill_wiki.push(false);
+                                skill_idx = Some(skills.len() - 1);
+                                push_timeline!(TimelineEntry { at: at_or_empty(), kind: TimelineKind::Skill, label: skill, count: None, tools: None });
+                            }
+                        }
                     } else {
                         match timeline.last_mut() {
                             Some(last) if last.kind == TimelineKind::Tools && last.tools.is_some() => {
@@ -941,9 +962,12 @@ pub fn normalize_session(input: NormalizeInput<'_>) -> std::io::Result<SessionRe
                         }
                     }
                     let wiki_hit = wiki_classifier.classify(&mut wiki, &name, args_ref);
-                    if name == "skill" && wiki_hit {
-                        if let Some(x) = skill_wiki.last_mut() {
-                            *x = true;
+                    if let (Some(i), true) = (skill_idx, wiki_hit) {
+                        if skill_wiki[i] {
+                            // 先に届いた skill.invoked の側で数えていた: classify が足した 1 件を戻す(二重に数えない)
+                            wiki.skill_calls.pop();
+                        } else {
+                            skill_wiki[i] = true;
                         }
                     }
                     let cwd = cur_cwd!();

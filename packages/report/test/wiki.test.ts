@@ -59,10 +59,12 @@ describe('集計の状態', () => {
     expect(wikiState([read, none], 0)).toBe('not-counted');
     expect(wikiState([], 0)).toBe('not-counted');
   });
-  it('vault の数の記録が無い古い集計: 参照したセッションが無ければ記録なし、あれば数えた', () => {
-    expect(wikiState([none, writeOnly], undefined)).toBe('no-record');
+  it('vault の数の記録が無い古い集計: vault に触れたセッションが無ければ記録なし、あれば数えた', () => {
+    expect(wikiState([none], undefined)).toBe('no-record');
     expect(wikiState([], undefined)).toBe('no-record');
     expect(wikiState([none, read], undefined)).toBe('counted');
+    // 書き込みだけのセッションがあれば vault は指定されていた
+    expect(wikiState([none, writeOnly], undefined)).toBe('counted');
   });
   it('vault を指定した集計は、参照したセッションが無くても数えた', () => {
     expect(wikiState([none], 1)).toBe('counted');

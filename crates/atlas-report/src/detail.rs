@@ -26,7 +26,7 @@ use atlas_core::turns::{mismatch_label, outcome_label, phase_label, request_kind
 use atlas_core::failure_ledger::MAX_ROWS;
 use atlas_core::types::{AgentStatus, CallOutcome, FailureKind, NextKind, ToolFailure, InstructionFile, InstructionInjection, InstructionScope, LineChanges, LineNote, LineSource, ProjectSource, SessionRecord, SessionTests, SessionTokens, SkillTrigger, SkillVia, TimelineEntry, TimelineKind, TokenCounts, TokenSource};
 use atlas_core::vcs_retention::{Outcome, SessionRetention};
-use atlas_core::wiki::WIKI_NOT_COUNTED;
+use atlas_core::wiki::{WikiState, WIKI_NOT_COUNTED, WIKI_NO_RECORD};
 use serde_json::Value;
 use std::cmp::Ordering;
 use std::collections::HashSet;
@@ -1142,8 +1142,8 @@ pub struct DetailOptions<'a> {
     pub memo: Option<&'a DetailMemo>,
     pub retention: Option<&'a SessionRetention>,
     pub retention_meta: Option<&'a RetentionMeta>,
-    /// 参照を数えた llm-wiki の vault の数(sessions.json の source.wikis)。0 なら数えていない。古い集計では None
-    pub wiki_vaults: Option<i64>,
+    /// llm-wiki の参照を数えた集計か(atlas_core::wiki::wiki_state で、絞り込み前の全セッションから決める)
+    pub wiki_state: WikiState,
 }
 
 const DETAIL_CSS: &str = include_str!("../assets/detail.css");
@@ -1440,8 +1440,11 @@ pub fn render_detail_html(r: &SessionRecord, o: &DetailOptions<'_>) -> String {
     };
     parts.push(sec.section(
         "llm-wiki の参照",
-        &if o.wiki_vaults == Some(0) {
+        &if o.wiki_state == WikiState::NotCounted {
             format!("<p class=\"note\" data-testid=\"wiki-not-counted\">{}</p>", esc(WIKI_NOT_COUNTED))
+        } else if o.wiki_state == WikiState::NoRecord {
+            // 古い集計で、どのセッションも vault に触れていない: 「参照はありません」とは言い切れない
+            format!("<p class=\"note\" data-testid=\"wiki-no-record\">{}</p>", esc(WIKI_NO_RECORD))
         } else if wiki_used {
             let kind = if w.referenced() { "参照した" } else { "書き込みだけ(参照したセッションには数えません)" };
             format!(

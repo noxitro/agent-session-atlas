@@ -302,6 +302,8 @@ fn main() -> Result<()> {
     d.write("insights-versions", &versions)?;
     d.write("insights-findings", &instruction_findings(&versions, &meta, plain.len()))?;
     d.write("insights-skills", &skill_stats(&plain_refs, installed.as_ref().map(|i| i.skills.as_slice())))?;
+    // 画面と insights.html で同じにする文
+    d.write("insights-texts", &json!({ "skillRateCause": SKILL_RATE_CAUSE }))?;
     let stuck = stuck_sessions(&plain_refs);
     d.write("insights-stuck", &stuck)?;
     d.write("insights-stuck-projects", &stuck_by_project(&stuck, &plain_refs))?;
@@ -382,7 +384,7 @@ fn main() -> Result<()> {
             let xs: Vec<SessionSummary> = cases.iter().map(|c| with_wiki(b, c)).collect();
             bucket("w", "w", &xs.iter().collect::<Vec<_>>()).sessions_with_wiki
         });
-        d.write("wiki", &json!({ "notCounted": atlas_core::wiki::WIKI_NOT_COUNTED, "sessionsWithWiki": per, "all": all }))?;
+        d.write("wiki", &json!({ "notCounted": atlas_core::wiki::WIKI_NOT_COUNTED, "noRecord": atlas_core::wiki::WIKI_NO_RECORD, "sessionsWithWiki": per, "all": all }))?;
         // ページごとの判定に載せるページの上限と選び方(上限を超える決まった入力)・ページの名前の辞書(scripts/parity-lib.ts と同じ形で書く)
         let many: Vec<String> = (0..13).map(|i| format!("wiki/p{}.md", i % 12)).collect();
         let (judged, _) = atlas_core::wiki::judged_wiki_pages(&many);

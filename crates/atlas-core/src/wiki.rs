@@ -112,6 +112,32 @@ pub fn empty_wiki() -> WikiUsage {
 /// npm run parity:fixture の wiki で突き合わせる)
 pub const WIKI_NOT_COUNTED: &str = "この集計では llm-wiki の vault を指定していないので、wiki の参照は数えていません(0 件という意味ではありません)。atlas.config.json の wikis で vault を指定して集計し直すと数えます。";
 
+/// vault を指定していたかの記録が無く、vault に触れたセッションも無いときの理由(packages/report/src/lib/wiki.ts の WIKI_NO_RECORD と同じ文。
+/// npm run parity:fixture の wiki で突き合わせる)
+pub const WIKI_NO_RECORD: &str = "この集計には、llm-wiki の vault を指定していたかの記録がありません(集計し直すと記録されます)。wiki を参照・書き込みしたセッションが無いので、数えていないのか、使っていないのかは分かりません。";
+
+/// 集計の状態(packages/report/src/lib/wiki.ts の WikiState と同じ並び)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WikiState {
+    /// 数えた
+    Counted,
+    /// vault を指定せずに集計した(どのセッションも 0 だが「参照していない」の意味ではない)
+    NotCounted,
+    /// vault を指定していたかの記録が無い古い集計で、vault に触れたセッションも無い(数えていないのか、使っていないのか分からない)
+    NoRecord,
+}
+
+/// 集計の状態を決める(packages/report/src/lib/wiki.ts の wikiState と同じ判定)。絞り込み前の全セッションで 1 度だけ決める。
+/// wiki_vaults: 参照を数えた vault の数(sessions.json の source.wikis。0 なら数えていない。古い集計では None)。
+/// 書き込みだけのセッションがあれば vault は指定されていたと分かるので、記録が無くても数えた扱い
+pub fn wiki_state<'a>(wikis: impl IntoIterator<Item = &'a WikiUsage>, wiki_vaults: Option<i64>) -> WikiState {
+    match wiki_vaults {
+        Some(0) => WikiState::NotCounted,
+        None if !wikis.into_iter().any(WikiUsage::touched) => WikiState::NoRecord,
+        _ => WikiState::Counted,
+    }
+}
+
 /// wiki を参照したか。索引の読み取り・個別ページの読み取り・wiki の skill の呼び出し・そのほかの呼び出し(vault の検索・一覧など)が
 /// 合わせて 1 回以上。書き込みは入れない(書き込みだけのセッションは参照していない)。
 /// 画面・表・ログで「参照した」と数えるのはこの判定だけ(画面は packages/report/src/lib/wiki.ts の wikiReferenced。並びをそろえる)
@@ -453,6 +479,21 @@ mod tests {
         let mut w = empty_wiki();
         assert!(c.classify(&mut w, "view", Some(&json!({"path": "b/x.mdx"}))));
         assert_eq!(w.other_calls, 1);
+    }
+
+    #[test]
+    fn state() {
+        let read = WikiUsage { index_reads: 1, ..Default::default() };
+        let write_only = WikiUsage { writes: 1, ..Default::default() };
+        let none = WikiUsage::default();
+        assert_eq!(wiki_state([&read, &none], Some(0)), WikiState::NotCounted);
+        assert_eq!(wiki_state([], Some(0)), WikiState::NotCounted);
+        assert_eq!(wiki_state([&none], None), WikiState::NoRecord);
+        assert_eq!(wiki_state([], None), WikiState::NoRecord);
+        assert_eq!(wiki_state([&none, &read], None), WikiState::Counted);
+        // 書き込みだけのセッションがあれば vault は指定されていた
+        assert_eq!(wiki_state([&none, &write_only], None), WikiState::Counted);
+        assert_eq!(wiki_state([&none], Some(1)), WikiState::Counted);
     }
 
     #[test]

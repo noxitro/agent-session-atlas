@@ -21,7 +21,7 @@ import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import type { SessionsFile } from '../packages/report/src/shared/types.ts';
 import { aggregate, bucket, coverageBreakdown, monthRange, unusedSkills } from '../packages/report/src/lib/aggregate.ts';
-import { judgedWikiPages, WIKI_JUDGED_PAGES_MAX, WIKI_NOT_COUNTED, wikiPageIndex } from '../packages/report/src/lib/wiki.ts';
+import { judgedWikiPages, WIKI_JUDGED_PAGES_MAX, WIKI_NO_RECORD, WIKI_NOT_COUNTED, wikiPageIndex } from '../packages/report/src/lib/wiki.ts';
 import type { SessionSummary } from '../packages/report/src/lib/types.ts';
 import { embedData, extractEmbedded, serializeForScript } from '../packages/report/src/lib/embed.ts';
 import { execAggregate, quantilesOf } from '../packages/report/src/lib/exec.ts';
@@ -39,6 +39,7 @@ import {
   requestCandidates,
   seriesKey,
   skillCandidates,
+  SKILL_RATE_CAUSE,
   skillStats,
   stuckByProject,
   stuckSessions,
@@ -277,6 +278,8 @@ function dumpWith(
   write('insights-versions', versions);
   write('insights-findings', instructionFindings(versions, insightMeta, plain.length));
   write('insights-skills', skillStats(plain, installed?.skills ?? null));
+  // 画面と insights.html で同じにする文
+  write('insights-texts', { skillRateCause: SKILL_RATE_CAUSE });
   const stuck = stuckSessions(plain);
   write('insights-stuck', stuck);
   write('insights-stuck-projects', stuckByProject(stuck, plain));
@@ -330,6 +333,7 @@ function dumpWith(
     const withWiki = (wiki: SessionSummary['wiki']): SessionSummary => ({ ...base, wiki });
     write('wiki', {
       notCounted: WIKI_NOT_COUNTED,
+      noRecord: WIKI_NO_RECORD,
       sessionsWithWiki: base ? cases.map((c) => bucket('w', 'w', [withWiki(c)]).sessionsWithWiki) : null,
       all: base ? bucket('w', 'w', cases.map(withWiki)).sessionsWithWiki : null,
     });

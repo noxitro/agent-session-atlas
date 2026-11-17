@@ -4,7 +4,7 @@
 use atlas_core::instructions::content_hash;
 use atlas_core::normalize::{normalize_session, DbInput, NormalizeInput};
 use atlas_core::types::{CopilotEvent, DbUsageRow, SessionRecord, WorkspaceInfo};
-use atlas_core::wiki::{WikiClassifier, WikiSpec};
+use atlas_core::wiki::{WikiClassifier, WikiSpec, WikiState};
 use atlas_report::build::embed_code_stamp;
 use atlas_report::coverage::{coverage_file, desktop_coverage, rule_for, CoverageCounter, Treatment};
 use atlas_report::detail::{merge_instruction_rows, render_detail_html, DetailOptions};
@@ -38,11 +38,11 @@ fn normalize(id: &str, events: Vec<CopilotEvent>, workspace: Option<WorkspaceInf
 }
 
 fn html(r: &SessionRecord) -> String {
-    html_with(r, None)
+    html_with(r, WikiState::Counted)
 }
 
-/// wiki_vaults: 参照を数えた vault の数(0 なら数えていない集計)
-fn html_with(r: &SessionRecord, wiki_vaults: Option<i64>) -> String {
+/// wiki_state: llm-wiki の参照を数えた集計か
+fn html_with(r: &SessionRecord, wiki_state: WikiState) -> String {
     render_detail_html(
         r,
         &DetailOptions {
@@ -59,7 +59,7 @@ fn html_with(r: &SessionRecord, wiki_vaults: Option<i64>) -> String {
             memo: None,
             retention: None,
             retention_meta: None,
-            wiki_vaults,
+            wiki_state,
         },
     )
 }
@@ -260,11 +260,13 @@ fn detail_merges_duplicate_rows() {
     let untouched = normalize("u", vec![ev("tool.execution_start", json!({ "toolName": "view", "toolCallId": "x1", "arguments": { "path": "E:\\v\\other\\a.md" } }), &t(1), json!({}))], None, &[], Some(&wiki));
     assert!(html(&untouched).contains("llm-wiki の参照はありません。"));
     // vault を指定せずに集計した(vault の数が 0): 「参照はありません」と言わずに、数えていない理由を出す
-    let off = html_with(&untouched, Some(0));
+    let off = html_with(&untouched, WikiState::NotCounted);
     assert!(!off.contains("llm-wiki の参照はありません。"));
     assert!(off.contains(atlas_core::wiki::WIKI_NOT_COUNTED));
-    // 古い集計(vault の数の記録なし)は今までどおり
-    assert!(html_with(&untouched, None).contains("llm-wiki の参照はありません。"));
+    // 古い集計(vault の数の記録なし)で、どのセッションも vault に触れていない: 「参照はありません」と言い切らずに、分からない理由を出す
+    let unknown = html_with(&untouched, WikiState::NoRecord);
+    assert!(!unknown.contains("llm-wiki の参照はありません。"));
+    assert!(unknown.contains(atlas_core::wiki::WIKI_NO_RECORD));
 
     // (11) 同じ理由で失敗したサブエージェントは ×N でまとめ、結果の無いツール呼び出しは「結果なし」に数える
     let mut events = Vec::new();
