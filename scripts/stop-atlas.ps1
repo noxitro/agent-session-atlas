@@ -9,6 +9,7 @@
 # 画面のサーバ(atlas serve・atlas open)だけなら、尋ねずに止める。集計・判定・送る操作などが動いていれば、止めてよいか尋ねる
 #   (途中で止めても、集計は次の集計で作り直し、判定は済んだ分が残る)。
 # 止めた後、残った印(out\ と out-folders\<キー>\out\ の .serve.json・.job.json)と、前の版の実行ファイル(bin\atlas*.exe)を消す。
+#   自動で送るタスクが、まだ動かす登録になっている実行ファイルは消さない(消すと、タスクが動かせず、自動で送れなくなる)。
 #
 #   -Yes   尋ねずに止める
 #   -Repo  対象のフォルダ(テスト用。ふだんはこのスクリプトの 1 つ上のフォルダ)
@@ -145,10 +146,41 @@ function Remove-StaleStamps([int[]]$keep) {
   return $removed
 }
 
-# 前の版の実行ファイル(bin\atlas*.exe。この版は使わない。動いていれば消せないので、次に止めたときに消す)
+# 自動で送るタスクが、まだ動かす登録になっている前の版の実行ファイル(このフォルダの bin\ の中のもの)。無ければ $null。
+# 前の版は、conhost に `--headless "<このフォルダ>\bin\atlas.exe" upload-auto` を渡して登録していた。この形のままのタスクは、
+# schedule-upload.bat を開くか、前の版の atlas.exe がこの版を取り込んだとき(scripts\ensure-atlas.ps1)に、Node.js で動かす形に
+# 登録し直される。それまではタスクがこの実行ファイルを動かすので、消すと、記録も通知も残らないまま自動で送れなくなる
+function Get-TaskExe {
+  $t = Get-ScheduledTask -TaskName 'agent-session-atlas-upload' -TaskPath '\' -ErrorAction SilentlyContinue
+  if (-not $t) { return $null }
+  foreach ($a in @($t.Actions)) {
+    if (-not $a -or $a.PSObject.Properties.Name -notcontains 'Arguments') { continue }
+    $m = [regex]::Match([string]$a.Arguments, '^\s*--headless\s+"([^"]+)"\s+upload-auto\b')
+    if (-not $m.Success) { continue }
+    try { $exe = [IO.Path]::GetFullPath($m.Groups[1].Value) } catch { continue }
+    if ((Split-Path -Parent $exe).TrimEnd('\') -ieq $Bin) { return $exe }
+  }
+  return $null
+}
+
+# 前の版の実行ファイル(bin\atlas*.exe。この版は使わない。動いていれば消せないので、次に止めたときに消す)。
+# 自動で送るタスクがまだ動かす登録になっているものは残し、どうすれば要らなくなるかを出す。
+# タスクを確かめられなかったときは、どれも消さない(残っても動きに差は無い)
 function Remove-LegacyExe {
   if (-not (Test-Path -LiteralPath $Bin -PathType Container)) { return }
-  Get-ChildItem -LiteralPath $Bin -Filter 'atlas*.exe' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+  $files = @(Get-ChildItem -LiteralPath $Bin -Filter 'atlas*.exe' -ErrorAction SilentlyContinue)
+  if ($files.Count -eq 0) { return }
+  $keep = $null
+  try { $keep = Get-TaskExe } catch { return }
+  foreach ($f in $files) {
+    if ($keep -and $f.FullName -ieq $keep) { continue }
+    Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue
+  }
+  if ($keep -and (Test-Path -LiteralPath $keep)) {
+    Say ''
+    Say "毎日自動で送るタスクが、前の版の実行ファイル($keep)で登録されたままなので、この実行ファイルは消しませんでした。"
+    Say 'schedule-upload.bat を開くと、Node.js で動かす形に登録し直します(その後は、この実行ファイルを使いません)。'
+  }
 }
 
 try {

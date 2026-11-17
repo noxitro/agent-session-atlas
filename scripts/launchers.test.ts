@@ -207,7 +207,10 @@ describe('scripts/ensure-atlas.ps1(前の版の atlas.exe から移るための�
     expect(text).not.toMatch(/RunAs|Set-ExecutionPolicy|-Scope\s+(LocalMachine|AllUsers)|Program Files/i);
     // 文言で .bat の名前を案内するのはよい。動かすのは node(deps-fresh.mjs)と npm と、タスクの操作だけ
     expect(text).not.toMatch(/main\.ts|launcher-update|^\s*&[^\r\n]*\.bat\b|cmd(\.exe)?\s+\/[cd]/im);
-    expect(text).toContain('ci --no-audit --no-fund');
+    expect(text).toContain("@('ci', '--no-audit', '--no-fund')");
+    // node と npm は Invoke-Native を通す(Windows PowerShell 5.1 は、標準エラーをリダイレクトしたコマンドの出力をエラーの記録に変える。
+    // $ErrorActionPreference = 'Stop' のまま直に動かすと、警告の 1 行で止まる)
+    expect(text).not.toMatch(/^\s*&[^\r\n]*(\*>|2>)/m);
     expect(text).not.toMatch(/npm install/);
   });
 
@@ -246,12 +249,12 @@ describe('scripts/ensure-atlas.ps1(前の版の atlas.exe から移るための�
       writeFileSync(join(repo, 'scripts', 'deps-fresh.mjs'), `process.exit(${depsOk ? 0 : 1});\n`);
       return repo;
     };
-    const ensure = (repo: string, taskArgs: string, check: boolean) => {
+    const ensure = (repo: string, taskArgs: string, check: boolean, env?: NodeJS.ProcessEnv) => {
       const args = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', wrapper, '-Script', join(repo, ENSURE)];
       // 空の引数は powershell.exe -File が落とすことがあるので、タスクが無いときは渡さない
       if (taskArgs) args.push('-TaskArgs', taskArgs);
       if (check) args.push('-Check');
-      const r = spawnSync('powershell.exe', args, { cwd: repo, timeout: 60_000 });
+      const r = spawnSync('powershell.exe', args, { cwd: repo, timeout: 60_000, env });
       const out = decodeConsole(r.stdout);
       const line = out.split(/\r?\n/).find((l) => l.startsWith('@@'));
       expect(line, `${out}${decodeConsole(r.stderr)}`).toBeDefined();
@@ -287,6 +290,41 @@ describe('scripts/ensure-atlas.ps1(前の版の atlas.exe から移るための�
         expect(ensure(repo, args, true)).toMatchObject({ code: 0, calls: [] });
         expect(ensure(repo, args, false)).toMatchObject({ code: 0, calls: [] });
       }
+    }, 120_000);
+
+    // node と npm が標準エラーに警告を出しても止まらない。偽の node.cmd と npm.cmd を PATH の先頭に置く(本物の npm は動かさない)。
+    // 直す前は、警告の 1 行で NativeCommandError になり、「この版へ移る用意ができませんでした」で 1 を返していた
+    it('node と npm が標準エラーに警告を出しても、依存を入れて 0 で終わる。npm が失敗したら、終了コードを出して 1', () => {
+      const fake = join(tmp, 'fake-node');
+      mkdirSync(fake, { recursive: true });
+      // node.cmd: 版を聞かれたら 24.1.0。deps-fresh.mjs は、<フォルダ>\node_modules\ok があれば 0。どちらも標準エラーに 1 行出す
+      writeFileSync(join(fake, 'node.cmd'), ['@echo off', 'echo (node:1) Warning: something 1>&2', 'if "%~1"=="-p" (echo 24.1.0& exit /b 0)', 'if exist "%~2\\node_modules\\ok" exit /b 0', 'exit /b 1', ''].join('\r\n'));
+      // npm.cmd: 警告を標準エラーに出す。FAKE_NPM_FAIL があれば 1、無ければ node_modules\ok を作って 0
+      writeFileSync(join(fake, 'npm.cmd'), ['@echo off', 'echo npm warn deprecated something@1.0.0 1>&2', 'if defined FAKE_NPM_FAIL exit /b 1', 'mkdir node_modules 2>nul', 'echo ok> node_modules\\ok', 'exit /b 0', ''].join('\r\n'));
+      const withFake = (extra: Record<string, string> = {}): NodeJS.ProcessEnv => {
+        const env: NodeJS.ProcessEnv = {};
+        // Windows の環境変数の名前は大文字小文字を区別しない(Path と PATH の両方を渡さない)
+        for (const [k, v] of Object.entries(process.env)) if (k.toLowerCase() !== 'path') env[k] = v;
+        return { ...env, Path: `${fake};${process.env.PATH ?? ''}`, ...extra };
+      };
+
+      const repo = makeRepo(false);
+      // 依存が無いうちは -Check は 1(警告で「Node.js が無い」とは見ない: 入れ方の案内は出さない)
+      const before = ensure(repo, '', true, withFake());
+      expect(before.code).toBe(1);
+      expect(before.text).not.toContain('Node.js 24 以上が見つかりません');
+      const r = ensure(repo, '', false, withFake());
+      expect(r.text).toContain('npm の依存を入れました');
+      expect(r.text).not.toContain('この版へ移る用意ができませんでした');
+      expect(r.code).toBe(0);
+      expect(existsSync(join(repo, 'node_modules', 'ok'))).toBe(true);
+      expect(ensure(repo, '', true, withFake()).code).toBe(0);
+
+      const bad = makeRepo(false);
+      const f = ensure(bad, '', false, withFake({ FAKE_NPM_FAIL: '1' }));
+      expect(f.text).toContain('npm ci の終了コード 1');
+      expect(f.code).toBe(1);
+      expect(existsSync(join(bad, 'node_modules'))).toBe(false);
     }, 120_000);
 
     it('依存がそろっていなければ -Check は 1(何も入れない・変えない)', () => {
@@ -386,6 +424,47 @@ describe('stop.bat と scripts/stop-atlas.ps1', () => {
       const r = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(ROOT, STOP_PS1), '-Repo', repo, ...args], { input, env, timeout: 60_000 });
       return { status: r.status, text: `${decodeConsole(r.stdout)}${decodeConsole(r.stderr)}` };
     };
+
+    // 自動で送るタスクが、前の版の形(このフォルダの bin\atlas.exe)で登録されたままなら、その実行ファイルは消さない
+    // (消すと、タスクが動かせず、記録も通知も残らないまま自動で送れなくなる)。タスクは偽物(この PC のタスク スケジューラは読まない)
+    it('自動で送るタスクがまだ動かす登録になっている前の実行ファイルは消さず、登録し直し方を出す。Node の形や別のフォルダのタスクなら消す', () => {
+      const wrapper = join(tmp, 'stop-wrapper.ps1');
+      writeFileSync(
+        wrapper,
+        [
+          'param([string]$Script, [string]$Repo, [string]$TaskArgs)',
+          'function Get-ScheduledTask { [CmdletBinding()] param($TaskName, $TaskPath) if (-not $TaskArgs) { return $null }; [pscustomobject]@{ TaskName = $TaskName; Actions = @([pscustomobject]@{ Execute = "conhost.exe"; Arguments = $TaskArgs }) } }',
+          '& $Script -Repo $Repo -Yes',
+          'exit $LASTEXITCODE',
+          '',
+        ].join('\r\n'),
+      );
+      const stopWithTask = (repo: string, taskArgs: string) => {
+        const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', wrapper, '-Script', join(ROOT, STOP_PS1), '-Repo', repo, '-TaskArgs', taskArgs], { env, timeout: 60_000 });
+        return { status: r.status, text: `${decodeConsole(r.stdout)}${decodeConsole(r.stderr)}` };
+      };
+
+      const kept = makeRepo('task-exe');
+      writeFileSync(join(kept, 'bin', 'atlas.old-0123abcd.exe'), '');
+      const r = stopWithTask(kept, `--headless "${kept}\\bin\\atlas.exe" upload-auto --no-update`);
+      expect(r.text).toContain('この実行ファイルは消しませんでした');
+      expect(r.text).toContain('schedule-upload.bat を開くと、Node.js で動かす形に登録し直します');
+      expect(r.status).toBe(0);
+      expect(existsSync(join(kept, 'bin', 'atlas.exe'))).toBe(true);
+      // タスクが動かさない、置き換えで移した前の実行ファイルは消す
+      expect(existsSync(join(kept, 'bin', 'atlas.old-0123abcd.exe'))).toBe(false);
+
+      for (const [name, taskArgs] of [
+        ['task-node', (repo: string) => `--headless "C:\\node\\node.exe" "${repo}\\packages\\cli\\src\\upload-auto.ts"`],
+        ['task-other', () => `--headless "${join(tmp, 'elsewhere')}\\bin\\atlas.exe" upload-auto`],
+      ] as const) {
+        const repo = makeRepo(name);
+        const gone = stopWithTask(repo, taskArgs(repo));
+        expect(gone.text, name).not.toContain('消しませんでした');
+        expect(gone.status, name).toBe(0);
+        expect(existsSync(join(repo, 'bin', 'atlas.exe')), name).toBe(false);
+      }
+    }, 120_000);
 
     // powershell.exe の起動だけで、CI の Windows では既定の 5 秒を超えることがある(下の 2 つと同じ上限にする)
     it('動いていなければ、そう出して 0 で終わる', () => {
