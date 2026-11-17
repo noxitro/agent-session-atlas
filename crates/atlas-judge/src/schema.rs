@@ -1,13 +1,21 @@
-//! judgments.json のスキーマ(schemaVersion 1)と検証(packages/judge/src/schema.ts の移植)。
+//! judgments.json のスキーマ(schemaVersion 2)と検証(packages/judge/src/schema.ts の移植)。
 //! 外部 LLM の出力も内部バックエンドの出力も、ここを通ったものだけを judgments.json に入れる。
 //! 形が合わないものは黙って直さず、どこが違うかを列挙して落とす。
+//! 例外は llm-wiki のページごとの判定(wikiPages)で、無い・壊れているときはほかの判定を捨てずに、そのセッションのページを未判定にする
+//! (壊れていたことは wiki_pages_note で知らせる)。版 1 は wikiPages の無い版で、読むときは 1 も受け付ける(書くのは 2)。
 
 use atlas_core::js;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::HashSet;
 
-pub const JUDGMENTS_SCHEMA_VERSION: i64 = 1;
+pub const JUDGMENTS_SCHEMA_VERSION: i64 = 2;
+
+/// 読める版(1: wikiPages の無い版)
+pub const READABLE_SCHEMA_VERSIONS: [i64; 2] = [1, 2];
+
+/// llm-wiki のページごとの「役立ったか」の値
+pub const WIKI_HELPFUL: [&str; 3] = ["yes", "no", "unknown"];
 
 pub const TASK_CATEGORIES: [&str; 7] = ["feature", "bugfix", "investigation", "refactor", "docs", "ops", "other"];
 
@@ -38,6 +46,17 @@ pub struct AiOutcome {
     pub rationale: String,
 }
 
+/// llm-wiki のページ 1 つについての判定(判定のパケットに載せたページごと)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WikiPageJudgment {
+    /// パケットに書いたページの名前
+    pub page: String,
+    /// yes: 中身が後の作業に使われ、作業を進めた / no: 使われなかった・誤った方向に導いた / unknown: 記録から判断できない
+    pub helpful: String,
+    /// 短い理由
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JudgeMeta {
@@ -57,6 +76,9 @@ pub struct JudgmentItem {
     pub instructions_effect: EffectScore,
     pub wiki_effect: EffectScore,
     pub skills_agents_effect: EffectScore,
+    /// llm-wiki のページごとの判定。版 1 の判定・項目の無い判定・配列でない項目では None(そのセッションのページは未判定)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wiki_pages: Option<Vec<WikiPageJudgment>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
     /// この項目を誰が判定したか(ツールが付ける。LLM の出力には不要)
@@ -228,6 +250,34 @@ pub fn item_problems(v: &Value, path: &str) -> Vec<String> {
     p
 }
 
+/// wikiPages を読む。配列でなければ None。形の合わない要素(page が空・helpful が yes / no / unknown でない)と、同じページの 2 回目以降は捨てる。
+/// reason が無ければ空の文字列にする
+pub fn parse_wiki_pages(v: Option<&Value>) -> Option<Vec<WikiPageJudgment>> {
+    let list = v?.as_array()?;
+    let mut out: Vec<WikiPageJudgment> = Vec::new();
+    for x in list {
+        let Some(o) = x.as_object() else { continue };
+        let Some(page) = o.get("page").and_then(Value::as_str).map(js::trim).filter(|p| !p.is_empty()) else { continue };
+        let Some(helpful) = o.get("helpful").and_then(Value::as_str).filter(|h| WIKI_HELPFUL.contains(h)) else { continue };
+        if out.iter().any(|w| w.page == page) {
+            continue;
+        }
+        out.push(WikiPageJudgment { page: page.to_string(), helpful: helpful.to_string(), reason: o.get("reason").and_then(Value::as_str).unwrap_or("").to_string() });
+    }
+    Some(out)
+}
+
+/// wikiPages の形が崩れていて、ページの判定を捨てたときの知らせ(問題が無い・項目が無いときは None)。取り込みと judge run のログに出す
+pub fn wiki_pages_note(item: &Value) -> Option<String> {
+    let v = item.get("wikiPages").filter(|v| !v.is_null())?;
+    let Some(list) = v.as_array() else {
+        return Some("wikiPages が配列ではないので、このセッションの llm-wiki のページはすべて未判定にしました".into());
+    };
+    let kept = parse_wiki_pages(Some(v)).map_or(0, |x| x.len());
+    let dropped = list.len() - kept;
+    (dropped > 0).then(|| format!("wikiPages の {dropped} 件は形が合わない(page が無い・helpful が yes / no / unknown でない)か、同じページの重複なので捨てました(そのページは未判定)"))
+}
+
 fn effect(o: &Obj, k: &str) -> EffectScore {
     let e = &o[k];
     EffectScore { score: e["score"].as_f64().unwrap_or(0.0), evidence: e["evidence"].as_str().unwrap_or("").to_string() }
@@ -253,6 +303,7 @@ pub fn validate_judgment_item(v: &Value, path: &str) -> Result<JudgmentItem, Jud
         instructions_effect: effect(x, "instructionsEffect"),
         wiki_effect: effect(x, "wikiEffect"),
         skills_agents_effect: effect(x, "skillsAgentsEffect"),
+        wiki_pages: parse_wiki_pages(x.get("wikiPages")),
         notes: x.get("notes").and_then(Value::as_str).filter(|n| !n.is_empty()).map(str::to_string),
         // TS は `if (x.judge)`(真のときだけ)。検証済みなのでオブジェクト
         judge: x.get("judge").and_then(Value::as_object).map(|j| JudgeMeta {
@@ -269,8 +320,8 @@ pub fn validate_judgments(v: &Value) -> Result<JudgmentsFile, JudgmentValidation
         return Err(JudgmentValidationError::new(vec!["ルートがオブジェクトではありません".into()]));
     };
     let mut p: Vec<String> = Vec::new();
-    if o.get("schemaVersion").and_then(Value::as_f64) != Some(JUDGMENTS_SCHEMA_VERSION as f64) {
-        p.push(format!("schemaVersion が 1 ではありません({})", stringify(o.get("schemaVersion"))));
+    if !o.get("schemaVersion").and_then(Value::as_f64).is_some_and(|v| READABLE_SCHEMA_VERSIONS.iter().any(|r| *r as f64 == v)) {
+        p.push(format!("schemaVersion が 1・2 のどちらでもありません({})", stringify(o.get("schemaVersion"))));
     }
     let j = o.get("judge");
     if !valid_judge(j) {
@@ -300,7 +351,7 @@ pub fn validate_judgments(v: &Value) -> Result<JudgmentsFile, JudgmentValidation
     let jj = j.and_then(Value::as_object).expect("valid_judge で確かめた");
     let items = o["items"].as_array().expect("確かめた").iter().enumerate().map(|(i, it)| validate_judgment_item(it, &format!("items[{i}]"))).collect::<Result<Vec<_>, _>>()?;
     Ok(JudgmentsFile {
-        schema_version: 1,
+        schema_version: JUDGMENTS_SCHEMA_VERSION,
         judge: FileJudge {
             backend: jj["backend"].as_str().unwrap_or("").to_string(),
             model: jj.get("model").and_then(Value::as_str).map(str::to_string),
@@ -325,7 +376,7 @@ pub struct JudgeUsage {
 
 pub fn empty_judgments(backend: &str, model: Option<&str>, ran_at: &str) -> JudgmentsFile {
     JudgmentsFile {
-        schema_version: 1,
+        schema_version: JUDGMENTS_SCHEMA_VERSION,
         judge: FileJudge { backend: backend.to_string(), model: model.map(str::to_string), ran_at: ran_at.to_string(), usage: None },
         items: Vec::new(),
         failures: None,
@@ -345,7 +396,7 @@ pub fn merge_judgments(base: &JudgmentsFile, add: &[JudgmentItem], judge: FileJu
     }
     let done: HashSet<&str> = add.iter().map(|i| i.session_id.as_str()).collect();
     let failures: Vec<Value> = base.failures.iter().flatten().filter(|f| !failure_session(f).is_some_and(|id| done.contains(id))).cloned().collect();
-    JudgmentsFile { schema_version: 1, judge, items: by.into_values().collect(), failures: if failures.is_empty() { None } else { Some(failures) } }
+    JudgmentsFile { schema_version: JUDGMENTS_SCHEMA_VERSION, judge, items: by.into_values().collect(), failures: if failures.is_empty() { None } else { Some(failures) } }
 }
 
 /// オブジェクトのキーを `Object.entries` の順(配列の添字の形のキーが先)で返す
@@ -564,6 +615,20 @@ pub fn item_json_schema() -> Value {
             "instructionsEffect": effect_schema(),
             "wikiEffect": effect_schema(),
             "skillsAgentsEffect": effect_schema(),
+            "wikiPages": {
+                "type": "array",
+                "description": "パケットの「llm-wiki のページごとの判定」に挙がったページごとに 1 件。挙がっていなければ空の配列",
+                "items": {
+                    "type": "object",
+                    "required": ["page", "helpful", "reason"],
+                    "additionalProperties": false,
+                    "properties": {
+                        "page": { "type": "string", "description": "パケットに書いたページの名前をそのまま" },
+                        "helpful": { "type": "string", "enum": WIKI_HELPFUL, "description": "yes: 中身が後の作業に使われ、作業を進めた / no: 使われなかった・誤った方向に導いた / unknown: 記録から判断できない" },
+                        "reason": { "type": "string", "description": "根拠を 1 文で" }
+                    }
+                }
+            },
             "notes": { "type": "string" },
             "judge": {
                 "type": "object",
@@ -578,11 +643,11 @@ pub fn item_json_schema() -> Value {
 pub fn judgments_json_schema() -> Value {
     serde_json::json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": "agent-session-atlas judgments.json (schemaVersion 1)",
+        "title": "agent-session-atlas judgments.json (schemaVersion 2)",
         "type": "object",
         "required": ["schemaVersion", "judge", "items"],
         "properties": {
-            "schemaVersion": { "const": 1 },
+            "schemaVersion": { "const": 2, "description": "版 1(wikiPages の無い版)の judgments.json も読めます" },
             "judge": {
                 "type": "object",
                 "required": ["backend", "ranAt"],
@@ -635,9 +700,14 @@ mod tests {
         for w in ["low ≤ hours ≤ high を満たす必要があります(6 / 5 / 7)", "confidence", "taskCategory", "quality", "重複"] {
             assert!(p.contains(w), "{w}: {p}");
         }
+        // 版 1 も版 2 も読み、正規形は版 2
         let mut v2 = ok.clone();
         v2["schemaVersion"] = json!(2);
-        assert!(validate_judgments(&v2).unwrap_err().to_string().contains("schemaVersion"));
+        assert_eq!(validate_judgments(&v2).unwrap().schema_version, 2);
+        assert_eq!(validate_judgments(&ok).unwrap().schema_version, JUDGMENTS_SCHEMA_VERSION);
+        let mut v3 = ok.clone();
+        v3["schemaVersion"] = json!(3);
+        assert!(validate_judgments(&v3).unwrap_err().to_string().contains("schemaVersion"));
         // 正規形はキーの順を固定し、余分なキーを落とす
         let mut extra = item(" c ");
         extra["junk"] = json!(1);
@@ -645,5 +715,52 @@ mod tests {
         let it = validate_judgment_item(&extra, "item").unwrap();
         assert_eq!(it.session_id, "c");
         assert_eq!(it.notes, None);
+        assert_eq!(it.wiki_pages, None);
+    }
+
+    // llm-wiki のページごとの判定: 正常・項目なし・壊れた形。どれもほかの判定は捨てない
+    #[test]
+    fn wiki_pages_lenient() {
+        let mut x = item("a");
+        x["wikiPages"] = json!([
+            { "page": " wiki/a.md ", "helpful": "yes", "reason": "手順に使った" },
+            { "page": "wiki/b.md", "helpful": "no" },
+            { "page": "wiki/c.md", "helpful": "maybe", "reason": "x" },
+            { "page": "wiki/a.md", "helpful": "no", "reason": "重複" },
+            "wiki/d.md",
+        ]);
+        assert!(item_problems(&x, "item").is_empty());
+        let it = validate_judgment_item(&x, "item").unwrap();
+        assert_eq!(
+            it.wiki_pages,
+            Some(vec![
+                WikiPageJudgment { page: "wiki/a.md".into(), helpful: "yes".into(), reason: "手順に使った".into() },
+                WikiPageJudgment { page: "wiki/b.md".into(), helpful: "no".into(), reason: String::new() },
+            ])
+        );
+        assert!(wiki_pages_note(&x).unwrap().contains("3 件"));
+        // 書いた形は wikiPages で、読み直しても同じ
+        let meta = FileJudge { backend: "external".into(), model: None, ran_at: "2026-11-17T00:00:00Z".into(), usage: None };
+        let file = merge_judgments(&empty_judgments("external", None, "2026-11-17T00:00:00Z"), std::slice::from_ref(&it), meta);
+        let v = serde_json::to_value(&file).unwrap();
+        assert_eq!(v["schemaVersion"], json!(2));
+        assert_eq!(v["items"][0]["wikiPages"][0], json!({ "page": "wiki/a.md", "helpful": "yes", "reason": "手順に使った" }));
+        assert_eq!(validate_judgments(&v).unwrap().items[0], it);
+        // 配列でない: ページは未判定(None)にし、知らせる。項目の無い判定は知らせない
+        let mut bad = item("b");
+        bad["wikiPages"] = json!({ "page": "wiki/a.md" });
+        assert!(item_problems(&bad, "item").is_empty());
+        assert_eq!(validate_judgment_item(&bad, "item").unwrap().wiki_pages, None);
+        assert!(wiki_pages_note(&bad).unwrap().contains("配列ではない"));
+        assert_eq!(wiki_pages_note(&item("c")), None);
+        // 空の配列は「判定するページが無い」で、そのまま
+        let mut empty = item("d");
+        empty["wikiPages"] = json!([]);
+        assert_eq!(validate_judgment_item(&empty, "item").unwrap().wiki_pages, Some(vec![]));
+        assert_eq!(wiki_pages_note(&empty), None);
+        // JSON Schema にも載せる(必須にはしない。版 1 の形の返答も取り込める)
+        let sch = item_json_schema();
+        assert!(sch["properties"]["wikiPages"].is_object());
+        assert!(!sch["required"].as_array().unwrap().contains(&json!("wikiPages")));
     }
 }

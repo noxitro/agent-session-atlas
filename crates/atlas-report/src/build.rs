@@ -710,8 +710,9 @@ pub fn build_report(input: BuildInput<'_>) -> Result<BuildResult> {
         .par_iter()
         .enumerate()
         .map(|(k, r)| -> u64 {
-            // 詳細ページには根拠も出す
-            let judgment = j.and_then(|j| j.by_session.get(&r.id));
+            // 詳細ページには根拠も出す(llm-wiki のページの判定は、判定のパケットに載せたページの分だけ)
+            let judgment = j.and_then(|j| j.by_session.get(&r.id)).map(|x| crate::judgments::judgment_for_session(x, &r.wiki.page_reads));
+            let judgment = judgment.as_ref();
             let memo = memos.get(&r.id).map(|m| DetailMemo { html: memo_html(&r.id, &m.text), updated_at: m.updated_at.clone() });
             let transcript_href = tr.map(|_| transcript_file_name(&r.id));
             let has_page = |name: &str| lib.is_some() && skill_first.get(name).is_some_and(|i| *i <= k);

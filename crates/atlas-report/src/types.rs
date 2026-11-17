@@ -14,7 +14,10 @@ use atlas_core::types::{Friction, LineChanges, ProjectSource, TodoSummary, Token
 use serde::{Deserialize, Serialize};
 
 /// 埋め込みデータの版(lib/types.ts の REPORT_DATA_VERSION。版の履歴はそちらの先頭のコメントを参照)
-pub const REPORT_DATA_VERSION: i64 = 17;
+pub const REPORT_DATA_VERSION: i64 = 18;
+
+/// llm-wiki のページごとの LLM の見立て [ページ, yes | no | unknown](lib/types.ts の WikiPageVerdict)
+pub type WikiPageVerdict = (String, String);
 
 /// 推論強度別の [リクエスト, 入力, 出力, nano AIU]
 pub type EffortTuple = [f64; 4];
@@ -117,6 +120,12 @@ pub struct JudgmentSummary {
     pub rationale: Option<String>,
     /// この判定を出したバックエンド
     pub backend: Option<String>,
+    /// llm-wiki のページごとの「役立ったか」(判定のパケットに載せたページだけ)。判定のスキーマの版 1 の判定・項目の無い判定・壊れた項目では None
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wiki_pages: Option<Vec<WikiPageVerdict>>,
+    /// wiki_pages と同じ並びの、判定の理由。詳細ページだけに出す(埋め込まない)
+    #[serde(skip)]
+    pub wiki_page_reasons: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -163,6 +172,9 @@ pub struct WikiSummary {
     /// vault に触れたそのほかの呼び出し(検索・一覧など)。埋め込みの版 15 以前には無い
     #[serde(default)]
     pub other_calls: i64,
+    /// 読んだページの名前(重複を除いて読んだ順)。埋め込みの版 17 以前には無い(空で読む。ページごとの表を出すかは版で見分ける)
+    #[serde(default)]
+    pub pages: Vec<String>,
 }
 
 impl WikiSummary {

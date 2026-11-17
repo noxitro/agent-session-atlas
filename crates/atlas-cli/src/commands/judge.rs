@@ -63,6 +63,9 @@ pub fn run_judge_command(p: &Paths, j: &JudgeCliOptions, log: Log<'_>) -> Result
                 if r.unknown_ids.len() > 5 { " …" } else { "" }
             ));
         }
+        for n in &r.notes {
+            log(&format!("judge import: 注意 {n}"));
+        }
         return Ok(None);
     }
     // 入っていないバックエンドなら、従量課金の注意を出す前に止める

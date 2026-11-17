@@ -3,11 +3,13 @@
 
 use crate::filter::coverage_of;
 use crate::format::truncate;
+use crate::judgments::judgment_for_session;
 use crate::project_label::short_project_label;
 use crate::turns::turn_tuples;
 use crate::types::*;
 use atlas_core::js::JsMap;
 use atlas_core::types::{AgentStatus, InstructionScope, SessionRecord, SessionTests, SkillTrigger};
+use atlas_core::wiki::unique_pages;
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -227,7 +229,15 @@ pub fn summarize(r: &SessionRecord, judgment: Option<&JudgmentSummary>) -> Sessi
         hooks: HooksSummary { total: r.hooks.total, by_type: r.hooks.by_type.clone() },
         instructions,
         lines: r.lines.clone(),
-        wiki: WikiSummary { index_reads: r.wiki.index_reads, page_reads: r.wiki.page_reads.len() as i64, skill_calls: r.wiki.skill_calls.len() as i64, writes: r.wiki.writes, other_calls: r.wiki.other_calls },
+        wiki: WikiSummary {
+            index_reads: r.wiki.index_reads,
+            page_reads: r.wiki.page_reads.len() as i64,
+            skill_calls: r.wiki.skill_calls.len() as i64,
+            writes: r.wiki.writes,
+            other_calls: r.wiki.other_calls,
+            // ページの名前だけ(本文は入れない)。ページごとの参照率に使う
+            pages: unique_pages(&r.wiki.page_reads),
+        },
         friction: r.friction.clone(),
         skill_chars,
         instruction_versions: r.instructions.iter().map(|i| (i.content_hash.clone(), i.chars, i.injections)).collect(),
@@ -236,8 +246,8 @@ pub fn summarize(r: &SessionRecord, judgment: Option<&JudgmentSummary>) -> Sessi
         tests: r.tests.as_ref().and_then(tests_summary),
         files: FilesSummary { changed: r.files.changed.len() as i64, created: r.files.created.len() as i64, deleted: r.files.deleted.len() as i64, session_state: r.files.session_state },
         href: detail_href(&r.id),
-        // 根拠の自由記述は HTML 本体に埋め込まない(詳細ページだけ)
-        judgment: judgment.map(|j| JudgmentSummary { rationale: None, ..j.clone() }),
+        // 根拠の自由記述は HTML 本体に埋め込まない(詳細ページだけ)。llm-wiki のページの判定は、判定のパケットに載せたページの分だけ
+        judgment: judgment.map(|j| JudgmentSummary { rationale: None, ..judgment_for_session(j, &r.wiki.page_reads) }),
         turn_verdicts: None,
         retention: None,
         memo: None,

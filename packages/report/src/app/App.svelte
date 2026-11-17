@@ -9,7 +9,7 @@
   import GroupHead from './components/GroupHead.svelte';
   import { highlights } from '../lib/highlights.ts';
   import { date, dateTime, int } from '../lib/format.ts';
-  import type { ReportData } from '../lib/types.ts';
+  import { WIKI_PAGES_DATA_VERSION, type ReportData } from '../lib/types.ts';
   import FilterBar from './components/FilterBar.svelte';
   import Overview from './components/Overview.svelte';
   import JudgmentPanel from './components/JudgmentPanel.svelte';
@@ -651,7 +651,7 @@
         <!-- 帳票の順: 表紙(規模の 4 欄)→ 摘要(要点)→ 明細 -->
         <Overview part="cover" {agg} {judged} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} {emptyInFilter} {editable} />
         <Highlights groups={points} />
-        <Insights sessions={filtered} allSessions={data.sessions} installed={installed?.skills ?? null} disabled={installed?.disabled ?? []} meta={data.insights?.meta ?? {}} candidates={data.insights?.candidates ?? []} candidateTotal={data.insights?.candidateTotal ?? data.insights?.candidates.length ?? 0} computedOver={data.insights?.computedOver ?? sessions.length} hasPage={true} libraryHref={data.library ? 'instructions.html' : null} {wiki} />
+        <Insights sessions={filtered} allSessions={data.sessions} installed={installed?.skills ?? null} disabled={installed?.disabled ?? []} meta={data.insights?.meta ?? {}} candidates={data.insights?.candidates ?? []} candidateTotal={data.insights?.candidateTotal ?? data.insights?.candidates.length ?? 0} computedOver={data.insights?.computedOver ?? sessions.length} hasPage={true} libraryHref={data.library ? 'instructions.html' : null} {wiki} wikiPagesRecorded={(data.version ?? 0) >= WIKI_PAGES_DATA_VERSION} />
         <TurnPhases agg={turnAgg} verdicts={verdictAgg} verdictModel={data.turnJudgments?.model ?? null} verdictRanAt={data.turnJudgments?.ranAt ?? null} {editable} />
         <Overview part="detail" {agg} {judged} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} {emptyInFilter} {wiki} />
         {#if judged}<JudgmentPanel {agg} meta={data.judgments} />{/if}

@@ -24,7 +24,16 @@ import type { VerdictTuple } from './verdicts.ts';
 // 15: exec.mainModelEfforts をリクエスト数だけにした(トークンと AIU は modelEfforts にある)
 // 16: failures(失敗の台帳の集計のページ failures.html を書いたか)
 // 17: tests(テストの結果の要約。テストの実行があるセッションだけ)・groups[].tag(送り先の元のタグ)・wikiVaults(参照を数えた vault の数)・wiki.otherCalls(vault の検索・一覧など)
-export const REPORT_DATA_VERSION = 17;
+// 18: wiki.pages(読んだ llm-wiki のページの名前。重複を除く)・judgment.wikiPages(ページごとの LLM の見立て)
+export const REPORT_DATA_VERSION = 18;
+
+/** wiki.pages を埋め込んだ最初の版(これより前の埋め込みでは、llm-wiki のページごとの表を出さない) */
+export const WIKI_PAGES_DATA_VERSION = 18;
+
+/** llm-wiki のページごとの「役立ったか」(LLM の見立て) */
+export type WikiHelpful = 'yes' | 'no' | 'unknown';
+/** [ページ, 役立ったか]。判定のパケットに載せたページだけ */
+export type WikiPageVerdict = [page: string, helpful: WikiHelpful];
 
 /**
  * テストの結果の要約(テストの実行ファイルが書いた印つきの行から。crates/atlas-core/src/test_results.rs)。
@@ -134,6 +143,11 @@ export interface JudgmentSummary {
   rationale: string | null;
   /** この判定を出したバックエンド(external / copilot-cli など) */
   backend: string | null;
+  /**
+   * llm-wiki のページごとの「役立ったか」(判定のパケットに載せたページだけ。理由は埋め込まず詳細ページだけ)。
+   * judgments.json の版 1 の判定・項目の無い判定・配列でない項目では無い(そのセッションのページは未判定)
+   */
+  wikiPages?: WikiPageVerdict[];
 }
 
 export interface SessionSummary {
@@ -212,8 +226,11 @@ export interface SessionSummary {
   instructions: Record<string, number>;
   /** 変更行数(shutdown の累計、無ければツールの合計) */
   lines: LineChanges;
-  /** otherCalls: vault に触れたそのほかの呼び出し(検索・一覧など。版 15 以前の埋め込みでは 0 で埋め戻す) */
-  wiki: { indexReads: number; pageReads: number; skillCalls: number; writes: number; otherCalls: number };
+  /**
+   * otherCalls: vault に触れたそのほかの呼び出し(検索・一覧など。版 15 以前の埋め込みでは 0 で埋め戻す)。
+   * pages: 読んだページの名前(重複を除いて読んだ順。本文は入れない)。版 17 以前の埋め込みには無く [] で埋め戻すので、ページごとの表を出すかは ReportData.version で見分ける
+   */
+  wiki: { indexReads: number; pageReads: number; skillCalls: number; writes: number; otherCalls: number; pages: string[] };
   friction: {
     compactions: number;
     aborts: number;

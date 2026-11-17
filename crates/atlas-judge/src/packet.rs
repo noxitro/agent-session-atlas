@@ -5,7 +5,9 @@
 //! 字数は TS 版と同じくコードポイントで数える(`[...s].length`)。
 
 use anyhow::{bail, Result};
-use atlas_core::classify::{is_main_assistant_message, is_user_turn};
+use atlas_core::classify::{is_internal_tool, is_main_assistant_message, is_user_turn};
+use atlas_core::secrets::redact_secrets;
+use atlas_core::wiki::{is_write_tool, judged_wiki_pages};
 use atlas_core::collate::locale_compare;
 use atlas_core::events::EventReader;
 use atlas_core::extract::{load_store, StoreData};
@@ -52,6 +54,34 @@ pub struct SessionTexts {
     pub final_response: Option<TextEntry>,
     pub compactions: Vec<TextEntry>,
     pub task_completes: Vec<TextEntry>,
+    /// llm-wiki のページを読んだ記録(判定に載せるページ atlas_core::wiki::judged_wiki_pages のうち、ログで読んだ呼び出しが見つかったもの。読んだ順)
+    pub wiki_reads: Vec<WikiRead>,
+}
+
+/// llm-wiki のページ 1 つを最初に読んだ記録(判定のパケットの「llm-wiki のページごとの判定」に載せる)
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct WikiRead {
+    /// ページの名前(sessions.json の wiki.pageReads と同じ書き方)
+    pub page: String,
+    /// 読んだ呼び出しの時刻
+    pub at: Option<String>,
+    /// 何番目の依頼の中で読んだか(1 から。最初の依頼より前なら None)
+    pub request: Option<usize>,
+    /// 読んだツールの結果の先頭(秘密らしい文字列を伏せた後、WIKI_EXCERPT_KEEP 字まで)。結果の本文がログに無い形なら None
+    pub excerpt: Option<String>,
+    /// 伏せた後の結果の全体の字数
+    pub excerpt_total: i64,
+    /// 読んだ後に同じ依頼の中で呼んだツール(WIKI_AFTER_TOOLS 件まで。内部ツールを除く)
+    pub after_tools: Vec<String>,
+}
+
+/// 抜粋を読み取りのときに持っておく字数(パケットにはこのうち PacketLimits::wiki_excerpt_chars 字まで載せる)
+const WIKI_EXCERPT_KEEP: usize = 4_000;
+/// 読んだ後のツールを並べる数
+const WIKI_AFTER_TOOLS: usize = 5;
+
+fn default_wiki_excerpt_chars() -> i64 {
+    DEFAULT_LIMITS.wiki_excerpt_chars
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,11 +98,14 @@ pub struct PacketLimits {
     pub summary_chars: i64,
     /// ファイル一覧などの列挙の上限(件)
     pub list_items: i64,
+    /// llm-wiki のページごとの抜粋の字数(1 ページ)。ページの数の上限は atlas_core::wiki::WIKI_JUDGED_PAGES_MAX。前の版の manifest には無い
+    #[serde(default = "default_wiki_excerpt_chars")]
+    pub wiki_excerpt_chars: i64,
 }
 
 /// 既定の上限。copilot -p はプロンプトをコマンドライン引数で渡すため、Windows の上限(32,767 文字)から
-/// 判定指示(約 4,000 文字)を引いた範囲に収める。
-pub const DEFAULT_LIMITS: PacketLimits = PacketLimits { max_chars: 24_000, request_chars: 6_000, requests_total_chars: 12_000, final_response_chars: 5_000, summary_chars: 5_000, list_items: 40 };
+/// 判定指示(約 4,500 文字)を引いた範囲に収める。llm-wiki の抜粋は 1 ページ 400 字 × 最大 10 ページで、この上限の中に入る
+pub const DEFAULT_LIMITS: PacketLimits = PacketLimits { max_chars: 24_000, request_chars: 6_000, requests_total_chars: 12_000, final_response_chars: 5_000, summary_chars: 5_000, list_items: 40, wiki_excerpt_chars: 400 };
 
 /// イベントの timestamp(`e.timestamp ?? null`。文字列でなければ String(v))
 fn at_of(v: Option<&Value>) -> Option<String> {
@@ -85,10 +118,110 @@ fn content_of<'a>(d: Option<&'a Value>, key: &str) -> Option<&'a str> {
 
 // 依頼・応答の数え方は sessions.json(core の normalize)と同じ規則にする(autopilot の自動継続・サブエージェントの応答を除く)
 
+/// ツールの引数の文字列の値だけをつなぐ(区切りを / にそろえ、小文字にする)。ページの名前を探すのに使う
+fn arg_text_lower(v: Option<&Value>, out: &mut String) {
+    match v {
+        Some(Value::String(s)) => {
+            out.push_str(&s.replace('\\', "/").to_lowercase());
+            out.push('\n');
+        }
+        Some(Value::Array(a)) => a.iter().for_each(|x| arg_text_lower(Some(x), out)),
+        Some(Value::Object(o)) => o.values().for_each(|x| arg_text_lower(Some(x), out)),
+        _ => {}
+    }
+}
+
+/// ツールの結果の本文(`result` が文字列ならそれ、オブジェクトなら content、無ければ detailedContent)。無ければ None
+fn result_text(d: Option<&Value>) -> Option<&str> {
+    match d.and_then(|d| d.get("result")) {
+        Some(Value::String(s)) => Some(s.as_str()),
+        Some(Value::Object(o)) => o.get("content").and_then(Value::as_str).filter(|c| !c.is_empty()).or_else(|| o.get("detailedContent").and_then(Value::as_str)),
+        _ => None,
+    }
+    .filter(|s| !js::trim(s).is_empty())
+}
+
+/// llm-wiki のページを読んだ呼び出しを、events.jsonl の中から探す。
+/// どのページを読んだかの判定は集計(atlas_core::wiki の WikiClassifier)が済ませているので、ここでは判定に載せるページの名前が
+/// 引数に「/<ページ>」の形で出る呼び出し(書き込みのツールを除く)を、そのページの読み取りとみなす
+struct WikiScan {
+    /// (ページ, 探す文字列)
+    targets: Vec<(String, String)>,
+    found: HashMap<String, WikiRead>,
+    /// 結果を待っている呼び出し → ページ
+    pending: HashMap<String, Vec<String>>,
+    /// 読んだ後のツールを集めているページ(同じ依頼の中だけ)
+    watching: Vec<String>,
+}
+
+impl WikiScan {
+    fn new(s: &SessionRecord) -> Self {
+        let targets = judged_wiki_pages(&s.wiki.page_reads).0.into_iter().map(|p| (p.clone(), format!("/{}", p.replace('\\', "/").to_lowercase()))).collect();
+        WikiScan { targets, found: HashMap::new(), pending: HashMap::new(), watching: Vec::new() }
+    }
+
+    fn user_turn(&mut self) {
+        self.watching.clear();
+    }
+
+    fn tool_start(&mut self, d: Option<&Value>, at: &Option<String>, request: usize) {
+        if self.targets.is_empty() {
+            return;
+        }
+        let name = content_of(d, "toolName").unwrap_or("");
+        if name.is_empty() || is_internal_tool(name) {
+            return;
+        }
+        for p in &self.watching {
+            if let Some(r) = self.found.get_mut(p)
+                && r.after_tools.len() < WIKI_AFTER_TOOLS
+            {
+                r.after_tools.push(name.to_string());
+            }
+        }
+        if is_write_tool(name) {
+            return;
+        }
+        let mut text = String::new();
+        arg_text_lower(d.and_then(|d| d.get("arguments")), &mut text);
+        let call = content_of(d, "toolCallId").unwrap_or("").to_string();
+        for (page, needle) in &self.targets {
+            if self.found.contains_key(page) || !text.contains(needle.as_str()) {
+                continue;
+            }
+            self.found.insert(page.clone(), WikiRead { page: page.clone(), at: at.clone(), request: (request > 0).then_some(request), ..Default::default() });
+            self.watching.push(page.clone());
+            if !call.is_empty() {
+                self.pending.entry(call.clone()).or_default().push(page.clone());
+            }
+        }
+    }
+
+    fn tool_complete(&mut self, d: Option<&Value>) {
+        let Some(pages) = content_of(d, "toolCallId").and_then(|id| self.pending.remove(id)) else { return };
+        let Some(text) = result_text(d) else { return };
+        let red = redact_secrets(text).0;
+        let total = len(&red);
+        let keep: String = red.chars().take(WIKI_EXCERPT_KEEP).collect();
+        for p in pages {
+            if let Some(r) = self.found.get_mut(&p) {
+                r.excerpt = Some(keep.clone());
+                r.excerpt_total = total;
+            }
+        }
+    }
+
+    /// 載せるページの並び(読んだ順)に
+    fn finish(mut self) -> Vec<WikiRead> {
+        self.targets.iter().filter_map(|(p, _)| self.found.remove(p)).collect()
+    }
+}
+
 fn texts_of(snapshot_dir: &Path, s: &SessionRecord, st: &StoreData) -> Result<SessionTexts> {
-    let mut t = SessionTexts { source: TextSource::Snapshot, requests: vec![], final_response: None, compactions: vec![], task_completes: vec![] };
+    let mut t = SessionTexts { source: TextSource::Snapshot, requests: vec![], final_response: None, compactions: vec![], task_completes: vec![], wiki_reads: vec![] };
     let events = snapshot_dir.join("session-state").join(&s.id).join("events.jsonl");
     let mut from_events = false;
+    let mut wiki = WikiScan::new(s);
     if events.exists() {
         let mut r = EventReader::open(&events)?;
         while let Some(e) = r.next_event()? {
@@ -101,8 +234,11 @@ fn texts_of(snapshot_dir: &Path, s: &SessionRecord, st: &StoreData) -> Result<Se
                     {
                         t.requests.push(TextEntry { at, text: c.to_string() });
                         from_events = true;
+                        wiki.user_turn();
                     }
                 }
+                "tool.execution_start" => wiki.tool_start(d, &at, t.requests.len()),
+                "tool.execution_complete" => wiki.tool_complete(d),
                 "assistant.message" => {
                     if is_main_assistant_message(e.agent_id.as_ref(), d)
                         && let Some(c) = content_of(d, "content").filter(|c| !js::trim(c).is_empty())
@@ -141,6 +277,7 @@ fn texts_of(snapshot_dir: &Path, s: &SessionRecord, st: &StoreData) -> Result<Se
         // スナップショットに本文が無い(--since で複製対象外など)。sessions.json の抜粋で代用
         return Ok(excerpt_texts(s));
     }
+    t.wiki_reads = wiki.finish();
     Ok(t)
 }
 
@@ -165,6 +302,7 @@ pub fn excerpt_texts(s: &SessionRecord) -> SessionTexts {
         final_response: s.last_assistant_message.as_deref().filter(|m| !m.is_empty()).map(|m| TextEntry { at: s.updated_at.clone(), text: m.to_string() }),
         compactions: vec![],
         task_completes: vec![],
+        wiki_reads: vec![],
     }
 }
 
@@ -336,6 +474,51 @@ fn enum_str<T: Serialize>(v: &T) -> String {
     }
 }
 
+/// パケットの「llm-wiki のページごとの判定」の見出し(判定の指示 rubric.rs の wikiPages の項がこの名前で指す)
+pub const WIKI_PAGES_HEADING: &str = "### llm-wiki のページごとの判定";
+
+/// 判定に載せるページ(読んだ順の先頭から上限まで)ごとに、読んだ時刻・読んだ後のツール・抜粋を並べる。返すのは本文と、抜粋を切り詰めた数
+fn wiki_pages_block(page_reads: &[String], reads: &[WikiRead], source: TextSource, excerpt_chars: i64) -> (String, i64) {
+    let (pages, rest) = judged_wiki_pages(page_reads);
+    let mut truncated = 0;
+    let mut out: Vec<String> = vec![WIKI_PAGES_HEADING.into()];
+    out.push(format!(
+        "判定するページ {} 件(重複を除いて読んだ順{})。wikiPages にページごとに 1 件ずつ返してください。抜粋は、そのページを読んだツールの結果の先頭 {} 字までです(秘密らしい文字列は伏せています)。",
+        pages.len(),
+        if rest > 0 { format!("の先頭から。残り {} 件は上限のため判定しません", nf(rest as i64)) } else { String::new() },
+        nf(excerpt_chars)
+    ));
+    for (i, p) in pages.iter().enumerate() {
+        out.push(String::new());
+        out.push(format!("#### ページ {}: {}", i + 1, one_line(p)));
+        let Some(r) = reads.iter().find(|r| r.page == *p) else {
+            out.push(if source == TextSource::Snapshot {
+                "- 抜粋なし(読んだ呼び出しをログから特定できませんでした。名前と前後の流れだけで判断してください)".into()
+            } else {
+                "- 抜粋なし(ログの全文が無く、読んだ呼び出しを確かめられません。名前と前後の流れだけで判断してください)".into()
+            });
+            continue;
+        };
+        let req = r.request.map(|n| format!("(依頼 {n} の中)")).unwrap_or_default();
+        out.push(format!("- 読んだ時刻: {}{req}", r.at.as_deref().unwrap_or("不明")));
+        out.push(format!("- 読んだ後のツール(同じ依頼の中、{WIKI_AFTER_TOOLS} 件まで): {}", if r.after_tools.is_empty() { "なし".to_string() } else { r.after_tools.join("、") }));
+        match &r.excerpt {
+            None => out.push("- 抜粋なし(ツールの結果の本文がログにありません。名前と前後の流れだけで判断してください)".into()),
+            Some(x) => {
+                let n = excerpt_chars.max(0) as usize;
+                let head: String = x.chars().take(n).collect();
+                let cut = r.excerpt_total > len(&head);
+                if cut {
+                    truncated += 1;
+                }
+                let note = if cut { format!("(先頭 {} 字 / 全 {} 字)", nf(len(&head)), nf(r.excerpt_total)) } else { String::new() };
+                out.push(format!("- 抜粋{note}:\n{}", fenced(&head, "text")));
+            }
+        }
+    }
+    (out.join("\n"), truncated)
+}
+
 fn render_once(s: &SessionRecord, t: &SessionTexts, l: &PacketLimits, wiki_vaults: Option<i64>) -> (String, i64) {
     let mut truncated = 0;
     let tok = &s.tokens;
@@ -456,16 +639,18 @@ fn render_once(s: &SessionRecord, t: &SessionTexts, l: &PacketLimits, wiki_vault
             w.other_calls,
             w.writes
         ));
-        if !w.page_reads.is_empty() {
-            let pages: Vec<String> = w.page_reads.iter().map(|p| format!("読んだページ: {p}")).collect();
-            push(list(&pages, 15.min(l.list_items), ""));
-        }
         if !w.skill_calls.is_empty() {
             let mut calls: JsMap<i64> = JsMap::new();
             for c in &w.skill_calls {
                 calls.inc(c, 1);
             }
             push(format!("- wiki skill: {}", counts_line(&calls, 20.min(l.list_items).max(0) as usize)));
+        }
+        if !w.page_reads.is_empty() {
+            push(String::new());
+            let (md, tr) = wiki_pages_block(&w.page_reads, &t.wiki_reads, t.source, l.wiki_excerpt_chars);
+            truncated += tr;
+            push(md);
         }
     }
     push(String::new());
@@ -529,6 +714,7 @@ pub fn render_packet(s: &SessionRecord, t: &SessionTexts, limits: &PacketLimits,
             final_response_chars: down(l.final_response_chars),
             summary_chars: down(l.summary_chars),
             list_items: down(l.list_items).max(5),
+            wiki_excerpt_chars: down(l.wiki_excerpt_chars),
             ..l
         };
     }

@@ -766,7 +766,29 @@ fn judgment_section(sec: &mut Sections, j: &JudgmentSummary, active_ms: Option<f
         Some(s) => format!("<h3>工数推定の根拠</h3><blockquote class=\"msg\">{}</blockquote>", esc(s)),
         None => String::new(),
     };
-    sec.section("LLM による判定(推定)", &format!("<div class=\"fields\" style=\"--cols:4\">{fields}</div>{summary}{rationale}"), "人が AI なしで同じ成果を出す場合の工数を LLM に推定させた値です。実測ではありません。")
+    let wiki_pages = wiki_pages_block(j);
+    sec.section("LLM による判定(推定)", &format!("<div class=\"fields\" style=\"--cols:4\">{fields}</div>{summary}{rationale}{wiki_pages}"), "人が AI なしで同じ成果を出す場合の工数を LLM に推定させた値です。実測ではありません。")
+}
+
+/// llm-wiki のページごとの「役立ったか」(LLM の見立て)の表。判定に項目が無ければ空
+fn wiki_pages_block(j: &JudgmentSummary) -> String {
+    let Some(list) = j.wiki_pages.as_ref().filter(|l| !l.is_empty()) else { return String::new() };
+    let label = |h: &str| match h {
+        "yes" => "役立った",
+        "no" => "役立たなかった",
+        _ => "分からない",
+    };
+    let rows: String = list
+        .iter()
+        .enumerate()
+        .map(|(i, (page, helpful))| {
+            let reason = j.wiki_page_reasons.get(i).map(String::as_str).filter(|r| !r.is_empty());
+            format!("<tr><td>{}</td><td>{}</td><td>{}</td></tr>", esc(page), label(helpful), reason.map_or_else(|| missing("記録なし"), esc))
+        })
+        .collect();
+    format!(
+        "<h3>llm-wiki のページごとの見立て</h3><p class=\"note\">判定役が、読んだページの名前と抜粋を見たうえで答えた見立てです。測った値ではありません。</p><div class=\"table-scroll\"><table class=\"ledger\"><thead><tr><th scope=\"col\">ページ</th><th scope=\"col\">役立ったか</th><th scope=\"col\">理由</th></tr></thead><tbody>{rows}</tbody></table></div>"
+    )
 }
 
 /// セッションの終わりから比べた時点までの日数(「・終わりから 3.5 日後」)。どちらかが無ければ空

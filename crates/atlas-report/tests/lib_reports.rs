@@ -127,7 +127,7 @@ fn aggregate_updated_at_is_latest_update() {
 #[test]
 fn sessions_with_wiki_counts_references_not_writes() {
     let base = summaries(&fixture()).remove(0);
-    let w = |index: i64, pages: i64, skills: i64, writes: i64, other: i64| WikiSummary { index_reads: index, page_reads: pages, skill_calls: skills, writes, other_calls: other };
+    let w = |index: i64, pages: i64, skills: i64, writes: i64, other: i64| WikiSummary { index_reads: index, page_reads: pages, skill_calls: skills, writes, other_calls: other, pages: vec![] };
     let cases = [
         ("書き込みだけ", w(0, 0, 0, 2, 0), false),
         ("検索だけ", w(0, 0, 0, 0, 3), true),

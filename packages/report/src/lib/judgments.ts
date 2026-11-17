@@ -2,7 +2,28 @@
 // スキーマ(docs/PLAN.md「judgments.json スキーマ」、正典は packages/judge/src/schema.ts の validateJudgments)の
 // うちレポートに要る項目だけを拾う。report は judge に依存しないので、ここでは表示に必要な最低限を検査し、
 // 形が合わない項目は捨てずにエラーにする(黙って欠損させない)。
-import type { JudgmentSummary } from './types.ts';
+// ただし llm-wiki のページごとの判定(wikiPages)だけは、壊れていても項目を捨てずに、そのページを未判定として読む(docs/judge.md)。
+// Rust の同じ読み取りは crates/atlas-report/src/judgments.rs(並びをそろえる)。
+import type { JudgmentSummary, WikiHelpful, WikiPageVerdict } from './types.ts';
+
+/** 読める judgments.json のスキーマの版(1: wikiPages の無い版。2: llm-wiki のページごとの判定を足した版) */
+export const JUDGMENTS_SCHEMA_VERSIONS: readonly number[] = [1, 2];
+
+const HELPFUL: readonly string[] = ['yes', 'no', 'unknown'] satisfies WikiHelpful[];
+
+/** wikiPages を読む。配列でなければ null(ページは未判定)。形の合わない要素と、同じページの 2 回目以降は捨てる */
+export function parseWikiPages(v: unknown): WikiPageVerdict[] | null {
+  if (!Array.isArray(v)) return null;
+  const out: WikiPageVerdict[] = [];
+  for (const x of v as unknown[]) {
+    const o = obj(x);
+    const page = typeof o.page === 'string' ? o.page.trim() : '';
+    if (!page || typeof o.helpful !== 'string' || !HELPFUL.includes(o.helpful)) continue;
+    if (out.some(([p]) => p === page)) continue;
+    out.push([page, o.helpful as WikiHelpful]);
+  }
+  return out;
+}
 
 export interface JudgmentsIndex {
   backend: string | null;
@@ -18,7 +39,7 @@ const obj = (v: unknown): Record<string, unknown> => (v && typeof v === 'object'
 export function parseJudgments(raw: unknown): JudgmentsIndex {
   if (!raw || typeof raw !== 'object') throw new Error('judgments.json がオブジェクトではありません');
   const o = raw as Record<string, unknown>;
-  if (o.schemaVersion !== 1) throw new Error(`judgments.json の schemaVersion が 1 ではありません(${String(o.schemaVersion)})`);
+  if (typeof o.schemaVersion !== 'number' || !JUDGMENTS_SCHEMA_VERSIONS.includes(o.schemaVersion)) throw new Error(`judgments.json の schemaVersion が 1・2 のどちらでもありません(${String(o.schemaVersion)})`);
   if (!Array.isArray(o.items)) throw new Error('judgments.json に items 配列がありません');
   const judge = obj(o.judge);
   const bySession = new Map<string, JudgmentSummary>();
@@ -30,6 +51,7 @@ export function parseJudgments(raw: unknown): JudgmentsIndex {
     const hours = num(h.hours);
     if (hours == null || hours < 0) throw new Error(`judgments.json の items[${i}](${id})の humanEffort.hours が数値ではありません`);
     const a = obj(x.aiOutcome);
+    const wikiPages = parseWikiPages(x.wikiPages);
     bySession.set(id, {
       taskCategory: str(x.taskCategory),
       hours,
@@ -43,6 +65,7 @@ export function parseJudgments(raw: unknown): JudgmentsIndex {
       effects: { instructions: num(obj(x.instructionsEffect).score), wiki: num(obj(x.wikiEffect).score), skillsAgents: num(obj(x.skillsAgentsEffect).score) },
       rationale: str(h.rationale),
       backend: str(obj(x.judge).backend) ?? str(judge.backend),
+      ...(wikiPages ? { wikiPages } : {}),
     });
   });
   return { backend: str(judge.backend), model: str(judge.model), ranAt: str(judge.ranAt), bySession };

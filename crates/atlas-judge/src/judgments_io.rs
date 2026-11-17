@@ -1,6 +1,6 @@
 //! judgments.json の読み書き・外部判定の取り込み(packages/judge/src/judgments-io.ts の移植)。
 
-use crate::schema::{empty_judgments, item_problems, items_from_candidates, json_candidates, merge_judgments, validate_judgment_item, validate_judgments, FileJudge, JudgeMeta, JudgmentItem, JudgmentValidationError, JudgmentsFile};
+use crate::schema::{empty_judgments, item_problems, items_from_candidates, json_candidates, merge_judgments, validate_judgment_item, validate_judgments, wiki_pages_note, FileJudge, JudgeMeta, JudgmentItem, JudgmentValidationError, JudgmentsFile};
 use anyhow::{anyhow, bail, Result};
 use atlas_core::{jsdate, js};
 use indexmap::IndexMap;
@@ -48,6 +48,8 @@ pub struct ImportResult {
     /// known_ids に無い sessionId(レポートには出ない)
     pub unknown_ids: Vec<String>,
     pub total: usize,
+    /// 取り込んだが、llm-wiki のページごとの判定(wikiPages)の形が崩れていて一部を捨てた項目の知らせ(「セッション <id>: …」)
+    pub notes: Vec<String>,
 }
 
 #[derive(Default)]
@@ -128,12 +130,16 @@ pub fn import_judgments_text(input: &str, judgments_path: &Path, o: ImportOption
 
     let mut by: IndexMap<String, JudgmentItem> = IndexMap::new();
     let mut duplicates = 0;
+    let mut notes: Vec<String> = Vec::new();
     for it in &raw {
         let mut x = spread(it);
         if let Some(m) = x.as_object_mut() {
             m.shift_remove("judge");
         }
         let mut v = validate_judgment_item(&x, "item")?;
+        if let Some(n) = wiki_pages_note(&x) {
+            notes.push(format!("セッション {}: {n}", v.session_id));
+        }
         if by.contains_key(&v.session_id) {
             duplicates += 1;
         }
@@ -151,6 +157,7 @@ pub fn import_judgments_text(input: &str, judgments_path: &Path, o: ImportOption
         overwritten: items.iter().filter(|i| existing.contains(i.session_id.as_str())).count(),
         unknown_ids: o.known_ids.map(|k| items.iter().map(|i| i.session_id.clone()).filter(|id| !k.contains(id)).collect()).unwrap_or_default(),
         total: merged.items.len(),
+        notes,
     })
 }
 
@@ -183,7 +190,7 @@ mod tests {
         std::fs::write(&md, format!("回答:\n```json\n{}\n```\n追加:\n```json\n{}\n```", whole, b2)).unwrap();
         let known: HashSet<String> = ["a".to_string()].into_iter().collect();
         let r = import_judgments(&md, &jp, ImportOptions { known_ids: Some(&known), ..Default::default() }).unwrap();
-        assert_eq!(r, ImportResult { imported: 2, duplicates: 1, overwritten: 0, unknown_ids: vec!["b".into()], total: 2 });
+        assert_eq!(r, ImportResult { imported: 2, duplicates: 1, overwritten: 0, unknown_ids: vec!["b".into()], total: 2, notes: vec![] });
         let j = read_judgments(&jp).unwrap().unwrap();
         assert_eq!(j.judge.backend, "external");
         assert_eq!(j.items.iter().find(|i| i.session_id == "b").unwrap().task_summary, "後");
@@ -207,5 +214,27 @@ mod tests {
         assert!(import_judgments_text("説明だけ", &jp, ImportOptions::default()).unwrap_err().to_string().starts_with("貼り付けた返答 から JSON を取り出せません"));
         let e = import_judgments_text("[1]", &jp, ImportOptions::default()).unwrap_err();
         assert!(e.downcast_ref::<JudgmentValidationError>().unwrap().problems[0].starts_with("1 件目が無いか"), "{e}");
+    }
+
+    // llm-wiki のページごとの判定: 版 1 の返答も版 2 の返答も取り込む。wikiPages が壊れていても項目は取り込み、知らせる
+    #[test]
+    fn imports_wiki_pages_leniently() {
+        let d = tempfile::tempdir().unwrap();
+        let jp = d.path().join("judgments.json");
+        let mut ok = item("a");
+        ok["wikiPages"] = json!([{ "page": "wiki/a.md", "helpful": "yes", "reason": "使った" }]);
+        let mut bad = item("b");
+        bad["wikiPages"] = json!("壊れた");
+        let v1 = json!({ "schemaVersion": 1, "judge": { "backend": "external", "model": "m365", "ranAt": "2026-10-01T00:00:00Z" }, "items": [ok, bad, item("c")] });
+        let r = import_judgments_text(&format!("```json\n{v1}\n```"), &jp, ImportOptions::default()).unwrap();
+        assert_eq!(r.imported, 3);
+        assert_eq!(r.notes.len(), 1);
+        assert!(r.notes[0].starts_with("セッション b: wikiPages が配列ではない"), "{:?}", r.notes);
+        let j = read_judgments(&jp).unwrap().unwrap();
+        assert_eq!(j.schema_version, 2);
+        let by = |id: &str| j.items.iter().find(|i| i.session_id == id).unwrap().wiki_pages.clone();
+        assert_eq!(by("a").unwrap()[0].helpful, "yes");
+        assert_eq!(by("b"), None);
+        assert_eq!(by("c"), None);
     }
 }

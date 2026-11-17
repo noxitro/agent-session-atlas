@@ -9,6 +9,8 @@ import { excerptAround, looksLikeId, searchSessions, searchTerms } from '../src/
 import { addIds, memberGroups, parseGroups, removeIds, resolveIdPrefixes, serializeGroups } from '../src/lib/groups.ts';
 import { sessionLabel } from '../src/lib/highlights.ts';
 import { parseJudgments } from '../src/lib/judgments.ts';
+import { judgmentForSession } from '../src/lib/summarize.ts';
+import { WIKI_JUDGED_PAGES_MAX } from '../src/lib/wiki.ts';
 import { shortProjectLabel } from '../src/lib/project-label.ts';
 import { niceTicks } from '../src/lib/scale.ts';
 import { modelLabel, sharedLeads, splitLead } from '../src/lib/format.ts';
@@ -222,8 +224,31 @@ describe('judgments', () => {
       backend: 'external',
     });
     expect(() => parseJudgments({ schemaVersion: 1, items: [{ sessionId: 'x', humanEffort: {} }] })).toThrow(/hours/);
-    expect(() => parseJudgments({ schemaVersion: 2, items: [] })).toThrow(/schemaVersion/);
+    expect(() => parseJudgments({ schemaVersion: 3, items: [] })).toThrow(/schemaVersion/);
     expect(() => parseJudgments({ schemaVersion: 1, items: [{}] })).toThrow(/sessionId/);
+  });
+
+  it('版 2 の llm-wiki のページごとの判定を読む。壊れていても項目は捨てず、ページを未判定にする', () => {
+    const parse = (wikiPages: unknown) => parseJudgments({ schemaVersion: 2, items: [{ sessionId: 'a', humanEffort: { hours: 1 }, wikiPages }] }).bySession.get('a')!;
+    const j = parse([
+      { page: ' wiki/a.md ', helpful: 'yes', reason: '使った' },
+      { page: 'wiki/b.md', helpful: 'maybe' },
+      { page: 'wiki/c.md', helpful: 'no' },
+      { page: 'wiki/a.md', helpful: 'no' },
+      'wiki/d.md',
+    ]);
+    expect(j.wikiPages).toEqual([
+      ['wiki/a.md', 'yes'],
+      ['wiki/c.md', 'no'],
+    ]);
+    // 配列でない・無い(版 1 の判定を含む): ページは未判定。ほかの判定は読む
+    expect(parse({ page: 'x' }).wikiPages).toBeUndefined();
+    expect(parse('壊れた').hours).toBe(1);
+    expect('wikiPages' in parseJudgments({ schemaVersion: 1, items: [{ sessionId: 'a', humanEffort: { hours: 1 } }] }).bySession.get('a')!).toBe(false);
+    // パケットに載せたページ(読んだ順の先頭から上限まで)に無い名前は捨てる。判定の無いものはそのまま
+    const reads = ['wiki/a.md', 'wiki/a.md', ...Array.from({ length: WIKI_JUDGED_PAGES_MAX }, (_, i) => `wiki/x${i}.md`), 'wiki/c.md'];
+    expect(judgmentForSession(j, reads).wikiPages).toEqual([['wiki/a.md', 'yes']]);
+    expect(judgmentForSession(parse(undefined), reads).wikiPages).toBeUndefined();
   });
 });
 

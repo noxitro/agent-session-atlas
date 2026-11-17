@@ -1,7 +1,7 @@
 //! Anthropic Messages API を直接呼ぶ判定バックエンド(従量課金。明示指定したときだけ使う。packages/judge/src/backends/anthropic.ts の移植)。
 //! 依存を増やさないため SDK を使わず raw HTTP(ureq)で実装している。テストでは HTTP の呼び出しを差し替える。
 
-use super::output::item_from_texts;
+use super::output::item_and_notes_from_texts;
 use super::{JudgeBackend, JudgePacket, JudgeResult};
 use crate::rubric::build_judge_prompt;
 use anyhow::{anyhow, bail, Result};
@@ -118,7 +118,8 @@ impl JudgeBackend for AnthropicBackend {
     fn judge(&self, packet: &JudgePacket<'_>) -> Result<JudgeResult> {
         let r = anthropic_message(&build_judge_prompt(packet.markdown, packet.session_id, None), &self.o)?;
         let texts = if r.texts.is_empty() { vec![] } else { vec![r.texts.join("\n")] };
-        Ok(JudgeResult { item: item_from_texts(&texts, packet.session_id)?, usage: r.usage, notes: r.notes })
+        let (item, wiki_notes) = item_and_notes_from_texts(&texts, packet.session_id)?;
+        Ok(JudgeResult { item, usage: r.usage, notes: r.notes.into_iter().chain(wiki_notes).collect() })
     }
 }
 

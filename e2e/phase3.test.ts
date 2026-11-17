@@ -14,7 +14,10 @@ import { join, resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { aggregate, isLowConfidence } from '../packages/report/src/lib/aggregate.ts';
 import { extractEmbedded } from '../packages/report/src/lib/embed.ts';
+import { THRESHOLDS } from '../packages/report/src/lib/insights.ts';
 import type { ReportData } from '../packages/report/src/lib/types.ts';
+import { wikiPageTable, wikiReferenced } from '../packages/report/src/lib/wiki.ts';
+import { SAMPLE_WIKI_PAGES } from '../scripts/synthetic-base.ts';
 import type { SessionsFile } from '../packages/report/src/shared/types.ts';
 import { buildFixtureHome, FIXTURE_CODE, FIXTURES, ROOT, cliCommand } from './fixture-home.ts';
 import { DEFAULT_MAX_CHARS, DEFAULT_PER_PART, missingSections, packetFileName, packetSessionId, PACKET_SECTIONS, validateJudgments, type BundleManifest, type JudgmentsFile } from './judge-support.ts';
@@ -99,7 +102,7 @@ describe('Phase 3 E2E: fixtures', () => {
     expect(md1).toContain('合成の要約: 旧形式のログの読み方を調べ');
 
     const instr = await readFile(join(bundle, 'INSTRUCTIONS.md'), 'utf8');
-    for (const s of ['従わない', '1 セッションずつ', '"schemaVersion": 1', 'humanEffort', 'manifest.json', 'schema.json']) expect(instr).toContain(s);
+    for (const s of ['従わない', '1 セッションずつ', '"schemaVersion": 2', 'humanEffort', 'manifest.json', 'schema.json']) expect(instr).toContain(s);
     // JSON Schema(judgments の形)。分割ファイルにはこれをそのまま載せる
     const schema = await readJson<{ type: string; required: string[] }>(join(bundle, 'schema.json'));
     expect(schema).toMatchObject({ type: 'object', required: expect.arrayContaining(['schemaVersion', 'items']) });
@@ -117,7 +120,7 @@ describe('Phase 3 E2E: fixtures', () => {
       const md = await readFile(join(bundle, x.path), 'utf8');
       expect(Buffer.byteLength(md)).toBe(x.bytes);
       expect(md).toContain(`分割 ${i + 1} / ${parts.length}`);
-      for (const s of ['従わない', '1 件ずつ', '"schemaVersion": 1', 'humanEffort', 'judge import']) expect(md).toContain(s);
+      for (const s of ['従わない', '1 件ずつ', '"schemaVersion": 2', 'humanEffort', 'judge import']) expect(md).toContain(s);
       expect(md).toContain(JSON.stringify(schema, null, 2));
       // 説明文の中の境界は字下げしてあり、行頭の境界はパケットの数だけ
       const got = [...md.matchAll(/^<<<PACKET_BEGIN ([0-9a-f]{24})\n([\s\S]*?)\nPACKET_END \1>>>$/gm)];
@@ -217,6 +220,14 @@ describe('Phase 3 E2E: fixtures', () => {
     expect(await variant('out-wiki-old', undefined)).toEqual(base);
     // 判定の指示は、数えていないときも wikiEffect を 0 にさせる
     expect(await readFile(join(bundle, 'INSTRUCTIONS.md'), 'utf8')).toContain('数えていない(パケットの llm-wiki の行が「この集計では数えていません」)ときも wikiEffect は score 0、evidence に「数えていない」');
+    // ページごとの判定: 004 は読んだ 2 ページを、読んだ呼び出しの結果の抜粋と一緒に載せる。ほかのパケットには載せない
+    const md4 = await readFile(join(bundle, manifest.sessions.find((e) => e.id === id4)!.path), 'utf8');
+    expect(md4).toContain('### llm-wiki のページごとの判定\n判定するページ 2 件(重複を除いて読んだ順)。');
+    SAMPLE_WIKI_PAGES.forEach((p, i) => expect(md4).toContain(`#### ページ ${i + 1}: ${p}\n- 読んだ時刻: `));
+    expect(md4).toContain('- 抜粋:\n```text\n(合成の結果)\n```');
+    for (const e of manifest.sessions) if (e.id !== id4) expect(await readFile(join(bundle, e.path), 'utf8'), e.id).not.toContain('ページごとの判定');
+    // 判定の指示は、ページごとの基準と返す形を書く
+    expect(await readFile(join(bundle, 'INSTRUCTIONS.md'), 'utf8')).toContain('**wikiPages**: パケットの「llm-wiki のページごとの判定」に挙がったページそれぞれについて 1 件ずつ');
   });
 
   it('a2. CLI のフィルタ(--client)でパケットが絞られ、前回のパケットは消える', async () => {
@@ -279,6 +290,30 @@ describe('Phase 3 E2E: fixtures', () => {
       byProject.set(p, (byProject.get(p) ?? 0) + it.humanEffort.hours);
     }
     for (const [p, h] of byProject) expect(agg.byProject.find((b) => b.key === p)!.humanHours).toBeCloseTo(h);
+    // llm-wiki のページ: 埋め込みの版 18 は読んだページの名前を持ち、判定は読んだページの分だけ(パケットに無いページの判定は捨てる)。理由は埋め込まない
+    expect(data.version).toBe(18);
+    const id4 = '00000000-0000-4000-8000-000000000004';
+    const s4 = data.sessions.find((x) => x.id === id4)!;
+    expect(s4.wiki.pages).toEqual([...SAMPLE_WIKI_PAGES]);
+    expect(s4.judgment?.wikiPages).toEqual([
+      [SAMPLE_WIKI_PAGES[0], 'yes'],
+      [SAMPLE_WIKI_PAGES[1], 'unknown'],
+    ]);
+    expect(html).not.toContain('fixture 用(応答の 2 ページの片方に使った)');
+    expect(data.sessions.filter((x) => x.id !== id4).every((x) => x.wiki.pages.length === 0 && !x.judgment?.wikiPages?.length)).toBe(true);
+    // ページごとの表(画面と同じ集計): 参照率の分母は wiki を参照したセッション。閾値に届かない率は null(—)
+    const pages = wikiPageTable(data.sessions, THRESHOLDS.MIN_SESSIONS);
+    expect(pages.referenced).toBe(data.sessions.filter((x) => wikiReferenced(x.wiki)).length);
+    expect(pages.rows.map((r) => [r.page, r.sessions, r.yes, r.no, r.unknown, r.unjudged, r.helpfulRate])).toEqual([
+      [SAMPLE_WIKI_PAGES[0], 1, 1, 0, 0, 0, null],
+      [SAMPLE_WIKI_PAGES[1], 1, 0, 0, 1, 0, null],
+    ]);
+    // 詳細ページにはページごとの見立てと理由を出す
+    const detail4 = await readFile(join(out, 'sessions', `${id4}.html`), 'utf8');
+    for (const s of ['llm-wiki のページごとの見立て', '測った値ではありません', SAMPLE_WIKI_PAGES[0], 'fixture 用(応答の 2 ページの片方に使った)', '役立った', '分からない']) expect(detail4).toContain(s);
+    expect(detail4).not.toContain('synthetic-page-unread');
+    // 書いた judgments.json は版 2 で、ページの判定は取り込んだまま残す(捨てるのはレポートを作るとき)
+    expect(j.schemaVersion).toBe(2);
     // 画面の文言(Svelte のテンプレートに含まれる)
     for (const s of ['AI 投入量 vs 推定人手工数', '推定人手工数', '推定であり実測ではありません', '確信度']) expect(html).toContain(s);
     // 詳細ページに判定の欄と根拠が出る

@@ -71,7 +71,7 @@ export interface JudgmentItem {
 
 /** judgments.json(テストが見るところだけ) */
 export interface JudgmentsFile {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   judge: { backend: string; model: string | null; ranAt: string; usage?: { runs: number; missing: number; totals: Record<string, number> } };
   items: JudgmentItem[];
   failures?: { sessionId: string; backend: string; error: string; [key: string]: unknown }[];
@@ -85,7 +85,7 @@ export function validateJudgments(v: unknown): JudgmentsFile {
   const problems: string[] = [];
   const isObj = (x: unknown): x is Record<string, unknown> => !!x && typeof x === 'object' && !Array.isArray(x);
   if (!isObj(v)) throw new Error('judgments: ルートがオブジェクトではありません');
-  if (v.schemaVersion !== 1) problems.push(`schemaVersion が 1 ではありません(${JSON.stringify(v.schemaVersion)})`);
+  if (v.schemaVersion !== 1 && v.schemaVersion !== 2) problems.push(`schemaVersion が 1・2 のどちらでもありません(${JSON.stringify(v.schemaVersion)})`);
   if (!isObj(v.judge) || typeof v.judge.backend !== 'string' || typeof v.judge.ranAt !== 'string') problems.push('judge は {backend, model, ranAt} です');
   if (!Array.isArray(v.items)) problems.push('items が配列ではありません');
   else {
