@@ -1,6 +1,7 @@
 // 画面の操作の検査(Playwright の Chromium)。架空の fixture で atlas all → atlas serve(port 0)を立て、実際に押して確かめる。
 // e2e/ は生成した HTML の文字列と API を見る。ここは Svelte の画面と詳細ページの素の script が、ブラウザで動くかを見る。
 //  a. 一覧でチェック → 「選んだ N 件だけ集計」で表示中の件数が変わり、「選択を解除」で戻る
+//  a2. 一覧の検索(セッション ID・題名)で行が絞られ、上の集計は変わらない
 //  b. グループを作成 → groups.json に書かれる → サイドバーで選ぶと絞り込まれる → 削除で消える
 //  c. 詳細ページでメモを書いて保存 → atlas-notes/memos に書かれ、再読み込みしても表示される
 //  d. 用語ページへのリンクで移動でき、パンくずで戻れる
@@ -154,6 +155,49 @@ describe('画面の操作', () => {
     await expect.poll(shown).toBe(all);
     await expect.poll(turnsTotal).toBe(turnsAll);
     await expect.poll(() => page.getByTestId('selected-count').innerText()).toBe('0');
+  });
+
+  it('a2. 一覧の検索: ID・題名で行を絞り(上の集計は変えない)、合わなければ絞り込みの外の件数を出す。詳細から戻ると検索語も戻る', async () => {
+    const records = (JSON.parse(await readFile(join(out, 'sessions.json'), 'utf8')) as { sessions: { id: string; empty: boolean; name: string | null }[] }).sessions;
+    const target = records.find((s) => !s.empty && s.name?.includes('wiki-query'));
+    const empty = records.find((s) => s.empty);
+    expect(target && empty, 'fixture に wiki-query の題名のセッションと空のセッションがある').toBeTruthy();
+    await page.goto(server.url);
+    const all = await shown();
+    const box = page.getByTestId('session-search');
+    const result = page.getByTestId('session-search-result');
+    const rows = page.locator('#sessions table.ledger tbody tr');
+    expect(await result.innerText()).toBe('');
+    // ID(丸ごと)で 1 件。行に ID を出す。上の集計(表示中の件数)は変えない
+    await box.fill(target!.id);
+    await expect.poll(() => rows.count()).toBe(1);
+    expect(await rows.first().getByTestId('session-id').innerText()).toBe(`ID ${target!.id}`);
+    expect(await result.innerText()).toContain('1 件が合います');
+    expect(await shown()).toBe(all);
+    // 題名の一部(大文字と小文字はそろえる)。ID では当たっていないので ID は出さない
+    await box.fill('WIKI-QUERY');
+    await expect.poll(() => rows.count()).toBe(1);
+    expect(await rows.first().getByTestId('session-id').count()).toBe(0);
+    // Esc で検索語を消すと、全件に戻る
+    await box.press('Escape');
+    await expect.poll(() => box.inputValue()).toBe('');
+    await expect.poll(() => rows.count()).toBe(Math.min(all, 50));
+    // 合わないときは表を出さず、そう知らせる
+    await box.fill('合うものが無い語 zzzz');
+    await expect.poll(() => result.innerText()).toContain('合うセッションはありません');
+    expect(await rows.count()).toBe(0);
+    // 空のセッション(既定で外している)は、絞り込みの外にあると知らせる
+    await box.fill(empty!.id);
+    await expect.poll(() => result.innerText()).toContain('今の絞り込みの外に、合うセッションがほかに 1 件あります');
+    expect(await result.innerText()).toContain('うち空のセッション 1 件は、「その他の条件」の「空のセッションを含める」で出ます');
+    // 詳細ページへ行って戻ると、検索語と絞った行が戻る
+    await box.fill(target!.id);
+    await expect.poll(() => rows.count()).toBe(1);
+    await rows.first().locator('td.name a').click();
+    await page.waitForURL((u) => u.pathname.includes(target!.id));
+    await page.goBack();
+    await expect.poll(() => page.getByTestId('session-search').inputValue()).toBe(target!.id);
+    await expect.poll(() => rows.count()).toBe(1);
   });
 
   it('b. グループを作成して選ぶと絞り込まれ、本文の見出しで名前と説明を直せて、削除すると groups.json からも消える', async () => {

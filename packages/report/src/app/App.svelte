@@ -662,6 +662,8 @@
         <ModelValue sessions={filtered} />
         <SessionTable
           sessions={filtered}
+          allSessions={sessions}
+          emptyIncluded={filter.empty === '1'}
           {judged}
           {selected}
           idsActive={eff.ids !== ''}

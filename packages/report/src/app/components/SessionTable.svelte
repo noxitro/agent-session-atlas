@@ -6,9 +6,12 @@
   import SortMark from './SortMark.svelte';
   import { restoredView, saveView } from '../view-restore.ts';
   import { categoryLabel, confidenceLabel } from '../../lib/judgment-labels.ts';
+  import { searchSessions } from '../../lib/session-search.ts';
 
   let {
     sessions,
+    allSessions = null,
+    emptyIncluded = false,
     judged,
     selected,
     idsActive,
@@ -24,6 +27,10 @@
     onremove,
   }: {
     sessions: SessionSummary[];
+    /** 絞り込む前の全セッション(検索で、今の絞り込みの外にも合うものがあるかを数える。無ければ数えない) */
+    allSessions?: SessionSummary[] | null;
+    /** 空のセッションを含めているか(検索に合った空のセッションが外れている理由を知らせるため) */
+    emptyIncluded?: boolean;
     judged: boolean;
     /** チェックしたセッション id(画面内だけ。保存しない) */
     selected: Set<string>;
@@ -75,18 +82,43 @@
   let sortKey = $state<Key>(back && back.sortKey in value ? (back.sortKey as Key) : 'time');
   let asc = $state(back?.asc === true);
   let page = $state(back && Number.isInteger(back.page) && back.page > 0 ? back.page : 0);
+  /** 一覧の検索(セッション ID の先頭か題名の一部)。行を絞るだけで、上の集計は変えない */
+  let query = $state(typeof back?.query === 'string' ? back.query : '');
   $effect(() => {
-    const onHide = (): void => saveView({ table: { sortKey, asc, page } });
+    const onHide = (): void => saveView({ table: { sortKey, asc, page, query } });
     addEventListener('pagehide', onHide);
     return () => removeEventListener('pagehide', onHide);
   });
   const PAGE = 50;
 
+  const found = $derived(searchSessions(sessions, query));
+  /** 一覧に出す行(検索していれば、合ったものだけ) */
+  const rows = $derived(found ? found.rows : sessions);
+  /** 検索に合ったが、今の絞り込みで外れているセッション(期間・プロジェクト・空のセッションなど) */
+  const outside = $derived.by(() => {
+    if (!found || !allSessions) return null;
+    const shown = new Set(found.rows.map((s) => s.id));
+    const out = (searchSessions(allSessions, query)?.rows ?? []).filter((s) => !shown.has(s.id));
+    return { count: out.length, empty: out.filter((s) => s.empty).length };
+  });
+  /** 検索の結果の一文(検索していなければ空) */
+  const findText = $derived.by(() => {
+    if (!found) return '';
+    const head = found.rows.length ? `${int(found.rows.length)} 件が合います。` : '合うセッションはありません。';
+    if (!outside?.count) return head;
+    const empty = outside.empty && !emptyIncluded ? `うち空のセッション ${int(outside.empty)} 件は、「その他の条件」の「空のセッションを含める」で出ます。` : '';
+    return `${head}今の絞り込みの外に、合うセッションがほかに ${int(outside.count)} 件あります(上の絞り込みを外すと出ます)。${empty}`;
+  });
+  function onSearch(v: string): void {
+    query = v;
+    page = 0;
+  }
+
   const sorted = $derived.by(() => {
     const f = value[sortKey];
     const dir = asc ? 1 : -1;
     // 日時の無いもの(-Infinity)どうしの差は NaN になるので、同じとみなす
-    return [...sessions].sort((a, b) => {
+    return [...rows].sort((a, b) => {
       const x = f(a);
       const y = f(b);
       return (x === y ? 0 : (x - y) * dir) || a.id.localeCompare(b.id);
@@ -272,9 +304,34 @@
   <div class="section-head">
     <h2 id="sessions-h">セッション一覧</h2>
     <p>
-      {int(sessions.length)} セッション。名前を押すと詳細(時系列・ツール内訳・指示ファイル・摩擦)を開きます。表は横にスクロールできます。
+      {#if found}{int(found.rows.length)} / {int(sessions.length)} セッション(検索で絞っています)。{:else}{int(sessions.length)} セッション。{/if}名前を押すと詳細(時系列・ツール内訳・指示ファイル・摩擦)を開きます。表は横にスクロールできます。
       {#if !judged}推定人手工数は未判定です(LLM による判定を実行すると表示されます)。{/if}
     </p>
+  </div>
+
+  <!-- 一覧の検索: 行を絞るだけ(上の集計と、選んだセッションは変えない) -->
+  <div class="find-bar" role="search" aria-label="セッション一覧の検索">
+    <label class="fld find">
+      <span class="k">セッションを探す</span>
+      <input
+        type="search"
+        value={query}
+        oninput={(e) => onSearch(e.currentTarget.value)}
+        onkeydown={(e) => {
+          if (e.key === 'Escape' && query) {
+            e.preventDefault();
+            onSearch('');
+          }
+        }}
+        spellcheck="false"
+        autocomplete="off"
+        placeholder="セッション ID の先頭 4 文字以上か、題名の一部"
+        aria-describedby="session-find-result"
+        data-testid="session-search"
+      />
+    </label>
+    <!-- live 領域は常に置いておき、文だけ差し替える(後から挿入すると読み上げられない) -->
+    <p class="find-result" id="session-find-result" role="status" data-testid="session-search-result">{findText}</p>
   </div>
 
   <!-- 選択の操作列: チェックした件数と、その件数だけで集計 / 解除 / グループとして保存 -->
@@ -326,7 +383,7 @@
     </form>
   {/if}
 
-  {#if sessions.length > 0}
+  {#if rows.length > 0}
     <div class="table-scroll">
       <table class="ledger">
         <thead>
@@ -370,7 +427,7 @@
               <td class="num when">{dateTime(s.createdAt ?? s.updatedAt)}</td>
               <td class="num when">{dateTime(s.updatedAt ?? s.createdAt)}</td>
               <td class="proj" title={s.project}>{#each pathParts(s.projectLabel) as seg, i (i)}{#if i}<wbr />{/if}{seg}{/each}{#if s.branch}<span class="sub">{s.branch}</span>{/if}</td>
-              <td class="name"><a href={s.href} title={title(s)}>{#if leads.get(s.id)?.lead}<span class="lead" title="ほかの行と同じ書き出し(縮めて表示)">{leads.get(s.id)?.lead}</span>{leads.get(s.id)?.rest}{:else}{title(s)}{/if}</a>{#if (leads.get(s.id)?.same ?? 1) > 1}<span class="tag" title="一覧の中に題名がまったく同じセッションが {leads.get(s.id)?.same} 件あります。開始時刻やプロジェクトで見分けてください">同じ題名 ×{leads.get(s.id)?.same}</span>{/if}{#if s.empty}<span class="tag" title="依頼・ツール呼び出し・応答がどれも無いセッション">空</span>{/if}{#if s.memo}<span class="sub" data-testid="memo-excerpt">メモ: {s.memo.excerpt || '(本文なし)'}</span>{/if}{#if groupsOf.has(s.id)}<span class="sub in-groups" data-testid="session-groups">タスクタグ: {groupsOf.get(s.id)?.join('、')}</span>{/if}</td>
+              <td class="name"><a href={s.href} title={title(s)}>{#if leads.get(s.id)?.lead}<span class="lead" title="ほかの行と同じ書き出し(縮めて表示)">{leads.get(s.id)?.lead}</span>{leads.get(s.id)?.rest}{:else}{title(s)}{/if}</a>{#if (leads.get(s.id)?.same ?? 1) > 1}<span class="tag" title="一覧の中に題名がまったく同じセッションが {leads.get(s.id)?.same} 件あります。開始時刻やプロジェクトで見分けてください">同じ題名 ×{leads.get(s.id)?.same}</span>{/if}{#if s.empty}<span class="tag" title="依頼・ツール呼び出し・応答がどれも無いセッション">空</span>{/if}{#if found?.byId.has(s.id)}<span class="sub sid" data-testid="session-id">ID {s.id}</span>{/if}{#if s.memo}<span class="sub" data-testid="memo-excerpt">メモ: {s.memo.excerpt || '(本文なし)'}</span>{/if}{#if groupsOf.has(s.id)}<span class="sub in-groups" data-testid="session-groups">タスクタグ: {groupsOf.get(s.id)?.join('、')}</span>{/if}</td>
               <td class="nowrap">{s.client ?? '不明'}</td>
               <td class="models" title={s.models.join('、')}>{s.models.length ? s.models.map(modelLabel).join('、') : '不明'}</td>
               <td class="num">{int(s.turns)}</td>
@@ -462,6 +519,30 @@
     display: block;
     font-size: 0.75rem;
     color: var(--ink-3);
+  }
+  /* ID は長い 16 進の並びなので、欄の幅で折り返す */
+  .sub.sid {
+    font-family: var(--mono, ui-monospace, monospace);
+    overflow-wrap: anywhere;
+  }
+  /* 一覧の検索(見出しの直下、選択の操作列の上) */
+  .find-bar {
+    display: flex;
+    align-items: flex-end;
+    gap: 4px 16px;
+    flex-wrap: wrap;
+    padding-top: 4px;
+  }
+  .fld.find input {
+    width: 26em;
+  }
+  .find-result {
+    margin: 0;
+    flex: 1 1 16em;
+    min-height: 1.25rem;
+    font-size: 0.8125rem;
+    color: var(--ink-2);
+    align-self: center;
   }
   .pager {
     display: flex;

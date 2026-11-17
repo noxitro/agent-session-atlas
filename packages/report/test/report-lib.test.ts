@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { effortSkew, isLowConfidence, monthRange } from '../src/lib/aggregate.ts';
 import { embedData, extractEmbedded, serializeForScript } from '../src/lib/embed.ts';
 import { decodeFilter, emptyFilter, encodeFilter, groupIds, isEmptyFilter } from '../src/lib/filter.ts';
+import { searchSessions, searchTerms } from '../src/lib/session-search.ts';
 import { addIds, memberGroups, parseGroups, removeIds, resolveIdPrefixes, serializeGroups } from '../src/lib/groups.ts';
 import { sessionLabel } from '../src/lib/highlights.ts';
 import { parseJudgments } from '../src/lib/judgments.ts';
@@ -47,6 +48,46 @@ describe('filter', () => {
     expect(decodeFilter(`#${encodeFilter(f)}`)).toEqual(f);
     expect(isEmptyFilter(decodeFilter('#coverage=bogus&unknown=1&project=%E0%A4'))).toBe(true);
     expect(encodeFilter(emptyFilter())).toBe('');
+  });
+});
+
+describe('session-search(セッション一覧の検索)', () => {
+  const s = (id: string, name: string | null, firstUserMessage: string | null) => ({ id, name, firstUserMessage });
+  const list = [
+    s('3f2a9c10-aaaa-4bbb-8ccc-000000000001', 'ログイン画面の修正', null),
+    s('3f2b0000-aaaa-4bbb-8ccc-000000000002', null, 'README を Ｅｎｇｌｉｓｈ に訳す'),
+    s('add00000-aaaa-4bbb-8ccc-000000000003', null, null),
+    s('99990000-aaaa-4bbb-8ccc-000000000004', '11 月の調査', '数字を含む題名'),
+  ];
+  const ids = (q: string): string[] | null => searchSessions(list, q)?.rows.map((x) => x.id.slice(0, 4)) ?? null;
+
+  it('空の検索語は絞らない(null)', () => {
+    expect(searchSessions(list, '')).toBeNull();
+    expect(searchSessions(list, '  　 ')).toBeNull();
+    expect(searchTerms(' a  A ｂ ')).toEqual(['a', 'b']);
+  });
+  it('ID は先頭 4 文字以上で当たり、当たった行を byId に入れる。大文字・全角でもよい', () => {
+    expect(ids('3f2a')).toEqual(['3f2a']);
+    expect(ids('3F2')).toEqual([]); // 3 文字は ID の先頭として比べない
+    expect(ids('３Ｆ２Ｂ')).toEqual(['3f2b']);
+    expect([...(searchSessions(list, '3f2a9c10')?.byId ?? [])]).toEqual(['3f2a9c10-aaaa-4bbb-8ccc-000000000001']);
+  });
+  it('ID の途中の文字だけでは当たらない(16 進の語や数字で、題名に無い行が偶然出ないように)', () => {
+    expect(ids('add')).toEqual([]);
+    expect(ids('aaaa')).toEqual([]);
+    expect(ids('11')).toEqual(['9999']); // 題名の「11 月」だけに当たる
+  });
+  it('貼ったパスや URL の中に ID が丸ごと入っていれば当たる', () => {
+    expect(ids('out\\sessions\\add00000-aaaa-4bbb-8ccc-000000000003.md')).toEqual(['add0']);
+  });
+  it('題名は名前と最初の依頼の両方を見る。全角半角・大文字小文字をそろえ、空白で区切った語はすべて含む行だけ', () => {
+    expect(ids('ログイン')).toEqual(['3f2a']);
+    expect(ids('english')).toEqual(['3f2b']);
+    expect(ids('readme 訳す')).toEqual(['3f2b']);
+    expect(ids('readme 修正')).toEqual([]);
+    expect(searchSessions(list, 'ログイン')?.byId.size).toBe(0);
+    // ID の語と題名の語を混ぜてもよい(どちらかに当たれば、その語は合う)
+    expect(ids('9999 調査')).toEqual(['9999']);
   });
 });
 
