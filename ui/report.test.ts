@@ -1035,18 +1035,17 @@ describe('画面の操作', () => {
       .toBe(true);
     const y = await scrollY();
     expect(y).toBeGreaterThan(1000);
-    // Playwright の click() は、押す前に要素を見える位置へスクロールし直す(要素の位置が端数の px だと 1px 動く)。
-    // ここで確かめたいのは画面が戻す位置なので、スクロールを動かさずにリンクを押す
-    await page.locator('#sessions table.ledger tbody tr td.name a').first().dispatchEvent('click');
+    await page.locator('#sessions table.ledger tbody tr td.name a').first().click();
     await page.waitForURL('**/sessions/*.html');
     await page.goBack();
     await page.waitForURL('**/atlas.html*');
-    try {
-      await expect.poll(scrollY).toBe(y);
-    } catch (e) {
-      // 落ちたら、画面が離れるときに覚えた位置(history.state)も出す(覚えた位置と戻した位置のどちらがずれたかを分けるため)
-      throw new Error(`${(e as Error).message}\n${await page.evaluate<string>("JSON.stringify({ now: window.scrollY, saved: history.state && history.state.atlasView })")}`);
-    }
+    // 戻した位置は、画面が離れるときに覚えた位置(history.state)とぴったり同じ。覚えた位置は、テストがスクロールした位置と 1px まで違ってよい
+    // (CI では、離れるまでの間に端数の高さの要素でブラウザがスクロール位置を 1px 動かすことがある。手元では起きない)
+    const saved = (): Promise<number | null> => page.evaluate<number | null>('history.state && history.state.atlasView && typeof history.state.atlasView.y === "number" ? Math.round(history.state.atlasView.y) : null');
+    await expect.poll(saved).not.toBeNull();
+    const savedY = (await saved())!;
+    expect(Math.abs(savedY - y), `覚えた位置 ${savedY}、スクロールした位置 ${y}`).toBeLessThanOrEqual(1);
+    await expect.poll(scrollY).toBe(savedY);
     expect(await startHead.getAttribute('aria-sort')).toBe('ascending');
     expect(await firstName()).toBe(first);
     // 要点の「このツールを使ったセッションに絞り込む→」は履歴に残る移動。戻ると絞り込みが外れ、進むとまた絞り込む
