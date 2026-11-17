@@ -102,8 +102,8 @@ pub fn run_extract(p: &Paths, since: Option<&str>, log: Log<'_>, temp_dirs: Opti
     if unknown > 0 || s.warnings.bad_lines > 0 {
         log(&format!("extract: 注意 未知のイベント種別 {unknown} 件、読めなかった行 {} 行", s.warnings.bad_lines));
     }
-    // 送り先から集計したときは、送った atlas の版を数える(古い版で送ったものが混ざっていないか)
-    let sent: Vec<SentSession<'_>> = s.sessions.iter().map(|x| SentSession { person: x.person.as_ref().and_then(|p| p.as_deref()), upload_atlas: x.upload_atlas.as_ref().map(|a| a.as_ref()) }).collect();
+    // 送り先から集計したときは、送った atlas の版を、送った人ごとに数える(古い版で送った人がいないか)
+    let sent: Vec<SentSession<'_>> = s.sessions.iter().map(|x| SentSession { person: x.person.as_ref().and_then(|p| p.as_deref()), folder: x.upload_folder.as_ref().and_then(|f| f.as_deref()), upload_atlas: x.upload_atlas.as_ref().map(|a| a.as_ref()) }).collect();
     if sent.iter().any(|x| x.upload_atlas.is_some()) {
         let local = current_atlas_build(&REPO_ROOT, crate::version::CODE_STAMP);
         if let Some(builds) = summarize_atlas_builds(&sent, Some(&local), s.source.uploads.as_ref()) {
