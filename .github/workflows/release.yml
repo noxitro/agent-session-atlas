@@ -195,6 +195,8 @@ jobs:
           rustup default stable
           rustc --version
       - run: npm ci
+      # atlas.exe に埋め込む画面のビルドの道具が、レジストリの署名と合うかを見る(合わなければリリースを作らない)
+      - run: npm audit signatures
       - run: npm run build:report
       - name: atlas.exe をビルドする
         shell: bash

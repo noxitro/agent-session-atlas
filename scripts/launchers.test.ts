@@ -390,8 +390,13 @@ describe('配る中身の一覧(scripts/release-shipped.txt)', () => {
     for (const f of ['ci.yml', 'deny-schedule.yml']) {
       const text = readFileSync(join(ROOT, '.github/workflows', f), 'utf8');
       expect(text, f).toMatch(/run: node scripts\/npm-audit\.mjs$/m);
-      expect(text, f).not.toMatch(/run: npm audit|--omit=dev/);
+      // npm audit をそのまま回すと除外(npm-audit-ignore.json)を通らないので、npm-audit.mjs だけにする(署名の検査は別)
+      expect(text, f).not.toMatch(/run: npm audit(?! signatures$)|--omit=dev/m);
     }
+    // 入れたものの署名は、npm ci のあとに PR の CI と、atlas.exe を作る前に見る
+    const ci = readFileSync(join(ROOT, '.github/workflows/ci.yml'), 'utf8').replace(/\r\n/g, '\n');
+    expect(ci).toMatch(/- run: npm ci\n[\s\S]*?run: npm audit signatures\n[\s\S]*?- run: npm run build:report\n/);
+    expect(job('windows')).toMatch(/- run: npm ci\n(?: +#.*\n)* +- run: npm audit signatures\n +- run: npm run build:report\n/);
     // cargo-deny の版は 3 つのワークフローでそろえる
     const version = (f: string) => readFileSync(join(ROOT, '.github/workflows', f), 'utf8').match(/CARGO_DENY_VERSION: (\S+)/)?.[1];
     expect(version('release.yml')).toBeDefined();
