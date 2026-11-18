@@ -12,12 +12,14 @@ describe('操作への案内', () => {
     expect(refreshHint({ editable: false })).toMatch(/atlas\.bat で集計し直す/);
   });
 
-  it('判定ダイアログの「約 N 回以上の判定」に使う塊の大きさは judge の chunkTurns と同じ', () => {
+  it('判定ダイアログの「約 N 回以上の判定」は、サーバが返す塊の大きさ(chunk)で割り、返さない古いサーバのときだけ judge の chunkTurns と同じ値にする', () => {
     const src = readFileSync(join(import.meta.dirname, '../src/app/components/JobActions.svelte'), 'utf8');
-    // 判定の本体は Rust(crates/atlas-judge/src/turn_bundle.rs の DEFAULT_TURN_LIMITS)
+    const detail = readFileSync(join(import.meta.dirname, '../../../crates/atlas-report/assets/session-tools.js'), 'utf8');
+    // 判定の本体は Rust(crates/atlas-judge/src/turn_bundle.rs の DEFAULT_TURN_LIMITS。serve が judge-preview の chunk で返す)
     const rust = readFileSync(join(import.meta.dirname, '../../../crates/atlas-judge/src/turn_bundle.rs'), 'utf8');
     const chunkTurns = Number(/pub const DEFAULT_TURN_LIMITS: TurnLimits = TurnLimits \{[^}]*chunk_turns: (\d+)/.exec(rust)?.[1]);
     expect(chunkTurns).toBeGreaterThan(0);
-    expect(Number(/const TURN_CHUNK = (\d+);/.exec(src)?.[1])).toBe(chunkTurns);
+    expect(Number(/const turnChunk = \$derived\(preview\?\.chunk && preview\.chunk > 0 \? preview\.chunk : (\d+)\);/.exec(src)?.[1])).toBe(chunkTurns);
+    expect(Number(/function jchunk\(p\)\{return p\.chunk>0\?p\.chunk:(\d+)\}/.exec(detail)?.[1])).toBe(chunkTurns);
   });
 });

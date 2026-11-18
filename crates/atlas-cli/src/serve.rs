@@ -19,7 +19,7 @@ use crate::config::{default_config_path, is_byok_model, load_config, modify_conf
 use crate::folders::{check_folder, folders_root_of, forget_folder, is_read_only_view, list_folder_states, list_folders, open_folder_report, FolderContext, FolderError};
 use crate::group_export::{export_group, GroupExportPaths};
 use crate::group_upload::{check_upload, upload_dir, upload_group, uploaded_at, GroupUploadPaths, GroupUploadResult, UploadChangedError, UploadCheck, UploadOptions, UploadProgress};
-use crate::jobs::{acquire_out_lock, parse_job_request, running_job_in, FullCtx, JobRunner, JobRunnerOptions, RunFullFn, SpawnFn};
+use crate::jobs::{acquire_out_lock, judge_scope, parse_job_request, running_job_in, FullCtx, JobRunner, JobRunnerOptions, JudgeScope, RunFullFn, SpawnFn};
 use atlas_core::js;
 use atlas_core::nodepath::platform;
 use atlas_report::groups::{add_ids, member_groups_keyed, remove_ids, unique_ids, MemberGroup, MemberSource, SessionGroup};
@@ -1441,8 +1441,9 @@ impl Server {
         let je = |e: crate::jobs::JobError| HttpError::new(e.status, e.message);
         if path == "/api/jobs" && method == "POST" {
             let body = self.json_body(req)?;
-            let ids = if body.get("kind").and_then(Value::as_str) == Some("full") { self.session_index()? } else { None };
-            let r = parse_job_request(&body, &|id| ids.as_ref().is_some_and(|ix| ix.ids.contains_key(id))).map_err(je)?;
+            let ids = if body.get("kind").and_then(Value::as_str) == Some("full") || body.contains_key("session") { self.session_index()? } else { None };
+            let groups = body.contains_key("group").then(|| load_groups(&self.groups_path));
+            let r = parse_job_request(&body, &|id| ids.as_ref().is_some_and(|ix| ix.ids.contains_key(id)), groups.as_ref()).map_err(je)?;
             // グループの書き出しは out/ を読んでいるので、終わるまで集計などを始めない
             let busy = lock(&self.busy_with);
             if let Some(b) = &*busy {
@@ -1464,7 +1465,16 @@ impl Server {
                 Ok(c) => (c.judge_model, None),
                 Err(e) => (None, Some(format!("{e:#}"))),
             };
-            let mut counts = if req.url.param("target") == Some("turns") { self.turn_preview()? } else { self.judge_preview()? };
+            // ?session=<id> / ?group=<タスクタグ> で数える範囲を絞る(詳細ページの 1 セッション、画面のタスクタグ)
+            let scope = self.preview_scope(req.url.param("session"), req.url.param("group"))?;
+            let mut counts = if req.url.param("target") == Some("turns") {
+                let mut c = self.turn_preview(scope.as_ref())?;
+                // 依頼ごとの判定は、続いた依頼をこの件数までまとめて 1 回で判定する(確認ダイアログの回数の目安)
+                c.insert("chunk".into(), json!(atlas_judge::turn_bundle::DEFAULT_TURN_LIMITS.chunk_turns));
+                c
+            } else {
+                self.judge_preview(scope.as_ref())?
+            };
             counts.insert("model".into(), json!(model));
             counts.insert("byok".into(), json!(is_byok_model(model.as_deref())));
             counts.insert("modelError".into(), json!(model_error));
@@ -1476,13 +1486,25 @@ impl Server {
         Err(HttpError::new(404, "無い API です"))
     }
 
-    /// 判定の確認ダイアログの件数: 依頼の記録があるセッションのうち judgments.json に無いもの
-    fn judge_preview(&self) -> R<Map<String, Value>> {
+    /// 判定の件数を数える範囲(無ければすべて)。確かめ方は POST /api/jobs と同じ(jobs::judge_scope)。group の範囲は groups.json のそのグループの ids
+    fn preview_scope(&self, session: Option<&str>, group: Option<&str>) -> R<Option<HashSet<String>>> {
+        let ids = if session.is_some() { self.session_index()? } else { None };
+        let groups = group.is_some().then(|| load_groups(&self.groups_path));
+        let scope = judge_scope(session, group, &|id| ids.as_ref().is_some_and(|ix| ix.ids.contains_key(id)), groups.as_ref()).map_err(|e| HttpError::new(e.status, e.message))?;
+        Ok(match scope {
+            JudgeScope::All => None,
+            JudgeScope::Session(id) => Some(HashSet::from([id])),
+            JudgeScope::Group(name) => Some(groups.and_then(|g| g.groups.into_iter().find(|g| g.name == name)).map(|g| g.ids.into_iter().collect()).unwrap_or_default()),
+        })
+    }
+
+    /// 判定の確認ダイアログの件数: 依頼の記録があるセッションのうち judgments.json に無いもの(scope があればその中だけ)
+    fn judge_preview(&self, scope: Option<&HashSet<String>>) -> R<Map<String, Value>> {
         let Some(ix) = self.session_index()? else { return Ok(obj(json!({ "eligible": 0, "judged": 0, "pending": 0 }))) };
         let judged = judged_session_ids(&self.out_dir).map_err(|e| HttpError::new(409, format!("{e:#}")))?;
         let (mut eligible, mut done) = (0, 0);
         for (id, x) in &ix.ids {
-            if !x.eligible {
+            if !x.eligible || scope.is_some_and(|s| !s.contains(id)) {
                 continue;
             }
             eligible += 1;
@@ -1493,12 +1515,15 @@ impl Server {
         Ok(obj(json!({ "eligible": eligible, "judged": done, "pending": eligible - done })))
     }
 
-    /// 依頼ごとの判定の件数(依頼ごとの記録がある依頼のうち、turn-judgments.json に無いもの)
-    fn turn_preview(&self) -> R<Map<String, Value>> {
+    /// 依頼ごとの判定の件数(依頼ごとの記録がある依頼のうち、turn-judgments.json に無いもの。scope があればその中だけ)
+    fn turn_preview(&self, scope: Option<&HashSet<String>>) -> R<Map<String, Value>> {
         let Some(ix) = self.session_index()? else { return Ok(obj(json!({ "eligible": 0, "judged": 0, "pending": 0, "withoutTurns": 0 }))) };
         let judged = judged_turn_keys(&self.out_dir).map_err(|e| HttpError::new(409, format!("{e:#}")))?;
         let (mut eligible, mut done, mut without) = (0, 0, 0);
         for (id, x) in &ix.ids {
+            if scope.is_some_and(|s| !s.contains(id)) {
+                continue;
+            }
             // 依頼があるのに依頼ごとの記録が無いセッション(古い集計)。「集計し直す」で入る
             if x.eligible && x.turns == 0 {
                 without += 1;

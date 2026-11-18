@@ -150,6 +150,20 @@ fn sessions_with_wiki_counts_references_not_writes() {
     assert_eq!((old.other_calls, old.referenced()), (0, false));
 }
 
+/// 絞り込みの wiki=1 は、wiki を参照したセッションだけを残す(書き込みだけは入れない)
+#[test]
+fn filter_wiki_keeps_referenced_sessions() {
+    let base = summaries(&fixture()).remove(0);
+    let w = |index: i64, writes: i64| WikiSummary { index_reads: index, writes, ..Default::default() };
+    let s = [SessionSummary { id: "r".into(), wiki: w(1, 0), ..base.clone() }, SessionSummary { id: "w".into(), wiki: w(0, 1), ..base.clone() }, SessionSummary { id: "n".into(), wiki: w(0, 0), ..base }];
+    let f = FilterState { wiki: "1".into(), ..empty_filter() };
+    assert_eq!(ids(&apply_filter(&s, &f)), ["r"]);
+    assert_eq!(apply_filter(&s, &empty_filter()).len(), 3);
+    assert_eq!(encode_filter(&f), "wiki=1");
+    assert_eq!(decode_filter("#wiki=1").wiki, "1");
+    assert_eq!(decode_filter("#wiki=yes").wiki, "");
+}
+
 #[test]
 fn aggregate_matches_core_metrics() {
     let rs = fixture();

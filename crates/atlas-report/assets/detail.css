@@ -18,6 +18,9 @@ section h3{margin:14px 0 6px}
 h3.gap{margin-top:16px}
 .field .small{font-size:.875rem;font-weight:600;line-height:1.4}
 .tag.id{font-family:var(--mono);border-color:var(--rule);color:var(--ink-3)}
+/* LLM 判定の札: 見出し(緑)と、済み・未判定の文字 */
+.tag.judge{color:var(--ink)}
+.tag.judge .k{color:var(--form);margin-right:.5em}
 .barcol{width:40%;min-width:80px}
 .bar{display:block;height:10px;background:var(--s1);min-width:2px}
 .kind{font-size:.75rem;color:var(--form);white-space:nowrap}

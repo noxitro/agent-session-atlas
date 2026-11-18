@@ -3,11 +3,17 @@
 //! 画面の「工数を判定する」(serve の jobs)も、子プロセスとして `atlas judge-flow …` を起動する。
 //!   atlas judge-flow [judge run のオプション]           bundle → judge run → export
 //!   atlas judge-flow --turns [--limit <n>] [--model <名前>]   turns bundle --unjudged → turns run(GitHub Copilot CLI)→ export
+//! --session / --group / --since などの絞り込みは判定する範囲(束)にだけ掛け、最後の export はレポート全体を作り直す。
 //! 判定に失敗したセッションがあってもレポートは作り直す(判定済みの分は反映する)。終了コードは 1 にする。
 
 use super::{run_command, Log};
 use crate::args::{parse_cli, CliOptions, USAGE};
 use std::io::Write;
+
+/// 最後の export。絞り込み(--session / --group / --since など)は判定する範囲を決めるためのものなので、レポートはいつも全体で作り直す
+fn export_all(common: &CliOptions) -> CliOptions {
+    CliOptions { command: "export".into(), since: None, project: None, client: None, model: None, branch: None, group: None, sessions: None, ..common.clone() }
+}
 
 fn stdout_log(msg: &str) {
     let mut out = std::io::stdout().lock();
@@ -36,7 +42,7 @@ fn turns_flow(argv: &[String]) -> u8 {
         t.unjudged = true;
         run_command(&CliOptions { command: "turns".into(), turns: Some(t), ..common.clone() }, &p, log)?;
         let failed = run_command(&o, &p, log).err().map(|e| e.to_string());
-        let b = run_command(&CliOptions { command: "export".into(), ..common.clone() }, &p, log)?;
+        let b = run_command(&export_all(&common), &p, log)?;
         if let Some(b) = b.build {
             log(&format!("\nレポート: {}", b.html_path.display()));
         }
@@ -85,7 +91,7 @@ pub fn main(argv: &[String]) -> u8 {
             }
         };
         // 直前の all が作ったセッション記録を消さないよう、export で作り直す
-        let b = run_command(&CliOptions { command: "export".into(), ..common.clone() }, &p, log)?;
+        let b = run_command(&export_all(&common), &p, log)?;
         if let Some(b) = b.build {
             log(&format!("\nレポート: {}", b.html_path.display()));
         }

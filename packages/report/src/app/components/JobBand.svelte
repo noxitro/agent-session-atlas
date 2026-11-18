@@ -50,8 +50,11 @@
     if (j.state === 'failed') return `${LABEL[j.kind]}に失敗しました。`;
     return `${LABEL[j.kind]}を止めました。`;
   });
+  /** 判定した範囲(1 セッション・タスクタグ。すべてなら書かない) */
+  const scope = (j: JobInfo): string =>
+    j.target.session ? `セッション ${j.target.session.slice(0, 8)}${j.target.force ? ' を判定し直し' : ''}、` : j.target.group ? `タスクタグ「${j.target.group}」、` : '';
   const target = (j: JobInfo): string =>
-    j.kind === 'judge' ? `最大 ${j.target.limit} 件、copilot -p` : j.kind === 'turn-judge' ? `最大 ${j.target.limit} 依頼、copilot -p` : '';
+    j.kind === 'judge' ? `${scope(j)}最大 ${j.target.limit} 件、copilot -p` : j.kind === 'turn-judge' ? `${scope(j)}最大 ${j.target.limit} 依頼、copilot -p` : '';
 </script>
 
 <!-- 読み上げは状態が変わったときの 1 文だけ(経過の秒は毎秒変わるので live 領域に入れない)。live 領域は常に置き、文だけ差し替える -->

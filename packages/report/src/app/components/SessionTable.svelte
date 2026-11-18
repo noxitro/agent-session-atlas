@@ -67,6 +67,16 @@
     return src && why ? `${src}(${why})` : src || why;
   }
 
+  /** 依頼ごとの判定をどこかで使っているか(使っていなければ、依頼の欄に判定の済み・未判定を出さない) */
+  const turnJudgeUsed = $derived((allSessions ?? sessions).some((s) => s.turnVerdicts?.length));
+  /** 依頼ごとの判定の済んだ数(依頼ごとの記録がある依頼のうち。記録が無ければ null。詳細ページの「LLM 判定(依頼)」と同じ数え方) */
+  function turnJudged(s: SessionSummary): { n: number; m: number } | null {
+    const m = s.turnRows?.length ?? 0;
+    if (!m) return null;
+    const turns = new Set((s.turnVerdicts ?? []).map((v) => v[0]).filter((t) => t >= 1 && t <= m));
+    return { n: turns.size, m };
+  }
+
   type Key = 'time' | 'updated' | 'turns' | 'input' | 'output' | 'tools' | 'lines' | 'friction' | 'active' | 'human';
   const value: Record<Key, (s: SessionSummary) => number> = {
     time: (s) => sessionTime(s) ?? -Infinity,
@@ -451,7 +461,9 @@
               <td class="name"><a href={s.href} title={title(s)}>{#if leads.get(s.id)?.lead}<span class="lead" title="ほかの行と同じ書き出し(縮めて表示)">{leads.get(s.id)?.lead}</span>{leads.get(s.id)?.rest}{:else}{title(s)}{/if}</a>{#if (leads.get(s.id)?.same ?? 1) > 1}<span class="tag" title="一覧の中に題名がまったく同じセッションが {leads.get(s.id)?.same} 件あります。開始時刻やプロジェクトで見分けてください">同じ題名 ×{leads.get(s.id)?.same}</span>{/if}{#if s.empty}<span class="tag" title="依頼・ツール呼び出し・応答がどれも無いセッション">空</span>{/if}{#if found?.byId.has(s.id)}<span class="sub sid" data-testid="session-id">ID {s.id}</span>{/if}{#if found?.viaFirst.has(s.id) && s.firstUserMessage}<span class="sub" data-testid="session-first-hit">最初の依頼: {excerptAround(s.firstUserMessage, found.viaFirst.get(s.id) ?? '')}</span>{/if}{#if s.memo}<span class="sub" data-testid="memo-excerpt">メモ: {s.memo.excerpt || '(本文なし)'}</span>{/if}{#if groupsOf.has(s.id)}<span class="sub in-groups" data-testid="session-groups">タスクタグ: {groupsOf.get(s.id)?.join('、')}</span>{/if}</td>
               <td class="nowrap">{s.client ?? '不明'}</td>
               <td class="models" title={s.models.join('、')}>{s.models.length ? s.models.map(modelLabel).join('、') : '不明'}</td>
-              <td class="num">{int(s.turns)}</td>
+              <td class="num">
+                {int(s.turns)}{#if turnJudgeUsed}{@const tj = turnJudged(s)}{#if tj}<span class="sub" class:tj-done={tj.n > 0} title="依頼ごとの LLM 判定(採用): 判定済み {int(tj.n)} / {int(tj.m)} 依頼" data-testid="turn-judge-state">{tj.n === 0 ? '未判定' : tj.n === tj.m ? '✓ 判定済み' : `判定 ${int(tj.n)} / ${int(tj.m)}`}</span>{/if}{/if}
+              </td>
               <td class="num">
                 {#if s.tokens.input == null}<span class="missing-value">{s.coverage === 'output-only' ? '推計不可' : '記録なし'}</span>{:else}{int(s.tokens.input)}{/if}
               </td>
@@ -542,6 +554,10 @@
     color: var(--ink-3);
   }
   /* ID は長い 16 進の並びなので、欄の幅で折り返す */
+  /* 依頼ごとの判定が済んだ(一部でも)ものは、未判定(淡墨)より 1 段濃くする。済み・未判定は文字でも分かる */
+  .sub.tj-done {
+    color: var(--ink-2);
+  }
   .sub.sid {
     font-family: var(--mono, ui-monospace, monospace);
     overflow-wrap: anywhere;

@@ -3,7 +3,7 @@
 use super::*;
 use crate::args::parse_cli;
 use crate::folders::{folder_paths, folders_root_of, write_folder_state, FolderError, FolderState};
-use crate::jobs::{acquire_out_lock, job_args, running_job_in, JobArgsInput, JobRequest, OutBusyError, JOB_LOCK_FILE};
+use crate::jobs::{acquire_out_lock, job_args, running_job_in, JobArgsInput, JobRequest, JudgeScope, OutBusyError, JOB_LOCK_FILE};
 use serde_json::json;
 use std::fs;
 use std::sync::Mutex;
@@ -71,7 +71,7 @@ fn refresh_args_follow_the_opened_folder() {
     assert_eq!(job_args(&JobRequest::Refresh, &h), Some(v(&["all", "--home", "/srv/logs/person-a", "--out", "o", "--notes-dir", "n"])));
     // 集計し直す以外は、出力先にあるものだけを使う
     assert_eq!(job_args(&JobRequest::Export, &h), Some(v(&["export", "--out", "o", "--notes-dir", "n"])));
-    assert_eq!(job_args(&JobRequest::TurnJudge { limit: 7 }, &h), Some(v(&["judge-flow", "--turns", "--limit", "7", "--out", "o", "--notes-dir", "n"])));
+    assert_eq!(job_args(&JobRequest::TurnJudge { limit: 7, scope: JudgeScope::All }, &h), Some(v(&["judge-flow", "--turns", "--limit", "7", "--out", "o", "--notes-dir", "n"])));
     assert_eq!(job_args(&JobRequest::TurnBundle, &h), Some(v(&["turns", "bundle", "--unjudged", "--out", "o", "--notes-dir", "n"])));
     // ZIP は束と同じ回に作る(--zip を付けた bundle。依頼ごとの判定には無い)
     assert_eq!(job_args(&JobRequest::BundleZip, &h), Some(v(&["bundle", "--unjudged", "--zip", "--out", "o", "--notes-dir", "n"])));

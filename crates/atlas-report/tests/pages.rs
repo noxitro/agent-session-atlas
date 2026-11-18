@@ -218,6 +218,65 @@ fn detail_missing_vs_zero() {
     assert!(!field_of(&html(&r), "ツール定義のトークン").unwrap().1.contains("100%"));
 }
 
+/// 見出しの下の「LLM 判定」の札(工数・依頼ごと)をタグを外した文字列で取り出す
+fn judge_tag(page: &str, testid: &str) -> Option<String> {
+    let re = Regex::new(&format!(r#"<span class="tag judge" data-testid="{testid}"[^>]*>(.*?)</span>(?:<span class="tag|</div>|</p>)"#)).unwrap();
+    let tags = Regex::new("<[^>]+>").unwrap();
+    re.captures(page).map(|m| tags.replace_all(&m[1], "").into_owned())
+}
+
+#[test]
+fn detail_judge_state_tags() {
+    let events = vec![
+        ev("user.message", json!({ "content": "直して" }), &t(0), json!({})),
+        ev("assistant.message", json!({ "content": "x" }), &t(1), json!({})),
+        ev("user.message", json!({ "content": "次も" }), &t(2), json!({})),
+        ev("assistant.message", json!({ "content": "y" }), &t(3), json!({})),
+    ];
+    let r = normalize("j", events, None, &[], None);
+    assert_eq!(r.analysis.turn_stats.as_ref().map(Vec::len), Some(2));
+    let page = |judgment: Option<&atlas_report::types::JudgmentSummary>, verdicts: Option<&atlas_core::tables::TurnVerdicts>| {
+        render_detail_html(
+            &r,
+            &DetailOptions {
+                css: "",
+                code: "c0de",
+                judgment,
+                verdicts,
+                generated_at: &t(0),
+                transcript_href: None,
+                library_href: None,
+                skill_has_page: &|_| true,
+                library_has_session: true,
+                full_href: None,
+                memo: None,
+                retention: None,
+                retention_meta: None,
+                wiki_state: WikiState::Counted,
+            },
+        )
+    };
+    let verdict = |turn: f64| atlas_core::tables::TurnVerdict { turn, kind: "task", outcome: "as_is", mismatch: None, phase: String::new(), confidence: 0.8, note: String::new() };
+    // まだ判定していない: どちらも「未判定」と文字で出す
+    let p = page(None, None);
+    assert_eq!(judge_tag(&p, "judge-state-effort").as_deref(), Some("LLM 判定(工数)未判定"));
+    assert_eq!(judge_tag(&p, "judge-state-turns").as_deref(), Some("LLM 判定(依頼ごと)未判定 / 2 件"));
+    // 一部だけ判定した依頼は数で、全部なら ✓。依頼ごとの記録に無い依頼番号の判定は数えない
+    let judged = atlas_report::types::JudgmentSummary { hours: Some(1.5), ..Default::default() };
+    let mut v = atlas_core::tables::TurnVerdicts::new();
+    v.insert(atlas_core::tables::turn_key(1.0), verdict(1.0));
+    v.insert(atlas_core::tables::turn_key(9.0), verdict(9.0));
+    let p = page(Some(&judged), Some(&v));
+    assert_eq!(judge_tag(&p, "judge-state-effort").as_deref(), Some("LLM 判定(工数)✓ 済み"));
+    assert_eq!(judge_tag(&p, "judge-state-turns").as_deref(), Some("LLM 判定(依頼ごと)1 / 2 件"));
+    v.insert(atlas_core::tables::turn_key(2.0), verdict(2.0));
+    assert_eq!(judge_tag(&page(Some(&judged), Some(&v)), "judge-state-turns").as_deref(), Some("LLM 判定(依頼ごと)✓ 2 / 2 件"));
+    // 依頼の無いセッションには札を出さない(判定できないため)
+    let empty = normalize("e", vec![ev("session.shutdown", json!({}), &t(1), json!({}))], None, &[], None);
+    let p = html(&empty);
+    assert!(judge_tag(&p, "judge-state-effort").is_none() && judge_tag(&p, "judge-state-turns").is_none(), "{p}");
+}
+
 #[test]
 fn detail_merges_duplicate_rows() {
     // (8) 同じ内容の指示文は 1 行にまとめ、ソースのパスのある行を残す

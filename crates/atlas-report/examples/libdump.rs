@@ -249,6 +249,7 @@ fn main() -> Result<()> {
         ("outputOnly", f(&|x| x.coverage = "output-only".into())),
         ("person", f(&|x| x.person = UNKNOWN.into())),
         ("unjudged", f(&|x| x.task_category = NO_JUDGMENT.into())),
+        ("wiki", f(&|x| x.wiki = "1".into())),
         ("ids", f(&|x| x.ids = plain.iter().take(5).map(|s| s.id.as_str()).chain(["zzz"]).collect::<Vec<_>>().join(","))),
         (
             "group",

@@ -154,7 +154,12 @@ export interface WikiPageRow {
   unjudged: number;
   /** 役立った率(yes ÷ (yes + no))。yes + no が閾値に届かなければ null */
   helpfulRate: number | null;
+  /** そのページを読んだセッション(渡したセッションの並びでの位置と、LLM の見立て。null は未判定)。渡した順 */
+  readers: { index: number; verdict: WikiPageVerdictValue | null }[];
 }
+
+/** LLM の見立ての値(役立った・役立たなかった・分からない) */
+export type WikiPageVerdictValue = 'yes' | 'no' | 'unknown';
 
 /** ページごとの表 */
 export interface WikiPageTable {
@@ -180,27 +185,64 @@ export function wikiPageTable(sessions: readonly WikiPageSession[], names: reado
   const referenced = sessions.filter((s) => wikiReferenced(s.wiki)).length;
   const rows = new Map<string, WikiPageRow>();
   const nameOf = (n: number): string => names[n] ?? `(ページ ${n})`;
-  for (const s of sessions) {
+  sessions.forEach((s, index) => {
     const pages = s.wiki?.pages ?? [];
-    if (!pages.length) continue;
+    if (!pages.length) return;
     const verdicts = new Map((s.judgment?.wikiPages ?? []).map(([p, h]) => [nameOf(p), h] as const));
     for (const page of new Set(pages.map(nameOf))) {
-      const r = rows.get(page) ?? rows.set(page, { page, sessions: 0, share: null, yes: 0, no: 0, unknown: 0, unjudged: 0, helpfulRate: null }).get(page)!;
+      const r = rows.get(page) ?? rows.set(page, { page, sessions: 0, share: null, yes: 0, no: 0, unknown: 0, unjudged: 0, helpfulRate: null, readers: [] }).get(page)!;
       r.sessions++;
       const h = verdicts.get(page);
-      if (h === 'yes') r.yes++;
-      else if (h === 'no') r.no++;
-      else if (h === 'unknown') r.unknown++;
+      const verdict = h === 'yes' || h === 'no' || h === 'unknown' ? h : null;
+      if (verdict) r[verdict]++;
       else r.unjudged++;
+      r.readers.push({ index, verdict });
     }
-  }
+  });
   const list = [...rows.values()];
   for (const r of list) {
     r.share = referenced >= minSessions ? r.sessions / referenced : null;
     r.helpfulRate = r.yes + r.no >= minSessions ? r.yes / (r.yes + r.no) : null;
   }
-  list.sort((a, b) => b.sessions - a.sessions || (a.page < b.page ? -1 : a.page > b.page ? 1 : 0));
+  list.sort(bySessions);
   return { referenced, rows: list };
+}
+
+const byPage = (a: WikiPageRow, b: WikiPageRow): number => (a.page < b.page ? -1 : a.page > b.page ? 1 : 0);
+const bySessions = (a: WikiPageRow, b: WikiPageRow): number => b.sessions - a.sessions || byPage(a, b);
+
+/** ページごとの表で並べ替えられる列 */
+export type WikiPageSortKey = 'page' | 'sessions' | 'share' | 'yes' | 'no' | 'unknown' | 'unjudged' | 'helpfulRate';
+
+/** ページごとの表を並べ替える(元は変えない)。率の null は向きにかかわらず最後。同じ値は読んだセッションの多い順、ページの名前の順 */
+export function sortWikiPageRows(rows: readonly WikiPageRow[], key: WikiPageSortKey, asc: boolean): WikiPageRow[] {
+  const dir = asc ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    if (key === 'page') return dir * byPage(a, b);
+    const x = a[key];
+    const y = b[key];
+    if (x === null || y === null) return x === y ? bySessions(a, b) : x === null ? 1 : -1;
+    return dir * (x - y) || bySessions(a, b);
+  });
+}
+
+/**
+ * ページの名前を表で短く出す: すべての名前に共通するフォルダ(/ 区切り)と、末尾の .md を除く。
+ * 除くと同じ名前になるものがあれば .md は残す。prefix は除いたフォルダ(末尾の / を含む。無ければ '')
+ */
+export function shortPageNames(names: readonly string[]): { prefix: string; dropMd: boolean; short: Map<string, string> } {
+  const dirs = names.map((n) => n.split('/').slice(0, -1));
+  let common = dirs[0] ?? [];
+  for (const d of dirs) {
+    let i = 0;
+    while (i < common.length && i < d.length && common[i] === d[i]) i++;
+    common = common.slice(0, i);
+  }
+  const prefix = common.length ? `${common.join('/')}/` : '';
+  const rest = names.map((n) => n.slice(prefix.length));
+  const stripped = rest.map((n) => n.replace(/\.md$/i, ''));
+  const dropMd = new Set(stripped).size === new Set(rest).size && stripped.some((n, i) => n !== rest[i]);
+  return { prefix, dropMd, short: new Map(names.map((n, i) => [n, dropMd ? stripped[i]! : rest[i]!])) };
 }
 
 /** 埋め込みの版が古く(ページの名前が無い)、ページごとの表を出さないときの理由 */

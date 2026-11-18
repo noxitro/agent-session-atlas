@@ -3,7 +3,7 @@
   import { conditionTable } from '../lib/conditions.ts';
   import { turnAggregate } from '../lib/turns.ts';
   import { verdictAggregate } from '../lib/verdicts.ts';
-  import { wikiState } from '../lib/wiki.ts';
+  import { wikiReferenced, wikiState } from '../lib/wiki.ts';
   import { applyFilter, currentGroupName, decodeFilter, decodeView, effectiveIds, emptyFilter, encodeFilter, filterOptions, groupIds, inScope, isEmptyFilter, isStateHash, joinIds, knownSelection, type FilterState } from '../lib/filter.ts';
   import GroupRail from './components/GroupRail.svelte';
   import GroupHead from './components/GroupHead.svelte';
@@ -51,6 +51,7 @@
   /** llm-wiki の参照を数えた集計か。絞り込みで変わらないよう、絞り込み前の全セッションと vault の数で 1 度だけ決める(lib/wiki.ts) */
   const wiki = $derived(wikiState(data?.sessions ?? [], data?.wikiVaults));
   const memoCount = $derived(sessions.filter((s) => s.memo).length);
+  const wikiCount = $derived(sessions.filter((s) => wikiReferenced(s.wiki)).length);
   const emptyCount = $derived(sessions.filter((s) => s.empty).length);
   const judged = $derived(!!data?.judgments.available);
 
@@ -400,7 +401,7 @@
   /** 効いている絞り込みの条件の数(期間は開始・終了で 1 つ、セッションの選択は 1 つ) */
   const activeConditions = $derived.by(() => {
     let n = filter.from || filter.to ? 1 : 0;
-    for (const k of ['project', 'person', 'client', 'model', 'branch', 'coverage', 'taskCategory', 'tool', 'ids', 'memo'] as const) if (filter[k]) n++;
+    for (const k of ['project', 'person', 'client', 'model', 'branch', 'coverage', 'taskCategory', 'tool', 'ids', 'memo', 'wiki'] as const) if (filter[k]) n++;
     if (filter.empty === '1') n++;
     return n;
   });
@@ -415,6 +416,7 @@
         { id: 'overview', label: '全体' },
         { id: 'highlights', label: '要点' },
         { id: 'insights', label: '改善点' },
+        ...(wiki === 'counted' ? [{ id: 'insights-wiki', label: 'llm-wiki' }] : []),
         { id: 'phases', label: '工程と詰まり' },
         { id: 'detail', label: '集計明細' },
         ...(judged ? [{ id: 'judgments', label: 'AI 投入量 vs 推定人手工数' }] : []),
@@ -568,7 +570,7 @@
         </p>
       </div>
       <div class="mast-tools">
-        {#if editable && jobStore}<JobActions jobs={jobStore} disabled={serverDown} /><SettingsDialog jobs={jobStore} disabled={serverDown} upload={uploadHandlers} send={canEdit ? projectSend : undefined} projects={settingsProjects} /><OpenFolder token={jobStore.token} disabled={serverDown} />{/if}
+        {#if editable && jobStore}<JobActions jobs={jobStore} disabled={serverDown} currentGroup={currentName} /><SettingsDialog jobs={jobStore} disabled={serverDown} upload={uploadHandlers} send={canEdit ? projectSend : undefined} projects={settingsProjects} /><OpenFolder token={jobStore.token} disabled={serverDown} />{/if}
         {#if sourceLabel}<span class="tag" title={sourceLabel.path} data-testid="source-tag">対象: {sourceLabel.name}</span>{/if}
         {#if readOnly}<span class="tag" title="タスクタグとメモは、送った人が付けたものを出します。この画面では書き換えません(集計し直す・判定はできます)" data-testid="readonly-tag">読むだけ</span>{/if}
         {#if data.atlasBuilds}<span class={data.atlasBuilds.ok ? 'tag' : 'tag warn'} title={[data.atlasBuilds.headline, ...data.atlasBuilds.lines].join('\n')} data-testid="atlas-builds-tag">送った atlas: {data.atlasBuilds.short}</span>{/if}
@@ -635,7 +637,7 @@
         <div class="down-band stale-band" role="alert">{STALE_MESSAGE}</div>
       {/if}
       {#if editable && jobStore}<JobBand jobs={jobStore} generatedAt={data.generatedAt} />{/if}
-      <FilterBar {filter} {options} {judged} {emptyCount} {memoCount} lastDay={all.overall.lastAt ? date(all.overall.lastAt) : null} onchange={setFilter} {editable} />
+      <FilterBar {filter} {options} {judged} {emptyCount} {memoCount} {wikiCount} wikiCounted={wiki === 'counted'} lastDay={all.overall.lastAt ? date(all.overall.lastAt) : null} onchange={setFilter} {editable} />
 
       <main class="wrap" id="main" tabindex="-1">
         {#if currentGroup}

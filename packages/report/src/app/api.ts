@@ -290,16 +290,19 @@ export interface JobInfo {
   endedAt: string | null;
   exitCode: number | null;
   log: string[];
-  target: { limit?: number; backend?: JobBackend; id?: string };
+  /** session / group: 判定した範囲(1 セッション・タスクタグ。無ければすべて)。force: 判定済みも判定し直す(工数の判定で session のときだけ) */
+  target: { limit?: number; backend?: JobBackend; id?: string; session?: string; group?: string; force?: boolean };
 }
+/** 判定する範囲: 1 セッション / タスクタグ(どちらも無ければすべて。同時には指定できない) */
+export type JudgeScope = { session: string; group?: undefined } | { group: string; session?: undefined };
 export type JobRequest =
   | { kind: 'refresh' }
-  | { kind: 'judge'; limit: number }
+  | ({ kind: 'judge'; limit: number; force?: boolean } & Partial<JudgeScope>)
   | { kind: 'bundle' }
   | { kind: 'bundle-zip' }
   | { kind: 'export' }
   | { kind: 'turn-bundle' }
-  | { kind: 'turn-judge'; limit: number }
+  | ({ kind: 'turn-judge'; limit: number } & Partial<JudgeScope>)
   | { kind: 'm365' }
   | { kind: 'turn-m365' };
 
@@ -314,9 +317,14 @@ export const jobsApi = {
   cancel(token: string): Promise<JobInfo> {
     return connect(fetch('api/jobs/current/cancel', { method: 'POST', headers: headers(token) }), (r) => parse<JobInfo>(r));
   },
-  /** 判定の確認ダイアログの件数(工数: 依頼の記録があるセッション / 依頼: 依頼ごとの記録がある依頼。そのうち未判定のもの) */
-  judgePreview(token: string, target: JudgeTarget = 'effort'): Promise<JudgePreview> {
-    return connect(fetch('api/jobs/judge-preview' + (target === 'turns' ? '?target=turns' : ''), { cache: 'no-store', headers: headers(token) }), (r) => parse(r));
+  /** 判定の確認ダイアログの件数(工数: 依頼の記録があるセッション / 依頼: 依頼ごとの記録がある依頼。そのうち未判定のもの)。scope があればその中だけ */
+  judgePreview(token: string, target: JudgeTarget = 'effort', scope?: JudgeScope): Promise<JudgePreview> {
+    const q = new URLSearchParams();
+    if (target === 'turns') q.set('target', 'turns');
+    if (scope?.session) q.set('session', scope.session);
+    else if (scope?.group) q.set('group', scope.group);
+    const s = q.toString();
+    return connect(fetch('api/jobs/judge-preview' + (s ? `?${s}` : ''), { cache: 'no-store', headers: headers(token) }), (r) => parse(r));
   },
 };
 
@@ -326,6 +334,8 @@ export interface JudgePreview {
   judged: number;
   pending: number;
   withoutTurns?: number;
+  /** 依頼ごとの判定(target=turns)で 1 回にまとめる依頼の数の上限。古いサーバは返さない */
+  chunk?: number;
   model?: string | null;
   /** 自分の API キーのモデル(BYOK。<プロバイダー名>/<モデル ID>)か。Copilot の AI クレジットは使わない */
   byok?: boolean;
