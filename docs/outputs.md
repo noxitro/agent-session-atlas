@@ -7,9 +7,9 @@
 セッションの経過を 1 ファイルの Markdown にして、LLM に渡して振り返ったり、自分で経過を読んだりするための出力です。依頼文や応答・パスがそのまま入るので、人に渡すなら中身を確かめてからにしてください。集計と同じスナップショットから作り、LLM は呼びません。
 
 ```
-bin\atlas.exe export                     # build と同じ絞り込みで、全セッションの .md を out/sessions/ に書く
-bin\atlas.exe export --since 2026-10-01  # 期間で絞る(--project / --client / --model / --branch も同じ)
-bin\atlas.exe export --tool-output all   # 成功したツールの結果も入れる(容量が数倍になる)
+npm run atlas -- export                     # build と同じ絞り込みで、全セッションの .md を out/sessions/ に書く
+npm run atlas -- export --since 2026-10-01  # 期間で絞る(--project / --client / --model / --branch も同じ)
+npm run atlas -- export --tool-output all   # 成功したツールの結果も入れる(容量が数倍になる)
 ```
 
 `atlas.bat`(`all`)は既定の中身(`--tool-output fail`、上限 20,000 字)で記録も作ります。`atlas.bat` から開いた詳細ページの「記録を読む」で、その場で読めます([screen.md の「画面からの操作」](screen.md#画面からの操作))。中身を変えたいとき(`--tool-output all`、`--max-chars`)は上のコマンドで作り直します。
@@ -30,7 +30,7 @@ bin\atlas.exe export --tool-output all   # 成功したツールの結果も入�
 - 長い本文は上限(`--max-chars`、既定 20,000 字。ツールの結果は 4,000 字)で中略し、中略した箇所に字数を書きます。LLM に渡す前に全体の長さを確認してください(長いセッションは 1 件で数十万字になります)。
 - **秘密情報**: API キーやトークンらしい文字列(GitHub / OpenAI・Anthropic / AWS / Slack / Google のキー、秘密鍵、JWT、Bearer)は形式で見つけて `[伏せました: 種類]` に置き換え、件数を記録の末尾と `export` のログに出します。形式で探しているだけなので偽陽性・見逃しがあります。本物が見つかったら元の記録(`~/.copilot`)にも残っているので鍵を作り直してください。共有する前に中身は必ず確認してください。
 - スナップショットに `events.jsonl` が無いセッション(`session-store.db` にだけあるもの、`--since` で複製対象外だったもの)は、`sessions.json` に残る最初の依頼と最後の応答だけの記録になり、その旨を書きます。
-- `export` は `build` を含むので、レポートと詳細ページも作り直されます。逆に素の `build` を実行すると `.md` は消え、詳細ページのリンクも消えます(フィルタで減ったセッションの古い記録を残さないため)。`all`(`atlas.bat`・`bin\atlas.exe`・画面の「集計し直す」)と判定(画面の「工数を判定する」・`bin\atlas.exe judge-flow`)は記録も作るので消えません。
+- `export` は `build` を含むので、レポートと詳細ページも作り直されます。逆に素の `build` を実行すると `.md` は消え、詳細ページのリンクも消えます(フィルタで減ったセッションの古い記録を残さないため)。`all`(`atlas.bat`・`npm run atlas`・画面の「集計し直す」)と判定(画面の「工数を判定する」・`npm run atlas:judge`)は記録も作るので消えません。
 - 同じ目的の既存ツールとの関係: agent-toolkit の `copilot-session-export`(アプリの中から `/export` `/export-usage` でその場で書き出す)と `copilot-usage-export`(PowerShell だけで動く日次バッチ)は、1 セッションをその場で・自動で書き出すためのものです。atlas の `export` は、集計と同じ絞り込みでまとめて出すためのもので、節の構成は揃えていますが同じファイルにはなりません。
 
 ## 表(CSV)
@@ -110,8 +110,8 @@ AI がセッションの中で足した行が、その後の VCS(Git / SVN / Per
 出力データだけでローカルと同等の解析ができるようにするための出力です。**外部に出さない前提**で、原本の文字列をそのまま含みます。
 
 ```
-bin\atlas.exe export --full            # snapshot / extract 済みの状態から、全件の全文記録と coverage.json を書く
-bin\atlas.exe snapshot --snapshot-all  # rewind-snapshots / 一覧に無いフォルダ / logs/ も写す
+npm run atlas -- export --full            # snapshot / extract 済みの状態から、全件の全文記録と coverage.json を書く
+npm run atlas -- snapshot --snapshot-all  # rewind-snapshots / 一覧に無いフォルダ / logs/ も写す
 ```
 
 1 セッションだけなら、`atlas.bat` から開いた詳細ページの「全文を作って読む」で、そのセッションの `out/full/<id>.md`(と `out/full/assets/<id>/`)だけを作ってその場で読めます。このときは `atlas.html`・詳細ページ・他のセッションの全文・`coverage.json` は作り直しません(網羅の検査は全件の `export --full` だけが書きます)。
@@ -121,7 +121,7 @@ bin\atlas.exe snapshot --snapshot-all  # rewind-snapshots / 一覧に無いフ�
 | `out/snapshot/` | 原本の複製(スナップショット)。セッションフォルダの `plan.md` / `checkpoints/` / `policies/`、直下の `plans/` / `attachments/` / `chats/` の `*.md` も写す。写さなかったもの(`rewind-snapshots/` は 1 セッションで数十 MB、一覧に無い名前のフォルダ、`logs/`、`repos/`、`chats/` の `*.md` 以外。`files/` / `rewind-file-snapshots/` は集計で使わないので写さず、大きさも測らない)は `snapshot-manifest.json` の `extras.skipped` に名前と容量を残し(`snapshot-source.json` は、どこから集計したかの印。集計が途中で止まっても残り、別の場所のログを同じ出力先に足すのを止めます)、`--snapshot-all` で写す(`repos/` と `chats/` の `*.md` 以外は写さない) |
 | `out/snapshot/desktop.json` | デスクトップアプリの `data.db` から、名前で固定した許可リストの列だけを読んだもの(下記) |
 | `out/full/<id>.md` | 全文記録。依頼、応答、reasoningText、ツールの引数と結果(成功含む)、hook の入出力、system.message、compaction の要約、skill の本文、plan.md、チェックポイント、`policies/` などの一覧(`files/` / `rewind-file-snapshots/` は `--snapshot-all` で写したときだけ)、data.db の列を時系列で、上限なしで書く。除くのは暗号化・不透明データ(`encryptedContent`、`reasoningOpaque`、`reasoningBlocks` の中の base64 らしい値)と base64 の本体(画像などは `out/full/assets/<id>/` に書き出してリンク)だけで、除いた箇所に種別とバイト数を書く。hook の入力に入っているツールの結果がツールの結果と同一なら参照にする。API キーらしい文字列は形式検査で伏せて件数を末尾に書く |
-| `out/coverage.json` | 網羅の検査。元データの event type × data のキーごとに件数・バイト数・扱い(`full` = 全文に出した / `ref` = 参照にした / `excluded` = 理由付きで除外)。扱いの表(`crates/atlas-report/src/coverage.rs`)に無いキーは `unclassified` として数え、`export` のログと全文記録の末尾にも出す(0 件なら欠損なし)。`data.db` の列も同じ表で(許可 = `full`、許可外 = `unclassified`、開かない表 = `excluded`) |
+| `out/coverage.json` | 網羅の検査。元データの event type × data のキーごとに件数・バイト数・扱い(`full` = 全文に出した / `ref` = 参照にした / `excluded` = 理由付きで除外)。扱いの表(`packages/report/src/coverage.ts`)に無いキーは `unclassified` として数え、`export` のログと全文記録の末尾にも出す(0 件なら欠損なし)。`data.db` の列も同じ表で(許可 = `full`、許可外 = `unclassified`、開かない表 = `excluded`) |
 | `out/instructions.html` と `out/library/` | 指示文(AGENTS.md / CLAUDE.md / copilot-instructions.md 等の注入)と skill の本文を、重複なしで版(内容のハッシュ)ごとに置いたもの。見出しごとの版一覧、本文、使われたセッション、使われた期間・プロジェクト、前の版との差分。「版 N」は初回の利用日の順の通し番号(改善点の「版 N」と同じ)で、別のリポジトリの同じ見出しのファイルも同じ項目に入るため、番号が大きい版が今の版とは限らない。そのため最後に使われた版に印を付けて開き、項目の見出しにプロジェクトごとの最後の版を、期間が重なる版に「並行して使用」を出す。差分は同じプロジェクトで前に使われた版と比べる(無ければ 1 つ前の版と比べ、そう書く)。詳細ページの指示ファイルの行と skill からリンクし、サイドバーの付録にも入る。`instructions.html#session=<セッション ID>` で開くと(詳細ページの「このセッションの指示文と skill」)、そのセッションで使われた版だけを残し、上の帯に件数と「すべて表示」「セッションの詳細に戻る」が出る(使えただけで呼ばなかった skill は本文が無いので、詳細ページの表にだけ出る)。`--full` でなくても `export` で作る |
 
 `--full` を付けない `export` や素の `build` は、前回の `out/full/` と `out/coverage.json`(と `instructions.html` / `out/library/`)を消しません(ユーザーの生成物を黙って消さないため。残っているときはログに生成日時を出します)。古い全文記録が残っている点に注意し、消したいときは `out/full/` フォルダと `out/coverage.json` を手で消してください(どちらかが残っている間は、ログに出ます)。
@@ -164,7 +164,7 @@ bin\atlas.exe snapshot --snapshot-all  # rewind-snapshots / 一覧に無いフ�
 | エージェント | 本体と、サブエージェントの名前ごと。起動、失敗・拒否のあった起動、失敗、拒否。結果の記録がある呼び出しの数はエージェントごとには分からないので、率は出しません |
 | skill・指示文の版 | 失敗をそれに結び付ける記録は無いので、**それを使ったセッションの単位**で数えます(分かるのは相関まで)。使ったセッションと、それ以外のセッションの失敗率を並べます。skill は、そのセッションで最初に呼んだ後の失敗・拒否の数も出します |
 
-回数と率の分母は `tools.results` から、要因・エラー文・呼び直しは台帳の行から数えます(台帳は 1 セッション 500 行までなので、回数は行からは数えません)。率は、結果の記録がある呼び出しが 20 回以上のものだけ出します(これより少ないと、1 回の失敗で率が 5 ポイントを超えて動きます)。skill と指示文の版の率は、さらに 5 セッション以上のものだけで、比べる 2 つの率は片方が出せないときは両方「—」にします。ページの表は多い順に 50 行までで、`failures.json` には全件を書きます。閾値は `crates/atlas-report/src/failure_stats.rs` の `thresholds` にまとめています。
+回数と率の分母は `tools.results` から、要因・エラー文・呼び直しは台帳の行から数えます(台帳は 1 セッション 500 行までなので、回数は行からは数えません)。率は、結果の記録がある呼び出しが 20 回以上のものだけ出します(これより少ないと、1 回の失敗で率が 5 ポイントを超えて動きます)。skill と指示文の版の率は、さらに 5 セッション以上のものだけで、比べる 2 つの率は片方が出せないときは両方「—」にします。ページの表は多い順に 50 行までで、`failures.json` には全件を書きます。閾値は `packages/report/src/failure-stats.ts` の `thresholds` にまとめています。
 
 ## LLM の判定(judgments.json)
 
@@ -180,7 +180,7 @@ bin\atlas.exe snapshot --snapshot-all  # rewind-snapshots / 一覧に無いフ�
 | `notes` / `judge` | 判定上の注意と、判定した出所(バックエンド・モデル・時刻) |
 
 - `wikiPages` が無い項目も取り込み、そのセッションのページを未判定にします(知らせません)。壊れている(配列でない・要素の形が違う)ときは、ほかの判定は取り込み、そのセッション(要素が壊れていたときはそのページ)を未判定にして、ログに知らせます(`judge run` は該当したセッションを 1 行にまとめます)。パケットに無いページの名前の判定は、レポートを作るときに捨てます(`judgments.json` には返答のまま残ります)。
-- 書くときの版は、どの項目も `wikiPages` を持たない間は 1、持つ項目ができたら 2 です。版 2 の `judgments.json` は、この機能より前の atlas.exe では読めず、`build` が止まります。
+- 書くときの版は、どの項目も `wikiPages` を持たない間は 1、持つ項目ができたら 2 です。版 2 の `judgments.json` は、この機能より前の atlas(Node 版・atlas.exe とも)では読めず、`build` が止まります。
 - レポート(`atlas.html`)への埋め込み: 読んだページの名前は、データの上の辞書 `wikiPageNames` に 1 回だけ置き(本文は入れません)、セッションの要約の `wiki.pages`(重複を除いて読んだ順)はその番号です。判定は `judgment.wikiPages` に `[ページの番号, yes | no | unknown]` で入れます(理由は埋め込まず、詳細ページの「LLM による判定(推定)」にだけ出します)。大きな vault を何度も読む使い方でも、名前の分は増えないようにするためで、件数での切り捨てはしていません。埋め込みの版(`atlas.html` のデータの `version`)はこれらを足して 18 にしました。版 17 以前の `atlas.html` にはページの名前が無いので、改善点のページごとの表は出さずに理由を出します。
 
 ## 改善点(規則による分析)
@@ -201,7 +201,7 @@ bin\atlas.exe snapshot --snapshot-all  # rewind-snapshots / 一覧に無いフ�
 ### スキルの下書き(`atlas skill-draft`、任意)
 
 ```
-bin\atlas.exe skill-draft <番号>  # out/insights.json の候補の番号。--backend copilot-cli(既定)/ anthropic、--model、--timeout
+npm run atlas -- skill-draft <番号>  # out/insights.json の候補の番号。--backend copilot-cli(既定)/ anthropic、--model、--timeout
 ```
 
-候補の繰り返し回数・代表の依頼文・ツールの並びを LLM に渡し、SKILL.md の形の下書きを `out/skill-drafts/<番号>-<名前>.md` に書きます。**明示したときだけ動き、`build` / `export` / `all` では呼びません**。費用は 1 回の実行で判定 1 件と同じです。`copilot-cli` はモデル 1 リクエスト相当の AI クレジット、`anthropic` は Anthropic API の従量課金(`ANTHROPIC_API_KEY` が必要)を消費します(`anthropic` は機能 `anthropic-backend` を付けてビルドした atlas だけ。リリースの `atlas.exe` には入っていません。[judge.md](judge.md))。`copilot-cli` は判定と同じ安全策(`--no-custom-instructions`、`shell` / `write` / `url` の拒否、`--add-dir` なし)で動きます。下書きの作業フォルダは判定と同じ接頭辞にしており、次回の集計では「(atlas の判定)」に分類されて候補に戻りません。テストは偽の CLI(`ATLAS_COPILOT_BIN`)と fetch の差し替えで行い、本物は呼びません。下書きは案なので、使う前に読んで直してください。
+候補の繰り返し回数・代表の依頼文・ツールの並びを LLM に渡し、SKILL.md の形の下書きを `out/skill-drafts/<番号>-<名前>.md` に書きます。**明示したときだけ動き、`build` / `export` / `all` では呼びません**。費用は 1 回の実行で判定 1 件と同じです。`copilot-cli` はモデル 1 リクエスト相当の AI クレジット、`anthropic` は Anthropic API の従量課金(`ANTHROPIC_API_KEY` が必要)を消費します([judge.md](judge.md))。`copilot-cli` は判定と同じ安全策(`--no-custom-instructions`、`shell` / `write` / `url` の拒否、`--add-dir` なし)で動きます。下書きの作業フォルダは判定と同じ接頭辞にしており、次回の集計では「(atlas の判定)」に分類されて候補に戻りません。テストは偽の CLI(`ATLAS_COPILOT_BIN`)と fetch の差し替えで行い、本物は呼びません。下書きは案なので、使う前に読んで直してください。

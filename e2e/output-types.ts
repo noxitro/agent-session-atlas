@@ -1,11 +1,11 @@
-// テストが読む atlas の出力ファイルの形(テストが見るところだけ)。atlas の本体は Rust(crates/)で、
-// sessions.json・metrics.json・画面のデータの形は packages/report/src/shared/types.ts と lib/types.ts にある。
+// テストが読む atlas の出力ファイルの形(テストが見るところだけ)。
+// sessions.json・metrics.json・画面のデータの形は packages/core/src/types.ts と packages/report/src/lib/types.ts にある。
 // ここは、それ以外の出力(スナップショットの記録・coverage.json・atlas-session-store.json・vcs-retention.json)の形。
-import type { DesktopSessionInfo } from '../packages/report/src/shared/desktop-types.ts';
-import type { DbFileRow, DbSessionRow, DbTurnRow, DbUsageRow, InstalledInventory } from '../packages/report/src/shared/types.ts';
-import type { FolderUpload } from '../packages/report/src/shared/atlas-version.ts';
+import type { DesktopSessionInfo } from '../packages/core/src/desktop-types.ts';
+import type { DbFileRow, DbSessionRow, DbTurnRow, DbUsageRow, InstalledInventory } from '../packages/core/src/types.ts';
+import type { FolderUpload } from '../packages/core/src/atlas-version.ts';
 
-/** out/snapshot/snapshot-manifest.json(crates/atlas-core/src/snapshot) */
+/** out/snapshot/snapshot-manifest.json(packages/core/src/snapshot.ts) */
 export interface SnapshotManifest {
   createdAt: string;
   sourceRoot: string;
@@ -34,7 +34,7 @@ export interface SnapshotManifest {
 
 export type Treatment = 'full' | 'ref' | 'excluded' | 'partial';
 
-/** out/coverage.json(crates/atlas-report/src/coverage.rs) */
+/** out/coverage.json(packages/report/src/coverage.ts) */
 export interface CoverageFile {
   version: 1;
   generatedAt: string;
@@ -46,7 +46,7 @@ export interface CoverageFile {
   desktop: { columns: { table: string; column: string; treatment: Treatment | 'unclassified'; reason?: string }[]; unclassified: number } | null;
 }
 
-/** アップロードしたセッションのフォルダに添える atlas-session-store.json(crates/atlas-core/src/extract.rs) */
+/** アップロードしたセッションのフォルダに添える atlas-session-store.json(packages/core/src/extract.ts) */
 export interface SessionStoreJson {
   version: 1;
   schemaVersion: number | null;
@@ -57,7 +57,7 @@ export interface SessionStoreJson {
   desktop?: DesktopSessionInfo | null;
 }
 
-/** out/vcs-retention.json(crates/atlas-core/src/vcs_step.rs)。テストが見るところだけ */
+/** out/vcs-retention.json(packages/core/src/vcs-step.ts)。テストが見るところだけ */
 export interface VcsRetentionFile {
   schemaVersion: number;
   generatedAt: string;

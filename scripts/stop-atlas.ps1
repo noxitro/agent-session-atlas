@@ -1,13 +1,15 @@
 ﻿# このフォルダの atlas を、すべて止める(stop.bat が呼ぶ)。
 # どこかのブラウザのタブが開いたままで画面のサーバが動き続けていると、atlas.bat は更新を飛ばし、前のサーバを開き直すだけになる。
-# 画面から別のフォルダを開いたときのサーバは、窓の無いまま動く(crates/atlas-cli/src/folders.rs の launch_detached)。そういうものも止める。
+# 画面から別のフォルダを開いたときのサーバは、窓の無いまま動く(packages/cli/src/folders.ts の起動)。そういうものも止める。
 #
-# 止めるもの: 実行ファイルが、このフォルダの bin\atlas.exe(置き換えで移した bin\atlas.old-*.exe を含む)のプロセスと、その子孫
+# 止めるもの: このフォルダの packages\cli\src\ の .ts を動かしている node のプロセス(起動用の .bat も、自動で送るタスクも、
+#   絶対パスで動かす)と、前の版の bin\atlas.exe(置き換えで移した bin\atlas.old-*.exe を含む)のプロセスと、それらの子孫
 #   (集計・判定の子プロセスや、判定が動かした copilot など)。別のフォルダの atlas や、関係の無いプロセスは止めない。
 #   印(out\.serve.json・out\.job.json)の pid は使わない(pid は使い回されるので、別のプロセスを止めかねない)。
 # 画面のサーバ(atlas serve・atlas open)だけなら、尋ねずに止める。集計・判定・送る操作などが動いていれば、止めてよいか尋ねる
 #   (途中で止めても、集計は次の集計で作り直し、判定は済んだ分が残る)。
-# 止めた後、残った印(out\ と out-folders\<キー>\out\ の .serve.json・.job.json)と、置き換えで移した前の実行ファイルを消す。
+# 止めた後、残った印(out\ と out-folders\<キー>\out\ の .serve.json・.job.json)と、前の版の実行ファイル(bin\atlas*.exe)を消す。
+#   自動で送るタスクが、まだ動かす登録になっている実行ファイルは消さない(消すと、タスクが動かせず、自動で送れなくなる)。
 #
 #   -Yes   尋ねずに止める
 #   -Repo  対象のフォルダ(テスト用。ふだんはこのスクリプトの 1 つ上のフォルダ)
@@ -32,7 +34,8 @@ if ($env:OS -ne 'Windows_NT') {
 if (-not $Repo) { $Repo = Split-Path -Parent $PSScriptRoot }
 $Repo = [IO.Path]::GetFullPath($Repo).TrimEnd('\')
 $Bin = Join-Path $Repo 'bin'
-# atlas.bat と同じ出力先(ATLAS_OUT は試すとき用。crates/atlas-cli/src/paths.rs の auto_out_dir)
+$CliSrc = Join-Path $Repo 'packages\cli\src'
+# atlas.bat と同じ出力先(ATLAS_OUT は試すとき用)
 $Out = if ($env:ATLAS_OUT) { [IO.Path]::GetFullPath($env:ATLAS_OUT) } else { Join-Path $Repo 'out' }
 
 # 画面のサーバ(止めても、開き直せば同じ画面に戻る)
@@ -49,10 +52,11 @@ $Labels = @{
   'upload-schedule' = '自動で送る登録'
   'setup'           = '初期設定'
   'self-update'     = '更新'
+  'launcher-update' = '更新'
 }
 
-# このフォルダの bin の atlas か(置き換えで移した atlas.old-*.exe も)
-function Test-OurExe($p) {
+# 前の版の bin の atlas か(置き換えで移した atlas.old-*.exe も)
+function Test-LegacyExe($p) {
   $path = $p.ExecutablePath
   if (-not $path) { return $false }
   try { $full = [IO.Path]::GetFullPath($path) } catch { return $false }
@@ -61,10 +65,32 @@ function Test-OurExe($p) {
   return ($dir -ieq $Bin) -and ($name -imatch '^atlas(\.old-[0-9a-f]+)?\.exe$')
 }
 
-# コマンドラインのサブコマンド(実行ファイルの次の語)
+# node が動かしている、このフォルダの packages\cli\src\ の .ts の名前(main.ts など)。違えば ''
+function Get-AtlasScript($p) {
+  if ([string]$p.Name -inotmatch '^node(\.exe)?$') { return '' }
+  $line = [string]$p.CommandLine
+  foreach ($m in [regex]::Matches($line, '"([^"]+)"|(\S+)')) {
+    $arg = if ($m.Groups[1].Success) { $m.Groups[1].Value } else { $m.Groups[2].Value }
+    if ($arg -notmatch '\.ts$') { continue }
+    try { $full = [IO.Path]::GetFullPath($arg) } catch { continue }
+    if ((Split-Path -Parent $full) -ieq $CliSrc) { return (Split-Path -Leaf $full) }
+  }
+  return ''
+}
+
+# このフォルダの atlas か
+function Test-OurExe($p) {
+  if (Get-AtlasScript $p) { return $true }
+  return (Test-LegacyExe $p)
+}
+
+# コマンドラインのサブコマンド(main.ts と前の版の atlas.exe は次の語、ほかの .ts はファイルの名前)
 function Get-SubCommand($p) {
   $line = [string]$p.CommandLine
-  $m = [regex]::Match($line, '^\s*(?:"[^"]*"|\S+)\s+(\S+)')
+  $script = Get-AtlasScript $p
+  if ($script -and $script -ine 'main.ts') { return [IO.Path]::GetFileNameWithoutExtension($script) }
+  $pattern = if ($script) { 'main\.ts"?\s+(\S+)' } else { '^\s*(?:"[^"]*"|\S+)\s+(\S+)' }
+  $m = [regex]::Match($line, $pattern)
   if ($m.Success) { return $m.Groups[1].Value.Trim('"') }
   return ''
 }
@@ -120,6 +146,43 @@ function Remove-StaleStamps([int[]]$keep) {
   return $removed
 }
 
+# 自動で送るタスクが、まだ動かす登録になっている前の版の実行ファイル(このフォルダの bin\ の中のもの)。無ければ $null。
+# 前の版は、conhost に `--headless "<このフォルダ>\bin\atlas.exe" upload-auto` を渡して登録していた。この形のままのタスクは、
+# schedule-upload.bat を開くか、前の版の atlas.exe がこの版を取り込んだとき(scripts\ensure-atlas.ps1)に、Node.js で動かす形に
+# 登録し直される。それまではタスクがこの実行ファイルを動かすので、消すと、記録も通知も残らないまま自動で送れなくなる
+function Get-TaskExe {
+  $t = Get-ScheduledTask -TaskName 'agent-session-atlas-upload' -TaskPath '\' -ErrorAction SilentlyContinue
+  if (-not $t) { return $null }
+  foreach ($a in @($t.Actions)) {
+    if (-not $a -or $a.PSObject.Properties.Name -notcontains 'Arguments') { continue }
+    $m = [regex]::Match([string]$a.Arguments, '^\s*--headless\s+"([^"]+)"\s+upload-auto\b')
+    if (-not $m.Success) { continue }
+    try { $exe = [IO.Path]::GetFullPath($m.Groups[1].Value) } catch { continue }
+    if ((Split-Path -Parent $exe).TrimEnd('\') -ieq $Bin) { return $exe }
+  }
+  return $null
+}
+
+# 前の版の実行ファイル(bin\atlas*.exe。この版は使わない。動いていれば消せないので、次に止めたときに消す)。
+# 自動で送るタスクがまだ動かす登録になっているものは残し、どうすれば要らなくなるかを出す。
+# タスクを確かめられなかったときは、どれも消さない(残っても動きに差は無い)
+function Remove-LegacyExe {
+  if (-not (Test-Path -LiteralPath $Bin -PathType Container)) { return }
+  $files = @(Get-ChildItem -LiteralPath $Bin -Filter 'atlas*.exe' -ErrorAction SilentlyContinue)
+  if ($files.Count -eq 0) { return }
+  $keep = $null
+  try { $keep = Get-TaskExe } catch { return }
+  foreach ($f in $files) {
+    if ($keep -and $f.FullName -ieq $keep) { continue }
+    Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue
+  }
+  if ($keep -and (Test-Path -LiteralPath $keep)) {
+    Say ''
+    Say "毎日自動で送るタスクが、前の版の実行ファイル($keep)で登録されたままなので、この実行ファイルは消しませんでした。"
+    Say 'schedule-upload.bat を開くと、Node.js で動かす形に登録し直します(その後は、この実行ファイルを使いません)。'
+  }
+}
+
 try {
   $all = Get-All
   $ours = @($all | Where-Object { Test-OurExe $_ })
@@ -128,9 +191,10 @@ try {
   $roots = @($ours | Where-Object { $ids -notcontains $_.ParentProcessId })
 
   if ($roots.Count -eq 0) {
-    Say '動いている atlas はありません(このフォルダの bin\atlas.exe のプロセスは見つかりませんでした)。'
+    Say '動いている atlas はありません(このフォルダの atlas のプロセスは見つかりませんでした)。'
     $n = Remove-StaleStamps @()
     if ($n -gt 0) { Say "残っていた印を $n 個消しました。" }
+    Remove-LegacyExe
     exit 0
   }
 
@@ -176,8 +240,7 @@ try {
 
   $left = @($seen.Keys | Where-Object { Test-Alive $_ })
   $n = Remove-StaleStamps $left
-  # 置き換えで移した前の実行ファイル(もう動いていなければ消せる。残っても次の atlas.bat が消す)
-  if (Test-Path -LiteralPath $Bin) { Get-ChildItem -LiteralPath $Bin -Filter 'atlas.old-*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue }
+  Remove-LegacyExe
 
   Say ''
   if ($left.Count -gt 0) {

@@ -12,13 +12,13 @@
 - **レポートは、確信度が 0.3 以下の推定を合計に入れません。** 件数と時間を別枠で出します(幅・中央値・「推定人手工数 ÷ AI の実働」・モデル別の「人手工数 / AIU」も同じ。セッション一覧と詳細ページには値をそのまま出します)。評価軸を変えて大量生成のセッションを判定し直しても、確信度は 0.3 以下に下がる一方で、時間は数千時間のまま変わらなかったためです(2026-11-14 に 2 セッションで確認)。LLM が出す時間そのものは指示で抑えられないので、確信度を手掛かりにレポートの側で分けています。
 - レポートは合計の横に中央値を出し、合計に入れたセッションのうち推定の大きい上位 5% が合計の半分以上を占めるときはその割合を知らせます([screen.md](screen.md) の「AI 投入量 vs 推定人手工数」)。
 
-評価軸を変える前に判定したセッションは、前の基準のままです(確信度が高いまま、合計に入ります)。判定し直すには、そのセッションだけを指定します。このツールで判定するなら `bin\atlas.exe judge-flow --session <id>,<id> --force`(ID は先頭の数文字でよい。そのセッションだけで添付を作って判定し、最後のレポートもそのセッションだけで作るので、続けて `bin\atlas.exe export` で全体に戻します)、チャットで判定するなら `bin\atlas.exe bundle --session <id>,<id>` で添付を作り直して貼ります。`judge run --only`(と `--session`)は今の添付に入っているセッションだけを判定します。未判定だけで作った添付(`bundle --unjudged`・画面の「添付ファイルを作る」)には判定済みのセッションが入っていないので、判定し直すのには使えません。
+評価軸を変える前に判定したセッションは、前の基準のままです(確信度が高いまま、合計に入ります)。判定し直すには、そのセッションだけを指定します。このツールで判定するなら `npm run atlas:judge -- --session <id>,<id> --force`(ID は先頭の数文字でよい。そのセッションだけで添付を作って判定し、最後のレポートもそのセッションだけで作るので、続けて `npm run atlas -- export` で全体に戻します)、チャットで判定するなら `npm run atlas -- bundle --session <id>,<id>` で添付を作り直して貼ります。`judge run --only`(と `--session`)は今の添付に入っているセッションだけを判定します。未判定だけで作った添付(`bundle --unjudged`・画面の「添付ファイルを作る」)には判定済みのセッションが入っていないので、判定し直すのには使えません。
 
 ## 1. 評価バンドルを作る(LLM は呼ばない)
 
 ```
-bin\atlas.exe            # まだなら先に集計(out/sessions.json と out/snapshot を作る)
-bin\atlas.exe bundle  # out/bundle/ を作る。--project / --since / --client などで対象を絞れる。--zip で out/bundle.zip も作る
+npm run atlas            # まだなら先に集計(out/sessions.json と out/snapshot を作る)
+npm run atlas -- bundle  # out/bundle/ を作る。--project / --since / --client などで対象を絞れる。--zip で out/bundle.zip も作る
 ```
 
 `out/bundle/` の中身:
@@ -71,9 +71,9 @@ bin\atlas.exe bundle  # out/bundle/ を作る。--project / --since / --client �
 コマンドでは次のとおりです(`--model` は M365 Copilot のモデルの選択の名前。`Auto` / `Quick Response` / `Think Deeper`。`--limit` は送るファイルの数、`--timeout` は 1 ファイルの待ち時間の秒数)。
 
 ```
-bin\atlas.exe bundle --unjudged     # 添付ファイルを作る(まだなら)
-bin\atlas.exe judge m365            # 未判定のファイルを M365 Copilot で判定して取り込み、レポートに反映する
-bin\atlas.exe turns m365 --limit 2  # 依頼ごとの判定(turns bundle --unjudged で作ったもの)を 2 ファイルだけ
+npm run atlas -- bundle --unjudged     # 添付ファイルを作る(まだなら)
+npm run atlas -- judge m365            # 未判定のファイルを M365 Copilot で判定して取り込み、レポートに反映する
+npm run atlas -- turns m365 --limit 2  # 依頼ごとの判定(turns bundle --unjudged で作ったもの)を 2 ファイルだけ
 ```
 
 ### コマンドで
@@ -81,14 +81,14 @@ bin\atlas.exe turns m365 --limit 2  # 依頼ごとの判定(turns bundle --unjud
 渡し方は、相手が受け取れる形で選びます。
 
 - **テキストの添付だけのとき(M365 Copilot など)**: `out/bundle/parts/` の `part-01.md` を 1 つ添付し、「このファイルの指示に従って判定して」と頼みます。指示・JSON Schema・パケット数件が 1 ファイルに入っているので、ほかのファイルは要りません。返答を保存して取り込んだら、`part-02.md`、`part-03.md` … と続けます。1 ファイルは最大 12 万字ほど(5 件 × 24,000 字)です。途中のセッションの判定が抜けるときは `--per-part 2` などで件数を減らして作り直してください。
-- **ZIP を渡せるとき**: 画面の「ZIP にまとめてエージェントに渡す」か `bin\atlas.exe bundle --unjudged --zip` で作った `out/bundle.zip` を添付して「`INSTRUCTIONS.md` に従って判定して」と頼みます。件数が多いときは何回かに分けて返してもらってかまいません。
+- **ZIP を渡せるとき**: 画面の「ZIP にまとめてエージェントに渡す」か `npm run atlas -- bundle --unjudged --zip` で作った `out/bundle.zip` を添付して「`INSTRUCTIONS.md` に従って判定して」と頼みます。件数が多いときは何回かに分けて返してもらってかまいません。
 - **フォルダを読めるエージェントやローカルの LLM に渡すとき**: 下の「[エージェントやローカルの LLM に渡す](#エージェントやローカルの-llm-に渡す)」。
 
 返ってきた JSON(または JSON のコードブロックを含む返答をそのまま貼った `.md` / `.txt`)を保存し、取り込みます。分けて返ってきた分は 1 つずつ取り込めます。
 
 ```
-bin\atlas.exe judge import 返答.md  # 検証して out/judgments.json に取り込む(同じセッションは上書き)
-bin\atlas.exe export              # レポートに合成(画面の「集計し直す」でもよい)
+npm run atlas -- judge import 返答.md  # 検証して out/judgments.json に取り込む(同じセッションは上書き)
+npm run atlas -- export              # レポートに合成(画面の「集計し直す」でもよい)
 ```
 
 形が合わない項目(範囲外の値、必須欄の欠け)が 1 件でもあると、何も取り込まずにどこが違うかを表示します。合成に素の `build` を使うと、セッション記録(`out/sessions/*.md`)が消えて詳細ページの「記録を読む」も消えるので、`export` か「集計し直す」を使ってください。
@@ -109,12 +109,12 @@ bin\atlas.exe export              # レポートに合成(画面の「集計し�
 コマンドでは次のとおりです。
 
 ```
-bin\atlas.exe bundle --unjudged --zip  # out/bundle/ と out/bundle.zip を作る
+npm run atlas -- bundle --unjudged --zip  # out/bundle/ と out/bundle.zip を作る
 ```
 
 1. `out/bundle.zip` を別のフォルダに写して渡す(または、そこで展開した `bundle` フォルダを開かせる。`out/` は開かせない)。フォルダを読めない相手には `parts/part-01.md` を 1 つずつ渡します(1 ファイルが相手の入力の上限に収まらないときは `--per-part 1` で作り直します)。
 2. 「`INSTRUCTIONS.md` に従って判定し、結果を `judgments.json` という 1 つのファイルに書いてください」と頼みます。
-3. できたファイルを取り込みます。画面なら「判定する…」→「ZIP にまとめてエージェントに渡す」(「チャットに貼って判定する」でも同じ)の手順 3 でファイルを選んで「取り込む」、コマンドなら `bin\atlas.exe judge import judgments.json` の後に `bin\atlas.exe export`。形が合わない項目が 1 件でもあると何も取り込まず、どこが違うかを出します。途中までの結果でも取り込めます(残りは次の `bundle --unjudged` に入ります)。
+3. できたファイルを取り込みます。画面なら「判定する…」→「ZIP にまとめてエージェントに渡す」(「チャットに貼って判定する」でも同じ)の手順 3 でファイルを選んで「取り込む」、コマンドなら `npm run atlas -- judge import judgments.json` の後に `npm run atlas -- export`。形が合わない項目が 1 件でもあると何も取り込まず、どこが違うかを出します。途中までの結果でも取り込めます(残りは次の `bundle --unjudged` に入ります)。
 
 - **パケットには他のセッションの依頼文や応答がそのまま入っています。** その中に「このコマンドを実行せよ」のような文があると、ツールを使えるエージェントは従ってしまうことがあります。エージェントに渡すときは、シェルの実行と Web へのアクセスを許可せず、ファイルの書き込みは結果のファイル(`judgments.json`)だけにして、展開したフォルダだけを開かせてください(「このツールが判定する」(2b)は、この制限を付けて Copilot CLI を起動します)。ファイルを書けない相手には、JSON を返答として出してもらい、それを貼るか保存して取り込みます。
 - **エージェントを出力先(`out/`)で開かないでください。** `out/judgments.json` はこのツールの判定の保存先です。そこに「`judgments.json` に書いて」と頼むと、今回の分だけの中身で上書きされ、それまでの判定が消えます。`out/` にはほかのセッションの記録もあります。`bundle.zip` は別のフォルダに写してから展開し、書かせるならそのフォルダの中にします(`out/` の中で展開すると `out/bundle/` も書き換わり、画面は ZIP を「まだ作っていません」と表示します)。
@@ -134,12 +134,12 @@ bin\atlas.exe bundle --unjudged --zip  # out/bundle/ と out/bundle.zip を作�
 `atlas.bat` から開いた画面の「判定する…」を押し、判定するものに「工数」、判定の方法に「このツールが判定する」を選ぶと、件数の上限(既定 10)を決める確認が出ます(判定には GitHub Copilot CLI の `copilot -p` を使います)。「〜件を判定する」を押すと、バンドルを作り直し、未判定のセッションを上限まで判定して、レポートを作り直します([screen.md の「画面からの操作」](screen.md#画面からの操作))。従量課金の `anthropic` とモデルの指定は画面からはできません(コマンドの `--backend anthropic` と `--model` だけ。画面からの判定は Copilot に設定してある既定のモデルを使います)。コマンドでは次のとおりです。
 
 ```
-bin\atlas.exe judge-flow                                    # bundle → judge run → export(画面の「工数を判定する」と同じ)
-bin\atlas.exe judge run --limit 5                           # まず 5 件だけ試す
-bin\atlas.exe judge run --only <id>,<id>                    # 指定したセッションだけ(ID は先頭でよい。--session も同じ。今の添付に入っているものだけ)
-bin\atlas.exe judge run --force                             # 判定済みも判定し直す
-bin\atlas.exe judge run --model <モデル名>                      # 判定に使うモデルを指定
-bin\atlas.exe judge run --model anthropic/claude-haiku-5-5  # Copilot に保存した自分のモデル(BYOK)を使う
+npm run atlas:judge                                            # bundle → judge run → export(画面の「工数を判定する」と同じ)
+npm run atlas -- judge run --limit 5                           # まず 5 件だけ試す
+npm run atlas -- judge run --only <id>,<id>                    # 指定したセッションだけ(ID は先頭でよい。--session も同じ。今の添付に入っているものだけ)
+npm run atlas -- judge run --force                             # 判定済みも判定し直す
+npm run atlas -- judge run --model <モデル名>                      # 判定に使うモデルを指定
+npm run atlas -- judge run --model anthropic/claude-haiku-5-5  # Copilot に保存した自分のモデル(BYOK)を使う
 ```
 
 - `judge run` が判定するのは、作ってある添付(`out/bundle`)のセッションです。絞り込み(`--project`・`--since`・`--group` など)は添付を作るときのもので、`judge run` に付けると止まります(以前は黙って無視し、添付の全体を判定していました)。絞り込んで判定するときは `judge-flow` に付けるか、先に `bundle` に付けて添付を作ります。
@@ -149,17 +149,10 @@ bin\atlas.exe judge run --model anthropic/claude-haiku-5-5  # Copilot に保存�
 | バックエンド | 中身 | 費用 |
 |---|---|---|
 | `copilot-cli`(既定) | `copilot -p` を空の作業フォルダで起動し、パケットをプロンプトに埋め込んで渡す | GitHub Copilot のサブスクリプション内で AI クレジット(旧課金では premium request)を消費します(1 セッション 1 回以上) |
-| `anthropic` | Anthropic Messages API を直接呼ぶ(既定モデル `claude-sonnet-5-5`、環境変数 `ANTHROPIC_API_KEY` が必要)。**既定のビルドとリリースの `atlas.exe` には入っていません**(下記) | **従量課金**です。明示的に `--backend anthropic` を指定したときだけ使います |
-
-- `anthropic` は、cargo の機能 `anthropic-backend` を付けてビルドした atlas にだけ入っています。HTTP と TLS の依存(ureq・rustls・ring・webpki-roots など 20 ほどのクレート)がこれだけのために要るので、既定のビルド・リリースの `atlas.exe`・起動用の `.bat` がこの PC でするビルドには入れていません。入っていない atlas で `--backend anthropic` を付けると、`judge run` と `skill-draft` は何もせずに、入っていないことと次のビルドの仕方を出して止まります。使うときは、このリポジトリで次を実行し、できた `target\release\atlas.exe` を使います(ビルドに要るものは [development.md](development.md))。
-
-  ```
-  npm run build:report
-  cargo build --release -p atlas-cli --features anthropic-backend
-  ```
+| `anthropic` | Anthropic Messages API を直接呼ぶ(既定モデル `claude-sonnet-5-5`、環境変数 `ANTHROPIC_API_KEY` が必要) | **従量課金**です。明示的に `--backend anthropic` を指定したときだけ使います |
 
 - `copilot-cli` は `--add-dir` を使いません(そのフォルダの `.github/skills` / `agents` を信頼設定として読むため、他セッションの本文を含むバンドルが指示の注入口になりうるからです)。ユーザーの AGENTS.md 等も読ませません(`--no-custom-instructions`)。`--allow-all-tools` は既定で付けます(付けたくないときは `--no-allow-tools`)が、判定にツールは要らないので、シェル・ファイルの作成と変更・URL アクセス(`shell` / `write` / `url`)は常に `--deny-tool` で拒否します(`copilot help permissions` によれば拒否は `--allow-all-tools` より優先されます。パケット本文に「コマンドを実行せよ」のような文が含まれていても動かないようにするためです)。MCP のツールはこの 3 種類のどれにも当たらない(`copilot help permissions` で別の種類 `<サーバー名>(ツール名)`)ので、モデルに見せるツールを `--available-tools=view` に絞り(作業フォルダは空で、copilot は既定でその外のパスを読ませません)、組み込みの MCP を `--disable-builtin-mcps` で止め、`copilot mcp list --json`(LLM は呼びません)で得た各サーバーを `--disable-mcp-server` と `--deny-tool <サーバー名>` で止めます。一覧を取れなかったときはサーバーごとの指定を付けずに続け、その旨を判定の notes に残します(copilot 1.0.109 での実走を 2026-11-11 に確認しました。架空のデータで、判定の間にツールの呼び出しは 0 回でした。同じ引数で起動してモデルに尋ねると、使えるツールは `view` だけと答え、作業フォルダの外のファイルを `view` で読もうとすると拒否されました)。プロンプト中のパケットの境界には依頼ごとの乱数を付け、本文側で境界を偽装できないようにしています。
-- **Copilot に保存した自分のモデル(BYOK)を使う**: Copilot CLI の `/model` で自分の API キーのモデルを保存してあれば(`~/.copilot/providers.json`。`copilot help providers`)、`--model <プロバイダー名>/<モデル ID>` で指定できます(例: `--model anthropic/claude-haiku-5-5`)。モデル ID だけを書くと `Model "…" is not available` で失敗します(copilot 1.0.109 で確認)。このとき GitHub の AI クレジットは使わず、**提供元の従量課金**になります(工数 2 件の判定で入力 1.3 万・出力 0.3 万トークンほどでした)。`turns run --model` と `bin\atlas.exe judge-flow --model` でも同じです。
+- **Copilot に保存した自分のモデル(BYOK)を使う**: Copilot CLI の `/model` で自分の API キーのモデルを保存してあれば(`~/.copilot/providers.json`。`copilot help providers`)、`--model <プロバイダー名>/<モデル ID>` で指定できます(例: `--model anthropic/claude-haiku-5-5`)。モデル ID だけを書くと `Model "…" is not available` で失敗します(copilot 1.0.109 で確認)。このとき GitHub の AI クレジットは使わず、**提供元の従量課金**になります(工数 2 件の判定で入力 1.3 万・出力 0.3 万トークンほどでした)。`turns run --model` と `npm run atlas:judge -- --model` でも同じです。
 - **いつも BYOK のモデルで判定する**: `atlas.config.json` に `"judgeModel": "anthropic/claude-sonnet-5-5"` のように書くと、`--model` を付けないときと、画面の「このツールが判定する」で、そのモデルを使います([cli.md の「判定に使うモデルの指定」](cli.md#判定に使うモデルの指定))。書かないと Copilot の既定のモデルで判定し、AI クレジットを使います。Copilot の既定のモデルは、Copilot CLI の設定(`~/.copilot/settings.json` の `model`)で決まります。そのモデルが使えなくなっていると、`Model "…" is not available` で失敗します。
 - 判定自体の使用量は `copilot` の `--usage-output-file` から集計し、`judgments.json` の `judge.usage` に残します。
 - `copilot` の場所は環境変数 `ATLAS_COPILOT_BIN` で指定できます(テストでは偽の copilot `fixtures/fake-copilot.mjs` に差し替えています)。
@@ -180,9 +173,9 @@ bin\atlas.exe judge run --model anthropic/claude-haiku-5-5  # Copilot に保存�
 - **抜粋を取る呼び出し**: ログの全文(スナップショットの `events.jsonl`)の呼び出しごとに、集計と同じ分類(今の設定 `atlas.config.json` の `wikis` の vault の指定)を当て、そのページを読んだと分類された呼び出しから取ります。書き込みのツールと、サブエージェントへの依頼(`task` など。引数は依頼文で、結果はページの中身ではない)は読み取りにしません。ページの名前の直後に名前の続きがあるもの(`a.md.bak` など)も、そのページの読み取りにしません。失敗した呼び出しと結果の本文が無い呼び出しは飛ばし、後の読み取りから取ります。結果(`result` の `content`、無ければ `detailedContent`)は、秘密らしい文字列を全文で伏せてから(秘密情報の検査と同じ規則)切ります。1 回の呼び出し(検索など)で複数のページを読んだときは、それらのページに同じ抜粋を載せ、「ほかのページと同じ結果の抜粋」と書きます。
 - **設定に vault の指定が無いとき**(集計した後に設定を変えたなど): 引数に「/<ページ>」の形で名前が出る呼び出しを読み取りとします(区切りのまとめ方は集計と同じ)。この場合、vault の直下のページ(`AGENTS.md` など)は、プロジェクトの同じ名前のファイルと見分けられません。設定の指定が集計したときと違うと、ページの名前が合わず、抜粋を取れないことがあります。
 - **抜粋が無いとき**: 成功して結果の本文がある読み取りがログに無いとき、読んだ呼び出しを特定できないとき、ログの全文が無いとき(`session-store.db` か sessions.json の抜粋で代用したとき)は「抜粋なし」と書き、名前と前後の流れだけで判断して、決め手が無ければ `unknown` にするよう指示に書いてあります。
-- **上限**: 判定に載せるのは 1 セッション 10 ページまで(`crates/atlas-core/src/wiki.rs` の `WIKI_JUDGED_PAGES_MAX`。読んだ順の先頭から)で、残りはパケットに「上限のため判定しません」と件数を書き、未判定にします。抜粋は 1 ページ 400 字まで(`PacketLimits` の `wikiExcerptChars`)で、パケットが 24,000 字に収まらないときは、ほかの本文と一緒に段階的に短くします(ページの並びは変えません)。
+- **上限**: 判定に載せるのは 1 セッション 10 ページまで(`packages/core/src/wiki.ts` の `WIKI_JUDGED_PAGES_MAX`。読んだ順の先頭から)で、残りはパケットに「上限のため判定しません」と件数を書き、未判定にします。抜粋は 1 ページ 400 字まで(`PacketLimits` の `wikiExcerptChars`)で、パケットが 24,000 字に収まらないときは、ほかの本文と一緒に段階的に短くします(ページの並びは変えません)。
 - **返答の扱い**: `wikiPages` は必須ではありません(版 1 の指示で作った返答もそのまま取り込めます)。無いときは、ほかの判定を取り込み、そのセッションのページを未判定にします(知らせません)。壊れているとき(配列でない、または要素の形が合わない(`page` が無い、`helpful` が 3 つの値のどれでもない)・同じページが 2 回ある)は、ほかの判定を取り込み、壊れた分のページを未判定にして、ログに知らせます(`judge import`・M365 Copilot の自動操作のログ。画面の「取り込む」では画面には出さず atlas のログに書きます。`judge run` は該当したセッションの件数と ID を 1 行にまとめて出します)。パケットに無いページの名前を返したものは、レポートを作るときに捨てます。
-- **版**: `judgments.json` のスキーマの版は 2(`wikiPages` を足した版)です。版 1 の `judgments.json` も読み、その判定のページは未判定として数えます。書くときは、どの項目も `wikiPages` を持たない間は版 1 のまま書き、`wikiPages` を持つ項目ができたら版 2 で書きます。**版 2 で書いた `judgments.json` は、この機能より前の atlas.exe では読めず、`build`(レポートを作る)が止まります。** 前の版の atlas.exe に戻すときは、`judgments.json` を控えてから戻してください。バンドル(添付ファイル)を作り直してから判定し直すと(`bin\atlas.exe bundle --session <id>` の後に `judge run --only <id> --force`、または作り直した添付ファイルをチャットに貼る)、ページごとの判定が付きます。
+- **版**: `judgments.json` のスキーマの版は 2(`wikiPages` を足した版)です。版 1 の `judgments.json` も読み、その判定のページは未判定として数えます。書くときは、どの項目も `wikiPages` を持たない間は版 1 のまま書き、`wikiPages` を持つ項目ができたら版 2 で書きます。**版 2 で書いた `judgments.json` は、この機能より前の atlas(Node 版・atlas.exe とも)では読めず、`build`(レポートを作る)が止まります。** 前の版に戻すときは、`judgments.json` を控えてから戻してください。バンドル(添付ファイル)を作り直してから判定し直すと(`npm run atlas:judge -- --session <id> --force`、または `npm run atlas -- bundle --session <id>` で作り直した添付ファイルをチャットに貼る)、ページごとの判定が付きます。
 - 判定は今までどおり利用者が回したときだけで、集計(`atlas.bat`・`build`・`export`)は LLM を呼びません。
 
 ## 3. 依頼ごとの採用
@@ -212,9 +205,9 @@ bin\atlas.exe judge run --model anthropic/claude-haiku-5-5  # Copilot に保存�
 コマンドでは次のとおりです。
 
 ```
-bin\atlas.exe turns bundle --unjudged  # out/turn-bundle/ を作る(判定済みの依頼を除く。LLM は呼ばない)
-bin\atlas.exe turns import 返答.md       # チャットの返答を out/turn-judgments.json に取り込む
-bin\atlas.exe export                   # レポートに反映する
+npm run atlas -- turns bundle --unjudged  # out/turn-bundle/ を作る(判定済みの依頼を除く。LLM は呼ばない)
+npm run atlas -- turns import 返答.md       # チャットの返答を out/turn-judgments.json に取り込む
+npm run atlas -- export                   # レポートに反映する
 ```
 
 ### GitHub Copilot CLI で回す
@@ -222,8 +215,8 @@ bin\atlas.exe export                   # レポートに反映する
 「判定する…」で「依頼ごとの採用」と「このツールが判定する」を選び、件数(依頼の数の上限。既定 60)を決めて実行します。依頼を最大 6 件ずつまとめて `copilot -p` を 1 回呼ぶので、AI クレジットは依頼 6 件ほどにつき 1 回分です(セッションの最後の依頼は 1 件で 1 回。後ろに回るので、件数の上限が判定できる依頼の数以下なら呼びません)。安全策(ツールの拒否、MCP の停止、空の作業フォルダ)は工数の判定と同じです。`--backend anthropic`(従量課金の API を直接呼ぶ)は、依頼ごとの判定には使えません。件数の上限は依頼のまとまりごとに確かめるので、上限を少し超えて判定することがあります(上限 12 で 14 件など)。
 
 ```
-bin\atlas.exe judge-flow --turns --limit 60  # turns bundle --unjudged → turns run → export
-bin\atlas.exe turns run --limit 60           # 判定だけ(先に turns bundle が要る)
+npm run atlas:judge -- --turns --limit 60  # turns bundle --unjudged → turns run → export
+npm run atlas -- turns run --limit 60      # 判定だけ(先に turns bundle が要る)
 ```
 
 判定できなかった塊(返答の形が合わない、クレジットの上限など)は `turn-judgments.json` の `failures` に残り、もう一度実行すると再試行します。

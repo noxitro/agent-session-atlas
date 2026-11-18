@@ -1,5 +1,6 @@
 // Phase 13: セッションごとのメモの、画面の lib(抜粋・id の形・絞り込み)。
-// メモの描画(Markdown の安全な HTML)と読み書き・画像は Rust(crates/atlas-report/src/memo_render.rs・memo_io.rs)に移り、そちらの単体テストが受け持つ
+// メモの描画(Markdown の安全な HTML)と読み書き・画像(Node 側の memo-render.ts・memo-io.ts)は、ここでは確かめない
+// (サーバの応答は packages/cli/test/serve.test.ts、詳細ページと CLI での往復は e2e/phase13.test.ts が確かめる)
 import { describe, expect, it } from 'vitest';
 import { applyFilter, decodeFilter, emptyFilter, encodeFilter } from '../src/lib/filter.ts';
 import { isSafeFileName, isSafeMemoId, memoExcerpt, memoSummary } from '../src/lib/memo.ts';

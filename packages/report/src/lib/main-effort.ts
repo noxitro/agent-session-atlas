@@ -1,5 +1,5 @@
 // セッションの本体(メインのエージェント)の (モデル, 推論強度) を決める。
-// Rust の crates/atlas-core/src/main_effort.rs(sessions.csv の列)と同じ決め方(npm run parity:fixture で突き合わせる)。
+// サーバー側の packages/core/src/main-effort.ts(sessions.csv の列)と同じ決め方(packages/report/test/compare-effort.test.ts で突き合わせる)。
 import { UNKNOWN_KEY } from './exec.ts';
 
 /** 本体のリクエストのうち、同じ (モデル, 推論強度) がこの割合以上なら、その組をセッションの本体の強度とみなす */

@@ -1,12 +1,11 @@
 // report の画面の lib(ブラウザで動く TS)のうち、セッションの記録を作らずに確かめられるもの。
-// 記録(sessions.json の形)から集計・絞り込みを確かめるテストは、記録を作る normalize が Rust(crates/atlas-core)に移ったので、
-// Rust の lib の移植(crates/atlas-report/tests/lib_reports.rs)と、TS の lib との突き合わせ(scripts/parity-lib.ts)が受け持つ。
+// 記録(sessions.json の形)を作ってから集計・絞り込みを確かめるテストは、ここには置かない(集計の結果は e2e が確かめる)。
 import { describe, expect, it } from 'vitest';
 import { effortSkew, isLowConfidence, monthRange } from '../src/lib/aggregate.ts';
 import { embedData, extractEmbedded, serializeForScript } from '../src/lib/embed.ts';
 import { decodeFilter, emptyFilter, encodeFilter, groupIds, isEmptyFilter } from '../src/lib/filter.ts';
 import { excerptAround, looksLikeId, searchIndex, searchSessions, searchTerms } from '../src/lib/session-search.ts';
-import { addIds, memberGroups, parseGroups, removeIds, resolveIdPrefixes, serializeGroups } from '../src/lib/groups.ts';
+import { addIds, memberGroups, memberGroupsKeyed, parseGroups, removeIds, resolveIdPrefixes, serializeGroups } from '../src/lib/groups.ts';
 import { sessionLabel } from '../src/lib/highlights.ts';
 import { parseJudgments } from '../src/lib/judgments.ts';
 import { embeddedJudgment, judgmentForSession } from '../src/lib/summarize.ts';
@@ -185,7 +184,6 @@ describe('shortProjectLabel', () => {
     expect(shortProjectLabel('/home/me/.copilot/chats/c1')).toBe('~/.copilot/chats/c1');
     expect(shortProjectLabel('quokka/x')).toBe('quokka/x');
     // Windows 形式。区切りは文字コードから作り、ホームの親フォルダの名前は分けて組み立てる
-    // (Rust の project_label.rs のテストと同じ入力と期待値)
     const sep = String.fromCharCode(92);
     const win = ['C:', 'Users', 'someone', 'proj'].join(sep);
     expect(shortProjectLabel(win)).toBe(`~${sep}proj`);
@@ -398,5 +396,20 @@ describe('memberGroups(送った人のタスクタグ)', () => {
       { name: 'a / b / c (2)', note: '', ids: ['s2'] },
     ]);
     expect(new Set(g.map((x) => x.name)).size).toBe(g.length);
+  });
+
+  it('memberGroupsKeyed: 元のタグは、表示名(人の前置きと、重なったときの番号)とは別に持つ', () => {
+    const keyed = memberGroupsKeyed([
+      { id: 's1', person: 'a', uploadTags: ['b / c'] },
+      { id: 's2', person: 'a / b', uploadTags: ['c'] },
+      { id: 's3', person: null, uploadTags: ['c'] },
+    ]);
+    expect(keyed.map((m) => [m.name, m.tag])).toEqual([
+      ['c', 'c'],
+      ['a / b / c', 'b / c'],
+      ['a / b / c (2)', 'c'],
+    ]);
+    // JSON の形とキーの順(画面・/api/groups はこの形を読む)
+    expect(JSON.stringify(keyed[1])).toBe('{"name":"a / b / c","note":"","ids":["s1"],"tag":"b / c"}');
   });
 });

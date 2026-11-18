@@ -1,6 +1,6 @@
 // SessionRecord → SessionSummary(HTML に埋め込む要約)。生イベント・timeline・長文は落とす。
-import type { FailureCauses } from '../shared/tool-failure.ts';
-import type { SessionRecord, SessionTests } from '../shared/types.ts';
+import type { FailureCauses } from '../../../core/src/tool-failure.ts';
+import type { SessionRecord, SessionTests } from '../../../core/src/types.ts';
 import { coverageOf } from './filter.ts';
 import { truncate } from './format.ts';
 import { shortProjectLabel } from './project-label.ts';

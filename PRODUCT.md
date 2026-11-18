@@ -47,7 +47,7 @@ web
 ## Evidence on Hand
 
 - 実データ一式(手元のみ、リポジトリには入れない)。
-- テスト時に架空の値だけで生成する fixture(`scripts/synthetic-fixtures.ts` → `.fixtures/`。リポジトリには置かない)と、既知のイベント種別名の一覧(`crates/atlas-core/src/event_types.rs`)。
+- テスト時に架空の値だけで生成する fixture(`scripts/synthetic-fixtures.ts` → `.fixtures/`。リポジトリには置かない)と、既知のイベント種別名の一覧(`packages/core/src/event-types.ts`)。
 - 集計の実出力 `out/live/sessions.json` / `metrics.json`(gitignore)。
 - 存在しないもの: 人手工数の実測値、利用者の声、ベンチマーク。これらを捏造しない。
 

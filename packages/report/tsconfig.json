@@ -13,8 +13,7 @@
   "include": [
     "src/app/**/*.ts",
     "src/app/**/*.svelte",
-    "src/lib/**/*.ts",
-    "src/shared/**/*.ts"
+    "src/lib/**/*.ts"
   ],
   "exclude": []
 }
