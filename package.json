@@ -18,9 +18,10 @@
     "fixtures": "node scripts/synthetic-fixtures.ts",
     "ui": "vitest run --project ui",
     "audit:ui": "node scripts/ui-audit.ts",
+    "audit:deps": "node scripts/npm-audit.mjs && npm audit signatures",
     "parity:lib": "node scripts/parity-lib.ts",
     "smoke": "node scripts/smoke-local.ts",
-    "ci": "npm run typecheck && npm run build:report && npm test && npm run build:atlas && npm run parity:fixture && npm run e2e && npm run ui && npm run smoke",
+    "ci": "npm run audit:deps && npm run typecheck && npm run build:report && npm test && npm run build:atlas && npm run parity:fixture && npm run e2e && npm run ui && npm run smoke",
     "parity:fixture": "node scripts/parity-fixture.ts"
   },
   "devDependencies": {
