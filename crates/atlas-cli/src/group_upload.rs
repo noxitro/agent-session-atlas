@@ -1,6 +1,6 @@
 //! グループのアップロード(packages/cli/src/group-upload.ts の移植): グループのセッションの生ログを、決めておいた場所へタスク(グループ)ごとに写す。
 //!   <基底>/<グループ名>/<セッション id>/events.jsonl            ← Copilot のセッションのフォルダ(前回の集計で複製したもの)
-//!                                      workspace.yaml / session.db / plan.md / checkpoints/ / files/ …
+//!                                      workspace.yaml / session.db / plan.md / checkpoints/ …(files/ などは --snapshot-all で写したときだけ)
 //!                                      atlas-session-store.json   ← session-store.db と data.db(許可リストの列)のそのセッションの行(atlas が添える)
 //!                                      atlas-memo.md / atlas-memo/ ← そのセッションのメモと画像(atlas-notes/memos/。あれば)
 //!   <基底>/<グループ名>/README.md                                 ← グループ名・説明・写した日時・セッションの一覧(写すたびに書き直す)

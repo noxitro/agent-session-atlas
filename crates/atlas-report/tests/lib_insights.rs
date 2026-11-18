@@ -316,6 +316,88 @@ fn indexed_clustering_matches_naive() {
     }
 }
 
+/// 同じ依頼を何度も実行したとき(同じ文がまとまりの大半を占める)も、代表は全員を比べたときと同じ。
+/// 代表は、同じ 3 文字の組を持つ人の和を 1 回だけ求めて選ぶので、重なりが多い形と、和が同じになる形を試す
+#[test]
+fn repeated_requests_pick_same_representative_as_naive() {
+    for seed in [7u32, 2024, 99999] {
+        let mut data = random_sources(120, seed);
+        // 3 つの文を、ずらした順で何度も繰り返す(どれも同じ回数なら和が同じ人が出る)
+        let reps = ["run the synthetic benchmark task alpha and report the totals", "run the synthetic benchmark task alpha and report all totals", "run the synthetic benchmark task alpha then report the totals"];
+        for (i, (_, a)) in data.iter_mut().enumerate() {
+            a.requests.push(reps[(i + seed as usize) % reps.len()].to_string());
+            a.turn_active_ms.push(Some((i * 1000) as f64));
+        }
+        let src: Vec<CandidateSource> = data.iter().map(|(id, a)| CandidateSource { id, project: "p", analysis: a }).collect();
+        let got = request_candidates(&src);
+        assert!(got.iter().any(|c| c.count >= 100));
+        assert_eq!(got, naive(&src));
+    }
+}
+
+/// まとまりへの振り分けは、代表の珍しい組(接頭辞)だけを索引にして絞る。類似度がしきい値の前後になる組み合わせが
+/// 多く出るよう、短い文・少ない文字の種類・長さのばらつきを付けても、全員を比べたときと同じまとまりになる
+#[test]
+fn prefix_filtered_clustering_matches_naive_near_threshold() {
+    for seed in [3u32, 77, 4242, 31337, 600613] {
+        let mut x = seed;
+        let mut rnd = |n: usize| -> usize {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            x as usize % n
+        };
+        let alphabet: Vec<char> = "abcdefg".chars().collect();
+        let bases: Vec<String> = (0..6).map(|_| (0..20 + rnd(40)).map(|_| alphabet[rnd(alphabet.len())]).collect()).collect();
+        let data: Vec<(String, SessionAnalysis)> = (0..200)
+            .map(|i| {
+                let requests: Vec<String> = (0..2)
+                    .map(|_| {
+                        let mut c: Vec<char> = bases[rnd(bases.len())].chars().collect();
+                        // 数文字を置き換え・足し・削り、類似度をしきい値の前後に散らす
+                        for _ in 0..rnd(8) {
+                            match rnd(3) {
+                                0 => {
+                                    let at = rnd(c.len());
+                                    c[at] = alphabet[rnd(alphabet.len())];
+                                }
+                                1 => c.push(alphabet[rnd(alphabet.len())]),
+                                _ if c.len() > 21 => {
+                                    c.pop();
+                                }
+                                _ => {}
+                            }
+                        }
+                        c.into_iter().collect()
+                    })
+                    .collect();
+                (format!("s{}", i % 40), SessionAnalysis { requests, turn_active_ms: vec![Some(i as f64), None], ..Default::default() })
+            })
+            .collect();
+        let src: Vec<CandidateSource> = data.iter().map(|(id, a)| CandidateSource { id, project: "p", analysis: a }).collect();
+        let got = request_candidates(&src);
+        assert!(!got.is_empty());
+        assert_eq!(got, naive(&src));
+    }
+}
+
+/// 類似度がちょうどしきい値(組の数の比も 0.6)の依頼は、同じまとまりに入る(絞り込みで落とさない)
+#[test]
+fn clustering_keeps_pairs_exactly_at_threshold() {
+    // 違う字だけを並べた n 字の文は、3 文字の組が n - 2 個。先頭 32 字は組 30 個で、52 字の組 50 個に含まれる → 30 / 50 = 0.6
+    let long: String = (0..52u32).map(|i| char::from_u32(0x4E00 + i * 7).unwrap()).collect();
+    let short: String = long.chars().take(32).collect();
+    assert_eq!(jaccard(&trigrams(&normalize_request(&long)), &trigrams(&normalize_request(&short))), 0.6);
+    for (first, second) in [(&long, &short), (&short, &long)] {
+        let data: Vec<(String, SessionAnalysis)> =
+            [first, second, second].iter().enumerate().map(|(i, r)| (format!("s{i}"), SessionAnalysis { requests: vec![r.to_string()], turn_active_ms: vec![Some(1000.0)], ..Default::default() })).collect();
+        let src: Vec<CandidateSource> = data.iter().map(|(id, a)| CandidateSource { id, project: "p", analysis: a }).collect();
+        let got = request_candidates(&src);
+        assert_eq!(got.iter().map(|c| c.count).collect::<Vec<_>>(), vec![3]);
+        assert_eq!(got, naive(&src));
+    }
+}
+
 // ---------- retention.test.ts: retentionItem ----------
 
 #[test]

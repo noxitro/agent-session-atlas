@@ -1,5 +1,6 @@
 // 「解析用の完全出力」の E2E(docs/PLAN.md の同じ題の節)
-//  a. スナップショットの拡張: plan.md / checkpoints / files / policies を写し、rewind-snapshots と一覧に無いフォルダ・logs/・repos/ は既定で写さず manifest に名前と容量。
+//  a. スナップショットの拡張: plan.md / checkpoints / policies を写し、rewind-snapshots と一覧に無いフォルダ・logs/・repos/ は既定で写さず manifest に名前と容量。
+//     files/ は集計で使わないので既定で写さず、大きさも測らない(manifest には名前だけ)
 //     --snapshot-all で写す。chats/ は *.md だけ。~/.copilot(fixture の home)は書き換えない(mtime 不変、-shm を作らない)
 //  b. data.db: 複製せず desktop.json に許可リストの列だけ。資格情報の合成値が out/ のどこにも出ない。sessions.json の desktop 欄と詳細ページに出る
 //  c. export --full: 元データの文字列が全文記録に現れ、暗号化キーと base64 本体は出ない。coverage.json の未分類が 0。画像は assets に
@@ -49,8 +50,9 @@ describe('Phase 11 E2E: fixtures', () => {
   it('a. スナップショットの拡張: 付随物を写し、大きいもの・一覧に無いものは manifest に残す。--snapshot-all で写す。元は書き換えない', async () => {
     const m = JSON.parse(await readFile(join(out, 'snapshot', 'snapshot-manifest.json'), 'utf8')) as SnapshotManifest;
     const sdir = join(out, 'snapshot', 'session-state', P11_SESSION);
-    for (const f of ['plan.md', join('checkpoints', 'index.md'), join('checkpoints', '001-first.md'), join('files', 'note.txt'), join('policies', 'p1.json')]) expect({ f, exists: existsSync(join(sdir, f)) }).toEqual({ f, exists: true });
+    for (const f of ['plan.md', join('checkpoints', 'index.md'), join('checkpoints', '001-first.md'), join('policies', 'p1.json')]) expect({ f, exists: existsSync(join(sdir, f)) }).toEqual({ f, exists: true });
     expect(existsSync(join(sdir, 'rewind-snapshots'))).toBe(false);
+    expect(existsSync(join(sdir, 'files'))).toBe(false);
     expect(existsSync(join(sdir, 'fake-solution'))).toBe(false);
     expect(existsSync(join(sdir, 'inuse.1234.lock'))).toBe(false);
     expect(existsSync(join(out, 'snapshot', 'plans', 'plan-synthetic.md'))).toBe(true);
@@ -64,6 +66,7 @@ describe('Phase 11 E2E: fixtures', () => {
     expect(x.all).toBe(false);
     const skipped = Object.fromEntries(x.skipped.map((s) => [s.path, s]));
     expect(skipped[`session-state/${P11_SESSION}/rewind-snapshots`]).toMatchObject({ bytes: 64 * 1024 + 13 });
+    expect(skipped[`session-state/${P11_SESSION}/files`]).toMatchObject({ bytes: 0, reason: expect.stringMatching(/集計では使わない/) });
     expect(skipped[`session-state/${P11_SESSION}/fake-solution`]).toBeDefined();
     expect(skipped.logs).toBeDefined();
     expect(skipped.repos).toBeDefined();
@@ -82,40 +85,41 @@ describe('Phase 11 E2E: fixtures', () => {
     // 2 回目は再利用(写さなかったものは同じ)
     const r2 = atlas(['snapshot', '--home', home, '--out', out]);
     expect(r2.status, r2.stderr).toBe(0);
-    expect(r2.stdout).toMatch(/写さなかったもの [56] 件/);
+    expect(r2.stdout).toMatch(/写さなかったもの [67] 件/);
     // 元から消えたファイルは複製先からも消える(削除の同期)
     const { rm: rmf, writeFile: wf } = await import('node:fs/promises');
-    await wf(join(home, 'session-state', P11_SESSION, 'files', 'gone.txt'), 'x');
+    await wf(join(home, 'session-state', P11_SESSION, 'checkpoints', 'gone.txt'), 'x');
     expect(atlas(['snapshot', '--home', home, '--out', out]).status).toBe(0);
-    expect(existsSync(join(sdir, 'files', 'gone.txt'))).toBe(true);
-    await rmf(join(home, 'session-state', P11_SESSION, 'files', 'gone.txt'));
+    expect(existsSync(join(sdir, 'checkpoints', 'gone.txt'))).toBe(true);
+    await rmf(join(home, 'session-state', P11_SESSION, 'checkpoints', 'gone.txt'));
     expect(atlas(['snapshot', '--home', home, '--out', out]).status).toBe(0);
-    expect(existsSync(join(sdir, 'files', 'gone.txt'))).toBe(false);
+    expect(existsSync(join(sdir, 'checkpoints', 'gone.txt'))).toBe(false);
     // 大文字小文字だけの改名(Windows): 写したばかりの複製を消さない
     const { rename } = await import('node:fs/promises');
-    await rename(join(home, 'session-state', P11_SESSION, 'files', 'note.txt'), join(home, 'session-state', P11_SESSION, 'files', 'Note.txt'));
+    await rename(join(home, 'session-state', P11_SESSION, 'checkpoints', 'index.md'), join(home, 'session-state', P11_SESSION, 'checkpoints', 'Index.md'));
     expect(atlas(['snapshot', '--home', home, '--out', out]).status).toBe(0);
-    const noteFiles = (await readdir(join(sdir, 'files'))).filter((f) => f.toLowerCase() === 'note.txt');
-    expect(noteFiles).toHaveLength(1);
-    expect(await readFile(join(sdir, 'files', noteFiles[0]), 'utf8')).toContain('合成ファイル');
-    await rename(join(home, 'session-state', P11_SESSION, 'files', 'Note.txt'), join(home, 'session-state', P11_SESSION, 'files', 'note.txt'));
+    const indexFiles = (await readdir(join(sdir, 'checkpoints'))).filter((f) => f.toLowerCase() === 'index.md');
+    expect(indexFiles).toHaveLength(1);
+    expect(await readFile(join(sdir, 'checkpoints', indexFiles[0]), 'utf8')).toContain('# Checkpoints');
+    await rename(join(home, 'session-state', P11_SESSION, 'checkpoints', 'Index.md'), join(home, 'session-state', P11_SESSION, 'checkpoints', 'index.md'));
     // ファイル単位の失敗: 複製先に同名のフォルダを置いて複製できなくしても全体は止まらず、skipped に理由が残る
     const { mkdir: mkd } = await import('node:fs/promises');
-    await wf(join(home, 'session-state', P11_SESSION, 'files', 'blocked.txt'), 'x');
-    await rmf(join(sdir, 'files', 'blocked.txt'), { force: true });
-    await mkd(join(sdir, 'files', 'blocked.txt'), { recursive: true });
+    await wf(join(home, 'session-state', P11_SESSION, 'checkpoints', 'blocked.txt'), 'x');
+    await rmf(join(sdir, 'checkpoints', 'blocked.txt'), { force: true });
+    await mkd(join(sdir, 'checkpoints', 'blocked.txt'), { recursive: true });
     const rb = atlas(['snapshot', '--home', home, '--out', out]);
     expect(rb.status, rb.stderr).toBe(0);
     const mb = JSON.parse(await readFile(join(out, 'snapshot', 'snapshot-manifest.json'), 'utf8')) as SnapshotManifest;
-    expect(mb.extras!.skipped.find((s) => s.path.endsWith('files/blocked.txt'))?.reason).toMatch(/複製できなかった/);
-    await rmf(join(sdir, 'files', 'blocked.txt'), { recursive: true, force: true });
-    await rmf(join(home, 'session-state', P11_SESSION, 'files', 'blocked.txt'));
+    expect(mb.extras!.skipped.find((s) => s.path.endsWith('checkpoints/blocked.txt'))?.reason).toMatch(/複製できなかった/);
+    await rmf(join(sdir, 'checkpoints', 'blocked.txt'), { recursive: true, force: true });
+    await rmf(join(home, 'session-state', P11_SESSION, 'checkpoints', 'blocked.txt'));
     expect(atlas(['snapshot', '--home', home, '--out', out]).status).toBe(0);
     before = await mtimes(home);
     // --snapshot-all で rewind-snapshots・fake-solution・logs/ を写す(repos は写さない)
     const ra = atlas(['snapshot', '--home', home, '--out', out, '--snapshot-all']);
     expect(ra.status, ra.stderr).toBe(0);
     expect(existsSync(join(sdir, 'rewind-snapshots', 'backups', 'big.bin'))).toBe(true);
+    expect(existsSync(join(sdir, 'files', 'note.txt'))).toBe(true);
     expect(existsSync(join(sdir, 'fake-solution', 'x.txt'))).toBe(true);
     expect(existsSync(join(out, 'snapshot', 'logs', 'github-app.1.log'))).toBe(true);
     expect(existsSync(join(out, 'snapshot', 'repos'))).toBe(false);
@@ -128,6 +132,8 @@ describe('Phase 11 E2E: fixtures', () => {
     expect(rk.status, rk.stderr).toBe(0);
     expect(existsSync(join(sdir, 'rewind-snapshots', 'backups', 'big.bin'))).toBe(true);
     expect(existsSync(join(out, 'snapshot', 'logs', 'github-app.1.log'))).toBe(true);
+    // files/ は残さず消す(前は既定で写していたもの。元にあるので失うものは無い)
+    expect(existsSync(join(sdir, 'files'))).toBe(false);
     expect(rk.stdout).toMatch(/前回 --snapshot-all で写したもの \d+ 件が残っています/);
     const mk = JSON.parse(await readFile(join(out, 'snapshot', 'snapshot-manifest.json'), 'utf8')) as SnapshotManifest;
     expect(mk.extras!.leftover.map((l) => l.path).sort()).toEqual([`session-state/${P11_SESSION}/fake-solution`, `session-state/${P11_SESSION}/rewind-snapshots`, 'logs'].sort());
