@@ -7,7 +7,8 @@
 # 手元で同じ順に回すのは npm run ci(docs/development.md の「CI」)。
 # fixture は e2e の globalSetup(e2e/global-setup.ts)と checkout-smoke.ts が作るので、ここに生成の手順は要らない。
 # 実データ(ATLAS_LIVE)と実 LLM 判定は CI では動かさない。
-# 依存の検査: Rust は cargo-deny(deny.toml)、npm は npm audit(dependencies だけ)と、PR では dependency-review。
+# 依存の検査: Rust は cargo-deny(deny.toml)、npm は scripts/npm-audit.mjs(devDependencies も含む。リリースと同じ)と、PR では
+# dependency-review(新しく入る・上がる dependencies だけ)。
 # 外部の Action はタグの付け替えで中身が変わらないようコミット SHA で固定する(末尾の注記が版。Dependabot が SHA ごと更新する)。
 # Rust はランナーに入っている rustup で入れる(SHA で固定できる Action を増やさない)。
 name: CI
@@ -119,9 +120,10 @@ jobs:
           restore-keys: |
             rust-debug-${{ runner.os }}-${{ steps.rust.outputs.version }}-
       - run: npm ci
-      # package.json の dependencies だけを見る(画面のビルドの devDependencies の警告はここでは止めず Dependabot の PR で追う)
+      # devDependencies も含めて high 以上で止める(リリースと毎週の検査と同じ。画面のビルドの道具の出力は atlas.exe に埋め込まれるので、
+      # リリースで止まるものは PR でも止める)。npm-audit-ignore.json に理由と外す時を書いた advisory だけは止めない
       - if: matrix.os == 'ubuntu-latest' && matrix.node == 24
-        run: npm audit --omit=dev --audit-level=high
+        run: node scripts/npm-audit.mjs
       - run: npm run typecheck
       # 画面(Svelte)を先に作る: atlas のビルドが packages/report/dist/template.html を実行ファイルに埋め込む
       - run: npm run build:report
@@ -316,7 +318,7 @@ jobs:
       - name: clone した状態での動作確認
         run: npm run smoke
 
-  # PR で新しく入る・上がる依存に既知の脆弱性が無いかを見る(dependencies だけ。npm audit と同じく devDependencies では止めない)
+  # PR で新しく入る・上がる依存に既知の脆弱性が無いかを見る(dependencies だけ。devDependencies は check の scripts/npm-audit.mjs が見る)
   dependency-review:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
