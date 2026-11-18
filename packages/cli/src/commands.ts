@@ -4,7 +4,7 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join, posix, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { codeStamp, computeMetrics, isEmptySession, toCsv, failuresTable, FAILURE_LEDGER_MAX_ROWS,currentAtlasBuild, describeAtlasBuilds, summarizeAtlasBuilds, describeSource, extract, readSnapshotManifest, METRICS_SCHEMA_VERSION, readVcsRetention, runVcsStep, snapshot, VCS_RETENTION_FILE, RETENTION_STATUS_LABEL, UNATTRIBUTABLE_REASON_LABEL, type VcsRetentionFile, UPLOAD_OLD_ONLY_REASON, UPLOAD_PROBE_HINT, uploadWorkDirId, KEPT_REASONS, type MetricsFile, type SessionRecord, type SessionsFile, type SnapshotManifest } from '../../core/src/index.ts';
+import { codeStamp, computeMetrics, wikiCountsOf, wikiKind, wikiState, type WikiSpec, isEmptySession, toCsv, failuresTable, FAILURE_LEDGER_MAX_ROWS,currentAtlasBuild, describeAtlasBuilds, summarizeAtlasBuilds, describeSource, extract, readSnapshotManifest, METRICS_SCHEMA_VERSION, readVcsRetention, runVcsStep, snapshot, VCS_RETENTION_FILE, RETENTION_STATUS_LABEL, UNATTRIBUTABLE_REASON_LABEL, type VcsRetentionFile, UPLOAD_OLD_ONLY_REASON, UPLOAD_PROBE_HINT, uploadWorkDirId, KEPT_REASONS, type MetricsFile, type SessionRecord, type SessionsFile, type SnapshotManifest } from '../../core/src/index.ts';
 import {
   buildReport,
   DEFAULT_TRANSCRIPT_OPTIONS,
@@ -255,8 +255,11 @@ export async function runExtract(p: Paths, since: string | null, log: Log, tempD
     log(`extract: インストール済み skill ${skills} 件・プラグイン ${s.installed.plugins.length} 件を記録(名前だけ)${s.installed.warnings.length ? `、注意 ${s.installed.warnings.join(' / ')}` : ''}`);
   }
   if (cfg.wikis?.length) {
-    const used = s.sessions.filter(({ wiki: w }) => w.indexReads + w.pageReads.length + w.skillCalls.length + w.writes + w.otherCalls > 0).length;
-    log(`extract: wiki の対象 ${cfg.wikis.map((w) => w.path).join('、')}(${cfg.path})、参照のあったセッション ${used} 件`);
+    // 画面と同じ数え方(wiki.ts の wikiKind)。書き込みだけのセッションは別に数える
+    const kinds = s.sessions.map(({ wiki: w }) => wikiKind(wikiCountsOf(w)));
+    const used = kinds.filter((k) => k === 'referenced').length;
+    const writeOnly = kinds.filter((k) => k === 'write-only').length;
+    log(`extract: wiki の対象 ${cfg.wikis.map((w) => w.path).join('、')}(${cfg.path})、参照したセッション ${used} 件・書き込みだけ ${writeOnly} 件`);
   } else log(`extract: wiki は未設定のため集計しません(${CONFIG_FILE} の wikis で vault を指定できます)`);
   if (unknown > 0 || s.warnings.badLines > 0) log(`extract: 注意 未知のイベント種別 ${unknown} 件、読めなかった行 ${s.warnings.badLines} 行`);
   // 送り先から集計したときは、送った atlas の版を、送った人ごとに数える(古い版で送った人がいないか)
@@ -596,14 +599,29 @@ const isFile = (p: string): boolean => {
   }
 };
 
+/**
+ * llm-wiki の vault の指定を設定から読む(ページごとの判定の抜粋を、集計と同じ分類器で取るため)。
+ * 読めない設定は、束を作るのを止めずに、指定なしとして続けてログに書く
+ */
+async function bundleWikiSpecs(config: string | null, log: Log): Promise<WikiSpec[]> {
+  const configPath = config ?? process.env.ATLAS_CONFIG ?? null;
+  try {
+    return (await loadConfig(configPath ? resolve(configPath) : join(REPO_ROOT, CONFIG_FILE), configPath != null)).wikis ?? [];
+  } catch (e) {
+    log(`bundle: 注意 設定を読めないので、llm-wiki のページの抜粋はページの名前で探します: ${(e as Error).message}`);
+    return [];
+  }
+}
+
 export async function runBundle(
   p: Paths,
   f: SessionFilter,
   /** zip: バンドルを 1 つの ZIP にもまとめる(<bundle>.zip) */
-  o: { includeEmpty: boolean; perPart?: number | null; unjudged?: boolean; zip?: boolean },
+  o: { includeEmpty: boolean; perPart?: number | null; unjudged?: boolean; zip?: boolean; config?: string | null },
   log: Log,
 ): Promise<BundleManifest> {
-  let { sessions } = await selectSessions(p, f, 'bundle', '先に atlas extract(または atlas all)を実行してください。', log);
+  const selected = await selectSessions(p, f, 'bundle', '先に atlas extract(または atlas all)を実行してください。', log);
+  let { sessions } = selected;
   if (o.unjudged) {
     const judged = new Set((await readJudgments(p.judgments))?.items.map((i) => i.sessionId) ?? []);
     const before = sessions.length;
@@ -618,6 +636,9 @@ export async function runBundle(
     perPart: o.perPart ?? undefined,
     scope: { since: f.since, project: f.project, client: f.client, model: f.model, branch: f.branch, group: f.group ?? null, session: f.sessions?.length ? f.sessions.join(',') : null, unjudged: o.unjudged ? 'yes' : null },
     log,
+    // 選んだセッションだけでなく集計の全セッションで決める(書き込みだけのセッションが選ばれていなくても、vault を指定していたと分かる)
+    wikiState: wikiState(selected.file.sessions.map((r) => ({ wiki: wikiCountsOf(r.wiki) })), selected.file.source.wikis),
+    wikiSpecs: await bundleWikiSpecs(o.config ?? null, log),
   });
   const excerpt = m.sessions.filter((e) => e.textSource === 'excerpt').length;
   const truncated = m.sessions.filter((e) => e.truncated > 0).length;
@@ -702,6 +723,7 @@ export async function runJudgeCommand(p: Paths, j: JudgeCliOptions, log: Log, ba
     const r = await importJudgments(resolve(j.file!), p.judgments, { knownIds: known });
     log(`judge import: ${r.imported} 件を取り込みました(既存の上書き ${r.overwritten} 件、取り込み元の重複 ${r.duplicates} 件)→ ${p.judgments}(計 ${r.total} 件)`);
     if (r.unknownIds.length) log(`judge import: 注意 sessions.json に無いセッション ID が ${r.unknownIds.length} 件あります(レポートには出ません): ${r.unknownIds.slice(0, 5).join(', ')}${r.unknownIds.length > 5 ? ' …' : ''}`);
+    for (const n of r.notes) log(`judge import: 注意 ${n}`);
     return null;
   }
   if (j.backend === 'anthropic') log('judge: 注意 anthropic バックエンドは Anthropic API の従量課金です');
@@ -721,6 +743,10 @@ export async function runJudgeCommand(p: Paths, j: JudgeCliOptions, log: Log, ba
     .join(', ');
   log(`judge: 完了 成功 ${s.succeeded} / 失敗 ${s.failed.length} / 対象 ${s.attempted}(判定済みでスキップ ${s.alreadyJudged})→ ${p.judgments}`);
   log(`judge: 判定自体の使用量 ${s.usage.runs} 回分${usage ? `(${usage})` : ''}${s.usage.missing ? `、取得できなかった ${s.usage.missing} 回` : ''}`);
+  if (s.wikiPageDrops.length) {
+    const ids = s.wikiPageDrops;
+    log(`judge: 注意 llm-wiki のページごとの判定(wikiPages)の形が崩れていて、一部か全部を捨てたセッション ${ids.length} 件(そのページは未判定): ${ids.slice(0, 5).join(', ')}${ids.length > 5 ? ' …' : ''}`);
+  }
   for (const n of s.notes.slice(0, 5)) log(`judge: 補足 ${n}`);
   return s;
 }
@@ -1084,7 +1110,7 @@ async function runCommand(o: CliOptions, p: Paths, log: Log): Promise<RunResult>
     case 'export':
       return { paths: p, build: await runBuild(p, { ...f, transcripts: { toolOutput: o.toolOutput, maxChars: o.maxChars, full: o.full } }, log) };
     case 'bundle':
-      await runBundle(p, f, { includeEmpty: o.includeEmpty, perPart: o.perPart, unjudged: o.unjudged, zip: o.zip }, log);
+      await runBundle(p, f, { includeEmpty: o.includeEmpty, perPart: o.perPart, unjudged: o.unjudged, zip: o.zip, config: o.config }, log);
       return { paths: p };
     case 'turns':
       if (o.turns!.action === 'm365') return runM365Command(o, p, 'turns', o.turns!, log);

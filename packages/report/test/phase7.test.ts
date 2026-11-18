@@ -8,6 +8,10 @@ import { applyFilter, decodeFilter, decodeView, emptyFilter, encodeFilter, filte
 import { msLabel } from '../src/lib/format.ts';
 import { highlights } from '../src/lib/highlights.ts';
 import { permissionGroup, summarize } from '../src/lib/summarize.ts';
+import { wikiPageIndex } from '../src/lib/wiki.ts';
+
+/** wiki のページを読まないセッションだけを要約するときの、空のページの辞書 */
+const NO_WIKI_PAGES = wikiPageIndex([]);
 
 const T0 = Date.parse('2026-10-01T00:00:00Z');
 const ev = (dt: number, type: string, data: unknown): CopilotEvent => ({ type, data, timestamp: new Date(T0 + dt).toISOString() });
@@ -53,7 +57,7 @@ async function records(): Promise<SessionRecord[]> {
 
 describe('Phase 7: 実行の性質の集計', () => {
   it('絞り込み後のセッションから、モード・推論強度・起点・文脈・待ち時間・所要時間・摩擦の詳細・todo を出す', async () => {
-    const all = (await records()).map((r) => summarize(r, null));
+    const all = (await records()).map((r) => summarize(r, null, NO_WIKI_PAGES));
     const x = execAggregate(all);
     expect(x.modes).toEqual({ rows: [{ key: 'interactive', turns: 1 }, { key: 'autopilot', turns: 1 }], inferred: 1, total: 2 });
     expect(x.efforts.map((e) => [e.key, e.requests])).toEqual([
@@ -93,7 +97,7 @@ describe('Phase 7: 実行の性質の集計', () => {
 
 describe('Phase 7: 要点欄とツールの絞り込み', () => {
   it('AIU 上位・失敗率の高いツール・compaction の多いセッション・未使用の skill。リンクは詳細ページか #…', async () => {
-    const all = (await records()).map((r) => summarize(r, null));
+    const all = (await records()).map((r) => summarize(r, null, NO_WIKI_PAGES));
     const filter = emptyFilter();
     const g = highlights(all, aggregate(all).usage, { filter, installed: { skills: ['grep-skill', 'zz'], disabled: [] } });
     expect(g.map((x) => x.kind)).toEqual(['cost', 'tool-failure', 'compaction', 'unused-skill']);
@@ -112,7 +116,7 @@ describe('Phase 7: 要点欄とツールの絞り込み', () => {
   it('AIU の記録が無ければ出力トークンで並べる', async () => {
     const recs = await records();
     for (const r of recs) r.tokens.nanoAiu = null;
-    const all = recs.map((r) => summarize(r, null));
+    const all = recs.map((r) => summarize(r, null, NO_WIKI_PAGES));
     const g = highlights(all, aggregate(all).usage, { filter: emptyFilter(), installed: null });
     expect(g[0].title).toBe('出力トークンの多いセッション');
     expect(g[0].items.map((i) => [i.text, i.href])).toEqual([

@@ -5,6 +5,10 @@ import type { CopilotEvent, SessionRecord } from '../../core/src/types.ts';
 import { aggregate, failureRate, unusedSkills, usageRanking } from '../src/lib/aggregate.ts';
 import { applyFilter, emptyFilter } from '../src/lib/filter.ts';
 import { summarize } from '../src/lib/summarize.ts';
+import { wikiPageIndex } from '../src/lib/wiki.ts';
+
+/** wiki のページを読まないセッションだけを要約するときの、空のページの辞書 */
+const NO_WIKI_PAGES = wikiPageIndex([]);
 
 let n = 0;
 const ev = (type: string, data: unknown, extra: Partial<CopilotEvent> = {}): CopilotEvent => ({
@@ -64,7 +68,7 @@ async function sessions(): Promise<SessionRecord[]> {
 describe('summarize(Phase 6 の形)', () => {
   it('失敗・拒否・結果なしのあったツールだけ issues に持ち、skill / agent は内訳つき', async () => {
     const [a] = await sessions();
-    const s = summarize(a, null);
+    const s = summarize(a, null, NO_WIKI_PAGES);
     expect(s.tools.mcp).toEqual({ gh: { 'gh-search': 1, 'gh-get': 1 } });
     // view: 3 回のうち結果 2(成功 1・拒否 1)。gh-search は全部成功なので持たない
     expect(s.tools.issues).toEqual({ 'gh-get': [1, 0, 1], view: [0, 1, 2] });
@@ -78,7 +82,7 @@ describe('summarize(Phase 6 の形)', () => {
 
 describe('usageRanking', () => {
   it('MCP ツールはサーバーごとに 1 行、失敗率は(失敗 + 拒否)÷ 結果のあった回数', async () => {
-    const summaries = (await sessions()).map((r) => summarize(r, null));
+    const summaries = (await sessions()).map((r) => summarize(r, null, NO_WIKI_PAGES));
     const u = usageRanking(summaries);
     expect(u.tools.map((t) => [t.key, t.calls, t.completed, t.success, t.failure, t.denied, t.sessions])).toEqual([
       ['view', 4, 3, 2, 0, 1, 2],
@@ -101,7 +105,7 @@ describe('usageRanking', () => {
   });
 
   it('絞り込みに追従する(プロジェクトで絞ると、そのセッションの分だけになる)', async () => {
-    const summaries = (await sessions()).map((r) => summarize(r, null));
+    const summaries = (await sessions()).map((r) => summarize(r, null, NO_WIKI_PAGES));
     const only = aggregate(applyFilter(summaries, { ...emptyFilter(), project: 'quokka/b' }));
     expect(only.usage.tools.map((t) => [t.key, t.calls])).toEqual([
       ['mcp:gh', 1],

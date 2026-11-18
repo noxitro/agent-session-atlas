@@ -22,8 +22,22 @@ export { extract, loadStore, sessionStoreRows, openSessionStoreReader, type Sess
 export type { ExtractOptions, StoreData } from './extract.ts';
 export { computeMetrics, bucketOf, distribution, quantiles, latencyByModel, toolDurationStats, monthKey, isEmptySession, installedSkillNames, unusedInstalledSkills } from './metrics.ts';
 export { extractInstructionBlocks, resolveInstructions, charCount, fileFromPath, contentHash } from './instructions.ts';
-export { emptyWiki, WikiClassifier } from './wiki.ts';
-export type { WikiSpec } from './wiki.ts';
+export {
+  emptyWiki,
+  isWriteTool,
+  judgedWikiPages,
+  uniquePages,
+  WikiClassifier,
+  wikiCountsOf,
+  wikiKind,
+  wikiReferenced,
+  wikiState,
+  wikiTouched,
+  WIKI_JUDGED_PAGES_MAX,
+  WIKI_NO_RECORD,
+  WIKI_NOT_COUNTED,
+} from './wiki.ts';
+export type { WikiCounts, WikiKind, WikiSpec, WikiState } from './wiki.ts';
 export { loadSqlite, openReadOnly, openWritable } from './sqlite.ts';
 export { removeTree, renameReplacing, replaceEntries } from './fs-retry.ts';
 export type { Database } from './sqlite.ts';
@@ -45,7 +59,7 @@ export {
   NEEDS_MISMATCH,
   DEFAULT_PHASE_NAMES,
 } from './turns.ts';
-export { commandKind, toolKind, phaseOf, requestKindOf, sessionTurns, followedByFix, isStuck, addTurn, emptyTurnBucket, turnMetrics, PHASES, PHASE_LABEL, REQUEST_KINDS, REQUEST_KIND_LABEL } from './turns.ts';
+export { DELEGATE_TOOLS, commandKind, toolKind, phaseOf, requestKindOf, sessionTurns, followedByFix, isStuck, addTurn, emptyTurnBucket, turnMetrics, PHASES, PHASE_LABEL, REQUEST_KINDS, REQUEST_KIND_LABEL } from './turns.ts';
 export type { Phase, RequestKind, TurnRow, TurnBucket, TurnMetrics, TurnFacts, Outcome, Mismatch } from './turns.ts';
 export { turnsCsv, sessionsCsv, toCsv, csvCell, turnsTable, sessionsTable, retentionHunksTable } from './tables.ts';
 export type { TurnVerdictLike, VerdictMap, Table, Cell, RetentionLabels } from './tables.ts';

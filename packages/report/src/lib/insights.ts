@@ -6,8 +6,7 @@ import type { SessionAnalysis } from '../../../core/src/types.ts';
 import { normalizeRequest } from '../../../core/src/text.ts';
 import type { SessionSummary } from './types.ts';
 
-/** skill の失敗率の差の読み方(画面の改善点の skill の箱と insights.html の skill の節で同じ文。
- * Rust は crates/atlas-report/src/insights.rs の SKILL_RATE_CAUSE。npm run parity:fixture の insights-texts で突き合わせる) */
+/** skill の失敗率の差の読み方(画面の改善点の skill の箱と insights.html の skill の節で同じ文) */
 export const SKILL_RATE_CAUSE = '呼ぶかどうかは作業の中身で決まるので、差は skill が原因とは限りません。';
 
 export const THRESHOLDS = {
@@ -408,6 +407,70 @@ export function collapseRuns(tools: string[]): string[] {
   return out;
 }
 
+/** 共通する組の数。ただし、残りを全部共有しても need に届かないと分かった時点で打ち切って null(どちらも昇順で重複なし) */
+function intersectionAtLeast(a: readonly string[], b: readonly string[], need: number): number | null {
+  let i = 0;
+  let j = 0;
+  let n = 0;
+  while (i < a.length && j < b.length) {
+    if (n + Math.min(a.length - i, b.length - j) < need) return null;
+    if (a[i]! < b[j]!) i++;
+    else if (a[i]! > b[j]!) j++;
+    else {
+      n++;
+      i++;
+      j++;
+    }
+  }
+  return n;
+}
+
+/**
+ * 接頭辞の長さ: 組が n 個の依頼文と類似度がしきい値以上になる相手は、珍しい順の先頭この個数のどこかを必ず共有する。
+ * しきい値は浮動小数の割り算と比べているので、わずかに小さく見て長めに取る(短すぎると取りこぼすが、長すぎても結果は同じ)
+ */
+function prefixLen(n: number): number {
+  const need = Math.ceil((THRESHOLDS.SIMILARITY - 1e-9) * n);
+  return Math.min(Math.max(n + 1 - need, 1), Math.max(n, 1));
+}
+
+/**
+ * まとまりの代表: 他の全員(自分を含む)との類似度の和が最大の人。和が同じなら先の人。和は members の順に足す。
+ *
+ * 全員どうしを比べると人数の 2 乗の回数になり、同じ依頼を何度も実行したまとまり(数千人)では集計の大半を占めていた。
+ * 類似度は 3 文字の組だけで決まるので、同じ組を持つ人どうしは、どの相手との類似度も、members の順に足した和も、ビットまで同じになる。
+ * そこで、組ごとに 1 回だけ相手の組との類似度を求め、和はその値を members の順に足して作る(結果は全員を比べたときと同じ)
+ */
+function clusterRepresentative<T extends { grams: Set<string> }>(members: readonly T[]): T {
+  const first: T[] = [];
+  const kindOf: number[] = [];
+  const seen = new Map<string, number>();
+  for (const m of members) {
+    const key = [...m.grams].sort().join('\u0000');
+    let k = seen.get(key);
+    if (k === undefined) {
+      k = first.length;
+      seen.set(key, k);
+      first.push(m);
+    }
+    kindOf.push(k);
+  }
+  const sums = first.map((a) => {
+    const row = first.map((b) => jaccard(a.grams, b.grams));
+    return kindOf.reduce((acc, k) => acc + row[k]!, 0);
+  });
+  let best = members[0]!;
+  let bestS = -Infinity;
+  members.forEach((m, i) => {
+    const s = sums[kindOf[i]!]!;
+    if (s > bestS) {
+      bestS = s;
+      best = m;
+    }
+  });
+  return best;
+}
+
 export function requestCandidates(sources: CandidateSource[]): Candidate[] {
   type Item = { id: string; text: string; norm: string; grams: Set<string>; ms: number | null };
   const items: Item[] = [];
@@ -420,33 +483,116 @@ export function requestCandidates(sources: CandidateSource[]): Candidate[] {
     });
   }
   // 先に作ったまとまりから順に、代表との類似度がしきい値以上の最初のまとまりに入れる。
-  // 代表の 3 文字の組がどのまとまりにあるかの索引を持ち、共通する組の数を数えて類似度を出す(jaccard と同じ式)。
-  // 共通する組が 1 つも無いまとまりは類似度 0 なので見ない(1 件ずつ全部のまとまりと比べると、依頼の数の 2 乗で遅くなる)
-  const clusters: { rep: Item; members: Item[] }[] = [];
+  //
+  // 代表の 3 文字の組をすべて索引に入れて共通する組を数えるだけだと、ありふれた組(「the」など)の行き先がまとまりの数だけ伸び、
+  // 依頼文がばらばらなとき(まとまりが依頼文の数ほどできる)に、依頼文の数の 2 乗の回数になる。
+  // そこで類似度での結合でよく使うやり方(PPJoin)で候補を絞る。組を全体で珍しい順に並べると、類似度が t 以上の 2 つは:
+  // - それぞれの先頭 |X| - ceil(t|X|) + 1 個(接頭辞)のどこかを必ず共有する(共有する組は ceil(t·max(|A|,|B|)) 個以上あるため)
+  // - 組の数の比が t 以上(類似度は 小さいほう / 大きいほう 以下)
+  // - 共有する組が ceil(t/(1+t)·(|A|+|B|)) 個以上。接頭辞で i 番目と j 番目が一致したとき、それより後で一致できるのは
+  //   min(|A|-i-1, |B|-j-1) 個までなので、それまでの一致の数に足しても届かなければ捨ててよい
+  // 代表の接頭辞を(位置つきで)索引に入れ、依頼文の接頭辞で引いて残った候補だけを、元と同じ式で確かめる(入るまとまりは元と同じ)。
+  // 架空の 9 万件の依頼文で、かなと漢字の語を偏って並べたもの(実際の文に近い)は大きく縮む。
+  // しきい値は浮動小数の割り算と比べているので、絞り込みではわずかに小さく見る(緩めても結果は同じ)
+  const t = THRESHOLDS.SIMILARITY - 1e-9;
+  const df = new Map<string, number>();
+  for (const it of items) for (const g of it.grams) df.set(g, (df.get(g) ?? 0) + 1);
+  const cmp = (x: string, y: string): number => (x < y ? -1 : x > y ? 1 : 0);
+  /** 突き合わせ用(文字列の順) */
+  const sorted = items.map((it) => [...it.grams].sort());
+  /** 接頭辞用(全体で珍しい順) */
+  const ordered = items.map((it) => [...it.grams].sort((x, y) => df.get(x)! - df.get(y)! || cmp(x, y)));
+  const reps: number[] = [];
+  const members: number[][] = [];
+  // 接頭辞の索引: 組 → [まとまり, 代表の並びでの位置, 代表の組の数]
+  const byPrefix = new Map<string, [number, number, number][]>();
+  // 全部の組の索引: 組 → まとまり。どの組もありふれていて(珍しい組が無い)接頭辞で絞れないときは、
+  // 照合より、こちらで全部のまとまりとの共通する組を数えるほうが安いので、依頼文ごとに安いほうを使う(どちらも結果は同じ)
   const byGram = new Map<string, number[]>();
-  for (const it of items) {
+  // まとまりごとの、接頭辞で一致した数(-1 は捨てた)と、共通する組の数。触ったまとまりだけを覚えて戻す
+  const count: number[] = [];
+  const shared: number[] = [];
+  let touched: number[] = [];
+  let probeWorth = 1;
+  const passes = (inter: number, a: number, b: number): boolean => inter / (a + b - inter) >= THRESHOLDS.SIMILARITY;
+  items.forEach((it, ii) => {
     let found = -1;
-    if (it.grams.size === 0) found = clusters.findIndex((x) => jaccard(x.rep.grams, it.grams) >= THRESHOLDS.SIMILARITY);
+    const a = it.grams.size;
+    if (a === 0) found = reps.findIndex((r) => jaccard(items[r]!.grams, it.grams) >= THRESHOLDS.SIMILARITY);
     else {
-      const shared = new Map<number, number>();
-      for (const g of it.grams) for (const ci of byGram.get(g) ?? []) shared.set(ci, (shared.get(ci) ?? 0) + 1);
-      for (const [ci, inter] of shared) {
-        if (found !== -1 && ci > found) continue;
-        if (inter / (clusters[ci]!.rep.grams.size + it.grams.size - inter) >= THRESHOLDS.SIMILARITY) found = ci;
+      const minB = Math.ceil(t * a);
+      const maxB = Math.floor(a / t);
+      // 数える手間(全部の組の索引の行き先の長さの和)と、接頭辞で引く手間。引く手間が数える手間の 1/4 を超えるなら、
+      // 絞っても照合の分が上乗せになるので、引かずに数える
+      const prefix = ordered[ii]!.slice(0, prefixLen(a));
+      const lists = [...it.grams].flatMap((g) => byGram.get(g) ?? []);
+      const countCost = lists.length;
+      let probeCost = 0;
+      for (const g of prefix) probeCost += byPrefix.get(g)?.length ?? 0;
+      // 直近で接頭辞が役に立ったか(引いて照合で済んだ割合)を覚え、役に立たない間は引かない(16 件に 1 件は試して覚え直す)
+      const probe = probeCost * 4 <= countCost && (probeWorth >= 0.2 || ii % 16 === 0);
+      if (probe) {
+        prefix.forEach((g, i) => {
+          for (const [ci, j, b] of byPrefix.get(g) ?? []) {
+            const c = count[ci]!;
+            if (c < 0 || b < minB || b > maxB) continue;
+            if (c === 0) touched.push(ci);
+            const need = Math.ceil((t / (1 + t)) * (a + b));
+            count[ci] = c + 1 + Math.min(a - i - 1, b - j - 1) >= need ? c + 1 : -1;
+          }
+        });
+      }
+      touched.sort((x, y) => x - y);
+      touched = touched.filter((ci) => {
+        const c = count[ci]!;
+        count[ci] = 0;
+        return c > 0;
+      });
+      // 照合の手間(残った候補 × 組の数。1 つずつ突き合わせるので、数えるより 3 倍ほど重い)と、数える手間の安いほう
+      const verify = probe && touched.length * a * 3 <= countCost;
+      if (probe) probeWorth = probeWorth * 0.9 + (verify ? 0.1 : 0);
+      if (verify) {
+        // 類似度がしきい値以上のまとまりのうち、いちばん先に作ったもの
+        found =
+          touched.find((ci) => {
+            const rep = sorted[reps[ci]!]!;
+            const inter = intersectionAtLeast(rep, sorted[ii]!, Math.ceil((t / (1 + t)) * (rep.length + a)));
+            return inter != null && passes(inter, rep.length, a);
+          }) ?? -1;
+        touched = [];
+      } else {
+        touched = [];
+        for (const ci of lists) {
+          if (shared[ci] === 0) touched.push(ci);
+          shared[ci]!++;
+        }
+        for (const ci of touched) {
+          const inter = shared[ci]!;
+          shared[ci] = 0;
+          if ((found === -1 || ci < found) && passes(inter, items[reps[ci]!]!.grams.size, a)) found = ci;
+        }
+        touched = [];
       }
     }
-    if (found !== -1) clusters[found]!.members.push(it);
+    if (found !== -1) members[found]!.push(ii);
     else {
-      const ci = clusters.push({ rep: it, members: [it] }) - 1;
+      const ci = reps.length;
+      reps.push(ii);
+      members.push([ii]);
+      count.push(0);
+      shared.push(0);
+      const o = ordered[ii]!;
+      o.slice(0, prefixLen(o.length)).forEach((g, j) => (byPrefix.get(g) ?? byPrefix.set(g, []).get(g)!).push([ci, j, o.length]));
       for (const g of it.grams) (byGram.get(g) ?? byGram.set(g, []).get(g)!).push(ci);
     }
-  }
+  });
+  const clusters = members.map((ms) => ({ members: ms.map((m) => items[m]!) }));
   const out: Candidate[] = [];
   for (const c of clusters) {
     const sessions = [...new Set(c.members.map((m) => m.id))];
     if (c.members.length < THRESHOLDS.MIN_REPEAT || sessions.length < 2) continue;
-    // 代表は他の全員との類似度の和が最大のもの
-    const rep = c.members.map((m) => ({ m, s: sum(c.members.map((o) => jaccard(m.grams, o.grams))) })).sort((a, b) => b.s - a.s)[0].m;
+    // 代表は他の全員との類似度の和が最大のもの(和が同じなら先の人)
+    const rep = clusterRepresentative(c.members);
     const medianMs = median(c.members.map((m) => m.ms).filter((x): x is number => x != null));
     out.push({
       kind: 'request',

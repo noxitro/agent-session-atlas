@@ -20,7 +20,8 @@ const SHELL_TOOLS = new Set(['powershell', 'bash', 'shell', 'write_powershell', 
 /** 計画・確認(todo は session.db を sql ツールで書く) */
 const PLAN_TOOLS = new Set(['ask_user', 'sql', 'update_todo', 'exit_plan_mode', 'todo_write']);
 const WEB_TOOLS = new Set(['web_fetch', 'web_search', 'fetch_copilot_cli_documentation']);
-const DELEGATE_TOOLS = new Set(['task', 'read_agent', 'list_agents', 'run_dynamic_workflow', 'dynamic_workflows_manage']);
+/** サブエージェントへの依頼のツール(判定のパケットでは、引数は依頼文で、結果はページの中身ではないので llm-wiki の読み取りに数えない) */
+export const DELEGATE_TOOLS: ReadonlySet<string> = new Set(['task', 'read_agent', 'list_agents', 'run_dynamic_workflow', 'dynamic_workflows_manage']);
 /** 工程を決めるのに数えない(シェルの出力を読む・止める、セッションの名前、記憶、完了の報告) */
 const NEUTRAL_TOOLS = new Set(['read_powershell', 'read_bash', 'stop_powershell', 'stop_bash', 'list_powershell', 'list_bash', 'rename_session', 'store_memory', 'vote_memory', 'task_complete', 'skill']);
 

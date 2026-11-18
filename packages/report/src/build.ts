@@ -24,7 +24,9 @@ import type { VcsRetentionFile } from '../../core/src/vcs-step.ts';
 import type { SessionGroup } from './lib/groups.ts';
 import { memoSummary } from './lib/memo.ts';
 import { loadMemberMemos, loadMemoIndex, renderMemberMemo, renderMemo, type MemoFile } from './memo-io.ts';
-import { detailFileName, summarize } from './lib/summarize.ts';
+import { detailFileName, judgmentForSession, summarize } from './lib/summarize.ts';
+import { wikiPageIndex, wikiState } from './lib/wiki.ts';
+import { wikiCountsOf } from '../../core/src/wiki.ts';
 import { renderTranscript, transcriptFileName, type TranscriptOptions } from './transcript.ts';
 import { loadStore, type StoreData } from '../../core/src/index.ts';
 import { REPORT_DATA_VERSION, type ReportData } from './lib/types.ts';
@@ -197,8 +199,10 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
   const vx = input.verdicts ?? null;
   const rx = input.retention ?? null;
   const retentionById = new Map((rx?.sessions ?? []).map((r) => [r.sessionId, r]));
+  // llm-wiki のページの名前は辞書に 1 回だけ置き、要約は番号で持つ
+  const wikiPages = wikiPageIndex(input.sessions);
   const sessions = input.sessions.map((r) => {
-    const base = summarize(r, j?.bySession.get(r.id) ?? null);
+    const base = summarize(r, j?.bySession.get(r.id) ?? null, wikiPages);
     const vt = vx ? verdictTuples(vx.bySession.get(r.id), vx.phases) : [];
     const rt = retentionById.get(r.id);
     const s = { ...base, ...(vt.length ? { turnVerdicts: vt } : {}), ...(rt ? { retention: retentionItem(rt, turnStarts(r)) } : {}) };
@@ -223,6 +227,8 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
     ...(input.readOnly ? { readOnly: true } : {}),
     // 参照を数えた llm-wiki の vault の数。0 なら wiki の参照は数えていない(古い集計では無い)
     ...(input.wikiVaults != null ? { wikiVaults: input.wikiVaults } : {}),
+    // 読んだ llm-wiki のページの名前の辞書(要約の wiki.pages と judgment.wikiPages はこの番号)
+    wikiPageNames: wikiPages.names,
     ...(atlasBuilds ? { atlasBuilds } : {}),
     metrics: input.metrics,
     sessions,
@@ -365,9 +371,12 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
     if (e.type === 'system.message' && typeof d.content === 'string') lib.addSystemMessage(id, d.content, e.timestamp ?? null);
     if (e.type === 'skill.invoked' && typeof d.content === 'string' && typeof d.name === 'string') lib.addSkill(id, d.name, d.content, contentHash(d.content), e.timestamp ?? null, typeof d.path === 'string' ? d.path : null);
   };
+  // wiki を数えた集計か(画面の wikiState と同じく、埋め込む全セッションで 1 度だけ決める)
+  const detailWikiState = wikiState(input.sessions.map((r) => ({ wiki: wikiCountsOf(r.wiki) })), input.wikiVaults ?? undefined);
   for (const r of input.sessions) {
-    // 詳細ページには根拠も出す
-    const judgment = j?.bySession.get(r.id) ?? null;
+    // 詳細ページには根拠も出す(llm-wiki のページの判定は、判定のパケットに載せたページの分だけ)
+    const found = j?.bySession.get(r.id);
+    const judgment = found ? judgmentForSession(found, r.wiki.pageReads) : null;
     let transcriptHref: string | null = null;
     if (tr && store && trStat) {
       const eventsPath = join(tr.snapshotDir, 'session-state', r.id, 'events.jsonl');
@@ -431,7 +440,7 @@ export async function buildReport(input: BuildInput): Promise<BuildResult> {
     }
     const m = memos.get(r.id);
     const memo = m ? { html: memoHtml(r.id, m.text), updatedAt: m.updatedAt } : null;
-    const page = renderDetailHtml(r, { css, judgment, verdicts: vx?.bySession.get(r.id) ?? null, retention: retentionById.get(r.id) ?? null, retentionMeta: data.retention ?? null, generatedAt, transcriptHref, libraryHref: data.library ? `../${INSTRUCTIONS_FILE}` : null, skillHasPage: (name) => !!lib?.hasSkill(name), libraryHasSession: !!lib?.hasSession(r.id), fullHref, memo });
+    const page = renderDetailHtml(r, { css, judgment, verdicts: vx?.bySession.get(r.id) ?? null, retention: retentionById.get(r.id) ?? null, retentionMeta: data.retention ?? null, wikiState: detailWikiState, generatedAt, transcriptHref, libraryHref: data.library ? `../${INSTRUCTIONS_FILE}` : null, skillHasPage: (name) => !!lib?.hasSkill(name), libraryHasSession: !!lib?.hasSession(r.id), fullHref, memo });
     detailBytes += Buffer.byteLength(page);
     await writeFile(join(detailDir, detailFileName(r.id)), page);
   }

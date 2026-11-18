@@ -53,7 +53,7 @@ import { describeVault, wikiSkillCandidates } from './setup.ts';
 import { importJudgmentsText, importTurnJudgmentsText, JudgmentValidationError, turnImportPhases } from '../../judge/src/index.ts';
 import { judgedSessionIds, judgedTurnKeys, listChatParts, type ChatParts, type ChatTarget } from './chat-parts.ts';
 import { phaseNames } from './config.ts';
-import { acquireOutLock, JobError, JobRunner, OutBusyError, parseJobRequest, runningJobIn, type RunFullFn, type SpawnFn } from './jobs.ts';
+import { acquireOutLock, alive, JobError, JobRunner, OutBusyError, parseJobRequest, runningJobIn, type RunFullFn, type SpawnFn } from './jobs.ts';
 import { exportGroup } from './group-export.ts';
 import { checkUpload, UploadChangedError, uploadDir, uploadedAt, uploadGroup, type GroupUploadResult, type UploadCheck, type UploadProgress } from './group-upload.ts';
 import { defaultConfigPath, isByokModel, loadConfig, modifyConfig, NO_CHANGE, parseConfig, parseUploadRoot, updateConfig } from './config.ts';
@@ -256,6 +256,9 @@ export async function findRunningServer(outDir: string): Promise<{ port: number;
   try {
     const j = JSON.parse(await readFile(p, 'utf8')) as { port?: number; pid?: number };
     if (!j.port) return null;
+    // 止められて(強制終了など).serve.json が残ったとき、そのポートには尋ねない。
+    // Windows は閉じたポートへの接続を断られても送り直すので、待ちの時間を使い切る
+    if (j.pid && !alive(j.pid)) return null;
     const r = await fetch(`http://127.0.0.1:${j.port}/api/state`, { signal: AbortSignal.timeout(1500) });
     if (r.headers.get('x-atlas-serve') !== '1') return null;
     return { port: j.port, pid: j.pid ?? 0, code: r.headers.get('x-atlas-code') };
@@ -1200,6 +1203,8 @@ export async function startServe(o: ServeOptions): Promise<ServeHandle> {
         throw new HttpError(400, (e as Error).message);
       }
       log(`${target === 'turns' ? 'turns import' : 'judge import'}(画面): ${r.imported} 件を取り込みました(既存の上書き ${r.overwritten} 件)`);
+      // llm-wiki のページごとの判定の一部を捨てた(そのページは未判定)
+      for (const n of 'notes' in r ? r.notes : []) log(`judge import(画面): 注意 ${n}`);
       const unknownIds = 'unknownIds' in r ? r.unknownIds : r.unknown;
       sendJson(res, 200, { imported: r.imported, overwritten: r.overwritten, duplicates: 'duplicates' in r ? r.duplicates : 0, unknownIds, total: r.total, parts: await partsJson() });
       return;

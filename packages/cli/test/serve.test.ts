@@ -1,4 +1,5 @@
 // atlas serve(Phase 10 第 2 段): 静的配信・API・token・パスの正規化・heartbeat による終了
+import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { request } from 'node:http';
@@ -63,6 +64,13 @@ describe('serve', () => {
     expect(st).toMatchObject({ port: h!.port, pid: process.pid });
     expect(JSON.stringify(st)).not.toContain(h!.token);
     expect(await findRunningServer(out)).toEqual({ port: h!.port, pid: process.pid, code: codeStamp() });
+    // 印の pid のプロセスが無ければ、ポートに尋ねずに動いていないとみなす(強制終了で残った印)
+    const dead = spawnSync(process.execPath, ['-e', '0']).pid!;
+    await writeFile(join(out, SERVE_STATE_FILE), JSON.stringify({ port: h!.port, pid: dead }));
+    expect(await findRunningServer(out)).toBeNull();
+    // pid の無い印は、今までどおりポートに尋ねる
+    await writeFile(join(out, SERVE_STATE_FILE), JSON.stringify({ port: h!.port }));
+    expect((await findRunningServer(out))?.port).toBe(h!.port);
   });
 
   it('版の目印: どの応答にも起動したときの目印(x-atlas-code)を付ける。目印を返さない古いサーバの代わり(null)では付けない', async () => {

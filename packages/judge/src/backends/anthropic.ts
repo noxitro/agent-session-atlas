@@ -1,7 +1,7 @@
 // Anthropic Messages API を fetch で直接呼ぶ判定バックエンド(従量課金。明示指定したときだけ使う)。
 // 依存を増やさないため SDK を使わず raw HTTP で実装している。
 import { buildJudgePrompt } from '../rubric.ts';
-import { itemFromTexts } from './output.ts';
+import { itemAndNotesFromTexts } from './output.ts';
 import type { JudgeBackend, JudgePacket, JudgeResult } from './types.ts';
 
 export const ANTHROPIC_DEFAULT_MODEL = 'claude-sonnet-5-5';
@@ -68,8 +68,8 @@ export function anthropicBackend(o: AnthropicOptions = {}): JudgeBackend {
     model: o.model ?? ANTHROPIC_DEFAULT_MODEL,
     async judge(packet: JudgePacket): Promise<JudgeResult> {
       const r = await anthropicMessage(buildJudgePrompt(packet.markdown, packet.sessionId), o);
-      const item = itemFromTexts(r.texts.length ? [r.texts.join('\n')] : [], packet.sessionId);
-      return { item, usage: r.usage, notes: r.notes };
+      const { item, wikiNotes } = itemAndNotesFromTexts(r.texts.length ? [r.texts.join('\n')] : [], packet.sessionId);
+      return { item, usage: r.usage, notes: r.notes, wikiNotes };
     },
   };
 }

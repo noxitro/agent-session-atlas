@@ -4,7 +4,25 @@
 // パケットにそう明記する。
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { isMainAssistantMessage, isUserTurn, loadStore, parseEvents, type SessionRecord, type StoreData } from '../../core/src/index.ts';
+import {
+  DELEGATE_TOOLS,
+  emptyWiki,
+  isInternalTool,
+  isMainAssistantMessage,
+  isUserTurn,
+  isWriteTool,
+  judgedWikiPages,
+  loadStore,
+  parseEvents,
+  redactSecrets,
+  uniquePages,
+  WIKI_JUDGED_PAGES_MAX,
+  type SessionRecord,
+  type StoreData,
+  type WikiClassifier,
+  type WikiState,
+} from '../../core/src/index.ts';
+import { wikiCountsOf, wikiTouched } from '../../core/src/wiki.ts';
 
 /** パケットに必ず含める見出し(E2E と run の検査に使う) */
 export const PACKET_SECTIONS = [
@@ -31,7 +49,34 @@ export interface SessionTexts {
   finalResponse: TextEntry | null;
   compactions: TextEntry[];
   taskCompletes: TextEntry[];
+  /** llm-wiki のページを読んだ記録(判定に載せるページ judgedWikiPages のうち、ログで読んだ呼び出しが見つかったもの。読んだ順) */
+  wikiReads: WikiRead[];
+  /** 読んだ呼び出しをログ(events.jsonl)の全文から探したか。false はログが無く、session-store.db か sessions.json の抜粋で本文を代用したとき */
+  wikiScanned: boolean;
 }
+
+/** llm-wiki のページ 1 つを最初に読んだ記録(判定のパケットの「llm-wiki のページごとの判定」に載せる) */
+export interface WikiRead {
+  /** ページの名前(sessions.json の wiki.pageReads と同じ書き方) */
+  page: string;
+  /** 読んだ呼び出しの時刻 */
+  at: string | null;
+  /** 何番目の依頼の中で読んだか(1 から。最初の依頼より前なら null) */
+  request: number | null;
+  /** 読んだツールの結果の先頭(秘密らしい文字列を伏せた後、WIKI_EXCERPT_KEEP 字まで)。結果の本文がログに無い形なら null */
+  excerpt: string | null;
+  /** 伏せた後の結果の全体の字数 */
+  excerptTotal: number;
+  /** 1 回の呼び出しで、判定に載せるほかのページも読んだ(抜粋はそれらと同じ結果) */
+  shared: boolean;
+  /** 読んだ後に同じ依頼の中で呼んだツール(WIKI_AFTER_TOOLS 件まで。内部ツールを除く) */
+  afterTools: string[];
+}
+
+/** 抜粋を読み取りのときに持っておく字数(パケットにはこのうち PacketLimits の wikiExcerptChars 字まで載せる) */
+const WIKI_EXCERPT_KEEP = 4_000;
+/** 読んだ後のツールを並べる数 */
+const WIKI_AFTER_TOOLS = 5;
 
 export interface PacketLimits {
   /** パケット全体の上限(文字)。超えたら本文の上限を段階的に下げる */
@@ -45,11 +90,13 @@ export interface PacketLimits {
   summaryChars: number;
   /** ファイル一覧などの列挙の上限(件) */
   listItems: number;
+  /** llm-wiki のページごとの抜粋の字数(1 ページ)。ページの数の上限は WIKI_JUDGED_PAGES_MAX。前の版の manifest には無い */
+  wikiExcerptChars: number;
 }
 
 /**
  * 既定の上限。copilot -p はプロンプトをコマンドライン引数で渡すため、Windows の上限(32,767 文字)から
- * 判定指示(約 4,000 文字)を引いた範囲に収める。
+ * 判定指示(約 4,500 文字)を引いた範囲に収める。llm-wiki の抜粋は 1 ページ 400 字 × 最大 10 ページで、この上限の中に入る
  */
 export const DEFAULT_LIMITS: PacketLimits = {
   maxChars: 24_000,
@@ -58,18 +105,153 @@ export const DEFAULT_LIMITS: PacketLimits = {
   finalResponseChars: 5_000,
   summaryChars: 5_000,
   listItems: 40,
+  wikiExcerptChars: 400,
 };
 
 // 依頼・応答の数え方は sessions.json(core の normalize)と同じ規則にする(autopilot の自動継続・サブエージェントの応答を除く)
 
-/** スナップショットから本文を読む。ids に無いセッションは読まない */
-export async function collectTexts(snapshotDir: string, sessions: SessionRecord[], store?: StoreData): Promise<Map<string, SessionTexts>> {
+/**
+ * ツールの引数の文字列の値だけをつなぐ(区切り [\\/]+ を 1 つの / にまとめ、小文字にする。集計の分類器と同じまとめ方)。
+ * ページの名前の直後を確かめるのと、設定に vault の指定が無いときにページの名前を探すのに使う
+ */
+function argTextLower(v: unknown): string {
+  if (typeof v === 'string') return `${v.replace(/[\\/]+/g, '/').toLowerCase()}\n`;
+  if (Array.isArray(v)) return v.map(argTextLower).join('');
+  if (v && typeof v === 'object') return Object.values(v).map(argTextLower).join('');
+  return '';
+}
+
+/** 名前の続きになる文字(分類器の [\p{L}\p{N}_-] と同じ) */
+const NAME_CHAR = /^[\p{L}\p{N}_-]$/u;
+
+/** text の中に「/<ページ>」があり、その直後が名前の続き(a.md.bak の「.bak」、a.mdx の「x」など)でない位置があるか */
+function hasPage(text: string, needle: string): boolean {
+  for (let i = text.indexOf(needle); i >= 0; i = text.indexOf(needle, i + 1)) {
+    const [c, n] = Array.from(text.slice(i + needle.length, i + needle.length + 4));
+    if (c != null && NAME_CHAR.test(c)) continue;
+    if (c === '.' && n != null && NAME_CHAR.test(n)) continue;
+    return true;
+  }
+  return false;
+}
+
+/** ツールの結果の本文(result が文字列ならそれ、オブジェクトなら content、無ければ detailedContent)。無ければ null */
+function resultText(d: Record<string, unknown>): string | null {
+  const r = d.result;
+  let t: unknown = null;
+  if (typeof r === 'string') t = r;
+  else if (r && typeof r === 'object' && !Array.isArray(r)) {
+    const o = r as Record<string, unknown>;
+    t = typeof o.content === 'string' && o.content !== '' ? o.content : typeof o.detailedContent === 'string' ? o.detailedContent : null;
+  }
+  return typeof t === 'string' && t.trim() !== '' ? t : null;
+}
+
+/**
+ * llm-wiki のページを読んだ呼び出しを、events.jsonl の中から探す。
+ * - 設定に vault の指定があれば、集計と同じ分類器(WikiClassifier.classify)を呼び出しごとに当て、
+ *   判定に載せるページを読んだと分類された呼び出しを、そのページの読み取りとする(集計と同じ決め方)。
+ * - 指定が無ければ、引数に「/<ページ>」の形で出る呼び出しを読み取りとする(区切りのまとめ方は分類器と同じ)。
+ *   この場合、vault の直下のページ(AGENTS.md など)はプロジェクトの同じ名前のファイルと見分けられない。
+ * - どちらでも、ページの名前の直後が名前の続き(a.md.bak の「.bak」など)の呼び出しは、そのページの読み取りにしない。
+ * どちらでも、書き込みのツールとサブエージェントへの依頼(task など。引数は依頼文で、結果はページの中身ではない)は読み取りとみなさない。
+ * 抜粋は、成功して結果の本文がある最初の呼び出しから取る(失敗・本文なしの呼び出しは飛ばし、後の呼び出しで埋める)
+ */
+class WikiScan {
+  /** (ページ, 指定が無いときに探す文字列) */
+  private readonly targets: [string, string][];
+  /** 抜粋を取れたページ */
+  private readonly found = new Map<string, WikiRead>();
+  /** 読んだ呼び出しはあったが、まだ抜粋を取れていないページ(最初の呼び出しの時刻と依頼) */
+  private readonly seen = new Map<string, WikiRead>();
+  private readonly pending = new Map<string, { pages: string[]; at: string | null; request: number | null }>();
+  /** 読んだ後のツールを集めているページ(同じ依頼の中だけ) */
+  private watching: string[] = [];
+
+  private readonly classifier: WikiClassifier | undefined;
+
+  constructor(s: SessionRecord, classifier: WikiClassifier | undefined) {
+    this.classifier = classifier;
+    this.targets = judgedWikiPages(s.wiki.pageReads).map((p) => [p, `/${p.replace(/\\/g, '/').toLowerCase()}`]);
+  }
+
+  userTurn(): void {
+    this.watching = [];
+  }
+
+  /** この呼び出しで読んだ、判定に載せるページ(載せる並び) */
+  private pagesOfCall(name: string, args: unknown): string[] {
+    if (isWriteTool(name) || DELEGATE_TOOLS.has(name)) return [];
+    const text = argTextLower(args);
+    // 名前の直後が名前の続き(a.md.bak など)なら、そのページの読み取りにしない(分類器は拡張子の後の「.」を見ないので、どちらでも確かめる)
+    const named = (needle: string): boolean => hasPage(text, needle);
+    if (this.classifier) {
+      const w = emptyWiki();
+      this.classifier.classify(w, name, args);
+      return this.targets.filter(([p, needle]) => w.pageReads.includes(p) && named(needle)).map(([p]) => p);
+    }
+    return this.targets.filter(([, needle]) => named(needle)).map(([p]) => p);
+  }
+
+  toolStart(d: Record<string, unknown>, at: string | null, request: number): void {
+    if (!this.targets.length) return;
+    const name = typeof d.toolName === 'string' ? d.toolName : '';
+    if (!name || isInternalTool(name)) return;
+    for (const p of this.watching) {
+      const r = this.found.get(p);
+      if (r && r.afterTools.length < WIKI_AFTER_TOOLS) r.afterTools.push(name);
+    }
+    const pages = this.pagesOfCall(name, d.arguments).filter((p) => !this.found.has(p));
+    if (!pages.length) return;
+    const req = request > 0 ? request : null;
+    for (const p of pages) if (!this.seen.has(p)) this.seen.set(p, { page: p, at, request: req, excerpt: null, excerptTotal: 0, shared: false, afterTools: [] });
+    const call = typeof d.toolCallId === 'string' ? d.toolCallId : '';
+    if (call) this.pending.set(call, { pages, at, request: req });
+  }
+
+  toolComplete(d: Record<string, unknown>): void {
+    const id = typeof d.toolCallId === 'string' ? d.toolCallId : null;
+    const read = id != null ? this.pending.get(id) : undefined;
+    if (!read) return;
+    this.pending.delete(id!);
+    // 失敗した呼び出しと、結果の本文が無い呼び出しは飛ばす(後の呼び出しで抜粋を埋める)
+    if (d.success === false) return;
+    const text = resultText(d);
+    if (text == null) return;
+    // 秘密らしい文字列は、切る前の全文で伏せる(途中で切れた鍵は形に当たらず残るため)
+    const red = redactSecrets(text).text;
+    const chars = [...red];
+    const keep = chars.slice(0, WIKI_EXCERPT_KEEP).join('');
+    const pages = read.pages.filter((p) => !this.found.has(p));
+    const shared = pages.length > 1;
+    for (const p of pages) {
+      this.seen.delete(p);
+      this.found.set(p, { page: p, at: read.at, request: read.request, excerpt: keep, excerptTotal: chars.length, shared, afterTools: [] });
+      this.watching.push(p);
+    }
+  }
+
+  /** 載せるページの並び(読んだ順)に。抜粋を取れなかったページは、最初に読んだ呼び出しの時刻と依頼だけ */
+  finish(): WikiRead[] {
+    return this.targets.flatMap(([p]) => {
+      const r = this.found.get(p) ?? this.seen.get(p);
+      return r ? [r] : [];
+    });
+  }
+}
+
+/**
+ * スナップショットから本文を読む。ids に無いセッションは読まない。
+ * wiki は集計と同じ vault の指定で作った分類器(llm-wiki のページを読んだ呼び出しを決めるのに使う。設定に指定が無ければ undefined)
+ */
+export async function collectTexts(snapshotDir: string, sessions: SessionRecord[], store?: StoreData, wiki?: WikiClassifier): Promise<Map<string, SessionTexts>> {
   const out = new Map<string, SessionTexts>();
   const st = store ?? (await loadStore(join(snapshotDir, 'session-store.db')));
   for (const s of sessions) {
-    const t: SessionTexts = { source: 'snapshot', requests: [], finalResponse: null, compactions: [], taskCompletes: [] };
+    const t: SessionTexts = { source: 'snapshot', requests: [], finalResponse: null, compactions: [], taskCompletes: [], wikiReads: [], wikiScanned: false };
     const events = join(snapshotDir, 'session-state', s.id, 'events.jsonl');
     let fromEvents = false;
+    const scan = new WikiScan(s, wiki);
     if (existsSync(events)) {
       for await (const e of parseEvents(events)) {
         const d = e.data ?? {};
@@ -79,7 +261,14 @@ export async function collectTexts(snapshotDir: string, sessions: SessionRecord[
             if (isUserTurn(d) && typeof d.content === 'string') {
               t.requests.push({ at, text: d.content });
               fromEvents = true;
+              scan.userTurn();
             }
+            break;
+          case 'tool.execution_start':
+            scan.toolStart(d, at, t.requests.length);
+            break;
+          case 'tool.execution_complete':
+            scan.toolComplete(d);
             break;
           case 'assistant.message':
             if (isMainAssistantMessage(e) && typeof d.content === 'string' && d.content.trim() !== '') {
@@ -104,6 +293,10 @@ export async function collectTexts(snapshotDir: string, sessions: SessionRecord[
       const last = [...turns].reverse().find((r) => r.assistant_response);
       if (last?.assistant_response) t.finalResponse = { at: last.timestamp, text: last.assistant_response };
     }
+    if (fromEvents) {
+      t.wikiReads = scan.finish();
+      t.wikiScanned = true;
+    }
     if (t.requests.length === 0 && t.finalResponse == null) {
       // スナップショットに本文が無い(--since で複製対象外など)。sessions.json の抜粋で代用
       out.set(s.id, excerptTexts(s));
@@ -119,6 +312,8 @@ export function excerptTexts(s: SessionRecord): SessionTexts {
     finalResponse: s.lastAssistantMessage ? { at: s.updatedAt, text: s.lastAssistantMessage } : null,
     compactions: [],
     taskCompletes: [],
+    wikiReads: [],
+    wikiScanned: false,
   };
 }
 
@@ -216,7 +411,53 @@ export interface RenderedPacket {
   limits: PacketLimits;
 }
 
-function renderOnce(s: SessionRecord, t: SessionTexts, L: PacketLimits): { md: string; truncated: number } {
+/** パケットの「llm-wiki のページごとの判定」の見出し(判定の指示 rubric.ts の wikiPages の項がこの名前で指す) */
+export const WIKI_PAGES_HEADING = '### llm-wiki のページごとの判定';
+
+const oneLine = (x: string): string => x.replace(/\r?\n/g, ' ');
+
+/**
+ * 判定に載せるページ(読んだ順の先頭から上限まで)ごとに、読んだ時刻・読んだ後のツール・抜粋を並べる。返すのは本文と、抜粋を切り詰めた数。
+ * scanned: 読んだ呼び出しをログの全文から探したか(SessionTexts の wikiScanned)
+ */
+function wikiPagesBlock(pageReads: readonly string[], reads: readonly WikiRead[], scanned: boolean, excerptChars: number): { md: string; truncated: number } {
+  const pages = judgedWikiPages(pageReads);
+  const rest = Math.max(0, uniquePages(pageReads).length - WIKI_JUDGED_PAGES_MAX);
+  let truncated = 0;
+  const out: string[] = [WIKI_PAGES_HEADING];
+  out.push(
+    `判定するページ ${pages.length} 件(重複を除いて読んだ順${rest > 0 ? `の先頭から。残り ${nf.format(rest)} 件は上限のため判定しません` : ''})。wikiPages にページごとに 1 件ずつ返してください。抜粋は、そのページを読んだツールの結果の先頭 ${nf.format(excerptChars)} 字までです(秘密らしい文字列は伏せています)。`,
+  );
+  pages.forEach((p, i) => {
+    out.push('');
+    out.push(`#### ページ ${i + 1}: ${oneLine(p)}`);
+    const r = reads.find((x) => x.page === p);
+    if (!r) {
+      out.push(
+        scanned
+          ? '- 抜粋なし(読んだ呼び出しをログから特定できませんでした。名前と前後の流れだけで判断してください)'
+          : '- 抜粋なし(ログの全文が無く、読んだ呼び出しを確かめられません。名前と前後の流れだけで判断してください)',
+      );
+      return;
+    }
+    out.push(`- 読んだ時刻: ${r.at ?? '不明'}${r.request != null ? `(依頼 ${r.request} の中)` : ''}`);
+    out.push(`- 読んだ後のツール(同じ依頼の中、${WIKI_AFTER_TOOLS} 件まで): ${r.afterTools.length ? r.afterTools.join('、') : 'なし'}`);
+    if (r.excerpt == null) {
+      out.push('- 抜粋なし(成功して結果の本文がある読み取りがログにありません。名前と前後の流れだけで判断してください)');
+      return;
+    }
+    const head = [...r.excerpt].slice(0, Math.max(0, excerptChars)).join('');
+    const cut = r.excerptTotal > len(head);
+    if (cut) truncated++;
+    const notes: string[] = [];
+    if (r.shared) notes.push('ほかのページと同じ結果の抜粋。1 回の呼び出しで複数のページを読みました');
+    if (cut) notes.push(`先頭 ${nf.format(len(head))} 字 / 全 ${nf.format(r.excerptTotal)} 字`);
+    out.push(`- 抜粋${notes.length ? `(${notes.join('。')})` : ''}:\n${fenced(head, 'text')}`);
+  });
+  return { md: out.join('\n'), truncated };
+}
+
+function renderOnce(s: SessionRecord, t: SessionTexts, L: PacketLimits, wikiState: WikiState): { md: string; truncated: number } {
   let truncated = 0;
   const tok = s.tokens;
   const lines: string[] = [];
@@ -299,14 +540,23 @@ function renderOnce(s: SessionRecord, t: SessionTexts, L: PacketLimits): { md: s
     ),
   );
   const w = s.wiki;
-  if (w.indexReads + w.pageReads.length + w.skillCalls.length + w.writes + w.otherCalls === 0) lines.push('- llm-wiki: 参照なし');
+  // vault を指定せずに集計した: 0 回は「参照なし」の意味にならない
+  if (wikiState === 'not-counted') lines.push('- llm-wiki: この集計では数えていません(vault の指定なし)');
+  // 古い集計で、どのセッションも vault に触れていない: 数えていないのか、使っていないのか分からない
+  else if (wikiState === 'no-record') lines.push('- llm-wiki: この集計では数えたか分かりません(vault の指定の記録なし)');
+  else if (!wikiTouched(wikiCountsOf(w))) lines.push('- llm-wiki: 参照なし');
   else {
-    lines.push(`- llm-wiki: 索引の読み取り ${w.indexReads} 回 / ページ読み取り ${w.pageReads.length} 件 / wiki skill ${w.skillCalls.length} 回 / 書き込み ${w.writes} 回`);
-    if (w.pageReads.length) lines.push(list(w.pageReads.map((p) => `読んだページ: ${p}`), Math.min(15, L.listItems), ''));
+    lines.push(`- llm-wiki: 索引の読み取り ${w.indexReads} 回 / ページ読み取り ${w.pageReads.length} 件 / wiki skill ${w.skillCalls.length} 回 / そのほかの呼び出し ${w.otherCalls} 回 / 書き込み ${w.writes} 回`);
     if (w.skillCalls.length) {
       const calls: Record<string, number> = {};
       for (const c of w.skillCalls) calls[c] = (calls[c] ?? 0) + 1;
       lines.push(`- wiki skill: ${countsLine(calls, Math.min(20, L.listItems))}`);
+    }
+    if (w.pageReads.length) {
+      lines.push('');
+      const b = wikiPagesBlock(w.pageReads, t.wikiReads, t.wikiScanned, L.wikiExcerptChars);
+      truncated += b.truncated;
+      lines.push(b.md);
     }
   }
   lines.push('');
@@ -348,11 +598,13 @@ function renderOnce(s: SessionRecord, t: SessionTexts, L: PacketLimits): { md: s
 /**
  * パケットを描画する。maxChars を超えたら本文と列挙の上限を段階的に下げて収める。
  * それでも収まらない(列挙だけで溢れる)ことは上限の設計上ほぼ無いが、起きたらエラーにする。
+ * wikiState は llm-wiki の参照を数えた集計か(wiki.ts の wikiState)。数えていない・記録なしなら wiki の行にそう書く
  */
-export function renderPacket(s: SessionRecord, t: SessionTexts, limits: PacketLimits = DEFAULT_LIMITS): RenderedPacket {
-  let L = { ...limits };
+export function renderPacket(s: SessionRecord, t: SessionTexts, limits: PacketLimits = DEFAULT_LIMITS, wikiState: WikiState = 'counted'): RenderedPacket {
+  // 前の版の manifest の上限には wikiExcerptChars が無い
+  let L = { ...limits, wikiExcerptChars: limits.wikiExcerptChars ?? DEFAULT_LIMITS.wikiExcerptChars };
   for (let i = 0; i < 8; i++) {
-    const r = renderOnce(s, t, L);
+    const r = renderOnce(s, t, L, wikiState);
     const chars = [...r.md].length;
     if (chars <= limits.maxChars) return { markdown: r.md, chars, truncated: r.truncated, limits: L };
     const k = 0.7;
@@ -363,6 +615,7 @@ export function renderPacket(s: SessionRecord, t: SessionTexts, limits: PacketLi
       finalResponseChars: Math.floor(L.finalResponseChars * k),
       summaryChars: Math.floor(L.summaryChars * k),
       listItems: Math.max(5, Math.floor(L.listItems * k)),
+      wikiExcerptChars: Math.floor(L.wikiExcerptChars * k),
     };
   }
   throw new Error(`セッション ${s.id} のパケットが上限 ${limits.maxChars} 字に収まりません`);

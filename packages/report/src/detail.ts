@@ -21,6 +21,7 @@ import type { TurnVerdict } from './lib/verdicts.ts';
 import type { SessionRetention } from '../../core/src/vcs-retention.ts';
 import { MODE_LABEL, placeLabel, REASON_LABEL, STATUS_LABEL, STATUSES, VCS_LABEL, type RetentionMeta } from './lib/retention.ts';
 import { relativeInside } from '../../core/src/classify.ts';
+import { wikiCountsOf, wikiReferenced, wikiTouched, WIKI_NO_RECORD, WIKI_NOT_COUNTED, type WikiState } from '../../core/src/wiki.ts';
 
 /** HTML エスケープ。外部参照の静的検査(http:// / fetch( の不在)を本文中の文字列で誤検出しないよう、:// と fetch( も実体参照にする */
 export function esc(s: unknown): string {
@@ -453,11 +454,26 @@ function judgmentSection(j: JudgmentSummary, activeMs: number | null): string {
     field('指示ファイルの効果', esc(effectLabel(j.effects.instructions))),
     field('llm-wiki の効果', esc(effectLabel(j.effects.wiki))),
     field('skill・agent の効果', esc(effectLabel(j.effects.skillsAgents))),
-    field('判定', esc(backendLabel(j.backend))),
+    field('判定', esc(backendLabel(j.backend)), judgedNote(j)),
   ].join('')}</div>`;
   const summary = j.taskSummary ? `<h3>タスクの要約</h3><blockquote class="msg">${esc(j.taskSummary)}</blockquote>` : '';
   const rationale = j.rationale ? `<h3>工数推定の根拠</h3><blockquote class="msg">${esc(j.rationale)}</blockquote>` : '';
-  return section('LLM による判定(推定)', `${fields}${summary}${rationale}`, '人が AI なしで同じ成果を出す場合の工数を LLM に推定させた値です。実測ではありません。');
+  return section('LLM による判定(推定)', `${fields}${summary}${rationale}${wikiPagesBlock(j)}`, '人が AI なしで同じ成果を出す場合の工数を LLM に推定させた値です。実測ではありません。');
+}
+
+/** 判定の欄の注: 判定したモデルと日時(「claude-sonnet-5-5・2026-11-14 10:23 に判定」)。どちらも分からなければ「判定した日時の記録なし」 */
+export function judgedNote(j: Pick<JudgmentSummary, 'model' | 'ranAt'>): string {
+  const parts = [j.model ? esc(j.model) : null, j.ranAt ? `${esc(dateTime(j.ranAt, '日時不明'))} に判定` : null].filter((x): x is string => x != null);
+  return parts.length ? parts.join('・') : '判定した日時の記録なし';
+}
+
+/** llm-wiki のページごとの「役立ったか」(LLM の見立て)の表。判定に項目が無ければ空 */
+export function wikiPagesBlock(j: Pick<JudgmentSummary, 'wikiPageVerdicts'>): string {
+  const list = j.wikiPageVerdicts;
+  if (!list?.length) return '';
+  const label = (h: string): string => (h === 'yes' ? '役立った' : h === 'no' ? '役立たなかった' : '分からない');
+  const rows = list.map(([page, helpful, reason]) => `<tr><td>${esc(page)}</td><td>${label(helpful)}</td><td>${reason ? esc(reason) : missing('記録なし')}</td></tr>`).join('');
+  return `<h3>llm-wiki のページごとの見立て</h3><p class="note">判定役が、読んだページの名前と、ログにあれば抜粋を見たうえで答えた見立てです。測った値ではありません。</p><div class="table-scroll"><table class="ledger"><thead><tr><th scope="col">ページ</th><th scope="col">役立ったか</th><th scope="col">理由</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
 /** AI の変更がその後の VCS のファイルに残っているか(atlas vcs の結果)。まとまりごとの状態の表を付ける */
@@ -675,6 +691,8 @@ export interface DetailOptions {
   /** AI の変更がその後の VCS のファイルに残っているか(atlas vcs の結果)。照合していなければ省略 */
   retention?: SessionRetention | null;
   retentionMeta?: RetentionMeta | null;
+  /** llm-wiki の参照を数えた集計か(wiki.ts の wikiState で、絞り込み前の全セッションから決める)。省略すると数えた集計として扱う */
+  wikiState?: WikiState;
 }
 
 const DETAIL_CSS = `
@@ -875,7 +893,9 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
   }
 
   const w = r.wiki;
-  const wikiUsed = w.indexReads + w.pageReads.length + w.skillCalls.length + w.writes + w.otherCalls > 0;
+  // 欄を出すのは vault に触れた(書き込みを含む)セッション。参照したかは欄の中の 1 行で分ける
+  const wikiCounts = wikiCountsOf(w);
+  const wikiUsed = wikiTouched(wikiCounts);
   // 同じページを何度も読むことがあるので、1 行にまとめて ×N を添える(読んだ順)
   const pageCounts = new Map<string, number>();
   for (const p of w.pageReads) pageCounts.set(p, (pageCounts.get(p) ?? 0) + 1);
@@ -886,14 +906,19 @@ export function renderDetailHtml(r: SessionRecord, o: DetailOptions): string {
   parts.push(
     section(
       'llm-wiki の参照',
-      wikiUsed
+      o.wikiState === 'not-counted'
+        ? `<p class="note" data-testid="wiki-not-counted">${esc(WIKI_NOT_COUNTED)}</p>`
+        : o.wikiState === 'no-record'
+          ? // 古い集計で、どのセッションも vault に触れていない: 「参照はありません」とは言い切れない
+            `<p class="note" data-testid="wiki-no-record">${esc(WIKI_NO_RECORD)}</p>`
+          : wikiUsed
         ? `<div class="fields" style="--cols:5">${[
             field('索引', esc(int(w.indexReads))),
             field('個別ページ', esc(int(w.pageReads.length)), pageCounts.size !== w.pageReads.length ? `${esc(int(pageCounts.size))} ページ` : ''),
             field('wiki skill', esc(int(w.skillCalls.length)), esc(w.skillCalls.join('、'))),
             field('書き込み', esc(int(w.writes))),
             field('その他', esc(int(w.otherCalls))),
-          ].join('')}</div>${pages}`
+          ].join('')}</div><p class="note" data-testid="wiki-kind">このセッションの扱い: ${wikiReferenced(wikiCounts) ? '参照した' : '書き込みだけ(参照したセッションには数えません)'}</p>${pages}`
         : `<p class="note">llm-wiki の参照はありません。</p>`,
     ),
   );

@@ -151,7 +151,7 @@ export async function runSetup(io: SetupIo, o: SetupOptions): Promise<{ written:
   const config: ConfigJson = {};
 
   io.print('');
-  io.print('[1/3] llm-wiki の vault(参照を数える wiki のフォルダ。指定しないと wiki の参照は 0 件のままです)');
+  io.print('[1/3] llm-wiki の vault(参照を数える wiki のフォルダ。指定しないと wiki の参照は数えません)');
   let keepWikis = false;
   if (current?.wikis?.length) {
     io.print(`  今の設定: ${current.wikis.map((w) => w.path).join(', ')}`);

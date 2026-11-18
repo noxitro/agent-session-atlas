@@ -96,4 +96,73 @@ describe('requestCandidates: 似た依頼のまとめ方', () => {
       expect(got).toEqual(naiveRequestCandidates(src));
     }
   });
+
+  it('同じ依頼を何度も実行したとき(同じ文がまとまりの大半を占める)も、代表は全員を比べたときと同じ', () => {
+    // 3 つの文を、ずらした順で何度も繰り返す(どれも同じ回数なら和が同じ人が出る)
+    const reps = ['run the synthetic benchmark task alpha and report the totals', 'run the synthetic benchmark task alpha and report all totals', 'run the synthetic benchmark task alpha then report the totals'];
+    for (const seed of [7, 2024, 99999]) {
+      const src = sources(120, seed);
+      src.forEach((x, i) => {
+        x.analysis.requests.push(reps[(i + seed) % reps.length]!);
+        x.analysis.turnActiveMs!.push(i * 1000);
+      });
+      const got = requestCandidates(src);
+      expect(got.some((c) => c.count >= 100)).toBe(true);
+      expect(got).toEqual(naiveRequestCandidates(src));
+    }
+  });
+
+  it('接頭辞で絞っても、類似度がしきい値の前後になる組み合わせが多いとき(短い文・少ない文字の種類・長さのばらつき)に全員を比べたときと同じ', () => {
+    for (const seed of [3, 77, 4242, 31337, 600613]) {
+      let x = seed >>> 0;
+      const rnd = (n: number): number => {
+        x ^= x << 13;
+        x >>>= 0;
+        x ^= x >>> 17;
+        x ^= x << 5;
+        x >>>= 0;
+        return x % n;
+      };
+      const alphabet = [...'abcdefg'];
+      const bases = Array.from({ length: 6 }, () => Array.from({ length: 20 + rnd(40) }, () => alphabet[rnd(alphabet.length)]!).join(''));
+      const src: CandidateSource[] = Array.from({ length: 200 }, (_, i) => ({
+        id: `s${i % 40}`,
+        project: 'p',
+        analysis: {
+          requests: Array.from({ length: 2 }, () => {
+            const c = [...bases[rnd(bases.length)]!];
+            // 数文字を置き換え・足し・削り、類似度をしきい値の前後に散らす
+            for (let k = rnd(8); k > 0; k--) {
+              const op = rnd(3);
+              if (op === 0) c[rnd(c.length)] = alphabet[rnd(alphabet.length)]!;
+              else if (op === 1) c.push(alphabet[rnd(alphabet.length)]!);
+              else if (c.length > 21) c.pop();
+            }
+            return c.join('');
+          }),
+          turnTools: [],
+          turnActiveMs: [i, null],
+        },
+      }));
+      const got = requestCandidates(src);
+      expect(got.length).toBeGreaterThan(0);
+      expect(got).toEqual(naiveRequestCandidates(src));
+    }
+  });
+
+  it('類似度がちょうどしきい値(組の数の比も 0.6)の依頼は、同じまとまりに入る(絞り込みで落とさない)', () => {
+    // 違う字だけを並べた n 字の文は、3 文字の組が n - 2 個。先頭 32 字は組 30 個で、52 字の組 50 個に含まれる → 30 / 50 = 0.6
+    const long = Array.from({ length: 52 }, (_, i) => String.fromCodePoint(0x4e00 + i * 7)).join('');
+    const short = [...long].slice(0, 32).join('');
+    expect(jaccard(trigrams(normalizeRequest(long)), trigrams(normalizeRequest(short)))).toBe(0.6);
+    for (const [first, second] of [
+      [long, short],
+      [short, long],
+    ] as const) {
+      const src: CandidateSource[] = [first, second, second].map((r, i) => ({ id: `s${i}`, project: 'p', analysis: { requests: [r], turnTools: [], turnActiveMs: [1000] } }));
+      const got = requestCandidates(src);
+      expect(got.map((c) => c.count)).toEqual([3]);
+      expect(got).toEqual(naiveRequestCandidates(src));
+    }
+  });
 });

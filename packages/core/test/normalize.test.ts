@@ -319,3 +319,47 @@ describe('helpers', () => {
     expect(projectKey(null, null, null)).toBe('(unknown)');
   });
 });
+
+describe('wiki の skill の数え方', () => {
+  const t = (s: number): string => new Date(Date.UTC(2026, 9, 1, 0, 0, s)).toISOString();
+  const run = (events: CopilotEvent[]) =>
+    normalizeSession({ id: 's', hasDir: true, events, wikiClassifier: new WikiClassifier([{ path: 'my-wiki', skills: ['wiki-query'] }]) });
+  const start = (id: string, skill: string, s: number): CopilotEvent => ev('tool.execution_start', { toolName: 'skill', toolCallId: id, arguments: { skill } }, t(s));
+  const vias = (r: Awaited<ReturnType<typeof run>>) => r.skills.map((s) => s.via);
+
+  it('skill ツールと対になった skill.invoked でも、path が vault の中なら 1 回だけ数える。逆の順でも二重に数えない', async () => {
+    // 名前が指定に無い skill を、vault の中から読んだ(path がある): 対になっても 1 回数える
+    const withPath = await run([start('t1', 'wiki-lint', 1), ev('skill.invoked', { name: 'wiki-lint', path: 'D:\\notes\\my-wiki\\skills\\wiki-lint\\SKILL.md' }, t(2))]);
+    expect(withPath.skills.map((s) => [s.name, s.via])).toEqual([['wiki-lint', 'both']]);
+    expect(withPath.wiki.skillCalls).toEqual(['wiki-lint']);
+    // path が無い形: 名前が指定に無ければ数えない
+    const noPath = await run([start('t1', 'wiki-lint', 1), ev('skill.invoked', { name: 'wiki-lint' }, t(2))]);
+    expect(vias(noPath)).toEqual(['both']);
+    expect(noPath.wiki.skillCalls).toEqual([]);
+    // path が vault の外: 数えない
+    const outside = await run([start('t1', 'other', 1), ev('skill.invoked', { name: 'other', path: 'D:\\notes\\my-wiki-app\\skills\\other\\SKILL.md' }, t(2))]);
+    expect(outside.wiki.skillCalls).toEqual([]);
+    // 名前が指定にある skill: ツールの側で数えているので、path が vault の中でも足さない
+    const named = await run([start('t1', 'wiki-query', 1), ev('skill.invoked', { name: 'wiki-query', path: 'D:\\notes\\my-wiki\\skills\\wiki-query\\SKILL.md' }, t(2))]);
+    expect(named.wiki.skillCalls).toEqual(['wiki-query']);
+    // 対にならない skill.invoked: 従来どおり path から数える
+    const alone = await run([ev('skill.invoked', { name: 'wiki-lint', path: 'D:/notes/my-wiki/skills/wiki-lint/SKILL.md' }, t(2))]);
+    expect(vias(alone)).toEqual(['event']);
+    expect(alone.wiki.skillCalls).toEqual(['wiki-lint']);
+    // skill.invoked がツールの呼び出しより先に届いた: 逆の順でも 1 件にまとめ、二重に数えない
+    const revNamed = await run([ev('skill.invoked', { name: 'wiki-query', path: 'D:\\notes\\my-wiki\\skills\\wiki-query\\SKILL.md' }, t(1)), start('t1', 'wiki-query', 2)]);
+    expect(revNamed.skills.map((s) => [s.name, s.via])).toEqual([['wiki-query', 'both']]);
+    expect(revNamed.wiki.skillCalls).toEqual(['wiki-query']);
+    // 逆の順で、skill.invoked に path が無い(ツールの側でだけ数える)
+    const revNoPath = await run([ev('skill.invoked', { name: 'wiki-query' }, t(1)), start('t1', 'wiki-query', 2)]);
+    expect(vias(revNoPath)).toEqual(['both']);
+    expect(revNoPath.wiki.skillCalls).toEqual(['wiki-query']);
+    // 逆の順で、path から数えた skill を、名前が指定に無いツールの呼び出しが受ける(ツールの側では数えない)
+    const revPath = await run([ev('skill.invoked', { name: 'wiki-lint', path: 'D:/notes/my-wiki/skills/wiki-lint/SKILL.md' }, t(1)), start('t1', 'wiki-lint', 2)]);
+    expect(vias(revPath)).toEqual(['both']);
+    expect(revPath.wiki.skillCalls).toEqual(['wiki-lint']);
+    // 窓(2 分)より後のツールの呼び出しは別の呼び出し
+    const apart = await run([ev('skill.invoked', { name: 'wiki-query' }, t(1)), start('t1', 'wiki-query', 1 + 121)]);
+    expect(vias(apart)).toEqual(['event', 'tool']);
+  });
+});

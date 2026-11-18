@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { emptyWiki, WikiClassifier } from '../src/wiki.ts';
+import { emptyWiki, isWriteTool, WikiClassifier, wikiCountsOf, wikiKind } from '../src/wiki.ts';
 
 describe('WikiClassifier', () => {
   it('index 読み・ページ読み・skill・書き込み・その他を分ける', () => {
@@ -94,5 +94,15 @@ describe('WikiClassifier', () => {
     const c = new WikiClassifier([{ path: 'notes' }]);
     expect(c.isSkill('custom', 'D:\\notes\\skills\\custom\\SKILL.md')).toBe(true);
     expect(c.isSkill('custom', 'D:\\other\\SKILL.md')).toBe(false);
+  });
+});
+
+describe('数え方の補助', () => {
+  it('isWriteTool は書き込みのツールだけ、wikiCountsOf はページと skill を回数にする', () => {
+    expect(isWriteTool('edit') && !isWriteTool('view')).toBe(true);
+    const c = wikiCountsOf({ indexReads: 0, pageReads: ['a.md', 'a.md'], skillCalls: ['q'], writes: 1, otherCalls: 0 });
+    expect(c).toEqual({ indexReads: 0, pageReads: 2, skillCalls: 1, writes: 1, otherCalls: 0 });
+    expect(wikiKind(c)).toBe('referenced');
+    expect(wikiKind(wikiCountsOf({ indexReads: 0, pageReads: [], skillCalls: [], writes: 3, otherCalls: 0 }))).toBe('write-only');
   });
 });

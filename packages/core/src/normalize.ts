@@ -458,6 +458,8 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
     return s == null && c == null && t == null ? null : { systemTokens: s, conversationTokens: c, toolDefinitionsTokens: t, source };
   };
   const skills: SkillUse[] = [];
+  /** その呼び出しを wiki の skill として数えたか(skill ツールと skill.invoked を二重に数えないため) */
+  const skillWiki = new Map<SkillUse, boolean>();
   /** 使えた skill(名前で重複を除き、初めて出た順)。<available_skills> を 1 度も見なければ null のまま */
   let availableSkills: Map<string, AvailableSkill> | null = null;
   const agents = new Map<string, AgentRun>();
@@ -694,11 +696,25 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
               if (k === 'edit') ts.edits++;
             }
           }
+          // この skill ツールの呼び出し(下の classify で wiki の skill と数えたかを skillWiki に残す)
+          let skillUse: SkillUse | null = null;
           if (name === 'skill') {
             const skill = typeof args?.skill === 'string' ? args.skill : '(unknown)';
-            // skill ツールはモデルが呼ぶもの。skill.invoked と対になれば、その trigger で上書きする
-            skills.push({ name: skill, at, via: 'tool', trigger: 'agent' });
-            pushTimeline({ at: at ?? '', kind: 'skill', label: skill });
+            // 直前の skill.invoked(ツールより先に届いたもの)と同じ呼び出しなら 1 件にまとめる(skill.invoked の側の逆の順)
+            const pair = [...skills]
+              .reverse()
+              .find((s) => s.via === 'event' && s.name === skill && t != null && ms(s.at) != null && t - (ms(s.at) as number) <= SKILL_PAIR_WINDOW_MS && t >= (ms(s.at) as number));
+            if (pair) {
+              pair.via = 'both';
+              skillUse = pair;
+            } else {
+              // skill ツールはモデルが呼ぶもの。skill.invoked と対になれば、その trigger で上書きする
+              skillUse = { name: skill, at, via: 'tool', trigger: 'agent' };
+              skills.push(skillUse);
+              // 下の classify で数えたら true にする
+              skillWiki.set(skillUse, false);
+              pushTimeline({ at: at ?? '', kind: 'skill', label: skill });
+            }
           } else {
             const last = timeline[timeline.length - 1];
             if (last && last.kind === 'tools' && last.tools) {
@@ -711,7 +727,11 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
             const ts = cur();
             if (ts) ts.askUser++;
           }
-          wikiClassifier.classify(wiki, name, args);
+          if (wikiClassifier.classify(wiki, name, args) && skillUse) {
+            // 先に届いた skill.invoked の側で数えていた: classify が足した 1 件を戻す(二重に数えない)
+            if (skillWiki.get(skillUse)) wiki.skillCalls.pop();
+            else skillWiki.set(skillUse, true);
+          }
           if (name === 'create' && typeof args?.path === 'string') files.add('create', args.path, curCwd());
           if ((name === 'edit' || name === 'str_replace_editor') && typeof args?.path === 'string') {
             files.add('edit', args.path, curCwd());
@@ -848,10 +868,19 @@ export async function normalizeSession(input: NormalizeInput): Promise<SessionRe
             pair.via = 'both';
             if (trigger) pair.trigger = trigger;
             if (chars != null) pair.chars = chars;
+            // skill ツールの引数からは wiki の skill と分からなかった呼び出しでも、skill.invoked の path
+            // (skill のファイルの場所)が vault の中なら数える。ツールの側で数えていれば足さない
+            if (!skillWiki.get(pair) && wikiClassifier.isSkill(name, d.path)) {
+              skillWiki.set(pair, true);
+              wiki.skillCalls.push(name);
+            }
           } else {
-            skills.push({ name, at, via: 'event', trigger, chars });
+            const use: SkillUse = { name, at, via: 'event', trigger, chars };
+            skills.push(use);
             pushTimeline({ at: at ?? '', kind: 'skill', label: name });
-            if (wikiClassifier.isSkill(name, d.path)) wiki.skillCalls.push(name);
+            const hit = wikiClassifier.isSkill(name, d.path);
+            skillWiki.set(use, hit);
+            if (hit) wiki.skillCalls.push(name);
           }
           break;
         }

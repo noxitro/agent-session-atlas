@@ -142,7 +142,7 @@ npm run atlas -- judge run --model <モデル名>                      # 判定�
 npm run atlas -- judge run --model anthropic/claude-haiku-5-5  # Copilot に保存した自分のモデル(BYOK)を使う
 ```
 
-- `judge run` が判定するのは、作ってある添付(`out/bundle`)のセッションです。絞り込み(`--project`・`--since`・`--group` など)は添付を作るときのもので、`judge run` に付けると止まります(以前は黙って無視し、添付の全体を判定していました)。絞り込んで判定するときは `judge-flow` に付けるか、先に `bundle` に付けて添付を作ります。
+- `judge run` が判定するのは、作ってある添付(`out/bundle`)のセッションです。絞り込み(`--project`・`--since`・`--group` など)は添付を作るときのもので、`judge run` に付けると止まります(以前は黙って無視し、添付の全体を判定していました)。絞り込んで判定するときは `npm run atlas:judge` に付けるか、先に `bundle` に付けて添付を作ります。
 - 判定済みのセッションは飛ばすので、途中で止めても続きから再開できます。失敗したセッションは `judgments.json` の `failures` に記録し、次へ進みます(最後に終了コード 1)。
 - バックエンドは `--backend` で選びます。
 

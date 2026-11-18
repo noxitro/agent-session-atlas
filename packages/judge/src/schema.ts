@@ -1,8 +1,27 @@
-// judgments.json のスキーマ(docs/PLAN.md「judgments.json スキーマ」、schemaVersion 1)と検証。
+// judgments.json のスキーマ(docs/PLAN.md「judgments.json スキーマ」、schemaVersion 2)と検証。
 // 外部 LLM の出力も内部バックエンドの出力も、ここを通ったものだけを judgments.json に入れる。
 // 形が合わないものは黙って直さず、どこが違うかを列挙して落とす。
+// 例外は llm-wiki のページごとの判定(wikiPages)で、無い・壊れているときはほかの判定を捨てずに、そのセッションのページを未判定にする
+// (壊れていたことは wikiPagesNote で知らせる)。版 1 は wikiPages の無い版で、読むときは 1 も受け付ける(書くのは 2)。
 
-export const JUDGMENTS_SCHEMA_VERSION = 1;
+export const JUDGMENTS_SCHEMA_VERSION = 2;
+
+/** 読める版(1: wikiPages の無い版) */
+export const READABLE_SCHEMA_VERSIONS: readonly number[] = [1, 2];
+
+/** llm-wiki のページごとの「役立ったか」の値 */
+export const WIKI_HELPFUL = ['yes', 'no', 'unknown'] as const;
+export type WikiHelpful = (typeof WIKI_HELPFUL)[number];
+
+/** llm-wiki のページ 1 つについての判定(判定のパケットに載せたページごと) */
+export interface WikiPageJudgment {
+  /** パケットに書いたページの名前 */
+  page: string;
+  /** yes: 中身が後の作業に使われ、作業を進めた / no: 使われなかった・誤った方向に導いた / unknown: 記録から判断できない */
+  helpful: WikiHelpful;
+  /** 短い理由 */
+  reason: string;
+}
 
 export const TASK_CATEGORIES = ['feature', 'bugfix', 'investigation', 'refactor', 'docs', 'ops', 'other'] as const;
 export type TaskCategory = (typeof TASK_CATEGORIES)[number];
@@ -26,6 +45,8 @@ export interface JudgmentItem {
   instructionsEffect: EffectScore;
   wikiEffect: EffectScore;
   skillsAgentsEffect: EffectScore;
+  /** llm-wiki のページごとの判定。版 1 の判定・項目の無い判定・配列でない項目では無い(そのセッションのページは未判定) */
+  wikiPages?: WikiPageJudgment[];
   notes?: string;
   /** この項目を誰が判定したか(ツールが付ける。LLM の出力には不要) */
   judge?: JudgeMeta;
@@ -56,7 +77,8 @@ export interface JudgeUsage {
 }
 
 export interface JudgmentsFile {
-  schemaVersion: 1;
+  /** 2: wikiPages を持つ項目がある。1: どの項目も wikiPages を持たない(前の版の atlas でも読めるよう 1 で書く) */
+  schemaVersion: 1 | 2;
   /** 最後に書き込んだ判定の実行情報(項目ごとの出所は items[].judge) */
   judge: { backend: BackendName; model: string | null; ranAt: string; usage?: JudgeUsage };
   items: JudgmentItem[];
@@ -121,6 +143,35 @@ export function itemProblems(v: unknown, path = 'item'): string[] {
   return p;
 }
 
+/**
+ * wikiPages を読む。配列でなければ undefined。形の合わない要素(page が空・helpful が yes / no / unknown でない)と、同じページの 2 回目以降は捨てる。
+ * reason が無ければ空の文字列にする
+ */
+export function parseWikiPages(v: unknown): WikiPageJudgment[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  const out: WikiPageJudgment[] = [];
+  for (const x of v) {
+    if (!isObj(x)) continue;
+    const page = isStr(x.page) ? x.page.trim() : '';
+    if (!page || !(WIKI_HELPFUL as readonly unknown[]).includes(x.helpful)) continue;
+    if (out.some((w) => w.page === page)) continue;
+    out.push({ page, helpful: x.helpful as WikiHelpful, reason: isStr(x.reason) ? x.reason : '' });
+  }
+  return out;
+}
+
+/** wikiPages の形が崩れていて、ページの判定を捨てたときの知らせ(問題が無い・項目が無いときは null)。取り込みと judge run のログに出す */
+export function wikiPagesNote(item: unknown): string | null {
+  const v = isObj(item) ? item.wikiPages : undefined;
+  if (v === undefined || v === null) return null;
+  if (!Array.isArray(v)) return 'wikiPages が配列ではないので、このセッションの llm-wiki のページはすべて未判定にしました';
+  const dropped = v.length - (parseWikiPages(v)?.length ?? 0);
+  return dropped > 0 ? `wikiPages の ${dropped} 件は形が合わない(page が無い・helpful が yes / no / unknown でない)か、同じページの重複なので捨てました(そのページは未判定)` : null;
+}
+
+/** 書くときの版。どの項目も wikiPages を持たない間は 1 で書く(前の版の atlas は版 2 の judgments.json を読めず、build が止まるため) */
+export const schemaVersionFor = (items: readonly JudgmentItem[]): 1 | 2 => (items.some((i) => i.wikiPages !== undefined) ? 2 : 1);
+
 /** 1 項目を検証し、余分なキーを落とした正規形を返す。不正なら JudgmentValidationError */
 export function validateJudgmentItem(v: unknown, path = 'item'): JudgmentItem {
   const p = itemProblems(v, path);
@@ -136,6 +187,8 @@ export function validateJudgmentItem(v: unknown, path = 'item'): JudgmentItem {
     wikiEffect: { score: x.wikiEffect.score, evidence: x.wikiEffect.evidence },
     skillsAgentsEffect: { score: x.skillsAgentsEffect.score, evidence: x.skillsAgentsEffect.evidence },
   };
+  const pages = parseWikiPages((v as Record<string, unknown>).wikiPages);
+  if (pages) out.wikiPages = pages;
   if (typeof x.notes === 'string' && x.notes !== '') out.notes = x.notes;
   if (x.judge) out.judge = { backend: x.judge.backend, model: x.judge.model ?? null, ranAt: x.judge.ranAt };
   return out;
@@ -145,7 +198,7 @@ export function validateJudgmentItem(v: unknown, path = 'item'): JudgmentItem {
 export function validateJudgments(v: unknown): JudgmentsFile {
   const p: string[] = [];
   if (!isObj(v)) throw new JudgmentValidationError(['ルートがオブジェクトではありません']);
-  if (v.schemaVersion !== JUDGMENTS_SCHEMA_VERSION) p.push(`schemaVersion が 1 ではありません(${JSON.stringify(v.schemaVersion)})`);
+  if (!READABLE_SCHEMA_VERSIONS.includes(v.schemaVersion as number)) p.push(`schemaVersion が 1・2 のどちらでもありません(${JSON.stringify(v.schemaVersion)})`);
   const j = v.judge;
   if (!isObj(j) || !(BACKENDS as readonly unknown[]).includes(j.backend) || !isStr(j.ranAt)) p.push(`judge は {backend: ${BACKENDS.join('|')}, model, ranAt} です`);
   if (!Array.isArray(v.items)) p.push('items が配列ではありません');
@@ -161,10 +214,11 @@ export function validateJudgments(v: unknown): JudgmentsFile {
   if (v.failures !== undefined && !Array.isArray(v.failures)) p.push('failures が配列ではありません');
   if (p.length) throw new JudgmentValidationError(p);
   const jj = j as Record<string, unknown>;
+  const items = (v.items as unknown[]).map((it, i) => validateJudgmentItem(it, `items[${i}]`));
   const out: JudgmentsFile = {
-    schemaVersion: 1,
+    schemaVersion: schemaVersionFor(items),
     judge: { backend: jj.backend as BackendName, model: isStr(jj.model) ? jj.model : null, ranAt: jj.ranAt as string },
-    items: (v.items as unknown[]).map((it, i) => validateJudgmentItem(it, `items[${i}]`)),
+    items,
   };
   if (isObj(jj.usage)) out.judge.usage = jj.usage as unknown as JudgeUsage;
   if (Array.isArray(v.failures) && v.failures.length) out.failures = v.failures as JudgmentFailure[];
@@ -181,7 +235,8 @@ export function mergeJudgments(base: JudgmentsFile, add: JudgmentItem[], judge: 
   for (const it of add) by.set(it.sessionId, it);
   const done = new Set(add.map((i) => i.sessionId));
   const failures = (base.failures ?? []).filter((f) => !done.has(f.sessionId));
-  const out: JudgmentsFile = { schemaVersion: 1, judge: { ...judge }, items: [...by.values()] };
+  const items = [...by.values()];
+  const out: JudgmentsFile = { schemaVersion: schemaVersionFor(items), judge: { ...judge }, items };
   if (failures.length) out.failures = failures;
   return out;
 }
@@ -303,6 +358,20 @@ export const ITEM_JSON_SCHEMA = {
     instructionsEffect: effectSchema,
     wikiEffect: effectSchema,
     skillsAgentsEffect: effectSchema,
+    wikiPages: {
+      type: 'array',
+      description: 'パケットの「llm-wiki のページごとの判定」に挙がったページごとに 1 件。挙がっていなければ空の配列',
+      items: {
+        type: 'object',
+        required: ['page', 'helpful', 'reason'],
+        additionalProperties: false,
+        properties: {
+          page: { type: 'string', description: 'パケットに書いたページの名前をそのまま' },
+          helpful: { type: 'string', enum: [...WIKI_HELPFUL], description: 'yes: 中身が後の作業に使われ、作業を進めた / no: 使われなかった・誤った方向に導いた / unknown: 記録から判断できない' },
+          reason: { type: 'string', description: '根拠を 1 文で' },
+        },
+      },
+    },
     notes: { type: 'string' },
     judge: {
       type: 'object',
@@ -314,11 +383,11 @@ export const ITEM_JSON_SCHEMA = {
 
 export const JUDGMENTS_JSON_SCHEMA = {
   $schema: 'https://json-schema.org/draft/2020-12/schema',
-  title: 'agent-session-atlas judgments.json (schemaVersion 1)',
+  title: 'agent-session-atlas judgments.json (schemaVersion 2)',
   type: 'object',
   required: ['schemaVersion', 'judge', 'items'],
   properties: {
-    schemaVersion: { const: 1 },
+    schemaVersion: { enum: [1, 2], description: '2: llm-wiki のページごとの判定 wikiPages を持つ版。1: wikiPages の無い版(どちらも読めます)' },
     judge: {
       type: 'object',
       required: ['backend', 'ranAt'],

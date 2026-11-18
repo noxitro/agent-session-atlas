@@ -4,7 +4,7 @@
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { replaceEntries, type SessionRecord } from '../../core/src/index.ts';
+import { replaceEntries, WikiClassifier, type SessionRecord, type WikiSpec, type WikiState } from '../../core/src/index.ts';
 import { collectTexts, DEFAULT_LIMITS, excerptTexts, hasRequest, renderPacket, type PacketLimits, type SessionTexts } from './packet.ts';
 import { packetBoundary, renderInstructions, renderPartInstructions } from './rubric.ts';
 import { JUDGMENTS_JSON_SCHEMA } from './schema.ts';
@@ -61,6 +61,16 @@ export interface BundleOptions {
   scope?: Record<string, string | null>;
   log?: (msg: string) => void;
   now?: () => Date;
+  /**
+   * llm-wiki の参照を数えた集計か(wiki.ts の wikiState で、sessions.json の source.wikis と全セッションから決める)。
+   * 数えていない・記録なしなら、パケットの wiki の行を「参照なし」にせずそう書く。省略すると数えた集計として扱う
+   */
+  wikiState?: WikiState;
+  /**
+   * 今の設定の llm-wiki の vault の指定(atlas.config.json の wikis)。ページごとの判定の抜粋を、集計と同じ分類器で、そのページを読んだ呼び出しから取る。
+   * 空なら、引数に出るページの名前で探す(vault の直下のページは、プロジェクトの同じ名前のファイルと見分けられない)
+   */
+  wikiSpecs?: WikiSpec[];
 }
 
 /** 1 つの分割ファイルに入れるパケットの既定の数。1 パケットは最大 24,000 字なので、1 ファイル最大 12 万字ほど */
@@ -90,7 +100,7 @@ async function writeBundle(sessions: SessionRecord[], opts: BundleOptions, dir: 
 
   let texts = new Map<string, SessionTexts>();
   if (opts.snapshotDir && existsSync(join(opts.snapshotDir, 'session-state'))) {
-    texts = await collectTexts(opts.snapshotDir, sessions);
+    texts = await collectTexts(opts.snapshotDir, sessions, undefined, opts.wikiSpecs?.length ? new WikiClassifier(opts.wikiSpecs) : undefined);
   } else {
     log(`bundle: 注意 スナップショット${opts.snapshotDir ? `(${opts.snapshotDir})` : ''}が無いため、本文は sessions.json の抜粋(先頭・末尾 2,000 字)で代用します`);
   }
@@ -106,7 +116,7 @@ async function writeBundle(sessions: SessionRecord[], opts: BundleOptions, dir: 
       skipped.push({ id: s.id, reason: 'ユーザーの依頼が記録されていない' });
       continue;
     }
-    const p = renderPacket(s, t, limits);
+    const p = renderPacket(s, t, limits, opts.wikiState ?? 'counted');
     const file = packetFileName(s.id);
     const bytes = Buffer.byteLength(p.markdown);
     await writeFile(join(dir, 'sessions', file), p.markdown);

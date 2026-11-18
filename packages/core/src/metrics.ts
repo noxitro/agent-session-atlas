@@ -1,4 +1,5 @@
 import { addCauses } from './tool-failure.ts';
+import { wikiCountsOf, wikiTouched } from './wiki.ts';
 import {
   METRICS_SCHEMA_VERSION,
   type Distribution,
@@ -146,7 +147,8 @@ export function bucketOf(sessions: SessionRecord[]): MetricsBucket {
       }
     }
     const w = s.wiki;
-    if (w.indexReads + w.pageReads.length + w.skillCalls.length + w.writes + w.otherCalls > 0) b.wiki.sessionsWithAny++;
+    // sessionsWithAny は名前どおり「vault に触れた」(書き込みを含む)。画面の「参照した」(wiki.ts の wikiReferenced)とは数え方が違う
+    if (wikiTouched(wikiCountsOf(w))) b.wiki.sessionsWithAny++;
     b.wiki.indexReads += w.indexReads;
     b.wiki.pageReads += w.pageReads.length;
     b.wiki.skillCalls += w.skillCalls.length;

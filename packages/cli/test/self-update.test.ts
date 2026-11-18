@@ -1,5 +1,5 @@
 // 自動で送る前に atlas 自身を新しい版にする(self-update.ts)。一時フォルダに本物の git のリポジトリ(送り元の origin と、
-// 作る人のチェックアウトと、作業メンバーのチェックアウト)を作って確かめる。npm install は偽物に替える
+// 作る側のチェックアウトと、自動で送る側のチェックアウト)を作って確かめる。npm install は偽物に替える
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -14,15 +14,15 @@ import { AUTO_UPDATE_STATE_FILE, SERVE_STATE_NAME } from '../src/upload-auto-fil
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 
 let base = '';
-/** 作る人のチェックアウト(新しい版を origin に送る) */
+/** 作る側のチェックアウト(新しい版を origin に送る) */
 let dev = '';
-/** 作業メンバーのチェックアウト(自動で送るタスクが動く) */
+/** 自動で送る側のチェックアウト(自動で送るタスクが動く) */
 let member = '';
 const saved: Record<string, string | undefined> = {};
 
 const git = (cwd: string, ...args: string[]): string => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 const head = (cwd: string): string => git(cwd, 'rev-parse', 'HEAD');
-/** 作る人が新しい版を作って origin に送る */
+/** 作る側が新しい版を作って origin に送る */
 function release(file = 'a.txt', text = `${Date.now()}-${Math.random()}`): string {
   writeFileSync(join(dev, file), text);
   git(dev, 'add', '-A');
@@ -220,11 +220,11 @@ describe('selfUpdate: 手で触っているチェックアウトは変えない'
   });
 
   it('origin の履歴が書き換えられた(force push)だけなら、新しい main に合わせ直す。手元にだけあるコミットがあれば、何もしない', () => {
-    // 作業メンバーは、前に取りに行った main のまま
+    // 自動で送る側は、前に取りに行った main のまま
     release();
     expect(update().r.outcome).toBe('updated');
     const before = head(member);
-    // 作る人が、main の履歴を書き換えて送り直す(同じ親の上に、別のコミット)
+    // 作る側が、main の履歴を書き換えて送り直す(同じ親の上に、別のコミット)
     writeFileSync(join(dev, 'a.txt'), 'rewritten');
     git(dev, 'add', '-A');
     git(dev, 'commit', '-q', '--amend', '-m', 'rewritten');

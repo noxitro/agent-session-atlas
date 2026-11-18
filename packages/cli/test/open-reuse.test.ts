@@ -108,7 +108,7 @@ describe('open-reuse: 入力の印', () => {
 });
 
 describe('open-reuse: フォルダごとの最後に送った記録', () => {
-  it('最後に送った日時は日付までで比べる(作業メンバーが送るたびに作り直しにならない)。版や、索引を読めたかが変われば変わる', () => {
+  it('最後に送った日時は日付までで比べる(送るたびに作り直しにならない)。版や、索引を読めたかが変われば変わる', () => {
     const { p, config } = setup();
     const atlas = { commit: 'a'.repeat(40), committedAt: '2026-11-13T00:00:00.000Z', dirty: false, code: '0123456789abcdef' };
     const write = (uploads: unknown): void =>

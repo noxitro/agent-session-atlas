@@ -1,9 +1,9 @@
-import { mkdir, mkdtemp, readdir, stat, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, stat, utimes, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { snapshot, SNAPSHOT_CONCURRENCY } from '../src/snapshot.ts';
+import { snapshot, SNAPSHOT_CONCURRENCY, SNAPSHOT_SESSION_UNUSED_DIRS } from '../src/snapshot.ts';
 import { openReadOnly, openWritable } from '../src/sqlite.ts';
 
 async function mtimes(dir: string): Promise<Record<string, number>> {
@@ -100,9 +100,9 @@ describe('snapshot', () => {
     const ids = Array.from({ length: SNAPSHOT_CONCURRENCY * 3 + 5 }, (_, i) => `s${String(i).padStart(3, '0')}`);
     for (const [i, id] of ids.entries()) {
       const dir = join(src, 'session-state', id);
-      await mkdir(join(dir, 'files'), { recursive: true });
+      await mkdir(join(dir, 'checkpoints'), { recursive: true });
       await writeFile(join(dir, 'events.jsonl'), `{"type":"x","i":${i}}\n`);
-      await writeFile(join(dir, 'files', 'a.txt'), id);
+      await writeFile(join(dir, 'checkpoints', 'a.md'), id);
       if (i % 9 === 0) {
         const db = await openWritable(join(dir, 'session.db'));
         db.exec(`CREATE TABLE todos(id TEXT); INSERT INTO todos VALUES ('${id}');`);
@@ -120,6 +120,39 @@ describe('snapshot', () => {
     r.close();
     const again = await snapshot(src, dest);
     expect(again.sessions).toMatchObject({ copiedFiles: 0, reusedFiles: ids.length, dbCopied: 0, dbReused: ids.filter((_, i) => i % 9 === 0).length });
+  });
+
+  it('files/ と rewind-file-snapshots/ は集計で使わないので、既定では写さず(大きさも測らない)、前の複製は消す。--snapshot-all で写す', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'atlas-snap-'));
+    const src = join(base, 'src');
+    const dest = join(base, 'dest');
+    const dir = join(src, 'session-state', 's1');
+    for (const sub of SNAPSHOT_SESSION_UNUSED_DIRS) {
+      await mkdir(join(dir, sub, 'deep'), { recursive: true });
+      await writeFile(join(dir, sub, 'deep', 'a.txt'), '控え');
+    }
+    await mkdir(join(dir, 'checkpoints'), { recursive: true });
+    await writeFile(join(dir, 'checkpoints', 'index.md'), '# c');
+    await writeFile(join(dir, 'events.jsonl'), '{"type":"x"}\n');
+    const sdir = join(dest, 'session-state', 's1');
+    // 前の版が既定で写した複製
+    for (const sub of SNAPSHOT_SESSION_UNUSED_DIRS) {
+      await mkdir(join(sdir, sub), { recursive: true });
+      await writeFile(join(sdir, sub, 'old.txt'), '前の複製');
+    }
+    const names = async (): Promise<string[]> => (await readdir(sdir)).filter((n) => !n.startsWith('.')).sort();
+    const m = await snapshot(src, dest);
+    expect(await names()).toEqual(['checkpoints', 'events.jsonl']);
+    expect(m.extras?.skipped.map((x) => [x.path, x.bytes, x.reason])).toEqual(
+      SNAPSHOT_SESSION_UNUSED_DIRS.map((d) => [`session-state/s1/${d}`, 0, '集計では使わない(--snapshot-all で写す。大きさは測っていない)']),
+    );
+    expect(m.extras?.leftover).toEqual([]);
+    const all = await snapshot(src, dest, { all: true });
+    for (const sub of SNAPSHOT_SESSION_UNUSED_DIRS) expect(await readFile(join(sdir, sub, 'deep', 'a.txt'), 'utf8')).toBe('控え');
+    expect(all.extras?.skipped).toEqual([]);
+    // 通常の snapshot に戻すと消える(元にあるので失うものは無い)
+    await snapshot(src, dest);
+    expect(await names()).toEqual(['checkpoints', 'events.jsonl']);
   });
 
   it('元ディレクトリが無ければ例外', async () => {

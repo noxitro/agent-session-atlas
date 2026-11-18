@@ -219,7 +219,7 @@ describe('embed', () => {
 });
 
 describe('judgments', () => {
-  it('項目ごとの判定の日時とモデルは項目の judge から読む。judge の無い古い項目は、モデルだけファイル全体のもの(crates/atlas-report/src/judgments.rs と同じ)', () => {
+  it('項目ごとの判定の日時とモデルは項目の judge から読む。judge の無い古い項目は、モデルだけファイル全体のもの', () => {
     const j = parseJudgments({
       schemaVersion: 1,
       judge: { backend: 'copilot-cli', model: 'file-model', ranAt: '2026-11-15T00:00:00Z' },

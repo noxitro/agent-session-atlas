@@ -2,8 +2,9 @@
 import { describe, expect, it } from 'vitest';
 import { normalizeSession } from '../../core/src/normalize.ts';
 import type { CopilotEvent, SessionRecord } from '../../core/src/types.ts';
-import { WikiClassifier } from '../../core/src/wiki.ts';
-import { mergeInstructionRows, renderDetailHtml } from '../src/detail.ts';
+import { WikiClassifier, WIKI_NO_RECORD, WIKI_NOT_COUNTED } from '../../core/src/wiki.ts';
+import { judgedNote, mergeInstructionRows, renderDetailHtml, wikiPagesBlock } from '../src/detail.ts';
+import { dateTime } from '../src/lib/format.ts';
 
 let n = 0;
 const ev = (type: string, data: unknown, timestamp: string, extra: Partial<CopilotEvent> = {}): CopilotEvent => ({ type, data, timestamp, id: `d${n++}`, ...extra });
@@ -111,6 +112,43 @@ describe('詳細ページ: 同じ行の重複', () => {
     expect(page.match(/<li>wiki\/a\.md/g)).toHaveLength(1);
     expect(page).toContain('<li>wiki/a.md <span class="tag">×2</span></li>');
     expect(fieldOf(page, '個別ページ')).toEqual({ v: '3', n: '2 ページ' });
+    // 読んだセッションの扱いは「参照した」
+    expect(page).toContain('このセッションの扱い: 参照した</p>');
+  });
+
+  it('(10b) 書き込みだけ・触れていない・数えていない・記録なしの集計で、「参照はありません」と言い切らない', async () => {
+    const wiki = new WikiClassifier([{ path: 'my-wiki', pages: ['wiki'] }]);
+    const writeOnly = await normalizeSession({ id: 'wo', wikiClassifier: wiki, events: [ev('tool.execution_start', { toolName: 'edit', toolCallId: 'e1', arguments: { path: 'E:\\v\\my-wiki\\wiki\\a.md' } }, T(1))] });
+    const wp = html(writeOnly);
+    expect(fieldOf(wp, '書き込み')).toEqual({ v: '1', n: '' });
+    expect(wp).toContain('このセッションの扱い: 書き込みだけ(参照したセッションには数えません)</p>');
+    // vault に触れていないセッション: 欄の代わりに「参照はありません」
+    const untouched = await normalizeSession({ id: 'u', wikiClassifier: wiki, events: [ev('tool.execution_start', { toolName: 'view', toolCallId: 'x1', arguments: { path: 'E:\\v\\other\\a.md' } }, T(1))] });
+    expect(html(untouched)).toContain('llm-wiki の参照はありません。');
+    // vault を指定せずに集計した(vault の数が 0): 数えていない理由を出す
+    const off = renderDetailHtml(untouched, { css: '', judgment: null, generatedAt: T(0), wikiState: 'not-counted' });
+    expect(off).not.toContain('llm-wiki の参照はありません。');
+    expect(off).toContain(WIKI_NOT_COUNTED);
+    // 古い集計(vault の数の記録なし)で、どのセッションも vault に触れていない: 分からない理由を出す
+    const unknown = renderDetailHtml(untouched, { css: '', judgment: null, generatedAt: T(0), wikiState: 'no-record' });
+    expect(unknown).not.toContain('llm-wiki の参照はありません。');
+    expect(unknown).toContain(WIKI_NO_RECORD);
+  });
+
+  it('(10c) 判定の欄: 判定したモデルと日時、llm-wiki のページごとの見立て(理由が空なら記録なし、見立てが無ければ出さない)', () => {
+    const at = dateTime('2026-11-14T01:02:03Z', '日時不明');
+    expect(judgedNote({ model: 'claude-sonnet-5-5', ranAt: '2026-11-14T01:02:03Z' })).toBe(`claude-sonnet-5-5・${at} に判定`);
+    expect(judgedNote({ ranAt: '2026-11-14T01:02:03Z' })).toBe(`${at} に判定`);
+    expect(judgedNote({ model: 'm365' })).toBe('m365');
+    expect(judgedNote({})).toBe('判定した日時の記録なし');
+    expect(judgedNote({ model: '<b>' })).toBe('&lt;b&gt;');
+    const b = wikiPagesBlock({ wikiPageVerdicts: [['wiki/a.md', 'yes', '手順に使った'], ['wiki/b.md', 'no', ''], ['wiki/c.md', 'unknown', '']] });
+    expect(b).toContain('<td>wiki/a.md</td><td>役立った</td><td>手順に使った</td>');
+    expect(b).toContain('<td>wiki/b.md</td><td>役立たなかった</td><td><span class="missing-value">記録なし</span></td>');
+    expect(b).toContain('<td>分からない</td>');
+    expect(b).toContain('名前と、ログにあれば抜粋');
+    expect(wikiPagesBlock({})).toBe('');
+    expect(wikiPagesBlock({ wikiPageVerdicts: [] })).toBe('');
   });
 
   it('(11) 同じ理由で失敗したサブエージェントは ×N でまとめ、結果の無いツール呼び出しは「結果なし」に数える', async () => {

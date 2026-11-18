@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { computeMetrics, distribution } from '../src/metrics.ts';
+import { bucketOf, computeMetrics, distribution } from '../src/metrics.ts';
 import { normalizeSession } from '../src/normalize.ts';
 
 describe('computeMetrics', () => {
@@ -37,5 +37,23 @@ describe('computeMetrics', () => {
   it('distribution', () => {
     expect(distribution([])).toEqual({ total: 0, median: null, p90: null });
     expect(distribution([5, 1, 3, 2, 4, 6, 7, 8, 9, 10])).toEqual({ total: 55, median: 5, p90: 9 });
+  });
+});
+
+describe('wiki.sessionsWithAny', () => {
+  it('名前どおり「vault に触れた」セッションを数える(書き込みだけのセッションも入る。画面の「参照した」とは数え方が違う)', async () => {
+    const make = async (id: string, w: { indexReads?: number; writes?: number }) => {
+      const r = await normalizeSession({ id, hasDir: true, events: [] });
+      Object.assign(r.wiki, w);
+      return r;
+    };
+    const writeOnly = await make('w', { writes: 1 });
+    const readWrite = await make('rw', { indexReads: 1, writes: 2 });
+    const untouched = await make('n', {});
+    const b = bucketOf([writeOnly, readWrite, untouched]);
+    expect(b.wiki.sessionsWithAny).toBe(2);
+    expect([b.wiki.indexReads, b.wiki.writes]).toEqual([1, 3]);
+    expect(bucketOf([writeOnly]).wiki.sessionsWithAny).toBe(1);
+    expect(bucketOf([untouched]).wiki.sessionsWithAny).toBe(0);
   });
 });

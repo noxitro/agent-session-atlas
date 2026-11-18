@@ -20,10 +20,11 @@ type LockEntry = {
 const lock = readJson('package-lock.json') as { lockfileVersion: number; packages: Record<string, LockEntry> };
 const rootPkg = readJson('package.json') as { workspaces: string[] };
 
-// ワークスペース(packages/report)は lockfile にリンクと本体の 2 行で載る。取得元も整合性も持たない
-const workspaces = new Set(rootPkg.workspaces);
-const isWorkspace = (key: string, e: LockEntry) =>
-  workspaces.has(key) || (e.link === true && workspaces.has(e.resolved ?? ''));
+// ワークスペース(packages/* の各フォルダ)は lockfile にリンクと本体の 2 行で載る。取得元も整合性も持たない。
+// package.json の workspaces はフォルダの名前か、末尾が /* の形(その下の 1 段のフォルダ)
+const isWorkspaceDir = (dir: string): boolean =>
+  rootPkg.workspaces.some((w) => (w.endsWith('/*') ? dir.startsWith(w.slice(0, -1)) && !dir.slice(w.length - 1).includes('/') && dir.length >= w.length : dir === w));
+const isWorkspace = (key: string, e: LockEntry) => isWorkspaceDir(key) || (e.link === true && isWorkspaceDir(e.resolved ?? ''));
 const installed = Object.entries(lock.packages).filter(([key, e]) => key !== '' && !isWorkspace(key, e));
 
 // インストール時にスクリプトを動かしてよいパッケージ(理由つき)。足すときは中身を確かめてから

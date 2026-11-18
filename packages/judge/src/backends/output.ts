@@ -1,7 +1,7 @@
 // エージェント CLI の出力(JSONL)から最終的な assistant 本文を取り出し、判定 JSON を検証する。
 // copilot -p --output-format json の行の形は版によって違いうるので、
 // 既知の形を広く受け、どれにも当たらなければ出力全体を本文として扱う。
-import { itemsFromCandidates, itemProblems, jsonCandidates, validateJudgmentItem, type JudgmentItem } from '../schema.ts';
+import { itemsFromCandidates, itemProblems, jsonCandidates, validateJudgmentItem, type JudgmentItem, wikiPagesNote } from '../schema.ts';
 
 export interface AgentOutput {
   /** assistant の本文(出現順) */
@@ -60,6 +60,11 @@ export function parseAgentJsonl(stdout: string): AgentOutput {
  * sessionId が無ければパケットの ID を補い、違う ID ならエラーにする。
  */
 export function itemFromTexts(texts: string[], sessionId: string): JudgmentItem {
+  return itemAndNotesFromTexts(texts, sessionId).item;
+}
+
+/** itemFromTexts と同じく判定項目を取り出し、llm-wiki のページごとの判定(wikiPages)の一部を捨てたときはその知らせも返す */
+export function itemAndNotesFromTexts(texts: string[], sessionId: string): { item: JudgmentItem; wikiNotes: string[] } {
   const problems: string[] = [];
   for (let i = texts.length - 1; i >= 0; i--) {
     const items = itemsFromCandidates(jsonCandidates(texts[i]));
@@ -77,7 +82,8 @@ export function itemFromTexts(texts: string[], sessionId: string): JudgmentItem 
         problems.push(...p);
         continue;
       }
-      return validateJudgmentItem(it);
+      const note = wikiPagesNote(it);
+      return { item: validateJudgmentItem(it), wikiNotes: note ? [note] : [] };
     }
   }
   if (texts.length === 0) throw new Error('応答に assistant の本文がありません');

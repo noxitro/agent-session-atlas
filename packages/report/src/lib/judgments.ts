@@ -3,7 +3,7 @@
 // うちレポートに要る項目だけを拾う。report は judge に依存しないので、ここでは表示に必要な最低限を検査し、
 // 形が合わない項目は捨てずにエラーにする(黙って欠損させない)。
 // ただし llm-wiki のページごとの判定(wikiPages)だけは、壊れていても項目を捨てずに、そのページを未判定として読む(docs/judge.md)。
-// Rust の同じ読み取りは crates/atlas-report/src/judgments.rs(並びをそろえる)。
+// 判定を書く側(packages/judge の schema.ts)の parseWikiPages と同じ決まりで読む。
 import type { JudgmentSummary, WikiHelpful, WikiPageVerdict } from './types.ts';
 
 /** 読める judgments.json のスキーマの版(1: wikiPages の無い版。2: llm-wiki のページごとの判定を足した版) */

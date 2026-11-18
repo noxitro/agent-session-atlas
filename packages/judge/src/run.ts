@@ -33,6 +33,8 @@ export interface RunSummary {
   failed: { sessionId: string; error: string }[];
   usage: JudgeUsage;
   notes: string[];
+  /** llm-wiki のページごとの判定の一部を捨てたセッション(そのページは未判定。補足の先頭 5 件に埋もれないよう、件数の 1 行で出す) */
+  wikiPageDrops: string[];
 }
 
 /**
@@ -79,7 +81,7 @@ export async function runJudge(o: RunOptions): Promise<RunSummary> {
   log(`judge: バックエンド ${o.backend.name}${o.backend.model ? `(${o.backend.model})` : ''}、対象 ${targets.length} 件(パケット ${manifest.sessions.length}、判定済みでスキップ ${alreadyJudged})`);
 
   const ranAt = now();
-  const summary: RunSummary = { packets: manifest.sessions.length, alreadyJudged, attempted: targets.length, succeeded: 0, failed: [], usage: { runs: 0, missing: 0, totals: {} }, notes: [] };
+  const summary: RunSummary = { packets: manifest.sessions.length, alreadyJudged, attempted: targets.length, succeeded: 0, failed: [], usage: { runs: 0, missing: 0, totals: {} }, notes: [], wikiPageDrops: [] };
 
   // judgments.json への書き込みは直列にする(並列判定でも 1 件ずつ確定させる)
   let chain: Promise<void> = Promise.resolve();
@@ -108,6 +110,7 @@ export async function runJudge(o: RunOptions): Promise<RunSummary> {
         r.item.judge = { backend: o.backend.name, model: o.backend.model, ranAt: now() };
         summary.usage = addUsage(summary.usage, r.usage);
         for (const n of r.notes) summary.notes.push(`${e.id}: ${n}`);
+        if (r.wikiNotes?.length) summary.wikiPageDrops.push(e.id);
         summary.succeeded++;
         await commit((j) => mergeJudgments(j, [r.item], meta()));
         log(`judge: [${++done}/${targets.length}] ${e.id} → ${r.item.taskCategory} ${r.item.humanEffort.hours} 時間(確信度 ${r.item.humanEffort.confidence})、${((performance.now() - t0) / 1000).toFixed(1)} 秒`);

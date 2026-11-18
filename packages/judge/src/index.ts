@@ -15,7 +15,7 @@ export type { JudgeBackend, JudgePacket, JudgeResult } from './backends/types.ts
 export { copilotCliBackend, copilotArgs, copilotMcpServers, JUDGE_AVAILABLE_TOOLS, JUDGE_DENIED_TOOL_KINDS } from './backends/copilot-cli.ts';
 export type { CopilotCliOptions } from './backends/copilot-cli.ts';
 export { anthropicBackend, ANTHROPIC_DEFAULT_MODEL, ANTHROPIC_API_VERSION } from './backends/anthropic.ts';
-export { parseAgentJsonl, itemFromTexts } from './backends/output.ts';
+export { parseAgentJsonl, itemAndNotesFromTexts, itemFromTexts } from './backends/output.ts';
 export { resolveCommand } from './backends/proc.ts';
 export { TURN_JUDGMENTS_VERSION, turnItemProblems, validateTurnJudgments, readTurnJudgments, writeTurnJudgments, mergeTurnJudgments, emptyTurnJudgments, importTurnJudgmentsText, turnJsonSchema } from './turn-schema.ts';
 export type { TurnJudgment, TurnJudgmentsFile, TurnImportResult } from './turn-schema.ts';

@@ -98,7 +98,7 @@ export function inputsKey(p: ReusePaths, options: unknown, configPath: string): 
     delete m.createdAt;
     if (m.sessions && typeof m.sessions === 'object') for (const k of VOLATILE_SESSION_COUNTS) delete m.sessions[k];
     // フォルダごとの最後に送った日時(送り先の索引)は、変わったセッションが無くても送るたびに変わる。レポートには日付までしか出さないので、
-    // 日付までにして入れる(そのままだと、作業メンバーが送るたびに作り直しになる)。版と、索引を読めたかは、そのまま入れる
+    // 日付までにして入れる(そのままだと、送るたびに作り直しになる)。版と、索引を読めたかは、そのまま入れる
     if (m.uploads && typeof m.uploads === 'object')
       for (const u of Object.values(m.uploads)) if (u && typeof u === 'object' && typeof u.uploadedAt === 'string') u.uploadedAt = u.uploadedAt.slice(0, 10);
     manifest = JSON.stringify(m);

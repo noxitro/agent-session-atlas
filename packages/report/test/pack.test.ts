@@ -6,6 +6,10 @@ import { embedData, extractEmbedded } from '../src/lib/embed.ts';
 import { packSummary, unpackData, unpackSummary } from '../src/lib/pack.ts';
 import { summarize } from '../src/lib/summarize.ts';
 import type { SessionSummary } from '../src/lib/types.ts';
+import { wikiPageIndex } from '../src/lib/wiki.ts';
+
+/** wiki のページを読まないセッションだけを要約するときの、空のページの辞書 */
+const NO_WIKI_PAGES = wikiPageIndex([]);
 
 const T0 = Date.parse('2026-11-08T00:00:00.000Z');
 const ev = (dt: number, type: string, data: Record<string, unknown>): CopilotEvent => ({ type, data, timestamp: new Date(T0 + dt).toISOString() });
@@ -24,7 +28,7 @@ async function summaries(): Promise<SessionSummary[]> {
       ev(2100, 'assistant.message', { content: '直しました', outputTokens: 0 }),
     ],
   });
-  return [empty, busy].map((r) => summarize(r, null));
+  return [empty, busy].map((r) => summarize(r, null, NO_WIKI_PAGES));
 }
 
 /** JSON を通した往復(埋め込みと同じ) */

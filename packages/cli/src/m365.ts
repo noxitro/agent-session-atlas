@@ -187,6 +187,8 @@ export async function runM365Judge(
         summary.succeeded++;
         summary.imported += r.imported;
         log(`m365: ${name} の返答から ${r.imported} 件を取り込みました(既存の上書き ${r.overwritten} 件)`);
+        // llm-wiki のページごとの判定の一部を捨てた(そのページは未判定)
+        for (const n of 'notes' in r ? r.notes : []) log(`m365:   注意 ${n}`);
       } catch (e) {
         const problems = e instanceof JudgmentValidationError ? e.problems.slice(0, 5) : [];
         summary.failed.push({ name, reason: (e as Error).message });

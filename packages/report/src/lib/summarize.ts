@@ -88,16 +88,14 @@ export function detailHref(id: string): string {
 }
 
 /**
- * セッションの判定から、判定のパケットに載せたページ(judgedWikiPages)の判定だけを残す。パケットに無いページの名前を LLM が返したら捨てる
- * (crates/atlas-report/src/judgments.rs の judgment_for_session と同じ)
- */
+ * セッションの判定から、判定のパケットに載せたページ(judgedWikiPages)の判定だけを残す。パケットに無いページの名前を LLM が返したら捨てる */
 export function judgmentForSession(j: JudgmentSummary, pageReads: readonly string[]): JudgmentSummary {
   if (!j.wikiPageVerdicts) return j;
   const judged = new Set(judgedWikiPages(pageReads));
   return { ...j, wikiPageVerdicts: j.wikiPageVerdicts.filter(([p]) => judged.has(p)) };
 }
 
-/** 埋め込む判定: 根拠と見立ての理由は落とし、見立てはページの番号にする(crates/atlas-report/src/summarize.rs と同じ並び) */
+/** 埋め込む判定: 根拠と見立ての理由は落とし、見立てはページの番号にする */
 export function embeddedJudgment(j: JudgmentSummary, pageReads: readonly string[], pages: WikiPageIndex): JudgmentSummary {
   const { wikiPageVerdicts: verdicts, ...rest } = judgmentForSession(j, pageReads);
   return { ...rest, rationale: null, ...(verdicts ? { wikiPages: verdicts.map(([p, h]): WikiPageMark => [pageNumber(pages, p), h]) } : {}) };

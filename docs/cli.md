@@ -62,7 +62,7 @@ npm run atlas -- --help                  # 使い方
 | `--vcs-mode <v>` | `vcs` / `all` で、比べる版をどこで見るか。`worktree`(既定。照合した時点の作業ツリーで、まだ取り込んでいない変更も含む)/ `committed`(最後に取り込んだ版。git は HEAD、svn は BASE、p4 は手元の版)/ `fixed`(セッションの終わりから決まった日数後の時点で取り込まれていた版。日数は設定の `vcs.lagDays`、既定 7)。設定の `vcs.mode` より優先する |
 | `--to <dir>` | `group upload` で、アップロード先の基底フォルダ(フルパス)。省略すると設定の `uploadRoot` |
 
-`judge run` 専用のオプション(`--backend` `--limit` `--only` `--concurrency` `--force` `--no-allow-tools` `--timeout`)は [judge.md](judge.md) を見てください。`judge` は作ってある添付(`out/bundle`)を判定するので、絞り込みのオプションは効きません。`--session` は `judge run` で `--only` と同じに扱い(先頭一致で添付から探す)、ほかの絞り込み(`--project`・`--since`・`--client`・`--branch`・`--group`)を付けると止まります(`judge-flow` では、添付を作る `bundle` に渡ります)。`judge run` では `--model` は判定に使うモデルの指定になります。
+`judge run` 専用のオプション(`--backend` `--limit` `--only` `--concurrency` `--force` `--no-allow-tools` `--timeout`)は [judge.md](judge.md) を見てください。`judge` は作ってある添付(`out/bundle`)を判定するので、絞り込みのオプションは効きません。`--session` は `judge run` で `--only` と同じに扱い(先頭一致で添付から探す)、ほかの絞り込み(`--project`・`--since`・`--client`・`--branch`・`--group`)を付けると止まります(`npm run atlas:judge` では、添付を作る `bundle` に渡ります)。`judge run` では `--model` は判定に使うモデルの指定になります。
 
 ## snapshot と extract が読むもの
 

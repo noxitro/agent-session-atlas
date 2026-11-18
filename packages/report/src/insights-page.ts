@@ -2,7 +2,7 @@
 // スキル化の候補の全文)を、用語ページと同じ作法で置く。本文は atlas.html に埋め込まない。
 import { esc } from './detail.ts';
 import { date, dateTime, dec, duration, int } from './lib/format.ts';
-import { cleanHeading, THRESHOLDS, type Candidate, type InstructionFindings, type SkillStat, type StuckSession, type VersionMeta, type VersionStat } from './lib/insights.ts';
+import { cleanHeading, SKILL_RATE_CAUSE, THRESHOLDS, type Candidate, type InstructionFindings, type SkillStat, type StuckSession, type VersionMeta, type VersionStat } from './lib/insights.ts';
 import { codeMeta, NAV_JS, renderRail, renderTop } from './page-nav.ts';
 
 export const INSIGHTS_FILE = 'insights.html';
@@ -105,7 +105,7 @@ export function renderInsightsHtml(o: InsightsPageOptions): string {
     )
     .join('');
   const off = new Set(o.disabledSkills.map((n) => n.toLowerCase()));
-  const skills = `<section class="section ins" id="i-skills" aria-labelledby="h-i-skills"><div class="section-head"><h2 id="h-i-skills">skill の傾向</h2><p>呼び出し回数(利用者 / エージェント)、本文の大きさ、呼んだセッションと呼ばなかったセッションの失敗率(それぞれ ${THRESHOLDS.MIN_SESSIONS} セッション未満なら —)。</p></div>${
+  const skills = `<section class="section ins" id="i-skills" aria-labelledby="h-i-skills"><div class="section-head"><h2 id="h-i-skills">skill の傾向</h2><p>呼び出し回数(利用者 / エージェント)、本文の大きさ、呼んだセッションと呼ばなかったセッションの失敗率(ツールの失敗・拒否 / 呼び出し。それぞれ ${THRESHOLDS.MIN_SESSIONS} セッション未満なら —)。${SKILL_RATE_CAUSE}</p></div>${
     rates || !o.skills.stats.length ? '' : `<p class="note">${THRESHOLDS.MIN_SESSIONS} セッション以上で呼ばれた skill が無いので、呼んだときと呼ばないときの失敗率は比べられません(列を省きました)。</p>`
   }<div class="table-scroll"><table class="ledger"><thead><tr><th scope="col">skill</th><th scope="col" class="num">呼び出し</th><th scope="col" class="num">利用者 / エージェント</th><th scope="col" class="num">本文の字数</th><th scope="col" class="num">セッション</th>${rates ? '<th scope="col" class="num">失敗率(呼んだ)</th><th scope="col" class="num">失敗率(呼ばない)</th>' : ''}<th scope="col" class="num">出力トークン / セッション</th></tr></thead><tbody>${sRows || `<tr><td colspan="${rates ? 8 : 6}">skill の呼び出しはありません。</td></tr>`}</tbody></table></div>${
     o.skills.unused.length ? `<p class="note">インストール済みで未使用: ${esc(o.skills.unused.map((n) => (off.has(n.toLowerCase()) ? `${n}(無効)` : n)).join('、'))}${o.skills.unused.some((n) => off.has(n.toLowerCase())) ? '(無効は今の設定で無効にしてあるもの)' : ''}</p>` : ''

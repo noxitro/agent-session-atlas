@@ -7,6 +7,10 @@ import { emptyFilter } from '../src/lib/filter.ts';
 import { highlights } from '../src/lib/highlights.ts';
 import { packSummary, unpackSummary } from '../src/lib/pack.ts';
 import { summarize } from '../src/lib/summarize.ts';
+import { wikiPageIndex } from '../src/lib/wiki.ts';
+
+/** wiki のページを読まないセッションだけを要約するときの、空のページの辞書 */
+const NO_WIKI_PAGES = wikiPageIndex([]);
 
 let n = 0;
 const ev = (type: string, data: unknown): CopilotEvent => ({ type, data, id: `e${n++}`, timestamp: new Date(Date.parse('2026-10-01T00:00:00Z') + n * 1000).toISOString() });
@@ -49,15 +53,15 @@ async function records(): Promise<SessionRecord[]> {
 describe('失敗の要因', () => {
   it('要約は失敗のあったツールだけ要因を持ち、埋め込みの縮小と埋め戻しで変わらない', async () => {
     const [a] = await records();
-    const s = summarize(a!, null);
+    const s = summarize(a!, null, NO_WIKI_PAGES);
     expect(s.tools.causes).toEqual({ 'zz-srv-find': { timeout: 2 }, 'zz-srv-read': { not_found: 1 }, view: { not_found: 1 } });
     expect(unpackSummary(packSummary(s)).tools.causes).toEqual(s.tools.causes);
-    const ok = summarize(await normalizeSession({ id: 'c', workspace: { cwd: 'X:\\zz-c' }, events: [ev('user.message', { content: 'c' }), ...call('1', 'view', null)] }), null);
+    const ok = summarize(await normalizeSession({ id: 'c', workspace: { cwd: 'X:\\zz-c' }, events: [ev('user.message', { content: 'c' }), ...call('1', 'view', null)] }), null, NO_WIKI_PAGES);
     expect(ok.tools.causes).toEqual({});
   });
 
   it('要因ごとの行は多い順で、その要因で失敗したツール(MCP はサーバーの中のツール)を持つ。ツールと MCP の行にも要因を足す', async () => {
-    const u = usageRanking((await records()).map((r) => summarize(r, null)));
+    const u = usageRanking((await records()).map((r) => summarize(r, null, NO_WIKI_PAGES)));
     expect(u.causes).toEqual([
       {
         cause: 'not_found',
@@ -81,7 +85,7 @@ describe('失敗の要因', () => {
   });
 
   it('要因の記録が無い失敗(以前の版で集計したセッション)は、要因の行に入れずに数だけ残す', async () => {
-    const summaries = (await records()).map((r) => summarize(r, null));
+    const summaries = (await records()).map((r) => summarize(r, null, NO_WIKI_PAGES));
     const old = { ...summaries[0]!, tools: { ...summaries[0]!.tools, causes: undefined } };
     const u = usageRanking([old, summaries[1]!]);
     expect(u.causesUnrecorded).toBe(4);
@@ -92,7 +96,7 @@ describe('失敗の要因', () => {
   });
 
   it('要点欄の「失敗率の高いツール」に、いちばん多い要因を添える', async () => {
-    const all = (await records()).map((r) => summarize(r, null));
+    const all = (await records()).map((r) => summarize(r, null, NO_WIKI_PAGES));
     const g = highlights(all, aggregate(all).usage, { filter: emptyFilter(), installed: null });
     const tf = g.find((x) => x.kind === 'tool-failure')!;
     expect(tf.items.map((i) => i.text)).toEqual([

@@ -1,5 +1,5 @@
 // atlas 自身を新しい版にする。次の 2 か所から呼ぶ:
-//  - 自動で送る前(schedule-upload.bat で登録したタスクが、upload-auto.ts から)。作業メンバーは定期の自動送信しか使わず、
+//  - 自動で送る前(schedule-upload.bat で登録したタスクが、upload-auto.ts から)。定期の自動送信しか使わない PC では、
 //    atlas.bat を開かないので、git pull しないままだと古い版で送り続けてしまうため
 //  - 起動用の .bat を開いたとき(launcher-update.ts)。マージした変更が、git pull しなくても利用者に届くように
 //

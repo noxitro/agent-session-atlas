@@ -57,7 +57,15 @@ export const UPLOAD_MEMO_IMAGES_LIMIT = 100 * 1024 * 1024;
  */
 export const SNAPSHOT_SESSION_EXTRA_FILES = ['plan.md', 'vscode.metadata.json', SESSION_STORE_JSON, UPLOAD_SESSION_META, UPLOAD_VCS_META, UPLOAD_MEMO_FILE] as const;
 /** Phase 11: セッションフォルダの追加のサブフォルダ(あれば再帰的に写す)。UPLOAD_MEMO_IMAGES はアップロード先から集計し直すときだけある */
-export const SNAPSHOT_SESSION_EXTRA_DIRS = ['checkpoints', 'files', 'rewind-file-snapshots', 'policies', 'research', 'sandbox-denials', UPLOAD_MEMO_IMAGES] as const;
+export const SNAPSHOT_SESSION_EXTRA_DIRS = ['checkpoints', 'policies', 'research', 'sandbox-denials', UPLOAD_MEMO_IMAGES] as const;
+/**
+ * 既定では写さないサブフォルダ(--snapshot-all で写す)。編集する前のファイルの控えなどで、集計では中身を使わない
+ * (--full の全文記録にファイルの名前と大きさを並べるだけ)のに、セッションが増えると大きくなり、ファイルの数も多い。
+ * 共有フォルダから写すときは、ファイル 1 つごとに大きさと更新時刻を問い合わせるので、写さなくても大きさは測らない。
+ * 前は既定で写していたので、前の複製は消す(元にあるので失うものは無い。--snapshot-all で写したものも、通常の snapshot で消える)
+ */
+export const SNAPSHOT_SESSION_UNUSED_DIRS = ['files', 'rewind-file-snapshots'] as const;
+const UNUSED_DIR_REASON = '集計では使わない(--snapshot-all で写す。大きさは測っていない)';
 /** Phase 11: 既定では写さず --snapshot-all で写すサブフォルダ(大きい。rewind-snapshots は 1 セッションで数十 MB) */
 export const SNAPSHOT_SESSION_HEAVY_DIRS = ['rewind-snapshots'] as const;
 /** Phase 11: ~/.copilot 直下で写すフォルダ */
@@ -334,7 +342,7 @@ export async function snapshot(src: string, dest: string, opts: SnapshotOptions 
         acc.dbErrors.push(`${name}: ${(e as Error).message}`);
       }
     } else await rm(join(dirDest, SNAPSHOT_SESSION_DB), { force: true }); // 元から消えたものは複製側も消す
-    // Phase 11: plan.md・checkpoints/・files/ などを写す。大きいもの・一覧に無いものは --snapshot-all のときだけ
+    // Phase 11: plan.md・checkpoints/ などを写す。大きいもの・一覧に無いもの・集計で使わないもの(files/ など)は --snapshot-all のときだけ
     await copySessionExtras(dirSrc, dirDest, src, all, prune, acc, ents);
     return true;
   }
@@ -1046,7 +1054,9 @@ const KNOWN_SESSION_ENTRIES = new Set<string>([
   ...SNAPSHOT_SESSION_EXTRA_FILES,
   ...SNAPSHOT_SESSION_EXTRA_DIRS,
   ...SNAPSHOT_SESSION_HEAVY_DIRS,
+  ...SNAPSHOT_SESSION_UNUSED_DIRS,
 ]);
+const isUnusedDir = (name: string): boolean => (SNAPSHOT_SESSION_UNUSED_DIRS as readonly string[]).includes(name);
 const isLock = (name: string): boolean => /^inuse\.\d+\.(lock|hold)$/.test(name) || name.endsWith('.lock');
 
 const LINK_REASON = 'シンボリックリンク / ジャンクション(辿らない)';
@@ -1195,12 +1205,14 @@ async function copySessionExtras(dirSrc: string, dirDest: string, root: string, 
           continue;
         }
       }
-      if (known || ((heavy || !KNOWN_SESSION_ENTRIES.has(name)) && all)) {
+      const unused = isUnusedDir(name);
+      if (known || ((heavy || unused || !KNOWN_SESSION_ENTRIES.has(name)) && all)) {
         present.add(name);
         const r = await copyTree(p, join(dirDest, name), extras.skipped, relPath(p));
         extras.sessionFiles += r.files;
         extras.sessionBytes += r.bytes;
-      } else if (heavy || !KNOWN_SESSION_ENTRIES.has(name)) {
+      } else if (unused) extras.skipped.push({ path: relPath(p), bytes: 0, reason: UNUSED_DIR_REASON });
+      else if (heavy || !KNOWN_SESSION_ENTRIES.has(name)) {
         extras.skipped.push({ path: relPath(p), bytes: await dirBytes(p), reason: heavy ? '大きい(--snapshot-all で写す)' : '一覧に無い名前(--snapshot-all で写す)' });
       }
     } else if (ent.isFile() && !KNOWN_SESSION_ENTRIES.has(name) && !isLock(name)) {
@@ -1215,10 +1227,12 @@ async function copySessionExtras(dirSrc: string, dirDest: string, root: string, 
   if (existsSync(dirDest)) {
     for (const ent of await readdir(dirDest, { withFileTypes: true })) {
       const name = ent.name;
-      if (KNOWN_SESSION_ENTRIES.has(name) && !(SNAPSHOT_SESSION_EXTRA_DIRS as readonly string[]).includes(name) && !(SNAPSHOT_SESSION_HEAVY_DIRS as readonly string[]).includes(name)) continue;
+      const unused = isUnusedDir(name);
+      if (KNOWN_SESSION_ENTRIES.has(name) && !(SNAPSHOT_SESSION_EXTRA_DIRS as readonly string[]).includes(name) && !(SNAPSHOT_SESSION_HEAVY_DIRS as readonly string[]).includes(name) && !unused) continue;
       if (name === SESSION_DB_FINGERPRINT || present.has(name)) continue;
       const p = join(dirDest, name);
-      if (!ents.get(name) || prune) await rm(p, { recursive: true, force: true });
+      // 集計で使わないフォルダ(files/ など)の前の複製は、元にあっても消す(元にあるので失うものは無い)
+      if (!ents.get(name) || prune || unused) await rm(p, { recursive: true, force: true });
       else extras.leftover.push({ path: relPath(join(dirSrc, name)), mtime: (await stat(p)).mtime.toISOString() });
     }
   }

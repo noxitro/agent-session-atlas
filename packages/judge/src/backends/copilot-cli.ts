@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildJudgePrompt } from '../rubric.ts';
 import { commandLineLength, MAX_COMMAND_LINE, resolveCommand, runProcess, tail, type ResolvedCommand } from './proc.ts';
-import { itemFromTexts, parseAgentJsonl } from './output.ts';
+import { itemAndNotesFromTexts, parseAgentJsonl } from './output.ts';
 import type { AskResult, JudgeBackend, JudgePacket, JudgeResult } from './types.ts';
 
 export interface CopilotCliOptions {
@@ -114,7 +114,8 @@ export function copilotCliBackend(o: CopilotCliOptions = {}): JudgeBackend {
     ask,
     async judge(packet: JudgePacket): Promise<JudgeResult> {
       const r = await ask(buildJudgePrompt(packet.markdown, packet.sessionId), packet.sessionId);
-      return { item: itemFromTexts(r.texts, packet.sessionId), usage: r.usage, notes: r.notes };
+      const { item, wikiNotes } = itemAndNotesFromTexts(r.texts, packet.sessionId);
+      return { item, usage: r.usage, notes: r.notes, wikiNotes };
     },
   };
 }

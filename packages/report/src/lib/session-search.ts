@@ -1,6 +1,6 @@
 // セッション一覧の検索(セッション ID の先頭か、題名の一部)。一覧の行を絞るだけで、集計の絞り込み(filter.ts)とは別。
 // 題名は、一覧に出す名前(セッション名)と最初の依頼の文。どちらもレポートのデータには先頭 160 字までしか入っていない
-// (crates/atlas-report/src/summarize.rs の SUMMARY_TEXT_CHARS)ので、その先の文では当たらない。
+// (summarize.ts の SUMMARY_TEXT_CHARS)ので、その先の文では当たらない。
 import type { SessionSummary } from './types.ts';
 
 /** 比べるときの形: 全角と半角・大文字と小文字をそろえ、続く空白を 1 つにする */

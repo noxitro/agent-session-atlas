@@ -10,8 +10,10 @@ import {
   jsonCandidates,
   JudgmentValidationError,
   mergeJudgments,
+  schemaVersionFor,
   validateJudgmentItem,
   validateJudgments,
+  wikiPagesNote,
   type JudgmentItem,
   type JudgmentsFile,
 } from './schema.ts';
@@ -31,8 +33,12 @@ export async function readJudgments(path: string): Promise<JudgmentsFile | null>
   }
 }
 
-/** 一時ファイルに書いてから置き換える(途中で落ちても壊れたファイルを残さない) */
-export async function writeJudgments(path: string, j: JudgmentsFile): Promise<void> {
+/**
+ * 一時ファイルに書いてから置き換える(途中で落ちても壊れたファイルを残さない)。
+ * 版は項目で決める(どの項目も wikiPages を持たない間は 1。前の版の atlas でも読めるように)
+ */
+export async function writeJudgments(path: string, file: JudgmentsFile): Promise<void> {
+  const j: JudgmentsFile = { ...file, schemaVersion: schemaVersionFor(file.items) };
   validateJudgments(j);
   await mkdir(dirname(path), { recursive: true });
   const tmp = `${path}.${process.pid}.tmp`;
@@ -49,6 +55,8 @@ export interface ImportResult {
   /** knownIds に無い sessionId(レポートには出ない) */
   unknownIds: string[];
   total: number;
+  /** 取り込んだが、llm-wiki のページごとの判定(wikiPages)の形が崩れていて一部を捨てた項目の知らせ(「セッション <id>: …」) */
+  notes: string[];
 }
 
 /**
@@ -101,10 +109,13 @@ export async function importJudgmentsText(
 
   const by = new Map<string, JudgmentItem>();
   let duplicates = 0;
+  const notes: string[] = [];
   for (const it of raw) {
     const x = { ...(it as Record<string, unknown>) };
     delete x.judge;
     const v = validateJudgmentItem(x);
+    const note = wikiPagesNote(x);
+    if (note) notes.push(`セッション ${v.sessionId}: ${note}`);
     if (by.has(v.sessionId)) duplicates++;
     v.judge = { backend: 'external', model, ranAt };
     by.set(v.sessionId, v);
@@ -120,5 +131,6 @@ export async function importJudgmentsText(
     overwritten: items.filter((i) => existing.has(i.sessionId)).length,
     unknownIds: o.knownIds ? items.map((i) => i.sessionId).filter((id) => !o.knownIds!.has(id)) : [],
     total: merged.items.length,
+    notes,
   };
 }
