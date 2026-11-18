@@ -384,8 +384,14 @@ describe('配る中身の一覧(scripts/release-shipped.txt)', () => {
     const audit = job('audit');
     expect(audit).toContain('ref: ${{ needs.plan.outputs.ref }}');
     expect(audit).toContain('cargo deny --locked check');
-    expect(audit).toMatch(/npm audit --audit-level=high/);
+    expect(audit).toMatch(/^ +node scripts\/npm-audit\.mjs$/m);
     expect(audit).not.toContain('--omit=dev');
+    // PR の CI と毎週の検査も同じ基準で見る(PR が通ったのにリリースだけが止まる、を起こさない)
+    for (const f of ['ci.yml', 'deny-schedule.yml']) {
+      const text = readFileSync(join(ROOT, '.github/workflows', f), 'utf8');
+      expect(text, f).toMatch(/run: node scripts\/npm-audit\.mjs$/m);
+      expect(text, f).not.toMatch(/run: npm audit|--omit=dev/);
+    }
     // cargo-deny の版は 3 つのワークフローでそろえる
     const version = (f: string) => readFileSync(join(ROOT, '.github/workflows', f), 'utf8').match(/CARGO_DENY_VERSION: (\S+)/)?.[1];
     expect(version('release.yml')).toBeDefined();

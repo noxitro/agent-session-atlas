@@ -1,0 +1,8 @@
+[
+  {
+    "id": "GHSA-fc5q-39xc-vjpf",
+    "package": "picomatch",
+    "reason": "ビルドとテストの道具(vite・vitest・svelte-check など)の中だけで使われ、glob は自分のリポジトリの設定から来るので、細工した glob を渡される経路が無い。atlas.exe に picomatch は入らない(画面のビルドの出力に含まれない)。修正版はまだ出ていない(4.0.7 まで該当)。",
+    "removeWhen": "picomatch の修正版が出て、Dependabot の更新で上がったら外す"
+  }
+]
