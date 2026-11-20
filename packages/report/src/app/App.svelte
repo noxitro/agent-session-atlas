@@ -5,7 +5,7 @@
   import { verdictAggregate } from '../lib/verdicts.ts';
   import { wikiReferenced, wikiState } from '../lib/wiki.ts';
   import { flushSync, tick, untrack } from 'svelte';
-  import { applyFilter, currentGroupName, decodeFilter, decodeTab, decodeView, DEFAULT_TAB, effectiveIds, emptyFilter, encodeState, filterHref, filterOptions, groupIds, inScope, isEmptyFilter, isStateHash, isTabId, joinIds, knownSelection, type FilterState, type TabId } from '../lib/filter.ts';
+  import { applyFilter, currentGroupName, decodeFilter, decodeTab, decodeView, DEFAULT_TAB, effectiveIds, emptyFilter, encodeFilter, encodeState, filterHref, filterOptions, groupIds, inScope, isEmptyFilter, isStateHash, isTabId, joinIds, knownSelection, type FilterState, type TabId } from '../lib/filter.ts';
   import GroupRail from './components/GroupRail.svelte';
   import GroupHead from './components/GroupHead.svelte';
   import { highlights } from '../lib/highlights.ts';
@@ -148,12 +148,28 @@
     });
   }
 
+  /**
+   * 今の URL が指す絞り込みとタブ。絞り込みは、# が空なら無し、絞り込み・タブ・表示の指定のハッシュならその中身、
+   * ページ内リンク(#phases)なら null(今の絞り込みのまま。ページ内リンクの URL は絞り込みを持たない)
+   */
+  function stateOfLocation(): { filter: FilterState | null; tab: TabId } {
+    const h = location.hash;
+    if (h.length <= 1) return { filter: emptyFilter(), tab: DEFAULT_TAB };
+    if (!isStateHash(h)) return { filter: null, tab: tabOfLocation() };
+    return { filter: decodeFilter(h), tab: tabOfLocation() };
+  }
+
   /** 今のスクロール位置を今の履歴の項目に書く(戻る / 進むでタブが変わったときに、その位置へ戻すため。スクロール中は止まってから書く) */
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   function saveScroll(): void {
     clearTimeout(saveTimer);
     saveView({ y: window.scrollY });
   }
+  /**
+   * 戻る / 進むで描き直して位置を戻している間(この時刻まで)は、スクロールの位置を書かない。
+   * 描き直しの途中の位置(上の節の高さが変わってブラウザがずらした位置)を、移った先の項目に残さないため
+   */
+  let settleUntil = 0;
 
   // 要点欄などの #… リンク(絞り込みの状態)を押したときに絞り込みを切り替える。
   // #overview のようなページ内リンクは、行き先が隠れたタブにあるときだけそのタブに移る
@@ -177,23 +193,31 @@
         }
         return;
       }
-      filter = decodeFilter(h);
+      // 戻る / 進むでは popstate で同じ絞り込みにしてある。同じなら置き換えない(描き直すと、戻した位置が上の節の高さの変化でずれる)
+      const f = decodeFilter(h);
+      if (encodeFilter(f) !== encodeFilter(filter)) filter = f;
       // 表示の指定があればその場所(のタブ)へ。無ければ tab=… のタブ(戻る / 進むで移った先。位置はブラウザと popstate が戻す)
       const view = decodeView(h);
       if (view) showView(view);
       else tab = decodeTab(h) ?? DEFAULT_TAB;
     };
-    // 戻る / 進む: 描き直してから(flushSync)ブラウザがスクロール位置を戻すよう、ここでタブを合わせる。
-    // タブが変わったときは、その項目に残した位置(saveScroll)へ自分でも戻す。ブラウザが覚えた位置は、
-    // 別のタブの節へのリンクを押したとき、タブを切り替えた後(ページの長さが変わった後)の位置になっていることがあるので、
-    // ブラウザが戻した後(次の描画の前)にもう一度合わせる
+    // 戻る / 進む: 移った先の絞り込みとタブを両方ここで当てて描き直してから(flushSync)、位置を戻す。
+    // popstate → ブラウザが位置を戻す → hashchange の順に来るので、絞り込みを hashchange まで待つと、
+    // 戻した後で上の節の高さが変わり(絞り込みを外すと要点などが伸びる)、ブラウザのスクロールの固定(scroll anchoring)で位置がずれる。
+    // その項目に残した位置(saveScroll)があれば自分でも戻す。ブラウザが覚えた位置は、別のタブの節へのリンクを押したとき、
+    // タブを切り替えた後(ページの長さが変わった後)の位置になっていることがあるので、ブラウザが戻した後(次の描画の前)にもう一度合わせる
     const onPop = (): void => {
       clearTimeout(saveTimer); // 前の項目の位置を、移った先の項目に書かない
-      const want = tabOfLocation();
-      if (want === tab) return;
-      tab = want;
+      const next = stateOfLocation();
+      const tabChanged = next.tab !== tab;
+      const filterChanged = next.filter != null && encodeFilter(next.filter) !== encodeFilter(filter);
+      if (!tabChanged && !filterChanged) return;
+      settleUntil = performance.now() + 500;
+      if (filterChanged) filter = next.filter!;
+      tab = next.tab;
       flushSync();
       const y = currentView()?.y;
+      if (y == null && !tabChanged) return; // 絞り込みだけが変わり、残した位置も無い: 描き終えた後でブラウザが戻す位置のまま
       const go = (): void => {
         if (y != null) window.scrollTo({ top: y, behavior: 'instant' });
         else anchorTarget(location.hash)?.scrollIntoView({ block: 'start', behavior: 'instant' });
@@ -203,6 +227,7 @@
     };
     const onScroll = (): void => {
       clearTimeout(saveTimer);
+      if (performance.now() < settleUntil) return;
       saveTimer = setTimeout(saveScroll, 200);
     };
     window.addEventListener('hashchange', onHash);
@@ -242,6 +267,25 @@
     const top = tabsEl?.getBoundingClientRect().top;
     if (top != null && top < topbarPx) window.scrollTo({ top: window.scrollY + top - topbarPx, behavior: 'instant' });
   }
+
+  // タブを切り替えて、焦点のあった要素が隠れたタブに入ったら(戻る / 進む・ページ内リンクで切り替えたとき)、焦点を今のタブの帯のリンクへ移す。
+  // そのままだと焦点が body に落ち、キーボードで続けて操作できない。スクロールはさせない
+  let lastFocus: Element | null = null;
+  $effect(() => {
+    const onFocus = (e: FocusEvent): void => void (lastFocus = e.target as Element | null);
+    document.addEventListener('focusin', onFocus);
+    return () => document.removeEventListener('focusin', onFocus);
+  });
+  $effect(() => {
+    void tab;
+    untrack(() => {
+      const inHidden = (el: Element | null): boolean => !!el?.isConnected && !!el.closest('[data-tab-panel]')?.hasAttribute('hidden');
+      const now = document.activeElement;
+      // ブラウザが隠れた要素から焦点を外すのは次の描画のとき(それまでは隠れた要素のまま)。外れた後なら body
+      const lost = inHidden(now) || ((!now || now === document.body) && inHidden(lastFocus));
+      if (lost) tabsEl?.querySelector<HTMLElement>('a[aria-current="page"]')?.focus({ preventScroll: true });
+    });
+  });
 
   // あふれてスクロールする表の枠にキーボードで届くようにする(描画が変わるたびに付け直す)
   $effect(() => watchScrollFocus(document.body));
@@ -698,6 +742,14 @@
       saveScroll();
       const el = anchorTarget(href);
       const p = panelOf(el);
+      if (el && !p) {
+        // どのタブにも入っていない行き先(「本文へ移動」の #main など): URL を書き換えない(書くと tab=… が消え、再読み込みで概況に戻る)。
+        // ブラウザのページ内移動と同じく、そこへスクロールして、焦点を受けられる要素なら焦点も移す
+        e.preventDefault();
+        el.scrollIntoView({ block: 'start' });
+        if (el.hasAttribute('tabindex') || el.tabIndex >= 0) el.focus({ preventScroll: true });
+        return;
+      }
       if (el && p && p !== tab) {
         tab = p;
         flushSync();

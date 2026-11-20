@@ -1136,8 +1136,7 @@ describe('画面の操作', () => {
     await page.locator('nav.toc a[href="#sessions"]').click();
     await expect.poll(tabNow).toBe('list');
     // 一覧のタブはページが短く、ちょうど 12px の位置まではスクロールできないことがある
-    await expect.poll(() => topOf('sessions')).toBeLessThan(40);
-    expect(await topOf('sessions')).toBeGreaterThanOrEqual(0);
+    await expect.poll(async () => { const t = await topOf('sessions'); return t >= 0 && t < 40; }).toBe(true);
     await page.goBack();
     await expect.poll(tabNow).toBe('breakdown');
     await expect.poll(scrollY).toBe(500);
@@ -1146,6 +1145,104 @@ describe('画面の操作', () => {
     await expect.poll(tabNow).toBe('overview');
     expect(await page.getByTestId('toc-tab-overview').getAttribute('aria-current')).toBe('page');
     expect(new URL(page.url()).hash).toBe('');
+  });
+
+  it('t2. 本文のタブ: 絞り込みのリンクから戻ると元の位置。隠れたタブに入った焦点は帯へ。「本文へ移動」はタブを保つ。view=unused-skills・本文の別のタブへのリンク・375px の行・印刷', async () => {
+    const tabNow = (): Promise<string | null> => page.evaluate<string | null>(`document.querySelector('[data-tab-panel]:not([hidden])')?.getAttribute('data-tab-panel') ?? null`);
+    const scrollY = (): Promise<number> => page.evaluate<number>('Math.round(window.scrollY)');
+    const savedY = (): Promise<number | null> => page.evaluate<number | null>('history.state && history.state.atlasView && typeof history.state.atlasView.y === "number" ? Math.round(history.state.atlasView.y) : null');
+    const focused = (): Promise<string | null> => page.evaluate<string | null>("document.activeElement?.getAttribute('data-testid') ?? document.activeElement?.id ?? null");
+    const topOf = (id: string): Promise<number> => page.evaluate<number>(`Math.round(document.getElementById(${JSON.stringify(id)}).getBoundingClientRect().top)`);
+    try {
+      // 概況の途中から要点の「このツールを使ったセッションに絞り込む」(一覧のタブへ移り、絞り込む)→ 戻ると、概況の同じ位置。
+      // 絞り込みを外すと上の節(要点など)の高さが変わるので、タブと絞り込みを同時に当ててから位置を戻さないと、ブラウザが位置をずらす
+      // ずれの大きさは幅と字の幅で変わる(この fixture では 1440px で 0、1280px で十数 px)ので、ずれの出る幅で見たうえで、
+      // 原因(ブラウザが位置を戻す時点で、絞り込みがまだ前の項目のまま)も popstate の時点の件数で直接確かめる
+      await page.setViewportSize({ width: 1280, height: 800 });
+      await page.goto('about:blank');
+      await page.goto(server.url);
+      const allShown = await page.getByTestId('shown-count').innerText();
+      await page.evaluate("window.scrollTo({ top: 1500, behavior: 'instant' })");
+      await expect.poll(scrollY).toBe(1500);
+      await page.waitForTimeout(400); // スクロールが止まってから位置を履歴の項目に書く
+      await page.evaluate(`document.querySelector('[data-testid="highlights"] a[href*="tool="]').click()`);
+      await expect.poll(tabNow).toBe('list');
+      expect(new URL(page.url()).hash).toMatch(/^#tool=[^&]+&tab=list$/);
+      expect(await page.getByTestId('shown-count').innerText()).not.toBe(allShown);
+      // 画面の popstate の処理の後に動く(後から足したので)。この時点で絞り込みもタブも戻り終えている
+      await page.evaluate(`window.__atPop = null; addEventListener('popstate', () => { window.__atPop = { shown: document.querySelector('[data-testid="shown-count"]').textContent, tab: document.querySelector('[data-tab-panel]:not([hidden])').getAttribute('data-tab-panel') }; }, { once: true })`);
+      await page.goBack();
+      await expect.poll(tabNow).toBe('overview');
+      expect(await page.evaluate('window.__atPop')).toEqual({ shown: allShown, tab: 'overview' });
+      await page.waitForTimeout(700); // ずれるなら、ずれて位置を書き終えるまで待つ
+      expect(Math.abs((await scrollY()) - 1500), `戻った位置 ${await scrollY()}`).toBeLessThanOrEqual(3);
+      expect(Math.abs(((await savedY()) ?? 0) - 1500), `残した位置 ${await savedY()}`).toBeLessThanOrEqual(3);
+      await page.setViewportSize({ width: 1440, height: 900 });
+      // 一覧のチェック欄に焦点があるまま戻ると、焦点は今のタブ(概況)の帯のリンクへ移る(body に落ちない)
+      await page.goForward();
+      await expect.poll(tabNow).toBe('list');
+      await page.locator('#sessions table.ledger tbody input[type="checkbox"]').first().focus();
+      await page.goBack();
+      await expect.poll(tabNow).toBe('overview');
+      await expect.poll(focused).toBe('tab-overview');
+
+      // 「本文へ移動」(#main。どのタブにも入っていない行き先)は URL のタブを消さない。焦点は本文へ。再読み込みしても同じタブ
+      await page.goto('about:blank');
+      await page.goto(`${server.url}#tab=breakdown`);
+      await page.locator('a.skip').focus();
+      await page.keyboard.press('Enter');
+      await expect.poll(focused).toBe('main');
+      expect(new URL(page.url()).hash).toBe('#tab=breakdown');
+      await page.reload();
+      await expect.poll(tabNow).toBe('breakdown');
+
+      // view=unused-skills(要点の「未使用の skill の一覧」)は内訳のタブを開き、利用ランキングを skill にして、その一覧に焦点を移す
+      await page.goto('about:blank');
+      await page.goto(`${server.url}#view=unused-skills`);
+      await expect.poll(tabNow).toBe('breakdown');
+      await expect.poll(focused).toBe('unused-skills');
+      expect(await page.getByTestId('unused-skills').isVisible()).toBe(true);
+      // 表示の指定は URL に残さず、タブだけを残す
+      expect(new URL(page.url()).hash).toBe('#tab=breakdown');
+
+      // 本文の中の別のタブへのリンク(集計明細の摩擦の「詳細は実行の性質」→ #exec)は、内訳のタブを開いてその節へ移る
+      await page.goto('about:blank');
+      await page.goto(server.url);
+      await page.locator('#detail a[href="#exec"]').click();
+      await expect.poll(tabNow).toBe('breakdown');
+      // スムーズスクロールの途中(行き先がまだ上にあって負の位置)で通らないよう、上端の近くに着くまで待つ
+      await expect.poll(async () => { const t = await topOf('exec'); return t >= 0 && t < 40; }).toBe(true);
+      expect(new URL(page.url()).hash).toBe('#exec');
+
+      // 印刷: どのタブの節も出し、タブの帯は出さない
+      await page.emulateMedia({ media: 'print' });
+      expect(await page.evaluate<string[]>(`[...document.querySelectorAll('[data-tab-panel]')].map((e) => getComputedStyle(e).display)`)).toEqual(['block', 'block', 'block']);
+      expect(await page.evaluate<string>(`getComputedStyle(document.querySelector('[data-testid="report-tabs"]')).display`)).toBe('none');
+      await page.emulateMedia({ media: null });
+
+      // 375px: 上部に固定した行は、タブ → 今のタブの節 → 付録(別ページ)の順で、高さは 37px のまま。タブを替えると節も替わる
+      await page.setViewportSize({ width: 375, height: 812 });
+      const row = (): Promise<string[]> =>
+        page.evaluate<string[]>(`[...document.querySelectorAll('.rail nav.toc a')].filter((a) => a.checkVisibility()).map((a) => {
+          if (a.closest('.toc-tabs')) return 'tab';
+          const h = a.getAttribute('href');
+          if (!h.startsWith('#')) return 'page';
+          return 'section:' + (document.getElementById(h.slice(1))?.closest('[data-tab-panel]')?.getAttribute('data-tab-panel') ?? '?');
+        })`);
+      const shape = (kinds: string[]): string => kinds.filter((k, i) => i === 0 || kinds[i - 1] !== k).join(' > ');
+      await page.goto('about:blank');
+      await page.goto(server.url);
+      expect(shape(await row())).toBe('tab > section:overview > page');
+      expect((await row()).filter((k) => k === 'tab')).toHaveLength(3);
+      expect(await page.evaluate<number>("document.querySelector('.rail').offsetHeight")).toBe(37);
+      await page.locator('.rail .toc-tabs a', { hasText: '内訳' }).click();
+      await expect.poll(tabNow).toBe('breakdown');
+      await expect.poll(async () => shape(await row())).toBe('tab > section:breakdown > page');
+      expect(await page.evaluate<number>("document.querySelector('.rail').offsetHeight")).toBe(37);
+    } finally {
+      await page.emulateMedia({ media: null });
+      await page.setViewportSize({ width: 1440, height: 900 });
+    }
   });
 
   it('h. サイドバーを出す幅: 1024px でもサイドバーにグループの一覧が出て、768px 未満(375px)は上部の 1 行の「グループ」から開く', async () => {
