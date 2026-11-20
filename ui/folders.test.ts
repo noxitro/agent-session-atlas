@@ -226,7 +226,8 @@ describe('別のフォルダを開く', () => {
   it('d. 送り先の全体を集計したレポートだけ、「人」の絞り込みと「人別」の表を出す。名前を押すとその人に絞り込む', async () => {
     const personLabel = (p: Page) => p.locator('.filterbar label.sel').filter({ has: p.locator('.k', { hasText: /^人$/ }) });
     // いつもの集計(この PC のセッション)には、人の軸を出さない
-    await page.goto(server.url);
+    // 人別・プロジェクト別は内訳のタブ
+    await page.goto(`${server.url}#tab=breakdown`);
     await expect.poll(() => page.locator('#projects tbody tr').count()).toBeGreaterThan(0);
     expect(await page.locator('#people').count()).toBe(0);
     expect(await personLabel(page).count()).toBe(0);
@@ -244,7 +245,7 @@ describe('別のフォルダを開く', () => {
     other = await browser.newPage({ viewport: { width: 1440, height: 900 } });
     watch(other);
     try {
-      await other.goto(all.url);
+      await other.goto(`${all.url}#tab=breakdown`);
       const people = other.locator('#people');
       await expect.poll(() => people.locator('tbody tr').count()).toBe(2);
       expect(await people.locator('h2').innerText()).toBe('人別');
@@ -272,7 +273,8 @@ describe('別のフォルダを開く', () => {
       const link = people.locator('tbody tr a.link', { hasText: 'person-b' });
       expect(await link.getAttribute('href')).toBe('#person=person-b');
       await link.click();
-      await expect.poll(() => other!.evaluate<string>('location.hash')).toContain('person=person-b');
+      // 絞り込んでもタブはそのまま(URL にもタブが残る)
+      await expect.poll(() => other!.evaluate<string>('location.hash')).toBe('#person=person-b&tab=breakdown');
       await expect.poll(() => select.inputValue()).toBe('person-b');
       await expect.poll(() => people.locator('tbody tr').count()).toBe(1);
       expect(await people.locator('tbody tr.current').count()).toBe(1);
@@ -286,7 +288,7 @@ describe('別のフォルダを開く', () => {
       await expect.poll(() => people.locator('tbody tr').count()).toBe(2);
       expect(await other.evaluate<string>('location.hash')).not.toContain('person=');
       // URL から開いても同じ(共有したリンクで、その人に絞った状態になる)
-      await other.goto(`${all.url}#person=person-b`);
+      await other.goto(`${all.url}#person=person-b&tab=breakdown`);
       await other.reload();
       await expect.poll(() => people.locator('tbody tr').count()).toBe(1);
       expect(await select.inputValue()).toBe('person-b');

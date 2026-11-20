@@ -152,6 +152,18 @@ components:
     height: "36px"
   toc-link-current:
     textColor: "{colors.form}"
+  tab:
+    textColor: "{colors.ink-2}"
+    typography: "{typography.subtitle}"
+    rounded: "{rounded.none}"
+    padding: "0 18px"
+    height: "40px"
+  tab-current:
+    backgroundColor: "{colors.surface}"
+    textColor: "{colors.form}"
+  toc-tab-current:
+    backgroundColor: "{colors.form}"
+    textColor: "{colors.surface}"
 ---
 
 # Design System: Copilot Session Atlas
@@ -295,6 +307,7 @@ components:
 ### Navigation
 
 - **目次:** 広い画面では左の列に、群の題つきの縦の一覧。狭い画面では上の帯に横 1 行。今いる項目は緑の太字と緑の 2px の線(`toc-link-current`)で、`aria-current` も付けます。
+- **タブの帯**(atlas.html の本文の上端。概況・内訳・一覧): 下に濃い罫を引いた横 1 行のリンク(`tab`)。今のタブは緑の字と緑の 2px の下線に紙の地(`tab-current`)で、`aria-current="page"` を付けます(URL で開ける画面なので、ARIA の tablist ではなくリンクにする)。720px 以下では 3 つを等分の幅に並べます。目次の中では、広い画面は群の題がタブへのリンクになり、狭い画面は帯の先頭に枠でまとめたリンクを並べます。どちらも今のタブは緑の地に紙の色の字(`toc-tab-current`)にして、目次の今いる項目(緑の字と線)と見分けます。
 - **絞り込み中の行:** 表の中で、絞り込みに使っている行は地の色を変え、名前の下に「絞り込み中(もう一度押すと解除)」と書きます。
 
 ### 罫線の表

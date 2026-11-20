@@ -36,7 +36,12 @@
   const m = $derived(metrics.find((x) => x.key === metric)!);
   const fmt = (v: number): string => (metric === 'aiu' || metric === 'premium' ? dec(v) : int(v));
 
+  /** 測った枠の幅。隠れたタブの中では 0 になるので、描く幅は最後に測れた幅(まだなら 800)のままにする(印刷で全タブを出すときに潰れない) */
+  let measured = $state(0);
   let width = $state(800);
+  $effect(() => {
+    if (measured > 0) width = measured;
+  });
   const H = 220;
   const AXIS = 30;
   const LEFT = 52;
@@ -92,7 +97,7 @@
   {#if data.length === 0}
     <p class="note">日時の分かるセッションがありません。</p>
   {:else}
-    <div class="chart" bind:clientWidth={width}>
+    <div class="chart" bind:clientWidth={measured}>
       <svg width={width} height={H + AXIS} role="img" aria-label="月別の{m.label}(開始月、UTC)。詳細は下の表を参照">
         {#each ticks as t}
           <line x1={LEFT} x2={LEFT + plotW} y1={y(t)} y2={y(t)} class={t === 0 ? 'base' : 'grid'} />
