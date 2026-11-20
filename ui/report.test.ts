@@ -1245,6 +1245,62 @@ describe('画面の操作', () => {
     }
   });
 
+  it('t3. 本文のタブ: 表示の指定(view=)のページ内リンクは、絞り込みが変わらなくても URL に view を残さない。帯で切り替えてから戻ると、その項目の位置に戻る(view の場所へ飛び直さない)', async () => {
+    const tabNow = (): Promise<string | null> => page.evaluate<string | null>(`document.querySelector('[data-tab-panel]:not([hidden])')?.getAttribute('data-tab-panel') ?? null`);
+    const scrollY = (): Promise<number> => page.evaluate<number>('Math.round(window.scrollY)');
+    const focused = (): Promise<string | null> => page.evaluate<string | null>("document.activeElement?.getAttribute('data-testid') ?? document.activeElement?.id ?? null");
+    const hash = (): string => new URL(page.url()).hash;
+    // Playwright の click は押す前に要素を画面に入れる(スクロールする)ので、DOM の click で押す
+    const domClick = (sel: string): Promise<unknown> => page.evaluate(`document.querySelector(${JSON.stringify(sel)}).click()`);
+    // 絞り込みの無いときの要点の「未使用の skill の一覧」と同じリンク(filterHref(絞り込み無し, 'unused-skills'))。
+    // この fixture にはインストール済みの記録が無く要点に出ないので、同じ href のリンクを概況に置いて押す
+    await page.goto('about:blank');
+    await page.goto(server.url);
+    await page.evaluate(`(() => { const a = document.createElement('a'); a.href = '#view=unused-skills'; a.id = 'test-unused-link'; a.textContent = '未使用の skill の一覧'; document.querySelector('[data-tab-panel="overview"]').prepend(a); })()`);
+    await domClick('#test-unused-link');
+    await expect.poll(tabNow).toBe('breakdown');
+    await expect.poll(focused).toBe('unused-skills');
+    await expect.poll(hash).toBe('#tab=breakdown');
+    // 未使用の一覧へのスムーズスクロールが止まるのを待つ(途中で動かすと、その後も動き続けることがある)
+    await expect
+      .poll(async () => {
+        const a = await scrollY();
+        await page.waitForTimeout(200);
+        return a === (await scrollY());
+      })
+      .toBe(true);
+    // 内訳の途中で帯から概況へ移り、戻ると内訳のその位置(未使用の一覧へ飛び直さない・焦点も移さない)
+    await page.evaluate("window.scrollTo({ top: 300, behavior: 'instant' })");
+    await expect.poll(scrollY).toBe(300);
+    await page.waitForTimeout(400); // スクロールが止まってから位置を履歴の項目に書く
+    await domClick('[data-testid="tab-overview"]');
+    await expect.poll(tabNow).toBe('overview');
+    await page.goBack();
+    await expect.poll(tabNow).toBe('breakdown');
+    await page.waitForTimeout(700);
+    expect(await scrollY()).toBe(300);
+    expect(await focused()).not.toBe('unused-skills');
+    expect(hash()).toBe('#tab=breakdown');
+
+    // 要点の「このツールを使ったセッションに絞り込む」を、もう同じツールで絞り込んでいるときに押しても、URL に view を残さない
+    await page.goto('about:blank');
+    await page.goto(server.url);
+    const tool = page.locator('[data-testid="highlights"] a[href*="tool="]').first();
+    const toolHref = (await tool.getAttribute('href'))!;
+    expect(toolHref).toMatch(/&view=sessions$/);
+    const filtered = toolHref.replace(/&view=sessions$/, '');
+    await domClick('[data-testid="highlights"] a[href*="tool="]');
+    await expect.poll(tabNow).toBe('list');
+    await expect.poll(hash).toBe(`${filtered}&tab=list`);
+    await domClick('[data-testid="tab-overview"]');
+    await expect.poll(tabNow).toBe('overview');
+    expect(hash()).toBe(filtered);
+    // 同じ絞り込みのまま、もう一度押す(絞り込みは変わらない)
+    await domClick('[data-testid="highlights"] a[href*="tool="]');
+    await expect.poll(tabNow).toBe('list');
+    await expect.poll(hash).toBe(`${filtered}&tab=list`);
+  });
+
   it('h. サイドバーを出す幅: 1024px でもサイドバーにグループの一覧が出て、768px 未満(375px)は上部の 1 行の「グループ」から開く', async () => {
     try {
       await page.setViewportSize({ width: 1024, height: 768 });

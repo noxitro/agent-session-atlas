@@ -159,6 +159,16 @@
     return { filter: decodeFilter(h), tab: tabOfLocation() };
   }
 
+  /** 今の絞り込みとタブを URL に書く(履歴には積まない。history.state(戻ったときの見た目。view-restore.ts)は消さずに URL だけ変える) */
+  function writeStateUrl(): void {
+    const h = encodeState(filter, tab);
+    try {
+      history.replaceState(history.state, '', h ? `#${h}` : location.pathname + location.search);
+    } catch {
+      /* file:// で履歴を書けない環境では URL に残さないだけ */
+    }
+  }
+
   /** 今のスクロール位置を今の履歴の項目に書く(戻る / 進むでタブが変わったときに、その位置へ戻すため。スクロール中は止まってから書く) */
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   function saveScroll(): void {
@@ -166,7 +176,7 @@
     saveView({ y: window.scrollY });
   }
   /**
-   * 戻る / 進むで描き直して位置を戻している間(この時刻まで)は、スクロールの位置を書かない。
+   * 戻る / 進むで描き直して位置を戻している間(この時刻まで)は、スクロールの位置を書かない(この時刻を過ぎてから 1 回だけ書く)。
    * 描き直しの途中の位置(上の節の高さが変わってブラウザがずらした位置)を、移った先の項目に残さないため
    */
   let settleUntil = 0;
@@ -198,8 +208,12 @@
       if (encodeFilter(f) !== encodeFilter(filter)) filter = f;
       // 表示の指定があればその場所(のタブ)へ。無ければ tab=… のタブ(戻る / 進むで移った先。位置はブラウザと popstate が戻す)
       const view = decodeView(h);
-      if (view) showView(view);
-      else tab = decodeTab(h) ?? DEFAULT_TAB;
+      if (view) {
+        showView(view);
+        // 表示の指定は 1 回だけ効かせるもので、URL には残さない(絞り込みとタブだけにする)。絞り込みが変わらなければ上の
+        // 書き換えの effect は動かないので、ここで書き換える。残すと、戻る / 進むでこの項目に来るたびにその場所へ飛び直す
+        writeStateUrl();
+      } else tab = decodeTab(h) ?? DEFAULT_TAB;
     };
     // 戻る / 進む: 移った先の絞り込みとタブを両方ここで当てて描き直してから(flushSync)、位置を戻す。
     // popstate → ブラウザが位置を戻す → hashchange の順に来るので、絞り込みを hashchange まで待つと、
@@ -227,8 +241,10 @@
     };
     const onScroll = (): void => {
       clearTimeout(saveTimer);
-      if (performance.now() < settleUntil) return;
-      saveTimer = setTimeout(saveScroll, 200);
+      // 戻している間のスクロールは、戻し終えた後(その時刻の 0.2 秒後)の位置を 1 回だけ書く。
+      // 途中の位置は書かず、その間に自分でスクロールして止めた位置も落とさない
+      const wait = Math.max(0, settleUntil - performance.now());
+      saveTimer = setTimeout(saveScroll, wait + 200);
     };
     window.addEventListener('hashchange', onHash);
     window.addEventListener('popstate', onPop);
@@ -338,13 +354,8 @@
 
   // 絞り込みを変えたら URL を書き換える(履歴には積まない)。今のタブの指定は残す(タブを変えたときは、ここでは書かない)
   $effect(() => {
-    const h = encodeState(filter, untrack(() => tab));
-    try {
-      // history.state(戻ったときの見た目。view-restore.ts)は消さずに URL だけ変える
-      history.replaceState(history.state, '', h ? `#${h}` : location.pathname + location.search);
-    } catch {
-      /* file:// で履歴を書けない環境では URL に残さないだけ */
-    }
+    void encodeFilter(filter);
+    untrack(writeStateUrl);
   });
 
   let theme = $state<ThemeChoice>(loadTheme());
