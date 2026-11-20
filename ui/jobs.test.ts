@@ -504,8 +504,9 @@ describe('画面からの操作(Phase 14)', () => {
   });
 
   it('g. 詳細ページの「記録を読む」「全文を作って読む」で本文が描かれ、記録に混ぜた script は実行されない', async () => {
-    await page.goto(server.url);
-    const link = page.locator('table.ledger tbody td.name a').first();
+    // セッション一覧は一覧のタブ(ほかのタブの節は hidden で隠れていて押せない)
+    await page.goto(`${server.url}#tab=list`);
+    const link = page.locator('#sessions table.ledger tbody td.name a').first();
     const href = (await link.getAttribute('href'))!;
     const id = /sessions\/([^/]+)\.html$/.exec(href)![1];
     await appendFile(join(out, 'sessions', `${id}.md`), EVIL);

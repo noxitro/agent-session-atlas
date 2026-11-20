@@ -250,13 +250,45 @@ export function decodeView(s: string): string | null {
   return null;
 }
 
-/** 絞り込みと表示の指定から URL ハッシュ(先頭の # 付き)を作る */
-export function filterHref(f: FilterState, view: string | null = null): string {
-  const parts = [encodeFilter(f), view ? `view=${encodeURIComponent(view)}` : ''].filter(Boolean);
+/**
+ * atlas.html の本文のタブ(概況・内訳・一覧)。URL ハッシュの tab=… に書く(既定の概況は書かない)。
+ * 絞り込み(FilterState)とは別の部分で、絞り込みの条件の数にも「解除」にも入らない。id は URL に残るので変えない
+ */
+export const TABS = ['overview', 'breakdown', 'list'] as const;
+export type TabId = (typeof TABS)[number];
+export const DEFAULT_TAB: TabId = 'overview';
+
+export function isTabId(s: string | null | undefined): s is TabId {
+  return (TABS as readonly string[]).includes(s ?? '');
+}
+
+/** URL ハッシュのタブの指定(tab=breakdown など)。無いか、知らない値なら null(呼び元が既定の概況にする) */
+export function decodeTab(s: string): TabId | null {
+  for (const part of s.replace(/^#/, '').split('&')) {
+    if (!part.startsWith('tab=')) continue;
+    let v: string;
+    try {
+      v = decodeURIComponent(part.slice(4));
+    } catch {
+      return null;
+    }
+    return isTabId(v) ? v : null;
+  }
+  return null;
+}
+
+/** 絞り込みとタブの指定の URL ハッシュ(先頭の # なし。どちらも既定なら '')。絞り込みを変えたときに URL を書き換えるのに使う */
+export function encodeState(f: FilterState, tab: TabId | null = null): string {
+  return [encodeFilter(f), tab && tab !== DEFAULT_TAB ? `tab=${tab}` : ''].filter(Boolean).join('&');
+}
+
+/** 絞り込みと表示の指定(と、あればタブ)から URL ハッシュ(先頭の # 付き)を作る */
+export function filterHref(f: FilterState, view: string | null = null, tab: TabId | null = null): string {
+  const parts = [encodeState(f, tab), view ? `view=${encodeURIComponent(view)}` : ''].filter(Boolean);
   return `#${parts.join('&')}`;
 }
 
-/** ハッシュが絞り込みか表示の指定を含むか(#overview のようなページ内リンクは含まない) */
+/** ハッシュが絞り込みか表示・タブの指定を含むか(#overview のようなページ内リンクは含まない) */
 export function isStateHash(s: string): boolean {
   return s.replace(/^#/, '').split('&').some((p) => p.indexOf('=') > 0);
 }

@@ -87,12 +87,18 @@ describe('画面の操作', () => {
   const rowChecks = () => page.locator('#sessions table.ledger tbody input[type="checkbox"]');
   // グループの一覧はサイドバーと狭い幅の一覧の 2 か所にあるので、見えている方を使う
   const rail = () => page.locator('[data-testid="group-rail"]:visible');
+  /** 本文のタブを開く(概況・内訳・一覧。ほかのタブの節は hidden で隠れていて押せない)。押すと履歴に積み、再読み込みしてもそのタブのまま */
+  const openTab = async (t: 'overview' | 'breakdown' | 'list'): Promise<void> => {
+    await page.getByTestId(`tab-${t}`).click();
+    await expect.poll(() => page.locator(`[data-tab-panel="${t}"]`).isHidden()).toBe(false);
+  };
   /** 開いた欄は requestAnimationFrame で焦点を移す(作成欄は名前へ、見出しの編集は名前を選ぶ)。移る前に打つと、遅い CI では打つ途中で焦点が移り、別の欄の文字が名前に入る */
   const focusLands = (l: Locator): Promise<void> => expect.poll(() => l.evaluate((el) => el.matches(':focus'))).toBe(true);
   const readGroups = async (): Promise<{ name: string; note?: string; ids: string[] }[]> => (existsSync(groupsPath) ? JSON.parse(await readFile(groupsPath, 'utf8')).groups : []);
 
   it('m. モデル別: 「推論強度で分ける」で モデル × 推論強度 の行になり、「モデルごと」で戻る。モデルごとの表には推論強度別のリクエストを出す', async () => {
     await page.goto(server.url);
+    await openTab('breakdown');
     const sec = page.locator('#models');
     await sec.getByText('表で見る').click();
     const rows = sec.locator('table.ledger tbody tr');
@@ -120,6 +126,7 @@ describe('画面の操作', () => {
 
   it('m2. モデルと推論強度の効果: 既定は モデル × 推論強度 の行で、「モデルごと」でモデルの数の行になる。リクエストの合計はどちらも同じ', async () => {
     await page.goto(server.url);
+    await openTab('breakdown');
     const sec = page.locator('#model-value');
     const rows = sec.getByTestId('model-value-table').locator('tbody tr');
     const heads = async (): Promise<string[]> => sec.locator('thead th').allInnerTexts();
@@ -145,6 +152,8 @@ describe('画面の操作', () => {
     const turnsTotal = async (): Promise<number> => Number((await page.getByTestId('phase-table').locator('tfoot td').first().innerText()).replace(/[^0-9]/g, ''));
     const turnsAll = await turnsTotal();
     expect(turnsAll).toBeGreaterThan(0);
+    // 一覧は一覧のタブ。「工程と詰まり」は概況のタブに隠れていても、絞り込みに合わせて数え直す
+    await openTab('list');
     await rowChecks().nth(0).check();
     await rowChecks().nth(1).check();
     await expect.poll(() => page.getByTestId('selected-count').innerText()).toBe('2');
@@ -165,6 +174,7 @@ describe('画面の操作', () => {
     const viaFirst = records.filter((s) => !s.empty && s.name && !s.name.includes('直して') && s.firstUserMessage?.includes('直して'));
     expect(target && empty && viaFirst.length === 1, 'fixture に wiki-query の題名・空のセッション・最初の依頼にだけ「直して」がある 1 件がある').toBeTruthy();
     await page.goto(server.url);
+    await openTab('list');
     const all = await shown();
     const box = page.getByTestId('session-search');
     const result = page.getByTestId('session-search-result');
@@ -223,6 +233,7 @@ describe('画面の操作', () => {
 
   it('b. グループを作成して選ぶと絞り込まれ、本文の見出しで名前と説明を直せて、削除すると groups.json からも消える', async () => {
     await page.goto(server.url);
+    await openTab('list');
     await rowChecks().nth(0).check();
     await rowChecks().nth(2).check();
     await page.getByTestId('add-to-group').click();
@@ -292,6 +303,7 @@ describe('画面の操作', () => {
 
   it('b2. 作成・追加の後と「すべて」に戻った後はチェックが外れ、次のグループに前の分が混ざらない。所属は一覧と詳細ページに出る', async () => {
     await page.goto(server.url);
+    await openTab('list');
     const idOf = async (i: number): Promise<string> => /sessions\/([^/]+)\.html$/.exec((await page.locator('table.ledger tbody td.name a').nth(i).getAttribute('href'))!)![1];
     const [id0, id1, id2] = [await idOf(0), await idOf(1), await idOf(2)];
     const create = async (name: string): Promise<void> => {
@@ -388,6 +400,7 @@ describe('画面の操作', () => {
 
   it('b3. 見出しの編集: 一覧からの追加で打ちかけが消えない・同名への改名は理由を出して名前を変えない・説明だけ空にできる・外すと焦点は本文へ', async () => {
     await page.goto(server.url);
+    await openTab('list');
     const create = async (rows: number[], name: string): Promise<void> => {
       for (const i of rows) await rowChecks().nth(i).check();
       await page.getByTestId('add-to-group').click();
@@ -457,7 +470,8 @@ describe('画面の操作', () => {
 
   it('c. 詳細ページでメモを書いて保存すると memos に書かれ、再読み込みしても表示される', async () => {
     await page.goto(server.url);
-    const link = page.locator('table.ledger tbody td.name a').first();
+    await openTab('list');
+    const link = page.locator('#sessions table.ledger tbody td.name a').first();
     const href = (await link.getAttribute('href'))!;
     const id = /sessions\/([^/]+)\.html$/.exec(href)![1];
     await link.click();
@@ -1014,6 +1028,7 @@ describe('画面の操作', () => {
   it('i. 戻る・進む: 詳細ページから戻るとスクロール位置と一覧の並べ替えが戻る。要点のリンクで絞り込んでから戻ると絞り込みが外れ、進むとまた絞り込む', async () => {
     await page.goto('about:blank');
     await page.goto(server.url);
+    await openTab('list');
     const all = await shown();
     // 一覧を「開始」の古い順に並べ替え、一覧の位置までスクロールしてから詳細ページへ
     const startHead = page.locator('#sessions table.ledger thead th', { has: page.getByRole('button', { name: /^開始/ }) });
@@ -1034,7 +1049,8 @@ describe('画面の操作', () => {
       })
       .toBe(true);
     const y = await scrollY();
-    expect(y).toBeGreaterThan(1000);
+    // 一覧のタブでは一覧の節が帯のすぐ下にあるので、位置は小さい(0 でないことだけ確かめる)
+    expect(y).toBeGreaterThan(100);
     await page.locator('#sessions table.ledger tbody tr td.name a').first().click();
     await page.waitForURL('**/sessions/*.html');
     await page.goBack();
@@ -1048,14 +1064,88 @@ describe('画面の操作', () => {
     await expect.poll(scrollY).toBe(savedY);
     expect(await startHead.getAttribute('aria-sort')).toBe('ascending');
     expect(await firstName()).toBe(first);
-    // 要点の「このツールを使ったセッションに絞り込む→」は履歴に残る移動。戻ると絞り込みが外れ、進むとまた絞り込む
+    // 要点の「このツールを使ったセッションに絞り込む→」は履歴に残る移動で、一覧のタブへ移る。戻ると絞り込みが外れて概況に戻り、進むとまた絞り込む
+    await openTab('overview');
     await page.getByRole('link', { name: /このツールを使ったセッションに絞り込む/ }).first().click();
     await expect.poll(shown).toBeLessThan(all);
+    await expect.poll(() => page.locator('[data-tab-panel="list"]').isHidden()).toBe(false);
+    expect(new URL(page.url()).hash).toMatch(/^#tool=[^&]+&tab=list$/);
     const narrowed = await shown();
     await page.goBack();
     await expect.poll(shown).toBe(all);
+    await expect.poll(() => page.locator('[data-tab-panel="overview"]').isHidden()).toBe(false);
     await page.goForward();
     await expect.poll(shown).toBe(narrowed);
+    await expect.poll(() => page.locator('[data-tab-panel="list"]').isHidden()).toBe(false);
+  });
+
+  it('t. 本文のタブ: 開いたときは概況。ページ内リンク(#phases・#exec-modes-h)は行き先のタブで開き、帯で切り替えると履歴に積み、戻る / 進む・再読み込みでタブと位置が戻る', async () => {
+    const tabNow = (): Promise<string | null> => page.evaluate<string | null>(`document.querySelector('[data-tab-panel]:not([hidden])')?.getAttribute('data-tab-panel') ?? null`);
+    const scrollY = (): Promise<number> => page.evaluate<number>('Math.round(window.scrollY)');
+    const topOf = (id: string): Promise<number> => page.evaluate<number>(`Math.round(document.getElementById(${JSON.stringify(id)}).getBoundingClientRect().top)`);
+    await page.goto('about:blank');
+    await page.goto(server.url);
+    expect(await tabNow()).toBe('overview');
+    // ほかのタブの節は描いてあるが隠れている(ページ内リンクの行き先を引ける)
+    expect(await page.locator('#sessions').count()).toBe(1);
+    expect(await page.locator('#sessions').isVisible()).toBe(false);
+    // 詳細ページの「工程と詰まり」へのリンク(../atlas.html#phases)は概況の節。開くとその節が上端(サイドバーの幅では 12px の余白)に来る
+    await page.goto('about:blank');
+    await page.goto(`${server.url}#phases`);
+    expect(await tabNow()).toBe('overview');
+    await expect.poll(() => topOf('phases')).toBe(12);
+    // 内訳の中の見出し(実行の性質の小見出し)は、内訳のタブを開いてから移る。URL には開いたタブが残る(再読み込みで同じタブ)
+    await page.goto('about:blank');
+    await page.goto(`${server.url}#exec-modes-h`);
+    await expect.poll(tabNow).toBe('breakdown');
+    await expect.poll(() => topOf('exec-modes-h')).toBeLessThan(40);
+    expect(new URL(page.url()).hash).toBe('#tab=breakdown');
+    // 絞り込みとタブを両方持つハッシュ。タブは絞り込みの条件に数えず、「解除」でも変わらない
+    await page.goto('about:blank');
+    await page.goto(`${server.url}#memo=1&tab=list`);
+    expect(await tabNow()).toBe('list');
+    await expect.poll(() => page.locator('.status .active .badge').innerText()).toBe('1');
+    await page.locator('.status').getByRole('button', { name: '解除' }).click();
+    await expect.poll(() => new URL(page.url()).hash).toBe('#tab=list');
+    expect(await tabNow()).toBe('list');
+    // 帯で切り替える: 概況の途中から内訳を開くと、帯が上端に来る位置へ移る。戻ると概況のその位置、進むと内訳、再読み込みでも内訳
+    await page.goto('about:blank');
+    await page.goto(server.url);
+    await page.evaluate("window.scrollTo({ top: 1200, behavior: 'instant' })");
+    await expect.poll(scrollY).toBe(1200);
+    // Playwright の click は押す前に要素を画面に入れる(スクロールする)ので、DOM の click で押す
+    await page.evaluate(`document.querySelector('[data-testid="tab-breakdown"]').click()`);
+    await expect.poll(tabNow).toBe('breakdown');
+    expect(new URL(page.url()).hash).toBe('#tab=breakdown');
+    expect(await page.evaluate<number>(`Math.round(document.querySelector('[data-testid="report-tabs"]').getBoundingClientRect().top)`)).toBe(0);
+    expect(await page.getByTestId('tab-breakdown').getAttribute('aria-current')).toBe('page');
+    // 目次の現在地は今のタブの節だけから選ぶ
+    await expect.poll(() => page.locator('.toc a[aria-current="true"]').getAttribute('href')).toBe('#usage');
+    await page.evaluate("window.scrollTo({ top: 500, behavior: 'instant' })");
+    await page.waitForTimeout(400); // スクロールが止まってから位置を履歴の項目に書く
+    await page.goBack();
+    await expect.poll(tabNow).toBe('overview');
+    await expect.poll(scrollY).toBe(1200);
+    await page.goForward();
+    await expect.poll(tabNow).toBe('breakdown');
+    await expect.poll(scrollY).toBe(500);
+    await page.reload();
+    await expect.poll(tabNow).toBe('breakdown');
+    await expect.poll(scrollY).toBe(500);
+    // サイドバーの別のタブの節(セッション一覧)を押すと、一覧のタブを開いてその節へ移る。戻ると内訳の元の位置
+    await page.locator('nav.toc a[href="#sessions"]').click();
+    await expect.poll(tabNow).toBe('list');
+    // 一覧のタブはページが短く、ちょうど 12px の位置まではスクロールできないことがある
+    await expect.poll(() => topOf('sessions')).toBeLessThan(40);
+    expect(await topOf('sessions')).toBeGreaterThanOrEqual(0);
+    await page.goBack();
+    await expect.poll(tabNow).toBe('breakdown');
+    await expect.poll(scrollY).toBe(500);
+    // 群の題もタブへのリンク(今のタブに aria-current="page")
+    await page.getByTestId('toc-tab-overview').click();
+    await expect.poll(tabNow).toBe('overview');
+    expect(await page.getByTestId('toc-tab-overview').getAttribute('aria-current')).toBe('page');
+    expect(new URL(page.url()).hash).toBe('');
   });
 
   it('h. サイドバーを出す幅: 1024px でもサイドバーにグループの一覧が出て、768px 未満(375px)は上部の 1 行の「グループ」から開く', async () => {
@@ -1107,6 +1197,7 @@ describe('画面の操作', () => {
     const readConfig = async (): Promise<Record<string, unknown>> => JSON.parse(await readFile(configPath, 'utf8'));
     try {
       await page.goto(server.url);
+      await openTab('breakdown');
       const section = page.locator('#projects');
       const note = section.locator('.send-note');
       await expect.poll(() => note.innerText()).toMatch(/今 0 件/);
@@ -1161,6 +1252,7 @@ describe('画面の操作', () => {
     });
     try {
       await page.goto(server.url);
+      await openTab('breakdown');
       const section = page.locator('#projects');
       await expect.poll(() => section.locator('.send-note').innerText()).toMatch(/今 0 件/);
       const rows = section.locator('tbody tr');
@@ -1289,7 +1381,8 @@ describe('画面の操作', () => {
       const cells = await page.locator(`${table} table.ledger tbody tr`).evaluateAll((rows, i) => rows.map((r) => (r.children[i as number] as { innerText?: string } | undefined)?.innerText?.trim() ?? ''), at);
       return cells.filter((c) => /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(c));
     };
-    for (const table of ['#sessions', '#projects']) {
+    for (const [table, tab] of [['#sessions', 'list'], ['#projects', 'breakdown']] as const) {
+      await openTab(tab);
       const head = page.locator(`${table} table.ledger thead th`, { has: page.getByRole('button', { name: /^最終更新/ }) });
       await head.getByRole('button').click();
       await expect.poll(() => head.getAttribute('aria-sort')).toBe('descending');

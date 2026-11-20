@@ -96,7 +96,8 @@ export function highlights(
       basis: `結果の記録が ${HIGHLIGHT_RATE_MIN} 回以上で失敗・拒否のあったツールを失敗率の高い順に`,
       items: rates.map((t) => ({
         text: `${t.mcpServer ? `MCP ${t.label}` : t.label}: 失敗率 ${percent(t.failure + t.denied, t.completed)}(失敗 ${int(t.failure)}・拒否 ${int(t.denied)} / ${int(t.completed)} 回、${int(t.sessions)} セッション)${mainCause(t.causes)}`,
-        href: filterHref({ ...opts.filter, tool: t.key }),
+        // 絞り込んだ結果のセッション一覧(一覧のタブ)へ移る(view を付けないと、絞り込みだけが変わって今のタブに留まる)
+        href: filterHref({ ...opts.filter, tool: t.key }, 'sessions'),
         linkLabel: 'このツールを使ったセッションに絞り込む',
       })),
     });

@@ -675,7 +675,7 @@ fn highlights_phase7() {
     );
     assert_eq!(g[1].items.len(), 1);
     assert_eq!(g[1].items[0].text, "grep: 失敗率 50%(失敗 3・拒否 0 / 6 回、1 セッション)。主な要因: その他 3 回");
-    assert_eq!(g[1].items[0].href, "#tool=grep");
+    assert_eq!(g[1].items[0].href, "#tool=grep&view=sessions");
     assert_eq!(g[2].items.iter().map(|i| i.href.as_str()).collect::<Vec<_>>(), ["sessions/a.html", "sessions/b.html"]);
     assert_eq!((g[3].items[0].text.as_str(), g[3].items[0].href.as_str()), ("2 / 2 件: grep-skill、zz", "#view=unused-skills"));
     assert_eq!(ids(&apply_filter(&all, &decode_filter("#tool=grep"))), ["a"]);

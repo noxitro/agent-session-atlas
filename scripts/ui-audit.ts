@@ -7,7 +7,8 @@
 // 検査(error は直す、warn は目で確かめる):
 //  - 構造(全ページ): id の重複 / ページ内リンク(#id)の行き先が無い / 別ページへのリンクの行き先(ファイルと #id)が無い /
 //    「版 N」のリンク文言と行き先の版番号の食い違い
-//  - 文言(全ページ、atlas.html はタブを 1 つずつ押した状態も): undefined・NaN・[object Object]・テンプレートの ${…}・
+//  - 文言(全ページ、atlas.html はタブを 1 つずつ押した状態も。本文のタブ(概況・内訳・一覧)ごとに開き、その中の切り替え(role="tab")も押す):
+//    undefined・NaN・[object Object]・テンプレートの ${…}・
 //    二重に逃がした実体参照(&amp; 等)・HTML コメントや生のタグの漏れ(pre / code / textarea の中は除く)
 //  - アクセシビリティの基本(全ページ): lang / 名前の無いリンクとボタン / alt の無い画像 / ラベルの無い入力欄 / 見出しの段の飛び(warn)
 //  - 押せそうで押せない要素(全ページ、atlas.html はタブごと、開閉要素を開いた状態、レイアウトの見本は 3 幅でも): 自分自身へのリンク /
@@ -434,19 +435,53 @@ async function openPage(ctx: BrowserContext, url: string, errors: string[]): Pro
   return page;
 }
 
-/** atlas.html のタブ(利用ランキングの種類など)を 1 つずつ押し、その状態で検査する */
-async function eachTab(page: Page, fn: (label: string) => Promise<void>): Promise<void> {
-  const tabs = page.locator('[role="tab"]');
+/** 本文のタブ(atlas.html の概況・内訳・一覧。ほかのタブの節は hidden で隠れている)のリンク */
+const PAGE_TABS = '[data-testid="report-tabs"] a';
+const textOf = async (l: ReturnType<Page['locator']>): Promise<string> => ((await l.textContent()) ?? '').replace(/\s+/g, ' ').trim();
+
+/**
+ * atlas.html の本文のタブを 1 つずつ開き、その状態で fn を呼ぶ(first は、開いたときのタブ = 呼び元がもう見た状態)。
+ * 終わったら開いたときのタブに戻す。本文のタブが無いページ(詳細ページなど)では、今の状態で 1 回だけ呼ぶ
+ */
+async function eachPageTab(page: Page, fn: (label: string, first: boolean) => Promise<void>): Promise<void> {
+  const tabs = page.locator(PAGE_TABS);
   const n = await tabs.count();
+  if (n === 0) return fn('', true);
+  const start = page.locator(`${PAGE_TABS}[aria-current="page"]`);
+  const startLabel = (await start.count()) ? await textOf(start) : '';
+  await fn(startLabel, true);
   for (let i = 0; i < n; i++) {
     const t = tabs.nth(i);
-    if (!(await t.isVisible())) continue;
-    if ((await t.getAttribute('aria-selected')) === 'true') continue;
-    const label = ((await t.textContent()) ?? '').replace(/\s+/g, ' ').trim();
+    if ((await t.getAttribute('aria-current')) === 'page') continue;
     await t.click();
     await page.waitForTimeout(50);
-    await fn(label);
+    await fn(await textOf(t), false);
   }
+  if (startLabel) {
+    await page.locator(PAGE_TABS, { hasText: startLabel }).first().click();
+    await page.waitForTimeout(50);
+  }
+}
+
+/**
+ * atlas.html のタブを 1 つずつ押し、その状態で検査する: 本文のタブ(概況・内訳・一覧)と、その中の切り替え(利用ランキングの種類など、role="tab")。
+ * 隠れたタブの中の切り替えは見えないので、本文のタブごとに、そこで見えている切り替えを押す。開いたときの状態そのものは呼び元が見るので呼ばない
+ */
+async function eachTab(page: Page, fn: (label: string) => Promise<void>): Promise<void> {
+  await eachPageTab(page, async (pageLabel, first) => {
+    if (!first) await fn(pageLabel);
+    const tabs = page.locator('[role="tab"]');
+    const n = await tabs.count();
+    for (let i = 0; i < n; i++) {
+      const t = tabs.nth(i);
+      if (!(await t.isVisible())) continue;
+      if ((await t.getAttribute('aria-selected')) === 'true') continue;
+      const label = await textOf(t);
+      await t.click();
+      await page.waitForTimeout(50);
+      await fn(pageLabel ? `${pageLabel} / ${label}` : label);
+    }
+  });
 }
 
 export async function audit(outDir: string, o: AuditOptions = {}): Promise<AuditResult> {
@@ -472,17 +507,19 @@ export async function audit(outDir: string, o: AuditOptions = {}): Promise<Audit
       const facts = (await page.evaluate(STATIC_CHECK)) as PageFacts;
       for (const f of facts.findings) findings.push({ page: rel, ...f });
       for (const f of await clickableFindings(page)) addOnce({ page: rel, ...f });
-      if (facts.tabs > 0)
+      if (facts.tabs > 0 || (await page.locator(PAGE_TABS).count()) > 0)
         await eachTab(page, async (label) => {
           const again = (await page.evaluate(STATIC_CHECK)) as PageFacts;
           for (const f of again.findings) if (!facts.findings.some((x) => x.kind === f.kind && x.detail === f.detail)) findings.push({ page: rel, ...f, where: `タブ「${label}」` });
           for (const f of await clickableFindings(page)) addOnce({ page: rel, ...f, where: `タブ「${label}」` });
         });
-      // 開閉要素(details・aria-expanded のボタン)の中は、閉じたままだと表示されず検査されないので、開いた状態でもう一度見る
-      if (((await page.evaluate(OPEN_ALL)) as number) > 0) {
-        await page.waitForTimeout(50);
-        for (const f of await clickableFindings(page)) addOnce({ page: rel, ...f, where: '開閉要素を開いた状態' });
-      }
+      // 開閉要素(details・aria-expanded のボタン)の中は、閉じたままだと表示されず検査されないので、開いた状態でもう一度見る(atlas.html は本文のタブごとに)
+      await eachPageTab(page, async (label) => {
+        if (((await page.evaluate(OPEN_ALL)) as number) > 0) {
+          await page.waitForTimeout(50);
+          for (const f of await clickableFindings(page)) addOnce({ page: rel, ...f, where: label ? `タブ「${label}」の開閉要素を開いた状態` : '開閉要素を開いた状態' });
+        }
+      });
       idsByPage.set(rel, new Set(facts.ids));
       if (rel === 'instructions.html') {
         for (const [id, label] of (await page.evaluate(`[...document.querySelectorAll('details.ver')].map((d) => [d.id, d.querySelector('summary b')?.textContent ?? ''])`)) as [string, string][]) versionLabel.set(id, label);
@@ -548,9 +585,13 @@ export async function audit(outDir: string, o: AuditOptions = {}): Promise<Audit
             for (const f of res) if (!findings.some((x) => x.page === rel && x.kind === f.kind && x.detail === f.detail)) findings.push({ page: rel, ...f, where: where + extra });
           };
           await run('');
-          if (rel === 'atlas.html') await eachTab(page, (label) => run(` タブ「${label}」`));
           // 押せそうで押せない要素は幅で出る部品が変わる(375px の上部の目次の行など)ので、幅ごとに見る(配色では変わらないのでライトだけ)
           if (scheme === 'light') for (const f of await clickableFindings(page)) addOnce({ page: rel, ...f, where });
+          if (rel === 'atlas.html')
+            await eachTab(page, async (label) => {
+              await run(` タブ「${label}」`);
+              if (scheme === 'light') for (const f of await clickableFindings(page)) addOnce({ page: rel, ...f, where: `${where} タブ「${label}」` });
+            });
           // 字の幅は OS のフォントで変わる(Linux の Noto は Windows の游ゴシックより広く、CI でだけはみ出した)。
           // 375px では字間を広げた状態でも横のはみ出しだけを確かめ、手元のフォントで収まっていても見逃さないようにする
           if (vp.width < 768 && scheme === 'light') {

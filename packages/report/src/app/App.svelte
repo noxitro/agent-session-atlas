@@ -4,7 +4,8 @@
   import { turnAggregate } from '../lib/turns.ts';
   import { verdictAggregate } from '../lib/verdicts.ts';
   import { wikiReferenced, wikiState } from '../lib/wiki.ts';
-  import { applyFilter, currentGroupName, decodeFilter, decodeView, effectiveIds, emptyFilter, encodeFilter, filterOptions, groupIds, inScope, isEmptyFilter, isStateHash, joinIds, knownSelection, type FilterState } from '../lib/filter.ts';
+  import { flushSync, tick, untrack } from 'svelte';
+  import { applyFilter, currentGroupName, decodeFilter, decodeTab, decodeView, DEFAULT_TAB, effectiveIds, emptyFilter, encodeState, filterHref, filterOptions, groupIds, inScope, isEmptyFilter, isStateHash, isTabId, joinIds, knownSelection, type FilterState, type TabId } from '../lib/filter.ts';
   import GroupRail from './components/GroupRail.svelte';
   import GroupHead from './components/GroupHead.svelte';
   import { highlights } from '../lib/highlights.ts';
@@ -30,7 +31,7 @@
   import { watchScrollFocus } from './scroll-focus.ts';
   import { STALE_MESSAGE } from '../lib/code-check.ts';
   import { api, foldersApi, serveToken, startHeartbeat, type GroupExport, type UploadHandlers, type UploadSetting } from './api.ts';
-  import { restoreDone, restoredView, saveView } from './view-restore.ts';
+  import { currentView, restoreDone, restoredView, saveView } from './view-restore.ts';
   import { JobStore } from './jobs.svelte.ts';
   import JobActions from './components/JobActions.svelte';
   import SettingsDialog from './components/SettingsDialog.svelte';
@@ -87,43 +88,213 @@
   /** 利用ランキングの表示中の種類(要点欄の「未使用の skill」から skill に切り替える) */
   let usageTab = $state<'tools' | 'mcp' | 'causes' | 'skills' | 'agents' | 'hooks' | 'instructions'>('tools');
 
-  /** URL ハッシュの表示の指定(view=…)に従ってその場所へ移る */
-  function showView(view: string | null): void {
-    if (view === 'unused-skills') {
-      usageTab = 'skills';
-      requestAnimationFrame(() => {
-        const el = document.getElementById('unused-skills');
-        el?.scrollIntoView({ block: 'start' });
-        el?.focus({ preventScroll: true });
-      });
-    } else if (view === 'sessions') {
-      requestAnimationFrame(() => document.getElementById('sessions')?.scrollIntoView({ block: 'start' }));
+  /**
+   * 本文のタブ(概況・内訳・一覧。目次の群と同じ)。どのタブの節も描いておき、ほかのタブは hidden で隠す
+   * (ページ内リンクの行き先を getElementById で引ける。印刷では全部出す)。
+   * 開いたときは URL の tab=…(無ければ概況)。ページ内リンク(#phases など)の行き先が別のタブにあれば、描いた後でそのタブに移る
+   */
+  let tab = $state<TabId>(
+    ((): TabId => {
+      try {
+        return decodeTab(location.hash) ?? DEFAULT_TAB;
+      } catch {
+        return DEFAULT_TAB;
+      }
+    })(),
+  );
+  /** 要素が入っているタブ(タブの外の要素や null なら null) */
+  function panelOf(el: Element | null): TabId | null {
+    const v = el?.closest<HTMLElement>('[data-tab-panel]')?.dataset.tabPanel;
+    return isTabId(v) ? v : null;
+  }
+  /** ページ内リンクのハッシュ(#phases)の行き先。空や、絞り込み・タブ・表示の指定(a=b を含む)なら null */
+  function anchorTarget(hash: string): HTMLElement | null {
+    const frag = hash.replace(/^#/, '');
+    if (!frag || isStateHash(frag)) return null;
+    let id = frag;
+    try {
+      id = decodeURIComponent(frag);
+    } catch {
+      /* そのまま */
     }
+    return document.getElementById(id);
+  }
+  /** 表示の指定(view=…)の行き先と、タブを決めるのに使う節(未使用の skill は種類を切り替えてから描かれるので、利用ランキングの節で決める) */
+  const VIEWS: Record<string, { target: string; section: string }> = {
+    'unused-skills': { target: 'unused-skills', section: 'usage' },
+    sessions: { target: 'sessions', section: 'sessions' },
+  };
+  /** 今の URL が指すタブ(戻る / 進むで移った先に合わせる) */
+  function tabOfLocation(): TabId {
+    const h = location.hash;
+    if (h.length <= 1) return DEFAULT_TAB;
+    // ページ内リンク: 行き先のタブ(#main のようにタブの外なら今のまま)
+    if (!isStateHash(h)) return panelOf(anchorTarget(h)) ?? tab;
+    const v = VIEWS[decodeView(h) ?? ''];
+    return (v ? panelOf(document.getElementById(v.section)) : null) ?? decodeTab(h) ?? DEFAULT_TAB;
   }
 
-  // 要点欄などの #… リンク(絞り込みの状態)を押したときに絞り込みを切り替える。#overview のようなページ内リンクは無視
+  /** URL ハッシュの表示の指定(view=…)に従って、その場所のタブを出してから移る */
+  function showView(view: string | null): void {
+    const v = VIEWS[view ?? ''];
+    if (!v) return;
+    if (view === 'unused-skills') usageTab = 'skills';
+    const p = panelOf(document.getElementById(v.section));
+    if (p) tab = p;
+    requestAnimationFrame(() => {
+      const el = document.getElementById(v.target);
+      el?.scrollIntoView({ block: 'start' });
+      if (view === 'unused-skills') el?.focus({ preventScroll: true });
+    });
+  }
+
+  /** 今のスクロール位置を今の履歴の項目に書く(戻る / 進むでタブが変わったときに、その位置へ戻すため。スクロール中は止まってから書く) */
+  let saveTimer: ReturnType<typeof setTimeout> | undefined;
+  function saveScroll(): void {
+    clearTimeout(saveTimer);
+    saveView({ y: window.scrollY });
+  }
+
+  // 要点欄などの #… リンク(絞り込みの状態)を押したときに絞り込みを切り替える。
+  // #overview のようなページ内リンクは、行き先が隠れたタブにあるときだけそのタブに移る
   $effect(() => {
     const onHash = (): void => {
-      // 戻る / 進むで # の無い URL(絞り込みの無い状態は # を書かない)に戻ったら、絞り込みも外す。
+      const h = location.hash;
+      // 戻る / 進むで # の無い URL(絞り込みの無い状態は # を書かない)に戻ったら、絞り込みも外す(タブは概況)。
       // 以前は読み飛ばしていたので、要点のリンクで絞り込んでから「戻る」を押しても絞り込みが残っていた
-      if (location.hash.length <= 1) {
+      if (h.length <= 1) {
         if (!isEmptyFilter(filter)) filter = emptyFilter();
+        tab = DEFAULT_TAB;
         return;
       }
-      if (!isStateHash(location.hash)) return;
-      filter = decodeFilter(location.hash);
-      showView(decodeView(location.hash) ?? 'sessions');
+      if (!isStateHash(h)) {
+        // ふつうは押したとき(下の click)か popstate で移り終えている。popstate を出さないブラウザや、URL を手で書き換えたときのため
+        const el = anchorTarget(h);
+        const p = panelOf(el);
+        if (el && p && p !== tab) {
+          tab = p;
+          void tick().then(() => el.scrollIntoView({ block: 'start', behavior: 'instant' }));
+        }
+        return;
+      }
+      filter = decodeFilter(h);
+      // 表示の指定があればその場所(のタブ)へ。無ければ tab=… のタブ(戻る / 進むで移った先。位置はブラウザと popstate が戻す)
+      const view = decodeView(h);
+      if (view) showView(view);
+      else tab = decodeTab(h) ?? DEFAULT_TAB;
+    };
+    // 戻る / 進む: 描き直してから(flushSync)ブラウザがスクロール位置を戻すよう、ここでタブを合わせる。
+    // タブが変わったときは、その項目に残した位置(saveScroll)へ自分でも戻す。ブラウザが覚えた位置は、
+    // 別のタブの節へのリンクを押したとき、タブを切り替えた後(ページの長さが変わった後)の位置になっていることがあるので、
+    // ブラウザが戻した後(次の描画の前)にもう一度合わせる
+    const onPop = (): void => {
+      clearTimeout(saveTimer); // 前の項目の位置を、移った先の項目に書かない
+      const want = tabOfLocation();
+      if (want === tab) return;
+      tab = want;
+      flushSync();
+      const y = currentView()?.y;
+      const go = (): void => {
+        if (y != null) window.scrollTo({ top: y, behavior: 'instant' });
+        else anchorTarget(location.hash)?.scrollIntoView({ block: 'start', behavior: 'instant' });
+      };
+      go();
+      requestAnimationFrame(go);
+    };
+    const onScroll = (): void => {
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(saveScroll, 200);
     };
     window.addEventListener('hashchange', onHash);
+    window.addEventListener('popstate', onPop);
+    window.addEventListener('scroll', onScroll, { passive: true });
     if (initialView) showView(initialView);
-    return () => window.removeEventListener('hashchange', onHash);
+    return () => {
+      window.removeEventListener('hashchange', onHash);
+      window.removeEventListener('popstate', onPop);
+      window.removeEventListener('scroll', onScroll);
+      clearTimeout(saveTimer);
+    };
   });
+
+  /** タブへのリンク(今の絞り込みはそのまま。概況は tab を書かない) */
+  const tabHref = (t: TabId): string => filterHref(filter, null, t);
+  let tabsEl = $state<HTMLElement | null>(null);
+  /**
+   * タブを開く(タブの帯・サイドバーの群の題・狭い幅の目次の行)。履歴に積むので「戻る」で前のタブに戻る。
+   * 新しいタブで開くなどの修飾つきの押し方はブラウザに任せる(リンクの href がそのタブの URL)
+   */
+  function openTab(e: MouseEvent, t: TabId): void {
+    if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    if (t !== tab) {
+      saveScroll(); // 今の項目に今の位置を残してから積む(戻ったときにその位置へ)
+      const h = encodeState(filter, t);
+      try {
+        history.pushState(null, '', h ? `#${h}` : location.pathname + location.search);
+      } catch {
+        /* file:// で履歴を書けない環境では、タブだけ切り替える */
+      }
+      tab = t;
+      flushSync();
+    }
+    // ページがタブの帯より下までスクロールしていれば、帯が上端に来る位置へ(ページの先頭までは戻さない)
+    const top = tabsEl?.getBoundingClientRect().top;
+    if (top != null && top < topbarPx) window.scrollTo({ top: window.scrollY + top - topbarPx, behavior: 'instant' });
+  }
 
   // あふれてスクロールする表の枠にキーボードで届くようにする(描画が変わるたびに付け直す)
   $effect(() => watchScrollFocus(document.body));
 
+  // 開いたとき: ページ内リンクのハッシュ(詳細ページからの atlas.html#phases、#exec-modes-h など)の行き先が別のタブにあれば、そのタブを出してから行き先へ移る。
+  // 戻る / 進む・再読み込みで別のページから開かれたら、離れたときのスクロール位置に戻す(描いてから。ブラウザに任せると描く前の短いページで先頭になる)。
+  // 離れるときに今の位置を履歴の項目に書く(view-restore.ts)。
+  // URL を書き換える effect(下)より先に置く(ここで決めたタブを、その effect が書く URL に残すため)
+  $effect(() =>
+    untrack(() => {
+      const y = restoredView()?.y;
+      const target = anchorTarget(location.hash);
+      const p = panelOf(target);
+      const moved = !!p && p !== tab;
+      if (p && moved) tab = p;
+      // scrollRestoration は 'auto' のままにする('manual' にすると、目次や要点のリンクで移ってからの「戻る」でブラウザが位置を戻さなくなる)
+      // 本文を描き終えてから戻す。後から高さが変わる(タスクタグの見出しが出るなど)ときのため、
+      // 少し後にもう一度だけ合わせる(その間に自分でスクロールしたら合わせない)。1px のずれでも合わせる
+      // (ブラウザが戻す位置や、端数の高さの要素によるずれが、ちょうど 1px のことがある)
+      const restore = y != null && y > 0;
+      const go = (): void => {
+        if (restore) window.scrollTo({ top: y, behavior: 'instant' });
+        else target?.scrollIntoView({ block: 'start', behavior: 'instant' });
+      };
+      const start = (): void => {
+        if (!restore && !target) return;
+        const before = (): number => (restore ? window.scrollY : (target?.getBoundingClientRect().top ?? 0));
+        go();
+        const at = before();
+        let userMoved = false;
+        const stop = (): void => void (userMoved = true);
+        addEventListener('wheel', stop, { once: true, passive: true });
+        addEventListener('keydown', stop, { once: true });
+        addEventListener('touchstart', stop, { once: true, passive: true });
+        setTimeout(() => {
+          if (!userMoved && (restore ? Math.abs(window.scrollY - y) >= 1 : Math.abs(before() - at) >= 1)) go();
+          removeEventListener('wheel', stop);
+          removeEventListener('keydown', stop);
+          removeEventListener('touchstart', stop);
+        }, 300);
+      };
+      // 描き終えてから(タブを替えたときの hidden と、狭い幅の目次の行の高さ --topbar-h が入ってから)移る
+      void tick().then(start);
+      restoreDone();
+      const onHide = (): void => saveView({ y: window.scrollY });
+      addEventListener('pagehide', onHide);
+      return () => removeEventListener('pagehide', onHide);
+    }),
+  );
+
+  // 絞り込みを変えたら URL を書き換える(履歴には積まない)。今のタブの指定は残す(タブを変えたときは、ここでは書かない)
   $effect(() => {
-    const h = encodeFilter(filter);
+    const h = encodeState(filter, untrack(() => tab));
     try {
       // history.state(戻ったときの見た目。view-restore.ts)は消さずに URL だけ変える
       history.replaceState(history.state, '', h ? `#${h}` : location.pathname + location.search);
@@ -408,10 +579,14 @@
 
   /** 目次の 1 項目。id はページ内の節、href は別ページ */
   type TocItem = { id: string; label: string; href?: undefined } | { href: string; label: string; id?: undefined };
-  /** 節の目次。広い画面(768px 以上)では左のサイドバー、狭い画面では上部の固定した 1 行。群で区切る(別ページは href) */
-  const tocGroups = $derived.by((): { title: string; items: TocItem[] }[] => [
+  /**
+   * 節の目次。広い画面(768px 以上)では左のサイドバー、狭い画面では上部の固定した 1 行。群で区切る(別ページは href)。
+   * tab のある群は本文のタブ(群の題がそのタブへのリンク)。節の並びは本文の並びと同じにする
+   */
+  const tocGroups = $derived.by((): { title: string; tab: TabId | null; items: TocItem[] }[] => [
     {
       title: '概況',
+      tab: 'overview',
       items: [
         { id: 'overview', label: '全体' },
         { id: 'highlights', label: '要点' },
@@ -427,6 +602,7 @@
     },
     {
       title: '内訳',
+      tab: 'breakdown',
       items: [
         { id: 'usage', label: '利用ランキング' },
         { id: 'exec', label: '実行の性質' },
@@ -437,11 +613,13 @@
         { id: 'model-value', label: 'モデルと推論強度の効果' },
       ],
     },
-    { title: '一覧', items: [{ id: 'sessions', label: 'セッション一覧' }] },
-    { title: '付録', items: [...(data?.failures ? [{ href: 'failures.html', label: '失敗の台帳の集計' }] : []), ...(data?.library ? [{ href: 'instructions.html', label: '指示文と skill' }] : []), { href: 'glossary.html', label: '用語の説明' }] },
+    { title: '一覧', tab: 'list', items: [{ id: 'sessions', label: 'セッション一覧' }] },
+    { title: '付録', tab: null, items: [...(data?.failures ? [{ href: 'failures.html', label: '失敗の台帳の集計' }] : []), ...(data?.library ? [{ href: 'instructions.html', label: '指示文と skill' }] : []), { href: 'glossary.html', label: '用語の説明' }] },
   ]);
+  /** タブ(目次の群のうち tab のあるもの) */
+  const tabGroups = $derived(tocGroups.filter((g): g is { title: string; tab: TabId; items: TocItem[] } => g.tab != null));
 
-  /** 読んでいる節(目次の現在地の印)。見出しが画面上部 1/3(固定行の下)を越えた最後の節 */
+  /** 読んでいる節(目次の現在地の印)。今のタブの節のうち、見出しが画面上部 1/3(固定行の下)を越えた最後の節 */
   let current = $state('overview');
   /** 目次と件数の帯の高さ。狭い画面では上部に固定するので、ページ内リンクの飛び先をこの分だけ下げる(--topbar-h) */
   let railHeight = $state(0);
@@ -459,10 +637,11 @@
     return () => wide.removeEventListener('change', apply);
   });
   $effect(() => {
-    const ids = tocGroups.flatMap((g) => g.items).map((i) => i.id).filter((id): id is string => !!id);
-    let tick = false;
+    const ids = (tocGroups.find((g) => g.tab === tab)?.items ?? []).map((i) => i.id).filter((id): id is string => !!id);
+    if (!ids.length) return;
+    let queued = false;
     const mark = (): void => {
-      tick = false;
+      queued = false;
       const line = topbarPx + Math.min(160, window.innerHeight / 3);
       let cur = ids[0];
       for (const id of ids) {
@@ -473,8 +652,8 @@
       current = cur;
     };
     const onScroll = (): void => {
-      if (!tick) {
-        tick = true;
+      if (!queued) {
+        queued = true;
         requestAnimationFrame(mark);
       }
     };
@@ -489,7 +668,9 @@
   // 狭い画面の目次行は横に流れるので、現在地の項目が見える位置まで行をずらす(ページは動かさない)
   $effect(() => {
     void current;
-    const a = railEl?.querySelector<HTMLElement>('.toc a[aria-current]');
+    void tab;
+    // 節の現在地(aria-current="true")。タブのリンク(aria-current="page")は行の先頭にある
+    const a = railEl?.querySelector<HTMLElement>('.toc a[aria-current="true"]');
     const ol = a?.closest<HTMLElement>('.toc');
     if (!a || !ol || ol.scrollWidth <= ol.clientWidth) return;
     const l = a.offsetLeft;
@@ -497,43 +678,29 @@
     if (l < ol.scrollLeft) ol.scrollLeft = l - 12;
     else if (r > ol.scrollLeft + ol.clientWidth) ol.scrollLeft = r - ol.clientWidth + 12;
   });
-  // 戻る / 進む・再読み込みで別のページから開かれたら、離れたときのスクロール位置に戻す(描いてから。ブラウザに任せると描く前の短いページで先頭になる)。
-  // 離れるときに今の位置を履歴の項目に書く(view-restore.ts)
-  $effect(() => {
-    const y = restoredView()?.y;
-    // scrollRestoration は 'auto' のままにする('manual' にすると、目次や要点のリンクで移ってからの「戻る」でブラウザが位置を戻さなくなる)
-    // effect の時点で本文は描き終わっているので、その場で戻す。後から高さが変わる(タスクタグの見出しが出るなど)ときのため、
-    // 少し後にもう一度だけ合わせる(その間に自分でスクロールしたら合わせない)。1px のずれでも合わせる
-    // (ブラウザが戻す位置や、端数の高さの要素によるずれが、ちょうど 1px のことがある)
-    if (y != null && y > 0) {
-      const go = (): void => window.scrollTo({ top: y, behavior: 'instant' });
-      go();
-      let moved = false;
-      const stop = (): void => void (moved = true);
-      addEventListener('wheel', stop, { once: true, passive: true });
-      addEventListener('keydown', stop, { once: true });
-      addEventListener('touchstart', stop, { once: true, passive: true });
-      setTimeout(() => {
-        if (!moved && Math.abs(window.scrollY - y) >= 1) go();
-        removeEventListener('wheel', stop);
-        removeEventListener('keydown', stop);
-        removeEventListener('touchstart', stop);
-      }, 300);
-    }
-    restoreDone();
-    const onHide = (): void => saveView({ y: window.scrollY });
-    addEventListener('pagehide', onHide);
-    return () => removeEventListener('pagehide', onHide);
-  });
   // 詳細・用語ページの「← 戻る」が history.back() で絞り込みを保てるよう、このページから別ページへ移るときに印を残す(file:// では referrer が無い)
   $effect(() => {
     const onClick = (e: MouseEvent): void => {
       const a = (e.target as Element | null)?.closest?.('a[href]');
-      if (!a || a.getAttribute('href')?.startsWith('#')) return;
-      try {
-        sessionStorage.setItem('atlas-return', '1');
-      } catch {
-        /* 保存できない環境では普通のリンクとして戻る */
+      if (!a) return;
+      const href = a.getAttribute('href') ?? '';
+      if (!href.startsWith('#')) {
+        try {
+          sessionStorage.setItem('atlas-return', '1');
+        } catch {
+          /* 保存できない環境では普通のリンクとして戻る */
+        }
+        return;
+      }
+      if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+      // ページ内リンク: 移る前の位置を今の履歴の項目に残す(戻るでタブが変わるときに使う)。
+      // 行き先が隠れたタブにあれば先にそのタブを出す(そのあとブラウザがいつもどおり行き先へスクロールし、履歴にも積む)
+      saveScroll();
+      const el = anchorTarget(href);
+      const p = panelOf(el);
+      if (el && p && p !== tab) {
+        tab = p;
+        flushSync();
       }
     };
     document.addEventListener('click', onClick, true);
@@ -588,9 +755,23 @@
     <div class="rail" bind:this={railEl} bind:offsetHeight={railHeight}>
       <div class="rail-in wrap">
         <nav class="toc" aria-label="ページ内の移動">
+          <!-- 狭い幅の行の先頭のタブ。広い幅では、タブは下の群の題に出す -->
+          <div class="toc-group toc-tabs" role="group" aria-label="タブ">
+            <ol>
+              {#each tabGroups as g (g.tab)}
+                <li><a href={tabHref(g.tab)} aria-current={tab === g.tab ? 'page' : undefined} onclick={(e) => openTab(e, g.tab)}>{g.title}</a></li>
+              {/each}
+            </ol>
+          </div>
           {#each tocGroups as g (g.title)}
-            <div class="toc-group" role="group" aria-label={g.title}>
-              <span class="toc-title" aria-hidden="true">{g.title}</span>
+            <!-- 狭い幅では今のタブの節だけを並べる(広い幅ではどのタブの節も出し、押すとそのタブに移る) -->
+            <div class="toc-group" class:off={g.tab != null && g.tab !== tab} role="group" aria-label={g.title}>
+              {#if g.tab}
+                {@const t = g.tab}
+                <a class="toc-tab" href={tabHref(t)} aria-current={tab === t ? 'page' : undefined} onclick={(e) => openTab(e, t)} data-testid="toc-tab-{t}">{g.title}</a>
+              {:else}
+                <span class="toc-title" aria-hidden="true">{g.title}</span>
+              {/if}
               <ol>
                 {#each g.items as it (it.label)}
                   <li><a href={it.href ?? `#${it.id}`} aria-current={it.id && current === it.id ? 'true' : undefined}>{it.label}</a></li>
@@ -650,43 +831,58 @@
           {/if}
         </div>
 
-        <!-- 帳票の順: 表紙(規模の 4 欄)→ 摘要(要点)→ 明細 -->
-        <Overview part="cover" {agg} {judged} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} {emptyInFilter} {editable} />
-        <Highlights groups={points} />
-        <Insights sessions={filtered} allSessions={data.sessions} installed={installed?.skills ?? null} disabled={installed?.disabled ?? []} meta={data.insights?.meta ?? {}} candidates={data.insights?.candidates ?? []} candidateTotal={data.insights?.candidateTotal ?? data.insights?.candidates.length ?? 0} computedOver={data.insights?.computedOver ?? sessions.length} hasPage={true} libraryHref={data.library ? 'instructions.html' : null} {wiki} wikiPagesRecorded={(data.version ?? 0) >= WIKI_PAGES_DATA_VERSION} wikiPageNames={data.wikiPageNames ?? []} />
-        <TurnPhases agg={turnAgg} verdicts={verdictAgg} verdictModel={data.turnJudgments?.model ?? null} verdictRanAt={data.turnJudgments?.ranAt ?? null} {editable} />
-        <Overview part="detail" {agg} {judged} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} {emptyInFilter} {wiki} />
-        {#if judged}<JudgmentPanel {agg} meta={data.judgments} />{/if}
-        {#if data.retention}<Retention sessions={filtered} meta={data.retention} />{/if}
-        <Compare sessions={scoped} groups={groupOptions} projects={options.project} lastAt={all.overall.lastAt} retention={!!data.retention} />
-        {#if hasConditions}<Conditions table={conditions} {wiki} />{/if}
-        <UsageRanking usage={agg.usage} {installed} failuresPage={data.failures === true} bind:tab={usageTab} />
-        <ExecProfile exec={agg.exec} sessions={filtered.length} />
-        <!-- 人別は、送り先(<人>/<プロジェクト>)をまとめて集計したレポートだけ -->
-        {#if options.person.length > 0}<ProjectTable kind="person" rows={agg.byPerson} {judged} {wiki} current={filter.person} onpick={(p) => setFilter({ person: p })} />{/if}
-        <ProjectTable rows={agg.byProject} {judged} {wiki} current={filter.project} onpick={(p) => setFilter({ project: p })} send={canEdit && !serverDown ? projectSend : undefined} />
-        <MonthlyChart months={agg.byMonth} lastAt={all.overall.lastAt} />
-        <ModelChart rows={agg.byModel} />
-        <ModelValue sessions={filtered} />
-        <SessionTable
-          sessions={filtered}
-          allSessions={sessions}
-          {emptyRelaxed}
-          emptyIncluded={filter.empty === '1'}
-          {judged}
-          {selected}
-          idsActive={eff.ids !== ''}
-          editable={canEdit}
-          readOnly={readOnlyView}
-          groups={groupOptions}
-          currentGroup={currentName}
-          onselect={(s) => (selected = s)}
-          onapply={applySelection}
-          onclear={clearSelection}
-          oncreate={createGroup}
-          onadd={addToGroup}
-          onremove={removeFromGroup}
-        />
+        <!-- 本文のタブ(目次の群と同じ)。押すと履歴に積む。隠れたタブも描いておく(印刷では全部出す) -->
+        <nav class="tabs" aria-label="レポートのタブ" bind:this={tabsEl} data-testid="report-tabs">
+          <ul>
+            {#each tabGroups as g (g.tab)}
+              <li><a href={tabHref(g.tab)} aria-current={tab === g.tab ? 'page' : undefined} onclick={(e) => openTab(e, g.tab)} data-testid="tab-{g.tab}">{g.title}</a></li>
+            {/each}
+          </ul>
+        </nav>
+
+        <div class="tab-panel" data-tab-panel="overview" hidden={tab !== 'overview'}>
+          <!-- 帳票の順: 表紙(規模の 4 欄)→ 摘要(要点)→ 明細 -->
+          <Overview part="cover" {agg} {judged} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} {emptyInFilter} {editable} />
+          <Highlights groups={points} />
+          <Insights sessions={filtered} allSessions={data.sessions} installed={installed?.skills ?? null} disabled={installed?.disabled ?? []} meta={data.insights?.meta ?? {}} candidates={data.insights?.candidates ?? []} candidateTotal={data.insights?.candidateTotal ?? data.insights?.candidates.length ?? 0} computedOver={data.insights?.computedOver ?? sessions.length} hasPage={true} libraryHref={data.library ? 'instructions.html' : null} {wiki} wikiPagesRecorded={(data.version ?? 0) >= WIKI_PAGES_DATA_VERSION} wikiPageNames={data.wikiPageNames ?? []} />
+          <TurnPhases agg={turnAgg} verdicts={verdictAgg} verdictModel={data.turnJudgments?.model ?? null} verdictRanAt={data.turnJudgments?.ranAt ?? null} {editable} />
+          <Overview part="detail" {agg} {judged} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} {emptyInFilter} {wiki} />
+          {#if judged}<JudgmentPanel {agg} meta={data.judgments} />{/if}
+          {#if data.retention}<Retention sessions={filtered} meta={data.retention} />{/if}
+          <Compare sessions={scoped} groups={groupOptions} projects={options.project} lastAt={all.overall.lastAt} retention={!!data.retention} />
+          {#if hasConditions}<Conditions table={conditions} {wiki} />{/if}
+        </div>
+        <div class="tab-panel" data-tab-panel="breakdown" hidden={tab !== 'breakdown'}>
+          <UsageRanking usage={agg.usage} {installed} failuresPage={data.failures === true} bind:tab={usageTab} />
+          <ExecProfile exec={agg.exec} sessions={filtered.length} />
+          <!-- 人別は、送り先(<人>/<プロジェクト>)をまとめて集計したレポートだけ -->
+          {#if options.person.length > 0}<ProjectTable kind="person" rows={agg.byPerson} {judged} {wiki} current={filter.person} onpick={(p) => setFilter({ person: p })} />{/if}
+          <ProjectTable rows={agg.byProject} {judged} {wiki} current={filter.project} onpick={(p) => setFilter({ project: p })} send={canEdit && !serverDown ? projectSend : undefined} />
+          <MonthlyChart months={agg.byMonth} lastAt={all.overall.lastAt} />
+          <ModelChart rows={agg.byModel} />
+          <ModelValue sessions={filtered} />
+        </div>
+        <div class="tab-panel" data-tab-panel="list" hidden={tab !== 'list'}>
+          <SessionTable
+            sessions={filtered}
+            allSessions={sessions}
+            {emptyRelaxed}
+            emptyIncluded={filter.empty === '1'}
+            {judged}
+            {selected}
+            idsActive={eff.ids !== ''}
+            editable={canEdit}
+            readOnly={readOnlyView}
+            groups={groupOptions}
+            currentGroup={currentName}
+            onselect={(s) => (selected = s)}
+            onapply={applySelection}
+            onclear={clearSelection}
+            oncreate={createGroup}
+            onadd={addToGroup}
+            onremove={removeFromGroup}
+          />
+        </div>
       </main>
       <footer class="wrap foot">
         <p>
@@ -859,6 +1055,128 @@
   .mast-tools .seg button {
     padding: 2px 8px;
   }
+  /* 本文のタブの帯(本文の上端。どの幅でも出す)。今のタブは緑の字と緑の 2px の線(目次の今いる項目と同じ印)と aria-current="page" */
+  .tabs {
+    margin-top: 20px;
+    border-bottom: 1px solid var(--rule-strong);
+  }
+  .tabs ul {
+    display: flex;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .tabs a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 40px;
+    padding: 0 18px;
+    margin-bottom: -1px;
+    font-size: 0.9375rem;
+    font-weight: 600;
+    color: var(--ink-2);
+    text-decoration: none;
+    border-bottom: 2px solid transparent;
+  }
+  .tabs a:hover {
+    color: var(--form);
+    background: var(--form-wash);
+  }
+  .tabs a[aria-current='page'] {
+    color: var(--form);
+    background: var(--surface);
+    border-bottom-color: var(--form);
+  }
+  @media (max-width: 720px) {
+    .tabs a {
+      flex: 1 1 0;
+      justify-content: center;
+      padding: 0 8px;
+    }
+    .tabs li {
+      display: flex;
+      flex: 1 1 0;
+    }
+  }
+  /* 印刷ではどのタブの節も出す(タブの帯は要らない) */
+  @media print {
+    .tabs {
+      display: none;
+    }
+    .tab-panel[hidden] {
+      display: block;
+    }
+  }
+
+  /* 目次のタブ。狭い幅の行では先頭に並べ(.toc-tabs)、今のタブ以外の群の節は隠す。広い幅では群の題(.toc-tab)がタブへのリンク */
+  .toc .toc-tabs a {
+    min-width: 0;
+    min-height: 28px;
+    padding: 0 10px;
+    font-weight: 600;
+    color: var(--ink-2);
+    border: 1px solid var(--control);
+    border-bottom: 1px solid var(--control);
+  }
+  .toc .toc-tabs li + li a {
+    margin-left: -1px;
+  }
+  .toc .toc-tabs ol {
+    gap: 0;
+  }
+  .toc .toc-tabs a:hover {
+    color: var(--form);
+    background: var(--form-wash);
+    text-decoration: none;
+  }
+  .toc .toc-tabs a[aria-current='page'] {
+    color: var(--surface);
+    background: var(--form);
+    border-color: var(--form);
+  }
+  .toc .toc-group.off {
+    display: none;
+  }
+  .toc .toc-tab {
+    display: none;
+  }
+  @media (min-width: 768px) {
+    .toc .toc-tabs {
+      display: none;
+    }
+    .toc .toc-tabs + .toc-group {
+      margin-top: 0;
+    }
+    .toc .toc-group.off {
+      display: block;
+    }
+    /* 群の題(base.css の .toc-title と同じ大きさ・色)を、押せる高さのリンクにする。今のタブは緑の地に紙の色の字 */
+    .toc .toc-tab {
+      display: flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 0 10px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      color: var(--form);
+      background: none;
+      border: 0;
+      border-bottom: 1px solid var(--rule-strong);
+      text-decoration: none;
+    }
+    .toc .toc-tab:hover {
+      background: var(--form-wash);
+      text-decoration: underline;
+    }
+    .toc .toc-tab[aria-current='page'] {
+      color: var(--surface);
+      background: var(--form);
+      border-bottom-color: var(--form);
+      text-decoration: none;
+    }
+  }
+
   /* グループの群: 狭い幅では目次行の「グループ」ボタンから開く一覧(.group-pop)、768px 以上ではサイドバーの群(.rail-groups) */
   .rail-groups {
     display: none;

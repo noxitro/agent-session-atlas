@@ -14,7 +14,10 @@ export function syncScrollFocus(root: ParentNode = document): void {
   });
 }
 
-/** 描画の変化(絞り込み・タブの切り替え・ページ送り)と幅の変化のたびに付け直す。戻り値で止める */
+/**
+ * 描画の変化(絞り込み・タブの切り替え・ページ送り)と幅の変化のたびに付け直す。戻り値で止める。
+ * 本文のタブは hidden の付け外しだけで切り替わる(子は変わらない)ので、hidden の変化も見る
+ */
 export function watchScrollFocus(root: HTMLElement): () => void {
   let queued = false;
   const run = (): void => {
@@ -26,7 +29,7 @@ export function watchScrollFocus(root: HTMLElement): () => void {
     });
   };
   const mo = new MutationObserver(run);
-  mo.observe(root, { childList: true, subtree: true });
+  mo.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['hidden'] });
   addEventListener('resize', run);
   syncScrollFocus(root);
   return () => {
