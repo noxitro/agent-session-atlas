@@ -197,6 +197,9 @@ pub enum JudgeScope {
     All,
     Session(String),
     Group(String),
+    /// 読むだけの画面のタスクタグ(送った人のタグ)。子プロセスは notes-dir の groups.json で名前を探すので、
+    /// 画面で解決した id(sessions.json にあるもの)を --session で渡す。name は表示用
+    GroupIds { name: String, ids: Vec<String> },
 }
 
 impl JudgeScope {
@@ -206,6 +209,7 @@ impl JudgeScope {
             JudgeScope::All => vec![],
             JudgeScope::Session(id) => vec![format!("--session={id}")],
             JudgeScope::Group(name) => vec![format!("--group={name}")],
+            JudgeScope::GroupIds { ids, .. } => vec![format!("--session={}", ids.join(","))],
         }
     }
 
@@ -214,6 +218,7 @@ impl JudgeScope {
             JudgeScope::All => String::new(),
             JudgeScope::Session(id) => format!("、セッション {id}"),
             JudgeScope::Group(name) => format!("、タスクタグ「{name}」"),
+            JudgeScope::GroupIds { name, ids } => format!("、タスクタグ「{name}」の {} セッション", ids.len()),
         }
     }
 
@@ -221,9 +226,49 @@ impl JudgeScope {
         match self {
             JudgeScope::All => (None, None),
             JudgeScope::Session(id) => (Some(id.clone()), None),
-            JudgeScope::Group(name) => (None, Some(name.clone())),
+            JudgeScope::Group(name) | JudgeScope::GroupIds { name, .. } => (None, Some(name.clone())),
         }
     }
+}
+
+/// 子プロセスのコマンドラインの目安の上限(Windows の上限 32767 文字より手前で断る)
+pub const JOB_ARGS_MAX_CHARS: usize = 30000;
+
+/// 読むだけの画面: タスクタグの範囲(judge_scope が groups で確かめた Group)を、そのタグの ids に置き換える。
+/// groups は画面のタスクタグ(送った人のタグ)、known_id は sessions.json にあるか。残った id が 0 件なら 400
+pub fn pin_group_ids(req: JobRequest, groups: &LoadedGroups, known_id: &dyn Fn(&str) -> bool) -> Result<JobRequest, JobError> {
+    let pin = |scope: JudgeScope| -> Result<JudgeScope, JobError> {
+        let JudgeScope::Group(name) = scope else { return Ok(scope) };
+        let ids: Vec<String> = groups.groups.iter().find(|g| g.name == name).map(|g| g.ids.iter().filter(|id| known_id(id)).cloned().collect()).unwrap_or_default();
+        if ids.is_empty() {
+            return Err(JobError::new(400, format!("タスクタグ「{name}」のセッションは sessions.json にありません(判定するものがありません)")));
+        }
+        Ok(JudgeScope::GroupIds { name, ids })
+    };
+    Ok(match req {
+        JobRequest::Judge { limit, backend, scope, force } => JobRequest::Judge { limit, backend, scope: pin(scope)?, force },
+        JobRequest::TurnJudge { limit, scope } => JobRequest::TurnJudge { limit, scope: pin(scope)? },
+        other => other,
+    })
+}
+
+/// 子プロセスの引数がコマンドラインに収まるか(引数の文字数と区切りの合計で見る)。
+/// Windows のコマンドラインの上限は 32767 文字(UTF-16)。JOB_ARGS_MAX_CHARS を 30000 にして、実行ファイルのパスと引用符の分を空けている。
+/// 数えるのは chars() で UTF-16 の単位とは違う(サロゲートペアで増える)が、引数はセッション ID と ASCII のオプションが主で、その差もこの余白に収まる
+fn check_args_length(req: &JobRequest, args: &[String]) -> Result<(), JobError> {
+    let total: usize = args.iter().map(|a| a.chars().count() + 1).sum();
+    if total <= JOB_ARGS_MAX_CHARS {
+        return Ok(());
+    }
+    let ids = matches!(req, JobRequest::Judge { scope: JudgeScope::GroupIds { .. }, .. } | JobRequest::TurnJudge { scope: JudgeScope::GroupIds { .. }, .. });
+    Err(JobError::new(
+        400,
+        if ids {
+            format!("タスクタグのセッションが多すぎて、判定の処理に渡せません(引数が {total} 文字)。対象を「すべて」にして判定してください")
+        } else {
+            format!("判定の処理に渡す引数が長すぎます({total} 文字)")
+        },
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -738,6 +783,12 @@ impl JobRunner {
         if let Some(j) = self.current().filter(|j| j.state == "running") {
             return Err(JobError::new(409, format!("ほかの処理({})が動いています。終わってから実行してください", label(&j.kind))));
         }
+        let out = self.o.out_dir.to_string_lossy().into_owned();
+        let notes = self.o.notes_dir.to_string_lossy().into_owned();
+        let args = job_args(req, &JobArgsInput { out_dir: &out, notes_dir: &notes, home: self.o.home.as_deref() });
+        if let Some(a) = &args {
+            check_args_length(req, a)?;
+        }
         // CLI(atlas.bat の再実行・npm run atlas:judge)が同じ out/ に書いている最中なら始めない。印はジョブの終わりに外す(drop_lock)
         match acquire_out_lock(&self.o.out_dir, req.kind(), "serve") {
             Ok(l) => l.keep(),
@@ -769,9 +820,7 @@ impl JobRunner {
             _ => String::new(),
         };
         (self.o.log)(&format!("[{}] 開始{what}", label(req.kind())));
-        let out = self.o.out_dir.to_string_lossy().into_owned();
-        let notes = self.o.notes_dir.to_string_lossy().into_owned();
-        match (job_args(req, &JobArgsInput { out_dir: &out, notes_dir: &notes, home: self.o.home.as_deref() }), req) {
+        match (args, req) {
             (Some(args), _) => self.start_child(&args),
             (None, JobRequest::Full { id }) => self.start_full(id.clone()),
             (None, _) => {}

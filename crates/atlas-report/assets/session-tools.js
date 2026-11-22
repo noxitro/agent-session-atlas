@@ -69,7 +69,7 @@ call('state',{headers:H,cache:'no-store'}).then(function(r){
 // 判定は AI クレジット(BYOK なら API の利用料)を使うので、押したら件数・モデル・費用を確かめてから始める。
 // 終わっても自動では読み直さない(メモの入力中などを守る)。「読み込み直す」で、作り直したページを出す
 var jg=el('div','ops-judge');jg.setAttribute('data-testid','detail-judge');jg.setAttribute('role','group');jg.setAttribute('aria-label','LLM 判定');jg.hidden=true;title.insertBefore(jg,box);
-var jBusy=false,jDown=false,jt0=0,pv=null,pt=null;
+var jBusy=false,jDown=false,jPick=false,jt0=0,pv=null,pt=null;
 // 依頼ごとの判定で 1 回にまとめる依頼の数は、サーバが judge-preview の chunk で返す(返さない古いサーバのときだけ 6)
 function jchunk(p){return p.chunk>0?p.chunk:6}
 var je=el('button','btn'),jt=el('button','btn'),jc=el('button','btn','止める'),jr=el('button','btn','読み込み直す'),jnote=el('p','judge-note'),jmsg=el('p','judge-msg'),jlog=el('p','judge-log'),jerr=el('p','judge-err');
@@ -81,7 +81,7 @@ function jsec(){return Math.max(0,Math.round((Date.now()-jt0)/1000))}
 function jq(turns){return call('jobs/judge-preview?session='+encodeURIComponent(id)+(turns?'&target=turns':''),{headers:H,cache:'no-store'})}
 // 押せないときは、その理由を下に書く(色だけで伝えない)
 function syncJudge(){
-  var off=jBusy||jDown,why=[];
+  var off=jBusy||jDown||jPick,why=[];
   je.textContent=pv.judged>0?'工数を判定し直す':'工数を判定する';
   je.disabled=off||!(pv.eligible>0);
   if(!(pv.eligible>0))why.push('工数: 依頼の記録が無いので判定できません。');
@@ -96,10 +96,14 @@ function syncJudge(){
   [je,jt].forEach(function(b){if(b.disabled&&why.length)b.setAttribute('aria-describedby','judge-note');else b.removeAttribute('aria-describedby')});
   jc.hidden=!jBusy||jDown;
 }
-function loadJudge(){
+// strict: 数えられなければ(押した後に数え直すとき)理由を添えて失敗にする。turns: 押したのが依頼ごとのボタンなら、依頼ごとの件数も読めないと失敗
+function loadJudge(strict,turns){
   return Promise.all([jq(false),jq(true)]).then(function(rs){
+    var bad=function(r){return !r.ok||!r.body},why=function(r){return new Error((r.body&&r.body.error)||('サーバの応答 '+r.status))};
     // セッションが sessions.json に無い(古いページ)などで数えられなければ、判定のボタンは出さない
-    if(!rs[0].ok||!rs[0].body)return false;
+    if(bad(rs[0])){if(strict)throw why(rs[0]);return false}
+    // 依頼ごとの件数だけ読めなかったのを「判定できる依頼が無くなっていた」としない
+    if(strict&&turns&&bad(rs[1]))throw why(rs[1]);
     pv=rs[0].body;pt=rs[1].ok&&rs[1].body?rs[1].body:null;syncJudge();jg.hidden=false;return true;
   });
 }
@@ -117,18 +121,48 @@ function jdone(kind){
   jBusy=false;jlog.textContent='';jmsg.textContent=jname(kind)+'が終わり、レポートを作り直しました。読み込み直すと、上の「LLM 判定」の札と表に出ます。';jr.hidden=false;syncJudge();
   loadJudge().catch(function(){});
 }
-function jwait(jobId){
+// 進み具合を確かめられない(通信の失敗・サーバの 5xx)ときは、間隔を空けてやり直す。判定は裏で続いているので、
+// 1 回の失敗では諦めない(諦めると「止める」が消え、判定のボタンをまた押せてしまう)。続けて JRETRY 回失敗したときだけ諦める
+var JRETRY=10;
+function jretry(jobId,miss,why){
+  if(miss>JRETRY){jfail('判定の進み具合を確かめられません('+why+')。判定は続いているかもしれないので、レポートの画面で確かめてください。');return}
+  jmsg.textContent='サーバの応答を待っています…(進み具合を確かめられませんでした。やり直し '+miss+' 回目)';
+  setTimeout(function(){jwait(jobId,miss)},Math.min(5000,700*miss));
+}
+function jwait(jobId,miss){
+  miss=miss||0;
+  // サーバが止まった(atlas-down)ら、もう答えないので待つのをやめる
+  if(jDown){jfail('サーバが止まったので、判定の進み具合を確かめられません。atlas.bat を実行し直して、レポートの画面で確かめてください。');return}
   call('jobs/current',{headers:H,cache:'no-store'}).then(function(r){
-    var j=r.body;if(!r.ok)throw new Error((j&&j.error)||('サーバの応答 '+r.status));
+    var j=r.body;
+    if(r.status>=500){jretry(jobId,miss+1,(j&&j.error)||('サーバの応答 '+r.status));return}
+    if(!r.ok)throw new Error((j&&j.error)||('サーバの応答 '+r.status));
     if(!j||j.id!==jobId)throw new Error('判定の状態が分からなくなりました。レポートの画面で確かめてください。');
     var last=(j.log||[]).slice(-1)[0]||'';
     if(j.state==='running'){jmsg.textContent=jname(j.kind)+'をしています(経過 '+jsec()+' 秒)…';jlog.textContent=last;setTimeout(function(){jwait(jobId)},700);return}
     if(j.state==='done'){jdone(j.kind);return}
     jfail(j.state==='canceled'?'判定を止めました。判定できた分は保存されていて、次の「集計し直す」でレポートに出ます。':jname(j.kind)+'ができませんでした'+(last?': '+last:'。'));
-  }).catch(function(e){jfail(e.message)});
+  },function(e){jretry(jobId,miss+1,e.message)}).catch(function(e){jfail(e.message)});
 }
+// 押したら件数を数え直してから確かめる(ページを開いた後に、ほかの所で判定されているかもしれない。古い件数のままだと
+// 判定し直す(force)を付けずに送り、0 件で終わって「終わり」と出てしまう)。数え直す間はボタンを押せない(二重押しを防ぐ)
 function runJudge(turns){
-  var p=turns?pt:pv;if(jBusy||jDown||!p)return;
+  if(jBusy||jDown||jPick||!pv)return;
+  // 前の判定の「読み込み直す」とその知らせは、判定を始めるとき(jstart)まで残す(確かめで取りやめたとき・対象が無いときに消えないように)
+  var prev=jmsg.textContent;
+  jPick=true;jerr.hidden=true;jmsg.textContent='判定の件数を数え直しています…';syncJudge();
+  loadJudge(true,turns).then(function(){
+    jPick=false;jmsg.textContent=prev;syncJudge();
+    askJudge(turns);
+  },function(e){
+    jPick=false;jmsg.textContent=prev;jerr.textContent='判定の件数を数え直せませんでした('+e.message+')。もう一度押してください。';jerr.hidden=false;syncJudge();
+  });
+}
+function askJudge(turns){
+  var p=turns?pt:pv;if(jBusy||jDown)return;
+  // 数え直したら、押したボタンの対象が無くなっていた
+  if(turns&&!(p&&p.pending>0)){jmsg.textContent=p&&p.eligible>0?'依頼ごと: '+p.judged+' 件とも判定済みになっていたので、判定しませんでした。':'依頼ごと: 判定できる依頼が無くなっていたので、判定しませんでした。';return}
+  if(!turns&&!(p.eligible>0)){jmsg.textContent='工数: 依頼の記録が無くなっていたので、判定しませんでした。';return}
   var again=!turns&&pv.judged>0;
   var what=turns?'このセッションの未判定の依頼 '+p.pending+' 件を LLM で判定します(約 '+Math.ceil(p.pending/jchunk(p))+' 回以上の判定。判定済みの '+p.judged+' 件は判定し直しません)。'
     :again?'このセッションの工数を LLM で判定し直します(前の判定は置き換わります)。':'このセッションの工数(推定人手工数と、成果の質・手戻り)を LLM で判定します。';

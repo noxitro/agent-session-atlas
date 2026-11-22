@@ -252,3 +252,94 @@ fn judge_rejects_filters_it_ignores() {
     assert!(e.starts_with("--group は judge m365 では効きません。"), "{e}");
     assert!(!e.contains("--session か --only"), "{e}");
 }
+
+/// 依頼が 1 つずつあるセッションの記録(~/.copilot の session-state の形)
+fn write_home_sessions(home: &std::path::Path, ids: &[&str]) {
+    for id in ids {
+        let d = home.join("session-state").join(id);
+        fs::create_dir_all(&d).unwrap();
+        let ev = [
+            json!({ "type": "session.start", "id": format!("{id}-s"), "parentId": null, "timestamp": "2026-07-01T09:00:00.000Z", "data": { "sessionId": id, "version": 1, "copilotVersion": "1.0.50", "selectedModel": "gpt-5.5-mini", "context": { "cwd": "X:/p" } } }),
+            json!({ "type": "user.message", "id": format!("{id}-u1"), "parentId": null, "timestamp": "2026-07-01T09:01:00.000Z", "data": { "content": "直して" } }),
+            json!({ "type": "assistant.message", "id": format!("{id}-m1"), "parentId": null, "timestamp": "2026-07-01T09:02:00.000Z", "data": { "messageId": format!("{id}-mm"), "content": "終わりました。", "toolRequests": [], "outputTokens": 5 } }),
+        ];
+        fs::write(d.join("events.jsonl"), ev.iter().map(|e| format!("{e}\n")).collect::<String>()).unwrap();
+    }
+}
+
+/// ユーザーの依頼が記録されていないセッション(束には入らない)
+fn write_home_session_without_request(home: &std::path::Path, id: &str) {
+    let d = home.join("session-state").join(id);
+    fs::create_dir_all(&d).unwrap();
+    let ev = [
+        json!({ "type": "session.start", "id": format!("{id}-s"), "parentId": null, "timestamp": "2026-07-01T10:00:00.000Z", "data": { "sessionId": id, "version": 1, "copilotVersion": "1.0.50", "selectedModel": "gpt-5.5-mini", "context": { "cwd": "X:/p" } } }),
+        json!({ "type": "assistant.message", "id": format!("{id}-m1"), "parentId": null, "timestamp": "2026-07-01T10:02:00.000Z", "data": { "messageId": format!("{id}-mm"), "content": "準備しました。", "toolRequests": [], "outputTokens": 5 } }),
+    ];
+    fs::write(d.join("events.jsonl"), ev.iter().map(|e| format!("{e}
+")).collect::<String>()).unwrap();
+}
+
+/// 絞った判定に、依頼の無いセッション(束に入らない)が混ざっても止まらない。記録に無い ID は今までどおり止まる
+#[test]
+fn scoped_judge_flow_skips_sessions_without_request() {
+    let d = tempfile::tempdir().unwrap();
+    let (home, out, notes) = (d.path().join("home"), d.path().join("out"), d.path().join("notes"));
+    write_home_sessions(&home, &["aaaa1111"]);
+    write_home_session_without_request(&home, "cccc3333");
+    let (h, o, n) = (home.to_string_lossy().into_owned(), out.to_string_lossy().into_owned(), notes.to_string_lossy().into_owned());
+    run(&cli(&["all", "--home", &h, "--out", &o, "--notes-dir", &n]), &quiet).unwrap();
+    let args = |v: &[&str]| v.iter().map(|s| s.to_string()).chain(["--out".to_string(), o.clone(), "--notes-dir".into(), n.clone()]).collect::<Vec<_>>();
+    assert_eq!(judge_flow::main(&args(&["--limit", "0", "--session=aaaa,cccc"])), 0);
+    // 依頼の無いセッションだけでも、判定するものが無いだけで止まらない
+    assert_eq!(judge_flow::main(&args(&["--limit", "0", "--session=cccc"])), 0);
+    assert_ne!(judge_flow::main(&args(&["--limit", "0", "--session=aaaa,zzzz"])), 0);
+    assert!(!out.join(judge_flow::JUDGE_WORK_DIR).exists());
+}
+
+#[test]
+fn scoped_judge_flow_keeps_shared_bundles() {
+    let d = tempfile::tempdir().unwrap();
+    let (home, out, notes) = (d.path().join("home"), d.path().join("out"), d.path().join("notes"));
+    write_home_sessions(&home, &["aaaa1111", "bbbb2222"]);
+    let (h, o, n) = (home.to_string_lossy().into_owned(), out.to_string_lossy().into_owned(), notes.to_string_lossy().into_owned());
+    run(&cli(&["all", "--home", &h, "--out", &o, "--notes-dir", &n]), &quiet).unwrap();
+    // チャットに貼る判定・M365 の判定が使う、未判定全件の束
+    run(&cli(&["bundle", "--unjudged", "--out", &o, "--notes-dir", &n]), &quiet).unwrap();
+    run(&cli(&["turns", "bundle", "--unjudged", "--out", &o, "--notes-dir", &n]), &quiet).unwrap();
+    let read = |p: &str| fs::read(out.join(p)).unwrap();
+    let (bundle, turn_bundle) = (read("bundle/manifest.json"), read("turn-bundle/manifest.json"));
+    let args = |v: &[&str]| v.iter().map(|s| s.to_string()).chain(["--out".to_string(), o.clone(), "--notes-dir".into(), n.clone()]).collect::<Vec<_>>();
+    // 絞った判定(--limit 0 なので LLM は呼ばない)。束は作業用の場所に作り、終わったら消す
+    fs::create_dir_all(out.join(judge_flow::JUDGE_WORK_DIR).join("残り")).unwrap();
+    assert_eq!(judge_flow::main(&args(&["--limit", "0", "--session=aaaa"])), 0);
+    assert_eq!(judge_flow::main(&args(&["--turns", "--limit", "0", "--session=aaaa"])), 0);
+    assert_eq!((read("bundle/manifest.json"), read("turn-bundle/manifest.json")), (bundle.clone(), turn_bundle.clone()));
+    assert!(!out.join(judge_flow::JUDGE_WORK_DIR).exists());
+    // 絞った束で判定に失敗しても(知らない id)、作業用の場所は残さない
+    assert_ne!(judge_flow::main(&args(&["--limit", "0", "--session=zzzz"])), 0);
+    assert!(!out.join(judge_flow::JUDGE_WORK_DIR).exists());
+    assert_eq!(read("bundle/manifest.json"), bundle);
+    // 絞らない判定は今までどおり共有の束を作り直す(前の回が止められて残った作業用の場所も消す)
+    fs::create_dir_all(out.join(judge_flow::JUDGE_WORK_DIR).join("残り")).unwrap();
+    assert_eq!(judge_flow::main(&args(&["--limit", "0"])), 0);
+    assert!(!out.join(judge_flow::JUDGE_WORK_DIR).exists());
+    let m: serde_json::Value = serde_json::from_slice(&read("bundle/manifest.json")).unwrap();
+    assert_eq!(m["sessions"].as_array().map(Vec::len), Some(2));
+}
+
+/// 作業用の場所を消すとき(jsfs::rm_rf = std の remove_dir_all)に、中の junction を辿らない(リンクの先の中身は消えない)
+#[cfg(windows)]
+#[test]
+fn work_dir_removal_does_not_follow_junctions() {
+    let d = tempfile::tempdir().unwrap();
+    let (work, target) = (d.path().join("work"), d.path().join("target"));
+    fs::create_dir_all(work.join("sub")).unwrap();
+    fs::create_dir_all(&target).unwrap();
+    fs::write(target.join("keep.txt"), "x").unwrap();
+    let st = std::process::Command::new("cmd").args(["/c", "mklink", "/J"]).arg(work.join("sub").join("link")).arg(&target).output().unwrap();
+    assert!(st.status.success(), "{}", String::from_utf8_lossy(&st.stderr));
+    assert!(work.join("sub").join("link").join("keep.txt").exists());
+    atlas_core::fs_retry::remove_tree(&work).unwrap();
+    assert!(!work.exists());
+    assert!(target.join("keep.txt").exists());
+}
