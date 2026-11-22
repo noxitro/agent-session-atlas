@@ -18,8 +18,8 @@ impl Default for WorkHours {
     }
 }
 
-/// 数える日数の上限(誤った日付で何百年も回らないように。約 30 年)
-const MAX_DAYS: i64 = 11_000;
+/// 数える日数の上限(誤った日付で長く回らないように。約 10 年。これより長い期間は、始めから 10 年分だけを数える)
+pub const MAX_DAYS: i64 = 3_700;
 
 /// "HH:MM" を 0 時からの分に。allow_24 なら "24:00" も受け付ける(終わりの時刻だけ)
 pub fn parse_hhmm(s: &str, allow_24: bool) -> Option<u32> {

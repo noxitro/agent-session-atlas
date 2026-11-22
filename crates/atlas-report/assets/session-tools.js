@@ -217,7 +217,7 @@ function sync(){
   var off=saving||tDown;
   bSet.disabled=off||!sel.value||(!!link&&link.source==='manual'&&link.taskId===sel.value);
   bNone.disabled=off||(!!link&&link.source==='manual'&&link.taskId==null);
-  bAuto.disabled=off||!link||link.source!=='manual';
+  bAuto.disabled=off||!link||link.source==='machine';
   open.disabled=tDown;
 }
 function apply(body){

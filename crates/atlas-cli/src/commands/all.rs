@@ -33,9 +33,12 @@ pub fn run_all_after_snapshot(o: &CliOptions, p: &Paths, log: Log<'_>, t: Instan
         atlas_core::jsfs::rm_force(&p.vcs_retention)?;
         log(&format!("vcs: 注意 照合できませんでした({e})。レポートの「AI の変更の残存」は出しません"));
     }
-    run_metrics(p, &f, log)?;
+    // 管理ツールのタスク: XML を読み、機械の紐づけを決め直してから metrics と build に進む(--task の絞り込みと表が同じ紐づけを使う。
+    // 初めての集計で --task を付けても、タスクを知らないとして止まらないように)
+    let refreshed = super::tasks::refresh_for_aggregation(p, o.config.as_deref(), "all", log)?;
+    run_metrics(p, &f, o.config.as_deref(), log)?;
     // セッション記録(.md)も作る
-    let build = run_build(p, &BuildOptions { filter: f, transcripts: Some(TranscriptCli { tool_output: o.tool_output, max_chars: o.max_chars, full: false }), config: o.config.clone() }, log)?;
+    let build = run_build(p, &BuildOptions { filter: f, transcripts: Some(TranscriptCli { tool_output: o.tool_output, max_chars: o.max_chars, full: false }), config: o.config.clone(), refreshed }, log)?;
     log(&format!("all: 完了 {}", elapsed(t)));
     Ok(build)
 }

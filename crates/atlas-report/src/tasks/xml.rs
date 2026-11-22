@@ -1,6 +1,6 @@
 //! 管理ツールが書き出した XML から、タスク(ID・名前・状態)を読む。書き出しの形は管理ツールごとに違うので、読み方は設定で決める。
 //! - タスク 1 件 = 名前(名前空間を除いた名前。大文字と小文字は区別しない)が item の要素。入れ子になっていても、当たる要素はすべてタスク
-//! - 項目(ID・名前・状態)は、その名前の属性か、子の要素の文字。名前の前に @ を付けると属性だけを見る。付けなければ属性、次に子の要素
+//! - 項目(ID・名前・状態)は、その名前の属性か、子の要素の文字。名前の前に @ を付けると属性だけを見る。付けなければ属性、次に子の要素(属性が空なら子の要素)
 //! - DTD は読まない(DOCTYPE があれば読めないものとして止める)。外部の実体も読まない。ファイルの大きさにも上限を置く
 //! - ID が空のタスクは飛ばす。同じ ID が 2 回あれば先のものを使う(数は知らせる)
 
@@ -9,8 +9,8 @@ use std::path::Path;
 
 /// 読む XML の大きさの上限(バイト)
 pub const XML_SIZE_LIMIT: u64 = 64 * 1024 * 1024;
-/// 読む要素などの数の上限(メモリを使い切らないように)
-const NODES_LIMIT: u32 = 20_000_000;
+/// 読む要素・属性・文字などの数の上限(メモリを使い切らないように)。タスク 1 件に数十の節があっても、数万件の書き出しには十分な数
+pub const NODES_LIMIT: u32 = 2_000_000;
 /// 項目の長さの上限(文字。超えた分は切る)
 pub const ID_MAX: usize = 200;
 pub const NAME_MAX: usize = 500;
@@ -112,7 +112,8 @@ fn child_text(node: Node<'_, '_>, name: &str) -> Option<String> {
 fn field_value(node: Node<'_, '_>, f: &Field) -> Option<String> {
     match f {
         Field::Attr(n) => attr(node, n),
-        Field::Either(n) => attr(node, n).or_else(|| child_text(node, n)),
+        // 属性が空(前後の空白だけ)なら子の要素を見る
+        Field::Either(n) => attr(node, n).filter(|v| !v.trim().is_empty()).or_else(|| child_text(node, n)),
     }
 }
 
@@ -235,6 +236,23 @@ mod tests {
         assert_eq!(r.tasks[0].name, "");
         let r = parse_tasks_xml(r#"<r><task><key>B</key></task></r>"#, &spec("task", "@key", "title", "state")).unwrap();
         assert_eq!((r.tasks.len(), r.empty_id), (0, 1));
+    }
+
+    /// 属性が空なら子の要素を見る(@ を付けたときは属性だけ)
+    #[test]
+    fn empty_attribute_falls_back_to_child() {
+        let x = r#"<r><Task Id=" " Name=""><Id>C-1</Id><Name>子の名前</Name></Task></r>"#;
+        let r = parse_tasks_xml(x, &def()).unwrap();
+        assert_eq!((r.tasks[0].id.as_str(), r.tasks[0].name.as_str()), ("C-1", "子の名前"));
+        let r = parse_tasks_xml(x, &spec("Task", "Id", "@Name", "Status")).unwrap();
+        assert_eq!(r.tasks[0].name, "");
+    }
+
+    /// 節の数の上限を超える XML は読まない
+    #[test]
+    fn node_limit() {
+        let many = format!("<r>{}</r>", "<Task Id=\"x\"/>".repeat(NODES_LIMIT as usize + 10));
+        assert!(parse_tasks_xml(&many, &def()).unwrap_err().starts_with("XML として読めません"));
     }
 
     #[test]

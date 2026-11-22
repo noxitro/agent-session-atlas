@@ -1,11 +1,14 @@
 //! タスクの状態(<notes-dir>/tasks.json)。管理ツールの XML を読むたびに更新する。
 //! 観測の時刻は XML のファイルの更新時刻(書き出した時刻)。同じ更新時刻の XML をもう一度読んでも何も変えない。
-//! - 未完了 → 完了: 完了を確認した時刻(doneAt)= その観測の時刻。初めて見たときに完了していたタスクも同じ
+//! - 未完了 → 完了: 完了を確認した時刻(doneAt)= その観測の時刻。完了に変わるのを見た(doneObserved)
+//! - 初めて見たときに完了していたタスク: doneAt はその観測の時刻だが、完了した時刻ではないので doneObserved にしない
+//!   (工数では「完了の時刻が分からない」として比べない)
 //! - 完了 → 未完了(開き直された): doneAt を消す
 //! - XML から消えたタスク: missing にして、最後に見た値を残す(履歴を消さない)
+//! - 前に読んだものより古い XML(更新時刻が前): 何も変えずに注意を出す(古い書き出しで完了を巻き戻さない)
 //!
 //! 完了を確認した時刻は、管理ツールで完了にした時刻ではなく、完了を最初に見た書き出しの時刻(書き出す間隔だけずれる)。
-//! 書き込みは壊れたファイルを上書きしない(直してもらう)。
+//! 書き込みは壊れたファイルを上書きしない(直してもらう)。読んで書く間はファイルのロック(with_file_lock)を持つ。
 
 use super::xml::{read_tasks_file, XmlRead, XmlSpec, XML_SIZE_LIMIT};
 use super::{read_json_file, write_atomic, TaskSource};
@@ -31,6 +34,9 @@ pub struct TaskState {
     /// 最後に読んだ XML に無かった
     #[serde(default)]
     pub missing: bool,
+    /// 未完了から完了に変わるのを見た(doneAt が完了を見た書き出しの時刻)。初めて見たときに完了していたら false
+    #[serde(default)]
+    pub done_observed: bool,
 }
 
 /// 最後に読んだ XML
@@ -115,12 +121,17 @@ pub struct SyncSummary {
     pub went_missing: usize,
     /// 消えていたのに、また出てきた
     pub returned: usize,
+    /// 前に読んだものより古い XML なので、何も変えなかった
+    pub older: bool,
 }
 
 /// 読んだ XML を状態に反映する。stamp が前に読んだものと同じなら何もしない
 pub fn apply_read(f: &mut TasksFile, read: &XmlRead, stamp: TasksStamp, is_done: impl Fn(&str) -> bool) -> SyncSummary {
     if f.source.as_ref() == Some(&stamp) {
         return SyncSummary { unchanged: true, total: read.tasks.len(), ..Default::default() };
+    }
+    if is_older(f, &stamp) {
+        return SyncSummary { unchanged: true, older: true, total: read.tasks.len(), ..Default::default() };
     }
     let obs = stamp.modified_at.clone();
     let mut s = SyncSummary { total: read.tasks.len(), ..Default::default() };
@@ -136,7 +147,7 @@ pub fn apply_read(f: &mut TasksFile, read: &XmlRead, stamp: TasksStamp, is_done:
                 }
                 f.tasks.insert(
                     t.id.clone(),
-                    TaskState { name: t.name.clone(), status: t.status.clone(), done, first_seen_at: obs.clone(), done_at: done.then(|| obs.clone()), last_seen_at: obs.clone(), missing: false },
+                    TaskState { name: t.name.clone(), status: t.status.clone(), done, first_seen_at: obs.clone(), done_at: done.then(|| obs.clone()), last_seen_at: obs.clone(), missing: false, done_observed: false },
                 );
             }
             Some(cur) => {
@@ -146,11 +157,14 @@ pub fn apply_read(f: &mut TasksFile, read: &XmlRead, stamp: TasksStamp, is_done:
                 if done && !cur.done {
                     s.completed += 1;
                     cur.done_at = Some(obs.clone());
+                    cur.done_observed = true;
                 } else if !done && cur.done {
                     s.reopened += 1;
                     cur.done_at = None;
+                    cur.done_observed = false;
                 } else if done && cur.done_at.is_none() {
                     cur.done_at = Some(obs.clone());
+                    cur.done_observed = false;
                 }
                 cur.done = done;
                 cur.name = t.name.clone();
@@ -170,6 +184,12 @@ pub fn apply_read(f: &mut TasksFile, read: &XmlRead, stamp: TasksStamp, is_done:
     s
 }
 
+/// 前に読んだ XML より古いか(更新時刻が前)
+fn is_older(f: &TasksFile, stamp: &TasksStamp) -> bool {
+    let ms = |s: &str| atlas_core::jsdate::parse_ms(s);
+    matches!((f.source.as_ref().and_then(|p| ms(&p.modified_at)), ms(&stamp.modified_at)), (Some(prev), Some(now)) if now < prev)
+}
+
 /// XML を読んで tasks.json を更新した結果
 #[derive(Debug, Clone, PartialEq)]
 pub struct SyncReport {
@@ -183,8 +203,19 @@ fn file_name(p: &Path) -> String {
     p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
-/// 設定の XML を読み、tasks.json を更新する。XML を読めない・tasks.json が壊れているときは理由を返し、何も書かない(前の状態を残す)
+/// 設定の XML を読み、tasks.json を更新する。XML を読めない・tasks.json が壊れているときは理由を返し、何も書かない(前の状態を残す)。
+/// 前に読んだものより古い XML なら何も変えず、注意(notes)を返す。読んで書く間は tasks.json のロックを持つ
 pub fn sync_tasks(source: &TaskSource, state_path: &Path) -> std::result::Result<SyncReport, String> {
+    let mut outcome: Option<std::result::Result<SyncReport, String>> = None;
+    super::with_file_lock(state_path, || {
+        outcome = Some(sync_locked(source, state_path));
+        Ok(())
+    })
+    .map_err(|e| format!("{e:#}"))?;
+    outcome.expect("ロックの中で決めた")
+}
+
+fn sync_locked(source: &TaskSource, state_path: &Path) -> std::result::Result<SyncReport, String> {
     let mut state = load_tasks_for_write(state_path).map_err(|e| e.to_string())?;
     let settings = source.settings_key();
     // 前に読んだときと同じ更新時刻なら、XML を読み直さない
@@ -201,7 +232,17 @@ pub fn sync_tasks(source: &TaskSource, state_path: &Path) -> std::result::Result
     }
     let (read, mtime) = read_tasks_file(&source.file, &XmlSpec::of(source))?;
     let stamp = TasksStamp { file: file_name(&source.file), modified_at: atlas_core::jsdate::to_iso(mtime), settings };
-    let summary = apply_read(&mut state, &read, stamp, |s| source.is_done(s));
+    let prev = state.source.as_ref().map(|p| p.modified_at.clone());
+    let summary = apply_read(&mut state, &read, stamp.clone(), |s| source.is_done(s));
+    if summary.older {
+        let when = |iso: &str| atlas_core::jsdate::parse_ms(iso).map_or_else(|| iso.to_string(), |ms| crate::format::date_time(Some(&atlas_core::jsdate::to_iso(ms)), "-"));
+        let note = format!(
+            "XML の更新時刻({})が、前に読んだもの({})より前です。古い書き出しで状態を戻さないよう、タスクの状態は変えていません",
+            when(&stamp.modified_at),
+            prev.as_deref().map(when).unwrap_or_default()
+        );
+        return Ok(SyncReport { summary, notes: vec![note], state });
+    }
     if !summary.unchanged {
         save_tasks(state_path, &state).map_err(|e| format!("{e:#}"))?;
     }
@@ -235,16 +276,19 @@ mod tests {
         let s = apply_read(&mut f, &read(&[("A", "画面", "Open"), ("B", "初めから完了", "Done")]), stamp(T1), done);
         assert_eq!((s.added, s.completed, s.unchanged), (2, 1, false));
         assert_eq!(f.tasks["A"].done_at, None);
-        // 初めて見たときに完了していたタスクも、その観測の時刻を完了を確認した時刻にする
+        // 初めて見たときに完了していたタスクも、その観測の時刻を完了を確認した時刻にする。ただし完了に変わるのは見ていない
         assert_eq!(f.tasks["B"].done_at.as_deref(), Some(T1));
+        assert!(!f.tasks["B"].done_observed);
         assert_eq!(f.tasks["B"].first_seen_at, T1);
 
         // A が完了になり、B は開き直された。名前の変更も写す
         let s = apply_read(&mut f, &read(&[("A", "画面(改)", "Done"), ("B", "初めから完了", "Open")]), stamp(T2), done);
         assert_eq!((s.completed, s.reopened, s.added), (1, 1, 0));
         assert_eq!(f.tasks["A"].done_at.as_deref(), Some(T2));
+        assert!(f.tasks["A"].done_observed);
         assert_eq!(f.tasks["A"].name, "画面(改)");
         assert_eq!(f.tasks["B"].done_at, None);
+        assert!(!f.tasks["B"].done_observed);
         assert!(!f.tasks["B"].done);
 
         // 完了のまま: 完了を確認した時刻は最初のまま。B は XML から消えた(最後の値を残す)
@@ -261,6 +305,40 @@ mod tests {
         assert_eq!((s.returned, s.completed), (1, 1));
         assert!(!f.tasks["B"].missing);
         assert_eq!(f.tasks["B"].done_at.as_deref(), Some("2026-11-05T09:00:00.000Z"));
+        assert!(f.tasks["B"].done_observed);
+    }
+
+    /// 前に読んだものより古い XML は、状態を変えずに注意を出す
+    #[test]
+    fn older_xml_does_not_roll_back() {
+        let mut f = TasksFile::default();
+        apply_read(&mut f, &read(&[("A", "a", "Done")]), stamp(T2), done);
+        let before = f.clone();
+        let s = apply_read(&mut f, &read(&[("A", "a", "Open"), ("C", "c", "Open")]), stamp(T1), done);
+        assert!(s.older && s.unchanged);
+        assert_eq!(f, before);
+        // 読み方を変えても、古い XML では変えない
+        let s = apply_read(&mut f, &read(&[("A", "a", "Open")]), TasksStamp { settings: "k2".into(), ..stamp(T1) }, done);
+        assert!(s.older);
+        assert_eq!(f, before);
+        // ファイルから: 注意を返し、tasks.json は書かない
+        let d = tempfile::tempdir().unwrap();
+        let xml = d.path().join("export.xml");
+        let state = d.path().join(crate::tasks::TASKS_FILE_NAME);
+        let src = TaskSource::with_file(&xml);
+        std::fs::write(&xml, r#"<Tasks><Task Id="A" Status="Done"/></Tasks>"#).unwrap();
+        let t = 1_795_000_000_000;
+        atlas_core::jsfs::utimes(&xml, t, t).unwrap();
+        sync_tasks(&src, &state).unwrap();
+        let saved = std::fs::read_to_string(&state).unwrap();
+        std::fs::write(&xml, r#"<Tasks><Task Id="A" Status="Open"/></Tasks>"#).unwrap();
+        atlas_core::jsfs::utimes(&xml, t - 3_600_000, t - 3_600_000).unwrap();
+        let r = sync_tasks(&src, &state).unwrap();
+        assert!(r.summary.older);
+        assert!(r.notes[0].contains("前に読んだもの"), "{:?}", r.notes);
+        assert!(r.state.tasks["A"].done);
+        assert_eq!(std::fs::read_to_string(&state).unwrap(), saved);
+        assert!(!crate::tasks::lock_path(&state).exists());
     }
 
     /// e2e でも使う架空の書き出し(前と後)を続けて読む
@@ -287,6 +365,8 @@ mod tests {
             assert_eq!(r.state.tasks[id].done_at.as_deref(), Some(t2s.as_str()), "{id}");
         }
         assert_eq!(r.state.tasks["DEMO-104"].done_at.as_deref(), Some(atlas_core::jsdate::to_iso(t1).as_str()));
+        assert!(!r.state.tasks["DEMO-104"].done_observed);
+        assert!(r.state.tasks["DEMO-101"].done_observed);
         assert!(r.state.tasks["DEMO-106"].missing);
         assert!(!r.state.tasks["DEMO-103"].done);
     }

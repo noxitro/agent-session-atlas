@@ -1485,6 +1485,10 @@ fn tasks_api_and_manual_links() {
     // 工数はその場で数え直す(s2 は 10 分の実働)
     let xy = v["tasks"]["items"].as_array().unwrap().iter().find(|t| t["id"] == "XY-9").unwrap().clone();
     assert_eq!((xy["sessions"].clone(), xy["aiActiveMs"].clone(), xy["excluded"].clone()), (json!(1), json!(600_000), json!("notDone")));
+    // 推定人手工数はレポートと同じゆるい読み方で読む(必須の項目が欠けた判定でも、時間があれば数える)
+    fs::write(e.out.join("judgments.json"), json!({ "schemaVersion": 1, "items": [{ "sessionId": "s2", "humanEffort": { "hours": 3 } }] }).to_string()).unwrap();
+    let xy = e.get("/api/tasks").1["tasks"]["items"].as_array().unwrap().iter().find(|t| t["id"] == "XY-9").unwrap().clone();
+    assert_eq!((xy["humanHours"].clone(), xy["judgedSessions"].clone()), (json!(3), json!(1)));
     // 「どのタスクでもない」
     let (_, v) = put("s2", json!({ "taskId": null }), true);
     assert_eq!(v["tasks"]["links"]["s2"]["taskId"], Value::Null);
@@ -1496,6 +1500,14 @@ fn tasks_api_and_manual_links() {
     assert_eq!(v["tasks"]["links"]["s1"], json!({ "taskId": "ABC-12", "source": "machine", "reason": "ID が題名にある" }));
     let (_, v) = put("s2", json!({ "auto": true }), true);
     assert!(v["tasks"]["links"].get("s2").is_none());
+    // LLM の紐づけも自動に戻せる(機械の紐づけを決め直す)
+    let links_path = e.notes.join("task-links.json");
+    let mut saved = js::parse_json(&fs::read_to_string(&links_path).unwrap()).unwrap();
+    saved["links"]["s1"] = json!({ "taskId": "XY-9", "source": "llm", "reason": "LLM", "confidence": 0.7, "at": "t" });
+    fs::write(&links_path, saved.to_string()).unwrap();
+    let (st, v) = put("s1", json!({ "auto": true }), true);
+    assert_eq!(st, 200);
+    assert_eq!(v["tasks"]["links"]["s1"]["source"], "machine");
     // 形の違うもの
     assert_eq!(put("s1", json!({ "taskId": "NOPE" }), true).0, 400);
     assert_eq!(put("s1", json!({ "taskId": 1 }), true).0, 400);
@@ -1522,9 +1534,9 @@ fn tasks_api_without_config_and_read_only() {
     // 送り先から集計した出力先: 送った人がセッションごとに添えた記録から作り、紐づけは書き換えない
     let meta = e.out.join("snapshot").join("session-state").join("s1");
     fs::create_dir_all(&meta).unwrap();
-    fs::write(meta.join("atlas-session.json"), json!({ "version": 1, "id": "s1", "task": { "id": "T-1", "name": "送った人のタスク", "status": "Done", "done": true, "doneAt": "2026-11-24T03:00:00Z", "source": "llm", "reason": "r" } }).to_string()).unwrap();
+    fs::write(meta.join("atlas-session.json"), json!({ "version": 1, "id": "s1", "task": { "id": "T-1", "name": "送った人のタスク", "status": "Done", "done": true, "doneAt": "2026-11-20T03:00:00Z", "source": "llm", "reason": "r" } }).to_string()).unwrap();
     sleep(20);
-    fs::write(e.out.join("sessions.json"), json!({ "source": { "root": "x", "since": null, "layout": "merged" }, "sessions": [{ "id": "s1", "turns": 0, "createdAt": "2026-11-23T01:00:00Z" }] }).to_string()).unwrap();
+    fs::write(e.out.join("sessions.json"), json!({ "source": { "root": "x", "since": null, "layout": "merged" }, "sessions": [{ "id": "s1", "turns": 0, "createdAt": "2026-11-19T01:00:00Z" }] }).to_string()).unwrap();
     let v = e.get("/api/tasks").1;
     assert_eq!(v["readOnly"], true);
     assert_eq!(v["tasks"]["origin"], "sender");

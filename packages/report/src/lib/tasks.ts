@@ -6,8 +6,15 @@ import type { TaskExcluded, TaskLinkSource, TasksReport } from './types.ts';
 export const LINK_SOURCE_LABEL: Record<TaskLinkSource, string> = { machine: '機械', llm: 'LLM', manual: '手動' };
 
 /** 比べられるタスクから外した理由(Rust の Excluded::label と同じ言葉。並びは理由を決める順) */
-export const TASK_EXCLUDED: TaskExcluded[] = ['notDone', 'noStart', 'unjudged', 'lowConfidence'];
-export const TASK_EXCLUDED_LABEL: Record<TaskExcluded, string> = { notDone: '未完了', noStart: '開始が分からない', unjudged: '判定なし', lowConfidence: '確度が低い' };
+export const TASK_EXCLUDED: TaskExcluded[] = ['notDone', 'doneUnobserved', 'afterDone', 'noStart', 'unjudged', 'lowConfidence'];
+export const TASK_EXCLUDED_LABEL: Record<TaskExcluded, string> = {
+  notDone: '未完了',
+  doneUnobserved: '完了の時刻が分からない',
+  afterDone: '完了の後に始まったセッション',
+  noStart: '開始が分からない',
+  unjudged: '判定なし',
+  lowConfidence: '確度が低い',
+};
 
 const DAY = ['', '月', '火', '水', '木', '金', '土', '日'];
 

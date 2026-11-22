@@ -119,10 +119,11 @@ pub fn parse_task_link(texts: &[String], q: &LinkQuery) -> Result<LlmLink> {
     bail!("応答の JSON が形式に合いません: {}", problems.into_iter().take(4).collect::<Vec<_>>().join(" / "))
 }
 
-/// 1 セッションを LLM に問い合わせる。候補が無ければ問い合わせずに「どれでもない」
+/// 1 セッションを LLM に問い合わせる。候補が無ければ問い合わせない(呼ぶ側は何も書かずに飛ばす。
+/// 「どのタスクでもない」と書くと、後でタスクが増えても聞き直さなくなるため)
 pub fn link_with_llm(backend: &dyn JudgeBackend, q: &LinkQuery) -> Result<LlmLink> {
     if q.candidates.is_empty() {
-        return Ok(LlmLink { task_id: None, confidence: 1.0, reason: "候補のタスクがありません".into() });
+        bail!("候補のタスクがありません");
     }
     if !backend.can_ask() {
         bail!("{} ではタスクの紐づけを回せません(GitHub Copilot CLI を使ってください)", backend.name());
@@ -193,10 +194,9 @@ mod tests {
         assert!(e.contains("候補に無い ID"), "{e}");
         assert!(link_with_llm(&f("{\"taskId\": \"T-1\", \"confidence\": 2}"), &q()).unwrap_err().to_string().contains("confidence"));
         assert!(link_with_llm(&f("わかりません"), &q()).unwrap_err().to_string().contains("JSON がありません"));
-        // 候補が無ければ問い合わせない
+        // 候補が無ければ問い合わせない(答えも作らない)
         let fake = f("x");
-        let r = link_with_llm(&fake, &LinkQuery { candidates: vec![], ..q() }).unwrap();
-        assert_eq!(r.task_id, None);
+        assert!(link_with_llm(&fake, &LinkQuery { candidates: vec![], ..q() }).unwrap_err().to_string().contains("候補のタスクがありません"));
         assert!(fake.prompts.lock().unwrap().is_empty());
     }
 }

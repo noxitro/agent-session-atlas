@@ -344,7 +344,7 @@ fn task_records_are_attached() {
     assert!(meta("s1").get("task").is_none());
     fs::write(
         e.notes.join("tasks.json"),
-        json!({ "version": 1, "tasks": { "T-1": { "name": "画面の | 修正", "status": "Done", "done": true, "firstSeenAt": "a", "doneAt": "2026-11-22T00:00:00.000Z", "lastSeenAt": "a" } } }).to_string(),
+        json!({ "version": 1, "tasks": { "T-1": { "name": "画面の | 修正", "status": "Done", "done": true, "firstSeenAt": "a", "doneAt": "2026-11-22T00:00:00.000Z", "lastSeenAt": "2026-11-22T00:00:00.000Z", "doneObserved": true } } }).to_string(),
     )
     .unwrap();
     fs::write(
@@ -355,7 +355,7 @@ fn task_records_are_attached() {
     let r = up(&p, &e.root);
     assert_eq!((r.uploaded, r.unchanged), (0, 2));
     let t = &meta("s1")["task"];
-    assert_eq!(t, &json!({ "id": "T-1", "name": "画面の | 修正", "status": "Done", "done": true, "doneAt": "2026-11-22T00:00:00.000Z", "start": "2026-11-20T01:00:00.000Z", "source": "machine", "reason": "ID が題名にある" }));
+    assert_eq!(t, &json!({ "id": "T-1", "name": "画面の | 修正", "status": "Done", "done": true, "doneAt": "2026-11-22T00:00:00.000Z", "doneObserved": true, "lastSeenAt": "2026-11-22T00:00:00.000Z", "start": "2026-11-20T01:00:00.000Z", "source": "machine", "reason": "ID が題名にある" }));
     // 「どのタスクでもない」は添えない
     assert!(meta("s2").get("task").is_none());
     let index = js::parse_json(&fs::read_to_string(dir.join("atlas-index.json")).unwrap()).unwrap();

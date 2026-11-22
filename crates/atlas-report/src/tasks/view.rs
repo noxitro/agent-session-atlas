@@ -51,6 +51,8 @@ pub struct TasksView {
     /// セッション id → 紐づけ(このレポートのセッションだけ。task_id が null は「どのタスクでもない」)
     pub links: IndexMap<String, LinkView>,
     pub summary: TaskSummary,
+    /// 絞り込んだセッション(--task・--session・--since など)だけで作った。serve の画面は、絞り込まない GET /api/tasks の値で置き換えない
+    pub scoped: bool,
 }
 
 /// セッションの工数に使う値。human はセッション id → (推定人手工数, 確信度)
@@ -100,7 +102,7 @@ pub fn local_view(i: LocalInputs<'_>) -> Option<TasksView> {
         .tasks
         .iter()
         .filter(|(id, t)| !t.missing || linked.contains(id.as_str()))
-        .map(|(id, t)| TaskInfo { id: id.clone(), name: t.name.clone(), status: t.status.clone(), done: t.done, done_at: t.done_at.clone(), missing: t.missing, start_hint: None })
+        .map(|(id, t)| TaskInfo { id: id.clone(), name: t.name.clone(), status: t.status.clone(), done: t.done, done_at: t.done_at.clone(), done_observed: t.done_observed, missing: t.missing, start_hint: None })
         .collect();
     let (items, summary) = compute_task_metrics(&tasks, &pairs, i.facts, i.work_hours);
     Some(TasksView {
@@ -113,6 +115,7 @@ pub fn local_view(i: LocalInputs<'_>) -> Option<TasksView> {
         items,
         links,
         summary,
+        scoped: false,
     })
 }
 
@@ -126,7 +129,7 @@ pub fn sender_view(per_session: &[(String, SenderTask)], shown: &[&str], facts: 
     let (tasks, pairs) = tasks_from_senders(&mine);
     let links: IndexMap<String, LinkView> = mine.iter().map(|(sid, t)| (sid.clone(), LinkView { task_id: Some(t.id.clone()), source: t.source, reason: t.reason.clone(), confidence: None })).collect();
     let (items, summary) = compute_task_metrics(&tasks, &pairs, facts, work_hours);
-    Some(TasksView { configured, origin: "sender", file: None, observed_at: None, work_hours: work_hours.into(), warnings: vec![], items, links, summary })
+    Some(TasksView { configured, origin: "sender", file: None, observed_at: None, work_hours: work_hours.into(), warnings: vec![], items, links, summary, scoped: false })
 }
 
 /// セッション id → タスク id(--task の絞り込みと、表の列に使う)
@@ -147,7 +150,7 @@ mod tests {
     }
 
     fn ts(name: &str, missing: bool) -> TaskState {
-        TaskState { name: name.into(), status: "Open".into(), done: false, first_seen_at: "t".into(), done_at: None, last_seen_at: "t".into(), missing }
+        TaskState { name: name.into(), status: "Open".into(), done: false, first_seen_at: "t".into(), done_at: None, last_seen_at: "t".into(), missing, done_observed: false }
     }
 
     #[test]
@@ -181,7 +184,7 @@ mod tests {
     #[test]
     fn sender_view_uses_only_shown_sessions() {
         let a = rec("s1", "2026-11-23T01:00:00Z");
-        let t = SenderTask { id: "T".into(), name: "n".into(), status: "Open".into(), done: false, done_at: None, start: None, source: LinkSource::Llm, reason: "r".into() };
+        let t = SenderTask { id: "T".into(), name: "n".into(), status: "Open".into(), done: false, done_at: None, done_observed: false, last_seen_at: None, start: None, source: LinkSource::Llm, reason: "r".into() };
         let per = vec![("s1".to_string(), t.clone()), ("hidden".to_string(), SenderTask { id: "U".into(), ..t })];
         let facts = session_facts(&[&a], &HashMap::new());
         let v = sender_view(&per, &["s1"], &facts, &WorkHours::default(), false).unwrap();

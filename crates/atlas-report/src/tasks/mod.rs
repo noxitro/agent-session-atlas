@@ -112,6 +112,52 @@ pub(crate) fn write_atomic(path: &Path, text: &str) -> Result<()> {
     Ok(())
 }
 
+/// ロックを取れるまで待つ長さ(ms)と、落ちた処理が残したロックとみなす古さ(ms)。
+/// ロックを持つのは読んで・直して・書くまでの短い間だけ(LLM の問い合わせの間は持たない)
+const LOCK_WAIT_MS: u128 = 15_000;
+const LOCK_STALE_MS: f64 = 30_000.0;
+
+/// <file>.lock
+pub fn lock_path(path: &Path) -> PathBuf {
+    let mut s = path.as_os_str().to_owned();
+    s.push(".lock");
+    PathBuf::from(s)
+}
+
+/// <file>.lock を排他で作り、f の間だけ持つ(serve の画面・LLM で紐づけるジョブの子プロセス・集計が、同じファイルを同時に読んで書かないように)。
+/// 書き手は、このロックの中で読み直してから自分の変更だけを足して書く。落ちた処理が残した古いロックは消して取り直す
+pub fn with_file_lock<T>(path: &Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    let lock = lock_path(path);
+    if let Some(dir) = lock.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir).with_context(|| format!("{} を作れません", dir.display()))?;
+    }
+    let started = std::time::Instant::now();
+    loop {
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&lock) {
+            Ok(_) => break,
+            // Windows では、消したばかりのロックを同じ名前で作ると一時的に拒否されることがある(少し待ってやり直す)
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && cfg!(windows) => {}
+            Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => return Err(e).with_context(|| format!("{} を作れません", lock.display())),
+            Err(_) => {
+                if let Ok(m) = std::fs::metadata(&lock)
+                    && atlas_core::jsdate::now_ms() as f64 - atlas_core::jsfs::mtime_ms(&m) > LOCK_STALE_MS
+                {
+                    let _ = std::fs::remove_file(&lock);
+                    continue;
+                }
+            }
+        }
+        if started.elapsed().as_millis() > LOCK_WAIT_MS {
+            anyhow::bail!("{} を別の処理が書き換えています({})。少し待ってからやり直してください", path.display(), lock.display());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(15));
+    }
+    let r = f();
+    // 消せなくても書いたことは失敗にしない(残ったロックは古くなれば次の書き手が消す)
+    let _ = std::fs::remove_file(&lock);
+    r
+}
+
 /// JSON のファイルを読む(無ければ None。BOM は取り除く)。読めなければ理由
 pub(crate) fn read_json_file(path: &Path) -> std::result::Result<Option<serde_json::Value>, String> {
     let bytes = match std::fs::read(path) {
@@ -137,6 +183,39 @@ mod tests {
         assert!(!s.is_done("Done!"));
         assert!(!s.is_done("未完了"));
         assert!(!s.is_done(""));
+    }
+
+    /// ロックの中の読み・直し・書きは重ならない(別の書き手の変更を消さない)。落ちた処理が残した古いロックは取り直す
+    #[test]
+    fn file_lock_serializes_writers_and_takes_over_stale_locks() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("n.txt");
+        std::fs::write(&p, "0").unwrap();
+        std::thread::scope(|s| {
+            for _ in 0..8 {
+                s.spawn(|| {
+                    for _ in 0..5 {
+                        with_file_lock(&p, || {
+                            let n: u32 = std::fs::read_to_string(&p)?.parse()?;
+                            std::thread::sleep(std::time::Duration::from_millis(1));
+                            std::fs::write(&p, (n + 1).to_string())?;
+                            Ok(())
+                        })
+                        .unwrap();
+                    }
+                });
+            }
+        });
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "40");
+        assert!(!lock_path(&p).exists());
+        std::fs::write(lock_path(&p), "").unwrap();
+        let old = atlas_core::jsdate::now_ms() - 120_000;
+        atlas_core::jsfs::utimes(&lock_path(&p), old, old).unwrap();
+        assert_eq!(with_file_lock(&p, || Ok(7)).unwrap(), 7);
+        assert!(!lock_path(&p).exists());
+        // f が失敗してもロックは外す
+        assert!(with_file_lock(&p, || -> Result<()> { anyhow::bail!("x") }).is_err());
+        assert!(!lock_path(&p).exists());
     }
 
     #[test]

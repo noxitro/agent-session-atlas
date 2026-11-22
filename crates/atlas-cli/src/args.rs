@@ -600,8 +600,8 @@ pub fn parse_cli(argv: &[String]) -> Result<CliOptions, UsageError> {
             return err("--force は tasks では使えません");
         }
     }
-    if values.has("config") && !matches!(cmd.as_str(), "extract" | "vcs" | "all" | "serve" | "open" | "tasks") {
-        return err("--config は extract・vcs・all・serve・open・tasks でだけ使えます");
+    if values.has("config") && !matches!(cmd.as_str(), "extract" | "vcs" | "metrics" | "all" | "serve" | "open" | "tasks") {
+        return err("--config は extract・vcs・metrics・all・serve・open・tasks でだけ使えます");
     }
     if let Some(since) = values.s("since") {
         if atlas_core::jsdate::parse_ms(since).is_none() {
@@ -729,6 +729,8 @@ mod tests {
         assert_eq!(t.tasks_cmd, Some(TasksCliOptions { action: "link".into(), llm: true, timeout_sec: 600 }));
         assert_eq!(t.sessions, Some(vec!["ab".into()]));
         assert_eq!(p(&["tasks", "sync", "--config", "c.json"]).unwrap().config.as_deref(), Some("c.json"));
+        assert_eq!(p(&["metrics", "--config", "c.json"]).unwrap().config.as_deref(), Some("c.json"));
+        assert!(p(&["build", "--config", "c.json"]).unwrap_err().0.starts_with("--config は extract・vcs・metrics"));
         assert_eq!(p(&["tasks"]).unwrap_err().0, "tasks の後に sync / list / link を指定してください");
         assert!(p(&["tasks", "nope"]).unwrap_err().0.starts_with("tasks の不明な操作です"));
         assert_eq!(p(&["tasks", "list", "--session", "a"]).unwrap_err().0, "--session は tasks link でだけ使えます");

@@ -207,7 +207,8 @@ pub fn select_from(p: &Paths, file: SessionsFile, f: &SessionFilter, cmd: &str, 
 }
 
 /// out/tables/ に表も書く
-pub fn run_metrics(p: &Paths, f: &SessionFilter, log: Log<'_>) -> Result<MetricsFile> {
+/// config は設定ファイル(--config。無ければ環境変数 ATLAS_CONFIG かリポジトリ直下)。管理ツールのタスクの表(tasks.csv)の稼働時間帯に使う
+pub fn run_metrics(p: &Paths, f: &SessionFilter, config: Option<&str>, log: Log<'_>) -> Result<MetricsFile> {
     let sel = select_sessions(p, f, "metrics", "先に atlas extract を実行してください。", log)?;
     let sessions = sel.sessions();
     let m = compute_metrics(&sessions, sel.file.installed.as_ref());
@@ -224,18 +225,10 @@ pub fn run_metrics(p: &Paths, f: &SessionFilter, log: Log<'_>) -> Result<Metrics
     if let Some(s) = &m.installed_skills {
         log(&format!("metrics: インストール済みで未使用の skill {} / {} 件", s.unused.len(), s.installed.len()));
     }
-    let cfg = super::tasks::load_task_config(None);
-    let tasks = super::tasks::build_view(p, &cfg, super::tasks::is_read_only(p, &sel.file), &sel.file.sessions, &sessions, None, &judgment_hours(p));
+    let cfg = super::tasks::load_task_config(config);
+    let tasks = super::tasks::build_view(p, &cfg, super::tasks::is_read_only(p, &sel.file), &sel.file.sessions, &sessions, None, &super::tasks::judgment_hours(&p.judgments));
     write_tables(p, &sessions, tasks.as_ref(), "metrics", log)?;
     Ok(m)
-}
-
-/// 推定人手工数(judgments.json。読めなければ空。読めないことは表の列と同じく build_tables が知らせる)
-fn judgment_hours(p: &Paths) -> std::collections::HashMap<String, (f64, Option<f64>)> {
-    match atlas_judge::judgments_io::read_judgments(&p.judgments) {
-        Ok(Some(j)) => j.items.iter().map(|i| (i.session_id.clone(), (i.human_effort.hours, Some(i.human_effort.confidence)))).collect(),
-        _ => std::collections::HashMap::new(),
-    }
 }
 
 /// sessions.csv(と SQLite の sessions)に足す、タスクの列(推定人手工数の列の後ろ)

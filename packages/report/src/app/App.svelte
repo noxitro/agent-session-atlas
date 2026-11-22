@@ -56,7 +56,8 @@
    * 値はすべて集計(Rust)が決めたもので、ここでは数え直さない。紐づけは絞り込み(filter.task)と一覧の 1 行に使う
    */
   let liveTasks = $state<TasksPayload | null>(null);
-  const tasks = $derived<TasksReport | null>(liveTasks ? liveTasks.tasks : (data?.tasks ?? null));
+  // 絞り込んだセッション(--task など)だけで作ったレポートは、絞り込まない API の値で置き換えない(埋め込みのまま)
+  const tasks = $derived<TasksReport | null>(liveTasks && !data?.tasks?.scoped ? liveTasks.tasks : (data?.tasks ?? null));
   const taskMap = $derived(taskOf(tasks?.links));
   const taskNames = $derived(new Map((tasks?.items ?? []).map((t) => [t.id, t.name || t.id])));
 

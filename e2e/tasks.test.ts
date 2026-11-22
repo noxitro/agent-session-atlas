@@ -239,4 +239,18 @@ describe('管理ツールのタスク(XML の読み込み・紐づけ・工数)'
     expect(existsSync(join(WORK, 'notes-received', 'tasks.json'))).toBe(false);
     expect((await readdir(dest)).sort()).toContain(S_FIX);
   });
+
+  it('g. 初めての集計でも all --task で絞れる(タスクの処理は metrics の前)。初めから完了のタスクは完了の時刻が分からないとして比べない', async () => {
+    const out3 = join(WORK, 'out-first');
+    const notes3 = join(WORK, 'notes-first');
+    const r = atlas(['all', '--home', home, '--out', out3, '--notes-dir', notes3, '--task', 'DEMO-101']);
+    expect(r.status, r.out).toBe(0);
+    expect(r.out).toContain('task=DEMO-101(紐づいたセッション 1 件)');
+    const state = await readJson<{ tasks: Record<string, { done: boolean; doneObserved?: boolean }> }>(join(notes3, 'tasks.json'));
+    expect(state.tasks['DEMO-101']).toMatchObject({ done: true, doneObserved: false });
+    const t = row(await tasksCsv(out3), 'DEMO-101');
+    expect(t).toMatchObject({ 完了: '1', '稼働時間帯の工数(時間)': '', 比べられる: '0', 比べない理由: '完了の時刻が分からない' });
+    // 絞って作ったレポートは scoped(serve の画面は API の値で置き換えない)
+    expect((await embedded(out3))?.scoped).toBe(true);
+  });
 });

@@ -68,7 +68,7 @@
                      (%TEMP% と AppData\Local\Temp・/tmp のパターン)を使わない
   --snapshot-all     snapshot: 既定で写さない大きなもの(rewind-snapshots、一覧に無い名前のもの、logs/)も写す
   --snapshot-prune   snapshot: 前回 --snapshot-all で写したが今回は写さないものを消す(既定は残して manifest に日時を出す)
-  --config <file>    extract・vcs・all・serve・open・tasks: 設定ファイル(wiki の vault・アップロード先・タスクの指定)の場所
+  --config <file>    extract・vcs・metrics・all・serve・open・tasks: 設定ファイル(wiki の vault・アップロード先・タスクの指定)の場所
                      (既定: 環境変数 ATLAS_CONFIG、無ければリポジトリ直下の atlas.config.json)
   --vcs-mode <v>     vcs・all: 比べる版をどこで見るか。worktree(既定、今の作業ツリー)/ committed(最後に取り込んだ版)/
                      fixed(セッションの終わりから決まった日数後の版。日数は設定の vcs.lagDays、既定 7)

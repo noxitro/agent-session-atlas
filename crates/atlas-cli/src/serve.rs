@@ -1452,26 +1452,25 @@ impl Server {
             Err(e) => crate::commands::tasks::TaskConfig { source: None, error: Some(format!("{e:#}")) },
         };
         let ix = self.session_index()?;
-        let human: HashMap<String, (f64, Option<f64>)> = match atlas_judge::judgments_io::read_judgments(&self.out_dir.join("judgments.json")) {
-            Ok(Some(j)) => j.items.iter().map(|i| (i.session_id.clone(), (i.human_effort.hours, Some(i.human_effort.confidence)))).collect(),
-            _ => HashMap::new(),
-        };
+        // 推定人手工数はレポート(build)と同じ読み方で、セッションの値は sessions.json の同じ項目(createdAt・activeMs)から。数えるのも同じ関数
+        let human = crate::commands::tasks::judgment_hours(&self.out_dir.join("judgments.json"));
         let ids: Vec<&str> = ix.as_ref().map(|ix| ix.ids.keys().map(String::as_str).collect()).unwrap_or_default();
         let facts: HashMap<String, atlas_report::tasks::metrics::SessionFacts> = ix
             .as_ref()
             .map(|ix| ix.ids.iter().map(|(id, e)| (id.clone(), atlas_report::tasks::metrics::SessionFacts { start_ms: e.start_ms, active_ms: e.active_ms, human: human.get(id).copied() })).collect())
             .unwrap_or_default();
-        let view = if read_only {
-            let dir = self.out_dir.join("snapshot").join("session-state");
-            let per: Vec<(String, atlas_report::tasks::sender::SenderTask)> =
-                ids.iter().filter_map(|id| atlas_report::tasks::sender::read_sender_task(&dir.join(id).join(atlas_core::snapshot::UPLOAD_SESSION_META), id).map(|t| (id.to_string(), t))).collect();
-            atlas_report::tasks::view::sender_view(&per, &ids, &facts, &cfg.work_hours(), cfg.source.is_some())
-        } else {
-            let st = atlas_report::tasks::state::load_tasks(&atlas_report::tasks::tasks_path(&self.notes_abs));
-            let li = atlas_report::tasks::links::load_links(&atlas_report::tasks::task_links_path(&self.notes_abs));
-            let warnings: Vec<String> = st.warnings.iter().chain(&li.warnings).chain(&cfg.error).cloned().collect();
-            atlas_report::tasks::view::local_view(atlas_report::tasks::view::LocalInputs { configured: cfg.source.is_some(), state: &st.file, links: &li.file, shown: &ids, facts: &facts, work_hours: &cfg.work_hours(), warnings })
-        };
+        let snapshot = self.out_dir.join("snapshot");
+        let view = crate::commands::tasks::tasks_view(crate::commands::tasks::ViewInputs {
+            notes: &self.notes_abs,
+            snapshot: &snapshot,
+            cfg: &cfg,
+            read_only,
+            all: &ids,
+            shown: &ids,
+            facts: &facts,
+            refreshed: None,
+            scoped: false,
+        });
         // LLM で紐づける前の確認に出す数: 依頼の記録があって、紐づけの無いセッション(tasks link --llm が聞くもの)
         let unresolved = match (&view, &ix) {
             (Some(v), Some(ix)) if !read_only => ix.ids.iter().filter(|(id, e)| e.eligible && !v.links.contains_key(id.as_str())).count(),
@@ -1523,19 +1522,23 @@ impl Server {
             {
                 return Err(HttpError::new(400, format!("タスク「{t}」はありません(管理ツールの XML を読み直すと出ることがあります)")));
             }
+            // 自動に戻すときの機械の紐づけに使う文は、ロックを取る前に読む(ロックは短く持つ)
+            let text = if auto { self.session_text(&id)? } else { None };
             let links_path = atlas_report::tasks::task_links_path(&self.notes_abs);
-            let mut links = atlas_report::tasks::links::load_links_for_write(&links_path).map_err(|e| HttpError::new(409, format!("{e:#}")))?;
             let now = atlas_core::jsdate::now_iso();
-            if auto {
-                links.links.shift_remove(&id);
-                // 機械の紐づけをすぐ決め直す(LLM の紐づけは頼んだときだけ)
-                if let Some(text) = self.session_text(&id)? {
-                    atlas_report::tasks::links::apply_machine(&mut links, std::slice::from_ref(&text), &state.file, &now);
+            // LLM で紐づけるジョブ(別のプロセス)や集計と重ならないよう、ファイルのロックの中で読み直して、このセッションの分だけを直す
+            atlas_report::tasks::links::update_links(&links_path, |links| {
+                if auto {
+                    // 手動でも LLM でも、紐づけを外して機械の紐づけをすぐ決め直す(LLM には頼んだときだけ聞く)
+                    links.links.shift_remove(&id);
+                    if let Some(text) = &text {
+                        atlas_report::tasks::links::apply_machine(links, std::slice::from_ref(text), &state.file, &now);
+                    }
+                } else {
+                    links.links.insert(id.clone(), atlas_report::tasks::links::TaskLink { task_id: task, source: atlas_report::tasks::links::LinkSource::Manual, reason: String::new(), confidence: None, at: now });
                 }
-            } else {
-                links.links.insert(id.clone(), atlas_report::tasks::links::TaskLink { task_id: task, source: atlas_report::tasks::links::LinkSource::Manual, reason: String::new(), confidence: None, at: now });
-            }
-            atlas_report::tasks::links::save_links(&links_path, &links).map_err(|e| HttpError::new(500, format!("{e:#}")))?;
+            })
+            .map_err(|e| HttpError::new(409, format!("{e:#}")))?;
         }
         Ok(send_json(200, &self.tasks_payload()?))
     }

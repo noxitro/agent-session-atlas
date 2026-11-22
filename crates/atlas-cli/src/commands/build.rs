@@ -40,6 +40,8 @@ pub struct BuildOptions {
     pub transcripts: Option<TranscriptCli>,
     /// 設定ファイル(--config。無ければ環境変数 ATLAS_CONFIG かリポジトリ直下)。管理ツールのタスクの読み方に使う
     pub config: Option<String>,
+    /// all が metrics の前に済ませたタスクの処理(あれば、build では XML を読み直さない)
+    pub refreshed: Option<super::tasks::Refreshed>,
 }
 
 /// レポートで見るフォルダごとの記録。絞り込んだときは、対象のセッションを数えたフォルダだけにする
@@ -80,7 +82,11 @@ pub fn run_build(p: &Paths, o: &BuildOptions, log: Log<'_>) -> Result<BuildResul
     let read_only = super::tasks::is_read_only(p, &file);
     // 管理ツールのタスク: XML を読んで状態を更新し、機械の紐づけを決め直す(--task の絞り込みより前に。読むだけの画面では送った人の記録を使う)
     let task_cfg = super::tasks::load_task_config(o.config.as_deref());
-    let refreshed = if read_only { None } else { Some(super::tasks::refresh_tasks(p, &task_cfg, &file.sessions, cmd, log)) };
+    let refreshed = match (&o.refreshed, read_only) {
+        (_, true) => None,
+        (Some(r), false) => Some(r.clone()),
+        (None, false) => Some(super::tasks::refresh_tasks(p, &task_cfg, &file.sessions, cmd, log)),
+    };
     let sel = select_from(p, file, &o.filter, cmd, log)?;
     let s: &SessionsFile = &sel.file;
     let sessions = sel.sessions();

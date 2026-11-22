@@ -323,7 +323,7 @@ export interface ReportData {
 export type TaskLinkSource = 'machine' | 'llm' | 'manual';
 
 /** 比べられるタスクから外した理由 */
-export type TaskExcluded = 'notDone' | 'noStart' | 'unjudged' | 'lowConfidence';
+export type TaskExcluded = 'notDone' | 'doneUnobserved' | 'afterDone' | 'noStart' | 'unjudged' | 'lowConfidence';
 
 /** タスク 1 件の値(Rust の tasks::metrics::TaskRow。画面は出すだけ) */
 export interface TaskRow {
@@ -333,11 +333,13 @@ export interface TaskRow {
   done: boolean;
   /** 完了を確認した時刻(完了を最初に見た XML の更新時刻) */
   doneAt: string | null;
+  /** 未完了から完了に変わるのを見た(初めて見たときに完了していたら false。工数を数えない) */
+  doneObserved: boolean;
   /** 最後に読んだ XML に無かった */
   missing: boolean;
-  /** 紐づいたセッションのうち最も早い開始 */
+  /** 紐づいたセッションのうち最も早い開始(完了を確認した時刻より後に始まったセッションは使わない) */
   start: string | null;
-  /** AI を使った場合の工数(稼働時間帯のミリ秒)。完了していなければ null */
+  /** AI を使った場合の工数(稼働時間帯のミリ秒)。完了に変わるのを見ていなければ null */
   workMs: number | null;
   /** AI の実働(ミリ秒) */
   aiActiveMs: number;
@@ -347,6 +349,8 @@ export interface TaskRow {
   judgedSessions: number;
   lowConfidenceSessions: number;
   unjudgedSessions: number;
+  /** 完了を確認した時刻より後に始まったセッションの数(手動か LLM の紐づけ) */
+  afterDoneSessions: number;
   links: { machine: number; llm: number; manual: number };
   comparable: boolean;
   excluded: TaskExcluded | null;
@@ -357,7 +361,7 @@ export interface TaskSummary {
   tasks: number;
   doneTasks: number;
   included: number;
-  excluded: { notDone: number; noStart: number; unjudged: number; lowConfidence: number };
+  excluded: { notDone: number; doneUnobserved: number; afterDone: number; noStart: number; unjudged: number; lowConfidence: number };
   workMs: number;
   humanHours: number;
   aiActiveMs: number;
@@ -386,6 +390,8 @@ export interface TasksReport {
   /** セッション id → 紐づけ */
   links: Record<string, TaskLinkView>;
   summary: TaskSummary;
+  /** 絞り込んだセッション(--task など)だけで作った。serve の画面は、絞り込まない GET /api/tasks の値で置き換えない */
+  scoped?: boolean;
 }
 
 /** Phase 12: スキル化の候補(埋め込み用。lib/insights.ts の Candidate と同じ形) */

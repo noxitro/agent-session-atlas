@@ -118,7 +118,7 @@ pub fn run_command(o: &CliOptions, p: &Paths, log: Log<'_>) -> Result<RunResult>
             Ok(RunResult::default())
         }
         "metrics" => {
-            metrics::run_metrics(p, &metrics::SessionFilter::from_cli(o), log)?;
+            metrics::run_metrics(p, &metrics::SessionFilter::from_cli(o), o.config.as_deref(), log)?;
             Ok(RunResult::default())
         }
         "vcs" => {
@@ -127,7 +127,7 @@ pub fn run_command(o: &CliOptions, p: &Paths, log: Log<'_>) -> Result<RunResult>
         }
         "build" | "export" => {
             let transcripts = (o.command == "export").then(|| build::TranscriptCli { tool_output: o.tool_output, max_chars: o.max_chars, full: o.full });
-            let b = build::run_build(p, &build::BuildOptions { filter: metrics::SessionFilter::from_cli(o), transcripts, config: o.config.clone() }, log)?;
+            let b = build::run_build(p, &build::BuildOptions { filter: metrics::SessionFilter::from_cli(o), transcripts, config: o.config.clone(), refreshed: None }, log)?;
             Ok(RunResult { build: Some(b), ..RunResult::default() })
         }
         "bundle" => {

@@ -2,12 +2,16 @@
 //! 紐づけの出所は 3 つ。手動(画面で選んだもの)> LLM(頼んだときだけ判定)> 機械(集計のたびに決め直す)の順に優先する。
 //! 機械の紐づけ(決まった規則。LLM は使わない):
 //! - セッションの題名と、依頼の文(最初の依頼と、記録した各依頼の先頭)から探す。VCS のコミットの文は見ない
-//! - タスクの ID: 前後が英数字でない所に、ID がそのまま出てくる(日本語の文字は区切りとみなす。2 文字未満の ID は探さない)
+//! - タスクの ID: 前後が英数字でない所に、ID がそのまま出てくる(日本語の文字は区切りとみなす。2 文字未満の ID は探さない)。
+//!   数字だけの ID は、前に # を付けて書いたもの(#101)だけを探す(ただの数字は件数や番号に当たりすぎる)
 //! - タスクの名前: 正規化(NFKC・小文字・空白をまとめる)した文の中に、正規化した名前が出てくる(4 文字未満の名前は探さない)
+//! - 当たりが重なるときは長い方だけを使う(DEMO-102-1 の中の DEMO-102、長い名前の中の短い名前は数えない)
 //! - 候補は、未完了のタスクと、セッションを始めた後に完了を確認したタスク(始める前に終わったタスクには紐づけない)
 //! - 当たったタスクがちょうど 1 つなら紐づける。0 か 2 つ以上なら決めない(LLM に任せられる)
+//! - 手動の紐づけと、LLM がタスクを選んだ紐づけは変えない。LLM が「どのタスクでもない」とした紐づけは、機械の当たりが 1 つに決まれば置き換える
 //!
-//! 書き込みは壊れたファイルを上書きしない(直してもらう)。
+//! 書き込みは壊れたファイルを上書きしない(直してもらう)。書き手(画面・LLM で紐づけるジョブ・集計)は別のプロセスのこともあるので、
+//! update_links でファイルのロックを取り、読み直してから自分の変更だけを足して書く。
 
 use super::state::{TaskState, TasksFile};
 use super::{read_json_file, write_atomic};
@@ -118,6 +122,20 @@ pub fn save_links(path: &Path, f: &LinksFile) -> Result<()> {
     write_atomic(path, &format!("{}\n", atlas_core::json::to_js_string_pretty(f)?))
 }
 
+/// task-links.json を、ロックの中で読み直して f で直し、変わっていれば書く(別のプロセスの書き手の変更を消さない)。
+/// 壊れたファイルは書き換えない。返すのは f の値と、直した後の中身
+pub fn update_links<T>(path: &Path, f: impl FnOnce(&mut LinksFile) -> T) -> Result<(T, LinksFile)> {
+    super::with_file_lock(path, || {
+        let mut links = load_links_for_write(path)?;
+        let before = links.clone();
+        let r = f(&mut links);
+        if links != before {
+            save_links(path, &links)?;
+        }
+        Ok((r, links))
+    })
+}
+
 /// 紐づけを探すセッションの文
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SessionText {
@@ -183,13 +201,22 @@ pub struct Matcher<'a> {
     name_task: Vec<usize>,
 }
 
+/// 重なった当たりのうち、もっと長い当たりの中に入るものを除く(位置 start..end とタスク)
+fn longest_only(found: Vec<(usize, usize, usize)>) -> Vec<(usize, usize, usize)> {
+    found.iter().filter(|(a, b, _)| !found.iter().any(|(c, d, _)| c <= a && b <= d && d - c > b - a)).copied().collect()
+}
+
 impl<'a> Matcher<'a> {
     pub fn new(state: &'a TasksFile) -> Matcher<'a> {
         let tasks: Vec<(&str, &TaskState)> = state.tasks.iter().map(|(k, v)| (k.as_str(), v)).collect();
         let (mut id_pats, mut id_task, mut name_pats, mut name_task) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for (i, (id, t)) in tasks.iter().enumerate() {
             let nid = normalize(id);
-            if nid.chars().count() >= ID_MIN_CHARS {
+            if !nid.is_empty() && nid.bytes().all(|b| b.is_ascii_digit()) {
+                // 数字だけの ID は #<数字> の形だけを探す
+                id_pats.push(format!("#{nid}"));
+                id_task.push(i);
+            } else if nid.chars().count() >= ID_MIN_CHARS {
                 id_pats.push(nid);
                 id_task.push(i);
             }
@@ -213,18 +240,25 @@ impl<'a> Matcher<'a> {
             *e = (*e).min(rank);
         };
         if let Some(ac) = &self.ids {
+            let mut found = Vec::new();
             for m in ac.find_overlapping_iter(text) {
                 let before = text[..m.start()].chars().next_back();
                 let after = text[m.end()..].chars().next();
                 let edge = |c: Option<char>| c.is_none_or(|c| !c.is_ascii_alphanumeric());
-                if edge(before) && edge(after) {
-                    put(self.id_task[m.pattern().as_usize()], rank_base);
+                // #<数字> は # が区切りなので、前は見ない
+                let hashed = text[m.start()..].starts_with('#');
+                if (hashed || edge(before)) && edge(after) {
+                    found.push((m.start(), m.end(), self.id_task[m.pattern().as_usize()]));
                 }
+            }
+            for (_, _, t) in longest_only(found) {
+                put(t, rank_base);
             }
         }
         if let Some(ac) = &self.names {
-            for m in ac.find_overlapping_iter(text) {
-                put(self.name_task[m.pattern().as_usize()], 2 + rank_base);
+            let found: Vec<(usize, usize, usize)> = ac.find_overlapping_iter(text).map(|m| (m.start(), m.end(), self.name_task[m.pattern().as_usize()])).collect();
+            for (_, _, t) in longest_only(found) {
+                put(t, 2 + rank_base);
             }
         }
     }
@@ -266,13 +300,24 @@ impl MachineSummary {
     }
 }
 
-/// sessions の機械の紐づけを決め直す。手動と LLM の紐づけは変えない。sessions に無いセッションの紐づけも変えない
+/// 機械が変えない紐づけ: 手動と、LLM がタスクを選んだもの(LLM が「どのタスクでもない」としたものは、機械の当たりが 1 つに決まれば置き換える)
+pub fn is_fixed(l: &TaskLink) -> bool {
+    l.source == LinkSource::Manual || (l.source == LinkSource::Llm && l.task_id.is_some())
+}
+
+/// sessions の機械の紐づけを決め直す。手動と、LLM がタスクを選んだ紐づけは変えない。sessions に無いセッションの紐づけも変えない
 pub fn apply_machine(links: &mut LinksFile, sessions: &[SessionText], state: &TasksFile, now: &str) -> MachineSummary {
     let m = Matcher::new(state);
-    let results: Vec<MachineMatch> = sessions.par_iter().map(|s| if links.links.get(&s.id).is_some_and(|l| l.source != LinkSource::Machine) { MachineMatch::None } else { m.match_session(s) }).collect();
+    let results: Vec<MachineMatch> = sessions.par_iter().map(|s| if links.links.get(&s.id).is_some_and(is_fixed) { MachineMatch::None } else { m.match_session(s) }).collect();
     let mut sum = MachineSummary::default();
     for (s, r) in sessions.iter().zip(results) {
-        if links.links.get(&s.id).is_some_and(|l| l.source != LinkSource::Machine) {
+        if links.links.get(&s.id).is_some_and(is_fixed) {
+            sum.kept += 1;
+            continue;
+        }
+        // LLM の「どのタスクでもない」は、機械の当たりが 1 つに決まったときだけ置き換え、決まらなければ残す
+        let llm_none = links.links.get(&s.id).is_some_and(|l| l.source == LinkSource::Llm);
+        if llm_none && !matches!(r, MachineMatch::One { .. }) {
             sum.kept += 1;
             continue;
         }
@@ -305,20 +350,23 @@ pub fn unresolved<'a>(links: &LinksFile, sessions: &'a [SessionText]) -> Vec<&'a
     sessions.iter().filter(|s| !links.links.contains_key(&s.id)).collect()
 }
 
-/// LLM に渡す候補(ID と名前)。未完了で XML にあるもの → 完了を確認した時刻の早いもの → XML から消えたもの の順に、上限まで
-pub fn llm_candidates(state: &TasksFile, start_ms: Option<i64>) -> Vec<(String, String)> {
+/// LLM に渡す候補(ID と名前)。機械の紐づけで 2 つ以上に当たったタスク(first) → 未完了で XML にあるもの →
+/// 完了を確認した時刻の早いもの → XML から消えたもの の順に、上限まで
+pub fn llm_candidates(state: &TasksFile, start_ms: Option<i64>, first: &[String]) -> Vec<(String, String)> {
     let mut c: Vec<(u8, i64, usize, &str, &TaskState)> = state
         .tasks
         .iter()
         .enumerate()
         .filter(|(_, (_, t))| is_candidate(t, start_ms))
         .map(|(i, (id, t))| {
-            let group = if t.missing {
-                2
-            } else if t.done {
-                1
-            } else {
+            let group = if first.iter().any(|f| f == id) {
                 0
+            } else if t.missing {
+                3
+            } else if t.done {
+                2
+            } else {
+                1
             };
             (group, t.done_at.as_deref().and_then(atlas_core::jsdate::parse_ms).unwrap_or(0), i, id.as_str(), t)
         })
@@ -337,7 +385,7 @@ mod tests {
     use super::*;
 
     fn task(name: &str, done_at: Option<&str>) -> TaskState {
-        TaskState { name: name.into(), status: if done_at.is_some() { "Done" } else { "Open" }.into(), done: done_at.is_some(), first_seen_at: "2026-11-01T00:00:00.000Z".into(), done_at: done_at.map(str::to_string), last_seen_at: "2026-11-01T00:00:00.000Z".into(), missing: false }
+        TaskState { name: name.into(), status: if done_at.is_some() { "Done" } else { "Open" }.into(), done: done_at.is_some(), first_seen_at: "2026-11-01T00:00:00.000Z".into(), done_at: done_at.map(str::to_string), last_seen_at: "2026-11-01T00:00:00.000Z".into(), missing: false, done_observed: done_at.is_some() }
     }
 
     fn state(items: &[(&str, TaskState)]) -> TasksFile {
@@ -369,6 +417,71 @@ mod tests {
         assert_eq!(one("7 件の修正", ""), MachineMatch::None);
         // 区切りの記号の隣は当たる
         assert_eq!(one("[XY-9]", ""), MachineMatch::One { task_id: "XY-9".into(), reason: "ID が題名にある".into() });
+    }
+
+    /// 数字だけの ID は #<数字> の形だけを探す
+    #[test]
+    fn digit_ids_need_a_hash() {
+        let s = state(&[("101", task("数字だけの番号", None)), ("7", task("一桁の番号", None))]);
+        let m = Matcher::new(&s);
+        let one = |t: &str| m.match_session(&sess("s", t, ""));
+        assert_eq!(one("101 件を直す"), MachineMatch::None);
+        assert_eq!(one("ID 101"), MachineMatch::None);
+        assert_eq!(one("#101 を直す"), MachineMatch::One { task_id: "101".into(), reason: "ID が題名にある".into() });
+        // # の前は見ない(区切りは # 自身)。後ろが数字や英字なら当たらない
+        assert_eq!(one("PR#101"), MachineMatch::One { task_id: "101".into(), reason: "ID が題名にある".into() });
+        assert_eq!(one("#1010"), MachineMatch::None);
+        assert_eq!(one("#101a"), MachineMatch::None);
+        // # を付ければ 1 桁も探す。全角の #・数字も同じ
+        assert_eq!(one("＃７"), MachineMatch::One { task_id: "7".into(), reason: "ID が題名にある".into() });
+    }
+
+    /// 当たりが重なるときは長い方だけ(e2e の書き出しの DEMO-102 と DEMO-102-1 も)
+    #[test]
+    fn overlapping_matches_prefer_the_longest() {
+        let s = state(&[("DEMO-102", task("Improve the synthetic project", None)), ("DEMO-102-1", task("入れ子のサブタスク", None))]);
+        let m = Matcher::new(&s);
+        assert_eq!(m.match_session(&sess("s", "DEMO-102-1 を直す", "")), MachineMatch::One { task_id: "DEMO-102-1".into(), reason: "ID が題名にある".into() });
+        assert_eq!(m.match_session(&sess("s", "DEMO-102 を直す", "")), MachineMatch::One { task_id: "DEMO-102".into(), reason: "ID が題名にある".into() });
+        // 別の場所に両方あれば 2 つに当たる
+        assert!(matches!(m.match_session(&sess("s", "DEMO-102 と DEMO-102-1", "")), MachineMatch::Many(_)));
+        // 名前も、長い名前の中の短い名前は数えない
+        let s2 = state(&[("A", task("帳票の出力", None)), ("B", task("帳票の出力を速くする", None))]);
+        let m2 = Matcher::new(&s2);
+        assert_eq!(m2.match_session(&sess("s", "", "帳票の出力を速くする件")), MachineMatch::One { task_id: "B".into(), reason: "タスク名が依頼にある".into() });
+        assert_eq!(m2.match_session(&sess("s", "", "帳票の出力の件")), MachineMatch::One { task_id: "A".into(), reason: "タスク名が依頼にある".into() });
+        // 同じ名前の 2 つのタスクは決めない
+        let s3 = state(&[("A", task("同じ名前のタスク", None)), ("B", task("同じ名前のタスク", None))]);
+        assert!(matches!(Matcher::new(&s3).match_session(&sess("s", "同じ名前のタスク", "")), MachineMatch::Many(_)));
+    }
+
+    /// 書き手は、ロックの中で読み直して自分の変更だけを足す(別の書き手が書いた手動の紐づけを消さない)
+    #[test]
+    fn update_links_merges_with_other_writers() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join(crate::tasks::TASK_LINKS_FILE_NAME);
+        let manual = TaskLink { task_id: Some("A".into()), source: LinkSource::Manual, reason: String::new(), confidence: None, at: "t".into() };
+        std::thread::scope(|sc| {
+            for i in 0..10 {
+                let manual = manual.clone();
+                let p = &p;
+                sc.spawn(move || {
+                    update_links(p, |l| {
+                        l.links.insert(format!("s{i}"), manual);
+                    })
+                    .unwrap();
+                });
+            }
+        });
+        let (_, got) = update_links(&p, |_| ()).unwrap();
+        assert_eq!(got.links.len(), 10);
+        // 何も変えなければ書かない
+        let before = std::fs::metadata(&p).unwrap().modified().unwrap();
+        update_links(&p, |_| ()).unwrap();
+        assert_eq!(std::fs::metadata(&p).unwrap().modified().unwrap(), before);
+        std::fs::write(&p, "{").unwrap();
+        assert!(update_links(&p, |_| ()).is_err());
+        assert!(!crate::tasks::lock_path(&p).exists());
     }
 
     #[test]
@@ -412,13 +525,19 @@ mod tests {
         let s = st();
         let mut links = LinksFile::default();
         links.links.insert("m".into(), TaskLink { task_id: Some("XY-9".into()), source: LinkSource::Manual, reason: String::new(), confidence: None, at: "t0".into() });
-        links.links.insert("l".into(), TaskLink { task_id: None, source: LinkSource::Llm, reason: "どれでもない".into(), confidence: Some(0.8), at: "t0".into() });
+        let llm = |t: Option<&str>| TaskLink { task_id: t.map(str::to_string), source: LinkSource::Llm, reason: "LLM".into(), confidence: Some(0.8), at: "t0".into() };
+        // LLM がタスクを選んだもの(機械は変えない)と、「どのタスクでもない」としたもの(機械の当たりが 1 つに決まれば置き換える・決まらなければ残す)
+        links.links.insert("lt".into(), llm(Some("XY-9")));
+        links.links.insert("ln".into(), llm(None));
+        links.links.insert("ln2".into(), llm(None));
         links.links.insert("old".into(), TaskLink { task_id: Some("ABC-123".into()), source: LinkSource::Machine, reason: "ID が題名にある".into(), confidence: None, at: "t0".into() });
-        let sessions = vec![sess("m", "ABC-12", ""), sess("l", "ABC-12", ""), sess("old", "もう当たらない", ""), sess("new", "ABC-12", ""), sess("two", "ABC-12 XY-9", "")];
+        let sessions = vec![sess("m", "ABC-12", ""), sess("lt", "ABC-12", ""), sess("ln", "ABC-12", ""), sess("ln2", "当たらない", ""), sess("old", "もう当たらない", ""), sess("new", "ABC-12", ""), sess("two", "ABC-12 XY-9", "")];
         let sum = apply_machine(&mut links, &sessions, &s, "t1");
-        assert_eq!(sum, MachineSummary { linked: 1, updated: 1, unmatched: 1, ambiguous: 1, kept: 2, removed: 1 });
+        assert_eq!(sum, MachineSummary { linked: 2, updated: 2, unmatched: 1, ambiguous: 1, kept: 3, removed: 1 });
         assert_eq!(links.links["m"].task_id.as_deref(), Some("XY-9"));
-        assert_eq!(links.links["l"].task_id, None);
+        assert_eq!(links.links["lt"].task_id.as_deref(), Some("XY-9"));
+        assert_eq!((links.links["ln"].task_id.as_deref(), links.links["ln"].source), (Some("ABC-12"), LinkSource::Machine));
+        assert_eq!((links.links["ln2"].task_id.as_deref(), links.links["ln2"].source), (None, LinkSource::Llm));
         assert!(!links.links.contains_key("old"));
         assert_eq!(links.links["new"].source, LinkSource::Machine);
         assert_eq!(links.links["new"].at, "t1");
@@ -430,7 +549,7 @@ mod tests {
         assert_eq!(un, ["old", "two"]);
         let lt = linked_tasks(&links);
         assert_eq!(lt.get("m"), Some(&("XY-9", LinkSource::Manual)));
-        assert!(!lt.contains_key("l"));
+        assert!(!lt.contains_key("ln2"));
     }
 
     #[test]
@@ -440,11 +559,16 @@ mod tests {
         items.insert(0, ("D-1".into(), task("先に完了", Some("2026-11-15T00:00:00.000Z"))));
         items.insert(0, ("GONE".into(), TaskState { missing: true, ..task("消えた", None) }));
         let s = TasksFile { tasks: items.into_iter().collect(), ..Default::default() };
-        let c = llm_candidates(&s, atlas_core::jsdate::parse_ms("2026-11-10T00:00:00Z"));
+        let c = llm_candidates(&s, atlas_core::jsdate::parse_ms("2026-11-10T00:00:00Z"), &[]);
         assert_eq!(c.len(), LLM_CANDIDATES_MAX);
         assert_eq!(c[0].0, "T-0");
+        // 機械の紐づけで 2 つ以上に当たったタスクを先に(上限で切られないように)
+        let late = format!("T-{}", LLM_CANDIDATES_MAX + 10);
+        let c = llm_candidates(&s, atlas_core::jsdate::parse_ms("2026-11-10T00:00:00Z"), &[late.clone(), "GONE".into()]);
+        assert_eq!((c[0].0.as_str(), c[1].0.as_str(), c[2].0.as_str()), ("GONE", late.as_str(), "T-0"));
+        assert_eq!(c.len(), LLM_CANDIDATES_MAX);
         let small = state(&[("GONE", TaskState { missing: true, ..task("消えた", None) }), ("D-2", task("b", Some("2026-11-20T00:00:00.000Z"))), ("D-1", task("a", Some("2026-11-15T00:00:00.000Z"))), ("O", task("o", None))]);
-        let ids: Vec<String> = llm_candidates(&small, None).into_iter().map(|x| x.0).collect();
+        let ids: Vec<String> = llm_candidates(&small, None, &[]).into_iter().map(|x| x.0).collect();
         assert_eq!(ids, ["O", "D-1", "D-2", "GONE"]);
     }
 

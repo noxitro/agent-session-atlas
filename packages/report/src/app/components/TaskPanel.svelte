@@ -202,7 +202,7 @@
                   {#if t.sessions === 0}—{:else if t.judgedSessions === 0}<span class="missing-value">未判定</span>{:else if t.judgedSessions === t.lowConfidenceSessions}—{:else}{hours(t.humanHours)}{/if}
                   {#if t.sessions > 0}<span class="part">判定 {int(t.judgedSessions)} / {int(t.sessions)}{t.lowConfidenceSessions ? `・確度が低い ${int(t.lowConfidenceSessions)}` : ''}</span>{/if}
                 </td>
-                <td class="num">{#if t.workMs != null}{msHours(t.workMs)}{:else if t.sessions === 0}—{:else}—<span class="part">{t.done ? '開始が分からない' : '未完了'}</span>{/if}</td>
+                <td class="num">{#if t.workMs != null}{msHours(t.workMs)}{:else if t.sessions === 0}—{:else}—<span class="part">{t.excluded ? TASK_EXCLUDED_LABEL[t.excluded] : '未完了'}</span>{/if}</td>
                 <td class="num">{t.sessions ? msHours(t.aiActiveMs) : '—'}</td>
                 <td class="num">{int(t.sessions)}</td>
                 <td class="src">{linkCounts(t.links) || '—'}</td>
