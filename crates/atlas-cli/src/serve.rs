@@ -19,11 +19,11 @@ use crate::config::{default_config_path, is_byok_model, load_config, modify_conf
 use crate::folders::{check_folder, folders_root_of, forget_folder, is_read_only_view, list_folder_states, list_folders, open_folder_report, FolderContext, FolderError};
 use crate::group_export::{export_group, GroupExportPaths};
 use crate::group_upload::{check_upload, upload_dir, upload_group, uploaded_at, GroupUploadPaths, GroupUploadResult, UploadChangedError, UploadCheck, UploadOptions, UploadProgress};
-use crate::jobs::{acquire_out_lock, judge_scope, parse_job_request, running_job_in, FullCtx, JobRunner, JobRunnerOptions, JudgeScope, RunFullFn, SpawnFn};
+use crate::jobs::{acquire_out_lock, judge_scope, parse_job_request, pin_group_ids, running_job_in, FullCtx, JobRunner, JobRunnerOptions, JudgeScope, RunFullFn, SpawnFn};
 use atlas_core::js;
 use atlas_core::nodepath::platform;
 use atlas_report::groups::{add_ids, member_groups_keyed, remove_ids, unique_ids, MemberGroup, MemberSource, SessionGroup};
-use atlas_report::groups_io::{load_groups, load_groups_for_write, save_groups};
+use atlas_report::groups_io::{load_groups, load_groups_for_write, save_groups, LoadedGroups};
 use atlas_report::memo::{is_safe_memo_id, memo_summary};
 use atlas_report::memo_io::{image_ext, load_memo_index, memos_dir, read_memo, render_memo, save_memo, save_memo_image, MemoFile, MEMO_IMAGE_LIMIT};
 use atlas_report::viewer::{encode_uri_component, render_view_document, render_viewer_shell, view_label, ViewKind, ViewerShellOptions, VIEW_KINDS, VIEW_LIMIT};
@@ -1441,9 +1441,15 @@ impl Server {
         let je = |e: crate::jobs::JobError| HttpError::new(e.status, e.message);
         if path == "/api/jobs" && method == "POST" {
             let body = self.json_body(req)?;
-            let ids = if body.get("kind").and_then(Value::as_str) == Some("full") || body.contains_key("session") { self.session_index()? } else { None };
-            let groups = body.contains_key("group").then(|| load_groups(&self.groups_path));
-            let r = parse_job_request(&body, &|id| ids.as_ref().is_some_and(|ix| ix.ids.contains_key(id)), groups.as_ref()).map_err(je)?;
+            let read_only = body.contains_key("group") && self.view_state().0;
+            let ids = if body.get("kind").and_then(Value::as_str) == Some("full") || body.contains_key("session") || read_only { self.session_index()? } else { None };
+            let groups = body.contains_key("group").then(|| self.judge_groups());
+            let known = |id: &str| ids.as_ref().is_some_and(|ix| ix.ids.contains_key(id));
+            let mut r = parse_job_request(&body, &known, groups.as_ref()).map_err(je)?;
+            // 読むだけの画面のタスクタグは送った人のもので、子プロセスが読む groups.json には無い。解決した id を渡す
+            if let (true, Some(g)) = (read_only, &groups) {
+                r = pin_group_ids(r, g, &known).map_err(je)?;
+            }
             // グループの書き出しは out/ を読んでいるので、終わるまで集計などを始めない
             let busy = lock(&self.busy_with);
             if let Some(b) = &*busy {
@@ -1486,15 +1492,25 @@ impl Server {
         Err(HttpError::new(404, "無い API です"))
     }
 
-    /// 判定の件数を数える範囲(無ければすべて)。確かめ方は POST /api/jobs と同じ(jobs::judge_scope)。group の範囲は groups.json のそのグループの ids
+    /// 判定の範囲を決めるタスクタグ: 画面に出ているもの。読むだけの画面は送った人のタグ(/api/state の groups と同じ members)、
+    /// それ以外は自分の groups.json
+    fn judge_groups(&self) -> LoadedGroups {
+        let (read_only, members) = self.view_state();
+        if !read_only {
+            return load_groups(&self.groups_path);
+        }
+        LoadedGroups { path: "送った人のタスクタグ".into(), exists: true, groups: members.into_iter().map(|m| m.group).collect(), warnings: vec![] }
+    }
+
+    /// 判定の件数を数える範囲(無ければすべて)。確かめ方は POST /api/jobs と同じ(jobs::judge_scope)。group の範囲は画面のタスクタグ(judge_groups)のそのグループの ids
     fn preview_scope(&self, session: Option<&str>, group: Option<&str>) -> R<Option<HashSet<String>>> {
         let ids = if session.is_some() { self.session_index()? } else { None };
-        let groups = group.is_some().then(|| load_groups(&self.groups_path));
+        let groups = group.is_some().then(|| self.judge_groups());
         let scope = judge_scope(session, group, &|id| ids.as_ref().is_some_and(|ix| ix.ids.contains_key(id)), groups.as_ref()).map_err(|e| HttpError::new(e.status, e.message))?;
         Ok(match scope {
             JudgeScope::All => None,
             JudgeScope::Session(id) => Some(HashSet::from([id])),
-            JudgeScope::Group(name) => Some(groups.and_then(|g| g.groups.into_iter().find(|g| g.name == name)).map(|g| g.ids.into_iter().collect()).unwrap_or_default()),
+            JudgeScope::Group(name) | JudgeScope::GroupIds { name, .. } => Some(groups.and_then(|g| g.groups.into_iter().find(|g| g.name == name)).map(|g| g.ids.into_iter().collect()).unwrap_or_default()),
         })
     }
 

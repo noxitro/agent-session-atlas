@@ -1229,6 +1229,65 @@ fn scoped_judge_jobs() {
 }
 
 #[test]
+fn read_only_view_judges_by_members_tags() {
+    let mut j = JobEnv::new();
+    // 自分の groups.json に同じ名前の別のタグがあっても、読むだけの画面は送った人のタグ(/api/state の groups)で解決する
+    fs::create_dir_all(&j.e.notes).unwrap();
+    fs::write(j.e.notes.join("groups.json"), json!({ "version": 1, "groups": [{ "name": "person-a / 武器", "note": "", "ids": ["s3"] }, { "name": "自分だけ", "note": "", "ids": ["s1"] }] }).to_string()).unwrap();
+    let sessions = |extra: Vec<Value>| {
+        let mut v = vec![
+            json!({ "id": "s1", "person": "person-a", "uploadTags": ["武器"], "turns": 2, "firstUserMessage": "x", "analysis": { "turnStats": [{}, {}] } }),
+            json!({ "id": "s2", "person": "person-a", "uploadTags": ["武器"], "turns": 1, "firstUserMessage": "y" }),
+            json!({ "id": "s3", "person": "person-b", "uploadTags": ["盾"], "turns": 1, "firstUserMessage": "z" }),
+        ];
+        v.extend(extra);
+        json!({ "version": 12, "source": { "root": "x", "since": null, "layout": "merged" }, "sessions": v }).to_string()
+    };
+    fs::write(j.e.out.join("sessions.json"), sessions(vec![])).unwrap();
+    j.start(|_| {});
+    let (out, notes) = (s(&j.e.out), s(&j.e.notes));
+    let tail = |v: &[&str]| v.iter().map(|x| x.to_string()).chain(["--out".to_string(), out.clone(), "--notes-dir".into(), notes.clone()]).collect::<Vec<_>>();
+    assert_eq!(j.e.get("/api/state").1["readOnly"], true);
+    let pv = |q: &str| j.e.json("GET", &format!("/api/jobs/judge-preview{q}"), None);
+    let counts = |v: &Value| (v["eligible"].clone(), v["judged"].clone(), v["pending"].clone());
+    let tag = "person-a%20%2F%20%E6%AD%A6%E5%99%A8";
+    assert_eq!(counts(&pv(&format!("?group={tag}")).1), (json!(2), json!(0), json!(2)));
+    assert_eq!(counts(&pv(&format!("?target=turns&group={tag}")).1), (json!(2), json!(0), json!(2)));
+    // 自分の groups.json にだけあるタグは、画面に無いので 404
+    assert_eq!(pv("?group=%E8%87%AA%E5%88%86%E3%81%A0%E3%81%91").0, 404);
+    assert_eq!(j.post(json!({ "kind": "judge", "limit": 1, "group": "自分だけ" })).0, 404);
+    // 子プロセスには名前ではなく、解決した id を --session で渡す(表示用の target は名前のまま)
+    let r = j.post(json!({ "kind": "judge", "limit": 2, "group": "person-a / 武器" }));
+    assert_eq!((r.0, r.1["target"].clone()), (202, json!({ "limit": 2, "backend": "copilot-cli", "group": "person-a / 武器" })));
+    assert_eq!(j.args(0), tail(&["judge-flow", "--limit", "2", "--backend", "copilot-cli", "--session=s1,s2"]));
+    j.child(0).exit(Some(0));
+    j.wait_not_running();
+    let r = j.post(json!({ "kind": "turn-judge", "limit": 9, "group": "person-a / 武器" }));
+    assert_eq!(r.0, 202);
+    assert_eq!(j.args(1), tail(&["judge-flow", "--turns", "--limit", "9", "--session=s1,s2"]));
+    j.child(1).exit(Some(0));
+    j.wait_not_running();
+    // コマンドラインに収まらないほど多いタグは 400(すべてを対象にしてもらう)。子プロセスは起動しない
+    sleep(20);
+    let many: Vec<Value> = (0..800).map(|i| json!({ "id": format!("m{i:039}"), "person": "person-c", "uploadTags": ["多い"], "turns": 1, "firstUserMessage": "x" })).collect();
+    fs::write(j.e.out.join("sessions.json"), sessions(many)).unwrap();
+    let (st, body) = j.post(json!({ "kind": "judge", "limit": 1, "group": "person-c / 多い" }));
+    assert_eq!(st, 400, "{body}");
+    assert!(body["error"].as_str().is_some_and(|m| m.contains("多すぎ") && m.contains("すべて")), "{body}");
+    assert_eq!(lock(&j.calls).len(), 2);
+    assert_eq!(counts(&pv("?group=person-c%20%2F%20%E5%A4%9A%E3%81%84").1), (json!(800), json!(0), json!(800)));
+    // 解決した id が sessions.json に 1 件も無ければ 400(件数の確認は 0 件)
+    use crate::jobs::{pin_group_ids, JobRequest, JudgeScope};
+    use atlas_report::groups::{LoadedGroups, SessionGroup};
+    let g = LoadedGroups { path: String::new(), exists: true, groups: vec![SessionGroup { name: "t".into(), note: String::new(), ids: vec!["gone".into()] }], warnings: vec![] };
+    let req = JobRequest::TurnJudge { limit: 1, scope: JudgeScope::Group("t".into()) };
+    assert_eq!(pin_group_ids(req.clone(), &g, &|_| false).map_err(|e| e.status), Err(400));
+    assert_eq!(pin_group_ids(req, &g, &|_| true), Ok(JobRequest::TurnJudge { limit: 1, scope: JudgeScope::GroupIds { name: "t".into(), ids: vec!["gone".into()] } }));
+    let all = JobRequest::Judge { limit: 1, backend: "copilot-cli".into(), scope: JudgeScope::All, force: false };
+    assert_eq!(pin_group_ids(all.clone(), &g, &|_| false), Ok(all));
+}
+
+#[test]
 fn chat_judge_parts_and_import() {
     let mut j = JobEnv::new();
     j.start(|_| {});

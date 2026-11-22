@@ -8,6 +8,8 @@
 //  f2c. 「ZIP にまとめてエージェントに渡す」: 依頼ごとの判定では選べない。工数では ZIP を作って保存でき、結果のファイルを選んで取り込める。添付ファイルを作り直すと ZIP は消える
 //  f3. 「依頼ごとの採用」を偽 copilot で判定すると、一覧の依頼の欄に判定の済み・未判定が出る。詳細ページに判定したかの札と判定のボタンが出て、そのセッションの残りの依頼だけを判定できる
 //  f4. タスクタグを選んで開くと、対象がそのタグのセッションだけになり、判定もそのタグのセッションだけにする
+//  f5. 詳細ページの判定: 進み具合の確認が途中で失敗(通信の失敗・5xx)しても、待ち続けて終わりまで出す
+//  f6. 詳細ページの判定: 押したら件数を数え直す。開いた後に判定済みになっていれば判定し直す(force)、対象が無くなっていれば送らない
 //  g. 詳細ページの「記録を読む」「全文を作って読む」で本文が描かれ、記録に混ぜた script やイベント属性は実行されない
 //  h. file:// で開いた atlas.html と詳細ページには操作が出ない
 // どの画面でもページ内の例外とコンソールのエラーが無いこと。
@@ -16,7 +18,7 @@ import { existsSync } from 'node:fs';
 import { appendFile, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { chromium, type Browser, type Page } from 'playwright';
+import { chromium, type Browser, type Dialog, type Page } from 'playwright';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { shotOnFailure } from './failure-shot.ts';
 import { buildFixtureHome, FIXTURE_CODE, ROOT, cliCommand, startServer, type ServeHandle } from '../e2e/fixture-home.ts';
@@ -613,6 +615,117 @@ describe('画面からの操作(Phase 14)', () => {
       // 後のテストにタグを持ち越さない(元の中身に戻す。無かったなら消す)
       if (original === null) await rm(groupsFile, { force: true });
       else await writeFile(groupsFile, original);
+    }
+  });
+
+  // 詳細ページの判定を、サーバの返事を差し替えて確かめる(f5・f6)
+  const json = (body: unknown, status = 200) => ({ status, contentType: 'application/json', body: JSON.stringify(body) });
+  const detailUrl = async (): Promise<string> => {
+    const sessions = (JSON.parse(await readFile(join(out, 'sessions.json'), 'utf8')) as { sessions: { id: string }[] }).sessions;
+    return new URL(`sessions/${sessions[0].id}.html`, server.url).href;
+  };
+  const fakeJob = (st: 'running' | 'done', target: Record<string, unknown>) => ({ id: 'fake-detail', kind: 'judge', state: st, startedAt: new Date().toISOString(), endedAt: st === 'running' ? null : new Date().toISOString(), exitCode: st === 'running' ? null : 0, log: [], target });
+  // 差し替えで失敗させた通信は、ブラウザがコンソールに「Failed to load resource」と出す。わざと起こしたものだけを除く
+  const dropFailedLoads = (): void => {
+    const rest = problems.splice(0).filter((p) => !/Failed to load resource/.test(p));
+    problems.push(...rest);
+  };
+
+  it('f5. 詳細ページ: 判定の進み具合の確認が途中で失敗しても、待ち続けて終わりまで出す', async () => {
+    let posted = false;
+    let polls = 0;
+    const seen: string[] = [];
+    await page.route(/\/api\/jobs\/judge-preview/, (r) => r.fulfill(json({ eligible: 1, judged: 0, pending: 1, withoutTurns: 0, chunk: 6, model: null, byok: false, modelError: null })));
+    await page.route(/\/api\/jobs$/, (r) => {
+      if (r.request().method() !== 'POST') return r.continue();
+      posted = true;
+      return r.fulfill(json(fakeJob('running', { limit: 1, backend: 'copilot-cli', session: 'x' }), 202));
+    });
+    await page.route(/\/api\/jobs\/current$/, (r) => {
+      if (!posted) return r.fulfill(json(null));
+      polls++;
+      // 1 回目は動いている、2 回目は通信の失敗、3 回目はサーバの 503、4 回目は動いている、その後は終わり
+      if (polls === 2) return r.abort('failed');
+      if (polls === 3) return r.fulfill(json({ error: '一時的に答えられません' }, 503));
+      return r.fulfill(json(fakeJob(polls <= 4 ? 'running' : 'done', { limit: 1, backend: 'copilot-cli', session: 'x' })));
+    });
+    try {
+      await page.goto(await detailUrl());
+      const group = page.getByTestId('detail-judge');
+      await group.waitFor({ state: 'visible' });
+      const msg = group.locator('p.judge-msg');
+      const watch = setInterval(() => {
+        void msg.innerText({ timeout: 200 }).then((t) => seen.push(t), () => {});
+      }, 100);
+      page.once('dialog', (d) => void d.accept());
+      await page.getByTestId('detail-judge-effort').click();
+      try {
+        await expect.poll(() => msg.innerText(), { timeout: 30_000 }).toContain('工数の判定が終わり、レポートを作り直しました');
+      } finally {
+        clearInterval(watch);
+      }
+      expect(polls).toBeGreaterThanOrEqual(5);
+      // 失敗の間は諦めずに待っていることを出し、失敗とはしない
+      expect(seen.some((t) => t.includes('サーバの応答を待っています'))).toBe(true);
+      expect(await group.locator('p.judge-err').isVisible()).toBe(false);
+      expect(await page.getByTestId('detail-judge-reload').isVisible()).toBe(true);
+    } finally {
+      await page.unrouteAll({ behavior: 'ignoreErrors' });
+      dropFailedLoads();
+    }
+  });
+
+  it('f6. 詳細ページ: 押したら件数を数え直し、開いた後に判定済みになっていれば判定し直す。対象が無くなっていれば送らない', async () => {
+    // 開いたときは工数も依頼ごとも未判定。開いた後にほかの所で判定された
+    let judgedElsewhere = false;
+    let delay = 0;
+    await page.route(/\/api\/jobs\/judge-preview/, async (r) => {
+      const turns = r.request().url().includes('target=turns');
+      if (delay) await new Promise((ok) => setTimeout(ok, delay));
+      if (turns) return r.fulfill(json(judgedElsewhere ? { eligible: 2, judged: 2, pending: 0, withoutTurns: 0, chunk: 6, model: null, byok: false, modelError: null } : { eligible: 2, judged: 0, pending: 2, withoutTurns: 0, chunk: 6, model: null, byok: false, modelError: null }));
+      return r.fulfill(json(judgedElsewhere ? { eligible: 1, judged: 1, pending: 0, model: null, byok: false, modelError: null } : { eligible: 1, judged: 0, pending: 1, model: null, byok: false, modelError: null }));
+    });
+    let body: Record<string, unknown> = {};
+    await page.route(/\/api\/jobs$/, (r) => {
+      body = JSON.parse(r.request().postData() ?? '{}') as Record<string, unknown>;
+      return r.fulfill(json(fakeJob('running', body), 202));
+    });
+    const dialogs: string[] = [];
+    const onDialog = (d: Dialog): void => {
+      dialogs.push(d.message());
+      void d.accept();
+    };
+    await page.route(/\/api\/jobs\/current$/, (r) => r.fulfill(json(Object.keys(body).length ? fakeJob('done', body) : null)));
+    try {
+      jobPosts.length = 0;
+      await page.goto(await detailUrl());
+      const group = page.getByTestId('detail-judge');
+      await group.waitFor({ state: 'visible' });
+      const effort = page.getByTestId('detail-judge-effort');
+      const turnBtn = page.getByTestId('detail-judge-turns');
+      expect(await effort.innerText()).toBe('工数を判定する');
+      expect(await turnBtn.innerText()).toBe('依頼ごとに判定する(未判定 2 件)');
+      judgedElsewhere = true;
+      // 依頼ごと: 数え直したら未判定が無いので、確認を出さず、送らずに理由を出す。数え直す間はどちらのボタンも押せない
+      page.on('dialog', onDialog);
+      delay = 500;
+      await turnBtn.click();
+      expect(await effort.isDisabled()).toBe(true);
+      expect(await turnBtn.isDisabled()).toBe(true);
+      await expect.poll(() => group.locator('p.judge-msg').innerText()).toContain('判定済みになっていたので、判定しませんでした');
+      delay = 0;
+      expect(dialogs).toEqual([]);
+      expect(jobPosts).toEqual([]);
+      // 工数: 数え直したら判定済みなので、判定し直す(force)として確かめてから送る
+      await effort.click();
+      const sid = /sessions\/(.+)\.html$/.exec(await detailUrl())![1];
+      await expect.poll(() => jobPosts.map((b) => JSON.parse(b))).toEqual([{ kind: 'judge', limit: 1, session: sid, force: true }]);
+      expect(dialogs).toHaveLength(1);
+      expect(dialogs[0]).toContain('このセッションの工数を LLM で判定し直します');
+      await expect.poll(() => group.locator('p.judge-msg').innerText()).toContain('工数の判定が終わり');
+    } finally {
+      page.off('dialog', onDialog);
+      await page.unrouteAll({ behavior: 'ignoreErrors' });
     }
   });
 
