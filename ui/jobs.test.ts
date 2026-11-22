@@ -1,17 +1,19 @@
 // Phase 14 の画面の操作(Playwright の Chromium)。架空の fixture で atlas all → atlas serve(port 0)を立て、実際に押して確かめる。
 //  e. 「集計し直す」→ 帯が実行中から完了に変わり、「再読み込み」で新しい集計(埋め込みの生成日時)が出て帯は消える
-//  f. 「判定する…」の確認ダイアログ: 「やめる」なら API を呼ばない。件数を決めて実行すると偽 copilot で判定が増える
+//  f. 「判定する…」の確認ダイアログ: 「やめる」なら API を呼ばない。件数を決めて実行すると偽 copilot で判定が増える。タスクタグを選んでいなければ、対象は「すべて」だけ
 //  f1. 「チャットに貼る」: 作り直しに失敗したら、ダイアログに失敗・理由・ログが出て、前に作った添付ファイルはそのまま使える。閉じたらもう出ない
 //  f1b. 「チャットに貼る」: 作るのを止めたら、止めたことと、使える添付ファイルがあるかが出る。この画面で動くのを見ていない処理は出ない
 //  f2. 「チャットに貼る」: 添付ファイルを作り、保存のリンクと本文のコピーが働き、形の違う返答は理由を出して取り込まず、正しい返答を取り込んで反映できる
 //  f2b. 「チャットに貼る」(依頼ごとの採用): 採用を判定できる依頼が先頭の何ファイルまでかが出て、一覧の最後の依頼だけのファイルに印が付く
 //  f2c. 「ZIP にまとめてエージェントに渡す」: 依頼ごとの判定では選べない。工数では ZIP を作って保存でき、結果のファイルを選んで取り込める。添付ファイルを作り直すと ZIP は消える
+//  f3. 「依頼ごとの採用」を偽 copilot で判定すると、一覧の依頼の欄に判定の済み・未判定が出る。詳細ページに判定したかの札と判定のボタンが出て、そのセッションの残りの依頼だけを判定できる
+//  f4. タスクタグを選んで開くと、対象がそのタグのセッションだけになり、判定もそのタグのセッションだけにする
 //  g. 詳細ページの「記録を読む」「全文を作って読む」で本文が描かれ、記録に混ぜた script やイベント属性は実行されない
 //  h. file:// で開いた atlas.html と詳細ページには操作が出ない
 // どの画面でもページ内の例外とコンソールのエラーが無いこと。
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { appendFile, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright';
@@ -108,6 +110,11 @@ describe('画面からの操作(Phase 14)', () => {
     expect(await dialog.innerText()).toContain('API の利用料がかかります');
     expect(await dialog.innerText()).toContain('GitHub Copilot の AI クレジットは使いません');
     expect(await dialog.innerText()).not.toContain('AI クレジットを消費します');
+    // タスクタグを選ばずに開いたので、対象は「すべて」。タグに絞る選択肢は押せず、押せない理由を文で出す
+    expect(await page.getByTestId('judge-scope-all').isChecked()).toBe(true);
+    expect(await page.getByTestId('judge-scope-group').isDisabled()).toBe(true);
+    expect(await page.getByTestId('judge-scope-group').getAttribute('aria-describedby')).toBe('judge-scope-off');
+    expect(await page.getByTestId('judge-scope-off').innerText()).toContain('詳細ページから判定できます');
     // 初期フォーカスは「やめる」
     expect(await page.evaluate<string | undefined>('document.activeElement?.dataset.testid')).toBe('judge-cancel');
     await page.getByTestId('judge-cancel').click();
@@ -493,6 +500,13 @@ describe('画面からの操作(Phase 14)', () => {
     await table.waitFor({ state: 'visible' });
     expect(await table.locator('tbody th').first().innerText()).toBe('実装');
     expect(await page.getByTestId('mismatch-table').innerText()).toContain('意図・要件の取り違え');
+    // 一覧の依頼の欄に、依頼ごとの判定の済み・未判定を文字で出す(色だけに頼らない)
+    const marks = page.locator('table.ledger [data-testid="turn-judge-state"]');
+    await expect.poll(() => marks.count()).toBeGreaterThan(0);
+    const texts = await marks.allInnerTexts();
+    for (const t of texts) expect(t).toMatch(/^(未判定|✓ 判定済み|判定 \d+ \/ \d+)$/);
+    expect(texts).toContain('未判定');
+    expect(texts.some((t) => t !== '未判定')).toBe(true);
     // 判定した依頼のあるセッションの詳細ページに、採用・合わなかった点・工程(普段)の列
     // 埋め込みの要約は href を持たない(id から作る。report の lib/pack.ts)
     const id = await page.evaluate<string>("JSON.parse(document.getElementById('atlas-data').textContent).sessions.find((s) => s.turnVerdicts && s.turnVerdicts.length).id");
@@ -501,6 +515,105 @@ describe('画面からの操作(Phase 14)', () => {
     await turns.waitFor({ state: 'visible' });
     expect(await turns.locator('thead').innerText()).toMatch(/採用\(LLM\)\s*合わなかった点\s*工程\(普段\)/);
     expect(await turns.locator('tbody').innerText()).toMatch(/そのまま採用|中身を修正して採用/);
+
+    // 判定したかの札: 工数は済み・未判定、依頼ごとは判定した数 / 依頼の数(件数の上限 3 では、最後の依頼は判定しない)
+    const effortTag = await page.getByTestId('judge-state-effort').innerText();
+    expect(effortTag).toMatch(/LLM 判定\(工数\)\s*(✓ 済み|未判定)/);
+    const turnTag = /(\d+) \/ (\d+) 件/.exec(await page.getByTestId('judge-state-turns').innerText())!;
+    const [judged, all] = [Number(turnTag[1]), Number(turnTag[2])];
+    expect(judged).toBeGreaterThan(0);
+    expect(judged).toBeLessThan(all);
+    // 判定のボタン: 工数は済みなら「判定し直す」。依頼ごとは未判定の数を出し、札の数と合う
+    const group = page.getByTestId('detail-judge');
+    await group.waitFor({ state: 'visible' });
+    expect(await page.getByTestId('detail-judge-effort').innerText()).toBe(effortTag.includes('✓') ? '工数を判定し直す' : '工数を判定する');
+    const turnBtn = page.getByTestId('detail-judge-turns');
+    expect(await turnBtn.innerText()).toBe(`依頼ごとに判定する(未判定 ${all - judged} 件)`);
+    // 確認で「キャンセル」なら何も始めない
+    jobPosts.length = 0;
+    page.once('dialog', (d) => void d.dismiss());
+    await page.getByTestId('detail-judge-effort').click();
+    await page.waitForTimeout(300);
+    expect(jobPosts).toEqual([]);
+    // 依頼ごと: このセッションの未判定の依頼だけを判定する。確認に件数と費用を出す
+    let asked = '';
+    page.once('dialog', (d) => {
+      asked = d.message();
+      void d.accept();
+    });
+    await turnBtn.click();
+    await expect.poll(() => jobPosts.map((b) => JSON.parse(b))).toEqual([{ kind: 'turn-judge', limit: all - judged, session: id }]);
+    expect(asked).toContain(`このセッションの未判定の依頼 ${all - judged} 件を LLM で判定します`);
+    expect(asked).toContain('API の利用料がかかります');
+    // 終わっても自動では読み直さない。「読み込み直す」で札が全部済みになり、ボタンは押せなくなる
+    const reload = page.getByTestId('detail-judge-reload');
+    await reload.waitFor({ state: 'visible', timeout: 60_000 });
+    expect(await group.locator('p.judge-msg').innerText()).toContain('依頼ごとの判定が終わり、レポートを作り直しました');
+    await reload.click();
+    await page.waitForLoadState('load');
+    await expect.poll(() => page.getByTestId('judge-state-turns').innerText()).toMatch(new RegExp(`✓ ${all} / ${all} 件`));
+    await group.waitFor({ state: 'visible' });
+    expect(await turnBtn.isDisabled()).toBe(true);
+    expect(await group.locator('p.judge-note').innerText()).toContain(`依頼ごと: ${all} 件とも判定済みです。`);
+  });
+
+  it('f4. タスクタグを選んで開くと、対象はそのタグのセッションだけになり、判定もそのタグのセッションだけにする', async () => {
+    type TurnItems = { items: { sessionId: string; turn: number }[] };
+    const readTurns = async (): Promise<TurnItems['items']> => (JSON.parse(await readFile(join(out, 'turn-judgments.json'), 'utf8')) as TurnItems).items;
+    const before = await readTurns();
+    // 依頼ごとの記録があって、まだどの依頼も判定していないセッションを 2 つ(依頼の多い順)
+    const sessions = (JSON.parse(await readFile(join(out, 'sessions.json'), 'utf8')) as { sessions: { id: string; analysis?: { turnStats?: unknown[] } }[] }).sessions;
+    const picked = sessions
+      .map((s) => ({ id: s.id, n: s.analysis?.turnStats?.length ?? 0 }))
+      .filter((s) => s.n > 0 && !before.some((t) => t.sessionId === s.id))
+      .sort((a, b) => b.n - a.n)
+      .slice(0, 2);
+    expect(picked).toHaveLength(2);
+    const ids = picked.map((s) => s.id);
+    const pending = picked.reduce((a, s) => a + s.n, 0);
+    // 元の groups.json(無ければ null)を覚えておき、終わったら戻す(無かったなら消す)
+    const groupsFile = join(notes, 'groups.json');
+    const original = await readFile(groupsFile).catch((e: NodeJS.ErrnoException) => {
+      if (e.code === 'ENOENT') return null;
+      throw e;
+    });
+    await mkdir(notes, { recursive: true });
+    await writeFile(groupsFile, JSON.stringify({ version: 1, groups: [{ name: 'scope-tag', note: '', ids }] }));
+    try {
+      jobPosts.length = 0;
+      await page.goto(server.url);
+      await page.locator('[data-testid="group-rail"]:visible').getByRole('button', { name: /scope-tag/ }).click();
+      const dialog = page.getByTestId('judge-dialog');
+      await page.getByTestId('job-judge').click();
+      await dialog.waitFor({ state: 'visible' });
+      await page.getByTestId('judge-target-turns').check();
+      await page.getByTestId('judge-method-tool').check();
+      // 選んでいるタグが対象に選ばれている
+      expect(await page.getByTestId('judge-scope-group').isChecked()).toBe(true);
+      expect(await page.getByTestId('judge-scope-group').isDisabled()).toBe(false);
+      expect(await dialog.locator('label', { has: page.getByTestId('judge-scope-group') }).innerText()).toBe('タスクタグ「scope-tag」のセッションだけ');
+      expect(await page.getByTestId('judge-scope-off').count()).toBe(0);
+      // 判定の回数の目安は、サーバが返す 1 回にまとめる依頼の数(chunk。今は 6)で割る
+      await expect.poll(() => page.getByTestId('judge-count').innerText()).toMatch(new RegExp(`^タスクタグ「scope-tag」の未判定の依頼 ${pending} 件のうち ${pending} 件を判定します\\(約 ${Math.ceil(pending / 6)} 回以上の判定。`));
+      // 「すべて」に戻すと、全体の未判定の数になる
+      await page.getByTestId('judge-scope-all').check();
+      await expect.poll(() => page.getByTestId('judge-count').innerText()).toMatch(/^未判定の依頼 \d+ 件のうち/);
+      await page.getByTestId('judge-scope-group').check();
+      await expect.poll(() => page.getByTestId('judge-count').innerText()).toMatch(/^タスクタグ「scope-tag」の/);
+      await page.getByTestId('judge-limit').fill('2');
+      await page.getByTestId('judge-run').click();
+      await dialog.waitFor({ state: 'hidden' });
+      expect(jobPosts.map((b) => JSON.parse(b))).toEqual([{ kind: 'turn-judge', limit: 2, group: 'scope-tag' }]);
+      await page.getByTestId('job-reload').waitFor({ state: 'visible', timeout: 60_000 });
+      // 増えた判定は、どれもタグのセッションの依頼
+      const added = (await readTurns()).filter((t) => !before.some((b) => b.sessionId === t.sessionId && b.turn === t.turn));
+      expect(added.length).toBeGreaterThan(0);
+      for (const t of added) expect(ids).toContain(t.sessionId);
+    } finally {
+      // 後のテストにタグを持ち越さない(元の中身に戻す。無かったなら消す)
+      if (original === null) await rm(groupsFile, { force: true });
+      else await writeFile(groupsFile, original);
+    }
   });
 
   it('g. 詳細ページの「記録を読む」「全文を作って読む」で本文が描かれ、記録に混ぜた script は実行されない', async () => {

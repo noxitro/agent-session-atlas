@@ -5,8 +5,8 @@
 //! scroll-focus・code-check の値は、TS の NAV_JS に埋め込まれた形のまま assets/nav.js に入っている(page_nav.rs)。
 //!
 //! ページの描画(段 4-2): build・detail・transcript・full・coverage・library・insights_page・glossary_page・page_nav・memo_render・
-//! memo_io・memo_editor・session_tools・viewer。ページに埋め込む JS と CSS の文字列は scripts/gen-report-assets.ts が TS から
-//! assets/ に書き出したもの(TS と違えば tests/assets_drift.rs が失敗する)。
+//! memo_io・memo_editor・session_tools・viewer。ページに埋め込む JS と CSS の文字列は assets/ にあり、そこを直接直す
+//! (はじめは TS から書き出したものだが、TS の元はもう無い)。
 
 pub mod aggregate;
 pub mod build;

@@ -1185,6 +1185,31 @@ fn opt_str<'a>(v: &'a Option<String>) -> Option<&'a str> {
     v.as_deref().filter(|s| !s.is_empty())
 }
 
+/// LLM 判定をしたかの札(工数と、依頼ごと)。済みかどうかを文字で出す(色だけに頼らない)。
+/// 判定できるものが無ければ出さない(工数は依頼があるセッション、依頼ごとは依頼ごとの記録がある依頼。atlas serve の判定の件数と同じ数え方)
+fn judge_tags(r: &SessionRecord, judgment: Option<&JudgmentSummary>, verdicts: Option<&TurnVerdicts>) -> String {
+    let mut s = String::new();
+    let tag = |testid: &str, title: &str, label: &str, value: &str| {
+        format!("<span class=\"tag judge\" data-testid=\"{testid}\" title=\"{}\"><span class=\"k\">{}</span>{value}</span>", esc(title), esc(label))
+    };
+    if judgment.is_some() {
+        s.push_str(&tag("judge-state-effort", "推定人手工数・成果の質・手戻りの LLM 判定(judgments.json)", "LLM 判定(工数)", "✓ 済み"));
+    } else if r.turns > 0 || opt_str(&r.first_user_message).is_some() {
+        s.push_str(&tag("judge-state-effort", "推定人手工数・成果の質・手戻りの LLM 判定(judgments.json)はまだありません", "LLM 判定(工数)", &missing("未判定")));
+    }
+    let m = r.analysis.turn_stats.as_ref().map_or(0, Vec::len);
+    if m > 0 {
+        let done = verdicts.map_or(0, |v| (1..=m).filter(|i| v.contains_key(&atlas_core::tables::turn_key(*i as f64))).count());
+        let value = match done {
+            0 => format!("{} / {} 件", missing("未判定"), int_i(m as i64)),
+            d if d == m => format!("✓ {} / {} 件", int_i(d as i64), int_i(m as i64)),
+            d => format!("{} / {} 件", int_i(d as i64), int_i(m as i64)),
+        };
+        s.push_str(&tag("judge-state-turns", "依頼ごとの採用・合わなかった点の LLM 判定(turn-judgments.json)。判定した依頼の数 / 依頼ごとの記録がある依頼の数", "LLM 判定(依頼ごと)", &value));
+    }
+    s
+}
+
 pub fn render_detail_html(r: &SessionRecord, o: &DetailOptions<'_>) -> String {
     let mut sec = Sections::default();
     let has_page = o.skill_has_page;
@@ -1216,6 +1241,7 @@ pub fn render_detail_html(r: &SessionRecord, o: &DetailOptions<'_>) -> String {
         ),
         if t.input.is_none() { "<span class=\"tag warn\">入力トークン記録なし</span>".into() } else { String::new() },
         if r.empty { "<span class=\"tag\">空のセッション(依頼・ツール・応答なし)</span>".into() } else { String::new() },
+        judge_tags(r, o.judgment, o.verdicts),
         format!("<span class=\"tag id\"><span class=\"sr-only\">セッション ID </span>{}</span>", esc(&r.id)),
     ]
     .join("");

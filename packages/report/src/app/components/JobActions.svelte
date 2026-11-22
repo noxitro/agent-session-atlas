@@ -4,19 +4,30 @@
   // ダイアログでは判定するもの(工数 = セッションごと / 依頼ごとの採用)と、判定の方法を選べる:
   // このツールから(copilot -p)か、チャットに貼る(M365 Copilot など。ChatJudge)か、ZIP にまとめてエージェントに渡す(工数の判定だけ。ChatJudge の via=zip)。
   // 選んだものはこのブラウザに覚える。
+  // このツールから判定するときは、対象を今選んでいるタスクタグのセッションだけに絞れる(1 セッションだけなら詳細ページから)。
   import { tick } from 'svelte';
-  import { jobsApi, type JudgePreview, type JudgeTarget } from '../api.ts';
+  import { jobsApi, type JudgePreview, type JudgeScope, type JudgeTarget } from '../api.ts';
   import type { JobStore } from '../jobs.svelte.ts';
   import { int } from '../../lib/format.ts';
   import ChatJudge from './ChatJudge.svelte';
 
-  let { jobs, disabled }: { jobs: JobStore; disabled: boolean } = $props();
+  let { jobs, disabled, currentGroup = null }: { jobs: JobStore; disabled: boolean; currentGroup?: string | null } = $props();
+
+  /** ダイアログを開いたときに選んでいたタスクタグ(開いている間に変わっても、数えた範囲と判定する範囲がずれない) */
+  let group = $state<string | null>(null);
+  let byGroup = $state(false);
+  const scope = $derived<JudgeScope | undefined>(byGroup && group ? { group } : undefined);
+  /** 件数の文の頭(タスクタグで絞っているときだけ) */
+  const where = $derived(scope ? `タスクタグ「${group}」の` : '');
+  function setScope(g: boolean): void {
+    byGroup = g;
+    runError = '';
+    void loadPreview();
+  }
 
   /** 件数の上限の最大(工数はセッション、依頼ごとの判定は依頼の数) */
   const LIMIT_MAX: Record<JudgeTarget, number> = { effort: 500, turns: 5000 };
   const LIMIT_DEFAULT: Record<JudgeTarget, number> = { effort: 10, turns: 60 };
-  /** 依頼の判定で 1 回にまとめる依頼の数の上限(judge の DEFAULT_TURN_LIMITS.chunkTurns と同じ。判定の回数の目安に使う) */
-  const TURN_CHUNK = 6;
   const TARGET_KEY = 'atlas.judge-target';
   let target = $state<JudgeTarget>(readTarget());
   function readTarget(): JudgeTarget {
@@ -75,6 +86,8 @@
     if (dlg) dlg.scrollTop = 0;
   }
   let preview = $state<JudgePreview | null>(null);
+  /** 依頼の判定で 1 回にまとめる依頼の数の上限(サーバが judge-preview の chunk で返す。返さない古いサーバのときだけ 6。判定の回数の目安に使う) */
+  const turnChunk = $derived(preview?.chunk && preview.chunk > 0 ? preview.chunk : 6);
   let previewError = $state('');
   let runError = $state('');
   let limit = $state<number | null>(LIMIT_DEFAULT[readTarget()]);
@@ -87,26 +100,31 @@
     preview = null;
     previewError = '';
     runError = '';
+    // タスクタグを選んでいれば、はじめはそのタグのセッションだけを対象にする(画面に出ている範囲と合わせる)
+    group = currentGroup;
+    byGroup = !!currentGroup;
     open = true;
     dlg?.showModal();
     await focusInitial();
     await loadPreview();
   }
+  /** 最後に数え始めたものだけを出す(判定するものや対象を続けて切り替えたとき、前の結果で上書きしない) */
+  let seq = 0;
   async function loadPreview(): Promise<void> {
     preview = null;
     previewError = '';
-    const t = target;
+    const n = ++seq;
     try {
-      const p = await jobsApi.judgePreview(jobs.token, t);
-      if (t === target) preview = p;
+      const p = await jobsApi.judgePreview(jobs.token, target, scope);
+      if (n === seq) preview = p;
     } catch (e) {
-      if (t === target) previewError = (e as Error).message;
+      if (n === seq) previewError = (e as Error).message;
     }
   }
   async function runJudge(e: SubmitEvent): Promise<void> {
     e.preventDefault();
     if (!limitOk || count < 1 || jobs.busy) return;
-    const req = target === 'turns' ? { kind: 'turn-judge' as const, limit: limit as number } : { kind: 'judge' as const, limit: limit as number };
+    const req = target === 'turns' ? { kind: 'turn-judge' as const, limit: limit as number, ...scope } : { kind: 'judge' as const, limit: limit as number, ...scope };
     if (await jobs.run(req)) dlg?.close();
     else runError = jobs.error;
   }
@@ -151,6 +169,12 @@
     {#if open}{#key target}<ChatJudge {jobs} {target} via={shown === 'zip' ? 'zip' : 'chat'} bind:reply={replies[target]} onclose={() => dlg?.close()} />{/key}{/if}
   {:else}
     <form onsubmit={runJudge} aria-busy={jobs.busy}>
+      <fieldset class="fld method">
+        <legend class="k">対象</legend>
+        <label class="opt"><input type="radio" name="judge-scope" value="all" checked={!scope} onchange={() => setScope(false)} data-testid="judge-scope-all" />すべてのセッション</label>
+        <label class="opt" class:off={!group}><input type="radio" name="judge-scope" value="group" checked={!!scope} disabled={!group} aria-describedby={group ? undefined : 'judge-scope-off'} onchange={() => setScope(true)} data-testid="judge-scope-group" />{group ? `タスクタグ「${group}」のセッションだけ` : 'タスクタグのセッションだけ'}</label>
+        {#if !group}<p class="why" id="judge-scope-off" data-testid="judge-scope-off">タスクタグの一覧でタグを選んでから開くと、そのタグのセッションだけを判定できます。1 つのセッションだけなら、そのセッションの詳細ページから判定できます。</p>{/if}
+      </fieldset>
       <p class="lead">
         {#if target === 'turns'}未判定の依頼を LLM に判定させ、採用されたか・合わなかった点・工程をレポートに足します。依頼数件をまとめて 1 回で判定します。判定用のファイルを作り直す → 判定する → レポートを作り直す、の順に自動で進みます。
         {:else}未判定のセッションを LLM に判定させ、推定人手工数をレポートに足します。判定用のファイルを作り直す → 判定する → レポートを作り直す、の順に自動で進みます。{/if}
@@ -168,15 +192,15 @@
         {#if !limitOk}件数の上限は 1〜{int(LIMIT_MAX[target])} の整数で指定してください。
         {:else if previewError}未判定の件数を数えられませんでした: {previewError}
         {:else if !preview}未判定の件数を数えています…
-        {:else if preview.pending === 0}未判定の{unit}はありません(判定済み {int(preview.judged)} 件)。
-        {:else}未判定の{unit} {int(preview.pending)} 件のうち <strong>{int(count)} 件</strong>を判定します({#if target === 'turns'}約 {int(Math.ceil(count / TURN_CHUNK))} 回以上の判定。{/if}判定済み {int(preview.judged)} 件は判定し直しません)。{/if}
+        {:else if preview.pending === 0}{where}未判定の{unit}はありません(判定済み {int(preview.judged)} 件)。
+        {:else}{where}未判定の{unit} {int(preview.pending)} 件のうち <strong>{int(count)} 件</strong>を判定します({#if target === 'turns'}約 {int(Math.ceil(count / turnChunk))} 回以上の判定。{/if}判定済み {int(preview.judged)} 件は判定し直しません)。{/if}
         {#if target === 'turns' && preview?.withoutTurns}<br />依頼ごとの記録が無いセッションが {int(preview.withoutTurns)} 件あります(古い集計)。先に「集計し直す」を押すと、その依頼も判定できます。{/if}
       </p>
       <p class="cost" id="judge-cost">
         {#if preview?.byok}<strong>API の利用料がかかります。</strong>
-          自分の API キーのモデル(BYOK)で判定するので、GitHub Copilot の AI クレジットは使いません。そのモデルの提供元(例: Anthropic)の API の従量課金を、{#if target === 'turns'}続いた依頼 {TURN_CHUNK} 件まで(長い依頼はもっと少なく)ごとに 1 回{:else}1 件につき 1 回以上{/if}の判定の分だけ使います。
+          自分の API キーのモデル(BYOK)で判定するので、GitHub Copilot の AI クレジットは使いません。そのモデルの提供元(例: Anthropic)の API の従量課金を、{#if target === 'turns'}続いた依頼 {turnChunk} 件まで(長い依頼はもっと少なく)ごとに 1 回{:else}1 件につき 1 回以上{/if}の判定の分だけ使います。
         {:else}<strong>AI クレジットを消費します。</strong>
-          {#if target === 'turns'}GitHub Copilot の AI クレジットを、続いた依頼 {TURN_CHUNK} 件まで(長い依頼はもっと少なく)ごとに 1 回の判定の分だけ使います。{:else}GitHub Copilot の AI クレジットを、1 件につき 1 回以上の判定の分だけ使います。{/if}
+          {#if target === 'turns'}GitHub Copilot の AI クレジットを、続いた依頼 {turnChunk} 件まで(長い依頼はもっと少なく)ごとに 1 回の判定の分だけ使います。{:else}GitHub Copilot の AI クレジットを、1 件につき 1 回以上の判定の分だけ使います。{/if}
           自分の API キーのモデル(BYOK)で判定するには、atlas.config.json に <code>"judgeModel": "anthropic/claude-sonnet-5-5"</code> のように書きます。
         {/if}
         {#if preview?.modelError}<br />設定ファイルを読めませんでした: {preview.modelError}{/if}
