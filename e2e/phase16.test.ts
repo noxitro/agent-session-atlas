@@ -15,12 +15,12 @@ import type { SessionRecord, SessionsFile } from '../packages/report/src/shared/
 import type { SessionStoreJson } from './output-types.ts';
 import { hasUsageRows } from './sqlite.ts';
 import { extractEmbedded } from '../packages/report/src/lib/embed.ts';
-import { buildFixtureHome, ROOT, cliCommand } from './fixture-home.ts';
+import { buildFixtureHome, ROOT, cliCommand, uploadDirName, uploadProjects } from './fixture-home.ts';
 import { folderPaths, foldersRootOf } from './folders.ts';
 
 const WORK = join(ROOT, 'out', 'e2e-phase16');
-const GROUP_A = 'Read-Side-A';
-const GROUP_B = 'Read-Side-B';
+const FOLDER_A = 'Read-Side-A';
+const FOLDER_B = 'Read-Side-B';
 /** 作業フォルダの .git/config からプロジェクト名が決まるセッション(ログに repository の記録が無い) */
 const GIT_SESSION = '00000000-0000-4000-8000-000000160001';
 
@@ -77,17 +77,16 @@ describe('Phase 16 E2E: アップロード先から集計し直す(読む側)', 
   let close: () => Promise<void>;
   let home: string;
   const out1 = join(WORK, 'out-src');
-  const notes = join(WORK, 'notes');
   const root = join(WORK, 'atlas-logs');
-  const destA = join(root, GROUP_A);
-  const destB = join(root, GROUP_B);
+  const destA = join(root, FOLDER_A);
+  const destB = join(root, FOLDER_B);
   const repo = join(WORK, 'pc-a', 'my-app');
   let original: SessionsFile;
   /** DB とフォルダの両方があり、トークンが記録されているセッション */
   let ids: string[];
-  /** グループ B に入れる、別のセッション */
+  /** フォルダ B に入れる、別のセッション */
   let other: string;
-  /** グループ A を集計し直したもの(消し残しや壊れたファイルが無いときの基準) */
+  /** フォルダ A を集計し直したもの(消し残しや壊れたファイルが無いときの基準) */
   let clean: SessionsFile;
 
   beforeAll(async () => {
@@ -116,17 +115,22 @@ describe('Phase 16 E2E: アップロード先から集計し直す(読む側)', 
       if (await hasUsageRows(join(out1, 'snapshot', 'session-store.db'), x.id)) ids.push(x.id);
     }
     expect(ids).toHaveLength(2);
-    other = original.sessions.find((x) => !ids.includes(x.id) && x.id !== GIT_SESSION && existsSync(join(out1, 'snapshot', 'session-state', x.id, 'events.jsonl')))!.id;
-    await mkdir(notes, { recursive: true });
-    await writeFile(
-      join(notes, 'groups.json'),
-      JSON.stringify({ version: 1, groups: [{ name: GROUP_A, note: '', ids: [...ids, GIT_SESSION] }, { name: GROUP_B, note: '', ids: [other] }] }),
-    );
-    await mkdir(root, { recursive: true });
-    for (const g of [GROUP_A, GROUP_B]) {
-      const r = atlas(['group', 'upload', g, '--to', root, '--out', out1, '--notes-dir', notes]);
-      expect(r.status, r.out).toBe(0);
-    }
+    other = original.sessions.find((x) => !ids.includes(x.id) && x.id !== GIT_SESSION && !x.empty && existsSync(join(out1, 'snapshot', 'session-state', x.id, 'events.jsonl')))!.id;
+    // 4 つのセッションのプロジェクトを送る(この fixture では、どれも別のプロジェクトで、そのプロジェクトの送れるセッションはそれだけ)
+    const projectOf = (id: string): string => original.sessions.find((s) => s.id === id)!.project;
+    const sent = [...ids, GIT_SESSION, other];
+    expect(new Set(sent.map(projectOf)).size).toBe(4);
+    for (const id of sent) expect(original.sessions.filter((s) => s.project === projectOf(id) && !s.empty).map((s) => s.id)).toEqual([id]);
+    const raw = join(WORK, 'atlas-logs-raw');
+    await mkdir(raw, { recursive: true });
+    const up = uploadProjects({ home, out: out1, root: raw, projects: sent.map(projectOf), configPath: join(WORK, 'atlas.config.json') });
+    expect(up.status, up.out).toBe(0);
+    // 読む側を確かめるフォルダを、送ったものから組み立てる: A は 3 つのプロジェクトのセッションをまとめたもの(索引・説明は GIT_SESSION のプロジェクトのもの)、
+    // B は 1 つのプロジェクトのフォルダのまま(名前だけ変える)。読む側はフォルダの中のセッションのフォルダと、添えた記録を読む
+    await mkdir(destA, { recursive: true });
+    for (const id of [...ids, GIT_SESSION]) await cp(join(raw, uploadDirName(projectOf(id)), id), join(destA, id), { recursive: true });
+    for (const name of ['README.md', 'atlas-index.json', 'atlas-installed.json']) await cp(join(raw, uploadDirName(projectOf(GIT_SESSION)), name), join(destA, name));
+    await cp(join(raw, uploadDirName(projectOf(other))), destB, { recursive: true });
     clean = await aggregate(destA, join(WORK, 'out-clean'));
     expect(clean.sessions.map((s) => s.id).sort()).toEqual([...ids, GIT_SESSION].sort());
     expect(tokens(clean.sessions)).toBeGreaterThan(0);
@@ -223,21 +227,21 @@ describe('Phase 16 E2E: アップロード先から集計し直す(読む側)', 
     const out = join(WORK, 'out-base');
     const r = atlas(['all', '--home', root, '--out', out]);
     expect(r.status, r.out).toBe(0);
-    expect(r.out).toContain(`下のフォルダ 2 件をまとめて読みました(${GROUP_A}、${GROUP_B})`);
+    expect(r.out).toContain(`下のフォルダ 2 件をまとめて読みました(${FOLDER_A}、${FOLDER_B})`);
     const merged = JSON.parse(await readFile(join(out, 'sessions.json'), 'utf8')) as SessionsFile;
-    expect(merged.source).toMatchObject({ layout: 'merged', folders: [GROUP_A, GROUP_B] });
+    expect(merged.source).toMatchObject({ layout: 'merged', folders: [FOLDER_A, FOLDER_B] });
     expect(merged.sessions.map((x) => x.id).sort()).toEqual([...ids, GIT_SESSION, other].sort());
     // フォルダ 1 つずつ集計したときと、セッションごとの中身が同じ(トークンも、送った側の記録から取るプロジェクト名も)。
     // 数えたフォルダ(uploadFolder)だけは、元のルートからの相対パスなので違う(1 つずつなら '.'、まとめて読めば <フォルダ>)
     const strip = (f: SessionsFile) => f.sessions.filter((x) => x.id !== other).map(({ instructions: _i, uploadFolder: _f, ...rest }) => rest);
     expect(strip(merged)).toEqual(strip(clean));
-    expect(Object.fromEntries(merged.sessions.filter((x) => ids.includes(x.id)).map((x) => [x.id, x.uploadFolder]))).toEqual(Object.fromEntries(ids.map((id) => [id, GROUP_A])));
+    expect(Object.fromEntries(merged.sessions.filter((x) => ids.includes(x.id)).map((x) => [x.id, x.uploadFolder]))).toEqual(Object.fromEntries(ids.map((id) => [id, FOLDER_A])));
     expect(clean.sessions.every((x) => x.uploadFolder === '.')).toBe(true);
     expect(existsSync(join(out, 'atlas.html'))).toBe(true);
     // 同じセッションを 2 つのフォルダに送ってあっても、1 度だけ数える
     const twice = join(WORK, 'atlas-logs-twice');
     await cp(root, twice, { recursive: true });
-    await cp(join(twice, GROUP_A, ids[0]), join(twice, GROUP_B, ids[0]), { recursive: true });
+    await cp(join(twice, FOLDER_A, ids[0]), join(twice, FOLDER_B, ids[0]), { recursive: true });
     const again = await aggregate(twice, join(WORK, 'out-twice'));
     expect(again.sessions.map((x) => x.id).sort()).toEqual([...ids, GIT_SESSION, other].sort());
     expect(tokens(again.sessions)).toBe(tokens(merged.sessions));
@@ -245,18 +249,18 @@ describe('Phase 16 E2E: アップロード先から集計し直す(読む側)', 
     const everyone = join(WORK, 'everyone');
     await cp(root, join(everyone, 'person-a'), { recursive: true });
     await cp(root, join(everyone, 'person-b'), { recursive: true });
-    // 送った人のインストール済みの記録: 人ごとに、新しいほうの記録だけを使う(person-a の GROUP_B は古い記録)
+    // 送った人のインストール済みの記録: 人ごとに、新しいほうの記録だけを使う(person-a の FOLDER_B は古い記録)
     const inventory = (sentAt: string, skills: string[]) => JSON.stringify({ version: 1, sentAt, skills, plugins: [], disabledSkills: [], warnings: [] });
-    await writeFile(join(everyone, 'person-a', GROUP_A, 'atlas-installed.json'), inventory('2026-11-10T00:00:00.000Z', ['zz-skill-a']));
-    await writeFile(join(everyone, 'person-a', GROUP_B, 'atlas-installed.json'), inventory('2026-11-01T00:00:00.000Z', ['zz-removed']));
-    await writeFile(join(everyone, 'person-b', GROUP_A, 'atlas-installed.json'), inventory('2026-11-10T00:00:00.000Z', ['zz-skill-b']));
-    await writeFile(join(everyone, 'person-b', GROUP_B, 'atlas-installed.json'), inventory('2026-11-09T00:00:00.000Z', ['zz-skill-b']));
+    await writeFile(join(everyone, 'person-a', FOLDER_A, 'atlas-installed.json'), inventory('2026-11-10T00:00:00.000Z', ['zz-skill-a']));
+    await writeFile(join(everyone, 'person-a', FOLDER_B, 'atlas-installed.json'), inventory('2026-11-01T00:00:00.000Z', ['zz-removed']));
+    await writeFile(join(everyone, 'person-b', FOLDER_A, 'atlas-installed.json'), inventory('2026-11-10T00:00:00.000Z', ['zz-skill-b']));
+    await writeFile(join(everyone, 'person-b', FOLDER_B, 'atlas-installed.json'), inventory('2026-11-09T00:00:00.000Z', ['zz-skill-b']));
     const out2 = join(WORK, 'out-everyone');
     const r2 = atlas(['all', '--home', everyone, '--out', out2]);
     expect(r2.status, r2.out).toBe(0);
     expect(r2.out).toContain('下のフォルダ 4 件をまとめて読みました(');
     const all = JSON.parse(await readFile(join(out2, 'sessions.json'), 'utf8')) as SessionsFile;
-    expect(all.source).toMatchObject({ layout: 'merged', folders: [`person-a/${GROUP_A}`, `person-a/${GROUP_B}`, `person-b/${GROUP_A}`, `person-b/${GROUP_B}`] });
+    expect(all.source).toMatchObject({ layout: 'merged', folders: [`person-a/${FOLDER_A}`, `person-a/${FOLDER_B}`, `person-b/${FOLDER_A}`, `person-b/${FOLDER_B}`] });
     expect(all.sessions.map((x) => x.id).sort()).toEqual([...ids, GIT_SESSION, other].sort());
     expect(tokens(all.sessions)).toBe(tokens(merged.sessions));
     expect(existsSync(join(out2, 'atlas.html'))).toBe(true);
@@ -269,7 +273,7 @@ describe('Phase 16 E2E: アップロード先から集計し直す(読む側)', 
     expect(r2.out).not.toMatch(/古い atlas で送った/);
     // 人のフォルダ 1 つを指すと、その人の分だけ
     const one = await aggregate(join(everyone, 'person-b'), join(WORK, 'out-person-b'));
-    expect(one.source).toMatchObject({ layout: 'merged', folders: [GROUP_A, GROUP_B] });
+    expect(one.source).toMatchObject({ layout: 'merged', folders: [FOLDER_A, FOLDER_B] });
     expect(one.sessions.map((x) => x.id).sort()).toEqual([...ids, GIT_SESSION, other].sort());
   }, 180_000);
 
@@ -309,7 +313,7 @@ describe('Phase 16 E2E: アップロード先から集計し直す(読む側)', 
       expect(output).toContain('2 段下まで読み');
       // 集計はフォルダごとの置き場に出る。いつもの出力先には何も作らない
       const all = JSON.parse(await readFile(join(fp.out, 'sessions.json'), 'utf8')) as SessionsFile;
-      expect(all.source).toMatchObject({ layout: 'merged', folders: [`person-a/${GROUP_A}`, `person-a/${GROUP_B}`, `person-b/${GROUP_A}`, `person-b/${GROUP_B}`] });
+      expect(all.source).toMatchObject({ layout: 'merged', folders: [`person-a/${FOLDER_A}`, `person-a/${FOLDER_B}`, `person-b/${FOLDER_A}`, `person-b/${FOLDER_B}`] });
       expect(all.sessions.map((x) => x.id).sort()).toEqual([...ids, GIT_SESSION, other].sort());
       expect(existsSync(localOut)).toBe(false);
       expect(JSON.parse(await readFile(fp.state, 'utf8'))).toMatchObject({ path: everyone, name: 'everyone-open', listed: true, run: { state: 'serving', pid: child.pid } });
@@ -325,7 +329,7 @@ describe('Phase 16 E2E: アップロード先から集計し直す(読む側)', 
       // サーバが動いたまま、送り先にセッションが増えた。同じフォルダをもう一度開くと、送り先を読み直してから、動いているサーバを使う
       // (前は読み直さずに開くだけだったので、増えたセッションが出なかった)
       const added = '00000000-0000-4000-8000-000000169999';
-      await cp(join(everyone, 'person-a', GROUP_A, ids[0]), join(everyone, 'person-a', GROUP_A, added), { recursive: true });
+      await cp(join(everyone, 'person-a', FOLDER_A, ids[0]), join(everyone, 'person-a', FOLDER_A, added), { recursive: true });
       const again = atlas(['open', everyone, '--out', localOut, '--notes-dir', localNotes, '--no-open']);
       expect(again.status, again.out).toBe(0);
       expect(again.out).toMatch(/snapshot: /);
@@ -336,12 +340,12 @@ describe('Phase 16 E2E: アップロード先から集計し直す(読む側)', 
       // 動いているサーバの画面(新しく開いたタブ)にも出る
       const fresh = extractEmbedded<{ sessions: { id: string }[] }>(await (await fetch(url)).text());
       expect(fresh.sessions.map((x) => x.id)).toContain(added);
-      // 開いた画面は読むだけ: タスクタグは作れず、どちらの置き場にも書かない
-      const made = await fetch(new URL('api/groups', url), { method: 'POST', headers: { 'content-type': 'application/json', 'x-atlas-token': token }, body: JSON.stringify({ name: '全員の分のタグ', note: '', ids: [ids[0]] }) });
+      // 開いた画面は読むだけ: メモは書けず、どちらの置き場にも書かない
+      const made = await fetch(new URL(`api/memos/${ids[0]}`, url), { method: 'PUT', headers: { 'content-type': 'application/json', 'x-atlas-token': token }, body: JSON.stringify({ text: '全員の分のメモ', rev: '' }) });
       expect(made.status).toBe(403);
       expect(((await made.json()) as { error: string }).error).toMatch(/読むだけ/);
-      expect(existsSync(join(fp.notes, 'groups.json'))).toBe(false);
-      expect(existsSync(join(localNotes, 'groups.json'))).toBe(false);
+      expect(existsSync(join(fp.notes, 'memos'))).toBe(false);
+      expect(existsSync(join(localNotes, 'memos'))).toBe(false);
       const st = (await (await fetch(new URL('api/state', url), { headers: { 'x-atlas-token': token } })).json()) as { readOnly: boolean };
       expect(st.readOnly).toBe(true);
     } finally {
@@ -376,7 +380,7 @@ describe('Phase 16 E2E: アップロード先から集計し直す(読む側)', 
     expect(same).not.toMatch(/extract: |build: /);
     expect(await readFile(join(fp.out, 'atlas.html'), 'utf8')).toBe(htmlBefore);
     // 元のフォルダのログが増えた: 作り直す
-    const events = join(everyone, 'person-a', GROUP_A, ids[0], 'events.jsonl');
+    const events = join(everyone, 'person-a', FOLDER_A, ids[0], 'events.jsonl');
     await writeFile(events, `${await readFile(events, 'utf8')}
 `);
     const grown = await open();
@@ -399,7 +403,7 @@ describe('Phase 16 E2E: アップロード先から集計し直す(読む側)', 
     const before = JSON.parse(await readFile(join(fp.out, 'sessions.json'), 'utf8')) as SessionsFile;
     expect(before.sessions.map((x) => x.id)).toContain(gone);
     expect(existsSync(join(fp.out, 'snapshot', 'session-state', gone))).toBe(true);
-    await rm(join(everyone, 'person-a', GROUP_A, gone), { recursive: true, force: true });
+    await rm(join(everyone, 'person-a', FOLDER_A, gone), { recursive: true, force: true });
     const removed = await open();
     expect(removed).toContain('元のフォルダから無くなっていたセッション 1 件の複製を消しました');
     expect(removed).not.toMatch(REUSED);
@@ -414,7 +418,7 @@ describe('Phase 16 E2E: アップロード先から集計し直す(読む側)', 
     // 人ごとのフォルダを丸ごと消した: その人だけが持っていたセッションの複製を消し、そのフォルダを読まなくなる
     // (person-b のほかのセッションは person-a にも同じ id があるので、消えない)
     const onlyB = '00000000-0000-4000-8000-000000169998';
-    await cp(join(everyone, 'person-b', GROUP_A, ids[0]), join(everyone, 'person-b', GROUP_A, onlyB), { recursive: true });
+    await cp(join(everyone, 'person-b', FOLDER_A, ids[0]), join(everyone, 'person-b', FOLDER_A, onlyB), { recursive: true });
     expect(await open()).not.toMatch(REUSED);
     expect((JSON.parse(await readFile(join(fp.out, 'sessions.json'), 'utf8')) as SessionsFile).sessions.map((x) => x.id)).toContain(onlyB);
     await rm(join(everyone, 'person-b'), { recursive: true, force: true });
@@ -422,14 +426,14 @@ describe('Phase 16 E2E: アップロード先から集計し直す(読む側)', 
     expect(personGone).toContain('元のフォルダから無くなっていたセッション 1 件の複製を消しました');
     expect(personGone).not.toMatch(REUSED);
     const onlyA = JSON.parse(await readFile(join(fp.out, 'sessions.json'), 'utf8')) as SessionsFile;
-    expect(onlyA.source).toMatchObject({ folders: [`person-a/${GROUP_A}`, `person-a/${GROUP_B}`] });
+    expect(onlyA.source).toMatchObject({ folders: [`person-a/${FOLDER_A}`, `person-a/${FOLDER_B}`] });
     expect(onlyA.sessions.map((x) => x.id)).not.toContain(onlyB);
     expect(onlyA.sessions.map((x) => x.id).sort()).toEqual(after.sessions.map((x) => x.id).sort());
     // 前にあったフォルダを読めないとき(ここでは、フォルダの代わりに同じ名前のファイルを置く)は、無くなったとみなさない:
     // 複製を消さずに数え、ログとレポートの警告に出す
     const hidden = join(WORK, 'group-b-hidden');
-    await rename(join(everyone, 'person-a', GROUP_B), hidden);
-    await writeFile(join(everyone, 'person-a', GROUP_B), 'not a folder');
+    await rename(join(everyone, 'person-a', FOLDER_B), hidden);
+    await writeFile(join(everyone, 'person-a', FOLDER_B), 'not a folder');
     const unreadable = await open();
     expect(unreadable).toContain('複製を消さず、前に写した複製で数えます');
     expect(unreadable).not.toContain('複製を消しました');
@@ -437,8 +441,8 @@ describe('Phase 16 E2E: アップロード先から集計し直す(読む側)', 
     expect(keptAll.sessions.map((x) => x.id).sort()).toEqual(onlyA.sessions.map((x) => x.id).sort());
     expect(keptAll.warnings.messages.join('\n')).toMatch(/今回は元から読まなかったセッション \d+ 件は、前に写した複製で数えている/);
     // 読めるようになれば、警告は消える
-    await rm(join(everyone, 'person-a', GROUP_B), { force: true });
-    await rename(hidden, join(everyone, 'person-a', GROUP_B));
+    await rm(join(everyone, 'person-a', FOLDER_B), { force: true });
+    await rename(hidden, join(everyone, 'person-a', FOLDER_B));
     expect(await open()).not.toContain('複製を消さず');
     expect((JSON.parse(await readFile(join(fp.out, 'sessions.json'), 'utf8')) as SessionsFile).warnings.messages.join('\n')).not.toContain('今回は元から読まなかった');
   }, 600_000);

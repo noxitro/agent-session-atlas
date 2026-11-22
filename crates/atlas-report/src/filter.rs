@@ -3,7 +3,7 @@
 use crate::types::SessionSummary;
 use atlas_core::collate::locale_compare;
 use atlas_core::types::SessionRecord;
-use atlas_core::{js, jsdate};
+use atlas_core::jsdate;
 use std::collections::{HashMap, HashSet};
 
 pub const ALL: &str = "";
@@ -170,8 +170,6 @@ pub struct FilterState {
     pub tool: String,
     /// セッションの選択(id をカンマ区切り。'' は制限なし)
     pub ids: String,
-    /// 選んだグループの名前('' は無し)
-    pub group: String,
     /// '1' ならメモのあるセッションだけ
     pub memo: String,
     /// '1' なら llm-wiki を参照したセッションだけ(WikiSummary::referenced。書き込みだけは入れない)
@@ -179,11 +177,9 @@ pub struct FilterState {
 }
 
 pub const NO_JUDGMENT: &str = "(none)";
-/// どのセッションにも当たらない id(0 件のグループを「制限なし」('')と区別する)
-pub const NO_SESSION: &str = "(none)";
 
 /// FilterState のキー(emptyFilter のキーの順。URL ハッシュの書き出しの順)
-pub const FILTER_KEYS: [&str; 15] = ["from", "to", "project", "person", "client", "model", "branch", "coverage", "taskCategory", "empty", "tool", "ids", "group", "memo", "wiki"];
+pub const FILTER_KEYS: [&str; 14] = ["from", "to", "project", "person", "client", "model", "branch", "coverage", "taskCategory", "empty", "tool", "ids", "memo", "wiki"];
 
 impl FilterState {
     pub fn get(&self, k: &str) -> &str {
@@ -200,7 +196,6 @@ impl FilterState {
             "empty" => &self.empty,
             "tool" => &self.tool,
             "ids" => &self.ids,
-            "group" => &self.group,
             "memo" => &self.memo,
             "wiki" => &self.wiki,
             _ => "",
@@ -221,7 +216,6 @@ impl FilterState {
             "empty" => &mut self.empty,
             "tool" => &mut self.tool,
             "ids" => &mut self.ids,
-            "group" => &mut self.group,
             "memo" => &mut self.memo,
             "wiki" => &mut self.wiki,
             _ => return None,
@@ -237,74 +231,18 @@ pub fn empty_filter() -> FilterState {
     FilterState::default()
 }
 
-/// グループの名前と id(SessionGroup・ReportGroup)
-pub trait NamedIds {
-    fn name(&self) -> &str;
-    fn ids(&self) -> &[String];
-}
-
-impl NamedIds for crate::groups::SessionGroup {
-    fn name(&self) -> &str {
-        &self.name
-    }
-    fn ids(&self) -> &[String] {
-        &self.ids
-    }
-}
-
-/// effectiveIds の戻り
-#[derive(Debug, Clone, PartialEq)]
-pub struct EffectiveIds<'g, G> {
-    pub group: Option<&'g G>,
-    pub ids: String,
-}
-
-/// 集計に使う id の集合を決める: group の名前が groups にあればその今の ids、無ければ ids
-pub fn effective_ids<'g, G: NamedIds>(ids: &str, group: &str, groups: &'g [G], known: &HashSet<String>) -> EffectiveIds<'g, G> {
-    let g = if group.is_empty() { None } else { groups.iter().find(|x| x.name() == group) };
-    match g {
-        None => EffectiveIds { group: None, ids: ids.to_string() },
-        Some(g) => EffectiveIds { group: Some(g), ids: group_ids(g.ids(), known) },
-    }
-}
-
-/// 現在のグループ名(名前で決まればそれ。決まらないときは ids の一致で探す。0 件・重複は決めない)
-pub fn current_group_name<G: NamedIds>(ids: &str, group: &str, groups: &[G], known: &HashSet<String>) -> Option<String> {
-    let e = effective_ids(ids, group, groups, known);
-    if let Some(g) = e.group {
-        return Some(g.name().to_string());
-    }
-    if ids.is_empty() || ids == NO_SESSION {
-        return None;
-    }
-    let hits: Vec<&G> = groups.iter().filter(|g| same_ids(ids, &group_ids(g.ids(), known))).collect();
-    if hits.len() == 1 { Some(hits[0].name().to_string()) } else { None }
-}
-
 /// 一覧のチェックに写す選択: ids のうち記録にあるものだけ
 pub fn known_selection(ids: &str, known: &HashSet<String>) -> Vec<String> {
     split_ids(ids).into_iter().filter(|id| known.contains(id)).collect()
 }
 
-/// グループの絞り込みに使う ids: 記録にある id、無ければ元の ids、それも無ければ NO_SESSION(= 0 件)
-pub fn group_ids(ids: &[String], known: &HashSet<String>) -> String {
-    let present: Vec<&str> = ids.iter().filter(|id| known.contains(*id)).map(String::as_str).collect();
-    if !present.is_empty() {
-        join_ids(present)
-    } else if !ids.is_empty() {
-        join_ids(ids.iter().map(String::as_str))
-    } else {
-        join_ids([NO_SESSION])
-    }
-}
-
 /// ids(カンマ区切り)を配列に(空要素と重複は除く)
 pub fn split_ids(ids: &str) -> Vec<String> {
-    crate::groups::unique_ids(ids.split(','))
+    crate::ids::unique_ids(ids.split(','))
 }
 
 pub fn join_ids<'a>(ids: impl IntoIterator<Item = &'a str>) -> String {
-    crate::groups::unique_ids(ids).join(",")
+    crate::ids::unique_ids(ids).join(",")
 }
 
 /// 2 つの ids が同じ集合か(順序は無視)
@@ -527,9 +465,6 @@ pub fn decode_filter(s: &str) -> FilterState {
         }
         if k == "ids" {
             v = join_ids(split_ids(&v).iter().map(String::as_str));
-        }
-        if k == "group" {
-            v = js::trim(&v).to_string();
         }
         *f.get_mut(k).expect("FILTER_KEYS のキー") = v;
     }

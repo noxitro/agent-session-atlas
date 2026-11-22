@@ -3,7 +3,7 @@
 //! 入力が前と同じなら出力も同じなので省く。
 //!   <置き場>/<キー>/built.json … 前に集計したときの入力の印(key)と、そのとき書いた出力の大きさと更新日時(outputs)
 //! 入力の印に入れるもの(どれかが変われば作り直す): atlas のコードの版(code_stamp)、集計に渡したオプションと設定ファイルの中身、
-//! 写した複製(<out>/snapshot/)の全ファイルの名前・大きさ・更新日時と manifest(作った日時は除く)、判定とタスクタグの大きさと更新日時。
+//! 写した複製(<out>/snapshot/)の全ファイルの名前・大きさ・更新日時と manifest(作った日時は除く)、判定の大きさと更新日時。
 //! 出力(atlas.html・sessions.json・metrics.json と、あれば vcs-retention.json)が built.json に書いたものと違えば作り直す。
 //! TS 版と同じ built.json を読み書きする(印の作り方も同じ)。
 
@@ -32,7 +32,6 @@ pub struct ReusePaths<'a> {
     pub snapshot: &'a Path,
     pub judgments: &'a Path,
     pub turn_judgments: &'a Path,
-    pub groups: &'a Path,
 }
 
 /// 確かめる出力(出力先からの相対パス)
@@ -134,7 +133,7 @@ pub fn inputs_key(p: &ReusePaths<'_>, options: &Value, config_path: &Path, code:
     }
     files.sort_by(|a, b| js::cmp_utf16(a, b));
     add("snapshot", &files.join("\n"));
-    for (label, path) in [("judgments", p.judgments), ("turn-judgments", p.turn_judgments), ("groups", p.groups)] {
+    for (label, path) in [("judgments", p.judgments), ("turn-judgments", p.turn_judgments)] {
         add(label, &stat_key(path).unwrap_or_default());
     }
     Ok(hex::encode(h.finalize()))
@@ -185,7 +184,7 @@ mod tests {
             std::fs::write(out.join(f), "x").unwrap();
         }
         let none = d.path().join("none");
-        let rp = ReusePaths { snapshot: &snap, judgments: &none, turn_judgments: &none, groups: &none };
+        let rp = ReusePaths { snapshot: &snap, judgments: &none, turn_judgments: &none };
         let opts = serde_json::json!({ "since": null });
         let key = inputs_key(&rp, &opts, &none, "code1").unwrap();
         assert_eq!(key, inputs_key(&rp, &opts, &none, "code1").unwrap());

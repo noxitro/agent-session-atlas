@@ -14,7 +14,6 @@ use atlas_core::metrics::compute_metrics;
 use atlas_core::types::{SessionRecord, SessionsFile, METRICS_SCHEMA_VERSION};
 use atlas_core::vcs_step::read_vcs_retention;
 use atlas_report::build::{build_report, page_css, template, BuildInput, BuildScope, BuildWarnings, ReportSource, TranscriptSettings, HTML_SIZE_LIMIT};
-use atlas_report::groups::{member_groups_keyed, MemberSource};
 use atlas_report::judgments::parse_judgments;
 use atlas_report::memo_io::memos_dir;
 use atlas_report::transcript::{ToolOutputMode, DEFAULT_GAP_MS, DEFAULT_MAX_TEXT_CHARS, DEFAULT_MAX_TOOL_CHARS};
@@ -131,7 +130,7 @@ pub fn run_build(p: &Paths, o: &BuildOptions, log: Log<'_>) -> Result<BuildResul
         None => {}
     }
 
-    write_tables(p, &sessions, &super::metrics::condition_groups(p, &sel), cmd, log)?;
+    write_tables(p, &sessions, cmd, log)?;
 
     let unknown: i64 = s.warnings.unknown_event_types.values().sum();
     let layout = s.source.layout.map(|l| match l {
@@ -140,13 +139,7 @@ pub fn run_build(p: &Paths, o: &BuildOptions, log: Log<'_>) -> Result<BuildResul
     });
     // 読むだけの画面にするか(送り先から集計した、または別のフォルダを開いた出力先。サーバと同じ判定)
     let read_only = crate::folders::is_read_only_view(&p.out.to_string_lossy(), layout);
-    let (groups, group_tags, memos, member_memos) = if read_only {
-        let src: Vec<MemberSource<'_>> = s.sessions.iter().map(MemberSource::from).collect();
-        let (groups, tags) = member_groups_keyed(&src).into_iter().map(|m| (m.group, m.tag)).unzip();
-        (groups, Some(tags), None, Some(p.snapshot.join("session-state")))
-    } else {
-        (sel.groups.groups.clone(), None, Some(memos_dir(&p.notes)), None)
-    };
+    let (memos, member_memos) = if read_only { (None, Some(p.snapshot.join("session-state"))) } else { (Some(memos_dir(&p.notes)), None) };
     let f = &o.filter;
     let r = build_report(BuildInput {
         sessions: sessions.clone(),
@@ -165,12 +158,10 @@ pub fn run_build(p: &Paths, o: &BuildOptions, log: Log<'_>) -> Result<BuildResul
             _ => None,
         },
         wiki_vaults: s.source.wikis,
-        warnings: BuildWarnings { unknown_event_types: unknown, bad_lines: s.warnings.bad_lines, notes: sel.groups.warnings.clone() },
+        warnings: BuildWarnings { unknown_event_types: unknown, bad_lines: s.warnings.bad_lines, notes: Vec::new() },
         judgments: judgments.as_ref(),
         verdicts: verdicts.as_ref(),
         retention: retention.as_ref(),
-        groups,
-        group_tags,
         memos_dir: memos,
         member_memos_dir: member_memos,
         read_only,

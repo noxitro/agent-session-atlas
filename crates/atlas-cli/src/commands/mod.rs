@@ -13,7 +13,6 @@ mod all;
 pub mod build;
 mod bundle;
 mod extract;
-mod group;
 pub(crate) mod judge;
 pub mod judge_flow;
 mod memo;
@@ -151,11 +150,6 @@ pub fn run_command(o: &CliOptions, p: &Paths, log: Log<'_>) -> Result<RunResult>
                 return run_m365_command(o, p, ChatTarget::Effort, j.model.as_deref(), j.limit, j.timeout_sec, log);
             }
             Ok(RunResult { judge: judge::run_judge_command(p, j, log)?, ..RunResult::default() })
-        }
-        "group" => {
-            let g = o.group_cmd.as_ref().ok_or_else(|| anyhow::anyhow!("group の操作がありません"))?;
-            group::run_group(p, g, o.config.as_deref(), log)?;
-            Ok(RunResult::default())
         }
         "memo" => {
             let m = o.memo_cmd.as_ref().ok_or_else(|| anyhow::anyhow!("memo の操作がありません"))?;

@@ -94,8 +94,8 @@ fn env() -> Env {
     Env { config: dir.join("atlas.config.json").to_string_lossy().into_owned(), dir, out, root_a, root_b, _t: t }
 }
 
-fn paths(e: &Env) -> GroupUploadPaths {
-    GroupUploadPaths { snapshot: e.out.join("snapshot"), groups: e.dir.join("notes").join("groups.json"), notes: None, sessions: Some(e.out.join("sessions.json")) }
+fn paths(e: &Env) -> UploadPaths {
+    UploadPaths { snapshot: e.out.join("snapshot"), notes: None, sessions: Some(e.out.join("sessions.json")) }
 }
 
 fn opts<'a>(e: &Env, auto: bool, summary: Option<&'a Mutex<UploadSummary>>) -> UploadProjectOptions<'a> {
@@ -173,10 +173,11 @@ fn lost_root_is_chosen_again_and_busy_out_stops() {
 }
 
 #[test]
-fn tags_are_written_and_root_is_remembered() {
+fn index_and_readme_are_written_and_root_is_remembered() {
     let e = env();
+    // 前の版が使っていたタスクタグの置き場(atlas-notes/groups.json)が残っていても、もう読まない
     fs::create_dir_all(e.dir.join("notes")).unwrap();
-    fs::write(e.dir.join("notes").join("groups.json"), serde_json::json!({ "version": 1, "groups": [{ "name": "Player-Weapon", "note": "", "ids": ["s1", "s4"] }, { "name": "調査", "note": "", "ids": ["s1"] }] }).to_string()).unwrap();
+    fs::write(e.dir.join("notes").join("groups.json"), serde_json::json!({ "version": 1, "groups": [{ "name": "Player-Weapon", "note": "", "ids": ["s1", "s4"] }] }).to_string()).unwrap();
     // 送り先が未定ならエクスプローラーで選んで覚える
     let io = Scripted::with(&["1", "y"], vec![Some(s(&e.root_a))]);
     assert!(run_upload_project(&io, &opts(&e, false, None)).unwrap());
@@ -184,17 +185,16 @@ fn tags_are_written_and_root_is_remembered() {
     let dest = e.root_a.join("owner_app");
     let index = js::parse_json(&fs::read_to_string(dest.join("atlas-index.json")).unwrap()).unwrap();
     assert_eq!(index["kind"], "project");
-    assert_eq!(index["sessions"][0]["tags"], serde_json::json!(["Player-Weapon", "調査"]));
-    assert_eq!(index["sessions"][1]["tags"], serde_json::json!([]));
+    assert!(index["sessions"][0].get("tags").is_none());
     let meta = js::parse_json(&fs::read_to_string(dest.join("s1").join("atlas-session.json")).unwrap()).unwrap();
     assert_eq!(meta["projectSource"], "git-remote");
     let meta2 = js::parse_json(&fs::read_to_string(dest.join("s2").join("atlas-session.json")).unwrap()).unwrap();
     assert_eq!(meta2["projectSource"], serde_json::Value::Null);
     let readme = fs::read_to_string(dest.join("README.md")).unwrap();
     assert!(readme.starts_with("# owner/app\n\n集計のプロジェクト「owner/app」のセッション"));
-    assert!(readme.contains("| [s1](s1/) | - | Player-Weapon、調査 |"));
-    assert!(readme.contains("| [s2](s2/) | - | タグなし |"));
-    assert!(Regex::new(r"## タスクタグごと\n\n### Player-Weapon\(1 件\)\n\n- \[s1\]\(s1/\)(?s:.)*### 調査\(1 件\)(?s:.)*### タグなし\(1 件\)\n\n- \[s2\]\(s2/\)").unwrap().is_match(&readme));
+    assert!(readme.contains("| セッション ID | 題名 | 最終更新 | メモ |"));
+    assert!(readme.contains("| [s1](s1/) | - | "));
+    assert!(!readme.contains("タスクタグ") && !readme.contains("タグなし"));
     assert!(io.printed().contains(&format!("送り先: {}", dest.display())));
 }
 

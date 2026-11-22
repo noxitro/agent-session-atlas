@@ -3,7 +3,7 @@
 //! 画面の「工数を判定する」(serve の jobs)も、子プロセスとして `atlas judge-flow …` を起動する。
 //!   atlas judge-flow [judge run のオプション]           bundle → judge run → export
 //!   atlas judge-flow --turns [--limit <n>] [--model <名前>]   turns bundle --unjudged → turns run(GitHub Copilot CLI)→ export
-//! --session / --group / --since などの絞り込みは判定する範囲(束)にだけ掛け、最後の export はレポート全体を作り直す。
+//! --session / --since などの絞り込みは判定する範囲(束)にだけ掛け、最後の export はレポート全体を作り直す。
 //! 絞り込みがあるときの束は、共有の束(out/bundle・out/turn-bundle)ではなく作業用の場所(out/judge-work)に作り、終わったら消す。
 //! 判定に失敗したセッションがあってもレポートは作り直す(判定済みの分は反映する)。終了コードは 1 にする。
 
@@ -65,9 +65,9 @@ fn without_scoped_sessions(j: crate::args::JudgeCliOptions, o: &CliOptions) -> c
     crate::args::JudgeCliOptions { ignored_filters: Vec::new(), only, ..j }
 }
 
-/// 最後の export。絞り込み(--session / --group / --since など)は判定する範囲を決めるためのものなので、レポートはいつも全体で作り直す
+/// 最後の export。絞り込み(--session / --since など)は判定する範囲を決めるためのものなので、レポートはいつも全体で作り直す
 fn export_all(common: &CliOptions) -> CliOptions {
-    CliOptions { command: "export".into(), since: None, project: None, client: None, model: None, branch: None, group: None, sessions: None, ..common.clone() }
+    CliOptions { command: "export".into(), since: None, project: None, client: None, model: None, branch: None, sessions: None, ..common.clone() }
 }
 
 fn stdout_log(msg: &str) {

@@ -7,7 +7,7 @@ use regex::Regex;
 use std::sync::LazyLock;
 
 /// API キー・トークンらしい形(種類名, 正規表現)。JS の \b は ASCII の語の境目なので (?-u:\b) にする。
-/// 送り先のフォルダの検査(group_upload の scan_secrets)も、この並びで数える
+/// 送り先のフォルダの検査(upload_copy の scan_secrets)も、この並びで数える
 pub static SECRET_PATTERNS: LazyLock<Vec<(&'static str, Regex)>> = LazyLock::new(|| {
     let b = r"(?-u:\b)";
     let s = js::RE_S;

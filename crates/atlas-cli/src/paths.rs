@@ -3,10 +3,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
-/// メモとグループの置き場の既定の名前(report の NOTES_DIR_NAME)
+/// メモの置き場の既定の名前
 pub const NOTES_DIR_NAME: &str = "atlas-notes";
-/// グループの定義(report の GROUPS_FILE_NAME)
-pub const GROUPS_FILE_NAME: &str = "groups.json";
 /// AI の変更の残存(core の VCS_RETENTION_FILE)
 pub const VCS_RETENTION_FILE: &str = "vcs-retention.json";
 
@@ -34,7 +32,7 @@ pub fn installed_exe() -> Option<PathBuf> {
     p.is_file().then_some(p)
 }
 
-/// 自動で送るタスク・その登録・開くたびの更新が見る出力先(atlas.bat と同じ既定の out/。環境変数 ATLAS_OUT は試すとき用)。
+/// 自動で送るタスク・その登録・開くたびの更新・プロジェクトを送る操作(upload-project)が見る出力先(atlas.bat と同じ既定の out/。環境変数 ATLAS_OUT は試すとき用)。
 /// 動いている atlas(atlas_running)を探す場所なので、3 つで同じ場所を見る
 pub fn auto_out_dir() -> PathBuf {
     match std::env::var("ATLAS_OUT").ok().filter(|s| !s.is_empty()) {
@@ -91,9 +89,8 @@ pub struct Paths {
     /// AI の変更がその後の VCS のファイルに残っているか(atlas vcs)
     pub vcs_retention: PathBuf,
     pub html: PathBuf,
-    /// メモとグループの置き場(既定はリポジトリ直下の atlas-notes/)
+    /// メモの置き場(既定はリポジトリ直下の atlas-notes/)
     pub notes: PathBuf,
-    pub groups: PathBuf,
 }
 
 pub struct PathInputs<'a> {
@@ -124,7 +121,6 @@ pub fn resolve_paths(o: PathInputs<'_>) -> Paths {
         turn_bundle: out.join("turn-bundle"),
         vcs_retention: out.join(VCS_RETENTION_FILE),
         html: out.join("atlas.html"),
-        groups: notes.join(GROUPS_FILE_NAME),
         home,
         out,
         notes,

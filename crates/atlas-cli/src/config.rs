@@ -1,5 +1,5 @@
 //! 設定ファイル atlas.config.json の読み書き(packages/cli/src/config.ts の移植)。
-//! wiki の指定と、依頼ごとの判定に使う普段の工程名、グループのアップロード先、upload-project.bat がまとめて送るプロジェクト、
+//! wiki の指定と、依頼ごとの判定に使う普段の工程名、アップロード先、upload-project.bat がまとめて送るプロジェクト、
 //! 判定に使うモデル、VCS の照合の設定を持つ。
 //! 書く側(modify_config・update_config)は、<設定ファイル>.lock のロックの中で読んでから書き、ほかの項目の書き方をできるだけ残す。
 
@@ -46,7 +46,7 @@ pub struct AtlasConfig {
     pub wikis: Option<Vec<WikiSpec>>,
     /// 依頼ごとの判定(段階 2)で LLM に選ばせる普段の工程名。設定に無ければ None
     pub phases: Option<Vec<String>>,
-    /// グループのアップロード先の基底フォルダ
+    /// アップロード先の基底フォルダ
     pub upload_root: Option<String>,
     /// upload-project.bat がまとめて送るプロジェクト
     pub upload_projects: Option<Vec<String>>,

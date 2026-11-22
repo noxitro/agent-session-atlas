@@ -87,7 +87,6 @@ describe('Phase 14 E2E: 画面からの操作(jobs)', () => {
     h = await startServer({
       outDir: out,
       notesDir: notes,
-      groupsPath: join(notes, 'groups.json'),
       port: 0,
       open: false,
       idleMs: 600_000,
@@ -378,7 +377,6 @@ describe('Phase 14 E2E: 画面からの操作(jobs)', () => {
     const h3 = await startServer({
       outDir: out,
       notesDir: notes,
-      groupsPath: join(notes, 'groups.json'),
       port: 0,
       open: false,
       idleMs: 600_000,
@@ -411,7 +409,6 @@ describe('Phase 14 E2E: 画面からの操作(jobs)', () => {
     const h2 = await startServer({
       outDir: out,
       notesDir: notes,
-      groupsPath: join(notes, 'groups.json'),
       port: 0,
       open: false,
       idleMs: 300,

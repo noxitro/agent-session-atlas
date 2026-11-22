@@ -31,7 +31,7 @@ web
 ## Operating Context
 
 - 入力: `~/.copilot`(Windows では `%USERPROFILE%\.copilot`)。Copilot が並行して書いている可能性がある。
-- 実行: 集計して開くのは `atlas.bat`(snapshot → extract → vcs → metrics → export(セッション記録つき)→ serve)。起動後の操作(集計し直す・工数の判定・記録と全文記録の表示・グループ・メモ)は serve の画面から。判定は確認ダイアログ(件数・バックエンド・AI クレジットの消費)を通す。細かい指定と全件の全文記録はコマンド(docs/cli.md)。
+- 実行: 集計して開くのは `atlas.bat`(snapshot → extract → vcs → metrics → export(セッション記録つき)→ serve)。起動後の操作(集計し直す・工数の判定・記録と全文記録の表示・メモ)は serve の画面から。判定は確認ダイアログ(件数・バックエンド・AI クレジットの消費)を通す。細かい指定と全件の全文記録はコマンド(docs/cli.md)。
 - 出力: `out/atlas.html`(単一ファイル、集計と要約のみ埋め込み)、`out/sessions/<id>.html`(詳細)、`out/sessions.json` / `metrics.json` / `bundle/` / `judgments.json`。
 - 共有: HTML をそのまま相手に渡す。名前やパスを伏せる機能は持たない(渡す前に利用者が中身を確かめる)。
 

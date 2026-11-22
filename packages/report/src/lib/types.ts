@@ -25,7 +25,8 @@ import type { VerdictTuple } from './verdicts.ts';
 // 16: failures(失敗の台帳の集計のページ failures.html を書いたか)
 // 17: tests(テストの結果の要約。テストの実行があるセッションだけ)・groups[].tag(送り先の元のタグ)・wikiVaults(参照を数えた vault の数)・wiki.otherCalls(vault の検索・一覧など)
 // 18: wikiPageNames(読んだ llm-wiki のページの名前の辞書)・wiki.pages(読んだページの番号。重複を除く)・judgment.wikiPages(ページごとの LLM の見立て)
-export const REPORT_DATA_VERSION = 18;
+// 19: groups(タスクタグ)をやめた
+export const REPORT_DATA_VERSION = 19;
 
 /** wiki.pages を埋め込んだ最初の版(これより前の埋め込みでは、llm-wiki のページごとの表を出さない) */
 export const WIKI_PAGES_DATA_VERSION = 18;
@@ -279,7 +280,7 @@ export interface ReportData {
   wikiVaults?: number;
   /** 読んだ llm-wiki のページの名前の辞書(セッションの wiki.pages と judgment.wikiPages はこの番号)。版 17 以前の埋め込みには無い */
   wikiPageNames?: string[];
-  /** 読むだけの画面として作った(送り先から集計した・別のフォルダを開いた)。タスクタグとメモは送った人のもの。古い埋め込みには無い */
+  /** 読むだけの画面として作った(送り先から集計した・別のフォルダを開いた)。メモは送った人のもの。古い埋め込みには無い */
   readOnly?: boolean;
   /**
    * 送り先から集計したときの、送った atlas の版(crates/atlas-core/src/atlas_version.rs の describe_atlas_builds)。送った人ごとにまとめる。ok = 対応が要る人がいない。
@@ -298,8 +299,6 @@ export interface ReportData {
   installed: { skills: string[]; disabled: string[] } | null;
   /** 人のフォルダの名前ごとのインストール済みの skill(送り先の全体を集計したとき。古い埋め込みには無い) */
   installedByPerson?: Record<string, { skills: string[]; disabled: string[] }>;
-  /** 名前付きグループ(atlas-notes/groups.json)。無ければ空 */
-  groups: ReportGroup[];
   /** Phase 11: 指示文と skill の閲覧ページ(instructions.html)を作ったか(export のとき) */
   library: boolean;
   /** 失敗の台帳の集計のページ(failures.html)を作ったか(古い版で作った atlas.html には無い) */
@@ -313,7 +312,7 @@ export interface ReportData {
     candidateTotal?: number;
     computedOver: number;
   };
-  /** notes: atlas-notes/ の読み取りで無視した箇所(groups.json が壊れている等。無ければ空) */
+  /** notes: 集計のときの注意(無ければ空) */
   warnings: { unknownEventTypes: number; badLines: number; notes: string[] };
 }
 
@@ -328,16 +327,4 @@ export interface InsightCandidate {
   representative: string | null;
   examples: string[];
   tools: string[] | null;
-}
-
-export interface ReportGroup {
-  name: string;
-  note: string;
-  /** 記録に無い id も含む(そのまま) */
-  ids: string[];
-  /**
-   * 送り先から集計したグループの、元のタグ(送った人が付けた名前そのまま。name は「<人> / <タグ>」で、重なると番号が付く)。
-   * 手元のタスクタグ(name がそのままタグ)と伏せ字版には無い
-   */
-  tag?: string;
 }

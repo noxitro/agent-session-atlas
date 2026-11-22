@@ -1,8 +1,7 @@
 //! 表計算ソフトで開く CSV(依頼ごと・セッションごと・VCS の照合のまとまりごと。packages/core/src/tables.ts の移植)と、
 //! ツールの失敗・拒否 1 件ごとの表(failures_table。失敗の台帳から作る。TS 版には無い)。
 //! Excel が UTF-8 と判断できるよう先頭に BOM を付け、行末は CRLF。
-//! 列の並びと見出しはここだけで決める(atlas metrics の out/tables/ と、グループの書き出しが同じものを使う。
-//! 失敗・拒否ごとの表は out/tables/ だけ)。
+//! 列の並びと見出しはここだけで決める(atlas metrics の out/tables/ が使う)。
 
 use crate::js;
 use crate::main_effort::main_effort_of;

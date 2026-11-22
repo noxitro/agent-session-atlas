@@ -1,4 +1,4 @@
-//! group_upload.rs のテスト(packages/cli/test/group-upload.test.ts の振る舞いを決めている部分)
+//! upload_copy.rs のテスト(packages/cli/test/group-upload.test.ts の振る舞いを決めている部分。写すまとまりはプロジェクトの形で作る)
 
 use super::*;
 use serde_json::json;
@@ -34,21 +34,37 @@ fn env() -> Env {
     fs::write(files.join("a.txt"), "a").unwrap();
     fs::write(out.join("snapshot").join("snapshot-manifest.json"), json!({ "createdAt": "2026-11-08T01:02:03.000Z" }).to_string()).unwrap();
     fs::create_dir_all(&notes).unwrap();
-    fs::write(notes.join("groups.json"), json!({ "version": 1, "groups": [{ "name": "Player/Weapon", "note": "", "ids": ["s1", "s2", "gone", "../s1"] }, { "name": "空", "note": "", "ids": [] }] }).to_string()).unwrap();
     fs::create_dir_all(&root).unwrap();
     Env { _t: t, dir, out, notes, root }
 }
 
-fn paths(e: &Env) -> GroupUploadPaths {
-    GroupUploadPaths { snapshot: e.out.join("snapshot"), groups: e.notes.join("groups.json"), notes: None, sessions: None }
+fn paths(e: &Env) -> UploadPaths {
+    UploadPaths { snapshot: e.out.join("snapshot"), notes: None, sessions: None }
 }
 
-fn with_notes(e: &Env) -> GroupUploadPaths {
-    GroupUploadPaths { notes: Some(e.notes.clone()), ..paths(e) }
+fn with_notes(e: &Env) -> UploadPaths {
+    UploadPaths { notes: Some(e.notes.clone()), ..paths(e) }
 }
 
-fn up(p: &GroupUploadPaths, root: &Path) -> GroupUploadResult {
-    upload_group(p, "Player/Weapon", root, &|_| {}, &UploadOptions::default()).unwrap()
+/// 写すまとまり(フォルダ名に直す文字と、記録に無い id・フォルダの外を指す id を含む)
+fn target_of(name: &str, note: &str, ids: &[&str]) -> UploadTarget {
+    UploadTarget { kind: "project".into(), name: name.into(), note: note.into(), ids: ids.iter().map(|x| x.to_string()).collect() }
+}
+
+fn target() -> UploadTarget {
+    target_of("Player/Weapon", "", &["s1", "s2", "gone", "../s1"])
+}
+
+fn upload_with(p: &UploadPaths, root: &Path, opts: &UploadOptions<'_>) -> Result<UploadResult> {
+    upload_target(p, &target(), root, &|_| {}, opts)
+}
+
+fn up(p: &UploadPaths, root: &Path) -> UploadResult {
+    upload_with(p, root, &UploadOptions::default()).unwrap()
+}
+
+fn check(p: &UploadPaths, root: &Path) -> UploadCheck {
+    check_target(p, &target(), root, None, false).unwrap()
 }
 
 fn names(dir: &Path) -> Vec<String> {
@@ -67,7 +83,7 @@ fn copies_sessions_and_skips_work_files_and_bad_ids() {
     let r = up(&paths(&e), &e.root);
     assert_eq!(
         r,
-        GroupUploadResult {
+        UploadResult {
             name: "Player/Weapon".into(),
             dir: e.root.join("Player_Weapon").to_string_lossy().into_owned(),
             uploaded: 2,
@@ -94,7 +110,7 @@ fn copies_sessions_and_skips_work_files_and_bad_ids() {
     let r3 = up(&paths(&e), &e.root);
     assert_eq!((r3.uploaded, r3.replaced, r3.unchanged, r3.leftovers.len()), (1, 0, 1, 0));
     // full なら全部写し直す
-    let r4 = upload_group(&paths(&e), "Player/Weapon", &e.root, &|_| {}, &UploadOptions { full: true, ..Default::default() }).unwrap();
+    let r4 = upload_with(&paths(&e), &e.root, &UploadOptions { full: true, ..Default::default() }).unwrap();
     assert_eq!((r4.uploaded, r4.replaced, r4.unchanged), (2, 2, 0));
     assert_eq!(names(&dir), vec!["README.md", "atlas-index.json", "s1", "s2"]);
     assert_eq!(upload_dir(&e.root, "con"), e.root.join("_con"));
@@ -108,7 +124,7 @@ fn second_upload_sends_only_changed() {
     let dir = PathBuf::from(&r.dir);
     let meta = js::parse_json(&fs::read_to_string(dir.join("s1").join("atlas-session.json")).unwrap()).unwrap();
     assert!(Regex::new("^[0-9a-f]{64}$").unwrap().is_match(meta["contents"].as_str().unwrap()));
-    let cnt = |r: &GroupUploadResult| (r.uploaded, r.unchanged);
+    let cnt = |r: &UploadResult| (r.uploaded, r.unchanged);
     assert_eq!(cnt(&up(&p, &e.root)), (0, 2));
     // OS が作るものは変わったことにしない
     fs::write(dir.join("s1").join("files").join("Thumbs.db"), "thumb").unwrap();
@@ -139,12 +155,14 @@ fn second_upload_sends_only_changed() {
     // 送り先でファイルが消されていれば写し直す
     fs::remove_file(dir.join("s1").join("files").join("a.txt")).unwrap();
     assert_eq!(cnt(&up(&p, &e.root)), (1, 1));
-    // タスクタグを変えただけなら写し直さず、添えた記録と README を書き直す
-    fs::write(e.notes.join("groups.json"), json!({ "version": 1, "groups": [{ "name": "Player/Weapon", "note": "", "ids": ["s1", "s2"] }, { "name": "調査", "note": "", "ids": ["s1"] }] }).to_string()).unwrap();
+    // 題名が変わっただけなら写し直さず、添えた記録と README を書き直す
+    let sessions = e.out.join("sessions.json");
+    fs::write(&sessions, json!({ "sessions": [{ "id": "s1", "name": "新しい題名" }] }).to_string()).unwrap();
+    let p = UploadPaths { sessions: Some(sessions), ..p };
     assert_eq!(cnt(&up(&p, &e.root)), (0, 2));
     let meta = js::parse_json(&fs::read_to_string(dir.join("s1").join("atlas-session.json")).unwrap()).unwrap();
-    assert_eq!(meta["tags"], json!(["Player/Weapon", "調査"]));
-    assert!(fs::read_to_string(dir.join("README.md")).unwrap().contains("セッション: 2 件"));
+    assert_eq!(meta["title"], json!("新しい題名"));
+    assert!(fs::read_to_string(dir.join("README.md")).unwrap().contains("| [s1](s1/) | 新しい題名 |"));
     assert!(names(&dir).iter().all(|n| !n.starts_with('.')));
 }
 
@@ -154,13 +172,13 @@ fn atlas_build_is_recorded() {
     let v1 = AtlasBuild { commit: Some("a".repeat(40)), committed_at: Some("2026-11-01T00:00:00.000Z".into()), dirty: Some(false), code: "0123456789abcdef".into() };
     let v2 = AtlasBuild { commit: Some("b".repeat(40)), committed_at: Some("2026-11-10T00:00:00.000Z".into()), dirty: Some(true), code: "fedcba9876543210".into() };
     let opts = |a: &AtlasBuild| UploadOptions { atlas: Some(a.clone()), ..Default::default() };
-    upload_group(&paths(&e), "Player/Weapon", &e.root, &|_| {}, &opts(&v1)).unwrap();
+    upload_with(&paths(&e), &e.root, &opts(&v1)).unwrap();
     let meta = |id: &str| js::parse_json(&fs::read_to_string(e.root.join("Player_Weapon").join(id).join("atlas-session.json")).unwrap()).unwrap();
     assert_eq!(meta("s1")["atlas"], serde_json::to_value(&v1).unwrap());
     let ev = state(&e, "s1").join("events.jsonl");
     fs::write(&ev, "{\"type\":\"session.start\",\"id\":\"S1\"}\n").unwrap();
     atlas_core::jsfs::utimes(&ev, 1_762_646_400_000, 1_762_646_400_000).unwrap();
-    let r = upload_group(&paths(&e), "Player/Weapon", &e.root, &|_| {}, &opts(&v2)).unwrap();
+    let r = upload_with(&paths(&e), &e.root, &opts(&v2)).unwrap();
     assert_eq!((r.uploaded, r.unchanged), (1, 1));
     assert_eq!(meta("s2")["atlas"], serde_json::to_value(&v2).unwrap());
     let index = js::parse_json(&fs::read_to_string(e.root.join("Player_Weapon").join("atlas-index.json")).unwrap()).unwrap();
@@ -168,26 +186,26 @@ fn atlas_build_is_recorded() {
     let keys: Vec<&String> = index.as_object().unwrap().keys().collect();
     assert_eq!(keys, ["version", "kind", "name", "note", "uploadedAt", "snapshotAt", "atlas", "sessions", "missing"]);
     let mkeys: Vec<String> = meta("s1").as_object().unwrap().keys().cloned().collect();
-    assert_eq!(mkeys, ["version", "id", "title", "project", "projectSource", "tags", "createdAt", "updatedAt", "memo", "contents", "atlas"]);
+    assert_eq!(mkeys, ["version", "id", "title", "project", "projectSource", "createdAt", "updatedAt", "memo", "contents", "atlas"]);
 }
 
 #[test]
 fn check_counts_only_changed_and_scans_secrets() {
     let e = env();
     up(&paths(&e), &e.root);
-    let c = check_upload(&paths(&e), "Player/Weapon", &e.root).unwrap();
+    let c = check(&paths(&e), &e.root);
     assert_eq!((c.sessions, c.unchanged, c.bytes, c.files, c.replace, c.secrets.count), (0, 2, 0, 0, 0, 0));
     fs::write(state(&e, "s2").join("events.jsonl"), format!("{}\n", json!({ "data": token() }))).unwrap();
-    let c = check_upload(&paths(&e), "Player/Weapon", &e.root).unwrap();
+    let c = check(&paths(&e), &e.root);
     assert_eq!((c.sessions, c.unchanged, c.replace, c.files, c.secrets.count), (1, 1, 1, 1, 1));
     assert_eq!(c.secrets.files, vec![SecretFile { id: "s2".into(), path: "events.jsonl".into(), count: 1 }]);
     // 点検を渡せば、確かめたものの送り先の一覧を読み直さない(結果は同じ)
-    let r = upload_group(&paths(&e), "Player/Weapon", &e.root, &|_| {}, &UploadOptions { expect: Some(c.fingerprint.clone()), check: Some(&c), ..Default::default() }).unwrap();
+    let r = upload_with(&paths(&e), &e.root, &UploadOptions { expect: Some(c.fingerprint.clone()), check: Some(&c), ..Default::default() }).unwrap();
     assert_eq!((r.uploaded, r.unchanged), (1, 1));
     // 点検の後に変わったら写さない
-    let c = check_upload(&paths(&e), "Player/Weapon", &e.root).unwrap();
+    let c = check(&paths(&e), &e.root);
     fs::write(state(&e, "s1").join("events.jsonl"), "{\"changed\":true}\n").unwrap();
-    let err = upload_group(&paths(&e), "Player/Weapon", &e.root, &|_| {}, &UploadOptions { expect: Some(c.fingerprint.clone()), ..Default::default() }).unwrap_err();
+    let err = upload_with(&paths(&e), &e.root, &UploadOptions { expect: Some(c.fingerprint.clone()), ..Default::default() }).unwrap_err();
     assert!(err.is::<UploadChangedError>());
 }
 
@@ -205,7 +223,7 @@ fn big_files_binary_and_chunk_boundaries() {
     let mut db = vec![0u8, 1, 2];
     db.extend_from_slice(t.as_bytes());
     fs::write(state(&e, "s2").join("session.db"), db).unwrap();
-    let c = check_upload(&paths(&e), "Player/Weapon", &e.root).unwrap();
+    let c = check(&paths(&e), &e.root);
     assert_eq!((c.sessions, c.replace, c.files), (2, 0, 5));
     assert_eq!(c.missing, vec!["gone", "../s1"]);
     assert_eq!(c.largest[0], LargeEntry { id: "s1".into(), path: "files".into(), bytes: 9 * 1024 * 1024 + 1 });
@@ -234,14 +252,14 @@ fn memos_readme_and_progress() {
     fs::write(memos.join("s1").join("abc.png"), "png").unwrap();
     fs::write(memos.join("s1").join("def.png"), "png2").unwrap();
     fs::write(memos.join("s2.md"), "  \n").unwrap();
-    fs::write(e.notes.join("groups.json"), json!({ "version": 1, "groups": [{ "name": "Player/Weapon", "note": "武器 | 当たり判定の\n直し", "ids": ["s1", "s2", "gone"] }] }).to_string()).unwrap();
     let sessions = e.out.join("sessions.json");
     fs::write(&sessions, json!({ "sessions": [{ "id": "s1", "name": null, "firstUserMessage": "当たり判定を | 直して", "updatedAt": "2026-11-07T03:04:00.000Z" }] }).to_string()).unwrap();
-    let p = GroupUploadPaths { sessions: Some(sessions), ..with_notes(&e) };
+    let p = UploadPaths { sessions: Some(sessions), ..with_notes(&e) };
+    let t = target_of("Player/Weapon", "武器 | 当たり判定の\n直し", &["s1", "s2", "gone"]);
     let seen = Mutex::new(Vec::<UploadProgress>::new());
     let on = |q: &UploadProgress| seen.lock().unwrap().push(q.clone());
-    let c = check_upload(&p, "Player/Weapon", &e.root).unwrap();
-    let r = upload_group(&p, "Player/Weapon", &e.root, &|_| {}, &UploadOptions { on_progress: Some(&on), ..Default::default() }).unwrap();
+    let c = check_target(&p, &t, &e.root, None, false).unwrap();
+    let r = upload_target(&p, &t, &e.root, &|_| {}, &UploadOptions { on_progress: Some(&on), ..Default::default() }).unwrap();
     assert_eq!(r.memos, 1);
     let dir = PathBuf::from(&r.dir);
     assert_eq!(
@@ -253,9 +271,10 @@ fn memos_readme_and_progress() {
     let readme = fs::read_to_string(dir.join("README.md")).unwrap();
     assert!(readme.starts_with("# Player/Weapon\n\n武器 | 当たり判定の\n直し\n"));
     assert!(readme.contains("セッション: 2 件(うちメモあり 1 件)"));
-    assert!(readme.contains("| [s1](s1/) | 当たり判定を \\| 直して | Player/Weapon | "));
+    assert!(readme.contains("| [s1](s1/) | 当たり判定を \\| 直して | "));
     assert!(readme.contains("| [あり](s1/atlas-memo.md) |"));
-    assert!(readme.contains("| [s2](s2/) | - | Player/Weapon | - | - |"));
+    assert!(readme.contains("| [s2](s2/) | - | - | - |"));
+    assert!(!readme.contains("タスクタグ"));
     assert!(readme.contains("写していないもの: `gone`"));
     assert!(readme.contains(&format!("--home \"{}\"", r.dir)));
     // 確認の合計と進み具合の合計は同じ
@@ -265,27 +284,26 @@ fn memos_readme_and_progress() {
     assert_eq!((last.bytes, last.copied), (c.bytes, c.bytes));
     // メモを消してからもう一度写すと、前に添えたメモも消える
     fs::remove_file(memos.join("s1.md")).unwrap();
-    assert_eq!(up(&p, &e.root).memos, 0);
+    assert_eq!(upload_target(&p, &t, &e.root, &|_| {}, &UploadOptions::default()).unwrap().memos, 0);
     assert!(!dir.join("s1").join("atlas-memo.md").exists());
 }
 
 #[test]
 fn stops_without_making_anything() {
     let e = env();
-    let err = |p: &GroupUploadPaths, name: &str, root: &Path| upload_group(p, name, root, &|_| {}, &UploadOptions::default()).unwrap_err().to_string();
-    assert!(err(&paths(&e), "Player/Weapon", &e.dir.join("none")).contains("アップロード先のフォルダが見つかりません"));
+    let err = |p: &UploadPaths, t: &UploadTarget, root: &Path| upload_target(p, t, root, &|_| {}, &UploadOptions::default()).unwrap_err().to_string();
+    assert!(err(&paths(&e), &target(), &e.dir.join("none")).contains("アップロード先のフォルダが見つかりません"));
     assert!(!e.dir.join("none").exists());
-    assert!(err(&paths(&e), "無い", &e.root).contains("タスクタグ「無い」はありません"));
-    assert!(err(&paths(&e), "空", &e.root).contains("セッションがありません"));
-    assert!(err(&GroupUploadPaths { snapshot: e.dir.join("nosnap"), ..paths(&e) }, "Player/Weapon", &e.root).contains("先に集計してください"));
-    fs::write(
-        e.notes.join("groups.json"),
-        json!({ "version": 1, "groups": [{ "name": "Player/Weapon", "note": "", "ids": ["s1"] }, { "name": "player_weapon", "note": "", "ids": ["s2"] }, { "name": "古い", "note": "", "ids": ["gone", "gone2"] }] }).to_string(),
-    )
-    .unwrap();
-    assert!(err(&paths(&e), "Player/Weapon", &e.root).contains("「Player/Weapon」と「player_weapon」は、アップロード先のフォルダ名が同じ「Player_Weapon」"));
-    assert!(err(&paths(&e), "古い", &e.root).contains("(2 件)は、前回の集計に 1 件もありません"));
+    assert!(err(&UploadPaths { snapshot: e.dir.join("nosnap"), ..paths(&e) }, &target(), &e.root).contains("先に集計してください"));
+    assert!(err(&paths(&e), &target_of("古い", "", &["gone", "gone2"]), &e.root).contains("プロジェクト「古い」のセッション(2 件)は、前回の集計に 1 件もありません"));
     assert!(names(&e.root).is_empty());
+    // 前の版がタスクタグを送ったフォルダ(索引の kind が group)には、同じ名前のプロジェクトでも混ぜない
+    let old = e.root.join("Player_Weapon");
+    fs::create_dir_all(&old).unwrap();
+    fs::write(old.join(UPLOAD_INDEX), json!({ "version": 1, "kind": "group", "name": "Player/Weapon", "sessions": [] }).to_string()).unwrap();
+    let m = err(&paths(&e), &target(), &e.root);
+    assert!(m.contains("前の版で送ったタスクタグ「Player/Weapon」がすでに送られています"), "{m}");
+    assert_eq!(names(&old), vec![UPLOAD_INDEX]);
     assert_eq!(upload_dir(&e.root, "nul.log"), e.root.join("_nul.log"));
     assert_eq!(upload_dir(&e.root, "console"), e.root.join("console"));
 }
@@ -310,26 +328,4 @@ fn store_key_text_drops_volatile_columns() {
     assert_ne!(store_key_text(&row("2026-11-01", 0, "別の題名", 1)), a);
     assert_eq!(store_key_text("{壊れた"), "{壊れた");
     assert_eq!(vcs_key_text(r#"{"computedAt":"x","result":{"evaluated":{"at":"y","n":1}}}"#), r#"{"result":{"evaluated":{"n":1}}}"#);
-}
-
-#[test]
-fn cli_upload_needs_force_for_secrets() {
-    let e = env();
-    fs::write(state(&e, "s1").join("events.jsonl"), format!("{{\"data\":\"{}\"}}\n", token())).unwrap();
-    let p = crate::paths::resolve_paths(crate::paths::PathInputs {
-        home: Some(&e.dir.to_string_lossy()),
-        out: Some(&e.out.to_string_lossy()),
-        judgments: None,
-        bundle: None,
-        notes_dir: Some(&e.notes.to_string_lossy()),
-    });
-    let lines = Mutex::new(Vec::<String>::new());
-    let log = |m: &str| lines.lock().unwrap().push(m.into());
-    let err = run_group_upload(&p, "Player/Weapon", Some(&e.root.to_string_lossy()), false, None, &log).unwrap_err();
-    assert!(err.to_string().contains("--force"));
-    assert!(lines.lock().unwrap().join("\n").contains("秘密らしい文字列が 1 件あります(GitHub トークン 1"));
-    assert!(!e.root.join("Player_Weapon").exists());
-    run_group_upload(&p, "Player/Weapon", Some(&e.root.to_string_lossy()), true, None, &log).unwrap();
-    assert!(e.root.join("Player_Weapon").join("s1").exists());
-    assert!(!e.out.join(crate::jobs::JOB_LOCK_FILE).exists());
 }

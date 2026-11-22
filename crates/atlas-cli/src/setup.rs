@@ -281,7 +281,7 @@ pub fn run_setup(io: &dyn SetupIo, o: &SetupOptions) -> Result<SetupResult> {
     }
 
     io.print("");
-    io.print("[3/3] アップロード先(画面のタスクタグの「アップロード」と upload-project.bat が、<この場所>\\<タスクタグ名かプロジェクト名>\\<セッション ID>\\ に写します)");
+    io.print("[3/3] アップロード先(upload-project.bat が、<この場所>\\<プロジェクト名>\\<セッション ID>\\ に写します)");
     let cur = current.as_ref().and_then(|c| c.upload_root.clone());
     if let Some(c) = &cur {
         io.print(&format!("  今の設定: {c}"));
@@ -301,7 +301,7 @@ pub fn run_setup(io: &dyn SetupIo, o: &SetupOptions) -> Result<SetupResult> {
         let mut a = unq(&io.ask(&question())?);
         let open = io.can_pick() && if cur.is_some() { yes(&a, false) } else { a.is_empty() };
         if open {
-            match pick_with(io, "アップロード先のフォルダを選んでください(この中にタスクタグ名・プロジェクト名のフォルダを作ります)", cur.as_deref()) {
+            match pick_with(io, "アップロード先のフォルダを選んでください(この中にプロジェクト名のフォルダを作ります)", cur.as_deref()) {
                 Some(p) => a = p,
                 None => continue,
             }

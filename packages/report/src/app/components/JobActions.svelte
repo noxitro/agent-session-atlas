@@ -3,27 +3,14 @@
   // 判定は AI クレジットを消費するので、必ず確認ダイアログ(件数・バックエンド・費用)を通す。「やめる」では API を呼ばない。
   // ダイアログでは判定するもの(工数 = セッションごと / 依頼ごとの採用)と、判定の方法を選べる:
   // このツールから(copilot -p)か、チャットに貼る(M365 Copilot など。ChatJudge)か、ZIP にまとめてエージェントに渡す(工数の判定だけ。ChatJudge の via=zip)。
-  // 選んだものはこのブラウザに覚える。
-  // このツールから判定するときは、対象を今選んでいるタスクタグのセッションだけに絞れる(1 セッションだけなら詳細ページから)。
+  // 選んだものはこのブラウザに覚える。1 セッションだけを判定するときは、そのセッションの詳細ページから。
   import { tick } from 'svelte';
-  import { jobsApi, type JudgePreview, type JudgeScope, type JudgeTarget } from '../api.ts';
+  import { jobsApi, type JudgePreview, type JudgeTarget } from '../api.ts';
   import type { JobStore } from '../jobs.svelte.ts';
   import { int } from '../../lib/format.ts';
   import ChatJudge from './ChatJudge.svelte';
 
-  let { jobs, disabled, currentGroup = null }: { jobs: JobStore; disabled: boolean; currentGroup?: string | null } = $props();
-
-  /** ダイアログを開いたときに選んでいたタスクタグ(開いている間に変わっても、数えた範囲と判定する範囲がずれない) */
-  let group = $state<string | null>(null);
-  let byGroup = $state(false);
-  const scope = $derived<JudgeScope | undefined>(byGroup && group ? { group } : undefined);
-  /** 件数の文の頭(タスクタグで絞っているときだけ) */
-  const where = $derived(scope ? `タスクタグ「${group}」の` : '');
-  function setScope(g: boolean): void {
-    byGroup = g;
-    runError = '';
-    void loadPreview();
-  }
+  let { jobs, disabled }: { jobs: JobStore; disabled: boolean } = $props();
 
   /** 件数の上限の最大(工数はセッション、依頼ごとの判定は依頼の数) */
   const LIMIT_MAX: Record<JudgeTarget, number> = { effort: 500, turns: 5000 };
@@ -100,22 +87,19 @@
     preview = null;
     previewError = '';
     runError = '';
-    // タスクタグを選んでいれば、はじめはそのタグのセッションだけを対象にする(画面に出ている範囲と合わせる)
-    group = currentGroup;
-    byGroup = !!currentGroup;
     open = true;
     dlg?.showModal();
     await focusInitial();
     await loadPreview();
   }
-  /** 最後に数え始めたものだけを出す(判定するものや対象を続けて切り替えたとき、前の結果で上書きしない) */
+  /** 最後に数え始めたものだけを出す(判定するものを続けて切り替えたとき、前の結果で上書きしない) */
   let seq = 0;
   async function loadPreview(): Promise<void> {
     preview = null;
     previewError = '';
     const n = ++seq;
     try {
-      const p = await jobsApi.judgePreview(jobs.token, target, scope);
+      const p = await jobsApi.judgePreview(jobs.token, target);
       if (n === seq) preview = p;
     } catch (e) {
       if (n === seq) previewError = (e as Error).message;
@@ -124,7 +108,7 @@
   async function runJudge(e: SubmitEvent): Promise<void> {
     e.preventDefault();
     if (!limitOk || count < 1 || jobs.busy) return;
-    const req = target === 'turns' ? { kind: 'turn-judge' as const, limit: limit as number, ...scope } : { kind: 'judge' as const, limit: limit as number, ...scope };
+    const req = target === 'turns' ? { kind: 'turn-judge' as const, limit: limit as number } : { kind: 'judge' as const, limit: limit as number };
     if (await jobs.run(req)) dlg?.close();
     else runError = jobs.error;
   }
@@ -169,12 +153,6 @@
     {#if open}{#key target}<ChatJudge {jobs} {target} via={shown === 'zip' ? 'zip' : 'chat'} bind:reply={replies[target]} onclose={() => dlg?.close()} />{/key}{/if}
   {:else}
     <form onsubmit={runJudge} aria-busy={jobs.busy}>
-      <fieldset class="fld method">
-        <legend class="k">対象</legend>
-        <label class="opt"><input type="radio" name="judge-scope" value="all" checked={!scope} onchange={() => setScope(false)} data-testid="judge-scope-all" />すべてのセッション</label>
-        <label class="opt" class:off={!group}><input type="radio" name="judge-scope" value="group" checked={!!scope} disabled={!group} aria-describedby={group ? undefined : 'judge-scope-off'} onchange={() => setScope(true)} data-testid="judge-scope-group" />{group ? `タスクタグ「${group}」のセッションだけ` : 'タスクタグのセッションだけ'}</label>
-        {#if !group}<p class="why" id="judge-scope-off" data-testid="judge-scope-off">タスクタグの一覧でタグを選んでから開くと、そのタグのセッションだけを判定できます。1 つのセッションだけなら、そのセッションの詳細ページから判定できます。</p>{/if}
-      </fieldset>
       <p class="lead">
         {#if target === 'turns'}未判定の依頼を LLM に判定させ、採用されたか・合わなかった点・工程をレポートに足します。依頼数件をまとめて 1 回で判定します。判定用のファイルを作り直す → 判定する → レポートを作り直す、の順に自動で進みます。
         {:else}未判定のセッションを LLM に判定させ、推定人手工数をレポートに足します。判定用のファイルを作り直す → 判定する → レポートを作り直す、の順に自動で進みます。{/if}
@@ -192,8 +170,8 @@
         {#if !limitOk}件数の上限は 1〜{int(LIMIT_MAX[target])} の整数で指定してください。
         {:else if previewError}未判定の件数を数えられませんでした: {previewError}
         {:else if !preview}未判定の件数を数えています…
-        {:else if preview.pending === 0}{where}未判定の{unit}はありません(判定済み {int(preview.judged)} 件)。
-        {:else}{where}未判定の{unit} {int(preview.pending)} 件のうち <strong>{int(count)} 件</strong>を判定します({#if target === 'turns'}約 {int(Math.ceil(count / turnChunk))} 回以上の判定。{/if}判定済み {int(preview.judged)} 件は判定し直しません)。{/if}
+        {:else if preview.pending === 0}未判定の{unit}はありません(判定済み {int(preview.judged)} 件)。
+        {:else}未判定の{unit} {int(preview.pending)} 件のうち <strong>{int(count)} 件</strong>を判定します({#if target === 'turns'}約 {int(Math.ceil(count / turnChunk))} 回以上の判定。{/if}判定済み {int(preview.judged)} 件は判定し直しません)。{/if}
         {#if target === 'turns' && preview?.withoutTurns}<br />依頼ごとの記録が無いセッションが {int(preview.withoutTurns)} 件あります(古い集計)。先に「集計し直す」を押すと、その依頼も判定できます。{/if}
       </p>
       <p class="cost" id="judge-cost">

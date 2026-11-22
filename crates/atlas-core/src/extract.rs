@@ -331,12 +331,11 @@ pub struct SenderProject {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SenderMeta {
     pub project: Option<SenderProject>,
-    pub tags: Vec<String>,
     pub atlas: Option<AtlasBuild>,
 }
 
-/// アップロードで添えた記録(UPLOAD_SESSION_META)を読み、プロジェクト名・タスクタグ・atlas の版を返す。
-/// 無い・読めない・形が違う・ほかのセッションのものなら None
+/// アップロードで添えた記録(UPLOAD_SESSION_META)を読み、プロジェクト名と atlas の版を返す。
+/// 無い・読めない・形が違う・ほかのセッションのものなら None。前の版が書いた項目(tags など)は読まない
 pub fn read_sender_meta(path: &Path, id: &str) -> Option<SenderMeta> {
     if !path.exists() {
         return None;
@@ -346,15 +345,11 @@ pub fn read_sender_meta(path: &Path, id: &str) -> Option<SenderMeta> {
     if !matches!(j.get("version"), Some(Value::Number(n)) if n.as_f64() == Some(1.0)) || js::str_of(j.get("id")) != Some(id) {
         return None;
     }
-    Some(SenderMeta { project: sender_project_of(&j), tags: sender_tags_of(&j), atlas: parse_atlas_build(j.get("atlas")) })
+    Some(SenderMeta { project: sender_project_of(&j), atlas: parse_atlas_build(j.get("atlas")) })
 }
 
 pub fn read_sender_project(path: &Path, id: &str) -> Option<SenderProject> {
     read_sender_meta(path, id)?.project
-}
-
-pub fn read_sender_tags(path: &Path, id: &str) -> Vec<String> {
-    read_sender_meta(path, id).map(|m| m.tags).unwrap_or_default()
 }
 
 fn sender_project_of(j: &serde_json::Map<String, Value>) -> Option<SenderProject> {
@@ -369,27 +364,6 @@ fn sender_project_of(j: &serde_json::Map<String, Value>) -> Option<SenderProject
     let source = js::str_of(j.get("projectSource")).filter(|s| PROJECT_SOURCES.contains(s)).and_then(ProjectSource::parse);
     let source = source.filter(|s| !matches!(s, ProjectSource::Temp | ProjectSource::Home | ProjectSource::AtlasJudge));
     Some(SenderProject { project: project.into(), source })
-}
-
-/// 送った人のタスクタグの数と長さの上限
-const SENDER_TAGS_MAX: usize = 50;
-const SENDER_TAG_CHARS: usize = 100;
-
-fn sender_tags_of(j: &serde_json::Map<String, Value>) -> Vec<String> {
-    let Some(Value::Array(tags)) = j.get("tags") else { return Vec::new() };
-    let mut out: Vec<String> = Vec::new();
-    for t in tags {
-        if out.len() >= SENDER_TAGS_MAX {
-            break;
-        }
-        let Value::String(t) = t else { continue };
-        let name = js::trim(t);
-        if name.is_empty() || js::code_points(name) > SENDER_TAG_CHARS || INVISIBLE_RE.is_match(name) || out.iter().any(|x| x == name) {
-            continue;
-        }
-        out.push(name.to_string());
-    }
-    out
 }
 
 static OWNER_REPO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(&crate::turns::js_re(r"^[^\\/:\s]+\/[^\\/:\s]+$")).unwrap());
@@ -690,7 +664,7 @@ pub fn extract(snapshot_dir: &Path, opts: &ExtractOptions<'_>) -> Result<Session
                 Err(e) => notes.push(format!("{id}: session.db を読めない ({e})")),
             }
         }
-        // 送り先から集計したときは、添えた記録(プロジェクト名とタスクタグ)を 1 度だけ読む
+        // 送り先から集計したときは、添えた記録(プロジェクト名と atlas の版)を 1 度だけ読む
         let meta = if uploaded && has_dir { read_sender_meta(&dir.join(UPLOAD_SESSION_META), id) } else { None };
         Ok(Loaded { id: id.clone(), rec, bad_lines, meta, notes })
     };
@@ -720,9 +694,8 @@ pub fn extract(snapshot_dir: &Path, opts: &ExtractOptions<'_>) -> Result<Session
         // 送り先をまとめて集計したとき(<人>/<プロジェクト> の下のセッション)は、人のフォルダの名前を持たせる
         rec.person = Some(if layout == Some(SourceLayout::Merged) { person_of_folder(owner.as_deref()) } else { None });
         if uploaded {
-            // そのセッションを数えたフォルダ・送った人のタスクタグ・フォルダを写した atlas の版
+            // そのセッションを数えたフォルダ・フォルダを写した atlas の版
             rec.upload_folder = Some(if layout == Some(SourceLayout::Merged) { owner.clone() } else { Some(".".into()) });
-            rec.upload_tags = Some(meta.as_ref().map(|m| m.tags.clone()).unwrap_or_default());
             rec.upload_atlas = Some(meta.as_ref().and_then(|m| m.atlas.clone()));
         }
         rec.desktop = Some(desktop.as_ref().and_then(|d| desktop_for_session(d, &id)).or_else(|| dir_desktops.get(&id).cloned()));
@@ -826,7 +799,6 @@ mod tests {
         std::fs::write(&p, r#"{"version":1,"id":"s1","project":" o/r ","projectSource":"temp","tags":["a"," a ","b\u0007",1,"c"]}"#).unwrap();
         let m = read_sender_meta(&p, "s1").unwrap();
         assert_eq!(m.project, Some(SenderProject { project: "o/r".into(), source: None }));
-        assert_eq!(m.tags, vec!["a", "c"]);
         assert!(read_sender_meta(&p, "s2").is_none());
         std::fs::write(&p, r#"{"version":1,"id":"s1","project":"(ホーム)","projectSource":"path"}"#).unwrap();
         assert_eq!(read_sender_project(&p, "s1"), Some(SenderProject { project: HOME_PROJECT.into(), source: Some(ProjectSource::Home) }));

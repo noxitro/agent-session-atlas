@@ -386,42 +386,13 @@ fn hash_round_trip_and_ids() {
 }
 
 #[test]
-fn groups_in_filter() {
-    use atlas_report::groups::SessionGroup;
+fn selection_in_filter() {
     let s = summaries(&fixture());
     let known: HashSet<String> = s.iter().map(|x| x.id.clone()).collect();
-    let f = FilterState { group: "調査 1".into(), ids: "a,b".into(), ..empty_filter() };
-    assert_eq!(encode_filter(&f), "ids=a,b&group=%E8%AA%BF%E6%9F%BB%201");
-    assert_eq!(decode_filter(&format!("#{}", encode_filter(&f))), f);
-    assert_eq!(decode_filter("#group=%20x%20").group, "x");
-    let g = |name: &str, ids: &[&str]| SessionGroup { name: name.into(), note: String::new(), ids: ids.iter().map(|x| x.to_string()).collect() };
-    let groups = vec![g("調査 1", &["c", "zzz"]), g("空", &[]), g("無い", &["zzz"])];
-    let e = effective_ids(&f.ids, &f.group, &groups, &known);
-    assert_eq!((e.group.map(|x| x.name.as_str()), e.ids.as_str()), (Some("調査 1"), "c"));
-    assert_eq!(ids(&apply_filter(&s, &FilterState { ids: e.ids.clone(), ..f.clone() })), ["c"]);
-    let e = effective_ids("a,b", "相手に無い", &groups, &known);
-    assert_eq!((e.group.is_none(), e.ids.as_str()), (true, "a,b"));
-    assert_eq!(group_ids(&groups[1].ids, &known), NO_SESSION);
-    assert_eq!(group_ids(&groups[2].ids, &known), "zzz");
-    assert!(apply_filter(&s, &FilterState { ids: NO_SESSION.into(), ..empty_filter() }).is_empty());
-
-    for name in ["a&b", "x=y", "100%", "#1", "p,q", "c+d", "& = % # , +"] {
-        let f = FilterState { group: name.into(), ids: "a".into(), ..empty_filter() };
-        let h = encode_filter(&f);
-        assert_eq!(decode_filter(&format!("#{h}")), f);
-        assert_eq!(decode_filter(&format!("#{h}&project=p")), FilterState { project: "p".into(), ..f });
-    }
-    assert_eq!(decode_filter(&format!("#ids=a,{NO_SESSION},zzz")).ids, format!("a,{NO_SESSION},zzz"));
-    assert_eq!(known_selection(&format!("a,{NO_SESSION},zzz,b"), &known), ["a", "b"]);
-    let groups = vec![g("A", &[]), g("B", &[]), g("C", &["a", "b"]), g("D", &["b", "a", "zzz"]), g("E", &["c"])];
-    assert_eq!(current_group_name("c", "E", &groups, &known).as_deref(), Some("E"));
-    assert_eq!(current_group_name("c", "", &groups, &known).as_deref(), Some("E"));
-    assert_eq!(current_group_name("c", "相手に無い", &groups, &known).as_deref(), Some("E"));
-    assert_eq!(current_group_name(NO_SESSION, "", &groups, &known), None);
-    assert_eq!(current_group_name(NO_SESSION, "B", &groups, &known).as_deref(), Some("B"));
-    assert_eq!(current_group_name("a,b", "", &groups, &known), None);
-    assert_eq!(current_group_name("a,b", "D", &groups, &known).as_deref(), Some("D"));
-    assert_eq!(current_group_name("", "", &groups, &known), None);
+    assert_eq!(known_selection("a,zzz,b", &known), ["a", "b"]);
+    // 前の版の URL のタスクタグ(group=)は読まずに捨てる(ほかの指定はそのまま)
+    assert_eq!(decode_filter("#ids=a,b&group=%E8%AA%BF%E6%9F%BB"), FilterState { ids: "a,b".into(), ..empty_filter() });
+    assert_eq!(decode_filter("#group=x&project=p"), FilterState { project: "p".into(), ..empty_filter() });
 }
 
 #[test]

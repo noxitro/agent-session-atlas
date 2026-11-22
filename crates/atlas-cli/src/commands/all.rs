@@ -59,11 +59,11 @@ pub fn run_all_or_reuse(o: &CliOptions, p: &Paths, built_file: &Path, log: Log<'
         None => REPO_ROOT.join(CONFIG_FILE),
     };
     let options = json!({
-        "since": o.since, "project": o.project, "client": o.client, "model": o.model, "branch": o.branch, "group": o.group, "sessions": o.sessions,
+        "since": o.since, "project": o.project, "client": o.client, "model": o.model, "branch": o.branch, "sessions": o.sessions,
         "toolOutput": o.tool_output.as_str(), "maxChars": o.max_chars, "tempDirs": o.temp_dirs, "vcsMode": o.vcs_mode,
     });
     let code = crate::version::CODE_STAMP.to_string();
-    let key = inputs_key(&ReusePaths { snapshot: &p.snapshot, judgments: &p.judgments, turn_judgments: &p.turn_judgments, groups: &p.groups }, &options, &config_file, &code)?;
+    let key = inputs_key(&ReusePaths { snapshot: &p.snapshot, judgments: &p.judgments, turn_judgments: &p.turn_judgments }, &options, &config_file, &code)?;
     let prev = read_built(built_file);
     // 使い回すのは、アップロードしたフォルダ(送った側が添えた記録だけで集計が決まる)のときだけ
     let layout = read_snapshot_manifest(&p.snapshot)?.and_then(|m| m.layout);

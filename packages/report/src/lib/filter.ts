@@ -32,10 +32,8 @@ export interface FilterState {
   empty: '' | '1';
   /** そのツールを呼んだセッションだけ(ツール名、MCP サーバーは mcp:<サーバー>)。要点欄のリンクから設定する */
   tool: string;
-  /** セッションの選択(id をカンマ区切り。'' は制限なし)。一覧のチェックからの「集計」か、グループの選択で入る */
+  /** セッションの選択(id をカンマ区切り。'' は制限なし)。一覧のチェックからの「集計」で入る */
   ids: string;
-  /** 選んだグループの名前('' は無し)。名前が今のグループにあればその ids で集計し、無ければ ids に落ちる(共有した相手に無い名前でも壊れない) */
-  group: string;
   /** '1' ならメモのあるセッションだけ */
   memo: '' | '1';
   /** '1' なら llm-wiki を参照したセッションだけ(wikiReferenced。書き込みだけは入れない) */
@@ -45,42 +43,12 @@ export interface FilterState {
 export const NO_JUDGMENT = '(none)';
 
 export function emptyFilter(): FilterState {
-  return { from: '', to: '', project: ALL, person: ALL, client: ALL, model: ALL, branch: ALL, coverage: '', taskCategory: ALL, empty: '', tool: ALL, ids: '', group: '', memo: '', wiki: '' };
+  return { from: '', to: '', project: ALL, person: ALL, client: ALL, model: ALL, branch: ALL, coverage: '', taskCategory: ALL, empty: '', tool: ALL, ids: '', memo: '', wiki: '' };
 }
 
-/**
- * 集計に使う id の集合を決める: group の名前が groups にあればその今の ids(記録にあるもの。1 件も無ければ元の ids = 0 件)、無ければ ids。
- * 戻りの group は見つかったグループ(無ければ null)
- */
-export function effectiveIds<G extends { name: string; ids: string[] }>(f: Pick<FilterState, 'ids' | 'group'>, groups: G[], known: Set<string>): { group: G | null; ids: string } {
-  const g = f.group ? (groups.find((x) => x.name === f.group) ?? null) : null;
-  if (!g) return { group: null, ids: f.ids };
-  return { group: g, ids: groupIds(g, known) };
-}
-
-/**
- * 現在のグループ名。名前で決まればそれ。決まらないとき(相手に無い名前)は ids の一致で探すが、
- * NO_SESSION(0 件のグループは全て同じ ids になる)や、同じ集合のグループが 2 つ以上あるときは決めない(null)
- */
-export function currentGroupName<G extends { name: string; ids: string[] }>(f: Pick<FilterState, 'ids' | 'group'>, groups: G[], known: Set<string>): string | null {
-  const e = effectiveIds(f, groups, known);
-  if (e.group) return e.group.name;
-  if (!f.ids || f.ids === NO_SESSION) return null;
-  const hits = groups.filter((g) => sameIds(f.ids, groupIds(g, known)));
-  return hits.length === 1 ? hits[0].name : null;
-}
-
-/** 一覧のチェックに写す選択: ids のうち記録にあるものだけ(共有された URL の未知の id や NO_SESSION は入れない) */
+/** 一覧のチェックに写す選択: ids のうち記録にあるものだけ(共有された URL の未知の id は入れない) */
 export function knownSelection(ids: string, known: Set<string>): Set<string> {
   return new Set(splitIds(ids).filter((id) => known.has(id)));
-}
-
-/** どのセッションにも当たらない id(0 件のグループを「制限なし」('')と区別する) */
-export const NO_SESSION = '(none)';
-/** グループの絞り込みに使う ids: 記録にある id、無ければ元の ids、それも無ければ NO_SESSION(= 0 件) */
-export function groupIds(g: { ids: string[] }, known: Set<string>): string {
-  const present = g.ids.filter((id) => known.has(id));
-  return joinIds(present.length ? present : g.ids.length ? g.ids : [NO_SESSION]);
 }
 
 /** ids(カンマ区切り)を配列に(空要素と重複は除く) */
@@ -309,7 +277,6 @@ export function decodeFilter(s: string): FilterState {
     if (k === 'coverage' && !['', 'input', 'output-only', 'none'].includes(v)) continue;
     if ((k === 'empty' || k === 'memo' || k === 'wiki') && !['', '1'].includes(v)) continue;
     if (k === 'ids') v = joinIds(splitIds(v));
-    if (k === 'group') v = v.trim();
     (f as unknown as Record<string, string>)[k] = v;
   }
   return f;

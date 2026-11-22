@@ -76,7 +76,7 @@ pub fn read_inventory(src: &Path) -> InstalledInventory {
 }
 
 /// 索引(UPLOAD_INDEX)のうち読む先頭の大きさ。索引にはそのフォルダの全セッションの一覧が入って大きくなるが、要るのは先頭に書く
-/// uploadedAt と atlas だけ(group-upload.ts が sessions より前に書く)。共有フォルダから全体を読まないように、先頭だけを読む
+/// uploadedAt と atlas だけ(upload_copy.rs が sessions より前に書く)。共有フォルダから全体を読まないように、先頭だけを読む
 const UPLOAD_INDEX_HEAD: usize = 64 * 1024;
 
 static HEAD_VERSION: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r#"^{RE_S}*\{{{RE_S}*"version"{RE_S}*:{RE_S}*1{RE_S}*,"#)).unwrap());
@@ -86,7 +86,7 @@ static HEAD_ATLAS: LazyLock<Regex> =
 
 /// 索引の先頭(全体が UPLOAD_INDEX_HEAD に収まらないとき)から、uploadedAt と atlas を取り出す。形が合わなければ None
 fn upload_index_head(text: &str) -> Option<serde_json::Map<String, Value>> {
-    // version は先頭の項目(group-upload.ts の書き方)。atlas は入れ子の無いオブジェクトか null
+    // version は先頭の項目(upload_copy.rs の書き方)。atlas は入れ子の無いオブジェクトか null
     if !HEAD_VERSION.is_match(text) {
         return None;
     }

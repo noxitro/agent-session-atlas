@@ -68,7 +68,6 @@ pub fn run_bundle(p: &Paths, f: &SessionFilter, o: &BundleCliOptions, log: Log<'
     scope.insert("client".into(), nz(&f.client));
     scope.insert("model".into(), nz(&f.model));
     scope.insert("branch".into(), nz(&f.branch));
-    scope.insert("group".into(), nz(&f.group));
     scope.insert("session".into(), f.sessions.as_ref().filter(|s| !s.is_empty()).map(|s| s.join(",")));
     scope.insert("unjudged".into(), if o.unjudged { Some("yes".into()) } else { None });
     let m = build_bundle(

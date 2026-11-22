@@ -4,11 +4,10 @@
 use std::collections::HashMap;
 use std::fmt;
 
-pub const COMMANDS: &[&str] = &["snapshot", "extract", "metrics", "vcs", "build", "export", "all", "bundle", "judge", "turns", "group", "memo", "serve", "open", "skill-draft"];
+pub const COMMANDS: &[&str] = &["snapshot", "extract", "metrics", "vcs", "build", "export", "all", "bundle", "judge", "turns", "memo", "serve", "open", "skill-draft"];
 pub const JUDGE_ACTIONS: &[&str] = &["run", "import", "m365"];
 pub const BACKEND_NAMES: &[&str] = &["copilot-cli", "anthropic"];
 pub const TURNS_ACTIONS: &[&str] = &["bundle", "run", "import", "m365"];
-pub const GROUP_ACTIONS: &[&str] = &["list", "add", "remove", "export", "upload"];
 pub const MEMO_ACTIONS: &[&str] = &["list", "show", "set", "remove"];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -41,16 +40,6 @@ pub struct TurnsCliOptions {
     pub model: Option<String>,
     pub unjudged: bool,
     pub timeout_sec: u64,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct GroupCliOptions {
-    pub action: String,
-    pub name: Option<String>,
-    pub ids: Vec<String>,
-    pub note: Option<String>,
-    pub to: Option<String>,
-    pub force: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -96,7 +85,6 @@ pub struct CliOptions {
     pub client: Option<String>,
     pub model: Option<String>,
     pub branch: Option<String>,
-    pub group: Option<String>,
     pub sessions: Option<Vec<String>>,
     pub notes_dir: Option<String>,
     pub judgments: Option<String>,
@@ -114,7 +102,6 @@ pub struct CliOptions {
     pub snapshot_prune: bool,
     pub judge: Option<JudgeCliOptions>,
     pub turns: Option<TurnsCliOptions>,
-    pub group_cmd: Option<GroupCliOptions>,
     pub memo_cmd: Option<MemoCliOptions>,
     pub port: Option<u64>,
     pub open: bool,
@@ -159,11 +146,8 @@ const OPTIONS: &[(&str, Kind)] = &[
     ("client", Kind::Str),
     ("model", Kind::Str),
     ("branch", Kind::Str),
-    ("group", Kind::Str),
     ("session", Kind::StrMulti),
     ("notes-dir", Kind::Str),
-    ("note", Kind::Str),
-    ("to", Kind::Str),
     ("file", Kind::Str),
     ("judgments", Kind::Str),
     ("bundle", Kind::Str),
@@ -379,7 +363,7 @@ pub fn parse_cli(argv: &[String]) -> Result<CliOptions, UsageError> {
         // JS の `values.only ? … : null`: 空文字は null
         let mut only = if values.s("only").is_some_and(|o| !o.is_empty()) { only } else { None };
         // 絞り込みは添付を作るときのもので、judge では効かない。--session だけは judge run で --only と同じに扱う(先頭一致で添付から探す)
-        let mut ignored_filters: Vec<String> = ["group", "project", "since", "client", "branch"].iter().filter(|k| values.has(k)).map(|k| format!("--{k}")).collect();
+        let mut ignored_filters: Vec<String> = ["project", "since", "client", "branch"].iter().filter(|k| values.has(k)).map(|k| format!("--{k}")).collect();
         if let Some(ids) = values.multi.get("session").map(split_list).filter(|s| !s.is_empty()) {
             if action == "run" {
                 only = Some(only.unwrap_or_default().into_iter().chain(ids).collect());
@@ -462,43 +446,6 @@ pub fn parse_cli(argv: &[String]) -> Result<CliOptions, UsageError> {
             action,
         });
     }
-    let mut group_cmd = None;
-    if cmd == "group" {
-        let Some(action) = positionals.get(1).cloned() else { return err("group の後に list / add / remove / export / upload を指定してください") };
-        if !GROUP_ACTIONS.contains(&action.as_str()) {
-            return err(format!("group の不明な操作です: {action}(list / add / remove / export / upload)"));
-        }
-        let name = positionals.get(2).cloned().filter(|s| !s.is_empty());
-        let ids = split_list(positionals.iter().skip(3));
-        if action == "list" && positionals.len() > 2 {
-            return err(format!("余分な引数があります: {}", extra(2)));
-        }
-        if action != "list" && name.is_none() {
-            return err(format!("group {action} にはグループ名を指定してください"));
-        }
-        if action == "add" && ids.is_empty() {
-            return err("group add にはセッション id を 1 つ以上指定してください");
-        }
-        if matches!(action.as_str(), "remove" | "export" | "upload") && positionals.len() > 3 {
-            return err(format!("余分な引数があります: {}", extra(3)));
-        }
-        if values.has("note") && action != "add" {
-            return err("--note は group add でだけ使えます");
-        }
-        if values.has("to") && action != "upload" {
-            return err("--to は group upload でだけ使えます");
-        }
-        if values.b("force", false) && action != "upload" {
-            return err("--force は judge run と group upload でだけ使えます");
-        }
-        // JS 版は positionals[2] ?? null(空文字もそのまま)。上の検査は空文字を名前なしとして扱う
-        let name = positionals.get(2).cloned();
-        group_cmd = Some(GroupCliOptions { action, name, ids, note: values.s("note").cloned(), to: values.s("to").cloned(), force: values.b("force", false) });
-    } else if values.has("note") {
-        return err("--note は group add でだけ使えます");
-    } else if values.has("to") {
-        return err("--to は group upload でだけ使えます");
-    }
     let mut memo_cmd = None;
     if cmd == "memo" {
         let Some(action) = positionals.get(1).cloned() else { return err("memo の後に list / show / set / remove を指定してください") };
@@ -548,7 +495,7 @@ pub fn parse_cli(argv: &[String]) -> Result<CliOptions, UsageError> {
             }
         }
     }
-    if !matches!(cmd.as_str(), "judge" | "turns" | "group" | "memo" | "skill-draft") {
+    if !matches!(cmd.as_str(), "judge" | "turns" | "memo" | "skill-draft") {
         if cmd != "open" && positionals.len() > 1 {
             return err(format!("コマンドは 1 つだけ指定してください: {}", positionals.join(" ")));
         }
@@ -558,7 +505,7 @@ pub fn parse_cli(argv: &[String]) -> Result<CliOptions, UsageError> {
             }
         }
         if values.b("force", false) {
-            return err("--force は judge run と group upload でだけ使えます");
+            return err("--force は judge run でだけ使えます");
         }
     }
     let tool_output = match values.s("tool-output").map(String::as_str).unwrap_or("fail") {
@@ -595,8 +542,8 @@ pub fn parse_cli(argv: &[String]) -> Result<CliOptions, UsageError> {
             return err(format!("--vcs-mode は worktree / committed / fixed のどれかです: {m}"));
         }
     }
-    if values.has("config") && !matches!(cmd.as_str(), "extract" | "vcs" | "all" | "serve" | "open") && !(cmd == "group" && positionals.get(1).is_some_and(|a| a == "upload")) {
-        return err("--config は extract・vcs・all・serve・open・group upload でだけ使えます");
+    if values.has("config") && !matches!(cmd.as_str(), "extract" | "vcs" | "all" | "serve" | "open") {
+        return err("--config は extract・vcs・all・serve・open でだけ使えます");
     }
     if let Some(since) = values.s("since") {
         if atlas_core::jsdate::parse_ms(since).is_none() {
@@ -622,9 +569,6 @@ pub fn parse_cli(argv: &[String]) -> Result<CliOptions, UsageError> {
     if values.multi.contains_key("session") && sessions.as_ref().is_none_or(|s| s.is_empty()) {
         return err("--session にセッション id を指定してください");
     }
-    if values.s("group").is_some_and(|g| g.trim().is_empty()) {
-        return err("--group にグループ名を指定してください");
-    }
     let temp_dirs = values.multi.get("temp-dir").filter(|v| !v.is_empty()).cloned();
     Ok(CliOptions {
         command: cmd,
@@ -635,7 +579,6 @@ pub fn parse_cli(argv: &[String]) -> Result<CliOptions, UsageError> {
         client: values.s("client").cloned(),
         model: values.s("model").cloned(),
         branch: values.s("branch").cloned(),
-        group: values.s("group").map(|g| g.trim().to_string()),
         sessions,
         notes_dir: values.s("notes-dir").cloned(),
         judgments: values.s("judgments").cloned(),
@@ -653,7 +596,6 @@ pub fn parse_cli(argv: &[String]) -> Result<CliOptions, UsageError> {
         snapshot_prune: values.b("snapshot-prune", false),
         judge,
         turns,
-        group_cmd,
         memo_cmd,
         port,
         open: values.b("open", true),
@@ -697,8 +639,8 @@ mod tests {
         let j = p(&["judge", "run", "--session", "ab12,cd", "--only", "ef"]).unwrap().judge.unwrap();
         assert_eq!(j.only, Some(vec!["ef".into(), "ab12".into(), "cd".into()]));
         assert!(j.ignored_filters.is_empty());
-        let j = p(&["judge", "run", "--project", "x", "--since", "2026-01-01", "--group", "g"]).unwrap().judge.unwrap();
-        assert_eq!(j.ignored_filters, vec!["--group", "--project", "--since"]);
+        let j = p(&["judge", "run", "--project", "x", "--since", "2026-01-01"]).unwrap().judge.unwrap();
+        assert_eq!(j.ignored_filters, vec!["--project", "--since"]);
         let j = p(&["judge", "import", "r.md", "--session", "ab12"]).unwrap().judge.unwrap();
         assert_eq!((j.only, j.ignored_filters), (None, vec!["--session".to_string()]));
         // judge 以外では今までどおり(絞り込みとして使う)

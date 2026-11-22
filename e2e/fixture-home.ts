@@ -2,9 +2,10 @@
 // .fixtures/ は e2e/global-setup.ts が scripts/synthetic-fixtures.ts で毎回作り直す(架空の値だけ。git には入れない)。
 // session-store.db は別プロセスの書き手が WAL モード(自動チェックポイント無効)で作る。
 // → 実環境と同じく本体 + -wal + -shm が並び、行は WAL にだけある状態になる。
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
 import { existsSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import { appendFile, cp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -300,12 +301,34 @@ export function cliCommand(args: string[], entry: CliEntry = 'main'): [string, s
   return [atlasCli(), entry === 'main' ? args : [entry, ...args]];
 }
 
+/** 送り先のフォルダ名(crates/atlas-report/src/ids.rs の safe_dir_name と同じ決め方) */
+export function uploadDirName(name: string): string {
+  let s = name.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').replace(/[. ]+$/, '').trim();
+  if (/^(con|prn|aux|nul|com\d|lpt\d)(\.|$)/i.test(s)) s = `_${s}`;
+  return s || 'group';
+}
+
+/**
+ * プロジェクトを送る操作(atlas upload-project。upload-project.bat と同じ入口)を、出力先(ATLAS_OUT)・設定(ATLAS_CONFIG)・
+ * Copilot のデータの場所(ATLAS_COPILOT_HOME)を差し替えて動かす。設定には送り先(uploadRoot)と、送るプロジェクトの印(uploadProjects)を書くので
+ * 番号は尋ねられず、送る前の確認には y と答える。送る前に集計し直す(atlas all)。メモは既定の置き場(リポジトリ直下の atlas-notes/)から読む
+ */
+export function uploadProjects(o: { home: string; out: string; root: string; projects: string[]; configPath: string; input?: string }): { status: number | null; out: string } {
+  writeFileSync(o.configPath, JSON.stringify({ wikis: FIXTURE_WIKIS, uploadRoot: o.root, uploadProjects: o.projects }));
+  const r = spawnSync(...cliCommand([], 'upload-project'), {
+    encoding: 'utf8',
+    cwd: ROOT,
+    timeout: 600_000,
+    input: o.input ?? 'y\n',
+    env: { ...process.env, ATLAS_OUT: o.out, ATLAS_CONFIG: o.configPath, ATLAS_COPILOT_HOME: o.home },
+  });
+  return { status: r.status, out: r.stdout + r.stderr };
+}
+
 /** startServer に渡す設定(atlas serve の引数と、テスト用の環境変数になるもの) */
 export interface ServeOptions {
   outDir: string;
   notesDir: string;
-  /** groups.json のパス(notesDir の直下だけ) */
-  groupsPath: string;
   /** 0 なら空きポート */
   port?: number;
   /** 起動後に既定のブラウザで開く */
@@ -323,8 +346,8 @@ export interface ServeOptions {
   jobs?: { env?: NodeJS.ProcessEnv };
   /** 設定ファイル */
   configPath?: string;
-  /** フォルダを選ぶ画面とエクスプローラーで開く操作の差し替え(テストの側に小さなサーバを立てて、atlas から尋ねさせる) */
-  folders?: { canPick?: boolean; pick?: (title: string, initial: string | null) => Promise<string | null>; open?: (dir: string) => void };
+  /** フォルダを選ぶ画面の差し替え(テストの側に小さなサーバを立てて、atlas から尋ねさせる) */
+  folders?: { canPick?: boolean; pick?: (title: string, initial: string | null) => Promise<string | null> };
   /** Copilot のデータの場所(ATLAS_COPILOT_HOME) */
   copilotHome?: string;
   /** 応答の x-atlas-code で返す版の目印(ATLAS_SERVE_CODE_STAMP)。null なら返さない(目印を返す前の古いサーバの代わり) */
@@ -342,10 +365,9 @@ export interface ServeHandle {
 
 /**
  * atlas serve を別のプロセスで動かし、起動を待って handle を返す。
- * フォルダを選ぶ画面とエクスプローラーで開く操作の差し替えは、テストの側に小さなサーバを立てて atlas から尋ねさせる(ATLAS_TEST_HOOK_URL)
+ * フォルダを選ぶ画面の差し替えは、テストの側に小さなサーバを立てて atlas から尋ねさせる(ATLAS_TEST_HOOK_URL)
  */
 export async function startServer(o: ServeOptions): Promise<ServeHandle> {
-  if (resolve(o.groupsPath) !== resolve(join(o.notesDir, 'groups.json'))) throw new Error('startServer: groups.json は notesDir の直下だけです');
   const env: NodeJS.ProcessEnv = { ...process.env, ...o.jobs?.env };
   const ms = (k: string, v: number | undefined): void => {
     if (v !== undefined) env[k] = String(v);
@@ -358,7 +380,7 @@ export async function startServer(o: ServeOptions): Promise<ServeHandle> {
   if (o.copilotHome) env.ATLAS_COPILOT_HOME = o.copilotHome;
   if (o.folders?.canPick !== undefined) env.ATLAS_SERVE_CAN_PICK = o.folders.canPick ? '1' : '0';
   let hook: Server | null = null;
-  if (o.folders?.pick || o.folders?.open) {
+  if (o.folders?.pick) {
     const f = o.folders;
     hook = createServer((req, res) => {
       let body = '';
@@ -366,14 +388,9 @@ export async function startServer(o: ServeOptions): Promise<ServeHandle> {
       req.on('data', (c: string) => (body += c));
       req.on('end', () => {
         void (async () => {
-          const j = JSON.parse(body || '{}') as { title?: string; initial?: string | null; dir?: string };
-          if (req.url === '/pick') {
-            const path = f.pick ? await f.pick(j.title ?? '', j.initial ?? null) : null;
-            res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ path }));
-          } else {
-            f.open?.(j.dir ?? '');
-            res.writeHead(200, { 'content-type': 'application/json' }).end('{}');
-          }
+          const j = JSON.parse(body || '{}') as { title?: string; initial?: string | null };
+          const path = req.url === '/pick' && f.pick ? await f.pick(j.title ?? '', j.initial ?? null) : null;
+          res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ path }));
         })().catch((e: unknown) => res.writeHead(500).end(String(e)));
       });
     });

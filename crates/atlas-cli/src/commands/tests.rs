@@ -1,4 +1,4 @@
-//! コマンドの入口のテスト(packages/cli/test/jobs.test.ts の CLI の印の部分・open-pick.test.ts・group-export.test.ts の CLI の部分)
+//! コマンドの入口のテスト(packages/cli/test/jobs.test.ts の CLI の印の部分・open-pick.test.ts)
 
 use super::*;
 use crate::args::parse_cli;
@@ -125,7 +125,7 @@ fn open_pick_unusable_folder_stops_with_reason() {
 }
 
 #[test]
-fn group_and_memo_commands() {
+fn memo_commands() {
     let d = tempfile::tempdir().unwrap();
     let out = d.path().join("out");
     let notes = d.path().join("notes");
@@ -134,21 +134,11 @@ fn group_and_memo_commands() {
     let logs: Mutex<Vec<String>> = Mutex::new(vec![]);
     let log = |m: &str| logs.lock().unwrap().push(m.to_string());
     let take = || std::mem::take(&mut *logs.lock().unwrap()).join("\n");
-    run(&cli(&["group", "list", "--out", &o, "--notes-dir", &n]), &log).unwrap();
-    assert!(take().contains("はまだありません(atlas group add <名前> <id...> で作れます)"));
-    run(&cli(&["group", "add", "調査", "abc", "abd", "--out", &o, "--notes-dir", &n]), &log).unwrap();
-    let l = take();
-    assert!(l.contains("が無いため id を先頭一致で解決せず、そのまま書きます") && l.contains("「調査」を作りました(2 件)"), "{l}");
+    // タスクタグのコマンド(group)と --group は、もう無い
+    assert_eq!(parse_cli(&["group".to_string(), "list".into()]).unwrap_err().0, "不明なコマンドです: group");
+    assert!(parse_cli(&["build".to_string(), "--group".into(), "g".into()]).unwrap_err().0.starts_with("Unknown option '--group'"));
     // sessions.json があれば先頭一致で解決する
     fs::write(out.join("sessions.json"), json!({ "sessions": [{ "id": "abc-1" }, { "id": "xyz-2" }] }).to_string()).unwrap();
-    run(&cli(&["group", "add", "調査", "xyz", "--note", "メモ", "--out", &o, "--notes-dir", &n]), &log).unwrap();
-    assert!(take().contains("「調査」に 1 件を追記しました(重複 0 件を除く、計 3 件)"));
-    run(&cli(&["group", "list", "--out", &o, "--notes-dir", &n]), &log).unwrap();
-    assert!(take().contains("  調査: 3 件(うち記録にあるのは 1 件) — メモ"));
-    assert!(run(&cli(&["group", "remove", "無い", "--out", &o, "--notes-dir", &n]), &log).unwrap_err().to_string().contains("(あるのは: 調査)"));
-    run(&cli(&["group", "remove", "調査", "--out", &o, "--notes-dir", &n]), &log).unwrap();
-    assert!(take().contains("「調査」を削除しました"));
-    // memo
     run(&cli(&["memo", "set", "abc", "本文です", "--out", &o, "--notes-dir", &n]), &log).unwrap();
     assert!(take().contains("memo: abc-1 のメモを保存しました(4 文字)"));
     run(&cli(&["memo", "list", "--out", &o, "--notes-dir", &n]), &log).unwrap();
@@ -248,8 +238,8 @@ fn judge_rejects_filters_it_ignores() {
     assert!(e.contains("judge-flow --project") && e.contains("--session か --only"), "{e}");
     let e = run(&cli(&["judge", "import", "r.md", "--session", "ab", "--out", &o, "--notes-dir", &n]), &quiet).unwrap_err().to_string();
     assert!(e.starts_with("--session は judge import では使えません"), "{e}");
-    let e = run(&cli(&["judge", "m365", "--group", "g", "--out", &o, "--notes-dir", &n]), &quiet).unwrap_err().to_string();
-    assert!(e.starts_with("--group は judge m365 では効きません。"), "{e}");
+    let e = run(&cli(&["judge", "m365", "--branch", "g", "--out", &o, "--notes-dir", &n]), &quiet).unwrap_err().to_string();
+    assert!(e.starts_with("--branch は judge m365 では効きません。"), "{e}");
     assert!(!e.contains("--session か --only"), "{e}");
 }
 

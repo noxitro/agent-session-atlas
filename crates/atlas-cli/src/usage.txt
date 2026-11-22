@@ -23,20 +23,13 @@
              依頼ごとの判定(採用・依頼の種類・合わなかった点・普段の工程名)。bundle は M365 Copilot などに添付する
              <out>/turn-bundle/parts/ を作る(LLM は呼ばない)。run は GitHub Copilot CLI で判定する(AI クレジットを消費します)。
              import はチャットの返答を <out>/turn-judgments.json に取り込む
-  group list / group add <名前> <id...> [--note <一文>] / group remove <名前> / group export <名前>
-  group upload <名前> [--to <基底フォルダ>] [--force]
-             名前付きグループ(<notes-dir>/groups.json)を一覧・追加(既存名なら id を追記)・削除する。
-             export はそのグループの表(CSV)・集計・記録を <out>/groups/<名前>/ に書き出す。
-             upload はそのグループのセッションの生ログ(前回の集計の複製)を <基底>/<名前>/<セッション id>/ に写す。
-             写す前に大きさと秘密らしい文字列(API キー・トークンなど)を調べ、見つかれば写さずに止まる(--force で写す)
-             (同じセッションは置き換え。基底は --to か atlas.config.json の uploadRoot)
   memo list / memo show <id> / memo set <id> <本文...> / memo set <id> --file <path> / memo remove <id>
              セッションごとのメモ(<notes-dir>/memos/<id>.md)を一覧・表示・保存・削除する(remove は画像を残す)
-  serve      out/ を 127.0.0.1 だけに配信してブラウザで開く(画面からグループとメモを書け、集計し直す・工数の判定・
+  serve      out/ を 127.0.0.1 だけに配信してブラウザで開く(画面からメモを書け、集計し直す・工数の判定・
              記録と全文記録の表示ができる)。ブラウザを閉じると止まる(画面から動かした処理の実行中は終わるまで待つ)
   open <フォルダ> / open --pick
              いつもの集計(この PC のデータ)とは別に、指定したフォルダを集計して、別のサーバで開く。指定できるのは、
-             アップロード先(全員の分)・その下の人ごとのフォルダ(その人の分)・プロジェクトやタスクタグのフォルダ。
+             アップロード先(全員の分)・その下の人ごとのフォルダ(その人の分)・プロジェクトのフォルダ。
              出力先は <out>-folders/<フォルダごとの名前>/out、メモは <notes-dir>/folders/<同じ名前>/ に分ける
              (--out と --notes-dir は、いつもの集計の場所のまま指定する)。画面の「別のフォルダを開く…」と同じ。
              --pick はフォルダを選ぶ画面(Windows のみ)を出し、選んだフォルダを開く(取り消したら何もしない)。
@@ -54,9 +47,8 @@
   --client <name>    クライアントで絞る(例: github/cli, github/autopilot)
   --model <name>     そのモデルを使ったセッションだけ(judge run では判定に使うモデル)
   --branch <name>    ブランチで絞る
-  --group <名前>     名前付きグループ(<notes-dir>/groups.json)のセッションだけ(他の絞り込みと AND)
   --session <id,...> 特定のセッションだけ(カンマ区切り、複数回指定可。id は先頭一致で解決、曖昧ならエラー)
-  --notes-dir <dir>  メモとグループの置き場(既定: リポジトリ直下の atlas-notes/)
+  --notes-dir <dir>  メモの置き場(既定: リポジトリ直下の atlas-notes/)
   --file <path>      memo set: 本文をこのファイルから読む
   --judgments <file> 判定結果 judgments.json の場所(既定: <out>/judgments.json)
   --bundle <dir>     評価バンドルの場所(既定: <out>/bundle)
@@ -69,7 +61,7 @@
                      (%TEMP% と AppData\Local\Temp・/tmp のパターン)を使わない
   --snapshot-all     snapshot: 既定で写さない大きなもの(rewind-snapshots、一覧に無い名前のもの、logs/)も写す
   --snapshot-prune   snapshot: 前回 --snapshot-all で写したが今回は写さないものを消す(既定は残して manifest に日時を出す)
-  --config <file>    extract・vcs・all・serve・open・group upload: 設定ファイル(wiki の vault・アップロード先の指定)の場所
+  --config <file>    extract・vcs・all・serve・open: 設定ファイル(wiki の vault・アップロード先の指定)の場所
                      (既定: 環境変数 ATLAS_CONFIG、無ければリポジトリ直下の atlas.config.json)
   --vcs-mode <v>     vcs・all: 比べる版をどこで見るか。worktree(既定、今の作業ツリー)/ committed(最後に取り込んだ版)/
                      fixed(セッションの終わりから決まった日数後の版。日数は設定の vcs.lagDays、既定 7)
@@ -91,7 +83,7 @@ judge run のオプション:
                      --features anthropic-backend を付けてビルドした atlas だけ。リリースの atlas.exe には無い)
   --limit <n>        未判定のものから最大 n 件だけ判定する
   --only <id,...>    指定したセッションだけ判定する(id は先頭一致。今の添付(out/bundle)に入っているものだけ。
-                     --session も同じ)。ほかの絞り込み(--project・--since・--group など)は judge では効かないので
+                     --session も同じ)。ほかの絞り込み(--project・--since など)は judge では効かないので
                      止まる。絞り込んで判定するときは judge-flow に付けるか、先に bundle に付けて添付を作る
   --concurrency <n>  同時に判定する数(既定 1)
   --force            判定済みのセッションも判定し直す

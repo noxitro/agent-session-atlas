@@ -2,11 +2,11 @@
 // ツールの結果(events.jsonl)から拾ってセッションの記録(sessions.json の tests)に持つことを、架空の ~/.copilot で通しで確かめる。
 //  a. 依頼の番号・ツール・呼び出しの ID つきで、呼び出しごとに持つ。印の行が無いセッションにはキーを置かない。
 //     実行ごとに、そこまでの実働と AI 使用量の累計・まだ通っていないテストの数を持ち、最初に全部通った実行の番号を残す
-//  b. タスクタグのセッションを送り(group upload)、送り先から集計し直しても同じ結果になる(生ログから読むので、別のファイルを添えない)
+//  b. プロジェクトのセッションを送り(upload-project)、送り先から集計し直しても同じ結果になる(生ログから読むので、別のファイルを添えない)
 //  c. 詳細ページに「テストの推移」の節が出る(印の行が無いセッションには出ない)。最後まで通らなかったセッションは「未達」
 //  d. レポート(atlas.html)には、テストの実行があるセッションだけに要約(何回目で通ったか・そこまでの実働と AI 使用量)を埋め込む
-//  e. 表(out/tables/ の CSV と atlas.sqlite)に、テストの実行・結果・件数と、課題 × 条件の表、sessions.csv の課題・条件・テストの列を書く。
-//     名前の決まりに合うタスクタグが無いときは conditions.csv を書かず、前のものも残さない
+//  e. 表(out/tables/ の CSV と atlas.sqlite)に、テストの実行・結果・件数と、sessions.csv のテストの列を書く。
+//     前の版が書いた課題 × 条件の表(conditions.csv)は残さない
 // ログ・パス・本文はすべて架空のもの
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -16,7 +16,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { extractEmbedded } from '../packages/report/src/lib/embed.ts';
 import type { ReportData } from '../packages/report/src/lib/types.ts';
 import type { SessionsFile } from '../packages/report/src/shared/types.ts';
-import { ROOT, cliCommand } from './fixture-home.ts';
+import { ROOT, cliCommand, uploadDirName, uploadProjects } from './fixture-home.ts';
 import { openReadOnly } from './sqlite.ts';
 
 const WORK = join(ROOT, 'out', 'e2e-phase18');
@@ -25,7 +25,6 @@ const OUT = join(WORK, 'out');
 const OUT2 = join(WORK, 'out-uploaded');
 const NOTES = join(WORK, 'notes');
 const UPLOAD = join(WORK, 'atlas-logs');
-const TAG = 'cond-a';
 const S_TESTS = '00000000-0000-4000-8000-000000180001';
 const S_PLAIN = '00000000-0000-4000-8000-000000180002';
 const S_UNREACHED = '00000000-0000-4000-8000-000000180003';
@@ -150,14 +149,15 @@ describe('Phase 18: テストの結果の取り込み', () => {
   });
 
   it('b. 送り先から集計し直しても、同じテストの結果になる', async () => {
-    await mkdir(NOTES, { recursive: true });
     // 送り先の基底のフォルダは、思わぬ場所に作らないよう atlas は作らない(先に作っておく)
     await mkdir(UPLOAD, { recursive: true });
-    await writeFile(join(NOTES, 'groups.json'), JSON.stringify({ version: 1, groups: [{ name: TAG, note: '', ids: [S_TESTS, S_PLAIN, S_UNREACHED] }] }));
-    const up = atlas(['group', 'upload', TAG, '--to', UPLOAD, '--out', OUT, '--notes-dir', NOTES]);
+    // 3 つのセッションは同じ作業フォルダ(同じプロジェクト)
+    const project = original.sessions.find((s) => s.id === S_TESTS)!.project;
+    expect(original.sessions.filter((s) => s.project === project).map((s) => s.id).sort()).toEqual([S_TESTS, S_PLAIN, S_UNREACHED]);
+    const up = uploadProjects({ home: HOME, out: OUT, root: UPLOAD, projects: [project], configPath: join(WORK, 'atlas.config.json') });
     expect(up.status, up.out).toBe(0);
     for (const cmd of ['snapshot', 'extract']) {
-      const r = atlas([cmd, '--home', join(UPLOAD, TAG), '--out', OUT2]);
+      const r = atlas([cmd, '--home', join(UPLOAD, uploadDirName(project)), '--out', OUT2]);
       expect(r.status, r.out).toBe(0);
     }
     const again = JSON.parse(await readFile(join(OUT2, 'sessions.json'), 'utf8')) as SessionsFile;
@@ -193,7 +193,7 @@ describe('Phase 18: テストの結果の取り込み', () => {
 
   it('d. レポートには、テストの実行があるセッションだけに要約を埋め込む', async () => {
     const data = extractEmbedded<ReportData>(await readFile(join(OUT, 'atlas.html'), 'utf8'));
-    expect(data.version).toBe(18);
+    expect(data.version).toBe(19);
     const tests = (id: string) => data.sessions.find((s) => s.id === id)?.tests;
     // 2 回目で通った。そこまでの実働は 5 分、AI 使用量は 5 AIU(通った後の分は入らない)。項目はこの 6 つだけで、実行ごとの結果やテストの名前は埋め込まない
     expect(tests(S_TESTS)).toEqual({ runs: 2, firstPass: 2, lastFailing: 0, passActiveMs: 300_000, passNanoAiu: 5e9, lastNanoAiu: 5e9 });
@@ -204,28 +204,24 @@ describe('Phase 18: テストの結果の取り込み', () => {
     expect('tests' in plain).toBe(false);
   });
 
-  it('e. 表(CSV と SQLite)に、テストの実行・結果・件数と、課題 × 条件の表を書く', async () => {
+  it('e. 表(CSV と SQLite)に、テストの実行・結果・件数を書く', async () => {
     const tables = join(OUT, 'tables');
     /** CSV を行と列に(この fixture の値には , と " が入らない) */
     const read = async (f: string): Promise<string[][]> => (await readFile(join(tables, f), 'utf8')).replace(/^\uFEFF/, '').trimEnd().split('\r\n').map((l) => l.split(','));
-    // a の集計(名前の決まりに合うタスクタグが無い): テストの表は書くが、課題 × 条件の表は書かない
-    expect(existsSync(join(tables, 'test-runs.csv'))).toBe(true);
-    expect(existsSync(join(tables, 'conditions.csv'))).toBe(false);
-
-    const notes = join(WORK, 'notes-tables');
-    await mkdir(notes, { recursive: true });
-    await writeFile(join(notes, 'groups.json'), JSON.stringify({ version: 1, groups: [{ name: 'zz-task__plain__1', note: '', ids: [S_TESTS] }, { name: 'zz-task__wiki', note: '', ids: [S_UNREACHED] }, { name: 'zz-misc', note: '', ids: [S_PLAIN] }] }));
-    const r = atlas(['metrics', '--out', OUT, '--notes-dir', notes]);
+    // 前の版が書いた課題 × 条件の表が残っていても、集計し直すと消す
+    await writeFile(join(tables, 'conditions.csv'), 'old');
+    const r = atlas(['metrics', '--out', OUT, '--notes-dir', NOTES]);
     expect(r.status, r.out).toBe(0);
-    expect(r.out).toContain('・conditions.csv・test-runs.csv・test-results.csv・test-counts.csv・atlas.sqlite');
+    expect(r.out).toContain('・test-runs.csv・test-results.csv・test-counts.csv・atlas.sqlite');
+    expect(existsSync(join(tables, 'conditions.csv'))).toBe(false);
 
     // テストの実行 1 回 1 行(S_TESTS が 2 回、S_UNREACHED が 2 回)
     const runs = await read('test-runs.csv');
-    expect(runs[0]).toEqual(['セッションID', 'セッション名', '課題', '条件', '実行', '完了', '依頼番号', 'ツール', 'サブエージェント', '結果', '合格', '通っていないテスト', '実働(秒)', 'AIU']);
+    expect(runs[0]).toEqual(['セッションID', 'セッション名', '実行', '完了', '依頼番号', 'ツール', 'サブエージェント', '結果', '合格', '通っていないテスト', '実働(秒)', 'AIU']);
     expect(runs.slice(1).map((x) => x[0])).toEqual([S_TESTS, S_TESTS, S_UNREACHED, S_UNREACHED]);
     // 1 回目: 2 分・2 AIU の時点で、2 件のうち 1 件が合格。リクエストごとの使用量の記録が無いセッションの AIU は空
-    expect(runs[1].slice(2)).toEqual(['zz-task', 'plain', '1', at(2), '1', 'powershell', '0', '2', '1', '1', '120', '2']);
-    expect(runs[4].slice(2)).toEqual(['zz-task', 'wiki', '2', at(23), '1', 'powershell', '0', '1', '0', '1', '180', '']);
+    expect(runs[1].slice(2)).toEqual(['1', at(2), '1', 'powershell', '0', '2', '1', '1', '120', '2']);
+    expect(runs[4].slice(2)).toEqual(['2', at(23), '1', 'powershell', '0', '1', '0', '1', '180', '']);
     // 結果 1 件 1 行と、件数 1 つ 1 行(名前は書いた側のまま)
     const results = await read('test-results.csv');
     expect(results.length - 1).toBe(7);
@@ -238,31 +234,15 @@ describe('Phase 18: テストの結果の取り込み', () => {
       [S_TESTS, '1', '1', '描画', 'diffRate', '0.25'],
     ]);
 
-    // 課題 × 条件の表: 課題ごとの行のあとに条件ごとの行。件数が足りないので、割合と中央値は空で、母数は出る
-    const cond = await read('conditions.csv');
-    expect(cond.slice(1).map((x) => x.slice(0, 5))).toEqual([
-      ['課題ごと', 'zz-task', 'plain', '1', '1'],
-      ['課題ごと', 'zz-task', 'wiki', '1', '1'],
-      ['条件ごと', '', 'plain', '1', '1'],
-      ['条件ごと', '', 'wiki', '1', '1'],
-    ]);
-    const h = cond[0];
-    const plain = cond[3];
-    expect(plain[h.indexOf('最後に全部通った')]).toBe('1');
-    expect(plain[h.indexOf('最後に全部通った割合')]).toBe('');
-    expect(plain[h.indexOf('通るまでの実行の母数')]).toBe('1');
-    expect(cond[4][h.indexOf('未達')]).toBe('1');
-    // 件数が足りない行は、未達かどうかも空
-    expect(cond[4][h.indexOf('通るまでの実行が未達')]).toBe('');
-
-    // sessions.csv に課題・条件とテストの列。決まりに合わないタグのセッションは空
+    // sessions.csv にテストの列(最初の依頼の列の前)。テストの実行が無いセッションは空
     const sessions = await read('sessions.csv');
     const sh = sessions[0];
     const col = (id: string, name: string): string => sessions.find((x) => x[0] === id)![sh.indexOf(name)];
-    expect(sh.indexOf('課題')).toBe(sh.indexOf('最初の依頼(先頭)') - 9);
-    expect(['課題', '条件', 'テストの実行', '最初に全部通った実行', '最後に通っていないテスト', '通るまでの実働(秒)', '通るまでの AIU'].map((n) => col(S_TESTS, n))).toEqual(['zz-task', 'plain', '2', '2', '0', '300', '5']);
-    expect(['課題', '条件', 'テストの実行', '最初に全部通った実行'].map((n) => col(S_UNREACHED, n))).toEqual(['zz-task', 'wiki', '2', '']);
-    expect(['課題', 'テストの実行'].map((n) => col(S_PLAIN, n))).toEqual(['', '']);
+    expect(sh).not.toContain('課題');
+    expect(sh.indexOf('テストの実行')).toBe(sh.indexOf('最初の依頼(先頭)') - 7);
+    expect(['テストの実行', '最初に全部通った実行', '最後に通っていないテスト', '通るまでの実働(秒)', '通るまでの AIU'].map((n) => col(S_TESTS, n))).toEqual(['2', '2', '0', '300', '5']);
+    expect(['テストの実行', '最初に全部通った実行'].map((n) => col(S_UNREACHED, n))).toEqual(['2', '']);
+    expect(col(S_PLAIN, 'テストの実行')).toBe('');
     // 印の行はすべて読めて、上限にも届いていない
     expect(['読めなかったテストの印の行', '上限で持たなかったテストの結果'].map((n) => col(S_TESTS, n))).toEqual(['0', '0']);
     expect(col(S_PLAIN, '読めなかったテストの印の行')).toBe('');
@@ -271,17 +251,11 @@ describe('Phase 18: テストの結果の取り込み', () => {
     const db = await openReadOnly(join(tables, 'atlas.sqlite'));
     try {
       const names = db.prepare("select name from sqlite_master where type = 'table' order by 1").all().map((x) => (x as { name: string }).name);
-      for (const t of ['conditions', 'test_runs', 'test_results', 'test_counts']) expect(names).toContain(t);
+      for (const t of ['test_runs', 'test_results', 'test_counts']) expect(names).toContain(t);
+      expect(names).not.toContain('conditions');
       expect(db.prepare('select count(*) n from test_counts').get()).toEqual({ n: 10 });
-      expect({ ...db.prepare('select "条件" c, "未達" u from conditions where "行" = \'条件ごと\' and "条件" = \'wiki\'').get() }).toEqual({ c: 'wiki', u: 1 });
     } finally {
       db.close();
     }
-
-    // タスクタグを外して集計し直すと、前の conditions.csv を残さない
-    await writeFile(join(notes, 'groups.json'), JSON.stringify({ version: 1, groups: [] }));
-    expect(atlas(['metrics', '--out', OUT, '--notes-dir', notes]).status).toBe(0);
-    expect(existsSync(join(tables, 'conditions.csv'))).toBe(false);
-    expect(existsSync(join(tables, 'test-runs.csv'))).toBe(true);
   });
 });

@@ -95,7 +95,7 @@ describe('AI の変更の残存: 割合を出す条件', () => {
     const data = extractEmbedded<ReportData>(await readFile(join(out, 'atlas.html'), 'utf8'));
     projectB = data.sessions.find((s) => s.id === idB)!.project;
 
-    server = await startServer({ outDir: out, notesDir: notes, groupsPath: join(notes, 'groups.json'), port: 0, open: false, idleMs: 600_000, firstHeartbeatMs: 600_000, configPath: join(WORK, 'atlas.config.json'), copilotHome: HOME });
+    server = await startServer({ outDir: out, notesDir: notes, port: 0, open: false, idleMs: 600_000, firstHeartbeatMs: 600_000, configPath: join(WORK, 'atlas.config.json'), copilotHome: HOME });
     browser = await chromium.launch();
     page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
     page.on('pageerror', (e) => problems.push(`pageerror: ${e.message}`));

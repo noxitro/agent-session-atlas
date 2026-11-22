@@ -1,7 +1,7 @@
 (function(){
 var d=document,sec=d.getElementById('memo'),title=d.querySelector('main .title');if(!sec||!title)return;
 var id=sec.dataset.session,mt=d.querySelector('meta[name="atlas-token"]'),token=mt?mt.content:'',H={'x-atlas-token':token};
-var st=d.createElement('style');st.textContent="\n.session-ops{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;margin-top:12px}\n.session-ops[hidden]{display:none}\n.session-ops .btn{display:inline-flex;align-items:center;min-height:30px;text-decoration:none}\n.session-ops .ops-help{flex-basis:100%;margin:0;font-size:.75rem;color:var(--ink-2)}\n.session-ops .ops-status{margin:0;font-size:.8125rem;color:var(--ink-2);min-height:1.5em}\n.session-ops .ops-status a{display:inline-flex;align-items:center;min-height:24px;margin-left:.5em}\n.ops-groups{margin:10px 0 0;font-size:.8125rem;color:var(--ink-2)}\n.ops-groups[hidden]{display:none}\n.ops-groups .k{color:var(--form);font-size:.75rem;margin-right:.75em}\n.ops-groups .none{color:var(--ink-3)}\n.ops-groups{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px}\n.ops-groups .tags{display:flex;flex-wrap:wrap;gap:6px;margin:0;padding:0;list-style:none}\n.ops-groups .tag{display:inline-flex;align-items:center;border:1px solid var(--rule);background:var(--form-wash)}\n.ops-groups .tag a{padding:2px 6px}\n.ops-groups .tag-x{min-width:24px;min-height:24px;border:0;border-left:1px solid var(--rule);background:none;color:var(--ink-2);cursor:pointer;font:inherit}\n.ops-groups .tag-x:hover{color:var(--ink)}\n.ops-groups .tag-add{display:inline-flex;gap:6px;align-items:center}\n.ops-groups .tag-add input{min-height:28px;padding:2px 6px;font:inherit;border:1px solid var(--rule-strong);background:var(--surface);color:var(--ink);width:16em;max-width:60vw}\n.ops-groups .tag-msg{flex-basis:100%;margin:0;min-height:1.2em;font-size:.75rem;color:var(--ink-2)}\n.session-ops .ops-err{flex-basis:100%;margin:2px 0 0;font-size:.8125rem;color:var(--ink);background:var(--warn-wash);border:1px solid var(--warn);padding:4px 8px;max-width:75ch}\n.ops-judge{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;margin:10px 0 0;font-size:.8125rem;color:var(--ink-2)}\n.ops-judge .k{color:var(--form);font-size:.75rem;margin-right:.75em}\n.ops-judge .btn{display:inline-flex;align-items:center;min-height:30px}\n.ops-judge .judge-note,.ops-judge .judge-log{flex-basis:100%;margin:0;font-size:.75rem;color:var(--ink-2);overflow-wrap:anywhere}\n.ops-judge .judge-msg{flex-basis:100%;margin:0;min-height:1.2em}\n.ops-judge .judge-err{flex-basis:100%;margin:2px 0 0;color:var(--ink);background:var(--warn-wash);border:1px solid var(--warn);padding:4px 8px;max-width:75ch;overflow-wrap:anywhere}\n.ops-judge[hidden],.ops-judge [hidden]{display:none}\n";d.head.appendChild(st);
+var st=d.createElement('style');st.textContent="\n.session-ops{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;margin-top:12px}\n.session-ops[hidden]{display:none}\n.session-ops .btn{display:inline-flex;align-items:center;min-height:30px;text-decoration:none}\n.session-ops .ops-help{flex-basis:100%;margin:0;font-size:.75rem;color:var(--ink-2)}\n.session-ops .ops-status{margin:0;font-size:.8125rem;color:var(--ink-2);min-height:1.5em}\n.session-ops .ops-status a{display:inline-flex;align-items:center;min-height:24px;margin-left:.5em}\n.session-ops .ops-err{flex-basis:100%;margin:2px 0 0;font-size:.8125rem;color:var(--ink);background:var(--warn-wash);border:1px solid var(--warn);padding:4px 8px;max-width:75ch}\n.ops-judge{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;margin:10px 0 0;font-size:.8125rem;color:var(--ink-2)}\n.ops-judge .k{color:var(--form);font-size:.75rem;margin-right:.75em}\n.ops-judge .btn{display:inline-flex;align-items:center;min-height:30px}\n.ops-judge .judge-note,.ops-judge .judge-log{flex-basis:100%;margin:0;font-size:.75rem;color:var(--ink-2);overflow-wrap:anywhere}\n.ops-judge .judge-msg{flex-basis:100%;margin:0;min-height:1.2em}\n.ops-judge .judge-err{flex-basis:100%;margin:2px 0 0;color:var(--ink);background:var(--warn-wash);border:1px solid var(--warn);padding:4px 8px;max-width:75ch;overflow-wrap:anywhere}\n.ops-judge[hidden],.ops-judge [hidden]{display:none}\n";d.head.appendChild(st);
 function el(tag,cls,text){var e=d.createElement(tag);if(cls)e.className=cls;if(text!=null)e.textContent=text;return e}
 var box=el('div','session-ops');box.setAttribute('role','group');box.setAttribute('aria-label','記録の表示');
 var view='../view/'+encodeURIComponent(id);
@@ -14,57 +14,7 @@ box.appendChild(el('p','ops-help',(md?'記録を読む: 依頼・応答・ツー
 var status=el('p','ops-status');status.id='ops-status';status.setAttribute('role','status');box.appendChild(status);
 var err=el('p','ops-err');err.setAttribute('role','alert');err.hidden=true;box.appendChild(err);
 title.appendChild(box);
-// タスクタグ(保存は atlas-notes/groups.json のグループ。atlas serve の最新を出す)。名前を押すとレポートをそのタグで絞り込む。
-// ここで付け外しできる: 「×」で外す(タグは 0 件でも残る)、入力して「付ける」(今あるタグなら足し、無ければ新しく作る)
-var gl=el('div','ops-groups');gl.setAttribute('data-testid','detail-groups');gl.setAttribute('role','group');gl.setAttribute('aria-label','タスクタグ');gl.hidden=true;title.insertBefore(gl,box);
-var JH={'x-atlas-token':token,'content-type':'application/json'},tagBusy=false,tagDown=false,allTags=[];
-// ro: 読むだけの画面(別のフォルダを開いたもの)。送った人が付けたタグを出すだけで、外す・付けるは出さない
-function drawTags(groups,ro){
-  allTags=groups.map(function(g){return g.name});
-  var mine=groups.filter(function(g){return Array.isArray(g.ids)&&g.ids.indexOf(id)>=0}).map(function(g){return g.name});
-  gl.textContent='';
-  gl.appendChild(el('span','k',ro?'タスクタグ(送った人が付けたもの)':'タスクタグ'));
-  var ul=el('ul','tags');
-  if(!mine.length)ul.appendChild(el('li','none','なし'));
-  mine.forEach(function(n){
-    var li=el('li','tag'),a=el('a',null,n);a.href='../atlas.html#group='+encodeURIComponent(n);li.appendChild(a);
-    if(ro){ul.appendChild(li);return}
-    var x=el('button','tag-x','×');x.type='button';x.setAttribute('aria-label','タスクタグ「'+n+'」を外す');x.disabled=tagDown;
-    x.addEventListener('click',function(){tagOp(function(){return call('groups/'+encodeURIComponent(n),{method:'PUT',headers:JH,body:JSON.stringify({remove:[id]})})},'「'+n+'」を外しました')});
-    li.appendChild(x);ul.appendChild(li);
-  });
-  gl.appendChild(ul);
-  if(ro){gl.hidden=false;return}
-  var f=el('form','tag-add'),inp=el('input'),dl=el('datalist'),b=el('button','btn','付ける');
-  dl.id='tag-options';allTags.filter(function(n){return mine.indexOf(n)<0}).forEach(function(n){var o=el('option');o.value=n;dl.appendChild(o)});
-  inp.type='text';inp.setAttribute('list','tag-options');inp.maxLength=100;inp.placeholder='タグの名前(例: Player-Weapon)';inp.setAttribute('aria-label','付けるタスクタグ');inp.disabled=tagDown;
-  b.type='submit';b.disabled=tagDown;
-  f.appendChild(inp);f.appendChild(dl);f.appendChild(b);
-  f.addEventListener('submit',function(e){
-    e.preventDefault();var n=inp.value.trim();if(!n){inp.focus();return}
-    if(mine.indexOf(n)>=0){tagMsg('「'+n+'」は付いています');return}
-    // 付ける直前に最新のタグの一覧を読み、今あるタグなら足し、無ければ作る(開いた時点の一覧で決めると、別の画面で増えたタグに「既にあります」で付けられない)
-    tagOp(function(){return call('state',{headers:H,cache:'no-store'}).then(function(s){var has=!!(s.ok&&s.body&&Array.isArray(s.body.groups)&&s.body.groups.some(function(g){return g.name===n}));return has?call('groups/'+encodeURIComponent(n),{method:'PUT',headers:JH,body:JSON.stringify({add:[id]})}):call('groups',{method:'POST',headers:JH,body:JSON.stringify({name:n,note:'',ids:[id]})})})},'「'+n+'」を付けました');
-  });
-  gl.appendChild(f);
-  var m=el('p','tag-msg');m.setAttribute('role','status');gl.appendChild(m);
-  gl.hidden=false;
-}
-function tagMsg(t){var m=gl.querySelector('.tag-msg');if(m)m.textContent=t}
-function tagOp(run,done){
-  if(tagBusy||tagDown)return;tagBusy=true;err.hidden=true;
-  run().then(function(r){
-    if(!r.ok||!r.body||!Array.isArray(r.body.groups))throw new Error((r.body&&r.body.error)||('サーバの応答 '+r.status));
-    drawTags(r.body.groups);tagMsg(done);
-    // 描き直すと押したボタンが消えるので、焦点はタグの入力欄へ
-    var t=gl.querySelector('.tag-add input');if(t)t.focus();
-  }).catch(function(e){err.textContent='タスクタグを変えられませんでした('+e.message+')';err.hidden=false}).then(function(){tagBusy=false});
-}
-d.addEventListener('atlas-down',function(){tagDown=true;gl.querySelectorAll('button,input').forEach(function(x){x.disabled=true})});
-call('state',{headers:H,cache:'no-store'}).then(function(r){
-  if(!r.ok||!r.body||!Array.isArray(r.body.groups))return;
-  drawTags(r.body.groups,r.body.readOnly===true);
-}).catch(function(){});
+var JH={'x-atlas-token':token,'content-type':'application/json'};
 // LLM 判定(このセッションだけ)。判定したかどうかは上の札(「LLM 判定」。detail.rs が書く)に出し、ここは判定を始めるボタンと進み具合を出す。
 // 判定は AI クレジット(BYOK なら API の利用料)を使うので、押したら件数・モデル・費用を確かめてから始める。
 // 終わっても自動では読み直さない(メモの入力中などを守る)。「読み込み直す」で、作り直したページを出す

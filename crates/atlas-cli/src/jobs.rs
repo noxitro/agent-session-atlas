@@ -16,7 +16,6 @@
 //! ジョブの子プロセスには JOB_ENV を渡し、親(serve)の印では止まらないようにする。
 
 use crate::sys;
-use atlas_report::groups::LoadedGroups;
 use serde::Serialize;
 use serde_json::{Map, Value};
 use std::io::Read;
@@ -190,26 +189,20 @@ pub const TURN_LIMIT_MAX: i64 = 5000;
 /// 残すログの行数(子プロセスの stdout / stderr の末尾)
 pub const JOB_LOG_LINES: usize = 200;
 
-/// 判定する範囲(画面のタスクタグ、セッションの詳細ページの 1 セッション)。All は絞らない
+/// 判定する範囲(セッションの詳細ページの 1 セッション)。All は絞らない
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum JudgeScope {
     #[default]
     All,
     Session(String),
-    Group(String),
-    /// 読むだけの画面のタスクタグ(送った人のタグ)。子プロセスは notes-dir の groups.json で名前を探すので、
-    /// 画面で解決した id(sessions.json にあるもの)を --session で渡す。name は表示用
-    GroupIds { name: String, ids: Vec<String> },
 }
 
 impl JudgeScope {
-    /// judge-flow に渡す絞り込み(--session / --group。値が - で始まっても読めるよう = でつなぐ)
+    /// judge-flow に渡す絞り込み(--session。値が - で始まっても読めるよう = でつなぐ)
     fn args(&self) -> Vec<String> {
         match self {
             JudgeScope::All => vec![],
             JudgeScope::Session(id) => vec![format!("--session={id}")],
-            JudgeScope::Group(name) => vec![format!("--group={name}")],
-            JudgeScope::GroupIds { ids, .. } => vec![format!("--session={}", ids.join(","))],
         }
     }
 
@@ -217,16 +210,13 @@ impl JudgeScope {
         match self {
             JudgeScope::All => String::new(),
             JudgeScope::Session(id) => format!("、セッション {id}"),
-            JudgeScope::Group(name) => format!("、タスクタグ「{name}」"),
-            JudgeScope::GroupIds { name, ids } => format!("、タスクタグ「{name}」の {} セッション", ids.len()),
         }
     }
 
-    fn target(&self) -> (Option<String>, Option<String>) {
+    fn session(&self) -> Option<String> {
         match self {
-            JudgeScope::All => (None, None),
-            JudgeScope::Session(id) => (Some(id.clone()), None),
-            JudgeScope::Group(name) | JudgeScope::GroupIds { name, .. } => (None, Some(name.clone())),
+            JudgeScope::All => None,
+            JudgeScope::Session(id) => Some(id.clone()),
         }
     }
 }
@@ -234,41 +224,15 @@ impl JudgeScope {
 /// 子プロセスのコマンドラインの目安の上限(Windows の上限 32767 文字より手前で断る)
 pub const JOB_ARGS_MAX_CHARS: usize = 30000;
 
-/// 読むだけの画面: タスクタグの範囲(judge_scope が groups で確かめた Group)を、そのタグの ids に置き換える。
-/// groups は画面のタスクタグ(送った人のタグ)、known_id は sessions.json にあるか。残った id が 0 件なら 400
-pub fn pin_group_ids(req: JobRequest, groups: &LoadedGroups, known_id: &dyn Fn(&str) -> bool) -> Result<JobRequest, JobError> {
-    let pin = |scope: JudgeScope| -> Result<JudgeScope, JobError> {
-        let JudgeScope::Group(name) = scope else { return Ok(scope) };
-        let ids: Vec<String> = groups.groups.iter().find(|g| g.name == name).map(|g| g.ids.iter().filter(|id| known_id(id)).cloned().collect()).unwrap_or_default();
-        if ids.is_empty() {
-            return Err(JobError::new(400, format!("タスクタグ「{name}」のセッションは sessions.json にありません(判定するものがありません)")));
-        }
-        Ok(JudgeScope::GroupIds { name, ids })
-    };
-    Ok(match req {
-        JobRequest::Judge { limit, backend, scope, force } => JobRequest::Judge { limit, backend, scope: pin(scope)?, force },
-        JobRequest::TurnJudge { limit, scope } => JobRequest::TurnJudge { limit, scope: pin(scope)? },
-        other => other,
-    })
-}
-
 /// 子プロセスの引数がコマンドラインに収まるか(引数の文字数と区切りの合計で見る)。
 /// Windows のコマンドラインの上限は 32767 文字(UTF-16)。JOB_ARGS_MAX_CHARS を 30000 にして、実行ファイルのパスと引用符の分を空けている。
 /// 数えるのは chars() で UTF-16 の単位とは違う(サロゲートペアで増える)が、引数はセッション ID と ASCII のオプションが主で、その差もこの余白に収まる
-fn check_args_length(req: &JobRequest, args: &[String]) -> Result<(), JobError> {
+fn check_args_length(args: &[String]) -> Result<(), JobError> {
     let total: usize = args.iter().map(|a| a.chars().count() + 1).sum();
     if total <= JOB_ARGS_MAX_CHARS {
         return Ok(());
     }
-    let ids = matches!(req, JobRequest::Judge { scope: JudgeScope::GroupIds { .. }, .. } | JobRequest::TurnJudge { scope: JudgeScope::GroupIds { .. }, .. });
-    Err(JobError::new(
-        400,
-        if ids {
-            format!("タスクタグのセッションが多すぎて、判定の処理に渡せません(引数が {total} 文字)。対象を「すべて」にして判定してください")
-        } else {
-            format!("判定の処理に渡す引数が長すぎます({total} 文字)")
-        },
-    ))
+    Err(JobError::new(400, format!("判定の処理に渡す引数が長すぎます({total} 文字)")))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -315,9 +279,6 @@ pub struct JobTarget {
     /// 判定を絞ったセッション id
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
-    /// 判定を絞ったタスクタグ
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub group: Option<String>,
     /// 判定し直す
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub force: bool,
@@ -361,9 +322,9 @@ impl std::error::Error for JobError {}
 
 fn job_keys(kind: &str) -> &'static [&'static str] {
     match kind {
-        "judge" => &["kind", "limit", "backend", "session", "group", "force"],
+        "judge" => &["kind", "limit", "backend", "session", "force"],
         "full" => &["kind", "id"],
-        "turn-judge" => &["kind", "limit", "session", "group"],
+        "turn-judge" => &["kind", "limit", "session"],
         _ => &["kind"],
     }
 }
@@ -386,43 +347,25 @@ fn session_id_of(id: Option<&str>, known_id: &dyn Fn(&str) -> bool) -> Result<St
     Ok(id)
 }
 
-/// 判定の範囲を決める(POST /api/jobs の本文の session / group と、GET /api/jobs/judge-preview の ?session= / ?group= で共通)。
-/// session と group はどちらか 1 つ。session はファイル名に使える形で known_id(sessions.json にあるか)を満たすこと。
-/// group は空でない名前(前後の空白は落とす)で、groups(groups.json を読んだもの。group を指定したときだけ読めばよい。None は無いのと同じ)にあること。
-/// 見つからないとき、groups.json に読めなかった箇所があれば 404 ではなく 409 にして、その箇所を添える(壊れた所にあるのかもしれないため)
-pub fn judge_scope(session: Option<&str>, group: Option<&str>, known_id: &dyn Fn(&str) -> bool, groups: Option<&LoadedGroups>) -> Result<JudgeScope, JobError> {
-    match (session, group) {
-        (None, None) => Ok(JudgeScope::All),
-        (Some(_), Some(_)) => Err(JobError::new(400, "session と group は同時に指定できません")),
-        (Some(s), None) => Ok(JudgeScope::Session(session_id_of(Some(s), known_id)?)),
-        (None, Some(g)) => {
-            let name = g.trim();
-            if name.is_empty() {
-                return Err(JobError::new(400, "group にはタスクタグの名前を指定してください"));
-            }
-            if groups.is_some_and(|g| g.groups.iter().any(|x| x.name == name)) {
-                return Ok(JudgeScope::Group(name.to_string()));
-            }
-            match groups.filter(|g| !g.warnings.is_empty()) {
-                // 警告の文にファイルの場所が入っている(load_groups)
-                Some(g) => Err(JobError::new(409, format!("タスクタグ「{name}」が見つかりません。groups.json に読めなかった箇所があります(直すと出ることがあります): {}", g.warnings.join(" / ")))),
-                None => Err(JobError::new(404, format!("タスクタグ「{name}」はありません"))),
-            }
-        }
+/// 判定の範囲を決める(POST /api/jobs の本文の session と、GET /api/jobs/judge-preview の ?session= で共通)。
+/// session はファイル名に使える形で known_id(sessions.json にあるか)を満たすこと
+pub fn judge_scope(session: Option<&str>, known_id: &dyn Fn(&str) -> bool) -> Result<JudgeScope, JobError> {
+    match session {
+        None => Ok(JudgeScope::All),
+        Some(s) => Ok(JudgeScope::Session(session_id_of(Some(s), known_id)?)),
     }
 }
 
-/// 本文の session / group(文字列でない値は空の文字列として渡し、形が正しくないとして 400 にする)
-fn scope_of(body: &Map<String, Value>, known_id: &dyn Fn(&str) -> bool, groups: Option<&LoadedGroups>) -> Result<JudgeScope, JobError> {
-    let text = |k: &str| body.get(k).map(|v| v.as_str().unwrap_or(""));
-    judge_scope(text("session"), text("group"), known_id, groups)
+/// 本文の session(文字列でない値は空の文字列として渡し、形が正しくないとして 400 にする)
+fn scope_of(body: &Map<String, Value>, known_id: &dyn Fn(&str) -> bool) -> Result<JudgeScope, JobError> {
+    judge_scope(body.get("session").map(|v| v.as_str().unwrap_or("")), known_id)
 }
 
 /// POST /api/jobs の本文を検証する(純関数)。kind は列挙、limit は 0〜500 の整数(数値で必須。画面の確認で決めた件数だけ受ける)、
 /// backend は省ける(画面から始める判定は copilot-cli だけなので、無ければそれ。書くなら copilot-cli)、id はファイル名に使える形で、
-/// known_id(sessions.json にあるか)を満たすこと。判定は session(known_id)か group(groups: 読んだ groups.json にあるか)で絞れ(judge_scope)、
+/// known_id(sessions.json にあるか)を満たすこと。判定は session(known_id)で絞れ(judge_scope)、
 /// force(判定し直す)は session と一緒にだけ使える。知らないキーは 400
-pub fn parse_job_request(body: &Map<String, Value>, known_id: &dyn Fn(&str) -> bool, groups: Option<&LoadedGroups>) -> Result<JobRequest, JobError> {
+pub fn parse_job_request(body: &Map<String, Value>, known_id: &dyn Fn(&str) -> bool) -> Result<JobRequest, JobError> {
     let kind = match body.get("kind") {
         Some(Value::String(k)) if JOB_KINDS.contains(&k.as_str()) => k.as_str(),
         _ => return Err(JobError::new(400, format!("kind は {} のどれかです", JOB_KINDS.join(" / ")))),
@@ -446,7 +389,7 @@ pub fn parse_job_request(body: &Map<String, Value>, known_id: &dyn Fn(&str) -> b
         let Some(limit) = integer_of(body.get("limit")).filter(|l| (0..=TURN_LIMIT_MAX).contains(l)) else {
             return Err(JobError::new(400, format!("limit には 0〜{TURN_LIMIT_MAX} の整数を指定してください(判定する依頼の数の上限)")));
         };
-        let scope = scope_of(body, known_id, groups)?;
+        let scope = scope_of(body, known_id)?;
         return Ok(JobRequest::TurnJudge { limit, scope });
     }
     if kind == "judge" {
@@ -463,7 +406,7 @@ pub fn parse_job_request(body: &Map<String, Value>, known_id: &dyn Fn(&str) -> b
             Some(Value::Bool(f)) => *f,
             Some(_) => return Err(JobError::new(400, "force は true か false です")),
         };
-        let scope = scope_of(body, known_id, groups)?;
+        let scope = scope_of(body, known_id)?;
         if force && !matches!(scope, JudgeScope::Session(_)) {
             return Err(JobError::new(400, "force(判定し直す)は session と一緒にだけ使えます"));
         }
@@ -787,7 +730,7 @@ impl JobRunner {
         let notes = self.o.notes_dir.to_string_lossy().into_owned();
         let args = job_args(req, &JobArgsInput { out_dir: &out, notes_dir: &notes, home: self.o.home.as_deref() });
         if let Some(a) = &args {
-            check_args_length(req, a)?;
+            check_args_length(a)?;
         }
         // CLI(atlas.bat の再実行・npm run atlas:judge)が同じ out/ に書いている最中なら始めない。印はジョブの終わりに外す(drop_lock)
         match acquire_out_lock(&self.o.out_dir, req.kind(), "serve") {
@@ -796,12 +739,10 @@ impl JobRunner {
         }
         let target = match req {
             JobRequest::Judge { limit, backend, scope, force } => {
-                let (session, group) = scope.target();
-                JobTarget { limit: Some(*limit), backend: Some(backend.clone()), session, group, force: *force, ..Default::default() }
+                JobTarget { limit: Some(*limit), backend: Some(backend.clone()), session: scope.session(), force: *force, ..Default::default() }
             }
             JobRequest::TurnJudge { limit, scope } => {
-                let (session, group) = scope.target();
-                JobTarget { limit: Some(*limit), session, group, ..Default::default() }
+                JobTarget { limit: Some(*limit), session: scope.session(), ..Default::default() }
             }
             JobRequest::Full { id } => JobTarget { id: Some(id.clone()), ..Default::default() },
             _ => JobTarget::default(),

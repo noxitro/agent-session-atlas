@@ -936,9 +936,6 @@ pub struct SessionRecord {
     /// 送り先から集計したときの、そのセッションを数えた送り先のフォルダ
     #[serde(default, skip_serializing_if = "Option::is_none", with = "crate::js::double_option")]
     pub upload_folder: Option<Option<String>>,
-    /// 送り先から集計したときの、送った人のタスクタグ
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub upload_tags: Option<Vec<String>>,
     /// 送り先から集計したときの、そのセッションのフォルダを写した atlas の版
     #[serde(default, skip_serializing_if = "Option::is_none", with = "crate::js::double_option")]
     pub upload_atlas: Option<Option<AtlasBuild>>,
