@@ -3,6 +3,7 @@
 // fetch の宛先は同一オリジンの相対パス 'api/…' だけ(E2E の外部参照の検査はこの形だけを許す)。
 import { isStaleServer } from '../lib/code-check.ts';
 import type { MemoSummary } from '../lib/memo.ts';
+import type { TasksReport } from '../lib/types.ts';
 
 export interface ApiState {
   version: number;
@@ -175,7 +176,7 @@ export const foldersApi = {
   },
 };
 
-export type JobKind = 'refresh' | 'judge' | 'full' | 'bundle' | 'bundle-zip' | 'export' | 'turn-bundle' | 'turn-judge' | 'm365' | 'turn-m365';
+export type JobKind = 'refresh' | 'judge' | 'full' | 'bundle' | 'bundle-zip' | 'export' | 'turn-bundle' | 'turn-judge' | 'm365' | 'turn-m365' | 'task-link';
 /** 何を判定するか: 工数(セッションごと)/ 依頼ごとの採用・種類・工程 */
 export type JudgeTarget = 'effort' | 'turns';
 /** 外の LLM への渡し方: チャットに添付ファイルを貼る / ZIP にまとめてエージェントに渡す(工数の判定だけ) */
@@ -203,7 +204,8 @@ export type JobRequest =
   | { kind: 'turn-bundle' }
   | ({ kind: 'turn-judge'; limit: number } & Partial<JudgeScope>)
   | { kind: 'm365' }
-  | { kind: 'turn-m365' };
+  | { kind: 'turn-m365' }
+  | ({ kind: 'task-link' } & Partial<JudgeScope>);
 
 export const jobsApi = {
   /** 最後のジョブ(まだ無ければ null) */
@@ -304,6 +306,20 @@ export const chatJudgeApi = {
       }
       throw new ChatImportError(body?.error ?? `サーバの応答 ${r.status}`, body?.problems ?? []);
     });
+  },
+};
+
+/** GET api/tasks: 今のタスクの状態・紐づけ・工数(埋め込みの ReportData.tasks と同じ形。設定も記録も無ければ tasks は null) */
+export interface TasksPayload {
+  readOnly: boolean;
+  tasks: TasksReport | null;
+  /** LLM で紐づけるときに聞くセッションの数(依頼の記録があって、紐づけの無いもの)。読むだけの画面では 0 */
+  unresolved: number;
+}
+
+export const tasksApi = {
+  get(token: string): Promise<TasksPayload> {
+    return connect(fetch('api/tasks', { cache: 'no-store', headers: headers(token) }), (r) => parse<TasksPayload>(r));
   },
 };
 

@@ -71,6 +71,8 @@ const NUMBERS: [f64; 31] = [
     f64::NEG_INFINITY,
     f64::NAN,
 ];
+/// タスクの絞り込みの割り振りに使う ID(scripts/parity-lib.ts の TASK_CASE_IDS と同じ)
+const TASK_CASE_IDS: [&str; 2] = ["T-1", "T-2 β"];
 const FILE_NAMES: [&str; 15] = ["メモ.md", "a b.txt", "x", "", ".x", "..", "a/b", "x.", "x ", "CON", "nul.log", "Com1", "a:b", "abc-1_2.x", "あ"];
 
 /// テストの結果の要約を確かめる形(実行なし / 未達 / 1 回目で通る / 通った後に不合格で AI 使用量の記録なし / 番号が実行の数を外れている / 番号が 0 / 番号が負)。
@@ -207,10 +209,15 @@ fn main() -> Result<()> {
         ("unjudged", f(&|x| x.task_category = NO_JUDGMENT.into())),
         ("wiki", f(&|x| x.wiki = "1".into())),
         ("ids", f(&|x| x.ids = plain.iter().take(5).map(|s| s.id.as_str()).chain(["zzz"]).collect::<Vec<_>>().join(","))),
+        ("task", f(&|x| x.task = TASK_CASE_IDS[0].into())),
+        ("noTask", f(&|x| x.task = NO_TASK.into())),
     ];
+    // タスクの絞り込み: 決まった割り振り(3 つおきにタスク 2 つと「タスクなし」)で両側を数える。scripts/parity-lib.ts と同じ
+    let tasks: TaskOf = plain.iter().enumerate().filter(|(i, _)| i % 3 != 2).map(|(i, s)| (s.id.clone(), TASK_CASE_IDS[i % 3].to_string())).collect();
+    d.write("task-options", &task_options(plain.iter().map(|s| s.id.as_str()), &tasks, &HashMap::from([(TASK_CASE_IDS[0].to_string(), "タスク 一つ目".to_string())])))?;
     let phases: Vec<String> = verdicts.as_ref().map(|v| v.phases.clone()).unwrap_or_default();
     for (name, flt) in &filters {
-        let xs = apply_filter(&plain, flt);
+        let xs = apply_filter_with(&plain, flt, &tasks);
         let agg = d.timed("aggregate", || aggregate(&xs, Some(people)));
         d.write(&format!("aggregate-{name}"), &agg)?;
         let hl = d.timed("highlights", || highlights(&xs, &agg.usage, &HighlightOptions { filter: flt, installed: installed.as_ref() }));

@@ -4,10 +4,10 @@
   import { verdictAggregate } from '../lib/verdicts.ts';
   import { wikiReferenced, wikiState } from '../lib/wiki.ts';
   import { flushSync, tick, untrack } from 'svelte';
-  import { applyFilter, decodeFilter, decodeTab, decodeView, DEFAULT_TAB, emptyFilter, encodeFilter, encodeState, filterHref, filterOptions, inScope, isEmptyFilter, isStateHash, isTabId, joinIds, knownSelection, type FilterState, type TabId } from '../lib/filter.ts';
+  import { applyFilter, decodeFilter, decodeTab, decodeView, DEFAULT_TAB, emptyFilter, encodeFilter, encodeState, filterHref, filterOptions, inScope, isEmptyFilter, isStateHash, isTabId, joinIds, knownSelection, taskOf, taskOptions, type FilterState, type TabId } from '../lib/filter.ts';
   import { highlights } from '../lib/highlights.ts';
   import { date, dateTime, int } from '../lib/format.ts';
-  import { WIKI_PAGES_DATA_VERSION, type ReportData } from '../lib/types.ts';
+  import { WIKI_PAGES_DATA_VERSION, type ReportData, type TasksReport } from '../lib/types.ts';
   import FilterBar from './components/FilterBar.svelte';
   import Overview from './components/Overview.svelte';
   import JudgmentPanel from './components/JudgmentPanel.svelte';
@@ -23,10 +23,11 @@
   import ModelChart from './components/ModelChart.svelte';
   import ModelValue from './components/ModelValue.svelte';
   import SessionTable from './components/SessionTable.svelte';
+  import TaskPanel from './components/TaskPanel.svelte';
   import { applyTheme, loadTheme, type ThemeChoice } from './theme.ts';
   import { watchScrollFocus } from './scroll-focus.ts';
   import { STALE_MESSAGE } from '../lib/code-check.ts';
-  import { api, foldersApi, serveToken, startHeartbeat, type UploadHandlers, type UploadSetting } from './api.ts';
+  import { api, foldersApi, serveToken, startHeartbeat, tasksApi, type TasksPayload, type UploadHandlers, type UploadSetting } from './api.ts';
   import { currentView, restoreDone, restoredView, saveView } from './view-restore.ts';
   import { JobStore } from './jobs.svelte.ts';
   import JobActions from './components/JobActions.svelte';
@@ -50,6 +51,14 @@
   const wikiCount = $derived(sessions.filter((s) => wikiReferenced(s.wiki)).length);
   const emptyCount = $derived(sessions.filter((s) => s.empty).length);
   const judged = $derived(!!data?.judgments.available);
+  /**
+   * 管理ツールのタスク。serve から開いた画面は API から読んだもの(詳細ページで直した紐づけも出る)、ほかは埋め込み。
+   * 値はすべて集計(Rust)が決めたもので、ここでは数え直さない。紐づけは絞り込み(filter.task)と一覧の 1 行に使う
+   */
+  let liveTasks = $state<TasksPayload | null>(null);
+  const tasks = $derived<TasksReport | null>(liveTasks ? liveTasks.tasks : (data?.tasks ?? null));
+  const taskMap = $derived(taskOf(tasks?.links));
+  const taskNames = $derived(new Map((tasks?.items ?? []).map((t) => [t.id, t.name || t.id])));
 
   function initialFilter(): FilterState {
     try {
@@ -71,7 +80,9 @@
   // 空のセッションを含めるかどうかで母集団が変わる(選択肢の件数・「全 N セッション」もこの範囲で数える)
   const scoped = $derived(sessions.filter((s) => inScope(s, filter)));
   const options = $derived(filterOptions(scoped));
-  const filtered = $derived.by(() => applyFilter(sessions, filter));
+  const filtered = $derived.by(() => applyFilter(sessions, filter, taskMap));
+  /** タスクの絞り込みの選択肢(集計対象の範囲で数える) */
+  const taskOpts = $derived(tasks ? taskOptions(scoped, taskMap, taskNames) : null);
   const agg = $derived(aggregate(filtered, options.person.length > 0));
   const turnAgg = $derived(turnAggregate(filtered));
   const verdictAgg = $derived(data?.turnJudgments?.available ? verdictAggregate(filtered, data.turnJudgments.phases) : null);
@@ -427,6 +438,11 @@
         uploadSetting = s.upload ?? null; // 古い serve には無い(アップロードの操作を出さない)
         readOnly = s.readOnly === true;
         editable = true;
+        // 古い serve には無い(失敗しても、埋め込みのタスクだけで出す)
+        tasksApi
+          .get(token)
+          .then((t) => (liveTasks = t))
+          .catch(() => {});
         // 古い serve には無い(失敗しても、埋め込みの source だけで出す)
         foldersApi
           .list(token)
@@ -445,7 +461,7 @@
   });
   // 今の絞り込み(空を含めるかの条件を除く)に当てはまる空のセッション数。表紙の「除外」の件数に使う
   /** 今の絞り込みで、空のセッションも含めたときに出るセッション */
-  const emptyRelaxed = $derived(applyFilter(sessions, { ...filter, empty: '1' }));
+  const emptyRelaxed = $derived(applyFilter(sessions, { ...filter, empty: '1' }, taskMap));
   const emptyInFilter = $derived(emptyRelaxed.filter((s) => s.empty).length);
   /** アップロード先(atlas.config.json の uploadRoot)。serve が教えてくれたときだけ設定に出す */
   let uploadSetting = $state<UploadSetting | null>(null);
@@ -495,7 +511,7 @@
   /** 効いている絞り込みの条件の数(期間は開始・終了で 1 つ、セッションの選択は 1 つ) */
   const activeConditions = $derived.by(() => {
     let n = filter.from || filter.to ? 1 : 0;
-    for (const k of ['project', 'person', 'client', 'model', 'branch', 'coverage', 'taskCategory', 'tool', 'ids', 'memo', 'wiki'] as const) if (filter[k]) n++;
+    for (const k of ['project', 'person', 'client', 'model', 'branch', 'coverage', 'taskCategory', 'tool', 'ids', 'memo', 'wiki', 'task'] as const) if (filter[k]) n++;
     if (filter.empty === '1') n++;
     return n;
   });
@@ -518,6 +534,7 @@
         { id: 'phases', label: '工程と詰まり' },
         { id: 'detail', label: '集計明細' },
         ...(judged ? [{ id: 'judgments', label: 'AI 投入量 vs 推定人手工数' }] : []),
+        ...(tasks ? [{ id: 'tasks', label: '管理ツールのタスク' }] : []),
         ...(data?.retention ? [{ id: 'retention', label: 'AI の変更の残存' }] : []),
         { id: 'compare', label: '比べる' },
       ],
@@ -667,7 +684,7 @@
         </p>
       </div>
       <div class="mast-tools">
-        {#if editable && jobStore}<JobActions jobs={jobStore} disabled={serverDown} /><SettingsDialog jobs={jobStore} disabled={serverDown} upload={uploadHandlers} send={canEdit ? projectSend : undefined} projects={settingsProjects} /><OpenFolder token={jobStore.token} disabled={serverDown} />{/if}
+        {#if editable && jobStore}<JobActions jobs={jobStore} disabled={serverDown} taskLink={liveTasks?.tasks ? { unresolved: liveTasks.unresolved, configured: liveTasks.tasks.configured, readOnly: liveTasks.readOnly } : null} /><SettingsDialog jobs={jobStore} disabled={serverDown} upload={uploadHandlers} send={canEdit ? projectSend : undefined} projects={settingsProjects} /><OpenFolder token={jobStore.token} disabled={serverDown} />{/if}
         {#if sourceLabel}<span class="tag" title={sourceLabel.path} data-testid="source-tag">対象: {sourceLabel.name}</span>{/if}
         {#if readOnly}<span class="tag" title="メモは、送った人が付けたものを出します。この画面では書き換えません(集計し直す・判定はできます)" data-testid="readonly-tag">読むだけ</span>{/if}
         {#if data.atlasBuilds}<span class={data.atlasBuilds.ok ? 'tag' : 'tag warn'} title={[data.atlasBuilds.headline, ...data.atlasBuilds.lines].join('\n')} data-testid="atlas-builds-tag">送った atlas: {data.atlasBuilds.short}</span>{/if}
@@ -729,7 +746,7 @@
         <div class="down-band stale-band" role="alert">{STALE_MESSAGE}</div>
       {/if}
       {#if editable && jobStore}<JobBand jobs={jobStore} generatedAt={data.generatedAt} />{/if}
-      <FilterBar {filter} {options} {judged} {emptyCount} {memoCount} {wikiCount} wikiCounted={wiki === 'counted'} lastDay={all.overall.lastAt ? date(all.overall.lastAt) : null} onchange={setFilter} {editable} />
+      <FilterBar {filter} {options} {judged} {emptyCount} {memoCount} {wikiCount} wikiCounted={wiki === 'counted'} lastDay={all.overall.lastAt ? date(all.overall.lastAt) : null} onchange={setFilter} {editable} tasks={taskOpts ? { options: taskOpts.tasks, none: taskOpts.none } : null} />
 
       <main class="wrap" id="main" tabindex="-1">
         <div class="empty" class:show={filtered.length === 0} role="status">
@@ -756,6 +773,7 @@
           <TurnPhases agg={turnAgg} verdicts={verdictAgg} verdictModel={data.turnJudgments?.model ?? null} verdictRanAt={data.turnJudgments?.ranAt ?? null} {editable} />
           <Overview part="detail" {agg} {judged} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} {emptyInFilter} {wiki} />
           {#if judged}<JudgmentPanel {agg} meta={data.judgments} />{/if}
+          {#if tasks}<TaskPanel {tasks} current={filter.task} noneCount={taskOpts?.none ?? 0} onpick={(t) => setFilter({ task: t })} />{/if}
           {#if data.retention}<Retention sessions={filtered} meta={data.retention} />{/if}
           <Compare sessions={scoped} projects={options.project} lastAt={all.overall.lastAt} retention={!!data.retention} />
         </div>
@@ -781,6 +799,7 @@
             onselect={(s) => (selected = s)}
             onapply={applySelection}
             onclear={clearSelection}
+            tasks={tasks ? { links: tasks.links, names: taskNames } : null}
           />
         </div>
       </main>

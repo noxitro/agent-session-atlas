@@ -1166,6 +1166,89 @@ pub struct DetailOptions<'a> {
     pub retention_meta: Option<&'a RetentionMeta>,
     /// llm-wiki の参照を数えた集計か(atlas_core::wiki::wiki_state で、絞り込み前の全セッションから決める)
     pub wiki_state: WikiState,
+    /// 管理ツールのタスクの行。タスクの設定も記録も無ければ None(行を出さない)
+    pub task: Option<&'a DetailTask>,
+}
+
+/// 詳細ページの「タスク」の行(ReportData.tasks の、このセッションの紐づけと、紐づいたタスク)
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DetailTask {
+    /// 紐づけ。None は紐づけが無い(機械で決まらず、LLM でも手でもまだ決めていない)
+    pub link: Option<DetailTaskLink>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DetailTaskLink {
+    /// None は「どのタスクでもない」
+    pub task_id: Option<String>,
+    pub name: Option<String>,
+    pub status: Option<String>,
+    pub done: Option<bool>,
+    /// machine / llm / manual
+    pub source: String,
+    pub reason: String,
+    pub confidence: Option<f64>,
+}
+
+impl DetailTask {
+    /// ReportData.tasks(tasks::view::TasksView を値にしたもの)から、セッション id の行を作る
+    pub fn from_view(tasks: &serde_json::Value, session: &str) -> DetailTask {
+        use serde_json::Value;
+        let Some(l) = tasks.get("links").and_then(|m| m.get(session)) else { return DetailTask::default() };
+        let task_id = l.get("taskId").and_then(Value::as_str).map(str::to_string);
+        let item = task_id.as_deref().and_then(|t| tasks.get("items").and_then(Value::as_array).and_then(|a| a.iter().find(|i| i.get("id").and_then(Value::as_str) == Some(t))));
+        let s = |v: Option<&Value>, k: &str| v.and_then(|v| v.get(k)).and_then(Value::as_str).map(str::to_string);
+        DetailTask {
+            link: Some(DetailTaskLink {
+                name: s(item, "name"),
+                status: s(item, "status"),
+                done: item.and_then(|i| i.get("done")).and_then(Value::as_bool),
+                source: s(Some(l), "source").unwrap_or_default(),
+                reason: s(Some(l), "reason").unwrap_or_default(),
+                confidence: l.get("confidence").and_then(Value::as_f64),
+                task_id,
+            }),
+        }
+    }
+}
+
+/// 紐づけの出所の言葉(tasks::links::LinkSource::label と同じ。画面の lib/tasks.ts の LINK_SOURCE_LABEL とも同じ)
+fn task_source_label(s: &str) -> &str {
+    match s {
+        "machine" => "機械",
+        "llm" => "LLM",
+        "manual" => "手動",
+        x => x,
+    }
+}
+
+/// 表題の下の「タスク」の行。atlas serve の画面では session-tools.js が、ここに変える操作を足す(読むだけの画面では足さない)。
+/// 中身(.task-now)の書き方は session-tools.js の taskNow と同じにする(変えた後に書き直すため)
+fn task_row(id: &str, t: &DetailTask) -> String {
+    let body = match &t.link {
+        None => format!("<span class=\"task-v\" data-testid=\"detail-task-name\">{}</span>", missing("紐づけなし")),
+        Some(l) => {
+            let v = match &l.task_id {
+                None => format!("<span class=\"task-v\" data-testid=\"detail-task-name\">{}</span>", missing("どのタスクでもない")),
+                Some(tid) => format!(
+                    "<span class=\"task-v\" data-testid=\"detail-task-name\">{}<span class=\"id\">({})</span></span>{}",
+                    esc(l.name.as_deref().filter(|n| !n.is_empty()).unwrap_or(tid)),
+                    esc(tid),
+                    match (&l.status, l.done) {
+                        (Some(st), Some(d)) => format!("<span class=\"task-st\" data-testid=\"detail-task-status\">状態: {}({})</span>", esc(if st.is_empty() { "—" } else { st }), if d { "完了" } else { "未完了" }),
+                        _ => String::new(),
+                    }
+                ),
+            };
+            let reason = if l.reason.is_empty() { String::new() } else { format!("({})", esc(&l.reason)) };
+            let conf = l.confidence.map(|c| format!("・確度 {}%", (c * 100.0).round() as i64)).unwrap_or_default();
+            format!("{v}<span class=\"task-src\" data-testid=\"detail-task-source\">紐づけ: {}{reason}{conf}</span>", esc(task_source_label(&l.source)))
+        }
+    };
+    format!(
+        "<div class=\"task-row\" id=\"task-row\" data-session=\"{}\" data-testid=\"detail-task\" role=\"group\" aria-label=\"管理ツールのタスク\"><span class=\"k\">タスク</span><span class=\"task-now\">{body}</span><a class=\"term\" href=\"../glossary.html#task-link-source\">紐づけの出所とは</a></div>",
+        esc(id)
+    )
 }
 
 const DETAIL_CSS: &str = include_str!("../assets/detail.css");
@@ -1619,10 +1702,11 @@ pub fn render_detail_html(r: &SessionRecord, o: &DetailOptions<'_>) -> String {
         links,
     };
     let style = format!("{}{DETAIL_CSS}{}", o.css, if o.memo.is_some() { MEMO_CSS } else { "" });
+    let task = o.task.map(|t| task_row(&r.id, t)).unwrap_or_default();
     let page_title = format!("{} | Copilot Session Atlas", esc(&truncate(Some(&title), 60)));
     let mut out = page_head(o.code, &page_title, &style);
     out.push_str(&format!(
-        "<body>\n{}\n<div class=\"shell\">\n{}\n<div class=\"content\">\n<main class=\"wrap\">\n<div class=\"title\"><h1>{}</h1><div class=\"meta\">{meta}</div></div>\n{}\n</main>\n<footer class=\"wrap page-foot\">Copilot Session Atlas が {} に生成。</footer>\n</div>\n</div>\n<script>{NAV_JS}</script>\n</body>\n</html>\n",
+        "<body>\n{}\n<div class=\"shell\">\n{}\n<div class=\"content\">\n<main class=\"wrap\">\n<div class=\"title\"><h1>{}</h1><div class=\"meta\">{meta}</div>{task}</div>\n{}\n</main>\n<footer class=\"wrap page-foot\">Copilot Session Atlas が {} に生成。</footer>\n</div>\n</div>\n<script>{NAV_JS}</script>\n</body>\n</html>\n",
         render_top(&nav),
         render_rail(&nav),
         esc(&title),

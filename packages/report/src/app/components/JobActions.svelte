@@ -10,7 +10,61 @@
   import { int } from '../../lib/format.ts';
   import ChatJudge from './ChatJudge.svelte';
 
-  let { jobs, disabled }: { jobs: JobStore; disabled: boolean } = $props();
+  let {
+    jobs,
+    disabled,
+    taskLink = null,
+  }: {
+    jobs: JobStore;
+    disabled: boolean;
+    /**
+     * 管理ツールのタスクに LLM で紐づける操作(GET api/tasks の答え)。タスクの設定も記録も無ければ null で、ボタンを出さない。
+     * unresolved は聞くセッションの数、configured は設定に tasks があるか、readOnly は読むだけの画面か
+     */
+    taskLink?: { unresolved: number; configured: boolean; readOnly: boolean } | null;
+  } = $props();
+
+  // --- タスクを LLM で紐づける(判定と同じモデル。AI クレジットか API の利用料を使うので、確かめてから始める) ---
+  let linkDlg = $state<HTMLDialogElement | null>(null);
+  let linkOpener = $state<HTMLButtonElement | null>(null);
+  let linkPreview = $state<JudgePreview | null>(null);
+  let linkPreviewError = $state('');
+  let linkError = $state('');
+  /** 押せない理由(押せるなら空)。押せないときも焦点は受け、理由を読み上げる(aria-disabled) */
+  const linkWhy = $derived(
+    !taskLink
+      ? ''
+      : taskLink.readOnly
+        ? '読むだけの画面では、送った人の紐づけをそのまま使います(ここでは紐づけません)。'
+        : !taskLink.configured
+          ? '設定(atlas.config.json)に tasks がありません。'
+          : taskLink.unresolved === 0
+            ? '紐づけの無いセッションはありません(機械・LLM・手動のどれかで決まっています)。'
+            : jobs.running
+              ? 'ほかの処理が動いています。終わってから押してください。'
+              : '',
+  );
+  const linkOff = $derived(disabled || jobs.busy || linkWhy !== '');
+  async function openLink(): Promise<void> {
+    if (linkOff || !taskLink) return;
+    linkPreview = null;
+    linkPreviewError = '';
+    linkError = '';
+    linkDlg?.showModal();
+    await tick();
+    linkDlg?.querySelector<HTMLElement>('[data-autofocus]')?.focus({ preventScroll: true });
+    try {
+      linkPreview = await jobsApi.judgePreview(jobs.token);
+    } catch (e) {
+      linkPreviewError = (e as Error).message;
+    }
+  }
+  async function runLink(e: SubmitEvent): Promise<void> {
+    e.preventDefault();
+    if (!taskLink || taskLink.unresolved < 1 || jobs.busy) return;
+    if (await jobs.run({ kind: 'task-link' })) linkDlg?.close();
+    else linkError = jobs.error;
+  }
 
   /** 件数の上限の最大(工数はセッション、依頼ごとの判定は依頼の数) */
   const LIMIT_MAX: Record<JudgeTarget, number> = { effort: 500, turns: 5000 };
@@ -117,7 +171,50 @@
 <div class="job-actions" role="group" aria-label="集計と判定">
   <button type="button" class="btn" disabled={off} data-testid="job-refresh" onclick={() => void jobs.run({ kind: 'refresh' })}>集計し直す</button>
   <button type="button" class="btn" disabled={off} bind:this={opener} data-testid="job-judge" aria-haspopup="dialog" onclick={openJudge}>判定する…</button>
+  {#if taskLink}
+    <button
+      type="button"
+      class="btn"
+      aria-disabled={linkOff ? 'true' : undefined}
+      aria-describedby={linkWhy ? 'task-link-why' : undefined}
+      title={linkWhy || undefined}
+      bind:this={linkOpener}
+      data-testid="job-task-link"
+      aria-haspopup="dialog"
+      onclick={openLink}>タスクを LLM で紐づける…({int(taskLink.readOnly ? 0 : taskLink.unresolved)})</button
+    >
+    {#if linkWhy}<span class="sr-only" id="task-link-why" data-testid="job-task-link-why">{linkWhy}</span>{/if}
+  {/if}
 </div>
+
+{#if taskLink}
+  <dialog bind:this={linkDlg} class="judge-dialog" aria-labelledby="task-link-h" aria-describedby="task-link-cost" data-testid="task-link-dialog" onclose={() => linkOpener?.focus()}>
+    <div class="head">
+      <h2 id="task-link-h">タスクを LLM で紐づける</h2>
+      <button type="button" class="btn close" onclick={() => linkDlg?.close()}>閉じる</button>
+    </div>
+    <form onsubmit={runLink} aria-busy={jobs.busy}>
+      <p class="lead">機械で決まらなかったセッションの題名と依頼の文を、判定と同じモデルに渡し、管理ツールのタスクのどれかを選ばせます。手で決めた紐づけと、前に LLM で決めた紐づけは変えません。終わったらレポートを作り直します。</p>
+      {#if linkPreview}
+        <p class="model" data-testid="task-link-model">
+          モデル: {#if linkPreview.model}<code>{linkPreview.model}</code>{#if linkPreview.byok}(自分の API キー・BYOK){/if}{:else}Copilot の既定のモデル{/if}<span class="src">(atlas.config.json の judgeModel{linkPreview.model ? '' : 'が未設定'})</span>
+        </p>
+      {:else if linkPreviewError}
+        <p class="model">使うモデルを確かめられませんでした: {linkPreviewError}</p>
+      {/if}
+      <p class="count" role="status" data-testid="task-link-count">紐づけの無いセッション <strong>{int(taskLink.unresolved)} 件</strong>を 1 件ずつ聞きます。</p>
+      <p class="cost" id="task-link-cost">
+        {#if linkPreview?.byok}<strong>API の利用料がかかります。</strong>自分の API キーのモデル(BYOK)で聞くので、GitHub Copilot の AI クレジットは使いません。そのモデルの提供元の API の従量課金を、1 件につき 1 回の分だけ使います。
+        {:else}<strong>AI クレジットを消費します。</strong>GitHub Copilot の AI クレジットを、1 件につき 1 回の分だけ使います。{/if}
+      </p>
+      {#if linkError}<p class="err" role="alert">{linkError}</p>{/if}
+      <div class="actions">
+        <button type="button" class="btn" data-autofocus data-testid="task-link-cancel" onclick={() => linkDlg?.close()}>やめる</button>
+        <button type="submit" class="btn primary" disabled={taskLink.unresolved < 1 || jobs.busy} data-testid="task-link-run">{jobs.busy ? '開始しています…' : `${int(taskLink.unresolved)} 件を紐づける`}</button>
+      </div>
+    </form>
+  </dialog>
+{/if}
 
 <dialog
   bind:this={dlg}
@@ -200,6 +297,13 @@
   }
   .job-actions .btn {
     padding: 2px 10px;
+  }
+  /* 押せない理由があるときは、無効のボタンと同じ見た目にする(焦点は受けて、理由を読み上げる) */
+  .job-actions .btn[aria-disabled='true'] {
+    color: var(--ink-3);
+    border-color: var(--rule);
+    background: var(--surface);
+    cursor: not-allowed;
   }
   .judge-dialog {
     width: min(36rem, calc(100vw - 32px));

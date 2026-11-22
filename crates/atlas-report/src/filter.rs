@@ -174,12 +174,28 @@ pub struct FilterState {
     pub memo: String,
     /// '1' なら llm-wiki を参照したセッションだけ(WikiSummary::referenced。書き込みだけは入れない)
     pub wiki: String,
+    /// 管理ツールのタスクの ID(そのタスクに紐づいたセッションだけ)。NO_TASK はどのタスクにも紐づいていないセッション
+    pub task: String,
 }
 
 pub const NO_JUDGMENT: &str = "(none)";
+/// タスクの絞り込みで「タスクなし」(どのタスクにも紐づいていない。「どのタスクでもない」と決めたものも入る)
+pub const NO_TASK: &str = "(none)";
+
+/// セッション id → 紐づいたタスクの ID(画面の TaskOf。ReportData.tasks.links のうち taskId のあるもの)
+pub type TaskOf = HashMap<String, String>;
+
+/// セッションがタスクの絞り込み(task)に合うか。空なら制限なし
+pub fn matches_task(id: &str, task: &str, tasks: &TaskOf) -> bool {
+    if task.is_empty() {
+        return true;
+    }
+    let t = tasks.get(id);
+    if task == NO_TASK { t.is_none() } else { t.is_some_and(|t| t == task) }
+}
 
 /// FilterState のキー(emptyFilter のキーの順。URL ハッシュの書き出しの順)
-pub const FILTER_KEYS: [&str; 14] = ["from", "to", "project", "person", "client", "model", "branch", "coverage", "taskCategory", "empty", "tool", "ids", "memo", "wiki"];
+pub const FILTER_KEYS: [&str; 15] = ["from", "to", "project", "person", "client", "model", "branch", "coverage", "taskCategory", "empty", "tool", "ids", "memo", "wiki", "task"];
 
 impl FilterState {
     pub fn get(&self, k: &str) -> &str {
@@ -198,6 +214,7 @@ impl FilterState {
             "ids" => &self.ids,
             "memo" => &self.memo,
             "wiki" => &self.wiki,
+            "task" => &self.task,
             _ => "",
         }
     }
@@ -218,6 +235,7 @@ impl FilterState {
             "ids" => &mut self.ids,
             "memo" => &mut self.memo,
             "wiki" => &mut self.wiki,
+            "task" => &mut self.task,
             _ => return None,
         })
     }
@@ -270,10 +288,18 @@ pub fn used_tool(s: &SessionSummary, tool: &str) -> bool {
 }
 
 pub fn matches(s: &SessionSummary, f: &FilterState, ids: Option<&HashSet<String>>) -> bool {
+    matches_with(s, f, ids, &TaskOf::new())
+}
+
+/// tasks はタスクの絞り込み(f.task)に使う紐づけ(画面の matches の 4 つ目の引数)
+pub fn matches_with(s: &SessionSummary, f: &FilterState, ids: Option<&HashSet<String>>, tasks: &TaskOf) -> bool {
     if !in_scope(s, f) {
         return false;
     }
     if ids.is_some_and(|ids| !ids.contains(&s.id)) {
+        return false;
+    }
+    if !matches_task(&s.id, &f.task, tasks) {
         return false;
     }
     if !matches_base(s, &f.base()) {
@@ -304,8 +330,13 @@ pub fn matches(s: &SessionSummary, f: &FilterState, ids: Option<&HashSet<String>
 }
 
 pub fn apply_filter<'a>(sessions: &'a [SessionSummary], f: &FilterState) -> Vec<&'a SessionSummary> {
+    apply_filter_with(sessions, f, &TaskOf::new())
+}
+
+/// tasks はタスクの絞り込み(f.task)に使う紐づけ(画面の applyFilter の 3 つ目の引数)
+pub fn apply_filter_with<'a>(sessions: &'a [SessionSummary], f: &FilterState, tasks: &TaskOf) -> Vec<&'a SessionSummary> {
     let ids: Option<HashSet<String>> = if f.ids.is_empty() { None } else { Some(split_ids(&f.ids).into_iter().collect()) };
-    sessions.iter().filter(|s| matches(s, f, ids.as_ref())).collect()
+    sessions.iter().filter(|s| matches_with(s, f, ids.as_ref(), tasks)).collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -354,6 +385,26 @@ pub fn filter_options(sessions: &[SessionSummary]) -> FilterOptions {
         branch: count_options(sessions.iter().map(|s| s.branch.clone().unwrap_or_else(|| UNKNOWN.into())), own),
         task_category: count_options(sessions.iter().map(|s| s.judgment.as_ref().and_then(|j| j.task_category.clone()).unwrap_or_else(|| NO_JUDGMENT.into())), own),
     }
+}
+
+/// タスクの絞り込みの選択肢と、どのタスクにも紐づいていないセッションの数(画面の taskOptions)
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct TaskOptions {
+    pub tasks: Vec<FilterOption>,
+    pub none: i64,
+}
+
+/// タスクの絞り込みの選択肢(紐づいたセッションの多い順、同じなら ID の順)。label はタスクの名前(names に無ければ ID)
+pub fn task_options<'a>(session_ids: impl IntoIterator<Item = &'a str>, tasks: &TaskOf, names: &HashMap<String, String>) -> TaskOptions {
+    let mut ids: Vec<String> = Vec::new();
+    let mut none = 0;
+    for sid in session_ids {
+        match tasks.get(sid) {
+            Some(t) => ids.push(t.clone()),
+            None => none += 1,
+        }
+    }
+    TaskOptions { tasks: count_options(ids, |v| names.get(v).cloned().unwrap_or_else(|| v.to_string())), none }
 }
 
 /// 入力トークン記録の 3 区分

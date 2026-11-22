@@ -19,6 +19,7 @@
     'turn-judge': '依頼の判定',
     m365: 'M365 Copilot での工数の判定',
     'turn-m365': 'M365 Copilot での依頼の判定',
+    'task-link': 'タスクの LLM での紐づけ',
   };
   /** 判定のジョブ(失敗しても判定できた分は保存されている) */
   const judging = (k: JobInfo['kind']): boolean => k === 'judge' || k === 'turn-judge' || k === 'm365' || k === 'turn-m365';

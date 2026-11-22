@@ -695,6 +695,11 @@ pub fn build_report(input: BuildInput<'_>) -> Result<BuildResult> {
     let wiki_state = atlas_core::wiki::wiki_state(input.sessions.iter().map(|r| &r.wiki), input.wiki_vaults);
     let library_href = library_on.then(|| format!("../{INSTRUCTIONS_FILE}"));
     let retention_meta_ref = retention_out.as_ref();
+    // 管理ツールのタスクの行(タスクの節があるときだけ。セッションの並びと同じ)
+    let task_row_of: Vec<crate::detail::DetailTask> = match &input.tasks {
+        Some(t) => input.sessions.iter().map(|r| crate::detail::DetailTask::from_view(t, &r.id)).collect(),
+        None => vec![],
+    };
     // 描くのは並べ、書くのは 1 本のスレッドに任せる(Windows では同じフォルダへ並べて書くと遅くなる)
     let writer = FileWriter::new();
     let pages: Vec<u64> = input
@@ -725,6 +730,7 @@ pub fn build_report(input: BuildInput<'_>) -> Result<BuildResult> {
                     retention: retention_by_id.get(r.id.as_str()).copied(),
                     retention_meta: retention_meta_ref,
                     wiki_state,
+                    task: task_row_of.get(k),
                 },
             );
             let bytes = byte_length(&page);

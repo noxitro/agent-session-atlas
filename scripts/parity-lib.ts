@@ -25,7 +25,7 @@ import type { SessionSummary } from '../packages/report/src/lib/types.ts';
 import { embedData, extractEmbedded, serializeForScript } from '../packages/report/src/lib/embed.ts';
 import { execAggregate, quantilesOf } from '../packages/report/src/lib/exec.ts';
 import { effortLabel, errorTypeLabel, initiatorLabel, modeLabel, subagentFailureLabel, todoStatusLabel } from '../packages/report/src/lib/exec-labels.ts';
-import { applyFilter, decodeFilter, decodeView, emptyFilter, encodeFilter, filterHref, filterOptions, hasPeople, isStateHash, NO_JUDGMENT, UNKNOWN, type FilterState } from '../packages/report/src/lib/filter.ts';
+import { applyFilter, decodeFilter, decodeView, emptyFilter, encodeFilter, filterHref, filterOptions, hasPeople, isStateHash, NO_JUDGMENT, NO_TASK, taskOptions, UNKNOWN, type FilterState } from '../packages/report/src/lib/filter.ts';
 import { compact, date, dateTime, dec, duration, int, modelLabel, month, msLabel, pathParts, percent, sharedLeads, splitLead, truncate } from '../packages/report/src/lib/format.ts';
 import { GLOSSARY, GLOSSARY_GROUPS, termsByGroup } from '../packages/report/src/lib/glossary.ts';
 import { highlights } from '../packages/report/src/lib/highlights.ts';
@@ -150,6 +150,8 @@ const WIKI_CASES = `[
   { "indexReads": 0, "pageReads": 0, "skillCalls": 1, "writes": 0, "otherCalls": 0 },
   { "indexReads": 1, "pageReads": 0, "skillCalls": 0, "writes": 0 }
 ]`;
+/** タスクの絞り込みの割り振りに使う ID(crates/atlas-report/examples/libdump.rs の TASK_CASE_IDS と同じ) */
+const TASK_CASE_IDS = ['T-1', 'T-2 β'];
 const FILE_NAMES = ['メモ.md', 'a b.txt', 'x', '', '.x', '..', 'a/b', 'x.', 'x ', 'CON', 'nul.log', 'Com1', 'a:b', 'abc-1_2.x', 'あ'];
 
 async function dumpTs(outDir: string): Promise<void> {
@@ -223,10 +225,15 @@ function dumpWith(
     unjudged: { ...emptyFilter(), taskCategory: NO_JUDGMENT },
     wiki: { ...emptyFilter(), wiki: '1' },
     ids: { ...emptyFilter(), ids: [...plain.slice(0, 5).map((s) => s.id), 'zzz'].join(',') },
+    task: { ...emptyFilter(), task: TASK_CASE_IDS[0] },
+    noTask: { ...emptyFilter(), task: NO_TASK },
   };
+  // タスクの絞り込み: 決まった割り振り(3 つおきにタスク 2 つと「タスクなし」)で両側を数える。crates/atlas-report/examples/libdump.rs と同じ
+  const tasks = new Map(plain.flatMap((s, i) => (i % 3 === 2 ? [] : [[s.id, TASK_CASE_IDS[i % 3]] as [string, string]])));
+  write('task-options', taskOptions(plain, tasks, new Map([[TASK_CASE_IDS[0], 'タスク 一つ目']])));
   const phases = verdicts?.phases ?? [];
   for (const [name, f] of Object.entries(filters)) {
-    const xs = applyFilter(plain, f);
+    const xs = applyFilter(plain, f, tasks);
     const agg = timed('aggregate', () => aggregate(xs, people));
     write(`aggregate-${name}`, agg);
     write(`highlights-${name}`, timed('highlights', () => highlights(xs, agg.usage, { filter: f, installed })));

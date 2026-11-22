@@ -172,4 +172,81 @@ full.addEventListener('click',function(){
 // 開いたときに同じセッションの全文を作っている最中なら、続きから待つ(再読み込みしたとき)
 call('jobs/current',{headers:H,cache:'no-store'}).then(function(r){var j=r.body;if(r.ok&&j&&j.state==='running'&&j.kind==='full'&&j.target&&j.target.id===id&&!busy){busy=true;full.disabled=true;full.textContent='作成中…';t0=Date.parse(j.startedAt)||Date.now();wait(j.id)}}).catch(function(){});
 d.addEventListener('atlas-down',function(){down=true;full.disabled=true;box.hidden=true});
+// 管理ツールのタスク(表題の下の「タスク」の行。detail.rs の task_row が書く)。この PC の出力を開いた画面だけ、紐づけを手で変える操作を足す
+// (読むだけの画面では、送った人の紐づけをそのまま出す)。保存は PUT api/tasks/links/<id>。答え(GET api/tasks と同じ形)で行を書き直す
+(function(){
+var row=d.getElementById('task-row');if(!row)return;
+var now=row.querySelector('.task-now'),SRC={machine:'機械',llm:'LLM',manual:'手動'};
+var ts=d.createElement('style');ts.textContent="\n.task-row .task-open{min-height:28px;padding:2px 10px}\n.task-edit{flex-basis:100%;display:flex;flex-wrap:wrap;align-items:flex-end;gap:8px 12px;margin-top:4px;padding-top:8px;border-top:1px dashed var(--rule)}\n.task-edit[hidden]{display:none}\n.task-edit .fld{display:block;min-width:0}\n.task-edit .fld .k{display:block;font-size:.6875rem;color:var(--form);margin-bottom:2px}\n.task-edit input,.task-edit select{font:inherit;font-size:.8125rem;color:var(--ink);background:var(--surface);border:1px solid var(--control);border-radius:0;padding:3px 6px;height:30px;max-width:100%}\n.task-edit input{width:16em}\n.task-edit select{width:28em}\n.task-edit input:hover,.task-edit select:hover{border-color:var(--form)}\n.task-edit .acts{display:flex;flex-wrap:wrap;gap:6px}\n.task-edit .acts .btn{min-height:30px}\n.task-edit .btn.primary{background:var(--form);color:var(--surface)}\n.task-edit .btn.primary:disabled{background:var(--surface);color:var(--ink-3)}\n.task-edit .task-msg{flex-basis:100%;margin:0;min-height:1.2em;color:var(--ink-2)}\n.task-edit .task-err{flex-basis:100%;margin:0;color:var(--ink);background:var(--warn-wash);border:1px solid var(--warn);padding:4px 8px;max-width:75ch;overflow-wrap:anywhere}\n.task-edit .task-err[hidden]{display:none}\n@media (max-width:720px){.task-edit input,.task-edit select{width:100%}.task-edit .fld{flex:1 1 100%}}\n";d.head.appendChild(ts);
+// 行の中身(detail.rs の task_row の .task-now と同じ書き方)
+function taskNow(l,item){
+  now.textContent='';
+  var v=el('span','task-v');v.setAttribute('data-testid','detail-task-name');now.appendChild(v);
+  if(!l||!l.taskId){v.appendChild(el('span','missing-value',l?'どのタスクでもない':'紐づけなし'))}
+  else{
+    v.appendChild(d.createTextNode(item&&item.name?item.name:l.taskId));v.appendChild(el('span','id','('+l.taskId+')'));
+    if(item){var st=el('span','task-st','状態: '+(item.status||'—')+'('+(item.done?'完了':'未完了')+')');st.setAttribute('data-testid','detail-task-status');now.appendChild(st)}
+  }
+  if(l){var src=el('span','task-src','紐づけ: '+(SRC[l.source]||l.source)+(l.reason?'('+l.reason+')':'')+(typeof l.confidence==='number'?'・確度 '+Math.round(l.confidence*100)+'%':''));src.setAttribute('data-testid','detail-task-source');now.appendChild(src)}
+}
+var items=[],link=null,tDown=false,saving=false;
+var open=el('button','btn task-open','変える…');open.type='button';open.setAttribute('aria-expanded','false');open.setAttribute('aria-controls','task-edit');open.setAttribute('data-testid','detail-task-open');
+var ed=el('div','task-edit');ed.id='task-edit';ed.hidden=true;ed.setAttribute('data-testid','detail-task-edit');
+var fq=el('label','fld'),fs=el('label','fld');fq.appendChild(el('span','k','探す(ID か名前の一部)'));fs.appendChild(el('span','k','タスク'));
+var q=el('input');q.type='search';q.autocomplete='off';q.spellcheck=false;q.setAttribute('data-testid','detail-task-search');fq.appendChild(q);
+var sel=el('select');sel.setAttribute('data-testid','detail-task-select');fs.appendChild(sel);
+var acts=el('div','acts'),bSet=el('button','btn primary','このタスクにする'),bNone=el('button','btn','どのタスクでもない'),bAuto=el('button','btn','自動に戻す'),bClose=el('button','btn','閉じる');
+[bSet,bNone,bAuto,bClose].forEach(function(b){b.type='button';acts.appendChild(b)});
+bSet.setAttribute('data-testid','detail-task-set');bNone.setAttribute('data-testid','detail-task-none');bAuto.setAttribute('data-testid','detail-task-auto');
+var tmsg=el('p','task-msg');tmsg.setAttribute('role','status');tmsg.setAttribute('data-testid','detail-task-msg');
+var terr=el('p','task-err');terr.setAttribute('role','alert');terr.hidden=true;
+[fq,fs,acts,tmsg,terr].forEach(function(x){ed.appendChild(x)});
+function label(t){return (t.name||t.id)+'('+t.id+')'+(t.done?'・完了':'')+(t.missing?'・書き出しに無い':'')}
+// 探す文字を含むタスクだけを並べる(未完了を先に。多すぎるときは先頭から)
+var MAXOPT=500;
+function fill(){
+  var k=q.value.trim().toLowerCase(),cur=sel.value||(link&&link.taskId)||'',n=0;sel.textContent='';
+  var list=items.filter(function(t){return !k||t.id.toLowerCase().indexOf(k)>=0||(t.name||'').toLowerCase().indexOf(k)>=0});
+  list.sort(function(a,b){return (a.done===b.done?0:a.done?1:-1)||(a.id<b.id?-1:a.id>b.id?1:0)});
+  list.slice(0,MAXOPT).forEach(function(t){var o=el('option',null,label(t));o.value=t.id;if(t.id===cur)o.selected=true;sel.appendChild(o);n++});
+  if(!n){var o=el('option',null,k?'合うタスクはありません':'タスクがありません');o.value='';o.disabled=true;sel.appendChild(o)}
+  if(list.length>MAXOPT)tmsg.textContent='合うタスク '+list.length+' 件のうち先頭の '+MAXOPT+' 件を出しています。探す文字を足して絞ってください。';
+  sync();
+}
+function sync(){
+  var off=saving||tDown;
+  bSet.disabled=off||!sel.value||(!!link&&link.source==='manual'&&link.taskId===sel.value);
+  bNone.disabled=off||(!!link&&link.source==='manual'&&link.taskId==null);
+  bAuto.disabled=off||!link||link.source!=='manual';
+  open.disabled=tDown;
+}
+function apply(body){
+  var t=body&&body.tasks;link=t&&t.links?t.links[row.dataset.session]||null:null;items=t&&t.items?t.items:[];
+  var item=link&&link.taskId?items.filter(function(x){return x.id===link.taskId})[0]:null;taskNow(link,item);
+}
+function save(payload,done){
+  if(saving||tDown)return;saving=true;terr.hidden=true;tmsg.textContent='保存しています…';sync();
+  call('tasks/links/'+encodeURIComponent(row.dataset.session),{method:'PUT',headers:JH,body:JSON.stringify(payload)}).then(function(r){
+    saving=false;
+    if(!r.ok||!r.body){terr.textContent='保存できませんでした('+((r.body&&r.body.error)||('サーバの応答 '+r.status))+')';terr.hidden=false;tmsg.textContent='';sync();return}
+    apply(r.body);fill();tmsg.textContent=done+'レポートの画面を開き直すと、一覧とタスクの節に出ます(tasks.csv は次の集計で作り直します)。';
+  }).catch(function(e){saving=false;terr.textContent='保存できませんでした('+e.message+')';terr.hidden=false;tmsg.textContent='';sync()});
+}
+q.addEventListener('input',fill);
+sel.addEventListener('change',sync);
+bSet.addEventListener('click',function(){if(sel.value)save({taskId:sel.value},'このタスクに紐づけました。')});
+bNone.addEventListener('click',function(){save({taskId:null},'どのタスクでもないことにしました。')});
+bAuto.addEventListener('click',function(){save({auto:true},'自動の紐づけに戻しました。')});
+function setOpen(v){ed.hidden=!v;open.setAttribute('aria-expanded',v?'true':'false');if(v){tmsg.textContent='';terr.hidden=true;fill();q.focus()}else open.focus()}
+open.addEventListener('click',function(){setOpen(ed.hidden)});
+bClose.addEventListener('click',function(){setOpen(false)});
+ed.addEventListener('keydown',function(e){if(e.key==='Escape'&&!e.isComposing){e.preventDefault();setOpen(false)}});
+call('tasks',{headers:H,cache:'no-store'}).then(function(r){
+  // 読むだけの画面・古いサーバ・タスクの記録が無いときは、操作を足さない(行は集計したときのまま)
+  if(!r.ok||!r.body||r.body.readOnly||!r.body.tasks)return;
+  apply(r.body);
+  row.insertBefore(open,row.querySelector('.term'));row.appendChild(ed);sync();
+}).catch(function(){});
+d.addEventListener('atlas-down',function(){tDown=true;ed.hidden=true;open.hidden=true;sync()});
+})();
 })();

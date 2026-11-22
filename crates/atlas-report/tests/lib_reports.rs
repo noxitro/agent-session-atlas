@@ -164,6 +164,24 @@ fn filter_wiki_keeps_referenced_sessions() {
     assert_eq!(decode_filter("#wiki=yes").wiki, "");
 }
 
+/// 絞り込みの task は、そのタスクに紐づいたセッションだけ(NO_TASK は紐づいていないもの)。紐づけを渡さなければどれもタスクなし
+#[test]
+fn filter_task_uses_links() {
+    let base = summaries(&fixture()).remove(0);
+    let s = [SessionSummary { id: "a".into(), ..base.clone() }, SessionSummary { id: "b".into(), ..base.clone() }, SessionSummary { id: "c".into(), ..base }];
+    let tasks: TaskOf = [("a".to_string(), "T-1".to_string()), ("b".to_string(), "T-2".to_string())].into();
+    let f = FilterState { task: "T-1".into(), ..empty_filter() };
+    assert_eq!(ids(&apply_filter_with(&s, &f, &tasks)), ["a"]);
+    assert_eq!(ids(&apply_filter_with(&s, &FilterState { task: NO_TASK.into(), ..empty_filter() }, &tasks)), ["c"]);
+    assert!(apply_filter(&s, &f).is_empty());
+    assert_eq!(apply_filter(&s, &FilterState { task: NO_TASK.into(), ..empty_filter() }).len(), 3);
+    assert_eq!(encode_filter(&f), "task=T-1");
+    assert_eq!(encode_filter(&FilterState { task: NO_TASK.into(), wiki: "1".into(), ..empty_filter() }), "wiki=1&task=(none)");
+    assert_eq!(decode_filter("#task=T%201").task, "T 1");
+    let o = task_options(s.iter().map(|x| x.id.as_str()), &tasks, &[("T-1".to_string(), "一つ目".to_string())].into());
+    assert_eq!((o.tasks.iter().map(|x| (x.value.as_str(), x.label.as_str(), x.count)).collect::<Vec<_>>(), o.none), (vec![("T-1", "一つ目", 1), ("T-2", "T-2", 1)], 1));
+}
+
 #[test]
 fn aggregate_matches_core_metrics() {
     let rs = fixture();
