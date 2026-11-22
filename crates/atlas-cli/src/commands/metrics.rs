@@ -17,7 +17,7 @@ use atlas_report::test_tables::{session_cells, test_tables, SESSION_COLUMNS};
 use std::collections::HashSet;
 use std::path::Path;
 
-/// CLI の絞り込み(--since・--project・--client・--model・--branch・--session)
+/// CLI の絞り込み(--since・--project・--client・--model・--branch・--session・--task)
 #[derive(Debug, Clone, Default)]
 pub struct SessionFilter {
     pub since: Option<String>,
@@ -27,6 +27,8 @@ pub struct SessionFilter {
     pub branch: Option<String>,
     /// 特定のセッション(id の先頭一致。解決前)
     pub sessions: Option<Vec<String>>,
+    /// 管理ツールのタスクの ID(そのタスクに紐づいたセッションだけ)
+    pub task: Option<String>,
 }
 
 /// JS の真偽(空文字・None は偽)
@@ -43,6 +45,7 @@ impl SessionFilter {
             model: o.model.clone(),
             branch: o.branch.clone(),
             sessions: o.sessions.clone(),
+            task: o.task.clone(),
         }
     }
 }
@@ -54,6 +57,7 @@ pub fn has_filter(f: &SessionFilter) -> bool {
         || set(&f.model).is_some()
         || set(&f.branch).is_some()
         || f.sessions.as_ref().is_some_and(|s| !s.is_empty())
+        || set(&f.task).is_some()
 }
 
 /// CLI のフィルタ。--project は完全一致するキーがあればそれだけ、無ければ部分一致(大文字小文字を区別しない)。
@@ -123,7 +127,7 @@ pub fn resolve_id_filter(all: &[SessionRecord], f: &SessionFilter) -> Result<Opt
     Ok(Some(ResolvedIds { set: session_ids.iter().cloned().collect(), session_ids }))
 }
 
-fn describe_filter(f: &SessionFilter, projects: &[String], ids: Option<&ResolvedIds>) -> String {
+fn describe_filter(f: &SessionFilter, projects: &[String], ids: Option<&ResolvedIds>, task_sessions: Option<usize>) -> String {
     let mut parts: Vec<String> = Vec::new();
     if let Some(v) = set(&f.since) {
         parts.push(format!("since={v}"));
@@ -142,6 +146,9 @@ fn describe_filter(f: &SessionFilter, projects: &[String], ids: Option<&Resolved
     }
     if let (true, Some(ids)) = (f.sessions.as_ref().is_some_and(|s| !s.is_empty()), ids) {
         parts.push(format!("session={} 件", ids.session_ids.len()));
+    }
+    if let (Some(t), Some(n)) = (set(&f.task), task_sessions) {
+        parts.push(format!("task={t}(紐づいたセッション {n} 件)"));
     }
     parts.join(", ")
 }
@@ -168,14 +175,33 @@ impl Selected {
     }
 }
 
+/// sessions.json を読む(無ければ hint を添えたエラー)
+pub fn read_sessions_file(p: &Paths, hint: &str) -> Result<SessionsFile> {
+    read_json(&p.sessions, hint)
+}
+
 /// sessions.json を読み、CLI の絞り込みを掛ける。共通のログも出す
 pub fn select_sessions(p: &Paths, f: &SessionFilter, cmd: &str, hint: &str, log: Log<'_>) -> Result<Selected> {
-    let file: SessionsFile = read_json(&p.sessions, hint)?;
-    let ids = resolve_id_filter(&file.sessions, f)?;
+    let file: SessionsFile = read_sessions_file(p, hint)?;
+    select_from(p, file, f, cmd, log)
+}
+
+/// 読んだ sessions.json に CLI の絞り込みを掛ける(--task は今の紐づけで決める)
+pub fn select_from(p: &Paths, file: SessionsFile, f: &SessionFilter, cmd: &str, log: Log<'_>) -> Result<Selected> {
+    let mut ids = resolve_id_filter(&file.sessions, f)?;
+    let mut task_sessions = None;
+    if let Some(t) = set(&f.task) {
+        let of_task = super::tasks::sessions_of_task(p, &file, t)?;
+        task_sessions = Some(of_task.len());
+        ids = Some(match ids {
+            Some(r) => ResolvedIds { set: r.set.into_iter().filter(|id| of_task.contains(id)).collect(), session_ids: r.session_ids },
+            None => ResolvedIds { set: of_task, session_ids: vec![] },
+        });
+    }
     // 位置で持つ(sessions.json を持ったまま返すため)
     let (index, projects) = filter_session_index(&file.sessions, f, ids.as_ref().map(|x| &x.set));
     if has_filter(f) {
-        log(&format!("{cmd}: 絞り込み {} → {} / {} セッション", describe_filter(f, &projects, ids.as_ref()), index.len(), file.sessions.len()));
+        log(&format!("{cmd}: 絞り込み {} → {} / {} セッション", describe_filter(f, &projects, ids.as_ref(), task_sessions), index.len(), file.sessions.len()));
     }
     Ok(Selected { file, index })
 }
@@ -198,14 +224,85 @@ pub fn run_metrics(p: &Paths, f: &SessionFilter, log: Log<'_>) -> Result<Metrics
     if let Some(s) = &m.installed_skills {
         log(&format!("metrics: インストール済みで未使用の skill {} / {} 件", s.unused.len(), s.installed.len()));
     }
-    write_tables(p, &sessions, "metrics", log)?;
+    let cfg = super::tasks::load_task_config(None);
+    let tasks = super::tasks::build_view(p, &cfg, super::tasks::is_read_only(p, &sel.file), &sel.file.sessions, &sessions, None, &judgment_hours(p));
+    write_tables(p, &sessions, tasks.as_ref(), "metrics", log)?;
     Ok(m)
+}
+
+/// 推定人手工数(judgments.json。読めなければ空。読めないことは表の列と同じく build_tables が知らせる)
+fn judgment_hours(p: &Paths) -> std::collections::HashMap<String, (f64, Option<f64>)> {
+    match atlas_judge::judgments_io::read_judgments(&p.judgments) {
+        Ok(Some(j)) => j.items.iter().map(|i| (i.session_id.clone(), (i.human_effort.hours, Some(i.human_effort.confidence)))).collect(),
+        _ => std::collections::HashMap::new(),
+    }
+}
+
+/// sessions.csv(と SQLite の sessions)に足す、タスクの列(推定人手工数の列の後ろ)
+pub const TASK_SESSION_COLUMNS: [&str; 3] = ["taskId", "taskName", "紐づけの出所"];
+
+/// out/tables/tasks.csv(と SQLite の tasks)。タスクごとの工数
+pub fn tasks_table(v: &atlas_report::tasks::view::TasksView) -> atlas_core::tables::Table {
+    let header: Vec<String> = [
+        "taskId",
+        "taskName",
+        "status",
+        "完了",
+        "XML に無い",
+        "開始",
+        "完了を確認した時刻",
+        "稼働時間帯の工数(時間)",
+        "AI の実働(時間)",
+        "推定人手工数(時間)",
+        "セッション数",
+        "判定済み",
+        "確度が低い",
+        "判定なし",
+        "紐づけ(機械)",
+        "紐づけ(LLM)",
+        "紐づけ(手動)",
+        "比べられる",
+        "比べない理由",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    let hours = |ms: f64| Cell::Num(atlas_core::js::round(ms / 36_000.0) / 100.0);
+    let rows = v
+        .items
+        .iter()
+        .map(|t| {
+            vec![
+                t.id.as_str().into(),
+                t.name.as_str().into(),
+                t.status.as_str().into(),
+                Cell::Bool(t.done),
+                Cell::Bool(t.missing),
+                t.start.as_deref().into(),
+                t.done_at.as_deref().into(),
+                t.work_ms.map_or(Cell::Null, hours),
+                hours(t.ai_active_ms),
+                Cell::Num(atlas_core::js::round(t.human_hours * 100.0) / 100.0),
+                t.sessions.into(),
+                t.judged_sessions.into(),
+                t.low_confidence_sessions.into(),
+                t.unjudged_sessions.into(),
+                t.links.machine.into(),
+                t.links.llm.into(),
+                t.links.manual.into(),
+                if t.sessions == 0 { Cell::Null } else { Cell::Bool(t.comparable) },
+                t.excluded.map_or(Cell::Null, |e| e.label().into()),
+            ]
+        })
+        .collect();
+    atlas_core::tables::Table { header, rows }
 }
 
 /// 表計算ソフトで開く表(依頼ごと・セッションごと・VCS の照合のまとまりごと・ツールの失敗と拒否ごと)を out/tables/ に書く。
 /// metrics・build・export が、それぞれの絞り込みのセッションで書く(判定を取り込んだ後の export でも、判定の列が表に入るように)。
 /// ツールの失敗と拒否ごとの表(failures.csv と SQLite の failures)と、テストの実行の表は、ここで足す
-pub fn write_tables(p: &Paths, sessions: &[&SessionRecord], cmd: &str, log: Log<'_>) -> Result<()> {
+/// tasks は管理ツールのタスクの節(あれば tasks.csv を書き、sessions.csv のタスクの列を埋める。無ければ tasks.csv を残さない)
+pub fn write_tables(p: &Paths, sessions: &[&SessionRecord], tasks: Option<&atlas_report::tasks::view::TasksView>, cmd: &str, log: Log<'_>) -> Result<()> {
     let dir = p.out.join("tables");
     std::fs::create_dir_all(&dir)?;
     let mut t = build_tables(sessions, &TablePaths { judgments: &p.judgments, turn_judgments: &p.turn_judgments, vcs_retention: Some(&p.vcs_retention) });
@@ -242,7 +339,35 @@ pub fn write_tables(p: &Paths, sessions: &[&SessionRecord], cmd: &str, log: Log<
             .unwrap_or_else(|| SESSION_COLUMNS.iter().map(|_| Cell::Null).collect());
             row.splice(at..at, cells);
         }
+        // タスクの列(推定人手工数の後ろ)。タスクの設定も記録も無ければ空
+        let at = sess.header.iter().position(|h| h == "推定人手工数(時間)").map_or(sess.header.len(), |i| i + 1);
+        sess.header.splice(at..at, TASK_SESSION_COLUMNS.iter().map(|h| h.to_string()));
+        let names: std::collections::HashMap<&str, &str> = tasks.map(|v| v.items.iter().map(|t| (t.id.as_str(), t.name.as_str())).collect()).unwrap_or_default();
+        for row in &mut sess.rows {
+            let link = match (&row[0], tasks) {
+                (Cell::Str(id), Some(v)) => v.links.get(id.as_str()),
+                _ => None,
+            };
+            let cells = match link {
+                Some(l) => vec![
+                    l.task_id.as_deref().map_or(Cell::Null, Cell::from),
+                    l.task_id.as_deref().and_then(|t| names.get(t).copied()).map_or(Cell::Null, Cell::from),
+                    Cell::from(l.source.label()),
+                ],
+                None => vec![Cell::Null, Cell::Null, Cell::Null],
+            };
+            row.splice(at..at, cells);
+        }
         t.sessions = to_csv(&sess.header, &sess.rows);
+    }
+    // タスクごとの表。タスクの設定も記録も無ければ書かず、前のものも残さない
+    match tasks {
+        Some(v) => {
+            let tt = tasks_table(v);
+            std::fs::write(dir.join("tasks.csv"), to_csv(&tt.header, &tt.rows))?;
+            t.data.push(("tasks".to_string(), tt));
+        }
+        None => atlas_core::jsfs::rm_force(&dir.join("tasks.csv"))?,
     }
     // テストの列を足してから書く
     std::fs::write(dir.join("sessions.csv"), &t.sessions)?;
@@ -275,8 +400,9 @@ pub fn write_tables(p: &Paths, sessions: &[&SessionRecord], cmd: &str, log: Log<
         }
     };
     log(&format!(
-        "{cmd}: 表 → {}・sessions.csv{}{}{}{sqlite}{}{}{}{}",
+        "{cmd}: 表 → {}・sessions.csv{}{}{}{}{sqlite}{}{}{}{}",
         dir.join("turns.csv").display(),
+        if tasks.is_some() { "・tasks.csv" } else { "" },
         if t.vcs_hunks.is_some() { "・vcs-hunks.csv" } else { "" },
         if with_failures { "・failures.csv" } else { "" },
         if with_tests { "・test-runs.csv・test-results.csv・test-counts.csv" } else { "" },
@@ -334,7 +460,7 @@ mod tests {
         assert_eq!(ids(&filter_sessions(&rs, &cli, None).0), ["1", "3"]);
         assert_eq!(ids(&filter_sessions(&rs, &SessionFilter { since: Some("2026-08-15".into()), ..Default::default() }, None).0), ["2", "3"]);
         let both = SessionFilter { client: Some("github/cli".into()), sessions: Some(vec!["1".into(), "2".into()]), ..Default::default() };
-        assert_eq!(describe_filter(&both, &[], Some(&ResolvedIds { set: HashSet::new(), session_ids: vec!["1".into(), "2".into()] })), "client=github/cli, session=2 件");
+        assert_eq!(describe_filter(&both, &[], Some(&ResolvedIds { set: HashSet::new(), session_ids: vec!["1".into(), "2".into()] }), None), "client=github/cli, session=2 件");
     }
 
     /// 失敗 1 件と拒否 1 件のあるセッション(イベントは架空のもの)
@@ -377,7 +503,7 @@ mod tests {
         let csv = dir.join("failures.csv");
 
         let rec = failing("00000000-0000-4000-8000-000000000031");
-        write_tables(&p, &[&rec], "metrics", &log).unwrap();
+        write_tables(&p, &[&rec], None, "metrics", &log).unwrap();
         let text = std::fs::read_to_string(&csv).unwrap();
         let lines: Vec<&str> = text.trim_end().split("\r\n").collect();
         assert!(lines[0].starts_with("\u{feff}セッションID,セッション名,プロジェクト,依頼番号,開始,種類,要因,ツール,"), "{}", lines[0]);
@@ -416,7 +542,7 @@ mod tests {
         let mut old = rec.clone();
         old.analysis.failures = None;
         old.analysis.failures_dropped = None;
-        write_tables(&p, &[&old], "metrics", &log).unwrap();
+        write_tables(&p, &[&old], None, "metrics", &log).unwrap();
         assert!(!csv.exists());
         assert_eq!(sqlite_tables(&dir.join(SQLITE_FILE)), ["sessions", "turns"]);
         assert!(!last().contains("・failures.csv"), "{}", last());
@@ -425,7 +551,7 @@ mod tests {
         // 混ざっているとき: 台帳のある記録の行だけを書き、載せていない件数を知らせる
         let mut capped = failing("00000000-0000-4000-8000-000000000032");
         capped.analysis.failures_dropped = Some(3);
-        write_tables(&p, &[&old, &capped], "build", &log).unwrap();
+        write_tables(&p, &[&old, &capped], None, "build", &log).unwrap();
         let text = std::fs::read_to_string(&csv).unwrap();
         assert_eq!(text.trim_end().split("\r\n").skip(1).map(|l| l.split(',').next().unwrap()).collect::<Vec<_>>(), vec![capped.id.as_str(); 2]);
         assert_eq!(sqlite_tables(&dir.join(SQLITE_FILE)), ["failures", "sessions", "turns"]);

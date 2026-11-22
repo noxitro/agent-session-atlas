@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  テスト用の、管理ツールの書き出しの例(架空のタスクだけ)。export-after.xml は、この後にいくつかのタスクが完了した書き出し。
+  既定の読み方(tasks.item = Task、id = Id、name = Name、status = Status、doneStatus = Done / Completed / Closed / 完了)で読める。
+  名前は合成の fixture(scripts/synthetic-fixtures.ts)の依頼の文に合わせてある:
+  DEMO-101 と DEMO-102 は機械の紐づけで決まり、DEMO-103 はどのセッションにも当たらない。
+-->
+<Export>
+  <Tasks>
+    <Task>
+      <Id>DEMO-101</Id>
+      <Name>fix the app</Name>
+      <Status>In Progress</Status>
+    </Task>
+    <Task>
+      <Id>DEMO-102</Id>
+      <Name>Improve the synthetic project</Name>
+      <Status>Open</Status>
+      <SubTasks>
+        <Task>
+          <Id>DEMO-102-1</Id>
+          <Name>入れ子のサブタスク</Name>
+          <Status>Open</Status>
+        </Task>
+      </SubTasks>
+    </Task>
+    <Task>
+      <Id>DEMO-103</Id>
+      <Name>帳票の出力を速くする</Name>
+      <Status>Open</Status>
+    </Task>
+    <Task>
+      <Id>DEMO-104</Id>
+      <Name>初めから完了していたタスク</Name>
+      <Status>Done</Status>
+    </Task>
+    <Task>
+      <Id>DEMO-106</Id>
+      <Name>次の書き出しで消えるタスク</Name>
+      <Status>Open</Status>
+    </Task>
+  </Tasks>
+</Export>

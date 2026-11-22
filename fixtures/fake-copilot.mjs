@@ -65,6 +65,14 @@ if (turnList) {
     );
   answer = { items };
 }
+// 管理ツールのタスクへの紐づけ(atlas tasks link --llm)のプロンプトなら、候補の先頭のタスクを選ぶ。
+// 環境変数 FAKE_COPILOT_TASK_NONE があれば「どのタスクでもない」と答える
+if (prompt.includes('<!-- atlas-task-link -->')) {
+  const first = /^- id: (.+?) \| 名前: /m.exec(prompt);
+  answer = process.env.FAKE_COPILOT_TASK_NONE || !first
+    ? { taskId: null, confidence: 0.6, reason: '偽 copilot(テスト用): 当たる候補なし' }
+    : { taskId: first[1], confidence: 0.7, reason: '偽 copilot(テスト用): 候補の先頭' };
+}
 const events = [
   { type: 'session.start', data: { sessionId: 'fake', copilotVersion: '0.0.0-fake' } },
   { type: 'assistant.turn_start', data: { turnId: '0' } },

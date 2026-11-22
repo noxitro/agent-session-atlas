@@ -67,7 +67,7 @@ fn without_scoped_sessions(j: crate::args::JudgeCliOptions, o: &CliOptions) -> c
 
 /// 最後の export。絞り込み(--session / --since など)は判定する範囲を決めるためのものなので、レポートはいつも全体で作り直す
 fn export_all(common: &CliOptions) -> CliOptions {
-    CliOptions { command: "export".into(), since: None, project: None, client: None, model: None, branch: None, sessions: None, ..common.clone() }
+    CliOptions { command: "export".into(), since: None, project: None, client: None, model: None, branch: None, sessions: None, task: None, ..common.clone() }
 }
 
 fn stdout_log(msg: &str) {

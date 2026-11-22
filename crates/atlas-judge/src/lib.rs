@@ -9,6 +9,7 @@ pub mod rubric;
 pub mod run;
 pub mod schema;
 pub mod skill_draft;
+pub mod task_link;
 pub mod turn_bundle;
 pub mod turn_run;
 pub mod turn_schema;

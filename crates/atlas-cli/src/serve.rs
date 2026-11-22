@@ -1,6 +1,7 @@
 //! atlas serve(packages/cli/src/serve.ts の移植): out/ を 127.0.0.1 だけに配信し、画面からメモ(atlas-notes/memos/)を書く小さな API を持つ。
 //! Phase 14: 画面からの操作(集計し直す・工数を判定する・全文を作る。jobs.rs)と、記録・全文記録の表示(/view/<id>)も持つ。
 //! チャットでの判定(M365 Copilot など): 添付ファイル(bundle/parts/)の一覧と進み具合(/api/judge/parts)、貼った返答の取り込み(/api/judge/import)。
+//! 管理ツールのタスク: 今の状態・紐づけ・工数(GET /api/tasks。集計し直さずに今のファイルから数える)と、手動の紐づけ(PUT /api/tasks/links/<id>)。
 //! 画面(3 画面)は 3 秒ごとに heartbeat を送り、ページを閉じるときは bye を送る。開いている画面がすべて bye を送ったら BYE_GRACE_MS 後に、
 //! heartbeat がどの画面からも IDLE の間届かなければ、自分で終了する(ブラウザを閉じれば止まる)。ジョブの実行中と、要求に応えている途中は止めず、終わってから判定を再開する。
 //! IDLE を短くしないこと: ブラウザは隠れたタブのタイマーを間引く(Chrome は 5 分以上隠れたタブを 1 分に 1 回まで)。以前の 8 秒では、別のタブで作業している間に止まっていた。
@@ -274,6 +275,9 @@ struct SessionEntry {
     eligible: bool,
     /// 依頼ごとの記録(turnStats)の数。依頼ごとの判定の対象
     turns: usize,
+    /// 始めた時刻(ミリ秒)と実働(ミリ秒)。タスクの工数に使う
+    start_ms: Option<i64>,
+    active_ms: Option<f64>,
 }
 
 /// sessions.json の id → 表題と判定の対象か(本文は持たない)。集計元の形(読むだけの画面かを決める)も持つ
@@ -334,6 +338,10 @@ struct Server {
     css: OnceLock<String>,
     life: Mutex<Life>,
     memo_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    /// メモの置き場の親(atlas-notes/。tasks.json と task-links.json の場所)
+    notes_abs: PathBuf,
+    /// task-links.json の読み・変更・書き込みは順番に行う
+    tasks_lock: Mutex<()>,
     /// 終わったら理由が入る
     done: Mutex<Option<String>>,
     done_cv: Condvar,
@@ -597,6 +605,8 @@ pub fn start_serve(o: ServeOptions) -> anyhow::Result<ServeHandle> {
             css: OnceLock::new(),
             life: Mutex::new(Life::default()),
             memo_locks: Mutex::new(HashMap::new()),
+            notes_abs: notes_abs.clone(),
+            tasks_lock: Mutex::new(()),
             done: Mutex::new(None),
             done_cv: Condvar::new(),
             conns: Mutex::new(Conns::default()),
@@ -997,7 +1007,9 @@ impl Server {
             let name = r.get("name").and_then(Value::as_str).map(js::trim).unwrap_or("");
             let eligible = r.get("turns").and_then(Value::as_f64).is_some_and(|t| t > 0.0) || js::truthy(r.get("firstUserMessage"));
             let turns = r.get("analysis").and_then(|a| a.get("turnStats")).and_then(Value::as_array).map_or(0, Vec::len);
-            ids.insert(id, SessionEntry { title: if name.is_empty() { "(名前なし)".into() } else { name.to_string() }, eligible, turns });
+            let start_ms = r.get("createdAt").and_then(Value::as_str).filter(|s| !s.is_empty()).and_then(atlas_core::jsdate::parse_ms);
+            let active_ms = r.get("activeMs").and_then(Value::as_f64);
+            ids.insert(id, SessionEntry { title: if name.is_empty() { "(名前なし)".into() } else { name.to_string() }, eligible, turns, start_ms, active_ms });
         }
         let layout = file.get("source").and_then(|s| s.get("layout")).and_then(Value::as_str).map(str::to_string);
         let ix = Arc::new(SessionIndex { ids, layout });
@@ -1201,6 +1213,16 @@ impl Server {
         if path == "/api/jobs" || path.starts_with("/api/jobs/") {
             return self.jobs_api(req, &method, path);
         }
+        if path == "/api/tasks" {
+            if method != "GET" {
+                return Err(HttpError::new(405, "この方法では使えません"));
+            }
+            return Ok(send_json(200, &self.tasks_payload()?));
+        }
+        if let Some(c) = TASK_LINK_API.captures(path) {
+            let raw = c[1].to_string();
+            return self.task_link_api(req, &method, &raw);
+        }
         if path.starts_with("/api/judge/") {
             let target = if req.url.param("target") == Some("turns") { ChatTarget::Turns } else { ChatTarget::Effort };
             return self.chat_judge_api(req, &method, path, target);
@@ -1379,6 +1401,10 @@ impl Server {
             let ids = if body.get("kind").and_then(Value::as_str) == Some("full") || body.contains_key("session") { self.session_index()? } else { None };
             let known = |id: &str| ids.as_ref().is_some_and(|ix| ix.ids.contains_key(id));
             let r = parse_job_request(&body, &known).map_err(je)?;
+            // 読むだけの画面の紐づけは送った人のもの。LLM で紐づけても画面には出ないので始めない
+            if matches!(r, crate::jobs::JobRequest::TaskLink { .. }) && self.read_only() {
+                return Err(HttpError::new(403, READ_ONLY_MESSAGE));
+            }
             let snap = self.jobs.start(&r).map_err(je)?;
             return Ok(send_json(202, &to_value(&snap)));
         }
@@ -1413,6 +1439,123 @@ impl Server {
             return Err(HttpError::new(405, "この方法では使えません"));
         }
         Err(HttpError::new(404, "無い API です"))
+    }
+
+    // ---------- 管理ツールのタスク ----------
+
+    /// GET /api/tasks: 今のタスクの状態・紐づけ・工数(レポートの埋め込みと同じ形。集計し直さずに、今のファイルから数える)。
+    /// 読むだけの画面は、送った人がセッションごとに添えた記録から
+    fn tasks_payload(&self) -> R<Value> {
+        let read_only = self.read_only();
+        let cfg = match load_config(&self.config_path, false) {
+            Ok(c) => crate::commands::tasks::TaskConfig { source: c.tasks, error: None },
+            Err(e) => crate::commands::tasks::TaskConfig { source: None, error: Some(format!("{e:#}")) },
+        };
+        let ix = self.session_index()?;
+        let human: HashMap<String, (f64, Option<f64>)> = match atlas_judge::judgments_io::read_judgments(&self.out_dir.join("judgments.json")) {
+            Ok(Some(j)) => j.items.iter().map(|i| (i.session_id.clone(), (i.human_effort.hours, Some(i.human_effort.confidence)))).collect(),
+            _ => HashMap::new(),
+        };
+        let ids: Vec<&str> = ix.as_ref().map(|ix| ix.ids.keys().map(String::as_str).collect()).unwrap_or_default();
+        let facts: HashMap<String, atlas_report::tasks::metrics::SessionFacts> = ix
+            .as_ref()
+            .map(|ix| ix.ids.iter().map(|(id, e)| (id.clone(), atlas_report::tasks::metrics::SessionFacts { start_ms: e.start_ms, active_ms: e.active_ms, human: human.get(id).copied() })).collect())
+            .unwrap_or_default();
+        let view = if read_only {
+            let dir = self.out_dir.join("snapshot").join("session-state");
+            let per: Vec<(String, atlas_report::tasks::sender::SenderTask)> =
+                ids.iter().filter_map(|id| atlas_report::tasks::sender::read_sender_task(&dir.join(id).join(atlas_core::snapshot::UPLOAD_SESSION_META), id).map(|t| (id.to_string(), t))).collect();
+            atlas_report::tasks::view::sender_view(&per, &ids, &facts, &cfg.work_hours(), cfg.source.is_some())
+        } else {
+            let st = atlas_report::tasks::state::load_tasks(&atlas_report::tasks::tasks_path(&self.notes_abs));
+            let li = atlas_report::tasks::links::load_links(&atlas_report::tasks::task_links_path(&self.notes_abs));
+            let warnings: Vec<String> = st.warnings.iter().chain(&li.warnings).chain(&cfg.error).cloned().collect();
+            atlas_report::tasks::view::local_view(atlas_report::tasks::view::LocalInputs { configured: cfg.source.is_some(), state: &st.file, links: &li.file, shown: &ids, facts: &facts, work_hours: &cfg.work_hours(), warnings })
+        };
+        // LLM で紐づける前の確認に出す数: 依頼の記録があって、紐づけの無いセッション(tasks link --llm が聞くもの)
+        let unresolved = match (&view, &ix) {
+            (Some(v), Some(ix)) if !read_only => ix.ids.iter().filter(|(id, e)| e.eligible && !v.links.contains_key(id.as_str())).count(),
+            _ => 0,
+        };
+        Ok(json!({ "readOnly": read_only, "tasks": view.as_ref().map(to_value), "unresolved": unresolved }))
+    }
+
+    /// PUT /api/tasks/links/<id>: { taskId: "<タスクの ID>" | null }(手動で紐づける。null は「どのタスクでもない」)か
+    /// { auto: true }(手動の紐づけを外して自動に戻す。機械の紐づけをすぐ決め直す)。返すのは GET /api/tasks と同じもの
+    fn task_link_api(&self, req: &mut Req, method: &str, raw_id: &str) -> R<Resp> {
+        if method != "PUT" {
+            return Err(HttpError::new(405, "この方法では使えません"));
+        }
+        self.check_token(req)?;
+        let id = decode_uri_component(raw_id).map_err(|()| HttpError::new(400, "セッション id を読めません"))?;
+        if !is_safe_memo_id(&id) {
+            return Err(HttpError::new(400, "セッション id の形が正しくありません"));
+        }
+        let body = self.json_body(req)?;
+        let extra: Vec<&str> = body.keys().map(String::as_str).filter(|k| !["taskId", "auto"].contains(k)).collect();
+        if !extra.is_empty() {
+            return Err(HttpError::new(400, format!("使えない項目です: {}", extra.join(", "))));
+        }
+        let auto = match body.get("auto") {
+            None => false,
+            Some(Value::Bool(b)) => *b,
+            Some(_) => return Err(HttpError::new(400, "auto は true か false です")),
+        };
+        let task: Option<String> = match (auto, body.get("taskId")) {
+            (true, None) => None,
+            (true, Some(_)) => return Err(HttpError::new(400, "auto と taskId は一緒に使えません")),
+            (false, Some(Value::Null)) => None,
+            (false, Some(Value::String(t))) if !js::trim(t).is_empty() && js::utf16_len(t) <= 400 => Some(js::trim(t).to_string()),
+            (false, _) => return Err(HttpError::new(400, "taskId にタスクの ID か null を指定してください(自動に戻すときは auto: true)")),
+        };
+        let ix = self.session_index()?.ok_or_else(|| HttpError::new(404, "まだ集計していません(sessions.json がありません)"))?;
+        if !ix.ids.contains_key(&id) {
+            return Err(HttpError::new(404, format!("セッション {id} は sessions.json にありません(集計し直すと出ることがあります)")));
+        }
+        {
+            let _g = lock(&self.tasks_lock);
+            let state = atlas_report::tasks::state::load_tasks(&atlas_report::tasks::tasks_path(&self.notes_abs));
+            if let Some(w) = state.warnings.first() {
+                return Err(HttpError::new(409, w.clone()));
+            }
+            if let Some(t) = &task
+                && !state.file.tasks.contains_key(t)
+            {
+                return Err(HttpError::new(400, format!("タスク「{t}」はありません(管理ツールの XML を読み直すと出ることがあります)")));
+            }
+            let links_path = atlas_report::tasks::task_links_path(&self.notes_abs);
+            let mut links = atlas_report::tasks::links::load_links_for_write(&links_path).map_err(|e| HttpError::new(409, format!("{e:#}")))?;
+            let now = atlas_core::jsdate::now_iso();
+            if auto {
+                links.links.shift_remove(&id);
+                // 機械の紐づけをすぐ決め直す(LLM の紐づけは頼んだときだけ)
+                if let Some(text) = self.session_text(&id)? {
+                    atlas_report::tasks::links::apply_machine(&mut links, std::slice::from_ref(&text), &state.file, &now);
+                }
+            } else {
+                links.links.insert(id.clone(), atlas_report::tasks::links::TaskLink { task_id: task, source: atlas_report::tasks::links::LinkSource::Manual, reason: String::new(), confidence: None, at: now });
+            }
+            atlas_report::tasks::links::save_links(&links_path, &links).map_err(|e| HttpError::new(500, format!("{e:#}")))?;
+        }
+        Ok(send_json(200, &self.tasks_payload()?))
+    }
+
+    /// sessions.json の 1 件の、機械の紐づけに使う文(題名・最初の依頼・各依頼の先頭)。無ければ None
+    fn session_text(&self, id: &str) -> R<Option<atlas_report::tasks::links::SessionText>> {
+        let file = std::fs::read(self.out_dir.join("sessions.json"))
+            .map_err(|e| e.to_string())
+            .and_then(|b| js::parse_json(&String::from_utf8_lossy(&b)).map_err(|e| e.to_string()))
+            .map_err(|e| HttpError::new(503, format!("sessions.json を読めません(集計の途中かもしれません): {e}")))?;
+        let Some(r) = file.get("sessions").and_then(Value::as_array).and_then(|a| a.iter().find(|r| r.get("id").and_then(Value::as_str) == Some(id))) else { return Ok(None) };
+        let mut prompts: Vec<&str> = r.get("firstUserMessage").and_then(Value::as_str).into_iter().collect();
+        prompts.extend(r.get("analysis").and_then(|a| a.get("requests")).and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str));
+        Ok(Some(atlas_report::tasks::links::SessionText {
+            id: id.to_string(),
+            start_ms: r.get("createdAt").and_then(Value::as_str).filter(|s| !s.is_empty()).and_then(atlas_core::jsdate::parse_ms),
+            title: r.get("name").and_then(Value::as_str).unwrap_or("").to_string(),
+            prompts: prompts.join("
+"),
+        }))
     }
 
     /// 判定の件数を数える範囲(無ければすべて)。確かめ方は POST /api/jobs と同じ(jobs::judge_scope)
@@ -1793,6 +1936,7 @@ impl From<HttpError> for FolderOrHttp {
 static VIEW_API: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^/api/view/([^/]+)$").unwrap());
 static VIEW_PAGE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^/view/([^/]+)$").unwrap());
 static MEMO_API: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^/api/memos/([^/]+)(/images)?$").unwrap());
+static TASK_LINK_API: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^/api/tasks/links/([^/]+)$").unwrap());
 /// 取り込む返答の本文の上限。画面はファイルを 5 MB まで読み、JSON の文字列にすると引用符と改行の分だけ増える(多くて 2 倍)ので、それが収まる大きさにする
 const IMPORT_BODY_MAX: u64 = 12 * 1024 * 1024;
 
@@ -1829,13 +1973,13 @@ fn seq_of(req: &Req) -> Option<f64> {
 }
 
 /// 別のフォルダ(送り先など)を開いた画面は読むだけ。メモは送った人が付けたものを出し、ここでは書き換えない。
-/// 断るのは、メモ・アップロード先・まとめて送る印。
+/// 断るのは、メモ・アップロード先・まとめて送る印・タスクの紐づけ。
 /// 集計し直す・判定(手元の出力先に書くだけで、送り先は書き換えない)・設定・別のフォルダを開く操作は使える
 fn blocked_when_read_only(path: &str, method: &str) -> bool {
     if method == "GET" || method == "HEAD" {
         return false;
     }
-    path.starts_with("/api/memos/") || path == "/api/upload-root" || path == "/api/upload-projects"
+    path.starts_with("/api/memos/") || path.starts_with("/api/tasks/") || path == "/api/upload-root" || path == "/api/upload-projects"
 }
 
 fn vault_json(d: &crate::setup::VaultInfo) -> Value {

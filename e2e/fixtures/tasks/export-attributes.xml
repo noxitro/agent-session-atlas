@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  テスト用の、管理ツールの書き出しの例(架空のタスクだけ)。属性と名前空間を使う形。export-after.xml と同じタスク(DEMO-102-1 を除く)。
+  読み方の設定: "tasks": { "file": "…", "item": "WorkItem", "id": "@key", "name": "Title", "status": "State", "doneStatus": ["Resolved", "完了"] }
+  (key は属性だけを見る。Title は属性、State は子の要素の文字。名前空間は無視する)
+-->
+<ex:Export xmlns:ex="urn:example:task-export" xmlns:f="urn:example:task-fields">
+  <ex:WorkItem f:key="DEMO-101" f:Title="fix the app"><f:State>Resolved</f:State></ex:WorkItem>
+  <ex:WorkItem f:key="DEMO-102" f:Title="Improve the synthetic project"><f:State>完了</f:State></ex:WorkItem>
+  <ex:WorkItem f:key="DEMO-103" f:Title="帳票の出力を速くする"><f:State>Active</f:State></ex:WorkItem>
+  <ex:WorkItem f:key="DEMO-104" f:Title="初めから完了していたタスク"><f:State>Resolved</f:State></ex:WorkItem>
+  <WorkItem xmlns="urn:example:default" key="DEMO-105" Title="後から増えたタスク"><State>New</State></WorkItem>
+</ex:Export>

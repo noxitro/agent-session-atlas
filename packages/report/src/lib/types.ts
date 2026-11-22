@@ -26,7 +26,8 @@ import type { VerdictTuple } from './verdicts.ts';
 // 17: tests(テストの結果の要約。テストの実行があるセッションだけ)・groups[].tag(送り先の元のタグ)・wikiVaults(参照を数えた vault の数)・wiki.otherCalls(vault の検索・一覧など)
 // 18: wikiPageNames(読んだ llm-wiki のページの名前の辞書)・wiki.pages(読んだページの番号。重複を除く)・judgment.wikiPages(ページごとの LLM の見立て)
 // 19: groups(タスクタグ)をやめた
-export const REPORT_DATA_VERSION = 19;
+// 20: tasks(管理ツールのタスク。紐づけ・タスクごとの工数。値は Rust が決め、画面は出すだけ)
+export const REPORT_DATA_VERSION = 20;
 
 /** wiki.pages を埋め込んだ最初の版(これより前の埋め込みでは、llm-wiki のページごとの表を出さない) */
 export const WIKI_PAGES_DATA_VERSION = 18;
@@ -314,6 +315,77 @@ export interface ReportData {
   };
   /** notes: 集計のときの注意(無ければ空) */
   warnings: { unknownEventTypes: number; badLines: number; notes: string[] };
+  /** 管理ツールのタスク(crates/atlas-report/src/tasks/view.rs の TasksView)。設定もタスクの記録も無ければ無い。版 19 以前の埋め込みにも無い */
+  tasks?: TasksReport | null;
+}
+
+/** 紐づけの出所(機械・LLM・手動) */
+export type TaskLinkSource = 'machine' | 'llm' | 'manual';
+
+/** 比べられるタスクから外した理由 */
+export type TaskExcluded = 'notDone' | 'noStart' | 'unjudged' | 'lowConfidence';
+
+/** タスク 1 件の値(Rust の tasks::metrics::TaskRow。画面は出すだけ) */
+export interface TaskRow {
+  id: string;
+  name: string;
+  status: string;
+  done: boolean;
+  /** 完了を確認した時刻(完了を最初に見た XML の更新時刻) */
+  doneAt: string | null;
+  /** 最後に読んだ XML に無かった */
+  missing: boolean;
+  /** 紐づいたセッションのうち最も早い開始 */
+  start: string | null;
+  /** AI を使った場合の工数(稼働時間帯のミリ秒)。完了していなければ null */
+  workMs: number | null;
+  /** AI の実働(ミリ秒) */
+  aiActiveMs: number;
+  /** AI を使わなかった場合の工数(推定人手工数の時間。確信度の低い推定は入れない) */
+  humanHours: number;
+  sessions: number;
+  judgedSessions: number;
+  lowConfidenceSessions: number;
+  unjudgedSessions: number;
+  links: { machine: number; llm: number; manual: number };
+  comparable: boolean;
+  excluded: TaskExcluded | null;
+}
+
+/** タスクの合計(比べられるタスクだけ) */
+export interface TaskSummary {
+  tasks: number;
+  doneTasks: number;
+  included: number;
+  excluded: { notDone: number; noStart: number; unjudged: number; lowConfidence: number };
+  workMs: number;
+  humanHours: number;
+  aiActiveMs: number;
+  aiActiveMsAll: number;
+  /** AI を使わなかった場合 ÷ AI を使った場合。比べられるタスクが ratioMin に届かなければ null */
+  ratio: number | null;
+  ratioMin: number;
+}
+
+export interface TaskLinkView {
+  taskId: string | null;
+  source: TaskLinkSource;
+  reason: string;
+  confidence?: number;
+}
+
+export interface TasksReport {
+  configured: boolean;
+  /** local: この PC の記録から。sender: 送った人がセッションごとに添えた記録から(読むだけの画面) */
+  origin: 'local' | 'sender';
+  file: string | null;
+  observedAt: string | null;
+  workHours: { days: number[]; start: string; end: string };
+  warnings: string[];
+  items: TaskRow[];
+  /** セッション id → 紐づけ */
+  links: Record<string, TaskLinkView>;
+  summary: TaskSummary;
 }
 
 /** Phase 12: スキル化の候補(埋め込み用。lib/insights.ts の Candidate と同じ形) */

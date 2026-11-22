@@ -5,6 +5,8 @@
 //!                                      atlas-session-store.json   ← session-store.db と data.db(許可リストの列)のそのセッションの行(atlas が添える)
 //!                                      atlas-memo.md / atlas-memo/ ← そのセッションのメモと画像(atlas-notes/memos/。あれば)
 //!   <基底>/<まとまりの名前>/README.md                                 ← 名前・説明・写した日時・セッションの一覧(写すたびに書き直す)
+//! 管理ツールのタスクに紐づいたセッションは、atlas-session.json と atlas-index.json の task に、そのタスク(ID・名前・状態・完了・紐づけの出所)を添える
+//! (送り先から集計した読むだけの画面は、これだけからタスクの一覧と工数を作る)。
 //!   <基底>/<まとまりの名前>/atlas-installed.json                      ← 送った人がインストールしている skill・プラグインの名前(集計し直す側が使う)
 //! 同じセッションのフォルダは丸ごと置き換える。ただし、前に送ったときから中身が変わっていないセッションは写し直さない(2 回目からは変わったものだけを送る)。
 //! まとまりから外れたセッションや、ほかの回・ほかの PC から写したセッションのフォルダには触れない(前に写したものを消さないため)。
@@ -57,6 +59,9 @@ pub struct UploadedSession {
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
     pub memo: bool,
+    /// 紐づいた管理ツールのタスク(紐づいていなければ省く)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task: Option<atlas_report::tasks::sender::SenderTask>,
 }
 
 #[derive(Debug, Clone)]
@@ -861,6 +866,8 @@ pub struct UploadContext {
     stores: Mutex<HashMap<String, Option<String>>>,
     memos: Mutex<HashMap<String, Option<String>>>,
     images: Mutex<HashMap<String, Vec<FileEntry>>>,
+    /// セッション id → 紐づいたタスク(<notes>/tasks.json と task-links.json から)
+    tasks: HashMap<String, atlas_report::tasks::sender::SenderTask>,
 }
 
 /// 点検とアップロードで共有できる、atlas が足して写すものを読む口
@@ -879,7 +886,14 @@ pub fn open_upload_context(p: &UploadPaths) -> Result<UploadContext> {
             }
         }
     }
-    Ok(UploadContext { reader, desktop, memo_dir, vcs, stores: Mutex::default(), memos: Mutex::default(), images: Mutex::default() })
+    // 管理ツールのタスクに紐づいたセッション。開始の時刻は sessions.json から(紐づけがあるときだけ読む)
+    let tasks = match &p.notes {
+        Some(n) => crate::commands::tasks::sender_records(n, &|| {
+            p.sessions.as_ref().filter(|x| x.exists()).and_then(|x| read_sessions(x).ok()).map(|v| v.into_iter().filter_map(|r| r.created_at.map(|c| (r.id, c))).collect()).unwrap_or_default()
+        }),
+        None => HashMap::new(),
+    };
+    Ok(UploadContext { reader, desktop, memo_dir, vcs, stores: Mutex::default(), memos: Mutex::default(), images: Mutex::default(), tasks })
 }
 
 impl UploadContext {
@@ -920,6 +934,11 @@ impl UploadContext {
         };
         self.memos.lock().unwrap().insert(id.to_string(), m.clone());
         Ok(m)
+    }
+
+    /// 紐づいた管理ツールのタスク(無ければ None)
+    pub fn task(&self, id: &str) -> Option<atlas_report::tasks::sender::SenderTask> {
+        self.tasks.get(id).cloned()
     }
 
     /// この PC で照合した結果(atlas-vcs.json の中身)。照合していなければ None
@@ -1122,6 +1141,7 @@ pub fn upload_target(p: &UploadPaths, target: &UploadTarget, root: &Path, log: &
             created_at: r.and_then(|r| r.created_at.clone()),
             updated_at: r.and_then(|r| r.updated_at.clone()),
             memo: with_memo.contains(id),
+            task: added.task(id),
         }
     };
     let meta_text = |s: UploadedSession, key: Option<&String>| -> Result<String> {
@@ -1396,13 +1416,17 @@ pub fn upload_readme(o: &ReadmeInput<'_>) -> String {
     lines.push(String::new());
     lines.push(format!("この README と {UPLOAD_INDEX}(プログラムや AI が読む索引)はアップロードするたびに書き直します。このフォルダには、ほかの回やほかの PC から写したセッションのフォルダもあることがあります。"));
     lines.push(String::new());
-    lines.push("| セッション ID | 題名 | 最終更新 | メモ |".into());
-    lines.push("| --- | --- | --- | --- |".into());
+    lines.push("| セッション ID | 題名 | タスク | 最終更新 | メモ |".into());
+    lines.push("| --- | --- | --- | --- | --- |".into());
     for s in o.sessions {
         let memo = if s.memo { format!("[あり]({}/{UPLOAD_MEMO_FILE})", s.id) } else { String::new() };
         let title = cell(&truncate(Some(s.title.as_deref().unwrap_or("")), 60));
+        let task = s.task.as_ref().map_or("-".to_string(), |t| {
+            let name = cell(&truncate(Some(&t.name), 40));
+            if name.is_empty() { cell(&t.id) } else { format!("{name}({})", cell(&t.id)) }
+        });
         lines.push(format!(
-            "| [{id}]({id}/) | {} | {} | {} |",
+            "| [{id}]({id}/) | {} | {task} | {} | {} |",
             if title.is_empty() { "-".to_string() } else { title },
             local_time(s.updated_at.as_deref()),
             if memo.is_empty() { "-".to_string() } else { memo },

@@ -329,3 +329,41 @@ fn store_key_text_drops_volatile_columns() {
     assert_eq!(store_key_text("{壊れた"), "{壊れた");
     assert_eq!(vcs_key_text(r#"{"computedAt":"x","result":{"evaluated":{"at":"y","n":1}}}"#), r#"{"result":{"evaluated":{"n":1}}}"#);
 }
+
+/// 管理ツールのタスクに紐づいたセッションは、atlas-session.json と atlas-index.json の task と README のタスクの列に、そのタスクを添える。
+/// 紐づけだけが変わったときは写し直さず、添えた記録を書き直す。受け取った側はこれを形と大きさを確かめて読む
+#[test]
+fn task_records_are_attached() {
+    let e = env();
+    let sessions = e.out.join("sessions.json");
+    fs::write(&sessions, json!({ "sessions": [{ "id": "s1", "name": "画面", "createdAt": "2026-11-20T01:00:00.000Z" }, { "id": "s2", "name": "雑談", "createdAt": "2026-11-20T02:00:00.000Z" }] }).to_string()).unwrap();
+    let p = UploadPaths { sessions: Some(sessions), ..with_notes(&e) };
+    let r = up(&p, &e.root);
+    let dir = PathBuf::from(&r.dir);
+    let meta = |id: &str| js::parse_json(&fs::read_to_string(dir.join(id).join("atlas-session.json")).unwrap()).unwrap();
+    assert!(meta("s1").get("task").is_none());
+    fs::write(
+        e.notes.join("tasks.json"),
+        json!({ "version": 1, "tasks": { "T-1": { "name": "画面の | 修正", "status": "Done", "done": true, "firstSeenAt": "a", "doneAt": "2026-11-22T00:00:00.000Z", "lastSeenAt": "a" } } }).to_string(),
+    )
+    .unwrap();
+    fs::write(
+        e.notes.join("task-links.json"),
+        json!({ "version": 1, "links": { "s1": { "taskId": "T-1", "source": "machine", "reason": "ID が題名にある", "at": "t" }, "s2": { "taskId": null, "source": "manual", "reason": "", "at": "t" } } }).to_string(),
+    )
+    .unwrap();
+    let r = up(&p, &e.root);
+    assert_eq!((r.uploaded, r.unchanged), (0, 2));
+    let t = &meta("s1")["task"];
+    assert_eq!(t, &json!({ "id": "T-1", "name": "画面の | 修正", "status": "Done", "done": true, "doneAt": "2026-11-22T00:00:00.000Z", "start": "2026-11-20T01:00:00.000Z", "source": "machine", "reason": "ID が題名にある" }));
+    // 「どのタスクでもない」は添えない
+    assert!(meta("s2").get("task").is_none());
+    let index = js::parse_json(&fs::read_to_string(dir.join("atlas-index.json")).unwrap()).unwrap();
+    assert_eq!(index["sessions"][0]["task"]["id"], "T-1");
+    let readme = fs::read_to_string(dir.join("README.md")).unwrap();
+    assert!(readme.contains("| [s1](s1/) | 画面 | 画面の \\| 修正(T-1) |"), "{readme}");
+    assert!(readme.contains("| [s2](s2/) | 雑談 | - |"), "{readme}");
+    // 受け取った側の読み方で読める
+    let got = atlas_report::tasks::sender::read_sender_task(&dir.join("s1").join("atlas-session.json"), "s1").unwrap();
+    assert_eq!((got.id.as_str(), got.done, got.source), ("T-1", true, atlas_report::tasks::links::LinkSource::Machine));
+}

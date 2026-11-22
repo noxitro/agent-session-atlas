@@ -146,7 +146,7 @@ describe('Phase 15 E2E: プロジェクトのアップロード', () => {
       const readme = await readFile(join(destOf(id), 'README.md'), 'utf8');
       expect(readme.startsWith(`# ${projectOf(id)}\n\n集計のプロジェクト「${projectOf(id)}」のセッション(`)).toBe(true);
       expect(readme).toContain('セッション: 1 件(うちメモあり 0 件)');
-      expect(readme).toContain('| セッション ID | 題名 | 最終更新 | メモ |');
+      expect(readme).toContain('| セッション ID | 題名 | タスク | 最終更新 | メモ |');
       expect(readme).toContain(`| [${id}](${id}/) |`);
       expect(readme).not.toContain('タスクタグ');
     }

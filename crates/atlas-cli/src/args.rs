@@ -4,11 +4,14 @@
 use std::collections::HashMap;
 use std::fmt;
 
-pub const COMMANDS: &[&str] = &["snapshot", "extract", "metrics", "vcs", "build", "export", "all", "bundle", "judge", "turns", "memo", "serve", "open", "skill-draft"];
+pub const COMMANDS: &[&str] = &["snapshot", "extract", "metrics", "vcs", "build", "export", "all", "bundle", "judge", "turns", "memo", "tasks", "serve", "open", "skill-draft"];
 pub const JUDGE_ACTIONS: &[&str] = &["run", "import", "m365"];
 pub const BACKEND_NAMES: &[&str] = &["copilot-cli", "anthropic"];
 pub const TURNS_ACTIONS: &[&str] = &["bundle", "run", "import", "m365"];
 pub const MEMO_ACTIONS: &[&str] = &["list", "show", "set", "remove"];
+pub const TASKS_ACTIONS: &[&str] = &["sync", "list", "link"];
+/// --task(タスクで絞る)を使えるコマンド
+pub const TASK_FILTER_COMMANDS: &[&str] = &["metrics", "build", "export", "all", "bundle", "turns", "judge"];
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct JudgeCliOptions {
@@ -50,6 +53,15 @@ pub struct MemoCliOptions {
     pub file: Option<String>,
 }
 
+/// atlas tasks(管理ツールのタスク)
+#[derive(Debug, Clone, PartialEq)]
+pub struct TasksCliOptions {
+    pub action: String,
+    /// link: 機械で決まらなかったセッションを LLM で紐づける
+    pub llm: bool,
+    pub timeout_sec: u64,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SkillDraftOptions {
     pub index: u64,
@@ -86,6 +98,8 @@ pub struct CliOptions {
     pub model: Option<String>,
     pub branch: Option<String>,
     pub sessions: Option<Vec<String>>,
+    /// タスクで絞る(管理ツールのタスクの ID)
+    pub task: Option<String>,
     pub notes_dir: Option<String>,
     pub judgments: Option<String>,
     pub bundle: Option<String>,
@@ -103,6 +117,7 @@ pub struct CliOptions {
     pub judge: Option<JudgeCliOptions>,
     pub turns: Option<TurnsCliOptions>,
     pub memo_cmd: Option<MemoCliOptions>,
+    pub tasks_cmd: Option<TasksCliOptions>,
     pub port: Option<u64>,
     pub open: bool,
     pub target: Option<String>,
@@ -147,6 +162,8 @@ const OPTIONS: &[(&str, Kind)] = &[
     ("model", Kind::Str),
     ("branch", Kind::Str),
     ("session", Kind::StrMulti),
+    ("task", Kind::Str),
+    ("llm", Kind::Bool),
     ("notes-dir", Kind::Str),
     ("file", Kind::Str),
     ("judgments", Kind::Str),
@@ -363,7 +380,7 @@ pub fn parse_cli(argv: &[String]) -> Result<CliOptions, UsageError> {
         // JS の `values.only ? … : null`: 空文字は null
         let mut only = if values.s("only").is_some_and(|o| !o.is_empty()) { only } else { None };
         // 絞り込みは添付を作るときのもので、judge では効かない。--session だけは judge run で --only と同じに扱う(先頭一致で添付から探す)
-        let mut ignored_filters: Vec<String> = ["project", "since", "client", "branch"].iter().filter(|k| values.has(k)).map(|k| format!("--{k}")).collect();
+        let mut ignored_filters: Vec<String> = ["project", "since", "client", "branch", "task"].iter().filter(|k| values.has(k)).map(|k| format!("--{k}")).collect();
         if let Some(ids) = values.multi.get("session").map(split_list).filter(|s| !s.is_empty()) {
             if action == "run" {
                 only = Some(only.unwrap_or_default().into_iter().chain(ids).collect());
@@ -471,6 +488,37 @@ pub fn parse_cli(argv: &[String]) -> Result<CliOptions, UsageError> {
         }
         memo_cmd = Some(MemoCliOptions { action, id, text: if rest.is_empty() { None } else { Some(rest.join(" ")) }, file: values.s("file").cloned() });
     }
+    let mut tasks_cmd = None;
+    if cmd == "tasks" {
+        let Some(action) = positionals.get(1).cloned() else { return err("tasks の後に sync / list / link を指定してください") };
+        if !TASKS_ACTIONS.contains(&action.as_str()) {
+            return err(format!("tasks の不明な操作です: {action}(sync / list / link)"));
+        }
+        if positionals.len() > 2 {
+            return err(format!("余分な引数があります: {}", extra(2)));
+        }
+        if action != "link" && values.multi.contains_key("session") {
+            return err("--session は tasks link でだけ使えます");
+        }
+        if values.has("timeout") && !values.b("llm", false) {
+            return err("--timeout は tasks link --llm でだけ使えます");
+        }
+        for k in ["since", "project", "client", "model", "branch"] {
+            if values.has(k) {
+                return err(format!("--{k} は tasks では使えません"));
+            }
+        }
+        tasks_cmd = Some(TasksCliOptions { llm: values.b("llm", false), timeout_sec: pos_int(values.s("timeout"), "--timeout", 1)?.unwrap_or(600), action });
+    }
+    if values.b("llm", false) && tasks_cmd.as_ref().is_none_or(|t| t.action != "link") {
+        return err("--llm は tasks link でだけ使えます");
+    }
+    if values.has("task") && !TASK_FILTER_COMMANDS.contains(&cmd.as_str()) {
+        return err(format!("--task は {} でだけ使えます", TASK_FILTER_COMMANDS.join("・")));
+    }
+    if values.s("task").is_some_and(|t| t.trim().is_empty()) {
+        return err("--task にタスクの ID を指定してください");
+    }
     if values.has("file") && memo_cmd.as_ref().is_none_or(|m| m.action != "set") {
         return err("--file は memo set でだけ使えます");
     }
@@ -495,7 +543,7 @@ pub fn parse_cli(argv: &[String]) -> Result<CliOptions, UsageError> {
             }
         }
     }
-    if !matches!(cmd.as_str(), "judge" | "turns" | "memo" | "skill-draft") {
+    if !matches!(cmd.as_str(), "judge" | "turns" | "memo" | "tasks" | "skill-draft") {
         if cmd != "open" && positionals.len() > 1 {
             return err(format!("コマンドは 1 つだけ指定してください: {}", positionals.join(" ")));
         }
@@ -542,8 +590,18 @@ pub fn parse_cli(argv: &[String]) -> Result<CliOptions, UsageError> {
             return err(format!("--vcs-mode は worktree / committed / fixed のどれかです: {m}"));
         }
     }
-    if values.has("config") && !matches!(cmd.as_str(), "extract" | "vcs" | "all" | "serve" | "open") {
-        return err("--config は extract・vcs・all・serve・open でだけ使えます");
+    if cmd == "tasks" {
+        for k in ["backend", "limit", "only", "concurrency"] {
+            if values.has(k) {
+                return err(format!("--{k} は tasks では使えません"));
+            }
+        }
+        if values.b("force", false) {
+            return err("--force は tasks では使えません");
+        }
+    }
+    if values.has("config") && !matches!(cmd.as_str(), "extract" | "vcs" | "all" | "serve" | "open" | "tasks") {
+        return err("--config は extract・vcs・all・serve・open・tasks でだけ使えます");
     }
     if let Some(since) = values.s("since") {
         if atlas_core::jsdate::parse_ms(since).is_none() {
@@ -580,6 +638,7 @@ pub fn parse_cli(argv: &[String]) -> Result<CliOptions, UsageError> {
         model: values.s("model").cloned(),
         branch: values.s("branch").cloned(),
         sessions,
+        task: values.s("task").map(|t| t.trim().to_string()),
         notes_dir: values.s("notes-dir").cloned(),
         judgments: values.s("judgments").cloned(),
         bundle: values.s("bundle").cloned(),
@@ -597,6 +656,7 @@ pub fn parse_cli(argv: &[String]) -> Result<CliOptions, UsageError> {
         judge,
         turns,
         memo_cmd,
+        tasks_cmd,
         port,
         open: values.b("open", true),
         target,
@@ -661,6 +721,26 @@ mod tests {
         assert!(p(&["build", "--bogus"]).unwrap_err().0.starts_with("Unknown option '--bogus'"));
         assert_eq!(p(&["build", "--since", "yesterday"]).unwrap_err().0, "--since の日時を解釈できません: yesterday");
         assert!(p(&["-h"]).unwrap().help);
+    }
+
+    #[test]
+    fn tasks_command_and_task_filter() {
+        let t = p(&["tasks", "link", "--llm", "--session", "ab"]).unwrap();
+        assert_eq!(t.tasks_cmd, Some(TasksCliOptions { action: "link".into(), llm: true, timeout_sec: 600 }));
+        assert_eq!(t.sessions, Some(vec!["ab".into()]));
+        assert_eq!(p(&["tasks", "sync", "--config", "c.json"]).unwrap().config.as_deref(), Some("c.json"));
+        assert_eq!(p(&["tasks"]).unwrap_err().0, "tasks の後に sync / list / link を指定してください");
+        assert!(p(&["tasks", "nope"]).unwrap_err().0.starts_with("tasks の不明な操作です"));
+        assert_eq!(p(&["tasks", "list", "--session", "a"]).unwrap_err().0, "--session は tasks link でだけ使えます");
+        assert_eq!(p(&["tasks", "sync", "--llm"]).unwrap_err().0, "--llm は tasks link でだけ使えます");
+        assert_eq!(p(&["build", "--llm"]).unwrap_err().0, "--llm は tasks link でだけ使えます");
+        assert_eq!(p(&["tasks", "link", "--limit", "1"]).unwrap_err().0, "--limit は tasks では使えません");
+        assert_eq!(p(&["tasks", "link", "--timeout", "5"]).unwrap_err().0, "--timeout は tasks link --llm でだけ使えます");
+        assert_eq!(p(&["build", "--task", " T-1 "]).unwrap().task.as_deref(), Some("T-1"));
+        assert_eq!(p(&["build", "--task", " "]).unwrap_err().0, "--task にタスクの ID を指定してください");
+        assert!(p(&["serve", "--task", "T"]).unwrap_err().0.starts_with("--task は metrics・build"));
+        // judge では効かない絞り込み(judge を直に実行したときは止める)
+        assert_eq!(p(&["judge", "run", "--task", "T"]).unwrap().judge.unwrap().ignored_filters, vec!["--task"]);
     }
 
     #[test]

@@ -8,6 +8,7 @@
 //! - turn-bundle: 子プロセス `atlas turns bundle --unjudged …`(依頼ごとの判定でチャットに添付するファイルを作る。LLM は呼ばない)
 //! - turn-judge:  子プロセス `atlas judge-flow --turns --limit <n> …`(依頼ごとの判定を GitHub Copilot CLI で回し、レポートを作り直す)
 //! - m365 / turn-m365: 子プロセス `atlas judge m365 …` / `atlas turns m365 …`(M365 Copilot のアプリを操作して判定する)
+//! - task-link: 子プロセス `atlas tasks link --llm [--session=<id>] …`(機械で決まらなかったセッションを、判定と同じモデルで管理ツールのタスクに紐づけ、レポートを作り直す)
 //! 子プロセスの引数はここで固定の配列に組み立て、この実行ファイル自身(TS 版は process.execPath と main.ts)を shell なしで起動する
 //! (画面からの文字列をコマンドラインに入れない)。起動の仕方(spawn)と全文の書き出し(run_full)は差し替えられる(単体テストを速く回すため)。
 //!
@@ -180,7 +181,7 @@ pub fn release_out_lock(out_dir: &Path) {
 
 // ---------- ジョブ ----------
 
-pub const JOB_KINDS: [&str; 10] = ["refresh", "judge", "full", "bundle", "bundle-zip", "export", "turn-bundle", "turn-judge", "m365", "turn-m365"];
+pub const JOB_KINDS: [&str; 11] = ["refresh", "judge", "full", "bundle", "bundle-zip", "export", "turn-bundle", "turn-judge", "m365", "turn-m365", "task-link"];
 /// 画面から始める判定のバックエンド(従量課金の anthropic は CLI だけ)
 pub const JOB_BACKENDS: [&str; 1] = ["copilot-cli"];
 pub const JOB_LIMIT_MAX: i64 = 500;
@@ -248,6 +249,8 @@ pub enum JobRequest {
     TurnJudge { limit: i64, scope: JudgeScope },
     M365,
     TurnM365,
+    /// 管理ツールのタスクに LLM で紐づける(範囲は、紐づけの無いセッションすべてか、1 セッション)
+    TaskLink { scope: JudgeScope },
 }
 
 impl JobRequest {
@@ -263,6 +266,7 @@ impl JobRequest {
             JobRequest::TurnJudge { .. } => "turn-judge",
             JobRequest::M365 => "m365",
             JobRequest::TurnM365 => "turn-m365",
+            JobRequest::TaskLink { .. } => "task-link",
         }
     }
 }
@@ -325,6 +329,7 @@ fn job_keys(kind: &str) -> &'static [&'static str] {
         "judge" => &["kind", "limit", "backend", "session", "force"],
         "full" => &["kind", "id"],
         "turn-judge" => &["kind", "limit", "session"],
+        "task-link" => &["kind", "session"],
         _ => &["kind"],
     }
 }
@@ -383,6 +388,7 @@ pub fn parse_job_request(body: &Map<String, Value>, known_id: &dyn Fn(&str) -> b
         "turn-bundle" => return Ok(JobRequest::TurnBundle),
         "m365" => return Ok(JobRequest::M365),
         "turn-m365" => return Ok(JobRequest::TurnM365),
+        "task-link" => return Ok(JobRequest::TaskLink { scope: scope_of(body, known_id)? }),
         _ => {}
     }
     if kind == "turn-judge" {
@@ -455,6 +461,11 @@ pub fn job_args(req: &JobRequest, p: &JobArgsInput<'_>) -> Option<Vec<String>> {
         // M365 Copilot のアプリを操作して、未判定の添付ファイルを判定する(取り込めたらレポートにも反映する)
         JobRequest::M365 => vec!["judge".into(), "m365".into()],
         JobRequest::TurnM365 => vec!["turns".into(), "m365".into()],
+        JobRequest::TaskLink { scope } => {
+            let mut v: Vec<String> = vec!["tasks".into(), "link".into(), "--llm".into()];
+            v.extend(scope.args());
+            v
+        }
         JobRequest::Full { .. } => return None,
     };
     v.extend(["--out".to_string(), p.out_dir.to_string(), "--notes-dir".to_string(), p.notes_dir.to_string()]);
@@ -630,6 +641,7 @@ fn label(kind: &str) -> &'static str {
         "turn-bundle" => "依頼の判定の添付ファイルを作る",
         "turn-judge" => "依頼を判定する",
         "m365" => "M365 Copilot で工数を判定する",
+        "task-link" => "タスクを LLM で紐づける",
         _ => "M365 Copilot で依頼を判定する",
     }
 }
@@ -744,6 +756,7 @@ impl JobRunner {
             JobRequest::TurnJudge { limit, scope } => {
                 JobTarget { limit: Some(*limit), session: scope.session(), ..Default::default() }
             }
+            JobRequest::TaskLink { scope } => JobTarget { session: scope.session(), ..Default::default() },
             JobRequest::Full { id } => JobTarget { id: Some(id.clone()), ..Default::default() },
             _ => JobTarget::default(),
         };
@@ -757,6 +770,7 @@ impl JobRunner {
         let what = match req {
             JobRequest::Judge { limit, backend, scope, force } => format!("(最大 {limit} 件、{backend}{}{})", scope.describe(), if *force { "、判定し直し" } else { "" }),
             JobRequest::TurnJudge { limit, scope } => format!("(最大 {limit} 依頼{})", scope.describe()),
+            JobRequest::TaskLink { scope: JudgeScope::Session(id) } => format!("(セッション {id})"),
             JobRequest::Full { id } => format!("({id})"),
             _ => String::new(),
         };

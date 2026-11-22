@@ -21,6 +21,7 @@ pub mod open;
 pub mod serve;
 mod skill_draft;
 mod snapshot;
+pub(crate) mod tasks;
 pub(crate) mod turns;
 mod vcs;
 
@@ -57,7 +58,7 @@ pub fn paths_of(o: &CliOptions) -> Paths {
 }
 
 /// out/ に書くコマンド。実行中は out/.job.json に印を置き、他のプロセス(画面のジョブ・別の atlas)と並行して書かない
-const WRITES_OUT: [&str; 10] = ["snapshot", "extract", "metrics", "build", "export", "bundle", "judge", "turns", "skill-draft", "all"];
+const WRITES_OUT: [&str; 11] = ["snapshot", "extract", "metrics", "build", "export", "bundle", "judge", "turns", "tasks", "skill-draft", "all"];
 
 pub fn run(o: &CliOptions, log: Log<'_>) -> Result<RunResult> {
     if o.command == "open" {
@@ -126,7 +127,7 @@ pub fn run_command(o: &CliOptions, p: &Paths, log: Log<'_>) -> Result<RunResult>
         }
         "build" | "export" => {
             let transcripts = (o.command == "export").then(|| build::TranscriptCli { tool_output: o.tool_output, max_chars: o.max_chars, full: o.full });
-            let b = build::run_build(p, &build::BuildOptions { filter: metrics::SessionFilter::from_cli(o), transcripts }, log)?;
+            let b = build::run_build(p, &build::BuildOptions { filter: metrics::SessionFilter::from_cli(o), transcripts, config: o.config.clone() }, log)?;
             Ok(RunResult { build: Some(b), ..RunResult::default() })
         }
         "bundle" => {
@@ -151,6 +152,7 @@ pub fn run_command(o: &CliOptions, p: &Paths, log: Log<'_>) -> Result<RunResult>
             }
             Ok(RunResult { judge: judge::run_judge_command(p, j, log)?, ..RunResult::default() })
         }
+        "tasks" => tasks::run_tasks_command(o, p, log),
         "memo" => {
             let m = o.memo_cmd.as_ref().ok_or_else(|| anyhow::anyhow!("memo の操作がありません"))?;
             memo::run_memo(p, m, log)?;

@@ -35,7 +35,7 @@ pub fn run_all_after_snapshot(o: &CliOptions, p: &Paths, log: Log<'_>, t: Instan
     }
     run_metrics(p, &f, log)?;
     // セッション記録(.md)も作る
-    let build = run_build(p, &BuildOptions { filter: f, transcripts: Some(TranscriptCli { tool_output: o.tool_output, max_chars: o.max_chars, full: false }) }, log)?;
+    let build = run_build(p, &BuildOptions { filter: f, transcripts: Some(TranscriptCli { tool_output: o.tool_output, max_chars: o.max_chars, full: false }), config: o.config.clone() }, log)?;
     log(&format!("all: 完了 {}", elapsed(t)));
     Ok(build)
 }
@@ -59,7 +59,7 @@ pub fn run_all_or_reuse(o: &CliOptions, p: &Paths, built_file: &Path, log: Log<'
         None => REPO_ROOT.join(CONFIG_FILE),
     };
     let options = json!({
-        "since": o.since, "project": o.project, "client": o.client, "model": o.model, "branch": o.branch, "sessions": o.sessions,
+        "since": o.since, "project": o.project, "client": o.client, "model": o.model, "branch": o.branch, "sessions": o.sessions, "task": o.task,
         "toolOutput": o.tool_output.as_str(), "maxChars": o.max_chars, "tempDirs": o.temp_dirs, "vcsMode": o.vcs_mode,
     });
     let code = crate::version::CODE_STAMP.to_string();

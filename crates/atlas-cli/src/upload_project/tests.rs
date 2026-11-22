@@ -192,7 +192,7 @@ fn index_and_readme_are_written_and_root_is_remembered() {
     assert_eq!(meta2["projectSource"], serde_json::Value::Null);
     let readme = fs::read_to_string(dest.join("README.md")).unwrap();
     assert!(readme.starts_with("# owner/app\n\n集計のプロジェクト「owner/app」のセッション"));
-    assert!(readme.contains("| セッション ID | 題名 | 最終更新 | メモ |"));
+    assert!(readme.contains("| セッション ID | 題名 | タスク | 最終更新 | メモ |"));
     assert!(readme.contains("| [s1](s1/) | - | "));
     assert!(!readme.contains("タスクタグ") && !readme.contains("タグなし"));
     assert!(io.printed().contains(&format!("送り先: {}", dest.display())));

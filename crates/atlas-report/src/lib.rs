@@ -42,6 +42,7 @@ pub mod raw_events;
 pub mod retention;
 pub mod session_tools;
 pub mod summarize;
+pub mod tasks;
 pub mod test_tables;
 pub mod transcript;
 pub mod turns;

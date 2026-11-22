@@ -25,6 +25,12 @@
              import はチャットの返答を <out>/turn-judgments.json に取り込む
   memo list / memo show <id> / memo set <id> <本文...> / memo set <id> --file <path> / memo remove <id>
              セッションごとのメモ(<notes-dir>/memos/<id>.md)を一覧・表示・保存・削除する(remove は画像を残す)
+  tasks sync / tasks list / tasks link [--llm] [--session <id>]
+             管理ツールのタスク(設定の tasks で指定した XML)。sync は XML を読んで <notes-dir>/tasks.json を更新し、
+             機械の紐づけ(<notes-dir>/task-links.json)を決め直す。list はタスクの一覧を出す。link は機械の紐づけを
+             決め直し、--llm を付けると、決まらなかったセッション(--session ならそのセッション)を判定と同じモデルで
+             紐づけて、レポートを作り直す(AI クレジットか、judgeModel の API キーの利用料を使います)。
+             集計(all・build・export)のたびにも XML を読み、機械の紐づけを決め直す(LLM は使わない)
   serve      out/ を 127.0.0.1 だけに配信してブラウザで開く(画面からメモを書け、集計し直す・工数の判定・
              記録と全文記録の表示ができる)。ブラウザを閉じると止まる(画面から動かした処理の実行中は終わるまで待つ)
   open <フォルダ> / open --pick
@@ -48,6 +54,7 @@
   --model <name>     そのモデルを使ったセッションだけ(judge run では判定に使うモデル)
   --branch <name>    ブランチで絞る
   --session <id,...> 特定のセッションだけ(カンマ区切り、複数回指定可。id は先頭一致で解決、曖昧ならエラー)
+  --task <id>        管理ツールのタスクで絞る(そのタスクに紐づいたセッションだけ。metrics・build・export・all・bundle・turns)
   --notes-dir <dir>  メモの置き場(既定: リポジトリ直下の atlas-notes/)
   --file <path>      memo set: 本文をこのファイルから読む
   --judgments <file> 判定結果 judgments.json の場所(既定: <out>/judgments.json)
@@ -61,7 +68,7 @@
                      (%TEMP% と AppData\Local\Temp・/tmp のパターン)を使わない
   --snapshot-all     snapshot: 既定で写さない大きなもの(rewind-snapshots、一覧に無い名前のもの、logs/)も写す
   --snapshot-prune   snapshot: 前回 --snapshot-all で写したが今回は写さないものを消す(既定は残して manifest に日時を出す)
-  --config <file>    extract・vcs・all・serve・open: 設定ファイル(wiki の vault・アップロード先の指定)の場所
+  --config <file>    extract・vcs・all・serve・open・tasks: 設定ファイル(wiki の vault・アップロード先・タスクの指定)の場所
                      (既定: 環境変数 ATLAS_CONFIG、無ければリポジトリ直下の atlas.config.json)
   --vcs-mode <v>     vcs・all: 比べる版をどこで見るか。worktree(既定、今の作業ツリー)/ committed(最後に取り込んだ版)/
                      fixed(セッションの終わりから決まった日数後の版。日数は設定の vcs.lagDays、既定 7)

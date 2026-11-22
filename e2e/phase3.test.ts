@@ -292,7 +292,7 @@ describe('Phase 3 E2E: fixtures', () => {
     for (const [p, h] of byProject) expect(agg.byProject.find((b) => b.key === p)!.humanHours).toBeCloseTo(h);
     // llm-wiki のページ: 埋め込みの版 18 から、ページの名前を辞書(wikiPageNames)に 1 回だけ置き、要約は番号を持つ。
     // 判定は読んだページの分だけ(パケットに無いページの判定は捨てる)。理由は埋め込まない
-    expect(data.version).toBe(19);
+    expect(data.version).toBe(20);
     expect(data.wikiPageNames).toEqual([...SAMPLE_WIKI_PAGES]);
     const id4 = '00000000-0000-4000-8000-000000000004';
     const s4 = data.sessions.find((x) => x.id === id4)!;

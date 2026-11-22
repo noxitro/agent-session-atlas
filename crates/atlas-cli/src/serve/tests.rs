@@ -1434,3 +1434,129 @@ fn view_too_large() {
     assert_eq!((b["tooLarge"].clone(), b["limit"].clone(), b["size"].clone(), b["mdHref"].clone()), (json!(true), json!(64), json!(MD.len()), json!("../sessions/s1.md")));
     assert!(b.get("html").is_none());
 }
+
+// ---------- 管理ツールのタスク ----------
+
+/// タスクの状態(tasks.json)と設定(atlas.config.json の tasks)と sessions.json を置いた場
+fn tasks_env() -> Env {
+    let e = Env::new();
+    fs::create_dir_all(&e.notes).unwrap();
+    fs::write(e.dir.join("export.xml"), "<Tasks/>").unwrap();
+    fs::write(e.dir.join("atlas.config.json"), json!({ "tasks": { "file": "export.xml" } }).to_string()).unwrap();
+    let task = |name: &str, done: bool| json!({ "name": name, "status": if done { "Done" } else { "Open" }, "done": done, "firstSeenAt": "2026-11-20T00:00:00.000Z", "doneAt": if done { json!("2026-11-24T03:00:00.000Z") } else { Value::Null }, "lastSeenAt": "2026-11-24T03:00:00.000Z", "missing": false });
+    fs::write(e.notes.join("tasks.json"), json!({ "version": 1, "tasks": { "ABC-12": task("一覧の不具合", true), "XY-9": task("帳票の出力", false) } }).to_string()).unwrap();
+    fs::write(
+        e.out.join("sessions.json"),
+        json!({ "sessions": [
+            { "id": "s1", "name": "ABC-12 を直す", "turns": 1, "firstUserMessage": "直して", "createdAt": "2026-11-23T01:00:00.000Z", "activeMs": 3_600_000, "analysis": { "requests": ["直して"] } },
+            { "id": "s2", "name": "雑談", "turns": 1, "firstUserMessage": "こんにちは", "createdAt": "2026-11-23T02:00:00.000Z", "activeMs": 600_000 },
+        ] })
+        .to_string(),
+    )
+    .unwrap();
+    e
+}
+
+#[test]
+fn tasks_api_and_manual_links() {
+    let mut e = tasks_env();
+    e.start(|_| {});
+    let (st, v) = e.get("/api/tasks");
+    assert_eq!(st, 200);
+    assert_eq!(v["readOnly"], false);
+    assert_eq!(v["tasks"]["configured"], true);
+    assert_eq!(v["tasks"]["items"].as_array().unwrap().len(), 2);
+    assert_eq!(v["tasks"]["links"], json!({}));
+    // LLM に聞く数(依頼の記録があって紐づけの無いセッション)
+    assert_eq!(v["unresolved"], 2);
+    let put = |id: &str, body: Value, token: bool| {
+        let t = e.token();
+        let r = e.req("PUT", &format!("/api/tasks/links/{id}"), token.then_some(t.as_str()), &[], body.to_string().as_bytes());
+        (r.status, r.json())
+    };
+    // token が無ければ書かない
+    assert_eq!(put("s2", json!({ "taskId": "XY-9" }), false).0, 403);
+    let (st, v) = put("s2", json!({ "taskId": "XY-9" }), true);
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["tasks"]["links"]["s2"], json!({ "taskId": "XY-9", "source": "manual", "reason": "" }));
+    assert_eq!(v["unresolved"], 1);
+    let saved = js::parse_json(&fs::read_to_string(e.notes.join("task-links.json")).unwrap()).unwrap();
+    assert_eq!(saved["links"]["s2"]["source"], "manual");
+    // 工数はその場で数え直す(s2 は 10 分の実働)
+    let xy = v["tasks"]["items"].as_array().unwrap().iter().find(|t| t["id"] == "XY-9").unwrap().clone();
+    assert_eq!((xy["sessions"].clone(), xy["aiActiveMs"].clone(), xy["excluded"].clone()), (json!(1), json!(600_000), json!("notDone")));
+    // 「どのタスクでもない」
+    let (_, v) = put("s2", json!({ "taskId": null }), true);
+    assert_eq!(v["tasks"]["links"]["s2"]["taskId"], Value::Null);
+    // 自動に戻すと、機械の紐づけをすぐ決め直す(s1 は題名に ID がある)
+    let (_, v) = put("s1", json!({ "taskId": "XY-9" }), true);
+    assert_eq!(v["tasks"]["links"]["s1"]["source"], "manual");
+    let (st, v) = put("s1", json!({ "auto": true }), true);
+    assert_eq!(st, 200);
+    assert_eq!(v["tasks"]["links"]["s1"], json!({ "taskId": "ABC-12", "source": "machine", "reason": "ID が題名にある" }));
+    let (_, v) = put("s2", json!({ "auto": true }), true);
+    assert!(v["tasks"]["links"].get("s2").is_none());
+    // 形の違うもの
+    assert_eq!(put("s1", json!({ "taskId": "NOPE" }), true).0, 400);
+    assert_eq!(put("s1", json!({ "taskId": 1 }), true).0, 400);
+    assert_eq!(put("s1", json!({ "taskId": "XY-9", "auto": true }), true).0, 400);
+    assert_eq!(put("s1", json!({ "task": "XY-9" }), true).0, 400);
+    assert_eq!(put("zz", json!({ "taskId": "XY-9" }), true).0, 404);
+    assert_eq!(put("a%2Fb", json!({ "taskId": "XY-9" }), true).0, 400);
+    assert_eq!(e.json("GET", "/api/tasks/links/s1", None).0, 405);
+    assert_eq!(e.json("POST", "/api/tasks", None).0, 405);
+    // 壊れた task-links.json は書き換えない
+    fs::write(e.notes.join("task-links.json"), "{ 壊れた").unwrap();
+    assert_eq!(put("s1", json!({ "taskId": "XY-9" }), true).0, 409);
+    assert_eq!(fs::read_to_string(e.notes.join("task-links.json")).unwrap(), "{ 壊れた");
+    assert!(!e.get("/api/tasks").1["tasks"]["warnings"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn tasks_api_without_config_and_read_only() {
+    let mut e = Env::new();
+    fs::write(e.out.join("sessions.json"), json!({ "sessions": [{ "id": "s1", "turns": 0 }] }).to_string()).unwrap();
+    e.start(|_| {});
+    // 設定もタスクの記録も無ければ節は無い
+    assert_eq!(e.get("/api/tasks").1, json!({ "readOnly": false, "tasks": null, "unresolved": 0 }));
+    // 送り先から集計した出力先: 送った人がセッションごとに添えた記録から作り、紐づけは書き換えない
+    let meta = e.out.join("snapshot").join("session-state").join("s1");
+    fs::create_dir_all(&meta).unwrap();
+    fs::write(meta.join("atlas-session.json"), json!({ "version": 1, "id": "s1", "task": { "id": "T-1", "name": "送った人のタスク", "status": "Done", "done": true, "doneAt": "2026-11-24T03:00:00Z", "source": "llm", "reason": "r" } }).to_string()).unwrap();
+    sleep(20);
+    fs::write(e.out.join("sessions.json"), json!({ "source": { "root": "x", "since": null, "layout": "merged" }, "sessions": [{ "id": "s1", "turns": 0, "createdAt": "2026-11-23T01:00:00Z" }] }).to_string()).unwrap();
+    let v = e.get("/api/tasks").1;
+    assert_eq!(v["readOnly"], true);
+    assert_eq!(v["tasks"]["origin"], "sender");
+    assert_eq!(v["tasks"]["items"][0]["name"], "送った人のタスク");
+    assert_eq!(v["tasks"]["links"]["s1"]["source"], "llm");
+    assert_eq!(e.json("PUT", "/api/tasks/links/s1", Some(json!({ "taskId": null }))).0, 403);
+    assert!(!e.notes.join("task-links.json").exists());
+}
+
+#[test]
+fn task_link_jobs() {
+    let mut j = JobEnv::new();
+    j.start(|_| {});
+    let (out, notes) = (s(&j.e.out), s(&j.e.notes));
+    let tail = |v: &[&str]| v.iter().map(|x| x.to_string()).chain(["--out".to_string(), out.clone(), "--notes-dir".into(), notes.clone()]).collect::<Vec<_>>();
+    assert_eq!(j.post(json!({ "kind": "task-link", "limit": 1 })).0, 400);
+    assert_eq!(j.post(json!({ "kind": "task-link", "session": "zz" })).0, 404);
+    let r = j.post(json!({ "kind": "task-link" }));
+    assert_eq!((r.0, r.1["kind"].clone(), r.1["target"].clone()), (202, json!("task-link"), json!({})));
+    assert_eq!(j.args(0), tail(&["tasks", "link", "--llm"]));
+    // 判定と同じく、ほかの処理が動いている間は始めない
+    assert_eq!(j.post(json!({ "kind": "task-link" })).0, 409);
+    j.child(0).exit(Some(0));
+    j.wait_not_running();
+    let r = j.post(json!({ "kind": "task-link", "session": "s1" }));
+    assert_eq!((r.0, r.1["target"].clone()), (202, json!({ "session": "s1" })));
+    assert_eq!(j.args(1), tail(&["tasks", "link", "--llm", "--session=s1"]));
+    j.child(1).exit(Some(0));
+    j.wait_not_running();
+    assert!(j.e.logs().iter().any(|l| l.starts_with("[タスクを LLM で紐づける] 開始(セッション s1)")), "{:?}", j.e.logs());
+    // 読むだけの画面では始めない
+    sleep(20);
+    fs::write(j.e.out.join("sessions.json"), json!({ "source": { "root": "x", "since": null, "layout": "flat" }, "sessions": [{ "id": "s1", "turns": 1 }] }).to_string()).unwrap();
+    assert_eq!(j.post(json!({ "kind": "task-link" })).0, 403);
+}
