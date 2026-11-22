@@ -145,6 +145,13 @@ export interface JudgmentSummary {
   rationale: string | null;
   /** この判定を出したバックエンド(external / copilot-cli など) */
   backend: string | null;
+  /** この判定を出したモデル(項目の judge.model。項目に judge が無い古い判定は、ファイル全体の judge.model)。分からなければ無い */
+  model?: string;
+  /**
+   * この判定をした日時(項目の judge.ranAt。ISO)。項目に judge が無い古い判定では無い
+   * (ファイル全体の judge.ranAt は最後に書き込んだ回のもので、そのセッションを判定した日時とは限らない)
+   */
+  ranAt?: string;
   /**
    * llm-wiki のページごとの「役立ったか」と理由(judgments.json から読んだ形。名前で持つ)。
    * 版 1 の判定・項目の無い判定・配列でない項目では無い(そのセッションのページは未判定)。埋め込みの要約では落とし、wikiPages に置き換える

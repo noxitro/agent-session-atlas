@@ -129,7 +129,8 @@ pub fn highlights(sessions: &[&SessionSummary], usage: &UsageRanking, opts: &Hig
                             int_n(t.sessions as f64),
                             main_cause(t)
                         ),
-                        href: filter_href(&FilterState { tool: t.key.clone(), ..opts.filter.clone() }, None),
+                        // 絞り込んだ結果のセッション一覧(一覧のタブ)へ移る(highlights.ts と同じ)
+                        href: filter_href(&FilterState { tool: t.key.clone(), ..opts.filter.clone() }, Some("sessions")),
                         link_label: "このツールを使ったセッションに絞り込む".into(),
                     }
                 })

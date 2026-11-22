@@ -98,6 +98,8 @@ pub fn parse_judgments(raw: &Value) -> Result<JudgmentsIndex> {
         };
         let a = obj(x.get("aiOutcome"));
         let score = |k: &str| num(obj(x.get(k)).get("score"));
+        // 項目ごとの判定の出所(judge run と取り込みが付ける)。無い古い判定は、モデルだけファイル全体のものを使う
+        let item_judge = x.get("judge").and_then(Value::as_object);
         let j = JudgmentSummary {
             task_category: str_of(x.get("taskCategory")),
             hours: Some(hours),
@@ -111,6 +113,11 @@ pub fn parse_judgments(raw: &Value) -> Result<JudgmentsIndex> {
             effects: JudgmentEffects { instructions: score("instructionsEffect"), wiki: score("wikiEffect"), skills_agents: score("skillsAgentsEffect") },
             rationale: str_of(h.get("rationale")),
             backend: str_of(obj(x.get("judge")).get("backend")).or_else(|| str_of(judge.get("backend"))),
+            model: match item_judge {
+                Some(ij) => str_of(ij.get("model")),
+                None => str_of(judge.get("model")),
+            },
+            ran_at: item_judge.and_then(|ij| str_of(ij.get("ranAt"))),
             wiki_page_verdicts: parse_wiki_pages(x.get("wikiPages")),
             wiki_pages: None,
         };
@@ -144,10 +151,31 @@ mod tests {
                 confidence: Some(0.7),
                 task_summary: Some("s".into()),
                 backend: Some("external".into()),
+                // 項目に judge が無いので、モデルはファイル全体のもの(日時は付けない)
+                model: Some("m".into()),
                 ..Default::default()
             }
         );
         assert!(parse_judgments(&json!({ "schemaVersion": 1, "items": [{ "sessionId": "x", "humanEffort": {} }] })).unwrap_err().to_string().contains("hours"));
+    }
+
+    /// 項目ごとの判定の日時とモデル: 項目の judge から読む。judge の無い古い項目は、モデルだけファイル全体のもの(日時は付けない)
+    #[test]
+    fn per_item_model_and_time() {
+        let j = parse_judgments(&json!({
+            "schemaVersion": 1,
+            "judge": { "backend": "copilot-cli", "model": "file-model", "ranAt": "2026-11-15T00:00:00Z" },
+            "items": [
+                { "sessionId": "a", "humanEffort": { "hours": 1 }, "judge": { "backend": "external", "model": "m365", "ranAt": "2026-11-14T01:02:03Z" } },
+                { "sessionId": "b", "humanEffort": { "hours": 1 }, "judge": { "backend": "copilot-cli", "model": null, "ranAt": "2026-11-13T00:00:00Z" } },
+                { "sessionId": "c", "humanEffort": { "hours": 1 } },
+            ],
+        }))
+        .unwrap();
+        let mr = |id: &str| (j.by_session[id].model.clone(), j.by_session[id].ran_at.clone());
+        assert_eq!(mr("a"), (Some("m365".into()), Some("2026-11-14T01:02:03Z".into())));
+        assert_eq!(mr("b"), (None, Some("2026-11-13T00:00:00Z".into())));
+        assert_eq!(mr("c"), (Some("file-model".into()), None));
         assert!(parse_judgments(&json!({ "schemaVersion": 3, "items": [] })).unwrap_err().to_string().contains("schemaVersion"));
         assert!(parse_judgments(&json!({ "schemaVersion": 1, "items": [{}] })).unwrap_err().to_string().contains("sessionId"));
         assert_eq!(parse_judgments(&json!({ "items": [] })).unwrap_err().to_string(), "judgments.json の schemaVersion が 1・2 のどちらでもありません(undefined)");

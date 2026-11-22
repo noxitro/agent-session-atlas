@@ -123,6 +123,13 @@ pub struct JudgmentSummary {
     pub rationale: Option<String>,
     /// この判定を出したバックエンド
     pub backend: Option<String>,
+    /// この判定を出したモデル(項目の judge.model。項目に judge が無い古い判定は、ファイル全体の judge.model)。分からなければ省く
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// この判定をした日時(項目の judge.ranAt。ISO)。項目に judge が無い古い判定では省く
+    /// (ファイル全体の judge.ranAt は最後に書き込んだ回のもので、そのセッションを判定した日時とは限らない)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ran_at: Option<String>,
     /// llm-wiki のページごとの「役立ったか」と理由(judgments.json から読んだ形。名前で持つ)。版 1 の判定・項目の無い判定・配列でない項目では None。
     /// 詳細ページに出す。埋め込みの要約では None にして、番号の wiki_pages に置き換える
     #[serde(default, skip_serializing_if = "Option::is_none")]

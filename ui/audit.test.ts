@@ -93,8 +93,25 @@ describe('網羅チェック', () => {
           '.ptr{cursor:pointer}.hov:hover{background:#eee}.ul{text-decoration:underline}',
       ),
     );
+    // atlas.html の本文のタブ: 隠れたタブ(hidden)の中だけにある不備も、そのタブを開いた状態で見つける(レイアウトの検査も)
+    await writeFile(
+      join(dir, 'atlas.html'),
+      page(
+        '<nav data-testid="report-tabs" aria-label="タブ"><a href="#" aria-current="page">概況</a> <a href="#tab=breakdown">内訳</a></nav>' +
+          '<div data-tab-panel="overview"><p>表の中身</p></div>' +
+          '<div data-tab-panel="breakdown" hidden><p class="ptr3">隠れたタブの押せそうな字</p><div class="wide3">隠れたタブではみ出す</div></div>' +
+          '<script>for (const a of document.querySelectorAll("[data-testid=report-tabs] a")) a.addEventListener("click", (e) => { e.preventDefault();' +
+          ' const t = a.getAttribute("href") === "#" ? "overview" : "breakdown";' +
+          ' for (const x of document.querySelectorAll("[data-testid=report-tabs] a")) x.toggleAttribute("aria-current", x === a), x === a && x.setAttribute("aria-current", "page");' +
+          ' for (const p of document.querySelectorAll("[data-tab-panel]")) p.hidden = p.dataset.tabPanel !== t; });</script>',
+        'a{display:inline-block;padding:8px}.ptr3{cursor:pointer}.wide3{width:2000px}',
+      ),
+    );
     const r = await audit(dir, { layoutSessions: 0 });
     const kinds = (p: string): string[] => [...new Set(r.findings.filter((f) => f.page === p).map((f) => f.kind))].sort();
+    const tabbed = r.findings.filter((f) => f.page === 'atlas.html').map((f) => `${f.kind} @${f.where ?? ''}`);
+    expect(tabbed).toContain('指のカーソルが出るのに操作できない @タブ「内訳」');
+    expect(tabbed.some((x) => /^横にはみ出している @375px ライト タブ「内訳」$/.test(x))).toBe(true);
     expect(kinds('bad.html')).toEqual(
       [
         'id の重複',

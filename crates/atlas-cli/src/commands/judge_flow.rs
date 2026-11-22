@@ -83,7 +83,9 @@ pub fn main(argv: &[String]) -> u8 {
         // bundle → judge run → export の間ずっと印を持つ(切れ目に画面の判定や atlas.bat の all が入らないように。中の run_command は印を取らない)
         let _lock = crate::jobs::acquire_out_lock(&p.out, "judge", "cli")?;
         run_command(&CliOptions { command: "bundle".into(), ..common.clone() }, &p, log)?;
-        let failed = match run_command(&judge_opts, &p, log) {
+        // 絞り込みは上の bundle で使った。judge run には渡さない(judge を直に実行したときだけ止めるため)
+        let judge_run = CliOptions { judge: judge_opts.judge.clone().map(|j| crate::args::JudgeCliOptions { ignored_filters: Vec::new(), ..j }), ..judge_opts.clone() };
+        let failed = match run_command(&judge_run, &p, log) {
             Ok(r) => r.judge.map_or(0, |j| j.failed.len()),
             Err(e) => {
                 eprintln!("atlas:judge: 判定を実行できませんでした: {e}");

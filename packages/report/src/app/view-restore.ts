@@ -38,6 +38,11 @@ export function restoredView(): ViewState | null {
   return used ? null : initial;
 }
 
+/** 今の履歴の項目に書いてある見た目(同じページの中の戻る / 進むで移った先の位置を読む。書いていなければ null) */
+export function currentView(): ViewState | null {
+  return readState();
+}
+
 /** 戻す処理を済ませた(後から描き直しても、もう一度は戻さない) */
 export function restoreDone(): void {
   used = true;

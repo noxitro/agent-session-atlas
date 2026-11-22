@@ -75,7 +75,13 @@ pub const UPLOAD_MEMO_IMAGES_LIMIT: u64 = 100 * 1024 * 1024;
 /// Phase 11: セッションフォルダの追加のファイル(あれば写す)。SESSION_STORE_JSON・UPLOAD_SESSION_META・UPLOAD_VCS_META・UPLOAD_MEMO_FILE はアップロード先から集計し直すときだけある
 pub const SNAPSHOT_SESSION_EXTRA_FILES: &[&str] = &["plan.md", "vscode.metadata.json", SESSION_STORE_JSON, UPLOAD_SESSION_META, UPLOAD_VCS_META, UPLOAD_MEMO_FILE];
 /// Phase 11: セッションフォルダの追加のサブフォルダ(あれば再帰的に写す)。UPLOAD_MEMO_IMAGES はアップロード先から集計し直すときだけある
-pub const SNAPSHOT_SESSION_EXTRA_DIRS: &[&str] = &["checkpoints", "files", "rewind-file-snapshots", "policies", "research", "sandbox-denials", UPLOAD_MEMO_IMAGES];
+pub const SNAPSHOT_SESSION_EXTRA_DIRS: &[&str] = &["checkpoints", "policies", "research", "sandbox-denials", UPLOAD_MEMO_IMAGES];
+/// 既定では写さないサブフォルダ(--snapshot-all で写す)。編集する前のファイルの控えなどで、集計では中身を使わない
+/// (--full の全文記録にファイルの名前と大きさを並べるだけ)のに、セッションが増えると大きくなり、ファイルの数も多い。
+/// 共有フォルダから写すときは、ファイル 1 つごとに大きさと更新時刻を問い合わせるので、写さなくても大きさは測らない。
+/// 前は既定で写していたので、前の複製は消す(元にあるので失うものは無い。--snapshot-all で写したものも、通常の snapshot で消える)
+pub const SNAPSHOT_SESSION_UNUSED_DIRS: &[&str] = &["files", "rewind-file-snapshots"];
+const UNUSED_DIR_REASON: &str = "集計では使わない(--snapshot-all で写す。大きさは測っていない)";
 /// Phase 11: 既定では写さず --snapshot-all で写すサブフォルダ(大きい。rewind-snapshots は 1 セッションで数十 MB)
 pub const SNAPSHOT_SESSION_HEAVY_DIRS: &[&str] = &["rewind-snapshots"];
 /// Phase 11: ~/.copilot 直下で写すフォルダ
@@ -396,7 +402,7 @@ static KNOWN_SESSION_ENTRIES: LazyLock<HashSet<String>> = LazyLock::new(|| {
     s.insert(SNAPSHOT_SESSION_DB.into());
     s.insert(format!("{SNAPSHOT_SESSION_DB}-wal"));
     s.insert(format!("{SNAPSHOT_SESSION_DB}-shm"));
-    s.extend(SNAPSHOT_SESSION_EXTRA_FILES.iter().chain(SNAPSHOT_SESSION_EXTRA_DIRS).chain(SNAPSHOT_SESSION_HEAVY_DIRS).map(|x| x.to_string()));
+    s.extend(SNAPSHOT_SESSION_EXTRA_FILES.iter().chain(SNAPSHOT_SESSION_EXTRA_DIRS).chain(SNAPSHOT_SESSION_HEAVY_DIRS).chain(SNAPSHOT_SESSION_UNUSED_DIRS).map(|x| x.to_string()));
     s
 });
 static LOCK_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^inuse\.[0-9]+\.(lock|hold)$").unwrap());
@@ -991,7 +997,7 @@ fn snapshot_session(ctx: &Ctx<'_>, t: &SessionTask, acc: &mut SessionAcc, worker
         // 元から消えたものは複製側も消す
         jsfs::rm_force(&db_dest)?;
     }
-    // Phase 11: plan.md・checkpoints/・files/ などを写す。大きいもの・一覧に無いものは --snapshot-all のときだけ
+    // Phase 11: plan.md・checkpoints/ などを写す。大きいもの・一覧に無いもの・集計で使わないもの(files/ など)は --snapshot-all のときだけ
     copy_session_extras(&t.dir_src, &dir_dest, ctx.src, ctx.all, ctx.prune, acc, &t.ents)?;
     Ok(true)
 }
@@ -1044,11 +1050,14 @@ fn copy_session_extras(dir_src: &Path, dir_dest: &Path, root: &Path, all: bool, 
                 }
             }
             let unknown = !KNOWN_SESSION_ENTRIES.contains(name);
-            if known || ((heavy || unknown) && all) {
+            let unused = SNAPSHOT_SESSION_UNUSED_DIRS.contains(&name);
+            if known || ((heavy || unknown || unused) && all) {
                 present.insert(name.to_string());
                 let (files, bytes) = copy_tree(&p, &dir_dest.join(name), &mut acc.skipped, &rel_path(&p))?;
                 acc.session_files += files;
                 acc.session_bytes += bytes;
+            } else if unused {
+                acc.skipped.push(SkippedEntry { path: rel_path(&p), bytes: 0, reason: UNUSED_DIR_REASON.to_string() });
             } else if heavy || unknown {
                 acc.skipped.push(SkippedEntry { path: rel_path(&p), bytes: dir_bytes(&p), reason: if heavy { "大きい(--snapshot-all で写す)" } else { "一覧に無い名前(--snapshot-all で写す)" }.to_string() });
             }
@@ -1066,14 +1075,15 @@ fn copy_session_extras(dir_src: &Path, dir_dest: &Path, root: &Path, all: bool, 
     if jsfs::exists(dir_dest) {
         for ent in jsfs::read_dir(dir_dest)? {
             let name = ent.name.as_str();
-            if KNOWN_SESSION_ENTRIES.contains(name) && !SNAPSHOT_SESSION_EXTRA_DIRS.contains(&name) && !SNAPSHOT_SESSION_HEAVY_DIRS.contains(&name) {
+            let unused = SNAPSHOT_SESSION_UNUSED_DIRS.contains(&name);
+            if KNOWN_SESSION_ENTRIES.contains(name) && !SNAPSHOT_SESSION_EXTRA_DIRS.contains(&name) && !SNAPSHOT_SESSION_HEAVY_DIRS.contains(&name) && !unused {
                 continue;
             }
             if name == SESSION_DB_FINGERPRINT || present.contains(name) {
                 continue;
             }
             let p = dir_dest.join(name);
-            if ents.get(name).is_none() || prune {
+            if ents.get(name).is_none() || prune || unused {
                 jsfs::rm_rf(&p)?;
             } else {
                 acc.leftover.push(Leftover { path: rel_path(&dir_src.join(name)), mtime: jsfs::mtime_iso(&fs::metadata(&p)?) });

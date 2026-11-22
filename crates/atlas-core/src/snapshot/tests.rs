@@ -183,9 +183,9 @@ fn parallel_copy_keeps_counts_and_order_and_leaves_no_temp() {
     let ids: Vec<String> = (0..SNAPSHOT_CONCURRENCY * 3 + 5).map(|i| format!("s{i:03}")).collect();
     for (i, id) in ids.iter().enumerate() {
         let dir = src.join("session-state").join(id);
-        fs::create_dir_all(dir.join("files")).unwrap();
+        fs::create_dir_all(dir.join("checkpoints")).unwrap();
         fs::write(dir.join("events.jsonl"), format!("{{\"type\":\"x\",\"i\":{i}}}\n")).unwrap();
-        fs::write(dir.join("files").join("a.txt"), id).unwrap();
+        fs::write(dir.join("checkpoints").join("a.md"), id).unwrap();
         if i % 9 == 0 {
             let db = open_writable(&dir.join("session.db")).unwrap();
             db.execute_batch(&format!("CREATE TABLE todos(id TEXT); INSERT INTO todos VALUES ('{id}');")).unwrap();
@@ -207,6 +207,44 @@ fn parallel_copy_keeps_counts_and_order_and_leaves_no_temp() {
     drop(r);
     let again = snap(&src, &dest).unwrap();
     assert_eq!((again.sessions.copied_files, again.sessions.reused_files, again.sessions.db_copied, again.sessions.db_reused), (0, ids.len() as u64, Some(0), Some(with_db)));
+}
+
+/// files/ と rewind-file-snapshots/ は集計で使わないので、既定では写さず(大きさも測らない)、前の複製は消す。--snapshot-all で写す
+#[test]
+fn unused_dirs_are_copied_only_with_snapshot_all() {
+    let base = work();
+    let src = base.path().join("src");
+    let dest = base.path().join("dest");
+    let dir = src.join("session-state").join("s1");
+    for sub in SNAPSHOT_SESSION_UNUSED_DIRS {
+        fs::create_dir_all(dir.join(sub).join("deep")).unwrap();
+        fs::write(dir.join(sub).join("deep").join("a.txt"), "控え").unwrap();
+    }
+    fs::create_dir_all(dir.join("checkpoints")).unwrap();
+    fs::write(dir.join("checkpoints").join("index.md"), "# c").unwrap();
+    fs::write(dir.join("events.jsonl"), "{\"type\":\"x\"}\n").unwrap();
+    let sdir = dest.join("session-state").join("s1");
+    // 前の版が既定で写した複製
+    for sub in SNAPSHOT_SESSION_UNUSED_DIRS {
+        fs::create_dir_all(sdir.join(sub)).unwrap();
+        fs::write(sdir.join(sub).join("old.txt"), "前の複製").unwrap();
+    }
+    let m = snap(&src, &dest).unwrap();
+    assert_eq!(names(&sdir), vec!["checkpoints", "events.jsonl"]);
+    let skipped: Vec<(String, u64, String)> = m.extras.as_ref().unwrap().skipped.iter().map(|x| (x.path.clone(), x.bytes, x.reason.clone())).collect();
+    assert_eq!(
+        skipped,
+        SNAPSHOT_SESSION_UNUSED_DIRS.iter().map(|d| (format!("session-state/s1/{d}"), 0, UNUSED_DIR_REASON.to_string())).collect::<Vec<_>>()
+    );
+    assert!(m.extras.as_ref().unwrap().leftover.is_empty());
+    let all = snapshot(&src, &dest, &SnapshotOptions { all: true, ..Default::default() }).unwrap();
+    for sub in SNAPSHOT_SESSION_UNUSED_DIRS {
+        assert_eq!(fs::read_to_string(sdir.join(sub).join("deep").join("a.txt")).unwrap(), "控え");
+    }
+    assert!(all.extras.as_ref().unwrap().skipped.is_empty());
+    // 通常の snapshot に戻すと消える(元にあるので失うものは無い)
+    snap(&src, &dest).unwrap();
+    assert_eq!(names(&sdir), vec!["checkpoints", "events.jsonl"]);
 }
 
 #[test]

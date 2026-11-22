@@ -58,18 +58,45 @@ struct Shared {
     done: usize,
 }
 
+/// 判定するセッションの ID(--only / --session)を、添付(バンドル)の ID に読み替える。完全に同じ ID を優先し、無ければ先頭一致で
+/// 1 つに決まるもの。複数に当たる・どれにも当たらないものがあれば止める
+pub fn resolve_only<'a>(only: &[String], ids: &[&'a str]) -> Result<HashSet<&'a str>> {
+    let mut want = HashSet::new();
+    let mut unknown: Vec<&str> = Vec::new();
+    let mut ambiguous: Vec<String> = Vec::new();
+    for q in only {
+        if let Some(id) = ids.iter().find(|id| **id == q.as_str()) {
+            want.insert(*id);
+            continue;
+        }
+        let hits: Vec<&&str> = ids.iter().filter(|id| id.starts_with(q.as_str())).collect();
+        match hits.as_slice() {
+            [one] => {
+                want.insert(**one);
+            }
+            [] => unknown.push(q),
+            many => ambiguous.push(format!("{q}({} 件)", many.len())),
+        }
+    }
+    if !ambiguous.is_empty() {
+        bail!("セッション ID の先頭が、添付(バンドル)の複数のセッションに当たります: {}。もっと長く指定してください", ambiguous.join(", "));
+    }
+    if !unknown.is_empty() {
+        bail!(
+            "バンドルに無いセッション ID です: {}。判定済みのセッションは、未判定だけで作った添付(bundle --unjudged・画面の「添付ファイルを作る」)には入りません。判定し直すときは bin\\atlas.exe judge-flow --session <ID の先頭> --force を使ってください",
+            unknown.join(", ")
+        );
+    }
+    Ok(want)
+}
+
 pub fn run_judge(o: &RunOptions<'_>) -> Result<RunSummary> {
     let log = o.log;
     let now = || o.now.map_or_else(atlas_core::jsdate::now_iso, |f| f());
     let manifest = read_bundle_manifest(&o.bundle_dir)?;
     let mut entries: Vec<&crate::bundle::BundleEntry> = manifest.sessions.iter().collect();
     if let Some(only) = o.only.as_ref().filter(|x| !x.is_empty()) {
-        let ids: HashSet<&str> = manifest.sessions.iter().map(|s| s.id.as_str()).collect();
-        let unknown: Vec<&str> = only.iter().map(String::as_str).filter(|id| !ids.contains(id)).collect();
-        if !unknown.is_empty() {
-            bail!("バンドルに無いセッション ID です: {}", unknown.join(", "));
-        }
-        let want: HashSet<&str> = only.iter().map(String::as_str).collect();
+        let want = resolve_only(only, &manifest.sessions.iter().map(|s| s.id.as_str()).collect::<Vec<_>>())?;
         entries.retain(|e| want.contains(e.id.as_str()));
     }
     let backend = o.backend;
@@ -174,4 +201,24 @@ pub fn run_judge(o: &RunOptions<'_>) -> Result<RunSummary> {
         r?;
     }
     Ok(shared.into_inner().unwrap().summary)
+}
+
+#[cfg(test)]
+mod resolve_only_tests {
+    use super::resolve_only;
+
+    /// 完全に同じ ID を優先し、無ければ先頭一致で 1 つに決まるもの。複数に当たる・どれにも当たらないものは止め、直し方を添える
+    #[test]
+    fn exact_then_unique_prefix() {
+        let ids = ["aaaa-1111", "aaaa-2222", "bbbb-3333", "cc"];
+        let q = |xs: &[&str]| xs.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        let mut got: Vec<&str> = resolve_only(&q(&["bbbb", "aaaa-1"]), &ids).unwrap().into_iter().collect();
+        got.sort();
+        assert_eq!(got, ["aaaa-1111", "bbbb-3333"]);
+        assert_eq!(resolve_only(&q(&["cc"]), &["cc", "ccdd"]).unwrap().into_iter().collect::<Vec<_>>(), ["cc"]);
+        let e = resolve_only(&q(&["aaaa"]), &ids).unwrap_err().to_string();
+        assert!(e.contains("aaaa(2 件)") && e.contains("もっと長く"), "{e}");
+        let e = resolve_only(&q(&["zzzz"]), &ids).unwrap_err().to_string();
+        assert!(e.starts_with("バンドルに無いセッション ID です: zzzz。") && e.contains("judge-flow --session"), "{e}");
+    }
 }

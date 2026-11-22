@@ -122,8 +122,9 @@ jobs:
 
   # 依存の既知の脆弱性の検査。ビルドするコミット(作り直しならタグのコミット)を見る。落ちたら windows のジョブは動かない。
   # - Rust: cargo deny --locked check(ci.yml と同じ。設定は deny.toml)
-  # - npm: devDependencies も含めて high 以上で落とす(deny-schedule.yml と同じ。画面のビルドに使う道具の出力は atlas.exe に埋め込まれるため)。
-  #   package-lock.json だけを見る(npm ci はしない。スクリプトを動かさない)
+  # - npm: scripts/npm-audit.mjs(npm audit を devDependencies も含めて回し、high 以上で落とす。ci.yml・deny-schedule.yml と同じ。
+  #   画面のビルドに使う道具の出力は atlas.exe に埋め込まれるため)。npm-audit-ignore.json に理由と外す時を書いた advisory だけは止めない。
+  #   package-lock.json だけを見る(npm ci はしない。スクリプトを動かさない。npm-audit.mjs は node: の標準モジュールだけで動く)
   # 直し方は docs/development.md の「依存の検査」。cargo-deny の版は ci.yml・deny-schedule.yml と同じものに固定する
   audit:
     name: 依存の脆弱性の検査
@@ -157,7 +158,13 @@ jobs:
         with:
           node-version: 24
       - name: npm の依存(devDependencies も含む)
-        run: npm audit --audit-level=high
+        # npm-audit.mjs より前のタグを作り直すときは、そのコミットに無いので npm audit をそのまま回す
+        run: |
+          if [ -f scripts/npm-audit.mjs ]; then
+            node scripts/npm-audit.mjs
+          else
+            npm audit --audit-level=high
+          fi
 
   windows:
     name: atlas.exe(Windows)
@@ -188,6 +195,8 @@ jobs:
           rustup default stable
           rustc --version
       - run: npm ci
+      # atlas.exe に埋め込む画面のビルドの道具が、レジストリの署名と合うかを見る(合わなければリリースを作らない)
+      - run: npm audit signatures
       - run: npm run build:report
       - name: atlas.exe をビルドする
         shell: bash

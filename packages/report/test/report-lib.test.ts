@@ -4,7 +4,7 @@
 import { describe, expect, it } from 'vitest';
 import { effortSkew, isLowConfidence, monthRange } from '../src/lib/aggregate.ts';
 import { embedData, extractEmbedded, serializeForScript } from '../src/lib/embed.ts';
-import { decodeFilter, emptyFilter, encodeFilter, groupIds, isEmptyFilter } from '../src/lib/filter.ts';
+import { decodeFilter, decodeTab, DEFAULT_TAB, emptyFilter, encodeFilter, encodeState, filterHref, groupIds, isEmptyFilter, isStateHash, isTabId, TABS } from '../src/lib/filter.ts';
 import { excerptAround, looksLikeId, searchIndex, searchSessions, searchTerms } from '../src/lib/session-search.ts';
 import { addIds, memberGroups, parseGroups, removeIds, resolveIdPrefixes, serializeGroups } from '../src/lib/groups.ts';
 import { sessionLabel } from '../src/lib/highlights.ts';
@@ -50,6 +50,39 @@ describe('filter', () => {
     expect(decodeFilter(`#${encodeFilter(f)}`)).toEqual(f);
     expect(isEmptyFilter(decodeFilter('#coverage=bogus&unknown=1&project=%E0%A4'))).toBe(true);
     expect(encodeFilter(emptyFilter())).toBe('');
+  });
+
+  it('タブの指定(tab=…)は絞り込みとは別の部分で、概況(既定)は書かない', () => {
+    const f = { ...emptyFilter(), project: 'a/b', tool: 'grep' };
+    // 絞り込みの後ろに付け、表示の指定(view)はその後ろ
+    expect(encodeState(f, 'breakdown')).toBe('project=a%2Fb&tool=grep&tab=breakdown');
+    expect(encodeState(f, 'overview')).toBe('project=a%2Fb&tool=grep');
+    expect(encodeState(f)).toBe(encodeFilter(f));
+    expect(encodeState(emptyFilter(), 'list')).toBe('tab=list');
+    expect(encodeState(emptyFilter(), DEFAULT_TAB)).toBe('');
+    expect(filterHref(f, 'sessions', 'list')).toBe('#project=a%2Fb&tool=grep&tab=list&view=sessions');
+    expect(filterHref(emptyFilter(), null, 'overview')).toBe('#');
+    // 第 3 引数を渡さなければ、これまでと同じ(Rust の filter_href と同じ形)
+    expect(filterHref(f, 'unused-skills')).toBe('#project=a%2Fb&tool=grep&view=unused-skills');
+    // 読み戻し: 知らない値・無いときは null(呼び元が概況にする)
+    expect(decodeTab('#project=x&tab=breakdown')).toBe('breakdown');
+    expect(decodeTab('tab=list&view=sessions')).toBe('list');
+    expect(decodeTab('#tab=bogus')).toBeNull();
+    expect(decodeTab('#tab=%E0%A4')).toBeNull();
+    expect(decodeTab('#project=x')).toBeNull();
+    expect(decodeTab('#phases')).toBeNull();
+    expect(TABS.every((t) => decodeTab(`#${encodeState(emptyFilter(), t)}`) === (t === DEFAULT_TAB ? null : t))).toBe(true);
+    // 絞り込みには入らない(条件の数・「解除」の対象にならない)
+    const withTab = decodeFilter('#project=a%2Fb&tab=breakdown&view=sessions');
+    expect(withTab).toEqual({ ...emptyFilter(), project: 'a/b' });
+    expect(Object.keys(withTab)).not.toContain('tab');
+    expect(isEmptyFilter(decodeFilter('#tab=list'))).toBe(true);
+    // タブだけのハッシュも状態のハッシュ(ページ内リンクの #phases とは区別する)
+    expect(isStateHash('#tab=list')).toBe(true);
+    expect(isStateHash('#phases')).toBe(false);
+    expect(isTabId('breakdown')).toBe(true);
+    expect(isTabId('tab')).toBe(false);
+    expect(isTabId(undefined)).toBe(false);
   });
 });
 
@@ -221,6 +254,21 @@ describe('embed', () => {
 });
 
 describe('judgments', () => {
+  it('項目ごとの判定の日時とモデルは項目の judge から読む。judge の無い古い項目は、モデルだけファイル全体のもの(crates/atlas-report/src/judgments.rs と同じ)', () => {
+    const j = parseJudgments({
+      schemaVersion: 1,
+      judge: { backend: 'copilot-cli', model: 'file-model', ranAt: '2026-11-15T00:00:00Z' },
+      items: [
+        { sessionId: 'a', humanEffort: { hours: 1 }, judge: { backend: 'external', model: 'm365', ranAt: '2026-11-14T01:02:03Z' } },
+        { sessionId: 'b', humanEffort: { hours: 1 }, judge: { backend: 'copilot-cli', model: null, ranAt: '2026-11-13T00:00:00Z' } },
+        { sessionId: 'c', humanEffort: { hours: 1 } },
+      ],
+    });
+    const mr = (id: string) => [j.bySession.get(id)?.model ?? null, j.bySession.get(id)?.ranAt ?? null];
+    expect(mr('a')).toEqual(['m365', '2026-11-14T01:02:03Z']);
+    expect(mr('b')).toEqual([null, '2026-11-13T00:00:00Z']);
+    expect(mr('c')).toEqual(['file-model', null]);
+  });
   it('必要な項目だけ拾い、形が違えばエラーにする', () => {
     const j = parseJudgments({
       schemaVersion: 1,
@@ -241,6 +289,8 @@ describe('judgments', () => {
       effects: { instructions: null, wiki: null, skillsAgents: null },
       rationale: null,
       backend: 'external',
+      // 項目に judge が無いので、モデルはファイル全体のもの(日時は付けない)
+      model: 'm',
     });
     expect(() => parseJudgments({ schemaVersion: 1, items: [{ sessionId: 'x', humanEffort: {} }] })).toThrow(/hours/);
     expect(() => parseJudgments({ schemaVersion: 3, items: [] })).toThrow(/schemaVersion/);
