@@ -80,6 +80,8 @@ describe('lib/retention', () => {
     // 照合不可のまとまりだけのリポジトリ(svn)と、どのまとまりも指していないリポジトリは数えない
     expect(retentionItem({ ...mixedLike, hunks: [hunk('p4'), hunk('svn', 'unattributable')] })).toMatchObject({ vcsKinds: ['p4'], baseline: 'observed' });
     expect(retentionItem({ ...mixedLike, hunks: [hunk('p4')] })).toMatchObject({ vcsKinds: ['p4'], baseline: 'observed' });
+    // 種類と根が同じリポジトリが重なっていても、まとまりが指すのは最初の 1 つだけ(core の repo_of_hunk と同じ)
+    expect(baselineSourceOf({ ...mixedLike, repos: [repo('p4', 'observed'), repo('p4', 'estimated')], hunks: [hunk('p4')] })).toBe('observed');
     // git で照合でき、p4 のまとまりはすべて読めなかった: VCS は git だけ、基準は記録(種類はセッションの vcs と同じなので持たない)
     const gitOnly = retentionItem({ ...base, vcs: 'git', baseline: { source: 'observed' }, repos: [repo('git', 'observed'), repo('p4', 'estimated')], hunks: [hunk('git'), hunk('p4', 'unattributable')] });
     expect(gitOnly.baseline).toBe('observed');

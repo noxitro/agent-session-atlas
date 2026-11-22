@@ -96,7 +96,10 @@ export const VCS_KINDS = ['git', 'svn', 'p4'] as const satisfies readonly VcsKin
  * 照合不可のまとまりだけのリポジトリ・どのまとまりも指していないリポジトリは入れない(core の measured_repos と同じ)
  */
 export function measuredRepos(r: Pick<RetentionLike, 'repos' | 'hunks'>): NonNullable<RetentionLike['repos']>[number][] {
-  return (r.repos ?? []).filter((x) => (r.hunks ?? []).some((h) => h.status !== 'unattributable' && h.vcs === x.vcs && h.root === x.root));
+  // まとまりは、種類と根が同じ最初のリポジトリだけを指す(core の repo_of_hunk と同じ。重複があっても 2 つ目は数えない)
+  const repos = r.repos ?? [];
+  const pointed = new Set((r.hunks ?? []).filter((h) => h.status !== 'unattributable' && h.vcs != null && h.root != null).map((h) => repos.findIndex((x) => x.vcs === h.vcs && x.root === h.root)));
+  return repos.filter((_, i) => pointed.has(i));
 }
 
 /**
