@@ -5,6 +5,8 @@ members = ["crates/atlas-core", "crates/atlas-report", "crates/atlas-judge", "cr
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+# タスクの記録の書き込みで OS のファイルのロック(std::fs::File::lock)を使う
+rust-version = "1.89"
 license = "MIT"
 publish = false
 

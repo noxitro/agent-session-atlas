@@ -49,18 +49,30 @@
   const linkOff = $derived(linkWhy !== '');
   /** 確認の中で、使うモデルと費用が分かったか(分かるまで、と分からなかったときは始められない。BYOK なら費用の出所が変わるため) */
   const linkReady = $derived(!!linkPreview && !linkPreviewError);
+  /** 確認の答えを待つ長さ(サーバが答えないときに、待ち続けずに理由を出す) */
+  const LINK_PREVIEW_TIMEOUT_MS = 20_000;
+  /** 開き直したときに、前に開いたときの遅れた答えで書き換えないための番号(判定の確認と同じ) */
+  let linkSeq = 0;
   async function openLink(): Promise<void> {
     if (linkOff || !taskLink) return;
+    const n = ++linkSeq;
     linkPreview = null;
     linkPreviewError = '';
     linkError = '';
     linkDlg?.showModal();
     await tick();
     linkDlg?.querySelector<HTMLElement>('[data-autofocus]')?.focus({ preventScroll: true });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`サーバが ${LINK_PREVIEW_TIMEOUT_MS / 1000} 秒以内に答えませんでした。閉じてから開き直してください`)), LINK_PREVIEW_TIMEOUT_MS);
+    });
     try {
-      linkPreview = await jobsApi.judgePreview(jobs.token);
+      const p = await Promise.race([jobsApi.judgePreview(jobs.token), timeout]);
+      if (n === linkSeq) linkPreview = p;
     } catch (e) {
-      linkPreviewError = (e as Error).message;
+      if (n === linkSeq) linkPreviewError = (e as Error).message;
+    } finally {
+      clearTimeout(timer);
     }
   }
   async function runLink(e: SubmitEvent): Promise<void> {

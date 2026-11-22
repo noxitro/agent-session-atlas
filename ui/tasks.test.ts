@@ -269,8 +269,51 @@ describe('管理ツールのタスクの画面', () => {
     await page.getByTestId('task-link-cancel').click();
     await dialog.waitFor({ state: 'hidden' });
     await page.unroute('**/api/jobs/judge-preview*');
+    // 開き直したら、前に開いたときの遅れた答え(失敗)で書き換えない
+    let releaseOld: () => void = () => {};
+    const heldOld = new Promise<void>((r) => (releaseOld = r));
+    let calls = 0;
+    await page.route('**/api/jobs/judge-preview*', async (route) => {
+      calls++;
+      if (calls === 1) {
+        await heldOld;
+        await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: '遅れた失敗' }) });
+      } else await route.continue();
+    });
+    await btn.click();
+    await dialog.waitFor({ state: 'visible' });
+    await page.getByTestId('task-link-cancel').click();
+    await dialog.waitFor({ state: 'hidden' });
+    await btn.click();
+    await dialog.waitFor({ state: 'visible' });
+    await expect.poll(() => page.getByTestId('task-link-cost').innerText()).toContain('AI クレジットを消費します。');
+    releaseOld();
+    await expect.poll(() => calls).toBe(2);
+    await page.waitForTimeout(200);
+    expect(await page.getByTestId('task-link-model').innerText()).not.toContain('遅れた失敗');
+    expect(await page.getByTestId('task-link-run').isDisabled()).toBe(false);
+    await page.getByTestId('task-link-cancel').click();
+    await dialog.waitFor({ state: 'hidden' });
+    await page.unroute('**/api/jobs/judge-preview*');
     // わざと失敗させた応答のコンソールのエラーだけは数えない
     for (let i = problems.length - 1; i >= 0; i--) if (/status of 503/.test(problems[i])) problems.splice(i, 1);
+    // サーバが答えないときは、待ち続けずに 20 秒で理由を出す(時計を進めて確かめる)
+    {
+      const p2 = await context.newPage();
+      await p2.clock.install();
+      await p2.route('**/api/jobs/judge-preview*', () => new Promise<void>(() => {}));
+      await p2.goto(server.url);
+      const b2 = p2.getByTestId('job-task-link');
+      await expect.poll(() => b2.getAttribute('aria-disabled')).toBeNull();
+      await expect.poll(() => b2.innerText()).toMatch(/\(\d+\)$/);
+      await b2.click();
+      await p2.getByTestId('task-link-dialog').waitFor({ state: 'visible' });
+      expect(await p2.getByTestId('task-link-model').innerText()).toBe('使うモデルを確かめています…');
+      await p2.clock.fastForward(21_000);
+      await expect.poll(() => p2.getByTestId('task-link-model').innerText()).toContain('20 秒以内に答えませんでした');
+      expect(await p2.getByTestId('task-link-run').isDisabled()).toBe(true);
+      await p2.close();
+    }
     await btn.click();
     await dialog.waitFor({ state: 'visible' });
     expect(await page.getByTestId('task-link-count').innerText()).toBe(`紐づけの無いセッション ${n} 件を 1 件ずつ聞きます。`);

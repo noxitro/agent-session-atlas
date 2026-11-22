@@ -12,7 +12,7 @@ use anyhow::{bail, Result};
 use atlas_core::types::{SessionRecord, SessionsFile};
 use atlas_judge::task_link::{link_with_llm, LinkQuery};
 use atlas_report::judgments::JudgmentsIndex;
-use atlas_report::tasks::links::{apply_machine, llm_candidates, load_links, update_links, LinkSource, LinksFile, MachineMatch, MachineSummary, Matcher, SessionText, TaskLink};
+use atlas_report::tasks::links::{apply_machine, has_text, llm_candidates, llm_eligible, load_links, update_links, LinkSource, LinksFile, MachineMatch, MachineSummary, Matcher, SessionText, TaskLink};
 use atlas_report::tasks::metrics::SessionFacts;
 use atlas_report::tasks::sender::{read_sender_task, SenderTask};
 use atlas_report::tasks::state::{load_tasks, sync_tasks, TasksFile};
@@ -340,9 +340,10 @@ fn run_link(o: &CliOptions, p: &Paths, t: &TasksCliOptions, log: Log<'_>) -> Res
             v
         }
         None => {
-            // 開いただけのセッション(依頼 0・ツール 0・応答 0)と、題名も依頼の文も無いセッションは聞かない
+            // 紐づけの無いセッションのうち、開いただけのもの(依頼 0・ツール 0・応答 0)・題名も依頼の文も無いもの・候補のタスクが無いものは聞かない
+            // (画面の確認に出す件数と同じ決め方。links::llm_eligible)
             let empty: HashSet<&str> = file.sessions.iter().filter(|s| atlas_core::metrics::is_empty_session(s)).map(|s| s.id.as_str()).collect();
-            texts.iter().filter(|s| !links.links.contains_key(&s.id) && !empty.contains(s.id.as_str()) && !(s.title.trim().is_empty() && s.prompts.trim().is_empty())).collect()
+            texts.iter().filter(|s| llm_eligible(&links, &state, &s.id, empty.contains(s.id.as_str()), has_text(&s.title, &s.prompts), s.start_ms)).collect()
         }
     };
     if targets.is_empty() {

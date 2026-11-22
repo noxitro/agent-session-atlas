@@ -159,13 +159,16 @@ fn observed_ms(t: &SenderTask) -> i64 {
 }
 
 /// 送った人たちの記録から、タスクの一覧と紐づけを作る。同じ ID のタスクは 1 つにまとめる。
-/// 記録が食い違うときは、いちばん新しく見た記録(最後に見た時刻・完了を確認した時刻の遅いもの)の名前・状態・完了を使う。開始は最も早いもの
+/// 記録が食い違うときは、いちばん新しく見た記録(最後に見た時刻・完了を確認した時刻の遅いもの)の名前・状態・完了を使う。
+/// 完了を確認した時刻は、完了に変わるのを見た記録のうち最も早いもの(見た記録が無ければ、完了の時刻は分からない)。開始は最も早いもの
 pub fn tasks_from_senders(per_session: &[(String, SenderTask)]) -> (Vec<TaskInfo>, Vec<(String, String, LinkSource)>) {
     let mut latest: IndexMap<String, &SenderTask> = IndexMap::new();
     let mut starts: HashMap<&str, i64> = HashMap::new();
+    let mut all: HashMap<&str, Vec<&SenderTask>> = HashMap::new();
     let mut links = Vec::with_capacity(per_session.len());
     for (sid, t) in per_session {
         links.push((sid.clone(), t.id.clone(), t.source));
+        all.entry(t.id.as_str()).or_default().push(t);
         match latest.get_mut(&t.id) {
             None => {
                 latest.insert(t.id.clone(), t);
@@ -183,15 +186,24 @@ pub fn tasks_from_senders(per_session: &[(String, SenderTask)]) -> (Vec<TaskInfo
     }
     let tasks = latest
         .into_values()
-        .map(|t| TaskInfo {
-            id: t.id.clone(),
-            name: t.name.clone(),
-            status: t.status.clone(),
-            done: t.done,
-            done_at: t.done_at.clone(),
-            done_observed: t.done_observed,
-            missing: false,
-            start_hint: starts.get(t.id.as_str()).map(|ms| atlas_core::jsdate::to_iso(*ms)),
+        .map(|t| {
+            // 完了を確認した時刻は、いちばん新しい記録と同じく完了で、完了に変わるのを見た記録のうち最も早いもの。
+            // どの記録も見ていなければ、完了の時刻は分からない(いちばん新しい記録の時刻のまま)
+            let observed = if t.done {
+                all.get(t.id.as_str()).into_iter().flatten().filter(|x| x.done && x.done_observed).filter_map(|x| x.done_at.as_deref().and_then(atlas_core::jsdate::parse_ms)).min()
+            } else {
+                None
+            };
+            TaskInfo {
+                id: t.id.clone(),
+                name: t.name.clone(),
+                status: t.status.clone(),
+                done: t.done,
+                done_at: observed.map(atlas_core::jsdate::to_iso).or_else(|| t.done_at.clone()),
+                done_observed: observed.is_some(),
+                missing: false,
+                start_hint: starts.get(t.id.as_str()).map(|ms| atlas_core::jsdate::to_iso(*ms)),
+            }
         })
         .collect();
     (tasks, links)
@@ -298,7 +310,15 @@ mod tests {
         assert_eq!(links.len(), 2);
         // 完了が新しい記録なら完了(並びに依らない)
         let later_done = SenderTask { last_seen_at: Some("2026-11-09T00:00:00.000Z".into()), done_at: Some("2026-11-09T00:00:00.000Z".into()), ..base.clone() };
-        let (tasks, _) = tasks_from_senders(&[("p2".into(), reopened), ("p3".into(), later_done)]);
+        let (tasks, _) = tasks_from_senders(&[("p2".into(), reopened.clone()), ("p3".into(), later_done.clone())]);
         assert_eq!((tasks[0].done, tasks[0].done_at.as_deref(), tasks[0].done_observed), (true, Some("2026-11-09T00:00:00.000Z"), true));
+        // 完了を見た記録が何件かあれば、完了を確認した時刻は最も早いもの。見ていない記録の時刻は使わない
+        let early_observed = SenderTask { last_seen_at: Some("2026-11-06T00:00:00.000Z".into()), done_at: Some("2026-11-06T00:00:00.000Z".into()), ..base.clone() };
+        let first_sight = SenderTask { done_observed: false, done_at: Some("2026-11-02T00:00:00.000Z".into()), last_seen_at: Some("2026-11-10T00:00:00.000Z".into()), ..base.clone() };
+        let (tasks, _) = tasks_from_senders(&[("a".into(), later_done.clone()), ("b".into(), early_observed), ("c".into(), first_sight.clone())]);
+        assert_eq!((tasks[0].done_at.as_deref(), tasks[0].done_observed), (Some("2026-11-06T00:00:00.000Z"), true));
+        // どの記録も完了に変わるのを見ていなければ、完了の時刻は分からない
+        let (tasks, _) = tasks_from_senders(&[("c".into(), first_sight)]);
+        assert!(tasks[0].done && !tasks[0].done_observed);
     }
 }

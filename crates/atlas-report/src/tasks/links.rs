@@ -3,7 +3,8 @@
 //! 機械の紐づけ(決まった規則。LLM は使わない):
 //! - セッションの題名と、依頼の文(最初の依頼と、記録した各依頼の先頭)から探す。VCS のコミットの文は見ない
 //! - タスクの ID: 前後が英数字でない所に、ID がそのまま出てくる(日本語の文字は区切りとみなす。2 文字未満の ID は探さない)。
-//!   数字だけの ID は、前に # を付けて書いたもの(#101)だけを探す(ただの数字は件数や番号に当たりすぎる)
+//!   数字だけの ID は、前に # を付けて書いたもの(#101)だけを探す(ただの数字は件数や番号に当たりすぎる)。
+//!   # を付けた番号は、リポジトリの PR や課題の番号にも当たりうる(数字だけの ID を使う環境では、その分だけ誤って紐づくことがある)
 //! - タスクの名前: 正規化(NFKC・小文字・空白をまとめる)した文の中に、正規化した名前が出てくる(4 文字未満の名前は探さない)
 //! - 当たりが重なるときは長い方だけを使う(DEMO-102-1 の中の DEMO-102、長い名前の中の短い名前は数えない)
 //! - 候補は、未完了のタスクと、セッションを始めた後に完了を確認したタスク(始める前に終わったタスクには紐づけない)
@@ -126,7 +127,7 @@ pub fn save_links(path: &Path, f: &LinksFile) -> Result<()> {
 /// 壊れたファイルは書き換えない。返すのは f の値と、直した後の中身
 pub fn update_links<T>(path: &Path, f: impl FnOnce(&mut LinksFile) -> T) -> Result<(T, LinksFile)> {
     super::with_file_lock(path, || {
-        let mut links = load_links_for_write(path)?;
+        let mut links = load_links_for_write(path).map_err(|e| super::BrokenFile(format!("{e:#}")))?;
         let before = links.clone();
         let r = f(&mut links);
         if links != before {
@@ -213,9 +214,11 @@ impl<'a> Matcher<'a> {
         for (i, (id, t)) in tasks.iter().enumerate() {
             let nid = normalize(id);
             if !nid.is_empty() && nid.bytes().all(|b| b.is_ascii_digit()) {
-                // 数字だけの ID は #<数字> の形だけを探す
-                id_pats.push(format!("#{nid}"));
-                id_task.push(i);
+                // 数字だけの ID は #<数字> の形だけを探す(2 文字未満の ID は、ほかの ID と同じく探さない)
+                if nid.len() >= ID_MIN_CHARS {
+                    id_pats.push(format!("#{nid}"));
+                    id_task.push(i);
+                }
             } else if nid.chars().count() >= ID_MIN_CHARS {
                 id_pats.push(nid);
                 id_task.push(i);
@@ -345,6 +348,17 @@ pub fn apply_machine(links: &mut LinksFile, sessions: &[SessionText], state: &Ta
     sum
 }
 
+/// LLM に聞くセッションか(`tasks link --llm` の対象と、画面の確認に出す件数が同じこの決め方を使う):
+/// 紐づけが無く、開いただけのセッション(empty)ではなく、題名か依頼の文があり、候補のタスクが 1 つ以上ある
+pub fn llm_eligible(links: &LinksFile, state: &TasksFile, id: &str, empty: bool, has_text: bool, start_ms: Option<i64>) -> bool {
+    !links.links.contains_key(id) && !empty && has_text && state.tasks.values().any(|t| is_candidate(t, start_ms))
+}
+
+/// 題名か依頼の文があるか(llm_eligible の has_text)
+pub fn has_text(title: &str, prompts: &str) -> bool {
+    !(title.trim().is_empty() && prompts.trim().is_empty())
+}
+
 /// 紐づけの無いセッション(LLM に任せるもの)
 pub fn unresolved<'a>(links: &LinksFile, sessions: &'a [SessionText]) -> Vec<&'a SessionText> {
     sessions.iter().filter(|s| !links.links.contains_key(&s.id)).collect()
@@ -432,8 +446,9 @@ mod tests {
         assert_eq!(one("PR#101"), MachineMatch::One { task_id: "101".into(), reason: "ID が題名にある".into() });
         assert_eq!(one("#1010"), MachineMatch::None);
         assert_eq!(one("#101a"), MachineMatch::None);
-        // # を付ければ 1 桁も探す。全角の #・数字も同じ
-        assert_eq!(one("＃７"), MachineMatch::One { task_id: "7".into(), reason: "ID が題名にある".into() });
+        // 全角の #・数字も同じ。2 文字未満の数字の ID は # を付けても探さない
+        assert_eq!(one("＃１０１"), MachineMatch::One { task_id: "101".into(), reason: "ID が題名にある".into() });
+        assert_eq!(one("#7 を直す"), MachineMatch::None);
     }
 
     /// 当たりが重なるときは長い方だけ(e2e の書き出しの DEMO-102 と DEMO-102-1 も)
@@ -481,7 +496,8 @@ mod tests {
         assert_eq!(std::fs::metadata(&p).unwrap().modified().unwrap(), before);
         std::fs::write(&p, "{").unwrap();
         assert!(update_links(&p, |_| ()).is_err());
-        assert!(!crate::tasks::lock_path(&p).exists());
+        // ロックは外れている(すぐ取り直せる)
+        crate::tasks::with_file_lock(&p, || Ok(())).unwrap();
     }
 
     #[test]
@@ -550,6 +566,24 @@ mod tests {
         let lt = linked_tasks(&links);
         assert_eq!(lt.get("m"), Some(&("XY-9", LinkSource::Manual)));
         assert!(!lt.contains_key("ln2"));
+    }
+
+    /// LLM に聞くセッションの決め方(CLI の対象と画面の件数が同じ)
+    #[test]
+    fn llm_eligibility() {
+        let s = state(&[("OLD", task("前に終わった仕事", Some("2026-11-05T00:00:00.000Z")))]);
+        let start = atlas_core::jsdate::parse_ms("2026-11-10T00:00:00Z");
+        let links = LinksFile::default();
+        // 候補が無い(始める前に終わったタスクだけ)
+        assert!(!llm_eligible(&links, &s, "a", false, true, start));
+        let s2 = state(&[("OLD", task("前に終わった仕事", Some("2026-11-05T00:00:00.000Z"))), ("NEW", task("未完了", None))]);
+        assert!(llm_eligible(&links, &s2, "a", false, true, start));
+        assert!(!llm_eligible(&links, &s2, "a", true, true, start));
+        assert!(!llm_eligible(&links, &s2, "a", false, false, start));
+        let mut l = LinksFile::default();
+        l.links.insert("a".into(), TaskLink { task_id: None, source: LinkSource::Llm, reason: String::new(), confidence: None, at: "t".into() });
+        assert!(!llm_eligible(&l, &s2, "a", false, true, start));
+        assert!(has_text("", " 依頼 ") && !has_text(" ", "\n"));
     }
 
     #[test]

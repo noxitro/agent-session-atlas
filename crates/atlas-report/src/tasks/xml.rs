@@ -9,8 +9,18 @@ use std::path::Path;
 
 /// 読む XML の大きさの上限(バイト)
 pub const XML_SIZE_LIMIT: u64 = 64 * 1024 * 1024;
-/// 読む要素・属性・文字などの数の上限(メモリを使い切らないように)。タスク 1 件に数十の節があっても、数万件の書き出しには十分な数
-pub const NODES_LIMIT: u32 = 2_000_000;
+/// 読む節の数の上限を決める、ファイルの大きさあたりの数(バイト数 ÷ これ)。roxmltree が数える節は、要素・文字(要素の間の
+/// 改行と字下げの空白も 1 つ)・コメント・処理命令と文書の根で、属性は数えない。字下げした書き出しで 1 件に子の要素が 30 ほどあると、
+/// 1 つの節はおよそ 13 バイト、値が 1 文字の項目ばかりでも 5 バイトほど(テストで測る)。これより細かいものは書き出しの形ではないとみなして読まない。
+/// 64 MB で 1,600 万ほどの節になり、メモリはファイルの大きさに比例する分だけ使う
+pub const BYTES_PER_NODE_MIN: usize = 4;
+/// 小さいファイルでも許す節の数
+const NODES_FLOOR: usize = 100_000;
+
+/// このファイルの大きさで許す節の数
+pub fn nodes_limit_for(bytes: usize) -> u32 {
+    (bytes / BYTES_PER_NODE_MIN).max(NODES_FLOOR).min(u32::MAX as usize) as u32
+}
 /// 項目の長さの上限(文字。超えた分は切る)
 pub const ID_MAX: usize = 200;
 pub const NAME_MAX: usize = 500;
@@ -129,7 +139,7 @@ fn clean(s: &str, max: usize) -> (String, bool) {
 
 /// XML の文字列からタスクを読む。XML として読めなければ理由
 pub fn parse_tasks_xml(text: &str, spec: &XmlSpec) -> Result<XmlRead, String> {
-    let opt = ParsingOptions { allow_dtd: false, nodes_limit: NODES_LIMIT, ..ParsingOptions::default() };
+    let opt = ParsingOptions { allow_dtd: false, nodes_limit: nodes_limit_for(text.len()), ..ParsingOptions::default() };
     let doc = Document::parse_with_options(text, opt).map_err(|e| match e {
         roxmltree::Error::DtdDetected => "DTD(<!DOCTYPE …>)のある XML は読みません".to_string(),
         e => format!("XML として読めません({e})"),
@@ -251,8 +261,37 @@ mod tests {
     /// 節の数の上限を超える XML は読まない
     #[test]
     fn node_limit() {
-        let many = format!("<r>{}</r>", "<Task Id=\"x\"/>".repeat(NODES_LIMIT as usize + 10));
-        assert!(parse_tasks_xml(&many, &def()).unwrap_err().starts_with("XML として読めません"));
+        // 節が細かすぎる(1 つが 4 バイトより小さい)XML は読まない
+        let dense = format!("<r>{}</r>", "<a/>x".repeat(NODES_FLOOR));
+        assert!(parse_tasks_xml(&dense, &def()).unwrap_err().starts_with("XML として読めません"));
+        // 属性は節に数えない(要素 1 つと根で 2)
+        let doc = Document::parse(r#"<a x="1" y="2" z="3"/>"#).unwrap();
+        assert_eq!(doc.descendants().count(), 2);
+        // 要素の間の改行と字下げ・要素の中の文字は、どれも 1 つの節
+        let doc = Document::parse("<a>\n  <b>t</b>\n</a>").unwrap();
+        assert_eq!(doc.descendants().count(), 6);
+    }
+
+    /// 字下げした書き出し(1 件に子の要素が 30)で、64 MB まで読める節の数があるか
+    #[test]
+    fn realistic_exports_fit_the_node_limit() {
+        let fields: String = (0..30).map(|i| format!("\n      <Field{i}>value of field {i}</Field{i}>")).collect();
+        let one = format!("\n    <Task>\n      <Id>T-1</Id>{fields}\n    </Task>");
+        let text = format!("<?xml version=\"1.0\"?>\n<Export>\n  <Tasks>{}\n  </Tasks>\n</Export>\n", one.repeat(2_000));
+        let doc = Document::parse_with_options(&text, ParsingOptions { nodes_limit: u32::MAX, ..ParsingOptions::default() }).unwrap();
+        let nodes = doc.descendants().count();
+        let per_node = text.len() / nodes;
+        assert!(per_node >= BYTES_PER_NODE_MIN * 3, "1 つの節が {per_node} バイト");
+        assert!(parse_tasks_xml(&text, &def()).is_ok());
+        // 64 MB の同じ形の書き出しの節の数が、上限に収まる
+        let full = (XML_SIZE_LIMIT as usize / text.len()) * nodes;
+        assert!((full as u64) < nodes_limit_for(XML_SIZE_LIMIT as usize) as u64, "{full}");
+        // 値が 1 文字の項目ばかりで、字下げの無い書き出しでも収まる
+        let short: String = (0..30).map(|i| format!("<F{i}>1</F{i}>")).collect();
+        let tight = format!("<Export>{}</Export>", format!("<Task><Id>T</Id>{short}</Task>").repeat(2_000));
+        let doc = Document::parse_with_options(&tight, ParsingOptions { nodes_limit: u32::MAX, ..ParsingOptions::default() }).unwrap();
+        assert!(tight.len() / doc.descendants().count() > BYTES_PER_NODE_MIN, "{}", tight.len() / doc.descendants().count());
+        assert!(parse_tasks_xml(&tight, &def()).is_ok());
     }
 
     #[test]

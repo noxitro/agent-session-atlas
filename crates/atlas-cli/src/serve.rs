@@ -278,6 +278,9 @@ struct SessionEntry {
     /// 始めた時刻(ミリ秒)と実働(ミリ秒)。タスクの工数に使う
     start_ms: Option<i64>,
     active_ms: Option<f64>,
+    /// 開いただけのセッション(sessions.json の empty)と、題名か依頼の文があるか。LLM で紐づけるセッションを数えるのに使う(links::llm_eligible)
+    empty: bool,
+    has_text: bool,
 }
 
 /// sessions.json の id → 表題と判定の対象か(本文は持たない)。集計元の形(読むだけの画面かを決める)も持つ
@@ -1009,7 +1012,11 @@ impl Server {
             let turns = r.get("analysis").and_then(|a| a.get("turnStats")).and_then(Value::as_array).map_or(0, Vec::len);
             let start_ms = r.get("createdAt").and_then(Value::as_str).filter(|s| !s.is_empty()).and_then(atlas_core::jsdate::parse_ms);
             let active_ms = r.get("activeMs").and_then(Value::as_f64);
-            ids.insert(id, SessionEntry { title: if name.is_empty() { "(名前なし)".into() } else { name.to_string() }, eligible, turns, start_ms, active_ms });
+            let empty = r.get("empty").and_then(Value::as_bool).unwrap_or(false);
+            // 題名か依頼の文(最初の依頼と、記録した各依頼の先頭)があるか。tasks link --llm の SessionText と同じ項目を見る
+            let prompt_text = r.get("firstUserMessage").and_then(Value::as_str).into_iter().chain(r.get("analysis").and_then(|a| a.get("requests")).and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str));
+            let has_text = atlas_report::tasks::links::has_text(r.get("name").and_then(Value::as_str).unwrap_or(""), &prompt_text.collect::<Vec<_>>().join("\n"));
+            ids.insert(id, SessionEntry { title: if name.is_empty() { "(名前なし)".into() } else { name.to_string() }, eligible, turns, start_ms, active_ms, empty, has_text });
         }
         let layout = file.get("source").and_then(|s| s.get("layout")).and_then(Value::as_str).map(str::to_string);
         let ix = Arc::new(SessionIndex { ids, layout });
@@ -1471,9 +1478,13 @@ impl Server {
             refreshed: None,
             scoped: false,
         });
-        // LLM で紐づける前の確認に出す数: 依頼の記録があって、紐づけの無いセッション(tasks link --llm が聞くもの)
+        // LLM で紐づける前の確認に出す数: tasks link --llm が聞くセッション(同じ決め方の links::llm_eligible)
         let unresolved = match (&view, &ix) {
-            (Some(v), Some(ix)) if !read_only => ix.ids.iter().filter(|(id, e)| e.eligible && !v.links.contains_key(id.as_str())).count(),
+            (Some(_), Some(ix)) if !read_only => {
+                let st = atlas_report::tasks::state::load_tasks(&atlas_report::tasks::tasks_path(&self.notes_abs)).file;
+                let li = atlas_report::tasks::links::load_links(&atlas_report::tasks::task_links_path(&self.notes_abs)).file;
+                ix.ids.iter().filter(|(id, e)| atlas_report::tasks::links::llm_eligible(&li, &st, id, e.empty, e.has_text, e.start_ms)).count()
+            }
             _ => 0,
         };
         Ok(json!({ "readOnly": read_only, "tasks": view.as_ref().map(to_value), "unresolved": unresolved }))
@@ -1538,7 +1549,11 @@ impl Server {
                     links.links.insert(id.clone(), atlas_report::tasks::links::TaskLink { task_id: task, source: atlas_report::tasks::links::LinkSource::Manual, reason: String::new(), confidence: None, at: now });
                 }
             })
-            .map_err(|e| HttpError::new(409, format!("{e:#}")))?;
+            .map_err(|e| {
+                // 別の書き手がロックを持ったまま・壊れたファイルは 409(待つか直してもらう)、ほかの書けなかった理由は 500
+                let busy = e.downcast_ref::<atlas_report::tasks::LockBusy>().is_some() || e.downcast_ref::<atlas_report::tasks::BrokenFile>().is_some();
+                HttpError::new(if busy { 409 } else { 500 }, format!("{e:#}"))
+            })?;
         }
         Ok(send_json(200, &self.tasks_payload()?))
     }
@@ -1556,8 +1571,7 @@ impl Server {
             id: id.to_string(),
             start_ms: r.get("createdAt").and_then(Value::as_str).filter(|s| !s.is_empty()).and_then(atlas_core::jsdate::parse_ms),
             title: r.get("name").and_then(Value::as_str).unwrap_or("").to_string(),
-            prompts: prompts.join("
-"),
+            prompts: prompts.join("\n"),
         }))
     }
 

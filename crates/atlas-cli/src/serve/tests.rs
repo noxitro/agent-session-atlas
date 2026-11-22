@@ -1522,6 +1522,35 @@ fn tasks_api_and_manual_links() {
     assert_eq!(put("s1", json!({ "taskId": "XY-9" }), true).0, 409);
     assert_eq!(fs::read_to_string(e.notes.join("task-links.json")).unwrap(), "{ 壊れた");
     assert!(!e.get("/api/tasks").1["tasks"]["warnings"].as_array().unwrap().is_empty());
+    // ロックそのものを作れない(書けない)ときは 500 と理由
+    fs::remove_file(e.notes.join("task-links.json")).unwrap();
+    let lock = e.notes.join("task-links.json.lock");
+    let _ = fs::remove_file(&lock);
+    fs::create_dir_all(&lock).unwrap();
+    let (st, v) = put("s1", json!({ "taskId": "XY-9" }), true);
+    assert_eq!(st, 500, "{v}");
+    assert!(v["error"].as_str().unwrap().contains("ロックのファイル"), "{v}");
+}
+
+/// 画面の確認に出す「LLM に聞くセッション」の数は、tasks link --llm の対象と同じ決め方(開いただけ・文の無い・候補の無いセッションは数えない)
+#[test]
+fn unresolved_count_matches_the_llm_job() {
+    let mut e = tasks_env();
+    let task = |done_at: Option<&str>| json!({ "name": "前に終わった仕事", "status": "Done", "done": done_at.is_some(), "firstSeenAt": "t", "doneAt": done_at, "lastSeenAt": "t" });
+    fs::write(e.notes.join("tasks.json"), json!({ "version": 1, "tasks": { "OLD-1": task(Some("2026-11-10T00:00:00.000Z")) } }).to_string()).unwrap();
+    fs::write(
+        e.out.join("sessions.json"),
+        json!({ "sessions": [
+            { "id": "a", "name": "前の作業", "turns": 1, "createdAt": "2026-11-05T00:00:00.000Z" },
+            { "id": "b", "name": "開いただけ", "turns": 0, "empty": true, "createdAt": "2026-11-05T00:00:00.000Z" },
+            { "id": "c", "name": "", "turns": 1, "createdAt": "2026-11-05T00:00:00.000Z" },
+            { "id": "d", "name": "後の作業", "turns": 1, "firstUserMessage": "直して", "createdAt": "2026-11-20T00:00:00.000Z" },
+        ] })
+        .to_string(),
+    )
+    .unwrap();
+    e.start(|_| {});
+    assert_eq!(e.get("/api/tasks").1["unresolved"], 1);
 }
 
 #[test]
