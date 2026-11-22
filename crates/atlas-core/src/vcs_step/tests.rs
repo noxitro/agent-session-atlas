@@ -340,6 +340,52 @@ fn sender_json_round_trip() {
 }
 
 #[test]
+fn sender_keeps_repos_and_hunk_vcs() {
+    // 複数の VCS にまたがる結果を送り、送り先で読み直しても repos とまとまりの VCS が残る
+    let mut res = result_of("s");
+    res["vcs"] = Value::Null;
+    res["root"] = Value::Null;
+    res["repos"] = json!([
+        {"vcs": "p4", "root": format!("X:{B}zz{B}assets"), "baseline": {"rev": "3", "source": "estimated"}, "evaluated": {"rev": "3"}},
+        {"vcs": "svn", "root": format!("X:{B}zz{B}tools"), "baseline": null, "evaluated": {"rev": "1", "source": "estimated"}},
+        // 形の違うもの・同じ種類と根の 2 つ目は使わない
+        {"vcs": "cvs", "root": "X:\\zz"},
+        {"vcs": "svn", "root": ""},
+        {"vcs": "svn", "root": format!("X:{B}zz{B}tools"), "baseline": {"rev": "9", "source": "observed"}, "evaluated": null},
+    ]);
+    res["hunks"][0]["vcs"] = json!("p4");
+    res["hunks"][0]["root"] = json!(format!("X:{B}zz{B}assets"));
+    res["hunks"][1]["vcs"] = json!("svn");
+    // 根の無いまとまりは、リポジトリを付けない
+    let r = parse_sender_vcs(&json!({"version": 1, "sessionId": "s", "computedAt": at(11, 0), "mode": "worktree", "result": res}), "s").unwrap();
+    assert_eq!(r.repos.iter().map(|x| (x.vcs, x.baseline.as_ref().map(|b| b.rev.as_str()), x.evaluated.as_ref().map(|e| (e.rev.as_str(), e.source)))).collect::<Vec<_>>(), [
+        (VcsKind::P4, Some("3"), Some(("3", None))),
+        (VcsKind::Svn, None, Some(("1", Some(RevisionSource::Estimated)))),
+    ]);
+    assert_eq!((r.hunks[0].vcs, r.hunks[1].vcs, r.hunks[1].root.as_deref()), (Some(VcsKind::P4), None, None));
+    // 送り先の集計: VCS 別は種類ごとに 1 回、基準は推定がまざるので推定
+    let s = summarize_retention(std::slice::from_ref(&r));
+    assert_eq!((serde_json::to_value(&s.by_vcs).unwrap(), s.baseline_estimated), (json!({"svn": 1, "p4": 1}), 1));
+    // 読み直したものを書いてまた読んでも、キーの順(送った側の順)と中身が変わらない
+    let text = crate::json::to_js_string(&r).unwrap();
+    let back: SessionRetention = serde_json::from_str(&text).unwrap();
+    assert!(back.sender_order);
+    assert_eq!(crate::json::to_js_string(&back).unwrap(), text);
+    let v = serde_json::to_value(&back).unwrap();
+    assert_eq!(v.as_object().unwrap().keys().take(8).collect::<Vec<_>>(), ["sessionId", "outcome", "vcs", "root", "baseline", "evaluated", "repos", "hunks"]);
+    assert_eq!(v["hunks"][0].as_object().unwrap().keys().collect::<Vec<_>>(), ["id", "path", "status", "lines", "vcs", "root"]);
+    // 送る側が添える中身にも入り、それを送り先で読み直せる
+    let sent = sender_vcs_json(&back, &at(11, 0), EvalMode::Worktree);
+    let again = parse_sender_vcs(&js::parse_json(&sent).unwrap(), "s").unwrap();
+    assert_eq!((&again.repos, again.hunks[0].vcs), (&r.repos, Some(VcsKind::P4)));
+
+    // repos の無い古い結果は、読み直しても repos を書かない
+    let old = parse_sender_vcs(&json!({"version": 1, "sessionId": "s", "computedAt": at(11, 0), "mode": "worktree", "result": result_of("s")}), "s").unwrap();
+    assert!(old.repos.is_empty() && old.hunks.iter().all(|h| h.vcs.is_none() && h.root.is_none()));
+    assert!(serde_json::to_value(&old).unwrap().get("repos").is_none());
+}
+
+#[test]
 fn read_back_keeps_key_order() {
     // 書いたファイルを読み直して書き直しても、キーの順が変わらない(後の工程が読み直して書き出すときのため)
     let ok = json!({"version": 1, "sessionId": "s", "computedAt": at(11, 0), "mode": "worktree", "result": result_of("s")});

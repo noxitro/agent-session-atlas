@@ -2,7 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { aggregateRetention, DEFAULT_LAG_DAYS, enoughMeasured, median, phaseAt, REASON_LABEL, REASONS, RETENTION_MIN_SESSIONS, retentionByPhase, retentionItem, shareOf, STATUS_LABEL, STATUSES, UNKNOWN_PHASE, VCS_LABEL, type RetentionItem } from '../src/lib/retention.ts';
+import { aggregateRetention, baselineSourceOf, DEFAULT_LAG_DAYS, enoughMeasured, median, phaseAt, REASON_LABEL, REASONS, RETENTION_MIN_SESSIONS, retentionByPhase, retentionItem, shareOf, STATUS_LABEL, STATUSES, UNKNOWN_PHASE, VCS_KINDS, VCS_LABEL, vcsKindsOf, type RetentionItem } from '../src/lib/retention.ts';
 import { comparePhaseRows, compareRows, compareSide, COMPARE_MIN_SESSIONS, defaultPeriods, inPeriod, type CompareSession } from '../src/lib/compare.ts';
 import { PHASES } from '../src/shared/turns.ts';
 import type { TurnTuple } from '../src/lib/turns.ts';
@@ -63,6 +63,26 @@ describe('lib/retention', () => {
     });
     expect(r).toEqual({ outcome: 'unattributable', reason: 'repo_not_found', vcs: null, baseline: null, on: 'local', mapped: false, hunks: [0, 0, 0, 2], lines: [0, 0, 0, 5] });
     expect(retentionItem({ outcome: 'no_ai_changes', vcs: null, baseline: null, counts: { kept: 0, modified: 0, missing: 0, unattributable: 0 }, lines: { kept: 0, modified: 0, missing: 0, unattributable: 0 }, computedOn: 'sender', pathMapped: true }).outcome).toBe('none');
+  });
+
+  it('複数の VCS にまたがるセッション: 埋め込みに種類を持ち、VCS 別は種類ごとに 1 回ずつ、基準はどれかが推定なら推定に数える', () => {
+    expect([...VCS_KINDS]).toEqual(rustList(VCS_RS, 'VCS_KINDS', 'VcsKind').map((v) => rustArms(VCS_RS, 'VcsKind', 'as_str')[v]));
+    const zero = { kept: 0, modified: 0, missing: 0, unattributable: 0 };
+    const base = { outcome: 'measured' as const, counts: { ...zero, kept: 1 }, lines: { ...zero, kept: 1 } };
+    const repo = (vcs: 'git' | 'svn' | 'p4', source: 'observed' | 'estimated') => ({ vcs, baseline: { source } });
+    const mixed = retentionItem({ ...base, vcs: null, baseline: { source: 'estimated' }, repos: [repo('p4', 'observed'), repo('svn', 'estimated')] });
+    expect(mixed).toMatchObject({ vcs: null, vcsKinds: ['svn', 'p4'], baseline: 'estimated' });
+    // キーの順は Rust の埋め込みと同じ(vcs の後に vcsKinds)
+    expect(JSON.stringify(mixed)).toContain('"vcs":null,"vcsKinds":["svn","p4"],"baseline":"estimated"');
+    // セッションの vcs だけと同じなら種類は持たない。repos が無い古い結果は今までどおり
+    const single = retentionItem({ ...base, vcs: 'git', baseline: { source: 'estimated' }, repos: [repo('git', 'observed')] });
+    expect(single.vcsKinds).toBeUndefined();
+    expect(single.baseline).toBe('observed');
+    expect(retentionItem({ ...base, vcs: 'svn', baseline: { source: 'estimated' } })).toMatchObject({ vcs: 'svn', baseline: 'estimated' });
+    expect(vcsKindsOf({ vcs: 'svn' })).toEqual(['svn']);
+    expect(baselineSourceOf({ baseline: { source: 'observed' }, repos: [{ vcs: 'svn', baseline: null }] })).toBe('observed');
+    const a = aggregateRetention([{ retention: mixed }, { retention: item({}) }, { retention: item({ vcs: 'p4' }) }]);
+    expect(a).toMatchObject({ measured: 3, byVcs: { svn: 1, p4: 2, git: 1 }, multiVcs: 1, baseline: { observed: 2, estimated: 1 } });
   });
 
   it('aggregateRetention: 照合できたセッションだけを分母にし、照合の範囲(照合していない・変更なし・照合不可の理由)を数える', () => {

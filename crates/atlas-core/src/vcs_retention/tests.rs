@@ -217,11 +217,13 @@ fn git_kept_modified_missing_and_baseline_lines() {
     // 書き出す形(キーの順は TS 版と同じ)
     let v = serde_json::to_value(r).unwrap();
     let keys: Vec<&String> = v.as_object().unwrap().keys().collect();
-    assert_eq!(keys, ["sessionId", "outcome", "vcs", "root", "baseline", "evaluated", "hunks", "excludedHunks", "counts", "lines", "provenance", "sessionEnd"]);
-    // 出所(どのツールの呼び出しの、ログのどこから取った変更か)を添える。似た本文で当てた行は推定として別に数える
-    assert_eq!(v["hunks"][0].as_object().unwrap().keys().collect::<Vec<_>>(), ["id", "path", "status", "lines", "at", "toolCallId", "from"]);
-    assert_eq!((v["hunks"][0]["from"].as_str(), v["hunks"][0]["toolCallId"].is_string()), (Some("diff"), true));
-    assert_eq!(v["hunks"][1].as_object().unwrap().keys().collect::<Vec<_>>(), ["id", "path", "status", "lines", "at", "similarLines", "toolCallId", "from"]);
+    assert_eq!(keys, ["sessionId", "outcome", "vcs", "root", "baseline", "evaluated", "repos", "hunks", "excludedHunks", "counts", "lines", "provenance", "sessionEnd"]);
+    // 照合に使ったリポジトリごとの基準と比べた版
+    assert_eq!(v["repos"], json!([{ "vcs": "git", "root": root, "baseline": { "rev": head, "source": "observed" }, "evaluated": { "rev": head } }]));
+    // 出所(どのツールの呼び出しの、ログのどこから取った変更か)と、照合に使ったリポジトリを添える。似た本文で当てた行は推定として別に数える
+    assert_eq!(v["hunks"][0].as_object().unwrap().keys().collect::<Vec<_>>(), ["id", "path", "status", "lines", "at", "toolCallId", "from", "vcs", "root"]);
+    assert_eq!((v["hunks"][0]["from"].as_str(), v["hunks"][0]["toolCallId"].is_string(), v["hunks"][0]["vcs"].as_str(), v["hunks"][0]["root"].as_str()), (Some("diff"), true, Some("git"), Some(root.as_str())));
+    assert_eq!(v["hunks"][1].as_object().unwrap().keys().collect::<Vec<_>>(), ["id", "path", "status", "lines", "at", "similarLines", "toolCallId", "from", "vcs", "root"]);
     assert_eq!((r.hunks[0].similar_lines, r.hunks[1].similar_lines), (0, 1));
     let s = summarize_retention(std::slice::from_ref(r));
     assert_eq!((s.similar_lines, s.excluded_hunks, s.evaluated_estimated, s.unread_edits), (1, 1, 0, 0));
@@ -859,7 +861,8 @@ fn unknown_reason_and_revision_errors() {
 
 #[test]
 fn evaluated_without_session_repo() {
-    // 作業フォルダに VCS が無く、ファイルの場所のリポジトリだけで照合したときも、比べた時点と見方を残す(版の印は付けない)
+    // 作業フォルダに VCS が無く、ファイルの場所のリポジトリだけで照合したときも、比べた時点と見方を残す(セッションの版の印は付けず、repos に残す)。
+    // 使ったリポジトリが 1 つだけなので、セッションの VCS と根はそれにする
     let mut tmp = Tmp::new();
     let plain = tmp.dir();
     let (root, _) = git_repo(&mut tmp, &[("a.txt", &["base"])]);
@@ -870,7 +873,8 @@ fn evaluated_without_session_repo() {
     let sets = [extract_ai_changes("s1", &ev, None)];
     let now = Some(ms_of(&at(24 * 20, 0)));
     let w = &measure(&sets, &RetentionOptions { now_ms: now, ..opts() })[0];
-    assert_eq!((w.outcome, w.vcs, w.evaluated.clone()), (Outcome::Measured, None, Some(Evaluated { mode: EvalMode::Worktree, rev: None, at: at(24 * 20, 0), source: None })));
+    assert_eq!((w.outcome, w.vcs, w.root.as_deref(), w.evaluated.clone()), (Outcome::Measured, Some(VcsKind::Git), Some(root.as_str()), Some(Evaluated { mode: EvalMode::Worktree, rev: None, at: at(24 * 20, 0), source: None })));
+    assert_eq!((w.repos.len(), w.repos[0].vcs, w.repos[0].baseline.as_ref().map(|b| b.source), w.repos[0].evaluated.is_some()), (1, VcsKind::Git, Some(RevisionSource::Estimated), true));
     let fx = &measure(&sets, &RetentionOptions { mode: EvalMode::Fixed, lag_days: 7, now_ms: now, ..opts() })[0];
     assert_eq!((fx.outcome, fx.hunks[0].status), (Outcome::Measured, RetentionStatus::Kept));
     assert_eq!(fx.evaluated, Some(Evaluated { mode: EvalMode::Fixed, rev: None, at: at(11 + 24 * 7, 0), source: Some(RevisionSource::Estimated) }));
@@ -968,4 +972,169 @@ fn dice_on_utf16_units() {
     assert_eq!(dice("abcd", "abce"), 2.0 * 2.0 / 6.0);
     // サロゲートペアは 2 単位として数える(JS と同じ)
     assert_eq!(dice("😀", "😀"), 1.0);
+}
+
+// ---- 複数の VCS にまたがるセッション(複合 VCS のプロジェクト・入れ子の作業コピー) ----
+
+/// 根ごとの偽の CLI を、呼ばれたフォルダ(作業ツリーを探すときはそのフォルダ、読むときは根)で振り分ける。
+/// そのフォルダを含む同じ種類の根のうち、いちばん内側のものに答えさせる。どれにも入らなければ「作業コピーではない」
+fn routed(fakes: Vec<(VcsKind, String, VcsRunner)>) -> VcsRunner {
+    Arc::new(move |cmd, args, cwd| {
+        let key = |p: &str| file_path_key(&crate::classify::resolve_file_path(p, None));
+        let inside = |root: &str| key(root) == key(cwd) || crate::classify::relative_inside(root, cwd).is_some();
+        let hit = fakes.iter().filter(|(k, root, _)| *k == cmd && inside(root)).max_by_key(|(_, root, _)| root.len());
+        match hit {
+            Some((_, _, run)) => run(cmd, args, cwd),
+            None if cmd == VcsKind::Git => RunResult { code: 128, stdout: String::new(), stderr: "fatal: not a git repository".into() },
+            None if cmd == VcsKind::Svn => RunResult { code: 1, stdout: String::new(), stderr: "svn: E155007: not a working copy".into() },
+            None => RunResult { code: 1, stdout: String::new(), stderr: "Client unknown.".into() },
+        }
+    })
+}
+
+#[test]
+fn mixed_vcs_without_session_repo() {
+    // 作業フォルダ(VCS の管理外)の下に、Perforce のワークスペース(assets)と SVN の作業コピー(tools)がある
+    let mut tmp = Tmp::new();
+    let parent = tmp.dir();
+    let assets = join(&parent, &["assets"]);
+    let tools = join(&parent, &["tools"]);
+    let fa = join(&assets, &["a.c"]);
+    let fb = join(&tools, &["b.py"]);
+    write(&fa, &["int base = 0;", "int p4Kept = 1;"]);
+    write(&fb, &["base = 0", "svn_kept = 1"]);
+    let (p4, p4_calls) = fake_vcs(VcsKind::P4, &assets, vec![rev(3, at(8, 0), &[("a.c", &["int base = 0;"])])]);
+    let (svn, _) = fake_vcs(VcsKind::Svn, &tools, vec![rev(1, at(8, 0), &[("b.py", &["base = 0"])])]);
+    let runner = routed(vec![(VcsKind::P4, assets.clone(), p4), (VcsKind::Svn, tools.clone(), svn)]);
+    let ev = session(&parent, None, None, (10, 0), (11, 0), vec![ed_at(&fa, &["int p4Kept = 1;"], (10, 1)), ed_at(&fb, &["svn_kept = 1"], (10, 2))]);
+    let rs = measure(&[extract_ai_changes("s1", &ev, None)], &RetentionOptions { runner, ..opts() });
+    let r = &rs[0];
+    assert_eq!(r.outcome, Outcome::Measured);
+    // 2 つのリポジトリにまたがるので、セッションの VCS と根は決めない。基準は最初に当たったもの(今までどおり)
+    assert_eq!((r.vcs, r.root.as_deref()), (None, None));
+    assert_eq!(r.baseline, Some(Revision { rev: "3".into(), source: RevisionSource::Estimated }));
+    assert_eq!(
+        r.repos,
+        [
+            RepoRetention { vcs: VcsKind::P4, root: assets.clone(), baseline: Some(Revision { rev: "3".into(), source: RevisionSource::Estimated }), evaluated: Some(RepoEvaluated { rev: "3".into(), source: None }) },
+            RepoRetention { vcs: VcsKind::Svn, root: tools.clone(), baseline: Some(Revision { rev: "1".into(), source: RevisionSource::Estimated }), evaluated: Some(RepoEvaluated { rev: "1".into(), source: None }) },
+        ]
+    );
+    assert_eq!(r.hunks.iter().map(|h| (h.status, h.vcs, h.root.as_deref())).collect::<Vec<_>>(), [(RetentionStatus::Kept, Some(VcsKind::P4), Some(assets.as_str())), (RetentionStatus::Kept, Some(VcsKind::Svn), Some(tools.as_str()))]);
+    // まとまりの基準は、そのまとまりのリポジトリのもの
+    assert_eq!(hunk_baseline(r, &r.hunks[1]).map(|b| b.rev.as_str()), Some("1"));
+    // VCS 別はセッションごとに種類を 1 回ずつ数える(合計が照合できたセッションの数を超えうる)。基準はどれかが推定なら推定
+    let s = summarize_retention(&rs);
+    assert_eq!((s.measured, s.baseline_estimated), (1, 1));
+    assert_eq!(serde_json::to_value(&s.by_vcs).unwrap(), json!({"svn": 1, "p4": 1}));
+    // 書いて読み直しても、repos とまとまりの VCS が残り、同じ形で書ける
+    let text = crate::json::to_js_string(r).unwrap();
+    let back: SessionRetention = serde_json::from_str(&text).unwrap();
+    assert_eq!((&back.repos, back.hunks[1].vcs), (&r.repos, Some(VcsKind::Svn)));
+    assert_eq!(crate::json::to_js_string(&back).unwrap(), text);
+    // 表: まとまりごとの VCS と基準
+    let t = crate::tables::retention_hunks_table(&[r], None);
+    let col = |name: &str| t.header.iter().position(|h| h == name).unwrap();
+    assert_eq!(t.rows.iter().map(|row| row[col("VCS")].clone()).collect::<Vec<_>>(), [crate::tables::Cell::from("p4"), crate::tables::Cell::from("svn")]);
+    assert_eq!(t.rows[1][col("開始時の基準")], crate::tables::Cell::from("推定"));
+    // 呼んだのは読む系だけ
+    for (c, a) in p4_calls.lock().unwrap().iter() {
+        assert!(assert_read_only(*c, a).is_ok(), "{c:?} {a:?}");
+    }
+
+    // 使ったリポジトリが 1 つだけなら、セッションの VCS と根もそれにする
+    let ev = session(&parent, None, None, (10, 0), (11, 0), vec![ed(&fb, &["svn_kept = 1"])]);
+    let (svn, _) = fake_vcs(VcsKind::Svn, &tools, vec![rev(1, at(8, 0), &[("b.py", &["base = 0"])])]);
+    let one = &measure(&[extract_ai_changes("s2", &ev, None)], &RetentionOptions { runner: routed(vec![(VcsKind::Svn, tools.clone(), svn)]), ..opts() })[0];
+    assert_eq!((one.outcome, one.vcs, one.root.as_deref(), one.repos.len()), (Outcome::Measured, Some(VcsKind::Svn), Some(tools.as_str()), 1));
+}
+
+#[test]
+fn nested_svn_inside_p4_workspace() {
+    // Perforce のワークスペースの根が作業フォルダで、その中の tools が SVN の作業コピー。tools のファイルは SVN で照合する
+    let mut tmp = Tmp::new();
+    let parent = tmp.dir();
+    let tools = join(&parent, &["tools"]);
+    let fa = join(&parent, &["assets", "a.c"]);
+    let fb = join(&tools, &["b.py"]);
+    write(&fa, &["int base = 0;", "int p4Kept = 1;"]);
+    // Perforce には tools のファイルが無い(SVN の作業コピーを探さずに P4 で照合すると、基準に無いので AI の行がすべて残ったことになる)
+    let (p4, p4_calls) = fake_vcs(VcsKind::P4, &parent, vec![rev(3, at(8, 0), &[("assets/a.c", &["int base = 0;"])])]);
+    // SVN の基準には、AI が足した行の 1 つがもうある(取り込んだ版から始めた)ので、SVN で照合すればその行は数えない
+    let (svn, _) = fake_vcs(VcsKind::Svn, &tools, vec![rev(1, at(8, 0), &[("b.py", &["base = 0", "svn_kept = 1"])])]);
+    let runner = routed(vec![(VcsKind::P4, parent.clone(), p4), (VcsKind::Svn, tools.clone(), svn)]);
+    let ev = session(&parent, None, None, (10, 0), (11, 0), vec![ed_at(&fa, &["int p4Kept = 1;"], (10, 1)), ed_at(&fb, &["svn_kept = 1", "svn_new = 2"], (10, 2))]);
+    write(&fb, &["base = 0", "svn_kept = 1", "svn_new = 2"]);
+    let r = &measure(&[extract_ai_changes("s1", &ev, None)], &RetentionOptions { runner, ..opts() })[0];
+    // セッションの VCS と根は、作業フォルダのリポジトリ(Perforce)のまま
+    assert_eq!((r.outcome, r.vcs, r.root.as_deref()), (Outcome::Measured, Some(VcsKind::P4), Some(parent.as_str())));
+    assert_eq!(r.baseline, Some(Revision { rev: "3".into(), source: RevisionSource::Estimated }));
+    assert_eq!(
+        r.repos.iter().map(|x| (x.vcs, x.root.as_str(), x.baseline.as_ref().map(|b| b.rev.as_str()))).collect::<Vec<_>>(),
+        [(VcsKind::P4, parent.as_str(), Some("3")), (VcsKind::Svn, tools.as_str(), Some("1"))]
+    );
+    // SVN の基準にあった行は数えないので、tools のまとまりは 1 行だけ
+    assert_eq!(r.hunks.iter().map(|h| (h.vcs, h.status, h.lines)).collect::<Vec<_>>(), [(Some(VcsKind::P4), RetentionStatus::Kept, lc(1, 0, 0, 0)), (Some(VcsKind::Svn), RetentionStatus::Kept, lc(1, 0, 0, 0))]);
+    // Perforce には tools のファイルを聞いていない
+    assert!(!p4_calls.lock().unwrap().iter().any(|(_, a)| a.iter().any(|x| x.contains("b.py"))));
+    let s = summarize_retention(std::slice::from_ref(r));
+    assert_eq!(serde_json::to_value(&s.by_vcs).unwrap(), json!({"svn": 1, "p4": 1}));
+}
+
+#[test]
+fn nested_git_inside_git() {
+    // git のリポジトリの中に、別の git のリポジトリ(inner)がある。inner のファイルは inner で照合する
+    let mut tmp = Tmp::new();
+    let (outer, head) = git_repo(&mut tmp, &[("a.txt", &["outer base"])]);
+    let inner = join(&outer, &["inner"]);
+    std::fs::create_dir_all(&inner).unwrap();
+    git9(&inner, &["init", "-q", "-b", "main"]);
+    write(&join(&inner, &["b.txt"]), &["inner base", "inner ai line"]);
+    git9(&inner, &["add", "-A"]);
+    git9(&inner, &["commit", "-q", "-m", "inner base"]);
+    let inner_head = git9(&inner, &["rev-parse", "HEAD"]);
+    let fa = join(&outer, &["a.txt"]);
+    let fb = join(&inner, &["b.txt"]);
+    write(&fa, &["outer base", "outer ai line"]);
+    write(&fb, &["inner base", "inner ai line", "inner new line"]);
+    let ev = session(&outer, Some(&outer), Some(&head), (10, 0), (11, 0), vec![ed_at(&fa, &["outer ai line"], (10, 1)), ed_at(&fb, &["inner ai line", "inner new line"], (10, 2))]);
+    // git だけ本物(一時フォルダの外で、上のフォルダのリポジトリに当たらないよう svn・p4 は無いことにする)
+    let runner: VcsRunner = Arc::new(|cmd, args, cwd| if cmd == VcsKind::Git { crate::vcs::default_run(cmd, args, cwd) } else { RunResult { code: -1, ..Default::default() } });
+    let r = &measure(&[extract_ai_changes("s1", &ev, None)], &RetentionOptions { runner, ..opts() })[0];
+    assert_eq!((r.outcome, r.vcs, r.root.as_deref()), (Outcome::Measured, Some(VcsKind::Git), Some(outer.as_str())));
+    // 外のリポジトリはログの開始時のコミット(記録)、inner は開始時刻から探した版(推定)
+    assert_eq!(r.baseline, Some(Revision { rev: head.clone(), source: RevisionSource::Observed }));
+    assert_eq!(
+        r.repos.iter().map(|x| (x.root.as_str(), x.baseline.clone())).collect::<Vec<_>>(),
+        [(outer.as_str(), Some(Revision { rev: head.clone(), source: RevisionSource::Observed })), (inner.as_str(), Some(Revision { rev: inner_head.clone(), source: RevisionSource::Estimated }))]
+    );
+    // inner の基準にあった行は数えない(外のリポジトリで照合すると、inner のファイルは基準に無いので 2 行とも残ったことになる)
+    assert_eq!(
+        r.hunks.iter().map(|h| (h.root.as_deref(), h.status, h.lines)).collect::<Vec<_>>(),
+        [(Some(outer.as_str()), RetentionStatus::Kept, lc(1, 0, 0, 0)), (Some(inner.as_str()), RetentionStatus::Kept, lc(1, 0, 0, 0))]
+    );
+    // 同じ種類はセッションごとに 1 回。基準は inner が推定なので推定に数える(推定を混ぜて記録と言わない)
+    let s = summarize_retention(std::slice::from_ref(r));
+    assert_eq!((serde_json::to_value(&s.by_vcs).unwrap(), s.baseline_estimated), (json!({"git": 1}), 1));
+}
+
+#[test]
+fn old_results_without_repos_read_and_write_unchanged() {
+    // repos とまとまりの vcs・root の無い古い結果は、そのまま読めて、書き直しても同じ形。集計はセッションの vcs と baseline で数える
+    let old = json!({
+        "sessionId": "s", "outcome": "measured", "vcs": "svn", "root": "X:\\zz", "baseline": {"rev": "4", "source": "estimated"},
+        "evaluated": {"mode": "worktree", "rev": "5", "at": at(12, 0)},
+        "hunks": [{"id": 1, "path": "X:\\zz\\a.c", "status": "kept", "lines": {"kept": 1, "modified": 0, "missing": 0, "unattributable": 0}, "at": at(10, 1), "from": "diff"}],
+        "excludedHunks": 0, "counts": {"kept": 1, "modified": 0, "missing": 0, "unattributable": 0}, "lines": {"kept": 1, "modified": 0, "missing": 0, "unattributable": 0},
+        "provenance": {"aiChanges": "events", "baseline": "estimated", "context": {}}, "sessionEnd": at(11, 0), "computedOn": "local",
+    });
+    let text = crate::json::to_js_string(&old).unwrap();
+    let r: SessionRetention = serde_json::from_str(&text).unwrap();
+    assert!(r.repos.is_empty());
+    assert_eq!((r.hunks[0].vcs, r.hunks[0].root.as_deref()), (None, None));
+    assert_eq!(crate::json::to_js_string(&r).unwrap(), text);
+    assert_eq!((vcs_kinds_of(&r), baseline_source_of(&r)), (vec![VcsKind::Svn], Some(RevisionSource::Estimated)));
+    assert_eq!(hunk_baseline(&r, &r.hunks[0]).map(|b| b.rev.as_str()), Some("4"));
+    let s = summarize_retention(std::slice::from_ref(&r));
+    assert_eq!((serde_json::to_value(&s.by_vcs).unwrap(), s.baseline_estimated), (json!({"svn": 1}), 1));
 }

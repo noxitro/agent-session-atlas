@@ -16,8 +16,8 @@ use crate::jsfs;
 use crate::snapshot::{SNAPSHOT_MANIFEST, UPLOAD_VCS_META};
 use crate::vcs::{EvalMode, Revision, RevisionSource, VcsKind};
 use crate::vcs_retention::{
-    measure_retention, status_of_lines, summarize_retention, tally, top_reason, ComputedOn, Evaluated, HunkRetention, LineCounts, Outcome, Provenance, RetentionOptions, RetentionStatus,
-    RetentionSummary, SessionRetention, UnattributableReason, ValueSource, RETENTION_STATUSES,
+    measure_retention, status_of_lines, summarize_retention, tally, top_reason, ComputedOn, Evaluated, HunkRetention, LineCounts, Outcome, Provenance, RepoEvaluated, RepoRetention, RetentionOptions,
+    RetentionStatus, RetentionSummary, SessionRetention, UnattributableReason, ValueSource, RETENTION_STATUSES,
 };
 use rayon::prelude::*;
 use regex::Regex;
@@ -238,7 +238,39 @@ fn hunk_of(v: &Value) -> Option<HunkRetention> {
     let similar_lines = count(o.get("similarLines")).filter(|n| *n <= lines.modified).unwrap_or(0);
     let tool_call_id = safe_str(o.get("toolCallId"), 200).filter(|s| !s.is_empty()).map(str::to_string);
     let from = o.get("from").and_then(Value::as_str).and_then(HunkFrom::parse);
-    Some(HunkRetention { id, path: path.to_string(), status, reason, lines, at: iso_or_null(o.get("at")).map(str::to_string), similar_lines, tool_call_id, from, reason_last: true })
+    // 照合に使ったリポジトリ(古い結果には無い)。種類と根がそろっているときだけ使う
+    let (vcs, root) = match (o.get("vcs").and_then(Value::as_str).and_then(VcsKind::parse), safe_str(o.get("root"), STR_MAX).filter(|s| !s.is_empty())) {
+        (Some(v), Some(r)) => (Some(v), Some(r.to_string())),
+        _ => (None, None),
+    };
+    Some(HunkRetention { id, path: path.to_string(), status, reason, lines, at: iso_or_null(o.get("at")).map(str::to_string), similar_lines, tool_call_id, from, vcs, root, reason_last: true })
+}
+
+/// 開始時の基準({rev, source})。形が違えば None
+fn revision_of(v: Option<&Value>) -> Option<Revision> {
+    let b = obj(v)?;
+    let rev = safe_str(b.get("rev"), 200).filter(|s| !s.is_empty())?;
+    let source = b.get("source").and_then(Value::as_str).and_then(RevisionSource::parse)?;
+    Some(Revision { rev: rev.to_string(), source })
+}
+
+/// 送った側の、照合に使ったリポジトリ(古い結果には無い)。形が違うものと、同じ種類と根の 2 つ目は使わない
+fn repos_of(v: Option<&Value>) -> Vec<RepoRetention> {
+    let Some(Value::Array(list)) = v else { return Vec::new() };
+    let mut out: Vec<RepoRetention> = Vec::new();
+    for x in list.iter().take(SENDER_HUNKS_MAX) {
+        let Some(o) = obj(Some(x)) else { continue };
+        let (Some(vcs), Some(root)) = (o.get("vcs").and_then(Value::as_str).and_then(VcsKind::parse), safe_str(o.get("root"), STR_MAX).filter(|s| !s.is_empty())) else { continue };
+        if out.iter().any(|r| r.vcs == vcs && r.root == root) {
+            continue;
+        }
+        let evaluated = obj(o.get("evaluated")).and_then(|e| {
+            let rev = safe_str(e.get("rev"), 200).filter(|s| !s.is_empty())?;
+            Some(RepoEvaluated { rev: rev.to_string(), source: e.get("source").and_then(Value::as_str).and_then(RevisionSource::parse) })
+        });
+        out.push(RepoRetention { vcs, root: root.to_string(), baseline: revision_of(o.get("baseline")), evaluated });
+    }
+    out
 }
 
 /// 送った側の、セッションの値(cwd など)をどこから取ったかの記録。知っている項目と値だけ残す
@@ -282,11 +314,7 @@ pub fn parse_sender_vcs(json: &Value, id: &str) -> Option<SessionRetention> {
         hunks.push(x);
     }
     let vcs = r.get("vcs").and_then(Value::as_str).and_then(VcsKind::parse);
-    let baseline = obj(r.get("baseline")).and_then(|b| {
-        let rev = safe_str(b.get("rev"), 200).filter(|s| !s.is_empty())?;
-        let source = b.get("source").and_then(Value::as_str).and_then(RevisionSource::parse)?;
-        Some(Revision { rev: rev.to_string(), source })
-    });
+    let baseline = revision_of(r.get("baseline"));
     // 照合した日時と見方は送った側のもの(この PC で集計した日時・既定の見方で埋めない)。セッションの記録に無ければ、添えたファイルの値を使う
     let sender_mode = j.get("mode").and_then(Value::as_str).and_then(EvalMode::parse);
     let sender_at = iso_or_null(j.get("computedAt"));
@@ -309,6 +337,7 @@ pub fn parse_sender_vcs(json: &Value, id: &str) -> Option<SessionRetention> {
         provenance: Provenance { ai_changes: "events".into(), baseline: baseline.as_ref().map(|b| b.source), context },
         baseline,
         evaluated,
+        repos: repos_of(r.get("repos")),
         hunks,
         excluded_hunks: count(r.get("excludedHunks")).unwrap_or(0),
         counts: LineCounts::default(),
@@ -354,6 +383,8 @@ fn not_measured(set: AiChangeSet) -> SessionRetention {
             similar_lines: 0,
             tool_call_id: h.tool_call_id.clone().filter(|t| !t.is_empty()),
             from: Some(h.from),
+            vcs: None,
+            root: None,
             reason_last: false,
         })
         .collect();
@@ -365,6 +396,7 @@ fn not_measured(set: AiChangeSet) -> SessionRetention {
         root: None,
         baseline: None,
         evaluated: None,
+        repos: Vec::new(),
         hunks,
         excluded_hunks: 0,
         counts: LineCounts::default(),

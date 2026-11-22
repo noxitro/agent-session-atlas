@@ -6,7 +6,7 @@ use atlas_core::jsdate;
 use atlas_core::turns::{session_turns, PHASES};
 use atlas_core::types::SessionRecord;
 use atlas_core::vcs::{EvalMode, VcsKind};
-use atlas_core::vcs_retention::{ComputedOn, LineCounts, Outcome, RetentionStatus, SessionRetention, RETENTION_STATUSES};
+use atlas_core::vcs_retention::{baseline_source_of, vcs_kinds_of, ComputedOn, LineCounts, Outcome, RetentionStatus, SessionRetention, RETENTION_STATUSES};
 use atlas_core::vcs_step::{SenderSummary, VcsRetentionFile};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -100,7 +100,10 @@ pub struct RetentionItem {
     pub outcome: String,
     pub reason: Option<String>,
     pub vcs: Option<VcsKind>,
-    /// observed / estimated
+    /// 照合に使ったリポジトリの種類(VCS_KINDS の順)。[vcs] と同じとき・古い結果(repos が無い)では省略
+    #[serde(rename = "vcsKinds", default, skip_serializing_if = "Option::is_none")]
+    pub vcs_kinds: Option<Vec<VcsKind>>,
+    /// observed / estimated(照合に使ったリポジトリのどれかが推定なら estimated)
     pub baseline: Option<String>,
     /// local / sender
     pub on: String,
@@ -142,6 +145,9 @@ pub fn retention_item(r: &SessionRetention, turns: &[TurnStart]) -> RetentionIte
         (Some(e), Some(a)) => Some(0f64.max(atlas_core::js::round(((a - e) as f64 / 86_400_000.0) * 10.0) / 10.0)),
         _ => None,
     };
+    // 照合に使ったリポジトリの種類。セッションの vcs だけと同じなら持たない(埋め込みを増やさない)
+    let kinds = vcs_kinds_of(r);
+    let vcs_kinds = (!r.repos.is_empty() && kinds != r.vcs.into_iter().collect::<Vec<_>>()).then_some(kinds);
     RetentionItem {
         phases,
         lag,
@@ -152,7 +158,8 @@ pub fn retention_item(r: &SessionRetention, turns: &[TurnStart]) -> RetentionIte
         },
         reason: r.reason.map(|x| x.as_str().to_string()),
         vcs: r.vcs,
-        baseline: r.baseline.as_ref().map(|b| b.source.as_str().to_string()),
+        vcs_kinds,
+        baseline: baseline_source_of(r).map(|b| b.as_str().to_string()),
         on: r.computed_on.unwrap_or(ComputedOn::Local).as_str().into(),
         mapped: r.path_mapped == Some(true),
         hunks: tuple(&r.counts),
@@ -240,7 +247,10 @@ pub struct RetentionAgg {
     pub unattributable: JsMap<i64>,
     pub unattributable_total: i64,
     pub baseline: BaselineCounts,
+    /// VCS ごとの照合できたセッションの数。複数の VCS にまたがるセッションはそれぞれに入る(合計が measured を超えうる)
     pub by_vcs: JsMap<i64>,
+    /// 照合できたセッションのうち、複数の VCS にまたがるもの
+    pub multi_vcs: i64,
     pub sender: i64,
     pub mapped: i64,
     pub hunks: StatusTuple,
@@ -279,8 +289,12 @@ pub fn aggregate_retention<'a>(sessions: impl IntoIterator<Item = Option<&'a Ret
             Some("observed") => a.baseline.observed += 1,
             _ => {}
         }
-        if let Some(v) = r.vcs {
+        let kinds: Vec<VcsKind> = r.vcs_kinds.clone().unwrap_or_else(|| r.vcs.into_iter().collect());
+        for v in &kinds {
             a.by_vcs.inc(v.as_str(), 1);
+        }
+        if kinds.len() > 1 {
+            a.multi_vcs += 1;
         }
         if r.on == "sender" {
             a.sender += 1;
@@ -343,7 +357,7 @@ mod tests {
     use super::*;
 
     fn item(f: impl FnOnce(&mut RetentionItem)) -> RetentionItem {
-        let mut r = RetentionItem { phases: None, lag: None, unread: None, outcome: "measured".into(), reason: None, vcs: Some(VcsKind::Git), baseline: Some("observed".into()), on: "local".into(), mapped: false, hunks: [0; 4], lines: [0; 4] };
+        let mut r = RetentionItem { phases: None, lag: None, unread: None, outcome: "measured".into(), reason: None, vcs: Some(VcsKind::Git), vcs_kinds: None, baseline: Some("observed".into()), on: "local".into(), mapped: false, hunks: [0; 4], lines: [0; 4] };
         f(&mut r);
         r
     }
@@ -381,9 +395,56 @@ mod tests {
         assert_eq!(atlas_core::json::to_js_string(&a.unattributable).unwrap(), r#"{"no_vcs":1,"unknown":1}"#);
         assert_eq!(a.baseline, BaselineCounts { observed: 2, estimated: 1 });
         assert_eq!(atlas_core::json::to_js_string(&a.by_vcs).unwrap(), r#"{"git":2,"p4":1}"#);
+        assert_eq!(a.multi_vcs, 0);
         assert_eq!((a.sender, a.mapped, a.hunks, a.lines), (1, 1, [4, 1, 3, 1], [12, 2, 7, 4]));
         // 割合の分母は照合できたまとまり(照合不可を除く 8)。割合と、出すかどうかの閾値は画面(lib/retention.ts)だけが持つ
         assert_eq!(measured_of(&a.hunks), 8);
+    }
+
+    // 複数の VCS にまたがるセッション: VCS 別は種類ごとに 1 回ずつ数え(合計が照合できたセッションを超えうる)、基準はどれかが推定なら推定
+    #[test]
+    fn aggregates_mixed_vcs() {
+        let list = [
+            Some(item(|r| {
+                r.vcs = None;
+                r.vcs_kinds = Some(vec![VcsKind::Svn, VcsKind::P4]);
+                r.baseline = Some("estimated".into());
+            })),
+            Some(item(|_| {})),
+            // 古い埋め込み(vcsKinds が無い)はセッションの vcs で数える
+            Some(item(|r| r.vcs = Some(VcsKind::P4))),
+        ];
+        let a = aggregate_retention(list.iter().map(Option::as_ref));
+        assert_eq!(a.measured, 3);
+        assert_eq!(atlas_core::json::to_js_string(&a.by_vcs).unwrap(), r#"{"svn":1,"p4":2,"git":1}"#);
+        assert_eq!((a.multi_vcs, a.baseline.clone()), (1, BaselineCounts { observed: 2, estimated: 1 }));
+    }
+
+    #[test]
+    fn item_of_mixed_vcs() {
+        use atlas_core::vcs::{Revision, RevisionSource};
+        use atlas_core::vcs_retention::RepoRetention;
+        let r: SessionRetention = serde_json::from_value(serde_json::json!({
+            "sessionId": "s", "outcome": "measured", "vcs": null, "root": null, "baseline": {"rev": "3", "source": "estimated"}, "evaluated": null,
+            "hunks": [], "excludedHunks": 0, "counts": {"kept": 1, "modified": 0, "missing": 0, "unattributable": 0}, "lines": {"kept": 1, "modified": 0, "missing": 0, "unattributable": 0},
+            "provenance": {"aiChanges": "events", "baseline": "estimated", "context": {}},
+        }))
+        .unwrap();
+        // repos が無い古い結果は今までどおり
+        let old = retention_item(&r, &[]);
+        assert_eq!((old.vcs, old.vcs_kinds.clone(), old.baseline.as_deref()), (None, None, Some("estimated")));
+        let repo = |vcs, root: &str, source| RepoRetention { vcs, root: root.into(), baseline: Some(Revision { rev: "1".into(), source }), evaluated: None };
+        let mut mixed = r.clone();
+        mixed.repos = vec![repo(VcsKind::P4, "a", RevisionSource::Observed), repo(VcsKind::Svn, "t", RevisionSource::Estimated)];
+        let it = retention_item(&mixed, &[]);
+        assert_eq!((it.vcs_kinds.clone(), it.baseline.as_deref()), (Some(vec![VcsKind::Svn, VcsKind::P4]), Some("estimated")));
+        assert!(atlas_core::json::to_js_string(&it).unwrap().contains(r#""vcs":null,"vcsKinds":["svn","p4"],"baseline":"estimated""#));
+        // セッションの vcs だけと同じなら、種類は持たない(埋め込みを増やさない)
+        let mut single = r.clone();
+        single.vcs = Some(VcsKind::Git);
+        single.repos = vec![repo(VcsKind::Git, "g", RevisionSource::Observed)];
+        let it = retention_item(&single, &[]);
+        assert_eq!((it.vcs_kinds, it.baseline.as_deref()), (None, Some("observed")));
     }
 
     #[test]

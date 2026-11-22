@@ -195,6 +195,9 @@ pub struct HunkRetention {
     pub tool_call_id: Option<String>,
     /// 変更をログのどこから取り出したか(diff = 完了イベントの diff、args = 開始イベントの引数)。記録が無ければ省略
     pub from: Option<HunkFrom>,
+    /// 照合に使ったリポジトリの VCS と根(セッションの repos のどれか)。リポジトリが決まらなかったまとまり・古い結果には無い
+    pub vcs: Option<VcsKind>,
+    pub root: Option<String>,
     /// キーの順(TS がオブジェクトを組み立てた順)。true = id, path, status, lines, at, reason(送った側の結果を読み直したもの)
     pub reason_last: bool,
 }
@@ -227,6 +230,12 @@ impl Serialize for HunkRetention {
         }
         if let Some(f) = &self.from {
             m.serialize_entry("from", f)?;
+        }
+        if let Some(v) = &self.vcs {
+            m.serialize_entry("vcs", v)?;
+        }
+        if let Some(r) = &self.root {
+            m.serialize_entry("root", r)?;
         }
         m.end()
     }
@@ -297,6 +306,26 @@ pub struct Provenance {
     pub context: JsMap<ValueSource>,
 }
 
+/// リポジトリで比べた版(worktree・committed = 照合したときに VCS で見た版、fixed = 日時から推定した版)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RepoEvaluated {
+    pub rev: String,
+    /// estimated = 日時から推定した(fixed)。無ければ、照合したときに VCS で見た版
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<RevisionSource>,
+}
+
+/// 照合に使ったリポジトリ 1 つと、その開始時の基準・比べた版(セッションの repos。1 つのセッションが複数の VCS にまたがるときに、どれも残す)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RepoRetention {
+    pub vcs: VcsKind,
+    pub root: String,
+    /// 開始時の基準。決められなかった・決まった日数がまだ経っていないときは null
+    pub baseline: Option<Revision>,
+    /// 比べた版。調べられなかった・決まった日数がまだ経っていないときは null
+    pub evaluated: Option<RepoEvaluated>,
+}
+
 /// セッション 1 つの結果(読み書きのキーの順は、下の Serialize・Deserialize の実装を参照)
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionRetention {
@@ -309,6 +338,8 @@ pub struct SessionRetention {
     /// 開始時の基準(observed = ログの記録、estimated = 時刻から推定)
     pub baseline: Option<Revision>,
     pub evaluated: Option<Evaluated>,
+    /// 照合に使ったリポジトリ(最初に使った順)。まとまりの vcs・root はこのどれか。空なら書かない(古い結果にも無い)
+    pub repos: Vec<RepoRetention>,
     pub hunks: Vec<HunkRetention>,
     /// 基準にあった行だけでできていて、数えなかったまとまり
     pub excluded_hunks: i64,
@@ -339,6 +370,9 @@ impl Serialize for SessionRetention {
         m.serialize_entry("root", &self.root)?;
         m.serialize_entry("baseline", &self.baseline)?;
         m.serialize_entry("evaluated", &self.evaluated)?;
+        if !self.repos.is_empty() {
+            m.serialize_entry("repos", &self.repos)?;
+        }
         m.serialize_entry("hunks", &self.hunks)?;
         m.serialize_entry("excludedHunks", &self.excluded_hunks)?;
         m.serialize_entry("counts", &self.counts)?;
@@ -384,6 +418,8 @@ struct SessionRetentionRaw {
     root: Option<String>,
     baseline: Option<Revision>,
     evaluated: Option<Evaluated>,
+    #[serde(default)]
+    repos: Vec<RepoRetention>,
     hunks: Vec<Value>,
     excluded_hunks: i64,
     counts: LineCounts,
@@ -426,6 +462,10 @@ impl HunkRetention {
             tool_call_id: Option<String>,
             #[serde(default)]
             from: Option<HunkFrom>,
+            #[serde(default)]
+            vcs: Option<VcsKind>,
+            #[serde(default)]
+            root: Option<String>,
         }
         let r: Raw = serde_json::from_value(v)?;
         Ok(HunkRetention {
@@ -438,6 +478,8 @@ impl HunkRetention {
             similar_lines: r.similar_lines,
             tool_call_id: r.tool_call_id,
             from: r.from,
+            vcs: r.vcs,
+            root: r.root,
             reason_last,
         })
     }
@@ -464,6 +506,7 @@ impl<'de> Deserialize<'de> for SessionRetention {
             root: r.root,
             baseline: r.baseline,
             evaluated: r.evaluated,
+            repos: r.repos,
             hunks,
             excluded_hunks: r.excluded_hunks,
             counts: r.counts,
@@ -490,12 +533,13 @@ pub struct RetentionSummary {
     pub measured: i64,
     /// AI の変更はあるが、すべて照合不可だったセッションの数(理由別。キーは UnattributableReason の名前)
     pub unattributable: JsMap<i64>,
-    /// 照合できたセッションのうち、基準を時刻から推定したもの
+    /// 照合できたセッションのうち、基準を時刻から推定したもの(repos のどれかが推定なら推定。baseline_source_of)
     pub baseline_estimated: i64,
     /// まとまりの数(照合できたセッションのものだけ。照合不可のまとまりも含む)
     pub hunks: LineCounts,
     pub lines: LineCounts,
-    /// VCS ごとの照合できたセッションの数(キーは VcsKind の名前)
+    /// VCS ごとの照合できたセッションの数(キーは VcsKind の名前)。repos の種類ごとに 1 回数えるので、
+    /// 複数の VCS にまたがるセッションはそれぞれに入り、合計が measured を超えることがある
     pub by_vcs: JsMap<i64>,
     // 以下は記録の欠け・推定の範囲(0 なら省略。古い結果には無い)
     /// 編集はあったが、変更の中身がログに無く取り出せなかった数(渡したすべてのセッション。分母に入らない欠測)
@@ -856,6 +900,8 @@ fn classify_file(hunks: &[&AiHunk], base: Option<&str>, after: Option<&str>, cla
             similar_lines,
             tool_call_id: p.h.tool_call_id.clone().filter(|t| !t.is_empty()),
             from: Some(p.h.from),
+            vcs: None,
+            root: None,
             reason_last: false,
         });
     }
@@ -887,6 +933,8 @@ fn unattributed(h: &AiHunk, reason: UnattributableReason) -> HunkRetention {
         similar_lines: 0,
         tool_call_id: h.tool_call_id.clone().filter(|t| !t.is_empty()),
         from: Some(h.from),
+        vcs: None,
+        root: None,
         reason_last: false,
     }
 }
@@ -946,6 +994,22 @@ fn same(a: &Arc<VcsRepo>, b: Option<&Arc<VcsRepo>>) -> bool {
     b.is_some_and(|b| Arc::ptr_eq(a, b))
 }
 
+/// セッションのリポジトリ(session)に入るファイルを、いちばん内側の作業コピーで照合するためのリポジトリ。
+/// ファイルのある場所(消えていれば、ディスクにある上のフォルダ)がセッションのリポジトリの根より内側なら、そこで VCS を探し、
+/// 根がセッションのリポジトリより内側にあり、そのファイルを含むリポジトリ(入れ子の作業コピー)が見つかればそれを使う。
+/// 見つからなければ session(同じ根のものも session のまま使う。基準の headCommit などを同じリポジトリと見分けるため)。
+/// open_repo はフォルダごとに結果を残すので、同じフォルダで VCS を何度も呼ばない
+fn inner_repo(session: &Arc<VcsRepo>, path: &str, runner: &VcsRunner, cache: &RepoCache) -> Arc<VcsRepo> {
+    let Some(dir) = nearest_existing_dir(&platform::dirname(path)) else { return session.clone() };
+    if session.relative(&dir).is_none() {
+        return session.clone();
+    }
+    match open_repo(&dir, runner, cache) {
+        Ok(o) if session.relative(&o.root).is_some() && o.relative(path).is_some() => o,
+        _ => session.clone(),
+    }
+}
+
 struct Shared<'a> {
     sets: &'a [AiChangeSet],
     index: LineIndex,
@@ -969,6 +1033,7 @@ fn measure_one(sh: &Shared<'_>, me: usize) -> SessionRetention {
         root: None,
         baseline: None,
         evaluated: None,
+        repos: Vec::new(),
         hunks: Vec::new(),
         excluded_hunks: 0,
         counts: LineCounts::default(),
@@ -1026,12 +1091,14 @@ fn measure_one(sh: &Shared<'_>, me: usize) -> SessionRetention {
         by_file.entry(file_path_key(&h.path)).or_default().push(h);
     }
 
+    // 照合に使ったリポジトリ(最初に使った順。同じものは 1 つ)
+    let mut used: Vec<Arc<VcsRepo>> = Vec::new();
     for (fk, hunks) in &by_file {
         let path = hunks[0].path.as_str();
         let mut repo: Option<Arc<VcsRepo>> = None;
         let mut reason = UnattributableReason::RepoNotFound;
         match (&session_repo, s_repo) {
-            (_, Some(r)) if r.relative(path).is_some() => repo = Some(r.clone()),
+            (_, Some(r)) if r.relative(path).is_some() => repo = Some(inner_repo(r, path, &opts.runner, &sh.caches.repos)),
             // 作業フォルダがこの PC に無い。上のフォルダをたどると別のリポジトリに当たりうるので、探さない
             (Some(Err(NoRepo::RepoNotFound)), _) => reason = UnattributableReason::RepoNotFound,
             _ => {
@@ -1057,52 +1124,62 @@ fn measure_one(sh: &Shared<'_>, me: usize) -> SessionRetention {
             result.hunks.extend(hunks.iter().map(|h| unattributed(h, reason)));
             continue;
         };
+        // 同じ作業コピーでも、別のフォルダで開いたものは別の値になるので、種類と根で見分ける
+        if !used.iter().any(|u| repo_key(u) == repo_key(&repo)) {
+            used.push(repo.clone());
+        }
+        // このファイルのまとまり(数えなかったものは入らない)に、照合に使ったリポジトリを付ける
+        let first = result.hunks.len();
         if too_recent {
             result.hunks.extend(hunks.iter().map(|h| unattributed(h, UnattributableReason::TooRecent)));
-            continue;
-        }
-        let outcome = (|| -> Result<(), String> {
-            let Some(b) = baseline_of(&repo)? else {
-                result.hunks.extend(hunks.iter().map(|h| unattributed(h, UnattributableReason::BaselineMissing)));
-                return Ok(());
-            };
-            if same(&repo, s_repo) || result.baseline.is_none() {
-                result.provenance.baseline = Some(b.source);
-                result.baseline = Some(b.clone());
-            }
-            let rk = repo_key(&repo);
-            // 比べる版(fixed: 終わりから決まった日数後の版、committed: 最後に取り込んだ版。worktree はディスクなので無い)
-            let after_rev: Option<String> = match mode {
-                EvalMode::Fixed => {
-                    let Some(r) = after_rev_of(&repo)? else {
-                        result.hunks.extend(hunks.iter().map(|h| unattributed(h, UnattributableReason::AfterMissing)));
-                        return Ok(());
-                    };
-                    Some(r)
+        } else {
+            let outcome = (|| -> Result<(), String> {
+                let Some(b) = baseline_of(&repo)? else {
+                    result.hunks.extend(hunks.iter().map(|h| unattributed(h, UnattributableReason::BaselineMissing)));
+                    return Ok(());
+                };
+                if same(&repo, s_repo) || result.baseline.is_none() {
+                    result.provenance.baseline = Some(b.source);
+                    result.baseline = Some(b.clone());
                 }
-                // svn の「今の版」は作業コピーのルートの版で、ファイルを取り込んだだけでは進まない(update するまで古いまま)。
-                // 基準と同じに見えても取り込みが無いとは言えないので、svn の committed ではこの判定をしない(BASE を読んで照合する)
-                EvalMode::Committed if repo.kind != VcsKind::Svn => sh.caches.revs.get_or_init(rk.clone(), || repo.current_revision())?,
-                EvalMode::Committed | EvalMode::Worktree => None,
-            };
-            // 比べる版が開始時の基準と同じなら、その間に取り込まれた変更が無い(AI の行は必ず見つからない)ので、照合不可にする
-            if after_rev.as_deref().is_some_and(|r| same_revision(repo.kind, r, &b.rev)) {
-                result.hunks.extend(hunks.iter().map(|h| unattributed(h, UnattributableReason::NoCommits)));
-                return Ok(());
+                let rk = repo_key(&repo);
+                // 比べる版(fixed: 終わりから決まった日数後の版、committed: 最後に取り込んだ版。worktree はディスクなので無い)
+                let after_rev: Option<String> = match mode {
+                    EvalMode::Fixed => {
+                        let Some(r) = after_rev_of(&repo)? else {
+                            result.hunks.extend(hunks.iter().map(|h| unattributed(h, UnattributableReason::AfterMissing)));
+                            return Ok(());
+                        };
+                        Some(r)
+                    }
+                    // svn の「今の版」は作業コピーのルートの版で、ファイルを取り込んだだけでは進まない(update するまで古いまま)。
+                    // 基準と同じに見えても取り込みが無いとは言えないので、svn の committed ではこの判定をしない(BASE を読んで照合する)
+                    EvalMode::Committed if repo.kind != VcsKind::Svn => sh.caches.revs.get_or_init(rk.clone(), || repo.current_revision())?,
+                    EvalMode::Committed | EvalMode::Worktree => None,
+                };
+                // 比べる版が開始時の基準と同じなら、その間に取り込まれた変更が無い(AI の行は必ず見つからない)ので、照合不可にする
+                if after_rev.as_deref().is_some_and(|r| same_revision(repo.kind, r, &b.rev)) {
+                    result.hunks.extend(hunks.iter().map(|h| unattributed(h, UnattributableReason::NoCommits)));
+                    return Ok(());
+                }
+                let base = read(format!("{rk}\0at\0{}\0{fk}", b.rev), &|| repo.read_at(&b.rev, path))?;
+                let after = if let (EvalMode::Fixed, Some(after_rev)) = (mode, after_rev.as_deref()) {
+                    read(format!("{rk}\0at\0{after_rev}\0{fk}"), &|| repo.read_at(after_rev, path))?
+                } else {
+                    read(format!("{rk}\0after\0{}\0{fk}", mode.as_str()), &|| repo.read_after(mode, path))?
+                };
+                let (results, excluded) = classify_file(hunks, base.as_deref().map(String::as_str), after.as_deref().map(String::as_str), |line| line_claim(&sh.index, &sh.owners, me, fk, line), opts.similarity);
+                result.hunks.extend(results);
+                result.excluded_hunks += excluded;
+                Ok(())
+            })();
+            if outcome.is_err() {
+                result.hunks.extend(hunks.iter().map(|h| unattributed(h, UnattributableReason::ReadError)));
             }
-            let base = read(format!("{rk}\0at\0{}\0{fk}", b.rev), &|| repo.read_at(&b.rev, path))?;
-            let after = if let (EvalMode::Fixed, Some(after_rev)) = (mode, after_rev.as_deref()) {
-                read(format!("{rk}\0at\0{after_rev}\0{fk}"), &|| repo.read_at(after_rev, path))?
-            } else {
-                read(format!("{rk}\0after\0{}\0{fk}", mode.as_str()), &|| repo.read_after(mode, path))?
-            };
-            let (results, excluded) = classify_file(hunks, base.as_deref().map(String::as_str), after.as_deref().map(String::as_str), |line| line_claim(&sh.index, &sh.owners, me, fk, line), opts.similarity);
-            result.hunks.extend(results);
-            result.excluded_hunks += excluded;
-            Ok(())
-        })();
-        if outcome.is_err() {
-            result.hunks.extend(hunks.iter().map(|h| unattributed(h, UnattributableReason::ReadError)));
+        }
+        for h in &mut result.hunks[first..] {
+            h.vcs = Some(repo.kind);
+            h.root = Some(repo.root.clone());
         }
     }
 
@@ -1117,6 +1194,24 @@ fn measure_one(sh: &Shared<'_>, me: usize) -> SessionRetention {
             let rev = sh.caches.revs.get_or_init(repo_key(repo), || repo.current_revision()).ok().flatten();
             result.evaluated = Some(Evaluated { mode, rev, at: sh.now.clone(), source: None });
         }
+    }
+    // 照合に使ったリポジトリごとの基準と比べた版(どちらも上で調べたものを使い回す。決まった日数がまだ経っていなければ調べない)
+    result.repos = used
+        .iter()
+        .map(|repo| {
+            let baseline = if too_recent { None } else { baseline_of(repo).ok().flatten() };
+            let evaluated = match mode {
+                EvalMode::Fixed if fixed_at.is_some() && !too_recent => after_rev_of(repo).ok().flatten().map(|rev| RepoEvaluated { rev, source: Some(RevisionSource::Estimated) }),
+                EvalMode::Fixed => None,
+                _ => sh.caches.revs.get_or_init(repo_key(repo), || repo.current_revision()).ok().flatten().map(|rev| RepoEvaluated { rev, source: None }),
+            };
+            RepoRetention { vcs: repo.kind, root: repo.root.clone(), baseline, evaluated }
+        })
+        .collect();
+    // 作業フォルダに VCS が無く、使ったリポジトリが 1 つだけなら、セッションの VCS と根もそれにする(2 つ以上なら決めない)
+    if let (None, [only]) = (s_repo, used.as_slice()) {
+        result.vcs = Some(only.kind);
+        result.root = Some(only.root.clone());
     }
     result.hunks.sort_by_key(|h| h.id);
     tally(&mut result);
@@ -1172,6 +1267,35 @@ pub fn measure_retention(sets: &[AiChangeSet], opts: &RetentionOptions) -> Vec<S
     out.into_iter().map(|m| m.into_inner().expect("結果").expect("すべてのセッションを照合した")).collect()
 }
 
+/// セッションの照合に使った VCS の種類(VCS_KINDS の順、同じ種類は 1 つ)。repos が無い(古い結果)ならセッションの vcs
+pub fn vcs_kinds_of(r: &SessionRetention) -> Vec<VcsKind> {
+    if r.repos.is_empty() {
+        return r.vcs.into_iter().collect();
+    }
+    crate::vcs::VCS_KINDS.into_iter().filter(|k| r.repos.iter().any(|x| x.vcs == *k)).collect()
+}
+
+/// セッションの開始時の基準の出所。repos があれば、どれかが推定なら推定、基準のあるものがすべて記録なら記録(推定を混ぜて記録と言わない)。
+/// repos が無い(古い結果)・どのリポジトリにも基準が無いなら、セッションの baseline
+pub fn baseline_source_of(r: &SessionRetention) -> Option<RevisionSource> {
+    let sources: Vec<RevisionSource> = r.repos.iter().filter_map(|x| x.baseline.as_ref().map(|b| b.source)).collect();
+    if sources.contains(&RevisionSource::Estimated) {
+        Some(RevisionSource::Estimated)
+    } else if !sources.is_empty() {
+        Some(RevisionSource::Observed)
+    } else {
+        r.baseline.as_ref().map(|b| b.source)
+    }
+}
+
+/// まとまりの照合に使ったリポジトリの基準(まとまりの root の repos。無ければセッションの baseline)
+pub fn hunk_baseline<'a>(r: &'a SessionRetention, h: &HunkRetention) -> Option<&'a Revision> {
+    match h.root.as_deref().and_then(|root| r.repos.iter().find(|x| Some(x.vcs) == h.vcs && x.root == root)) {
+        Some(x) => x.baseline.as_ref(),
+        None => r.baseline.as_ref(),
+    }
+}
+
 /// 照合の範囲と、照合できたセッションでの内訳
 pub fn summarize_retention(results: &[SessionRetention]) -> RetentionSummary {
     let mut s = RetentionSummary { sessions: results.len() as i64, ..Default::default() };
@@ -1192,7 +1316,7 @@ pub fn summarize_retention(results: &[SessionRetention]) -> RetentionSummary {
             continue;
         }
         s.measured += 1;
-        if r.baseline.as_ref().is_some_and(|b| b.source == RevisionSource::Estimated) {
+        if baseline_source_of(r) == Some(RevisionSource::Estimated) {
             s.baseline_estimated += 1;
         }
         // fixed の版はいつも日時から決めた推定(source の無い古い送った側の結果も、見方で数える)
@@ -1201,7 +1325,7 @@ pub fn summarize_retention(results: &[SessionRetention]) -> RetentionSummary {
         }
         s.excluded_hunks += r.excluded_hunks;
         s.similar_lines += r.hunks.iter().map(|h| h.similar_lines).sum::<i64>();
-        if let Some(v) = r.vcs {
+        for v in vcs_kinds_of(r) {
             s.by_vcs.inc(v.as_str(), 1);
         }
         s.hunks.add(&r.counts);
