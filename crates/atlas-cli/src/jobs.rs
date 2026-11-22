@@ -252,7 +252,9 @@ pub fn pin_group_ids(req: JobRequest, groups: &LoadedGroups, known_id: &dyn Fn(&
     })
 }
 
-/// 子プロセスの引数がコマンドラインに収まるか(引数の文字数と区切りの合計で見る)
+/// 子プロセスの引数がコマンドラインに収まるか(引数の文字数と区切りの合計で見る)。
+/// Windows のコマンドラインの上限は 32767 文字(UTF-16)。JOB_ARGS_MAX_CHARS を 30000 にして、実行ファイルのパスと引用符の分を空けている。
+/// 数えるのは chars() で UTF-16 の単位とは違う(サロゲートペアで増える)が、引数はセッション ID と ASCII のオプションが主で、その差もこの余白に収まる
 fn check_args_length(req: &JobRequest, args: &[String]) -> Result<(), JobError> {
     let total: usize = args.iter().map(|a| a.chars().count() + 1).sum();
     if total <= JOB_ARGS_MAX_CHARS {

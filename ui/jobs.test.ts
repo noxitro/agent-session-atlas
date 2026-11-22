@@ -10,6 +10,7 @@
 //  f4. タスクタグを選んで開くと、対象がそのタグのセッションだけになり、判定もそのタグのセッションだけにする
 //  f5. 詳細ページの判定: 進み具合の確認が途中で失敗(通信の失敗・5xx)しても、待ち続けて終わりまで出す
 //  f6. 詳細ページの判定: 押したら件数を数え直す。開いた後に判定済みになっていれば判定し直す(force)、対象が無くなっていれば送らない
+//  f7. 詳細ページの判定: 数え直しで依頼ごとの件数だけ読めなければ失敗と出す。確かめで取りやめても「読み込み直す」は残る
 //  g. 詳細ページの「記録を読む」「全文を作って読む」で本文が描かれ、記録に混ぜた script やイベント属性は実行されない
 //  h. file:// で開いた atlas.html と詳細ページには操作が出ない
 // どの画面でもページ内の例外とコンソールのエラーが無いこと。
@@ -726,6 +727,60 @@ describe('画面からの操作(Phase 14)', () => {
     } finally {
       page.off('dialog', onDialog);
       await page.unrouteAll({ behavior: 'ignoreErrors' });
+    }
+  });
+
+  it('f7. 詳細ページ: 数え直しで依頼ごとの件数だけ読めなければ失敗と出す。確かめで取りやめても「読み込み直す」は残る', async () => {
+    let turnsFail = false;
+    await page.route(/\/api\/jobs\/judge-preview/, (r) => {
+      if (r.request().url().includes('target=turns')) return turnsFail ? r.fulfill(json({ error: '数えられません' }, 500)) : r.fulfill(json({ eligible: 2, judged: 0, pending: 2, withoutTurns: 0, chunk: 6, model: null, byok: false, modelError: null }));
+      return r.fulfill(json({ eligible: 1, judged: 0, pending: 1, model: null, byok: false, modelError: null }));
+    });
+    let body: Record<string, unknown> = {};
+    await page.route(/\/api\/jobs$/, (r) => {
+      body = JSON.parse(r.request().postData() ?? '{}') as Record<string, unknown>;
+      return r.fulfill(json(fakeJob('running', body), 202));
+    });
+    await page.route(/\/api\/jobs\/current$/, (r) => r.fulfill(json(Object.keys(body).length ? fakeJob('done', body) : null)));
+    let accept = true;
+    const dialogs: string[] = [];
+    const onDialog = (d: Dialog): void => {
+      dialogs.push(d.message());
+      void (accept ? d.accept() : d.dismiss());
+    };
+    try {
+      await page.goto(await detailUrl());
+      const group = page.getByTestId('detail-judge');
+      await group.waitFor({ state: 'visible' });
+      const msg = group.locator('p.judge-msg');
+      const err = group.locator('p.judge-err');
+      const reload = page.getByTestId('detail-judge-reload');
+      page.on('dialog', onDialog);
+      // 工数を 1 回判定して「読み込み直す」を出す
+      await page.getByTestId('detail-judge-effort').click();
+      await expect.poll(() => msg.innerText()).toContain('工数の判定が終わり');
+      expect(await reload.isVisible()).toBe(true);
+      const done = await msg.innerText();
+      // 依頼ごと: 依頼ごとの件数だけ読めない → 「判定できる依頼が無くなっていた」ではなく、数え直せなかったと出す
+      turnsFail = true;
+      jobPosts.length = 0;
+      await page.getByTestId('detail-judge-turns').click();
+      await expect.poll(() => err.innerText()).toContain('判定の件数を数え直せませんでした');
+      expect(await msg.innerText()).not.toContain('判定できる依頼が無くなっていた');
+      expect(await reload.isVisible()).toBe(true);
+      expect(dialogs).toHaveLength(1);
+      // 工数: 確かめで取りやめても、前の判定の知らせと「読み込み直す」は残る
+      turnsFail = false;
+      accept = false;
+      await page.getByTestId('detail-judge-effort').click();
+      await expect.poll(() => dialogs.length).toBe(2);
+      expect(await msg.innerText()).toBe(done);
+      expect(await reload.isVisible()).toBe(true);
+      expect(jobPosts).toEqual([]);
+    } finally {
+      page.off('dialog', onDialog);
+      await page.unrouteAll({ behavior: 'ignoreErrors' });
+      dropFailedLoads();
     }
   });
 

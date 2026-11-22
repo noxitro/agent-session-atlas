@@ -96,11 +96,14 @@ function syncJudge(){
   [je,jt].forEach(function(b){if(b.disabled&&why.length)b.setAttribute('aria-describedby','judge-note');else b.removeAttribute('aria-describedby')});
   jc.hidden=!jBusy||jDown;
 }
-// strict: 数えられなければ(押した後に数え直すとき)理由を添えて失敗にする
-function loadJudge(strict){
+// strict: 数えられなければ(押した後に数え直すとき)理由を添えて失敗にする。turns: 押したのが依頼ごとのボタンなら、依頼ごとの件数も読めないと失敗
+function loadJudge(strict,turns){
   return Promise.all([jq(false),jq(true)]).then(function(rs){
+    var bad=function(r){return !r.ok||!r.body},why=function(r){return new Error((r.body&&r.body.error)||('サーバの応答 '+r.status))};
     // セッションが sessions.json に無い(古いページ)などで数えられなければ、判定のボタンは出さない
-    if(!rs[0].ok||!rs[0].body){if(strict)throw new Error((rs[0].body&&rs[0].body.error)||('サーバの応答 '+rs[0].status));return false}
+    if(bad(rs[0])){if(strict)throw why(rs[0]);return false}
+    // 依頼ごとの件数だけ読めなかったのを「判定できる依頼が無くなっていた」としない
+    if(strict&&turns&&bad(rs[1]))throw why(rs[1]);
     pv=rs[0].body;pt=rs[1].ok&&rs[1].body?rs[1].body:null;syncJudge();jg.hidden=false;return true;
   });
 }
@@ -145,12 +148,14 @@ function jwait(jobId,miss){
 // 判定し直す(force)を付けずに送り、0 件で終わって「終わり」と出てしまう)。数え直す間はボタンを押せない(二重押しを防ぐ)
 function runJudge(turns){
   if(jBusy||jDown||jPick||!pv)return;
-  jPick=true;jerr.hidden=true;jr.hidden=true;jmsg.textContent='判定の件数を数え直しています…';syncJudge();
-  loadJudge(true).then(function(){
-    jPick=false;jmsg.textContent='';syncJudge();
+  // 前の判定の「読み込み直す」とその知らせは、判定を始めるとき(jstart)まで残す(確かめで取りやめたとき・対象が無いときに消えないように)
+  var prev=jmsg.textContent;
+  jPick=true;jerr.hidden=true;jmsg.textContent='判定の件数を数え直しています…';syncJudge();
+  loadJudge(true,turns).then(function(){
+    jPick=false;jmsg.textContent=prev;syncJudge();
     askJudge(turns);
   },function(e){
-    jPick=false;jmsg.textContent='';jerr.textContent='判定の件数を数え直せませんでした('+e.message+')。もう一度押してください。';jerr.hidden=false;syncJudge();
+    jPick=false;jmsg.textContent=prev;jerr.textContent='判定の件数を数え直せませんでした('+e.message+')。もう一度押してください。';jerr.hidden=false;syncJudge();
   });
 }
 function askJudge(turns){

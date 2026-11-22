@@ -35,18 +35,34 @@ impl Drop for WorkDir {
 
 /// 絞り込みがあれば、束の場所を作業用の場所へ差し替える(--bundle で場所を指したときはそのまま。判定の結果の judgments.json などは共有のまま)
 fn use_work_dir(p: &mut Paths, common: &CliOptions, log: Log<'_>) -> anyhow::Result<WorkDir> {
+    let dir = p.out.join(JUDGE_WORK_DIR);
+    // 前の回が画面の「止める」(子プロセスごと止めるので Drop が動かない)などで残っていれば、絞らない回でも消しておく
+    atlas_core::fs_retry::remove_tree(&dir)?;
     if !has_filter(&SessionFilter::from_cli(common)) {
         return Ok(WorkDir(None));
     }
-    let dir = p.out.join(JUDGE_WORK_DIR);
-    // 前の回が止められて残っていれば消してから作る
-    atlas_core::fs_retry::remove_tree(&dir)?;
     if common.bundle.is_none() {
         p.bundle = dir.join("bundle");
     }
     p.turn_bundle = dir.join("turn-bundle");
     log(&format!("判定の範囲を絞ったので、束は作業用の場所に作ります(共有の束は変えません。終わったら消します)→ {}", dir.display()));
     Ok(WorkDir(Some(dir)))
+}
+
+/// judge run に渡す判定のオプション。args は --session の ID を --only の後ろに足すが、絞った束(作業用の場所)はもう
+/// その範囲だけで作ってあるので、--session の分は外す。束はユーザーの依頼が記録されていないセッションを入れないため、
+/// 残すと「バンドルに無いセッション ID です」で全体が止まる(記録に無い ID は、その前の bundle の絞り込みで止まる)。
+/// --bundle で場所を指したときは、その束から --session の ID を探すので残す
+fn without_scoped_sessions(j: crate::args::JudgeCliOptions, o: &CliOptions) -> crate::args::JudgeCliOptions {
+    let mut only = j.only.clone();
+    let scoped = o.bundle.is_none() && has_filter(&SessionFilter::from_cli(o));
+    if let (true, Some(list), Some(ids)) = (scoped, only.as_mut(), o.sessions.as_ref()) {
+        list.truncate(list.len().saturating_sub(ids.len()));
+        if list.is_empty() {
+            only = None;
+        }
+    }
+    crate::args::JudgeCliOptions { ignored_filters: Vec::new(), only, ..j }
 }
 
 /// 最後の export。絞り込み(--session / --group / --since など)は判定する範囲を決めるためのものなので、レポートはいつも全体で作り直す
@@ -125,7 +141,7 @@ pub fn main(argv: &[String]) -> u8 {
         let _work = use_work_dir(&mut p, &common, log)?;
         run_command(&CliOptions { command: "bundle".into(), ..common.clone() }, &p, log)?;
         // 絞り込みは上の bundle で使った。judge run には渡さない(judge を直に実行したときだけ止めるため)
-        let judge_run = CliOptions { judge: judge_opts.judge.clone().map(|j| crate::args::JudgeCliOptions { ignored_filters: Vec::new(), ..j }), ..judge_opts.clone() };
+        let judge_run = CliOptions { judge: judge_opts.judge.clone().map(|j| without_scoped_sessions(j, &judge_opts)), ..judge_opts.clone() };
         let failed = match run_command(&judge_run, &p, log) {
             Ok(r) => r.judge.map_or(0, |j| j.failed.len()),
             Err(e) => {
