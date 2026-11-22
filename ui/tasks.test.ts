@@ -159,7 +159,7 @@ describe('管理ツールのタスクの画面', () => {
     // 一覧へ移ると、そのタスクのセッションだけが出て、行にタスクの名前がある
     await page.locator('tr[data-task="DEMO-101"]').getByRole('link', { name: 'セッション一覧へ' }).click();
     await page.locator('#sessions').waitFor({ state: 'visible' });
-    expect(await page.getByTestId('session-task').allInnerTexts()).toEqual(['タスク: fix the app']);
+    expect(await page.getByTestId('session-task').allInnerTexts()).toEqual(['タスク: fix the app · DEMO-101(紐づけ: 機械)']);
     // もう一度押すと外れる(概況に戻って)
     await page.getByTestId('tab-overview').click();
     await page.getByTestId('tasks-table').locator('tr[data-task="DEMO-101"]').getByTestId('task-pick').click();
@@ -171,7 +171,9 @@ describe('管理ツールのタスクの画面', () => {
     await page.getByTestId('task-filter').selectOption('DEMO-102');
     await expect.poll(shown).toBe(1);
     const opts = await page.getByTestId('task-filter').locator('option').allInnerTexts();
-    expect(opts).toEqual(['すべて', `タスクなし(${all - 2})`, 'fix the app(DEMO-101)(1)', 'Improve the synthetic project(DEMO-102)(1)']);
+    // 「名前 · ID(件数)」。長い名前は縮め、全文は title に持つ(狭い幅でも件数まで見えるように)
+    expect(opts).toEqual(['すべて', `タスクなし(${all - 2})`, 'fix the app · DEMO-101(1)', 'Improve the synthetic pr… · DEMO-102(1)']);
+    expect(await page.getByTestId('task-filter').locator('option[value="DEMO-102"]').getAttribute('title')).toBe('Improve the synthetic project · DEMO-102');
     await page.getByTestId('task-filter').selectOption('');
     await expect.poll(shown).toBe(all);
   });
@@ -186,10 +188,25 @@ describe('管理ツールのタスクの画面', () => {
     // 探す文字で候補を絞る(ID か名前の一部)
     await page.getByTestId('detail-task-search').fill('帳票');
     expect(await page.getByTestId('detail-task-select').locator('option').allInnerTexts()).toEqual(['帳票の出力を速くする(DEMO-103)']);
+    // 合った数は、打ち終えてから状態の行で知らせる
+    await expect.poll(() => page.getByTestId('detail-task-msg').innerText()).toBe('合うタスク 1 件。');
     await page.getByTestId('detail-task-search').fill('');
     await page.getByTestId('detail-task-select').selectOption('DEMO-103');
     await page.getByTestId('detail-task-set').click();
     await expect.poll(() => page.getByTestId('detail-task-msg').innerText()).toContain('このタスクに紐づけました。');
+    // 保存しても焦点は押したボタンに残り(押せない状態は aria-disabled)、Esc で閉じて「変える…」に戻る
+    expect(await page.evaluate<string | undefined>('document.activeElement?.dataset.testid')).toBe('detail-task-set');
+    expect(await page.getByTestId('detail-task-set').getAttribute('aria-disabled')).toBe('true');
+    await page.keyboard.press('Escape');
+    await page.getByTestId('detail-task-edit').waitFor({ state: 'hidden' });
+    expect(await page.evaluate<string | undefined>('document.activeElement?.dataset.testid')).toBe('detail-task-open');
+    // サーバが止まった知らせで閉じるときも、焦点を「変える…」へ移す(body に落とさない)
+    await page.getByTestId('detail-task-open').click();
+    await page.getByTestId('detail-task-search').focus();
+    await page.evaluate("document.dispatchEvent(new Event('atlas-down'))");
+    await page.getByTestId('detail-task-edit').waitFor({ state: 'hidden' });
+    expect(await page.evaluate<string | undefined>('document.activeElement?.dataset.testid')).toBe('detail-task-open');
+    expect(await page.getByTestId('detail-task-open').getAttribute('aria-disabled')).toBe('true');
     expect(await page.getByTestId('detail-task-name').innerText()).toBe('帳票の出力を速くする(DEMO-103)');
     expect(await page.getByTestId('detail-task-source').innerText()).toBe('紐づけ: 手動');
     expect((await links())[S_OTHER]).toMatchObject({ taskId: 'DEMO-103', source: 'manual' });
@@ -204,11 +221,14 @@ describe('管理ツールのタスクの画面', () => {
     await page.getByTestId('detail-task-none').click();
     await expect.poll(() => page.getByTestId('detail-task-name').innerText()).toBe('どのタスクでもない');
     expect((await links())[S_OTHER]).toMatchObject({ taskId: null, source: 'manual' });
-    expect(await page.getByTestId('detail-task-none').isDisabled()).toBe(true);
+    expect(await page.getByTestId('detail-task-none').getAttribute('aria-disabled')).toBe('true');
+    // 押せない状態で押しても何もしない
+    await page.getByTestId('detail-task-none').click({ force: true });
+    expect((await links())[S_OTHER]).toMatchObject({ taskId: null, source: 'manual' });
     await page.getByTestId('detail-task-auto').click();
     await expect.poll(() => page.getByTestId('detail-task-name').innerText()).toBe('紐づけなし');
     expect((await links())[S_OTHER]).toBeUndefined();
-    expect(await page.getByTestId('detail-task-auto').isDisabled()).toBe(true);
+    expect(await page.getByTestId('detail-task-auto').getAttribute('aria-disabled')).toBe('true');
     // 機械で紐づいたセッションを自動に戻しても、機械の紐づけはすぐ決め直す
     await page.goto(detailUrl(server, S_FIX));
     expect(await page.getByTestId('detail-task-name').innerText()).toBe('fix the app(DEMO-101)');
@@ -230,10 +250,32 @@ describe('管理ツールのタスクの画面', () => {
     expect(n).toBeGreaterThan(0);
     expect(await btn.getAttribute('aria-disabled')).toBeNull();
     const dialog = page.getByTestId('task-link-dialog');
+    // 使うモデル(費用の出所)が分かるまでは「消費します」と書かず、始められない。分からなかったときも始められない
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => (release = r));
+    await page.route('**/api/jobs/judge-preview*', async (route) => {
+      await held;
+      await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'テスト用の失敗' }) });
+    });
+    await btn.click();
+    await dialog.waitFor({ state: 'visible' });
+    expect(await page.getByTestId('task-link-cost').innerText()).toBe('費用を確かめています…');
+    expect(await page.getByTestId('task-link-model').innerText()).toBe('使うモデルを確かめています…');
+    expect(await page.getByTestId('task-link-run').isDisabled()).toBe(true);
+    release();
+    await expect.poll(() => page.getByTestId('task-link-model').innerText()).toBe('使うモデルを確かめられませんでした: テスト用の失敗');
+    expect(await page.getByTestId('task-link-cost').innerText()).toContain('費用を確かめられないので、始められません。');
+    expect(await page.getByTestId('task-link-run').isDisabled()).toBe(true);
+    await page.getByTestId('task-link-cancel').click();
+    await dialog.waitFor({ state: 'hidden' });
+    await page.unroute('**/api/jobs/judge-preview*');
+    // わざと失敗させた応答のコンソールのエラーだけは数えない
+    for (let i = problems.length - 1; i >= 0; i--) if (/status of 503/.test(problems[i])) problems.splice(i, 1);
     await btn.click();
     await dialog.waitFor({ state: 'visible' });
     expect(await page.getByTestId('task-link-count').innerText()).toBe(`紐づけの無いセッション ${n} 件を 1 件ずつ聞きます。`);
-    expect(await dialog.innerText()).toContain('AI クレジットを消費します。');
+    await expect.poll(() => page.getByTestId('task-link-cost').innerText()).toContain('AI クレジットを消費します。');
+    expect(await page.getByTestId('task-link-run').isDisabled()).toBe(false);
     // 初期フォーカスは「やめる」。やめれば何も始めない
     expect(await page.evaluate<string | undefined>('document.activeElement?.dataset.testid')).toBe('task-link-cancel');
     await page.getByTestId('task-link-cancel').click();

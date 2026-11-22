@@ -40,11 +40,15 @@
           ? '設定(atlas.config.json)に tasks がありません。'
           : taskLink.unresolved === 0
             ? '紐づけの無いセッションはありません(機械・LLM・手動のどれかで決まっています)。'
-            : jobs.running
-              ? 'ほかの処理が動いています。終わってから押してください。'
-              : '',
+            : disabled
+              ? 'サーバが止まっています。atlas.bat を実行し直してください。'
+              : jobs.running || jobs.busy
+                ? 'ほかの処理が動いています。終わってから押してください。'
+                : '',
   );
-  const linkOff = $derived(disabled || jobs.busy || linkWhy !== '');
+  const linkOff = $derived(linkWhy !== '');
+  /** 確認の中で、使うモデルと費用が分かったか(分かるまで、と分からなかったときは始められない。BYOK なら費用の出所が変わるため) */
+  const linkReady = $derived(!!linkPreview && !linkPreviewError);
   async function openLink(): Promise<void> {
     if (linkOff || !taskLink) return;
     linkPreview = null;
@@ -61,7 +65,7 @@
   }
   async function runLink(e: SubmitEvent): Promise<void> {
     e.preventDefault();
-    if (!taskLink || taskLink.unresolved < 1 || jobs.busy) return;
+    if (!taskLink || taskLink.unresolved < 1 || jobs.busy || !linkReady) return;
     if (await jobs.run({ kind: 'task-link' })) linkDlg?.close();
     else linkError = jobs.error;
   }
@@ -195,22 +199,28 @@
     </div>
     <form onsubmit={runLink} aria-busy={jobs.busy}>
       <p class="lead">機械で決まらなかったセッションの題名と依頼の文を、判定と同じモデルに渡し、管理ツールのタスクのどれかを選ばせます。手で決めた紐づけと、前に LLM で決めた紐づけは変えません。終わったらレポートを作り直します。</p>
-      {#if linkPreview}
-        <p class="model" data-testid="task-link-model">
+      <p class="model" data-testid="task-link-model">
+        {#if linkPreview}
           モデル: {#if linkPreview.model}<code>{linkPreview.model}</code>{#if linkPreview.byok}(自分の API キー・BYOK){/if}{:else}Copilot の既定のモデル{/if}<span class="src">(atlas.config.json の judgeModel{linkPreview.model ? '' : 'が未設定'})</span>
-        </p>
-      {:else if linkPreviewError}
-        <p class="model">使うモデルを確かめられませんでした: {linkPreviewError}</p>
-      {/if}
+        {:else if linkPreviewError}
+          使うモデルを確かめられませんでした: {linkPreviewError}
+        {:else}
+          使うモデルを確かめています…
+        {/if}
+      </p>
       <p class="count" role="status" data-testid="task-link-count">紐づけの無いセッション <strong>{int(taskLink.unresolved)} 件</strong>を 1 件ずつ聞きます。</p>
-      <p class="cost" id="task-link-cost">
-        {#if linkPreview?.byok}<strong>API の利用料がかかります。</strong>自分の API キーのモデル(BYOK)で聞くので、GitHub Copilot の AI クレジットは使いません。そのモデルの提供元の API の従量課金を、1 件につき 1 回の分だけ使います。
+      <!-- 費用の出所(AI クレジットか API の利用料)はモデルで決まる。分かるまで「消費します」と書かず、始めるボタンも押せない -->
+      <p class="cost" class:pending={!linkPreview && !linkPreviewError} id="task-link-cost" data-testid="task-link-cost">
+        {#if linkPreviewError}<strong>費用を確かめられないので、始められません。</strong>ダイアログを閉じて、もう一度開いてください。
+        {:else if !linkPreview}費用を確かめています…
+        {:else if linkPreview.byok}<strong>API の利用料がかかります。</strong>自分の API キーのモデル(BYOK)で聞くので、GitHub Copilot の AI クレジットは使いません。そのモデルの提供元の API の従量課金を、1 件につき 1 回の分だけ使います。
         {:else}<strong>AI クレジットを消費します。</strong>GitHub Copilot の AI クレジットを、1 件につき 1 回の分だけ使います。{/if}
+        {#if linkPreview?.modelError}<br />設定ファイルを読めませんでした: {linkPreview.modelError}{/if}
       </p>
       {#if linkError}<p class="err" role="alert">{linkError}</p>{/if}
       <div class="actions">
         <button type="button" class="btn" data-autofocus data-testid="task-link-cancel" onclick={() => linkDlg?.close()}>やめる</button>
-        <button type="submit" class="btn primary" disabled={taskLink.unresolved < 1 || jobs.busy} data-testid="task-link-run">{jobs.busy ? '開始しています…' : `${int(taskLink.unresolved)} 件を紐づける`}</button>
+        <button type="submit" class="btn primary" disabled={taskLink.unresolved < 1 || jobs.busy || !linkReady} data-testid="task-link-run">{jobs.busy ? '開始しています…' : `${int(taskLink.unresolved)} 件を紐づける`}</button>
       </div>
     </form>
   </dialog>
@@ -258,11 +268,15 @@
         <label class="fld"><span class="k">件数({unit})の上限</span><input type="number" name="judge-limit" autocomplete="off" min="1" max={LIMIT_MAX[target]} step="1" inputmode="numeric" bind:value={limit} aria-invalid={limitOk ? undefined : 'true'} aria-describedby="judge-count" data-testid="judge-limit" /></label>
         <p class="fld only">判定に使うもの: GitHub Copilot CLI(copilot -p)</p>
       </div>
-      {#if preview}
-        <p class="model" data-testid="judge-model">
+      <p class="model" data-testid="judge-model">
+        {#if preview}
           モデル: {#if preview.model}<code>{preview.model}</code>{#if preview.byok}(自分の API キー・BYOK){/if}{:else}Copilot の既定のモデル{/if}<span class="src">(atlas.config.json の judgeModel{preview.model ? '' : 'が未設定'})</span>
-        </p>
-      {/if}
+        {:else if previewError}
+          使うモデルを確かめられませんでした
+        {:else}
+          使うモデルを確かめています…
+        {/if}
+      </p>
       <p class="count" id="judge-count" role="status" data-testid="judge-count">
         {#if !limitOk}件数の上限は 1〜{int(LIMIT_MAX[target])} の整数で指定してください。
         {:else if previewError}未判定の件数を数えられませんでした: {previewError}
@@ -271,8 +285,11 @@
         {:else}未判定の{unit} {int(preview.pending)} 件のうち <strong>{int(count)} 件</strong>を判定します({#if target === 'turns'}約 {int(Math.ceil(count / turnChunk))} 回以上の判定。{/if}判定済み {int(preview.judged)} 件は判定し直しません)。{/if}
         {#if target === 'turns' && preview?.withoutTurns}<br />依頼ごとの記録が無いセッションが {int(preview.withoutTurns)} 件あります(古い集計)。先に「集計し直す」を押すと、その依頼も判定できます。{/if}
       </p>
-      <p class="cost" id="judge-cost">
-        {#if preview?.byok}<strong>API の利用料がかかります。</strong>
+      <!-- 費用の出所はモデルで決まる。分かるまで「消費します」と書かない(始めるボタンは件数が分かるまで押せない) -->
+      <p class="cost" class:pending={!preview && !previewError} id="judge-cost" data-testid="judge-cost">
+        {#if previewError}<strong>費用を確かめられないので、始められません。</strong>ダイアログを閉じて、もう一度開いてください。
+        {:else if !preview}費用を確かめています…
+        {:else if preview.byok}<strong>API の利用料がかかります。</strong>
           自分の API キーのモデル(BYOK)で判定するので、GitHub Copilot の AI クレジットは使いません。そのモデルの提供元(例: Anthropic)の API の従量課金を、{#if target === 'turns'}続いた依頼 {turnChunk} 件まで(長い依頼はもっと少なく)ごとに 1 回{:else}1 件につき 1 回以上{/if}の判定の分だけ使います。
         {:else}<strong>AI クレジットを消費します。</strong>
           {#if target === 'turns'}GitHub Copilot の AI クレジットを、続いた依頼 {turnChunk} 件まで(長い依頼はもっと少なく)ごとに 1 回の判定の分だけ使います。{:else}GitHub Copilot の AI クレジットを、1 件につき 1 回以上の判定の分だけ使います。{/if}
@@ -441,6 +458,12 @@
     font-size: 0.8125rem;
     background: var(--warn-wash);
     border: 1px solid var(--warn);
+  }
+  /* 費用を確かめている間は、注意の色にしない(まだ何も言っていない) */
+  .cost.pending {
+    color: var(--ink-2);
+    background: var(--surface);
+    border-color: var(--rule);
   }
   .err {
     margin: 8px 0 0;

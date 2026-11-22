@@ -43,12 +43,12 @@
     /** 管理ツールのタスクの紐づけ(セッション id → 紐づけ)とタスクの名前。タスクの記録が無ければ null */
     tasks?: { links: Record<string, TaskLinkView>; names: ReadonlyMap<string, string> } | null;
   } = $props();
-  /** 一覧のタスクの 1 行(紐づいたタスクの名前)。紐づいていなければ null */
-  function taskLine(id: string): { name: string; title: string } | null {
+  /** 一覧のタスクの 1 行(紐づいたタスクの名前・ID・紐づけの出所。理由は title)。紐づいていなければ null */
+  function taskLine(id: string): { name: string; id: string; source: string; title: string } | null {
     const l = tasks?.links[id];
     if (!l?.taskId) return null;
     const name = tasks?.names.get(l.taskId) ?? l.taskId;
-    return { name, title: `${l.taskId}・紐づけ: ${LINK_SOURCE_LABEL[l.source]}${l.reason ? `(${l.reason})` : ''}` };
+    return { name: name === l.taskId ? '' : name, id: l.taskId, source: LINK_SOURCE_LABEL[l.source], title: l.reason ? `紐づけの理由: ${l.reason}` : '' };
   }
 
   /** 変更行の欄の title(出所と、記録が欠けている理由) */
@@ -299,7 +299,7 @@
               <td class="num when">{dateTime(s.createdAt ?? s.updatedAt)}</td>
               <td class="num when">{dateTime(s.updatedAt ?? s.createdAt)}</td>
               <td class="proj" title={s.project}>{#each pathParts(s.projectLabel) as seg, i (i)}{#if i}<wbr />{/if}{seg}{/each}{#if s.branch}<span class="sub">{s.branch}</span>{/if}</td>
-              <td class="name"><a href={s.href} title={title(s)}>{#if leads.get(s.id)?.lead}<span class="lead" title="ほかの行と同じ書き出し(縮めて表示)">{leads.get(s.id)?.lead}</span>{leads.get(s.id)?.rest}{:else}{title(s)}{/if}</a>{#if (leads.get(s.id)?.same ?? 1) > 1}<span class="tag" title="一覧の中に題名がまったく同じセッションが {leads.get(s.id)?.same} 件あります。開始時刻やプロジェクトで見分けてください">同じ題名 ×{leads.get(s.id)?.same}</span>{/if}{#if s.empty}<span class="tag" title="依頼・ツール呼び出し・応答がどれも無いセッション">空</span>{/if}{#if found?.byId.has(s.id)}<span class="sub sid" data-testid="session-id">ID {s.id}</span>{/if}{#if found?.viaFirst.has(s.id) && s.firstUserMessage}<span class="sub" data-testid="session-first-hit">最初の依頼: {excerptAround(s.firstUserMessage, found.viaFirst.get(s.id) ?? '')}</span>{/if}{#if s.memo}<span class="sub" data-testid="memo-excerpt">メモ: {s.memo.excerpt || '(本文なし)'}</span>{/if}{#if taskLine(s.id)}{@const tl = taskLine(s.id)!}<span class="sub" title={tl.title} data-testid="session-task">タスク: {tl.name}</span>{/if}</td>
+              <td class="name"><a href={s.href} title={title(s)}>{#if leads.get(s.id)?.lead}<span class="lead" title="ほかの行と同じ書き出し(縮めて表示)">{leads.get(s.id)?.lead}</span>{leads.get(s.id)?.rest}{:else}{title(s)}{/if}</a>{#if (leads.get(s.id)?.same ?? 1) > 1}<span class="tag" title="一覧の中に題名がまったく同じセッションが {leads.get(s.id)?.same} 件あります。開始時刻やプロジェクトで見分けてください">同じ題名 ×{leads.get(s.id)?.same}</span>{/if}{#if s.empty}<span class="tag" title="依頼・ツール呼び出し・応答がどれも無いセッション">空</span>{/if}{#if found?.byId.has(s.id)}<span class="sub sid" data-testid="session-id">ID {s.id}</span>{/if}{#if found?.viaFirst.has(s.id) && s.firstUserMessage}<span class="sub" data-testid="session-first-hit">最初の依頼: {excerptAround(s.firstUserMessage, found.viaFirst.get(s.id) ?? '')}</span>{/if}{#if s.memo}<span class="sub" data-testid="memo-excerpt">メモ: {s.memo.excerpt || '(本文なし)'}</span>{/if}{#if taskLine(s.id)}{@const tl = taskLine(s.id)!}<span class="sub" title={tl.title || undefined} data-testid="session-task">タスク: {tl.name ? `${tl.name} · ` : ''}<span translate="no">{tl.id}</span>(紐づけ: {tl.source})</span>{/if}</td>
               <td class="nowrap">{s.client ?? '不明'}</td>
               <td class="models" title={s.models.join('、')}>{s.models.length ? s.models.map(modelLabel).join('、') : '不明'}</td>
               <td class="num">

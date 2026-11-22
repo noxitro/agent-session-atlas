@@ -109,7 +109,7 @@
       {#if tasks.origin === 'sender'}送った人の記録に、紐づいたタスクはありません。{:else}タスクがありません。設定の <code>tasks.file</code> の XML と、読み方(<code>tasks.item</code> など)を確かめてください。{/if}
     </p>
   {:else}
-    <div class="fields" style="--cols:3">
+    <div class="fields task-fields" style="--cols:3">
       <div class="field">
         <span class="k">タスクの数</span>
         <span class="v" data-testid="tasks-count">{int(tasks.items.length)}</span>
@@ -132,7 +132,7 @@
       </div>
     </div>
     <!-- 2 つの工数と AI の実働は、別の欄に並べるだけ(狭い幅でも 2 つの工数が隣り合うよう、数の欄とは別の組にする) -->
-    <div class="fields efforts" style="--cols:3">
+    <div class="fields task-fields efforts" style="--cols:3">
       <div class="field">
         <span class="k">AI を使わなかった場合の工数(推定人手工数)</span>
         <span class="v" data-testid="tasks-human">{s.included ? hours(s.humanHours) : '—'}</span>
@@ -191,10 +191,10 @@
                   {:else}
                     <span class="plain">{t.name || t.id}</span>
                   {/if}
-                  <span class="part id">{t.id}</span>
+                  <span class="part id" translate="no">{t.id}</span>
                   {#if current === t.id}<span class="part">絞り込み中(もう一度押すと解除)。<a href={filterHref({ ...emptyFilter(), task: t.id }, null, 'list')}>セッション一覧へ</a></span>{/if}
                 </th>
-                <td class="status">{t.status || '—'}<span class="part">{t.done ? '完了' : '未完了'}</span>{#if t.missing}<span class="tag" title="最後に読んだ XML に無かったタスク。最後に読んだ値のまま出しています">書き出しに無い</span>{/if}</td>
+                <td class="status"><span translate="no">{t.status || '—'}</span><span class="part">{t.done ? '完了' : '未完了'}</span>{#if t.missing}<span class="tag" title="最後に読んだ XML に無かったタスク。最後に読んだ値のまま出しています">書き出しに無い</span>{/if}</td>
                 <td class="num when">{dateTime(t.start, '—')}</td>
                 <td class="num when">{dateTime(t.doneAt, '—')}</td>
                 <td class="num">
@@ -218,7 +218,7 @@
         <button type="button" class="btn" aria-expanded={expanded} onclick={() => (expanded = !expanded)}>{expanded ? `上位 ${LIMIT} 件だけ表示` : `残り ${int(sorted.length - LIMIT)} 件も表示`}</button>
       {/if}
       {#if unlinked > 0}
-        <button type="button" class="btn" aria-pressed={showAll} onclick={() => (showAll = !showAll)} data-testid="tasks-show-all">{showAll ? 'セッションの紐づいたタスクだけ表示' : `セッションの紐づいていないタスク ${int(unlinked)} 件も表示`}</button>
+        <button type="button" class="btn" onclick={() => (showAll = !showAll)} data-testid="tasks-show-all">{showAll ? 'セッションの紐づいたタスクだけ表示' : `セッションの紐づいていないタスク ${int(unlinked)} 件も表示`}</button>
       {/if}
     </div>
   {/if}
@@ -237,6 +237,12 @@
   /* 数の欄の組のすぐ下に続ける(罫を二重にしない) */
   .fields.efforts {
     border-top: 0;
+  }
+  /* 狭い幅(2 列)では 3 つ目の欄を横に伸ばす(空欄を残さない。要点の枠と同じ考え方) */
+  @media (max-width: 720px) {
+    .task-fields .field:last-child:nth-child(odd) {
+      grid-column: 1 / -1;
+    }
   }
   .task-warn {
     margin: 0 0 8px;
