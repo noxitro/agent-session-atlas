@@ -69,20 +69,30 @@ describe('lib/retention', () => {
     expect([...VCS_KINDS]).toEqual(rustList(VCS_RS, 'VCS_KINDS', 'VcsKind').map((v) => rustArms(VCS_RS, 'VcsKind', 'as_str')[v]));
     const zero = { kept: 0, modified: 0, missing: 0, unattributable: 0 };
     const base = { outcome: 'measured' as const, counts: { ...zero, kept: 1 }, lines: { ...zero, kept: 1 } };
-    const repo = (vcs: 'git' | 'svn' | 'p4', source: 'observed' | 'estimated') => ({ vcs, baseline: { source } });
-    const mixed = retentionItem({ ...base, vcs: null, baseline: { source: 'estimated' }, repos: [repo('p4', 'observed'), repo('svn', 'estimated')] });
+    type Kind = 'git' | 'svn' | 'p4';
+    const repo = (vcs: Kind, source: 'observed' | 'estimated') => ({ vcs, root: `r-${vcs}`, baseline: { source } });
+    const hunk = (vcs: Kind, status: 'kept' | 'unattributable' = 'kept') => ({ status, vcs, root: `r-${vcs}` });
+    const mixedLike = { ...base, vcs: null, baseline: { source: 'estimated' as const }, repos: [repo('p4', 'observed'), repo('svn', 'estimated')], hunks: [hunk('p4'), hunk('svn')] };
+    const mixed = retentionItem(mixedLike);
     expect(mixed).toMatchObject({ vcs: null, vcsKinds: ['svn', 'p4'], baseline: 'estimated' });
     // キーの順は Rust の埋め込みと同じ(vcs の後に vcsKinds)
     expect(JSON.stringify(mixed)).toContain('"vcs":null,"vcsKinds":["svn","p4"],"baseline":"estimated"');
+    // 照合不可のまとまりだけのリポジトリ(svn)と、どのまとまりも指していないリポジトリは数えない
+    expect(retentionItem({ ...mixedLike, hunks: [hunk('p4'), hunk('svn', 'unattributable')] })).toMatchObject({ vcsKinds: ['p4'], baseline: 'observed' });
+    expect(retentionItem({ ...mixedLike, hunks: [hunk('p4')] })).toMatchObject({ vcsKinds: ['p4'], baseline: 'observed' });
+    // git で照合でき、p4 のまとまりはすべて読めなかった: VCS は git だけ、基準は記録(種類はセッションの vcs と同じなので持たない)
+    const gitOnly = retentionItem({ ...base, vcs: 'git', baseline: { source: 'observed' }, repos: [repo('git', 'observed'), repo('p4', 'estimated')], hunks: [hunk('git'), hunk('p4', 'unattributable')] });
+    expect(gitOnly.baseline).toBe('observed');
+    expect(gitOnly.vcsKinds).toBeUndefined();
     // セッションの vcs だけと同じなら種類は持たない。repos が無い古い結果は今までどおり
-    const single = retentionItem({ ...base, vcs: 'git', baseline: { source: 'estimated' }, repos: [repo('git', 'observed')] });
+    const single = retentionItem({ ...base, vcs: 'git', baseline: { source: 'estimated' }, repos: [repo('git', 'observed')], hunks: [hunk('git')] });
     expect(single.vcsKinds).toBeUndefined();
     expect(single.baseline).toBe('observed');
     expect(retentionItem({ ...base, vcs: 'svn', baseline: { source: 'estimated' } })).toMatchObject({ vcs: 'svn', baseline: 'estimated' });
     expect(vcsKindsOf({ vcs: 'svn' })).toEqual(['svn']);
-    expect(baselineSourceOf({ baseline: { source: 'observed' }, repos: [{ vcs: 'svn', baseline: null }] })).toBe('observed');
-    const a = aggregateRetention([{ retention: mixed }, { retention: item({}) }, { retention: item({ vcs: 'p4' }) }]);
-    expect(a).toMatchObject({ measured: 3, byVcs: { svn: 1, p4: 2, git: 1 }, multiVcs: 1, baseline: { observed: 2, estimated: 1 } });
+    expect(baselineSourceOf({ baseline: { source: 'observed' }, repos: [{ vcs: 'svn', root: 'r-svn', baseline: null }] })).toBe('observed');
+    const a = aggregateRetention([{ retention: mixed }, { retention: item({}) }, { retention: item({ vcs: 'p4' }) }, { retention: gitOnly }]);
+    expect(a).toMatchObject({ measured: 4, byVcs: { svn: 1, p4: 2, git: 2 }, multiVcs: 1, baseline: { observed: 3, estimated: 1 } });
   });
 
   it('aggregateRetention: 照合できたセッションだけを分母にし、照合の範囲(照合していない・変更なし・照合不可の理由)を数える', () => {

@@ -26,7 +26,7 @@ use atlas_core::turns::{mismatch_label, outcome_label, phase_label, request_kind
 use atlas_core::failure_ledger::MAX_ROWS;
 use atlas_core::types::{AgentStatus, CallOutcome, FailureKind, NextKind, ToolFailure, InstructionFile, InstructionInjection, InstructionScope, LineChanges, LineNote, LineSource, ProjectSource, SessionRecord, SessionTests, SessionTokens, SkillTrigger, SkillVia, TimelineEntry, TimelineKind, TokenCounts, TokenSource};
 use atlas_core::vcs::{RevisionSource, VcsKind};
-use atlas_core::vcs_retention::{Outcome, SessionRetention};
+use atlas_core::vcs_retention::{hunk_repo_values, HunkRetention, Outcome, RepoRetention, SessionRetention};
 use atlas_core::wiki::{WikiState, WIKI_NOT_COUNTED, WIKI_NO_RECORD};
 use serde_json::Value;
 use std::cmp::Ordering;
@@ -843,8 +843,8 @@ fn lag_text(end: Option<&str>, at: Option<&str>) -> String {
     format!("・セッションの終わりから {} 日後", esc(&dec_n(d)))
 }
 
-/// AI の変更がその後の VCS のファイルに残っているか(atlas vcs の結果)
-fn retention_section(sec: &mut Sections, r: &SessionRetention, meta: Option<&RetentionMeta>) -> String {
+/// AI の変更がその後の VCS のファイルに残っているか(atlas vcs の結果)。work_dir はセッションの作業フォルダ(リポジトリの根の見分けに使う)
+fn retention_section(sec: &mut Sections, r: &SessionRetention, meta: Option<&RetentionMeta>, work_dir: Option<&str>) -> String {
     // 状態の名前は、設定(vcs.labels)で差し替えたものがあればそれ
     let label = |k: &str| -> String { meta.and_then(|m| m.labels.as_ref()).and_then(|l| l.get(k)).cloned().unwrap_or_else(|| status_label(k).to_string()) };
     let lead = esc(&format!(
@@ -867,9 +867,26 @@ fn retention_section(sec: &mut Sections, r: &SessionRetention, meta: Option<&Ret
     let baseline = r.baseline.as_ref().map(|b| source_note(b.source)).unwrap_or("");
     // 照合に使ったリポジトリが複数(またはセッションのものと違う)なら、VCS と開始時の基準をリポジトリごとに並べる
     let multi = r.repos.len() > 1 || r.repos.first().is_some_and(|x| Some(x.vcs) != r.vcs || Some(&x.root) != r.root.as_ref());
-    let repo_baseline = |x: &atlas_core::vcs_retention::RepoRetention| -> String {
+    // 同じ種類のリポジトリが 2 つ以上あれば、見分けられるよう根を添える(作業フォルダからの相対。外・同じフォルダならフォルダ名)
+    let root_label = |x: &RepoRetention| -> Option<String> {
+        if r.repos.iter().filter(|y| y.vcs == x.vcs).count() < 2 {
+            return None;
+        }
+        let name = || x.root.trim_end_matches(['\\', '/']).rsplit(['\\', '/']).next().unwrap_or(&x.root).to_string();
+        Some(work_dir.filter(|w| !w.is_empty()).and_then(|w| relative_inside(w, &x.root)).unwrap_or_else(name))
+    };
+    let repo_name = |x: &RepoRetention| -> String {
+        match root_label(x) {
+            Some(l) => format!("{}({l})", vcs_label(x.vcs.as_str())),
+            None => vcs_label(x.vcs.as_str()).to_string(),
+        }
+    };
+    let repo_baseline = |x: &RepoRetention| -> String {
         let b = x.baseline.as_ref().map_or_else(|| "基準なし".to_string(), |b| format!("基準 {}・{}", rev_text(x.vcs, &b.rev), if b.source == RevisionSource::Observed { "記録" } else { "推定" }));
-        format!("{}({b})", vcs_label(x.vcs.as_str()))
+        match root_label(x) {
+            Some(l) => format!("{}({l}・{b})", vcs_label(x.vcs.as_str())),
+            None => format!("{}({b})", vcs_label(x.vcs.as_str())),
+        }
     };
     let evaluated_note = match &r.evaluated {
         Some(ev) => {
@@ -894,8 +911,8 @@ fn retention_section(sec: &mut Sections, r: &SessionRetention, meta: Option<&Ret
         ),
         field(
             "VCS",
-            &if multi { esc(&r.repos.iter().map(|x| vcs_label(x.vcs.as_str())).collect::<Vec<_>>().join(" / ")) } else { r.vcs.map_or_else(|| missing("不明"), |v| esc(vcs_label(v.as_str()))) },
-            &format!("{}{}{}", if multi { format!("{} のリポジトリで照合・", int_i(r.repos.len() as i64)) } else { String::new() }, esc(&place), if r.path_mapped == Some(true) { "・パスを設定で読み替え" } else { "" }),
+            &if multi { esc(&r.repos.iter().map(repo_name).collect::<Vec<_>>().join(" / ")) } else { r.vcs.map_or_else(|| missing("不明"), |v| esc(vcs_label(v.as_str()))) },
+            &format!("{}{}{}", if multi { format!("リポジトリ {} つで照合・", int_i(r.repos.len() as i64)) } else { String::new() }, esc(&place), if r.path_mapped == Some(true) { "・パスを設定で読み替え" } else { "" }),
         ),
         if multi {
             // 出所の説明は、出てくるものだけ(記録・推定の順)
@@ -915,6 +932,14 @@ fn retention_section(sec: &mut Sections, r: &SessionRetention, meta: Option<&Ret
     let counts = format!("<div class=\"table-scroll\"><table class=\"ledger\"><thead><tr><th scope=\"col\">状態</th><th scope=\"col\" class=\"num\">まとまり</th><th scope=\"col\" class=\"num\">行</th></tr></thead><tbody>{counts}</tbody></table></div>");
     // リポジトリの中のファイルは、照合に使ったリポジトリ(無ければセッションのもの)からの相対パスで出す。照合と同じ relativeInside で決める
     let rel = |root: Option<&str>, p: &str| -> String { root.or(r.root.as_deref()).filter(|s| !s.is_empty()).and_then(|root| relative_inside(root, p)).unwrap_or_else(|| p.to_string()) };
+    // まとまりの VCS は、照合に使ったリポジトリのもの(vcs-hunks.csv と同じ。古い結果はセッションの VCS、
+    // 新しい結果でリポジトリの決まらなかったまとまりは空)
+    let hunk_vcs = |h: &HunkRetention| -> String {
+        match r.repos.iter().find(|x| Some(x.vcs) == h.vcs && Some(&x.root) == h.root.as_ref()) {
+            Some(x) => esc(&repo_name(x)),
+            None => hunk_repo_values(r, h).0.map_or_else(String::new, |v| esc(vcs_label(v.as_str()))),
+        }
+    };
     let rows: String = r
         .hunks
         .iter()
@@ -923,7 +948,7 @@ fn retention_section(sec: &mut Sections, r: &SessionRetention, meta: Option<&Ret
                 "<tr><td class=\"num\">{}</td><td><code>{}</code></td><td>{}</td><td class=\"st\">{}{}</td>{}</tr>",
                 int_i(h.id),
                 esc(&rel(h.root.as_deref(), &h.path)),
-                h.vcs.map_or_else(|| missing("なし"), |v| esc(vcs_label(v.as_str()))),
+                hunk_vcs(h),
                 esc(&label(h.status.as_str())),
                 h.reason.map(|x| format!("<span class=\"why\">{}</span>", esc(reason_label(x.as_str())))).unwrap_or_default(),
                 STATUSES.iter().map(|k| format!("<td class=\"num\">{}</td>", int_i(count_of(&h.lines, k)))).collect::<String>()
@@ -940,6 +965,24 @@ fn retention_section(sec: &mut Sections, r: &SessionRetention, meta: Option<&Ret
     };
     let excluded = if r.excluded_hunks != 0 { format!("<p class=\"note\">開始時の基準のファイルにもともとあった行だけでできたまとまり {} 件は数えていません。</p>", int_i(r.excluded_hunks)) } else { String::new() };
     sec.section("AI の変更の残存(VCS)", &format!("<div class=\"fields\" style=\"--cols:4\">{fields}</div>{counts}{table}{excluded}{unread}"), &lead)
+}
+
+/// 版の印の書き方(Perforce = change N、SVN = rN、Git = 先頭 7 字)
+fn rev_text(kind: VcsKind, rev: &str) -> String {
+    match kind {
+        VcsKind::P4 => format!("change {rev}"),
+        VcsKind::Svn => format!("r{rev}"),
+        VcsKind::Git => rev.chars().take(7).collect(),
+    }
+}
+
+fn count_of(c: &atlas_core::vcs_retention::LineCounts, k: &str) -> i64 {
+    match k {
+        "kept" => c.kept,
+        "modified" => c.modified,
+        "missing" => c.missing,
+        _ => c.unattributable,
+    }
 }
 
 #[cfg(test)]
@@ -960,6 +1003,10 @@ mod retention_tests {
         .unwrap()
     }
 
+    fn html_of(r: &SessionRetention, work: Option<&str>) -> String {
+        retention_section(&mut Sections { seq: 0, index: vec![] }, r, None, work)
+    }
+
     /// 複数のリポジトリで照合したセッションは、VCS と開始時の基準をリポジトリごとに並べ、まとまりごとの表に VCS を出す
     #[test]
     fn mixed_vcs_rows() {
@@ -967,40 +1014,52 @@ mod retention_tests {
             {"vcs": "p4", "root": "X:\\zz\\assets", "baseline": {"rev": "3", "source": "estimated"}, "evaluated": {"rev": "3"}},
             {"vcs": "svn", "root": "X:\\zz\\tools", "baseline": {"rev": "1", "source": "estimated"}, "evaluated": {"rev": "1"}},
         ]);
-        let r = result(repos, serde_json::Value::Null, serde_json::Value::Null);
-        let html = retention_section(&mut Sections { seq: 0, index: vec![] }, &r, None);
+        let html = html_of(&result(repos, serde_json::Value::Null, serde_json::Value::Null), Some("X:\\zz"));
         assert!(html.contains("Perforce / SVN"), "{html}");
-        assert!(html.contains("2 のリポジトリで照合"), "{html}");
+        assert!(html.contains("リポジトリ 2 つで照合"), "{html}");
         assert!(html.contains("Perforce(基準 change 3・推定)/ SVN(基準 r1・推定)"), "{html}");
         assert!(html.contains("<th scope=\"col\">VCS</th>"), "{html}");
         // まとまりのパスは、そのまとまりのリポジトリからの相対パス
         assert!(html.contains("<td><code>a.c</code></td><td>Perforce</td>"), "{html}");
         assert!(html.contains("<td><code>b.py</code></td><td>SVN</td>"), "{html}");
-        assert!(html.contains(&format!("<td>{}</td>", missing("なし"))), "{html}");
+        // 新しい結果で、リポジトリの決まらなかったまとまりの VCS は空(セッションの値で埋めない)
+        assert!(html.contains("<td><code>X:\\zz\\note.txt</code></td><td></td>"), "{html}");
 
         // リポジトリが 1 つでセッションと同じなら、今までどおり 1 つだけ出す
         let one = result(serde_json::json!([{"vcs": "p4", "root": "X:\\zz\\assets", "baseline": {"rev": "3", "source": "estimated"}, "evaluated": null}]), serde_json::json!("p4"), serde_json::json!("X:\\zz\\assets"));
-        let html = retention_section(&mut Sections { seq: 0, index: vec![] }, &one, None);
-        assert!(!html.contains("のリポジトリで照合") && !html.contains("基準 change"), "{html}");
+        let html = html_of(&one, None);
+        assert!(!html.contains("つで照合") && !html.contains("基準 change"), "{html}");
         assert_eq!((rev_text(VcsKind::Git, "0123456789abcdef"), rev_text(VcsKind::Svn, "12")), ("0123456".to_string(), "r12".to_string()));
     }
-}
 
-/// 版の印の書き方(Perforce = change N、SVN = rN、Git = 先頭 7 字)
-fn rev_text(kind: VcsKind, rev: &str) -> String {
-    match kind {
-        VcsKind::P4 => format!("change {rev}"),
-        VcsKind::Svn => format!("r{rev}"),
-        VcsKind::Git => rev.chars().take(7).collect(),
+    /// repos の無い古い結果は、まとまりの VCS をセッションの VCS で出す
+    #[test]
+    fn old_result_falls_back_to_session_vcs() {
+        let mut r = result(serde_json::json!([]), serde_json::json!("git"), serde_json::json!("X:\\zz"));
+        for h in &mut r.hunks {
+            (h.vcs, h.root) = (None, None);
+        }
+        let html = html_of(&r, None);
+        assert!(html.contains("<td><code>assets/a.c</code></td><td>Git</td>"), "{html}");
+        assert!(html.contains("<td><code>note.txt</code></td><td>Git</td>"), "{html}");
     }
-}
 
-fn count_of(c: &atlas_core::vcs_retention::LineCounts, k: &str) -> i64 {
-    match k {
-        "kept" => c.kept,
-        "modified" => c.modified,
-        "missing" => c.missing,
-        _ => c.unattributable,
+    /// 同じ種類のリポジトリが 2 つ以上あれば、根(作業フォルダからの相対。同じ・外ならフォルダ名)を添えて見分ける
+    #[test]
+    fn same_kind_repos_show_roots() {
+        let repos = serde_json::json!([
+            {"vcs": "git", "root": "X:\\zz", "baseline": {"rev": "0123456789", "source": "observed"}, "evaluated": null},
+            {"vcs": "git", "root": "X:\\zz\\inner", "baseline": {"rev": "abcdef0123", "source": "estimated"}, "evaluated": null},
+        ]);
+        let mut r = result(repos, serde_json::json!("git"), serde_json::json!("X:\\zz"));
+        r.hunks[0].vcs = Some(VcsKind::Git);
+        r.hunks[0].root = Some("X:\\zz".into());
+        r.hunks[1].vcs = Some(VcsKind::Git);
+        r.hunks[1].root = Some("X:\\zz\\inner".into());
+        let html = html_of(&r, Some("X:\\zz"));
+        assert!(html.contains("Git(zz) / Git(inner)"), "{html}");
+        assert!(html.contains("Git(zz・基準 0123456・記録)/ Git(inner・基準 abcdef0・推定)"), "{html}");
+        assert!(html.contains("<td>Git(inner)</td>"), "{html}");
     }
 }
 
@@ -1370,7 +1429,7 @@ pub fn render_detail_html(r: &SessionRecord, o: &DetailOptions<'_>) -> String {
         parts.push(judgment_section(&mut sec, j, r.active_ms));
     }
     if let Some(rt) = o.retention {
-        parts.push(retention_section(&mut sec, rt, o.retention_meta));
+        parts.push(retention_section(&mut sec, rt, o.retention_meta, r.git_root.as_deref().or(r.cwd.as_deref())));
     }
 
     let first = opt_str(&r.first_user_message);

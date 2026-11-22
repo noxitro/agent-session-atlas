@@ -13,13 +13,13 @@ export interface RetentionLike {
   vcs: VcsKind | null;
   baseline: { source: 'observed' | 'estimated' } | null;
   /** 照合に使ったリポジトリ(最初に使った順)。古い結果には無い */
-  repos?: readonly { vcs: VcsKind; baseline: { source: 'observed' | 'estimated' } | null }[];
+  repos?: readonly { vcs: VcsKind; root: string; baseline: { source: 'observed' | 'estimated' } | null }[];
   counts: Record<RetentionStatus, number>;
   lines: Record<RetentionStatus, number>;
   pathMapped?: boolean;
   computedOn?: 'local' | 'sender';
-  /** まとまりごとの状態と、作った編集の時刻(工程ごとの集計に使う) */
-  hunks?: readonly { status: RetentionStatus; at?: string }[];
+  /** まとまりごとの状態と、作った編集の時刻(工程ごとの集計に使う)・照合に使ったリポジトリ(VCS 別の数えに使う) */
+  hunks?: readonly { status: RetentionStatus; at?: string; vcs?: VcsKind; root?: string }[];
   /** 比べた時点(evaluated.at)と、セッションの終わり。間の日数を出す */
   evaluated?: { at: string } | null;
   sessionEnd?: string | null;
@@ -91,18 +91,30 @@ export const VCS_LABEL: Record<VcsKind, string> = { git: 'Git', svn: 'SVN', p4: 
 /** VCS の種類の並び(core の VCS_KINDS と同じ) */
 export const VCS_KINDS = ['git', 'svn', 'p4'] as const satisfies readonly VcsKind[];
 
-/** 照合に使った VCS の種類(VCS_KINDS の順、同じ種類は 1 つ)。repos が無い(古い結果)ならセッションの vcs */
-export function vcsKindsOf(r: Pick<RetentionLike, 'vcs' | 'repos'>): VcsKind[] {
-  if (!r.repos?.length) return r.vcs ? [r.vcs] : [];
-  return VCS_KINDS.filter((k) => r.repos!.some((x) => x.vcs === k));
+/**
+ * 照合できたまとまり(そのまま残る・直されて残る・見つからない)が 1 つ以上あるリポジトリ(repos の順。まとまりの vcs・root で引く)。
+ * 照合不可のまとまりだけのリポジトリ・どのまとまりも指していないリポジトリは入れない(core の measured_repos と同じ)
+ */
+export function measuredRepos(r: Pick<RetentionLike, 'repos' | 'hunks'>): NonNullable<RetentionLike['repos']>[number][] {
+  return (r.repos ?? []).filter((x) => (r.hunks ?? []).some((h) => h.status !== 'unattributable' && h.vcs === x.vcs && h.root === x.root));
 }
 
 /**
- * 開始時の基準の出所。repos があれば、どれかが推定なら推定、基準のあるものがすべて記録なら記録(推定を混ぜて記録と言わない)。
- * repos が無い(古い結果)・どのリポジトリにも基準が無いなら、セッションの baseline
+ * 照合に使った VCS の種類(照合できたまとまりのあるリポジトリの種類。VCS_KINDS の順、同じ種類は 1 つ)。
+ * そのようなリポジトリが無い(repos の無い古い結果・すべて照合不可)ならセッションの vcs
  */
-export function baselineSourceOf(r: Pick<RetentionLike, 'baseline' | 'repos'>): 'observed' | 'estimated' | null {
-  const sources = (r.repos ?? []).flatMap((x) => (x.baseline ? [x.baseline.source] : []));
+export function vcsKindsOf(r: Pick<RetentionLike, 'vcs' | 'repos' | 'hunks'>): VcsKind[] {
+  const repos = measuredRepos(r);
+  if (!repos.length) return r.vcs ? [r.vcs] : [];
+  return VCS_KINDS.filter((k) => repos.some((x) => x.vcs === k));
+}
+
+/**
+ * 開始時の基準の出所。照合できたまとまりのあるリポジトリの基準で、どれかが推定なら推定、すべて記録なら記録(推定を混ぜて記録と言わない)。
+ * そのようなリポジトリが無い(repos の無い古い結果・すべて照合不可)なら、セッションの baseline
+ */
+export function baselineSourceOf(r: Pick<RetentionLike, 'baseline' | 'repos' | 'hunks'>): 'observed' | 'estimated' | null {
+  const sources = measuredRepos(r).flatMap((x) => (x.baseline ? [x.baseline.source] : []));
   if (sources.includes('estimated')) return 'estimated';
   if (sources.length) return 'observed';
   return r.baseline?.source ?? null;

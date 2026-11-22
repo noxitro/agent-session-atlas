@@ -18,7 +18,7 @@ use crate::classify::file_path_key;
 use crate::js::{self, lone_surrogate_unit, JsMap};
 use crate::jsdate;
 use crate::nodepath::platform;
-use crate::vcs::{default_runner, nearest_existing_dir, open_repo, EvalMode, Memo, NoRepo, OpenRepoResult, RepoCache, Revision, RevisionSource, VcsKind, VcsRepo, VcsRunner};
+use crate::vcs::{default_runner, nearest_existing_dir, open_repo, open_repo_kinds, EvalMode, Memo, NoRepo, OpenRepoResult, RepoCache, Revision, RevisionSource, VcsKind, VcsRepo, VcsRunner};
 use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -998,13 +998,18 @@ fn same(a: &Arc<VcsRepo>, b: Option<&Arc<VcsRepo>>) -> bool {
 /// ファイルのある場所(消えていれば、ディスクにある上のフォルダ)がセッションのリポジトリの根より内側なら、そこで VCS を探し、
 /// 根がセッションのリポジトリより内側にあり、そのファイルを含むリポジトリ(入れ子の作業コピー)が見つかればそれを使う。
 /// 見つからなければ session(同じ根のものも session のまま使う。基準の headCommit などを同じリポジトリと見分けるため)。
-/// open_repo はフォルダごとに結果を残すので、同じフォルダで VCS を何度も呼ばない
+/// 探すのは入れ子として意味のある種類だけ(git の中は git、svn と p4 の中は git と svn)。p4 はサーバーに問い合わせるので呼ばず、
+/// p4 のワークスペースの中の別のクライアントは分けない。結果はフォルダと種類の組ごとに残すので、同じフォルダで VCS を何度も呼ばない
 fn inner_repo(session: &Arc<VcsRepo>, path: &str, runner: &VcsRunner, cache: &RepoCache) -> Arc<VcsRepo> {
     let Some(dir) = nearest_existing_dir(&platform::dirname(path)) else { return session.clone() };
     if session.relative(&dir).is_none() {
         return session.clone();
     }
-    match open_repo(&dir, runner, cache) {
+    let kinds: &[VcsKind] = match session.kind {
+        VcsKind::Git => &[VcsKind::Git],
+        VcsKind::Svn | VcsKind::P4 => &[VcsKind::Git, VcsKind::Svn],
+    };
+    match open_repo_kinds(&dir, kinds, runner, cache) {
         Ok(o) if session.relative(&o.root).is_some() && o.relative(path).is_some() => o,
         _ => session.clone(),
     }
@@ -1138,7 +1143,9 @@ fn measure_one(sh: &Shared<'_>, me: usize) -> SessionRetention {
                     result.hunks.extend(hunks.iter().map(|h| unattributed(h, UnattributableReason::BaselineMissing)));
                     return Ok(());
                 };
-                if same(&repo, s_repo) || result.baseline.is_none() {
+                // セッションの基準は、作業フォルダのリポジトリがあればその基準だけ(ほかのリポジトリの基準で埋めない)。
+                // 作業フォルダに VCS が無ければ、最初に基準の決まったリポジトリのもの(リポジトリごとの基準は repos)
+                if same(&repo, s_repo) || (s_repo.is_none() && result.baseline.is_none()) {
                     result.provenance.baseline = Some(b.source);
                     result.baseline = Some(b.clone());
                 }
@@ -1195,7 +1202,9 @@ fn measure_one(sh: &Shared<'_>, me: usize) -> SessionRetention {
             result.evaluated = Some(Evaluated { mode, rev, at: sh.now.clone(), source: None });
         }
     }
-    // 照合に使ったリポジトリごとの基準と比べた版(どちらも上で調べたものを使い回す。決まった日数がまだ経っていなければ調べない)
+    // 照合に使ったリポジトリごとの基準と比べた版。基準と版はリポジトリごとのキャッシュから引くので、ファイルの照合で調べたものは
+    // VCS を呼び直さない(基準を決められず版を調べなかったリポジトリ・svn の committed などは、ここで初めて版を調べる)。
+    // 決まった日数がまだ経っていなければ、どちらも調べない
     result.repos = used
         .iter()
         .map(|repo| {
@@ -1267,18 +1276,32 @@ pub fn measure_retention(sets: &[AiChangeSet], opts: &RetentionOptions) -> Vec<S
     out.into_iter().map(|m| m.into_inner().expect("結果").expect("すべてのセッションを照合した")).collect()
 }
 
-/// セッションの照合に使った VCS の種類(VCS_KINDS の順、同じ種類は 1 つ)。repos が無い(古い結果)ならセッションの vcs
-pub fn vcs_kinds_of(r: &SessionRetention) -> Vec<VcsKind> {
-    if r.repos.is_empty() {
-        return r.vcs.into_iter().collect();
-    }
-    crate::vcs::VCS_KINDS.into_iter().filter(|k| r.repos.iter().any(|x| x.vcs == *k)).collect()
+/// まとまりが指すリポジトリ(まとまりの vcs・root で repos を引く)
+fn repo_of_hunk<'a>(r: &'a SessionRetention, h: &HunkRetention) -> Option<&'a RepoRetention> {
+    let (vcs, root) = (h.vcs?, h.root.as_deref()?);
+    r.repos.iter().find(|x| x.vcs == vcs && x.root == root)
 }
 
-/// セッションの開始時の基準の出所。repos があれば、どれかが推定なら推定、基準のあるものがすべて記録なら記録(推定を混ぜて記録と言わない)。
-/// repos が無い(古い結果)・どのリポジトリにも基準が無いなら、セッションの baseline
+/// 照合できたまとまり(そのまま残る・直されて残る・見つからない)が 1 つ以上あるリポジトリ(repos の順)。
+/// 照合不可のまとまりだけのリポジトリ・どのまとまりも指していないリポジトリは入れない
+pub fn measured_repos(r: &SessionRetention) -> Vec<&RepoRetention> {
+    r.repos.iter().filter(|&x| r.hunks.iter().any(|h| h.status != RetentionStatus::Unattributable && repo_of_hunk(r, h).is_some_and(|y| std::ptr::eq(x, y)))).collect()
+}
+
+/// セッションの照合に使った VCS の種類(照合できたまとまりのあるリポジトリの種類。VCS_KINDS の順、同じ種類は 1 つ)。
+/// そのようなリポジトリが無い(repos の無い古い結果・すべて照合不可)ならセッションの vcs
+pub fn vcs_kinds_of(r: &SessionRetention) -> Vec<VcsKind> {
+    let repos = measured_repos(r);
+    if repos.is_empty() {
+        return r.vcs.into_iter().collect();
+    }
+    crate::vcs::VCS_KINDS.into_iter().filter(|k| repos.iter().any(|x| x.vcs == *k)).collect()
+}
+
+/// セッションの開始時の基準の出所。照合できたまとまりのあるリポジトリの基準で、どれかが推定なら推定、すべて記録なら記録
+/// (推定を混ぜて記録と言わない)。そのようなリポジトリが無い(repos の無い古い結果・すべて照合不可)なら、セッションの baseline
 pub fn baseline_source_of(r: &SessionRetention) -> Option<RevisionSource> {
-    let sources: Vec<RevisionSource> = r.repos.iter().filter_map(|x| x.baseline.as_ref().map(|b| b.source)).collect();
+    let sources: Vec<RevisionSource> = measured_repos(r).iter().filter_map(|x| x.baseline.as_ref().map(|b| b.source)).collect();
     if sources.contains(&RevisionSource::Estimated) {
         Some(RevisionSource::Estimated)
     } else if !sources.is_empty() {
@@ -1288,11 +1311,15 @@ pub fn baseline_source_of(r: &SessionRetention) -> Option<RevisionSource> {
     }
 }
 
-/// まとまりの照合に使ったリポジトリの基準(まとまりの root の repos。無ければセッションの baseline)
-pub fn hunk_baseline<'a>(r: &'a SessionRetention, h: &HunkRetention) -> Option<&'a Revision> {
-    match h.root.as_deref().and_then(|root| r.repos.iter().find(|x| Some(x.vcs) == h.vcs && x.root == root)) {
-        Some(x) => x.baseline.as_ref(),
-        None => r.baseline.as_ref(),
+/// まとまりの照合に使ったリポジトリの VCS と基準。repos の無い古い結果ではセッションの値。
+/// 新しい結果(repos がある)で、リポジトリの決まらなかったまとまりは無し(セッションの値で埋めない)
+pub fn hunk_repo_values<'a>(r: &'a SessionRetention, h: &HunkRetention) -> (Option<VcsKind>, Option<&'a Revision>) {
+    if r.repos.is_empty() {
+        return (h.vcs.or(r.vcs), r.baseline.as_ref());
+    }
+    match repo_of_hunk(r, h) {
+        Some(x) => (Some(x.vcs), x.baseline.as_ref()),
+        None => (h.vcs, None),
     }
 }
 

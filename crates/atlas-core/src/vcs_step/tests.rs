@@ -363,9 +363,18 @@ fn sender_keeps_repos_and_hunk_vcs() {
         (VcsKind::Svn, None, Some(("1", Some(RevisionSource::Estimated)))),
     ]);
     assert_eq!((r.hunks[0].vcs, r.hunks[1].vcs, r.hunks[1].root.as_deref()), (Some(VcsKind::P4), None, None));
-    // 送り先の集計: VCS 別は種類ごとに 1 回、基準は推定がまざるので推定
+    // 送り先の集計: 数えるのは、照合できたまとまりが指すリポジトリだけ(svn はどのまとまりも指していないので入れない)
     let s = summarize_retention(std::slice::from_ref(&r));
-    assert_eq!((serde_json::to_value(&s.by_vcs).unwrap(), s.baseline_estimated), (json!({"svn": 1, "p4": 1}), 1));
+    assert_eq!((serde_json::to_value(&s.by_vcs).unwrap(), s.baseline_estimated), (json!({"p4": 1}), 1));
+    // svn を指すまとまりがあっても、照合不可だけなら数えない。照合できたまとまりが指せば数える
+    let mut res2 = res.clone();
+    res2["hunks"][1] = json!({"id": 2, "path": format!("X:{B}zz{B}tools{B}b.py"), "status": "unattributable", "reason": "read_error", "lines": {"kept": 0, "modified": 0, "missing": 0, "unattributable": 2}, "vcs": "svn", "root": format!("X:{B}zz{B}tools")});
+    let r2 = parse_sender_vcs(&json!({"version": 1, "sessionId": "s", "computedAt": at(11, 0), "mode": "worktree", "result": res2.clone()}), "s").unwrap();
+    assert_eq!(serde_json::to_value(&summarize_retention(std::slice::from_ref(&r2)).by_vcs).unwrap(), json!({"p4": 1}));
+    res2["hunks"][1]["status"] = json!("missing");
+    res2["hunks"][1]["lines"] = json!({"kept": 0, "modified": 0, "missing": 2, "unattributable": 0});
+    let r3 = parse_sender_vcs(&json!({"version": 1, "sessionId": "s", "computedAt": at(11, 0), "mode": "worktree", "result": res2}), "s").unwrap();
+    assert_eq!(serde_json::to_value(&summarize_retention(std::slice::from_ref(&r3)).by_vcs).unwrap(), json!({"svn": 1, "p4": 1}));
     // 読み直したものを書いてまた読んでも、キーの順(送った側の順)と中身が変わらない
     let text = crate::json::to_js_string(&r).unwrap();
     let back: SessionRetention = serde_json::from_str(&text).unwrap();

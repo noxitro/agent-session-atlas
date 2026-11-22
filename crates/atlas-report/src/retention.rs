@@ -434,15 +434,26 @@ mod tests {
         let old = retention_item(&r, &[]);
         assert_eq!((old.vcs, old.vcs_kinds.clone(), old.baseline.as_deref()), (None, None, Some("estimated")));
         let repo = |vcs, root: &str, source| RepoRetention { vcs, root: root.into(), baseline: Some(Revision { rev: "1".into(), source }), evaluated: None };
+        // そのリポジトリを指すまとまり(status は状態の名前)
+        let hunk = |id: i64, vcs: VcsKind, root: &str, status: &str| -> atlas_core::vcs_retention::HunkRetention {
+            let lines = if status == "kept" { serde_json::json!({"kept": 1, "modified": 0, "missing": 0, "unattributable": 0}) } else { serde_json::json!({"kept": 0, "modified": 0, "missing": 0, "unattributable": 1}) };
+            serde_json::from_value(serde_json::json!({"id": id, "path": format!("{root}/f"), "status": status, "lines": lines, "vcs": vcs, "root": root})).unwrap()
+        };
         let mut mixed = r.clone();
         mixed.repos = vec![repo(VcsKind::P4, "a", RevisionSource::Observed), repo(VcsKind::Svn, "t", RevisionSource::Estimated)];
+        mixed.hunks = vec![hunk(1, VcsKind::P4, "a", "kept"), hunk(2, VcsKind::Svn, "t", "kept")];
         let it = retention_item(&mixed, &[]);
         assert_eq!((it.vcs_kinds.clone(), it.baseline.as_deref()), (Some(vec![VcsKind::Svn, VcsKind::P4]), Some("estimated")));
         assert!(atlas_core::json::to_js_string(&it).unwrap().contains(r#""vcs":null,"vcsKinds":["svn","p4"],"baseline":"estimated""#));
+        // 照合不可のまとまりだけのリポジトリ(svn)は数えない
+        mixed.hunks[1] = hunk(2, VcsKind::Svn, "t", "unattributable");
+        let it = retention_item(&mixed, &[]);
+        assert_eq!((it.vcs_kinds.clone(), it.baseline.as_deref()), (Some(vec![VcsKind::P4]), Some("observed")));
         // セッションの vcs だけと同じなら、種類は持たない(埋め込みを増やさない)
         let mut single = r.clone();
         single.vcs = Some(VcsKind::Git);
         single.repos = vec![repo(VcsKind::Git, "g", RevisionSource::Observed)];
+        single.hunks = vec![hunk(1, VcsKind::Git, "g", "kept")];
         let it = retention_item(&single, &[]);
         assert_eq!((it.vcs_kinds, it.baseline.as_deref()), (None, Some("observed")));
     }

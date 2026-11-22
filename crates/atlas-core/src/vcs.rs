@@ -627,23 +627,39 @@ pub fn nearest_existing_dir(p: &str) -> Option<String> {
 /// 結果は cache に dir ごとに残す
 pub fn open_repo(dir: &str, runner: &VcsRunner, cache: &RepoCache) -> OpenRepoResult {
     let key = file_path_key(&resolve_file_path(dir, None));
-    cache.get_or_init(key, || detect(dir, runner))
+    cache.get_or_init(key, || detect(dir, runner, &VCS_KINDS))
 }
 
-fn detect(dir: &str, runner: &VcsRunner) -> OpenRepoResult {
+/// open_repo と同じく dir を含む作業ツリーを探すが、kinds の種類だけを(git → svn → p4 の順で)調べる。
+/// 入れ子の作業コピーを探すときに、要らない VCS(サーバーに問い合わせる p4 など)を呼ばないため。
+/// 結果は cache に dir と種類の組ごとに残す(open_repo の鍵はパスだけで \0 を含まないので、混ざらない)
+pub fn open_repo_kinds(dir: &str, kinds: &[VcsKind], runner: &VcsRunner, cache: &RepoCache) -> OpenRepoResult {
+    let names: Vec<&str> = VCS_KINDS.iter().filter(|k| kinds.contains(k)).map(|k| k.as_str()).collect();
+    let key = format!("{}\0{}", names.join(","), file_path_key(&resolve_file_path(dir, None)));
+    cache.get_or_init(key, || detect(dir, runner, kinds))
+}
+
+fn detect(dir: &str, runner: &VcsRunner, kinds: &[VcsKind]) -> OpenRepoResult {
     if !jsfs::exists(Path::new(dir)) {
         return Err(NoRepo::RepoNotFound);
     }
     // ここで呼ぶのは読む系だけ(rev-parse・info)
     let run = |cmd: VcsKind, args: &[&str]| -> RunResult { run_read_only(runner, cmd, &strings(args), dir).expect("読む系のコマンド") };
     let repo = |kind: VcsKind, root: &str, p4_offset_min: Option<i32>| Ok(Arc::new(VcsRepo { kind, root: resolve_file_path(root, None), p4_offset_min, run: runner.clone() }));
-    let g = run(VcsKind::Git, &["--no-optional-locks", "-C", dir, "rev-parse", "--show-toplevel"]);
-    if g.code == 0 && !js::trim(&g.stdout).is_empty() {
-        return repo(VcsKind::Git, js::trim(&g.stdout), None);
+    if kinds.contains(&VcsKind::Git) {
+        let g = run(VcsKind::Git, &["--no-optional-locks", "-C", dir, "rev-parse", "--show-toplevel"]);
+        if g.code == 0 && !js::trim(&g.stdout).is_empty() {
+            return repo(VcsKind::Git, js::trim(&g.stdout), None);
+        }
     }
-    let s = run(VcsKind::Svn, &["--non-interactive", "info", "--show-item", "wc-root", dir]);
-    if s.code == 0 && !js::trim(&s.stdout).is_empty() {
-        return repo(VcsKind::Svn, js::trim(&s.stdout), None);
+    if kinds.contains(&VcsKind::Svn) {
+        let s = run(VcsKind::Svn, &["--non-interactive", "info", "--show-item", "wc-root", dir]);
+        if s.code == 0 && !js::trim(&s.stdout).is_empty() {
+            return repo(VcsKind::Svn, js::trim(&s.stdout), None);
+        }
+    }
+    if !kinds.contains(&VcsKind::P4) {
+        return Err(NoRepo::NoVcs);
     }
     let p = run(VcsKind::P4, &["-d", dir, "-ztag", "info"]);
     if p.code == 0 {

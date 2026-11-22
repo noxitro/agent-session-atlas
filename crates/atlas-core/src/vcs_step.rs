@@ -184,6 +184,8 @@ pub fn apply_path_map(mut set: AiChangeSet, map: &[PathMapping]) -> (AiChangeSet
 // --- 送った側の結果を読む(共有フォルダに置かれたものなので、形を確かめ、決めた項目だけを作り直す) ---
 
 const SENDER_HUNKS_MAX: usize = 20_000;
+/// 送った側の結果から読む、照合に使ったリポジトリの数の上限(これを超えた分は読まない)
+const SENDER_REPOS_MAX: usize = 256;
 const STR_MAX: usize = 4096;
 static UNSAFE_CHARS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]").unwrap());
 
@@ -254,11 +256,12 @@ fn revision_of(v: Option<&Value>) -> Option<Revision> {
     Some(Revision { rev: rev.to_string(), source })
 }
 
-/// 送った側の、照合に使ったリポジトリ(古い結果には無い)。形が違うものと、同じ種類と根の 2 つ目は使わない
+/// 送った側の、照合に使ったリポジトリ(古い結果には無い)。形が違うものと、同じ種類と根の 2 つ目は使わない。
+/// まとまりが指していないものも残すが、VCS 別や基準の数えには入らない(measured_repos がまとまりから引く)
 fn repos_of(v: Option<&Value>) -> Vec<RepoRetention> {
     let Some(Value::Array(list)) = v else { return Vec::new() };
     let mut out: Vec<RepoRetention> = Vec::new();
-    for x in list.iter().take(SENDER_HUNKS_MAX) {
+    for x in list.iter().take(SENDER_REPOS_MAX) {
         let Some(o) = obj(Some(x)) else { continue };
         let (Some(vcs), Some(root)) = (o.get("vcs").and_then(Value::as_str).and_then(VcsKind::parse), safe_str(o.get("root"), STR_MAX).filter(|s| !s.is_empty())) else { continue };
         if out.iter().any(|r| r.vcs == vcs && r.root == root) {
