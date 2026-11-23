@@ -422,7 +422,7 @@ pub(crate) struct ProcessTree {
 
 impl ProcessTree {
     /// 起動する前に呼ぶ。Windows 以外では、子を新しいプロセスグループの先頭にする(子孫はそのグループを受け継ぐので、kill でまとめて止められる)。
-    /// 端末の Ctrl+C は親のグループにだけ届き、子には届かない(Windows も窓の無い子には届かない)。Windows では何もしない(ジョブオブジェクトに入れるのは起動した後)
+    /// 端末の Ctrl+C は親のグループにだけ届き、子には届かない(Windows も窓の無い子には届かない。serve は中断のときに動いているジョブを止める)。Windows では何もしない(ジョブオブジェクトに入れるのは起動した後)
     pub(crate) fn prepare(c: &mut std::process::Command) -> &mut std::process::Command {
         #[cfg(unix)]
         {
