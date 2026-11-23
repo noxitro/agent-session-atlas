@@ -1,6 +1,6 @@
 // clone した直後と同じ中身のフォルダ(scripts/fresh-checkout.ts の出力)を、起動用の .bat と同じ順で動かして確かめる:
 // *.bat と ensure-atlas.ps1 が CRLF → 実行ファイル(bin/atlas.exe)もテンプレートも無い → scripts/ensure-atlas.ps1 が、
-// リリースを探せない(git archive なので origin が無い)ので、この PC でビルドする(npm ci → npm run build:report → cargo build --release)
+// 利用者の PC と同じく、この PC でビルドする(npm ci → npm run build:report → cargo build --release。git archive なので .git が無く、版で比べる)
 // → もう一度動かすとビルドせずに使い回す → 架空の fixture で初期設定・atlas all・プロジェクトを送る操作が通る → Windows では *.bat を実際に起動する。
 // 使い方: node scripts/checkout-smoke.ts <フォルダ>(npm ci と cargo build をするのでネットワークが要る。
 // 環境変数 CARGO_TARGET_DIR を渡すと、そこでビルドする。npm run smoke はリポジトリの target/ を渡し、依存のビルドを使い回す)
@@ -28,7 +28,7 @@ if (bats.sort().join(',') !== BATS) fail(`*.bat は ${BATS.split(',').join('・'
 for (const f of [...bats, join('scripts', 'ensure-atlas.ps1'), join('scripts', 'stop-atlas.ps1')]) {
   if (/(^|[^\r])\n/.test(readFileSync(join(pkg, f), 'utf8'))) fail(`${f} に CRLF でない改行があります(.gitattributes の eol を確認)`);
 }
-// *.bat と *.ps1 以外はリポジトリのまま LF(手元の core.autocrlf で変わっていない = Linux で作るリリースと同じ中身)
+// *.bat と *.ps1 以外はリポジトリのまま LF(手元の core.autocrlf で変わっていない = Linux で clone したものと同じ中身)
 if (readFileSync(join(pkg, 'package.json'), 'utf8').includes('\r')) fail('package.json が CRLF になっています(core.autocrlf の影響)');
 
 // clone した直後には、実行ファイルもレポートのテンプレートも無い(bin/ と packages/report/dist は git に入れない)

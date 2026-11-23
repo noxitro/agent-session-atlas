@@ -10,17 +10,22 @@
 //!  - 今のブランチが、origin の既定のブランチ(origin/HEAD。分からなければ origin/main)を追っている
 //!  - git が管理しているファイルを手で変えていない。ただし package-lock.json だけが変わっているときは、npm が書き換えたものとして元に戻してから進める
 //!  - 早送り(fast-forward)だけで新しい版になる。ただし、origin の履歴が書き換えられた(force push)だけで、手元にだけあるコミットが無いときは、新しい main に合わせ直す
-//!  - 新しい版が、前にこの PC で動かなかった版(avoid)ではない
-//!  - 新しい版のリリースが出ている(配る atlas.exe の中身が変わったのにリリースがまだ無いコミットには進めない。scripts/release-shipped.txt。
-//!    その手前の、リリースのあるコミットまでは進める)
+//!  - 新しい版が、前にこの PC で動かなかった版(avoid。コミットの全桁)ではない
+//!  - この PC に、atlas をビルドするのに要るもの(Node.js・Rust・Windows では C++ のビルドツール)がある。atlas.exe は配っていない
+//!    (GitHub のリリースで配るのは 2026-11-23 にやめた)ので、新しい版の実行ファイルはここでビルドするしかない。
+//!    無ければ取り込まない(前の版の実行ファイルで、新しい版の .bat やスクリプトを動かさないように)。今の実行ファイルのまま続ける
 //!
-//! 取ってくるときは、タグも取ってくる(リリースのタグはマージの後にできるので、前に取り込んだコミットに後から付くことがある)。
-//! 実行ファイル(bin/atlas.exe)は git pull では新しくならない。取り込んだ版の実行ファイルは、起動用の .bat と同じ scripts/ensure-atlas.ps1 で用意する
-//! (HEAD から辿れるいちばん新しいタグ v<版> のリリースを取ってきて sha256 を確かめ、取れなければ Node と Rust があればここでビルドする)。
-//! コミットは変わらなくても、取り込んであるコミットに新しいタグが届いたら、その版の実行ファイルを用意する(前の回に用意できなかったときも、
-//! 自動で送るタスクは次の回にもう一度用意する。起動用の .bat は、毎回 ensure-atlas.ps1 が用意する)。
-//! 用意できなければ、前の版に戻して前の版の実行ファイルを用意し直す(rollback)。
-//! ダウンロードと検証とビルドの手順は .bat と同じものを使いたいので、Rust で書き直さずにスクリプトを呼ぶ(HTTP と TLS のクレートを実行ファイルに入れずに済む)。
+//!  - 新しい版が、前にこの PC でビルドできなかったコミット(bin/build-failed.txt)ではない。起動用の .bat からは同じコミットをもう試さず、
+//!    自動で送るタスクは 1 日に 1 回まで試す(RETRY_FAILED_BUILD_AFTER)。もっと新しいコミットが出たら、それを試す
+//!
+//! 実行ファイル(bin/atlas.exe)は git pull では新しくならない。取り込んだ版の実行ファイルは、起動用の .bat と同じ scripts/ensure-atlas.ps1 で
+//! ビルドする(-KeepOlder は付けない)。ビルドできなければ、前の版のコミットに戻す。実行ファイルは置き換えていないので、前と同じ
+//! 実行ファイルのまま続く(ビルドに頼らずに送れる)。
+//! 新しい版の実行ファイルがこの PC で動かなかったとき(upload_auto.rs)は、コミットを戻し、実行ファイルを置き換える前のもの(bin/atlas.prev.exe。
+//! ensure-atlas.ps1 が置き換えるときに残す)に戻す(rollback)。ここでもビルドはしない。
+//! コミットは変わらなくても、実行ファイルが今のコミットから作ったものでなければ(手で git pull した・前の回にビルドできなかった)、
+//! 自動で送るタスクはここでビルドし直す(ビルドに要るものが無ければ、そのまま続ける。起動用の .bat は、毎回 ensure-atlas.ps1 がそろえる)。
+//! ビルドの手順は .bat と同じものを使いたいので、Rust で書き直さずにスクリプトを呼ぶ。
 //! どれかで止まっても、送ること・開くことは止めない(今の版のまま続ける)。何をしたか・しなかった理由と、どうすれば新しい版になるかは、記録と結果に残す。
 
 use crate::upload_auto_files::AutoUpdateResult;
@@ -67,6 +72,8 @@ pub fn run_cmd(cmd: &str, args: &[&str], cwd: &Path, timeout: Duration) -> CmdRe
             String::from_utf8_lossy(&b).into_owned()
         })
     };
+    // 止めるときは子孫ごと(ensure-atlas.ps1 が動かした cargo・rustc・npm を、git reset の後まで残さない。Windows はジョブオブジェクト)
+    let tree = crate::jobs::ProcessTree::of(&child);
     let out = read(child.stdout.take().map(|s| Box::new(s) as Box<dyn std::io::Read + Send>));
     let err = read(child.stderr.take().map(|s| Box::new(s) as Box<dyn std::io::Read + Send>));
     let started = Instant::now();
@@ -76,6 +83,7 @@ pub fn run_cmd(cmd: &str, args: &[&str], cwd: &Path, timeout: Duration) -> CmdRe
                 return CmdResult { code: st.code().unwrap_or(-1), stdout: out.join().unwrap_or_default(), stderr: err.join().unwrap_or_default() };
             }
             Ok(None) if started.elapsed() > timeout => {
+                tree.kill();
                 let _ = child.kill();
                 let _ = child.wait();
                 return CmdResult { code: -1, stdout: out.join().unwrap_or_default(), stderr: format!("{} 秒で終わらなかった", (timeout.as_millis() as f64 / 1000.0).round()) };
@@ -91,10 +99,16 @@ pub struct UpdateOptions<'a> {
     pub repo: &'a Path,
     pub log: &'a dyn Fn(&str),
     pub run: Option<CmdRunner<'a>>,
-    /// bin/ の実行ファイルが、今のチェックアウトの版のものか(既定は scripts/ensure-atlas.ps1 -Check)
+    /// bin/ の実行ファイルが、今のコミットから作ったものか(既定は scripts/ensure-atlas.ps1 -Check)
     pub exe_fresh: Option<&'a dyn Fn() -> bool>,
-    /// 今のチェックアウトの版の実行ファイルを用意する。用意できたら true(既定は scripts/ensure-atlas.ps1)
+    /// 今のコミットの実行ファイルをビルドする。できたら true(既定は scripts/ensure-atlas.ps1)
     pub install_exe: Option<&'a dyn Fn() -> bool>,
+    /// ビルドに要るもののうち、この PC に無いもの(そろっていれば None。既定は scripts/ensure-atlas.ps1 -CheckTools)
+    pub missing_tools: Option<&'a dyn Fn() -> Option<String>>,
+    /// 前にこの PC でビルドできなかったコミットと、それからの時間(無ければ None。既定は bin/build-failed.txt。ensure-atlas.ps1 が書く)
+    pub failed_build: Option<&'a dyn Fn() -> Option<(String, Duration)>>,
+    /// bin/atlas.exe を、置き換える前のもの(bin/atlas.prev.exe。ensure-atlas.ps1 が残す)に戻す。ビルドはしない(既定は restore_previous_exe)
+    pub restore_exe: Option<&'a dyn Fn() -> Result<(), String>>,
     /// このチェックアウトで atlas の処理が動いていれば、その説明(動いていれば更新しない)
     pub busy: Option<&'a dyn Fn() -> Option<String>>,
     /// 使わない版(前にこの PC で動かなかった版。コミットの全桁)
@@ -103,8 +117,9 @@ pub struct UpdateOptions<'a> {
     pub carry_on: &'a str,
     /// もう最新で何もしなかったときは、結果を記録に書かない(起動用の .bat が開くたびに動かすので、何もしなかったときは何も出さない)
     pub quiet_latest: bool,
-    /// 直前に scripts/ensure-atlas.ps1 で実行ファイルを今のコミットの版にそろえたか(起動用の .bat)。そろえたなら、コミットが同じときは、
-    /// 新しいリリースのタグが届いたときだけ実行ファイルを確かめる。そろえていなければ(自動で送るタスク)、毎回確かめる
+    /// 直前に scripts/ensure-atlas.ps1 -KeepOlder で実行ファイルを今のコミットのものにそろえたか(起動用の .bat)。そろえたなら、
+    /// コミットが変わらないときは実行ファイルを確かめ直さない(そろえられなかったときも、同じビルドをもう一度試さない)。
+    /// そろえていなければ(自動で送るタスク)、毎回確かめる
     pub exe_just_ensured: bool,
     /// git fetch を待つ長さ(起動用の .bat は、窓の前で待つので短くする)
     pub fetch_timeout: Duration,
@@ -112,7 +127,22 @@ pub struct UpdateOptions<'a> {
 
 impl<'a> UpdateOptions<'a> {
     pub fn new(repo: &'a Path, log: &'a dyn Fn(&str)) -> Self {
-        UpdateOptions { repo, log, run: None, exe_fresh: None, install_exe: None, busy: None, avoid: None, carry_on: "今の版のまま送ります", quiet_latest: false, exe_just_ensured: false, fetch_timeout: FETCH_TIMEOUT }
+        UpdateOptions {
+            repo,
+            log,
+            run: None,
+            exe_fresh: None,
+            install_exe: None,
+            missing_tools: None,
+            failed_build: None,
+            restore_exe: None,
+            busy: None,
+            avoid: None,
+            carry_on: "今の版のまま送ります",
+            quiet_latest: false,
+            exe_just_ensured: false,
+            fetch_timeout: FETCH_TIMEOUT,
+        }
     }
     fn runner(&self) -> CmdRunner<'a> {
         self.run.unwrap_or(&run_cmd)
@@ -122,13 +152,18 @@ impl<'a> UpdateOptions<'a> {
 const FETCH_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 /// 起動用の .bat から開いたときの git fetch の長さ(つながらない環境で、開くたびに長く待たせない)
 const LAUNCHER_FETCH_TIMEOUT: Duration = Duration::from_secs(20);
-/// 配る atlas.exe に入るものの一覧(git の pathspec。リリースのワークフローと同じファイルを、比べるコミットから読む)
-pub const SHIPPED_LIST: &str = "scripts/release-shipped.txt";
 const GIT_TIMEOUT: Duration = Duration::from_secs(60);
-/// 実行ファイルを用意する長さ(リリースが無くてここでビルドするときは、初めてなら数分かかる)
+/// 実行ファイルをビルドする長さ(初めてなら数分から十数分かかる)
 const ENSURE_TIMEOUT: Duration = Duration::from_secs(40 * 60);
 /// npm が書き換えることのある、git が管理しているファイル(これだけが変わっているときは、元に戻してから進める)
 const LOCK_FILE: &str = "package-lock.json";
+/// ビルドの経過を書くファイル(scripts/ensure-atlas.ps1 が書く)
+const BUILD_LOG: &str = "bin\\build.log";
+/// ビルドできなかったコミット(scripts/ensure-atlas.ps1 が、ビルドに失敗したときに書き、できたときに消す。中身はコミットの全桁)
+pub const FAILED_BUILD_FILE: &str = "build-failed.txt";
+/// 前にビルドできなかったのと同じコミットを、自動で送るタスクがもう一度試すまでの間(1 日に 1 回まで。毎日同じ時刻に動くタスクが、次の日に試せるよう少し短く)。
+/// 起動用の .bat からは、同じコミットをもう一度は試さない(開くたびに数分待たせない。もっと新しいコミットが出たら、それにする)
+const RETRY_FAILED_BUILD_AFTER: Duration = Duration::from_secs(20 * 60 * 60);
 
 /// 失敗したコマンドの理由(エラー出力の最初の行)
 fn reason_of(r: &CmdResult) -> String {
@@ -148,36 +183,117 @@ fn short_s(sha: &str) -> String {
     short(Some(sha)).unwrap_or_default()
 }
 
+/// scripts/ensure-atlas.ps1 の動かし方
+#[derive(Clone, Copy)]
+enum Ensure {
+    /// 今のコミットの実行ファイルをビルドする(-KeepOlder は付けない)
+    Build,
+    /// 実行ファイルが今のコミットのものか(-Check)
+    Check,
+    /// ビルドに要るものがそろっているか(-CheckTools)
+    Tools,
+}
+
 /// scripts/ensure-atlas.ps1 を動かす(Windows は Windows PowerShell、ほかは pwsh)。窓は出さない
-fn ensure_script(o: &UpdateOptions<'_>, check: bool) -> CmdResult {
+fn ensure_script(o: &UpdateOptions<'_>, how: Ensure) -> CmdResult {
     let script = o.repo.join("scripts").join("ensure-atlas.ps1");
     let script = script.to_string_lossy();
     let mut args = vec!["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", &script];
-    if check {
-        args.push("-Check");
+    match how {
+        Ensure::Build => {}
+        Ensure::Check => args.push("-Check"),
+        Ensure::Tools => args.push("-CheckTools"),
     }
-    (o.runner())(if cfg!(windows) { "powershell.exe" } else { "pwsh" }, &args, o.repo, if check { GIT_TIMEOUT } else { ENSURE_TIMEOUT })
+    let timeout = if matches!(how, Ensure::Build) { ENSURE_TIMEOUT } else { GIT_TIMEOUT };
+    (o.runner())(if cfg!(windows) { "powershell.exe" } else { "pwsh" }, &args, o.repo, timeout)
 }
 
 fn exe_fresh(o: &UpdateOptions<'_>) -> bool {
     if let Some(f) = o.exe_fresh {
         return f();
     }
-    ensure_script(o, true).code == 0
+    ensure_script(o, Ensure::Check).code == 0
 }
 
 fn install_exe(o: &UpdateOptions<'_>) -> bool {
     if let Some(f) = o.install_exe {
         return f();
     }
-    let r = ensure_script(o, false);
+    let r = ensure_script(o, Ensure::Build);
     for line in r.stdout.split('\n').map(|l| atlas_core::js::trim(l.strip_suffix('\r').unwrap_or(l))).filter(|l| !l.is_empty()) {
         (o.log)(&format!("  {line}"));
     }
     if r.code != 0 {
-        (o.log)(&format!("atlas の更新: 実行ファイルを用意できませんでした({})", reason_of(&r)));
+        (o.log)(&format!("atlas の更新: 実行ファイルをビルドできませんでした({})", reason_of(&r)));
     }
     r.code == 0
+}
+
+/// ensure-atlas.ps1 -CheckTools の結果から、足りないもの(そろっていれば None)。
+/// 終了コード 1 は足りない(出力の最後の行が、足りないものの並び)。スクリプトを動かせなければ、ビルドもできないので足りないものとして扱う
+fn parse_missing_tools(r: &CmdResult) -> Option<String> {
+    match r.code {
+        0 => None,
+        1 => Some(
+            r.stdout
+                .split('\n')
+                .map(|l| atlas_core::js::trim(l.strip_suffix('\r').unwrap_or(l)))
+                .filter(|l| !l.is_empty())
+                .last()
+                .map(str::to_string)
+                .unwrap_or_else(|| "Node.js・Rust など".to_string()),
+        ),
+        _ => Some(format!("確かめられませんでした: {}", reason_of(r))),
+    }
+}
+
+fn missing_tools(o: &UpdateOptions<'_>) -> Option<String> {
+    if let Some(f) = o.missing_tools {
+        return f();
+    }
+    parse_missing_tools(&ensure_script(o, Ensure::Tools))
+}
+
+/// bin/build-failed.txt の中身(コミット)と、書いてからの時間
+fn read_failed_build(repo: &Path) -> Option<(String, Duration)> {
+    let p = repo.join("bin").join(FAILED_BUILD_FILE);
+    let text = std::fs::read_to_string(&p).ok()?;
+    let sha = text.split_whitespace().next()?.to_string();
+    let age = std::fs::metadata(&p).ok()?.modified().ok()?.elapsed().unwrap_or_default();
+    Some((sha, age))
+}
+
+fn failed_build(o: &UpdateOptions<'_>) -> Option<(String, Duration)> {
+    match o.failed_build {
+        Some(f) => f(),
+        None => read_failed_build(o.repo),
+    }
+}
+
+/// 置き換える前の実行ファイルの名前(scripts/ensure-atlas.ps1 の Install-Exe が、置き換えるときに今のものをこの名前に移す)
+fn exe_names() -> (&'static str, &'static str) {
+    if cfg!(windows) { ("atlas.exe", "atlas.prev.exe") } else { ("atlas", "atlas.prev") }
+}
+
+/// bin/atlas.exe を、置き換える前のもの(bin/atlas.prev.exe)に戻す。ビルドはしない。
+/// 今の bin/atlas.exe は消すか(動いていて消せなければ)別の名前に移し、前のものを写す(前のものは、呼んだプロセスが動かしていることがあるので、移さずに写す)
+pub fn restore_previous_exe(repo: &Path) -> Result<(), String> {
+    let bin = repo.join("bin");
+    let (name, prev_name) = exe_names();
+    let exe = bin.join(name);
+    let prev = bin.join(prev_name);
+    if !prev.is_file() {
+        return Err(format!("置き換える前の実行ファイル(bin\\{prev_name})がありません"));
+    }
+    if exe.exists() && std::fs::remove_file(&exe).is_err() {
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or_default();
+        let aside = bin.join(format!("atlas.old-{:x}{:x}{}", std::process::id(), nonce, if cfg!(windows) { ".exe" } else { "" }));
+        std::fs::rename(&exe, &aside).map_err(|e| format!("今の bin\\{name} を移せません({e})"))?;
+    }
+    std::fs::copy(&prev, &exe).map_err(|e| format!("bin\\{prev_name} を bin\\{name} に写せません({e})"))?;
+    // どのソースから作ったかの記録(調べるとき用)は、前のものと合わなくなるので消す
+    let _ = std::fs::remove_file(bin.join("atlas-source.txt"));
+    Ok(())
 }
 
 /// rollback の結果
@@ -188,75 +304,65 @@ pub struct RollbackResult {
     pub note: String,
 }
 
-/// 前の版(from_sha)に戻し、実行ファイルが前の版のものでなければ用意し直す。新しい版の実行ファイルを用意できなかったときと、
-/// 新しい版がこの PC で動かなかったとき(upload_auto.rs)に使う。手で変えたファイルが無いことは確かめてあるので、--keep で戻せる
+/// 前の版(from_sha)に戻す。新しい版がこの PC で動かなかったとき(upload_auto.rs)に使う。手で変えたファイルが無いことは確かめてあるので、--keep で戻せる。
+/// 実行ファイルが前の版のものでなければ、置き換える前のもの(bin/atlas.prev.exe)に戻す。ビルドはしない(ビルドに頼らずに送れるように。
+/// 戻せなくても、呼んだプロセスが前の版の実行ファイルなので、この回はそのプロセスが送る)
 pub fn rollback(o: &UpdateOptions<'_>, from_sha: &str) -> RollbackResult {
+    let r = revert_commit(o, from_sha);
+    if !r.ok {
+        return r;
+    }
+    let s = short_s(from_sha);
+    if exe_fresh(o) {
+        return RollbackResult { ok: true, reverted: true, note: format!("前の版({s})に戻しました") };
+    }
+    let restored = match o.restore_exe {
+        Some(f) => f(),
+        None => restore_previous_exe(o.repo),
+    };
+    match restored {
+        Ok(()) => {
+            (o.log)("atlas の更新: 実行ファイルを、置き換える前のもの(bin\\atlas.prev.exe)に戻しました");
+            RollbackResult { ok: true, reverted: true, note: format!("前の版({s})に戻し、実行ファイルも置き換える前のものに戻しました") }
+        }
+        Err(e) => RollbackResult { ok: true, reverted: true, note: format!("前の版({s})に戻しましたが、実行ファイルは前のものに戻せませんでした({e}。atlas.bat を開くとビルドし直します)") },
+    }
+}
+
+/// コミットだけを戻す(新しい版の実行ファイルをビルドできなかったとき。実行ファイルは置き換えていないので、前と同じ実行ファイルのまま続ける。
+/// 前の版をもう一度ビルドしに行かない)
+fn revert_commit(o: &UpdateOptions<'_>, from_sha: &str) -> RollbackResult {
     let back = (o.runner())("git", &["reset", "--keep", from_sha], o.repo, GIT_TIMEOUT);
     let s = short_s(from_sha);
     if back.code != 0 {
         return RollbackResult { ok: false, reverted: false, note: format!("前の版({s})に戻せませんでした({})。atlas.bat を開いて確かめてください", reason_of(&back)) };
     }
     (o.log)(&format!("atlas の更新: 前の版({s})に戻しました"));
-    if exe_fresh(o) {
-        return RollbackResult { ok: true, reverted: true, note: format!("前の版({s})に戻しました") };
-    }
-    (o.log)("atlas の更新: 前の版の実行ファイルを用意し直します");
-    if install_exe(o) {
-        return RollbackResult { ok: true, reverted: true, note: format!("前の版({s})に戻し、実行ファイルも前の版にしました") };
-    }
-    RollbackResult { ok: false, reverted: true, note: format!("前の版({s})に戻しましたが、実行ファイルを前の版にできませんでした。atlas.bat を開くと用意し直します") }
+    RollbackResult { ok: true, reverted: true, note: format!("前の版({s})に戻しました(実行ファイルは置き換えていないので、前のまま)") }
 }
 
-/// v<x.y.z> の形のタグのうち、いちばん新しいもの(リリースのワークフローが付けるのはこの形だけ)。無ければ None
-fn newest_release_tag(list: &str) -> Option<String> {
-    list.lines()
-        .map(str::trim)
-        .filter_map(|t| {
-            let nums = t.strip_prefix('v')?.split('.').map(|p| if !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) { p.parse::<u64>().ok() } else { None }).collect::<Option<Vec<_>>>()?;
-            (nums.len() == 3).then(|| ((nums[0], nums[1], nums[2]), t.to_string()))
-        })
-        .max_by_key(|(k, _)| *k)
-        .map(|(_, t)| t)
+/// コミットはそのままのときの、今のコミットの実行ファイル
+#[derive(Debug, Clone, PartialEq)]
+enum HeadExe {
+    /// 今のコミットから作ったもの(か、起動用の .bat が直前にそろえた)。何もしない
+    Fresh,
+    /// 今のコミットから作ったものではないが、ビルドに要るもの(中身)が無いので、そのまま
+    NoTools(String),
+    /// ビルドし直した。できたか
+    Built(bool),
 }
 
-/// コミット to のリリースがまだ無い(配る中身が、to から辿れるいちばん新しいリリースのタグより後で変わっている)とき、
-/// そのタグと、タグのコミット。待たなくてよければ None(to に配る中身の一覧が無い前の版のコミット・タグが無い・確かめられないときも None)
-fn pending_release(o: &UpdateOptions<'_>, to: &str) -> Option<(String, String)> {
-    let run = o.runner();
-    let git = |args: &[&str]| run("git", args, o.repo, GIT_TIMEOUT);
-    let list = git(&["show", &format!("{to}:{SHIPPED_LIST}")]);
-    if list.code != 0 {
-        return None;
+/// 実行ファイルが今のコミットから作ったものでなければ(手で git pull した・前の回にビルドできなかった)、ビルドし直す
+/// (起動用の .bat からは、直前に ensure-atlas.ps1 が同じことをしたので、しない)
+fn refresh_head_exe(o: &UpdateOptions<'_>) -> HeadExe {
+    if o.exe_just_ensured || exe_fresh(o) {
+        return HeadExe::Fresh;
     }
-    let specs: Vec<&str> = list.stdout.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).collect();
-    if specs.is_empty() {
-        return None;
+    if let Some(m) = missing_tools(o) {
+        return HeadExe::NoTools(m);
     }
-    let tags = git(&["tag", "--list", "v*", "--merged", to]);
-    if tags.code != 0 {
-        return None;
-    }
-    let tag = newest_release_tag(&tags.stdout)?;
-    let mut args = vec!["diff", "--quiet", tag.as_str(), to, "--"];
-    args.extend(specs);
-    // 1 = 違いがある(リリースを待っている)。0 は同じ、ほかは確かめられない
-    if git(&args).code != 1 {
-        return None;
-    }
-    let at = git(&["rev-list", "-n", "1", &format!("refs/tags/{tag}")]);
-    let at = atlas_core::js::trim(&at.stdout).to_string();
-    (!at.is_empty()).then_some((tag, at))
-}
-
-/// コミットはそのままのときに、今のコミットの版の実行ファイルにする。しなくてよければ None、したら用意できたか。
-/// 新しいリリースのタグが届いたときと、前の回に用意できなかったときに用意する(起動用の .bat からは、直前に ensure-atlas.ps1 が
-/// 同じ確かめをしたので、新しいタグが届いたときだけ)
-fn refresh_head_exe(o: &UpdateOptions<'_>, tags_changed: bool) -> Option<bool> {
-    if (o.exe_just_ensured && !tags_changed) || exe_fresh(o) {
-        return None;
-    }
-    (o.log)(if tags_changed { "atlas の更新: 新しいリリースが出たので、その版の実行ファイルを用意します" } else { "atlas の更新: 今の版の実行ファイルを用意し直します" });
-    Some(install_exe(o))
+    (o.log)(&format!("atlas の更新: 実行ファイルが今のソースから作ったものではないので、ビルドし直します(経過は {BUILD_LOG})"));
+    HeadExe::Built(install_exe(o))
 }
 
 /// atlas 自身を新しい版にする(できるときだけ)。失敗は結果に書き、止めない
@@ -328,13 +434,7 @@ pub fn self_update(o: &UpdateOptions<'_>) -> AutoUpdateResult {
     }
     // 取りに行く前の origin の main(前に取りに行ったときのもの)。origin の履歴が書き換えられたかを見分けるのに使う
     let before = atlas_core::js::trim(&git(&["rev-parse", "@{u}"]).stdout).to_string();
-    // 今のコミットから辿れるリリースのタグ(scripts/ensure-atlas.ps1 が、このうちいちばん新しい版のリリースを使う)
-    let release_tags = || git(&["tag", "--list", "v*", "--merged", "HEAD"]);
-    let tags_before = release_tags();
-    // タグも取ってくる(--tags)。リリースのタグは、マージの後にできる(.github/workflows/release.yml)ので、前に取り込んだコミットに
-    // 後から付くことがある。ふつうの fetch も取り込むコミットに付いたタグは取ってくるが、タグを取らない設定(git clone --no-tags の
-    // remote.origin.tagOpt)だと届かない。付け替えられたタグも合わせる(--force。リリースのタグはふだん付け替えない)
-    let fetch = run("git", &["fetch", "--quiet", "--tags", "--force", "origin"], o.repo, o.fetch_timeout);
+    let fetch = run("git", &["fetch", "--quiet", "origin"], o.repo, o.fetch_timeout);
     if fetch.code != 0 {
         return result("failed", from, None, format!("新しい版を取りに行けなかったので、{carry}({}。次の回にもう一度試します)", reason_of(&fetch)));
     }
@@ -344,18 +444,16 @@ pub fn self_update(o: &UpdateOptions<'_>) -> AutoUpdateResult {
     }
     let to = atlas_core::js::trim(&target.stdout).to_string();
     let from_s = from.unwrap_or_default();
-    // 取り込んであるコミットに、新しいリリースのタグが付いたか(確かめられなければ、付いたものとして扱う)
-    let tags_after = release_tags();
-    let tags_changed = tags_before.code != 0 || tags_after.code != 0 || tags_before.stdout != tags_after.stdout;
-    // コミットは変えないとき(最新・待つ・使わない)の、今の版の実行ファイルの結果(結果の文の後ろに足す)
-    let head_exe_note = |r: Option<bool>| match r {
-        None => String::new(),
-        Some(true) => "。今の版の実行ファイルは、新しいリリースのものにしました".to_string(),
-        Some(false) => "。今の版の新しいリリースの実行ファイルも用意できませんでした(次の回にもう一度試します)".to_string(),
+    // コミットは変えないとき(使わない・早送りできない)の、今のコミットの実行ファイルの結果(結果の文の後ろに足す)
+    let head_exe_note = |r: HeadExe| match r {
+        HeadExe::Fresh => String::new(),
+        HeadExe::NoTools(m) => format!("。今の実行ファイルは今のソースから作ったものではありませんが、Rust などが無いので作り直していません(足りないもの: {m})"),
+        HeadExe::Built(true) => "。今の版の実行ファイルは、今のソースからビルドし直しました".to_string(),
+        HeadExe::Built(false) => format!("。今の版の実行ファイルもビルドできませんでした(次の回にもう一度試します。経過は {BUILD_LOG})"),
     };
     if to == from_s {
-        return match refresh_head_exe(o, tags_changed) {
-            None => {
+        return match refresh_head_exe(o) {
+            HeadExe::Fresh => {
                 // 何もしなかった。起動用の .bat から開くたびに動かすので、そのときは何も出さない
                 let r = make("latest", from, from, format!("最新です({})", short_s(from_s)));
                 if !o.quiet_latest {
@@ -363,74 +461,92 @@ pub fn self_update(o: &UpdateOptions<'_>) -> AutoUpdateResult {
                 }
                 r
             }
-            Some(true) => result("latest", from, from, format!("最新です({})。新しいリリースの実行ファイルにしました", short_s(from_s))),
-            Some(false) => result("failed", from, from, format!("最新です({})が、新しいリリースの実行ファイルを用意できなかったので、{carry}(次の回にもう一度試します)", short_s(from_s))),
+            HeadExe::NoTools(m) => result(
+                "skipped",
+                from,
+                from,
+                format!("最新です({})が、実行ファイルは今のソースから作ったものではありません。Rust などが無いので作り直さず、{carry}(足りないもの: {m})", short_s(from_s)),
+            ),
+            HeadExe::Built(true) => result("latest", from, from, format!("最新です({})。実行ファイルを今のソースからビルドし直しました", short_s(from_s))),
+            HeadExe::Built(false) => {
+                result("failed", from, from, format!("最新です({})が、今のソースから実行ファイルをビルドできなかったので、{carry}(次の回にもう一度試します。経過は {BUILD_LOG})", short_s(from_s)))
+            }
         };
     }
-    let is_ancestor = |a: &str, b: &str| git(&["merge-base", "--is-ancestor", a, b]).code == 0;
-    // 配る中身が変わったのにリリースがまだ無いコミット(マージからリリースができるまでの数分と、リリースのワークフローが失敗したまま)には
-    // 進めない。前の版の実行ファイルで、新しい版の .bat やスクリプトを動かさないように。リリースのある、いちばん新しいコミットまでは進める
-    let waiting = pending_release(o, &to);
-    let target = waiting.as_ref().map_or(to.clone(), |(_, at)| at.clone());
-    if waiting.is_some() && (target == from_s || !is_ancestor(from_s, &target)) {
-        let tag = waiting.as_ref().map_or("", |(t, _)| t.as_str());
-        let exe = head_exe_note(refresh_head_exe(o, tags_changed));
+    if o.avoid.as_deref().is_some_and(|a| !a.is_empty() && a == to) {
+        let exe = head_exe_note(refresh_head_exe(o));
+        return result("skipped", from, None, format!("新しい版({})は前にこの PC で動かなかったので、使いません(もっと新しい版が出たら、それにします){exe}", short_s(&to)));
+    }
+    // 前にこの PC でビルドできなかったコミットは、起動用の .bat からはもう試さない(開くたびに数分待たせない)。自動で送るタスクは 1 日に 1 回まで試す
+    if let Some((_, age)) = failed_build(o).filter(|(sha, _)| *sha == to) {
+        if o.exe_just_ensured || age < RETRY_FAILED_BUILD_AFTER {
+            let retry = if o.exe_just_ensured { "" } else { "自動で送るタスクは、1 日たったらもう一度試します。" };
+            return result(
+                "skipped",
+                from,
+                None,
+                format!(
+                    "新しい版({})は前にこの PC でビルドできなかったので、今回は取り込みません。{carry}(もっと新しい版が出たら、それにします。{retry}経過は {BUILD_LOG}。bin\\{FAILED_BUILD_FILE} を消すと、次の回にもう一度試します)",
+                    short_s(&to)
+                ),
+            );
+        }
+    }
+    // 新しい版の実行ファイルは、ここでビルドするしかない。ビルドに要るものが無ければ、取り込まない(前の版の実行ファイルで、新しい版の
+    // .bat やスクリプトを動かさないように)
+    if let Some(m) = missing_tools(o) {
         return result(
             "skipped",
             from,
             None,
-            format!("新しい版({})のリリースがまだ出ていない(いちばん新しいリリースは {tag})ので、まだ取り込みません。{carry}(リリースが出たら、次の回に取り込みます){exe}", short_s(&to)),
+            format!("新しい版({})がありますが、Rust などが無いので新しい版にしていません(足りないもの: {m}。atlas.exe はこの PC でビルドするので、入れると次の回から新しい版にします)。{carry}", short_s(&to)),
         );
     }
-    if o.avoid.as_deref().is_some_and(|a| !a.is_empty() && a == target) {
-        let exe = head_exe_note(refresh_head_exe(o, tags_changed));
-        return result("skipped", from, None, format!("新しい版({})は前にこの PC で動かなかったので、使いません(もっと新しい版が出たら、それにします){exe}", short_s(&target)));
-    }
+    let is_ancestor = |a: &str, b: &str| git(&["merge-base", "--is-ancestor", a, b]).code == 0;
     // origin の履歴が書き換えられていて(force push)、新しい main に合わせ直したか
     let mut rewritten = false;
-    if is_ancestor(from_s, &target) {
-        let merge = git(&["merge", "--ff-only", "--quiet", &target]);
+    if is_ancestor(from_s, &to) {
+        let merge = git(&["merge", "--ff-only", "--quiet", &to]);
         if merge.code != 0 {
             return result("skipped", from, None, format!("新しい版を取り込めないので、更新しません({})", reason_of(&merge)));
         }
-    } else if !before.is_empty() && before != target && is_ancestor(from_s, &before) && !is_ancestor(&before, &target) {
+    } else if !before.is_empty() && before != to && is_ancestor(from_s, &before) && !is_ancestor(&before, &to) {
         // 早送りできないのが、origin の履歴が書き換えられたためだけのとき。手で変えたファイルが無いことは確かめてあるので、
         // 新しい main に合わせ直す(--keep は、手元の変更を消さない。前の版のコミットも手元には残る)
-        let reset = git(&["reset", "--keep", &target]);
+        let reset = git(&["reset", "--keep", &to]);
         if reset.code != 0 {
             return result("skipped", from, None, format!("origin の履歴が書き換えられていて、新しい版に合わせられないので、更新しません({})", reason_of(&reset)));
         }
         rewritten = true;
         (o.log)(&format!("atlas の更新: origin の {main} の履歴が書き換えられていたので、新しい {main} に合わせました"));
     } else {
-        let exe = head_exe_note(refresh_head_exe(o, tags_changed));
+        let exe = head_exe_note(refresh_head_exe(o));
         return result("skipped", from, None, format!("早送りだけでは新しい版にできないので、更新しません(手元にだけあるコミットがあるなど。git log {main}..HEAD で確かめられます){exe}"));
     }
-    (o.log)(&format!("atlas の更新: 新しい版({})を取り込みました", short_s(&target)));
+    (o.log)(&format!("atlas の更新: 新しい版({})を取り込みました", short_s(&to)));
     if !exe_fresh(o) {
-        (o.log)("atlas の更新: 版が変わったので、新しい版の実行ファイルを用意します");
+        (o.log)(&format!("atlas の更新: 版が変わったので、新しい版の実行ファイルをビルドします(数分かかることがあります。経過は {BUILD_LOG})"));
         if !install_exe(o) {
-            // 新しい版のソースを、前の版の実行ファイルで動かさない(設定やファイルの形が合わないことがある)
-            let back = rollback(o, from_s);
+            // 新しい版のソースを、前の版の実行ファイルで動かさない(設定やファイルの形が合わないことがある)。実行ファイルは置き換えていないので、
+            // コミットだけを戻せば、前と同じ実行ファイルで続けられる
+            let back = revert_commit(o, from_s);
+            // 同じコミットを次にいつ試すか(bin/build-failed.txt を見て決める。上の「前にこの PC でビルドできなかった」)
+            let retry = if o.exe_just_ensured { "同じ版はもう試さず、もっと新しい版が出たらそれにします" } else { "同じ版は 1 日たったらもう一度試します" };
             let note = if back.ok {
-                format!("新しい版({})の実行ファイルを用意できなかったので、{}。{carry}(次の回にもう一度試します)", short_s(&target), back.note)
+                format!("新しい版({})の実行ファイルをビルドできなかったので、{}。{carry}({retry}。経過は {BUILD_LOG})", short_s(&to), back.note)
             } else {
-                format!("新しい版({})の実行ファイルを用意できず、{}", short_s(&target), back.note)
+                format!("新しい版({})の実行ファイルをビルドできず、{}", short_s(&to), back.note)
             };
-            return result("failed", from, Some(if back.reverted { from_s } else { &target }), note);
+            return result("failed", from, Some(if back.reverted { from_s } else { &to }), note);
         }
     }
     let note = format!(
-        "{} から {} に更新しました{}{}",
+        "{} から {} に更新しました{}",
         short_s(from_s),
-        short_s(&target),
-        if rewritten { format!("(origin の {main} の履歴が書き換えられていたので、新しい {main} に合わせました)") } else { String::new() },
-        match &waiting {
-            Some((tag, _)) => format!("(その先の {} はリリースがまだ出ていないので、リリース {tag} の版まで)", short_s(&to)),
-            None => String::new(),
-        }
+        short_s(&to),
+        if rewritten { format!("(origin の {main} の履歴が書き換えられていたので、新しい {main} に合わせました)") } else { String::new() }
     );
-    result("updated", from, Some(&target), note)
+    result("updated", from, Some(&to), note)
 }
 
 /// `atlas self-update` の終了コード: チェックアウトのコミットが変わった(起動用の .bat は、自分を動かし直す)
@@ -489,6 +605,12 @@ mod tests {
         dev: PathBuf,
         member: PathBuf,
         cfg: PathBuf,
+        /// ビルドに要るもののうち、無いもの(None ならそろっている)
+        missing: RefCell<Option<String>>,
+        /// ビルドに要るものを確かめた回数
+        tool_checks: RefCell<usize>,
+        /// 前にビルドできなかったコミットと、それからの時間
+        failed: RefCell<Option<(String, Duration)>>,
     }
 
     impl Repos {
@@ -512,7 +634,7 @@ mod tests {
             let base = d.path().to_path_buf();
             let cfg = base.join("gitconfig");
             fs::write(&cfg, "").unwrap();
-            let r = Repos { dev: base.join("dev"), member: base.join("member"), cfg, _d: d };
+            let r = Repos { dev: base.join("dev"), member: base.join("member"), cfg, _d: d, missing: RefCell::new(None), tool_checks: RefCell::new(0), failed: RefCell::new(None) };
             let origin = base.join("origin.git");
             r.git(&base, &["init", "-q", "--bare", "-b", "main", &origin.to_string_lossy()]);
             r.git(&base, &["clone", "-q", &origin.to_string_lossy(), &r.dev.to_string_lossy()]);
@@ -548,10 +670,17 @@ mod tests {
                 unsafe_env_free_run(cmd, args, cwd, t, &cfg)
             };
             let fresh_f = move || fresh;
+            let tools = || {
+                *self.tool_checks.borrow_mut() += 1;
+                self.missing.borrow().clone()
+            };
+            let failed = || self.failed.borrow().clone();
             let mut o = UpdateOptions::new(&self.member, &log);
             o.run = Some(&run);
             o.exe_fresh = Some(&fresh_f);
             o.install_exe = Some(installs);
+            o.missing_tools = Some(&tools);
+            o.failed_build = Some(&failed);
             o.avoid = avoid;
             o.busy = busy;
             o.exe_just_ensured = launcher;
@@ -575,23 +704,43 @@ mod tests {
         let yes = || true;
         let (u, _) = r.update(true, &yes, None, None);
         assert_eq!((u.outcome.as_str(), u.from.as_deref(), u.to.as_deref()), ("latest", Some(&before[..7]), Some(&before[..7])));
+        // 最新で実行ファイルも今のコミットのものなら、ビルドに要るものは確かめない
+        assert_eq!(*r.tool_checks.borrow(), 0);
         let next = r.release("a.txt", "second");
         let (u, logs) = r.update(true, &yes, None, None);
         assert_eq!(u.outcome, "updated");
         assert_eq!(r.head(&r.member), next);
         assert!(logs.join("\n").contains(&format!("{} から {} に更新しました", &before[..7], &next[..7])));
-        // 実行ファイルを用意できなければ前の版に戻し、前の版の実行ファイルを用意し直す
-        let mid = next;
+        // ビルドできたら、新しい版の実行ファイルで続ける
+        r.release("a.txt", "built");
+        let n = RefCell::new(0);
+        let counted = || {
+            *n.borrow_mut() += 1;
+            true
+        };
+        let (u, logs) = r.update(false, &counted, None, None);
+        assert_eq!(u.outcome, "updated");
+        assert_eq!(*n.borrow(), 1);
+        assert!(logs.iter().any(|l| l.starts_with("atlas の更新: 版が変わったので、新しい版の実行ファイルをビルドします")), "{logs:?}");
+        // ビルドできなければ前の版に戻す。実行ファイルは置き換えていないので、前の版をビルドし直しには行かない(今の実行ファイルのまま送る)
+        let mid = r.head(&r.member);
         r.release("package-lock.json", "{\"v\":3}");
         let n = RefCell::new(0);
-        let installs = || {
+        let fails = || {
             *n.borrow_mut() += 1;
-            *n.borrow() > 1
+            false
         };
-        let (u, _) = r.update(false, &installs, None, None);
+        let (u, _) = r.update(false, &fails, None, None);
         assert_eq!((u.outcome.as_str(), u.from.as_deref(), u.to.as_deref(), u.from_sha()), ("failed", Some(&mid[..7]), Some(&mid[..7]), Some(mid.as_str())));
-        assert!(u.note.contains("実行ファイルを用意できなかったので、前の版(") && u.note.contains(")に戻し、実行ファイルも前の版にしました。今の版のまま送ります"), "{}", u.note);
-        assert_eq!(*n.borrow(), 2);
+        assert_eq!(
+            u.note,
+            format!(
+                "新しい版({})の実行ファイルをビルドできなかったので、前の版({})に戻しました(実行ファイルは置き換えていないので、前のまま)。今の版のまま送ります(同じ版は 1 日たったらもう一度試します。経過は bin\\build.log)",
+                &r.head(&r.dev)[..7],
+                &mid[..7]
+            )
+        );
+        assert_eq!(*n.borrow(), 1);
         assert_eq!(r.head(&r.member), mid);
         // 前にこの PC で動かなかった版は使わない。もっと新しい版が出たら、それにする
         let bad = r.git(&r.dev, &["rev-parse", "HEAD"]);
@@ -602,6 +751,84 @@ mod tests {
         let (u, _) = r.update(true, &yes, Some(bad), None);
         assert_eq!(u.outcome, "updated");
         assert_eq!(r.head(&r.member), newer);
+    }
+
+    #[test]
+    fn without_build_tools_new_commits_are_not_pulled_and_the_current_exe_keeps_going() {
+        let r = Repos::new();
+        let before = r.head(&r.member);
+        *r.missing.borrow_mut() = Some("Rust(cargo)、Visual Studio の C++ のビルドツール(MSVC)".into());
+        let n = RefCell::new(0);
+        let installs = || {
+            *n.borrow_mut() += 1;
+            true
+        };
+        let next = r.release("a.txt", "second");
+        let (u, logs) = r.update(false, &installs, None, None);
+        assert_eq!((u.outcome.as_str(), u.from_sha(), u.to_sha()), ("skipped", Some(before.as_str()), None));
+        assert_eq!(
+            u.note,
+            format!(
+                "新しい版({})がありますが、Rust などが無いので新しい版にしていません(足りないもの: Rust(cargo)、Visual Studio の C++ のビルドツール(MSVC)。atlas.exe はこの PC でビルドするので、入れると次の回から新しい版にします)。今の版のまま送ります",
+                &next[..7]
+            )
+        );
+        assert!(logs.iter().any(|l| l.contains("Rust などが無いので新しい版にしていません")), "{logs:?}");
+        // 早送りしていない(取り込んでから戻したのでもない)。ビルドもしない
+        assert_eq!(r.head(&r.member), before);
+        let reflog = r.git(&r.member, &["reflog", "--format=%gs"]);
+        assert!(!reflog.contains("merge") && !reflog.contains("reset"), "{reflog}");
+        assert_eq!(*n.borrow(), 0);
+        // 入れたら、次の回に新しい版にする
+        *r.missing.borrow_mut() = None;
+        let (u, _) = r.update(false, &installs, None, None);
+        assert_eq!((u.outcome.as_str(), u.to_sha()), ("updated", Some(next.as_str())));
+        assert_eq!(*n.borrow(), 1);
+    }
+
+    #[test]
+    fn a_stale_exe_at_the_current_commit_is_rebuilt_or_kept() {
+        let r = Repos::new();
+        let head = r.head(&r.member);
+        let n = RefCell::new(0);
+        let installs = || {
+            *n.borrow_mut() += 1;
+            true
+        };
+        // 手で git pull したなど: コミットは最新だが、実行ファイルが今のコミットのものではない。自動で送るタスクはビルドし直す
+        let (u, logs) = r.update(false, &installs, None, None);
+        assert_eq!((u.outcome.as_str(), u.note.as_str()), ("latest", format!("最新です({})。実行ファイルを今のソースからビルドし直しました", &head[..7]).as_str()));
+        assert!(logs.iter().any(|l| l.starts_with("atlas の更新: 実行ファイルが今のソースから作ったものではないので、ビルドし直します")), "{logs:?}");
+        assert_eq!(*n.borrow(), 1);
+        // ビルドできなければ、今の実行ファイルのまま続ける(戻すコミットは無い)
+        let no = || false;
+        let (u, _) = r.update(false, &no, None, None);
+        assert_eq!(u.outcome, "failed");
+        assert_eq!(u.note, format!("最新です({})が、今のソースから実行ファイルをビルドできなかったので、今の版のまま送ります(次の回にもう一度試します。経過は bin\\build.log)", &head[..7]));
+        assert_eq!(r.head(&r.member), head);
+        // ビルドに要るものが無ければ、ビルドしに行かずにそのまま続け、そのことを結果に残す(最新でも結果を見せる skipped)
+        *r.missing.borrow_mut() = Some("Rust(cargo)".into());
+        let (u, _) = r.update(false, &installs, None, None);
+        assert_eq!(u.outcome, "skipped");
+        assert_eq!(u.note, format!("最新です({})が、実行ファイルは今のソースから作ったものではありません。Rust などが無いので作り直さず、今の版のまま送ります(足りないもの: Rust(cargo))", &head[..7]));
+        assert_eq!(*n.borrow(), 1);
+        // 起動用の .bat からは、確かめ直さない(直前に ensure-atlas.ps1 -KeepOlder がそろえたか、そろえられないことを出した)
+        let checks = *r.tool_checks.borrow();
+        let (u, logs) = r.update_as(false, &installs, None, None, true);
+        assert_eq!((u.outcome.as_str(), u.note.as_str()), ("latest", format!("最新です({})", &head[..7]).as_str()));
+        assert!(logs.iter().all(|l| !l.contains("ビルド")), "{logs:?}");
+        assert_eq!((*n.borrow(), *r.tool_checks.borrow()), (1, checks));
+    }
+
+    #[test]
+    fn the_tools_check_reads_the_script_result() {
+        let res = |code: i32, stdout: &str| CmdResult { code, stdout: stdout.into(), stderr: String::new() };
+        assert_eq!(parse_missing_tools(&res(0, "")), None);
+        assert_eq!(parse_missing_tools(&res(1, "Node.js、Rust(cargo)\r\n")).as_deref(), Some("Node.js、Rust(cargo)"));
+        assert_eq!(parse_missing_tools(&res(1, "")).as_deref(), Some("Node.js・Rust など"));
+        // PowerShell を動かせない(ビルドもできない)
+        let none = CmdResult { code: -1, stdout: String::new(), stderr: "program not found".into() };
+        assert_eq!(parse_missing_tools(&none).as_deref(), Some("確かめられませんでした: program not found"));
     }
 
     #[test]
@@ -650,97 +877,22 @@ mod tests {
     }
 
     #[test]
-    fn tags_added_after_the_commit_was_pulled_still_arrive_and_switch_the_exe() {
-        let r = Repos::new();
-        // git clone --no-tags で取ったフォルダ(ふつうの fetch はタグを取らない)でも、タグが届く
-        r.git(&r.member, &["config", "remote.origin.tagOpt", "--no-tags"]);
-        let yes = || true;
-        let next = r.release("a.txt", "second");
-        let (u, _) = r.update(true, &yes, None, None);
-        assert_eq!(u.outcome, "updated");
-        // リリースのワークフローが、取り込んだ後のコミットにタグを付ける
-        r.git(&r.dev, &["tag", "v0.1.1", &next]);
-        r.git(&r.dev, &["push", "-q", "origin", "v0.1.1"]);
-        let n = RefCell::new(0);
-        let installs = || {
-            *n.borrow_mut() += 1;
-            true
-        };
-        let (u, logs) = r.update(false, &installs, None, None);
-        assert_eq!((u.outcome.as_str(), u.from_sha(), u.to_sha()), ("latest", Some(next.as_str()), Some(next.as_str())));
-        assert_eq!(u.note, format!("最新です({})。新しいリリースの実行ファイルにしました", &next[..7]));
-        assert!(logs.iter().any(|l| l == "atlas の更新: 新しいリリースが出たので、その版の実行ファイルを用意します"), "{logs:?}");
-        assert_eq!(*n.borrow(), 1);
-        assert_eq!(r.git(&r.member, &["tag", "--list", "v*", "--merged", "HEAD"]), "v0.1.1");
-        // 起動用の .bat からは、タグが変わらなければ実行ファイルを確かめ直さない(直前に ensure-atlas.ps1 が確かめた。開くたびに速く終わる)
-        let (u, _) = r.update_as(false, &installs, None, None, true);
-        assert_eq!((u.outcome.as_str(), u.note.as_str()), ("latest", format!("最新です({})", &next[..7]).as_str()));
-        assert_eq!(*n.borrow(), 1);
-        // 付いたタグの実行ファイルを用意できなければ、今の実行ファイルのまま続ける(戻すコミットは無い)
-        r.git(&r.dev, &["tag", "v0.1.2", &next]);
-        r.git(&r.dev, &["push", "-q", "origin", "v0.1.2"]);
-        let no = || false;
-        let (u, _) = r.update(false, &no, None, None);
-        assert_eq!(u.outcome, "failed");
-        assert_eq!(u.note, format!("最新です({})が、新しいリリースの実行ファイルを用意できなかったので、今の版のまま送ります(次の回にもう一度試します)", &next[..7]));
-        assert_eq!(r.head(&r.member), next);
-        // 自動で送るタスクは、タグがもう届いていても、次の回にもう一度用意する(届いた回に用意できなかったら、そのままにしない)
-        let (u, logs) = r.update(false, &installs, None, None);
-        assert_eq!((u.outcome.as_str(), u.note.as_str()), ("latest", format!("最新です({})。新しいリリースの実行ファイルにしました", &next[..7]).as_str()));
-        assert!(logs.iter().any(|l| l == "atlas の更新: 今の版の実行ファイルを用意し直します"), "{logs:?}");
-        assert_eq!(*n.borrow(), 2);
-        // 新しいタグがあっても、実行ファイルがもうその版なら用意しない
-        r.git(&r.dev, &["tag", "v0.1.3", &next]);
-        r.git(&r.dev, &["push", "-q", "origin", "v0.1.3"]);
-        let (u, _) = r.update(true, &installs, None, None);
-        assert_eq!(u.note, format!("最新です({})", &next[..7]));
-        assert_eq!(*n.borrow(), 2);
-    }
-
-    #[test]
-    fn newest_release_tag_compares_numbers_and_ignores_other_tags() {
-        assert_eq!(newest_release_tag("v0.1.9\nv0.1.10\nv0.2.0-rc.1\nv1\nvx.1.2\n").as_deref(), Some("v0.1.10"));
-        assert_eq!(newest_release_tag("v0.9.0\r\nv0.10.0\r\n").as_deref(), Some("v0.10.0"));
-        assert_eq!(newest_release_tag(""), None);
-    }
-
-    #[test]
-    fn commits_whose_release_is_not_out_yet_are_not_pulled() {
+    fn a_rewritten_origin_is_followed_when_nothing_is_local() {
         let r = Repos::new();
         let yes = || true;
-        // 配る中身の一覧と、そのリリース
-        fs::create_dir_all(r.dev.join("scripts")).unwrap();
-        fs::write(r.dev.join(SHIPPED_LIST), "# 配るもの\r\ncrates\r\n:(exclude)crates/*/tests/*\r\n").unwrap();
-        fs::create_dir_all(r.dev.join("crates/x/tests")).unwrap();
-        fs::write(r.dev.join("crates/x/lib.rs"), "1").unwrap();
-        let released = r.release("crates/x/lib.rs", "1");
-        r.git(&r.dev, &["tag", "v0.1.1", &released]);
-        r.git(&r.dev, &["push", "-q", "origin", "v0.1.1"]);
-        // 説明書だけのコミットは、リリースが無くても取り込む
-        let docs = r.release("README.md", "docs");
+        r.release("a.txt", "second");
+        r.update(true, &yes, None, None);
+        // origin の main を書き換える(force push)
+        r.git(&r.dev, &["reset", "-q", "--hard", "HEAD~1"]);
+        fs::write(r.dev.join("b.txt"), "other").unwrap();
+        r.git(&r.dev, &["add", "-A"]);
+        r.git(&r.dev, &["commit", "-q", "-m", "rewritten"]);
+        r.git(&r.dev, &["push", "-q", "--force", "origin", "main"]);
+        let rewritten = r.head(&r.dev);
         let (u, _) = r.update(true, &yes, None, None);
-        assert_eq!((u.outcome.as_str(), u.to_sha()), ("updated", Some(docs.as_str())));
-        // テストだけの変更も、配る中身ではない
-        let tests = r.release("crates/x/tests/t.rs", "t");
-        let (u, _) = r.update(true, &yes, None, None);
-        assert_eq!((u.outcome.as_str(), u.to_sha()), ("updated", Some(tests.as_str())));
-        // 配る中身が変わったのにリリースがまだ無いコミットには進めない(取り込んだコミットのリリースのほうが新しい)
-        let pending = r.release("crates/x/lib.rs", "2");
-        let (u, _) = r.update(true, &yes, None, None);
-        assert_eq!(u.outcome, "skipped");
-        assert_eq!(u.note, format!("新しい版({})のリリースがまだ出ていない(いちばん新しいリリースは v0.1.1)ので、まだ取り込みません。今の版のまま送ります(リリースが出たら、次の回に取り込みます)", &pending[..7]));
-        assert_eq!(r.head(&r.member), tests);
-        // リリースが出たら取り込む
-        r.git(&r.dev, &["tag", "v0.1.2", &pending]);
-        r.git(&r.dev, &["push", "-q", "origin", "v0.1.2"]);
-        let (u, _) = r.update(true, &yes, None, None);
-        assert_eq!((u.outcome.as_str(), u.to_sha()), ("updated", Some(pending.as_str())));
-        // 前のほうのコミットにいる人は、リリースのあるコミットまでは進める
-        r.git(&r.member, &["reset", "-q", "--hard", &docs]);
-        r.release("crates/x/lib.rs", "3");
-        let (u, _) = r.update(true, &yes, None, None);
-        assert_eq!((u.outcome.as_str(), u.to_sha()), ("updated", Some(pending.as_str())));
-        assert!(u.note.ends_with("はリリースがまだ出ていないので、リリース v0.1.2 の版まで)"), "{}", u.note);
+        assert_eq!((u.outcome.as_str(), u.to_sha()), ("updated", Some(rewritten.as_str())));
+        assert!(u.note.ends_with("(origin の origin/main の履歴が書き換えられていたので、新しい origin/main に合わせました)"), "{}", u.note);
+        assert_eq!(r.head(&r.member), rewritten);
     }
 
     #[test]
@@ -751,10 +903,12 @@ mod tests {
         let cfg = r.cfg.clone();
         let run = move |cmd: &str, args: &[&str], cwd: &Path, t: Duration| unsafe_env_free_run(cmd, args, cwd, t, &cfg);
         let yes = || true;
+        let tools = || None;
         let mut o = UpdateOptions::new(&r.member, &log);
         o.run = Some(&run);
         o.exe_fresh = Some(&yes);
         o.install_exe = Some(&yes);
+        o.missing_tools = Some(&tools);
         o.carry_on = "今の版のまま開きます";
         o.quiet_latest = true;
         // 最新なら何も出さない
@@ -777,7 +931,7 @@ mod tests {
     }
 
     #[test]
-    fn rollback_reinstalls_when_needed() {
+    fn rollback_restores_the_previous_exe_without_building() {
         let r = Repos::new();
         let first = r.head(&r.member);
         r.release("a.txt", "second");
@@ -788,12 +942,122 @@ mod tests {
         let cfg = r.cfg.clone();
         let run = move |cmd: &str, args: &[&str], cwd: &Path, t: Duration| unsafe_env_free_run(cmd, args, cwd, t, &cfg);
         let stale = || false;
+        // ビルドしに行ったら失敗にする(戻すときはビルドしない)
+        let builds = RefCell::new(0);
+        let build = || {
+            *builds.borrow_mut() += 1;
+            false
+        };
+        let restores = RefCell::new(0);
+        let restore = || {
+            *restores.borrow_mut() += 1;
+            Ok(())
+        };
         let mut o = UpdateOptions::new(&r.member, &log);
         o.run = Some(&run);
         o.exe_fresh = Some(&stale);
-        o.install_exe = Some(&yes);
+        o.install_exe = Some(&build);
+        o.restore_exe = Some(&restore);
         let b = rollback(&o, &first);
-        assert_eq!(b, RollbackResult { ok: true, reverted: true, note: format!("前の版({})に戻し、実行ファイルも前の版にしました", &first[..7]) });
+        assert_eq!(b, RollbackResult { ok: true, reverted: true, note: format!("前の版({})に戻し、実行ファイルも置き換える前のものに戻しました", &first[..7]) });
         assert_eq!(r.head(&r.member), first);
+        assert_eq!((*builds.borrow(), *restores.borrow()), (0, 1));
+        // 前のものに戻せなくても、コミットは戻せたので ok(この回は、呼んだプロセス(前の版)が送る)
+        r.git(&r.member, &["reset", "-q", "--hard", "origin/main"]);
+        let broken = || Err("置き換える前の実行ファイル(bin\\atlas.prev.exe)がありません".to_string());
+        o.restore_exe = Some(&broken);
+        let b = rollback(&o, &first);
+        assert!(b.ok && b.reverted, "{b:?}");
+        assert!(b.note.contains("実行ファイルは前のものに戻せませんでした(置き換える前の実行ファイル"), "{}", b.note);
+        assert_eq!(*builds.borrow(), 0);
+        // 実行ファイルがもう前の版のものなら、何も戻さない
+        r.git(&r.member, &["reset", "-q", "--hard", "origin/main"]);
+        o.exe_fresh = Some(&yes);
+        o.restore_exe = Some(&restore);
+        let b = rollback(&o, &first);
+        assert_eq!(b.note, format!("前の版({})に戻しました", &first[..7]));
+        assert_eq!(*restores.borrow(), 1);
+    }
+
+    #[test]
+    fn restore_previous_exe_copies_the_kept_one_back() {
+        let d = tempfile::tempdir().unwrap();
+        let bin = d.path().join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let (name, prev) = exe_names();
+        assert_eq!(restore_previous_exe(d.path()), Err(format!("置き換える前の実行ファイル(bin\\{prev})がありません")));
+        fs::write(bin.join(name), "new").unwrap();
+        fs::write(bin.join(prev), "old").unwrap();
+        fs::write(bin.join("atlas-source.txt"), "local x\n").unwrap();
+        restore_previous_exe(d.path()).unwrap();
+        assert_eq!(fs::read_to_string(bin.join(name)).unwrap(), "old");
+        // 前のものは残す(呼んだプロセスが動かしていることがある)
+        assert_eq!(fs::read_to_string(bin.join(prev)).unwrap(), "old");
+        assert!(!bin.join("atlas-source.txt").exists());
+    }
+
+    #[test]
+    fn a_commit_that_failed_to_build_is_not_retried_from_launchers_and_once_a_day_from_the_task() {
+        let r = Repos::new();
+        let before = r.head(&r.member);
+        let next = r.release("a.txt", "second");
+        let n = RefCell::new(0);
+        let installs = || {
+            *n.borrow_mut() += 1;
+            true
+        };
+        *r.failed.borrow_mut() = Some((next.clone(), Duration::from_secs(60)));
+        // 起動用の .bat からは、同じコミットをもう試さない
+        let (u, _) = r.update_as(true, &installs, None, None, true);
+        assert_eq!(u.outcome, "skipped");
+        assert!(u.note.starts_with(&format!("新しい版({})は前にこの PC でビルドできなかったので、今回は取り込みません。", &next[..7])), "{}", u.note);
+        assert!(!u.note.contains("1 日たったら"));
+        assert_eq!((r.head(&r.member), *n.borrow()), (before.clone(), 0));
+        // 自動で送るタスクも、1 日たつまでは試さない
+        let (u, _) = r.update(true, &installs, None, None);
+        assert_eq!(u.outcome, "skipped");
+        assert!(u.note.contains("自動で送るタスクは、1 日たったらもう一度試します。"), "{}", u.note);
+        assert_eq!(*n.borrow(), 0);
+        // 起動用の .bat は、1 日たっても同じコミットは試さない
+        *r.failed.borrow_mut() = Some((next.clone(), Duration::from_secs(21 * 60 * 60)));
+        let (u, _) = r.update_as(true, &installs, None, None, true);
+        assert_eq!(u.outcome, "skipped");
+        // 自動で送るタスクは、1 日たったらもう一度試す
+        let (u, _) = r.update(false, &installs, None, None);
+        assert_eq!((u.outcome.as_str(), u.to_sha()), ("updated", Some(next.as_str())));
+        assert_eq!(*n.borrow(), 1);
+        // もっと新しいコミットが出たら、起動用の .bat からも試す
+        *r.failed.borrow_mut() = Some((next.clone(), Duration::from_secs(60)));
+        let newer = r.release("a.txt", "third");
+        let (u, _) = r.update_as(false, &installs, None, None, true);
+        assert_eq!((u.outcome.as_str(), u.to_sha()), ("updated", Some(newer.as_str())));
+    }
+
+    #[test]
+    fn the_failed_build_file_is_read_with_its_age() {
+        let d = tempfile::tempdir().unwrap();
+        assert_eq!(read_failed_build(d.path()), None);
+        fs::create_dir_all(d.path().join("bin")).unwrap();
+        fs::write(d.path().join("bin").join(FAILED_BUILD_FILE), format!("{}\r\n", "c".repeat(40))).unwrap();
+        let (sha, age) = read_failed_build(d.path()).unwrap();
+        assert_eq!(sha, "c".repeat(40));
+        assert!(age < Duration::from_secs(60 * 60));
+    }
+
+    /// 時間切れで止めるときは子孫ごと止める(ensure-atlas.ps1 が動かした cargo などを残さない)。
+    /// 子の cmd が、親が止められた後に印のファイルを書く。子孫ごと止まれば書かれない
+    #[cfg(windows)]
+    #[test]
+    fn a_timed_out_command_is_stopped_with_its_children() {
+        let d = tempfile::tempdir().unwrap();
+        let mark = d.path().join("mark.txt");
+        let line = format!("start /b cmd /d /c \"ping -n 4 127.0.0.1 >nul & echo x > \"{}\"\" & ping -n 30 127.0.0.1 >nul", mark.display());
+        let started = Instant::now();
+        let r = run_cmd("cmd.exe", &["/d", "/s", "/c", &line], d.path(), Duration::from_secs(1));
+        assert_eq!(r.code, -1);
+        // 子が残っていれば、出力のパイプが閉じるまで待たされる
+        assert!(started.elapsed() < Duration::from_secs(3), "{:?}", started.elapsed());
+        std::thread::sleep(Duration::from_secs(5));
+        assert!(!mark.exists(), "子のプロセスが残って書いた");
     }
 }

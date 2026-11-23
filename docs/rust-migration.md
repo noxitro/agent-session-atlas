@@ -15,7 +15,7 @@
 ## 置き場所
 
 ```
-Cargo.toml                 ワークスペース。[workspace.package] の version は、この PC でビルドしたときの版と、minor・major を上げるときの次のリリースの版
+Cargo.toml                 ワークスペース。[workspace.package] の version は、atlas --version に出る版
 crates/atlas-core/         TS 版の packages/core の移植(types・events・snapshot・desktop・extract・normalize・classify・project・
                            instructions・wiki・metrics・turns・tables・ai-changes・vcs・vcs-retention・vcs-step・tool-failure・
                            atlas-build・atlas-version・fs-retry)と、共通の json.rs・jsdate.rs・collate.rs
@@ -28,7 +28,7 @@ crates/atlas-cli/          TS 版の packages/cli(実行ファイル atlas)。co
 packages/report/src/app/   画面(Svelte)。lib/・shared/・styles/ と一緒に Vite で dist/template.html にまとめる
 packages/report/src/shared/ 画面が読む型と定数(もとは packages/core にあったもの。types・turns・tool-failure・project-keys・
                            desktop-types・atlas-version)
-scripts/ensure-atlas.ps1   起動用の .bat が最初に動かす: bin\atlas.exe を Cargo.toml の版にそろえる(リリースから取る / ビルドする)
+scripts/ensure-atlas.ps1   起動用の .bat が最初に動かす: bin\atlas.exe を今のコミットのものにそろえる(この PC でビルドする)
 ```
 
 TS のファイル 1 つを Rust のモジュール 1 つに移した(`normalize.ts` → `normalize.rs`)。関数名は snake_case に直したが、対応がわかるよう名前は変えていない。
@@ -77,6 +77,9 @@ TS のファイル 1 つを Rust のモジュール 1 つに移した(`normalize
 
 ## 決めたこと(段 8)
 
+- **さらに後に変えたこと(配るのをやめた。2026-11-23)**: `atlas.exe` を GitHub のリリースで配るのをやめた。利用者の PC で、いつもこのリポジトリのソースからビルドする。
+  `.github/workflows/release.yml` と `scripts/release-shipped.txt` を外し、`ensure-atlas.ps1` は実行ファイルをどこからも取ってこない(作ったときのコミットが `HEAD` と同じかで比べる)。
+  下の「マージごとのリリース」と「配り方は『両方』」は、この形に置き換わった(今の形は README の「atlas.exe の用意と更新」と docs/PLAN.md の 2026-11-23 の項)。
 - **その後に変えたこと(マージごとのリリース)**: 版を上げる PR を要らなくした。リリースのワークフローは、配る中身が前のリリースのタグから変わったマージごとに、パッチ版のタグとリリースを作る(実行ファイルの版はビルドのときに `ATLAS_VERSION` で渡す)。
   `ensure-atlas.ps1` が取ってくる版は、`Cargo.toml` の `version` ではなく、HEAD から辿れるいちばん新しいタグ `v<x.y.z>`(git もタグも無ければ `Cargo.toml` の `version`)。
   起動用の .bat は、開くたびに `atlas self-update`(自動で送る前の更新と同じ `self_update.rs`。タグも取ってくる)で新しい版を取り込み、コミットが変わったら 1 行の中で自分を動かし直す。

@@ -40,6 +40,6 @@ sha2 = "0.11.1"
 tempfile = "3.27.0"
 
 [features]
-# 従量課金の Anthropic API を直接呼ぶ判定バックエンド(--backend anthropic)を入れる。既定のビルドとリリースの atlas.exe には入れない
+# 従量課金の Anthropic API を直接呼ぶ判定バックエンド(--backend anthropic)を入れる。既定のビルドと、起動用の .bat がこの PC でする atlas.exe のビルドには入れない
 # (HTTP と TLS の依存が増えるため)。使うときは cargo build --release -p atlas-cli --features anthropic-backend
 anthropic-backend = ["atlas-judge/anthropic-backend"]

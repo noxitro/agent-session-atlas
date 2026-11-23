@@ -33,7 +33,7 @@ bin\atlas.exe --help                  # 使い方
 
 前の版の `judge run`・`turns run`・`judge-flow`・`tasks link --llm`(このツールが LLM を呼んで判定する操作)は無くなりました(2026-11-23)。指定すると、代わりの手順を出して止まります(終了コード 2)。
 
-起動用の `.bat` から動かす入口も、同じ実行ファイルのサブコマンドです(使い方には出しません): `setup`(`setup.bat`)・`upload-project`(`upload-project.bat`。送り先へのセッションの写し方は [README の「プロジェクトのセッションをまとめて送る」](../README.md#プロジェクトのセッションをまとめて送るupload-projectbat)。出力先は、試すときだけ環境変数 `ATLAS_OUT` で変えられる)・`upload-schedule`(`schedule-upload.bat`)・`upload-auto`(`schedule-upload.bat` で登録したタスク)・`self-update`(すべての `.bat` が開くたびに動かす更新。`git fetch --tags` と早送りで新しい版を取り込み、その版の実行ファイルを用意する。コミットが変わったら終了コード 10、それ以外はいつも 0。環境変数 `ATLAS_NO_AUTO_UPDATE=1` なら何もしない)。
+起動用の `.bat` から動かす入口も、同じ実行ファイルのサブコマンドです(使い方には出しません): `setup`(`setup.bat`)・`upload-project`(`upload-project.bat`。送り先へのセッションの写し方は [README の「プロジェクトのセッションをまとめて送る」](../README.md#プロジェクトのセッションをまとめて送るupload-projectbat)。出力先は、試すときだけ環境変数 `ATLAS_OUT` で変えられる)・`upload-schedule`(`schedule-upload.bat`)・`upload-auto`(`schedule-upload.bat` で登録したタスク)・`self-update`(すべての `.bat` が開くたびに動かす更新。`git fetch` と早送りで新しい版を取り込み、その版の実行ファイルをこの PC でビルドする。ビルドに要るもの(Node.js・Rust・Windows では C++ のビルドツール)が無ければ取り込まず、ビルドできなければ前のコミットに戻す。コミットが変わったら終了コード 10、それ以外はいつも 0。環境変数 `ATLAS_NO_AUTO_UPDATE=1` なら何もしない)。
 
 ## オプション
 
@@ -62,7 +62,7 @@ bin\atlas.exe --help                  # 使い方
 | `--temp-dir <dir>` | `extract` で、このフォルダ配下を「(一時フォルダ)」にまとめる(複数指定可)。指定すると既定の判定(`%TEMP%` と `AppData\Local\Temp`・`/tmp` のパターン)を使わず、挙げたフォルダだけを一時フォルダとみなす。このリポジトリ自体を一時フォルダ配下に置いて試すときや、別のマシンのデータを読むとき用 |
 | `--config <file>` | `extract`・`vcs`・`metrics`・`all`・`serve`・`open`・`tasks` で読む設定ファイル(`metrics` は管理ツールのタスクの表 `tasks.csv` の稼働時間帯に使う)(既定: 環境変数 `ATLAS_CONFIG`、無ければリポジトリ直下の `atlas.config.json`。下記「[wiki の指定](#wiki-の指定)」と「[アップロード先の指定](#アップロード先の指定)」)。`serve` は画面で決めたアップロード先をこのファイルに書く |
 | `--vcs-mode <v>` | `vcs` / `all` で、比べる版をどこで見るか。`worktree`(既定。照合した時点の作業ツリーで、まだ取り込んでいない変更も含む)/ `committed`(最後に取り込んだ版。git は HEAD、svn は BASE、p4 は手元の版)/ `fixed`(セッションの終わりから決まった日数後の時点で取り込まれていた版。日数は設定の `vcs.lagDays`、既定 7)。設定の `vcs.mode` より優先する |
-| `-V`, `--version` | 版を出す(`atlas 0.1.3 (commit <作ったときのコミット>, code <版の目印>)`)。リリースの `atlas.exe` はリリースのタグ `v<版>` の版(ビルドのときに環境変数 `ATLAS_VERSION` で渡す)、渡さずに作ったもの(この PC でのビルド)はワークスペースの `Cargo.toml` の `version`。`scripts/ensure-atlas.ps1` が、置いてある実行ファイルの版を確かめるのに使う |
+| `-V`, `--version` | 版を出す(`atlas 0.1.3 (commit <作ったときのコミット>, code <版の目印>)`)。版はワークスペースの `Cargo.toml` の `version`(ビルドのときに環境変数 `ATLAS_VERSION` を渡せば、その版)。`scripts/ensure-atlas.ps1` が、置いてある実行ファイルを今のコミットから作ったかを、`commit` で確かめるのに使う(git が管理しているファイルを変えたまま作ったものは、コミットの後ろに `-dirty` が付き、同じとはみなさない。git で取得したフォルダでなければ版で) |
 
 `--limit` と `--timeout` は `judge m365`・`turns m365`・`tasks m365` で使います(`--timeout` は `skill-draft` でも使う)。`--backend` は `skill-draft` でだけ使います。`judge import`・`judge m365` は作ってある添付(`out/bundle`)を使うので、絞り込みのオプション(`--session`・`--project`・`--since`・`--client`・`--branch`・`--task`)を付けると止まります。絞るときは、先に `bundle` に付けて添付を作ります。`judge m365` では `--model` は M365 Copilot のモデルの選択の名前になります。
 
@@ -219,6 +219,6 @@ llm-wiki の参照は、ツール呼び出しの引数に vault の場所が現�
 
 - 名前に「judge」とあるのは、前の版がこのツールの中の判定にも使っていたためです。判定はもうこのツールの中では回さないので(外部の LLM に頼む)、判定には使いません。前の版の設定を書いたままでも、そのまま読めます。
 - 決まる順: コマンドの `--model` > 設定の `judgeModel` > どちらも無ければ Copilot の既定のモデル。どれを使ったかは、ログの最初に出ます。
-- `--backend anthropic`(Anthropic API を直接呼ぶ)には使いません(モデル名の形が違うため。そちらは `--model` で指定します)。`anthropic` は、機能 `anthropic-backend` を付けてビルドした atlas にだけ入っています(リリースの `atlas.exe` には無い。[development.md](development.md))。
+- `--backend anthropic`(Anthropic API を直接呼ぶ)には使いません(モデル名の形が違うため。そちらは `--model` で指定します)。`anthropic` は、機能 `anthropic-backend` を付けてビルドした atlas にだけ入っています(既定のビルドには無い。[development.md](development.md))。
 
 画面と bat は、設定ファイルを書き換える間 `atlas.config.json.lock` を作り、1 つずつ書きます(別の処理の書き換えを消さないように。落ちて残ったものは 10 秒たてば無視します)。書き換えるのは 1 項目だけで、ほかの項目の書き方(手で詰めた配列など)はそのまま残します。

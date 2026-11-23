@@ -90,6 +90,6 @@ serve・open のオプション:
 
 skill-draft のオプション:
   --backend <name>   copilot-cli(既定、copilot -p)/ anthropic(従量課金、ANTHROPIC_API_KEY が必要。
-                     --features anthropic-backend を付けてビルドした atlas だけ。リリースの atlas.exe には無い)
+                     --features anthropic-backend を付けてビルドした atlas だけ。既定のビルドには無い)
   --timeout <秒>     制限時間(既定 600)
   copilot の実行ファイルは環境変数 ATLAS_COPILOT_BIN で差し替えられます。

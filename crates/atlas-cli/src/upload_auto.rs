@@ -2,7 +2,8 @@
 //! 集計し直してから、画面で「まとめて送る」に印を付けたプロジェクトを、覚えた送り先へ尋ねずに送る(upload-project.bat の y まで進めたのと同じ)。
 //! 窓が無いので、経過は out/auto-upload.log に、結果は out/auto-upload.json に書き、送れなかったときは Windows の通知で知らせる。
 //! 送る前に、atlas 自身を新しい版にする(self_update.rs。タスクの引数に --no-update があればしない)。新しい版にしたら、
-//! 新しい版で動かし直す。動かし直した側が結果を残さずに終わったら(新しい版がこの PC で動かない)、その版を覚えて前の版に戻し、前の版で動かし直して送る(run_update_flow)。
+//! 新しい版で動かし直す。動かし直した側が結果を残さずに終わったら(新しい版がこの PC で動かない)、その版を覚えて前の版に戻し
+//! (コミットと、bin/ の実行ファイルを置き換える前のものに。ビルドはしない)、このプロセス(前の版)がそのまま送る(run_update_flow)。
 
 use crate::upload_copy::UploadPaths;
 use crate::upload_auto_files::{
@@ -279,11 +280,8 @@ pub fn run_update_flow(d: &UpdateFlowDeps<'_>) -> (Option<AutoUpdateResult>, Opt
         note: format!("{bad}ので、{note}。前の版で送ります(もっと新しい版が出たら、それにします。直らなければ atlas を作っている人に知らせてください)"),
     };
     (d.log)(&format!("atlas の更新: {}", fallback.note));
-    let second = relaunch(&fallback);
-    if second.0 {
-        return (Some(fallback), Some(second.1.unwrap_or(1)));
-    }
-    fail(&format!("{bad}ので前の版に戻しましたが、前の版でも動かせませんでした(記録をご覧ください)"), fallback)
+    // 送るのは、このプロセス(前の版の実行ファイル)。bin/ の実行ファイルを戻せたかにも、ビルドにも頼らない
+    (Some(fallback), None)
 }
 
 /// 自動で送るときの io(尋ねない。表示は記録に書く)
@@ -514,14 +512,17 @@ mod tests {
         assert_eq!(r, (Some(updated()), Some(0)));
         let rel = &f.relaunches.borrow()[0];
         assert_eq!(rel[1], (PARENT_ENV.to_string(), "4321".to_string()));
-        // 結果を残さずに落ちたら、その版を覚えて前の版に戻し、前の版で送る
+        // 結果を残さずに落ちたら、その版を覚えて前の版に戻し、このプロセス(前の版)がそのまま送る(動かし直さない。bin/ の実行ファイルにもビルドにも頼らない)
         let (f, r) = run(updated(), vec![None, Some(finished("2026-11-13T09:00:09.000Z", true))], true, HashMap::new(), vec![]);
-        assert_eq!(r.1, Some(0));
+        assert_eq!(r.1, None);
+        assert_eq!(f.relaunches.borrow().len(), 1);
         let u = r.0.unwrap();
         assert_eq!((u.outcome.as_str(), u.to.as_deref(), u.to_sha()), ("failed", Some("aaaaaaa"), Some("a".repeat(40).as_str())));
+        assert!(u.note.ends_with("前の版で送ります(もっと新しい版が出たら、それにします。直らなければ atlas を作っている人に知らせてください)"), "{}", u.note);
         assert_eq!(*f.avoided.borrow(), vec!["b".repeat(40)]);
         assert_eq!(*f.rolled.borrow(), vec!["a".repeat(40)]);
         assert!(f.logs.borrow().iter().any(|l| l == "  SyntaxError: 新しい版が読めない"));
+        assert!(f.written.borrow().is_empty() && f.notes.borrow().is_empty());
         // 前の版に戻せなければ、送れなかったことを結果に書いて知らせる(前の回の結果のままにしない)
         let (f, r) = run(updated(), vec![None], false, HashMap::new(), vec![]);
         assert_eq!(r.1, Some(1));
@@ -532,8 +533,9 @@ mod tests {
         // 途中で落ちた(始めたが終わっていない)ときも、結果が残らなかったものとして前の版で送る
         let half = AutoStatusFile { finished_at: None, ..finished("2026-11-13T09:00:05.000Z", false) };
         let (f, r) = run(updated(), vec![Some(half), Some(finished("2026-11-13T09:00:09.000Z", true))], true, HashMap::new(), vec![]);
-        assert_eq!(r.1, Some(0));
-        assert_eq!(f.relaunches.borrow().len(), 2);
+        assert_eq!(r.1, None);
+        assert_eq!(f.relaunches.borrow().len(), 1);
+        assert_eq!(*f.rolled.borrow(), vec!["a".repeat(40)]);
     }
 
     #[test]

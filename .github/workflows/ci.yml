@@ -1,13 +1,13 @@
 # push / PR ごとに型検査・レポートの画面のビルド・単体テスト(Rust と TS)・TS と Rust の lib の突き合わせを回す(ジョブ check。
 # Rust はテスト用の debug だけを作る)。E2E(テスト時に生成する架空の fixture のみ。ジョブ e2e)・画面の操作(ジョブ ui)・clone した
 # 直後と同じ中身を作って atlas.bat と同じ順で動かす確認(ジョブ smoke。npm run smoke = scripts/fresh-checkout.ts →
-# scripts/checkout-smoke.ts。リリースが無いときの、この PC でビルドする道)は、どれも atlas を release で作ってから動かすので、check と
+# scripts/checkout-smoke.ts。利用者の PC と同じく、ensure-atlas.ps1 がビルドする道)は、どれも atlas を release で作ってから動かすので、check と
 # 並べて別のジョブで回す(1 つのジョブで順に回すと待ち時間がそれぞれの和になるため。e2e・ui・smoke はそれぞれ atlas を作り直す)。
 # 文書だけを変えた PR では、この 4 つを飛ばす(ジョブ changes)。
 # 手元で同じ順に回すのは npm run ci(docs/development.md の「CI」)。
 # fixture は e2e の globalSetup(e2e/global-setup.ts)と checkout-smoke.ts が作るので、ここに生成の手順は要らない。
 # 実データ(ATLAS_LIVE)と実 LLM 判定は CI では動かさない。
-# 依存の検査: Rust は cargo-deny(deny.toml)、npm は scripts/npm-audit.mjs(devDependencies も含む。リリースと同じ)・npm audit signatures(入れたものの署名)・scripts/lockfile.test.ts(npm test。lockfile の取得元と整合性)と、PR では
+# 依存の検査: Rust は cargo-deny(deny.toml)、npm は scripts/npm-audit.mjs(devDependencies も含む。毎週の検査と同じ)・npm audit signatures(入れたものの署名)・scripts/lockfile.test.ts(npm test。lockfile の取得元と整合性)と、PR では
 # dependency-review(新しく入る・上がる dependencies だけ)。
 # 外部の Action はタグの付け替えで中身が変わらないようコミット SHA で固定する(末尾の注記が版。Dependabot が SHA ごと更新する)。
 # Rust はランナーに入っている rustup で入れる(SHA で固定できる Action を増やさない)。
@@ -120,8 +120,8 @@ jobs:
           restore-keys: |
             rust-debug-${{ runner.os }}-${{ steps.rust.outputs.version }}-
       - run: npm ci
-      # devDependencies も含めて high 以上で止める(リリースと毎週の検査と同じ。画面のビルドの道具の出力は atlas.exe に埋め込まれるので、
-      # リリースで止まるものは PR でも止める)。npm-audit-ignore.json に理由と外す時を書いた advisory だけは止めない
+      # devDependencies も含めて high 以上で止める(毎週の検査と同じ。画面のビルドの道具の出力は atlas.exe に埋め込まれ、
+      # 利用者の PC でも同じ依存でビルドするため)。npm-audit-ignore.json に理由と外す時を書いた advisory だけは止めない
       - if: matrix.os == 'ubuntu-latest' && matrix.node == 24
         run: node scripts/npm-audit.mjs
       # npm ci で入れたパッケージが、レジストリの署名(と、あれば来歴の attestation)と合うかを見る。
@@ -281,7 +281,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # clone した状態での動作確認(手元の npm run smoke と同じ。scripts/smoke-local.ts)。リリースは探さず(origin が無い)、
+  # clone した状態での動作確認(手元の npm run smoke と同じ。scripts/smoke-local.ts)。利用者の PC と同じく、
   # scripts/ensure-atlas.ps1 がこの PC でビルドする道を通る(Linux は pwsh で動かす)。OS ごとに Node 24 で回す
   # (Node 26 での npm ci・画面のビルド・atlas のビルドは check が、Node 26 での E2E は e2e が見る)。
   # ビルドはこのリポジトリの target/ を使う(CARGO_TARGET_DIR。キャッシュの依存のビルドを使い回す)。中身は clone した先のものなので、

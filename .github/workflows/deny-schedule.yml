@@ -1,7 +1,7 @@
 # 依存の既知の脆弱性を毎週見る。新しい advisory はコードを変えなくても出るので、push と PR だけでは気づけない。
 # - Rust: cargo deny check advisories(RustSec の脆弱性・保守終了・健全でないもの・取り下げられた版。設定は deny.toml)
 # - npm: scripts/npm-audit.mjs(npm audit を devDependencies も含めて回し、high 以上で落とす。画面のビルドに使う道具で、その出力は
-#   atlas.exe に埋め込まれるため。push と PR の CI・リリースと同じ。npm-audit-ignore.json に理由と外す時を書いた advisory だけは止めない)
+#   atlas.exe に埋め込まれるため。push と PR の CI と同じ。npm-audit-ignore.json に理由と外す時を書いた advisory だけは止めない)
 # 落ちたら Actions の画面と通知で分かる。直し方は docs/development.md の「依存の検査」。
 # 外部の Action はコミット SHA で固定する(ci.yml と同じ)。
 name: Dependency audit (weekly)
