@@ -16,7 +16,7 @@ const NESTED_FLAT_PROBE_MAX: usize = 3;
 
 /// 集計の元に指したフォルダの形。
 /// - copilot: ~/.copilot(session-state/ か session-store.db がある)
-/// - flat: セッションのフォルダが直下に並ぶ(アップロードしたグループ・プロジェクトのフォルダ)
+/// - flat: セッションのフォルダが直下に並ぶ(アップロードしたプロジェクトのフォルダ)
 /// - merged: flat のフォルダが下に並ぶ。folders(src からの相対パス。/ 区切り)を 1 つのレポートにまとめて読む。
 ///   1 段下に並ぶもの(人ごとのフォルダなど。folders は名前だけ)と、2 段下に並ぶもの(送り先そのものなど。folders は <人>/<プロジェクト>)の両方
 /// - none: どれでもない(セッションが 1 件も見つからない)
@@ -37,7 +37,7 @@ pub fn describe_source(src: &Path) -> SourceShape {
     if is_flat_layout(src) {
         return SourceShape::Flat;
     }
-    // 1 段下: アップロードしたフォルダ(プロジェクトやグループ)
+    // 1 段下: アップロードしたフォルダ(プロジェクト)
     let direct = all_upload_folders(src);
     let is_direct: HashSet<&str> = direct.iter().map(String::as_str).collect();
     // ~/.copilot の形のフォルダ(バックアップや、集計の出力先)は、人ごとのフォルダとしては見ない
@@ -70,7 +70,7 @@ pub fn person_of_folder(folder: Option<&str>) -> Option<String> {
 }
 
 /// 直下にセッションのフォルダ(workspace.yaml か events.jsonl を持つ)が並ぶ形か。~/.copilot の印(session-state/・session-store.db)があれば違う。
-/// atlas のアップロード先(<基底>\<グループ>)を --home に指して集計し直すとき用
+/// atlas のアップロード先(<基底>\<プロジェクト>)を --home に指して集計し直すとき用
 pub fn is_flat_layout(src: &Path) -> bool {
     if looks_like_copilot_home_async(src) {
         return false;

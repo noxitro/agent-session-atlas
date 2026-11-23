@@ -1,5 +1,5 @@
 // clone した直後と同じ中身のフォルダを作る: ソース一式(git archive HEAD)だけ。ビルド済みのレポートテンプレートと実行ファイルは入れない
-// (リリースが無いときの利用者と同じく、起動用の .bat が最初に動かす scripts/ensure-atlas.ps1 が作る)。CI と npm run smoke は、これを scripts/checkout-smoke.ts で動かして確かめる。
+// (利用者の PC と同じく、起動用の .bat が最初に動かす scripts/ensure-atlas.ps1 がビルドする)。CI と npm run smoke は、これを scripts/checkout-smoke.ts で動かして確かめる。
 // 使い方: node scripts/fresh-checkout.ts <名前> <出力先>(<出力先>/<名前> ができる)
 // git archive なので .gitattributes の eol(*.bat は CRLF)が効き、コミットしていない変更は入らない。
 import { spawn } from 'node:child_process';

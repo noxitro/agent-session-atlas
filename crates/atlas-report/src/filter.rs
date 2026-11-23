@@ -3,7 +3,7 @@
 use crate::types::SessionSummary;
 use atlas_core::collate::locale_compare;
 use atlas_core::types::SessionRecord;
-use atlas_core::{js, jsdate};
+use atlas_core::jsdate;
 use std::collections::{HashMap, HashSet};
 
 pub const ALL: &str = "";
@@ -170,20 +170,33 @@ pub struct FilterState {
     pub tool: String,
     /// セッションの選択(id をカンマ区切り。'' は制限なし)
     pub ids: String,
-    /// 選んだグループの名前('' は無し)
-    pub group: String,
     /// '1' ならメモのあるセッションだけ
     pub memo: String,
     /// '1' なら llm-wiki を参照したセッションだけ(WikiSummary::referenced。書き込みだけは入れない)
     pub wiki: String,
+    /// 管理ツールのタスクの ID(そのタスクに紐づいたセッションだけ)。NO_TASK はどのタスクにも紐づいていないセッション
+    pub task: String,
 }
 
 pub const NO_JUDGMENT: &str = "(none)";
-/// どのセッションにも当たらない id(0 件のグループを「制限なし」('')と区別する)
-pub const NO_SESSION: &str = "(none)";
+/// タスクの絞り込みで「タスクなし」(どのタスクにも紐づいていない。「どのタスクでもない」と決めたものも入る)
+pub const NO_TASK: &str = "(none)";
+
+/// セッション id → 紐づいたタスクの ID の並び(画面の TaskOf。ReportData.tasks.links のうち taskIds が空でないもの)
+pub type TaskOf = HashMap<String, Vec<String>>;
+
+/// セッションがタスクの絞り込み(task)に合うか。空なら制限なし。いくつかのタスクに紐づいたセッションは、そのどれで絞っても合う。
+/// NO_TASK はどのタスクにも紐づいていないセッション
+pub fn matches_task(id: &str, task: &str, tasks: &TaskOf) -> bool {
+    if task.is_empty() {
+        return true;
+    }
+    let t = tasks.get(id).filter(|t| !t.is_empty());
+    if task == NO_TASK { t.is_none() } else { t.is_some_and(|t| t.iter().any(|x| x == task)) }
+}
 
 /// FilterState のキー(emptyFilter のキーの順。URL ハッシュの書き出しの順)
-pub const FILTER_KEYS: [&str; 15] = ["from", "to", "project", "person", "client", "model", "branch", "coverage", "taskCategory", "empty", "tool", "ids", "group", "memo", "wiki"];
+pub const FILTER_KEYS: [&str; 15] = ["from", "to", "project", "person", "client", "model", "branch", "coverage", "taskCategory", "empty", "tool", "ids", "memo", "wiki", "task"];
 
 impl FilterState {
     pub fn get(&self, k: &str) -> &str {
@@ -200,9 +213,9 @@ impl FilterState {
             "empty" => &self.empty,
             "tool" => &self.tool,
             "ids" => &self.ids,
-            "group" => &self.group,
             "memo" => &self.memo,
             "wiki" => &self.wiki,
+            "task" => &self.task,
             _ => "",
         }
     }
@@ -221,9 +234,9 @@ impl FilterState {
             "empty" => &mut self.empty,
             "tool" => &mut self.tool,
             "ids" => &mut self.ids,
-            "group" => &mut self.group,
             "memo" => &mut self.memo,
             "wiki" => &mut self.wiki,
+            "task" => &mut self.task,
             _ => return None,
         })
     }
@@ -237,74 +250,18 @@ pub fn empty_filter() -> FilterState {
     FilterState::default()
 }
 
-/// グループの名前と id(SessionGroup・ReportGroup)
-pub trait NamedIds {
-    fn name(&self) -> &str;
-    fn ids(&self) -> &[String];
-}
-
-impl NamedIds for crate::groups::SessionGroup {
-    fn name(&self) -> &str {
-        &self.name
-    }
-    fn ids(&self) -> &[String] {
-        &self.ids
-    }
-}
-
-/// effectiveIds の戻り
-#[derive(Debug, Clone, PartialEq)]
-pub struct EffectiveIds<'g, G> {
-    pub group: Option<&'g G>,
-    pub ids: String,
-}
-
-/// 集計に使う id の集合を決める: group の名前が groups にあればその今の ids、無ければ ids
-pub fn effective_ids<'g, G: NamedIds>(ids: &str, group: &str, groups: &'g [G], known: &HashSet<String>) -> EffectiveIds<'g, G> {
-    let g = if group.is_empty() { None } else { groups.iter().find(|x| x.name() == group) };
-    match g {
-        None => EffectiveIds { group: None, ids: ids.to_string() },
-        Some(g) => EffectiveIds { group: Some(g), ids: group_ids(g.ids(), known) },
-    }
-}
-
-/// 現在のグループ名(名前で決まればそれ。決まらないときは ids の一致で探す。0 件・重複は決めない)
-pub fn current_group_name<G: NamedIds>(ids: &str, group: &str, groups: &[G], known: &HashSet<String>) -> Option<String> {
-    let e = effective_ids(ids, group, groups, known);
-    if let Some(g) = e.group {
-        return Some(g.name().to_string());
-    }
-    if ids.is_empty() || ids == NO_SESSION {
-        return None;
-    }
-    let hits: Vec<&G> = groups.iter().filter(|g| same_ids(ids, &group_ids(g.ids(), known))).collect();
-    if hits.len() == 1 { Some(hits[0].name().to_string()) } else { None }
-}
-
 /// 一覧のチェックに写す選択: ids のうち記録にあるものだけ
 pub fn known_selection(ids: &str, known: &HashSet<String>) -> Vec<String> {
     split_ids(ids).into_iter().filter(|id| known.contains(id)).collect()
 }
 
-/// グループの絞り込みに使う ids: 記録にある id、無ければ元の ids、それも無ければ NO_SESSION(= 0 件)
-pub fn group_ids(ids: &[String], known: &HashSet<String>) -> String {
-    let present: Vec<&str> = ids.iter().filter(|id| known.contains(*id)).map(String::as_str).collect();
-    if !present.is_empty() {
-        join_ids(present)
-    } else if !ids.is_empty() {
-        join_ids(ids.iter().map(String::as_str))
-    } else {
-        join_ids([NO_SESSION])
-    }
-}
-
 /// ids(カンマ区切り)を配列に(空要素と重複は除く)
 pub fn split_ids(ids: &str) -> Vec<String> {
-    crate::groups::unique_ids(ids.split(','))
+    crate::ids::unique_ids(ids.split(','))
 }
 
 pub fn join_ids<'a>(ids: impl IntoIterator<Item = &'a str>) -> String {
-    crate::groups::unique_ids(ids).join(",")
+    crate::ids::unique_ids(ids).join(",")
 }
 
 /// 2 つの ids が同じ集合か(順序は無視)
@@ -332,10 +289,18 @@ pub fn used_tool(s: &SessionSummary, tool: &str) -> bool {
 }
 
 pub fn matches(s: &SessionSummary, f: &FilterState, ids: Option<&HashSet<String>>) -> bool {
+    matches_with(s, f, ids, &TaskOf::new())
+}
+
+/// tasks はタスクの絞り込み(f.task)に使う紐づけ(画面の matches の 4 つ目の引数)
+pub fn matches_with(s: &SessionSummary, f: &FilterState, ids: Option<&HashSet<String>>, tasks: &TaskOf) -> bool {
     if !in_scope(s, f) {
         return false;
     }
     if ids.is_some_and(|ids| !ids.contains(&s.id)) {
+        return false;
+    }
+    if !matches_task(&s.id, &f.task, tasks) {
         return false;
     }
     if !matches_base(s, &f.base()) {
@@ -366,8 +331,13 @@ pub fn matches(s: &SessionSummary, f: &FilterState, ids: Option<&HashSet<String>
 }
 
 pub fn apply_filter<'a>(sessions: &'a [SessionSummary], f: &FilterState) -> Vec<&'a SessionSummary> {
+    apply_filter_with(sessions, f, &TaskOf::new())
+}
+
+/// tasks はタスクの絞り込み(f.task)に使う紐づけ(画面の applyFilter の 3 つ目の引数)
+pub fn apply_filter_with<'a>(sessions: &'a [SessionSummary], f: &FilterState, tasks: &TaskOf) -> Vec<&'a SessionSummary> {
     let ids: Option<HashSet<String>> = if f.ids.is_empty() { None } else { Some(split_ids(&f.ids).into_iter().collect()) };
-    sessions.iter().filter(|s| matches(s, f, ids.as_ref())).collect()
+    sessions.iter().filter(|s| matches_with(s, f, ids.as_ref(), tasks)).collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -416,6 +386,31 @@ pub fn filter_options(sessions: &[SessionSummary]) -> FilterOptions {
         branch: count_options(sessions.iter().map(|s| s.branch.clone().unwrap_or_else(|| UNKNOWN.into())), own),
         task_category: count_options(sessions.iter().map(|s| s.judgment.as_ref().and_then(|j| j.task_category.clone()).unwrap_or_else(|| NO_JUDGMENT.into())), own),
     }
+}
+
+/// タスクの絞り込みの選択肢と、どのタスクにも紐づいていないセッションの数(画面の taskOptions)
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct TaskOptions {
+    pub tasks: Vec<FilterOption>,
+    pub none: i64,
+}
+
+/// タスクの絞り込みの選択肢(紐づいたセッションの多い順、同じなら ID の順)。label はタスクの名前(names に無ければ ID)。
+/// 件数はそのタスクに紐づいたセッションの数(いくつかのタスクに紐づいたセッションは、それぞれのタスクに数える)
+pub fn task_options<'a>(session_ids: impl IntoIterator<Item = &'a str>, tasks: &TaskOf, names: &HashMap<String, String>) -> TaskOptions {
+    let mut ids: Vec<String> = Vec::new();
+    let mut none = 0;
+    for sid in session_ids {
+        match tasks.get(sid).filter(|t| !t.is_empty()) {
+            Some(t) => {
+                // 同じ ID が重なっていても 1 つに数える(画面の new Set と同じ)
+                let mut seen: HashSet<&str> = HashSet::new();
+                ids.extend(t.iter().filter(|x| seen.insert(x.as_str())).cloned());
+            }
+            None => none += 1,
+        }
+    }
+    TaskOptions { tasks: count_options(ids, |v| names.get(v).cloned().unwrap_or_else(|| v.to_string())), none }
 }
 
 /// 入力トークン記録の 3 区分
@@ -527,9 +522,6 @@ pub fn decode_filter(s: &str) -> FilterState {
         }
         if k == "ids" {
             v = join_ids(split_ids(&v).iter().map(String::as_str));
-        }
-        if k == "group" {
-            v = js::trim(&v).to_string();
         }
         *f.get_mut(k).expect("FILTER_KEYS のキー") = v;
     }

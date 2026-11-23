@@ -1,6 +1,7 @@
 //! 初期設定(packages/cli/src/setup.ts の移植。setup.bat から `atlas setup` で呼ぶ): llm-wiki の vault と普段の工程名、アップロード先を対話で尋ね、
 //! リポジトリ直下の atlas.config.json を書く。フォルダはエクスプローラー(フォルダを選ぶ画面)で選べる。黒い窓へのドラッグとパスの入力でも決められる。
 //! 書く前に parse_config で検査し、既存の設定は atlas.config.json.bak に退避する。集計はしない(atlas.bat で行う)。
+//! ここで尋ねない項目(判定に使うモデル・VCS の照合・管理ツールのタスクなど)は、今の設定に書いてあるとおりに残す。
 
 use crate::config::{load_config, parse_config, parse_upload_root, AtlasConfig, CONFIG_FILE};
 use anyhow::Result;
@@ -69,6 +70,19 @@ pub struct ConfigJson {
     /// upload-project.bat がまとめて送るプロジェクト(setup.bat では尋ねず、今の設定を残す)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub upload_projects: Option<Vec<String>>,
+}
+
+/// setup.bat が決める項目。ほかの項目は今の設定のまま残す
+const SETUP_KEYS: [&str; 4] = ["wikis", "phases", "uploadRoot", "uploadProjects"];
+
+/// 今の設定ファイルの中身(書いてあるとおり。~/ などを展開しないもの)。読めなければ None
+fn current_raw(path: &str) -> Option<serde_json::Map<String, Value>> {
+    let bytes = std::fs::read(path).ok()?;
+    let text = String::from_utf8_lossy(&bytes);
+    match js::parse_json(text.strip_prefix('\u{feff}').unwrap_or(&text)).ok()? {
+        Value::Object(o) => Some(o),
+        _ => None,
+    }
 }
 
 static YES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(?:y|yes|はい|ｙ)$").unwrap());
@@ -281,7 +295,7 @@ pub fn run_setup(io: &dyn SetupIo, o: &SetupOptions) -> Result<SetupResult> {
     }
 
     io.print("");
-    io.print("[3/3] アップロード先(画面のタスクタグの「アップロード」と upload-project.bat が、<この場所>\\<タスクタグ名かプロジェクト名>\\<セッション ID>\\ に写します)");
+    io.print("[3/3] アップロード先(upload-project.bat が、<この場所>\\<プロジェクト名>\\<セッション ID>\\ に写します)");
     let cur = current.as_ref().and_then(|c| c.upload_root.clone());
     if let Some(c) = &cur {
         io.print(&format!("  今の設定: {c}"));
@@ -301,7 +315,7 @@ pub fn run_setup(io: &dyn SetupIo, o: &SetupOptions) -> Result<SetupResult> {
         let mut a = unq(&io.ask(&question())?);
         let open = io.can_pick() && if cur.is_some() { yes(&a, false) } else { a.is_empty() };
         if open {
-            match pick_with(io, "アップロード先のフォルダを選んでください(この中にタスクタグ名・プロジェクト名のフォルダを作ります)", cur.as_deref()) {
+            match pick_with(io, "アップロード先のフォルダを選んでください(この中にプロジェクト名のフォルダを作ります)", cur.as_deref()) {
                 Some(p) => a = p,
                 None => continue,
             }
@@ -331,7 +345,15 @@ pub fn run_setup(io: &dyn SetupIo, o: &SetupOptions) -> Result<SetupResult> {
         config.upload_projects = Some(p);
     }
 
-    let value = serde_json::to_value(&config)?;
+    let mut value = serde_json::to_value(&config)?;
+    // ここで尋ねない項目(judgeModel・vcs・tasks など)は、今の設定に書いてあるとおりに残す(読めた設定だけ。作り直すときは残さない)
+    if let (Some(raw), Some(_), Value::Object(obj)) = (current_raw(&o.config_path), current.as_ref(), &mut value) {
+        for (k, v) in raw {
+            if !SETUP_KEYS.contains(&k.as_str()) {
+                obj.insert(k, v);
+            }
+        }
+    }
     parse_config(&value).map_err(anyhow::Error::msg)?; // 書く前に、集計が読むのと同じ検査を通す
     let text = format!("{}\n", atlas_core::json::to_js_string_pretty(&value)?);
     io.print("");
@@ -547,6 +569,32 @@ mod tests {
         assert_eq!(bak["phases"], serde_json::json!(["a", "b"]));
         assert!(io.text().contains("phases は 2 つ以上指定してください"));
         assert!(io.text().contains("phases に同じ名前が 2 回あります"));
+    }
+
+    /// setup.bat で尋ねない項目(判定に使うモデル・VCS の照合・管理ツールのタスク)は、書いてあるとおりに残す
+    #[test]
+    fn keeps_keys_it_does_not_ask_about() {
+        let e = env();
+        let raw = serde_json::json!({
+            "judgeModel": "anthropic/claude-x",
+            "phases": ["a", "b"],
+            "vcs": { "pathMap": [], "mode": "committed" },
+            "tasks": { "file": "~/exports/tasks.xml", "doneStatus": ["Done"], "workHours": { "days": [1, 2, 3], "start": "10:00", "end": "17:00" } }
+        });
+        fs::write(&e.config_path, raw.to_string()).unwrap();
+        let io = Scripted::new(&["", "", "", ""]);
+        run_setup(&io, &opts(&e)).unwrap();
+        let w = written(&e);
+        assert_eq!(w["judgeModel"], raw["judgeModel"]);
+        assert_eq!(w["vcs"], raw["vcs"]);
+        // ~/ は展開せずに書いてあるとおり
+        assert_eq!(w["tasks"], raw["tasks"]);
+        assert_eq!(w["phases"], serde_json::json!(["a", "b"]));
+        // 読めない設定から作り直すときは残さない
+        let e = env();
+        fs::write(&e.config_path, r#"{"judgeModel": "a b"}"#).unwrap();
+        run_setup(&Scripted::new(&["", "", "", ""]), &opts(&e)).unwrap();
+        assert_eq!(written(&e), serde_json::json!({}));
     }
 
     #[test]

@@ -2,6 +2,7 @@
 name = "atlas-judge"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
@@ -17,7 +18,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order", "float_roundtrip"] }
 tempfile = "3.27.0"
 # 従量課金の Anthropic API を直接呼ぶバックエンド(anthropic)だけが使う HTTP クライアント。
-# TLS の実装などで依存が増えるので、既定のビルド(リリースの atlas.exe も)には入れない(下の anthropic-backend)
+# TLS の実装などで依存が増えるので、既定のビルド(起動用の .bat がこの PC でする atlas.exe のビルドも)には入れない(下の anthropic-backend)
 ureq = { version = "3.5.2", optional = true }
 
 [features]

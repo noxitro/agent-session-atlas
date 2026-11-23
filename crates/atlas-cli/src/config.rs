@@ -1,6 +1,6 @@
 //! 設定ファイル atlas.config.json の読み書き(packages/cli/src/config.ts の移植)。
-//! wiki の指定と、依頼ごとの判定に使う普段の工程名、グループのアップロード先、upload-project.bat がまとめて送るプロジェクト、
-//! 判定に使うモデル、VCS の照合の設定を持つ。
+//! wiki の指定と、依頼ごとの判定に使う普段の工程名、アップロード先、upload-project.bat がまとめて送るプロジェクト、
+//! 判定に使うモデル、VCS の照合の設定、管理ツールのタスクの XML の読み方(tasks)を持つ。
 //! 書く側(modify_config・update_config)は、<設定ファイル>.lock のロックの中で読んでから書き、ほかの項目の書き方をできるだけ残す。
 
 use crate::paths::{resolve, REPO_ROOT};
@@ -9,6 +9,8 @@ use atlas_core::nodepath::platform;
 use atlas_core::project::os_homedir;
 use atlas_core::turns::DEFAULT_PHASE_NAMES;
 use atlas_core::wiki::WikiSpec;
+use atlas_report::tasks::hours::parse_hhmm;
+use atlas_report::tasks::{TaskSource, WorkHours};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -46,17 +48,23 @@ pub struct AtlasConfig {
     pub wikis: Option<Vec<WikiSpec>>,
     /// 依頼ごとの判定(段階 2)で LLM に選ばせる普段の工程名。設定に無ければ None
     pub phases: Option<Vec<String>>,
-    /// グループのアップロード先の基底フォルダ
+    /// アップロード先の基底フォルダ
     pub upload_root: Option<String>,
     /// upload-project.bat がまとめて送るプロジェクト
     pub upload_projects: Option<Vec<String>>,
-    /// LLM の判定で Copilot CLI に渡すモデル
+    /// skill-draft(SKILL.md の下書き)で Copilot CLI に渡すモデル。判定はこのツールの中では回さないので、判定には使わない
+    /// (前の版で判定に使っていた設定も、そのまま読める)
     pub judge_model: Option<String>,
     /// AI の変更がその後の VCS のファイルに残っているかの照合
     pub vcs: Option<VcsConfig>,
+    /// 管理ツールが書き出したタスクの XML の読み方と稼働時間帯。file の相対パスは、load_config が設定ファイルのフォルダから解決する
+    pub tasks: Option<TaskSource>,
 }
 
-const KEYS: [&str; 6] = ["wikis", "phases", "uploadRoot", "uploadProjects", "judgeModel", "vcs"];
+const KEYS: [&str; 7] = ["wikis", "phases", "uploadRoot", "uploadProjects", "judgeModel", "vcs", "tasks"];
+const TASKS_KEYS: [&str; 7] = ["file", "item", "id", "name", "status", "doneStatus", "workHours"];
+/// tasks の要素の名前・項目の名前の長さの上限
+const TASKS_NAME_MAX: usize = 100;
 const VCS_LABEL_MAX: usize = 40;
 const VCS_NOTE_MAX: usize = 1000;
 const WIKI_LISTS: [&str; 4] = ["index", "pages", "extensions", "skills"];
@@ -180,6 +188,110 @@ fn js_entries(o: &Map<String, Value>) -> Vec<(&String, &Value)> {
     idx.into_iter().map(|x| x.1).chain(rest).collect()
 }
 
+/// tasks の項目。読み方の書き間違いはタスクが 0 件になって気付きにくいので止める
+fn parse_tasks(v: &Value) -> R<TaskSource> {
+    let Value::Object(o) = v else {
+        return Err(r#"tasks はオブジェクトで指定してください(例: { "file": "D:\\export\\tasks.xml" })"#.into());
+    };
+    for k in o.keys() {
+        if !TASKS_KEYS.contains(&k.as_str()) {
+            return Err(format!("tasks の不明な項目です: {k}"));
+        }
+    }
+    let file = match o.get("file") {
+        Some(Value::String(f)) if !js::trim(f).is_empty() && !CONTROL_RE.is_match(f) => QUOTED_RE.replace(js::trim(f), "$1").into_owned(),
+        _ => return Err("tasks.file に管理ツールが書き出した XML のファイルを指定してください".into()),
+    };
+    let file = if TILDE_RE.is_match(&file) { platform::join(&[&os_homedir(), &file[2..]]) } else { file };
+    let mut t = TaskSource::with_file(file);
+    let name = |k: &str, attr_ok: bool| -> R<Option<String>> {
+        let Some(x) = o.get(k) else { return Ok(None) };
+        let ok = match x {
+            Value::String(s) => {
+                let s = js::trim(s);
+                let bare = if attr_ok { s.strip_prefix('@').unwrap_or(s) } else { s };
+                !bare.is_empty() && js::utf16_len(s) <= TASKS_NAME_MAX && !bare.chars().any(|c| c.is_whitespace() || c.is_control() || matches!(c, '<' | '>' | '/' | '@' | '"' | '\''))
+            }
+            _ => false,
+        };
+        if !ok {
+            return Err(format!(
+                "tasks.{k} には XML の{}名前を指定してください(空白や記号を含まない {TASKS_NAME_MAX} 文字以内{})",
+                if attr_ok { "要素か属性の" } else { "要素の" },
+                if attr_ok { "。属性だけを見るときは先頭に @" } else { "" }
+            ));
+        }
+        Ok(Some(js::trim(x.as_str().unwrap()).to_string()))
+    };
+    if let Some(v) = name("item", false)? {
+        t.item = v;
+    }
+    if let Some(v) = name("id", true)? {
+        t.id = v;
+    }
+    if let Some(v) = name("name", true)? {
+        t.name = v;
+    }
+    if let Some(v) = name("status", true)? {
+        t.status = v;
+    }
+    if let Some(d) = o.get("doneStatus") {
+        let list: Vec<String> = string_list(d, "tasks.doneStatus")?.iter().map(|x| js::trim(x).to_string()).collect();
+        if list.is_empty() {
+            return Err("tasks.doneStatus には完了とみなす状態を 1 つ以上指定してください".into());
+        }
+        t.done_status = list;
+    }
+    if let Some(w) = o.get("workHours") {
+        t.work_hours = parse_work_hours(w)?;
+    }
+    Ok(t)
+}
+
+fn parse_work_hours(v: &Value) -> R<WorkHours> {
+    let Value::Object(o) = v else {
+        return Err(r#"tasks.workHours は { "days": [1, 2, 3, 4, 5], "start": "09:00", "end": "18:00" } の形で指定してください"#.into());
+    };
+    for k in o.keys() {
+        if !["days", "start", "end"].contains(&k.as_str()) {
+            return Err(format!("tasks.workHours の不明な項目です: {k}"));
+        }
+    }
+    let mut w = WorkHours::default();
+    if let Some(d) = o.get("days") {
+        let err = || "tasks.workHours.days には曜日の番号(1 = 月曜 … 7 = 日曜)を重ねずに 1 つ以上指定してください".to_string();
+        let Value::Array(a) = d else { return Err(err()) };
+        let mut days: Vec<u8> = Vec::new();
+        for x in a {
+            match x.as_f64() {
+                Some(n) if x.is_number() && n.fract() == 0.0 && (1.0..=7.0).contains(&n) && !days.contains(&(n as u8)) => days.push(n as u8),
+                _ => return Err(err()),
+            }
+        }
+        if days.is_empty() {
+            return Err(err());
+        }
+        w.days = days;
+    }
+    let hhmm = |k: &str, allow_24: bool| -> R<Option<u32>> {
+        match o.get(k) {
+            None => Ok(None),
+            Some(Value::String(s)) => parse_hhmm(js::trim(s), allow_24).map(Some).ok_or_else(|| format!("tasks.workHours.{k} は \"HH:MM\" の形で指定してください(例: \"09:00\")")),
+            Some(_) => Err(format!("tasks.workHours.{k} は \"HH:MM\" の形で指定してください(例: \"09:00\")")),
+        }
+    };
+    if let Some(s) = hhmm("start", false)? {
+        w.start_min = s;
+    }
+    if let Some(e) = hhmm("end", true)? {
+        w.end_min = e;
+    }
+    if w.start_min >= w.end_min {
+        return Err("tasks.workHours は start を end より前にしてください(日をまたぐ時間帯は指定できません)".into());
+    }
+    Ok(w)
+}
+
 fn parse_wiki(v: &Value, i: usize) -> R<WikiSpec> {
     let where_ = format!("wikis[{i}]");
     if let Value::String(s) = v {
@@ -259,7 +371,21 @@ pub fn parse_config(v: &Value) -> R<AtlasConfig> {
     if let Some(v) = o.get("vcs") {
         cfg.vcs = Some(parse_vcs(v)?);
     }
+    if let Some(v) = o.get("tasks") {
+        cfg.tasks = Some(parse_tasks(v)?);
+    }
     Ok(cfg)
+}
+
+/// tasks.file の相対パスを、設定ファイルのフォルダから解決する
+fn resolve_tasks_file(cfg: &mut AtlasConfig, config_path: &str) {
+    if let Some(t) = cfg.tasks.as_mut() {
+        let f = t.file.to_string_lossy().into_owned();
+        if !is_absolute_path(&f) {
+            let dir = Path::new(config_path).parent().map(Path::to_path_buf).unwrap_or_default();
+            t.file = resolve(dir.join(&f));
+        }
+    }
 }
 
 /// Copilot CLI の BYOK のモデル(<プロバイダー名>/<モデル ID>)か
@@ -306,7 +432,10 @@ pub fn load_config(path: &str, required: bool) -> anyhow::Result<AtlasConfig> {
         parse_config(&v)
     };
     match read() {
-        Ok(c) => Ok(AtlasConfig { path: Some(path.to_string()), ..c }),
+        Ok(mut c) => {
+            resolve_tasks_file(&mut c, path);
+            Ok(AtlasConfig { path: Some(path.to_string()), ..c })
+        }
         Err(e) => anyhow::bail!("設定ファイル {path} を読めません: {e}"),
     }
 }
@@ -317,13 +446,13 @@ pub fn phase_names() -> anyhow::Result<Vec<String>> {
     Ok(load_config(&default_config_path(), explicit)?.phases.unwrap_or_else(|| DEFAULT_PHASE_NAMES.iter().map(|s| s.to_string()).collect()))
 }
 
-/// 判定に使うモデル(設定の judgeModel、無ければ None)
+/// skill-draft に使うモデル(設定の judgeModel、無ければ None)
 pub fn judge_model_setting() -> anyhow::Result<Option<String>> {
     let explicit = std::env::var_os("ATLAS_CONFIG").is_some();
     Ok(load_config(&default_config_path(), explicit)?.judge_model)
 }
 
-/// 判定に使うモデルを決めて、どこから来たかをログに書く。指定(--model)> 設定の judgeModel > なし(Copilot の既定のモデル)。
+/// skill-draft に使うモデルを決めて、どこから来たかをログに書く。指定(--model)> 設定の judgeModel > なし(Copilot の既定のモデル)。
 /// 設定は copilot-cli のときだけ使う(anthropic バックエンドのモデル名は形が違う)
 pub fn resolve_judge_model(explicit: Option<&str>, label: &str, log: &(dyn Fn(&str) + Sync)) -> anyhow::Result<Option<String>> {
     if let Some(e) = explicit.filter(|e| !e.is_empty()) {
@@ -332,11 +461,11 @@ pub fn resolve_judge_model(explicit: Option<&str>, label: &str, log: &(dyn Fn(&s
     let m = judge_model_setting()?;
     match m.as_deref().filter(|m| !m.is_empty()) {
         Some(m) => log(&format!(
-            "{label}: 判定に使うモデル {m}(atlas.config.json の judgeModel{})",
+            "{label}: 使うモデル {m}(atlas.config.json の judgeModel{})",
             if is_byok_model(Some(m)) { "。自分の API キーのモデル(BYOK)なので、Copilot の AI クレジットは使いません" } else { "" }
         )),
         None => log(&format!(
-            "{label}: 注意 モデルを指定していないので、Copilot の既定のモデルで判定します(AI クレジットを使います)。自分の API キーのモデル(BYOK)を使うときは、atlas.config.json に \"judgeModel\": \"anthropic/claude-sonnet-5-5\" のように書きます"
+            "{label}: 注意 モデルを指定していないので、Copilot の既定のモデルを使います(AI クレジットを使います)。自分の API キーのモデル(BYOK)を使うときは、atlas.config.json に \"judgeModel\": \"anthropic/claude-sonnet-5-5\" のように書きます"
         )),
     }
     Ok(m)
@@ -732,6 +861,46 @@ mod tests {
         for path in ["", ".", "/", "~", "../"] {
             assert!(err(json!({"wikis": [{ "path": path }]})).contains("path"), "{path}");
         }
+    }
+
+    #[test]
+    fn tasks_key() {
+        let t = parse_config(&json!({"tasks": {"file": "C:/export/tasks.xml"}})).unwrap().tasks.unwrap();
+        assert_eq!(t, TaskSource::with_file("C:/export/tasks.xml"));
+        let t = parse_config(&json!({"tasks": {"file": " \"x.xml\" ", "item": "WorkItem", "id": "@key", "name": "Title", "status": "State", "doneStatus": [" Resolved ", "済"], "workHours": {"days": [1, 2, 3, 4, 5, 6], "start": "08:30", "end": "24:00"}}})).unwrap().tasks.unwrap();
+        assert_eq!(t.file.to_string_lossy(), "x.xml");
+        assert_eq!((t.item.as_str(), t.id.as_str(), t.name.as_str(), t.status.as_str()), ("WorkItem", "@key", "Title", "State"));
+        assert_eq!(t.done_status, ["Resolved", "済"]);
+        assert_eq!(t.work_hours, WorkHours { days: vec![1, 2, 3, 4, 5, 6], start_min: 510, end_min: 1440 });
+        assert!(err(json!({"tasks": "x.xml"})).contains("オブジェクト"));
+        assert_eq!(err(json!({"tasks": {"file": "x", "path": "y"}})), "tasks の不明な項目です: path");
+        assert!(err(json!({"tasks": {}})).contains("tasks.file"));
+        assert!(err(json!({"tasks": {"file": "x", "item": "@Task"}})).contains("tasks.item"));
+        assert!(err(json!({"tasks": {"file": "x", "id": "a b"}})).contains("tasks.id"));
+        assert!(err(json!({"tasks": {"file": "x", "name": "@"}})).contains("tasks.name"));
+        assert!(err(json!({"tasks": {"file": "x", "doneStatus": []}})).contains("tasks.doneStatus"));
+        assert!(err(json!({"tasks": {"file": "x", "doneStatus": "Done"}})).contains("tasks.doneStatus"));
+        for days in [json!([]), json!([0]), json!([8]), json!([1, 1]), json!([1.5]), json!("1")] {
+            assert!(err(json!({"tasks": {"file": "x", "workHours": {"days": days}}})).contains("tasks.workHours.days"), "{days}");
+        }
+        assert!(err(json!({"tasks": {"file": "x", "workHours": {"start": "9:00"}}})).contains("tasks.workHours.start"));
+        assert!(err(json!({"tasks": {"file": "x", "workHours": {"start": "24:00"}}})).contains("tasks.workHours.start"));
+        assert!(err(json!({"tasks": {"file": "x", "workHours": {"start": "18:00", "end": "09:00"}}})).contains("start を end より前"));
+        assert!(err(json!({"tasks": {"file": "x", "workHours": {"start": "09:00", "end": "09:00"}}})).contains("start を end より前"));
+        assert!(err(json!({"tasks": {"file": "x", "workHours": {"lunch": "12:00"}}})).contains("不明な項目"));
+    }
+
+    #[test]
+    fn tasks_file_resolves_against_the_config_folder() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("conf").join(CONFIG_FILE);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, r#"{"tasks": {"file": "exports/tasks.xml"}}"#).unwrap();
+        let c = load_config(&p.to_string_lossy(), true).unwrap();
+        assert_eq!(c.tasks.unwrap().file, resolve(d.path().join("conf").join("exports").join("tasks.xml")));
+        let abs = d.path().join("abs.xml");
+        std::fs::write(&p, serde_json::to_string(&json!({"tasks": {"file": abs.to_string_lossy()}})).unwrap()).unwrap();
+        assert_eq!(load_config(&p.to_string_lossy(), true).unwrap().tasks.unwrap().file, abs);
     }
 
     #[test]

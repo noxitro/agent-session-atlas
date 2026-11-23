@@ -581,11 +581,6 @@ export interface SessionRecord {
    */
   person?: string | null;
   /**
-   * 送り先から集計したときの、送った人がそのセッションに付けていたタスクタグ(送った時点のもの。atlas-session.json の tags)。
-   * 送り先から集計したセッションにだけある(タグが無ければ空)。この PC の記録・古い sessions.json には無い
-   */
-  uploadTags?: string[];
-  /**
    * 送り先から集計したときの、そのセッションのフォルダを写した atlas の版(atlas-session.json の atlas)。
    * 記録が無い(前の版で送った)ものは null。この PC の記録・古い sessions.json には無い(省略)
    */

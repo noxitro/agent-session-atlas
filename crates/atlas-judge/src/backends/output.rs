@@ -1,9 +1,7 @@
-//! エージェント CLI の出力(JSONL)から最終的な assistant 本文を取り出し、判定 JSON を検証する(packages/judge/src/backends/output.ts の移植)。
+//! エージェント CLI の出力(JSONL)から最終的な assistant 本文を取り出す(skill-draft が使う。packages/judge/src/backends/output.ts の移植)。
 //! copilot -p --output-format json の行の形は版によって違いうるので、
 //! 既知の形を広く受け、どれにも当たらなければ出力全体を本文として扱う。
 
-use crate::schema::{item_problems, items_from_candidates, json_candidates, validate_judgment_item, wiki_pages_note, JudgmentItem};
-use anyhow::{bail, Result};
 use atlas_core::js;
 use indexmap::IndexMap;
 use serde_json::Value;
@@ -74,85 +72,24 @@ pub fn parse_agent_jsonl(stdout: &str) -> AgentOutput {
     out
 }
 
-/// 本文の候補(後ろから)から判定項目を 1 つ取り出して検証する。
-/// sessionId が無ければパケットの ID を補い、違う ID ならエラーにする。
-pub fn item_from_texts(texts: &[String], session_id: &str) -> Result<JudgmentItem> {
-    item_and_notes_from_texts(texts, session_id).map(|x| x.0)
-}
-
-/// item_from_texts と同じく判定項目を取り出し、llm-wiki のページごとの判定(wikiPages)の一部を捨てたときはその知らせも返す
-pub fn item_and_notes_from_texts(texts: &[String], session_id: &str) -> Result<(JudgmentItem, Vec<String>)> {
-    let mut problems: Vec<String> = Vec::new();
-    for t in texts.iter().rev() {
-        for raw in items_from_candidates(&json_candidates(t)) {
-            let Value::Object(mut it) = raw else { continue };
-            if matches!(it.get("sessionId"), None | Some(Value::Null)) || it.get("sessionId").and_then(Value::as_str) == Some("") {
-                it.insert("sessionId".into(), Value::String(session_id.to_string()));
-            }
-            if it.get("sessionId").and_then(Value::as_str) != Some(session_id) {
-                problems.push(format!("sessionId が違います(期待 {session_id}、出力 {})", js::to_js_string(&it["sessionId"])));
-                continue;
-            }
-            it.shift_remove("judge");
-            let v = Value::Object(it);
-            let p = item_problems(&v, "item");
-            if !p.is_empty() {
-                problems.extend(p);
-                continue;
-            }
-            return Ok((validate_judgment_item(&v, "item")?, wiki_pages_note(&v).into_iter().collect()));
-        }
-    }
-    let Some(last) = texts.last() else { bail!("応答に assistant の本文がありません") };
-    if problems.is_empty() {
-        bail!("応答から JSON を取り出せません(本文の末尾: {})", js::tail(last, 300));
-    }
-    bail!("応答の JSON がスキーマに合いません: {}", problems.iter().take(8).cloned().collect::<Vec<_>>().join(" / "))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schema::json_candidates;
     use serde_json::json;
 
-    fn item(id: Option<&str>) -> Value {
-        let mut v = json!({
-            "taskCategory": "feature",
-            "taskSummary": "要約",
-            "humanEffort": { "hours": 2, "low": 1, "high": 4, "confidence": 0.5, "rationale": "根拠" },
-            "aiOutcome": { "completed": true, "quality": 4, "rework": 1, "rationale": "成果" },
-            "instructionsEffect": { "score": 1, "evidence": "e" },
-            "wikiEffect": { "score": 0, "evidence": "参照なし" },
-            "skillsAgentsEffect": { "score": 0, "evidence": "参照なし" },
-        });
-        if let Some(id) = id {
-            v["sessionId"] = json!(id);
-        }
-        v
-    }
-
     #[test]
-    fn reads_copilot_jsonl_and_checks_session() {
+    fn reads_copilot_jsonl() {
         let lines = [
             json!({ "type": "session.start", "data": {} }),
             json!({ "type": "assistant.message", "data": { "content": "考え中", "parentToolCallId": null } }),
             json!({ "type": "assistant.message", "data": { "content": "サブエージェント", "parentToolCallId": "t1" } }),
-            json!({ "type": "assistant.message", "data": { "content": format!("```json\n{}\n```", item(None)) } }),
+            json!({ "type": "assistant.message", "data": { "content": "---\nname: x\n---" } }),
         ];
         let out = parse_agent_jsonl(&lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n"));
-        assert_eq!(out.texts.len(), 2);
-        assert_eq!(item_from_texts(&out.texts, "S1").unwrap().session_id, "S1");
-        assert!(item_from_texts(&[item(Some("other")).to_string()], "S1").unwrap_err().to_string().contains("sessionId が違います"));
-        assert!(item_from_texts(&["```json\n{\"sessionId\":\"S1\"}\n```".into()], "S1").unwrap_err().to_string().contains("スキーマに合いません"));
-        assert!(item_from_texts(&["ただの文章".into()], "S1").unwrap_err().to_string().contains("取り出せません"));
-        // wikiPages が壊れていても判定は取り、知らせを返す
-        let mut w = item(Some("S1"));
-        w["wikiPages"] = json!([{ "page": "wiki/a.md", "helpful": "yes", "reason": "r" }, { "page": "wiki/b.md" }]);
-        let (it, notes) = item_and_notes_from_texts(&[w.to_string()], "S1").unwrap();
-        assert_eq!(it.wiki_pages.unwrap().len(), 1);
-        assert_eq!(notes.len(), 1);
+        assert_eq!(out.texts, ["考え中", "---\nname: x\n---"]);
         // JSONL でない出力は全体を本文として扱う
-        assert_eq!(parse_agent_jsonl(&format!("text {}", item(Some("S1")))).texts.len(), 1);
+        assert_eq!(parse_agent_jsonl("ただの文 {\"a\": 1}").texts.len(), 1);
         // Copilot の session.error はエラー本文として拾う
         let err = parse_agent_jsonl(
             &[
@@ -167,10 +104,11 @@ mod tests {
 
     #[test]
     fn json_candidates_forms() {
-        let md = format!("結果です。\n\n```json\n{}\n```\n\n続き\n\n```json\n{}\n```\n", item(Some("a")), json!({ "items": [item(Some("b"))] }));
+        let item = |id: &str| json!({ "sessionId": id });
+        let md = format!("結果です。\n\n```json\n{}\n```\n\n続き\n\n```json\n{}\n```\n", item("a"), json!({ "items": [item("b")] }));
         assert_eq!(json_candidates(&md).len(), 2);
-        assert_eq!(json_candidates(&json!([item(Some("a"))]).to_string()).len(), 1);
-        assert_eq!(json_candidates(&format!("はい: {} 以上", item(Some("a")))).len(), 1);
+        assert_eq!(json_candidates(&json!([item("a")]).to_string()).len(), 1);
+        assert_eq!(json_candidates(&format!("はい: {} 以上", item("a"))).len(), 1);
         assert_eq!(json_candidates("JSON はありません").len(), 0);
         // 囲みは同じ長さ以上の同じ文字で閉じる。言語名の無い囲みは { か [ で始まるものだけ
         assert_eq!(json_candidates("````\n{\"a\":1}\n```\n````").len(), 1);

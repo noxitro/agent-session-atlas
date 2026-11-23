@@ -1,21 +1,20 @@
-//! 判定バックエンド(packages/judge/src/backends/ の移植)。types.ts の共通の形はここに置く。
+//! skill-draft(SKILL.md の下書き)が LLM を呼ぶ経路(GitHub Copilot CLI の copilot -p と、任意の anthropic)。
+//! 判定はこのツールの中では回さない(チャットに貼るか ZIP にまとめて、外部の LLM に頼む。docs/judge.md)。
 
-// 従量課金の Anthropic API を直接呼ぶバックエンド。機能 anthropic-backend を付けてビルドしたときだけ入る(Cargo.toml)
+// 従量課金の Anthropic API を直接呼ぶ経路(skill-draft の --backend anthropic)。機能 anthropic-backend を付けてビルドしたときだけ入る(Cargo.toml)
 #[cfg(feature = "anthropic-backend")]
 pub mod anthropic;
 pub mod copilot_cli;
 pub mod output;
 pub mod proc;
 
-use crate::schema::JudgmentItem;
 use anyhow::{bail, Result};
-use serde_json::Value;
 
 /// このビルドに anthropic バックエンドが入っているか
 pub const ANTHROPIC_BACKEND_BUILT: bool = cfg!(feature = "anthropic-backend");
 
 /// anthropic を選んだのに、このビルドに入っていないときの文言(入れ方まで書く)
-pub const ANTHROPIC_NOT_BUILT: &str = "anthropic バックエンド(Anthropic API を直接呼ぶ。従量課金)は、この atlas には入っていません(既定のビルドとリリースの atlas.exe には入れていません)。使うときは、このリポジトリで npm run build:report の後に cargo build --release -p atlas-cli --features anthropic-backend を実行し、できた target/release/atlas(.exe)を使ってください(docs/judge.md)。GitHub Copilot CLI で判定するなら --backend を付けません(既定の copilot-cli)";
+pub const ANTHROPIC_NOT_BUILT: &str = "anthropic バックエンド(skill-draft で Anthropic API を直接呼ぶ。従量課金)は、この atlas には入っていません(既定のビルドと、起動用の .bat がこの PC でする atlas.exe のビルドには入れていません)。使うときは、このリポジトリで npm run build:report の後に cargo build --release -p atlas-cli --features anthropic-backend を実行し、できた target/release/atlas(.exe)を使ってください(docs/development.md)。GitHub Copilot CLI で下書きするなら --backend を付けません(既定の copilot-cli)";
 
 /// 選んだバックエンドがこのビルドで使えるか確かめる(使えなければ、入れ方を書いたエラー)。
 /// 引数の解釈では anthropic の名前を受け付け、実行するときにここで止める(不明な名前とは別の、分かる文言にするため)
@@ -24,45 +23,6 @@ pub fn ensure_backend_built(name: &str) -> Result<()> {
         bail!("{ANTHROPIC_NOT_BUILT}");
     }
     Ok(())
-}
-
-pub struct JudgePacket<'a> {
-    pub session_id: &'a str,
-    /// 評価パケット(Markdown)
-    pub markdown: &'a str,
-}
-
-pub struct JudgeResult {
-    /// 検証済みの項目(judge メタは run 側で付ける)
-    pub item: JudgmentItem,
-    /// バックエンドが返した判定自体の使用量(形は問わない)。取れなければ None
-    pub usage: Option<Value>,
-    /// 補足(usage が取れなかった理由など)
-    pub notes: Vec<String>,
-    /// llm-wiki のページごとの判定(wikiPages)の形が崩れていて、一部を捨てたときの知らせ(run は件数の 1 行にまとめて出す)
-    pub wiki_notes: Vec<String>,
-}
-
-/// プロンプトを 1 回渡して返った本文(依頼ごとの判定など、セッションの判定以外に使う)
-pub struct AskResult {
-    /// assistant の本文(出現順)
-    pub texts: Vec<String>,
-    pub usage: Option<Value>,
-    pub notes: Vec<String>,
-}
-
-pub trait JudgeBackend: Sync {
-    fn name(&self) -> &str;
-    fn model(&self) -> Option<&str>;
-    fn judge(&self, packet: &JudgePacket<'_>) -> Result<JudgeResult>;
-    /// ask を持つか(copilot-cli だけ)
-    fn can_ask(&self) -> bool {
-        false
-    }
-    /// プロンプトをそのまま渡す(label は生の出力を残すときのファイル名)
-    fn ask(&self, _prompt: &str, _label: &str) -> Result<AskResult> {
-        bail!("{} では ask を使えません", self.name())
-    }
 }
 
 #[cfg(test)]

@@ -3,7 +3,7 @@
 //! 集計のプロジェクト(プロジェクト別の表と同じ単位)のセッションの生ログを、<送り先>/<プロジェクト名>/<セッション id>/ に写す。
 //! 送るプロジェクトは、画面の「プロジェクト別」で「まとめて送る」に印を付けたもの(atlas.config.json の uploadProjects)。
 //! 印が無ければ、その場で番号を選ぶ(1 3 5-8 のように複数選べる)。印の無い新しいプロジェクトは送らず、最近更新したものの名前を出して知らせる。
-//! 送り先は一度選んだら atlas.config.json の uploadRoot に覚える(画面のグループのアップロードと共通)。まだ無ければエクスプローラーで選ぶ。
+//! 送り先は一度選んだら atlas.config.json の uploadRoot に覚える(画面の「設定…」と共通)。まだ無ければエクスプローラーで選ぶ。
 //! 送る前に毎回、送り先・セッション数・大きさ・秘密らしい文字列を見せて確認する(y で送る / n で今回だけ番号で選び直す / c で送り先を選び直す / それ以外はやめる)。
 //!
 //! 黒い窓に出す文の決まり(読み飛ばされないように):
@@ -11,11 +11,11 @@
 //!  - 1 行に 1 つのことだけを書く。一覧は名前の列をそろえる
 //!  - 調べている・写している途中の様子は、行を増やさずに 1 行を書き換えて出す(io.status。端末でなければ出さない)
 
-use crate::group_upload::{check_target, list_projects, open_upload_context, project_target, read_sessions, upload_target, GroupUploadPaths, GroupUploadResult, ProjectSummary, UploadChangedError, UploadCheck, UploadOptions, UploadRecord, UploadTarget};
+use crate::upload_copy::{check_target, list_projects, open_upload_context, project_target, read_sessions, upload_target, UploadPaths, UploadResult, ProjectSummary, UploadChangedError, UploadCheck, UploadOptions, UploadRecord, UploadTarget};
 use crate::upload_auto_files::SentProject;
 use anyhow::{anyhow, Result};
 use atlas_core::js;
-use atlas_report::groups::safe_dir_name;
+use atlas_report::ids::safe_dir_name;
 use regex::Regex;
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -328,7 +328,7 @@ fn describe(io: &dyn ConsoleIo, checks: &[UploadCheck], root: &str) {
         io.print("");
         io.print(&format!("  注意: 秘密らしい文字列が {secrets} 件あります({}。偽陽性もありえます)", kinds.iter().map(|(k, n)| format!("{k} {n}")).collect::<Vec<_>>().join("・")));
         // 点検はプロジェクトごとに多い順 10 ファイルまで返す。並べ直して全体の多い順 5 ファイルを出す
-        let mut files: Vec<(&str, &crate::group_upload::SecretFile)> = checks.iter().flat_map(|c| c.secrets.files.iter().map(move |f| (c.name.as_str(), f))).collect();
+        let mut files: Vec<(&str, &crate::upload_copy::SecretFile)> = checks.iter().flat_map(|c| c.secrets.files.iter().map(move |f| (c.name.as_str(), f))).collect();
         files.sort_by(|a, b| b.1.count.cmp(&a.1.count));
         for (name, f) in files.iter().take(5) {
             io.print(&format!("    {}{}/{}: {} 件", if many { format!("{name}: ") } else { String::new() }, f.id, f.path, f.count));
@@ -446,7 +446,7 @@ pub struct UploadSummary {
 }
 
 pub struct UploadProjectOptions<'a> {
-    pub paths: GroupUploadPaths,
+    pub paths: UploadPaths,
     pub config_path: String,
     pub auto: bool,
     pub summary: Option<&'a Mutex<UploadSummary>>,
@@ -502,21 +502,21 @@ pub fn run_upload_project(io: &dyn ConsoleIo, o: &UploadProjectOptions<'_>) -> R
     }
     let mut root = root.unwrap_or_default();
     // 送る前に毎回確かめる。入力を待つ間はロックを放すので、写すときに確かめた中身と同じかを見直し、変わっていたら残りをもう一度確かめる
-    let mut sent: Vec<GroupUploadResult> = Vec::new();
+    let mut sent: Vec<UploadResult> = Vec::new();
     let mut failed: Vec<(String, String)> = Vec::new();
     if let Some(s) = o.summary {
         s.lock().unwrap().root = Some(root.clone());
     }
     let mut rechecks = 0;
     let mut stopped = false;
-    let sent_note = |sent: &[GroupUploadResult]| -> String {
+    let sent_note = |sent: &[UploadResult]| -> String {
         if sent.is_empty() {
             "何も送っていません".into()
         } else {
             format!("ここまでに {} プロジェクトを送りました({})。残りは送っていません", sent.len(), names(&sent.iter().map(|r| r.name.clone()).collect::<Vec<_>>(), 10))
         }
     };
-    let quit = |sent: &[GroupUploadResult], failed: &[(String, String)]| io.print(if !sent.is_empty() || !failed.is_empty() { "  やめました。" } else { "  やめました(何も送っていません)。" });
+    let quit = |sent: &[UploadResult], failed: &[(String, String)]| io.print(if !sent.is_empty() || !failed.is_empty() { "  やめました。" } else { "  やめました(何も送っていません)。" });
     let body = (|| -> Result<()> {
         while !pending.is_empty() {
             // 自動のときは確かめ直しが続いても尋ねられないので、決まった回数で止める
@@ -584,7 +584,7 @@ pub fn run_upload_project(io: &dyn ConsoleIo, o: &UploadProjectOptions<'_>) -> R
                 for (i, t) in todo.iter().enumerate() {
                     let tag = if many { format!("[{}/{}] ", i + 1, todo.len()) } else { String::new() };
                     let shown: Mutex<(Instant, Option<usize>)> = Mutex::new((Instant::now() - Duration::from_secs(1), None));
-                    let on_progress = |p: &crate::group_upload::UploadProgress| {
+                    let on_progress = |p: &crate::upload_copy::UploadProgress| {
                         // 写すたびに呼ばれるので、セッションを 1 件写し終えたときと、間が空いたときだけ書き換える
                         if !io.has_status() {
                             return;
@@ -636,7 +636,7 @@ pub fn run_upload_project(io: &dyn ConsoleIo, o: &UploadProjectOptions<'_>) -> R
                             }
                             if !r.stale_meta.is_empty() {
                                 io.print(&format!(
-                                    "      タスクタグや題名の記録(atlas-session.json)を書き直せなかったセッションが {} 件あります(送り先で開かれているなど。次に送るときにもう一度書き直します): {}",
+                                    "      題名などの記録(atlas-session.json)を書き直せなかったセッションが {} 件あります(送り先で開かれているなど。次に送るときにもう一度書き直します): {}",
                                     r.stale_meta.len(),
                                     names(&r.stale_meta, 3)
                                 ));
@@ -988,16 +988,18 @@ pub fn run_all(out: Option<&str>, log: &(dyn Fn(&str) + Sync)) -> Result<()> {
 
 /// upload-project.bat から(`atlas upload-project`)
 pub fn main(_argv: &[String]) -> u8 {
-    // 置き場は atlas.bat と同じ既定(out/ と atlas-notes/)
-    let paths = crate::paths::resolve_paths(crate::paths::PathInputs { home: None, out: None, judgments: None, bundle: None, notes_dir: None });
+    // 置き場は atlas.bat と同じ既定(out/ と atlas-notes/)。出力先は upload-auto と同じく、試すときだけ環境変数 ATLAS_OUT で変えられる
+    let out_dir = crate::paths::auto_out_dir();
+    let out_s = out_dir.to_string_lossy().into_owned();
+    let paths = crate::paths::resolve_paths(crate::paths::PathInputs { home: None, out: Some(&out_s), judgments: None, bundle: None, notes_dir: None });
     let c = Console::new().with_picker(|initial| crate::folder_picker::pick_folder("プロジェクトのセッションを送る先のフォルダを選んでください", initial));
     // Ctrl+C で終わるときも、集計の作業中の印(out/.job.json)は外す(自分の印だけを消す)
     let out = paths.out.clone();
     c.exit_on_ctrl_c(move || crate::jobs::release_out_lock(&out));
-    let gp = GroupUploadPaths::of(&paths);
+    let gp = UploadPaths::of(&paths);
     let r = (|| -> Result<u8> {
         // 集計もここで動かす(別のプログラムにすると、集計を待つ間に押した Enter が、送る操作の最初の答えになるため)
-        if !refresh_aggregate(&c, &upload_log(), &|log| run_all(None, log)) {
+        if !refresh_aggregate(&c, &upload_log(), &|log| run_all(Some(&out_s), log)) {
             return Ok(1);
         }
         let sent = run_upload_project(&c, &UploadProjectOptions { paths: gp, config_path: crate::config::default_config_path(), auto: false, summary: None })?;

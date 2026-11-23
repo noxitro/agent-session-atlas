@@ -184,7 +184,6 @@ fn uploaded_folders_use_sender_records_not_disk() {
     let (p, src, r) = run("sent", Some(meta.clone()), "flat");
     assert_eq!((p.as_str(), src), ("zz-owner/zz-sent", ProjectSource::GitRemote));
     assert_eq!(r.upload_folder, Some(Some(".".into())));
-    assert_eq!(r.upload_tags, Some(vec!["a".into(), "b".into()]));
     assert_eq!(r.upload_atlas.clone().flatten().unwrap().committed_at.as_deref(), Some("2026-11-13T00:00:00.000Z"));
     assert_eq!(r.person, Some(None));
     let mut m = meta.clone();
@@ -207,7 +206,6 @@ fn uploaded_folders_use_sender_records_not_disk() {
     let (p, src, r) = run("none", None, "flat");
     assert_eq!(src, ProjectSource::Path);
     assert!(!p.contains("zz-"));
-    assert_eq!(r.upload_tags, Some(vec![]));
     assert_eq!(r.upload_atlas, Some(None));
     // まとめて読んだときは、人のフォルダの名前と、数えたフォルダを持たせる
     let snap = dir.path().join("merged");
@@ -278,15 +276,12 @@ fn store_json_bad_shapes_are_reported_not_fatal() {
 }
 
 #[test]
-fn sender_tags_and_trust() {
+fn sender_meta_and_trust() {
     let dir = tempfile::tempdir().unwrap();
     let f = dir.path().join("atlas-session.json");
-    let valid: Vec<String> = (0..60).map(|i| format!("t{i}")).collect();
-    let mut tags: Vec<Value> = vec![json!(""); 60];
-    tags.extend(vec![json!("t0"); 10]);
-    tags.extend(valid.iter().map(|t| json!(t)));
+    // 前の版が書いた tags は読まずに飛ばす(読めなくはしない)
+    let tags: Vec<Value> = vec![json!("t0"), json!(1)];
     fs::write(&f, json!({"version": 1, "id": "s1", "project": "owner/app", "tags": tags}).to_string()).unwrap();
-    assert_eq!(read_sender_tags(&f, "s1"), valid[..50].to_vec());
     let m = read_sender_meta(&f, "s1").unwrap();
     assert_eq!(m.project, Some(SenderProject { project: "owner/app".into(), source: None }));
     assert_eq!(m.atlas, None);

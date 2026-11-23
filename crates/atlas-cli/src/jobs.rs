@@ -1,22 +1,22 @@
-//! atlas serve の画面から動かす処理(ジョブ。packages/cli/src/jobs.ts の移植)。同時に 1 つだけ。
+//! atlas serve の画面から動かす処理(ジョブ。packages/cli/src/jobs.ts の移植)。同時に 1 つだけ。どれも LLM を呼ばない
+//! (判定するのは外部の LLM。チャットに貼る・ZIP をエージェントに渡す・M365 Copilot のアプリを操作する)。
 //! - refresh: 子プロセス `atlas all --out <out> --notes-dir <notes>`(集計し直す)
-//! - judge:   子プロセス `atlas judge-flow --limit <n> --backend <b> --out <out> --notes-dir <notes>`(bundle → judge run → export)
 //! - full:    サーバ内で 1 件だけ全文記録を書く(write_full_record。atlas.html・coverage.json・他のセッションは触らない)
-//! - bundle:  子プロセス `atlas bundle --unjudged …`(チャットに添付する評価バンドルを未判定のセッションだけで作る。LLM は呼ばない)
-//! - bundle-zip: 子プロセス `atlas bundle --unjudged --zip …`(同じ評価バンドルを作り、1 つの ZIP にもまとめる。フォルダを読めるエージェントに渡す用。LLM は呼ばない)
-//! - export:  子プロセス `atlas export …`(チャットの返答を取り込んだ後、判定をレポートに反映する)
-//! - turn-bundle: 子プロセス `atlas turns bundle --unjudged …`(依頼ごとの判定でチャットに添付するファイルを作る。LLM は呼ばない)
-//! - turn-judge:  子プロセス `atlas judge-flow --turns --limit <n> …`(依頼ごとの判定を GitHub Copilot CLI で回し、レポートを作り直す)
-//! - m365 / turn-m365: 子プロセス `atlas judge m365 …` / `atlas turns m365 …`(M365 Copilot のアプリを操作して判定する)
+//! - bundle / bundle-zip: 子プロセス `atlas bundle --unjudged [--zip] …`(工数の判定でチャットに添付する評価バンドルを未判定のセッションだけで作る。
+//!   bundle-zip は 1 つの ZIP にもまとめる。フォルダを読めるエージェントに渡す用)
+//! - turn-bundle / turn-bundle-zip: 子プロセス `atlas turns bundle --unjudged [--zip] …`(依頼ごとの判定の添付ファイルと ZIP)
+//! - task-bundle / task-bundle-zip: 子プロセス `atlas tasks bundle [--zip] …`(管理ツールのタスクへの紐づけを頼む添付ファイルと ZIP)
+//! - export:  子プロセス `atlas export …`(返答を取り込んだ後、レポートに反映する)
+//! - m365 / turn-m365 / task-m365: 子プロセス `atlas judge m365 …` / `atlas turns m365 …` / `atlas tasks m365 …`(M365 Copilot のアプリを操作する)
+//!
 //! 子プロセスの引数はここで固定の配列に組み立て、この実行ファイル自身(TS 版は process.execPath と main.ts)を shell なしで起動する
 //! (画面からの文字列をコマンドラインに入れない)。起動の仕方(spawn)と全文の書き出し(run_full)は差し替えられる(単体テストを速く回すため)。
 //!
 //! out/ に書く処理の実行中だけ置く印({ pid, kind, by, startedAt })も持つ。serve のジョブも CLI の書き込むコマンド(all・judge・build など)も置き、
-//! 他のプロセスの印があれば始めずに止まる(atlas.bat の再実行や npm run atlas:judge と画面の判定が、同じ out/ に並行して書かないように)。
+//! 他のプロセスの印があれば始めずに止まる(atlas.bat の再実行と画面の処理が、同じ out/ に並行して書かないように)。
 //! ジョブの子プロセスには JOB_ENV を渡し、親(serve)の印では止まらないようにする。
 
 use crate::sys;
-use atlas_report::groups::LoadedGroups;
 use serde::Serialize;
 use serde_json::{Map, Value};
 use std::io::Read;
@@ -126,7 +126,7 @@ impl Drop for OutLock {
 
 /// out/ の印を取る。他のプロセスが持っていれば OutBusyError。
 /// 印は排他的に作るので、2 つが同時に取りに来ても片方だけが取れる。次のときは何もしない印を返す:
-/// 同じプロセスが持っている(atlas:judge の bundle → judge → export の入れ子)・ジョブの子プロセス・印が書けない(並行実行を止められないだけで、処理は動かす)
+/// 同じプロセスが持っている(1 つのコマンドの中で、別のコマンドを続けて動かす入れ子)・ジョブの子プロセス・印が書けない(並行実行を止められないだけで、処理は動かす)
 pub fn acquire_out_lock(out_dir: &Path, kind: &str, by: &str) -> Result<OutLock, OutBusyError> {
     let none = || OutLock { out_dir: None };
     if in_job() {
@@ -181,146 +181,74 @@ pub fn release_out_lock(out_dir: &Path) {
 
 // ---------- ジョブ ----------
 
-pub const JOB_KINDS: [&str; 10] = ["refresh", "judge", "full", "bundle", "bundle-zip", "export", "turn-bundle", "turn-judge", "m365", "turn-m365"];
-/// 画面から始める判定のバックエンド(従量課金の anthropic は CLI だけ)
-pub const JOB_BACKENDS: [&str; 1] = ["copilot-cli"];
-pub const JOB_LIMIT_MAX: i64 = 500;
-/// 依頼ごとの判定の件数の上限(1 セッション 200 依頼 × 数十セッション)
-pub const TURN_LIMIT_MAX: i64 = 5000;
+pub const JOB_KINDS: [&str; 12] = ["refresh", "full", "bundle", "bundle-zip", "export", "turn-bundle", "turn-bundle-zip", "task-bundle", "task-bundle-zip", "m365", "turn-m365", "task-m365"];
+/// 前の版の画面が送る、このツールの中で判定するジョブ(無くなった。分かる文言で断る)
+const GONE_KINDS: [&str; 3] = ["judge", "turn-judge", "task-link"];
+/// 前の版の画面(このツールの中で判定するボタンのある画面)への知らせ。画面は集計し直すと作り直されるので、読み込み直すだけでは変わらないことがある
+pub const GONE_MESSAGE: &str = "このツールが LLM を呼んで判定する処理は無くなりました。レポートの画面の「判定する…」で、チャットに貼るか ZIP にまとめて、外部の LLM に頼んでください(この画面は前の版で作ったものです。「集計し直す」か atlas export でレポートを作り直すと、新しい画面になります)";
 /// 残すログの行数(子プロセスの stdout / stderr の末尾)
 pub const JOB_LOG_LINES: usize = 200;
-
-/// 判定する範囲(画面のタスクタグ、セッションの詳細ページの 1 セッション)。All は絞らない
-#[derive(Debug, Clone, Default, PartialEq)]
-pub enum JudgeScope {
-    #[default]
-    All,
-    Session(String),
-    Group(String),
-    /// 読むだけの画面のタスクタグ(送った人のタグ)。子プロセスは notes-dir の groups.json で名前を探すので、
-    /// 画面で解決した id(sessions.json にあるもの)を --session で渡す。name は表示用
-    GroupIds { name: String, ids: Vec<String> },
-}
-
-impl JudgeScope {
-    /// judge-flow に渡す絞り込み(--session / --group。値が - で始まっても読めるよう = でつなぐ)
-    fn args(&self) -> Vec<String> {
-        match self {
-            JudgeScope::All => vec![],
-            JudgeScope::Session(id) => vec![format!("--session={id}")],
-            JudgeScope::Group(name) => vec![format!("--group={name}")],
-            JudgeScope::GroupIds { ids, .. } => vec![format!("--session={}", ids.join(","))],
-        }
-    }
-
-    fn describe(&self) -> String {
-        match self {
-            JudgeScope::All => String::new(),
-            JudgeScope::Session(id) => format!("、セッション {id}"),
-            JudgeScope::Group(name) => format!("、タスクタグ「{name}」"),
-            JudgeScope::GroupIds { name, ids } => format!("、タスクタグ「{name}」の {} セッション", ids.len()),
-        }
-    }
-
-    fn target(&self) -> (Option<String>, Option<String>) {
-        match self {
-            JudgeScope::All => (None, None),
-            JudgeScope::Session(id) => (Some(id.clone()), None),
-            JudgeScope::Group(name) | JudgeScope::GroupIds { name, .. } => (None, Some(name.clone())),
-        }
-    }
-}
 
 /// 子プロセスのコマンドラインの目安の上限(Windows の上限 32767 文字より手前で断る)
 pub const JOB_ARGS_MAX_CHARS: usize = 30000;
 
-/// 読むだけの画面: タスクタグの範囲(judge_scope が groups で確かめた Group)を、そのタグの ids に置き換える。
-/// groups は画面のタスクタグ(送った人のタグ)、known_id は sessions.json にあるか。残った id が 0 件なら 400
-pub fn pin_group_ids(req: JobRequest, groups: &LoadedGroups, known_id: &dyn Fn(&str) -> bool) -> Result<JobRequest, JobError> {
-    let pin = |scope: JudgeScope| -> Result<JudgeScope, JobError> {
-        let JudgeScope::Group(name) = scope else { return Ok(scope) };
-        let ids: Vec<String> = groups.groups.iter().find(|g| g.name == name).map(|g| g.ids.iter().filter(|id| known_id(id)).cloned().collect()).unwrap_or_default();
-        if ids.is_empty() {
-            return Err(JobError::new(400, format!("タスクタグ「{name}」のセッションは sessions.json にありません(判定するものがありません)")));
-        }
-        Ok(JudgeScope::GroupIds { name, ids })
-    };
-    Ok(match req {
-        JobRequest::Judge { limit, backend, scope, force } => JobRequest::Judge { limit, backend, scope: pin(scope)?, force },
-        JobRequest::TurnJudge { limit, scope } => JobRequest::TurnJudge { limit, scope: pin(scope)? },
-        other => other,
-    })
-}
-
 /// 子プロセスの引数がコマンドラインに収まるか(引数の文字数と区切りの合計で見る)。
 /// Windows のコマンドラインの上限は 32767 文字(UTF-16)。JOB_ARGS_MAX_CHARS を 30000 にして、実行ファイルのパスと引用符の分を空けている。
 /// 数えるのは chars() で UTF-16 の単位とは違う(サロゲートペアで増える)が、引数はセッション ID と ASCII のオプションが主で、その差もこの余白に収まる
-fn check_args_length(req: &JobRequest, args: &[String]) -> Result<(), JobError> {
+fn check_args_length(args: &[String]) -> Result<(), JobError> {
     let total: usize = args.iter().map(|a| a.chars().count() + 1).sum();
     if total <= JOB_ARGS_MAX_CHARS {
         return Ok(());
     }
-    let ids = matches!(req, JobRequest::Judge { scope: JudgeScope::GroupIds { .. }, .. } | JobRequest::TurnJudge { scope: JudgeScope::GroupIds { .. }, .. });
-    Err(JobError::new(
-        400,
-        if ids {
-            format!("タスクタグのセッションが多すぎて、判定の処理に渡せません(引数が {total} 文字)。対象を「すべて」にして判定してください")
-        } else {
-            format!("判定の処理に渡す引数が長すぎます({total} 文字)")
-        },
-    ))
+    Err(JobError::new(400, format!("処理に渡す引数が長すぎます({total} 文字)")))
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum JobRequest {
     Refresh,
-    /// force: 判定済みでも判定し直す(1 セッションに絞ったときだけ)
-    Judge { limit: i64, backend: String, scope: JudgeScope, force: bool },
     Full { id: String },
     Bundle,
     BundleZip,
     Export,
     TurnBundle,
-    TurnJudge { limit: i64, scope: JudgeScope },
+    TurnBundleZip,
+    /// 管理ツールのタスクへの紐づけを外部の LLM に頼む添付ファイル(紐づけの無いセッションだけ)
+    TaskBundle,
+    TaskBundleZip,
     M365,
     TurnM365,
+    TaskM365,
 }
 
 impl JobRequest {
     pub fn kind(&self) -> &'static str {
         match self {
             JobRequest::Refresh => "refresh",
-            JobRequest::Judge { .. } => "judge",
             JobRequest::Full { .. } => "full",
             JobRequest::Bundle => "bundle",
             JobRequest::BundleZip => "bundle-zip",
             JobRequest::Export => "export",
             JobRequest::TurnBundle => "turn-bundle",
-            JobRequest::TurnJudge { .. } => "turn-judge",
+            JobRequest::TurnBundleZip => "turn-bundle-zip",
+            JobRequest::TaskBundle => "task-bundle",
+            JobRequest::TaskBundleZip => "task-bundle-zip",
             JobRequest::M365 => "m365",
             JobRequest::TurnM365 => "turn-m365",
+            JobRequest::TaskM365 => "task-m365",
         }
+    }
+
+    /// 管理ツールのタスクの紐づけを書くジョブか(読むだけの画面では始めない)
+    pub fn writes_task_links(&self) -> bool {
+        matches!(self, JobRequest::TaskBundle | JobRequest::TaskBundleZip | JobRequest::TaskM365)
     }
 }
 
-/// 要求の中身(判定の件数とバックエンドと範囲、全文のセッション id)
+/// 要求の中身(全文のセッション id)
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct JobTarget {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub limit: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub backend: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    /// 判定を絞ったセッション id
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub session: Option<String>,
-    /// 判定を絞ったタスクタグ
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub group: Option<String>,
-    /// 判定し直す
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub force: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -361,17 +289,9 @@ impl std::error::Error for JobError {}
 
 fn job_keys(kind: &str) -> &'static [&'static str] {
     match kind {
-        "judge" => &["kind", "limit", "backend", "session", "group", "force"],
         "full" => &["kind", "id"],
-        "turn-judge" => &["kind", "limit", "session", "group"],
         _ => &["kind"],
     }
-}
-
-/// JS の Number.isInteger(数の値で、整数)
-fn integer_of(v: Option<&Value>) -> Option<i64> {
-    let n = v?.as_f64()?;
-    (n.is_finite() && n.fract() == 0.0).then_some(n as i64)
 }
 
 /// セッション id の形と、sessions.json にあるか(無い・文字列でないものは形が正しくないとみなす)
@@ -386,45 +306,14 @@ fn session_id_of(id: Option<&str>, known_id: &dyn Fn(&str) -> bool) -> Result<St
     Ok(id)
 }
 
-/// 判定の範囲を決める(POST /api/jobs の本文の session / group と、GET /api/jobs/judge-preview の ?session= / ?group= で共通)。
-/// session と group はどちらか 1 つ。session はファイル名に使える形で known_id(sessions.json にあるか)を満たすこと。
-/// group は空でない名前(前後の空白は落とす)で、groups(groups.json を読んだもの。group を指定したときだけ読めばよい。None は無いのと同じ)にあること。
-/// 見つからないとき、groups.json に読めなかった箇所があれば 404 ではなく 409 にして、その箇所を添える(壊れた所にあるのかもしれないため)
-pub fn judge_scope(session: Option<&str>, group: Option<&str>, known_id: &dyn Fn(&str) -> bool, groups: Option<&LoadedGroups>) -> Result<JudgeScope, JobError> {
-    match (session, group) {
-        (None, None) => Ok(JudgeScope::All),
-        (Some(_), Some(_)) => Err(JobError::new(400, "session と group は同時に指定できません")),
-        (Some(s), None) => Ok(JudgeScope::Session(session_id_of(Some(s), known_id)?)),
-        (None, Some(g)) => {
-            let name = g.trim();
-            if name.is_empty() {
-                return Err(JobError::new(400, "group にはタスクタグの名前を指定してください"));
-            }
-            if groups.is_some_and(|g| g.groups.iter().any(|x| x.name == name)) {
-                return Ok(JudgeScope::Group(name.to_string()));
-            }
-            match groups.filter(|g| !g.warnings.is_empty()) {
-                // 警告の文にファイルの場所が入っている(load_groups)
-                Some(g) => Err(JobError::new(409, format!("タスクタグ「{name}」が見つかりません。groups.json に読めなかった箇所があります(直すと出ることがあります): {}", g.warnings.join(" / ")))),
-                None => Err(JobError::new(404, format!("タスクタグ「{name}」はありません"))),
-            }
-        }
-    }
-}
-
-/// 本文の session / group(文字列でない値は空の文字列として渡し、形が正しくないとして 400 にする)
-fn scope_of(body: &Map<String, Value>, known_id: &dyn Fn(&str) -> bool, groups: Option<&LoadedGroups>) -> Result<JudgeScope, JobError> {
-    let text = |k: &str| body.get(k).map(|v| v.as_str().unwrap_or(""));
-    judge_scope(text("session"), text("group"), known_id, groups)
-}
-
-/// POST /api/jobs の本文を検証する(純関数)。kind は列挙、limit は 0〜500 の整数(数値で必須。画面の確認で決めた件数だけ受ける)、
-/// backend は省ける(画面から始める判定は copilot-cli だけなので、無ければそれ。書くなら copilot-cli)、id はファイル名に使える形で、
-/// known_id(sessions.json にあるか)を満たすこと。判定は session(known_id)か group(groups: 読んだ groups.json にあるか)で絞れ(judge_scope)、
-/// force(判定し直す)は session と一緒にだけ使える。知らないキーは 400
-pub fn parse_job_request(body: &Map<String, Value>, known_id: &dyn Fn(&str) -> bool, groups: Option<&LoadedGroups>) -> Result<JobRequest, JobError> {
+/// POST /api/jobs の本文を検証する(純関数)。kind は列挙、id はファイル名に使える形で known_id(sessions.json にあるか)を満たすこと。
+/// 知らないキーは 400。前の版の画面が送る、このツールの中で判定するジョブ(judge・turn-judge・task-link)は、無くなったと書いて 410
+pub fn parse_job_request(body: &Map<String, Value>, known_id: &dyn Fn(&str) -> bool) -> Result<JobRequest, JobError> {
     let kind = match body.get("kind") {
         Some(Value::String(k)) if JOB_KINDS.contains(&k.as_str()) => k.as_str(),
+        Some(Value::String(k)) if GONE_KINDS.contains(&k.as_str()) => {
+            return Err(JobError::new(410, GONE_MESSAGE));
+        }
         _ => return Err(JobError::new(400, format!("kind は {} のどれかです", JOB_KINDS.join(" / ")))),
     };
     let allowed = job_keys(kind);
@@ -432,44 +321,20 @@ pub fn parse_job_request(body: &Map<String, Value>, known_id: &dyn Fn(&str) -> b
     if !extra.is_empty() {
         return Err(JobError::new(400, format!("{kind} では使えない項目です: {}", extra.join(", "))));
     }
-    match kind {
-        "refresh" => return Ok(JobRequest::Refresh),
-        "bundle" => return Ok(JobRequest::Bundle),
-        "bundle-zip" => return Ok(JobRequest::BundleZip),
-        "export" => return Ok(JobRequest::Export),
-        "turn-bundle" => return Ok(JobRequest::TurnBundle),
-        "m365" => return Ok(JobRequest::M365),
-        "turn-m365" => return Ok(JobRequest::TurnM365),
-        _ => {}
-    }
-    if kind == "turn-judge" {
-        let Some(limit) = integer_of(body.get("limit")).filter(|l| (0..=TURN_LIMIT_MAX).contains(l)) else {
-            return Err(JobError::new(400, format!("limit には 0〜{TURN_LIMIT_MAX} の整数を指定してください(判定する依頼の数の上限)")));
-        };
-        let scope = scope_of(body, known_id, groups)?;
-        return Ok(JobRequest::TurnJudge { limit, scope });
-    }
-    if kind == "judge" {
-        let Some(limit) = integer_of(body.get("limit")).filter(|l| (0..=JOB_LIMIT_MAX).contains(l)) else {
-            return Err(JobError::new(400, format!("limit には 0〜{JOB_LIMIT_MAX} の整数を指定してください(判定する件数の上限)")));
-        };
-        let backend = match body.get("backend") {
-            None => JOB_BACKENDS[0].to_string(),
-            Some(Value::String(b)) if JOB_BACKENDS.contains(&b.as_str()) => b.clone(),
-            Some(_) => return Err(JobError::new(400, format!("backend は {} です(従量課金の anthropic は CLI からだけ使えます)", JOB_BACKENDS.join(" / ")))),
-        };
-        let force = match body.get("force") {
-            None => false,
-            Some(Value::Bool(f)) => *f,
-            Some(_) => return Err(JobError::new(400, "force は true か false です")),
-        };
-        let scope = scope_of(body, known_id, groups)?;
-        if force && !matches!(scope, JudgeScope::Session(_)) {
-            return Err(JobError::new(400, "force(判定し直す)は session と一緒にだけ使えます"));
-        }
-        return Ok(JobRequest::Judge { limit, backend, scope, force });
-    }
-    Ok(JobRequest::Full { id: session_id_of(body.get("id").and_then(Value::as_str), known_id)? })
+    Ok(match kind {
+        "refresh" => JobRequest::Refresh,
+        "bundle" => JobRequest::Bundle,
+        "bundle-zip" => JobRequest::BundleZip,
+        "export" => JobRequest::Export,
+        "turn-bundle" => JobRequest::TurnBundle,
+        "turn-bundle-zip" => JobRequest::TurnBundleZip,
+        "task-bundle" => JobRequest::TaskBundle,
+        "task-bundle-zip" => JobRequest::TaskBundleZip,
+        "m365" => JobRequest::M365,
+        "turn-m365" => JobRequest::TurnM365,
+        "task-m365" => JobRequest::TaskM365,
+        _ => JobRequest::Full { id: session_id_of(body.get("id").and_then(Value::as_str), known_id)? },
+    })
 }
 
 /// 子プロセスの引数を決める場所
@@ -480,7 +345,7 @@ pub struct JobArgsInput<'a> {
     pub home: Option<&'a str>,
 }
 
-/// 子プロセスの引数(この実行ファイルの後ろ。TS 版の main.ts / judge-flow.ts の代わりにサブコマンドを置く)。サーバが固定の形で組み立てる。full はサーバ内なので None
+/// 子プロセスの引数(この実行ファイルの後ろ。TS 版の main.ts の代わりにサブコマンドを置く)。サーバが固定の形で組み立てる。full はサーバ内なので None
 pub fn job_args(req: &JobRequest, p: &JobArgsInput<'_>) -> Option<Vec<String>> {
     let mut v: Vec<String> = match req {
         // home: 別のフォルダを開いたサーバ(atlas open)は、集計し直すときも同じフォルダを読む
@@ -491,27 +356,19 @@ pub fn job_args(req: &JobRequest, p: &JobArgsInput<'_>) -> Option<Vec<String>> {
             }
             v
         }
-        JobRequest::Judge { limit, backend, scope, force } => {
-            let mut v: Vec<String> = vec!["judge-flow".into(), "--limit".into(), limit.to_string(), "--backend".into(), backend.clone()];
-            v.extend(scope.args());
-            if *force {
-                v.push("--force".into());
-            }
-            v
-        }
         JobRequest::Bundle => vec!["bundle".into(), "--unjudged".into()],
         // 束と ZIP を同じ回に作る(前の束から作った ZIP を渡させない)
         JobRequest::BundleZip => vec!["bundle".into(), "--unjudged".into(), "--zip".into()],
         JobRequest::Export => vec!["export".into()],
         JobRequest::TurnBundle => vec!["turns".into(), "bundle".into(), "--unjudged".into()],
-        JobRequest::TurnJudge { limit, scope } => {
-            let mut v: Vec<String> = vec!["judge-flow".into(), "--turns".into(), "--limit".into(), limit.to_string()];
-            v.extend(scope.args());
-            v
-        }
-        // M365 Copilot のアプリを操作して、未判定の添付ファイルを判定する(取り込めたらレポートにも反映する)
+        JobRequest::TurnBundleZip => vec!["turns".into(), "bundle".into(), "--unjudged".into(), "--zip".into()],
+        // タスクの紐づけの束は、いつも紐づけの無いセッションだけで作る
+        JobRequest::TaskBundle => vec!["tasks".into(), "bundle".into()],
+        JobRequest::TaskBundleZip => vec!["tasks".into(), "bundle".into(), "--zip".into()],
+        // M365 Copilot のアプリを操作して、未判定の添付ファイルを送る(取り込めたらレポートにも反映する)
         JobRequest::M365 => vec!["judge".into(), "m365".into()],
         JobRequest::TurnM365 => vec!["turns".into(), "m365".into()],
+        JobRequest::TaskM365 => vec!["tasks".into(), "m365".into()],
         JobRequest::Full { .. } => return None,
     };
     v.extend(["--out".to_string(), p.out_dir.to_string(), "--notes-dir".to_string(), p.notes_dir.to_string()]);
@@ -553,16 +410,16 @@ impl ChildLike for RealChild {
     }
 }
 
-/// 子プロセスと、その子孫(judge-flow が起動した copilot など)。止めるときはまとめて止める。
+/// 子プロセスと、その子孫(M365 Copilot を操作する PowerShell など)。止めるときはまとめて止める。
 /// Windows ではジョブオブジェクトに入れておき、すぐに子孫ごと止める(TS 版は taskkill /T /F。Rust 版の集計は速く、taskkill が動き出す前に終わることがある)
-struct ProcessTree {
+pub(crate) struct ProcessTree {
     pid: u32,
     #[cfg(windows)]
     job: usize,
 }
 
 impl ProcessTree {
-    fn of(child: &std::process::Child) -> ProcessTree {
+    pub(crate) fn of(child: &std::process::Child) -> ProcessTree {
         #[cfg(windows)]
         {
             use std::os::windows::io::AsRawHandle;
@@ -584,7 +441,7 @@ impl ProcessTree {
         ProcessTree { pid: child.id() }
     }
 
-    fn kill(&self) {
+    pub(crate) fn kill(&self) {
         #[cfg(windows)]
         {
             use windows_sys::Win32::System::JobObjects::TerminateJobObject;
@@ -609,7 +466,7 @@ impl Drop for ProcessTree {
     }
 }
 
-/// 止める(ジョブオブジェクトが使えないとき)。Windows では子孫ごと(judge-flow が起動した copilot を残さない)
+/// 止める(ジョブオブジェクトが使えないとき)。Windows では子孫ごと(子プロセスが起動したものを残さない)
 fn kill_tree(pid: u32) {
     #[cfg(windows)]
     {
@@ -679,14 +536,16 @@ pub struct JobRunnerOptions {
 fn label(kind: &str) -> &'static str {
     match kind {
         "refresh" => "集計し直す",
-        "judge" => "工数を判定する",
         "full" => "全文を作る",
         "bundle" => "添付ファイルを作る",
         "bundle-zip" => "ZIP を作る",
         "export" => "レポートに反映する",
         "turn-bundle" => "依頼の判定の添付ファイルを作る",
-        "turn-judge" => "依頼を判定する",
+        "turn-bundle-zip" => "依頼の判定の ZIP を作る",
+        "task-bundle" => "タスクの紐づけの添付ファイルを作る",
+        "task-bundle-zip" => "タスクの紐づけの ZIP を作る",
         "m365" => "M365 Copilot で工数を判定する",
+        "task-m365" => "M365 Copilot でタスクに紐づける",
         _ => "M365 Copilot で依頼を判定する",
     }
 }
@@ -787,23 +646,15 @@ impl JobRunner {
         let notes = self.o.notes_dir.to_string_lossy().into_owned();
         let args = job_args(req, &JobArgsInput { out_dir: &out, notes_dir: &notes, home: self.o.home.as_deref() });
         if let Some(a) = &args {
-            check_args_length(req, a)?;
+            check_args_length(a)?;
         }
-        // CLI(atlas.bat の再実行・npm run atlas:judge)が同じ out/ に書いている最中なら始めない。印はジョブの終わりに外す(drop_lock)
+        // CLI(atlas.bat の再実行など)が同じ out/ に書いている最中なら始めない。印はジョブの終わりに外す(drop_lock)
         match acquire_out_lock(&self.o.out_dir, req.kind(), "serve") {
             Ok(l) => l.keep(),
             Err(e) => return Err(JobError::new(409, e.0)),
         }
         let target = match req {
-            JobRequest::Judge { limit, backend, scope, force } => {
-                let (session, group) = scope.target();
-                JobTarget { limit: Some(*limit), backend: Some(backend.clone()), session, group, force: *force, ..Default::default() }
-            }
-            JobRequest::TurnJudge { limit, scope } => {
-                let (session, group) = scope.target();
-                JobTarget { limit: Some(*limit), session, group, ..Default::default() }
-            }
-            JobRequest::Full { id } => JobTarget { id: Some(id.clone()), ..Default::default() },
+            JobRequest::Full { id } => JobTarget { id: Some(id.clone()) },
             _ => JobTarget::default(),
         };
         {
@@ -814,8 +665,6 @@ impl JobRunner {
             st.job = Some(JobSnapshot { id, kind: req.kind().into(), state: "running".into(), started_at: atlas_core::jsdate::now_iso(), ended_at: None, exit_code: None, log: vec![], target });
         }
         let what = match req {
-            JobRequest::Judge { limit, backend, scope, force } => format!("(最大 {limit} 件、{backend}{}{})", scope.describe(), if *force { "、判定し直し" } else { "" }),
-            JobRequest::TurnJudge { limit, scope } => format!("(最大 {limit} 依頼{})", scope.describe()),
             JobRequest::Full { id } => format!("({id})"),
             _ => String::new(),
         };

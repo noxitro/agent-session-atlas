@@ -77,15 +77,3 @@ fn run_picker(exe: &str, title: &str, initial: Option<&str>) -> std::result::Res
     let path = atlas_core::js::trim(out.strip_prefix('\u{feff}').unwrap_or(&out)).to_string();
     Ok((!path.is_empty()).then_some(path))
 }
-
-/// フォルダをエクスプローラー(macOS は Finder、他は既定のファイルマネージャー)で開く。開くだけで終わりを待たない
-pub fn open_folder(dir: &str) {
-    let prog = if cfg!(windows) {
-        "explorer.exe"
-    } else if cfg!(target_os = "macos") {
-        "open"
-    } else {
-        "xdg-open"
-    };
-    let _ = Command::new(prog).arg(dir).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
-}

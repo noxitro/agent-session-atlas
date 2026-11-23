@@ -1,9 +1,7 @@
 // llm-wiki の参照の数え方(lib/wiki.ts)と、それを使う集計(lib/aggregate.ts の sessionsWithWiki)。値はすべて架空のもの
 import { describe, expect, it } from 'vitest';
 import { bucket } from '../src/lib/aggregate.ts';
-import { usageCount } from '../src/lib/condition-usage.ts';
 import { applyFilter, decodeFilter, emptyFilter, encodeFilter } from '../src/lib/filter.ts';
-import type { ConditionSession } from '../src/lib/conditions.ts';
 import type { SessionSummary } from '../src/lib/types.ts';
 import {
   WIKI_NO_RECORD,
@@ -255,10 +253,9 @@ describe('どこでも同じ数え方', () => {
     ['skill だけ', w({ skillCalls: 1 }), true],
     ['参照と書き込み', w({ pageReads: 1, writes: 2 }), true],
   ];
-  it.each(cases)('%s: 集計の sessionsWithWiki と、課題 × 条件の利用の確認は、wikiReferenced と同じ', (_name, c, referenced) => {
+  it.each(cases)('%s: 集計の sessionsWithWiki は、wikiReferenced と同じ', (_name, c, referenced) => {
     expect(wikiReferenced(c)).toBe(referenced);
     expect(bucket('all', '全体', [summary(c)]).sessionsWithWiki).toBe(referenced ? 1 : 0);
-    expect(usageCount({ id: 'x', wiki: c } as unknown as ConditionSession, 'wiki') > 0).toBe(referenced);
   });
   it('絞り込みの wiki=1 も同じ数え方で残す。ハッシュで往復し、不正な値は捨てる', () => {
     const ss = cases.map(([name, c]) => ({ ...summary(c), id: name, project: 'p', client: null, branch: null, models: [] }));

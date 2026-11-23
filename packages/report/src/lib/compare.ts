@@ -1,4 +1,4 @@
-// 「比べる」の節: 2 つの条件(タスクタグ・期間・プロジェクト・推論強度)のセッションの指標を並べる。工程は依頼(ターン)の単位で並べる。
+// 「比べる」の節: 2 つの条件(期間・プロジェクト・推論強度)のセッションの指標を並べる。工程は依頼(ターン)の単位で並べる。
 // 差は相関で、条件の違いが原因とは限らない。差の幅(95%)は、セッションを互いに独立とみなした近似(同じ人のセッションの似かたは入れていない)。
 import { EFFORT_ORDER, orderBy } from './exec.ts';
 import { localDayStart, sessionTime } from './filter.ts';
@@ -11,9 +11,9 @@ import type { SessionSummary } from './types.ts';
 /** 割合を出す最小のセッション数(改善点の率と同じ 5) */
 export const COMPARE_MIN_SESSIONS = 5;
 
-export const COMPARE_KINDS = ['tag', 'period', 'project', 'phase', 'effort'] as const;
+export const COMPARE_KINDS = ['period', 'project', 'phase', 'effort'] as const;
 export type CompareKind = (typeof COMPARE_KINDS)[number];
-export const COMPARE_KIND_LABEL: Record<CompareKind, string> = { tag: 'タスクタグ', period: '期間', project: 'プロジェクト', phase: '工程', effort: '推論強度' };
+export const COMPARE_KIND_LABEL: Record<CompareKind, string> = { period: '期間', project: 'プロジェクト', phase: '工程', effort: '推論強度' };
 
 export type CompareSession = Pick<
   SessionSummary,
@@ -357,7 +357,7 @@ export interface EffortSplit<T> {
 /**
  * 推論強度どうしの母集団: 期間に開始し、本体が (model, a) と決まったセッションと (model, b) と決まったセッション。
  * 同じ分類から、混在・記録なしの件数と、利用者 × 週の表も作る(A・B のどちらでもない強度のセッションは、どれにも数えない)。
- * a と b が同じなら、両側に同じセッションが入る(タスクタグやプロジェクトで同じものを選んだときと同じ)
+ * a と b が同じなら、両側に同じセッションが入る(プロジェクトで同じものを選んだときと同じ)
  */
 export function effortSplit<T extends EffortSource>(sessions: readonly T[], model: string, a: string, b: string, from: string, to: string): EffortSplit<T> {
   const byPerson = sessions.some((s) => s.person != null && s.person !== '');

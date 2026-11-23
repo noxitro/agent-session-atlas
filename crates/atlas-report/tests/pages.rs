@@ -60,6 +60,7 @@ fn html_with(r: &SessionRecord, wiki_state: WikiState) -> String {
             retention: None,
             retention_meta: None,
             wiki_state,
+            task: None,
         },
     )
 }
@@ -253,6 +254,7 @@ fn detail_judge_state_tags() {
                 retention: None,
                 retention_meta: None,
                 wiki_state: WikiState::Counted,
+                task: None,
             },
         )
     };

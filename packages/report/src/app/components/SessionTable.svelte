@@ -2,11 +2,13 @@
   import { frictionTotal } from '../../lib/aggregate.ts';
   import { sessionTime, sessionUpdated } from '../../lib/filter.ts';
   import { date, dateTime, dec, duration, int, modelLabel, pathParts, sharedLeads, splitLead, truncate } from '../../lib/format.ts';
-  import type { ReportGroup, SessionSummary } from '../../lib/types.ts';
+  import type { SessionSummary } from '../../lib/types.ts';
   import SortMark from './SortMark.svelte';
   import { restoredView, saveView } from '../view-restore.ts';
   import { categoryLabel, confidenceLabel } from '../../lib/judgment-labels.ts';
   import { excerptAround, ID_PREFIX_MIN, looksLikeId, searchIndex, searchSessions, searchTerms } from '../../lib/session-search.ts';
+  import { sortByTask, taskCell, type TaskCell } from '../../lib/tasks.ts';
+  import type { TaskLinkView } from '../../lib/types.ts';
 
   let {
     sessions,
@@ -16,16 +18,10 @@
     judged,
     selected,
     idsActive,
-    editable,
-    readOnly = false,
-    groups,
-    currentGroup,
     onselect,
     onapply,
     onclear,
-    oncreate,
-    onadd,
-    onremove,
+    tasks = null,
   }: {
     sessions: SessionSummary[];
     /** 絞り込む前の全セッション(検索で、今の絞り込みの外にも合うものがあるかを数える。無ければ数えない) */
@@ -44,21 +40,11 @@
     onapply: () => void;
     /** 選択を外す(集計中ならその条件も外す) */
     onclear: () => void;
-    /** atlas serve から開いていて、グループを作れる */
-    editable: boolean;
-    /** 読むだけの画面(タスクタグは送った人が付けたもの。ここでは付けられない) */
-    readOnly?: boolean;
-    /** 選んだセッションでグループを作る(失敗は例外。理由を入力欄の下に出す) */
-    oncreate: (name: string, note: string) => Promise<void>;
-    /** 既存のグループ(「グループに追加」の一覧) */
-    groups: (ReportGroup & { present: number })[];
-    /** 現在のグループ名(グループで絞り込み中。「このグループから外す」が出る) */
-    currentGroup: string | null;
-    /** 選んだセッションを既存のグループに足す。結果の一文を返す */
-    onadd: (name: string) => Promise<string>;
-    /** 選んだセッションを現在のグループから外す。結果の一文を返す */
-    onremove: () => Promise<string>;
+    /** 管理ツールのタスクの紐づけ(セッション id → 紐づけ)とタスクの名前。タスクの記録が無ければ null */
+    tasks?: { links: Record<string, TaskLinkView>; names: ReadonlyMap<string, string> } | null;
   } = $props();
+  /** 「タスク」の欄の中身(紐づいたタスクの名前・ID と紐づけの出所。title に理由と、出しきれないときは全部のタスク) */
+  const cellOf = (id: string): TaskCell | null => (tasks ? taskCell(tasks.links[id], tasks.names) : null);
 
   /** 変更行の欄の title(出所と、記録が欠けている理由) */
   function linesTitle(l: SessionSummary['lines']): string {
@@ -77,8 +63,11 @@
     return { n: turns.size, m };
   }
 
-  type Key = 'time' | 'updated' | 'turns' | 'input' | 'output' | 'tools' | 'lines' | 'friction' | 'active' | 'human';
-  const value: Record<Key, (s: SessionSummary) => number> = {
+  /** 'task' は文字の並べ替え(最初のタスクの名前、同じなら ID)。ほかは数 */
+  type Key = NumKey | 'task';
+  type NumKey = 'time' | 'updated' | 'turns' | 'input' | 'output' | 'tools' | 'lines' | 'friction' | 'active' | 'human';
+  const KEYS: readonly string[] = ['time', 'updated', 'turns', 'input', 'output', 'tools', 'lines', 'friction', 'active', 'human', 'task'];
+  const value: Record<NumKey, (s: SessionSummary) => number> = {
     time: (s) => sessionTime(s) ?? -Infinity,
     updated: (s) => sessionUpdated(s) ?? -Infinity,
     turns: (s) => s.turns,
@@ -92,7 +81,7 @@
   };
   // 戻る / 進むで開かれたら、離れたときの並べ替えとページから始める(view-restore.ts)
   const back = restoredView()?.table;
-  let sortKey = $state<Key>(back && back.sortKey in value ? (back.sortKey as Key) : 'time');
+  let sortKey = $state<Key>(back && KEYS.includes(back.sortKey) ? (back.sortKey as Key) : 'time');
   let asc = $state(back?.asc === true);
   let page = $state(back && Number.isInteger(back.page) && back.page > 0 ? back.page : 0);
   /** 一覧の検索(セッション ID の先頭か題名の一部)。行を絞るだけで、上の集計は変えない */
@@ -114,7 +103,7 @@
   const relaxedIds = $derived(new Set((emptyRelaxed ?? []).map((s) => s.id)));
   /**
    * 検索に合ったが、今の絞り込みで外れているセッション。emptyOnly は「空のセッションを含める」だけで出るもの、
-   * rest はほかの条件(期間・プロジェクト・タスクタグなど)でも外れているもの(restEmpty はそのうち空のセッション)
+   * rest はほかの条件(期間・プロジェクトなど)でも外れているもの(restEmpty はそのうち空のセッション)
    */
   const outside = $derived.by(() => {
     if (!found || !allIndex) return null;
@@ -142,9 +131,18 @@
     page = 0;
   }
 
+  /** 一覧の既定の並び(開始の新しい順、同じならセッション id)。「タスク」の列で同じ順位の行に使う */
+  const byDefault = (a: SessionSummary, b: SessionSummary): number => {
+    const x = value.time(a);
+    const y = value.time(b);
+    return (x === y ? 0 : y - x) || a.id.localeCompare(b.id);
+  };
   const sorted = $derived.by(() => {
-    const f = value[sortKey];
     const dir = asc ? 1 : -1;
+    // 最初のタスクの名前、同じなら ID の順。タスクの無いセッションは、どちらの向きでも後ろ(lib/tasks.ts)
+    if (sortKey === 'task' && tasks) return sortByTask(rows, tasks.links, tasks.names, asc, byDefault);
+    // タスクの列が無いレポート(戻る・進むで並べ替えを戻したとき)は、開始の順にする
+    const f = value[sortKey === 'task' ? 'time' : sortKey];
     // 日時の無いもの(-Infinity)どうしの差は NaN になるので、同じとみなす
     return [...rows].sort((a, b) => {
       const x = f(a);
@@ -163,7 +161,8 @@
     if (sortKey === k) asc = !asc;
     else {
       sortKey = k;
-      asc = false;
+      // 数は多い順から、文字(タスクの名前)は 50 音・ABC の順から(タスクの節の表と同じ)
+      asc = k === 'task';
     }
     page = 0;
   }
@@ -195,13 +194,6 @@
     return m;
   });
 
-  /** セッション id → 入っているグループの名前(行の下に「グループ: …」と出す) */
-  const groupsOf = $derived.by(() => {
-    const m = new Map<string, string[]>();
-    for (const g of groups) for (const id of g.ids) m.set(id, [...(m.get(id) ?? []), g.name]);
-    return m;
-  });
-
   // --- 選択(チェック欄)。状態は親(App)が持ち、ここは表示と操作だけ ---
   const visibleChecked = $derived(visible.filter((s) => selected.has(s.id)).length);
   const allVisible = $derived(visible.length > 0 && visibleChecked === visible.length);
@@ -219,119 +211,6 @@
     onselect(next);
   }
 
-  // --- 「グループを作成」: 名前と説明の入力欄をインラインで開き、作成を押すと API で保存される(ダイアログは出さない) ---
-  let createOpen = $state(false);
-  let newName = $state('');
-  let newNote = $state('');
-  let createError = $state('');
-  let busy = $state(false);
-  let nameEl = $state<HTMLInputElement | null>(null);
-  let createBtn = $state<HTMLButtonElement | null>(null);
-  function openCreate(): void {
-    createError = '';
-    createOpen = true;
-    requestAnimationFrame(() => nameEl?.focus());
-  }
-  function cancelCreate(): void {
-    createOpen = false;
-    createError = '';
-    requestAnimationFrame(() => createBtn?.focus());
-  }
-  async function submitCreate(e: SubmitEvent): Promise<void> {
-    e.preventDefault();
-    if (busy) return;
-    const name = newName.trim();
-    if (!name) {
-      // 空でも送れる(無効にしない)。理由を入力欄の下に出して戻す
-      createError = '名前を入れてください';
-      nameEl?.focus();
-      return;
-    }
-    busy = true;
-    createError = '';
-    try {
-      await oncreate(name, newNote.trim());
-      createOpen = false;
-      newName = '';
-      newNote = '';
-      requestAnimationFrame(() => createBtn?.focus());
-    } catch (err) {
-      createError = (err as Error).message;
-      requestAnimationFrame(() => nameEl?.focus());
-    } finally {
-      busy = false;
-    }
-  }
-  // サーバが止まったら(editable が外れたら)開いていた入力欄も閉じる
-  $effect(() => {
-    if (!editable) {
-      createOpen = false;
-      menuOpen = false;
-    }
-  });
-
-  // --- 「グループに追加 ▾」: 既存グループの一覧(末尾に「新しいグループ…」)。1 回で追加し、絞り込みは変えず結果を短く出す ---
-  let menuOpen = $state(false);
-  let menuBtn = $state<HTMLButtonElement | null>(null);
-  let menuEl = $state<HTMLElement | null>(null);
-  let status = $state('');
-  let statusError = $state(false);
-  let working = $state(false);
-  function toggleMenu(): void {
-    menuOpen = !menuOpen;
-    if (menuOpen) requestAnimationFrame(() => menuEl?.querySelector<HTMLButtonElement>('button')?.focus());
-  }
-  function closeMenu(back = true): void {
-    if (!menuOpen) return;
-    menuOpen = false;
-    if (back) menuBtn?.focus();
-  }
-  $effect(() => {
-    if (!menuOpen) return;
-    const onDown = (e: MouseEvent): void => {
-      const t = e.target as Node;
-      if (menuEl?.contains(t) || menuBtn?.contains(t)) return;
-      closeMenu(false);
-    };
-    const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') closeMenu();
-      else if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && menuEl && (menuEl.contains(document.activeElement) || document.activeElement === menuBtn)) {
-        const items = [...menuEl.querySelectorAll<HTMLButtonElement>('button')];
-        const i = items.indexOf(document.activeElement as HTMLButtonElement);
-        const n = (i + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
-        items[n]?.focus();
-        e.preventDefault();
-      }
-    };
-    document.addEventListener('mousedown', onDown);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onDown);
-      document.removeEventListener('keydown', onKey);
-    };
-  });
-  async function report(action: () => Promise<string>): Promise<void> {
-    if (working) return;
-    working = true;
-    status = '';
-    try {
-      status = await action();
-      statusError = false;
-    } catch (e) {
-      status = (e as Error).message;
-      statusError = true;
-    } finally {
-      working = false;
-    }
-  }
-  function pickAdd(name: string): void {
-    closeMenu();
-    void report(() => onadd(name));
-  }
-  function pickNew(): void {
-    closeMenu(false);
-    openCreate();
-  }
 </script>
 
 <section class="section" id="sessions" aria-labelledby="sessions-h">
@@ -352,7 +231,7 @@
         value={query}
         oninput={(e) => onSearch(e.currentTarget.value)}
         onkeydown={(e) => {
-          // IME の変換を取り消す Esc では消さない。開いているメニュー(タスクタグ)の Esc の処理にも渡さない
+          // IME の変換を取り消す Esc では消さない。ほかの Esc の処理にも渡さない
           if (e.key === 'Escape' && !e.isComposing && e.keyCode !== 229 && query) {
             e.preventDefault();
             e.stopPropagation();
@@ -371,54 +250,18 @@
     <p class="find-hint" id="session-find-hint">ID は先頭 {ID_PREFIX_MIN} 文字以上か ID 全体(ID を含むパスを貼ってもよい)。題名は、セッション名と最初の依頼の先頭 160 字から探します。上の集計は変えません。</p>
   </div>
 
-  <!-- 選択の操作列: チェックした件数と、その件数だけで集計 / 解除 / グループとして保存 -->
+  <!-- 選択の操作列: チェックした件数と、その件数だけで集計 / 解除 -->
   <div class="select-bar" role="group" aria-label="セッションの選択">
     <p class="sel-count">
       <span aria-live="polite" aria-atomic="true"><strong data-testid="selected-count">{int(selected.size)}</strong> 件を選択中</span>{#if idsActive}<span class="tag on">この選択で集計中</span>{/if}
-      {#if selected.size === 0}<span class="why">{editable ? '左端の欄にチェックを付けると、そのセッションだけで集計し直したり、タスクタグを付けられます。' : '左端の欄にチェックを付けると、そのセッションだけで集計し直せます。'}</span>{/if}
+      {#if selected.size === 0}<span class="why">左端の欄にチェックを付けると、そのセッションだけで集計し直せます。</span>{/if}
     </p>
     <div class="sel-actions">
       <button type="button" class="btn" data-testid="apply-selection" disabled={selected.size === 0} onclick={onapply}>選んだ {int(selected.size)} 件だけ集計</button>
-      <!-- 選択で集計中は 0 件でも押せる(記録に無い id だけのグループを選んだときに条件を外す手段を残す) -->
+      <!-- 選択で集計中は 0 件でも押せる(記録に無い id だけを選んだ URL で開いたときに条件を外す手段を残す) -->
       <button type="button" class="btn" disabled={selected.size === 0 && !idsActive} onclick={onclear}>選択を解除</button>
-      {#if editable}
-        <span class="menu-wrap">
-          <button type="button" class="btn" data-testid="add-to-group" bind:this={menuBtn} disabled={selected.size === 0 || createOpen} aria-expanded={menuOpen} aria-controls="add-menu" onclick={toggleMenu}>タスクタグを付ける <span aria-hidden="true">▾</span></button>
-          {#if menuOpen}
-            <div class="menu" id="add-menu" bind:this={menuEl} role="group" aria-label="付けるタスクタグ" data-testid="add-menu" onfocusout={(e) => { const t = e.relatedTarget as Node | null; if (t && !menuEl?.contains(t) && !menuBtn?.contains(t)) closeMenu(false); }}>
-              {#each groups as g (g.name)}
-                <button type="button" class="item" onclick={() => pickAdd(g.name)}>{g.name}<span class="cnt" aria-hidden="true">{g.present === g.ids.length ? int(g.ids.length) : `${int(g.present)} / ${int(g.ids.length)}`}</span><span class="sr-only">{int(g.present)} 件</span></button>
-              {/each}
-              <button type="button" class="item new" data-testid="create-group" onclick={pickNew}>新しいタスクタグ…</button>
-            </div>
-          {/if}
-        </span>
-        {#if currentGroup}
-          <button type="button" class="btn" data-testid="remove-from-group" disabled={selected.size === 0} onclick={() => void report(onremove)}>このタスクタグを外す</button>
-        {/if}
-      {:else if readOnly}
-        <span class="how" data-testid="readonly-how">読むだけの画面です。タスクタグは送った人が付けたものを出し、ここでは付けられません</span>
-      {:else}
-        <span class="how">このファイルは閲覧用です。タスクタグは atlas.bat から開いたときに付けられます</span>
-      {/if}
     </div>
   </div>
-  {#if editable}
-    <!-- live 領域は常に置いておき、文だけ差し替える(後から挿入すると読み上げられない)。高さも確保して表を押し下げない -->
-    <p class="status-line" class:bad={statusError} role="status" data-testid="group-status">{status}</p>
-  {/if}
-  {#if createOpen && editable}
-    <form class="create-box" data-testid="create-form" aria-label="タスクタグの作成" aria-busy={busy} onsubmit={submitCreate}>
-      <p class="create-lead">選んだ {int(selected.size)} 件にタスクタグを付けます(atlas-notes/groups.json に保存され、左の「タスクタグ」(狭い画面では目次の行の「タスクタグ」)から選べます)。</p>
-      <div class="create-row">
-        <label class="fld"><span class="k">名前</span><input type="text" bind:this={nameEl} bind:value={newName} maxlength="100" readonly={busy} aria-invalid={createError ? 'true' : undefined} aria-describedby={createError ? 'create-error' : undefined} placeholder="例: 11 月の調査" /></label>
-        <label class="fld wide"><span class="k">説明(任意)</span><input type="text" bind:value={newNote} maxlength="200" readonly={busy} placeholder="何のタスクか" /></label>
-        <button type="submit" class="btn" aria-disabled={busy}>{busy ? '作成中…' : '作成'}</button>
-        <button type="button" class="btn" onclick={cancelCreate} aria-disabled={busy}>取消</button>
-      </div>
-      {#if createError}<p class="err" id="create-error" role="alert">{createError}</p>{/if}
-    </form>
-  {/if}
 
   {#if rows.length > 0}
     <div class="table-scroll">
@@ -445,6 +288,8 @@
             {@render head('updated', '最終更新', false)}
             <th scope="col">プロジェクト</th>
             <th scope="col">セッション</th>
+            <!-- 管理ツールのタスク(タスクの記録があるときだけ)。題名の隣に置き、何の作業のセッションかを並べて読めるようにする -->
+            {#if tasks}{@render head('task', 'タスク', false)}{/if}
             <th scope="col">クライアント</th>
             <th scope="col">モデル</th>
             {@render head('turns', '依頼')}
@@ -464,7 +309,19 @@
               <td class="num when">{dateTime(s.createdAt ?? s.updatedAt)}</td>
               <td class="num when">{dateTime(s.updatedAt ?? s.createdAt)}</td>
               <td class="proj" title={s.project}>{#each pathParts(s.projectLabel) as seg, i (i)}{#if i}<wbr />{/if}{seg}{/each}{#if s.branch}<span class="sub">{s.branch}</span>{/if}</td>
-              <td class="name"><a href={s.href} title={title(s)}>{#if leads.get(s.id)?.lead}<span class="lead" title="ほかの行と同じ書き出し(縮めて表示)">{leads.get(s.id)?.lead}</span>{leads.get(s.id)?.rest}{:else}{title(s)}{/if}</a>{#if (leads.get(s.id)?.same ?? 1) > 1}<span class="tag" title="一覧の中に題名がまったく同じセッションが {leads.get(s.id)?.same} 件あります。開始時刻やプロジェクトで見分けてください">同じ題名 ×{leads.get(s.id)?.same}</span>{/if}{#if s.empty}<span class="tag" title="依頼・ツール呼び出し・応答がどれも無いセッション">空</span>{/if}{#if found?.byId.has(s.id)}<span class="sub sid" data-testid="session-id">ID {s.id}</span>{/if}{#if found?.viaFirst.has(s.id) && s.firstUserMessage}<span class="sub" data-testid="session-first-hit">最初の依頼: {excerptAround(s.firstUserMessage, found.viaFirst.get(s.id) ?? '')}</span>{/if}{#if s.memo}<span class="sub" data-testid="memo-excerpt">メモ: {s.memo.excerpt || '(本文なし)'}</span>{/if}{#if groupsOf.has(s.id)}<span class="sub in-groups" data-testid="session-groups">タスクタグ: {groupsOf.get(s.id)?.join('、')}</span>{/if}</td>
+              <td class="name"><a href={s.href} title={title(s)}>{#if leads.get(s.id)?.lead}<span class="lead" title="ほかの行と同じ書き出し(縮めて表示)">{leads.get(s.id)?.lead}</span>{leads.get(s.id)?.rest}{:else}{title(s)}{/if}</a>{#if (leads.get(s.id)?.same ?? 1) > 1}<span class="tag" title="一覧の中に題名がまったく同じセッションが {leads.get(s.id)?.same} 件あります。開始時刻やプロジェクトで見分けてください">同じ題名 ×{leads.get(s.id)?.same}</span>{/if}{#if s.empty}<span class="tag" title="依頼・ツール呼び出し・応答がどれも無いセッション">空</span>{/if}{#if found?.byId.has(s.id)}<span class="sub sid" data-testid="session-id">ID {s.id}</span>{/if}{#if found?.viaFirst.has(s.id) && s.firstUserMessage}<span class="sub" data-testid="session-first-hit">最初の依頼: {excerptAround(s.firstUserMessage, found.viaFirst.get(s.id) ?? '')}</span>{/if}{#if s.memo}<span class="sub" data-testid="memo-excerpt">メモ: {s.memo.excerpt || '(本文なし)'}</span>{/if}</td>
+              {#if tasks}
+                {@const tc = cellOf(s.id)}
+                <td class="task" title={tc?.title || undefined} data-testid="session-task">
+                  {#if !tc}<span class="missing-value">紐づけなし</span>
+                  {:else}
+                    {#if tc.tasks.length === 0}<span class="missing-value">どのタスクでもない</span>{/if}
+                    {#each tc.tasks as t (t.id)}<span class="tk" data-testid="session-task-item"><span class="tid" translate="no">{t.id}</span>{#if t.name}{' '}<span class="tn">{t.name}</span>{/if}</span>{/each}
+                    {#if tc.more > 0}<span class="tk more" data-testid="session-task-more">+{int(tc.more)} 件</span>{/if}
+                    <span class="sub">紐づけ: {tc.source}</span>
+                  {/if}
+                </td>
+              {/if}
               <td class="nowrap">{s.client ?? '不明'}</td>
               <td class="models" title={s.models.join('、')}>{s.models.length ? s.models.map(modelLabel).join('、') : '不明'}</td>
               <td class="num">
@@ -546,6 +403,32 @@
   .name {
     min-width: 18em;
     max-width: 32em;
+  }
+  /* 管理ツールのタスク(タスクごとに 1 まとまり。ID を先に置いて折り返さず(名前が長くても ID は切れない)、続く名前ごと 2 行で切る。
+     全文は欄の title。ID は等幅の淡墨で、名前と分けて読める) */
+  .task {
+    min-width: 12em;
+    max-width: 18em;
+    font-size: 0.75rem;
+  }
+  .task .tk {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+  }
+  .task .tk + .tk {
+    margin-top: 2px;
+  }
+  .task .tid {
+    font-family: var(--mono, ui-monospace, monospace);
+    color: var(--ink-3);
+    white-space: nowrap;
+  }
+  .task .more {
+    color: var(--ink-2);
   }
   .models {
     max-width: 14em;
@@ -673,89 +556,6 @@
     background: var(--form-wash);
   }
 
-  .how {
-    font-size: 0.75rem;
-    color: var(--ink-3);
-    align-self: center;
-  }
-  /* 「グループに追加 ▾」の一覧(ボタンの下に開く。外を押す / Esc で閉じる) */
-  .menu-wrap {
-    position: relative;
-    display: inline-block;
-  }
-  /* ボタンは操作列の右端にあるので、メニューは右端を揃えて左へ開く(左揃えだと画面の右にはみ出してページが横に流れる) */
-  .menu {
-    position: absolute;
-    right: 0;
-    top: 100%;
-    z-index: 5;
-    min-width: 16em;
-    max-width: 28em;
-    max-height: 40vh;
-    overflow-y: auto;
-    margin-top: 2px;
-    background: var(--surface);
-    border: 1px solid var(--form);
-    display: flex;
-    flex-direction: column;
-  }
-  .item {
-    display: flex;
-    gap: 8px;
-    align-items: baseline;
-    width: 100%;
-    min-height: 30px;
-    padding: 4px 10px;
-    font: inherit;
-    font-size: 0.8125rem;
-    text-align: left;
-    color: var(--ink);
-    background: none;
-    border: 0;
-    border-bottom: 1px solid var(--rule);
-    cursor: pointer;
-  }
-  .item:hover {
-    background: var(--form-wash);
-  }
-  .item .cnt {
-    margin-left: auto;
-    color: var(--ink-3);
-    font-size: 0.75rem;
-    font-variant-numeric: tabular-nums;
-  }
-  .item.new {
-    color: var(--form);
-    border-bottom: 0;
-  }
-  .status-line {
-    margin: 4px 0 0;
-    min-height: 1.25rem;
-    font-size: 0.8125rem;
-    color: var(--form);
-  }
-  .status-line.bad {
-    color: var(--warn);
-  }
-
-  /* グループを作成: 名前と説明をインラインで(帳票の記入欄と同じ 1px の枠) */
-  .create-box {
-    margin-top: 8px;
-    padding: 10px 12px;
-    border: 1px solid var(--form);
-    background: var(--surface);
-  }
-  .create-lead {
-    margin: 0 0 8px;
-    font-size: 0.8125rem;
-    color: var(--ink-2);
-  }
-  .create-row {
-    display: flex;
-    align-items: flex-end;
-    gap: 6px 12px;
-    flex-wrap: wrap;
-  }
   .fld {
     display: block;
   }
@@ -776,17 +576,5 @@
     height: 30px;
     width: 16em;
     max-width: 100%;
-  }
-  .fld.wide input {
-    width: 28em;
-  }
-  .create-row .btn {
-    height: 30px;
-    padding: 3px 12px;
-  }
-  .err {
-    margin: 6px 0 0;
-    font-size: 0.75rem;
-    color: var(--warn);
   }
 </style>

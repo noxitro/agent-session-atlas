@@ -1,11 +1,12 @@
 // 「画面からの操作」の E2E(docs/PLAN.md の同じ題の節): 架空の fixture で atlas all → atlas serve(同じプロセス、port 0)を立て、
-// 本物の子プロセス(main.ts all / judge-flow.ts)とサーバ内の全文の書き出しを API から動かす。LLM は呼ばない(偽 copilot)。
+// 本物の子プロセス(atlas all・bundle・turns bundle・export)とサーバ内の全文の書き出しを API から動かす。LLM は呼ばない(判定するのは外部の LLM)。
 //  a. refresh: 集計し直すと atlas.html が作り直され(埋め込みの生成日時が変わる)、記録(.md)もある
 //  b. full: out/full/<id>.md(と assets/)だけができ、atlas.html・詳細ページ・他のファイルは 1 バイトも変わらず、coverage.json も作らない。表示の API で描ける
-//  c. judge: 件数の無い要求は 400(確認なしでは走らない)。偽 copilot で上限の件数だけ判定され、レポートに反映される
+//  c. このツールの中で判定するジョブ(judge・turn-judge・task-link)は無い(前の版の画面が送っても、分かる文言で断る)
 //  c2. チャットでの判定: 添付ファイルを未判定のセッションだけで作り(bundle --unjudged)、貼った返答を取り込み、export でレポートに反映する
+//  c3. 依頼ごとの判定: 添付ファイルと ZIP(turns bundle --unjudged --zip)を作り、返答を依頼単位で取り込み、レポートに出す
 //  d. cancel: 実行中の集計を止めると canceled になり、次の要求を受け付ける
-//  e. ジョブの実行中は heartbeat が途切れてもサーバが止まらず、終わってから止まる(判定 1 件に 2.5 秒かかる偽 copilot で)
+//  d2. cancel はジョブの子の子まで止める: M365 Copilot の自動の判定(画面の操作は偽物 fixtures/fake-m365.mjs。30 秒待つ)を止めると、数秒で終わり、偽物のプロセスも残らない
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
@@ -19,7 +20,6 @@ import { buildFixtureHome, FIXTURE_CODE, P11_SESSION, ROOT, cliCommand, startSer
 import { openReadOnly } from './sqlite.ts';
 
 const WORK = join(ROOT, 'out', 'e2e-phase14');
-const FAKE = join(FIXTURE_CODE, 'fake-copilot.mjs');
 
 async function listFiles(dir: string, skip: (rel: string) => boolean): Promise<Map<string, string>> {
   const out = new Map<string, string>();
@@ -76,7 +76,6 @@ describe('Phase 14 E2E: 画面からの操作(jobs)', () => {
   let home: string;
   let close: () => Promise<void>;
   let h: ServeHandle;
-  const fakeLog = join(WORK, 'fake-copilot.log');
 
   beforeAll(async () => {
     await rm(WORK, { recursive: true, force: true });
@@ -87,12 +86,11 @@ describe('Phase 14 E2E: 画面からの操作(jobs)', () => {
     h = await startServer({
       outDir: out,
       notesDir: notes,
-      groupsPath: join(notes, 'groups.json'),
       port: 0,
       open: false,
       idleMs: 600_000,
       firstHeartbeatMs: 600_000,
-      jobs: { env: { ATLAS_COPILOT_HOME: home, ATLAS_COPILOT_BIN: FAKE, FAKE_COPILOT_LOG: fakeLog } },
+      jobs: { env: { ATLAS_COPILOT_HOME: home } },
     });
   });
   afterAll(async () => {
@@ -260,34 +258,30 @@ describe('Phase 14 E2E: 画面からの操作(jobs)', () => {
     console.log(`[phase14] full(${P11_SESSION})${(ms / 1000).toFixed(2)} 秒、${(Buffer.byteLength(md) / 1024).toFixed(1)} KB、assets ${made.length - 1} ファイル`);
   });
 
-  it('c. judge: 件数の無い要求は受けず、偽 copilot で上限の件数だけ判定してレポートに反映する', async () => {
+  it('c. このツールの中で判定するジョブは無く(410)、件数だけを返す', async () => {
     await rm(join(out, 'judgments.json'), { force: true });
-    expect((await startJob({ kind: 'judge', backend: 'copilot-cli' })).status).toBe(400);
-    expect((await startJob({ kind: 'judge', limit: 2, backend: 'anthropic' })).status).toBe(400);
-    expect(existsSync(fakeLog)).toBe(false);
+    for (const body of [{ kind: 'judge', limit: 2, backend: 'copilot-cli' }, { kind: 'turn-judge', limit: 3 }, { kind: 'task-link' }]) {
+      const r = await startJob(body);
+      expect(r.status, JSON.stringify(body)).toBe(410);
+      expect(r.body.error).toMatch(/無くなりました/);
+    }
+    // 始めていない(前のジョブのまま)
+    expect((await api('/api/jobs/current')).body.kind).toBe('full');
     const preview = (await api('/api/jobs/judge-preview')).body;
-    expect(preview.judged).toBe(0);
+    expect(preview).toEqual({ eligible: preview.pending, judged: 0, pending: preview.pending });
     expect(preview.pending).toBeGreaterThanOrEqual(2);
-    expect((await startJob({ kind: 'judge', limit: 2, backend: 'copilot-cli' })).status).toBe(202);
-    const j = await waitJob();
-    expect(j.state, j.log.join('\n')).toBe('done');
-    const judgments = JSON.parse(await readFile(join(out, 'judgments.json'), 'utf8')) as { items: { sessionId: string }[] };
-    expect(judgments.items).toHaveLength(2);
-    expect((await readFile(fakeLog, 'utf8')).trim().split('\n')).toHaveLength(2);
-    expect((await embedded()).judgments).toMatchObject({ available: true, items: 2 });
-    expect((await api('/api/jobs/judge-preview')).body).toMatchObject({ judged: 2, pending: preview.pending - 2 });
   });
 
   it('c2. チャットでの判定: 未判定だけの添付ファイル → 返答の取り込み → 反映', async () => {
     const before = (await api('/api/jobs/judge-preview')).body;
-    expect(before.judged).toBe(2);
+    expect(before.judged).toBe(0);
     expect((await startJob({ kind: 'bundle' })).status).toBe(202);
     const b = await waitJob();
     expect(b.state, b.log.join('\n')).toBe('done');
     const list = (await api('/api/judge/parts')).body;
     expect(list).toMatchObject({ exists: true, unjudgedOnly: true, count: before.pending });
     // 判定済みの 2 件は入らない
-    const judged = new Set((JSON.parse(await readFile(join(out, 'judgments.json'), 'utf8')) as { items: { sessionId: string }[] }).items.map((i) => i.sessionId));
+    const judged = new Set(existsSync(join(out, 'judgments.json')) ? (JSON.parse(await readFile(join(out, 'judgments.json'), 'utf8')) as { items: { sessionId: string }[] }).items.map((i) => i.sessionId) : []);
     const first = list.parts[0];
     expect(first).toMatchObject({ name: 'part-01.md', judged: 0 });
     const text = (await api(`/api/judge/parts/${first.name}`)).body.text as string;
@@ -315,35 +309,28 @@ describe('Phase 14 E2E: 画面からの操作(jobs)', () => {
     expect((await startJob({ kind: 'export' })).status).toBe(202);
     const e = await waitJob();
     expect(e.state, e.log.join('\n')).toBe('done');
-    expect((await embedded()).judgments).toMatchObject({ available: true, items: 2 + ids.length });
+    expect((await embedded()).judgments).toMatchObject({ available: true, items: ids.length });
     // export なので記録(.md)は消えない
     expect(existsSync(join(out, 'sessions', `${ids[0]}.md`))).toBe(true);
   });
 
-  it('c3. 依頼ごとの判定: GitHub Copilot CLI(偽)で判定してレポートに出し、チャットの返答も依頼単位で取り込める', async () => {
+  it('c3. 依頼ごとの判定: 添付ファイルと ZIP を作り、返答を依頼単位で取り込んでレポートに出す', async () => {
     const pre = (await api('/api/jobs/judge-preview?target=turns')).body;
     expect(pre.judged).toBe(0);
     expect(pre.pending).toBeGreaterThan(2);
-    // copilot -p 以外・件数の無い要求は受けない
-    expect((await startJob({ kind: 'turn-judge' })).status).toBe(400);
-    expect((await startJob({ kind: 'turn-judge', limit: 3, backend: 'copilot-cli' })).status).toBe(400);
-    expect((await startJob({ kind: 'turn-judge', limit: 3 })).status).toBe(202);
-    const j = await waitJob();
-    expect(j.state, j.log.join('\n')).toBe('done');
-    const tj = JSON.parse(await readFile(join(out, 'turn-judgments.json'), 'utf8')) as { phases: string[]; items: { sessionId: string; turn: number; outcome: string }[] };
-    expect(tj.phases).toContain('実装');
-    expect(tj.items.length).toBeGreaterThanOrEqual(3);
-    const e = await embedded();
-    expect(e.turnJudgments).toMatchObject({ available: true, items: tj.items.length });
-    expect(e.sessions.some((x) => (x.turnVerdicts?.length ?? 0) > 0)).toBe(true);
-    // 表にも判定の列が付く
-    expect((await readFile(join(out, 'tables', 'turns.csv'), 'utf8')).split('\r\n')[0]).toContain('判定:扱い');
-
-    // チャット: 未判定の依頼だけで添付ファイルを作り、返答を依頼単位で取り込む
-    expect((await startJob({ kind: 'turn-bundle' })).status).toBe(202);
+    // 未判定の依頼だけで添付ファイルと ZIP を同じ回に作る
+    expect((await startJob({ kind: 'turn-bundle-zip' })).status).toBe(202);
     expect((await waitJob()).state).toBe('done');
     const parts = (await api('/api/judge/parts?target=turns')).body;
-    expect(parts).toMatchObject({ exists: true, unjudgedOnly: true });
+    expect(parts).toMatchObject({ exists: true, unjudgedOnly: true, judged: 0, zip: { path: 'turn-bundle.zip' } });
+    expect(parts.decidable).toMatchObject({ turns: expect.any(Number), parts: expect.any(Number), chunks: expect.any(Number) });
+    // ZIP は out/ の下のファイルとして取れる(保存のリンク)。中に INSTRUCTIONS.md と塊が入る
+    const z = await fetch(`http://127.0.0.1:${h.port}/${parts.zip.path}`);
+    expect(z.status).toBe(200);
+    const zip = Buffer.from(await z.arrayBuffer()).toString('latin1');
+    expect(zip).toContain('turn-bundle/INSTRUCTIONS.md');
+    expect(zip).toContain('turn-bundle/chunks/0001.md');
+    expect(zip).not.toContain('turn-bundle/parts/');
     const first = parts.parts[0];
     const text = (await api(`/api/judge/parts/${first.name}?target=turns`)).body.text as string;
     const want = [...text.matchAll(/^- セッション (\S+) の依頼 (\d+)(?:〜(\d+))?$/gm)].flatMap((m) => {
@@ -360,7 +347,20 @@ describe('Phase 14 E2E: 画面からの操作(jobs)', () => {
     expect(ok.status, JSON.stringify(ok.body)).toBe(200);
     expect(ok.body).toMatchObject({ imported: items.length, overwritten: 0 });
     expect(ok.body.parts.parts[0]).toMatchObject({ name: first.name, judged: first.sessions });
-    expect((await api('/api/jobs/judge-preview?target=turns')).body.judged).toBe(tj.items.length + items.length);
+    expect(ok.body.parts.judged).toBe(items.length);
+    expect((await api('/api/jobs/judge-preview?target=turns')).body.judged).toBe(items.length);
+    expect((await startJob({ kind: 'export' })).status).toBe(202);
+    expect((await waitJob()).state).toBe('done');
+    const e = await embedded();
+    expect(e.turnJudgments).toMatchObject({ available: true, items: items.length });
+    expect(e.sessions.some((x) => (x.turnVerdicts?.length ?? 0) > 0)).toBe(true);
+    // 表にも判定の列が付く
+    expect((await readFile(join(out, 'tables', 'turns.csv'), 'utf8')).split('\r\n')[0]).toContain('判定:扱い');
+    // ZIP なしで作り直すと、前の ZIP は消える(画面にも出ない)
+    expect((await startJob({ kind: 'turn-bundle' })).status).toBe(202);
+    expect((await waitJob()).state).toBe('done');
+    expect((await api('/api/judge/parts?target=turns')).body.zip).toBeUndefined();
+    expect(existsSync(join(out, 'turn-bundle.zip'))).toBe(false);
   });
 
   it('d. cancel: 実行中の集計を止めると canceled になり、次の要求を受け付ける', async () => {
@@ -374,61 +374,54 @@ describe('Phase 14 E2E: 画面からの操作(jobs)', () => {
     expect((await waitJob()).state).toBe('done');
   });
 
-  it('d2. cancel は子プロセス(と孫の copilot)を本当に止める: 1 件 30 秒かかる判定を止めると数秒で終わる', async () => {
+  it('d2. cancel は子プロセスの子まで止める: 1 ファイル 30 秒かかる M365 Copilot の自動の判定(偽の画面の操作)を止めると数秒で終わり、偽物のプロセスも残らない', async () => {
+    const pidFile = join(WORK, 'fake-m365.pid');
+    await rm(pidFile, { force: true });
     const h3 = await startServer({
       outDir: out,
       notesDir: notes,
-      groupsPath: join(notes, 'groups.json'),
       port: 0,
       open: false,
       idleMs: 600_000,
       firstHeartbeatMs: 600_000,
-      jobs: { env: { ATLAS_COPILOT_HOME: home, ATLAS_COPILOT_BIN: FAKE, FAKE_COPILOT_DELAY_MS: '30000' } },
+      jobs: { env: { ATLAS_COPILOT_HOME: home, ATLAS_M365_FAKE_DRIVER: join(FIXTURE_CODE, 'fake-m365.mjs'), FAKE_M365_DELAY_MS: '30000', FAKE_M365_PID_FILE: pidFile } },
     });
+    const alive = (pid: number): boolean => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
     try {
-      const judged = existsSync(join(out, 'judgments.json')) ? (JSON.parse(await readFile(join(out, 'judgments.json'), 'utf8')) as { items: unknown[] }).items.length : 0;
-      expect((await startJob({ kind: 'judge', limit: 3, backend: 'copilot-cli' }, h3)).status).toBe(202);
-      // bundle が終わって判定(偽 copilot)が始まるまで待つ
+      // 送るファイルがあるように、判定を消してから未判定の添付ファイルを作り直す
+      await rm(join(out, 'judgments.json'), { force: true });
+      expect((await startJob({ kind: 'bundle' }, h3)).status).toBe(202);
+      expect((await waitJob(h3)).state).toBe('done');
+      expect((await startJob({ kind: 'm365' }, h3)).status).toBe(202);
+      // 子(atlas judge m365)が偽の画面の操作(node。ジョブの子の子)を起動するまで待つ
       const t0 = Date.now();
-      while (!(await api('/api/jobs/current', {}, h3)).body.log.some((l: string) => /^judge: バックエンド/.test(l))) {
-        if (Date.now() - t0 > 60_000) throw new Error('判定が始まりませんでした');
+      while (!existsSync(pidFile) || !(await readFile(pidFile, 'utf8')).trim()) {
+        if (Date.now() - t0 > 60_000) throw new Error(`偽の画面の操作が始まりませんでした: ${(await api('/api/jobs/current', {}, h3)).body.log.join(' / ')}`);
         await new Promise((r) => setTimeout(r, 100));
       }
+      const pid = Number((await readFile(pidFile, 'utf8')).trim());
+      expect(alive(pid)).toBe(true);
       const c = Date.now();
       expect((await api('/api/jobs/current/cancel', { method: 'POST' }, h3)).status).toBe(200);
       const j = await waitJob(h3, 60_000);
-      // 止める処理が効かなければ、偽 copilot の 30 秒を待ってから終わる
+      // 止める処理が効かなければ、偽物の 30 秒を待ってから終わる
       expect(j.state).toBe('canceled');
       expect(Date.now() - c).toBeLessThan(10_000);
-      const after = existsSync(join(out, 'judgments.json')) ? (JSON.parse(await readFile(join(out, 'judgments.json'), 'utf8')) as { items: unknown[] }).items.length : 0;
-      expect(after).toBe(judged);
+      // 子の子(偽の画面の操作)も止まっている
+      const t1 = Date.now();
+      while (alive(pid) && Date.now() - t1 < 5_000) await new Promise((r) => setTimeout(r, 100));
+      expect(alive(pid)).toBe(false);
+      // 何も取り込んでいない
+      expect(existsSync(join(out, 'judgments.json'))).toBe(false);
     } finally {
       await h3.close('テスト終了');
     }
-  });
-
-  it('e. ジョブの実行中は heartbeat が途切れてもサーバが止まらず、終わってから止まる', async () => {
-    const h2 = await startServer({
-      outDir: out,
-      notesDir: notes,
-      groupsPath: join(notes, 'groups.json'),
-      port: 0,
-      open: false,
-      idleMs: 300,
-      firstHeartbeatMs: 300,
-      // 判定 1 件に 2.5 秒かかる偽 copilot(猶予 300ms より十分長いジョブにする)
-      jobs: { env: { ATLAS_COPILOT_HOME: home, ATLAS_COPILOT_BIN: FAKE, FAKE_COPILOT_DELAY_MS: '2500' } },
-    });
-    let ended = false;
-    void h2.done.then(() => (ended = true));
-    await fetch(`http://127.0.0.1:${h2.port}/api/heartbeat`, { method: 'POST', headers: { 'x-atlas-token': h2.token } });
-    expect((await startJob({ kind: 'judge', limit: 1, backend: 'copilot-cli' }, h2)).status).toBe(202);
-    // heartbeat を送らずに猶予(300ms)の数倍待つ
-    await new Promise((r) => setTimeout(r, 1500));
-    expect(ended).toBe(false);
-    expect((await api('/api/jobs/current', {}, h2)).body.state).toBe('running');
-    const j = await waitJob(h2);
-    expect(j.state).toBe('done');
-    expect(await h2.done).toMatch(/heartbeat が途切れた/);
   });
 });

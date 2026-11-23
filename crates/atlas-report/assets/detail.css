@@ -31,3 +31,16 @@ blockquote.msg{margin:8px 0 0;padding:10px 12px;background:var(--surface);border
 .three{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:24px}
 .three ul{overflow-wrap:anywhere}
 @media (max-width:720px){.two,.three{grid-template-columns:minmax(0,1fr)}}
+/* 管理ツールのタスクの行(表題の下)。項目名は緑、紐づけの出所と理由は薄墨。atlas serve では session-tools.js が変える操作を足す */
+.task-row{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px;margin-top:10px;padding:6px 10px;border:1px solid var(--rule);border-top-color:var(--rule-strong);background:var(--surface);font-size:.8125rem}
+.task-row>.k{color:var(--form);font-size:.75rem}
+.task-row .task-now{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 12px;min-width:0}
+/* 紐づいたタスクの並び(いくつかあれば 1 件ずつ行を分ける) */
+.task-row .task-list{display:flex;flex-direction:column;gap:2px;margin:0;padding:0;list-style:none;min-width:0}
+.task-row .task-item{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 12px;min-width:0}
+.task-row .task-v{font-weight:600;overflow-wrap:anywhere}
+.task-row .task-v .id{font-family:var(--mono);font-weight:400;color:var(--ink-3);margin-left:.25em}
+.task-row .task-st,.task-row .task-src,.task-row .task-split{color:var(--ink-2);overflow-wrap:anywhere}
+.task-row .task-split{flex-basis:100%}
+.task-row .task-skip{color:var(--ink);background:var(--warn-wash);border:1px solid var(--warn);padding:0 6px;font-size:.75rem}
+.task-row .term{margin-left:auto;font-size:.75rem}

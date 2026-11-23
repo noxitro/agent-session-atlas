@@ -7,7 +7,7 @@ out-folders/
 atlas.config.json
 # 設定ファイルを書き換える間だけ作るロック(落ちると残ることがある)
 atlas.config.json.lock
-# 利用者のメモとグループ(セッション ID や自由記述を含む)
+# 利用者のメモ(セッション ID や自由記述を含む。前の版のタスクタグ groups.json もここ)
 atlas-notes/
 # テスト時に生成する fixture(架空の値だけ。サンプルデータはリポジトリに置かない)
 .fixtures/
@@ -20,5 +20,5 @@ atlas-notes/
 # Rust のビルド出力
 /target/
 
-# atlas の実行ファイル(scripts/ensure-atlas.ps1 がリリースから取ってくるか、この PC でビルドして置く)
+# atlas の実行ファイル(scripts/ensure-atlas.ps1 がこの PC でビルドして置く)
 /bin/

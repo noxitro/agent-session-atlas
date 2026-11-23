@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  テスト用の、管理ツールの書き出しの例(架空のタスクだけ)。export-before.xml の後の書き出し:
+  DEMO-101 と DEMO-102 が完了し、DEMO-105 が増え、DEMO-106 が消えた。DEMO-104 は完了のまま。
+-->
+<Export>
+  <Tasks>
+    <Task>
+      <Id>DEMO-101</Id>
+      <Name>fix the app</Name>
+      <Status>Completed</Status>
+    </Task>
+    <Task>
+      <Id>DEMO-102</Id>
+      <Name>Improve the synthetic project</Name>
+      <Status>closed</Status>
+      <SubTasks>
+        <Task>
+          <Id>DEMO-102-1</Id>
+          <Name>入れ子のサブタスク</Name>
+          <Status>Done</Status>
+        </Task>
+      </SubTasks>
+    </Task>
+    <Task>
+      <Id>DEMO-103</Id>
+      <Name>帳票の出力を速くする</Name>
+      <Status>In Progress</Status>
+    </Task>
+    <Task>
+      <Id>DEMO-104</Id>
+      <Name>初めから完了していたタスク</Name>
+      <Status>Done</Status>
+    </Task>
+    <Task>
+      <Id>DEMO-105</Id>
+      <Name>後から増えたタスク</Name>
+      <Status>Open</Status>
+    </Task>
+  </Tasks>
+</Export>

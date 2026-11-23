@@ -4,26 +4,13 @@
 //! (V8 と同じ ICU の照合規則を ICU4X で引く。'_x' < '-y' < '10' < '9' < 'a' < 'A' < 'b' < 'あ' < 'ア' < '亜' の順)。
 
 use icu_collator::options::CollatorOptions;
-use icu_collator::preferences::CollationNumericOrdering;
-use icu_collator::{Collator, CollatorBorrowed, CollatorPreferences};
+use icu_collator::{Collator, CollatorBorrowed};
 use icu_locale_core::locale;
 use std::cmp::Ordering;
 use std::sync::LazyLock;
 
 static COLLATOR: LazyLock<CollatorBorrowed<'static>> =
     LazyLock::new(|| Collator::try_new(locale!("ja").into(), CollatorOptions::default()).expect("ICU4X の ja 照合データは組み込み"));
-
-/// 数字の並びを数として比べる照合(`new Intl.Collator('ja', { numeric: true })`。c2 < c10)
-static NUMERIC: LazyLock<CollatorBorrowed<'static>> = LazyLock::new(|| {
-    let mut prefs: CollatorPreferences = locale!("ja").into();
-    prefs.numeric_ordering = Some(CollationNumericOrdering::True);
-    Collator::try_new(prefs, CollatorOptions::default()).expect("ICU4X の ja 照合データは組み込み")
-});
-
-/// `new Intl.Collator('ja', { numeric: true }).compare(a, b)` 相当(課題 × 条件の表の並び)
-pub fn locale_compare_numeric(a: &str, b: &str) -> Ordering {
-    NUMERIC.compare(a, b)
-}
 
 /// `a.localeCompare(b)` 相当(ja の照合)
 pub fn locale_compare(a: &str, b: &str) -> Ordering {

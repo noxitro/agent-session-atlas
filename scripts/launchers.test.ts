@@ -2,7 +2,7 @@
 // LF だけの改行だと cmd が goto のラベルを読めずに失敗する(a3527a5 で atlas-export.bat に実際に起きた)。
 // BOM があると先頭の @echo off がコマンド名として読まれる。.gitattributes の eol=crlf が外れたらここで止める。
 import { type ChildProcess, execFileSync, spawn, spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -94,7 +94,7 @@ describe('*.bat', () => {
     expect(early).toEqual([]);
   });
 
-  // 実行ファイルを用意してから動かす。Node.js の確かめと npm install はもうしない(Node.js が無くても、リリースがあれば動く)
+  // 実行ファイルを用意してから動かす。Node.js の確かめとビルド(npm ci など)は ensure-atlas.ps1 がするので、.bat では node と npm を呼ばない
   it.each(LAUNCHERS)('%s は最初に scripts\\ensure-atlas.ps1 を動かし、失敗したら止まる。node と npm は呼ばない', (f) => {
     const lines = codeLines(f);
     const i = lines.findIndex((l) => /ensure-atlas\.ps1/i.test(l));
@@ -148,26 +148,25 @@ describe('scripts/ensure-atlas.ps1', () => {
     expect(text.match(/(^|[^\r])\n/g)).toBeNull();
   });
 
-  it('リリースを探すリポジトリは決め打ちせず、origin から決める。取ってきたものは sha256 と版を確かめてから置く', () => {
-    expect(text).toContain('git -C $Repo remote get-url origin');
-    expect(text).not.toMatch(/github\.com\/[A-Za-z0-9-]+\/agent-session-atlas/);
-    expect(text).toContain('atlas.exe.sha256');
-    expect(text).toContain('Get-FileHash -Algorithm SHA256');
-    // 置く前に、取ってきたものの版を atlas --version で確かめる
-    expect(text).toContain('Get-ExeInfo $file');
-    // PowerShell の変数は大文字小文字を区別しない: 置き場所の $Exe を、取ってきた・作ったファイルの $exe で上書きしない(上書きして、置く前に消していた)
+  // atlas.exe は配っていない(GitHub のリリースで配るのは 2026-11-23 にやめた)。どこからも取ってこず、いつもこの PC でビルドする
+  it('実行ファイルを取ってこない(リリース・ダウンロード・ハッシュや来歴の確かめが無い)。ビルドしたものだけを置く', () => {
+    expect(text).not.toMatch(/Invoke-WebRequest|gh release|gh attestation|releases\/download|Get-FileHash|ATLAS_RELEASE_REPO|remote get-url/);
+    // 前のリリースのタグで版を決めない(版は Cargo.toml の version と、作ったときのコミット)
+    expect(text).not.toMatch(/git -C \$Repo tag\b|refs\/tags|Compare-SemVer/);
+    // ATLAS_BUILD_LOCAL はもう読まない(付けたままでも害は無い。説明にだけ残す)
+    expect(text.split(/\r\n/).filter((l) => !l.startsWith('#') && l.includes('ATLAS_BUILD_LOCAL'))).toEqual([]);
+    expect(text).toContain("Install-Exe $got ('local ' + $head)");
+    // PowerShell の変数は大文字小文字を区別しない: 置き場所の $Exe を、作ったファイルの $exe で上書きしない(上書きして、置く前に消していた)
     expect(text.match(/\$exe\b/g) ?? []).toEqual([]);
   });
 
-  // sha256 はリリースと同じ場所から取るので、リリースを差し替えられると一緒に差し替わる。来歴(attestation)は GitHub の署名で、
-  // このリポジトリのリリースのワークフローが作ったものかを確かめる。gh が無いときは sha256 だけで続け、そのことを出す
-  it('gh があってログインしていれば、取ってきたものを動かす前にビルドの来歴を gh attestation verify で確かめ、合わなければ使わない', () => {
-    expect(text).toContain('gh attestation verify $file --repo $slug --signer-workflow "$slug/.github/workflows/release.yml"');
-    expect(text).toContain('& gh auth status');
-    expect(text.indexOf('Test-Attestation $file $slug')).toBeGreaterThan(text.indexOf('Get-FileHash -Algorithm SHA256'));
-    expect(text.indexOf('Test-Attestation $file $slug')).toBeLessThan(text.indexOf('Get-ExeInfo $file'));
-    expect(text).toContain("if ($script:Attestation -eq 'fail') { return $null }");
-    expect(text).toContain('gh(GitHub CLI)が無いので、ビルドの来歴(attestation)は確かめず、sha256 だけで確かめました');
+  // 使えるのは、今のコミット(HEAD)から作った実行ファイルだけ。git で取得したフォルダでなければ、版で比べる
+  it('bin\\atlas.exe は、atlas --version のコミットが HEAD と同じときだけ使い、違えばビルドし直す', () => {
+    expect(text).toMatch(/if \(\$head\) \{\r\n(?: {4}#.*\r\n)? {4}if \(\$info\.Commit -ne \$head\) \{ return /);
+    // -dirty も読む(読めないと、動く実行ファイルを「無い」と扱う)
+    expect(text).toContain('commit ([0-9a-f]{40,64}(?:-dirty)?), ');
+    expect(text).toContain("$want = Get-CargoVersion");
+    expect(text).toContain('param([switch]$Check, [switch]$CheckTools, [switch]$KeepOlder)');
   });
 
   // Windows の Rust(MSVC 向け)はリンカーと、同梱の SQLite のコンパイルに Visual Studio の C++ のビルドツールを使う。
@@ -180,28 +179,171 @@ describe('scripts/ensure-atlas.ps1', () => {
     expect(text).toContain('https://visualstudio.microsoft.com/visual-cpp-build-tools/');
   });
 
-  // リリースのワークフローは、配る中身が変わったマージごとにパッチ版のタグを付ける(Cargo.toml の version は上げない)。
-  // 取ってくる版は、HEAD から辿れるいちばん新しいタグ(semver で比べる。git の --sort=-v:refname はプレリリースを後ろに並べるので使わない)
-  it('取ってくる版は HEAD から辿れるいちばん新しいタグ v<x.y.z> で決め、タグが無ければ Cargo.toml の version にする', () => {
-    expect(text).toContain("& git -C $Repo tag --list 'v*' --merged HEAD");
-    expect(text).not.toMatch(/& git [^\r\n]*--sort=/);
-    expect(text).toContain('function Compare-SemVer');
-    expect(text).toMatch(/function Get-WantVersion \{\r\n {2}\$tag = Get-TagVersion\r\n {2}if \(\$tag\) \{ return \$tag \}\r\n {2}return Get-CargoVersion\r\n\}/);
+  // -CheckTools は自動の更新(crates/atlas-cli/src/self_update.rs)が、新しい版を取り込む前に読む(終了コード 1 と、足りないものの 1 行)
+  it('-CheckTools は何も変えずに、ビルドに要るものがそろっているかを終了コードで返し、足りなければその並びを 1 行で出す', () => {
+    expect(text).toMatch(/if \(\$CheckTools\) \{\r\n {4}\$missing = Get-MissingTools\r\n {4}if \(\$missing\.Count -eq 0\) \{ exit 0 \}\r\n {4}Say \(\$missing -join '、'\)\r\n {4}exit 1\r\n {2}\}/);
+    const rust = readFileSync(join(ROOT, 'crates/atlas-cli/src/self_update.rs'), 'utf8');
+    expect(rust).toContain('Ensure::Tools => args.push("-CheckTools")');
   });
 
-  // タグを取らずに取得したフォルダ(git clone --no-tags)は、上げなくなった Cargo.toml の version に固定されないよう、一度タグを取ってくる。
-  // 待つのは 20 秒まで。-Check は何も変えないので取りに行かない
-  it('HEAD から辿れるタグが無ければ、-Check でないときだけ、時間を区切って origin からタグを取ってくる', () => {
-    expect(text).toContain("if (-not $best -and -not $Check -and (Invoke-TagFetch)) { $best = Find-NewestTag }");
-    expect(text).toMatch(/Start-Process -FilePath 'git' -ArgumentList @\('fetch', '--quiet', '--tags', 'origin'\)/);
-    expect(text).toContain('$p.WaitForExit(20000)');
-    expect(text).toContain("$env:GIT_TERMINAL_PROMPT = '0'");
-  });
+  // 本当に ensure-atlas.ps1 を動かす。atlas.exe の代わりに、隣の fake-version.txt の中身を --version の答えとして出すだけの
+  // 小さな実行ファイルを、Windows PowerShell の Add-Type(C# のコンパイラ)で作って bin\atlas.exe に置く(出すコミットを決められる)。
+  // 一時フォルダに ensure-atlas.ps1・Cargo.toml・package.json だけを置き、git で取得したフォルダ(コミットで比べる)と、そうでないフォルダ(版で比べる)を作る。
+  // Windows だけ(Add-Type で実行ファイルを作るのと、ensure-atlas.ps1 を Windows PowerShell 5.1 で動かすため。ほかの OS では飛ばす)
+  describe.skipIf(process.platform !== 'win32')('実際に動かす(Windows PowerShell 5.1。atlas.exe の代わりの実行ファイルで)', () => {
+    const sys = process.env.SystemRoot ?? 'C:\\Windows';
+    const powershell = join(sys, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    const fullEnv: NodeJS.ProcessEnv = { ...process.env, CARGO_TARGET_DIR: undefined };
+    // ビルドに要るものが無い PC: PATH を Windows のフォルダと git だけにする(git は HEAD を読むのに要る)
+    const bare: NodeJS.ProcessEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.toLowerCase() !== 'path'));
+    // 飛ばすときも、vitest は describe の中身を読むので、Windows でなければ探さない
+    const gitDir = process.platform === 'win32' ? execFileSync('where.exe', ['git'], { encoding: 'utf8' }).split(/\r?\n/)[0].replace(/\\[^\\]+$/, '') : '';
+    bare.PATH = `${join(sys, 'System32')};${sys};${join(sys, 'System32', 'WindowsPowerShell', 'v1.0')};${gitDir}`;
+    let tmp = '';
+    let fake = '';
+    let n = 0;
+    beforeAll(() => {
+      tmp = mkdtempSync(join(tmpdir(), 'atlas-ensure-'));
+      fake = join(tmp, 'fake-atlas.exe');
+      const cs = join(tmp, 'fake-atlas.cs');
+      writeFileSync(
+        cs,
+        'public static class P { public static int Main(string[] a) { var d = System.AppDomain.CurrentDomain.BaseDirectory; ' +
+          'System.Console.Write(System.IO.File.ReadAllText(System.IO.Path.Combine(d, "fake-version.txt"))); return 0; } }\n',
+      );
+      const r = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-Command', `Add-Type -Path '${cs}' -OutputType ConsoleApplication -OutputAssembly '${fake}'`], { encoding: 'utf8' });
+      expect(existsSync(fake), `代わりの実行ファイルを作れません: ${r.stdout}${r.stderr}`).toBe(true);
+    }, 120_000);
+    afterAll(() => rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 }));
 
-  // 取り下げた版の番号で別のコミットからリリースを作り直したら、前のものを使い続けない
-  it('リリースの実行ファイルは、版に加えて、作ったコミットがタグのコミットと同じかも見る(置いてあるものと、取ってきたもの)', () => {
-    expect(text).toContain('& git -C $Repo rev-list -n 1 "refs/tags/v$best"');
-    expect(text.match(/\$script:WantCommit -and \$info\.Commit -and \$info\.Commit -ne \$script:WantCommit/g)).toHaveLength(2);
+    /** 一時フォルダ(git なら 1 つコミットする)。bin\atlas.exe に代わりの実行ファイルを置き、出すコミットを書く(null なら置かない) */
+    const makeRepo = (git: boolean): { dir: string; head: string; place: (line: string | null) => void } => {
+      const dir = join(tmp, `repo-${n++}`);
+      mkdirSync(join(dir, 'scripts'), { recursive: true });
+      copyFileSync(join(ROOT, ENSURE), join(dir, ENSURE));
+      writeFileSync(join(dir, 'Cargo.toml'), '[workspace.package]\nversion = "9.9.9"\n');
+      // npm を動かすときに、上のフォルダの package.json を探しに行かないよう、ここに置く(依存の一覧は無いので npm ci はすぐに失敗する)
+      writeFileSync(join(dir, 'package.json'), '{ "name": "atlas-ensure-test", "private": true, "engines": { "node": ">=24" } }\n');
+      let head = '';
+      if (git) {
+        const g = (...args: string[]) =>
+          execFileSync('git', ['-c', 'user.name=test', '-c', 'user.email=test@example.invalid', '-c', 'core.autocrlf=false', ...args], { cwd: dir, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1' } }).trim();
+        g('init', '-q', '-b', 'main');
+        writeFileSync(join(dir, '.gitignore'), '/bin/\n');
+        g('add', '-A');
+        g('commit', '-q', '-m', 'first');
+        head = g('rev-parse', 'HEAD');
+      }
+      const place = (line: string | null) => {
+        mkdirSync(join(dir, 'bin'), { recursive: true });
+        if (line === null) return;
+        copyFileSync(fake, join(dir, 'bin', 'atlas.exe'));
+        writeFileSync(join(dir, 'bin', 'fake-version.txt'), `${line}\n`);
+      };
+      return { dir, head, place };
+    };
+    const ensure = (dir: string, args: string[], env: NodeJS.ProcessEnv = fullEnv) => {
+      const r = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', join(dir, ENSURE), ...args], { cwd: dir, env, encoding: 'utf8', timeout: 120_000 });
+      return { status: r.status, text: `${r.stdout ?? ''}${r.stderr ?? ''}` };
+    };
+    const line = (commit: string) => `atlas 9.9.9 (commit ${commit}, code 0123456789abcdef)`;
+    const exeText = (dir: string) => readFileSync(join(dir, 'bin', 'fake-version.txt'), 'utf8');
+
+    it('git のフォルダで、atlas --version のコミットが HEAD と同じなら、何もしない(-Check も 0)', () => {
+      const r = makeRepo(true);
+      r.place(line(r.head));
+      expect(ensure(r.dir, ['-Check']).status).toBe(0);
+      const plain = ensure(r.dir, []);
+      expect([plain.status, plain.text.trim()]).toEqual([0, '']);
+    }, 120_000);
+
+    it('コミットが違う・-dirty が付いている・実行ファイルが無いときは、そのまま使わない(-Check が 1)', () => {
+      const r = makeRepo(true);
+      r.place(line('0'.repeat(40)));
+      expect(ensure(r.dir, ['-Check']).status).toBe(1);
+      // git が管理しているファイルを変えたまま作ったもの(開発の手元)は、HEAD と同じとはみなさない
+      r.place(line(`${r.head}-dirty`));
+      expect(ensure(r.dir, ['-Check']).status).toBe(1);
+      const empty = makeRepo(true);
+      empty.place(null);
+      expect(ensure(empty.dir, ['-Check']).status).toBe(1);
+    }, 120_000);
+
+    it('ビルドに要るものが無ければ、足りないものを出して 1 で終わる。-KeepOlder なら、前のソースから作った実行ファイルをそのまま残して 0 で続ける', () => {
+      const r = makeRepo(true);
+      const tools = ensure(r.dir, ['-CheckTools'], bare);
+      expect(tools.status).toBe(1);
+      expect(tools.text).toContain('Node.js、npm、Rust(cargo)');
+      // 前のものが無ければ、-KeepOlder でも止まる
+      r.place(null);
+      const none = ensure(r.dir, ['-KeepOlder'], bare);
+      expect(none.status).toBe(1);
+      expect(none.text).toContain('atlas をビルドするのに要るものが足りません(足りないもの: Node.js、npm、Rust(cargo)');
+      expect(none.text).toContain('https://rustup.rs/');
+      expect(none.text).not.toContain('リリース');
+      expect(existsSync(join(r.dir, 'bin', 'atlas.exe'))).toBe(false);
+      // 前のコミットから作ったもの
+      const old = line('1'.repeat(40));
+      r.place(old);
+      expect(ensure(r.dir, [], bare).status).toBe(1);
+      const kept = ensure(r.dir, ['-KeepOlder'], bare);
+      expect(kept.status).toBe(0);
+      expect(kept.text).toContain('今回は、前のソースから作った bin\\atlas.exe(版 9.9.9、コミット 1111111)のまま続けます。今のソースの変更は入っていません。');
+      expect(exeText(r.dir)).toBe(`${old}\n`);
+    }, 120_000);
+
+    it('git で取得したフォルダでなければ、版が Cargo.toml と同じなら、そのまま使う(ビルドに要るものが無くても、何も出さない)', () => {
+      const r = makeRepo(false);
+      r.place('atlas 9.9.9 (code 0123456789abcdef)');
+      expect(ensure(r.dir, ['-Check'], bare).status).toBe(0);
+      const same = ensure(r.dir, [], bare);
+      expect([same.status, same.text.trim()]).toEqual([0, '']);
+      r.place('atlas 9.9.8 (code 0123456789abcdef)');
+      expect(ensure(r.dir, ['-Check'], bare).status).toBe(1);
+    }, 120_000);
+
+    // ビルドに要るものがそろっている PC(この PC・CI の Windows)では、コミットが違えばビルドしに行く。一時フォルダには依存の一覧が無いので
+    // npm ci で失敗し、そのコミットを bin\build-failed.txt に残す(自動の更新が同じコミットを何度も試さないように)。
+    // そろっていない PC では確かめられないので飛ばす。CI(環境変数 CI)ではそろっているはずなので、飛ばさずに落とす
+    const toolsReady = process.platform === 'win32' && spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', join(ROOT, ENSURE), '-CheckTools'], { encoding: 'utf8' }).status === 0;
+    it.skipIf(!toolsReady && !process.env.CI)('ビルドに要るものがあれば、コミットが違うときにビルドしに行く。できなければ失敗したコミットを残し、-KeepOlder なら前のもので続ける', () => {
+      expect(toolsReady, 'CI の Windows に、ビルドに要るものがそろっていません').toBe(true);
+      const r = makeRepo(true);
+      const old = line('2'.repeat(40));
+      r.place(old);
+      const built = ensure(r.dir, []);
+      expect(built.status).toBe(1);
+      expect(built.text).toContain('この PC でビルドします');
+      expect(built.text).toContain('atlas をビルドできませんでした');
+      expect(readFileSync(join(r.dir, 'bin', 'build-failed.txt'), 'utf8').trim()).toBe(r.head);
+      const kept = ensure(r.dir, ['-KeepOlder']);
+      expect(kept.status).toBe(0);
+      expect(kept.text).toContain('今回は、前のソースから作った bin\\atlas.exe');
+      expect(exeText(r.dir)).toBe(`${old}\n`);
+    }, 300_000);
+
+    // 自動で送るタスクがビルドしている間に .bat を開いたとき: 同じフォルダで 2 つ同時にビルドしない(bin\build.lock を開いたままにして印にする)。
+    // ここでは印をテストが開いたままにして、ほかがビルドしている状態を作る
+    it('ほかがビルドしている間は、-KeepOlder で前のものが動けば、少し待ってからそれで続ける(ビルドしない)', () => {
+      const r = makeRepo(true);
+      const old = line('3'.repeat(40));
+      r.place(old);
+      const fd = openSync(join(r.dir, 'bin', 'build.lock'), 'w');
+      try {
+        const t = performance.now();
+        const busy = ensure(r.dir, ['-KeepOlder']);
+        if (toolsReady) {
+          expect(busy.text).toContain('ほかの atlas が、このフォルダで atlas.exe をビルドしています');
+          expect(performance.now() - t).toBeGreaterThan(4_000);
+        }
+        expect(busy.status).toBe(0);
+        expect(busy.text).not.toContain('この PC でビルドします');
+        expect(busy.text).toContain('今回は、前のソースから作った bin\\atlas.exe');
+        expect(exeText(r.dir)).toBe(`${old}\n`);
+      } finally {
+        closeSync(fd);
+      }
+    }, 120_000);
   });
 
   it('管理者の権限が要る操作をしない', () => {
@@ -351,61 +493,41 @@ describe('TS 版で登録したタスクのための互換の入口(packages/cli
     expect(imports.filter((m) => !m.startsWith('node:'))).toEqual([]);
   });
   it('ensure-atlas.ps1 で実行ファイルを用意してから bin の atlas upload-auto を同じ引数で動かし、登録し直すよう知らせる', () => {
-    expect(text).toContain("join(ROOT, 'scripts', 'ensure-atlas.ps1')");
+    // ビルドできなくても、前に作った atlas.exe で送る(-KeepOlder)
+    expect(text).toContain("join(ROOT, 'scripts', 'ensure-atlas.ps1'), '-KeepOlder']");
     expect(text).toContain("['upload-auto', ...process.argv.slice(2)]");
     expect(text).toContain('schedule-upload.bat を開くと');
   });
 });
 
-// 配る atlas.exe に入るものの一覧は 1 つのファイルにだけ書く。リリースのワークフロー(リリースを作るか)と自動の更新(リリースを待つか)が
-// 同じ一覧で決めないと、リリースの出ないコミットを待ち続けたり、リリースより先に進んだりする
-describe('配る中身の一覧(scripts/release-shipped.txt)', () => {
-  const LIST = 'scripts/release-shipped.txt';
-  const specs = readFileSync(join(ROOT, LIST), 'utf8')
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter((l) => l && !l.startsWith('#'));
-  it('リリースのワークフローと自動の更新が、同じファイルを読む(ワークフローに一覧を書かない)', () => {
-    const workflow = readFileSync(join(ROOT, '.github/workflows/release.yml'), 'utf8');
-    expect(workflow).toContain(`< ${LIST} |`);
-    expect(workflow).not.toMatch(/shipped=\(/);
+// atlas.exe は配らない(2026-11-23 にやめた)ので、リリースを作るワークフローも、配る中身の一覧も置かない。
+// 依存の検査は、PR の CI と毎週の検査が、devDependencies も含めて同じ基準で見る(画面のビルドの道具の出力は atlas.exe に埋め込まれる)
+describe('ワークフロー(リリースは作らない。依存の検査)', () => {
+  const WORKFLOWS = join(ROOT, '.github/workflows');
+  it('リリースを作るワークフローと、配る中身の一覧が無い', () => {
+    expect(existsSync(join(WORKFLOWS, 'release.yml'))).toBe(false);
+    expect(existsSync(join(ROOT, 'scripts/release-shipped.txt'))).toBe(false);
+    for (const f of readdirSync(WORKFLOWS)) {
+      const text = readFileSync(join(WORKFLOWS, f), 'utf8');
+      expect(text, f).not.toMatch(/gh release|attest-build-provenance|softprops\/action-gh-release|tags:\s*\[?['"]?v/);
+    }
     const rust = readFileSync(join(ROOT, 'crates/atlas-cli/src/self_update.rs'), 'utf8');
-    expect(rust).toContain(`pub const SHIPPED_LIST: &str = "${LIST}";`);
+    expect(rust).not.toMatch(/release-shipped|SHIPPED_LIST|--tags/);
   });
-  it('リリースは、依存の脆弱性の検査を通ってからビルドする(devDependencies も含めて見る)', () => {
-    // Windows のランナーは core.autocrlf=true で取り出すので、改行をそろえてからジョブを切り出す
-    const workflow = readFileSync(join(ROOT, '.github/workflows/release.yml'), 'utf8').replace(/\r\n/g, '\n');
-    const job = (name: string) => {
-      const m = workflow.match(new RegExp(`\\n  ${name}:\\n([\\s\\S]*?)(?=\\n  [a-z][\\w-]*:\\n|$)`));
-      expect(m, `ジョブ ${name}`).not.toBeNull();
-      return m![1];
-    };
-    expect(job('windows')).toMatch(/needs: \[plan, audit\]/);
-    const audit = job('audit');
-    expect(audit).toContain('ref: ${{ needs.plan.outputs.ref }}');
-    expect(audit).toContain('cargo deny --locked check');
-    expect(audit).toMatch(/^ +node scripts\/npm-audit\.mjs$/m);
-    expect(audit).not.toContain('--omit=dev');
-    // PR の CI と毎週の検査も同じ基準で見る(PR が通ったのにリリースだけが止まる、を起こさない)
+  it('PR の CI と毎週の検査は、npm の依存を devDependencies も含めて scripts/npm-audit.mjs で見て、Rust の依存を cargo deny で見る', () => {
     for (const f of ['ci.yml', 'deny-schedule.yml']) {
-      const text = readFileSync(join(ROOT, '.github/workflows', f), 'utf8');
+      const text = readFileSync(join(WORKFLOWS, f), 'utf8');
       expect(text, f).toMatch(/run: node scripts\/npm-audit\.mjs$/m);
       // npm audit をそのまま回すと除外(npm-audit-ignore.json)を通らないので、npm-audit.mjs だけにする(署名の検査は別)
       expect(text, f).not.toMatch(/run: npm audit(?! signatures$)|--omit=dev/m);
+      expect(text, f).toMatch(/run: cargo deny --locked check/);
     }
-    // 入れたものの署名は、npm ci のあとに PR の CI と、atlas.exe を作る前に見る
-    const ci = readFileSync(join(ROOT, '.github/workflows/ci.yml'), 'utf8').replace(/\r\n/g, '\n');
+    // 入れたものの署名は、npm ci のあとに PR の CI で見る
+    const ci = readFileSync(join(WORKFLOWS, 'ci.yml'), 'utf8').replace(/\r\n/g, '\n');
     expect(ci).toMatch(/- run: npm ci\n[\s\S]*?run: npm audit signatures\n[\s\S]*?- run: npm run build:report\n/);
-    expect(job('windows')).toMatch(/- run: npm ci\n(?: +#.*\n)* +- run: npm audit signatures\n +- run: npm run build:report\n/);
-    // cargo-deny の版は 3 つのワークフローでそろえる
-    const version = (f: string) => readFileSync(join(ROOT, '.github/workflows', f), 'utf8').match(/CARGO_DENY_VERSION: (\S+)/)?.[1];
-    expect(version('release.yml')).toBeDefined();
-    expect(version('release.yml')).toBe(version('ci.yml'));
-    expect(version('release.yml')).toBe(version('deny-schedule.yml'));
-  });
-  it('実行ファイルを作る入力を入れ、テストは除く', () => {
-    expect(specs).toEqual(expect.arrayContaining(['crates', 'Cargo.toml', 'Cargo.lock', 'packages/report', 'package-lock.json', ':(exclude)crates/*/tests/*']));
-    // 一覧そのものと、説明書・スクリプトは入れない(変えてもリリースを作らない)
-    expect(specs.filter((s) => /^(scripts|docs|README)/.test(s))).toEqual([]);
+    // cargo-deny の版は 2 つのワークフローでそろえる
+    const version = (f: string) => readFileSync(join(WORKFLOWS, f), 'utf8').match(/CARGO_DENY_VERSION: (\S+)/)?.[1];
+    expect(version('ci.yml')).toBeDefined();
+    expect(version('ci.yml')).toBe(version('deny-schedule.yml'));
   });
 });

@@ -1,8 +1,9 @@
-//! 評価バンドルを 1 つの ZIP にまとめる(atlas bundle --zip)。
+//! 外部の LLM に渡す束を 1 つの ZIP にまとめる(atlas bundle --zip・turns bundle --zip・tasks bundle --zip)。
 //! フォルダやファイルを読めるエージェント(GitHub Copilot CLI、ローカルの LLM など)に 1 ファイルで渡すためのもの。
 //! 圧縮はしない(無圧縮の ZIP は CRC-32 だけで書けるので、依存を増やさない)。ZIP64 は書かないので、
 //! ファイルが 65,535 個、全体が 4 GB を超えるときは作らずに止める。
-//! 入れるのは INSTRUCTIONS.md・manifest.json・schema.json・sessions/ だけ(parts/ は sessions/ と同じ中身なので入れない)。
+//! 入れるのは INSTRUCTIONS.md・manifest.json・schema.json と、パケットのフォルダ(工数とタスクの紐づけは sessions/、依頼ごとの採用は chunks/)だけ
+//! (parts/ はパケットと同じ中身なので入れない)。
 
 use crate::bundle::BundleManifest;
 use anyhow::{bail, Context, Result};
@@ -66,13 +67,22 @@ struct Central {
     offset: u32,
 }
 
-/// bundle_dir の中身を zip_path に書く。ZIP の中では root フォルダの下に置く(展開するとフォルダが 1 つできる)。
-/// 作りかけは別の名前に書いてから入れ替えるので、途中で失敗しても前の ZIP は残る
+/// 工数の評価バンドルの ZIP(INSTRUCTIONS.md・manifest.json・schema.json・sessions/)
 pub fn write_bundle_zip(bundle_dir: &Path, manifest: &BundleManifest, zip_path: &Path, root: &str, stamp: DosTime) -> Result<ZipSummary> {
     let mut names: Vec<String> = vec![manifest.files.instructions.clone(), "manifest.json".into(), manifest.files.schema.clone()];
     names.extend(manifest.sessions.iter().map(|e| e.path.clone()));
+    write_zip(bundle_dir, &names, zip_path, root, stamp, BUNDLE_NARROW)
+}
+
+/// 工数と依頼ごとの判定の束を ZIP にできないときの、絞り方の案内
+pub const BUNDLE_NARROW: &str = "--since や --unjudged で対象を絞ってください";
+
+/// dir の中の names(dir からの相対パス。/ 区切り)を zip_path に書く。ZIP の中では root フォルダの下に置く(展開するとフォルダが 1 つできる)。
+/// 作りかけは別の名前に書いてから入れ替えるので、途中で失敗しても前の ZIP は残る。
+/// narrow は、上限を超えたときに続ける絞り方の案内(束の種類で違う。例: BUNDLE_NARROW)
+pub fn write_zip(bundle_dir: &Path, names: &[String], zip_path: &Path, root: &str, stamp: DosTime, narrow: &str) -> Result<ZipSummary> {
     if names.len() > u16::MAX as usize {
-        bail!("ZIP に入れるファイルが多すぎます({} 個。上限 65,535 個)。--since や --unjudged で対象を絞ってください", names.len());
+        bail!("ZIP に入れるファイルが多すぎます({} 個。上限 65,535 個)。{narrow}", names.len());
     }
 
     let tmp = zip_path.with_extension("zip.tmp");
@@ -80,12 +90,12 @@ pub fn write_bundle_zip(bundle_dir: &Path, manifest: &BundleManifest, zip_path: 
         let mut w = BufWriter::new(std::fs::File::create(&tmp).with_context(|| format!("{} を作れません", tmp.display()))?);
         let mut offset: u64 = 0;
         let mut central: Vec<Central> = Vec::with_capacity(names.len());
-        for rel in &names {
-            let data = std::fs::read(bundle_dir.join(rel)).with_context(|| format!("{} を読めません", bundle_dir.join(rel).display()))?;
+        for rel in names {
+            let data = std::fs::read(atlas_core::jsfs::join_slash(bundle_dir, rel)).with_context(|| format!("{} を読めません", atlas_core::jsfs::join_slash(bundle_dir, rel).display()))?;
             let name = format!("{root}/{rel}");
             let next = offset + 30 + name.len() as u64 + data.len() as u64;
             if next > u32::MAX as u64 {
-                bail!("ZIP が 4 GB を超えます。--since や --unjudged で対象を絞ってください");
+                bail!("ZIP が 4 GB を超えます。{narrow}");
             }
             let crc = crc32(&data);
             w.write_all(&0x0403_4b50u32.to_le_bytes())?;
@@ -108,7 +118,7 @@ pub fn write_bundle_zip(bundle_dir: &Path, manifest: &BundleManifest, zip_path: 
             offset += 46 + c.name.len() as u64;
         }
         if offset > u32::MAX as u64 {
-            bail!("ZIP が 4 GB を超えます。--since や --unjudged で対象を絞ってください");
+            bail!("ZIP が 4 GB を超えます。{narrow}");
         }
         w.write_all(&0x0605_4b50u32.to_le_bytes())?;
         w.write_all(&[0u8; 4])?; // ディスク番号
@@ -221,6 +231,18 @@ mod tests {
         assert_eq!(names, ["bundle/INSTRUCTIONS.md", "bundle/manifest.json", "bundle/schema.json", "bundle/sessions/s1.md"]);
         assert_eq!(seen[0].1, "指示".as_bytes());
         assert_eq!(seen[3].1, b"123456789");
+    }
+
+    /// 上限を超えたときの案内は、束の種類ごとの絞り方(タスクの紐づけは --session、工数と依頼ごとは --since・--unjudged)
+    #[test]
+    fn too_many_files_tell_how_to_narrow_for_the_kind() {
+        let d = tempfile::tempdir().unwrap();
+        let names: Vec<String> = (0..=u16::MAX as usize).map(|i| format!("sessions/{i}.md")).collect();
+        let e = write_zip(d.path(), &names, &d.path().join("x.zip"), "task-bundle", DosTime::now(), "--session で対象を絞ってください").unwrap_err().to_string();
+        assert!(e.ends_with("上限 65,535 個)。--session で対象を絞ってください"), "{e}");
+        let e = write_zip(d.path(), &names, &d.path().join("x.zip"), "bundle", DosTime::now(), BUNDLE_NARROW).unwrap_err().to_string();
+        assert!(e.ends_with("--since や --unjudged で対象を絞ってください"), "{e}");
+        assert!(!d.path().join("x.zip").exists());
     }
 
     #[test]

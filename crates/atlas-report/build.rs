@@ -1,7 +1,7 @@
 //! report の画面のテンプレート(Vite で作った packages/report/dist/template.html)を実行ファイルに埋め込む。
 //! 実行するときは埋め込んだものだけを使う(リポジトリの dist/ は読まない)。
 //! 無ければ埋め込まない(テンプレートを使わない cargo test のため。atlas build は案内を出して止まる)。
-//! 環境変数 ATLAS_REQUIRE_TEMPLATE=1 のときは、無ければビルドを止める(配る実行ファイルを作るとき。scripts/ensure-atlas.ps1 とリリースのワークフロー)。
+//! 環境変数 ATLAS_REQUIRE_TEMPLATE=1 のときは、無ければビルドを止める(利用者が使う実行ファイルを作るとき。scripts/ensure-atlas.ps1)。
 
 use std::path::PathBuf;
 

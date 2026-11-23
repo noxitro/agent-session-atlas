@@ -1,22 +1,18 @@
 <script lang="ts">
   import { aggregate } from '../lib/aggregate.ts';
-  import { conditionTable } from '../lib/conditions.ts';
   import { turnAggregate } from '../lib/turns.ts';
   import { verdictAggregate } from '../lib/verdicts.ts';
   import { wikiReferenced, wikiState } from '../lib/wiki.ts';
   import { flushSync, tick, untrack } from 'svelte';
-  import { applyFilter, currentGroupName, decodeFilter, decodeTab, decodeView, DEFAULT_TAB, effectiveIds, emptyFilter, encodeFilter, encodeState, filterHref, filterOptions, groupIds, inScope, isEmptyFilter, isStateHash, isTabId, joinIds, knownSelection, type FilterState, type TabId } from '../lib/filter.ts';
-  import GroupRail from './components/GroupRail.svelte';
-  import GroupHead from './components/GroupHead.svelte';
+  import { applyFilter, decodeFilter, decodeTab, decodeView, DEFAULT_TAB, emptyFilter, encodeFilter, encodeState, filterHref, filterOptions, inScope, isEmptyFilter, isStateHash, isTabId, joinIds, knownSelection, taskOf, taskOptions, type FilterState, type TabId } from '../lib/filter.ts';
   import { highlights } from '../lib/highlights.ts';
   import { date, dateTime, int } from '../lib/format.ts';
-  import { WIKI_PAGES_DATA_VERSION, type ReportData } from '../lib/types.ts';
+  import { WIKI_PAGES_DATA_VERSION, type ReportData, type TasksReport } from '../lib/types.ts';
   import FilterBar from './components/FilterBar.svelte';
   import Overview from './components/Overview.svelte';
   import JudgmentPanel from './components/JudgmentPanel.svelte';
   import Retention from './components/Retention.svelte';
   import Compare from './components/Compare.svelte';
-  import Conditions from './components/Conditions.svelte';
   import ProjectTable from './components/ProjectTable.svelte';
   import UsageRanking from './components/UsageRanking.svelte';
   import Highlights from './components/Highlights.svelte';
@@ -27,10 +23,11 @@
   import ModelChart from './components/ModelChart.svelte';
   import ModelValue from './components/ModelValue.svelte';
   import SessionTable from './components/SessionTable.svelte';
+  import TaskPanel from './components/TaskPanel.svelte';
   import { applyTheme, loadTheme, type ThemeChoice } from './theme.ts';
   import { watchScrollFocus } from './scroll-focus.ts';
   import { STALE_MESSAGE } from '../lib/code-check.ts';
-  import { api, foldersApi, serveToken, startHeartbeat, type GroupExport, type UploadHandlers, type UploadSetting } from './api.ts';
+  import { api, foldersApi, serveToken, startHeartbeat, tasksApi, type TasksPayload, type UploadHandlers, type UploadSetting } from './api.ts';
   import { currentView, restoreDone, restoredView, saveView } from './view-restore.ts';
   import { JobStore } from './jobs.svelte.ts';
   import JobActions from './components/JobActions.svelte';
@@ -38,7 +35,6 @@
   import OpenFolder from './components/OpenFolder.svelte';
   import JobBand from './components/JobBand.svelte';
   import type { MemoSummary } from '../lib/memo.ts';
-  import type { ReportGroup } from '../lib/types.ts';
 
   let { data, error }: { data: ReportData | null; error: string | null } = $props();
 
@@ -55,6 +51,15 @@
   const wikiCount = $derived(sessions.filter((s) => wikiReferenced(s.wiki)).length);
   const emptyCount = $derived(sessions.filter((s) => s.empty).length);
   const judged = $derived(!!data?.judgments.available);
+  /**
+   * 管理ツールのタスク。serve から開いた画面は API から読んだもの(詳細ページで直した紐づけも出る)、ほかは埋め込み。
+   * 値はすべて集計(Rust)が決めたもので、ここでは数え直さない。紐づけは絞り込み(filter.task)と一覧の 1 行に使う
+   */
+  let liveTasks = $state<TasksPayload | null>(null);
+  // 絞り込んだセッション(--task など)だけで作ったレポートは、絞り込まない API の値で置き換えない(埋め込みのまま)
+  const tasks = $derived<TasksReport | null>(liveTasks && !data?.tasks?.scoped ? liveTasks.tasks : (data?.tasks ?? null));
+  const taskMap = $derived(taskOf(tasks?.links));
+  const taskNames = $derived(new Map((tasks?.items ?? []).map((t) => [t.id, t.name || t.id])));
 
   function initialFilter(): FilterState {
     try {
@@ -76,8 +81,9 @@
   // 空のセッションを含めるかどうかで母集団が変わる(選択肢の件数・「全 N セッション」もこの範囲で数える)
   const scoped = $derived(sessions.filter((s) => inScope(s, filter)));
   const options = $derived(filterOptions(scoped));
-  // 集計に使う id は「group の名前が今のグループにあればその ids、無ければ ids」(effectiveIds。宣言は下だが評価は描画時)
-  const filtered = $derived.by(() => applyFilter(sessions, { ...filter, ids: eff.ids }));
+  const filtered = $derived.by(() => applyFilter(sessions, filter, taskMap));
+  /** タスクの絞り込みの選択肢(集計対象の範囲で数える) */
+  const taskOpts = $derived(tasks ? taskOptions(scoped, taskMap, taskNames) : null);
   const agg = $derived(aggregate(filtered, options.person.length > 0));
   const turnAgg = $derived(turnAggregate(filtered));
   const verdictAgg = $derived(data?.turnJudgments?.available ? verdictAggregate(filtered, data.turnJudgments.phases) : null);
@@ -318,7 +324,7 @@
       const moved = !!p && p !== tab;
       if (p && moved) tab = p;
       // scrollRestoration は 'auto' のままにする('manual' にすると、目次や要点のリンクで移ってからの「戻る」でブラウザが位置を戻さなくなる)
-      // 本文を描き終えてから戻す。後から高さが変わる(タスクタグの見出しが出るなど)ときのため、
+      // 本文を描き終えてから戻す。後から高さが変わる(サーバから読んだ帯が出るなど)ときのため、
       // 少し後にもう一度だけ合わせる(その間に自分でスクロールしたら合わせない)。1px のずれでも合わせる
       // (ブラウザが戻す位置や、端数の高さの要素によるずれが、ちょうど 1px のことがある)
       const restore = y != null && y > 0;
@@ -372,43 +378,38 @@
   }
 
   // セッションの選択(一覧のチェック欄)。状態は画面内だけ(保存しない)。
-  // filter.ids が変わったとき(「集計」、グループの選択、ハッシュから開いた、戻る)は選択を ids に揃える = 絞り込み中の一覧は全てチェック済みで出る
+  // filter.ids が変わったとき(「集計」、ハッシュから開いた、戻る)は選択を ids に揃える = 絞り込み中の一覧は全てチェック済みで出る
   let selected = $state<Set<string>>(new Set());
   const knownIds = $derived(new Set(sessions.map((s) => s.id)));
-  // 依存は ids の文字列だけ(eff はグループの一覧が変わるたびに新しいオブジェクトになるが、文字列が同じなら走らない = 外したチェックが戻らない)
-  const effIds = $derived.by(() => eff.ids);
-  // 絞り込み(グループ・選んだ N 件)を外したときはチェックも外す。残すと、「すべて」に戻った後に次のグループを作ったり足したりしたとき、
-  // 前のグループのセッションが(別のページにあって見えないまま)黙って混ざる
+  // 依存は ids の文字列だけ(文字列が同じなら走らない = 外したチェックが戻らない)
+  const filterIds = $derived.by(() => filter.ids);
+  // 選んだ N 件の絞り込みを外したときはチェックも外す(残すと、別のページにあって見えないセッションが次の集計に黙って混ざる)
   let prevIds = '';
   $effect(() => {
-    const ids = effIds;
-    // 記録に無い id(共有された URL やグループの ids に混じるもの)は選択に入れない(件数を記録どおりにする)
+    const ids = filterIds;
+    // 記録に無い id(共有された URL に混じるもの)は選択に入れない(件数を記録どおりにする)
     if (ids) selected = knownSelection(ids, knownIds);
     else if (prevIds) selected = new Set();
     prevIds = ids;
   });
-  /** チェックしたものだけで集計する(他の条件と AND)。グループの選択は外れる(名前の一致で現在のグループになることはある) */
+  /** チェックしたものだけで集計する(他の条件と AND) */
   function applySelection(): void {
-    if (selected.size) setFilter({ ids: joinIds(selected), group: '' });
+    if (selected.size) setFilter({ ids: joinIds(selected) });
   }
   /** 選択を外す。選択で集計中ならその条件も外す(チェックが無いのに「選んだ N 件」で絞られたままにしない) */
   function clearSelection(): void {
     selected = new Set();
-    if (filter.ids || filter.group) setFilter({ ids: '', group: '' });
+    if (filter.ids) setFilter({ ids: '' });
   }
   // --- 編集モード(atlas serve から開いたとき)。画面と保存の境界は api.ts の小さな API だけ ---
   /** serve が meta に入れた token(file:// や共有用の 1 ファイルでは null) */
   const token = serveToken();
   /** http(s) で開かれ、token があり、GET api/state が成功した */
   let editable = $state(false);
-  /** 別のフォルダを開いた画面(サーバが読むだけと答えた)。集計し直す・判定は使えるが、タスクタグ・メモ・アップロードは書き換えない */
+  /** 別のフォルダを開いた画面(サーバが読むだけと答えた)。集計し直す・判定は使えるが、メモ・アップロード先は書き換えない */
   let readOnly = $state(false);
-  /** タスクタグ・アップロード・まとめて送る印を書き換えられるか */
+  /** アップロード先・まとめて送る印を書き換えられるか */
   const canEdit = $derived(editable && !readOnly);
-  /** 読むだけの画面として作ったレポート(ファイルで開いたときも、案内の文言を読むだけの画面のものにする) */
-  const readOnlyView = $derived(readOnly || data?.readOnly === true);
-  /** API から読んだグループ(編集モードではこちらを使う。CLI で足したものも再読み込みで出る) */
-  let liveGroups = $state<ReportGroup[] | null>(null);
   /** heartbeat が失敗した(サーバが止まった)。閲覧はそのまま、編集だけ無効 */
   let serverDown = $state(false);
   /** サーバがこの画面と違う版(atlas を更新した後も、前から動いているサーバが応えている)。閲覧と編集はそのまま、帯で知らせる */
@@ -434,11 +435,15 @@
     api
       .state()
       .then((s) => {
-        liveGroups = s.groups;
         liveMemos = s.memos ?? null; // 古い serve には無い(埋め込みの抜粋を残す)
         uploadSetting = s.upload ?? null; // 古い serve には無い(アップロードの操作を出さない)
         readOnly = s.readOnly === true;
         editable = true;
+        // 古い serve には無い(失敗しても、埋め込みのタスクだけで出す)
+        tasksApi
+          .get(token)
+          .then((t) => (liveTasks = t))
+          .catch(() => {});
         // 古い serve には無い(失敗しても、埋め込みの source だけで出す)
         foldersApi
           .list(token)
@@ -448,64 +453,18 @@
       .catch(() => {});
     return stop;
   });
-  // Phase 14: 画面からの操作(集計し直す・工数を判定する)。編集できるとき(serve から開いた画面)だけ。サーバが止まったら読むのもやめる
+  // 画面からの操作(集計し直す・判定の添付ファイルを作る)。編集できるとき(serve から開いた画面)だけ。サーバが止まったら読むのもやめる
   const jobStore = token ? new JobStore(token) : null;
   $effect(() => {
     if (!jobStore || !editable || serverDown) return;
     jobStore.startPolling();
     return () => jobStore.stopPolling();
   });
-  /** 名前付きグループ(記録にある id とその件数つき) */
-  const groupOptions = $derived.by(() =>
-    (liveGroups ?? data?.groups ?? []).map((g) => {
-      const presentIds = g.ids.filter((id) => knownIds.has(id));
-      return { ...g, presentIds, present: presentIds.length };
-    }),
-  );
-  // 「課題 × 条件」の表(タスクタグの名前の決まりに合うものから)。母集団は「比べる」と同じで、上の絞り込みには従わない。
-  // 節を出すかどうかは、目次と本文の両方でこの 1 つから決める
-  const conditions = $derived(conditionTable(scoped, groupOptions));
-  const hasConditions = $derived(conditions.matchedTags > 0);
-  /** group(名前)→ 今のグループの ids、無ければ ids(共有した相手にその名前が無くても壊れない) */
-  const eff = $derived(effectiveIds(filter, groupOptions, knownIds));
   // 今の絞り込み(空を含めるかの条件を除く)に当てはまる空のセッション数。表紙の「除外」の件数に使う
   /** 今の絞り込みで、空のセッションも含めたときに出るセッション */
-  const emptyRelaxed = $derived(applyFilter(sessions, { ...filter, empty: '1', ids: eff.ids }));
+  const emptyRelaxed = $derived(applyFilter(sessions, { ...filter, empty: '1' }, taskMap));
   const emptyInFilter = $derived(emptyRelaxed.filter((s) => s.empty).length);
-  /** 現在のグループ名(名前で決まらないときは ids の一致。0 件のグループや同じ集合が複数あるときは決めない) */
-  const currentName = $derived(currentGroupName(filter, groupOptions, knownIds));
-  const currentGroup = $derived(currentName ? (groupOptions.find((g) => g.name === currentName) ?? null) : null);
-  /** 一覧のチェックから集計しているときの件数(記録にある id だけ。グループで絞り込み中は 0) */
-  const adhocCount = $derived(currentName ? 0 : knownSelection(eff.ids, knownIds).size);
-  // #group=X だけが残ったとき(手で編集した hash、相手に無い名前): あればその ids を補い、無ければ(グループの一覧が揃ってから)捨てる
-  $effect(() => {
-    if (!filter.group || filter.ids) return;
-    if (eff.group) setFilter({ ids: groupIds(eff.group, knownIds) });
-    else if (liveGroups !== null || !token) setFilter({ group: '' });
-  });
-  /** グループを選ぶ(null で「すべて」)。名前と、その時点の ids の両方を hash に書く */
-  function pickGroup(name: string | null): void {
-    if (!name) {
-      setFilter({ ids: '', group: '' });
-      return;
-    }
-    const g = groupOptions.find((x) => x.name === name);
-    if (g) setFilter({ ids: groupIds(g, knownIds), group: name });
-  }
-  const selectedKnown = (): string[] => sessions.filter((s) => selected.has(s.id)).map((s) => s.id);
-  /** 選んだセッションで新しいグループを作り、そのグループで絞り込む(失敗は呼び元が入力欄の下に出す) */
-  async function createGroup(name: string, note: string): Promise<void> {
-    const r = await api.create(token!, { name, note, ids: selectedKnown() });
-    liveGroups = r.groups;
-    setFilter({ ids: groupIds(r.group, knownIds), group: name });
-  }
-  /** 名前と説明を 1 回で直す(本文の見出しの「編集」)。改名したら hash の名前も追従させる */
-  async function saveGroup(oldName: string, patch: { name?: string; note?: string }): Promise<void> {
-    const r = await api.update(token!, oldName, patch);
-    liveGroups = r.groups;
-    if (patch.name && filter.group === oldName) setFilter({ group: patch.name });
-  }
-  /** グループのアップロード先(atlas.config.json の uploadRoot)。serve が教えてくれたときだけ操作を出す */
+  /** アップロード先(atlas.config.json の uploadRoot)。serve が教えてくれたときだけ設定に出す */
   let uploadSetting = $state<UploadSetting | null>(null);
   const uploadHandlers = $derived<UploadHandlers | undefined>(
     uploadSetting
@@ -521,10 +480,6 @@
             if (uploadSetting) uploadSetting = { ...uploadSetting, root: r.root, error: null };
             return r.root;
           },
-          check: (name) => api.checkUpload(token!, name),
-          run: (name, expect) => api.uploadGroup(token!, name, expect),
-          progress: (name) => api.uploadProgress(token!, name),
-          open: async (name) => void (await api.openUpload(token!, name)),
         }
       : undefined,
   );
@@ -553,81 +508,11 @@
    * 空のセッションだけのプロジェクトは出さない(upload-project.bat は空のセッションを送らないので、印を付けても何も送られない)
    */
   const settingsProjects = $derived(aggregate(sessions.filter((x) => !x.empty)).byProject.map((b) => ({ key: b.key, label: b.label, sessions: b.sessions })));
-  function exportGroup(name: string): Promise<GroupExport> {
-    return api.exportGroup(token!, name);
-  }
-  async function deleteGroup(name: string): Promise<void> {
-    // currentName は groups から求めるので、一覧を差し替える前に覚える(後で見ると消したグループはもう無く、絞り込みが残る)
-    // 通信中に別のグループへ移っていたら(ids が変わっていたら)移った先の絞り込みは残す
-    const wasCurrent = currentName === name;
-    const idsBefore = filter.ids;
-    const r = await api.remove(token!, name);
-    liveGroups = r.groups;
-    if (wasCurrent && filter.ids === idsBefore) setFilter({ ids: '', group: '' });
-  }
-  /**
-   * 選んだセッションを既存のグループに足す。差分(add)だけを送り、サーバが最新の ids に適用する(画面を開いたまま CLI で足した id が消えない)。
-   * 件数とグループの一覧はサーバの応答から。絞り込みは変えない(現在のグループに足したときだけ ids を追従させる)
-   */
-  async function addToGroup(name: string): Promise<string> {
-    const res = await api.update(token!, name, { add: selectedKnown() });
-    liveGroups = res.groups;
-    const msg = `${int(res.added)} 件を「${name}」に追加しました${res.dup ? `(既に入っていた ${int(res.dup)} 件を除く)` : ''}`;
-    if (currentName === name) {
-      setFilter({ ids: groupIds(res.group, knownIds), group: name });
-      return msg;
-    }
-    // 足し終えたチェックは外す(続けて別のグループに足すときに前の分が混ざらないように)。選んだ N 件で集計中なら条件は残す
-    if (!filter.ids) {
-      selected = new Set();
-      return `${msg}。チェックは外しました`;
-    }
-    return msg;
-  }
-  /** 選んだセッションを現在のグループから外す(差分 remove を送る。0 件になっても消さない) */
-  async function removeFromGroup(): Promise<string> {
-    const name = currentName;
-    if (!name) throw new Error('タスクタグで絞り込んでいるときだけ外せます');
-    const res = await api.update(token!, name, { remove: selectedKnown() });
-    liveGroups = res.groups;
-    setFilter({ ids: groupIds(res.group, knownIds), group: name });
-    return `${int(res.removed)} 件を「${name}」から外しました${res.group.ids.length === 0 ? '(タスクタグは 0 件のまま残ります)' : ''}`;
-  }
-  // 狭い幅(768px 未満)では目次行の「グループ」から一覧を開く。外を押す / Esc で閉じ、焦点はボタンに戻す
-  let groupsOpen = $state(false);
-  let groupsBtn = $state<HTMLButtonElement | null>(null);
-  let groupsPop = $state<HTMLElement | null>(null);
-  function toggleGroups(): void {
-    groupsOpen = !groupsOpen;
-    if (groupsOpen) requestAnimationFrame(() => groupsPop?.focus());
-  }
-  function closeGroups(back = true): void {
-    if (!groupsOpen) return;
-    groupsOpen = false;
-    if (back) groupsBtn?.focus();
-  }
-  $effect(() => {
-    if (!groupsOpen) return;
-    const onDown = (e: MouseEvent): void => {
-      const t = e.target as Node;
-      if (groupsPop?.contains(t) || groupsBtn?.contains(t)) return;
-      closeGroups(false);
-    };
-    const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') closeGroups();
-    };
-    document.addEventListener('mousedown', onDown);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onDown);
-      document.removeEventListener('keydown', onKey);
-    };
-  });
 
   /** 効いている絞り込みの条件の数(期間は開始・終了で 1 つ、セッションの選択は 1 つ) */
   const activeConditions = $derived.by(() => {
     let n = filter.from || filter.to ? 1 : 0;
-    for (const k of ['project', 'person', 'client', 'model', 'branch', 'coverage', 'taskCategory', 'tool', 'ids', 'memo', 'wiki'] as const) if (filter[k]) n++;
+    for (const k of ['project', 'person', 'client', 'model', 'branch', 'coverage', 'taskCategory', 'tool', 'ids', 'memo', 'wiki', 'task'] as const) if (filter[k]) n++;
     if (filter.empty === '1') n++;
     return n;
   });
@@ -650,9 +535,9 @@
         { id: 'phases', label: '工程と詰まり' },
         { id: 'detail', label: '集計明細' },
         ...(judged ? [{ id: 'judgments', label: 'AI 投入量 vs 推定人手工数' }] : []),
+        ...(tasks ? [{ id: 'tasks', label: '管理ツールのタスク' }] : []),
         ...(data?.retention ? [{ id: 'retention', label: 'AI の変更の残存' }] : []),
         { id: 'compare', label: '比べる' },
-        ...(hasConditions ? [{ id: 'conditions', label: '課題 × 条件' }] : []),
       ],
     },
     {
@@ -800,9 +685,9 @@
         </p>
       </div>
       <div class="mast-tools">
-        {#if editable && jobStore}<JobActions jobs={jobStore} disabled={serverDown} currentGroup={currentName} /><SettingsDialog jobs={jobStore} disabled={serverDown} upload={uploadHandlers} send={canEdit ? projectSend : undefined} projects={settingsProjects} /><OpenFolder token={jobStore.token} disabled={serverDown} />{/if}
+        {#if editable && jobStore}<JobActions jobs={jobStore} disabled={serverDown} tasks={liveTasks?.tasks ? { configured: liveTasks.tasks.configured, readOnly: liveTasks.readOnly } : null} /><SettingsDialog jobs={jobStore} disabled={serverDown} upload={uploadHandlers} send={canEdit ? projectSend : undefined} projects={settingsProjects} /><OpenFolder token={jobStore.token} disabled={serverDown} />{/if}
         {#if sourceLabel}<span class="tag" title={sourceLabel.path} data-testid="source-tag">対象: {sourceLabel.name}</span>{/if}
-        {#if readOnly}<span class="tag" title="タスクタグとメモは、送った人が付けたものを出します。この画面では書き換えません(集計し直す・判定はできます)" data-testid="readonly-tag">読むだけ</span>{/if}
+        {#if readOnly}<span class="tag" title="メモは、送った人が付けたものを出します。この画面では書き換えません(集計し直す・判定はできます)" data-testid="readonly-tag">読むだけ</span>{/if}
         {#if data.atlasBuilds}<span class={data.atlasBuilds.ok ? 'tag' : 'tag warn'} title={[data.atlasBuilds.headline, ...data.atlasBuilds.lines].join('\n')} data-testid="atlas-builds-tag">送った atlas: {data.atlasBuilds.short}</span>{/if}
         {#if scopeNotes.length}<span class="tag" title="atlas build の実行時に絞り込んだ条件">出力時の絞り込み: {scopeNotes.join('、')}</span>{/if}
         <div class="seg" role="group" aria-label="配色">
@@ -842,26 +727,7 @@
               </ol>
             </div>
           {/each}
-          <div class="toc-group groups-toggle" role="group" aria-label="タスクタグ">
-            <ol>
-              <li>
-                <button type="button" class="toc-btn" bind:this={groupsBtn} aria-expanded={groupsOpen} aria-controls="group-pop" data-testid="groups-toggle" onclick={toggleGroups}>
-                  タスクタグ<span class="cnt">{int(groupOptions.length)}</span>
-                </button>
-              </li>
-            </ol>
-          </div>
         </nav>
-        <!-- サイドバー(768px 以上)の「グループ」の群。狭い幅では目次行の「グループ」から同じ中身を開く -->
-        <div class="rail-groups" role="group" aria-label="タスクタグ">
-          <span class="toc-title" aria-hidden="true">タスクタグ</span>
-          <GroupRail groups={groupOptions} current={currentName} selectedCount={adhocCount} editable={canEdit} readOnly={readOnlyView} onpick={pickGroup} />
-        </div>
-        {#if groupsOpen}
-          <div class="group-pop" id="group-pop" role="region" bind:this={groupsPop} tabindex="-1" aria-label="タスクタグ" data-testid="group-pop" onfocusout={(e) => { const t = e.relatedTarget as Node | null; if (t && !groupsPop?.contains(t) && !groupsBtn?.contains(t)) closeGroups(false); }}>
-            <GroupRail groups={groupOptions} current={currentName} selectedCount={adhocCount} editable={canEdit} readOnly={readOnlyView} onpick={(n) => { pickGroup(n); closeGroups(); }} />
-          </div>
-        {/if}
         <div class="status">
           <p class="count" aria-live="polite" aria-atomic="true">
             <span class="w">表示中</span> <strong data-testid="shown-count">{int(filtered.length)}</strong> / <span class="w">集計対象</span> {int(scoped.length)} <span class="w">セッション</span><span class="u" aria-hidden="true">件</span>
@@ -881,12 +747,9 @@
         <div class="down-band stale-band" role="alert">{STALE_MESSAGE}</div>
       {/if}
       {#if editable && jobStore}<JobBand jobs={jobStore} generatedAt={data.generatedAt} />{/if}
-      <FilterBar {filter} {options} {judged} {emptyCount} {memoCount} {wikiCount} wikiCounted={wiki === 'counted'} lastDay={all.overall.lastAt ? date(all.overall.lastAt) : null} onchange={setFilter} {editable} />
+      <FilterBar {filter} {options} {judged} {emptyCount} {memoCount} {wikiCount} wikiCounted={wiki === 'counted'} lastDay={all.overall.lastAt ? date(all.overall.lastAt) : null} onchange={setFilter} {editable} tasks={taskOpts ? { options: taskOpts.tasks, none: taskOpts.none } : null} />
 
       <main class="wrap" id="main" tabindex="-1">
-        {#if currentGroup}
-          <GroupHead group={currentGroup} editable={canEdit} onclear={() => pickGroup(null)} onsave={saveGroup} ondelete={deleteGroup} onexport={exportGroup} upload={uploadHandlers} />
-        {/if}
         <div class="empty" class:show={filtered.length === 0} role="status">
           {#if filtered.length === 0}
             <p>この条件に合うセッションはありません。</p>
@@ -911,9 +774,9 @@
           <TurnPhases agg={turnAgg} verdicts={verdictAgg} verdictModel={data.turnJudgments?.model ?? null} verdictRanAt={data.turnJudgments?.ranAt ?? null} {editable} />
           <Overview part="detail" {agg} {judged} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} {emptyInFilter} {wiki} />
           {#if judged}<JudgmentPanel {agg} meta={data.judgments} />{/if}
+          {#if tasks}<TaskPanel {tasks} current={filter.task} noneCount={taskOpts?.none ?? 0} onpick={(t) => setFilter({ task: t })} />{/if}
           {#if data.retention}<Retention sessions={filtered} meta={data.retention} />{/if}
-          <Compare sessions={scoped} groups={groupOptions} projects={options.project} lastAt={all.overall.lastAt} retention={!!data.retention} />
-          {#if hasConditions}<Conditions table={conditions} {wiki} />{/if}
+          <Compare sessions={scoped} projects={options.project} lastAt={all.overall.lastAt} retention={!!data.retention} />
         </div>
         <div class="tab-panel" data-tab-panel="breakdown" hidden={tab !== 'breakdown'}>
           <UsageRanking usage={agg.usage} {installed} failuresPage={data.failures === true} bind:tab={usageTab} />
@@ -933,17 +796,11 @@
             emptyIncluded={filter.empty === '1'}
             {judged}
             {selected}
-            idsActive={eff.ids !== ''}
-            editable={canEdit}
-            readOnly={readOnlyView}
-            groups={groupOptions}
-            currentGroup={currentName}
+            idsActive={filter.ids !== ''}
             onselect={(s) => (selected = s)}
             onapply={applySelection}
             onclear={clearSelection}
-            oncreate={createGroup}
-            onadd={addToGroup}
-            onremove={removeFromGroup}
+            tasks={tasks ? { links: tasks.links, names: taskNames } : null}
           />
         </div>
       </main>
@@ -954,7 +811,7 @@
             読み取り時の注意: 未知のイベント種別 {int(data.warnings.unknownEventTypes)} 件、読めなかった行 {int(data.warnings.badLines)} 行。
           {/if}
           {#if data.warnings.notes?.length}
-            メモとタスクタグ(atlas-notes)の読み取りで無視した箇所 {int(data.warnings.notes.length)} 件(全体サマリの集計明細に理由)。
+            集計の注意 {int(data.warnings.notes.length)} 件(全体サマリの集計明細に理由)。
           {/if}
         </p>
       </footer>
@@ -1237,86 +1094,6 @@
       background: var(--form);
       border-bottom-color: var(--form);
       text-decoration: none;
-    }
-  }
-
-  /* グループの群: 狭い幅では目次行の「グループ」ボタンから開く一覧(.group-pop)、768px 以上ではサイドバーの群(.rail-groups) */
-  .rail-groups {
-    display: none;
-  }
-  .toc-btn {
-    display: inline-flex;
-    align-items: center;
-    min-height: 36px;
-    padding: 0;
-    font: inherit;
-    white-space: nowrap;
-    color: var(--ink-2);
-    background: none;
-    border: 0;
-    border-bottom: 2px solid transparent;
-    cursor: pointer;
-  }
-  .toc-btn:hover {
-    color: var(--form);
-    text-decoration: underline;
-  }
-  .toc-btn[aria-expanded='true'] {
-    color: var(--form);
-    font-weight: 600;
-    border-bottom-color: var(--form);
-  }
-  .toc-btn .cnt {
-    margin-left: 6px;
-    color: var(--ink-3);
-    font-size: 0.75rem;
-    font-weight: 400;
-    font-variant-numeric: tabular-nums;
-  }
-  .group-pop {
-    position: absolute;
-    left: 0;
-    right: 0;
-    top: 100%;
-    max-width: 36em;
-    margin: 0 auto;
-    padding: 6px 0 8px;
-    background: var(--surface);
-    border: 1px solid var(--rule-strong);
-    border-top: 0;
-    box-shadow: 0 1px 0 var(--rule-strong);
-    z-index: 7;
-  }
-  .group-pop:focus-visible {
-    outline: 2px solid var(--form);
-    outline-offset: -2px;
-  }
-  /* 狭い幅では目次行の先頭に置く(右端に隠れて気づけないのを避ける) */
-  .groups-toggle {
-    order: -1;
-    margin-left: 0;
-    padding-left: 0;
-    border-left: 0;
-    margin-right: 10px;
-    padding-right: 10px;
-    border-right: 1px solid var(--rule);
-  }
-  @media (min-width: 768px) {
-    .groups-toggle,
-    .group-pop {
-      display: none;
-    }
-    .rail-groups {
-      display: block;
-      margin-top: 14px;
-    }
-    .rail-groups .toc-title {
-      display: block;
-      font-size: 0.6875rem;
-      color: var(--form);
-      letter-spacing: 0.04em;
-      padding-bottom: 2px;
-      border-bottom: 1px solid var(--rule-strong);
     }
   }
 </style>

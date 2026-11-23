@@ -1,50 +1,55 @@
-﻿# atlas の実行ファイル(bin\atlas.exe)を、このチェックアウトの版にそろえる。
-# このチェックアウトの版は、HEAD から辿れるタグ v<x.y.z> のうち、いちばん新しいもの(リリースのワークフローが、配る中身が変わったマージごとに
-# 付ける。.github/workflows/release.yml)。HEAD から辿れるタグが無ければ(タグを取らずに取得したフォルダなど)、一度 origin からタグを取ってくる。
-# git が無いか、それでもタグが無ければ、Cargo.toml の [workspace.package] の version。
+﻿# atlas の実行ファイル(bin\atlas.exe)を、このチェックアウトのソースからこの PC でビルドして、今のコミットのものにそろえる。
+# atlas.exe は配っていない(GitHub のリリースで配るのは 2026-11-23 にやめた)。いつもこの PC で、このフォルダのソースからビルドする。
 # 起動用の .bat がすべて最初に呼ぶ。.bat と自動で送るタスク(atlas upload-auto)は、git fetch で新しい版にした後にも呼ぶ(crates/atlas-cli/src/self_update.rs)。
 #
 # 順に試す:
-#  1. bin\atlas.exe があり、そのまま使えるなら、何もしない。使えるのは:
-#     - リリースから取ったもの: atlas --version の版が、このチェックアウトの版と同じで、作ったときのコミットがそのタグのコミットと同じ
-#       (取り下げた版の番号で、別のコミットからリリースを作り直したときに、前のものを使い続けないように)
-#     - この PC でビルドしたもの: Node.js と Rust があれば、作ったときのコミットが今のコミットと同じ(違えばビルドし直す)。
-#       無ければ、リリースから取ったものと同じく版で比べる(一度ビルドした人も、ビルドに要るものを消せばリリースに移る)
-#  2. このリポジトリ(git remote get-url origin の GitHub)のリリース v<version> から atlas.exe を取ってきて、
-#     同じリリースの atlas.exe.sha256 と照らし合わせてから bin\ に置く(取れなければ gh release download も試す)。
-#     gh(GitHub CLI)があってログインしていれば、ビルドの来歴(GitHub の artifact attestation。このリポジトリのリリースの
-#     ワークフローが作ったものか)も gh attestation verify で確かめ、合わなければ使わない。gh が無ければ sha256 だけで確かめる
-#  3. リリースが無いか取れなければ、Node.js と Rust(Windows では Visual Studio の C++ のビルドツールも)があれば、
-#     ここでビルドして bin\ に置く(npm ci → npm run build:report → cargo build --release。経過は bin\build.log)
-#  4. どれもできなければ、何を入れればよいかを出して、終了コード 1 で終わる
+#  1. bin\atlas.exe があり、作ったときのコミット(atlas --version に出る)が今のコミット(HEAD)と同じなら、何もしない。
+#     git が管理しているファイルを変えたまま作ったもの(コミットの後ろに -dirty。開発の手元だけ)は、HEAD と同じとはみなさない。
+#     git で取得したフォルダでない(今のコミットが分からない)ときは、版(Cargo.toml の [workspace.package] の version)が同じなら何もしない
+#     (版はふだん上げないので、そういうフォルダでソースを変えたら、bin\atlas.exe を消してから開く)
+#  2. Node.js と Rust(Windows では Visual Studio の C++ のビルドツールも)があれば、ここでビルドして bin\ に置く
+#     (npm ci → npm run build:report → cargo build --release。経過は bin\build.log。初めてのときは数分から十数分かかる)。
+#     ビルドできなければ、そのときのコミットを bin\build-failed.txt に書く(自動の更新が、同じコミットを何度も試さないように。self_update.rs)
+#  3. ビルドに要るものが無ければ、何を入れればよいかを出して、終了コード 1 で終わる
 #
 # 管理者の権限は要らない(書くのは bin\ と target\ と node_modules\ だけ)。
-# 動いている bin\atlas.exe(開いたままの画面のサーバなど)は消せないので、別の名前に移してから置き換える(次に動かしたときに消す)。
+# 置き換えるときは、今の bin\atlas.exe を bin\atlas.prev.exe に移してから置く(動いていても移せる)。前の atlas.prev.exe は消し、
+# 動いていて消せなければ atlas.old-<番号>.exe に移す(次に動かしたときに消す)。atlas.prev.exe は、新しい版がこの PC で動かなかったときに、
+# ビルドせずに戻すのに使う(self_update.rs の rollback)。
+# 同じフォルダで 2 つ同時にビルドしない(自動で送るタスクがビルドしている間に .bat を開いたときなど): bin\build.lock を開いたままにして印にする
+# (プロセスが終われば閉じるので、残っても次の回の邪魔をしない)。ほかがビルドしている間は、-KeepOlder で前のものが動けば少し待ってからそれで続け、
+# そうでなければ終わるのを待つ。
 #
-#   -Check      何も変えずに、bin\atlas.exe が今の版のものかだけを終了コードで返す(0 = そのまま使える、1 = 用意し直す)
-#   -KeepOlder  新しい版を用意できなくても、前の版の bin\atlas.exe が動けば、それで続ける(終了コード 0)。起動用の .bat が付ける。
-#               リリースのワークフローが失敗したままの間や、手で付けたタグのリリースが無いときに、開けなくならないように。
-#               .bat と自動で送るタスクの更新(self_update.rs)は付けない(用意できなければ前の版に戻す)
+#   -Check       何も変えずに、bin\atlas.exe が今のコミットから作ったものかだけを終了コードで返す(0 = そのまま使える、1 = ビルドし直す)
+#   -CheckTools  何も変えずに、ビルドに要るものがそろっているかだけを終了コードで返す(0 = そろっている、1 = 足りない。足りないものを 1 行で出す)。
+#                Node.js の版(package.json の engines)と、cargo が実際に動くか(既定のツールチェーンがあるか)も見る。
+#                自動の更新(self_update.rs)が、新しい版を取り込む前に使う(ビルドできない PC では、取り込まずに今の版のまま続ける)
+#   -KeepOlder   ビルドできなくても(ビルドに要るものが無い・ビルドに失敗した・ほかがビルドしている・置けなかった)、前のソースから作った
+#                bin\atlas.exe が動けば、それで続ける(終了コード 0)。起動用の .bat が付ける。自動の更新(self_update.rs)は付けない
+#                (ビルドできなければ前の版に戻す)
 #
-# 環境変数(ふだんは要らない):
-#   ATLAS_BUILD_LOCAL=1   リリースを取りに行かず、この PC でビルドする(開発用)
-#   ATLAS_RELEASE_REPO    リリースを探すリポジトリ(owner/name)。無ければ origin から決める
+# 環境変数 ATLAS_BUILD_LOCAL(前はリリースを取りに行かずにビルドする指定)は、もう読まない(いつもビルドする)。付けたままでも害は無い。
 #
 # Windows PowerShell 5.1 が日本語を読めるよう、このファイルは BOM 付きの UTF-8 で置く(.gitattributes で改行は CRLF)。
-param([switch]$Check, [switch]$KeepOlder)
+param([switch]$Check, [switch]$CheckTools, [switch]$KeepOlder)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
 
-# PowerShell の変数は大文字小文字を区別しない。置き場所の $Exe を、大文字小文字だけ違う同じ名前で上書きしないこと(取ってきた・作ったファイルは $file・$got)
+# PowerShell の変数は大文字小文字を区別しない。置き場所の $Exe を、大文字小文字だけ違う同じ名前で上書きしないこと(作ったファイルは $got・$built)
 $Repo = Split-Path -Parent $PSScriptRoot
 $OnWindows = ($env:OS -eq 'Windows_NT')
 $ExeName = if ($OnWindows) { 'atlas.exe' } else { 'atlas' }
+$PrevName = if ($OnWindows) { 'atlas.prev.exe' } else { 'atlas.prev' }
 $Bin = Join-Path $Repo 'bin'
 $Exe = Join-Path $Bin $ExeName
-# どこから来た実行ファイルか(release v<version> / local <コミット>)
+$Prev = Join-Path $Bin $PrevName
+# どのソースから作った実行ファイルか(local <コミット>。調べるとき用。使えるかどうかは atlas --version で決める)
 $SourceFile = Join-Path $Bin 'atlas-source.txt'
 $BuildLog = Join-Path $Bin 'build.log'
+# ビルドできなかったコミット(self_update.rs の FAILED_BUILD_FILE と同じ名前)
+$FailedFile = Join-Path $Bin 'build-failed.txt'
+$LockFile = Join-Path $Bin 'build.lock'
 
 # 自動で送るタスクから動かすときは出力をパイプで読むので、UTF-8 で書く(窓が無いと設定できないことがある)
 try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }
@@ -60,95 +65,7 @@ function Get-CargoVersion {
   return $v.Groups[1].Value
 }
 
-# semver の版(1.2.3 と 1.2.3-rc.1)を比べる。a が後なら正、前なら負、同じなら 0。
-# git tag --sort=-v:refname は、プレリリース(-rc.1)を後ろに並べることがあるので使わない。ビルドの印(+...)は比べない
-function Compare-SemVer([string]$a, [string]$b) {
-  $pa = [regex]::Match($a, '^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$')
-  $pb = [regex]::Match($b, '^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$')
-  for ($i = 1; $i -le 3; $i++) {
-    $c = ([decimal]$pa.Groups[$i].Value).CompareTo([decimal]$pb.Groups[$i].Value)
-    if ($c -ne 0) { return $c }
-  }
-  $ra = $pa.Groups[4].Value
-  $rb = $pb.Groups[4].Value
-  # プレリリースの無いほうが後(1.0.0-rc.1 < 1.0.0)
-  if ($ra -eq $rb) { return 0 }
-  if (-not $ra) { return 1 }
-  if (-not $rb) { return -1 }
-  $xa = $ra.Split('.')
-  $xb = $rb.Split('.')
-  for ($i = 0; $i -lt [Math]::Min($xa.Count, $xb.Count); $i++) {
-    $na = $xa[$i] -match '^\d+$'
-    $nb = $xb[$i] -match '^\d+$'
-    if ($na -and $nb) { $c = ([decimal]$xa[$i]).CompareTo([decimal]$xb[$i]) }
-    elseif ($na) { $c = -1 }
-    elseif ($nb) { $c = 1 }
-    else { $c = [string]::CompareOrdinal($xa[$i], $xb[$i]) }
-    if ($c -ne 0) { return [Math]::Sign($c) }
-  }
-  return ($xa.Count).CompareTo($xb.Count)
-}
-
-# HEAD から辿れるタグ v<x.y.z> のうち、いちばん新しいものの版(v を除く)。無ければ $null
-function Find-NewestTag {
-  $ErrorActionPreference = 'Continue'
-  $tags = & git -C $Repo tag --list 'v*' --merged HEAD 2>$null
-  if ($LASTEXITCODE -ne 0) { return $null }
-  $best = $null
-  foreach ($t in @($tags)) {
-    $t = ([string]$t).Trim()
-    if ($t -notmatch '^v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$') { continue }
-    $v = $Matches[1]
-    if (-not $best -or (Compare-SemVer $v $best) -gt 0) { $best = $v }
-  }
-  return $best
-}
-
-# origin からタグを取ってくる(20 秒まで。資格情報は尋ねない)。取れたら $true
-function Invoke-TagFetch {
-  $ErrorActionPreference = 'Continue'
-  $err = [IO.Path]::GetTempFileName()
-  $out = [IO.Path]::GetTempFileName()
-  $prompt = $env:GIT_TERMINAL_PROMPT
-  try {
-    $env:GIT_TERMINAL_PROMPT = '0'
-    $p = Start-Process -FilePath 'git' -ArgumentList @('fetch', '--quiet', '--tags', 'origin') -WorkingDirectory $Repo -NoNewWindow -PassThru -RedirectStandardError $err -RedirectStandardOutput $out
-    # 終わった後に終了コードを読めるよう、先にハンドルを取っておく(Windows PowerShell 5.1)
-    $null = $p.Handle
-    if (-not $p.WaitForExit(20000)) { try { $p.Kill() } catch { }; return $false }
-    return ($p.ExitCode -eq 0)
-  } catch {
-    return $false
-  } finally {
-    $env:GIT_TERMINAL_PROMPT = $prompt
-    Remove-Item -LiteralPath $err, $out -Force -ErrorAction SilentlyContinue
-  }
-}
-
-# このチェックアウトの版のタグのコミット(全桁。分からなければ空)。Get-TagVersion が決める
-$script:WantCommit = ''
-
-# このチェックアウトの版のタグ(v を除く)。git が無いかタグが無ければ $null
-function Get-TagVersion {
-  $ErrorActionPreference = 'Continue'
-  if (-not (Test-Path -LiteralPath (Join-Path $Repo '.git')) -or -not (Test-Tool 'git')) { return $null }
-  $best = Find-NewestTag
-  # タグを取らずに取得したフォルダ(git clone --no-tags など)。-Check は何も変えないので取りに行かない
-  if (-not $best -and -not $Check -and (Invoke-TagFetch)) { $best = Find-NewestTag }
-  if (-not $best) { return $null }
-  $c = & git -C $Repo rev-list -n 1 "refs/tags/v$best" 2>$null
-  if ($LASTEXITCODE -eq 0) { $script:WantCommit = ([string]$c).Trim() }
-  return $best
-}
-
-# このチェックアウトの版(取ってくるリリースは v<この版>)
-function Get-WantVersion {
-  $tag = Get-TagVersion
-  if ($tag) { return $tag }
-  return Get-CargoVersion
-}
-
-# atlas --version の 1 行(atlas 0.1.0 (commit <全桁>, code <目印>))から版とコミットを読む。動かせなければ $null
+# atlas --version の 1 行(atlas 0.1.0 (commit <全桁>[-dirty], code <目印>))から版とコミットを読む。動かせなければ $null
 function Get-ExeInfo([string]$path) {
   # 外のコマンドの標準エラーを止める理由にしない(Windows PowerShell 5.1 は 2>$null でも Stop だと止まる)
   $ErrorActionPreference = 'Continue'
@@ -157,7 +74,7 @@ function Get-ExeInfo([string]$path) {
     $out = & $path --version 2>$null
     if ($LASTEXITCODE -ne 0) { return $null }
   } catch { return $null }
-  $m = [regex]::Match([string]($out | Select-Object -First 1), '^atlas (\S+) \((?:commit ([0-9a-f]{40,64}), )?code [0-9a-f]+\)')
+  $m = [regex]::Match([string]($out | Select-Object -First 1), '^atlas (\S+) \((?:commit ([0-9a-f]{40,64}(?:-dirty)?), )?code [0-9a-f]+\)')
   if (-not $m.Success) { return $null }
   return [pscustomobject]@{ Version = $m.Groups[1].Value; Commit = $m.Groups[2].Value }
 }
@@ -172,10 +89,7 @@ function Get-Head {
   return ([string]$h).Trim()
 }
 
-function Get-Source {
-  if (Test-Path -LiteralPath $SourceFile) { return ([IO.File]::ReadAllText($SourceFile)).Trim() }
-  return ''
-}
+function Get-Short([string]$commit) { if ($commit.Length -gt 7) { return $commit.Substring(0, 7) } else { return $commit } }
 
 # Rust の MSVC 向けのツールチェーン(Windows の既定)が使う、Visual Studio の C++ のビルドツール(リンカーと、同梱の SQLite を
 # コンパイルする cl.exe。Windows SDK と一緒に入れる)があるか。Windows 以外と、MSVC 向けでない Rust(gnu など)では要らない
@@ -199,45 +113,53 @@ function Test-MsvcTools {
   return ((Test-Tool 'cl.exe') -and (Test-Tool 'link.exe'))
 }
 
-# この PC でビルドするのに足りないもの(無ければ空)
+# package.json の engines.node が求める Node.js のいちばん下の版(>=24 なら 24)。読めなければ 24
+function Get-NodeMajorWanted {
+  try {
+    $text = [IO.File]::ReadAllText((Join-Path $Repo 'package.json'))
+    $m = [regex]::Match($text, '"node"\s*:\s*">=\s*(\d+)')
+    if ($m.Success) { return [int]$m.Groups[1].Value }
+  } catch { }
+  return 24
+}
+
+# この PC でビルドするのに足りないもの(無ければ空)。ある・動く・版が足りる、まで見る
 function Get-MissingTools {
+  $ErrorActionPreference = 'Continue'
   $missing = @()
   if (-not (Test-Tool 'node')) { $missing += 'Node.js' }
+  else {
+    $want = Get-NodeMajorWanted
+    $v = ([string](& node --version 2>$null)).Trim()
+    $m = [regex]::Match($v, '^v(\d+)\.')
+    if ($LASTEXITCODE -ne 0 -or -not $m.Success) { $missing += "Node.js $want 以上(node が動きません)" }
+    elseif ([int]$m.Groups[1].Value -lt $want) { $missing += "Node.js $want 以上(今は $v)" }
+  }
   if (-not (Test-Tool 'npm')) { $missing += 'npm' }
   if (-not (Test-Tool 'cargo')) { $missing += 'Rust(cargo)' }
+  else {
+    # rustup だけで既定のツールチェーンが無いときなど、cargo はあっても動かない
+    & cargo --version *> $null
+    if ($LASTEXITCODE -ne 0) { $missing += 'Rust(cargo が動きません。rustup default stable で既定のツールチェーンを入れます)' }
+  }
   if (-not (Test-MsvcTools)) { $missing += 'Visual Studio の C++ のビルドツール(MSVC)' }
   return ,$missing
 }
 
 # 今の bin\atlas.exe をそのまま使えるか。使えなければ理由を返す(使えれば $null)
-function Get-StaleReason([string]$want) {
+function Get-StaleReason {
   $info = Get-ExeInfo $Exe
-  if (-not $info) { return 'bin\atlas.exe がありません' }
-  # この PC でビルドしたものは、ビルドし直せるなら、作ったときのコミットで比べる(版は Cargo.toml の version なので、タグの版とは比べない)。
-  # ソースが変わっていれば、し直す。ビルドに要るものが無ければ、リリースから取ったものと同じく版で比べる
-  # (git が無くてコミットが分からなければ、版で比べる。そのときの版は Cargo.toml の version)
+  if (-not $info) { return 'bin\atlas.exe がありません(か、動きません)' }
   $head = Get-Head
-  if ($head -and $info.Commit -and (Get-Source) -like 'local *' -and (Get-MissingTools).Count -eq 0) {
-    if ($info.Commit -ne $head) { return 'この PC でビルドした bin\atlas.exe より、ソースが新しくなっています' }
+  if ($head) {
+    # -dirty の付いたもの(変えたまま作ったもの)は、HEAD と同じにならない
+    if ($info.Commit -ne $head) { return "bin\atlas.exe は、今のソース(コミット $(Get-Short $head))から作ったものではありません" }
     return $null
   }
+  # git で取得したフォルダでない(今のコミットが分からない)ときは、版で比べる
+  $want = Get-CargoVersion
   if ($info.Version -ne $want) { return "bin\atlas.exe の版($($info.Version))が、このフォルダの版($want)と違います" }
-  if ($script:WantCommit -and $info.Commit -and $info.Commit -ne $script:WantCommit) {
-    return "bin\atlas.exe は、リリース v$want のタグのコミットから作ったものではありません(リリースが作り直されたなど)"
-  }
   return $null
-}
-
-# origin の GitHub のリポジトリ(owner/name)。分からなければ $null
-function Get-RepoSlug {
-  $ErrorActionPreference = 'Continue'
-  if ($env:ATLAS_RELEASE_REPO) { return $env:ATLAS_RELEASE_REPO }
-  if (-not (Test-Tool 'git')) { return $null }
-  $url = & git -C $Repo remote get-url origin 2>$null
-  if ($LASTEXITCODE -ne 0 -or -not $url) { return $null }
-  $m = [regex]::Match(([string]$url).Trim(), '^(?:https://(?:[^@/]+@)?github\.com/|git@github\.com:|ssh://git@github\.com/)([^/]+)/([^/]+?)(?:\.git)?/?$')
-  if (-not $m.Success) { return $null }
-  return "$($m.Groups[1].Value)/$($m.Groups[2].Value)"
 }
 
 function New-WorkDir {
@@ -247,81 +169,43 @@ function New-WorkDir {
   return $d
 }
 
-# 用意した実行ファイルを bin\ に置く。動いている bin\atlas.exe は消せないので、別の名前に移す(移すのはできる)
+# ビルドの印(bin\build.lock を、ほかが開けないように開いたままにする)。開けたら閉じるためのもの、ほかが開いていれば $null
+function Open-BuildLock {
+  New-Item -ItemType Directory -Force -Path $Bin | Out-Null
+  try { return [IO.File]::Open($LockFile, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None) }
+  catch { return $null }
+}
+
+# 印を取れるまで、seconds 秒まで待つ。取れなければ $null
+function Wait-BuildLock([int]$seconds) {
+  $deadline = (Get-Date).AddSeconds($seconds)
+  while ($true) {
+    $l = Open-BuildLock
+    if ($l) { return $l }
+    if ((Get-Date) -ge $deadline) { return $null }
+    Start-Sleep -Milliseconds 500
+  }
+}
+
+# 作った実行ファイルを bin\ に置く。今の bin\atlas.exe はいつも先に bin\atlas.prev.exe に移す(動いていても移せる。置けなかったら戻せるように)
 function Install-Exe([string]$src, [string]$source) {
+  $moved = $false
   if (Test-Path -LiteralPath $Exe) {
-    try { Remove-Item -LiteralPath $Exe -Force }
-    catch { Move-Item -LiteralPath $Exe -Destination (Join-Path $Bin ('atlas.old-' + [guid]::NewGuid().ToString('N') + '.exe')) -Force }
+    if (Test-Path -LiteralPath $Prev) {
+      try { Remove-Item -LiteralPath $Prev -Force }
+      catch { Move-Item -LiteralPath $Prev -Destination (Join-Path $Bin ('atlas.old-' + [guid]::NewGuid().ToString('N') + '.exe')) -Force }
+    }
+    Move-Item -LiteralPath $Exe -Destination $Prev
+    $moved = $true
   }
-  Move-Item -LiteralPath $src -Destination $Exe
-  [IO.File]::WriteAllText($SourceFile, $source + "`n")
-}
-
-$script:DownloadReason = ''
-# ビルドの来歴を確かめたか('ok' / 'skip')と、確かめなかったときの理由
-$script:Attestation = ''
-$script:AttestationNote = ''
-
-# 取ってきた atlas.exe のビルドの来歴(GitHub の artifact attestation)を gh attestation verify で確かめる。
-# このリポジトリのリリースのワークフロー(.github/workflows/release.yml)が作ったものでなければ失敗にする。
-# 戻り値: 'ok'(確かめた)/ 'skip'(gh が無いかログインしていないので確かめられない。理由は AttestationNote)/ 'fail'(合わない。理由は DownloadReason)
-function Test-Attestation([string]$file, [string]$slug) {
-  $ErrorActionPreference = 'Continue'
-  if (-not (Test-Tool 'gh')) {
-    $script:AttestationNote = 'gh(GitHub CLI)が無いので、ビルドの来歴(attestation)は確かめず、sha256 だけで確かめました'
-    return 'skip'
+  try { Move-Item -LiteralPath $src -Destination $Exe }
+  catch {
+    if ($moved -and -not (Test-Path -LiteralPath $Exe)) { Move-Item -LiteralPath $Prev -Destination $Exe -ErrorAction SilentlyContinue }
+    throw
   }
-  & gh auth status *> $null
-  if ($LASTEXITCODE -ne 0) {
-    $script:AttestationNote = 'gh にログインしていないので、ビルドの来歴(attestation)は確かめず、sha256 だけで確かめました(gh auth login で確かめるようになります)'
-    return 'skip'
-  }
-  $out = & gh attestation verify $file --repo $slug --signer-workflow "$slug/.github/workflows/release.yml" 2>&1
-  if ($LASTEXITCODE -ne 0) {
-    $why = @($out | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ }) | Select-Object -Last 1
-    $script:DownloadReason = "取ってきた atlas.exe のビルドの来歴を確かめられません(gh attestation verify: $why)。使いません"
-    return 'fail'
-  }
-  return 'ok'
-}
-
-# リリース v<version> の atlas.exe を取ってきて、sha256 と版を確かめる。確かめた実行ファイルのパス(だめなら $null。理由は DownloadReason)
-function Get-ReleaseExe([string]$want, [string]$work) {
-  if (-not $OnWindows) { $script:DownloadReason = 'リリースの実行ファイルは Windows 用だけです'; return $null }
-  $slug = Get-RepoSlug
-  if (-not $slug) { $script:DownloadReason = 'GitHub から取得したフォルダではないので、リリースを探せません'; return $null }
-  $tag = "v$want"
-  $file = Join-Path $work 'atlas.exe'
-  $sum = Join-Path $work 'atlas.exe.sha256'
-  try {
-    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-    $ProgressPreference = 'SilentlyContinue'
-    $base = "https://github.com/$slug/releases/download/$tag"
-    Invoke-WebRequest -UseBasicParsing -Uri "$base/atlas.exe.sha256" -OutFile $sum -TimeoutSec 60
-    Invoke-WebRequest -UseBasicParsing -Uri "$base/atlas.exe" -OutFile $file -TimeoutSec 900
-  } catch {
-    $script:DownloadReason = "$slug のリリース $tag を取得できません($($_.Exception.Message))"
-    # 公開していないリポジトリなど。gh にログインしていれば、gh で取れる
-    if ((Test-Tool 'gh')) {
-      $ErrorActionPreference = 'Continue'
-      & gh release download $tag -R $slug -p atlas.exe -p atlas.exe.sha256 -D $work --clobber *> $null
-      if ($LASTEXITCODE -ne 0) { return $null }
-    } else { return $null }
-  }
-  if (-not (Test-Path -LiteralPath $file) -or -not (Test-Path -LiteralPath $sum)) { $script:DownloadReason = "リリース $tag に atlas.exe と atlas.exe.sha256 がそろっていません"; return $null }
-  $expect = [regex]::Match([IO.File]::ReadAllText($sum), '\b[0-9a-fA-F]{64}\b').Value.ToLowerInvariant()
-  $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $file).Hash.ToLowerInvariant()
-  if (-not $expect -or $expect -ne $actual) { $script:DownloadReason = "取ってきた atlas.exe の sha256 がリリースの atlas.exe.sha256 と合いません(使いません)"; return $null }
-  # 来歴は、取ってきたものを動かす(版を確かめる atlas --version)前に確かめる
-  $script:Attestation = Test-Attestation $file $slug
-  if ($script:Attestation -eq 'fail') { return $null }
-  $info = Get-ExeInfo $file
-  if (-not $info -or $info.Version -ne $want) { $script:DownloadReason = "取ってきた atlas.exe の版が $want ではありません(使いません)"; return $null }
-  if ($script:WantCommit -and $info.Commit -and $info.Commit -ne $script:WantCommit) {
-    $script:DownloadReason = "取ってきた atlas.exe が、タグ $tag のコミットから作ったものではありません(使いません。次に開いたときに、タグを取り直してからもう一度試します)"
-    return $null
-  }
-  return $file
+  # ここから先は、置けた後の記録だけ(失敗しても、置いたものは使える。自動の更新が前の版に戻さないよう、止めない)
+  try { [IO.File]::WriteAllText($SourceFile, $source + "`n") } catch { Say "  注意: $SourceFile を書けませんでした($($_.Exception.Message))" }
+  Remove-Item -LiteralPath $FailedFile -Force -ErrorAction SilentlyContinue
 }
 
 # cmd(Windows)か sh で動かし、出力は bin\build.log に足す。終了コードを返す
@@ -346,7 +230,7 @@ function Build-LocalExe([string]$work) {
     }
     Say '  画面を作っています(npm run build:report)...'
     if ((Invoke-Logged 'npm run build:report') -ne 0) { Say '  画面を作れませんでした。'; return $null }
-    Say '  atlas をビルドしています(cargo build --release。初めてのときは数分かかります)...'
+    Say '  atlas をビルドしています(cargo build --release。初めてのときは数分から十数分かかります)...'
     $env:ATLAS_REQUIRE_TEMPLATE = '1'
     if ((Invoke-Logged 'cargo build --release --locked -p atlas-cli') -ne 0) { Say '  cargo build に失敗しました。'; return $null }
   } finally { Pop-Location }
@@ -359,13 +243,19 @@ function Build-LocalExe([string]$work) {
   return $copy
 }
 
-# -KeepOlder のとき、新しい版を用意できなかったら、動く前の bin\atlas.exe で続ける。続けるなら $true
+# ビルドできなかったコミットを残す(自動の更新が、同じコミットを開くたびに試さないように)。書けなくても止めない
+function Save-FailedBuild {
+  try { [IO.File]::WriteAllText($FailedFile, (Get-Head) + "`n") } catch { }
+}
+
+# -KeepOlder のとき、用意できなかったら、動く前の bin\atlas.exe で続ける。続けるなら $true
 function Use-Older {
   if (-not $KeepOlder) { return $false }
   $info = Get-ExeInfo $Exe
   if (-not $info) { return $false }
+  $from = if ($info.Commit) { "版 $($info.Version)、コミット $(Get-Short $info.Commit)" } else { "版 $($info.Version)" }
   Say ''
-  Say "今回は、今ある bin\atlas.exe(版 $($info.Version))のまま続けます。次に開いたときに、もう一度用意します。"
+  Say "今回は、前のソースから作った bin\atlas.exe($from)のまま続けます。今のソースの変更は入っていません。次に開いたときに、もう一度ビルドします。"
   return $true
 }
 
@@ -376,53 +266,70 @@ function Show-LogTail {
   }
 }
 
+function Show-ToolsHelp($missing) {
+  $tools = 'Node.js 24 以上(https://nodejs.org/)と Rust(https://rustup.rs/)'
+  if ($OnWindows) { $tools += '、Visual Studio Build Tools の「C++ によるデスクトップ開発」(MSVC と Windows SDK。https://visualstudio.microsoft.com/visual-cpp-build-tools/)' }
+  Say ''
+  Say "atlas をビルドするのに要るものが足りません(足りないもの: $($missing -join '、'))。"
+  Say "atlas.exe は配っていないので、この PC でビルドします。$tools を入れてから、もう一度実行してください。"
+}
+
+$lock = $null
 try {
-  $want = Get-WantVersion
-  $stale = Get-StaleReason $want
+  if ($CheckTools) {
+    $missing = Get-MissingTools
+    if ($missing.Count -eq 0) { exit 0 }
+    Say ($missing -join '、')
+    exit 1
+  }
+  $stale = Get-StaleReason
   if ($Check) { if ($stale) { exit 1 } else { exit 0 } }
   # 前に置き換えたときに移した、前の実行ファイル(もう動いていなければ消せる)
   if (Test-Path -LiteralPath $Bin) { Get-ChildItem -LiteralPath $Bin -Filter 'atlas.old-*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue }
   if (-not $stale) { exit 0 }
 
   Say "atlas を用意します: $stale"
-  $work = New-WorkDir
-  try {
-    $got = $null
-    if ($env:ATLAS_BUILD_LOCAL -ne '1') {
-      Say "  リリース v$want を探しています..."
-      $got = Get-ReleaseExe $want $work
-      if ($got) {
-        Install-Exe $got "release v$want"
-        if ($script:Attestation -eq 'ok') {
-          Say "  リリース v$want の atlas.exe を置きました(sha256 とビルドの来歴を確かめました)"
-        } else {
-          Say "  リリース v$want の atlas.exe を置きました(sha256 を確かめました)"
-          Say "  $($script:AttestationNote)"
-        }
-        exit 0
-      }
-      Say "  $($script:DownloadReason)"
-    }
-    $missing = Get-MissingTools
-    if ($missing.Count -eq 0) {
-      Say '  この PC でビルドします。'
-      $got = Build-LocalExe $work
-      if ($got) {
-        Install-Exe $got ('local ' + (Get-Head))
-        exit 0
-      }
-      Show-LogTail
-      Say ''
-      Say 'atlas をビルドできませんでした。上の記録を確かめてください。'
+  $missing = Get-MissingTools
+  if ($missing.Count -ne 0) {
+    Show-ToolsHelp $missing
+    if (Use-Older) { exit 0 }
+    exit 1
+  }
+  $lock = Open-BuildLock
+  if (-not $lock) {
+    Say '  ほかの atlas が、このフォルダで atlas.exe をビルドしています(自動で送るタスクなど)。'
+    # 前のものが動くなら長く待たせない。無ければ、終わるのを待つ(ビルドは初めてだと十数分かかる)
+    $older = [bool]($KeepOlder -and (Get-ExeInfo $Exe))
+    if (-not $older) { Say '  終わるのを待っています...' }
+    $lock = Wait-BuildLock $(if ($older) { 5 } else { 40 * 60 })
+    if (-not $lock) {
       if (Use-Older) { exit 0 }
+      Say 'ほかのビルドが終わらなかったので、やめます。しばらくしてから、もう一度実行してください。'
       exit 1
     }
+    # ほかがビルドし終えていれば、それを使う
+    $stale = Get-StaleReason
+    if (-not $stale) { Say '  ほかの atlas がビルドし終えたものを使います。'; exit 0 }
+  }
+  Say '  この PC でビルドします(経過は bin\build.log)。'
+  $work = New-WorkDir
+  try {
+    $got = Build-LocalExe $work
+    if ($got) {
+      $head = Get-Head
+      Install-Exe $got ('local ' + $head)
+      # 置いたものが今のコミットから作ったものか(変えたまま作ると -dirty が付く)。違っても繰り返さない(次に開いたときにもう一度ビルドする)
+      $after = Get-ExeInfo $Exe
+      if ($head -and (-not $after -or $after.Commit -ne $head)) {
+        $made = if ($after -and $after.Commit) { $after.Commit } else { '不明' }
+        Say "  注意: 置いた bin\atlas.exe の作ったときのコミット($made)が、今のコミット($head)と違います(git が管理しているファイルを変えたままだと -dirty が付きます)。次に開いたときに、もう一度ビルドします。"
+      }
+      exit 0
+    }
+    Save-FailedBuild
+    Show-LogTail
     Say ''
-    Say "atlas.exe を用意できませんでした(版 v$want)。次のどちらかをしてから、もう一度実行してください:"
-    $tools = 'Node.js 24 以上(https://nodejs.org/)と Rust(https://rustup.rs/)'
-    if ($OnWindows) { $tools += '、Visual Studio Build Tools の「C++ によるデスクトップ開発」(MSVC と Windows SDK。https://visualstudio.microsoft.com/visual-cpp-build-tools/)' }
-    Say "  - $tools を入れる。この PC でビルドします(足りないもの: $($missing -join '、'))"
-    Say "  - 版 v$want のリリースが出るのを待つ(出ていなければ、atlas を作っている人に知らせてください)"
+    Say 'atlas をビルドできませんでした。上の記録を確かめてください。'
     if (Use-Older) { exit 0 }
     exit 1
   } finally {
@@ -430,5 +337,8 @@ try {
   }
 } catch {
   Say "atlas を用意できませんでした: $($_.Exception.Message)"
+  if (Use-Older) { exit 0 }
   exit 1
+} finally {
+  if ($lock) { $lock.Dispose() }
 }

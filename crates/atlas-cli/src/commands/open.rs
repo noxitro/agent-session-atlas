@@ -66,7 +66,7 @@ pub fn run_open(o: &CliOptions, log: Log<'_>, pick: Option<PickDep<'_>>) -> Resu
         reports: Some(ReportsOptions { root: Some(PathBuf::from(&root)), notes_base: Some(local.notes.clone()), local_out: Some(local.out.clone()), current: Some(info.path.clone()), launch: None }),
     };
     log(&format!("open: {}({})", info.path, info.summary));
-    log(&format!("open: 出力先 {}(読むだけの画面です。タスクタグとメモは送った人が付けたものを出し、この画面では書き換えません)", fp.out));
+    log(&format!("open: 出力先 {}(読むだけの画面です。メモは送った人が付けたものを出し、この画面では書き換えません)", fp.out));
     let all_opts = CliOptions { command: "all".into(), home: Some(info.path.clone()), out: Some(fp.out.clone()), notes_dir: Some(fp.notes.clone()), ..o.clone() };
     let built = PathBuf::from(&fp.built);
     let aggregate = || -> Result<Option<super::BuildResult>> {
@@ -96,7 +96,7 @@ pub fn run_open(o: &CliOptions, log: Log<'_>, pick: Option<PickDep<'_>>) -> Resu
         };
         save(prev.and_then(|s| s.run), true)?;
         run_serve(&p, serve(), log)?;
-        return Ok(RunResult { build, ..RunResult::default() });
+        return Ok(RunResult { build });
     }
     let r = (|| -> Result<Option<super::BuildResult>> {
         // 同じフォルダを別のプロセスが集計していれば、ここで止まる(その状態は書き換えない)
@@ -110,7 +110,7 @@ pub fn run_open(o: &CliOptions, log: Log<'_>, pick: Option<PickDep<'_>>) -> Resu
         Ok(build)
     })();
     match r {
-        Ok(build) => Ok(RunResult { build, ..RunResult::default() }),
+        Ok(build) => Ok(RunResult { build }),
         Err(e) => {
             if e.downcast_ref::<OutBusyError>().is_none() {
                 let m = format!("{e:#}");

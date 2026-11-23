@@ -1,4 +1,4 @@
-//! serve.rs のテスト(packages/cli/test/serve.test.ts・jobs.test.ts・group-export.test.ts の serve の部分の振る舞いを決めているところ)。
+//! serve.rs のテスト(packages/cli/test/serve.test.ts・jobs.test.ts の serve の部分の振る舞いを決めているところ)。
 //! 子プロセスは差し替えて速く回す(本物の起動は e2e の phase14)。
 
 use super::*;
@@ -267,7 +267,7 @@ impl Env {
         if let Some(h) = self.h.take() {
             h.close("テスト");
         }
-        let mut o = ServeOptions::new(&self.out, &self.notes, self.notes.join("groups.json"));
+        let mut o = ServeOptions::new(&self.out, &self.notes);
         o.open = false;
         let logs = self.logs.clone();
         o.log = Arc::new(move |m: &str| lock(&logs).push(m.to_string()));
@@ -550,15 +550,14 @@ fn memo_ids_and_images() {
 fn read_only_view_for_uploaded_out() {
     let mut e = Env::new();
     fs::create_dir_all(&e.notes).unwrap();
+    // 前の版のタスクタグ(groups.json)と送った人のタグ(uploadTags)が残っていても、読まずに無視する
     fs::write(e.notes.join("groups.json"), json!({ "version": 1, "groups": [{ "name": "この PC の", "note": "", "ids": ["s1"] }] }).to_string()).unwrap();
     fs::write(e.out.join("sessions.json"), json!({ "version": 12, "source": { "root": "x", "since": null, "layout": "merged" }, "sessions": [{ "id": "s1", "person": "person-a", "uploadTags": ["武器"], "turns": 0 }] }).to_string()).unwrap();
     e.start(|_| {});
     let s = e.get("/api/state");
     assert_eq!(s.0, 200);
     assert_eq!(s.1["readOnly"], true);
-    // 表示名は「人 / タグ」。元のタグを別に持つ(課題 × 条件の表が、名前の決まりを元のタグから読む)
-    assert_eq!(s.1["groups"], json!([{ "name": "person-a / 武器", "note": "", "ids": ["s1"], "tag": "武器" }]));
-    assert_eq!(e.json("POST", "/api/groups", Some(json!({ "name": "x", "note": "", "ids": ["s1"] }))).0, 403);
+    assert!(s.1.get("groups").is_none());
     assert_eq!(e.json("PUT", "/api/memos/s1", Some(json!({ "text": "x", "rev": "" }))).0, 403);
     assert!(e.req("GET", "/api/memo-editor.js", None, &[], b"").text().contains("読むだけ"));
     // この PC の集計に戻したら(layout が無い)、書ける画面に戻る
@@ -566,7 +565,7 @@ fn read_only_view_for_uploaded_out() {
     fs::write(e.out.join("sessions.json"), json!({ "version": 12, "source": { "root": null, "since": null }, "sessions": [{ "id": "s1", "turns": 0 }] }).to_string()).unwrap();
     let t = e.get("/api/state").1;
     assert!(t.get("readOnly").is_none());
-    assert_eq!(t["groups"][0]["name"], "この PC の");
+    assert!(t.get("groups").is_none());
 }
 
 #[test]
@@ -580,82 +579,19 @@ fn memo_editor_js() {
 }
 
 #[test]
-fn groups_api() {
+fn state_api() {
     let mut e = Env::new();
     e.start(|_| {});
     let s0 = e.get("/api/state");
     assert_eq!(s0.0, 200);
-    assert_eq!((s0.1["version"].clone(), s0.1["groups"].clone(), s0.1["exists"].clone(), s0.1["warnings"].clone()), (json!(1), json!([]), json!(false), json!([])));
+    assert_eq!(s0.1["version"], json!(1));
     assert_eq!(s0.1["notesDir"], json!(e.notes.to_string_lossy()));
-    let body = json!({ "name": "a", "note": "", "ids": ["1"] }).to_string();
-    assert_eq!(e.req("POST", "/api/groups", None, &[], body.as_bytes()).status, 403);
-    assert_eq!(e.req("POST", "/api/groups", Some("wrong"), &[], body.as_bytes()).status, 403);
-    let c = e.json("POST", "/api/groups", Some(json!({ "name": " a ", "note": "n", "ids": ["1", "2", "1"] })));
-    assert_eq!(c.0, 201);
-    assert_eq!(c.1["group"], json!({ "name": "a", "note": "n", "ids": ["1", "2"] }));
-    let saved: Value = serde_json::from_str(&fs::read_to_string(e.notes.join("groups.json")).unwrap()).unwrap();
-    assert_eq!(saved, json!({ "version": 1, "groups": [{ "name": "a", "note": "n", "ids": ["1", "2"] }] }));
-    assert_eq!(e.json("POST", "/api/groups", Some(json!({ "name": "a", "ids": [] }))).0, 409);
-    assert_eq!(e.json("POST", "/api/groups", Some(json!({ "name": "", "ids": [] }))).0, 400);
-    assert_eq!(e.json("POST", "/api/groups", Some(json!({ "name": "b", "ids": "x" }))).0, 400);
-    let t = e.token();
-    assert_eq!(e.req("POST", "/api/groups", Some(&t), &[], b"{oops").status, 400);
-    assert_eq!(e.json("POST", "/api/groups", Some(json!({ "name": "b", "ids": ["3"] }))).0, 201);
-    assert_eq!(e.json("PUT", "/api/groups/a", Some(json!({ "name": "b" }))).0, 409);
-    let u = e.json("PUT", "/api/groups/a", Some(json!({ "name": "A", "note": "nn" })));
-    assert_eq!(u.0, 200);
-    assert_eq!(u.1["group"], json!({ "name": "A", "note": "nn", "ids": ["1", "2"] }));
-    assert_eq!(e.json("PUT", "/api/groups/A", Some(json!({ "ids": ["1", "2", "9", "9"] }))).1["group"]["ids"], json!(["1", "2", "9"]));
-    assert_eq!(e.json("PUT", "/api/groups/A", Some(json!({ "ids": [] }))).1["group"], json!({ "name": "A", "note": "nn", "ids": [] }));
-    // 差分(add / remove)はサーバが読み直した最新の ids に適用する
-    fs::write(e.notes.join("groups.json"), json!({ "version": 1, "groups": [{ "name": "A", "note": "nn", "ids": ["1", "2", "x"] }, { "name": "b", "note": "", "ids": ["3"] }] }).to_string()).unwrap();
-    let d1 = e.json("PUT", "/api/groups/A", Some(json!({ "add": ["y", "2", "y"] })));
-    assert_eq!((d1.1["added"].clone(), d1.1["dup"].clone(), d1.1["removed"].clone(), d1.1["group"]["ids"].clone()), (json!(1), json!(1), json!(0), json!(["1", "2", "x", "y"])));
-    fs::write(e.notes.join("groups.json"), json!({ "version": 1, "groups": [{ "name": "A", "note": "nn", "ids": ["1", "2", "x", "y", "z"] }, { "name": "b", "note": "", "ids": ["3"] }] }).to_string()).unwrap();
-    let d2 = e.json("PUT", "/api/groups/A", Some(json!({ "remove": ["y", "nope"] })));
-    assert_eq!((d2.1["added"].clone(), d2.1["removed"].clone(), d2.1["group"]["ids"].clone()), (json!(0), json!(1), json!(["1", "2", "x", "z"])));
-    assert_eq!(e.json("PUT", "/api/groups/A", Some(json!({ "add": ["q"], "ids": ["1"] }))).0, 400);
-    assert_eq!(e.json("PUT", "/api/groups/A", Some(json!({ "add": "q" }))).0, 400);
-    assert_eq!(e.json("PUT", "/api/groups/A", Some(json!({ "ids": ["1", "2"] }))).0, 200);
-    assert_eq!(e.json("PUT", "/api/groups/zzz", Some(json!({ "note": "" }))).0, 404);
-    assert_eq!(e.json("DELETE", "/api/groups/zzz", None).0, 404);
-    let d = e.json("DELETE", "/api/groups/b", None);
-    assert_eq!(d.0, 200);
-    assert_eq!(d.1["groups"], json!([{ "name": "A", "note": "nn", "ids": ["1", "2"] }]));
-    // 壊れたファイルは読みでは警告、書きでは 409 で上書きしない
-    fs::write(e.notes.join("groups.json"), "{ broken").unwrap();
-    assert_eq!(e.get("/api/state").1["warnings"].as_array().unwrap().len(), 1);
-    let broken = e.json("POST", "/api/groups", Some(json!({ "name": "c", "ids": [] })));
-    assert_eq!(broken.0, 409);
-    assert!(broken.1["error"].as_str().unwrap().contains("書き換えません"));
-    assert_eq!(fs::read_to_string(e.notes.join("groups.json")).unwrap(), "{ broken");
+    assert_eq!(s0.1["memos"], json!({}));
+    assert!(s0.1.get("groups").is_none() && s0.1.get("groupsPath").is_none());
+    // タスクタグの API はもう無い
+    assert_eq!(e.json("POST", "/api/groups", Some(json!({ "name": "a", "note": "", "ids": ["1"] }))).0, 404);
+    assert_eq!(e.json("POST", &format!("/api/groups/{}/upload", encode_uri_component("a")), None).0, 404);
     assert_eq!(e.get("/api/nope").0, 404);
-    assert_eq!(e.json("PATCH", "/api/groups", None).0, 405);
-}
-
-#[test]
-fn concurrent_group_changes_all_apply() {
-    let mut e = Env::new();
-    e.start(|_| {});
-    assert_eq!(e.json("POST", "/api/groups", Some(json!({ "name": "g", "ids": [] }))).0, 201);
-    let (port, host, t) = (e.port(), e.host(), e.token());
-    let mut hs = Vec::new();
-    for i in 0..12 {
-        let (host, t) = (host.clone(), t.clone());
-        hs.push(std::thread::spawn(move || raw(port, "PUT", "/api/groups/g", &host, &[("x-atlas-token", &t)], json!({ "add": [format!("s{i}")] }).to_string().as_bytes()).status));
-    }
-    for n in ["h1", "h2", "h3"] {
-        let (host, t) = (host.clone(), t.clone());
-        hs.push(std::thread::spawn(move || raw(port, "POST", "/api/groups", &host, &[("x-atlas-token", &t)], json!({ "name": n, "ids": [] }).to_string().as_bytes()).status));
-    }
-    let st: Vec<u16> = hs.into_iter().map(|h| h.join().unwrap()).collect();
-    assert_eq!(st, [vec![200; 12], vec![201; 3]].concat());
-    let saved: Value = serde_json::from_str(&fs::read_to_string(e.notes.join("groups.json")).unwrap()).unwrap();
-    let mut names: Vec<&str> = saved["groups"].as_array().unwrap().iter().map(|g| g["name"].as_str().unwrap()).collect();
-    names.sort();
-    assert_eq!(names, vec!["g", "h1", "h2", "h3"]);
-    assert_eq!(saved["groups"][0]["ids"].as_array().unwrap().len(), 12);
-    assert!(fs::read_dir(&e.notes).unwrap().all(|x| !x.unwrap().file_name().to_string_lossy().ends_with(".tmp")));
 }
 
 #[test]
@@ -1034,7 +970,7 @@ fn jobs_spawn_fixed_args_and_keep_log_lines() {
     assert!(env.contains(&(JOB_ENV.into(), "1".into())));
     let lockf: Value = serde_json::from_str(&fs::read_to_string(j.e.out.join(JOB_LOCK_FILE)).unwrap()).unwrap();
     assert_eq!((lockf["pid"].clone(), lockf["kind"].clone()), (json!(std::process::id()), json!("refresh")));
-    assert_eq!(j.post(json!({ "kind": "judge", "limit": 1, "backend": "copilot-cli" })).0, 409);
+    assert_eq!(j.post(json!({ "kind": "bundle" })).0, 409);
     assert_eq!(j.post(json!({ "kind": "full", "id": "s1" })).0, 409);
     assert_eq!(lock(&j.calls).len(), 1);
     j.child(0).stdout("一行目\r\n二行");
@@ -1052,12 +988,12 @@ fn jobs_spawn_fixed_args_and_keep_log_lines() {
     want.sort();
     assert_eq!(log, want);
     assert!(!j.e.out.join(JOB_LOCK_FILE).exists());
-    assert_eq!(j.post(json!({ "kind": "judge", "limit": 3, "backend": "copilot-cli" })).0, 202);
-    assert_eq!(j.args(1), vec!["judge-flow".to_string(), "--limit".into(), "3".into(), "--backend".into(), "copilot-cli".into(), "--out".into(), out.clone(), "--notes-dir".into(), notes.clone()]);
+    assert_eq!(j.post(json!({ "kind": "turn-bundle-zip" })).0, 202);
+    assert_eq!(j.args(1), vec!["turns".to_string(), "bundle".into(), "--unjudged".into(), "--zip".into(), "--out".into(), out.clone(), "--notes-dir".into(), notes.clone()]);
     j.child(1).exit(Some(1));
     j.wait_not_running();
     let c = j.current();
-    assert_eq!((c["kind"].clone(), c["state"].clone(), c["exitCode"].clone(), c["target"].clone()), (json!("judge"), json!("failed"), json!(1), json!({ "limit": 3, "backend": "copilot-cli" })));
+    assert_eq!((c["kind"].clone(), c["state"].clone(), c["exitCode"].clone(), c["target"].clone()), (json!("turn-bundle-zip"), json!("failed"), json!(1), json!({})));
     // 200 行だけ残す
     j.post(json!({ "kind": "refresh" }));
     j.child(2).stdout(&(0..250).map(|i| format!("行 {i}\n")).collect::<String>());
@@ -1075,20 +1011,16 @@ fn job_request_validation() {
         (json!({}), 400),
         (json!({ "kind": "nope" }), 400),
         (json!({ "kind": "refresh", "out": "x" }), 400),
-        (json!({ "kind": "judge", "backend": "copilot-cli" }), 400),
-        (json!({ "kind": "judge", "limit": -1, "backend": "copilot-cli" }), 400),
-        (json!({ "kind": "judge", "limit": 501, "backend": "copilot-cli" }), 400),
-        (json!({ "kind": "judge", "limit": 1.5, "backend": "copilot-cli" }), 400),
-        (json!({ "kind": "judge", "limit": "10", "backend": "copilot-cli" }), 400),
-        (json!({ "kind": "judge", "limit": 10, "backend": null }), 400),
-        (json!({ "kind": "judge", "limit": 10, "backend": "" }), 400),
-        (json!({ "kind": "judge", "limit": 10, "backend": "anthropic" }), 400),
-        (json!({ "kind": "judge", "limit": 10, "backend": "copilot-cli; calc" }), 400),
-        (json!({ "kind": "judge", "limit": 10, "backend": "copilot-cli", "only": "s1" }), 400),
+        // このツールの中で判定するジョブは無くなった(前の版の画面が送ってきたら、分かる文言で断る)
+        (json!({ "kind": "judge", "limit": 3, "backend": "copilot-cli" }), 410),
+        (json!({ "kind": "turn-judge", "limit": 3 }), 410),
+        (json!({ "kind": "task-link" }), 410),
         (json!({ "kind": "full" }), 400),
         (json!({ "kind": "bundle", "perPart": 2 }), 400),
         (json!({ "kind": "bundle-zip", "zip": false }), 400),
-        (json!({ "kind": "turn-bundle-zip" }), 400),
+        (json!({ "kind": "turn-bundle-zip", "limit": 1 }), 400),
+        (json!({ "kind": "task-bundle", "session": "s1" }), 400),
+        (json!({ "kind": "task-m365", "limit": 1 }), 400),
         (json!({ "kind": "export", "id": "s1" }), 400),
         (json!({ "kind": "full", "id": ".." }), 400),
         (json!({ "kind": "full", "id": "a/b" }), 400),
@@ -1102,98 +1034,40 @@ fn job_request_validation() {
     assert_eq!(j.e.req("POST", "/api/jobs", Some(&t), &[], b"[1]").status, 400);
     assert!(lock(&j.calls).is_empty());
     assert!(lock(&j.fulls).is_empty());
-    use crate::jobs::{judge_scope, JobRequest, JudgeScope};
-    use atlas_report::groups::{LoadedGroups, SessionGroup};
-    let loaded = |groups: Vec<SessionGroup>, warnings: Vec<String>| LoadedGroups { path: "notes/groups.json".into(), exists: true, groups, warnings };
-    let tag = SessionGroup { name: "調査: A/B".into(), note: String::new(), ids: vec!["s1".into()] };
-    let groups = loaded(vec![tag.clone()], vec![]);
-    let p = |v: Value| parse_job_request(v.as_object().unwrap(), &|id| id != "nope", Some(&groups));
-    let judge = |limit: i64, scope: JudgeScope, force: bool| -> Result<JobRequest, crate::jobs::JobError> { Ok(JobRequest::Judge { limit, backend: "copilot-cli".into(), scope, force }) };
-    assert_eq!(p(json!({ "kind": "judge", "limit": 0, "backend": "copilot-cli" })), judge(0, JudgeScope::All, false));
-    assert_eq!(p(json!({ "kind": "judge", "limit": 10 })), judge(10, JudgeScope::All, false));
-    assert_eq!(p(json!({ "kind": "judge", "limit": 500, "backend": "copilot-cli" })), judge(500, JudgeScope::All, false));
-    // 範囲: 1 セッション(判定し直すのはこのときだけ)か、タスクタグ(前後の空白は落とす)
-    assert_eq!(p(json!({ "kind": "judge", "limit": 1, "session": "s1" })), judge(1, JudgeScope::Session("s1".into()), false));
-    assert_eq!(p(json!({ "kind": "judge", "limit": 1, "session": "-s1", "force": true })), judge(1, JudgeScope::Session("-s1".into()), true));
-    assert_eq!(p(json!({ "kind": "judge", "limit": 1, "session": "s1", "force": false })), judge(1, JudgeScope::Session("s1".into()), false));
-    assert_eq!(p(json!({ "kind": "judge", "limit": 20, "group": " 調査: A/B " })), judge(20, JudgeScope::Group("調査: A/B".into()), false));
-    assert_eq!(p(json!({ "kind": "turn-judge", "limit": 5000, "session": "s1" })), Ok(JobRequest::TurnJudge { limit: 5000, scope: JudgeScope::Session("s1".into()) }));
-    assert_eq!(p(json!({ "kind": "turn-judge", "limit": 9, "group": "調査: A/B" })), Ok(JobRequest::TurnJudge { limit: 9, scope: JudgeScope::Group("調査: A/B".into()) }));
-    assert_eq!(p(json!({ "kind": "turn-judge", "limit": 9 })), Ok(JobRequest::TurnJudge { limit: 9, scope: JudgeScope::All }));
+    use crate::jobs::JobRequest;
+    let p = |v: Value| parse_job_request(v.as_object().unwrap(), &|id| id != "nope");
+    for (kind, want) in [
+        ("turn-bundle-zip", JobRequest::TurnBundleZip),
+        ("task-bundle", JobRequest::TaskBundle),
+        ("task-bundle-zip", JobRequest::TaskBundleZip),
+        ("task-m365", JobRequest::TaskM365),
+    ] {
+        assert_eq!(p(json!({ "kind": kind })), Ok(want));
+    }
+    let gone = p(json!({ "kind": "judge", "limit": 1 })).unwrap_err();
+    assert!(gone.message.contains("無くなりました") && gone.message.contains("ZIP"), "{}", gone.message);
+    // 前の版の画面は、読み込み直すだけでは変わらない(集計し直すと作り直される)
+    assert!(gone.message.contains("「集計し直す」か atlas export"), "{}", gone.message);
     let bad: Vec<(Value, u16)> = vec![
-        (json!({ "kind": "judge", "limit": 1, "session": "s1", "group": "調査: A/B" }), 400),
-        (json!({ "kind": "judge", "limit": 1, "session": "a/b" }), 400),
-        (json!({ "kind": "judge", "limit": 1, "session": ["s1"] }), 400),
-        (json!({ "kind": "judge", "limit": 1, "session": "nope" }), 404),
-        (json!({ "kind": "judge", "limit": 1, "group": "" }), 400),
-        (json!({ "kind": "judge", "limit": 1, "group": 1 }), 400),
-        (json!({ "kind": "judge", "limit": 1, "group": "無い" }), 404),
-        (json!({ "kind": "judge", "limit": 1, "force": true }), 400),
-        (json!({ "kind": "judge", "limit": 1, "group": "調査: A/B", "force": true }), 400),
-        (json!({ "kind": "judge", "limit": 1, "session": "s1", "force": "yes" }), 400),
-        (json!({ "kind": "turn-judge", "limit": 1, "session": "s1", "force": true }), 400),
-        (json!({ "kind": "full", "id": "s1", "session": "s1" }), 400),
+        // タスクタグの範囲(group)は、もう受けない
         (json!({ "kind": "bundle", "group": "調査: A/B" }), 400),
+        (json!({ "kind": "full", "id": "s1", "session": "s1" }), 400),
     ];
     for (body, status) in bad {
         let got = p(body.clone()).map_err(|e| e.status);
         assert_eq!((body.clone(), got), (body, Err(status)));
     }
-    // 件数の確認(judge-preview)も同じ関数で確かめる: session の形、空の group は 400
-    let scope = |session: Option<&str>, group: Option<&str>, g: Option<&LoadedGroups>| judge_scope(session, group, &|id| id != "nope", g).map_err(|e| e.status);
-    assert_eq!(scope(Some("a/b"), None, None), Err(400));
-    assert_eq!(scope(Some(""), None, None), Err(400));
-    assert_eq!(scope(None, Some(" "), Some(&groups)), Err(400));
-    assert_eq!(scope(Some("s1"), Some("調査: A/B"), Some(&groups)), Err(400));
-    assert_eq!(scope(None, Some("調査: A/B"), None), Err(404));
-    // groups.json が壊れている(読めなかった箇所がある)ときは、無いとは言わずに 409 で理由を添える。見つかれば使える
-    let broken = loaded(vec![], vec!["notes/groups.json: JSON として読めないため無視しました(x)".into()]);
-    let e = judge_scope(None, Some("調査: A/B"), &|_| true, Some(&broken)).unwrap_err();
-    assert_eq!(e.status, 409);
-    assert!(e.message.contains("タスクタグ「調査: A/B」") && e.message.contains("JSON として読めないため無視しました"), "{}", e.message);
-    let partly = loaded(vec![tag], vec!["notes/groups.json: groups[1] の形が違うため無視しました".into()]);
-    assert_eq!(judge_scope(None, Some("調査: A/B"), &|_| true, Some(&partly)), Ok(JudgeScope::Group("調査: A/B".into())));
-    assert_eq!(judge_scope(None, Some("無い"), &|_| true, Some(&partly)).map_err(|e| e.status), Err(409));
 }
 
+/// 添付ファイルを作る前に出す、未判定の数(工数・依頼ごと)
 #[test]
-fn scoped_judge_jobs() {
+fn judge_preview_counts_effort_and_turns() {
     let mut j = JobEnv::new();
-    fs::create_dir_all(&j.e.notes).unwrap();
-    fs::write(j.e.notes.join("groups.json"), json!({ "version": 1, "groups": [{ "name": "調査: A/B", "note": "", "ids": ["s2", "gone"] }] }).to_string()).unwrap();
     j.start(|_| {});
-    let (out, notes) = (s(&j.e.out), s(&j.e.notes));
-    let tail = |v: &[&str]| v.iter().map(|x| x.to_string()).chain(["--out".to_string(), out.clone(), "--notes-dir".into(), notes.clone()]).collect::<Vec<_>>();
-    // 1 セッションを判定し直す(id は sessions.json にあるものだけ)
-    assert_eq!(j.post(json!({ "kind": "judge", "limit": 1, "session": "zz" })).0, 404);
-    assert_eq!(j.post(json!({ "kind": "judge", "limit": 1, "group": "無い" })).0, 404);
-    let r = j.post(json!({ "kind": "judge", "limit": 1, "session": "s1", "force": true }));
-    assert_eq!((r.0, r.1["target"].clone()), (202, json!({ "limit": 1, "backend": "copilot-cli", "session": "s1", "force": true })));
-    assert_eq!(j.args(0), tail(&["judge-flow", "--limit", "1", "--backend", "copilot-cli", "--session=s1", "--force"]));
-    j.child(0).exit(Some(0));
-    j.wait_not_running();
-    let r = j.post(json!({ "kind": "turn-judge", "limit": 5000, "group": "調査: A/B" }));
-    assert_eq!((r.0, r.1["target"].clone()), (202, json!({ "limit": 5000, "group": "調査: A/B" })));
-    assert_eq!(j.args(1), tail(&["judge-flow", "--turns", "--limit", "5000", "--group=調査: A/B"]));
-    j.child(1).exit(Some(0));
-    j.wait_not_running();
-    // 件数も同じ範囲で数える(タスクタグの中の、sessions.json に無い id は数えない)
     fs::write(j.e.out.join("judgments.json"), json!({ "schemaVersion": 1, "items": [{ "sessionId": "s1" }] }).to_string()).unwrap();
     let pv = |q: &str| j.e.json("GET", &format!("/api/jobs/judge-preview{q}"), None);
     let counts = |v: &Value| (v["eligible"].clone(), v["judged"].clone(), v["pending"].clone());
-    assert_eq!(counts(&pv("").1), (json!(2), json!(1), json!(1)));
-    assert_eq!(counts(&pv("?session=s1").1), (json!(1), json!(1), json!(0)));
-    assert_eq!(counts(&pv("?session=s3").1), (json!(0), json!(0), json!(0)));
-    assert_eq!(counts(&pv("?group=%E8%AA%BF%E6%9F%BB%3A%20A%2FB").1), (json!(1), json!(0), json!(1)));
-    assert_eq!(pv("?session=zz").0, 404);
-    assert_eq!(pv("?group=x").0, 404);
-    assert_eq!(pv("?session=s1&group=x").0, 400);
-    // POST と同じ確かめ方: session の形が正しくない、group が空(前後の空白だけ)なら 400
-    assert_eq!(pv("?session=a%2Fb").0, 400);
-    assert_eq!(pv("?session=").0, 400);
-    assert_eq!(pv("?group=").0, 400);
-    assert_eq!(pv("?group=%20%20").0, 400);
-    assert_eq!(j.post(json!({ "kind": "judge", "limit": 1, "group": "  " })).0, 400);
+    assert_eq!(pv("").1, json!({ "eligible": 2, "judged": 1, "pending": 1 }));
     // 依頼ごと: s1 は 2 依頼、s2 は依頼ごとの記録が無い
     fs::write(
         j.e.out.join("sessions.json"),
@@ -1204,87 +1078,21 @@ fn scoped_judge_jobs() {
         .to_string(),
     )
     .unwrap();
-    let t = pv("?target=turns&session=s1").1;
-    assert_eq!((counts(&t), t["withoutTurns"].clone()), ((json!(2), json!(0), json!(2)), json!(0)));
-    assert_eq!(counts(&pv("?target=turns").1), (json!(2), json!(0), json!(2)));
-    let t = pv("?target=turns&group=%E8%AA%BF%E6%9F%BB%3A%20A%2FB").1;
-    assert_eq!((counts(&t), t["withoutTurns"].clone()), ((json!(0), json!(0), json!(0)), json!(1)));
-    // 依頼ごとの判定で 1 回にまとめる依頼の数(画面の回数の目安。セッションごとの判定には載せない)
-    assert_eq!(t["chunk"], json!(atlas_judge::turn_bundle::DEFAULT_TURN_LIMITS.chunk_turns));
-    assert_eq!(pv("?target=turns").1["chunk"], json!(6));
-    assert_eq!(pv("").1.get("chunk"), None);
-    // groups.json が壊れていると、タスクタグを「無い」とは言わずに、読めなかったことを添えて 409(POST も件数の確認も)
-    fs::write(j.e.notes.join("groups.json"), "{ 壊れた").unwrap();
-    let (st, body) = pv("?group=%E8%AA%BF%E6%9F%BB%3A%20A%2FB");
-    assert_eq!(st, 409);
-    let msg = body["error"].as_str().unwrap_or_default().to_string();
-    assert!(msg.contains("タスクタグ「調査: A/B」") && msg.contains("JSON として読めない"), "{msg}");
-    let (st, body) = j.post(json!({ "kind": "turn-judge", "limit": 1, "group": "調査: A/B" }));
-    assert_eq!(st, 409);
-    assert!(body["error"].as_str().is_some_and(|m| m.contains("JSON として読めない")), "{body}");
-    // ファイルが無いときは今までどおり 404
-    fs::remove_file(j.e.notes.join("groups.json")).unwrap();
-    assert_eq!(pv("?group=%E8%AA%BF%E6%9F%BB%3A%20A%2FB").0, 404);
-    assert_eq!(j.post(json!({ "kind": "judge", "limit": 1, "group": "調査: A/B" })).0, 404);
-}
-
-#[test]
-fn read_only_view_judges_by_members_tags() {
-    let mut j = JobEnv::new();
-    // 自分の groups.json に同じ名前の別のタグがあっても、読むだけの画面は送った人のタグ(/api/state の groups)で解決する
-    fs::create_dir_all(&j.e.notes).unwrap();
-    fs::write(j.e.notes.join("groups.json"), json!({ "version": 1, "groups": [{ "name": "person-a / 武器", "note": "", "ids": ["s3"] }, { "name": "自分だけ", "note": "", "ids": ["s1"] }] }).to_string()).unwrap();
-    let sessions = |extra: Vec<Value>| {
-        let mut v = vec![
-            json!({ "id": "s1", "person": "person-a", "uploadTags": ["武器"], "turns": 2, "firstUserMessage": "x", "analysis": { "turnStats": [{}, {}] } }),
-            json!({ "id": "s2", "person": "person-a", "uploadTags": ["武器"], "turns": 1, "firstUserMessage": "y" }),
-            json!({ "id": "s3", "person": "person-b", "uploadTags": ["盾"], "turns": 1, "firstUserMessage": "z" }),
-        ];
-        v.extend(extra);
-        json!({ "version": 12, "source": { "root": "x", "since": null, "layout": "merged" }, "sessions": v }).to_string()
-    };
-    fs::write(j.e.out.join("sessions.json"), sessions(vec![])).unwrap();
-    j.start(|_| {});
-    let (out, notes) = (s(&j.e.out), s(&j.e.notes));
-    let tail = |v: &[&str]| v.iter().map(|x| x.to_string()).chain(["--out".to_string(), out.clone(), "--notes-dir".into(), notes.clone()]).collect::<Vec<_>>();
-    assert_eq!(j.e.get("/api/state").1["readOnly"], true);
-    let pv = |q: &str| j.e.json("GET", &format!("/api/jobs/judge-preview{q}"), None);
-    let counts = |v: &Value| (v["eligible"].clone(), v["judged"].clone(), v["pending"].clone());
-    let tag = "person-a%20%2F%20%E6%AD%A6%E5%99%A8";
-    assert_eq!(counts(&pv(&format!("?group={tag}")).1), (json!(2), json!(0), json!(2)));
-    assert_eq!(counts(&pv(&format!("?target=turns&group={tag}")).1), (json!(2), json!(0), json!(2)));
-    // 自分の groups.json にだけあるタグは、画面に無いので 404
-    assert_eq!(pv("?group=%E8%87%AA%E5%88%86%E3%81%A0%E3%81%91").0, 404);
-    assert_eq!(j.post(json!({ "kind": "judge", "limit": 1, "group": "自分だけ" })).0, 404);
-    // 子プロセスには名前ではなく、解決した id を --session で渡す(表示用の target は名前のまま)
-    let r = j.post(json!({ "kind": "judge", "limit": 2, "group": "person-a / 武器" }));
-    assert_eq!((r.0, r.1["target"].clone()), (202, json!({ "limit": 2, "backend": "copilot-cli", "group": "person-a / 武器" })));
-    assert_eq!(j.args(0), tail(&["judge-flow", "--limit", "2", "--backend", "copilot-cli", "--session=s1,s2"]));
-    j.child(0).exit(Some(0));
-    j.wait_not_running();
-    let r = j.post(json!({ "kind": "turn-judge", "limit": 9, "group": "person-a / 武器" }));
-    assert_eq!(r.0, 202);
-    assert_eq!(j.args(1), tail(&["judge-flow", "--turns", "--limit", "9", "--session=s1,s2"]));
-    j.child(1).exit(Some(0));
-    j.wait_not_running();
-    // コマンドラインに収まらないほど多いタグは 400(すべてを対象にしてもらう)。子プロセスは起動しない
-    sleep(20);
-    let many: Vec<Value> = (0..800).map(|i| json!({ "id": format!("m{i:039}"), "person": "person-c", "uploadTags": ["多い"], "turns": 1, "firstUserMessage": "x" })).collect();
-    fs::write(j.e.out.join("sessions.json"), sessions(many)).unwrap();
-    let (st, body) = j.post(json!({ "kind": "judge", "limit": 1, "group": "person-c / 多い" }));
-    assert_eq!(st, 400, "{body}");
-    assert!(body["error"].as_str().is_some_and(|m| m.contains("多すぎ") && m.contains("すべて")), "{body}");
-    assert_eq!(lock(&j.calls).len(), 2);
-    assert_eq!(counts(&pv("?group=person-c%20%2F%20%E5%A4%9A%E3%81%84").1), (json!(800), json!(0), json!(800)));
-    // 解決した id が sessions.json に 1 件も無ければ 400(件数の確認は 0 件)
-    use crate::jobs::{pin_group_ids, JobRequest, JudgeScope};
-    use atlas_report::groups::{LoadedGroups, SessionGroup};
-    let g = LoadedGroups { path: String::new(), exists: true, groups: vec![SessionGroup { name: "t".into(), note: String::new(), ids: vec!["gone".into()] }], warnings: vec![] };
-    let req = JobRequest::TurnJudge { limit: 1, scope: JudgeScope::Group("t".into()) };
-    assert_eq!(pin_group_ids(req.clone(), &g, &|_| false).map_err(|e| e.status), Err(400));
-    assert_eq!(pin_group_ids(req, &g, &|_| true), Ok(JobRequest::TurnJudge { limit: 1, scope: JudgeScope::GroupIds { name: "t".into(), ids: vec!["gone".into()] } }));
-    let all = JobRequest::Judge { limit: 1, backend: "copilot-cli".into(), scope: JudgeScope::All, force: false };
-    assert_eq!(pin_group_ids(all.clone(), &g, &|_| false), Ok(all));
+    let t = pv("?target=turns").1;
+    assert_eq!((counts(&t), t["withoutTurns"].clone()), ((json!(2), json!(0), json!(2)), json!(1)));
+    // 判定のモデルや回数の目安は、もう返さない(このツールは判定しない)
+    for k in ["model", "byok", "modelError", "chunk"] {
+        assert!(t.get(k).is_none() && pv("").1.get(k).is_none(), "{k}");
+    }
+    // タスクの設定も記録も無ければ、タスクへの紐づけは 0
+    assert_eq!(pv("?target=tasks").1, json!({ "eligible": 0, "judged": 0, "pending": 0 }));
+    // 前の版の詳細ページは ?session= で 1 セッションの件数を聞く。全体の件数を返さず、無くなったことを知らせる(そのページは判定の欄を出さない)
+    for q in ["?session=s1", "?session=s1&target=turns"] {
+        let (st, v) = pv(q);
+        assert_eq!(st, 410, "{q}");
+        assert!(v["error"].as_str().unwrap().contains("集計し直す"), "{v}");
+        assert!(v.get("pending").is_none());
+    }
 }
 
 #[test]
@@ -1319,7 +1127,7 @@ fn chat_judge_parts_and_import() {
     // 消えたファイル(part-02)は一覧に出さない
     assert_eq!(
         j.e.json("GET", "/api/judge/parts", None).1,
-        json!({ "exists": true, "generatedAt": "2026-11-05T00:00:00.000Z", "unjudgedOnly": true, "count": 2, "parts": [{ "path": "bundle/parts/part-01.md", "name": "part-01.md", "sessions": 2, "judged": 0, "bytes": 30 }], "canAutomate": cfg!(windows) })
+        json!({ "exists": true, "generatedAt": "2026-11-05T00:00:00.000Z", "unjudgedOnly": true, "count": 2, "parts": [{ "path": "bundle/parts/part-01.md", "name": "part-01.md", "sessions": 2, "judged": 0, "bytes": 30 }], "judged": 0, "canAutomate": cfg!(windows) })
     );
     assert_eq!(j.e.json("GET", "/api/judge/parts/part-01.md", None).1, json!({ "name": "part-01.md", "text": "# 指示\nパケット s1 s2" }));
     // ZIP: 束の一覧より後に書いたものだけを返す(出力先からの相対パスだけ。フルパスは返さない)。前の束の ZIP は返さない
@@ -1429,25 +1237,6 @@ fn full_job_done_or_failed() {
     j.wait_not_running();
     let c = j.current();
     assert_eq!((c["state"].clone(), c["log"].clone()), (json!("failed"), json!(["失敗しました: スナップショットがありません"])));
-}
-
-#[test]
-fn judge_preview_counts_and_model() {
-    let mut j = JobEnv::new();
-    j.start(|_| {});
-    let cfg = j.e.dir.join("atlas.config.json");
-    assert_eq!(j.e.json("GET", "/api/jobs/judge-preview", None).1, json!({ "eligible": 2, "judged": 0, "pending": 2, "model": null, "byok": false, "modelError": null }));
-    fs::write(&cfg, json!({ "judgeModel": "anthropic/claude-sonnet-5-5" }).to_string()).unwrap();
-    let pv = j.e.json("GET", "/api/jobs/judge-preview", None).1;
-    assert_eq!((pv["pending"].clone(), pv["model"].clone(), pv["byok"].clone(), pv["modelError"].clone()), (json!(2), json!("anthropic/claude-sonnet-5-5"), json!(true), Value::Null));
-    fs::write(&cfg, "{ broken").unwrap();
-    let pv = j.e.json("GET", "/api/jobs/judge-preview", None).1;
-    assert_eq!((pv["model"].clone(), pv["byok"].clone()), (Value::Null, json!(false)));
-    assert!(pv["modelError"].as_str().unwrap().contains("atlas.config.json を読めません"));
-    fs::write(&cfg, "{}").unwrap();
-    fs::write(j.e.out.join("judgments.json"), json!({ "schemaVersion": 1, "items": [{ "sessionId": "s1" }, { "sessionId": "zzz" }] }).to_string()).unwrap();
-    let pv = j.e.json("GET", "/api/jobs/judge-preview", None).1;
-    assert_eq!((pv["eligible"].clone(), pv["judged"].clone(), pv["pending"].clone()), (json!(2), json!(1), json!(1)));
 }
 
 #[test]
@@ -1596,22 +1385,259 @@ fn view_too_large() {
     assert!(b.get("html").is_none());
 }
 
-// ---------- group-export.test.ts の serve の部分 ----------
+// ---------- 管理ツールのタスク ----------
 
-#[test]
-fn group_export_api_needs_token_and_releases_lock() {
-    let mut e = Env::new();
+/// タスクの状態(tasks.json)と設定(atlas.config.json の tasks)と sessions.json を置いた場
+fn tasks_env() -> Env {
+    let e = Env::new();
     fs::create_dir_all(&e.notes).unwrap();
-    fs::write(e.out.join("sessions.json"), json!({ "sessions": [] }).to_string()).unwrap();
-    fs::write(e.notes.join("groups.json"), json!({ "version": 1, "groups": [{ "name": "調査: A/B", "note": "", "ids": ["s1"] }] }).to_string()).unwrap();
-    e.start(|_| {});
-    let path = format!("/api/groups/{}/export", encode_uri_component("調査: A/B"));
-    assert_eq!(e.req("POST", &path, None, &[], b"").status, 403);
-    let ok = e.json("POST", &path, None);
-    assert_eq!(ok.0, 200);
-    assert_eq!((ok.1["name"].clone(), ok.1["sessions"].clone(), ok.1["missing"].clone()), (json!("調査: A/B"), json!(0), json!(1)));
-    assert_eq!(e.json("POST", &format!("/api/groups/{}/export", encode_uri_component("無い")), None).0, 404);
-    assert!(!e.out.join(JOB_LOCK_FILE).exists());
+    fs::write(e.dir.join("export.xml"), "<Tasks/>").unwrap();
+    fs::write(e.dir.join("atlas.config.json"), json!({ "tasks": { "file": "export.xml" } }).to_string()).unwrap();
+    let task = |name: &str, done: bool| json!({ "name": name, "status": if done { "Done" } else { "Open" }, "done": done, "firstSeenAt": "2026-11-20T00:00:00.000Z", "doneAt": if done { json!("2026-11-24T03:00:00.000Z") } else { Value::Null }, "lastSeenAt": "2026-11-24T03:00:00.000Z", "missing": false });
+    fs::write(e.notes.join("tasks.json"), json!({ "version": 1, "tasks": { "ABC-12": task("一覧の不具合", true), "XY-9": task("帳票の出力", false) } }).to_string()).unwrap();
+    fs::write(
+        e.out.join("sessions.json"),
+        json!({ "sessions": [
+            { "id": "s1", "name": "ABC-12 を直す", "turns": 1, "firstUserMessage": "直して", "createdAt": "2026-11-23T01:00:00.000Z", "activeMs": 3_600_000, "analysis": { "requests": ["直して"] } },
+            { "id": "s2", "name": "雑談", "turns": 1, "firstUserMessage": "こんにちは", "createdAt": "2026-11-23T02:00:00.000Z", "activeMs": 600_000 },
+        ] })
+        .to_string(),
+    )
+    .unwrap();
+    e
 }
 
+#[test]
+fn tasks_api_and_manual_links() {
+    let mut e = tasks_env();
+    e.start(|_| {});
+    let (st, v) = e.get("/api/tasks");
+    assert_eq!(st, 200);
+    assert_eq!(v["readOnly"], false);
+    assert_eq!(v["tasks"]["configured"], true);
+    assert_eq!(v["tasks"]["items"].as_array().unwrap().len(), 2);
+    assert_eq!(v["tasks"]["links"], json!({}));
+    // LLM に頼む数(依頼の記録があって紐づけの無いセッション)
+    assert_eq!(v["unresolved"], 2);
+    let put = |id: &str, body: Value, token: bool| {
+        let t = e.token();
+        let r = e.req("PUT", &format!("/api/tasks/links/{id}"), token.then_some(t.as_str()), &[], body.to_string().as_bytes());
+        (r.status, r.json())
+    };
+    // token が無ければ書かない
+    assert_eq!(put("s2", json!({ "taskId": "XY-9" }), false).0, 403);
+    // 前の形(taskId が 1 つ)でも送れる
+    let (st, v) = put("s2", json!({ "taskId": "XY-9" }), true);
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["tasks"]["links"]["s2"], json!({ "taskIds": ["XY-9"], "countedTaskIds": ["XY-9"], "source": "manual", "reason": "" }));
+    assert_eq!(v["unresolved"], 1);
+    let saved = js::parse_json(&fs::read_to_string(e.notes.join("task-links.json")).unwrap()).unwrap();
+    assert_eq!(saved["links"]["s2"]["source"], "manual");
+    // 工数はその場で数え直す(s2 は 10 分の実働)
+    let xy = v["tasks"]["items"].as_array().unwrap().iter().find(|t| t["id"] == "XY-9").unwrap().clone();
+    assert_eq!((xy["sessions"].clone(), xy["aiActiveMs"].clone(), xy["excluded"].clone()), (json!(1), json!(600_000), json!("notDone")));
+    // 推定人手工数はレポートと同じゆるい読み方で読む(必須の項目が欠けた判定でも、時間があれば数える)
+    fs::write(e.out.join("judgments.json"), json!({ "schemaVersion": 1, "items": [{ "sessionId": "s2", "humanEffort": { "hours": 3 } }] }).to_string()).unwrap();
+    let xy = e.get("/api/tasks").1["tasks"]["items"].as_array().unwrap().iter().find(|t| t["id"] == "XY-9").unwrap().clone();
+    assert_eq!((xy["humanHours"].clone(), xy["judgedSessions"].clone()), (json!(3), json!(1)));
+    // いくつかのタスク(送った順。重なりは除く)。実働と推定人手工数はタスクの数で等分する
+    let (st, v) = put("s2", json!({ "taskIds": ["XY-9", "ABC-12", "XY-9"] }), true);
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["tasks"]["links"]["s2"]["taskIds"], json!(["XY-9", "ABC-12"]));
+    let item = |v: &Value, id: &str| v["tasks"]["items"].as_array().unwrap().iter().find(|t| t["id"] == id).unwrap().clone();
+    assert_eq!((item(&v, "XY-9")["aiActiveMs"].clone(), item(&v, "XY-9")["humanHours"].clone(), item(&v, "XY-9")["sharedSessions"].clone()), (json!(300_000), json!(1.5), json!(1)));
+    assert_eq!((item(&v, "ABC-12")["aiActiveMs"].clone(), item(&v, "ABC-12")["sessions"].clone()), (json!(300_000), json!(1)));
+    assert_eq!(v["tasks"]["summary"]["sharedSessions"], 1);
+    let saved = js::parse_json(&fs::read_to_string(e.notes.join("task-links.json")).unwrap()).unwrap();
+    assert_eq!(saved["version"], 2);
+    assert_eq!(saved["links"]["s2"]["taskIds"], json!(["XY-9", "ABC-12"]));
+    assert!(saved["links"]["s2"].get("taskId").is_none());
+    // 上限を超えた並び・知らないタスク・文字列でない ID は断る
+    // 重なりを除いてから上限を確かめる(同じ ID を上限より多く送っても 1 つ)
+    let same: Vec<String> = (0..=atlas_report::tasks::links::MAX_TASKS_PER_SESSION).map(|_| "XY-9".to_string()).collect();
+    let (st, v) = put("s2", json!({ "taskIds": same }), true);
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["tasks"]["links"]["s2"]["taskIds"], json!(["XY-9"]));
+    let many: Vec<String> = (0..=atlas_report::tasks::links::MAX_TASKS_PER_SESSION).map(|i| format!("T-{i}")).collect();
+    let (st, v) = put("s2", json!({ "taskIds": many }), true);
+    assert_eq!(st, 400);
+    assert!(v["error"].as_str().unwrap().contains("個まで"), "{v}");
+    // 一覧に無いタスクは、無いものを全部書いて断る
+    let (st, v) = put("s2", json!({ "taskIds": ["XY-9", "NOPE", "GONE"] }), true);
+    assert_eq!(st, 400);
+    assert!(v["error"].as_str().unwrap().contains("「NOPE」「GONE」"), "{v}");
+    put("s2", json!({ "taskIds": ["XY-9", "ABC-12"] }), true);
+    assert_eq!(put("s2", json!({ "taskIds": ["XY-9", 1] }), true).0, 400);
+    assert_eq!(put("s2", json!({ "taskIds": [""] }), true).0, 400);
+    assert_eq!(put("s2", json!({ "taskIds": "XY-9" }), true).0, 400);
+    assert_eq!(put("s2", json!({ "taskIds": ["XY-9"], "taskId": "XY-9" }), true).0, 400);
+    assert_eq!(put("s2", json!({ "taskIds": ["XY-9"], "auto": true }), true).0, 400);
+    // 断ったものは書いていない
+    assert_eq!(e.get("/api/tasks").1["tasks"]["links"]["s2"]["taskIds"], json!(["XY-9", "ABC-12"]));
+    // 「どのタスクでもない」(空の並び。前の形の null も同じ)
+    let (_, v) = put("s2", json!({ "taskIds": [] }), true);
+    assert_eq!(v["tasks"]["links"]["s2"]["taskIds"], json!([]));
+    assert_eq!(v["tasks"]["links"]["s2"]["source"], "manual");
+    let (_, v) = put("s2", json!({ "taskId": null }), true);
+    assert_eq!(v["tasks"]["links"]["s2"]["taskIds"], json!([]));
+    // 自動に戻すと、機械の紐づけをすぐ決め直す(s1 は題名に ID がある)
+    let (_, v) = put("s1", json!({ "taskId": "XY-9" }), true);
+    assert_eq!(v["tasks"]["links"]["s1"]["source"], "manual");
+    let (st, v) = put("s1", json!({ "auto": true }), true);
+    assert_eq!(st, 200);
+    assert_eq!(v["tasks"]["links"]["s1"], json!({ "taskIds": ["ABC-12"], "countedTaskIds": ["ABC-12"], "source": "machine", "reason": "ID が題名にある" }));
+    let (_, v) = put("s2", json!({ "auto": true }), true);
+    assert!(v["tasks"]["links"].get("s2").is_none());
+    // LLM の紐づけも自動に戻せる(機械の紐づけを決め直す)
+    let links_path = e.notes.join("task-links.json");
+    let mut saved = js::parse_json(&fs::read_to_string(&links_path).unwrap()).unwrap();
+    saved["links"]["s1"] = json!({ "taskId": "XY-9", "source": "llm", "reason": "LLM", "confidence": 0.7, "at": "t" });
+    fs::write(&links_path, saved.to_string()).unwrap();
+    let (st, v) = put("s1", json!({ "auto": true }), true);
+    assert_eq!(st, 200);
+    assert_eq!(v["tasks"]["links"]["s1"]["source"], "machine");
+    // 形の違うもの
+    assert_eq!(put("s1", json!({ "taskId": "NOPE" }), true).0, 400);
+    assert_eq!(put("s1", json!({ "taskId": 1 }), true).0, 400);
+    assert_eq!(put("s1", json!({ "taskId": "XY-9", "auto": true }), true).0, 400);
+    assert_eq!(put("s1", json!({ "task": "XY-9" }), true).0, 400);
+    assert_eq!(put("zz", json!({ "taskId": "XY-9" }), true).0, 404);
+    assert_eq!(put("a%2Fb", json!({ "taskId": "XY-9" }), true).0, 400);
+    assert_eq!(e.json("GET", "/api/tasks/links/s1", None).0, 405);
+    assert_eq!(e.json("POST", "/api/tasks", None).0, 405);
+    // 壊れた task-links.json は書き換えない
+    fs::write(e.notes.join("task-links.json"), "{ 壊れた").unwrap();
+    assert_eq!(put("s1", json!({ "taskId": "XY-9" }), true).0, 409);
+    assert_eq!(fs::read_to_string(e.notes.join("task-links.json")).unwrap(), "{ 壊れた");
+    assert!(!e.get("/api/tasks").1["tasks"]["warnings"].as_array().unwrap().is_empty());
+    // ロックそのものを作れない(書けない)ときは 500 と理由
+    fs::remove_file(e.notes.join("task-links.json")).unwrap();
+    let lock = e.notes.join("task-links.json.lock");
+    let _ = fs::remove_file(&lock);
+    fs::create_dir_all(&lock).unwrap();
+    let (st, v) = put("s1", json!({ "taskId": "XY-9" }), true);
+    assert_eq!(st, 500, "{v}");
+    assert!(v["error"].as_str().unwrap().contains("ロックのファイル"), "{v}");
+}
 
+/// 画面に出す「LLM に頼むセッション」の数は、tasks bundle が束に入れるものと同じ決め方(開いただけ・文の無い・候補の無いセッションは数えない)
+#[test]
+fn unresolved_count_matches_the_llm_job() {
+    let mut e = tasks_env();
+    let task = |done_at: Option<&str>| json!({ "name": "前に終わった仕事", "status": "Done", "done": done_at.is_some(), "firstSeenAt": "t", "doneAt": done_at, "lastSeenAt": "t" });
+    fs::write(e.notes.join("tasks.json"), json!({ "version": 1, "tasks": { "OLD-1": task(Some("2026-11-10T00:00:00.000Z")) } }).to_string()).unwrap();
+    fs::write(
+        e.out.join("sessions.json"),
+        json!({ "sessions": [
+            { "id": "a", "name": "前の作業", "turns": 1, "createdAt": "2026-11-05T00:00:00.000Z" },
+            { "id": "b", "name": "開いただけ", "turns": 0, "empty": true, "createdAt": "2026-11-05T00:00:00.000Z" },
+            { "id": "c", "name": "", "turns": 1, "createdAt": "2026-11-05T00:00:00.000Z" },
+            { "id": "d", "name": "後の作業", "turns": 1, "firstUserMessage": "直して", "createdAt": "2026-11-20T00:00:00.000Z" },
+        ] })
+        .to_string(),
+    )
+    .unwrap();
+    e.start(|_| {});
+    assert_eq!(e.get("/api/tasks").1["unresolved"], 1);
+    assert_eq!(e.json("GET", "/api/jobs/judge-preview?target=tasks", None).1["pending"], 1);
+}
+
+#[test]
+fn tasks_api_without_config_and_read_only() {
+    let mut e = Env::new();
+    fs::write(e.out.join("sessions.json"), json!({ "sessions": [{ "id": "s1", "turns": 0 }] }).to_string()).unwrap();
+    e.start(|_| {});
+    // 設定もタスクの記録も無ければ節は無い
+    assert_eq!(e.get("/api/tasks").1, json!({ "readOnly": false, "tasks": null, "unresolved": 0 }));
+    // 送り先から集計した出力先: 送った人がセッションごとに添えた記録から作り、紐づけは書き換えない
+    let meta = e.out.join("snapshot").join("session-state").join("s1");
+    fs::create_dir_all(&meta).unwrap();
+    // 今の版の記録(tasks の並び)。前の版の task(1 つ)は sender.rs のテストで読む
+    let t = |id: &str, name: &str| json!({ "id": id, "name": name, "status": "Done", "done": true, "doneAt": "2026-11-20T03:00:00Z", "source": "llm", "reason": "r" });
+    fs::write(meta.join("atlas-session.json"), json!({ "version": 1, "id": "s1", "tasks": [t("T-1", "送った人のタスク"), t("T-2", "もう一つ")] }).to_string()).unwrap();
+    sleep(20);
+    fs::write(e.out.join("sessions.json"), json!({ "source": { "root": "x", "since": null, "layout": "merged" }, "sessions": [{ "id": "s1", "turns": 0, "createdAt": "2026-11-19T01:00:00Z" }] }).to_string()).unwrap();
+    let v = e.get("/api/tasks").1;
+    assert_eq!(v["readOnly"], true);
+    assert_eq!(v["tasks"]["origin"], "sender");
+    assert_eq!(v["tasks"]["items"][0]["name"], "送った人のタスク");
+    assert_eq!(v["tasks"]["links"]["s1"]["source"], "llm");
+    assert_eq!(v["tasks"]["links"]["s1"]["taskIds"], json!(["T-1", "T-2"]));
+    assert_eq!(v["tasks"]["items"][1]["sharedSessions"], 1);
+    assert_eq!(e.json("PUT", "/api/tasks/links/s1", Some(json!({ "taskId": null }))).0, 403);
+    assert_eq!(e.json("PUT", "/api/tasks/links/s1", Some(json!({ "taskIds": [] }))).0, 403);
+    // タスクの紐づけの添付ファイルと取り込みも断る(紐づけは送った人のもの)
+    for (method, path) in [("GET", "/api/judge/parts?target=tasks"), ("GET", "/api/judge/parts/part-01.md?target=tasks"), ("POST", "/api/judge/import?target=tasks")] {
+        assert_eq!(e.json(method, path, (method == "POST").then(|| json!({ "text": "{}" }))).0, 403, "{path}");
+    }
+    assert_eq!(e.json("GET", "/api/jobs/judge-preview?target=tasks", None).1["pending"], 0);
+    assert!(!e.notes.join("task-links.json").exists());
+}
+
+#[test]
+fn task_bundle_jobs() {
+    let mut j = JobEnv::new();
+    j.start(|_| {});
+    let (out, notes) = (s(&j.e.out), s(&j.e.notes));
+    let tail = |v: &[&str]| v.iter().map(|x| x.to_string()).chain(["--out".to_string(), out.clone(), "--notes-dir".into(), notes.clone()]).collect::<Vec<_>>();
+    let r = j.post(json!({ "kind": "task-bundle" }));
+    assert_eq!((r.0, r.1["kind"].clone(), r.1["target"].clone()), (202, json!("task-bundle"), json!({})));
+    assert_eq!(j.args(0), tail(&["tasks", "bundle"]));
+    // ほかの処理が動いている間は始めない
+    assert_eq!(j.post(json!({ "kind": "task-bundle-zip" })).0, 409);
+    j.child(0).exit(Some(0));
+    j.wait_not_running();
+    assert_eq!(j.post(json!({ "kind": "task-bundle-zip" })).0, 202);
+    assert_eq!(j.args(1), tail(&["tasks", "bundle", "--zip"]));
+    j.child(1).exit(Some(0));
+    j.wait_not_running();
+    assert_eq!(j.post(json!({ "kind": "task-m365" })).0, 202);
+    assert_eq!(j.args(2), tail(&["tasks", "m365"]));
+    j.child(2).exit(Some(0));
+    j.wait_not_running();
+    assert!(j.e.logs().iter().any(|l| l.starts_with("[タスクの紐づけの ZIP を作る] 開始")), "{:?}", j.e.logs());
+    // 読むだけの画面では始めない(紐づけは送った人のもの)
+    sleep(20);
+    fs::write(j.e.out.join("sessions.json"), json!({ "source": { "root": "x", "since": null, "layout": "flat" }, "sessions": [{ "id": "s1", "turns": 1 }] }).to_string()).unwrap();
+    for kind in ["task-bundle", "task-bundle-zip", "task-m365"] {
+        assert_eq!(j.post(json!({ "kind": kind })).0, 403, "{kind}");
+    }
+}
+
+/// タスクへの紐づけの添付ファイル(?target=tasks): 一覧・件数・返答の取り込み(候補と照らし、手動の紐づけは変えない)
+#[test]
+fn task_link_parts_and_import() {
+    let mut e = tasks_env();
+    e.start(|_| {});
+    let pv = e.json("GET", "/api/jobs/judge-preview?target=tasks", None).1;
+    assert_eq!(pv, json!({ "eligible": 2, "judged": 0, "pending": 2 }));
+    assert_eq!(e.json("GET", "/api/judge/parts?target=tasks", None).1, json!({ "exists": false, "canAutomate": cfg!(windows) }));
+    let q = |id: &str| atlas_judge::task_link::LinkQuery { session_id: id.into(), title: "t".into(), prompts: vec![], candidates: vec![("ABC-12".into(), "一覧の不具合".into()), ("XY-9".into(), "帳票の出力".into())] };
+    let dir = e.out.join(crate::paths::TASK_BUNDLE_DIR);
+    atlas_judge::task_link::build_task_bundle(&[q("s1"), q("s2")], &atlas_judge::task_link::TaskBundleOptions { bundle_dir: dir.clone(), per_part: Some(1), boundary: None, scope: IndexMap::new(), now: Some("2026-11-23T00:00:00.000Z".into()) }).unwrap();
+    let parts = e.json("GET", "/api/judge/parts?target=tasks", None).1;
+    assert_eq!((parts["exists"].clone(), parts["count"].clone(), parts["judged"].clone()), (json!(true), json!(2), json!(0)));
+    assert_eq!(parts["parts"][0], json!({ "path": "task-bundle/parts/part-01.md", "name": "part-01.md", "sessions": 1, "judged": 0, "bytes": parts["parts"][0]["bytes"].clone() }));
+    assert!(e.json("GET", "/api/judge/parts/part-02.md?target=tasks", None).1["text"].as_str().unwrap().contains("セッション ID: s2"));
+    // 取り込む前に、画面で s2 を手動で紐づけた
+    let t = e.token();
+    assert_eq!(e.req("PUT", "/api/tasks/links/s2", Some(&t), &[], json!({ "taskIds": ["XY-9"] }).to_string().as_bytes()).status, 200);
+    let import = |text: String| e.json("POST", "/api/judge/import?target=tasks", Some(json!({ "text": text })));
+    // 候補に無い ID だけの答えは形の誤り(何も書かない。直す点を返す)
+    let bad = import(json!({ "links": [{ "sessionId": "s1", "taskIds": ["NOPE"], "confidence": 0.5 }] }).to_string());
+    assert_eq!(bad.0, 400);
+    assert!(bad.1["error"].as_str().unwrap().contains("紐づけの形式に合いません"), "{}", bad.1);
+    assert!(bad.1["problems"][0].as_str().unwrap().contains("NOPE"));
+    let ok = import(format!("```json\n{}\n```", json!({ "links": [{ "sessionId": "s1", "taskIds": ["XY-9", "NOPE"], "confidence": 0.6, "reason": "帳票" }, { "sessionId": "s2", "taskIds": [], "confidence": 0.9 }] })));
+    assert_eq!(ok.0, 200, "{}", ok.1);
+    assert_eq!((ok.1["imported"].clone(), ok.1["kept"].clone(), ok.1["parts"]["judged"].clone()), (json!(1), json!(1), json!(2)));
+    // 除いた ID と、書かなかったセッションの知らせを画面に返す
+    let notices: Vec<String> = ok.1["notices"].as_array().unwrap().iter().map(|n| n.as_str().unwrap().to_string()).collect();
+    assert!(notices.iter().any(|n| n.starts_with("手動で紐づけてあるので書かなかったセッション 1 件: s2")), "{notices:?}");
+    assert!(notices.iter().any(|n| n.contains("候補に無いタスクの ID を除きました: NOPE")), "{notices:?}");
+    let links = e.get("/api/tasks").1["tasks"]["links"].clone();
+    assert_eq!((links["s1"]["source"].clone(), links["s1"]["taskIds"].clone()), (json!("llm"), json!(["XY-9"])));
+    assert_eq!((links["s2"]["source"].clone(), links["s2"]["taskIds"].clone()), (json!("manual"), json!(["XY-9"])));
+    assert_eq!(e.json("GET", "/api/jobs/judge-preview?target=tasks", None).1, json!({ "eligible": 1, "judged": 1, "pending": 0 }));
+    assert!(e.logs().iter().any(|l| l.starts_with("tasks import(画面): 1 セッションの紐づけを取り込みました")), "{:?}", e.logs());
+}

@@ -1,12 +1,11 @@
 //! atlas 自身の版(build.rs がビルドのときに決める)。
-//! 配る版は、リリースのワークフローが付けるタグ v<版> の版(ビルドのときに環境変数 ATLAS_VERSION で渡す)。
-//! 渡さずに作ったもの(この PC でのビルド・cargo test)は、ワークスペースの Cargo.toml の version。
-//! scripts/ensure-atlas.ps1 は `atlas --version` の 1 語目の後ろの版と、チェックアウトの HEAD から辿れるいちばん新しいタグ v<版> の版を比べ、
-//! 違えば実行ファイルを取り直す。
+//! 版は、ワークスペースの Cargo.toml の version(ビルドのときに環境変数 ATLAS_VERSION を渡せば、その版)。
+//! scripts/ensure-atlas.ps1 は `atlas --version` に出る作ったときのコミットを、チェックアウトの HEAD と比べ、違えばビルドし直す
+//! (git で取得したフォルダでなければ、版を Cargo.toml の version と比べる)。
 
-/// 配る版(ATLAS_VERSION。無ければワークスペースの Cargo.toml の version。semver の形)
+/// 版(ATLAS_VERSION。無ければワークスペースの Cargo.toml の version。semver の形)
 pub const VERSION: &str = env!("ATLAS_VERSION");
-/// 作ったときの git のコミット(全桁。分からなければ空)
+/// 作ったときの git のコミット(全桁。git が管理しているファイルを変えたまま作ったら、後ろに -dirty。分からなければ空)
 pub const COMMIT: &str = env!("ATLAS_BUILD_COMMIT");
 /// 版の目印(画面とサーバの版のずれを見つけるのに使う。build.rs の説明を参照)
 pub const CODE_STAMP: &str = env!("ATLAS_CODE_STAMP");
@@ -31,6 +30,8 @@ mod tests {
         }
         assert_eq!(CODE_STAMP.len(), 16);
         assert!(CODE_STAMP.bytes().all(|b| b.is_ascii_hexdigit()));
-        assert!(COMMIT.is_empty() || COMMIT.len() >= 40);
+        // scripts/ensure-atlas.ps1 が読む形(全桁の 16 進と、変えたまま作ったときの -dirty)
+        let hex = COMMIT.strip_suffix("-dirty").unwrap_or(COMMIT);
+        assert!(COMMIT.is_empty() || (hex.len() >= 40 && hex.bytes().all(|b| b.is_ascii_hexdigit())), "{COMMIT}");
     }
 }

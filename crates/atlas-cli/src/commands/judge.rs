@@ -1,17 +1,11 @@
-//! atlas judge run / import(packages/cli/src/commands.ts の makeBackend・runJudgeCommand の移植)。ログの文言は TS 版と同じ。
-//! 判定のバックエンドとモデルの決め方は TS 版と同じにする(既定は copilot-cli。モデルは --model > atlas.config.json の judgeModel > なし)。
+//! atlas judge import(外部の LLM で作った工数の判定を取り込む。packages/cli/src/commands.ts の runJudgeCommand の移植)。ログの文言は TS 版と同じ。
+//! 判定はこのツールの中では回さない(チャットに貼るか ZIP にまとめて、外部の LLM に頼む。docs/judge.md)。
 
-use super::{JudgeSummary, Log};
+use super::Log;
 use crate::args::JudgeCliOptions;
-use crate::config::resolve_judge_model;
 use crate::paths::{resolve, Paths};
 use anyhow::{bail, Result};
-#[cfg(feature = "anthropic-backend")]
-use atlas_judge::backends::anthropic::{anthropic_backend, AnthropicOptions};
-use atlas_judge::backends::copilot_cli::{copilot_cli_backend, CopilotCliOptions};
-use atlas_judge::backends::{ensure_backend_built, JudgeBackend};
 use atlas_judge::judgments_io::{import_judgments, ImportOptions};
-use atlas_judge::run::{run_judge, RunOptions};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::path::Path;
@@ -26,92 +20,32 @@ pub(crate) fn read_sessions_value(path: &Path) -> Result<Vec<Value>> {
     }
 }
 
-/// 判定のバックエンドを作る。anthropic は機能 anthropic-backend を付けてビルドしたときだけ(なければ入れ方を書いたエラー)
-pub fn make_backend(j: &JudgeCliOptions, model: Option<String>) -> Result<Box<dyn JudgeBackend>> {
-    ensure_backend_built(&j.backend)?;
-    let timeout_ms = j.timeout_sec * 1000;
-    match j.backend.as_str() {
-        "copilot-cli" => Ok(Box::new(copilot_cli_backend(CopilotCliOptions { bin: None, model, allow_tools: Some(j.allow_tools), timeout_ms: Some(timeout_ms) }))),
-        #[cfg(feature = "anthropic-backend")]
-        "anthropic" => Ok(Box::new(anthropic_backend(AnthropicOptions { model, timeout_ms: Some(timeout_ms), ..Default::default() })?)),
-        other => bail!("不明なバックエンドです: {other}"),
-    }
-}
-
-pub fn run_judge_command(p: &Paths, j: &JudgeCliOptions, log: Log<'_>) -> Result<Option<JudgeSummary>> {
-    if j.action == "import" {
-        let known: Option<HashSet<String>> = if p.sessions.exists() {
-            Some(read_sessions_value(&p.sessions)?.iter().filter_map(|s| s.get("id").and_then(Value::as_str).map(str::to_string)).collect())
-        } else {
-            None
-        };
-        let file = resolve(j.file.as_deref().unwrap_or(""));
-        let r = import_judgments(&file, &p.judgments, ImportOptions { known_ids: known.as_ref(), ..Default::default() })?;
-        log(&format!(
-            "judge import: {} 件を取り込みました(既存の上書き {} 件、取り込み元の重複 {} 件)→ {}(計 {} 件)",
-            r.imported,
-            r.overwritten,
-            r.duplicates,
-            p.judgments.display(),
-            r.total
-        ));
-        if !r.unknown_ids.is_empty() {
-            log(&format!(
-                "judge import: 注意 sessions.json に無いセッション ID が {} 件あります(レポートには出ません): {}{}",
-                r.unknown_ids.len(),
-                r.unknown_ids.iter().take(5).cloned().collect::<Vec<_>>().join(", "),
-                if r.unknown_ids.len() > 5 { " …" } else { "" }
-            ));
-        }
-        for n in &r.notes {
-            log(&format!("judge import: 注意 {n}"));
-        }
-        return Ok(None);
-    }
-    // 入っていないバックエンドなら、従量課金の注意を出す前に止める
-    ensure_backend_built(&j.backend)?;
-    if j.backend == "anthropic" {
-        log("judge: 注意 anthropic バックエンドは Anthropic API の従量課金です");
-    }
-    let model = if j.backend == "copilot-cli" { resolve_judge_model(j.model.as_deref(), "judge", log)? } else { j.model.clone() };
-    let backend = make_backend(j, model)?;
-    let s = run_judge(&RunOptions {
-        bundle_dir: p.bundle.clone(),
-        judgments_path: p.judgments.clone(),
-        backend: backend.as_ref(),
-        limit: j.limit,
-        only: j.only.clone(),
-        force: j.force,
-        concurrency: j.concurrency,
-        log,
-        now: None,
-    })?;
-    let usage = s.usage.totals.js_entries().into_iter().take(8).map(|(k, v)| format!("{k}={}", atlas_core::js::num_to_string(*v))).collect::<Vec<_>>().join(", ");
+pub fn run_judge_import(p: &Paths, j: &JudgeCliOptions, log: Log<'_>) -> Result<()> {
+    let known: Option<HashSet<String>> = if p.sessions.exists() {
+        Some(read_sessions_value(&p.sessions)?.iter().filter_map(|s| s.get("id").and_then(Value::as_str).map(str::to_string)).collect())
+    } else {
+        None
+    };
+    let file = resolve(j.file.as_deref().unwrap_or(""));
+    let r = import_judgments(&file, &p.judgments, ImportOptions { known_ids: known.as_ref(), ..Default::default() })?;
     log(&format!(
-        "judge: 完了 成功 {} / 失敗 {} / 対象 {}(判定済みでスキップ {})→ {}",
-        s.succeeded,
-        s.failed.len(),
-        s.attempted,
-        s.already_judged,
-        p.judgments.display()
+        "judge import: {} 件を取り込みました(既存の上書き {} 件、取り込み元の重複 {} 件)→ {}(計 {} 件)",
+        r.imported,
+        r.overwritten,
+        r.duplicates,
+        p.judgments.display(),
+        r.total
     ));
-    log(&format!(
-        "judge: 判定自体の使用量 {} 回分{}{}",
-        s.usage.runs,
-        if usage.is_empty() { String::new() } else { format!("({usage})") },
-        if s.usage.missing > 0 { format!("、取得できなかった {} 回", s.usage.missing) } else { String::new() }
-    ));
-    if !s.wiki_page_drops.is_empty() {
-        let ids = &s.wiki_page_drops;
+    if !r.unknown_ids.is_empty() {
         log(&format!(
-            "judge: 注意 llm-wiki のページごとの判定(wikiPages)の形が崩れていて、一部か全部を捨てたセッション {} 件(そのページは未判定): {}{}",
-            ids.len(),
-            ids.iter().take(5).cloned().collect::<Vec<_>>().join(", "),
-            if ids.len() > 5 { " …" } else { "" }
+            "judge import: 注意 sessions.json に無いセッション ID が {} 件あります(レポートには出ません): {}{}",
+            r.unknown_ids.len(),
+            r.unknown_ids.iter().take(5).cloned().collect::<Vec<_>>().join(", "),
+            if r.unknown_ids.len() > 5 { " …" } else { "" }
         ));
     }
-    for n in s.notes.iter().take(5) {
-        log(&format!("judge: 補足 {n}"));
+    for n in &r.notes {
+        log(&format!("judge import: 注意 {n}"));
     }
-    Ok(Some(JudgeSummary { failed: s.failed.iter().map(|f| f.session_id.clone()).collect() }))
+    Ok(())
 }
