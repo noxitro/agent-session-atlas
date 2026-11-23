@@ -58,6 +58,7 @@ pub fn run_cmd(cmd: &str, args: &[&str], cwd: &Path, timeout: Duration) -> CmdRe
     let mut c = Command::new(cmd);
     c.args(args).current_dir(cwd).env("GIT_TERMINAL_PROMPT", "0").env("GCM_INTERACTIVE", "never").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     hide_window(&mut c);
+    crate::jobs::ProcessTree::prepare(&mut c);
     let mut child = match c.spawn() {
         Ok(ch) => ch,
         Err(e) => return CmdResult { code: -1, stdout: String::new(), stderr: e.to_string() },

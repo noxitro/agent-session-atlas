@@ -411,7 +411,9 @@ impl ChildLike for RealChild {
 }
 
 /// 子プロセスと、その子孫(M365 Copilot を操作する PowerShell など)。止めるときはまとめて止める。
-/// Windows ではジョブオブジェクトに入れておき、すぐに子孫ごと止める(TS 版は taskkill /T /F。Rust 版の集計は速く、taskkill が動き出す前に終わることがある)
+/// Windows ではジョブオブジェクトに入れておき、すぐに子孫ごと止める(TS 版は taskkill /T /F。Rust 版の集計は速く、taskkill が動き出す前に終わることがある)。
+/// Windows 以外では、起動する前に [`ProcessTree::prepare`] で子を新しいプロセスグループの先頭にしておき、止めるときはグループごと止める
+/// (子の pid にだけ送ると、子が起動したもの(孫)が親を失って残る)
 pub(crate) struct ProcessTree {
     pid: u32,
     #[cfg(windows)]
@@ -419,6 +421,17 @@ pub(crate) struct ProcessTree {
 }
 
 impl ProcessTree {
+    /// 起動する前に呼ぶ。Windows 以外では、子を新しいプロセスグループの先頭にする(子孫はそのグループを受け継ぐので、kill でまとめて止められる)。
+    /// 端末の Ctrl+C は親のグループにだけ届き、子には届かない(Windows も窓の無い子には届かない)。Windows では何もしない(ジョブオブジェクトに入れるのは起動した後)
+    pub(crate) fn prepare(c: &mut std::process::Command) -> &mut std::process::Command {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            c.process_group(0);
+        }
+        c
+    }
+
     pub(crate) fn of(child: &std::process::Child) -> ProcessTree {
         #[cfg(windows)]
         {
@@ -489,9 +502,12 @@ fn kill_tree(pid: u32) {
     }
     #[cfg(unix)]
     {
+        // prepare で子をグループの先頭にしてあれば、グループの id は子の pid と同じ。グループごと止め、送れなければ(prepare していない)子だけに送る
         // SAFETY: SIGTERM を送るだけ
         unsafe {
-            libc::kill(pid as libc::pid_t, libc::SIGTERM);
+            if libc::kill(-(pid as libc::pid_t), libc::SIGTERM) != 0 {
+                libc::kill(pid as libc::pid_t, libc::SIGTERM);
+            }
         }
     }
 }
@@ -504,6 +520,7 @@ pub fn default_spawn() -> SpawnFn {
         let mut c = std::process::Command::new(exe);
         c.args(args).envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str()))).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
         crate::self_update::hide_window(&mut c);
+        ProcessTree::prepare(&mut c);
         let child = c.spawn()?;
         let tree = Arc::new(ProcessTree::of(&child));
         Ok(Box::new(RealChild { child, tree }) as Box<dyn ChildLike>)
@@ -814,5 +831,28 @@ mod tests {
         assert!(e.0.contains("画面の帯で進み具合を見られます。"));
         let _ = child.kill();
         let _ = child.wait();
+    }
+
+    /// 止めると、子が起動したもの(孫)も止まる(Windows 以外はプロセスグループごと止める。子の pid だけに送ると孫が残る)
+    #[cfg(unix)]
+    #[test]
+    fn process_tree_kill_stops_grandchildren() {
+        use std::io::BufRead;
+        let mut c = std::process::Command::new("sh");
+        c.args(["-c", "sleep 30 & echo $!; wait"]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped());
+        ProcessTree::prepare(&mut c);
+        let mut child = c.spawn().unwrap();
+        let tree = ProcessTree::of(&child);
+        let mut line = String::new();
+        std::io::BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
+        let grandchild: u32 = line.trim().parse().unwrap();
+        assert!(sys::alive(grandchild));
+        tree.kill();
+        child.wait().unwrap();
+        let t = std::time::Instant::now();
+        while sys::alive(grandchild) && t.elapsed() < std::time::Duration::from_secs(5) {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(!sys::alive(grandchild), "孫({grandchild})が残っています");
     }
 }
