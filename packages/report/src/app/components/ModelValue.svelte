@@ -8,10 +8,9 @@
   let { sessions }: { sessions: readonly SessionSummary[] } = $props();
 
   let split = $state(true);
-  /** 人で絞る(空はすべて)。人の記録が 2 人以上あるときだけ選べる。読み取りも、選んだ人のセッションだけで作る */
-  let person = $state('');
-  /** 人の記録が無いセッションを選ぶ値(| はフォルダの名前に使えないので、人の名前と重ならない) */
-  const NO_PERSON = '|none|';
+  /** 人で絞る。人の記録が 2 人以上あるときだけ選べる。読み取りも、選んだ人のセッションだけで作る(none は人の記録が無いセッション) */
+  type PersonPick = { kind: 'all' } | { kind: 'none' } | { kind: 'person'; name: string };
+  let pick = $state<PersonPick>({ kind: 'all' });
   const people = $derived.by(() => {
     const n = new Map<string, number>();
     let none = 0;
@@ -22,11 +21,24 @@
     return { list: [...n].map(([name, c]) => ({ name, sessions: c })).sort((a, b) => a.name.localeCompare(b.name)), none };
   });
   const byPerson = $derived(people.list.length >= 2);
-  // 上の絞り込みで選んでいた人がいなくなったら、すべてに戻す
+  // 上の絞り込みで選んでいた人がいなくなったときと、人が 1 人以下になって選択欄が消えたときは、すべてに戻す
   $effect(() => {
-    if (person && !(person === NO_PERSON ? people.none > 0 : people.list.some((p) => p.name === person))) person = '';
+    const p = pick;
+    if (p.kind === 'all') return;
+    const gone = !byPerson || (p.kind === 'none' ? people.none === 0 : !people.list.some((x) => x.name === p.name));
+    if (gone) pick = { kind: 'all' };
   });
-  const mine = $derived(!byPerson || !person ? sessions : sessions.filter((s) => (person === NO_PERSON ? !s.person : s.person === person)));
+  /** 選択欄の値(選択肢の位置で表す。名前を値にしないので、どんな名前とも重ならない) */
+  const pickValue = $derived(pick.kind === 'all' ? 'all' : pick.kind === 'none' ? 'none' : `p${people.list.findIndex((x) => x.name === (pick as { name: string }).name)}`);
+  function choose(v: string): void {
+    if (v === 'all') pick = { kind: 'all' };
+    else if (v === 'none') pick = { kind: 'none' };
+    else {
+      const x = people.list[Number(v.slice(1))];
+      pick = x ? { kind: 'person', name: x.name } : { kind: 'all' };
+    }
+  }
+  const mine = $derived(!byPerson || pick.kind === 'all' ? sessions : sessions.filter((s) => (pick.kind === 'none' ? !s.person : pick.kind === 'person' && s.person === pick.name)));
   const rows = $derived(modelValue(mine, split));
   const findings = $derived(effortFindings(modelValue(mine, true), modelValue(mine, false)));
   // 記録の無い効果の列は出さない
@@ -54,16 +66,16 @@
     {#if byPerson}
       <label class="who">
         <span>人</span>
-        <select value={person} onchange={(e) => (person = e.currentTarget.value)} data-testid="model-value-person">
-          <option value="">すべて({int(sessions.length)})</option>
-          {#each people.list as p (p.name)}<option value={p.name}>{p.name}({int(p.sessions)})</option>{/each}
-          {#if people.none > 0}<option value={NO_PERSON}>(人の記録なし)({int(people.none)})</option>{/if}
+        <select value={pickValue} onchange={(e) => choose(e.currentTarget.value)} data-testid="model-value-person">
+          <option value="all">すべて({int(sessions.length)})</option>
+          {#each people.list as p, i (p.name)}<option value={`p${i}`}>{p.name}({int(p.sessions)})</option>{/each}
+          {#if people.none > 0}<option value="none">(人の記録なし)({int(people.none)})</option>{/if}
         </select>
       </label>
     {/if}
   </div>
-  {#if byPerson && person}
-    <p class="note" data-testid="model-value-person-note">{person === NO_PERSON ? '人の記録が無いセッション' : `${person} のセッション`}({int(mine.length)} 件)だけで表と読み取りを作っています。</p>
+  {#if byPerson && pick.kind !== 'all'}
+    <p class="note" data-testid="model-value-person-note">{pick.kind === 'none' ? '人の記録が無いセッション' : `${pick.name} のセッション`}({int(mine.length)} 件)だけで表と読み取りを作っています。</p>
   {/if}
   {#if rows.length === 0}
     <p class="note">モデル別のリクエストの記録があるセッションがありません。</p>

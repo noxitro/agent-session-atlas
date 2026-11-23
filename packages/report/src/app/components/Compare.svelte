@@ -73,8 +73,12 @@
   let modelEffort = $state('');
   let modelFrom = $state('');
   let modelTo = $state('');
+  // 選択肢は全期間から作り(期間を変えても選んだ値が消えないように)、件数は選んだ期間の中で数える
   const mainModels = $derived(modelChoices(sessions));
+  const modelPool = $derived(sessions.filter((s) => inPeriod(s, modelFrom, modelTo)));
+  const modelCount = $derived(new Map(modelChoices(modelPool).map((c) => [c.model, c.sessions])));
   const modelEfforts = $derived(modelEffortChoices(sessions, modelA, modelB));
+  const modelEffortCount = $derived(new Map(modelEffortChoices(modelPool, modelA, modelB).map((c) => [c.effort, c])));
   // wiki の参照: 期間(A と B に同じ期間)。数えていない集計では選べない(理由を出す)
   let wikiFrom = $state('');
   let wikiTo = $state('');
@@ -215,7 +219,7 @@
   const personMean = (r: PersonPairedRow): string => (r.mean == null ? '—' : `${signed(r, r.mean)}${unitWord(r)}`);
   /** 人を単位にした幅。2 人未満で出さないときは、使えた人の数を添える */
   function personWidth(r: PersonPairedRow): string {
-    if (r.ci) return width(r);
+    if (r.ci) return `${width(r)}${r.clipped ? '(端で切った)' : ''}`;
     return r.persons === 0 ? '—' : `—(使えた人が ${r.persons} 人)`;
   }
   /** 人ごとの表の 1 つの値: その人の差。値の出ない人は — */
@@ -223,6 +227,7 @@
     const d = r.diffs[i];
     return d == null ? '—' : `${signed(r, d)}${unitWord(r)}`;
   };
+  const lagText = (d: number | null): string => (d == null ? '—' : `${dec(Math.round(d * 10) / 10)} 日`);
   /** 人ごとの表の値の下に添える A → B */
   function personAB(key: string, i: number): string {
     const g = persons?.groups[i];
@@ -257,7 +262,7 @@
             <label>
               <span class="sr-only">{side === 'a' ? 'A' : 'B'} のモデル</span>
               <select value={side === 'a' ? modelA : modelB} onchange={(e) => (side === 'a' ? (modelA = e.currentTarget.value) : (modelB = e.currentTarget.value))} data-testid={`compare-model-${side}`}>
-                {#each mainModels as m (m.model)}<option value={m.model}>{modelLabel(m.model)}({int(m.sessions)})</option>{/each}
+                {#each mainModels as m (m.model)}<option value={m.model}>{modelLabel(m.model)}(期間内 {int(modelCount.get(m.model) ?? 0)})</option>{/each}
               </select>
             </label>
           </fieldset>
@@ -268,7 +273,7 @@
             <span class="sr-only">モデルを比べる推論強度</span>
             <select value={modelEffort} onchange={(e) => (modelEffort = e.currentTarget.value)} data-testid="compare-model-effort">
               <option value="">すべて</option>
-              {#each modelEfforts as c (c.effort)}<option value={c.effort}>{effortLabel(c.effort)}(A {int(c.a)}・B {int(c.b)})</option>{/each}
+              {#each modelEfforts as c (c.effort)}<option value={c.effort}>{effortLabel(c.effort)}(期間内 A {int(modelEffortCount.get(c.effort)?.a ?? 0)}・B {int(modelEffortCount.get(c.effort)?.b ?? 0)})</option>{/each}
             </select>
           </label>
         </fieldset>
@@ -411,14 +416,15 @@
   {/if}
   {#if kind === 'model' && modelA}
     <p class="note" data-testid="compare-model-excluded">
-      {modelLabel(modelA)}{modelB !== modelA ? `・${modelLabel(modelB)}` : ''} のセッションのうち、本体が混在のセッション {int(mSplit.mixed)} 件・記録なし {int(mSplit.none)} 件は、A と B のどちらにも入れていません(本体のリクエストの {Math.round(MAIN_EFFORT_SHARE * 100)}% 以上が同じモデルと推論強度の組のセッションだけを数えます。強度を「すべて」にしても、同じモデルで強度が混ざったセッションは混在です。期間の中の件数)。{modelEffort ? `A と B のモデルで、本体の強度が ${effortLabel(modelEffort)} 以外と決まったセッションも入れていません。` : ''}
+      {modelLabel(modelA)}{modelB !== modelA ? `・${modelLabel(modelB)}` : ''} のセッションのうち、本体が混在のセッション {int(mSplit.mixed)} 件・記録なし {int(mSplit.none)} 件は、A と B のどちらにも入れていません(本体のリクエストの {Math.round(MAIN_EFFORT_SHARE * 100)}% 以上が同じモデルと推論強度の組のセッションだけを数えます。強度を「すべて」にしても、同じモデルで強度が混ざったセッションは混在です。期間の中の件数)。強度を途中で変えたセッション(どの組も本体のリクエストの {Math.round(MAIN_EFFORT_SHARE * 100)}% に届かないもの)は、A と B のどちらにも入りません。いつも強度を混ぜて使ったモデルは、本体と決まったセッションが無いので、モデルの選択肢に出ません。{modelEffort ? `A と B のモデルで、本体の強度が ${effortLabel(modelEffort)} 以外と決まったセッションも入れていません。` : ''}
     </p>
   {/if}
   {#if persons}
     <div class="persons" data-testid="compare-person">
       <h3 id="compare-person-h">人ごとの差</h3>
+      <p class="sides" data-testid="compare-person-sides">A: {sideLabel('a')} / B: {sideLabel('b')}{#if kind === 'wiki'}。差(B − A)は「wiki を参照していない − 参照した」です{/if}</p>
       <p class="note">
-        同じ人の中での差を平均したもので、人の違いの影響を減らします。人の数が少ないと幅は広くなります。両方の側にそれぞれ {countWord} {minCount} 件以上ある人だけを使います(記録のある {int(persons.groups.length)} 人のうち {int(persons.eligible)} 人)。行ごとに、その人の A と B の値がどちらも出ているもの(上の表と同じ「—」の決まり)の差(B − A)を、人を単位にして平均します。差の幅(95%)は、人ごとの差の平均 ± t × 標準偏差 ÷ √人数(t は自由度 = 使えた人の数 − 1 の t 分布の値)で、使えた人が 2 人未満の行には出しません。{#if persons.unassigned.a + persons.unassigned.b > 0}人の記録が無い{countWord}(A {int(persons.unassigned.a)} 件・B {int(persons.unassigned.b)} 件)は入れていません。{/if}差は相関で、条件の違いが原因とは限りません。
+        同じ人の中での差を平均したもので、人の違いの影響を減らします。人の数が少ないと幅は広くなります。両方の側にそれぞれ {countWord} {minCount} 件以上ある人だけを使います(記録のある {int(persons.groups.length)} 人のうち {int(persons.eligible)} 人)。行ごとに、その人の A と B の値がどちらも出ているもの(上の表と同じ「—」の決まり)の差(B − A)を、人を単位にして平均します。差の幅(95%)は、人ごとの差の平均 ± t × 標準偏差 ÷ √人数(t は自由度 = 使えた人の数 − 1 の t 分布の値)で、使えた人が 2 人未満の行には出しません。割合の行の幅は、差のとりうる範囲(±100 ポイント)で切り、切ったときは「(端で切った)」と書きます。どの人も同じ重みで平均する(セッションの数によらない)ので、上の表の差とは一致しません。ツールの失敗・拒否の率は、その人のツール呼び出しが {minCount} 回未満の側を「—」にします{#if kind === 'phase'}(次の依頼で直し・差し戻しの割合も、次の依頼があった依頼が {minCount} 件未満の側は「—」){/if}。{#if persons.unassigned.a + persons.unassigned.b > 0}人の記録が無い{countWord}(A {int(persons.unassigned.a)} 件・B {int(persons.unassigned.b)} 件)は入れていません。{/if}差は相関で、条件の違いが原因とは限りません。
       </p>
       {#if persons.eligible < 2}
         <p class="note" data-testid="compare-person-reason">
@@ -452,7 +458,7 @@
       {#if personRetention}
         <div class="table-scroll weeks">
           <table class="ledger" aria-labelledby="compare-person-ret-h" data-testid="compare-person-retention">
-            <caption id="compare-person-ret-h" class="cap">AI の変更の残存(人ごと。ほかの行と混ぜずに別に出します)</caption>
+            <caption id="compare-person-ret-h" class="cap">AI の変更の残存(人ごと。ほかの行と混ぜずに別に出します。A: {sideLabel('a')} / B: {sideLabel('b')})</caption>
             <thead>
               <tr>
                 <th scope="col">指標</th>
@@ -468,7 +474,9 @@
                 <td class="num">{int(personRetention.persons)}</td>
                 <td class="num">{personMean(personRetention)}</td>
                 <td class="num ci">{personWidth(personRetention)}</td>
-                <td class="how">単位はまとまり。人ごとに、照合できたまとまり(照合不可を除く)に対する残っている(そのまま + 直されて)割合を出し、その差を平均します。照合できたセッションがその人の A と B のどちらも {RETENTION_MIN_SESSIONS} 件以上ある人だけを使います(照合できたセッションの数は、下の人ごとの表)。</td>
+                <td class="how">
+                  {#if kind === 'phase'}単位はまとまり。人ごとに、その工程の依頼で AI が足したまとまり(照合できたセッションの、照合不可を除く)に対する残っている(そのまま + 直されて)割合を出し、その差を平均します。その工程にまとまりのある照合できたセッションが、その人の A と B のどちらも {RETENTION_MIN_SESSIONS} 件以上ある人だけを使います。{:else}単位はまとまり。人ごとに、照合できたまとまり(照合不可を除く)に対する残っている(そのまま + 直されて)割合を出し、その差を平均します。照合できたセッションがその人の A と B のどちらも {RETENTION_MIN_SESSIONS} 件以上ある人だけを使います。{/if}照合できたセッションの数と、セッションの終わりから比べた時点までの日数(中央値)は、下の人ごとの表に並べます(両側で大きく違うと、後から人が手を入れた時間が違うので比べにくい)。
+                </td>
               </tr>
             </tbody>
           </table>
@@ -477,7 +485,8 @@
       <details class="tableview" data-testid="compare-person-detail">
         <summary>人ごとの表({int(persons.groups.length)} 人)</summary>
         <div class="table-scroll">
-          <table class="ledger" data-testid="compare-person-groups">
+          <table class="ledger" aria-labelledby="compare-person-groups-h" data-testid="compare-person-groups">
+            <caption id="compare-person-groups-h" class="cap">人ごとの値(A: {sideLabel('a')} / B: {sideLabel('b')}。値はその人の差 B − A)</caption>
             <thead>
               <tr>
                 <th scope="col">人</th>
@@ -486,6 +495,7 @@
                 {#each personRows as r (r.key)}<th scope="col" class="num">{r.label}</th>{/each}
                 {#if personRetention}
                   <th scope="col" class="num">照合できたセッション(A / B)</th>
+                  <th scope="col" class="num">比べた時点まで(中央値。A / B)</th>
                   <th scope="col" class="num">{personRetention.label}</th>
                 {/if}
               </tr>
@@ -501,6 +511,7 @@
                   {/each}
                   {#if personRetention}
                     <td class="num">{int(g.measuredA)} / {int(g.measuredB)}</td>
+                    <td class="num">{lagText(g.lagA)} / {lagText(g.lagB)}</td>
                     <td class="num">{personCell(personRetention, i)}{#if personAB(personRetention.key, i)}<span class="ab">{personAB(personRetention.key, i)}</span>{/if}</td>
                   {/if}
                 </tr>
@@ -590,6 +601,10 @@
   }
   .persons h3 {
     margin-bottom: 4px;
+  }
+  .sides {
+    margin: 0 0 4px;
+    font-size: 0.8125rem;
   }
   .ab {
     display: block;

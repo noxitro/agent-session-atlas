@@ -128,6 +128,8 @@ describe('比べる: モデル・wiki の参照・人ごとの差', () => {
     // 件数・比の行は入れない
     expect(await box.locator('[data-testid="compare-person-table"] tr[data-key="sessions"]').count()).toBe(0);
     expect(await box.locator('[data-testid="compare-person-table"] tr[data-key="aiu-per-request"]').count()).toBe(0);
+    // 側の名前を添える
+    expect(await box.getByTestId('compare-person-sides').innerText()).toMatch(/^A: .+ \/ B: .+/);
     // 3 人とも使えるので、理由の文は出さない
     expect(await box.getByTestId('compare-person-reason').count()).toBe(0);
     // 畳んだ人ごとの表
@@ -154,6 +156,8 @@ describe('比べる: モデル・wiki の参照・人ごとの差', () => {
     expect(Number(await cell('sessions', 1).innerText())).toBeGreaterThan(0);
     expect(await section().locator('[data-testid="compare-table"] th.num').first().innerText()).toContain('wiki を参照した');
     expect(await section().getByTestId('compare-wiki-off').count()).toBe(0);
+    // 人ごとの差では、差の向きが「参照していない − 参照した」と読めるようにする
+    expect(await section().getByTestId('compare-person-sides').innerText()).toContain('差(B − A)は「wiki を参照していない − 参照した」です');
     // 数えていない集計
     await page.goto(fileUrl(await variant('no-wiki', (d) => (study(d), (d.wikiVaults = 0)))));
     await expect.poll(() => kindButton('wiki の参照').isDisabled()).toBe(true);
@@ -177,10 +181,19 @@ describe('比べる: モデル・wiki の参照・人ごとの差', () => {
       return cells.reduce((a, t) => a + Number(t.replace(/[^\d]/g, '')), 0);
     };
     const all = await total();
-    await pick.selectOption(EFFORT_PEOPLE[1]);
+    // 選択肢は「すべて」・人の名前の順。値は名前でなく位置なので、位置で選ぶ
+    await pick.selectOption({ index: 2 });
     await expect.poll(() => page.getByTestId('model-value-person-note').innerText()).toContain(`${EFFORT_PEOPLE[1]} のセッション`);
     await expect.poll(total).toBeLessThan(all);
     expect(await total()).toBeGreaterThan(0);
+    // 上の絞り込みで人が 1 人になると選択欄が消え、人の選択は「すべて」に戻る(絞り込みを外しても、選んでいた人に戻らない)
+    await page.evaluate(`location.hash = 'person=${EFFORT_PEOPLE[1]}&tab=breakdown'`);
+    await expect.poll(() => pick.count()).toBe(0);
+    expect(await page.getByTestId('model-value-person-note').count()).toBe(0);
+    await page.evaluate(`location.hash = 'tab=breakdown'`);
+    await expect.poll(() => pick.count()).toBe(1);
+    expect(await pick.inputValue()).toBe('all');
+    expect(await total()).toBe(all);
   });
 
   it('f. 375px の幅で横にはみ出さない', async () => {

@@ -180,6 +180,10 @@ describe('人ごとの差', () => {
       [5, 5],
       [5, 5],
     ]);
+    expect(r.groups.map((g) => [g.lagA, g.lagB])).toEqual([
+      [1, 1],
+      [1, 1],
+    ]);
     expect(r.retention!.persons).toBe(2);
     expect(r.retention!.diffs[0]).toBeCloseTo(0.5, 10);
     expect(r.retention!.diffs[1]).toBeCloseTo(0, 10);
@@ -203,5 +207,33 @@ describe('人ごとの差', () => {
     ]);
     expect(r.unassigned).toEqual({ a: 2, b: 2 });
     expect(r.rows.map((x) => x.key)).toEqual(['active', 'failure', 'stuck', 'fix', 'aiu']);
+    // 次の依頼があった依頼: zz-a の実装は 5 件、調査は 4 件(最後の依頼には次が無い)で、調査の側が 5 件に届かないので直しの割合は出さない
+    expect(r.rows.find((x) => x.key === 'fix')).toMatchObject({ persons: 0, mean: null });
+    // ツール呼び出しは依頼ごとに 1 回で 5 回あるので、失敗率は出る
+    expect(r.rows.find((x) => x.key === 'failure')!.persons).toBe(1);
+  });
+
+  it('割合の行の幅は ±100 ポイントで切り、切ったことを印にする。平均の行は切らない', () => {
+    // 2 人: +0.9 と −0.5(自由度 1 で幅が ±1 を越える)
+    const mk = (person: string, side: string, n: number, c: number) => Array.from({ length: n }, (_, i) => s(`${person}-${side}${i}`, { person, turnRows: i < c ? clean : fixed, turns: side === 'a' ? 2 : 2 + i }));
+    const r = personSessionPaired([...mk('zz-a', 'a', 10, 0), ...mk('zz-b', 'a', 10, 10)], [...mk('zz-a', 'b', 10, 9), ...mk('zz-b', 'b', 10, 5)]);
+    const nr = r.rows.find((x) => x.key === 'no-rework')!;
+    expect(nr.mean).toBeCloseTo(0.2, 10);
+    expect(nr.clipped).toBe(true);
+    expect(nr.ci).toEqual([-1, 1]);
+    const turns = r.rows.find((x) => x.key === 'turns')!;
+    expect(turns.clipped).toBe(false);
+  });
+
+  it('ツール呼び出しが 5 回未満の側の失敗率は、その人を平均から外す(上の表の 1 人分として入れない)', () => {
+    const mk = (person: string, side: string, calls: number) => Array.from({ length: 5 }, (_, i) => s(`${person}-${side}${i}`, { person, tools: { total: i === 0 ? calls : 0 } as CompareSession['tools'], friction: { toolFailures: i === 0 ? 1 : 0 } as CompareSession['friction'] }));
+    const r = personSessionPaired([...mk('zz-a', 'a', 2), ...mk('zz-b', 'a', 10), ...mk('zz-c', 'a', 10)], [...mk('zz-a', 'b', 10), ...mk('zz-b', 'b', 5), ...mk('zz-c', 'b', 20)]);
+    const f = r.rows.find((x) => x.key === 'failure')!;
+    expect(f.persons).toBe(2);
+    expect(f.diffs[0]).toBeNull();
+    expect(f.diffs[1]).toBeCloseTo(0.1, 10);
+    expect(f.diffs[2]).toBeCloseTo(-0.05, 10);
+    // 人ごとの表の値も —(A 側を null にする)
+    expect(r.groups[0].rows.find((x) => x.key === 'failure')!.a).toBeNull();
   });
 });
