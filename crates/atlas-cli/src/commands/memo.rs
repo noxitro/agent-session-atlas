@@ -1,15 +1,26 @@
 //! atlas memo list / show / set / remove(packages/cli/src/commands.ts の runMemo の移植)。
 //! id は sessions.json があれば先頭一致で解決する(無ければそのまま使う)。
 
-use super::group::session_ids;
 use super::Log;
 use crate::args::MemoCliOptions;
 use crate::paths::Paths;
 use anyhow::{anyhow, bail, Result};
-use atlas_report::groups::resolve_id_prefixes;
+use atlas_report::ids::resolve_id_prefixes;
 use atlas_report::memo::memo_summary;
 use atlas_report::memo_io::{load_memo_index, memos_dir, read_memo, save_memo};
 use indexmap::IndexSet;
+use serde_json::Value;
+use std::path::Path;
+
+/// sessions.json のセッション id(TS 版の readJson の後の sessions.map(id))
+fn session_ids(path: &Path) -> Result<Vec<String>> {
+    if !path.exists() {
+        bail!("{} がありません。", path.display());
+    }
+    let text = std::fs::read(path).map_err(|e| anyhow!("{} を読めません: {e}", path.display()))?;
+    let v = atlas_core::js::parse_json(&String::from_utf8_lossy(&text)).map_err(|e| anyhow!("{} を読めません: {e}", path.display()))?;
+    Ok(v.get("sessions").and_then(Value::as_array).map(|a| a.iter().filter_map(|s| s.get("id").and_then(Value::as_str)).map(str::to_string).collect()).unwrap_or_default())
+}
 
 pub fn run_memo(p: &Paths, m: &MemoCliOptions, log: Log<'_>) -> Result<()> {
     let dir = memos_dir(&p.notes);

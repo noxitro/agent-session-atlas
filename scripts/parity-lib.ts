@@ -1,11 +1,10 @@
 // report の lib(packages/report/src/lib/*.ts)の TS 版と Rust 版(crates/atlas-report)を、同じ入力で動かして結果を突き合わせる
 // (Rust 移行の段 4-1 の確認用。docs/rust-migration.md)。build の移植の前に、lib を直接比べるためのもの。
 //
-//   node scripts/parity-lib.ts <out> <dump> [--notes <dir>]            TS 版の結果を <dump> に書く
-//   node scripts/parity-lib.ts <out> --compare [--notes <dir>] [--work <dir>] [--rs <exe> | --release] [--max-diffs <n>]
+//   node scripts/parity-lib.ts <out> <dump>                            TS 版の結果を <dump> に書く
+//   node scripts/parity-lib.ts <out> --compare [--work <dir>] [--rs <exe> | --release] [--max-diffs <n>]
 //
 // - <out> は atlas の出力先(sessions.json。あれば judgments.json・turn-judgments.json・vcs-retention.json も読む)。
-//   --notes はメモと名前付きグループの置き場(groups.json を読む)。既定は <out> と同じ階層の atlas-notes。
 // - 結果は lib の入口ごとに 1 つの JSON(summaries.json・aggregate-<条件>.json・insights-*.json・format.json など)。
 //   build.ts と同じ呼び方(全セッションの要約、絞り込みの条件ごとの集計、改善点の候補)で呼ぶ。
 // - --compare は TS 版を <work>/ts に、Rust 版(crates/atlas-report/examples/libdump.rs。既定は npm test と同じ選び方の debug で作って動かす。
@@ -26,10 +25,9 @@ import type { SessionSummary } from '../packages/report/src/lib/types.ts';
 import { embedData, extractEmbedded, serializeForScript } from '../packages/report/src/lib/embed.ts';
 import { execAggregate, quantilesOf } from '../packages/report/src/lib/exec.ts';
 import { effortLabel, errorTypeLabel, initiatorLabel, modeLabel, subagentFailureLabel, todoStatusLabel } from '../packages/report/src/lib/exec-labels.ts';
-import { applyFilter, currentGroupName, decodeFilter, decodeView, effectiveIds, emptyFilter, encodeFilter, filterHref, filterOptions, groupIds, hasPeople, isStateHash, NO_JUDGMENT, UNKNOWN, type FilterState } from '../packages/report/src/lib/filter.ts';
+import { applyFilter, decodeFilter, decodeView, emptyFilter, encodeFilter, filterHref, filterOptions, hasPeople, isStateHash, NO_JUDGMENT, NO_TASK, taskOptions, UNKNOWN, type FilterState } from '../packages/report/src/lib/filter.ts';
 import { compact, date, dateTime, dec, duration, int, modelLabel, month, msLabel, pathParts, percent, sharedLeads, splitLead, truncate } from '../packages/report/src/lib/format.ts';
 import { GLOSSARY, GLOSSARY_GROUPS, termsByGroup } from '../packages/report/src/lib/glossary.ts';
-import { memberGroups, parseGroups, safeDirName, serializeGroups } from '../packages/report/src/lib/groups.ts';
 import { highlights } from '../packages/report/src/lib/highlights.ts';
 import {
   cleanHeading,
@@ -55,7 +53,6 @@ import { packSummary } from '../packages/report/src/lib/pack.ts';
 import { shortProjectLabel } from '../packages/report/src/lib/project-label.ts';
 import { aggregateRetention, retentionByPhase, retentionItem, UNKNOWN_PHASE, type TurnStart } from '../packages/report/src/lib/retention.ts';
 import { detailFileName, summarize, testsSummary } from '../packages/report/src/lib/summarize.ts';
-import { compareNames, conditionTable, parseConditionTag, type ConditionGroup, type ConditionSession } from '../packages/report/src/lib/conditions.ts';
 import { turnAggregate } from '../packages/report/src/lib/turns.ts';
 import { parseVerdicts, verdictAggregate, verdictTuples } from '../packages/report/src/lib/verdicts.ts';
 import { REPORT_DATA_VERSION } from '../packages/report/src/lib/types.ts';
@@ -96,7 +93,6 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const { values, positionals } = parseArgs({
   allowPositionals: true,
   options: {
-    notes: { type: 'string' },
     compare: { type: 'boolean', default: false },
     work: { type: 'string' },
     rs: { type: 'string' },
@@ -106,7 +102,6 @@ const { values, positionals } = parseArgs({
 });
 
 const inDir = resolve(positionals[0] ?? join(ROOT, 'out'));
-const notesDir = resolve(values.notes ?? join(dirname(inDir), 'atlas-notes'));
 
 /** 入口ごとの所要時間(ms) */
 const timings: Record<string, number> = {};
@@ -155,8 +150,8 @@ const WIKI_CASES = `[
   { "indexReads": 0, "pageReads": 0, "skillCalls": 1, "writes": 0, "otherCalls": 0 },
   { "indexReads": 1, "pageReads": 0, "skillCalls": 0, "writes": 0 }
 ]`;
-/** 課題 × 条件の表を確かめる形(セッション・タスクタグ・名前の読み取り・並び)。crates/atlas-report/examples/libdump.rs の CONDITION_CASES と同じ中身 */
-const CONDITION_CASES = `{"sessions":[{"id":"s01","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":1,"firstPass":1,"lastFailing":0,"passActiveMs":60000.5,"passNanoAiu":1500000000.0,"lastNanoAiu":2000000000.0},"person":null},{"id":"s02","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":2,"firstPass":2,"lastFailing":0,"passActiveMs":120001.0,"passNanoAiu":3000000000.0,"lastNanoAiu":4000000000.0},"person":null},{"id":"s03","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":3,"firstPass":3,"lastFailing":0,"passActiveMs":180001.5,"passNanoAiu":4500000000.0,"lastNanoAiu":6000000000.0},"person":null},{"id":"s04","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":2,"firstPass":1,"lastFailing":1,"passActiveMs":60000.5,"passNanoAiu":1500000000.0,"lastNanoAiu":2000000000.0},"person":null},{"id":"s05","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":3,"firstPass":null,"lastFailing":2,"passActiveMs":null,"passNanoAiu":null,"lastNanoAiu":7000000000.0},"person":null},{"id":"s06","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":3,"firstPass":null,"lastFailing":2,"passActiveMs":null,"passNanoAiu":null,"lastNanoAiu":null},"person":null},{"id":"s07","activeMs":null,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":null},"tests":{"runs":2,"firstPass":2,"lastFailing":0,"passActiveMs":120001.0,"passNanoAiu":3000000000.0,"lastNanoAiu":4000000000.0},"person":null},{"id":"s08","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":4,"firstPass":4,"lastFailing":0,"passActiveMs":240002.0,"passNanoAiu":null,"lastNanoAiu":null},"person":null},{"id":"s09","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"person":null},{"id":"s10","activeMs":600000,"tools":{"total":0},"friction":{"toolFailures":0},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":1,"firstPass":1,"lastFailing":0,"passActiveMs":60000.5,"passNanoAiu":1500000000.0,"lastNanoAiu":2000000000.0},"person":null},{"id":"s11","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":2,"firstPass":2,"lastFailing":0,"passActiveMs":120001.0,"passNanoAiu":3000000000.0,"lastNanoAiu":4000000000.0},"person":"zz-a"},{"id":"s12","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":3,"firstPass":3,"lastFailing":0,"passActiveMs":180001.5,"passNanoAiu":4500000000.0,"lastNanoAiu":6000000000.0},"person":"zz-b"},{"id":"s13","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":3,"firstPass":null,"lastFailing":2,"passActiveMs":null,"passNanoAiu":null,"lastNanoAiu":7000000000.0},"person":"zz-b"},{"id":"s14","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":1,"firstPass":1,"lastFailing":0,"passActiveMs":60000.5,"passNanoAiu":1500000000.0,"lastNanoAiu":2000000000.0},"person":null},{"id":"s15","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":1,"firstPass":1,"lastFailing":0,"passActiveMs":60000.5,"passNanoAiu":1500000000.0,"lastNanoAiu":2000000000.0},"person":null},{"id":"s16","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":3,"firstPass":null,"lastFailing":2,"passActiveMs":null,"passNanoAiu":null,"lastNanoAiu":7000000000.0},"person":null},{"id":"s17","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":2,"firstPass":2,"lastFailing":0,"passActiveMs":120001.0,"passNanoAiu":3000000000.0,"lastNanoAiu":4000000000.0},"person":null},{"id":"s18","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":2,"firstPass":2,"lastFailing":0,"passActiveMs":120001.0,"passNanoAiu":3000000000.0,"lastNanoAiu":4000000000.0},"person":null}],"groups":[{"name":"t10__wiki__1","presentIds":["s01","s02","s03"]},{"name":"t10__wiki__2","presentIds":["s03","s04","s05","s06"]},{"name":"t2__wiki","presentIds":["s07","s08","s09"]},{"name":"t2__0-plain","presentIds":["s10","s14","s15","s16","s17"]},{"name":"zz-a / t2__coderef__1","tag":"t2__coderef__1","presentIds":["s11"]},{"name":"zz-b / t2__coderef__1","tag":"t2__coderef__1","presentIds":["s12","s13"]},{"name":"描画__wiki","presentIds":["s18"]},{"name":"描画__0-plain","presentIds":["s18"]},{"name":"zz-misc","presentIds":["s09"]},{"name":"x__y__v2","presentIds":["s09"]},{"name":"gone__wiki","presentIds":["not-in-records"]}],"names":["render__wiki","render__wiki__1"," 描画 __ wiki あり __ 007 ","Player-Weapon__code_ref__12","render","render__","__wiki","render____1","a__b__c__1","render__wiki__v2","render__wiki__１","a___b","a__b_",""],"order":["c10","c2","B","a","c1","0-plain","wiki","Wiki","描画","あ","ア","t10","t2","x_1","x-1","c01","c001","c1","c１０","v1.10","v1.9","v1.9a","Z","z"]}`;
+/** タスクの絞り込みの割り振りに使う ID(crates/atlas-report/examples/libdump.rs の TASK_CASE_IDS と同じ) */
+const TASK_CASE_IDS = ['T-1', 'T-2 β'];
 const FILE_NAMES = ['メモ.md', 'a b.txt', 'x', '', '.x', '..', 'a/b', 'x.', 'x ', 'CON', 'nul.log', 'Com1', 'a:b', 'abc-1_2.x', 'あ'];
 
 async function dumpTs(outDir: string): Promise<void> {
@@ -170,10 +165,8 @@ async function dumpTs(outDir: string): Promise<void> {
   const judgments = existsSync(jPath) ? parseJudgments(JSON.parse(readFileSync(jPath, 'utf8'))) : null;
   const vPath = join(inDir, 'turn-judgments.json');
   const verdicts = existsSync(vPath) ? parseVerdicts(JSON.parse(readFileSync(vPath, 'utf8'))) : null;
-  const gPath = join(notesDir, 'groups.json');
-  const groups = existsSync(gPath) ? parseGroups(JSON.parse(readFileSync(gPath, 'utf8')), 'groups.json') : { groups: [], warnings: [] };
   const rx = readVcsRetention(join(inDir, 'vcs-retention.json'));
-  dumpWith(outDir, write, file, records, judgments, verdicts, groups, rx);
+  dumpWith(outDir, write, file, records, judgments, verdicts, rx);
 }
 
 function dumpWith(
@@ -183,7 +176,6 @@ function dumpWith(
   records: SessionRecord[],
   judgments: ReturnType<typeof parseJudgments> | null,
   verdicts: ReturnType<typeof parseVerdicts>,
-  groups: ReturnType<typeof parseGroups>,
   rx: VcsRetentionFile | null,
 ): void {
   const installed = file.installed ? { skills: [...new Set([...file.installed.skills, ...file.installed.plugins.flatMap((p) => p.skills)])].sort(), disabled: [...(file.installed.disabledSkills ?? [])].sort() } : null;
@@ -218,7 +210,6 @@ function dumpWith(
   const dates = plain.map((s) => s.createdAt).filter((x): x is string => !!x).sort();
   const all = aggregate(plain);
   const mcpTool = all.usage.tools.find((t) => t.mcpServer);
-  const g0 = groups.groups[0];
   const filters: Record<string, FilterState> = {
     all: emptyFilter(),
     withEmpty: { ...emptyFilter(), empty: '1' },
@@ -234,11 +225,16 @@ function dumpWith(
     unjudged: { ...emptyFilter(), taskCategory: NO_JUDGMENT },
     wiki: { ...emptyFilter(), wiki: '1' },
     ids: { ...emptyFilter(), ids: [...plain.slice(0, 5).map((s) => s.id), 'zzz'].join(',') },
-    group: { ...emptyFilter(), group: g0?.name ?? '', ids: g0 ? effectiveIds({ ids: '', group: g0.name }, groups.groups, new Set(plain.map((s) => s.id))).ids : '' },
+    task: { ...emptyFilter(), task: TASK_CASE_IDS[0] },
+    task2: { ...emptyFilter(), task: TASK_CASE_IDS[1] },
+    noTask: { ...emptyFilter(), task: NO_TASK },
   };
+  // タスクの絞り込み: 決まった割り振り(4 つおきに 1 つ目・2 つ目・「タスクなし」・両方)で両側を数える。crates/atlas-report/examples/libdump.rs と同じ
+  const tasks = new Map(plain.flatMap((s, i) => (i % 4 === 2 ? [] : [[s.id, i % 4 === 3 ? [TASK_CASE_IDS[1], TASK_CASE_IDS[0]] : [TASK_CASE_IDS[i % 4]]] as [string, string[]]])));
+  write('task-options', taskOptions(plain, tasks, new Map([[TASK_CASE_IDS[0], 'タスク 一つ目']])));
   const phases = verdicts?.phases ?? [];
   for (const [name, f] of Object.entries(filters)) {
-    const xs = applyFilter(plain, f);
+    const xs = applyFilter(plain, f, tasks);
     const agg = timed('aggregate', () => aggregate(xs, people));
     write(`aggregate-${name}`, agg);
     write(`highlights-${name}`, timed('highlights', () => highlights(xs, agg.usage, { filter: f, installed })));
@@ -314,7 +310,7 @@ function dumpWith(
     records.map((r) => [truncate(r.firstUserMessage, 48), r.cwd ? pathParts(r.cwd) : null, detailFileName(r.id), r.models.map(modelLabel), shortProjectLabel(r.project)]),
   );
 
-  // 表示名・メモ・グループ・用語
+  // 表示名・メモ・用語
   const keys = (m: Record<string, unknown>): string[] => Object.keys(m);
   const all2 = execAggregate(plain);
   // 本体の (モデル, 推論強度)。画面は要約から、Rust(sessions.csv)は sessions.json の記録から決める
@@ -342,30 +338,6 @@ function dumpWith(
     const many = Array.from({ length: 13 }, (_, i) => `wiki/p${i % 12}.md`);
     write('wiki-pages', { max: WIKI_JUDGED_PAGES_MAX, judged: judgedWikiPages(many), names: wikiPages.names });
   }
-  // 課題 × 条件の表(画面は TS、表(conditions.csv)は Rust で計算する。行・まとめた行・数え方を突き合わせる。lookalikes は画面だけ)
-  {
-    const c = JSON.parse(CONDITION_CASES) as { sessions: ConditionSession[]; groups: ConditionGroup[]; names: string[]; order: string[] };
-    const t = conditionTable(c.sessions, c.groups);
-    write('conditions', {
-      names: c.names.map(parseConditionTag),
-      order: [...c.order].sort(compareNames),
-      table: {
-        tasks: t.tasks,
-        conditions: t.conditions,
-        rows: t.rows,
-        pooled: t.pooled,
-        matchedTags: t.matchedTags,
-        counted: t.counted,
-        members: t.members.map((m) => [m.session.id, m.task, m.condition]),
-        unmatched: t.unmatched,
-        ambiguous: t.ambiguous,
-        people: t.people,
-        sharedRows: t.sharedRows,
-        unevenTasks: t.unevenTasks,
-        hasTests: t.hasTests,
-      },
-    });
-  }
   write('labels', {
     modes: [...all2.modes.rows.map((r) => r.key), '(unknown)', 'x'].map(modeLabel),
     initiators: [...all2.initiators.rows.map((r) => r.key), '(unknown)', 'x'].map(initiatorLabel),
@@ -381,14 +353,6 @@ function dumpWith(
   write('memo', {
     texts: [...MEMO_TEXTS, ...records.slice(0, 200).map((r) => r.firstUserMessage ?? '')].map((t) => [memoExcerpt(t), memoSummary(t, '2026-11-03T00:00:00.000Z')]),
     names: FILE_NAMES.map((n) => [isSafeFileName(n), isSafeMemoId(n)]),
-  });
-  const known = new Set(plain.map((s) => s.id));
-  write('groups', {
-    parsed: groups,
-    serialized: serializeGroups(groups.groups),
-    member: memberGroups(records),
-    dirs: [...groups.groups.map((g) => g.name), 'a/b:c', 'nul.log', 'x. . ', '...'].map(safeDirName),
-    effective: groups.groups.map((g) => [effectiveIds({ ids: '', group: g.name }, groups.groups, known), currentGroupName({ ids: groupIds(g, known), group: '' }, groups.groups, known), groupIds(g, known)]),
   });
   write('glossary', { groups: GLOSSARY_GROUPS, terms: GLOSSARY, counts: GLOSSARY_GROUPS.map((g) => termsByGroup(g.id).length) });
   writeFileSync(join(outDir, 'timings.txt'), JSON.stringify(timings));
@@ -453,7 +417,7 @@ function buildLibdump(release: boolean): string {
 if (!values.compare) {
   const dump = positionals[1];
   if (!dump) {
-    console.error('使い方: node scripts/parity-lib.ts <out> <dump> [--notes <dir>] / node scripts/parity-lib.ts <out> --compare');
+    console.error('使い方: node scripts/parity-lib.ts <out> <dump> / node scripts/parity-lib.ts <out> --compare');
     process.exit(2);
   }
   await dumpTs(resolve(dump));
@@ -463,13 +427,13 @@ if (!values.compare) {
   const rsDir = join(work, 'rs');
   // TS 版は別のプロセスで動かす(所要時間を同じ条件で測るため)
   const t0 = performance.now();
-  const ts = spawnSync(process.execPath, [fileURLToPath(import.meta.url), inDir, tsDir, '--notes', notesDir], { stdio: 'inherit' });
+  const ts = spawnSync(process.execPath, [fileURLToPath(import.meta.url), inDir, tsDir], { stdio: 'inherit' });
   const tsMs = performance.now() - t0;
   if (ts.status !== 0) process.exit(1);
   rmSync(rsDir, { recursive: true, force: true });
   const exe = values.rs ?? buildLibdump(values.release);
   const t1 = performance.now();
-  const rs = spawnSync(exe, [inDir, rsDir, notesDir], { stdio: 'inherit' });
+  const rs = spawnSync(exe, [inDir, rsDir], { stdio: 'inherit' });
   const rsMs = performance.now() - t1;
   if (rs.status !== 0) process.exit(1);
   const tt = JSON.parse(readFileSync(join(tsDir, 'timings.txt'), 'utf8')) as Record<string, number>;

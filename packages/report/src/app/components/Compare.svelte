@@ -27,28 +27,23 @@
 
   let {
     sessions,
-    groups,
     projects,
     lastAt,
     retention,
   }: {
     /** 比べる母集団(空のセッションを含めるかの条件だけを掛けたもの。上の絞り込みには従わない) */
     sessions: CompareSession[];
-    groups: { name: string; presentIds: string[] }[];
     projects: Option[];
     lastAt: string | null;
     /** AI の変更の残存を照合してあるか(無ければその行を出さない) */
     retention: boolean;
   } = $props();
 
-  const usableGroups = $derived(groups.filter((g) => g.presentIds.length > 0));
   let kind = $state<CompareKind>('period');
   // 既定の期間は開いたときの最後の日から決める(選び直した期間を、集計の更新で上書きしない)
   const periods = untrack(() => defaultPeriods(lastAt));
   let periodA = $state({ ...periods.a });
   let periodB = $state({ ...periods.b });
-  let tagA = $state('');
-  let tagB = $state('');
   let projA = $state('');
   let projB = $state('');
   // 工程の既定は、実装と調査(依頼の多い 2 つ)
@@ -63,7 +58,7 @@
   const models = $derived(effortModels(sessions));
   const choices = $derived(effortChoices(sessions, effModel));
   /**
-   * 選んでいる値が選択肢に無ければ(まだ選んでいない・タグの名前を変えた / 消した・空のセッションの条件で選択肢から消えた)、
+   * 選んでいる値が選択肢に無ければ(まだ選んでいない・空のセッションの条件で選択肢から消えた)、
    * 選び直す。A は先頭、B は A と違う最初のもの。選択肢にあるうちは、選んだ値を変えない
    */
   function keep(cur: string, values: string[], avoid: string | null): string {
@@ -71,12 +66,7 @@
     return values.find((v) => v !== avoid) ?? '';
   }
   $effect(() => {
-    const tags = usableGroups.map((g) => g.name);
     const projs = projects.map((p) => p.value);
-    const a = keep(tagA, tags, null);
-    if (a !== tagA) tagA = a;
-    const b = keep(tagB, tags, a);
-    if (b !== tagB) tagB = b;
     const pa = keep(projA, projs, null);
     if (pa !== projA) projA = pa;
     const pb = keep(projB, projs, pa);
@@ -100,11 +90,6 @@
       const p = side === 'a' ? periodA : periodB;
       return sessions.filter((s) => inPeriod(s, p.from, p.to));
     }
-    if (kind === 'tag') {
-      const g = usableGroups.find((x) => x.name === (side === 'a' ? tagA : tagB));
-      const ids = new Set(g?.presentIds ?? []);
-      return sessions.filter((s) => ids.has(s.id));
-    }
     if (kind === 'effort') return side === 'a' ? split.a : split.b;
     const key = side === 'a' ? projA : projB;
     return key ? sessions.filter((s) => s.project === key) : [];
@@ -120,7 +105,6 @@
       const p = side === 'a' ? periodA : periodB;
       return `${p.from || '最初'}〜${p.to || '最後'}`;
     }
-    if (kind === 'tag') return (side === 'a' ? tagA : tagB) || '(未選択)';
     if (kind === 'phase') return PHASE_LABEL[side === 'a' ? phaseA : phaseB];
     if (kind === 'effort') {
       const e = side === 'a' ? effA : effB;
@@ -175,7 +159,7 @@
   <div class="section-head">
     <h2 id="compare-h">比べる</h2>
     <p>
-      2 つの条件(タスクタグ・期間・プロジェクト・工程・推論強度)を並べます。上の絞り込みには従わず、全セッション(空のセッションを含めるかの条件だけ)から選びます。セッションが {COMPARE_MIN_SESSIONS} 件未満の側の割合と、割る数(記録のあるセッション)が {COMPARE_MIN_SESSIONS} 件未満の平均は「—」です。工程は依頼(ターン)の単位で並べ、依頼が {COMPARE_MIN_TURNS} 件未満の割合と平均を「—」にします(AI の変更の残存の割合は、その工程に照合できたまとまりのあるセッションが {RETENTION_MIN_SESSIONS} 件未満なら「—」)。差は相関で、条件の違いが原因とは限りません。差の幅(95%)はセッションを互いに独立とみなした近似で、同じ人のセッションは結果が似るため、実際の幅はこれより広くなります。手戻りのないセッションの割合を依頼の数で分けた行は、推論強度を比べるときだけ出します。
+      2 つの条件(期間・プロジェクト・工程・推論強度)を並べます。上の絞り込みには従わず、全セッション(空のセッションを含めるかの条件だけ)から選びます。セッションが {COMPARE_MIN_SESSIONS} 件未満の側の割合と、割る数(記録のあるセッション)が {COMPARE_MIN_SESSIONS} 件未満の平均は「—」です。工程は依頼(ターン)の単位で並べ、依頼が {COMPARE_MIN_TURNS} 件未満の割合と平均を「—」にします(AI の変更の残存の割合は、その工程に照合できたまとまりのあるセッションが {RETENTION_MIN_SESSIONS} 件未満なら「—」)。差は相関で、条件の違いが原因とは限りません。差の幅(95%)はセッションを互いに独立とみなした近似で、同じ人のセッションは結果が似るため、実際の幅はこれより広くなります。手戻りのないセッションの割合を依頼の数で分けた行は、推論強度を比べるときだけ出します。
     </p>
   </div>
 
@@ -225,17 +209,6 @@
             <label><span class="sr-only">{side === 'a' ? 'A' : 'B'} の開始日</span><input type="date" value={p.from} max={p.to || undefined} onchange={(e) => (side === 'a' ? (periodA = { ...periodA, from: e.currentTarget.value }) : (periodB = { ...periodB, from: e.currentTarget.value }))} /></label>
             <span aria-hidden="true">〜</span>
             <label><span class="sr-only">{side === 'a' ? 'A' : 'B'} の終了日</span><input type="date" value={p.to} min={p.from || undefined} onchange={(e) => (side === 'a' ? (periodA = { ...periodA, to: e.currentTarget.value }) : (periodB = { ...periodB, to: e.currentTarget.value }))} /></label>
-          {:else if kind === 'tag'}
-            {#if usableGroups.length === 0}
-              <span class="muted">タスクタグがありません(セッション一覧で選んで作れます)</span>
-            {:else}
-              <label>
-                <span class="sr-only">{side === 'a' ? 'A' : 'B'} のタスクタグ</span>
-                <select value={side === 'a' ? tagA : tagB} onchange={(e) => (side === 'a' ? (tagA = e.currentTarget.value) : (tagB = e.currentTarget.value))}>
-                  {#each usableGroups as g (g.name)}<option value={g.name}>{g.name}({int(g.presentIds.length)})</option>{/each}
-                </select>
-              </label>
-            {/if}
           {:else if kind === 'phase'}
             <label>
               <span class="sr-only">{side === 'a' ? 'A' : 'B'} の工程</span>

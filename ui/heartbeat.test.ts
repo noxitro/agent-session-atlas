@@ -35,7 +35,6 @@ describe('サーバの止まり方', () => {
     const server: ServeHandle = await startServer({
       outDir: out,
       notesDir: notes,
-      groupsPath: join(notes, 'groups.json'),
       port: 0,
       open: false,
       idleMs: 600_000,
@@ -97,7 +96,6 @@ describe('サーバの止まり方', () => {
       const server = await startServer({
         outDir: out,
         notesDir: notes,
-        groupsPath: join(notes, 'groups.json'),
         port: 0,
         open: false,
         idleMs: 600_000,

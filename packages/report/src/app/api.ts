@@ -3,24 +3,20 @@
 // fetch の宛先は同一オリジンの相対パス 'api/…' だけ(E2E の外部参照の検査はこの形だけを許す)。
 import { isStaleServer } from '../lib/code-check.ts';
 import type { MemoSummary } from '../lib/memo.ts';
-import type { ReportGroup } from '../lib/types.ts';
+import type { TasksReport } from '../lib/types.ts';
 
 export interface ApiState {
   version: number;
-  /** 別のフォルダを開いた画面(読むだけ)。タスクタグは送った人のもので、メモ・アップロード先は返さない */
+  /** 別のフォルダを開いた画面(読むだけ)。メモ・アップロード先は返さない */
   readOnly?: boolean;
-  groups: ReportGroup[];
   /** セッション id → メモの概要(メモの API より古い serve には無い) */
   memos?: Record<string, MemoSummary>;
   notesDir: string;
-  groupsPath: string;
-  exists: boolean;
-  warnings: string[];
-  /** グループのアップロード先(atlas.config.json の uploadRoot)。この機能より古い serve には無い */
+  /** アップロード先(atlas.config.json の uploadRoot)。この機能より古い serve には無い */
   upload?: UploadSetting;
 }
 
-/** グループのアップロード先の設定。root は基底フォルダ(未設定は null)、error は設定ファイルを読めない理由、canPick はフォルダを選ぶ画面を出せるか */
+/** アップロード先の設定。root は基底フォルダ(未設定は null)、error は設定ファイルを読めない理由、canPick はフォルダを選ぶ画面を出せるか */
 export interface UploadSetting {
   root: string | null;
   /** upload-project.bat がまとめて送るプロジェクト(atlas.config.json の uploadProjects)。この機能より古い serve には無い */
@@ -29,68 +25,13 @@ export interface UploadSetting {
   canPick: boolean;
 }
 
-/** アップロードの操作(App が下の api をつなぎ、GroupHead が使う)。setting は今のアップロード先 */
+/** アップロード先の操作(App が下の api をつなぎ、設定の画面が使う)。setting は今のアップロード先 */
 export interface UploadHandlers {
   setting: UploadSetting;
   /** フォルダを選ぶ画面を出して既定にする。取り消したら null */
   pick: () => Promise<string | null>;
   /** 入力したパスを既定にする */
   setRoot: (root: string) => Promise<string>;
-  /** 写す前の点検(大きさと秘密らしい文字列) */
-  check: (name: string) => Promise<UploadCheck>;
-  /** 写す。expect は確かめたときの点検の指紋(写す直前に点検し直し、違えば写さずに理由を返す) */
-  run: (name: string, expect?: string) => Promise<GroupUpload>;
-  /** 写している途中の進み具合。終わっていれば直近の結果(10 分以内)。どちらでもなければ null */
-  progress: (name: string) => Promise<UploadPoll>;
-  open: (name: string) => Promise<void>;
-}
-
-/** 写す前の点検(serve の group-upload.ts の UploadCheck と同じ形) */
-export interface UploadCheck {
-  name: string;
-  dir: string;
-  sessions: number;
-  /** 前に写したときから変わっていないので写さないセッション(古いサーバは返さない) */
-  unchanged?: number;
-  missing: string[];
-  replace: number;
-  bytes: number;
-  files: number;
-  largest: { id: string; path: string; bytes: number }[];
-  secrets: { count: number; kinds: { label: string; count: number }[]; files: { id: string; path: string; count: number }[]; skipped: number };
-  snapshotAt: string | null;
-  /** この点検の指紋(写すときに渡す) */
-  fingerprint: string;
-}
-
-/** 写している途中の進み具合(serve の group-upload.ts の UploadProgress と同じ形) */
-export interface UploadProgress {
-  sessions: number;
-  done: number;
-  bytes: number;
-  copied: number;
-  current: string | null;
-}
-
-/** 進み具合の問い合わせの答え: 写している途中なら進み具合、終わっていれば直近の結果、どちらでもなければ null */
-export type UploadPoll = UploadProgress | { finished: true; at: number; ok: boolean; error: string | null; result: GroupUpload | null } | null;
-
-/** グループのアップロードの結果(serve の group-upload.ts と同じ形) */
-export interface GroupUpload {
-  name: string;
-  dir: string;
-  uploaded: number;
-  replaced: number;
-  /** 前に写したときから変わっていないので写さなかったセッション(古いサーバは返さない) */
-  unchanged?: number;
-  missing: string[];
-  snapshotAt: string | null;
-  /** メモを添えたセッションの数 */
-  memos: number;
-  /** 置き換えた前のフォルダのうち、消せずに送り先に残ったもの(送り先で開かれていたなど) */
-  leftovers: string[];
-  /** 写さなかったセッションのうち、添えた記録を書き直せなかったもの(古いサーバは返さない) */
-  staleMeta?: string[];
 }
 
 /** serve が差し込んだ token。http(s) 以外・無し・プレースホルダ(__ で始まる)なら null */
@@ -118,35 +59,10 @@ const connect = <T>(p: Promise<Response>, parseBody: (r: Response) => Promise<T>
     throw new Error('サーバに接続できません(atlas.bat を実行し直してください)');
   });
 
-/** グループの書き出しの結果(serve の group-export.ts と同じ形) */
-export interface GroupExport {
-  name: string;
-  dir: string;
-  sessions: number;
-  turns: number;
-  records: number;
-  missing: number;
-}
-
 export const api = {
   state(): Promise<ApiState> {
     return connect(fetch('api/state', { cache: 'no-store' }), (r) => parse<ApiState>(r));
   },
-  create(token: string, g: ReportGroup): Promise<{ group: ReportGroup; groups: ReportGroup[] }> {
-    return connect(fetch('api/groups', { method: 'POST', headers: headers(token), body: JSON.stringify(g) }), (r) => parse(r));
-  },
-  /** patch は name / note / ids の全置換か、add / remove の差分(サーバが最新の ids に適用する。ids とは同時に使えない) */
-  update(
-    token: string,
-    name: string,
-    patch: Partial<ReportGroup> & { add?: string[]; remove?: string[] },
-  ): Promise<{ group: ReportGroup; groups: ReportGroup[]; added: number; dup: number; removed: number }> {
-    return connect(fetch('api/groups/' + encodeURIComponent(name), { method: 'PUT', headers: headers(token), body: JSON.stringify(patch) }), (r) => parse(r));
-  },
-  remove(token: string, name: string): Promise<{ groups: ReportGroup[] }> {
-    return connect(fetch('api/groups/' + encodeURIComponent(name), { method: 'DELETE', headers: headers(token) }), (r) => parse(r));
-  },
-  /** グループの表(CSV)・集計・記録を out/groups/<名前>/ に書き出す */
   /** フォルダを選ぶ画面を出し、選んだ場所をアップロード先にする(取り消したら root は null) */
   pickUploadRoot(token: string): Promise<{ root: string | null }> {
     return connect(fetch('api/upload-root', { method: 'POST', headers: headers(token) }), (r) => parse(r));
@@ -158,22 +74,6 @@ export const api = {
   /** upload-project.bat がまとめて送るプロジェクトに足す(on: true)・外す(on: false)。返すのは書いた後の一覧 */
   setUploadProject(token: string, project: string, on: boolean): Promise<{ projects: string[] }> {
     return connect(fetch('api/upload-projects', { method: 'PUT', headers: headers(token), body: JSON.stringify({ project, on }) }), (r) => parse(r));
-  },
-  uploadGroup(token: string, name: string, expect?: string): Promise<GroupUpload> {
-    return connect(fetch('api/groups/' + encodeURIComponent(name) + '/upload', { method: 'POST', headers: headers(token), body: JSON.stringify(expect ? { expect } : {}) }), (r) => parse<GroupUpload>(r));
-  },
-  /** 写した先のフォルダをエクスプローラーで開く */
-  checkUpload(token: string, name: string): Promise<UploadCheck> {
-    return connect(fetch('api/groups/' + encodeURIComponent(name) + '/upload/check', { method: 'POST', headers: headers(token) }), (r) => parse<UploadCheck>(r));
-  },
-  uploadProgress(token: string, name: string): Promise<UploadPoll> {
-    return connect(fetch('api/groups/' + encodeURIComponent(name) + '/upload/progress', { headers: headers(token) }), (r) => parse<UploadPoll>(r));
-  },
-  openUpload(token: string, name: string): Promise<{ dir: string }> {
-    return connect(fetch('api/groups/' + encodeURIComponent(name) + '/upload/open', { method: 'POST', headers: headers(token) }), (r) => parse(r));
-  },
-  exportGroup(token: string, name: string): Promise<GroupExport> {
-    return connect(fetch('api/groups/' + encodeURIComponent(name) + '/export', { method: 'POST', headers: headers(token) }), (r) => parse<GroupExport>(r));
   },
 };
 
@@ -276,12 +176,23 @@ export const foldersApi = {
   },
 };
 
-export type JobKind = 'refresh' | 'judge' | 'full' | 'bundle' | 'bundle-zip' | 'export' | 'turn-bundle' | 'turn-judge' | 'm365' | 'turn-m365';
-/** 何を判定するか: 工数(セッションごと)/ 依頼ごとの採用・種類・工程 */
-export type JudgeTarget = 'effort' | 'turns';
-/** 外の LLM への渡し方: チャットに添付ファイルを貼る / ZIP にまとめてエージェントに渡す(工数の判定だけ) */
+export type JobKind =
+  | 'refresh'
+  | 'full'
+  | 'bundle'
+  | 'bundle-zip'
+  | 'export'
+  | 'turn-bundle'
+  | 'turn-bundle-zip'
+  | 'task-bundle'
+  | 'task-bundle-zip'
+  | 'm365'
+  | 'turn-m365'
+  | 'task-m365';
+/** 何を判定するか: 工数(セッションごと)/ 依頼ごとの採用・種類・工程 / 管理ツールのタスクへの紐づけ(セッションごと) */
+export type JudgeTarget = 'effort' | 'turns' | 'tasks';
+/** 外の LLM への渡し方: チャットに添付ファイルを貼る / ZIP にまとめてエージェントに渡す(どの判定にもある) */
 export type JudgeVia = 'chat' | 'zip';
-export type JobBackend = 'copilot-cli';
 export interface JobInfo {
   id: string;
   kind: JobKind;
@@ -290,21 +201,14 @@ export interface JobInfo {
   endedAt: string | null;
   exitCode: number | null;
   log: string[];
-  /** session / group: 判定した範囲(1 セッション・タスクタグ。無ければすべて)。force: 判定済みも判定し直す(工数の判定で session のときだけ) */
-  target: { limit?: number; backend?: JobBackend; id?: string; session?: string; group?: string; force?: boolean };
+  /** id: 全文記録を作ったセッション */
+  target: { id?: string };
 }
-/** 判定する範囲: 1 セッション / タスクタグ(どちらも無ければすべて。同時には指定できない) */
-export type JudgeScope = { session: string; group?: undefined } | { group: string; session?: undefined };
-export type JobRequest =
-  | { kind: 'refresh' }
-  | ({ kind: 'judge'; limit: number; force?: boolean } & Partial<JudgeScope>)
-  | { kind: 'bundle' }
-  | { kind: 'bundle-zip' }
-  | { kind: 'export' }
-  | { kind: 'turn-bundle' }
-  | ({ kind: 'turn-judge'; limit: number } & Partial<JudgeScope>)
-  | { kind: 'm365' }
-  | { kind: 'turn-m365' };
+/** 中身を指定しないで始めるジョブ(全文記録の作成のほか) */
+export type PlainJobKind = Exclude<JobKind, 'full'>;
+export type JobRequest = { kind: PlainJobKind } | { kind: 'full'; id: string };
+
+const q = (target: JudgeTarget): string => (target === 'effort' ? '' : `?target=${target}`);
 
 export const jobsApi = {
   /** 最後のジョブ(まだ無ければ null) */
@@ -317,30 +221,21 @@ export const jobsApi = {
   cancel(token: string): Promise<JobInfo> {
     return connect(fetch('api/jobs/current/cancel', { method: 'POST', headers: headers(token) }), (r) => parse<JobInfo>(r));
   },
-  /** 判定の確認ダイアログの件数(工数: 依頼の記録があるセッション / 依頼: 依頼ごとの記録がある依頼。そのうち未判定のもの)。scope があればその中だけ */
-  judgePreview(token: string, target: JudgeTarget = 'effort', scope?: JudgeScope): Promise<JudgePreview> {
-    const q = new URLSearchParams();
-    if (target === 'turns') q.set('target', 'turns');
-    if (scope?.session) q.set('session', scope.session);
-    else if (scope?.group) q.set('group', scope.group);
-    const s = q.toString();
-    return connect(fetch('api/jobs/judge-preview' + (s ? `?${s}` : ''), { cache: 'no-store', headers: headers(token) }), (r) => parse(r));
+  /**
+   * 添付ファイルを作る前に出す件数(工数: 依頼の記録があるセッション / 依頼: 依頼ごとの記録がある依頼 / タスク: LLM に頼むセッション。
+   * pending はそのうち未判定のもの)
+   */
+  judgePreview(token: string, target: JudgeTarget = 'effort'): Promise<JudgePreview> {
+    return connect(fetch('api/jobs/judge-preview' + q(target), { cache: 'no-store', headers: headers(token) }), (r) => parse(r));
   },
 };
 
-/** 判定の確認ダイアログの件数と、判定に使うモデル(設定の judgeModel。null は Copilot の既定のモデル) */
+/** 判定の件数 */
 export interface JudgePreview {
   eligible: number;
   judged: number;
   pending: number;
   withoutTurns?: number;
-  /** 依頼ごとの判定(target=turns)で 1 回にまとめる依頼の数の上限。古いサーバは返さない */
-  chunk?: number;
-  model?: string | null;
-  /** 自分の API キーのモデル(BYOK。<プロバイダー名>/<モデル ID>)か。Copilot の AI クレジットは使わない */
-  byok?: boolean;
-  /** 設定ファイルを読めなかったときの理由 */
-  modelError?: string | null;
 }
 
 /** チャットでの判定の添付ファイル(bundle/parts/)。path は atlas.html からの相対パス */
@@ -360,12 +255,14 @@ export interface ChatParts {
   unjudgedOnly?: boolean;
   count?: number;
   parts?: ChatPart[];
-  /** 依頼の判定で、採用を判定できる依頼の数(turns)と、それが入っている先頭のファイルの数(parts)。古い添付には無い */
-  decidable?: { turns: number; parts: number };
+  /** 依頼の判定で、採用を判定できる依頼の数(turns)と、それが入っている先頭のファイルの数(parts)・先頭の塊の数(chunks。ZIP の中)。古い添付には無い */
+  decidable?: { turns: number; parts: number; chunks?: number };
   /** M365 Copilot のアプリを自動で操作できるか(サーバが Windows のとき) */
   canAutomate?: boolean;
-  /** 今の束をまとめた ZIP(工数の判定で、あるときだけ)。path は atlas.html からの相対パス */
+  /** 今の束をまとめた ZIP(あるときだけ)。path は atlas.html からの相対パス */
   zip?: { path: string; bytes: number; modifiedAt: string };
+  /** 束の中の判定済みの数(count のうち。タスクは紐づけのあるセッション) */
+  judged?: number;
 }
 export interface ChatImportResult {
   imported: number;
@@ -373,6 +270,10 @@ export interface ChatImportResult {
   duplicates: number;
   unknownIds: string[];
   total: number;
+  /** タスクの紐づけで、書かなかったセッションの数(手動か前に LLM で決めた紐づけ、「どのタスクでもない」の答えに対するタスクのある機械の紐づけがあった) */
+  kept?: number;
+  /** 取り込みで除いたもの(候補に無い ID など)と、書かなかったセッションの知らせ(古いサーバは返さない) */
+  notices?: string[];
   parts: ChatParts;
 }
 /** 取り込みの失敗。problems は形が合わない項目の一覧(返答のどこが違うか) */
@@ -384,9 +285,7 @@ export class ChatImportError extends Error {
   }
 }
 
-const q = (target: JudgeTarget): string => (target === 'turns' ? '?target=turns' : '');
-
-/** チャットでの判定。target が turns なら依頼ごとの判定(sessions / judged は依頼の数) */
+/** チャットでの判定。target が turns なら依頼ごとの判定(sessions / judged は依頼の数)、tasks なら管理ツールのタスクへの紐づけ */
 export const chatJudgeApi = {
   parts(token: string, target: JudgeTarget = 'effort'): Promise<ChatParts> {
     return connect(fetch('api/judge/parts' + q(target), { cache: 'no-store', headers: headers(token) }), (r) => parse<ChatParts>(r));
@@ -406,6 +305,20 @@ export const chatJudgeApi = {
       }
       throw new ChatImportError(body?.error ?? `サーバの応答 ${r.status}`, body?.problems ?? []);
     });
+  },
+};
+
+/** GET api/tasks: 今のタスクの状態・紐づけ・工数(埋め込みの ReportData.tasks と同じ形。設定も記録も無ければ tasks は null) */
+export interface TasksPayload {
+  readOnly: boolean;
+  tasks: TasksReport | null;
+  /** LLM に紐づけを頼むセッションの数(依頼の記録があって、紐づけの無いもの)。読むだけの画面では 0 */
+  unresolved: number;
+}
+
+export const tasksApi = {
+  get(token: string): Promise<TasksPayload> {
+    return connect(fetch('api/tasks', { cache: 'no-store', headers: headers(token) }), (r) => parse<TasksPayload>(r));
   },
 };
 

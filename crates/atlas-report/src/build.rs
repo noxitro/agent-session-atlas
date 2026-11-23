@@ -12,7 +12,6 @@ use crate::detail::{render_detail_html, DetailMemo, DetailOptions};
 use crate::embed::embed_data;
 use crate::full::{finish_full_file, full_file_name, full_tail, render_full_body, write_full_body, Counted, Excluded, FullOptions};
 use crate::glossary_page::{render_glossary_html, GlossaryPageOptions, GLOSSARY_FILE};
-use crate::groups::SessionGroup;
 use crate::highlights::{installed_view, InstalledView};
 use crate::html::{byte_length, write_text};
 use crate::insights::{embedded_candidates, insight_meta, instruction_findings, instruction_versions, skill_candidates, skill_stats, stuck_by_project, stuck_sessions, Candidate, CandidateSource, VersionMeta};
@@ -157,9 +156,6 @@ pub struct BuildInput<'a> {
     pub verdicts: Option<&'a VerdictIndex>,
     /// AI の変更がその後の VCS のファイルに残っているか
     pub retention: Option<&'a VcsRetentionFile>,
-    pub groups: Vec<SessionGroup>,
-    /// 送り先から集計したときの、グループごとの元のタグ(groups と同じ並び)。手元のタスクタグでは None
-    pub group_tags: Option<Vec<String>>,
     /// Phase 13: メモの置き場(<notes-dir>/memos)
     pub memos_dir: Option<PathBuf>,
     /// 送り先から集計したとき: 送った人のメモを読む、写したセッションのフォルダ(<snapshot>/session-state)。あれば memos_dir より優先する
@@ -185,6 +181,8 @@ pub struct BuildInput<'a> {
     pub library: Option<bool>,
     /// sessions.json の desktop(data.db の読み取りの状態)
     pub desktop_meta: Option<&'a SessionsDesktop>,
+    /// 管理ツールのタスクの節(tasks::view::TasksView を値にしたもの)。設定もタスクの記録も無ければ None
+    pub tasks: Option<Value>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -280,16 +278,6 @@ struct TurnJudgmentsOut {
 }
 
 #[derive(Serialize)]
-struct GroupOut<'a> {
-    name: &'a str,
-    note: &'a str,
-    ids: &'a [String],
-    /// 送り先から集計したグループの、元のタグ(名前は「<人> / <タグ>」なので別に持つ)。手元のタスクタグには無い
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tag: Option<&'a str>,
-}
-
-#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct InsightsOut {
     meta: JsMap<VersionMeta>,
@@ -332,12 +320,14 @@ struct ReportData<'a> {
     installed: Option<&'a InstalledView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     installed_by_person: Option<JsMap<InstalledView>>,
-    groups: Vec<GroupOut<'a>>,
     library: bool,
     /// 失敗の台帳の集計のページ(failures.html)を書いたか
     failures: bool,
     insights: InsightsOut,
     warnings: WarningsOut,
+    /// 管理ツールのタスク(tasks::view::TasksView)。設定もタスクの記録も無ければ省く
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tasks: Option<&'a Value>,
 }
 
 #[derive(Serialize)]
@@ -489,16 +479,11 @@ pub fn build_report(input: BuildInput<'_>) -> Result<BuildResult> {
         installed: installed.as_ref(),
         // 人に絞ったときに、その人のインストール済みの skill で「未使用」を出す
         installed_by_person: input.installed_by_person.map(|m| JsMap(m.js_entries().into_iter().map(|(k, v)| (k.clone(), installed_view(v))).collect())),
-        groups: input
-            .groups
-            .iter()
-            .enumerate()
-            .map(|(i, g)| GroupOut { name: &g.name, note: &g.note, ids: &g.ids, tag: input.group_tags.as_ref().and_then(|t| t.get(i)).map(String::as_str) })
-            .collect(),
         library: library_on,
         failures: true,
         insights: InsightsOut { meta: meta_for_page.clone(), candidates: embedded_candidates(&candidates), candidate_total: candidates.len(), computed_over: input.sessions.len() },
         warnings: WarningsOut { unknown_event_types: input.warnings.unknown_event_types, bad_lines: input.warnings.bad_lines, notes: input.warnings.notes.clone() },
+        tasks: input.tasks.as_ref(),
     };
 
     // 版の目印はデータを埋める前に置き換える(記録の本文に同じ文字列があっても触れない)
@@ -710,6 +695,11 @@ pub fn build_report(input: BuildInput<'_>) -> Result<BuildResult> {
     let wiki_state = atlas_core::wiki::wiki_state(input.sessions.iter().map(|r| &r.wiki), input.wiki_vaults);
     let library_href = library_on.then(|| format!("../{INSTRUCTIONS_FILE}"));
     let retention_meta_ref = retention_out.as_ref();
+    // 管理ツールのタスクの行(タスクの節があるときだけ。セッションの並びと同じ)
+    let task_row_of: Vec<crate::detail::DetailTask> = match &input.tasks {
+        Some(t) => input.sessions.iter().map(|r| crate::detail::DetailTask::from_view(t, &r.id)).collect(),
+        None => vec![],
+    };
     // 描くのは並べ、書くのは 1 本のスレッドに任せる(Windows では同じフォルダへ並べて書くと遅くなる)
     let writer = FileWriter::new();
     let pages: Vec<u64> = input
@@ -740,6 +730,7 @@ pub fn build_report(input: BuildInput<'_>) -> Result<BuildResult> {
                     retention: retention_by_id.get(r.id.as_str()).copied(),
                     retention_meta: retention_meta_ref,
                     wiki_state,
+                    task: task_row_of.get(k),
                 },
             );
             let bytes = byte_length(&page);

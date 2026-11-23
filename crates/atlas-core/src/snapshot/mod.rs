@@ -37,15 +37,15 @@ pub const SNAPSHOT_SESSION_FILES: &[&str] = &["workspace.yaml", "events.jsonl"];
 /// アップロードしたセッションのフォルダに添える、session-store.db のそのセッションの行(atlas が書く。Copilot のファイルではない)。
 /// 生ログ(events.jsonl など)だけだと、DB にしか無いトークン数・依頼の記録が欠けるため。extract はこれも読む
 pub const SESSION_STORE_JSON: &str = "atlas-session-store.json";
-/// アップロードしたセッションのフォルダに添える、送った側の記録(題名・プロジェクト名とその決め方・タスクタグ・日時)。
+/// アップロードしたセッションのフォルダに添える、送った側の記録(題名・プロジェクト名とその決め方・日時)。
 /// アップロード先から集計し直すとき、extract はプロジェクト名をここから取る(読む側の PC のディスクからは決めない)
 pub const UPLOAD_SESSION_META: &str = "atlas-session.json";
 /// アップロードしたセッションのフォルダに添える、送った側の PC で照合した「AI の変更がその後の VCS のファイルに残っているか」(vcs-step.ts)。
 /// 送り先にはリポジトリが無いことが多いので、アップロード先から集計し直すときはこれを読む(無ければ照合していない扱い)
 pub const UPLOAD_VCS_META: &str = "atlas-vcs.json";
-/// アップロード先のフォルダ(グループ・プロジェクト)の索引。写すたびに書き直す
+/// アップロード先のフォルダ(プロジェクト)の索引。写すたびに書き直す
 pub const UPLOAD_INDEX: &str = "atlas-index.json";
-/// アップロード先のフォルダ(グループ・プロジェクト)に添える、送った人がインストールしている skill・プラグインの名前
+/// アップロード先のフォルダ(プロジェクト)に添える、送った人がインストールしている skill・プラグインの名前
 /// (read_inventory と同じ形。中身は読まず名前だけ)。送るたびに書き直す。集計し直すときは「インストール済みで未使用の skill」に使う
 pub const UPLOAD_INSTALLED: &str = "atlas-installed.json";
 /// アップロードがセッションのフォルダを置き換えるときの作業用のフォルダ(写している途中のもの)
@@ -467,7 +467,7 @@ pub fn snapshot(src: &Path, dest: &Path, opts: &SnapshotOptions) -> Result<Snaps
     if !jsfs::exists(src) {
         bail!("元ディレクトリが無い: {}", src.display());
     }
-    // アップロードしたグループ・プロジェクトのフォルダ(<送り先>\<フォルダ>\<セッション id>\events.jsonl …)は、そのフォルダを session-state/ とみなす。
+    // アップロードしたプロジェクトのフォルダ(<送り先>\<フォルダ>\<セッション id>\events.jsonl …)は、そのフォルダを session-state/ とみなす。
     // そのフォルダが並ぶ場所(人ごとのフォルダ)と、もう 1 段上(送り先そのもの。全員の分)は、下のフォルダをまとめて読む
     let shape = describe_source(src);
     let flat = shape == SourceShape::Flat;

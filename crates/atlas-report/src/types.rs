@@ -14,7 +14,7 @@ use atlas_core::types::{Friction, LineChanges, ProjectSource, TodoSummary, Token
 use serde::{Deserialize, Serialize};
 
 /// 埋め込みデータの版(lib/types.ts の REPORT_DATA_VERSION。版の履歴はそちらの先頭のコメントを参照)
-pub const REPORT_DATA_VERSION: i64 = 18;
+pub const REPORT_DATA_VERSION: i64 = 21;
 
 /// llm-wiki のページごとの LLM の見立て [ページの名前, yes | no | unknown, 理由](judgments.json から読んだ形。lib/types.ts の WikiPageVerdict)
 pub type WikiPageVerdict = (String, String, String);
@@ -313,6 +313,3 @@ pub struct SessionSummary {
 
 /// Phase 12: スキル化の候補(埋め込み用。insights の Candidate と同じ形)
 pub type InsightCandidate = crate::insights::Candidate;
-
-/// 名前付きグループ(ReportData.groups)
-pub type ReportGroup = crate::groups::SessionGroup;

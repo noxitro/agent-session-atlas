@@ -34,5 +34,5 @@ if (imp.status !== 0) {
   console.error(`parity-fixture: atlas judge import が終了コード ${imp.status} で失敗しました`);
   process.exit(1);
 }
-const cmp = spawnSync(process.execPath, [join(ROOT, 'scripts', 'parity-lib.ts'), out, '--compare', '--notes', notes, '--work', join(ROOT, 'out', 'parity-fixture-dump')], { cwd: ROOT, stdio: 'inherit' });
+const cmp = spawnSync(process.execPath, [join(ROOT, 'scripts', 'parity-lib.ts'), out, '--compare', '--work', join(ROOT, 'out', 'parity-fixture-dump')], { cwd: ROOT, stdio: 'inherit' });
 process.exit(cmp.status ?? 1);

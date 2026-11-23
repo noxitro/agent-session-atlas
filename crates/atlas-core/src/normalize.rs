@@ -1670,7 +1670,6 @@ pub fn normalize_session(input: NormalizeInput<'_>) -> std::io::Result<SessionRe
         events: EventCounts { total, bad_lines: 0, by_type },
         person: None,
         upload_folder: None,
-        upload_tags: None,
         upload_atlas: None,
         desktop: None,
     })

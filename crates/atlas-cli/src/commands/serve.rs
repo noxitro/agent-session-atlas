@@ -3,7 +3,7 @@
 
 use super::Log;
 use crate::paths::Paths;
-use crate::serve::{find_running_server, open_in_browser, simple_request, start_serve, LogFn, OpenDirFn, PickFn, ReportsOptions, ServeOptions};
+use crate::serve::{find_running_server, open_in_browser, simple_request, start_serve, LogFn, PickFn, ReportsOptions, ServeOptions};
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -47,7 +47,7 @@ fn test_overrides(o: &mut ServeOptions) {
     if let Ok(c) = std::env::var("ATLAS_SERVE_CAN_PICK") {
         o.can_pick = Some(c == "1");
     }
-    // フォルダを選ぶ画面とエクスプローラーで開く操作は、テストの側の小さなサーバに尋ねる(POST /pick・/open)
+    // フォルダを選ぶ画面は、テストの側の小さなサーバに尋ねる(POST /pick)
     if let Some(port) = std::env::var("ATLAS_TEST_HOOK_URL").ok().and_then(|u| u.rsplit(':').next().and_then(|p| p.trim_end_matches('/').parse::<u16>().ok())) {
         let pick: PickFn = Arc::new(move |title: &str, initial: Option<&str>| {
             let body = json!({ "title": title, "initial": initial }).to_string();
@@ -58,12 +58,7 @@ fn test_overrides(o: &mut ServeOptions) {
             let v: Value = serde_json::from_slice(&r.body)?;
             Ok(v.get("path").and_then(Value::as_str).map(str::to_string))
         });
-        let open: OpenDirFn = Arc::new(move |dir: &str| {
-            let body = json!({ "dir": dir }).to_string();
-            let _ = simple_request(port, "POST", "/open", &[("content-type", "application/json")], body.as_bytes(), Duration::from_secs(30));
-        });
         o.pick = Some(pick);
-        o.open_dir = Some(open);
     }
 }
 
@@ -90,7 +85,7 @@ pub fn run_serve(p: &Paths, o: ServeCli, log: Log<'_>) -> Result<String> {
         let _ = s.flush();
     };
     let server_log: LogFn = Arc::new(out);
-    let mut so = ServeOptions::new(&p.out, &p.notes, &p.groups);
+    let mut so = ServeOptions::new(&p.out, &p.notes);
     so.port = o.port.unwrap_or(0) as u16;
     so.open = o.open;
     so.log = server_log;

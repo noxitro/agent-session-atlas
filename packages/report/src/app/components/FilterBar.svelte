@@ -1,7 +1,7 @@
 <script lang="ts">
   import { categoryLabel } from '../../lib/judgment-labels.ts';
-  import { NO_JUDGMENT, UNKNOWN, type FilterState, type Option } from '../../lib/filter.ts';
-  import { int, modelLabel } from '../../lib/format.ts';
+  import { NO_JUDGMENT, NO_TASK, UNKNOWN, type FilterState, type Option } from '../../lib/filter.ts';
+  import { int, modelLabel, truncate } from '../../lib/format.ts';
   import { judgeHint } from '../../lib/hints.ts';
 
   let {
@@ -15,6 +15,7 @@
     lastDay,
     onchange,
     editable = false,
+    tasks = null,
   }: {
     filter: FilterState;
     options: { project: Option[]; person: Option[]; client: Option[]; model: Option[]; branch: Option[]; taskCategory: Option[] };
@@ -32,7 +33,13 @@
     onchange: (patch: Partial<FilterState>) => void;
     /** serve から開き、判定のボタンがある(案内の文を分ける) */
     editable?: boolean;
+    /** 管理ツールのタスクの選択肢(タスクの記録が無ければ null で、選ぶ欄を出さない)。none はどのタスクにも紐づいていないセッションの数 */
+    tasks?: { options: Option[]; none: number } | null;
   } = $props();
+  /** 選択肢に無いタスクで絞っているとき(共有された URL など)も、外せるように選んだものを出す */
+  /** タスクの選択肢の文字: 「名前 · ID(件数)」。長い名前は縮める(全文は title。狭い幅でも件数まで見えるように) */
+  const taskOption = (o: Option): string => `${o.label === o.value ? '' : `${truncate(o.label, 24)} · `}${o.value}(${int(o.count)})`;
+  const taskMissing = $derived(!!filter.task && filter.task !== NO_TASK && !tasks?.options.some((o) => o.value === filter.task));
 
   const label = (v: string): string => (v === UNKNOWN ? '不明' : v === NO_JUDGMENT ? '未判定' : categoryLabel(v));
   /** ツールの絞り込みの表示名(mcp:<サーバー> は「MCP <サーバー>」) */
@@ -100,6 +107,19 @@
     {@render select('project', 'プロジェクト', options.project)}
     {@render select('client', 'クライアント', options.client)}
     {@render select('model', 'モデル', options.model, modelLabel)}
+    {#if tasks || filter.task !== ''}
+      <label class="sel task">
+        <span class="k">タスク</span>
+        <select value={filter.task} data-testid="task-filter" onchange={(e) => onchange({ task: e.currentTarget.value })}>
+          <option value="">すべて</option>
+          <option value={NO_TASK}>タスクなし({int(tasks?.none ?? 0)})</option>
+          {#if taskMissing}<option value={filter.task}>{filter.task}(0)</option>{/if}
+          {#each tasks?.options ?? [] as o (o.value)}
+            <option value={o.value} title={o.label === o.value ? o.value : `${o.label} · ${o.value}`}>{taskOption(o)}</option>
+          {/each}
+        </select>
+      </label>
+    {/if}
 
 
     {#if filter.tool}
@@ -236,6 +256,10 @@
     height: 30px;
     max-width: 13em;
   }
+  /* タスクの名前は長いことがあるので少し広く取る(狭い画面では下の規則でほかと同じ幅) */
+  .task select {
+    max-width: 20em;
+  }
   input[type='date'] {
     max-width: 10em;
   }
@@ -312,6 +336,10 @@
       width: 100%;
     }
     .more-toggle {
+      flex: 1 1 100%;
+    }
+    /* タスクは名前と ID と件数が並ぶので 1 行を使う */
+    .sel.task {
       flex: 1 1 100%;
     }
   }

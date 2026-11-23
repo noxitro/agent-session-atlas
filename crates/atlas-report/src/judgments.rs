@@ -98,7 +98,7 @@ pub fn parse_judgments(raw: &Value) -> Result<JudgmentsIndex> {
         };
         let a = obj(x.get("aiOutcome"));
         let score = |k: &str| num(obj(x.get(k)).get("score"));
-        // 項目ごとの判定の出所(judge run と取り込みが付ける)。無い古い判定は、モデルだけファイル全体のものを使う
+        // 項目ごとの判定の出所(取り込みと、前の版の judge run が付けた)。無い古い判定は、モデルだけファイル全体のものを使う
         let item_judge = x.get("judge").and_then(Value::as_object);
         let j = JudgmentSummary {
             task_category: str_of(x.get("taskCategory")),

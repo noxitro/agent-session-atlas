@@ -233,7 +233,7 @@
             <tbody><tr><td class="num">{int(wikiUse.indexReads)}</td><td class="num">{int(wikiUse.pageReads)}</td><td class="num">{int(wikiUse.skillCalls)}</td><td class="num">{int(wikiUse.otherCalls)}</td></tr></tbody>
           </table>
         </div>
-        <p class="basis" data-testid="insights-wiki-why">率は並べていません。参照するかどうかは作業の中身で決まるので、差が出ても wiki が原因とは分かりません。引数に vault の場所が出ない読みは数えないので、「参照なし」にも参照したセッションが混ざります。数え方は<a href="glossary.html#llm-wiki">用語の説明</a>、wiki あり / なしで比べるときは<a href="glossary.html#conditions">課題 × 条件</a>。参照したセッションだけを見るときは、絞り込みの「その他の条件」の「wiki を参照したセッションだけ」。</p>
+        <p class="basis" data-testid="insights-wiki-why">率は並べていません。参照するかどうかは作業の中身で決まるので、差が出ても wiki が原因とは分かりません。引数に vault の場所が出ない読みは数えないので、「参照なし」にも参照したセッションが混ざります。数え方は<a href="glossary.html#llm-wiki">用語の説明</a>。参照したセッションだけを見るときは、絞り込みの「その他の条件」の「wiki を参照したセッションだけ」。</p>
       {/if}
     </div>
 

@@ -4,9 +4,8 @@
 import { describe, expect, it } from 'vitest';
 import { effortSkew, isLowConfidence, monthRange } from '../src/lib/aggregate.ts';
 import { embedData, extractEmbedded, serializeForScript } from '../src/lib/embed.ts';
-import { decodeFilter, decodeTab, DEFAULT_TAB, emptyFilter, encodeFilter, encodeState, filterHref, groupIds, isEmptyFilter, isStateHash, isTabId, TABS } from '../src/lib/filter.ts';
+import { decodeFilter, decodeTab, DEFAULT_TAB, emptyFilter, encodeFilter, encodeState, filterHref, isEmptyFilter, isStateHash, isTabId, TABS } from '../src/lib/filter.ts';
 import { excerptAround, looksLikeId, searchIndex, searchSessions, searchTerms } from '../src/lib/session-search.ts';
-import { addIds, memberGroups, parseGroups, removeIds, resolveIdPrefixes, serializeGroups } from '../src/lib/groups.ts';
 import { sessionLabel } from '../src/lib/highlights.ts';
 import { parseJudgments } from '../src/lib/judgments.ts';
 import { embeddedJudgment, judgmentForSession } from '../src/lib/summarize.ts';
@@ -162,54 +161,11 @@ describe('session-search(セッション一覧の検索)', () => {
   });
 });
 
-describe('groups: 追加と除外(純関数)', () => {
-  it('addIds は重複を足さず順序を保ち、removeIds は 0 件になっても消さない', () => {
-    const g = { name: 'g', note: '', ids: ['a', 'b'] };
-    const r = addIds(g, ['b', 'c', 'c', ' ', 'a']);
-    expect(r).toEqual({ group: { name: 'g', note: '', ids: ['a', 'b', 'c'] }, added: 1, dup: 2 });
-    expect(g.ids).toEqual(['a', 'b']);
-    expect(addIds(g, [])).toEqual({ group: { name: 'g', note: '', ids: ['a', 'b'] }, added: 0, dup: 0 });
-    const d = removeIds(g, ['a', 'zzz']);
-    expect(d).toEqual({ group: { name: 'g', note: '', ids: ['b'] }, removed: 1 });
-    expect(removeIds(d.group, ['b'])).toEqual({ group: { name: 'g', note: '', ids: [] }, removed: 1 });
-    expect(removeIds({ ...g, ids: [] }, ['a'])).toEqual({ group: { name: 'g', note: '', ids: [] }, removed: 0 });
-  });
-});
-
-describe('groups(atlas-notes/groups.json)', () => {
-  it('正常な形を読み、重複した id を除く。書き出しはキーの順を固定して雛形になる', () => {
-    const r = parseGroups({ version: 1, groups: [{ name: ' 調査 ', note: 'x', ids: ['a', 'b', 'a', ' '] }, { name: '空', ids: [] }] });
-    expect(r.warnings).toEqual([]);
-    expect(r.groups).toEqual([
-      { name: '調査', note: 'x', ids: ['a', 'b'] },
-      { name: '空', note: '', ids: [] },
-    ]);
-    expect(serializeGroups(r.groups)).toBe(`${JSON.stringify({ version: 1, groups: r.groups }, null, 2)}\n`);
-  });
-
-  it('壊れた形はエラーにせず、読めた分だけ返して理由を残す(全体 / 1 件 / 重複名)', () => {
-    expect(parseGroups(null).groups).toEqual([]);
-    expect(parseGroups(null).warnings[0]).toMatch(/オブジェクトではない/);
-    expect(parseGroups({ version: 2, groups: [] }).warnings[0]).toMatch(/version/);
-    expect(parseGroups({ version: 1, groups: {} }).warnings[0]).toMatch(/配列ではない/);
-    const r = parseGroups({
-      version: 1,
-      groups: [{ name: 'ok', ids: ['a'] }, 'junk', { name: '', ids: [] }, { name: 'bad', ids: 'a' }, { name: 'ok', ids: ['b'] }, { name: 'n', ids: ['c'], note: 3 }],
-    });
-    expect(r.groups.map((g) => g.name)).toEqual(['ok', 'n']);
-    expect(r.groups[0].ids).toEqual(['a']);
-    expect(r.groups[1].note).toBe('');
-    expect(r.warnings).toHaveLength(5);
-    expect(r.warnings.find((w) => w.includes('重複'))).toMatch(/「ok」/);
-    expect(r.warnings.find((w) => w.includes('note'))).toMatch(/\(n\)/);
-  });
-
-  it('id の先頭一致: 完全一致を優先し、1 つに決まれば採り、曖昧・未知はエラー', () => {
-    const known = ['abc-1', 'abc-2', 'abd-1', 'abc'];
-    expect(resolveIdPrefixes(known, ['abc'])).toEqual(['abc']);
-    expect(resolveIdPrefixes(known, ['abd', 'abc-2', 'abd'])).toEqual(['abd-1', 'abc-2']);
-    expect(() => resolveIdPrefixes(known, ['abc-'])).toThrow(/曖昧/);
-    expect(() => resolveIdPrefixes(known, ['zzz'])).toThrow(/記録にありません/);
+describe('前の版の URL のタスクタグ', () => {
+  it('group= は読まずに捨てる(ほかの指定はそのまま)', () => {
+    expect(decodeFilter('#ids=a,b&group=%E8%AA%BF%E6%9F%BB')).toEqual({ ...emptyFilter(), ids: 'a,b' });
+    expect(decodeFilter('#group=x&project=p')).toEqual({ ...emptyFilter(), project: 'p' });
+    expect('group' in emptyFilter()).toBe(false);
   });
 });
 
@@ -397,39 +353,5 @@ describe('一覧の題名の見分け(sharedLeads)', () => {
     const r = sharedLeads(['リポジトリの README を  更新して。章立ては変えない', 'リポジトリの README を 更新して。章立ては変える', 'リポジトリの別の話']);
     expect(r[0].cut).toBeGreaterThan(0);
     expect(r[2]).toEqual({ cut: 0, same: 1 });
-  });
-});
-
-describe('memberGroups(送った人のタスクタグ)', () => {
-  it('人ごとに分ける(同じ名前のタグでも別の人なら別のグループ)。名前は「人 / タグ」、人が無ければタグだけ。人・タグの順に並べる', () => {
-    expect(
-      memberGroups([
-        { id: 's1', person: 'person-b', uploadTags: ['武器'] },
-        { id: 's2', person: 'person-a', uploadTags: ['武器', 'UI'] },
-        { id: 's3', person: 'person-a', uploadTags: ['武器'] },
-        { id: 's4', person: null, uploadTags: ['共有'] },
-        { id: 's5', person: 'person-a', uploadTags: [] },
-        { id: 's6' },
-      ]),
-    ).toEqual([
-      { name: '共有', note: '', ids: ['s4'] },
-      { name: 'person-a / UI', note: '', ids: ['s2'] },
-      { name: 'person-a / 武器', note: '', ids: ['s2', 's3'] },
-      { name: 'person-b / 武器', note: '', ids: ['s1'] },
-    ]);
-    expect(memberGroups([])).toEqual([]);
-  });
-
-  it('人とタグの組で分ける。表示名が重なったら後のものに番号を付ける(名前はグループの鍵なので重ねない)', () => {
-    const g = memberGroups([
-      { id: 's1', person: 'a', uploadTags: ['b / c'] },
-      { id: 's2', person: 'a / b', uploadTags: ['c'] },
-      { id: 's3', person: 'a', uploadTags: ['b / c', 'b / c'] },
-    ]);
-    expect(g).toEqual([
-      { name: 'a / b / c', note: '', ids: ['s1', 's3'] },
-      { name: 'a / b / c (2)', note: '', ids: ['s2'] },
-    ]);
-    expect(new Set(g.map((x) => x.name)).size).toBe(g.length);
   });
 });

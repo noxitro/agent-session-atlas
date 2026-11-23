@@ -1,6 +1,6 @@
-//! M365 Copilot のアプリを UI Automation で操作して判定する(atlas judge m365 / atlas turns m365 と、画面の「M365 Copilot で自動で判定する」。
+//! M365 Copilot のアプリを UI Automation で操作して判定する(atlas judge m365 / turns m365 / tasks m365 と、画面の「M365 Copilot で自動で判定する」。
 //! packages/cli/src/m365.ts の移植)。
-//! 添付ファイル(bundle/parts/・turn-bundle/parts/)のうち未判定のものを 1 つずつ、新しいチャットで送り、返答を取り込む。
+//! 添付ファイル(bundle/parts/・turn-bundle/parts/・task-bundle/parts/)のうち未判定のものを 1 つずつ、新しいチャットで送り、返答を取り込む。
 //! 画面の操作は m365-uia.ps1(Windows PowerShell)が 1 ファイルごとに行う。判定するのは M365 Copilot なので、このツールは AI クレジットを使わない。
 //! 返答は <bundle>/replies/<名前>.md に残す(形が合わずに取り込めなかったとき、読んで確かめられるように)。
 //! m365-uia.ps1 は TS 版と同じファイルを実行ファイルに埋め込み、一時フォルダに書き出して同じ引数で起動する(実行ファイル 1 つで動くように)。
@@ -14,7 +14,7 @@ use atlas_judge::backends::copilot_cli::mkdtemp;
 use atlas_judge::backends::proc::hide_window;
 use atlas_judge::judgments_io::{import_judgments_text, ImportOptions};
 use atlas_judge::schema::JudgmentValidationError;
-use atlas_judge::turn_run::turn_import_phases;
+use atlas_judge::turn_bundle::turn_import_phases;
 use atlas_judge::turn_schema::{import_turn_judgments_text, TurnImportOptions};
 use regex::Regex;
 use serde_json::Value;
@@ -62,7 +62,17 @@ impl std::fmt::Display for M365FatalError {
 
 impl std::error::Error for M365FatalError {}
 
-/// m365-uia.ps1 を Windows PowerShell で動かす
+/// テスト用: 画面を操作するスクリプトの代わりに動かす偽物(node で動かす .mjs。fixtures/fake-m365.mjs)。
+/// 本物の M365 Copilot と PowerShell に触れずに、画面からのジョブ(子プロセスと、その子の止め方)と返答の取り込みを確かめるため。
+/// 指定すると Windows でなくても動かす(偽物は画面を操作しない)
+pub const FAKE_DRIVER_ENV: &str = "ATLAS_M365_FAKE_DRIVER";
+
+/// 偽物を使うか(テスト用。FAKE_DRIVER_ENV)
+pub fn fake_driver() -> Option<std::ffi::OsString> {
+    std::env::var_os(FAKE_DRIVER_ENV).filter(|v| !v.is_empty())
+}
+
+/// m365-uia.ps1 を Windows PowerShell で動かす(FAKE_DRIVER_ENV があれば、その偽物を node で同じ引数で動かす)
 pub fn powershell_driver(req: &M365Request<'_>) -> Result<()> {
     let args: Vec<String> = vec![
         "-NoProfile".into(),
@@ -82,7 +92,14 @@ pub fn powershell_driver(req: &M365Request<'_>) -> Result<()> {
         "-OutFile".into(),
         req.out_file.display().to_string(),
     ];
-    let mut c = Command::new("powershell.exe");
+    let mut c = match fake_driver() {
+        Some(fake) => {
+            let mut c = Command::new("node");
+            c.arg(fake);
+            c
+        }
+        None => Command::new("powershell.exe"),
+    };
     c.args(&args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     hide_window(&mut c);
     let mut child = c.spawn().map_err(|e| anyhow!("Windows PowerShell を起動できません: {e}"))?;
@@ -170,6 +187,8 @@ pub fn powershell_driver(req: &M365Request<'_>) -> Result<()> {
 
 pub struct M365Paths {
     pub out: PathBuf,
+    /// メモの置き場(タスクの紐づけ task-links.json を書く)
+    pub notes: PathBuf,
     pub sessions: PathBuf,
     pub judgments: PathBuf,
     pub turn_judgments: PathBuf,
@@ -213,10 +232,10 @@ pub fn run_m365_judge(p: &M365Paths, o: &M365Options, log: &dyn Fn(&str), driver
     }
     let turns = o.target == ChatTarget::Turns;
     let label = if turns { "依頼" } else { "セッション" };
-    let info = list_chat_parts(&p.out, o.target)?;
+    let info = list_chat_parts(&p.out, &p.notes, o.target)?;
     let all_parts = info.parts.clone().unwrap_or_default();
     if !info.exists || all_parts.is_empty() {
-        bail!("添付ファイルがまだありません。先に「添付ファイルを作る」(atlas {} --unjudged)を実行してください", if turns { "turns bundle" } else { "bundle" });
+        bail!("添付ファイルがまだありません。先に「添付ファイルを作る」(atlas {})を実行してください", o.target.bundle_command());
     }
     let pending: Vec<_> = all_parts.iter().filter(|x| x.judged < x.sessions).collect();
     let todo: Vec<_> = match o.limit {
@@ -234,7 +253,7 @@ pub fn run_m365_judge(p: &M365Paths, o: &M365Options, log: &dyn Fn(&str), driver
     let known_ids: HashSet<String> = known.iter().filter_map(|s| s.get("id").and_then(Value::as_str).map(str::to_string)).collect();
     let tbs = turns_by_session(&known);
     let phases = if turns { turn_import_phases(&p.turn_bundle, &phase_names()?) } else { vec![] };
-    let replies_dir = p.out.join(if turns { "turn-bundle" } else { "bundle" }).join("replies");
+    let replies_dir = p.out.join(o.target.dir_name()).join("replies");
     std::fs::create_dir_all(&replies_dir)?;
     // 添付に使う一時のファイルと画面を操作するスクリプトは、終わったら消す(TempDir を落とすと消える)
     let work = mkdtemp("atlas-m365-")?;
@@ -287,10 +306,23 @@ pub fn run_m365_judge(p: &M365Paths, o: &M365Options, log: &dyn Fn(&str), driver
         let text = clean_copilot_reply(&raw);
         std::fs::write(replies_dir.join(format!("{}.raw.txt", name.strip_suffix(".txt").unwrap_or(&name))), &raw)?;
         std::fs::write(&reply, &text)?;
-        let r = if turns {
-            import_turn_judgments_text(&text, &p.turn_judgments, TurnImportOptions { phases: &phases, turns_by_session: Some(&tbs), now: None, backend: None, model: None }).map(|r| (r.imported, r.overwritten, Vec::new()))
-        } else {
-            import_judgments_text(&text, &p.judgments, ImportOptions { known_ids: Some(&known_ids), label: Some(name.clone()), now: None }).map(|r| (r.imported, r.overwritten, r.notes))
+        let r = match o.target {
+            ChatTarget::Turns => import_turn_judgments_text(&text, &p.turn_judgments, TurnImportOptions { phases: &phases, turns_by_session: Some(&tbs), now: None, backend: None, model: None }).map(|r| (r.imported, r.overwritten, Vec::new())),
+            ChatTarget::Effort => import_judgments_text(&text, &p.judgments, ImportOptions { known_ids: Some(&known_ids), label: Some(name.clone()), now: None }).map(|r| (r.imported, r.overwritten, r.notes)),
+            // 手動と、前に LLM で決めた紐づけは書かない(その知らせを注意に出す)
+            ChatTarget::Tasks => crate::commands::tasks::import_task_links_text(&text, &p.notes, &p.out.join(o.target.dir_name())).map(|r| {
+                let mut notes = r.notes.clone();
+                if !r.kept_manual.is_empty() {
+                    notes.push(format!("手動で紐づけてあるので書かなかったセッション {} 件", r.kept_manual.len()));
+                }
+                if !r.kept_llm.is_empty() {
+                    notes.push(format!("前に LLM で紐づけてあるので書かなかったセッション {} 件", r.kept_llm.len()));
+                }
+                if !r.kept_machine.is_empty() {
+                    notes.push(format!("答えは「どのタスクでもない」でしたが、機械がタスクに紐づけてあるので書かなかったセッション {} 件", r.kept_machine.len()));
+                }
+                (r.imported, 0, notes)
+            }),
         };
         match r {
             Ok((imported, overwritten, notes)) => {
@@ -309,7 +341,7 @@ pub fn run_m365_judge(p: &M365Paths, o: &M365Options, log: &dyn Fn(&str), driver
                     "m365: {name} の返答を取り込めませんでした(何も書いていません): {e}{}",
                     if problems.is_empty() { String::new() } else { format!("\n{}", problems.iter().map(|x| format!("m365:   - {x}")).collect::<Vec<_>>().join("\n")) }
                 ));
-                log(&format!("m365:   返答は {} にあります(直して atlas {} import で取り込めます)", reply.display(), if turns { "turns" } else { "judge" }));
+                log(&format!("m365:   返答は {} にあります(直して atlas {} で取り込めます)", reply.display(), o.target.import_command()));
             }
         }
     }
@@ -443,7 +475,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(out.join("sessions.json"), json!({ "version": 12, "sessions": [{"id": "s1"}, {"id": "s2"}, {"id": "s3"}, {"id": "s4"}] }).to_string()).unwrap();
-        let p = M365Paths { sessions: out.join("sessions.json"), judgments: out.join("judgments.json"), turn_judgments: out.join("turn-judgments.json"), turn_bundle: out.join("turn-bundle"), out };
+        let p = M365Paths { sessions: out.join("sessions.json"), judgments: out.join("judgments.json"), turn_judgments: out.join("turn-judgments.json"), turn_bundle: out.join("turn-bundle"), notes: dir.path().join("notes"), out };
         (dir, p)
     }
 
@@ -497,6 +529,85 @@ mod tests {
         let rec3 = recorder(&none, &[]);
         assert_eq!(run_m365_judge(&p, &o("Auto", None), &|_| {}, &rec3, true, &|_| {}).unwrap().attempted, 0);
         assert!(none.borrow().is_empty());
+    }
+
+    /// タスクの紐づけ(tasks m365): 紐づけの無いセッションの添付ファイルを送り、返答を task-links.json に書く。
+    /// 送る前に手動か LLM で紐づいたセッションは書かずに知らせ、返答は task-bundle/replies/ に残す。紐づいたファイルは次に送らない
+    #[test]
+    fn tasks_target_imports_links_and_reports_kept_sessions() {
+        use atlas_judge::task_link::{build_task_bundle, LinkQuery, TaskBundleOptions};
+        use atlas_report::tasks::links::{load_links, update_links, LinkSource, TaskLink};
+        let (_d, p) = setup();
+        let q = |id: &str| LinkQuery { session_id: id.into(), title: "題名".into(), prompts: vec!["直して".into()], candidates: vec![("T-1".into(), "一つ目".into()), ("T-2".into(), "二つ目".into())] };
+        build_task_bundle(&[q("s1"), q("s2"), q("s3")], &TaskBundleOptions { bundle_dir: p.out.join("task-bundle"), per_part: Some(1), boundary: None, scope: Default::default(), now: None }).unwrap();
+        // 束を作った後に、s2 は手動で、s3 は LLM で紐づいた
+        let links_path = atlas_report::tasks::task_links_path(&p.notes);
+        let link = |t: &str, source| TaskLink { task_ids: vec![t.into()], source, reason: String::new(), confidence: None, at: "t".into() };
+        update_links(&links_path, |l| {
+            l.links.insert("s2".into(), link("T-2", LinkSource::Manual));
+            l.links.insert("s3".into(), link("T-2", LinkSource::Llm));
+        })
+        .unwrap();
+        let calls = RefCell::new(Vec::<String>::new());
+        // 添付の中のセッションに、候補の先頭を選んだ返答を書く
+        let answer = |req: &M365Request<'_>| -> Result<()> {
+            calls.borrow_mut().push(base(&req.attach));
+            let text = std::fs::read_to_string(&req.attach)?;
+            assert!(text.starts_with("# 管理ツールのタスクへの紐づけの指示"));
+            let id = text.lines().find_map(|l| l.strip_prefix("- セッション ID: ")).unwrap().to_string();
+            std::fs::write(&req.out_file, format!("決めました。\n```json\n{}\n```", json!({ "links": [{ "sessionId": id, "taskIds": ["T-1"], "confidence": 0.7, "reason": "画面から" }] })))?;
+            Ok(())
+        };
+        let logs = RefCell::new(Vec::<String>::new());
+        let log = |m: &str| logs.borrow_mut().push(m.to_string());
+        let o = M365Options { target: ChatTarget::Tasks, model: "Think Deeper".into(), limit: None, timeout_sec: 60, retries: None };
+        let s = run_m365_judge(&p, &o, &log, &answer, true, &|_| {}).unwrap();
+        // s2 と s3 は紐づいているので送らない(取り込み済みのファイル)。s1 のファイルだけを送って取り込む
+        assert_eq!(*calls.borrow(), ["tasks-part-01.txt"]);
+        assert_eq!((s.attempted, s.succeeded, s.imported, s.failed.len()), (1, 1, 1, 0));
+        let got = load_links(&links_path).file;
+        assert_eq!((got.links["s1"].task_ids.clone(), got.links["s1"].source, got.links["s1"].reason.as_str()), (vec!["T-1".to_string()], LinkSource::Llm, "画面から"));
+        assert_eq!(got.links["s2"].source, LinkSource::Manual);
+        assert!(std::fs::read_to_string(p.out.join("task-bundle").join("replies").join("tasks-part-01.md")).unwrap().contains("\"sessionId\":\"s1\""));
+        assert!(p.out.join("task-bundle").join("replies").join("tasks-part-01.raw.txt").exists());
+        assert!(logs.borrow().iter().any(|l| l == "m365: tasks-part-01.txt の返答から 1 件を取り込みました(既存の上書き 0 件)"), "{:?}", logs.borrow());
+        // 送る前に s1 が手動で、別の回では s3 が LLM で紐づいていたら、書かずに知らせる(ファイルは取り込めた扱い)
+        update_links(&links_path, |l| {
+            l.links.shift_remove("s2");
+            l.links.shift_remove("s3");
+        })
+        .unwrap();
+        let reply_for = |id: &'static str| move |req: &M365Request<'_>| -> Result<()> {
+            std::fs::write(&req.out_file, format!("```json\n{}\n```", json!({ "links": [{ "sessionId": id, "taskIds": ["T-1"], "confidence": 0.7 }] })))?;
+            Ok(())
+        };
+        // 送っている間に s2 が手動で紐づけられた
+        let manual_meanwhile = |req: &M365Request<'_>| -> Result<()> {
+            update_links(&links_path, |l| {
+                l.links.insert("s2".into(), link("T-2", LinkSource::Manual));
+            })
+            .unwrap();
+            reply_for("s2")(req)
+        };
+        let logs2 = RefCell::new(Vec::<String>::new());
+        let log2 = |m: &str| logs2.borrow_mut().push(m.to_string());
+        let s2 = run_m365_judge(&p, &M365Options { limit: Some(1), ..o }, &log2, &manual_meanwhile, true, &|_| {}).unwrap();
+        assert_eq!((s2.succeeded, s2.imported), (1, 0));
+        assert!(logs2.borrow().iter().any(|l| l == "m365:   注意 手動で紐づけてあるので書かなかったセッション 1 件"), "{:?}", logs2.borrow());
+        let llm_meanwhile = |req: &M365Request<'_>| -> Result<()> {
+            update_links(&links_path, |l| {
+                l.links.insert("s3".into(), link("T-2", LinkSource::Llm));
+            })
+            .unwrap();
+            reply_for("s3")(req)
+        };
+        let logs3 = RefCell::new(Vec::<String>::new());
+        let log3 = |m: &str| logs3.borrow_mut().push(m.to_string());
+        let s3 = run_m365_judge(&p, &M365Options { target: ChatTarget::Tasks, model: "Think Deeper".into(), limit: None, timeout_sec: 60, retries: None }, &log3, &llm_meanwhile, true, &|_| {}).unwrap();
+        assert_eq!((s3.succeeded, s3.imported), (1, 0));
+        assert!(logs3.borrow().iter().any(|l| l == "m365:   注意 前に LLM で紐づけてあるので書かなかったセッション 1 件"), "{:?}", logs3.borrow());
+        // 全部紐づいたら、送るファイルは無い
+        assert_eq!(run_m365_judge(&p, &M365Options { target: ChatTarget::Tasks, model: "Think Deeper".into(), limit: None, timeout_sec: 60, retries: None }, &|_| {}, &answer, true, &|_| {}).unwrap().attempted, 0);
     }
 
     /// 画面が見つからないときはやり直さず、残りのファイルも送らない。--limit で送る数を絞れる。Windows 以外と、添付ファイルが無いときは止まる

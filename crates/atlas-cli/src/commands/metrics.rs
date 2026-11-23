@@ -12,12 +12,12 @@ use atlas_core::metrics::{compute_metrics, is_empty_session};
 use atlas_core::tables::{failures_table, to_csv, Cell};
 use atlas_core::types::{MetricsFile, SessionRecord, SessionsFile};
 use atlas_report::filter::{matches_base, BaseFilter};
-use atlas_report::conditions::{assignments, condition_table, conditions_csv_table, session_cells, test_tables, CondGroup, CondSession, SESSION_COLUMNS};
-use atlas_report::groups::{load_groups, member_groups_keyed, resolve_id_prefixes, LoadedGroups, MemberSource};
+use atlas_report::ids::resolve_id_prefixes;
+use atlas_report::test_tables::{session_cells, test_tables, SESSION_COLUMNS};
 use std::collections::HashSet;
 use std::path::Path;
 
-/// CLI の絞り込み(--since・--project・--client・--model・--branch・--group・--session)
+/// CLI の絞り込み(--since・--project・--client・--model・--branch・--session・--task)
 #[derive(Debug, Clone, Default)]
 pub struct SessionFilter {
     pub since: Option<String>,
@@ -25,10 +25,10 @@ pub struct SessionFilter {
     pub client: Option<String>,
     pub model: Option<String>,
     pub branch: Option<String>,
-    /// 名前付きグループ(groups.json)の名前
-    pub group: Option<String>,
     /// 特定のセッション(id の先頭一致。解決前)
     pub sessions: Option<Vec<String>>,
+    /// 管理ツールのタスクの ID(そのタスクに紐づいたセッションだけ)
+    pub task: Option<String>,
 }
 
 /// JS の真偽(空文字・None は偽)
@@ -44,8 +44,8 @@ impl SessionFilter {
             client: o.client.clone(),
             model: o.model.clone(),
             branch: o.branch.clone(),
-            group: o.group.clone(),
             sessions: o.sessions.clone(),
+            task: o.task.clone(),
         }
     }
 }
@@ -56,13 +56,13 @@ pub fn has_filter(f: &SessionFilter) -> bool {
         || set(&f.client).is_some()
         || set(&f.model).is_some()
         || set(&f.branch).is_some()
-        || set(&f.group).is_some()
         || f.sessions.as_ref().is_some_and(|s| !s.is_empty())
+        || set(&f.task).is_some()
 }
 
 /// CLI のフィルタ。--project は完全一致するキーがあればそれだけ、無ければ部分一致(大文字小文字を区別しない)。
 /// --since は core の snapshot と同じく「その時刻以降に更新された」セッション。
-/// ids は --group / --session を解決した後のセッション id の集合(None なら制限なし)。他の条件と AND。
+/// ids は --session を解決した後のセッション id の集合(None なら制限なし)。他の条件と AND。
 #[allow(dead_code)] // build・bundle・turns の移植(段 4・6)で使う。今はテストだけ
 pub fn filter_sessions<'a>(sessions: &'a [SessionRecord], f: &SessionFilter, ids: Option<&HashSet<String>>) -> (Vec<&'a SessionRecord>, Vec<String>) {
     let (index, projects) = filter_session_index(sessions, f, ids);
@@ -111,57 +111,23 @@ pub fn filter_session_index(sessions: &[SessionRecord], f: &SessionFilter, ids: 
     (out, projects)
 }
 
-/// --group と --session を解決したもの
+/// --session を解決したもの
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedIds {
     /// 他の条件と AND する id の集合
     pub set: HashSet<String>,
-    pub group_total: usize,
-    pub group_known: usize,
     pub session_ids: Vec<String>,
 }
 
-/// --group と --session をセッション id の集合に解決する(どちらも無ければ None)。
-/// グループが無い名前・曖昧な id・記録に無い id はエラー(黙って 0 件にしない)。グループの ids に記録に無い id があるのは許す(件数だけ知らせる)。
-pub fn resolve_id_filter(all: &[SessionRecord], f: &SessionFilter, groups: &LoadedGroups) -> Result<Option<ResolvedIds>> {
-    let sessions_given = f.sessions.as_ref().is_some_and(|s| !s.is_empty());
-    if set(&f.group).is_none() && !sessions_given {
-        return Ok(None);
-    }
+/// --session をセッション id の集合に解決する(無ければ None)。曖昧な id・記録に無い id はエラー(黙って 0 件にしない)。
+pub fn resolve_id_filter(all: &[SessionRecord], f: &SessionFilter) -> Result<Option<ResolvedIds>> {
+    let Some(prefixes) = f.sessions.as_ref().filter(|s| !s.is_empty()) else { return Ok(None) };
     let known: Vec<&str> = all.iter().map(|s| s.id.as_str()).collect();
-    let known_set: HashSet<&str> = known.iter().copied().collect();
-    let mut result: Option<HashSet<String>> = None;
-    let (mut group_total, mut group_known) = (0usize, 0usize);
-    if let Some(name) = set(&f.group) {
-        let Some(g) = groups.groups.iter().find(|x| x.name == name) else {
-            let names: Vec<&str> = groups.groups.iter().map(|x| x.name.as_str()).collect();
-            if groups.exists {
-                bail!(
-                    "グループ「{name}」は {} にありません{}{}",
-                    groups.path,
-                    if names.is_empty() { String::new() } else { format!("(あるのは: {})", names.join(", ")) },
-                    if groups.warnings.is_empty() { String::new() } else { format!("。読めなかった箇所: {}", groups.warnings.join(" / ")) }
-                );
-            }
-            bail!("グループ「{name}」を探す {} がありません(atlas group add で作れます。場所は --notes-dir で変えられます)", groups.path);
-        };
-        result = Some(g.ids.iter().cloned().collect());
-        group_total = g.ids.len();
-        group_known = g.ids.iter().filter(|id| known_set.contains(id.as_str())).count();
-    }
-    let mut session_ids: Vec<String> = Vec::new();
-    if let Some(prefixes) = f.sessions.as_ref().filter(|s| !s.is_empty()) {
-        session_ids = resolve_id_prefixes(&known, prefixes)?;
-        let s: HashSet<String> = session_ids.iter().cloned().collect();
-        result = Some(match result {
-            Some(set) => set.into_iter().filter(|id| s.contains(id)).collect(),
-            None => s,
-        });
-    }
-    Ok(Some(ResolvedIds { set: result.unwrap_or_default(), group_total, group_known, session_ids }))
+    let session_ids = resolve_id_prefixes(&known, prefixes)?;
+    Ok(Some(ResolvedIds { set: session_ids.iter().cloned().collect(), session_ids }))
 }
 
-fn describe_filter(f: &SessionFilter, projects: &[String], ids: Option<&ResolvedIds>) -> String {
+fn describe_filter(f: &SessionFilter, projects: &[String], ids: Option<&ResolvedIds>, task_sessions: Option<usize>) -> String {
     let mut parts: Vec<String> = Vec::new();
     if let Some(v) = set(&f.since) {
         parts.push(format!("since={v}"));
@@ -178,11 +144,11 @@ fn describe_filter(f: &SessionFilter, projects: &[String], ids: Option<&Resolved
     if let Some(v) = set(&f.branch) {
         parts.push(format!("branch={v}"));
     }
-    if let (Some(g), Some(ids)) = (set(&f.group), ids) {
-        parts.push(format!("group={g}({} / {} 件が記録にある)", ids.group_known, ids.group_total));
-    }
     if let (true, Some(ids)) = (f.sessions.as_ref().is_some_and(|s| !s.is_empty()), ids) {
         parts.push(format!("session={} 件", ids.session_ids.len()));
+    }
+    if let (Some(t), Some(n)) = (set(&f.task), task_sessions) {
+        parts.push(format!("task={t}(紐づいたセッション {n} 件)"));
     }
     parts.join(", ")
 }
@@ -201,8 +167,6 @@ pub struct Selected {
     pub file: SessionsFile,
     /// file.sessions の中の位置(元の順)
     pub index: Vec<usize>,
-    /// groups.json(build のタスクタグと、課題 × 条件の表に使う)
-    pub groups: LoadedGroups,
 }
 
 impl Selected {
@@ -211,24 +175,40 @@ impl Selected {
     }
 }
 
-/// sessions.json を読み、groups.json を読み(無ければ空)、CLI の絞り込みを掛ける。共通のログも出す
+/// sessions.json を読む(無ければ hint を添えたエラー)
+pub fn read_sessions_file(p: &Paths, hint: &str) -> Result<SessionsFile> {
+    read_json(&p.sessions, hint)
+}
+
+/// sessions.json を読み、CLI の絞り込みを掛ける。共通のログも出す
 pub fn select_sessions(p: &Paths, f: &SessionFilter, cmd: &str, hint: &str, log: Log<'_>) -> Result<Selected> {
-    let file: SessionsFile = read_json(&p.sessions, hint)?;
-    let groups = load_groups(&p.groups);
-    for w in &groups.warnings {
-        log(&format!("{cmd}: 注意 {w}"));
+    let file: SessionsFile = read_sessions_file(p, hint)?;
+    select_from(p, file, f, cmd, log)
+}
+
+/// 読んだ sessions.json に CLI の絞り込みを掛ける(--task は今の紐づけで決める)
+pub fn select_from(p: &Paths, file: SessionsFile, f: &SessionFilter, cmd: &str, log: Log<'_>) -> Result<Selected> {
+    let mut ids = resolve_id_filter(&file.sessions, f)?;
+    let mut task_sessions = None;
+    if let Some(t) = set(&f.task) {
+        let of_task = super::tasks::sessions_of_task(p, &file, t)?;
+        task_sessions = Some(of_task.len());
+        ids = Some(match ids {
+            Some(r) => ResolvedIds { set: r.set.into_iter().filter(|id| of_task.contains(id)).collect(), session_ids: r.session_ids },
+            None => ResolvedIds { set: of_task, session_ids: vec![] },
+        });
     }
-    let ids = resolve_id_filter(&file.sessions, f, &groups)?;
     // 位置で持つ(sessions.json を持ったまま返すため)
     let (index, projects) = filter_session_index(&file.sessions, f, ids.as_ref().map(|x| &x.set));
     if has_filter(f) {
-        log(&format!("{cmd}: 絞り込み {} → {} / {} セッション", describe_filter(f, &projects, ids.as_ref()), index.len(), file.sessions.len()));
+        log(&format!("{cmd}: 絞り込み {} → {} / {} セッション", describe_filter(f, &projects, ids.as_ref(), task_sessions), index.len(), file.sessions.len()));
     }
-    Ok(Selected { file, index, groups })
+    Ok(Selected { file, index })
 }
 
 /// out/tables/ に表も書く
-pub fn run_metrics(p: &Paths, f: &SessionFilter, log: Log<'_>) -> Result<MetricsFile> {
+/// config は設定ファイル(--config。無ければ環境変数 ATLAS_CONFIG かリポジトリ直下)。管理ツールのタスクの表(tasks.csv)の稼働時間帯に使う
+pub fn run_metrics(p: &Paths, f: &SessionFilter, config: Option<&str>, log: Log<'_>) -> Result<MetricsFile> {
     let sel = select_sessions(p, f, "metrics", "先に atlas extract を実行してください。", log)?;
     let sessions = sel.sessions();
     let m = compute_metrics(&sessions, sel.file.installed.as_ref());
@@ -245,30 +225,105 @@ pub fn run_metrics(p: &Paths, f: &SessionFilter, log: Log<'_>) -> Result<Metrics
     if let Some(s) = &m.installed_skills {
         log(&format!("metrics: インストール済みで未使用の skill {} / {} 件", s.unused.len(), s.installed.len()));
     }
-    write_tables(p, &sessions, &condition_groups(p, &sel), "metrics", log)?;
+    let cfg = super::tasks::load_task_config(config);
+    let tasks = super::tasks::build_view(p, &cfg, super::tasks::is_read_only(p, &sel.file), &sel.file.sessions, &sessions, None, &super::tasks::judgment_hours(&p.judgments));
+    write_tables(p, &sessions, tasks.as_ref(), "metrics", log)?;
     Ok(m)
 }
 
-/// 課題 × 条件の表に使うタスクタグ(build と同じ選び方: 読むだけの画面にする出力先(送り先から集計したもの)は、送った人のタグ(元の名前)。
-/// それ以外は groups.json)
-pub fn condition_groups(p: &Paths, sel: &Selected) -> Vec<CondGroup> {
-    let layout = sel.file.source.layout.map(|l| match l {
-        atlas_core::types::UploadLayout::Flat => "flat",
-        atlas_core::types::UploadLayout::Merged => "merged",
-    });
-    if crate::folders::is_read_only_view(&p.out.to_string_lossy(), layout) {
-        let src: Vec<MemberSource<'_>> = sel.file.sessions.iter().map(MemberSource::from).collect();
-        member_groups_keyed(&src).into_iter().map(|m| CondGroup { raw: m.tag, ids: m.group.ids }).collect()
-    } else {
-        sel.groups.groups.iter().map(|g| CondGroup { raw: g.name.clone(), ids: g.ids.clone() }).collect()
-    }
+/// sessions.csv(と SQLite の sessions)に足す、タスクの列(推定人手工数の列の後ろ)。
+/// いくつかのタスクに紐づいたセッションは、taskId と taskName を TASK_JOIN でつなぐ(紐づけの順)。紐づけの出所はセッションごとに 1 つ。
+/// タスクの数は紐づいたタスクの数(「どのタスクでもない」は 0、紐づけが無ければ空)。工数を等分する相手の数ではない
+/// (一覧に無いタスクと、完了を確認した後に始めたセッションのタスクには数えないので、等分の割合は session-tasks.csv の按分で見る)
+pub const TASK_SESSION_COLUMNS: [&str; 4] = ["taskId", "taskName", "紐づけの出所", "タスクの数"];
+/// sessions.csv で、いくつかのタスクをつなぐ文字(1 件ずつ見るときは session-tasks.csv)
+pub const TASK_JOIN: &str = "; ";
+
+/// out/tables/session-tasks.csv(と SQLite の session_tasks)。セッション × 紐づいたタスクの 1 行ずつ。
+/// 按分は、そのタスクに数えたセッションの値の割合(工数を数えるタスク(counted_task_ids)の数で等分。1 つなら 1)。
+/// 一覧に無いタスクと、完了を確認した後に始めたセッションのタスクは 0(行は出す)
+pub fn session_tasks_table(v: &atlas_report::tasks::view::TasksView) -> atlas_core::tables::Table {
+    let header: Vec<String> = ["セッションID", "taskId", "taskName", "紐づけの出所", "按分"].iter().map(|s| s.to_string()).collect();
+    let names: std::collections::HashMap<&str, &str> = v.items.iter().map(|t| (t.id.as_str(), t.name.as_str())).collect();
+    let rows = v
+        .links
+        .iter()
+        .flat_map(|(sid, l)| {
+            let share = atlas_report::tasks::metrics::share_of(l.counted_task_ids.len());
+            let names = &names;
+            l.task_ids.iter().map(move |t| {
+                let mine = if l.counted_task_ids.contains(t) { share } else { 0.0 };
+                vec![sid.as_str().into(), t.as_str().into(), names.get(t.as_str()).copied().filter(|n| !n.is_empty()).map_or(Cell::Null, Cell::from), Cell::from(l.source.label()), Cell::Num(mine)]
+            })
+        })
+        .collect();
+    atlas_core::tables::Table { header, rows }
+}
+
+/// out/tables/tasks.csv(と SQLite の tasks)。タスクごとの工数
+pub fn tasks_table(v: &atlas_report::tasks::view::TasksView) -> atlas_core::tables::Table {
+    let header: Vec<String> = [
+        "taskId",
+        "taskName",
+        "status",
+        "完了",
+        "XML に無い",
+        "開始",
+        "完了を確認した時刻",
+        "稼働時間帯の工数(時間)",
+        "AI の実働(時間)",
+        "推定人手工数(時間)",
+        "セッション数",
+        "共有のセッション",
+        "判定済み",
+        "確度が低い",
+        "判定なし",
+        "紐づけ(機械)",
+        "紐づけ(LLM)",
+        "紐づけ(手動)",
+        "比べられる",
+        "比べない理由",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    let hours = |ms: f64| Cell::Num(atlas_core::js::round(ms / 36_000.0) / 100.0);
+    let rows = v
+        .items
+        .iter()
+        .map(|t| {
+            vec![
+                t.id.as_str().into(),
+                t.name.as_str().into(),
+                t.status.as_str().into(),
+                Cell::Bool(t.done),
+                Cell::Bool(t.missing),
+                t.start.as_deref().into(),
+                t.done_at.as_deref().into(),
+                t.work_ms.map_or(Cell::Null, hours),
+                hours(t.ai_active_ms),
+                Cell::Num(atlas_core::js::round(t.human_hours * 100.0) / 100.0),
+                t.sessions.into(),
+                t.shared_sessions.into(),
+                t.judged_sessions.into(),
+                t.low_confidence_sessions.into(),
+                t.unjudged_sessions.into(),
+                t.links.machine.into(),
+                t.links.llm.into(),
+                t.links.manual.into(),
+                if t.sessions == 0 { Cell::Null } else { Cell::Bool(t.comparable) },
+                t.excluded.map_or(Cell::Null, |e| e.label().into()),
+            ]
+        })
+        .collect();
+    atlas_core::tables::Table { header, rows }
 }
 
 /// 表計算ソフトで開く表(依頼ごと・セッションごと・VCS の照合のまとまりごと・ツールの失敗と拒否ごと)を out/tables/ に書く。
 /// metrics・build・export が、それぞれの絞り込みのセッションで書く(判定を取り込んだ後の export でも、判定の列が表に入るように)。
-/// ツールの失敗と拒否ごとの表(failures.csv と SQLite の failures)は、ここでだけ足す(グループの書き出しには入れない)
-/// 表(out/tables/)を書く。groups は課題 × 条件の表に使うタスクタグ(condition_groups)
-pub fn write_tables(p: &Paths, sessions: &[&SessionRecord], groups: &[CondGroup], cmd: &str, log: Log<'_>) -> Result<()> {
+/// ツールの失敗と拒否ごとの表(failures.csv と SQLite の failures)と、テストの実行の表は、ここで足す
+/// tasks は管理ツールのタスクの節(あれば tasks.csv を書き、sessions.csv のタスクの列を埋める。無ければ tasks.csv を残さない)
+pub fn write_tables(p: &Paths, sessions: &[&SessionRecord], tasks: Option<&atlas_report::tasks::view::TasksView>, cmd: &str, log: Log<'_>) -> Result<()> {
     let dir = p.out.join("tables");
     std::fs::create_dir_all(&dir)?;
     let mut t = build_tables(sessions, &TablePaths { judgments: &p.judgments, turn_judgments: &p.turn_judgments, vcs_retention: Some(&p.vcs_retention) });
@@ -282,7 +337,7 @@ pub fn write_tables(p: &Paths, sessions: &[&SessionRecord], groups: &[CondGroup]
         None => atlas_core::jsfs::rm_force(&dir.join("vcs-hunks.csv"))?,
     }
     // 失敗の台帳の無い古い記録だけのときは、表を書かず、前の failures.csv も残さない(見出しだけの表は「失敗が 0 件」と読めてしまう)。
-    // SQLite には、この関数の中の t.data に足して入れる(build_tables の返す中身は変えないので、グループの書き出しには入らない)
+    // SQLite には、この関数の中の t.data に足して入れる
     let failures = failures_table(sessions);
     match &failures {
         Some(f) => std::fs::write(dir.join("failures.csv"), to_csv(&f.header, &f.rows))?,
@@ -292,40 +347,67 @@ pub fn write_tables(p: &Paths, sessions: &[&SessionRecord], groups: &[CondGroup]
     if let Some(f) = failures {
         t.data.push(("failures".to_string(), f));
     }
-    // 課題 × 条件の表とテストの結果(画面の「課題 × 条件」と同じ数え方。母集団は空のセッションを除いたもの)
-    let cond_sessions: Vec<CondSession> = sessions.iter().filter(|s| !is_empty_session(s)).map(|s| CondSession::from_record(s)).collect();
-    let cond = condition_table(&cond_sessions, groups);
-    let assign = assignments(&cond);
-    // sessions.csv(と SQLite の sessions)に、課題・条件とテストの列を、最初の依頼の列の前に足す
+    // sessions.csv(と SQLite の sessions)に、テストの列を、最初の依頼の列の前に足す
     if let Some((_, sess)) = t.data.iter_mut().find(|(n, _)| n == "sessions") {
         let at = sess.header.iter().position(|h| h == "最初の依頼(先頭)").unwrap_or(sess.header.len());
         sess.header.splice(at..at, SESSION_COLUMNS.iter().map(|h| h.to_string()));
         let by_id: std::collections::HashMap<&str, &SessionRecord> = sessions.iter().map(|s| (s.id.as_str(), *s)).collect();
         for row in &mut sess.rows {
             let cells = match &row[0] {
-                Cell::Str(id) => by_id.get(id.as_str()).map(|r| session_cells(r, &assign)),
+                Cell::Str(id) => by_id.get(id.as_str()).map(|r| session_cells(r)),
                 _ => None,
             }
             .unwrap_or_else(|| SESSION_COLUMNS.iter().map(|_| Cell::Null).collect());
             row.splice(at..at, cells);
         }
+        // タスクの列(推定人手工数の後ろ)。タスクの設定も記録も無ければ空
+        let at = sess.header.iter().position(|h| h == "推定人手工数(時間)").map_or(sess.header.len(), |i| i + 1);
+        sess.header.splice(at..at, TASK_SESSION_COLUMNS.iter().map(|h| h.to_string()));
+        let names: std::collections::HashMap<&str, &str> = tasks.map(|v| v.items.iter().map(|t| (t.id.as_str(), t.name.as_str())).collect()).unwrap_or_default();
+        for row in &mut sess.rows {
+            let link = match (&row[0], tasks) {
+                (Cell::Str(id), Some(v)) => v.links.get(id.as_str()),
+                _ => None,
+            };
+            let cells = match link {
+                Some(l) => {
+                    // つないだ値が空(タスクが無い・名前がどれも分からない)なら NULL
+                    let joined = |v: Vec<&str>| if v.iter().all(|x| x.is_empty()) { Cell::Null } else { Cell::from(v.join(TASK_JOIN).as_str()) };
+                    vec![
+                        joined(l.task_ids.iter().map(String::as_str).collect()),
+                        joined(l.task_ids.iter().map(|t| names.get(t.as_str()).copied().unwrap_or("")).collect()),
+                        Cell::from(l.source.label()),
+                        l.task_ids.len().into(),
+                    ]
+                }
+                None => vec![Cell::Null, Cell::Null, Cell::Null, Cell::Null],
+            };
+            row.splice(at..at, cells);
+        }
         t.sessions = to_csv(&sess.header, &sess.rows);
     }
-    // 課題・条件とテストの列を足してから書く
+    // タスクごとの表と、セッション × タスクの表。タスクの設定も記録も無ければ書かず、前のものも残さない
+    match tasks {
+        Some(v) => {
+            let tt = tasks_table(v);
+            std::fs::write(dir.join("tasks.csv"), to_csv(&tt.header, &tt.rows))?;
+            t.data.push(("tasks".to_string(), tt));
+            let st = session_tasks_table(v);
+            std::fs::write(dir.join("session-tasks.csv"), to_csv(&st.header, &st.rows))?;
+            t.data.push(("session_tasks".to_string(), st));
+        }
+        None => {
+            atlas_core::jsfs::rm_force(&dir.join("tasks.csv"))?;
+            atlas_core::jsfs::rm_force(&dir.join("session-tasks.csv"))?;
+        }
+    }
+    // テストの列を足してから書く
     std::fs::write(dir.join("sessions.csv"), &t.sessions)?;
-    // 名前の決まりに合うタスクタグが無ければ書かず、前のものも残さない
-    let with_conditions = cond.matched_tags > 0;
-    let conditions = with_conditions.then(|| conditions_csv_table(&cond));
-    match &conditions {
-        Some(c) => std::fs::write(dir.join("conditions.csv"), to_csv(&c.header, &c.rows))?,
-        None => atlas_core::jsfs::rm_force(&dir.join("conditions.csv"))?,
-    }
-    if let Some(c) = conditions {
-        t.data.push(("conditions".to_string(), c));
-    }
+    // 前の版が書いた課題 × 条件の表(conditions.csv)は、もう作らないので残さない
+    atlas_core::jsfs::rm_force(&dir.join("conditions.csv"))?;
     // テストの実行が 1 回も無ければ書かず、前のものも残さない(見出しだけの表は「0 件」と読めてしまう)
     let listed_sessions: Vec<&SessionRecord> = sessions.iter().filter(|s| !is_empty_session(s)).copied().collect();
-    let tests = test_tables(&listed_sessions, &assign);
+    let tests = test_tables(&listed_sessions);
     for (file, table) in [("test-runs.csv", tests.as_ref().map(|x| &x.runs)), ("test-results.csv", tests.as_ref().map(|x| &x.results)), ("test-counts.csv", tests.as_ref().map(|x| &x.counts))] {
         match table {
             Some(tb) => std::fs::write(dir.join(file), to_csv(&tb.header, &tb.rows))?,
@@ -352,9 +434,9 @@ pub fn write_tables(p: &Paths, sessions: &[&SessionRecord], groups: &[CondGroup]
     log(&format!(
         "{cmd}: 表 → {}・sessions.csv{}{}{}{}{sqlite}{}{}{}{}",
         dir.join("turns.csv").display(),
+        if tasks.is_some() { "・tasks.csv・session-tasks.csv" } else { "" },
         if t.vcs_hunks.is_some() { "・vcs-hunks.csv" } else { "" },
         if with_failures { "・failures.csv" } else { "" },
-        if with_conditions { "・conditions.csv" } else { "" },
         if with_tests { "・test-runs.csv・test-results.csv・test-counts.csv" } else { "" },
         if t.with_verdicts { "(依頼ごとの判定の列つき)" } else { "" },
         if t.with_retention { "(VCS の照合の列つき)" } else { "" },
@@ -369,7 +451,6 @@ mod tests {
     use super::*;
     use atlas_core::normalize::{normalize_session, NormalizeInput};
     use atlas_core::types::WorkspaceInfo;
-    use atlas_report::groups::SessionGroup;
 
     fn mk(id: &str, repository: &str, client: &str, at: &str) -> SessionRecord {
         let ws = WorkspaceInfo { repository: Some(repository.into()), client_name: Some(client.into()), created_at: Some(at.into()), updated_at: Some(at.into()), ..Default::default() };
@@ -390,31 +471,18 @@ mod tests {
         ];
         let none = SessionFilter::default();
         assert!(!has_filter(&none));
-        assert!(has_filter(&SessionFilter { group: Some("g".into()), ..Default::default() }));
         assert!(has_filter(&SessionFilter { sessions: Some(vec!["1".into()]), ..Default::default() }));
         assert!(!has_filter(&SessionFilter { sessions: Some(vec![]), ..Default::default() }));
         let cli = SessionFilter { client: Some("github/cli".into()), ..Default::default() };
         let set12: HashSet<String> = ["1".to_string(), "2".to_string()].into_iter().collect();
         assert_eq!(ids(&filter_sessions(&rs, &cli, Some(&set12)).0), ["1"]);
 
-        let groups = LoadedGroups { path: "g.json".into(), exists: true, groups: vec![SessionGroup { name: "g".into(), note: "".into(), ids: vec!["1".into(), "3".into(), "x".into()] }], warnings: vec![] };
-        let g = SessionFilter { group: Some("g".into()), ..Default::default() };
-        let r = resolve_id_filter(&rs, &g, &groups).unwrap().unwrap();
-        let mut got: Vec<&String> = r.set.iter().collect();
-        got.sort();
-        assert_eq!(got, ["1", "3", "x"]);
-        assert_eq!((r.group_total, r.group_known), (3, 2));
-        assert_eq!(ids(&filter_sessions(&rs, &g, Some(&r.set)).0), ["1", "3"]);
-        let nope = SessionFilter { group: Some("nope".into()), ..Default::default() };
-        let e = resolve_id_filter(&rs, &nope, &groups).unwrap_err().to_string();
-        assert!(e.contains("「nope」") && e.contains("あるのは: g"), "{e}");
-        let missing = LoadedGroups { exists: false, groups: vec![], ..groups.clone() };
-        assert!(resolve_id_filter(&rs, &g, &missing).unwrap_err().to_string().contains("がありません"));
         let s2 = SessionFilter { sessions: Some(vec!["2".into()]), ..Default::default() };
-        assert_eq!(resolve_id_filter(&rs, &s2, &groups).unwrap().unwrap().set.into_iter().collect::<Vec<_>>(), ["2"]);
-        let both = SessionFilter { group: Some("g".into()), sessions: Some(vec!["1".into(), "2".into()]), ..Default::default() };
-        assert_eq!(resolve_id_filter(&rs, &both, &groups).unwrap().unwrap().set.into_iter().collect::<Vec<_>>(), ["1"]);
-        assert!(resolve_id_filter(&rs, &none, &groups).unwrap().is_none());
+        let r = resolve_id_filter(&rs, &s2).unwrap().unwrap();
+        assert_eq!(r.set.iter().collect::<Vec<_>>(), ["2"]);
+        assert_eq!(ids(&filter_sessions(&rs, &cli, Some(&r.set)).0), Vec::<String>::new());
+        assert!(resolve_id_filter(&rs, &SessionFilter { sessions: Some(vec!["9".into()]), ..Default::default() }).unwrap_err().to_string().contains("記録にありません"));
+        assert!(resolve_id_filter(&rs, &none).unwrap().is_none());
 
         assert_eq!(ids(&filter_sessions(&rs, &SessionFilter { project: Some("quokka/app".into()), ..Default::default() }, None).0), ["1"]);
         let (partial, mut projects) = filter_sessions(&rs, &SessionFilter { project: Some("QUOKKA".into()), ..Default::default() }, None);
@@ -423,10 +491,8 @@ mod tests {
         assert_eq!(projects, ["quokka/app", "quokka/app-docs"]);
         assert_eq!(ids(&filter_sessions(&rs, &cli, None).0), ["1", "3"]);
         assert_eq!(ids(&filter_sessions(&rs, &SessionFilter { since: Some("2026-08-15".into()), ..Default::default() }, None).0), ["2", "3"]);
-        assert_eq!(
-            describe_filter(&both, &[], Some(&ResolvedIds { set: HashSet::new(), group_total: 3, group_known: 2, session_ids: vec!["1".into()] })),
-            "group=g(2 / 3 件が記録にある), session=1 件"
-        );
+        let both = SessionFilter { client: Some("github/cli".into()), sessions: Some(vec!["1".into(), "2".into()]), ..Default::default() };
+        assert_eq!(describe_filter(&both, &[], Some(&ResolvedIds { set: HashSet::new(), session_ids: vec!["1".into(), "2".into()] }), None), "client=github/cli, session=2 件");
     }
 
     /// 失敗 1 件と拒否 1 件のあるセッション(イベントは架空のもの)
@@ -469,7 +535,7 @@ mod tests {
         let csv = dir.join("failures.csv");
 
         let rec = failing("00000000-0000-4000-8000-000000000031");
-        write_tables(&p, &[&rec], &[], "metrics", &log).unwrap();
+        write_tables(&p, &[&rec], None, "metrics", &log).unwrap();
         let text = std::fs::read_to_string(&csv).unwrap();
         let lines: Vec<&str> = text.trim_end().split("\r\n").collect();
         assert!(lines[0].starts_with("\u{feff}セッションID,セッション名,プロジェクト,依頼番号,開始,種類,要因,ツール,"), "{}", lines[0]);
@@ -508,7 +574,7 @@ mod tests {
         let mut old = rec.clone();
         old.analysis.failures = None;
         old.analysis.failures_dropped = None;
-        write_tables(&p, &[&old], &[], "metrics", &log).unwrap();
+        write_tables(&p, &[&old], None, "metrics", &log).unwrap();
         assert!(!csv.exists());
         assert_eq!(sqlite_tables(&dir.join(SQLITE_FILE)), ["sessions", "turns"]);
         assert!(!last().contains("・failures.csv"), "{}", last());
@@ -517,7 +583,7 @@ mod tests {
         // 混ざっているとき: 台帳のある記録の行だけを書き、載せていない件数を知らせる
         let mut capped = failing("00000000-0000-4000-8000-000000000032");
         capped.analysis.failures_dropped = Some(3);
-        write_tables(&p, &[&old, &capped], &[], "build", &log).unwrap();
+        write_tables(&p, &[&old, &capped], None, "build", &log).unwrap();
         let text = std::fs::read_to_string(&csv).unwrap();
         assert_eq!(text.trim_end().split("\r\n").skip(1).map(|l| l.split(',').next().unwrap()).collect::<Vec<_>>(), vec![capped.id.as_str(); 2]);
         assert_eq!(sqlite_tables(&dir.join(SQLITE_FILE)), ["failures", "sessions", "turns"]);
