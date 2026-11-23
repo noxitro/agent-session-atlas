@@ -328,7 +328,9 @@ describe('本番の置き方: 設定のフォルダ(AtlasSettings)を使い、�
     await cp(plainLog, log2, { recursive: true });
     await mkdir(settings2, { recursive: true });
     // DEMO-101 は日付だけ(その日の稼働時間帯の終わり)、DEMO-104 は時差つきの日時、DEMO-103 は読めない値
+    // 雛形は取り出し方で CRLF になる(Windows の CI)。置き換えは \n で書くので、先にそろえる
     const xml = (await readFile(join(XML_DIR, 'export-before.xml'), 'utf8'))
+      .replace(/\r\n/g, '\n')
       .replace('<Id>DEMO-101</Id>\n      <Name>fix the app</Name>\n      <Status>In Progress</Status>', '<Id>DEMO-101</Id>\n      <Name>fix the app</Name>\n      <Status>Done</Status>\n      <ClosedDate>2026/10/22</ClosedDate>')
       .replace('<Status>Done</Status>\n    </Task>', '<Status>Done</Status>\n      <ClosedDate>2026-10-20T12:00:00+09:00</ClosedDate>\n    </Task>')
       .replace('<Name>帳票の出力を速くする</Name>\n      <Status>Open</Status>', '<Name>帳票の出力を速くする</Name>\n      <Status>Done</Status>\n      <ClosedDate>先週</ClosedDate>');
