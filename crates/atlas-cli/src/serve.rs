@@ -857,6 +857,11 @@ impl Server {
             l.idle_gen += 1;
         }
         let _ = atlas_core::jsfs::rm_force(&self.out_dir.join(SERVE_STATE_FILE));
+        // 動いているジョブ(子プロセスと、その子孫)も止める(中断・窓を閉じたとき。猶予切れではジョブの実行中に来ない)。
+        // 止めずに抜けると、印を消した後も子が out/ に書き続ける。Unix では子を別のプロセスグループで起動するので、端末の Ctrl+C は子に届かない
+        if self.jobs.running() {
+            let _ = self.jobs.cancel();
+        }
         self.jobs.drop_lock();
         // 止めるときは、まだ何も送っていない接続(ブラウザが次の要求のために先に開けておくもの)や送りかけの要求も、待たずにすべて切る。
         // 自分から止まるとき(expire)は、応えている途中の要求が無いことを確かめてからここへ来る。切られるのは、中断(Ctrl+C)のときだけ
