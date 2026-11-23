@@ -262,7 +262,7 @@ export function compareRows(a: CompareSide, b: CompareSide, o: { byTurnCount?: b
       ci: enough(a.sessions, b.sessions) ? newcombeDiff(a.reworkSessions, a.sessions, b.reworkSessions, b.sessions) : null,
     },
     row('tests-scored', 'テストを実行したセッション', 'count', (s) => s.testsFirstPass.scored, 'テストの結果の記録が 1 回以上あるセッション(テストの結果の 2 行の分母)'),
-    share('tests-first-pass', '最初のテストの実行で全部通ったセッションの割合', (s) => s.testsFirstPass, 'テストを実行したセッション(テストの結果の記録が 1 回以上あるもの)のうち、最初の実行で全部通ったもの'),
+    share('tests-first-pass', '最初のテストの実行で全部通ったセッションの割合', (s) => s.testsFirstPass, 'テストを実行したセッション(テストの結果の記録が 1 回以上あるもの)のうち、最初の実行で全部通ったもの。最初の実行は、そのとき走らせたテストだけの結果。テストを走らせるか・いつ走らせるかは条件で変わりうるので、テストを実行したセッションの数も見比べる'),
     share('tests-last-failing', '最後に通っていないテストが残ったセッションの割合', (s) => s.testsLastFailing, 'テストを実行したセッションのうち、最後の実行の後に通っていないテストがあるもの(未達と、通った後に不合格)。小さいほど良い'),
     row('retention-measured', '照合できたセッション(AI の変更の残存の分母)', 'count', (s) => s.retention.measured, 'AI の変更があったセッションのうち'),
     row('retention-kept', '残っている(そのまま + 直されて)割合', 'rate', keptShare, `照合できたまとまりに対する割合。照合できたセッションが ${RETENTION_MIN_SESSIONS} 件未満なら —`),

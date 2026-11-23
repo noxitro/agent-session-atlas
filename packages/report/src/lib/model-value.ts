@@ -233,7 +233,7 @@ export function effortFindings(split: readonly ValueRow[], models: readonly Valu
       ['ツール失敗率', enough(lo.weight, ratio(lo.tools.failures, lo.tools.calls)), enough(hi.weight, ratio(hi.tools.failures, hi.tools.calls)), pctText],
     ];
     for (const [label, a, b, f] of pairs) if (a != null && b != null) parts.push(`${label} ${f(a)} → ${f(b)}`);
-    if (parts.length > 0) out.push(`${modelLabel(model)}: ${lo.effort} → ${hi.effort} で、${parts.join('、')}(セッション ${lo.sessions} 件 / ${hi.sessions} 件。効果は按分した値なので差の幅は出していません)。`);
+    if (parts.length > 0) out.push(`${modelLabel(model)}: ${lo.effort} → ${hi.effort} で、${parts.join('、')}(セッション ${lo.sessions} 件 / ${hi.sessions} 件。コストは合計の比、効果は按分した値で、どちらも差の幅は出していません)。`);
   }
   const value = models
     .filter((r) => r.sessions >= MIN_SESSIONS && r.judgedNanoAiu > 0 && r.hours.weight >= MIN_SESSIONS)

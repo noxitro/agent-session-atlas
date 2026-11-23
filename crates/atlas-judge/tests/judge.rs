@@ -54,9 +54,12 @@ fn packet_does_not_name_the_model() {
     r.models = vec!["zz-model-alpha".into(), "zz-model-beta".into()];
     // 推論のトークン数も推論強度とほぼ連動するので載せない(入力・出力・キャッシュ読取は載せる)
     r.tokens.reasoning = Some(98765.0);
+    // 推論強度の名前も載せない(記録にあっても)
+    r.exec.efforts.0.insert("zz-effort-max".into(), Default::default());
     let t = SessionTexts { source: TextSource::Snapshot, requests: vec![entry(None, "直して")], final_response: Some(entry(None, "完了")), compactions: vec![], task_completes: vec![], wiki_reads: vec![], wiki_scanned: false };
     let md = render_packet(&r, &t, &DEFAULT_LIMITS, WikiState::Counted).unwrap().markdown;
     assert!(!md.contains("zz-model-alpha") && !md.contains("zz-model-beta"), "{md}");
+    assert!(!md.contains("zz-effort-max"), "{md}");
     assert!(!md.lines().any(|l| l.starts_with("- モデル:")), "{md}");
     let tokens = md.lines().find(|l| l.starts_with("- トークン(")).expect("トークンの行");
     assert!(tokens.contains("入力 ") && tokens.contains("出力 ") && tokens.contains("キャッシュ読取 "), "{tokens}");
