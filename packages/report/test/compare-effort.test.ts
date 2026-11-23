@@ -175,6 +175,10 @@ describe('手戻りのないセッション', () => {
     const B = [...Array.from({ length: 4 }, (_, i) => s(`b-first${i}`, tests(1, 0))), s('b-regress', tests(1, 3))];
     const rows = compareRows(compareSide(A), compareSide(B));
     const r = (k: string) => rows.find((x) => x.key === k)!;
+    // 分母の件数の行が、割合の 2 行の前に出る
+    expect(rows.map((x) => x.key).filter((k) => k.startsWith('tests'))).toEqual(['tests-scored', 'tests-first-pass', 'tests-last-failing']);
+    expect(r('tests-scored')).toMatchObject({ unit: 'count', a: 6, b: 5 });
+    expect('ci' in r('tests-scored')).toBe(false);
     expect(r('tests-first-pass')).toMatchObject({ unit: 'rate', a: 3 / 6, b: 5 / 5 });
     expect(r('tests-last-failing')).toMatchObject({ unit: 'rate', a: 2 / 6, b: 1 / 5 });
     expect(r('tests-first-pass').ci).toEqual(newcombeDiff(3, 6, 5, 5));

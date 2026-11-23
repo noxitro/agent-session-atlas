@@ -78,6 +78,8 @@ describe('比べる: 推論強度どうし', () => {
     expect(await cell('scored', 3).innerText()).toBe('');
     expect(await cell('aiu-per-request', 3).innerText()).toBe('');
     expect(await cell('aiu-per-request', 0).innerText()).not.toBe('—');
+    // この fixture にはテストの結果の記録が無いので、テストの行は出さない
+    expect(await section().locator('[data-testid="compare-table"] tr[data-key^="tests"]').count()).toBe(0);
   });
 
   it('b. 混在・記録なしの件数と、利用者 × 週の表。期間を絞ると両方に効く', async () => {

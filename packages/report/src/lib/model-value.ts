@@ -203,8 +203,9 @@ const numText = (x: number): string => (Math.round(x * 100) / 100).toString();
  * 読み取り: 同じモデルで推論強度を変えたときの、コストと効果の値を並べる(1 モデル 1 行)。
  * セッションが MIN_SESSIONS 以上ある強度が 2 つ以上あるモデルだけ。いちばん弱い強度といちばん強い強度を並べる。
  * 効果は按分した値で、セッションを単位にした差の幅(「比べる」の Newcombe・Welch)を出せないので、差の向きを言い切らずに値を並べ、
- * 差の幅を出していないことを文に書く(幅は「比べる」の推論強度で、本体の強度が決まったセッションだけで見られる)。
- * models(モデルごとの行)があれば、1 AIU あたりの推定人手工数の最大と最小のモデルも並べる
+ * 差の幅を出していないことを文に書く(「比べる」の推論強度で幅が出るのは、手戻りのないセッションやテストの結果など、セッションを単位にした割合と平均の行だけ。
+ * 達成率・品質・依頼の採用率の行は無く、ツールの失敗率と残存の割合には幅を出さない)。
+ * models(モデルごとの行。modelValue の並びのまま、リクエストの多い順)があれば、1 AIU あたりの推定人手工数もその順に並べる(大小の順に並べると差の向きを言い切るのと同じになるため)
  */
 export function effortFindings(split: readonly ValueRow[], models: readonly ValueRow[] = []): string[] {
   const out: string[] = [];
@@ -236,11 +237,7 @@ export function effortFindings(split: readonly ValueRow[], models: readonly Valu
   }
   const value = models
     .filter((r) => r.sessions >= MIN_SESSIONS && r.judgedNanoAiu > 0 && r.hours.weight >= MIN_SESSIONS)
-    .map((r) => ({ r, v: r.hours.sum / aiu(r.judgedNanoAiu) }))
-    .sort((a, b) => b.v - a.v);
-  if (value.length >= 2)
-    out.push(
-      `1 AIU あたりの推定人手工数は、最大が ${modelLabel(value[0].r.model)}(${numText(value[0].v)} 時間)、最小が ${modelLabel(value[value.length - 1].r.model)}(${numText(value[value.length - 1].v)} 時間)(按分した推定の比なので差の幅は出していません)。`,
-    );
+    .map((r) => `${modelLabel(r.model)} ${numText(r.hours.sum / aiu(r.judgedNanoAiu))} 時間`);
+  if (value.length >= 2) out.push(`1 AIU あたりの推定人手工数(リクエストの多い順): ${value.join('、')}(按分した推定の比なので差の幅は出していません)。`);
   return out;
 }

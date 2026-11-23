@@ -689,14 +689,8 @@ fn render_once(s: &SessionRecord, t: &SessionTexts, l: &PacketLimits, wiki_state
     push("## 規模(ターン数・所要時間・トークン)".into());
     push(format!("- ユーザーの依頼(ターン): {} 回 / アシスタント応答: {} 回", s.turns, s.assistant_messages));
     push(format!("- 所要時間(最初〜最後のイベント): {} / 実働時間(5 分超の空白を除く): {}", dur(s.duration_ms), dur(s.active_ms)));
-    push(format!(
-        "- トークン(出所: {}): 入力 {} / 出力 {} / キャッシュ読取 {} / 推論 {}",
-        enum_str(&tok.source),
-        int(tok.input),
-        int(Some(tok.output)),
-        int(tok.cache_read),
-        int(tok.reasoning)
-    ));
+    // 推論のトークン数は載せない。推論強度とほぼ連動するので、モデルの名前と同じく判定する LLM に条件が分かってしまうため
+    push(format!("- トークン(出所: {}): 入力 {} / 出力 {} / キャッシュ読取 {}", enum_str(&tok.source), int(tok.input), int(Some(tok.output)), int(tok.cache_read)));
     push(format!("- API リクエスト: {}", int(tok.requests)));
     push(String::new());
 

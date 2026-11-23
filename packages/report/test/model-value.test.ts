@@ -113,11 +113,12 @@ describe('モデルと推論強度の効果', () => {
     expect(all[0]).toContain('品質 3 → 4');
   });
 
-  it('読み取り: 1 AIU あたりの推定人手工数の最大と最小は、人手工数を数えた判定が按分して MIN_SESSIONS 件分以上あるモデルだけ', () => {
+  it('読み取り: 1 AIU あたりの推定人手工数は、人手工数を数えた判定が按分して MIN_SESSIONS 件分以上あるモデルだけを、大小でなくリクエストの多い順に並べる', () => {
     const N = COMPARE_MIN_SESSIONS;
     const ofModel = (m: string, hours: number, n: number) => Array.from({ length: n }, (_, i) => sess(`${m}${i}`, { [m]: { high: [1, 0, 0, 1e9] } }, { judgment: judged({ hours, confidence: 0.8 }) }));
-    const both = [...ofModel('a', 2, N), ...ofModel('b', 1, N)];
-    expect(effortFindings([], modelValue(both, false))).toEqual(['1 AIU あたりの推定人手工数は、最大が a(2 時間)、最小が b(1 時間)(按分した推定の比なので差の幅は出していません)。']);
+    // b のほうがリクエストが多い(N + 1 件)ので先。値の小さい b が先に来ても、大小の順に並べ替えない
+    const both = [...ofModel('a', 2, N), ...ofModel('b', 1, N + 1)];
+    expect(effortFindings([], modelValue(both, false))).toEqual(['1 AIU あたりの推定人手工数(リクエストの多い順): b 1 時間、a 2 時間(按分した推定の比なので差の幅は出していません)。']);
     // b が N - 1 件なら、並べるモデルが 1 つになるので出さない
     expect(effortFindings([], modelValue([...ofModel('a', 2, N), ...ofModel('b', 1, N - 1)], false))).toEqual([]);
   });

@@ -261,6 +261,7 @@ export function compareRows(a: CompareSide, b: CompareSide, o: { byTurnCount?: b
       ...row('rework', '同じファイルを編集し直したセッションの割合', 'rate', (s) => rate(s.reworkSessions, s.sessions, s.sessions), '依頼をまたいで同じファイルを編集し直した(手戻りのないセッションとは別の数え方)'),
       ci: enough(a.sessions, b.sessions) ? newcombeDiff(a.reworkSessions, a.sessions, b.reworkSessions, b.sessions) : null,
     },
+    row('tests-scored', 'テストを実行したセッション', 'count', (s) => s.testsFirstPass.scored, 'テストの結果の記録が 1 回以上あるセッション(テストの結果の 2 行の分母)'),
     share('tests-first-pass', '最初のテストの実行で全部通ったセッションの割合', (s) => s.testsFirstPass, 'テストを実行したセッション(テストの結果の記録が 1 回以上あるもの)のうち、最初の実行で全部通ったもの'),
     share('tests-last-failing', '最後に通っていないテストが残ったセッションの割合', (s) => s.testsLastFailing, 'テストを実行したセッションのうち、最後の実行の後に通っていないテストがあるもの(未達と、通った後に不合格)。小さいほど良い'),
     row('retention-measured', '照合できたセッション(AI の変更の残存の分母)', 'count', (s) => s.retention.measured, 'AI の変更があったセッションのうち'),
