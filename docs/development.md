@@ -74,6 +74,13 @@ ATLAS_LIVE=1 npm run e2e
 
 `ATLAS_COPILOT_HOME` で `~/.copilot` 以外の場所を指定できます。E2E は LLM を呼びません(判定はこのツールの中では回さないので、外部の LLM の返答は架空のものを取り込みます。`skill-draft` の検査は偽の copilot で行います)。
 
+共有の設定のフォルダに別々のプロセスが同時に書く検査(`e2e/concurrent-writes.test.ts`)は、いつもは手元のフォルダだけで回します。共有のフォルダ(UNC のパス)でも確かめるときは、書き込める UNC のフォルダを環境変数 `ATLAS_TEST_UNC_DIR` で指します(その下に一時のフォルダを作り、終わったら消します)。Windows では、手元の一時フォルダを管理共有(`\\localhost\<ドライブ>$\…`)で指せば、同じ PC の SMB を通して試せます。
+
+```
+# PowerShell
+$env:ATLAS_TEST_UNC_DIR = '\\<host>\<share>\<フォルダ>'; npx vitest run --project e2e e2e/concurrent-writes.test.ts
+```
+
 ## 全ページの網羅チェック(`npm run audit:ui`)
 
 生成したレポート(`out/` など)の全ページ(`atlas.html`・`insights.html`・`instructions.html`・`glossary.html`・`sessions/*.html`)を Chromium で開き、機械で分かる不備を洗い出します。目視のレビューで漏れやすい、ページをまたぐ食い違いや一部の幅・配色だけで起きる崩れを、毎回同じ基準で確かめるためのものです。
