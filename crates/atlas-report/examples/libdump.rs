@@ -210,10 +210,16 @@ fn main() -> Result<()> {
         ("wiki", f(&|x| x.wiki = "1".into())),
         ("ids", f(&|x| x.ids = plain.iter().take(5).map(|s| s.id.as_str()).chain(["zzz"]).collect::<Vec<_>>().join(","))),
         ("task", f(&|x| x.task = TASK_CASE_IDS[0].into())),
+        ("task2", f(&|x| x.task = TASK_CASE_IDS[1].into())),
         ("noTask", f(&|x| x.task = NO_TASK.into())),
     ];
-    // タスクの絞り込み: 決まった割り振り(3 つおきにタスク 2 つと「タスクなし」)で両側を数える。scripts/parity-lib.ts と同じ
-    let tasks: TaskOf = plain.iter().enumerate().filter(|(i, _)| i % 3 != 2).map(|(i, s)| (s.id.clone(), TASK_CASE_IDS[i % 3].to_string())).collect();
+    // タスクの絞り込み: 決まった割り振り(4 つおきに 1 つ目・2 つ目・「タスクなし」・両方)で両側を数える。scripts/parity-lib.ts と同じ
+    let tasks: TaskOf = plain
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| i % 4 != 2)
+        .map(|(i, s)| (s.id.clone(), if i % 4 == 3 { vec![TASK_CASE_IDS[1].to_string(), TASK_CASE_IDS[0].to_string()] } else { vec![TASK_CASE_IDS[i % 4].to_string()] }))
+        .collect();
     d.write("task-options", &task_options(plain.iter().map(|s| s.id.as_str()), &tasks, &HashMap::from([(TASK_CASE_IDS[0].to_string(), "タスク 一つ目".to_string())])))?;
     let phases: Vec<String> = verdicts.as_ref().map(|v| v.phases.clone()).unwrap_or_default();
     for (name, flt) in &filters {

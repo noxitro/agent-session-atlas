@@ -261,6 +261,25 @@ export async function addPhase12Fixtures(home: string): Promise<void> {
   }
 }
 
+/**
+ * 管理ツールのタスクのテスト用に、依頼の文を決めたセッションを 1 つ足す(架空の値だけ。session-store.db には入れない)。
+ * 依頼の後に 4 分おきの応答を activeMinutes / 4 回並べるので、実働はちょうど activeMinutes 分になる(5 分を超える間が無い)
+ */
+export async function addPromptSession(home: string, o: { id: string; cwd: string; createdAt: string; prompt: string; activeMinutes: number }): Promise<void> {
+  const dir = join(home, 'session-state', o.id);
+  await mkdir(dir, { recursive: true });
+  const t0 = Date.parse(o.createdAt);
+  const ts = (ms: number): string => new Date(t0 + ms).toISOString();
+  const ev: object[] = [
+    { type: 'session.start', id: `${o.id}-s`, parentId: null, timestamp: ts(0), data: { sessionId: o.id, version: 1, copilotVersion: '1.0.103', selectedModel: 'claude-haiku-5-5', context: { cwd: o.cwd, gitRoot: o.cwd } } },
+    { type: 'user.message', id: `${o.id}-u`, parentId: null, timestamp: ts(0), data: { content: o.prompt } },
+  ];
+  const steps = Math.round(o.activeMinutes / 4);
+  for (let i = 1; i <= steps; i++) ev.push({ type: 'assistant.message', id: `${o.id}-m${i}`, parentId: null, timestamp: ts(i * 4 * 60_000), data: { messageId: `${o.id}-mm${i}`, content: '(合成の応答)', toolRequests: [], outputTokens: 5 } });
+  await writeFile(join(dir, 'events.jsonl'), ev.map((e) => JSON.stringify(e)).join('\n') + '\n');
+  await writeFile(join(dir, 'workspace.yaml'), [`id: ${o.id}`, `cwd: ${o.cwd}`, `git_root: ${o.cwd}`, 'client_name: github/cli', `created_at: ${ts(0)}`, `updated_at: ${ts(steps * 4 * 60_000)}`, ''].join('\n'));
+}
+
 // ---------- atlas の実行ファイル ----------
 // e2e と画面のテストは atlas の実行ファイル(Rust 版)を動かす。サーバも別のプロセス(atlas serve)として動かし、
 // テスト用の設定は環境変数で渡す(docs/rust-migration.md の「確かめ方」)。

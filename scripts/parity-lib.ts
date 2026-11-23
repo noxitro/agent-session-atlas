@@ -226,10 +226,11 @@ function dumpWith(
     wiki: { ...emptyFilter(), wiki: '1' },
     ids: { ...emptyFilter(), ids: [...plain.slice(0, 5).map((s) => s.id), 'zzz'].join(',') },
     task: { ...emptyFilter(), task: TASK_CASE_IDS[0] },
+    task2: { ...emptyFilter(), task: TASK_CASE_IDS[1] },
     noTask: { ...emptyFilter(), task: NO_TASK },
   };
-  // タスクの絞り込み: 決まった割り振り(3 つおきにタスク 2 つと「タスクなし」)で両側を数える。crates/atlas-report/examples/libdump.rs と同じ
-  const tasks = new Map(plain.flatMap((s, i) => (i % 3 === 2 ? [] : [[s.id, TASK_CASE_IDS[i % 3]] as [string, string]])));
+  // タスクの絞り込み: 決まった割り振り(4 つおきに 1 つ目・2 つ目・「タスクなし」・両方)で両側を数える。crates/atlas-report/examples/libdump.rs と同じ
+  const tasks = new Map(plain.flatMap((s, i) => (i % 4 === 2 ? [] : [[s.id, i % 4 === 3 ? [TASK_CASE_IDS[1], TASK_CASE_IDS[0]] : [TASK_CASE_IDS[i % 4]]] as [string, string[]]])));
   write('task-options', taskOptions(plain, tasks, new Map([[TASK_CASE_IDS[0], 'タスク 一つ目']])));
   const phases = verdicts?.phases ?? [];
   for (const [name, f] of Object.entries(filters)) {

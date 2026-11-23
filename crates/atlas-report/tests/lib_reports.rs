@@ -168,18 +168,22 @@ fn filter_wiki_keeps_referenced_sessions() {
 #[test]
 fn filter_task_uses_links() {
     let base = summaries(&fixture()).remove(0);
-    let s = [SessionSummary { id: "a".into(), ..base.clone() }, SessionSummary { id: "b".into(), ..base.clone() }, SessionSummary { id: "c".into(), ..base }];
-    let tasks: TaskOf = [("a".to_string(), "T-1".to_string()), ("b".to_string(), "T-2".to_string())].into();
+    let s = [SessionSummary { id: "a".into(), ..base.clone() }, SessionSummary { id: "b".into(), ..base.clone() }, SessionSummary { id: "c".into(), ..base.clone() }, SessionSummary { id: "d".into(), ..base.clone() }, SessionSummary { id: "e".into(), ..base }];
+    // d は T-1 と T-2 の両方に紐づく。e は空の並び(どのタスクにも紐づいていない)
+    let v = |xs: &[&str]| xs.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+    let tasks: TaskOf = [("a".to_string(), v(&["T-1"])), ("b".to_string(), v(&["T-2"])), ("d".to_string(), v(&["T-2", "T-1"])), ("e".to_string(), vec![])].into();
     let f = FilterState { task: "T-1".into(), ..empty_filter() };
-    assert_eq!(ids(&apply_filter_with(&s, &f, &tasks)), ["a"]);
-    assert_eq!(ids(&apply_filter_with(&s, &FilterState { task: NO_TASK.into(), ..empty_filter() }, &tasks)), ["c"]);
+    assert_eq!(ids(&apply_filter_with(&s, &f, &tasks)), ["a", "d"]);
+    assert_eq!(ids(&apply_filter_with(&s, &FilterState { task: "T-2".into(), ..empty_filter() }, &tasks)), ["b", "d"]);
+    assert_eq!(ids(&apply_filter_with(&s, &FilterState { task: NO_TASK.into(), ..empty_filter() }, &tasks)), ["c", "e"]);
     assert!(apply_filter(&s, &f).is_empty());
-    assert_eq!(apply_filter(&s, &FilterState { task: NO_TASK.into(), ..empty_filter() }).len(), 3);
+    assert_eq!(apply_filter(&s, &FilterState { task: NO_TASK.into(), ..empty_filter() }).len(), 5);
     assert_eq!(encode_filter(&f), "task=T-1");
     assert_eq!(encode_filter(&FilterState { task: NO_TASK.into(), wiki: "1".into(), ..empty_filter() }), "wiki=1&task=(none)");
     assert_eq!(decode_filter("#task=T%201").task, "T 1");
+    // 件数はそのタスクに紐づいたセッションの数(d は両方に数える)
     let o = task_options(s.iter().map(|x| x.id.as_str()), &tasks, &[("T-1".to_string(), "一つ目".to_string())].into());
-    assert_eq!((o.tasks.iter().map(|x| (x.value.as_str(), x.label.as_str(), x.count)).collect::<Vec<_>>(), o.none), (vec![("T-1", "一つ目", 1), ("T-2", "T-2", 1)], 1));
+    assert_eq!((o.tasks.iter().map(|x| (x.value.as_str(), x.label.as_str(), x.count)).collect::<Vec<_>>(), o.none), (vec![("T-1", "一つ目", 2), ("T-2", "T-2", 2)], 2));
 }
 
 #[test]

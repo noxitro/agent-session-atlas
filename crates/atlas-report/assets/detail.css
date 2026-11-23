@@ -35,7 +35,12 @@ blockquote.msg{margin:8px 0 0;padding:10px 12px;background:var(--surface);border
 .task-row{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px;margin-top:10px;padding:6px 10px;border:1px solid var(--rule);border-top-color:var(--rule-strong);background:var(--surface);font-size:.8125rem}
 .task-row>.k{color:var(--form);font-size:.75rem}
 .task-row .task-now{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 12px;min-width:0}
+/* 紐づいたタスクの並び(いくつかあれば 1 件ずつ行を分ける) */
+.task-row .task-list{display:flex;flex-direction:column;gap:2px;margin:0;padding:0;list-style:none;min-width:0}
+.task-row .task-item{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 12px;min-width:0}
 .task-row .task-v{font-weight:600;overflow-wrap:anywhere}
 .task-row .task-v .id{font-family:var(--mono);font-weight:400;color:var(--ink-3);margin-left:.25em}
-.task-row .task-st,.task-row .task-src{color:var(--ink-2);overflow-wrap:anywhere}
+.task-row .task-st,.task-row .task-src,.task-row .task-split{color:var(--ink-2);overflow-wrap:anywhere}
+.task-row .task-split{flex-basis:100%}
+.task-row .task-skip{color:var(--ink);background:var(--warn-wash);border:1px solid var(--warn);padding:0 6px;font-size:.75rem}
 .task-row .term{margin-left:auto;font-size:.75rem}

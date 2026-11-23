@@ -154,6 +154,9 @@
       <li><strong>AI を使わなかった場合の工数</strong>: 紐づいたセッションの推定人手工数(LLM の推定)の合計。確信度が 30% 以下の推定は入れません。</li>
       <li><strong>AI を使った場合の工数</strong>: 紐づいた最初のセッションの開始から、完了を確認した時刻までのうち、稼働時間帯({wh}、この PC の時刻)に入る時間。祝日は区別しません(平日の祝日も稼働時間帯に入ります)。完了を確認した時刻は、XML で完了と分かった時刻(書き出しのファイルの更新時刻)で、書き出しの間隔の分だけ遅れます。</li>
       <li><strong>AI の実働</strong>: 紐づいたセッションの実働時間(5 分を超えて記録の無い間を除いた時間)の合計。</li>
+      <li data-testid="tasks-split">
+        複数のタスクに紐づくセッションの実働時間と推定人手工数は、タスクの数で等分して数えます(2 つなら半分ずつ。タスクの値を足すと、セッションの値を重ねずに全体の値になります)。タスクの一覧に無いタスクと、完了を確認した後に始めたセッションのタスクには数えず、残りのタスクで分けます。セッションの数は等分せず、紐づいたタスクごとに 1 つずつ数えます。{#if s.sharedSessions > 0}今は {int(s.sharedSessions)} セッションを複数のタスクに分けて数えています。{/if}<a href="glossary.html#task-split">等分とは</a>
+      </li>
       <li>数え方は<a href="glossary.html#task-comparable">用語の説明</a>にあります。</li>
     </ul>
 
@@ -204,7 +207,7 @@
                 </td>
                 <td class="num">{#if t.workMs != null}{msHours(t.workMs)}{:else if t.sessions === 0}—{:else}—<span class="part">{t.excluded ? TASK_EXCLUDED_LABEL[t.excluded] : '未完了'}</span>{/if}</td>
                 <td class="num">{t.sessions ? msHours(t.aiActiveMs) : '—'}</td>
-                <td class="num">{int(t.sessions)}</td>
+                <td class="num">{int(t.sessions)}{#if t.sharedSessions > 0}<span class="part" title="ほかのタスクにも紐づいているセッション。実働と推定人手工数はタスクの数で等分しています" data-testid="task-shared">共有 {int(t.sharedSessions)}</span>{/if}</td>
                 <td class="src">{linkCounts(t.links) || '—'}</td>
                 <td class="why">{t.excluded ? TASK_EXCLUDED_LABEL[t.excluded] : t.comparable ? '比べる' : '—'}</td>
               </tr>

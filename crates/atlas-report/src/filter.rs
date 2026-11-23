@@ -182,16 +182,17 @@ pub const NO_JUDGMENT: &str = "(none)";
 /// タスクの絞り込みで「タスクなし」(どのタスクにも紐づいていない。「どのタスクでもない」と決めたものも入る)
 pub const NO_TASK: &str = "(none)";
 
-/// セッション id → 紐づいたタスクの ID(画面の TaskOf。ReportData.tasks.links のうち taskId のあるもの)
-pub type TaskOf = HashMap<String, String>;
+/// セッション id → 紐づいたタスクの ID の並び(画面の TaskOf。ReportData.tasks.links のうち taskIds が空でないもの)
+pub type TaskOf = HashMap<String, Vec<String>>;
 
-/// セッションがタスクの絞り込み(task)に合うか。空なら制限なし
+/// セッションがタスクの絞り込み(task)に合うか。空なら制限なし。いくつかのタスクに紐づいたセッションは、そのどれで絞っても合う。
+/// NO_TASK はどのタスクにも紐づいていないセッション
 pub fn matches_task(id: &str, task: &str, tasks: &TaskOf) -> bool {
     if task.is_empty() {
         return true;
     }
-    let t = tasks.get(id);
-    if task == NO_TASK { t.is_none() } else { t.is_some_and(|t| t == task) }
+    let t = tasks.get(id).filter(|t| !t.is_empty());
+    if task == NO_TASK { t.is_none() } else { t.is_some_and(|t| t.iter().any(|x| x == task)) }
 }
 
 /// FilterState のキー(emptyFilter のキーの順。URL ハッシュの書き出しの順)
@@ -394,13 +395,18 @@ pub struct TaskOptions {
     pub none: i64,
 }
 
-/// タスクの絞り込みの選択肢(紐づいたセッションの多い順、同じなら ID の順)。label はタスクの名前(names に無ければ ID)
+/// タスクの絞り込みの選択肢(紐づいたセッションの多い順、同じなら ID の順)。label はタスクの名前(names に無ければ ID)。
+/// 件数はそのタスクに紐づいたセッションの数(いくつかのタスクに紐づいたセッションは、それぞれのタスクに数える)
 pub fn task_options<'a>(session_ids: impl IntoIterator<Item = &'a str>, tasks: &TaskOf, names: &HashMap<String, String>) -> TaskOptions {
     let mut ids: Vec<String> = Vec::new();
     let mut none = 0;
     for sid in session_ids {
-        match tasks.get(sid) {
-            Some(t) => ids.push(t.clone()),
+        match tasks.get(sid).filter(|t| !t.is_empty()) {
+            Some(t) => {
+                // 同じ ID が重なっていても 1 つに数える(画面の new Set と同じ)
+                let mut seen: HashSet<&str> = HashSet::new();
+                ids.extend(t.iter().filter(|x| seen.insert(x.as_str())).cloned());
+            }
             None => none += 1,
         }
     }

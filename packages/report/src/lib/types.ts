@@ -27,7 +27,8 @@ import type { VerdictTuple } from './verdicts.ts';
 // 18: wikiPageNames(読んだ llm-wiki のページの名前の辞書)・wiki.pages(読んだページの番号。重複を除く)・judgment.wikiPages(ページごとの LLM の見立て)
 // 19: groups(タスクタグ)をやめた
 // 20: tasks(管理ツールのタスク。紐づけ・タスクごとの工数。値は Rust が決め、画面は出すだけ)
-export const REPORT_DATA_VERSION = 20;
+// 21: tasks.links の taskId(1 つ)を taskIds(いくつかのタスク)に。tasks.links[].countedTaskIds(工数を等分するタスク)・tasks.items[].sharedSessions・tasks.summary.sharedSessions(いくつかのタスクに数えたセッション)
+export const REPORT_DATA_VERSION = 21;
 
 /** wiki.pages を埋め込んだ最初の版(これより前の埋め込みでは、llm-wiki のページごとの表を出さない) */
 export const WIKI_PAGES_DATA_VERSION = 18;
@@ -341,11 +342,13 @@ export interface TaskRow {
   start: string | null;
   /** AI を使った場合の工数(稼働時間帯のミリ秒)。完了に変わるのを見ていなければ null */
   workMs: number | null;
-  /** AI の実働(ミリ秒) */
+  /** AI の実働(ミリ秒。いくつかのタスクに紐づいたセッションは、タスクの数で等分した分) */
   aiActiveMs: number;
-  /** AI を使わなかった場合の工数(推定人手工数の時間。確信度の低い推定は入れない) */
+  /** AI を使わなかった場合の工数(推定人手工数の時間。確信度の低い推定は入れない。いくつかのタスクに紐づいたセッションは等分した分) */
   humanHours: number;
   sessions: number;
+  /** 紐づいたセッションのうち、ほかのタスクにも紐づいているもの(実働と推定人手工数はタスクの数で等分した) */
+  sharedSessions: number;
   judgedSessions: number;
   lowConfidenceSessions: number;
   unjudgedSessions: number;
@@ -366,13 +369,18 @@ export interface TaskSummary {
   humanHours: number;
   aiActiveMs: number;
   aiActiveMsAll: number;
+  /** いくつかのタスクに紐づいたセッションの数(重ねて数えない) */
+  sharedSessions: number;
   /** AI を使わなかった場合 ÷ AI を使った場合。比べられるタスクが ratioMin に届かなければ null */
   ratio: number | null;
   ratioMin: number;
 }
 
 export interface TaskLinkView {
-  taskId: string | null;
+  /** 紐づいたタスク(並びは決めた順)。空は「どのタスクでもない」 */
+  taskIds: string[];
+  /** 実働と推定人手工数を数えるタスク(Rust の tasks::metrics::counted_tasks。一覧にあり、完了を確認した後に始めたのではないもの)。それぞれに 1/(この数) ずつ */
+  countedTaskIds?: string[];
   source: TaskLinkSource;
   reason: string;
   confidence?: number;

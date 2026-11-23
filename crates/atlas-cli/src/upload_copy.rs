@@ -5,7 +5,7 @@
 //!                                      atlas-session-store.json   ← session-store.db と data.db(許可リストの列)のそのセッションの行(atlas が添える)
 //!                                      atlas-memo.md / atlas-memo/ ← そのセッションのメモと画像(atlas-notes/memos/。あれば)
 //!   <基底>/<まとまりの名前>/README.md                                 ← 名前・説明・写した日時・セッションの一覧(写すたびに書き直す)
-//! 管理ツールのタスクに紐づいたセッションは、atlas-session.json と atlas-index.json の task に、そのタスク(ID・名前・状態・完了・紐づけの出所)を添える
+//! 管理ツールのタスクに紐づいたセッションは、atlas-session.json と atlas-index.json の tasks に、紐づいたタスクの並び(ID・名前・状態・完了・紐づけの出所)を添える
 //! (送り先から集計した読むだけの画面は、これだけからタスクの一覧と工数を作る)。
 //!   <基底>/<まとまりの名前>/atlas-installed.json                      ← 送った人がインストールしている skill・プラグインの名前(集計し直す側が使う)
 //! 同じセッションのフォルダは丸ごと置き換える。ただし、前に送ったときから中身が変わっていないセッションは写し直さない(2 回目からは変わったものだけを送る)。
@@ -59,7 +59,11 @@ pub struct UploadedSession {
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
     pub memo: bool,
-    /// 紐づいた管理ツールのタスク(紐づいていなければ省く)
+    /// 紐づいた管理ツールのタスクの並び(紐づいていなければ省く。前の版の task(1 つ)の代わり)
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tasks: Vec<atlas_report::tasks::sender::SenderTask>,
+    /// 紐づいたタスクがちょうど 1 つのときだけ、前の版の形(task。1 つのタスク)でも添える(前の版の atlas が新しい記録を読んでも、タスクが見えるように)。
+    /// 読む側は tasks があればそちらを使う
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task: Option<atlas_report::tasks::sender::SenderTask>,
 }
@@ -866,8 +870,8 @@ pub struct UploadContext {
     stores: Mutex<HashMap<String, Option<String>>>,
     memos: Mutex<HashMap<String, Option<String>>>,
     images: Mutex<HashMap<String, Vec<FileEntry>>>,
-    /// セッション id → 紐づいたタスク(<notes>/tasks.json と task-links.json から)
-    tasks: HashMap<String, atlas_report::tasks::sender::SenderTask>,
+    /// セッション id → 紐づいたタスクの並び(<notes>/tasks.json と task-links.json から)
+    tasks: HashMap<String, Vec<atlas_report::tasks::sender::SenderTask>>,
 }
 
 /// 点検とアップロードで共有できる、atlas が足して写すものを読む口
@@ -936,9 +940,9 @@ impl UploadContext {
         Ok(m)
     }
 
-    /// 紐づいた管理ツールのタスク(無ければ None)
-    pub fn task(&self, id: &str) -> Option<atlas_report::tasks::sender::SenderTask> {
-        self.tasks.get(id).cloned()
+    /// 紐づいた管理ツールのタスクの並び(無ければ空)
+    pub fn tasks(&self, id: &str) -> Vec<atlas_report::tasks::sender::SenderTask> {
+        self.tasks.get(id).cloned().unwrap_or_default()
     }
 
     /// この PC で照合した結果(atlas-vcs.json の中身)。照合していなければ None
@@ -1141,7 +1145,8 @@ pub fn upload_target(p: &UploadPaths, target: &UploadTarget, root: &Path, log: &
             created_at: r.and_then(|r| r.created_at.clone()),
             updated_at: r.and_then(|r| r.updated_at.clone()),
             memo: with_memo.contains(id),
-            task: added.task(id),
+            tasks: added.tasks(id),
+            task: Some(added.tasks(id)).filter(|t| t.len() == 1).and_then(|mut t| t.pop()),
         }
     };
     let meta_text = |s: UploadedSession, key: Option<&String>| -> Result<String> {
@@ -1421,10 +1426,19 @@ pub fn upload_readme(o: &ReadmeInput<'_>) -> String {
     for s in o.sessions {
         let memo = if s.memo { format!("[あり]({}/{UPLOAD_MEMO_FILE})", s.id) } else { String::new() };
         let title = cell(&truncate(Some(s.title.as_deref().unwrap_or("")), 60));
-        let task = s.task.as_ref().map_or("-".to_string(), |t| {
-            let name = cell(&truncate(Some(&t.name), 40));
-            if name.is_empty() { cell(&t.id) } else { format!("{name}({})", cell(&t.id)) }
-        });
+        // いくつかのタスクに紐づいていれば「、」でつなぐ(紐づけの順)
+        let task = if s.tasks.is_empty() {
+            "-".to_string()
+        } else {
+            s.tasks
+                .iter()
+                .map(|t| {
+                    let name = cell(&truncate(Some(&t.name), 40));
+                    if name.is_empty() { cell(&t.id) } else { format!("{name}({})", cell(&t.id)) }
+                })
+                .collect::<Vec<_>>()
+                .join("、")
+        };
         lines.push(format!(
             "| [{id}]({id}/) | {} | {task} | {} | {} |",
             if title.is_empty() { "-".to_string() } else { title },

@@ -14,7 +14,7 @@ use atlas_core::types::{Friction, LineChanges, ProjectSource, TodoSummary, Token
 use serde::{Deserialize, Serialize};
 
 /// 埋め込みデータの版(lib/types.ts の REPORT_DATA_VERSION。版の履歴はそちらの先頭のコメントを参照)
-pub const REPORT_DATA_VERSION: i64 = 20;
+pub const REPORT_DATA_VERSION: i64 = 21;
 
 /// llm-wiki のページごとの LLM の見立て [ページの名前, yes | no | unknown, 理由](judgments.json から読んだ形。lib/types.ts の WikiPageVerdict)
 pub type WikiPageVerdict = (String, String, String);

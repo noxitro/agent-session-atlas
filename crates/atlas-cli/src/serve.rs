@@ -1490,8 +1490,9 @@ impl Server {
         Ok(json!({ "readOnly": read_only, "tasks": view.as_ref().map(to_value), "unresolved": unresolved }))
     }
 
-    /// PUT /api/tasks/links/<id>: { taskId: "<タスクの ID>" | null }(手動で紐づける。null は「どのタスクでもない」)か
-    /// { auto: true }(手動の紐づけを外して自動に戻す。機械の紐づけをすぐ決め直す)。返すのは GET /api/tasks と同じもの
+    /// PUT /api/tasks/links/<id>: { taskIds: ["<タスクの ID>", …] }(手動で紐づける。空の並びは「どのタスクでもない」。上限は links::MAX_TASKS_PER_SESSION)、
+    /// 前の形の { taskId: "<タスクの ID>" | null }、か { auto: true }(手動の紐づけを外して自動に戻す。機械の紐づけをすぐ決め直す)。
+    /// 返すのは GET /api/tasks と同じもの
     fn task_link_api(&self, req: &mut Req, method: &str, raw_id: &str) -> R<Resp> {
         if method != "PUT" {
             return Err(HttpError::new(405, "この方法では使えません"));
@@ -1502,7 +1503,7 @@ impl Server {
             return Err(HttpError::new(400, "セッション id の形が正しくありません"));
         }
         let body = self.json_body(req)?;
-        let extra: Vec<&str> = body.keys().map(String::as_str).filter(|k| !["taskId", "auto"].contains(k)).collect();
+        let extra: Vec<&str> = body.keys().map(String::as_str).filter(|k| !["taskIds", "taskId", "auto"].contains(k)).collect();
         if !extra.is_empty() {
             return Err(HttpError::new(400, format!("使えない項目です: {}", extra.join(", "))));
         }
@@ -1511,12 +1512,32 @@ impl Server {
             Some(Value::Bool(b)) => *b,
             Some(_) => return Err(HttpError::new(400, "auto は true か false です")),
         };
-        let task: Option<String> = match (auto, body.get("taskId")) {
-            (true, None) => None,
-            (true, Some(_)) => return Err(HttpError::new(400, "auto と taskId は一緒に使えません")),
-            (false, Some(Value::Null)) => None,
-            (false, Some(Value::String(t))) if !js::trim(t).is_empty() && js::utf16_len(t) <= 400 => Some(js::trim(t).to_string()),
-            (false, _) => return Err(HttpError::new(400, "taskId にタスクの ID か null を指定してください(自動に戻すときは auto: true)")),
+        let max = atlas_report::tasks::links::MAX_TASKS_PER_SESSION;
+        let one = |v: &Value| match v {
+            Value::String(t) if !js::trim(t).is_empty() && js::utf16_len(t) <= 400 => Ok(js::trim(t).to_string()),
+            _ => Err(HttpError::new(400, "タスクの ID は空でない文字列です")),
+        };
+        let tasks: Vec<String> = match (auto, body.get("taskIds"), body.get("taskId")) {
+            (true, None, None) => vec![],
+            (true, ..) => return Err(HttpError::new(400, "auto と taskIds(taskId)は一緒に使えません")),
+            (false, Some(_), Some(_)) => return Err(HttpError::new(400, "taskIds と taskId は一緒に使えません")),
+            (false, Some(Value::Array(a)), None) => {
+                // 重なりを除いてから上限を確かめる(同じ ID を何度送っても 1 つ)。並びは送られた順
+                let mut ids: Vec<String> = Vec::new();
+                for v in a {
+                    let id = one(v)?;
+                    if !ids.contains(&id) {
+                        ids.push(id);
+                    }
+                }
+                if ids.len() > max {
+                    return Err(HttpError::new(400, format!("1 つのセッションに紐づけられるタスクは {max} 個までです(重なりを除いて {} 個)", ids.len())));
+                }
+                ids
+            }
+            (false, None, Some(Value::Null)) => vec![],
+            (false, None, Some(v @ Value::String(_))) => vec![one(v)?],
+            (false, ..) => return Err(HttpError::new(400, "taskIds にタスクの ID の並びを指定してください(空の並びは「どのタスクでもない」。自動に戻すときは auto: true)")),
         };
         let ix = self.session_index()?.ok_or_else(|| HttpError::new(404, "まだ集計していません(sessions.json がありません)"))?;
         if !ix.ids.contains_key(&id) {
@@ -1528,10 +1549,11 @@ impl Server {
             if let Some(w) = state.warnings.first() {
                 return Err(HttpError::new(409, w.clone()));
             }
-            if let Some(t) = &task
-                && !state.file.tasks.contains_key(t)
-            {
-                return Err(HttpError::new(400, format!("タスク「{t}」はありません(管理ツールの XML を読み直すと出ることがあります)")));
+            // 一覧に無いタスクは、どれが無いかを全部書いて断る(画面はこの文を出し、外す札が分かるようにする)
+            let unknown: Vec<&str> = tasks.iter().filter(|t| !state.file.tasks.contains_key(*t)).map(String::as_str).collect();
+            if !unknown.is_empty() {
+                let names = unknown.iter().map(|t| format!("「{t}」")).collect::<String>();
+                return Err(HttpError::new(400, format!("タスクの一覧にないタスクです: {names}。外してから保存してください(管理ツールの XML を読み直すと出ることがあります)")));
             }
             // 自動に戻すときの機械の紐づけに使う文は、ロックを取る前に読む(ロックは短く持つ)
             let text = if auto { self.session_text(&id)? } else { None };
@@ -1546,7 +1568,7 @@ impl Server {
                         atlas_report::tasks::links::apply_machine(links, std::slice::from_ref(text), &state.file, &now);
                     }
                 } else {
-                    links.links.insert(id.clone(), atlas_report::tasks::links::TaskLink { task_id: task, source: atlas_report::tasks::links::LinkSource::Manual, reason: String::new(), confidence: None, at: now });
+                    links.links.insert(id.clone(), atlas_report::tasks::links::TaskLink { task_ids: tasks, source: atlas_report::tasks::links::LinkSource::Manual, reason: String::new(), confidence: None, at: now });
                 }
             })
             .map_err(|e| {

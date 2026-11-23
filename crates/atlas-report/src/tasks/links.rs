@@ -1,5 +1,6 @@
-//! セッションとタスクの紐づけ(<notes-dir>/task-links.json)。1 つのセッションは 1 つのタスクにだけ紐づく。
-//! 紐づけの出所は 3 つ。手動(画面で選んだもの)> LLM(頼んだときだけ判定)> 機械(集計のたびに決め直す)の順に優先する。
+//! セッションとタスクの紐づけ(<notes-dir>/task-links.json)。1 つのセッションは、いくつかのタスクに紐づくことがある
+//! (1 つのタスクにも、いくつものセッションが紐づく)。紐づくタスクの数には上限(MAX_TASKS_PER_SESSION)を置く。
+//! 紐づけの出所は 3 つで、セッションごとに 1 つ。手動(画面で選んだもの)> LLM(頼んだときだけ判定)> 機械(集計のたびに決め直す)の順に優先する。
 //! 機械の紐づけ(決まった規則。LLM は使わない):
 //! - セッションの題名と、依頼の文(最初の依頼と、記録した各依頼の先頭)から探す。VCS のコミットの文は見ない
 //! - タスクの ID: 前後が英数字でない所に、ID がそのまま出てくる(日本語の文字は区切りとみなす。2 文字未満の ID は探さない)。
@@ -8,8 +9,10 @@
 //! - タスクの名前: 正規化(NFKC・小文字・空白をまとめる)した文の中に、正規化した名前が出てくる(4 文字未満の名前は探さない)
 //! - 当たりが重なるときは長い方だけを使う(DEMO-102-1 の中の DEMO-102、長い名前の中の短い名前は数えない)
 //! - 候補は、未完了のタスクと、セッションを始めた後に完了を確認したタスク(始める前に終わったタスクには紐づけない)
-//! - 当たったタスクがちょうど 1 つなら紐づける。0 か 2 つ以上なら決めない(LLM に任せられる)
-//! - 手動の紐づけと、LLM がタスクを選んだ紐づけは変えない。LLM が「どのタスクでもない」とした紐づけは、機械の当たりが 1 つに決まれば置き換える
+//! - ID で当たったタスクだけなら、そのすべてに紐づける(ID をはっきり書いたもの)。
+//!   ID の当たりが無く、名前で当たったタスクがちょうど 1 つなら、そのタスクに紐づける。
+//!   当たりが無ければ決めない。名前だけの当たりがあって、当たったタスクが 2 つ以上なら決めない(LLM に任せられる)。上限を超えたときも決めない
+//! - 手動の紐づけと、LLM がタスクを選んだ紐づけは変えない。LLM が「どのタスクでもない」とした紐づけは、機械の当たりが決まれば置き換える
 //!
 //! 書き込みは壊れたファイルを上書きしない(直してもらう)。書き手(画面・LLM で紐づけるジョブ・集計)は別のプロセスのこともあるので、
 //! update_links でファイルのロックを取り、読み直してから自分の変更だけを足して書く。
@@ -26,7 +29,13 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use unicode_normalization::UnicodeNormalization;
 
-pub const LINKS_VERSION: u32 = 1;
+/// task-links.json の版。2 で紐づけを taskIds(いくつかのタスク)にした。1 の taskId(1 つか null)も読み、書くのは 2 の形だけ
+pub const LINKS_VERSION: u32 = 2;
+/// 読める前の版
+const LINKS_VERSION_OLD: u32 = 1;
+/// 1 つのセッションに紐づけるタスクの数の上限。誤った当たりや壊れた記録で並びが長くならないための安全のための上限で、
+/// どこかの環境の件数に合わせたものではない(機械の紐づけはこれを超えたら決めず、LLM の答え・画面・送った人の記録も超えた分を受け付けない)
+pub const MAX_TASKS_PER_SESSION: usize = 10;
 /// 探す ID の短さの下限(文字)。これより短い ID は数字などに当たりすぎる
 pub const ID_MIN_CHARS: usize = 2;
 /// 探す名前の短さの下限(文字)
@@ -61,10 +70,10 @@ impl LinkSource {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", from = "RawTaskLink")]
 pub struct TaskLink {
-    /// 紐づけたタスク。null は「どのタスクでもない」(手動か LLM が決めたもの)
-    pub task_id: Option<String>,
+    /// 紐づけたタスク(並びは決めた順。重なりなし、上限まで)。空は「どのタスクでもない」(手動か LLM が決めたもの)
+    pub task_ids: Vec<String>,
     pub source: LinkSource,
     /// 決めた理由(機械はどこに当たったか、LLM は LLM の答え、手動は空)
     #[serde(default)]
@@ -74,6 +83,52 @@ pub struct TaskLink {
     pub confidence: Option<f64>,
     /// 決めた日時(ISO)
     pub at: String,
+}
+
+/// 読むときの形: 版 2 の taskIds か、版 1 の taskId(1 つか null。0 か 1 件の並びとして読む)
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawTaskLink {
+    #[serde(default)]
+    task_ids: Option<Vec<String>>,
+    #[serde(default)]
+    task_id: Option<String>,
+    source: LinkSource,
+    #[serde(default)]
+    reason: String,
+    #[serde(default)]
+    confidence: Option<f64>,
+    at: String,
+}
+
+impl From<RawTaskLink> for TaskLink {
+    fn from(r: RawTaskLink) -> Self {
+        let ids = r.task_ids.unwrap_or_else(|| r.task_id.into_iter().collect());
+        TaskLink { task_ids: tidy_ids(ids), source: r.source, reason: r.reason, confidence: r.confidence, at: r.at }
+    }
+}
+
+/// タスクの ID の並びを整える: 前後の空白を除き、空のものと重なりを除いて、並びを保ったまま上限(MAX_TASKS_PER_SESSION)まで
+pub fn tidy_ids<S: AsRef<str>>(ids: impl IntoIterator<Item = S>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for id in ids {
+        let t = atlas_core::js::trim(id.as_ref());
+        if t.is_empty() || out.iter().any(|x| x == t) {
+            continue;
+        }
+        if out.len() == MAX_TASKS_PER_SESSION {
+            break;
+        }
+        out.push(t.to_string());
+    }
+    out
+}
+
+impl TaskLink {
+    /// 「どのタスクでもない」(手動か LLM が決めた、タスクの無い紐づけ)
+    pub fn is_none(&self) -> bool {
+        self.task_ids.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -98,10 +153,12 @@ pub struct LoadedLinks {
 
 fn parse(path: &Path) -> std::result::Result<Option<LinksFile>, String> {
     let Some(v) = read_json_file(path)? else { return Ok(None) };
-    let f: LinksFile = serde_json::from_value(v).map_err(|e| format!("{} の形が違います({e})", path.display()))?;
-    if f.version != LINKS_VERSION {
-        return Err(format!("{} の版 {} は読めません(この atlas が読めるのは {LINKS_VERSION})", path.display(), f.version));
+    let mut f: LinksFile = serde_json::from_value(v).map_err(|e| format!("{} の形が違います({e})", path.display()))?;
+    if f.version != LINKS_VERSION && f.version != LINKS_VERSION_OLD {
+        return Err(format!("{} の版 {} は読めません(この atlas が読めるのは {LINKS_VERSION_OLD} と {LINKS_VERSION})", path.display(), f.version));
     }
+    // 前の版の形で読んだものも、書くときは今の版の形にする
+    f.version = LINKS_VERSION;
     Ok(Some(f))
 }
 
@@ -181,15 +238,18 @@ pub fn is_candidate(t: &TaskState, start_ms: Option<i64>) -> bool {
     }
 }
 
-/// どこに当たったか(小さいほど強い。理由の文に使う)
+/// どこに当たったか(小さいほど強い。理由の文に使う)。0・1 は ID、2・3 は名前
 const REASONS: [&str; 4] = ["ID が題名にある", "ID が依頼にある", "タスク名が題名にある", "タスク名が依頼にある"];
+/// ID でいくつかのタスクに当たり、題名にも依頼にも ID があったとき
+const REASON_IDS_BOTH: &str = "ID が題名と依頼にある";
 
 /// 機械の紐づけの結果
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MachineMatch {
-    One { task_id: String, reason: String },
+    /// 紐づける(ID で当たったタスクのすべてか、名前だけで当たった 1 つのタスク。並びは XML の順)
+    Linked { task_ids: Vec<String>, reason: String },
     None,
-    /// 2 つ以上に当たった(当たったタスクの ID)
+    /// 決めない(名前だけの当たりがあって 2 つ以上のタスクに当たった・上限を超えた。当たったタスクの ID)
     Many(Vec<String>),
 }
 
@@ -272,10 +332,28 @@ impl<'a> Matcher<'a> {
         self.scan(&normalize(&s.title), 0, &mut hits);
         self.scan(&normalize(&s.prompts), 1, &mut hits);
         let found: Vec<(usize, usize)> = hits.into_iter().filter(|(i, _)| is_candidate(self.tasks[*i].1, s.start_ms)).collect();
-        match found.as_slice() {
-            [] => MachineMatch::None,
-            [(i, rank)] => MachineMatch::One { task_id: self.tasks[*i].0.to_string(), reason: REASONS[*rank].to_string() },
-            many => MachineMatch::Many(many.iter().map(|(i, _)| self.tasks[*i].0.to_string()).collect()),
+        let id_of = |i: usize| self.tasks[i].0.to_string();
+        if found.is_empty() {
+            return MachineMatch::None;
+        }
+        if found.len() > MAX_TASKS_PER_SESSION {
+            return MachineMatch::Many(found.iter().map(|(i, _)| id_of(*i)).collect());
+        }
+        // ID で当たったタスク(題名 0・依頼 1)と、名前だけで当たったタスク(2・3)
+        let (by_id, name_only): (Vec<_>, Vec<_>) = found.iter().copied().partition(|(_, rank)| *rank < 2);
+        match (by_id.as_slice(), name_only.as_slice()) {
+            ([(i, rank)], []) | ([], [(i, rank)]) => MachineMatch::Linked { task_ids: vec![id_of(*i)], reason: REASONS[*rank].to_string() },
+            (ids, []) => {
+                let reason = if ids.iter().all(|(_, r)| *r == 0) {
+                    REASONS[0]
+                } else if ids.iter().all(|(_, r)| *r == 1) {
+                    REASONS[1]
+                } else {
+                    REASON_IDS_BOTH
+                };
+                MachineMatch::Linked { task_ids: ids.iter().map(|(i, _)| id_of(*i)).collect(), reason: reason.to_string() }
+            }
+            _ => MachineMatch::Many(found.iter().map(|(i, _)| id_of(*i)).collect()),
         }
     }
 }
@@ -289,7 +367,7 @@ pub struct MachineSummary {
     pub updated: usize,
     /// 当たるタスクが無い
     pub unmatched: usize,
-    /// 2 つ以上に当たって決めなかった
+    /// 名前だけの当たりがあって 2 つ以上のタスクに当たった(か上限を超えた)ので決めなかった
     pub ambiguous: usize,
     /// 手動か LLM の紐づけがあるので触らなかった
     pub kept: usize,
@@ -303,9 +381,9 @@ impl MachineSummary {
     }
 }
 
-/// 機械が変えない紐づけ: 手動と、LLM がタスクを選んだもの(LLM が「どのタスクでもない」としたものは、機械の当たりが 1 つに決まれば置き換える)
+/// 機械が変えない紐づけ: 手動と、LLM がタスクを選んだもの(LLM が「どのタスクでもない」としたものは、機械の当たりが決まれば置き換える)
 pub fn is_fixed(l: &TaskLink) -> bool {
-    l.source == LinkSource::Manual || (l.source == LinkSource::Llm && l.task_id.is_some())
+    l.source == LinkSource::Manual || (l.source == LinkSource::Llm && !l.is_none())
 }
 
 /// sessions の機械の紐づけを決め直す。手動と、LLM がタスクを選んだ紐づけは変えない。sessions に無いセッションの紐づけも変えない
@@ -318,19 +396,19 @@ pub fn apply_machine(links: &mut LinksFile, sessions: &[SessionText], state: &Ta
             sum.kept += 1;
             continue;
         }
-        // LLM の「どのタスクでもない」は、機械の当たりが 1 つに決まったときだけ置き換え、決まらなければ残す
+        // LLM の「どのタスクでもない」は、機械の当たりが決まったときだけ置き換え、決まらなければ残す
         let llm_none = links.links.get(&s.id).is_some_and(|l| l.source == LinkSource::Llm);
-        if llm_none && !matches!(r, MachineMatch::One { .. }) {
+        if llm_none && !matches!(r, MachineMatch::Linked { .. }) {
             sum.kept += 1;
             continue;
         }
         match r {
-            MachineMatch::One { task_id, reason } => {
+            MachineMatch::Linked { task_ids, reason } => {
                 sum.linked += 1;
-                let same = links.links.get(&s.id).is_some_and(|l| l.task_id.as_deref() == Some(task_id.as_str()) && l.reason == reason);
+                let same = links.links.get(&s.id).is_some_and(|l| l.source == LinkSource::Machine && l.task_ids == task_ids && l.reason == reason);
                 if !same {
                     sum.updated += 1;
-                    links.links.insert(s.id.clone(), TaskLink { task_id: Some(task_id), source: LinkSource::Machine, reason, confidence: None, at: now.to_string() });
+                    links.links.insert(s.id.clone(), TaskLink { task_ids, source: LinkSource::Machine, reason, confidence: None, at: now.to_string() });
                 }
             }
             other => {
@@ -364,7 +442,7 @@ pub fn unresolved<'a>(links: &LinksFile, sessions: &'a [SessionText]) -> Vec<&'a
     sessions.iter().filter(|s| !links.links.contains_key(&s.id)).collect()
 }
 
-/// LLM に渡す候補(ID と名前)。機械の紐づけで 2 つ以上に当たったタスク(first) → 未完了で XML にあるもの →
+/// LLM に渡す候補(ID と名前)。機械の紐づけで決めなかったときに当たったタスク(first) → 未完了で XML にあるもの →
 /// 完了を確認した時刻の早いもの → XML から消えたもの の順に、上限まで
 pub fn llm_candidates(state: &TasksFile, start_ms: Option<i64>, first: &[String]) -> Vec<(String, String)> {
     let mut c: Vec<(u8, i64, usize, &str, &TaskState)> = state
@@ -389,9 +467,9 @@ pub fn llm_candidates(state: &TasksFile, start_ms: Option<i64>, first: &[String]
     c.into_iter().take(LLM_CANDIDATES_MAX).map(|x| (x.3.to_string(), x.4.name.clone())).collect()
 }
 
-/// セッション id → 紐づいたタスク(task_id が null のものは入れない)
-pub fn linked_tasks(links: &LinksFile) -> HashMap<&str, (&str, LinkSource)> {
-    links.links.iter().filter_map(|(sid, l)| l.task_id.as_deref().map(|t| (sid.as_str(), (t, l.source)))).collect()
+/// セッション id → 紐づいたタスク(「どのタスクでもない」は入れない)
+pub fn linked_tasks(links: &LinksFile) -> HashMap<&str, (&[String], LinkSource)> {
+    links.links.iter().filter(|(_, l)| !l.is_none()).map(|(sid, l)| (sid.as_str(), (l.task_ids.as_slice(), l.source))).collect()
 }
 
 #[cfg(test)]
@@ -419,18 +497,18 @@ mod tests {
         let s = st();
         let m = Matcher::new(&s);
         let one = |t: &str, p: &str| m.match_session(&sess("s", t, p));
-        assert_eq!(one("ABC-12 を直す", ""), MachineMatch::One { task_id: "ABC-12".into(), reason: "ID が題名にある".into() });
+        assert_eq!(one("ABC-12 を直す", ""), MachineMatch::Linked { task_ids: vec!["ABC-12".into()], reason: "ID が題名にある".into() });
         // 日本語の文字は区切り。全角・小文字も同じ ID
-        assert_eq!(one("", "これはabc-12の件"), MachineMatch::One { task_id: "ABC-12".into(), reason: "ID が依頼にある".into() });
-        assert_eq!(one("ＡＢＣ－１２", ""), MachineMatch::One { task_id: "ABC-12".into(), reason: "ID が題名にある".into() });
+        assert_eq!(one("", "これはabc-12の件"), MachineMatch::Linked { task_ids: vec!["ABC-12".into()], reason: "ID が依頼にある".into() });
+        assert_eq!(one("ＡＢＣ－１２", ""), MachineMatch::Linked { task_ids: vec!["ABC-12".into()], reason: "ID が題名にある".into() });
         // ABC-123 の中の ABC-12 は当たらない(後ろが数字)。ABC-123 だけ
-        assert_eq!(one("ABC-123", ""), MachineMatch::One { task_id: "ABC-123".into(), reason: "ID が題名にある".into() });
+        assert_eq!(one("ABC-123", ""), MachineMatch::Linked { task_ids: vec!["ABC-123".into()], reason: "ID が題名にある".into() });
         // 前後が英数字なら当たらない
         assert_eq!(one("xABC-12", "ABC-12x"), MachineMatch::None);
         // 2 文字未満の ID は探さない
         assert_eq!(one("7 件の修正", ""), MachineMatch::None);
         // 区切りの記号の隣は当たる
-        assert_eq!(one("[XY-9]", ""), MachineMatch::One { task_id: "XY-9".into(), reason: "ID が題名にある".into() });
+        assert_eq!(one("[XY-9]", ""), MachineMatch::Linked { task_ids: vec!["XY-9".into()], reason: "ID が題名にある".into() });
     }
 
     /// 数字だけの ID は #<数字> の形だけを探す
@@ -441,13 +519,13 @@ mod tests {
         let one = |t: &str| m.match_session(&sess("s", t, ""));
         assert_eq!(one("101 件を直す"), MachineMatch::None);
         assert_eq!(one("ID 101"), MachineMatch::None);
-        assert_eq!(one("#101 を直す"), MachineMatch::One { task_id: "101".into(), reason: "ID が題名にある".into() });
+        assert_eq!(one("#101 を直す"), MachineMatch::Linked { task_ids: vec!["101".into()], reason: "ID が題名にある".into() });
         // # の前は見ない(区切りは # 自身)。後ろが数字や英字なら当たらない
-        assert_eq!(one("PR#101"), MachineMatch::One { task_id: "101".into(), reason: "ID が題名にある".into() });
+        assert_eq!(one("PR#101"), MachineMatch::Linked { task_ids: vec!["101".into()], reason: "ID が題名にある".into() });
         assert_eq!(one("#1010"), MachineMatch::None);
         assert_eq!(one("#101a"), MachineMatch::None);
         // 全角の #・数字も同じ。2 文字未満の数字の ID は # を付けても探さない
-        assert_eq!(one("＃１０１"), MachineMatch::One { task_id: "101".into(), reason: "ID が題名にある".into() });
+        assert_eq!(one("＃１０１"), MachineMatch::Linked { task_ids: vec!["101".into()], reason: "ID が題名にある".into() });
         assert_eq!(one("#7 を直す"), MachineMatch::None);
     }
 
@@ -456,15 +534,15 @@ mod tests {
     fn overlapping_matches_prefer_the_longest() {
         let s = state(&[("DEMO-102", task("Improve the synthetic project", None)), ("DEMO-102-1", task("入れ子のサブタスク", None))]);
         let m = Matcher::new(&s);
-        assert_eq!(m.match_session(&sess("s", "DEMO-102-1 を直す", "")), MachineMatch::One { task_id: "DEMO-102-1".into(), reason: "ID が題名にある".into() });
-        assert_eq!(m.match_session(&sess("s", "DEMO-102 を直す", "")), MachineMatch::One { task_id: "DEMO-102".into(), reason: "ID が題名にある".into() });
-        // 別の場所に両方あれば 2 つに当たる
-        assert!(matches!(m.match_session(&sess("s", "DEMO-102 と DEMO-102-1", "")), MachineMatch::Many(_)));
+        assert_eq!(m.match_session(&sess("s", "DEMO-102-1 を直す", "")), MachineMatch::Linked { task_ids: vec!["DEMO-102-1".into()], reason: "ID が題名にある".into() });
+        assert_eq!(m.match_session(&sess("s", "DEMO-102 を直す", "")), MachineMatch::Linked { task_ids: vec!["DEMO-102".into()], reason: "ID が題名にある".into() });
+        // 別の場所に両方の ID があれば、2 つに紐づける(並びは XML の順)
+        assert_eq!(m.match_session(&sess("s", "DEMO-102-1 と DEMO-102", "")), MachineMatch::Linked { task_ids: vec!["DEMO-102".into(), "DEMO-102-1".into()], reason: "ID が題名にある".into() });
         // 名前も、長い名前の中の短い名前は数えない
         let s2 = state(&[("A", task("帳票の出力", None)), ("B", task("帳票の出力を速くする", None))]);
         let m2 = Matcher::new(&s2);
-        assert_eq!(m2.match_session(&sess("s", "", "帳票の出力を速くする件")), MachineMatch::One { task_id: "B".into(), reason: "タスク名が依頼にある".into() });
-        assert_eq!(m2.match_session(&sess("s", "", "帳票の出力の件")), MachineMatch::One { task_id: "A".into(), reason: "タスク名が依頼にある".into() });
+        assert_eq!(m2.match_session(&sess("s", "", "帳票の出力を速くする件")), MachineMatch::Linked { task_ids: vec!["B".into()], reason: "タスク名が依頼にある".into() });
+        assert_eq!(m2.match_session(&sess("s", "", "帳票の出力の件")), MachineMatch::Linked { task_ids: vec!["A".into()], reason: "タスク名が依頼にある".into() });
         // 同じ名前の 2 つのタスクは決めない
         let s3 = state(&[("A", task("同じ名前のタスク", None)), ("B", task("同じ名前のタスク", None))]);
         assert!(matches!(Matcher::new(&s3).match_session(&sess("s", "同じ名前のタスク", "")), MachineMatch::Many(_)));
@@ -475,7 +553,7 @@ mod tests {
     fn update_links_merges_with_other_writers() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join(crate::tasks::TASK_LINKS_FILE_NAME);
-        let manual = TaskLink { task_id: Some("A".into()), source: LinkSource::Manual, reason: String::new(), confidence: None, at: "t".into() };
+        let manual = TaskLink { task_ids: vec!["A".into()], source: LinkSource::Manual, reason: String::new(), confidence: None, at: "t".into() };
         std::thread::scope(|sc| {
             for i in 0..10 {
                 let manual = manual.clone();
@@ -504,23 +582,51 @@ mod tests {
     fn names_are_normalized_substrings() {
         let s = st();
         let m = Matcher::new(&s);
-        assert_eq!(m.match_session(&sess("s", "", "まず ログイン画面の不具合 を見て")), MachineMatch::One { task_id: "ABC-12".into(), reason: "タスク名が依頼にある".into() });
+        assert_eq!(m.match_session(&sess("s", "", "まず ログイン画面の不具合 を見て")), MachineMatch::Linked { task_ids: vec!["ABC-12".into()], reason: "タスク名が依頼にある".into() });
         // 空白の違い(改行・続いた空白)はまとめて比べる
         let s2 = state(&[("N-1", task("Export  the   Report", None))]);
         let m2 = Matcher::new(&s2);
-        assert!(matches!(m2.match_session(&sess("s", "please export the\nreport now", "")), MachineMatch::One { .. }));
+        assert!(matches!(m2.match_session(&sess("s", "please export the\nreport now", "")), MachineMatch::Linked { .. }));
         // 4 文字未満の名前は探さない
         let s3 = state(&[("N-2", task("帳票", None))]);
         assert_eq!(Matcher::new(&s3).match_session(&sess("s", "帳票を直す", "")), MachineMatch::None);
         // ID と名前の両方で同じタスクに当たれば 1 つ。理由は強い方(ID・題名)
-        assert_eq!(m.match_session(&sess("s", "ABC-12", "ログイン画面の不具合")), MachineMatch::One { task_id: "ABC-12".into(), reason: "ID が題名にある".into() });
+        assert_eq!(m.match_session(&sess("s", "ABC-12", "ログイン画面の不具合")), MachineMatch::Linked { task_ids: vec!["ABC-12".into()], reason: "ID が題名にある".into() });
+    }
+
+    /// ID だけで当たればすべてに紐づける。名前だけの当たりが混じって 2 つ以上なら決めない。上限を超えても決めない
+    #[test]
+    fn several_ids_link_all_and_names_stay_ambiguous() {
+        let s = st();
+        let m = Matcher::new(&s);
+        let linked = |ids: &[&str], reason: &str| MachineMatch::Linked { task_ids: ids.iter().map(|x| x.to_string()).collect(), reason: reason.into() };
+        assert_eq!(m.match_session(&sess("s", "XY-9 と ABC-12", "")), linked(&["ABC-12", "XY-9"], "ID が題名にある"));
+        assert_eq!(m.match_session(&sess("s", "", "ABC-12 と XY-9 をまとめて")), linked(&["ABC-12", "XY-9"], "ID が依頼にある"));
+        assert_eq!(m.match_session(&sess("s", "ABC-12", "XY-9 も")), linked(&["ABC-12", "XY-9"], "ID が題名と依頼にある"));
+        // 同じタスクの ID と名前は 1 つの当たり(ID の当たり)
+        assert_eq!(m.match_session(&sess("s", "ABC-12 XY-9", "ログイン画面の不具合")), linked(&["ABC-12", "XY-9"], "ID が題名にある"));
+        // 名前だけで 1 つなら紐づける。ID の当たりに、ほかのタスクの名前の当たりが混じれば決めない
+        assert_eq!(m.match_session(&sess("s", "", "帳票の出力")), linked(&["XY-9"], "タスク名が依頼にある"));
+        match m.match_session(&sess("s", "ABC-12", "帳票の出力")) {
+            MachineMatch::Many(ids) => assert_eq!(ids, ["ABC-12", "XY-9"]),
+            other => panic!("{other:?}"),
+        }
+        // 名前だけで 2 つ
+        assert!(matches!(m.match_session(&sess("s", "ログイン画面の不具合と帳票の出力", "")), MachineMatch::Many(_)));
+        // 上限を超えた ID の当たりは決めない(上限ちょうどなら紐づける)
+        let many: Vec<(String, TaskState)> = (0..=MAX_TASKS_PER_SESSION).map(|i| (format!("T-{i}"), task(&format!("仕事の名前 {i}"), None))).collect();
+        let big = TasksFile { tasks: many.into_iter().collect(), ..Default::default() };
+        let mb = Matcher::new(&big);
+        let all: Vec<String> = (0..=MAX_TASKS_PER_SESSION).map(|i| format!("T-{i}")).collect();
+        assert!(matches!(mb.match_session(&sess("s", &all.join(" "), "")), MachineMatch::Many(ids) if ids.len() == MAX_TASKS_PER_SESSION + 1));
+        assert!(matches!(mb.match_session(&sess("s", &all[..MAX_TASKS_PER_SESSION].join(" "), "")), MachineMatch::Linked { task_ids, .. } if task_ids.len() == MAX_TASKS_PER_SESSION));
     }
 
     #[test]
     fn ambiguity_and_candidates() {
         let s = st();
         let m = Matcher::new(&s);
-        match m.match_session(&sess("s", "ABC-12 と XY-9", "")) {
+        match m.match_session(&sess("s", "ログイン画面の不具合 と XY-9", "")) {
             MachineMatch::Many(ids) => assert_eq!(ids, ["ABC-12", "XY-9"]),
             other => panic!("{other:?}"),
         }
@@ -528,11 +634,11 @@ mod tests {
         let s2 = state(&[("OLD-1", task("前に終わった仕事", Some("2026-11-05T00:00:00.000Z"))), ("NEW-1", task("後で終わった仕事", Some("2026-11-12T00:00:00.000Z")))]);
         let m2 = Matcher::new(&s2);
         assert_eq!(m2.match_session(&sess("s", "OLD-1", "")), MachineMatch::None);
-        assert_eq!(m2.match_session(&sess("s", "OLD-1 NEW-1", "")), MachineMatch::One { task_id: "NEW-1".into(), reason: "ID が題名にある".into() });
+        assert_eq!(m2.match_session(&sess("s", "OLD-1 NEW-1", "")), MachineMatch::Linked { task_ids: vec!["NEW-1".into()], reason: "ID が題名にある".into() });
         // 始めた時刻が分からなければ候補に入れる
         let mut unknown = sess("s", "OLD-1", "");
         unknown.start_ms = None;
-        assert!(matches!(m2.match_session(&unknown), MachineMatch::One { .. }));
+        assert!(matches!(m2.match_session(&unknown), MachineMatch::Linked { .. }));
         assert!(is_candidate(&task("x", None), None));
     }
 
@@ -540,20 +646,31 @@ mod tests {
     fn machine_never_overrides_llm_or_manual_and_is_recomputed() {
         let s = st();
         let mut links = LinksFile::default();
-        links.links.insert("m".into(), TaskLink { task_id: Some("XY-9".into()), source: LinkSource::Manual, reason: String::new(), confidence: None, at: "t0".into() });
-        let llm = |t: Option<&str>| TaskLink { task_id: t.map(str::to_string), source: LinkSource::Llm, reason: "LLM".into(), confidence: Some(0.8), at: "t0".into() };
+        links.links.insert("m".into(), TaskLink { task_ids: vec!["XY-9".into()], source: LinkSource::Manual, reason: String::new(), confidence: None, at: "t0".into() });
+        let llm = |t: Option<&str>| TaskLink { task_ids: t.map(str::to_string).into_iter().collect(), source: LinkSource::Llm, reason: "LLM".into(), confidence: Some(0.8), at: "t0".into() };
         // LLM がタスクを選んだもの(機械は変えない)と、「どのタスクでもない」としたもの(機械の当たりが 1 つに決まれば置き換える・決まらなければ残す)
         links.links.insert("lt".into(), llm(Some("XY-9")));
         links.links.insert("ln".into(), llm(None));
         links.links.insert("ln2".into(), llm(None));
-        links.links.insert("old".into(), TaskLink { task_id: Some("ABC-123".into()), source: LinkSource::Machine, reason: "ID が題名にある".into(), confidence: None, at: "t0".into() });
-        let sessions = vec![sess("m", "ABC-12", ""), sess("lt", "ABC-12", ""), sess("ln", "ABC-12", ""), sess("ln2", "当たらない", ""), sess("old", "もう当たらない", ""), sess("new", "ABC-12", ""), sess("two", "ABC-12 XY-9", "")];
+        links.links.insert("old".into(), TaskLink { task_ids: vec!["ABC-123".into()], source: LinkSource::Machine, reason: "ID が題名にある".into(), confidence: None, at: "t0".into() });
+        let sessions = vec![
+            sess("m", "ABC-12", ""),
+            sess("lt", "ABC-12", ""),
+            sess("ln", "ABC-12", ""),
+            sess("ln2", "当たらない", ""),
+            sess("old", "もう当たらない", ""),
+            sess("new", "ABC-12", ""),
+            sess("both", "ABC-12 XY-9", ""),
+            sess("two", "ログイン画面の不具合 XY-9", ""),
+        ];
         let sum = apply_machine(&mut links, &sessions, &s, "t1");
-        assert_eq!(sum, MachineSummary { linked: 2, updated: 2, unmatched: 1, ambiguous: 1, kept: 3, removed: 1 });
-        assert_eq!(links.links["m"].task_id.as_deref(), Some("XY-9"));
-        assert_eq!(links.links["lt"].task_id.as_deref(), Some("XY-9"));
-        assert_eq!((links.links["ln"].task_id.as_deref(), links.links["ln"].source), (Some("ABC-12"), LinkSource::Machine));
-        assert_eq!((links.links["ln2"].task_id.as_deref(), links.links["ln2"].source), (None, LinkSource::Llm));
+        assert_eq!(sum, MachineSummary { linked: 3, updated: 3, unmatched: 1, ambiguous: 1, kept: 3, removed: 1 });
+        assert_eq!(links.links["both"].task_ids, ["ABC-12", "XY-9"]);
+        assert_eq!(links.links["both"].reason, "ID が題名にある");
+        assert_eq!(links.links["m"].task_ids.first().map(String::as_str), Some("XY-9"));
+        assert_eq!(links.links["lt"].task_ids.first().map(String::as_str), Some("XY-9"));
+        assert_eq!((links.links["ln"].task_ids.first().map(String::as_str), links.links["ln"].source), (Some("ABC-12"), LinkSource::Machine));
+        assert_eq!((links.links["ln2"].task_ids.first().map(String::as_str), links.links["ln2"].source), (None, LinkSource::Llm));
         assert!(!links.links.contains_key("old"));
         assert_eq!(links.links["new"].source, LinkSource::Machine);
         assert_eq!(links.links["new"].at, "t1");
@@ -564,7 +681,8 @@ mod tests {
         let un: Vec<&str> = unresolved(&links, &sessions).iter().map(|s| s.id.as_str()).collect();
         assert_eq!(un, ["old", "two"]);
         let lt = linked_tasks(&links);
-        assert_eq!(lt.get("m"), Some(&("XY-9", LinkSource::Manual)));
+        assert_eq!(lt.get("m"), Some(&(&["XY-9".to_string()][..], LinkSource::Manual)));
+        assert_eq!(lt["both"].0.len(), 2);
         assert!(!lt.contains_key("ln2"));
     }
 
@@ -581,7 +699,7 @@ mod tests {
         assert!(!llm_eligible(&links, &s2, "a", true, true, start));
         assert!(!llm_eligible(&links, &s2, "a", false, false, start));
         let mut l = LinksFile::default();
-        l.links.insert("a".into(), TaskLink { task_id: None, source: LinkSource::Llm, reason: String::new(), confidence: None, at: "t".into() });
+        l.links.insert("a".into(), TaskLink { task_ids: vec![], source: LinkSource::Llm, reason: String::new(), confidence: None, at: "t".into() });
         assert!(!llm_eligible(&l, &s2, "a", false, true, start));
         assert!(has_text("", " 依頼 ") && !has_text(" ", "\n"));
     }
@@ -612,13 +730,55 @@ mod tests {
         let p = d.path().join(crate::tasks::TASK_LINKS_FILE_NAME);
         assert!(load_links_for_write(&p).unwrap().links.is_empty());
         let mut f = LinksFile::default();
-        f.links.insert("s".into(), TaskLink { task_id: Some("A".into()), source: LinkSource::Llm, reason: "r".into(), confidence: Some(0.5), at: "t".into() });
+        f.links.insert("s".into(), TaskLink { task_ids: vec!["A".into()], source: LinkSource::Llm, reason: "r".into(), confidence: Some(0.5), at: "t".into() });
         save_links(&p, &f).unwrap();
         assert_eq!(load_links(&p).file, f);
         let text = std::fs::read_to_string(&p).unwrap();
         assert!(text.contains("\"source\": \"llm\""), "{text}");
+        assert!(text.contains("\"taskIds\": [\n        \"A\"\n      ]") && !text.contains("\"taskId\""), "{text}");
+        assert!(text.contains(&format!("\"version\": {LINKS_VERSION}")));
         std::fs::write(&p, "[]").unwrap();
         assert!(load_links_for_write(&p).unwrap_err().to_string().contains("書き換えません"));
         assert!(!load_links(&p).warnings.is_empty());
+        // 知らない版は読まない
+        std::fs::write(&p, serde_json::json!({ "version": 99, "links": {} }).to_string()).unwrap();
+        assert!(load_links_for_write(&p).is_err());
+    }
+
+    /// 前の版(taskId が 1 つか null)のファイルも読み、0 か 1 件の並びにする。書くのは今の版の形だけ。
+    /// 並びは整える(空白・空・重なりを除き、上限まで)
+    #[test]
+    fn reads_old_single_task_files_and_writes_the_new_form() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join(crate::tasks::TASK_LINKS_FILE_NAME);
+        let many: Vec<String> = (0..MAX_TASKS_PER_SESSION + 3).map(|i| format!("T-{i}")).collect();
+        std::fs::write(
+            &p,
+            serde_json::json!({ "version": 1, "links": {
+                "a": { "taskId": "T-1", "source": "machine", "reason": "ID が題名にある", "at": "t" },
+                "b": { "taskId": null, "source": "manual", "reason": "", "at": "t" },
+                "c": { "taskIds": [" T-2 ", "", "T-3", "T-2"], "source": "llm", "reason": "r", "confidence": 0.5, "at": "t" },
+                "d": { "taskIds": many, "source": "manual", "at": "t" }
+            } })
+            .to_string(),
+        )
+        .unwrap();
+        let f = load_links(&p);
+        assert!(f.warnings.is_empty(), "{:?}", f.warnings);
+        let l = &f.file.links;
+        assert_eq!(l["a"].task_ids, ["T-1"]);
+        assert!(l["b"].is_none() && l["b"].source == LinkSource::Manual);
+        assert_eq!(l["c"].task_ids, ["T-2", "T-3"]);
+        assert_eq!(l["d"].task_ids.len(), MAX_TASKS_PER_SESSION);
+        assert_eq!(f.file.version, LINKS_VERSION);
+        // 何かを直して書けば、今の版の形になる
+        update_links(&p, |x| {
+            x.links.shift_remove("d");
+        })
+        .unwrap();
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(!text.contains("\"taskId\"") && text.contains("\"taskIds\": []"), "{text}");
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&text).unwrap()["version"], LINKS_VERSION);
+        assert_eq!(tidy_ids(["a", " a", "b", ""]), ["a", "b"]);
     }
 }

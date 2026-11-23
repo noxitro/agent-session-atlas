@@ -3,6 +3,11 @@
 //!   完了に変わるのを見たタスク(doneObserved)だけ。完了を確認した時刻より後に始まったセッション(手動か LLM で紐づけたときだけありうる)は、開始に使わない
 //! - AI の実働(aiActiveMs): 紐づいたセッションの実働(activeMs)の合計
 //! - AI を使わなかった場合の工数(humanHours): 紐づいたセッションの推定人手工数(LLM の判定)の合計。確信度の低い推定(aggregate::LOW_CONFIDENCE 以下)は入れない
+//! - いくつかのタスクに紐づいたセッションの実働と推定人手工数は、数えるタスク(counted_tasks: 一覧にあり、完了を確認した後に
+//!   始めたのではないタスク)の数で等分する(k 個なら 1/k ずつ)。数えないタスクには 0。
+//!   合計がセッションの値を重ねて数えず、タスクの値を足すと、数えたセッションの値の合計になるように。
+//!   セッションの数(判定済み・確度が低い・判定なしを含む)は等分しない(そのタスクに紐づいたセッションを 1 つずつ数える)。
+//!   開始と稼働時間帯の工数は、タスクの始まりから完了までの長さなので等分しない
 //!
 //! 合計は「比べられるタスク」(完了に変わるのを見ていて、紐づいたセッションがすべて完了の前に始まり、確信度の低くない推定を持つ)だけで出す。
 //! 外したタスクは理由ごとに数える。
@@ -104,11 +109,13 @@ pub struct TaskRow {
     pub start: Option<String>,
     /// AI を使った場合の工数(稼働時間帯のミリ秒)。完了に変わるのを見ていなければ null
     pub work_ms: Option<f64>,
-    /// AI の実働(ミリ秒)
+    /// AI の実働(ミリ秒。いくつかのタスクに紐づいたセッションは、タスクの数で等分した分)
     pub ai_active_ms: f64,
-    /// AI を使わなかった場合の工数(推定人手工数の時間。確信度の低い推定は入れない)
+    /// AI を使わなかった場合の工数(推定人手工数の時間。確信度の低い推定は入れない。いくつかのタスクに紐づいたセッションは等分した分)
     pub human_hours: f64,
     pub sessions: usize,
+    /// このタスクに数えたセッションのうち、ほかのタスクにも数えたもの(共有のセッション。値を等分した。counted_tasks)
+    pub shared_sessions: usize,
     pub judged_sessions: usize,
     pub low_confidence_sessions: usize,
     pub unjudged_sessions: usize,
@@ -149,18 +156,59 @@ pub struct TaskSummary {
     pub ai_active_ms: f64,
     /// 紐づいたセッションの AI の実働の合計(比べられないタスクも入れる)
     pub ai_active_ms_all: f64,
+    /// いくつかのタスクに数えたセッションの数(値をタスクの数で等分したもの。重ねて数えない。counted_tasks)
+    pub shared_sessions: usize,
     /// AI を使わなかった場合 ÷ AI を使った場合(比べられるタスクが ratio_min に届いたときだけ)
     pub ratio: Option<f64>,
     pub ratio_min: usize,
 }
 
-/// タスクごとの工数と合計。links はセッション id → (タスク id, 出所)。返す行は tasks の順で、紐づいたセッションが無いタスクも入れる(数は 0)
+/// セッションの値をタスクに分ける割合(数えるタスクの数 k なら 1/k)
+pub fn share_of(k: usize) -> f64 {
+    if k == 0 { 0.0 } else { 1.0 / k as f64 }
+}
+
+/// 完了を確認した時刻より後に始まったセッションか(そのタスクの開始に使わず、工数にも数えない。始めた時刻か完了の時刻が分からなければ false)
+pub fn started_after_done(t: &TaskInfo, start_ms: Option<i64>) -> bool {
+    let done_ms = if t.done { t.done_at.as_deref().and_then(atlas_core::jsdate::parse_ms) } else { None };
+    matches!((start_ms, done_ms), (Some(s), Some(d)) if s > d)
+}
+
+/// セッションの実働と推定人手工数を数えるタスク(等分の相手。ここが 1 か所の決まり):
+/// 紐づいたタスクのうち、タスクの一覧(tasks)にあり、そのタスクの完了を確認した後に始まったのではないもの。並びは紐づけの順で、重なりは除く。
+/// 一覧に無いタスク(tasks.json に無い ID・送った人の記録で形の違ったもの)と、完了の後に始まったタスクには数えない。
+/// 数えるタスクが k 個なら、それぞれに 1/k ずつ(k が 0 ならどこにも数えない)
+pub fn counted_tasks<'a>(task_ids: impl IntoIterator<Item = &'a str>, tasks: &HashMap<&str, &TaskInfo>, start_ms: Option<i64>) -> Vec<&'a str> {
+    let mut out: Vec<&str> = Vec::new();
+    for id in task_ids {
+        if out.contains(&id) {
+            continue;
+        }
+        if tasks.get(id).is_some_and(|t| !started_after_done(t, start_ms)) {
+            out.push(id);
+        }
+    }
+    out
+}
+
+/// タスクごとの工数と合計。links は (セッション id, タスク id, 出所) の組(1 つのセッションがいくつかのタスクに紐づけば、その数だけ組がある)。
+/// 返す行は tasks の順で、紐づいたセッションが無いタスクも入れる(数は 0)。
+/// セッションの実働と推定人手工数は、counted_tasks のタスクに等分する(タスクの値を足すと、数えたセッションの値の合計になる)
 pub fn compute_task_metrics(tasks: &[TaskInfo], links: &[(String, String, LinkSource)], facts: &HashMap<String, SessionFacts>, wh: &WorkHours) -> (Vec<TaskRow>, TaskSummary) {
     let mut by_task: HashMap<&str, Vec<(&str, LinkSource)>> = HashMap::new();
+    // セッションごとの、紐づいたタスク(並びは組の順。同じ組が重なっていても 1 つ)
+    let mut per_session: indexmap::IndexMap<&str, Vec<&str>> = indexmap::IndexMap::new();
     for (sid, tid, src) in links {
-        by_task.entry(tid.as_str()).or_default().push((sid.as_str(), *src));
+        let ids = per_session.entry(sid.as_str()).or_default();
+        if !ids.contains(&tid.as_str()) {
+            ids.push(tid.as_str());
+            by_task.entry(tid.as_str()).or_default().push((sid.as_str(), *src));
+        }
     }
+    let by_id: HashMap<&str, &TaskInfo> = tasks.iter().map(|t| (t.id.as_str(), t)).collect();
     let empty = SessionFacts::default();
+    // セッションごとの、数えるタスク
+    let counted: HashMap<&str, Vec<&str>> = per_session.iter().map(|(sid, ids)| (*sid, counted_tasks(ids.iter().copied(), &by_id, facts.get(*sid).and_then(|f| f.start_ms)))).collect();
     let mut rows = Vec::with_capacity(tasks.len());
     let mut sum = TaskSummary { ratio_min: RATIO_MIN_TASKS, ..Default::default() };
     for t in tasks {
@@ -178,6 +226,7 @@ pub fn compute_task_metrics(tasks: &[TaskInfo], links: &[(String, String, LinkSo
             ai_active_ms: 0.0,
             human_hours: 0.0,
             sessions: linked.len(),
+            shared_sessions: 0,
             judged_sessions: 0,
             low_confidence_sessions: 0,
             unjudged_sessions: 0,
@@ -192,6 +241,14 @@ pub fn compute_task_metrics(tasks: &[TaskInfo], links: &[(String, String, LinkSo
         let mut start: Option<i64> = t.start_hint.as_deref().and_then(atlas_core::jsdate::parse_ms).filter(|s| before_done(*s));
         for (sid, src) in linked {
             let f = facts.get(*sid).unwrap_or(&empty);
+            let mine = counted.get(sid).map(Vec::as_slice).unwrap_or(&[]);
+            let k = mine.len();
+            let counts_here = mine.contains(&t.id.as_str());
+            // 等分は k で割る(1/k を掛けるより丸めの誤差が出にくい)。このタスクに数えないセッションは 0
+            let split = |x: f64| if counts_here { x / k as f64 } else { 0.0 };
+            if counts_here && k > 1 {
+                row.shared_sessions += 1;
+            }
             row.links.add(*src);
             if let Some(s) = f.start_ms {
                 if before_done(s) {
@@ -200,7 +257,7 @@ pub fn compute_task_metrics(tasks: &[TaskInfo], links: &[(String, String, LinkSo
                     row.after_done_sessions += 1;
                 }
             }
-            row.ai_active_ms += f.active_ms.unwrap_or(0.0);
+            row.ai_active_ms += split(f.active_ms.unwrap_or(0.0));
             match f.human {
                 None => row.unjudged_sessions += 1,
                 Some((_, conf)) if is_low_confidence(conf) => {
@@ -209,7 +266,7 @@ pub fn compute_task_metrics(tasks: &[TaskInfo], links: &[(String, String, LinkSo
                 }
                 Some((h, _)) => {
                     row.judged_sessions += 1;
-                    row.human_hours += h;
+                    row.human_hours += split(h);
                 }
             }
         }
@@ -256,6 +313,7 @@ pub fn compute_task_metrics(tasks: &[TaskInfo], links: &[(String, String, LinkSo
         }
         rows.push(row);
     }
+    sum.shared_sessions = counted.values().filter(|c| c.len() > 1).count();
     if sum.included >= RATIO_MIN_TASKS && sum.work_ms > 0.0 {
         sum.ratio = Some(sum.human_hours / (sum.work_ms / 3_600_000.0));
     }
@@ -357,6 +415,92 @@ mod tests {
             // 比べられるタスクが下限に届かないので比は出さない
             assert_eq!(sum.ratio, None);
             assert_eq!(sum.ratio_min, RATIO_MIN_TASKS);
+        });
+    }
+
+    /// いくつかのタスクに紐づいたセッションの実働と推定人手工数は、タスクの数で等分する(足すと全体の値になる)。
+    /// セッションの数・判定の数は等分しない。開始と稼働時間帯の工数はタスクの長さなので等分しない
+    #[test]
+    fn shared_sessions_are_split_equally() {
+        with_zone(&TimeZone::fixed(Offset::constant(9)), || {
+            let tasks = vec![info("A", Some("2026-11-24T12:00:00+09:00")), info("B", Some("2026-11-24T12:00:00+09:00")), info("C", None)];
+            let mut f = HashMap::new();
+            // s1 は A と B の両方、s2 は A だけ、s3 は A・B・C の 3 つ(確信度の低い推定)
+            f.insert("s1".to_string(), facts("2026-11-23T10:00:00+09:00", 2.0, Some((6.0, Some(0.9)))));
+            f.insert("s2".to_string(), facts("2026-11-23T14:00:00+09:00", 1.0, Some((4.0, Some(0.9)))));
+            f.insert("s3".to_string(), facts("2026-11-23T15:00:00+09:00", 3.0, Some((9.0, Some(0.2)))));
+            let links = vec![
+                link("s1", "A", LinkSource::Machine),
+                link("s1", "B", LinkSource::Machine),
+                link("s2", "A", LinkSource::Manual),
+                link("s3", "A", LinkSource::Llm),
+                link("s3", "B", LinkSource::Llm),
+                link("s3", "C", LinkSource::Llm),
+                // 同じ組が重なっても 1 つに数える
+                link("s2", "A", LinkSource::Manual),
+            ];
+            let (rows, sum) = compute_task_metrics(&tasks, &links, &f, &WorkHours::default());
+            let (a, b, c) = (&rows[0], &rows[1], &rows[2]);
+            // A: s1 の半分 + s2 の全部 + s3 の 3 分の 1
+            assert_eq!(a.ai_active_ms, (1.0 + 1.0 + 1.0) * 3_600_000.0);
+            assert_eq!(a.human_hours, 3.0 + 4.0);
+            assert_eq!((a.sessions, a.shared_sessions, a.judged_sessions, a.low_confidence_sessions), (3, 2, 3, 1));
+            assert_eq!(a.links, SourceCounts { machine: 1, llm: 1, manual: 1 });
+            assert_eq!(b.ai_active_ms, (1.0 + 1.0) * 3_600_000.0);
+            assert_eq!(b.human_hours, 3.0);
+            assert_eq!((b.sessions, b.shared_sessions), (2, 2));
+            assert_eq!(c.ai_active_ms, 3_600_000.0);
+            assert_eq!((c.sessions, c.shared_sessions), (1, 1));
+            // 開始と稼働時間帯の工数は等分しない(A も B も 11/23 10:00 から)
+            assert_eq!((a.start.clone(), a.work_ms), (b.start.clone(), b.work_ms));
+            assert_eq!(a.work_ms, Some(11.0 * 3_600_000.0));
+            // 足すと全体の値(各セッションの実働の合計 6 時間)
+            assert_eq!(sum.ai_active_ms_all, 6.0 * 3_600_000.0);
+            assert_eq!(rows.iter().map(|r| r.ai_active_ms).sum::<f64>(), 6.0 * 3_600_000.0);
+            assert_eq!(sum.shared_sessions, 2);
+            // 2 つに分けたセッション 1 件だけなら、それぞれ半分
+            let (rows, sum) = compute_task_metrics(&tasks[..2], &links[..2], &f, &WorkHours::default());
+            assert_eq!((rows[0].ai_active_ms, rows[1].ai_active_ms), (3_600_000.0, 3_600_000.0));
+            assert_eq!((rows[0].human_hours, rows[1].human_hours), (3.0, 3.0));
+            assert!(rows[0].comparable && rows[1].comparable);
+            assert_eq!((sum.included, sum.human_hours, sum.ai_active_ms), (2, 6.0, 2.0 * 3_600_000.0));
+            assert_eq!(share_of(4), 0.25);
+            assert_eq!(share_of(0), 0.0);
+        });
+    }
+
+    /// 一覧に無いタスクには数えない(知っているタスクが全部を受け取る)。
+    /// 完了を確認した後に始まったセッションは、そのタスクに数えず、ほかのタスクが全部を受け取る。どこにも数えなければ 0。
+    /// タスクの値の合計は、数えたセッションの値の合計
+    #[test]
+    fn unknown_and_after_done_tasks_do_not_take_a_share() {
+        with_zone(&TimeZone::fixed(Offset::constant(9)), || {
+            let tasks = vec![info("A", Some("2026-11-24T12:00:00+09:00")), info("B", None)];
+            let by_id: HashMap<&str, &TaskInfo> = tasks.iter().map(|t| (t.id.as_str(), t)).collect();
+            let mut f = HashMap::new();
+            // s1: A と一覧に無い NOPE。s2: A の完了の後に始まった(A と B)。s3: A の完了の後に始まった(A だけ)
+            f.insert("s1".to_string(), facts("2026-11-23T10:00:00+09:00", 2.0, Some((6.0, Some(0.9)))));
+            f.insert("s2".to_string(), facts("2026-11-25T10:00:00+09:00", 4.0, Some((8.0, Some(0.9)))));
+            f.insert("s3".to_string(), facts("2026-11-25T10:00:00+09:00", 1.0, Some((1.0, Some(0.9)))));
+            let links = vec![link("s1", "A", LinkSource::Manual), link("s1", "NOPE", LinkSource::Manual), link("s2", "A", LinkSource::Manual), link("s2", "B", LinkSource::Manual), link("s3", "A", LinkSource::Llm)];
+            assert_eq!(counted_tasks(["A", "NOPE", "A"], &by_id, parse_ms("2026-11-23T10:00:00+09:00")), ["A"]);
+            assert_eq!(counted_tasks(["A", "B"], &by_id, parse_ms("2026-11-25T10:00:00+09:00")), ["B"]);
+            // 始めた時刻が分からなければ数える
+            assert_eq!(counted_tasks(["A", "B"], &by_id, None), ["A", "B"]);
+            let (rows, sum) = compute_task_metrics(&tasks, &links, &f, &WorkHours::default());
+            let (a, b) = (&rows[0], &rows[1]);
+            // A は s1 の全部(NOPE は数えない)。s2・s3 は完了の後なので 0(セッションと完了の後のセッションには数える)
+            assert_eq!((a.ai_active_ms, a.human_hours), (2.0 * 3_600_000.0, 6.0));
+            assert_eq!((a.sessions, a.after_done_sessions, a.shared_sessions), (3, 2, 0));
+            // B は s2 の全部
+            assert_eq!((b.ai_active_ms, b.human_hours, b.sessions, b.shared_sessions), (4.0 * 3_600_000.0, 8.0, 1, 0));
+            assert_eq!(sum.shared_sessions, 0);
+            // 合計は、数えたセッション(s1 と s2)の値。どこにも数えない s3 は入らない
+            assert_eq!(sum.ai_active_ms_all, 6.0 * 3_600_000.0);
+            assert_eq!(rows.iter().map(|r| r.human_hours).sum::<f64>(), 14.0);
+            assert!(!started_after_done(&tasks[1], parse_ms("2030-01-01T00:00:00Z")));
+            assert!(started_after_done(&tasks[0], parse_ms("2026-11-24T12:00:01+09:00")));
+            assert!(!started_after_done(&tasks[0], parse_ms("2026-11-24T12:00:00+09:00")));
         });
     }
 

@@ -231,8 +231,34 @@ pub fn run_metrics(p: &Paths, f: &SessionFilter, config: Option<&str>, log: Log<
     Ok(m)
 }
 
-/// sessions.csv(と SQLite の sessions)に足す、タスクの列(推定人手工数の列の後ろ)
-pub const TASK_SESSION_COLUMNS: [&str; 3] = ["taskId", "taskName", "紐づけの出所"];
+/// sessions.csv(と SQLite の sessions)に足す、タスクの列(推定人手工数の列の後ろ)。
+/// いくつかのタスクに紐づいたセッションは、taskId と taskName を TASK_JOIN でつなぐ(紐づけの順)。紐づけの出所はセッションごとに 1 つ。
+/// タスクの数は紐づいたタスクの数(「どのタスクでもない」は 0、紐づけが無ければ空)。工数を等分する相手の数ではない
+/// (一覧に無いタスクと、完了を確認した後に始めたセッションのタスクには数えないので、等分の割合は session-tasks.csv の按分で見る)
+pub const TASK_SESSION_COLUMNS: [&str; 4] = ["taskId", "taskName", "紐づけの出所", "タスクの数"];
+/// sessions.csv で、いくつかのタスクをつなぐ文字(1 件ずつ見るときは session-tasks.csv)
+pub const TASK_JOIN: &str = "; ";
+
+/// out/tables/session-tasks.csv(と SQLite の session_tasks)。セッション × 紐づいたタスクの 1 行ずつ。
+/// 按分は、そのタスクに数えたセッションの値の割合(工数を数えるタスク(counted_task_ids)の数で等分。1 つなら 1)。
+/// 一覧に無いタスクと、完了を確認した後に始めたセッションのタスクは 0(行は出す)
+pub fn session_tasks_table(v: &atlas_report::tasks::view::TasksView) -> atlas_core::tables::Table {
+    let header: Vec<String> = ["セッションID", "taskId", "taskName", "紐づけの出所", "按分"].iter().map(|s| s.to_string()).collect();
+    let names: std::collections::HashMap<&str, &str> = v.items.iter().map(|t| (t.id.as_str(), t.name.as_str())).collect();
+    let rows = v
+        .links
+        .iter()
+        .flat_map(|(sid, l)| {
+            let share = atlas_report::tasks::metrics::share_of(l.counted_task_ids.len());
+            let names = &names;
+            l.task_ids.iter().map(move |t| {
+                let mine = if l.counted_task_ids.contains(t) { share } else { 0.0 };
+                vec![sid.as_str().into(), t.as_str().into(), names.get(t.as_str()).copied().filter(|n| !n.is_empty()).map_or(Cell::Null, Cell::from), Cell::from(l.source.label()), Cell::Num(mine)]
+            })
+        })
+        .collect();
+    atlas_core::tables::Table { header, rows }
+}
 
 /// out/tables/tasks.csv(と SQLite の tasks)。タスクごとの工数
 pub fn tasks_table(v: &atlas_report::tasks::view::TasksView) -> atlas_core::tables::Table {
@@ -248,6 +274,7 @@ pub fn tasks_table(v: &atlas_report::tasks::view::TasksView) -> atlas_core::tabl
         "AI の実働(時間)",
         "推定人手工数(時間)",
         "セッション数",
+        "共有のセッション",
         "判定済み",
         "確度が低い",
         "判定なし",
@@ -277,6 +304,7 @@ pub fn tasks_table(v: &atlas_report::tasks::view::TasksView) -> atlas_core::tabl
                 hours(t.ai_active_ms),
                 Cell::Num(atlas_core::js::round(t.human_hours * 100.0) / 100.0),
                 t.sessions.into(),
+                t.shared_sessions.into(),
                 t.judged_sessions.into(),
                 t.low_confidence_sessions.into(),
                 t.unjudged_sessions.into(),
@@ -342,25 +370,36 @@ pub fn write_tables(p: &Paths, sessions: &[&SessionRecord], tasks: Option<&atlas
                 _ => None,
             };
             let cells = match link {
-                Some(l) => vec![
-                    l.task_id.as_deref().map_or(Cell::Null, Cell::from),
-                    l.task_id.as_deref().and_then(|t| names.get(t).copied()).map_or(Cell::Null, Cell::from),
-                    Cell::from(l.source.label()),
-                ],
-                None => vec![Cell::Null, Cell::Null, Cell::Null],
+                Some(l) => {
+                    // つないだ値が空(タスクが無い・名前がどれも分からない)なら NULL
+                    let joined = |v: Vec<&str>| if v.iter().all(|x| x.is_empty()) { Cell::Null } else { Cell::from(v.join(TASK_JOIN).as_str()) };
+                    vec![
+                        joined(l.task_ids.iter().map(String::as_str).collect()),
+                        joined(l.task_ids.iter().map(|t| names.get(t.as_str()).copied().unwrap_or("")).collect()),
+                        Cell::from(l.source.label()),
+                        l.task_ids.len().into(),
+                    ]
+                }
+                None => vec![Cell::Null, Cell::Null, Cell::Null, Cell::Null],
             };
             row.splice(at..at, cells);
         }
         t.sessions = to_csv(&sess.header, &sess.rows);
     }
-    // タスクごとの表。タスクの設定も記録も無ければ書かず、前のものも残さない
+    // タスクごとの表と、セッション × タスクの表。タスクの設定も記録も無ければ書かず、前のものも残さない
     match tasks {
         Some(v) => {
             let tt = tasks_table(v);
             std::fs::write(dir.join("tasks.csv"), to_csv(&tt.header, &tt.rows))?;
             t.data.push(("tasks".to_string(), tt));
+            let st = session_tasks_table(v);
+            std::fs::write(dir.join("session-tasks.csv"), to_csv(&st.header, &st.rows))?;
+            t.data.push(("session_tasks".to_string(), st));
         }
-        None => atlas_core::jsfs::rm_force(&dir.join("tasks.csv"))?,
+        None => {
+            atlas_core::jsfs::rm_force(&dir.join("tasks.csv"))?;
+            atlas_core::jsfs::rm_force(&dir.join("session-tasks.csv"))?;
+        }
     }
     // テストの列を足してから書く
     std::fs::write(dir.join("sessions.csv"), &t.sessions)?;
@@ -395,7 +434,7 @@ pub fn write_tables(p: &Paths, sessions: &[&SessionRecord], tasks: Option<&atlas
     log(&format!(
         "{cmd}: 表 → {}・sessions.csv{}{}{}{}{sqlite}{}{}{}{}",
         dir.join("turns.csv").display(),
-        if tasks.is_some() { "・tasks.csv" } else { "" },
+        if tasks.is_some() { "・tasks.csv・session-tasks.csv" } else { "" },
         if t.vcs_hunks.is_some() { "・vcs-hunks.csv" } else { "" },
         if with_failures { "・failures.csv" } else { "" },
         if with_tests { "・test-runs.csv・test-results.csv・test-counts.csv" } else { "" },

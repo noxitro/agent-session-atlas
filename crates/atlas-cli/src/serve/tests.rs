@@ -1476,9 +1476,10 @@ fn tasks_api_and_manual_links() {
     };
     // token が無ければ書かない
     assert_eq!(put("s2", json!({ "taskId": "XY-9" }), false).0, 403);
+    // 前の形(taskId が 1 つ)でも送れる
     let (st, v) = put("s2", json!({ "taskId": "XY-9" }), true);
     assert_eq!(st, 200, "{v}");
-    assert_eq!(v["tasks"]["links"]["s2"], json!({ "taskId": "XY-9", "source": "manual", "reason": "" }));
+    assert_eq!(v["tasks"]["links"]["s2"], json!({ "taskIds": ["XY-9"], "countedTaskIds": ["XY-9"], "source": "manual", "reason": "" }));
     assert_eq!(v["unresolved"], 1);
     let saved = js::parse_json(&fs::read_to_string(e.notes.join("task-links.json")).unwrap()).unwrap();
     assert_eq!(saved["links"]["s2"]["source"], "manual");
@@ -1489,15 +1490,52 @@ fn tasks_api_and_manual_links() {
     fs::write(e.out.join("judgments.json"), json!({ "schemaVersion": 1, "items": [{ "sessionId": "s2", "humanEffort": { "hours": 3 } }] }).to_string()).unwrap();
     let xy = e.get("/api/tasks").1["tasks"]["items"].as_array().unwrap().iter().find(|t| t["id"] == "XY-9").unwrap().clone();
     assert_eq!((xy["humanHours"].clone(), xy["judgedSessions"].clone()), (json!(3), json!(1)));
-    // 「どのタスクでもない」
+    // いくつかのタスク(送った順。重なりは除く)。実働と推定人手工数はタスクの数で等分する
+    let (st, v) = put("s2", json!({ "taskIds": ["XY-9", "ABC-12", "XY-9"] }), true);
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["tasks"]["links"]["s2"]["taskIds"], json!(["XY-9", "ABC-12"]));
+    let item = |v: &Value, id: &str| v["tasks"]["items"].as_array().unwrap().iter().find(|t| t["id"] == id).unwrap().clone();
+    assert_eq!((item(&v, "XY-9")["aiActiveMs"].clone(), item(&v, "XY-9")["humanHours"].clone(), item(&v, "XY-9")["sharedSessions"].clone()), (json!(300_000), json!(1.5), json!(1)));
+    assert_eq!((item(&v, "ABC-12")["aiActiveMs"].clone(), item(&v, "ABC-12")["sessions"].clone()), (json!(300_000), json!(1)));
+    assert_eq!(v["tasks"]["summary"]["sharedSessions"], 1);
+    let saved = js::parse_json(&fs::read_to_string(e.notes.join("task-links.json")).unwrap()).unwrap();
+    assert_eq!(saved["version"], 2);
+    assert_eq!(saved["links"]["s2"]["taskIds"], json!(["XY-9", "ABC-12"]));
+    assert!(saved["links"]["s2"].get("taskId").is_none());
+    // 上限を超えた並び・知らないタスク・文字列でない ID は断る
+    // 重なりを除いてから上限を確かめる(同じ ID を上限より多く送っても 1 つ)
+    let same: Vec<String> = (0..=atlas_report::tasks::links::MAX_TASKS_PER_SESSION).map(|_| "XY-9".to_string()).collect();
+    let (st, v) = put("s2", json!({ "taskIds": same }), true);
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(v["tasks"]["links"]["s2"]["taskIds"], json!(["XY-9"]));
+    let many: Vec<String> = (0..=atlas_report::tasks::links::MAX_TASKS_PER_SESSION).map(|i| format!("T-{i}")).collect();
+    let (st, v) = put("s2", json!({ "taskIds": many }), true);
+    assert_eq!(st, 400);
+    assert!(v["error"].as_str().unwrap().contains("個まで"), "{v}");
+    // 一覧に無いタスクは、無いものを全部書いて断る
+    let (st, v) = put("s2", json!({ "taskIds": ["XY-9", "NOPE", "GONE"] }), true);
+    assert_eq!(st, 400);
+    assert!(v["error"].as_str().unwrap().contains("「NOPE」「GONE」"), "{v}");
+    put("s2", json!({ "taskIds": ["XY-9", "ABC-12"] }), true);
+    assert_eq!(put("s2", json!({ "taskIds": ["XY-9", 1] }), true).0, 400);
+    assert_eq!(put("s2", json!({ "taskIds": [""] }), true).0, 400);
+    assert_eq!(put("s2", json!({ "taskIds": "XY-9" }), true).0, 400);
+    assert_eq!(put("s2", json!({ "taskIds": ["XY-9"], "taskId": "XY-9" }), true).0, 400);
+    assert_eq!(put("s2", json!({ "taskIds": ["XY-9"], "auto": true }), true).0, 400);
+    // 断ったものは書いていない
+    assert_eq!(e.get("/api/tasks").1["tasks"]["links"]["s2"]["taskIds"], json!(["XY-9", "ABC-12"]));
+    // 「どのタスクでもない」(空の並び。前の形の null も同じ)
+    let (_, v) = put("s2", json!({ "taskIds": [] }), true);
+    assert_eq!(v["tasks"]["links"]["s2"]["taskIds"], json!([]));
+    assert_eq!(v["tasks"]["links"]["s2"]["source"], "manual");
     let (_, v) = put("s2", json!({ "taskId": null }), true);
-    assert_eq!(v["tasks"]["links"]["s2"]["taskId"], Value::Null);
+    assert_eq!(v["tasks"]["links"]["s2"]["taskIds"], json!([]));
     // 自動に戻すと、機械の紐づけをすぐ決め直す(s1 は題名に ID がある)
     let (_, v) = put("s1", json!({ "taskId": "XY-9" }), true);
     assert_eq!(v["tasks"]["links"]["s1"]["source"], "manual");
     let (st, v) = put("s1", json!({ "auto": true }), true);
     assert_eq!(st, 200);
-    assert_eq!(v["tasks"]["links"]["s1"], json!({ "taskId": "ABC-12", "source": "machine", "reason": "ID が題名にある" }));
+    assert_eq!(v["tasks"]["links"]["s1"], json!({ "taskIds": ["ABC-12"], "countedTaskIds": ["ABC-12"], "source": "machine", "reason": "ID が題名にある" }));
     let (_, v) = put("s2", json!({ "auto": true }), true);
     assert!(v["tasks"]["links"].get("s2").is_none());
     // LLM の紐づけも自動に戻せる(機械の紐づけを決め直す)
@@ -1563,7 +1601,9 @@ fn tasks_api_without_config_and_read_only() {
     // 送り先から集計した出力先: 送った人がセッションごとに添えた記録から作り、紐づけは書き換えない
     let meta = e.out.join("snapshot").join("session-state").join("s1");
     fs::create_dir_all(&meta).unwrap();
-    fs::write(meta.join("atlas-session.json"), json!({ "version": 1, "id": "s1", "task": { "id": "T-1", "name": "送った人のタスク", "status": "Done", "done": true, "doneAt": "2026-11-20T03:00:00Z", "source": "llm", "reason": "r" } }).to_string()).unwrap();
+    // 今の版の記録(tasks の並び)。前の版の task(1 つ)は sender.rs のテストで読む
+    let t = |id: &str, name: &str| json!({ "id": id, "name": name, "status": "Done", "done": true, "doneAt": "2026-11-20T03:00:00Z", "source": "llm", "reason": "r" });
+    fs::write(meta.join("atlas-session.json"), json!({ "version": 1, "id": "s1", "tasks": [t("T-1", "送った人のタスク"), t("T-2", "もう一つ")] }).to_string()).unwrap();
     sleep(20);
     fs::write(e.out.join("sessions.json"), json!({ "source": { "root": "x", "since": null, "layout": "merged" }, "sessions": [{ "id": "s1", "turns": 0, "createdAt": "2026-11-19T01:00:00Z" }] }).to_string()).unwrap();
     let v = e.get("/api/tasks").1;
@@ -1571,7 +1611,10 @@ fn tasks_api_without_config_and_read_only() {
     assert_eq!(v["tasks"]["origin"], "sender");
     assert_eq!(v["tasks"]["items"][0]["name"], "送った人のタスク");
     assert_eq!(v["tasks"]["links"]["s1"]["source"], "llm");
+    assert_eq!(v["tasks"]["links"]["s1"]["taskIds"], json!(["T-1", "T-2"]));
+    assert_eq!(v["tasks"]["items"][1]["sharedSessions"], 1);
     assert_eq!(e.json("PUT", "/api/tasks/links/s1", Some(json!({ "taskId": null }))).0, 403);
+    assert_eq!(e.json("PUT", "/api/tasks/links/s1", Some(json!({ "taskIds": [] }))).0, 403);
     assert!(!e.notes.join("task-links.json").exists());
 }
 

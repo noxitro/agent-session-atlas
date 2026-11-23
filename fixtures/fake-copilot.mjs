@@ -65,13 +65,19 @@ if (turnList) {
     );
   answer = { items };
 }
-// 管理ツールのタスクへの紐づけ(atlas tasks link --llm)のプロンプトなら、候補の先頭のタスクを選ぶ。
-// 環境変数 FAKE_COPILOT_TASK_NONE があれば「どのタスクでもない」と答える
+// 管理ツールのタスクへの紐づけ(atlas tasks link --llm)のプロンプトなら、セッションの文(題名・依頼)に出てくる候補の ID をすべて選ぶ
+// (いくつかのタスクを選ぶ答えを返せるように)。出てこなければ候補の先頭を選ぶ。
+// 環境変数 FAKE_COPILOT_TASK_NONE があれば「どのタスクでもない」(空の並び)と答える
 if (prompt.includes('<!-- atlas-task-link -->')) {
-  const first = /^- id: (.+?) \| 名前: /m.exec(prompt);
-  answer = process.env.FAKE_COPILOT_TASK_NONE || !first
-    ? { taskId: null, confidence: 0.6, reason: '偽 copilot(テスト用): 当たる候補なし' }
-    : { taskId: first[1], confidence: 0.7, reason: '偽 copilot(テスト用): 候補の先頭' };
+  const ids = [...prompt.matchAll(/^- id: (.+?) \| 名前: /gm)].map((m) => m[1]);
+  const at = prompt.indexOf('## セッション');
+  const session = at >= 0 ? prompt.slice(at, prompt.indexOf('## 候補のタスク', at)) : '';
+  const named = ids.filter((id) => session.includes(id));
+  answer = process.env.FAKE_COPILOT_TASK_NONE || !ids.length
+    ? { taskIds: [], confidence: 0.6, reason: '偽 copilot(テスト用): 当たる候補なし' }
+    : named.length
+      ? { taskIds: named, confidence: 0.7, reason: '偽 copilot(テスト用): セッションの文にある候補' }
+      : { taskIds: [ids[0]], confidence: 0.7, reason: '偽 copilot(テスト用): 候補の先頭' };
 }
 const events = [
   { type: 'session.start', data: { sessionId: 'fake', copilotVersion: '0.0.0-fake' } },

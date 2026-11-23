@@ -14,7 +14,7 @@ use atlas_judge::task_link::{link_with_llm, LinkQuery};
 use atlas_report::judgments::JudgmentsIndex;
 use atlas_report::tasks::links::{apply_machine, has_text, llm_candidates, llm_eligible, load_links, update_links, LinkSource, LinksFile, MachineMatch, MachineSummary, Matcher, SessionText, TaskLink};
 use atlas_report::tasks::metrics::SessionFacts;
-use atlas_report::tasks::sender::{read_sender_task, SenderTask};
+use atlas_report::tasks::sender::{read_sender_tasks, SenderTask};
 use atlas_report::tasks::state::{load_tasks, sync_tasks, TasksFile};
 use atlas_report::tasks::view::{local_view, sender_view, session_facts, LocalInputs, TasksView};
 use atlas_report::tasks::{task_links_path, tasks_path, TaskSource, WorkHours};
@@ -149,9 +149,9 @@ pub fn refresh_for_aggregation(p: &Paths, config: Option<&str>, cmd: &str, log: 
 }
 
 /// 送り先のセッションのフォルダ(スナップショットに写したもの)から、送った人のタスクの記録を読む
-pub fn sender_tasks_of(p: &Paths, sessions: &[SessionRecord]) -> Vec<(String, SenderTask)> {
+pub fn sender_tasks_of(p: &Paths, sessions: &[SessionRecord]) -> Vec<(String, Vec<SenderTask>)> {
     let dir = p.snapshot.join("session-state");
-    sessions.iter().filter_map(|s| read_sender_task(&dir.join(&s.id).join(atlas_core::snapshot::UPLOAD_SESSION_META), &s.id).map(|t| (s.id.clone(), t))).collect()
+    sessions.iter().map(|s| (s.id.clone(), read_sender_tasks(&dir.join(&s.id).join(atlas_core::snapshot::UPLOAD_SESSION_META), &s.id))).filter(|(_, ts)| !ts.is_empty()).collect()
 }
 
 /// セッション id → (推定人手工数, 確信度)。レポート(build)と GET /api/tasks と表が同じ読み方をする(judgments::parse_judgments。
@@ -188,7 +188,8 @@ pub struct ViewInputs<'a> {
 pub fn tasks_view(i: ViewInputs<'_>) -> Option<TasksView> {
     let mut v = if i.read_only {
         let dir = i.snapshot.join("session-state");
-        let per: Vec<(String, SenderTask)> = i.all.iter().filter_map(|id| read_sender_task(&dir.join(id).join(atlas_core::snapshot::UPLOAD_SESSION_META), id).map(|t| (id.to_string(), t))).collect();
+        let per: Vec<(String, Vec<SenderTask>)> =
+            i.all.iter().map(|id| (id.to_string(), read_sender_tasks(&dir.join(id).join(atlas_core::snapshot::UPLOAD_SESSION_META), id))).filter(|(_, ts)| !ts.is_empty()).collect();
         sender_view(&per, i.shown, i.facts, &i.cfg.work_hours(), i.cfg.source.is_some())
     } else {
         let owned;
@@ -219,14 +220,15 @@ pub fn build_view(p: &Paths, cfg: &TaskConfig, read_only: bool, all: &[SessionRe
 pub fn sessions_of_task(p: &Paths, file: &SessionsFile, task: &str) -> Result<HashSet<String>> {
     if is_read_only(p, file) {
         let per = sender_tasks_of(p, &file.sessions);
-        if !per.iter().any(|(_, t)| t.id == task) {
+        let has = |ts: &[SenderTask]| ts.iter().any(|t| t.id == task);
+        if !per.iter().any(|(_, ts)| has(ts)) {
             bail!("タスク「{task}」に紐づいたセッションは、送った人の記録にありません");
         }
-        return Ok(per.into_iter().filter(|(_, t)| t.id == task).map(|(s, _)| s).collect());
+        return Ok(per.into_iter().filter(|(_, ts)| has(ts)).map(|(s, _)| s).collect());
     }
     let state = load_tasks(&tasks_path(&p.notes)).file;
     let links = load_links(&task_links_path(&p.notes)).file;
-    let ids: HashSet<String> = links.links.iter().filter(|(_, l)| l.task_id.as_deref() == Some(task)).map(|(s, _)| s.clone()).collect();
+    let ids: HashSet<String> = links.links.iter().filter(|(_, l)| l.task_ids.iter().any(|t| t == task)).map(|(s, _)| s.clone()).collect();
     if ids.is_empty() && !state.tasks.contains_key(task) {
         bail!("タスク「{task}」は {} にありません(atlas tasks list で ID を確かめられます)", tasks_path(&p.notes).display());
     }
@@ -278,9 +280,10 @@ pub fn run_tasks(o: &CliOptions, p: &Paths, t: &TasksCliOptions, log: Log<'_>) -
             }
             let links = load_links(&task_links_path(&p.notes)).file;
             let mut count: HashMap<&str, usize> = HashMap::new();
+            // いくつかのタスクに紐づいたセッションは、それぞれのタスクに 1 つずつ数える
             for l in links.links.values() {
-                if let Some(t) = l.task_id.as_deref() {
-                    *count.entry(t).or_default() += 1;
+                for t in &l.task_ids {
+                    *count.entry(t.as_str()).or_default() += 1;
                 }
             }
             if st.file.tasks.is_empty() {
@@ -383,12 +386,12 @@ fn run_link(o: &CliOptions, p: &Paths, t: &TasksCliOptions, log: Log<'_>) -> Res
                     i + 1,
                     targets.len(),
                     s.id,
-                    a.task_id.as_deref().unwrap_or("どのタスクでもない"),
+                    if a.task_ids.is_empty() { "どのタスクでもない".to_string() } else { a.task_ids.join(", ") },
                     atlas_core::js::num_to_string(a.confidence)
                 ));
                 // 1 件ずつ、ロックの中で読み直してこのセッションの分だけを書く(途中で止めても決まった分は残す。
                 // 聞いている間に画面で手動で紐づけたものは変えない)
-                let link = TaskLink { task_id: a.task_id, source: LinkSource::Llm, reason: a.reason, confidence: Some(a.confidence), at: atlas_core::jsdate::now_iso() };
+                let link = TaskLink { task_ids: a.task_ids, source: LinkSource::Llm, reason: a.reason, confidence: Some(a.confidence), at: atlas_core::jsdate::now_iso() };
                 if write_llm_link(&links_path, &s.id, link)? {
                     changed = true;
                 } else {
@@ -410,7 +413,7 @@ fn run_link(o: &CliOptions, p: &Paths, t: &TasksCliOptions, log: Log<'_>) -> Res
     Ok(changed)
 }
 
-/// LLM に聞く中身。機械の紐づけで 2 つ以上に当たったタスクを候補の先頭に置く(上限で切られないように)。候補が無ければ None(聞かない)
+/// LLM に聞く中身。機械の紐づけで決めなかったときに当たったタスクを候補の先頭に置く(上限で切られないように)。候補が無ければ None(聞かない)
 pub fn llm_query(state: &TasksFile, matcher: &Matcher<'_>, s: &SessionText) -> Option<LinkQuery> {
     let first: Vec<String> = match matcher.match_session(s) {
         MachineMatch::Many(ids) => ids,
@@ -449,9 +452,9 @@ pub fn run_tasks_command(o: &CliOptions, p: &Paths, log: Log<'_>) -> Result<supe
 
 /// 送るときの、セッション id → タスクの記録(notes にある tasks.json と task-links.json から。無ければ空)。
 /// starts はセッション id → 開始(紐づけがあるときだけ呼ぶ)
-pub fn sender_records(notes: &Path, starts: &dyn Fn() -> HashMap<String, String>) -> HashMap<String, SenderTask> {
+pub fn sender_records(notes: &Path, starts: &dyn Fn() -> HashMap<String, String>) -> HashMap<String, Vec<SenderTask>> {
     let links = load_links(&task_links_path(notes)).file;
-    if !links.links.values().any(|l| l.task_id.is_some()) {
+    if !links.links.values().any(|l| !l.is_none()) {
         return HashMap::new();
     }
     let state = load_tasks(&tasks_path(notes)).file;
@@ -497,18 +500,20 @@ mod tests {
         let r = refresh_tasks(&p, &cfg, &sessions, "build", &log);
         assert!(r.warnings.is_empty(), "{:?}", r.warnings);
         assert_eq!(r.state.tasks.len(), 6);
-        assert_eq!(r.links.links["s1"].task_id.as_deref(), Some("DEMO-101"));
+        assert_eq!(r.links.links["s1"].task_ids.first().map(String::as_str), Some("DEMO-101"));
         assert!(!r.links.links.contains_key("s2"));
         assert!(logs.lock().unwrap().iter().any(|l| l.starts_with("build: 管理ツールのタスク タスク 6 件")));
         assert!(task_links_path(&p.notes).exists());
 
-        // 完了した書き出し → s1 のタスクは完了。s3 は 2 つに当たる(DEMO-105 が増えた)ので決めない
+        // 最初の書き出しには DEMO-105 が無いので、s3 は DEMO-103 だけ
+        assert_eq!(r.links.links["s3"].task_ids, ["DEMO-103"]);
+        // 完了した書き出し → s1 のタスクは完了。s3 は 2 つの ID を書いてあるので(DEMO-105 が増えた)、両方に紐づける
         std::fs::write(&xml, fixture("export-after.xml")).unwrap();
         let later = atlas_core::jsdate::now_ms() + 60_000;
         atlas_core::jsfs::utimes(&xml, later, later).unwrap();
         let r = refresh_tasks(&p, &cfg, &sessions, "build", &log);
         assert!(r.state.tasks["DEMO-101"].done);
-        assert!(!r.links.links.contains_key("s3"), "{:?}", r.links);
+        assert_eq!(r.links.links["s3"].task_ids, ["DEMO-103", "DEMO-105"], "{:?}", r.links);
 
         let refs: Vec<&SessionRecord> = sessions.iter().collect();
         let human: HashMap<String, (f64, Option<f64>)> = HashMap::from([("s1".to_string(), (6.0, Some(0.8)))]);
@@ -522,25 +527,51 @@ mod tests {
         let tables = p.out.join("tables");
         let csv = std::fs::read_to_string(tables.join("tasks.csv")).unwrap();
         let lines: Vec<&str> = csv.trim_end().split("\r\n").collect();
-        assert!(lines[0].starts_with("\u{feff}taskId,taskName,status,完了,XML に無い,開始,完了を確認した時刻,稼働時間帯の工数(時間),AI の実働(時間),推定人手工数(時間),セッション数"), "{}", lines[0]);
+        assert!(lines[0].starts_with("\u{feff}taskId,taskName,status,完了,XML に無い,開始,完了を確認した時刻,稼働時間帯の工数(時間),AI の実働(時間),推定人手工数(時間),セッション数,共有のセッション,判定済み"), "{}", lines[0]);
         assert_eq!(lines.len(), 1 + view.items.len());
         let row: Vec<&str> = lines.iter().find(|l| l.starts_with("DEMO-101,")).unwrap().split(',').collect();
-        assert_eq!((row[3], row[9], row[10], row[14]), ("1", "6", "1", "1"));
+        assert_eq!((row[3], row[9], row[10], row[11], row[15]), ("1", "6", "1", "0", "1"));
+        // s3 は DEMO-103 と DEMO-105 の共有のセッション
+        let row: Vec<&str> = lines.iter().find(|l| l.starts_with("DEMO-105,")).unwrap().split(',').collect();
+        assert_eq!((row[10], row[11]), ("1", "1"));
         let sess = std::fs::read_to_string(tables.join("sessions.csv")).unwrap();
         let header: Vec<&str> = sess.lines().next().unwrap().trim_start_matches('\u{feff}').split(',').collect();
         let at = header.iter().position(|h| *h == "推定人手工数(時間)").unwrap();
-        assert_eq!(&header[at + 1..at + 4], ["taskId", "taskName", "紐づけの出所"]);
+        assert_eq!(&header[at + 1..at + 5], ["taskId", "taskName", "紐づけの出所", "タスクの数"]);
         let s1: Vec<&str> = sess.lines().find(|l| l.starts_with("s1,")).unwrap().split(',').collect();
-        assert_eq!(&s1[at + 1..at + 4], ["DEMO-101", "fix the app", "機械"]);
+        assert_eq!(&s1[at + 1..at + 5], ["DEMO-101", "fix the app", "機械", "1"]);
         let s2: Vec<&str> = sess.lines().find(|l| l.starts_with("s2,")).unwrap().split(',').collect();
-        assert_eq!(&s2[at + 1..at + 4], ["", "", ""]);
+        assert_eq!(&s2[at + 1..at + 5], ["", "", "", ""]);
+        // いくつかのタスクは「; 」でつなぐ(紐づけの順)
+        let s3: Vec<&str> = sess.lines().find(|l| l.starts_with("s3,")).unwrap().split(',').collect();
+        assert_eq!(&s3[at + 1..at + 5], ["DEMO-103; DEMO-105", "帳票の出力を速くする; 後から増えたタスク", "機械", "2"]);
+        // セッション × タスクの表(按分は等分の割合)
+        let st = std::fs::read_to_string(tables.join("session-tasks.csv")).unwrap();
+        let st: Vec<&str> = st.trim_end().split("\r\n").collect();
+        assert_eq!(st[0], "\u{feff}セッションID,taskId,taskName,紐づけの出所,按分");
+        assert_eq!(&st[1..], ["s1,DEMO-101,fix the app,機械,1", "s3,DEMO-103,帳票の出力を速くする,機械,0.5", "s3,DEMO-105,後から増えたタスク,機械,0.5"]);
         let db = rusqlite::Connection::open(tables.join(crate::tables::SQLITE_FILE)).unwrap();
         let n: i64 = db.query_row(r#"SELECT count(*) FROM tasks WHERE "taskId" = 'DEMO-101' AND "セッション数" = 1"#, [], |r| r.get(0)).unwrap();
         assert_eq!(n, 1);
+        let half: f64 = db.query_row(r#"SELECT sum("按分") FROM session_tasks WHERE "セッションID" = 's3'"#, [], |r| r.get(0)).unwrap();
+        assert_eq!(half, 1.0);
         drop(db);
-        // タスクの節が無ければ、前の tasks.csv を残さない(sessions.csv の列は空で残る)
+        // 一覧に無いタスクだけに紐づけたセッション: taskName は NULL、按分は 0(タスクの数は紐づいた数のまま)
+        let mut r2 = r.clone();
+        r2.links.links.insert("s2".into(), link(Some("NOPE"), LinkSource::Manual));
+        let view2 = build_view(&p, &cfg, false, &sessions, &refs, Some(&r2), &human).unwrap();
+        assert!(view2.links["s2"].counted_task_ids.is_empty());
+        super::super::metrics::write_tables(&p, &refs, Some(&view2), "build", &log).unwrap();
+        let db = rusqlite::Connection::open(tables.join(crate::tables::SQLITE_FILE)).unwrap();
+        let (name_null, n): (bool, f64) = db.query_row(r#"SELECT "taskName" IS NULL, "タスクの数" FROM sessions WHERE "セッションID" = 's2'"#, [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((name_null, n), (true, 1.0));
+        let share: f64 = db.query_row(r#"SELECT "按分" FROM session_tasks WHERE "セッションID" = 's2'"#, [], |r| r.get(0)).unwrap();
+        assert_eq!(share, 0.0);
+        drop(db);
+        // タスクの節が無ければ、前の tasks.csv と session-tasks.csv を残さない(sessions.csv の列は空で残る)
         super::super::metrics::write_tables(&p, &refs, None, "build", &log).unwrap();
         assert!(!tables.join("tasks.csv").exists());
+        assert!(!tables.join("session-tasks.csv").exists());
 
         // XML を読めなくなっても、前の状態のまま続け、注意を出す
         std::fs::write(&xml, "<Export><Task").unwrap();
@@ -549,7 +580,7 @@ mod tests {
         let r = refresh_tasks(&p, &cfg, &sessions, "build", &log);
         assert_eq!(r.state.tasks.len(), 7);
         assert!(r.warnings[0].contains("XML として読めません"), "{:?}", r.warnings);
-        assert_eq!(r.links.links["s1"].task_id.as_deref(), Some("DEMO-101"));
+        assert_eq!(r.links.links["s1"].task_ids.first().map(String::as_str), Some("DEMO-101"));
         let view = build_view(&p, &cfg, false, &sessions, &refs, Some(&r), &human).unwrap();
         assert!(view.warnings[0].contains("前に読んだタスクの状態"));
     }
@@ -576,7 +607,7 @@ mod tests {
     }
 
     fn link(task: Option<&str>, source: LinkSource) -> TaskLink {
-        TaskLink { task_id: task.map(str::to_string), source, reason: String::new(), confidence: None, at: "t".into() }
+        TaskLink { task_ids: task.map(str::to_string).into_iter().collect(), source, reason: String::new(), confidence: None, at: "t".into() }
     }
 
     /// LLM で紐づけるジョブ(別のプロセス)が 1 件ずつ書くとき、ロックの中で読み直してそのセッションの分だけを書く。
@@ -594,7 +625,7 @@ mod tests {
         assert!(!write_llm_link(&p, "s1", link(Some("B"), LinkSource::Llm)).unwrap());
         assert!(write_llm_link(&p, "s2", link(Some("B"), LinkSource::Llm)).unwrap());
         let got = load_links(&p).file;
-        assert_eq!((got.links["s1"].task_id.as_deref(), got.links["s1"].source), (Some("A"), LinkSource::Manual));
+        assert_eq!((got.links["s1"].task_ids.first().map(String::as_str), got.links["s1"].source), (Some("A"), LinkSource::Manual));
         assert_eq!(got.links["m0"].source, LinkSource::Manual);
         assert_eq!(got.links["s2"].source, LinkSource::Llm);
         // 同時に書いても、どちらの書き手の変更も残る
@@ -642,7 +673,9 @@ mod tests {
         }
         let last = atlas_report::tasks::links::LLM_CANDIDATES_MAX + 4;
         let m = Matcher::new(&state);
-        let s = SessionText { title: format!("T-{last} と T-{} の件", last - 1), ..s };
+        // 名前だけで 2 つに当たる(ID で書いたものは機械で両方に紐づくので、LLM には名前で当たったものを聞く)
+        assert!(matches!(m.match_session(&SessionText { title: format!("T-{last} と T-{} の件", last - 1), ..s.clone() }), MachineMatch::Linked { .. }));
+        let s = SessionText { title: format!("仕事 {last} と 仕事 {} の件", last - 1), ..s };
         let q = llm_query(&state, &m, &s).unwrap();
         assert_eq!(q.prompts, ["依頼 1", "依頼 2"]);
         assert_eq!(q.candidates.len(), atlas_report::tasks::links::LLM_CANDIDATES_MAX);

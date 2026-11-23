@@ -25,7 +25,7 @@ const T_BEFORE = new Date('2026-10-14T00:00:00.000Z');
 const T_AFTER = new Date('2026-10-23T12:00:00.000Z');
 const SHOTS = process.env.ATLAS_UI_SHOTS || null;
 
-type Links = { links: Record<string, { taskId: string | null; source: string; reason: string }> };
+type Links = { links: Record<string, { taskIds: string[]; source: string; reason: string }> };
 
 describe('管理ツールのタスクの画面', () => {
   /** ATLAS_REPO_ROOT(プロジェクトを送る操作が既定のメモの置き場 atlas-notes/ をこの下に見る) */
@@ -159,7 +159,8 @@ describe('管理ツールのタスクの画面', () => {
     // 一覧へ移ると、そのタスクのセッションだけが出て、行にタスクの名前がある
     await page.locator('tr[data-task="DEMO-101"]').getByRole('link', { name: 'セッション一覧へ' }).click();
     await page.locator('#sessions').waitFor({ state: 'visible' });
-    expect(await page.getByTestId('session-task').allInnerTexts()).toEqual(['タスク: fix the app · DEMO-101(紐づけ: 機械)']);
+    expect(await page.getByTestId('session-task').allInnerTexts()).toEqual(['DEMO-101 fix the app\n紐づけ: 機械']);
+    expect(await page.getByTestId('session-task').getAttribute('title')).toBe('紐づけの理由: タスク名が依頼にある');
     // もう一度押すと外れる(概況に戻って)
     await page.getByTestId('tab-overview').click();
     await page.getByTestId('tasks-table').locator('tr[data-task="DEMO-101"]').getByTestId('task-pick').click();
@@ -185,6 +186,9 @@ describe('管理ツールのタスクの画面', () => {
     expect(await page.getByTestId('detail-task-name').innerText()).toBe('紐づけなし');
     await page.getByTestId('detail-task-open').click();
     await page.getByTestId('detail-task-edit').waitFor({ state: 'visible' });
+    // 紐づけが無いので札は無く、保存は押せない
+    expect(await page.getByTestId('detail-task-chip').count()).toBe(0);
+    expect(await page.getByTestId('detail-task-save').getAttribute('aria-disabled')).toBe('true');
     // 探す文字で候補を絞る(ID か名前の一部)
     await page.getByTestId('detail-task-search').fill('帳票');
     expect(await page.getByTestId('detail-task-select').locator('option').allInnerTexts()).toEqual(['帳票の出力を速くする(DEMO-103)']);
@@ -192,11 +196,17 @@ describe('管理ツールのタスクの画面', () => {
     await expect.poll(() => page.getByTestId('detail-task-msg').innerText()).toBe('合うタスク 1 件。');
     await page.getByTestId('detail-task-search').fill('');
     await page.getByTestId('detail-task-select').selectOption('DEMO-103');
-    await page.getByTestId('detail-task-set').click();
+    // 加えるのは下書き(まだ保存しない)。加えたタスクは選択から消える
+    await page.getByTestId('detail-task-add').click();
+    expect(await page.getByTestId('detail-task-chip').allInnerTexts()).toEqual(['帳票の出力を速くする(DEMO-103)\n外す']);
+    expect(await page.getByTestId('detail-task-msg').innerText()).toContain('まだ保存していません');
+    expect(await page.getByTestId('detail-task-select').locator('option[value="DEMO-103"]').count()).toBe(0);
+    expect((await links())[S_OTHER]).toBeUndefined();
+    await page.getByTestId('detail-task-save').click();
     await expect.poll(() => page.getByTestId('detail-task-msg').innerText()).toContain('このタスクに紐づけました。');
     // 保存しても焦点は押したボタンに残り(押せない状態は aria-disabled)、Esc で閉じて「変える…」に戻る
-    expect(await page.evaluate<string | undefined>('document.activeElement?.dataset.testid')).toBe('detail-task-set');
-    expect(await page.getByTestId('detail-task-set').getAttribute('aria-disabled')).toBe('true');
+    expect(await page.evaluate<string | undefined>('document.activeElement?.dataset.testid')).toBe('detail-task-save');
+    expect(await page.getByTestId('detail-task-save').getAttribute('aria-disabled')).toBe('true');
     await page.keyboard.press('Escape');
     await page.getByTestId('detail-task-edit').waitFor({ state: 'hidden' });
     expect(await page.evaluate<string | undefined>('document.activeElement?.dataset.testid')).toBe('detail-task-open');
@@ -209,7 +219,7 @@ describe('管理ツールのタスクの画面', () => {
     expect(await page.getByTestId('detail-task-open').getAttribute('aria-disabled')).toBe('true');
     expect(await page.getByTestId('detail-task-name').innerText()).toBe('帳票の出力を速くする(DEMO-103)');
     expect(await page.getByTestId('detail-task-source').innerText()).toBe('紐づけ: 手動');
-    expect((await links())[S_OTHER]).toMatchObject({ taskId: 'DEMO-103', source: 'manual' });
+    expect((await links())[S_OTHER]).toMatchObject({ taskIds: ['DEMO-103'], source: 'manual' });
     // レポートを開き直すと(サーバの今の紐づけを読む)、一覧とタスクの節に出る
     await page.goto(server.url);
     await panel().waitFor({ state: 'visible' });
@@ -220,11 +230,11 @@ describe('管理ツールのタスクの画面', () => {
     await page.getByTestId('detail-task-open').click();
     await page.getByTestId('detail-task-none').click();
     await expect.poll(() => page.getByTestId('detail-task-name').innerText()).toBe('どのタスクでもない');
-    expect((await links())[S_OTHER]).toMatchObject({ taskId: null, source: 'manual' });
+    expect((await links())[S_OTHER]).toMatchObject({ taskIds: [], source: 'manual' });
     expect(await page.getByTestId('detail-task-none').getAttribute('aria-disabled')).toBe('true');
     // 押せない状態で押しても何もしない
     await page.getByTestId('detail-task-none').click({ force: true });
-    expect((await links())[S_OTHER]).toMatchObject({ taskId: null, source: 'manual' });
+    expect((await links())[S_OTHER]).toMatchObject({ taskIds: [], source: 'manual' });
     await page.getByTestId('detail-task-auto').click();
     await expect.poll(() => page.getByTestId('detail-task-name').innerText()).toBe('紐づけなし');
     expect((await links())[S_OTHER]).toBeUndefined();
@@ -240,6 +250,126 @@ describe('管理ツールのタスクの画面', () => {
       await page.getByTestId('detail-task-open').click();
       await page.getByTestId('detail-task').screenshot({ path: join(SHOTS, 'detail-task-open-light-1440.png') });
     }
+  });
+
+  it('c2. 詳細ページで 2 つ目のタスクを加えて保存すると両方が残り、一覧の「タスク」の列に出て並べ替えられる', async () => {
+    // 機械で DEMO-101 に紐づいたセッションに、DEMO-103 を加える(下書きは今の紐づけから始まる)
+    await page.goto(detailUrl(server, S_FIX));
+    await page.getByTestId('detail-task-open').click();
+    expect(await page.getByTestId('detail-task-chip').allInnerTexts()).toEqual(['fix the app(DEMO-101)\n外す']);
+    // 機械の紐づけと同じ並びなら、手動として保存できる(出所を手動にする)
+    expect(await page.getByTestId('detail-task-save').getAttribute('aria-disabled')).toBe('false');
+    await page.getByTestId('detail-task-select').selectOption('DEMO-103');
+    await page.getByTestId('detail-task-add').click();
+    await page.getByTestId('detail-task-select').selectOption('DEMO-102');
+    await page.getByTestId('detail-task-add').click();
+    expect(await page.getByTestId('detail-task-chip').count()).toBe(3);
+    // 外すと、焦点は次の札の「外す」に移る(最後の札なら探す欄)
+    await page.getByTestId('detail-task-remove').nth(2).click();
+    expect(await page.getByTestId('detail-task-chip').count()).toBe(2);
+    expect(await page.evaluate<string | undefined>('document.activeElement?.dataset.testid')).toBe('detail-task-remove');
+    expect(await page.evaluate<string | null | undefined>('document.activeElement?.getAttribute("aria-label")')).toBe('帳票の出力を速くする(DEMO-103)を外す');
+    if (SHOTS) {
+      await mkdir(SHOTS, { recursive: true });
+      for (const [scheme, width] of [['light', 1440], ['dark', 1440], ['light', 390]] as const) {
+        await page.setViewportSize({ width, height: 900 });
+        await page.emulateMedia({ colorScheme: scheme });
+        await page.getByTestId('detail-task').screenshot({ path: join(SHOTS, `m2m-detail-editor-${scheme}-${width}.png`) });
+      }
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await page.emulateMedia({ colorScheme: 'light' });
+    }
+    await page.getByTestId('detail-task-save').click();
+    await expect.poll(() => page.getByTestId('detail-task-msg').innerText()).toContain('2 つのタスクに紐づけました。');
+    expect((await links())[S_FIX]).toMatchObject({ taskIds: ['DEMO-101', 'DEMO-103'], source: 'manual' });
+    expect(await page.evaluate<string | undefined>('document.activeElement?.dataset.testid')).toBe('detail-task-save');
+    // 開き直しても両方が出て、等分の 1 行がある
+    await page.goto(detailUrl(server, S_FIX));
+    await page.getByTestId('detail-task').waitFor({ state: 'visible' });
+    await expect.poll(() => page.getByTestId('detail-task-name').allInnerTexts()).toEqual(['fix the app(DEMO-101)', '帳票の出力を速くする(DEMO-103)']);
+    expect(await page.getByTestId('detail-task-status').allInnerTexts()).toEqual(['状態: Completed(完了)', '状態: In Progress(未完了)']);
+    expect(await page.getByTestId('detail-task-split').innerText()).toBe('2 つのタスクに紐づいています。実働と推定人手工数は、2 つのタスクで等分して数えます');
+    if (SHOTS) await page.getByTestId('detail-task').screenshot({ path: join(SHOTS, 'm2m-detail-two-tasks-light-1440.png') });
+    // 3 つ目も API で足して、一覧の列は 2 つまで出して「+1 件」、全部は title
+    const put = (id: string, body: unknown): Promise<Response> =>
+      fetch(server.url.replace(/atlas\.html$/, `api/tasks/links/${id}`), { method: 'PUT', headers: { 'content-type': 'application/json', 'x-atlas-token': server.token }, body: JSON.stringify(body) });
+    expect((await put(S_OTHER, { taskIds: ['DEMO-103', 'DEMO-102', 'DEMO-104'] })).status).toBe(200);
+    await page.goto(`${server.url}#tab=list`);
+    await page.locator('#sessions').waitFor({ state: 'visible' });
+    const head = page.locator('#sessions thead th', { hasText: 'タスク' });
+    expect(await head.count()).toBe(1);
+    const cell = (id: string) => page.locator('#sessions tbody tr', { has: page.locator(`a[href$="${id}.html"]`) }).getByTestId('session-task');
+    await expect.poll(() => cell(S_OTHER).innerText()).toBe('DEMO-103 帳票の出力を速くする\nDEMO-102 Improve the synthetic project\n+1 件\n紐づけ: 手動');
+    expect(await cell(S_OTHER).getAttribute('title')).toBe('タスク:\n帳票の出力を速くする · DEMO-103\nImprove the synthetic project · DEMO-102\n初めから完了していたタスク · DEMO-104');
+    expect(await cell(S_FIX).innerText()).toBe('DEMO-101 fix the app\nDEMO-103 帳票の出力を速くする\n紐づけ: 手動');
+    // 紐づけの無いセッションは「紐づけなし」
+    expect(await page.getByTestId('session-task').allInnerTexts()).toContain('紐づけなし');
+    // 列見出しで並べ替える: 初めは名前の昇順(fix < Improve < 帳票)、もう一度押すと逆。タスクの無いセッションはどちらでも後ろ
+    const order = (): Promise<string[]> => page.locator('#sessions tbody tr td.name a').evaluateAll((as) => as.map((a) => (a as unknown as { href: string }).href.replace(/^.*\/|\.html$/g, '')));
+    await head.getByRole('button').click();
+    expect(await head.getAttribute('aria-sort')).toBe('ascending');
+    expect((await order()).slice(0, 3)).toEqual([S_FIX, S_IMPROVE, S_OTHER]);
+    await head.getByRole('button').click();
+    expect(await head.getAttribute('aria-sort')).toBe('descending');
+    const desc = await order();
+    expect(desc.slice(0, 3)).toEqual([S_OTHER, S_IMPROVE, S_FIX]);
+    expect(desc.length).toBeGreaterThan(3);
+    if (SHOTS) {
+      for (const [scheme, width] of [['light', 1440], ['dark', 1440], ['light', 390], ['dark', 390]] as const) {
+        await page.setViewportSize({ width, height: 900 });
+        await page.emulateMedia({ colorScheme: scheme });
+        await page.locator('#sessions').scrollIntoViewIfNeeded();
+        // 狭い幅では表を横に流して「タスク」の列を見せる
+        await page.evaluate("(() => { const s = document.querySelector('#sessions .table-scroll'); const th = [...document.querySelectorAll('#sessions thead th')].find((x) => x.textContent.includes('タスク')); if (s && th && innerWidth < 768) s.scrollLeft = th.offsetLeft - 40; })()");
+        await page.locator('#sessions .table-scroll').screenshot({ path: join(SHOTS, `m2m-session-list-${scheme}-${width}.png`) });
+      }
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await page.emulateMedia({ colorScheme: 'light' });
+    }
+    // 390px でも、ページが横にはみ出さない(表は枠の中で横に流す)
+    await page.setViewportSize({ width: 390, height: 900 });
+    expect(await page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')).toBe(true);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    // タスクの節: 共有のセッションと等分の説明
+    await page.goto(server.url);
+    await panel().waitFor({ state: 'visible' });
+    await expect.poll(() => page.getByTestId('tasks-table').locator('tr[data-task="DEMO-103"]').getByTestId('task-shared').innerText()).toBe('共有 2');
+    expect(await page.getByTestId('tasks-split').innerText()).toContain('複数のタスクに紐づくセッションの実働時間と推定人手工数は、タスクの数で等分して数えます');
+    expect(await page.getByTestId('tasks-split').innerText()).toContain('今は 2 セッションを複数のタスクに分けて数えています。');
+    // タスクで絞り込むと、ほかのタスクにも紐づいたセッションも入る
+    await page.getByTestId('task-filter').selectOption('DEMO-103');
+    await expect.poll(shown).toBe(2);
+    await page.getByTestId('task-filter').selectOption('');
+    // タスクの一覧に無い ID(tasks.json から無くなったもの)が紐づけに残っていると: 詳細ページで印を付け、工数に数えず、
+    // そのままでは保存できない(サーバはどの ID が無いかを書いて断り、画面はその文を出す)
+    const file = join(notes, 'task-links.json');
+    const saved = JSON.parse(await readFile(file, 'utf8')) as { links: Record<string, unknown> };
+    saved.links[S_OTHER] = { taskIds: ['DEMO-103', 'GONE-9'], source: 'manual', reason: '', at: '2026-11-23T00:00:00.000Z' };
+    await writeFile(file, JSON.stringify(saved));
+    await page.goto(detailUrl(server, S_OTHER));
+    await page.getByTestId('detail-task').waitFor({ state: 'visible' });
+    await expect.poll(() => page.getByTestId('detail-task-skip').allInnerTexts()).toEqual(['一覧にないタスク(工数に数えない)']);
+    expect(await page.getByTestId('detail-task-split').innerText()).toBe('2 つのタスクに紐づいています。実働と推定人手工数は、1 つのタスクにだけ数えます(一覧に無いタスクと、完了を確認した後に始めたセッションのタスクには数えません)');
+    await page.getByTestId('detail-task-open').click();
+    expect(await page.getByTestId('detail-task-unknown').allInnerTexts()).toEqual(['一覧にないタスク']);
+    // 一覧にある札を入れ替えて保存すると、無い ID を名指しで断る
+    await page.getByTestId('detail-task-remove').first().click();
+    await page.getByTestId('detail-task-select').selectOption('DEMO-102');
+    await page.getByTestId('detail-task-add').click();
+    await page.getByTestId('detail-task-save').click();
+    await expect.poll(() => page.getByTestId('detail-task-err').innerText()).toContain('「GONE-9」');
+    // 無い ID の札を外すと保存できる
+    await page.getByLabel('GONE-9(GONE-9)を外す').click();
+    await page.getByTestId('detail-task-save').click();
+    await expect.poll(() => page.getByTestId('detail-task-msg').innerText()).toContain('このタスクに紐づけました。');
+    expect((await links())[S_OTHER]).toMatchObject({ taskIds: ['DEMO-102'], source: 'manual' });
+    // わざと断らせた応答のコンソールのエラーは数えない
+    for (let i = problems.length - 1; i >= 0; i--) if (/status of 400/.test(problems[i])) problems.splice(i, 1);
+    // 元に戻す(次の LLM のテストの件数を変えない)
+    expect((await put(S_OTHER, { auto: true })).status).toBe(200);
+    expect((await put(S_FIX, { auto: true })).status).toBe(200);
+    expect((await links())[S_FIX]).toMatchObject({ taskIds: ['DEMO-101'], source: 'machine' });
+    expect((await links())[S_OTHER]).toBeUndefined();
   });
 
   it('d. 「タスクを LLM で紐づける…」は確かめてから始め、終わると LLM の紐づけが出る', async () => {

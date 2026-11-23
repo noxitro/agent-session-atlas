@@ -341,29 +341,49 @@ fn task_records_are_attached() {
     let r = up(&p, &e.root);
     let dir = PathBuf::from(&r.dir);
     let meta = |id: &str| js::parse_json(&fs::read_to_string(dir.join(id).join("atlas-session.json")).unwrap()).unwrap();
-    assert!(meta("s1").get("task").is_none());
+    assert!(meta("s1").get("tasks").is_none());
     fs::write(
         e.notes.join("tasks.json"),
-        json!({ "version": 1, "tasks": { "T-1": { "name": "画面の | 修正", "status": "Done", "done": true, "firstSeenAt": "a", "doneAt": "2026-11-22T00:00:00.000Z", "lastSeenAt": "2026-11-22T00:00:00.000Z", "doneObserved": true } } }).to_string(),
+        json!({ "version": 1, "tasks": {
+            "T-1": { "name": "画面の | 修正", "status": "Done", "done": true, "firstSeenAt": "a", "doneAt": "2026-11-22T00:00:00.000Z", "lastSeenAt": "2026-11-22T00:00:00.000Z", "doneObserved": true },
+            "T-2": { "name": "帳票", "status": "Open", "done": false, "firstSeenAt": "a", "doneAt": null, "lastSeenAt": "2026-11-22T00:00:00.000Z" }
+        } })
+        .to_string(),
     )
     .unwrap();
+    // 前の版の task-links.json(taskId が 1 つ)も読む。s1 は 2 つのタスク(版 2 の形)
     fs::write(
         e.notes.join("task-links.json"),
-        json!({ "version": 1, "links": { "s1": { "taskId": "T-1", "source": "machine", "reason": "ID が題名にある", "at": "t" }, "s2": { "taskId": null, "source": "manual", "reason": "", "at": "t" } } }).to_string(),
+        json!({ "version": 2, "links": { "s1": { "taskIds": ["T-1", "T-2"], "source": "machine", "reason": "ID が題名にある", "at": "t" }, "s2": { "taskIds": [], "source": "manual", "reason": "", "at": "t" } } }).to_string(),
     )
     .unwrap();
     let r = up(&p, &e.root);
     assert_eq!((r.uploaded, r.unchanged), (0, 2));
-    let t = &meta("s1")["task"];
-    assert_eq!(t, &json!({ "id": "T-1", "name": "画面の | 修正", "status": "Done", "done": true, "doneAt": "2026-11-22T00:00:00.000Z", "doneObserved": true, "lastSeenAt": "2026-11-22T00:00:00.000Z", "start": "2026-11-20T01:00:00.000Z", "source": "machine", "reason": "ID が題名にある" }));
+    let t = &meta("s1")["tasks"];
+    assert_eq!(
+        t[0],
+        json!({ "id": "T-1", "name": "画面の | 修正", "status": "Done", "done": true, "doneAt": "2026-11-22T00:00:00.000Z", "doneObserved": true, "lastSeenAt": "2026-11-22T00:00:00.000Z", "start": "2026-11-20T01:00:00.000Z", "source": "machine", "reason": "ID が題名にある" })
+    );
+    assert_eq!(t[1]["id"], "T-2");
+    assert_eq!(t.as_array().unwrap().len(), 2);
+    // タスクが 2 つなら、前の版の task(1 つ)は書かない
+    assert!(meta("s1").get("task").is_none());
     // 「どのタスクでもない」は添えない
-    assert!(meta("s2").get("task").is_none());
+    assert!(meta("s2").get("tasks").is_none());
     let index = js::parse_json(&fs::read_to_string(dir.join("atlas-index.json")).unwrap()).unwrap();
-    assert_eq!(index["sessions"][0]["task"]["id"], "T-1");
+    assert_eq!(index["sessions"][0]["tasks"][1]["id"], "T-2");
     let readme = fs::read_to_string(dir.join("README.md")).unwrap();
-    assert!(readme.contains("| [s1](s1/) | 画面 | 画面の \\| 修正(T-1) |"), "{readme}");
+    assert!(readme.contains("| [s1](s1/) | 画面 | 画面の \\| 修正(T-1)、帳票(T-2) |"), "{readme}");
     assert!(readme.contains("| [s2](s2/) | 雑談 | - |"), "{readme}");
     // 受け取った側の読み方で読める
-    let got = atlas_report::tasks::sender::read_sender_task(&dir.join("s1").join("atlas-session.json"), "s1").unwrap();
-    assert_eq!((got.id.as_str(), got.done, got.source), ("T-1", true, atlas_report::tasks::links::LinkSource::Machine));
+    let got = atlas_report::tasks::sender::read_sender_tasks(&dir.join("s1").join("atlas-session.json"), "s1");
+    assert_eq!(got.iter().map(|t| (t.id.as_str(), t.done, t.source)).collect::<Vec<_>>(), [("T-1", true, atlas_report::tasks::links::LinkSource::Machine), ("T-2", false, atlas_report::tasks::links::LinkSource::Machine)]);
+    // 前の版の紐づけ(taskId)からも送れる
+    fs::write(e.notes.join("task-links.json"), json!({ "version": 1, "links": { "s1": { "taskId": "T-2", "source": "llm", "reason": "r", "at": "t" } } }).to_string()).unwrap();
+    up(&p, &e.root);
+    assert_eq!(meta("s1")["tasks"].as_array().map(|a| a.iter().map(|t| t["id"].clone()).collect::<Vec<_>>()), Some(vec![json!("T-2")]));
+    // タスクがちょうど 1 つなら、前の版の atlas も読めるよう task にも同じものを添える
+    assert_eq!(meta("s1")["task"], meta("s1")["tasks"][0]);
+    let index = js::parse_json(&fs::read_to_string(dir.join("atlas-index.json")).unwrap()).unwrap();
+    assert_eq!(index["sessions"][0]["task"]["id"], "T-2");
 }

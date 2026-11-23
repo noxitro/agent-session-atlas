@@ -46,22 +46,32 @@ export const NO_JUDGMENT = '(none)';
 /** タスクの絞り込みで「タスクなし」(どのタスクにも紐づいていない。「どのタスクでもない」と決めたものも入る) */
 export const NO_TASK = '(none)';
 
-/** セッション id → 紐づいたタスクの ID(ReportData.tasks.links のうち taskId のあるもの)。タスクの記録が無ければ空 */
-export type TaskOf = ReadonlyMap<string, string>;
+/** セッション id → 紐づいたタスクの ID の並び(ReportData.tasks.links のうち taskIds が空でないもの)。タスクの記録が無ければ空 */
+export type TaskOf = ReadonlyMap<string, readonly string[]>;
 const NO_TASKS: TaskOf = new Map();
 
-/** ReportData.tasks.links から TaskOf を作る(taskId が null の「どのタスクでもない」は入れない) */
-export function taskOf(links: Record<string, { taskId: string | null }> | null | undefined): TaskOf {
-  const m = new Map<string, string>();
-  for (const [sid, l] of Object.entries(links ?? {})) if (l.taskId != null) m.set(sid, l.taskId);
+/**
+ * ReportData.tasks.links から TaskOf を作る(taskIds が空の「どのタスクでもない」は入れない)。
+ * 版 20 の埋め込み(taskId が 1 つか null)も 0 か 1 件の並びとして読む
+ */
+export function taskOf(links: Record<string, { taskIds?: readonly string[] | null; taskId?: string | null }> | null | undefined): TaskOf {
+  const m = new Map<string, readonly string[]>();
+  for (const [sid, l] of Object.entries(links ?? {})) {
+    const ids = l.taskIds ?? (l.taskId != null ? [l.taskId] : []);
+    if (ids.length) m.set(sid, ids);
+  }
   return m;
 }
 
-/** セッションがタスクの絞り込み(task)に合うか。空なら制限なし */
+/**
+ * セッションがタスクの絞り込み(task)に合うか。空なら制限なし。いくつかのタスクに紐づいたセッションは、そのどれで絞っても合う。
+ * NO_TASK はどのタスクにも紐づいていないセッション
+ */
 export function matchesTask(id: string, task: string, tasks: TaskOf): boolean {
   if (!task) return true;
   const t = tasks.get(id);
-  return task === NO_TASK ? t == null : t === task;
+  const none = t == null || t.length === 0;
+  return task === NO_TASK ? none : !none && t.includes(task);
 }
 
 export function emptyFilter(): FilterState {
@@ -215,15 +225,15 @@ export function filterOptions(sessions: SessionSummary[]): {
 
 /**
  * タスクの絞り込みの選択肢(sessions に対する件数付き。紐づいたセッションの多い順、同じなら ID の順)と、どのタスクにも紐づいていないセッションの数。
- * label はタスクの名前(names に無ければ ID)
+ * label はタスクの名前(names に無ければ ID)。件数はそのタスクに紐づいたセッションの数(いくつかのタスクに紐づいたセッションは、それぞれのタスクに数える)
  */
 export function taskOptions(sessions: Pick<SessionSummary, 'id'>[], tasks: TaskOf, names: ReadonlyMap<string, string>): { tasks: Option[]; none: number } {
   const ids: string[] = [];
   let none = 0;
   for (const s of sessions) {
     const t = tasks.get(s.id);
-    if (t == null) none++;
-    else ids.push(t);
+    if (t == null || t.length === 0) none++;
+    else ids.push(...new Set(t));
   }
   return { tasks: countOptions(ids, (v) => names.get(v) ?? v), none };
 }
