@@ -317,7 +317,7 @@ pub fn import_turn_judgments_text(input: &str, path: &Path, o: TurnImportOptions
 /// 前の置き場(from)の依頼ごとの判定を、共有の置き場(to)に混ぜて移す(judgments_io::move_judgments_into と同じ決まり)。
 /// 共有の側にある依頼(セッションと依頼番号)は共有の側のままにし、無いものだけを足す。移したら from は moved_path の名前に変える。
 /// from が無ければ None、あれば足した依頼の数。from が読めなければエラー(何も書かず、from も残す)
-pub fn move_turn_judgments_into(from: &Path, to: &Path) -> Result<Option<usize>> {
+pub fn move_turn_judgments_into(from: &Path, to: &Path) -> Result<Option<crate::judgments_io::Moved>> {
     if !from.exists() {
         return Ok(None);
     }
@@ -341,8 +341,9 @@ pub fn move_turn_judgments_into(from: &Path, to: &Path) -> Result<Option<usize>>
             }
         }
         write_turn_judgments(to, &merged)?;
-        atlas_core::fs_retry::rename_replacing(from, &crate::judgments_io::moved_path(from))?;
-        Ok(Some(add.len()))
+        let renamed_to = crate::judgments_io::moved_path(from);
+        atlas_core::fs_retry::rename_replacing(from, &renamed_to)?;
+        Ok(Some(crate::judgments_io::Moved { added: add.len(), renamed_to }))
     })
 }
 
@@ -421,11 +422,12 @@ mod tests {
         let mut more = ph.clone();
         more.push("運用".into());
         import_turn_judgments_text(&json!([item(1, json!({"note": "共有"})), item(3, json!({"phase": "運用"}))]).to_string(), &shared, TurnImportOptions { phases: &more, ..o() }).unwrap();
-        assert_eq!(move_turn_judgments_into(&old, &shared).unwrap(), Some(1));
+        let m = move_turn_judgments_into(&old, &shared).unwrap().unwrap();
+        assert_eq!(m.added, 1);
         let j = read_turn_judgments(&shared).unwrap().unwrap();
         assert_eq!(j.items.iter().map(|i| (i.turn, i.note.as_str())).collect::<Vec<_>>(), [(1, "共有"), (2, "理由"), (3, "理由")]);
         assert!(j.phases.contains(&"運用".to_string()));
-        assert!(!old.exists() && crate::judgments_io::moved_path(&old).exists());
+        assert!(!old.exists() && m.renamed_to.exists());
         assert_eq!(move_turn_judgments_into(&old, &shared).unwrap(), None);
     }
 

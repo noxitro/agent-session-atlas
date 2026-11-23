@@ -65,8 +65,12 @@
   let effB = $state('');
   let effFrom = $state('');
   let effTo = $state('');
+  // 選択肢は全期間から作り(期間を変えても選んだ値が消えないように)、件数は選んだ期間の中で数える(モデルどうしと同じ)
   const models = $derived(effortModels(sessions));
   const choices = $derived(effortChoices(sessions, effModel));
+  const effPool = $derived(sessions.filter((s) => inPeriod(s, effFrom, effTo)));
+  const effModelCount = $derived(new Map(effortModels(effPool).map((m) => [m.model, m.sessions])));
+  const effChoiceCount = $derived(new Map(effortChoices(effPool, effModel).map((c) => [c.effort, c.sessions])));
   // モデルどうし: A と B のモデル・強度(空はすべて)・期間(A と B に同じ期間)
   let modelA = $state('');
   let modelB = $state('');
@@ -76,7 +80,8 @@
   // 選択肢は全期間から作り(期間を変えても選んだ値が消えないように)、件数は選んだ期間の中で数える
   const mainModels = $derived(modelChoices(sessions));
   const modelPool = $derived(sessions.filter((s) => inPeriod(s, modelFrom, modelTo)));
-  const modelCount = $derived(new Map(modelChoices(modelPool).map((c) => [c.model, c.sessions])));
+  // 強度を 1 つ選んだときは、その強度と決まったセッションで数える(表の A・B の母集団と同じ)
+  const modelCount = $derived(new Map(modelChoices(modelPool, modelEffort).map((c) => [c.model, c.sessions])));
   const modelEfforts = $derived(modelEffortChoices(sessions, modelA, modelB));
   const modelEffortCount = $derived(new Map(modelEffortChoices(modelPool, modelA, modelB).map((c) => [c.effort, c])));
   // wiki の参照: 期間(A と B に同じ期間)。数えていない集計では選べない(理由を出す)
@@ -300,7 +305,7 @@
           <label>
             <span class="sr-only">比べるモデル</span>
             <select value={effModel} onchange={(e) => (effModel = e.currentTarget.value)} data-testid="compare-effort-model">
-              {#each models as m (m.model)}<option value={m.model}>{modelLabel(m.model)}({int(m.sessions)})</option>{/each}
+              {#each models as m (m.model)}<option value={m.model}>{modelLabel(m.model)}(期間内 {int(effModelCount.get(m.model) ?? 0)})</option>{/each}
             </select>
           </label>
         </fieldset>
@@ -310,7 +315,7 @@
             <label>
               <span class="sr-only">{side === 'a' ? 'A' : 'B'} の推論強度</span>
               <select value={side === 'a' ? effA : effB} onchange={(e) => (side === 'a' ? (effA = e.currentTarget.value) : (effB = e.currentTarget.value))} data-testid={`compare-effort-${side}`}>
-                {#each choices as c (c.effort)}<option value={c.effort}>{effortLabel(c.effort)}({int(c.sessions)})</option>{/each}
+                {#each choices as c (c.effort)}<option value={c.effort}>{effortLabel(c.effort)}(期間内 {int(effChoiceCount.get(c.effort) ?? 0)})</option>{/each}
               </select>
             </label>
           </fieldset>

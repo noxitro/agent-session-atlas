@@ -117,7 +117,7 @@ pub fn shared_judgment_files(dir: &Path) -> (PathBuf, PathBuf) {
     (dir.join(atlas_judge::rubric::RESULT_FILE), dir.join(atlas_judge::turn_bundle::TURN_RESULT_FILE))
 }
 
-type MoveFn = fn(&Path, &Path) -> Result<Option<usize>>;
+type MoveFn = fn(&Path, &Path) -> Result<Option<atlas_judge::judgments_io::Moved>>;
 
 /// 前に出力先(out)にあった判定を、設定のフォルダの共有の置き場に混ぜて移す(共有の側にあるものを優先する)。移したら 1 行ずつ知らせる。
 /// 前の判定が読めないときは移さずに注意を出す(前のファイルはそのまま残す)
@@ -133,10 +133,11 @@ fn move_judgments(p: &Paths, dir: &Path, log: Log<'_>) {
         }
         match mv(&from, to) {
             Ok(None) => {}
-            Ok(Some(n)) => log(&format!(
-                "settings: 出力先にあった{what}を、設定のフォルダの共有の置き場 {} に移しました(足した{unit} {n} 件。共有の側にあったものはそのまま。前のファイルは {} に名前を変えました)",
+            Ok(Some(m)) => log(&format!(
+                "settings: 出力先にあった{what}を、設定のフォルダの共有の置き場 {} に移しました(足した{unit} {} 件。共有の側にあったものはそのまま。前のファイルは {} に名前を変えました)",
                 to.display(),
-                atlas_judge::judgments_io::moved_path(&from).display()
+                m.added,
+                m.renamed_to.display()
             )),
             Err(e) => log(&format!("settings: 注意 出力先にあった{what} {} を共有の置き場に移せませんでした({e:#})。前のファイルはそのまま残し、共有の置き場の判定を使います", from.display())),
         }

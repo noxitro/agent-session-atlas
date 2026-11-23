@@ -230,12 +230,13 @@ pub fn normalize(s: &str) -> String {
     n.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// そのセッションの候補か: 未完了のタスクと、セッションを始めた後に完了を確認したタスク(始めた時刻か完了の時刻が分からなければ候補に入れる)
+/// そのセッションの候補か: 未完了のタスクと、セッションを始めた後に完了を確認したタスク(始めた時刻か完了の時刻が分からなければ候補に入れる)。
+/// 日付だけの完了日は、その日の終わり(24:00)までに始めたセッションを候補にする(TaskState::done_cutoff_ms)
 pub fn is_candidate(t: &TaskState, start_ms: Option<i64>) -> bool {
     if !t.done {
         return true;
     }
-    match (t.done_at.as_deref().and_then(atlas_core::jsdate::parse_ms), start_ms) {
+    match (t.done_cutoff_ms(), start_ms) {
         (Some(done), Some(start)) => done >= start,
         _ => true,
     }
@@ -533,7 +534,7 @@ mod tests {
     use super::*;
 
     fn task(name: &str, done_at: Option<&str>) -> TaskState {
-        TaskState { name: name.into(), status: if done_at.is_some() { "Done" } else { "Open" }.into(), done: done_at.is_some(), first_seen_at: "2026-11-01T00:00:00.000Z".into(), done_at: done_at.map(str::to_string), last_seen_at: "2026-11-01T00:00:00.000Z".into(), missing: false, done_observed: done_at.is_some(), done_at_source: None }
+        TaskState { name: name.into(), status: if done_at.is_some() { "Done" } else { "Open" }.into(), done: done_at.is_some(), first_seen_at: "2026-11-01T00:00:00.000Z".into(), done_at: done_at.map(str::to_string), last_seen_at: "2026-11-01T00:00:00.000Z".into(), missing: false, done_observed: done_at.is_some(), done_at_source: None, done_date_only: false }
     }
 
     fn state(items: &[(&str, TaskState)]) -> TasksFile {

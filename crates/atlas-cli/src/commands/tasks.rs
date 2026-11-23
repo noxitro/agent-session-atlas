@@ -855,6 +855,7 @@ mod tests {
             missing: false,
             done_observed: done_at.is_some(),
             done_at_source: None,
+            done_date_only: false,
         };
         let mut state = TasksFile::default();
         state.tasks.insert("OLD-1".into(), task("前に終わった仕事", Some("2026-11-01T00:00:00.000Z")));

@@ -345,6 +345,8 @@ pub struct JobArgsInput<'a> {
     pub home: Option<&'a str>,
     /// 設定のフォルダ(settings_dir.rs。サーバが使っているもの。どのジョブにも --settings で渡す)
     pub settings: Option<&'a str>,
+    /// 工数の判定のファイル(サーバが画面の取り込みに使うもの。どのジョブにも --judgments で渡し、画面とジョブで同じファイルを読み書きする)
+    pub judgments: Option<&'a str>,
 }
 
 /// 子プロセスの引数(この実行ファイルの後ろ。TS 版の main.ts の代わりにサブコマンドを置く)。サーバが固定の形で組み立てる。full はサーバ内なので None
@@ -376,6 +378,9 @@ pub fn job_args(req: &JobRequest, p: &JobArgsInput<'_>) -> Option<Vec<String>> {
     v.extend(["--out".to_string(), p.out_dir.to_string(), "--notes-dir".to_string(), p.notes_dir.to_string()]);
     if let Some(s) = p.settings {
         v.extend(["--settings".to_string(), s.to_string()]);
+    }
+    if let Some(j) = p.judgments {
+        v.extend(["--judgments".to_string(), j.to_string()]);
     }
     Some(v)
 }
@@ -547,6 +552,8 @@ pub struct JobRunnerOptions {
     pub home: Option<String>,
     /// 設定のフォルダ(子プロセスに --settings で渡す)
     pub settings: Option<String>,
+    /// 工数の判定のファイル(子プロセスに --judgments で渡す。画面の取り込み先と同じ)
+    pub judgments: Option<String>,
     pub spawn: Option<SpawnFn>,
     /// 子プロセスに足す環境変数
     pub env: Vec<(String, String)>,
@@ -668,7 +675,7 @@ impl JobRunner {
         }
         let out = self.o.out_dir.to_string_lossy().into_owned();
         let notes = self.o.notes_dir.to_string_lossy().into_owned();
-        let args = job_args(req, &JobArgsInput { out_dir: &out, notes_dir: &notes, home: self.o.home.as_deref(), settings: self.o.settings.as_deref() });
+        let args = job_args(req, &JobArgsInput { out_dir: &out, notes_dir: &notes, home: self.o.home.as_deref(), settings: self.o.settings.as_deref(), judgments: self.o.judgments.as_deref() });
         if let Some(a) = &args {
             check_args_length(a)?;
         }

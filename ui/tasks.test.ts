@@ -432,7 +432,11 @@ describe('管理ツールのタスクの画面', () => {
     expect(n).toBeGreaterThan(0);
     await page.getByTestId('chat-bundle').click();
     await expect.poll(() => page.getByTestId('chat-bundle-state').innerText(), { timeout: 60_000 }).toMatch(/紐づけの無いものだけ、\d+ ファイル/);
-    const m = JSON.parse(await readFile(join(out, 'task-bundle', 'manifest.json'), 'utf8')) as { count: number; sessions: { id: string; candidates: string[] }[] };
+    // 候補の ID は manifest.json でなく candidates.json にある(manifest.json は件数とファイルの一覧だけ)
+    const raw = JSON.parse(await readFile(join(out, 'task-bundle', 'manifest.json'), 'utf8')) as { count: number; sessions: { id: string; candidates?: string[] }[] };
+    const cands = JSON.parse(await readFile(join(out, 'task-bundle', 'candidates.json'), 'utf8')) as { sessions: Record<string, string[]> };
+    expect(raw.sessions.every((s) => s.candidates === undefined)).toBe(true);
+    const m = { ...raw, sessions: raw.sessions.map((s) => ({ id: s.id, candidates: cands.sessions[s.id] })) };
     expect(m.count).toBe(n);
     // 機械で紐づいたセッションは入れない
     expect(m.sessions.map((s) => s.id)).not.toContain(S_FIX);

@@ -9,7 +9,7 @@
 //  d. --settings で指せる。次に開くときは、前に使った設定のフォルダを使う
 // 時刻は UTC で動かす(稼働時間帯はこの PC の時刻で数えるので、どの PC でも同じ値になるように)
 import { spawn, spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, utimesSync } from 'node:fs';
+import { copyFileSync, existsSync, readdirSync, utimesSync } from 'node:fs';
 import { cp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -188,7 +188,9 @@ describe('本番の置き方: 設定のフォルダ(AtlasSettings)を使い、�
         await new Promise((r) => setTimeout(r, 200));
       }
       expect(cur?.state, cur?.log.join('\n')).toBe('done');
-      const m = await readJson<{ sessions: { id: string; candidates: string[] }[] }>(join(fp.out, 'task-bundle', 'manifest.json'));
+      const raw = await readJson<{ sessions: { id: string }[] }>(join(fp.out, 'task-bundle', 'manifest.json'));
+      const cands = await readJson<{ sessions: Record<string, string[]> }>(join(fp.out, 'task-bundle', 'candidates.json'));
+      const m = { sessions: raw.sessions.map((e) => ({ id: e.id, candidates: cands.sessions[e.id] })) };
       expect(m.sessions.map((s) => s.id)).toContain(S_VAGUE);
       expect(m.sessions.map((s) => s.id)).not.toContain(S_FIX);
       // 偽の返答を CLI で取り込む(--out に開いたフォルダの出力先。設定のフォルダは開いたフォルダの記録から決まる)
@@ -303,7 +305,9 @@ describe('本番の置き方: 設定のフォルダ(AtlasSettings)を使い、�
       const out = person.output();
       expect(out).toContain(`open: 設定のフォルダ ${settings}(開いたフォルダから上へ探して見つけたもの)`);
       expect(out).toContain(`settings: 出力先にあった工数の判定を、設定のフォルダの共有の置き場 ${shared} に移しました(足したセッション 1 件。`);
-      expect(existsSync(join(alice.out, 'judgments.json.moved'))).toBe(true);
+      // 前のファイルは、時刻を付けた名前に変えて残す(前に移したものを上書きしない)
+      expect(readdirSync(alice.out).some((n) => /^judgments\.json\.moved-\d{8}T\d{6}/.test(n))).toBe(true);
+      expect(existsSync(join(alice.out, 'judgments.json'))).toBe(false);
       const merged = Object.fromEntries((await readJson<Judgments>(shared)).items.map((i) => [i.sessionId, i.taskSummary]));
       expect(merged).toEqual({ [S_FIX]: '2 回目', [S_IMPROVE]: '2 回目', [S_MULTI]: '前の出力先' });
       const data = await embedded(alice.out);
@@ -336,15 +340,16 @@ describe('本番の置き方: 設定のフォルダ(AtlasSettings)を使い、�
     const r = atlas(['all', '--home', log2, '--out', out2, '--settings', settings2]);
     expect(r.status, r.out).toBe(0);
     expect(r.out).toContain('完了日時(設定の tasks.doneAt)を読めない完了のタスク 1 件');
-    type State = { tasks: Record<string, { doneAt: string | null; doneObserved: boolean; doneAtSource?: string }> };
+    type State = { tasks: Record<string, { doneAt: string | null; doneObserved: boolean; doneAtSource?: string; doneDateOnly?: boolean }> };
     const st = await readJson<State>(join(settings2, 'tasks.json'));
-    // TZ=UTC: 日付だけは、その日の稼働時間帯の終わり(18:00)
-    expect(st.tasks['DEMO-101']).toMatchObject({ doneAt: '2026-10-22T18:00:00.000Z', doneObserved: true, doneAtSource: 'recorded' });
+    // TZ=UTC: 日付だけは、その日の稼働時間帯の終わり(18:00)。日付だけだったことも残す(候補と「完了の後に始まった」はその日の終わりで見る)
+    expect(st.tasks['DEMO-101']).toMatchObject({ doneAt: '2026-10-22T18:00:00.000Z', doneObserved: true, doneAtSource: 'recorded', doneDateOnly: true });
     expect(st.tasks['DEMO-104']).toMatchObject({ doneAt: '2026-10-20T03:00:00.000Z', doneObserved: true, doneAtSource: 'recorded' });
+    expect(st.tasks['DEMO-104'].doneDateOnly).toBeUndefined();
     // 読めない値は観測(初めて見たときに完了なので、時刻は分からない)
     expect(st.tasks['DEMO-103']).toMatchObject({ doneAt: T_XML.toISOString(), doneObserved: false, doneAtSource: 'observed' });
     const v = (await embedded(out2)).tasks as TasksReport;
-    expect(v.items.find((t) => t.id === 'DEMO-101')).toMatchObject({ doneAtSource: 'recorded', doneAt: '2026-10-22T18:00:00.000Z' });
+    expect(v.items.find((t) => t.id === 'DEMO-101')).toMatchObject({ doneAtSource: 'recorded', doneAt: '2026-10-22T18:00:00.000Z', doneDateOnly: true });
     expect(v.items.find((t) => t.id === 'DEMO-103')).toMatchObject({ doneAtSource: 'observed' });
     // セッションが紐づいた完了タスク: DEMO-101(記録)と DEMO-103(観測。S_MULTI が紐づく)
     expect(v.summary.doneSources).toEqual({ recorded: 1, observed: 1 });
@@ -353,7 +358,15 @@ describe('本番の置き方: 設定のフォルダ(AtlasSettings)を使い、�
     const col = head.indexOf('完了時刻の出所');
     expect(col).toBeGreaterThan(0);
     const row101 = csv.find((l) => l.startsWith('DEMO-101,'))!.split(',');
-    expect(row101[col]).toBe('記録');
+    expect(row101[col]).toBe('記録(日付だけ)');
+    // 設定のフォルダを使う回でも、CLI の judge import は取り込めたらレポートを作り直す(export。tasks import と同じ)
+    const reply = join(WORK, 'reply-effort-settings2.md');
+    await writeFile(reply, effortReply([S_FIX], 'CLI で取り込み'));
+    const imp = atlas(['judge', 'import', reply, '--out', out2, '--settings', settings2]);
+    expect(imp.status, imp.out).toBe(0);
+    expect(imp.out).toContain(`judge import: 1 件を取り込みました(既存の上書き 0 件、取り込み元の重複 0 件)→ ${join(settings2, 'judgments.json')}`);
+    expect(imp.out).toMatch(/export: /);
+    expect((await embedded(out2)).sessions.find((s) => s.id === S_FIX)?.judgment).toMatchObject({ taskSummary: 'CLI で取り込み' });
   }, 600_000);
 
   it('g. 設定のフォルダが無ければ、判定は今までどおり出力先に置く', async () => {
@@ -364,6 +377,9 @@ describe('本番の置き方: 設定のフォルダ(AtlasSettings)を使い、�
     const before = existsSync(join(settings, 'judgments.json')) ? await readFile(join(settings, 'judgments.json'), 'utf8') : null;
     const r = atlas(['judge', 'import', reply, '--out', out3]);
     expect(r.status, r.out).toBe(0);
+    // 取り込めたらレポートを作り直す
+    expect(r.out).toMatch(/export: /);
+    expect((await embedded(out3)).sessions.find((s) => s.id === S_FIX)?.judgment).toMatchObject({ taskSummary: 'ふだんの置き場' });
     expect((await readJson<Judgments>(join(out3, 'judgments.json'))).items.map((i) => i.taskSummary)).toEqual(['ふだんの置き場']);
     expect(existsSync(join(settings, 'judgments.json')) ? await readFile(join(settings, 'judgments.json'), 'utf8') : null).toBe(before);
   }, 600_000);

@@ -115,7 +115,18 @@ pub fn local_view(i: LocalInputs<'_>) -> Option<TasksView> {
         .tasks
         .iter()
         .filter(|(id, t)| !t.missing || linked.contains(id.as_str()))
-        .map(|(id, t)| TaskInfo { id: id.clone(), name: t.name.clone(), status: t.status.clone(), done: t.done, done_at: t.done_at.clone(), done_observed: t.done_observed, done_at_source: t.done_source(), missing: t.missing, start_hint: None })
+        .map(|(id, t)| TaskInfo {
+            id: id.clone(),
+            name: t.name.clone(),
+            status: t.status.clone(),
+            done: t.done,
+            done_at: t.done_at.clone(),
+            done_observed: t.done_observed,
+            done_at_source: t.done_source(),
+            done_date_only: t.done_date_only && t.done_source() == Some(super::state::DoneAtSource::Recorded),
+            missing: t.missing,
+            start_hint: None,
+        })
         .collect();
     let (items, summary) = compute_task_metrics(&tasks, &pairs, i.facts, i.work_hours);
     fill_counted(&mut links, &tasks, i.facts);
@@ -169,7 +180,7 @@ mod tests {
     }
 
     fn ts(name: &str, missing: bool) -> TaskState {
-        TaskState { name: name.into(), status: "Open".into(), done: false, first_seen_at: "t".into(), done_at: None, last_seen_at: "t".into(), missing, done_observed: false, done_at_source: None }
+        TaskState { name: name.into(), status: "Open".into(), done: false, first_seen_at: "t".into(), done_at: None, last_seen_at: "t".into(), missing, done_observed: false, done_at_source: None, done_date_only: false }
     }
 
     #[test]
@@ -219,7 +230,7 @@ mod tests {
         s3.active_ms = Some(600_000.0);
         let sessions = vec![&s1, &s2, &s3];
         let mut state = TasksFile::default();
-        let done = |name: &str| TaskState { name: name.into(), status: "Done".into(), done: true, first_seen_at: "t".into(), done_at: Some("2026-11-05T00:00:00.000Z".into()), last_seen_at: "2026-11-05T00:00:00.000Z".into(), missing: false, done_observed: true, done_at_source: None };
+        let done = |name: &str| TaskState { name: name.into(), status: "Done".into(), done: true, first_seen_at: "t".into(), done_at: Some("2026-11-05T00:00:00.000Z".into()), last_seen_at: "2026-11-05T00:00:00.000Z".into(), missing: false, done_observed: true, done_at_source: None, done_date_only: false };
         state.tasks.insert("T".into(), done("終わった仕事"));
         state.tasks.insert("U".into(), TaskState { done: false, done_at: None, status: "Open".into(), done_observed: false, ..done("続く仕事") });
         let mut links = LinksFile::default();
@@ -261,7 +272,7 @@ mod tests {
     #[test]
     fn sender_view_uses_only_shown_sessions() {
         let a = rec("s1", "2026-11-23T01:00:00Z");
-        let t = SenderTask { id: "T".into(), name: "n".into(), status: "Open".into(), done: false, done_at: None, done_observed: false, done_at_recorded: false, last_seen_at: None, start: None, source: LinkSource::Llm, reason: "r".into() };
+        let t = SenderTask { id: "T".into(), name: "n".into(), status: "Open".into(), done: false, done_at: None, done_observed: false, done_at_recorded: false, done_date_only: false, last_seen_at: None, start: None, source: LinkSource::Llm, reason: "r".into() };
         let per = vec![("s1".to_string(), vec![t.clone(), SenderTask { id: "V".into(), ..t.clone() }]), ("hidden".to_string(), vec![SenderTask { id: "U".into(), ..t }])];
         let facts = session_facts(&[&a], &HashMap::new());
         let v = sender_view(&per, &["s1"], &facts, &WorkHours::default(), false).unwrap();

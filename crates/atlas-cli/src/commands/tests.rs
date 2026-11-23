@@ -64,7 +64,7 @@ fn out_lock_stops_writing_commands() {
 
 #[test]
 fn refresh_args_follow_the_opened_folder() {
-    let p = JobArgsInput { out_dir: "o", notes_dir: "n", home: None, settings: None };
+    let p = JobArgsInput { out_dir: "o", notes_dir: "n", home: None, settings: None, judgments: None };
     let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     assert_eq!(job_args(&JobRequest::Refresh, &p), Some(v(&["all", "--out", "o", "--notes-dir", "n"])));
     let h = JobArgsInput { home: Some("/srv/logs/person-a"), ..p };
@@ -88,6 +88,15 @@ fn refresh_args_follow_the_opened_folder() {
     for r in [JobRequest::Refresh, JobRequest::Bundle, JobRequest::BundleZip, JobRequest::Export, JobRequest::TurnBundle, JobRequest::TurnBundleZip, JobRequest::TaskBundleZip, JobRequest::TurnM365, JobRequest::TaskM365] {
         let a = job_args(&r, &st).unwrap();
         crate::args::parse_cli(&a).unwrap_or_else(|e| panic!("{a:?}: {e}"));
+    }
+    // serve --judgments X: 画面の取り込み先と同じ工数の判定のファイルを、どのジョブにも渡す(束の --unjudged・M365・作り直しが同じファイルを読む)
+    let j = JobArgsInput { judgments: Some("J"), ..st };
+    assert_eq!(job_args(&JobRequest::BundleZip, &j), Some(v(&["bundle", "--unjudged", "--zip", "--out", "o", "--notes-dir", "n", "--settings", "S", "--judgments", "J"])));
+    assert_eq!(job_args(&JobRequest::Export, &j), Some(v(&["export", "--out", "o", "--notes-dir", "n", "--settings", "S", "--judgments", "J"])));
+    for r in [JobRequest::Refresh, JobRequest::Bundle, JobRequest::BundleZip, JobRequest::Export, JobRequest::TurnBundle, JobRequest::TurnBundleZip, JobRequest::TaskBundle, JobRequest::TaskBundleZip, JobRequest::M365, JobRequest::TurnM365, JobRequest::TaskM365] {
+        let a = job_args(&r, &j).unwrap();
+        let o = crate::args::parse_cli(&a).unwrap_or_else(|e| panic!("{a:?}: {e}"));
+        assert_eq!(o.judgments.as_deref(), Some("J"), "{a:?}");
     }
 }
 

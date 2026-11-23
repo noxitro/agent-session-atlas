@@ -52,6 +52,13 @@ describe('モデルどうし', () => {
       { model: 'mc', sessions: 1 },
     ]);
     expect(defaultModels(modelChoices(list))).toEqual(['ma', 'mb']);
+    // 強度を 1 つ選んだときは、その強度と決まったセッションだけを数える(modelSplit の母集団と同じ)
+    expect(modelChoices(list, 'medium')).toEqual([
+      { model: 'ma', sessions: 2 },
+      { model: 'mb', sessions: 1 },
+      { model: 'mc', sessions: 1 },
+    ]);
+    expect(modelChoices(list, 'xhigh')).toEqual([{ model: 'ma', sessions: 1 }]);
     expect(defaultModels([{ model: 'only' }])).toEqual(['only', 'only']);
     expect(defaultModels([])).toEqual(['', '']);
   });

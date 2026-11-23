@@ -25,7 +25,8 @@ pub(crate) fn turns_by_session(sessions: &[Value]) -> HashMap<String, usize> {
         .collect()
 }
 
-pub fn run_turns(p: &Paths, f: &SessionFilter, t: &TurnsCliOptions, zip: bool, log: Log<'_>) -> Result<()> {
+/// 束を作る(bundle)か、返答を取り込む(import)。取り込んだときは、取り込んだ数を返す(1 件以上なら、呼ぶ側がレポートを作り直す)
+pub fn run_turns(p: &Paths, f: &SessionFilter, t: &TurnsCliOptions, zip: bool, log: Log<'_>) -> Result<usize> {
     let phases = phase_names_in(p.settings.as_deref())?;
     if t.action == "bundle" {
         let sel = select_sessions(p, f, "turns", "先に atlas extract(または atlas all)を実行してください。", log)?;
@@ -58,7 +59,7 @@ pub fn run_turns(p: &Paths, f: &SessionFilter, t: &TurnsCliOptions, zip: bool, l
             log(&format!("turns bundle: ZIP にまとめました({} ファイル、{}、無圧縮。parts/ は入れていません)→ {}", z.files, mb(z.bytes), path.display()));
             log("turns bundle: フォルダやファイルを読めるエージェントに渡し、INSTRUCTIONS.md を最初に読ませてください。返ってきた JSON は atlas turns import <ファイル> で取り込みます");
         }
-        return Ok(());
+        return Ok(0);
     }
     let known = if p.sessions.exists() { read_sessions_value(&p.sessions)? } else { vec![] };
     let tbs = turns_by_session(&known);
@@ -74,5 +75,5 @@ pub fn run_turns(p: &Paths, f: &SessionFilter, t: &TurnsCliOptions, zip: bool, l
             if r.unknown.len() > 5 { " …" } else { "" }
         ));
     }
-    Ok(())
+    Ok(r.imported)
 }

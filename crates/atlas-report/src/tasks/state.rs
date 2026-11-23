@@ -12,7 +12,12 @@
 //! 完了を確認した時刻は、管理ツールで完了にした時刻ではなく、完了を最初に見た書き出しの時刻(書き出す間隔だけずれる。出所は「観測」)。
 //! 設定に完了日時の項目(tasks.doneAt)があり、完了のタスクの値を読めれば(hours::parse_done_at)、その日時を完了の時刻にする(出所は「記録」)。
 //! 記録の完了日時は完了の時刻が分かるものとして、初めて見たときに完了していたタスクでも doneObserved にする。
-//! 読めない値は数を知らせ、そのタスクは観測の決め方に戻す。完了のまま記録が無くなったときは、前に決めた時刻と出所を残す。
+//! 読めない値(書き方の違うもの・2000 年より前・XML の更新時刻の 1 日後より後)は数を知らせ、そのタスクは観測の決め方に戻す。
+//! ただし前に記録の時刻を決めたタスクは、読めない値でも、値が無くなっても(doneAt を設定から外したときも)、前の時刻と出所を残す(数は分けて知らせる)。
+//! 日付だけの完了日(hours::DoneAt::date_only)は doneDateOnly に残し、時刻はその日の稼働時間帯の終わりにする(工数はここまで)。
+//! 候補と「完了の後に始まった」の判定は、その日の終わり(24:00。TaskState::done_cutoff_ms)で見る。
+//! 「同じ読み方」かは、稼働時間帯を除いた目印(TaskSource::reading_key)で見る(稼働時間帯を変えた回に完了したタスクも、完了に変わるのを見たとする)。
+//! 読み直すかは、稼働時間帯も入れた目印(settings_key)で決める(日付だけの完了日の時刻が変わるため)。
 //! 書き込みは壊れたファイルを上書きしない(直してもらう)。読んで書く間はファイルのロック(with_file_lock)を持つ。
 
 use super::xml::{read_tasks_file, XmlRead, XmlSpec, XML_SIZE_LIMIT};
@@ -46,6 +51,9 @@ pub struct TaskState {
     /// 完了の時刻の出所(記録: XML の完了日時。観測: 完了を見た書き出しの時刻)。未完了なら無い。前の版の tasks.json には無い(観測として読む)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub done_at_source: Option<DoneAtSource>,
+    /// 完了の時刻が、XML の日付だけの完了日から決めたもの(時刻はその日の稼働時間帯の終わり)。記録のときだけ。前の版の tasks.json には無い
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub done_date_only: bool,
 }
 
 /// 完了の時刻の出所
@@ -72,6 +80,23 @@ impl TaskState {
     pub fn done_source(&self) -> Option<DoneAtSource> {
         (self.done && self.done_at.is_some()).then(|| self.done_at_source.unwrap_or(DoneAtSource::Observed))
     }
+
+    /// 候補と「完了の後に始まった」の判定に使う完了の時刻(完了していなければ None)。日付だけの完了日は、その日の終わり(24:00)
+    pub fn done_cutoff_ms(&self) -> Option<i64> {
+        if !self.done {
+            return None;
+        }
+        done_cutoff(self.done_at.as_deref(), self.done_date_only)
+    }
+}
+
+/// 完了の時刻(ISO)から、候補と「完了の後に始まった」の判定に使う時刻。日付だけの完了日は、その日の終わり(24:00)
+pub fn done_cutoff(done_at: Option<&str>, date_only: bool) -> Option<i64> {
+    let ms = done_at.and_then(atlas_core::jsdate::parse_ms)?;
+    if date_only {
+        return super::hours::day_end_ms(ms).or(Some(ms));
+    }
+    Some(ms)
 }
 
 /// 最後に読んだ XML
@@ -85,8 +110,26 @@ pub struct TasksStamp {
     pub path: String,
     /// ファイルの更新時刻(ISO。観測の時刻)
     pub modified_at: String,
-    /// 読み方の目印(TaskSource::settings_key)
+    /// 読み方の目印(TaskSource::settings_key。読み直すかはこれで決める)
     pub settings: String,
+    /// 稼働時間帯を除いた読み方の目印(TaskSource::reading_key)。settings と違うとき(完了日時の項目を指したとき)だけ書く。
+    /// 「同じ読み方」(完了に変わるのを見たか)はこれで比べる。無ければ settings と同じ
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reading: Option<String>,
+}
+
+impl TasksStamp {
+    /// 「同じ読み方」を比べる目印(稼働時間帯を除いたもの)
+    pub fn reading_key(&self) -> &str {
+        self.reading.as_deref().unwrap_or(&self.settings)
+    }
+
+    /// 読み方の目印 2 つを設定から入れる
+    pub fn of(source: &TaskSource, file: String, path: String, modified_at: String) -> TasksStamp {
+        let settings = source.settings_key();
+        let reading = Some(source.reading_key()).filter(|r| *r != settings);
+        TasksStamp { file, path, modified_at, settings, reading }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -163,35 +206,50 @@ pub struct SyncSummary {
     pub older: bool,
     /// 完了のタスクのうち、XML の完了日時を完了の時刻にした数(記録)
     pub recorded: usize,
-    /// 完了のタスクのうち、完了日時の値を読めなかった数(観測の決め方に戻した)
+    /// 完了のタスクのうち、完了日時の値を読めなかった数(観測の決め方に戻した)。範囲の外(2000 年より前・XML の更新時刻の 1 日後より後)も入れる
     pub done_at_unreadable: usize,
+    /// 完了日時の値を読めなかったが、前に記録の時刻を決めてあったので、前の記録を残した数(done_at_unreadable とは別に数える)
+    pub done_at_unreadable_kept: usize,
 }
+
+/// 2000-01-01T00:00:00Z(これより前の完了日時は読めない値とする。送った人の記録の日時と同じ範囲)
+const DONE_AT_MIN_MS: i64 = 946_684_800_000;
+const DAY_MS: i64 = 86_400_000;
 
 /// 読んだ XML を状態に反映する(完了日時は読まない)。stamp が前に読んだものと同じなら何もしない
 pub fn apply_read(f: &mut TasksFile, read: &XmlRead, stamp: TasksStamp, is_done: impl Fn(&str) -> bool) -> SyncSummary {
     apply_read_with(f, read, stamp, is_done, |_| None)
 }
 
-/// apply_read に、XML の完了日時の読み方(読めなければ None)を足したもの
-pub fn apply_read_with(f: &mut TasksFile, read: &XmlRead, stamp: TasksStamp, is_done: impl Fn(&str) -> bool, done_at_of: impl Fn(&str) -> Option<i64>) -> SyncSummary {
+/// apply_read に、XML の完了日時の読み方(読めなければ None)を足したもの。
+/// 読めても、2000 年より前・XML の更新時刻(観測の時刻)の 1 日後より後のものは、読めない値とする(書き間違い・予定日の取り違えなど)
+pub fn apply_read_with(f: &mut TasksFile, read: &XmlRead, stamp: TasksStamp, is_done: impl Fn(&str) -> bool, done_at_of: impl Fn(&str) -> Option<super::hours::DoneAt>) -> SyncSummary {
     if f.source.as_ref() == Some(&stamp) {
         return SyncSummary { unchanged: true, total: read.tasks.len(), ..Default::default() };
     }
     if is_older(f, &stamp, atlas_core::jsdate::now_ms()) {
         return SyncSummary { unchanged: true, older: true, total: read.tasks.len(), ..Default::default() };
     }
-    // 同じ読み方での 2 回目以降の読み込みか(読み方を変えて完了になったものは、完了に変わるのを見たとしない)
-    let same_settings = f.source.as_ref().is_some_and(|p| p.settings == stamp.settings);
+    // 同じ読み方での 2 回目以降の読み込みか(読み方を変えて完了になったものは、完了に変わるのを見たとしない)。
+    // 稼働時間帯は完了かどうかの読み方を変えないので、比べる目印に入れない
+    let same_settings = f.source.as_ref().is_some_and(|p| p.reading_key() == stamp.reading_key());
     let obs = stamp.modified_at.clone();
+    let latest = atlas_core::jsdate::parse_ms(&obs).map(|ms| ms + DAY_MS);
+    let in_range = |d: &super::hours::DoneAt| d.ms >= DONE_AT_MIN_MS && latest.is_none_or(|l| d.ms <= l);
     let mut s = SyncSummary { total: read.tasks.len(), ..Default::default() };
     let mut present = std::collections::HashSet::new();
     for t in &read.tasks {
         present.insert(t.id.as_str());
         let done = is_done(&t.status);
         // XML の完了日時(完了のタスクだけ見る)
-        let recorded = if done { t.done_at.as_deref().map(|v| done_at_of(v).map(atlas_core::jsdate::to_iso)) } else { None };
+        let recorded = if done { t.done_at.as_deref().map(|v| done_at_of(v).filter(in_range)) } else { None };
         if matches!(recorded, Some(None)) {
-            s.done_at_unreadable += 1;
+            // 前に記録の時刻を決めてあるタスク(完了のまま)は、前の記録を残す(下の Some(cur) の枝)。数は分けて知らせる
+            if f.tasks.get(&t.id).is_some_and(|c| c.done && c.done_source() == Some(DoneAtSource::Recorded)) {
+                s.done_at_unreadable_kept += 1;
+            } else {
+                s.done_at_unreadable += 1;
+            }
         }
         let recorded = recorded.flatten();
         if recorded.is_some() {
@@ -213,9 +271,10 @@ pub fn apply_read_with(f: &mut TasksFile, read: &XmlRead, stamp: TasksStamp, is_
                     missing: false,
                     done_observed: false,
                     done_at_source: done.then_some(DoneAtSource::Observed),
+                    done_date_only: false,
                 };
                 if let Some(r) = recorded {
-                    (st.done_at, st.done_observed, st.done_at_source) = (Some(r), true, Some(DoneAtSource::Recorded));
+                    (st.done_at, st.done_observed, st.done_at_source, st.done_date_only) = (Some(atlas_core::jsdate::to_iso(r.ms)), true, Some(DoneAtSource::Recorded), r.date_only);
                 }
                 f.tasks.insert(t.id.clone(), st);
             }
@@ -228,19 +287,22 @@ pub fn apply_read_with(f: &mut TasksFile, read: &XmlRead, stamp: TasksStamp, is_
                     cur.done_at = Some(obs.clone());
                     cur.done_observed = same_settings;
                     cur.done_at_source = Some(DoneAtSource::Observed);
+                    cur.done_date_only = false;
                 } else if !done && cur.done {
                     s.reopened += 1;
                     cur.done_at = None;
                     cur.done_observed = false;
                     cur.done_at_source = None;
+                    cur.done_date_only = false;
                 } else if done && cur.done_at.is_none() {
                     cur.done_at = Some(obs.clone());
                     cur.done_observed = false;
                     cur.done_at_source = Some(DoneAtSource::Observed);
+                    cur.done_date_only = false;
                 }
                 // XML に完了日時の記録があれば、いつもそれを完了の時刻にする(書き出しごとに読み直す)
                 if let Some(r) = recorded {
-                    (cur.done_at, cur.done_observed, cur.done_at_source) = (Some(r), true, Some(DoneAtSource::Recorded));
+                    (cur.done_at, cur.done_observed, cur.done_at_source, cur.done_date_only) = (Some(atlas_core::jsdate::to_iso(r.ms)), true, Some(DoneAtSource::Recorded), r.date_only);
                 }
                 cur.done = done;
                 cur.name = t.name.clone();
@@ -302,21 +364,20 @@ pub fn sync_tasks(source: &TaskSource, state_path: &Path) -> std::result::Result
 
 fn sync_locked(source: &TaskSource, state_path: &Path) -> std::result::Result<SyncReport, String> {
     let mut state = load_tasks_for_write(state_path).map_err(|e| e.to_string())?;
-    let settings = source.settings_key();
     // 前に読んだときと同じ更新時刻なら、XML を読み直さない
     if let (Ok(meta), Some(prev)) = (std::fs::metadata(&source.file), state.source.as_ref())
         && meta.is_file()
         && meta.len() <= XML_SIZE_LIMIT
     {
         let mtime = atlas_core::jsfs::mtime_ms(&meta).floor() as i64;
-        let stamp = TasksStamp { file: file_name(&source.file), path: path_of(&source.file), modified_at: atlas_core::jsdate::to_iso(mtime), settings: settings.clone() };
+        let stamp = TasksStamp::of(source, file_name(&source.file), path_of(&source.file), atlas_core::jsdate::to_iso(mtime));
         if *prev == stamp {
             let total = state.tasks.values().filter(|t| !t.missing).count();
             return Ok(SyncReport { summary: SyncSummary { unchanged: true, total, ..Default::default() }, notes: vec![], state });
         }
     }
     let (read, mtime) = read_tasks_file(&source.file, &XmlSpec::of(source))?;
-    let stamp = TasksStamp { file: file_name(&source.file), path: path_of(&source.file), modified_at: atlas_core::jsdate::to_iso(mtime), settings };
+    let stamp = TasksStamp::of(source, file_name(&source.file), path_of(&source.file), atlas_core::jsdate::to_iso(mtime));
     let prev = state.source.as_ref().map(|p| p.modified_at.clone());
     let summary = apply_read_with(&mut state, &read, stamp.clone(), |s| source.is_done(s), |v| super::hours::parse_done_at(v, &source.work_hours));
     if summary.older {
@@ -332,11 +393,12 @@ fn sync_locked(source: &TaskSource, state_path: &Path) -> std::result::Result<Sy
         save_tasks(state_path, &state).map_err(|e| format!("{e:#}"))?;
     }
     let mut notes = read.notes();
+    const READABLE: &str = "読める書き方: 2026-11-20T15:30:00+09:00 などの ISO 8601、2026-11-20・2026/11/20(後ろに 15:30 などの時刻を付けられます)。2000 年より前と、XML の書き出しの 1 日後より後の日時は読みません";
     if summary.done_at_unreadable > 0 {
-        notes.push(format!(
-            "完了日時(設定の tasks.doneAt)を読めない完了のタスク {} 件は、完了を見た書き出しの時刻(観測)で数えます。読める書き方: 2026-11-20T15:30:00+09:00 などの ISO 8601、2026-11-20・2026/11/20(後ろに 15:30 などの時刻を付けられます)",
-            summary.done_at_unreadable
-        ));
+        notes.push(format!("完了日時(設定の tasks.doneAt)を読めない完了のタスク {} 件は、完了を見た書き出しの時刻(観測)で数えます。{READABLE}", summary.done_at_unreadable));
+    }
+    if summary.done_at_unreadable_kept > 0 {
+        notes.push(format!("完了日時(設定の tasks.doneAt)を今回は読めなかった完了のタスク {} 件は、前に読んだ完了日時(記録)を残します。{READABLE}", summary.done_at_unreadable_kept));
     }
     Ok(SyncReport { summary, notes, state })
 }
@@ -358,7 +420,7 @@ mod tests {
             items: items.len(),
             ..Default::default()
         };
-        let parse = |v: &str| atlas_core::jsdate::parse_ms(v).filter(|_| v.contains('T'));
+        let parse = |v: &str| atlas_core::jsdate::parse_ms(v).filter(|_| v.contains('T')).map(|ms| crate::tasks::hours::DoneAt { ms, date_only: false });
         let mut f = TasksFile::default();
         let s = apply_read_with(&mut f, &rec(&[("A", "Done", Some("2026-11-01T10:00:00.000Z")), ("B", "Done", Some("いつか")), ("C", "Open", Some("2026-11-01T10:00:00.000Z")), ("D", "Open", None)]), stamp(T1), done, parse);
         assert_eq!((s.recorded, s.done_at_unreadable), (1, 1));
@@ -381,6 +443,99 @@ mod tests {
         // 前の版の tasks.json(出所が無い)の完了は観測として読む
         let old: TaskState = serde_json::from_value(serde_json::json!({ "name": "n", "status": "Done", "done": true, "firstSeenAt": T1, "doneAt": T1, "lastSeenAt": T1 })).unwrap();
         assert_eq!(old.done_source(), Some(DoneAtSource::Observed));
+        assert!(!old.done_date_only);
+    }
+
+    /// 前に記録の時刻を決めたタスクの値が読めなくなったら、前の記録を残し、観測で数えるものとは分けて数える
+    #[test]
+    fn unreadable_value_keeps_the_previous_record() {
+        let rec = |items: &[(&str, Option<&str>)]| XmlRead {
+            tasks: items.iter().map(|(i, d)| XmlTask { id: i.to_string(), name: i.to_string(), status: "Done".into(), done_at: d.map(str::to_string) }).collect(),
+            items: items.len(),
+            ..Default::default()
+        };
+        let parse = |v: &str| atlas_core::jsdate::parse_ms(v).filter(|_| v.contains('T')).map(|ms| crate::tasks::hours::DoneAt { ms, date_only: false });
+        let mut f = TasksFile::default();
+        apply_read_with(&mut f, &rec(&[("A", Some("2026-11-01T10:00:00.000Z")), ("B", None)]), stamp(T1), done, parse);
+        let s = apply_read_with(&mut f, &rec(&[("A", Some("いつか")), ("B", Some("先週"))]), stamp(T2), done, parse);
+        // A は前の記録を残す(観測で数えるのは B だけ)
+        assert_eq!((s.done_at_unreadable, s.done_at_unreadable_kept), (1, 1));
+        assert_eq!((f.tasks["A"].done_at.as_deref(), f.tasks["A"].done_source()), (Some("2026-11-01T10:00:00.000Z"), Some(DoneAtSource::Recorded)));
+        assert_eq!(f.tasks["B"].done_source(), Some(DoneAtSource::Observed));
+    }
+
+    /// XML の更新時刻の 1 日後より後と、2000 年より前の完了日時は、読めない値として観測に戻す
+    #[test]
+    fn future_and_too_old_done_at_are_unreadable() {
+        let rec = |d: &str| XmlRead { tasks: vec![XmlTask { id: "A".into(), name: "A".into(), status: "Done".into(), done_at: Some(d.into()) }], items: 1, ..Default::default() };
+        let parse = |v: &str| atlas_core::jsdate::parse_ms(v).map(|ms| crate::tasks::hours::DoneAt { ms, date_only: false });
+        // T1 = 2026-11-02T09:00Z。1 日後ちょうどまでは読む
+        for (v, ok) in [("2026-11-03T09:00:00.000Z", true), ("2026-11-03T09:00:00.001Z", false), ("2030-01-01T00:00:00.000Z", false), ("1999-12-31T23:59:59.000Z", false), ("2000-01-01T00:00:00.000Z", true)] {
+            let mut f = TasksFile::default();
+            let s = apply_read_with(&mut f, &rec(v), stamp(T1), done, parse);
+            assert_eq!((s.recorded, s.done_at_unreadable), (usize::from(ok), usize::from(!ok)), "{v}");
+            let want = if ok { (Some(v), Some(DoneAtSource::Recorded)) } else { (Some(T1), Some(DoneAtSource::Observed)) };
+            assert_eq!((f.tasks["A"].done_at.as_deref(), f.tasks["A"].done_source()), want, "{v}");
+        }
+    }
+
+    /// 日付だけの完了日: 時刻は稼働時間帯の終わり(工数)、候補と「完了の後に始まった」の判定はその日の終わり
+    #[test]
+    fn date_only_done_at_keeps_the_day_end_for_cutoffs() {
+        atlas_core::jsdate::with_zone(&atlas_core::jsdate::TimeZone::fixed(atlas_core::jsdate::Offset::constant(9)), || {
+            let wh = crate::tasks::WorkHours::default();
+            let rec = |d: &str| XmlRead { tasks: vec![XmlTask { id: "A".into(), name: "A".into(), status: "Done".into(), done_at: Some(d.into()) }], items: 1, ..Default::default() };
+            let mut f = TasksFile::default();
+            apply_read_with(&mut f, &rec("2026/11/20"), stamp("2026-11-21T00:00:00.000Z"), done, |v| crate::tasks::hours::parse_done_at(v, &wh));
+            let a = &f.tasks["A"];
+            assert_eq!((a.done_at.as_deref(), a.done_date_only), (Some("2026-11-20T09:00:00.000Z"), true));
+            let ms = |s: &str| atlas_core::jsdate::parse_ms(s).unwrap();
+            assert_eq!(a.done_cutoff_ms(), Some(ms("2026-11-21T00:00:00+09:00")));
+            // その日の夜(稼働時間帯の後)に始めたセッションも候補。翌日に始めたものは候補でない
+            assert!(crate::tasks::links::is_candidate(a, Some(ms("2026-11-20T20:00:00+09:00"))));
+            assert!(!crate::tasks::links::is_candidate(a, Some(ms("2026-11-21T00:00:00.001+09:00"))));
+            let saved = serde_json::to_value(a).unwrap();
+            assert_eq!(saved["doneDateOnly"], true);
+            // 時刻つきの記録に変わったら、日付だけの印を外す
+            apply_read_with(&mut f, &rec("2026-11-20T15:00:00+09:00"), stamp("2026-11-22T00:00:00.000Z"), done, |v| crate::tasks::hours::parse_done_at(v, &wh));
+            assert!(!f.tasks["A"].done_date_only);
+            assert_eq!(f.tasks["A"].done_cutoff_ms(), Some(ms("2026-11-20T15:00:00+09:00")));
+            assert!(serde_json::to_value(&f.tasks["A"]).unwrap().get("doneDateOnly").is_none());
+        });
+    }
+
+    /// 稼働時間帯を変えた回に完了したタスクも、完了に変わるのを見たとする(「同じ読み方」は稼働時間帯を除いた目印で比べる)。
+    /// 同じ更新時刻の XML でも、稼働時間帯を変えたら読み直す(日付だけの完了日の時刻が変わるため)
+    #[test]
+    fn work_hours_change_keeps_observation_but_rereads() {
+        atlas_core::jsdate::with_zone(&atlas_core::jsdate::TimeZone::fixed(atlas_core::jsdate::Offset::constant(9)), || {
+            let d = tempfile::tempdir().unwrap();
+            let xml = d.path().join("export.xml");
+            let state = d.path().join(crate::tasks::TASKS_FILE_NAME);
+            let src = TaskSource { done_at: Some("ClosedDate".into()), ..TaskSource::with_file(&xml) };
+            let set_mtime = |ms: i64| atlas_core::jsfs::utimes(&xml, ms, ms).unwrap();
+            let now = atlas_core::jsdate::now_ms();
+            std::fs::write(&xml, r#"<Tasks><Task Id="A" Status="Open"/><Task Id="B" Status="Done" ClosedDate="2020/11/20"/></Tasks>"#).unwrap();
+            set_mtime(now - 3_600_000);
+            sync_tasks(&src, &state).unwrap();
+            // 稼働時間帯だけを変えた: 同じ更新時刻でも読み直し、日付だけの完了日の時刻を決め直す
+            let late = TaskSource { work_hours: crate::tasks::WorkHours { end_min: 20 * 60, ..Default::default() }, ..src.clone() };
+            assert_ne!(late.settings_key(), src.settings_key());
+            assert_eq!(late.reading_key(), src.reading_key());
+            let r = sync_tasks(&late, &state).unwrap();
+            assert!(!r.summary.unchanged);
+            assert_eq!(r.state.tasks["B"].done_at.as_deref(), Some("2020-11-20T11:00:00.000Z"));
+            // 稼働時間帯を変えた回に A が完了になった(記録なし): 完了に変わるのを見たとする
+            std::fs::write(&xml, r#"<Tasks><Task Id="A" Status="Done"/><Task Id="B" Status="Done" ClosedDate="2020/11/20"/></Tasks>"#).unwrap();
+            set_mtime(now - 60_000);
+            let r = sync_tasks(&src, &state).unwrap();
+            assert_eq!((r.summary.completed, r.state.tasks["A"].done_observed, r.state.tasks["A"].done_source()), (1, true, Some(DoneAtSource::Observed)));
+            let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&state).unwrap()).unwrap();
+            assert_eq!((saved["source"]["settings"].as_str(), saved["source"]["reading"].as_str()), (Some(src.settings_key().as_str()), Some(src.reading_key().as_str())));
+            // 完了日時の項目を指さなければ、目印は 1 つ(reading は書かない)
+            let plain = TasksStamp::of(&TaskSource::with_file(&xml), "f".into(), "p".into(), "t".into());
+            assert_eq!((plain.reading.as_deref(), plain.reading_key()), (None, TaskSource::with_file(&xml).settings_key().as_str()));
+        });
     }
 
     /// ファイルから: 設定の doneAt で読み、読めない値は注意を出す。時刻の無い日付は稼働時間帯の終わり
@@ -407,7 +562,7 @@ mod tests {
     }
 
     fn stamp(at: &str) -> TasksStamp {
-        TasksStamp { file: "export.xml".into(), path: "x/export.xml".into(), modified_at: at.into(), settings: "k".into() }
+        TasksStamp { file: "export.xml".into(), path: "x/export.xml".into(), modified_at: at.into(), settings: "k".into(), reading: None }
     }
 
     fn done(s: &str) -> bool {

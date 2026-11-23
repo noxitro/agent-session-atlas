@@ -152,6 +152,18 @@ impl ServeOptions {
     }
 }
 
+/// 返答の取り込みで書けなかったときの応答。ほかの書き手(別の集計する人・ジョブ)がロックを持ったまま待ちきれなかった・
+/// 書き換えない壊れたファイルは 409(少し待つか直してもう一度。タスクの紐づけの書き込みと同じ)、ほかは 400
+pub(crate) fn import_error(e: &anyhow::Error) -> HttpError {
+    if e.downcast_ref::<atlas_report::tasks::LockBusy>().is_some() {
+        return HttpError::new(409, format!("ほかの人(か別の処理)が書き込み中です。少し待ってから、もう一度取り込んでください(何も取り込んでいません。{e:#})"));
+    }
+    if e.downcast_ref::<atlas_report::tasks::BrokenFile>().is_some() {
+        return HttpError::new(409, format!("{e:#}"));
+    }
+    HttpError::new(400, format!("{e:#}"))
+}
+
 /// 画面に返す失敗(状態コードと理由)
 #[derive(Debug, Clone, PartialEq)]
 pub struct HttpError {
@@ -586,6 +598,8 @@ pub fn start_serve(o: ServeOptions) -> anyhow::Result<ServeHandle> {
             notes_dir: notes_abs.clone(),
             home: o.home.clone(),
             settings: o.settings_dir.as_ref().map(|d| crate::paths::resolve(d).to_string_lossy().into_owned()),
+            // 画面の取り込み(self.judgments)と、ジョブ(束・M365・作り直し)が同じ工数の判定のファイルを使うように
+            judgments: o.judgments.as_ref().map(|j| crate::paths::resolve(j).to_string_lossy().into_owned()),
             spawn: o.job_spawn.clone(),
             env,
             run_full,
@@ -1806,7 +1820,7 @@ impl Server {
                         let what = if target == ChatTarget::Tasks { "紐づけ" } else { "判定" };
                         return Ok(send_json(400, &json!({ "error": format!("返答の形が{what}の形式に合いません(何も取り込んでいません)"), "problems": v.problems })));
                     }
-                    return Err(HttpError::new(400, format!("{e:#}")));
+                    return Err(import_error(&e));
                 }
             };
             if target != ChatTarget::Tasks {

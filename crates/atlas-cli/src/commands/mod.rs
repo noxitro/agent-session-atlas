@@ -98,6 +98,15 @@ pub(crate) fn run_m365_command(o: &CliOptions, p: &Paths, target: ChatTarget, mo
     Ok(RunResult { build })
 }
 
+/// judge import・turns import の後に、1 件以上取り込めて集計の結果(sessions.json)があれば、レポートを作り直す(export。tasks import と同じ)。
+/// 設定のフォルダを使うときも、同じ設定(o と p は当てた後のもの)で作り直す
+fn rebuild_after_import(o: &CliOptions, p: &Paths, imported: usize, log: Log<'_>) -> Result<RunResult> {
+    if imported == 0 || !p.sessions.exists() {
+        return Ok(RunResult::default());
+    }
+    run_command(&CliOptions { command: "export".into(), model: None, judge: None, turns: None, tasks_cmd: None, sessions: None, task: None, ..o.clone() }, p, log)
+}
+
 pub fn run_command(o: &CliOptions, p: &Paths, log: Log<'_>) -> Result<RunResult> {
     match o.command.as_str() {
         "snapshot" => {
@@ -130,8 +139,8 @@ pub fn run_command(o: &CliOptions, p: &Paths, log: Log<'_>) -> Result<RunResult>
             if t.action == "m365" {
                 return run_m365_command(o, p, ChatTarget::Turns, t.model.as_deref(), t.limit, t.timeout_sec, log);
             }
-            turns::run_turns(p, &metrics::SessionFilter { model: None, ..metrics::SessionFilter::from_cli(o) }, t, o.zip, log)?;
-            Ok(RunResult::default())
+            let imported = turns::run_turns(p, &metrics::SessionFilter { model: None, ..metrics::SessionFilter::from_cli(o) }, t, o.zip, log)?;
+            rebuild_after_import(o, p, imported, log)
         }
         "judge" => {
             let j = o.judge.as_ref().ok_or_else(|| anyhow::anyhow!("judge の操作がありません"))?;
@@ -141,8 +150,8 @@ pub fn run_command(o: &CliOptions, p: &Paths, log: Log<'_>) -> Result<RunResult>
             if j.action == "m365" {
                 return run_m365_command(o, p, ChatTarget::Effort, j.model.as_deref(), j.limit, j.timeout_sec, log);
             }
-            judge::run_judge_import(p, j, log)?;
-            Ok(RunResult::default())
+            let imported = judge::run_judge_import(p, j, log)?;
+            rebuild_after_import(o, p, imported, log)
         }
         "tasks" => tasks::run_tasks_command(o, p, log),
         "memo" => {

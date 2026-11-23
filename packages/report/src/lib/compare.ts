@@ -428,11 +428,12 @@ export function effortSplit<T extends EffortSource>(sessions: readonly T[], mode
  */
 
 /** 本体がそのモデルと決まったセッションの数(強度は問わない。多い順、同数は名前の順) */
-export function modelChoices(sessions: readonly EffortSource[]): { model: string; sessions: number }[] {
+export function modelChoices(sessions: readonly EffortSource[], effort = ''): { model: string; sessions: number }[] {
   const n = new Map<string, number>();
   for (const s of sessions) {
     const m = mainEffortOf(s.exec?.mainModelEfforts);
-    if (m.kind === 'decided') n.set(m.model, (n.get(m.model) ?? 0) + 1);
+    // 強度を 1 つ選んだときは、その強度と決まったセッションだけを数える(modelSplit の母集団と同じ)
+    if (m.kind === 'decided' && (!effort || m.effort === effort)) n.set(m.model, (n.get(m.model) ?? 0) + 1);
   }
   return [...n].map(([model, c]) => ({ model, sessions: c })).sort((a, b) => b.sessions - a.sessions || a.model.localeCompare(b.model));
 }

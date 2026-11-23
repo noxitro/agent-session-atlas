@@ -100,13 +100,37 @@ fn take_num(s: &str, min: usize, max: usize) -> Option<(u32, &str)> {
     Some((s[..n].parse().ok()?, &s[n..]))
 }
 
+/// 読んだ完了日時
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DoneAt {
+    /// 完了の時刻(ミリ秒)。日付だけのものは、その日の稼働時間帯の終わり(工数はここまでを数える)
+    pub ms: i64,
+    /// 日付だけ(時刻の無い日付か、時差の無い 0:00 ちょうど)。候補と「完了の後に始まった」の判定には、その日の終わり(24:00)を使う(day_end_ms)
+    pub date_only: bool,
+}
+
+/// 日付だけの完了日の、その日の稼働時間帯の終わり(workHours.end。24:00 なら翌日の 0 時)のローカル時刻
+fn work_end_of(date: Civil, wh: &WorkHours) -> Option<i64> {
+    let end = if wh.end_min >= 1440 { date.add_days(1)? } else { date.at(wh.end_min / 60, wh.end_min % 60, 0)? };
+    local_ms(end)
+}
+
+/// 日付だけの完了日の、その日の終わり(翌日の 0 時のローカル時刻)。ms はその日の稼働時間帯の終わり(DoneAt::ms。
+/// 24:00 なら翌日の 0 時なので、1 ミリ秒前の日付で見る)
+pub fn day_end_ms(ms: i64) -> Option<i64> {
+    let p = local_parts(ms - 1)?;
+    local_ms(Civil::date(p.year, p.month, p.day)?.add_days(1)?)
+}
+
 /// 管理ツールの XML にある完了日時(設定の tasks.doneAt)を読む。読めなければ None。読む書き方は次のとおり:
 /// - 日付: YYYY-MM-DD か YYYY/MM/DD(月と日は 1 桁でもよい)。暦に無い日(2 月 30 日など)は読まない
 /// - 時刻(任意): 日付の後に T か空白を挟んで HH:MM、HH:MM:SS、HH:MM:SS.fff
 /// - 時差(任意。時刻があるときだけ): Z か ±HH:MM か ±HHMM。無ければこの PC のローカル時刻
-/// 時刻の無い日付は、その日の稼働時間帯の終わり(workHours.end。24:00 なら翌日の 0 時)のローカル時刻にする
-/// (その日のうちに終わったとみなし、その日の稼働時間をすべて数える。稼働日でない曜日でも同じ時刻にする)
-pub fn parse_done_at(s: &str, wh: &WorkHours) -> Option<i64> {
+/// 時刻の無い日付と、時差の無い 0:00 ちょうど(`2026/11/20 0:00:00` など。日付だけの項目を日時の形で書き出す管理ツールがあるため)は、
+/// 日付だけとして読む(date_only)。ms はその日の稼働時間帯の終わり(workHours.end。24:00 なら翌日の 0 時)のローカル時刻にする
+/// (その日のうちに終わったとみなし、その日の稼働時間をすべて数える。稼働日でない曜日でも同じ時刻にする)。
+/// 時差を書いた 0:00 は、書いたとおりの時刻にする(時差まで書いたものは、時刻も意図したものとみなす)
+pub fn parse_done_at(s: &str, wh: &WorkHours) -> Option<DoneAt> {
     let s = s.trim();
     let (y, rest) = take_num(s, 4, 4)?;
     let sep = rest.chars().next().filter(|c| *c == '-' || *c == '/')?;
@@ -114,9 +138,9 @@ pub fn parse_done_at(s: &str, wh: &WorkHours) -> Option<i64> {
     let rest = rest.strip_prefix(sep)?;
     let (d, rest) = take_num(rest, 1, 2)?;
     let date = Civil::date(y as i32, m, d)?;
+    let date_only = |date: Civil| work_end_of(date, wh).map(|ms| DoneAt { ms, date_only: true });
     if rest.is_empty() {
-        let end = if wh.end_min >= 1440 { date.add_days(1)? } else { date.at(wh.end_min / 60, wh.end_min % 60, 0)? };
-        return local_ms(end);
+        return date_only(date);
     }
     let rest = rest.strip_prefix('T').or_else(|| rest.strip_prefix(' '))?.trim_start();
     let (h, rest) = take_num(rest, 1, 2)?;
@@ -138,6 +162,9 @@ pub fn parse_done_at(s: &str, wh: &WorkHours) -> Option<i64> {
     };
     let at = date.at(h, mi, sec)?;
     let zone = rest.trim();
+    if zone.is_empty() && (h, mi, sec, frac_ms) == (0, 0, 0, 0) {
+        return date_only(date);
+    }
     let base = if zone.is_empty() {
         local_ms(at)?
     } else {
@@ -153,7 +180,7 @@ pub fn parse_done_at(s: &str, wh: &WorkHours) -> Option<i64> {
         };
         atlas_core::jsdate::parse_ms(&format!("{y:04}-{m:02}-{d:02}T{h:02}:{mi:02}:{sec:02}{off}"))?
     };
-    Some(base + frac_ms)
+    Some(DoneAt { ms: base + frac_ms, date_only: false })
 }
 
 #[cfg(test)]
@@ -166,7 +193,8 @@ mod tests {
     fn done_at_formats() {
         jst(|| {
             let wh = WorkHours::default();
-            let p = |s: &str| parse_done_at(s, &wh);
+            let p = |s: &str| parse_done_at(s, &wh).filter(|d| !d.date_only).map(|d| d.ms);
+            let day = |s: &str| parse_done_at(s, &wh).filter(|d| d.date_only).map(|d| d.ms);
             assert_eq!(p("2026-11-20T15:30:00+09:00"), Some(ms("2026-11-20T15:30:00+09:00")));
             assert_eq!(p("2026-11-20T06:30:00Z"), Some(ms("2026-11-20T15:30:00+09:00")));
             assert_eq!(p("2026-11-20T15:30:00.250+0900"), Some(ms("2026-11-20T15:30:00+09:00") + 250));
@@ -174,14 +202,26 @@ mod tests {
             assert_eq!(p("2026-11-20T15:30"), Some(ms("2026-11-20T15:30:00+09:00")));
             assert_eq!(p("2026-11-20 15:30:10"), Some(ms("2026-11-20T15:30:10+09:00")));
             assert_eq!(p("2026/11/20 9:05"), Some(ms("2026-11-20T09:05:00+09:00")));
-            assert_eq!(p(" 2026/1/5 "), Some(ms("2026-01-05T18:00:00+09:00")));
-            // 時刻の無い日付は、その日の稼働時間帯の終わり
-            assert_eq!(p("2026-11-20"), Some(ms("2026-11-20T18:00:00+09:00")));
+            assert_eq!(day(" 2026/1/5 "), Some(ms("2026-01-05T18:00:00+09:00")));
+            // 時刻の無い日付は日付だけ(時刻はその日の稼働時間帯の終わり)
+            assert_eq!(day("2026-11-20"), Some(ms("2026-11-20T18:00:00+09:00")));
             let late = WorkHours { end_min: 1440, ..WorkHours::default() };
-            assert_eq!(parse_done_at("2026-11-20", &late), Some(ms("2026-11-21T00:00:00+09:00")));
-            for bad in ["", "済み", "2026-02-30", "2026-13-01", "20261120", "2026-11-20T25:00", "2026-11-20T10", "2026-11/20", "26-11-20", "2026-11-20T10:00+9", "2026-11-20 10:00 JST", "2026-11-20T10:00:00.", "11/20/2026"] {
-                assert_eq!(p(bad), None, "{bad}");
+            assert_eq!(parse_done_at("2026-11-20", &late), Some(DoneAt { ms: ms("2026-11-21T00:00:00+09:00"), date_only: true }));
+            // 時差の無い 0:00 ちょうどは日付だけとみなす(日付だけの項目を日時の形で書き出す管理ツールのため)
+            for s in ["2026/11/20 0:00:00", "2026-11-20T00:00", "2026-11-20 00:00:00.000"] {
+                assert_eq!(day(s), Some(ms("2026-11-20T18:00:00+09:00")), "{s}");
             }
+            // 0:00 でも、時差を書いたもの・秒や小数があるものは書いたとおりの時刻
+            assert_eq!(p("2026-11-20T00:00:00+09:00"), Some(ms("2026-11-20T00:00:00+09:00")));
+            assert_eq!(p("2026-11-20T00:00:00Z"), Some(ms("2026-11-20T09:00:00+09:00")));
+            assert_eq!(p("2026-11-20 0:00:01"), Some(ms("2026-11-20T00:00:01+09:00")));
+            assert_eq!(p("2026-11-20 00:00:00.5"), Some(ms("2026-11-20T00:00:00+09:00") + 500));
+            for bad in ["", "済み", "2026-02-30", "2026-13-01", "20261120", "2026-11-20T25:00", "2026-11-20T10", "2026-11/20", "26-11-20", "2026-11-20T10:00+9", "2026-11-20 10:00 JST", "2026-11-20T10:00:00.", "11/20/2026"] {
+                assert_eq!(parse_done_at(bad, &wh), None, "{bad}");
+            }
+            // その日の終わり(候補と「完了の後に始まった」の判定に使う): 稼働時間帯の終わりが 24:00 でも同じ日の終わり
+            assert_eq!(day_end_ms(ms("2026-11-20T18:00:00+09:00")), Some(ms("2026-11-21T00:00:00+09:00")));
+            assert_eq!(day_end_ms(ms("2026-11-21T00:00:00+09:00")), Some(ms("2026-11-21T00:00:00+09:00")));
         });
     }
 

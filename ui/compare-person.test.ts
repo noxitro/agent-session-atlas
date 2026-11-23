@@ -110,9 +110,13 @@ describe('比べる: モデル・wiki の参照・人ごとの差', () => {
     const note = section().getByTestId('compare-model-excluded');
     expect(await note.innerText()).toContain('混在のセッション 1 件・記録なし 1 件');
     // 強度をそろえると、その強度と決まったセッションだけになる
+    const selected = (id: string) => section().getByTestId(id).locator('option:checked').textContent().then((t) => t ?? '');
     await section().getByTestId('compare-model-effort').selectOption('medium');
     await expect.poll(async () => Number(await cell('sessions', 0).innerText()) + Number(await cell('sessions', 1).innerText())).toBeLessThan(EFFORT_PEOPLE.length * 12);
     expect(await section().locator('[data-testid="compare-table"] th.num').first().innerText()).toContain('medium');
+    // モデルの選択肢の「期間内 N」も、選んだ強度で数える(表の A・B のセッション数と同じ)
+    expect(await selected('compare-model-a')).toContain(`(期間内 ${await cell('sessions', 0).innerText()})`);
+    expect(await selected('compare-model-b')).toContain(`(期間内 ${await cell('sessions', 1).innerText()})`);
   });
 
   it('b. 人の記録があるときだけ、人ごとの差(使えた人・平均・人を単位にした幅)と、畳んだ人ごとの表が出る', async () => {

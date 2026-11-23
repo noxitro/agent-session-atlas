@@ -3,9 +3,11 @@
 //! 工数の判定と同じく、チャットに貼る(parts/)か、フォルダ(ZIP。tasks bundle --zip)ごとエージェントに渡す。
 //!   sessions/<セッション ID>.md: 1 セッションのパケット
 //!   parts/part-<番号>.md: 指示・JSON Schema と、パケット数件(ファイルごとの乱数の境界で囲む)
-//!   INSTRUCTIONS.md・schema.json・manifest.json(セッションごとの候補の ID も残す。返答の検証に使う)
+//!   INSTRUCTIONS.md・schema.json・manifest.json(件数とファイルの一覧)
+//!   candidates.json: セッションごとの候補の ID(返答の検証に使う。束の版 2 から。版 1 の束は manifest.json の sessions[].candidates に持っていた)
+//!   (候補の ID を manifest.json から分けたのは、タスクの数だけ ID が並び、外部のエージェントが一覧の確認に読む manifest.json が大きくなるため)
 //! 1 つのセッションがいくつかのタスクの作業をすることもあるので、答えは 0 個以上のタスク(taskIds)。
-//! 返答の ID は、そのセッションの候補(manifest.json)にあるものだけを受け付け、重なりを除いて上限までにする。
+//! 返答の ID は、そのセッションの候補(candidates.json。版 1 の束は manifest.json)にあるものだけを受け付け、重なりを除いて上限までにする。
 //! 書き込み(task-links.json)は呼ぶ側(atlas-cli の tasks)がロックの中でする。
 
 use crate::bundle::{packet_file_name, BundleFiles};
@@ -20,7 +22,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
-pub const TASK_BUNDLE_VERSION: i64 = 1;
+/// 束の版。2 から、候補の ID を manifest.json から candidates.json に分けた(1 の束も読む)
+pub const TASK_BUNDLE_VERSION: i64 = 2;
+/// 候補の ID を manifest.json に持っていた束の版
+const TASK_BUNDLE_VERSION_INLINE: i64 = 1;
+/// セッションごとの候補の ID(束の中の名前。ZIP には入れない。返答の検証にだけ使う)
+pub const TASK_CANDIDATES_FILE: &str = "candidates.json";
 /// 返答の JSON の版
 pub const TASK_REPLY_VERSION: i64 = 1;
 /// 1 つの分割ファイルに入れるパケットの既定の数(1 パケットは候補 100 件で 1 万字ほどまで)
@@ -61,9 +68,19 @@ pub struct TaskBundleEntry {
     pub id: String,
     /// 束からの相対パス(/ 区切り)
     pub path: String,
-    /// 候補のタスクの ID(パケットに書いた順)。返答の ID はこの中にあるものだけを受け付ける
+    /// 候補のタスクの ID(パケットに書いた順)。返答の ID はこの中にあるものだけを受け付ける。
+    /// manifest.json には書かず(版 2)、candidates.json から読んで入れる。版 1 の束は manifest.json にある
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub candidates: Vec<String>,
     pub chars: i64,
+}
+
+/// candidates.json の中身
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct TaskCandidatesFile {
+    version: i64,
+    /// セッション ID → 候補のタスクの ID(パケットに書いた順)。並びは manifest.json の sessions と同じ
+    sessions: IndexMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -183,10 +200,11 @@ const INSTRUCTIONS_TPL: &str = "# 管理ツールのタスクへの紐づけの�
 ## フォルダの中身
 
 - `INSTRUCTIONS.md`: この指示(最初に読む)
-- `manifest.json`: パケットの一覧(`sessions[].id` と `sessions[].path`)
+- `manifest.json`: パケットの一覧(`sessions[].id` と `sessions[].path`)。件数とファイルの一覧を確かめるためのもので、全部を読まなくてかまいません
 - `schema.json`: 返す JSON の JSON Schema
 - `sessions/<セッション ID>.md`: パケット(1 セッション 1 ファイル。題名・最初の依頼の文・候補のタスク)
 - `parts/part-<番号>.md`: この指示と数件のパケットを 1 ファイルにまとめたもの(ZIP やフォルダを渡せないとき用。ZIP には入っていません。中身は `sessions/` と同じなので、あっても読まなくてかまいません)
+- `candidates.json`: 取り込みの検証に使う候補の ID の一覧(ZIP には入っていません。候補はパケットに書いてあるので、あっても読まなくてかまいません)
 - `⟦result⟧`: 結果を書くファイル(あなたが作ります)
 
 ## 守ること
@@ -195,7 +213,7 @@ const INSTRUCTIONS_TPL: &str = "# 管理ツールのタスクへの紐づけの�
 
 ## 手順
 
-1. `manifest.json` の `sessions` を上から順に処理します。一度に全件を読まず、**1 セッションずつ**パケットを読んで決めてください。
+1. `sessions/` のパケットを順に読みます(`manifest.json` は件数とファイルの一覧の確認用で、全部を読まなくてかまいません)。各パケットを読んで、**そのパケットだけを根拠に**決めます(同じ依頼のセッションが続くときは並べて読んでもかまいませんが、結果はパケットごとに決めます)。
 2. 各パケットについて、下の「決めること」で 1 項目の JSON を作ります。`sessionId` はパケットの「セッション ID」をそのまま写します。
 3. 決めた項目を次の形の JSON 1 つにまとめ、このフォルダの中の `⟦result⟧` に書きます。
 
@@ -326,7 +344,7 @@ pub struct TaskBundleOptions<'a> {
 }
 
 /// 入れ替える名前。先頭が一覧(manifest.json)
-const TASK_BUNDLE_ENTRIES: [&str; 5] = ["manifest.json", "sessions", "parts", "INSTRUCTIONS.md", "schema.json"];
+const TASK_BUNDLE_ENTRIES: [&str; 6] = ["manifest.json", "sessions", "parts", "INSTRUCTIONS.md", "schema.json", TASK_CANDIDATES_FILE];
 
 /// 作りかけの場所に全部を作ってから、前のものと入れ替える(途中で失敗しても、前に作ったものはそのまま使える)。
 /// queries は呼ぶ側が選んだセッション(紐づけの無いもの。候補が 1 つ以上)で、並びのまま書く
@@ -387,7 +405,11 @@ fn write_task_bundle(queries: &[LinkQuery], o: &TaskBundleOptions<'_>, dir: &Pat
     };
     std::fs::write(dir.join("INSTRUCTIONS.md"), render_task_instructions(manifest.sessions.len(), &generated_at))?;
     std::fs::write(dir.join("schema.json"), &schema_json)?;
-    std::fs::write(dir.join("manifest.json"), format!("{}\n", atlas_core::json::to_js_string_pretty(&manifest)?))?;
+    // 候補の ID は candidates.json に分け、manifest.json は件数とファイルの一覧だけにする(読むのは read_task_bundle_manifest で 1 つに戻す)
+    let cands = TaskCandidatesFile { version: TASK_BUNDLE_VERSION, sessions: manifest.sessions.iter().map(|e| (e.id.clone(), e.candidates.clone())).collect() };
+    std::fs::write(dir.join(TASK_CANDIDATES_FILE), format!("{}\n", atlas_core::json::to_js_string_pretty(&cands)?))?;
+    let light = TaskBundleManifest { sessions: manifest.sessions.iter().map(|e| TaskBundleEntry { candidates: vec![], ..e.clone() }).collect(), ..manifest.clone() };
+    std::fs::write(dir.join("manifest.json"), format!("{}\n", atlas_core::json::to_js_string_pretty(&light)?))?;
     Ok(manifest)
 }
 
@@ -398,6 +420,8 @@ pub fn task_zip_names(m: &TaskBundleManifest) -> Vec<String> {
     names
 }
 
+/// 束の一覧を読む。候補の ID は、版 2 の束は candidates.json から、版 1 の束(前の版の atlas で作ったもの)は manifest.json から読んで、
+/// どちらも sessions[].candidates に入れて返す
 pub fn read_task_bundle_manifest(bundle_dir: &Path) -> Result<TaskBundleManifest> {
     let p = bundle_dir.join("manifest.json");
     if !p.exists() {
@@ -405,11 +429,26 @@ pub fn read_task_bundle_manifest(bundle_dir: &Path) -> Result<TaskBundleManifest
     }
     let text = std::fs::read(&p)?;
     let v = js::parse_json(&String::from_utf8_lossy(&text)).map_err(|e| anyhow!("{}: {e}", p.display()))?;
-    let version = v.get("version");
-    if version.and_then(Value::as_f64) != Some(TASK_BUNDLE_VERSION as f64) || !v.get("sessions").is_some_and(Value::is_array) {
-        bail!("{} の形式が想定と違います(version {})", p.display(), version.map_or_else(|| "undefined".into(), js::to_js_string));
+    let version = v.get("version").and_then(Value::as_f64);
+    let known = [TASK_BUNDLE_VERSION, TASK_BUNDLE_VERSION_INLINE].iter().any(|k| version == Some(*k as f64));
+    if !known || !v.get("sessions").is_some_and(Value::is_array) {
+        bail!("{} の形式が想定と違います(version {})", p.display(), v.get("version").map_or_else(|| "undefined".into(), js::to_js_string));
     }
-    serde_json::from_value(v).map_err(|e| anyhow!("{} の形式が想定と違います({e})", p.display()))
+    let mut m: TaskBundleManifest = serde_json::from_value(v).map_err(|e| anyhow!("{} の形式が想定と違います({e})", p.display()))?;
+    if m.version == TASK_BUNDLE_VERSION_INLINE {
+        return Ok(m);
+    }
+    let cp = bundle_dir.join(TASK_CANDIDATES_FILE);
+    if !cp.exists() {
+        bail!("{} がありません(束の一部が欠けています)。atlas tasks bundle で束を作り直してください。", cp.display());
+    }
+    let ct = std::fs::read(&cp)?;
+    let cv = js::parse_json(&String::from_utf8_lossy(&ct)).map_err(|e| anyhow!("{}: {e}", cp.display()))?;
+    let c: TaskCandidatesFile = serde_json::from_value(cv).map_err(|e| anyhow!("{} の形式が想定と違います({e})", cp.display()))?;
+    for e in &mut m.sessions {
+        e.candidates = c.sessions.get(&e.id).cloned().ok_or_else(|| anyhow!("{} にセッション {} の候補がありません。atlas tasks bundle で束を作り直してください。", cp.display(), e.id))?;
+    }
+    Ok(m)
 }
 
 /// 答えのタスクの並び。taskIds(並び)か、前の形の taskId(1 つか null)。空・"null" は数えない。形が違えば理由
@@ -655,6 +694,64 @@ mod tests {
         // 候補の無いセッションは入れない(呼ぶ側の誤り)
         assert!(build_task_bundle(&[LinkQuery { candidates: vec![], ..q("x") }], &TaskBundleOptions { bundle_dir: dir.clone(), per_part: None, boundary: None, scope: IndexMap::new(), now: None }).is_err());
         assert_eq!(manifest(&dir).count, 3, "失敗しても前の束は残る");
+    }
+
+    /// 候補の ID は candidates.json に分け、manifest.json には書かない(件数とファイルの一覧だけ)。読むときは 1 つに戻す。
+    /// 前の版の束(版 1。manifest.json に候補がある)も読め、返答の検証に使える
+    #[test]
+    fn candidates_live_outside_the_manifest_and_old_bundles_still_read() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("task-bundle");
+        let qs: Vec<LinkQuery> = (1..=2).map(|i| q(&format!("s{i}"))).collect();
+        let m = build_task_bundle(&qs, &TaskBundleOptions { bundle_dir: dir.clone(), per_part: None, boundary: None, scope: IndexMap::new(), now: Some("2026-11-24T00:00:00.000Z".into()) }).unwrap();
+        let raw: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(raw["version"], json!(TASK_BUNDLE_VERSION));
+        assert!(raw["sessions"].as_array().unwrap().iter().all(|e| e.get("candidates").is_none()), "{raw}");
+        let c: Value = serde_json::from_str(&std::fs::read_to_string(dir.join(TASK_CANDIDATES_FILE)).unwrap()).unwrap();
+        assert_eq!(c["sessions"], json!({ "s1": ["T-1", "T-2"], "s2": ["T-1", "T-2"] }));
+        assert_eq!(manifest(&dir), m);
+        assert_eq!(manifest(&dir).sessions[0].candidates, ["T-1", "T-2"]);
+        // ZIP には入れない(外部のエージェントは候補をパケットで読む)
+        assert!(!task_zip_names(&m).iter().any(|n| n == TASK_CANDIDATES_FILE));
+        // 欠けていたら、作り直すように言う
+        std::fs::remove_file(dir.join(TASK_CANDIDATES_FILE)).unwrap();
+        assert!(read_task_bundle_manifest(&dir).unwrap_err().to_string().contains("束を作り直してください"));
+        // 前の版の束: manifest.json の sessions[].candidates を読む(candidates.json は無い)
+        let old = d.path().join("old");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(
+            old.join("manifest.json"),
+            json!({ "version": 1, "generatedAt": "2026-11-20T00:00:00.000Z", "count": 1, "perPart": 10, "files": { "instructions": "INSTRUCTIONS.md", "schema": "schema.json" }, "sessions": [{ "id": "s1", "path": "sessions/s1.md", "candidates": ["T-9"], "chars": 10 }], "parts": [] }).to_string(),
+        )
+        .unwrap();
+        let om = read_task_bundle_manifest(&old).unwrap();
+        assert_eq!((om.version, om.sessions[0].candidates.clone()), (1, vec!["T-9".to_string()]));
+        assert_eq!(parse_task_reply("{\"sessionId\":\"s1\",\"taskIds\":[\"T-9\"],\"confidence\":0.5}", &om).unwrap().links[0].task_ids, ["T-9"]);
+        // 知らない版は読まない
+        std::fs::write(old.join("manifest.json"), json!({ "version": 3, "sessions": [] }).to_string()).unwrap();
+        assert!(read_task_bundle_manifest(&old).unwrap_err().to_string().contains("version 3"));
+    }
+
+    /// 3 つの指示(工数・依頼ごと・タスク)は、manifest.json を全部読まなくてよいこと、パケットごとに決めること、
+    /// 形の誤りの文が返ってきたら直して書き直すことを、同じ言い方で書く
+    #[test]
+    fn folder_instructions_share_the_reading_rules() {
+        let tm = crate::turn_bundle::TurnBundleManifest { version: 1, generated_at: "t".into(), phases: vec!["実装".into()], count: 1, decidable: None, unjudged_only: false, chunks: vec![], parts: vec![], skipped: vec![] };
+        let all = [crate::rubric::render_instructions(1, "t"), crate::turn_bundle::render_turn_instructions(&tm), render_task_instructions(1, "t")];
+        for (i, ins) in all.iter().enumerate() {
+            for s in ["件数とファイルの一覧を確かめるためのもので、全部を読まなくてかまいません", "は件数とファイルの一覧の確認用で、全部を読まなくてかまいません", "だけを根拠に", "並べて読んでもかまいませんが", "何も取り込まれず、「何件目(どのセッション)の、どの項目が、どう違うか」", "を書き直します(直した項目だけでなく、全体を書き直します)"] {
+                assert!(ins.contains(s), "{i}: {s}");
+            }
+            assert!(!ins.contains("1 セッションずつ") && !ins.contains("1 つの塊ずつ"), "{i}");
+        }
+        assert!(all[2].contains("`candidates.json`"));
+        // 工数の判定は、達成(completed)の基準を、フォルダで渡す指示とチャットに貼る指示の両方に書く
+        let part = crate::rubric::render_part_instructions(&crate::rubric::PartInstructions { part: 1, parts: 1, ids: &["s1"], total: 1, generated_at: "t", boundary: "b", schema_json: "{}" });
+        for ins in [&all[0], &part] {
+            for s in ["依頼が求めた**中身**と、依頼が決めた**出力の形**", "形だけが違う", "true にし、quality を下げ", "中身が違う・足りないときは false", "正解のデータ(期待される出力)がパケットに無いときは", "humanEffort の confidence を下げ"] {
+                assert!(ins.contains(s), "{s}");
+            }
+        }
     }
 
     fn reply(m: &TaskBundleManifest, text: &str) -> Result<TaskReply> {

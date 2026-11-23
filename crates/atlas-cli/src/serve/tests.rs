@@ -1196,6 +1196,45 @@ fn chat_judge_parts_and_import() {
     assert_eq!(j.e.get("/api/judge/parts").0, 403);
 }
 
+/// serve --judgments X: 画面の取り込み先(X)と、ジョブ(子プロセス)の読み先をそろえる。どのジョブにも --judgments X を渡す
+#[test]
+fn jobs_get_the_same_judgments_file_as_the_screen() {
+    let mut j = JobEnv::new();
+    let mine = j.e.dir.join("mine").join("judgments.json");
+    let m = mine.clone();
+    j.start(move |o| o.judgments = Some(m));
+    let (out, notes) = (s(&j.e.out), s(&j.e.notes));
+    assert_eq!(j.post(json!({ "kind": "bundle" })).0, 202);
+    assert_eq!(j.args(0), vec!["bundle".to_string(), "--unjudged".into(), "--out".into(), out.clone(), "--notes-dir".into(), notes.clone(), "--judgments".into(), s(&mine)]);
+    j.child(0).exit(Some(0));
+    j.wait_not_running();
+    assert_eq!(j.post(json!({ "kind": "export" })).0, 202);
+    assert_eq!(j.args(1), vec!["export".to_string(), "--out".into(), out, "--notes-dir".into(), notes, "--judgments".into(), s(&mine)]);
+    j.child(1).exit(Some(0));
+    j.wait_not_running();
+    // 画面に貼った返答も同じファイルに書く(出力先の judgments.json には書かない)
+    let item = json!({
+        "sessionId": "s1", "taskCategory": "feature", "taskSummary": "要約",
+        "humanEffort": { "hours": 2, "low": 1, "high": 4, "confidence": 0.5, "rationale": "根拠" },
+        "aiOutcome": { "completed": true, "quality": 4, "rework": 1, "rationale": "成果" },
+        "instructionsEffect": { "score": 1, "evidence": "e" }, "wikiEffect": { "score": 0, "evidence": "参照なし" }, "skillsAgentsEffect": { "score": 0, "evidence": "参照なし" },
+    });
+    let r = j.e.json("POST", "/api/judge/import", Some(json!({ "text": json!([item]).to_string() })));
+    assert_eq!(r.0, 200, "{}", r.1);
+    assert!(mine.is_file() && !j.e.out.join("judgments.json").exists());
+}
+
+/// 返答の取り込みで、ほかの書き手がロックを持ったまま待ちきれなかったときは 409(少し待ってもう一度。タスクの紐づけの書き込みと同じ)
+#[test]
+fn import_lock_busy_is_409() {
+    let busy: anyhow::Error = anyhow::Error::from(atlas_report::tasks::LockBusy("judgments.json を別の処理が書き換えています".into())).context("取り込めません");
+    let e = import_error(&busy);
+    assert_eq!(e.status, 409);
+    assert!(e.message.contains("ほかの人(か別の処理)が書き込み中です。少し待ってから、もう一度取り込んでください"), "{}", e.message);
+    assert_eq!(import_error(&anyhow::Error::from(atlas_report::tasks::BrokenFile("壊れています".into()))).status, 409);
+    assert_eq!(import_error(&anyhow::anyhow!("JSON を取り出せません")).status, 400);
+}
+
 #[test]
 fn jobs_need_token_origin_and_host() {
     let mut j = JobEnv::new();

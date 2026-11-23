@@ -37,9 +37,21 @@ pub struct TaskInfo {
     pub done_observed: bool,
     /// 完了の時刻の出所(完了していて時刻があるときだけ)
     pub done_at_source: Option<DoneAtSource>,
+    /// 完了の時刻が、日付だけの完了日から決めたもの(done_at はその日の稼働時間帯の終わり。「完了の後に始まった」はその日の終わりで見る)
+    pub done_date_only: bool,
     pub missing: bool,
     /// 送った人が数えた開始(紐づいたセッションのうち最も早い開始)。手元のセッションの開始と早い方を使う
     pub start_hint: Option<String>,
+}
+
+impl TaskInfo {
+    /// 「完了の後に始まった」の判定に使う完了の時刻(完了していなければ None。日付だけの完了日は、その日の終わり)
+    pub fn done_cutoff_ms(&self) -> Option<i64> {
+        if !self.done {
+            return None;
+        }
+        super::state::done_cutoff(self.done_at.as_deref(), self.done_date_only)
+    }
 }
 
 /// セッション 1 件の、工数に使う値
@@ -110,6 +122,9 @@ pub struct TaskRow {
     pub done_observed: bool,
     /// 完了の時刻の出所(記録・観測。未完了なら null)
     pub done_at_source: Option<DoneAtSource>,
+    /// 完了の時刻が、日付だけの完了日から決めたもの(画面では日付だけを出す)。そうでなければ書かない
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub done_date_only: bool,
     pub missing: bool,
     /// 紐づいたセッションのうち最も早い開始(ISO。完了を確認した時刻より後に始まったセッションは使わない)
     pub start: Option<String>,
@@ -195,10 +210,10 @@ pub fn share_of(k: usize) -> f64 {
     if k == 0 { 0.0 } else { 1.0 / k as f64 }
 }
 
-/// 完了を確認した時刻より後に始まったセッションか(そのタスクの開始に使わず、工数にも数えない。始めた時刻か完了の時刻が分からなければ false)
+/// 完了を確認した時刻より後に始まったセッションか(そのタスクの開始に使わず、工数にも数えない。始めた時刻か完了の時刻が分からなければ false)。
+/// 日付だけの完了日は、その日の終わり(24:00)より後に始まったものだけ
 pub fn started_after_done(t: &TaskInfo, start_ms: Option<i64>) -> bool {
-    let done_ms = if t.done { t.done_at.as_deref().and_then(atlas_core::jsdate::parse_ms) } else { None };
-    matches!((start_ms, done_ms), (Some(s), Some(d)) if s > d)
+    matches!((start_ms, t.done_cutoff_ms()), (Some(s), Some(d)) if s > d)
 }
 
 /// セッションの実働と推定人手工数を数えるタスク(等分の相手。ここが 1 か所の決まり):
@@ -248,6 +263,7 @@ pub fn compute_task_metrics(tasks: &[TaskInfo], links: &[(String, String, LinkSo
             done_at: t.done_at.clone(),
             done_observed: t.done_observed,
             done_at_source: t.done_at_source.filter(|_| t.done && t.done_at.is_some()),
+            done_date_only: t.done && t.done_at.is_some() && t.done_date_only,
             missing: t.missing,
             start: None,
             work_ms: None,
@@ -263,9 +279,11 @@ pub fn compute_task_metrics(tasks: &[TaskInfo], links: &[(String, String, LinkSo
             comparable: false,
             excluded: None,
         };
+        // 工数(稼働時間帯の長さ)は完了の時刻まで(日付だけの完了日は、その日の稼働時間帯の終わり)
         let done_ms = if t.done { t.done_at.as_deref().and_then(atlas_core::jsdate::parse_ms) } else { None };
-        // 完了を確認した時刻より後の開始は、開始に使わない
-        let before_done = |s: i64| done_ms.is_none_or(|d| s <= d);
+        // 完了を確認した時刻より後の開始は、開始に使わない(日付だけの完了日は、その日の終わりまでに始めたものを使う)
+        let cutoff = t.done_cutoff_ms();
+        let before_done = |s: i64| cutoff.is_none_or(|d| s <= d);
         let mut start: Option<i64> = t.start_hint.as_deref().and_then(atlas_core::jsdate::parse_ms).filter(|s| before_done(*s));
         for (sid, src) in linked {
             let f = facts.get(*sid).unwrap_or(&empty);
@@ -388,7 +406,33 @@ mod tests {
     }
 
     fn info(id: &str, done_at: Option<&str>) -> TaskInfo {
-        TaskInfo { id: id.into(), name: format!("{id} の名前"), status: if done_at.is_some() { "Done" } else { "Open" }.into(), done: done_at.is_some(), done_at: done_at.map(str::to_string), done_observed: done_at.is_some(), done_at_source: done_at.map(|_| DoneAtSource::Observed), missing: false, start_hint: None }
+        TaskInfo { id: id.into(), name: format!("{id} の名前"), status: if done_at.is_some() { "Done" } else { "Open" }.into(), done: done_at.is_some(), done_at: done_at.map(str::to_string), done_observed: done_at.is_some(), done_at_source: done_at.map(|_| DoneAtSource::Observed), done_date_only: false, missing: false, start_hint: None }
+    }
+
+    /// 日付だけの完了日: その日の夜(稼働時間帯の後)に始めたセッションも数え(完了の後に始まったとしない)、工数は稼働時間帯の終わりまで
+    #[test]
+    fn date_only_done_counts_the_evening_session_and_work_stops_with_the_work_hours() {
+        with_zone(&TimeZone::fixed(Offset::constant(9)), || {
+            // 月曜(11/23)が完了日(日付だけ)。done_at はその日の稼働時間帯の終わり 18:00
+            let t = TaskInfo { done_date_only: true, done_at_source: Some(DoneAtSource::Recorded), ..info("A", Some("2026-11-23T18:00:00+09:00")) };
+            let mut f = HashMap::new();
+            f.insert("early".to_string(), facts("2026-11-23T10:00:00+09:00", 1.0, Some((2.0, Some(0.8)))));
+            f.insert("evening".to_string(), facts("2026-11-23T20:00:00+09:00", 1.0, Some((1.0, Some(0.8)))));
+            assert!(!started_after_done(&t, parse_ms("2026-11-23T20:00:00+09:00")));
+            assert!(started_after_done(&t, parse_ms("2026-11-24T00:00:01+09:00")));
+            let (rows, sum) = compute_task_metrics(std::slice::from_ref(&t), &[link("early", "A", LinkSource::Machine), link("evening", "A", LinkSource::Machine)], &f, &WorkHours::default());
+            let r = &rows[0];
+            assert_eq!((r.after_done_sessions, r.excluded, r.done_date_only), (0, None, true));
+            // 10:00〜18:00 の 8 時間(夜のセッションの分は稼働時間帯の外)
+            assert_eq!(r.work_ms, Some(8.0 * 3_600_000.0));
+            assert_eq!((r.human_hours, sum.included), (3.0, 1));
+            // 時刻つきの完了(18:00)なら、夜のセッションは完了の後
+            let timed = TaskInfo { done_date_only: false, ..t.clone() };
+            assert!(started_after_done(&timed, parse_ms("2026-11-23T20:00:00+09:00")));
+            assert_eq!(serde_json::to_value(r).unwrap()["doneDateOnly"], true);
+            let (rows, _) = compute_task_metrics(&[timed], &[link("early", "A", LinkSource::Machine)], &f, &WorkHours::default());
+            assert!(serde_json::to_value(&rows[0]).unwrap().get("doneDateOnly").is_none());
+        });
     }
 
     fn facts(start: &str, active_h: f64, human: Option<(f64, Option<f64>)>) -> SessionFacts {

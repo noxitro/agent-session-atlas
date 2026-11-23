@@ -20,7 +20,8 @@ pub(crate) fn read_sessions_value(path: &Path) -> Result<Vec<Value>> {
     }
 }
 
-pub fn run_judge_import(p: &Paths, j: &JudgeCliOptions, log: Log<'_>) -> Result<()> {
+/// 取り込んだ数を返す(1 件以上なら、呼ぶ側がレポートを作り直す)
+pub fn run_judge_import(p: &Paths, j: &JudgeCliOptions, log: Log<'_>) -> Result<usize> {
     let known: Option<HashSet<String>> = if p.sessions.exists() {
         Some(read_sessions_value(&p.sessions)?.iter().filter_map(|s| s.get("id").and_then(Value::as_str).map(str::to_string)).collect())
     } else {
@@ -47,5 +48,5 @@ pub fn run_judge_import(p: &Paths, j: &JudgeCliOptions, log: Log<'_>) -> Result<
     for n in &r.notes {
         log(&format!("judge import: 注意 {n}"));
     }
-    Ok(())
+    Ok(r.imported)
 }

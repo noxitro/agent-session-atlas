@@ -5,7 +5,7 @@
 
 use super::links::{LinkSource, LinksFile, MAX_TASKS_PER_SESSION};
 use super::metrics::TaskInfo;
-use super::state::TasksFile;
+use super::state::{TaskState, TasksFile};
 use super::xml::{ID_MAX, NAME_MAX, STATUS_MAX};
 use atlas_core::js;
 use indexmap::IndexMap;
@@ -38,6 +38,9 @@ pub struct SenderTask {
     /// 完了の時刻が XML の完了日時(記録)か。false なら観測。前の版の記録には無い(観測として読む)
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub done_at_recorded: bool,
+    /// 記録の完了の時刻が、日付だけの完了日から決めたもの(doneAt はその日の稼働時間帯の終わり)。前の版の記録には無い
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub done_date_only: bool,
     /// 送った人が最後にそのタスクを XML で見た時刻(複数の人の記録が食い違うとき、新しい方を使う)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_seen_at: Option<String>,
@@ -57,7 +60,7 @@ pub fn sender_tasks(state: &TasksFile, links: &LinksFile, starts: &HashMap<Strin
     for (sid, l) in &links.links {
         let Some(ms) = starts.get(sid).and_then(|s| atlas_core::jsdate::parse_ms(s)) else { continue };
         for tid in &l.task_ids {
-            let done_ms = state.tasks.get(tid).filter(|t| t.done).and_then(|t| t.done_at.as_deref()).and_then(atlas_core::jsdate::parse_ms);
+            let done_ms = state.tasks.get(tid).and_then(TaskState::done_cutoff_ms);
             if done_ms.is_some_and(|d| ms > d) {
                 continue;
             }
@@ -80,6 +83,7 @@ pub fn sender_tasks(state: &TasksFile, links: &LinksFile, starts: &HashMap<Strin
                     done_at: t.done_at.clone(),
                     done_observed: t.done_observed,
                     done_at_recorded: t.done_source() == Some(super::state::DoneAtSource::Recorded),
+                    done_date_only: t.done_date_only && t.done_source() == Some(super::state::DoneAtSource::Recorded),
                     last_seen_at: Some(t.last_seen_at.clone()).filter(|s| atlas_core::jsdate::parse_ms(s).is_some()),
                     start: first.get(tid.as_str()).map(|ms| atlas_core::jsdate::to_iso(*ms)),
                     source: l.source,
@@ -138,10 +142,16 @@ fn sender_task_at(v: Option<&Value>, now_ms: i64) -> Option<SenderTask> {
         None => false,
         Some(b) => b.as_bool()?,
     };
+    let done_date_only = match o.get("doneDateOnly") {
+        None => false,
+        Some(b) => b.as_bool()?,
+    };
     let done_at = if done { iso(o.get("doneAt"), now_ms)? } else { None };
+    let done_date_only = done && done_at_recorded && done_date_only && done_at.is_some();
     let last_seen = iso(o.get("lastSeenAt"), now_ms)?;
-    // 開始は、完了を確認した時刻より後のもの・長すぎるものを使わない(記録は残し、開始だけ捨てる)
-    let start = iso(o.get("start"), now_ms)?.filter(|s| done_at.is_none_or(|d| *s <= d && d - *s <= SPAN_MAX_DAYS * DAY_MS)).filter(|s| now_ms - *s <= SPAN_MAX_DAYS * DAY_MS);
+    // 開始は、完了を確認した時刻より後のもの・長すぎるものを使わない(記録は残し、開始だけ捨てる)。日付だけの完了日は、その日の終わりまで
+    let cutoff = done_at.map(|d| if done_date_only { super::hours::day_end_ms(d).unwrap_or(d) } else { d });
+    let start = iso(o.get("start"), now_ms)?.filter(|s| cutoff.is_none_or(|d| *s <= d && d - *s <= SPAN_MAX_DAYS * DAY_MS)).filter(|s| now_ms - *s <= SPAN_MAX_DAYS * DAY_MS);
     Some(SenderTask {
         id: text(o.get("id"), ID_MAX, false)?,
         name: text(o.get("name"), NAME_MAX, true)?,
@@ -150,6 +160,7 @@ fn sender_task_at(v: Option<&Value>, now_ms: i64) -> Option<SenderTask> {
         done_at: to_iso(done_at),
         done_observed: done && done_observed,
         done_at_recorded: done && done_at_recorded && done_at.is_some(),
+        done_date_only,
         last_seen_at: to_iso(last_seen),
         start: to_iso(start),
         source,
@@ -250,6 +261,7 @@ pub fn tasks_from_senders(per_session: &[(String, Vec<SenderTask>)]) -> (Vec<Tas
                     (true, Some(_)) => Some(super::state::DoneAtSource::Recorded),
                     (true, None) => t.done_at.as_ref().map(|_| super::state::DoneAtSource::Observed),
                 },
+                done_date_only: recorded.is_some() && t.done_date_only,
                 missing: false,
                 start_hint: starts.get(t.id.as_str()).map(|ms| atlas_core::jsdate::to_iso(*ms)),
             }
@@ -290,6 +302,21 @@ mod tests {
         assert_eq!(bad(json!({ "done": false })).unwrap().done_at, None);
         // 日時の範囲: 2000 年より前・今より 1 日以上後は読まない
         assert!(bad(json!({ "doneAt": "1999-12-31T00:00:00Z" })).is_none());
+        // 日付だけの完了日(記録): 開始はその日の終わりまでのものを使う。記録でなければ日付だけの印は使わない
+        let day = |extra: Value| {
+            let mut v = json!({ "id": "T", "name": "n", "status": "Done", "done": true, "doneAt": "2026-11-02T09:00:00.000Z", "doneAtRecorded": true, "doneDateOnly": true, "start": "2026-11-02T12:00:00.000Z", "source": "machine" });
+            for (k, x) in extra.as_object().unwrap() {
+                v[k] = x.clone();
+            }
+            sender_task_at(Some(&v), atlas_core::jsdate::parse_ms("2026-11-10T00:00:00Z").unwrap())
+        };
+        atlas_core::jsdate::with_zone(&atlas_core::jsdate::TimeZone::fixed(atlas_core::jsdate::Offset::constant(9)), || {
+            let t = day(json!({})).unwrap();
+            assert_eq!((t.done_date_only, t.start.as_deref()), (true, Some("2026-11-02T12:00:00.000Z")));
+            let t = day(json!({ "doneAtRecorded": false })).unwrap();
+            assert_eq!((t.done_date_only, t.start), (false, None));
+            assert!(day(json!({ "doneDateOnly": "yes" })).is_none());
+        });
         assert!(bad(json!({ "lastSeenAt": "2999-01-01T00:00:00Z" })).is_none());
         assert!(bad(json!({ "doneObserved": "yes" })).is_none());
         assert!(!t.done_observed);
@@ -336,9 +363,9 @@ mod tests {
     #[test]
     fn builds_sender_records_and_merges_them() {
         let mut state = TasksFile::default();
-        state.tasks.insert("T".into(), TaskState { name: "仕事".into(), status: "Done".into(), done: true, first_seen_at: "a".into(), done_at: Some("2026-11-05T00:00:00.000Z".into()), last_seen_at: "2026-11-05T00:00:00.000Z".into(), missing: false, done_observed: true, done_at_source: None });
+        state.tasks.insert("T".into(), TaskState { name: "仕事".into(), status: "Done".into(), done: true, first_seen_at: "a".into(), done_at: Some("2026-11-05T00:00:00.000Z".into()), last_seen_at: "2026-11-05T00:00:00.000Z".into(), missing: false, done_observed: true, done_at_source: None, done_date_only: false });
         let mut links = LinksFile::default();
-        state.tasks.insert("U".into(), TaskState { name: "もう一つ".into(), status: "Open".into(), done: false, first_seen_at: "a".into(), done_at: None, last_seen_at: "2026-11-05T00:00:00.000Z".into(), missing: false, done_observed: false, done_at_source: None });
+        state.tasks.insert("U".into(), TaskState { name: "もう一つ".into(), status: "Open".into(), done: false, first_seen_at: "a".into(), done_at: None, last_seen_at: "2026-11-05T00:00:00.000Z".into(), missing: false, done_observed: false, done_at_source: None, done_date_only: false });
         let l = |t: &[&str], s: LinkSource| TaskLink { task_ids: t.iter().map(|x| x.to_string()).collect(), source: s, reason: "r".into(), confidence: None, at: "t".into() };
         links.links.insert("s1".into(), l(&["T"], LinkSource::Machine));
         links.links.insert("s2".into(), l(&["T"], LinkSource::Manual));
@@ -373,6 +400,7 @@ mod tests {
             done_at: Some("2026-11-05T00:00:00.000Z".into()),
             done_observed: true,
             done_at_recorded: false,
+            done_date_only: false,
             last_seen_at: Some("2026-11-05T00:00:00.000Z".into()),
             start: Some("2026-11-02T00:00:00.000Z".into()),
             source: LinkSource::Machine,

@@ -547,7 +547,7 @@ const TURN_INSTRUCTIONS_TPL: &str = "# Copilot の依頼ごとの判定の指示
 ## フォルダの中身
 
 - `INSTRUCTIONS.md`: この指示(最初に読む)
-- `manifest.json`: 塊の一覧(`chunks[].path` のファイルに、セッション `chunks[].sessionId` の依頼 `chunks[].turns` が入っています)
+- `manifest.json`: 塊の一覧(`chunks[].path` のファイルに、セッション `chunks[].sessionId` の依頼 `chunks[].turns` が入っています)。件数とファイルの一覧を確かめるためのもので、全部を読まなくてかまいません(各塊のファイルに、セッション ID と判定する依頼が書いてあります)
 - `schema.json`: 返す JSON の JSON Schema
 - `chunks/<番号>.md`: 判定パケット(1 つの塊に、1 セッションの続いた依頼が数件)
 - `parts/part-<番号>.md`: この指示と数個の塊を 1 ファイルにまとめたもの(ZIP やフォルダを渡せないとき用。ZIP には入っていません。中身は `chunks/` と同じなので、あっても読まなくてかまいません)
@@ -564,7 +564,7 @@ const TURN_INSTRUCTIONS_TPL: &str = "# Copilot の依頼ごとの判定の指示
 
 ## 手順
 
-1. `manifest.json` の `chunks` を上から順に処理します。一度に全部を読まず、**1 つの塊ずつ**読んで判定してください。
+1. `chunks/` の塊を番号の順に読みます(`manifest.json` は件数とファイルの一覧の確認用で、全部を読まなくてかまいません)。各塊を読んで、**その塊だけを根拠に**判定します(同じセッションの塊が続くときは並べて読んでもかまいませんが、結果は塊ごとに決めます)。
 2. 各塊の「判定する依頼」の各依頼について 1 項目の JSON を作ります(判定しないと書いてある依頼は参考です。項目を作りません)。`sessionId` は塊の「セッション ID」をそのまま写します。
 3. 判定した項目を次の形の JSON 1 つにまとめ、このフォルダの中の `⟦result⟧` に書きます。
 
@@ -602,7 +602,7 @@ pub fn render_turn_instructions(m: &TurnBundleManifest) -> String {
             d.chunks
         ),
         Some(d) if d.chunks == 0 && total > 0 => "どの塊も、セッションの最後の依頼だけです(次の依頼が無いので outcome は unknown になり、種類と工程だけが決まります)。".to_string(),
-        _ => "`manifest.json` の `chunks` の順に判定してください(どの塊も、採用を判定できる依頼です)。".to_string(),
+        _ => "`chunks/` の塊を番号の順に判定してください(どの塊も、採用を判定できる依頼です)。".to_string(),
     };
     fill(
         TURN_INSTRUCTIONS_TPL,

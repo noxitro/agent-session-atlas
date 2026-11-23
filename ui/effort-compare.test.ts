@@ -90,12 +90,21 @@ describe('比べる: 推論強度どうし', () => {
     expect(await weeks.locator('caption').innerText()).toContain('利用者 × 週');
     expect(await weeks.locator('tbody tr').count()).toBe(EFFORT_PEOPLE.length * EFFORT_WEEKS);
     expect((await weeks.locator('tbody tr').first().innerText()).replace(/\s+/g, ' ')).toBe('zz-user-a 2026-10-05〜 3 0 0 0');
+    // 選択肢の件数は、選んだ期間の中で数えて「期間内 N」と出す(モデルどうしと同じ。強度の件数は表の A・B のセッション数と同じ)
+    const selected = (id: string) => section().getByTestId(id).locator('option:checked').textContent().then((t) => t ?? '');
+    expect(await selected('compare-effort-a')).toBe(`medium(期間内 ${await cell('sessions', 0).innerText()})`);
+    expect(await selected('compare-effort-b')).toBe(`xhigh(期間内 ${await cell('sessions', 1).innerText()})`);
+    expect(await selected('compare-effort-model')).toMatch(/\(期間内 \d+\)$/);
     // 最初の週だけに絞る(混在・記録なしは 2 週目なので 0 件になる)
     await section().getByLabel('推論強度を比べる期間の開始日').fill('2026-10-05');
     await section().getByLabel('推論強度を比べる期間の終了日').fill('2026-10-11');
     await expect.poll(() => note.innerText()).toContain('混在のセッション 0 件・記録なし 0 件');
     await expect.poll(() => weeks.locator('tbody tr').count()).toBe(EFFORT_PEOPLE.length);
     expect(Number(await cell('sessions', 0).innerText()) + Number(await cell('sessions', 1).innerText())).toBe(EFFORT_PEOPLE.length * 3);
+    expect(await selected('compare-effort-a')).toBe(`medium(期間内 ${await cell('sessions', 0).innerText()})`);
+    expect(await selected('compare-effort-b')).toBe(`xhigh(期間内 ${await cell('sessions', 1).innerText()})`);
+    // 最初の週のセッションは、どれもこのモデルが本体(混在・記録なしが 0 件)
+    expect(await selected('compare-effort-model')).toContain(`(期間内 ${EFFORT_PEOPLE.length * 3})`);
   });
 
   it('c. 375px の幅で横にはみ出さない', async () => {

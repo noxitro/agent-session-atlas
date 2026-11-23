@@ -19,16 +19,18 @@ pub fn read_judgments(path: &Path) -> Result<Option<JudgmentsFile>> {
     validate_judgments(&raw).map(Some).map_err(|e| anyhow!("{p}: {e}"))
 }
 
-/// 一時ファイル(`<path>.<pid>.tmp`)に JSON を書いてから置き換える(途中で落ちても壊れたファイルを残さない)
+/// 一時ファイル(タスクの状態と同じ `<path>.<pid>-<時刻>-<連番>.tmp`。tasks::tmp_path)に JSON を書いてから置き換える
+/// (途中で落ちても壊れたファイルを残さない。共有の置き場で、同じ pid の別の PC のプロセスや同じプロセスの別のスレッドと一時ファイルが重ならない)
 pub fn write_json_atomic<T: serde::Serialize>(path: &Path, v: &T) -> Result<()> {
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d)?;
     }
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(format!(".{}.tmp", std::process::id()));
-    let tmp = std::path::PathBuf::from(tmp);
+    let tmp = atlas_report::tasks::tmp_path(path);
     std::fs::write(&tmp, format!("{}\n", atlas_core::json::to_js_string_pretty(v)?))?;
-    atlas_core::fs_retry::rename_replacing(&tmp, path)?;
+    if let Err(e) = atlas_core::fs_retry::rename_replacing(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.into());
+    }
     Ok(())
 }
 
@@ -169,18 +171,33 @@ pub fn import_judgments_text(input: &str, judgments_path: &Path, o: ImportOption
     })
 }
 
-/// 移した後の前の置き場の名前(<file>.moved。もう読まない。中身を確かめたいときのために消さずに残す)
+/// 移した後の前の置き場の名前(<file>.moved-<時刻>。もう読まない。中身を確かめたいときのために消さずに残す)。
+/// 前に移したもの(同じ出力先で設定のフォルダを外して作り直し、また移したときなど)を上書きしないよう、時刻を付け、それでも重なれば -2, -3 … を足す
 pub fn moved_path(from: &Path) -> std::path::PathBuf {
-    let mut s = from.as_os_str().to_owned();
-    s.push(".moved");
-    std::path::PathBuf::from(s)
+    let stamp: String = atlas_core::jsdate::now_iso().chars().filter(|c| c.is_ascii_alphanumeric()).take(15).collect();
+    let name = |n: usize| {
+        let mut s = from.as_os_str().to_owned();
+        s.push(if n < 2 { format!(".moved-{stamp}") } else { format!(".moved-{stamp}-{n}") });
+        std::path::PathBuf::from(s)
+    };
+    (1..).map(name).find(|p| !p.exists()).expect("空いた名前がある")
+}
+
+/// 前の置き場から移した結果
+#[derive(Debug, Clone, PartialEq)]
+pub struct Moved {
+    /// 足したもの(セッション。依頼ごとの判定は依頼)の数
+    pub added: usize,
+    /// 前のファイルの新しい名前(moved_path)
+    pub renamed_to: std::path::PathBuf,
 }
 
 /// 前の置き場(from。開いたフォルダの出力先)の判定を、共有の置き場(to。設定のフォルダ)に混ぜて移す。
 /// 共有の側にあるセッションは共有の側のままにし、無いものだけを足す。移したら from は moved_path の名前に変える(次からは移さない)。
-/// from が無ければ None、あれば足したセッションの数。from が読めなければエラー(何も書かず、from も残す)。
+/// from が無ければ None、あれば足したセッションの数と、前のファイルの新しい名前。from が読めなければエラー(何も書かず、from も残す)。
+/// 判定に失敗した記録(failures)は、どちらにも判定の無いセッションのものを、セッションごとに 1 つだけ残す(共有の側を先に)。
 /// 読んで書くまでは to のロックの中で行う(ほかの集計する人の取り込みと重ならないように)
-pub fn move_judgments_into(from: &Path, to: &Path) -> Result<Option<usize>> {
+pub fn move_judgments_into(from: &Path, to: &Path) -> Result<Option<Moved>> {
     if !from.exists() {
         return Ok(None);
     }
@@ -191,20 +208,26 @@ pub fn move_judgments_into(from: &Path, to: &Path) -> Result<Option<usize>> {
         let add: Vec<JudgmentItem> = old.items.iter().filter(|i| !have.contains(&i.session_id)).cloned().collect();
         let mut merged = cur.unwrap_or_else(|| JudgmentsFile { failures: None, items: vec![], ..old.clone() });
         merged.items.extend(add.iter().cloned());
-        // 判定に失敗した記録は、どちらにも判定の無いセッションのものだけを残す(共有の側の記録を先に)
+        // 判定に失敗した記録は、どちらにも判定の無いセッションのものだけを残す(共有の側の記録を先に)。
+        // 同じセッションの記録が両方にあれば先の 1 つだけ(セッション ID の無い記録は、同じ中身のものを 1 つに)
         let judged: HashSet<&str> = merged.items.iter().map(|i| i.session_id.as_str()).collect();
-        let failures: Vec<Value> = merged
-            .failures
-            .iter()
-            .flatten()
-            .chain(old.failures.iter().flatten())
-            .filter(|f| !f.get("sessionId").and_then(Value::as_str).is_some_and(|id| judged.contains(id)))
-            .cloned()
-            .collect();
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut failures: Vec<Value> = Vec::new();
+        for f in merged.failures.iter().flatten().chain(old.failures.iter().flatten()) {
+            let id = f.get("sessionId").and_then(Value::as_str);
+            if id.is_some_and(|id| judged.contains(id)) {
+                continue;
+            }
+            let key = id.map_or_else(|| format!("\u{0}{f}"), str::to_string);
+            if seen.insert(key) {
+                failures.push(f.clone());
+            }
+        }
         merged.failures = (!failures.is_empty()).then_some(failures);
         write_judgments(to, &merged)?;
-        atlas_core::fs_retry::rename_replacing(from, &moved_path(from))?;
-        Ok(Some(add.len()))
+        let renamed_to = moved_path(from);
+        atlas_core::fs_retry::rename_replacing(from, &renamed_to)?;
+        Ok(Some(Moved { added: add.len(), renamed_to }))
     })
 }
 
@@ -275,22 +298,60 @@ mod tests {
         let mut a_new = item("a");
         a_new["taskSummary"] = json!("共有");
         import_judgments_text(&json!([a_new, item("c")]).to_string(), &shared, ImportOptions::default()).unwrap();
-        assert_eq!(move_judgments_into(&old, &shared).unwrap(), Some(1));
+        let m = move_judgments_into(&old, &shared).unwrap().unwrap();
+        assert_eq!(m.added, 1);
         let j = read_judgments(&shared).unwrap().unwrap();
         let mut ids: Vec<&str> = j.items.iter().map(|i| i.session_id.as_str()).collect();
         ids.sort();
         assert_eq!(ids, ["a", "b", "c"]);
         assert_eq!(j.items.iter().find(|i| i.session_id == "a").unwrap().task_summary, "共有");
-        assert!(!old.exists() && moved_path(&old).exists());
+        assert!(!old.exists() && m.renamed_to.exists());
+        let name = m.renamed_to.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.starts_with("judgments.json.moved-") && name.len() > "judgments.json.moved-".len(), "{name}");
         assert_eq!(move_judgments_into(&old, &shared).unwrap(), None);
-        // 共有の側がまだ無ければ、前の判定をそのまま移す
+        // 共有の側がまだ無ければ、前の判定をそのまま移す。前に移したファイルは上書きしない(別の名前にする)
         let other = d.path().join("other").join("judgments.json");
-        std::fs::rename(moved_path(&old), &old).unwrap();
-        assert_eq!(move_judgments_into(&old, &other).unwrap(), Some(2));
+        std::fs::copy(&m.renamed_to, &old).unwrap();
+        let m2 = move_judgments_into(&old, &other).unwrap().unwrap();
+        assert_eq!(m2.added, 2);
+        assert_ne!(m2.renamed_to, m.renamed_to);
+        assert!(m.renamed_to.exists() && m2.renamed_to.exists());
         // 読めない前の判定は移さず、残す
         std::fs::write(&old, "{").unwrap();
         assert!(move_judgments_into(&old, &shared).is_err());
         assert!(old.exists());
+    }
+
+    /// 判定に失敗した記録は、移すときにセッションごとに 1 つにする(共有の側を先に。判定のあるセッションの記録は捨てる)
+    #[test]
+    fn move_dedups_failures_by_session() {
+        let d = tempfile::tempdir().unwrap();
+        let (old, shared) = (d.path().join("out").join("judgments.json"), d.path().join("s").join("judgments.json"));
+        import_judgments_text(&json!([item("a")]).to_string(), &old, ImportOptions::default()).unwrap();
+        import_judgments_text(&json!([item("b")]).to_string(), &shared, ImportOptions::default()).unwrap();
+        let add_failures = |p: &Path, fs: Value| {
+            let mut v: Value = serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
+            v["failures"] = fs;
+            std::fs::write(p, v.to_string()).unwrap();
+        };
+        add_failures(&shared, json!([{ "sessionId": "x", "error": "共有" }, { "sessionId": "x", "error": "共有の 2 つ目" }, { "error": "ID なし" }]));
+        add_failures(&old, json!([{ "sessionId": "x", "error": "前" }, { "sessionId": "y", "error": "前" }, { "sessionId": "b", "error": "判定あり" }, { "error": "ID なし" }]));
+        move_judgments_into(&old, &shared).unwrap().unwrap();
+        let j = read_judgments(&shared).unwrap().unwrap();
+        assert_eq!(j.failures.unwrap(), vec![json!({ "sessionId": "x", "error": "共有" }), json!({ "error": "ID なし" }), json!({ "sessionId": "y", "error": "前" })]);
+    }
+
+    /// 書き込みの一時ファイルは、タスクの状態と同じ名前の付け方(pid・時刻・連番)で、書いた後は残らない
+    #[test]
+    fn writes_through_a_unique_temporary_file() {
+        let d = tempfile::tempdir().unwrap();
+        let jp = d.path().join("judgments.json");
+        let (a, b) = (atlas_report::tasks::tmp_path(&jp), atlas_report::tasks::tmp_path(&jp));
+        assert_ne!(a, b);
+        assert!(a.to_string_lossy().contains(&format!("judgments.json.{}-", std::process::id())));
+        import_judgments_text(&json!([item("a")]).to_string(), &jp, ImportOptions::default()).unwrap();
+        let left: Vec<String> = std::fs::read_dir(d.path()).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).filter(|n| n.ends_with(".tmp")).collect();
+        assert!(left.is_empty(), "{left:?}");
     }
 
     // llm-wiki のページごとの判定: 版 1 の返答も版 2 の返答も取り込む。wikiPages が壊れていても項目は取り込み、知らせる
