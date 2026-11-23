@@ -32,6 +32,7 @@ public static class AtlasM365Win32 {
   [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool IsHungAppWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
   [DllImport("user32.dll")] static extern bool AttachThreadInput(uint a, uint b, bool attach);
   [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
@@ -80,24 +81,29 @@ public static class AtlasM365Win32 {
 /// あきらめた後は、前面が M365 Copilot から離れて次に出たときに、また戻す
 public static class AtlasM365Guard {
   const int GiveUpMs = 3000, MaxWaitMs = 500;
-  static volatile bool active;
+  static volatile bool active, busy;
   static uint copilotPid, ownPid;
   static readonly List<IntPtr> recent = new List<IntPtr>();
   static readonly object gate = new object();
   public static int Restored, Failed, Attempts, Loops;
   public static string LastError = "";
   public static bool Active { get { return active; } set { active = value; } }
+  /// Active を止めた後、見張りがその周(前面を戻している途中なら、その試し)を終えるまで待つ。
+  /// 待たずにキーを送ると、遅れて効いた見張りの切り替えで、キーが利用者の窓へ行くことがある
+  public static void Settle() {
+    for (int i = 0; i < 40 && busy; i++) Thread.Sleep(10);
+  }
   public static void Start(uint copilot) {
     copilotPid = copilot;
     ownPid = (uint)Process.GetCurrentProcess().Id;
     var t = new Thread(Loop); t.IsBackground = true; t.Start();
   }
-  /// 直前に利用者が使っていた窓(閉じた窓・隠れた窓・最小化した窓は除く)
+  /// 直前に利用者が使っていた窓(閉じた窓・隠れた窓・最小化した窓と、応答なしの窓は除く。応答なしの窓へ前面を移そうとすると、見張りが止まることがある)
   public static IntPtr UserWindow() {
     lock (gate) {
       for (int i = recent.Count - 1; i >= 0; i--) {
         var h = recent[i];
-        if (AtlasM365Win32.IsWindow(h) && AtlasM365Win32.IsWindowVisible(h) && !AtlasM365Win32.IsIconic(h)) return h;
+        if (AtlasM365Win32.IsWindow(h) && AtlasM365Win32.IsWindowVisible(h) && !AtlasM365Win32.IsIconic(h) && !AtlasM365Win32.IsHungAppWindow(h)) return h;
       }
     }
     return IntPtr.Zero;
@@ -112,13 +118,16 @@ public static class AtlasM365Guard {
     int started = 0, next = 0, wait = 0;
     IntPtr tried = IntPtr.Zero;
     while (true) {
+      // Active を読む前から、この周の終わりまで busy(Settle がこの周を待てるように)
+      busy = true;
       try {
         var fg = AtlasM365Win32.GetForegroundWindow();
         uint pid = 0;
         if (fg != IntPtr.Zero) AtlasM365Win32.GetWindowThreadProcessId(fg, out pid);
-        // 止めているあいだ(依頼文を打つため自分で前面に出すときも)は数えない
-        if (!active) inEpisode = false;
-        if (fg == IntPtr.Zero) { }
+        // 止めているあいだ(依頼文を打つため自分で前面に出すときも)は試さず、数えない。
+        // その回の状態は持ち越す(依頼文を打つ間も M365 Copilot が前面のままなら、同じ 1 回として続ける)
+        // 前面の窓が無いあいだ(画面のロックや確認の画面)は、その回を打ち切る(戻った後は新しい回として試し直す)
+        if (fg == IntPtr.Zero) inEpisode = false;
         else if (pid == copilotPid) {
           if (active) {
             int now = Environment.TickCount;
@@ -136,13 +145,15 @@ public static class AtlasM365Guard {
           }
         } else {
           // 戻そうとした窓へ遅れて前面が移ったときも、戻せた回に数える(利用者が自分でほかの窓へ移ったときは数えない)
-          if (inEpisode && !gaveUp && tried != IntPtr.Zero && fg == tried) Restored++;
+          // 止めているあいだに前面が移ったのは、依頼文を打った後に自分で戻したもの。数えない
+          if (active && inEpisode && !gaveUp && tried != IntPtr.Zero && fg == tried) Restored++;
           inEpisode = false;
           if (pid != ownPid && AtlasM365Win32.IsWindowVisible(fg)) {
             lock (gate) { recent.Remove(fg); recent.Add(fg); if (recent.Count > 8) recent.RemoveAt(0); }
           }
         }
       } catch (Exception e) { LastError = e.Message; }
+      finally { busy = false; }
       Loops++;
       Thread.Sleep(30);
     }
@@ -273,6 +284,7 @@ function TypePrompt {
   for ($i = 1; $i -le 4 -and -not (EditorHasPrompt); $i++) {
     $user = [AtlasM365Guard]::UserWindow()
     [AtlasM365Guard]::Active = $false
+    [AtlasM365Guard]::Settle()
     try {
       if (-not [AtlasM365Win32]::Front($top)) { continue }
       $ed = ById $win 'm365-chat-editor-target-element'
@@ -367,7 +379,7 @@ Start-Sleep -Seconds 3
 # 回数は前面に出た 1 回ごと。戻せなかった回は、利用者が窓を移すまで M365 Copilot が前面に残っていた
 if ([AtlasM365Guard]::Restored + [AtlasM365Guard]::Failed -gt 0) {
   $guardNote = "M365 Copilot が前面に出たので戻しました({0} 回、戻せなかった {1} 回)" -f [AtlasM365Guard]::Restored, [AtlasM365Guard]::Failed
-  if ([AtlasM365Guard]::Failed -gt 0) { $guardNote += '。戻せなかったときは M365 Copilot が前面に残っていたので、そのあいだに打った文字はほかのアプリに届いていないかもしれません(M365 Copilot の入力欄に入った文字は、送る前に消しています)' }
+  if ([AtlasM365Guard]::Failed -gt 0) { $guardNote += '。戻せなかったときは M365 Copilot が前面に残っていたので、そのあいだに打った文字はほかのアプリに届いていないかもしれません(依頼文を打つ前に M365 Copilot の入力欄に入った文字は、消してから打っています)' }
   Say $guardNote
 }
 
