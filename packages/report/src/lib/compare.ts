@@ -1,5 +1,6 @@
-// 「比べる」の節: 2 つの条件(期間・プロジェクト・推論強度)のセッションの指標を並べる。工程は依頼(ターン)の単位で並べる。
+// 「比べる」の節: 2 つの条件(期間・プロジェクト・推論強度・モデル・wiki の参照)のセッションの指標を並べる。工程は依頼(ターン)の単位で並べる。
 // 差は相関で、条件の違いが原因とは限らない。差の幅(95%)は、セッションを互いに独立とみなした近似(同じ人のセッションの似かたは入れていない)。
+// 人の違いを減らした比べ方(人ごとの差の平均と、人を単位にした幅)は lib/compare-person.ts。
 import { EFFORT_ORDER, orderBy } from './exec.ts';
 import { localDayStart, sessionTime } from './filter.ts';
 import { mainEffortOf, mainModelsOf } from './main-effort.ts';
@@ -7,18 +8,21 @@ import { PHASES, REQUEST_KINDS, type Phase, type TurnBucket } from '../shared/tu
 import { aggregateRetention, enoughMeasured, measuredOf, median, RETENTION_MIN_SESSIONS, retentionByPhase, shareOf, type RetentionAgg, type StatusTuple } from './retention.ts';
 import { turnAggregate, type TurnTuple } from './turns.ts';
 import type { SessionSummary } from './types.ts';
+import { wikiReferenced } from './wiki.ts';
 
 /** 割合を出す最小のセッション数(改善点の率と同じ 5) */
 export const COMPARE_MIN_SESSIONS = 5;
 
-export const COMPARE_KINDS = ['period', 'project', 'phase', 'effort'] as const;
+export const COMPARE_KINDS = ['period', 'project', 'phase', 'effort', 'model', 'wiki'] as const;
 export type CompareKind = (typeof COMPARE_KINDS)[number];
-export const COMPARE_KIND_LABEL: Record<CompareKind, string> = { period: '期間', project: 'プロジェクト', phase: '工程', effort: '推論強度' };
+export const COMPARE_KIND_LABEL: Record<CompareKind, string> = { period: '期間', project: 'プロジェクト', phase: '工程', effort: '推論強度', model: 'モデル', wiki: 'wiki の参照' };
 
 export type CompareSession = Pick<
   SessionSummary,
   'id' | 'turns' | 'activeMs' | 'tools' | 'friction' | 'analysis' | 'tokens' | 'retention' | 'createdAt' | 'updatedAt' | 'project' | 'turnRows' | 'person' | 'models' | 'tests'
 > & {
+  /** wiki の参照で比べるときに使う(作りかけの値では無いことがある。無ければ参照していないとして読む) */
+  wiki?: SessionSummary['wiki'] | null;
   /** 推論強度の比較に使う(古い埋め込み・テストの作りかけの値では無いことがある) */
   exec?: Pick<SessionSummary['exec'], 'mainModelEfforts'>;
 };
@@ -412,6 +416,91 @@ export function effortSplit<T extends EffortSource>(sessions: readonly T[], mode
     }
   }
   out.weeks = [...weeks.values()].sort((x, y) => (x.person == null ? 1 : 0) - (y.person == null ? 1 : 0) || (x.person ?? '').localeCompare(y.person ?? '') || x.week.localeCompare(y.week));
+  return out;
+}
+
+// ---------- モデルどうし ----------
+
+/**
+ * 本体のモデルは、推論強度どうしと同じ決め方(mainEffortOf。本体のリクエストの MAIN_EFFORT_SHARE 以上が同じ (モデル, 強度) の組)で決める。
+ * モデルだけの割合では決めない: sessions.csv の「本体のモデル」の列(Rust の main_effort_of)と同じセッションを同じモデルにするため。
+ * そのため、同じモデルでも強度が混ざったセッションは「混在」に入る(強度を「すべて」にしても)
+ */
+
+/** 本体がそのモデルと決まったセッションの数(強度は問わない。多い順、同数は名前の順) */
+export function modelChoices(sessions: readonly EffortSource[]): { model: string; sessions: number }[] {
+  const n = new Map<string, number>();
+  for (const s of sessions) {
+    const m = mainEffortOf(s.exec?.mainModelEfforts);
+    if (m.kind === 'decided') n.set(m.model, (n.get(m.model) ?? 0) + 1);
+  }
+  return [...n].map(([model, c]) => ({ model, sessions: c })).sort((a, b) => b.sessions - a.sessions || a.model.localeCompare(b.model));
+}
+
+/** 既定の A と B: 本体と決まったセッションの多い順の 2 つ(1 つしか無ければ両方に同じモデル) */
+export function defaultModels(choices: readonly { model: string }[]): [a: string, b: string] {
+  return [choices[0]?.model ?? '', choices[1]?.model ?? choices[0]?.model ?? ''];
+}
+
+/** モデルどうしで選べる強度: A か B のモデルの本体がその強度と決まったセッションの数(強度の並び: none → max) */
+export function modelEffortChoices(sessions: readonly EffortSource[], ma: string, mb: string): { effort: string; a: number; b: number }[] {
+  const n = new Map<string, { a: number; b: number }>();
+  for (const s of sessions) {
+    const m = mainEffortOf(s.exec?.mainModelEfforts);
+    if (m.kind !== 'decided' || (m.model !== ma && m.model !== mb)) continue;
+    const c = n.get(m.effort) ?? n.set(m.effort, { a: 0, b: 0 }).get(m.effort)!;
+    if (m.model === ma) c.a++;
+    if (m.model === mb) c.b++;
+  }
+  const order = orderBy(EFFORT_ORDER);
+  return [...n].map(([effort, c]) => ({ effort, ...c })).sort((a, b) => order(a.effort, b.effort));
+}
+
+export interface ModelSplit<T> {
+  a: T[];
+  b: T[];
+  /** 期間の中で、A か B のモデルのセッションのうち、本体が混在のものと記録の無いもの */
+  mixed: number;
+  none: number;
+}
+
+/**
+ * モデルどうしの母集団: 期間に開始し、本体が (ma, effort) と決まったセッションと (mb, effort) と決まったセッション。effort が空なら強度は問わない。
+ * 混在・記録なしは、A か B のモデルのセッション(本体のリクエストにそのモデルがある。記録が無ければ、セッションのモデルの一覧にある)のうち、
+ * 本体が決まらなかったもの(推論強度どうしの effortClass と同じ)。A・B のモデルと決まったが強度が違うセッションは、どれにも数えない。
+ * ma と mb が同じなら、両側に同じセッションが入る
+ */
+export function modelSplit<T extends EffortSource>(sessions: readonly T[], ma: string, mb: string, effort: string, from: string, to: string): ModelSplit<T> {
+  const out: ModelSplit<T> = { a: [], b: [], mixed: 0, none: 0 };
+  for (const s of sessions) {
+    if (!inPeriod(s, from, to)) continue;
+    const m = mainEffortOf(s.exec?.mainModelEfforts);
+    if (m.kind === 'decided') {
+      if (effort && m.effort !== effort) continue;
+      if (m.model === ma) out.a.push(s);
+      if (m.model === mb) out.b.push(s);
+      continue;
+    }
+    const c = effortClass(s, ma) ?? effortClass(s, mb);
+    if (c?.kind === 'mixed') out.mixed++;
+    else if (c?.kind === 'none') out.none++;
+  }
+  return out;
+}
+
+// ---------- wiki の参照 ----------
+
+/**
+ * wiki の参照で比べる母集団: 期間に開始したセッションのうち、A = llm-wiki を参照したもの、B = 参照していないもの。
+ * 参照したかは、改善点の llm-wiki の箱と絞り込みと同じ wikiReferenced(書き込みだけのセッションは B に入る)。
+ * wiki の参照を数えていない集計(wikiState が counted でない)では、画面で選べないようにする(B が「数えていない」セッションになるため)
+ */
+export function wikiSplit<T extends Pick<CompareSession, 'wiki' | 'createdAt' | 'updatedAt'>>(sessions: readonly T[], from: string, to: string): { a: T[]; b: T[] } {
+  const out: { a: T[]; b: T[] } = { a: [], b: [] };
+  for (const s of sessions) {
+    if (!inPeriod(s, from, to)) continue;
+    (wikiReferenced(s.wiki) ? out.a : out.b).push(s);
+  }
   return out;
 }
 

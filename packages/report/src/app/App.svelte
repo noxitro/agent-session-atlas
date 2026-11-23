@@ -780,7 +780,7 @@
           {#if judged}<JudgmentPanel {agg} meta={data.judgments} />{/if}
           {#if tasks}<TaskPanel {tasks} current={filter.task} noneCount={taskOpts?.none ?? 0} onpick={(t) => setFilter({ task: t })} />{/if}
           {#if data.retention}<Retention sessions={filtered} meta={data.retention} />{/if}
-          <Compare sessions={scoped} projects={options.project} lastAt={all.overall.lastAt} retention={!!data.retention} />
+          <Compare sessions={scoped} projects={options.project} lastAt={all.overall.lastAt} retention={!!data.retention} {wiki} />
         </div>
         <div class="tab-panel" data-tab-panel="breakdown" hidden={tab !== 'breakdown'}>
           <UsageRanking usage={agg.usage} {installed} failuresPage={data.failures === true} bind:tab={usageTab} />
