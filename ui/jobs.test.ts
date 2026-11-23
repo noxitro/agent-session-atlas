@@ -398,6 +398,8 @@ describe('画面からの操作(Phase 14)', () => {
     await expect.poll(() => page.getByText('依頼文をコピーしました。').count()).toBe(1);
     expect(await page.evaluate<string>('navigator.clipboard.readText()')).toBe(request);
     expect(await page.getByTestId('chat-zip-file-hint').innerText()).toContain('「JSON を返してください」に変えて頼み');
+    // ZIP の INSTRUCTIONS.md も、依頼文と同じファイル(フォルダの中の judgments.json)に書かせる
+    expect(await readFile(join(out, 'bundle', 'INSTRUCTIONS.md'), 'utf8')).toContain('結果は、このフォルダの中の `judgments.json` という 1 つのファイルに書きます');
 
     // 結果のファイルを選ぶ欄は、貼り付けの欄より先にある
     expect(await page.evaluate<boolean>("!!(document.getElementById('chat-reply-file').compareDocumentPosition(document.getElementById('chat-reply')) & Node.DOCUMENT_POSITION_FOLLOWING)")).toBe(true);
@@ -480,6 +482,7 @@ describe('画面からの操作(Phase 14)', () => {
     const request = 'turn-bundle フォルダの INSTRUCTIONS.md に従って判定し、結果を turn-bundle フォルダの中の turn-judgments.json に書いてください。';
     expect(await page.getByTestId('chat-request').innerText()).toBe(request);
     expect(await page.getByTestId('chat-zip-file-hint').innerText()).toContain('できた turn-judgments.json を、手順 3 で選びます');
+    expect(await readFile(join(out, 'turn-bundle', 'INSTRUCTIONS.md'), 'utf8')).toContain('結果は、このフォルダの中の `turn-judgments.json` という 1 つのファイルに書きます');
 
     // エージェントが書いた turn-judgments.json(架空)。判定できる依頼の塊だけを判定し、偶数の依頼は中身を直させた
     const phase = m.phases.includes('実装') ? '実装' : m.phases[0];

@@ -199,6 +199,7 @@ export function summarize(r: SessionRecord, judgment: JudgmentSummary | null, pa
       extraEdits: r.analysis?.extraEdits ?? 0,
       maxConsecutiveFailures: r.analysis?.maxConsecutiveFailures ?? 0,
       turns: r.analysis?.turnTools.length ?? 0,
+      ...(r.analysis?.turnsOverLimit ? { turnsOverLimit: r.analysis.turnsOverLimit } : {}),
     },
     ...(r.analysis?.turnStats?.length ? { turnRows: turnTuples(r) } : {}),
     ...(tests ? { tests } : {}),

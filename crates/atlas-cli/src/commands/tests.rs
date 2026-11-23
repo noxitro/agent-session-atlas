@@ -64,7 +64,7 @@ fn out_lock_stops_writing_commands() {
 
 #[test]
 fn refresh_args_follow_the_opened_folder() {
-    let p = JobArgsInput { out_dir: "o", notes_dir: "n", home: None };
+    let p = JobArgsInput { out_dir: "o", notes_dir: "n", home: None, settings: None, judgments: None };
     let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     assert_eq!(job_args(&JobRequest::Refresh, &p), Some(v(&["all", "--out", "o", "--notes-dir", "n"])));
     let h = JobArgsInput { home: Some("/srv/logs/person-a"), ..p };
@@ -81,6 +81,23 @@ fn refresh_args_follow_the_opened_folder() {
     assert_eq!(job_args(&JobRequest::TurnM365, &h), Some(v(&["turns", "m365", "--out", "o", "--notes-dir", "n"])));
     assert_eq!(job_args(&JobRequest::TaskM365, &h), Some(v(&["tasks", "m365", "--out", "o", "--notes-dir", "n"])));
     assert_eq!(job_args(&JobRequest::Full { id: "s1".into() }, &h), None);
+    // 設定のフォルダを使うサーバは、どのジョブにも同じ設定のフォルダを渡す
+    let st = JobArgsInput { settings: Some("S"), ..h };
+    assert_eq!(job_args(&JobRequest::TaskBundle, &st), Some(v(&["tasks", "bundle", "--out", "o", "--notes-dir", "n", "--settings", "S"])));
+    assert_eq!(job_args(&JobRequest::M365, &st), Some(v(&["judge", "m365", "--out", "o", "--notes-dir", "n", "--settings", "S"])));
+    for r in [JobRequest::Refresh, JobRequest::Bundle, JobRequest::BundleZip, JobRequest::Export, JobRequest::TurnBundle, JobRequest::TurnBundleZip, JobRequest::TaskBundleZip, JobRequest::TurnM365, JobRequest::TaskM365] {
+        let a = job_args(&r, &st).unwrap();
+        crate::args::parse_cli(&a).unwrap_or_else(|e| panic!("{a:?}: {e}"));
+    }
+    // serve --judgments X: 画面の取り込み先と同じ工数の判定のファイルを、どのジョブにも渡す(束の --unjudged・M365・作り直しが同じファイルを読む)
+    let j = JobArgsInput { judgments: Some("J"), ..st };
+    assert_eq!(job_args(&JobRequest::BundleZip, &j), Some(v(&["bundle", "--unjudged", "--zip", "--out", "o", "--notes-dir", "n", "--settings", "S", "--judgments", "J"])));
+    assert_eq!(job_args(&JobRequest::Export, &j), Some(v(&["export", "--out", "o", "--notes-dir", "n", "--settings", "S", "--judgments", "J"])));
+    for r in [JobRequest::Refresh, JobRequest::Bundle, JobRequest::BundleZip, JobRequest::Export, JobRequest::TurnBundle, JobRequest::TurnBundleZip, JobRequest::TaskBundle, JobRequest::TaskBundleZip, JobRequest::M365, JobRequest::TurnM365, JobRequest::TaskM365] {
+        let a = job_args(&r, &j).unwrap();
+        let o = crate::args::parse_cli(&a).unwrap_or_else(|e| panic!("{a:?}: {e}"));
+        assert_eq!(o.judgments.as_deref(), Some("J"), "{a:?}");
+    }
 }
 
 #[test]
@@ -93,7 +110,7 @@ fn open_pick_canceled_writes_nothing() {
     let before = d.path().join("logs").join("person-a").to_string_lossy().into_owned();
     fs::create_dir_all(&before).unwrap();
     let at = "2026-11-01T00:00:00.000Z".to_string();
-    write_folder_state(&folder_paths(&root, &notes, &before).state, &FolderState { version: 1, path: before.clone(), name: "person-a".into(), added_at: at.clone(), opened_at: at, listed: true, run: None }).unwrap();
+    write_folder_state(&folder_paths(&root, &notes, &before).state, &FolderState { version: 1, path: before.clone(), name: "person-a".into(), added_at: at.clone(), opened_at: at, listed: true, run: None, settings: None }).unwrap();
     let asked: Mutex<Vec<Option<String>>> = Mutex::new(vec![]);
     let logs: Mutex<Vec<String>> = Mutex::new(vec![]);
     let pick = |_t: &str, initial: Option<&str>| -> anyhow::Result<Option<String>> {
@@ -202,12 +219,13 @@ fn write_turn_parts(out: &std::path::Path, extra: serde_json::Value, files: &[us
 
 #[test]
 fn turn_chat_parts_mark_last_only_files() {
-    use crate::chat_parts::{list_chat_parts, ChatDecidable, ChatTarget};
+    use crate::chat_parts::{list_chat_parts, ChatDecidable, ChatTarget, JudgedFiles};
+    let (jf, tf) = (std::path::PathBuf::from("none-judgments.json"), std::path::PathBuf::from("none-turn-judgments.json"));
     // 採用を判定できる依頼の数と先頭のファイル数を返し、その後ろのファイルに「最後の依頼だけ」の印を付ける(消えたファイルがあっても番号はずれない)
     let d = tempfile::tempdir().unwrap();
     // 先頭の 2 ファイルが判定できる依頼。part-02 は消えている
     write_turn_parts(d.path(), json!({ "decidable": { "turns": 3, "chunks": 2, "parts": 2 } }), &[1, 3, 4]);
-    let r = list_chat_parts(d.path(), d.path(), ChatTarget::Turns).unwrap();
+    let r = list_chat_parts(d.path(), &JudgedFiles { judgments: &d.path().join(&jf), turn_judgments: &d.path().join(&tf), tasks_dir: d.path() }, ChatTarget::Turns).unwrap();
     assert_eq!((r.exists, r.unjudged_only, r.count, r.decidable), (true, Some(true), Some(5), Some(ChatDecidable { turns: 3, parts: 2, chunks: 2 })));
     let marks: Vec<(String, Option<bool>)> = r.parts.as_ref().unwrap().iter().map(|p| (p.name.clone(), p.last_only)).collect();
     assert_eq!(marks, [("part-01.md".to_string(), Some(false)), ("part-03.md".to_string(), Some(true)), ("part-04.md".to_string(), Some(true))]);
@@ -219,7 +237,7 @@ fn turn_chat_parts_mark_last_only_files() {
     // 古い添付(decidable が無い)では、数も印も返さない
     let d = tempfile::tempdir().unwrap();
     write_turn_parts(d.path(), json!({}), &[1, 2, 3, 4]);
-    let r = list_chat_parts(d.path(), d.path(), ChatTarget::Turns).unwrap();
+    let r = list_chat_parts(d.path(), &JudgedFiles { judgments: &d.path().join(&jf), turn_judgments: &d.path().join(&tf), tasks_dir: d.path() }, ChatTarget::Turns).unwrap();
     assert_eq!(r.decidable, None);
     assert_eq!(r.parts.as_ref().unwrap().len(), 4);
     let v = serde_json::to_value(&r).unwrap();
@@ -237,6 +255,90 @@ fn judge_rejects_filters_it_ignores() {
     let e = run(&cli(&["judge", "m365", "--branch", "g", "--out", &o, "--notes-dir", &n]), &quiet).unwrap_err().to_string();
     assert!(e.starts_with("--branch は judge m365 では効きません。"), "{e}");
     assert!(e.contains("bundle --branch --unjudged"), "{e}");
+}
+
+/// turns の import・m365 も、judge と同じく効かない絞り込みを断る(bundle では絞り込みに使う)
+#[test]
+fn turns_rejects_filters_on_import_and_m365() {
+    let d = tempfile::tempdir().unwrap();
+    let (o, n) = (d.path().join("out").to_string_lossy().into_owned(), d.path().join("notes").to_string_lossy().into_owned());
+    let e = run(&cli(&["turns", "import", "r.md", "--project", "p", "--out", &o, "--notes-dir", &n]), &quiet).unwrap_err().to_string();
+    assert_eq!(e, "--project は turns import では使えません(返答に入っている依頼をすべて取り込みます)");
+    let e = run(&cli(&["turns", "import", "r.md", "--session", "ab", "--model", "m", "--out", &o, "--notes-dir", &n]), &quiet).unwrap_err().to_string();
+    assert!(e.starts_with("--session --model は turns import では使えません"), "{e}");
+    let e = run(&cli(&["turns", "m365", "--since", "2026-11-01", "--task", "T", "--out", &o, "--notes-dir", &n]), &quiet).unwrap_err().to_string();
+    assert!(e.starts_with("--since --task は turns m365 では効きません。送るのは、作ってある添付(out/turn-bundle)のファイルです。"), "{e}");
+    assert!(e.contains("bin\\atlas.exe turns bundle --since --task --unjudged で添付を作ってから turns m365"), "{e}");
+    // m365 の --model は M365 Copilot のモデルの選択なので断らない。bundle の絞り込みも断らない
+    assert!(cli(&["turns", "m365", "--model", "Auto"]).turns.unwrap().ignored_filters.is_empty());
+    assert!(cli(&["turns", "bundle", "--project", "p", "--session", "ab"]).turns.unwrap().ignored_filters.is_empty());
+}
+
+/// tasks の import・m365 も、judge・turns と同じく効かない絞り込みを断る(何も取り込まず、送らない)
+#[test]
+fn tasks_rejects_filters_on_import_and_m365() {
+    let d = tempfile::tempdir().unwrap();
+    let (o, n) = (d.path().join("out").to_string_lossy().into_owned(), d.path().join("notes").to_string_lossy().into_owned());
+    let e = run(&cli(&["tasks", "import", "r.md", "--project", "p", "--out", &o, "--notes-dir", &n]), &quiet).unwrap_err().to_string();
+    assert_eq!(e, "--project は tasks import では使えません(返答に入っているセッションの紐づけをすべて取り込みます)");
+    let e = run(&cli(&["tasks", "import", "r.md", "--session", "ab", "--task", "T", "--model", "m", "--out", &o, "--notes-dir", &n]), &quiet).unwrap_err().to_string();
+    assert!(e.starts_with("--session --task --model は tasks import では使えません"), "{e}");
+    let e = run(&cli(&["tasks", "m365", "--since", "2026-11-01", "--out", &o, "--notes-dir", &n]), &quiet).unwrap_err().to_string();
+    assert!(e.starts_with("--since は tasks m365 では効きません。送るのは、作ってある添付(out/task-bundle)のファイルです。"), "{e}");
+    assert!(e.contains("bin\\atlas.exe tasks bundle --session <セッション id> で添付を作ってから tasks m365"), "{e}");
+    // m365 の --model は M365 Copilot のモデルの選択なので断らない
+    assert!(cli(&["tasks", "m365", "--model", "Auto"]).tasks_cmd.unwrap().ignored_filters.is_empty());
+    // 断ったので、取り込みのファイルも紐づけも作っていない
+    assert!(!d.path().join("notes").join("task-links.json").exists());
+}
+
+/// 取り込みの後の作り直しは、取り込みのコマンドの絞り込みと記録の出し方(--full など)を引き継がず、既定の出し方で作る。
+/// 出力先・設定のフォルダは引き継ぐ
+#[test]
+fn export_after_import_drops_filters_and_transcript_options() {
+    let o = cli(&[
+        "export", "--since", "2026-01-01", "--project", "p", "--client", "c", "--model", "m", "--branch", "b", "--session", "ab", "--task", "T", "--full", "--tool-output", "all", "--max-chars", "500", "--out", "X", "--settings", "S",
+    ]);
+    let e = export_after_import(&CliOptions { command: "judge".into(), ..o });
+    assert_eq!(e.command, "export");
+    assert!(e.since.is_none() && e.project.is_none() && e.client.is_none() && e.model.is_none() && e.branch.is_none() && e.sessions.is_none() && e.task.is_none());
+    assert_eq!((e.tool_output, e.max_chars, e.full), (crate::args::ToolOutput::Fail, None, false));
+    assert_eq!((e.out.as_deref(), e.settings.as_deref()), (Some("X"), Some("S")));
+    // 既定の export と、絞り込みと記録の出し方が同じ
+    let plain = cli(&["export", "--out", "X", "--settings", "S"]);
+    assert!(!metrics::has_filter(&metrics::SessionFilter::from_cli(&e)));
+    assert_eq!((e.tool_output, e.max_chars, e.full), (plain.tool_output, plain.max_chars, plain.full));
+}
+
+/// 取り込めた後の作り直しに失敗したら、取り込みは済んでいることと作り直し方を添える(取り込んだ判定は残る)
+#[test]
+fn rebuild_failure_after_import_says_the_import_is_done() {
+    let d = tempfile::tempdir().unwrap();
+    let (home, out, notes) = (d.path().join("home"), d.path().join("out"), d.path().join("notes"));
+    write_home_sessions(&home, &["aaaa1111", "bbbb2222"]);
+    let (h, o, n) = (home.to_string_lossy().into_owned(), out.to_string_lossy().into_owned(), notes.to_string_lossy().into_owned());
+    run(&cli(&["all", "--home", &h, "--out", &o, "--notes-dir", &n]), &quiet).unwrap();
+    // レポートを書けないようにする(atlas.html をフォルダにする)
+    fs::remove_file(out.join("atlas.html")).unwrap();
+    fs::create_dir_all(out.join("atlas.html").join("x")).unwrap();
+    let item = json!({
+        "sessionId": "aaaa1111",
+        "taskCategory": "feature",
+        "taskSummary": "要約",
+        "humanEffort": { "hours": 2, "low": 1, "high": 4, "confidence": 0.5, "rationale": "根拠" },
+        "aiOutcome": { "completed": true, "quality": 4, "rework": 1, "rationale": "成果" },
+        "instructionsEffect": { "score": 1, "evidence": "e" },
+        "wikiEffect": { "score": 0, "evidence": "参照なし" },
+        "skillsAgentsEffect": { "score": 0, "evidence": "参照なし" },
+    });
+    let reply = d.path().join("reply.json");
+    fs::write(&reply, json!({ "schemaVersion": 2, "judge": { "backend": "external", "model": null, "ranAt": null }, "items": [item] }).to_string()).unwrap();
+    let e = run(&cli(&["judge", "import", &reply.to_string_lossy(), "--out", &o, "--notes-dir", &n]), &quiet).unwrap_err();
+    let e = format!("{e:#}");
+    assert!(e.ends_with(REBUILD_FAILED), "{e}");
+    assert_eq!(REBUILD_FAILED, "取り込みは済んでいます。bin\\atlas.exe export でレポートを作り直してください");
+    let saved: serde_json::Value = serde_json::from_str(&fs::read_to_string(out.join("judgments.json")).unwrap()).unwrap();
+    assert_eq!(saved["items"][0]["sessionId"], "aaaa1111");
 }
 
 /// 依頼が 1 つずつあるセッションの記録(~/.copilot の session-state の形)
@@ -289,7 +391,8 @@ fn turns_bundle_zip_and_stale_zip() {
     assert!(!text.contains("turn-bundle/parts/"));
     assert!(logs.lock().unwrap().iter().any(|l| l.starts_with("turns bundle: ZIP にまとめました(5 ファイル")), "{:?}", logs.lock().unwrap());
     // 画面の一覧にも、今の束の ZIP として出る
-    let parts = crate::chat_parts::list_chat_parts(&out, &notes, crate::chat_parts::ChatTarget::Turns).unwrap();
+    let files = crate::chat_parts::JudgedFiles { judgments: &out.join("judgments.json"), turn_judgments: &out.join("turn-judgments.json"), tasks_dir: &notes };
+    let parts = crate::chat_parts::list_chat_parts(&out, &files, crate::chat_parts::ChatTarget::Turns).unwrap();
     assert_eq!(parts.zip.as_ref().map(|z| z.path.as_str()), Some("turn-bundle.zip"));
     run(&cli(&["turns", "bundle", "--unjudged", "--out", &o, "--notes-dir", &n]), &log).unwrap();
     assert!(!zip.exists());

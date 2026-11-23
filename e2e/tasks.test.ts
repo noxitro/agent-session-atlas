@@ -195,10 +195,15 @@ describe('管理ツールのタスク(XML の読み込み・紐づけ・工数)'
     const b = atlas(['tasks', 'bundle', '--zip', '--out', out]);
     expect(b.status, b.out).toBe(0);
     const tb = join(out, 'task-bundle');
-    type Manifest = { count: number; sessions: { id: string; path: string; candidates: string[] }[]; parts: { path: string; sessions: string[] }[] };
-    const m = await readJson<Manifest>(join(tb, 'manifest.json'));
-    // 束に入るのは紐づけの無いセッションだけ(機械で紐づいた 3 つは入れない)。候補は manifest にも残す
+    type Manifest = { count: number; sessions: { id: string; path: string; candidates?: string[] }[]; parts: { path: string; sessions: string[] }[] };
+    const raw = await readJson<Manifest>(join(tb, 'manifest.json'));
+    // 候補の ID は candidates.json に分ける(manifest.json は件数とファイルの一覧だけ。外部のエージェントが読む量を減らす)
+    for (const e of raw.sessions) expect(e.candidates).toBeUndefined();
+    const cands = await readJson<{ sessions: Record<string, string[]> }>(join(tb, 'candidates.json'));
+    const m = { ...raw, sessions: raw.sessions.map((e) => ({ ...e, candidates: cands.sessions[e.id] })) };
+    // 束に入るのは紐づけの無いセッションだけ(機械で紐づいた 3 つは入れない)。候補は candidates.json に残す
     expect(m.count).toBeGreaterThan(0);
+    expect(Object.keys(cands.sessions)).toEqual(m.sessions.map((e) => e.id));
     for (const id of [S_FIX, S_IMPROVE, S_MULTI]) expect(m.sessions.map((e) => e.id)).not.toContain(id);
     for (const e of m.sessions) {
       expect(e.candidates.length).toBeGreaterThan(0);
@@ -222,6 +227,10 @@ describe('管理ツールのタスク(XML の読み込み・紐づけ・工数)'
     const zip = (await readFile(join(out, 'task-bundle.zip'))).toString('latin1');
     for (const f of ['task-bundle/INSTRUCTIONS.md', 'task-bundle/manifest.json', 'task-bundle/schema.json', `task-bundle/${m.sessions[0].path}`]) expect(zip).toContain(f);
     expect(zip).not.toContain('task-bundle/parts/');
+    expect(zip).not.toContain('task-bundle/candidates.json');
+    // ZIP の指示は、画面の依頼文と同じファイル(task-bundle フォルダの中の links.json)に書かせる。チャットに貼る指示は、ツールを使わせない
+    expect(await readFile(join(tb, 'INSTRUCTIONS.md'), 'utf8')).toContain('結果は、このフォルダの中の `links.json` という 1 つのファイルに書きます');
+    expect(part).toContain('ツール(ファイル操作・シェル・Web 検索など)は使わないでください');
     // 外部の LLM の返答(架空)。1 つ目は候補の先頭 2 つ、2 つ目は「どのタスクでもない」、ほかのセッションの候補に無い ID も混ぜる
     const [first, second] = m.sessions;
     const reply = join(WORK, 'task-reply.md');
@@ -284,7 +293,9 @@ describe('管理ツールのタスク(XML の読み込み・紐づけ・工数)'
     await writeFile(linksPath, JSON.stringify(saved));
     const b = atlas(['tasks', 'bundle', '--out', out]);
     expect(b.status, b.out).toBe(0);
-    const m = await readJson<{ count: number; sessions: { id: string; candidates: string[] }[] }>(join(out, 'task-bundle', 'manifest.json'));
+    const raw = await readJson<{ count: number; sessions: { id: string }[] }>(join(out, 'task-bundle', 'manifest.json'));
+    const cands = await readJson<{ sessions: Record<string, string[]> }>(join(out, 'task-bundle', 'candidates.json'));
+    const m = { ...raw, sessions: raw.sessions.map((e) => ({ id: e.id, candidates: cands.sessions[e.id] })) };
     expect(m.count).toBeGreaterThanOrEqual(llmIds.length);
     const r = atlas(['tasks', 'm365', '--out', out, '--timeout', '60'], { ATLAS_M365_FAKE_DRIVER: join(FIXTURE_CODE, 'fake-m365.mjs') });
     expect(r.status, r.out).toBe(0);
@@ -359,8 +370,11 @@ describe('管理ツールのタスク(XML の読み込み・紐づけ・工数)'
     expect(v.links[S_MULTI]?.taskIds).toEqual(['DEMO-102-1', 'DEMO-103']);
     expect(v.items.find((t) => t.id === 'DEMO-103')).toMatchObject({ sessions: 1, sharedSessions: 1, aiActiveMs: 1_800_000 });
     expect(csv(await readFile(join(out2, 'tables', 'session-tasks.csv'), 'utf8')).filter((r) => r['セッションID'] === S_MULTI).map((r) => r['按分'])).toEqual(['0.5', '0.5']);
-    expect(v.items.find((t) => t.id === 'DEMO-101')).toMatchObject({ done: true, doneAt: T_AFTER.toISOString(), start: '2026-10-15T00:00:00.000Z', workMs: 57 * 3_600_000, sessions: 1 });
-    expect(row(await tasksCsv(out2), 'DEMO-101')['稼働時間帯の工数(時間)']).toBe('57');
+    // 開始と稼働時間帯の工数は、送った人の記録の値(送った人の PC で、送らなかったセッションも含めて決めたもの。
+    // d2 の偽の M365 Copilot が候補の先頭を答えるので、ほかのプロジェクトのセッションが DEMO-101 に紐づくこともある)
+    const sent = (await embedded())!.items.find((t) => t.id === 'DEMO-101')!;
+    expect(v.items.find((t) => t.id === 'DEMO-101')).toMatchObject({ done: true, doneAt: T_AFTER.toISOString(), start: sent.start, workMs: sent.workMs, sessions: 1 });
+    expect(row(await tasksCsv(out2), 'DEMO-101')['稼働時間帯の工数(時間)']).toBe(row(await tasksCsv(), 'DEMO-101')['稼働時間帯の工数(時間)']);
     // 送り先ではタスクの状態を作らない(XML を読まない)
     expect(existsSync(join(WORK, 'notes-received', 'tasks.json'))).toBe(false);
     expect((await readdir(dest)).sort()).toContain(S_FIX);

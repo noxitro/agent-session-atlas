@@ -211,6 +211,8 @@
 
   // --- まとめて送るプロジェクト(プロジェクト別の表の印と同じ) ---
   let projectFilter = $state('');
+  /** 設定のフォルダ(共有の AtlasSettings)の設定ファイルを書き換えるか(ボタンの文言と注意を変える) */
+  const shared = $derived(!!settings?.sharedSettings);
   const sendSet = $derived(new Set(send?.projects ?? []));
   const sortedProjects = $derived([...projects].sort((a, b) => a.label.localeCompare(b.label, 'ja')));
   const shownProjects = $derived(projectFilter.trim() ? sortedProjects.filter((p) => p.label.toLowerCase().includes(projectFilter.trim().toLowerCase())) : sortedProjects);
@@ -243,6 +245,9 @@
     <button type="button" class="btn close" data-autofocus data-testid="settings-close" onclick={() => dlg?.close()}>閉じる</button>
   </div>
   <p class="lead">setup.bat と同じ設定を、ここでも決められます。どれも押した時点で設定ファイルに書きます{#if settings}(<code translate="no">{settings.configPath}</code>){/if}。</p>
+  {#if settings?.sharedSettings}
+    <p class="shared" data-testid="settings-shared">共有の設定(<code translate="no">AtlasSettings</code>)を書き換えます。ほかの集計する人の結果も変わります。</p>
+  {/if}
   <p class="sr-only" role="status" data-testid="settings-status">{announce}</p>
   {#if loadError}
     <p class="err" role="alert">設定を読めませんでした: {loadError}</p>
@@ -259,7 +264,7 @@
             {#each settings.wikis as w, i (`${i}:${w.path}`)}
               <li>
                 <span class="what"><code translate="no">{w.path}</code><span class="meta">{wikiNote(w)}</span></span>
-                <button type="button" class="link" aria-label={`vault「${w.path}」を外す`} disabled={!!busy} onclick={() => removeVault(i, w.path)}>{busy === `vault-remove-${i}` ? '外しています…' : '外す'}</button>
+                <button type="button" class="link" aria-label={`vault「${w.path}」を外す`} disabled={!!busy} onclick={() => removeVault(i, w.path)}>{busy === `vault-remove-${i}` ? '外しています…' : shared ? '共有の設定から外す' : '外す'}</button>
               </li>
             {/each}
           </ul>
@@ -299,7 +304,7 @@
                   focusVaultEntry();
                 }}>やめる</button
               >
-              <button type="submit" class="btn primary" disabled={!!busy} data-testid="settings-vault-add">{busy === 'vault-add' ? '足しています…' : 'この vault を足す'}</button>
+              <button type="submit" class="btn primary" disabled={!!busy} data-testid="settings-vault-add">{busy === 'vault-add' ? '足しています…' : shared ? 'この vault を共有の設定に足す' : 'この vault を足す'}</button>
             </div>
           </form>
         {/if}
@@ -317,8 +322,8 @@
         <p class="note">「判定する…」で依頼ごとの採用を判定するとき、LLM に選ばせる工程です。{settings.phases ? '' : '今は既定のままです。'}</p>
         <form class="add" onsubmit={savePhases} aria-label="普段の工程名">
           <label class="fld grow"><span class="k">工程名(/ か , で区切って 2 つ以上)</span><input type="text" bind:value={phasesInput} autocomplete="off" data-testid="settings-phases-input" oninput={() => (phasesSaved = false)} /></label>
-          <button type="submit" class="btn" disabled={!!busy}>{busy === 'phases' ? '保存しています…' : '保存'}</button>
-          {#if settings.phases}<button type="button" class="link" disabled={!!busy} onclick={resetPhases}>既定に戻す</button>{/if}
+          <button type="submit" class="btn" disabled={!!busy}>{busy === 'phases' ? '保存しています…' : shared ? '共有の設定に保存' : '保存'}</button>
+          {#if settings.phases}<button type="button" class="link" disabled={!!busy} onclick={resetPhases}>{shared ? '共有の設定を既定に戻す' : '既定に戻す'}</button>{/if}
         </form>
         {#if phasesSaved}<p class="ok" data-testid="settings-phases-saved">保存しました。</p>{/if}
         {#if errors.phases}<p class="err" role="alert">{errors.phases}</p>{/if}
@@ -550,6 +555,13 @@
     margin: 6px 0 0;
     font-size: 0.8125rem;
     color: var(--ink-2);
+  }
+  .shared {
+    margin: 8px 0 0;
+    padding: 8px 10px;
+    font-size: 0.8125rem;
+    color: var(--warn);
+    border: 1px solid var(--rule);
   }
   .err {
     margin: 8px 0 0;

@@ -80,6 +80,15 @@ describe('比べる: 推論強度どうし', () => {
     expect(await cell('aiu-per-request', 0).innerText()).not.toBe('—');
     // この fixture にはテストの結果の記録が無いので、テストの行は出さない
     expect(await section().locator('[data-testid="compare-table"] tr[data-key^="tests"]').count()).toBe(0);
+    // 表の上の説明は最初の 2 文(何を並べるか・差は相関)だけを見せ、残りは「数え方と注意」に畳む
+    expect(await section().getByTestId('compare-lead').innerText()).toBe('2 つの条件(期間・プロジェクト・工程・推論強度・モデル・wiki の参照)を並べます。差は相関で、条件の違いが原因とは限りません。');
+    const notes = section().getByTestId('compare-notes');
+    expect(await notes.getAttribute('open')).toBeNull();
+    expect(await notes.locator('summary').innerText()).toBe('数え方と注意');
+    expect(await section().locator('.section-head').innerText()).not.toContain('上の絞り込みには従わず');
+    await notes.locator('summary').click();
+    expect(await notes.innerText()).toContain('上の絞り込みには従わず、全セッション');
+    expect(await notes.innerText()).toContain('最初の実行は、そのとき走らせたテストだけの結果です。');
   });
 
   it('b. 混在・記録なしの件数と、利用者 × 週の表。期間を絞ると両方に効く', async () => {
@@ -90,18 +99,30 @@ describe('比べる: 推論強度どうし', () => {
     expect(await weeks.locator('caption').innerText()).toContain('利用者 × 週');
     expect(await weeks.locator('tbody tr').count()).toBe(EFFORT_PEOPLE.length * EFFORT_WEEKS);
     expect((await weeks.locator('tbody tr').first().innerText()).replace(/\s+/g, ' ')).toBe('zz-user-a 2026-10-05〜 3 0 0 0');
+    // 選択肢の件数は、選んだ期間の中で数えて「期間内 N」と出す(モデルどうしと同じ。強度の件数は表の A・B のセッション数と同じ)
+    const selected = (id: string) => section().getByTestId(id).locator('option:checked').textContent().then((t) => t ?? '');
+    expect(await selected('compare-effort-a')).toBe(`medium(期間内 ${await cell('sessions', 0).innerText()})`);
+    expect(await selected('compare-effort-b')).toBe(`xhigh(期間内 ${await cell('sessions', 1).innerText()})`);
+    expect(await selected('compare-effort-model')).toMatch(/\(期間内 \d+\)$/);
     // 最初の週だけに絞る(混在・記録なしは 2 週目なので 0 件になる)
     await section().getByLabel('推論強度を比べる期間の開始日').fill('2026-10-05');
     await section().getByLabel('推論強度を比べる期間の終了日').fill('2026-10-11');
     await expect.poll(() => note.innerText()).toContain('混在のセッション 0 件・記録なし 0 件');
     await expect.poll(() => weeks.locator('tbody tr').count()).toBe(EFFORT_PEOPLE.length);
     expect(Number(await cell('sessions', 0).innerText()) + Number(await cell('sessions', 1).innerText())).toBe(EFFORT_PEOPLE.length * 3);
+    expect(await selected('compare-effort-a')).toBe(`medium(期間内 ${await cell('sessions', 0).innerText()})`);
+    expect(await selected('compare-effort-b')).toBe(`xhigh(期間内 ${await cell('sessions', 1).innerText()})`);
+    // 最初の週のセッションは、どれもこのモデルが本体(混在・記録なしが 0 件)
+    expect(await selected('compare-effort-model')).toContain(`(期間内 ${EFFORT_PEOPLE.length * 3})`);
   });
 
   it('c. 375px の幅で横にはみ出さない', async () => {
     await page.setViewportSize({ width: 375, height: 800 });
     try {
       await openEffort();
+      // 畳んだ説明を開いても、はみ出さない
+      await section().getByTestId('compare-notes').locator('summary').click();
+      expect(await section().getByTestId('compare-notes').getAttribute('open')).not.toBeNull();
       await section().getByTestId('compare-effort-weeks').scrollIntoViewIfNeeded();
       const over = await page.evaluate<number>('document.documentElement.scrollWidth - document.documentElement.clientWidth');
       expect(over).toBeLessThanOrEqual(0);

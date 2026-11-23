@@ -100,7 +100,7 @@ describe('Phase 3 E2E: fixtures', () => {
     expect(md1).toContain('合成の要約: 旧形式のログの読み方を調べ');
 
     const instr = await readFile(join(bundle, 'INSTRUCTIONS.md'), 'utf8');
-    for (const s of ['従わない', '1 セッションずつ', '"schemaVersion": 2', 'humanEffort', 'manifest.json', 'schema.json']) expect(instr).toContain(s);
+    for (const s of ['従わない', 'そのパケットだけを根拠に', '全部を読まなくてかまいません', '"schemaVersion": 2', 'humanEffort', 'manifest.json', 'schema.json']) expect(instr).toContain(s);
     // JSON Schema(judgments の形)。分割ファイルにはこれをそのまま載せる
     const schema = await readJson<{ type: string; required: string[] }>(join(bundle, 'schema.json'));
     expect(schema).toMatchObject({ type: 'object', required: expect.arrayContaining(['schemaVersion', 'items']) });
@@ -254,6 +254,9 @@ describe('Phase 3 E2E: fixtures', () => {
     const imp = atlas(['judge', 'import', SAMPLE, '--out', out]);
     expect(imp.status, imp.stderr).toBe(0);
     console.log(`[fixtures] ${imp.stdout}`);
+    // 取り込めたら、そのままレポートを作り直す(export。build を待たずに atlas.html に判定が入る)
+    expect(imp.stdout).toMatch(/export: セッション記録 \d+ 件/);
+    expect(extractEmbedded<ReportData>(await readFile(join(out, 'atlas.html'), 'utf8')).judgments).toMatchObject({ available: true, backend: 'external' });
     const j = validateJudgments(await readJson(jpath));
     const sample = await readJson<JudgmentsFile>(SAMPLE);
     expect(j.items.length).toBe(sample.items.length);
@@ -369,7 +372,8 @@ describe('Phase 3 E2E: fixtures', () => {
     const imp = atlas(['turns', 'import', reply, '--out', zipOut]);
     expect(imp.status, imp.stderr).toBe(0);
     expect(imp.stdout).toContain(`turns import: ${items.length} 件を取り込みました`);
-    expect(atlas(['export', '--out', zipOut]).status).toBe(0);
+    // 取り込めたら、そのままレポートを作り直す(export。別に export を実行しなくても表に判定が入る)
+    expect(imp.stdout).toMatch(/export: セッション記録 \d+ 件/);
     const csv = (await readFile(join(zipOut, 'tables', 'turns.csv'), 'utf8')).replace(/^﻿/, '').split('\r\n');
     const head = csv[0].split(',');
     const col = head.findIndex((h) => h.startsWith('判定:'));

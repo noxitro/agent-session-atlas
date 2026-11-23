@@ -1,24 +1,28 @@
-// 「比べる」の節: 2 つの条件(期間・プロジェクト・推論強度)のセッションの指標を並べる。工程は依頼(ターン)の単位で並べる。
+// 「比べる」の節: 2 つの条件(期間・プロジェクト・推論強度・モデル・wiki の参照)のセッションの指標を並べる。工程は依頼(ターン)の単位で並べる。
 // 差は相関で、条件の違いが原因とは限らない。差の幅(95%)は、セッションを互いに独立とみなした近似(同じ人のセッションの似かたは入れていない)。
+// 人の違いを減らした比べ方(人ごとの差の平均と、人を単位にした幅)は lib/compare-person.ts。
 import { EFFORT_ORDER, orderBy } from './exec.ts';
 import { localDayStart, sessionTime } from './filter.ts';
 import { mainEffortOf, mainModelsOf } from './main-effort.ts';
 import { PHASES, REQUEST_KINDS, type Phase, type TurnBucket } from '../shared/turns.ts';
-import { aggregateRetention, enoughMeasured, measuredOf, median, RETENTION_MIN_SESSIONS, retentionByPhase, shareOf, type RetentionAgg, type StatusTuple } from './retention.ts';
+import { aggregateRetention, enoughMeasured, measuredOf, median, MODE_LABEL, modeDiffer, modeMix, REASON_LABEL, RETENTION_MIN_SESSIONS, RETENTION_MODES, retentionByPhase, shareOf, unattributableByCount, type RetentionAgg, type StatusTuple } from './retention.ts';
 import { turnAggregate, type TurnTuple } from './turns.ts';
 import type { SessionSummary } from './types.ts';
+import { wikiReferenced } from './wiki.ts';
 
 /** 割合を出す最小のセッション数(改善点の率と同じ 5) */
 export const COMPARE_MIN_SESSIONS = 5;
 
-export const COMPARE_KINDS = ['period', 'project', 'phase', 'effort'] as const;
+export const COMPARE_KINDS = ['period', 'project', 'phase', 'effort', 'model', 'wiki'] as const;
 export type CompareKind = (typeof COMPARE_KINDS)[number];
-export const COMPARE_KIND_LABEL: Record<CompareKind, string> = { period: '期間', project: 'プロジェクト', phase: '工程', effort: '推論強度' };
+export const COMPARE_KIND_LABEL: Record<CompareKind, string> = { period: '期間', project: 'プロジェクト', phase: '工程', effort: '推論強度', model: 'モデル', wiki: 'wiki の参照' };
 
 export type CompareSession = Pick<
   SessionSummary,
   'id' | 'turns' | 'activeMs' | 'tools' | 'friction' | 'analysis' | 'tokens' | 'retention' | 'createdAt' | 'updatedAt' | 'project' | 'turnRows' | 'person' | 'models' | 'tests'
 > & {
+  /** wiki の参照で比べるときに使う(作りかけの値では無いことがある。無ければ参照していないとして読む) */
+  wiki?: SessionSummary['wiki'] | null;
   /** 推論強度の比較に使う(古い埋め込み・テストの作りかけの値では無いことがある) */
   exec?: Pick<SessionSummary['exec'], 'mainModelEfforts'>;
 };
@@ -238,10 +242,16 @@ export function compareRows(a: CompareSide, b: CompareSide, o: { byTurnCount?: b
     const m = (x: number[]): number | null => (x.length < COMPARE_MIN_SESSIONS ? null : mean(x));
     return { key, label, unit, a: m(va), b: m(vb), note, ci: enough(va.length, vb.length) ? welchDiff(va, vb) : null };
   };
-  // 残存の割合を出すかは、残存の節と同じ決まり(照合できたセッションが RETENTION_MIN_SESSIONS 以上)
-  const keptShare = (s: CompareSide): number | null => keptOf(s.retention.hunks, s.retention.measured);
-  const missingShare = (s: CompareSide): number | null => shareOf(s.retention.hunks, 2, s.retention.measured);
-  return [
+  // 残存の割合を出すかは、残存の節と同じ決まり(照合できたセッションが RETENTION_MIN_SESSIONS 以上)。
+  // 側の中で比べた版(worktree・committed・fixed)が混ざっていれば、違う時点との比べを足すことになるので、その側は出さない(modeMix)。
+  // A と B の版がそれぞれ 1 つに決まっていても互いに違えば、違う時点の版と比べたもの同士になるので、両側とも出さない(modeDiffer。版の記録の無い古い結果は違うとみなさない)
+  const differ = modeDiffer(a.retention, b.retention) != null;
+  const mixed = (s: CompareSide): boolean => differ || modeMix(s.retention) != null;
+  const keptShare = (s: CompareSide): number | null => (mixed(s) ? null : keptOf(s.retention.hunks, s.retention.measured));
+  const missingShare = (s: CompareSide): number | null => (mixed(s) ? null : shareOf(s.retention.hunks, 2, s.retention.measured));
+  // 日数は、側の中で版が混ざっていなければ出す(A と B で版が違っても、それぞれの側の日数には意味があるので並べる)
+  const lagMedian = (s: CompareSide): number | null => (modeMix(s.retention) != null || !enoughMeasured(s.retention.measured) ? null : median(s.retention.lags));
+  const base: CompareRow[] = [
     row('sessions', 'セッション', 'count', (s) => s.sessions, ''),
     share('no-rework', '手戻りのないセッションの割合', (s) => s.noRework, '採点できたセッションのうち、2 件目以降の依頼に直し・差し戻しが無く、どの依頼にも中断が無かったもの'),
     ...(o.byTurnCount
@@ -265,10 +275,44 @@ export function compareRows(a: CompareSide, b: CompareSide, o: { byTurnCount?: b
     share('tests-first-pass', '最初のテストの実行で全部通ったセッションの割合', (s) => s.testsFirstPass, 'テストを実行したセッション(テストの結果の記録が 1 回以上あるもの)のうち、最初の実行で全部通ったもの。最初の実行は、そのとき走らせたテストだけの結果。テストを走らせるか・いつ走らせるかは条件で変わりうるので、テストを実行したセッションの数も見比べる'),
     share('tests-last-failing', '最後に通っていないテストが残ったセッションの割合', (s) => s.testsLastFailing, 'テストを実行したセッションのうち、最後の実行の後に通っていないテストがあるもの(未達と、通った後に不合格)。小さいほど良い'),
     row('retention-measured', '照合できたセッション(AI の変更の残存の分母)', 'count', (s) => s.retention.measured, 'AI の変更があったセッションのうち'),
-    row('retention-kept', '残っている(そのまま + 直されて)割合', 'rate', keptShare, `照合できたまとまりに対する割合。照合できたセッションが ${RETENTION_MIN_SESSIONS} 件未満なら —`),
-    row('retention-missing', '見つからない割合', 'rate', missingShare, '照合できたまとまりに対する割合'),
-    row('retention-lag', 'セッションの終わりから比べた時点まで(中央値)', 'days', (s) => (enoughMeasured(s.retention.measured) ? median(s.retention.lags) : null), '照合できたセッション。両側で大きく違うと、後から人が手を入れた時間が違うので残存の割合を比べにくい'),
+    row('retention-kept', '残っている(そのまま + 直されて)割合', 'rate', keptShare, `単位はまとまり。照合できたまとまり(照合不可を除く)に対する、そのまま残る + 直されて残るの割合。照合できたセッションが ${RETENTION_MIN_SESSIONS} 件未満か、比べた版が側の中で混ざっているか、A と B で違えば —`),
+    row('retention-missing', '見つからない割合', 'rate', missingShare, '単位はまとまり。照合できたまとまりに対する、見つからないの割合(比べた版が側の中で混ざっているか、A と B で違えば —)'),
+    row('retention-lag', 'セッションの終わりから比べた時点まで(中央値)', 'days', lagMedian, '照合できたセッション。両側で大きく違うと、後から人が手を入れた時間が違うので残存の割合を比べにくい(比べた版が側の中で混ざっていれば —。A と B で版が違っても、それぞれの側の日数は出す)'),
   ];
+  return [...base, ...retentionDetailRows(a.retention, b.retention)];
+}
+
+/** 照合不可の理由を、両側を合わせて多い順にこの数だけ行にする(残りは「その他の理由」の 1 行) */
+export const RETENTION_REASON_ROWS = 3;
+
+/**
+ * AI の変更の残存の、割合のほかに並べる行(AGENTS.md の決まり): 開始時の基準の記録・推定の件数、比べた版の内訳、
+ * 照合不可の理由別の件数(両側を合わせて多い順に RETENTION_REASON_ROWS 件と、その他)。どれも件数の行で、差は出さない。
+ * pool は工程どうし: 両側を同じセッションの母集団から作るので、a と b に同じ母集団の集計を渡し、見出しに「母集団」と書く
+ */
+export function retentionDetailRows(a: RetentionAgg, b: RetentionAgg, o: { pool?: boolean } = {}): CompareRow[] {
+  const pool = o.pool ?? false;
+  const label = (s: string): string => (pool ? `${s}(母集団)` : s);
+  const where = pool ? '母集団(A と B の両方を作るセッション)の照合できたセッションのうち' : '照合できたセッションのうち';
+  const count = (key: string, l: string, f: (r: RetentionAgg) => number, note: string): CompareRow => ({ key, label: label(l), unit: 'count', a: f(a), b: f(b), note: pool ? `${note}。工程どうしは同じセッションから両側を作るので、A と B に同じ数を並べる` : note });
+  const rows: CompareRow[] = [
+    count('retention-baseline-observed', '開始時の基準: 記録', (r) => r.baseline.observed, `${where}、開始時の基準がログに残った開始時のコミット(記録)のもの`),
+    count('retention-baseline-estimated', '開始時の基準: 推定', (r) => r.baseline.estimated, `${where}、開始時の基準を開始時刻から探した版(推定)のもの。記録と推定は分けて読む`),
+  ];
+  for (const m of RETENTION_MODES) {
+    if ((a.modes?.[m] ?? 0) + (b.modes?.[m] ?? 0) === 0) continue;
+    rows.push(count(`retention-mode-${m}`, `比べた版: ${MODE_LABEL[m]}`, (r) => r.modes?.[m] ?? 0, pool ? `${where}、${m} で比べたもの。混ざっていれば残存の割合は出さない` : `${where}、${m} で比べたもの。側の中で混ざっているか、A と B で違えば残存の割合は出さない`));
+  }
+  rows.push(count('retention-unattributable', '照合不可のセッション', (r) => r.unattributableTotal, 'AI の変更はあるが、どのまとまりも照合できなかったセッション(残存の割合の分母に入れない)'));
+  // 理由は両側を合わせて多い順(同じ数なら REASONS の順)
+  const both: RetentionAgg['unattributable'] = {};
+  for (const r of pool ? [a] : [a, b]) for (const [k, n] of unattributableByCount(r)) both[k] = (both[k] ?? 0) + n;
+  const order = unattributableByCount({ unattributable: both }).map(([k]) => k);
+  const top = order.slice(0, RETENTION_REASON_ROWS);
+  for (const k of top) rows.push(count(`retention-unattributable-${k}`, `照合不可: ${REASON_LABEL[k]}`, (r) => r.unattributable[k] ?? 0, '照合不可のセッションの理由別の件数'));
+  const rest = order.slice(RETENTION_REASON_ROWS);
+  if (rest.length) rows.push(count('retention-unattributable-other', '照合不可: その他の理由', (r) => rest.reduce((n, k) => n + (r.unattributable[k] ?? 0), 0), `上の ${RETENTION_REASON_ROWS} つのほかの理由(${rest.map((k) => REASON_LABEL[k]).join('・')})`));
+  return rows;
 }
 
 /**
@@ -415,6 +459,92 @@ export function effortSplit<T extends EffortSource>(sessions: readonly T[], mode
   return out;
 }
 
+// ---------- モデルどうし ----------
+
+/**
+ * 本体のモデルは、推論強度どうしと同じ決め方(mainEffortOf。本体のリクエストの MAIN_EFFORT_SHARE 以上が同じ (モデル, 強度) の組)で決める。
+ * モデルだけの割合では決めない: sessions.csv の「本体のモデル」の列(Rust の main_effort_of)と同じセッションを同じモデルにするため。
+ * そのため、同じモデルでも強度が混ざったセッションは「混在」に入る(強度を「すべて」にしても)
+ */
+
+/** 本体がそのモデルと決まったセッションの数(強度は問わない。多い順、同数は名前の順) */
+export function modelChoices(sessions: readonly EffortSource[], effort = ''): { model: string; sessions: number }[] {
+  const n = new Map<string, number>();
+  for (const s of sessions) {
+    const m = mainEffortOf(s.exec?.mainModelEfforts);
+    // 強度を 1 つ選んだときは、その強度と決まったセッションだけを数える(modelSplit の母集団と同じ)
+    if (m.kind === 'decided' && (!effort || m.effort === effort)) n.set(m.model, (n.get(m.model) ?? 0) + 1);
+  }
+  return [...n].map(([model, c]) => ({ model, sessions: c })).sort((a, b) => b.sessions - a.sessions || a.model.localeCompare(b.model));
+}
+
+/** 既定の A と B: 本体と決まったセッションの多い順の 2 つ(1 つしか無ければ両方に同じモデル) */
+export function defaultModels(choices: readonly { model: string }[]): [a: string, b: string] {
+  return [choices[0]?.model ?? '', choices[1]?.model ?? choices[0]?.model ?? ''];
+}
+
+/** モデルどうしで選べる強度: A か B のモデルの本体がその強度と決まったセッションの数(強度の並び: none → max) */
+export function modelEffortChoices(sessions: readonly EffortSource[], ma: string, mb: string): { effort: string; a: number; b: number }[] {
+  const n = new Map<string, { a: number; b: number }>();
+  for (const s of sessions) {
+    const m = mainEffortOf(s.exec?.mainModelEfforts);
+    if (m.kind !== 'decided' || (m.model !== ma && m.model !== mb)) continue;
+    const c = n.get(m.effort) ?? n.set(m.effort, { a: 0, b: 0 }).get(m.effort)!;
+    if (m.model === ma) c.a++;
+    if (m.model === mb) c.b++;
+  }
+  const order = orderBy(EFFORT_ORDER);
+  return [...n].map(([effort, c]) => ({ effort, ...c })).sort((a, b) => order(a.effort, b.effort));
+}
+
+export interface ModelSplit<T> {
+  a: T[];
+  b: T[];
+  /** 期間の中で、A か B のモデルのセッションのうち、本体が混在のものと記録の無いもの */
+  mixed: number;
+  none: number;
+}
+
+/**
+ * モデルどうしの母集団: 期間に開始し、本体が (ma, effort) と決まったセッションと (mb, effort) と決まったセッション。effort が空なら強度は問わない。
+ * 混在・記録なしは、A か B のモデルのセッション(本体のリクエストにそのモデルがある。記録が無ければ、セッションのモデルの一覧にある)のうち、
+ * 本体が決まらなかったもの(推論強度どうしの effortClass と同じ)。A・B のモデルと決まったが強度が違うセッションは、どれにも数えない。
+ * ma と mb が同じなら、両側に同じセッションが入る
+ */
+export function modelSplit<T extends EffortSource>(sessions: readonly T[], ma: string, mb: string, effort: string, from: string, to: string): ModelSplit<T> {
+  const out: ModelSplit<T> = { a: [], b: [], mixed: 0, none: 0 };
+  for (const s of sessions) {
+    if (!inPeriod(s, from, to)) continue;
+    const m = mainEffortOf(s.exec?.mainModelEfforts);
+    if (m.kind === 'decided') {
+      if (effort && m.effort !== effort) continue;
+      if (m.model === ma) out.a.push(s);
+      if (m.model === mb) out.b.push(s);
+      continue;
+    }
+    const c = effortClass(s, ma) ?? effortClass(s, mb);
+    if (c?.kind === 'mixed') out.mixed++;
+    else if (c?.kind === 'none') out.none++;
+  }
+  return out;
+}
+
+// ---------- wiki の参照 ----------
+
+/**
+ * wiki の参照で比べる母集団: 期間に開始したセッションのうち、A = llm-wiki を参照したもの、B = 参照していないもの。
+ * 参照したかは、改善点の llm-wiki の箱と絞り込みと同じ wikiReferenced(書き込みだけのセッションは B に入る)。
+ * wiki の参照を数えていない集計(wikiState が counted でない)では、画面で選べないようにする(B が「数えていない」セッションになるため)
+ */
+export function wikiSplit<T extends Pick<CompareSession, 'wiki' | 'createdAt' | 'updatedAt'>>(sessions: readonly T[], from: string, to: string): { a: T[]; b: T[] } {
+  const out: { a: T[]; b: T[] } = { a: [], b: [] };
+  for (const s of sessions) {
+    if (!inPeriod(s, from, to)) continue;
+    (wikiReferenced(s.wiki) ? out.a : out.b).push(s);
+  }
+  return out;
+}
+
 /** 割合や平均を出す最小の依頼の数(セッションの 5 と同じ考え方) */
 export const COMPARE_MIN_TURNS = 5;
 
@@ -433,7 +563,11 @@ export function comparePhaseRows(sessions: readonly CompareSession[], a: Phase, 
   const perTurn = (v: number, n: number): number | null => (n < COMPARE_MIN_TURNS ? null : v / n);
   const share = (part: number, whole: number, n: number): number | null => (n < COMPARE_MIN_TURNS || whole <= 0 ? null : part / whole);
   const row = (key: string, label: string, unit: CompareRow['unit'], f: (p: Phase) => number | null, note: string): CompareRow => ({ key, label, unit, a: f(a), b: f(b), note });
-  const retShare = (p: Phase, i: 'kept' | 'missing'): number | null => (i === 'kept' ? keptOf(hunks(p), retSessions(p)) : shareOf(hunks(p), 2, retSessions(p)));
+  // 工程どうしは同じセッションから両側を作るので、比べた版が混ざっているかは母集団の照合できたセッションで見る(混ざっていれば割合と日数を出さない)
+  const pool = aggregateRetention(sessions);
+  const mixed = modeMix(pool) != null;
+  const retShare = (p: Phase, i: 'kept' | 'missing'): number | null => (mixed ? null : i === 'kept' ? keptOf(hunks(p), retSessions(p)) : shareOf(hunks(p), 2, retSessions(p)));
+  const lag = (p: Phase): number | null => (mixed ? null : phaseLag(sessions, p));
   return [
     row('turns', '依頼', 'count', (p) => bucket(p).turns, '依頼(ターン)の数'),
     row('active', '実働 / 依頼', 'minutes', (p) => perTurn(bucket(p).activeMs, bucket(p).turns), '平均(記録の無い依頼は 0 として足す。5 件未満なら —)'),
@@ -443,7 +577,23 @@ export function comparePhaseRows(sessions: readonly CompareSession[], a: Phase, 
     row('aiu', 'AIU / 依頼', 'aiu', (p) => perTurn(bucket(p).nanoAiu / 1e9, bucket(p).turns), '平均(5 件未満なら —)'),
     row('retention-measured', '照合できたセッション(その工程にまとまりがあるもの)', 'count', retSessions, `AI の変更の残存の割合を出すかを決める数(${RETENTION_MIN_SESSIONS} 件未満なら割合は —)`),
     row('retention-hunks', '照合できたまとまり', 'count', (p) => measuredOf(hunks(p)), '照合できたセッションの、その工程の依頼で AI が足したまとまり'),
-    row('retention-kept', '残っている(そのまま + 直されて)割合', 'rate', (p) => retShare(p, 'kept'), `照合できたまとまりに対する割合(照合できたセッションが ${RETENTION_MIN_SESSIONS} 件未満なら —)`),
-    row('retention-missing', '見つからない割合', 'rate', (p) => retShare(p, 'missing'), '照合できたまとまりに対する割合'),
+    row('retention-kept', '残っている(そのまま + 直されて)割合', 'rate', (p) => retShare(p, 'kept'), `単位はまとまり。照合できたまとまり(照合不可を除く)に対する、そのまま残る + 直されて残るの割合(照合できたセッションが ${RETENTION_MIN_SESSIONS} 件未満か、母集団の比べた版が混ざっていれば —)`),
+    row('retention-missing', '見つからない割合', 'rate', (p) => retShare(p, 'missing'), '単位はまとまり。照合できたまとまりに対する、見つからないの割合(母集団の比べた版が混ざっていれば —)'),
+    row('retention-lag', 'セッションの終わりから比べた時点まで(中央値)', 'days', lag, `その工程にまとまりのある照合できたセッション(${RETENTION_MIN_SESSIONS} 件未満か、母集団の比べた版が混ざっていれば —)。両側で大きく違うと、後から人が手を入れた時間が違うので残存の割合を比べにくい`),
+    ...retentionDetailRows(pool, pool, { pool: true }),
   ];
+}
+
+/** その工程にまとまり(照合不可を除く)がある照合できたセッションの、比べた時点までの日数の中央値(そのセッションが RETENTION_MIN_SESSIONS 件未満なら null) */
+export function phaseLag(list: readonly Pick<CompareSession, 'retention'>[], p: Phase): number | null {
+  const i = PHASES.indexOf(p);
+  const lags: number[] = [];
+  let n = 0;
+  for (const s of list) {
+    const r = s.retention;
+    if (!r || r.outcome !== 'measured' || !r.phases?.some(([q, ...t]) => q === i && measuredOf(t as StatusTuple) > 0)) continue;
+    n++;
+    if (r.lag != null) lags.push(r.lag);
+  }
+  return enoughMeasured(n) ? median(lags) : null;
 }

@@ -2,9 +2,9 @@
   // 概況の「管理ツールのタスク」の節。値はすべて集計のとき(Rust の tasks::view)に決めたもので、画面は出すだけ(数え直さない)。
   // 上の絞り込みは掛からない(タスクの行を押すと、そのタスクのセッションに絞り込む)。
   // 2 つの工数(AI を使わなかった場合・使った場合)と AI の実働は、別の欄に並べるだけで 1 つの点数にしない
-  import { dateTime, dec, int } from '../../lib/format.ts';
+  import { dateTime, dec, int, modelLabel, percent } from '../../lib/format.ts';
   import { NO_TASK, filterHref, emptyFilter } from '../../lib/filter.ts';
-  import { hours, linkCounts, msHours, TASK_EXCLUDED, TASK_EXCLUDED_LABEL, workHoursText } from '../../lib/tasks.ts';
+  import { DONE_AT_SOURCE_LABEL, doneAtSourceText, doneAtText, frictionText, frictionTotal, hours, linkCounts, msHours, rateText, TASK_EXCLUDED_LABEL, taskIncludedNote, verdictBreakdown, workHoursText } from '../../lib/tasks.ts';
   import type { TaskRow, TasksReport } from '../../lib/types.ts';
   import SortMark from './SortMark.svelte';
 
@@ -26,15 +26,12 @@
   const s = $derived(tasks.summary);
   const done = $derived(tasks.items.filter((t) => t.done).length);
   const missing = $derived(tasks.items.filter((t) => t.missing).length);
-  const excludedText = $derived(
-    TASK_EXCLUDED.filter((k) => s.excluded[k] > 0)
-      .map((k) => `${TASK_EXCLUDED_LABEL[k]} ${int(s.excluded[k])}`)
-      .join('・'),
-  );
   const wh = $derived(workHoursText(tasks.workHours));
+  /** 完了したタスクの、完了の時刻の出所ごとの数(古い埋め込みには無い) */
+  const doneSrc = $derived(doneAtSourceText(s.doneSources));
   const ratioText = (r: number): string => `${dec(Math.round(r * 100) / 100)} 倍`;
 
-  type Key = 'name' | 'status' | 'start' | 'doneAt' | 'human' | 'work' | 'active' | 'sessions';
+  type Key = 'name' | 'status' | 'start' | 'doneAt' | 'human' | 'work' | 'active' | 'sessions' | 'people' | 'model' | 'friction' | 'judged' | 'fixRate';
   const timeOf = (iso: string | null): number => {
     const t = iso ? Date.parse(iso) : NaN;
     return Number.isNaN(t) ? -Infinity : t;
@@ -48,7 +45,20 @@
     work: (t) => t.workMs ?? -1,
     active: (t) => t.aiActiveMs,
     sessions: (t) => t.sessions,
+    // 値の無いもの(記録なし・下限に届かない割合)は、多い順で最後に来るように -1。モデルの無いものは名前の順で最後
+    people: (t) => t.people ?? -1,
+    model: (t) => (t.mainModel ? modelLabel(t.mainModel) : '￿'),
+    friction: (t) => (t.sessions ? (frictionTotal(t) ?? -1) : -1),
+    judged: (t) => t.verdicts?.judged ?? -1,
+    fixRate: (t) => t.verdicts?.fixRate ?? -1,
   };
+  /** 人の記録のあるタスクが 1 つでもあれば人数の列を出す(送り先から集計したとき) */
+  const withPeople = $derived(tasks.items.some((t) => t.people != null));
+  /** 古い埋め込み(詰まりの列が無い)では、その列を出さない */
+  const withFriction = $derived(tasks.items.some((t) => t.friction != null));
+  /** 依頼ごとの判定のあるタスクが 1 つでもあれば、判定の列を出す */
+  const withVerdicts = $derived(tasks.items.some((t) => t.verdicts != null));
+  const verdictMin = $derived(s.verdictMin ?? 5);
   /** null は XML の順(並べ替えていない) */
   let sortKey = $state<Key | null>(null);
   let asc = $state(false);
@@ -75,7 +85,7 @@
     if (sortKey === k) asc = !asc;
     else {
       sortKey = k;
-      asc = k === 'name' || k === 'status';
+      asc = k === 'name' || k === 'status' || k === 'model';
     }
   }
   const st = (k: Key): 'asc' | 'desc' | 'none' => (sortKey === k ? (asc ? 'asc' : 'desc') : 'none');
@@ -118,7 +128,7 @@
       <div class="field">
         <span class="k">比べられる完了タスク</span>
         <span class="v" data-testid="tasks-included">{int(s.included)}</span>
-        <span class="n">セッションが紐づいたタスク {int(s.tasks)} 件のうち。{excludedText ? `比べないもの: ${excludedText}` : '比べないものはありません'}</span>
+        <span class="n">{taskIncludedNote(s)}</span>
       </div>
       <div class="field">
         <span class="k">AI を使わなかった場合 ÷ AI を使った場合</span>
@@ -152,11 +162,16 @@
 
     <ul class="defs" data-testid="tasks-defs">
       <li><strong>AI を使わなかった場合の工数</strong>: 紐づいたセッションの推定人手工数(LLM の推定)の合計。確信度が 30% 以下の推定は入れません。</li>
-      <li><strong>AI を使った場合の工数</strong>: 紐づいた最初のセッションの開始から、完了を確認した時刻までのうち、稼働時間帯({wh}、この PC の時刻)に入る時間。祝日は区別しません(平日の祝日も稼働時間帯に入ります)。完了を確認した時刻は、XML で完了と分かった時刻(書き出しのファイルの更新時刻)で、書き出しの間隔の分だけ遅れます。</li>
+      <li><strong>AI を使った場合の工数</strong>: 紐づいた最初のセッションの開始から、完了を確認した時刻までのうち、稼働時間帯({wh}、この PC の時刻)に入る時間。祝日は区別しません(平日の祝日も稼働時間帯に入ります)。完了を確認した時刻は、設定の <code>tasks.doneAt</code> で XML の完了日時を読めればその日時(記録)、無ければ XML で完了と分かった時刻(書き出しのファイルの更新時刻。観測)で、観測は書き出しの間隔の分だけ遅れます。{#if doneSrc}今は{doneSrc}です。{/if}</li>
       <li><strong>AI の実働</strong>: 紐づいたセッションの実働時間(5 分を超えて記録の無い間を除いた時間)の合計。</li>
       <li data-testid="tasks-split">
         複数のタスクに紐づくセッションの実働時間と推定人手工数は、タスクの数で等分して数えます(2 つなら半分ずつ。タスクの値を足すと、セッションの値を重ねずに全体の値になります)。タスクの一覧に無いタスクと、完了を確認した後に始めたセッションのタスクには数えず、残りのタスクで分けます。セッションの数は等分せず、紐づいたタスクごとに 1 つずつ数えます。{#if s.sharedSessions > 0}今は {int(s.sharedSessions)} セッションを複数のタスクに分けて数えています。{/if}<a href="glossary.html#task-split">等分とは</a>
       </li>
+      {#if withFriction}
+        <li data-testid="tasks-friction-defs">
+          <strong>詰まりの列</strong>(人数・主なモデル・摩擦{withVerdicts ? '・依頼の判定' : ''}): 紐づいたセッションすべてを 1 つずつ数えます(工数と違い、複数のタスクに紐づくセッションも等分しません)。{#if withPeople}人数は、人の記録(送り先の人のフォルダ)のあるセッションの人の数です。{/if}主なモデルは、本体のリクエストがいちばん多いモデルと、本体のリクエストに占める割合です。摩擦は、ツールの失敗・拒否、中断、文脈圧縮の数です。<span data-testid="tasks-friction-caution">タスクの中身(難しさや工程の構成)はタスクごとに違うので、{withPeople ? '人数や' : ''}主なモデルで並べた摩擦{withVerdicts ? 'や依頼の判定' : ''}の違いを、{withPeople ? '人数の多い少ないや' : ''}モデルの良し悪しの比較には使えません(モデルどうしは「比べる」の節で、同じ期間・同じ推論強度にそろえて比べます)。</span>{#if withVerdicts}依頼の判定は LLM の推定で、直し(中身・体裁の直し)と不採用の割合は判定できた作業の依頼に対する割合、的外れの割合は判定できた質問に対する割合です。分母が {int(verdictMin)} 件に届かない割合は「—」です。工数とも AI の変更の残存とも別のもので、1 つの点数にしません。{/if}
+        </li>
+      {/if}
       <li>数え方は<a href="glossary.html#task-comparable">用語の説明</a>にあります。</li>
     </ul>
 
@@ -183,6 +198,15 @@
               {@render head('sessions', 'セッション')}
               <th scope="col">紐づけの出所</th>
               <th scope="col">比べない理由</th>
+              {#if withPeople}{@render head('people', '人数')}{/if}
+              {#if withFriction}
+                {@render head('model', '主なモデル', false)}
+                {@render head('friction', '摩擦')}
+              {/if}
+              {#if withVerdicts}
+                {@render head('judged', '判定した依頼')}
+                {@render head('fixRate', '直しの割合')}
+              {/if}
             </tr>
           </thead>
           <tbody>
@@ -199,7 +223,7 @@
                 </th>
                 <td class="status"><span translate="no">{t.status || '—'}</span><span class="part">{t.done ? '完了' : '未完了'}</span>{#if t.missing}<span class="tag" title="最後に読んだ XML に無かったタスク。最後に読んだ値のまま出しています">書き出しに無い</span>{/if}</td>
                 <td class="num when">{dateTime(t.start, '—')}</td>
-                <td class="num when">{dateTime(t.doneAt, '—')}</td>
+                <td class="num when">{doneAtText(t)}{#if t.doneAt && t.doneAtSource}<span class="part" data-testid="task-done-source" title={t.doneAtSource === 'recorded' ? (t.doneDate ? '管理ツールの XML にあった完了日(日付だけ。工数はその日の稼働時間帯の終わりまでを数えます)' : '管理ツールの XML にあった完了日時') : '完了を最初に見た書き出しの時刻(XML の更新時刻)'}>{DONE_AT_SOURCE_LABEL[t.doneAtSource]}</span>{/if}</td>
                 <td class="num">
                   <!-- 確信度の低い推定だけなら、合計に入れる推定が無い(0 時間とは書かない) -->
                   {#if t.sessions === 0}—{:else if t.judgedSessions === 0}<span class="missing-value">未判定</span>{:else if t.judgedSessions === t.lowConfidenceSessions}—{:else}{hours(t.humanHours)}{/if}
@@ -210,6 +234,15 @@
                 <td class="num">{int(t.sessions)}{#if t.sharedSessions > 0}<span class="part" title="ほかのタスクにも紐づいているセッション。実働と推定人手工数はタスクの数で等分しています" data-testid="task-shared">共有 {int(t.sharedSessions)}</span>{/if}</td>
                 <td class="src">{linkCounts(t.links) || '—'}</td>
                 <td class="why">{t.excluded ? TASK_EXCLUDED_LABEL[t.excluded] : t.comparable ? '比べる' : '—'}</td>
+                {#if withPeople}<td class="num" data-testid="task-people">{t.people != null ? int(t.people) : '—'}</td>{/if}
+                {#if withFriction}
+                  <td class="model" data-testid="task-model">{#if t.mainModel}<span translate="no">{modelLabel(t.mainModel)}</span>{#if t.mainModelShare != null}<span class="part">本体のリクエストの {percent(t.mainModelShare, 1)}</span>{/if}{:else}—{/if}</td>
+                  <td class="num" data-testid="task-friction">{#if t.sessions && t.friction}{int(frictionTotal(t) ?? 0)}<span class="part">{frictionText(t.friction)}</span>{:else}—{/if}</td>
+                {/if}
+                {#if withVerdicts}
+                  <td class="num" data-testid="task-judged">{#if t.verdicts}{int(t.verdicts.judged)}<span class="part">{verdictBreakdown(t.verdicts)}</span>{:else}—{/if}</td>
+                  <td class="num" data-testid="task-fix-rate" title={t.verdicts && t.verdicts.fixRate == null ? `判定できた作業の依頼が ${verdictMin} 件に届かないので出しません` : undefined}>{rateText(t.verdicts?.fixRate)}{#if t.verdicts}<span class="part">{int(t.verdicts.fix)} / {int(t.verdicts.workDecided)}</span>{/if}</td>
+                {/if}
               </tr>
             {/each}
           </tbody>
@@ -330,6 +363,14 @@
   .why {
     white-space: nowrap;
     font-size: 0.75rem;
+  }
+  /* モデルの名前は折らない(表は .table-scroll で横に流す)。割合の注記は折り返してよい */
+  .model {
+    min-width: 8em;
+    max-width: 16em;
+  }
+  .model > span[translate] {
+    white-space: nowrap;
   }
   .more {
     display: flex;

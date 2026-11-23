@@ -5,6 +5,7 @@
 //  c. 詳細ページでメモを書いて保存 → atlas-notes/memos に書かれ、再読み込みしても表示される
 //  d. 用語ページへのリンクで移動でき、パンくずで戻れる
 //  (a の中で)「工程と詰まり」は絞り込みに合わせて集計し直す
+//  t. 管理ツールのタスクの記録が無ければ、表紙は 4 欄のまま(タスクの工数の欄を出さない)
 // どの画面でもページ内の例外とコンソールのエラーが無いこと。
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -87,7 +88,16 @@ describe('画面の操作', () => {
     await expect.poll(() => page.locator(`[data-tab-panel="${t}"]`).isHidden()).toBe(false);
   };
 
-  it('m. モデル別: 「推論強度で分ける」で モデル × 推論強度 の行になり、「モデルごと」で戻る。モデルごとの表には推論強度別のリクエストを出す', async () => {
+  it('t. 管理ツールのタスクの記録が無ければ、タスクの節も表紙のタスクの工数も出さず、表紙は 4 欄のまま', async () => {
+    await page.goto(server.url);
+    await page.locator('#overview .fields').waitFor({ state: 'visible' });
+    expect(await page.getByTestId('tasks-panel').count()).toBe(0);
+    expect(await page.getByTestId('cover-tasks').count()).toBe(0);
+    expect(await page.locator('#overview .fields > .field').count()).toBe(4);
+    expect(await page.locator('#overview .section-head p').innerText()).not.toContain('管理ツールのタスク');
+  });
+
+  it('m. モデル別:「推論強度で分ける」で モデル × 推論強度 の行になり、「モデルごと」で戻る。モデルごとの表には推論強度別のリクエストを出す', async () => {
     await page.goto(server.url);
     await openTab('breakdown');
     const sec = page.locator('#models');

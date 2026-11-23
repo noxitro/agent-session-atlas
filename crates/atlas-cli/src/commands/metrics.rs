@@ -226,7 +226,7 @@ pub fn run_metrics(p: &Paths, f: &SessionFilter, config: Option<&str>, log: Log<
         log(&format!("metrics: インストール済みで未使用の skill {} / {} 件", s.unused.len(), s.installed.len()));
     }
     let cfg = super::tasks::load_task_config(config);
-    let tasks = super::tasks::build_view(p, &cfg, super::tasks::is_read_only(p, &sel.file), &sel.file.sessions, &sessions, None, &super::tasks::judgment_hours(&p.judgments));
+    let tasks = super::tasks::build_view(p, &cfg, super::tasks::tasks_read_only(p, &sel.file), &sel.file.sessions, &sessions, None, &super::tasks::judgment_hours(&p.judgments));
     write_tables(p, &sessions, tasks.as_ref(), "metrics", log)?;
     Ok(m)
 }
@@ -270,6 +270,7 @@ pub fn tasks_table(v: &atlas_report::tasks::view::TasksView) -> atlas_core::tabl
         "XML に無い",
         "開始",
         "完了を確認した時刻",
+        "完了時刻の出所",
         "稼働時間帯の工数(時間)",
         "AI の実働(時間)",
         "推定人手工数(時間)",
@@ -283,11 +284,29 @@ pub fn tasks_table(v: &atlas_report::tasks::view::TasksView) -> atlas_core::tabl
         "紐づけ(手動)",
         "比べられる",
         "比べない理由",
+        // 詰まりを見る列(紐づいたセッションすべての値。等分しない。atlas_report::tasks::extras)
+        "人数",
+        "主なモデル",
+        "主なモデルの割合",
+        "ツールの失敗・拒否",
+        "中断",
+        "文脈圧縮",
+        "判定した依頼",
+        "判定できた作業の依頼",
+        "直し",
+        "不採用",
+        "判定できた質問",
+        "的外れ",
+        "直しの割合",
+        "不採用の割合",
+        "的外れの割合",
     ]
     .iter()
     .map(|s| s.to_string())
     .collect();
     let hours = |ms: f64| Cell::Num(atlas_core::js::round(ms / 36_000.0) / 100.0);
+    // 割合は 0〜1 の小数 3 桁(分母が下限に届かなければ空)
+    let rate = |x: Option<f64>| x.map_or(Cell::Null, |x| Cell::Num(atlas_core::js::round(x * 1000.0) / 1000.0));
     let rows = v
         .items
         .iter()
@@ -299,7 +318,9 @@ pub fn tasks_table(v: &atlas_report::tasks::view::TasksView) -> atlas_core::tabl
                 Cell::Bool(t.done),
                 Cell::Bool(t.missing),
                 t.start.as_deref().into(),
-                t.done_at.as_deref().into(),
+                // 日付だけの完了日は、日付の文字("2026-11-20")をそのまま出す(見る PC の時間帯で日付がずれないように。出所にも添える)
+                t.done_date.as_deref().or(t.done_at.as_deref()).into(),
+                t.done_at_source.map_or(Cell::Null, |s| if t.done_date.is_some() { format!("{}(日付だけ)", s.label()).into() } else { s.label().into() }),
                 t.work_ms.map_or(Cell::Null, hours),
                 hours(t.ai_active_ms),
                 Cell::Num(atlas_core::js::round(t.human_hours * 100.0) / 100.0),
@@ -313,6 +334,21 @@ pub fn tasks_table(v: &atlas_report::tasks::view::TasksView) -> atlas_core::tabl
                 t.links.manual.into(),
                 if t.sessions == 0 { Cell::Null } else { Cell::Bool(t.comparable) },
                 t.excluded.map_or(Cell::Null, |e| e.label().into()),
+                t.people.map_or(Cell::Null, Cell::from),
+                t.main_model.as_deref().into(),
+                t.main_model_share.map_or(Cell::Null, |x| Cell::Num(atlas_core::js::round(x * 1000.0) / 1000.0)),
+                if t.sessions == 0 { Cell::Null } else { t.friction.tool_failures.into() },
+                if t.sessions == 0 { Cell::Null } else { t.friction.aborts.into() },
+                if t.sessions == 0 { Cell::Null } else { t.friction.compactions.into() },
+                t.verdicts.as_ref().map_or(Cell::Null, |v| v.judged.into()),
+                t.verdicts.as_ref().map_or(Cell::Null, |v| v.work_decided.into()),
+                t.verdicts.as_ref().map_or(Cell::Null, |v| v.fix.into()),
+                t.verdicts.as_ref().map_or(Cell::Null, |v| v.rejected.into()),
+                t.verdicts.as_ref().map_or(Cell::Null, |v| v.question_decided.into()),
+                t.verdicts.as_ref().map_or(Cell::Null, |v| v.off_target.into()),
+                rate(t.verdicts.as_ref().and_then(|v| v.fix_rate)),
+                rate(t.verdicts.as_ref().and_then(|v| v.rejected_rate)),
+                rate(t.verdicts.as_ref().and_then(|v| v.off_target_rate)),
             ]
         })
         .collect();

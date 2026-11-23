@@ -1,7 +1,7 @@
 <script lang="ts">
   import { aggregate } from '../lib/aggregate.ts';
   import { turnAggregate } from '../lib/turns.ts';
-  import { verdictAggregate } from '../lib/verdicts.ts';
+  import { turnsOverLimit, verdictAggregate } from '../lib/verdicts.ts';
   import { wikiReferenced, wikiState } from '../lib/wiki.ts';
   import { flushSync, tick, untrack } from 'svelte';
   import { applyFilter, decodeFilter, decodeTab, decodeView, DEFAULT_TAB, emptyFilter, encodeFilter, encodeState, filterHref, filterOptions, inScope, isEmptyFilter, isStateHash, isTabId, joinIds, knownSelection, taskOf, taskOptions, type FilterState, type TabId } from '../lib/filter.ts';
@@ -415,7 +415,9 @@
   /** サーバがこの画面と違う版(atlas を更新した後も、前から動いているサーバが応えている)。閲覧と編集はそのまま、帯で知らせる */
   let serverStale = $state(false);
   /** 「別のフォルダを開く」で開いた画面なら、そのフォルダ(サーバに聞く。~/.copilot の形のフォルダは埋め込みの source に出ないため) */
-  let liveSource = $state<{ name: string; path: string } | null>(null);
+  let liveSource = $state<{ name: string; path: string; settings?: { name: string; path: string } | null } | null>(null);
+  /** この画面が使っている設定のフォルダ(共有の AtlasSettings。サーバに聞く。使っていなければ null) */
+  const settingsLabel = $derived(liveSource?.settings ?? null);
   /** この画面が集計しているフォルダ(この PC のセッションなら null) */
   const sourceLabel = $derived(liveSource ?? (data?.source ? { name: data.source.name, path: data.source.path } : null));
   $effect(() => {
@@ -687,7 +689,8 @@
       <div class="mast-tools">
         {#if editable && jobStore}<JobActions jobs={jobStore} disabled={serverDown} tasks={liveTasks?.tasks ? { configured: liveTasks.tasks.configured, readOnly: liveTasks.readOnly } : null} /><SettingsDialog jobs={jobStore} disabled={serverDown} upload={uploadHandlers} send={canEdit ? projectSend : undefined} projects={settingsProjects} /><OpenFolder token={jobStore.token} disabled={serverDown} />{/if}
         {#if sourceLabel}<span class="tag" title={sourceLabel.path} data-testid="source-tag">対象: {sourceLabel.name}</span>{/if}
-        {#if readOnly}<span class="tag" title="メモは、送った人が付けたものを出します。この画面では書き換えません(集計し直す・判定はできます)" data-testid="readonly-tag">読むだけ</span>{/if}
+        {#if settingsLabel}<span class="tag" title={settingsLabel.path} data-testid="settings-tag">設定: {settingsLabel.name}</span>{/if}
+        {#if readOnly}<span class="tag" title={liveTasks && !liveTasks.readOnly && liveTasks.tasks ? 'メモは、送った人が付けたものを出します。この画面では書き換えません(集計し直す・判定はできます)。管理ツールのタスクの紐づけは、設定のフォルダに書くので、この画面で変えられます' : 'メモは、送った人が付けたものを出します。この画面では書き換えません(集計し直す・判定はできます)'} data-testid="readonly-tag">読むだけ</span>{/if}
         {#if data.atlasBuilds}<span class={data.atlasBuilds.ok ? 'tag' : 'tag warn'} title={[data.atlasBuilds.headline, ...data.atlasBuilds.lines].join('\n')} data-testid="atlas-builds-tag">送った atlas: {data.atlasBuilds.short}</span>{/if}
         {#if scopeNotes.length}<span class="tag" title="atlas build の実行時に絞り込んだ条件">出力時の絞り込み: {scopeNotes.join('、')}</span>{/if}
         <div class="seg" role="group" aria-label="配色">
@@ -769,21 +772,21 @@
 
         <div class="tab-panel" data-tab-panel="overview" hidden={tab !== 'overview'}>
           <!-- 帳票の順: 表紙(規模の 4 欄)→ 摘要(要点)→ 明細 -->
-          <Overview part="cover" {agg} {judged} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} {emptyInFilter} {editable} />
+          <Overview part="cover" {agg} {judged} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} {emptyInFilter} {editable} {tasks} />
           <Highlights groups={points} />
           <Insights sessions={filtered} allSessions={data.sessions} installed={installed?.skills ?? null} disabled={installed?.disabled ?? []} meta={data.insights?.meta ?? {}} candidates={data.insights?.candidates ?? []} candidateTotal={data.insights?.candidateTotal ?? data.insights?.candidates.length ?? 0} computedOver={data.insights?.computedOver ?? sessions.length} hasPage={true} libraryHref={data.library ? 'instructions.html' : null} {wiki} wikiPagesRecorded={(data.version ?? 0) >= WIKI_PAGES_DATA_VERSION} wikiPageNames={data.wikiPageNames ?? []} />
-          <TurnPhases agg={turnAgg} verdicts={verdictAgg} verdictModel={data.turnJudgments?.model ?? null} verdictRanAt={data.turnJudgments?.ranAt ?? null} {editable} />
+          <TurnPhases agg={turnAgg} verdicts={verdictAgg} verdictModel={data.turnJudgments?.model ?? null} verdictRanAt={data.turnJudgments?.ranAt ?? null} overLimit={turnsOverLimit(filtered)} {editable} />
           <Overview part="detail" {agg} {judged} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} {emptyInFilter} {wiki} />
           {#if judged}<JudgmentPanel {agg} meta={data.judgments} />{/if}
           {#if tasks}<TaskPanel {tasks} current={filter.task} noneCount={taskOpts?.none ?? 0} onpick={(t) => setFilter({ task: t })} />{/if}
           {#if data.retention}<Retention sessions={filtered} meta={data.retention} />{/if}
-          <Compare sessions={scoped} projects={options.project} lastAt={all.overall.lastAt} retention={!!data.retention} />
+          <Compare sessions={scoped} projects={options.project} lastAt={all.overall.lastAt} retention={!!data.retention} {wiki} />
         </div>
         <div class="tab-panel" data-tab-panel="breakdown" hidden={tab !== 'breakdown'}>
           <UsageRanking usage={agg.usage} {installed} failuresPage={data.failures === true} bind:tab={usageTab} />
           <ExecProfile exec={agg.exec} sessions={filtered.length} />
           <!-- 人別は、送り先(<人>/<プロジェクト>)をまとめて集計したレポートだけ -->
-          {#if options.person.length > 0}<ProjectTable kind="person" rows={agg.byPerson} {judged} {wiki} current={filter.person} onpick={(p) => setFilter({ person: p })} />{/if}
+          {#if options.person.length > 0}<ProjectTable kind="person" rows={agg.byPerson} {judged} {wiki} verdicts={!!data?.turnJudgments?.available} current={filter.person} onpick={(p) => setFilter({ person: p })} />{/if}
           <ProjectTable rows={agg.byProject} {judged} {wiki} current={filter.project} onpick={(p) => setFilter({ project: p })} send={canEdit && !serverDown ? projectSend : undefined} />
           <MonthlyChart months={agg.byMonth} lastAt={all.overall.lastAt} />
           <ModelChart rows={agg.byModel} />

@@ -5,10 +5,10 @@ use super::judge::read_sessions_value;
 use super::metrics::{select_sessions, SessionFilter};
 use super::{mb, Log};
 use crate::args::TurnsCliOptions;
-use crate::config::phase_names;
+use crate::config::phase_names_in;
 use crate::paths::{resolve, Paths};
 use anyhow::Result;
-use atlas_judge::turn_bundle::{build_turn_bundle, decidable_note, turn_import_phases, turn_zip_names, TurnBundleOptions};
+use atlas_judge::turn_bundle::{build_turn_bundle, decidable_note, over_limit_note, turn_import_phases, turn_zip_names, TurnBundleOptions};
 use atlas_judge::turn_schema::{import_turn_judgments_text, read_turn_judgments, TurnImportOptions};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -25,8 +25,9 @@ pub(crate) fn turns_by_session(sessions: &[Value]) -> HashMap<String, usize> {
         .collect()
 }
 
-pub fn run_turns(p: &Paths, f: &SessionFilter, t: &TurnsCliOptions, zip: bool, log: Log<'_>) -> Result<()> {
-    let phases = phase_names()?;
+/// 束を作る(bundle)か、返答を取り込む(import)。取り込んだときは、取り込んだ数を返す(1 件以上なら、呼ぶ側がレポートを作り直す)
+pub fn run_turns(p: &Paths, f: &SessionFilter, t: &TurnsCliOptions, zip: bool, log: Log<'_>) -> Result<usize> {
+    let phases = phase_names_in(p.settings.as_deref())?;
     if t.action == "bundle" {
         let sel = select_sessions(p, f, "turns", "先に atlas extract(または atlas all)を実行してください。", log)?;
         super::bundle::drop_old_judge_work(&p.out, "turns bundle", log);
@@ -53,12 +54,15 @@ pub fn run_turns(p: &Paths, f: &SessionFilter, t: &TurnsCliOptions, zip: bool, l
         if let Some(note) = decidable_note(m.count, m.decidable.as_ref()) {
             log(&format!("turns bundle: {note}"));
         }
+        if let Some(o) = &m.over_limit {
+            log(&format!("turns bundle: 注意 {}", over_limit_note(o)));
+        }
         log(&format!("turns bundle: 工程名 {}(atlas.config.json の phases で変えられます)", phases.join(" / ")));
         if let Some((path, z)) = super::bundle::zip_or_drop(&p.turn_bundle, &p.out.join("turn-bundle"), zip, &turn_zip_names(&m), "turns bundle", atlas_judge::zip::BUNDLE_NARROW, log)? {
             log(&format!("turns bundle: ZIP にまとめました({} ファイル、{}、無圧縮。parts/ は入れていません)→ {}", z.files, mb(z.bytes), path.display()));
             log("turns bundle: フォルダやファイルを読めるエージェントに渡し、INSTRUCTIONS.md を最初に読ませてください。返ってきた JSON は atlas turns import <ファイル> で取り込みます");
         }
-        return Ok(());
+        return Ok(0);
     }
     let known = if p.sessions.exists() { read_sessions_value(&p.sessions)? } else { vec![] };
     let tbs = turns_by_session(&known);
@@ -74,5 +78,5 @@ pub fn run_turns(p: &Paths, f: &SessionFilter, t: &TurnsCliOptions, zip: bool, l
             if r.unknown.len() > 5 { " …" } else { "" }
         ));
     }
-    Ok(())
+    Ok(r.imported)
 }

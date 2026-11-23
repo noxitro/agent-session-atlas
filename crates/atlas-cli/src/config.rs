@@ -62,7 +62,7 @@ pub struct AtlasConfig {
 }
 
 const KEYS: [&str; 7] = ["wikis", "phases", "uploadRoot", "uploadProjects", "judgeModel", "vcs", "tasks"];
-const TASKS_KEYS: [&str; 7] = ["file", "item", "id", "name", "status", "doneStatus", "workHours"];
+const TASKS_KEYS: [&str; 8] = ["file", "item", "id", "name", "status", "doneStatus", "doneAt", "workHours"];
 /// tasks の要素の名前・項目の名前の長さの上限
 const TASKS_NAME_MAX: usize = 100;
 const VCS_LABEL_MAX: usize = 40;
@@ -235,6 +235,7 @@ fn parse_tasks(v: &Value) -> R<TaskSource> {
     if let Some(v) = name("status", true)? {
         t.status = v;
     }
+    t.done_at = name("doneAt", true)?;
     if let Some(d) = o.get("doneStatus") {
         let list: Vec<String> = string_list(d, "tasks.doneStatus")?.iter().map(|x| js::trim(x).to_string()).collect();
         if list.is_empty() {
@@ -440,25 +441,34 @@ pub fn load_config(path: &str, required: bool) -> anyhow::Result<AtlasConfig> {
     }
 }
 
-/// 依頼ごとの判定に使う普段の工程名(設定の phases、無ければ既定)
-pub fn phase_names() -> anyhow::Result<Vec<String>> {
-    let explicit = std::env::var_os("ATLAS_CONFIG").is_some();
-    Ok(load_config(&default_config_path(), explicit)?.phases.unwrap_or_else(|| DEFAULT_PHASE_NAMES.iter().map(|s| s.to_string()).collect()))
+/// 読む設定ファイルと、無いと止めるか。設定のフォルダ(settings_dir.rs。Paths::settings)を使うときはその atlas.config.json、
+/// 使わなければ default_config_path()(環境変数 ATLAS_CONFIG で指したときだけ、無いと止める)
+fn config_for(settings: Option<&Path>) -> (String, bool) {
+    match settings {
+        Some(d) => (crate::settings_dir::settings_config(d).to_string_lossy().into_owned(), true),
+        None => (default_config_path(), std::env::var_os("ATLAS_CONFIG").is_some()),
+    }
 }
 
-/// skill-draft に使うモデル(設定の judgeModel、無ければ None)
-pub fn judge_model_setting() -> anyhow::Result<Option<String>> {
-    let explicit = std::env::var_os("ATLAS_CONFIG").is_some();
-    Ok(load_config(&default_config_path(), explicit)?.judge_model)
+/// 依頼ごとの判定に使う普段の工程名(設定の phases、無ければ既定)。settings が Some なら、その設定のフォルダの atlas.config.json の phases
+pub fn phase_names_in(settings: Option<&Path>) -> anyhow::Result<Vec<String>> {
+    let (path, explicit) = config_for(settings);
+    Ok(load_config(&path, explicit)?.phases.unwrap_or_else(|| DEFAULT_PHASE_NAMES.iter().map(|s| s.to_string()).collect()))
+}
+
+/// skill-draft に使うモデル(設定の judgeModel、無ければ None)。settings は phase_names_in と同じ
+pub fn judge_model_setting(settings: Option<&Path>) -> anyhow::Result<Option<String>> {
+    let (path, explicit) = config_for(settings);
+    Ok(load_config(&path, explicit)?.judge_model)
 }
 
 /// skill-draft に使うモデルを決めて、どこから来たかをログに書く。指定(--model)> 設定の judgeModel > なし(Copilot の既定のモデル)。
-/// 設定は copilot-cli のときだけ使う(anthropic バックエンドのモデル名は形が違う)
-pub fn resolve_judge_model(explicit: Option<&str>, label: &str, log: &(dyn Fn(&str) + Sync)) -> anyhow::Result<Option<String>> {
+/// 設定は copilot-cli のときだけ使う(anthropic バックエンドのモデル名は形が違う)。settings は phase_names_in と同じ
+pub fn resolve_judge_model(explicit: Option<&str>, settings: Option<&Path>, label: &str, log: &(dyn Fn(&str) + Sync)) -> anyhow::Result<Option<String>> {
     if let Some(e) = explicit.filter(|e| !e.is_empty()) {
         return Ok(Some(e.to_string()));
     }
-    let m = judge_model_setting()?;
+    let m = judge_model_setting(settings)?;
     match m.as_deref().filter(|m| !m.is_empty()) {
         Some(m) => log(&format!(
             "{label}: 使うモデル {m}(atlas.config.json の judgeModel{})",
@@ -878,6 +888,11 @@ mod tests {
         assert!(err(json!({"tasks": {"file": "x", "item": "@Task"}})).contains("tasks.item"));
         assert!(err(json!({"tasks": {"file": "x", "id": "a b"}})).contains("tasks.id"));
         assert!(err(json!({"tasks": {"file": "x", "name": "@"}})).contains("tasks.name"));
+        // 完了日時の項目(任意。@ で属性だけ)
+        assert_eq!(parse_config(&json!({"tasks": {"file": "x"}})).unwrap().tasks.unwrap().done_at, None);
+        assert_eq!(parse_config(&json!({"tasks": {"file": "x", "doneAt": " @ClosedDate "}})).unwrap().tasks.unwrap().done_at.as_deref(), Some("@ClosedDate"));
+        assert!(err(json!({"tasks": {"file": "x", "doneAt": "完了 日"}})).contains("tasks.doneAt"));
+        assert!(err(json!({"tasks": {"file": "x", "doneAt": 1}})).contains("tasks.doneAt"));
         assert!(err(json!({"tasks": {"file": "x", "doneStatus": []}})).contains("tasks.doneStatus"));
         assert!(err(json!({"tasks": {"file": "x", "doneStatus": "Done"}})).contains("tasks.doneStatus"));
         for days in [json!([]), json!([0]), json!([8]), json!([1, 1]), json!([1.5]), json!("1")] {

@@ -99,7 +99,7 @@ describe('Phase 18: テストの結果の取り込み', () => {
     const r = atlas(['all', '--home', HOME, '--out', OUT, '--notes-dir', NOTES]);
     expect(r.status, r.out).toBe(0);
     original = JSON.parse(await readFile(join(OUT, 'sessions.json'), 'utf8')) as SessionsFile;
-    expect(original.schemaVersion).toBe(19);
+    expect(original.schemaVersion).toBe(20);
     expect(testsOf(original, S_TESTS)).toEqual({
       runs: [
         {

@@ -8,7 +8,7 @@
 use crate::chat_parts::{chat_save_name, list_chat_parts, ChatTarget, CHAT_REQUEST};
 use crate::commands::judge::read_sessions_value;
 use crate::commands::turns::turns_by_session;
-use crate::config::phase_names;
+use crate::config::phase_names_in;
 use anyhow::{anyhow, bail, Result};
 use atlas_judge::backends::copilot_cli::mkdtemp;
 use atlas_judge::backends::proc::hide_window;
@@ -187,12 +187,14 @@ pub fn powershell_driver(req: &M365Request<'_>) -> Result<()> {
 
 pub struct M365Paths {
     pub out: PathBuf,
-    /// メモの置き場(タスクの紐づけ task-links.json を書く)
+    /// タスクの紐づけ(task-links.json)の場所(メモの置き場か、設定のフォルダ。Paths::tasks_dir)
     pub notes: PathBuf,
     pub sessions: PathBuf,
     pub judgments: PathBuf,
     pub turn_judgments: PathBuf,
     pub turn_bundle: PathBuf,
+    /// 設定のフォルダ(Paths::settings)。あれば工程名はその atlas.config.json から読む
+    pub settings: Option<PathBuf>,
 }
 
 pub struct M365Options {
@@ -232,7 +234,7 @@ pub fn run_m365_judge(p: &M365Paths, o: &M365Options, log: &dyn Fn(&str), driver
     }
     let turns = o.target == ChatTarget::Turns;
     let label = if turns { "依頼" } else { "セッション" };
-    let info = list_chat_parts(&p.out, &p.notes, o.target)?;
+    let info = list_chat_parts(&p.out, &crate::chat_parts::JudgedFiles { judgments: &p.judgments, turn_judgments: &p.turn_judgments, tasks_dir: &p.notes }, o.target)?;
     let all_parts = info.parts.clone().unwrap_or_default();
     if !info.exists || all_parts.is_empty() {
         bail!("添付ファイルがまだありません。先に「添付ファイルを作る」(atlas {})を実行してください", o.target.bundle_command());
@@ -252,7 +254,7 @@ pub fn run_m365_judge(p: &M365Paths, o: &M365Options, log: &dyn Fn(&str), driver
     let known = if p.sessions.exists() { read_sessions_value(&p.sessions)? } else { vec![] };
     let known_ids: HashSet<String> = known.iter().filter_map(|s| s.get("id").and_then(Value::as_str).map(str::to_string)).collect();
     let tbs = turns_by_session(&known);
-    let phases = if turns { turn_import_phases(&p.turn_bundle, &phase_names()?) } else { vec![] };
+    let phases = if turns { turn_import_phases(&p.turn_bundle, &phase_names_in(p.settings.as_deref())?) } else { vec![] };
     let replies_dir = p.out.join(o.target.dir_name()).join("replies");
     std::fs::create_dir_all(&replies_dir)?;
     // 添付に使う一時のファイルと画面を操作するスクリプトは、終わったら消す(TempDir を落とすと消える)
@@ -475,7 +477,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(out.join("sessions.json"), json!({ "version": 12, "sessions": [{"id": "s1"}, {"id": "s2"}, {"id": "s3"}, {"id": "s4"}] }).to_string()).unwrap();
-        let p = M365Paths { sessions: out.join("sessions.json"), judgments: out.join("judgments.json"), turn_judgments: out.join("turn-judgments.json"), turn_bundle: out.join("turn-bundle"), notes: dir.path().join("notes"), out };
+        let p = M365Paths { sessions: out.join("sessions.json"), judgments: out.join("judgments.json"), turn_judgments: out.join("turn-judgments.json"), turn_bundle: out.join("turn-bundle"), notes: dir.path().join("notes"), settings: None, out };
         (dir, p)
     }
 
@@ -538,7 +540,7 @@ mod tests {
         use atlas_judge::task_link::{build_task_bundle, LinkQuery, TaskBundleOptions};
         use atlas_report::tasks::links::{load_links, update_links, LinkSource, TaskLink};
         let (_d, p) = setup();
-        let q = |id: &str| LinkQuery { session_id: id.into(), title: "題名".into(), prompts: vec!["直して".into()], candidates: vec![("T-1".into(), "一つ目".into()), ("T-2".into(), "二つ目".into())] };
+        let q = |id: &str| LinkQuery { session_id: id.into(), title: "題名".into(), prompts: vec!["直して".into()], candidates: vec![("T-1".into(), "一つ目".into()), ("T-2".into(), "二つ目".into())], candidates_total: 2 };
         build_task_bundle(&[q("s1"), q("s2"), q("s3")], &TaskBundleOptions { bundle_dir: p.out.join("task-bundle"), per_part: Some(1), boundary: None, scope: Default::default(), now: None }).unwrap();
         // 束を作った後に、s2 は手動で、s3 は LLM で紐づいた
         let links_path = atlas_report::tasks::task_links_path(&p.notes);

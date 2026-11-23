@@ -297,15 +297,54 @@ pub fn import_turn_judgments_text(input: &str, path: &Path, o: TurnImportOptions
     let ran_at = o.now.clone().unwrap_or_else(atlas_core::jsdate::now_iso);
     let judge = TurnJudge { backend: o.backend.clone().unwrap_or_else(|| "external".into()), model: model.clone(), ran_at: ran_at.clone() };
     let items: Vec<TurnJudgment> = raw.iter().map(|it| TurnJudgment { judge: Some(judge.clone()), ..normalize_item(it.as_object().expect("検証済み")) }).collect();
-    let base = read_turn_judgments(path)?.unwrap_or_else(|| empty_turn_judgments(o.phases, &judge.backend, model.as_deref(), &ran_at));
-    let existing: HashSet<String> = base.items.iter().map(|i| key(&i.session_id, i.turn)).collect();
-    let merged = merge_turn_judgments(&base, &items, o.phases, judge);
-    write_turn_judgments(path, &merged)?;
+    // 読み直してから混ぜて書くまでを、ファイルのロックの中で行う(共有の置き場では、ほかの集計する人も同じファイルに取り込むため。
+    // 同じセッションの同じ依頼は後から取り込んだもので置き換え、ほかの判定は残す)
+    let (overwritten, total) = atlas_report::tasks::with_file_lock(path, || {
+        let base = read_turn_judgments(path).map_err(|e| crate::judgments_io::broken_judgments(path, e))?.unwrap_or_else(|| empty_turn_judgments(o.phases, &judge.backend, model.as_deref(), &ran_at));
+        let existing: HashSet<String> = base.items.iter().map(|i| key(&i.session_id, i.turn)).collect();
+        let overwritten = items.iter().filter(|i| existing.contains(&key(&i.session_id, i.turn))).count();
+        let merged = merge_turn_judgments(&base, &items, o.phases, judge.clone());
+        write_turn_judgments(path, &merged)?;
+        Ok((overwritten, merged.items.len()))
+    })?;
     let unknown = match o.turns_by_session {
         Some(m) => items.iter().filter(|i| !m.contains_key(&i.session_id) || i.turn > *m.get(&i.session_id).unwrap_or(&0) as i64).map(|i| format!("{} の依頼 {}", i.session_id, i.turn)).collect(),
         None => vec![],
     };
-    Ok(TurnImportResult { imported: items.len(), overwritten: items.iter().filter(|i| existing.contains(&key(&i.session_id, i.turn))).count(), unknown, total: merged.items.len() })
+    Ok(TurnImportResult { imported: items.len(), overwritten, unknown, total })
+}
+
+/// 前の置き場(from)の依頼ごとの判定を、共有の置き場(to)に混ぜて移す(judgments_io::move_judgments_into と同じ決まり)。
+/// 共有の側にある依頼(セッションと依頼番号)は共有の側のままにし、無いものだけを足す。移したら from は moved_path の名前に変える。
+/// from が無ければ None、あれば足した依頼の数。from が読めなければエラー(何も書かず、from も残す)
+pub fn move_turn_judgments_into(from: &Path, to: &Path) -> Result<Option<crate::judgments_io::Moved>> {
+    if !from.exists() {
+        return Ok(None);
+    }
+    atlas_report::tasks::with_file_lock(to, || {
+        let Some(old) = read_turn_judgments(from).map_err(|e| anyhow!("{}: {e}", from.display()))? else { return Ok(None) };
+        let cur = read_turn_judgments(to).map_err(|e| anyhow!("{}: {e}", to.display()))?;
+        let have: HashSet<String> = cur.as_ref().map(|c| c.items.iter().map(|i| key(&i.session_id, i.turn)).collect()).unwrap_or_default();
+        let add: Vec<TurnJudgment> = old.items.iter().filter(|i| !have.contains(&key(&i.session_id, i.turn))).cloned().collect();
+        let mut merged = cur.unwrap_or_else(|| TurnJudgmentsFile { items: vec![], failures: vec![], ..old.clone() });
+        merged.items.extend(add.iter().cloned());
+        merged.items.sort_by(|a, b| locale_compare(&a.session_id, &b.session_id).then(a.turn.cmp(&b.turn)));
+        for p in &old.phases {
+            if !merged.phases.contains(p) {
+                merged.phases.push(p.clone());
+            }
+        }
+        // 判定できなかった塊の記録は、共有の側のものに、前の置き場にしかないものを足す(同じものは 1 つ)
+        for f in &old.failures {
+            if !merged.failures.contains(f) {
+                merged.failures.push(f.clone());
+            }
+        }
+        write_turn_judgments(to, &merged)?;
+        let renamed_to = crate::judgments_io::moved_path(from);
+        atlas_core::fs_retry::rename_replacing(from, &renamed_to)?;
+        Ok(Some(crate::judgments_io::Moved { added: add.len(), renamed_to }))
+    })
 }
 
 /// 判定の返答の JSON Schema(判定の指示に載せる)
@@ -356,6 +395,30 @@ mod tests {
         v
     }
 
+    /// 取り込みのロックの中で今の判定のファイルが読めなければ、書き換えずに BrokenFile で止める(serve は 409)。工数の判定も同じ
+    #[test]
+    fn broken_judgment_files_are_not_overwritten() {
+        let d = tempfile::tempdir().unwrap();
+        let ph = phases();
+        let path = d.path().join("turn-judgments.json");
+        std::fs::write(&path, "{ 壊れた").unwrap();
+        let e = import_turn_judgments_text(&json!([item(1, json!({}))]).to_string(), &path, TurnImportOptions { phases: &ph, turns_by_session: None, now: None, backend: None, model: None }).unwrap_err();
+        let b = e.downcast_ref::<atlas_report::tasks::BrokenFile>().expect("BrokenFile");
+        assert!(b.0.starts_with(&format!("判定のファイルが壊れています。{} を確かめてください", path.display())), "{}", b.0);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ 壊れた");
+        let effort = d.path().join("judgments.json");
+        std::fs::write(&effort, "{\"schemaVersion\": 2}").unwrap();
+        let reply = json!([{
+            "sessionId": "s1", "taskCategory": "feature", "taskSummary": "要約",
+            "humanEffort": { "hours": 2, "low": 1, "high": 4, "confidence": 0.5, "rationale": "根拠" },
+            "aiOutcome": { "completed": true, "quality": 4, "rework": 1, "rationale": "成果" },
+            "instructionsEffect": { "score": 1, "evidence": "e" }, "wikiEffect": { "score": 0, "evidence": "参照なし" }, "skillsAgentsEffect": { "score": 0, "evidence": "参照なし" },
+        }]);
+        let e = crate::judgments_io::import_judgments_text(&reply.to_string(), &effort, Default::default()).unwrap_err();
+        assert!(e.downcast_ref::<atlas_report::tasks::BrokenFile>().is_some_and(|b| b.0.starts_with("判定のファイルが壊れています。")), "{e:#}");
+        assert_eq!(std::fs::read_to_string(&effort).unwrap(), "{\"schemaVersion\": 2}");
+    }
+
     #[test]
     fn checks_kind_outcome_mismatch_phase_confidence() {
         let ph = phases();
@@ -370,6 +433,26 @@ mod tests {
         assert!(pr(item(1, json!({"phase": "開発"})), "1 件目").join(",").contains("phase は 要件定義 / 設計 / 実装 / テスト"));
         assert_eq!(pr(item(0, json!({"confidence": 2})), "1 件目").len(), 2);
         assert_eq!(pr(json!("x"), "2 件目"), vec!["2 件目が無いか、{ … } の形ではありません".to_string()]);
+    }
+
+    /// 共有の置き場へ移す: 共有の側にある依頼はそのまま、無いものだけ足す。前の一覧にしか無い工程名も残す
+    #[test]
+    fn moves_old_turn_judgments_into_shared() {
+        let d = tempfile::tempdir().unwrap();
+        let (old, shared) = (d.path().join("out").join("turn-judgments.json"), d.path().join("s").join("turn-judgments.json"));
+        let ph = phases();
+        let o = || TurnImportOptions { phases: &ph, turns_by_session: None, now: None, backend: None, model: None };
+        import_turn_judgments_text(&json!([item(1, json!({"note": "前"})), item(2, json!({}))]).to_string(), &old, o()).unwrap();
+        let mut more = ph.clone();
+        more.push("運用".into());
+        import_turn_judgments_text(&json!([item(1, json!({"note": "共有"})), item(3, json!({"phase": "運用"}))]).to_string(), &shared, TurnImportOptions { phases: &more, ..o() }).unwrap();
+        let m = move_turn_judgments_into(&old, &shared).unwrap().unwrap();
+        assert_eq!(m.added, 1);
+        let j = read_turn_judgments(&shared).unwrap().unwrap();
+        assert_eq!(j.items.iter().map(|i| (i.turn, i.note.as_str())).collect::<Vec<_>>(), [(1, "共有"), (2, "理由"), (3, "理由")]);
+        assert!(j.phases.contains(&"運用".to_string()));
+        assert!(!old.exists() && m.renamed_to.exists());
+        assert_eq!(move_turn_judgments_into(&old, &shared).unwrap(), None);
     }
 
     #[test]

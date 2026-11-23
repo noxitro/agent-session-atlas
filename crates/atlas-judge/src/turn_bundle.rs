@@ -9,7 +9,7 @@
 
 use crate::bundle::Skipped;
 use crate::packet::{clip, fenced};
-use crate::rubric::{fill, packet_boundary, SAFETY_RULES};
+use crate::rubric::{fill, folder_output, packet_boundary, safety_rules, tools_folder, TOOLS_CHAT};
 use crate::turn_schema::{turn_json_schema, TURN_JUDGMENTS_VERSION};
 use anyhow::{anyhow, bail, Result};
 use atlas_core::classify::{is_autopilot_continuation, is_main_assistant_message, is_user_turn};
@@ -206,9 +206,12 @@ fn range(turns: &[i64]) -> String {
     if turns.len() == 1 { turns[0].to_string() } else { format!("{}〜{}", turns[0], turns[turns.len() - 1]) }
 }
 
-/// セッションの判定と同じ注意(理由を書く欄の名前だけ note にする)
-fn turn_safety_rules() -> String {
-    SAFETY_RULES.replace("rationale", "note")
+/// 結果を書くファイル(フォルダ・ZIP で渡すとき。束のフォルダの中に書かせる。画面の依頼文と docs/judge.md と同じ名前)
+pub const TURN_RESULT_FILE: &str = "turn-judgments.json";
+
+/// セッションの判定と同じ注意(理由を書く欄の名前だけ note にする)。tools はツールの決まり(rubric::safety_rules)
+fn turn_safety_rules(tools: &str) -> String {
+    safety_rules(tools).replace("rationale", "note")
 }
 
 const RUBRIC_TPL: &str = "### 判定すること(依頼 1 件ごと)
@@ -226,12 +229,75 @@ const RUBRIC_TPL: &str = "### 判定すること(依頼 1 件ごと)
   - requirement = 依頼の意図・要件・前提の取り違え。defect = 誤り・不具合・動かない。quality = 品質・体裁・規約や決まりごとに合わない。scope = やり過ぎ・足りない・範囲違い。environment = 環境・ツール・権限・外部サービスの事情。other = どれにも当たらない
 - **phase**(その依頼が、利用者の作業の流れのどの工程に当たるか): ⟦phases⟧ のどれか 1 つ。規則による推定(参考)の「工程」は使ったツールからの機械的な推定なので、依頼文と応答の内容で決め直してください
 - **confidence**: 0〜1。次の依頼の文があいまいなとき、本文が中略されているときは下げる
-- **note**: 判定の理由を日本語で 1〜2 文(80 字程度まで)。依頼文や応答をそのまま長く引用しない";
+- **note**: 判定の理由を日本語で 1〜2 文(80 字程度まで)。依頼文や応答をそのまま長く引用しない
+
+### 迷うときの決め方(上の分類の意味は変えません)
+
+- **材料が足りないとき**: 次の依頼の文が「(本文なし)」のとき、この依頼の応答が「(応答の記録なし)」のとき、AI の最後の応答が途中経過だけ(「…確認します」「…を実行します」のように、作業の途中で終わっている)のときは、outcome を unknown にし、confidence を低く(0.3 以下)します
+- **kind は文の形ではなく意図で決めます**: 質問の形をした依頼でも、直前の AI の成果を直させる意図なら fix、相談・情報を求める意図なら question です
+- **question の outcome**: 同じ話を深掘りする追加の質問は follow_up(mismatch は null)。回答が的外れで聞き直したときは off_target(mismatch を付ける)
+- **承認を求められたとき**: AI が承認を求め、次の依頼が承認だけ(「承認」「OK」など)のときは as_is。承認までに中身を直させたときは、直させた成果を出した依頼(直しを求める依頼の 1 つ前の依頼)を fix_content にします(直した後の成果が承認されたら、その依頼は as_is)
+- **中断と再開が続くとき**: この依頼の間に中断があり、次の依頼が「再開」「続けて」だけのときは、この依頼の outcome は unknown にします(成果が出る前に止まっていて、扱いが読み取れないため)
+- **phase(設定・運用と要件定義)**: ツールや環境の設定・運用(エージェントやエディタの設定、ビルドや実行の環境、権限、認証など)の依頼は ⟦opsPhase⟧ にします。⟦reqRule⟧";
+
+/// 「運用」が無いときに、設定・運用に近い工程名とみなす語(工程名に含まれていればよい。前のものほど近い)。英字は大文字・小文字を区別しない。
+/// 「構築」「管理」「準備」は、ほかの工程の名前にも入る(「設計・構築」「進捗管理」「資料準備」など)ので、ここには入れず OPS_EXACT_NAMES で名前ごと見る
+/// (「環境構築」「環境準備」は「環境」を含むので、ここで選ばれる)
+const OPS_NEAR_WORDS: [&str; 11] = ["保守", "運営", "環境", "設定", "インフラ", "基盤", "ops", "infra", "setup", "config", "maint"];
+
+/// 「運用」が無く、OPS_NEAR_WORDS を含む工程名も無いときに、設定・運用に近い工程名とみなす名前(工程名がこの名前と同じときだけ)
+const OPS_EXACT_NAMES: [&str; 1] = ["運用管理"];
+
+/// 設定・運用の依頼を入れる工程名の決め方
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpsPhase {
+    /// 工程名に「運用」がある
+    Ops,
+    /// 「運用」が無く、設定・運用に近い工程名(OPS_NEAR_WORDS を含むもの、OPS_EXACT_NAMES と同じもの)がある
+    Near(String),
+    /// どちらも無く、「その他」がある
+    Other,
+    /// どれも無い(工程名を 1 つに決められない)
+    Undecided,
+}
+
+/// 設定・運用の依頼を入れる工程名を決める: 「運用」があれば「運用」、無ければ工程名の中で最も近いもの
+/// (OPS_NEAR_WORDS の前の語を含むもの。同じ語なら一覧の前のもの。無ければ OPS_EXACT_NAMES の前の名前と同じもの)、それも無ければ「その他」
+pub fn ops_phase_of(phases: &[String]) -> OpsPhase {
+    if phases.iter().any(|x| x == "運用") {
+        return OpsPhase::Ops;
+    }
+    for w in OPS_NEAR_WORDS {
+        if let Some(p) = phases.iter().find(|p| p.to_lowercase().contains(w)) {
+            return OpsPhase::Near(p.clone());
+        }
+    }
+    for w in OPS_EXACT_NAMES {
+        if let Some(p) = phases.iter().find(|p| p.as_str() == w) {
+            return OpsPhase::Near(p.clone());
+        }
+    }
+    if phases.iter().any(|x| x == "その他") { OpsPhase::Other } else { OpsPhase::Undecided }
+}
+
+/// ツールや環境の設定・運用の依頼を入れる工程名の文(ops_phase_of で決めた工程名を入れる)と、要件定義の文
+fn ops_phase_rule(phases: &[String]) -> (String, &'static str) {
+    let phase = match ops_phase_of(phases) {
+        OpsPhase::Ops => "`運用`(`その他` にはしません)".to_string(),
+        OpsPhase::Near(p) => format!("`{p}`(工程名に「運用」が無いため、いちばん近い工程名にします。`その他` にはしません)"),
+        OpsPhase::Other => "`その他`(工程名に「運用」も、それに近い工程名も無いため)".to_string(),
+        OpsPhase::Undecided => "上の工程名のうち最も近いもの(工程名に「運用」も「その他」も、それに近い工程名も無いため)".to_string(),
+    };
+    let has = |p: &str| phases.iter().any(|x| x == p);
+    let req = if has("要件定義") { "`要件定義` は、作るものの要件・仕様を決める依頼だけにします(設定・運用の話は入れません)" } else { "要件・仕様を決める工程には、設定・運用の話を入れません" };
+    (phase, req)
+}
 
 /// 判定の基準(分割ファイルの指示と INSTRUCTIONS.md の両方に載せる)
 pub fn turn_rubric(phases: &[String]) -> String {
     let ol = |xs: &[&str], label: fn(&str) -> &'static str| xs.iter().map(|x| format!("`{x}`({})", label(x))).collect::<Vec<_>>().join(" / ");
     let ph = phases.iter().map(|p| format!("`{p}`")).collect::<Vec<_>>().join(" / ");
+    let (ops_phase, req_rule) = ops_phase_rule(phases);
     fill(
         RUBRIC_TPL,
         &[
@@ -240,6 +306,8 @@ pub fn turn_rubric(phases: &[String]) -> String {
             ("question", &ol(&QUESTION_OUTCOMES, outcome_label)),
             ("mismatch", &ol(&MISMATCHES, mismatch_label)),
             ("phases", &ph),
+            ("opsPhase", &ops_phase),
+            ("reqRule", req_rule),
         ],
     )
 }
@@ -313,7 +381,7 @@ pub fn render_turn_part_instructions(part: usize, parts: usize, chunks: &[&TurnC
             ("total", &total.to_string()),
             ("generatedAt", generated_at),
             ("list", &list),
-            ("safety", &turn_safety_rules()),
+            ("safety", &turn_safety_rules(TOOLS_CHAT)),
             ("version", &TURN_JUDGMENTS_VERSION.to_string()),
             ("example", &item_example(phases)),
             ("rubric", &turn_rubric(phases)),
@@ -380,6 +448,32 @@ pub struct TurnBundleManifest {
     pub parts: Vec<TurnPart>,
     /// 本文が読めず外したセッション
     pub skipped: Vec<Skipped>,
+    /// 1 セッションの依頼の上限(MAX_TURNS)を超えて、束に入れなかった本体の依頼の数と、そのセッションの数(束に依頼を入れたセッションのうち)。
+    /// 超えたセッションが無ければ無い。古い manifest にも無い
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub over_limit: Option<OverLimit>,
+}
+
+/// 1 セッションの依頼の上限を超えて、判定の束に入れなかった依頼
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OverLimit {
+    /// 上限(MAX_TURNS)
+    pub limit: i64,
+    pub turns: i64,
+    pub sessions: i64,
+}
+
+/// 1 セッションの依頼の上限(MAX_TURNS)を超えた本体の依頼の数と、超えたセッションの数。超えたセッションが無ければ None。
+/// 数は集計のときに本体の依頼として数えたもの(analysis.turns_over_limit)。セッションの依頼の数(turns)からは数えない
+/// (サブエージェントの依頼も入り、DB だけのセッションの依頼も入るため)。渡すのは、束に入れたセッション(本文を読めたもの)だけにする
+pub fn turns_over_limit(sessions: &[&SessionRecord]) -> Option<OverLimit> {
+    let over: Vec<i64> = sessions.iter().filter_map(|s| s.analysis.turns_over_limit).filter(|n| *n > 0).collect();
+    (!over.is_empty()).then(|| OverLimit { limit: MAX_TURNS as i64, turns: over.iter().sum(), sessions: over.len() as i64 })
+}
+
+/// 上限を超えて束に入れなかった依頼を知らせる文(束を作るときのログ)
+pub fn over_limit_note(o: &OverLimit) -> String {
+    format!("1 セッションの先頭 {} 依頼までを束に入れます。上限を超えて入れなかった依頼が {} 件({} セッション)あります(判定せず、レポートの依頼ごとの集計にも入りません)", o.limit, o.turns, o.sessions)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -466,11 +560,16 @@ fn write_turn_bundle(sessions: &[&SessionRecord], o: &TurnBundleOptions<'_>, dir
     let mut front: Vec<TurnChunk> = Vec::new();
     let mut tail: Vec<TurnChunk> = Vec::new();
     let mut skipped: Vec<Skipped> = Vec::new();
-    for g in per {
+    // 上限を超えた依頼は、束に依頼を入れたセッションの分だけ数える(本文の無いセッション・DB だけのセッション・判定済みだけのセッションは入れていない)
+    let mut bundled: Vec<&SessionRecord> = Vec::new();
+    for (rec, g) in sessions.iter().zip(per) {
         match g {
             Got::None => {}
             Got::Skip(s) => skipped.push(s),
             Got::Chunks(f, t) => {
+                if !f.is_empty() || !t.is_empty() {
+                    bundled.push(*rec);
+                }
                 front.extend(f);
                 tail.extend(t);
             }
@@ -524,6 +623,7 @@ fn write_turn_bundle(sessions: &[&SessionRecord], o: &TurnBundleOptions<'_>, dir
         chunks: chunks.iter().enumerate().map(|(i, c)| ChunkEntry { session_id: c.session_id.clone(), turns: c.turns.clone(), chars: js::utf16_len(&c.markdown) as i64, path: Some(chunk_file(i + 1)) }).collect(),
         parts,
         skipped,
+        over_limit: turns_over_limit(&bundled),
     };
     // フォルダ(ZIP)ごと渡すときは塊を 1 ファイルずつ読ませるので、塊の本文も残す
     std::fs::create_dir_all(dir.join("chunks"))?;
@@ -539,15 +639,16 @@ fn write_turn_bundle(sessions: &[&SessionRecord], o: &TurnBundleOptions<'_>, dir
 const TURN_INSTRUCTIONS_TPL: &str = "# Copilot の依頼ごとの判定の指示
 
 このフォルダ(依頼ごとの判定の束)には、GitHub Copilot のセッションログから作った判定パケットが、依頼 ⟦total⟧ 件分(⟦chunks⟧ 個の塊)入っています(生成 ⟦generatedAt⟧)。
-あなたの役割は、各依頼について「依頼の種類」「AI の成果が利用者にどう扱われたか」「合わなかった点」「工程」を判定し、決められた JSON で返すことです。
+あなたの役割は、各依頼について「依頼の種類」「AI の成果が利用者にどう扱われたか」「合わなかった点」「工程」を判定し、決められた JSON をこのフォルダの中の `⟦result⟧` に書くことです。
 
 ## フォルダの中身
 
 - `INSTRUCTIONS.md`: この指示(最初に読む)
-- `manifest.json`: 塊の一覧(`chunks[].path` のファイルに、セッション `chunks[].sessionId` の依頼 `chunks[].turns` が入っています)
+- `manifest.json`: 塊の一覧(`chunks[].path` のファイルに、セッション `chunks[].sessionId` の依頼 `chunks[].turns` が入っています)。件数とファイルの一覧を確かめるためのもので、全部を読まなくてかまいません(各塊のファイルに、セッション ID と判定する依頼が書いてあります)
 - `schema.json`: 返す JSON の JSON Schema
 - `chunks/<番号>.md`: 判定パケット(1 つの塊に、1 セッションの続いた依頼が数件)
 - `parts/part-<番号>.md`: この指示と数個の塊を 1 ファイルにまとめたもの(ZIP やフォルダを渡せないとき用。ZIP には入っていません。中身は `chunks/` と同じなので、あっても読まなくてかまいません)
+- `⟦result⟧`: 結果を書くファイル(あなたが作ります)
 
 ## 判定する順番
 
@@ -557,12 +658,13 @@ const TURN_INSTRUCTIONS_TPL: &str = "# Copilot の依頼ごとの判定の指示
 
 ⟦safety⟧
 - 成果の扱いは**次の依頼の文**で判断します。次の依頼の文がパケットに無いのは、セッションの最後の依頼だけです。
+- `⟦result⟧` は、判定しながら手で書いてかまいません(書くためにスクリプトを作って動かす必要はありません)。ファイルの読み書きのほかのツールを使わないことは、上のとおりです。
 
 ## 手順
 
-1. `manifest.json` の `chunks` を上から順に処理します。一度に全部を読まず、**1 つの塊ずつ**読んで判定してください。
+1. `chunks/` の塊を番号の順に読みます(`manifest.json` は件数とファイルの一覧の確認用で、全部を読まなくてかまいません)。各塊を読んで、**その塊だけを根拠に**判定します(同じセッションの塊が続くときは並べて読んでもかまいませんが、結果は塊ごとに決めます)。
 2. 各塊の「判定する依頼」の各依頼について 1 項目の JSON を作ります(判定しないと書いてある依頼は参考です。項目を作りません)。`sessionId` は塊の「セッション ID」をそのまま写します。
-3. 判定し終えたものから、次の形でまとめて返します(途中で区切ってもかまいません。何回かに分けて返した JSON は、あとで 1 つずつ取り込めます)。
+3. 判定した項目を次の形の JSON 1 つにまとめ、このフォルダの中の `⟦result⟧` に書きます。
 
 ```json
 {
@@ -574,7 +676,7 @@ const TURN_INSTRUCTIONS_TPL: &str = "# Copilot の依頼ごとの判定の指示
 }
 ```
 
-- JSON は ```json のコードブロックに入れてください(前後に説明文があってもかまいません。取り込み時にコードブロックだけを読みます)。
+⟦output⟧
 - 形は `schema.json` に従います。形の合わない項目が 1 件でもあると、取り込み時にエラーになります。
 
 ⟦rubric⟧
@@ -598,7 +700,7 @@ pub fn render_turn_instructions(m: &TurnBundleManifest) -> String {
             d.chunks
         ),
         Some(d) if d.chunks == 0 && total > 0 => "どの塊も、セッションの最後の依頼だけです(次の依頼が無いので outcome は unknown になり、種類と工程だけが決まります)。".to_string(),
-        _ => "`manifest.json` の `chunks` の順に判定してください(どの塊も、採用を判定できる依頼です)。".to_string(),
+        _ => "`chunks/` の塊を番号の順に判定してください(どの塊も、採用を判定できる依頼です)。".to_string(),
     };
     fill(
         TURN_INSTRUCTIONS_TPL,
@@ -607,9 +709,11 @@ pub fn render_turn_instructions(m: &TurnBundleManifest) -> String {
             ("chunks", &total.to_string()),
             ("generatedAt", &m.generated_at),
             ("order", &order),
-            ("safety", &turn_safety_rules()),
+            ("result", TURN_RESULT_FILE),
+            ("safety", &turn_safety_rules(&tools_folder(TURN_RESULT_FILE))),
             ("version", &TURN_JUDGMENTS_VERSION.to_string()),
             ("example", &item_example(&m.phases)),
+            ("output", &folder_output(TURN_RESULT_FILE)),
             ("rubric", &turn_rubric(&m.phases)),
         ],
     )

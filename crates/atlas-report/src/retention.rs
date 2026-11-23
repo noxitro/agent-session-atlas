@@ -110,6 +110,9 @@ pub struct RetentionItem {
     pub mapped: bool,
     pub hunks: StatusTuple,
     pub lines: StatusTuple,
+    /// 比べた版の決め方(evaluated.mode。worktree / committed / fixed)。比べた時点の記録が無い結果・古い埋め込みには無い
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<EvalMode>,
 }
 
 /// 照合した場所の言葉
@@ -164,6 +167,7 @@ pub fn retention_item(r: &SessionRetention, turns: &[TurnStart]) -> RetentionIte
         mapped: r.path_mapped == Some(true),
         hunks: tuple(&r.counts),
         lines: tuple(&r.lines),
+        mode: r.evaluated.as_ref().map(|e| e.mode),
     }
 }
 
@@ -258,6 +262,8 @@ pub struct RetentionAgg {
     pub lags: Vec<f64>,
     pub unread: i64,
     pub unread_sessions: i64,
+    /// 照合できたセッションの、比べた版の決め方(mode)ごとの数(記録の無いものは入れない)。2 つ以上あれば、比べる版が混ざっている
+    pub modes: JsMap<i64>,
 }
 
 /// 照合の結果を集計する(照合できたセッションだけを分母にし、照合の範囲を一緒に数える)
@@ -304,6 +310,9 @@ pub fn aggregate_retention<'a>(sessions: impl IntoIterator<Item = Option<&'a Ret
         }
         if let Some(l) = r.lag {
             a.lags.push(l);
+        }
+        if let Some(m) = r.mode {
+            a.modes.inc(m.as_str(), 1);
         }
         add(&mut a.hunks, &r.hunks);
         add(&mut a.lines, &r.lines);
@@ -357,7 +366,7 @@ mod tests {
     use super::*;
 
     fn item(f: impl FnOnce(&mut RetentionItem)) -> RetentionItem {
-        let mut r = RetentionItem { phases: None, lag: None, unread: None, outcome: "measured".into(), reason: None, vcs: Some(VcsKind::Git), vcs_kinds: None, baseline: Some("observed".into()), on: "local".into(), mapped: false, hunks: [0; 4], lines: [0; 4] };
+        let mut r = RetentionItem { phases: None, lag: None, unread: None, outcome: "measured".into(), reason: None, vcs: Some(VcsKind::Git), vcs_kinds: None, baseline: Some("observed".into()), on: "local".into(), mapped: false, hunks: [0; 4], lines: [0; 4], mode: None };
         f(&mut r);
         r
     }
@@ -399,6 +408,29 @@ mod tests {
         assert_eq!((a.sender, a.mapped, a.hunks, a.lines), (1, 1, [4, 1, 3, 1], [12, 2, 7, 4]));
         // 割合の分母は照合できたまとまり(照合不可を除く 8)。割合と、出すかどうかの閾値は画面(lib/retention.ts)だけが持つ
         assert_eq!(measured_of(&a.hunks), 8);
+        // 比べた版の記録が無ければ、版の内訳は空
+        assert!(a.modes.is_empty());
+    }
+
+    // 比べた版(evaluated.mode)の内訳は、照合できたセッションだけを数える(照合不可・変更なし・記録の無いものは入れない)。
+    // retention.test.ts の「比べた版の内訳」と同じ
+    #[test]
+    fn aggregates_modes_of_measured_sessions() {
+        let list = [
+            Some(item(|r| r.mode = Some(EvalMode::Worktree))),
+            Some(item(|r| r.mode = Some(EvalMode::Fixed))),
+            Some(item(|r| r.mode = Some(EvalMode::Worktree))),
+            Some(item(|r| {
+                r.outcome = "unattributable".into();
+                r.mode = Some(EvalMode::Committed);
+            })),
+            Some(item(|r| r.mode = None)),
+        ];
+        let a = aggregate_retention(list.iter().map(Option::as_ref));
+        assert_eq!(atlas_core::json::to_js_string(&a.modes).unwrap(), r#"{"worktree":2,"fixed":1}"#);
+        // 埋め込みには版の決め方を持つ(無ければ書かない)
+        assert_eq!(serde_json::to_value(&list[1]).unwrap()["mode"], "fixed");
+        assert!(serde_json::to_value(&list[4]).unwrap().get("mode").is_none());
     }
 
     // 複数の VCS にまたがるセッション: VCS 別は種類ごとに 1 回ずつ数え(合計が照合できたセッションを超えうる)、基準はどれかが推定なら推定

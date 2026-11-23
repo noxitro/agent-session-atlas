@@ -213,6 +213,9 @@ pub struct AnalysisSummary {
     pub extra_edits: i64,
     pub max_consecutive_failures: i64,
     pub turns: i64,
+    /// 本体の依頼のうち、先頭 200 件の上限を超えて依頼ごとの記録と判定の束に入らなかったものの数(sessions.json の analysis.turnsOverLimit。0 件・古い記録では無い)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turns_over_limit: Option<i64>,
 }
 
 /// 入力トークン記録の有無を UI 向けに 3 区分にしたもの(input / output-only / none)

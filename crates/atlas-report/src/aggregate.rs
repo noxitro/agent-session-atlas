@@ -8,6 +8,7 @@ use atlas_core::collate::locale_compare;
 use atlas_core::js::{self, JsMap};
 use atlas_core::jsdate;
 use atlas_core::tool_failure::{add_causes, failure_cause_label, FAILURE_CAUSES};
+use atlas_core::turns::{MISMATCHES, OUTCOMES};
 use atlas_core::types::{Friction, LineSource};
 use indexmap::IndexMap;
 use serde::Serialize;
@@ -123,6 +124,26 @@ pub struct Bucket {
     pub judged_confidence: Option<f64>,
     /// 同じセッションに AI が使った量(AI 投入量 vs 推定人手工数の比較用)
     pub judged_ai: JudgedAi,
+    /// 依頼ごとの LLM の判定(turn_verdicts。LLM の推定で、推定人手工数や AI の変更の残存とは混ぜない)
+    pub turn_verdicts: BucketVerdicts,
+}
+
+/// 依頼ごとの判定の数(判定した依頼・判定できた作業の依頼・そのまま採用・直し(中身・体裁)・合わなかった点ごと)
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BucketVerdicts {
+    pub judged: i64,
+    pub work_decided: i64,
+    pub as_is: i64,
+    pub fix: i64,
+    /// MISMATCHES の並びで、すべてのキーを持つ
+    pub by_mismatch: JsMap<i64>,
+}
+
+impl Default for BucketVerdicts {
+    fn default() -> Self {
+        BucketVerdicts { judged: 0, work_decided: 0, as_is: 0, fix: 0, by_mismatch: JsMap(MISMATCHES.iter().map(|m| (m.to_string(), 0)).collect()) }
+    }
 }
 
 /// モデルの推論強度別の行
@@ -428,6 +449,24 @@ pub fn bucket(key: &str, label: &str, sessions: &[&SessionSummary]) -> Bucket {
                     ai.premium_requests += t.premium_requests.unwrap_or(0.0);
                 }
             }
+        // 依頼ごとの判定(verdict_aggregate と同じく、扱いの番号の合わないものは数えない)
+        let tv = &mut b.turn_verdicts;
+        for v in s.turn_verdicts.as_deref().unwrap_or(&[]) {
+            let Some(outcome) = usize::try_from(v.2).ok().and_then(|i| OUTCOMES.get(i)).copied() else { continue };
+            tv.judged += 1;
+            if matches!(outcome, "as_is" | "fix_content" | "fix_style" | "rejected") {
+                tv.work_decided += 1;
+            }
+            if outcome == "as_is" {
+                tv.as_is += 1;
+            }
+            if matches!(outcome, "fix_content" | "fix_style") {
+                tv.fix += 1;
+            }
+            if let Some(m) = v.3.and_then(|m| usize::try_from(m).ok()).and_then(|i| MISMATCHES.get(i)) {
+                tv.by_mismatch.inc(m, 1);
+            }
+        }
     }
     b.active_median_ms = median(&actives);
     b.judged_confidence = if conf_n > 0 { Some(conf_sum / conf_n as f64) } else { None };

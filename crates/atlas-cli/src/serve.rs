@@ -17,7 +17,7 @@ mod http;
 mod tests;
 
 use crate::chat_parts::{judged_session_ids, judged_turn_keys, list_chat_parts, ChatParts, ChatTarget};
-use crate::config::{default_config_path, load_config, modify_config, parse_config, parse_upload_root, phase_names, update_config, ConfigEdit};
+use crate::config::{default_config_path, load_config, modify_config, parse_config, parse_upload_root, update_config, ConfigEdit};
 use crate::folders::{check_folder, folders_root_of, forget_folder, is_read_only_view, list_folder_states, list_folders, open_folder_report, FolderContext, FolderError};
 use crate::jobs::{parse_job_request, running_job_in, FullCtx, JobRunner, JobRunnerOptions, RunFullFn, SpawnFn};
 use atlas_core::js;
@@ -100,6 +100,13 @@ pub struct ServeOptions {
     pub view_limit: u64,
     /// アップロード先(uploadRoot)を読み書きする設定ファイル。None なら default_config_path()
     pub config_path: Option<PathBuf>,
+    /// 設定のフォルダ(settings_dir.rs)。あれば config_path はその atlas.config.json で、その設定に tasks があれば、
+    /// タスクの状態と紐づけは設定のフォルダに置く(読むだけの画面でも、タスクの紐づけは変えられる)
+    pub settings_dir: Option<PathBuf>,
+    /// 工数の判定と依頼ごとの判定のファイル(Paths の judgments・turn_judgments。設定のフォルダを使うときは、その中の共有の置き場)。
+    /// None なら出力先の judgments.json・turn-judgments.json
+    pub judgments: Option<PathBuf>,
+    pub turn_judgments: Option<PathBuf>,
     /// フォルダを選ぶ画面(既定は folder_picker.rs。テストで差し替える)
     pub can_pick: Option<bool>,
     pub pick: Option<PickFn>,
@@ -131,6 +138,9 @@ impl ServeOptions {
             run_full: None,
             view_limit: VIEW_LIMIT,
             config_path: None,
+            settings_dir: None,
+            judgments: None,
+            turn_judgments: None,
             can_pick: None,
             pick: None,
             m365: None,
@@ -140,6 +150,18 @@ impl ServeOptions {
             code_stamp: None,
         }
     }
+}
+
+/// 返答の取り込みで書けなかったときの応答。ほかの書き手(別の集計する人・ジョブ)がロックを持ったまま待ちきれなかった・
+/// 書き換えない壊れたファイルは 409(少し待つか直してもう一度。タスクの紐づけの書き込みと同じ)、ほかは 400
+pub(crate) fn import_error(e: &anyhow::Error) -> HttpError {
+    if e.downcast_ref::<atlas_report::tasks::LockBusy>().is_some() {
+        return HttpError::new(409, format!("ほかの人(か別の処理)が書き込み中です。少し待ってから、もう一度取り込んでください(何も取り込んでいません。{e:#})"));
+    }
+    if e.downcast_ref::<atlas_report::tasks::BrokenFile>().is_some() {
+        return HttpError::new(409, format!("{e:#}"));
+    }
+    HttpError::new(400, format!("{e:#}"))
 }
 
 /// 画面に返す失敗(状態コードと理由)
@@ -282,6 +304,8 @@ struct SessionEntry {
     /// 開いただけのセッション(sessions.json の empty)と、題名か依頼の文があるか。LLM に紐づけを頼むセッションを数えるのに使う(links::llm_eligible)
     empty: bool,
     has_text: bool,
+    /// タスクの表の、工数のほかの列(人数・主なモデル・摩擦)に使う値(依頼ごとの判定は、GET /api/tasks のときに足す)
+    extra: atlas_report::tasks::extras::SessionExtra,
 }
 
 /// sessions.json の id → 表題と判定の対象か(本文は持たない)。集計元の形(読むだけの画面かを決める)も持つ
@@ -342,10 +366,15 @@ struct Server {
     css: OnceLock<String>,
     life: Mutex<Life>,
     memo_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
-    /// メモの置き場の親(atlas-notes/。tasks.json と task-links.json の場所)
+    /// メモの置き場の親(atlas-notes/。設定のフォルダにタスクを置いていなければ、tasks.json と task-links.json の場所)
     notes_abs: PathBuf,
+    /// 設定のフォルダ(あれば config_path はその atlas.config.json)
+    settings_dir: Option<PathBuf>,
     /// task-links.json の読み・変更・書き込みは順番に行う
     tasks_lock: Mutex<()>,
+    /// 工数の判定と依頼ごとの判定のファイル(ServeOptions の judgments・turn_judgments)
+    judgments: PathBuf,
+    turn_judgments: PathBuf,
     /// 終わったら理由が入る
     done: Mutex<Option<String>>,
     done_cv: Condvar,
@@ -534,8 +563,9 @@ pub fn start_serve(o: ServeOptions) -> anyhow::Result<ServeHandle> {
     };
     let s_of = |p: &Option<PathBuf>, d: &Path| crate::paths::resolve(p.clone().unwrap_or_else(|| d.to_path_buf())).to_string_lossy().into_owned();
     let mut extra_args: Vec<String> = Vec::new();
-    // 開いたフォルダのサーバにも、同じ設定ファイルと、ブラウザを開くかどうかを引き継ぐ
-    if let Some(c) = &o.config_path {
+    // 開いたフォルダのサーバにも、同じ設定ファイルと、ブラウザを開くかどうかを引き継ぐ。
+    // 設定のフォルダの設定ファイルは引き継がない(開くフォルダごとに、atlas open が設定のフォルダを決める)
+    if let Some(c) = o.config_path.as_ref().filter(|_| o.settings_dir.is_none()) {
         extra_args.extend(["--config".into(), crate::paths::resolve(c).to_string_lossy().into_owned()]);
     }
     if !o.open {
@@ -569,6 +599,9 @@ pub fn start_serve(o: ServeOptions) -> anyhow::Result<ServeHandle> {
             out_dir: out_dir.clone(),
             notes_dir: notes_abs.clone(),
             home: o.home.clone(),
+            settings: o.settings_dir.as_ref().map(|d| crate::paths::resolve(d).to_string_lossy().into_owned()),
+            // 画面の取り込み(self.judgments)と、ジョブ(束・M365・作り直し)が同じ工数の判定のファイルを使うように
+            judgments: o.judgments.as_ref().map(|j| crate::paths::resolve(j).to_string_lossy().into_owned()),
             spawn: o.job_spawn.clone(),
             env,
             run_full,
@@ -610,7 +643,10 @@ pub fn start_serve(o: ServeOptions) -> anyhow::Result<ServeHandle> {
             life: Mutex::new(Life::default()),
             memo_locks: Mutex::new(HashMap::new()),
             notes_abs: notes_abs.clone(),
+            settings_dir: o.settings_dir.as_ref().map(crate::paths::resolve),
             tasks_lock: Mutex::new(()),
+            judgments: o.judgments.as_ref().map(crate::paths::resolve).unwrap_or_else(|| out_dir.join(atlas_judge::rubric::RESULT_FILE)),
+            turn_judgments: o.turn_judgments.as_ref().map(crate::paths::resolve).unwrap_or_else(|| out_dir.join(atlas_judge::turn_bundle::TURN_RESULT_FILE)),
             done: Mutex::new(None),
             done_cv: Condvar::new(),
             conns: Mutex::new(Conns::default()),
@@ -1022,7 +1058,8 @@ impl Server {
             // 題名か依頼の文(最初の依頼と、記録した各依頼の先頭)があるか。tasks bundle(links::llm_eligible)の SessionText と同じ項目を見る
             let prompt_text = r.get("firstUserMessage").and_then(Value::as_str).into_iter().chain(r.get("analysis").and_then(|a| a.get("requests")).and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str));
             let has_text = atlas_report::tasks::links::has_text(r.get("name").and_then(Value::as_str).unwrap_or(""), &prompt_text.collect::<Vec<_>>().join("\n"));
-            ids.insert(id, SessionEntry { title: if name.is_empty() { "(名前なし)".into() } else { name.to_string() }, eligible, turns, start_ms, active_ms, empty, has_text });
+            let extra = atlas_report::tasks::extras::SessionExtra::from_value(r);
+            ids.insert(id, SessionEntry { title: if name.is_empty() { "(名前なし)".into() } else { name.to_string() }, eligible, turns, start_ms, active_ms, empty, has_text, extra });
         }
         let layout = file.get("source").and_then(|s| s.get("layout")).and_then(Value::as_str).map(str::to_string);
         let ix = Arc::new(SessionIndex { ids, layout });
@@ -1036,6 +1073,19 @@ impl Server {
         let _ = self.session_index();
         let cache = lock(&self.sessions_cache).as_ref().map(|(_, ix)| ix.clone());
         self.current.is_some() || is_read_only_view(&self.out_s, cache.as_ref().and_then(|c| c.layout.as_deref()))
+    }
+
+    /// タスクの状態と紐づけの場所と、それが設定のフォルダか(設定のフォルダがあり、その設定に tasks があるとき)
+    fn task_store(&self) -> (PathBuf, bool) {
+        match &self.settings_dir {
+            Some(d) if load_config(&self.config_path, false).is_ok_and(|c| c.tasks.is_some()) => (d.clone(), true),
+            _ => (self.notes_abs.clone(), false),
+        }
+    }
+
+    /// タスクの紐づけを読むだけにするか(読むだけの画面で、設定のフォルダにタスクを置いていないとき。送った人の記録を出す)
+    fn tasks_read_only(&self) -> bool {
+        self.read_only() && !self.task_store().1
     }
 
     fn refreshing(&self) -> bool {
@@ -1106,6 +1156,8 @@ impl Server {
         };
         json!({
             "configPath": self.config_path,
+            // 設定のフォルダ(共有の AtlasSettings)の設定ファイルを読み書きしているときはそのフォルダ(画面は、書き換えるとほかの集計する人の結果も変わると出す)
+            "sharedSettings": self.settings_dir.as_ref().map(|d| d.to_string_lossy().into_owned()),
             "error": error,
             "canPick": self.can_pick,
             "wikis": c.as_ref().and_then(|c| c.wikis.clone()).map(|w| to_value(&w)).unwrap_or_else(|| json!([])),
@@ -1116,6 +1168,14 @@ impl Server {
             // 名前に wiki を含むインストール済みの skill(vault を足すときに、wiki の skill として数えるか選べるように。setup.bat と同じ候補)
             "skillCandidates": crate::setup::wiki_skill_candidates(&self.copilot_home),
         })
+    }
+
+    /// 画面の設定を書き換えたときの 1 行(共有の設定のフォルダの設定ファイルなら、そう書く)
+    fn log_setting(&self, what: &str) {
+        match &self.settings_dir {
+            Some(d) => (self.log)(&format!("serve: 共有の設定({})を書き換えました: {what}({})。ほかの集計する人の結果も変わります", d.display(), self.config_path)),
+            None => (self.log)(&format!("serve: {what}({})", self.config_path)),
+        }
     }
 
     /// 設定ファイルの 1 項目を書き換える。読めない設定・ロックが取れないときは 409、検査に通らない値は 400
@@ -1163,7 +1223,7 @@ impl Server {
             return Ok(Resp { status: 204, headers: vec![], body: Vec::new() });
         }
         let read_only = self.read_only();
-        if read_only && blocked_when_read_only(path, &method) {
+        if read_only && blocked_when_read_only(path, &method) && !(path.starts_with("/api/tasks/") && !self.tasks_read_only()) {
             return Err(HttpError::new(403, READ_ONLY_MESSAGE));
         }
         if path == "/api/state" && method == "GET" && read_only {
@@ -1313,7 +1373,7 @@ impl Server {
                 list.push(spec.clone());
                 Ok(ConfigEdit::Set(Value::Array(list)))
             })?;
-            (self.log)(&format!("serve: vault「{name}」を足しました({})", self.config_path));
+            self.log_setting(&format!("vault「{name}」を足しました"));
             return Ok(send_json(200, &self.settings_of()));
         }
         if path == "/api/settings/wikis/remove" {
@@ -1335,7 +1395,7 @@ impl Server {
                 let next: Vec<Value> = list.iter().enumerate().filter(|(i, _)| *i != at).map(|(_, v)| v.clone()).collect();
                 Ok(if next.is_empty() { ConfigEdit::Remove } else { ConfigEdit::Set(Value::Array(next)) })
             })?;
-            (self.log)(&format!("serve: vault「{bpath}」を外しました({})", self.config_path));
+            self.log_setting(&format!("vault「{bpath}」を外しました"));
             return Ok(send_json(200, &self.settings_of()));
         }
         if path == "/api/settings/phases" {
@@ -1349,7 +1409,7 @@ impl Server {
             }
             let value = phases.clone();
             self.write_setting("phases", move |_, _| Ok(value.map_or(ConfigEdit::Remove, |p| ConfigEdit::Set(json!(p)))))?;
-            (self.log)(&format!("serve: 普段の工程名を{}しました({})", phases.map_or("既定に".to_string(), |p| format!(" {} に", p.join(" / "))), self.config_path));
+            self.log_setting(&format!("普段の工程名を{}しました", phases.map_or("既定に".to_string(), |p| format!(" {} に", p.join(" / ")))));
             return Ok(send_json(200, &self.settings_of()));
         }
         Err(HttpError::new(404, "見つかりません"))
@@ -1374,7 +1434,7 @@ impl Server {
             return Ok(send_json(
                 200,
                 &match check_folder(&Value::String(chosen.clone())) {
-                    Ok(info) => json!({ "path": info.path, "ok": true, "name": info.name, "summary": info.summary }),
+                    Ok(info) => json!({ "path": info.path, "ok": true, "name": info.name, "summary": info.summary, "settings": crate::folders::settings_preview(&self.folder_ctx, &info.path) }),
                     Err(e) => json!({ "path": chosen, "ok": false, "error": e.message }),
                 },
             ));
@@ -1386,7 +1446,7 @@ impl Server {
             return Ok(send_json(
                 200,
                 &match check_folder(&input) {
-                    Ok(info) => json!({ "path": info.path, "ok": true, "name": info.name, "summary": info.summary }),
+                    Ok(info) => json!({ "path": info.path, "ok": true, "name": info.name, "summary": info.summary, "settings": crate::folders::settings_preview(&self.folder_ctx, &info.path) }),
                     Err(e) => json!({ "path": input.as_str().unwrap_or(""), "ok": false, "error": e.message }),
                 },
             ));
@@ -1414,8 +1474,8 @@ impl Server {
             let ids = if body.get("kind").and_then(Value::as_str) == Some("full") { self.session_index()? } else { None };
             let known = |id: &str| ids.as_ref().is_some_and(|ix| ix.ids.contains_key(id));
             let r = parse_job_request(&body, &known).map_err(je)?;
-            // 読むだけの画面の紐づけは送った人のもの。LLM で紐づけても画面には出ないので始めない
-            if r.writes_task_links() && self.read_only() {
+            // 読むだけの画面の紐づけは送った人のもの。LLM で紐づけても画面には出ないので始めない(設定のフォルダにタスクを置いていれば始める)
+            if r.writes_task_links() && self.tasks_read_only() {
                 return Err(HttpError::new(403, READ_ONLY_MESSAGE));
             }
             let snap = self.jobs.start(&r).map_err(je)?;
@@ -1452,22 +1512,33 @@ impl Server {
     /// GET /api/tasks: 今のタスクの状態・紐づけ・工数(レポートの埋め込みと同じ形。集計し直さずに、今のファイルから数える)。
     /// 読むだけの画面は、送った人がセッションごとに添えた記録から
     fn tasks_payload(&self) -> R<Value> {
-        let read_only = self.read_only();
+        let read_only = self.tasks_read_only();
+        let (store, _) = self.task_store();
         let cfg = match load_config(&self.config_path, false) {
             Ok(c) => crate::commands::tasks::TaskConfig { source: c.tasks, error: None },
             Err(e) => crate::commands::tasks::TaskConfig { source: None, error: Some(format!("{e:#}")) },
         };
         let ix = self.session_index()?;
         // 推定人手工数はレポート(build)と同じ読み方で、セッションの値は sessions.json の同じ項目(createdAt・activeMs)から。数えるのも同じ関数
-        let human = crate::commands::tasks::judgment_hours(&self.out_dir.join("judgments.json"));
+        let human = crate::commands::tasks::judgment_hours(&self.judgments);
+        // 依頼ごとの判定もレポート(build)と同じ読み方で、人数・主なモデル・摩擦は sessions.json の同じ項目から(extras::SessionExtra)
+        let verdicts = crate::commands::tasks::turn_verdict_counts(&self.turn_judgments);
         let ids: Vec<&str> = ix.as_ref().map(|ix| ix.ids.keys().map(String::as_str).collect()).unwrap_or_default();
         let facts: HashMap<String, atlas_report::tasks::metrics::SessionFacts> = ix
             .as_ref()
-            .map(|ix| ix.ids.iter().map(|(id, e)| (id.clone(), atlas_report::tasks::metrics::SessionFacts { start_ms: e.start_ms, active_ms: e.active_ms, human: human.get(id).copied() })).collect())
+            .map(|ix| {
+                ix.ids
+                    .iter()
+                    .map(|(id, e)| {
+                        let extra = atlas_report::tasks::extras::SessionExtra { verdicts: verdicts.get(id).copied(), ..e.extra.clone() };
+                        (id.clone(), atlas_report::tasks::metrics::SessionFacts { start_ms: e.start_ms, active_ms: e.active_ms, human: human.get(id).copied(), extra })
+                    })
+                    .collect()
+            })
             .unwrap_or_default();
         let snapshot = self.out_dir.join("snapshot");
         let view = crate::commands::tasks::tasks_view(crate::commands::tasks::ViewInputs {
-            notes: &self.notes_abs,
+            notes: &store,
             snapshot: &snapshot,
             cfg: &cfg,
             read_only,
@@ -1480,8 +1551,8 @@ impl Server {
         // LLM に紐づけを頼むセッションの数: tasks bundle が束に入れるもの(同じ決め方の links::llm_eligible)
         let unresolved = match (&view, &ix) {
             (Some(_), Some(ix)) if !read_only => {
-                let st = atlas_report::tasks::state::load_tasks(&atlas_report::tasks::tasks_path(&self.notes_abs)).file;
-                let li = atlas_report::tasks::links::load_links(&atlas_report::tasks::task_links_path(&self.notes_abs)).file;
+                let st = atlas_report::tasks::state::load_tasks(&atlas_report::tasks::tasks_path(&store)).file;
+                let li = atlas_report::tasks::links::load_links(&atlas_report::tasks::task_links_path(&store)).file;
                 ix.ids.iter().filter(|(id, e)| atlas_report::tasks::links::llm_eligible(&li, &st, id, e.empty, e.has_text, e.start_ms)).count()
             }
             _ => 0,
@@ -1544,7 +1615,8 @@ impl Server {
         }
         {
             let _g = lock(&self.tasks_lock);
-            let state = atlas_report::tasks::state::load_tasks(&atlas_report::tasks::tasks_path(&self.notes_abs));
+            let (store, _) = self.task_store();
+            let state = atlas_report::tasks::state::load_tasks(&atlas_report::tasks::tasks_path(&store));
             if let Some(w) = state.warnings.first() {
                 return Err(HttpError::new(409, w.clone()));
             }
@@ -1556,7 +1628,7 @@ impl Server {
             }
             // 自動に戻すときの機械の紐づけに使う文は、ロックを取る前に読む(ロックは短く持つ)
             let text = if auto { self.session_text(&id)? } else { None };
-            let links_path = atlas_report::tasks::task_links_path(&self.notes_abs);
+            let links_path = atlas_report::tasks::task_links_path(&store);
             let now = atlas_core::jsdate::now_iso();
             // 返答を取り込むジョブ(別のプロセス)や集計と重ならないよう、ファイルのロックの中で読み直して、このセッションの分だけを直す
             atlas_report::tasks::links::update_links(&links_path, |links| {
@@ -1591,6 +1663,7 @@ impl Server {
         Ok(Some(atlas_report::tasks::links::SessionText {
             id: id.to_string(),
             start_ms: r.get("createdAt").and_then(Value::as_str).filter(|s| !s.is_empty()).and_then(atlas_core::jsdate::parse_ms),
+            end_ms: r.get("updatedAt").and_then(Value::as_str).filter(|s| !s.is_empty()).and_then(atlas_core::jsdate::parse_ms),
             title: r.get("name").and_then(Value::as_str).unwrap_or("").to_string(),
             prompts: prompts.join("\n"),
         }))
@@ -1599,7 +1672,7 @@ impl Server {
     /// 工数の判定の件数: 依頼の記録があるセッションのうち judgments.json に無いもの
     fn judge_preview(&self) -> R<Map<String, Value>> {
         let Some(ix) = self.session_index()? else { return Ok(obj(json!({ "eligible": 0, "judged": 0, "pending": 0 }))) };
-        let judged = judged_session_ids(&self.out_dir).map_err(|e| HttpError::new(409, format!("{e:#}")))?;
+        let judged = judged_session_ids(&self.judgments).map_err(|e| HttpError::new(409, format!("{e:#}")))?;
         let (mut eligible, mut done) = (0, 0);
         for (id, x) in &ix.ids {
             if !x.eligible {
@@ -1616,7 +1689,7 @@ impl Server {
     /// 依頼ごとの判定の件数(依頼ごとの記録がある依頼のうち、turn-judgments.json に無いもの)
     fn turn_preview(&self) -> R<Map<String, Value>> {
         let Some(ix) = self.session_index()? else { return Ok(obj(json!({ "eligible": 0, "judged": 0, "pending": 0, "withoutTurns": 0 }))) };
-        let judged = judged_turn_keys(&self.out_dir).map_err(|e| HttpError::new(409, format!("{e:#}")))?;
+        let judged = judged_turn_keys(&self.turn_judgments).map_err(|e| HttpError::new(409, format!("{e:#}")))?;
         let (mut eligible, mut done, mut without) = (0, 0, 0);
         for (id, x) in &ix.ids {
             // 依頼があるのに依頼ごとの記録が無いセッション(古い集計)。「集計し直す」で入る
@@ -1638,11 +1711,12 @@ impl Server {
     fn task_preview(&self) -> R<Map<String, Value>> {
         let zero = || obj(json!({ "eligible": 0, "judged": 0, "pending": 0 }));
         let Some(ix) = self.session_index()? else { return Ok(zero()) };
-        if self.read_only() {
+        if self.tasks_read_only() {
             return Ok(zero());
         }
-        let st = atlas_report::tasks::state::load_tasks(&atlas_report::tasks::tasks_path(&self.notes_abs)).file;
-        let li = atlas_report::tasks::links::load_links(&atlas_report::tasks::task_links_path(&self.notes_abs)).file;
+        let (store, _) = self.task_store();
+        let st = atlas_report::tasks::state::load_tasks(&atlas_report::tasks::tasks_path(&store)).file;
+        let li = atlas_report::tasks::links::load_links(&atlas_report::tasks::task_links_path(&store)).file;
         let pending = ix.ids.iter().filter(|(id, e)| atlas_report::tasks::links::llm_eligible(&li, &st, id, e.empty, e.has_text, e.start_ms)).count();
         let judged = ix.ids.keys().filter(|id| li.links.get(*id).is_some_and(|l| l.source == atlas_report::tasks::links::LinkSource::Llm)).count();
         Ok(obj(json!({ "eligible": pending + judged, "judged": judged, "pending": pending })))
@@ -1650,7 +1724,8 @@ impl Server {
 
     /// 添付ファイルの一覧(chat_parts.rs。manifest が読めなければ 409)
     fn parts_for(&self, target: ChatTarget) -> R<ChatParts> {
-        list_chat_parts(&self.out_dir, &self.notes_abs, target).map_err(|e| HttpError::new(409, format!("{e:#}")))
+        let store = self.task_store().0;
+        list_chat_parts(&self.out_dir, &crate::chat_parts::JudgedFiles { judgments: &self.judgments, turn_judgments: &self.turn_judgments, tasks_dir: &store }, target).map_err(|e| HttpError::new(409, format!("{e:#}")))
     }
 
     /// 画面に返す添付ファイルの一覧(M365 Copilot を自動で操作できるかを足す。一覧を読んだときも、取り込んだ後も同じ形)
@@ -1671,7 +1746,7 @@ impl Server {
     fn chat_judge_api(&self, req: &mut Req, method: &str, path: &str, target: ChatTarget) -> R<Resp> {
         self.check_token(req)?;
         // 読むだけの画面のタスクの紐づけは送った人のもの。添付ファイルも返答の取り込みも断る(ほかのタスクの API と同じ)
-        if target == ChatTarget::Tasks && self.read_only() {
+        if target == ChatTarget::Tasks && self.tasks_read_only() {
             return Err(HttpError::new(403, READ_ONLY_MESSAGE));
         }
         if path == "/api/judge/parts" {
@@ -1717,8 +1792,9 @@ impl Server {
             let r: anyhow::Result<(usize, usize, usize, Vec<String>, usize)> = if target == ChatTarget::Tasks {
                 // 画面の手動の紐づけ(同じプロセス)とも重ならないよう、紐づけを書く間はタスクのロックも持つ
                 let _g = lock(&self.tasks_lock);
-                crate::commands::tasks::import_task_links_text(&text, &self.notes_abs, &self.out_dir.join(crate::paths::TASK_BUNDLE_DIR)).map(|r| {
-                    let lines = crate::commands::tasks::import_lines("tasks import(画面)", &r, &atlas_report::tasks::task_links_path(&self.notes_abs));
+                let (store, _) = self.task_store();
+                crate::commands::tasks::import_task_links_text(&text, &store, &self.out_dir.join(crate::paths::TASK_BUNDLE_DIR)).map(|r| {
+                    let lines = crate::commands::tasks::import_lines("tasks import(画面)", &r, &atlas_report::tasks::task_links_path(&store));
                     for l in &lines {
                         (self.log)(l);
                     }
@@ -1729,18 +1805,18 @@ impl Server {
                 })
             } else if target == ChatTarget::Turns {
                 (|| {
-                    let phases = atlas_judge::turn_bundle::turn_import_phases(&self.out_dir.join("turn-bundle"), &phase_names()?);
+                    let phases = atlas_judge::turn_bundle::turn_import_phases(&self.out_dir.join("turn-bundle"), &crate::config::phase_names_in(self.settings_dir.as_deref())?);
                     let by: Option<HashMap<String, usize>> = ids.as_ref().map(|ix| ix.ids.iter().map(|(id, x)| (id.clone(), x.turns)).collect());
                     let r = atlas_judge::turn_schema::import_turn_judgments_text(
                         &text,
-                        &self.out_dir.join("turn-judgments.json"),
+                        &self.turn_judgments,
                         atlas_judge::turn_schema::TurnImportOptions { phases: &phases, turns_by_session: by.as_ref(), now: None, backend: None, model: None },
                     )?;
                     Ok((r.imported, r.overwritten, 0, r.unknown, r.total))
                 })()
             } else {
                 let known: Option<HashSet<String>> = ids.as_ref().map(|ix| ix.ids.keys().cloned().collect());
-                atlas_judge::judgments_io::import_judgments_text(&text, &self.out_dir.join("judgments.json"), atlas_judge::judgments_io::ImportOptions { known_ids: known.as_ref(), now: None, label: None })
+                atlas_judge::judgments_io::import_judgments_text(&text, &self.judgments, atlas_judge::judgments_io::ImportOptions { known_ids: known.as_ref(), now: None, label: None })
                     .map(|r| {
                         // llm-wiki のページごとの判定の一部を捨てた(そのページは未判定)
                         for n in &r.notes {
@@ -1757,11 +1833,12 @@ impl Server {
                         let what = if target == ChatTarget::Tasks { "紐づけ" } else { "判定" };
                         return Ok(send_json(400, &json!({ "error": format!("返答の形が{what}の形式に合いません(何も取り込んでいません)"), "problems": v.problems })));
                     }
-                    return Err(HttpError::new(400, format!("{e:#}")));
+                    return Err(import_error(&e));
                 }
             };
             if target != ChatTarget::Tasks {
-                (self.log)(&format!("{}(画面): {imported} 件を取り込みました(既存の上書き {overwritten} 件)", target.import_command()));
+                let file = if target == ChatTarget::Turns { &self.turn_judgments } else { &self.judgments };
+                (self.log)(&format!("{}(画面): {imported} 件を取り込みました(既存の上書き {overwritten} 件)→ {}", target.import_command(), file.display()));
             }
             let parts = self.parts_json(target)?;
             // タスクの紐づけでは、kept に書かなかった数(手動か前の LLM の紐づけがあった)を返す

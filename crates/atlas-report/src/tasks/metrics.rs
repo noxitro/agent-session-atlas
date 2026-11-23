@@ -9,12 +9,16 @@
 //!   セッションの数(判定済み・確度が低い・判定なしを含む)は等分しない(そのタスクに紐づいたセッションを 1 つずつ数える)。
 //!   開始と稼働時間帯の工数は、タスクの始まりから完了までの長さなので等分しない
 //!
-//! 合計は「比べられるタスク」(完了に変わるのを見ていて、紐づいたセッションがすべて完了の前に始まり、確信度の低くない推定を持つ)だけで出す。
-//! 外したタスクは理由ごとに数える。
+//! 合計は「比べられるタスク」(完了の時刻が分かり、紐づいたセッションがすべて完了の前に始まり、開始から完了までが稼働時間帯に重なり、
+//! 確信度の低くない推定を持つ)だけで出す。
+//! 外したタスクは理由ごとに数える。完了の時刻の出所(記録: XML の完了日時・観測: 完了を見た書き出しの時刻)は、
+//! 完了したタスクと比べられるタスクのそれぞれで件数を分けて出す(どちらも合計に入れる)。
 //! 2 つの工数の比は、比べられるタスクが RATIO_MIN_TASKS 件に届いたときだけ出す(1 件だけで大きく動く値を出さない)。
 
+use super::extras::{task_extras, SessionExtra, TaskFriction, TaskVerdicts, VERDICT_RATE_MIN_TURNS};
 use super::hours::{work_overlap_ms, WorkHours};
 use super::links::LinkSource;
+pub use super::state::DoneAtSource;
 use crate::aggregate::is_low_confidence;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -31,11 +35,34 @@ pub struct TaskInfo {
     pub status: String,
     pub done: bool,
     pub done_at: Option<String>,
-    /// 未完了から完了に変わるのを見た(初めて見たときに完了していたら false。完了を確認した時刻が完了の時刻にならない)
+    /// 完了の時刻が分かる(未完了から完了に変わるのを見たか、XML に完了日時の記録があった。初めて見たときに完了していて記録も無ければ false)
     pub done_observed: bool,
+    /// 完了の時刻の出所(完了していて時刻があるときだけ)
+    pub done_at_source: Option<DoneAtSource>,
+    /// 日付だけの完了日の、暦の日付の文字("YYYY-MM-DD")。工数はその日の稼働時間帯の終わりまで、「完了の後に始まった」はその日の終わりで見る
+    /// (どちらもこの日付と、集計する PC の時間帯から決める)。時刻つきの完了なら None
+    pub done_date: Option<String>,
     pub missing: bool,
     /// 送った人が数えた開始(紐づいたセッションのうち最も早い開始)。手元のセッションの開始と早い方を使う
     pub start_hint: Option<String>,
+}
+
+impl TaskInfo {
+    /// 「完了の後に始まった」の判定に使う完了の時刻(完了していなければ None。日付だけの完了日は、その日の終わり)
+    pub fn done_cutoff_ms(&self) -> Option<i64> {
+        if !self.done {
+            return None;
+        }
+        super::state::done_cutoff(self.done_at.as_deref(), self.done_date.as_deref())
+    }
+
+    /// 工数(稼働時間帯の長さ)を数える終わり(完了していなければ None。日付だけの完了日は、その日の稼働時間帯の終わり)
+    pub fn done_work_end_ms(&self, wh: &WorkHours) -> Option<i64> {
+        if !self.done {
+            return None;
+        }
+        super::state::done_work_end(self.done_at.as_deref(), self.done_date.as_deref(), wh)
+    }
 }
 
 /// セッション 1 件の、工数に使う値
@@ -45,6 +72,8 @@ pub struct SessionFacts {
     pub active_ms: Option<f64>,
     /// 推定人手工数(時間)と確信度。判定が無ければ None
     pub human: Option<(f64, Option<f64>)>,
+    /// タスクの表の、工数のほかの列(人数・主なモデル・摩擦・依頼ごとの判定)に使う値
+    pub extra: SessionExtra,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -76,6 +105,9 @@ pub enum Excluded {
     AfterDone,
     /// 紐づいたセッションの開始の時刻が分からない
     NoStart,
+    /// 開始から完了までが稼働時間帯に重ならない(AI を使った場合の工数が 0 時間になる。稼働日でない日だけ・稼働時間帯の外だけで作業して完了した、
+    /// 日付だけの完了日で、その日の稼働時間帯の終わりより後に始めた、など)
+    NoWorkHours,
     /// 推定人手工数の判定が無いセッションがある
     Unjudged,
     /// 確信度の低い推定のセッションがある
@@ -89,6 +121,7 @@ impl Excluded {
             Excluded::DoneUnobserved => "完了の時刻が分からない",
             Excluded::NoStart => "開始が分からない",
             Excluded::AfterDone => "完了の後に始まったセッション",
+            Excluded::NoWorkHours => "稼働時間帯に重ならない",
             Excluded::Unjudged => "判定なし",
             Excluded::LowConfidence => "確度が低い",
         }
@@ -104,6 +137,12 @@ pub struct TaskRow {
     pub done: bool,
     pub done_at: Option<String>,
     pub done_observed: bool,
+    /// 完了の時刻の出所(記録・観測。未完了なら null)
+    pub done_at_source: Option<DoneAtSource>,
+    /// 日付だけの完了日の、暦の日付の文字("YYYY-MM-DD"。画面と tasks.csv はこれをそのまま出す)。時刻つきなら書かない。
+    /// このとき done_at は、集計した PC の時間帯での、その日の稼働時間帯の終わり(工数を数えた終わり)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub done_date: Option<String>,
     pub missing: bool,
     /// 紐づいたセッションのうち最も早い開始(ISO。完了を確認した時刻より後に始まったセッションは使わない)
     pub start: Option<String>,
@@ -127,6 +166,15 @@ pub struct TaskRow {
     pub comparable: bool,
     /// 比べられないときの理由
     pub excluded: Option<Excluded>,
+    /// 紐づいたセッションの人数(人の記録のあるセッションの、人の数)。どのセッションにも人の記録が無ければ null(extras.rs)
+    pub people: Option<usize>,
+    /// 主なモデル(紐づいたセッションの本体のリクエストがいちばん多いモデル)と、その割合(0〜1)。記録が無ければ null
+    pub main_model: Option<String>,
+    pub main_model_share: Option<f64>,
+    /// 摩擦(紐づいたセッションの、ツールの失敗・拒否・中断・文脈圧縮の数。等分しない)
+    pub friction: TaskFriction,
+    /// 依頼ごとの判定(紐づいたセッションの和。等分しない)。判定した依頼が無ければ null
+    pub verdicts: Option<TaskVerdicts>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -136,8 +184,26 @@ pub struct ExcludedCounts {
     pub done_unobserved: usize,
     pub no_start: usize,
     pub after_done: usize,
+    pub no_work_hours: usize,
     pub unjudged: usize,
     pub low_confidence: usize,
+}
+
+/// 完了の時刻の出所ごとの数
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct DoneAtCounts {
+    pub recorded: usize,
+    pub observed: usize,
+}
+
+impl DoneAtCounts {
+    fn add(&mut self, s: Option<DoneAtSource>) {
+        match s {
+            Some(DoneAtSource::Recorded) => self.recorded += 1,
+            Some(DoneAtSource::Observed) => self.observed += 1,
+            None => {}
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -147,8 +213,12 @@ pub struct TaskSummary {
     pub tasks: usize,
     /// そのうち完了したもの
     pub done_tasks: usize,
+    /// 完了したもの(done_tasks)の、完了の時刻の出所ごとの数
+    pub done_sources: DoneAtCounts,
     /// 比べられるタスクの数
     pub included: usize,
+    /// 比べられるタスク(included)の、完了の時刻の出所ごとの数
+    pub included_sources: DoneAtCounts,
     pub excluded: ExcludedCounts,
     /// 比べられるタスクの合計
     pub work_ms: f64,
@@ -161,6 +231,8 @@ pub struct TaskSummary {
     /// AI を使わなかった場合 ÷ AI を使った場合(比べられるタスクが ratio_min に届いたときだけ)
     pub ratio: Option<f64>,
     pub ratio_min: usize,
+    /// タスクごとの依頼ごとの判定の割合を出す、分母の依頼の数の下限(extras::VERDICT_RATE_MIN_TURNS)
+    pub verdict_min: usize,
 }
 
 /// セッションの値をタスクに分ける割合(数えるタスクの数 k なら 1/k)
@@ -168,10 +240,10 @@ pub fn share_of(k: usize) -> f64 {
     if k == 0 { 0.0 } else { 1.0 / k as f64 }
 }
 
-/// 完了を確認した時刻より後に始まったセッションか(そのタスクの開始に使わず、工数にも数えない。始めた時刻か完了の時刻が分からなければ false)
+/// 完了を確認した時刻より後に始まったセッションか(そのタスクの開始に使わず、工数にも数えない。始めた時刻か完了の時刻が分からなければ false)。
+/// 日付だけの完了日は、その日の終わり(24:00)より後に始まったものだけ
 pub fn started_after_done(t: &TaskInfo, start_ms: Option<i64>) -> bool {
-    let done_ms = if t.done { t.done_at.as_deref().and_then(atlas_core::jsdate::parse_ms) } else { None };
-    matches!((start_ms, done_ms), (Some(s), Some(d)) if s > d)
+    matches!((start_ms, t.done_cutoff_ms()), (Some(s), Some(d)) if s > d)
 }
 
 /// セッションの実働と推定人手工数を数えるタスク(等分の相手。ここが 1 か所の決まり):
@@ -210,7 +282,7 @@ pub fn compute_task_metrics(tasks: &[TaskInfo], links: &[(String, String, LinkSo
     // セッションごとの、数えるタスク
     let counted: HashMap<&str, Vec<&str>> = per_session.iter().map(|(sid, ids)| (*sid, counted_tasks(ids.iter().copied(), &by_id, facts.get(*sid).and_then(|f| f.start_ms)))).collect();
     let mut rows = Vec::with_capacity(tasks.len());
-    let mut sum = TaskSummary { ratio_min: RATIO_MIN_TASKS, ..Default::default() };
+    let mut sum = TaskSummary { ratio_min: RATIO_MIN_TASKS, verdict_min: VERDICT_RATE_MIN_TURNS, ..Default::default() };
     for t in tasks {
         let linked = by_task.get(t.id.as_str()).map(Vec::as_slice).unwrap_or(&[]);
         let mut row = TaskRow {
@@ -220,6 +292,8 @@ pub fn compute_task_metrics(tasks: &[TaskInfo], links: &[(String, String, LinkSo
             done: t.done,
             done_at: t.done_at.clone(),
             done_observed: t.done_observed,
+            done_at_source: t.done_at_source.filter(|_| t.done && t.done_at.is_some()),
+            done_date: t.done_date.clone().filter(|_| t.done && t.done_at.is_some()),
             missing: t.missing,
             start: None,
             work_ms: None,
@@ -234,10 +308,27 @@ pub fn compute_task_metrics(tasks: &[TaskInfo], links: &[(String, String, LinkSo
             links: SourceCounts::default(),
             comparable: false,
             excluded: None,
+            people: None,
+            main_model: None,
+            main_model_share: None,
+            friction: TaskFriction::default(),
+            verdicts: None,
         };
-        let done_ms = if t.done { t.done_at.as_deref().and_then(atlas_core::jsdate::parse_ms) } else { None };
-        // 完了を確認した時刻より後の開始は、開始に使わない
-        let before_done = |s: i64| done_ms.is_none_or(|d| s <= d);
+        // 人数・主なモデル・摩擦・依頼ごとの判定は、紐づいたセッションすべてを 1 つずつ数える(等分しない。セッションの数と同じ数え方)
+        let ex = task_extras(linked.iter().map(|(sid, _)| facts.get(*sid).map_or(&empty.extra, |f| &f.extra)));
+        row.people = ex.people;
+        row.main_model = ex.main_model;
+        row.main_model_share = ex.main_model_share;
+        row.friction = ex.friction;
+        row.verdicts = ex.verdicts;
+        // 工数(稼働時間帯の長さ)は完了の時刻まで(日付だけの完了日は、その日付の稼働時間帯の終わり。集計する PC の時間帯)
+        let done_ms = t.done_work_end_ms(wh);
+        if row.done_date.is_some() {
+            row.done_at = done_ms.map(atlas_core::jsdate::to_iso);
+        }
+        // 完了を確認した時刻より後の開始は、開始に使わない(日付だけの完了日は、その日の終わりまでに始めたものを使う)
+        let cutoff = t.done_cutoff_ms();
+        let before_done = |s: i64| cutoff.is_none_or(|d| s <= d);
         let mut start: Option<i64> = t.start_hint.as_deref().and_then(atlas_core::jsdate::parse_ms).filter(|s| before_done(*s));
         for (sid, src) in linked {
             let f = facts.get(*sid).unwrap_or(&empty);
@@ -271,14 +362,23 @@ pub fn compute_task_metrics(tasks: &[TaskInfo], links: &[(String, String, LinkSo
             }
         }
         row.start = start.map(atlas_core::jsdate::to_iso);
+        // 開始から完了までが稼働時間帯に重ならなければ(稼働日でない日だけ・稼働時間帯の外だけで作業して完了した、日付だけの完了日で
+        // その日の稼働時間帯の終わりより後に始めた、など)、工数は 0 時間になる。その 0 時間は出さず、比べない(理由は「稼働時間帯に重ならない」)
+        let mut no_work_hours = false;
         if let (true, Some(s), Some(d)) = (t.done_observed, start, done_ms) {
-            row.work_ms = Some(work_overlap_ms(s, d, wh));
+            let w = work_overlap_ms(s, d, wh);
+            if w > 0.0 {
+                row.work_ms = Some(w);
+            } else {
+                no_work_hours = true;
+            }
         }
         if !linked.is_empty() {
             sum.tasks += 1;
             sum.ai_active_ms_all += row.ai_active_ms;
             if t.done {
                 sum.done_tasks += 1;
+                sum.done_sources.add(row.done_at_source);
             }
             row.excluded = if !t.done || done_ms.is_none() {
                 Some(Excluded::NotDone)
@@ -288,6 +388,8 @@ pub fn compute_task_metrics(tasks: &[TaskInfo], links: &[(String, String, LinkSo
                 Some(Excluded::AfterDone)
             } else if start.is_none() {
                 Some(Excluded::NoStart)
+            } else if no_work_hours {
+                Some(Excluded::NoWorkHours)
             } else if row.unjudged_sessions > 0 {
                 Some(Excluded::Unjudged)
             } else if row.low_confidence_sessions > 0 {
@@ -299,6 +401,7 @@ pub fn compute_task_metrics(tasks: &[TaskInfo], links: &[(String, String, LinkSo
                 None => {
                     row.comparable = true;
                     sum.included += 1;
+                    sum.included_sources.add(row.done_at_source);
                     sum.work_ms += row.work_ms.unwrap_or(0.0);
                     sum.human_hours += row.human_hours;
                     sum.ai_active_ms += row.ai_active_ms;
@@ -307,6 +410,7 @@ pub fn compute_task_metrics(tasks: &[TaskInfo], links: &[(String, String, LinkSo
                 Some(Excluded::DoneUnobserved) => sum.excluded.done_unobserved += 1,
                 Some(Excluded::NoStart) => sum.excluded.no_start += 1,
                 Some(Excluded::AfterDone) => sum.excluded.after_done += 1,
+                Some(Excluded::NoWorkHours) => sum.excluded.no_work_hours += 1,
                 Some(Excluded::Unjudged) => sum.excluded.unjudged += 1,
                 Some(Excluded::LowConfidence) => sum.excluded.low_confidence += 1,
             }
@@ -358,11 +462,100 @@ mod tests {
     }
 
     fn info(id: &str, done_at: Option<&str>) -> TaskInfo {
-        TaskInfo { id: id.into(), name: format!("{id} の名前"), status: if done_at.is_some() { "Done" } else { "Open" }.into(), done: done_at.is_some(), done_at: done_at.map(str::to_string), done_observed: done_at.is_some(), missing: false, start_hint: None }
+        TaskInfo { id: id.into(), name: format!("{id} の名前"), status: if done_at.is_some() { "Done" } else { "Open" }.into(), done: done_at.is_some(), done_at: done_at.map(str::to_string), done_observed: done_at.is_some(), done_at_source: done_at.map(|_| DoneAtSource::Observed), done_date: None, missing: false, start_hint: None }
+    }
+
+    /// 日付だけの完了日: その日の夜(稼働時間帯の後)に始めたセッションも数え(完了の後に始まったとしない)、工数は稼働時間帯の終わりまで
+    #[test]
+    fn date_only_done_counts_the_evening_session_and_work_stops_with_the_work_hours() {
+        with_zone(&TimeZone::fixed(Offset::constant(9)), || {
+            // 月曜(11/23)が完了日(日付だけ)。done_at はその日の稼働時間帯の終わり 18:00
+            let t = TaskInfo { done_date: Some("2026-11-23".into()), done_at_source: Some(DoneAtSource::Recorded), ..info("A", Some("2026-11-23T18:00:00+09:00")) };
+            let mut f = HashMap::new();
+            f.insert("early".to_string(), facts("2026-11-23T10:00:00+09:00", 1.0, Some((2.0, Some(0.8)))));
+            f.insert("evening".to_string(), facts("2026-11-23T20:00:00+09:00", 1.0, Some((1.0, Some(0.8)))));
+            assert!(!started_after_done(&t, parse_ms("2026-11-23T20:00:00+09:00")));
+            assert!(started_after_done(&t, parse_ms("2026-11-24T00:00:01+09:00")));
+            let (rows, sum) = compute_task_metrics(std::slice::from_ref(&t), &[link("early", "A", LinkSource::Machine), link("evening", "A", LinkSource::Machine)], &f, &WorkHours::default());
+            let r = &rows[0];
+            assert_eq!((r.after_done_sessions, r.excluded, r.done_date.as_deref()), (0, None, Some("2026-11-23")));
+            // 10:00〜18:00 の 8 時間(夜のセッションの分は稼働時間帯の外)
+            assert_eq!(r.work_ms, Some(8.0 * 3_600_000.0));
+            assert_eq!((r.human_hours, sum.included), (3.0, 1));
+            // 時刻つきの完了(18:00)なら、夜のセッションは完了の後
+            let timed = TaskInfo { done_date: None, ..t.clone() };
+            assert!(started_after_done(&timed, parse_ms("2026-11-23T20:00:00+09:00")));
+            assert_eq!(serde_json::to_value(r).unwrap()["doneDate"], "2026-11-23");
+            let (rows, _) = compute_task_metrics(&[timed], &[link("early", "A", LinkSource::Machine)], &f, &WorkHours::default());
+            assert!(serde_json::to_value(&rows[0]).unwrap().get("doneDate").is_none());
+        });
+    }
+
+    /// 日付だけの完了日で、紐づいたセッションがどれもその日の稼働時間帯の終わりより後(夜)に始まったときは、
+    /// 工数が 0 時間になるので比べない。理由は「稼働時間帯に重ならない」(完了の後に始まったセッションは無いので、その数も 0 のまま)
+    #[test]
+    fn date_only_done_with_only_an_evening_session_is_not_compared() {
+        with_zone(&TimeZone::fixed(Offset::constant(9)), || {
+            let t = TaskInfo { done_date: Some("2026-11-23".into()), done_at_source: Some(DoneAtSource::Recorded), ..info("A", Some("2026-11-23T18:00:00+09:00")) };
+            let mut f = HashMap::new();
+            f.insert("evening".to_string(), facts("2026-11-23T20:00:00+09:00", 1.0, Some((1.0, Some(0.8)))));
+            let (rows, sum) = compute_task_metrics(std::slice::from_ref(&t), &[link("evening", "A", LinkSource::Machine)], &f, &WorkHours::default());
+            let r = &rows[0];
+            assert_eq!((r.work_ms, r.comparable, r.excluded), (None, false, Some(Excluded::NoWorkHours)));
+            assert_eq!(r.excluded.map(Excluded::label), Some("稼働時間帯に重ならない"));
+            // セッションはその日のうちに始めたので、開始と実働・推定人手工数はこのタスクに数える(比べないだけ)。理由と件数が食い違わない
+            assert_eq!((r.start.as_deref(), r.human_hours, r.after_done_sessions), (Some("2026-11-23T11:00:00.000Z"), 1.0, 0));
+            assert_eq!(sum.excluded, ExcludedCounts { no_work_hours: 1, ..Default::default() });
+            assert_eq!((sum.included, sum.work_ms), (0, 0.0));
+            assert_eq!(serde_json::to_value(r).unwrap()["excluded"], "noWorkHours");
+        });
+    }
+
+    /// 稼働日でない日だけ(土日)に作業して完了したタスク・稼働時間帯の外(夜)だけで作業して完了したタスクは、工数が 0 時間になるので比べない
+    #[test]
+    fn tasks_outside_the_work_hours_are_not_compared() {
+        with_zone(&TimeZone::fixed(Offset::constant(9)), || {
+            // 11/28(土)10:00 に始めて 11/29(日)15:00 に完了。11/24(火)19:00 に始めて 22:00 に完了
+            let tasks = vec![info("W", Some("2026-11-29T15:00:00+09:00")), info("N", Some("2026-11-24T22:00:00+09:00")), info("OK", Some("2026-11-24T12:00:00+09:00"))];
+            let mut f = HashMap::new();
+            f.insert("w".to_string(), facts("2026-11-28T10:00:00+09:00", 2.0, Some((3.0, Some(0.9)))));
+            f.insert("n".to_string(), facts("2026-11-24T19:00:00+09:00", 1.0, Some((2.0, Some(0.9)))));
+            f.insert("ok".to_string(), facts("2026-11-24T10:00:00+09:00", 1.0, Some((2.0, Some(0.9)))));
+            let links = vec![link("w", "W", LinkSource::Machine), link("n", "N", LinkSource::Machine), link("ok", "OK", LinkSource::Machine)];
+            let (rows, sum) = compute_task_metrics(&tasks, &links, &f, &WorkHours::default());
+            for r in &rows[..2] {
+                assert_eq!((r.work_ms, r.comparable, r.excluded, r.after_done_sessions), (None, false, Some(Excluded::NoWorkHours), 0), "{}", r.id);
+                // 開始は出す(比べないだけ)
+                assert!(r.start.is_some());
+            }
+            assert_eq!((rows[2].work_ms, rows[2].excluded), (Some(2.0 * 3_600_000.0), None));
+            assert_eq!(sum.excluded, ExcludedCounts { no_work_hours: 2, ..Default::default() });
+            assert_eq!((sum.included, sum.work_ms, sum.human_hours), (1, 2.0 * 3_600_000.0, 2.0));
+            // 稼働時間帯を毎日の 0:00〜24:00 にすれば、同じタスクも比べられる
+            let all_day = WorkHours { days: vec![1, 2, 3, 4, 5, 6, 7], start_min: 0, end_min: 1440 };
+            let (rows, _) = compute_task_metrics(&tasks, &links, &f, &all_day);
+            assert!(rows.iter().all(|r| r.comparable), "{rows:?}");
+        });
+    }
+
+    /// 日付だけの完了日の工数の終わりは、日付の文字と集計する PC の時間帯から決める(前に読んだ PC の時間帯の doneAt を使わない)
+    #[test]
+    fn date_only_work_end_follows_the_date_and_this_pcs_time_zone() {
+        // JST の PC で読んだ doneAt(11/23 18:00 JST = 09:00Z)。集計は UTC の PC
+        let t = TaskInfo { done_date: Some("2026-11-23".into()), done_at_source: Some(DoneAtSource::Recorded), ..info("A", Some("2026-11-23T09:00:00.000Z")) };
+        let mut f = HashMap::new();
+        f.insert("s".to_string(), facts("2026-11-23T10:00:00Z", 1.0, Some((1.0, Some(0.8)))));
+        with_zone(&TimeZone::fixed(Offset::constant(0)), || {
+            let (rows, _) = compute_task_metrics(std::slice::from_ref(&t), &[link("s", "A", LinkSource::Machine)], &f, &WorkHours::default());
+            // UTC の 11/23 10:00〜18:00 の 8 時間(読んだ PC の 09:00Z で切らない)。doneAt もこの PC の 18:00
+            assert_eq!((rows[0].work_ms, rows[0].done_at.as_deref(), rows[0].done_date.as_deref()), (Some(8.0 * 3_600_000.0), Some("2026-11-23T18:00:00.000Z"), Some("2026-11-23")));
+            assert!(!started_after_done(&t, parse_ms("2026-11-23T23:00:00Z")));
+            assert!(started_after_done(&t, parse_ms("2026-11-24T00:00:01Z")));
+        });
     }
 
     fn facts(start: &str, active_h: f64, human: Option<(f64, Option<f64>)>) -> SessionFacts {
-        SessionFacts { start_ms: parse_ms(start), active_ms: Some(active_h * 3_600_000.0), human }
+        SessionFacts { start_ms: parse_ms(start), active_ms: Some(active_h * 3_600_000.0), human, extra: Default::default() }
     }
 
     fn link(s: &str, t: &str, src: LinkSource) -> (String, String, LinkSource) {
@@ -525,7 +718,7 @@ mod tests {
             let mut hinted = info("H", Some("2026-11-23T12:00:00+09:00"));
             hinted.start_hint = Some("2026-11-23T09:00:00+09:00".into());
             f.insert("h".into(), facts("2026-11-23T11:00:00+09:00", 0.1, Some((1.0, Some(0.9)))));
-            f.insert("x".into(), SessionFacts { start_ms: None, active_ms: None, human: Some((1.0, Some(0.9))) });
+            f.insert("x".into(), SessionFacts { start_ms: None, active_ms: None, human: Some((1.0, Some(0.9))), extra: Default::default() });
             let (rows, sum) = compute_task_metrics(&[hinted, info("X", Some("2026-11-23T12:00:00+09:00"))], &[link("h", "H", LinkSource::Llm), link("x", "X", LinkSource::Manual)], &f, &WorkHours::default());
             assert_eq!(rows[0].work_ms, Some(3.0 * 3_600_000.0));
             assert_eq!(rows[1].excluded, Some(Excluded::NoStart));

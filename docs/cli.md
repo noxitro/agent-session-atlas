@@ -22,14 +22,14 @@ bin\atlas.exe --help                  # 使い方
 | `export` | `build` に加えて、各セッションの記録(経過・消費)を `out/sessions/<id>.md` に書く。LLM での振り返り用(依頼文や応答がそのまま入るので、人に渡すなら中身を確かめてから。[outputs.md の「セッション記録」](outputs.md#セッション記録markdown))。指示文と skill の閲覧ページ `out/instructions.html` も作る。`--full` で解析用の全文記録([outputs.md](outputs.md#解析用の完全出力))。LLM は呼ばない |
 | `all` | `snapshot` → `extract` → `vcs` → `metrics` → `export` を順に実行する(コマンド省略時の既定) |
 | `bundle` | LLM に工数を判定させる評価バンドル `out/bundle/` を作る(LLM は呼ばない)。ZIP を渡せない相手用に、指示とパケット数件を 1 ファイルにまとめた `out/bundle/parts/part-<番号>.md` も書く。`--zip` を付けると `out/bundle.zip` にもまとめる。付けずに作り直すと、前に作った `out/bundle.zip` は消す(中身が今のバンドルと合わなくなるため。`--bundle` で別の場所に作ったときの `<dir>.zip` は消さず、古いことを知らせる) |
-| `judge import <ファイル>` | 外部の LLM で作った判定(JSON か、JSON を含む Markdown)を検証して `out/judgments.json` に取り込む |
+| `judge import <ファイル>` | 外部の LLM で作った判定(JSON か、JSON を含む Markdown)を検証して `out/judgments.json` に取り込む。1 件以上取り込めて集計の結果(`sessions.json`)があれば、レポートを作り直す(`export`。`tasks import` と同じ。設定のフォルダを使うときも同じ設定で作り直す) |
 | `judge m365` / `turns m365` / `tasks m365` `[--model <名前>] [--limit <ファイル数>] [--timeout <秒>]` | 開いている M365 Copilot のアプリ(Windows)を UI Automation で操作し、未判定の添付ファイル(`bundle` / `turns bundle` / `tasks bundle` で作ったもの)を 1 つずつ新しいチャットで送って、返答を取り込み、レポートに反映する。`--model` は M365 Copilot のモデルの選択の名前(既定 `Think Deeper`)、`--timeout` は 1 ファイルの待ち時間(既定 900 秒)。添付は OneDrive に入る([judge.md の「M365 Copilot のアプリを自動で操作する」](judge.md#m365-copilot-のアプリを自動で操作するwindows)) |
 | `tasks sync` / `tasks list` / `tasks link` | 管理ツールのタスク(設定の `tasks`。[README の「管理ツールのタスクと工数」](../README.md#管理ツールのタスクと工数任意))。`sync` は XML を読んで `atlas-notes/tasks.json` を更新し、機械の紐づけ(`atlas-notes/task-links.json`)を決め直す(レポートは作り直さない)。`list` はタスクの一覧(状態・完了を確認した時刻・紐づいたセッションの数。いくつかのタスクに紐づいたセッションは、それぞれのタスクに数える)を出す。`link` は機械の紐づけを決め直し、変わったら `export` でレポートを作り直す。1 つのセッションは、いくつかのタスクに紐づくことがある(10 個まで)。手で紐づけを決めるコマンドは無い(詳細ページの「変える…」で決める)。集計(`all`・`build`・`export`)のたびにも XML を読み、機械の紐づけを決め直す(LLM は使わない。`all` は `metrics` の前に行うので、初めての集計でも `--task` で絞れる) |
 | `tasks bundle [--session <id,...>] [--zip] [--per-part <n>]` / `tasks import <ファイル>` | 機械で紐づかなかったセッションの紐づけを外部の LLM に頼む([judge.md の 4](judge.md#4-管理ツールのタスクへの紐づけ))。`bundle` は機械の紐づけを決め直してから、紐づけの無いセッション(`--session` ならその中。手動・LLM・機械の紐づけのあるものは理由を出して入れない)を `out/task-bundle/` にまとめる(LLM は呼ばない。`--zip` で `out/task-bundle.zip` にも。`--per-part` の既定は 10。頼むセッションが無ければ、前の束と ZIP はそのまま残す)。`import` は返答を束の候補と照らして確かめ、`task-links.json` に紐づけの出所 LLM で書き、書いたセッションがあれば `export` でレポートを作り直す。形の合わない項目が 1 件でもあれば何も書かない。手動と、前に LLM で決めた紐づけは変えない(「どのタスクでもない」の答えは、タスクのある機械の紐づけも変えない) |
 | `serve` | `out/` をローカルサーバ(`127.0.0.1`)で配信してブラウザで開く。画面からメモを書け、集計し直す・判定の添付ファイルを作る・返答の取り込み・記録と全文記録の表示ができる([screen.md の「画面からの操作」](screen.md#画面からの操作))。ブラウザを閉じると止まる(画面から動かした処理の実行中は、終わるまで待ってから止まる)。`atlas.bat` はこれで終わる |
 | `open <フォルダ>` | いつもの集計(この PC のデータ → `out/`)とは別に、指定したフォルダを集計して(`all` と同じ手順)、そのフォルダのサーバで開く。画面の「別のフォルダを開く…」と同じ([screen.md の「別のフォルダを開く」](screen.md#別のフォルダを開く))。指定できるのは、アップロード先(全員の分)・その下の人ごとのフォルダ(その人の分)・プロジェクトのフォルダ・`~/.copilot` の形のフォルダ(下記「[別のフォルダを開く(open)](#別のフォルダを開くopen)」) |
 | `memo list` / `memo show <id>` / `memo set <id> <本文...>` / `memo set <id> --file <path>` / `memo remove <id>` | セッションごとのメモ(`atlas-notes/memos/<id>.md`)を一覧・表示・保存・削除する。id は先頭の数文字でよい。`remove` は画像を残す([screen.md の「セッションのメモ」](screen.md#セッションのメモ)) |
-| `turns bundle [--unjudged] [--zip]` / `turns import <ファイル>` | 依頼ごとの採用の判定([judge.md の 3](judge.md#3-依頼ごとの採用))。`bundle` は M365 Copilot などに添付する `<out>/turn-bundle/parts/` と、フォルダごと渡すときの塊(`chunks/`)・`INSTRUCTIONS.md`・`schema.json` を作る(LLM は呼ばない)。`--zip` で `<out>/turn-bundle.zip` にもまとめる(付けずに作り直すと、前の ZIP は消す)。`import` は返答(チャットの返答か、エージェントに書かせた `turn-judgments.json`)を `<out>/turn-judgments.json` に取り込む |
+| `turns bundle [--unjudged] [--zip]` / `turns import <ファイル>` | 依頼ごとの採用の判定([judge.md の 3](judge.md#3-依頼ごとの採用))。`bundle` は M365 Copilot などに添付する `<out>/turn-bundle/parts/` と、フォルダごと渡すときの塊(`chunks/`)・`INSTRUCTIONS.md`・`schema.json` を作る(LLM は呼ばない)。`--zip` で `<out>/turn-bundle.zip` にもまとめる(付けずに作り直すと、前の ZIP は消す)。`import` は返答(チャットの返答か、エージェントに書かせた `turn-judgments.json`)を `<out>/turn-judgments.json` に取り込み、1 件以上取り込めればレポートを作り直す(`export`) |
 
 前の版の `judge run`・`turns run`・`judge-flow`・`tasks link --llm`(このツールが LLM を呼んで判定する操作)は無くなりました(2026-11-23)。指定すると、代わりの手順を出して止まります(終了コード 2)。
 
@@ -61,10 +61,13 @@ bin\atlas.exe --help                  # 使い方
 | `--snapshot-prune` | `snapshot` / `all` / `export` で、前回 `--snapshot-all` で写したが今回は写さないものを消す(既定は残して `snapshot-manifest.json` の `extras.leftover` とログに日時を出す) |
 | `--temp-dir <dir>` | `extract` で、このフォルダ配下を「(一時フォルダ)」にまとめる(複数指定可)。指定すると既定の判定(`%TEMP%` と `AppData\Local\Temp`・`/tmp` のパターン)を使わず、挙げたフォルダだけを一時フォルダとみなす。このリポジトリ自体を一時フォルダ配下に置いて試すときや、別のマシンのデータを読むとき用 |
 | `--config <file>` | `extract`・`vcs`・`metrics`・`all`・`serve`・`open`・`tasks` で読む設定ファイル(`metrics` は管理ツールのタスクの表 `tasks.csv` の稼働時間帯に使う)(既定: 環境変数 `ATLAS_CONFIG`、無ければリポジトリ直下の `atlas.config.json`。下記「[wiki の指定](#wiki-の指定)」と「[アップロード先の指定](#アップロード先の指定)」)。`serve` は画面で決めたアップロード先をこのファイルに書く |
+| `--settings <dir>` | 設定のフォルダ([下記](#設定のフォルダ--settings))。`extract`・`vcs`・`metrics`・`build`・`export`・`all`・`bundle`・`turns`・`judge`・`serve`・`open`・`tasks` で使え(画面のジョブにも渡す)、`<dir>/atlas.config.json` を設定ファイルとして読む。その設定に `tasks` があれば、タスクの状態(`tasks.json`)と紐づけ(`task-links.json`)を `<dir>` に置く。`--config` とは一緒に使えない。開いたフォルダの出力先(`<out>-folders/<キー>/out`)を `--out` に指したときは、省いても `open` が使った設定のフォルダを使う |
 | `--vcs-mode <v>` | `vcs` / `all` で、比べる版をどこで見るか。`worktree`(既定。照合した時点の作業ツリーで、まだ取り込んでいない変更も含む)/ `committed`(最後に取り込んだ版。git は HEAD、svn は BASE、p4 は手元の版)/ `fixed`(セッションの終わりから決まった日数後の時点で取り込まれていた版。日数は設定の `vcs.lagDays`、既定 7)。設定の `vcs.mode` より優先する |
 | `-V`, `--version` | 版を出す(`atlas 0.1.3 (commit <作ったときのコミット>, code <版の目印>)`)。版はワークスペースの `Cargo.toml` の `version`(ビルドのときに環境変数 `ATLAS_VERSION` を渡せば、その版)。`scripts/ensure-atlas.ps1` が、置いてある実行ファイルを今のコミットから作ったかを、`commit` で確かめるのに使う(git が管理しているファイルを変えたまま作ったものは、コミットの後ろに `-dirty` が付き、同じとはみなさない。git で取得したフォルダでなければ版で) |
 
-`--limit` と `--timeout` は `judge m365`・`turns m365`・`tasks m365` で使います(`--timeout` は `skill-draft` でも使う)。`--backend` は `skill-draft` でだけ使います。`judge import`・`judge m365` は作ってある添付(`out/bundle`)を使うので、絞り込みのオプション(`--session`・`--project`・`--since`・`--client`・`--branch`・`--task`)を付けると止まります。絞るときは、先に `bundle` に付けて添付を作ります。`judge m365` では `--model` は M365 Copilot のモデルの選択の名前になります。
+`--limit` と `--timeout` は `judge m365`・`turns m365`・`tasks m365` で使います(`--timeout` は `skill-draft` でも使う)。`--backend` は `skill-draft` でだけ使います。`judge import`・`judge m365`・`turns import`・`turns m365` は、返答の全体か作ってある添付(`out/bundle`・`out/turn-bundle`)を使うので、絞り込みのオプション(`--session`・`--project`・`--since`・`--client`・`--branch`・`--task`。`import` では `--model` も)を付けると止まります。絞るときは、先に `bundle`・`turns bundle` に付けて添付を作ります。`tasks import`・`tasks m365` も同じく、絞り込みのオプション(`import` では `--model` も)を付けると、何をするか(返答の全体を取り込む・作ってある `out/task-bundle` を送る)と代わりの手順を出して止まります(`tasks bundle` は `--session` でだけ絞ります)。`judge m365`・`turns m365`・`tasks m365` では `--model` は M365 Copilot のモデルの選択の名前になります。
+
+取り込み(`judge import`・`turns import`・`tasks import`・`judge m365`・`turns m365`・`tasks m365`)の後のレポートの作り直し(`export`)は、絞り込みを付けず、すべてのセッションで、既定の記録の出し方(`--full`・`--tool-output`・`--max-chars` を付けない `export` と同じ)で作ります。全文の記録で作り直したいときは、取り込みの後に `export --full` などを実行します。作り直しに失敗したときは、取り込みは済んでいるので、エラーの後ろに「取り込みは済んでいます。bin\atlas.exe export でレポートを作り直してください」と出します。
 
 ## snapshot と extract が読むもの
 
@@ -112,9 +115,42 @@ bin\atlas.exe open --pick                         # フォルダを選ぶ画面�
 
 - **開くたびにフォルダを読み直し、変わっていたところだけ作り直します**。元のフォルダから手元へ写すところ(snapshot)は毎回行います(元が変わったかは、写してみないと分かりません。変わっていないファイルは写し直しません)。その後の extract・metrics・build は、前に集計したときから何も変わっていなければ省き、そのときのレポートをそのまま開きます(ログに「そのときのレポートを使います」と出ます)。作り直すのは、次のどれかが変わったときです: 写した複製(ファイルの名前・大きさ・更新日時)、`open` に渡した絞り込み、設定ファイル、atlas のコード、判定(`judgments.json`・`turn-judgments.json`)。レポート(`atlas.html`・`sessions.json`・`metrics.json`・`vcs-retention.json`)が前に集計したときのままでないとき(開いた画面で「集計し直す」や判定を動かした後など)も作り直します。必ず作り直したいときは `--rebuild` を付けるか、開いた画面で「集計し直す」を押します。使い回すのは、アップロードしたフォルダ(送った側が添えた記録だけで集計が決まるもの)だけです。`~/.copilot` の形のフォルダは、この PC のディスク(作業フォルダの VCS の状態など)も読んで集計するので、いつも作り直します。
 - そのフォルダのサーバがもう動いていれば(前に開いたタブを開いたままなど)、送り先を読み直してから(何も変わっていなければ前のレポートを使います)、動いているサーバの画面をブラウザで開きます。新しく開いたタブには新しい集計が出ます。前から開いていたタブは、再読み込みすると出ます。開いた画面で「集計し直す」を実行している最中なら、読み直さずに開きます(終わると画面に「新しい集計ができました」と出ます)。読み直せなかったときも、前の集計のまま開きます(理由は記録に出します)。同じ出力先に書く処理が動いている間は、始めずに理由を出します。
-- **使えるオプション**: `--pick` `--rebuild` `--port` `--no-open` `--config`、絞り込み(`--since` `--project` など。集計にそのまま渡します)、`--snapshot-all` `--snapshot-prune`。`--home`(開くフォルダは `open` の後ろに書きます)・`--judgments`・`--bundle` は使えません。
+- **設定のフォルダ**: 開いたフォルダから上へ探して `AtlasSettings/atlas.config.json` があれば、それで集計し、タスクを集計する側で紐づけます([下記](#設定のフォルダ--settings))。
+- **使えるオプション**: `--pick` `--rebuild` `--port` `--no-open` `--config` `--settings`、絞り込み(`--since` `--project` など。集計にそのまま渡します)、`--snapshot-all` `--snapshot-prune`。`--home`(開くフォルダは `open` の後ろに書きます)・`--judgments`・`--bundle` は使えません。
 - **開いた画面で「集計し直す」を押すと、同じフォルダを読み直します**(`open` に渡した絞り込みは引き継ぎません。`serve` と同じ)。
 - 開いたフォルダは `atlas.config.json` には書きません(覚えるのは `folder.json` だけ)。
+
+## 設定のフォルダ(--settings)
+
+チームの本番の置き方(共有の場所に、送り先 `SessionLog` と設定のフォルダ `AtlasSettings` を並べる。[README の「本番の置き方」](../README.md#本番の置き方sessionlog-と-atlassettings))で使います。設定のフォルダの名前は `AtlasSettings`(`crates/atlas-cli/src/settings_dir.rs` の `SETTINGS_DIR_NAME`)。
+
+```
+bin\atlas.exe open "\\server\share\SessionLog\alice"                      # 上へ探して \\server\share\AtlasSettings を使う
+bin\atlas.exe open "D:\logs\SessionLog" --settings "\\server\share\AtlasSettings"   # 別の場所の設定のフォルダを指す
+bin\atlas.exe tasks bundle --zip --out "out-folders\SessionLog-1a2b3c4d\out"           # 開いたフォルダの出力先に向けて(設定のフォルダは記録から)
+bin\atlas.exe tasks import reply.md --out "out-folders\SessionLog-1a2b3c4d\out"
+```
+
+**`open` が使う設定のフォルダ**は、次の順で決めます。
+
+1. `--settings <dir>` で指したもの(`<dir>/atlas.config.json` が無ければ止まります)。
+2. そのフォルダを前に開いたときに使ったもの(`folder.json` の `settings`)。その `atlas.config.json` が無くなっていれば、注意を出して次へ進みます。
+3. 開いたフォルダ F から、F・F の親・その親…と上がり、どこかの段 D で `D/AtlasSettings/atlas.config.json` があれば、その `AtlasSettings`(近いものが先。ドライブや共有の根まで上がります)。
+4. どれでも見つからなければ使いません(今までどおり。`--config` があればそれを読みます)。
+
+見つかったときは、`--config` と環境変数 `ATLAS_CONFIG` より先に使い、使った設定のフォルダを `folder.json` の `settings` に書きます(使わなかったときは消します)。`open` のログに「設定のフォルダ …(決め方)」と出ます。
+
+**設定のフォルダを使うときの集計**:
+
+- 集計(`open` が動かす extract・vcs・metrics・build と、画面のジョブ)は `<設定のフォルダ>/atlas.config.json` を読みます。中の相対パス(`tasks.file` など)は、設定ファイルのフォルダから見ます。画面の設定の欄(wiki・工程名)を変えると、この設定ファイルに書きます。
+- その設定に `tasks` があれば、タスクの状態(`tasks.json`)と紐づけ(`task-links.json`)は設定のフォルダに置きます。集計のたびに XML を読んで状態を更新し、機械の紐づけを決め直します(この PC の集計と同じ決まり)。書くときはファイルのロックを取って読み直すので、何人かの集計する人が同じ設定のフォルダを使えます。送った人が添えたタスクの記録(`atlas-session.json` の `tasks`)は使いません。
+- 設定に `tasks` が無ければ、タスクは今までどおり送った人の記録から作ります(読むだけ)。
+- 工数と依頼ごとの判定(`judgments.json`・`turn-judgments.json`)は、設定に `tasks` が無くても、いつも設定のフォルダに置き、集計する人のあいだで共有します(`--judgments` で指したときは、工数の判定はそのファイル)。取り込み(`judge import`・`turns import`・`judge m365`・`turns m365`・画面)はファイルのロックの中で読み直し、セッションごとに混ぜて書きます。`--unjudged` の束・レポート・タスクの工数も、この置き場の判定を使います。前に出力先にあった判定は、初めて使うときに混ぜて移し(共有の側を優先)、前のファイルを `<名前>.moved` に変えて、ログに 1 行出します。
+- 依頼ごとの判定の工程名(`phases`)と、`skill-draft` のモデル(`judgeModel`)も、設定のフォルダの `atlas.config.json` から読みます。
+- 画面はメモについて読むだけのままですが、タスクの紐づけは読むだけにしません: 「判定する…」の「タスクの紐づけ」(束は開いたフォルダの出力先の `task-bundle/`)、返答の取り込み、M365 Copilot の自動操作、詳細ページの手動の紐づけが使えます。取り込みは設定のフォルダの `task-links.json` に書き、レポートを作り直します。
+- `atlas open` は、設定のフォルダの XML・`tasks.json`・`task-links.json` の大きさと更新日時も、前に集計したときの入力の印(`built.json`)に入れます。ほかの集計する人が紐づけを変えていれば作り直します。
+
+**ほかのコマンド**(`tasks bundle` / `tasks import` / `tasks m365` / `tasks sync` / `tasks list` / `export` など)は、`--out` に開いたフォルダの出力先を指せば、`folder.json` の `settings` から同じ設定のフォルダを使います(`--settings` で指し直すこともできます)。`--settings` は開いたフォルダ以外の出力先にも使え、そのときもタスクの状態と紐づけは設定のフォルダに置きます。設定のフォルダの `atlas.config.json` が無い・読めないときは止まります(送った人の記録に黙って戻しません)。
 
 ## レポートのファイル
 

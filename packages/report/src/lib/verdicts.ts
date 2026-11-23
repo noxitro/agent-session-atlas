@@ -139,3 +139,53 @@ export function verdictAggregate(sessions: { turnRows?: TurnTuple[]; turnVerdict
 /** 作業の依頼のうち判定できたもの(判定不能・質問の扱いを除く)と、そのまま採用の割合の分母 */
 export const workDecided = (c: OutcomeCounts): number => c.byOutcome.as_is + c.byOutcome.fix_content + c.byOutcome.fix_style + c.byOutcome.rejected;
 export const questionDecided = (c: OutcomeCounts): number => c.byOutcome.helpful + c.byOutcome.follow_up + c.byOutcome.off_target;
+
+/**
+ * 依頼ごとの判定の割合(採用率・直しの割合・役に立った率など)を出す、分母の依頼の数の下限。これに届かない割合は「—」。
+ * 「採用(LLM の判定)」の表・人別の表・タスクの表(Rust の tasks::extras::VERDICT_RATE_MIN_TURNS)で同じ数にする。
+ * 「比べる」で工程どうしの割合を出す下限(COMPARE_MIN_TURNS)と同じ(表示の決まりで、どこかの環境の件数に合わせたものではない)
+ */
+export const VERDICT_RATE_MIN_TURNS = 5;
+
+/** 割合(分母が VERDICT_RATE_MIN_TURNS 件に届かなければ null) */
+export const verdictRate = (part: number, whole: number): number | null => (whole >= VERDICT_RATE_MIN_TURNS && whole > 0 ? part / whole : null);
+
+/** 人別の表に出す、依頼ごとの判定の値。割合は分母(判定できた作業の依頼)が min 件に届かなければ null、合わなかった点のいちばん多いものは判定した依頼が min 件に届かなければ null */
+export interface BucketVerdictView {
+  judged: number;
+  /** そのまま採用 ÷ 判定できた作業の依頼 */
+  adoptRate: number | null;
+  /** 直し(中身・体裁)÷ 判定できた作業の依頼 */
+  fixRate: number | null;
+  /** 合わなかった点のいちばん多いもの(同じ数なら MISMATCHES の順)と、その数。合わなかった点が 1 件も無ければ null */
+  topMismatch: { key: Mismatch; count: number } | null;
+}
+
+export function bucketVerdictView(v: { judged: number; workDecided: number; asIs: number; fix: number; byMismatch: Record<Mismatch, number> }, min: number = VERDICT_RATE_MIN_TURNS): BucketVerdictView {
+  const enough = v.workDecided >= min && v.workDecided > 0;
+  let top: BucketVerdictView['topMismatch'] = null;
+  for (const m of MISMATCHES) if (v.byMismatch[m] > 0 && (!top || v.byMismatch[m] > top.count)) top = { key: m, count: v.byMismatch[m] };
+  return { judged: v.judged, adoptRate: enough ? v.asIs / v.workDecided : null, fixRate: enough ? v.fix / v.workDecided : null, topMismatch: v.judged >= min ? top : null };
+}
+
+/** 1 セッションの依頼の上限(core の normalize の ANALYSIS_TURNS・判定の束の MAX_TURNS と同じ)。これより後の依頼は依頼ごとの記録が無く、判定の束にも入らない */
+export const TURN_LIMIT = 200;
+
+/**
+ * 上限を超えて、依頼ごとの記録と判定の束に入らなかった本体の依頼の数と、そのセッションの数。
+ * 集計のときに本体の依頼として数えたもの(analysis.turnsOverLimit)を足す。セッションの依頼の数(turns)からは数えない:
+ * turns にはサブエージェントの依頼も入り、DB だけのセッション(依頼ごとの記録が無く、束にも入らない)の依頼も入るため。
+ * 古い集計(turnsOverLimit の記録が無い)では 0 になる(集計し直すと出る)
+ */
+export function turnsOverLimit(sessions: readonly { analysis?: { turnsOverLimit?: number } }[]): { turns: number; sessions: number } {
+  let turns = 0;
+  let n = 0;
+  for (const s of sessions) {
+    const over = s.analysis?.turnsOverLimit ?? 0;
+    if (over > 0) {
+      turns += over;
+      n++;
+    }
+  }
+  return { turns, sessions: n };
+}

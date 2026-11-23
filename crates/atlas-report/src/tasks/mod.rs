@@ -3,6 +3,7 @@
 //! 送り先から集計したときは、送った人がセッションごとに添えたタスクの記録(atlas-session.json の task。sender.rs)から同じものを作る。
 //! 画面に埋め込む形は view.rs。LLM に紐づけを頼む束と返答の検証は atlas-judge の task_link.rs。
 
+pub mod extras;
 pub mod hours;
 pub mod links;
 pub mod metrics;
@@ -41,6 +42,8 @@ pub struct TaskSource {
     pub status: String,
     /// 完了とみなす状態(前後の空白を除き、大文字と小文字を区別せずに完全一致)
     pub done_status: Vec<String>,
+    /// 完了日時の項目(任意。id などと同じ書き方で、@ を付けると属性だけ)。読めれば、それを完了の時刻(記録)にする
+    pub done_at: Option<String>,
     pub work_hours: WorkHours,
 }
 
@@ -54,6 +57,7 @@ impl TaskSource {
             name: DEFAULT_NAME_FIELD.into(),
             status: DEFAULT_STATUS_FIELD.into(),
             done_status: DEFAULT_DONE_STATUS.iter().map(|s| s.to_string()).collect(),
+            done_at: None,
             work_hours: WorkHours::default(),
         }
     }
@@ -64,8 +68,19 @@ impl TaskSource {
         self.done_status.iter().any(|d| atlas_core::js::trim(d).to_lowercase() == s)
     }
 
-    /// 読み方の目印(同じ更新時刻の XML でも、読み方を変えたら読み直す)。ファイルの場所は入れない(stamp の path に別に持つ)
+    /// 読み方の目印(同じ更新時刻の XML でも、読み方を変えたら読み直す)。ファイルの場所は入れない(stamp の path に別に持つ)。
+    /// 完了日時の項目を指したときは、稼働時間帯も入れる(時刻の無い完了日の時刻が変わるので、読み直す)
     pub fn settings_key(&self) -> String {
+        self.key(true)
+    }
+
+    /// 稼働時間帯を除いた読み方の目印(完了かどうかの読み方。state.rs が「同じ読み方」かを比べるのに使う)。
+    /// 完了日時の項目を指さなければ settings_key と同じ
+    pub fn reading_key(&self) -> String {
+        self.key(false)
+    }
+
+    fn key(&self, with_work_hours: bool) -> String {
         use sha2::{Digest, Sha256};
         let mut h = Sha256::new();
         for part in [self.item.as_str(), &self.id, &self.name, &self.status] {
@@ -75,6 +90,16 @@ impl TaskSource {
         for d in &self.done_status {
             h.update(d.as_bytes());
             h.update([1u8]);
+        }
+        // 完了日時の項目は、指したときだけ入れる(指さない設定の目印は前の版と同じ。読み直しで完了の変化を見落とさないように)。
+        // 稼働時間帯も、時刻の無い完了日時の読み方を変えるので、そのときだけ入れる(with_work_hours のとき)
+        if let Some(d) = &self.done_at {
+            h.update([2u8]);
+            h.update(d.as_bytes());
+            if with_work_hours {
+                h.update([2u8]);
+                h.update(format!("{:?}/{}/{}", self.work_hours.days, self.work_hours.start_min, self.work_hours.end_min).as_bytes());
+            }
         }
         hex::encode(&h.finalize()[..8])
     }
@@ -91,7 +116,8 @@ pub fn task_links_path(notes: &Path) -> PathBuf {
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
-fn tmp_path(path: &Path) -> PathBuf {
+/// 書き込みの一時ファイル(`<path>.<pid>-<時刻>-<連番>.tmp`)。同じプロセスの別のスレッドや、同じ pid を使い回した別の PC のプロセスと重ならないように
+pub fn tmp_path(path: &Path) -> PathBuf {
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
     let mut s = path.as_os_str().to_owned();
     s.push(format!(".{}-{nanos:x}-{}.tmp", std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed)));

@@ -13,7 +13,7 @@ use crate::js::JsMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const SESSIONS_SCHEMA_VERSION: i64 = 19;
+pub const SESSIONS_SCHEMA_VERSION: i64 = 20;
 pub const METRICS_SCHEMA_VERSION: i64 = 6;
 
 // ---------- 入力(生データ) ----------
@@ -305,6 +305,10 @@ pub struct SessionAnalysis {
     /// 行数の上限を超えて残さなかった行の数(failures と一緒に持つ)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failures_dropped: Option<i64>,
+    /// 本体の依頼のうち、先頭 200 件の上限を超えて依頼ごとの記録(turnStats など)に入れなかったものの数。
+    /// サブエージェントの依頼と、DB の turns テーブルだけから数えた依頼は入れない。0 件・古い sessions.json(スキーマ 19 まで)には無い
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turns_over_limit: Option<i64>,
 }
 
 /// 失敗の台帳の 1 行の種類

@@ -56,7 +56,9 @@ pub fn run(o: &CliOptions, log: Log<'_>) -> Result<RunResult> {
     if o.command == "open" {
         return open::run_open(o, log, None);
     }
-    let p = paths_of(o);
+    let mut p = paths_of(o);
+    // 設定のフォルダ(--settings か、開いたフォルダの出力先の記録)があれば、その設定ファイルを読み、タスクの置き場も決める
+    let o = &crate::settings_dir::apply_settings(o, &mut p, log)?;
     let lock = if WRITES_OUT.contains(&o.command.as_str()) { Some(crate::jobs::acquire_out_lock(&p.out, &o.command, "cli")?) } else { None };
     let r = run_command(o, &p, log);
     if let Some(l) = lock {
@@ -65,27 +67,69 @@ pub fn run(o: &CliOptions, log: Log<'_>) -> Result<RunResult> {
     r
 }
 
-/// judge に、judge では効かない絞り込みを付けたときの知らせ(黙って添付の全体を扱わないように止める)
-fn ignored_filters_message(action: &str, flags: &[String]) -> String {
+/// judge・turns・tasks の import・m365 に、そこでは効かない絞り込みを付けたときの知らせ(黙って返答や添付の全体を扱わないように止める)
+pub(crate) fn ignored_filters_message(cmd: &str, action: &str, flags: &[String]) -> String {
     let list = flags.join(" ");
+    let (what, bundle, make) = match cmd {
+        "turns" => ("依頼", "out/turn-bundle", "turns bundle"),
+        "tasks" => ("セッションの紐づけ", "out/task-bundle", "tasks bundle"),
+        _ => ("セッション", "out/bundle", "bundle"),
+    };
     match action {
-        "import" => format!("{list} は judge import では使えません(返答に入っているセッションをすべて取り込みます)"),
-        _ => format!("{list} は judge {action} では効きません。送るのは、作ってある添付(out/bundle)のファイルです。\n絞り込むときは、先に bin\\atlas.exe bundle {list} --unjudged で添付を作ってから judge {action} を実行してください"),
+        "import" => format!("{list} は {cmd} import では使えません(返答に入っている{what}をすべて取り込みます)"),
+        // tasks bundle は --session だけで絞る(期間やプロジェクトでは絞らない)
+        _ if cmd == "tasks" => format!("{list} は {cmd} {action} では効きません。送るのは、作ってある添付({bundle})のファイルです。\nセッションを絞るときは、先に bin\\atlas.exe {make} --session <セッション id> で添付を作ってから {cmd} {action} を実行してください"),
+        _ => format!("{list} は {cmd} {action} では効きません。送るのは、作ってある添付({bundle})のファイルです。\n絞り込むときは、先に bin\\atlas.exe {make} {list} --unjudged で添付を作ってから {cmd} {action} を実行してください"),
     }
+}
+
+/// 取り込みの後にレポートを作り直す export の指定。取り込みのコマンドに付いた絞り込み(--since・--project・--client・--model・
+/// --branch・--session・--task)と記録の出し方(--full・--tool-output・--max-chars)は引き継がず、既定の出し方ですべてのセッションで作る
+/// (絞り込んだレポートで、前に作った全体のレポートを置き換えないように)。出力先・設定のフォルダ・判定のファイルは引き継ぐ
+pub(crate) fn export_after_import(o: &CliOptions) -> CliOptions {
+    CliOptions {
+        command: "export".into(),
+        since: None,
+        project: None,
+        client: None,
+        model: None,
+        branch: None,
+        sessions: None,
+        task: None,
+        tool_output: crate::args::ToolOutput::Fail,
+        max_chars: None,
+        full: false,
+        snapshot_all: false,
+        snapshot_prune: false,
+        judge: None,
+        turns: None,
+        tasks_cmd: None,
+        memo_cmd: None,
+        skill_draft: None,
+        ..o.clone()
+    }
+}
+
+/// 取り込みの後の作り直しに失敗したときに添える文
+pub(crate) const REBUILD_FAILED: &str = "取り込みは済んでいます。bin\\atlas.exe export でレポートを作り直してください";
+
+/// 取り込みの後の作り直し(export_after_import)。失敗したら、取り込みは済んでいることと、作り直し方を添えて返す
+pub(crate) fn rebuild_report(o: &CliOptions, p: &Paths, log: Log<'_>) -> Result<RunResult> {
+    run_command(&export_after_import(o), p, log).map_err(|e| anyhow::anyhow!("{e:#}\n{REBUILD_FAILED}"))
 }
 
 /// judge m365 / turns m365 / tasks m365: 開いている M365 Copilot のアプリを操作して未判定の添付ファイルを送り(m365.rs)、
 /// 1 件でも取り込めたらレポートに反映する(export)。送れなかった・取り込めなかったファイルがあれば、反映した後に失敗にする
 pub(crate) fn run_m365_command(o: &CliOptions, p: &Paths, target: ChatTarget, model: Option<&str>, limit: Option<u64>, timeout_sec: u64, log: Log<'_>) -> Result<RunResult> {
     let s = run_m365_judge(
-        &M365Paths { out: p.out.clone(), notes: p.notes.clone(), sessions: p.sessions.clone(), judgments: p.judgments.clone(), turn_judgments: p.turn_judgments.clone(), turn_bundle: p.turn_bundle.clone() },
+        &M365Paths { out: p.out.clone(), notes: p.tasks_dir.clone(), sessions: p.sessions.clone(), judgments: p.judgments.clone(), turn_judgments: p.turn_judgments.clone(), turn_bundle: p.turn_bundle.clone(), settings: p.settings.clone() },
         &M365Options { target, model: model.unwrap_or(M365_DEFAULT_MODEL).to_string(), limit, timeout_sec, retries: None },
         &|m: &str| log(m),
         &powershell_driver,
         cfg!(windows) || crate::m365::fake_driver().is_some(),
         &std::thread::sleep,
     )?;
-    let build = if s.imported > 0 { run_command(&CliOptions { command: "export".into(), model: None, judge: None, turns: None, tasks_cmd: None, sessions: None, task: None, ..o.clone() }, p, log)?.build } else { None };
+    let build = if s.imported > 0 { rebuild_report(o, p, log)?.build } else { None };
     if !s.failed.is_empty() {
         anyhow::bail!(
             "M365 Copilot で判定できなかったファイルが {} 個あります: {}",
@@ -94,6 +138,15 @@ pub(crate) fn run_m365_command(o: &CliOptions, p: &Paths, target: ChatTarget, mo
         );
     }
     Ok(RunResult { build })
+}
+
+/// judge import・turns import の後に、1 件以上取り込めて集計の結果(sessions.json)があれば、レポートを作り直す(export。tasks import と同じ)。
+/// 設定のフォルダを使うときも、同じ設定(o と p は当てた後のもの)で作り直す。絞り込みと記録の出し方は引き継がない(export_after_import)
+fn rebuild_after_import(o: &CliOptions, p: &Paths, imported: usize, log: Log<'_>) -> Result<RunResult> {
+    if imported == 0 || !p.sessions.exists() {
+        return Ok(RunResult::default());
+    }
+    rebuild_report(o, p, log)
 }
 
 pub fn run_command(o: &CliOptions, p: &Paths, log: Log<'_>) -> Result<RunResult> {
@@ -125,22 +178,25 @@ pub fn run_command(o: &CliOptions, p: &Paths, log: Log<'_>) -> Result<RunResult>
         }
         "turns" => {
             let t = o.turns.as_ref().ok_or_else(|| anyhow::anyhow!("turns の操作がありません"))?;
+            if !t.ignored_filters.is_empty() {
+                anyhow::bail!("{}", ignored_filters_message("turns", &t.action, &t.ignored_filters));
+            }
             if t.action == "m365" {
                 return run_m365_command(o, p, ChatTarget::Turns, t.model.as_deref(), t.limit, t.timeout_sec, log);
             }
-            turns::run_turns(p, &metrics::SessionFilter { model: None, ..metrics::SessionFilter::from_cli(o) }, t, o.zip, log)?;
-            Ok(RunResult::default())
+            let imported = turns::run_turns(p, &metrics::SessionFilter { model: None, ..metrics::SessionFilter::from_cli(o) }, t, o.zip, log)?;
+            rebuild_after_import(o, p, imported, log)
         }
         "judge" => {
             let j = o.judge.as_ref().ok_or_else(|| anyhow::anyhow!("judge の操作がありません"))?;
             if !j.ignored_filters.is_empty() {
-                anyhow::bail!("{}", ignored_filters_message(&j.action, &j.ignored_filters));
+                anyhow::bail!("{}", ignored_filters_message("judge", &j.action, &j.ignored_filters));
             }
             if j.action == "m365" {
                 return run_m365_command(o, p, ChatTarget::Effort, j.model.as_deref(), j.limit, j.timeout_sec, log);
             }
-            judge::run_judge_import(p, j, log)?;
-            Ok(RunResult::default())
+            let imported = judge::run_judge_import(p, j, log)?;
+            rebuild_after_import(o, p, imported, log)
         }
         "tasks" => tasks::run_tasks_command(o, p, log),
         "memo" => {
@@ -149,7 +205,7 @@ pub fn run_command(o: &CliOptions, p: &Paths, log: Log<'_>) -> Result<RunResult>
             Ok(RunResult::default())
         }
         "serve" => {
-            serve::run_serve(p, serve::ServeCli { port: o.port, open: o.open, config: o.config.clone(), home: None, reports: None }, log)?;
+            serve::run_serve(p, serve::ServeCli { port: o.port, open: o.open, config: o.config.clone(), home: None, reports: None, settings: p.settings.clone() }, log)?;
             Ok(RunResult::default())
         }
         "skill-draft" => {

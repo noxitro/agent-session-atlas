@@ -14,11 +14,13 @@
   bundle     LLM に工数を判定させる評価バンドルを <out>/bundle に作る。ZIP を渡せない相手用に、
              指示とパケット数件を 1 ファイルにまとめた <out>/bundle/parts/part-<番号>.md も書く
   judge import <ファイル>
-             外部の LLM で作った判定(JSON か、JSON を含む Markdown)を検証して judgments.json に取り込む
+             外部の LLM で作った判定(JSON か、JSON を含む Markdown)を検証して judgments.json に取り込み、
+             取り込めたらレポートを作り直す
   turns bundle [--unjudged] [--zip] / turns import <ファイル>
              依頼ごとの判定(採用・依頼の種類・合わなかった点・普段の工程名)。bundle は M365 Copilot などに添付する
              <out>/turn-bundle/parts/ と、フォルダごと渡すときの chunks/・INSTRUCTIONS.md を作る(--zip で
-             <out>/turn-bundle.zip にもまとめる)。import は返答を <out>/turn-judgments.json に取り込む
+             <out>/turn-bundle.zip にもまとめる)。import は返答を <out>/turn-judgments.json に取り込み、
+             取り込めたらレポートを作り直す
   judge m365 / turns m365 / tasks m365 [--model <M365 のモデル>] [--limit <ファイル数>] [--timeout <秒>]
              開いている M365 Copilot のアプリ(Windows)を UI Automation で操作し、未判定の添付ファイル(bundle・turns bundle・
              tasks bundle で作ったもの)を 1 つずつ新しいチャットで送って、返答を取り込み、レポートに反映する。モデルの既定は
@@ -73,6 +75,10 @@
   --snapshot-prune   snapshot: 前回 --snapshot-all で写したが今回は写さないものを消す(既定は残して manifest に日時を出す)
   --config <file>    extract・vcs・metrics・all・serve・open・tasks: 設定ファイル(wiki の vault・アップロード先・タスクの指定)の場所
                      (既定: 環境変数 ATLAS_CONFIG、無ければリポジトリ直下の atlas.config.json)
+  --settings <dir>   extract・vcs・metrics・build・export・all・bundle・turns・judge・serve・open・tasks: 設定のフォルダ(共有の AtlasSettings)。
+                     <dir>\atlas.config.json を読み、その設定に tasks があればタスクの状態と紐づけを <dir> に置く。
+                     open は省いても、前に使ったものか、開いたフォルダから上へ探した AtlasSettings を使う。
+                     開いたフォルダの出力先を --out に指したときは、省いても open が使ったものを使う
   --vcs-mode <v>     vcs・all: 比べる版をどこで見るか。worktree(既定、今の作業ツリー)/ committed(最後に取り込んだ版)/
                      fixed(セッションの終わりから決まった日数後の版。日数は設定の vcs.lagDays、既定 7)
   -h, --help         この説明を出す

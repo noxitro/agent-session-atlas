@@ -227,7 +227,14 @@ export interface SessionSummary {
   /** Phase 12: 注入された指示文の版 [contentHash, 文字数, 注入回数] */
   instructionVersions: [hash: string, chars: number, injections: number][];
   /** Phase 12: 手戻り・失敗の連続(改善点の分析。ターンごとの列と依頼文は埋め込まない) */
-  analysis: { filesReedited: number; extraEdits: number; maxConsecutiveFailures: number; turns: number };
+  analysis: {
+    filesReedited: number;
+    extraEdits: number;
+    maxConsecutiveFailures: number;
+    turns: number;
+    /** 本体の依頼のうち、先頭 200 件の上限を超えて依頼ごとの記録と判定の束に入らなかったものの数(sessions.json の analysis.turnsOverLimit。0 件・古い記録では無い) */
+    turnsOverLimit?: number;
+  };
   /** 依頼(ターン)ごとの工程・種類・詰まり(lib/turns.ts の TurnTuple)。ターンの記録が無いセッション・古い埋め込みには無い */
   turnRows?: TurnTuple[];
   /** テストの結果の要約。テストの実行が無いセッション・古い埋め込みには無い */
@@ -323,8 +330,15 @@ export interface ReportData {
 /** 紐づけの出所(機械・LLM・手動) */
 export type TaskLinkSource = 'machine' | 'llm' | 'manual';
 
+/** 完了の時刻の出所(記録: XML の完了日時・観測: 完了を最初に見た書き出しの時刻) */
+export type TaskDoneAtSource = 'recorded' | 'observed';
+export interface TaskDoneAtCounts {
+  recorded: number;
+  observed: number;
+}
+
 /** 比べられるタスクから外した理由 */
-export type TaskExcluded = 'notDone' | 'doneUnobserved' | 'afterDone' | 'noStart' | 'unjudged' | 'lowConfidence';
+export type TaskExcluded = 'notDone' | 'doneUnobserved' | 'afterDone' | 'noStart' | 'noWorkHours' | 'unjudged' | 'lowConfidence';
 
 /** タスク 1 件の値(Rust の tasks::metrics::TaskRow。画面は出すだけ) */
 export interface TaskRow {
@@ -334,8 +348,12 @@ export interface TaskRow {
   done: boolean;
   /** 完了を確認した時刻(完了を最初に見た XML の更新時刻) */
   doneAt: string | null;
-  /** 未完了から完了に変わるのを見た(初めて見たときに完了していたら false。工数を数えない) */
+  /** 完了の時刻が分かる(未完了から完了に変わるのを見たか、XML に完了日時の記録があった。分からなければ工数を数えない) */
   doneObserved: boolean;
+  /** 完了の時刻の出所(recorded: XML の完了日時。observed: 完了を最初に見た書き出しの時刻)。未完了なら null。古い埋め込みには無い */
+  doneAtSource?: TaskDoneAtSource | null;
+  /** 記録の完了日時が日付だけのときの、暦の日付の文字("2026-11-20"。画面はこれをそのまま出す)。doneAt は、集計した PC の時間帯でのその日の稼働時間帯の終わり。そうでなければ無い */
+  doneDate?: string;
   /** 最後に読んだ XML に無かった */
   missing: boolean;
   /** 紐づいたセッションのうち最も早い開始(完了を確認した時刻より後に始まったセッションは使わない) */
@@ -357,14 +375,50 @@ export interface TaskRow {
   links: { machine: number; llm: number; manual: number };
   comparable: boolean;
   excluded: TaskExcluded | null;
+  /**
+   * 詰まりを見る列(Rust の tasks::extras。紐づいたセッションすべてを 1 つずつ数え、等分しない)。古い埋め込みには無い。
+   * people: 人の記録のあるセッションの人の数(どのセッションにも人の記録が無ければ null)
+   */
+  people?: number | null;
+  /** 主なモデル(紐づいたセッションの本体のリクエストがいちばん多いモデル)と、その割合(0〜1)。記録が無ければ null */
+  mainModel?: string | null;
+  mainModelShare?: number | null;
+  /** ツールの失敗・拒否・中断・文脈圧縮の数 */
+  friction?: TaskFriction;
+  /** 依頼ごとの判定(LLM の推定)。判定した依頼が無ければ null */
+  verdicts?: TaskVerdicts | null;
+}
+
+export interface TaskFriction {
+  toolFailures: number;
+  aborts: number;
+  compactions: number;
+}
+
+/** タスクの依頼ごとの判定。割合(0〜1)は分母(直しと不採用は判定できた作業の依頼、的外れは判定できた質問)が TaskSummary.verdictMin に届かなければ null */
+export interface TaskVerdicts {
+  judged: number;
+  workDecided: number;
+  questionDecided: number;
+  fix: number;
+  rejected: number;
+  offTarget: number;
+  fixRate: number | null;
+  rejectedRate: number | null;
+  offTargetRate: number | null;
 }
 
 /** タスクの合計(比べられるタスクだけ) */
 export interface TaskSummary {
   tasks: number;
   doneTasks: number;
+  /** 完了したタスク(doneTasks)の、完了の時刻の出所ごとの数。古い埋め込みには無い */
+  doneSources?: TaskDoneAtCounts;
   included: number;
-  excluded: { notDone: number; doneUnobserved: number; afterDone: number; noStart: number; unjudged: number; lowConfidence: number };
+  /** 比べられるタスク(included)の、完了の時刻の出所ごとの数。古い埋め込みには無い */
+  includedSources?: TaskDoneAtCounts;
+  /** noWorkHours は古い埋め込みには無い(0 として読む) */
+  excluded: { notDone: number; doneUnobserved: number; afterDone: number; noStart: number; noWorkHours?: number; unjudged: number; lowConfidence: number };
   workMs: number;
   humanHours: number;
   aiActiveMs: number;
@@ -374,6 +428,8 @@ export interface TaskSummary {
   /** AI を使わなかった場合 ÷ AI を使った場合。比べられるタスクが ratioMin に届かなければ null */
   ratio: number | null;
   ratioMin: number;
+  /** タスクごとの依頼ごとの判定の割合を出す、分母の依頼の数の下限(lib/compare.ts の COMPARE_MIN_TURNS と同じ数)。古い埋め込みには無い */
+  verdictMin?: number;
 }
 
 export interface TaskLinkView {

@@ -1,7 +1,7 @@
 // 管理ツールのタスクの絞り込み(filter.ts の task)と、表示の言葉・一覧の「タスク」の欄(lib/tasks.ts)
 import { describe, expect, it } from 'vitest';
 import { applyFilter, decodeFilter, emptyFilter, encodeFilter, matchesTask, NO_TASK, taskOf, taskOptions } from '../src/lib/filter.ts';
-import { hours, linkCounts, linkTaskIds, msHours, sortByTask, TASK_CELL_SHOWN, taskCell, workHoursText } from '../src/lib/tasks.ts';
+import { doneAtText, frictionText, frictionTotal, hours, linkCounts, linkTaskIds, msHours, rateText, sortByTask, TASK_CELL_SHOWN, TASK_EXCLUDED, taskCell, taskExcludedText, taskIncludedNote, verdictBreakdown, workHoursText } from '../src/lib/tasks.ts';
 import type { SessionSummary, TaskLinkView } from '../src/lib/types.ts';
 
 describe('タスクの絞り込み', () => {
@@ -109,6 +109,15 @@ describe('一覧の「タスク」の欄', () => {
 });
 
 describe('タスクの表示の言葉', () => {
+  it('日付だけの完了日は、埋め込みの日付の文字をそのまま出す(doneAt から日付に戻さないので、見る PC の時間帯でずれない)', () => {
+    // doneAt は集計した PC の時間帯での、その日の稼働時間帯の終わり。どの時間帯で見ても、日付は書いた文字のまま
+    expect(doneAtText({ doneAt: '2026-11-20T09:00:00.000Z', doneDate: '2026-11-20' })).toBe('2026-11-20');
+    expect(doneAtText({ doneAt: '2026-11-20T23:30:00.000Z', doneDate: '2026-11-20' })).toBe('2026-11-20');
+    // 時刻つきの完了は日時(この PC の時間帯)。完了していなければ「—」
+    expect(doneAtText({ doneAt: null })).toBe('—');
+    expect(doneAtText({ doneAt: '2026-11-20T09:00:00.000Z' })).toMatch(/^2026-11-2\d \d{2}:\d{2}$/);
+  });
+
   it('稼働時間帯は続いた曜日を「〜」でつなぎ、時の先頭の 0 を落とす', () => {
     expect(workHoursText({ days: [1, 2, 3, 4, 5], start: '09:00', end: '18:00' })).toBe('月〜金 9:00〜18:00');
     expect(workHoursText({ days: [1, 3, 5], start: '10:30', end: '19:00' })).toBe('月・水・金 10:30〜19:00');
@@ -123,5 +132,22 @@ describe('タスクの表示の言葉', () => {
   it('紐づけの出所は 0 のものを出さない', () => {
     expect(linkCounts({ machine: 2, llm: 0, manual: 1 })).toBe('機械 2・手動 1');
     expect(linkCounts({ machine: 0, llm: 0, manual: 0 })).toBe('');
+  });
+  it('比べられる完了タスクの注記(タスクの節と表紙で同じ文): 紐づいたタスクの数と、比べないものを理由の順に(0 のものは出さない)', () => {
+    const none = { notDone: 0, doneUnobserved: 0, afterDone: 0, noStart: 0, unjudged: 0, lowConfidence: 0 };
+    expect(taskIncludedNote({ tasks: 3, excluded: { ...none, lowConfidence: 1, notDone: 2 } })).toBe('セッションが紐づいたタスク 3 件のうち。比べないもの: 未完了 2・確度が低い 1');
+    expect(taskIncludedNote({ tasks: 0, excluded: none })).toBe('セッションが紐づいたタスク 0 件のうち。比べないものはありません');
+    expect(taskExcludedText({ ...none, unjudged: 1200 })).toBe('判定なし 1,200');
+    // 稼働時間帯に重ならない(工数が 0 時間)は、開始が分からないの後・判定なしの前。古い埋め込み(数が無い)は 0 として読む
+    expect(taskExcludedText({ ...none, noWorkHours: 2, unjudged: 1, noStart: 1 })).toBe('開始が分からない 1・稼働時間帯に重ならない 2・判定なし 1');
+    expect(TASK_EXCLUDED.indexOf('noWorkHours')).toBe(TASK_EXCLUDED.indexOf('noStart') + 1);
+  });
+  it('詰まりの列の言葉: 摩擦の内訳と合計、依頼の判定の数と割合(下限に届かない割合は —)', () => {
+    expect(frictionText({ toolFailures: 3, aborts: 1, compactions: 0 })).toBe('失敗・拒否 3・中断 1・圧縮 0');
+    expect(frictionTotal({ friction: { toolFailures: 3, aborts: 1, compactions: 2 } })).toBe(6);
+    expect(frictionTotal({})).toBeNull();
+    expect(rateText(null)).toBe('—');
+    expect(rateText(1 / 3)).toBe('33%');
+    expect(verdictBreakdown({ judged: 9, workDecided: 6, questionDecided: 2, fix: 2, rejected: 1, offTarget: 1, fixRate: 2 / 6, rejectedRate: 1 / 6, offTargetRate: null })).toBe('直し 2(33%)・不採用 1(17%)・的外れ 1(—)');
   });
 });

@@ -373,6 +373,45 @@ fn over_200_requests_attach_201st_as_reference() {
     assert!(!last.contains("次の依頼はありません"));
 }
 
+/// 上限を超えた依頼の数は、集計のときに本体の依頼として数えたもの(サブエージェントの user.message は入れない)。
+/// 束の overLimit は、束に依頼を入れたセッションの分だけ(本文の無いセッション・DB だけのセッションは入れない)
+#[test]
+fn over_limit_counts_main_turns_of_bundled_sessions() {
+    let d = tempfile::tempdir().unwrap();
+    let snap = d.path().join("snapshot");
+    // 本体の依頼 203 件。各依頼にサブエージェントの user.message(agentId つき)を 1 件ずつ足す
+    let mut events = vec![ev("session.start", json!({ "context": { "cwd": "X:\\p" } }), &ts(0))];
+    for i in 1..=203usize {
+        let b = (i * 1000) as i64;
+        events.push(ev("user.message", json!({ "content": format!("依頼 {i} の本文") }), &ts(b)));
+        events.push(CopilotEvent { agent_id: Some(json!("sub-1")), ..ev("user.message", json!({ "content": "サブエージェントへの依頼" }), &ts(b + 10)) });
+        events.push(ev("assistant.message", json!({ "content": format!("応答 {i}") }), &ts(b + 100)));
+    }
+    let dir = snap.join("session-state").join("big");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("events.jsonl"), events.iter().map(|e| serde_json::to_string(e).unwrap()).collect::<Vec<_>>().join("\n")).unwrap();
+    let big = normalize("big", None, events);
+    // 依頼の数(turns)にはサブエージェントの分も入るので、turns − 200 では数えない
+    assert!(big.turns > 400, "{}", big.turns);
+    assert_eq!(big.analysis.turns_over_limit, Some(3));
+    assert_eq!(big.analysis.turn_stats.as_ref().unwrap().len(), 200);
+    // 上限に届かないセッションは記録しない
+    let small = session_with_turns(&snap, "small", 8, true);
+    assert_eq!(small.analysis.turns_over_limit, None);
+    // 本文(events.jsonl)の無いセッションは束に入らないので、上限を超えた依頼があっても数えない
+    let mut gone = session_with_turns(&snap, "gone", 4, false);
+    std::fs::remove_dir_all(snap.join("session-state").join("gone")).unwrap();
+    gone.analysis.turns_over_limit = Some(50);
+    let tb = d.path().join("tb");
+    let m = build_turn_bundle(&[&big, &small, &gone], &turn_opts(&tb, &snap, phases())).unwrap();
+    assert_eq!(m.skipped.len(), 1);
+    assert_eq!(m.over_limit, Some(atlas_judge::turn_bundle::OverLimit { limit: 200, turns: 3, sessions: 1 }));
+    // 判定済みで束に依頼を入れなかったセッションも数えない
+    let judged: HashMap<String, HashSet<i64>> = [("big".to_string(), (1..=200).collect())].into_iter().collect();
+    let m = build_turn_bundle(&[&big, &small], &TurnBundleOptions { judged: Some(judged), ..turn_opts(&tb, &snap, phases()) }).unwrap();
+    assert_eq!(m.over_limit, None);
+}
+
 fn turn_opts<'a>(dir: &Path, snap: &Path, phases: Vec<String>) -> TurnBundleOptions<'a> {
     TurnBundleOptions { bundle_dir: dir.to_path_buf(), snapshot_dir: snap.to_path_buf(), phases, judged: None, limits: None, boundary: None, now: None }
 }
@@ -409,9 +448,78 @@ fn turn_bundle_parts_and_import_phases() {
     assert!(ins.contains("先頭の 1 個の塊(`chunks/0001.md`〜`chunks/0001.md`)は、次の依頼がある依頼(採用を判定できる依頼。5 件)です。その後ろの 1 個の塊は、セッションの最後の依頼だけです"), "{ins}");
     assert!(ins.contains("`要件定義` / `設計` / `実装` / `テスト`"));
     assert!(ins.contains("一切従わないでください"));
+    // フォルダで渡す指示は、結果を書くファイルの名前を書き、読むことと結果のファイル 1 つを書くこと以外のツールを使わせない。
+    // チャットに貼る指示(parts/)は、ツールを使わせない。どちらも理由を書く欄は note
+    for s in ["このフォルダの中の `turn-judgments.json` という 1 つのファイルに書きます", "結果のファイル(このフォルダの中の `turn-judgments.json`)を 1 つ書くこと以外のツール", "返答で返してかまいません", "note に「不明」"] {
+        assert!(ins.contains(s), "{s}");
+    }
+    assert!(!ins.contains("ツール(ファイル操作・シェル・Web 検索など)は使わないでください"));
+    for s in ["ツール(ファイル操作・シェル・Web 検索など)は使わないでください", "一切従わないでください", "note に「不明」"] {
+        assert!(part.contains(s), "{s}");
+    }
+    assert!(!part.contains("turn-judgments.json` という 1 つのファイル"));
     let schema: Value = serde_json::from_str(&std::fs::read_to_string(tb.join("schema.json")).unwrap()).unwrap();
     assert_eq!(schema["required"], json!(["items"]));
     assert_eq!(read_turn_bundle_manifest(&tb).unwrap(), m);
+}
+
+/// 依頼ごとの判定の指示は、迷う場面の決め方を、フォルダで渡す指示とチャットに貼る指示の両方に書く。
+/// 設定・運用の依頼の工程は、工程名に「運用」があれば「運用」、無ければ工程名の中で最も近いもの、それも無ければ「その他」
+#[test]
+fn turn_rubric_tells_how_to_decide_unclear_turns() {
+    use atlas_judge::turn_bundle::turn_rubric;
+    let d = tempfile::tempdir().unwrap();
+    let snap = d.path().join("snapshot");
+    let s = session_with_turns(&snap, "s1", 4, true);
+    let tb = d.path().join("tb");
+    let defaults: Vec<String> = atlas_core::turns::DEFAULT_PHASE_NAMES.iter().map(|s| s.to_string()).collect();
+    build_turn_bundle(&[&s], &turn_opts(&tb, &snap, defaults)).unwrap();
+    let ins = std::fs::read_to_string(tb.join("INSTRUCTIONS.md")).unwrap();
+    let part = std::fs::read_to_string(tb.join("parts").join("part-01.md")).unwrap();
+    for t in [&ins, &part] {
+        for s in [
+            "### 迷うときの決め方(上の分類の意味は変えません)",
+            "次の依頼の文が「(本文なし)」のとき、この依頼の応答が「(応答の記録なし)」のとき、AI の最後の応答が途中経過だけ",
+            "outcome を unknown にし、confidence を低く(0.3 以下)します",
+            "kind は文の形ではなく意図で決めます",
+            "直前の AI の成果を直させる意図なら fix、相談・情報を求める意図なら question",
+            "同じ話を深掘りする追加の質問は follow_up(mismatch は null)",
+            "回答が的外れで聞き直したときは off_target(mismatch を付ける)",
+            "次の依頼が承認だけ(「承認」「OK」など)のときは as_is",
+            "直させた成果を出した依頼(直しを求める依頼の 1 つ前の依頼)を fix_content",
+            "次の依頼が「再開」「続けて」だけのときは、この依頼の outcome は unknown",
+            "ツールや環境の設定・運用(エージェントやエディタの設定、ビルドや実行の環境、権限、認証など)の依頼は `運用`(`その他` にはしません)",
+            "`要件定義` は、作るものの要件・仕様を決める依頼だけにします",
+        ] {
+            assert!(t.contains(s), "{s}");
+        }
+    }
+    // 結果のファイルは手で書いてよい(フォルダで渡すときだけ。チャットに貼る指示はファイルを書かない)
+    assert!(ins.contains("`turn-judgments.json` は、判定しながら手で書いてかまいません"));
+    assert!(!part.contains("手で書いてかまいません"));
+    // 工程名を変えたとき: 「運用」が無ければ、いちばん近い工程名(その名前を文に入れる)。それも無ければ「その他」
+    use atlas_judge::turn_bundle::{ops_phase_of, OpsPhase};
+    let names = |xs: &[&str]| -> Vec<String> { xs.iter().map(|s| s.to_string()).collect() };
+    let near = names(&["設計", "実装", "環境構築", "その他"]);
+    assert_eq!(ops_phase_of(&near), OpsPhase::Near("環境構築".into()));
+    let r = turn_rubric(&near);
+    assert!(r.contains("の依頼は `環境構築`(工程名に「運用」が無いため、いちばん近い工程名にします。`その他` にはしません)"), "{r}");
+    // 近さは語の順(保守が環境より近い)。英字は大文字・小文字を区別しない
+    assert_eq!(ops_phase_of(&names(&["環境", "保守・改善"])), OpsPhase::Near("保守・改善".into()));
+    assert_eq!(ops_phase_of(&names(&["Design", "DevOps"])), OpsPhase::Near("DevOps".into()));
+    assert_eq!(ops_phase_of(&names(&["運用", "保守"])), OpsPhase::Ops);
+    // 「構築」「管理」「準備」は、ほかの工程の名前にも入るので、含むだけでは近いとみなさない(「運用管理」は名前ごと見る。「環境構築」「環境準備」は「環境」を含むので近い語で選ばれる)
+    assert_eq!(ops_phase_of(&names(&["設計・構築", "進捗管理", "資料準備", "その他"])), OpsPhase::Other);
+    assert_eq!(ops_phase_of(&names(&["設計", "品質管理", "運用管理"])), OpsPhase::Near("運用管理".into()));
+    assert_eq!(ops_phase_of(&names(&["構築", "管理", "準備"])), OpsPhase::Undecided);
+    let other = names(&["設計", "実装", "その他"]);
+    assert_eq!(ops_phase_of(&other), OpsPhase::Other);
+    let r = turn_rubric(&other);
+    assert!(r.contains("の依頼は `その他`(工程名に「運用」も、それに近い工程名も無いため)"), "{r}");
+    assert!(r.contains("要件・仕様を決める工程には、設定・運用の話を入れません"));
+    assert_eq!(ops_phase_of(&phases()), OpsPhase::Undecided);
+    let r = turn_rubric(&phases());
+    assert!(r.contains("の依頼は 上の工程名のうち最も近いもの(工程名に「運用」も「その他」も、それに近い工程名も無いため)"), "{r}");
 }
 
 /// ZIP の中の名前と中身(末尾のレコードから中央ディレクトリをたどる)

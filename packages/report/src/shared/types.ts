@@ -26,7 +26,8 @@ import type { AtlasBuild, FolderUpload } from './atlas-version.ts';
 // 17: exec.mainModelEfforts(本体のリクエストだけの モデル別 × 推論強度別。サブエージェントを除く)
 // 18: analysis.failures・failuresDropped(失敗の台帳: ツールの失敗と拒否を 1 件 1 行で)・tools.resultsByModel・agents[].prompt
 // 19: tests(テストの実行ファイルが書いた印つきの 1 行 JSON と、実行ごとの推移。印の行があるセッションだけ)・source.wikis(参照を数えた vault の数)
-export const SESSIONS_SCHEMA_VERSION = 19;
+// 20: analysis.turnsOverLimit(本体の依頼のうち、先頭 200 件の上限を超えて依頼ごとの記録に入れなかったものの数)
+export const SESSIONS_SCHEMA_VERSION = 20;
 // 5: turns(依頼単位の工程 × 詰まり・依頼の種類の集計)
 // 6: tools.results[].causes(ツールの失敗の要因別の回数)
 export const METRICS_SCHEMA_VERSION = 6;
@@ -221,6 +222,11 @@ export interface SessionAnalysis {
   failures?: ToolFailure[];
   /** 行数の上限を超えて残さなかった行の数 */
   failuresDropped?: number;
+  /**
+   * 本体の依頼のうち、先頭 200 件の上限を超えて依頼ごとの記録(turnStats など)に入れなかったものの数。
+   * サブエージェントの依頼と、DB の turns テーブルだけから数えた依頼は入れない。0 件・古い sessions.json(スキーマ 19 まで)には無い
+   */
+  turnsOverLimit?: number;
 }
 
 /** 失敗の後の呼び出しの結果(unknown: complete が無い・success が真偽値でない) */

@@ -3,6 +3,7 @@
 //! - 項目(ID・名前・状態)は、その名前の属性か、子の要素の文字。名前の前に @ を付けると属性だけを見る。付けなければ属性、次に子の要素(属性が空なら子の要素)
 //! - DTD は読まない(DOCTYPE があれば読めないものとして止める)。外部の実体も読まない。ファイルの大きさにも上限を置く
 //! - ID が空のタスクは飛ばす。同じ ID が 2 回あれば先のものを使う(数は知らせる)
+//! - 完了日時(設定の doneAt。任意)は文字のまま返す。日時として読むのは state.rs(hours::parse_done_at)
 
 use roxmltree::{Document, Node, ParsingOptions};
 use std::path::Path;
@@ -51,11 +52,19 @@ pub struct XmlSpec {
     pub id: Field,
     pub name: Field,
     pub status: Field,
+    /// 完了日時の項目(設定に無ければ None)
+    pub done_at: Option<Field>,
 }
 
 impl XmlSpec {
     pub fn of(s: &super::TaskSource) -> XmlSpec {
-        XmlSpec { item: atlas_core::js::trim(&s.item).to_lowercase(), id: Field::parse(&s.id), name: Field::parse(&s.name), status: Field::parse(&s.status) }
+        XmlSpec {
+            item: atlas_core::js::trim(&s.item).to_lowercase(),
+            id: Field::parse(&s.id),
+            name: Field::parse(&s.name),
+            status: Field::parse(&s.status),
+            done_at: s.done_at.as_deref().map(Field::parse),
+        }
     }
 }
 
@@ -65,6 +74,8 @@ pub struct XmlTask {
     pub id: String,
     pub name: String,
     pub status: String,
+    /// 完了日時の文字(設定に doneAt があり、値が空でないときだけ。読めるかは見ていない)
+    pub done_at: Option<String>,
 }
 
 /// 読んだ結果
@@ -160,7 +171,9 @@ pub fn parse_tasks_xml(text: &str, spec: &XmlSpec) -> Result<XmlRead, String> {
         let (name, cut_name) = clean(&field_value(node, &spec.name).unwrap_or_default(), NAME_MAX);
         let (status, cut_status) = clean(&field_value(node, &spec.status).unwrap_or_default(), STATUS_MAX);
         out.truncated += [cut_id, cut_name, cut_status].iter().filter(|x| **x).count();
-        out.tasks.push(XmlTask { id, name, status });
+        // 完了日時は状態と同じ長さで切る(日時ならそれより短い。切れた値は、日時として読めない値になる)
+        let done_at = spec.done_at.as_ref().and_then(|f| field_value(node, f)).map(|v| clean(&v, STATUS_MAX).0).filter(|v| !v.is_empty());
+        out.tasks.push(XmlTask { id, name, status, done_at });
     }
     Ok(out)
 }
@@ -202,7 +215,7 @@ mod tests {
     use super::*;
 
     fn spec(item: &str, id: &str, name: &str, status: &str) -> XmlSpec {
-        XmlSpec { item: item.to_lowercase(), id: Field::parse(id), name: Field::parse(name), status: Field::parse(status) }
+        XmlSpec { item: item.to_lowercase(), id: Field::parse(id), name: Field::parse(name), status: Field::parse(status), done_at: None }
     }
 
     fn def() -> XmlSpec {
@@ -226,9 +239,9 @@ mod tests {
         assert_eq!(
             r.tasks,
             vec![
-                XmlTask { id: "T-1".into(), name: "画面の 一覧を直す".into(), status: "Open".into() },
-                XmlTask { id: "T-2".into(), name: "属性だけのタスク".into(), status: "Done".into() },
-                XmlTask { id: "T-3".into(), name: "大文字の要素".into(), status: "Closed".into() },
+                XmlTask { id: "T-1".into(), name: "画面の 一覧を直す".into(), status: "Open".into(), done_at: None },
+                XmlTask { id: "T-2".into(), name: "属性だけのタスク".into(), status: "Done".into(), done_at: None },
+                XmlTask { id: "T-3".into(), name: "大文字の要素".into(), status: "Closed".into(), done_at: None },
             ]
         );
         assert_eq!(r.items, 3);
@@ -381,5 +394,23 @@ mod tests {
         assert!(read_tasks_file(&p, &def()).unwrap_err().contains("UTF-8"));
         assert!(read_tasks_file(&d.path().join("none.xml"), &def()).unwrap_err().starts_with("タスクの XML がありません"));
         assert!(read_tasks_file(d.path(), &def()).unwrap_err().contains("ファイルではありません"));
+    }
+
+    /// 完了日時(設定の doneAt)は、ほかの項目と同じ読み方で文字のまま返す。設定に無ければ読まない
+    #[test]
+    fn done_at_field() {
+        let text = r#"<Tasks>
+            <Task Id="A" Status="Done" ClosedDate="2026-11-20"><ClosedDate>子の要素</ClosedDate></Task>
+            <Task Id="B" Status="Done"><ClosedDate> 2026/11/21 15:30 </ClosedDate></Task>
+            <Task Id="C" Status="Open" ClosedDate=""/>
+        </Tasks>"#;
+        let with = |f: &str| XmlSpec { done_at: Some(Field::parse(f)), ..def() };
+        let r = parse_tasks_xml(text, &with("ClosedDate")).unwrap();
+        let got: Vec<Option<&str>> = r.tasks.iter().map(|t| t.done_at.as_deref()).collect();
+        assert_eq!(got, [Some("2026-11-20"), Some("2026/11/21 15:30"), None]);
+        let r = parse_tasks_xml(text, &with("@ClosedDate")).unwrap();
+        let got: Vec<Option<&str>> = r.tasks.iter().map(|t| t.done_at.as_deref()).collect();
+        assert_eq!(got, [Some("2026-11-20"), None, None]);
+        assert!(parse_tasks_xml(text, &def()).unwrap().tasks.iter().all(|t| t.done_at.is_none()));
     }
 }

@@ -4,6 +4,8 @@
   import { confidenceLabel } from '../../lib/judgment-labels.ts';
   import { judgeHint } from '../../lib/hints.ts';
   import { wikiStateNote, type WikiState } from '../../lib/wiki.ts';
+  import { doneAtSourceText, hours, msHours, taskIncludedNote, workHoursText } from '../../lib/tasks.ts';
+  import type { TasksReport } from '../../lib/types.ts';
 
   let {
     agg,
@@ -16,6 +18,7 @@
     part = 'cover',
     editable = false,
     wiki = 'counted',
+    tasks = null,
   }: {
     agg: Aggregate;
     judged: boolean;
@@ -33,8 +36,15 @@
     editable?: boolean;
     /** llm-wiki の参照を数えた集計か(数えていなければ、wiki の欄を出さずに理由を出す) */
     wiki?: WikiState;
+    /**
+     * 管理ツールのタスクの記録(タスクの節が出るときと同じ条件で渡す)。表紙に、比べられる完了タスクの 3 つの時間を並べる。
+     * 値は集計のとき(Rust の tasks::view)に決めた summary をそのまま出し、数え直さない。比は出さない(タスクの節の欄のまま)
+     */
+    tasks?: TasksReport | null;
   } = $props();
   const wikiNote = $derived(wikiStateNote(wiki));
+  const ts = $derived(tasks?.summary ?? null);
+  const taskWh = $derived(tasks ? workHoursText(tasks.workHours) : '');
 
   const o = $derived(agg.overall);
   const c = $derived(agg.coverage);
@@ -63,7 +73,7 @@
 <section class="section" id="overview" aria-labelledby="overview-h">
   <div class="section-head">
     <h2 id="overview-h">全体サマリ</h2>
-    <p>{filtered ? '絞り込み後の値' : '全セッションの値'}。セッション数・期間・実働時間・推定人手工数の 4 つです。トークンやツールなどの明細は要点の下の「集計明細」にあります。</p>
+    <p>{filtered ? '絞り込み後の値' : '全セッションの値'}。セッション数・期間・実働時間・推定人手工数の 4 つです。{#if ts}その下の管理ツールのタスクの工数だけは、集計したときの値です。{/if}トークンやツールなどの明細は要点の下の「集計明細」にあります。</p>
   </div>
   {#if !includeEmpty && emptyCount > 0}
     <p class="excluded" data-testid="empty-excluded">{#if filtered}この条件の空のセッション {int(emptyInFilter)} 件を除外(全体では {int(emptyCount)} 件。{:else}空のセッション {int(emptyCount)} 件を除外({/if}依頼・ツール呼び出し・応答がどれも無いもの。絞り込みの「その他の条件」の「空のセッションを含める」で含められます)</p>
@@ -92,6 +102,27 @@
         <span class="v missing">未判定</span><span class="n">LLM による推定はまだありません。{judgeHint('工数', { editable })}{#if editable}Copilot の AI クレジットを使う方法と、M365 Copilot などのチャットに貼る方法があります。{/if}</span>
       {/if}
     </div>
+    {#if ts}
+      <!-- 管理ツールのタスクの工数: 4 欄の下に幅いっぱいの 5 つ目の欄。値はタスクの節と同じ summary(比べられる完了タスクの合計)で、比は出さない -->
+      <div class="field task-effort" data-testid="cover-tasks">
+        <span class="k">管理ツールのタスクの工数(比べられる完了タスク <span data-testid="cover-tasks-included">{int(ts.included)}</span> 件)</span>
+        <div class="trio">
+          <div class="item">
+            <span class="ik"><a href="glossary.html#task-work-hours">タスクの所要</a>(開始〜完了、稼働時間帯)</span>
+            <span class="iv" class:missing={!ts.included} data-testid="cover-tasks-work">{ts.included ? msHours(ts.workMs) : '—'}</span>
+          </div>
+          <div class="item">
+            <span class="ik">推定人手工数(AI を使わなかった場合)</span>
+            <span class="iv" class:missing={!ts.included} data-testid="cover-tasks-human">{ts.included ? hours(ts.humanHours) : '—'}</span>
+          </div>
+          <div class="item">
+            <span class="ik">AI の実働</span>
+            <span class="iv" class:missing={!ts.included} data-testid="cover-tasks-active">{ts.included ? msHours(ts.aiActiveMs) : '—'}</span>
+          </div>
+        </div>
+        <span class="n" data-testid="cover-tasks-note">{#if ts.included}比べられる完了タスクの合計{#if doneAtSourceText(ts.includedSources)}<span data-testid="cover-tasks-sources">({doneAtSourceText(ts.includedSources)})</span>{/if}。{:else}<span data-testid="cover-tasks-why">{taskIncludedNote(ts)}</span>。{/if}集計したときの値で、上の絞り込みに従いません。タスクの所要は稼働時間帯({taskWh})に入る時間で、並行して進めたタスクにはそれぞれに同じ時間が入るので、合計が実際の勤務時間を超えることがあります。タスクごとの値は<a href="#tasks">管理ツールのタスク</a>にあります。</span>
+      </div>
+    {/if}
   </div>
 </section>
 {:else}
@@ -234,6 +265,44 @@
   }
   .field > .n a:hover {
     color: var(--form);
+  }
+  /* 表紙の 5 つ目の欄(管理ツールのタスクの工数): 4 欄の下に幅いっぱいで置き、中に 3 つの時間を並べる。
+     狭い幅では 3 つが折り返して縦に並ぶ(欄の中の格子なので、表紙の 2 列の格子は崩さない) */
+  .task-effort {
+    grid-column: 1 / -1;
+  }
+  .trio {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(13em, 1fr));
+    gap: 6px 24px;
+    margin-top: 4px;
+  }
+  .item {
+    min-width: 0;
+  }
+  .ik {
+    display: block;
+    font-size: 0.75rem;
+    color: var(--ink-2);
+  }
+  .ik a {
+    color: inherit;
+    text-decoration-color: var(--rule-strong);
+  }
+  .ik a:hover {
+    color: var(--form);
+  }
+  .iv {
+    display: block;
+    font-size: 1.375rem;
+    font-weight: 600;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+  }
+  @media (max-width: 720px) {
+    .iv {
+      font-size: 1.125rem;
+    }
   }
   .coverage {
     background: var(--surface);
