@@ -199,13 +199,13 @@ describe('人ごとの差', () => {
     expect(r.rows.some((x) => x.key.startsWith('retention'))).toBe(false);
   });
 
-  it('残存: その人の A と B で比べた版が違えば(それぞれは 1 つ)、その人の割合と日数を出さず、平均に入れない', () => {
+  it('残存: その人の A と B で比べた版が違えば(それぞれは 1 つ)、その人の割合を出さず(日数は側ごとに出す)、平均に入れない', () => {
     const ret = (kept: number, mode: string) => ({ outcome: 'measured', hunks: [kept, 0, 4 - kept, 0], lines: [kept, 0, 4 - kept, 0], lag: 1, mode });
     const mk = (person: string, side: string, kept: number, mode: string) => Array.from({ length: 5 }, (_, i) => s(`${person}-${side}${i}`, { person, retention: ret(kept, mode) as unknown as CompareSession['retention'] }));
     // zz-a は A が fixed・B が worktree(違う)、zz-b はどちらも fixed
     const r = personSessionPaired([...mk('zz-a', 'a', 1, 'fixed'), ...mk('zz-b', 'a', 2, 'fixed')], [...mk('zz-a', 'b', 3, 'worktree'), ...mk('zz-b', 'b', 3, 'fixed')]);
     expect(r.groups.map((g) => [g.person, g.lagA, g.lagB])).toEqual([
-      ['zz-a', null, null],
+      ['zz-a', 1, 1],
       ['zz-b', 1, 1],
     ]);
     expect(r.retention!.diffs[0]).toBeNull();
