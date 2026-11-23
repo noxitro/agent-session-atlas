@@ -257,6 +257,72 @@ fn judge_rejects_filters_it_ignores() {
     assert!(e.contains("bundle --branch --unjudged"), "{e}");
 }
 
+/// turns の import・m365 も、judge と同じく効かない絞り込みを断る(bundle では絞り込みに使う)
+#[test]
+fn turns_rejects_filters_on_import_and_m365() {
+    let d = tempfile::tempdir().unwrap();
+    let (o, n) = (d.path().join("out").to_string_lossy().into_owned(), d.path().join("notes").to_string_lossy().into_owned());
+    let e = run(&cli(&["turns", "import", "r.md", "--project", "p", "--out", &o, "--notes-dir", &n]), &quiet).unwrap_err().to_string();
+    assert_eq!(e, "--project は turns import では使えません(返答に入っている依頼をすべて取り込みます)");
+    let e = run(&cli(&["turns", "import", "r.md", "--session", "ab", "--model", "m", "--out", &o, "--notes-dir", &n]), &quiet).unwrap_err().to_string();
+    assert!(e.starts_with("--session --model は turns import では使えません"), "{e}");
+    let e = run(&cli(&["turns", "m365", "--since", "2026-11-01", "--task", "T", "--out", &o, "--notes-dir", &n]), &quiet).unwrap_err().to_string();
+    assert!(e.starts_with("--since --task は turns m365 では効きません。送るのは、作ってある添付(out/turn-bundle)のファイルです。"), "{e}");
+    assert!(e.contains("bin\\atlas.exe turns bundle --since --task --unjudged で添付を作ってから turns m365"), "{e}");
+    // m365 の --model は M365 Copilot のモデルの選択なので断らない。bundle の絞り込みも断らない
+    assert!(cli(&["turns", "m365", "--model", "Auto"]).turns.unwrap().ignored_filters.is_empty());
+    assert!(cli(&["turns", "bundle", "--project", "p", "--session", "ab"]).turns.unwrap().ignored_filters.is_empty());
+}
+
+/// 取り込みの後の作り直しは、取り込みのコマンドの絞り込みと記録の出し方(--full など)を引き継がず、既定の出し方で作る。
+/// 出力先・設定のフォルダは引き継ぐ
+#[test]
+fn export_after_import_drops_filters_and_transcript_options() {
+    let o = cli(&[
+        "export", "--since", "2026-01-01", "--project", "p", "--client", "c", "--model", "m", "--branch", "b", "--session", "ab", "--task", "T", "--full", "--tool-output", "all", "--max-chars", "500", "--out", "X", "--settings", "S",
+    ]);
+    let e = export_after_import(&CliOptions { command: "judge".into(), ..o });
+    assert_eq!(e.command, "export");
+    assert!(e.since.is_none() && e.project.is_none() && e.client.is_none() && e.model.is_none() && e.branch.is_none() && e.sessions.is_none() && e.task.is_none());
+    assert_eq!((e.tool_output, e.max_chars, e.full), (crate::args::ToolOutput::Fail, None, false));
+    assert_eq!((e.out.as_deref(), e.settings.as_deref()), (Some("X"), Some("S")));
+    // 既定の export と、絞り込みと記録の出し方が同じ
+    let plain = cli(&["export", "--out", "X", "--settings", "S"]);
+    assert!(!metrics::has_filter(&metrics::SessionFilter::from_cli(&e)));
+    assert_eq!((e.tool_output, e.max_chars, e.full), (plain.tool_output, plain.max_chars, plain.full));
+}
+
+/// 取り込めた後の作り直しに失敗したら、取り込みは済んでいることと作り直し方を添える(取り込んだ判定は残る)
+#[test]
+fn rebuild_failure_after_import_says_the_import_is_done() {
+    let d = tempfile::tempdir().unwrap();
+    let (home, out, notes) = (d.path().join("home"), d.path().join("out"), d.path().join("notes"));
+    write_home_sessions(&home, &["aaaa1111", "bbbb2222"]);
+    let (h, o, n) = (home.to_string_lossy().into_owned(), out.to_string_lossy().into_owned(), notes.to_string_lossy().into_owned());
+    run(&cli(&["all", "--home", &h, "--out", &o, "--notes-dir", &n]), &quiet).unwrap();
+    // レポートを書けないようにする(atlas.html をフォルダにする)
+    fs::remove_file(out.join("atlas.html")).unwrap();
+    fs::create_dir_all(out.join("atlas.html").join("x")).unwrap();
+    let item = json!({
+        "sessionId": "aaaa1111",
+        "taskCategory": "feature",
+        "taskSummary": "要約",
+        "humanEffort": { "hours": 2, "low": 1, "high": 4, "confidence": 0.5, "rationale": "根拠" },
+        "aiOutcome": { "completed": true, "quality": 4, "rework": 1, "rationale": "成果" },
+        "instructionsEffect": { "score": 1, "evidence": "e" },
+        "wikiEffect": { "score": 0, "evidence": "参照なし" },
+        "skillsAgentsEffect": { "score": 0, "evidence": "参照なし" },
+    });
+    let reply = d.path().join("reply.json");
+    fs::write(&reply, json!({ "schemaVersion": 2, "judge": { "backend": "external", "model": null, "ranAt": null }, "items": [item] }).to_string()).unwrap();
+    let e = run(&cli(&["judge", "import", &reply.to_string_lossy(), "--out", &o, "--notes-dir", &n]), &quiet).unwrap_err();
+    let e = format!("{e:#}");
+    assert!(e.ends_with(REBUILD_FAILED), "{e}");
+    assert_eq!(REBUILD_FAILED, "取り込みは済んでいます。bin\\atlas.exe export でレポートを作り直してください");
+    let saved: serde_json::Value = serde_json::from_str(&fs::read_to_string(out.join("judgments.json")).unwrap()).unwrap();
+    assert_eq!(saved["items"][0]["sessionId"], "aaaa1111");
+}
+
 /// 依頼が 1 つずつあるセッションの記録(~/.copilot の session-state の形)
 fn write_home_sessions(home: &std::path::Path, ids: &[&str]) {
     for id in ids {

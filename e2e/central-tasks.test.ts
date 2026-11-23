@@ -340,16 +340,18 @@ describe('本番の置き方: 設定のフォルダ(AtlasSettings)を使い、�
     const r = atlas(['all', '--home', log2, '--out', out2, '--settings', settings2]);
     expect(r.status, r.out).toBe(0);
     expect(r.out).toContain('完了日時(設定の tasks.doneAt)を読めない完了のタスク 1 件');
-    type State = { tasks: Record<string, { doneAt: string | null; doneObserved: boolean; doneAtSource?: string; doneDateOnly?: boolean }> };
+    type State = { tasks: Record<string, { doneAt: string | null; doneObserved: boolean; doneAtSource?: string; doneDateOnly?: boolean; doneDate?: string }> };
     const st = await readJson<State>(join(settings2, 'tasks.json'));
     // TZ=UTC: 日付だけは、その日の稼働時間帯の終わり(18:00)。日付だけだったことも残す(候補と「完了の後に始まった」はその日の終わりで見る)
-    expect(st.tasks['DEMO-101']).toMatchObject({ doneAt: '2026-10-22T18:00:00.000Z', doneObserved: true, doneAtSource: 'recorded', doneDateOnly: true });
+    // 暦の日付の文字(doneDate)も残す(見る PC の時間帯で日付がずれないように。doneDateOnly は前の版の atlas が読む)
+    expect(st.tasks['DEMO-101']).toMatchObject({ doneAt: '2026-10-22T18:00:00.000Z', doneObserved: true, doneAtSource: 'recorded', doneDateOnly: true, doneDate: '2026-10-22' });
     expect(st.tasks['DEMO-104']).toMatchObject({ doneAt: '2026-10-20T03:00:00.000Z', doneObserved: true, doneAtSource: 'recorded' });
     expect(st.tasks['DEMO-104'].doneDateOnly).toBeUndefined();
+    expect(st.tasks['DEMO-104'].doneDate).toBeUndefined();
     // 読めない値は観測(初めて見たときに完了なので、時刻は分からない)
     expect(st.tasks['DEMO-103']).toMatchObject({ doneAt: T_XML.toISOString(), doneObserved: false, doneAtSource: 'observed' });
     const v = (await embedded(out2)).tasks as TasksReport;
-    expect(v.items.find((t) => t.id === 'DEMO-101')).toMatchObject({ doneAtSource: 'recorded', doneAt: '2026-10-22T18:00:00.000Z', doneDateOnly: true });
+    expect(v.items.find((t) => t.id === 'DEMO-101')).toMatchObject({ doneAtSource: 'recorded', doneAt: '2026-10-22T18:00:00.000Z', doneDate: '2026-10-22' });
     expect(v.items.find((t) => t.id === 'DEMO-103')).toMatchObject({ doneAtSource: 'observed' });
     // セッションが紐づいた完了タスク: DEMO-101(記録)と DEMO-103(観測。S_MULTI が紐づく)
     expect(v.summary.doneSources).toEqual({ recorded: 1, observed: 1 });
@@ -359,6 +361,8 @@ describe('本番の置き方: 設定のフォルダ(AtlasSettings)を使い、�
     expect(col).toBeGreaterThan(0);
     const row101 = csv.find((l) => l.startsWith('DEMO-101,'))!.split(',');
     expect(row101[col]).toBe('記録(日付だけ)');
+    // 完了の列は、日付の文字をそのまま出す
+    expect(row101[col - 1]).toBe('2026-10-22');
     // 設定のフォルダを使う回でも、CLI の judge import は取り込めたらレポートを作り直す(export。tasks import と同じ)
     const reply = join(WORK, 'reply-effort-settings2.md');
     await writeFile(reply, effortReply([S_FIX], 'CLI で取り込み'));

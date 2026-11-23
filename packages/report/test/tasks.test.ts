@@ -1,7 +1,7 @@
 // 管理ツールのタスクの絞り込み(filter.ts の task)と、表示の言葉・一覧の「タスク」の欄(lib/tasks.ts)
 import { describe, expect, it } from 'vitest';
 import { applyFilter, decodeFilter, emptyFilter, encodeFilter, matchesTask, NO_TASK, taskOf, taskOptions } from '../src/lib/filter.ts';
-import { hours, linkCounts, linkTaskIds, msHours, sortByTask, TASK_CELL_SHOWN, taskCell, taskExcludedText, taskIncludedNote, workHoursText } from '../src/lib/tasks.ts';
+import { doneAtText, hours, linkCounts, linkTaskIds, msHours, sortByTask, TASK_CELL_SHOWN, taskCell, taskExcludedText, taskIncludedNote, workHoursText } from '../src/lib/tasks.ts';
 import type { SessionSummary, TaskLinkView } from '../src/lib/types.ts';
 
 describe('タスクの絞り込み', () => {
@@ -109,6 +109,15 @@ describe('一覧の「タスク」の欄', () => {
 });
 
 describe('タスクの表示の言葉', () => {
+  it('日付だけの完了日は、埋め込みの日付の文字をそのまま出す(doneAt から日付に戻さないので、見る PC の時間帯でずれない)', () => {
+    // doneAt は集計した PC の時間帯での、その日の稼働時間帯の終わり。どの時間帯で見ても、日付は書いた文字のまま
+    expect(doneAtText({ doneAt: '2026-11-20T09:00:00.000Z', doneDate: '2026-11-20' })).toBe('2026-11-20');
+    expect(doneAtText({ doneAt: '2026-11-20T23:30:00.000Z', doneDate: '2026-11-20' })).toBe('2026-11-20');
+    // 時刻つきの完了は日時(この PC の時間帯)。完了していなければ「—」
+    expect(doneAtText({ doneAt: null })).toBe('—');
+    expect(doneAtText({ doneAt: '2026-11-20T09:00:00.000Z' })).toMatch(/^2026-11-2\d \d{2}:\d{2}$/);
+  });
+
   it('稼働時間帯は続いた曜日を「〜」でつなぎ、時の先頭の 0 を落とす', () => {
     expect(workHoursText({ days: [1, 2, 3, 4, 5], start: '09:00', end: '18:00' })).toBe('月〜金 9:00〜18:00');
     expect(workHoursText({ days: [1, 3, 5], start: '10:30', end: '19:00' })).toBe('月・水・金 10:30〜19:00');

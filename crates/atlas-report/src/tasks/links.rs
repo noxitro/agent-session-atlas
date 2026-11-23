@@ -534,7 +534,7 @@ mod tests {
     use super::*;
 
     fn task(name: &str, done_at: Option<&str>) -> TaskState {
-        TaskState { name: name.into(), status: if done_at.is_some() { "Done" } else { "Open" }.into(), done: done_at.is_some(), first_seen_at: "2026-11-01T00:00:00.000Z".into(), done_at: done_at.map(str::to_string), last_seen_at: "2026-11-01T00:00:00.000Z".into(), missing: false, done_observed: done_at.is_some(), done_at_source: None, done_date_only: false }
+        TaskState { name: name.into(), status: if done_at.is_some() { "Done" } else { "Open" }.into(), done: done_at.is_some(), first_seen_at: "2026-11-01T00:00:00.000Z".into(), done_at: done_at.map(str::to_string), last_seen_at: "2026-11-01T00:00:00.000Z".into(), missing: false, done_observed: done_at.is_some(), done_at_source: None, done_date_only: false, done_date: None }
     }
 
     fn state(items: &[(&str, TaskState)]) -> TasksFile {

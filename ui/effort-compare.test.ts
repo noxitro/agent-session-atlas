@@ -80,6 +80,15 @@ describe('比べる: 推論強度どうし', () => {
     expect(await cell('aiu-per-request', 0).innerText()).not.toBe('—');
     // この fixture にはテストの結果の記録が無いので、テストの行は出さない
     expect(await section().locator('[data-testid="compare-table"] tr[data-key^="tests"]').count()).toBe(0);
+    // 表の上の説明は最初の 2 文(何を並べるか・差は相関)だけを見せ、残りは「数え方と注意」に畳む
+    expect(await section().getByTestId('compare-lead').innerText()).toBe('2 つの条件(期間・プロジェクト・工程・推論強度・モデル・wiki の参照)を並べます。差は相関で、条件の違いが原因とは限りません。');
+    const notes = section().getByTestId('compare-notes');
+    expect(await notes.getAttribute('open')).toBeNull();
+    expect(await notes.locator('summary').innerText()).toBe('数え方と注意');
+    expect(await section().locator('.section-head').innerText()).not.toContain('上の絞り込みには従わず');
+    await notes.locator('summary').click();
+    expect(await notes.innerText()).toContain('上の絞り込みには従わず、全セッション');
+    expect(await notes.innerText()).toContain('最初の実行は、そのとき走らせたテストだけの結果です。');
   });
 
   it('b. 混在・記録なしの件数と、利用者 × 週の表。期間を絞ると両方に効く', async () => {
@@ -111,6 +120,9 @@ describe('比べる: 推論強度どうし', () => {
     await page.setViewportSize({ width: 375, height: 800 });
     try {
       await openEffort();
+      // 畳んだ説明を開いても、はみ出さない
+      await section().getByTestId('compare-notes').locator('summary').click();
+      expect(await section().getByTestId('compare-notes').getAttribute('open')).not.toBeNull();
       await section().getByTestId('compare-effort-weeks').scrollIntoViewIfNeeded();
       const over = await page.evaluate<number>('document.documentElement.scrollWidth - document.documentElement.clientWidth');
       expect(over).toBeLessThanOrEqual(0);

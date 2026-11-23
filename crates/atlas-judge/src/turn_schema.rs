@@ -300,7 +300,7 @@ pub fn import_turn_judgments_text(input: &str, path: &Path, o: TurnImportOptions
     // 読み直してから混ぜて書くまでを、ファイルのロックの中で行う(共有の置き場では、ほかの集計する人も同じファイルに取り込むため。
     // 同じセッションの同じ依頼は後から取り込んだもので置き換え、ほかの判定は残す)
     let (overwritten, total) = atlas_report::tasks::with_file_lock(path, || {
-        let base = read_turn_judgments(path)?.unwrap_or_else(|| empty_turn_judgments(o.phases, &judge.backend, model.as_deref(), &ran_at));
+        let base = read_turn_judgments(path).map_err(|e| crate::judgments_io::broken_judgments(path, e))?.unwrap_or_else(|| empty_turn_judgments(o.phases, &judge.backend, model.as_deref(), &ran_at));
         let existing: HashSet<String> = base.items.iter().map(|i| key(&i.session_id, i.turn)).collect();
         let overwritten = items.iter().filter(|i| existing.contains(&key(&i.session_id, i.turn))).count();
         let merged = merge_turn_judgments(&base, &items, o.phases, judge.clone());
@@ -393,6 +393,30 @@ mod tests {
             v[k] = x.clone();
         }
         v
+    }
+
+    /// 取り込みのロックの中で今の判定のファイルが読めなければ、書き換えずに BrokenFile で止める(serve は 409)。工数の判定も同じ
+    #[test]
+    fn broken_judgment_files_are_not_overwritten() {
+        let d = tempfile::tempdir().unwrap();
+        let ph = phases();
+        let path = d.path().join("turn-judgments.json");
+        std::fs::write(&path, "{ 壊れた").unwrap();
+        let e = import_turn_judgments_text(&json!([item(1, json!({}))]).to_string(), &path, TurnImportOptions { phases: &ph, turns_by_session: None, now: None, backend: None, model: None }).unwrap_err();
+        let b = e.downcast_ref::<atlas_report::tasks::BrokenFile>().expect("BrokenFile");
+        assert!(b.0.starts_with(&format!("判定のファイルが壊れています。{} を確かめてください", path.display())), "{}", b.0);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ 壊れた");
+        let effort = d.path().join("judgments.json");
+        std::fs::write(&effort, "{\"schemaVersion\": 2}").unwrap();
+        let reply = json!([{
+            "sessionId": "s1", "taskCategory": "feature", "taskSummary": "要約",
+            "humanEffort": { "hours": 2, "low": 1, "high": 4, "confidence": 0.5, "rationale": "根拠" },
+            "aiOutcome": { "completed": true, "quality": 4, "rework": 1, "rationale": "成果" },
+            "instructionsEffect": { "score": 1, "evidence": "e" }, "wikiEffect": { "score": 0, "evidence": "参照なし" }, "skillsAgentsEffect": { "score": 0, "evidence": "参照なし" },
+        }]);
+        let e = crate::judgments_io::import_judgments_text(&reply.to_string(), &effort, Default::default()).unwrap_err();
+        assert!(e.downcast_ref::<atlas_report::tasks::BrokenFile>().is_some_and(|b| b.0.starts_with("判定のファイルが壊れています。")), "{e:#}");
+        assert_eq!(std::fs::read_to_string(&effort).unwrap(), "{\"schemaVersion\": 2}");
     }
 
     #[test]

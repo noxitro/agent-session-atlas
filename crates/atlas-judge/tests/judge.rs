@@ -424,6 +424,49 @@ fn turn_bundle_parts_and_import_phases() {
     assert_eq!(read_turn_bundle_manifest(&tb).unwrap(), m);
 }
 
+/// 依頼ごとの判定の指示は、迷う場面の決め方を、フォルダで渡す指示とチャットに貼る指示の両方に書く。
+/// 設定・運用の依頼の工程は、工程名に「運用」があれば「運用」、無ければ「その他」、どちらも無ければ最も近いもの
+#[test]
+fn turn_rubric_tells_how_to_decide_unclear_turns() {
+    use atlas_judge::turn_bundle::turn_rubric;
+    let d = tempfile::tempdir().unwrap();
+    let snap = d.path().join("snapshot");
+    let s = session_with_turns(&snap, "s1", 4, true);
+    let tb = d.path().join("tb");
+    let defaults: Vec<String> = atlas_core::turns::DEFAULT_PHASE_NAMES.iter().map(|s| s.to_string()).collect();
+    build_turn_bundle(&[&s], &turn_opts(&tb, &snap, defaults)).unwrap();
+    let ins = std::fs::read_to_string(tb.join("INSTRUCTIONS.md")).unwrap();
+    let part = std::fs::read_to_string(tb.join("parts").join("part-01.md")).unwrap();
+    for t in [&ins, &part] {
+        for s in [
+            "### 迷うときの決め方(上の分類の意味は変えません)",
+            "次の依頼の文が「(本文なし)」のとき、この依頼の応答が「(応答の記録なし)」のとき、AI の最後の応答が途中経過だけ",
+            "outcome を unknown にし、confidence を低く(0.3 以下)します",
+            "kind は文の形ではなく意図で決めます",
+            "直前の AI の成果を直させる意図なら fix、相談・情報を求める意図なら question",
+            "同じ話を深掘りする追加の質問は follow_up(mismatch は null)",
+            "回答が的外れで聞き直したときは off_target(mismatch を付ける)",
+            "次の依頼が承認だけ(「承認」「OK」など)のときは as_is",
+            "直させた成果を出した依頼(直しを求める依頼の 1 つ前の依頼)を fix_content",
+            "次の依頼が「再開」「続けて」だけのときは、この依頼の outcome は unknown",
+            "ツールや環境の設定・運用(エージェントやエディタの設定、ビルドや実行の環境、権限、認証など)の依頼は `運用`(`その他` にはしません)",
+            "`要件定義` は、作るものの要件・仕様を決める依頼だけにします",
+        ] {
+            assert!(t.contains(s), "{s}");
+        }
+    }
+    // 結果のファイルは手で書いてよい(フォルダで渡すときだけ。チャットに貼る指示はファイルを書かない)
+    assert!(ins.contains("`turn-judgments.json` は、判定しながら手で書いてかまいません"));
+    assert!(!part.contains("手で書いてかまいません"));
+    // 工程名を変えたとき
+    let other: Vec<String> = ["設計", "実装", "その他"].iter().map(|s| s.to_string()).collect();
+    let r = turn_rubric(&other);
+    assert!(r.contains("の依頼は `その他`(工程名に「運用」が無いため)"));
+    assert!(r.contains("要件・仕様を決める工程には、設定・運用の話を入れません"));
+    let r = turn_rubric(&phases());
+    assert!(r.contains("の依頼は 上の工程名のうち最も近いもの(工程名に「運用」も「その他」も無いため)"));
+}
+
 /// ZIP の中の名前と中身(末尾のレコードから中央ディレクトリをたどる)
 fn zip_entries(bytes: &[u8]) -> Vec<(String, Vec<u8>)> {
     let u16_at = |i: usize| u16::from_le_bytes([bytes[i], bytes[i + 1]]) as usize;

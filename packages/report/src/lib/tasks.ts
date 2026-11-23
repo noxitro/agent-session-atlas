@@ -1,5 +1,5 @@
 // 管理ツールのタスクの表示(値は Rust の tasks::view が決めたもの。ここは言葉と単位にするだけで、数え直さない)
-import { date, dateTime, dec, int } from './format.ts';
+import { dateTime, dec, int } from './format.ts';
 import type { TaskDoneAtCounts, TaskDoneAtSource, TaskExcluded, TaskLinkSource, TaskLinkView, TaskRow, TaskSummary, TasksReport } from './types.ts';
 
 /** 紐づけのタスクの ID の並び(版 20 の埋め込みの taskId(1 つか null)も 0 か 1 件の並びとして読む) */
@@ -85,14 +85,11 @@ export function taskExcludedText(excluded: Record<TaskExcluded, number>): string
 export const DONE_AT_SOURCE_LABEL: Record<TaskDoneAtSource, string> = { recorded: '記録', observed: '観測' };
 
 /**
- * 完了を確認した時刻の表示。日付だけの完了日(doneDateOnly)は日付だけを出す
- * (doneAt はその日の稼働時間帯の終わりで、24:00 なら翌日の 0 時なので、1 ミリ秒前の日付で見る)
+ * 完了を確認した時刻の表示。日付だけの完了日は、Rust が読んだときの暦の日付の文字(doneDate。"2026-11-20")をそのまま出す
+ * (doneAt から日付に戻すと、見る PC の時間帯で 1 日ずれるため)
  */
-export function doneAtText(t: Pick<TaskRow, 'doneAt' | 'doneDateOnly'>): string {
-  if (t.doneDateOnly && t.doneAt) {
-    const ms = Date.parse(t.doneAt);
-    if (!Number.isNaN(ms)) return date(new Date(ms - 1).toISOString(), '—');
-  }
+export function doneAtText(t: Pick<TaskRow, 'doneAt' | 'doneDate'>): string {
+  if (t.doneDate) return t.doneDate;
   return dateTime(t.doneAt, '—');
 }
 

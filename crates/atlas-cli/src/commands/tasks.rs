@@ -552,8 +552,8 @@ pub fn run_tasks_command(o: &CliOptions, p: &Paths, log: Log<'_>) -> Result<supe
     }
     let changed = run_tasks(o, p, t, log)?;
     if matches!(t.action.as_str(), "link" | "import") && changed && p.sessions.exists() {
-        let export = CliOptions { command: "export".into(), sessions: None, task: None, tasks_cmd: None, model: None, ..o.clone() };
-        return super::run_command(&export, p, log);
+        // 絞り込みと記録の出し方は引き継がない(judge import・turns import と同じ)
+        return super::rebuild_report(o, p, log);
     }
     Ok(super::RunResult::default())
 }
@@ -856,6 +856,7 @@ mod tests {
             done_observed: done_at.is_some(),
             done_at_source: None,
             done_date_only: false,
+            done_date: None,
         };
         let mut state = TasksFile::default();
         state.tasks.insert("OLD-1".into(), task("前に終わった仕事", Some("2026-11-01T00:00:00.000Z")));

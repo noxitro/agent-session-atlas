@@ -38,9 +38,14 @@ pub struct SenderTask {
     /// 完了の時刻が XML の完了日時(記録)か。false なら観測。前の版の記録には無い(観測として読む)
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub done_at_recorded: bool,
-    /// 記録の完了の時刻が、日付だけの完了日から決めたもの(doneAt はその日の稼働時間帯の終わり)。前の版の記録には無い
+    /// 記録の完了の時刻が、日付だけの完了日から決めたもの(doneAt は送った人の PC の時間帯での、その日の稼働時間帯の終わり)。前の版の記録には無い。
+    /// 前の版の atlas が読むので、done_date と一緒に書く
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub done_date_only: bool,
+    /// 日付だけの完了日の、暦の日付の文字("YYYY-MM-DD")。受け取った側は、この日付と自分の時間帯で工数と締め切りを決める。
+    /// 前の版の記録には無い(doneDateOnly だけのときは、前の版と同じ計算で doneAt から決める)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub done_date: Option<String>,
     /// 送った人が最後にそのタスクを XML で見た時刻(複数の人の記録が食い違うとき、新しい方を使う)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_seen_at: Option<String>,
@@ -83,7 +88,8 @@ pub fn sender_tasks(state: &TasksFile, links: &LinksFile, starts: &HashMap<Strin
                     done_at: t.done_at.clone(),
                     done_observed: t.done_observed,
                     done_at_recorded: t.done_source() == Some(super::state::DoneAtSource::Recorded),
-                    done_date_only: t.done_date_only && t.done_source() == Some(super::state::DoneAtSource::Recorded),
+                    done_date_only: t.done_date().is_some(),
+                    done_date: t.done_date(),
                     last_seen_at: Some(t.last_seen_at.clone()).filter(|s| atlas_core::jsdate::parse_ms(s).is_some()),
                     start: first.get(tid.as_str()).map(|ms| atlas_core::jsdate::to_iso(*ms)),
                     source: l.source,
@@ -146,21 +152,30 @@ fn sender_task_at(v: Option<&Value>, now_ms: i64) -> Option<SenderTask> {
         None => false,
         Some(b) => b.as_bool()?,
     };
+    // 日付の文字は YYYY-MM-DD だけ(形が違えばその記録を読まない)
+    let done_date = match o.get("doneDate") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(d)) => Some(super::hours::parse_date(d).map(super::hours::format_date)?),
+        Some(_) => return None,
+    };
     let done_at = if done { iso(o.get("doneAt"), now_ms)? } else { None };
-    let done_date_only = done && done_at_recorded && done_date_only && done_at.is_some();
+    let done_date_only = done && done_at_recorded && (done_date_only || done_date.is_some()) && done_at.is_some();
+    let done_at_iso = to_iso(done_at);
+    let done_date = if done_date_only { super::hours::done_date_text(done_date.as_deref(), done_at_iso.as_deref()) } else { None };
     let last_seen = iso(o.get("lastSeenAt"), now_ms)?;
     // 開始は、完了を確認した時刻より後のもの・長すぎるものを使わない(記録は残し、開始だけ捨てる)。日付だけの完了日は、その日の終わりまで
-    let cutoff = done_at.map(|d| if done_date_only { super::hours::day_end_ms(d).unwrap_or(d) } else { d });
+    let cutoff = done_at.map(|d| super::state::done_cutoff(done_at_iso.as_deref(), done_date.as_deref()).unwrap_or(d));
     let start = iso(o.get("start"), now_ms)?.filter(|s| cutoff.is_none_or(|d| *s <= d && d - *s <= SPAN_MAX_DAYS * DAY_MS)).filter(|s| now_ms - *s <= SPAN_MAX_DAYS * DAY_MS);
     Some(SenderTask {
         id: text(o.get("id"), ID_MAX, false)?,
         name: text(o.get("name"), NAME_MAX, true)?,
         status: text(o.get("status"), STATUS_MAX, true)?,
         done,
-        done_at: to_iso(done_at),
+        done_at: done_at_iso,
         done_observed: done && done_observed,
         done_at_recorded: done && done_at_recorded && done_at.is_some(),
-        done_date_only,
+        done_date_only: done_date.is_some(),
+        done_date,
         last_seen_at: to_iso(last_seen),
         start: to_iso(start),
         source,
@@ -261,7 +276,7 @@ pub fn tasks_from_senders(per_session: &[(String, Vec<SenderTask>)]) -> (Vec<Tas
                     (true, Some(_)) => Some(super::state::DoneAtSource::Recorded),
                     (true, None) => t.done_at.as_ref().map(|_| super::state::DoneAtSource::Observed),
                 },
-                done_date_only: recorded.is_some() && t.done_date_only,
+                done_date: if recorded.is_some() && t.done_date_only { super::hours::done_date_text(t.done_date.as_deref(), t.done_at.as_deref()) } else { None },
                 missing: false,
                 start_hint: starts.get(t.id.as_str()).map(|ms| atlas_core::jsdate::to_iso(*ms)),
             }
@@ -313,9 +328,27 @@ mod tests {
         atlas_core::jsdate::with_zone(&atlas_core::jsdate::TimeZone::fixed(atlas_core::jsdate::Offset::constant(9)), || {
             let t = day(json!({})).unwrap();
             assert_eq!((t.done_date_only, t.start.as_deref()), (true, Some("2026-11-02T12:00:00.000Z")));
+            // 前の版の記録(doneDateOnly だけ)は、前の版と同じ計算(doneAt の 1 ミリ秒前の、この PC の日付)で日付の文字を作る
+            assert_eq!(t.done_date.as_deref(), Some("2026-11-02"));
             let t = day(json!({ "doneAtRecorded": false })).unwrap();
-            assert_eq!((t.done_date_only, t.start), (false, None));
+            assert_eq!((t.done_date_only, t.start, t.done_date), (false, None, None));
             assert!(day(json!({ "doneDateOnly": "yes" })).is_none());
+            // 日付の文字があればそれを使う(この PC の時間帯で決め直さない)。締め切りはその日付のこの PC の 24:00
+            let t = day(json!({ "doneDate": "2026-11-01", "start": "2026-11-01T14:59:59.000Z" })).unwrap();
+            assert_eq!((t.done_date.as_deref(), t.done_date_only, t.start.as_deref()), (Some("2026-11-01"), true, Some("2026-11-01T14:59:59.000Z")));
+            assert_eq!(day(json!({ "doneDate": "2026-11-01", "start": "2026-11-01T15:00:01.000Z" })).unwrap().start, None);
+            // 形の違う日付の文字は、その記録を読まない
+            for bad in [json!("2026/11/01"), json!("2026-11-31"), json!(20261101)] {
+                assert!(day(json!({ "doneDate": bad })).is_none(), "{bad}");
+            }
+            // 書き出す記録には、日付の文字と、前の版が読む doneDateOnly の両方を入れる
+            let v = serde_json::to_value(day(json!({ "doneDate": "2026-11-01" })).unwrap()).unwrap();
+            assert_eq!((v["doneDate"].clone(), v["doneDateOnly"].clone()), (json!("2026-11-01"), json!(true)));
+        });
+        // 日付の文字は、受け取った PC の時間帯によらない(前の版の記録だけは前の版と同じずれ方)
+        atlas_core::jsdate::with_zone(&atlas_core::jsdate::TimeZone::fixed(atlas_core::jsdate::Offset::constant(-10)), || {
+            assert_eq!(day(json!({ "doneDate": "2026-11-02" })).unwrap().done_date.as_deref(), Some("2026-11-02"));
+            assert_eq!(day(json!({})).unwrap().done_date.as_deref(), Some("2026-11-01"));
         });
         assert!(bad(json!({ "lastSeenAt": "2999-01-01T00:00:00Z" })).is_none());
         assert!(bad(json!({ "doneObserved": "yes" })).is_none());
@@ -363,9 +396,9 @@ mod tests {
     #[test]
     fn builds_sender_records_and_merges_them() {
         let mut state = TasksFile::default();
-        state.tasks.insert("T".into(), TaskState { name: "仕事".into(), status: "Done".into(), done: true, first_seen_at: "a".into(), done_at: Some("2026-11-05T00:00:00.000Z".into()), last_seen_at: "2026-11-05T00:00:00.000Z".into(), missing: false, done_observed: true, done_at_source: None, done_date_only: false });
+        state.tasks.insert("T".into(), TaskState { name: "仕事".into(), status: "Done".into(), done: true, first_seen_at: "a".into(), done_at: Some("2026-11-05T00:00:00.000Z".into()), last_seen_at: "2026-11-05T00:00:00.000Z".into(), missing: false, done_observed: true, done_at_source: None, done_date_only: false, done_date: None });
         let mut links = LinksFile::default();
-        state.tasks.insert("U".into(), TaskState { name: "もう一つ".into(), status: "Open".into(), done: false, first_seen_at: "a".into(), done_at: None, last_seen_at: "2026-11-05T00:00:00.000Z".into(), missing: false, done_observed: false, done_at_source: None, done_date_only: false });
+        state.tasks.insert("U".into(), TaskState { name: "もう一つ".into(), status: "Open".into(), done: false, first_seen_at: "a".into(), done_at: None, last_seen_at: "2026-11-05T00:00:00.000Z".into(), missing: false, done_observed: false, done_at_source: None, done_date_only: false, done_date: None });
         let l = |t: &[&str], s: LinkSource| TaskLink { task_ids: t.iter().map(|x| x.to_string()).collect(), source: s, reason: "r".into(), confidence: None, at: "t".into() };
         links.links.insert("s1".into(), l(&["T"], LinkSource::Machine));
         links.links.insert("s2".into(), l(&["T"], LinkSource::Manual));
@@ -390,6 +423,15 @@ mod tests {
         // 送った記録を読み直すと同じ並び
         let v = json!({ "tasks": serde_json::to_value(&st["s6"]).unwrap() });
         assert_eq!(sender_tasks_of(&v), st["s6"]);
+        // 日付だけの完了日(記録)は、日付の文字を送り、受け取った側のタスクにもその文字を使う
+        let mut dated = state.clone();
+        if let Some(t) = dated.tasks.get_mut("T") {
+            (t.done_at_source, t.done_date_only, t.done_date) = (Some(crate::tasks::state::DoneAtSource::Recorded), true, Some("2026-11-04".into()));
+        }
+        let ds = sender_tasks(&dated, &links, &starts);
+        assert_eq!((ds["s1"][0].done_date.as_deref(), ds["s1"][0].done_date_only), (Some("2026-11-04"), true));
+        let (tasks, _) = tasks_from_senders(&[("s1".into(), ds["s1"].clone())]);
+        assert_eq!(tasks[0].done_date.as_deref(), Some("2026-11-04"));
 
         // 2 人の記録が食い違う: いちばん新しく見た記録を使う(完了と見た記録が古ければ、後で開き直された方を使う)
         let base = SenderTask {
@@ -401,6 +443,7 @@ mod tests {
             done_observed: true,
             done_at_recorded: false,
             done_date_only: false,
+            done_date: None,
             last_seen_at: Some("2026-11-05T00:00:00.000Z".into()),
             start: Some("2026-11-02T00:00:00.000Z".into()),
             source: LinkSource::Machine,

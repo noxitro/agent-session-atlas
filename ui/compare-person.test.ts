@@ -124,7 +124,15 @@ describe('比べる: モデル・wiki の参照・人ごとの差', () => {
     await kindButton('モデル').click();
     const box = section().getByTestId('compare-person');
     await expect.poll(() => box.count()).toBe(1);
-    expect(await box.innerText()).toContain('同じ人の中での差を平均したもので、人の違いの影響を減らします。人の数が少ないと幅は広くなります');
+    // 説明は最初の 2 文だけを見せ、残り(数え方と注意)は畳む
+    expect(await box.getByTestId('compare-person-lead').innerText()).toBe('同じ人の中での差を平均したもので、人の違いの影響を減らします。差は相関で、条件の違いが原因とは限りません。');
+    const notesBox = box.getByTestId('compare-person-notes');
+    expect(await notesBox.getAttribute('open')).toBeNull();
+    expect(await notesBox.locator('summary').innerText()).toBe('数え方と注意');
+    expect(await box.innerText()).not.toContain('人の数が少ないと幅は広くなります');
+    await notesBox.locator('summary').click();
+    expect(await notesBox.innerText()).toContain('人の数が少ないと幅は広くなります');
+    await notesBox.locator('summary').click();
     const row = box.locator('[data-testid="compare-person-table"] tr[data-key="no-rework"] td');
     expect(await row.nth(0).innerText()).toBe(String(EFFORT_PEOPLE.length));
     expect(await row.nth(1).innerText()).toMatch(/^[+−]?[\d.]+ ポイント$|^0 ポイント$/);

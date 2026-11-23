@@ -748,8 +748,12 @@ mod tests {
         // 工数の判定は、達成(completed)の基準を、フォルダで渡す指示とチャットに貼る指示の両方に書く
         let part = crate::rubric::render_part_instructions(&crate::rubric::PartInstructions { part: 1, parts: 1, ids: &["s1"], total: 1, generated_at: "t", boundary: "b", schema_json: "{}" });
         for ins in [&all[0], &part] {
-            for s in ["依頼が求めた**中身**と、依頼が決めた**出力の形**", "形だけが違う", "true にし、quality を下げ", "中身が違う・足りないときは false", "正解のデータ(期待される出力)がパケットに無いときは", "humanEffort の confidence を下げ"] {
+            for s in ["依頼が求めた**中身**を満たしたら true", "中身が違う・足りないときは false", "**出力の形**", "completed を変えず、quality を下げ、rationale に形の違いを書く", "正解のデータ(期待される出力)がパケットに無いときは", "aiOutcome の rationale に「正解のデータが無く、記録から判断した」と書く", "humanEffort の confidence は下げない"] {
                 assert!(ins.contains(s), "{s}");
+            }
+            // 前の文(中身と形の両方を満たしたら達成・正解が無ければ工数の確信度を下げる)は残さない
+            for s in ["の両方を満たしたら true", "humanEffort の confidence を下げ", "正解なし・記録から判断"] {
+                assert!(!ins.contains(s), "{s}");
             }
         }
     }

@@ -65,7 +65,9 @@ bin\atlas.exe --help                  # 使い方
 | `--vcs-mode <v>` | `vcs` / `all` で、比べる版をどこで見るか。`worktree`(既定。照合した時点の作業ツリーで、まだ取り込んでいない変更も含む)/ `committed`(最後に取り込んだ版。git は HEAD、svn は BASE、p4 は手元の版)/ `fixed`(セッションの終わりから決まった日数後の時点で取り込まれていた版。日数は設定の `vcs.lagDays`、既定 7)。設定の `vcs.mode` より優先する |
 | `-V`, `--version` | 版を出す(`atlas 0.1.3 (commit <作ったときのコミット>, code <版の目印>)`)。版はワークスペースの `Cargo.toml` の `version`(ビルドのときに環境変数 `ATLAS_VERSION` を渡せば、その版)。`scripts/ensure-atlas.ps1` が、置いてある実行ファイルを今のコミットから作ったかを、`commit` で確かめるのに使う(git が管理しているファイルを変えたまま作ったものは、コミットの後ろに `-dirty` が付き、同じとはみなさない。git で取得したフォルダでなければ版で) |
 
-`--limit` と `--timeout` は `judge m365`・`turns m365`・`tasks m365` で使います(`--timeout` は `skill-draft` でも使う)。`--backend` は `skill-draft` でだけ使います。`judge import`・`judge m365` は作ってある添付(`out/bundle`)を使うので、絞り込みのオプション(`--session`・`--project`・`--since`・`--client`・`--branch`・`--task`)を付けると止まります。絞るときは、先に `bundle` に付けて添付を作ります。`judge m365` では `--model` は M365 Copilot のモデルの選択の名前になります。
+`--limit` と `--timeout` は `judge m365`・`turns m365`・`tasks m365` で使います(`--timeout` は `skill-draft` でも使う)。`--backend` は `skill-draft` でだけ使います。`judge import`・`judge m365`・`turns import`・`turns m365` は、返答の全体か作ってある添付(`out/bundle`・`out/turn-bundle`)を使うので、絞り込みのオプション(`--session`・`--project`・`--since`・`--client`・`--branch`・`--task`。`import` では `--model` も)を付けると止まります。絞るときは、先に `bundle`・`turns bundle` に付けて添付を作ります。`tasks import`・`tasks m365` も、絞り込みのオプションを付けると止まります(前から)。`judge m365`・`turns m365`・`tasks m365` では `--model` は M365 Copilot のモデルの選択の名前になります。
+
+取り込み(`judge import`・`turns import`・`tasks import`・`judge m365`・`turns m365`・`tasks m365`)の後のレポートの作り直し(`export`)は、絞り込みを付けず、すべてのセッションで、既定の記録の出し方(`--full`・`--tool-output`・`--max-chars` を付けない `export` と同じ)で作ります。全文の記録で作り直したいときは、取り込みの後に `export --full` などを実行します。作り直しに失敗したときは、取り込みは済んでいるので、エラーの後ろに「取り込みは済んでいます。bin\atlas.exe export でレポートを作り直してください」と出します。
 
 ## snapshot と extract が読むもの
 

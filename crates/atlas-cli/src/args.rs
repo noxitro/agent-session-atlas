@@ -42,6 +42,9 @@ pub struct TurnsCliOptions {
     pub model: Option<String>,
     pub unjudged: bool,
     pub timeout_sec: u64,
+    /// import・m365 では効かない絞り込みの指定(judge と同じ。import は返答の全体を取り込み、m365 は作ってある添付を送るので、
+    /// そのまま実行すると黙って全体を扱ってしまう。指定されたら止める)。bundle では空
+    pub ignored_filters: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -337,6 +340,19 @@ fn split_list<'a>(items: impl IntoIterator<Item = &'a String>) -> Vec<String> {
     items.into_iter().flat_map(|s| s.split(',')).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
 }
 
+/// 判定の取り込み(import)と M365 Copilot での判定(m365)では効かない絞り込みの指定(「--session」「--project」など)。
+/// import では --model も絞り込み(モデルで絞る)なので効かない。m365 の --model は M365 Copilot のモデルの選択
+fn ignored_filters_of(values: &Values, action: &str) -> Vec<String> {
+    let mut out: Vec<String> = ["project", "since", "client", "branch", "task"].iter().filter(|k| values.has(k)).map(|k| format!("--{k}")).collect();
+    if values.multi.get("session").map(split_list).is_some_and(|s| !s.is_empty()) {
+        out.insert(0, "--session".into());
+    }
+    if action == "import" && values.has("model") {
+        out.push("--model".into());
+    }
+    out
+}
+
 pub fn parse_cli(argv: &[String]) -> Result<CliOptions, UsageError> {
     // 前の版の tasks link --llm(このツールが LLM を呼んで紐づける)は、知らないオプションとしてではなく、代わりの手順を知らせる
     if argv.iter().any(|a| a == "--llm") {
@@ -374,14 +390,7 @@ pub fn parse_cli(argv: &[String]) -> Result<CliOptions, UsageError> {
             }
         }
         // 絞り込みは添付を作るときのもので、judge では効かない(作ってある添付の全体を扱う)
-        let mut ignored_filters: Vec<String> = ["project", "since", "client", "branch", "task"].iter().filter(|k| values.has(k)).map(|k| format!("--{k}")).collect();
-        if values.multi.get("session").map(split_list).is_some_and(|s| !s.is_empty()) {
-            ignored_filters.insert(0, "--session".into());
-        }
-        // import では --model も絞り込み(モデルで絞る)なので効かない。m365 では M365 Copilot のモデルの選択
-        if action == "import" && values.has("model") {
-            ignored_filters.push("--model".into());
-        }
+        let ignored_filters = ignored_filters_of(&values, &action);
         judge = Some(JudgeCliOptions {
             file,
             model: values.s("model").cloned(),
@@ -438,12 +447,15 @@ pub fn parse_cli(argv: &[String]) -> Result<CliOptions, UsageError> {
         if values.b("zip", false) && action != "bundle" {
             return err("--zip は bundle・turns bundle・tasks bundle でだけ使えます");
         }
+        // import・m365 では、judge と同じく絞り込みを断る(bundle では絞り込みに使う)
+        let ignored_filters = if action == "bundle" { vec![] } else { ignored_filters_of(&values, &action) };
         turns = Some(TurnsCliOptions {
             file,
             limit: pos_int(values.s("limit"), "--limit", 0)?,
             model: values.s("model").cloned(),
             unjudged: values.b("unjudged", false),
             timeout_sec: pos_int(values.s("timeout"), "--timeout", 1)?.unwrap_or(900),
+            ignored_filters,
             action,
         });
     }

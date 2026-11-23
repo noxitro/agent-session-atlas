@@ -300,9 +300,9 @@ pub fn tasks_table(v: &atlas_report::tasks::view::TasksView) -> atlas_core::tabl
                 Cell::Bool(t.done),
                 Cell::Bool(t.missing),
                 t.start.as_deref().into(),
-                t.done_at.as_deref().into(),
-                // 日付だけの完了日は、完了を確認した時刻がその日の稼働時間帯の終わり(出所に添える)
-                t.done_at_source.map_or(Cell::Null, |s| if t.done_date_only { format!("{}(日付だけ)", s.label()).into() } else { s.label().into() }),
+                // 日付だけの完了日は、日付の文字("2026-11-20")をそのまま出す(見る PC の時間帯で日付がずれないように。出所にも添える)
+                t.done_date.as_deref().or(t.done_at.as_deref()).into(),
+                t.done_at_source.map_or(Cell::Null, |s| if t.done_date.is_some() { format!("{}(日付だけ)", s.label()).into() } else { s.label().into() }),
                 t.work_ms.map_or(Cell::Null, hours),
                 hours(t.ai_active_ms),
                 Cell::Num(atlas_core::js::round(t.human_hours * 100.0) / 100.0),

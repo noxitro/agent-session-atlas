@@ -67,13 +67,49 @@ pub fn run(o: &CliOptions, log: Log<'_>) -> Result<RunResult> {
     r
 }
 
-/// judge に、judge では効かない絞り込みを付けたときの知らせ(黙って添付の全体を扱わないように止める)
-fn ignored_filters_message(action: &str, flags: &[String]) -> String {
+/// judge・turns の import・m365 に、そこでは効かない絞り込みを付けたときの知らせ(黙って返答や添付の全体を扱わないように止める)
+fn ignored_filters_message(cmd: &str, action: &str, flags: &[String]) -> String {
     let list = flags.join(" ");
+    let (what, bundle, make) = if cmd == "turns" { ("依頼", "out/turn-bundle", "turns bundle") } else { ("セッション", "out/bundle", "bundle") };
     match action {
-        "import" => format!("{list} は judge import では使えません(返答に入っているセッションをすべて取り込みます)"),
-        _ => format!("{list} は judge {action} では効きません。送るのは、作ってある添付(out/bundle)のファイルです。\n絞り込むときは、先に bin\\atlas.exe bundle {list} --unjudged で添付を作ってから judge {action} を実行してください"),
+        "import" => format!("{list} は {cmd} import では使えません(返答に入っている{what}をすべて取り込みます)"),
+        _ => format!("{list} は {cmd} {action} では効きません。送るのは、作ってある添付({bundle})のファイルです。\n絞り込むときは、先に bin\\atlas.exe {make} {list} --unjudged で添付を作ってから {cmd} {action} を実行してください"),
     }
+}
+
+/// 取り込みの後にレポートを作り直す export の指定。取り込みのコマンドに付いた絞り込み(--since・--project・--client・--model・
+/// --branch・--session・--task)と記録の出し方(--full・--tool-output・--max-chars)は引き継がず、既定の出し方ですべてのセッションで作る
+/// (絞り込んだレポートで、前に作った全体のレポートを置き換えないように)。出力先・設定のフォルダ・判定のファイルは引き継ぐ
+pub(crate) fn export_after_import(o: &CliOptions) -> CliOptions {
+    CliOptions {
+        command: "export".into(),
+        since: None,
+        project: None,
+        client: None,
+        model: None,
+        branch: None,
+        sessions: None,
+        task: None,
+        tool_output: crate::args::ToolOutput::Fail,
+        max_chars: None,
+        full: false,
+        snapshot_all: false,
+        snapshot_prune: false,
+        judge: None,
+        turns: None,
+        tasks_cmd: None,
+        memo_cmd: None,
+        skill_draft: None,
+        ..o.clone()
+    }
+}
+
+/// 取り込みの後の作り直しに失敗したときに添える文
+pub(crate) const REBUILD_FAILED: &str = "取り込みは済んでいます。bin\\atlas.exe export でレポートを作り直してください";
+
+/// 取り込みの後の作り直し(export_after_import)。失敗したら、取り込みは済んでいることと、作り直し方を添えて返す
+pub(crate) fn rebuild_report(o: &CliOptions, p: &Paths, log: Log<'_>) -> Result<RunResult> {
+    run_command(&export_after_import(o), p, log).map_err(|e| anyhow::anyhow!("{e:#}\n{REBUILD_FAILED}"))
 }
 
 /// judge m365 / turns m365 / tasks m365: 開いている M365 Copilot のアプリを操作して未判定の添付ファイルを送り(m365.rs)、
@@ -87,7 +123,7 @@ pub(crate) fn run_m365_command(o: &CliOptions, p: &Paths, target: ChatTarget, mo
         cfg!(windows) || crate::m365::fake_driver().is_some(),
         &std::thread::sleep,
     )?;
-    let build = if s.imported > 0 { run_command(&CliOptions { command: "export".into(), model: None, judge: None, turns: None, tasks_cmd: None, sessions: None, task: None, ..o.clone() }, p, log)?.build } else { None };
+    let build = if s.imported > 0 { rebuild_report(o, p, log)?.build } else { None };
     if !s.failed.is_empty() {
         anyhow::bail!(
             "M365 Copilot で判定できなかったファイルが {} 個あります: {}",
@@ -99,12 +135,12 @@ pub(crate) fn run_m365_command(o: &CliOptions, p: &Paths, target: ChatTarget, mo
 }
 
 /// judge import・turns import の後に、1 件以上取り込めて集計の結果(sessions.json)があれば、レポートを作り直す(export。tasks import と同じ)。
-/// 設定のフォルダを使うときも、同じ設定(o と p は当てた後のもの)で作り直す
+/// 設定のフォルダを使うときも、同じ設定(o と p は当てた後のもの)で作り直す。絞り込みと記録の出し方は引き継がない(export_after_import)
 fn rebuild_after_import(o: &CliOptions, p: &Paths, imported: usize, log: Log<'_>) -> Result<RunResult> {
     if imported == 0 || !p.sessions.exists() {
         return Ok(RunResult::default());
     }
-    run_command(&CliOptions { command: "export".into(), model: None, judge: None, turns: None, tasks_cmd: None, sessions: None, task: None, ..o.clone() }, p, log)
+    rebuild_report(o, p, log)
 }
 
 pub fn run_command(o: &CliOptions, p: &Paths, log: Log<'_>) -> Result<RunResult> {
@@ -136,6 +172,9 @@ pub fn run_command(o: &CliOptions, p: &Paths, log: Log<'_>) -> Result<RunResult>
         }
         "turns" => {
             let t = o.turns.as_ref().ok_or_else(|| anyhow::anyhow!("turns の操作がありません"))?;
+            if !t.ignored_filters.is_empty() {
+                anyhow::bail!("{}", ignored_filters_message("turns", &t.action, &t.ignored_filters));
+            }
             if t.action == "m365" {
                 return run_m365_command(o, p, ChatTarget::Turns, t.model.as_deref(), t.limit, t.timeout_sec, log);
             }
@@ -145,7 +184,7 @@ pub fn run_command(o: &CliOptions, p: &Paths, log: Log<'_>) -> Result<RunResult>
         "judge" => {
             let j = o.judge.as_ref().ok_or_else(|| anyhow::anyhow!("judge の操作がありません"))?;
             if !j.ignored_filters.is_empty() {
-                anyhow::bail!("{}", ignored_filters_message(&j.action, &j.ignored_filters));
+                anyhow::bail!("{}", ignored_filters_message("judge", &j.action, &j.ignored_filters));
             }
             if j.action == "m365" {
                 return run_m365_command(o, p, ChatTarget::Effort, j.model.as_deref(), j.limit, j.timeout_sec, log);

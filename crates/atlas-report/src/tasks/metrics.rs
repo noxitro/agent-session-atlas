@@ -37,8 +37,9 @@ pub struct TaskInfo {
     pub done_observed: bool,
     /// 完了の時刻の出所(完了していて時刻があるときだけ)
     pub done_at_source: Option<DoneAtSource>,
-    /// 完了の時刻が、日付だけの完了日から決めたもの(done_at はその日の稼働時間帯の終わり。「完了の後に始まった」はその日の終わりで見る)
-    pub done_date_only: bool,
+    /// 日付だけの完了日の、暦の日付の文字("YYYY-MM-DD")。工数はその日の稼働時間帯の終わりまで、「完了の後に始まった」はその日の終わりで見る
+    /// (どちらもこの日付と、集計する PC の時間帯から決める)。時刻つきの完了なら None
+    pub done_date: Option<String>,
     pub missing: bool,
     /// 送った人が数えた開始(紐づいたセッションのうち最も早い開始)。手元のセッションの開始と早い方を使う
     pub start_hint: Option<String>,
@@ -50,7 +51,15 @@ impl TaskInfo {
         if !self.done {
             return None;
         }
-        super::state::done_cutoff(self.done_at.as_deref(), self.done_date_only)
+        super::state::done_cutoff(self.done_at.as_deref(), self.done_date.as_deref())
+    }
+
+    /// 工数(稼働時間帯の長さ)を数える終わり(完了していなければ None。日付だけの完了日は、その日の稼働時間帯の終わり)
+    pub fn done_work_end_ms(&self, wh: &WorkHours) -> Option<i64> {
+        if !self.done {
+            return None;
+        }
+        super::state::done_work_end(self.done_at.as_deref(), self.done_date.as_deref(), wh)
     }
 }
 
@@ -122,9 +131,10 @@ pub struct TaskRow {
     pub done_observed: bool,
     /// 完了の時刻の出所(記録・観測。未完了なら null)
     pub done_at_source: Option<DoneAtSource>,
-    /// 完了の時刻が、日付だけの完了日から決めたもの(画面では日付だけを出す)。そうでなければ書かない
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub done_date_only: bool,
+    /// 日付だけの完了日の、暦の日付の文字("YYYY-MM-DD"。画面と tasks.csv はこれをそのまま出す)。時刻つきなら書かない。
+    /// このとき done_at は、集計した PC の時間帯での、その日の稼働時間帯の終わり(工数を数えた終わり)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub done_date: Option<String>,
     pub missing: bool,
     /// 紐づいたセッションのうち最も早い開始(ISO。完了を確認した時刻より後に始まったセッションは使わない)
     pub start: Option<String>,
@@ -263,7 +273,7 @@ pub fn compute_task_metrics(tasks: &[TaskInfo], links: &[(String, String, LinkSo
             done_at: t.done_at.clone(),
             done_observed: t.done_observed,
             done_at_source: t.done_at_source.filter(|_| t.done && t.done_at.is_some()),
-            done_date_only: t.done && t.done_at.is_some() && t.done_date_only,
+            done_date: t.done_date.clone().filter(|_| t.done && t.done_at.is_some()),
             missing: t.missing,
             start: None,
             work_ms: None,
@@ -279,8 +289,11 @@ pub fn compute_task_metrics(tasks: &[TaskInfo], links: &[(String, String, LinkSo
             comparable: false,
             excluded: None,
         };
-        // 工数(稼働時間帯の長さ)は完了の時刻まで(日付だけの完了日は、その日の稼働時間帯の終わり)
-        let done_ms = if t.done { t.done_at.as_deref().and_then(atlas_core::jsdate::parse_ms) } else { None };
+        // 工数(稼働時間帯の長さ)は完了の時刻まで(日付だけの完了日は、その日付の稼働時間帯の終わり。集計する PC の時間帯)
+        let done_ms = t.done_work_end_ms(wh);
+        if row.done_date.is_some() {
+            row.done_at = done_ms.map(atlas_core::jsdate::to_iso);
+        }
         // 完了を確認した時刻より後の開始は、開始に使わない(日付だけの完了日は、その日の終わりまでに始めたものを使う)
         let cutoff = t.done_cutoff_ms();
         let before_done = |s: i64| cutoff.is_none_or(|d| s <= d);
@@ -317,7 +330,10 @@ pub fn compute_task_metrics(tasks: &[TaskInfo], links: &[(String, String, LinkSo
             }
         }
         row.start = start.map(atlas_core::jsdate::to_iso);
-        if let (true, Some(s), Some(d)) = (t.done_observed, start, done_ms) {
+        // 日付だけの完了日で、始まりがその日の稼働時間帯の終わりより後(夜に始めて、その日に完了)なら、工数は 0 時間になる。
+        // その 0 時間を比べず、「完了の後に始まった」と同じく比べないものにする
+        let started_after_work_end = row.done_date.is_some() && matches!((start, done_ms), (Some(s), Some(d)) if s > d);
+        if let (true, Some(s), Some(d), false) = (t.done_observed, start, done_ms, started_after_work_end) {
             row.work_ms = Some(work_overlap_ms(s, d, wh));
         }
         if !linked.is_empty() {
@@ -331,7 +347,7 @@ pub fn compute_task_metrics(tasks: &[TaskInfo], links: &[(String, String, LinkSo
                 Some(Excluded::NotDone)
             } else if !t.done_observed {
                 Some(Excluded::DoneUnobserved)
-            } else if row.after_done_sessions > 0 {
+            } else if row.after_done_sessions > 0 || started_after_work_end {
                 Some(Excluded::AfterDone)
             } else if start.is_none() {
                 Some(Excluded::NoStart)
@@ -406,7 +422,7 @@ mod tests {
     }
 
     fn info(id: &str, done_at: Option<&str>) -> TaskInfo {
-        TaskInfo { id: id.into(), name: format!("{id} の名前"), status: if done_at.is_some() { "Done" } else { "Open" }.into(), done: done_at.is_some(), done_at: done_at.map(str::to_string), done_observed: done_at.is_some(), done_at_source: done_at.map(|_| DoneAtSource::Observed), done_date_only: false, missing: false, start_hint: None }
+        TaskInfo { id: id.into(), name: format!("{id} の名前"), status: if done_at.is_some() { "Done" } else { "Open" }.into(), done: done_at.is_some(), done_at: done_at.map(str::to_string), done_observed: done_at.is_some(), done_at_source: done_at.map(|_| DoneAtSource::Observed), done_date: None, missing: false, start_hint: None }
     }
 
     /// 日付だけの完了日: その日の夜(稼働時間帯の後)に始めたセッションも数え(完了の後に始まったとしない)、工数は稼働時間帯の終わりまで
@@ -414,7 +430,7 @@ mod tests {
     fn date_only_done_counts_the_evening_session_and_work_stops_with_the_work_hours() {
         with_zone(&TimeZone::fixed(Offset::constant(9)), || {
             // 月曜(11/23)が完了日(日付だけ)。done_at はその日の稼働時間帯の終わり 18:00
-            let t = TaskInfo { done_date_only: true, done_at_source: Some(DoneAtSource::Recorded), ..info("A", Some("2026-11-23T18:00:00+09:00")) };
+            let t = TaskInfo { done_date: Some("2026-11-23".into()), done_at_source: Some(DoneAtSource::Recorded), ..info("A", Some("2026-11-23T18:00:00+09:00")) };
             let mut f = HashMap::new();
             f.insert("early".to_string(), facts("2026-11-23T10:00:00+09:00", 1.0, Some((2.0, Some(0.8)))));
             f.insert("evening".to_string(), facts("2026-11-23T20:00:00+09:00", 1.0, Some((1.0, Some(0.8)))));
@@ -422,16 +438,50 @@ mod tests {
             assert!(started_after_done(&t, parse_ms("2026-11-24T00:00:01+09:00")));
             let (rows, sum) = compute_task_metrics(std::slice::from_ref(&t), &[link("early", "A", LinkSource::Machine), link("evening", "A", LinkSource::Machine)], &f, &WorkHours::default());
             let r = &rows[0];
-            assert_eq!((r.after_done_sessions, r.excluded, r.done_date_only), (0, None, true));
+            assert_eq!((r.after_done_sessions, r.excluded, r.done_date.as_deref()), (0, None, Some("2026-11-23")));
             // 10:00〜18:00 の 8 時間(夜のセッションの分は稼働時間帯の外)
             assert_eq!(r.work_ms, Some(8.0 * 3_600_000.0));
             assert_eq!((r.human_hours, sum.included), (3.0, 1));
             // 時刻つきの完了(18:00)なら、夜のセッションは完了の後
-            let timed = TaskInfo { done_date_only: false, ..t.clone() };
+            let timed = TaskInfo { done_date: None, ..t.clone() };
             assert!(started_after_done(&timed, parse_ms("2026-11-23T20:00:00+09:00")));
-            assert_eq!(serde_json::to_value(r).unwrap()["doneDateOnly"], true);
+            assert_eq!(serde_json::to_value(r).unwrap()["doneDate"], "2026-11-23");
             let (rows, _) = compute_task_metrics(&[timed], &[link("early", "A", LinkSource::Machine)], &f, &WorkHours::default());
-            assert!(serde_json::to_value(&rows[0]).unwrap().get("doneDateOnly").is_none());
+            assert!(serde_json::to_value(&rows[0]).unwrap().get("doneDate").is_none());
+        });
+    }
+
+    /// 日付だけの完了日で、紐づいたセッションがどれもその日の稼働時間帯の終わりより後(夜)に始まったときは、
+    /// 工数が 0 時間になるので比べない(理由は「完了の後に始まったセッション」と同じ)
+    #[test]
+    fn date_only_done_with_only_an_evening_session_is_not_compared() {
+        with_zone(&TimeZone::fixed(Offset::constant(9)), || {
+            let t = TaskInfo { done_date: Some("2026-11-23".into()), done_at_source: Some(DoneAtSource::Recorded), ..info("A", Some("2026-11-23T18:00:00+09:00")) };
+            let mut f = HashMap::new();
+            f.insert("evening".to_string(), facts("2026-11-23T20:00:00+09:00", 1.0, Some((1.0, Some(0.8)))));
+            let (rows, sum) = compute_task_metrics(std::slice::from_ref(&t), &[link("evening", "A", LinkSource::Machine)], &f, &WorkHours::default());
+            let r = &rows[0];
+            assert_eq!((r.work_ms, r.comparable, r.excluded), (None, false, Some(Excluded::AfterDone)));
+            assert_eq!(r.excluded.map(Excluded::label), Some("完了の後に始まったセッション"));
+            // セッションはその日のうちに始めたので、開始と実働・推定人手工数はこのタスクに数える(比べないだけ)
+            assert_eq!((r.start.as_deref(), r.human_hours, r.after_done_sessions), (Some("2026-11-23T11:00:00.000Z"), 1.0, 0));
+            assert_eq!((sum.included, sum.excluded.after_done, sum.work_ms), (0, 1, 0.0));
+        });
+    }
+
+    /// 日付だけの完了日の工数の終わりは、日付の文字と集計する PC の時間帯から決める(前に読んだ PC の時間帯の doneAt を使わない)
+    #[test]
+    fn date_only_work_end_follows_the_date_and_this_pcs_time_zone() {
+        // JST の PC で読んだ doneAt(11/23 18:00 JST = 09:00Z)。集計は UTC の PC
+        let t = TaskInfo { done_date: Some("2026-11-23".into()), done_at_source: Some(DoneAtSource::Recorded), ..info("A", Some("2026-11-23T09:00:00.000Z")) };
+        let mut f = HashMap::new();
+        f.insert("s".to_string(), facts("2026-11-23T10:00:00Z", 1.0, Some((1.0, Some(0.8)))));
+        with_zone(&TimeZone::fixed(Offset::constant(0)), || {
+            let (rows, _) = compute_task_metrics(std::slice::from_ref(&t), &[link("s", "A", LinkSource::Machine)], &f, &WorkHours::default());
+            // UTC の 11/23 10:00〜18:00 の 8 時間(読んだ PC の 09:00Z で切らない)。doneAt もこの PC の 18:00
+            assert_eq!((rows[0].work_ms, rows[0].done_at.as_deref(), rows[0].done_date.as_deref()), (Some(8.0 * 3_600_000.0), Some("2026-11-23T18:00:00.000Z"), Some("2026-11-23")));
+            assert!(!started_after_done(&t, parse_ms("2026-11-23T23:00:00Z")));
+            assert!(started_after_done(&t, parse_ms("2026-11-24T00:00:01Z")));
         });
     }
 

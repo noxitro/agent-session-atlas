@@ -245,9 +245,13 @@
 <section class="section" id="compare" aria-labelledby="compare-h">
   <div class="section-head">
     <h2 id="compare-h">比べる</h2>
-    <p>
-      2 つの条件(期間・プロジェクト・工程・推論強度・モデル・wiki の参照)を並べます。上の絞り込みには従わず、全セッション(空のセッションを含めるかの条件だけ)から選びます。セッションが {COMPARE_MIN_SESSIONS} 件未満の側の割合と、割る数(記録のあるセッション)が {COMPARE_MIN_SESSIONS} 件未満の平均は「—」です。工程は依頼(ターン)の単位で並べ、依頼が {COMPARE_MIN_TURNS} 件未満の割合と平均を「—」にします(AI の変更の残存の割合は、その工程に照合できたまとまりのあるセッションが {RETENTION_MIN_SESSIONS} 件未満なら「—」)。差は相関で、条件の違いが原因とは限りません。差の幅(95%)はセッションを互いに独立とみなした近似で、同じ人のセッションは結果が似るため、実際の幅はこれより広くなります{#if byPerson}(人の違いの影響を減らした比べ方は、表の下の「人ごとの差」){/if}。モデルどうしは、本体のモデルと推論強度の組が決まったセッション(本体のリクエストの {Math.round(MAIN_EFFORT_SHARE * 100)}% 以上が同じ組。推論強度どうしと同じ決め方)を、選んだモデルで分けます。wiki の参照は、llm-wiki を参照したセッション(改善点の llm-wiki の箱・絞り込みと同じ決め方。書き込みだけのセッションは参照していない側)と参照していないセッションを分けます。手戻りのないセッションの割合を依頼の数で分けた行は、推論強度を比べるときだけ出します。テストの結果の 2 行は、テストを実行したセッション(テストの結果の記録が 1 回以上あるもの。その数も並べます)を割る数にし、それが {COMPARE_MIN_SESSIONS} 件未満の側は「—」です(テストの記録のあるセッションが無いときと、工程どうしでは出しません)。テストを走らせるか・いつ走らせるかは条件で変わりうるので、テストを実行したセッションの数も見比べてください。最初の実行は、そのとき走らせたテストだけの結果です。
-    </p>
+    <p data-testid="compare-lead">2 つの条件(期間・プロジェクト・工程・推論強度・モデル・wiki の参照)を並べます。差は相関で、条件の違いが原因とは限りません。</p>
+    <details class="notes" data-testid="compare-notes">
+      <summary>数え方と注意</summary>
+      <p>
+      上の絞り込みには従わず、全セッション(空のセッションを含めるかの条件だけ)から選びます。セッションが {COMPARE_MIN_SESSIONS} 件未満の側の割合と、割る数(記録のあるセッション)が {COMPARE_MIN_SESSIONS} 件未満の平均は「—」です。工程は依頼(ターン)の単位で並べ、依頼が {COMPARE_MIN_TURNS} 件未満の割合と平均を「—」にします(AI の変更の残存の割合は、その工程に照合できたまとまりのあるセッションが {RETENTION_MIN_SESSIONS} 件未満なら「—」)。差の幅(95%)はセッションを互いに独立とみなした近似で、同じ人のセッションは結果が似るため、実際の幅はこれより広くなります{#if byPerson}(人の違いの影響を減らした比べ方は、表の下の「人ごとの差」){/if}。モデルどうしは、本体のモデルと推論強度の組が決まったセッション(本体のリクエストの {Math.round(MAIN_EFFORT_SHARE * 100)}% 以上が同じ組。推論強度どうしと同じ決め方)を、選んだモデルで分けます。wiki の参照は、llm-wiki を参照したセッション(改善点の llm-wiki の箱・絞り込みと同じ決め方。書き込みだけのセッションは参照していない側)と参照していないセッションを分けます。手戻りのないセッションの割合を依頼の数で分けた行は、推論強度を比べるときだけ出します。テストの結果の 2 行は、テストを実行したセッション(テストの結果の記録が 1 回以上あるもの。その数も並べます)を割る数にし、それが {COMPARE_MIN_SESSIONS} 件未満の側は「—」です(テストの記録のあるセッションが無いときと、工程どうしでは出しません)。テストを走らせるか・いつ走らせるかは条件で変わりうるので、テストを実行したセッションの数も見比べてください。最初の実行は、そのとき走らせたテストだけの結果です。
+      </p>
+    </details>
   </div>
 
   <div class="controls">
@@ -428,9 +432,13 @@
     <div class="persons" data-testid="compare-person">
       <h3 id="compare-person-h">人ごとの差</h3>
       <p class="sides" data-testid="compare-person-sides">A: {sideLabel('a')} / B: {sideLabel('b')}{#if kind === 'wiki'}。差(B − A)は「wiki を参照していない − 参照した」です{/if}</p>
-      <p class="note">
-        同じ人の中での差を平均したもので、人の違いの影響を減らします。人の数が少ないと幅は広くなります。両方の側にそれぞれ {countWord} {minCount} 件以上ある人だけを使います(記録のある {int(persons.groups.length)} 人のうち {int(persons.eligible)} 人)。行ごとに、その人の A と B の値がどちらも出ているもの(上の表と同じ「—」の決まり)の差(B − A)を、人を単位にして平均します。差の幅(95%)は、人ごとの差の平均 ± t × 標準偏差 ÷ √人数(t は自由度 = 使えた人の数 − 1 の t 分布の値)で、使えた人が 2 人未満の行には出しません。割合の行の幅は、差のとりうる範囲(±100 ポイント)で切り、切ったときは「(端で切った)」と書きます。どの人も同じ重みで平均する(セッションの数によらない)ので、上の表の差とは一致しません。ツールの失敗・拒否の率は、その人のツール呼び出しが {minCount} 回未満の側を「—」にします{#if kind === 'phase'}(次の依頼で直し・差し戻しの割合も、次の依頼があった依頼が {minCount} 件未満の側は「—」){/if}。{#if persons.unassigned.a + persons.unassigned.b > 0}人の記録が無い{countWord}(A {int(persons.unassigned.a)} 件・B {int(persons.unassigned.b)} 件)は入れていません。{/if}差は相関で、条件の違いが原因とは限りません。
-      </p>
+      <p class="note" data-testid="compare-person-lead">同じ人の中での差を平均したもので、人の違いの影響を減らします。差は相関で、条件の違いが原因とは限りません。</p>
+      <details class="notes" data-testid="compare-person-notes">
+        <summary>数え方と注意</summary>
+        <p class="note">
+        人の数が少ないと幅は広くなります。両方の側にそれぞれ {countWord} {minCount} 件以上ある人だけを使います(記録のある {int(persons.groups.length)} 人のうち {int(persons.eligible)} 人)。行ごとに、その人の A と B の値がどちらも出ているもの(上の表と同じ「—」の決まり)の差(B − A)を、人を単位にして平均します。差の幅(95%)は、人ごとの差の平均 ± t × 標準偏差 ÷ √人数(t は自由度 = 使えた人の数 − 1 の t 分布の値)で、使えた人が 2 人未満の行には出しません。割合の行の幅は、差のとりうる範囲(±100 ポイント)で切り、切ったときは「(端で切った)」と書きます。どの人も同じ重みで平均する(セッションの数によらない)ので、上の表の差とは一致しません。ツールの失敗・拒否の率は、その人のツール呼び出しが {minCount} 回未満の側を「—」にします{#if kind === 'phase'}(次の依頼で直し・差し戻しの割合も、次の依頼があった依頼が {minCount} 件未満の側は「—」){/if}。{#if persons.unassigned.a + persons.unassigned.b > 0}人の記録が無い{countWord}(A {int(persons.unassigned.a)} 件・B {int(persons.unassigned.b)} 件)は入れていません。{/if}
+        </p>
+      </details>
       {#if persons.eligible < 2}
         <p class="note" data-testid="compare-person-reason">
           両方の側にそれぞれ {countWord} {minCount} 件以上ある人が {int(persons.eligible)} 人なので、人を単位にした幅は出しません(2 人以上で出します)。
@@ -603,6 +611,24 @@
   }
   .persons {
     margin-top: 18px;
+  }
+  /* 説明の続き(数え方と注意)は畳む。最初の 2 文だけを見せる */
+  .notes {
+    /* 見出しの行(折り返す flex)の中では、行いっぱいに置いて見出しの横に入らないようにする */
+    flex: 1 1 100%;
+    margin: 4px 0 8px;
+    max-width: 100%;
+    min-width: 0;
+  }
+  .notes > summary {
+    font-size: 0.8125rem;
+    color: var(--form);
+    min-height: 24px;
+    cursor: pointer;
+  }
+  .notes > p {
+    margin: 4px 0 0;
+    overflow-wrap: anywhere;
   }
   .persons h3 {
     margin-bottom: 4px;

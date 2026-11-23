@@ -196,7 +196,7 @@
                 </th>
                 <td class="status"><span translate="no">{t.status || '—'}</span><span class="part">{t.done ? '完了' : '未完了'}</span>{#if t.missing}<span class="tag" title="最後に読んだ XML に無かったタスク。最後に読んだ値のまま出しています">書き出しに無い</span>{/if}</td>
                 <td class="num when">{dateTime(t.start, '—')}</td>
-                <td class="num when">{doneAtText(t)}{#if t.doneAt && t.doneAtSource}<span class="part" data-testid="task-done-source" title={t.doneAtSource === 'recorded' ? (t.doneDateOnly ? '管理ツールの XML にあった完了日(日付だけ。工数はその日の稼働時間帯の終わりまでを数えます)' : '管理ツールの XML にあった完了日時') : '完了を最初に見た書き出しの時刻(XML の更新時刻)'}>{DONE_AT_SOURCE_LABEL[t.doneAtSource]}</span>{/if}</td>
+                <td class="num when">{doneAtText(t)}{#if t.doneAt && t.doneAtSource}<span class="part" data-testid="task-done-source" title={t.doneAtSource === 'recorded' ? (t.doneDate ? '管理ツールの XML にあった完了日(日付だけ。工数はその日の稼働時間帯の終わりまでを数えます)' : '管理ツールの XML にあった完了日時') : '完了を最初に見た書き出しの時刻(XML の更新時刻)'}>{DONE_AT_SOURCE_LABEL[t.doneAtSource]}</span>{/if}</td>
                 <td class="num">
                   <!-- 確信度の低い推定だけなら、合計に入れる推定が無い(0 時間とは書かない) -->
                   {#if t.sessions === 0}—{:else if t.judgedSessions === 0}<span class="missing-value">未判定</span>{:else if t.judgedSessions === t.lowConfidenceSessions}—{:else}{hours(t.humanHours)}{/if}

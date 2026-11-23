@@ -229,12 +229,37 @@ const RUBRIC_TPL: &str = "### 判定すること(依頼 1 件ごと)
   - requirement = 依頼の意図・要件・前提の取り違え。defect = 誤り・不具合・動かない。quality = 品質・体裁・規約や決まりごとに合わない。scope = やり過ぎ・足りない・範囲違い。environment = 環境・ツール・権限・外部サービスの事情。other = どれにも当たらない
 - **phase**(その依頼が、利用者の作業の流れのどの工程に当たるか): ⟦phases⟧ のどれか 1 つ。規則による推定(参考)の「工程」は使ったツールからの機械的な推定なので、依頼文と応答の内容で決め直してください
 - **confidence**: 0〜1。次の依頼の文があいまいなとき、本文が中略されているときは下げる
-- **note**: 判定の理由を日本語で 1〜2 文(80 字程度まで)。依頼文や応答をそのまま長く引用しない";
+- **note**: 判定の理由を日本語で 1〜2 文(80 字程度まで)。依頼文や応答をそのまま長く引用しない
+
+### 迷うときの決め方(上の分類の意味は変えません)
+
+- **材料が足りないとき**: 次の依頼の文が「(本文なし)」のとき、この依頼の応答が「(応答の記録なし)」のとき、AI の最後の応答が途中経過だけ(「…確認します」「…を実行します」のように、作業の途中で終わっている)のときは、outcome を unknown にし、confidence を低く(0.3 以下)します
+- **kind は文の形ではなく意図で決めます**: 質問の形をした依頼でも、直前の AI の成果を直させる意図なら fix、相談・情報を求める意図なら question です
+- **question の outcome**: 同じ話を深掘りする追加の質問は follow_up(mismatch は null)。回答が的外れで聞き直したときは off_target(mismatch を付ける)
+- **承認を求められたとき**: AI が承認を求め、次の依頼が承認だけ(「承認」「OK」など)のときは as_is。承認までに中身を直させたときは、直させた成果を出した依頼(直しを求める依頼の 1 つ前の依頼)を fix_content にします(直した後の成果が承認されたら、その依頼は as_is)
+- **中断と再開が続くとき**: この依頼の間に中断があり、次の依頼が「再開」「続けて」だけのときは、この依頼の outcome は unknown にします(成果が出る前に止まっていて、扱いが読み取れないため)
+- **phase(設定・運用と要件定義)**: ツールや環境の設定・運用(エージェントやエディタの設定、ビルドや実行の環境、権限、認証など)の依頼は ⟦opsPhase⟧ にします。⟦reqRule⟧";
+
+/// ツールや環境の設定・運用の依頼を入れる工程名。工程名の一覧に「運用」があれば「運用」(既定の工程名にある)、
+/// 無ければ「その他」、どちらも無ければ一覧の中で最も近いもの
+fn ops_phase_rule(phases: &[String]) -> (&'static str, &'static str) {
+    let has = |p: &str| phases.iter().any(|x| x == p);
+    let phase = if has("運用") {
+        "`運用`(`その他` にはしません)"
+    } else if has("その他") {
+        "`その他`(工程名に「運用」が無いため)"
+    } else {
+        "上の工程名のうち最も近いもの(工程名に「運用」も「その他」も無いため)"
+    };
+    let req = if has("要件定義") { "`要件定義` は、作るものの要件・仕様を決める依頼だけにします(設定・運用の話は入れません)" } else { "要件・仕様を決める工程には、設定・運用の話を入れません" };
+    (phase, req)
+}
 
 /// 判定の基準(分割ファイルの指示と INSTRUCTIONS.md の両方に載せる)
 pub fn turn_rubric(phases: &[String]) -> String {
     let ol = |xs: &[&str], label: fn(&str) -> &'static str| xs.iter().map(|x| format!("`{x}`({})", label(x))).collect::<Vec<_>>().join(" / ");
     let ph = phases.iter().map(|p| format!("`{p}`")).collect::<Vec<_>>().join(" / ");
+    let (ops_phase, req_rule) = ops_phase_rule(phases);
     fill(
         RUBRIC_TPL,
         &[
@@ -243,6 +268,8 @@ pub fn turn_rubric(phases: &[String]) -> String {
             ("question", &ol(&QUESTION_OUTCOMES, outcome_label)),
             ("mismatch", &ol(&MISMATCHES, mismatch_label)),
             ("phases", &ph),
+            ("opsPhase", ops_phase),
+            ("reqRule", req_rule),
         ],
     )
 }
@@ -561,6 +588,7 @@ const TURN_INSTRUCTIONS_TPL: &str = "# Copilot の依頼ごとの判定の指示
 
 ⟦safety⟧
 - 成果の扱いは**次の依頼の文**で判断します。次の依頼の文がパケットに無いのは、セッションの最後の依頼だけです。
+- `⟦result⟧` は、判定しながら手で書いてかまいません(書くためにスクリプトを作って動かす必要はありません)。ファイルの読み書きのほかのツールを使わないことは、上のとおりです。
 
 ## 手順
 

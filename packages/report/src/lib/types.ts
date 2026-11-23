@@ -345,8 +345,8 @@ export interface TaskRow {
   doneObserved: boolean;
   /** 完了の時刻の出所(recorded: XML の完了日時。observed: 完了を最初に見た書き出しの時刻)。未完了なら null。古い埋め込みには無い */
   doneAtSource?: TaskDoneAtSource | null;
-  /** 記録の完了日時が日付だけ(doneAt はその日の稼働時間帯の終わり。画面は日付だけを出す)。そうでなければ無い */
-  doneDateOnly?: boolean;
+  /** 記録の完了日時が日付だけのときの、暦の日付の文字("2026-11-20"。画面はこれをそのまま出す)。doneAt は、集計した PC の時間帯でのその日の稼働時間帯の終わり。そうでなければ無い */
+  doneDate?: string;
   /** 最後に読んだ XML に無かった */
   missing: boolean;
   /** 紐づいたセッションのうち最も早い開始(完了を確認した時刻より後に始まったセッションは使わない) */

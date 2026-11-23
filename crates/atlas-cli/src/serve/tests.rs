@@ -1191,6 +1191,15 @@ fn chat_judge_parts_and_import() {
     assert_eq!((ok.1["parts"]["parts"][0]["name"].clone(), ok.1["parts"]["parts"][0]["judged"].clone()), (json!("part-01.md"), json!(1)));
     // 取り込んだ後の一覧も、読んだときと同じ形(M365 Copilot を自動で操作できるかが入る)
     assert_eq!(ok.1["parts"]["canAutomate"], json!(cfg!(windows)));
+    // 今の判定のファイルが壊れていれば、書き換えずに 409(直してもう一度)
+    let saved = fs::read(j.e.out.join("judgments.json")).unwrap();
+    fs::write(j.e.out.join("judgments.json"), "{ 壊れた").unwrap();
+    let broken = import(&reply);
+    assert_eq!(broken.0, 409, "{}", broken.1);
+    let msg = broken.1["error"].as_str().unwrap();
+    assert!(msg.starts_with("判定のファイルが壊れています。") && msg.contains("judgments.json を確かめてください"), "{msg}");
+    assert_eq!(fs::read_to_string(j.e.out.join("judgments.json")).unwrap(), "{ 壊れた");
+    fs::write(j.e.out.join("judgments.json"), saved).unwrap();
     let pv = j.e.json("GET", "/api/jobs/judge-preview", None).1;
     assert_eq!((pv["eligible"].clone(), pv["judged"].clone(), pv["pending"].clone()), (json!(2), json!(1), json!(1)));
     assert_eq!(j.e.get("/api/judge/parts").0, 403);

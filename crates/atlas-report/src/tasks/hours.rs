@@ -103,23 +103,54 @@ fn take_num(s: &str, min: usize, max: usize) -> Option<(u32, &str)> {
 /// 読んだ完了日時
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DoneAt {
-    /// 完了の時刻(ミリ秒)。日付だけのものは、その日の稼働時間帯の終わり(工数はここまでを数える)
+    /// 完了の時刻(ミリ秒)。日付だけのものは、読んだ PC の時間帯での、その日の稼働時間帯の終わり(前の版の atlas が読む値)
     pub ms: i64,
-    /// 日付だけ(時刻の無い日付か、時差の無い 0:00 ちょうど)。候補と「完了の後に始まった」の判定には、その日の終わり(24:00)を使う(day_end_ms)
-    pub date_only: bool,
+    /// 日付だけ(時刻の無い日付か、時差の無い 0:00 ちょうど)のときの暦の日付。工数(稼働時間帯の終わり)と、候補と「完了の後に始まった」の判定
+    /// (その日の 24:00)は、この日付と集計する PC の時間帯から決める(date_work_end_ms・date_end_ms)。時刻つきなら None
+    pub date: Option<Civil>,
 }
 
-/// 日付だけの完了日の、その日の稼働時間帯の終わり(workHours.end。24:00 なら翌日の 0 時)のローカル時刻
-fn work_end_of(date: Civil, wh: &WorkHours) -> Option<i64> {
+impl DoneAt {
+    pub fn date_only(&self) -> bool {
+        self.date.is_some()
+    }
+}
+
+/// 暦の日付を "YYYY-MM-DD" に
+pub fn format_date(c: Civil) -> String {
+    format!("{:04}-{:02}-{:02}", c.year, c.month, c.day)
+}
+
+/// "YYYY-MM-DD"(月と日は 2 桁)を暦の日付に。暦に無い日・ほかの書き方は None
+pub fn parse_date(s: &str) -> Option<Civil> {
+    let b = s.as_bytes();
+    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' || !b.iter().enumerate().all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit()) {
+        return None;
+    }
+    Civil::date(s[..4].parse().ok()?, s[5..7].parse().ok()?, s[8..].parse().ok()?)
+}
+
+/// 日付の、稼働時間帯の終わり(workHours.end。24:00 なら翌日の 0 時)の、この PC の時間帯での時刻。日付だけの完了日の工数はここまで
+pub fn date_work_end_ms(date: Civil, wh: &WorkHours) -> Option<i64> {
     let end = if wh.end_min >= 1440 { date.add_days(1)? } else { date.at(wh.end_min / 60, wh.end_min % 60, 0)? };
     local_ms(end)
 }
 
-/// 日付だけの完了日の、その日の終わり(翌日の 0 時のローカル時刻)。ms はその日の稼働時間帯の終わり(DoneAt::ms。
-/// 24:00 なら翌日の 0 時なので、1 ミリ秒前の日付で見る)
-pub fn day_end_ms(ms: i64) -> Option<i64> {
+/// 日付の終わり(翌日の 0 時)の、この PC の時間帯での時刻。日付だけの完了日の、候補と「完了の後に始まった」の判定に使う
+pub fn date_end_ms(date: Civil) -> Option<i64> {
+    local_ms(date.add_days(1)?)
+}
+
+/// 日付だけの完了日の、暦の日付の文字("YYYY-MM-DD")。
+/// done_date(この版が書いたもの)が読めればそれを使う。無ければ(前の版の tasks.json・送った人の記録は doneDateOnly だけ)、
+/// 前の版と同じ計算で決める: done_at(その日の稼働時間帯の終わり。24:00 なら翌日の 0 時)の 1 ミリ秒前の、この PC の時間帯での日付
+pub fn done_date_text(done_date: Option<&str>, done_at: Option<&str>) -> Option<String> {
+    if let Some(d) = done_date.and_then(parse_date) {
+        return Some(format_date(d));
+    }
+    let ms = done_at.and_then(atlas_core::jsdate::parse_ms)?;
     let p = local_parts(ms - 1)?;
-    local_ms(Civil::date(p.year, p.month, p.day)?.add_days(1)?)
+    Civil::date(p.year, p.month, p.day).map(format_date)
 }
 
 /// 管理ツールの XML にある完了日時(設定の tasks.doneAt)を読む。読めなければ None。読む書き方は次のとおり:
@@ -138,7 +169,7 @@ pub fn parse_done_at(s: &str, wh: &WorkHours) -> Option<DoneAt> {
     let rest = rest.strip_prefix(sep)?;
     let (d, rest) = take_num(rest, 1, 2)?;
     let date = Civil::date(y as i32, m, d)?;
-    let date_only = |date: Civil| work_end_of(date, wh).map(|ms| DoneAt { ms, date_only: true });
+    let date_only = |date: Civil| date_work_end_ms(date, wh).map(|ms| DoneAt { ms, date: Some(date) });
     if rest.is_empty() {
         return date_only(date);
     }
@@ -180,7 +211,7 @@ pub fn parse_done_at(s: &str, wh: &WorkHours) -> Option<DoneAt> {
         };
         atlas_core::jsdate::parse_ms(&format!("{y:04}-{m:02}-{d:02}T{h:02}:{mi:02}:{sec:02}{off}"))?
     };
-    Some(DoneAt { ms: base + frac_ms, date_only: false })
+    Some(DoneAt { ms: base + frac_ms, date: None })
 }
 
 #[cfg(test)]
@@ -193,8 +224,8 @@ mod tests {
     fn done_at_formats() {
         jst(|| {
             let wh = WorkHours::default();
-            let p = |s: &str| parse_done_at(s, &wh).filter(|d| !d.date_only).map(|d| d.ms);
-            let day = |s: &str| parse_done_at(s, &wh).filter(|d| d.date_only).map(|d| d.ms);
+            let p = |s: &str| parse_done_at(s, &wh).filter(|d| !d.date_only()).map(|d| d.ms);
+            let day = |s: &str| parse_done_at(s, &wh).filter(|d| d.date_only()).map(|d| d.ms);
             assert_eq!(p("2026-11-20T15:30:00+09:00"), Some(ms("2026-11-20T15:30:00+09:00")));
             assert_eq!(p("2026-11-20T06:30:00Z"), Some(ms("2026-11-20T15:30:00+09:00")));
             assert_eq!(p("2026-11-20T15:30:00.250+0900"), Some(ms("2026-11-20T15:30:00+09:00") + 250));
@@ -206,7 +237,9 @@ mod tests {
             // 時刻の無い日付は日付だけ(時刻はその日の稼働時間帯の終わり)
             assert_eq!(day("2026-11-20"), Some(ms("2026-11-20T18:00:00+09:00")));
             let late = WorkHours { end_min: 1440, ..WorkHours::default() };
-            assert_eq!(parse_done_at("2026-11-20", &late), Some(DoneAt { ms: ms("2026-11-21T00:00:00+09:00"), date_only: true }));
+            assert_eq!(parse_done_at("2026-11-20", &late), Some(DoneAt { ms: ms("2026-11-21T00:00:00+09:00"), date: Civil::date(2026, 11, 20) }));
+            // 書いた日付の文字は、読んだ書き方によらず YYYY-MM-DD
+            assert_eq!(parse_done_at(" 2026/1/5 ", &wh).and_then(|d| d.date).map(format_date).as_deref(), Some("2026-01-05"));
             // 時差の無い 0:00 ちょうどは日付だけとみなす(日付だけの項目を日時の形で書き出す管理ツールのため)
             for s in ["2026/11/20 0:00:00", "2026-11-20T00:00", "2026-11-20 00:00:00.000"] {
                 assert_eq!(day(s), Some(ms("2026-11-20T18:00:00+09:00")), "{s}");
@@ -219,10 +252,46 @@ mod tests {
             for bad in ["", "済み", "2026-02-30", "2026-13-01", "20261120", "2026-11-20T25:00", "2026-11-20T10", "2026-11/20", "26-11-20", "2026-11-20T10:00+9", "2026-11-20 10:00 JST", "2026-11-20T10:00:00.", "11/20/2026"] {
                 assert_eq!(parse_done_at(bad, &wh), None, "{bad}");
             }
-            // その日の終わり(候補と「完了の後に始まった」の判定に使う): 稼働時間帯の終わりが 24:00 でも同じ日の終わり
-            assert_eq!(day_end_ms(ms("2026-11-20T18:00:00+09:00")), Some(ms("2026-11-21T00:00:00+09:00")));
-            assert_eq!(day_end_ms(ms("2026-11-21T00:00:00+09:00")), Some(ms("2026-11-21T00:00:00+09:00")));
+            // その日の終わり(候補と「完了の後に始まった」の判定に使う)
+            let d = Civil::date(2026, 11, 20).unwrap();
+            assert_eq!(date_end_ms(d), Some(ms("2026-11-21T00:00:00+09:00")));
+            assert_eq!(date_work_end_ms(d, &late), Some(ms("2026-11-21T00:00:00+09:00")));
         });
+    }
+
+    /// 日付の文字は、見る PC の時間帯によらず同じ。締め切りと稼働時間帯の終わりは、その日付と集計する PC の時間帯から決める。
+    /// 前の版の記録(doneDateOnly だけ)は、前の版と同じ計算で日付を決める
+    #[test]
+    fn done_date_text_does_not_move_with_the_time_zone() {
+        let wh = WorkHours::default();
+        // JST の PC で読んだ日付だけの完了日(doneAt は JST の 18:00 = 09:00Z)
+        let read = jst(|| parse_done_at("2026/11/20", &wh)).unwrap();
+        let date = read.date.map(format_date).unwrap();
+        assert_eq!(date, "2026-11-20");
+        assert_eq!(atlas_core::jsdate::to_iso(read.ms), "2026-11-20T09:00:00.000Z");
+        let iso = atlas_core::jsdate::to_iso(read.ms);
+        for off in [-10, -5, 0, 9, 14] {
+            with_zone(&TimeZone::fixed(Offset::constant(off)), || {
+                // 書いた日付の文字は、どの時間帯の PC でも同じ
+                assert_eq!(done_date_text(Some(&date), Some(&iso)).as_deref(), Some("2026-11-20"), "{off}");
+                // 締め切りと稼働時間帯の終わりは、その PC の時間帯の 11/21 0:00 と 11/20 18:00
+                let d = parse_date(&date).unwrap();
+                let local = |h: u32| local_ms(d.at(h, 0, 0).unwrap()).unwrap();
+                assert_eq!(date_end_ms(d), Some(local(0) + 86_400_000), "{off}");
+                assert_eq!(date_work_end_ms(d, &wh), Some(local(18)), "{off}");
+            });
+        }
+        // 前の版の記録(日付の文字が無い)は、doneAt の 1 ミリ秒前の、見る PC の時間帯の日付(前と同じずれ方)
+        assert_eq!(jst(|| done_date_text(None, Some(&iso))).as_deref(), Some("2026-11-20"));
+        assert_eq!(with_zone(&TimeZone::fixed(Offset::constant(-10)), || done_date_text(None, Some(&iso))).as_deref(), Some("2026-11-19"));
+        // 稼働時間帯の終わりが 24:00(翌日の 0 時)でも、前の日の日付
+        assert_eq!(jst(|| done_date_text(None, Some("2026-11-20T15:00:00.000Z"))).as_deref(), Some("2026-11-20"));
+        // 読めない日付の文字は、前の版と同じ計算に戻す
+        assert_eq!(jst(|| done_date_text(Some("2026/11/20"), Some(&iso))).as_deref(), Some("2026-11-20"));
+        for bad in ["2026-2-03", "2026-02-30", "20261120", "2026-11-20T00:00", ""] {
+            assert_eq!(parse_date(bad), None, "{bad}");
+        }
+        assert_eq!(done_date_text(Some("x"), None), None);
     }
 
     const H: f64 = 3_600_000.0;

@@ -19,6 +19,15 @@ pub fn read_judgments(path: &Path) -> Result<Option<JudgmentsFile>> {
     validate_judgments(&raw).map(Some).map_err(|e| anyhow!("{p}: {e}"))
 }
 
+/// 取り込みのロックの中で、今の判定のファイルが読めないとき(壊れた JSON・形の違い)の誤り。書き換えずに止め、
+/// serve は 409 で返す(BrokenFile。タスクの紐づけのファイルと同じ)
+pub fn broken_judgments(path: &Path, e: anyhow::Error) -> anyhow::Error {
+    anyhow::Error::from(atlas_report::tasks::BrokenFile(format!(
+        "判定のファイルが壊れています。{} を確かめてください(直すか、別の名前に変えてから取り込み直します。壊れたファイルは書き換えません。何も取り込んでいません。{e:#})",
+        path.display()
+    )))
+}
+
 /// 一時ファイル(タスクの状態と同じ `<path>.<pid>-<時刻>-<連番>.tmp`。tasks::tmp_path)に JSON を書いてから置き換える
 /// (途中で落ちても壊れたファイルを残さない。共有の置き場で、同じ pid の別の PC のプロセスや同じプロセスの別のスレッドと一時ファイルが重ならない)
 pub fn write_json_atomic<T: serde::Serialize>(path: &Path, v: &T) -> Result<()> {
@@ -154,7 +163,7 @@ pub fn import_judgments_text(input: &str, judgments_path: &Path, o: ImportOption
     // 読み直してから混ぜて書くまでを、ファイルのロックの中で行う(共有の置き場では、ほかの集計する人も同じファイルに取り込むため。
     // 同じセッションは後から取り込んだもので置き換え、ほかのセッションの判定は残す)
     let (overwritten, total) = atlas_report::tasks::with_file_lock(judgments_path, || {
-        let base = read_judgments(judgments_path)?.unwrap_or_else(|| empty_judgments("external", model.as_deref(), &now));
+        let base = read_judgments(judgments_path).map_err(|e| broken_judgments(judgments_path, e))?.unwrap_or_else(|| empty_judgments("external", model.as_deref(), &now));
         let existing: HashSet<&str> = base.items.iter().map(|i| i.session_id.as_str()).collect();
         let overwritten = items.iter().filter(|i| existing.contains(i.session_id.as_str())).count();
         let merged = merge_judgments(&base, &items, FileJudge { backend: "external".into(), model: model.clone(), ran_at: now.clone(), usage: None });
