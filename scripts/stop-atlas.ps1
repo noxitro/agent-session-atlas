@@ -1,5 +1,7 @@
-﻿# このフォルダの atlas を、すべて止める(stop.bat が呼ぶ)。
+﻿# このフォルダの atlas を、すべて止める(stop.bat が呼ぶ)。atlas.bat も、開くたびに最初に -ViewersOnly で呼ぶ。
 # どこかのブラウザのタブが開いたままで画面のサーバが動き続けていると、atlas.bat は更新を飛ばし、前のサーバを開き直すだけになる。
+# そのため atlas.bat は、画面のサーバだけが動いていれば、それを止めてから更新・集計・新しいサーバの起動に進む(-ViewersOnly)。
+# 集計などが動いているときと、ATLAS_NO_AUTO_UPDATE=1 のときは atlas.bat は止めないので、そういうときに stop.bat で止める。
 # 画面から別のフォルダを開いたときのサーバは、窓の無いまま動く(crates/atlas-cli/src/folders.rs の launch_detached)。そういうものも止める。
 #
 # 止めるもの: 実行ファイルが、このフォルダの bin\atlas.exe(置き換えで移した bin\atlas.prev.exe・bin\atlas.old-*.exe を含む)のプロセスと、その子孫
@@ -9,13 +11,18 @@
 #   (途中で止めても、集計は次の集計で作り直し、判定は済んだ分が残る)。
 # 止めた後、残った印(out\ と out-folders\<キー>\out\ の .serve.json・.job.json)と、置き換えで移した前の実行ファイルを消す。
 #
-#   -Yes   尋ねずに止める
-#   -Repo  対象のフォルダ(テスト用。ふだんはこのスクリプトの 1 つ上のフォルダ)
+#   -Yes          尋ねずに止める
+#   -ViewersOnly  atlas.bat が呼ぶ。動いているのが画面のサーバだけのときだけ、尋ねずに止める。画面のサーバとみなすのは、
+#                 中の atlas がどれも serve・open で、集計の印(.job.json)の pid でもなく、atlas でも窓の付き物(conhost.exe)でもない子がいないもの
+#                 (サーバの中の集計・全文の書き出し・フォルダを選ぶ画面などが動いていれば、画面のサーバとみなさない)。
+#                 ほかの処理が動いていれば、何も止めず・尋ねずに、その旨を 1 行出して終わる。何も動いていなければ何も出さない。
+#                 止められなかったときも、確かめられなかったときも終了コードは 0(atlas.bat はそのまま続け、self-update が更新しない理由を出す)
+#   -Repo         対象のフォルダ(テスト用。ふだんはこのスクリプトの 1 つ上のフォルダ)
 #
-# 終了コード: 0 = 動いていなかった・止めた・止めないと答えた、1 = 止められなかったものがある
+# 終了コード: 0 = 動いていなかった・止めた・止めないと答えた、1 = 止められなかったものがある(-ViewersOnly では、いつも 0)
 # 管理者の権限は要らない(自分のプロセスだけを止める)。Windows だけで動く。
 # Windows PowerShell 5.1 が日本語を読めるよう、このファイルは BOM 付きの UTF-8 で置く(.gitattributes で改行は CRLF)。
-param([switch]$Yes, [string]$Repo = '')
+param([switch]$Yes, [switch]$ViewersOnly, [string]$Repo = '')
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
@@ -25,6 +32,7 @@ try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }
 function Say([string]$m) { Write-Host $m }
 
 if ($env:OS -ne 'Windows_NT') {
+  if ($ViewersOnly) { exit 0 }
   Say 'stop.bat は Windows だけで動きます。'
   exit 1
 }
@@ -100,25 +108,65 @@ function Get-Descendants($root, $all) {
 
 function Test-Alive([int]$id) { return [bool](Get-Process -Id $id -ErrorAction SilentlyContinue) }
 
-# 印(.serve.json・.job.json)のうち、pid が止めずに残ったこのフォルダの atlas ではないもの(止めたか、もう無い)を消す
-function Remove-StaleStamps([int[]]$keep) {
+# 印を置くフォルダ(out\ と out-folders\<キー>\out\)
+function Get-StampDirs {
   $dirs = @($Out)
   $folders = "$Out-folders"
   if (Test-Path -LiteralPath $folders -PathType Container) {
     foreach ($d in @(Get-ChildItem -LiteralPath $folders -Directory -ErrorAction SilentlyContinue)) { $dirs += (Join-Path $d.FullName 'out') }
   }
+  return $dirs
+}
+
+# 印の pid(読めなければ 0)
+function Read-StampPid([string]$f) {
+  try { return [int]((Get-Content -LiteralPath $f -Raw -Encoding UTF8 | ConvertFrom-Json).pid) } catch { return 0 }
+}
+
+# 印(.serve.json・.job.json)のうち、pid が止めずに残ったこのフォルダの atlas ではないもの(止めたか、もう無い)を消す
+function Remove-StaleStamps([int[]]$keep) {
   $removed = 0
-  foreach ($dir in $dirs) {
+  foreach ($dir in @(Get-StampDirs)) {
     foreach ($name in @('.serve.json', '.job.json')) {
       $f = Join-Path $dir $name
       if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { continue }
-      $stampPid = 0
-      try { $stampPid = [int]((Get-Content -LiteralPath $f -Raw -Encoding UTF8 | ConvertFrom-Json).pid) } catch { }
+      $stampPid = Read-StampPid $f
       if ($stampPid -gt 0 -and $keep -contains $stampPid) { continue }
       try { Remove-Item -LiteralPath $f -Force; $removed++ } catch { }
     }
   }
   return $removed
+}
+
+# 集計の印(.job.json)の pid。サーバが自分の中で集計・全文の書き出しをしている間と、open が集計している間は、そのプロセスの pid が載る。
+# 止めない理由にだけ使う(pid が使い回されて別のプロセスに当たっても、止めずに終わるだけ)
+function Get-JobPids {
+  $pids = @()
+  foreach ($dir in @(Get-StampDirs)) {
+    $f = Join-Path $dir '.job.json'
+    if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { continue }
+    $p = Read-StampPid $f
+    if ($p -gt 0) { $pids += $p }
+  }
+  return $pids
+}
+
+# targets を子から順に止め(親が子を動かし直さないように)、止まるのを待ってから、残った印と前の実行ファイルを消す
+function Stop-Targets($targets) {
+  $seen = @{}
+  foreach ($t in $targets) {
+    if ($seen.ContainsKey([int]$t.ProcessId)) { continue }
+    $seen[[int]$t.ProcessId] = $true
+    try { Stop-Process -Id $t.ProcessId -Force -ErrorAction Stop } catch { }
+  }
+  $deadline = (Get-Date).AddSeconds(10)
+  while ((Get-Date) -lt $deadline -and @($seen.Keys | Where-Object { Test-Alive $_ }).Count -gt 0) { Start-Sleep -Milliseconds 200 }
+
+  $left = @($seen.Keys | Where-Object { Test-Alive $_ })
+  $n = Remove-StaleStamps $left
+  # 置き換えで移した前の実行ファイル(もう動いていなければ消せる。残っても次の atlas.bat が消す)
+  if (Test-Path -LiteralPath $Bin) { Get-ChildItem -LiteralPath $Bin -Filter 'atlas.old-*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue }
+  return @{ Stopped = $seen.Count; Left = $left; Stamps = $n }
 }
 
 try {
@@ -129,9 +177,41 @@ try {
   $roots = @($ours | Where-Object { $ids -notcontains $_.ParentProcessId })
 
   if ($roots.Count -eq 0) {
-    Say '動いている atlas はありません(このフォルダの bin\atlas.exe のプロセスは見つかりませんでした)。'
     $n = Remove-StaleStamps @()
+    # atlas.bat から呼んだときは、何も出さない(開くたびに出ると邪魔になる)
+    if ($ViewersOnly) { exit 0 }
+    Say '動いている atlas はありません(このフォルダの bin\atlas.exe のプロセスは見つかりませんでした)。'
     if ($n -gt 0) { Say "残っていた印を $n 個消しました。" }
+    exit 0
+  }
+
+  if ($ViewersOnly) {
+    $jobPids = @(Get-JobPids)
+    $targets = @()
+    $busy = @()
+    foreach ($r in $roots) {
+      $kids = Get-Descendants $r $all
+      $tree = @($r) + @($kids | Where-Object { Test-OurExe $_ })
+      foreach ($p in $tree) {
+        $sub = Get-SubCommand $p
+        if ($Viewers -notcontains $sub) { $busy += (Get-Label $sub) }
+        elseif ($jobPids -contains [int]$p.ProcessId) { $busy += '画面のサーバの中の集計' }
+      }
+      # atlas でない子(フォルダを選ぶ画面の PowerShell など)。窓の付き物の conhost.exe は数えない
+      if (@($kids | Where-Object { -not (Test-OurExe $_) -and $_.Name -ine 'conhost.exe' }).Count -gt 0) { $busy += '画面のサーバの中の処理' }
+      $targets += $kids
+      $targets += $r
+    }
+    if ($busy.Count -gt 0) {
+      Say "このフォルダの atlas で$(@($busy | Select-Object -Unique) -join '・')が動いているので、何も止めずに続けます(新しい版にするには、終わってから開き直すか、stop.bat で止めてください)。"
+      exit 0
+    }
+    $res = Stop-Targets $targets
+    if ($res.Left.Count -gt 0) {
+      Say "前に開いた画面のサーバを止められませんでした(pid $($res.Left -join '、'))。このまま続けます(新しい版にするには、stop.bat かタスク マネージャーで止めてから開き直してください)。"
+      exit 0
+    }
+    Say '前に開いた画面のサーバを止めました。新しい版があれば取り込んでから開き直します(開いたままの古いタブは閉じて構いません)。'
     exit 0
   }
 
@@ -165,30 +245,21 @@ try {
     }
   }
 
-  # 子から止める(親が子を動かし直さないように)
-  $seen = @{}
-  foreach ($t in $targets) {
-    if ($seen.ContainsKey([int]$t.ProcessId)) { continue }
-    $seen[[int]$t.ProcessId] = $true
-    try { Stop-Process -Id $t.ProcessId -Force -ErrorAction Stop } catch { }
-  }
-  $deadline = (Get-Date).AddSeconds(10)
-  while ((Get-Date) -lt $deadline -and @($seen.Keys | Where-Object { Test-Alive $_ }).Count -gt 0) { Start-Sleep -Milliseconds 200 }
-
-  $left = @($seen.Keys | Where-Object { Test-Alive $_ })
-  $n = Remove-StaleStamps $left
-  # 置き換えで移した前の実行ファイル(もう動いていなければ消せる。残っても次の atlas.bat が消す)
-  if (Test-Path -LiteralPath $Bin) { Get-ChildItem -LiteralPath $Bin -Filter 'atlas.old-*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue }
-
+  $res = Stop-Targets $targets
   Say ''
-  if ($left.Count -gt 0) {
-    Say "止められなかったプロセスがあります(pid $($left -join '、'))。タスク マネージャーで止めるか、PC を再起動してください。"
+  if ($res.Left.Count -gt 0) {
+    Say "止められなかったプロセスがあります(pid $($res.Left -join '、'))。タスク マネージャーで止めるか、PC を再起動してください。"
     exit 1
   }
-  Say "止めました($($seen.Count) 個のプロセス)。$(if ($n -gt 0) { "残った印を $n 個消しました。" })"
+  Say "止めました($($res.Stopped) 個のプロセス)。$(if ($res.Stamps -gt 0) { "残った印を $($res.Stamps) 個消しました。" })"
   Say '開いたままのタブは閉じてください。atlas.bat を開くと、新しい版にしてから開き直します。'
   exit 0
 } catch {
+  # atlas.bat から呼んだときは止めない(そのまま続け、self-update が「動いているので更新しない」かどうかを決める)
+  if ($ViewersOnly) {
+    Say "前に開いた画面のサーバが動いているかを確かめられませんでした($($_.Exception.Message))。このまま続けます。"
+    exit 0
+  }
   Say "atlas を止められませんでした: $($_.Exception.Message)"
   exit 1
 }

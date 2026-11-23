@@ -95,7 +95,7 @@ describe('*.bat', () => {
   });
 
   // 実行ファイルを用意してから動かす。Node.js の確かめとビルド(npm ci など)は ensure-atlas.ps1 がするので、.bat では node と npm を呼ばない
-  it.each(LAUNCHERS)('%s は最初に scripts\\ensure-atlas.ps1 を動かし、失敗したら止まる。node と npm は呼ばない', (f) => {
+  it.each(LAUNCHERS)('%s は最初に(atlas.bat は前に開いた画面のサーバを止めてから)scripts\\ensure-atlas.ps1 を動かし、失敗したら止まる。node と npm は呼ばない', (f) => {
     const lines = codeLines(f);
     const i = lines.findIndex((l) => /ensure-atlas\.ps1/i.test(l));
     expect(lines[i]).toBe('powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\ensure-atlas.ps1 -KeepOlder');
@@ -360,8 +360,22 @@ describe('stop.bat と scripts/stop-atlas.ps1', () => {
     expect(lines.slice(4)).toEqual(['powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\stop-atlas.ps1 %*', 'set "code=%errorlevel%"', 'echo.', 'pause', 'exit /b %code%']);
   });
 
+  // atlas.bat は開くたびに最初に、前に開いた画面のサーバだけを止める(残ったサーバがあると self-update が更新を飛ばし、serve が前のサーバを開き直すだけになる)。
+  // ATLAS_NO_AUTO_UPDATE=1 なら止めない(更新もしない)。読み直した後(ATLAS_SELF_UPDATED)は、もう止めたので動かさない。
+  // 結果は調べない(止められなくても・確かめられなくても続け、self-update が更新しない理由を出す)
+  const VIEWERS_LINE = 'if not "%ATLAS_NO_AUTO_UPDATE%"=="1" if not defined ATLAS_SELF_UPDATED powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\stop-atlas.ps1 -ViewersOnly';
+  it('atlas.bat は cd の直後(ensure-atlas.ps1 の前)に stop-atlas.ps1 -ViewersOnly を 1 行で動かし、結果を調べない。ほかの起動用の bat は動かさない', () => {
+    const lines = codeLines('atlas.bat');
+    expect(lines.slice(0, 6)).toEqual(['@echo off', 'setlocal', 'chcp 65001 >nul', 'cd /d "%~dp0"', VIEWERS_LINE, 'powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\ensure-atlas.ps1 -KeepOlder']);
+    expect(lines.filter((l) => /stop-atlas/i.test(l))).toEqual([VIEWERS_LINE]);
+    for (const f of LAUNCHERS.filter((f) => f !== 'atlas.bat')) expect(codeLines(f).filter((l) => /stop-atlas/i.test(l)), f).toEqual([]);
+  });
+
   const buf = readFileSync(join(ROOT, STOP_PS1));
   const text = buf.subarray(3).toString('utf8');
+  it('stop-atlas.ps1 は -Yes・-ViewersOnly・-Repo を受け取る', () => {
+    expect(text).toContain("param([switch]$Yes, [switch]$ViewersOnly, [string]$Repo = '')");
+  });
   it('stop-atlas.ps1 は BOM 付きの UTF-8 で、改行はすべて CRLF。管理者の権限が要る操作をしない', () => {
     expect(buf.subarray(0, 3).equals(BOM)).toBe(true);
     expect(text.match(/(^|[^\r])\n/g)).toBeNull();
@@ -381,9 +395,24 @@ describe('stop.bat と scripts/stop-atlas.ps1', () => {
     };
     const started: ChildProcess[] = [];
     let tmp = '';
+    // -ViewersOnly 用: quiet は子を持たない serve・open・all。spawn-all・spawn-open の serve は、自分と同じ実行ファイル(このフォルダの atlas)で
+    // all・open(quiet のもの)を子として動かし、その pid を kid-<serve の pid> に書いてから待つ
+    let quiet = '';
+    let spawnAll = '';
+    let spawnOpen = '';
     beforeAll(() => {
       tmp = mkdtempSync(join(tmpdir(), 'atlas-stop-'));
       for (const [name, body] of Object.entries(SCRIPTS)) writeFileSync(join(tmp, name), body);
+      quiet = join(tmp, 'quiet');
+      spawnAll = join(tmp, 'spawn-all');
+      spawnOpen = join(tmp, 'spawn-open');
+      for (const d of [quiet, spawnAll, spawnOpen]) mkdirSync(d);
+      for (const name of ['serve', 'open', 'all']) writeFileSync(join(quiet, name), SLEEP);
+      const spawnAtlas = (sub: string) =>
+        `const c = require('node:child_process').spawn(process.execPath, [${JSON.stringify(sub)}], { cwd: ${JSON.stringify(quiet)}, stdio: 'ignore' }); ` +
+        `require('node:fs').writeFileSync(require('node:path').join(${JSON.stringify(tmp)}, 'kid-' + process.pid), String(c.pid)); ${SLEEP}`;
+      writeFileSync(join(spawnAll, 'serve'), spawnAtlas('all'));
+      writeFileSync(join(spawnOpen, 'serve'), spawnAtlas('open'));
     });
     const repos: string[] = [];
     // フォルダごとに powershell.exe を起動するので、既定の 10 秒では足りないことがある(下のテストの上限と同じ理由)
@@ -402,8 +431,8 @@ describe('stop.bat と scripts/stop-atlas.ps1', () => {
       repos.push(repo);
       return repo;
     };
-    const start = (repo: string, sub: string): ChildProcess => {
-      const c = spawn(join(repo, 'bin', 'atlas.exe'), [sub], { cwd: tmp, stdio: 'ignore' });
+    const start = (repo: string, sub: string, cwd = tmp): ChildProcess => {
+      const c = spawn(join(repo, 'bin', 'atlas.exe'), [sub], { cwd, stdio: 'ignore' });
       started.push(c);
       return c;
     };
@@ -482,6 +511,108 @@ describe('stop.bat と scripts/stop-atlas.ps1', () => {
       expect(forced.text).toContain('止めました');
       await waitFor(() => !alive(again.pid!), '集計が止まる');
     }, 60_000);
+
+    // ここから -ViewersOnly(atlas.bat が開くたびに最初に呼ぶ)。入力は渡さない(尋ねれば Read-Host が入力の終わりを読む)
+    const kidOf = async (c: ChildProcess): Promise<number> => {
+      const f = join(tmp, `kid-${c.pid}`);
+      await waitFor(() => existsSync(f), 'サーバの子');
+      const kid = Number(readFileSync(f, 'utf8'));
+      await waitFor(() => alive(kid), 'サーバの子の起動');
+      return kid;
+    };
+
+    it('-ViewersOnly: 動いていなければ何も出さずに 0 で終わり、残った印は消す。続けて呼んでも同じ', () => {
+      const repo = makeRepo('viewers-empty');
+      mkdirSync(join(repo, 'out'), { recursive: true });
+      writeFileSync(join(repo, 'out', '.serve.json'), JSON.stringify({ port: 1, pid: 4_000_000 }));
+      for (let i = 0; i < 2; i++) {
+        const r = stop(repo, ['-ViewersOnly']);
+        expect([r.status, r.text.trim()]).toEqual([0, '']);
+      }
+      expect(existsSync(join(repo, 'out', '.serve.json'))).toBe(false);
+    }, 60_000);
+
+    it('-ViewersOnly: 画面のサーバだけ(サーバと、その画面から開いた別のフォルダの open)なら、尋ねずに止めて 1 行出す。別のフォルダの atlas は止めない', async () => {
+      const v = makeRepo('viewers-only');
+      const w = makeRepo('viewers-other');
+      const serve = start(v, 'serve', spawnOpen);
+      const open = await kidOf(serve);
+      const other = start(w, 'serve', quiet);
+      await waitFor(() => other.pid !== undefined && alive(other.pid), '別のフォルダのサーバの起動');
+      mkdirSync(join(v, 'out'), { recursive: true });
+      writeFileSync(join(v, 'out', '.serve.json'), JSON.stringify({ port: 1, pid: serve.pid }));
+
+      const r = stop(v, ['-ViewersOnly']);
+      expect(r.status).toBe(0);
+      expect(r.text).toContain('前に開いた画面のサーバを止めました');
+      expect(r.text).not.toContain('止めますか');
+      expect(r.text.trim().split(/\r?\n/)).toHaveLength(1);
+      await waitFor(() => !alive(serve.pid!) && !alive(open), 'サーバと open が止まる');
+      expect(alive(other.pid!)).toBe(true);
+      expect(existsSync(join(v, 'out', '.serve.json'))).toBe(false);
+      // 止めた後にもう一度呼んでも(self-update で読み直した後など)、何もしない
+      const again = stop(v, ['-ViewersOnly']);
+      expect([again.status, again.text.trim()]).toEqual([0, '']);
+    }, 120_000);
+
+    it('-ViewersOnly: 集計が動いている・サーバの中で集計の子が動いている・サーバが集計の印を持っている・サーバに atlas でない子がいるときは、何も止めず尋ねずに 1 行出して 0 で終わる', async () => {
+      const cases: { name: string; run: (repo: string) => Promise<number[]>; says: string }[] = [
+        {
+          name: 'viewers-busy-all',
+          run: async (repo) => {
+            const all = start(repo, 'all', quiet);
+            const serve = start(repo, 'serve', quiet);
+            await waitFor(() => alive(all.pid!) && alive(serve.pid!), '集計とサーバの起動');
+            return [all.pid!, serve.pid!];
+          },
+          says: '集計',
+        },
+        {
+          name: 'viewers-busy-kid',
+          run: async (repo) => {
+            const serve = start(repo, 'serve', spawnAll);
+            return [serve.pid!, await kidOf(serve)];
+          },
+          says: '集計',
+        },
+        {
+          name: 'viewers-busy-stamp',
+          run: async (repo) => {
+            const serve = start(repo, 'serve', quiet);
+            await waitFor(() => alive(serve.pid!), 'サーバの起動');
+            mkdirSync(join(repo, 'out-folders', 'k', 'out'), { recursive: true });
+            writeFileSync(join(repo, 'out-folders', 'k', 'out', '.job.json'), JSON.stringify({ pid: serve.pid, kind: 'all', by: 'serve' }));
+            return [serve.pid!];
+          },
+          says: '画面のサーバの中の集計',
+        },
+        {
+          name: 'viewers-busy-other-child',
+          run: async (repo) => {
+            const serve = start(repo, 'serve');
+            const f = join(tmp, `child-${serve.pid}`);
+            await waitFor(() => existsSync(f), 'サーバの子');
+            return [serve.pid!, Number(readFileSync(f, 'utf8'))];
+          },
+          says: '画面のサーバの中の処理',
+        },
+      ];
+      for (const c of cases) {
+        const repo = makeRepo(c.name);
+        const pids = await c.run(repo);
+        const r = stop(repo, ['-ViewersOnly']);
+        expect(r.status, c.name).toBe(0);
+        expect(r.text, c.name).toContain(c.says);
+        expect(r.text, c.name).toContain('何も止めずに続けます');
+        expect(r.text, c.name).not.toContain('止めますか');
+        expect(r.text.trim().split(/\r?\n/), c.name).toHaveLength(1);
+        expect(pids.map(alive), c.name).toEqual(pids.map(() => true));
+        if (c.name === 'viewers-busy-stamp') expect(existsSync(join(repo, 'out-folders', 'k', 'out', '.job.json'))).toBe(true);
+        // 次の場合に持ち越さない
+        stop(repo, ['-Yes']);
+        await waitFor(() => pids.every((p) => !alive(p)), '後片付け');
+      }
+    }, 180_000);
   });
 });
 
