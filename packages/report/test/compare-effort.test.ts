@@ -160,6 +160,30 @@ describe('手戻りのないセッション', () => {
     expect(one.find((x) => x.key === 'aiu')!.a).toBe(3);
     expect(one.find((x) => x.key === 'aiu-per-request')).toMatchObject({ a: null, b: 30 / 20 });
   });
+
+  it('テストの結果: テストを実行したセッションを分母に、最初の実行で全部通った割合と、最後に通っていないテストが残った割合。幅は Newcombe', () => {
+    const tests = (firstPass: number | null, lastFailing: number): Partial<CompareSession> => ({ tests: { runs: 3, firstPass, lastFailing, passActiveMs: null, passNanoAiu: null, lastNanoAiu: null } });
+    // A: 実行したセッション 6 件(最初に通った 3・2 回目で通った 1・未達 2)と、記録なし 4 件(分母に入れない)
+    const A = [
+      ...[1, 1, 1].map((f, i) => s(`a-first${i}`, tests(f, 0))),
+      s('a-second', tests(2, 0)),
+      s('a-never0', tests(null, 2)),
+      s('a-never1', tests(null, 1)),
+      ...Array.from({ length: 4 }, (_, i) => s(`a-none${i}`)),
+    ];
+    // B: 実行したセッション 5 件(最初に通った 4・通った後に不合格 1)
+    const B = [...Array.from({ length: 4 }, (_, i) => s(`b-first${i}`, tests(1, 0))), s('b-regress', tests(1, 3))];
+    const rows = compareRows(compareSide(A), compareSide(B));
+    const r = (k: string) => rows.find((x) => x.key === k)!;
+    expect(r('tests-first-pass')).toMatchObject({ unit: 'rate', a: 3 / 6, b: 5 / 5 });
+    expect(r('tests-last-failing')).toMatchObject({ unit: 'rate', a: 2 / 6, b: 1 / 5 });
+    expect(r('tests-first-pass').ci).toEqual(newcombeDiff(3, 6, 5, 5));
+    expect(r('tests-last-failing').ci).toEqual(newcombeDiff(2, 6, 1, 5));
+    // テストを実行したセッションが 5 件未満の側は —(幅も —)。セッション自体は 5 件以上あっても、割る数で決める
+    const few = compareRows(compareSide(A), compareSide(B.slice(0, 4).concat(s('b-none'))));
+    expect(few.find((x) => x.key === 'tests-first-pass')).toMatchObject({ a: 0.5, b: null, ci: null });
+    expect(few.find((x) => x.key === 'tests-last-failing')).toMatchObject({ a: 2 / 6, b: null, ci: null });
+  });
 });
 
 describe('推論強度どうしの母集団と、利用者 × 週', () => {

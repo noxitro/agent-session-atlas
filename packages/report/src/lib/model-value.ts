@@ -4,6 +4,7 @@
 // コスト(リクエスト・トークン・AIU)は按分せず、その モデル × 強度 のリクエストの実数を足す。
 import { OUTCOMES, type Outcome } from '../shared/turns.ts';
 import { isLowConfidence } from './aggregate.ts';
+import { COMPARE_MIN_SESSIONS } from './compare.ts';
 import { EFFORT_ORDER, orderBy } from './exec.ts';
 import { modelLabel } from './format.ts';
 import { enoughMeasured, measuredOf } from './retention.ts';
@@ -181,11 +182,16 @@ export const mean = (w: Weighted): number | null => ratio(w.sum, w.weight);
 /** AIU(1 AIU = 10^9 nano AIU) */
 export const aiu = (nano: number): number => nano / 1e9;
 
-/** これより少ないセッションの行は、ばらつきが大きいので読み取り(effortFindings)に使わない */
-export const MIN_SESSIONS = 3;
-/** 読み取りで効果を比べるのは、その効果の記録があるセッションの重み(按分)がこれ以上のときだけ */
-const MIN_EFFECT_WEIGHT = 1;
-const enough = (weight: number, value: number | null): number | null => (weight >= MIN_EFFECT_WEIGHT ? value : null);
+/**
+ * これより少ないセッションの行は、ばらつきが大きいので読み取り(effortFindings)に使わず、表に ※ を付ける。
+ * 「比べる」で割合と平均を出す件数(COMPARE_MIN_SESSIONS)と同じ
+ */
+export const MIN_SESSIONS = COMPARE_MIN_SESSIONS;
+/**
+ * 読み取りで効果を並べるのは、その効果の記録があるセッションの重み(按分)が MIN_SESSIONS 以上のときだけ
+ * (「比べる」が、割る数が COMPARE_MIN_SESSIONS 未満の割合と平均を出さないのと同じ。按分した値なので、割る数は重みの合計)
+ */
+const enough = (weight: number, value: number | null): number | null => (weight >= MIN_SESSIONS ? value : null);
 
 /** 残っている割合(照合できたまとまりのうち、そのまま + 直されて)。照合できたセッションが RETENTION_MIN_SESSIONS(残存の節・「比べる」と同じ値)未満なら null */
 export const keptShare = (r: ValueRow): number | null => (enoughMeasured(r.retention.sessions) ? ratio(r.retention.kept, r.retention.measured) : null);
@@ -194,9 +200,11 @@ const pctText = (x: number): string => `${Math.round(x * 100)}%`;
 const numText = (x: number): string => (Math.round(x * 100) / 100).toString();
 
 /**
- * 読み取り: 同じモデルで推論強度を変えたときに、コストと効果がどう違うか(1 モデル 1 行)。
- * セッションが MIN_SESSIONS 以上ある強度が 2 つ以上あるモデルだけ。いちばん弱い強度を基準に、いちばん強い強度と比べる。
- * models(モデルごとの行)があれば、人手工数あたりのコストのいちばん良いモデルも足す
+ * 読み取り: 同じモデルで推論強度を変えたときの、コストと効果の値を並べる(1 モデル 1 行)。
+ * セッションが MIN_SESSIONS 以上ある強度が 2 つ以上あるモデルだけ。いちばん弱い強度といちばん強い強度を並べる。
+ * 効果は按分した値で、セッションを単位にした差の幅(「比べる」の Newcombe・Welch)を出せないので、差の向きを言い切らずに値を並べ、
+ * 差の幅を出していないことを文に書く(幅は「比べる」の推論強度で、本体の強度が決まったセッションだけで見られる)。
+ * models(モデルごとの行)があれば、1 AIU あたりの推定人手工数の最大と最小のモデルも並べる
  */
 export function effortFindings(split: readonly ValueRow[], models: readonly ValueRow[] = []): string[] {
   const out: string[] = [];
@@ -221,16 +229,18 @@ export function effortFindings(split: readonly ValueRow[], models: readonly Valu
       ['品質', enough(lo.quality.weight, mean(lo.quality)), enough(hi.quality.weight, mean(hi.quality)), numText],
       ['依頼の採用率', enough(lo.turns.weight, ratio(lo.turns.adopted, lo.turns.judged)), enough(hi.turns.weight, ratio(hi.turns.adopted, hi.turns.judged)), pctText],
       ['残っている割合', enough(lo.retention.weight, keptShare(lo)), enough(hi.retention.weight, keptShare(hi)), pctText],
-      ['ツール失敗率', ratio(lo.tools.failures, lo.tools.calls), ratio(hi.tools.failures, hi.tools.calls), pctText],
+      ['ツール失敗率', enough(lo.weight, ratio(lo.tools.failures, lo.tools.calls)), enough(hi.weight, ratio(hi.tools.failures, hi.tools.calls)), pctText],
     ];
     for (const [label, a, b, f] of pairs) if (a != null && b != null) parts.push(`${label} ${f(a)} → ${f(b)}`);
-    if (parts.length > 0) out.push(`${modelLabel(model)}: ${hi.effort} は ${lo.effort} に比べて、${parts.join('、')}(セッション ${lo.sessions} 件 / ${hi.sessions} 件)。`);
+    if (parts.length > 0) out.push(`${modelLabel(model)}: ${lo.effort} → ${hi.effort} で、${parts.join('、')}(セッション ${lo.sessions} 件 / ${hi.sessions} 件。効果は按分した値なので差の幅は出していません)。`);
   }
   const value = models
-    .filter((r) => r.sessions >= MIN_SESSIONS && r.judgedNanoAiu > 0 && r.hours.weight > 0)
+    .filter((r) => r.sessions >= MIN_SESSIONS && r.judgedNanoAiu > 0 && r.hours.weight >= MIN_SESSIONS)
     .map((r) => ({ r, v: r.hours.sum / aiu(r.judgedNanoAiu) }))
     .sort((a, b) => b.v - a.v);
   if (value.length >= 2)
-    out.push(`1 AIU あたりの推定人手工数がいちばん大きいのは ${modelLabel(value[0].r.model)}(${numText(value[0].v)} 時間)、いちばん小さいのは ${modelLabel(value[value.length - 1].r.model)}(${numText(value[value.length - 1].v)} 時間)。`);
+    out.push(
+      `1 AIU あたりの推定人手工数は、最大が ${modelLabel(value[0].r.model)}(${numText(value[0].v)} 時間)、最小が ${modelLabel(value[value.length - 1].r.model)}(${numText(value[value.length - 1].v)} 時間)(按分した推定の比なので差の幅は出していません)。`,
+    );
   return out;
 }

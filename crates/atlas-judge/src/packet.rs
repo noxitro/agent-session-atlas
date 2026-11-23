@@ -630,7 +630,8 @@ fn render_once(s: &SessionRecord, t: &SessionTexts, l: &PacketLimits, wiki_state
         s.copilot_version.as_deref().filter(|x| !x.is_empty()).map(|v| format!("(Copilot {v})")).unwrap_or_default()
     ));
     push(format!("- 開始: {} / 最終更新: {}", s.created_at.as_deref().unwrap_or("不明"), s.updated_at.as_deref().unwrap_or("不明")));
-    push(format!("- モデル: {}", if s.models.is_empty() { "不明".to_string() } else { s.models.join("、") }));
+    // モデルの名前と推論強度は載せない。レポートはモデルや推論強度で判定を比べるので、
+    // 判定する LLM が条件を知ったまま質を付けると、比べた結果が偏るため
     push(format!(
         "- 本文の出所: {}",
         if t.source == TextSource::Snapshot { "ログの全文(長いものは中略)" } else { "sessions.json の抜粋(先頭・末尾 2,000 字まで。全文は取得できなかった)" }

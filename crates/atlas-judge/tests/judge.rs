@@ -48,6 +48,18 @@ fn packet_has_sections_and_fences_do_not_close() {
 }
 
 #[test]
+fn packet_does_not_name_the_model() {
+    // モデルや推論強度で判定を比べるので、判定する LLM に条件(モデル)を見せない
+    let mut r = record();
+    r.models = vec!["zz-model-alpha".into(), "zz-model-beta".into()];
+    let t = SessionTexts { source: TextSource::Snapshot, requests: vec![entry(None, "直して")], final_response: Some(entry(None, "完了")), compactions: vec![], task_completes: vec![], wiki_reads: vec![], wiki_scanned: false };
+    let md = render_packet(&r, &t, &DEFAULT_LIMITS, WikiState::Counted).unwrap().markdown;
+    assert!(!md.contains("zz-model-alpha") && !md.contains("zz-model-beta"), "{md}");
+    assert!(!md.lines().any(|l| l.starts_with("- モデル:")), "{md}");
+    assert!(missing_sections(&md).is_empty());
+}
+
+#[test]
 fn long_texts_are_clipped_to_max_chars() {
     let mut r = record();
     let long = "あ".repeat(50_000);
