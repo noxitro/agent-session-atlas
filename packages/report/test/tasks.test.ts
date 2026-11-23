@@ -1,7 +1,7 @@
 // 管理ツールのタスクの絞り込み(filter.ts の task)と、表示の言葉・一覧の「タスク」の欄(lib/tasks.ts)
 import { describe, expect, it } from 'vitest';
 import { applyFilter, decodeFilter, emptyFilter, encodeFilter, matchesTask, NO_TASK, taskOf, taskOptions } from '../src/lib/filter.ts';
-import { hours, linkCounts, linkTaskIds, msHours, sortByTask, TASK_CELL_SHOWN, taskCell, workHoursText } from '../src/lib/tasks.ts';
+import { hours, linkCounts, linkTaskIds, msHours, sortByTask, TASK_CELL_SHOWN, taskCell, taskExcludedText, taskIncludedNote, workHoursText } from '../src/lib/tasks.ts';
 import type { SessionSummary, TaskLinkView } from '../src/lib/types.ts';
 
 describe('タスクの絞り込み', () => {
@@ -123,5 +123,11 @@ describe('タスクの表示の言葉', () => {
   it('紐づけの出所は 0 のものを出さない', () => {
     expect(linkCounts({ machine: 2, llm: 0, manual: 1 })).toBe('機械 2・手動 1');
     expect(linkCounts({ machine: 0, llm: 0, manual: 0 })).toBe('');
+  });
+  it('比べられる完了タスクの注記(タスクの節と表紙で同じ文): 紐づいたタスクの数と、比べないものを理由の順に(0 のものは出さない)', () => {
+    const none = { notDone: 0, doneUnobserved: 0, afterDone: 0, noStart: 0, unjudged: 0, lowConfidence: 0 };
+    expect(taskIncludedNote({ tasks: 3, excluded: { ...none, lowConfidence: 1, notDone: 2 } })).toBe('セッションが紐づいたタスク 3 件のうち。比べないもの: 未完了 2・確度が低い 1');
+    expect(taskIncludedNote({ tasks: 0, excluded: none })).toBe('セッションが紐づいたタスク 0 件のうち。比べないものはありません');
+    expect(taskExcludedText({ ...none, unjudged: 1200 })).toBe('判定なし 1,200');
   });
 });

@@ -769,7 +769,7 @@
 
         <div class="tab-panel" data-tab-panel="overview" hidden={tab !== 'overview'}>
           <!-- 帳票の順: 表紙(規模の 4 欄)→ 摘要(要点)→ 明細 -->
-          <Overview part="cover" {agg} {judged} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} {emptyInFilter} {editable} />
+          <Overview part="cover" {agg} {judged} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} {emptyInFilter} {editable} {tasks} />
           <Highlights groups={points} />
           <Insights sessions={filtered} allSessions={data.sessions} installed={installed?.skills ?? null} disabled={installed?.disabled ?? []} meta={data.insights?.meta ?? {}} candidates={data.insights?.candidates ?? []} candidateTotal={data.insights?.candidateTotal ?? data.insights?.candidates.length ?? 0} computedOver={data.insights?.computedOver ?? sessions.length} hasPage={true} libraryHref={data.library ? 'instructions.html' : null} {wiki} wikiPagesRecorded={(data.version ?? 0) >= WIKI_PAGES_DATA_VERSION} wikiPageNames={data.wikiPageNames ?? []} />
           <TurnPhases agg={turnAgg} verdicts={verdictAgg} verdictModel={data.turnJudgments?.model ?? null} verdictRanAt={data.turnJudgments?.ranAt ?? null} {editable} />

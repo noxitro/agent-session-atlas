@@ -4,7 +4,7 @@
   // 2 つの工数(AI を使わなかった場合・使った場合)と AI の実働は、別の欄に並べるだけで 1 つの点数にしない
   import { dateTime, dec, int } from '../../lib/format.ts';
   import { NO_TASK, filterHref, emptyFilter } from '../../lib/filter.ts';
-  import { hours, linkCounts, msHours, TASK_EXCLUDED, TASK_EXCLUDED_LABEL, workHoursText } from '../../lib/tasks.ts';
+  import { hours, linkCounts, msHours, TASK_EXCLUDED_LABEL, taskIncludedNote, workHoursText } from '../../lib/tasks.ts';
   import type { TaskRow, TasksReport } from '../../lib/types.ts';
   import SortMark from './SortMark.svelte';
 
@@ -26,11 +26,6 @@
   const s = $derived(tasks.summary);
   const done = $derived(tasks.items.filter((t) => t.done).length);
   const missing = $derived(tasks.items.filter((t) => t.missing).length);
-  const excludedText = $derived(
-    TASK_EXCLUDED.filter((k) => s.excluded[k] > 0)
-      .map((k) => `${TASK_EXCLUDED_LABEL[k]} ${int(s.excluded[k])}`)
-      .join('・'),
-  );
   const wh = $derived(workHoursText(tasks.workHours));
   const ratioText = (r: number): string => `${dec(Math.round(r * 100) / 100)} 倍`;
 
@@ -118,7 +113,7 @@
       <div class="field">
         <span class="k">比べられる完了タスク</span>
         <span class="v" data-testid="tasks-included">{int(s.included)}</span>
-        <span class="n">セッションが紐づいたタスク {int(s.tasks)} 件のうち。{excludedText ? `比べないもの: ${excludedText}` : '比べないものはありません'}</span>
+        <span class="n">{taskIncludedNote(s)}</span>
       </div>
       <div class="field">
         <span class="k">AI を使わなかった場合 ÷ AI を使った場合</span>

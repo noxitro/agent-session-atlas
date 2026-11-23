@@ -1,5 +1,6 @@
 // 管理ツールのタスクの画面(Playwright の Chromium)。テスト用の XML(e2e/fixtures/tasks/)と架空の fixture で atlas all → atlas serve を立て、実際に押して確かめる。
 //  a. 概況の「管理ツールのタスク」: タスクの数・比べられる完了タスク・2 つの工数と AI の実働を別の欄に出し、比べられるタスクが下限に届かなければ比を出さない
+//  a2. 全体サマリの表紙: 比べられる完了タスクと同じ範囲の 3 つの時間(比は出さない)。絞り込みでは変わらず、狭い幅でも欄に収まる
 //  b. タスクの行を押すとそのタスクのセッションに絞り込み、一覧の行にタスクの名前が出る。絞り込みの行の「タスク」でも選べる(タスクなしも)
 //  c. 詳細ページの「タスク」の行: 手で選ぶ・どのタスクでもない・自動に戻すが task-links.json に残り、行が書き変わる
 //  d. 「判定する…」の「タスクの紐づけ」: チャットに貼る手順で添付ファイルを作り、返答を取り込むと LLM の紐づけが出る(このツールの中で LLM を呼ぶボタンは無い)
@@ -145,6 +146,47 @@ describe('管理ツールのタスクの画面', () => {
     expect(await rows.first().getAttribute('data-task')).toBe('DEMO-101');
     expect(await page.getByTestId('tasks-table').locator('th[aria-sort="descending"]').innerText()).toContain('AI を使った場合');
     await shots('tasks-panel', panel, server.url + '#tasks');
+  });
+
+  it('a2. 全体サマリの表紙に、比べられる完了タスクと同じ範囲の 3 つの時間が並び(比は出さない)、絞り込みでは変わらない。狭い幅でも崩れない', async () => {
+    await page.goto(server.url);
+    const cover = page.getByTestId('cover-tasks');
+    await cover.waitFor({ state: 'visible' });
+    // タスクの節の欄と同じ値(数え直さない)
+    expect(await page.getByTestId('cover-tasks-included').innerText()).toBe(await page.getByTestId('tasks-included').innerText());
+    expect(await page.getByTestId('cover-tasks-work').innerText()).toBe('57 時間');
+    expect(await page.getByTestId('cover-tasks-human').innerText()).toBe('40 時間');
+    expect(await page.getByTestId('cover-tasks-active').innerText()).toBe('0.01 時間');
+    const text = await cover.innerText();
+    expect(text).toContain('タスクの所要');
+    expect(text).not.toContain('倍');
+    expect(text).not.toContain('÷');
+    const note = await page.getByTestId('cover-tasks-note').innerText();
+    expect(note).toContain('上の絞り込みに従いません');
+    expect(note).toContain('合計が実際の勤務時間を超えることがあります');
+    expect(note).toContain('月〜金 9:00〜18:00');
+    expect(await page.getByTestId('cover-tasks-why').count()).toBe(0);
+    // 表紙のほかの欄は絞り込みに従うが、タスクの工数は集計したときの値のまま
+    await page.getByTestId('task-filter').selectOption('DEMO-102');
+    await expect.poll(shown).toBe(1);
+    expect(await page.getByTestId('cover-tasks-work').innerText()).toBe('57 時間');
+    expect(await page.getByTestId('cover-tasks-included').innerText()).toBe('1');
+    await page.getByTestId('task-filter').selectOption('');
+    // 欄は表紙の格子の幅いっぱい(4 欄の下に 1 行)。390px でも 3 つの時間が欄の中に収まり、ページが横にはみ出さない
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      const box = (await cover.boundingBox())!;
+      const grid = (await page.locator('#overview .fields').boundingBox())!;
+      expect(Math.abs(box.width - grid.width)).toBeLessThan(3);
+      for (const id of ['cover-tasks-work', 'cover-tasks-human', 'cover-tasks-active']) {
+        const v = (await page.getByTestId(id).boundingBox())!;
+        expect(v.x).toBeGreaterThanOrEqual(box.x);
+        expect(v.x + v.width).toBeLessThanOrEqual(box.x + box.width + 1);
+      }
+      expect(await page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')).toBe(true);
+    }
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await shots('cover-tasks', () => page.locator('#overview'), server.url);
   });
 
   it('b. タスクの行を押すとそのタスクのセッションに絞り込み、一覧の行にタスクの名前が出る。絞り込みの行の「タスク」でも選べる', async () => {
@@ -503,6 +545,12 @@ describe('管理ツールのタスクの画面', () => {
     await panel().waitFor({ state: 'visible' });
     expect(await panel().innerText()).toContain('送った人がセッションごとに添えた記録から数えています');
     expect(await page.getByTestId('tasks-work').innerText()).toBe('—');
+    // 表紙: 比べられる完了タスクが 0 件なので、時間は「—」で、件数 0 と理由(タスクの節の欄と同じ文)を出す
+    expect(await page.getByTestId('cover-tasks-included').innerText()).toBe('0');
+    for (const id of ['cover-tasks-work', 'cover-tasks-human', 'cover-tasks-active']) expect(await page.getByTestId(id).innerText()).toBe('—');
+    const why = await page.getByTestId('cover-tasks-why').innerText();
+    expect(why).toMatch(/^セッションが紐づいたタスク \d+ 件のうち。/);
+    expect(await panel().innerText()).toContain(why);
     expect(await page.getByTestId('tasks-table').locator('tbody tr').evaluateAll((trs) => trs.map((tr) => (tr as unknown as { dataset: Record<string, string> }).dataset.task))).toEqual(['DEMO-101']);
     expect(await page.getByTestId('tasks-table').innerText()).toContain('57 時間');
     await page.getByTestId('task-filter').selectOption('DEMO-101');
