@@ -147,14 +147,23 @@ export interface FolderEntry {
 }
 export interface FolderList {
   canPick: boolean;
-  /** この画面が開いているフォルダ(この PC のセッションなら null) */
-  current: { path: string; name: string } | null;
+  /** この画面が開いているフォルダ(この PC のセッションなら null)。settings は使っている設定のフォルダ(使っていなければ null。古い serve には無い) */
+  current: { path: string; name: string; settings?: SettingsDirTag | null } | null;
   /** この PC のセッションの画面 */
   local: { status: 'current' | 'open' | 'idle'; url: string | null };
   folders: FolderEntry[];
 }
-/** 選んだフォルダを調べた結果(ok でなければ、集計できない理由) */
-export type FolderCheck = { path: string; ok: true; name: string; summary: string } | { path: string; ok: false; error: string };
+/**
+ * 設定のフォルダ(共有の AtlasSettings。crates/atlas-cli/src/settings_dir.rs)。path はフルパス、name は画面に出す名前。
+ * from は決め方(given: --settings で指した / remembered: 前に開いたときのもの / found: 上のフォルダで見つけた。開いた画面では null)
+ */
+export interface SettingsDirTag {
+  path: string;
+  name: string;
+  from: 'given' | 'remembered' | 'found' | null;
+}
+/** 選んだフォルダを調べた結果(ok でなければ、集計できない理由)。settings は開いたら使う設定のフォルダ(古い serve には無い) */
+export type FolderCheck = { path: string; ok: true; name: string; summary: string; settings?: SettingsDirTag | null } | { path: string; ok: false; error: string };
 export const foldersApi = {
   list(token: string): Promise<FolderList> {
     return connect(fetch('api/folders', { cache: 'no-store', headers: headers(token) }), (r) => parse<FolderList>(r));

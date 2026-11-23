@@ -64,7 +64,7 @@ fn out_lock_stops_writing_commands() {
 
 #[test]
 fn refresh_args_follow_the_opened_folder() {
-    let p = JobArgsInput { out_dir: "o", notes_dir: "n", home: None };
+    let p = JobArgsInput { out_dir: "o", notes_dir: "n", home: None, settings: None };
     let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     assert_eq!(job_args(&JobRequest::Refresh, &p), Some(v(&["all", "--out", "o", "--notes-dir", "n"])));
     let h = JobArgsInput { home: Some("/srv/logs/person-a"), ..p };
@@ -81,6 +81,14 @@ fn refresh_args_follow_the_opened_folder() {
     assert_eq!(job_args(&JobRequest::TurnM365, &h), Some(v(&["turns", "m365", "--out", "o", "--notes-dir", "n"])));
     assert_eq!(job_args(&JobRequest::TaskM365, &h), Some(v(&["tasks", "m365", "--out", "o", "--notes-dir", "n"])));
     assert_eq!(job_args(&JobRequest::Full { id: "s1".into() }, &h), None);
+    // 設定のフォルダを使うサーバは、どのジョブにも同じ設定のフォルダを渡す
+    let st = JobArgsInput { settings: Some("S"), ..h };
+    assert_eq!(job_args(&JobRequest::TaskBundle, &st), Some(v(&["tasks", "bundle", "--out", "o", "--notes-dir", "n", "--settings", "S"])));
+    assert_eq!(job_args(&JobRequest::M365, &st), Some(v(&["judge", "m365", "--out", "o", "--notes-dir", "n", "--settings", "S"])));
+    for r in [JobRequest::Refresh, JobRequest::Bundle, JobRequest::BundleZip, JobRequest::Export, JobRequest::TurnBundle, JobRequest::TurnBundleZip, JobRequest::TaskBundleZip, JobRequest::TurnM365, JobRequest::TaskM365] {
+        let a = job_args(&r, &st).unwrap();
+        crate::args::parse_cli(&a).unwrap_or_else(|e| panic!("{a:?}: {e}"));
+    }
 }
 
 #[test]
@@ -93,7 +101,7 @@ fn open_pick_canceled_writes_nothing() {
     let before = d.path().join("logs").join("person-a").to_string_lossy().into_owned();
     fs::create_dir_all(&before).unwrap();
     let at = "2026-11-01T00:00:00.000Z".to_string();
-    write_folder_state(&folder_paths(&root, &notes, &before).state, &FolderState { version: 1, path: before.clone(), name: "person-a".into(), added_at: at.clone(), opened_at: at, listed: true, run: None }).unwrap();
+    write_folder_state(&folder_paths(&root, &notes, &before).state, &FolderState { version: 1, path: before.clone(), name: "person-a".into(), added_at: at.clone(), opened_at: at, listed: true, run: None, settings: None }).unwrap();
     let asked: Mutex<Vec<Option<String>>> = Mutex::new(vec![]);
     let logs: Mutex<Vec<String>> = Mutex::new(vec![]);
     let pick = |_t: &str, initial: Option<&str>| -> anyhow::Result<Option<String>> {

@@ -80,9 +80,11 @@ pub fn run_build(p: &Paths, o: &BuildOptions, log: Log<'_>) -> Result<BuildResul
     let file = read_sessions_file(p, "先に atlas extract を実行してください。")?;
     // 読むだけの画面にするか(送り先から集計した、または別のフォルダを開いた出力先。サーバと同じ判定)
     let read_only = super::tasks::is_read_only(p, &file);
-    // 管理ツールのタスク: XML を読んで状態を更新し、機械の紐づけを決め直す(--task の絞り込みより前に。読むだけの画面では送った人の記録を使う)
+    // 管理ツールのタスク: XML を読んで状態を更新し、機械の紐づけを決め直す(--task の絞り込みより前に。読むだけの画面では送った人の記録を使う。
+    // ただし設定のフォルダにタスクを置いていれば、読むだけの画面でも、この PC と同じく決める)
+    let tasks_read_only = super::tasks::tasks_read_only(p, &file);
     let task_cfg = super::tasks::load_task_config(o.config.as_deref());
-    let refreshed = match (&o.refreshed, read_only) {
+    let refreshed = match (&o.refreshed, tasks_read_only) {
         (_, true) => None,
         (Some(r), false) => Some(r.clone()),
         (None, false) => Some(super::tasks::refresh_tasks(p, &task_cfg, &file.sessions, cmd, log)),
@@ -144,7 +146,7 @@ pub fn run_build(p: &Paths, o: &BuildOptions, log: Log<'_>) -> Result<BuildResul
         None => {}
     }
 
-    let task_view = super::tasks::build_view(p, &task_cfg, read_only, &s.sessions, &sessions, refreshed.as_ref(), &super::tasks::human_of(judgments.as_ref()));
+    let task_view = super::tasks::build_view(p, &task_cfg, tasks_read_only, &s.sessions, &sessions, refreshed.as_ref(), &super::tasks::human_of(judgments.as_ref()));
     write_tables(p, &sessions, task_view.as_ref(), cmd, log)?;
 
     let unknown: i64 = s.warnings.unknown_event_types.values().sum();

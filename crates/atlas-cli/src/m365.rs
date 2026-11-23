@@ -187,7 +187,7 @@ pub fn powershell_driver(req: &M365Request<'_>) -> Result<()> {
 
 pub struct M365Paths {
     pub out: PathBuf,
-    /// メモの置き場(タスクの紐づけ task-links.json を書く)
+    /// タスクの紐づけ(task-links.json)の場所(メモの置き場か、設定のフォルダ。Paths::tasks_dir)
     pub notes: PathBuf,
     pub sessions: PathBuf,
     pub judgments: PathBuf,

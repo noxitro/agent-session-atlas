@@ -226,7 +226,7 @@ pub fn run_metrics(p: &Paths, f: &SessionFilter, config: Option<&str>, log: Log<
         log(&format!("metrics: インストール済みで未使用の skill {} / {} 件", s.unused.len(), s.installed.len()));
     }
     let cfg = super::tasks::load_task_config(config);
-    let tasks = super::tasks::build_view(p, &cfg, super::tasks::is_read_only(p, &sel.file), &sel.file.sessions, &sessions, None, &super::tasks::judgment_hours(&p.judgments));
+    let tasks = super::tasks::build_view(p, &cfg, super::tasks::tasks_read_only(p, &sel.file), &sel.file.sessions, &sessions, None, &super::tasks::judgment_hours(&p.judgments));
     write_tables(p, &sessions, tasks.as_ref(), "metrics", log)?;
     Ok(m)
 }

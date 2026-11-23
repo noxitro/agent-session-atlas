@@ -232,6 +232,13 @@
           <div class="found" data-testid="folders-found">
             <p class="what"><b>{f.name}</b> <code translate="no">{f.path}</code></p>
             <p class="note">{f.summary}</p>
+            {#if f.settings}
+              <!-- 設定のフォルダ(共有の AtlasSettings)。集計の設定を読み、設定に tasks があれば、ここでタスクを紐づける -->
+              <p class="note" data-testid="folders-found-settings">
+                <span class="tag" title={f.settings.path}>設定: {f.settings.name}</span>
+                {f.settings.from === 'remembered' ? '前にこのフォルダを開いたときの設定のフォルダを使います。' : '上のフォルダで見つけた設定のフォルダを使います。'}集計の設定(atlas.config.json)をここから読み、設定に管理ツールのタスクがあれば、タスクの紐づけはこの PC で行います。
+              </p>
+            {/if}
             <div class="actions">
               <button type="button" class="btn" disabled={!!busy} onclick={() => (found = null)}>やめる</button>
               <button type="button" class="btn primary" disabled={!!busy} data-folder-go data-testid="folders-go" onclick={() => open(f.path, 'open-found')}>{busy === 'open-found' ? '始めています…' : '集計して開く'}</button>

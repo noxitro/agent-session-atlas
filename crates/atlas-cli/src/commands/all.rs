@@ -66,7 +66,20 @@ pub fn run_all_or_reuse(o: &CliOptions, p: &Paths, built_file: &Path, log: Log<'
         "toolOutput": o.tool_output.as_str(), "maxChars": o.max_chars, "tempDirs": o.temp_dirs, "vcsMode": o.vcs_mode,
     });
     let code = crate::version::CODE_STAMP.to_string();
-    let key = inputs_key(&ReusePaths { snapshot: &p.snapshot, judgments: &p.judgments, turn_judgments: &p.turn_judgments }, &options, &config_file, &code)?;
+    let core = inputs_key(&ReusePaths { snapshot: &p.snapshot, judgments: &p.judgments, turn_judgments: &p.turn_judgments }, &options, &config_file, &code)?;
+    // 設定のフォルダにタスクを置いているときは、XML と、タスクの状態・紐づけ(ほかの集計する人も書く)も入力の印に入れる。
+    // 集計がそれらを書き直すことがあるので、覚える印は集計の後のもの(集計に使った状態)にする
+    let config_s = config_file.to_string_lossy().into_owned();
+    let with_tasks = |core: &str| -> String {
+        match crate::settings_dir::central_task_stamp(p, &config_s) {
+            Some(t) => {
+                use sha2::{Digest, Sha256};
+                hex::encode(Sha256::digest(format!("{core}\0tasks\0{t}").as_bytes()))
+            }
+            None => core.to_string(),
+        }
+    };
+    let key = with_tasks(&core);
     let prev = read_built(built_file);
     // 使い回すのは、アップロードしたフォルダ(送った側が添えた記録だけで集計が決まる)のときだけ
     let layout = read_snapshot_manifest(&p.snapshot)?.and_then(|m| m.layout);
@@ -82,7 +95,7 @@ pub fn run_all_or_reuse(o: &CliOptions, p: &Paths, built_file: &Path, log: Log<'
     clear_built(built_file)?;
     let build = run_all_after_snapshot(o, p, log, t)?;
     if uploaded {
-        write_built(built_file, &key, &p.out)?;
+        write_built(built_file, &with_tasks(&core), &p.out)?;
     }
     Ok(Some(build))
 }

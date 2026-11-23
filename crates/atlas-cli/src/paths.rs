@@ -96,6 +96,13 @@ pub struct Paths {
     pub html: PathBuf,
     /// メモの置き場(既定はリポジトリ直下の atlas-notes/)
     pub notes: PathBuf,
+    /// 管理ツールのタスクの状態(tasks.json)と紐づけ(task-links.json)の場所。既定は notes。
+    /// 設定のフォルダ(settings_dir.rs)の設定に tasks があれば、その設定のフォルダ
+    pub tasks_dir: PathBuf,
+    /// 使う設定のフォルダ(--settings か、開いたフォルダの記録 folder.json の settings)。無ければ None
+    pub settings: Option<PathBuf>,
+    /// タスクの状態と紐づけを設定のフォルダに置いているか(集計する人が紐づける。読むだけの画面でも、タスクの紐づけは変えられる)
+    pub central_tasks: bool,
 }
 
 pub struct PathInputs<'a> {
@@ -129,6 +136,9 @@ pub fn resolve_paths(o: PathInputs<'_>) -> Paths {
         html: out.join("atlas.html"),
         home,
         out,
+        tasks_dir: notes.clone(),
+        settings: None,
+        central_tasks: false,
         notes,
     }
 }

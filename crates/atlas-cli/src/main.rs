@@ -12,6 +12,7 @@ mod open_reuse;
 mod paths;
 mod self_update;
 mod serve;
+mod settings_dir;
 mod setup;
 mod sys;
 mod tables;

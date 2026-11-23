@@ -125,6 +125,10 @@ pub struct FolderState {
     /// 画面の一覧に出すか(「一覧から外す」で false。出力は消さない)
     pub listed: bool,
     pub run: Option<FolderRun>,
+    /// 前に開いたときに使った設定のフォルダ(settings_dir.rs。使わなかったときは無い)。
+    /// 開いたフォルダの出力先に向けたジョブと CLI も、これを読んで同じ設定のフォルダを使う
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings: Option<String>,
 }
 
 pub fn read_folder_state(file: &str) -> Option<FolderState> {
@@ -148,6 +152,7 @@ pub fn read_folder_state(file: &str) -> Option<FolderState> {
         opened_at: s("openedAt").unwrap_or_default(),
         listed: j.get("listed") != Some(&Value::Bool(false)),
         run,
+        settings: s("settings").filter(|x| !x.is_empty()),
         path,
     })
 }
@@ -329,6 +334,30 @@ pub struct FolderEntry {
 pub struct CurrentFolder {
     pub path: String,
     pub name: String,
+    /// この画面が使っている設定のフォルダ(settings_dir.rs。使っていなければ null)
+    pub settings: Option<SettingsTag>,
+}
+
+/// 画面に出す設定のフォルダ(名前と、title に出すフルパス)。from は決め方(given / remembered / found。開いた画面では null)
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SettingsTag {
+    pub path: String,
+    pub name: String,
+    pub from: Option<&'static str>,
+}
+
+impl SettingsTag {
+    pub fn of(path: &str, from: Option<&'static str>) -> SettingsTag {
+        SettingsTag { path: path.to_string(), name: folder_name(path), from }
+    }
+}
+
+/// 画面の「調べる」: そのフォルダを開いたら使う設定のフォルダ(atlas open と同じ決め方)
+pub fn settings_preview(ctx: &FolderContext<'_>, path: &str) -> Option<SettingsTag> {
+    let fp = folder_paths(&ctx.root, &ctx.notes_base, path);
+    let remembered = read_folder_state(&fp.state).and_then(|s| s.settings);
+    let r = crate::settings_dir::settings_for_open(None, remembered.as_deref(), Path::new(path)).ok()?;
+    r.dir.map(|(d, from)| SettingsTag::of(&d.to_string_lossy(), Some(from.key())))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -438,7 +467,11 @@ pub fn list_folders(ctx: &FolderContext<'_>) -> FolderList {
             None => LocalStatus { status: "idle".into(), url: None },
         },
     };
-    FolderList { can_pick: ctx.can_pick, current: ctx.current.as_ref().map(|c| CurrentFolder { path: c.clone(), name: folder_name(c) }), local, folders }
+    let current = ctx.current.as_ref().map(|c| {
+        let settings = read_folder_state(&folder_paths(&ctx.root, &ctx.notes_base, c).state).and_then(|s| s.settings).map(|s| SettingsTag::of(&s, None));
+        CurrentFolder { path: c.clone(), name: folder_name(c), settings }
+    });
+    FolderList { can_pick: ctx.can_pick, current, local, folders }
 }
 
 /// `atlas open <フォルダ>` の引数(実行ファイルの後ろ)。画面からの文字列はフォルダのパスだけで、確かめた後の絶対パスを 1 つの引数として渡す
@@ -462,6 +495,8 @@ pub fn open_folder_report(ctx: &FolderContext<'_>, input: &Value) -> Result<Fold
         opened_at: now.clone(),
         listed: true,
         run: None,
+        // 設定のフォルダは、集計を始めた atlas open が決めて書く(それまでは前のもの)
+        settings: prev.as_ref().and_then(|p| p.settings.clone()),
     };
     let prev_run = prev.as_ref().and_then(|p| p.run.clone());
     if ctx.current.as_deref().is_some_and(|c| folder_key(c) == fp.key) || ctx.pending.lock().unwrap().contains(&fp.key) {
@@ -534,7 +569,7 @@ mod tests {
         assert_eq!(p.out, platform::join(&[&p.dir, "out"]));
         assert_eq!(p.notes, platform::join(&[&base, "notes", "folders", &p.key]));
         assert!(!is_read_only_view(&p.out, None));
-        write_folder_state(&p.state, &FolderState { version: 1, path: a.clone(), name: "logs".into(), added_at: "t".into(), opened_at: "t".into(), listed: true, run: None }).unwrap();
+        write_folder_state(&p.state, &FolderState { version: 1, path: a.clone(), name: "logs".into(), added_at: "t".into(), opened_at: "t".into(), listed: true, run: None, settings: None }).unwrap();
         assert!(is_opened_folder_out(&p.out));
         assert!(is_read_only_view(&p.out, None));
         assert!(is_read_only_view(&base, Some("merged")));

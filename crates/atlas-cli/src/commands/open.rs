@@ -2,6 +2,7 @@
 //! (アップロード先・人ごとのフォルダ・プロジェクトのフォルダ)を集計して、別のサーバで開く。
 //! 出力先とメモはフォルダごとに分ける(folders.rs)。そのフォルダのサーバが動いていれば、ブラウザで開くだけ。
 //! 状態(集計中・表示中・失敗)は <置き場>/<キー>/folder.json に書き、画面の「別のフォルダを開く…」の一覧が読む。
+//! 設定のフォルダ(settings_dir.rs。共有の AtlasSettings)を決め、あればその atlas.config.json で集計し、folder.json に覚える。
 
 use super::all::run_all_or_reuse;
 use super::serve::{run_serve, ServeCli};
@@ -40,8 +41,22 @@ pub fn run_open(o: &CliOptions, log: Log<'_>, pick: Option<PickDep<'_>>) -> Resu
     }
     let info = check_folder(&target.map_or(Value::Null, Value::String))?;
     let fp = folder_paths(&root, &local_notes, &info.path);
-    let p = resolve_paths(PathInputs { home: Some(&info.path), out: Some(&fp.out), judgments: None, bundle: None, notes_dir: Some(&fp.notes) });
+    let mut p = resolve_paths(PathInputs { home: Some(&info.path), out: Some(&fp.out), judgments: None, bundle: None, notes_dir: Some(&fp.notes) });
     let prev = read_folder_state(&fp.state);
+    // 設定のフォルダ: --settings → 前に開いたときのもの → 上へ探す。見つかれば --config より先に使う
+    let found = crate::settings_dir::settings_for_open(o.settings.as_deref(), prev.as_ref().and_then(|s| s.settings.as_deref()), Path::new(&info.path))?;
+    for n in &found.notes {
+        log(&format!("open: 注意 {n}"));
+    }
+    if let (Some(c), Some((d, _))) = (&o.config, &found.dir) {
+        log(&format!("open: 注意 --config の {c} は読みません(設定のフォルダ {} の {} を読みます)", d.display(), crate::config::CONFIG_FILE));
+    }
+    let settings = found.dir.as_ref().map(|(d, _)| d.to_string_lossy().into_owned());
+    // 集計(と、この後の画面のジョブ)が読む設定。タスクの置き場もここで決まる
+    let all_base = CliOptions { settings: settings.clone(), config: if settings.is_some() { None } else { o.config.clone() }, ..o.clone() };
+    // (使わないと決めたときは当てない。folder.json に残る前の記録は、このあと書き直す)
+    let all_base = if settings.is_some() { crate::settings_dir::apply_settings(&all_base, &mut p)? } else { all_base };
+    let p = p;
     let now = atlas_core::jsdate::now_iso;
     let base = FolderState {
         version: 1,
@@ -51,6 +66,7 @@ pub fn run_open(o: &CliOptions, log: Log<'_>, pick: Option<PickDep<'_>>) -> Resu
         opened_at: now(),
         listed: true,
         run: None,
+        settings: settings.clone(),
     };
     // 一覧から外す操作(画面)が途中で入っていたら、それを残す
     let save = |run: Option<FolderRun>, relist: bool| -> Result<()> {
@@ -61,13 +77,27 @@ pub fn run_open(o: &CliOptions, log: Log<'_>, pick: Option<PickDep<'_>>) -> Resu
     let serve = || ServeCli {
         port: o.port,
         open: o.open,
-        config: o.config.clone(),
+        config: all_base.config.clone(),
+        settings: p.settings.clone(),
         home: Some(info.path.clone()),
         reports: Some(ReportsOptions { root: Some(PathBuf::from(&root)), notes_base: Some(local.notes.clone()), local_out: Some(local.out.clone()), current: Some(info.path.clone()), launch: None }),
     };
     log(&format!("open: {}({})", info.path, info.summary));
-    log(&format!("open: 出力先 {}(読むだけの画面です。メモは送った人が付けたものを出し、この画面では書き換えません)", fp.out));
-    let all_opts = CliOptions { command: "all".into(), home: Some(info.path.clone()), out: Some(fp.out.clone()), notes_dir: Some(fp.notes.clone()), ..o.clone() };
+    if let Some((d, from)) = &found.dir {
+        log(&format!(
+            "open: 設定のフォルダ {}({})の {} を読みます。{}",
+            d.display(),
+            from.label(),
+            crate::config::CONFIG_FILE,
+            if p.central_tasks { "タスクの紐づけは、ここで集計する人が行い、設定のフォルダに書きます(送った人が添えたタスクの記録は使いません)" } else { "設定に tasks が無いので、タスクは送った人が添えた記録から出します" }
+        ));
+    }
+    log(&format!(
+        "open: 出力先 {}(読むだけの画面です。メモは送った人が付けたものを出し、この画面では書き換えません{})",
+        fp.out,
+        if p.central_tasks { "。タスクの紐づけは、この画面と CLI(--out にこの出力先)で変えられます" } else { "" }
+    ));
+    let all_opts = CliOptions { command: "all".into(), home: Some(info.path.clone()), out: Some(fp.out.clone()), notes_dir: Some(fp.notes.clone()), ..all_base.clone() };
     let built = PathBuf::from(&fp.built);
     let aggregate = || -> Result<Option<super::BuildResult>> {
         let lock = acquire_out_lock(&p.out, "all", "cli")?;

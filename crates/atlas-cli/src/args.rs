@@ -111,6 +111,8 @@ pub struct CliOptions {
     pub zip: bool,
     pub temp_dirs: Option<Vec<String>>,
     pub config: Option<String>,
+    /// 設定のフォルダ(atlas.config.json と、管理ツールのタスクの状態・紐づけを置く共有の場所。settings_dir.rs)
+    pub settings: Option<String>,
     pub tool_output: ToolOutput,
     pub max_chars: Option<u64>,
     pub full: bool,
@@ -175,6 +177,7 @@ const OPTIONS: &[(&str, Kind)] = &[
     ("zip", Kind::Bool),
     ("temp-dir", Kind::StrMulti),
     ("config", Kind::Str),
+    ("settings", Kind::Str),
     ("tool-output", Kind::Str),
     ("full", Kind::Bool),
     ("snapshot-all", Kind::Bool),
@@ -594,6 +597,15 @@ pub fn parse_cli(argv: &[String]) -> Result<CliOptions, UsageError> {
     if values.has("config") && !matches!(cmd.as_str(), "extract" | "vcs" | "metrics" | "all" | "serve" | "open" | "tasks") {
         return err("--config は extract・vcs・metrics・all・serve・open・tasks でだけ使えます");
     }
+    if values.has("settings") && !matches!(cmd.as_str(), "extract" | "vcs" | "metrics" | "build" | "export" | "all" | "bundle" | "turns" | "judge" | "serve" | "open" | "tasks") {
+        return err("--settings は extract・vcs・metrics・build・export・all・bundle・turns・judge・serve・open・tasks でだけ使えます");
+    }
+    if values.has("settings") && values.has("config") {
+        return err("--settings と --config は一緒に使えません(--settings のときは、設定のフォルダの atlas.config.json を読みます)");
+    }
+    if values.s("settings").is_some_and(|s| s.trim().is_empty()) {
+        return err("--settings に設定のフォルダを指定してください");
+    }
     if let Some(since) = values.s("since") {
         if atlas_core::jsdate::parse_ms(since).is_none() {
             return err(format!("--since の日時を解釈できません: {since}"));
@@ -639,6 +651,7 @@ pub fn parse_cli(argv: &[String]) -> Result<CliOptions, UsageError> {
         zip: values.b("zip", false),
         temp_dirs,
         config: values.s("config").cloned(),
+        settings: values.s("settings").map(|s| s.trim().to_string()),
         tool_output,
         max_chars: pos_int(values.s("max-chars"), "--max-chars", 200)?,
         full,
@@ -746,6 +759,12 @@ mod tests {
         assert_eq!(p(&["tasks", "sync", "--config", "c.json"]).unwrap().config.as_deref(), Some("c.json"));
         assert_eq!(p(&["metrics", "--config", "c.json"]).unwrap().config.as_deref(), Some("c.json"));
         assert!(p(&["build", "--config", "c.json"]).unwrap_err().0.starts_with("--config は extract・vcs・metrics"));
+        assert_eq!(p(&["tasks", "bundle", "--settings", " S "]).unwrap().settings.as_deref(), Some("S"));
+        assert_eq!(p(&["export", "--settings", "S"]).unwrap().settings.as_deref(), Some("S"));
+        assert!(p(&["memo", "list", "--settings", "S"]).unwrap_err().0.starts_with("--settings は extract・vcs・metrics・build"));
+        assert_eq!(p(&["judge", "m365", "--settings", "S"]).unwrap().settings.as_deref(), Some("S"));
+        assert!(p(&["open", "C:/x", "--settings", "S", "--config", "c.json"]).unwrap_err().0.starts_with("--settings と --config は一緒に使えません"));
+        assert_eq!(p(&["open", "C:/x", "--settings", " "]).unwrap_err().0, "--settings に設定のフォルダを指定してください");
         assert_eq!(p(&["tasks"]).unwrap_err().0, "tasks の後に sync / list / link / bundle / import / m365 を指定してください");
         assert!(p(&["tasks", "nope"]).unwrap_err().0.starts_with("tasks の不明な操作です"));
         assert_eq!(p(&["tasks", "list", "--session", "a"]).unwrap_err().0, "--session は tasks bundle でだけ使えます");

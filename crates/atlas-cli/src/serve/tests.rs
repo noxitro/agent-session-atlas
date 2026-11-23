@@ -853,9 +853,31 @@ fn folders_api_for_opened_folder_server() {
         o.reports = ReportsOptions { root: Some(root), notes_base: Some(notes), local_out: Some(local), current: Some(l.clone()), launch: Some(Arc::new(|_: &[String], _: &str| None)) };
     });
     let b = e.json("GET", "/api/folders", None).1;
-    assert_eq!(b["current"], json!({ "path": logs.to_string_lossy(), "name": "logs" }));
+    assert_eq!(b["current"], json!({ "path": logs.to_string_lossy(), "name": "logs", "settings": null }));
     assert_eq!(b["local"], json!({ "status": "idle", "url": null }));
     assert_eq!(b["folders"], json!([]));
+    // 開いたときに使った設定のフォルダ(folder.json の settings)を、この画面の設定として返す
+    let fp = crate::folders::folder_paths(&s(&e.dir.join("reports")), &s(&e.notes), &l);
+    let st = e.dir.join("share").join(crate::settings_dir::SETTINGS_DIR_NAME);
+    crate::folders::write_folder_state(&fp.state, &crate::folders::FolderState { version: 1, path: l.clone(), name: "logs".into(), added_at: "t".into(), opened_at: "t".into(), listed: true, run: None, settings: Some(s(&st)) }).unwrap();
+    let b = e.json("GET", "/api/folders", None).1;
+    assert_eq!(b["current"]["settings"], json!({ "path": s(&st), "name": "AtlasSettings", "from": null }));
+}
+
+/// 「調べる」: そのフォルダを開いたら使う設定のフォルダ(上へ探して見つけたもの)を返す
+#[test]
+fn folders_check_shows_settings_dir() {
+    let mut e = Env::new();
+    let logs = e.dir.join("SessionLog");
+    fs::create_dir_all(logs.join("alice").join("proj").join("s1")).unwrap();
+    fs::write(logs.join("alice").join("proj").join("s1").join("events.jsonl"), "{}\n").unwrap();
+    e.start(|_| {});
+    let check = |p: &Path| e.json("POST", "/api/folders/check", Some(json!({ "path": s(p) }))).1;
+    assert_eq!(check(&logs.join("alice"))["settings"], Value::Null);
+    let st = e.dir.join(crate::settings_dir::SETTINGS_DIR_NAME);
+    fs::create_dir_all(&st).unwrap();
+    fs::write(st.join("atlas.config.json"), "{}").unwrap();
+    assert_eq!(check(&logs.join("alice"))["settings"], json!({ "path": s(&st), "name": "AtlasSettings", "from": "found" }));
 }
 
 #[test]
@@ -1572,6 +1594,40 @@ fn tasks_api_without_config_and_read_only() {
     }
     assert_eq!(e.json("GET", "/api/jobs/judge-preview?target=tasks", None).1["pending"], 0);
     assert!(!e.notes.join("task-links.json").exists());
+}
+
+/// 設定のフォルダの設定に tasks がある、開いたフォルダのサーバ: メモは読むだけのまま、タスクの紐づけは設定のフォルダに書ける
+#[test]
+fn central_tasks_in_opened_folder_server() {
+    let mut e = tasks_env();
+    // tasks_env の設定とタスクの状態を、設定のフォルダに移す(メモの置き場には置かない)
+    let st = e.dir.join(crate::settings_dir::SETTINGS_DIR_NAME);
+    fs::create_dir_all(&st).unwrap();
+    fs::rename(e.dir.join("atlas.config.json"), st.join("atlas.config.json")).unwrap();
+    fs::rename(e.dir.join("export.xml"), st.join("export.xml")).unwrap();
+    fs::rename(e.notes.join("tasks.json"), st.join("tasks.json")).unwrap();
+    let logs = e.dir.join("logs");
+    fs::create_dir_all(&logs).unwrap();
+    let (l, stc) = (s(&logs), st.clone());
+    e.start(|o| {
+        o.config_path = Some(stc.join("atlas.config.json"));
+        o.settings_dir = Some(stc.clone());
+        o.reports.current = Some(l.clone());
+    });
+    // メモは読むだけ
+    assert_eq!(e.get("/api/state").1["readOnly"], true);
+    assert_eq!(e.json("PUT", "/api/memos/s1", Some(json!({ "text": "x", "rev": "" }))).0, 403);
+    // タスクは設定のフォルダから読み、紐づけを変えられる
+    let v = e.get("/api/tasks").1;
+    assert_eq!((v["readOnly"].clone(), v["tasks"]["origin"].clone()), (json!(false), json!("local")));
+    assert_eq!(e.json("PUT", "/api/tasks/links/s2", Some(json!({ "taskIds": ["XY-9"] }))).0, 200);
+    assert!(st.join("task-links.json").exists());
+    assert!(!e.notes.join("task-links.json").exists());
+    assert_eq!(e.json("GET", "/api/judge/parts?target=tasks", None).0, 200);
+    // 設定から tasks を外すと、送った人の記録を読むだけに戻る
+    fs::write(st.join("atlas.config.json"), "{}").unwrap();
+    assert_eq!(e.get("/api/tasks").1["readOnly"], true);
+    assert_eq!(e.json("PUT", "/api/tasks/links/s2", Some(json!({ "taskIds": [] }))).0, 403);
 }
 
 #[test]

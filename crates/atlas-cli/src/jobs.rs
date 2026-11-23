@@ -343,6 +343,8 @@ pub struct JobArgsInput<'a> {
     pub notes_dir: &'a str,
     /// 集計し直すときに読む場所(別のフォルダを開いたサーバ。省略時は CLI の既定)
     pub home: Option<&'a str>,
+    /// 設定のフォルダ(settings_dir.rs。サーバが使っているもの。どのジョブにも --settings で渡す)
+    pub settings: Option<&'a str>,
 }
 
 /// 子プロセスの引数(この実行ファイルの後ろ。TS 版の main.ts の代わりにサブコマンドを置く)。サーバが固定の形で組み立てる。full はサーバ内なので None
@@ -372,6 +374,9 @@ pub fn job_args(req: &JobRequest, p: &JobArgsInput<'_>) -> Option<Vec<String>> {
         JobRequest::Full { .. } => return None,
     };
     v.extend(["--out".to_string(), p.out_dir.to_string(), "--notes-dir".to_string(), p.notes_dir.to_string()]);
+    if let Some(s) = p.settings {
+        v.extend(["--settings".to_string(), s.to_string()]);
+    }
     Some(v)
 }
 
@@ -540,6 +545,8 @@ pub struct JobRunnerOptions {
     pub notes_dir: PathBuf,
     /// 集計し直すときに読む場所(別のフォルダを開いたサーバ。省略時は CLI の既定)
     pub home: Option<String>,
+    /// 設定のフォルダ(子プロセスに --settings で渡す)
+    pub settings: Option<String>,
     pub spawn: Option<SpawnFn>,
     /// 子プロセスに足す環境変数
     pub env: Vec<(String, String)>,
@@ -661,7 +668,7 @@ impl JobRunner {
         }
         let out = self.o.out_dir.to_string_lossy().into_owned();
         let notes = self.o.notes_dir.to_string_lossy().into_owned();
-        let args = job_args(req, &JobArgsInput { out_dir: &out, notes_dir: &notes, home: self.o.home.as_deref() });
+        let args = job_args(req, &JobArgsInput { out_dir: &out, notes_dir: &notes, home: self.o.home.as_deref(), settings: self.o.settings.as_deref() });
         if let Some(a) = &args {
             check_args_length(a)?;
         }

@@ -3,7 +3,9 @@
 //!   機械の紐づけ(task-links.json)を決め直す。XML を読めなければ前の状態のまま続け、注意をレポートに出す
 //! - LLM の紐づけは頼んだときだけで、このツールは LLM を呼ばない。紐づけの無いセッションを束(tasks bundle。<out>/task-bundle/)にして、
 //!   工数の判定と同じく外部の LLM に渡し(チャットに貼る・ZIP をエージェントに渡す・M365 Copilot の自動操作)、返答を取り込む(tasks import)
-//! - 送り先から集計した(読むだけの)出力先では、XML は読まず、送った人がセッションごとに添えた記録だけを使う
+//! - 送り先から集計した(読むだけの)出力先では、XML は読まず、送った人がセッションごとに添えた記録だけを使う。
+//!   ただし設定のフォルダ(settings_dir.rs)の設定に tasks があれば、集計する人がこの PC と同じ決まりで紐づける
+//!   (タスクの状態と紐づけは設定のフォルダに置き、送った人の記録は使わない。Paths::central_tasks)
 
 use super::Log;
 use crate::args::{CliOptions, TasksCliOptions};
@@ -55,13 +57,19 @@ pub fn load_task_config(config: Option<&str>) -> TaskConfig {
     }
 }
 
-/// 読むだけの画面の出力先か(送り先から集計した・別のフォルダを開いた)
+/// 読むだけの画面の出力先か(送り先から集計した・別のフォルダを開いた)。メモの扱いはこれで決める
 pub fn is_read_only(p: &Paths, file: &SessionsFile) -> bool {
     let layout = file.source.layout.map(|l| match l {
         atlas_core::types::UploadLayout::Flat => "flat",
         atlas_core::types::UploadLayout::Merged => "merged",
     });
     crate::folders::is_read_only_view(&p.out.to_string_lossy(), layout)
+}
+
+/// タスクの紐づけを読むだけにするか: 読むだけの画面で、設定のフォルダにタスクを置いていないとき(送った人の記録を使う)。
+/// 設定のフォルダにタスクを置いていれば、読むだけの画面でも、集計する人が紐づける
+pub fn tasks_read_only(p: &Paths, file: &SessionsFile) -> bool {
+    !p.central_tasks && is_read_only(p, file)
 }
 
 /// 集計のたびの処理の結果
@@ -89,8 +97,8 @@ fn machine_line(m: &MachineSummary) -> String {
 /// XML を読んで tasks.json を更新し(設定があるとき)、機械の紐づけを決め直す。失敗しても止めず、前の状態と注意を返す
 pub fn refresh_tasks(p: &Paths, cfg: &TaskConfig, sessions: &[SessionRecord], cmd: &str, log: Log<'_>) -> Refreshed {
     let mut warnings: Vec<String> = cfg.error.iter().cloned().collect();
-    let state_path = tasks_path(&p.notes);
-    let links_path = task_links_path(&p.notes);
+    let state_path = tasks_path(&p.tasks_dir);
+    let links_path = task_links_path(&p.tasks_dir);
     let state = match &cfg.source {
         Some(src) => match sync_tasks(src, &state_path) {
             Ok(r) => {
@@ -141,10 +149,10 @@ pub fn refresh_tasks(p: &Paths, cfg: &TaskConfig, sessions: &[SessionRecord], cm
     Refreshed { state, links, warnings }
 }
 
-/// all の、metrics の前のタスクの処理(sessions.json を読み、読むだけの出力先でなければ refresh_tasks)。読むだけなら None
+/// all の、metrics の前のタスクの処理(sessions.json を読み、タスクを読むだけの出力先でなければ refresh_tasks)。読むだけなら None
 pub fn refresh_for_aggregation(p: &Paths, config: Option<&str>, cmd: &str, log: Log<'_>) -> Result<Option<Refreshed>> {
     let file = super::metrics::read_sessions_file(p, "先に atlas extract を実行してください。")?;
-    if is_read_only(p, &file) {
+    if tasks_read_only(p, &file) {
         return Ok(None);
     }
     Ok(Some(refresh_tasks(p, &load_task_config(config), &file.sessions, cmd, log)))
@@ -171,10 +179,11 @@ pub fn judgment_hours(path: &Path) -> HashMap<String, (f64, Option<f64>)> {
 
 /// タスクの節を作る(レポートの埋め込みと GET /api/tasks が同じものを使う)
 pub struct ViewInputs<'a> {
-    /// メモの置き場(tasks.json と task-links.json)と、スナップショット(送った人の記録)
+    /// tasks.json と task-links.json の場所(Paths::tasks_dir)と、スナップショット(送った人の記録)
     pub notes: &'a Path,
     pub snapshot: &'a Path,
     pub cfg: &'a TaskConfig,
+    /// タスクを読むだけにする(送った人の記録から作る。tasks_read_only)
     pub read_only: bool,
     /// 送った人の記録を読むセッション(読むだけの画面。集計のすべて)
     pub all: &'a [&'a str],
@@ -210,17 +219,17 @@ pub fn tasks_view(i: ViewInputs<'_>) -> Option<TasksView> {
     Some(v)
 }
 
-/// レポートの節。read_only なら送った人の記録から、それ以外はこの PC の記録から。shown が all より少なければ scoped
+/// レポートの節。read_only(tasks_read_only)なら送った人の記録から、それ以外はこの PC か設定のフォルダの記録から。shown が all より少なければ scoped
 pub fn build_view(p: &Paths, cfg: &TaskConfig, read_only: bool, all: &[SessionRecord], shown: &[&SessionRecord], refreshed: Option<&Refreshed>, human: &HashMap<String, (f64, Option<f64>)>) -> Option<TasksView> {
     let ids: Vec<&str> = shown.iter().map(|s| s.id.as_str()).collect();
     let all_ids: Vec<&str> = all.iter().map(|s| s.id.as_str()).collect();
     let facts: HashMap<String, SessionFacts> = session_facts(shown, human);
-    tasks_view(ViewInputs { notes: &p.notes, snapshot: &p.snapshot, cfg, read_only, all: &all_ids, shown: &ids, facts: &facts, refreshed, scoped: shown.len() < all.len() })
+    tasks_view(ViewInputs { notes: &p.tasks_dir, snapshot: &p.snapshot, cfg, read_only, all: &all_ids, shown: &ids, facts: &facts, refreshed, scoped: shown.len() < all.len() })
 }
 
 /// --task: そのタスクに紐づいたセッション。知らないタスクなら止める(黙って 0 件にしない)
 pub fn sessions_of_task(p: &Paths, file: &SessionsFile, task: &str) -> Result<HashSet<String>> {
-    if is_read_only(p, file) {
+    if tasks_read_only(p, file) {
         let per = sender_tasks_of(p, &file.sessions);
         let has = |ts: &[SenderTask]| ts.iter().any(|t| t.id == task);
         if !per.iter().any(|(_, ts)| has(ts)) {
@@ -228,11 +237,11 @@ pub fn sessions_of_task(p: &Paths, file: &SessionsFile, task: &str) -> Result<Ha
         }
         return Ok(per.into_iter().filter(|(_, ts)| has(ts)).map(|(s, _)| s).collect());
     }
-    let state = load_tasks(&tasks_path(&p.notes)).file;
-    let links = load_links(&task_links_path(&p.notes)).file;
+    let state = load_tasks(&tasks_path(&p.tasks_dir)).file;
+    let links = load_links(&task_links_path(&p.tasks_dir)).file;
     let ids: HashSet<String> = links.links.iter().filter(|(_, l)| l.task_ids.iter().any(|t| t == task)).map(|(s, _)| s.clone()).collect();
     if ids.is_empty() && !state.tasks.contains_key(task) {
-        bail!("タスク「{task}」は {} にありません(atlas tasks list で ID を確かめられます)", tasks_path(&p.notes).display());
+        bail!("タスク「{task}」は {} にありません(atlas tasks list で ID を確かめられます)", tasks_path(&p.tasks_dir).display());
     }
     Ok(ids)
 }
@@ -260,8 +269,8 @@ pub fn run_tasks(o: &CliOptions, p: &Paths, t: &TasksCliOptions, log: Log<'_>) -
     match t.action.as_str() {
         "sync" => {
             let src = require_source(&cfg)?;
-            let r = sync_tasks(src, &tasks_path(&p.notes)).map_err(anyhow::Error::msg)?;
-            log(&format!("tasks sync: {} → {}", sync_line(&r.summary), tasks_path(&p.notes).display()));
+            let r = sync_tasks(src, &tasks_path(&p.tasks_dir)).map_err(anyhow::Error::msg)?;
+            log(&format!("tasks sync: {} → {}", sync_line(&r.summary), tasks_path(&p.tasks_dir).display()));
             for n in &r.notes {
                 log(&format!("tasks sync: 注意 {n}"));
             }
@@ -271,16 +280,16 @@ pub fn run_tasks(o: &CliOptions, p: &Paths, t: &TasksCliOptions, log: Log<'_>) -
             };
             let texts: Vec<SessionText> = file.sessions.iter().map(SessionText::of).collect();
             let now = atlas_core::jsdate::now_iso();
-            let (m, _) = update_links(&task_links_path(&p.notes), |links| apply_machine(links, &texts, &r.state, &now))?;
+            let (m, _) = update_links(&task_links_path(&p.tasks_dir), |links| apply_machine(links, &texts, &r.state, &now))?;
             log(&format!("tasks sync: {}。レポートに出すには atlas export(画面の「集計し直す」)を実行してください", machine_line(&m)));
             Ok(false)
         }
         "list" => {
-            let st = load_tasks(&tasks_path(&p.notes));
+            let st = load_tasks(&tasks_path(&p.tasks_dir));
             for w in &st.warnings {
                 log(&format!("tasks list: 注意 {w}"));
             }
-            let links = load_links(&task_links_path(&p.notes)).file;
+            let links = load_links(&task_links_path(&p.tasks_dir)).file;
             let mut count: HashMap<&str, usize> = HashMap::new();
             // いくつかのタスクに紐づいたセッションは、それぞれのタスクに 1 つずつ数える
             for l in links.links.values() {
@@ -289,7 +298,7 @@ pub fn run_tasks(o: &CliOptions, p: &Paths, t: &TasksCliOptions, log: Log<'_>) -
                 }
             }
             if st.file.tasks.is_empty() {
-                log(&format!("tasks list: タスクはまだありません({})。atlas tasks sync で管理ツールの XML を読みます", tasks_path(&p.notes).display()));
+                log(&format!("tasks list: タスクはまだありません({})。atlas tasks sync で管理ツールの XML を読みます", tasks_path(&p.tasks_dir).display()));
                 return Ok(false);
             }
             log("ID\t状態\t完了\t完了を確認した時刻\tセッション\t名前");
@@ -319,7 +328,7 @@ fn run_link(p: &Paths, log: Log<'_>) -> Result<bool> {
     let (file, state) = sessions_and_tasks(p)?;
     let texts: Vec<SessionText> = file.sessions.iter().map(SessionText::of).collect();
     let now = atlas_core::jsdate::now_iso();
-    let (m, _) = update_links(&task_links_path(&p.notes), |links| apply_machine(links, &texts, &state, &now))?;
+    let (m, _) = update_links(&task_links_path(&p.tasks_dir), |links| apply_machine(links, &texts, &state, &now))?;
     log(&format!("tasks link: {}", machine_line(&m)));
     Ok(m.changed())
 }
@@ -327,12 +336,12 @@ fn run_link(p: &Paths, log: Log<'_>) -> Result<bool> {
 /// 集計(sessions.json)とタスクの状態(tasks.json)。どちらかが無ければ、何をすればよいかを書いて止める
 fn sessions_and_tasks(p: &Paths) -> Result<(SessionsFile, TasksFile)> {
     let Some(file) = read_sessions(p)? else { bail!("{} がありません。先に atlas all を実行してください", p.sessions.display()) };
-    let state = load_tasks(&tasks_path(&p.notes));
+    let state = load_tasks(&tasks_path(&p.tasks_dir));
     if let Some(w) = state.warnings.first() {
         bail!("{w}");
     }
     if state.file.tasks.is_empty() {
-        bail!("タスクがまだありません({})。先に atlas tasks sync で管理ツールの XML を読んでください", tasks_path(&p.notes).display());
+        bail!("タスクがまだありません({})。先に atlas tasks sync で管理ツールの XML を読んでください", tasks_path(&p.tasks_dir).display());
     }
     Ok((file, state.file))
 }
@@ -394,7 +403,7 @@ pub fn run_task_bundle(o: &CliOptions, p: &Paths, log: Log<'_>) -> Result<Option
     let (file, state) = sessions_and_tasks(p)?;
     let texts: Vec<SessionText> = file.sessions.iter().map(SessionText::of).collect();
     let now = atlas_core::jsdate::now_iso();
-    let (m, links) = update_links(&task_links_path(&p.notes), |links| apply_machine(links, &texts, &state, &now))?;
+    let (m, links) = update_links(&task_links_path(&p.tasks_dir), |links| apply_machine(links, &texts, &state, &now))?;
     log(&format!("tasks bundle: {}", machine_line(&m)));
     // 対象: 紐づけの無いセッションのうち、開いただけのもの(依頼 0・ツール 0・応答 0)・題名も依頼の文も無いもの・候補のタスクが無いものを除く
     // (画面の件数と同じ決め方。links::llm_eligible)。--session ならその中だけ
@@ -512,8 +521,8 @@ pub fn import_lines(cmd: &str, s: &TaskImportSummary, links_path: &Path) -> Vec<
 
 fn run_task_import(p: &Paths, t: &TasksCliOptions, log: Log<'_>) -> Result<bool> {
     let text = atlas_judge::read_text(&resolve(t.file.as_deref().unwrap_or("")))?;
-    let s = import_task_links_text(&text, &p.notes, &p.task_bundle)?;
-    for l in import_lines("tasks import", &s, &task_links_path(&p.notes)) {
+    let s = import_task_links_text(&text, &p.tasks_dir, &p.task_bundle)?;
+    for l in import_lines("tasks import", &s, &task_links_path(&p.tasks_dir)) {
         log(&l);
     }
     Ok(s.imported > 0)
