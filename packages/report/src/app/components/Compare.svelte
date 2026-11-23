@@ -98,8 +98,14 @@
   const split = $derived(effortSplit(sessions, effModel, effA, effB, effFrom, effTo));
   const a = $derived(compareSide(pick('a')));
   const b = $derived(compareSide(pick('b')));
+  // テストの結果の記録が母集団のどこにも無ければ、テストの行を出さない(照合していないときに残存の行を出さないのと同じ)
+  const hasTests = $derived(sessions.some((s) => s.tests != null));
   // 工程は依頼の単位で並べる(セッションの単位の行とは別の表になる)
-  const rows = $derived((kind === 'phase' ? comparePhaseRows(sessions, phaseA, phaseB) : compareRows(a, b, { byTurnCount: kind === 'effort' })).filter((r) => retention || !r.key.startsWith('retention')));
+  const rows = $derived(
+    (kind === 'phase' ? comparePhaseRows(sessions, phaseA, phaseB) : compareRows(a, b, { byTurnCount: kind === 'effort' })).filter(
+      (r) => (retention || !r.key.startsWith('retention')) && (hasTests || !r.key.startsWith('tests')),
+    ),
+  );
   const sideLabel = (side: 'a' | 'b'): string => {
     if (kind === 'period') {
       const p = side === 'a' ? periodA : periodB;
@@ -142,7 +148,7 @@
   const unitWord = (r: CompareRow): string => (r.unit === 'rate' ? ' ポイント' : r.unit === 'days' ? ' 日' : r.unit === 'minutes' ? ' 分' : '');
   /** 差(B − A)。割合はポイント、件数は件数 */
   function diff(r: CompareRow): string {
-    if (r.a == null || r.b == null || r.key === 'sessions' || r.key === 'scored' || r.key === 'turns' && kind === 'phase' || r.key === 'retention-measured' || r.key === 'retention-hunks') return '';
+    if (r.a == null || r.b == null || r.key === 'sessions' || r.key === 'scored' || r.key === 'tests-scored' || r.key === 'turns' && kind === 'phase' || r.key === 'retention-measured' || r.key === 'retention-hunks') return '';
     return `${signed(r, r.b - r.a)}${unitWord(r)}`;
   }
   /** 差の幅(95%)。0 をまたぐかは文字でも書く(色や印だけにしない) */
@@ -159,7 +165,7 @@
   <div class="section-head">
     <h2 id="compare-h">比べる</h2>
     <p>
-      2 つの条件(期間・プロジェクト・工程・推論強度)を並べます。上の絞り込みには従わず、全セッション(空のセッションを含めるかの条件だけ)から選びます。セッションが {COMPARE_MIN_SESSIONS} 件未満の側の割合と、割る数(記録のあるセッション)が {COMPARE_MIN_SESSIONS} 件未満の平均は「—」です。工程は依頼(ターン)の単位で並べ、依頼が {COMPARE_MIN_TURNS} 件未満の割合と平均を「—」にします(AI の変更の残存の割合は、その工程に照合できたまとまりのあるセッションが {RETENTION_MIN_SESSIONS} 件未満なら「—」)。差は相関で、条件の違いが原因とは限りません。差の幅(95%)はセッションを互いに独立とみなした近似で、同じ人のセッションは結果が似るため、実際の幅はこれより広くなります。手戻りのないセッションの割合を依頼の数で分けた行は、推論強度を比べるときだけ出します。
+      2 つの条件(期間・プロジェクト・工程・推論強度)を並べます。上の絞り込みには従わず、全セッション(空のセッションを含めるかの条件だけ)から選びます。セッションが {COMPARE_MIN_SESSIONS} 件未満の側の割合と、割る数(記録のあるセッション)が {COMPARE_MIN_SESSIONS} 件未満の平均は「—」です。工程は依頼(ターン)の単位で並べ、依頼が {COMPARE_MIN_TURNS} 件未満の割合と平均を「—」にします(AI の変更の残存の割合は、その工程に照合できたまとまりのあるセッションが {RETENTION_MIN_SESSIONS} 件未満なら「—」)。差は相関で、条件の違いが原因とは限りません。差の幅(95%)はセッションを互いに独立とみなした近似で、同じ人のセッションは結果が似るため、実際の幅はこれより広くなります。手戻りのないセッションの割合を依頼の数で分けた行は、推論強度を比べるときだけ出します。テストの結果の 2 行は、テストを実行したセッション(テストの結果の記録が 1 回以上あるもの。その数も並べます)を割る数にし、それが {COMPARE_MIN_SESSIONS} 件未満の側は「—」です(テストの記録のあるセッションが無いときと、工程どうしでは出しません)。テストを走らせるか・いつ走らせるかは条件で変わりうるので、テストを実行したセッションの数も見比べてください。最初の実行は、そのとき走らせたテストだけの結果です。
     </p>
   </div>
 

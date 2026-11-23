@@ -17,7 +17,7 @@ export const COMPARE_KIND_LABEL: Record<CompareKind, string> = { period: '期間
 
 export type CompareSession = Pick<
   SessionSummary,
-  'id' | 'turns' | 'activeMs' | 'tools' | 'friction' | 'analysis' | 'tokens' | 'retention' | 'createdAt' | 'updatedAt' | 'project' | 'turnRows' | 'person' | 'models'
+  'id' | 'turns' | 'activeMs' | 'tools' | 'friction' | 'analysis' | 'tokens' | 'retention' | 'createdAt' | 'updatedAt' | 'project' | 'turnRows' | 'person' | 'models' | 'tests'
 > & {
   /** 推論強度の比較に使う(古い埋め込み・テストの作りかけの値では無いことがある) */
   exec?: Pick<SessionSummary['exec'], 'mainModelEfforts'>;
@@ -38,7 +38,7 @@ export function reworkOfTurns(rows: readonly TurnTuple[] | undefined): boolean |
   return rows.some((x, i) => (i > 0 && (x[1] === FIX_KIND || x[1] === REVERT_KIND)) || x[7] > 0);
 }
 
-/** 採点できたセッションの数と、そのうち手戻りの無かった数 */
+/** 採点できたセッションの数(割合の分母)と、そのうち当たったものの数(手戻りの行では手戻りの無かった数) */
 export interface ScoredCount {
   scored: number;
   clean: number;
@@ -58,6 +58,12 @@ export interface CompareSide {
   noRework: ScoredCount;
   noReworkShort: ScoredCount;
   noReworkLong: ScoredCount;
+  /**
+   * テストの結果(テストを実行したセッションだけ。scored はテストを実行したセッションの数)。
+   * firstPass の clean は最初の実行で全部通ったもの、lastFailing の clean は最後の実行の後に通っていないテストが残ったもの
+   */
+  testsFirstPass: ScoredCount;
+  testsLastFailing: ScoredCount;
   /** セッションごとの値(平均と、その差の幅に使う。記録の無いセッションは入れない) */
   values: { turns: number[]; activeMs: number[]; aiu: number[]; requests: number[] };
   retention: RetentionAgg;
@@ -75,6 +81,8 @@ export function compareSide(list: readonly CompareSession[]): CompareSide {
     noRework: { scored: 0, clean: 0 },
     noReworkShort: { scored: 0, clean: 0 },
     noReworkLong: { scored: 0, clean: 0 },
+    testsFirstPass: { scored: 0, clean: 0 },
+    testsLastFailing: { scored: 0, clean: 0 },
     values: { turns: [], activeMs: [], aiu: [], requests: [] },
     retention: aggregateRetention(list),
   };
@@ -92,6 +100,13 @@ export function compareSide(list: readonly CompareSession[]): CompareSide {
       s.aiuRequestSessions++;
       s.aiuForRequests += aiu;
       s.requestsWithAiu += req;
+    }
+    // テストの記録が無いセッション(実行 0 回)は、どちらの割合の分母にも入れない
+    if (x.tests) {
+      s.testsFirstPass.scored++;
+      s.testsLastFailing.scored++;
+      if (x.tests.firstPass === 1) s.testsFirstPass.clean++;
+      if (x.tests.lastFailing > 0) s.testsLastFailing.clean++;
     }
     const rework = reworkOfTurns(x.turnRows);
     if (rework != null) {
@@ -246,6 +261,9 @@ export function compareRows(a: CompareSide, b: CompareSide, o: { byTurnCount?: b
       ...row('rework', '同じファイルを編集し直したセッションの割合', 'rate', (s) => rate(s.reworkSessions, s.sessions, s.sessions), '依頼をまたいで同じファイルを編集し直した(手戻りのないセッションとは別の数え方)'),
       ci: enough(a.sessions, b.sessions) ? newcombeDiff(a.reworkSessions, a.sessions, b.reworkSessions, b.sessions) : null,
     },
+    row('tests-scored', 'テストを実行したセッション', 'count', (s) => s.testsFirstPass.scored, 'テストの結果の記録が 1 回以上あるセッション(テストの結果の 2 行の分母)'),
+    share('tests-first-pass', '最初のテストの実行で全部通ったセッションの割合', (s) => s.testsFirstPass, 'テストを実行したセッション(テストの結果の記録が 1 回以上あるもの)のうち、最初の実行で全部通ったもの。最初の実行は、そのとき走らせたテストだけの結果。テストを走らせるか・いつ走らせるかは条件で変わりうるので、テストを実行したセッションの数も見比べる'),
+    share('tests-last-failing', '最後に通っていないテストが残ったセッションの割合', (s) => s.testsLastFailing, 'テストを実行したセッションのうち、最後の実行の後に通っていないテストがあるもの(未達と、通った後に不合格)。小さいほど良い'),
     row('retention-measured', '照合できたセッション(AI の変更の残存の分母)', 'count', (s) => s.retention.measured, 'AI の変更があったセッションのうち'),
     row('retention-kept', '残っている(そのまま + 直されて)割合', 'rate', keptShare, `照合できたまとまりに対する割合。照合できたセッションが ${RETENTION_MIN_SESSIONS} 件未満なら —`),
     row('retention-missing', '見つからない割合', 'rate', missingShare, '照合できたまとまりに対する割合'),

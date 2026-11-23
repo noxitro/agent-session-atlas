@@ -630,7 +630,8 @@ fn render_once(s: &SessionRecord, t: &SessionTexts, l: &PacketLimits, wiki_state
         s.copilot_version.as_deref().filter(|x| !x.is_empty()).map(|v| format!("(Copilot {v})")).unwrap_or_default()
     ));
     push(format!("- 開始: {} / 最終更新: {}", s.created_at.as_deref().unwrap_or("不明"), s.updated_at.as_deref().unwrap_or("不明")));
-    push(format!("- モデル: {}", if s.models.is_empty() { "不明".to_string() } else { s.models.join("、") }));
+    // モデルの名前と推論強度は載せない。レポートはモデルや推論強度で判定を比べるので、
+    // 判定する LLM が条件を知ったまま質を付けると、比べた結果が偏るため
     push(format!(
         "- 本文の出所: {}",
         if t.source == TextSource::Snapshot { "ログの全文(長いものは中略)" } else { "sessions.json の抜粋(先頭・末尾 2,000 字まで。全文は取得できなかった)" }
@@ -688,14 +689,8 @@ fn render_once(s: &SessionRecord, t: &SessionTexts, l: &PacketLimits, wiki_state
     push("## 規模(ターン数・所要時間・トークン)".into());
     push(format!("- ユーザーの依頼(ターン): {} 回 / アシスタント応答: {} 回", s.turns, s.assistant_messages));
     push(format!("- 所要時間(最初〜最後のイベント): {} / 実働時間(5 分超の空白を除く): {}", dur(s.duration_ms), dur(s.active_ms)));
-    push(format!(
-        "- トークン(出所: {}): 入力 {} / 出力 {} / キャッシュ読取 {} / 推論 {}",
-        enum_str(&tok.source),
-        int(tok.input),
-        int(Some(tok.output)),
-        int(tok.cache_read),
-        int(tok.reasoning)
-    ));
+    // 推論のトークン数は載せない。推論強度とほぼ連動するので、モデルの名前と同じく判定する LLM に条件が分かってしまうため
+    push(format!("- トークン(出所: {}): 入力 {} / 出力 {} / キャッシュ読取 {}", enum_str(&tok.source), int(tok.input), int(Some(tok.output)), int(tok.cache_read)));
     push(format!("- API リクエスト: {}", int(tok.requests)));
     push(String::new());
 

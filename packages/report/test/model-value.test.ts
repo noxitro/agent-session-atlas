@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { OUTCOMES } from '../src/shared/turns.ts';
-import { effortFindings, keptShare, mean, modelValue, ratio } from '../src/lib/model-value.ts';
+import { COMPARE_MIN_SESSIONS } from '../src/lib/compare.ts';
+import { effortFindings, keptShare, mean, MIN_SESSIONS, modelValue, ratio } from '../src/lib/model-value.ts';
 import { RETENTION_MIN_SESSIONS } from '../src/lib/retention.ts';
 import type { EffortTuple, JudgmentSummary, SessionSummary } from '../src/lib/types.ts';
 
@@ -78,18 +79,48 @@ describe('モデルと推論強度の効果', () => {
     expect(modelValue([sess('none', {})], true)).toEqual([]);
   });
 
-  it('読み取り: 件数の足りる強度が 2 つ以上あるモデルだけ、弱い強度と強い強度を比べる', () => {
+  it('読み取り: 件数の足りる強度が 2 つ以上あるモデルだけ、弱い強度と強い強度の値を並べる。閾値は「比べる」と同じ', () => {
+    expect(MIN_SESSIONS).toBe(COMPARE_MIN_SESSIONS);
+    const N = COMPARE_MIN_SESSIONS;
     const kept = (n: number) => ({ retention: { outcome: 'measured', hunks: [n, 0, 10 - n, 0] } }) as Partial<SessionSummary>;
-    const lows = Array.from({ length: 3 }, (_, i) => sess(`l${i}`, { m: { low: [2, 0, 0, 2e9] } }, { judgment: judged({ completed: i < 2, hours: 1 }), ...kept(10) }));
-    const highs = Array.from({ length: 3 }, (_, i) => sess(`h${i}`, { m: { high: [2, 0, 0, 6e9] } }, { judgment: judged({ completed: true, hours: 3 }) }));
-    // high の残存は、ほかのモデルが 9 割のセッション 1 件だけ(按分して 0.1 件分)なので、残っている割合は比べない
+    // low: N 件(達成は N - 1 件)。high: N 件と、ほかのモデルが 9 割のセッション 1 件
+    const lows = Array.from({ length: N }, (_, i) => sess(`l${i}`, { m: { low: [2, 0, 0, 2e9] } }, { judgment: judged({ completed: i < N - 1, hours: 1 }), ...kept(10) }));
+    const highs = Array.from({ length: N }, (_, i) => sess(`h${i}`, { m: { high: [2, 0, 0, 6e9] } }, { judgment: judged({ completed: true, hours: 3 }) }));
+    // high の残存は、ほかのモデルが 9 割のセッション 1 件だけ(按分して 0.1 件分)なので、残っている割合は並べない
     highs.push(sess('mix', { m: { high: [1, 0, 0, 1e9] }, z: { medium: [9, 0, 0, 0] } }, kept(0)));
-    // n は 2 件しか無いので比べない
-    const few = Array.from({ length: 2 }, (_, i) => sess(`n${i}`, { n: { low: [1, 0, 0, 1e9], high: [1, 0, 0, 1e9] } }));
+    // n は N - 1 件ずつしか無いので並べない
+    const few = Array.from({ length: N - 1 }, (_, i) => sess(`n${i}`, { n: { low: [1, 0, 0, 1e9], high: [1, 0, 0, 1e9] } }));
     const all = [...lows, ...highs, ...few];
     const f = effortFindings(modelValue(all, true), modelValue(all, false));
-    expect(f[0]).toBe('m: high は low に比べて、1 リクエストの AIU が 2.71 倍、達成率 67% → 100%、ツール失敗率 0% → 0%(セッション 3 件 / 4 件)。');
+    const cost = Math.round((31 / 11 / 1) * 100) / 100;
+    expect(f[0]).toBe(`m: low → high で、1 リクエストの AIU が ${cost} 倍、達成率 ${Math.round(((N - 1) / N) * 100)}% → 100%、ツール失敗率 0% → 0%(セッション ${N} 件 / ${N + 1} 件。コストは合計の比、効果は按分した値で、どちらも差の幅は出していません)。`);
     expect(f).toHaveLength(1);
+    // 片方の強度のセッションが 1 件足りなければ、そのモデルの読み取りは出ない
+    const short = [...lows.slice(0, N - 1), ...highs];
+    expect(effortFindings(modelValue(short, true)).join('')).not.toContain('m: ');
+  });
+
+  it('読み取り: 効果は、その記録があるセッションが按分して MIN_SESSIONS 件分に届かなければ並べない(セッションの数が足りていても)', () => {
+    const N = COMPARE_MIN_SESSIONS;
+    const lows = Array.from({ length: N }, (_, i) => sess(`l${i}`, { m: { low: [1, 0, 0, 1e9] } }, { judgment: judged({ quality: 3 }) }));
+    // high の判定は N - 1 件だけ
+    const highs = Array.from({ length: N }, (_, i) => sess(`h${i}`, { m: { high: [1, 0, 0, 1e9] } }, { judgment: i < N - 1 ? judged({ quality: 4 }) : null }));
+    const f = effortFindings(modelValue([...lows, ...highs], true));
+    expect(f).toHaveLength(1);
+    expect(f[0]).not.toContain('品質');
+    // 判定が N 件そろえば並べる
+    const all = effortFindings(modelValue([...lows, ...highs.map((h) => ({ ...h, judgment: judged({ quality: 4 }) }))], true));
+    expect(all[0]).toContain('品質 3 → 4');
+  });
+
+  it('読み取り: 1 AIU あたりの推定人手工数は、人手工数を数えた判定が按分して MIN_SESSIONS 件分以上あるモデルだけを、大小でなくリクエストの多い順に並べる', () => {
+    const N = COMPARE_MIN_SESSIONS;
+    const ofModel = (m: string, hours: number, n: number) => Array.from({ length: n }, (_, i) => sess(`${m}${i}`, { [m]: { high: [1, 0, 0, 1e9] } }, { judgment: judged({ hours, confidence: 0.8 }) }));
+    // b のほうがリクエストが多い(N + 1 件)ので先。値の小さい b が先に来ても、大小の順に並べ替えない
+    const both = [...ofModel('a', 2, N), ...ofModel('b', 1, N + 1)];
+    expect(effortFindings([], modelValue(both, false))).toEqual(['1 AIU あたりの推定人手工数(リクエストの多い順): b 1 時間、a 2 時間(按分した推定の比なので差の幅は出していません)。']);
+    // b が N - 1 件なら、並べるモデルが 1 つになるので出さない
+    expect(effortFindings([], modelValue([...ofModel('a', 2, N), ...ofModel('b', 1, N - 1)], false))).toEqual([]);
   });
 
   it('残存: まとまりの単位で、残っている(そのまま + 直されて)÷ 照合できたまとまり(照合不可を除く)。照合できたセッションの数と AI の変更があったセッションの数も持つ', () => {
@@ -122,7 +153,7 @@ describe('モデルと推論強度の効果', () => {
     const lows = Array.from({ length: N }, (_, i) => sess(`l${i}`, { m: { low: [1, 0, 0, 0] } }, ret([1, 0, 1, 0])));
     const highs = Array.from({ length: N }, (_, i) => sess(`h${i}`, { m: { high: [1, 0, 0, 0] } }, ret([1, 1, 0, 3])));
     const f = effortFindings(modelValue([...lows, ...highs], true));
-    expect(f).toEqual([`m: high は low に比べて、残っている割合 50% → 100%、ツール失敗率 0% → 0%(セッション ${N} 件 / ${N} 件)。`]);
+    expect(f).toEqual([`m: low → high で、残っている割合 50% → 100%、ツール失敗率 0% → 0%(セッション ${N} 件 / ${N} 件。効果は按分した値なので差の幅は出していません)。`]);
     // 片方の強度で照合できたセッションが足りなければ、残っている割合は比べない
     const few = effortFindings(modelValue([...lows, ...highs.slice(0, N - 1)], true));
     expect(few.join('')).not.toContain('残っている割合');
