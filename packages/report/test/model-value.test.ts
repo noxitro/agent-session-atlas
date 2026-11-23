@@ -153,7 +153,7 @@ describe('モデルと推論強度の効果', () => {
     const lows = Array.from({ length: N }, (_, i) => sess(`l${i}`, { m: { low: [1, 0, 0, 0] } }, ret([1, 0, 1, 0])));
     const highs = Array.from({ length: N }, (_, i) => sess(`h${i}`, { m: { high: [1, 0, 0, 0] } }, ret([1, 1, 0, 3])));
     const f = effortFindings(modelValue([...lows, ...highs], true));
-    expect(f).toEqual([`m: low → high で、残っている割合 50% → 100%、ツール失敗率 0% → 0%(セッション ${N} 件 / ${N} 件。コストは合計の比、効果は按分した値で、どちらも差の幅は出していません)。`]);
+    expect(f).toEqual([`m: low → high で、残っている割合 50% → 100%、ツール失敗率 0% → 0%(セッション ${N} 件 / ${N} 件。効果は按分した値なので差の幅は出していません)。`]);
     // 片方の強度で照合できたセッションが足りなければ、残っている割合は比べない
     const few = effortFindings(modelValue([...lows, ...highs.slice(0, N - 1)], true));
     expect(few.join('')).not.toContain('残っている割合');

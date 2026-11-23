@@ -224,7 +224,8 @@ export function effortFindings(split: readonly ValueRow[], models: readonly Valu
     const cost = (r: ValueRow): number | null => (r.nanoAiu > 0 ? ratio(r.nanoAiu, r.requests) : null);
     const cl = cost(lo);
     const ch = cost(hi);
-    if (cl != null && ch != null && cl > 0) parts.push(`1 リクエストの AIU が ${numText(ch / cl)} 倍`);
+    const hasCost = cl != null && ch != null && cl > 0;
+    if (hasCost) parts.push(`1 リクエストの AIU が ${numText(ch! / cl!)} 倍`);
     const pairs: [string, number | null, number | null, (x: number) => string][] = [
       ['達成率', enough(lo.completed.weight, mean(lo.completed)), enough(hi.completed.weight, mean(hi.completed)), pctText],
       ['品質', enough(lo.quality.weight, mean(lo.quality)), enough(hi.quality.weight, mean(hi.quality)), numText],
@@ -233,7 +234,7 @@ export function effortFindings(split: readonly ValueRow[], models: readonly Valu
       ['ツール失敗率', enough(lo.weight, ratio(lo.tools.failures, lo.tools.calls)), enough(hi.weight, ratio(hi.tools.failures, hi.tools.calls)), pctText],
     ];
     for (const [label, a, b, f] of pairs) if (a != null && b != null) parts.push(`${label} ${f(a)} → ${f(b)}`);
-    if (parts.length > 0) out.push(`${modelLabel(model)}: ${lo.effort} → ${hi.effort} で、${parts.join('、')}(セッション ${lo.sessions} 件 / ${hi.sessions} 件。コストは合計の比、効果は按分した値で、どちらも差の幅は出していません)。`);
+    if (parts.length > 0) out.push(`${modelLabel(model)}: ${lo.effort} → ${hi.effort} で、${parts.join('、')}(セッション ${lo.sessions} 件 / ${hi.sessions} 件。${hasCost ? 'コストは合計の比、効果は按分した値で、どちらも' : '効果は按分した値なので'}差の幅は出していません)。`);
   }
   const value = models
     .filter((r) => r.sessions >= MIN_SESSIONS && r.judgedNanoAiu > 0 && r.hours.weight >= MIN_SESSIONS)
