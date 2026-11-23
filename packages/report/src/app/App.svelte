@@ -676,7 +676,7 @@
 {:else}
   <a class="skip" href="#main">本文へ移動</a>
   <header class="masthead">
-    <div class="wrap mast-row">
+    <div class="wrap mast-row" class:wide={tab === 'list'}>
       <div class="mast-title">
         <h1>Copilot Session Atlas</h1>
         <p class="mast-sub">
@@ -699,7 +699,8 @@
     </div>
   </header>
 
-  <div class="shell">
+  <!-- 一覧タブは横に長い表なので、幅の上限を外して画面の幅まで使う -->
+  <div class="shell" class:wide={tab === 'list'}>
     <div class="rail" bind:this={railEl} bind:offsetHeight={railHeight}>
       <div class="rail-in wrap">
         <nav class="toc" aria-label="ページ内の移動">
@@ -899,6 +900,9 @@
     /* マストヘッドの幅をサイドバー + 本文(.shell)に揃える */
     .mast-row {
       max-width: calc(1360px + 13em + 32px);
+    }
+    .mast-row.wide {
+      max-width: none;
     }
     .status {
       display: block;

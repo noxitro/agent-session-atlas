@@ -660,6 +660,9 @@ html {
     gap: 0 32px;
     align-items: start;
   }
+  .shell.wide {
+    max-width: none;
+  }
   .content {
     min-width: 0;
   }
