@@ -25,7 +25,7 @@ use atlas_core::types::SessionRecord;
 use indexmap::IndexMap;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use unicode_normalization::UnicodeNormalization;
 
@@ -200,6 +200,8 @@ pub struct SessionText {
     pub id: String,
     /// 始めた時刻(ミリ秒)
     pub start_ms: Option<i64>,
+    /// 最後の活動の時刻(ミリ秒。sessions.json の updatedAt)。LLM に渡す候補の並びに使う
+    pub end_ms: Option<i64>,
     pub title: String,
     /// 最初の依頼と、記録した各依頼の先頭(改行でつなげたもの)
     pub prompts: String,
@@ -215,6 +217,7 @@ impl SessionText {
         SessionText {
             id: r.id.clone(),
             start_ms: r.created_at.as_deref().filter(|s| !s.is_empty()).and_then(atlas_core::jsdate::parse_ms),
+            end_ms: r.updated_at.as_deref().filter(|s| !s.is_empty()).and_then(atlas_core::jsdate::parse_ms),
             title: r.name.clone().unwrap_or_default(),
             prompts: prompts.join("\n"),
         }
@@ -442,29 +445,82 @@ pub fn unresolved<'a>(links: &LinksFile, sessions: &'a [SessionText]) -> Vec<&'a
     sessions.iter().filter(|s| !links.links.contains_key(&s.id)).collect()
 }
 
-/// LLM に渡す候補(ID と名前)。機械の紐づけで決めなかったときに当たったタスク(first) → 未完了で XML にあるもの →
-/// 完了を確認した時刻の早いもの → XML から消えたもの の順に、上限まで
-pub fn llm_candidates(state: &TasksFile, start_ms: Option<i64>, first: &[String]) -> Vec<(String, String)> {
-    let mut c: Vec<(u8, i64, usize, &str, &TaskState)> = state
+/// LLM に渡す候補を決める材料
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CandidateQuery<'a> {
+    /// セッションを始めた時刻(始める前に完了したタスクは候補にしない)
+    pub start_ms: Option<i64>,
+    /// セッションの最後の活動の時刻(完了したタスクの並びに使う。無ければ start_ms)
+    pub end_ms: Option<i64>,
+    /// セッションの題名と依頼の文(パケットに書くのと同じ文)。タスクの名前との文字の重なりを数える
+    pub text: &'a str,
+    /// 機械の紐づけで決めなかったときに当たったタスク(先頭に置く)
+    pub first: &'a [String],
+}
+
+/// LLM に渡す候補(ID と名前。上限まで)と、切る前の候補の数
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct LlmCandidates {
+    pub items: Vec<(String, String)>,
+    /// 候補になるタスクの数(上限で切る前)。items より多ければ切った
+    pub total: usize,
+}
+
+/// 文字 bigram: 正規化(normalize)した文の、隣り合う 2 文字の組。どちらも文字か数字の組だけ(空白・記号をまたがない)。
+/// 分かち書きの無い日本語でも、単語で区切る英語でも同じ決め方で働く
+pub fn char_bigrams(s: &str) -> HashSet<(char, char)> {
+    let n: Vec<char> = normalize(s).chars().collect();
+    n.windows(2).filter(|w| w[0].is_alphanumeric() && w[1].is_alphanumeric()).map(|w| (w[0], w[1])).collect()
+}
+
+/// タスクの名前の文字 bigram のうち、セッションの文(text の bigram)にもあるものの数(重なり)
+pub fn bigram_overlap(name: &str, text: &HashSet<(char, char)>) -> usize {
+    char_bigrams(name).iter().filter(|g| text.contains(g)).count()
+}
+
+/// 並べるときの鍵: (機械の当たりなら 0, 重なりの多い順, 未完了 1・完了 2・XML から消えた 3, 完了の隔たり, XML の順)
+type CandidateKey = (u8, std::cmp::Reverse<usize>, u8, i64, usize);
+
+/// LLM に渡す候補。候補になるタスク(is_candidate)を次の順に並べ、上限(LLM_CANDIDATES_MAX)で切る(決まった規則。LLM は使わない)。
+/// 1. 機械の紐づけで決めなかったときに当たったタスク(first。XML の順)
+/// 2. 残りは、セッションの題名と依頼の文と、タスクの名前の文字 bigram の重なり(bigram_overlap)の多い順。
+///    重なりが同じものは、未完了で XML にあるもの → 完了を確認した時刻がセッションの最後の活動(end_ms。無ければ start_ms)に近いもの →
+///    XML から消えたもの。それでも同じものは XML の順
+///
+/// 完了の早い順にしないのは、何日もかけて終えたタスク(完了の確認がセッションの開始から遠いもの)が、
+/// 開始の後に完了した多くのタスクの後ろに回って、上限で漏れないようにするため
+pub fn llm_candidates(state: &TasksFile, q: &CandidateQuery<'_>) -> LlmCandidates {
+    let text = char_bigrams(q.text);
+    let reference = q.end_ms.or(q.start_ms);
+    let mut c: Vec<(CandidateKey, &str, &TaskState)> = state
         .tasks
         .iter()
         .enumerate()
-        .filter(|(_, (_, t))| is_candidate(t, start_ms))
+        .filter(|(_, (_, t))| is_candidate(t, q.start_ms))
         .map(|(i, (id, t))| {
-            let group = if first.iter().any(|f| f == id) {
-                0
-            } else if t.missing {
+            if q.first.iter().any(|f| f == id) {
+                return ((0, std::cmp::Reverse(0), 0, 0, i), id.as_str(), t);
+            }
+            let group = if t.missing {
                 3
             } else if t.done {
                 2
             } else {
                 1
             };
-            (group, t.done_at.as_deref().and_then(atlas_core::jsdate::parse_ms).unwrap_or(0), i, id.as_str(), t)
+            // 完了したものは、最後の活動からの隔たり。セッションの時刻が分からなければ完了の早い順、完了の時刻が分からないものは後ろ
+            let dist = match (group, t.done_at.as_deref().and_then(atlas_core::jsdate::parse_ms), reference) {
+                (2, Some(d), Some(r)) => (d - r).abs(),
+                (2, Some(d), None) => d,
+                (2, None, _) => i64::MAX,
+                _ => 0,
+            };
+            ((1, std::cmp::Reverse(bigram_overlap(&t.name, &text)), group, dist, i), id.as_str(), t)
         })
         .collect();
-    c.sort_by_key(|x| (x.0, x.1, x.2));
-    c.into_iter().take(LLM_CANDIDATES_MAX).map(|x| (x.3.to_string(), x.4.name.clone())).collect()
+    let total = c.len();
+    c.sort_by_key(|x| x.0);
+    LlmCandidates { items: c.into_iter().take(LLM_CANDIDATES_MAX).map(|x| (x.1.to_string(), x.2.name.clone())).collect(), total }
 }
 
 /// セッション id → 紐づいたタスク(「どのタスクでもない」は入れない)
@@ -485,7 +541,7 @@ mod tests {
     }
 
     fn sess(id: &str, title: &str, prompts: &str) -> SessionText {
-        SessionText { id: id.into(), start_ms: atlas_core::jsdate::parse_ms("2026-11-10T00:00:00Z"), title: title.into(), prompts: prompts.into() }
+        SessionText { id: id.into(), start_ms: atlas_core::jsdate::parse_ms("2026-11-10T00:00:00Z"), title: title.into(), prompts: prompts.into(), ..Default::default() }
     }
 
     fn st() -> TasksFile {
@@ -711,17 +767,62 @@ mod tests {
         items.insert(0, ("D-1".into(), task("先に完了", Some("2026-11-15T00:00:00.000Z"))));
         items.insert(0, ("GONE".into(), TaskState { missing: true, ..task("消えた", None) }));
         let s = TasksFile { tasks: items.into_iter().collect(), ..Default::default() };
-        let c = llm_candidates(&s, atlas_core::jsdate::parse_ms("2026-11-10T00:00:00Z"), &[]);
-        assert_eq!(c.len(), LLM_CANDIDATES_MAX);
-        assert_eq!(c[0].0, "T-0");
+        let start = atlas_core::jsdate::parse_ms("2026-11-10T00:00:00Z");
+        let c = llm_candidates(&s, &CandidateQuery { start_ms: start, ..Default::default() });
+        assert_eq!((c.items.len(), c.total), (LLM_CANDIDATES_MAX, LLM_CANDIDATES_MAX + 23));
+        assert_eq!(c.items[0].0, "T-0");
         // 機械の紐づけで 2 つ以上に当たったタスクを先に(上限で切られないように)
         let late = format!("T-{}", LLM_CANDIDATES_MAX + 10);
-        let c = llm_candidates(&s, atlas_core::jsdate::parse_ms("2026-11-10T00:00:00Z"), &[late.clone(), "GONE".into()]);
+        let first = [late.clone(), "GONE".into()];
+        let c = llm_candidates(&s, &CandidateQuery { start_ms: start, first: &first, ..Default::default() }).items;
         assert_eq!((c[0].0.as_str(), c[1].0.as_str(), c[2].0.as_str()), ("GONE", late.as_str(), "T-0"));
         assert_eq!(c.len(), LLM_CANDIDATES_MAX);
+        // セッションの時刻が分からなければ、重なりが同じ完了は早い順
         let small = state(&[("GONE", TaskState { missing: true, ..task("消えた", None) }), ("D-2", task("b", Some("2026-11-20T00:00:00.000Z"))), ("D-1", task("a", Some("2026-11-15T00:00:00.000Z"))), ("O", task("o", None))]);
-        let ids: Vec<String> = llm_candidates(&small, None, &[]).into_iter().map(|x| x.0).collect();
-        assert_eq!(ids, ["O", "D-1", "D-2", "GONE"]);
+        let ids = |s: &TasksFile, q: &CandidateQuery<'_>| llm_candidates(s, q).items.into_iter().map(|x| x.0).collect::<Vec<_>>();
+        assert_eq!(ids(&small, &CandidateQuery::default()), ["O", "D-1", "D-2", "GONE"]);
+        // 重なりが同じ完了は、セッションの最後の活動に近い順(完了の早い順ではない)。最後の活動が無ければ開始に近い順
+        let end = atlas_core::jsdate::parse_ms("2026-11-19T00:00:00Z");
+        assert_eq!(ids(&small, &CandidateQuery { start_ms: start, end_ms: end, ..Default::default() }), ["O", "D-2", "D-1", "GONE"]);
+        assert_eq!(ids(&small, &CandidateQuery { start_ms: start, ..Default::default() }), ["O", "D-1", "D-2", "GONE"]);
+    }
+
+    /// 完了の遅いタスクも、題名と依頼の文との文字の重なりで上限の中に入る。機械の当たりは重なりより前
+    #[test]
+    fn llm_candidates_rank_by_text_overlap() {
+        let start = atlas_core::jsdate::parse_ms("2026-11-10T00:00:00Z");
+        // 開始の後に完了した多くのタスク(完了の早いもの)と、何日もかけて終えたタスク(完了が遅い)
+        let mut items: Vec<(String, TaskState)> = (0..LLM_CANDIDATES_MAX + 30).map(|i| (format!("E-{i}"), task(&format!("定例の作業 {i}"), Some("2026-11-11T00:00:00.000Z")))).collect();
+        items.push(("SLOW".into(), task("帳票の出力を速くする", Some("2026-11-28T00:00:00.000Z"))));
+        items.push(("SLOW-EN".into(), task("Speed up the report export", Some("2026-11-29T00:00:00.000Z"))));
+        let s = TasksFile { tasks: items.into_iter().collect(), ..Default::default() };
+        // 重なりが無ければ、完了の遅いタスクは上限の外
+        let none = llm_candidates(&s, &CandidateQuery { start_ms: start, end_ms: start, text: "関係のない話", ..Default::default() });
+        assert!(!none.items.iter().any(|x| x.0 == "SLOW" || x.0 == "SLOW-EN"));
+        assert_eq!(none.total, LLM_CANDIDATES_MAX + 32);
+        // 日本語の題名・英語の依頼との重なりで先頭へ
+        let text = "題名: 帳票の出力が遅い\n依頼 1: export of the report is slow";
+        let c = llm_candidates(&s, &CandidateQuery { start_ms: start, end_ms: start, text, ..Default::default() }).items;
+        // 英語の名前は 9 組(th・he・re・ep・po・or・rt・ex・xp)、日本語の名前は 4 組(帳票・票の・の出・出力)が重なる
+        assert_eq!((c[0].0.as_str(), c[1].0.as_str()), ("SLOW-EN", "SLOW"), "{:?}", &c[..3]);
+        // 機械の当たり(first)は重なりより前
+        let first = ["E-5".to_string()];
+        let c = llm_candidates(&s, &CandidateQuery { start_ms: start, end_ms: start, text, first: &first }).items;
+        assert_eq!((c[0].0.as_str(), c[1].0.as_str(), c[2].0.as_str()), ("E-5", "SLOW-EN", "SLOW"));
+        assert_eq!(c.len(), LLM_CANDIDATES_MAX);
+        // 重なりが同じなら、未完了 → 完了(最後の活動に近い順)→ XML から消えたもの
+        let tie = state(&[
+            ("GONE", TaskState { missing: true, ..task("帳票の修正", None) }),
+            ("FAR", task("帳票の確認", Some("2026-11-12T00:00:00.000Z"))),
+            ("NEAR", task("帳票の追加", Some("2026-11-25T00:00:00.000Z"))),
+            ("OPEN", task("帳票の整理", None)),
+            ("ZERO", task("別の仕事", None)),
+        ]);
+        let ids: Vec<String> = llm_candidates(&tie, &CandidateQuery { start_ms: start, end_ms: atlas_core::jsdate::parse_ms("2026-11-24T00:00:00Z"), text: "帳票", ..Default::default() }).items.into_iter().map(|x| x.0).collect();
+        assert_eq!(ids, ["OPEN", "NEAR", "FAR", "GONE", "ZERO"]);
+        // bigram は空白と記号をまたがない
+        assert_eq!(char_bigrams("ab c-d"), HashSet::from([('a', 'b')]));
+        assert_eq!(bigram_overlap("Ｒｅｐｏｒｔ", &char_bigrams("report")), 5);
     }
 
     #[test]

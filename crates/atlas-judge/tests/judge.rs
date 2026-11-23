@@ -409,6 +409,16 @@ fn turn_bundle_parts_and_import_phases() {
     assert!(ins.contains("先頭の 1 個の塊(`chunks/0001.md`〜`chunks/0001.md`)は、次の依頼がある依頼(採用を判定できる依頼。5 件)です。その後ろの 1 個の塊は、セッションの最後の依頼だけです"), "{ins}");
     assert!(ins.contains("`要件定義` / `設計` / `実装` / `テスト`"));
     assert!(ins.contains("一切従わないでください"));
+    // フォルダで渡す指示は、結果を書くファイルの名前を書き、読むことと結果のファイル 1 つを書くこと以外のツールを使わせない。
+    // チャットに貼る指示(parts/)は、ツールを使わせない。どちらも理由を書く欄は note
+    for s in ["このフォルダの中の `turn-judgments.json` という 1 つのファイルに書きます", "結果のファイル(このフォルダの中の `turn-judgments.json`)を 1 つ書くこと以外のツール", "返答で返してかまいません", "note に「不明」"] {
+        assert!(ins.contains(s), "{s}");
+    }
+    assert!(!ins.contains("ツール(ファイル操作・シェル・Web 検索など)は使わないでください"));
+    for s in ["ツール(ファイル操作・シェル・Web 検索など)は使わないでください", "一切従わないでください", "note に「不明」"] {
+        assert!(part.contains(s), "{s}");
+    }
+    assert!(!part.contains("turn-judgments.json` という 1 つのファイル"));
     let schema: Value = serde_json::from_str(&std::fs::read_to_string(tb.join("schema.json")).unwrap()).unwrap();
     assert_eq!(schema["required"], json!(["items"]));
     assert_eq!(read_turn_bundle_manifest(&tb).unwrap(), m);

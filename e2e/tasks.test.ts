@@ -222,6 +222,9 @@ describe('管理ツールのタスク(XML の読み込み・紐づけ・工数)'
     const zip = (await readFile(join(out, 'task-bundle.zip'))).toString('latin1');
     for (const f of ['task-bundle/INSTRUCTIONS.md', 'task-bundle/manifest.json', 'task-bundle/schema.json', `task-bundle/${m.sessions[0].path}`]) expect(zip).toContain(f);
     expect(zip).not.toContain('task-bundle/parts/');
+    // ZIP の指示は、画面の依頼文と同じファイル(task-bundle フォルダの中の links.json)に書かせる。チャットに貼る指示は、ツールを使わせない
+    expect(await readFile(join(tb, 'INSTRUCTIONS.md'), 'utf8')).toContain('結果は、このフォルダの中の `links.json` という 1 つのファイルに書きます');
+    expect(part).toContain('ツール(ファイル操作・シェル・Web 検索など)は使わないでください');
     // 外部の LLM の返答(架空)。1 つ目は候補の先頭 2 つ、2 つ目は「どのタスクでもない」、ほかのセッションの候補に無い ID も混ぜる
     const [first, second] = m.sessions;
     const reply = join(WORK, 'task-reply.md');
@@ -359,8 +362,11 @@ describe('管理ツールのタスク(XML の読み込み・紐づけ・工数)'
     expect(v.links[S_MULTI]?.taskIds).toEqual(['DEMO-102-1', 'DEMO-103']);
     expect(v.items.find((t) => t.id === 'DEMO-103')).toMatchObject({ sessions: 1, sharedSessions: 1, aiActiveMs: 1_800_000 });
     expect(csv(await readFile(join(out2, 'tables', 'session-tasks.csv'), 'utf8')).filter((r) => r['セッションID'] === S_MULTI).map((r) => r['按分'])).toEqual(['0.5', '0.5']);
-    expect(v.items.find((t) => t.id === 'DEMO-101')).toMatchObject({ done: true, doneAt: T_AFTER.toISOString(), start: '2026-10-15T00:00:00.000Z', workMs: 57 * 3_600_000, sessions: 1 });
-    expect(row(await tasksCsv(out2), 'DEMO-101')['稼働時間帯の工数(時間)']).toBe('57');
+    // 開始と稼働時間帯の工数は、送った人の記録の値(送った人の PC で、送らなかったセッションも含めて決めたもの。
+    // d2 の偽の M365 Copilot が候補の先頭を答えるので、ほかのプロジェクトのセッションが DEMO-101 に紐づくこともある)
+    const sent = (await embedded())!.items.find((t) => t.id === 'DEMO-101')!;
+    expect(v.items.find((t) => t.id === 'DEMO-101')).toMatchObject({ done: true, doneAt: T_AFTER.toISOString(), start: sent.start, workMs: sent.workMs, sessions: 1 });
+    expect(row(await tasksCsv(out2), 'DEMO-101')['稼働時間帯の工数(時間)']).toBe(row(await tasksCsv(), 'DEMO-101')['稼働時間帯の工数(時間)']);
     // 送り先ではタスクの状態を作らない(XML を読まない)
     expect(existsSync(join(WORK, 'notes-received', 'tasks.json'))).toBe(false);
     expect((await readdir(dest)).sort()).toContain(S_FIX);

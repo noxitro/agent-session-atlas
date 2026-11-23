@@ -1591,6 +1591,7 @@ impl Server {
         Ok(Some(atlas_report::tasks::links::SessionText {
             id: id.to_string(),
             start_ms: r.get("createdAt").and_then(Value::as_str).filter(|s| !s.is_empty()).and_then(atlas_core::jsdate::parse_ms),
+            end_ms: r.get("updatedAt").and_then(Value::as_str).filter(|s| !s.is_empty()).and_then(atlas_core::jsdate::parse_ms),
             title: r.get("name").and_then(Value::as_str).unwrap_or("").to_string(),
             prompts: prompts.join("\n"),
         }))

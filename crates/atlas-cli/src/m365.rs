@@ -538,7 +538,7 @@ mod tests {
         use atlas_judge::task_link::{build_task_bundle, LinkQuery, TaskBundleOptions};
         use atlas_report::tasks::links::{load_links, update_links, LinkSource, TaskLink};
         let (_d, p) = setup();
-        let q = |id: &str| LinkQuery { session_id: id.into(), title: "題名".into(), prompts: vec!["直して".into()], candidates: vec![("T-1".into(), "一つ目".into()), ("T-2".into(), "二つ目".into())] };
+        let q = |id: &str| LinkQuery { session_id: id.into(), title: "題名".into(), prompts: vec!["直して".into()], candidates: vec![("T-1".into(), "一つ目".into()), ("T-2".into(), "二つ目".into())], candidates_total: 2 };
         build_task_bundle(&[q("s1"), q("s2"), q("s3")], &TaskBundleOptions { bundle_dir: p.out.join("task-bundle"), per_part: Some(1), boundary: None, scope: Default::default(), now: None }).unwrap();
         // 束を作った後に、s2 は手動で、s3 は LLM で紐づいた
         let links_path = atlas_report::tasks::task_links_path(&p.notes);

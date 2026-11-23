@@ -13,7 +13,7 @@ use anyhow::{bail, Result};
 use atlas_core::types::{SessionRecord, SessionsFile};
 use atlas_judge::task_link::{build_task_bundle, parse_task_reply, read_task_bundle_manifest, task_zip_names, LinkQuery, TaskBundleManifest, TaskBundleOptions, PROMPTS_MAX};
 use atlas_report::judgments::JudgmentsIndex;
-use atlas_report::tasks::links::{apply_machine, has_text, llm_candidates, llm_eligible, load_links, update_links, LinkSource, LinksFile, MachineMatch, MachineSummary, Matcher, SessionText, TaskLink};
+use atlas_report::tasks::links::{apply_machine, has_text, llm_candidates, llm_eligible, CandidateQuery, load_links, update_links, LinkSource, LinksFile, MachineMatch, MachineSummary, Matcher, SessionText, TaskLink};
 use atlas_report::tasks::metrics::SessionFacts;
 use atlas_report::tasks::sender::{read_sender_tasks, SenderTask};
 use atlas_report::tasks::state::{load_tasks, sync_tasks, TasksFile};
@@ -519,18 +519,20 @@ fn run_task_import(p: &Paths, t: &TasksCliOptions, log: Log<'_>) -> Result<bool>
     Ok(s.imported > 0)
 }
 
-/// LLM に頼む中身。機械の紐づけで決めなかったときに当たったタスクを候補の先頭に置く(上限で切られないように)。候補が無ければ None(頼まない)。
+/// LLM に頼む中身。機械の紐づけで決めなかったときに当たったタスクを候補の先頭に置き(上限で切られないように)、
+/// 残りはパケットに書くのと同じ題名と依頼の文に、名前の文字が多く重なる順に並べる(links::llm_candidates)。候補が無ければ None(頼まない)。
 /// prompts は依頼の文(依頼 1 件が 1 つ。task_prompts)
 pub fn llm_query(state: &TasksFile, matcher: &Matcher<'_>, s: &SessionText, prompts: Vec<String>) -> Option<LinkQuery> {
     let first: Vec<String> = match matcher.match_session(s) {
         MachineMatch::Many(ids) => ids,
         _ => vec![],
     };
-    let candidates = llm_candidates(state, s.start_ms, &first);
-    if candidates.is_empty() {
+    let text = atlas_judge::task_link::packet_text(&s.title, &prompts);
+    let c = llm_candidates(state, &CandidateQuery { start_ms: s.start_ms, end_ms: s.end_ms, text: &text, first: &first });
+    if c.items.is_empty() {
         return None;
     }
-    Some(LinkQuery { session_id: s.id.clone(), title: s.title.clone(), prompts, candidates })
+    Some(LinkQuery { session_id: s.id.clone(), title: s.title.clone(), prompts, candidates: c.items, candidates_total: c.total })
 }
 
 /// atlas tasks の後に、紐づけが変わっていればレポートを作り直す(export で)。m365 は取り込めたら作り直す
@@ -825,7 +827,7 @@ mod tests {
         std::fs::write(dir.join("events.jsonl"), events.iter().map(|e| serde_json::to_string(e).unwrap()).collect::<Vec<_>>().join("\n")).unwrap();
         assert_eq!(task_prompts(&snap, &r), [multi, "二つ目の依頼", "三つ目の依頼"]);
         // パケットでは、1 件の依頼の改行は空白にして、依頼 1 に入れる
-        let md = atlas_judge::task_link::render_task_packet(&LinkQuery { session_id: "m1".into(), title: "t".into(), prompts: task_prompts(&snap, &r), candidates: vec![("T-1".into(), "x".into())] });
+        let md = atlas_judge::task_link::render_task_packet(&LinkQuery { session_id: "m1".into(), title: "t".into(), prompts: task_prompts(&snap, &r), candidates: vec![("T-1".into(), "x".into())], candidates_total: 1 });
         assert!(md.contains("依頼 1: 一行目の依頼 二行目 三行目 四行目\n依頼 2: 二つ目の依頼\n依頼 3: 三つ目の依頼\n"), "{md}");
         assert!(!md.contains("四つ目の依頼"));
     }
@@ -846,7 +848,7 @@ mod tests {
         let mut state = TasksFile::default();
         state.tasks.insert("OLD-1".into(), task("前に終わった仕事", Some("2026-11-01T00:00:00.000Z")));
         let m = Matcher::new(&state);
-        let s = SessionText { id: "s".into(), start_ms: atlas_core::jsdate::parse_ms("2026-11-10T00:00:00Z"), title: "題名".into(), prompts: "依頼 1\n\n依頼 2".into() };
+        let s = SessionText { id: "s".into(), start_ms: atlas_core::jsdate::parse_ms("2026-11-10T00:00:00Z"), title: "題名".into(), prompts: "依頼 1\n\n依頼 2".into(), ..Default::default() };
         assert!(llm_query(&state, &m, &s, vec![]).is_none());
         for i in 0..atlas_report::tasks::links::LLM_CANDIDATES_MAX + 5 {
             state.tasks.insert(format!("T-{i}"), task(&format!("仕事 {i}"), None));
@@ -859,8 +861,20 @@ mod tests {
         let q = llm_query(&state, &m, &s, vec!["依頼 1".into(), "依頼 2".into()]).unwrap();
         assert_eq!(q.prompts, ["依頼 1", "依頼 2"]);
         assert_eq!(q.candidates.len(), atlas_report::tasks::links::LLM_CANDIDATES_MAX);
+        assert_eq!(q.candidates_total, atlas_report::tasks::links::LLM_CANDIDATES_MAX + 5);
         let firsts: Vec<&str> = q.candidates.iter().take(2).map(|c| c.0.as_str()).collect();
         assert_eq!(firsts, [format!("T-{}", last - 1), format!("T-{last}")]);
+        // 何日もかけて終えたタスク(完了が遅い)も、依頼の文(パケットに書くのと同じ文)と名前が重なれば、機械の当たりの次に入る
+        state.tasks.insert("SLOW".into(), task("帳票の出力を速くする", Some("2026-11-30T00:00:00.000Z")));
+        let m = Matcher::new(&state);
+        let q = llm_query(&state, &m, &s, vec!["帳票の出力が遅いので直して".into()]).unwrap();
+        assert_eq!((q.candidates[2].0.as_str(), q.candidates.len(), q.candidates_total), ("SLOW", atlas_report::tasks::links::LLM_CANDIDATES_MAX, atlas_report::tasks::links::LLM_CANDIDATES_MAX + 6));
+        // パケットにも、候補を絞ったことを書く。manifest.json に残す候補の ID は、パケットと同じ並びと上限
+        let md = atlas_judge::task_link::render_task_packet(&q);
+        assert!(md.contains(&format!("全 {} 件のうち、題名と依頼の文に近いものから {} 件", q.candidates_total, q.candidates.len())), "{md}");
+        let d = tempfile::tempdir().unwrap();
+        let bm = atlas_judge::task_link::build_task_bundle(std::slice::from_ref(&q), &TaskBundleOptions { bundle_dir: d.path().join("tb"), per_part: None, boundary: None, scope: IndexMap::new(), now: None }).unwrap();
+        assert_eq!(bm.sessions[0].candidates, q.candidates.iter().map(|c| c.0.clone()).collect::<Vec<_>>());
     }
 
     /// all は metrics の前にタスクを処理する(初めての集計でも --task で絞れる)。metrics は --config の稼働時間帯を使う

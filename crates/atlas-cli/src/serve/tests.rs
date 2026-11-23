@@ -1612,7 +1612,7 @@ fn task_link_parts_and_import() {
     let pv = e.json("GET", "/api/jobs/judge-preview?target=tasks", None).1;
     assert_eq!(pv, json!({ "eligible": 2, "judged": 0, "pending": 2 }));
     assert_eq!(e.json("GET", "/api/judge/parts?target=tasks", None).1, json!({ "exists": false, "canAutomate": cfg!(windows) }));
-    let q = |id: &str| atlas_judge::task_link::LinkQuery { session_id: id.into(), title: "t".into(), prompts: vec![], candidates: vec![("ABC-12".into(), "一覧の不具合".into()), ("XY-9".into(), "帳票の出力".into())] };
+    let q = |id: &str| atlas_judge::task_link::LinkQuery { session_id: id.into(), title: "t".into(), prompts: vec![], candidates: vec![("ABC-12".into(), "一覧の不具合".into()), ("XY-9".into(), "帳票の出力".into())], candidates_total: 2 };
     let dir = e.out.join(crate::paths::TASK_BUNDLE_DIR);
     atlas_judge::task_link::build_task_bundle(&[q("s1"), q("s2")], &atlas_judge::task_link::TaskBundleOptions { bundle_dir: dir.clone(), per_part: Some(1), boundary: None, scope: IndexMap::new(), now: Some("2026-11-23T00:00:00.000Z".into()) }).unwrap();
     let parts = e.json("GET", "/api/judge/parts?target=tasks", None).1;

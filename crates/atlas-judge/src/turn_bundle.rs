@@ -9,7 +9,7 @@
 
 use crate::bundle::Skipped;
 use crate::packet::{clip, fenced};
-use crate::rubric::{fill, packet_boundary, SAFETY_RULES};
+use crate::rubric::{fill, folder_output, packet_boundary, safety_rules, tools_folder, TOOLS_CHAT};
 use crate::turn_schema::{turn_json_schema, TURN_JUDGMENTS_VERSION};
 use anyhow::{anyhow, bail, Result};
 use atlas_core::classify::{is_autopilot_continuation, is_main_assistant_message, is_user_turn};
@@ -206,9 +206,12 @@ fn range(turns: &[i64]) -> String {
     if turns.len() == 1 { turns[0].to_string() } else { format!("{}〜{}", turns[0], turns[turns.len() - 1]) }
 }
 
-/// セッションの判定と同じ注意(理由を書く欄の名前だけ note にする)
-fn turn_safety_rules() -> String {
-    SAFETY_RULES.replace("rationale", "note")
+/// 結果を書くファイル(フォルダ・ZIP で渡すとき。束のフォルダの中に書かせる。画面の依頼文と docs/judge.md と同じ名前)
+pub const TURN_RESULT_FILE: &str = "turn-judgments.json";
+
+/// セッションの判定と同じ注意(理由を書く欄の名前だけ note にする)。tools はツールの決まり(rubric::safety_rules)
+fn turn_safety_rules(tools: &str) -> String {
+    safety_rules(tools).replace("rationale", "note")
 }
 
 const RUBRIC_TPL: &str = "### 判定すること(依頼 1 件ごと)
@@ -313,7 +316,7 @@ pub fn render_turn_part_instructions(part: usize, parts: usize, chunks: &[&TurnC
             ("total", &total.to_string()),
             ("generatedAt", generated_at),
             ("list", &list),
-            ("safety", &turn_safety_rules()),
+            ("safety", &turn_safety_rules(TOOLS_CHAT)),
             ("version", &TURN_JUDGMENTS_VERSION.to_string()),
             ("example", &item_example(phases)),
             ("rubric", &turn_rubric(phases)),
@@ -539,7 +542,7 @@ fn write_turn_bundle(sessions: &[&SessionRecord], o: &TurnBundleOptions<'_>, dir
 const TURN_INSTRUCTIONS_TPL: &str = "# Copilot の依頼ごとの判定の指示
 
 このフォルダ(依頼ごとの判定の束)には、GitHub Copilot のセッションログから作った判定パケットが、依頼 ⟦total⟧ 件分(⟦chunks⟧ 個の塊)入っています(生成 ⟦generatedAt⟧)。
-あなたの役割は、各依頼について「依頼の種類」「AI の成果が利用者にどう扱われたか」「合わなかった点」「工程」を判定し、決められた JSON で返すことです。
+あなたの役割は、各依頼について「依頼の種類」「AI の成果が利用者にどう扱われたか」「合わなかった点」「工程」を判定し、決められた JSON をこのフォルダの中の `⟦result⟧` に書くことです。
 
 ## フォルダの中身
 
@@ -548,6 +551,7 @@ const TURN_INSTRUCTIONS_TPL: &str = "# Copilot の依頼ごとの判定の指示
 - `schema.json`: 返す JSON の JSON Schema
 - `chunks/<番号>.md`: 判定パケット(1 つの塊に、1 セッションの続いた依頼が数件)
 - `parts/part-<番号>.md`: この指示と数個の塊を 1 ファイルにまとめたもの(ZIP やフォルダを渡せないとき用。ZIP には入っていません。中身は `chunks/` と同じなので、あっても読まなくてかまいません)
+- `⟦result⟧`: 結果を書くファイル(あなたが作ります)
 
 ## 判定する順番
 
@@ -562,7 +566,7 @@ const TURN_INSTRUCTIONS_TPL: &str = "# Copilot の依頼ごとの判定の指示
 
 1. `manifest.json` の `chunks` を上から順に処理します。一度に全部を読まず、**1 つの塊ずつ**読んで判定してください。
 2. 各塊の「判定する依頼」の各依頼について 1 項目の JSON を作ります(判定しないと書いてある依頼は参考です。項目を作りません)。`sessionId` は塊の「セッション ID」をそのまま写します。
-3. 判定し終えたものから、次の形でまとめて返します(途中で区切ってもかまいません。何回かに分けて返した JSON は、あとで 1 つずつ取り込めます)。
+3. 判定した項目を次の形の JSON 1 つにまとめ、このフォルダの中の `⟦result⟧` に書きます。
 
 ```json
 {
@@ -574,7 +578,7 @@ const TURN_INSTRUCTIONS_TPL: &str = "# Copilot の依頼ごとの判定の指示
 }
 ```
 
-- JSON は ```json のコードブロックに入れてください(前後に説明文があってもかまいません。取り込み時にコードブロックだけを読みます)。
+⟦output⟧
 - 形は `schema.json` に従います。形の合わない項目が 1 件でもあると、取り込み時にエラーになります。
 
 ⟦rubric⟧
@@ -607,9 +611,11 @@ pub fn render_turn_instructions(m: &TurnBundleManifest) -> String {
             ("chunks", &total.to_string()),
             ("generatedAt", &m.generated_at),
             ("order", &order),
-            ("safety", &turn_safety_rules()),
+            ("result", TURN_RESULT_FILE),
+            ("safety", &turn_safety_rules(&tools_folder(TURN_RESULT_FILE))),
             ("version", &TURN_JUDGMENTS_VERSION.to_string()),
             ("example", &item_example(&m.phases)),
+            ("output", &folder_output(TURN_RESULT_FILE)),
             ("rubric", &turn_rubric(&m.phases)),
         ],
     )
