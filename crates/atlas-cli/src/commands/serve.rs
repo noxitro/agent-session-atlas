@@ -95,6 +95,8 @@ pub fn run_serve(p: &Paths, o: ServeCli, log: Log<'_>) -> Result<String> {
     so.reports = o.reports.unwrap_or_default();
     so.config_path = o.config.map(PathBuf::from);
     so.settings_dir = o.settings;
+    so.judgments = Some(p.judgments.clone());
+    so.turn_judgments = Some(p.turn_judgments.clone());
     test_overrides(&mut so);
     let h = start_serve(so)?;
     let close = h.closer();

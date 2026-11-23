@@ -148,18 +148,63 @@ pub fn import_judgments_text(input: &str, judgments_path: &Path, o: ImportOption
         v.judge = Some(JudgeMeta { backend: "external".into(), model: model.clone(), ran_at: ran_at.clone() });
         by.insert(v.session_id.clone(), v);
     }
-    let base = read_judgments(judgments_path)?.unwrap_or_else(|| empty_judgments("external", model.as_deref(), &now));
-    let existing: HashSet<&str> = base.items.iter().map(|i| i.session_id.as_str()).collect();
     let items: Vec<JudgmentItem> = by.into_values().collect();
-    let merged = merge_judgments(&base, &items, FileJudge { backend: "external".into(), model: model.clone(), ran_at: now.clone(), usage: None });
-    write_judgments(judgments_path, &merged)?;
+    // 読み直してから混ぜて書くまでを、ファイルのロックの中で行う(共有の置き場では、ほかの集計する人も同じファイルに取り込むため。
+    // 同じセッションは後から取り込んだもので置き換え、ほかのセッションの判定は残す)
+    let (overwritten, total) = atlas_report::tasks::with_file_lock(judgments_path, || {
+        let base = read_judgments(judgments_path)?.unwrap_or_else(|| empty_judgments("external", model.as_deref(), &now));
+        let existing: HashSet<&str> = base.items.iter().map(|i| i.session_id.as_str()).collect();
+        let overwritten = items.iter().filter(|i| existing.contains(i.session_id.as_str())).count();
+        let merged = merge_judgments(&base, &items, FileJudge { backend: "external".into(), model: model.clone(), ran_at: now.clone(), usage: None });
+        write_judgments(judgments_path, &merged)?;
+        Ok((overwritten, merged.items.len()))
+    })?;
     Ok(ImportResult {
         imported: items.len(),
         duplicates,
-        overwritten: items.iter().filter(|i| existing.contains(i.session_id.as_str())).count(),
+        overwritten,
         unknown_ids: o.known_ids.map(|k| items.iter().map(|i| i.session_id.clone()).filter(|id| !k.contains(id)).collect()).unwrap_or_default(),
-        total: merged.items.len(),
+        total,
         notes,
+    })
+}
+
+/// 移した後の前の置き場の名前(<file>.moved。もう読まない。中身を確かめたいときのために消さずに残す)
+pub fn moved_path(from: &Path) -> std::path::PathBuf {
+    let mut s = from.as_os_str().to_owned();
+    s.push(".moved");
+    std::path::PathBuf::from(s)
+}
+
+/// 前の置き場(from。開いたフォルダの出力先)の判定を、共有の置き場(to。設定のフォルダ)に混ぜて移す。
+/// 共有の側にあるセッションは共有の側のままにし、無いものだけを足す。移したら from は moved_path の名前に変える(次からは移さない)。
+/// from が無ければ None、あれば足したセッションの数。from が読めなければエラー(何も書かず、from も残す)。
+/// 読んで書くまでは to のロックの中で行う(ほかの集計する人の取り込みと重ならないように)
+pub fn move_judgments_into(from: &Path, to: &Path) -> Result<Option<usize>> {
+    if !from.exists() {
+        return Ok(None);
+    }
+    atlas_report::tasks::with_file_lock(to, || {
+        let Some(old) = read_judgments(from)? else { return Ok(None) };
+        let cur = read_judgments(to)?;
+        let have: HashSet<String> = cur.as_ref().map(|c| c.items.iter().map(|i| i.session_id.clone()).collect()).unwrap_or_default();
+        let add: Vec<JudgmentItem> = old.items.iter().filter(|i| !have.contains(&i.session_id)).cloned().collect();
+        let mut merged = cur.unwrap_or_else(|| JudgmentsFile { failures: None, items: vec![], ..old.clone() });
+        merged.items.extend(add.iter().cloned());
+        // 判定に失敗した記録は、どちらにも判定の無いセッションのものだけを残す(共有の側の記録を先に)
+        let judged: HashSet<&str> = merged.items.iter().map(|i| i.session_id.as_str()).collect();
+        let failures: Vec<Value> = merged
+            .failures
+            .iter()
+            .flatten()
+            .chain(old.failures.iter().flatten())
+            .filter(|f| !f.get("sessionId").and_then(Value::as_str).is_some_and(|id| judged.contains(id)))
+            .cloned()
+            .collect();
+        merged.failures = (!failures.is_empty()).then_some(failures);
+        write_judgments(to, &merged)?;
+        atlas_core::fs_retry::rename_replacing(from, &moved_path(from))?;
+        Ok(Some(add.len()))
     })
 }
 
@@ -216,6 +261,36 @@ mod tests {
         assert!(import_judgments_text("説明だけ", &jp, ImportOptions::default()).unwrap_err().to_string().starts_with("貼り付けた返答 から JSON を取り出せません"));
         let e = import_judgments_text("[1]", &jp, ImportOptions::default()).unwrap_err();
         assert!(e.downcast_ref::<JudgmentValidationError>().unwrap().problems[0].starts_with("1 件目が無いか"), "{e}");
+    }
+
+    /// 共有の置き場へ移す: 共有の側にあるセッションはそのまま、無いものだけ足し、前のファイルは .moved にする。2 回目は何もしない
+    #[test]
+    fn moves_old_judgments_into_shared() {
+        let d = tempfile::tempdir().unwrap();
+        let (old, shared) = (d.path().join("out").join("judgments.json"), d.path().join("AtlasSettings").join("judgments.json"));
+        assert_eq!(move_judgments_into(&old, &shared).unwrap(), None);
+        let mut a_old = item("a");
+        a_old["taskSummary"] = json!("前の出力先");
+        import_judgments_text(&json!([a_old, item("b")]).to_string(), &old, ImportOptions::default()).unwrap();
+        let mut a_new = item("a");
+        a_new["taskSummary"] = json!("共有");
+        import_judgments_text(&json!([a_new, item("c")]).to_string(), &shared, ImportOptions::default()).unwrap();
+        assert_eq!(move_judgments_into(&old, &shared).unwrap(), Some(1));
+        let j = read_judgments(&shared).unwrap().unwrap();
+        let mut ids: Vec<&str> = j.items.iter().map(|i| i.session_id.as_str()).collect();
+        ids.sort();
+        assert_eq!(ids, ["a", "b", "c"]);
+        assert_eq!(j.items.iter().find(|i| i.session_id == "a").unwrap().task_summary, "共有");
+        assert!(!old.exists() && moved_path(&old).exists());
+        assert_eq!(move_judgments_into(&old, &shared).unwrap(), None);
+        // 共有の側がまだ無ければ、前の判定をそのまま移す
+        let other = d.path().join("other").join("judgments.json");
+        std::fs::rename(moved_path(&old), &old).unwrap();
+        assert_eq!(move_judgments_into(&old, &other).unwrap(), Some(2));
+        // 読めない前の判定は移さず、残す
+        std::fs::write(&old, "{").unwrap();
+        assert!(move_judgments_into(&old, &shared).is_err());
+        assert!(old.exists());
     }
 
     // llm-wiki のページごとの判定: 版 1 の返答も版 2 の返答も取り込む。wikiPages が壊れていても項目は取り込み、知らせる

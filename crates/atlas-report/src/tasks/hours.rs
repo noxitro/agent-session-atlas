@@ -91,10 +91,99 @@ pub fn work_overlap_ms(start_ms: i64, end_ms: i64, wh: &WorkHours) -> f64 {
     total as f64
 }
 
+/// 先頭の数字(min〜max 桁)と残り
+fn take_num(s: &str, min: usize, max: usize) -> Option<(u32, &str)> {
+    let n = s.bytes().take_while(u8::is_ascii_digit).count();
+    if n < min || n > max {
+        return None;
+    }
+    Some((s[..n].parse().ok()?, &s[n..]))
+}
+
+/// 管理ツールの XML にある完了日時(設定の tasks.doneAt)を読む。読めなければ None。読む書き方は次のとおり:
+/// - 日付: YYYY-MM-DD か YYYY/MM/DD(月と日は 1 桁でもよい)。暦に無い日(2 月 30 日など)は読まない
+/// - 時刻(任意): 日付の後に T か空白を挟んで HH:MM、HH:MM:SS、HH:MM:SS.fff
+/// - 時差(任意。時刻があるときだけ): Z か ±HH:MM か ±HHMM。無ければこの PC のローカル時刻
+/// 時刻の無い日付は、その日の稼働時間帯の終わり(workHours.end。24:00 なら翌日の 0 時)のローカル時刻にする
+/// (その日のうちに終わったとみなし、その日の稼働時間をすべて数える。稼働日でない曜日でも同じ時刻にする)
+pub fn parse_done_at(s: &str, wh: &WorkHours) -> Option<i64> {
+    let s = s.trim();
+    let (y, rest) = take_num(s, 4, 4)?;
+    let sep = rest.chars().next().filter(|c| *c == '-' || *c == '/')?;
+    let (m, rest) = take_num(&rest[1..], 1, 2)?;
+    let rest = rest.strip_prefix(sep)?;
+    let (d, rest) = take_num(rest, 1, 2)?;
+    let date = Civil::date(y as i32, m, d)?;
+    if rest.is_empty() {
+        let end = if wh.end_min >= 1440 { date.add_days(1)? } else { date.at(wh.end_min / 60, wh.end_min % 60, 0)? };
+        return local_ms(end);
+    }
+    let rest = rest.strip_prefix('T').or_else(|| rest.strip_prefix(' '))?.trim_start();
+    let (h, rest) = take_num(rest, 1, 2)?;
+    let (mi, rest) = take_num(rest.strip_prefix(':')?, 2, 2)?;
+    let (sec, rest) = match rest.strip_prefix(':') {
+        Some(r) => take_num(r, 2, 2)?,
+        None => (0, rest),
+    };
+    let (frac_ms, rest) = match rest.strip_prefix('.') {
+        Some(r) => {
+            let n = r.bytes().take_while(u8::is_ascii_digit).count();
+            if n == 0 {
+                return None;
+            }
+            let ms: String = r[..n].chars().chain(std::iter::repeat('0')).take(3).collect();
+            (ms.parse::<i64>().ok()?, &r[n..])
+        }
+        None => (0, rest),
+    };
+    let at = date.at(h, mi, sec)?;
+    let zone = rest.trim();
+    let base = if zone.is_empty() {
+        local_ms(at)?
+    } else {
+        let off = if zone == "Z" || zone == "z" {
+            "Z".to_string()
+        } else {
+            let sign = zone.chars().next().filter(|c| *c == '+' || *c == '-')?;
+            let digits = zone[1..].replacen(':', "", 1);
+            if digits.len() != 4 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            format!("{sign}{}:{}", &digits[..2], &digits[2..])
+        };
+        atlas_core::jsdate::parse_ms(&format!("{y:04}-{m:02}-{d:02}T{h:02}:{mi:02}:{sec:02}{off}"))?
+    };
+    Some(base + frac_ms)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use atlas_core::jsdate::{parse_ms, with_zone, Offset, TimeZone};
+
+    /// 完了日時の書き方: ISO 8601・YYYY-MM-DD・YYYY/MM/DD(時刻あり・なし)。時刻の無い日付は稼働時間帯の終わり
+    #[test]
+    fn done_at_formats() {
+        jst(|| {
+            let wh = WorkHours::default();
+            let p = |s: &str| parse_done_at(s, &wh);
+            assert_eq!(p("2026-11-20T15:30:00+09:00"), Some(ms("2026-11-20T15:30:00+09:00")));
+            assert_eq!(p("2026-11-20T06:30:00Z"), Some(ms("2026-11-20T15:30:00+09:00")));
+            assert_eq!(p("2026-11-20T15:30:00.250+0900"), Some(ms("2026-11-20T15:30:00+09:00") + 250));
+            // 時差が無ければローカル時刻
+            assert_eq!(p("2026-11-20T15:30"), Some(ms("2026-11-20T15:30:00+09:00")));
+            assert_eq!(p("2026-11-20 15:30:10"), Some(ms("2026-11-20T15:30:10+09:00")));
+            assert_eq!(p("2026/11/20 9:05"), Some(ms("2026-11-20T09:05:00+09:00")));
+            assert_eq!(p(" 2026/1/5 "), Some(ms("2026-01-05T18:00:00+09:00")));
+            // 時刻の無い日付は、その日の稼働時間帯の終わり
+            assert_eq!(p("2026-11-20"), Some(ms("2026-11-20T18:00:00+09:00")));
+            let late = WorkHours { end_min: 1440, ..WorkHours::default() };
+            assert_eq!(parse_done_at("2026-11-20", &late), Some(ms("2026-11-21T00:00:00+09:00")));
+            for bad in ["", "済み", "2026-02-30", "2026-13-01", "20261120", "2026-11-20T25:00", "2026-11-20T10", "2026-11/20", "26-11-20", "2026-11-20T10:00+9", "2026-11-20 10:00 JST", "2026-11-20T10:00:00.", "11/20/2026"] {
+                assert_eq!(p(bad), None, "{bad}");
+            }
+        });
+    }
 
     const H: f64 = 3_600_000.0;
 

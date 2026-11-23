@@ -210,12 +210,13 @@ fn write_turn_parts(out: &std::path::Path, extra: serde_json::Value, files: &[us
 
 #[test]
 fn turn_chat_parts_mark_last_only_files() {
-    use crate::chat_parts::{list_chat_parts, ChatDecidable, ChatTarget};
+    use crate::chat_parts::{list_chat_parts, ChatDecidable, ChatTarget, JudgedFiles};
+    let (jf, tf) = (std::path::PathBuf::from("none-judgments.json"), std::path::PathBuf::from("none-turn-judgments.json"));
     // 採用を判定できる依頼の数と先頭のファイル数を返し、その後ろのファイルに「最後の依頼だけ」の印を付ける(消えたファイルがあっても番号はずれない)
     let d = tempfile::tempdir().unwrap();
     // 先頭の 2 ファイルが判定できる依頼。part-02 は消えている
     write_turn_parts(d.path(), json!({ "decidable": { "turns": 3, "chunks": 2, "parts": 2 } }), &[1, 3, 4]);
-    let r = list_chat_parts(d.path(), d.path(), ChatTarget::Turns).unwrap();
+    let r = list_chat_parts(d.path(), &JudgedFiles { judgments: &d.path().join(&jf), turn_judgments: &d.path().join(&tf), tasks_dir: d.path() }, ChatTarget::Turns).unwrap();
     assert_eq!((r.exists, r.unjudged_only, r.count, r.decidable), (true, Some(true), Some(5), Some(ChatDecidable { turns: 3, parts: 2, chunks: 2 })));
     let marks: Vec<(String, Option<bool>)> = r.parts.as_ref().unwrap().iter().map(|p| (p.name.clone(), p.last_only)).collect();
     assert_eq!(marks, [("part-01.md".to_string(), Some(false)), ("part-03.md".to_string(), Some(true)), ("part-04.md".to_string(), Some(true))]);
@@ -227,7 +228,7 @@ fn turn_chat_parts_mark_last_only_files() {
     // 古い添付(decidable が無い)では、数も印も返さない
     let d = tempfile::tempdir().unwrap();
     write_turn_parts(d.path(), json!({}), &[1, 2, 3, 4]);
-    let r = list_chat_parts(d.path(), d.path(), ChatTarget::Turns).unwrap();
+    let r = list_chat_parts(d.path(), &JudgedFiles { judgments: &d.path().join(&jf), turn_judgments: &d.path().join(&tf), tasks_dir: d.path() }, ChatTarget::Turns).unwrap();
     assert_eq!(r.decidable, None);
     assert_eq!(r.parts.as_ref().unwrap().len(), 4);
     let v = serde_json::to_value(&r).unwrap();
@@ -297,7 +298,8 @@ fn turns_bundle_zip_and_stale_zip() {
     assert!(!text.contains("turn-bundle/parts/"));
     assert!(logs.lock().unwrap().iter().any(|l| l.starts_with("turns bundle: ZIP にまとめました(5 ファイル")), "{:?}", logs.lock().unwrap());
     // 画面の一覧にも、今の束の ZIP として出る
-    let parts = crate::chat_parts::list_chat_parts(&out, &notes, crate::chat_parts::ChatTarget::Turns).unwrap();
+    let files = crate::chat_parts::JudgedFiles { judgments: &out.join("judgments.json"), turn_judgments: &out.join("turn-judgments.json"), tasks_dir: &notes };
+    let parts = crate::chat_parts::list_chat_parts(&out, &files, crate::chat_parts::ChatTarget::Turns).unwrap();
     assert_eq!(parts.zip.as_ref().map(|z| z.path.as_str()), Some("turn-bundle.zip"));
     run(&cli(&["turns", "bundle", "--unjudged", "--out", &o, "--notes-dir", &n]), &log).unwrap();
     assert!(!zip.exists());

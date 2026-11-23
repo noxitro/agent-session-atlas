@@ -5,7 +5,7 @@ use super::judge::read_sessions_value;
 use super::metrics::{select_sessions, SessionFilter};
 use super::{mb, Log};
 use crate::args::TurnsCliOptions;
-use crate::config::phase_names;
+use crate::config::phase_names_in;
 use crate::paths::{resolve, Paths};
 use anyhow::Result;
 use atlas_judge::turn_bundle::{build_turn_bundle, decidable_note, turn_import_phases, turn_zip_names, TurnBundleOptions};
@@ -26,7 +26,7 @@ pub(crate) fn turns_by_session(sessions: &[Value]) -> HashMap<String, usize> {
 }
 
 pub fn run_turns(p: &Paths, f: &SessionFilter, t: &TurnsCliOptions, zip: bool, log: Log<'_>) -> Result<()> {
-    let phases = phase_names()?;
+    let phases = phase_names_in(p.settings.as_deref())?;
     if t.action == "bundle" {
         let sel = select_sessions(p, f, "turns", "先に atlas extract(または atlas all)を実行してください。", log)?;
         super::bundle::drop_old_judge_work(&p.out, "turns bundle", log);

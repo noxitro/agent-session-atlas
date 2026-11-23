@@ -58,7 +58,7 @@ pub fn run(o: &CliOptions, log: Log<'_>) -> Result<RunResult> {
     }
     let mut p = paths_of(o);
     // 設定のフォルダ(--settings か、開いたフォルダの出力先の記録)があれば、その設定ファイルを読み、タスクの置き場も決める
-    let o = &crate::settings_dir::apply_settings(o, &mut p)?;
+    let o = &crate::settings_dir::apply_settings(o, &mut p, log)?;
     let lock = if WRITES_OUT.contains(&o.command.as_str()) { Some(crate::jobs::acquire_out_lock(&p.out, &o.command, "cli")?) } else { None };
     let r = run_command(o, &p, log);
     if let Some(l) = lock {
@@ -80,7 +80,7 @@ fn ignored_filters_message(action: &str, flags: &[String]) -> String {
 /// 1 件でも取り込めたらレポートに反映する(export)。送れなかった・取り込めなかったファイルがあれば、反映した後に失敗にする
 pub(crate) fn run_m365_command(o: &CliOptions, p: &Paths, target: ChatTarget, model: Option<&str>, limit: Option<u64>, timeout_sec: u64, log: Log<'_>) -> Result<RunResult> {
     let s = run_m365_judge(
-        &M365Paths { out: p.out.clone(), notes: p.tasks_dir.clone(), sessions: p.sessions.clone(), judgments: p.judgments.clone(), turn_judgments: p.turn_judgments.clone(), turn_bundle: p.turn_bundle.clone() },
+        &M365Paths { out: p.out.clone(), notes: p.tasks_dir.clone(), sessions: p.sessions.clone(), judgments: p.judgments.clone(), turn_judgments: p.turn_judgments.clone(), turn_bundle: p.turn_bundle.clone(), settings: p.settings.clone() },
         &M365Options { target, model: model.unwrap_or(M365_DEFAULT_MODEL).to_string(), limit, timeout_sec, retries: None },
         &|m: &str| log(m),
         &powershell_driver,

@@ -62,7 +62,7 @@ pub fn run_skill_draft(p: &Paths, o: &SkillDraftOptions, log: Log<'_>) -> Result
         o.backend,
         if o.backend == "anthropic" { "(Anthropic API の従量課金です)" } else { "(クレジットを消費する場合があります)" }
     ));
-    let model = if o.backend == "copilot-cli" { resolve_judge_model(o.model.as_deref(), "skill-draft", log)? } else { o.model.clone() };
+    let model = if o.backend == "copilot-cli" { resolve_judge_model(o.model.as_deref(), p.settings.as_deref(), "skill-draft", log)? } else { o.model.clone() };
     let r = draft_skill(c, o.index, &DraftOptions { backend: Some(o.backend.clone()), model, timeout_ms: Some(o.timeout_sec * 1000), ..Default::default() })?;
     let dir = p.out.join("skill-drafts");
     std::fs::create_dir_all(&dir)?;

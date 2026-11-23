@@ -1624,6 +1624,14 @@ fn central_tasks_in_opened_folder_server() {
     assert!(st.join("task-links.json").exists());
     assert!(!e.notes.join("task-links.json").exists());
     assert_eq!(e.json("GET", "/api/judge/parts?target=tasks", None).0, 200);
+    // 画面の設定は共有の設定(画面は書き換えの注意を出す)。書き換えたら、共有の設定を書き換えたと 1 行残す
+    assert_eq!(e.json("GET", "/api/settings", None).1["sharedSettings"], json!(s(&st)));
+    assert_eq!(e.json("PUT", "/api/settings/phases", Some(json!({ "phases": ["設計", "実装"] }))).0, 200);
+    let cfg: Value = serde_json::from_str(&fs::read_to_string(st.join("atlas.config.json")).unwrap()).unwrap();
+    assert_eq!(cfg["phases"], json!(["設計", "実装"]));
+    let shared_logs: Vec<String> = e.logs().into_iter().filter(|l| l.contains("共有の設定(")).collect();
+    assert_eq!(shared_logs.len(), 1, "{:?}", e.logs());
+    assert!(shared_logs[0].contains("普段の工程名を 設計 / 実装 にしました") && shared_logs[0].contains("ほかの集計する人の結果も変わります"), "{shared_logs:?}");
     // 設定から tasks を外すと、送った人の記録を読むだけに戻る
     fs::write(st.join("atlas.config.json"), "{}").unwrap();
     assert_eq!(e.get("/api/tasks").1["readOnly"], true);

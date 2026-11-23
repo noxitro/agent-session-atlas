@@ -297,15 +297,53 @@ pub fn import_turn_judgments_text(input: &str, path: &Path, o: TurnImportOptions
     let ran_at = o.now.clone().unwrap_or_else(atlas_core::jsdate::now_iso);
     let judge = TurnJudge { backend: o.backend.clone().unwrap_or_else(|| "external".into()), model: model.clone(), ran_at: ran_at.clone() };
     let items: Vec<TurnJudgment> = raw.iter().map(|it| TurnJudgment { judge: Some(judge.clone()), ..normalize_item(it.as_object().expect("検証済み")) }).collect();
-    let base = read_turn_judgments(path)?.unwrap_or_else(|| empty_turn_judgments(o.phases, &judge.backend, model.as_deref(), &ran_at));
-    let existing: HashSet<String> = base.items.iter().map(|i| key(&i.session_id, i.turn)).collect();
-    let merged = merge_turn_judgments(&base, &items, o.phases, judge);
-    write_turn_judgments(path, &merged)?;
+    // 読み直してから混ぜて書くまでを、ファイルのロックの中で行う(共有の置き場では、ほかの集計する人も同じファイルに取り込むため。
+    // 同じセッションの同じ依頼は後から取り込んだもので置き換え、ほかの判定は残す)
+    let (overwritten, total) = atlas_report::tasks::with_file_lock(path, || {
+        let base = read_turn_judgments(path)?.unwrap_or_else(|| empty_turn_judgments(o.phases, &judge.backend, model.as_deref(), &ran_at));
+        let existing: HashSet<String> = base.items.iter().map(|i| key(&i.session_id, i.turn)).collect();
+        let overwritten = items.iter().filter(|i| existing.contains(&key(&i.session_id, i.turn))).count();
+        let merged = merge_turn_judgments(&base, &items, o.phases, judge.clone());
+        write_turn_judgments(path, &merged)?;
+        Ok((overwritten, merged.items.len()))
+    })?;
     let unknown = match o.turns_by_session {
         Some(m) => items.iter().filter(|i| !m.contains_key(&i.session_id) || i.turn > *m.get(&i.session_id).unwrap_or(&0) as i64).map(|i| format!("{} の依頼 {}", i.session_id, i.turn)).collect(),
         None => vec![],
     };
-    Ok(TurnImportResult { imported: items.len(), overwritten: items.iter().filter(|i| existing.contains(&key(&i.session_id, i.turn))).count(), unknown, total: merged.items.len() })
+    Ok(TurnImportResult { imported: items.len(), overwritten, unknown, total })
+}
+
+/// 前の置き場(from)の依頼ごとの判定を、共有の置き場(to)に混ぜて移す(judgments_io::move_judgments_into と同じ決まり)。
+/// 共有の側にある依頼(セッションと依頼番号)は共有の側のままにし、無いものだけを足す。移したら from は moved_path の名前に変える。
+/// from が無ければ None、あれば足した依頼の数。from が読めなければエラー(何も書かず、from も残す)
+pub fn move_turn_judgments_into(from: &Path, to: &Path) -> Result<Option<usize>> {
+    if !from.exists() {
+        return Ok(None);
+    }
+    atlas_report::tasks::with_file_lock(to, || {
+        let Some(old) = read_turn_judgments(from).map_err(|e| anyhow!("{}: {e}", from.display()))? else { return Ok(None) };
+        let cur = read_turn_judgments(to).map_err(|e| anyhow!("{}: {e}", to.display()))?;
+        let have: HashSet<String> = cur.as_ref().map(|c| c.items.iter().map(|i| key(&i.session_id, i.turn)).collect()).unwrap_or_default();
+        let add: Vec<TurnJudgment> = old.items.iter().filter(|i| !have.contains(&key(&i.session_id, i.turn))).cloned().collect();
+        let mut merged = cur.unwrap_or_else(|| TurnJudgmentsFile { items: vec![], failures: vec![], ..old.clone() });
+        merged.items.extend(add.iter().cloned());
+        merged.items.sort_by(|a, b| locale_compare(&a.session_id, &b.session_id).then(a.turn.cmp(&b.turn)));
+        for p in &old.phases {
+            if !merged.phases.contains(p) {
+                merged.phases.push(p.clone());
+            }
+        }
+        // 判定できなかった塊の記録は、共有の側のものに、前の置き場にしかないものを足す(同じものは 1 つ)
+        for f in &old.failures {
+            if !merged.failures.contains(f) {
+                merged.failures.push(f.clone());
+            }
+        }
+        write_turn_judgments(to, &merged)?;
+        atlas_core::fs_retry::rename_replacing(from, &crate::judgments_io::moved_path(from))?;
+        Ok(Some(add.len()))
+    })
 }
 
 /// 判定の返答の JSON Schema(判定の指示に載せる)
@@ -370,6 +408,25 @@ mod tests {
         assert!(pr(item(1, json!({"phase": "開発"})), "1 件目").join(",").contains("phase は 要件定義 / 設計 / 実装 / テスト"));
         assert_eq!(pr(item(0, json!({"confidence": 2})), "1 件目").len(), 2);
         assert_eq!(pr(json!("x"), "2 件目"), vec!["2 件目が無いか、{ … } の形ではありません".to_string()]);
+    }
+
+    /// 共有の置き場へ移す: 共有の側にある依頼はそのまま、無いものだけ足す。前の一覧にしか無い工程名も残す
+    #[test]
+    fn moves_old_turn_judgments_into_shared() {
+        let d = tempfile::tempdir().unwrap();
+        let (old, shared) = (d.path().join("out").join("turn-judgments.json"), d.path().join("s").join("turn-judgments.json"));
+        let ph = phases();
+        let o = || TurnImportOptions { phases: &ph, turns_by_session: None, now: None, backend: None, model: None };
+        import_turn_judgments_text(&json!([item(1, json!({"note": "前"})), item(2, json!({}))]).to_string(), &old, o()).unwrap();
+        let mut more = ph.clone();
+        more.push("運用".into());
+        import_turn_judgments_text(&json!([item(1, json!({"note": "共有"})), item(3, json!({"phase": "運用"}))]).to_string(), &shared, TurnImportOptions { phases: &more, ..o() }).unwrap();
+        assert_eq!(move_turn_judgments_into(&old, &shared).unwrap(), Some(1));
+        let j = read_turn_judgments(&shared).unwrap().unwrap();
+        assert_eq!(j.items.iter().map(|i| (i.turn, i.note.as_str())).collect::<Vec<_>>(), [(1, "共有"), (2, "理由"), (3, "理由")]);
+        assert!(j.phases.contains(&"運用".to_string()));
+        assert!(!old.exists() && crate::judgments_io::moved_path(&old).exists());
+        assert_eq!(move_turn_judgments_into(&old, &shared).unwrap(), None);
     }
 
     #[test]

@@ -635,13 +635,14 @@ mod tests {
         let tables = p.out.join("tables");
         let csv = std::fs::read_to_string(tables.join("tasks.csv")).unwrap();
         let lines: Vec<&str> = csv.trim_end().split("\r\n").collect();
-        assert!(lines[0].starts_with("\u{feff}taskId,taskName,status,完了,XML に無い,開始,完了を確認した時刻,稼働時間帯の工数(時間),AI の実働(時間),推定人手工数(時間),セッション数,共有のセッション,判定済み"), "{}", lines[0]);
+        assert!(lines[0].starts_with("\u{feff}taskId,taskName,status,完了,XML に無い,開始,完了を確認した時刻,完了時刻の出所,稼働時間帯の工数(時間),AI の実働(時間),推定人手工数(時間),セッション数,共有のセッション,判定済み"), "{}", lines[0]);
         assert_eq!(lines.len(), 1 + view.items.len());
         let row: Vec<&str> = lines.iter().find(|l| l.starts_with("DEMO-101,")).unwrap().split(',').collect();
-        assert_eq!((row[3], row[9], row[10], row[11], row[15]), ("1", "6", "1", "0", "1"));
+        // 完了時刻の出所は、XML に完了日時が無いので観測
+        assert_eq!((row[3], row[7], row[10], row[11], row[12], row[16]), ("1", "観測", "6", "1", "0", "1"));
         // s3 は DEMO-103 と DEMO-105 の共有のセッション
         let row: Vec<&str> = lines.iter().find(|l| l.starts_with("DEMO-105,")).unwrap().split(',').collect();
-        assert_eq!((row[10], row[11]), ("1", "1"));
+        assert_eq!((row[11], row[12]), ("1", "1"));
         let sess = std::fs::read_to_string(tables.join("sessions.csv")).unwrap();
         let header: Vec<&str> = sess.lines().next().unwrap().trim_start_matches('\u{feff}').split(',').collect();
         let at = header.iter().position(|h| *h == "推定人手工数(時間)").unwrap();
@@ -853,6 +854,7 @@ mod tests {
             last_seen_at: "t".into(),
             missing: false,
             done_observed: done_at.is_some(),
+            done_at_source: None,
         };
         let mut state = TasksFile::default();
         state.tasks.insert("OLD-1".into(), task("前に終わった仕事", Some("2026-11-01T00:00:00.000Z")));
@@ -920,7 +922,7 @@ mod tests {
         let csv = std::fs::read_to_string(p.out.join("tables").join("tasks.csv")).unwrap();
         let row: Vec<&str> = csv.lines().find(|l| l.starts_with("DEMO-101,")).unwrap().split(',').collect();
         // 開始 11/20 1:00 → 完了を確認した時刻 11/21 1:00 = 24 時間(--config の稼働時間帯)
-        assert_eq!(row[7], "24");
+        assert_eq!(row[8], "24");
         // 初めから完了していたタスク(DEMO-104)は、完了の時刻が分からない
         let view = build_view(&p, &load_task_config(Some(&cfg_s)), false, &sessions, &sessions.iter().collect::<Vec<_>>(), None, &HashMap::new()).unwrap();
         let t104 = view.items.iter().find(|t| t.id == "DEMO-104").unwrap();

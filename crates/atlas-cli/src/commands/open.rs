@@ -55,7 +55,7 @@ pub fn run_open(o: &CliOptions, log: Log<'_>, pick: Option<PickDep<'_>>) -> Resu
     // 集計(と、この後の画面のジョブ)が読む設定。タスクの置き場もここで決まる
     let all_base = CliOptions { settings: settings.clone(), config: if settings.is_some() { None } else { o.config.clone() }, ..o.clone() };
     // (使わないと決めたときは当てない。folder.json に残る前の記録は、このあと書き直す)
-    let all_base = if settings.is_some() { crate::settings_dir::apply_settings(&all_base, &mut p)? } else { all_base };
+    let all_base = if settings.is_some() { crate::settings_dir::apply_settings(&all_base, &mut p, log)? } else { all_base };
     let p = p;
     let now = atlas_core::jsdate::now_iso;
     let base = FolderState {
@@ -90,6 +90,11 @@ pub fn run_open(o: &CliOptions, log: Log<'_>, pick: Option<PickDep<'_>>) -> Resu
             from.label(),
             crate::config::CONFIG_FILE,
             if p.central_tasks { "タスクの紐づけは、ここで集計する人が行い、設定のフォルダに書きます(送った人が添えたタスクの記録は使いません)" } else { "設定に tasks が無いので、タスクは送った人が添えた記録から出します" }
+        ));
+        log(&format!(
+            "open: 工数と依頼ごとの判定は、設定のフォルダの {} と {} を使います(集計する人のあいだで共有します。判定には依頼の要約と理由が入ります)",
+            p.judgments.display(),
+            p.turn_judgments.display()
         ));
     }
     log(&format!(

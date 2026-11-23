@@ -121,12 +121,21 @@ impl ChatParts {
     }
 }
 
+/// 判定済みの数を数えるファイル(工数の判定・依頼ごとの判定・タスクの紐づけの場所)。
+/// 開いたフォルダで設定のフォルダを使うときは、どれも設定のフォルダ(Paths の judgments・turn_judgments・tasks_dir)
+#[derive(Debug, Clone, Copy)]
+pub struct JudgedFiles<'a> {
+    pub judgments: &'a Path,
+    pub turn_judgments: &'a Path,
+    /// task-links.json を置くフォルダ
+    pub tasks_dir: &'a Path,
+}
+
 /// judgments.json にあるセッション id(無ければ空。読めなければ例外)
-pub fn judged_session_ids(out_dir: &Path) -> Result<HashSet<String>> {
+pub fn judged_session_ids(jp: &Path) -> Result<HashSet<String>> {
     let mut judged = HashSet::new();
-    let jp = out_dir.join("judgments.json");
     if jp.exists() {
-        let v = atlas_judge::read_text(&jp).and_then(|t| atlas_core::js::parse_json(&t).map_err(anyhow::Error::from)).map_err(|e| anyhow!("judgments.json を読めません: {e}"))?;
+        let v = atlas_judge::read_text(jp).and_then(|t| atlas_core::js::parse_json(&t).map_err(anyhow::Error::from)).map_err(|e| anyhow!("{} を読めません: {e}", jp.display()))?;
         for it in v.get("items").and_then(Value::as_array).into_iter().flatten() {
             if let Some(id) = it.get("sessionId").and_then(Value::as_str) {
                 judged.insert(id.to_string());
@@ -137,8 +146,8 @@ pub fn judged_session_ids(out_dir: &Path) -> Result<HashSet<String>> {
 }
 
 /// turn-judgments.json の判定済みの依頼(セッション ID#依頼番号)
-pub fn judged_turn_keys(out_dir: &Path) -> Result<HashSet<String>> {
-    let j = read_turn_judgments(&out_dir.join("turn-judgments.json")).map_err(|e| anyhow!("turn-judgments.json を読めません: {e}"))?;
+pub fn judged_turn_keys(path: &Path) -> Result<HashSet<String>> {
+    let j = read_turn_judgments(path).map_err(|e| anyhow!("{} を読めません: {e}", path.display()))?;
     Ok(j.map(|j| j.items.iter().map(|i| format!("{}#{}", i.session_id, i.turn)).collect()).unwrap_or_default())
 }
 
@@ -152,8 +161,8 @@ fn name_of(path: &str) -> String {
 }
 
 /// 添付ファイルの一覧(manifest にあって、ファイルが残っているもの)。manifest が読めなければ例外。
-/// notes_dir はタスクの紐づけ(task-links.json)を読む場所
-pub fn list_chat_parts(out_dir: &Path, notes_dir: &Path, target: ChatTarget) -> Result<ChatParts> {
+/// 判定済みの数は files の判定・紐づけから数える
+pub fn list_chat_parts(out_dir: &Path, files: &JudgedFiles<'_>, target: ChatTarget) -> Result<ChatParts> {
     let dir = out_dir.join(target.dir_name());
     if !dir.join("manifest.json").exists() {
         return Ok(ChatParts::none());
@@ -161,7 +170,7 @@ pub fn list_chat_parts(out_dir: &Path, notes_dir: &Path, target: ChatTarget) -> 
     match target {
         ChatTarget::Turns => {
             let m = read_turn_bundle_manifest(&dir)?;
-            let judged = judged_turn_keys(out_dir)?;
+            let judged = judged_turn_keys(files.turn_judgments)?;
             let d = m.decidable;
             let parts = m
                 .parts
@@ -192,7 +201,7 @@ pub fn list_chat_parts(out_dir: &Path, notes_dir: &Path, target: ChatTarget) -> 
         }
         ChatTarget::Tasks => {
             let m = read_task_bundle_manifest(&dir)?;
-            let linked = linked_session_ids(notes_dir);
+            let linked = linked_session_ids(files.tasks_dir);
             let parts = m
                 .parts
                 .iter()
@@ -205,7 +214,7 @@ pub fn list_chat_parts(out_dir: &Path, notes_dir: &Path, target: ChatTarget) -> 
         }
         ChatTarget::Effort => {
             let m = read_bundle_manifest(&dir)?;
-            let judged = judged_session_ids(out_dir)?;
+            let judged = judged_session_ids(files.judgments)?;
             let parts = m
                 .parts
                 .iter()

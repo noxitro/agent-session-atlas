@@ -247,4 +247,124 @@ describe('本番の置き方: 設定のフォルダ(AtlasSettings)を使い、�
       await again.stop();
     }
   }, 600_000);
+
+  /** 工数の判定の返答(画面に貼るもの) */
+  const effortReply = (ids: string[], summary: string): string =>
+    '```json\n' +
+    JSON.stringify({
+      items: ids.map((id) => ({
+        sessionId: id,
+        taskCategory: 'feature',
+        taskSummary: summary,
+        humanEffort: { hours: 3, low: 2, high: 5, confidence: 0.5, rationale: '根拠' },
+        aiOutcome: { completed: true, quality: 4, rework: 0, rationale: '成果' },
+        instructionsEffect: { score: 0, evidence: '参照なし' },
+        wikiEffect: { score: 0, evidence: '参照なし' },
+        skillsAgentsEffect: { score: 0, evidence: '参照なし' },
+      })),
+    }) +
+    '\n```\n';
+  type Judgments = { items: { sessionId: string; taskSummary: string }[] };
+
+  it('e. 判定は設定のフォルダで共有する: 画面で取り込むと AtlasSettings に書かれ、2 回の取り込みが混ざり、人のフォルダで開いても使われる', async () => {
+    const root = folderPaths(foldersRootOf(localOut), localNotes, sessionLog);
+    const aliceDir = join(sessionLog, 'alice');
+    const alice = folderPaths(foldersRootOf(localOut), localNotes, aliceDir);
+    const shared = join(settings, 'judgments.json');
+    const sharedTurns = join(settings, 'turn-judgments.json');
+    const opened = await openUntilServing([sessionLog]);
+    try {
+      const { url, token } = opened;
+      expect(opened.output()).toContain(`open: 工数と依頼ごとの判定は、設定のフォルダの ${shared} と ${sharedTurns} を使います`);
+      const first = await api<{ imported: number; overwritten: number }>(url, token, 'api/judge/import', { method: 'POST', body: JSON.stringify({ text: effortReply([S_FIX], '1 回目') }) });
+      expect(first.status, JSON.stringify(first.body)).toBe(200);
+      expect((await readJson<Judgments>(shared)).items.map((i) => i.sessionId)).toEqual([S_FIX]);
+      expect(existsSync(join(root.out, 'judgments.json'))).toBe(false);
+      // 2 回目の取り込み(別のセッションと、同じセッションの判定し直し)は混ざる。同じセッションは後から取り込んだもの
+      const second = await api<{ imported: number; overwritten: number; total: number }>(url, token, 'api/judge/import', { method: 'POST', body: JSON.stringify({ text: effortReply([S_IMPROVE, S_FIX], '2 回目') }) });
+      expect(second.body).toMatchObject({ imported: 2, overwritten: 1, total: 2 });
+      const both = await readJson<Judgments>(shared);
+      expect(Object.fromEntries(both.items.map((i) => [i.sessionId, i.taskSummary]))).toEqual({ [S_FIX]: '2 回目', [S_IMPROVE]: '2 回目' });
+      // 依頼ごとの判定も設定のフォルダに
+      const turns = { items: [{ sessionId: S_FIX, turn: 1, kind: 'question', outcome: 'follow_up', mismatch: null, phase: '調査', confidence: 0.5, note: 'テスト用' }] };
+      const t = await api<{ imported: number }>(url, token, 'api/judge/import?target=turns', { method: 'POST', body: JSON.stringify({ text: '```json\n' + JSON.stringify(turns) + '\n```' }) });
+      expect(t.status, JSON.stringify(t.body)).toBe(200);
+      expect(existsSync(sharedTurns)).toBe(true);
+      expect(existsSync(join(root.out, 'turn-judgments.json'))).toBe(false);
+      expect((await api<{ judged: number }>(url, token, 'api/jobs/judge-preview')).body.judged).toBe(2);
+    } finally {
+      await opened.stop();
+    }
+    // 人のフォルダ(別のパス)を開いても、同じ判定を使う。前にその出力先にあった判定は、共有の側を優先して混ぜて移す
+    await mkdir(alice.out, { recursive: true });
+    await writeFile(join(alice.out, 'judgments.json'), JSON.stringify({ schemaVersion: 1, judge: { backend: 'external', model: null, ranAt: '2026-10-01T00:00:00.000Z' }, items: JSON.parse(effortReply([S_FIX, S_MULTI], '前の出力先').split('\n')[1]).items }));
+    const person = await openUntilServing([aliceDir]);
+    try {
+      const out = person.output();
+      expect(out).toContain(`open: 設定のフォルダ ${settings}(開いたフォルダから上へ探して見つけたもの)`);
+      expect(out).toContain(`settings: 出力先にあった工数の判定を、設定のフォルダの共有の置き場 ${shared} に移しました(足したセッション 1 件。`);
+      expect(existsSync(join(alice.out, 'judgments.json.moved'))).toBe(true);
+      const merged = Object.fromEntries((await readJson<Judgments>(shared)).items.map((i) => [i.sessionId, i.taskSummary]));
+      expect(merged).toEqual({ [S_FIX]: '2 回目', [S_IMPROVE]: '2 回目', [S_MULTI]: '前の出力先' });
+      const data = await embedded(alice.out);
+      expect(data.judgments).toMatchObject({ available: true });
+      expect(data.sessions.find((s) => s.id === S_FIX)?.judgment).toMatchObject({ taskSummary: '2 回目' });
+      expect(data.turnJudgments).toMatchObject({ available: true, items: 1 });
+      // 画面の判定済みの数も、共有の置き場から数える(人のフォルダにあるのは S_FIX・S_MULTI)
+      expect((await api<{ judged: number }>(person.url, person.token, 'api/jobs/judge-preview')).body.judged).toBe(2);
+    } finally {
+      await person.stop();
+    }
+  }, 600_000);
+
+  it('f. XML の完了日時(tasks.doneAt)があれば、それを完了の時刻(記録)にする', async () => {
+    const share2 = join(WORK, 'share2');
+    const log2 = join(share2, 'SessionLog');
+    const settings2 = join(share2, 'AtlasSettings');
+    await cp(plainLog, log2, { recursive: true });
+    await mkdir(settings2, { recursive: true });
+    // DEMO-101 は日付だけ(その日の稼働時間帯の終わり)、DEMO-104 は時差つきの日時、DEMO-103 は読めない値
+    const xml = (await readFile(join(XML_DIR, 'export-before.xml'), 'utf8'))
+      .replace('<Id>DEMO-101</Id>\n      <Name>fix the app</Name>\n      <Status>In Progress</Status>', '<Id>DEMO-101</Id>\n      <Name>fix the app</Name>\n      <Status>Done</Status>\n      <ClosedDate>2026/10/22</ClosedDate>')
+      .replace('<Status>Done</Status>\n    </Task>', '<Status>Done</Status>\n      <ClosedDate>2026-10-20T12:00:00+09:00</ClosedDate>\n    </Task>')
+      .replace('<Name>帳票の出力を速くする</Name>\n      <Status>Open</Status>', '<Name>帳票の出力を速くする</Name>\n      <Status>Done</Status>\n      <ClosedDate>先週</ClosedDate>');
+    expect(xml.match(/<ClosedDate>/g)?.length).toBe(3);
+    await writeFile(join(settings2, 'export.xml'), xml);
+    utimesSync(join(settings2, 'export.xml'), T_XML, T_XML);
+    await writeFile(join(settings2, 'atlas.config.json'), JSON.stringify({ wikis: FIXTURE_WIKIS, tasks: { file: 'export.xml', doneAt: 'ClosedDate', workHours: { days: [1, 2, 3, 4, 5], start: '09:00', end: '18:00' } } }));
+    const out2 = join(WORK, 'out2');
+    const r = atlas(['all', '--home', log2, '--out', out2, '--settings', settings2]);
+    expect(r.status, r.out).toBe(0);
+    expect(r.out).toContain('完了日時(設定の tasks.doneAt)を読めない完了のタスク 1 件');
+    type State = { tasks: Record<string, { doneAt: string | null; doneObserved: boolean; doneAtSource?: string }> };
+    const st = await readJson<State>(join(settings2, 'tasks.json'));
+    // TZ=UTC: 日付だけは、その日の稼働時間帯の終わり(18:00)
+    expect(st.tasks['DEMO-101']).toMatchObject({ doneAt: '2026-10-22T18:00:00.000Z', doneObserved: true, doneAtSource: 'recorded' });
+    expect(st.tasks['DEMO-104']).toMatchObject({ doneAt: '2026-10-20T03:00:00.000Z', doneObserved: true, doneAtSource: 'recorded' });
+    // 読めない値は観測(初めて見たときに完了なので、時刻は分からない)
+    expect(st.tasks['DEMO-103']).toMatchObject({ doneAt: T_XML.toISOString(), doneObserved: false, doneAtSource: 'observed' });
+    const v = (await embedded(out2)).tasks as TasksReport;
+    expect(v.items.find((t) => t.id === 'DEMO-101')).toMatchObject({ doneAtSource: 'recorded', doneAt: '2026-10-22T18:00:00.000Z' });
+    expect(v.items.find((t) => t.id === 'DEMO-103')).toMatchObject({ doneAtSource: 'observed' });
+    // セッションが紐づいた完了タスク: DEMO-101(記録)と DEMO-103(観測。S_MULTI が紐づく)
+    expect(v.summary.doneSources).toEqual({ recorded: 1, observed: 1 });
+    const csv = (await readFile(join(out2, 'tables', 'tasks.csv'), 'utf8')).replace(/^\uFEFF/, '').split('\r\n');
+    const head = csv[0].split(',');
+    const col = head.indexOf('完了時刻の出所');
+    expect(col).toBeGreaterThan(0);
+    const row101 = csv.find((l) => l.startsWith('DEMO-101,'))!.split(',');
+    expect(row101[col]).toBe('記録');
+  }, 600_000);
+
+  it('g. 設定のフォルダが無ければ、判定は今までどおり出力先に置く', async () => {
+    const out3 = join(WORK, 'out3');
+    expect(atlas(['all', '--home', plainLog, '--out', out3]).status).toBe(0);
+    const reply = join(WORK, 'reply-effort.md');
+    await writeFile(reply, effortReply([S_FIX], 'ふだんの置き場'));
+    const before = existsSync(join(settings, 'judgments.json')) ? await readFile(join(settings, 'judgments.json'), 'utf8') : null;
+    const r = atlas(['judge', 'import', reply, '--out', out3]);
+    expect(r.status, r.out).toBe(0);
+    expect((await readJson<Judgments>(join(out3, 'judgments.json'))).items.map((i) => i.taskSummary)).toEqual(['ふだんの置き場']);
+    expect(existsSync(join(settings, 'judgments.json')) ? await readFile(join(settings, 'judgments.json'), 'utf8') : null).toBe(before);
+  }, 600_000);
 });

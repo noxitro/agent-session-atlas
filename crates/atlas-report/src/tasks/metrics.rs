@@ -9,12 +9,14 @@
 //!   セッションの数(判定済み・確度が低い・判定なしを含む)は等分しない(そのタスクに紐づいたセッションを 1 つずつ数える)。
 //!   開始と稼働時間帯の工数は、タスクの始まりから完了までの長さなので等分しない
 //!
-//! 合計は「比べられるタスク」(完了に変わるのを見ていて、紐づいたセッションがすべて完了の前に始まり、確信度の低くない推定を持つ)だけで出す。
-//! 外したタスクは理由ごとに数える。
+//! 合計は「比べられるタスク」(完了の時刻が分かり、紐づいたセッションがすべて完了の前に始まり、確信度の低くない推定を持つ)だけで出す。
+//! 外したタスクは理由ごとに数える。完了の時刻の出所(記録: XML の完了日時・観測: 完了を見た書き出しの時刻)は、
+//! 完了したタスクと比べられるタスクのそれぞれで件数を分けて出す(どちらも合計に入れる)。
 //! 2 つの工数の比は、比べられるタスクが RATIO_MIN_TASKS 件に届いたときだけ出す(1 件だけで大きく動く値を出さない)。
 
 use super::hours::{work_overlap_ms, WorkHours};
 use super::links::LinkSource;
+pub use super::state::DoneAtSource;
 use crate::aggregate::is_low_confidence;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -31,8 +33,10 @@ pub struct TaskInfo {
     pub status: String,
     pub done: bool,
     pub done_at: Option<String>,
-    /// 未完了から完了に変わるのを見た(初めて見たときに完了していたら false。完了を確認した時刻が完了の時刻にならない)
+    /// 完了の時刻が分かる(未完了から完了に変わるのを見たか、XML に完了日時の記録があった。初めて見たときに完了していて記録も無ければ false)
     pub done_observed: bool,
+    /// 完了の時刻の出所(完了していて時刻があるときだけ)
+    pub done_at_source: Option<DoneAtSource>,
     pub missing: bool,
     /// 送った人が数えた開始(紐づいたセッションのうち最も早い開始)。手元のセッションの開始と早い方を使う
     pub start_hint: Option<String>,
@@ -104,6 +108,8 @@ pub struct TaskRow {
     pub done: bool,
     pub done_at: Option<String>,
     pub done_observed: bool,
+    /// 完了の時刻の出所(記録・観測。未完了なら null)
+    pub done_at_source: Option<DoneAtSource>,
     pub missing: bool,
     /// 紐づいたセッションのうち最も早い開始(ISO。完了を確認した時刻より後に始まったセッションは使わない)
     pub start: Option<String>,
@@ -140,6 +146,23 @@ pub struct ExcludedCounts {
     pub low_confidence: usize,
 }
 
+/// 完了の時刻の出所ごとの数
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct DoneAtCounts {
+    pub recorded: usize,
+    pub observed: usize,
+}
+
+impl DoneAtCounts {
+    fn add(&mut self, s: Option<DoneAtSource>) {
+        match s {
+            Some(DoneAtSource::Recorded) => self.recorded += 1,
+            Some(DoneAtSource::Observed) => self.observed += 1,
+            None => {}
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskSummary {
@@ -147,8 +170,12 @@ pub struct TaskSummary {
     pub tasks: usize,
     /// そのうち完了したもの
     pub done_tasks: usize,
+    /// 完了したもの(done_tasks)の、完了の時刻の出所ごとの数
+    pub done_sources: DoneAtCounts,
     /// 比べられるタスクの数
     pub included: usize,
+    /// 比べられるタスク(included)の、完了の時刻の出所ごとの数
+    pub included_sources: DoneAtCounts,
     pub excluded: ExcludedCounts,
     /// 比べられるタスクの合計
     pub work_ms: f64,
@@ -220,6 +247,7 @@ pub fn compute_task_metrics(tasks: &[TaskInfo], links: &[(String, String, LinkSo
             done: t.done,
             done_at: t.done_at.clone(),
             done_observed: t.done_observed,
+            done_at_source: t.done_at_source.filter(|_| t.done && t.done_at.is_some()),
             missing: t.missing,
             start: None,
             work_ms: None,
@@ -279,6 +307,7 @@ pub fn compute_task_metrics(tasks: &[TaskInfo], links: &[(String, String, LinkSo
             sum.ai_active_ms_all += row.ai_active_ms;
             if t.done {
                 sum.done_tasks += 1;
+                sum.done_sources.add(row.done_at_source);
             }
             row.excluded = if !t.done || done_ms.is_none() {
                 Some(Excluded::NotDone)
@@ -299,6 +328,7 @@ pub fn compute_task_metrics(tasks: &[TaskInfo], links: &[(String, String, LinkSo
                 None => {
                     row.comparable = true;
                     sum.included += 1;
+                    sum.included_sources.add(row.done_at_source);
                     sum.work_ms += row.work_ms.unwrap_or(0.0);
                     sum.human_hours += row.human_hours;
                     sum.ai_active_ms += row.ai_active_ms;
@@ -358,7 +388,7 @@ mod tests {
     }
 
     fn info(id: &str, done_at: Option<&str>) -> TaskInfo {
-        TaskInfo { id: id.into(), name: format!("{id} の名前"), status: if done_at.is_some() { "Done" } else { "Open" }.into(), done: done_at.is_some(), done_at: done_at.map(str::to_string), done_observed: done_at.is_some(), missing: false, start_hint: None }
+        TaskInfo { id: id.into(), name: format!("{id} の名前"), status: if done_at.is_some() { "Done" } else { "Open" }.into(), done: done_at.is_some(), done_at: done_at.map(str::to_string), done_observed: done_at.is_some(), done_at_source: done_at.map(|_| DoneAtSource::Observed), missing: false, start_hint: None }
     }
 
     fn facts(start: &str, active_h: f64, human: Option<(f64, Option<f64>)>) -> SessionFacts {

@@ -1,6 +1,6 @@
 // 管理ツールのタスクの表示(値は Rust の tasks::view が決めたもの。ここは言葉と単位にするだけで、数え直さない)
 import { dec, int } from './format.ts';
-import type { TaskExcluded, TaskLinkSource, TaskLinkView, TaskSummary, TasksReport } from './types.ts';
+import type { TaskDoneAtCounts, TaskDoneAtSource, TaskExcluded, TaskLinkSource, TaskLinkView, TaskSummary, TasksReport } from './types.ts';
 
 /** 紐づけのタスクの ID の並び(版 20 の埋め込みの taskId(1 つか null)も 0 か 1 件の並びとして読む) */
 export function linkTaskIds(l: Pick<TaskLinkView, 'taskIds'> | { taskId?: string | null; taskIds?: readonly string[] | null }): readonly string[] {
@@ -81,10 +81,20 @@ export function taskExcludedText(excluded: Record<TaskExcluded, number>): string
     .join('・');
 }
 
-/** 「比べられる完了タスク」の欄の注記(セッションが紐づいたタスクの数と、比べないものの理由)。タスクの節と全体サマリの表紙で同じ言い方にする */
-export function taskIncludedNote(s: Pick<TaskSummary, 'tasks' | 'excluded'>): string {
+/** 完了の時刻の出所(Rust の DoneAtSource::label と同じ言葉) */
+export const DONE_AT_SOURCE_LABEL: Record<TaskDoneAtSource, string> = { recorded: '記録', observed: '観測' };
+
+/** 完了の時刻の出所ごとの数。例: 完了の時刻は記録 3・観測 1。数が無い(古い埋め込み)か、どちらも 0 なら空 */
+export function doneAtSourceText(c: TaskDoneAtCounts | undefined): string {
+  if (!c || c.recorded + c.observed === 0) return '';
+  return `完了の時刻は記録 ${int(c.recorded)}・観測 ${int(c.observed)}`;
+}
+
+/** 「比べられる完了タスク」の欄の注記(セッションが紐づいたタスクの数と、比べないものの理由、比べるものの完了の時刻の出所)。タスクの節と全体サマリの表紙で同じ言い方にする */
+export function taskIncludedNote(s: Pick<TaskSummary, 'tasks' | 'excluded' | 'includedSources'>): string {
   const ex = taskExcludedText(s.excluded);
-  return `セッションが紐づいたタスク ${int(s.tasks)} 件のうち。${ex ? `比べないもの: ${ex}` : '比べないものはありません'}`;
+  const src = doneAtSourceText(s.includedSources);
+  return `セッションが紐づいたタスク ${int(s.tasks)} 件のうち。${ex ? `比べないもの: ${ex}` : '比べないものはありません'}${src ? `。比べるもののうち、${src}` : ''}`;
 }
 
 const DAY = ['', '月', '火', '水', '木', '金', '土', '日'];

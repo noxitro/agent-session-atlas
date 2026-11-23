@@ -4,7 +4,7 @@
   import { confidenceLabel } from '../../lib/judgment-labels.ts';
   import { judgeHint } from '../../lib/hints.ts';
   import { wikiStateNote, type WikiState } from '../../lib/wiki.ts';
-  import { hours, msHours, taskIncludedNote, workHoursText } from '../../lib/tasks.ts';
+  import { doneAtSourceText, hours, msHours, taskIncludedNote, workHoursText } from '../../lib/tasks.ts';
   import type { TasksReport } from '../../lib/types.ts';
 
   let {
@@ -120,7 +120,7 @@
             <span class="iv" class:missing={!ts.included} data-testid="cover-tasks-active">{ts.included ? msHours(ts.aiActiveMs) : '—'}</span>
           </div>
         </div>
-        <span class="n" data-testid="cover-tasks-note">{#if ts.included}比べられる完了タスクの合計。{:else}<span data-testid="cover-tasks-why">{taskIncludedNote(ts)}</span>。{/if}集計したときの値で、上の絞り込みに従いません。タスクの所要は稼働時間帯({taskWh})に入る時間で、並行して進めたタスクにはそれぞれに同じ時間が入るので、合計が実際の勤務時間を超えることがあります。タスクごとの値は<a href="#tasks">管理ツールのタスク</a>にあります。</span>
+        <span class="n" data-testid="cover-tasks-note">{#if ts.included}比べられる完了タスクの合計{#if doneAtSourceText(ts.includedSources)}<span data-testid="cover-tasks-sources">({doneAtSourceText(ts.includedSources)})</span>{/if}。{:else}<span data-testid="cover-tasks-why">{taskIncludedNote(ts)}</span>。{/if}集計したときの値で、上の絞り込みに従いません。タスクの所要は稼働時間帯({taskWh})に入る時間で、並行して進めたタスクにはそれぞれに同じ時間が入るので、合計が実際の勤務時間を超えることがあります。タスクごとの値は<a href="#tasks">管理ツールのタスク</a>にあります。</span>
       </div>
     {/if}
   </div>

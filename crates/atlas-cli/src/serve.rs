@@ -17,7 +17,7 @@ mod http;
 mod tests;
 
 use crate::chat_parts::{judged_session_ids, judged_turn_keys, list_chat_parts, ChatParts, ChatTarget};
-use crate::config::{default_config_path, load_config, modify_config, parse_config, parse_upload_root, phase_names, update_config, ConfigEdit};
+use crate::config::{default_config_path, load_config, modify_config, parse_config, parse_upload_root, update_config, ConfigEdit};
 use crate::folders::{check_folder, folders_root_of, forget_folder, is_read_only_view, list_folder_states, list_folders, open_folder_report, FolderContext, FolderError};
 use crate::jobs::{parse_job_request, running_job_in, FullCtx, JobRunner, JobRunnerOptions, RunFullFn, SpawnFn};
 use atlas_core::js;
@@ -103,6 +103,10 @@ pub struct ServeOptions {
     /// 設定のフォルダ(settings_dir.rs)。あれば config_path はその atlas.config.json で、その設定に tasks があれば、
     /// タスクの状態と紐づけは設定のフォルダに置く(読むだけの画面でも、タスクの紐づけは変えられる)
     pub settings_dir: Option<PathBuf>,
+    /// 工数の判定と依頼ごとの判定のファイル(Paths の judgments・turn_judgments。設定のフォルダを使うときは、その中の共有の置き場)。
+    /// None なら出力先の judgments.json・turn-judgments.json
+    pub judgments: Option<PathBuf>,
+    pub turn_judgments: Option<PathBuf>,
     /// フォルダを選ぶ画面(既定は folder_picker.rs。テストで差し替える)
     pub can_pick: Option<bool>,
     pub pick: Option<PickFn>,
@@ -135,6 +139,8 @@ impl ServeOptions {
             view_limit: VIEW_LIMIT,
             config_path: None,
             settings_dir: None,
+            judgments: None,
+            turn_judgments: None,
             can_pick: None,
             pick: None,
             m365: None,
@@ -352,6 +358,9 @@ struct Server {
     settings_dir: Option<PathBuf>,
     /// task-links.json の読み・変更・書き込みは順番に行う
     tasks_lock: Mutex<()>,
+    /// 工数の判定と依頼ごとの判定のファイル(ServeOptions の judgments・turn_judgments)
+    judgments: PathBuf,
+    turn_judgments: PathBuf,
     /// 終わったら理由が入る
     done: Mutex<Option<String>>,
     done_cv: Condvar,
@@ -620,6 +629,8 @@ pub fn start_serve(o: ServeOptions) -> anyhow::Result<ServeHandle> {
             notes_abs: notes_abs.clone(),
             settings_dir: o.settings_dir.as_ref().map(crate::paths::resolve),
             tasks_lock: Mutex::new(()),
+            judgments: o.judgments.as_ref().map(crate::paths::resolve).unwrap_or_else(|| out_dir.join(atlas_judge::rubric::RESULT_FILE)),
+            turn_judgments: o.turn_judgments.as_ref().map(crate::paths::resolve).unwrap_or_else(|| out_dir.join(atlas_judge::turn_bundle::TURN_RESULT_FILE)),
             done: Mutex::new(None),
             done_cv: Condvar::new(),
             conns: Mutex::new(Conns::default()),
@@ -1128,6 +1139,8 @@ impl Server {
         };
         json!({
             "configPath": self.config_path,
+            // 設定のフォルダ(共有の AtlasSettings)の設定ファイルを読み書きしているときはそのフォルダ(画面は、書き換えるとほかの集計する人の結果も変わると出す)
+            "sharedSettings": self.settings_dir.as_ref().map(|d| d.to_string_lossy().into_owned()),
             "error": error,
             "canPick": self.can_pick,
             "wikis": c.as_ref().and_then(|c| c.wikis.clone()).map(|w| to_value(&w)).unwrap_or_else(|| json!([])),
@@ -1138,6 +1151,14 @@ impl Server {
             // 名前に wiki を含むインストール済みの skill(vault を足すときに、wiki の skill として数えるか選べるように。setup.bat と同じ候補)
             "skillCandidates": crate::setup::wiki_skill_candidates(&self.copilot_home),
         })
+    }
+
+    /// 画面の設定を書き換えたときの 1 行(共有の設定のフォルダの設定ファイルなら、そう書く)
+    fn log_setting(&self, what: &str) {
+        match &self.settings_dir {
+            Some(d) => (self.log)(&format!("serve: 共有の設定({})を書き換えました: {what}({})。ほかの集計する人の結果も変わります", d.display(), self.config_path)),
+            None => (self.log)(&format!("serve: {what}({})", self.config_path)),
+        }
     }
 
     /// 設定ファイルの 1 項目を書き換える。読めない設定・ロックが取れないときは 409、検査に通らない値は 400
@@ -1335,7 +1356,7 @@ impl Server {
                 list.push(spec.clone());
                 Ok(ConfigEdit::Set(Value::Array(list)))
             })?;
-            (self.log)(&format!("serve: vault「{name}」を足しました({})", self.config_path));
+            self.log_setting(&format!("vault「{name}」を足しました"));
             return Ok(send_json(200, &self.settings_of()));
         }
         if path == "/api/settings/wikis/remove" {
@@ -1357,7 +1378,7 @@ impl Server {
                 let next: Vec<Value> = list.iter().enumerate().filter(|(i, _)| *i != at).map(|(_, v)| v.clone()).collect();
                 Ok(if next.is_empty() { ConfigEdit::Remove } else { ConfigEdit::Set(Value::Array(next)) })
             })?;
-            (self.log)(&format!("serve: vault「{bpath}」を外しました({})", self.config_path));
+            self.log_setting(&format!("vault「{bpath}」を外しました"));
             return Ok(send_json(200, &self.settings_of()));
         }
         if path == "/api/settings/phases" {
@@ -1371,7 +1392,7 @@ impl Server {
             }
             let value = phases.clone();
             self.write_setting("phases", move |_, _| Ok(value.map_or(ConfigEdit::Remove, |p| ConfigEdit::Set(json!(p)))))?;
-            (self.log)(&format!("serve: 普段の工程名を{}しました({})", phases.map_or("既定に".to_string(), |p| format!(" {} に", p.join(" / "))), self.config_path));
+            self.log_setting(&format!("普段の工程名を{}しました", phases.map_or("既定に".to_string(), |p| format!(" {} に", p.join(" / ")))));
             return Ok(send_json(200, &self.settings_of()));
         }
         Err(HttpError::new(404, "見つかりません"))
@@ -1482,7 +1503,7 @@ impl Server {
         };
         let ix = self.session_index()?;
         // 推定人手工数はレポート(build)と同じ読み方で、セッションの値は sessions.json の同じ項目(createdAt・activeMs)から。数えるのも同じ関数
-        let human = crate::commands::tasks::judgment_hours(&self.out_dir.join("judgments.json"));
+        let human = crate::commands::tasks::judgment_hours(&self.judgments);
         let ids: Vec<&str> = ix.as_ref().map(|ix| ix.ids.keys().map(String::as_str).collect()).unwrap_or_default();
         let facts: HashMap<String, atlas_report::tasks::metrics::SessionFacts> = ix
             .as_ref()
@@ -1624,7 +1645,7 @@ impl Server {
     /// 工数の判定の件数: 依頼の記録があるセッションのうち judgments.json に無いもの
     fn judge_preview(&self) -> R<Map<String, Value>> {
         let Some(ix) = self.session_index()? else { return Ok(obj(json!({ "eligible": 0, "judged": 0, "pending": 0 }))) };
-        let judged = judged_session_ids(&self.out_dir).map_err(|e| HttpError::new(409, format!("{e:#}")))?;
+        let judged = judged_session_ids(&self.judgments).map_err(|e| HttpError::new(409, format!("{e:#}")))?;
         let (mut eligible, mut done) = (0, 0);
         for (id, x) in &ix.ids {
             if !x.eligible {
@@ -1641,7 +1662,7 @@ impl Server {
     /// 依頼ごとの判定の件数(依頼ごとの記録がある依頼のうち、turn-judgments.json に無いもの)
     fn turn_preview(&self) -> R<Map<String, Value>> {
         let Some(ix) = self.session_index()? else { return Ok(obj(json!({ "eligible": 0, "judged": 0, "pending": 0, "withoutTurns": 0 }))) };
-        let judged = judged_turn_keys(&self.out_dir).map_err(|e| HttpError::new(409, format!("{e:#}")))?;
+        let judged = judged_turn_keys(&self.turn_judgments).map_err(|e| HttpError::new(409, format!("{e:#}")))?;
         let (mut eligible, mut done, mut without) = (0, 0, 0);
         for (id, x) in &ix.ids {
             // 依頼があるのに依頼ごとの記録が無いセッション(古い集計)。「集計し直す」で入る
@@ -1676,7 +1697,8 @@ impl Server {
 
     /// 添付ファイルの一覧(chat_parts.rs。manifest が読めなければ 409)
     fn parts_for(&self, target: ChatTarget) -> R<ChatParts> {
-        list_chat_parts(&self.out_dir, &self.task_store().0, target).map_err(|e| HttpError::new(409, format!("{e:#}")))
+        let store = self.task_store().0;
+        list_chat_parts(&self.out_dir, &crate::chat_parts::JudgedFiles { judgments: &self.judgments, turn_judgments: &self.turn_judgments, tasks_dir: &store }, target).map_err(|e| HttpError::new(409, format!("{e:#}")))
     }
 
     /// 画面に返す添付ファイルの一覧(M365 Copilot を自動で操作できるかを足す。一覧を読んだときも、取り込んだ後も同じ形)
@@ -1756,18 +1778,18 @@ impl Server {
                 })
             } else if target == ChatTarget::Turns {
                 (|| {
-                    let phases = atlas_judge::turn_bundle::turn_import_phases(&self.out_dir.join("turn-bundle"), &phase_names()?);
+                    let phases = atlas_judge::turn_bundle::turn_import_phases(&self.out_dir.join("turn-bundle"), &crate::config::phase_names_in(self.settings_dir.as_deref())?);
                     let by: Option<HashMap<String, usize>> = ids.as_ref().map(|ix| ix.ids.iter().map(|(id, x)| (id.clone(), x.turns)).collect());
                     let r = atlas_judge::turn_schema::import_turn_judgments_text(
                         &text,
-                        &self.out_dir.join("turn-judgments.json"),
+                        &self.turn_judgments,
                         atlas_judge::turn_schema::TurnImportOptions { phases: &phases, turns_by_session: by.as_ref(), now: None, backend: None, model: None },
                     )?;
                     Ok((r.imported, r.overwritten, 0, r.unknown, r.total))
                 })()
             } else {
                 let known: Option<HashSet<String>> = ids.as_ref().map(|ix| ix.ids.keys().cloned().collect());
-                atlas_judge::judgments_io::import_judgments_text(&text, &self.out_dir.join("judgments.json"), atlas_judge::judgments_io::ImportOptions { known_ids: known.as_ref(), now: None, label: None })
+                atlas_judge::judgments_io::import_judgments_text(&text, &self.judgments, atlas_judge::judgments_io::ImportOptions { known_ids: known.as_ref(), now: None, label: None })
                     .map(|r| {
                         // llm-wiki のページごとの判定の一部を捨てた(そのページは未判定)
                         for n in &r.notes {
@@ -1788,7 +1810,8 @@ impl Server {
                 }
             };
             if target != ChatTarget::Tasks {
-                (self.log)(&format!("{}(画面): {imported} 件を取り込みました(既存の上書き {overwritten} 件)", target.import_command()));
+                let file = if target == ChatTarget::Turns { &self.turn_judgments } else { &self.judgments };
+                (self.log)(&format!("{}(画面): {imported} 件を取り込みました(既存の上書き {overwritten} 件)→ {}", target.import_command(), file.display()));
             }
             let parts = self.parts_json(target)?;
             // タスクの紐づけでは、kept に書かなかった数(手動か前の LLM の紐づけがあった)を返す

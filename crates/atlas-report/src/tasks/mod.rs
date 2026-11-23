@@ -41,6 +41,8 @@ pub struct TaskSource {
     pub status: String,
     /// 完了とみなす状態(前後の空白を除き、大文字と小文字を区別せずに完全一致)
     pub done_status: Vec<String>,
+    /// 完了日時の項目(任意。id などと同じ書き方で、@ を付けると属性だけ)。読めれば、それを完了の時刻(記録)にする
+    pub done_at: Option<String>,
     pub work_hours: WorkHours,
 }
 
@@ -54,6 +56,7 @@ impl TaskSource {
             name: DEFAULT_NAME_FIELD.into(),
             status: DEFAULT_STATUS_FIELD.into(),
             done_status: DEFAULT_DONE_STATUS.iter().map(|s| s.to_string()).collect(),
+            done_at: None,
             work_hours: WorkHours::default(),
         }
     }
@@ -75,6 +78,14 @@ impl TaskSource {
         for d in &self.done_status {
             h.update(d.as_bytes());
             h.update([1u8]);
+        }
+        // 完了日時の項目は、指したときだけ入れる(指さない設定の目印は前の版と同じ。読み直しで完了の変化を見落とさないように)。
+        // 稼働時間帯も、時刻の無い完了日時の読み方を変えるので、そのときだけ入れる
+        if let Some(d) = &self.done_at {
+            h.update([2u8]);
+            h.update(d.as_bytes());
+            h.update([2u8]);
+            h.update(format!("{:?}/{}/{}", self.work_hours.days, self.work_hours.start_min, self.work_hours.end_min).as_bytes());
         }
         hex::encode(&h.finalize()[..8])
     }

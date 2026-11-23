@@ -5,10 +5,15 @@
 //! - その設定に tasks があれば、タスクの状態(tasks.json)と紐づけ(task-links.json)を設定のフォルダに置き、集計する人が紐づける
 //!   (集計のたびに XML を読み、機械の紐づけを決め直す。LLM の紐づけと手動の紐づけもできる)。送った人が添えたタスクの記録は使わない
 //!
+//! - 工数と依頼ごとの判定(judgments.json・turn-judgments.json)は、設定のフォルダを使うときはいつも設定のフォルダに置く
+//!   (集計する人や開いたパスが違っても、同じ判定を使う。取り込みはファイルのロックの中で読み直して、セッションごとに混ぜて書く)。
+//!   前に開いたフォルダの出力先にあった判定は、初めて使うときに混ぜて移す(共有の側にあるものを優先する。move_judgments)
+//!
 //! 使う設定のフォルダは open で決め(settings_for_open)、開いたフォルダの記録(folder.json の settings)に覚える。
 //! 開いたフォルダの出力先(--out)に向けたほかのコマンド(画面のジョブ・CLI)は、その記録か --settings から同じものを使う(apply_settings)。
 
 use crate::args::CliOptions;
+use crate::commands::Log;
 use crate::config::CONFIG_FILE;
 use crate::folders::{is_opened_folder_out, read_folder_state, FOLDER_STATE_FILE};
 use crate::paths::{resolve, Paths};
@@ -107,10 +112,42 @@ pub fn remembered_for_out(out: &Path) -> Option<String> {
     read_folder_state(&state.to_string_lossy())?.settings.filter(|s| !s.is_empty())
 }
 
+/// 設定のフォルダに置く、工数の判定と依頼ごとの判定のファイル
+pub fn shared_judgment_files(dir: &Path) -> (PathBuf, PathBuf) {
+    (dir.join(atlas_judge::rubric::RESULT_FILE), dir.join(atlas_judge::turn_bundle::TURN_RESULT_FILE))
+}
+
+type MoveFn = fn(&Path, &Path) -> Result<Option<usize>>;
+
+/// 前に出力先(out)にあった判定を、設定のフォルダの共有の置き場に混ぜて移す(共有の側にあるものを優先する)。移したら 1 行ずつ知らせる。
+/// 前の判定が読めないときは移さずに注意を出す(前のファイルはそのまま残す)
+fn move_judgments(p: &Paths, dir: &Path, log: Log<'_>) {
+    let pairs: [(&str, PathBuf, &Path, MoveFn, &str); 2] = [
+        ("工数の判定", p.out.join(atlas_judge::rubric::RESULT_FILE), &p.judgments, atlas_judge::judgments_io::move_judgments_into, "セッション"),
+        ("依頼ごとの判定", p.out.join(atlas_judge::turn_bundle::TURN_RESULT_FILE), &p.turn_judgments, atlas_judge::turn_schema::move_turn_judgments_into, "依頼"),
+    ];
+    for (what, from, to, mv, unit) in pairs {
+        // 共有の置き場に移すだけ(--judgments で指したファイルには移さない)
+        if from == to || !to.starts_with(dir) {
+            continue;
+        }
+        match mv(&from, to) {
+            Ok(None) => {}
+            Ok(Some(n)) => log(&format!(
+                "settings: 出力先にあった{what}を、設定のフォルダの共有の置き場 {} に移しました(足した{unit} {n} 件。共有の側にあったものはそのまま。前のファイルは {} に名前を変えました)",
+                to.display(),
+                atlas_judge::judgments_io::moved_path(&from).display()
+            )),
+            Err(e) => log(&format!("settings: 注意 出力先にあった{what} {} を共有の置き場に移せませんでした({e:#})。前のファイルはそのまま残し、共有の置き場の判定を使います", from.display())),
+        }
+    }
+}
+
 /// コマンドに設定のフォルダを当てる。--settings か、開いたフォルダの出力先の記録から決め(--config より先に使う)、
 /// あれば設定ファイルをそのフォルダの atlas.config.json にし、その設定に tasks があればタスクの状態と紐づけの場所を設定のフォルダにする。
+/// 工数と依頼ごとの判定は、いつも設定のフォルダに置く(--judgments で指したときは、工数の判定だけそのファイル)。前に出力先にあった判定は移す。
 /// 設定ファイルが無い・読めないときは止める(黙って送った人の記録に戻さない)
-pub fn apply_settings(o: &CliOptions, p: &mut Paths) -> Result<CliOptions> {
+pub fn apply_settings(o: &CliOptions, p: &mut Paths, log: Log<'_>) -> Result<CliOptions> {
     let dir = match &o.settings {
         Some(s) => Some(resolve(s)),
         None => remembered_for_out(&p.out).map(resolve),
@@ -132,7 +169,14 @@ pub fn apply_settings(o: &CliOptions, p: &mut Paths) -> Result<CliOptions> {
         p.tasks_dir = dir.clone();
         p.central_tasks = true;
     }
+    let (judgments, turn_judgments) = shared_judgment_files(&dir);
+    if o.judgments.is_none() {
+        p.judgments = judgments;
+    }
+    p.turn_judgments = turn_judgments;
+    p.shared_judgments = true;
     p.settings = Some(dir.clone());
+    move_judgments(p, &dir, log);
     Ok(CliOptions { config: Some(cfg_s), settings: Some(dir.to_string_lossy().into_owned()), ..o.clone() })
 }
 
@@ -216,27 +260,63 @@ mod tests {
         let paths = || crate::paths::resolve_paths(crate::paths::PathInputs { home: None, out: Some(&s(&d.path().join("out"))), judgments: None, bundle: None, notes_dir: Some(&s(&d.path().join("notes"))) });
         // 指さなければ何もしない
         let mut p = paths();
-        let o = apply_settings(&opts(&[]), &mut p).unwrap();
+        let o = apply_settings(&opts(&[]), &mut p, &|_| {}).unwrap();
         assert_eq!((o.config, p.tasks_dir.clone(), p.central_tasks), (None, d.path().join("notes"), false));
         // 設定ファイルが無ければ止める
         let mut p = paths();
-        assert!(apply_settings(&opts(&["--settings", &s(&st)]), &mut p).unwrap_err().to_string().contains("atlas.config.json がありません"));
+        assert!(apply_settings(&opts(&["--settings", &s(&st)]), &mut p, &|_| {}).unwrap_err().to_string().contains("atlas.config.json がありません"));
         // tasks が無ければ、設定ファイルだけを使う
         put_config(&st, "{}");
         let mut p = paths();
-        let o = apply_settings(&opts(&["--settings", &s(&st)]), &mut p).unwrap();
+        let o = apply_settings(&opts(&["--settings", &s(&st)]), &mut p, &|_| {}).unwrap();
         assert_eq!((o.config.as_deref(), p.central_tasks, p.settings.clone()), (Some(s(&settings_config(&st)).as_str()), false, Some(st.clone())));
         assert_eq!(central_task_stamp(&p, o.config.as_deref().unwrap()), None);
         // tasks があれば、タスクの置き場も設定のフォルダ
         put_config(&st, r#"{ "tasks": { "file": "export.xml" } }"#);
         let mut p = paths();
-        let o = apply_settings(&opts(&["--settings", &s(&st)]), &mut p).unwrap();
+        let o = apply_settings(&opts(&["--settings", &s(&st)]), &mut p, &|_| {}).unwrap();
         assert_eq!((p.tasks_dir.clone(), p.central_tasks), (st.clone(), true));
         let stamp = central_task_stamp(&p, o.config.as_deref().unwrap()).unwrap();
         assert!(stamp.contains("export.xml=none") && stamp.contains("task-links.json=none"), "{stamp}");
         // 読めない設定は止める
         put_config(&st, "{");
         let mut p = paths();
-        assert!(apply_settings(&opts(&["--settings", &s(&st)]), &mut p).unwrap_err().to_string().contains("読めません"));
+        assert!(apply_settings(&opts(&["--settings", &s(&st)]), &mut p, &|_| {}).unwrap_err().to_string().contains("読めません"));
+    }
+
+    /// 判定は、設定のフォルダを使うときはいつも設定のフォルダに置く。前に出力先にあった判定は移し、1 行知らせる
+    #[test]
+    fn judgments_are_shared_in_the_settings_folder() {
+        let d = tempfile::tempdir().unwrap();
+        let st = d.path().join(SETTINGS_DIR_NAME);
+        put_config(&st, "{}");
+        let out = d.path().join("out");
+        let s = |p: &Path| p.to_string_lossy().into_owned();
+        let opts = |extra: &[&str]| crate::args::parse_cli(&["export"].iter().chain(extra).map(|x| x.to_string()).collect::<Vec<_>>()).unwrap();
+        let paths = || crate::paths::resolve_paths(crate::paths::PathInputs { home: None, out: Some(&s(&out)), judgments: None, bundle: None, notes_dir: Some(&s(&d.path().join("notes"))) });
+        // 設定のフォルダが無ければ、今までどおり出力先
+        let mut p = paths();
+        apply_settings(&opts(&[]), &mut p, &|_| {}).unwrap();
+        assert_eq!((p.judgments.clone(), p.turn_judgments.clone(), p.shared_judgments), (out.join("judgments.json"), out.join("turn-judgments.json"), false));
+        // 前に出力先にあった判定は、共有の置き場に移す
+        let item = |id: &str| serde_json::json!({ "sessionId": id, "taskCategory": "feature", "taskSummary": "要約", "humanEffort": { "hours": 2, "low": 1, "high": 4, "confidence": 0.5, "rationale": "r" }, "aiOutcome": { "completed": true, "quality": 4, "rework": 1, "rationale": "r" }, "instructionsEffect": { "score": 0, "evidence": "e" }, "wikiEffect": { "score": 0, "evidence": "e" }, "skillsAgentsEffect": { "score": 0, "evidence": "e" } });
+        atlas_judge::judgments_io::import_judgments_text(&serde_json::json!([item("a")]).to_string(), &out.join("judgments.json"), Default::default()).unwrap();
+        let logs = std::sync::Mutex::new(Vec::<String>::new());
+        let mut p = paths();
+        apply_settings(&opts(&["--settings", &s(&st)]), &mut p, &|m| logs.lock().unwrap().push(m.to_string())).unwrap();
+        assert_eq!((p.judgments.clone(), p.turn_judgments.clone(), p.shared_judgments), (st.join("judgments.json"), st.join("turn-judgments.json"), true));
+        let logs = logs.into_inner().unwrap();
+        assert_eq!(logs.len(), 1, "{logs:?}");
+        assert!(logs[0].contains("工数の判定を、設定のフォルダの共有の置き場") && logs[0].contains("1 件"), "{logs:?}");
+        assert!(st.join("judgments.json").is_file() && !out.join("judgments.json").exists());
+        // --judgments で指したときは、工数の判定はそのファイル(依頼ごとの判定は共有)
+        let mine = d.path().join("mine.json");
+        let o = opts(&["--settings", &s(&st), "--judgments", &s(&mine)]);
+        let mut p = crate::commands::paths_of(&o);
+        std::fs::write(out.join("judgments.json"), "{}").unwrap();
+        apply_settings(&o, &mut p, &|_| {}).unwrap();
+        assert_eq!((p.judgments.clone(), p.turn_judgments.clone()), (mine.clone(), st.join("turn-judgments.json")));
+        // 指したファイルには、出力先の判定を移さない
+        assert!(!mine.exists() && out.join("judgments.json").exists());
     }
 }

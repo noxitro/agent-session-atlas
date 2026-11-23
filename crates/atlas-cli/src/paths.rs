@@ -103,6 +103,8 @@ pub struct Paths {
     pub settings: Option<PathBuf>,
     /// タスクの状態と紐づけを設定のフォルダに置いているか(集計する人が紐づける。読むだけの画面でも、タスクの紐づけは変えられる)
     pub central_tasks: bool,
+    /// 工数と依頼ごとの判定(judgments・turn_judgments)を設定のフォルダに置き、集計する人のあいだで共有しているか(settings_dir.rs)
+    pub shared_judgments: bool,
 }
 
 pub struct PathInputs<'a> {
@@ -139,6 +141,7 @@ pub fn resolve_paths(o: PathInputs<'_>) -> Paths {
         tasks_dir: notes.clone(),
         settings: None,
         central_tasks: false,
+        shared_judgments: false,
         notes,
     }
 }

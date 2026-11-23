@@ -15,6 +15,8 @@
 | 依頼ごとの採用(採用・合わなかった点・工程) | 依頼 | `out/turn-judgments.json` | [3](#3-依頼ごとの採用) |
 | 管理ツールのタスクへの紐づけ(タスクを設定したときだけ) | セッション | `atlas-notes/task-links.json` | [4](#4-管理ツールのタスクへの紐づけ) |
 
+設定のフォルダ(共有の `AtlasSettings`。[README の「本番の置き方」](../README.md#本番の置き方sessionlog-と-atlassettings))を使って開いたフォルダでは、工数と依頼ごとの判定の結果は `out/` ではなく `AtlasSettings/judgments.json`・`AtlasSettings/turn-judgments.json` に書き、集計する人のあいだで共有します(タスクの紐づけは、設定に `tasks` があるとき `AtlasSettings/task-links.json`)。取り込みは、どの置き場でもファイルのロックの中で読み直して、セッションごと(依頼ごとはセッションと依頼番号ごと)に混ぜて書きます。
+
 結果は次の `atlas export`(画面の「レポートに反映する」「集計し直す」)でレポートに合成されます。
 
 **推定は推定です。** レポートには幅(low〜high)と確信度を一緒に出しますが、人手での実測ではありません。

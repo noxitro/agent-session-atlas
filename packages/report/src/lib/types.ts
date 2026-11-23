@@ -323,6 +323,13 @@ export interface ReportData {
 /** 紐づけの出所(機械・LLM・手動) */
 export type TaskLinkSource = 'machine' | 'llm' | 'manual';
 
+/** 完了の時刻の出所(記録: XML の完了日時・観測: 完了を最初に見た書き出しの時刻) */
+export type TaskDoneAtSource = 'recorded' | 'observed';
+export interface TaskDoneAtCounts {
+  recorded: number;
+  observed: number;
+}
+
 /** 比べられるタスクから外した理由 */
 export type TaskExcluded = 'notDone' | 'doneUnobserved' | 'afterDone' | 'noStart' | 'unjudged' | 'lowConfidence';
 
@@ -334,8 +341,10 @@ export interface TaskRow {
   done: boolean;
   /** 完了を確認した時刻(完了を最初に見た XML の更新時刻) */
   doneAt: string | null;
-  /** 未完了から完了に変わるのを見た(初めて見たときに完了していたら false。工数を数えない) */
+  /** 完了の時刻が分かる(未完了から完了に変わるのを見たか、XML に完了日時の記録があった。分からなければ工数を数えない) */
   doneObserved: boolean;
+  /** 完了の時刻の出所(recorded: XML の完了日時。observed: 完了を最初に見た書き出しの時刻)。未完了なら null。古い埋め込みには無い */
+  doneAtSource?: TaskDoneAtSource | null;
   /** 最後に読んだ XML に無かった */
   missing: boolean;
   /** 紐づいたセッションのうち最も早い開始(完了を確認した時刻より後に始まったセッションは使わない) */
@@ -363,7 +372,11 @@ export interface TaskRow {
 export interface TaskSummary {
   tasks: number;
   doneTasks: number;
+  /** 完了したタスク(doneTasks)の、完了の時刻の出所ごとの数。古い埋め込みには無い */
+  doneSources?: TaskDoneAtCounts;
   included: number;
+  /** 比べられるタスク(included)の、完了の時刻の出所ごとの数。古い埋め込みには無い */
+  includedSources?: TaskDoneAtCounts;
   excluded: { notDone: number; doneUnobserved: number; afterDone: number; noStart: number; unjudged: number; lowConfidence: number };
   workMs: number;
   humanHours: number;

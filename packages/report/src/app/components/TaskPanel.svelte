@@ -4,7 +4,7 @@
   // 2 つの工数(AI を使わなかった場合・使った場合)と AI の実働は、別の欄に並べるだけで 1 つの点数にしない
   import { dateTime, dec, int } from '../../lib/format.ts';
   import { NO_TASK, filterHref, emptyFilter } from '../../lib/filter.ts';
-  import { hours, linkCounts, msHours, TASK_EXCLUDED_LABEL, taskIncludedNote, workHoursText } from '../../lib/tasks.ts';
+  import { DONE_AT_SOURCE_LABEL, doneAtSourceText, hours, linkCounts, msHours, TASK_EXCLUDED_LABEL, taskIncludedNote, workHoursText } from '../../lib/tasks.ts';
   import type { TaskRow, TasksReport } from '../../lib/types.ts';
   import SortMark from './SortMark.svelte';
 
@@ -27,6 +27,8 @@
   const done = $derived(tasks.items.filter((t) => t.done).length);
   const missing = $derived(tasks.items.filter((t) => t.missing).length);
   const wh = $derived(workHoursText(tasks.workHours));
+  /** 完了したタスクの、完了の時刻の出所ごとの数(古い埋め込みには無い) */
+  const doneSrc = $derived(doneAtSourceText(s.doneSources));
   const ratioText = (r: number): string => `${dec(Math.round(r * 100) / 100)} 倍`;
 
   type Key = 'name' | 'status' | 'start' | 'doneAt' | 'human' | 'work' | 'active' | 'sessions';
@@ -147,7 +149,7 @@
 
     <ul class="defs" data-testid="tasks-defs">
       <li><strong>AI を使わなかった場合の工数</strong>: 紐づいたセッションの推定人手工数(LLM の推定)の合計。確信度が 30% 以下の推定は入れません。</li>
-      <li><strong>AI を使った場合の工数</strong>: 紐づいた最初のセッションの開始から、完了を確認した時刻までのうち、稼働時間帯({wh}、この PC の時刻)に入る時間。祝日は区別しません(平日の祝日も稼働時間帯に入ります)。完了を確認した時刻は、XML で完了と分かった時刻(書き出しのファイルの更新時刻)で、書き出しの間隔の分だけ遅れます。</li>
+      <li><strong>AI を使った場合の工数</strong>: 紐づいた最初のセッションの開始から、完了を確認した時刻までのうち、稼働時間帯({wh}、この PC の時刻)に入る時間。祝日は区別しません(平日の祝日も稼働時間帯に入ります)。完了を確認した時刻は、設定の <code>tasks.doneAt</code> で XML の完了日時を読めればその日時(記録)、無ければ XML で完了と分かった時刻(書き出しのファイルの更新時刻。観測)で、観測は書き出しの間隔の分だけ遅れます。{#if doneSrc}今は{doneSrc}です。{/if}</li>
       <li><strong>AI の実働</strong>: 紐づいたセッションの実働時間(5 分を超えて記録の無い間を除いた時間)の合計。</li>
       <li data-testid="tasks-split">
         複数のタスクに紐づくセッションの実働時間と推定人手工数は、タスクの数で等分して数えます(2 つなら半分ずつ。タスクの値を足すと、セッションの値を重ねずに全体の値になります)。タスクの一覧に無いタスクと、完了を確認した後に始めたセッションのタスクには数えず、残りのタスクで分けます。セッションの数は等分せず、紐づいたタスクごとに 1 つずつ数えます。{#if s.sharedSessions > 0}今は {int(s.sharedSessions)} セッションを複数のタスクに分けて数えています。{/if}<a href="glossary.html#task-split">等分とは</a>
@@ -194,7 +196,7 @@
                 </th>
                 <td class="status"><span translate="no">{t.status || '—'}</span><span class="part">{t.done ? '完了' : '未完了'}</span>{#if t.missing}<span class="tag" title="最後に読んだ XML に無かったタスク。最後に読んだ値のまま出しています">書き出しに無い</span>{/if}</td>
                 <td class="num when">{dateTime(t.start, '—')}</td>
-                <td class="num when">{dateTime(t.doneAt, '—')}</td>
+                <td class="num when">{dateTime(t.doneAt, '—')}{#if t.doneAt && t.doneAtSource}<span class="part" data-testid="task-done-source" title={t.doneAtSource === 'recorded' ? '管理ツールの XML にあった完了日時' : '完了を最初に見た書き出しの時刻(XML の更新時刻)'}>{DONE_AT_SOURCE_LABEL[t.doneAtSource]}</span>{/if}</td>
                 <td class="num">
                   <!-- 確信度の低い推定だけなら、合計に入れる推定が無い(0 時間とは書かない) -->
                   {#if t.sessions === 0}—{:else if t.judgedSessions === 0}<span class="missing-value">未判定</span>{:else if t.judgedSessions === t.lowConfidenceSessions}—{:else}{hours(t.humanHours)}{/if}

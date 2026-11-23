@@ -88,6 +88,8 @@ export interface WikiSetting {
 }
 export interface Settings {
   configPath: string;
+  /** 設定のフォルダ(共有の AtlasSettings)の設定ファイルを書き換えるときは、そのフォルダ。古いサーバには無い */
+  sharedSettings?: string | null;
   /** 設定ファイルを読めない理由(読めなければ書き換えない) */
   error: string | null;
   canPick: boolean;
