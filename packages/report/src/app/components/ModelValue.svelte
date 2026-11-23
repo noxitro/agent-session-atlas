@@ -8,8 +8,39 @@
   let { sessions }: { sessions: readonly SessionSummary[] } = $props();
 
   let split = $state(true);
-  const rows = $derived(modelValue(sessions, split));
-  const findings = $derived(effortFindings(modelValue(sessions, true), modelValue(sessions, false)));
+  /** 人で絞る。人の記録が 2 人以上あるときだけ選べる。読み取りも、選んだ人のセッションだけで作る(none は人の記録が無いセッション) */
+  type PersonPick = { kind: 'all' } | { kind: 'none' } | { kind: 'person'; name: string };
+  let pick = $state<PersonPick>({ kind: 'all' });
+  const people = $derived.by(() => {
+    const n = new Map<string, number>();
+    let none = 0;
+    for (const s of sessions) {
+      if (s.person) n.set(s.person, (n.get(s.person) ?? 0) + 1);
+      else none++;
+    }
+    return { list: [...n].map(([name, c]) => ({ name, sessions: c })).sort((a, b) => a.name.localeCompare(b.name)), none };
+  });
+  const byPerson = $derived(people.list.length >= 2);
+  // 上の絞り込みで選んでいた人がいなくなったときと、人が 1 人以下になって選択欄が消えたときは、すべてに戻す
+  $effect(() => {
+    const p = pick;
+    if (p.kind === 'all') return;
+    const gone = !byPerson || (p.kind === 'none' ? people.none === 0 : !people.list.some((x) => x.name === p.name));
+    if (gone) pick = { kind: 'all' };
+  });
+  /** 選択欄の値(選択肢の位置で表す。名前を値にしないので、どんな名前とも重ならない) */
+  const pickValue = $derived(pick.kind === 'all' ? 'all' : pick.kind === 'none' ? 'none' : `p${people.list.findIndex((x) => x.name === (pick as { name: string }).name)}`);
+  function choose(v: string): void {
+    if (v === 'all') pick = { kind: 'all' };
+    else if (v === 'none') pick = { kind: 'none' };
+    else {
+      const x = people.list[Number(v.slice(1))];
+      pick = x ? { kind: 'person', name: x.name } : { kind: 'all' };
+    }
+  }
+  const mine = $derived(!byPerson || pick.kind === 'all' ? sessions : sessions.filter((s) => (pick.kind === 'none' ? !s.person : pick.kind === 'person' && s.person === pick.name)));
+  const rows = $derived(modelValue(mine, split));
+  const findings = $derived(effortFindings(modelValue(mine, true), modelValue(mine, false)));
   // 記録の無い効果の列は出さない
   const hasJudged = $derived(rows.some((r) => r.completed.weight > 0 || r.quality.weight > 0 || r.hours.weight > 0));
   const hasVerdicts = $derived(rows.some((r) => r.turns.judged > 0));
@@ -32,7 +63,20 @@
       <button type="button" aria-pressed={!split} onclick={() => (split = false)}>モデルごと</button>
       <button type="button" aria-pressed={split} onclick={() => (split = true)}>推論強度で分ける</button>
     </div>
+    {#if byPerson}
+      <label class="who">
+        <span>人</span>
+        <select value={pickValue} onchange={(e) => choose(e.currentTarget.value)} data-testid="model-value-person">
+          <option value="all">すべて({int(sessions.length)})</option>
+          {#each people.list as p, i (p.name)}<option value={`p${i}`}>{p.name}({int(p.sessions)})</option>{/each}
+          {#if people.none > 0}<option value="none">(人の記録なし)({int(people.none)})</option>{/if}
+        </select>
+      </label>
+    {/if}
   </div>
+  {#if byPerson && pick.kind !== 'all'}
+    <p class="note" data-testid="model-value-person-note">{pick.kind === 'none' ? '人の記録が無いセッション' : `${pick.name} のセッション`}({int(mine.length)} 件)だけで表と読み取りを作っています。</p>
+  {/if}
   {#if rows.length === 0}
     <p class="note">モデル別のリクエストの記録があるセッションがありません。</p>
   {:else}
@@ -102,12 +146,33 @@
       </table>
     </div>
     <p class="note">
-      推論強度はリクエストごとに決まりますが、効果の記録(セッションの判定・依頼の判定・AI の変更の残存・ツールの失敗)はセッションごとにしかありません。そこで、セッションの効果を、そのセッションのリクエストに占めるモデル{split ? ' × 推論強度' : ''}の割合で按分して数えています(1 セッションの重みの合計は 1)。コスト(リクエスト・AIU)は按分せず、そのモデル{split ? ' × 推論強度' : ''}のリクエストの実数です。{#if hasRetention}AI の変更の残存は、照合できたまとまり(照合不可を除く)のうち残っている(そのまま + 直されて)割合で、「比べる」と同じ数え方です。照合できたセッションが {RETENTION_MIN_SESSIONS} 件未満の行は割合を出しません。{/if}難しい作業ほど強い推論強度や上位のモデルを選びやすいので、差がそのまま強度やモデルの効果とは限りません。※ はセッションが {MIN_SESSIONS} 件未満の行です。表の上の読み取りは、セッションが {MIN_SESSIONS} 件以上の強度どうしで、効果はその記録があるセッションが按分して {MIN_SESSIONS} 件分以上あるものだけを並べます(「比べる」で割合と平均を出す件数と同じ)。按分した値は、セッションを単位にした差の幅(95%)を出せないので、読み取りは値を並べるだけで、差があるとは言えません。「比べる」の推論強度(本体の推論強度が決まったセッションだけを並べます)で差の幅が出るのは、手戻りのないセッションの割合やテストの結果の割合など、セッションを単位にした割合と平均の行だけです(達成率・品質・依頼の採用率の行は無く、ツールの失敗率と AI の変更の残存の割合には幅を出しません)。{#if !hasJudged}セッションの判定(atlas judge)をすると、達成率・品質・手戻り・人手工数あたりのコストも出ます。{/if}{#if !hasVerdicts}依頼の判定をすると、依頼の採用率も出ます。{/if}
+      推論強度はリクエストごとに決まりますが、効果の記録(セッションの判定・依頼の判定・AI の変更の残存・ツールの失敗)はセッションごとにしかありません。そこで、セッションの効果を、そのセッションのリクエストに占めるモデル{split ? ' × 推論強度' : ''}の割合で按分して数えています(1 セッションの重みの合計は 1)。コスト(リクエスト・AIU)は按分せず、そのモデル{split ? ' × 推論強度' : ''}のリクエストの実数です。{#if hasRetention}AI の変更の残存は、照合できたまとまり(照合不可を除く)のうち残っている(そのまま + 直されて)割合で、「比べる」と同じ数え方です。照合できたセッションが {RETENTION_MIN_SESSIONS} 件未満の行は割合を出しません。{/if}{#if byPerson}人によって作業の中身や結果が似るので、人で絞ると人の違いの影響を減らして読めます(人で絞ると件数が減り、※ の行が増えます)。{/if}難しい作業ほど強い推論強度や上位のモデルを選びやすいので、差がそのまま強度やモデルの効果とは限りません。※ はセッションが {MIN_SESSIONS} 件未満の行です。表の上の読み取りは、セッションが {MIN_SESSIONS} 件以上の強度どうしで、効果はその記録があるセッションが按分して {MIN_SESSIONS} 件分以上あるものだけを並べます(「比べる」で割合と平均を出す件数と同じ)。按分した値は、セッションを単位にした差の幅(95%)を出せないので、読み取りは値を並べるだけで、差があるとは言えません。「比べる」の推論強度(本体の推論強度が決まったセッションだけを並べます)で差の幅が出るのは、手戻りのないセッションの割合やテストの結果の割合など、セッションを単位にした割合と平均の行だけです(達成率・品質・依頼の採用率の行は無く、ツールの失敗率と AI の変更の残存の割合には幅を出しません)。{#if !hasJudged}セッションの判定(atlas judge)をすると、達成率・品質・手戻り・人手工数あたりのコストも出ます。{/if}{#if !hasVerdicts}依頼の判定をすると、依頼の採用率も出ます。{/if}
     </p>
   {/if}
 </section>
 
 <style>
+  .who {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.8125rem;
+    color: var(--ink-2);
+  }
+  .who select {
+    font: inherit;
+    font-size: 0.8125rem;
+    color: var(--ink);
+    background: var(--surface);
+    border: 1px solid var(--control);
+    border-radius: 0;
+    padding: 3px 6px;
+    height: 30px;
+    max-width: 16em;
+  }
+  .who select:hover {
+    border-color: var(--form);
+  }
   th.grp {
     text-align: center;
   }
