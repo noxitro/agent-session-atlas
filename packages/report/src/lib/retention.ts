@@ -12,12 +12,14 @@ export interface RetentionLike {
   reason?: UnattributableReason;
   vcs: VcsKind | null;
   baseline: { source: 'observed' | 'estimated' } | null;
+  /** 照合に使ったリポジトリ(最初に使った順)。古い結果には無い */
+  repos?: readonly { vcs: VcsKind; root: string; baseline: { source: 'observed' | 'estimated' } | null }[];
   counts: Record<RetentionStatus, number>;
   lines: Record<RetentionStatus, number>;
   pathMapped?: boolean;
   computedOn?: 'local' | 'sender';
-  /** まとまりごとの状態と、作った編集の時刻(工程ごとの集計に使う) */
-  hunks?: readonly { status: RetentionStatus; at?: string }[];
+  /** まとまりごとの状態と、作った編集の時刻(工程ごとの集計に使う)・照合に使ったリポジトリ(VCS 別の数えに使う) */
+  hunks?: readonly { status: RetentionStatus; at?: string; vcs?: VcsKind; root?: string }[];
   /** 比べた時点(evaluated.at)と、セッションの終わり。間の日数を出す */
   evaluated?: { at: string } | null;
   sessionEnd?: string | null;
@@ -86,6 +88,41 @@ export const REASON_LABEL: Record<UnattributableReason, string> = {
 
 export const VCS_LABEL: Record<VcsKind, string> = { git: 'Git', svn: 'SVN', p4: 'Perforce' };
 
+/** VCS の種類の並び(core の VCS_KINDS と同じ) */
+export const VCS_KINDS = ['git', 'svn', 'p4'] as const satisfies readonly VcsKind[];
+
+/**
+ * 照合できたまとまり(そのまま残る・直されて残る・見つからない)が 1 つ以上あるリポジトリ(repos の順。まとまりの vcs・root で引く)。
+ * 照合不可のまとまりだけのリポジトリ・どのまとまりも指していないリポジトリは入れない(core の measured_repos と同じ)
+ */
+export function measuredRepos(r: Pick<RetentionLike, 'repos' | 'hunks'>): NonNullable<RetentionLike['repos']>[number][] {
+  // まとまりは、種類と根が同じ最初のリポジトリだけを指す(core の repo_of_hunk と同じ。重複があっても 2 つ目は数えない)
+  const repos = r.repos ?? [];
+  const pointed = new Set((r.hunks ?? []).filter((h) => h.status !== 'unattributable' && h.vcs != null && h.root != null).map((h) => repos.findIndex((x) => x.vcs === h.vcs && x.root === h.root)));
+  return repos.filter((_, i) => pointed.has(i));
+}
+
+/**
+ * 照合に使った VCS の種類(照合できたまとまりのあるリポジトリの種類。VCS_KINDS の順、同じ種類は 1 つ)。
+ * そのようなリポジトリが無い(repos の無い古い結果・すべて照合不可)ならセッションの vcs
+ */
+export function vcsKindsOf(r: Pick<RetentionLike, 'vcs' | 'repos' | 'hunks'>): VcsKind[] {
+  const repos = measuredRepos(r);
+  if (!repos.length) return r.vcs ? [r.vcs] : [];
+  return VCS_KINDS.filter((k) => repos.some((x) => x.vcs === k));
+}
+
+/**
+ * 開始時の基準の出所。照合できたまとまりのあるリポジトリの基準で、どれかが推定なら推定、すべて記録なら記録(推定を混ぜて記録と言わない)。
+ * そのようなリポジトリが無い(repos の無い古い結果・すべて照合不可)なら、セッションの baseline
+ */
+export function baselineSourceOf(r: Pick<RetentionLike, 'baseline' | 'repos' | 'hunks'>): 'observed' | 'estimated' | null {
+  const sources = measuredRepos(r).flatMap((x) => (x.baseline ? [x.baseline.source] : []));
+  if (sources.includes('estimated')) return 'estimated';
+  if (sources.length) return 'observed';
+  return r.baseline?.source ?? null;
+}
+
 /** [そのまま残る, 直されて残る, 見つからない, 照合不可] */
 export type StatusTuple = [kept: number, modified: number, missing: number, unattributable: number];
 
@@ -95,7 +132,9 @@ export interface RetentionItem {
   outcome: 'measured' | 'none' | 'unattributable';
   reason: UnattributableReason | null;
   vcs: VcsKind | null;
-  /** 開始時の基準。observed = ログの記録、estimated = 時刻から推定 */
+  /** 照合に使ったリポジトリの種類(VCS_KINDS の順)。[vcs] と同じとき・古い結果(repos が無い)では省略 */
+  vcsKinds?: VcsKind[];
+  /** 開始時の基準。observed = ログの記録、estimated = 時刻から推定(照合に使ったリポジトリのどれかが推定なら推定) */
   baseline: 'observed' | 'estimated' | null;
   /** 照合した場所。sender = 送った側の PC */
   on: 'local' | 'sender';
@@ -158,6 +197,9 @@ export function retentionItem(r: RetentionLike, turns: readonly TurnStart[] = []
   const endMs = r.sessionEnd ? Date.parse(r.sessionEnd) : NaN;
   const atMs = r.evaluated?.at ? Date.parse(r.evaluated.at) : NaN;
   const lag = Number.isNaN(endMs) || Number.isNaN(atMs) ? null : Math.max(0, Math.round(((atMs - endMs) / 86_400_000) * 10) / 10);
+  // 照合に使ったリポジトリの種類。セッションの vcs だけと同じなら持たない(埋め込みを増やさない)
+  const kinds = vcsKindsOf(r);
+  const sameAsVcs = kinds.length === (r.vcs ? 1 : 0) && (!r.vcs || kinds[0] === r.vcs);
   return {
     ...(phases ? { phases } : {}),
     ...(lag != null ? { lag } : {}),
@@ -165,7 +207,8 @@ export function retentionItem(r: RetentionLike, turns: readonly TurnStart[] = []
     outcome: r.outcome === 'no_ai_changes' ? 'none' : r.outcome,
     reason: r.reason ?? null,
     vcs: r.vcs,
-    baseline: r.baseline?.source ?? null,
+    ...(r.repos?.length && !sameAsVcs ? { vcsKinds: kinds } : {}),
+    baseline: baselineSourceOf(r),
     on: r.computedOn ?? 'local',
     mapped: !!r.pathMapped,
     hunks: tuple(r.counts),
@@ -207,8 +250,10 @@ export interface RetentionAgg {
   unattributableTotal: number;
   /** 照合できたセッションの基準の内訳 */
   baseline: { observed: number; estimated: number };
-  /** 照合できたセッションの VCS の内訳 */
+  /** 照合できたセッションの VCS の内訳。複数の VCS にまたがるセッションはそれぞれに入る(合計が measured を超えうる) */
   byVcs: Partial<Record<VcsKind, number>>;
+  /** 照合できたセッションのうち、複数の VCS にまたがるもの */
+  multiVcs: number;
   /** 送った側の PC で照合したもの・パスを読み替えたもの(照合できたセッションのうち) */
   sender: number;
   mapped: number;
@@ -224,7 +269,7 @@ export interface RetentionAgg {
 
 /** 照合の結果を集計する(照合できたセッションだけを分母にし、照合の範囲を一緒に数える) */
 export function aggregateRetention(sessions: readonly { retention?: RetentionItem | null }[]): RetentionAgg {
-  const a: RetentionAgg = { sessions: sessions.length, notChecked: 0, none: 0, withAi: 0, measured: 0, unattributable: {}, unattributableTotal: 0, baseline: { observed: 0, estimated: 0 }, byVcs: {}, sender: 0, mapped: 0, hunks: zero(), lines: zero(), lags: [], unread: 0, unreadSessions: 0 };
+  const a: RetentionAgg = { sessions: sessions.length, notChecked: 0, none: 0, withAi: 0, measured: 0, unattributable: {}, unattributableTotal: 0, baseline: { observed: 0, estimated: 0 }, byVcs: {}, multiVcs: 0, sender: 0, mapped: 0, hunks: zero(), lines: zero(), lags: [], unread: 0, unreadSessions: 0 };
   for (const s of sessions) {
     const r = s.retention;
     if (r?.unread) ((a.unread += r.unread), a.unreadSessions++);
@@ -246,7 +291,9 @@ export function aggregateRetention(sessions: readonly { retention?: RetentionIte
     a.measured++;
     if (r.baseline === 'estimated') a.baseline.estimated++;
     else if (r.baseline === 'observed') a.baseline.observed++;
-    if (r.vcs) a.byVcs[r.vcs] = (a.byVcs[r.vcs] ?? 0) + 1;
+    const kinds = r.vcsKinds ?? (r.vcs ? [r.vcs] : []);
+    for (const k of kinds) a.byVcs[k] = (a.byVcs[k] ?? 0) + 1;
+    if (kinds.length > 1) a.multiVcs++;
     if (r.on === 'sender') a.sender++;
     if (r.mapped) a.mapped++;
     if (r.lag != null) a.lags.push(r.lag);

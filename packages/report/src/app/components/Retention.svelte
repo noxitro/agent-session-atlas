@@ -151,7 +151,7 @@
           <tr><th scope="row" class="ind">AI の変更なし</th><td class="num">{int(a.none)}</td><td>編集・作成で足した行が無い</td></tr>
           {#if a.notChecked}<tr><th scope="row" class="ind">照合していない</th><td class="num">{int(a.notChecked)}</td><td>照合した後に増えたセッションなど。atlas vcs で照合し直せます</td></tr>{/if}
           <tr><th scope="row" class="ind">AI の変更あり</th><td class="num">{int(a.withAi)}</td><td>ログの編集のイベントから取った</td></tr>
-          <tr><th scope="row" class="ind2">照合できた(分母)</th><td class="num">{int(a.measured)}</td><td>開始時の基準: 記録 {int(a.baseline.observed)}・推定 {int(a.baseline.estimated)}{vcsText ? `。${vcsText}` : ''}{a.sender ? `。送った側の PC で照合 ${int(a.sender)}` : ''}{a.mapped ? `。パスを読み替え ${int(a.mapped)}` : ''}</td></tr>
+          <tr><th scope="row" class="ind2">照合できた(分母)</th><td class="num">{int(a.measured)}</td><td>開始時の基準: 記録 {int(a.baseline.observed)}・推定 {int(a.baseline.estimated)}{vcsText ? `。${vcsText}` : ''}{a.multiVcs ? `(複数の VCS にまたがる ${int(a.multiVcs)} セッションは、それぞれの VCS に数えるので、VCS ごとの合計は照合できたセッションの数を超えます)` : ''}{a.sender ? `。送った側の PC で照合 ${int(a.sender)}` : ''}{a.mapped ? `。パスを読み替え ${int(a.mapped)}` : ''}</td></tr>
           {#each reasons as r (r.key)}
             <tr><th scope="row" class="ind2">{L.unattributable}: {r.label}</th><td class="num">{int(r.n)}</td><td></td></tr>
           {/each}

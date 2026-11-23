@@ -9,7 +9,7 @@ use crate::metrics::is_empty_session;
 use crate::tool_failure::failure_cause_label;
 use crate::turns::{js_re, mismatch_label, outcome_label, phase_label, request_kind_label, session_turns};
 use crate::types::{CallOutcome, FailureKind, NextKind, SessionRecord, TOOL_KINDS};
-use crate::vcs_retention::{ComputedOn, Outcome, RetentionStatus, SessionRetention, RETENTION_STATUSES};
+use crate::vcs_retention::{baseline_source_of, hunk_repo_values, vcs_kinds_of, ComputedOn, Outcome, RetentionStatus, SessionRetention, RETENTION_STATUSES};
 use crate::vcs::RevisionSource;
 use indexmap::IndexMap;
 use regex::Regex;
@@ -283,12 +283,22 @@ fn label_of(labels: Option<&RetentionLabels>, k: RetentionStatus) -> String {
 }
 
 /// 開始時の基準の出所の言葉(記録 = ログに残った開始時の版、推定 = 開始時刻から VCS の履歴で探した版)
-fn baseline_cell(r: &SessionRetention) -> &'static str {
-    match &r.baseline {
-        Some(b) if b.source == RevisionSource::Observed => "記録",
-        Some(_) => "推定",
+fn source_cell(s: Option<RevisionSource>) -> &'static str {
+    match s {
+        Some(RevisionSource::Observed) => "記録",
+        Some(RevisionSource::Estimated) => "推定",
         None => "",
     }
+}
+
+/// セッションの開始時の基準(照合に使ったリポジトリのどれかが推定なら推定)
+fn baseline_cell(r: &SessionRetention) -> &'static str {
+    source_cell(baseline_source_of(r))
+}
+
+/// セッションの VCS(照合に使ったリポジトリの種類。複数なら VCS_KINDS の順に + でつなぐ。無ければセッションの vcs)
+fn vcs_cell(r: &SessionRetention) -> String {
+    vcs_kinds_of(r).iter().map(|k| k.as_str()).collect::<Vec<_>>().join("+")
 }
 
 /// VCS の照合の列(retention を渡したときだけ。最初の依頼の列の前に入れる)
@@ -319,7 +329,7 @@ fn retention_cells(r: Option<&SessionRetention>, labels: Option<&RetentionLabels
         }
         .into(),
         r.reason.map_or("", |x| x.label()).into(),
-        r.vcs.map_or("", |v| v.as_str()).into(),
+        vcs_cell(r).into(),
         baseline_cell(r).into(),
         // computedOn が無いのは、送った側の結果が添えられておらず、どこでも照合していないもの
         match r.computed_on {
@@ -358,14 +368,16 @@ pub fn retention_hunks_table(retention: &[&SessionRetention], labels: Option<&Re
     let mut rows: Vec<Vec<Cell>> = Vec::new();
     for r in retention {
         for h in &r.hunks {
+            // まとまりの照合に使ったリポジトリの VCS と基準(古い結果はセッションの値。新しい結果でリポジトリの決まらなかったまとまりは空)
+            let (vcs, baseline) = hunk_repo_values(r, h);
             let mut row: Vec<Cell> = vec![
                 r.session_id.as_str().into(),
                 h.id.into(),
                 h.path.as_str().into(),
                 label_of(labels, h.status).into(),
                 h.reason.map_or("", |x| x.label()).into(),
-                r.vcs.map_or("", |v| v.as_str()).into(),
-                baseline_cell(r).into(),
+                vcs.map_or("", |v| v.as_str()).into(),
+                source_cell(baseline.map(|b| b.source)).into(),
             ];
             row.extend(RETENTION_STATUSES.iter().map(|k| Cell::from(h.lines.get(*k))));
             rows.push(row);
@@ -672,6 +684,49 @@ mod tests {
         let rc: HashMap<String, &SessionRetention> = [("c".to_string(), &not_measured)].into_iter().collect();
         let t2 = sessions_table(&[&c], &HashMap::new(), Some(&rc), None);
         assert_eq!(t2.rows[0][t2.header.iter().position(|h| h == "照合した場所").unwrap()], Cell::from("照合していない"));
+
+        // 複数の VCS にまたがるセッション: VCS は種類を + でつなぎ、基準はどれかが推定なら推定。まとまりの列は、まとまりのリポジトリのもの
+        use crate::vcs::{Revision, VcsKind};
+        use crate::vcs_retention::RepoRetention;
+        let mut mixed = measured.clone();
+        mixed.vcs = None;
+        mixed.repos = vec![
+            RepoRetention { vcs: VcsKind::Git, root: "r".into(), baseline: Some(Revision { rev: "h".into(), source: RevisionSource::Observed }), evaluated: None },
+            RepoRetention { vcs: VcsKind::Svn, root: "r/tools".into(), baseline: Some(Revision { rev: "1".into(), source: RevisionSource::Estimated }), evaluated: None },
+        ];
+        let mut h2 = mixed.hunks[0].clone();
+        h2.id = 2;
+        h2.vcs = Some(VcsKind::Svn);
+        h2.root = Some("r/tools".into());
+        mixed.hunks[0].vcs = Some(VcsKind::Git);
+        mixed.hunks[0].root = Some("r".into());
+        mixed.hunks.push(h2);
+        // リポジトリの決まらなかったまとまり(VCS の管理下でない)
+        let mut h3 = mixed.hunks[0].clone();
+        h3.id = 3;
+        h3.vcs = None;
+        h3.root = None;
+        h3.status = RetentionStatus::Unattributable;
+        h3.reason = Some(crate::vcs_retention::UnattributableReason::NoVcs);
+        mixed.hunks.push(h3);
+        mixed.vcs = Some(VcsKind::Git);
+        let rm: HashMap<String, &SessionRetention> = [("a".to_string(), &mixed)].into_iter().collect();
+        let tm = sessions_table(&[&a], &HashMap::new(), Some(&rm), None);
+        let cm = |name: &str| tm.rows[0][tm.header.iter().position(|h| h == name).unwrap()].clone();
+        assert_eq!((cm("VCS"), cm("開始時の基準")), (Cell::from("git+svn"), Cell::from("推定")));
+        let hm = retention_hunks_table(&[&mixed], None);
+        // 新しい結果で、リポジトリの決まらなかったまとまりは VCS と基準を空にする(セッションの値で埋めない)
+        assert_eq!(
+            hm.rows.iter().map(|r| (r[5].clone(), r[6].clone())).collect::<Vec<_>>(),
+            [(Cell::from("git"), Cell::from("記録")), (Cell::from("svn"), Cell::from("推定")), (Cell::from(""), Cell::from(""))]
+        );
+        // svn のまとまりが照合不可だけなら、セッションの VCS と基準に svn を数えない
+        mixed.hunks[1].status = RetentionStatus::Unattributable;
+        mixed.hunks[1].reason = Some(crate::vcs_retention::UnattributableReason::ReadError);
+        let rm: HashMap<String, &SessionRetention> = [("a".to_string(), &mixed)].into_iter().collect();
+        let tm = sessions_table(&[&a], &HashMap::new(), Some(&rm), None);
+        let cm = |name: &str| tm.rows[0][tm.header.iter().position(|h| h == name).unwrap()].clone();
+        assert_eq!((cm("VCS"), cm("開始時の基準")), (Cell::from("git"), Cell::from("記録")));
     }
 
     const LEDGER_T0: i64 = 1_790_812_800_000; // 2026-10-01T00:00:00.000Z
