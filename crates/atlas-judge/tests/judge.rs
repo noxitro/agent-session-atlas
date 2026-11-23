@@ -508,7 +508,7 @@ fn turn_rubric_tells_how_to_decide_unclear_turns() {
     assert_eq!(ops_phase_of(&names(&["環境", "保守・改善"])), OpsPhase::Near("保守・改善".into()));
     assert_eq!(ops_phase_of(&names(&["Design", "DevOps"])), OpsPhase::Near("DevOps".into()));
     assert_eq!(ops_phase_of(&names(&["運用", "保守"])), OpsPhase::Ops);
-    // 「構築」「管理」「準備」は、ほかの工程の名前にも入るので、含むだけでは近いとみなさない(名前が「環境構築」「運用管理」「環境準備」のときだけ)
+    // 「構築」「管理」「準備」は、ほかの工程の名前にも入るので、含むだけでは近いとみなさない(「運用管理」は名前ごと見る。「環境構築」「環境準備」は「環境」を含むので近い語で選ばれる)
     assert_eq!(ops_phase_of(&names(&["設計・構築", "進捗管理", "資料準備", "その他"])), OpsPhase::Other);
     assert_eq!(ops_phase_of(&names(&["設計", "品質管理", "運用管理"])), OpsPhase::Near("運用管理".into()));
     assert_eq!(ops_phase_of(&names(&["構築", "管理", "準備"])), OpsPhase::Undecided);

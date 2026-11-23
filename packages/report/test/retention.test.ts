@@ -212,7 +212,7 @@ describe('lib/compare', () => {
     expect(comparePhaseRows(withPhase(B), 'research', 'implement').find((x) => x.key === 'retention-kept')).toMatchObject({ a: null, b: null });
   });
 
-  it('A と B で比べる版が違う(それぞれは 1 つ)ときは、両側の残存の割合と日数を出さない。版の記録の無い側は違うとみなさない', () => {
+  it('A と B で比べる版が違う(それぞれは 1 つ)ときは、両側の残存の割合を出さない(日数は側ごとに出す)。版の記録の無い側は違うとみなさない', () => {
     const measured = (id: string, o: Partial<RetentionItem>) => s(id, { retention: item({ hunks: [2, 0, 1, 0], lines: [2, 0, 1, 0], lag: 3, ...o }) });
     const A = Array.from({ length: 5 }, (_, i) => measured(`a${i}`, { mode: 'worktree' }));
     const B = Array.from({ length: 5 }, (_, i) => measured(`b${i}`, { mode: 'fixed', lag: 7 }));
@@ -224,7 +224,7 @@ describe('lib/compare', () => {
     const r = (k: string) => rows.find((x) => x.key === k)!;
     expect(r('retention-kept')).toMatchObject({ a: null, b: null });
     expect(r('retention-missing')).toMatchObject({ a: null, b: null });
-    expect(r('retention-lag')).toMatchObject({ a: null, b: null });
+    expect(r('retention-lag')).toMatchObject({ a: 3, b: 7 });
     // 件数の行(照合できたセッション・比べた版の内訳)はそのまま出す
     expect(r('retention-measured')).toMatchObject({ a: 5, b: 5 });
     expect(r('retention-mode-worktree')).toMatchObject({ a: 5, b: 0 });

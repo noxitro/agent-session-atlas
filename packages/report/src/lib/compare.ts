@@ -249,7 +249,8 @@ export function compareRows(a: CompareSide, b: CompareSide, o: { byTurnCount?: b
   const mixed = (s: CompareSide): boolean => differ || modeMix(s.retention) != null;
   const keptShare = (s: CompareSide): number | null => (mixed(s) ? null : keptOf(s.retention.hunks, s.retention.measured));
   const missingShare = (s: CompareSide): number | null => (mixed(s) ? null : shareOf(s.retention.hunks, 2, s.retention.measured));
-  const lagMedian = (s: CompareSide): number | null => (mixed(s) || !enoughMeasured(s.retention.measured) ? null : median(s.retention.lags));
+  // 日数は、側の中で版が混ざっていなければ出す(A と B で版が違っても、それぞれの側の日数には意味があるので並べる)
+  const lagMedian = (s: CompareSide): number | null => (modeMix(s.retention) != null || !enoughMeasured(s.retention.measured) ? null : median(s.retention.lags));
   const base: CompareRow[] = [
     row('sessions', 'セッション', 'count', (s) => s.sessions, ''),
     share('no-rework', '手戻りのないセッションの割合', (s) => s.noRework, '採点できたセッションのうち、2 件目以降の依頼に直し・差し戻しが無く、どの依頼にも中断が無かったもの'),
@@ -276,7 +277,7 @@ export function compareRows(a: CompareSide, b: CompareSide, o: { byTurnCount?: b
     row('retention-measured', '照合できたセッション(AI の変更の残存の分母)', 'count', (s) => s.retention.measured, 'AI の変更があったセッションのうち'),
     row('retention-kept', '残っている(そのまま + 直されて)割合', 'rate', keptShare, `単位はまとまり。照合できたまとまり(照合不可を除く)に対する、そのまま残る + 直されて残るの割合。照合できたセッションが ${RETENTION_MIN_SESSIONS} 件未満か、比べた版が側の中で混ざっているか、A と B で違えば —`),
     row('retention-missing', '見つからない割合', 'rate', missingShare, '単位はまとまり。照合できたまとまりに対する、見つからないの割合(比べた版が側の中で混ざっているか、A と B で違えば —)'),
-    row('retention-lag', 'セッションの終わりから比べた時点まで(中央値)', 'days', lagMedian, '照合できたセッション。両側で大きく違うと、後から人が手を入れた時間が違うので残存の割合を比べにくい(比べた版が側の中で混ざっているか、A と B で違えば —)'),
+    row('retention-lag', 'セッションの終わりから比べた時点まで(中央値)', 'days', lagMedian, '照合できたセッション。両側で大きく違うと、後から人が手を入れた時間が違うので残存の割合を比べにくい(比べた版が側の中で混ざっていれば —。A と B で版が違っても、それぞれの側の日数は出す)'),
   ];
   return [...base, ...retentionDetailRows(a.retention, b.retention)];
 }

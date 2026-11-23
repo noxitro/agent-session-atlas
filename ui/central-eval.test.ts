@@ -200,10 +200,10 @@ describe('集計する人が見る列と行', () => {
     expect(await row('ZZ-3').innerText()).toContain('稼働時間帯に重ならない');
     expect(await page.getByTestId('tasks-panel').innerText()).toContain('比べないもの: 稼働時間帯に重ならない 1');
     expect(await page.getByTestId('tasks-friction-defs').innerText()).toContain('分母が 5 件に届かない割合は「—」');
-    // 人数・主なモデルで並べた違いを、人の数やモデルの良し悪しの比較に使わない断り
+    // 人数・主なモデルで並べた違いを、人数の多い少ないやモデルの良し悪しの比較に使わない断り
     const caution = await page.getByTestId('tasks-friction-caution').innerText();
     expect(caution).toContain('タスクの中身(難しさや工程の構成)はタスクごとに違う');
-    expect(caution).toContain('人数や主なモデルで並べた摩擦や依頼の判定の違いを、人の数やモデルの良し悪しの比較には使えません');
+    expect(caution).toContain('人数や主なモデルで並べた摩擦や依頼の判定の違いを、人数の多い少ないやモデルの良し悪しの比較には使えません');
     // 並べ替え: 摩擦の多い順 → 直しの割合の多い順(— は最後)→ 人数の多い順
     await table().getByRole('button', { name: '摩擦' }).click();
     expect(await order()).toEqual(['ZZ-1', 'ZZ-3', 'ZZ-2']);
@@ -319,11 +319,14 @@ describe('集計する人が見る列と行', () => {
     await section.getByRole('button', { name: 'wiki の参照', exact: true }).click();
     const cell = (key: string, col: number) => section.locator(`[data-testid="compare-table"] tr[data-key="${key}"] td`).nth(col);
     await expect.poll(() => cell('sessions', 0).innerText()).toBe(String(referenced));
-    for (const k of ['retention-kept', 'retention-missing', 'retention-lag']) {
+    for (const k of ['retention-kept', 'retention-missing']) {
       expect(await cell(k, 0).innerText(), k).toBe('—');
       expect(await cell(k, 1).innerText(), k).toBe('—');
       expect(await cell(k, 2).innerText(), k).toBe('');
     }
+    // 日数は、側の中で版が混ざっていなければ側ごとに出す
+    expect(await cell('retention-lag', 0).innerText()).not.toBe('—');
+    expect(await cell('retention-lag', 1).innerText()).not.toBe('—');
     // 件数の行は出す
     expect(await cell('retention-mode-fixed', 0).innerText()).toBe(String(referenced));
     expect(await cell('retention-mode-worktree', 0).innerText()).toBe('0');
