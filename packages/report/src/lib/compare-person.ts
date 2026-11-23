@@ -3,9 +3,8 @@
 // どの人も同じ重みで平均する(セッションの数によらない)ので、上の表の差(全セッションをまとめた値の差)とは一致しない。
 // 差は相関で、条件の違いが原因とは限らない。DOM や node: に依存しない。LLM は使わない。
 import { COMPARE_MIN_SESSIONS, COMPARE_MIN_TURNS, comparePhaseRows, compareRows, compareSide, t975, type CompareRow, type CompareSession } from './compare.ts';
-import { enoughMeasured, measuredOf, median, type StatusTuple } from './retention.ts';
 import { turnAggregate } from './turns.ts';
-import { PHASES, type Phase } from '../shared/turns.ts';
+import type { Phase } from '../shared/turns.ts';
 
 /**
  * 人ごとの差を出す行(セッションを単位にした割合と平均)。
@@ -166,20 +165,6 @@ export function personSessionPaired(a: readonly CompareSession[], b: readonly Co
   return finish(groups, unassigned, 'session', PERSON_ROW_KEYS);
 }
 
-/** その工程にまとまりがある照合できたセッションの、比べた時点までの日数の中央値(セッションが足りなければ null) */
-function phaseLag(list: readonly CompareSession[], p: Phase): number | null {
-  const i = PHASES.indexOf(p);
-  const lags: number[] = [];
-  let n = 0;
-  for (const s of list) {
-    const r = s.retention;
-    if (!r || r.outcome !== 'measured' || !r.phases?.some(([q, ...t]) => q === i && measuredOf(t as StatusTuple) > 0)) continue;
-    n++;
-    if (r.lag != null) lags.push(r.lag);
-  }
-  return enoughMeasured(n) ? median(lags) : null;
-}
-
 /**
  * 工程どうし(依頼の単位)の人ごとの差。その人のセッションの依頼のうち、工程が A のものと B のもの。
  * ツールの失敗・拒否の率はツール呼び出しが、次の依頼で直し・差し戻しの割合は次の依頼があった依頼が、COMPARE_MIN_TURNS 未満の側を出さない
@@ -199,7 +184,9 @@ export function personPhasePaired(sessions: readonly CompareSession[], pa: Phase
     const a = agg[pa].turns;
     const b = agg[pb].turns;
     const [measuredA, measuredB] = pairOf(rows, RETENTION_MEASURED_KEY);
-    return { person, a, b, eligible: a >= COMPARE_MIN_TURNS && b >= COMPARE_MIN_TURNS, rows, measuredA: measuredA ?? 0, measuredB: measuredB ?? 0, lagA: phaseLag(list, pa), lagB: phaseLag(list, pb) };
+    // 日数は comparePhaseRows の行(その人の母集団の比べた版が混ざっていれば null)
+    const [lagA, lagB] = pairOf(rows, RETENTION_LAG_KEY);
+    return { person, a, b, eligible: a >= COMPARE_MIN_TURNS && b >= COMPARE_MIN_TURNS, rows, measuredA: measuredA ?? 0, measuredB: measuredB ?? 0, lagA, lagB };
   });
   const agg = turnAggregate(none).byPhase;
   return finish(groups, { a: agg[pa].turns, b: agg[pb].turns }, 'turn', PERSON_PHASE_ROW_KEYS);

@@ -631,6 +631,8 @@ pub fn normalize_session(input: NormalizeInput<'_>) -> std::io::Result<SessionRe
     let mut turn_consecutive: i64 = 0;
     let mut turn_edited: HashSet<String> = HashSet::new();
     let mut overflow_ms: Option<i64> = None;
+    // 本体の依頼のうち、上限(ANALYSIS_TURNS)を超えて依頼ごとの記録に入れなかったものの数(サブエージェントの user.message は数えない)
+    let mut turns_over_limit: i64 = 0;
     // 失敗の台帳: 完了するまでの呼び出しの材料(complete で捨てる)・呼び出しの並び・行・要求の束・依頼の始まり
     let mut pending_calls: HashMap<String, PendingCall> = HashMap::new();
     let mut call_recs: Vec<CallRec> = Vec::new();
@@ -786,6 +788,7 @@ pub fn normalize_session(input: NormalizeInput<'_>) -> std::io::Result<SessionRe
                             turn_edited.clear();
                         } else if !agent_truthy {
                             cur_turn = None;
+                            turns_over_limit += 1;
                             if overflow_ms.is_none() {
                                 overflow_ms = t;
                             }
@@ -1614,6 +1617,7 @@ pub fn normalize_session(input: NormalizeInput<'_>) -> std::io::Result<SessionRe
         turn_stats: Some(turn_stats),
         failures: Some(failures),
         failures_dropped: Some(failures_dropped),
+        turns_over_limit: (turns_over_limit > 0).then_some(turns_over_limit),
     };
 
     Ok(SessionRecord {

@@ -3,7 +3,7 @@
   // 絞り込み後のセッションで集計し直す(lib/verdicts.ts)。判定は推定(次の依頼の文から LLM が決めたもの)。
   import { MISMATCH_LABEL, MISMATCHES } from '../../shared/turns.ts';
   import { dateTime, int, percent } from '../../lib/format.ts';
-  import { questionDecided, TURN_LIMIT, workDecided, type OutcomeCounts, type VerdictAggregate } from '../../lib/verdicts.ts';
+  import { questionDecided, TURN_LIMIT, VERDICT_RATE_MIN_TURNS, verdictRate, workDecided, type OutcomeCounts, type VerdictAggregate } from '../../lib/verdicts.ts';
   import { judgeHint } from '../../lib/hints.ts';
 
   let {
@@ -15,7 +15,8 @@
   }: { agg: VerdictAggregate | null; model: string | null; ranAt: string | null; overLimit?: { turns: number; sessions: number }; editable?: boolean } = $props();
 
   const rows = $derived(agg ? agg.phases.map((name, i) => ({ name, c: agg.byPhase[i] })).filter((r) => r.c.judged > 0) : []);
-  const pct = (part: number, whole: number): string => (whole > 0 ? percent(part, whole) : '—');
+  /** 割合は、分母が VERDICT_RATE_MIN_TURNS 件に届かなければ「—」(人別の表・タスクの表と同じ下限。工程別の行も合計の行も同じ) */
+  const pct = (part: number, whole: number): string => (verdictRate(part, whole) == null ? '—' : percent(part, whole));
   /** 最後の判定(モデルと日時の分かる方だけ) */
   const last = $derived([model ? `モデル ${model}` : '', ranAt ? dateTime(ranAt) : ''].filter(Boolean).join('、'));
   const anyMismatch = $derived(!!agg && MISMATCHES.some((m) => agg.total.byMismatch[m] > 0));
@@ -45,7 +46,7 @@
   </p>
 {:else}
   <p class="note">
-    {int(agg.judged)} 依頼({int(agg.sessions)} セッション)を、次の依頼の文と拒否・中断から LLM が判定したものです(推定)。{last ? `最後の判定: ${last}。` : ''}採用率は、判定できた作業の依頼のうち「そのまま採用」の割合です(判定不能は分母に入れません)。「工程(普段)」は、設定した普段の工程名に LLM が当てはめたもので、上の表の「工程」(使ったツールから決めたもの)とは別です。
+    {int(agg.judged)} 依頼({int(agg.sessions)} セッション)を、次の依頼の文と拒否・中断から LLM が判定したものです(推定)。{last ? `最後の判定: ${last}。` : ''}採用率は、判定できた作業の依頼のうち「そのまま採用」の割合で、役に立った率は、判定できた質問の依頼のうち「役に立った」の割合です(判定不能は分母に入れません。分母が {int(VERDICT_RATE_MIN_TURNS)} 件に届かない割合は、人別の表・タスクの表と同じく「—」にします)。「工程(普段)」は、設定した普段の工程名に LLM が当てはめたもので、上の表の「工程」(使ったツールから決めたもの)とは別です。
   </p>
   <div class="table-scroll">
     <table class="ledger small" data-testid="verdict-table" aria-labelledby="verdicts-h">

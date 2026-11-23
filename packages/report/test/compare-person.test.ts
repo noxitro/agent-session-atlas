@@ -199,6 +199,20 @@ describe('人ごとの差', () => {
     expect(r.rows.some((x) => x.key.startsWith('retention'))).toBe(false);
   });
 
+  it('残存: その人の A と B で比べた版が違えば(それぞれは 1 つ)、その人の割合と日数を出さず、平均に入れない', () => {
+    const ret = (kept: number, mode: string) => ({ outcome: 'measured', hunks: [kept, 0, 4 - kept, 0], lines: [kept, 0, 4 - kept, 0], lag: 1, mode });
+    const mk = (person: string, side: string, kept: number, mode: string) => Array.from({ length: 5 }, (_, i) => s(`${person}-${side}${i}`, { person, retention: ret(kept, mode) as unknown as CompareSession['retention'] }));
+    // zz-a は A が fixed・B が worktree(違う)、zz-b はどちらも fixed
+    const r = personSessionPaired([...mk('zz-a', 'a', 1, 'fixed'), ...mk('zz-b', 'a', 2, 'fixed')], [...mk('zz-a', 'b', 3, 'worktree'), ...mk('zz-b', 'b', 3, 'fixed')]);
+    expect(r.groups.map((g) => [g.person, g.lagA, g.lagB])).toEqual([
+      ['zz-a', null, null],
+      ['zz-b', 1, 1],
+    ]);
+    expect(r.retention!.diffs[0]).toBeNull();
+    expect(r.retention!.diffs[1]).toBeCloseTo(0.25, 10);
+    expect(r.retention!.persons).toBe(1);
+  });
+
   it('personPhasePaired: 工程どうしは依頼の単位で、両方の工程に依頼が 5 件以上ある人だけ', () => {
     const rows = (impl: number, research: number, fixAfterImpl: boolean) => [
       ...Array.from({ length: impl }, () => turn('task', 'implement')),

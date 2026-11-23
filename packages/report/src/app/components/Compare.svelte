@@ -27,7 +27,7 @@
   import { effortLabel } from '../../lib/exec-labels.ts';
   import { wikiStateNote, type WikiState } from '../../lib/wiki.ts';
   import { MAIN_EFFORT_SHARE } from '../../lib/main-effort.ts';
-  import { aggregateRetention, modeMix, RETENTION_MIN_SESSIONS } from '../../lib/retention.ts';
+  import { aggregateRetention, modeDiffer, modeMix, RETENTION_MIN_SESSIONS } from '../../lib/retention.ts';
   import { PHASE_LABEL, PHASES, type Phase } from '../../shared/turns.ts';
   import { dec, int, modelLabel, percent } from '../../lib/format.ts';
   import type { Option } from '../../lib/filter.ts';
@@ -160,9 +160,11 @@
   const persons = $derived(byPerson ? (kind === 'phase' ? personPhasePaired(sessions, phaseA, phaseB) : personSessionPaired(listA, listB)) : null);
   const personRows = $derived(persons ? persons.rows.filter((r) => shown(r.key)) : []);
   const personRetention = $derived(persons && retention && persons.retention ? persons.retention : null);
-  // 比べた版(worktree・committed・fixed)が側の中で混ざっているときの内訳(工程どうしは両側が同じセッションなので母集団で見る)
+  // 比べた版(worktree・committed・fixed)が側の中で混ざっているときの内訳と、A と B でそれぞれ 1 つに決まっていて違うときの内訳
+  // (工程どうしは両側が同じセッションなので母集団で見る。母集団が混ざっていなければ、両側の版も同じ)
   const mixA = $derived(retention && kind !== 'phase' ? modeMix(a.retention) : null);
   const mixB = $derived(retention && kind !== 'phase' ? modeMix(b.retention) : null);
+  const differ = $derived(retention && kind !== 'phase' ? modeDiffer(a.retention, b.retention) : null);
   const mixPool = $derived(retention && kind === 'phase' ? modeMix(aggregateRetention(sessions)) : null);
   const countWord = $derived(kind === 'phase' ? '依頼' : 'セッション');
   const minCount = $derived(kind === 'phase' ? COMPARE_MIN_TURNS : COMPARE_MIN_SESSIONS);
@@ -395,9 +397,17 @@
       </tbody>
     </table>
   </div>
-  {#if mixA || mixB || mixPool}
+  {#if mixPool}
     <p class="note" role="note" data-testid="compare-retention-mixed">
-      {#if mixPool}比べる版が混ざっています({mixPool})。{:else}{#if mixA}A: 比べる版が混ざっています({mixA})。{/if}{#if mixB}B: 比べる版が混ざっています({mixB})。{/if}{/if}AI の変更の残存の割合と、比べた時点までの日数は、違う時点の版との比べを足すことになるので出しません(比べた版の行で内訳を見られます。同じ比べ方で照合し直すと出ます)。
+      比べる版が混ざっています({mixPool})。工程どうしは同じセッションから A と B を作るので、母集団の照合できたセッションで見ます。AI の変更の残存の割合と、比べた時点までの日数は、違う時点の版との比べを足すことになるので、どちらの工程にも出しません(「比べた版(母集団)」の行で内訳を見られます。全部のセッションを同じ比べ方で照合し直すと出ます)。
+    </p>
+  {:else if mixA || mixB}
+    <p class="note" role="note" data-testid="compare-retention-mixed">
+      {#if mixA}A: 比べる版が混ざっています({mixA})。{/if}{#if mixB}B: 比べる版が混ざっています({mixB})。{/if}混ざっている側の AI の変更の残存の割合と、比べた時点までの日数は、違う時点の版との比べを足すことになるので出しません(「比べた版」の行で内訳を見られます。その側のセッションを同じ比べ方で照合し直すと出ます)。
+    </p>
+  {:else if differ}
+    <p class="note" role="note" data-testid="compare-retention-differ">
+      A と B で比べる版が違います({differ})。違う時点の版と比べたもの同士になるので、AI の変更の残存の割合・比べた時点までの日数とその差は、A にも B にも出しません(人ごとの差も同じです。「比べた版」の行で内訳を見られます。A と B を同じ比べ方で照合し直すと出ます)。
     </p>
   {/if}
   {#if kind === 'effort' && effModel}

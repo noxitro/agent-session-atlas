@@ -271,7 +271,7 @@ pub fn summarize(r: &SessionRecord, judgment: Option<&JudgmentSummary>, pages: &
         friction: r.friction.clone(),
         skill_chars,
         instruction_versions: r.instructions.iter().map(|i| (i.content_hash.clone(), i.chars, i.injections)).collect(),
-        analysis: AnalysisSummary { files_reedited: a.files_reedited, extra_edits: a.extra_edits, max_consecutive_failures: a.max_consecutive_failures, turns: a.turn_tools.len() as i64 },
+        analysis: AnalysisSummary { files_reedited: a.files_reedited, extra_edits: a.extra_edits, max_consecutive_failures: a.max_consecutive_failures, turns: a.turn_tools.len() as i64, turns_over_limit: a.turns_over_limit.filter(|n| *n > 0) },
         turn_rows: a.turn_stats.as_ref().filter(|x| !x.is_empty()).map(|_| turn_tuples(r)),
         tests: r.tests.as_ref().and_then(tests_summary),
         files: FilesSummary { changed: r.files.changed.len() as i64, created: r.files.created.len() as i64, deleted: r.files.deleted.len() as i64, session_state: r.files.session_state },

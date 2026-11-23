@@ -2,7 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { aggregateRetention, baselineSourceOf, DEFAULT_LAG_DAYS, enoughMeasured, median, modeMix, phaseAt, REASON_LABEL, REASONS, RETENTION_MIN_SESSIONS, RETENTION_MODES, retentionByPhase, retentionItem, shareOf, STATUS_LABEL, STATUSES, unattributableByCount, UNKNOWN_PHASE, VCS_KINDS, VCS_LABEL, vcsKindsOf, type RetentionItem } from '../src/lib/retention.ts';
+import { aggregateRetention, baselineSourceOf, DEFAULT_LAG_DAYS, enoughMeasured, median, modeDiffer, modeMix, phaseAt, REASON_LABEL, REASONS, RETENTION_MIN_SESSIONS, RETENTION_MODES, retentionByPhase, retentionItem, shareOf, singleMode, STATUS_LABEL, STATUSES, unattributableByCount, UNKNOWN_PHASE, VCS_KINDS, VCS_LABEL, vcsKindsOf, type RetentionItem } from '../src/lib/retention.ts';
 import { comparePhaseRows, compareRows, compareSide, COMPARE_MIN_SESSIONS, defaultPeriods, inPeriod, type CompareSession } from '../src/lib/compare.ts';
 import { PHASES } from '../src/shared/turns.ts';
 import type { TurnTuple } from '../src/lib/turns.ts';
@@ -210,6 +210,67 @@ describe('lib/compare', () => {
     const withPhase = (xs: CompareSession[]) => xs.map((x) => (x.retention?.outcome === 'measured' ? { ...x, retention: { ...x.retention, phases: [[research, 2, 0, 1, 0]] as RetentionItem['phases'] } } : x));
     expect(comparePhaseRows(withPhase(A), 'research', 'implement').find((x) => x.key === 'retention-kept')!.a).toBe(2 / 3);
     expect(comparePhaseRows(withPhase(B), 'research', 'implement').find((x) => x.key === 'retention-kept')).toMatchObject({ a: null, b: null });
+  });
+
+  it('A と B で比べる版が違う(それぞれは 1 つ)ときは、両側の残存の割合と日数を出さない。版の記録の無い側は違うとみなさない', () => {
+    const measured = (id: string, o: Partial<RetentionItem>) => s(id, { retention: item({ hunks: [2, 0, 1, 0], lines: [2, 0, 1, 0], lag: 3, ...o }) });
+    const A = Array.from({ length: 5 }, (_, i) => measured(`a${i}`, { mode: 'worktree' }));
+    const B = Array.from({ length: 5 }, (_, i) => measured(`b${i}`, { mode: 'fixed', lag: 7 }));
+    const sa = compareSide(A);
+    const sb = compareSide(B);
+    expect([singleMode(sa.retention), singleMode(sb.retention)]).toEqual(['worktree', 'fixed']);
+    expect(modeDiffer(sa.retention, sb.retention)).toBe('A: worktree・B: fixed');
+    const rows = compareRows(sa, sb);
+    const r = (k: string) => rows.find((x) => x.key === k)!;
+    expect(r('retention-kept')).toMatchObject({ a: null, b: null });
+    expect(r('retention-missing')).toMatchObject({ a: null, b: null });
+    expect(r('retention-lag')).toMatchObject({ a: null, b: null });
+    // 件数の行(照合できたセッション・比べた版の内訳)はそのまま出す
+    expect(r('retention-measured')).toMatchObject({ a: 5, b: 5 });
+    expect(r('retention-mode-worktree')).toMatchObject({ a: 5, b: 0 });
+    expect(r('retention-mode-fixed')).toMatchObject({ a: 0, b: 5 });
+    // 同じ版なら出す
+    const same = compareRows(sa, compareSide(Array.from({ length: 5 }, (_, i) => measured(`c${i}`, { mode: 'worktree' }))));
+    expect(same.find((x) => x.key === 'retention-kept')).toMatchObject({ a: 2 / 3, b: 2 / 3 });
+    // 版の記録が無い古い結果は、違うともみなさない(混ざっているともみなさない)
+    const old = compareSide(Array.from({ length: 5 }, (_, i) => measured(`o${i}`, {})));
+    expect(modeDiffer(sa.retention, old.retention)).toBeNull();
+    expect(compareRows(sa, old).find((x) => x.key === 'retention-kept')).toMatchObject({ a: 2 / 3, b: 2 / 3 });
+    // 側の中で混ざっているときは modeMix で見る(modeDiffer は null)
+    const mixed = compareSide([...A.slice(0, 3), ...B.slice(0, 2)]);
+    expect(modeDiffer(mixed.retention, sb.retention)).toBeNull();
+  });
+
+  it('工程どうし: 母集団の残存の内訳(基準・比べた版・照合不可の理由)と、工程ごとの日数を並べる。母集団の版が混ざれば日数も出さない', () => {
+    const research = PHASES.indexOf('research');
+    const implement = PHASES.indexOf('implement');
+    const measured = (id: string, phase: number, o: Partial<RetentionItem>) => s(id, { retention: item({ hunks: [2, 0, 1, 0], lines: [2, 0, 1, 0], phases: [[phase, 2, 0, 1, 0]], ...o }) });
+    const unattr = (id: string, reason: RetentionItem['reason']) => s(id, { retention: item({ outcome: 'unattributable', reason, hunks: [0, 0, 0, 1] }) });
+    const pool = [
+      ...Array.from({ length: 5 }, (_, i) => measured(`r${i}`, research, { mode: 'fixed', lag: 7, baseline: i === 0 ? 'estimated' : 'observed' })),
+      ...Array.from({ length: 5 }, (_, i) => measured(`i${i}`, implement, { mode: 'fixed', lag: 2 })),
+      unattr('u1', 'no_vcs'),
+      unattr('u2', 'too_recent'),
+    ];
+    const rows = comparePhaseRows(pool, 'research', 'implement');
+    const r = (k: string) => rows.find((x) => x.key === k)!;
+    expect(r('retention-lag')).toMatchObject({ a: 7, b: 2, unit: 'days' });
+    // 内訳は母集団の数を A と B に同じ数で並べ、見出しに「母集団」と書く
+    expect(r('retention-baseline-observed')).toMatchObject({ a: 9, b: 9, label: '開始時の基準: 記録(母集団)' });
+    expect(r('retention-baseline-estimated')).toMatchObject({ a: 1, b: 1 });
+    expect(r('retention-mode-fixed')).toMatchObject({ a: 10, b: 10 });
+    expect(r('retention-unattributable')).toMatchObject({ a: 2, b: 2 });
+    expect(r('retention-unattributable-no_vcs')).toMatchObject({ a: 1, b: 1 });
+    expect(r('retention-unattributable-too_recent')).toMatchObject({ a: 1, b: 1 });
+    expect(r('retention-mode-fixed').note).toContain('A と B に同じ数');
+    // 母集団の版が混ざれば、割合も日数も出さない
+    const mixed = comparePhaseRows([...pool.slice(0, 9), measured('w', implement, { mode: 'worktree', lag: 2 })], 'research', 'implement');
+    const m = (k: string) => mixed.find((x) => x.key === k)!;
+    expect(m('retention-lag')).toMatchObject({ a: null, b: null });
+    expect(m('retention-kept')).toMatchObject({ a: null, b: null });
+    expect(m('retention-mode-worktree')).toMatchObject({ a: 1, b: 1 });
+    // その工程にまとまりのあるセッションが 5 件未満なら日数は出さない
+    expect(comparePhaseRows(pool.slice(0, 4), 'research', 'implement').find((x) => x.key === 'retention-lag')).toMatchObject({ a: null, b: null });
   });
 
   it('retentionItem は比べた版の決め方(evaluated.mode)を持ち、無ければ書かない。並びは Rust の EVAL_MODES と同じ', () => {

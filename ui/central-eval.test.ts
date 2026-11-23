@@ -5,7 +5,10 @@
 //  b. タスクの表は、狭い幅(390px)では表の中で横に流れ、ページは横にはみ出さない。広い幅でも同じ列が出る
 //  c. 人別の表に、判定した依頼・採用率・直しの割合・合わなかった点(最多)の列が出る。判定できた作業の依頼が下限に届かない人は —
 //  d. 「比べる」の残存: 開始時の基準の記録・推定、比べた版の内訳、照合不可の理由別の件数が並び、版が混ざった側の割合は — で理由を出す
-//  e. 「採用(LLM の判定)」の節に、依頼の上限を超えて判定の束に入らなかった依頼の数が出る
+//  e. 「採用(LLM の判定)」の節に、依頼の上限を超えて判定の束に入らなかった依頼の数が出る(集計のときに本体の依頼として数えた数。依頼の数からは数えない)
+//  f. 「比べる」の残存: A と B の比べた版がそれぞれ 1 つで互いに違えば、両側の割合・日数を — にし、理由を出す(人ごとの差も —)
+//  g. 「比べる」の工程どうし: 母集団の残存の内訳(基準・比べた版・照合不可の理由)と日数の行が並び、母集団の版が混ざれば工程どうしの文を出す
+//  h. 「採用(LLM の判定)」の採用率は、分母が下限に届かない工程の行で —
 // どの画面でもページ内の例外とコンソールのエラーが無いこと。
 import { spawnSync } from 'node:child_process';
 import { readFile, rm, writeFile } from 'node:fs/promises';
@@ -111,7 +114,8 @@ describe('集計する人が見る列と行', () => {
    * タスクの節・依頼ごとの判定・残存の照合を足す。
    * 判定: 1 人目は全セッションに 2 件(そのまま・中身の直し(誤り))、2 人目は 1 セッションだけ 2 件、3 人目は無し。
    * 残存: 3 件に 1 件を wiki を参照したことにし(A の側)、その側だけ比べた版を worktree と fixed で交互にする(B はすべて worktree)。
-   * 最初のセッションの依頼の数を上限より 30 多くする
+   * 最初のセッションは、本体の依頼が上限を 30 件超えたことにする(analysis.turnsOverLimit)。
+   * 2 番目のセッションは、依頼の数(サブエージェントの依頼を含む)だけが上限を超えたことにする(上限を超えた数には入らない)
    */
   function edit(d: ReportData): void {
     d.tasks = tasksReport();
@@ -148,6 +152,8 @@ describe('集計する人が見る列と行', () => {
     b[1].retention = { outcome: 'unattributable', reason: 'outside_repo', vcs: 'git', baseline: null, on: 'local', mapped: false, hunks: [0, 0, 0, 1], lines: [0, 0, 0, 1] };
     d.turnJudgments.items = judged;
     list[0].turns = 230;
+    list[0].analysis = { ...list[0].analysis, turnsOverLimit: 30 };
+    list[1].turns = 450;
   }
 
   beforeAll(async () => {
@@ -194,6 +200,10 @@ describe('集計する人が見る列と行', () => {
     expect(await row('ZZ-3').innerText()).toContain('稼働時間帯に重ならない');
     expect(await page.getByTestId('tasks-panel').innerText()).toContain('比べないもの: 稼働時間帯に重ならない 1');
     expect(await page.getByTestId('tasks-friction-defs').innerText()).toContain('分母が 5 件に届かない割合は「—」');
+    // 人数・主なモデルで並べた違いを、人の数やモデルの良し悪しの比較に使わない断り
+    const caution = await page.getByTestId('tasks-friction-caution').innerText();
+    expect(caution).toContain('タスクの中身(難しさや工程の構成)はタスクごとに違う');
+    expect(caution).toContain('人数や主なモデルで並べた摩擦や依頼の判定の違いを、人の数やモデルの良し悪しの比較には使えません');
     // 並べ替え: 摩擦の多い順 → 直しの割合の多い順(— は最後)→ 人数の多い順
     await table().getByRole('button', { name: '摩擦' }).click();
     expect(await order()).toEqual(['ZZ-1', 'ZZ-3', 'ZZ-2']);
@@ -231,6 +241,7 @@ describe('集計する人が見る列と行', () => {
     const head = await people.locator('thead').innerText();
     for (const h of ['判定した依頼', '採用率', '直しの割合', '合わなかった点(最多)']) expect(head).toContain(h);
     expect(await people.getByTestId('people-verdict-note').innerText()).toContain('5 件未満なら「—」');
+    expect(await people.getByTestId('people-verdict-note').innerText()).toContain('依頼の難しさや工程の構成が人ごとに違うので、人の良し悪しの比較には使えません');
     const row = (person: string) => people.locator('tbody tr', { has: page.getByRole('link', { name: person, exact: true }) });
     const a = row(EFFORT_PEOPLE[0]);
     const judgedA = Number(await a.getByTestId('person-verdict-judged').innerText());
@@ -277,7 +288,10 @@ describe('集計する人が見る列と行', () => {
     expect(await cell('retention-unattributable', 1).innerText()).toBe('2');
     expect(await cell('retention-unattributable-too_recent', 1).innerText()).toBe('1');
     expect(await cell('retention-unattributable-outside_repo', 1).innerText()).toBe('1');
-    expect(await section.locator('[data-testid="compare-table"] tr[data-key="retention-kept"] .how').innerText()).toContain('単位はまとまり');    await page.setViewportSize({ width: 390, height: 900 });
+    expect(await section.locator('[data-testid="compare-table"] tr[data-key="retention-kept"] .how').innerText()).toContain('単位はまとまり');
+    // A と B で版が違う、の文は出さない(A の側の中で混ざっているので、そちらの文)
+    expect(await section.getByTestId('compare-retention-differ').count()).toBe(0);
+    await page.setViewportSize({ width: 390, height: 900 });
     expect(await page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')).toBe(true);
     await page.setViewportSize({ width: 1440, height: 900 });
   });
@@ -286,6 +300,86 @@ describe('集計する人が見る列と行', () => {
     await page.goto(fileUrl(path) + '#phases');
     const note = page.getByTestId('verdicts-over-limit');
     await note.waitFor({ state: 'visible' });
+    // 依頼の数(230・450)からは数えず、本体の依頼として数えた 30 件だけ
     expect(await note.innerText()).toBe('1 セッションの先頭 200 依頼までを判定の束に入れます。この条件では、上限を超えて束に入らなかった依頼が 30 件(1 セッション)あり、判定しません。');
+  });
+
+  it('f. 「比べる」の残存: A と B の比べた版が互いに違えば、両側の割合・日数を — にして理由を出す。人ごとの差も —', async () => {
+    // A(wiki を参照した)はすべて fixed、B(参照していない)はすべて worktree
+    const differ = await variant('differ', (d) => {
+      edit(d);
+      // edit と同じ並びで、3 件に 1 件(wiki を参照したことにした側)を fixed にする
+      const list = [...d.sessions].sort((x, y) => (x.createdAt ?? '').localeCompare(y.createdAt ?? ''));
+      list.forEach((s, i) => {
+        if (s.retention?.outcome === 'measured') s.retention = { ...s.retention, mode: i % 3 === 0 ? 'fixed' : 'worktree' };
+      });
+    });
+    await page.goto(fileUrl(differ) + '#compare');
+    const section = page.locator('#compare');
+    await section.getByRole('button', { name: 'wiki の参照', exact: true }).click();
+    const cell = (key: string, col: number) => section.locator(`[data-testid="compare-table"] tr[data-key="${key}"] td`).nth(col);
+    await expect.poll(() => cell('sessions', 0).innerText()).toBe(String(referenced));
+    for (const k of ['retention-kept', 'retention-missing', 'retention-lag']) {
+      expect(await cell(k, 0).innerText(), k).toBe('—');
+      expect(await cell(k, 1).innerText(), k).toBe('—');
+      expect(await cell(k, 2).innerText(), k).toBe('');
+    }
+    // 件数の行は出す
+    expect(await cell('retention-mode-fixed', 0).innerText()).toBe(String(referenced));
+    expect(await cell('retention-mode-worktree', 0).innerText()).toBe('0');
+    const note = await section.getByTestId('compare-retention-differ').innerText();
+    expect(note).toContain('A と B で比べる版が違います(A: fixed・B: worktree)');
+    expect(note).toContain('A と B を同じ比べ方で照合し直すと出ます');
+    expect(await section.getByTestId('compare-retention-mixed').count()).toBe(0);
+    // 人ごとの差の残存も出さない(どの人も A と B で版が違う)
+    const person = section.getByTestId('compare-person-retention').locator('tbody td');
+    expect(await person.nth(0).innerText()).toBe('0');
+    expect(await person.nth(1).innerText()).toBe('—');
+  });
+
+  it('g. 「比べる」の工程どうし: 母集団の残存の内訳と日数の行が並び、母集団の版が混ざれば工程どうしの文を出す', async () => {
+    await page.goto(fileUrl(path) + '#compare');
+    const section = page.locator('#compare');
+    await section.getByRole('button', { name: '工程', exact: true }).click();
+    const row = (key: string) => section.locator(`[data-testid="compare-table"] tr[data-key="${key}"]`);
+    const cell = (key: string, col: number) => row(key).locator('td').nth(col);
+    await row('retention-baseline-observed').waitFor({ state: 'visible' });
+    expect(await row('retention-baseline-observed').locator('th').innerText()).toBe('開始時の基準: 記録(母集団)');
+    // 母集団の数を A と B に同じ数で並べ、差は出さない
+    for (const k of ['retention-baseline-observed', 'retention-baseline-estimated', 'retention-mode-worktree', 'retention-mode-fixed', 'retention-unattributable', 'retention-unattributable-too_recent']) {
+      expect(await cell(k, 0).innerText(), k).toBe(await cell(k, 1).innerText());
+      expect(await cell(k, 2).innerText(), k).toBe('');
+    }
+    expect(await cell('retention-mode-fixed', 0).innerText()).toBe(String(fixedA));
+    expect(await cell('retention-unattributable', 0).innerText()).toBe('2');
+    // 母集団で worktree と fixed が混ざっているので、日数と割合は両側とも —
+    expect(await row('retention-lag').count()).toBe(1);
+    expect(await cell('retention-lag', 0).innerText()).toBe('—');
+    expect(await cell('retention-lag', 1).innerText()).toBe('—');
+    const note = await section.getByTestId('compare-retention-mixed').innerText();
+    expect(note).toContain(`比べる版が混ざっています(worktree`);
+    expect(note).toContain('工程どうしは同じセッションから A と B を作るので、母集団の照合できたセッションで見ます');
+    expect(note).toContain('「比べた版(母集団)」の行');
+    expect(note).not.toContain('A: 比べる版');
+  });
+
+  it('h. 「採用(LLM の判定)」の採用率は、分母が下限に届かない工程の行で —(合計の行は出す)', async () => {
+    // 1 人目のセッションのうち 1 つだけ、2 件目の依頼の普段の工程を「調査」にする(調査の判定できた作業の依頼は 1 件)
+    const few = await variant('few-verdicts', (d) => {
+      edit(d);
+      d.turnJudgments!.phases = ['実装', '調査'];
+      const s = d.sessions.find((x) => x.turnVerdicts?.length);
+      s!.turnVerdicts = [s!.turnVerdicts![0], [2, 0, 1, 1, 1, 70]];
+    });
+    await page.goto(fileUrl(few) + '#phases');
+    const t = page.getByTestId('verdict-table');
+    await t.waitFor({ state: 'visible' });
+    const rate = (name: string) => t.locator('tbody tr', { has: page.getByRole('rowheader', { name, exact: true }) }).locator('td').nth(5);
+    expect((await rate('調査').innerText()).split('\n')[0]).toBe('—');
+    expect((await rate('実装').innerText()).split('\n')[0]).toMatch(/%$/);
+    expect((await t.locator('tfoot td').nth(5).innerText()).split('\n')[0]).toMatch(/%$/);
+    // 質問の依頼が無いので、役に立った率はどの行も —
+    expect(await t.locator('tfoot td').nth(9).innerText()).toBe('—');
+    expect(await page.locator('#phases').innerText()).toContain('分母が 5 件に届かない割合は、人別の表・タスクの表と同じく「—」にします');
   });
 });

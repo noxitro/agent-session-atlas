@@ -2,7 +2,8 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { bucketVerdictView, TURN_LIMIT, turnsOverLimit, verdictAggregate, UNLISTED_PHASE, type VerdictTuple } from '../src/lib/verdicts.ts';
+import { bucketVerdictView, TURN_LIMIT, turnsOverLimit, VERDICT_RATE_MIN_TURNS, verdictAggregate, verdictRate, UNLISTED_PHASE, type VerdictTuple } from '../src/lib/verdicts.ts';
+import { COMPARE_MIN_TURNS } from '../src/lib/compare.ts';
 import { bucket } from '../src/lib/aggregate.ts';
 import type { SessionSummary } from '../src/lib/types.ts';
 import type { TurnTuple } from '../src/lib/turns.ts';
@@ -49,11 +50,25 @@ describe('依頼ごとの判定の集計', () => {
     expect(bucketVerdictView({ ...b, byMismatch: { ...b.byMismatch, requirement: 2 } }, 5).topMismatch).toEqual({ key: 'requirement', count: 2 });
   });
 
-  it('依頼の上限を超えて判定の束に入らなかった依頼を数える(上限は Rust の判定の束と同じ)', () => {
-    expect(turnsOverLimit([{ turns: TURN_LIMIT + 30 }, { turns: TURN_LIMIT }, { turns: 5 }, { turns: TURN_LIMIT + 1 }])).toEqual({ turns: 31, sessions: 2 });
+  it('依頼の上限を超えて判定の束に入らなかった依頼を数える(集計のときに本体の依頼として数えた数。上限は Rust の判定の束と同じ)', () => {
+    const over = (n?: number) => ({ analysis: n == null ? {} : { turnsOverLimit: n } });
+    expect(turnsOverLimit([over(30), over(), over(0), over(1)])).toEqual({ turns: 31, sessions: 2 });
+    // 依頼の数(turns)からは数えない: サブエージェントの依頼も入る・DB だけのセッション(依頼ごとの記録が無い)の依頼も入るため
+    expect(turnsOverLimit([{ turns: TURN_LIMIT + 300, analysis: {} }] as { turns: number; analysis: {} }[])).toEqual({ turns: 0, sessions: 0 });
     expect(turnsOverLimit([])).toEqual({ turns: 0, sessions: 0 });
     const rs = readFileSync(join(import.meta.dirname, '..', '..', '..', 'crates', 'atlas-judge', 'src', 'turn_bundle.rs'), 'utf8');
     expect(rs).toContain(`const MAX_TURNS: usize = ${TURN_LIMIT};`);
+    const core = readFileSync(join(import.meta.dirname, '..', '..', '..', 'crates', 'atlas-core', 'src', 'normalize.rs'), 'utf8');
+    expect(core).toContain(`const ANALYSIS_TURNS: usize = ${TURN_LIMIT};`);
+  });
+
+  it('依頼ごとの判定の割合の下限は、Rust のタスクの表と「比べる」の工程どうしと同じ', () => {
+    const rs = readFileSync(join(import.meta.dirname, '..', '..', '..', 'crates', 'atlas-report', 'src', 'tasks', 'extras.rs'), 'utf8');
+    expect(rs).toContain(`pub const VERDICT_RATE_MIN_TURNS: usize = ${VERDICT_RATE_MIN_TURNS};`);
+    expect(VERDICT_RATE_MIN_TURNS).toBe(COMPARE_MIN_TURNS);
+    expect(verdictRate(2, VERDICT_RATE_MIN_TURNS)).toBe(2 / VERDICT_RATE_MIN_TURNS);
+    expect(verdictRate(1, VERDICT_RATE_MIN_TURNS - 1)).toBeNull();
+    expect(verdictRate(0, 0)).toBeNull();
   });
 });
 

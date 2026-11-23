@@ -324,6 +324,23 @@ export function modeMix(a: Pick<RetentionAgg, 'modes'>): string | null {
   return ms.length > 1 ? ms.map((m) => `${m} ${a.modes[m]}`).join('・') : null;
 }
 
+/** 照合できたセッションの比べた版の決め方が 1 つだけならそれ。記録が無い・混ざっているときは null */
+export function singleMode(a: Pick<RetentionAgg, 'modes'>): RetentionMode | null {
+  const ms = RETENTION_MODES.filter((m) => (a.modes?.[m] ?? 0) > 0);
+  return ms.length === 1 ? ms[0] : null;
+}
+
+/**
+ * A と B の比べた版が、それぞれ 1 つに決まっていて互いに違うときの内訳(例: A: worktree・B: fixed)。
+ * どちらかの版の記録が無い(古い結果)・どちらかが混ざっている(modeMix で別に見る)・同じときは null。
+ * 違うと、残存の割合と比べた時点までの日数は違う時点の版と比べたもの同士になるので、両側とも出さない(「比べる」)
+ */
+export function modeDiffer(a: Pick<RetentionAgg, 'modes'>, b: Pick<RetentionAgg, 'modes'>): string | null {
+  const ma = singleMode(a);
+  const mb = singleMode(b);
+  return ma && mb && ma !== mb ? `A: ${ma}・B: ${mb}` : null;
+}
+
 /** 照合不可の理由を多い順に(同じ数なら REASONS の順) */
 export function unattributableByCount(a: Pick<RetentionAgg, 'unattributable'>): [UnattributableReason, number][] {
   return REASONS.filter((r) => (a.unattributable[r] ?? 0) > 0)

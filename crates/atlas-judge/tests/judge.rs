@@ -373,6 +373,45 @@ fn over_200_requests_attach_201st_as_reference() {
     assert!(!last.contains("次の依頼はありません"));
 }
 
+/// 上限を超えた依頼の数は、集計のときに本体の依頼として数えたもの(サブエージェントの user.message は入れない)。
+/// 束の overLimit は、束に依頼を入れたセッションの分だけ(本文の無いセッション・DB だけのセッションは入れない)
+#[test]
+fn over_limit_counts_main_turns_of_bundled_sessions() {
+    let d = tempfile::tempdir().unwrap();
+    let snap = d.path().join("snapshot");
+    // 本体の依頼 203 件。各依頼にサブエージェントの user.message(agentId つき)を 1 件ずつ足す
+    let mut events = vec![ev("session.start", json!({ "context": { "cwd": "X:\\p" } }), &ts(0))];
+    for i in 1..=203usize {
+        let b = (i * 1000) as i64;
+        events.push(ev("user.message", json!({ "content": format!("依頼 {i} の本文") }), &ts(b)));
+        events.push(CopilotEvent { agent_id: Some(json!("sub-1")), ..ev("user.message", json!({ "content": "サブエージェントへの依頼" }), &ts(b + 10)) });
+        events.push(ev("assistant.message", json!({ "content": format!("応答 {i}") }), &ts(b + 100)));
+    }
+    let dir = snap.join("session-state").join("big");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("events.jsonl"), events.iter().map(|e| serde_json::to_string(e).unwrap()).collect::<Vec<_>>().join("\n")).unwrap();
+    let big = normalize("big", None, events);
+    // 依頼の数(turns)にはサブエージェントの分も入るので、turns − 200 では数えない
+    assert!(big.turns > 400, "{}", big.turns);
+    assert_eq!(big.analysis.turns_over_limit, Some(3));
+    assert_eq!(big.analysis.turn_stats.as_ref().unwrap().len(), 200);
+    // 上限に届かないセッションは記録しない
+    let small = session_with_turns(&snap, "small", 8, true);
+    assert_eq!(small.analysis.turns_over_limit, None);
+    // 本文(events.jsonl)の無いセッションは束に入らないので、上限を超えた依頼があっても数えない
+    let mut gone = session_with_turns(&snap, "gone", 4, false);
+    std::fs::remove_dir_all(snap.join("session-state").join("gone")).unwrap();
+    gone.analysis.turns_over_limit = Some(50);
+    let tb = d.path().join("tb");
+    let m = build_turn_bundle(&[&big, &small, &gone], &turn_opts(&tb, &snap, phases())).unwrap();
+    assert_eq!(m.skipped.len(), 1);
+    assert_eq!(m.over_limit, Some(atlas_judge::turn_bundle::OverLimit { limit: 200, turns: 3, sessions: 1 }));
+    // 判定済みで束に依頼を入れなかったセッションも数えない
+    let judged: HashMap<String, HashSet<i64>> = [("big".to_string(), (1..=200).collect())].into_iter().collect();
+    let m = build_turn_bundle(&[&big, &small], &TurnBundleOptions { judged: Some(judged), ..turn_opts(&tb, &snap, phases()) }).unwrap();
+    assert_eq!(m.over_limit, None);
+}
+
 fn turn_opts<'a>(dir: &Path, snap: &Path, phases: Vec<String>) -> TurnBundleOptions<'a> {
     TurnBundleOptions { bundle_dir: dir.to_path_buf(), snapshot_dir: snap.to_path_buf(), phases, judged: None, limits: None, boundary: None, now: None }
 }
@@ -469,6 +508,10 @@ fn turn_rubric_tells_how_to_decide_unclear_turns() {
     assert_eq!(ops_phase_of(&names(&["環境", "保守・改善"])), OpsPhase::Near("保守・改善".into()));
     assert_eq!(ops_phase_of(&names(&["Design", "DevOps"])), OpsPhase::Near("DevOps".into()));
     assert_eq!(ops_phase_of(&names(&["運用", "保守"])), OpsPhase::Ops);
+    // 「構築」「管理」「準備」は、ほかの工程の名前にも入るので、含むだけでは近いとみなさない(名前が「環境構築」「運用管理」「環境準備」のときだけ)
+    assert_eq!(ops_phase_of(&names(&["設計・構築", "進捗管理", "資料準備", "その他"])), OpsPhase::Other);
+    assert_eq!(ops_phase_of(&names(&["設計", "品質管理", "運用管理"])), OpsPhase::Near("運用管理".into()));
+    assert_eq!(ops_phase_of(&names(&["構築", "管理", "準備"])), OpsPhase::Undecided);
     let other = names(&["設計", "実装", "その他"]);
     assert_eq!(ops_phase_of(&other), OpsPhase::Other);
     let r = turn_rubric(&other);

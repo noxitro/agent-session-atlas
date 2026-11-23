@@ -2,8 +2,7 @@
   import type { Bucket } from '../../lib/aggregate.ts';
   import { dateTime, dec, duration, int, pathParts, percent } from '../../lib/format.ts';
   import { confidenceLabel } from '../../lib/judgment-labels.ts';
-  import { COMPARE_MIN_TURNS } from '../../lib/compare.ts';
-  import { bucketVerdictView } from '../../lib/verdicts.ts';
+  import { bucketVerdictView, VERDICT_RATE_MIN_TURNS } from '../../lib/verdicts.ts';
   import { MISMATCH_LABEL } from '../../shared/turns.ts';
   import { wikiStateShortNote, type WikiState } from '../../lib/wiki.ts';
   import SortMark from './SortMark.svelte';
@@ -33,9 +32,9 @@
   } = $props();
 
   type Key = 'label' | 'updated' | 'sessions' | 'input' | 'output' | 'tools' | 'lines' | 'skills' | 'agents' | 'hooks' | 'instructions' | 'wiki' | 'friction' | 'active' | 'human' | 'vjudged' | 'vadopt' | 'vfix' | 'vmismatch';
-  /** 人ごとの表の、依頼ごとの判定の列(割合は判定できた作業の依頼が COMPARE_MIN_TURNS 件に届かなければ —) */
+  /** 人ごとの表の、依頼ごとの判定の列(割合は判定できた作業の依頼が VERDICT_RATE_MIN_TURNS 件に届かなければ —) */
   const showVerdicts = $derived(kind === 'person' && verdicts);
-  const vv = (b: Bucket) => bucketVerdictView(b.turnVerdicts, COMPARE_MIN_TURNS);
+  const vv = (b: Bucket) => bucketVerdictView(b.turnVerdicts, VERDICT_RATE_MIN_TURNS);
   /** 最終更新の時刻(日時の無いものは、新しい順で最後に来るように -Infinity) */
   const updatedMs = (b: Bucket): number => {
     const t = b.updatedAt ? Date.parse(b.updatedAt) : NaN;
@@ -134,9 +133,9 @@
     ...(showVerdicts
       ? [
           { key: 'vjudged' as const, label: '判定した依頼', title: '依頼ごとの判定(LLM の推定)をした依頼の数(判定不能を含む)' },
-          { key: 'vadopt' as const, label: '採用率', title: `判定できた作業の依頼のうち「そのまま採用」の割合。判定できた作業の依頼が ${COMPARE_MIN_TURNS} 件未満なら —` },
-          { key: 'vfix' as const, label: '直しの割合', title: `判定できた作業の依頼のうち、中身か体裁を直させた割合。判定できた作業の依頼が ${COMPARE_MIN_TURNS} 件未満なら —` },
-          { key: 'vmismatch' as const, label: '合わなかった点(最多)', title: `直し・不採用・的外れの理由のいちばん多いもの。判定した依頼が ${COMPARE_MIN_TURNS} 件未満なら —` },
+          { key: 'vadopt' as const, label: '採用率', title: `判定できた作業の依頼のうち「そのまま採用」の割合。判定できた作業の依頼が ${VERDICT_RATE_MIN_TURNS} 件未満なら —` },
+          { key: 'vfix' as const, label: '直しの割合', title: `判定できた作業の依頼のうち、中身か体裁を直させた割合。判定できた作業の依頼が ${VERDICT_RATE_MIN_TURNS} 件未満なら —` },
+          { key: 'vmismatch' as const, label: '合わなかった点(最多)', title: `直し・不採用・的外れの理由のいちばん多いもの。判定した依頼が ${VERDICT_RATE_MIN_TURNS} 件未満なら —` },
         ]
       : []),
   ]);
@@ -181,7 +180,7 @@
     <h2 id="{t.id}-h">{t.heading}</h2>
     {#if kind === 'person'}
       <p>
-        {int(rows.length)} 人。送り先のフォルダ(<code>&lt;人&gt;/&lt;プロジェクト&gt;</code>)の、人のフォルダの名前ごとの内訳です。名前を押すとその人に絞り込みます(列見出しで並べ替え)。列の読み方は下の「プロジェクト別」と同じです。人のフォルダの下に無いセッションは「不明」にまとめています。{#if showVerdicts}<span data-testid="people-verdict-note">判定した依頼・採用率・直しの割合・合わなかった点(最多)は、依頼ごとの判定(LLM の推定)から数えたもので、採用率と直しの割合は判定できた作業の依頼に対する割合です(判定できた作業の依頼が {COMPARE_MIN_TURNS} 件未満なら「—」。合わなかった点は判定した依頼が {COMPARE_MIN_TURNS} 件未満なら「—」)。推定人手工数とは別の列で、1 つの点数にしません。</span>{/if}
+        {int(rows.length)} 人。送り先のフォルダ(<code>&lt;人&gt;/&lt;プロジェクト&gt;</code>)の、人のフォルダの名前ごとの内訳です。名前を押すとその人に絞り込みます(列見出しで並べ替え)。列の読み方は下の「プロジェクト別」と同じです。人のフォルダの下に無いセッションは「不明」にまとめています。{#if showVerdicts}<span data-testid="people-verdict-note">判定した依頼・採用率・直しの割合・合わなかった点(最多)は、依頼ごとの判定(LLM の推定)から数えたもので、採用率と直しの割合は判定できた作業の依頼に対する割合です(判定できた作業の依頼が {VERDICT_RATE_MIN_TURNS} 件未満なら「—」。合わなかった点は判定した依頼が {VERDICT_RATE_MIN_TURNS} 件未満なら「—」)。推定人手工数とは別の列で、1 つの点数にしません。依頼の難しさや工程の構成が人ごとに違うので、人の良し悪しの比較には使えません。</span>{/if}
       </p>
     {:else}
       <p>

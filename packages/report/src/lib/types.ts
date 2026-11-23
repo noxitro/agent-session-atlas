@@ -227,7 +227,14 @@ export interface SessionSummary {
   /** Phase 12: 注入された指示文の版 [contentHash, 文字数, 注入回数] */
   instructionVersions: [hash: string, chars: number, injections: number][];
   /** Phase 12: 手戻り・失敗の連続(改善点の分析。ターンごとの列と依頼文は埋め込まない) */
-  analysis: { filesReedited: number; extraEdits: number; maxConsecutiveFailures: number; turns: number };
+  analysis: {
+    filesReedited: number;
+    extraEdits: number;
+    maxConsecutiveFailures: number;
+    turns: number;
+    /** 本体の依頼のうち、先頭 200 件の上限を超えて依頼ごとの記録と判定の束に入らなかったものの数(sessions.json の analysis.turnsOverLimit。0 件・古い記録では無い) */
+    turnsOverLimit?: number;
+  };
   /** 依頼(ターン)ごとの工程・種類・詰まり(lib/turns.ts の TurnTuple)。ターンの記録が無いセッション・古い埋め込みには無い */
   turnRows?: TurnTuple[];
   /** テストの結果の要約。テストの実行が無いセッション・古い埋め込みには無い */
