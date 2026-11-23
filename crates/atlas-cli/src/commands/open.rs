@@ -96,7 +96,7 @@ pub fn run_open(o: &CliOptions, log: Log<'_>, pick: Option<PickDep<'_>>) -> Resu
         };
         save(prev.and_then(|s| s.run), true)?;
         run_serve(&p, serve(), log)?;
-        return Ok(RunResult { build, ..RunResult::default() });
+        return Ok(RunResult { build });
     }
     let r = (|| -> Result<Option<super::BuildResult>> {
         // 同じフォルダを別のプロセスが集計していれば、ここで止まる(その状態は書き換えない)
@@ -110,7 +110,7 @@ pub fn run_open(o: &CliOptions, log: Log<'_>, pick: Option<PickDep<'_>>) -> Resu
         Ok(build)
     })();
     match r {
-        Ok(build) => Ok(RunResult { build, ..RunResult::default() }),
+        Ok(build) => Ok(RunResult { build }),
         Err(e) => {
             if e.downcast_ref::<OutBusyError>().is_none() {
                 let m = format!("{e:#}");

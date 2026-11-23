@@ -3,7 +3,7 @@
 # 画面から別のフォルダを開いたときのサーバは、窓の無いまま動く(crates/atlas-cli/src/folders.rs の launch_detached)。そういうものも止める。
 #
 # 止めるもの: 実行ファイルが、このフォルダの bin\atlas.exe(置き換えで移した bin\atlas.old-*.exe を含む)のプロセスと、その子孫
-#   (集計・判定の子プロセスや、判定が動かした copilot など)。別のフォルダの atlas や、関係の無いプロセスは止めない。
+#   (集計・判定の子プロセスや、M365 Copilot を操作する PowerShell、skill-draft が動かした copilot など)。別のフォルダの atlas や、関係の無いプロセスは止めない。
 #   印(out\.serve.json・out\.job.json)の pid は使わない(pid は使い回されるので、別のプロセスを止めかねない)。
 # 画面のサーバ(atlas serve・atlas open)だけなら、尋ねずに止める。集計・判定・送る操作などが動いていれば、止めてよいか尋ねる
 #   (途中で止めても、集計は次の集計で作り直し、判定は済んだ分が残る)。
@@ -43,7 +43,8 @@ $Labels = @{
   'all'             = '集計'
   'build'           = '集計'
   'judge'           = '判定'
-  'judge-flow'      = '判定'
+  'turns'           = '判定'
+  'tasks'           = 'タスクの紐づけ'
   'upload-auto'     = '自動で送る処理'
   'upload-project'  = 'プロジェクトを送る処理'
   'upload-schedule' = '自動で送る登録'

@@ -74,6 +74,9 @@ pub fn home_dir() -> PathBuf {
     std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
 }
 
+/// タスクの紐づけの束の場所(<out> の下)
+pub const TASK_BUNDLE_DIR: &str = "task-bundle";
+
 #[derive(Debug, Clone)]
 pub struct Paths {
     pub home: PathBuf,
@@ -83,9 +86,11 @@ pub struct Paths {
     pub metrics: PathBuf,
     pub judgments: PathBuf,
     pub bundle: PathBuf,
-    /// 依頼ごとの判定(段階 2)の結果と、判定に渡すファイル
+    /// 依頼ごとの判定の結果と、外部の LLM に渡すファイル
     pub turn_judgments: PathBuf,
     pub turn_bundle: PathBuf,
+    /// 管理ツールのタスクへの紐づけを外部の LLM に頼むファイル(結果は notes の task-links.json)
+    pub task_bundle: PathBuf,
     /// AI の変更がその後の VCS のファイルに残っているか(atlas vcs)
     pub vcs_retention: PathBuf,
     pub html: PathBuf,
@@ -119,6 +124,7 @@ pub fn resolve_paths(o: PathInputs<'_>) -> Paths {
         bundle: o.bundle.map(resolve).unwrap_or_else(|| out.join("bundle")),
         turn_judgments: out.join("turn-judgments.json"),
         turn_bundle: out.join("turn-bundle"),
+        task_bundle: out.join(TASK_BUNDLE_DIR),
         vcs_retention: out.join(VCS_RETENTION_FILE),
         html: out.join("atlas.html"),
         home,

@@ -1,4 +1,4 @@
-// Phase 14: 画面から動かす処理(集計し直す・工数を判定する)の状態。マストヘッドの操作(JobActions)と本文の上の帯(JobBand)が共有する。
+// 画面から動かす処理(集計し直す・判定の添付ファイルを作る・M365 Copilot の自動操作など)の状態。マストヘッドの操作(JobActions)と本文の上の帯(JobBand)が共有する。
 // GET api/jobs/current を実行中は 1 秒ごと、それ以外は 5 秒ごとに読む(詳細ページや別のタブで始めた処理も帯に出す)。
 import { jobsApi, type JobInfo, type JobRequest } from './api.ts';
 

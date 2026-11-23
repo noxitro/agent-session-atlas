@@ -52,7 +52,8 @@ pub struct AtlasConfig {
     pub upload_root: Option<String>,
     /// upload-project.bat がまとめて送るプロジェクト
     pub upload_projects: Option<Vec<String>>,
-    /// LLM の判定で Copilot CLI に渡すモデル
+    /// skill-draft(SKILL.md の下書き)で Copilot CLI に渡すモデル。判定はこのツールの中では回さないので、判定には使わない
+    /// (前の版で判定に使っていた設定も、そのまま読める)
     pub judge_model: Option<String>,
     /// AI の変更がその後の VCS のファイルに残っているかの照合
     pub vcs: Option<VcsConfig>,
@@ -445,13 +446,13 @@ pub fn phase_names() -> anyhow::Result<Vec<String>> {
     Ok(load_config(&default_config_path(), explicit)?.phases.unwrap_or_else(|| DEFAULT_PHASE_NAMES.iter().map(|s| s.to_string()).collect()))
 }
 
-/// 判定に使うモデル(設定の judgeModel、無ければ None)
+/// skill-draft に使うモデル(設定の judgeModel、無ければ None)
 pub fn judge_model_setting() -> anyhow::Result<Option<String>> {
     let explicit = std::env::var_os("ATLAS_CONFIG").is_some();
     Ok(load_config(&default_config_path(), explicit)?.judge_model)
 }
 
-/// 判定に使うモデルを決めて、どこから来たかをログに書く。指定(--model)> 設定の judgeModel > なし(Copilot の既定のモデル)。
+/// skill-draft に使うモデルを決めて、どこから来たかをログに書く。指定(--model)> 設定の judgeModel > なし(Copilot の既定のモデル)。
 /// 設定は copilot-cli のときだけ使う(anthropic バックエンドのモデル名は形が違う)
 pub fn resolve_judge_model(explicit: Option<&str>, label: &str, log: &(dyn Fn(&str) + Sync)) -> anyhow::Result<Option<String>> {
     if let Some(e) = explicit.filter(|e| !e.is_empty()) {
@@ -460,11 +461,11 @@ pub fn resolve_judge_model(explicit: Option<&str>, label: &str, log: &(dyn Fn(&s
     let m = judge_model_setting()?;
     match m.as_deref().filter(|m| !m.is_empty()) {
         Some(m) => log(&format!(
-            "{label}: 判定に使うモデル {m}(atlas.config.json の judgeModel{})",
+            "{label}: 使うモデル {m}(atlas.config.json の judgeModel{})",
             if is_byok_model(Some(m)) { "。自分の API キーのモデル(BYOK)なので、Copilot の AI クレジットは使いません" } else { "" }
         )),
         None => log(&format!(
-            "{label}: 注意 モデルを指定していないので、Copilot の既定のモデルで判定します(AI クレジットを使います)。自分の API キーのモデル(BYOK)を使うときは、atlas.config.json に \"judgeModel\": \"anthropic/claude-sonnet-5-5\" のように書きます"
+            "{label}: 注意 モデルを指定していないので、Copilot の既定のモデルを使います(AI クレジットを使います)。自分の API キーのモデル(BYOK)を使うときは、atlas.config.json に \"judgeModel\": \"anthropic/claude-sonnet-5-5\" のように書きます"
         )),
     }
     Ok(m)

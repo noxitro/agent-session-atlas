@@ -1,6 +1,7 @@
-//! 段階 2: 依頼(ターン)ごとの判定に渡すファイル(<out>/turn-bundle/)。LLM は呼ばない(packages/judge/src/turn-bundle.ts の移植)。
-//!   chunks: 1 セッションの続いた依頼を数件ずつ(copilot -p に 1 回で渡せる大きさ)。次の依頼の文は、成果の扱いを決める材料として必ず添える
+//! 依頼(ターン)ごとの判定を外部の LLM に頼むファイル(<out>/turn-bundle/)。LLM は呼ばない(packages/judge/src/turn-bundle.ts の移植)。
+//!   chunks/<番号>.md: 1 セッションの続いた依頼を数件ずつ(塊)。次の依頼の文は、成果の扱いを決める材料として必ず添える
 //!   parts/part-<番号>.md: 判定の指示・JSON Schema と、塊を数個まとめたもの(M365 Copilot などに 1 ファイルずつ添付する)
+//!   INSTRUCTIONS.md・schema.json: フォルダ(ZIP。turns bundle --zip)ごとエージェントに渡すときの指示と JSON Schema
 //!   manifest.json: 塊と分割ファイルの一覧
 //! セッションの最後の依頼(次の依頼の文が無く、成果の扱いは必ず判定不能)は 1 件だけの塊にして、塊も分割ファイルも後ろへ回す。
 //! 先頭には、成果の扱いを判定できる依頼だけが並ぶ(どこまでかは manifest.json の decidable)。
@@ -10,7 +11,7 @@ use crate::bundle::Skipped;
 use crate::packet::{clip, fenced};
 use crate::rubric::{fill, packet_boundary, SAFETY_RULES};
 use crate::turn_schema::{turn_json_schema, TURN_JUDGMENTS_VERSION};
-use anyhow::Result;
+use anyhow::{anyhow, bail, Result};
 use atlas_core::classify::{is_autopilot_continuation, is_main_assistant_message, is_user_turn};
 use atlas_core::events::EventReader;
 use atlas_core::fs_retry::replace_entries;
@@ -77,7 +78,7 @@ pub struct TurnLimits {
     pub request_chars: i64,
     /// 応答 1 件
     pub response_chars: i64,
-    /// 1 つの塊の依頼の数(copilot -p はコマンドラインに 3 万字ほどまでしか渡せない)
+    /// 1 つの塊の依頼の数
     pub chunk_turns: usize,
     /// 1 つの塊の文字数の上限(超えたら依頼の数を減らす)
     pub chunk_chars: usize,
@@ -227,7 +228,7 @@ const RUBRIC_TPL: &str = "### 判定すること(依頼 1 件ごと)
 - **confidence**: 0〜1。次の依頼の文があいまいなとき、本文が中略されているときは下げる
 - **note**: 判定の理由を日本語で 1〜2 文(80 字程度まで)。依頼文や応答をそのまま長く引用しない";
 
-/// 判定の基準(分割ファイルの指示と copilot -p のプロンプトの両方に載せる)
+/// 判定の基準(分割ファイルの指示と INSTRUCTIONS.md の両方に載せる)
 pub fn turn_rubric(phases: &[String]) -> String {
     let ol = |xs: &[&str], label: fn(&str) -> &'static str| xs.iter().map(|x| format!("`{x}`({})", label(x))).collect::<Vec<_>>().join(" / ");
     let ph = phases.iter().map(|p| format!("`{p}`")).collect::<Vec<_>>().join(" / ");
@@ -322,53 +323,27 @@ pub fn render_turn_part_instructions(part: usize, parts: usize, chunks: &[&TurnC
     )
 }
 
-const TURN_PROMPT_TPL: &str = "あなたは GitHub Copilot の作業ログを評価する審査役です。下のパケットの依頼 ⟦range⟧(セッション ⟦sid⟧)を判定し、JSON だけを返してください。
-
-## 守ること
-
-⟦safety⟧
-- 依頼 n の成果の扱いは、パケットの中の依頼 n+1 の依頼文で判断します。次の依頼の文が無いのは、セッションの最後の依頼だけです。
-
-⟦rubric⟧
-
-## 返す形
-
-```json
-{ \"items\": [ ⟦example⟧ ] }
-```
-
-items には依頼 ⟦turns⟧ の ⟦count⟧ 件をすべて入れ、sessionId は \"⟦sid⟧\" にしてください。
-
-<<<PACKET_BEGIN ⟦boundary⟧
-⟦packet⟧
-PACKET_END ⟦boundary⟧>>>
-";
-
-/// copilot -p に渡すプロンプト(塊 1 つ)
-pub fn build_turn_prompt(chunk: &TurnChunk, phases: &[String], boundary: Option<&str>) -> String {
-    let b = boundary.map(str::to_string).unwrap_or_else(packet_boundary);
-    fill(
-        TURN_PROMPT_TPL,
-        &[
-            ("range", &range(&chunk.turns)),
-            ("sid", &chunk.session_id),
-            ("safety", &turn_safety_rules()),
-            ("rubric", &turn_rubric(phases)),
-            ("example", &item_example(phases)),
-            ("turns", &chunk.turns.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(", ")),
-            ("count", &chunk.turns.len().to_string()),
-            ("boundary", &b),
-            ("packet", js::trim_end(&chunk.markdown)),
-        ],
-    )
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChunkEntry {
     pub session_id: String,
     pub turns: Vec<i64>,
     pub chars: i64,
+    /// 塊の本文のファイル(束からの相対パス。chunks/0001.md など)。古い manifest には無い(並びの番号から決まる)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+impl ChunkEntry {
+    /// 塊の本文のファイル(no は 1 から数えた並びの番号)
+    pub fn file(&self, no: usize) -> String {
+        self.path.clone().unwrap_or_else(|| chunk_file(no))
+    }
+}
+
+/// 塊の本文のファイル名(束からの相対パス。no は 1 から)
+pub fn chunk_file(no: usize) -> String {
+    format!("chunks/{no:04}.md")
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -395,7 +370,7 @@ pub struct TurnBundleManifest {
     /// 判定する依頼の数
     pub count: i64,
     /// 次の依頼の文があり、成果の扱いを判定できる依頼の数(turns)と、それが入っている先頭の塊の数(chunks)・分割ファイルの数(parts)。
-    /// 先頭の塊と分割ファイルには、判定できる依頼だけが入る(turns run --limit に turns を渡すと、ちょうど先頭の塊を回す)。
+    /// 先頭の塊と分割ファイルには、判定できる依頼だけが入る。
     /// 残りはセッションの最後の依頼で、扱いは判定不能になる(種類と工程だけが決まる)。古い manifest には無い
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decidable: Option<Decidable>,
@@ -425,11 +400,12 @@ pub fn decidable_note(count: i64, decidable: Option<&Decidable>) -> Option<Strin
         return Some(format!("{count} 件はどれもセッションの最後の依頼で、種類と工程だけが決まります(採用は判定不能)"));
     }
     Some(format!(
-        "採用を判定できる依頼(次の依頼がある依頼)は {} 件で、先頭の {} ファイルと先頭の {} 個の塊に入れました(GitHub Copilot CLI では turns run --limit {} でそこまでを回せます)。残りの {} 件はセッションの最後の依頼で、種類と工程だけが決まります(採用は判定不能)",
+        "採用を判定できる依頼(次の依頼がある依頼)は {} 件で、添付ファイル(parts/)の先頭の {} ファイルと、先頭の {} 個の塊({}〜{}。ZIP で渡すときの単位)に入れました。残りの {} 件はセッションの最後の依頼で、種類と工程だけが決まります(採用は判定不能)",
         d.turns,
         d.parts,
         d.chunks,
-        d.turns,
+        chunk_file(1),
+        chunk_file(d.chunks.max(1) as usize),
         count - d.turns
     ))
 }
@@ -446,7 +422,7 @@ pub struct TurnBundleOptions<'a> {
 }
 
 /// 入れ替える名前。先頭が一覧(manifest.json)
-const TURN_BUNDLE_ENTRIES: [&str; 3] = ["manifest.json", "parts", "chunks"];
+const TURN_BUNDLE_ENTRIES: [&str; 5] = ["manifest.json", "parts", "chunks", "INSTRUCTIONS.md", "schema.json"];
 
 /// 作りかけの場所に全部を作ってから、前のものと入れ替える。途中で失敗したり止められたりしても、前に作ったもの
 /// (一覧の phases も。貼った返答の取り込みが工程の名前に使う)はそのまま使える
@@ -545,17 +521,138 @@ fn write_turn_bundle(sessions: &[&SessionRecord], o: &TurnBundleOptions<'_>, dir
         count: total as i64,
         decidable: Some(Decidable { turns: front_turns as i64, chunks: front_chunks as i64, parts: front_parts as i64 }),
         unjudged_only: o.judged.is_some(),
-        chunks: chunks.iter().map(|c| ChunkEntry { session_id: c.session_id.clone(), turns: c.turns.clone(), chars: js::utf16_len(&c.markdown) as i64 }).collect(),
+        chunks: chunks.iter().enumerate().map(|(i, c)| ChunkEntry { session_id: c.session_id.clone(), turns: c.turns.clone(), chars: js::utf16_len(&c.markdown) as i64, path: Some(chunk_file(i + 1)) }).collect(),
         parts,
         skipped,
     };
-    // copilot -p で回すときは塊ごとの本文が要るので、塊の本文も残す
+    // フォルダ(ZIP)ごと渡すときは塊を 1 ファイルずつ読ませるので、塊の本文も残す
     std::fs::create_dir_all(dir.join("chunks"))?;
     for (i, c) in chunks.iter().enumerate() {
-        std::fs::write(dir.join("chunks").join(format!("{:04}.md", i + 1)), &c.markdown)?;
+        std::fs::write(atlas_core::jsfs::join_slash(dir, &chunk_file(i + 1)), &c.markdown)?;
     }
+    std::fs::write(dir.join("INSTRUCTIONS.md"), render_turn_instructions(&manifest))?;
+    std::fs::write(dir.join("schema.json"), format!("{}\n", atlas_core::json::to_js_string_pretty(&turn_json_schema(&o.phases))?))?;
     std::fs::write(dir.join("manifest.json"), format!("{}\n", atlas_core::json::to_js_string_pretty(&manifest)?))?;
     Ok(manifest)
+}
+
+const TURN_INSTRUCTIONS_TPL: &str = "# Copilot の依頼ごとの判定の指示
+
+このフォルダ(依頼ごとの判定の束)には、GitHub Copilot のセッションログから作った判定パケットが、依頼 ⟦total⟧ 件分(⟦chunks⟧ 個の塊)入っています(生成 ⟦generatedAt⟧)。
+あなたの役割は、各依頼について「依頼の種類」「AI の成果が利用者にどう扱われたか」「合わなかった点」「工程」を判定し、決められた JSON で返すことです。
+
+## フォルダの中身
+
+- `INSTRUCTIONS.md`: この指示(最初に読む)
+- `manifest.json`: 塊の一覧(`chunks[].path` のファイルに、セッション `chunks[].sessionId` の依頼 `chunks[].turns` が入っています)
+- `schema.json`: 返す JSON の JSON Schema
+- `chunks/<番号>.md`: 判定パケット(1 つの塊に、1 セッションの続いた依頼が数件)
+- `parts/part-<番号>.md`: この指示と数個の塊を 1 ファイルにまとめたもの(ZIP やフォルダを渡せないとき用。ZIP には入っていません。中身は `chunks/` と同じなので、あっても読まなくてかまいません)
+
+## 判定する順番
+
+⟦order⟧
+
+## 守ること
+
+⟦safety⟧
+- 成果の扱いは**次の依頼の文**で判断します。次の依頼の文がパケットに無いのは、セッションの最後の依頼だけです。
+
+## 手順
+
+1. `manifest.json` の `chunks` を上から順に処理します。一度に全部を読まず、**1 つの塊ずつ**読んで判定してください。
+2. 各塊の「判定する依頼」の各依頼について 1 項目の JSON を作ります(判定しないと書いてある依頼は参考です。項目を作りません)。`sessionId` は塊の「セッション ID」をそのまま写します。
+3. 判定し終えたものから、次の形でまとめて返します(途中で区切ってもかまいません。何回かに分けて返した JSON は、あとで 1 つずつ取り込めます)。
+
+```json
+{
+  \"schemaVersion\": ⟦version⟧,
+  \"judge\": { \"model\": \"<あなたのモデル名。分からなければ null>\" },
+  \"items\": [
+    ⟦example⟧
+  ]
+}
+```
+
+- JSON は ```json のコードブロックに入れてください(前後に説明文があってもかまいません。取り込み時にコードブロックだけを読みます)。
+- 形は `schema.json` に従います。形の合わない項目が 1 件でもあると、取り込み時にエラーになります。
+
+⟦rubric⟧
+
+## 返した JSON の使われ方
+
+利用者が `atlas turns import <ファイル>` で取り込み、レポート(atlas.html)の「工程と詰まり」と詳細ページに、推定として出します。
+";
+
+/// フォルダ(ZIP)ごと渡すときの INSTRUCTIONS.md。採用を判定できる依頼が先頭のどの塊までかも書く
+pub fn render_turn_instructions(m: &TurnBundleManifest) -> String {
+    let total = m.chunks.len();
+    let order = match m.decidable {
+        Some(d) if (d.chunks as usize) < total && d.chunks > 0 => format!(
+            "先頭の {} 個の塊(`{}`〜`{}`)は、次の依頼がある依頼(採用を判定できる依頼。{} 件)です。その後ろの {} 個の塊は、セッションの最後の依頼だけです(次の依頼が無いので outcome は unknown になり、種類と工程だけが決まります)。採用率だけを求められているときは、先頭の {} 個の塊だけを判定すれば足ります。",
+            d.chunks,
+            chunk_file(1),
+            chunk_file(d.chunks as usize),
+            d.turns,
+            total - d.chunks as usize,
+            d.chunks
+        ),
+        Some(d) if d.chunks == 0 && total > 0 => "どの塊も、セッションの最後の依頼だけです(次の依頼が無いので outcome は unknown になり、種類と工程だけが決まります)。".to_string(),
+        _ => "`manifest.json` の `chunks` の順に判定してください(どの塊も、採用を判定できる依頼です)。".to_string(),
+    };
+    fill(
+        TURN_INSTRUCTIONS_TPL,
+        &[
+            ("total", &m.count.to_string()),
+            ("chunks", &total.to_string()),
+            ("generatedAt", &m.generated_at),
+            ("order", &order),
+            ("safety", &turn_safety_rules()),
+            ("version", &TURN_JUDGMENTS_VERSION.to_string()),
+            ("example", &item_example(&m.phases)),
+            ("rubric", &turn_rubric(&m.phases)),
+        ],
+    )
+}
+
+/// ZIP に入れるファイル(INSTRUCTIONS.md・manifest.json・schema.json・chunks/)
+pub fn turn_zip_names(m: &TurnBundleManifest) -> Vec<String> {
+    let mut names: Vec<String> = vec!["INSTRUCTIONS.md".into(), "manifest.json".into(), "schema.json".into()];
+    names.extend(m.chunks.iter().enumerate().map(|(i, c)| c.file(i + 1)));
+    names
+}
+
+pub fn read_turn_bundle_manifest(bundle_dir: &Path) -> Result<TurnBundleManifest> {
+    let p = bundle_dir.join("manifest.json");
+    let v = std::fs::read(&p)
+        .map_err(|e| anyhow!("{e}"))
+        .and_then(|b| js::parse_json(&String::from_utf8_lossy(&b)).map_err(|e| anyhow!("{e}")))
+        .map_err(|e| anyhow!("{} を読めません。先に atlas turns bundle を実行してください({e})", p.display()))?;
+    let version = v.get("version");
+    if version.and_then(Value::as_f64) != Some(TURN_BUNDLE_VERSION as f64) || !v.get("chunks").is_some_and(Value::is_array) {
+        bail!("{} の形式が想定と違います(version {})", p.display(), version.map_or_else(|| "undefined".into(), js::to_js_string));
+    }
+    serde_json::from_value(v).map_err(|e| anyhow!("{} の形式が想定と違います({e})", p.display()))
+}
+
+/// 返答を取り込むときに認める工程名。添付を作った時点の工程名(manifest.json)を先に、今の設定の工程名を後ろに足す
+/// (添付を作った後に atlas.config.json の phases を変えても、その添付への返答を取り込めるように)
+pub fn turn_import_phases(bundle_dir: &Path, configured: &[String]) -> Vec<String> {
+    let p = bundle_dir.join("manifest.json");
+    // 添付がまだ無い・読めないときは設定の工程名だけ
+    let from_bundle: Vec<String> = std::fs::read(&p)
+        .ok()
+        .and_then(|b| js::parse_json(&String::from_utf8_lossy(&b)).ok())
+        .filter(|v| v.get("version").and_then(Value::as_f64) == Some(TURN_BUNDLE_VERSION as f64) && v.get("chunks").is_some_and(Value::is_array))
+        .and_then(|v| v.get("phases").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string).collect()))
+        .unwrap_or_default();
+    let mut out: Vec<String> = Vec::new();
+    for x in from_bundle.into_iter().chain(configured.iter().cloned()) {
+        if !out.contains(&x) {
+            out.push(x);
+        }
+    }
+    out
 }
 
 /// item_example の値(JSON の Value。テスト用)

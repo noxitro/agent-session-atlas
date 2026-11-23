@@ -14,7 +14,6 @@ pub mod build;
 mod bundle;
 mod extract;
 pub(crate) mod judge;
-pub mod judge_flow;
 mod memo;
 mod metrics;
 pub mod open;
@@ -41,16 +40,9 @@ pub(crate) fn mb(b: u64) -> String {
 /// build・export・all の結果(main がレポートの場所を出す)
 pub use build::BuildResult;
 
-/// judge run の結果(失敗したセッションがあれば終了コード 1)
-#[derive(Debug, Clone, Default)]
-pub struct JudgeSummary {
-    pub failed: Vec<String>,
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct RunResult {
     pub build: Option<BuildResult>,
-    pub judge: Option<JudgeSummary>,
 }
 
 pub fn paths_of(o: &CliOptions) -> Paths {
@@ -73,30 +65,27 @@ pub fn run(o: &CliOptions, log: Log<'_>) -> Result<RunResult> {
     r
 }
 
-/// judge m365 / turns m365: 開いている M365 Copilot のアプリを操作して未判定の添付ファイルを判定し(m365.rs)、
-/// 1 件でも取り込めたらレポートに反映する(export)。送れなかった・取り込めなかったファイルがあれば、反映した後に失敗にする
-/// judge に、judge では効かない絞り込みを付けたときの知らせ(黙って添付の全体を判定しないように止める)
+/// judge に、judge では効かない絞り込みを付けたときの知らせ(黙って添付の全体を扱わないように止める)
 fn ignored_filters_message(action: &str, flags: &[String]) -> String {
     let list = flags.join(" ");
     match action {
         "import" => format!("{list} は judge import では使えません(返答に入っているセッションをすべて取り込みます)"),
-        _ => format!(
-            "{list} は judge {action} では効きません。判定するのは、作ってある添付(out/bundle)のセッションです。\n絞り込んで判定するときは、bin\\atlas.exe judge-flow {list} … で添付を作るところから通すか、先に bin\\atlas.exe bundle {list} … で添付を作ってから judge {action} を実行してください{}",
-            if action == "run" { "(judge run で特定のセッションだけを判定するときは --session か --only に ID を指定します)" } else { "" }
-        ),
+        _ => format!("{list} は judge {action} では効きません。送るのは、作ってある添付(out/bundle)のファイルです。\n絞り込むときは、先に bin\\atlas.exe bundle {list} --unjudged で添付を作ってから judge {action} を実行してください"),
     }
 }
 
-fn run_m365_command(o: &CliOptions, p: &Paths, target: ChatTarget, model: Option<&str>, limit: Option<u64>, timeout_sec: u64, log: Log<'_>) -> Result<RunResult> {
+/// judge m365 / turns m365 / tasks m365: 開いている M365 Copilot のアプリを操作して未判定の添付ファイルを送り(m365.rs)、
+/// 1 件でも取り込めたらレポートに反映する(export)。送れなかった・取り込めなかったファイルがあれば、反映した後に失敗にする
+pub(crate) fn run_m365_command(o: &CliOptions, p: &Paths, target: ChatTarget, model: Option<&str>, limit: Option<u64>, timeout_sec: u64, log: Log<'_>) -> Result<RunResult> {
     let s = run_m365_judge(
-        &M365Paths { out: p.out.clone(), sessions: p.sessions.clone(), judgments: p.judgments.clone(), turn_judgments: p.turn_judgments.clone(), turn_bundle: p.turn_bundle.clone() },
+        &M365Paths { out: p.out.clone(), notes: p.notes.clone(), sessions: p.sessions.clone(), judgments: p.judgments.clone(), turn_judgments: p.turn_judgments.clone(), turn_bundle: p.turn_bundle.clone() },
         &M365Options { target, model: model.unwrap_or(M365_DEFAULT_MODEL).to_string(), limit, timeout_sec, retries: None },
         &|m: &str| log(m),
         &powershell_driver,
-        cfg!(windows),
+        cfg!(windows) || crate::m365::fake_driver().is_some(),
         &std::thread::sleep,
     )?;
-    let build = if s.imported > 0 { run_command(&CliOptions { command: "export".into(), model: None, judge: None, turns: None, ..o.clone() }, p, log)?.build } else { None };
+    let build = if s.imported > 0 { run_command(&CliOptions { command: "export".into(), model: None, judge: None, turns: None, tasks_cmd: None, sessions: None, task: None, ..o.clone() }, p, log)?.build } else { None };
     if !s.failed.is_empty() {
         anyhow::bail!(
             "M365 Copilot で判定できなかったファイルが {} 個あります: {}",
@@ -104,7 +93,7 @@ fn run_m365_command(o: &CliOptions, p: &Paths, target: ChatTarget, model: Option
             s.failed.iter().map(|f| format!("{}({})", f.name, f.reason)).collect::<Vec<_>>().join(" / ")
         );
     }
-    Ok(RunResult { build, ..RunResult::default() })
+    Ok(RunResult { build })
 }
 
 pub fn run_command(o: &CliOptions, p: &Paths, log: Log<'_>) -> Result<RunResult> {
@@ -128,7 +117,7 @@ pub fn run_command(o: &CliOptions, p: &Paths, log: Log<'_>) -> Result<RunResult>
         "build" | "export" => {
             let transcripts = (o.command == "export").then(|| build::TranscriptCli { tool_output: o.tool_output, max_chars: o.max_chars, full: o.full });
             let b = build::run_build(p, &build::BuildOptions { filter: metrics::SessionFilter::from_cli(o), transcripts, config: o.config.clone(), refreshed: None }, log)?;
-            Ok(RunResult { build: Some(b), ..RunResult::default() })
+            Ok(RunResult { build: Some(b) })
         }
         "bundle" => {
             bundle::run_bundle(p, &metrics::SessionFilter::from_cli(o), &bundle::BundleCliOptions { include_empty: o.include_empty, per_part: o.per_part, unjudged: o.unjudged, zip: o.zip, config: o.config.clone() }, log)?;
@@ -139,7 +128,7 @@ pub fn run_command(o: &CliOptions, p: &Paths, log: Log<'_>) -> Result<RunResult>
             if t.action == "m365" {
                 return run_m365_command(o, p, ChatTarget::Turns, t.model.as_deref(), t.limit, t.timeout_sec, log);
             }
-            turns::run_turns(p, &metrics::SessionFilter { model: None, ..metrics::SessionFilter::from_cli(o) }, t, log)?;
+            turns::run_turns(p, &metrics::SessionFilter { model: None, ..metrics::SessionFilter::from_cli(o) }, t, o.zip, log)?;
             Ok(RunResult::default())
         }
         "judge" => {
@@ -150,7 +139,8 @@ pub fn run_command(o: &CliOptions, p: &Paths, log: Log<'_>) -> Result<RunResult>
             if j.action == "m365" {
                 return run_m365_command(o, p, ChatTarget::Effort, j.model.as_deref(), j.limit, j.timeout_sec, log);
             }
-            Ok(RunResult { judge: judge::run_judge_command(p, j, log)?, ..RunResult::default() })
+            judge::run_judge_import(p, j, log)?;
+            Ok(RunResult::default())
         }
         "tasks" => tasks::run_tasks_command(o, p, log),
         "memo" => {
@@ -168,7 +158,7 @@ pub fn run_command(o: &CliOptions, p: &Paths, log: Log<'_>) -> Result<RunResult>
             Ok(RunResult::default())
         }
         "open" => open::run_open(o, log, None),
-        "all" => Ok(RunResult { build: Some(all::run_all(o, p, log)?), ..RunResult::default() }),
+        "all" => Ok(RunResult { build: Some(all::run_all(o, p, log)?) }),
         other => Err(anyhow::anyhow!("不明なコマンドです: {other}")),
     }
 }

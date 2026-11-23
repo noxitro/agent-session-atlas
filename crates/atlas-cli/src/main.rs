@@ -35,9 +35,10 @@ fn main() -> ExitCode {
         println!("{}", version::version_line());
         return ExitCode::SUCCESS;
     }
-    // 判定の通し(TS 版の judge-flow.ts / npm run atlas:judge)。引数の解釈が違うので、先に振り分ける
+    // 判定の通し(judge-flow)は無くなった(判定は外部の LLM に頼む)。前の呼び方には、代わりの手順を知らせる
     if argv.first().is_some_and(|a| a == "judge-flow") {
-        return ExitCode::from(commands::judge_flow::main(&argv[1..]));
+        eprintln!("atlas: judge-flow は無くなりました。{}", args::NO_IN_TOOL_JUDGING);
+        return ExitCode::from(2);
     }
     // .bat から動かす入口(TS 版では packages/cli/src/ の別のファイル。setup.ts・upload-project.ts・upload-schedule.ts・upload-auto.ts)。
     // 使い方には出さない。引数と出力は TS 版の各ファイルと同じ
@@ -70,12 +71,6 @@ fn main() -> ExitCode {
         Ok(r) => {
             if let Some(b) = &r.build {
                 log(&format!("\nレポート: {}", b.html_path.display()));
-            }
-            if let Some(j) = &r.judge {
-                if !j.failed.is_empty() {
-                    eprintln!("atlas: 判定に失敗したセッションが {} 件あります(judgments.json の failures に記録しました。もう一度 judge run すると再試行します)", j.failed.len());
-                    return ExitCode::from(1);
-                }
             }
             ExitCode::SUCCESS
         }

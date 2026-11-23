@@ -1,16 +1,14 @@
-//! 依頼ごとの判定(段階 2): atlas turns bundle / run(GitHub Copilot CLI)/ import(packages/cli/src/commands.ts の runTurns の移植)。
-//! ログの文言は TS 版と同じ。
+//! 依頼ごとの判定: atlas turns bundle(添付ファイルと、--zip なら ZIP を作る)/ import(packages/cli/src/commands.ts の runTurns の移植)。
+//! 判定するのは外部の LLM(チャットに貼る・ZIP をエージェントに渡す)で、このツールは LLM を呼ばない。ログの文言は TS 版と同じ。
 
 use super::judge::read_sessions_value;
 use super::metrics::{select_sessions, SessionFilter};
-use super::Log;
+use super::{mb, Log};
 use crate::args::TurnsCliOptions;
-use crate::config::{phase_names, resolve_judge_model};
+use crate::config::phase_names;
 use crate::paths::{resolve, Paths};
-use anyhow::{bail, Result};
-use atlas_judge::backends::copilot_cli::{copilot_cli_backend, CopilotCliOptions};
-use atlas_judge::turn_bundle::{build_turn_bundle, decidable_note, TurnBundleOptions};
-use atlas_judge::turn_run::{run_turn_judge, turn_import_phases, TurnRunOptions};
+use anyhow::Result;
+use atlas_judge::turn_bundle::{build_turn_bundle, decidable_note, turn_import_phases, turn_zip_names, TurnBundleOptions};
 use atlas_judge::turn_schema::{import_turn_judgments_text, read_turn_judgments, TurnImportOptions};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -27,21 +25,24 @@ pub(crate) fn turns_by_session(sessions: &[Value]) -> HashMap<String, usize> {
         .collect()
 }
 
-pub fn run_turns(p: &Paths, f: &SessionFilter, t: &TurnsCliOptions, log: Log<'_>) -> Result<()> {
+pub fn run_turns(p: &Paths, f: &SessionFilter, t: &TurnsCliOptions, zip: bool, log: Log<'_>) -> Result<()> {
     let phases = phase_names()?;
     if t.action == "bundle" {
         let sel = select_sessions(p, f, "turns", "先に atlas extract(または atlas all)を実行してください。", log)?;
-        let existing = if t.unjudged { read_turn_judgments(&p.turn_judgments)? } else { None };
-        let judged: Option<HashMap<String, HashSet<i64>>> = existing.map(|e| {
+        super::bundle::drop_old_judge_work(&p.out, "turns bundle", log);
+        // --unjudged なら、まだ何も判定していなくても「未判定だけで作った」と記録する(画面の「未判定だけ」の表示)
+        let judged: Option<HashMap<String, HashSet<i64>>> = if t.unjudged {
             let mut m: HashMap<String, HashSet<i64>> = HashMap::new();
-            for i in e.items {
+            for i in read_turn_judgments(&p.turn_judgments)?.map(|e| e.items).unwrap_or_default() {
                 m.entry(i.session_id).or_default().insert(i.turn);
             }
-            m
-        });
+            Some(m)
+        } else {
+            None
+        };
         let m = build_turn_bundle(&sel.sessions(), &TurnBundleOptions { bundle_dir: p.turn_bundle.clone(), snapshot_dir: p.snapshot.clone(), phases: phases.clone(), judged, limits: None, boundary: None, now: None })?;
         log(&format!(
-            "turns bundle: 依頼 {} 件{}を、M365 Copilot などに添付する {} ファイル(parts/)と、GitHub Copilot CLI で 1 回ずつ渡す {} 個の塊にしました → {}{}",
+            "turns bundle: 依頼 {} 件{}を、M365 Copilot などに添付する {} ファイル(parts/)と、フォルダ(ZIP)ごと渡すときの {} 個の塊(chunks/)にしました → {}{}",
             m.count,
             if t.unjudged { "(判定済みを除く)" } else { "" },
             m.parts.len(),
@@ -53,14 +54,9 @@ pub fn run_turns(p: &Paths, f: &SessionFilter, t: &TurnsCliOptions, log: Log<'_>
             log(&format!("turns bundle: {note}"));
         }
         log(&format!("turns bundle: 工程名 {}(atlas.config.json の phases で変えられます)", phases.join(" / ")));
-        return Ok(());
-    }
-    if t.action == "run" {
-        let model = resolve_judge_model(t.model.as_deref(), "turns", log)?;
-        let backend = copilot_cli_backend(CopilotCliOptions { bin: None, model, allow_tools: None, timeout_ms: Some(t.timeout_sec * 1000) });
-        let r = run_turn_judge(&TurnRunOptions { bundle_dir: p.turn_bundle.clone(), path: p.turn_judgments.clone(), backend: &backend, limit: t.limit, log, now: None })?;
-        if !r.failed.is_empty() {
-            bail!("判定できなかった塊が {} 個あります({} の failures。もう一度実行すると再試行します)", r.failed.len(), p.turn_judgments.display());
+        if let Some((path, z)) = super::bundle::zip_or_drop(&p.turn_bundle, &p.out.join("turn-bundle"), zip, &turn_zip_names(&m), "turns bundle", atlas_judge::zip::BUNDLE_NARROW, log)? {
+            log(&format!("turns bundle: ZIP にまとめました({} ファイル、{}、無圧縮。parts/ は入れていません)→ {}", z.files, mb(z.bytes), path.display()));
+            log("turns bundle: フォルダやファイルを読めるエージェントに渡し、INSTRUCTIONS.md を最初に読ませてください。返ってきた JSON は atlas turns import <ファイル> で取り込みます");
         }
         return Ok(());
     }

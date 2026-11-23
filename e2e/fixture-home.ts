@@ -313,7 +313,7 @@ export function atlasCli(): string {
 }
 
 /** CLI の入口。main は atlas のコマンド、ほかはサブコマンド(起動用の .bat から呼ぶもの) */
-export type CliEntry = 'main' | 'judge-flow' | 'setup' | 'upload-project' | 'upload-schedule' | 'upload-auto';
+export type CliEntry = 'main' | 'setup' | 'upload-project' | 'upload-schedule' | 'upload-auto';
 
 /** CLI を動かすコマンドと引数([コマンド, 引数])。spawn / spawnSync にそのまま渡す */
 export function cliCommand(args: string[], entry: CliEntry = 'main'): [string, string[]] {

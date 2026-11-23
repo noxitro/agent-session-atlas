@@ -54,7 +54,7 @@ bin\atlas.exe export --tool-output all   # 成功したツールの結果も入�
 
 ## 管理ツールのタスク
 
-設定の `tasks` に、管理ツールが書き出したタスクの XML を書いたときだけ作ります(設定の書き方と数え方は [README の「管理ツールのタスクと工数」](../README.md#管理ツールのタスクと工数任意))。XML は集計のたびと `atlas tasks sync` で読みます。LLM を使うのは、頼んだときの紐づけ(`atlas tasks link --llm`)だけです。
+設定の `tasks` に、管理ツールが書き出したタスクの XML を書いたときだけ作ります(設定の書き方と数え方は [README の「管理ツールのタスクと工数」](../README.md#管理ツールのタスクと工数任意))。XML は集計のたびと `atlas tasks sync` で読みます。LLM を使うのは、頼んだときの紐づけだけで、それも外部の LLM に頼みます(`atlas tasks bundle` で束を作り、`atlas tasks import` で取り込む。[judge.md の 4](judge.md#4-管理ツールのタスクへの紐づけ))。
 
 **`atlas-notes/tasks.json`**(タスクの状態。XML を読むたびに更新する)
 
@@ -86,8 +86,21 @@ bin\atlas.exe export --tool-output all   # 成功したツールの結果も入�
 - `taskIds` は紐づいたタスク(並びは決めた順。機械は XML の順、LLM は答えの順、手動は加えた順)。空の並び `[]` は「どのタスクでもない」です。1 つのセッションに 10 個まで(誤った当たりや壊れた記録で長くならないための安全のための上限。超えた分は読みません)。
 - 前の版(`version` 1。`taskId` が 1 つか null)のファイルも読み、0 か 1 件の並びとして扱います。書くのは版 2 の形だけです(前の版の atlas は版 2 のファイルを読まず、書き換えもしません)。
 - `source` は `machine`(機械)・`llm`(LLM)・`manual`(手動)で、セッションごとに 1 つです。`confidence` は LLM のときだけです。
-- 機械の紐づけは集計のたびに決め直します。ID で当たったタスクだけなら、そのすべてに紐づけます。ID の当たりが無く、名前で当たったタスクがちょうど 1 つなら、そのタスクに紐づけます。名前だけの当たりがあって 2 つ以上のタスクに当たったときと、上限を超えたときは決めません。手動の紐づけと、LLM がタスクを選んだ紐づけは変えません。LLM が「どのタスクでもない」とした紐づけは、機械の当たりが決まれば置き換えます。紐づけの無いセッションは載りません。LLM に聞いても候補のタスクが 1 つも無いセッションは、聞かずに何も書きません。
-- 書き手(画面の手動の紐づけ・LLM で紐づける処理・集計)は別のプロセスのこともあるので、`task-links.json.lock`(と `tasks.json.lock`)を開いて OS のファイルのロックを取ってから読み直し、自分の変更だけを足して書きます。LLM で紐づけている間に画面で手動で紐づけても消えません。ロックはファイルを開いている間だけ効くので、処理が落ちれば OS が外します(`.lock` のファイルそのものは残しておきます。消しても困りません)。15 秒待っても取れなければ止まり、serve は 409 を返します。
+- 機械の紐づけは集計のたびに決め直します。ID で当たったタスクだけなら、そのすべてに紐づけます。ID の当たりが無く、名前で当たったタスクがちょうど 1 つなら、そのタスクに紐づけます。名前だけの当たりがあって 2 つ以上のタスクに当たったときと、上限を超えたときは決めません。手動の紐づけと、LLM がタスクを選んだ紐づけは変えません。LLM が「どのタスクでもない」とした紐づけは、機械の当たりが決まれば置き換えます。紐づけの無いセッションは載りません。候補のタスクが 1 つも無いセッションは、LLM に頼む束に入れず、何も書きません。
+- 書き手(画面の手動の紐づけ・LLM の返答の取り込み・集計)は別のプロセスのこともあるので、`task-links.json.lock`(と `tasks.json.lock`)を開いて OS のファイルのロックを取ってから読み直し、自分の変更だけを足して書きます。LLM の返答を取り込んでいる間に画面で手動で紐づけても消えません。ロックはファイルを開いている間だけ効くので、処理が落ちれば OS が外します(`.lock` のファイルそのものは残しておきます。消しても困りません)。15 秒待っても取れなければ止まり、serve は 409 を返します。
+
+**`out/task-bundle/`**(紐づけを外部の LLM に頼む束。`atlas tasks bundle` と画面の「判定する…」の「タスクの紐づけ」が作る。LLM は呼ばない)
+
+| ファイル | 内容 |
+|---|---|
+| `INSTRUCTIONS.md` | フォルダ(ZIP)ごと渡すときの指示(決めること・守ること・返す形)。最初に読ませる |
+| `manifest.json` | パケットの一覧。`sessions[]` に `id`・`path`(`sessions/<セッション ID>.md`)・`candidates`(そのセッションの候補のタスクの ID。返答の検証に使う)・`chars`、`parts[]` に添付ファイルとその中のセッション、`perPart`・`scope`(`--session` で絞ったか) |
+| `schema.json` | 返す JSON(`{ "schemaVersion": 1, "links": [ { "sessionId", "taskIds", "confidence", "reason" } ] }`)の JSON Schema |
+| `sessions/<セッション ID>.md` | 1 セッションのパケット(題名・最初の依頼から 3 件までの文・候補のタスクの ID と名前) |
+| `parts/part-<番号>.md` | チャットに添付するファイル。指示・JSON Schema と、パケット数件(既定 10 件)をファイルごとの乱数の境界で囲んだもの |
+| `replies/` | M365 Copilot の自動操作で受け取った返答(`tasks m365` のとき) |
+
+`--zip` を付けると `INSTRUCTIONS.md`・`manifest.json`・`schema.json`・`sessions/` を `out/task-bundle.zip` にまとめます(展開すると `task-bundle` フォルダ。結果は、その中の `links.json` に書かせます)。付けずに作り直すと、前の ZIP は消します。返答の検証と書き方は [judge.md の 4](judge.md#4-管理ツールのタスクへの紐づけ) にあります。
 
 **レポートに埋め込むもの**: `atlas.html` の埋め込みデータの `tasks`(版 20 から。版 21 で `links` の `taskId` を `taskIds` の並びにし、工数を等分するタスク `countedTaskIds` と、タスクごとと合計に `sharedSessions`(いくつかのタスクに数えたセッションの数)を足した)。タスクごとの値と合計はここで決め、画面は数え直しません。serve から開いた画面は `GET /api/tasks` で同じ形の今の値を読みます(詳細ページで直した紐づけも出ます)。`GET /api/tasks` は、レポートと同じ関数・同じ読み方の推定人手工数(`judgments.json`)で数えます。絞り込み(`--task`・`--session`・`--since` など)で作ったレポートは `tasks.scoped` が true で、画面は API の値で置き換えずに埋め込みの値を出します。
 
@@ -221,7 +234,7 @@ bin\atlas.exe snapshot --snapshot-all  # rewind-snapshots / 一覧に無いフ�
 
 ## LLM の判定(judgments.json)
 
-`out/judgments.json` は、セッションごとの LLM の判定(推定人手工数など。作り方は [judge.md](judge.md))です。判定は利用者が `judge` を回したときだけで、集計は LLM を呼びません。スキーマの版(`schemaVersion`)は 2 で、版 1(下の `wikiPages` の無い版)の `judgments.json` と返答もそのまま読めます(書くときの版は下の注のとおり、`wikiPages` を持つ項目があるときだけ 2 にします)。
+`out/judgments.json` は、セッションごとの LLM の判定(推定人手工数など。作り方は [judge.md](judge.md))です。判定するのは外部の LLM で、利用者が返答を取り込んだときだけ増えます(集計もこのツールも LLM を呼びません)。スキーマの版(`schemaVersion`)は 2 で、版 1(下の `wikiPages` の無い版)の `judgments.json` と返答もそのまま読めます(書くときの版は下の注のとおり、`wikiPages` を持つ項目があるときだけ 2 にします)。
 
 | 項目 | 中身 |
 |---|---|
@@ -230,9 +243,9 @@ bin\atlas.exe snapshot --snapshot-all  # rewind-snapshots / 一覧に無いフ�
 | `aiOutcome` | AI が達成したか・質・手戻り |
 | `instructionsEffect` / `wikiEffect` / `skillsAgentsEffect` | 指示ファイル・llm-wiki・skill と agent のセッション全体への効果(−2〜+2 と根拠) |
 | `wikiPages`(版 2 から。任意) | llm-wiki のページごとの判定 `{ page, helpful, reason }` の並び。`helpful` は `yes`(中身が後の作業に使われ、作業を進めた)/ `no`(使われなかった・誤った方向に導いた)/ `unknown`(記録から判断できない)。判定のパケットに載せたページ(1 セッション 10 ページまで)が対象 |
-| `notes` / `judge` | 判定上の注意と、判定した出所(バックエンド・モデル・時刻) |
+| `notes` / `judge` | 判定上の注意と、判定した出所(バックエンド・モデル・時刻。取り込んだものは `external`。前の版がこのツールの中で判定したものは `copilot-cli`・`anthropic` で、そのまま読む) |
 
-- `wikiPages` が無い項目も取り込み、そのセッションのページを未判定にします(知らせません)。壊れている(配列でない・要素の形が違う)ときは、ほかの判定は取り込み、そのセッション(要素が壊れていたときはそのページ)を未判定にして、ログに知らせます(`judge run` は該当したセッションを 1 行にまとめます)。パケットに無いページの名前の判定は、レポートを作るときに捨てます(`judgments.json` には返答のまま残ります)。
+- `wikiPages` が無い項目も取り込み、そのセッションのページを未判定にします(知らせません)。壊れている(配列でない・要素の形が違う)ときは、ほかの判定は取り込み、そのセッション(要素が壊れていたときはそのページ)を未判定にして、ログに知らせます(`judge import`・M365 Copilot の自動操作のログ)。パケットに無いページの名前の判定は、レポートを作るときに捨てます(`judgments.json` には返答のまま残ります)。
 - 書くときの版は、どの項目も `wikiPages` を持たない間は 1、持つ項目ができたら 2 です。版 2 の `judgments.json` は、この機能より前の atlas.exe では読めず、`build` が止まります。
 - レポート(`atlas.html`)への埋め込み: 読んだページの名前は、データの上の辞書 `wikiPageNames` に 1 回だけ置き(本文は入れません)、セッションの要約の `wiki.pages`(重複を除いて読んだ順)はその番号です。判定は `judgment.wikiPages` に `[ページの番号, yes | no | unknown]` で入れます(理由は埋め込まず、詳細ページの「LLM による判定(推定)」にだけ出します)。大きな vault を何度も読む使い方でも、名前の分は増えないようにするためで、件数での切り捨てはしていません。埋め込みの版(`atlas.html` のデータの `version`)はこれらを足して 18 にしました。版 17 以前の `atlas.html` にはページの名前が無いので、改善点のページごとの表は出さずに理由を出します。
 
@@ -257,4 +270,4 @@ bin\atlas.exe snapshot --snapshot-all  # rewind-snapshots / 一覧に無いフ�
 bin\atlas.exe skill-draft <番号>  # out/insights.json の候補の番号。--backend copilot-cli(既定)/ anthropic、--model、--timeout
 ```
 
-候補の繰り返し回数・代表の依頼文・ツールの並びを LLM に渡し、SKILL.md の形の下書きを `out/skill-drafts/<番号>-<名前>.md` に書きます。**明示したときだけ動き、`build` / `export` / `all` では呼びません**。費用は 1 回の実行で判定 1 件と同じです。`copilot-cli` はモデル 1 リクエスト相当の AI クレジット、`anthropic` は Anthropic API の従量課金(`ANTHROPIC_API_KEY` が必要)を消費します(`anthropic` は機能 `anthropic-backend` を付けてビルドした atlas だけ。リリースの `atlas.exe` には入っていません。[judge.md](judge.md))。`copilot-cli` は判定と同じ安全策(`--no-custom-instructions`、`shell` / `write` / `url` の拒否、`--add-dir` なし)で動きます。下書きの作業フォルダは判定と同じ接頭辞にしており、次回の集計では「(atlas の判定)」に分類されて候補に戻りません。テストは偽の CLI(`ATLAS_COPILOT_BIN`)と fetch の差し替えで行い、本物は呼びません。下書きは案なので、使う前に読んで直してください。
+候補の繰り返し回数・代表の依頼文・ツールの並びを LLM に渡し、SKILL.md の形の下書きを `out/skill-drafts/<番号>-<名前>.md` に書きます。**明示したときだけ動き、`build` / `export` / `all` では呼びません**。このツールが LLM を呼ぶのはここだけです(判定は外部の LLM に頼みます。[judge.md](judge.md))。費用は 1 回の実行で 1 リクエストです。`copilot-cli` はモデル 1 リクエスト相当の AI クレジット、`anthropic` は Anthropic API の従量課金(`ANTHROPIC_API_KEY` が必要)を消費します(`anthropic` は機能 `anthropic-backend` を付けてビルドした atlas だけ。リリースの `atlas.exe` には入っていません。[development.md](development.md))。モデルは `--model`、無ければ設定の `judgeModel`([cli.md の「skill-draft に使うモデルの指定」](cli.md#skill-draft-に使うモデルの指定))。`copilot-cli` は安全策(`--no-custom-instructions`、`shell` / `write` / `url` と MCP の拒否、`--add-dir` なし、空の作業フォルダ)を付けて動きます。下書きの作業フォルダは前の版の判定と同じ接頭辞にしており、次回の集計では「(atlas の判定)」に分類されて候補に戻りません。テストは偽の CLI(`ATLAS_COPILOT_BIN`)と fetch の差し替えで行い、本物は呼びません。下書きは案なので、使う前に読んで直してください。

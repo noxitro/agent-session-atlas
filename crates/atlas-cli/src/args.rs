@@ -5,36 +5,35 @@ use std::collections::HashMap;
 use std::fmt;
 
 pub const COMMANDS: &[&str] = &["snapshot", "extract", "metrics", "vcs", "build", "export", "all", "bundle", "judge", "turns", "memo", "tasks", "serve", "open", "skill-draft"];
-pub const JUDGE_ACTIONS: &[&str] = &["run", "import", "m365"];
+pub const JUDGE_ACTIONS: &[&str] = &["import", "m365"];
+/// skill-draft の --backend
 pub const BACKEND_NAMES: &[&str] = &["copilot-cli", "anthropic"];
-pub const TURNS_ACTIONS: &[&str] = &["bundle", "run", "import", "m365"];
+pub const TURNS_ACTIONS: &[&str] = &["bundle", "import", "m365"];
 pub const MEMO_ACTIONS: &[&str] = &["list", "show", "set", "remove"];
-pub const TASKS_ACTIONS: &[&str] = &["sync", "list", "link"];
+pub const TASKS_ACTIONS: &[&str] = &["sync", "list", "link", "bundle", "import", "m365"];
+/// 判定はこのツールの中では回さない(2026-11-23 に、外部の LLM に頼む形だけにした)。前の操作を指定したときの知らせ
+pub const NO_IN_TOOL_JUDGING: &str = "このツールが LLM を呼んで判定する操作は無くなりました。判定は、添付ファイルをチャットに貼るか、ZIP にまとめてエージェントに渡して、外部の LLM に頼みます(画面の「判定する…」、または bundle / turns bundle / tasks bundle で作って judge import / turns import / tasks import で取り込む。docs/judge.md)";
 /// --task(タスクで絞る)を使えるコマンド
 pub const TASK_FILTER_COMMANDS: &[&str] = &["metrics", "build", "export", "all", "bundle", "turns", "judge"];
 
+/// atlas judge import / m365(工数の判定の返答を取り込む・M365 Copilot のアプリで判定する)
 #[derive(Debug, Clone, PartialEq)]
 pub struct JudgeCliOptions {
     pub action: String,
     /// import するファイル
     pub file: Option<String>,
-    pub backend: String,
-    /// 判定に使うモデル(judge のときの --model)
+    /// m365: M365 Copilot のモデルの選択の名前(--model)
     pub model: Option<String>,
+    /// m365: 送るファイルの数の上限
     pub limit: Option<u64>,
-    pub only: Option<Vec<String>>,
-    pub concurrency: u64,
-    pub force: bool,
-    /// copilot-cli に --allow-all-tools を付けるか
-    pub allow_tools: bool,
-    /// 1 件あたりの制限時間(秒)
+    /// m365: 1 ファイルの返答を待つ秒数
     pub timeout_sec: u64,
-    /// judge では効かない絞り込みの指定(「--project」など)。judge は作ってある添付(out/bundle)を判定するので、
-    /// そのまま実行すると黙って添付の全体を判定してしまう。judge を直に実行したときは止める(judge-flow は添付を作るのに使うので消してから渡す)
+    /// judge では効かない絞り込みの指定(「--project」など)。judge は作ってある添付(out/bundle)を使うので、
+    /// そのまま実行すると黙って添付の全体を扱ってしまう。指定されたら止める
     pub ignored_filters: Vec<String>,
 }
 
-/// 依頼ごとの判定(段階 2)。run は GitHub Copilot CLI だけ(従量課金の anthropic は使わない)
+/// 依頼ごとの判定: bundle(添付ファイルと ZIP を作る)/ import / m365
 #[derive(Debug, Clone, PartialEq)]
 pub struct TurnsCliOptions {
     pub action: String,
@@ -53,12 +52,15 @@ pub struct MemoCliOptions {
     pub file: Option<String>,
 }
 
-/// atlas tasks(管理ツールのタスク)
+/// atlas tasks(管理ツールのタスク)。bundle・import・m365 は、機械で決まらなかったセッションの紐づけを外部の LLM に頼む
 #[derive(Debug, Clone, PartialEq)]
 pub struct TasksCliOptions {
     pub action: String,
-    /// link: 機械で決まらなかったセッションを LLM で紐づける
-    pub llm: bool,
+    /// import するファイル
+    pub file: Option<String>,
+    /// m365: M365 Copilot のモデルの選択の名前・送るファイルの数の上限・1 ファイルの返答を待つ秒数
+    pub model: Option<String>,
+    pub limit: Option<u64>,
     pub timeout_sec: u64,
 }
 
@@ -163,7 +165,6 @@ const OPTIONS: &[(&str, Kind)] = &[
     ("branch", Kind::Str),
     ("session", Kind::StrMulti),
     ("task", Kind::Str),
-    ("llm", Kind::Bool),
     ("notes-dir", Kind::Str),
     ("file", Kind::Str),
     ("judgments", Kind::Str),
@@ -182,10 +183,6 @@ const OPTIONS: &[(&str, Kind)] = &[
     ("vcs-mode", Kind::Str),
     ("backend", Kind::Str),
     ("limit", Kind::Str),
-    ("only", Kind::Str),
-    ("concurrency", Kind::Str),
-    ("force", Kind::Bool),
-    ("allow-tools", Kind::Bool),
     ("timeout", Kind::Str),
     ("port", Kind::Str),
     ("open", Kind::Bool),
@@ -338,6 +335,10 @@ fn split_list<'a>(items: impl IntoIterator<Item = &'a String>) -> Vec<String> {
 }
 
 pub fn parse_cli(argv: &[String]) -> Result<CliOptions, UsageError> {
+    // 前の版の tasks link --llm(このツールが LLM を呼んで紐づける)は、知らないオプションとしてではなく、代わりの手順を知らせる
+    if argv.iter().any(|a| a == "--llm") {
+        return err(format!("--llm は無くなりました。{NO_IN_TOOL_JUDGING}"));
+    }
     let (values, positionals) = parse_args(argv)?;
     let cmd = positionals.first().cloned().unwrap_or_else(|| "all".to_string());
     if !COMMANDS.contains(&cmd.as_str()) {
@@ -347,19 +348,12 @@ pub fn parse_cli(argv: &[String]) -> Result<CliOptions, UsageError> {
 
     let mut judge = None;
     if cmd == "judge" {
-        let Some(action) = positionals.get(1).cloned() else { return err("judge の後に run / import / m365 を指定してください") };
-        if !JUDGE_ACTIONS.contains(&action.as_str()) {
-            return err(format!("judge の不明な操作です: {action}(run / import / m365)"));
+        let Some(action) = positionals.get(1).cloned() else { return err("judge の後に import / m365 を指定してください") };
+        if action == "run" {
+            return err(format!("judge run は無くなりました。{NO_IN_TOOL_JUDGING}"));
         }
-        if action == "m365" {
-            for k in ["only", "concurrency", "backend"] {
-                if values.has(k) {
-                    return err(format!("--{k} は judge m365 では使えません"));
-                }
-            }
-            if values.b("force", false) {
-                return err("--force は judge m365 では使えません(判定済みのセッションは添付ファイルに入りません)");
-            }
+        if !JUDGE_ACTIONS.contains(&action.as_str()) {
+            return err(format!("judge の不明な操作です: {action}(import / m365)"));
         }
         let file = positionals.get(2).cloned();
         if action == "import" && file.is_none() {
@@ -369,36 +363,28 @@ pub fn parse_cli(argv: &[String]) -> Result<CliOptions, UsageError> {
         if positionals.len() > max_pos {
             return err(format!("余分な引数があります: {}", extra(max_pos)));
         }
-        let backend = values.s("backend").cloned().unwrap_or_else(|| "copilot-cli".into());
-        if !BACKEND_NAMES.contains(&backend.as_str()) {
-            return err(format!("不明なバックエンドです: {backend}({})", BACKEND_NAMES.join(" / ")));
-        }
-        let only = values.s("only").map(|o| split_list([o]));
-        if values.has("only") && only.as_ref().is_none_or(|o| o.is_empty()) {
-            return err("--only にセッション ID を指定してください");
-        }
-        // JS の `values.only ? … : null`: 空文字は null
-        let mut only = if values.s("only").is_some_and(|o| !o.is_empty()) { only } else { None };
-        // 絞り込みは添付を作るときのもので、judge では効かない。--session だけは judge run で --only と同じに扱う(先頭一致で添付から探す)
-        let mut ignored_filters: Vec<String> = ["project", "since", "client", "branch", "task"].iter().filter(|k| values.has(k)).map(|k| format!("--{k}")).collect();
-        if let Some(ids) = values.multi.get("session").map(split_list).filter(|s| !s.is_empty()) {
-            if action == "run" {
-                only = Some(only.unwrap_or_default().into_iter().chain(ids).collect());
-            } else {
-                ignored_filters.insert(0, "--session".into());
+        if action != "m365" {
+            for k in ["limit", "timeout"] {
+                if values.has(k) {
+                    return err(format!("--{k} は judge m365 でだけ使えます"));
+                }
             }
+        }
+        // 絞り込みは添付を作るときのもので、judge では効かない(作ってある添付の全体を扱う)
+        let mut ignored_filters: Vec<String> = ["project", "since", "client", "branch", "task"].iter().filter(|k| values.has(k)).map(|k| format!("--{k}")).collect();
+        if values.multi.get("session").map(split_list).is_some_and(|s| !s.is_empty()) {
+            ignored_filters.insert(0, "--session".into());
+        }
+        // import では --model も絞り込み(モデルで絞る)なので効かない。m365 では M365 Copilot のモデルの選択
+        if action == "import" && values.has("model") {
+            ignored_filters.push("--model".into());
         }
         judge = Some(JudgeCliOptions {
             file,
-            backend,
             model: values.s("model").cloned(),
             limit: pos_int(values.s("limit"), "--limit", 0)?,
-            only,
-            concurrency: pos_int(values.s("concurrency"), "--concurrency", 1)?.unwrap_or(1),
-            force: values.b("force", false),
-            allow_tools: values.b("allow-tools", true),
-            // m365 は 1 ファイルの返答を待つ秒数(Think Deeper は数分かかることがあるので長め)
-            timeout_sec: pos_int(values.s("timeout"), "--timeout", 1)?.unwrap_or(if action == "m365" { 900 } else { 600 }),
+            // Think Deeper は数分かかることがあるので長め
+            timeout_sec: pos_int(values.s("timeout"), "--timeout", 1)?.unwrap_or(900),
             ignored_filters,
             action,
         });
@@ -421,9 +407,12 @@ pub fn parse_cli(argv: &[String]) -> Result<CliOptions, UsageError> {
     }
     let mut turns = None;
     if cmd == "turns" {
-        let Some(action) = positionals.get(1).cloned() else { return err("turns の後に bundle / run / import / m365 を指定してください") };
+        let Some(action) = positionals.get(1).cloned() else { return err("turns の後に bundle / import / m365 を指定してください") };
+        if action == "run" {
+            return err(format!("turns run は無くなりました。{NO_IN_TOOL_JUDGING}"));
+        }
         if !TURNS_ACTIONS.contains(&action.as_str()) {
-            return err(format!("turns の不明な操作です: {action}(bundle / run / import / m365)"));
+            return err(format!("turns の不明な操作です: {action}(bundle / import / m365)"));
         }
         let file = positionals.get(2).cloned();
         if action == "import" && file.is_none() {
@@ -433,33 +422,25 @@ pub fn parse_cli(argv: &[String]) -> Result<CliOptions, UsageError> {
         if positionals.len() > max_pos {
             return err(format!("余分な引数があります: {}", extra(max_pos)));
         }
-        if values.s("backend").is_some_and(|b| b != "copilot-cli") {
-            return err("turns run は GitHub Copilot CLI(copilot-cli)でだけ回せます(ほかはチャットに貼る方法を使ってください)");
-        }
-        for k in ["only", "concurrency"] {
-            if values.has(k) {
-                return err(format!("--{k} は turns では使えません"));
-            }
-        }
-        if values.b("force", false) {
-            return err("--force は turns では使えません");
-        }
-        if action != "run" && action != "m365" {
-            for k in ["limit", "model", "timeout"] {
+        if action != "m365" {
+            for k in ["limit", "timeout"] {
                 if values.has(k) {
-                    return err(format!("--{k} は turns run と turns m365 でだけ使えます"));
+                    return err(format!("--{k} は turns m365 でだけ使えます"));
                 }
             }
         }
         if values.b("unjudged", false) && action != "bundle" {
-            return err("--unjudged は bundle と turns bundle でだけ使えます");
+            return err("--unjudged は bundle・turns bundle・tasks bundle でだけ使えます");
+        }
+        if values.b("zip", false) && action != "bundle" {
+            return err("--zip は bundle・turns bundle・tasks bundle でだけ使えます");
         }
         turns = Some(TurnsCliOptions {
             file,
             limit: pos_int(values.s("limit"), "--limit", 0)?,
             model: values.s("model").cloned(),
             unjudged: values.b("unjudged", false),
-            timeout_sec: pos_int(values.s("timeout"), "--timeout", 1)?.unwrap_or(if action == "m365" { 900 } else { 600 }),
+            timeout_sec: pos_int(values.s("timeout"), "--timeout", 1)?.unwrap_or(900),
             action,
         });
     }
@@ -490,28 +471,45 @@ pub fn parse_cli(argv: &[String]) -> Result<CliOptions, UsageError> {
     }
     let mut tasks_cmd = None;
     if cmd == "tasks" {
-        let Some(action) = positionals.get(1).cloned() else { return err("tasks の後に sync / list / link を指定してください") };
+        let Some(action) = positionals.get(1).cloned() else { return err("tasks の後に sync / list / link / bundle / import / m365 を指定してください") };
         if !TASKS_ACTIONS.contains(&action.as_str()) {
-            return err(format!("tasks の不明な操作です: {action}(sync / list / link)"));
+            return err(format!("tasks の不明な操作です: {action}(sync / list / link / bundle / import / m365)"));
         }
-        if positionals.len() > 2 {
-            return err(format!("余分な引数があります: {}", extra(2)));
+        let file = positionals.get(2).cloned();
+        if action == "import" && file.is_none() {
+            return err("tasks import には取り込むファイルを指定してください");
         }
-        if action != "link" && values.multi.contains_key("session") {
-            return err("--session は tasks link でだけ使えます");
+        let max_pos = if action == "import" { 3 } else { 2 };
+        if positionals.len() > max_pos {
+            return err(format!("余分な引数があります: {}", extra(max_pos)));
         }
-        if values.has("timeout") && !values.b("llm", false) {
-            return err("--timeout は tasks link --llm でだけ使えます");
+        if action != "bundle" && values.multi.contains_key("session") {
+            return err("--session は tasks bundle でだけ使えます");
         }
-        for k in ["since", "project", "client", "model", "branch"] {
+        for k in ["unjudged", "zip"] {
+            if values.b(k, false) && action != "bundle" {
+                return err(format!("--{k} は bundle・turns bundle・tasks bundle でだけ使えます"));
+            }
+        }
+        if action != "m365" {
+            for k in ["limit", "timeout", "model"] {
+                if values.has(k) {
+                    return err(format!("--{k} は tasks m365 でだけ使えます"));
+                }
+            }
+        }
+        for k in ["since", "project", "client", "branch"] {
             if values.has(k) {
                 return err(format!("--{k} は tasks では使えません"));
             }
         }
-        tasks_cmd = Some(TasksCliOptions { llm: values.b("llm", false), timeout_sec: pos_int(values.s("timeout"), "--timeout", 1)?.unwrap_or(600), action });
-    }
-    if values.b("llm", false) && tasks_cmd.as_ref().is_none_or(|t| t.action != "link") {
-        return err("--llm は tasks link でだけ使えます");
+        tasks_cmd = Some(TasksCliOptions {
+            file,
+            model: values.s("model").cloned(),
+            limit: pos_int(values.s("limit"), "--limit", 0)?,
+            timeout_sec: pos_int(values.s("timeout"), "--timeout", 1)?.unwrap_or(900),
+            action,
+        });
     }
     if values.has("task") && !TASK_FILTER_COMMANDS.contains(&cmd.as_str()) {
         return err(format!("--task は {} でだけ使えます", TASK_FILTER_COMMANDS.join("・")));
@@ -547,14 +545,17 @@ pub fn parse_cli(argv: &[String]) -> Result<CliOptions, UsageError> {
         if cmd != "open" && positionals.len() > 1 {
             return err(format!("コマンドは 1 つだけ指定してください: {}", positionals.join(" ")));
         }
-        for k in ["backend", "limit", "only", "concurrency", "timeout"] {
+        for k in ["limit", "timeout"] {
             if values.has(k) {
-                return err(format!("--{k} は judge run でだけ使えます"));
+                return err(format!("--{k} は judge m365・turns m365・tasks m365 でだけ使えます"));
             }
         }
-        if values.b("force", false) {
-            return err("--force は judge run でだけ使えます");
-        }
+    }
+    if values.has("backend") && cmd != "skill-draft" {
+        return err("--backend は skill-draft でだけ使えます(判定はこのツールの中では回しません)");
+    }
+    if values.has("limit") && cmd == "skill-draft" {
+        return err("--limit は judge m365・turns m365・tasks m365 でだけ使えます");
     }
     let tool_output = match values.s("tool-output").map(String::as_str).unwrap_or("fail") {
         "fail" => ToolOutput::Fail,
@@ -565,14 +566,14 @@ pub fn parse_cli(argv: &[String]) -> Result<CliOptions, UsageError> {
     if (values.has("tool-output") || values.has("max-chars")) && cmd != "export" {
         return err("--tool-output と --max-chars は export でだけ使えます");
     }
-    if values.has("per-part") && cmd != "bundle" {
-        return err("--per-part は bundle でだけ使えます");
+    if values.has("per-part") && cmd != "bundle" && !(cmd == "tasks" && tasks_cmd.as_ref().is_some_and(|t| t.action == "bundle")) {
+        return err("--per-part は bundle と tasks bundle でだけ使えます");
     }
-    if values.b("unjudged", false) && cmd != "bundle" && cmd != "turns" {
-        return err("--unjudged は bundle と turns bundle でだけ使えます");
+    if values.b("unjudged", false) && !matches!(cmd.as_str(), "bundle" | "turns" | "tasks") {
+        return err("--unjudged は bundle・turns bundle・tasks bundle でだけ使えます");
     }
-    if values.b("zip", false) && cmd != "bundle" {
-        return err("--zip は bundle でだけ使えます");
+    if values.b("zip", false) && !matches!(cmd.as_str(), "bundle" | "turns" | "tasks") {
+        return err("--zip は bundle・turns bundle・tasks bundle でだけ使えます");
     }
     let full = values.b("full", false);
     if full && cmd != "export" {
@@ -588,16 +589,6 @@ pub fn parse_cli(argv: &[String]) -> Result<CliOptions, UsageError> {
     if let Some(m) = &vcs_mode {
         if !matches!(m.as_str(), "worktree" | "committed" | "fixed") {
             return err(format!("--vcs-mode は worktree / committed / fixed のどれかです: {m}"));
-        }
-    }
-    if cmd == "tasks" {
-        for k in ["backend", "limit", "only", "concurrency"] {
-            if values.has(k) {
-                return err(format!("--{k} は tasks では使えません"));
-            }
-        }
-        if values.b("force", false) {
-            return err("--force は tasks では使えません");
         }
     }
     if values.has("config") && !matches!(cmd.as_str(), "extract" | "vcs" | "metrics" | "all" | "serve" | "open" | "tasks") {
@@ -693,56 +684,81 @@ mod tests {
         assert_eq!(o.temp_dirs, Some(vec!["t".into()]));
     }
 
-    /// judge では効かない絞り込みは覚えておき(judge を直に実行したときに止める)、--session は judge run で --only に足す
+    /// judge では効かない絞り込みは覚えておく(実行するときに止める)
     #[test]
-    fn judge_session_and_ignored_filters() {
-        let j = p(&["judge", "run", "--session", "ab12,cd", "--only", "ef"]).unwrap().judge.unwrap();
-        assert_eq!(j.only, Some(vec!["ef".into(), "ab12".into(), "cd".into()]));
-        assert!(j.ignored_filters.is_empty());
-        let j = p(&["judge", "run", "--project", "x", "--since", "2026-01-01"]).unwrap().judge.unwrap();
-        assert_eq!(j.ignored_filters, vec!["--project", "--since"]);
-        let j = p(&["judge", "import", "r.md", "--session", "ab12"]).unwrap().judge.unwrap();
-        assert_eq!((j.only, j.ignored_filters), (None, vec!["--session".to_string()]));
+    fn judge_ignored_filters() {
+        let j = p(&["judge", "import", "r.md", "--session", "ab12", "--project", "x"]).unwrap().judge.unwrap();
+        assert_eq!(j.ignored_filters, vec!["--session", "--project"]);
+        let j = p(&["judge", "m365", "--model", "Auto", "--limit", "2"]).unwrap().judge.unwrap();
+        assert_eq!((j.model.as_deref(), j.limit, j.ignored_filters.is_empty(), j.timeout_sec), (Some("Auto"), Some(2), true, 900));
+        assert_eq!(p(&["judge", "import", "r.md", "--model", "m"]).unwrap().judge.unwrap().ignored_filters, vec!["--model"]);
         // judge 以外では今までどおり(絞り込みとして使う)
         assert!(p(&["bundle", "--session", "ab12"]).unwrap().judge.is_none());
     }
 
+    /// このツールの中で判定する操作(judge run・turns run・--backend など)は無い
+    #[test]
+    fn in_tool_judging_is_gone() {
+        for args in [vec!["judge", "run"], vec!["turns", "run"]] {
+            let e = p(&args).unwrap_err().0;
+            assert!(e.contains("無くなりました") && e.contains("docs/judge.md"), "{e}");
+        }
+        assert_eq!(p(&["judge"]).unwrap_err().0, "judge の後に import / m365 を指定してください");
+        for (args, want) in [
+            (vec!["judge", "m365", "--backend", "copilot-cli"], "--backend は skill-draft でだけ使えます"),
+            (vec!["build", "--limit", "1"], "--limit は judge m365・turns m365・tasks m365 でだけ使えます"),
+            (vec!["judge", "import", "r.md", "--limit", "1"], "--limit は judge m365 でだけ使えます"),
+            (vec!["turns", "bundle", "--timeout", "1"], "--timeout は turns m365 でだけ使えます"),
+            (vec!["skill-draft", "1", "--limit", "1"], "--limit は judge m365・turns m365・tasks m365 でだけ使えます"),
+        ] {
+            assert!(p(&args).unwrap_err().0.starts_with(want), "{args:?}");
+        }
+        for opt in ["--only", "--force", "--concurrency", "--no-allow-tools"] {
+            assert!(p(&["judge", "m365", opt]).unwrap_err().0.starts_with(&format!("Unknown option '{opt}'")), "{opt}");
+        }
+        assert_eq!(p(&["skill-draft", "1", "--backend", "anthropic"]).unwrap().skill_draft.unwrap().backend, "anthropic");
+    }
+
     #[test]
     fn judge_and_errors() {
-        let o = p(&["judge", "run", "--limit", "3", "--no-allow-tools"]).unwrap();
-        let j = o.judge.unwrap();
-        assert_eq!(j.limit, Some(3));
-        assert!(!j.allow_tools);
-        assert_eq!(j.timeout_sec, 600);
-        assert_eq!(p(&["judge", "m365"]).unwrap().judge.unwrap().timeout_sec, 900);
+        let o = p(&["judge", "m365", "--limit", "3"]).unwrap();
+        assert_eq!(o.judge.unwrap().limit, Some(3));
         assert_eq!(p(&["nope"]).unwrap_err().0, "不明なコマンドです: nope");
-        assert_eq!(p(&["build", "--limit", "1"]).unwrap_err().0, "--limit は judge run でだけ使えます");
-        assert_eq!(p(&["judge", "run", "--limit", "1.5"]).unwrap_err().0, "--limit には 0 以上の整数を指定してください: 1.5");
+        assert_eq!(p(&["judge", "m365", "--limit", "1.5"]).unwrap_err().0, "--limit には 0 以上の整数を指定してください: 1.5");
         assert!(p(&["build", "--bogus"]).unwrap_err().0.starts_with("Unknown option '--bogus'"));
         assert_eq!(p(&["build", "--since", "yesterday"]).unwrap_err().0, "--since の日時を解釈できません: yesterday");
         assert!(p(&["-h"]).unwrap().help);
+        // turns bundle と tasks bundle にも ZIP がある
+        assert!(p(&["turns", "bundle", "--unjudged", "--zip"]).unwrap().zip);
+        assert_eq!(p(&["turns", "import", "x.json", "--zip"]).unwrap_err().0, "--zip は bundle・turns bundle・tasks bundle でだけ使えます");
+        assert_eq!(p(&["export", "--zip"]).unwrap_err().0, "--zip は bundle・turns bundle・tasks bundle でだけ使えます");
     }
 
     #[test]
     fn tasks_command_and_task_filter() {
-        let t = p(&["tasks", "link", "--llm", "--session", "ab"]).unwrap();
-        assert_eq!(t.tasks_cmd, Some(TasksCliOptions { action: "link".into(), llm: true, timeout_sec: 600 }));
-        assert_eq!(t.sessions, Some(vec!["ab".into()]));
+        let t = p(&["tasks", "bundle", "--session", "ab", "--zip", "--per-part", "3", "--unjudged"]).unwrap();
+        assert_eq!(t.tasks_cmd, Some(TasksCliOptions { action: "bundle".into(), file: None, model: None, limit: None, timeout_sec: 900 }));
+        assert_eq!((t.sessions, t.zip, t.per_part, t.unjudged), (Some(vec!["ab".into()]), true, Some(3), true));
+        assert_eq!(p(&["tasks", "import", "reply.md"]).unwrap().tasks_cmd.unwrap().file.as_deref(), Some("reply.md"));
+        assert_eq!(p(&["tasks", "import"]).unwrap_err().0, "tasks import には取り込むファイルを指定してください");
+        let m = p(&["tasks", "m365", "--model", "Auto", "--limit", "1", "--timeout", "60"]).unwrap().tasks_cmd.unwrap();
+        assert_eq!((m.model.as_deref(), m.limit, m.timeout_sec), (Some("Auto"), Some(1), 60));
         assert_eq!(p(&["tasks", "sync", "--config", "c.json"]).unwrap().config.as_deref(), Some("c.json"));
         assert_eq!(p(&["metrics", "--config", "c.json"]).unwrap().config.as_deref(), Some("c.json"));
         assert!(p(&["build", "--config", "c.json"]).unwrap_err().0.starts_with("--config は extract・vcs・metrics"));
-        assert_eq!(p(&["tasks"]).unwrap_err().0, "tasks の後に sync / list / link を指定してください");
+        assert_eq!(p(&["tasks"]).unwrap_err().0, "tasks の後に sync / list / link / bundle / import / m365 を指定してください");
         assert!(p(&["tasks", "nope"]).unwrap_err().0.starts_with("tasks の不明な操作です"));
-        assert_eq!(p(&["tasks", "list", "--session", "a"]).unwrap_err().0, "--session は tasks link でだけ使えます");
-        assert_eq!(p(&["tasks", "sync", "--llm"]).unwrap_err().0, "--llm は tasks link でだけ使えます");
-        assert_eq!(p(&["build", "--llm"]).unwrap_err().0, "--llm は tasks link でだけ使えます");
-        assert_eq!(p(&["tasks", "link", "--limit", "1"]).unwrap_err().0, "--limit は tasks では使えません");
-        assert_eq!(p(&["tasks", "link", "--timeout", "5"]).unwrap_err().0, "--timeout は tasks link --llm でだけ使えます");
+        assert_eq!(p(&["tasks", "list", "--session", "a"]).unwrap_err().0, "--session は tasks bundle でだけ使えます");
+        assert_eq!(p(&["tasks", "link", "--zip"]).unwrap_err().0, "--zip は bundle・turns bundle・tasks bundle でだけ使えます");
+        assert_eq!(p(&["tasks", "link", "--per-part", "2"]).unwrap_err().0, "--per-part は bundle と tasks bundle でだけ使えます");
+        assert!(p(&["tasks", "link", "--llm"]).unwrap_err().0.starts_with("--llm は無くなりました。"));
+        assert_eq!(p(&["tasks", "link", "--limit", "1"]).unwrap_err().0, "--limit は tasks m365 でだけ使えます");
+        assert_eq!(p(&["tasks", "bundle", "--timeout", "5"]).unwrap_err().0, "--timeout は tasks m365 でだけ使えます");
         assert_eq!(p(&["build", "--task", " T-1 "]).unwrap().task.as_deref(), Some("T-1"));
         assert_eq!(p(&["build", "--task", " "]).unwrap_err().0, "--task にタスクの ID を指定してください");
         assert!(p(&["serve", "--task", "T"]).unwrap_err().0.starts_with("--task は metrics・build"));
         // judge では効かない絞り込み(judge を直に実行したときは止める)
-        assert_eq!(p(&["judge", "run", "--task", "T"]).unwrap().judge.unwrap().ignored_filters, vec!["--task"]);
+        assert_eq!(p(&["judge", "m365", "--task", "T"]).unwrap().judge.unwrap().ignored_filters, vec!["--task"]);
     }
 
     #[test]

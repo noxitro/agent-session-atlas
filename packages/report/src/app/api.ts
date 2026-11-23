@@ -176,12 +176,23 @@ export const foldersApi = {
   },
 };
 
-export type JobKind = 'refresh' | 'judge' | 'full' | 'bundle' | 'bundle-zip' | 'export' | 'turn-bundle' | 'turn-judge' | 'm365' | 'turn-m365' | 'task-link';
-/** 何を判定するか: 工数(セッションごと)/ 依頼ごとの採用・種類・工程 */
-export type JudgeTarget = 'effort' | 'turns';
-/** 外の LLM への渡し方: チャットに添付ファイルを貼る / ZIP にまとめてエージェントに渡す(工数の判定だけ) */
+export type JobKind =
+  | 'refresh'
+  | 'full'
+  | 'bundle'
+  | 'bundle-zip'
+  | 'export'
+  | 'turn-bundle'
+  | 'turn-bundle-zip'
+  | 'task-bundle'
+  | 'task-bundle-zip'
+  | 'm365'
+  | 'turn-m365'
+  | 'task-m365';
+/** 何を判定するか: 工数(セッションごと)/ 依頼ごとの採用・種類・工程 / 管理ツールのタスクへの紐づけ(セッションごと) */
+export type JudgeTarget = 'effort' | 'turns' | 'tasks';
+/** 外の LLM への渡し方: チャットに添付ファイルを貼る / ZIP にまとめてエージェントに渡す(どの判定にもある) */
 export type JudgeVia = 'chat' | 'zip';
-export type JobBackend = 'copilot-cli';
 export interface JobInfo {
   id: string;
   kind: JobKind;
@@ -190,22 +201,14 @@ export interface JobInfo {
   endedAt: string | null;
   exitCode: number | null;
   log: string[];
-  /** session: 判定した範囲(1 セッション。無ければすべて)。force: 判定済みも判定し直す(工数の判定で session のときだけ) */
-  target: { limit?: number; backend?: JobBackend; id?: string; session?: string; force?: boolean };
+  /** id: 全文記録を作ったセッション */
+  target: { id?: string };
 }
-/** 判定する範囲: 1 セッション(無ければすべて) */
-export type JudgeScope = { session: string };
-export type JobRequest =
-  | { kind: 'refresh' }
-  | ({ kind: 'judge'; limit: number; force?: boolean } & Partial<JudgeScope>)
-  | { kind: 'bundle' }
-  | { kind: 'bundle-zip' }
-  | { kind: 'export' }
-  | { kind: 'turn-bundle' }
-  | ({ kind: 'turn-judge'; limit: number } & Partial<JudgeScope>)
-  | { kind: 'm365' }
-  | { kind: 'turn-m365' }
-  | ({ kind: 'task-link' } & Partial<JudgeScope>);
+/** 中身を指定しないで始めるジョブ(全文記録の作成のほか) */
+export type PlainJobKind = Exclude<JobKind, 'full'>;
+export type JobRequest = { kind: PlainJobKind } | { kind: 'full'; id: string };
+
+const q = (target: JudgeTarget): string => (target === 'effort' ? '' : `?target=${target}`);
 
 export const jobsApi = {
   /** 最後のジョブ(まだ無ければ null) */
@@ -218,29 +221,21 @@ export const jobsApi = {
   cancel(token: string): Promise<JobInfo> {
     return connect(fetch('api/jobs/current/cancel', { method: 'POST', headers: headers(token) }), (r) => parse<JobInfo>(r));
   },
-  /** 判定の確認ダイアログの件数(工数: 依頼の記録があるセッション / 依頼: 依頼ごとの記録がある依頼。そのうち未判定のもの)。scope があればその中だけ */
-  judgePreview(token: string, target: JudgeTarget = 'effort', scope?: JudgeScope): Promise<JudgePreview> {
-    const q = new URLSearchParams();
-    if (target === 'turns') q.set('target', 'turns');
-    if (scope?.session) q.set('session', scope.session);
-    const s = q.toString();
-    return connect(fetch('api/jobs/judge-preview' + (s ? `?${s}` : ''), { cache: 'no-store', headers: headers(token) }), (r) => parse(r));
+  /**
+   * 添付ファイルを作る前に出す件数(工数: 依頼の記録があるセッション / 依頼: 依頼ごとの記録がある依頼 / タスク: LLM に頼むセッション。
+   * pending はそのうち未判定のもの)
+   */
+  judgePreview(token: string, target: JudgeTarget = 'effort'): Promise<JudgePreview> {
+    return connect(fetch('api/jobs/judge-preview' + q(target), { cache: 'no-store', headers: headers(token) }), (r) => parse(r));
   },
 };
 
-/** 判定の確認ダイアログの件数と、判定に使うモデル(設定の judgeModel。null は Copilot の既定のモデル) */
+/** 判定の件数 */
 export interface JudgePreview {
   eligible: number;
   judged: number;
   pending: number;
   withoutTurns?: number;
-  /** 依頼ごとの判定(target=turns)で 1 回にまとめる依頼の数の上限。古いサーバは返さない */
-  chunk?: number;
-  model?: string | null;
-  /** 自分の API キーのモデル(BYOK。<プロバイダー名>/<モデル ID>)か。Copilot の AI クレジットは使わない */
-  byok?: boolean;
-  /** 設定ファイルを読めなかったときの理由 */
-  modelError?: string | null;
 }
 
 /** チャットでの判定の添付ファイル(bundle/parts/)。path は atlas.html からの相対パス */
@@ -260,12 +255,14 @@ export interface ChatParts {
   unjudgedOnly?: boolean;
   count?: number;
   parts?: ChatPart[];
-  /** 依頼の判定で、採用を判定できる依頼の数(turns)と、それが入っている先頭のファイルの数(parts)。古い添付には無い */
-  decidable?: { turns: number; parts: number };
+  /** 依頼の判定で、採用を判定できる依頼の数(turns)と、それが入っている先頭のファイルの数(parts)・先頭の塊の数(chunks。ZIP の中)。古い添付には無い */
+  decidable?: { turns: number; parts: number; chunks?: number };
   /** M365 Copilot のアプリを自動で操作できるか(サーバが Windows のとき) */
   canAutomate?: boolean;
-  /** 今の束をまとめた ZIP(工数の判定で、あるときだけ)。path は atlas.html からの相対パス */
+  /** 今の束をまとめた ZIP(あるときだけ)。path は atlas.html からの相対パス */
   zip?: { path: string; bytes: number; modifiedAt: string };
+  /** 束の中の判定済みの数(count のうち。タスクは紐づけのあるセッション) */
+  judged?: number;
 }
 export interface ChatImportResult {
   imported: number;
@@ -273,6 +270,10 @@ export interface ChatImportResult {
   duplicates: number;
   unknownIds: string[];
   total: number;
+  /** タスクの紐づけで、書かなかったセッションの数(手動か前に LLM で決めた紐づけ、「どのタスクでもない」の答えに対するタスクのある機械の紐づけがあった) */
+  kept?: number;
+  /** 取り込みで除いたもの(候補に無い ID など)と、書かなかったセッションの知らせ(古いサーバは返さない) */
+  notices?: string[];
   parts: ChatParts;
 }
 /** 取り込みの失敗。problems は形が合わない項目の一覧(返答のどこが違うか) */
@@ -284,9 +285,7 @@ export class ChatImportError extends Error {
   }
 }
 
-const q = (target: JudgeTarget): string => (target === 'turns' ? '?target=turns' : '');
-
-/** チャットでの判定。target が turns なら依頼ごとの判定(sessions / judged は依頼の数) */
+/** チャットでの判定。target が turns なら依頼ごとの判定(sessions / judged は依頼の数)、tasks なら管理ツールのタスクへの紐づけ */
 export const chatJudgeApi = {
   parts(token: string, target: JudgeTarget = 'effort'): Promise<ChatParts> {
     return connect(fetch('api/judge/parts' + q(target), { cache: 'no-store', headers: headers(token) }), (r) => parse<ChatParts>(r));
@@ -313,7 +312,7 @@ export const chatJudgeApi = {
 export interface TasksPayload {
   readOnly: boolean;
   tasks: TasksReport | null;
-  /** LLM で紐づけるときに聞くセッションの数(依頼の記録があって、紐づけの無いもの)。読むだけの画面では 0 */
+  /** LLM に紐づけを頼むセッションの数(依頼の記録があって、紐づけの無いもの)。読むだけの画面では 0 */
   unresolved: number;
 }
 

@@ -1,16 +1,17 @@
-//! 管理ツールのタスクとの連携(atlas tasks sync / list / link と、集計のたびの処理)。
+//! 管理ツールのタスクとの連携(atlas tasks sync / list / link / bundle / import / m365 と、集計のたびの処理)。
 //! - 集計(build・export・all。画面の「集計し直す」も all)のたびに、設定の XML を読んでタスクの状態(tasks.json)を更新し、
 //!   機械の紐づけ(task-links.json)を決め直す。XML を読めなければ前の状態のまま続け、注意をレポートに出す
-//! - LLM の紐づけは頼んだときだけ(atlas tasks link --llm、画面の「タスクを LLM で紐づける」)。モデルの呼び方は判定と同じ
+//! - LLM の紐づけは頼んだときだけで、このツールは LLM を呼ばない。紐づけの無いセッションを束(tasks bundle。<out>/task-bundle/)にして、
+//!   工数の判定と同じく外部の LLM に渡し(チャットに貼る・ZIP をエージェントに渡す・M365 Copilot の自動操作)、返答を取り込む(tasks import)
 //! - 送り先から集計した(読むだけの)出力先では、XML は読まず、送った人がセッションごとに添えた記録だけを使う
 
 use super::Log;
-use crate::args::{CliOptions, JudgeCliOptions, TasksCliOptions};
-use crate::config::{load_config, resolve_judge_model, CONFIG_FILE};
+use crate::args::{CliOptions, TasksCliOptions};
+use crate::config::{load_config, CONFIG_FILE};
 use crate::paths::{resolve, Paths, REPO_ROOT};
 use anyhow::{bail, Result};
 use atlas_core::types::{SessionRecord, SessionsFile};
-use atlas_judge::task_link::{link_with_llm, LinkQuery};
+use atlas_judge::task_link::{build_task_bundle, parse_task_reply, read_task_bundle_manifest, task_zip_names, LinkQuery, TaskBundleManifest, TaskBundleOptions, PROMPTS_MAX};
 use atlas_report::judgments::JudgmentsIndex;
 use atlas_report::tasks::links::{apply_machine, has_text, llm_candidates, llm_eligible, load_links, update_links, LinkSource, LinksFile, MachineMatch, MachineSummary, Matcher, SessionText, TaskLink};
 use atlas_report::tasks::metrics::SessionFacts;
@@ -18,6 +19,7 @@ use atlas_report::tasks::sender::{read_sender_tasks, SenderTask};
 use atlas_report::tasks::state::{load_tasks, sync_tasks, TasksFile};
 use atlas_report::tasks::view::{local_view, sender_view, session_facts, LocalInputs, TasksView};
 use atlas_report::tasks::{task_links_path, tasks_path, TaskSource, WorkHours};
+use indexmap::IndexMap;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -252,7 +254,7 @@ fn require_source(cfg: &TaskConfig) -> Result<&TaskSource> {
     cfg.source.as_ref().ok_or_else(|| anyhow::anyhow!("設定ファイル(atlas.config.json)に tasks がありません。管理ツールが書き出した XML を \"tasks\": {{ \"file\": \"…\" }} で指定してください(docs/outputs.md)"))
 }
 
-/// atlas tasks sync / list / link。戻り値は、レポートを作り直したほうがよいか(紐づけが変わった)
+/// atlas tasks sync / list / link / bundle / import。戻り値は、レポートを作り直したほうがよいか(紐づけが変わった)
 pub fn run_tasks(o: &CliOptions, p: &Paths, t: &TasksCliOptions, log: Log<'_>) -> Result<bool> {
     let cfg = load_task_config(o.config.as_deref());
     match t.action.as_str() {
@@ -304,117 +306,222 @@ pub fn run_tasks(o: &CliOptions, p: &Paths, t: &TasksCliOptions, log: Log<'_>) -
             }
             Ok(false)
         }
-        _ => run_link(o, p, t, log),
+        "bundle" => {
+            run_task_bundle(o, p, log)?;
+            Ok(false)
+        }
+        "import" => run_task_import(p, t, log),
+        _ => run_link(p, log),
     }
 }
 
-fn run_link(o: &CliOptions, p: &Paths, t: &TasksCliOptions, log: Log<'_>) -> Result<bool> {
+fn run_link(p: &Paths, log: Log<'_>) -> Result<bool> {
+    let (file, state) = sessions_and_tasks(p)?;
+    let texts: Vec<SessionText> = file.sessions.iter().map(SessionText::of).collect();
+    let now = atlas_core::jsdate::now_iso();
+    let (m, _) = update_links(&task_links_path(&p.notes), |links| apply_machine(links, &texts, &state, &now))?;
+    log(&format!("tasks link: {}", machine_line(&m)));
+    Ok(m.changed())
+}
+
+/// 集計(sessions.json)とタスクの状態(tasks.json)。どちらかが無ければ、何をすればよいかを書いて止める
+fn sessions_and_tasks(p: &Paths) -> Result<(SessionsFile, TasksFile)> {
     let Some(file) = read_sessions(p)? else { bail!("{} がありません。先に atlas all を実行してください", p.sessions.display()) };
     let state = load_tasks(&tasks_path(&p.notes));
     if let Some(w) = state.warnings.first() {
         bail!("{w}");
     }
-    let state = state.file;
-    if state.tasks.is_empty() {
+    if state.file.tasks.is_empty() {
         bail!("タスクがまだありません({})。先に atlas tasks sync で管理ツールの XML を読んでください", tasks_path(&p.notes).display());
     }
-    let links_path = task_links_path(&p.notes);
+    Ok((file, state.file))
+}
+
+/// LLM に頼むセッションでない理由(--session で指したとき。頼むなら None)
+fn not_eligible_reason(links: &LinksFile, state: &TasksFile, s: &SessionText, empty: bool) -> Option<&'static str> {
+    match links.links.get(&s.id).map(|l| l.source) {
+        Some(LinkSource::Manual) => return Some("手動で紐づけてあるので、LLM には頼みません(画面で「自動に戻す」を押すと頼めます)"),
+        Some(LinkSource::Llm) => return Some("前に LLM で紐づけてあるので、もう一度は頼みません(画面で「自動に戻す」を押すと頼み直せます)"),
+        Some(LinkSource::Machine) => return Some("機械で紐づいたので、LLM には頼みません"),
+        None => {}
+    }
+    if empty {
+        return Some("開いただけのセッション(依頼・ツール・応答が無い)なので、頼みません");
+    }
+    if !has_text(&s.title, &s.prompts) {
+        return Some("題名も依頼の文も無いので、頼みません");
+    }
+    if !llm_eligible(links, state, &s.id, empty, true, s.start_ms) {
+        return Some("候補のタスクが無いので、頼みません");
+    }
+    None
+}
+
+/// LLM に頼むセッションが無かったときの知らせ(画面も、ジョブのログのこの文で知らせる)
+pub const NO_TASK_BUNDLE: &str = "LLM に頼むセッションはありません";
+
+/// LLM に渡す依頼の文: 最初の依頼から PROMPTS_MAX 件まで(依頼 1 件が 1 つ。改行を含む依頼も 1 つ)。
+/// スナップショットのログ(events.jsonl)の本体の依頼を読み、無ければ sessions.json の最初の依頼と、各依頼の先頭(300 字まで)で代える
+/// (sessions.json の各依頼の先頭の 1 件目は最初の依頼と同じ依頼なので、最初の依頼の方を使う)
+pub fn task_prompts(snapshot: &Path, r: &SessionRecord) -> Vec<String> {
+    let keep = |v: Vec<String>| -> Vec<String> { v.into_iter().filter(|x| !x.trim().is_empty()).take(PROMPTS_MAX).collect() };
+    if let Ok(Some(t)) = atlas_judge::turn_bundle::collect_turn_texts(snapshot, &r.id) {
+        let v = keep(t.requests);
+        if !v.is_empty() {
+            return v;
+        }
+    }
+    let requests = &r.analysis.requests;
+    let mut v: Vec<String> = Vec::new();
+    let rest: &[String] = match r.first_user_message.as_deref().filter(|f| !f.trim().is_empty()) {
+        Some(f) => {
+            v.push(f.to_string());
+            match requests.first() {
+                Some(h) if f.starts_with(h.as_str()) => &requests[1..],
+                _ => &requests[..],
+            }
+        }
+        None => &requests[..],
+    };
+    v.extend(rest.iter().cloned());
+    keep(v)
+}
+
+/// atlas tasks bundle: 機械の紐づけを決め直してから、紐づけの無いセッション(links::llm_eligible。--session ならその中)を、
+/// 外部の LLM に頼む束(<out>/task-bundle/。--zip なら task-bundle.zip も)にする。LLM は呼ばない。
+/// 頼むセッションが 1 つも無ければ、前に作った束と ZIP には触らずに None(--session で紐づいたセッションだけを指したときなど)
+pub fn run_task_bundle(o: &CliOptions, p: &Paths, log: Log<'_>) -> Result<Option<TaskBundleManifest>> {
+    let (file, state) = sessions_and_tasks(p)?;
     let texts: Vec<SessionText> = file.sessions.iter().map(SessionText::of).collect();
     let now = atlas_core::jsdate::now_iso();
-    let (m, links) = update_links(&links_path, |links| apply_machine(links, &texts, &state, &now))?;
-    let mut changed = m.changed();
-    log(&format!("tasks link: {}", machine_line(&m)));
-    if !t.llm {
-        return Ok(changed);
-    }
-    // 対象: --session があればそのセッション(手動の紐づけは変えない)、無ければ紐づけの無いセッション(依頼の記録があるもの)
+    let (m, links) = update_links(&task_links_path(&p.notes), |links| apply_machine(links, &texts, &state, &now))?;
+    log(&format!("tasks bundle: {}", machine_line(&m)));
+    // 対象: 紐づけの無いセッションのうち、開いただけのもの(依頼 0・ツール 0・応答 0)・題名も依頼の文も無いもの・候補のタスクが無いものを除く
+    // (画面の件数と同じ決め方。links::llm_eligible)。--session ならその中だけ
+    let empty: HashSet<&str> = file.sessions.iter().filter(|s| atlas_core::metrics::is_empty_session(s)).map(|s| s.id.as_str()).collect();
+    let eligible = |s: &SessionText| llm_eligible(&links, &state, &s.id, empty.contains(s.id.as_str()), has_text(&s.title, &s.prompts), s.start_ms);
     let targets: Vec<&SessionText> = match o.sessions.as_ref().filter(|s| !s.is_empty()) {
         Some(prefixes) => {
             let known: Vec<&str> = texts.iter().map(|s| s.id.as_str()).collect();
             let ids = atlas_report::ids::resolve_id_prefixes(&known, prefixes)?;
             let mut v = Vec::new();
             for id in &ids {
-                if links.links.get(id).is_some_and(|l| l.source == LinkSource::Manual) {
-                    log(&format!("tasks link: {id} は手動で紐づけてあるので、LLM には聞きません(画面で「自動に戻す」と聞けます)"));
-                    continue;
+                let Some(s) = texts.iter().find(|s| &s.id == id) else { continue };
+                match not_eligible_reason(&links, &state, s, empty.contains(id.as_str())) {
+                    Some(why) => log(&format!("tasks bundle: {id} は{why}")),
+                    None => v.push(s),
                 }
-                v.extend(texts.iter().filter(|s| &s.id == id));
             }
             v
         }
-        None => {
-            // 紐づけの無いセッションのうち、開いただけのもの(依頼 0・ツール 0・応答 0)・題名も依頼の文も無いもの・候補のタスクが無いものは聞かない
-            // (画面の確認に出す件数と同じ決め方。links::llm_eligible)
-            let empty: HashSet<&str> = file.sessions.iter().filter(|s| atlas_core::metrics::is_empty_session(s)).map(|s| s.id.as_str()).collect();
-            texts.iter().filter(|s| llm_eligible(&links, &state, &s.id, empty.contains(s.id.as_str()), has_text(&s.title, &s.prompts), s.start_ms)).collect()
-        }
+        None => texts.iter().filter(|s| eligible(s)).collect(),
     };
-    if targets.is_empty() {
-        log("tasks link: LLM に聞くセッションはありません");
-        return Ok(changed);
-    }
-    let model = resolve_judge_model(None, "tasks link", log)?;
-    let j = JudgeCliOptions {
-        action: "run".into(),
-        file: None,
-        backend: "copilot-cli".into(),
-        model: None,
-        limit: None,
-        only: None,
-        concurrency: 1,
-        force: false,
-        allow_tools: true,
-        timeout_sec: t.timeout_sec,
-        ignored_filters: vec![],
-    };
-    let backend = super::judge::make_backend(&j, model)?;
-    log(&format!("tasks link: LLM で紐づけます {} セッション(バックエンド {}{})", targets.len(), backend.name(), backend.model().map(|m| format!("({m})")).unwrap_or_default()));
-    let mut failed: Vec<String> = Vec::new();
-    let mut asked = 0usize;
     let matcher = Matcher::new(&state);
-    for (i, s) in targets.iter().enumerate() {
-        // 候補が無ければ聞かず、何も書かない(後でタスクが増えたら、機械か LLM で決められるように)
-        let Some(q) = llm_query(&state, &matcher, s) else {
-            log(&format!("tasks link: [{}/{}] {} 候補のタスクが無いので聞きません", i + 1, targets.len(), s.id));
-            continue;
-        };
-        asked += 1;
-        match link_with_llm(backend.as_ref(), &q) {
-            Ok(a) => {
-                log(&format!(
-                    "tasks link: [{}/{}] {} → {}(確信度 {})",
-                    i + 1,
-                    targets.len(),
-                    s.id,
-                    if a.task_ids.is_empty() { "どのタスクでもない".to_string() } else { a.task_ids.join(", ") },
-                    atlas_core::js::num_to_string(a.confidence)
-                ));
-                // 1 件ずつ、ロックの中で読み直してこのセッションの分だけを書く(途中で止めても決まった分は残す。
-                // 聞いている間に画面で手動で紐づけたものは変えない)
-                let link = TaskLink { task_ids: a.task_ids, source: LinkSource::Llm, reason: a.reason, confidence: Some(a.confidence), at: atlas_core::jsdate::now_iso() };
-                if write_llm_link(&links_path, &s.id, link)? {
-                    changed = true;
-                } else {
-                    log(&format!("tasks link: {} は聞いている間に手動で紐づけられたので、LLM の答えは書きません", s.id));
-                }
-            }
-            Err(e) => {
-                log(&format!("tasks link: [{}/{}] {} 失敗: {e:#}", i + 1, targets.len(), s.id));
-                failed.push(s.id.clone());
-            }
-        }
+    let records: HashMap<&str, &SessionRecord> = file.sessions.iter().map(|r| (r.id.as_str(), r)).collect();
+    let queries: Vec<LinkQuery> = targets.iter().filter_map(|s| llm_query(&state, &matcher, s, records.get(s.id.as_str()).map(|r| task_prompts(&p.snapshot, r)).unwrap_or_default())).collect();
+    if queries.is_empty() {
+        // 空の束で前の束(と ZIP)を置き換えない。前の束への返答は、そのまま取り込める
+        log(&format!(
+            "tasks bundle: {NO_TASK_BUNDLE}(紐づけの無いセッションがありません)。前に作った束{}はそのまま残します",
+            if p.task_bundle.join("manifest.json").exists() { format!("({})", p.task_bundle.display()) } else { String::new() }
+        ));
+        return Ok(None);
     }
-    if !failed.is_empty() {
-        log(&format!("tasks link: LLM で紐づけられなかったセッション {} 件(もう一度実行すると聞き直します)", failed.len()));
+    let mut scope: IndexMap<String, Option<String>> = IndexMap::new();
+    scope.insert("session".into(), o.sessions.as_ref().filter(|s| !s.is_empty()).map(|s| s.join(",")));
+    let bm = build_task_bundle(&queries, &TaskBundleOptions { bundle_dir: p.task_bundle.clone(), per_part: o.per_part.map(|n| n as usize), boundary: None, scope, now: None })?;
+    log(&format!(
+        "tasks bundle: 紐づけの無いセッション {} 件を、チャットに添付する {} ファイル(parts/。{} 件ずつ)と、フォルダ(ZIP)ごと渡すときのパケット(sessions/)にしました → {}",
+        bm.count,
+        bm.parts.len(),
+        bm.per_part,
+        p.task_bundle.display()
+    ));
+    if let Some((path, z)) = super::bundle::zip_or_drop(&p.task_bundle, &p.out.join(crate::paths::TASK_BUNDLE_DIR), o.zip, &task_zip_names(&bm), "tasks bundle", "--session で対象を絞ってください", log)? {
+        log(&format!("tasks bundle: ZIP にまとめました({} ファイル、{}、無圧縮。parts/ は入れていません)→ {}", z.files, super::mb(z.bytes), path.display()));
+        log("tasks bundle: フォルダやファイルを読めるエージェントに渡し、INSTRUCTIONS.md を最初に読ませてください。返ってきた JSON は atlas tasks import <ファイル> で取り込みます");
     }
-    if asked > 0 && failed.len() == asked {
-        bail!("LLM で 1 件も紐づけられませんでした");
-    }
-    Ok(changed)
+    Ok(Some(bm))
 }
 
-/// LLM に聞く中身。機械の紐づけで決めなかったときに当たったタスクを候補の先頭に置く(上限で切られないように)。候補が無ければ None(聞かない)
-pub fn llm_query(state: &TasksFile, matcher: &Matcher<'_>, s: &SessionText) -> Option<LinkQuery> {
+/// 返答の取り込みの結果
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TaskImportSummary {
+    /// 書いたセッション
+    pub imported: usize,
+    /// 書かなかったセッション: 取り込む前に手動で紐づけてあった・LLM で紐づけてあった・
+    /// 答えが「どのタスクでもない」で、機械がタスクに紐づけてあった(束を作った後に機械の当たりが決まったもの)
+    pub kept_manual: Vec<String>,
+    pub kept_llm: Vec<String>,
+    pub kept_machine: Vec<String>,
+    /// 返答の中の同じセッションの重なり(後ろのものを使った)
+    pub duplicates: usize,
+    /// 除いた ID などの知らせ
+    pub notes: Vec<String>,
+}
+
+/// 外部の LLM の返答(JSON か、JSON のコードブロックを含む文)を、作った束(<out>/task-bundle/manifest.json)と照らして確かめ、
+/// task-links.json に紐づけの出所 LLM で書く。形の合わない項目が 1 件でもあれば何も書かない(JudgmentValidationError)。
+/// ロックの中で読み直し、手動の紐づけと、前に LLM で決めた紐づけは変えない(取り込む前に決まったものを、古い答えで上書きしない)。
+/// 機械の紐づけは、タスクを選んだ答えなら置き換える(LLM は機械より先に使う)。「どのタスクでもない」の答えでは、タスクのある機械の紐づけを消さない
+pub fn import_task_links_text(text: &str, notes: &Path, bundle_dir: &Path) -> Result<TaskImportSummary> {
+    let m = read_task_bundle_manifest(bundle_dir)?;
+    let reply = parse_task_reply(text, &m)?;
+    let now = atlas_core::jsdate::now_iso();
+    let (s, _) = update_links(&task_links_path(notes), |l| {
+        let mut s = TaskImportSummary { duplicates: reply.duplicates, notes: reply.notes.clone(), ..Default::default() };
+        for x in &reply.links {
+            match l.links.get(&x.session_id).map(|e| e.source) {
+                Some(LinkSource::Manual) => s.kept_manual.push(x.session_id.clone()),
+                Some(LinkSource::Llm) => s.kept_llm.push(x.session_id.clone()),
+                Some(LinkSource::Machine) if x.task_ids.is_empty() && l.links.get(&x.session_id).is_some_and(|e| !e.is_none()) => s.kept_machine.push(x.session_id.clone()),
+                _ => {
+                    l.links.insert(x.session_id.clone(), TaskLink { task_ids: x.task_ids.clone(), source: LinkSource::Llm, reason: x.reason.clone(), confidence: Some(x.confidence), at: now.clone() });
+                    s.imported += 1;
+                }
+            }
+        }
+        s
+    })?;
+    Ok(s)
+}
+
+/// 取り込みの結果のログの行
+pub fn import_lines(cmd: &str, s: &TaskImportSummary, links_path: &Path) -> Vec<String> {
+    let mut v = vec![format!(
+        "{cmd}: {} セッションの紐づけを取り込みました(出所 LLM)→ {}{}",
+        s.imported,
+        links_path.display(),
+        if s.duplicates > 0 { format!("。返答の中の重なり {} 件は後ろのものを使いました", s.duplicates) } else { String::new() }
+    )];
+    let ids = |xs: &[String]| xs.iter().take(5).cloned().collect::<Vec<_>>().join(", ") + if xs.len() > 5 { " …" } else { "" };
+    if !s.kept_manual.is_empty() {
+        v.push(format!("{cmd}: 手動で紐づけてあるので書かなかったセッション {} 件: {}", s.kept_manual.len(), ids(&s.kept_manual)));
+    }
+    if !s.kept_llm.is_empty() {
+        v.push(format!("{cmd}: 前に LLM で紐づけてあるので書かなかったセッション {} 件: {}(頼み直すときは、画面で「自動に戻す」を押してから束を作り直します)", s.kept_llm.len(), ids(&s.kept_llm)));
+    }
+    if !s.kept_machine.is_empty() {
+        v.push(format!("{cmd}: 答えは「どのタスクでもない」でしたが、機械がタスクに紐づけてあるので書かなかったセッション {} 件: {}", s.kept_machine.len(), ids(&s.kept_machine)));
+    }
+    for n in &s.notes {
+        v.push(format!("{cmd}: 注意 {n}"));
+    }
+    v
+}
+
+fn run_task_import(p: &Paths, t: &TasksCliOptions, log: Log<'_>) -> Result<bool> {
+    let text = atlas_judge::read_text(&resolve(t.file.as_deref().unwrap_or("")))?;
+    let s = import_task_links_text(&text, &p.notes, &p.task_bundle)?;
+    for l in import_lines("tasks import", &s, &task_links_path(&p.notes)) {
+        log(&l);
+    }
+    Ok(s.imported > 0)
+}
+
+/// LLM に頼む中身。機械の紐づけで決めなかったときに当たったタスクを候補の先頭に置く(上限で切られないように)。候補が無ければ None(頼まない)。
+/// prompts は依頼の文(依頼 1 件が 1 つ。task_prompts)
+pub fn llm_query(state: &TasksFile, matcher: &Matcher<'_>, s: &SessionText, prompts: Vec<String>) -> Option<LinkQuery> {
     let first: Vec<String> = match matcher.match_session(s) {
         MachineMatch::Many(ids) => ids,
         _ => vec![],
@@ -423,28 +530,18 @@ pub fn llm_query(state: &TasksFile, matcher: &Matcher<'_>, s: &SessionText) -> O
     if candidates.is_empty() {
         return None;
     }
-    Some(LinkQuery { session_id: s.id.clone(), title: s.title.clone(), prompts: s.prompts.split('\n').filter(|x| !x.trim().is_empty()).map(str::to_string).collect(), candidates })
+    Some(LinkQuery { session_id: s.id.clone(), title: s.title.clone(), prompts, candidates })
 }
 
-/// LLM の答えを書く。ロックの中で読み直し、このセッションの分だけを書く(聞いている間に画面で手動で紐づけたもの・ほかのセッションの紐づけは変えない)。
-/// 書いたら true、手動の紐づけがあって書かなかったら false
-pub fn write_llm_link(links_path: &Path, session: &str, link: TaskLink) -> Result<bool> {
-    let (wrote, _) = update_links(links_path, |l| {
-        if l.links.get(session).is_some_and(|x| x.source == LinkSource::Manual) {
-            return false;
-        }
-        l.links.insert(session.to_string(), link);
-        true
-    })?;
-    Ok(wrote)
-}
-
-/// atlas tasks の後に、紐づけが変わっていればレポートを作り直す(判定の通しと同じく export で)
+/// atlas tasks の後に、紐づけが変わっていればレポートを作り直す(export で)。m365 は取り込めたら作り直す
 pub fn run_tasks_command(o: &CliOptions, p: &Paths, log: Log<'_>) -> Result<super::RunResult> {
     let t = o.tasks_cmd.as_ref().ok_or_else(|| anyhow::anyhow!("tasks の操作がありません"))?;
+    if t.action == "m365" {
+        return super::run_m365_command(o, p, crate::chat_parts::ChatTarget::Tasks, t.model.as_deref(), t.limit, t.timeout_sec, log);
+    }
     let changed = run_tasks(o, p, t, log)?;
-    if t.action == "link" && changed && p.sessions.exists() {
-        let export = CliOptions { command: "export".into(), sessions: None, task: None, tasks_cmd: None, ..o.clone() };
+    if matches!(t.action.as_str(), "link" | "import") && changed && p.sessions.exists() {
+        let export = CliOptions { command: "export".into(), sessions: None, task: None, tasks_cmd: None, model: None, ..o.clone() };
         return super::run_command(&export, p, log);
     }
     Ok(super::RunResult::default())
@@ -610,47 +707,130 @@ mod tests {
         TaskLink { task_ids: task.map(str::to_string).into_iter().collect(), source, reason: String::new(), confidence: None, at: "t".into() }
     }
 
-    /// LLM で紐づけるジョブ(別のプロセス)が 1 件ずつ書くとき、ロックの中で読み直してそのセッションの分だけを書く。
-    /// 聞いている間に画面で手動で紐づけたもの・ほかのセッションの手動の紐づけを消さない
+    /// tasks bundle: 機械の紐づけを決め直してから、紐づけの無いセッションだけを束にする(候補は manifest に残す)。--session でも、紐づいたセッションは入れない。
+    /// tasks import: 束の候補と照らして確かめ、手動と前の LLM の紐づけは変えずに、出所 LLM で書く(機械の紐づけは置き換える)。形の誤りがあれば何も書かない
     #[test]
-    fn llm_answers_never_overwrite_manual_links_written_meanwhile() {
+    fn task_bundle_and_import_keep_precedence() {
         let d = tempfile::tempdir().unwrap();
-        let p = task_links_path(d.path());
-        // ジョブが聞いている間に、画面が s1 と m0 を手動で紐づけた
-        update_links(&p, |l| {
-            l.links.insert("s1".into(), link(Some("A"), LinkSource::Manual));
-            l.links.insert("m0".into(), link(None, LinkSource::Manual));
+        let p = paths(d.path());
+        let xml = d.path().join("export.xml");
+        std::fs::write(&xml, fixture("export-before.xml")).unwrap();
+        let cfg = TaskConfig { source: Some(TaskSource::with_file(&xml)), error: None };
+        let sessions = vec![rec("s1", "2026-11-20T01:00:00.000Z", "fix the app"), rec("s2", "2026-11-20T02:00:00.000Z", "雑談だけ"), rec("s3", "2026-11-20T03:00:00.000Z", "画面の文言を直す"), rec("s4", "2026-11-20T04:00:00.000Z", "別の話"), rec("s5", "2026-11-20T05:00:00.000Z", "もう一つ別の話")];
+        let file = serde_json::json!({
+            "schemaVersion": 1, "generatedAt": "2026-11-23T00:00:00.000Z", "source": { "root": null, "snapshotDir": "x", "since": null },
+            "counts": { "sessions": 5, "dbOnly": 0, "dirOnly": 0, "both": 0, "empty": 0 }, "installed": null,
+            "warnings": { "unknownEventTypes": {}, "badLines": 0, "messages": [] }, "sessions": serde_json::to_value(&sessions).unwrap()
+        });
+        std::fs::create_dir_all(&p.out).unwrap();
+        std::fs::write(&p.sessions, file.to_string()).unwrap();
+        refresh_tasks(&p, &cfg, &sessions, "build", &|_| {});
+        let logs = Mutex::new(Vec::<String>::new());
+        let log = |m: &str| logs.lock().unwrap().push(m.to_string());
+        let (o, n) = (p.out.to_string_lossy().into_owned(), p.notes.to_string_lossy().into_owned());
+        let opts = |extra: &[&str]| crate::args::parse_cli(&["tasks", "bundle", "--out", &o, "--notes-dir", &n].iter().chain(extra).map(|s| s.to_string()).collect::<Vec<_>>()).unwrap();
+        let m = run_task_bundle(&opts(&["--zip"]), &p, &log).unwrap().unwrap();
+        // s1 は機械で紐づいた。残りの 4 つを、候補のタスク(未完了のもの)と一緒に束にする
+        assert_eq!(m.sessions.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), ["s2", "s3", "s4", "s5"]);
+        assert!(m.sessions[0].candidates.contains(&"DEMO-103".to_string()));
+        assert!(p.task_bundle.join("parts").join("part-01.md").exists());
+        assert!(p.out.join("task-bundle.zip").exists());
+        // 頼むセッションが無いとき(--session で紐づいたセッションだけを指した)は、前の束と ZIP に触らずに理由を出す
+        let manifest_before = std::fs::read(p.task_bundle.join("manifest.json")).unwrap();
+        assert!(run_task_bundle(&opts(&["--session", "s1"]), &p, &log).unwrap().is_none());
+        assert_eq!(std::fs::read(p.task_bundle.join("manifest.json")).unwrap(), manifest_before);
+        assert!(p.out.join("task-bundle.zip").exists());
+        assert!(logs.lock().unwrap().iter().any(|l| l.starts_with(&format!("tasks bundle: {NO_TASK_BUNDLE}")) && l.contains("そのまま残します")), "{:?}", logs.lock().unwrap());
+        // --session で指しても、紐づいたセッションは入れず、理由を出す(ZIP は作らなかったので、前のものを消す)
+        let one = run_task_bundle(&opts(&["--session", "s1,s3"]), &p, &log).unwrap().unwrap();
+        assert_eq!(one.sessions.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), ["s3"]);
+        assert!(logs.lock().unwrap().iter().any(|l| l == "tasks bundle: s1 は機械で紐づいたので、LLM には頼みません"), "{:?}", logs.lock().unwrap());
+        assert!(!p.out.join("task-bundle.zip").exists());
+        let m = run_task_bundle(&opts(&[]), &p, &log).unwrap().unwrap();
+
+        // 束を作った後に、画面で s4 を手動で紐づけ、s2 は前に LLM で紐づけ、s3 と s5 は機械の当たりが決まった
+        let links_path = task_links_path(&p.notes);
+        update_links(&links_path, |l| {
+            l.links.insert("s4".into(), link(Some("DEMO-102"), LinkSource::Manual));
+            l.links.insert("s2".into(), link(Some("DEMO-102"), LinkSource::Llm));
+            l.links.insert("s3".into(), link(Some("DEMO-101"), LinkSource::Machine));
+            l.links.insert("s5".into(), link(Some("DEMO-101"), LinkSource::Machine));
         })
         .unwrap();
-        assert!(!write_llm_link(&p, "s1", link(Some("B"), LinkSource::Llm)).unwrap());
-        assert!(write_llm_link(&p, "s2", link(Some("B"), LinkSource::Llm)).unwrap());
-        let got = load_links(&p).file;
-        assert_eq!((got.links["s1"].task_ids.first().map(String::as_str), got.links["s1"].source), (Some("A"), LinkSource::Manual));
-        assert_eq!(got.links["m0"].source, LinkSource::Manual);
-        assert_eq!(got.links["s2"].source, LinkSource::Llm);
-        // 同時に書いても、どちらの書き手の変更も残る
-        std::thread::scope(|sc| {
-            let p = &p;
-            sc.spawn(move || {
+        // 形の誤り(候補に無い ID だけ)が 1 件でもあれば、何も書かない
+        let before = std::fs::read(&links_path).unwrap();
+        let bad = serde_json::json!({ "links": [{ "sessionId": "s3", "taskIds": ["DEMO-103"], "confidence": 0.7 }, { "sessionId": "s2", "taskIds": ["NOPE"], "confidence": 0.5 }] }).to_string();
+        let e = import_task_links_text(&bad, &p.notes, &p.task_bundle).unwrap_err();
+        assert!(e.downcast_ref::<atlas_judge::schema::JudgmentValidationError>().is_some_and(|v| v.problems.len() == 1 && v.problems[0].contains("NOPE")), "{e:#}");
+        assert_eq!(std::fs::read(&links_path).unwrap(), before);
+        let reply = format!(
+            "決めました\n```json\n{}\n```",
+            serde_json::json!({ "schemaVersion": 1, "links": [
+                { "sessionId": "s2", "taskIds": ["DEMO-103"], "confidence": 0.7, "reason": "r" },
+                { "sessionId": "s3", "taskIds": ["DEMO-103", "DEMO-102", "DEMO-103"], "confidence": 0.8, "reason": "両方" },
+                { "sessionId": "s4", "taskIds": [], "confidence": 0.9, "reason": "どれでもない" },
+                { "sessionId": "s5", "taskIds": [], "confidence": 0.9, "reason": "どれでもない" }
+            ] })
+        );
+        // ほかの書き手(画面の手動の紐づけ)と同時に書いても、どちらの変更も残る
+        let r = std::thread::scope(|sc| {
+            let lp = &links_path;
+            let h = sc.spawn(move || {
                 for i in 0..20 {
-                    write_llm_link(p, &format!("l{i}"), link(Some("B"), LinkSource::Llm)).unwrap();
-                }
-            });
-            sc.spawn(move || {
-                for i in 0..20 {
-                    update_links(p, |l| {
-                        l.links.insert(format!("h{i}"), link(Some("A"), LinkSource::Manual));
+                    update_links(lp, |l| {
+                        l.links.insert(format!("h{i}"), link(Some("DEMO-101"), LinkSource::Manual));
                     })
                     .unwrap();
                 }
             });
+            let r = import_task_links_text(&reply, &p.notes, &p.task_bundle).unwrap();
+            h.join().unwrap();
+            r
         });
-        let got = load_links(&p).file;
-        assert_eq!(got.links.len(), 3 + 40);
-        assert!((0..20).all(|i| got.links[&format!("h{i}")].source == LinkSource::Manual && got.links[&format!("l{i}")].source == LinkSource::Llm));
+        assert_eq!((r.imported, r.kept_manual.clone(), r.kept_llm.clone(), r.kept_machine.clone()), (1, vec!["s4".to_string()], vec!["s2".to_string()], vec!["s5".to_string()]));
+        let got = load_links(&links_path).file;
+        // タスクを選んだ答えは機械の紐づけを置き換え、「どのタスクでもない」の答えは機械の紐づけを残す
+        assert_eq!((got.links["s3"].task_ids.clone(), got.links["s3"].source, got.links["s3"].confidence), (vec!["DEMO-103".to_string(), "DEMO-102".to_string()], LinkSource::Llm, Some(0.8)));
+        assert_eq!((got.links["s5"].task_ids.clone(), got.links["s5"].source), (vec!["DEMO-101".to_string()], LinkSource::Machine));
+        assert_eq!((got.links["s4"].source, got.links["s2"].task_ids.clone()), (LinkSource::Manual, vec!["DEMO-102".to_string()]));
+        assert!((0..20).all(|i| got.links[&format!("h{i}")].source == LinkSource::Manual));
+        assert_eq!(got.links["s1"].source, LinkSource::Machine);
+        // 束に入っていないセッション(s1)の答えは、形の誤りとして断る
+        let other = serde_json::json!({ "links": [{ "sessionId": "s1", "taskIds": ["DEMO-101"], "confidence": 0.7 }] }).to_string();
+        assert!(import_task_links_text(&other, &p.notes, &p.task_bundle).unwrap_err().downcast_ref::<atlas_judge::schema::JudgmentValidationError>().is_some());
+        // ログの行(書かなかった数を出す)
+        let lines = import_lines("tasks import", &r, &links_path);
+        assert!(lines[0].starts_with("tasks import: 1 セッションの紐づけを取り込みました(出所 LLM)"), "{lines:?}");
+        assert!(lines.iter().any(|l| l.starts_with("tasks import: 手動で紐づけてあるので書かなかったセッション 1 件: s4")));
+        assert!(lines.iter().any(|l| l.starts_with("tasks import: 前に LLM で紐づけてあるので書かなかったセッション 1 件: s2")));
+        assert!(lines.iter().any(|l| l.starts_with("tasks import: 答えは「どのタスクでもない」でしたが、機械がタスクに紐づけてあるので書かなかったセッション 1 件: s5")));
+        let _ = m;
     }
 
-    /// 候補が無いセッションには聞かない(何も書かない)。機械で 2 つ以上に当たったタスクを候補の先頭に置く
+    /// LLM に渡す依頼の文は、依頼 1 件が 1 つ(改行を含む最初の依頼を、行ごとの依頼にしない)。最初の依頼から 3 件まで
+    #[test]
+    fn task_prompts_keep_each_request_whole() {
+        use atlas_core::types::CopilotEvent;
+        let d = tempfile::tempdir().unwrap();
+        let snap = d.path().join("snapshot");
+        let multi = "一行目の依頼\n二行目\n三行目\n四行目";
+        // スナップショットが無ければ sessions.json から(最初の依頼と、各依頼の先頭の 2 件目から)
+        let r = rec("m1", "2026-11-20T01:00:00.000Z", multi);
+        assert_eq!(task_prompts(&snap, &r), [multi]);
+        // スナップショットのログがあれば、本体の依頼を最初から 3 件まで
+        let dir = snap.join("session-state").join("m1");
+        std::fs::create_dir_all(&dir).unwrap();
+        let ev = |content: &str, at: &str| CopilotEvent { kind: "user.message".into(), data: Some(serde_json::json!({ "content": content })), timestamp: Some(serde_json::json!(at)), ..Default::default() };
+        let events = [ev(multi, "2026-11-20T01:00:00.000Z"), ev("二つ目の依頼", "2026-11-20T01:01:00.000Z"), ev("三つ目の依頼", "2026-11-20T01:02:00.000Z"), ev("四つ目の依頼", "2026-11-20T01:03:00.000Z")];
+        std::fs::write(dir.join("events.jsonl"), events.iter().map(|e| serde_json::to_string(e).unwrap()).collect::<Vec<_>>().join("\n")).unwrap();
+        assert_eq!(task_prompts(&snap, &r), [multi, "二つ目の依頼", "三つ目の依頼"]);
+        // パケットでは、1 件の依頼の改行は空白にして、依頼 1 に入れる
+        let md = atlas_judge::task_link::render_task_packet(&LinkQuery { session_id: "m1".into(), title: "t".into(), prompts: task_prompts(&snap, &r), candidates: vec![("T-1".into(), "x".into())] });
+        assert!(md.contains("依頼 1: 一行目の依頼 二行目 三行目 四行目\n依頼 2: 二つ目の依頼\n依頼 3: 三つ目の依頼\n"), "{md}");
+        assert!(!md.contains("四つ目の依頼"));
+    }
+
+    /// 候補が無いセッションは頼まない(束に入れない)。機械で 2 つ以上に当たったタスクを候補の先頭に置く
     #[test]
     fn llm_query_skips_without_candidates_and_puts_ambiguous_first() {
         let task = |name: &str, done_at: Option<&str>| atlas_report::tasks::state::TaskState {
@@ -667,7 +847,7 @@ mod tests {
         state.tasks.insert("OLD-1".into(), task("前に終わった仕事", Some("2026-11-01T00:00:00.000Z")));
         let m = Matcher::new(&state);
         let s = SessionText { id: "s".into(), start_ms: atlas_core::jsdate::parse_ms("2026-11-10T00:00:00Z"), title: "題名".into(), prompts: "依頼 1\n\n依頼 2".into() };
-        assert!(llm_query(&state, &m, &s).is_none());
+        assert!(llm_query(&state, &m, &s, vec![]).is_none());
         for i in 0..atlas_report::tasks::links::LLM_CANDIDATES_MAX + 5 {
             state.tasks.insert(format!("T-{i}"), task(&format!("仕事 {i}"), None));
         }
@@ -676,7 +856,7 @@ mod tests {
         // 名前だけで 2 つに当たる(ID で書いたものは機械で両方に紐づくので、LLM には名前で当たったものを聞く)
         assert!(matches!(m.match_session(&SessionText { title: format!("T-{last} と T-{} の件", last - 1), ..s.clone() }), MachineMatch::Linked { .. }));
         let s = SessionText { title: format!("仕事 {last} と 仕事 {} の件", last - 1), ..s };
-        let q = llm_query(&state, &m, &s).unwrap();
+        let q = llm_query(&state, &m, &s, vec!["依頼 1".into(), "依頼 2".into()]).unwrap();
         assert_eq!(q.prompts, ["依頼 1", "依頼 2"]);
         assert_eq!(q.candidates.len(), atlas_report::tasks::links::LLM_CANDIDATES_MAX);
         let firsts: Vec<&str> = q.candidates.iter().take(2).map(|c| c.0.as_str()).collect();

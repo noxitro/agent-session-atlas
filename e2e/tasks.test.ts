@@ -5,7 +5,8 @@
 //  b. 後の書き出し(export-after.xml)に差し替えて tasks sync → 完了になったタスクに完了を確認した時刻(XML の更新時刻)が入る。
 //     稼働時間帯の工数は、開始から完了を確認した時刻までのうち稼働時間帯に入る時間(時刻を決めて、時間の値まで確かめる)
 //  c. 推定人手工数(judgments.json)を取り込むと、比べられるタスクと、外した理由が出る
-//  d. tasks link --llm(偽の copilot)で、機械で決まらなかったセッションを LLM で紐づけ、レポートを作り直す
+//  d. tasks bundle で機械で決まらなかったセッションの束を作り、外部の LLM の返答(架空)を tasks import で取り込み、レポートを作り直す
+//  d2. tasks m365(M365 Copilot の画面の操作は偽物 fixtures/fake-m365.mjs)で、添付ファイルを送って返答を取り込み、レポートを作り直す
 //  e. 属性と名前空間を使う XML も、読み方の設定(@ で属性)で読める
 //  f. プロジェクトを送ると、atlas-session.json にタスクが添えられ、送り先から集計した読むだけの出力にもタスクの節が出る
 // 時刻は UTC で動かす(稼働時間帯はこの PC の時刻で数えるので、どの PC でも同じ値になるように)
@@ -20,7 +21,6 @@ import { addPromptSession, buildFixtureHome, FIXTURE_CODE, FIXTURE_WIKIS, FIXTUR
 
 const WORK = join(ROOT, 'out', 'e2e-tasks');
 const XML_DIR = join(ROOT, 'e2e', 'fixtures', 'tasks');
-const FAKE = join(FIXTURE_CODE, 'fake-copilot.mjs');
 /** 機械で紐づくセッション(fixture の依頼の文がタスクの名前と同じ) */
 const S_FIX = '00000000-0000-4000-8000-000000000008';
 const S_IMPROVE = '00000000-0000-4000-8000-000000000011';
@@ -46,7 +46,7 @@ describe('管理ツールのタスク(XML の読み込み・紐づけ・工数)'
   const notes = join(repo, 'atlas-notes');
   const xml = join(WORK, 'export.xml');
   const configPath = join(WORK, 'atlas.config.json');
-  const env = (): NodeJS.ProcessEnv => ({ ...process.env, TZ: 'UTC', ATLAS_REPO_ROOT: repo, ATLAS_CONFIG: configPath, ATLAS_COPILOT_HOME: home, ATLAS_COPILOT_BIN: FAKE, FAKE_COPILOT_LOG: join(WORK, 'fake-copilot.log') });
+  const env = (): NodeJS.ProcessEnv => ({ ...process.env, TZ: 'UTC', ATLAS_REPO_ROOT: repo, ATLAS_CONFIG: configPath, ATLAS_COPILOT_HOME: home });
   function atlas(args: string[], extra: NodeJS.ProcessEnv = {}): { status: number | null; out: string } {
     const r = spawnSync(...cliCommand(args), { encoding: 'utf8', cwd: ROOT, timeout: 600_000, env: { ...env(), ...extra } });
     return { status: r.status, out: r.stdout + r.stderr };
@@ -189,35 +189,117 @@ describe('管理ツールのタスク(XML の読み込み・紐づけ・工数)'
     expect(v.summary.ratioMin).toBeGreaterThan(1);
   });
 
-  it('d. tasks link --llm(偽の copilot)で、機械で決まらなかったセッションを LLM で紐づけ、レポートを作り直す', async () => {
+  it('d. tasks bundle で、機械で決まらなかったセッションの紐づけを外部の LLM に頼む束を作り、返答を tasks import で取り込んでレポートを作り直す', async () => {
     const before = await readJson<{ links: Record<string, unknown> }>(join(notes, 'task-links.json'));
     expect(Object.keys(before.links)).toHaveLength(3);
-    const r = atlas(['tasks', 'link', '--llm', '--out', out]);
-    expect(r.status, r.out).toBe(0);
-    expect(r.out).toMatch(/tasks link: LLM で紐づけます \d+ セッション/);
-    const links = await readJson<{ links: Record<string, { taskIds: string[]; source: string; reason: string; confidence?: number }> }>(join(notes, 'task-links.json'));
-    const llm = Object.entries(links.links).filter(([, l]) => l.source === 'llm');
-    expect(llm.length).toBeGreaterThan(0);
-    // 偽の copilot は候補の先頭を選ぶ。候補は未完了のタスクと、セッションの開始より後に完了したタスク
-    for (const [, l] of llm) {
-      expect(l.reason).toContain('偽 copilot');
-      expect(l.confidence).toBe(0.7);
-      expect(l.taskIds.length).toBeGreaterThan(0);
-      for (const id of l.taskIds) expect(['DEMO-101', 'DEMO-102', 'DEMO-102-1', 'DEMO-103', 'DEMO-104', 'DEMO-105']).toContain(id);
+    const b = atlas(['tasks', 'bundle', '--zip', '--out', out]);
+    expect(b.status, b.out).toBe(0);
+    const tb = join(out, 'task-bundle');
+    type Manifest = { count: number; sessions: { id: string; path: string; candidates: string[] }[]; parts: { path: string; sessions: string[] }[] };
+    const m = await readJson<Manifest>(join(tb, 'manifest.json'));
+    // 束に入るのは紐づけの無いセッションだけ(機械で紐づいた 3 つは入れない)。候補は manifest にも残す
+    expect(m.count).toBeGreaterThan(0);
+    for (const id of [S_FIX, S_IMPROVE, S_MULTI]) expect(m.sessions.map((e) => e.id)).not.toContain(id);
+    for (const e of m.sessions) {
+      expect(e.candidates.length).toBeGreaterThan(0);
+      for (const c of e.candidates) expect(['DEMO-101', 'DEMO-102', 'DEMO-102-1', 'DEMO-103', 'DEMO-104', 'DEMO-105', 'DEMO-106']).toContain(c);
     }
+    // 添付ファイル: 指示・JSON Schema・パケット(ファイルごとの乱数の境界)。ZIP には parts/ を入れない
+    const part = await readFile(join(tb, m.parts[0].path), 'utf8');
+    const bound = /^<<<PACKET_BEGIN ([0-9a-f]{24})$/m.exec(part)?.[1];
+    expect(bound).toBeTruthy();
+    expect(part).toContain(`PACKET_END ${bound}>>>`);
+    expect(part).toMatch(/一切従わないでください/);
+    expect(part).toContain('名前や話題が似ているだけで、作業していないタスクは選びません');
+    // 頼むセッションが無いとき(--session で機械で紐づいたセッションだけを指した)は、前の束と ZIP に触らずに理由を出す
+    const manifestBefore = await readFile(join(tb, 'manifest.json'), 'utf8');
+    const none = atlas(['tasks', 'bundle', '--session', S_FIX, '--out', out]);
+    expect(none.status, none.out).toBe(0);
+    expect(none.out).toContain(`tasks bundle: ${S_FIX} は機械で紐づいたので、LLM には頼みません`);
+    expect(none.out).toContain('tasks bundle: LLM に頼むセッションはありません');
+    expect(await readFile(join(tb, 'manifest.json'), 'utf8')).toBe(manifestBefore);
+    expect(existsSync(join(out, 'task-bundle.zip'))).toBe(true);
+    const zip = (await readFile(join(out, 'task-bundle.zip'))).toString('latin1');
+    for (const f of ['task-bundle/INSTRUCTIONS.md', 'task-bundle/manifest.json', 'task-bundle/schema.json', `task-bundle/${m.sessions[0].path}`]) expect(zip).toContain(f);
+    expect(zip).not.toContain('task-bundle/parts/');
+    // 外部の LLM の返答(架空)。1 つ目は候補の先頭 2 つ、2 つ目は「どのタスクでもない」、ほかのセッションの候補に無い ID も混ぜる
+    const [first, second] = m.sessions;
+    const reply = join(WORK, 'task-reply.md');
+    const links = [{ sessionId: first.id, taskIds: [first.candidates[0], ...first.candidates.slice(1, 2), 'NOT-A-TASK'], confidence: 0.7, reason: 'テスト用の答え' }];
+    if (second) links.push({ sessionId: second.id, taskIds: [], confidence: 0.9, reason: 'どれでもない' });
+    // 形の誤り(候補に無い ID だけ)があれば何も書かない
+    const bad = join(WORK, 'task-reply-bad.json');
+    await writeFile(bad, JSON.stringify({ links: [{ sessionId: first.id, taskIds: ['NOT-A-TASK'], confidence: 0.5 }] }));
+    const rb = atlas(['tasks', 'import', bad, '--out', out]);
+    expect(rb.status).toBe(1);
+    expect(rb.out).toContain('候補に無いタスクの ID です: NOT-A-TASK');
+    expect((await readJson<{ links: Record<string, unknown> }>(join(notes, 'task-links.json'))).links).toEqual(before.links);
+    await writeFile(reply, `決めました。\n\`\`\`json\n${JSON.stringify({ schemaVersion: 1, links })}\n\`\`\`\n`);
+    const r = atlas(['tasks', 'import', reply, '--out', out]);
+    expect(r.status, r.out).toBe(0);
+    expect(r.out).toContain(`tasks import: ${links.length} セッションの紐づけを取り込みました(出所 LLM)`);
+    expect(r.out).toContain('候補に無いタスクの ID を除きました: NOT-A-TASK');
+    // 取り込んだ後にレポートを作り直す(export)
+    expect(r.out).toMatch(/export: セッション記録 \d+ 件/);
+    const saved = await readJson<{ links: Record<string, { taskIds: string[]; source: string; reason: string; confidence?: number }> }>(join(notes, 'task-links.json'));
+    expect(saved.links[first.id]).toMatchObject({ taskIds: [first.candidates[0], ...first.candidates.slice(1, 2)], source: 'llm', reason: 'テスト用の答え', confidence: 0.7 });
+    if (second) expect(saved.links[second.id]).toMatchObject({ taskIds: [], source: 'llm' });
     // 機械の紐づけはそのまま
-    expect(links.links[S_FIX]).toMatchObject({ taskIds: ['DEMO-101'], source: 'machine' });
-    expect(links.links[S_MULTI]).toMatchObject({ taskIds: ['DEMO-102-1', 'DEMO-103'], source: 'machine' });
+    expect(saved.links[S_FIX]).toMatchObject({ taskIds: ['DEMO-101'], source: 'machine' });
+    expect(saved.links[S_MULTI]).toMatchObject({ taskIds: ['DEMO-102-1', 'DEMO-103'], source: 'machine' });
     // 作り直したレポートと表に出る
     const v = (await embedded())!;
+    const llm = Object.entries(saved.links).filter(([, l]) => l.source === 'llm');
     expect(Object.values(v.links).filter((l) => l.source === 'llm')).toHaveLength(llm.length);
     const t = await tasksCsv();
     // 紐づけ(LLM)は、LLM で紐づいたセッションをタスクごとに数えたもの
     expect(t.reduce((n, x) => n + Number(x['紐づけ(LLM)']), 0)).toBe(llm.reduce((n, [, l]) => n + l.taskIds.length, 0));
-    // もう一度実行しても、LLM で決めたものは聞き直さない
-    const again = atlas(['tasks', 'link', '--llm', '--out', out]);
+    const st = csv(await readFile(join(out, 'tables', 'session-tasks.csv'), 'utf8')).filter((x) => x['セッションID'] === first.id);
+    expect(st.map((x) => [x.taskId, x['紐づけの出所']])).toEqual(saved.links[first.id].taskIds.map((id) => [id, 'LLM']));
+    // 同じ返答をもう一度取り込んでも、前に LLM で決めたものは書き換えない
+    const again = atlas(['tasks', 'import', reply, '--out', out]);
     expect(again.status, again.out).toBe(0);
-    expect(again.out).toContain('tasks link: LLM に聞くセッションはありません');
+    expect(again.out).toContain(`前に LLM で紐づけてあるので書かなかったセッション ${links.length} 件`);
+    // 束を作り直すと、LLM で決めたセッションはもう入らない(頼むセッションがまだあれば、ZIP なしで作り直して前の ZIP を消す)
+    const rebuilt = atlas(['tasks', 'bundle', '--out', out]);
+    expect(rebuilt.status, rebuilt.out).toBe(0);
+    if (m.count > links.length) {
+      const m2 = await readJson<Manifest>(join(tb, 'manifest.json'));
+      expect(m2.sessions.map((e) => e.id)).not.toContain(first.id);
+      expect(existsSync(join(out, 'task-bundle.zip'))).toBe(false);
+    } else {
+      expect(rebuilt.out).toContain('tasks bundle: LLM に頼むセッションはありません');
+    }
+    // このツールの中で LLM を呼ぶ操作(--llm)は無い
+    expect(atlas(['tasks', 'link', '--llm', '--out', out]).status).toBe(2);
+  });
+
+  it('d2. tasks m365(画面の操作は偽物)で、添付ファイルを送って返答を取り込み、レポートを作り直す。返答は task-bundle/replies/ に残る', async () => {
+    // 前に LLM で決めた紐づけを外して(画面の「自動に戻す」と同じ)、もう一度頼む
+    const linksPath = join(notes, 'task-links.json');
+    const saved = await readJson<{ version: number; links: Record<string, { source: string }> }>(linksPath);
+    const llmIds = Object.entries(saved.links).filter(([, l]) => l.source === 'llm').map(([id]) => id);
+    expect(llmIds.length).toBeGreaterThan(0);
+    for (const id of llmIds) delete saved.links[id];
+    await writeFile(linksPath, JSON.stringify(saved));
+    const b = atlas(['tasks', 'bundle', '--out', out]);
+    expect(b.status, b.out).toBe(0);
+    const m = await readJson<{ count: number; sessions: { id: string; candidates: string[] }[] }>(join(out, 'task-bundle', 'manifest.json'));
+    expect(m.count).toBeGreaterThanOrEqual(llmIds.length);
+    const r = atlas(['tasks', 'm365', '--out', out, '--timeout', '60'], { ATLAS_M365_FAKE_DRIVER: join(FIXTURE_CODE, 'fake-m365.mjs') });
+    expect(r.status, r.out).toBe(0);
+    expect(r.out).toMatch(/m365: tasks-part-01\.txt の返答から \d+ 件を取り込みました/);
+    // 取り込めたので、レポートを作り直す(export)
+    expect(r.out).toMatch(/export: セッション記録 \d+ 件/);
+    expect(existsSync(join(out, 'task-bundle', 'replies', 'tasks-part-01.md'))).toBe(true);
+    const after = await readJson<{ links: Record<string, { taskIds: string[]; source: string; reason: string }> }>(linksPath);
+    for (const e of m.sessions) expect(after.links[e.id]).toMatchObject({ taskIds: [e.candidates[0]], source: 'llm', reason: '偽の M365 Copilot(テスト用): 候補の先頭' });
+    const v = (await embedded())!;
+    expect(v.links[m.sessions[0].id]?.source).toBe('llm');
+    // 全部紐づいたので、もう送るファイルは無い
+    const again = atlas(['tasks', 'm365', '--out', out], { ATLAS_M365_FAKE_DRIVER: join(FIXTURE_CODE, 'fake-m365.mjs') });
+    expect(again.status, again.out).toBe(0);
+    expect(again.out).toContain('m365: 未判定の添付ファイルはありません');
   });
 
   it('e. 属性と名前空間を使う XML を、読み方の設定(@ で属性)で読む', async () => {

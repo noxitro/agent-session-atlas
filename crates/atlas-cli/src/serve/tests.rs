@@ -970,7 +970,7 @@ fn jobs_spawn_fixed_args_and_keep_log_lines() {
     assert!(env.contains(&(JOB_ENV.into(), "1".into())));
     let lockf: Value = serde_json::from_str(&fs::read_to_string(j.e.out.join(JOB_LOCK_FILE)).unwrap()).unwrap();
     assert_eq!((lockf["pid"].clone(), lockf["kind"].clone()), (json!(std::process::id()), json!("refresh")));
-    assert_eq!(j.post(json!({ "kind": "judge", "limit": 1, "backend": "copilot-cli" })).0, 409);
+    assert_eq!(j.post(json!({ "kind": "bundle" })).0, 409);
     assert_eq!(j.post(json!({ "kind": "full", "id": "s1" })).0, 409);
     assert_eq!(lock(&j.calls).len(), 1);
     j.child(0).stdout("一行目\r\n二行");
@@ -988,12 +988,12 @@ fn jobs_spawn_fixed_args_and_keep_log_lines() {
     want.sort();
     assert_eq!(log, want);
     assert!(!j.e.out.join(JOB_LOCK_FILE).exists());
-    assert_eq!(j.post(json!({ "kind": "judge", "limit": 3, "backend": "copilot-cli" })).0, 202);
-    assert_eq!(j.args(1), vec!["judge-flow".to_string(), "--limit".into(), "3".into(), "--backend".into(), "copilot-cli".into(), "--out".into(), out.clone(), "--notes-dir".into(), notes.clone()]);
+    assert_eq!(j.post(json!({ "kind": "turn-bundle-zip" })).0, 202);
+    assert_eq!(j.args(1), vec!["turns".to_string(), "bundle".into(), "--unjudged".into(), "--zip".into(), "--out".into(), out.clone(), "--notes-dir".into(), notes.clone()]);
     j.child(1).exit(Some(1));
     j.wait_not_running();
     let c = j.current();
-    assert_eq!((c["kind"].clone(), c["state"].clone(), c["exitCode"].clone(), c["target"].clone()), (json!("judge"), json!("failed"), json!(1), json!({ "limit": 3, "backend": "copilot-cli" })));
+    assert_eq!((c["kind"].clone(), c["state"].clone(), c["exitCode"].clone(), c["target"].clone()), (json!("turn-bundle-zip"), json!("failed"), json!(1), json!({})));
     // 200 行だけ残す
     j.post(json!({ "kind": "refresh" }));
     j.child(2).stdout(&(0..250).map(|i| format!("行 {i}\n")).collect::<String>());
@@ -1011,20 +1011,16 @@ fn job_request_validation() {
         (json!({}), 400),
         (json!({ "kind": "nope" }), 400),
         (json!({ "kind": "refresh", "out": "x" }), 400),
-        (json!({ "kind": "judge", "backend": "copilot-cli" }), 400),
-        (json!({ "kind": "judge", "limit": -1, "backend": "copilot-cli" }), 400),
-        (json!({ "kind": "judge", "limit": 501, "backend": "copilot-cli" }), 400),
-        (json!({ "kind": "judge", "limit": 1.5, "backend": "copilot-cli" }), 400),
-        (json!({ "kind": "judge", "limit": "10", "backend": "copilot-cli" }), 400),
-        (json!({ "kind": "judge", "limit": 10, "backend": null }), 400),
-        (json!({ "kind": "judge", "limit": 10, "backend": "" }), 400),
-        (json!({ "kind": "judge", "limit": 10, "backend": "anthropic" }), 400),
-        (json!({ "kind": "judge", "limit": 10, "backend": "copilot-cli; calc" }), 400),
-        (json!({ "kind": "judge", "limit": 10, "backend": "copilot-cli", "only": "s1" }), 400),
+        // このツールの中で判定するジョブは無くなった(前の版の画面が送ってきたら、分かる文言で断る)
+        (json!({ "kind": "judge", "limit": 3, "backend": "copilot-cli" }), 410),
+        (json!({ "kind": "turn-judge", "limit": 3 }), 410),
+        (json!({ "kind": "task-link" }), 410),
         (json!({ "kind": "full" }), 400),
         (json!({ "kind": "bundle", "perPart": 2 }), 400),
         (json!({ "kind": "bundle-zip", "zip": false }), 400),
-        (json!({ "kind": "turn-bundle-zip" }), 400),
+        (json!({ "kind": "turn-bundle-zip", "limit": 1 }), 400),
+        (json!({ "kind": "task-bundle", "session": "s1" }), 400),
+        (json!({ "kind": "task-m365", "limit": 1 }), 400),
         (json!({ "kind": "export", "id": "s1" }), 400),
         (json!({ "kind": "full", "id": ".." }), 400),
         (json!({ "kind": "full", "id": "a/b" }), 400),
@@ -1038,73 +1034,40 @@ fn job_request_validation() {
     assert_eq!(j.e.req("POST", "/api/jobs", Some(&t), &[], b"[1]").status, 400);
     assert!(lock(&j.calls).is_empty());
     assert!(lock(&j.fulls).is_empty());
-    use crate::jobs::{judge_scope, JobRequest, JudgeScope};
+    use crate::jobs::JobRequest;
     let p = |v: Value| parse_job_request(v.as_object().unwrap(), &|id| id != "nope");
-    let judge = |limit: i64, scope: JudgeScope, force: bool| -> Result<JobRequest, crate::jobs::JobError> { Ok(JobRequest::Judge { limit, backend: "copilot-cli".into(), scope, force }) };
-    assert_eq!(p(json!({ "kind": "judge", "limit": 0, "backend": "copilot-cli" })), judge(0, JudgeScope::All, false));
-    assert_eq!(p(json!({ "kind": "judge", "limit": 10 })), judge(10, JudgeScope::All, false));
-    assert_eq!(p(json!({ "kind": "judge", "limit": 500, "backend": "copilot-cli" })), judge(500, JudgeScope::All, false));
-    // 範囲: 1 セッション(判定し直すのはこのときだけ)
-    assert_eq!(p(json!({ "kind": "judge", "limit": 1, "session": "s1" })), judge(1, JudgeScope::Session("s1".into()), false));
-    assert_eq!(p(json!({ "kind": "judge", "limit": 1, "session": "-s1", "force": true })), judge(1, JudgeScope::Session("-s1".into()), true));
-    assert_eq!(p(json!({ "kind": "judge", "limit": 1, "session": "s1", "force": false })), judge(1, JudgeScope::Session("s1".into()), false));
-    assert_eq!(p(json!({ "kind": "turn-judge", "limit": 5000, "session": "s1" })), Ok(JobRequest::TurnJudge { limit: 5000, scope: JudgeScope::Session("s1".into()) }));
-    assert_eq!(p(json!({ "kind": "turn-judge", "limit": 9 })), Ok(JobRequest::TurnJudge { limit: 9, scope: JudgeScope::All }));
+    for (kind, want) in [
+        ("turn-bundle-zip", JobRequest::TurnBundleZip),
+        ("task-bundle", JobRequest::TaskBundle),
+        ("task-bundle-zip", JobRequest::TaskBundleZip),
+        ("task-m365", JobRequest::TaskM365),
+    ] {
+        assert_eq!(p(json!({ "kind": kind })), Ok(want));
+    }
+    let gone = p(json!({ "kind": "judge", "limit": 1 })).unwrap_err();
+    assert!(gone.message.contains("無くなりました") && gone.message.contains("ZIP"), "{}", gone.message);
+    // 前の版の画面は、読み込み直すだけでは変わらない(集計し直すと作り直される)
+    assert!(gone.message.contains("「集計し直す」か atlas export"), "{}", gone.message);
     let bad: Vec<(Value, u16)> = vec![
         // タスクタグの範囲(group)は、もう受けない
-        (json!({ "kind": "judge", "limit": 1, "group": "調査: A/B" }), 400),
-        (json!({ "kind": "turn-judge", "limit": 1, "group": "調査: A/B" }), 400),
-        (json!({ "kind": "judge", "limit": 1, "session": "a/b" }), 400),
-        (json!({ "kind": "judge", "limit": 1, "session": ["s1"] }), 400),
-        (json!({ "kind": "judge", "limit": 1, "session": "nope" }), 404),
-        (json!({ "kind": "judge", "limit": 1, "force": true }), 400),
-        (json!({ "kind": "judge", "limit": 1, "session": "s1", "force": "yes" }), 400),
-        (json!({ "kind": "turn-judge", "limit": 1, "session": "s1", "force": true }), 400),
-        (json!({ "kind": "full", "id": "s1", "session": "s1" }), 400),
         (json!({ "kind": "bundle", "group": "調査: A/B" }), 400),
+        (json!({ "kind": "full", "id": "s1", "session": "s1" }), 400),
     ];
     for (body, status) in bad {
         let got = p(body.clone()).map_err(|e| e.status);
         assert_eq!((body.clone(), got), (body, Err(status)));
     }
-    // 件数の確認(judge-preview)も同じ関数で確かめる: session の形
-    let scope = |session: Option<&str>| judge_scope(session, &|id| id != "nope").map_err(|e| e.status);
-    assert_eq!(scope(Some("a/b")), Err(400));
-    assert_eq!(scope(Some("")), Err(400));
-    assert_eq!(scope(Some("nope")), Err(404));
-    assert_eq!(scope(None), Ok(JudgeScope::All));
 }
 
+/// 添付ファイルを作る前に出す、未判定の数(工数・依頼ごと)
 #[test]
-fn scoped_judge_jobs() {
+fn judge_preview_counts_effort_and_turns() {
     let mut j = JobEnv::new();
     j.start(|_| {});
-    let (out, notes) = (s(&j.e.out), s(&j.e.notes));
-    let tail = |v: &[&str]| v.iter().map(|x| x.to_string()).chain(["--out".to_string(), out.clone(), "--notes-dir".into(), notes.clone()]).collect::<Vec<_>>();
-    // 1 セッションを判定し直す(id は sessions.json にあるものだけ)
-    assert_eq!(j.post(json!({ "kind": "judge", "limit": 1, "session": "zz" })).0, 404);
-    let r = j.post(json!({ "kind": "judge", "limit": 1, "session": "s1", "force": true }));
-    assert_eq!((r.0, r.1["target"].clone()), (202, json!({ "limit": 1, "backend": "copilot-cli", "session": "s1", "force": true })));
-    assert_eq!(j.args(0), tail(&["judge-flow", "--limit", "1", "--backend", "copilot-cli", "--session=s1", "--force"]));
-    j.child(0).exit(Some(0));
-    j.wait_not_running();
-    let r = j.post(json!({ "kind": "turn-judge", "limit": 5000, "session": "s2" }));
-    assert_eq!((r.0, r.1["target"].clone()), (202, json!({ "limit": 5000, "session": "s2" })));
-    assert_eq!(j.args(1), tail(&["judge-flow", "--turns", "--limit", "5000", "--session=s2"]));
-    j.child(1).exit(Some(0));
-    j.wait_not_running();
-    // 件数も同じ範囲で数える
     fs::write(j.e.out.join("judgments.json"), json!({ "schemaVersion": 1, "items": [{ "sessionId": "s1" }] }).to_string()).unwrap();
     let pv = |q: &str| j.e.json("GET", &format!("/api/jobs/judge-preview{q}"), None);
     let counts = |v: &Value| (v["eligible"].clone(), v["judged"].clone(), v["pending"].clone());
-    assert_eq!(counts(&pv("").1), (json!(2), json!(1), json!(1)));
-    assert_eq!(counts(&pv("?session=s1").1), (json!(1), json!(1), json!(0)));
-    assert_eq!(counts(&pv("?session=s3").1), (json!(0), json!(0), json!(0)));
-    assert_eq!(counts(&pv("?session=s2").1), (json!(1), json!(0), json!(1)));
-    assert_eq!(pv("?session=zz").0, 404);
-    // POST と同じ確かめ方: session の形が正しくなければ 400
-    assert_eq!(pv("?session=a%2Fb").0, 400);
-    assert_eq!(pv("?session=").0, 400);
+    assert_eq!(pv("").1, json!({ "eligible": 2, "judged": 1, "pending": 1 }));
     // 依頼ごと: s1 は 2 依頼、s2 は依頼ごとの記録が無い
     fs::write(
         j.e.out.join("sessions.json"),
@@ -1115,15 +1078,21 @@ fn scoped_judge_jobs() {
         .to_string(),
     )
     .unwrap();
-    let t = pv("?target=turns&session=s1").1;
-    assert_eq!((counts(&t), t["withoutTurns"].clone()), ((json!(2), json!(0), json!(2)), json!(0)));
-    assert_eq!(counts(&pv("?target=turns").1), (json!(2), json!(0), json!(2)));
-    let t = pv("?target=turns&session=s2").1;
-    assert_eq!((counts(&t), t["withoutTurns"].clone()), ((json!(0), json!(0), json!(0)), json!(1)));
-    // 依頼ごとの判定で 1 回にまとめる依頼の数(画面の回数の目安。セッションごとの判定には載せない)
-    assert_eq!(t["chunk"], json!(atlas_judge::turn_bundle::DEFAULT_TURN_LIMITS.chunk_turns));
-    assert_eq!(pv("?target=turns").1["chunk"], json!(6));
-    assert_eq!(pv("").1.get("chunk"), None);
+    let t = pv("?target=turns").1;
+    assert_eq!((counts(&t), t["withoutTurns"].clone()), ((json!(2), json!(0), json!(2)), json!(1)));
+    // 判定のモデルや回数の目安は、もう返さない(このツールは判定しない)
+    for k in ["model", "byok", "modelError", "chunk"] {
+        assert!(t.get(k).is_none() && pv("").1.get(k).is_none(), "{k}");
+    }
+    // タスクの設定も記録も無ければ、タスクへの紐づけは 0
+    assert_eq!(pv("?target=tasks").1, json!({ "eligible": 0, "judged": 0, "pending": 0 }));
+    // 前の版の詳細ページは ?session= で 1 セッションの件数を聞く。全体の件数を返さず、無くなったことを知らせる(そのページは判定の欄を出さない)
+    for q in ["?session=s1", "?session=s1&target=turns"] {
+        let (st, v) = pv(q);
+        assert_eq!(st, 410, "{q}");
+        assert!(v["error"].as_str().unwrap().contains("集計し直す"), "{v}");
+        assert!(v.get("pending").is_none());
+    }
 }
 
 #[test]
@@ -1158,7 +1127,7 @@ fn chat_judge_parts_and_import() {
     // 消えたファイル(part-02)は一覧に出さない
     assert_eq!(
         j.e.json("GET", "/api/judge/parts", None).1,
-        json!({ "exists": true, "generatedAt": "2026-11-05T00:00:00.000Z", "unjudgedOnly": true, "count": 2, "parts": [{ "path": "bundle/parts/part-01.md", "name": "part-01.md", "sessions": 2, "judged": 0, "bytes": 30 }], "canAutomate": cfg!(windows) })
+        json!({ "exists": true, "generatedAt": "2026-11-05T00:00:00.000Z", "unjudgedOnly": true, "count": 2, "parts": [{ "path": "bundle/parts/part-01.md", "name": "part-01.md", "sessions": 2, "judged": 0, "bytes": 30 }], "judged": 0, "canAutomate": cfg!(windows) })
     );
     assert_eq!(j.e.json("GET", "/api/judge/parts/part-01.md", None).1, json!({ "name": "part-01.md", "text": "# 指示\nパケット s1 s2" }));
     // ZIP: 束の一覧より後に書いたものだけを返す(出力先からの相対パスだけ。フルパスは返さない)。前の束の ZIP は返さない
@@ -1268,25 +1237,6 @@ fn full_job_done_or_failed() {
     j.wait_not_running();
     let c = j.current();
     assert_eq!((c["state"].clone(), c["log"].clone()), (json!("failed"), json!(["失敗しました: スナップショットがありません"])));
-}
-
-#[test]
-fn judge_preview_counts_and_model() {
-    let mut j = JobEnv::new();
-    j.start(|_| {});
-    let cfg = j.e.dir.join("atlas.config.json");
-    assert_eq!(j.e.json("GET", "/api/jobs/judge-preview", None).1, json!({ "eligible": 2, "judged": 0, "pending": 2, "model": null, "byok": false, "modelError": null }));
-    fs::write(&cfg, json!({ "judgeModel": "anthropic/claude-sonnet-5-5" }).to_string()).unwrap();
-    let pv = j.e.json("GET", "/api/jobs/judge-preview", None).1;
-    assert_eq!((pv["pending"].clone(), pv["model"].clone(), pv["byok"].clone(), pv["modelError"].clone()), (json!(2), json!("anthropic/claude-sonnet-5-5"), json!(true), Value::Null));
-    fs::write(&cfg, "{ broken").unwrap();
-    let pv = j.e.json("GET", "/api/jobs/judge-preview", None).1;
-    assert_eq!((pv["model"].clone(), pv["byok"].clone()), (Value::Null, json!(false)));
-    assert!(pv["modelError"].as_str().unwrap().contains("atlas.config.json を読めません"));
-    fs::write(&cfg, "{}").unwrap();
-    fs::write(j.e.out.join("judgments.json"), json!({ "schemaVersion": 1, "items": [{ "sessionId": "s1" }, { "sessionId": "zzz" }] }).to_string()).unwrap();
-    let pv = j.e.json("GET", "/api/jobs/judge-preview", None).1;
-    assert_eq!((pv["eligible"].clone(), pv["judged"].clone(), pv["pending"].clone()), (json!(2), json!(1), json!(1)));
 }
 
 #[test]
@@ -1467,7 +1417,7 @@ fn tasks_api_and_manual_links() {
     assert_eq!(v["tasks"]["configured"], true);
     assert_eq!(v["tasks"]["items"].as_array().unwrap().len(), 2);
     assert_eq!(v["tasks"]["links"], json!({}));
-    // LLM に聞く数(依頼の記録があって紐づけの無いセッション)
+    // LLM に頼む数(依頼の記録があって紐づけの無いセッション)
     assert_eq!(v["unresolved"], 2);
     let put = |id: &str, body: Value, token: bool| {
         let t = e.token();
@@ -1570,7 +1520,7 @@ fn tasks_api_and_manual_links() {
     assert!(v["error"].as_str().unwrap().contains("ロックのファイル"), "{v}");
 }
 
-/// 画面の確認に出す「LLM に聞くセッション」の数は、tasks link --llm の対象と同じ決め方(開いただけ・文の無い・候補の無いセッションは数えない)
+/// 画面に出す「LLM に頼むセッション」の数は、tasks bundle が束に入れるものと同じ決め方(開いただけ・文の無い・候補の無いセッションは数えない)
 #[test]
 fn unresolved_count_matches_the_llm_job() {
     let mut e = tasks_env();
@@ -1589,6 +1539,7 @@ fn unresolved_count_matches_the_llm_job() {
     .unwrap();
     e.start(|_| {});
     assert_eq!(e.get("/api/tasks").1["unresolved"], 1);
+    assert_eq!(e.json("GET", "/api/jobs/judge-preview?target=tasks", None).1["pending"], 1);
 }
 
 #[test]
@@ -1615,32 +1566,78 @@ fn tasks_api_without_config_and_read_only() {
     assert_eq!(v["tasks"]["items"][1]["sharedSessions"], 1);
     assert_eq!(e.json("PUT", "/api/tasks/links/s1", Some(json!({ "taskId": null }))).0, 403);
     assert_eq!(e.json("PUT", "/api/tasks/links/s1", Some(json!({ "taskIds": [] }))).0, 403);
+    // タスクの紐づけの添付ファイルと取り込みも断る(紐づけは送った人のもの)
+    for (method, path) in [("GET", "/api/judge/parts?target=tasks"), ("GET", "/api/judge/parts/part-01.md?target=tasks"), ("POST", "/api/judge/import?target=tasks")] {
+        assert_eq!(e.json(method, path, (method == "POST").then(|| json!({ "text": "{}" }))).0, 403, "{path}");
+    }
+    assert_eq!(e.json("GET", "/api/jobs/judge-preview?target=tasks", None).1["pending"], 0);
     assert!(!e.notes.join("task-links.json").exists());
 }
 
 #[test]
-fn task_link_jobs() {
+fn task_bundle_jobs() {
     let mut j = JobEnv::new();
     j.start(|_| {});
     let (out, notes) = (s(&j.e.out), s(&j.e.notes));
     let tail = |v: &[&str]| v.iter().map(|x| x.to_string()).chain(["--out".to_string(), out.clone(), "--notes-dir".into(), notes.clone()]).collect::<Vec<_>>();
-    assert_eq!(j.post(json!({ "kind": "task-link", "limit": 1 })).0, 400);
-    assert_eq!(j.post(json!({ "kind": "task-link", "session": "zz" })).0, 404);
-    let r = j.post(json!({ "kind": "task-link" }));
-    assert_eq!((r.0, r.1["kind"].clone(), r.1["target"].clone()), (202, json!("task-link"), json!({})));
-    assert_eq!(j.args(0), tail(&["tasks", "link", "--llm"]));
-    // 判定と同じく、ほかの処理が動いている間は始めない
-    assert_eq!(j.post(json!({ "kind": "task-link" })).0, 409);
+    let r = j.post(json!({ "kind": "task-bundle" }));
+    assert_eq!((r.0, r.1["kind"].clone(), r.1["target"].clone()), (202, json!("task-bundle"), json!({})));
+    assert_eq!(j.args(0), tail(&["tasks", "bundle"]));
+    // ほかの処理が動いている間は始めない
+    assert_eq!(j.post(json!({ "kind": "task-bundle-zip" })).0, 409);
     j.child(0).exit(Some(0));
     j.wait_not_running();
-    let r = j.post(json!({ "kind": "task-link", "session": "s1" }));
-    assert_eq!((r.0, r.1["target"].clone()), (202, json!({ "session": "s1" })));
-    assert_eq!(j.args(1), tail(&["tasks", "link", "--llm", "--session=s1"]));
+    assert_eq!(j.post(json!({ "kind": "task-bundle-zip" })).0, 202);
+    assert_eq!(j.args(1), tail(&["tasks", "bundle", "--zip"]));
     j.child(1).exit(Some(0));
     j.wait_not_running();
-    assert!(j.e.logs().iter().any(|l| l.starts_with("[タスクを LLM で紐づける] 開始(セッション s1)")), "{:?}", j.e.logs());
-    // 読むだけの画面では始めない
+    assert_eq!(j.post(json!({ "kind": "task-m365" })).0, 202);
+    assert_eq!(j.args(2), tail(&["tasks", "m365"]));
+    j.child(2).exit(Some(0));
+    j.wait_not_running();
+    assert!(j.e.logs().iter().any(|l| l.starts_with("[タスクの紐づけの ZIP を作る] 開始")), "{:?}", j.e.logs());
+    // 読むだけの画面では始めない(紐づけは送った人のもの)
     sleep(20);
     fs::write(j.e.out.join("sessions.json"), json!({ "source": { "root": "x", "since": null, "layout": "flat" }, "sessions": [{ "id": "s1", "turns": 1 }] }).to_string()).unwrap();
-    assert_eq!(j.post(json!({ "kind": "task-link" })).0, 403);
+    for kind in ["task-bundle", "task-bundle-zip", "task-m365"] {
+        assert_eq!(j.post(json!({ "kind": kind })).0, 403, "{kind}");
+    }
+}
+
+/// タスクへの紐づけの添付ファイル(?target=tasks): 一覧・件数・返答の取り込み(候補と照らし、手動の紐づけは変えない)
+#[test]
+fn task_link_parts_and_import() {
+    let mut e = tasks_env();
+    e.start(|_| {});
+    let pv = e.json("GET", "/api/jobs/judge-preview?target=tasks", None).1;
+    assert_eq!(pv, json!({ "eligible": 2, "judged": 0, "pending": 2 }));
+    assert_eq!(e.json("GET", "/api/judge/parts?target=tasks", None).1, json!({ "exists": false, "canAutomate": cfg!(windows) }));
+    let q = |id: &str| atlas_judge::task_link::LinkQuery { session_id: id.into(), title: "t".into(), prompts: vec![], candidates: vec![("ABC-12".into(), "一覧の不具合".into()), ("XY-9".into(), "帳票の出力".into())] };
+    let dir = e.out.join(crate::paths::TASK_BUNDLE_DIR);
+    atlas_judge::task_link::build_task_bundle(&[q("s1"), q("s2")], &atlas_judge::task_link::TaskBundleOptions { bundle_dir: dir.clone(), per_part: Some(1), boundary: None, scope: IndexMap::new(), now: Some("2026-11-23T00:00:00.000Z".into()) }).unwrap();
+    let parts = e.json("GET", "/api/judge/parts?target=tasks", None).1;
+    assert_eq!((parts["exists"].clone(), parts["count"].clone(), parts["judged"].clone()), (json!(true), json!(2), json!(0)));
+    assert_eq!(parts["parts"][0], json!({ "path": "task-bundle/parts/part-01.md", "name": "part-01.md", "sessions": 1, "judged": 0, "bytes": parts["parts"][0]["bytes"].clone() }));
+    assert!(e.json("GET", "/api/judge/parts/part-02.md?target=tasks", None).1["text"].as_str().unwrap().contains("セッション ID: s2"));
+    // 取り込む前に、画面で s2 を手動で紐づけた
+    let t = e.token();
+    assert_eq!(e.req("PUT", "/api/tasks/links/s2", Some(&t), &[], json!({ "taskIds": ["XY-9"] }).to_string().as_bytes()).status, 200);
+    let import = |text: String| e.json("POST", "/api/judge/import?target=tasks", Some(json!({ "text": text })));
+    // 候補に無い ID だけの答えは形の誤り(何も書かない。直す点を返す)
+    let bad = import(json!({ "links": [{ "sessionId": "s1", "taskIds": ["NOPE"], "confidence": 0.5 }] }).to_string());
+    assert_eq!(bad.0, 400);
+    assert!(bad.1["error"].as_str().unwrap().contains("紐づけの形式に合いません"), "{}", bad.1);
+    assert!(bad.1["problems"][0].as_str().unwrap().contains("NOPE"));
+    let ok = import(format!("```json\n{}\n```", json!({ "links": [{ "sessionId": "s1", "taskIds": ["XY-9", "NOPE"], "confidence": 0.6, "reason": "帳票" }, { "sessionId": "s2", "taskIds": [], "confidence": 0.9 }] })));
+    assert_eq!(ok.0, 200, "{}", ok.1);
+    assert_eq!((ok.1["imported"].clone(), ok.1["kept"].clone(), ok.1["parts"]["judged"].clone()), (json!(1), json!(1), json!(2)));
+    // 除いた ID と、書かなかったセッションの知らせを画面に返す
+    let notices: Vec<String> = ok.1["notices"].as_array().unwrap().iter().map(|n| n.as_str().unwrap().to_string()).collect();
+    assert!(notices.iter().any(|n| n.starts_with("手動で紐づけてあるので書かなかったセッション 1 件: s2")), "{notices:?}");
+    assert!(notices.iter().any(|n| n.contains("候補に無いタスクの ID を除きました: NOPE")), "{notices:?}");
+    let links = e.get("/api/tasks").1["tasks"]["links"].clone();
+    assert_eq!((links["s1"]["source"].clone(), links["s1"]["taskIds"].clone()), (json!("llm"), json!(["XY-9"])));
+    assert_eq!((links["s2"]["source"].clone(), links["s2"]["taskIds"].clone()), (json!("manual"), json!(["XY-9"])));
+    assert_eq!(e.json("GET", "/api/jobs/judge-preview?target=tasks", None).1, json!({ "eligible": 1, "judged": 1, "pending": 0 }));
+    assert!(e.logs().iter().any(|l| l.starts_with("tasks import(画面): 1 セッションの紐づけを取り込みました")), "{:?}", e.logs());
 }

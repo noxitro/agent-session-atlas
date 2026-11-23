@@ -1,7 +1,7 @@
 //! 管理ツールのタスクとの連携。管理ツールが書き出した XML を読み(xml.rs)、タスクの状態を atlas-notes/tasks.json に覚え(state.rs)、
 //! セッションとタスクの紐づけを atlas-notes/task-links.json に持ち(links.rs)、タスクごとの工数を数える(metrics.rs・hours.rs)。
 //! 送り先から集計したときは、送った人がセッションごとに添えたタスクの記録(atlas-session.json の task。sender.rs)から同じものを作る。
-//! 画面に埋め込む形は view.rs。LLM で紐づける処理は atlas-judge の task_link.rs。
+//! 画面に埋め込む形は view.rs。LLM に紐づけを頼む束と返答の検証は atlas-judge の task_link.rs。
 
 pub mod hours;
 pub mod links;
@@ -156,7 +156,7 @@ impl Drop for LockGuard {
 }
 
 /// <file>.lock を開いて OS のファイルのロック(Windows は LockFileEx、ほかは flock)を排他で取り、f の間だけ持つ
-/// (serve の画面・LLM で紐づけるジョブの子プロセス・集計が、同じファイルを同時に読んで書かないように)。
+/// (serve の画面・返答を取り込むジョブの子プロセス・集計が、同じファイルを同時に読んで書かないように)。
 /// 書き手は、このロックの中で読み直してから自分の変更だけを足して書く。
 /// ロックは開いているハンドルに付くので、落ちたプロセスのロックは OS が外す(古いロックを消して取り直す仕組みは要らず、取り合いも起きない)。
 /// <file>.lock のファイルそのものは消さずに残す(消すと、開いたままの別の書き手と別のファイルを取り合うことになるため)。

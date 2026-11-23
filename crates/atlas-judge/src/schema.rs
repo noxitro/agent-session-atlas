@@ -272,7 +272,7 @@ pub fn parse_wiki_pages(v: Option<&Value>) -> Option<Vec<WikiPageJudgment>> {
     Some(out)
 }
 
-/// wikiPages の形が崩れていて、ページの判定を捨てたときの知らせ(問題が無い・項目が無いときは None)。取り込みと judge run のログに出す
+/// wikiPages の形が崩れていて、ページの判定を捨てたときの知らせ(問題が無い・項目が無いときは None)。取り込み(judge import・M365 Copilot の自動操作)のログに出す
 pub fn wiki_pages_note(item: &Value) -> Option<String> {
     let v = item.get("wikiPages").filter(|v| !v.is_null())?;
     let Some(list) = v.as_array() else {
@@ -417,44 +417,6 @@ pub fn js_object_entries(m: &Map<String, Value>) -> Vec<(&String, &Value)> {
     }
     idx.sort_by_key(|x| x.0);
     idx.into_iter().map(|x| x.1).chain(rest).map(|k| (k, &m[k])).collect()
-}
-
-/// usage の JSON(形は問わない)から数値の葉を "a.b" 経路で集める
-pub fn numeric_leaves(v: &Value, prefix: &str, out: &mut js::JsMap<f64>) {
-    match v {
-        Value::Number(_) => {
-            if let Some(n) = js::num(Some(v)) {
-                out.add(if prefix.is_empty() { "value" } else { prefix }, n);
-            }
-        }
-        Value::Array(a) => {
-            for x in a {
-                numeric_leaves(x, prefix, out);
-            }
-        }
-        Value::Object(o) => {
-            for (k, x) in js_object_entries(o) {
-                let p = if prefix.is_empty() { k.clone() } else { format!("{prefix}.{k}") };
-                numeric_leaves(x, &p, out);
-            }
-        }
-        _ => {}
-    }
-}
-
-pub fn add_usage(u: Option<&JudgeUsage>, raw: Option<&Value>) -> JudgeUsage {
-    let mut out = u.cloned().unwrap_or_default();
-    let Some(raw) = raw.filter(|r| !r.is_null()) else {
-        out.missing += 1;
-        return out;
-    };
-    out.runs += 1;
-    let mut leaves = js::JsMap::new();
-    numeric_leaves(raw, "", &mut leaves);
-    for (k, n) in leaves.js_entries() {
-        out.totals.add(k, *n);
-    }
-    out
 }
 
 // ---------- LLM 出力から JSON を取り出す ----------

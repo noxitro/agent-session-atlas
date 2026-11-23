@@ -22,16 +22,18 @@ bin\atlas.exe --help                  # 使い方
 | `export` | `build` に加えて、各セッションの記録(経過・消費)を `out/sessions/<id>.md` に書く。LLM での振り返り用(依頼文や応答がそのまま入るので、人に渡すなら中身を確かめてから。[outputs.md の「セッション記録」](outputs.md#セッション記録markdown))。指示文と skill の閲覧ページ `out/instructions.html` も作る。`--full` で解析用の全文記録([outputs.md](outputs.md#解析用の完全出力))。LLM は呼ばない |
 | `all` | `snapshot` → `extract` → `vcs` → `metrics` → `export` を順に実行する(コマンド省略時の既定) |
 | `bundle` | LLM に工数を判定させる評価バンドル `out/bundle/` を作る(LLM は呼ばない)。ZIP を渡せない相手用に、指示とパケット数件を 1 ファイルにまとめた `out/bundle/parts/part-<番号>.md` も書く。`--zip` を付けると `out/bundle.zip` にもまとめる。付けずに作り直すと、前に作った `out/bundle.zip` は消す(中身が今のバンドルと合わなくなるため。`--bundle` で別の場所に作ったときの `<dir>.zip` は消さず、古いことを知らせる) |
-| `judge run` | バンドルの各セッションを LLM で判定し `out/judgments.json` に追記する(**クレジットを消費します**) |
 | `judge import <ファイル>` | 外部の LLM で作った判定(JSON か、JSON を含む Markdown)を検証して `out/judgments.json` に取り込む |
-| `judge m365` / `turns m365` `[--model <名前>] [--limit <ファイル数>] [--timeout <秒>]` | 開いている M365 Copilot のアプリ(Windows)を UI Automation で操作し、未判定の添付ファイル(`bundle` / `turns bundle` で作ったもの)を 1 つずつ新しいチャットで送って、返答を取り込み、レポートに反映する。`--model` は M365 Copilot のモデルの選択の名前(既定 `Think Deeper`)、`--timeout` は 1 ファイルの待ち時間(既定 900 秒)。AI クレジットは使わない。添付は OneDrive に入る([judge.md の「M365 Copilot のアプリを自動で操作する」](judge.md#m365-copilot-のアプリを自動で操作するwindows)) |
-| `tasks sync` / `tasks list` / `tasks link [--llm] [--session <id,...>] [--timeout <秒>]` | 管理ツールのタスク(設定の `tasks`。[README の「管理ツールのタスクと工数」](../README.md#管理ツールのタスクと工数任意))。`sync` は XML を読んで `atlas-notes/tasks.json` を更新し、機械の紐づけ(`atlas-notes/task-links.json`)を決め直す(レポートは作り直さない)。`list` はタスクの一覧(状態・完了を確認した時刻・紐づいたセッションの数。いくつかのタスクに紐づいたセッションは、それぞれのタスクに数える)を出す。`link` は機械の紐づけを決め直し、`--llm` を付けると、紐づけの無いセッション(`--session` ならそのセッション。手動で決めたものは除く)を判定と同じモデルで 1 件ずつ紐づける(**AI クレジットか、`judgeModel` の API の利用料を使います**。LLM は作業したタスクを 0 個以上選び、ログに `→ A, B` のように出す)。1 つのセッションは、いくつかのタスクに紐づくことがある(10 個まで)。手で紐づけを決めるコマンドは無い(詳細ページの「変える…」で決める)。候補のタスクが無いセッションには聞かない。1 件ずつ、ロックの中で読み直してそのセッションの分だけを書く(聞いている間に画面で手動で紐づけたものは変えない)。紐づけが変わったら `export` でレポートを作り直す。集計(`all`・`build`・`export`)のたびにも XML を読み、機械の紐づけを決め直す(LLM は使わない。`all` は `metrics` の前に行うので、初めての集計でも `--task` で絞れる) |
-| `serve` | `out/` をローカルサーバ(`127.0.0.1`)で配信してブラウザで開く。画面からメモを書け、集計し直す・工数の判定・記録と全文記録の表示ができる([screen.md の「画面からの操作」](screen.md#画面からの操作))。ブラウザを閉じると止まる(画面から動かした処理の実行中は、終わるまで待ってから止まる)。`atlas.bat` はこれで終わる |
+| `judge m365` / `turns m365` / `tasks m365` `[--model <名前>] [--limit <ファイル数>] [--timeout <秒>]` | 開いている M365 Copilot のアプリ(Windows)を UI Automation で操作し、未判定の添付ファイル(`bundle` / `turns bundle` / `tasks bundle` で作ったもの)を 1 つずつ新しいチャットで送って、返答を取り込み、レポートに反映する。`--model` は M365 Copilot のモデルの選択の名前(既定 `Think Deeper`)、`--timeout` は 1 ファイルの待ち時間(既定 900 秒)。添付は OneDrive に入る([judge.md の「M365 Copilot のアプリを自動で操作する」](judge.md#m365-copilot-のアプリを自動で操作するwindows)) |
+| `tasks sync` / `tasks list` / `tasks link` | 管理ツールのタスク(設定の `tasks`。[README の「管理ツールのタスクと工数」](../README.md#管理ツールのタスクと工数任意))。`sync` は XML を読んで `atlas-notes/tasks.json` を更新し、機械の紐づけ(`atlas-notes/task-links.json`)を決め直す(レポートは作り直さない)。`list` はタスクの一覧(状態・完了を確認した時刻・紐づいたセッションの数。いくつかのタスクに紐づいたセッションは、それぞれのタスクに数える)を出す。`link` は機械の紐づけを決め直し、変わったら `export` でレポートを作り直す。1 つのセッションは、いくつかのタスクに紐づくことがある(10 個まで)。手で紐づけを決めるコマンドは無い(詳細ページの「変える…」で決める)。集計(`all`・`build`・`export`)のたびにも XML を読み、機械の紐づけを決め直す(LLM は使わない。`all` は `metrics` の前に行うので、初めての集計でも `--task` で絞れる) |
+| `tasks bundle [--session <id,...>] [--zip] [--per-part <n>]` / `tasks import <ファイル>` | 機械で紐づかなかったセッションの紐づけを外部の LLM に頼む([judge.md の 4](judge.md#4-管理ツールのタスクへの紐づけ))。`bundle` は機械の紐づけを決め直してから、紐づけの無いセッション(`--session` ならその中。手動・LLM・機械の紐づけのあるものは理由を出して入れない)を `out/task-bundle/` にまとめる(LLM は呼ばない。`--zip` で `out/task-bundle.zip` にも。`--per-part` の既定は 10。頼むセッションが無ければ、前の束と ZIP はそのまま残す)。`import` は返答を束の候補と照らして確かめ、`task-links.json` に紐づけの出所 LLM で書き、書いたセッションがあれば `export` でレポートを作り直す。形の合わない項目が 1 件でもあれば何も書かない。手動と、前に LLM で決めた紐づけは変えない(「どのタスクでもない」の答えは、タスクのある機械の紐づけも変えない) |
+| `serve` | `out/` をローカルサーバ(`127.0.0.1`)で配信してブラウザで開く。画面からメモを書け、集計し直す・判定の添付ファイルを作る・返答の取り込み・記録と全文記録の表示ができる([screen.md の「画面からの操作」](screen.md#画面からの操作))。ブラウザを閉じると止まる(画面から動かした処理の実行中は、終わるまで待ってから止まる)。`atlas.bat` はこれで終わる |
 | `open <フォルダ>` | いつもの集計(この PC のデータ → `out/`)とは別に、指定したフォルダを集計して(`all` と同じ手順)、そのフォルダのサーバで開く。画面の「別のフォルダを開く…」と同じ([screen.md の「別のフォルダを開く」](screen.md#別のフォルダを開く))。指定できるのは、アップロード先(全員の分)・その下の人ごとのフォルダ(その人の分)・プロジェクトのフォルダ・`~/.copilot` の形のフォルダ(下記「[別のフォルダを開く(open)](#別のフォルダを開くopen)」) |
 | `memo list` / `memo show <id>` / `memo set <id> <本文...>` / `memo set <id> --file <path>` / `memo remove <id>` | セッションごとのメモ(`atlas-notes/memos/<id>.md`)を一覧・表示・保存・削除する。id は先頭の数文字でよい。`remove` は画像を残す([screen.md の「セッションのメモ」](screen.md#セッションのメモ)) |
-| `turns bundle [--unjudged]` / `turns run [--limit <n>] [--model <名前>]` / `turns import <ファイル>` | 依頼ごとの採用の判定([judge.md の 3](judge.md#3-依頼ごとの採用))。`bundle` は M365 Copilot などに添付する `<out>/turn-bundle/parts/` と、GitHub Copilot CLI に渡す塊を作る(LLM は呼ばない)。`run` は GitHub Copilot CLI で判定する(AI クレジットを消費。従量課金の API を直接呼ぶ `anthropic` は使わない)。`import` はチャットの返答を `<out>/turn-judgments.json` に取り込む |
+| `turns bundle [--unjudged] [--zip]` / `turns import <ファイル>` | 依頼ごとの採用の判定([judge.md の 3](judge.md#3-依頼ごとの採用))。`bundle` は M365 Copilot などに添付する `<out>/turn-bundle/parts/` と、フォルダごと渡すときの塊(`chunks/`)・`INSTRUCTIONS.md`・`schema.json` を作る(LLM は呼ばない)。`--zip` で `<out>/turn-bundle.zip` にもまとめる(付けずに作り直すと、前の ZIP は消す)。`import` は返答(チャットの返答か、エージェントに書かせた `turn-judgments.json`)を `<out>/turn-judgments.json` に取り込む |
 
-起動用の `.bat` から動かす入口も、同じ実行ファイルのサブコマンドです(使い方には出しません): `judge-flow`(判定の通し。`--session <id,...>` で判定する範囲を絞れる(`--force` で判定済みも判定し直す。画面から判定し直せるのは詳細ページの 1 セッションだけ)。最後の `export` はいつもレポート全体を作り直す。絞ったときの束は共有の `out/bundle`・`out/turn-bundle` ではなく作業用の `out/judge-work/` に作り、終わったら消す。[judge.md の「範囲を絞る」](judge.md#範囲を絞る1-セッション))・`setup`(`setup.bat`)・`upload-project`(`upload-project.bat`。送り先へのセッションの写し方は [README の「プロジェクトのセッションをまとめて送る」](../README.md#プロジェクトのセッションをまとめて送るupload-projectbat)。出力先は、試すときだけ環境変数 `ATLAS_OUT` で変えられる)・`upload-schedule`(`schedule-upload.bat`)・`upload-auto`(`schedule-upload.bat` で登録したタスク)・`self-update`(すべての `.bat` が開くたびに動かす更新。`git fetch --tags` と早送りで新しい版を取り込み、その版の実行ファイルを用意する。コミットが変わったら終了コード 10、それ以外はいつも 0。環境変数 `ATLAS_NO_AUTO_UPDATE=1` なら何もしない)。
+前の版の `judge run`・`turns run`・`judge-flow`・`tasks link --llm`(このツールが LLM を呼んで判定する操作)は無くなりました(2026-11-23)。指定すると、代わりの手順を出して止まります(終了コード 2)。
+
+起動用の `.bat` から動かす入口も、同じ実行ファイルのサブコマンドです(使い方には出しません): `setup`(`setup.bat`)・`upload-project`(`upload-project.bat`。送り先へのセッションの写し方は [README の「プロジェクトのセッションをまとめて送る」](../README.md#プロジェクトのセッションをまとめて送るupload-projectbat)。出力先は、試すときだけ環境変数 `ATLAS_OUT` で変えられる)・`upload-schedule`(`schedule-upload.bat`)・`upload-auto`(`schedule-upload.bat` で登録したタスク)・`self-update`(すべての `.bat` が開くたびに動かす更新。`git fetch --tags` と早送りで新しい版を取り込み、その版の実行ファイルを用意する。コミットが変わったら終了コード 10、それ以外はいつも 0。環境変数 `ATLAS_NO_AUTO_UPDATE=1` なら何もしない)。
 
 ## オプション
 
@@ -49,9 +51,9 @@ bin\atlas.exe --help                  # 使い方
 | `--judgments <file>` | LLM の判定結果 `judgments.json` の場所(既定: `out/judgments.json` があれば使う) |
 | `--bundle <dir>` | 評価バンドルの場所(既定: `out/bundle/`) |
 | `--include-empty` | `bundle` で、依頼の記録が無いセッションもパケットにする |
-| `--per-part <n>` | `bundle` で、`parts/` の 1 ファイルに入れるパケットの数(既定 5) |
-| `--unjudged` | `bundle` で、判定済み(`judgments.json` にある)セッションを入れない(画面の「チャットに貼って判定する」の「添付ファイルを作る」はこれを付ける) |
-| `--zip` | `bundle` で、バンドル(`parts/` を除く)を 1 つの ZIP(`out/bundle.zip`。無圧縮)にもまとめる。フォルダを読めるエージェントやローカルの LLM に渡すとき用([judge.md の「エージェントやローカルの LLM に渡す」](judge.md#エージェントやローカルの-llm-に渡す))。画面の「ZIP にまとめてエージェントに渡す」の「ZIP を作る」は `bundle --unjudged --zip` を実行する |
+| `--per-part <n>` | `bundle`・`tasks bundle` で、`parts/` の 1 ファイルに入れるパケットの数(既定 5。`tasks bundle` は 10) |
+| `--unjudged` | `bundle`・`turns bundle` で、判定済み(`judgments.json`・`turn-judgments.json` にある)セッション・依頼を入れない(画面の「チャットに貼って判定する」の「添付ファイルを作る」はこれを付ける)。`tasks bundle` はいつも紐づけの無いセッションだけなので、付けても同じ |
+| `--zip` | `bundle`・`turns bundle`・`tasks bundle` で、束(`parts/` を除く)を 1 つの ZIP(`out/bundle.zip`・`turn-bundle.zip`・`task-bundle.zip`。無圧縮)にもまとめる。フォルダを読めるエージェントやローカルの LLM に渡すとき用([judge.md の「エージェントやローカルの LLM に渡す」](judge.md#エージェントやローカルの-llm-に渡す))。画面の「ZIP にまとめてエージェントに渡す」の「ZIP を作る」は `bundle --unjudged --zip`(`turns bundle --unjudged --zip`・`tasks bundle --zip`)を実行する |
 | `--tool-output <v>` | `export` で、ツールの結果を記録に入れる条件。`fail`(既定。失敗したときだけ)/ `all` / `none` |
 | `--max-chars <n>` | `export` で、依頼・応答・要約 1 件の上限(文字、既定 20000)。超えた分は中略して字数を書く |
 | `--full` | `export` で、解析用の全文記録 `out/full/<id>.md`(上限なし)と `out/coverage.json`(網羅の検査)も書く |
@@ -62,7 +64,7 @@ bin\atlas.exe --help                  # 使い方
 | `--vcs-mode <v>` | `vcs` / `all` で、比べる版をどこで見るか。`worktree`(既定。照合した時点の作業ツリーで、まだ取り込んでいない変更も含む)/ `committed`(最後に取り込んだ版。git は HEAD、svn は BASE、p4 は手元の版)/ `fixed`(セッションの終わりから決まった日数後の時点で取り込まれていた版。日数は設定の `vcs.lagDays`、既定 7)。設定の `vcs.mode` より優先する |
 | `-V`, `--version` | 版を出す(`atlas 0.1.3 (commit <作ったときのコミット>, code <版の目印>)`)。リリースの `atlas.exe` はリリースのタグ `v<版>` の版(ビルドのときに環境変数 `ATLAS_VERSION` で渡す)、渡さずに作ったもの(この PC でのビルド)はワークスペースの `Cargo.toml` の `version`。`scripts/ensure-atlas.ps1` が、置いてある実行ファイルの版を確かめるのに使う |
 
-`judge run` 専用のオプション(`--backend` `--limit` `--only` `--concurrency` `--force` `--no-allow-tools` `--timeout`)は [judge.md](judge.md) を見てください。`judge` は作ってある添付(`out/bundle`)を判定するので、絞り込みのオプションは効きません。`--session` は `judge run` で `--only` と同じに扱い(先頭一致で添付から探す)、ほかの絞り込み(`--project`・`--since`・`--client`・`--branch`・`--task`)を付けると止まります(`judge-flow` では、添付を作る `bundle` に渡ります)。`judge run` では `--model` は判定に使うモデルの指定になります。
+`--limit` と `--timeout` は `judge m365`・`turns m365`・`tasks m365` で使います(`--timeout` は `skill-draft` でも使う)。`--backend` は `skill-draft` でだけ使います。`judge import`・`judge m365` は作ってある添付(`out/bundle`)を使うので、絞り込みのオプション(`--session`・`--project`・`--since`・`--client`・`--branch`・`--task`)を付けると止まります。絞るときは、先に `bundle` に付けて添付を作ります。`judge m365` では `--model` は M365 Copilot のモデルの選択の名前になります。
 
 ## snapshot と extract が読むもの
 
@@ -207,17 +209,16 @@ llm-wiki の参照は、ツール呼び出しの引数に vault の場所が現�
 - `labels` で状態の名前(`kept` / `modified` / `missing` / `unattributable`)を差し替えられます。表の列名・画面・詳細ページに使います(40 文字まで)。`note` は画面の「AI の変更の残存」の節の説明に足す一文です(1000 文字まで)。どちらも `atlas vcs` の結果(`vcs-retention.json`)に入るので、変えたら `atlas vcs`(か `atlas.bat`)で照合し直します。環境ごとの決まりや言葉づかいは、リポジトリに入れずにここ(未追跡の設定ファイル)に置けます。
 - 書き間違い(知らない項目・相対パス)は、照合が 0 件になって気付きにくいので、エラーで止めます。
 
-## 判定に使うモデルの指定
+## skill-draft に使うモデルの指定
 
-LLM の判定(`judge run`・`turns run`・`skill-draft`・`bin\atlas.exe judge-flow` と、画面の「判定する…」の「このツールが判定する」)と、管理ツールのタスクの LLM での紐づけ(`tasks link --llm`・画面の「タスクを LLM で紐づける…」)で、GitHub Copilot CLI に渡すモデルです。Copilot に保存した自分の API キーのモデル(BYOK)は `<プロバイダー名>/<モデル ID>` で書きます([judge.md](judge.md#2b-このツールの中で判定する画面からまたはコマンドで))。
+`skill-draft`(SKILL.md の下書き。このツールが LLM を呼ぶのはここだけ)で、GitHub Copilot CLI に渡すモデルです。Copilot に保存した自分の API キーのモデル(BYOK)は `<プロバイダー名>/<モデル ID>` で書きます。
 
 ```json
 { "judgeModel": "anthropic/claude-sonnet-5-5" }
 ```
 
-- 決まる順: コマンドの `--model` > 設定の `judgeModel` > どちらも無ければ Copilot の既定のモデル。どれを使ったかは、判定のログの最初に出ます。
-- **設定が無いと、GitHub Copilot の AI クレジットを使います**(Copilot の既定のモデル)。BYOK のモデルなら AI クレジットは使わず、提供元の API の従量課金になります。画面の確認ダイアログには、使うモデルと、どちらの費用かが出ます。
-- `--backend anthropic`(Anthropic API を直接呼ぶ)には使いません(モデル名の形が違うため。そちらは `--model` で指定します)。`anthropic` は、機能 `anthropic-backend` を付けてビルドした atlas にだけ入っています(リリースの `atlas.exe` には無い。[judge.md](judge.md#2b-このツールの中で判定する画面からまたはコマンドで))。
-- 画面から動かす処理は、サーバと同じ設定ファイルを読みます(`serve` や `open` を `--config` で起動したときは、その設定ファイル)。
+- 名前に「judge」とあるのは、前の版がこのツールの中の判定にも使っていたためです。判定はもうこのツールの中では回さないので(外部の LLM に頼む)、判定には使いません。前の版の設定を書いたままでも、そのまま読めます。
+- 決まる順: コマンドの `--model` > 設定の `judgeModel` > どちらも無ければ Copilot の既定のモデル。どれを使ったかは、ログの最初に出ます。
+- `--backend anthropic`(Anthropic API を直接呼ぶ)には使いません(モデル名の形が違うため。そちらは `--model` で指定します)。`anthropic` は、機能 `anthropic-backend` を付けてビルドした atlas にだけ入っています(リリースの `atlas.exe` には無い。[development.md](development.md))。
 
 画面と bat は、設定ファイルを書き換える間 `atlas.config.json.lock` を作り、1 つずつ書きます(別の処理の書き換えを消さないように。落ちて残ったものは 10 秒たてば無視します)。書き換えるのは 1 項目だけで、ほかの項目の書き方(手で詰めた配列など)はそのまま残します。

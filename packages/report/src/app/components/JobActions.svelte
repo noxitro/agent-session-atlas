@@ -1,249 +1,90 @@
 <script lang="ts">
-  // Phase 14: マストヘッドの操作「集計し直す」「判定する…」(atlas serve から開いたときだけ)。
-  // 判定は AI クレジットを消費するので、必ず確認ダイアログ(件数・バックエンド・費用)を通す。「やめる」では API を呼ばない。
-  // ダイアログでは判定するもの(工数 = セッションごと / 依頼ごとの採用)と、判定の方法を選べる:
-  // このツールから(copilot -p)か、チャットに貼る(M365 Copilot など。ChatJudge)か、ZIP にまとめてエージェントに渡す(工数の判定だけ。ChatJudge の via=zip)。
-  // 選んだものはこのブラウザに覚える。1 セッションだけを判定するときは、そのセッションの詳細ページから。
+  // マストヘッドの操作「集計し直す」「判定する…」(atlas serve から開いたときだけ)。
+  // 判定はこのツールの中では回さない。判定するのは外部の LLM で、ダイアログでは判定するもの(工数 = セッションごと / 依頼ごとの採用 /
+  // 管理ツールのタスクへの紐づけ)と、渡し方(チャットに貼る / ZIP にまとめてエージェントに渡す)を選ぶ(ChatJudge)。
+  // タスクへの紐づけは、タスクの設定か記録があって、読むだけの画面でないときだけ選べる。選んだものはこのブラウザに覚える。
   import { tick } from 'svelte';
-  import { jobsApi, type JudgePreview, type JudgeTarget } from '../api.ts';
+  import type { JudgeTarget, JudgeVia } from '../api.ts';
   import type { JobStore } from '../jobs.svelte.ts';
-  import { int } from '../../lib/format.ts';
   import ChatJudge from './ChatJudge.svelte';
 
   let {
     jobs,
     disabled,
-    taskLink = null,
+    tasks = null,
   }: {
     jobs: JobStore;
     disabled: boolean;
-    /**
-     * 管理ツールのタスクに LLM で紐づける操作(GET api/tasks の答え)。タスクの設定も記録も無ければ null で、ボタンを出さない。
-     * unresolved は聞くセッションの数、configured は設定に tasks があるか、readOnly は読むだけの画面か
-     */
-    taskLink?: { unresolved: number; configured: boolean; readOnly: boolean } | null;
+    /** 管理ツールのタスク(GET api/tasks の答え)。タスクの設定も記録も無ければ null で、「タスクの紐づけ」を出さない。readOnly は読むだけの画面 */
+    tasks?: { configured: boolean; readOnly: boolean } | null;
   } = $props();
 
-  // --- タスクを LLM で紐づける(判定と同じモデル。AI クレジットか API の利用料を使うので、確かめてから始める) ---
-  let linkDlg = $state<HTMLDialogElement | null>(null);
-  let linkOpener = $state<HTMLButtonElement | null>(null);
-  let linkPreview = $state<JudgePreview | null>(null);
-  let linkPreviewError = $state('');
-  let linkError = $state('');
-  /** 押せない理由(押せるなら空)。押せないときも焦点は受け、理由を読み上げる(aria-disabled) */
-  const linkWhy = $derived(
-    !taskLink
-      ? ''
-      : taskLink.readOnly
-        ? '読むだけの画面では、送った人の紐づけをそのまま使います(ここでは紐づけません)。'
-        : !taskLink.configured
-          ? '設定(atlas.config.json)に tasks がありません。'
-          : taskLink.unresolved === 0
-            ? '紐づけの無いセッションはありません(機械・LLM・手動のどれかで決まっています)。'
-            : disabled
-              ? 'サーバが止まっています。atlas.bat を実行し直してください。'
-              : jobs.running || jobs.busy
-                ? 'ほかの処理が動いています。終わってから押してください。'
-                : '',
-  );
-  const linkOff = $derived(linkWhy !== '');
-  /** 確認の中で、使うモデルと費用が分かったか(分かるまで、と分からなかったときは始められない。BYOK なら費用の出所が変わるため) */
-  const linkReady = $derived(!!linkPreview && !linkPreviewError);
-  /** 確認の答えを待つ長さ(サーバが答えないときに、待ち続けずに理由を出す) */
-  const LINK_PREVIEW_TIMEOUT_MS = 20_000;
-  /** 開き直したときに、前に開いたときの遅れた答えで書き換えないための番号(判定の確認と同じ) */
-  let linkSeq = 0;
-  async function openLink(): Promise<void> {
-    if (linkOff || !taskLink) return;
-    const n = ++linkSeq;
-    linkPreview = null;
-    linkPreviewError = '';
-    linkError = '';
-    linkDlg?.showModal();
-    await tick();
-    linkDlg?.querySelector<HTMLElement>('[data-autofocus]')?.focus({ preventScroll: true });
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new Error(`サーバが ${LINK_PREVIEW_TIMEOUT_MS / 1000} 秒以内に答えませんでした。閉じてから開き直してください`)), LINK_PREVIEW_TIMEOUT_MS);
-    });
-    try {
-      const p = await Promise.race([jobsApi.judgePreview(jobs.token), timeout]);
-      if (n === linkSeq) linkPreview = p;
-    } catch (e) {
-      if (n === linkSeq) linkPreviewError = (e as Error).message;
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-  async function runLink(e: SubmitEvent): Promise<void> {
-    e.preventDefault();
-    if (!taskLink || taskLink.unresolved < 1 || jobs.busy || !linkReady) return;
-    if (await jobs.run({ kind: 'task-link' })) linkDlg?.close();
-    else linkError = jobs.error;
-  }
+  /** タスクの紐づけを選べるか(読むだけの画面の紐づけは送った人のものなので、ここでは頼まない) */
+  const tasksOn = $derived(!!tasks && !tasks.readOnly);
 
-  /** 件数の上限の最大(工数はセッション、依頼ごとの判定は依頼の数) */
-  const LIMIT_MAX: Record<JudgeTarget, number> = { effort: 500, turns: 5000 };
-  const LIMIT_DEFAULT: Record<JudgeTarget, number> = { effort: 10, turns: 60 };
   const TARGET_KEY = 'atlas.judge-target';
+  const METHOD_KEY = 'atlas.judge-method';
   let target = $state<JudgeTarget>(readTarget());
   function readTarget(): JudgeTarget {
     try {
-      return localStorage.getItem(TARGET_KEY) === 'turns' ? 'turns' : 'effort';
+      const t = localStorage.getItem(TARGET_KEY);
+      return t === 'turns' || t === 'tasks' ? t : 'effort';
     } catch {
       return 'effort';
     }
   }
-  /** 判定するものごとの件数の上限と、チャットに貼りかけた返答(切り替えても失わない) */
-  const limits: Record<JudgeTarget, number | null> = { ...LIMIT_DEFAULT };
-  let replies = $state<Record<JudgeTarget, string>>({ effort: '', turns: '' });
-  function setTarget(t: JudgeTarget): void {
-    limits[target] = limit;
-    target = t;
-    limit = limits[t];
-    runError = '';
+  /** 選べない「タスクの紐づけ」を覚えていたら、工数の手順を出す(タスクが使えるようになれば戻る) */
+  const shownTarget = $derived<JudgeTarget>(target === 'tasks' && !tasksOn ? 'effort' : target);
+  let method = $state<JudgeVia>(readMethod());
+  function readMethod(): JudgeVia {
     try {
-      localStorage.setItem(TARGET_KEY, t);
+      // 前の版で覚えた、このツールの中で判定する方法(tool)は、チャットに貼る手順にする
+      return localStorage.getItem(METHOD_KEY) === 'zip' ? 'zip' : 'chat';
+    } catch {
+      return 'chat';
+    }
+  }
+  /** 判定するものごとの、貼りかけの返答(切り替えても失わない) */
+  let replies = $state<Record<JudgeTarget, string>>({ effort: '', turns: '', tasks: '' });
+  function remember(key: string, v: string): void {
+    try {
+      localStorage.setItem(key, v);
     } catch {
       /* 覚えられなくても選んだものでは動く */
     }
-    void loadPreview();
   }
-  const unit = $derived(target === 'turns' ? '依頼' : 'セッション');
+  function setTarget(t: JudgeTarget): void {
+    target = t;
+    remember(TARGET_KEY, t);
+  }
+  function setMethod(m: JudgeVia): void {
+    method = m;
+    remember(METHOD_KEY, m);
+  }
   let dlg = $state<HTMLDialogElement | null>(null);
   let opener = $state<HTMLButtonElement | null>(null);
   let open = $state(false);
-  const METHOD_KEY = 'atlas.judge-method';
-  type Method = 'tool' | 'chat' | 'zip';
-  let method = $state<Method>(readMethod());
-  function readMethod(): Method {
-    try {
-      const m = localStorage.getItem(METHOD_KEY);
-      return m === 'chat' || m === 'zip' ? m : 'tool';
-    } catch {
-      return 'tool';
-    }
-  }
-  /** 依頼ごとの判定には ZIP が無い。ZIP を選んだまま切り替えたときはチャットの手順を出す(工数に戻すと ZIP に戻る) */
-  const zipOff = $derived(target === 'turns');
-  const shown = $derived<Method>(method === 'zip' && zipOff ? 'chat' : method);
-  function setMethod(m: Method): void {
-    method = m;
-    try {
-      localStorage.setItem(METHOD_KEY, m);
-    } catch {
-      /* 覚えられなくても選んだ方法では動く */
-    }
-  }
-  /** 初期フォーカス: このツールからなら「やめる」(Enter の押し間違いで費用のかかる処理を始めない)、チャットなら表題の横の「閉じる」 */
-  async function focusInitial(): Promise<void> {
-    await tick();
-    // 「閉じる」はチャットの手順の下にあるので、フォーカスで送らずに表題から見せる
-    dlg?.querySelector<HTMLElement>('[data-autofocus]')?.focus({ preventScroll: true });
-    if (dlg) dlg.scrollTop = 0;
-  }
-  let preview = $state<JudgePreview | null>(null);
-  /** 依頼の判定で 1 回にまとめる依頼の数の上限(サーバが judge-preview の chunk で返す。返さない古いサーバのときだけ 6。判定の回数の目安に使う) */
-  const turnChunk = $derived(preview?.chunk && preview.chunk > 0 ? preview.chunk : 6);
-  let previewError = $state('');
-  let runError = $state('');
-  let limit = $state<number | null>(LIMIT_DEFAULT[readTarget()]);
   const off = $derived(disabled || jobs.running || jobs.busy);
-  const limitOk = $derived(typeof limit === 'number' && Number.isInteger(limit) && limit >= 1 && limit <= LIMIT_MAX[target]);
-  /** 実際に判定する件数(未判定のうち上限まで) */
-  const count = $derived(preview && limitOk ? Math.min(preview.pending, limit as number) : 0);
 
   async function openJudge(): Promise<void> {
-    preview = null;
-    previewError = '';
-    runError = '';
     open = true;
     dlg?.showModal();
-    await focusInitial();
-    await loadPreview();
-  }
-  /** 最後に数え始めたものだけを出す(判定するものを続けて切り替えたとき、前の結果で上書きしない) */
-  let seq = 0;
-  async function loadPreview(): Promise<void> {
-    preview = null;
-    previewError = '';
-    const n = ++seq;
-    try {
-      const p = await jobsApi.judgePreview(jobs.token, target);
-      if (n === seq) preview = p;
-    } catch (e) {
-      if (n === seq) previewError = (e as Error).message;
-    }
-  }
-  async function runJudge(e: SubmitEvent): Promise<void> {
-    e.preventDefault();
-    if (!limitOk || count < 1 || jobs.busy) return;
-    const req = target === 'turns' ? { kind: 'turn-judge' as const, limit: limit as number } : { kind: 'judge' as const, limit: limit as number };
-    if (await jobs.run(req)) dlg?.close();
-    else runError = jobs.error;
+    await tick();
+    // 「閉じる」は手順の下にもあるので、フォーカスで送らずに表題から見せる
+    dlg?.querySelector<HTMLElement>('[data-autofocus]')?.focus({ preventScroll: true });
+    if (dlg) dlg.scrollTop = 0;
   }
 </script>
 
 <div class="job-actions" role="group" aria-label="集計と判定">
   <button type="button" class="btn" disabled={off} data-testid="job-refresh" onclick={() => void jobs.run({ kind: 'refresh' })}>集計し直す</button>
   <button type="button" class="btn" disabled={off} bind:this={opener} data-testid="job-judge" aria-haspopup="dialog" onclick={openJudge}>判定する…</button>
-  {#if taskLink}
-    <button
-      type="button"
-      class="btn"
-      aria-disabled={linkOff ? 'true' : undefined}
-      aria-describedby={linkWhy ? 'task-link-why' : undefined}
-      title={linkWhy || undefined}
-      bind:this={linkOpener}
-      data-testid="job-task-link"
-      aria-haspopup="dialog"
-      onclick={openLink}>タスクを LLM で紐づける…({int(taskLink.readOnly ? 0 : taskLink.unresolved)})</button
-    >
-    {#if linkWhy}<span class="sr-only" id="task-link-why" data-testid="job-task-link-why">{linkWhy}</span>{/if}
-  {/if}
 </div>
-
-{#if taskLink}
-  <dialog bind:this={linkDlg} class="judge-dialog" aria-labelledby="task-link-h" aria-describedby="task-link-cost" data-testid="task-link-dialog" onclose={() => linkOpener?.focus()}>
-    <div class="head">
-      <h2 id="task-link-h">タスクを LLM で紐づける</h2>
-      <button type="button" class="btn close" onclick={() => linkDlg?.close()}>閉じる</button>
-    </div>
-    <form onsubmit={runLink} aria-busy={jobs.busy}>
-      <p class="lead">機械で決まらなかったセッションの題名と依頼の文を、判定と同じモデルに渡し、管理ツールのタスクのどれかを選ばせます。手で決めた紐づけと、前に LLM で決めた紐づけは変えません。終わったらレポートを作り直します。</p>
-      <p class="model" data-testid="task-link-model">
-        {#if linkPreview}
-          モデル: {#if linkPreview.model}<code>{linkPreview.model}</code>{#if linkPreview.byok}(自分の API キー・BYOK){/if}{:else}Copilot の既定のモデル{/if}<span class="src">(atlas.config.json の judgeModel{linkPreview.model ? '' : 'が未設定'})</span>
-        {:else if linkPreviewError}
-          使うモデルを確かめられませんでした: {linkPreviewError}
-        {:else}
-          使うモデルを確かめています…
-        {/if}
-      </p>
-      <p class="count" role="status" data-testid="task-link-count">紐づけの無いセッション <strong>{int(taskLink.unresolved)} 件</strong>を 1 件ずつ聞きます。</p>
-      <!-- 費用の出所(AI クレジットか API の利用料)はモデルで決まる。分かるまで「消費します」と書かず、始めるボタンも押せない -->
-      <p class="cost" class:pending={!linkPreview && !linkPreviewError} id="task-link-cost" data-testid="task-link-cost">
-        {#if linkPreviewError}<strong>費用を確かめられないので、始められません。</strong>ダイアログを閉じて、もう一度開いてください。
-        {:else if !linkPreview}費用を確かめています…
-        {:else if linkPreview.byok}<strong>API の利用料がかかります。</strong>自分の API キーのモデル(BYOK)で聞くので、GitHub Copilot の AI クレジットは使いません。そのモデルの提供元の API の従量課金を、1 件につき 1 回の分だけ使います。
-        {:else}<strong>AI クレジットを消費します。</strong>GitHub Copilot の AI クレジットを、1 件につき 1 回の分だけ使います。{/if}
-        {#if linkPreview?.modelError}<br />設定ファイルを読めませんでした: {linkPreview.modelError}{/if}
-      </p>
-      {#if linkError}<p class="err" role="alert">{linkError}</p>{/if}
-      <div class="actions">
-        <button type="button" class="btn" data-autofocus data-testid="task-link-cancel" onclick={() => linkDlg?.close()}>やめる</button>
-        <button type="submit" class="btn primary" disabled={taskLink.unresolved < 1 || jobs.busy || !linkReady} data-testid="task-link-run">{jobs.busy ? '開始しています…' : `${int(taskLink.unresolved)} 件を紐づける`}</button>
-      </div>
-    </form>
-  </dialog>
-{/if}
 
 <dialog
   bind:this={dlg}
   class="judge-dialog"
-  class:wide={shown !== 'tool'}
   aria-labelledby="judge-h"
-  aria-describedby={shown === 'tool' ? 'judge-cost' : undefined}
   data-testid="judge-dialog"
   onclose={() => {
     open = false;
@@ -252,70 +93,26 @@
 >
   <div class="head">
     <h2 id="judge-h">LLM で判定する</h2>
-    <!-- 手順の長いチャット側では一番下の「閉じる」が画面の外になる(スマホには Esc が無い)ので、表題の横にも置く -->
-    <button type="button" class="btn close" data-autofocus={shown !== 'tool' ? '' : undefined} data-testid="judge-close" onclick={() => dlg?.close()}>閉じる</button>
+    <!-- 手順の長いダイアログでは一番下の「閉じる」が画面の外になる(スマホには Esc が無い)ので、表題の横にも置く -->
+    <button type="button" class="btn close" data-autofocus data-testid="judge-close" onclick={() => dlg?.close()}>閉じる</button>
   </div>
+  <p class="lead" data-testid="judge-lead">判定するのは、あなたが使っている外部の LLM です。このツールは LLM を呼ばず、渡すファイルを作って、返ってきた答えを取り込みます。</p>
   <fieldset class="fld method" aria-describedby="judge-target-note">
     <legend class="k">判定するもの</legend>
-    <label class="opt"><input type="radio" name="judge-target" value="effort" checked={target === 'effort'} onchange={() => setTarget('effort')} data-testid="judge-target-effort" />工数(セッションごとの推定人手工数と、成果の質・手戻り)</label>
-    <label class="opt"><input type="radio" name="judge-target" value="turns" checked={target === 'turns'} onchange={() => setTarget('turns')} data-testid="judge-target-turns" />依頼ごとの採用(任意。どの依頼が直されたか・合わなかった点・工程まで見たいとき)</label>
-    <p class="both" id="judge-target-note" data-testid="judge-target-note">2 つは別の判定で、片方だけでも使えます。迷ったら工数だけで足ります。</p>
+    <label class="opt"><input type="radio" name="judge-target" value="effort" checked={shownTarget === 'effort'} onchange={() => setTarget('effort')} data-testid="judge-target-effort" />工数(セッションごとの推定人手工数と、成果の質・手戻り)</label>
+    <label class="opt"><input type="radio" name="judge-target" value="turns" checked={shownTarget === 'turns'} onchange={() => setTarget('turns')} data-testid="judge-target-turns" />依頼ごとの採用(任意。どの依頼が直されたか・合わなかった点・工程まで見たいとき)</label>
+    {#if tasksOn}
+      <label class="opt"><input type="radio" name="judge-target" value="tasks" checked={shownTarget === 'tasks'} onchange={() => setTarget('tasks')} data-testid="judge-target-tasks" />タスクの紐づけ(機械で決まらなかったセッションが、管理ツールのどのタスクの作業か)</label>
+    {/if}
+    <p class="both" id="judge-target-note" data-testid="judge-target-note">どれも別の判定で、1 つだけでも使えます。迷ったら工数だけで足ります。</p>
   </fieldset>
   <fieldset class="fld method">
     <legend class="k">判定の方法</legend>
-    <label class="opt"><input type="radio" name="judge-method" value="tool" checked={shown === 'tool'} onchange={() => setMethod('tool')} data-testid="judge-method-tool" />このツールが判定する(GitHub Copilot CLI を手元で動かす)</label>
-    <label class="opt"><input type="radio" name="judge-method" value="chat" checked={shown === 'chat'} onchange={() => setMethod('chat')} data-testid="judge-method-chat" />チャットに貼って判定する(M365 Copilot など。ファイルの添付か貼り付けができる LLM なら使える)</label>
-    <label class="opt" class:off={zipOff}><input type="radio" name="judge-method" value="zip" checked={shown === 'zip'} disabled={zipOff} aria-describedby={zipOff ? 'judge-zip-off' : undefined} onchange={() => setMethod('zip')} data-testid="judge-method-zip" />ZIP にまとめてエージェントに渡す(フォルダを読める LLM 向け。工数の判定だけ)</label>
-    {#if zipOff}<p class="why" id="judge-zip-off" data-testid="judge-zip-off">依頼ごとの判定には ZIP がありません。「チャットに貼って判定する」で作るファイルは 1 つで完結するので、どの LLM にもそのまま渡せます。</p>{/if}
+    <label class="opt"><input type="radio" name="judge-method" value="chat" checked={method === 'chat'} onchange={() => setMethod('chat')} data-testid="judge-method-chat" />チャットに貼って判定する(M365 Copilot など。ファイルの添付か貼り付けができる LLM なら使える)</label>
+    <label class="opt"><input type="radio" name="judge-method" value="zip" checked={method === 'zip'} onchange={() => setMethod('zip')} data-testid="judge-method-zip" />ZIP にまとめてエージェントに渡す(フォルダを読める LLM 向け)</label>
   </fieldset>
-  {#if shown !== 'tool'}
-    {#if open}{#key target}<ChatJudge {jobs} {target} via={shown === 'zip' ? 'zip' : 'chat'} bind:reply={replies[target]} onclose={() => dlg?.close()} />{/key}{/if}
-  {:else}
-    <form onsubmit={runJudge} aria-busy={jobs.busy}>
-      <p class="lead">
-        {#if target === 'turns'}未判定の依頼を LLM に判定させ、採用されたか・合わなかった点・工程をレポートに足します。依頼数件をまとめて 1 回で判定します。判定用のファイルを作り直す → 判定する → レポートを作り直す、の順に自動で進みます。
-        {:else}未判定のセッションを LLM に判定させ、推定人手工数をレポートに足します。判定用のファイルを作り直す → 判定する → レポートを作り直す、の順に自動で進みます。{/if}
-      </p>
-      <div class="row">
-        <label class="fld"><span class="k">件数({unit})の上限</span><input type="number" name="judge-limit" autocomplete="off" min="1" max={LIMIT_MAX[target]} step="1" inputmode="numeric" bind:value={limit} aria-invalid={limitOk ? undefined : 'true'} aria-describedby="judge-count" data-testid="judge-limit" /></label>
-        <p class="fld only">判定に使うもの: GitHub Copilot CLI(copilot -p)</p>
-      </div>
-      <p class="model" data-testid="judge-model">
-        {#if preview}
-          モデル: {#if preview.model}<code>{preview.model}</code>{#if preview.byok}(自分の API キー・BYOK){/if}{:else}Copilot の既定のモデル{/if}<span class="src">(atlas.config.json の judgeModel{preview.model ? '' : 'が未設定'})</span>
-        {:else if previewError}
-          使うモデルを確かめられませんでした
-        {:else}
-          使うモデルを確かめています…
-        {/if}
-      </p>
-      <p class="count" id="judge-count" role="status" data-testid="judge-count">
-        {#if !limitOk}件数の上限は 1〜{int(LIMIT_MAX[target])} の整数で指定してください。
-        {:else if previewError}未判定の件数を数えられませんでした: {previewError}
-        {:else if !preview}未判定の件数を数えています…
-        {:else if preview.pending === 0}未判定の{unit}はありません(判定済み {int(preview.judged)} 件)。
-        {:else}未判定の{unit} {int(preview.pending)} 件のうち <strong>{int(count)} 件</strong>を判定します({#if target === 'turns'}約 {int(Math.ceil(count / turnChunk))} 回以上の判定。{/if}判定済み {int(preview.judged)} 件は判定し直しません)。{/if}
-        {#if target === 'turns' && preview?.withoutTurns}<br />依頼ごとの記録が無いセッションが {int(preview.withoutTurns)} 件あります(古い集計)。先に「集計し直す」を押すと、その依頼も判定できます。{/if}
-      </p>
-      <!-- 費用の出所はモデルで決まる。分かるまで「消費します」と書かない(始めるボタンは件数が分かるまで押せない) -->
-      <p class="cost" class:pending={!preview && !previewError} id="judge-cost" data-testid="judge-cost">
-        {#if previewError}<strong>費用を確かめられないので、始められません。</strong>ダイアログを閉じて、もう一度開いてください。
-        {:else if !preview}費用を確かめています…
-        {:else if preview.byok}<strong>API の利用料がかかります。</strong>
-          自分の API キーのモデル(BYOK)で判定するので、GitHub Copilot の AI クレジットは使いません。そのモデルの提供元(例: Anthropic)の API の従量課金を、{#if target === 'turns'}続いた依頼 {turnChunk} 件まで(長い依頼はもっと少なく)ごとに 1 回{:else}1 件につき 1 回以上{/if}の判定の分だけ使います。
-        {:else}<strong>AI クレジットを消費します。</strong>
-          {#if target === 'turns'}GitHub Copilot の AI クレジットを、続いた依頼 {turnChunk} 件まで(長い依頼はもっと少なく)ごとに 1 回の判定の分だけ使います。{:else}GitHub Copilot の AI クレジットを、1 件につき 1 回以上の判定の分だけ使います。{/if}
-          自分の API キーのモデル(BYOK)で判定するには、atlas.config.json に <code>"judgeModel": "anthropic/claude-sonnet-5-5"</code> のように書きます。
-        {/if}
-        {#if preview?.modelError}<br />設定ファイルを読めませんでした: {preview.modelError}{/if}
-      </p>
-      {#if runError}<p class="err" role="alert">{runError}</p>{/if}
-      <div class="actions">
-        <button type="button" class="btn" data-autofocus data-testid="judge-cancel" onclick={() => dlg?.close()}>やめる</button>
-        <button type="submit" class="btn primary" disabled={count < 1 || jobs.busy} data-testid="judge-run">{jobs.busy ? '開始しています…' : count > 0 ? `${int(count)} 件を判定する` : '判定する'}</button>
-      </div>
-    </form>
-  {/if}
+  <!-- 判定するものを変えたら作り直す。方法(チャット・ZIP)を変えても、この画面で取り込んだ件数は残す(同じ束を使うため) -->
+  {#if open}{#key shownTarget}<ChatJudge {jobs} target={shownTarget} via={method} bind:reply={replies[shownTarget]} onclose={() => dlg?.close()} />{/key}{/if}
 </dialog>
 
 <style>
@@ -327,15 +124,8 @@
   .job-actions .btn {
     padding: 2px 10px;
   }
-  /* 押せない理由があるときは、無効のボタンと同じ見た目にする(焦点は受けて、理由を読み上げる) */
-  .job-actions .btn[aria-disabled='true'] {
-    color: var(--ink-3);
-    border-color: var(--rule);
-    background: var(--surface);
-    cursor: not-allowed;
-  }
   .judge-dialog {
-    width: min(36rem, calc(100vw - 32px));
+    width: min(42rem, calc(100vw - 32px));
     max-height: calc(100vh - 32px);
     overflow: auto;
     /* 手順の長い方法では中を縦に流す。端まで流しても、後ろのページは動かさない */
@@ -346,17 +136,8 @@
     border: 1px solid var(--rule-strong);
     border-top: 3px solid var(--form);
   }
-  .judge-dialog.wide {
-    width: min(42rem, calc(100vw - 32px));
-  }
   .method {
     margin-top: 10px;
-  }
-  .only {
-    min-height: 30px;
-    display: flex;
-    align-items: center;
-    font-size: 0.8125rem;
   }
   .judge-dialog::backdrop {
     background: rgba(14, 17, 16, 0.45);
@@ -381,13 +162,6 @@
     font-size: 0.8125rem;
     color: var(--ink-2);
   }
-  .row {
-    display: flex;
-    gap: 10px 24px;
-    flex-wrap: wrap;
-    align-items: flex-start;
-    margin-top: 12px;
-  }
   .fld {
     margin: 0;
     padding: 0;
@@ -401,21 +175,6 @@
     color: var(--form);
     margin-bottom: 2px;
   }
-  .fld input[type='number'] {
-    font: inherit;
-    font-size: 0.875rem;
-    width: 7em;
-    height: 30px;
-    padding: 3px 6px;
-    color: var(--ink);
-    background: var(--surface);
-    border: 1px solid var(--control);
-    border-radius: 0;
-    font-variant-numeric: tabular-nums;
-  }
-  .fld input[aria-invalid='true'] {
-    border-color: var(--warn);
-  }
   .opt {
     display: inline-flex;
     align-items: center;
@@ -428,80 +187,9 @@
     margin: 0;
     accent-color: var(--form);
   }
-  /* 選べない方法: 文字を淡墨にして、理由をすぐ下に書く */
-  .opt.off {
-    color: var(--ink-3);
-  }
   .both {
     margin: 2px 0 0;
     font-size: 0.75rem;
     color: var(--ink-2);
-  }
-  .why {
-    margin: 0 0 2px;
-    padding-left: 19px;
-    font-size: 0.75rem;
-    color: var(--ink-2);
-  }
-  .model {
-    margin: 8px 0 0;
-    font-size: 0.8125rem;
-    overflow-wrap: anywhere;
-  }
-  .model code,
-  .cost code {
-    font-family: var(--mono);
-    font-size: 0.8125rem;
-    overflow-wrap: anywhere;
-  }
-  .model .src {
-    color: var(--ink-3);
-  }
-  .count {
-    margin: 12px 0 0;
-    padding: 8px 10px;
-    font-size: 0.8125rem;
-    background: var(--form-wash);
-    border: 1px solid var(--rule);
-  }
-  .cost {
-    margin: 8px 0 0;
-    padding: 8px 10px;
-    font-size: 0.8125rem;
-    background: var(--warn-wash);
-    border: 1px solid var(--warn);
-  }
-  /* 費用を確かめている間は、注意の色にしない(まだ何も言っていない) */
-  .cost.pending {
-    color: var(--ink-2);
-    background: var(--surface);
-    border-color: var(--rule);
-  }
-  .err {
-    margin: 8px 0 0;
-    font-size: 0.8125rem;
-    color: var(--warn);
-  }
-  .actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 8px;
-    margin-top: 16px;
-  }
-  .actions .btn {
-    min-height: 32px;
-  }
-  .btn.primary {
-    background: var(--form);
-    color: var(--surface);
-  }
-  .btn.primary:hover {
-    background: var(--form);
-    text-decoration: underline;
-  }
-  .btn.primary:disabled {
-    background: var(--surface);
-    color: var(--ink-3);
-    text-decoration: none;
   }
 </style>

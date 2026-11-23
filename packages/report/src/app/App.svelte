@@ -453,7 +453,7 @@
       .catch(() => {});
     return stop;
   });
-  // Phase 14: 画面からの操作(集計し直す・工数を判定する)。編集できるとき(serve から開いた画面)だけ。サーバが止まったら読むのもやめる
+  // 画面からの操作(集計し直す・判定の添付ファイルを作る)。編集できるとき(serve から開いた画面)だけ。サーバが止まったら読むのもやめる
   const jobStore = token ? new JobStore(token) : null;
   $effect(() => {
     if (!jobStore || !editable || serverDown) return;
@@ -685,7 +685,7 @@
         </p>
       </div>
       <div class="mast-tools">
-        {#if editable && jobStore}<JobActions jobs={jobStore} disabled={serverDown} taskLink={liveTasks?.tasks ? { unresolved: liveTasks.unresolved, configured: liveTasks.tasks.configured, readOnly: liveTasks.readOnly } : null} /><SettingsDialog jobs={jobStore} disabled={serverDown} upload={uploadHandlers} send={canEdit ? projectSend : undefined} projects={settingsProjects} /><OpenFolder token={jobStore.token} disabled={serverDown} />{/if}
+        {#if editable && jobStore}<JobActions jobs={jobStore} disabled={serverDown} tasks={liveTasks?.tasks ? { configured: liveTasks.tasks.configured, readOnly: liveTasks.readOnly } : null} /><SettingsDialog jobs={jobStore} disabled={serverDown} upload={uploadHandlers} send={canEdit ? projectSend : undefined} projects={settingsProjects} /><OpenFolder token={jobStore.token} disabled={serverDown} />{/if}
         {#if sourceLabel}<span class="tag" title={sourceLabel.path} data-testid="source-tag">対象: {sourceLabel.name}</span>{/if}
         {#if readOnly}<span class="tag" title="メモは、送った人が付けたものを出します。この画面では書き換えません(集計し直す・判定はできます)" data-testid="readonly-tag">読むだけ</span>{/if}
         {#if data.atlasBuilds}<span class={data.atlasBuilds.ok ? 'tag' : 'tag warn'} title={[data.atlasBuilds.headline, ...data.atlasBuilds.lines].join('\n')} data-testid="atlas-builds-tag">送った atlas: {data.atlasBuilds.short}</span>{/if}

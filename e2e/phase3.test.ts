@@ -1,16 +1,15 @@
-// 判定(bundle・judgments の取り込み・judge run)の E2E
+// 判定(bundle・judgments の取り込み)の E2E。判定するのは外部の LLM で、このツールは LLM を呼ばない
 //  a. fixtures から bundle を生成し、manifest / INSTRUCTIONS / schema / 各 md の必須セクションが揃う
 //  a4. パケットの llm-wiki の行は sessions.json の source.wikis(参照を数えた vault の数)で決まる
 //  b. 手書きの judgments サンプルを import → build で atlas.html に推定人手工数(一覧・プロジェクト別・全体)が出る
-//  c. 偽 copilot(fixtures/fake-copilot.mjs)で judge run が judgments を作り、--add-dir を渡さず、
-//     プロンプトにパケットが含まれることを引数記録で確かめる(LLM は呼ばない)
+//  c. このツールの中で判定する操作(judge run・judge-flow・turns run)は無く、代わりの手順を案内する
+//  c2. 依頼ごとの採用の ZIP(turns bundle --zip)を作り、エージェントが書いた結果を取り込んでレポートに出す
 //  d. ATLAS_LIVE=1 のとき実データから bundle を作り、件数とサイズをログに出す(LLM は呼ばない)
-// 実際の copilot -p の 1 回実行(ATLAS_LIVE_JUDGE=1)はユーザー許可のうえでオーケストレータが行うため、ここには含めない。
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { cp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { aggregate, isLowConfidence } from '../packages/report/src/lib/aggregate.ts';
 import { extractEmbedded } from '../packages/report/src/lib/embed.ts';
@@ -19,12 +18,11 @@ import type { ReportData } from '../packages/report/src/lib/types.ts';
 import { wikiPageTable, wikiReferenced } from '../packages/report/src/lib/wiki.ts';
 import { SAMPLE_WIKI_PAGES } from '../scripts/synthetic-base.ts';
 import type { SessionsFile } from '../packages/report/src/shared/types.ts';
-import { buildFixtureHome, FIXTURE_CODE, FIXTURES, ROOT, cliCommand } from './fixture-home.ts';
+import { atlasCli, buildFixtureHome, FIXTURES, ROOT, cliCommand } from './fixture-home.ts';
 import { DEFAULT_MAX_CHARS, DEFAULT_PER_PART, missingSections, packetFileName, packetSessionId, PACKET_SECTIONS, validateJudgments, type BundleManifest, type JudgmentsFile } from './judge-support.ts';
 
 const LIVE = process.env.ATLAS_LIVE === '1';
 const WORK = join(ROOT, 'out', 'e2e-phase3');
-const FAKE = join(FIXTURE_CODE, 'fake-copilot.mjs');
 /** 手書きの judgments サンプル(架空の判定。globalSetup が scripts/synthetic-base.ts の judgmentsSample() から書く) */
 const SAMPLE = join(FIXTURES, 'judgments-sample.json');
 
@@ -160,10 +158,10 @@ describe('Phase 3 E2E: fixtures', () => {
     }
     expect(at).toBe(end);
     expect(names.sort()).toEqual(['bundle/INSTRUCTIONS.md', 'bundle/manifest.json', 'bundle/schema.json', ...m.sessions.map((s) => `bundle/${s.path}`)].sort());
-    // bundle 以外では使えない
-    const t = atlas(['turns', 'bundle', '--out', out3, '--zip']);
+    // 束を作るコマンド(bundle・turns bundle・tasks bundle)のほかでは使えない
+    const t = atlas(['export', '--out', out3, '--zip']);
     expect(t.status).not.toBe(0);
-    expect(t.stdout + t.stderr).toContain('--zip は bundle でだけ使えます');
+    expect(t.stdout + t.stderr).toContain('--zip は bundle・turns bundle・tasks bundle でだけ使えます');
     // INSTRUCTIONS.md は、parts/ が ZIP に無いことを書く
     expect(await readFile(join(out3, 'bundle', 'INSTRUCTIONS.md'), 'utf8')).toContain('ZIP には入っていません');
     // --zip なしで作り直すと、中身が合わなくなる前の ZIP は消す
@@ -329,97 +327,73 @@ describe('Phase 3 E2E: fixtures', () => {
     expect(validateJudgments(await readJson(jpath)).items.length).toBe(sample.items.length);
   });
 
-  it('c. 偽 copilot で judge run: judgments ができ、--add-dir を渡さず、プロンプトにパケットが入る', async () => {
-    const jpath = join(WORK, 'run-judgments.json');
-    const log = join(WORK, 'fake-copilot.log');
-    await rm(jpath, { force: true });
-    await rm(log, { force: true });
-    const env = { ATLAS_COPILOT_BIN: FAKE, FAKE_COPILOT_LOG: log };
-
-    const r1 = atlas(['judge', 'run', '--out', out, '--judgments', jpath, '--limit', '2', '--model', 'fake-model'], env);
-    expect(r1.status, `${r1.stderr}\n${r1.stdout}`).toBe(0);
-    console.log(`[fake-copilot] ${r1.stdout}`);
-    let j = validateJudgments(await readJson(jpath));
-    expect(j.items.length).toBe(2);
-    expect(j.judge).toMatchObject({ backend: 'copilot-cli', model: 'fake-model' });
-    expect(j.items.every((i) => i.judge?.backend === 'copilot-cli' && i.taskSummary.includes('偽 copilot'))).toBe(true);
-    // usage-output-file から判定自体の使用量を集計
-    expect(j.judge.usage).toMatchObject({ runs: 2, missing: 0 });
-    expect(j.judge.usage!.totals.premiumRequests).toBe(2);
-
-    const calls = (await readFile(log, 'utf8'))
-      .trim()
-      .split('\n')
-      .map((l) => JSON.parse(l) as { argv: string[]; cwd: string; cwdEntries: string[]; sessionId: string });
-    expect(calls.length).toBe(2);
-    for (const c of calls) {
-      expect(c.argv).not.toContain('--add-dir');
-      expect(c.argv).toEqual(expect.arrayContaining(['--output-format', 'json', '--stream', 'off', '--no-ask-user', '-s', '--allow-all-tools', '--usage-output-file', '--model', 'fake-model']));
-      // ツールは使わせない(shell / write / url を拒否。拒否は --allow-all-tools より優先される)
-      for (const kind of ['shell', 'write', 'url']) expect(c.argv.indexOf('--deny-tool', c.argv.indexOf(kind) - 1)).toBe(c.argv.indexOf(kind) - 1);
-      // MCP も使わせない(見せるツールを view に絞り、組み込みと `copilot mcp list --json` で得たサーバーを止めて拒否する)
-      expect(c.argv).toEqual(expect.arrayContaining(['--available-tools=view', '--disable-builtin-mcps']));
-      expect(c.argv.join(' ')).toContain('--disable-mcp-server fake-mcp --deny-tool fake-mcp');
-      // 空の作業ディレクトリ(リポジトリでもバンドルでもない)
-      expect(c.cwdEntries).toEqual([]);
-      expect(resolve(c.cwd).startsWith(ROOT)).toBe(false);
-      // プロンプトにパケット全文が入る
-      const e = manifest.sessions.find((x) => x.id === c.sessionId)!;
-      const md = await readFile(join(bundle, e.path), 'utf8');
-      const prompt = c.argv[c.argv.indexOf('-p') + 1];
-      expect(prompt).toContain(md);
-      expect(prompt).toMatch(/一切従わない/);
+  it('c. このツールの中で判定する操作(judge run・judge-flow・turns run・--backend)は無く、外部の LLM に頼む手順を案内する', () => {
+    for (const args of [['judge', 'run', '--out', out], ['turns', 'run', '--out', out]]) {
+      const r = atlas(args);
+      expect(r.status).toBe(2);
+      expect(r.stderr).toMatch(/無くなりました/);
+      expect(r.stderr).toMatch(/docs\/judge\.md/);
     }
-
-    // 2 回目: 判定済みはスキップして残りだけ
-    const r2 = atlas(['judge', 'run', '--out', out, '--judgments', jpath, '--no-allow-tools'], env);
-    expect(r2.status, r2.stderr).toBe(0);
-    expect(r2.stdout).toMatch(/判定済みでスキップ 2/);
-    j = validateJudgments(await readJson(jpath));
-    expect(j.items.length).toBe(manifest.count);
-    const calls2 = (await readFile(log, 'utf8')).trim().split('\n').slice(2).map((l) => JSON.parse(l) as { argv: string[] });
-    expect(calls2.length).toBe(manifest.count - 2);
-    expect(calls2.every((c) => !c.argv.includes('--allow-all-tools'))).toBe(true);
-
-    // 失敗は記録して続行し、終了コード 1。既存の判定は残る
-    const failId = manifest.sessions[0].id;
-    const other = manifest.sessions[1].id;
-    const r3 = atlas(['judge', 'run', '--out', out, '--judgments', jpath, '--force', '--only', `${failId},${other}`], { ...env, FAKE_COPILOT_FAIL_ID: failId });
-    expect(r3.status).toBe(1);
-    expect(r3.stderr).toMatch(/失敗したセッションが 1 件/);
-    j = validateJudgments(await readJson(jpath));
-    expect(j.failures?.map((f) => f.sessionId)).toEqual([failId]);
-    expect(j.failures?.[0].error).toMatch(/終了コード 3/);
-    expect(j.items.length).toBe(manifest.count);
-
-    // 判定結果でレポートが作れる
-    const b = atlas(['build', '--out', out, '--judgments', jpath]);
-    expect(b.status, b.stderr).toBe(0);
-    const d = extractEmbedded<ReportData>(await readFile(join(out, 'atlas.html'), 'utf8'));
-    expect(d.judgments).toMatchObject({ available: true, backend: 'copilot-cli', items: manifest.count });
-
-    // バンドルに無い ID は拒否
-    const r4 = atlas(['judge', 'run', '--out', out, '--judgments', jpath, '--only', 'no-such-id'], env);
-    expect(r4.status).toBe(1);
-    expect(r4.stderr).toMatch(/バンドルに無い/);
+    const flow = spawnSync(atlasCli(), ['judge-flow', '--out', out], { encoding: 'utf8', cwd: ROOT, timeout: 600_000 });
+    expect(flow.status).toBe(2);
+    expect(flow.stderr).toMatch(/judge-flow は無くなりました/);
+    const backend = atlas(['bundle', '--out', out, '--backend', 'copilot-cli']);
+    expect(backend.status).toBe(2);
+    expect(backend.stderr).toMatch(/--backend は skill-draft でだけ使えます/);
   });
 
-  it('c2. atlas-judge の入口(judge-flow): 最後は export で、直前の all が作ったセッション記録を消さない', async () => {
-    const flowOut = join(WORK, 'out-flow');
-    const env = { ATLAS_COPILOT_BIN: FAKE, FAKE_COPILOT_LOG: join(WORK, 'fake-copilot-flow.log') };
-    const flow = (args: string[]): ReturnType<typeof atlas> => {
-      const t = performance.now();
-      const r = spawnSync(...cliCommand(args, 'judge-flow'), { encoding: 'utf8', cwd: ROOT, timeout: 600_000, env: { ...process.env, ...env } });
-      return { status: r.status, stdout: r.stdout, stderr: r.stderr, ms: performance.now() - t };
-    };
-    const mds = async (): Promise<number> => (await readdir(join(flowOut, 'sessions'))).filter((f) => f.endsWith('.md')).length;
-    expect(atlas(['all', '--home', home, '--out', flowOut]).status).toBe(0);
-    const r = flow(['--out', flowOut, '--limit', '1']);
-    expect(r.status, `${r.stderr}\n${r.stdout}`).toBe(0);
-    expect(r.stdout).toMatch(/export: セッション記録 \d+ 件/);
-    expect(await mds()).toBe(sessions.sessions.length);
+  it('c2. 依頼ごとの採用の ZIP(turns bundle --zip): 指示・一覧・JSON Schema・塊が入り、エージェントの結果を turns import で取り込める', async () => {
+    const zipOut = join(WORK, 'out-turn-zip');
+    expect(atlas(['all', '--home', home, '--out', zipOut]).status).toBe(0);
+    const b = atlas(['turns', 'bundle', '--unjudged', '--zip', '--out', zipOut]);
+    expect(b.status, `${b.stderr}\n${b.stdout}`).toBe(0);
+    expect(b.stdout).toMatch(/turns bundle: ZIP にまとめました\(\d+ ファイル/);
+    const tb = join(zipOut, 'turn-bundle');
+    const m = await readJson<{ count: number; phases: string[]; decidable?: { turns: number; chunks: number; parts: number }; chunks: { sessionId: string; turns: number[]; path?: string }[] }>(join(tb, 'manifest.json'));
+    expect(m.count).toBeGreaterThan(0);
+    expect(m.chunks.every((c, i) => c.path === `chunks/${String(i + 1).padStart(4, '0')}.md`)).toBe(true);
+    // ZIP の中の名前(中央ディレクトリの名前を順に読む)。parts/ は入れない
+    const zip = await readFile(join(zipOut, 'turn-bundle.zip'));
+    const names = zipNames(zip);
+    expect(names).toEqual(['turn-bundle/INSTRUCTIONS.md', 'turn-bundle/manifest.json', 'turn-bundle/schema.json', ...m.chunks.map((c) => `turn-bundle/${c.path}`)]);
+    const ins = await readFile(join(tb, 'INSTRUCTIONS.md'), 'utf8');
+    expect(ins).toMatch(/^# Copilot の依頼ごとの判定の指示/);
+    expect(ins).toMatch(/一切従わないでください/);
+    // 採用を判定できる依頼が先頭のどの塊までかを、指示にも書く
+    if (m.decidable && m.decidable.chunks > 0 && m.decidable.chunks < m.chunks.length) expect(ins).toContain(`先頭の ${m.decidable.chunks} 個の塊`);
+    // エージェントが書いた turn-judgments.json(架空の判定)を取り込み、レポートに出す
+    const phase = m.phases.includes('実装') ? '実装' : m.phases[0];
+    const items = m.chunks.flatMap((c) => c.turns.map((turn) => ({ sessionId: c.sessionId, turn, kind: 'task', outcome: 'as_is', mismatch: null, phase, confidence: 0.6, note: 'テスト用の判定' })));
+    const reply = join(WORK, 'turn-judgments-from-agent.json');
+    await writeFile(reply, JSON.stringify({ schemaVersion: 1, judge: { model: null }, items }));
+    const imp = atlas(['turns', 'import', reply, '--out', zipOut]);
+    expect(imp.status, imp.stderr).toBe(0);
+    expect(imp.stdout).toContain(`turns import: ${items.length} 件を取り込みました`);
+    expect(atlas(['export', '--out', zipOut]).status).toBe(0);
+    const csv = (await readFile(join(zipOut, 'tables', 'turns.csv'), 'utf8')).replace(/^﻿/, '').split('\r\n');
+    const head = csv[0].split(',');
+    const col = head.findIndex((h) => h.startsWith('判定:'));
+    expect(col).toBeGreaterThan(-1);
+    expect(csv.slice(1).filter((l) => l && l.split(',')[col] !== '').length).toBeGreaterThan(0);
+    // --zip なしで作り直すと、前の ZIP は消す(中身が合わなくなるため)
+    expect(atlas(['turns', 'bundle', '--out', zipOut]).status).toBe(0);
+    expect(existsSync(join(zipOut, 'turn-bundle.zip'))).toBe(false);
   });
 });
+
+/** 無圧縮の ZIP の中央ディレクトリから、名前を順に読む */
+function zipNames(b: Buffer): string[] {
+  const end = b.length - 22;
+  const count = b.readUInt16LE(end + 10);
+  let at = b.readUInt32LE(end + 16);
+  const names: string[] = [];
+  for (let i = 0; i < count; i++) {
+    const len = b.readUInt16LE(at + 28);
+    names.push(b.subarray(at + 46, at + 46 + len).toString('utf8'));
+    at += 46 + len;
+  }
+  return names;
+}
 
 describe.skipIf(!LIVE)('Phase 3 E2E: 実データ(ATLAS_LIVE=1、LLM は呼ばない)', () => {
   const src = process.env.ATLAS_COPILOT_HOME ?? join(homedir(), '.copilot');

@@ -27,16 +27,16 @@ npm run audit:ui -- out   # 生成したレポートの全ページの網羅チ�
 ATLAS_UI_CPU_SLOWDOWN=20 npm run ui
 npm run fixtures    # fixture(.fixtures/)を手で作り直す(中身を見たいとき。E2E は毎回自動で作り直す)
 cargo deny check    # Rust の依存の検査(下記「依存の検査」。cargo install cargo-deny --locked で入れておく)
-# 従量課金の Anthropic API を直接呼ぶ判定(--backend anthropic)を入れたビルドとテスト(既定では入らない。下記)
+# skill-draft で従量課金の Anthropic API を直接呼ぶ経路(--backend anthropic)を入れたビルドとテスト(既定では入らない。下記)
 cargo build --release -p atlas-cli --features anthropic-backend
 cargo test --workspace --features atlas-cli/anthropic-backend
 ```
 
-### 機能 anthropic-backend(従量課金の API を直接呼ぶ判定)
+### 機能 anthropic-backend(skill-draft で従量課金の API を直接呼ぶ)
 
-判定のバックエンド `anthropic`(`crates/atlas-judge/src/backends/anthropic.rs`。Anthropic Messages API を直接呼ぶ。従量課金)は、cargo の機能 `anthropic-backend`(`atlas-judge` の機能を `atlas-cli` が同じ名前で渡す)を付けたときだけ入ります。
+`skill-draft` のバックエンド `anthropic`(`crates/atlas-judge/src/backends/anthropic.rs`。Anthropic Messages API を直接呼ぶ。従量課金)は、cargo の機能 `anthropic-backend`(`atlas-judge` の機能を `atlas-cli` が同じ名前で渡す)を付けたときだけ入ります。
 HTTP と TLS のクライアント(`ureq`・`rustls`・`ring`・`webpki-roots` など)がこれだけのために要るので、既定のビルドとリリースの `atlas.exe`、`scripts/ensure-atlas.ps1` のこの PC でのビルドには入れません。
-入れていないビルドでも `--backend anthropic` は引数として受け付け、`judge run` と `skill-draft` が、入っていないことと上のビルドの仕方を出して止まります(`atlas_judge::backends::ensure_backend_built`)。
+入れていないビルドでも `--backend anthropic` は引数として受け付け、`skill-draft` が、入っていないことと上のビルドの仕方を出して止まります(`atlas_judge::backends::ensure_backend_built`)。
 テストは両方で回します(`cargo test --workspace` と、上の `--features` を付けたもの)。片方だけで動くテストは `#[cfg(feature = "anthropic-backend")]` で分けます。
 
 ### 依存の検査
@@ -72,7 +72,7 @@ $env:ATLAS_LIVE = '1'; npm run e2e
 ATLAS_LIVE=1 npm run e2e
 ```
 
-`ATLAS_COPILOT_HOME` で `~/.copilot` 以外の場所を指定できます。E2E は LLM を呼びません(`judge run` の検査は偽の copilot で行います)。
+`ATLAS_COPILOT_HOME` で `~/.copilot` 以外の場所を指定できます。E2E は LLM を呼びません(判定はこのツールの中では回さないので、外部の LLM の返答は架空のものを取り込みます。`skill-draft` の検査は偽の copilot で行います)。
 
 ## 全ページの網羅チェック(`npm run audit:ui`)
 
@@ -135,7 +135,7 @@ npm run audit:ui -- out --json audit.json --shots shots
 - `.fixtures/` は `.gitignore` 済みです。中身を見たいときは `npm run fixtures` で作れます。
   - `copilot-home/session-state/<id>/{workspace.yaml,events.jsonl}` と `copilot-home/session-store.json`(`session-store.db` の中身。テスト時に `e2e/fixture-home.ts` が WAL の DB に組み立てます)
   - `manifest.json`(各セッションの役割)、`fixture-counts.json`(core を使わずに数えた件数 = 期待値の根拠)、`judgments-sample.json`(手書きの架空の判定)
-- `fixtures/` にはコード(偽の copilot `fixtures/fake-copilot.mjs`)だけを置きます。
+- `fixtures/` にはコード(`skill-draft` の検査に使う偽の copilot `fixtures/fake-copilot.mjs` と、M365 Copilot の画面の操作の偽物 `fixtures/fake-m365.mjs`)だけを置きます。`fake-m365.mjs` は環境変数 `ATLAS_M365_FAKE_DRIVER` に指すと、`m365-uia.ps1` の代わりに node で動きます(テスト用。指すと Windows 以外でも動く)。画面の「止める」でジョブの子の子まで止まるかと、タスクの紐づけの自動の取り込みを、本物の M365 Copilot に触れずに確かめます。
 
 セッションの役割:
 

@@ -1,9 +1,6 @@
-//! Anthropic Messages API を直接呼ぶ判定バックエンド(従量課金。明示指定したときだけ使う。packages/judge/src/backends/anthropic.ts の移植)。
+//! Anthropic Messages API を直接呼ぶ経路(skill-draft の --backend anthropic。従量課金。明示指定したときだけ使う。packages/judge/src/backends/anthropic.ts の移植)。
 //! 依存を増やさないため SDK を使わず raw HTTP(ureq)で実装している。テストでは HTTP の呼び出しを差し替える。
 
-use super::output::item_and_notes_from_texts;
-use super::{JudgeBackend, JudgePacket, JudgeResult};
-use crate::rubric::build_judge_prompt;
 use anyhow::{anyhow, bail, Result};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -61,7 +58,7 @@ fn ureq_post(url: &str, headers: &[(&str, String)], body: &str, timeout: Duratio
     Ok(HttpResponse { status, body })
 }
 
-/// Messages API を 1 回呼んで本文を返す(判定と skill-draft で共通)
+/// Messages API を 1 回呼んで本文を返す(skill-draft が使う)
 pub fn anthropic_message(prompt: &str, o: &AnthropicOptions) -> Result<AnthropicText> {
     let api_key = resolve_key(o)?;
     let model = o.model.clone().unwrap_or_else(|| ANTHROPIC_DEFAULT_MODEL.into());
@@ -86,7 +83,7 @@ pub fn anthropic_message(prompt: &str, o: &AnthropicOptions) -> Result<Anthropic
     let stop = body.get("stop_reason").and_then(Value::as_str);
     if stop == Some("refusal") {
         let cat = body.get("stop_details").and_then(|d| d.get("category")).and_then(Value::as_str).unwrap_or("理由不明");
-        bail!("Anthropic API が判定を拒否しました({cat})");
+        bail!("Anthropic API が応答を拒否しました({cat})");
     }
     let texts = body
         .get("content")
@@ -97,71 +94,30 @@ pub fn anthropic_message(prompt: &str, o: &AnthropicOptions) -> Result<Anthropic
     Ok(AnthropicText { texts, usage, notes: if stop == Some("max_tokens") { vec!["応答が max_tokens で打ち切られました".into()] } else { vec![] } })
 }
 
-pub struct AnthropicBackend {
-    o: AnthropicOptions,
-    model: String,
-}
-
-pub fn anthropic_backend(o: AnthropicOptions) -> Result<AnthropicBackend> {
-    resolve_key(&o)?;
-    let model = o.model.clone().unwrap_or_else(|| ANTHROPIC_DEFAULT_MODEL.into());
-    Ok(AnthropicBackend { o, model })
-}
-
-impl JudgeBackend for AnthropicBackend {
-    fn name(&self) -> &str {
-        "anthropic"
-    }
-    fn model(&self) -> Option<&str> {
-        Some(&self.model)
-    }
-    fn judge(&self, packet: &JudgePacket<'_>) -> Result<JudgeResult> {
-        let r = anthropic_message(&build_judge_prompt(packet.markdown, packet.session_id, None), &self.o)?;
-        let texts = if r.texts.is_empty() { vec![] } else { vec![r.texts.join("\n")] };
-        let (item, wiki_notes) = item_and_notes_from_texts(&texts, packet.session_id)?;
-        Ok(JudgeResult { item, usage: r.usage, notes: r.notes, wiki_notes })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    pub fn item(id: &str) -> Value {
-        json!({
-            "sessionId": id,
-            "taskCategory": "feature",
-            "taskSummary": "要約",
-            "humanEffort": { "hours": 2, "low": 1, "high": 4, "confidence": 0.5, "rationale": "根拠" },
-            "aiOutcome": { "completed": true, "quality": 4, "rework": 1, "rationale": "成果" },
-            "instructionsEffect": { "score": 1, "evidence": "e" },
-            "wikiEffect": { "score": 0, "evidence": "参照なし" },
-            "skillsAgentsEffect": { "score": 0, "evidence": "参照なし" },
-        })
-    }
-
     #[test]
     fn needs_key_and_reads_text_and_usage() {
-        assert!(anthropic_backend(AnthropicOptions { api_key: Some(String::new()), ..Default::default() }).err().unwrap().to_string().contains("ANTHROPIC_API_KEY"));
+        let o = |key: &str, post: HttpPost| AnthropicOptions { api_key: Some(key.into()), post: Some(post), base_url: Some("http://127.0.0.1:9".into()), ..Default::default() };
         let sent: Arc<Mutex<Option<(String, String)>>> = Arc::new(Mutex::new(None));
         let s2 = sent.clone();
         let post: HttpPost = Arc::new(move |url, _h, body, _t| {
             *s2.lock().unwrap() = Some((url.to_string(), body.to_string()));
-            Ok(HttpResponse { status: 200, body: json!({ "content": [{ "type": "text", "text": format!("```json\n{}\n```", item("s")) }], "stop_reason": "end_turn", "usage": { "input_tokens": 10, "output_tokens": 3 } }).to_string() })
+            Ok(HttpResponse { status: 200, body: json!({ "content": [{ "type": "text", "text": "下書き" }], "stop_reason": "end_turn", "usage": { "input_tokens": 10, "output_tokens": 3 } }).to_string() })
         });
-        let b = anthropic_backend(AnthropicOptions { api_key: Some("test-key".into()), post: Some(post), base_url: Some("http://127.0.0.1:9".into()), ..Default::default() }).unwrap();
-        let r = b.judge(&JudgePacket { session_id: "s", markdown: "# p" }).unwrap();
-        assert_eq!(r.item.session_id, "s");
+        assert!(anthropic_message("p", &o("", post.clone())).err().unwrap().to_string().contains("ANTHROPIC_API_KEY"));
+        let r = anthropic_message("p", &o("test-key", post)).unwrap();
+        assert_eq!(r.texts, ["下書き"]);
         assert_eq!(r.usage, Some(json!({ "input_tokens": 10, "output_tokens": 3 })));
-        assert_eq!(b.model(), Some("claude-sonnet-5-5"));
         let (url, body) = sent.lock().unwrap().clone().unwrap();
         assert_eq!(url, "http://127.0.0.1:9/v1/messages");
         let body: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(body["model"], "claude-sonnet-5-5");
         assert!(body.get("temperature").is_none());
         let refuse: HttpPost = Arc::new(|_, _, _, _| Ok(HttpResponse { status: 200, body: json!({ "content": [], "stop_reason": "refusal", "stop_details": { "category": "cyber" } }).to_string() }));
-        let rb = anthropic_backend(AnthropicOptions { api_key: Some("k".into()), post: Some(refuse), base_url: Some("http://127.0.0.1:9".into()), ..Default::default() }).unwrap();
-        assert!(rb.judge(&JudgePacket { session_id: "s", markdown: "" }).err().unwrap().to_string().contains("拒否"));
+        assert!(anthropic_message("p", &o("k", refuse)).err().unwrap().to_string().contains("拒否"));
     }
 }
