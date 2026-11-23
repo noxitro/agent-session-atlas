@@ -1,12 +1,12 @@
 //! report の lib の Rust 版の結果を、入口ごとに 1 つの JSON に書く(scripts/parity-lib.ts の Rust 側。TS 版と同じ呼び方・同じ並び)。
 //!
-//!   cargo run --release -p atlas-report --example libdump -- <out> <dump> <notes>
+//!   cargo run --release -p atlas-report --example libdump -- <out> <dump>
 //!
 //! scripts/parity-lib.ts --compare は、npm test(cargo test --workspace)と同じ選び方の debug で作る(cargo build --workspace --example libdump。
 //! cargo test が作ったものをそのまま使う)。--release では atlas-cli と一緒に作る(cargo build --release -p atlas-cli -p atlas-report --example libdump)。
 //! 上の cargo run は atlas-report だけで依存の features を決めるので、atlas-cli のビルドを使い回せず release を作り直す。
 //!
-//! <out> は atlas の出力先(sessions.json。あれば judgments.json・turn-judgments.json・vcs-retention.json)、<notes> は groups.json の置き場。
+//! <out> は atlas の出力先(sessions.json。あれば judgments.json・turn-judgments.json・vcs-retention.json)。
 
 use anyhow::{Context, Result};
 use atlas_core::js::{self, JsMap};
@@ -19,7 +19,6 @@ use atlas_report::exec_labels::*;
 use atlas_report::filter::*;
 use atlas_report::format::*;
 use atlas_report::glossary::{terms_by_group, GLOSSARY, GLOSSARY_GROUPS};
-use atlas_report::groups::{member_groups, parse_groups, safe_dir_name, serialize_groups, MemberSource, ParsedGroups};
 use atlas_report::highlights::{highlights, installed_view, HighlightOptions};
 use atlas_report::insights::*;
 use atlas_report::judgment_labels::*;
@@ -34,7 +33,7 @@ use atlas_report::types::{SessionSummary, WikiSummary, REPORT_DATA_VERSION};
 use atlas_report::verdicts::{parse_verdicts, verdict_aggregate, verdict_tuples};
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -72,6 +71,8 @@ const NUMBERS: [f64; 31] = [
     f64::NEG_INFINITY,
     f64::NAN,
 ];
+/// タスクの絞り込みの割り振りに使う ID(scripts/parity-lib.ts の TASK_CASE_IDS と同じ)
+const TASK_CASE_IDS: [&str; 2] = ["T-1", "T-2 β"];
 const FILE_NAMES: [&str; 15] = ["メモ.md", "a b.txt", "x", "", ".x", "..", "a/b", "x.", "x ", "CON", "nul.log", "Com1", "a:b", "abc-1_2.x", "あ"];
 
 /// テストの結果の要約を確かめる形(実行なし / 未達 / 1 回目で通る / 通った後に不合格で AI 使用量の記録なし / 番号が実行の数を外れている / 番号が 0 / 番号が負)。
@@ -96,46 +97,6 @@ const WIKI_CASES: &str = r#"[
   { "indexReads": 0, "pageReads": 0, "skillCalls": 1, "writes": 0, "otherCalls": 0 },
   { "indexReads": 1, "pageReads": 0, "skillCalls": 0, "writes": 0 }
 ]"#;
-
-/// 課題 × 条件の表を確かめる形(scripts/parity-lib.ts の CONDITION_CASES と同じ中身)
-const CONDITION_CASES: &str = r#"{"sessions":[{"id":"s01","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":1,"firstPass":1,"lastFailing":0,"passActiveMs":60000.5,"passNanoAiu":1500000000.0,"lastNanoAiu":2000000000.0},"person":null},{"id":"s02","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":2,"firstPass":2,"lastFailing":0,"passActiveMs":120001.0,"passNanoAiu":3000000000.0,"lastNanoAiu":4000000000.0},"person":null},{"id":"s03","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":3,"firstPass":3,"lastFailing":0,"passActiveMs":180001.5,"passNanoAiu":4500000000.0,"lastNanoAiu":6000000000.0},"person":null},{"id":"s04","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":2,"firstPass":1,"lastFailing":1,"passActiveMs":60000.5,"passNanoAiu":1500000000.0,"lastNanoAiu":2000000000.0},"person":null},{"id":"s05","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":3,"firstPass":null,"lastFailing":2,"passActiveMs":null,"passNanoAiu":null,"lastNanoAiu":7000000000.0},"person":null},{"id":"s06","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":3,"firstPass":null,"lastFailing":2,"passActiveMs":null,"passNanoAiu":null,"lastNanoAiu":null},"person":null},{"id":"s07","activeMs":null,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":null},"tests":{"runs":2,"firstPass":2,"lastFailing":0,"passActiveMs":120001.0,"passNanoAiu":3000000000.0,"lastNanoAiu":4000000000.0},"person":null},{"id":"s08","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":4,"firstPass":4,"lastFailing":0,"passActiveMs":240002.0,"passNanoAiu":null,"lastNanoAiu":null},"person":null},{"id":"s09","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"person":null},{"id":"s10","activeMs":600000,"tools":{"total":0},"friction":{"toolFailures":0},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":1,"firstPass":1,"lastFailing":0,"passActiveMs":60000.5,"passNanoAiu":1500000000.0,"lastNanoAiu":2000000000.0},"person":null},{"id":"s11","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":2,"firstPass":2,"lastFailing":0,"passActiveMs":120001.0,"passNanoAiu":3000000000.0,"lastNanoAiu":4000000000.0},"person":"zz-a"},{"id":"s12","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":3,"firstPass":3,"lastFailing":0,"passActiveMs":180001.5,"passNanoAiu":4500000000.0,"lastNanoAiu":6000000000.0},"person":"zz-b"},{"id":"s13","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":3,"firstPass":null,"lastFailing":2,"passActiveMs":null,"passNanoAiu":null,"lastNanoAiu":7000000000.0},"person":"zz-b"},{"id":"s14","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":1,"firstPass":1,"lastFailing":0,"passActiveMs":60000.5,"passNanoAiu":1500000000.0,"lastNanoAiu":2000000000.0},"person":null},{"id":"s15","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":1,"firstPass":1,"lastFailing":0,"passActiveMs":60000.5,"passNanoAiu":1500000000.0,"lastNanoAiu":2000000000.0},"person":null},{"id":"s16","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":3,"firstPass":null,"lastFailing":2,"passActiveMs":null,"passNanoAiu":null,"lastNanoAiu":7000000000.0},"person":null},{"id":"s17","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":2,"firstPass":2,"lastFailing":0,"passActiveMs":120001.0,"passNanoAiu":3000000000.0,"lastNanoAiu":4000000000.0},"person":null},{"id":"s18","activeMs":600000,"tools":{"total":10},"friction":{"toolFailures":1},"tokens":{"nanoAiu":4000000000.0},"tests":{"runs":2,"firstPass":2,"lastFailing":0,"passActiveMs":120001.0,"passNanoAiu":3000000000.0,"lastNanoAiu":4000000000.0},"person":null}],"groups":[{"name":"t10__wiki__1","presentIds":["s01","s02","s03"]},{"name":"t10__wiki__2","presentIds":["s03","s04","s05","s06"]},{"name":"t2__wiki","presentIds":["s07","s08","s09"]},{"name":"t2__0-plain","presentIds":["s10","s14","s15","s16","s17"]},{"name":"zz-a / t2__coderef__1","tag":"t2__coderef__1","presentIds":["s11"]},{"name":"zz-b / t2__coderef__1","tag":"t2__coderef__1","presentIds":["s12","s13"]},{"name":"描画__wiki","presentIds":["s18"]},{"name":"描画__0-plain","presentIds":["s18"]},{"name":"zz-misc","presentIds":["s09"]},{"name":"x__y__v2","presentIds":["s09"]},{"name":"gone__wiki","presentIds":["not-in-records"]}],"names":["render__wiki","render__wiki__1"," 描画 __ wiki あり __ 007 ","Player-Weapon__code_ref__12","render","render__","__wiki","render____1","a__b__c__1","render__wiki__v2","render__wiki__１","a___b","a__b_",""],"order":["c10","c2","B","a","c1","0-plain","wiki","Wiki","描画","あ","ア","t10","t2","x_1","x-1","c01","c001","c1","c１０","v1.10","v1.9","v1.9a","Z","z"]}"#;
-
-/// CONDITION_CASES のセッションとタスクタグを、表の計算の形にする(画面の ConditionSession・ConditionGroup と同じ項目を読む)
-fn condition_cases() -> Result<(Vec<atlas_report::conditions::CondSession>, Vec<atlas_report::conditions::CondGroup>, Vec<String>, Vec<String>)> {
-    use atlas_report::conditions::{CondGroup, CondSession};
-    let v: Value = serde_json::from_str(CONDITION_CASES)?;
-    let num = |x: &Value, path: &[&str]| path.iter().fold(Some(x), |a, k| a.and_then(|a| a.get(*k))).and_then(Value::as_f64);
-    let sessions = v["sessions"]
-        .as_array()
-        .context("sessions")?
-        .iter()
-        .map(|s| -> Result<CondSession> {
-            Ok(CondSession {
-                id: s["id"].as_str().context("id")?.to_string(),
-                active_ms: num(s, &["activeMs"]),
-                tools: num(s, &["tools", "total"]).unwrap_or(0.0) as i64,
-                tool_failures: num(s, &["friction", "toolFailures"]).unwrap_or(0.0) as i64,
-                nano_aiu: num(s, &["tokens", "nanoAiu"]),
-                tests: match s.get("tests") {
-                    Some(t) if !t.is_null() => Some(serde_json::from_value(t.clone())?),
-                    _ => None,
-                },
-                person: s["person"].as_str().map(str::to_string),
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let groups = v["groups"]
-        .as_array()
-        .context("groups")?
-        .iter()
-        .map(|g| CondGroup {
-            raw: g.get("tag").and_then(Value::as_str).or(g["name"].as_str()).unwrap_or("").to_string(),
-            ids: g["presentIds"].as_array().map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default(),
-        })
-        .collect();
-    let strs = |k: &str| v[k].as_array().map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect::<Vec<_>>()).unwrap_or_default();
-    Ok((sessions, groups, strs("names"), strs("order")))
-}
 
 struct Dump {
     dir: PathBuf,
@@ -165,7 +126,7 @@ fn read_json(p: &Path) -> Result<Option<Value>> {
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let (in_dir, out_dir, notes) = (PathBuf::from(&args[0]), PathBuf::from(&args[1]), PathBuf::from(&args[2]));
+    let (in_dir, out_dir) = (PathBuf::from(&args[0]), PathBuf::from(&args[1]));
     let _ = std::fs::remove_dir_all(&out_dir);
     std::fs::create_dir_all(&out_dir)?;
     let mut d = Dump { dir: out_dir, timings: JsMap::new() };
@@ -175,7 +136,6 @@ fn main() -> Result<()> {
     let records: Vec<&SessionRecord> = file.sessions.iter().collect();
     let judgments = read_json(&in_dir.join("judgments.json"))?.map(|v| parse_judgments(&v)).transpose()?;
     let verdicts = read_json(&in_dir.join("turn-judgments.json"))?.and_then(|v| parse_verdicts(&v));
-    let groups: ParsedGroups = read_json(&notes.join("groups.json"))?.map_or_else(ParsedGroups::default, |v| parse_groups(&v, "groups.json"));
     let rx = read_vcs_retention(&in_dir.join("vcs-retention.json"));
     let installed = file.installed.as_ref().map(installed_view);
     d.write(
@@ -228,8 +188,6 @@ fn main() -> Result<()> {
     dates.sort_by(|a, b| js::cmp_utf16(a, b));
     let all = aggregate(&plain_refs, None);
     let mcp_tool = all.usage.tools.iter().find(|t| t.mcp_server.as_deref().is_some_and(|x| !x.is_empty()));
-    let known: HashSet<String> = plain.iter().map(|s| s.id.clone()).collect();
-    let g0 = groups.groups.first();
     let day = |i: usize| dates.get(i).map_or(String::new(), |x| js::head(x, 10).into_owned());
     let f = |m: &dyn Fn(&mut FilterState)| {
         let mut x = empty_filter();
@@ -251,17 +209,21 @@ fn main() -> Result<()> {
         ("unjudged", f(&|x| x.task_category = NO_JUDGMENT.into())),
         ("wiki", f(&|x| x.wiki = "1".into())),
         ("ids", f(&|x| x.ids = plain.iter().take(5).map(|s| s.id.as_str()).chain(["zzz"]).collect::<Vec<_>>().join(","))),
-        (
-            "group",
-            f(&|x| {
-                x.group = g0.map_or(String::new(), |g| g.name.clone());
-                x.ids = g0.map_or(String::new(), |g| effective_ids("", &g.name, &groups.groups, &known).ids);
-            }),
-        ),
+        ("task", f(&|x| x.task = TASK_CASE_IDS[0].into())),
+        ("task2", f(&|x| x.task = TASK_CASE_IDS[1].into())),
+        ("noTask", f(&|x| x.task = NO_TASK.into())),
     ];
+    // タスクの絞り込み: 決まった割り振り(4 つおきに 1 つ目・2 つ目・「タスクなし」・両方)で両側を数える。scripts/parity-lib.ts と同じ
+    let tasks: TaskOf = plain
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| i % 4 != 2)
+        .map(|(i, s)| (s.id.clone(), if i % 4 == 3 { vec![TASK_CASE_IDS[1].to_string(), TASK_CASE_IDS[0].to_string()] } else { vec![TASK_CASE_IDS[i % 4].to_string()] }))
+        .collect();
+    d.write("task-options", &task_options(plain.iter().map(|s| s.id.as_str()), &tasks, &HashMap::from([(TASK_CASE_IDS[0].to_string(), "タスク 一つ目".to_string())])))?;
     let phases: Vec<String> = verdicts.as_ref().map(|v| v.phases.clone()).unwrap_or_default();
     for (name, flt) in &filters {
-        let xs = apply_filter(&plain, flt);
+        let xs = apply_filter_with(&plain, flt, &tasks);
         let agg = d.timed("aggregate", || aggregate(&xs, Some(people)));
         d.write(&format!("aggregate-{name}"), &agg)?;
         let hl = d.timed("highlights", || highlights(&xs, &agg.usage, &HighlightOptions { filter: flt, installed: installed.as_ref() }));
@@ -355,7 +317,7 @@ fn main() -> Result<()> {
         .collect();
     d.write("format-text", &text)?;
 
-    // 表示名・メモ・グループ・用語
+    // 表示名・メモ・用語
     // 本体の (モデル, 推論強度)。画面は要約から、Rust(sessions.csv)は sessions.json の記録から決める
     let by_id: std::collections::HashMap<&str, &SessionRecord> = records.iter().map(|r| (r.id.as_str(), *r)).collect();
     let main: Vec<Value> = plain
@@ -390,35 +352,6 @@ fn main() -> Result<()> {
         let many: Vec<String> = (0..13).map(|i| format!("wiki/p{}.md", i % 12)).collect();
         let (judged, _) = atlas_core::wiki::judged_wiki_pages(&many);
         d.write("wiki-pages", &json!({ "max": atlas_core::wiki::WIKI_JUDGED_PAGES_MAX, "judged": judged, "names": wiki_pages.names }))?;
-    }
-    // 課題 × 条件の表(scripts/parity-lib.ts と同じ形で書く)
-    {
-        use atlas_report::conditions::{compare_names, condition_table, parse_condition_tag};
-        let (cs, cg, names, mut order) = condition_cases()?;
-        let t = condition_table(&cs, &cg);
-        order.sort_by(|a, b| compare_names(a, b));
-        d.write(
-            "conditions",
-            &json!({
-                "names": names.iter().map(|n| parse_condition_tag(n)).collect::<Vec<_>>(),
-                "order": order,
-                "table": {
-                    "tasks": t.tasks,
-                    "conditions": t.conditions,
-                    "rows": t.rows,
-                    "pooled": t.pooled,
-                    "matchedTags": t.matched_tags,
-                    "counted": t.counted,
-                    "members": t.members.iter().map(|m| json!([m.id, m.task, m.condition])).collect::<Vec<_>>(),
-                    "unmatched": t.unmatched,
-                    "ambiguous": t.ambiguous,
-                    "people": t.people,
-                    "sharedRows": t.shared_rows,
-                    "unevenTasks": t.uneven_tasks,
-                    "hasTests": t.has_tests,
-                },
-            }),
-        )?;
     }
     let x = exec_aggregate(&plain_refs);
     let with = |a: Vec<String>, extra: &[&str]| -> Vec<String> { a.into_iter().chain(extra.iter().map(|s| s.to_string())).collect() };
@@ -461,26 +394,6 @@ fn main() -> Result<()> {
         &json!({
             "texts": memo_texts.iter().map(|t| json!([memo_excerpt(t), memo_summary(t, Some("2026-11-03T00:00:00.000Z"))])).collect::<Vec<_>>(),
             "names": (FILE_NAMES.map(|n| [is_safe_file_name(n), is_safe_memo_id(n)])),
-        }),
-    )?;
-    let members: Vec<MemberSource> = records.iter().map(|r| MemberSource::from(*r)).collect();
-    let effective: Vec<Value> = groups
-        .groups
-        .iter()
-        .map(|g| {
-            let e = effective_ids("", &g.name, &groups.groups, &known);
-            let ids = group_ids(&g.ids, &known);
-            json!([{ "group": e.group, "ids": e.ids }, current_group_name(&ids, "", &groups.groups, &known), ids])
-        })
-        .collect();
-    d.write(
-        "groups",
-        &json!({
-            "parsed": { "groups": groups.groups, "warnings": groups.warnings },
-            "serialized": serialize_groups(&groups.groups),
-            "member": member_groups(&members),
-            "dirs": groups.groups.iter().map(|g| g.name.as_str()).chain(["a/b:c", "nul.log", "x. . ", "..."]).map(safe_dir_name).collect::<Vec<_>>(),
-            "effective": effective,
         }),
     )?;
     d.write("glossary", &json!({ "groups": GLOSSARY_GROUPS, "terms": *GLOSSARY, "counts": GLOSSARY_GROUPS.iter().map(|g| terms_by_group(g.id).len()).collect::<Vec<_>>() }))?;

@@ -1,6 +1,6 @@
 //! Phase 12: スキル化の候補から SKILL.md の下書きを LLM に作らせる(任意。明示したときだけ動く。packages/judge/src/skill-draft.ts の移植)。
-//! 判定と同じバックエンド(copilot-cli / anthropic)の経路を使う(anthropic は機能 anthropic-backend を付けてビルドしたときだけ)。copilot-cli は空の作業ディレクトリ、
-//! --no-custom-instructions、shell / write / url と MCP の拒否まで判定と同じ。
+//! LLM を呼ぶのはこのツールの中でここだけ(判定は外部の LLM に頼む)。経路は copilot-cli / anthropic(anthropic は機能 anthropic-backend を付けてビルドしたときだけ)。
+//! copilot-cli は空の作業ディレクトリ、--no-custom-instructions、shell / write / url と MCP の拒否を付ける(backends/copilot_cli.rs)。
 //! クレジットや従量課金を消費しうるので既定の処理では呼ばず、テストは偽の CLI と HTTP の差し替えで行う。
 
 #[cfg(feature = "anthropic-backend")]
@@ -94,7 +94,7 @@ fn check_length(cmd: &ResolvedCommand, args: &[String]) -> Result<()> {
 fn draft_with_copilot(prompt: &str, o: &SkillDraftOptions) -> Result<SkillDraftResult> {
     let bin = o.copilot_bin.clone().or_else(|| std::env::var("ATLAS_COPILOT_BIN").ok()).unwrap_or_else(|| "copilot".into());
     let cmd = resolve_command(&bin)?;
-    // 下書きの作業フォルダ。接頭辞を判定と揃え、次回の extract で「(atlas の判定)」に分類させる。
+    // 下書きの作業フォルダ。接頭辞を前の版の判定と揃え、次回の extract で「(atlas の判定)」に分類させる。
     // 変えると、下書きのセッションが実データとして集計され、候補の母集団に戻ってしまう。
     let work = mkdtemp(JUDGE_WORK_DIR_PREFIX)?;
     let usage_dir = mkdtemp("atlas-draft-usage-")?;

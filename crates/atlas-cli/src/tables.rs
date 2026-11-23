@@ -1,6 +1,6 @@
 //! 表計算ソフトで開く表(依頼ごとの turns.csv・セッションごとの sessions.csv・VCS の照合のまとまりごとの vcs-hunks.csv)と、
 //! 同じ中身の SQLite(atlas.sqlite)を作る(packages/cli/src/tables.ts の移植)。
-//! out/tables/(metrics・build・export)とグループの書き出し(out/groups/<名前>/)が同じものを使う。
+//! out/tables/(metrics・build・export)が使う。
 //! ツールの失敗と拒否ごとの表(failures.csv と SQLite の failures)は out/tables/ だけなので、ここでは作らない
 //! (commands/metrics.rs の write_tables が、write_sqlite に渡す表に足す)。
 
@@ -18,7 +18,7 @@ use indexmap::IndexMap;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-/// 表と同じ中身の SQLite(out/tables/ とグループの書き出しの中)
+/// 表と同じ中身の SQLite(out/tables/ の中)
 pub const SQLITE_FILE: &str = "atlas.sqlite";
 
 pub struct TablePaths<'a> {

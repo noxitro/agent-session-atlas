@@ -804,6 +804,48 @@ fn wiki_pages_block(j: &JudgmentSummary) -> String {
 mod wiki_pages_tests {
     use super::*;
 
+    /// 等分の 1 行: 紐づいたタスクの数と、工数を数えるタスクの数から
+    #[test]
+    fn task_split_lines() {
+        assert_eq!(task_split_text(0, 0), None);
+        assert_eq!(task_split_text(1, 1), None);
+        assert_eq!(task_split_text(2, 2).unwrap(), "2 つのタスクに紐づいています。実働と推定人手工数は、2 つのタスクで等分して数えます");
+        assert!(task_split_text(2, 1).unwrap().starts_with("2 つのタスクに紐づいています。実働と推定人手工数は、1 つのタスクにだけ数えます(一覧に無い"));
+        assert!(task_split_text(1, 0).unwrap().starts_with("実働と推定人手工数は、どのタスクにも数えません("));
+    }
+
+    /// 「タスク」の行: いくつかのタスクを 1 件ずつ並べ、等分の 1 行を添える。前の版の taskId だけの紐づけは読まない(埋め込みは版 21 の形)
+    #[test]
+    fn task_row_lists_every_linked_task() {
+        let tasks = serde_json::json!({
+            "items": [{ "id": "T-1", "name": "一覧 <b>", "status": "Done", "done": true }, { "id": "T-2", "name": "帳票", "status": "", "done": false }],
+            "links": {
+                "s": { "taskIds": ["T-1", "T-2", "T-404"], "countedTaskIds": ["T-1", "T-2"], "source": "machine", "reason": "ID が題名にある" },
+                "one": { "taskIds": ["T-2"], "source": "llm", "reason": "r", "confidence": 0.7 },
+                "none": { "taskIds": [], "source": "manual", "reason": "" }
+            }
+        });
+        let t = DetailTask::from_view(&tasks, "s");
+        let l = t.link.as_ref().unwrap();
+        assert_eq!(l.tasks.iter().map(|x| x.id.as_str()).collect::<Vec<_>>(), ["T-1", "T-2", "T-404"]);
+        assert_eq!((l.tasks[2].name.clone(), l.tasks[2].done), (None, None));
+        let html = task_row("s", &t);
+        assert_eq!(html.matches("data-testid=\"detail-task-item\"").count(), 3);
+        assert!(html.contains("一覧 &lt;b&gt;<span class=\"id\" translate=\"no\">(T-1)</span>"), "{html}");
+        assert!(html.contains("状態: Done(完了)") && html.contains("状態: —(未完了)"), "{html}");
+        assert!(html.contains("T-404<span class=\"id\" translate=\"no\">(T-404)</span>"), "{html}");
+        assert!(html.contains("3 つのタスクに紐づいています。実働と推定人手工数は、2 つのタスクで等分して数えます(一覧に無いタスクと、完了を確認した後に始めたセッションのタスクには数えません)"), "{html}");
+        assert_eq!(html.matches("data-testid=\"detail-task-skip\"").count(), 1);
+        assert!(html.contains("一覧にないタスク(工数に数えない)"));
+        assert!(l.tasks[0].counted && !l.tasks[2].counted);
+        assert!(html.contains("紐づけ: 機械(ID が題名にある)"));
+        let one = task_row("one", &DetailTask::from_view(&tasks, "one"));
+        assert!(!one.contains("detail-task-split") && one.contains("・確度 70%"), "{one}");
+        let none = task_row("none", &DetailTask::from_view(&tasks, "none"));
+        assert!(none.contains("どのタスクでもない") && none.contains("紐づけ: 手動"), "{none}");
+        assert!(task_row("x", &DetailTask::from_view(&tasks, "x")).contains("紐づけなし"));
+    }
+
     /// 理由が空の見立ては「記録なし」と出し、見立てが無ければ節を出さない
     #[test]
     fn empty_reason_and_no_verdicts() {
@@ -1166,6 +1208,137 @@ pub struct DetailOptions<'a> {
     pub retention_meta: Option<&'a RetentionMeta>,
     /// llm-wiki の参照を数えた集計か(atlas_core::wiki::wiki_state で、絞り込み前の全セッションから決める)
     pub wiki_state: WikiState,
+    /// 管理ツールのタスクの行。タスクの設定も記録も無ければ None(行を出さない)
+    pub task: Option<&'a DetailTask>,
+}
+
+/// 詳細ページの「タスク」の行(ReportData.tasks の、このセッションの紐づけと、紐づいたタスク)
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DetailTask {
+    /// 紐づけ。None は紐づけが無い(機械で決まらず、LLM でも手でもまだ決めていない)
+    pub link: Option<DetailTaskLink>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DetailTaskLink {
+    /// 紐づいたタスク(並びは紐づけの順)。空は「どのタスクでもない」
+    pub tasks: Vec<DetailTaskItem>,
+    /// machine / llm / manual(セッションごとに 1 つ)
+    pub source: String,
+    pub reason: String,
+    pub confidence: Option<f64>,
+}
+
+/// 紐づいたタスク 1 件(名前・状態はタスクの一覧にあるときだけ)
+#[derive(Debug, Clone, PartialEq)]
+pub struct DetailTaskItem {
+    pub id: String,
+    pub name: Option<String>,
+    pub status: Option<String>,
+    pub done: Option<bool>,
+    /// 実働と推定人手工数をこのタスクに数えるか(tasks::metrics::counted_tasks。一覧に無いタスク・完了を確認した後に始めたセッションのタスクは false)
+    pub counted: bool,
+}
+
+/// 紐づいたタスクの数 n と、そのうち工数を数えるタスクの数 k から、等分の 1 行(どちらも 1 つ以下で同じなら無し)。
+/// session-tools.js の splitText と同じ文にする
+pub fn task_split_text(n: usize, k: usize) -> Option<String> {
+    if n <= 1 && k == n {
+        return None;
+    }
+    let head = if n > 1 { format!("{n} つのタスクに紐づいています。") } else { String::new() };
+    let body = match k {
+        0 => "実働と推定人手工数は、どのタスクにも数えません".to_string(),
+        1 => "実働と推定人手工数は、1 つのタスクにだけ数えます".to_string(),
+        k => format!("実働と推定人手工数は、{k} つのタスクで等分して数えます"),
+    };
+    let note = if k < n { "(一覧に無いタスクと、完了を確認した後に始めたセッションのタスクには数えません)" } else { "" };
+    Some(format!("{head}{body}{note}"))
+}
+
+impl DetailTask {
+    /// ReportData.tasks(tasks::view::TasksView を値にしたもの)から、セッション id の行を作る
+    pub fn from_view(tasks: &serde_json::Value, session: &str) -> DetailTask {
+        use serde_json::Value;
+        let Some(l) = tasks.get("links").and_then(|m| m.get(session)) else { return DetailTask::default() };
+        let s = |v: Option<&Value>, k: &str| v.and_then(|v| v.get(k)).and_then(Value::as_str).map(str::to_string);
+        let items = tasks.get("items").and_then(Value::as_array);
+        let strs = |k: &str| -> Option<Vec<&str>> { l.get(k).and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()) };
+        let ids: Vec<&str> = strs("taskIds").unwrap_or_default();
+        // 数えるタスク(無ければ、紐づいたタスクすべて)
+        let counted: Vec<&str> = strs("countedTaskIds").unwrap_or_else(|| ids.clone());
+        let tasks = ids
+            .into_iter()
+            .map(|t| {
+                let item = items.and_then(|a| a.iter().find(|i| i.get("id").and_then(Value::as_str) == Some(t)));
+                DetailTaskItem { id: t.to_string(), name: s(item, "name"), status: s(item, "status"), done: item.and_then(|i| i.get("done")).and_then(Value::as_bool), counted: counted.contains(&t) }
+            })
+            .collect();
+        DetailTask {
+            link: Some(DetailTaskLink {
+                tasks,
+                source: s(Some(l), "source").unwrap_or_default(),
+                reason: s(Some(l), "reason").unwrap_or_default(),
+                confidence: l.get("confidence").and_then(Value::as_f64),
+            }),
+        }
+    }
+}
+
+/// 紐づけの出所の言葉(tasks::links::LinkSource::label と同じ。画面の lib/tasks.ts の LINK_SOURCE_LABEL とも同じ)
+fn task_source_label(s: &str) -> &str {
+    match s {
+        "machine" => "機械",
+        "llm" => "LLM",
+        "manual" => "手動",
+        x => x,
+    }
+}
+
+/// 表題の下の「タスク」の行。atlas serve の画面では session-tools.js が、ここに変える操作を足す(読むだけの画面では足さない)。
+/// 中身(.task-now)の書き方は session-tools.js の taskNow と同じにする(変えた後に書き直すため)
+/// いくつかのタスクに紐づいたときは、紐づいたタスクを並べ(ul)、その下に等分の 1 行を添える
+fn task_row(id: &str, t: &DetailTask) -> String {
+    let body = match &t.link {
+        None => format!("<span class=\"task-v\" data-testid=\"detail-task-name\">{}</span>", missing("紐づけなし")),
+        Some(l) => {
+            let v = if l.tasks.is_empty() {
+                format!("<span class=\"task-v\" data-testid=\"detail-task-name\">{}</span>", missing("どのタスクでもない"))
+            } else {
+                let items: String = l
+                    .tasks
+                    .iter()
+                    .map(|x| {
+                        format!(
+                            "<li class=\"task-item\" data-testid=\"detail-task-item\"><span class=\"task-v\" data-testid=\"detail-task-name\">{}<span class=\"id\" translate=\"no\">({})</span></span>{}{}</li>",
+                            esc(x.name.as_deref().filter(|n| !n.is_empty()).unwrap_or(&x.id)),
+                            esc(&x.id),
+                            match (&x.status, x.done) {
+                                (Some(st), Some(d)) => format!("<span class=\"task-st\" data-testid=\"detail-task-status\">状態: {}({})</span>", esc(if st.is_empty() { "—" } else { st }), if d { "完了" } else { "未完了" }),
+                                _ => String::new(),
+                            },
+                            match (x.counted, x.name.is_some()) {
+                                (true, _) => String::new(),
+                                (false, false) => "<span class=\"task-skip\" data-testid=\"detail-task-skip\">一覧にないタスク(工数に数えない)</span>".to_string(),
+                                (false, true) => "<span class=\"task-skip\" data-testid=\"detail-task-skip\">完了を確認した後に始めたセッション(工数に数えない)</span>".to_string(),
+                            }
+                        )
+                    })
+                    .collect();
+                let split = task_split_text(l.tasks.len(), l.tasks.iter().filter(|x| x.counted).count())
+                    .map(|t| format!("<span class=\"task-split\" data-testid=\"detail-task-split\">{}</span>", esc(&t)))
+                    .unwrap_or_default();
+                format!("<ul class=\"task-list\">{items}</ul>{split}")
+            };
+            let reason = if l.reason.is_empty() { String::new() } else { format!("({})", esc(&l.reason)) };
+            let conf = l.confidence.map(|c| format!("・確度 {}%", (c * 100.0).round() as i64)).unwrap_or_default();
+            format!("{v}<span class=\"task-src\" data-testid=\"detail-task-source\">紐づけ: {}{reason}{conf}</span>", esc(task_source_label(&l.source)))
+        }
+    };
+    format!(
+        "<div class=\"task-row\" id=\"task-row\" data-session=\"{}\" data-testid=\"detail-task\" role=\"group\" aria-label=\"管理ツールのタスク\"><span class=\"k\">タスク</span><div class=\"task-now\">{body}</div><a class=\"term\" href=\"../glossary.html#task-link-source\">紐づけの出所とは</a></div>",
+        esc(id)
+    )
 }
 
 const DETAIL_CSS: &str = include_str!("../assets/detail.css");
@@ -1619,10 +1792,11 @@ pub fn render_detail_html(r: &SessionRecord, o: &DetailOptions<'_>) -> String {
         links,
     };
     let style = format!("{}{DETAIL_CSS}{}", o.css, if o.memo.is_some() { MEMO_CSS } else { "" });
+    let task = o.task.map(|t| task_row(&r.id, t)).unwrap_or_default();
     let page_title = format!("{} | Copilot Session Atlas", esc(&truncate(Some(&title), 60)));
     let mut out = page_head(o.code, &page_title, &style);
     out.push_str(&format!(
-        "<body>\n{}\n<div class=\"shell\">\n{}\n<div class=\"content\">\n<main class=\"wrap\">\n<div class=\"title\"><h1>{}</h1><div class=\"meta\">{meta}</div></div>\n{}\n</main>\n<footer class=\"wrap page-foot\">Copilot Session Atlas が {} に生成。</footer>\n</div>\n</div>\n<script>{NAV_JS}</script>\n</body>\n</html>\n",
+        "<body>\n{}\n<div class=\"shell\">\n{}\n<div class=\"content\">\n<main class=\"wrap\">\n<div class=\"title\"><h1>{}</h1><div class=\"meta\">{meta}</div>{task}</div>\n{}\n</main>\n<footer class=\"wrap page-foot\">Copilot Session Atlas が {} に生成。</footer>\n</div>\n</div>\n<script>{NAV_JS}</script>\n</body>\n</html>\n",
         render_top(&nav),
         render_rail(&nav),
         esc(&title),

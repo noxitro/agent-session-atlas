@@ -1,7 +1,7 @@
 // 「別のフォルダを開く…」の画面の操作(Playwright の Chromium)。
 // 架空の fixture をアップロード先の形(logs/<人>/<プロジェクト>/<セッション>)に並べ、いつもの集計のサーバ(atlas serve)から、人のフォルダを選んで開く。
 //  a. 集計できないフォルダは理由を出す。人のフォルダを調べると何を読むかが出て、「集計して開く」で一覧が「集計しています…」から「開いています」に変わる
-//  b. 開いた先(別のサーバ)は、対象のフォルダの名前を出し、いつもの集計へのリンクを持つ。メモとタスクタグはフォルダごとの場所に書く
+//  b. 開いた先(別のサーバ)は、対象のフォルダの名前を出し、いつもの集計へのリンクを持つ。メモは送った人のもので、書き換えられない
 //  c. 開いた先のサーバが止まると「前に開いた日時」に戻り、一覧から外せる(集計の出力は残る)
 //  d. 送り先の全体(<人>/<プロジェクト>)を集計したレポートだけ、「人」の絞り込みと「人別」の表を出す。名前を押すとその人に絞り込む
 // 開くのは別のプロセス(atlas open)なので、終わったら止める。どの画面でもページ内の例外とコンソールのエラーが無いこと。
@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { chromium, type Browser, type Page } from 'playwright';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { shotOnFailure } from './failure-shot.ts';
-import { buildFixtureHome, ROOT, cliCommand, startServer, type ServeHandle } from '../e2e/fixture-home.ts';
+import { buildFixtureHome, ROOT, cliCommand, startServer, uploadDirName, uploadProjects, type ServeHandle } from '../e2e/fixture-home.ts';
 import { folderPaths, foldersRootOf, type FolderPaths } from '../e2e/folders.ts';
 
 const WORK = join(ROOT, 'out', 'ui-folders');
@@ -24,6 +24,8 @@ describe('別のフォルダを開く', () => {
   const person = join(logs, 'person-a');
   const root = foldersRootOf(out);
   let fp: FolderPaths;
+  /** 送ったセッション(proj-a に 0・1、proj-b に 2) */
+  let ids: string[];
   let close: () => Promise<void>;
   let server: ServeHandle;
   let browser: Browser;
@@ -58,22 +60,30 @@ describe('別のフォルダを開く', () => {
       expect(r.status, r.stdout + r.stderr).toBe(0);
     };
     atlas(['all', '--home', home, '--out', out, '--notes-dir', notes]);
-    // タスクタグ 2 つをアップロードして、人のフォルダの下に置く(logs/person-a/<タグ>/<セッション>)
-    const s = JSON.parse(await readFile(join(out, 'sessions.json'), 'utf8')) as { sessions: { id: string }[] };
-    const ids = s.sessions.map((x) => x.id).filter((id) => existsSync(join(out, 'snapshot', 'session-state', id, 'events.jsonl')));
-    expect(ids.length).toBeGreaterThanOrEqual(3);
-    await mkdir(join(notes, 'memos'), { recursive: true });
-    // 送った人のメモ(アップロードで atlas-memo.md としてセッションのフォルダに入る)
-    await writeFile(join(notes, 'memos', `${ids[0]}.md`), '# 送った人のメモ\n\n当たり判定を直した。');
-    await writeFile(join(notes, 'groups.json'), JSON.stringify({ version: 1, groups: [{ name: 'proj-a', note: '', ids: ids.slice(0, 2) }, { name: 'proj-b', note: '', ids: ids.slice(2, 3) }] }));
+    // 3 つのプロジェクトをアップロードして(atlas upload-project)、送り先のフォルダ 2 つ(proj-a に 2 件、proj-b に 1 件)に組み立て、
+    // 人のフォルダの下に置く(logs/person-a/<フォルダ>/<セッション>)
+    const s = JSON.parse(await readFile(join(out, 'sessions.json'), 'utf8')) as { sessions: { id: string; project: string; empty: boolean }[] };
+    const live = s.sessions.filter((x) => !x.empty && existsSync(join(out, 'snapshot', 'session-state', x.id, 'events.jsonl')));
+    // この fixture では、セッションはそれぞれ別のプロジェクト(そのプロジェクトの送れるセッションはそれだけ)
+    const picked = live.filter((x) => live.filter((y) => y.project === x.project).length === 1).slice(0, 3);
+    expect(picked).toHaveLength(3);
+    ids = picked.map((x) => x.id);
+    const raw = join(WORK, 'upload-raw');
+    await mkdir(raw, { recursive: true });
+    const up = uploadProjects({ home, out, root: raw, projects: picked.map((x) => x.project), configPath: join(WORK, 'atlas.config.json') });
+    expect(up.status, up.out).toBe(0);
     const upload = join(WORK, 'upload');
-    await mkdir(upload, { recursive: true });
-    for (const g of ['proj-a', 'proj-b']) atlas(['group', 'upload', g, '--to', upload, '--out', out, '--notes-dir', notes]);
+    const dirOf = (i: number): string => join(raw, uploadDirName(picked[i].project));
+    for (const i of [0, 1]) await cp(join(dirOf(i), ids[i]), join(upload, 'proj-a', ids[i]), { recursive: true });
+    for (const name of ['README.md', 'atlas-index.json', 'atlas-installed.json']) await cp(join(dirOf(0), name), join(upload, 'proj-a', name));
+    await cp(dirOf(2), join(upload, 'proj-b'), { recursive: true });
+    // 送った人のメモ(アップロードでは atlas-memo.md としてセッションのフォルダに入る。添え方は crates/atlas-cli/src/upload_copy/tests.rs)
+    await writeFile(join(upload, 'proj-a', ids[0], 'atlas-memo.md'), '# 送った人のメモ\n\n当たり判定を直した。');
     await cp(upload, person, { recursive: true });
     await cp(join(upload, 'proj-a'), join(logs, 'person-b', 'proj-a'), { recursive: true });
     fp = folderPaths(root, notes, person);
 
-    server = await startServer({ outDir: out, notesDir: notes, groupsPath: join(notes, 'groups.json'), port: 0, open: false, idleMs: 600_000, firstHeartbeatMs: 600_000 });
+    server = await startServer({ outDir: out, notesDir: notes, port: 0, open: false, idleMs: 600_000, firstHeartbeatMs: 600_000 });
     browser = await chromium.launch();
     page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
     watch(page);
@@ -147,7 +157,7 @@ describe('別のフォルダを開く', () => {
     expect(await dialog(page).locator('[data-folder-row]').count()).toBe(1);
   });
 
-  it('b. 開いた先は対象のフォルダの名前と「読むだけ」を出し、いつもの集計へのリンクを持つ。タスクタグとメモは送った人のもので、書き換えられない', async () => {
+  it('b. 開いた先は対象のフォルダの名前と「読むだけ」を出し、いつもの集計へのリンクを持つ。メモは送った人のもので、書き換えられない', async () => {
     const href = (await row(page).getByRole('link', { name: /person-a を表示する/ }).getAttribute('href'))!;
     other = await browser.newPage({ viewport: { width: 1440, height: 900 } });
     watch(other);
@@ -170,40 +180,28 @@ describe('別のフォルダを開く', () => {
     await dialog(other).getByTestId('folders-close').click();
     await expect.poll(() => focused(other!)).toBe('folders-open');
 
-    // 読むだけ: 「読むだけ」の札。タスクタグを作る・付ける操作と、まとめて送る印は出さない(集計し直す・判定は出す)
+    // 読むだけ: 「読むだけ」の札。まとめて送る印は出さない(集計し直す・判定は出す)
     await expect.poll(() => other!.getByTestId('readonly-tag').innerText()).toBe('読むだけ');
-    expect(await other.getByTestId('add-to-group').count()).toBe(0);
-    // 案内も読むだけの画面のもの(「atlas.bat から開くと付けられる」とは出さない)
-    expect(await other.getByTestId('readonly-how').innerText()).toContain('読むだけの画面です');
-    expect(await other.getByText('atlas.bat から開いたときに付けられます').count()).toBe(0);
     expect(await other.locator('#projects').getByRole('checkbox').count()).toBe(0);
     expect(await other.getByTestId('job-judge').count()).toBe(1);
     expect(await other.getByTestId('job-refresh').count()).toBe(1);
-    // タスクタグ: 送った人が付けていたもの(人のフォルダを開いたので、人の名前は付かない)。いつもの置き場のものとは別
+    // 読むだけの画面のサーバ。メモの置き場は、いつもの置き場とは別(フォルダごと)
     const token = await other.evaluate<string>("document.querySelector('meta[name=\"atlas-token\"]').content");
-    const state = (await (await fetch(new URL('api/state', href), { headers: { 'x-atlas-token': token } })).json()) as { readOnly: boolean; groups: { name: string; ids: string[] }[]; notesDir: string };
+    const state = (await (await fetch(new URL('api/state', href), { headers: { 'x-atlas-token': token } })).json()) as { readOnly: boolean; notesDir: string };
     expect(state.readOnly).toBe(true);
-    expect(state.groups.map((g) => [g.name, g.ids.length])).toEqual([
-      ['proj-a', 2],
-      ['proj-b', 1],
-    ]);
     expect(state.notesDir).toBe(fp.notes);
-    // 画面の左の一覧にも出る
-    await expect.poll(() => other!.locator('.group-rail').innerText()).toContain('proj-a');
+    expect('groups' in state).toBe(false);
     // 書き換える API はサーバが断る(画面を通さずに呼んでも)
     const put = (path: string, body: unknown, method = 'PUT') => fetch(new URL(path, href), { method, headers: { 'x-atlas-token': token, 'content-type': 'application/json' }, body: JSON.stringify(body) });
-    for (const r of [await put('api/groups', { name: '新しい', note: '', ids: [] }, 'POST'), await put('api/groups/proj-a', { remove: [state.groups[0].ids[0]] }), await put(`api/memos/${state.groups[0].ids[0]}`, { text: 'x', rev: '' }), await put('api/upload-projects', { project: 'x', on: true })]) {
+    for (const r of [await put(`api/memos/${ids[0]}`, { text: 'x', rev: '' }), await put('api/upload-projects', { project: 'x', on: true })]) {
       expect(r.status).toBe(403);
       expect(((await r.json()) as { error: string }).error).toContain('読むだけ');
     }
-    expect(existsSync(join(fp.notes, 'groups.json'))).toBe(false);
-    // 詳細ページ: 送った人のメモを出し、書き換える欄は出さない。タスクタグは送った人のもので、外す・付けるは出さない
-    const memoId = state.groups[0].ids.find((x) => existsSync(join(fp.out, 'snapshot', 'session-state', x, 'atlas-memo.md')))!;
-    expect(memoId).toBeTruthy();
-    await other.goto(new URL(`sessions/${memoId}.html`, href).href);
+    expect(existsSync(join(fp.notes, 'memos'))).toBe(false);
+    // 詳細ページ: 送った人のメモを出し、書き換える欄は出さない
+    expect(existsSync(join(fp.out, 'snapshot', 'session-state', ids[0], 'atlas-memo.md'))).toBe(true);
+    await other.goto(new URL(`sessions/${ids[0]}.html`, href).href);
     await expect.poll(() => other!.locator('#memo').innerText()).toContain('当たり判定を直した。');
-    await expect.poll(() => other!.getByTestId('detail-groups').innerText()).toContain('送った人が付けたもの');
-    expect(await other.getByTestId('detail-groups').locator('button, input').count()).toBe(0);
     expect(await other.getByTestId('memo-text').count()).toBe(0);
     await other.close();
   });
@@ -241,7 +239,7 @@ describe('別のフォルダを開く', () => {
     const notesAll = join(WORK, 'notes-everyone');
     const r = spawnSync(...cliCommand(['all', '--home', everyone, '--out', outAll, '--notes-dir', notesAll]), { cwd: ROOT, encoding: 'utf8', timeout: 120_000 });
     expect(r.status, r.stdout + r.stderr).toBe(0);
-    const all = await startServer({ outDir: outAll, notesDir: notesAll, groupsPath: join(notesAll, 'groups.json'), port: 0, open: false, idleMs: 600_000, firstHeartbeatMs: 600_000 });
+    const all = await startServer({ outDir: outAll, notesDir: notesAll, port: 0, open: false, idleMs: 600_000, firstHeartbeatMs: 600_000 });
     other = await browser.newPage({ viewport: { width: 1440, height: 900 } });
     watch(other);
     try {
@@ -258,12 +256,8 @@ describe('別のフォルダを開く', () => {
       expect([...names].sort()).toEqual(['person-a', 'person-b']);
       // 「まとめて送る」の印は、人別には出さない
       expect(await people.getByRole('checkbox').count()).toBe(0);
-      // 送った人のタスクタグを、人ごとに分けて出す(同じ proj-a でも、人が違えば別)
-      const groups = await other.evaluate<{ name: string; ids: string[] }[]>("JSON.parse(document.getElementById('atlas-data').textContent).groups");
-      expect(groups.map((g) => [g.name, g.ids.length])).toEqual([
-        ['person-a / proj-a', 2],
-        ['person-b / proj-b', 1],
-      ]);
+      // タスクタグ(前の版の groups)は埋め込まない
+      expect(await other.evaluate<boolean>("'groups' in JSON.parse(document.getElementById('atlas-data').textContent)")).toBe(false);
       // 絞り込みの「人」: 件数付き
       const select = personLabel(other).locator('select');
       expect(await select.locator('option').allInnerTexts()).toEqual(['すべて(2)', 'person-a(2)', 'person-b(1)']);

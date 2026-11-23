@@ -1,7 +1,7 @@
 //! atlas build / export(packages/cli/src/commands.ts の runBuild・uploadsFor の移植)。ログの文言は TS 版と同じ(所要時間だけ違う)。
 //! 描くのは atlas-report の build(build_report)。テンプレートと CSS は実行ファイルに埋め込んだもの(template・page_css)、版の目印は version::CODE_STAMP。
 
-use super::metrics::{has_filter, select_sessions, write_tables, SessionFilter};
+use super::metrics::{has_filter, read_sessions_file, select_from, write_tables, SessionFilter};
 use super::{mb, ms, Log};
 use crate::args::ToolOutput;
 use crate::paths::{Paths, REPO_ROOT};
@@ -14,7 +14,6 @@ use atlas_core::metrics::compute_metrics;
 use atlas_core::types::{SessionRecord, SessionsFile, METRICS_SCHEMA_VERSION};
 use atlas_core::vcs_step::read_vcs_retention;
 use atlas_report::build::{build_report, page_css, template, BuildInput, BuildScope, BuildWarnings, ReportSource, TranscriptSettings, HTML_SIZE_LIMIT};
-use atlas_report::groups::{member_groups_keyed, MemberSource};
 use atlas_report::judgments::parse_judgments;
 use atlas_report::memo_io::memos_dir;
 use atlas_report::transcript::{ToolOutputMode, DEFAULT_GAP_MS, DEFAULT_MAX_TEXT_CHARS, DEFAULT_MAX_TOOL_CHARS};
@@ -39,6 +38,10 @@ pub struct TranscriptCli {
 pub struct BuildOptions {
     pub filter: SessionFilter,
     pub transcripts: Option<TranscriptCli>,
+    /// 設定ファイル(--config。無ければ環境変数 ATLAS_CONFIG かリポジトリ直下)。管理ツールのタスクの読み方に使う
+    pub config: Option<String>,
+    /// all が metrics の前に済ませたタスクの処理(あれば、build では XML を読み直さない)
+    pub refreshed: Option<super::tasks::Refreshed>,
 }
 
 /// レポートで見るフォルダごとの記録。絞り込んだときは、対象のセッションを数えたフォルダだけにする
@@ -74,7 +77,17 @@ fn secs(ms_f: f64) -> Duration {
 /// build と export(TS 版の runBuild)
 pub fn run_build(p: &Paths, o: &BuildOptions, log: Log<'_>) -> Result<BuildResult> {
     let cmd = if o.transcripts.is_some() { "export" } else { "build" };
-    let sel = select_sessions(p, &o.filter, cmd, "先に atlas extract を実行してください。", log)?;
+    let file = read_sessions_file(p, "先に atlas extract を実行してください。")?;
+    // 読むだけの画面にするか(送り先から集計した、または別のフォルダを開いた出力先。サーバと同じ判定)
+    let read_only = super::tasks::is_read_only(p, &file);
+    // 管理ツールのタスク: XML を読んで状態を更新し、機械の紐づけを決め直す(--task の絞り込みより前に。読むだけの画面では送った人の記録を使う)
+    let task_cfg = super::tasks::load_task_config(o.config.as_deref());
+    let refreshed = match (&o.refreshed, read_only) {
+        (_, true) => None,
+        (Some(r), false) => Some(r.clone()),
+        (None, false) => Some(super::tasks::refresh_tasks(p, &task_cfg, &file.sessions, cmd, log)),
+    };
+    let sel = select_from(p, file, &o.filter, cmd, log)?;
     let s: &SessionsFile = &sel.file;
     let sessions = sel.sessions();
     if sessions.is_empty() {
@@ -131,22 +144,11 @@ pub fn run_build(p: &Paths, o: &BuildOptions, log: Log<'_>) -> Result<BuildResul
         None => {}
     }
 
-    write_tables(p, &sessions, &super::metrics::condition_groups(p, &sel), cmd, log)?;
+    let task_view = super::tasks::build_view(p, &task_cfg, read_only, &s.sessions, &sessions, refreshed.as_ref(), &super::tasks::human_of(judgments.as_ref()));
+    write_tables(p, &sessions, task_view.as_ref(), cmd, log)?;
 
     let unknown: i64 = s.warnings.unknown_event_types.values().sum();
-    let layout = s.source.layout.map(|l| match l {
-        atlas_core::types::UploadLayout::Flat => "flat",
-        atlas_core::types::UploadLayout::Merged => "merged",
-    });
-    // 読むだけの画面にするか(送り先から集計した、または別のフォルダを開いた出力先。サーバと同じ判定)
-    let read_only = crate::folders::is_read_only_view(&p.out.to_string_lossy(), layout);
-    let (groups, group_tags, memos, member_memos) = if read_only {
-        let src: Vec<MemberSource<'_>> = s.sessions.iter().map(MemberSource::from).collect();
-        let (groups, tags) = member_groups_keyed(&src).into_iter().map(|m| (m.group, m.tag)).unzip();
-        (groups, Some(tags), None, Some(p.snapshot.join("session-state")))
-    } else {
-        (sel.groups.groups.clone(), None, Some(memos_dir(&p.notes)), None)
-    };
+    let (memos, member_memos) = if read_only { (None, Some(p.snapshot.join("session-state"))) } else { (Some(memos_dir(&p.notes)), None) };
     let f = &o.filter;
     let r = build_report(BuildInput {
         sessions: sessions.clone(),
@@ -165,12 +167,10 @@ pub fn run_build(p: &Paths, o: &BuildOptions, log: Log<'_>) -> Result<BuildResul
             _ => None,
         },
         wiki_vaults: s.source.wikis,
-        warnings: BuildWarnings { unknown_event_types: unknown, bad_lines: s.warnings.bad_lines, notes: sel.groups.warnings.clone() },
+        warnings: BuildWarnings { unknown_event_types: unknown, bad_lines: s.warnings.bad_lines, notes: Vec::new() },
         judgments: judgments.as_ref(),
         verdicts: verdicts.as_ref(),
         retention: retention.as_ref(),
-        groups,
-        group_tags,
         memos_dir: memos,
         member_memos_dir: member_memos,
         read_only,
@@ -196,6 +196,7 @@ pub fn run_build(p: &Paths, o: &BuildOptions, log: Log<'_>) -> Result<BuildResul
         full: o.transcripts.as_ref().is_some_and(|t| t.full),
         library: None,
         desktop_meta: s.desktop.as_ref().and_then(|d| d.as_ref()),
+        tasks: task_view.as_ref().map(serde_json::to_value).transpose()?,
     })?;
     if let Some(at) = &r.stale.full {
         log(&format!("build: 前回の --full の出力(out/full/ と out/coverage.json、生成 {at})が残っています。消したいときは、out/full/ フォルダと out/coverage.json を手で消してください"));

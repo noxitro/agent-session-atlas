@@ -27,16 +27,16 @@ npm run audit:ui -- out   # 生成したレポートの全ページの網羅チ�
 ATLAS_UI_CPU_SLOWDOWN=20 npm run ui
 npm run fixtures    # fixture(.fixtures/)を手で作り直す(中身を見たいとき。E2E は毎回自動で作り直す)
 cargo deny check    # Rust の依存の検査(下記「依存の検査」。cargo install cargo-deny --locked で入れておく)
-# 従量課金の Anthropic API を直接呼ぶ判定(--backend anthropic)を入れたビルドとテスト(既定では入らない。下記)
+# skill-draft で従量課金の Anthropic API を直接呼ぶ経路(--backend anthropic)を入れたビルドとテスト(既定では入らない。下記)
 cargo build --release -p atlas-cli --features anthropic-backend
 cargo test --workspace --features atlas-cli/anthropic-backend
 ```
 
-### 機能 anthropic-backend(従量課金の API を直接呼ぶ判定)
+### 機能 anthropic-backend(skill-draft で従量課金の API を直接呼ぶ)
 
-判定のバックエンド `anthropic`(`crates/atlas-judge/src/backends/anthropic.rs`。Anthropic Messages API を直接呼ぶ。従量課金)は、cargo の機能 `anthropic-backend`(`atlas-judge` の機能を `atlas-cli` が同じ名前で渡す)を付けたときだけ入ります。
+`skill-draft` のバックエンド `anthropic`(`crates/atlas-judge/src/backends/anthropic.rs`。Anthropic Messages API を直接呼ぶ。従量課金)は、cargo の機能 `anthropic-backend`(`atlas-judge` の機能を `atlas-cli` が同じ名前で渡す)を付けたときだけ入ります。
 HTTP と TLS のクライアント(`ureq`・`rustls`・`ring`・`webpki-roots` など)がこれだけのために要るので、既定のビルドと、`scripts/ensure-atlas.ps1` がする利用者の PC でのビルドには入れません。
-入れていないビルドでも `--backend anthropic` は引数として受け付け、`judge run` と `skill-draft` が、入っていないことと上のビルドの仕方を出して止まります(`atlas_judge::backends::ensure_backend_built`)。
+入れていないビルドでも `--backend anthropic` は引数として受け付け、`skill-draft` が、入っていないことと上のビルドの仕方を出して止まります(`atlas_judge::backends::ensure_backend_built`)。
 テストは両方で回します(`cargo test --workspace` と、上の `--features` を付けたもの)。片方だけで動くテストは `#[cfg(feature = "anthropic-backend")]` で分けます。
 
 ### 依存の検査
@@ -72,7 +72,7 @@ $env:ATLAS_LIVE = '1'; npm run e2e
 ATLAS_LIVE=1 npm run e2e
 ```
 
-`ATLAS_COPILOT_HOME` で `~/.copilot` 以外の場所を指定できます。E2E は LLM を呼びません(`judge run` の検査は偽の copilot で行います)。
+`ATLAS_COPILOT_HOME` で `~/.copilot` 以外の場所を指定できます。E2E は LLM を呼びません(判定はこのツールの中では回さないので、外部の LLM の返答は架空のものを取り込みます。`skill-draft` の検査は偽の copilot で行います)。
 
 ## 全ページの網羅チェック(`npm run audit:ui`)
 
@@ -85,7 +85,7 @@ npm run audit:ui -- out --json audit.json --shots shots
 - **構造(全ページ)**: id の重複、ページ内リンクと別ページへのリンクの行き先(ファイルと `#id`)、リンクの「版 N」と行き先の版番号の一致
 - **文言(全ページ。atlas.html はタブを 1 つずつ押した状態も。本文のタブ(概況・内訳・一覧。開いていないタブの欄は `hidden` で隠れている)を 1 つずつ開き、その中の切り替え(利用ランキングの種類など)も押す。レイアウトと押せそうで押せない要素の検査も、タブごとに同じように見る)**: `undefined`・`NaN`・`[object Object]`・テンプレートの `${…}`・二重に逃がした実体参照・HTML コメントの印の漏れ(`pre` / `code` の中の本文は除く)
 - **アクセシビリティの基本(全ページ)**: `lang`、名前の無いリンクとボタン、`alt` の無い画像、ラベルの無い入力欄、見出しの段の飛び
-- **押せそうで押せない要素(全ページ。atlas.html はタブを 1 つずつ押した状態、閉じた `details` と `aria-expanded="false"` のボタンを開いた状態、レイアウトの見本は 375 / 1024 / 1440px でも)**: 自分自身へのリンク(押しても同じ場所に留まるもの。`glossary.html#x` のようにファイル名付きで同じページを指すもの、見出し・語の欄の中のものも含む。節の先頭へ戻るリンクのように行き先が節や枠でほかの中身も持つものは除く)、指のカーソルが出るのにボタン・リンク・操作を受ける ARIA の役割のどれでもないもの(引き継いだ子は数えず、カーソルを付けた要素だけ)。目で確かめる側: ホバーで見た目が変わるのに操作できない要素(表の行の読み取り補助など意図したものもあるため)、下線があるのにリンクでない文字(包んだ要素に付けた下線も)、逆向きの、ボタンなど操作できるのに指のカーソルが出ない要素。「押すものが無い」ことを示すカーソル(矢印・既定・I 字・疑問符・無し)のものを挙げ、指摘の末尾に出ているカーソルの値を添えます。別の操作を示すカーソル(待ち・不可・つかむ・拡大・幅を変える・写すなど)は意図したものとして挙げません。字を打つ欄・選ぶ欄とそのラベル、使えない状態のもの(中の印が使えないラベルも)、部品の付いていないラベル、一覧・表・木・メニューの中の項目(option・gridcell・treeitem・menuitem。矢印が普通)も除きます。サーバが要る設定・別のフォルダのダイアログと 375px のタスクタグの一覧の中は、`npm run ui` の `ui/report.test.ts` が同じ検査(`clickableFindings`)で見ます
+- **押せそうで押せない要素(全ページ。atlas.html はタブを 1 つずつ押した状態、閉じた `details` と `aria-expanded="false"` のボタンを開いた状態、レイアウトの見本は 375 / 1024 / 1440px でも)**: 自分自身へのリンク(押しても同じ場所に留まるもの。`glossary.html#x` のようにファイル名付きで同じページを指すもの、見出し・語の欄の中のものも含む。節の先頭へ戻るリンクのように行き先が節や枠でほかの中身も持つものは除く)、指のカーソルが出るのにボタン・リンク・操作を受ける ARIA の役割のどれでもないもの(引き継いだ子は数えず、カーソルを付けた要素だけ)。目で確かめる側: ホバーで見た目が変わるのに操作できない要素(表の行の読み取り補助など意図したものもあるため)、下線があるのにリンクでない文字(包んだ要素に付けた下線も)、逆向きの、ボタンなど操作できるのに指のカーソルが出ない要素。「押すものが無い」ことを示すカーソル(矢印・既定・I 字・疑問符・無し)のものを挙げ、指摘の末尾に出ているカーソルの値を添えます。別の操作を示すカーソル(待ち・不可・つかむ・拡大・幅を変える・写すなど)は意図したものとして挙げません。字を打つ欄・選ぶ欄とそのラベル、使えない状態のもの(中の印が使えないラベルも)、部品の付いていないラベル、一覧・表・木・メニューの中の項目(option・gridcell・treeitem・menuitem。矢印が普通)も除きます。サーバが要る設定・別のフォルダのダイアログと 375px の画面は、`npm run ui` の `ui/report.test.ts` が同じ検査(`clickableFindings`)で見ます
 - **実行時(全ページ)**: ページ内の例外とコンソールのエラー
 - **レイアウト(主要ページと詳細ページの見本 × 375 / 1024 / 1440px × ライト / ダーク)**: 横へのはみ出し、文字のコントラスト(WCAG 2.x)、切れた文字、キーボードで届かないスクロール領域、375px での小さい押す的。375px では字間を広げた状態でも横のはみ出しを確かめる(字の幅は OS のフォントで違い、Linux の CI でだけはみ出すことがあるため)
 
@@ -94,7 +94,7 @@ npm run audit:ui -- out --json audit.json --shots shots
 ## CI(GitHub Actions)
 
 - **CI**(`.github/workflows/ci.yml`): `main` への push と PR ごとに、Windows と Linux × Node.js 24 と 26 の 4 通りで `npm ci` → `typecheck` → `build:report` → `test`(`cargo test` と TS の単体テスト)→ `parity:fixture` を実行します(ジョブ `check`。Rust はテスト用の debug だけを作り、`parity:fixture` も debug の atlas と `libdump` で回します)。E2E(ジョブ `e2e`。Windows と Linux で、atlas を 1 回作ってから Node.js 24 と 26 で続けて回す。24 で落ちても 26 も回す)・画面の操作の検査(ジョブ `ui`)・clone した状態での動作確認(ジョブ `smoke`。`ui` と `smoke` は Windows と Linux の Node.js 24)は、atlas を release で作ってから動かすので、`check` と並べて別のジョブで回します(1 つのジョブで順に回すと待ち時間が和になるため。それぞれ atlas を作り直します)。文書だけ(`docs/` の下と `*.md`)を変えた PR では、この 4 つを飛ばします(ジョブ `changes`。`main` への push と手動の実行では全部回します)。マージの条件は、これらをまとめたジョブ `ci-ok` だけです。Rust はランナーの rustup で stable を入れ、crates.io の依存と `target/` を、テスト用の debug(`check`)と release(`e2e`・`ui`・`smoke`)に分けて、OS・rustc の版・`Cargo.lock` ごとにキャッシュします(rustc の版が変わると依存のビルドは使えないのでキーに入れる)。保存するのは `main` の `check`(Node.js 24)と `e2e` だけで、PR と `ui`・`smoke` は取り出すだけです(PR ごとに同じ大きさのキャッシュを作ると、リポジトリのキャッシュの上限で `main` のものが追い出されるため)。そのため、新しい stable が出た後と `Cargo.lock` を変えた後は、次に `main` でこの 2 つが通るまで、PR は依存(変わった分)を作り直します。急ぐときは Actions タブから `main` で CI を手動で 1 回動かすと、キャッシュが作り直されます。`check` は、テスト用のビルドのデバッグ情報を行番号だけにします(`CARGO_PROFILE_DEV_DEBUG=line-tables-only`。コンパイルとリンクが速くなる。手元の既定は変えません)。`parity:fixture` の Rust の側(`libdump`)は、`npm test` の `cargo test --workspace` が作ったものを使います(`scripts/parity-lib.ts`。同じ選び方で作るので作り直さない。`check` は `ATLAS_REQUIRE_TEMPLATE` も同じ値にします)。E2E はテスト時に生成する架空の fixture だけを使い(追加の手順は不要)、実データ(`ATLAS_LIVE`)や実際の LLM 判定は動かしません。Actions タブから手動でも実行できます。
-  - 画面の操作の検査(`ui/`。ジョブ `ui`): Playwright の Chromium で、一覧のチェックで集計し直す・タスクタグの作成 / 選択 / 名前と説明の編集 / 削除・詳細ページでのタスクタグの付け外しとメモ・アップロード・別のフォルダを開く(`ui/folders.test.ts`。開いた先の別のサーバまで)・戻る / 進む・サーバの止まり方・用語ページとの行き来を実際に押して確かめ、どの画面でもページ内の例外とコンソールのエラーが無いことを見ます。ブラウザの本体は Playwright の版ごとにキャッシュします(保存は `main` だけ)。落ちたテストはその時点の画面を `out/ui-failures/<テスト名>.png` に残し(`ui/failure-shot.ts`)、CI では成果物 `ui-failures-<OS>` として 7 日間残します(Actions の実行結果の画面から落とせます)。
+  - 画面の操作の検査(`ui/`。ジョブ `ui`): Playwright の Chromium で、一覧のチェックで集計し直す・詳細ページのメモ・別のフォルダを開く(`ui/folders.test.ts`。開いた先の別のサーバまで)・戻る / 進む・サーバの止まり方・用語ページとの行き来を実際に押して確かめ、どの画面でもページ内の例外とコンソールのエラーが無いことを見ます。ブラウザの本体は Playwright の版ごとにキャッシュします(保存は `main` だけ)。落ちたテストはその時点の画面を `out/ui-failures/<テスト名>.png` に残し(`ui/failure-shot.ts`)、CI では成果物 `ui-failures-<OS>` として 7 日間残します(Actions の実行結果の画面から落とせます)。
   - clone した状態での動作確認(ジョブ `smoke`): clone した直後と同じ中身(`scripts/fresh-checkout.ts`。git archive HEAD だけで、`bin/` もレポートのテンプレートも入れない)を作り、起動用の `.bat` と同じ順で動かします(`scripts/checkout-smoke.ts`。`*.bat` と `ensure-atlas.ps1` が CRLF か → `scripts/ensure-atlas.ps1` が、利用者の PC と同じくこの PC でビルドするか(`npm ci` → `build:report` → `cargo build --release`)→ もう一度動かすと使い回すか → 初期設定(`atlas setup`)が書かずに終わるか → 架空の fixture で `atlas all` → プロジェクトを送る操作 → Windows では `upload-project.bat`・`schedule-upload.bat`・`setup.bat`・`open-folder.bat`・`stop.bat` を cmd で実際に起動する。Linux では `ensure-atlas.ps1` を pwsh で動かす)。ビルドはリポジトリの `target/` を使います(`CARGO_TARGET_DIR`。依存のクレートのビルドを使い回す)。手元では `npm run smoke` で同じことを試せます(`scripts/smoke-local.ts`。置き場はリポジトリの外の一時フォルダ(OS の一時フォルダの `atlas-ci-pkg-XXXXXX/`。回すたびに別の名前で、通ったら消し、落ちたら残す。中に作ると、入れ忘れた依存もリポジトリの `node_modules` から読めて見逃すため)。コミット済みの内容だけが入るので、コミットしていない変更があれば注意を出します)。
   - **push の前に手元で CI と同じ順に回す**: `npm run ci`(`typecheck` → `build:report` → `test` → `build:atlas` → `parity:fixture` → `e2e` → `ui` → `smoke`。最初に落ちたところで止まります)。画面の操作の検査には `npx playwright install chromium` が 1 回要ります。
   - 依存の脆弱性: Rust はジョブ `cargo-deny`(`cargo deny --locked check`。上の「依存の検査」)で見ます。npm は `devDependencies` も含めて high 以上の advisory があると止まります(`node scripts/npm-audit.mjs`。毎週の検査と同じ。除外は上の「依存の検査」の `npm-audit-ignore.json`)。PR では、その PR で新しく入る・上がる `dependencies` も見ます(ジョブ `dependency-review`。`actions/dependency-review-action`。high 以上で止める)。
@@ -119,13 +119,12 @@ npm run audit:ui -- out --json audit.json --shots shots
 **サンプルデータはリポジトリに置かず、テスト時に架空の値だけで生成します。実データは読みません。**
 
 - 規則: fixtures に実データ(匿名化したものも含む)を使わない。セッション ID・ツール呼び出し ID・パス・時刻・本文はすべて作った値です(`00000000-0000-4000-8000-0000000000NN`、`call_synth_…`、`X:\synthetic-…` など)。
-- 「課題 × 条件」の節の画面の検査(`ui/conditions.test.ts`)は、別の生成器 `scripts/synthetic-conditions.ts` で、課題 2 つ × 条件 3 つ × 3 回の架空のログ(テストの実行ファイルの印つきの行を含む)を作って集計します。~/.copilot の形(タスクタグは `groups.json`)と、送り先をまとめて集計する形(タスクタグは各セッションの `atlas-session.json`)の両方を書けます。中身を見たいときは `node scripts/synthetic-conditions.ts <フォルダ>`。
 - 推論強度どうしの比較の画面の検査(`ui/effort-compare.test.ts`)は、別の生成器 `scripts/synthetic-effort.ts` で、送り先をまとめて集計する形(利用者 3 人 × 4 週、週ごとに medium と xhigh を入れ替える)の架空のログを作って集計します。中身を見たいときは `node scripts/synthetic-effort.ts <フォルダ>` で書き出せます。
 - 生成器は `scripts/synthetic-fixtures.ts`(001〜006・099 は `scripts/synthetic-base.ts`)で、何度実行しても同じ結果になります。E2E は `e2e/global-setup.ts`(vitest の globalSetup)から毎回これを呼び、`.fixtures/` を作り直してから走ります。新しく clone した状態でも `npm ci && npm test && npm run e2e` だけで動きます(CI も同じ)。
 - `.fixtures/` は `.gitignore` 済みです。中身を見たいときは `npm run fixtures` で作れます。
   - `copilot-home/session-state/<id>/{workspace.yaml,events.jsonl}` と `copilot-home/session-store.json`(`session-store.db` の中身。テスト時に `e2e/fixture-home.ts` が WAL の DB に組み立てます)
   - `manifest.json`(各セッションの役割)、`fixture-counts.json`(core を使わずに数えた件数 = 期待値の根拠)、`judgments-sample.json`(手書きの架空の判定)
-- `fixtures/` にはコード(偽の copilot `fixtures/fake-copilot.mjs`)だけを置きます。
+- `fixtures/` にはコード(`skill-draft` の検査に使う偽の copilot `fixtures/fake-copilot.mjs` と、M365 Copilot の画面の操作の偽物 `fixtures/fake-m365.mjs`)だけを置きます。`fake-m365.mjs` は環境変数 `ATLAS_M365_FAKE_DRIVER` に指すと、`m365-uia.ps1` の代わりに node で動きます(テスト用。指すと Windows 以外でも動く)。画面の「止める」でジョブの子の子まで止まるかと、タスクの紐づけの自動の取り込みを、本物の M365 Copilot に触れずに確かめます。
 
 セッションの役割:
 

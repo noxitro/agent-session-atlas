@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Phase 14: 画面から動かした処理の帯(本文の上。atlas serve から開いたときだけ)。
+  // 画面から動かした処理の帯(本文の上。atlas serve から開いたときだけ)。
   // 実行中(経過・止める・ログ)→ 完了(「新しい集計ができました」と「再読み込み」。自動では読み直さない: メモの入力中などを守る)/ 失敗 / 止めた。
   // この画面のデータより後に始まった処理だけを出す(再読み込みした後は出さない)。全文記録の作成(詳細ページから)は実行中だけ出す。
   import type { JobInfo } from '../api.ts';
@@ -10,27 +10,31 @@
 
   const LABEL: Record<JobInfo['kind'], string> = {
     refresh: '集計し直し',
-    judge: '工数の判定',
     full: '全文記録の作成',
     bundle: '添付ファイルの作成',
     'bundle-zip': 'ZIP の作成',
     export: 'レポートへの反映',
     'turn-bundle': '依頼判定用の添付ファイルの作成',
-    'turn-judge': '依頼の判定',
+    'turn-bundle-zip': '依頼判定用の ZIP の作成',
+    'task-bundle': 'タスクの紐づけ用の添付ファイルの作成',
+    'task-bundle-zip': 'タスクの紐づけ用の ZIP の作成',
     m365: 'M365 Copilot での工数の判定',
     'turn-m365': 'M365 Copilot での依頼の判定',
+    'task-m365': 'M365 Copilot でのタスクの紐づけ',
   };
-  /** 判定のジョブ(失敗しても判定できた分は保存されている) */
-  const judging = (k: JobInfo['kind']): boolean => k === 'judge' || k === 'turn-judge' || k === 'm365' || k === 'turn-m365';
-  /** 工数(セッション)の判定か */
-  const effort = (k: JobInfo['kind']): boolean => k === 'judge' || k === 'm365';
+  /** 判定のジョブ(M365 Copilot の自動操作。失敗しても判定できた分は保存されている) */
+  const judging = (k: JobInfo['kind']): boolean => k === 'm365' || k === 'turn-m365' || k === 'task-m365';
+  /** 判定の単位(工数とタスクの紐づけはセッション、依頼ごとは依頼) */
+  const unitOf = (k: JobInfo['kind']): string => (k === 'turn-m365' ? '依頼' : 'セッション');
+  /** 添付ファイル・ZIP の作成(判定ダイアログの中から始め、終わったことはそこで示す) */
+  const BUNDLE_KINDS: JobInfo['kind'][] = ['bundle', 'bundle-zip', 'turn-bundle', 'turn-bundle-zip', 'task-bundle', 'task-bundle-zip'];
   const job = $derived(jobs.job);
   const shown = $derived.by(() => {
     const j = job;
     if (!j || jobs.dismissed === j.id) return null;
     if (j.state === 'running') return j;
     // 全文記録の作成(詳細ページから)と添付ファイル・ZIP の作成(判定ダイアログの中から)は、終わったことを始めた画面が示すので帯には出さない
-    if (j.kind === 'full' || j.kind === 'bundle' || j.kind === 'bundle-zip' || j.kind === 'turn-bundle') return null;
+    if (j.kind === 'full' || BUNDLE_KINDS.includes(j.kind)) return null;
     return Date.parse(j.startedAt) >= Date.parse(generatedAt) ? j : null;
   });
   function elapsed(j: JobInfo, now: number): string {
@@ -50,11 +54,6 @@
     if (j.state === 'failed') return `${LABEL[j.kind]}に失敗しました。`;
     return `${LABEL[j.kind]}を止めました。`;
   });
-  /** 判定した範囲(1 セッション・タスクタグ。すべてなら書かない) */
-  const scope = (j: JobInfo): string =>
-    j.target.session ? `セッション ${j.target.session.slice(0, 8)}${j.target.force ? ' を判定し直し' : ''}、` : j.target.group ? `タスクタグ「${j.target.group}」、` : '';
-  const target = (j: JobInfo): string =>
-    j.kind === 'judge' ? `${scope(j)}最大 ${j.target.limit} 件、copilot -p` : j.kind === 'turn-judge' ? `${scope(j)}最大 ${j.target.limit} 依頼、copilot -p` : '';
 </script>
 
 <!-- 読み上げは状態が変わったときの 1 文だけ(経過の秒は毎秒変わるので live 領域に入れない)。live 領域は常に置き、文だけ差し替える -->
@@ -64,12 +63,12 @@
     <div class="wrap band-in">
       <p class="msg">
         {#if shown.state === 'running'}
-          <strong>{LABEL[shown.kind]}をしています</strong>(経過 {elapsed(shown, jobs.now)}{target(shown) ? `、${target(shown)}` : ''})。{#if shown.kind === 'refresh'}終わるまで詳細ページと記録は開けないことがあります。{:else if shown.kind === 'm365' || shown.kind === 'turn-m365'}終わるまで M365 Copilot の画面に触らないでください(この画面を閉じても続きます)。{:else if judging(shown.kind)}画面を閉じても最後まで続きます。{/if}
+          <strong>{LABEL[shown.kind]}をしています</strong>(経過 {elapsed(shown, jobs.now)})。{#if shown.kind === 'refresh'}終わるまで詳細ページと記録は開けないことがあります。{:else if judging(shown.kind)}終わるまで M365 Copilot の画面に触らないでください(この画面を閉じても続きます)。{/if}
         {:else if shown.state === 'done'}
           <strong>新しい集計ができました</strong>({LABEL[shown.kind]}、{elapsed(shown, jobs.now)})。再読み込みすると反映されます。
         {:else if shown.state === 'failed'}
           {#if judging(shown.kind)}
-            <strong>判定に失敗した{effort(shown.kind) ? 'セッション' : '依頼'}があるか、判定を実行できませんでした</strong>(終了コード {shown.exitCode ?? '—'})。判定できた分は保存されています。「再読み込み」で反映されていなければ「集計し直す」を押してください。理由は下のログにあります。
+            <strong>判定に失敗した{unitOf(shown.kind)}があるか、判定を実行できませんでした</strong>(終了コード {shown.exitCode ?? '—'})。判定できた分は保存されています。「再読み込み」で反映されていなければ「集計し直す」を押してください。理由は下のログにあります。
           {:else}
             <strong>{LABEL[shown.kind]}に失敗しました</strong>(終了コード {shown.exitCode ?? '—'})。下のログで理由を確かめてください。
           {/if}

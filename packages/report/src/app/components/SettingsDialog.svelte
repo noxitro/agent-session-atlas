@@ -17,7 +17,7 @@
     jobs: JobStore;
     /** サーバが止まったときは押せない */
     disabled: boolean;
-    /** アップロード先(App の uploadSetting。プロジェクト別の表・タスクタグの見出しと共通) */
+    /** アップロード先(App の uploadSetting。プロジェクト別の表と共通) */
     upload?: UploadHandlers;
     /** まとめて送るプロジェクトの印(プロジェクト別の表と共通) */
     send?: { projects: string[]; toggle: (project: string, on: boolean) => Promise<void> };
@@ -183,7 +183,7 @@
     });
   }
 
-  // --- アップロード先(App の uploadSetting を通して書く。タスクタグの見出しと同じ) ---
+  // --- アップロード先(App の uploadSetting を通して書く) ---
   let rootInput = $state('');
   function pickRoot(): void {
     if (!upload) return;
@@ -327,7 +327,7 @@
       {#if upload}
         <section class="sec" aria-labelledby="set-root-h" data-testid="settings-root">
           <h3 id="set-root-h">アップロード先</h3>
-          <p class="note">タスクタグの「アップロード」と upload-project.bat が、この中にタスクタグ名・プロジェクト名のフォルダを作って写します。</p>
+          <p class="note">upload-project.bat が、この中にプロジェクト名のフォルダを作って写します。</p>
           <p class="cur" data-testid="settings-root-current">{#if upload.setting.root}<code translate="no">{upload.setting.root}</code>{:else}<span class="none">まだ決まっていません</span>{/if}</p>
           <form class="add" onsubmit={setRoot} aria-label="アップロード先を決める">
             {#if upload.setting.canPick}<button type="button" class="btn" disabled={!!busy} data-testid="settings-root-pick" onclick={pickRoot}>{busy === 'root-pick' ? '選んでいます…' : 'エクスプローラーで選ぶ…'}</button>{/if}

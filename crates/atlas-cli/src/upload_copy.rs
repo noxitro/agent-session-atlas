@@ -1,16 +1,19 @@
-//! グループのアップロード(packages/cli/src/group-upload.ts の移植): グループのセッションの生ログを、決めておいた場所へタスク(グループ)ごとに写す。
-//!   <基底>/<グループ名>/<セッション id>/events.jsonl            ← Copilot のセッションのフォルダ(前回の集計で複製したもの)
+//! アップロードの写し方(packages/cli/src/group-upload.ts の移植): まとまり(集計のプロジェクト)のセッションの生ログを、決めておいた場所へまとまりごとに写す。
+//! プロジェクトのアップロード(upload_project.rs。upload-project.bat・画面・定期アップロード)が使う。
+//!   <基底>/<まとまりの名前>/<セッション id>/events.jsonl            ← Copilot のセッションのフォルダ(前回の集計で複製したもの)
 //!                                      workspace.yaml / session.db / plan.md / checkpoints/ …(files/ などは --snapshot-all で写したときだけ)
 //!                                      atlas-session-store.json   ← session-store.db と data.db(許可リストの列)のそのセッションの行(atlas が添える)
 //!                                      atlas-memo.md / atlas-memo/ ← そのセッションのメモと画像(atlas-notes/memos/。あれば)
-//!   <基底>/<グループ名>/README.md                                 ← グループ名・説明・写した日時・セッションの一覧(写すたびに書き直す)
-//!   <基底>/<グループ名>/atlas-installed.json                      ← 送った人がインストールしている skill・プラグインの名前(集計し直す側が使う)
+//!   <基底>/<まとまりの名前>/README.md                                 ← 名前・説明・写した日時・セッションの一覧(写すたびに書き直す)
+//! 管理ツールのタスクに紐づいたセッションは、atlas-session.json と atlas-index.json の tasks に、紐づいたタスクの並び(ID・名前・状態・完了・紐づけの出所)を添える
+//! (送り先から集計した読むだけの画面は、これだけからタスクの一覧と工数を作る)。
+//!   <基底>/<まとまりの名前>/atlas-installed.json                      ← 送った人がインストールしている skill・プラグインの名前(集計し直す側が使う)
 //! 同じセッションのフォルダは丸ごと置き換える。ただし、前に送ったときから中身が変わっていないセッションは写し直さない(2 回目からは変わったものだけを送る)。
-//! グループから外したセッションや、ほかの回・ほかの PC から写したセッションのフォルダには触れない(前に写したものを消さないため)。
-//! 送った先は `atlas all --home <基底>/<グループ名>` でそのまま集計できる。
+//! まとまりから外れたセッションや、ほかの回・ほかの PC から写したセッションのフォルダには触れない(前に写したものを消さないため)。
+//! 送った先は `atlas all --home <基底>/<まとまりの名前>` でそのまま集計できる。
 //! 元(~/.copilot)は読まず、前回の集計で out/snapshot/ に複製したものを写す(SQLite は一貫した複製を取ってあるため)。
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{bail, Result};
 use atlas_core::atlas_version::AtlasBuild;
 use atlas_core::desktop::{desktop_for_session, DesktopData};
 use atlas_core::js::{self, RE_S};
@@ -22,7 +25,7 @@ use atlas_core::vcs_retention::ComputedOn;
 use atlas_core::vcs_step::{read_vcs_retention, sender_vcs_json, VCS_RETENTION_FILE};
 use atlas_core::{collate, fs_retry, jsdate, jsfs};
 use atlas_report::format::{date_time, truncate};
-use atlas_report::groups::{load_groups, safe_dir_name};
+use atlas_report::ids::safe_dir_name;
 use regex::Regex;
 use rusqlite::types::ValueRef;
 use serde::{Deserialize, Serialize};
@@ -37,7 +40,7 @@ use std::sync::{LazyLock, Mutex};
 const SNAPSHOT_PRIVATE: &str = ".session.db.src";
 /// セッション id として写してよい名前(Copilot の id は英数字と - だけ。. で始まるもの・区切りを含むものは除く)
 static SAFE_ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z0-9][A-Za-z0-9_-]*$").unwrap());
-/// グループ・プロジェクトのフォルダの説明(人が読む)
+/// プロジェクトのフォルダの説明(人が読む)
 pub const UPLOAD_README: &str = "README.md";
 
 fn safe_id(id: &str) -> bool {
@@ -53,46 +56,39 @@ pub struct UploadedSession {
     pub project: Option<String>,
     /// プロジェクト名の決め方。集計に無いセッションは null
     pub project_source: Option<Value>,
-    /// タスクタグ(そのセッションが入っているグループの名前)。無ければ空
-    pub tags: Vec<String>,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
     pub memo: bool,
-}
-
-/// タスクタグ(グループ)ごとの、入っているセッションの id。groups.json が無い・読めなければ空
-fn tags_by_id(groups_path: &Path) -> HashMap<String, Vec<String>> {
-    let mut out: HashMap<String, Vec<String>> = HashMap::new();
-    for g in load_groups(groups_path).groups {
-        for id in g.ids {
-            out.entry(id).or_default().push(g.name.clone());
-        }
-    }
-    out
+    /// 紐づいた管理ツールのタスクの並び(紐づいていなければ省く。前の版の task(1 つ)の代わり)
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tasks: Vec<atlas_report::tasks::sender::SenderTask>,
+    /// 紐づいたタスクがちょうど 1 つのときだけ、前の版の形(task。1 つのタスク)でも添える(前の版の atlas が新しい記録を読んでも、タスクが見えるように)。
+    /// 読む側は tasks があればそちらを使う
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task: Option<atlas_report::tasks::sender::SenderTask>,
 }
 
 #[derive(Debug, Clone)]
-pub struct GroupUploadPaths {
+pub struct UploadPaths {
     /// out/snapshot(前回の集計の複製)
     pub snapshot: PathBuf,
-    pub groups: PathBuf,
     /// メモの置き場の親(atlas-notes/)。無ければメモは添えない
     pub notes: Option<PathBuf>,
     /// out/sessions.json(README の題名と日付に使う)。無ければ ID だけ並べる
     pub sessions: Option<PathBuf>,
 }
 
-impl GroupUploadPaths {
+impl UploadPaths {
     pub fn of(p: &crate::paths::Paths) -> Self {
-        GroupUploadPaths { snapshot: p.snapshot.clone(), groups: p.groups.clone(), notes: Some(p.notes.clone()), sessions: Some(p.sessions.clone()) }
+        UploadPaths { snapshot: p.snapshot.clone(), notes: Some(p.notes.clone()), sessions: Some(p.sessions.clone()) }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GroupUploadResult {
+pub struct UploadResult {
     pub name: String,
-    /// 写した先(<基底>/<グループ名>)
+    /// 写した先(<基底>/<まとまりの名前>)
     pub dir: String,
     /// 写したセッション
     pub uploaded: usize,
@@ -102,7 +98,7 @@ pub struct GroupUploadResult {
     pub unchanged: usize,
     /// 写さなかったセッションのうち、添えた記録を書き直せなかったもの
     pub stale_meta: Vec<String>,
-    /// グループの id のうち、前回の集計の複製に無かったもの
+    /// まとまりの id のうち、前回の集計の複製に無かったもの
     pub missing: Vec<String>,
     /// 写した元の複製を作った日時(前回の集計)。分からなければ null
     pub snapshot_at: Option<String>,
@@ -515,7 +511,7 @@ fn count_secrets(text: &str) -> SecretCounts {
     c
 }
 
-/// アップロード先のグループのフォルダ(<基底>/<グループ名>)。フォルダ名に使えない文字は _ にする
+/// アップロード先のまとまりのフォルダ(<基底>/<プロジェクト名>)。フォルダ名に使えない文字は _ にする
 pub fn upload_dir(root: &Path, name: &str) -> PathBuf {
     root.join(safe_dir_name(name))
 }
@@ -600,14 +596,10 @@ pub struct UploadProgress {
     pub current: Option<String>,
 }
 
-/// 確認に「大きいもの」を出す目安(段 5 の serve の画面が使う)
-#[allow(dead_code)]
-pub const UPLOAD_CONFIRM_BYTES: u64 = 100 * 1024 * 1024;
-
-/// 写すセッションのまとまり(グループか、集計のプロジェクト)。名前がアップロード先のフォルダ名になる
+/// 写すセッションのまとまり(集計のプロジェクト)。名前がアップロード先のフォルダ名になる
 #[derive(Debug, Clone, PartialEq)]
 pub struct UploadTarget {
-    /// group / project
+    /// project(前の版の送り先の索引には group(タスクタグ)もある)
     pub kind: String,
     pub name: String,
     /// README に書く説明
@@ -615,8 +607,9 @@ pub struct UploadTarget {
     pub ids: Vec<String>,
 }
 
+/// まとまりの種類の名前。group は前の版が送ったタスクタグのフォルダ(今は送らないが、同じフォルダに混ぜないために読む)
 fn kind_label(kind: &str) -> &'static str {
-    if kind == "group" { "タスクタグ" } else { "プロジェクト" }
+    if kind == "group" { "前の版で送ったタスクタグ" } else { "プロジェクト" }
 }
 
 struct Prepared {
@@ -624,24 +617,6 @@ struct Prepared {
     dir: PathBuf,
     present: Vec<String>,
     missing: Vec<String>,
-}
-
-/// groups.json のグループ(画面ではタスクタグ)を、写すまとまりにする(無い・空・フォルダ名が別のタグと同じなら止まる)
-pub fn group_target(groups_path: &Path, name: &str) -> Result<UploadTarget> {
-    let loaded = load_groups(groups_path);
-    let Some(g) = loaded.groups.iter().find(|x| x.name == name) else {
-        let names: Vec<&str> = loaded.groups.iter().map(|x| x.name.as_str()).collect();
-        bail!("タスクタグ「{name}」はありません{}", if names.is_empty() { String::new() } else { format!("(あるのは: {})", names.join(", ")) });
-    };
-    if g.ids.is_empty() {
-        bail!("タスクタグ「{name}」にセッションがありません");
-    }
-    // フォルダ名に直すと同じになる別のタスクタグがあれば、混ざるので写さない
-    let folder = safe_dir_name(name);
-    if let Some(clash) = loaded.groups.iter().find(|x| x.name != name && js::to_lower(&safe_dir_name(&x.name)) == js::to_lower(&folder)) {
-        bail!("タスクタグ「{name}」と「{}」は、アップロード先のフォルダ名が同じ「{folder}」になります。どちらかの名前を変えてください", clash.name);
-    }
-    Ok(UploadTarget { kind: "group".into(), name: name.into(), note: g.note.clone(), ids: g.ids.clone() })
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -733,22 +708,16 @@ pub fn project_target(snapshot: &Path, name: &str, records: &[UploadRecord]) -> 
 struct IndexInfo {
     kind: String,
     name: String,
-    uploaded_at: Option<String>,
 }
 
-/// 送り先のフォルダの索引(前に送ったときに書いたもの)。無いか読めなければ None
+/// 送り先のフォルダの索引(前に送ったときに書いたもの)。無いか読めなければ None。
+/// 前の版がタスクタグを送ったフォルダ(kind が group)も読む(そこへプロジェクトを混ぜないため)
 fn read_index(dir: &Path) -> Option<IndexInfo> {
     let path = dir.join(UPLOAD_INDEX);
     let j = js::parse_json(&String::from_utf8_lossy(&std::fs::read(path).ok()?)).ok()?;
     let kind = j.get("kind").and_then(Value::as_str).filter(|k| *k == "group" || *k == "project")?;
     let name = j.get("name").and_then(Value::as_str)?;
-    Some(IndexInfo { kind: kind.into(), name: name.into(), uploaded_at: j.get("uploadedAt").and_then(Value::as_str).map(str::to_string) })
-}
-
-/// 送り先のフォルダに前に送ったときの日時(索引の uploadedAt)。無ければ None(段 5 の serve の画面が使う)
-#[allow(dead_code)]
-pub fn uploaded_at(root: &Path, name: &str) -> Option<String> {
-    read_index(&upload_dir(root, name))?.uploaded_at
+    Some(IndexInfo { kind: kind.into(), name: name.into() })
 }
 
 fn is_dir(p: &Path) -> bool {
@@ -777,7 +746,7 @@ fn read_manifest(snapshot: &Path) -> Result<Option<ManifestInfo>> {
 }
 
 /// 写せるかを確かめ、写すセッションと写さないセッションに分ける(点検とアップロードで同じ条件)
-fn prepare(p: &GroupUploadPaths, g: &UploadTarget, root: &Path) -> Result<Prepared> {
+fn prepare(p: &UploadPaths, g: &UploadTarget, root: &Path) -> Result<Prepared> {
     let name = &g.name;
     // 基底のフォルダは作らない(ネットワークドライブの切断やドライブ名の違いで、思わぬ場所に作らないように)
     if !is_dir(root) {
@@ -796,15 +765,14 @@ fn prepare(p: &GroupUploadPaths, g: &UploadTarget, root: &Path) -> Result<Prepar
     if let Some(prev) = read_index(&dir) {
         if prev.kind != g.kind || prev.name != *name {
             bail!(
-                "送り先のフォルダ「{}」には、{}「{}」がすでに送られています。混ざるので写しません({}送り先を変えてください)",
+                "送り先のフォルダ「{}」には、{}「{}」がすでに送られています。混ざるので写しません(送り先を変えてください)",
                 dir.display(),
                 kind_label(&prev.kind),
-                prev.name,
-                if g.kind == "group" { "タスクタグの名前を変えるか、" } else { "" }
+                prev.name
             );
         }
     }
-    // groups.json は手で書けるので、フォルダの外を指す id は写さない
+    // フォルダの外を指す id は写さない
     let (mut present, mut missing) = (Vec::new(), Vec::new());
     for id in &g.ids {
         if safe_id(id) && state_dir.join(id).exists() {
@@ -814,11 +782,6 @@ fn prepare(p: &GroupUploadPaths, g: &UploadTarget, root: &Path) -> Result<Prepar
         }
     }
     Ok(Prepared { state_dir, dir, present, missing })
-}
-
-/// グループ(タスクタグ)を写す前の点検
-pub fn check_upload(p: &GroupUploadPaths, name: &str, root: &Path) -> Result<UploadCheck> {
-    check_target(p, &group_target(&p.groups, name)?, root, None, false)
 }
 
 /// session-store.db をセッションごとに読む道具(core の extract.ts の openSessionStoreReader)
@@ -907,10 +870,12 @@ pub struct UploadContext {
     stores: Mutex<HashMap<String, Option<String>>>,
     memos: Mutex<HashMap<String, Option<String>>>,
     images: Mutex<HashMap<String, Vec<FileEntry>>>,
+    /// セッション id → 紐づいたタスクの並び(<notes>/tasks.json と task-links.json から)
+    tasks: HashMap<String, Vec<atlas_report::tasks::sender::SenderTask>>,
 }
 
 /// 点検とアップロードで共有できる、atlas が足して写すものを読む口
-pub fn open_upload_context(p: &GroupUploadPaths) -> Result<UploadContext> {
+pub fn open_upload_context(p: &UploadPaths) -> Result<UploadContext> {
     // session-store.db は 1 回だけ開く
     let reader = SessionStoreReader::open(&p.snapshot.join("session-store.db"))?.map(Mutex::new);
     // デスクトップアプリのセッションは題名・モデル・トークン数などが data.db にしかない
@@ -925,7 +890,14 @@ pub fn open_upload_context(p: &GroupUploadPaths) -> Result<UploadContext> {
             }
         }
     }
-    Ok(UploadContext { reader, desktop, memo_dir, vcs, stores: Mutex::default(), memos: Mutex::default(), images: Mutex::default() })
+    // 管理ツールのタスクに紐づいたセッション。開始の時刻は sessions.json から(紐づけがあるときだけ読む)
+    let tasks = match &p.notes {
+        Some(n) => crate::commands::tasks::sender_records(n, &|| {
+            p.sessions.as_ref().filter(|x| x.exists()).and_then(|x| read_sessions(x).ok()).map(|v| v.into_iter().filter_map(|r| r.created_at.map(|c| (r.id, c))).collect()).unwrap_or_default()
+        }),
+        None => HashMap::new(),
+    };
+    Ok(UploadContext { reader, desktop, memo_dir, vcs, stores: Mutex::default(), memos: Mutex::default(), images: Mutex::default(), tasks })
 }
 
 impl UploadContext {
@@ -968,6 +940,11 @@ impl UploadContext {
         Ok(m)
     }
 
+    /// 紐づいた管理ツールのタスクの並び(無ければ空)
+    pub fn tasks(&self, id: &str) -> Vec<atlas_report::tasks::sender::SenderTask> {
+        self.tasks.get(id).cloned().unwrap_or_default()
+    }
+
     /// この PC で照合した結果(atlas-vcs.json の中身)。照合していなければ None
     pub fn vcs_json(&self, id: &str) -> Option<String> {
         self.vcs.get(id).cloned()
@@ -1001,12 +978,12 @@ fn read_memo_text(dir: &Path, id: &str) -> Result<Option<String>> {
 }
 
 /// 写す前の点検(大きさと秘密らしい文字列)。何も写さない。ctx は共有する読む口
-pub fn check_target(p: &GroupUploadPaths, target: &UploadTarget, root: &Path, ctx: Option<&UploadContext>, full: bool) -> Result<UploadCheck> {
+pub fn check_target(p: &UploadPaths, target: &UploadTarget, root: &Path, ctx: Option<&UploadContext>, full: bool) -> Result<UploadCheck> {
     Ok(inspect(p, target, root, ctx, full, None)?.0)
 }
 
 /// 点検の本体。写すときに使い回せるよう、セッションごとの分け方も返す
-fn inspect(p: &GroupUploadPaths, target: &UploadTarget, root: &Path, ctx: Option<&UploadContext>, full: bool, trusted: Option<&HashMap<PathBuf, String>>) -> Result<(UploadCheck, Vec<SessionPlan>)> {
+fn inspect(p: &UploadPaths, target: &UploadTarget, root: &Path, ctx: Option<&UploadContext>, full: bool, trusted: Option<&HashMap<PathBuf, String>>) -> Result<(UploadCheck, Vec<SessionPlan>)> {
     let Prepared { state_dir, dir, present, missing } = prepare(p, target, root)?;
     let own;
     let added = match ctx {
@@ -1123,12 +1100,8 @@ pub struct UploadOptions<'a> {
     pub atlas: Option<AtlasBuild>,
 }
 
-pub fn upload_group(p: &GroupUploadPaths, name: &str, root: &Path, log: &dyn Fn(&str), opts: &UploadOptions<'_>) -> Result<GroupUploadResult> {
-    upload_target(p, &group_target(&p.groups, name)?, root, log, opts)
-}
-
-/// まとまり(グループかプロジェクト)のセッションを <基底>/<名前>/<セッション id>/ に写す
-pub fn upload_target(p: &GroupUploadPaths, target: &UploadTarget, root: &Path, log: &dyn Fn(&str), opts: &UploadOptions<'_>) -> Result<GroupUploadResult> {
+/// まとまり(プロジェクト)のセッションを <基底>/<名前>/<セッション id>/ に写す
+pub fn upload_target(p: &UploadPaths, target: &UploadTarget, root: &Path, log: &dyn Fn(&str), opts: &UploadOptions<'_>) -> Result<UploadResult> {
     // 確かめてから今までに中身が変わっていたら写さない(点検していないログを写さないように)
     let mut planned: Option<Vec<SessionPlan>> = None;
     if let Some(expect) = &opts.expect {
@@ -1160,7 +1133,6 @@ pub fn upload_target(p: &GroupUploadPaths, target: &UploadTarget, root: &Path, l
     let mut leftovers: Vec<String> = Vec::new();
     let mut stale_meta: Vec<String> = Vec::new();
     let records = read_records(opts.sessions, p.sessions.as_deref(), &present);
-    let tags = tags_by_id(&p.groups);
     // 送る atlas の版。写し直さないセッションの記録も、この版に書き直す
     let atlas = opts.atlas.clone().unwrap_or_else(|| atlas_core::atlas_build::current_atlas_build(&crate::paths::REPO_ROOT, crate::version::CODE_STAMP));
     let info = |id: &str, with_memo: &HashSet<String>| -> UploadedSession {
@@ -1170,10 +1142,11 @@ pub fn upload_target(p: &GroupUploadPaths, target: &UploadTarget, root: &Path, l
             title: r.and_then(|r| r.name.clone().filter(|n| !n.is_empty()).or_else(|| r.first_user_message.clone().filter(|n| !n.is_empty()))),
             project: r.and_then(|r| r.project_name().map(str::to_string)),
             project_source: r.and_then(|r| r.project_source.clone()),
-            tags: tags.get(id).cloned().unwrap_or_default(),
             created_at: r.and_then(|r| r.created_at.clone()),
             updated_at: r.and_then(|r| r.updated_at.clone()),
             memo: with_memo.contains(id),
+            tasks: added.tasks(id),
+            task: Some(added.tasks(id)).filter(|t| t.len() == 1).and_then(|mut t| t.pop()),
         }
     };
     let meta_text = |s: UploadedSession, key: Option<&String>| -> Result<String> {
@@ -1276,7 +1249,7 @@ pub fn upload_target(p: &GroupUploadPaths, target: &UploadTarget, root: &Path, l
             bail!("セッション {id} を写せませんでした({e})。前に写したフォルダはそのままです。写し終えたのは {uploaded} 件です");
         }
     }
-    // 写さないものも、添えた記録(タスクタグ・題名など)が変わっていれば書き直す。書き直せなくても止めずに、セッションを知らせる
+    // 写さないものも、添えた記録(題名など)が変わっていれば書き直す。書き直せなくても止めずに、セッションを知らせる
     for id in &kept {
         let dest = dir.join(id);
         if added.memo(id)?.is_some() {
@@ -1314,7 +1287,7 @@ pub fn upload_target(p: &GroupUploadPaths, target: &UploadTarget, root: &Path, l
     let sessions: Vec<UploadedSession> = present.iter().filter(|id| kept.contains(*id) || done.contains(id)).map(|id| info(id, &with_memo)).collect();
     std::fs::write(
         dir.join(UPLOAD_README),
-        group_readme(&ReadmeInput { kind: &g.kind, name, note: &g.note, dir: &dir.to_string_lossy(), sessions: &sessions, missing: &missing, snapshot_at: snapshot_at.as_deref(), now: &now }),
+        upload_readme(&ReadmeInput { kind: &g.kind, name, note: &g.note, dir: &dir.to_string_lossy(), sessions: &sessions, missing: &missing, snapshot_at: snapshot_at.as_deref(), now: &now }),
     )?;
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
@@ -1351,7 +1324,7 @@ pub fn upload_target(p: &GroupUploadPaths, target: &UploadTarget, root: &Path, l
         dir.display(),
         if missing.is_empty() { String::new() } else { format!("。前回の集計に無い {} 件は写していません", missing.len()) }
     ));
-    Ok(GroupUploadResult {
+    Ok(UploadResult {
         name: name.clone(),
         dir: dir.to_string_lossy().into_owned(),
         uploaded,
@@ -1436,60 +1409,43 @@ pub struct ReadmeInput<'a> {
     pub now: &'a str,
 }
 
-/// グループのフォルダの README.md(写すたびに書き直す)。人が開いて、何のまとまりか・どれにメモがあるかが分かるように
-pub fn group_readme(o: &ReadmeInput<'_>) -> String {
+/// 送り先のフォルダの README.md(写すたびに書き直す)。人が開いて、何のまとまりか・どれにメモがあるかが分かるように
+pub fn upload_readme(o: &ReadmeInput<'_>) -> String {
     let mut lines: Vec<String> = vec![format!("# {}", o.name), String::new()];
     let note = js::trim(o.note);
-    lines.push(if note.is_empty() { "(グループの説明はありません。atlas の画面のタスクタグの見出しで書けます)".into() } else { note.into() });
+    lines.push(if note.is_empty() { "(説明はありません)".into() } else { note.into() });
     lines.push(String::new());
     lines.push(format!("- アップロードした日時: {}", local_time(Some(o.now))));
     lines.push(format!("- ログの時点: {}", o.snapshot_at.filter(|s| !s.is_empty()).map_or("不明".to_string(), |s| format!("{} の集計", local_time(Some(s))))));
     lines.push(format!("- セッション: {} 件(うちメモあり {} 件)", o.sessions.len(), o.sessions.iter().filter(|s| s.memo).count()));
     lines.push(String::new());
     lines.push(format!("この README と {UPLOAD_INDEX}(プログラムや AI が読む索引)はアップロードするたびに書き直します。このフォルダには、ほかの回やほかの PC から写したセッションのフォルダもあることがあります。"));
-    lines.push(format!("タスクタグは、atlas の画面でセッションに付けたものです(各セッションのフォルダの {UPLOAD_SESSION_META} にもあります)。"));
     lines.push(String::new());
-    lines.push("| セッション ID | 題名 | タスクタグ | 最終更新 | メモ |".into());
+    lines.push("| セッション ID | 題名 | タスク | 最終更新 | メモ |".into());
     lines.push("| --- | --- | --- | --- | --- |".into());
     for s in o.sessions {
         let memo = if s.memo { format!("[あり]({}/{UPLOAD_MEMO_FILE})", s.id) } else { String::new() };
         let title = cell(&truncate(Some(s.title.as_deref().unwrap_or("")), 60));
+        // いくつかのタスクに紐づいていれば「、」でつなぐ(紐づけの順)
+        let task = if s.tasks.is_empty() {
+            "-".to_string()
+        } else {
+            s.tasks
+                .iter()
+                .map(|t| {
+                    let name = cell(&truncate(Some(&t.name), 40));
+                    if name.is_empty() { cell(&t.id) } else { format!("{name}({})", cell(&t.id)) }
+                })
+                .collect::<Vec<_>>()
+                .join("、")
+        };
         lines.push(format!(
-            "| [{id}]({id}/) | {} | {} | {} | {} |",
+            "| [{id}]({id}/) | {} | {task} | {} | {} |",
             if title.is_empty() { "-".to_string() } else { title },
-            if s.tags.is_empty() { "タグなし".to_string() } else { cell(&s.tags.join("、")) },
             local_time(s.updated_at.as_deref()),
             if memo.is_empty() { "-".to_string() } else { memo },
             id = s.id
         ));
-    }
-    // タスクごとに見分けられるよう、タグごとの一覧も書く(1 つのセッションが複数のタグに入ることがある)
-    let mut by_tag: indexmap::IndexMap<String, Vec<&UploadedSession>> = indexmap::IndexMap::new();
-    for s in o.sessions {
-        let tags: Vec<String> = if s.tags.is_empty() { vec![String::new()] } else { s.tags.clone() };
-        for t in tags {
-            by_tag.entry(t).or_default().push(s);
-        }
-    }
-    if by_tag.len() > 1 || !by_tag.contains_key(o.name) {
-        lines.extend(["".into(), "## タスクタグごと".into(), "".into()]);
-        let mut order: Vec<&String> = by_tag.keys().collect();
-        order.sort_by(|a, b| match (a.is_empty(), b.is_empty()) {
-            (true, true) => std::cmp::Ordering::Equal,
-            (true, false) => std::cmp::Ordering::Greater,
-            (false, true) => std::cmp::Ordering::Less,
-            _ => collate::locale_compare(a, b),
-        });
-        for tag in order {
-            let list = &by_tag[tag];
-            lines.push(format!("### {}({} 件)", if tag.is_empty() { "タグなし".to_string() } else { cell(tag) }, list.len()));
-            lines.push(String::new());
-            for s in list {
-                lines.push(format!("- [{}]({}/) — {}", cell(&truncate(Some(s.title.as_deref().unwrap_or(&s.id)), 60)), s.id, local_time(s.updated_at.as_deref())));
-            }
-            lines.push(String::new());
-        }
-        lines.pop();
     }
     if !o.missing.is_empty() {
         lines.push(String::new());
@@ -1517,7 +1473,7 @@ pub fn group_readme(o: &ReadmeInput<'_>) -> String {
         ]
         .map(String::from),
     );
-    lines.push(format!("メモ(各セッションのフォルダの {UPLOAD_MEMO_FILE})とタスクタグ({UPLOAD_SESSION_META} の tags)は、このフォルダを集計し直した画面に、読むだけで出ます。ファイルを開いて読むこともできます。"));
+    lines.push(format!("メモ(各セッションのフォルダの {UPLOAD_MEMO_FILE})は、このフォルダを集計し直した画面に、読むだけで出ます。ファイルを開いて読むこともできます。"));
     lines.push(String::new());
     lines.join("\n")
 }
@@ -1526,66 +1482,6 @@ pub fn group_readme(o: &ReadmeInput<'_>) -> String {
 fn read_desktop_json(path: &Path) -> Option<DesktopData> {
     let t = std::fs::read(path).ok()?;
     js::parse_json_as(&String::from_utf8_lossy(&t)).ok()
-}
-
-/// `atlas group upload`(commands.ts の runGroup の upload)。--to か設定の uploadRoot に写す。
-/// 写す前に大きさと秘密らしい文字列を調べ、秘密らしい文字列があれば --force が無い限り写さない
-pub fn run_group_upload(p: &crate::paths::Paths, name: &str, to: Option<&str>, force: bool, config: Option<&str>, log: &(dyn Fn(&str) + Sync)) -> Result<()> {
-    let root = match to {
-        None => {
-            let explicit = config.map(str::to_string).or_else(|| std::env::var("ATLAS_CONFIG").ok());
-            let path = match &explicit {
-                Some(c) => crate::paths::resolve(c).to_string_lossy().into_owned(),
-                None => crate::paths::REPO_ROOT.join(crate::config::CONFIG_FILE).to_string_lossy().into_owned(),
-            };
-            let cfg = crate::config::load_config(&path, explicit.is_some())?;
-            cfg.upload_root.ok_or_else(|| anyhow!("アップロード先が決まっていません。--to <フォルダ> で指定するか、setup.bat か画面のグループの見出しで既定の場所を決めてください"))?
-        }
-        Some(t) => crate::config::parse_upload_root(&Value::String(t.into())).map_err(anyhow::Error::msg)?,
-    };
-    let root = PathBuf::from(root);
-    // 前回の集計の複製(out/snapshot/)を読むので、集計の途中と重ならないよう印を取る
-    let lock = crate::jobs::acquire_out_lock(&p.out, "group upload", "cli")?;
-    let gp = GroupUploadPaths::of(p);
-    let r = (|| -> Result<()> {
-        let mb = crate::commands::mb;
-        let c = check_upload(&gp, name, &root)?;
-        log(&format!(
-            "group upload: {} セッション・{}{}{}",
-            c.sessions,
-            mb(c.bytes),
-            if c.unchanged > 0 { format!("(前に送ったときから変わっていない {} セッションは写しません)", c.unchanged) } else { String::new() },
-            if c.largest.is_empty() {
-                String::new()
-            } else {
-                format!("(大きいもの: {})", c.largest.iter().take(3).map(|x| format!("{}/{} {}", js::head(&x.id, 8), x.path, mb(x.bytes))).collect::<Vec<_>>().join("、"))
-            }
-        ));
-        if c.secrets.count > 0 {
-            log(&format!(
-                "group upload: 秘密らしい文字列が {} 件あります({}。偽陽性もありえます)",
-                c.secrets.count,
-                c.secrets.kinds.iter().map(|k| format!("{} {}", k.label, k.count)).collect::<Vec<_>>().join("・")
-            ));
-            for f in &c.secrets.files {
-                log(&format!("  {}/{}: {} 件", f.id, f.path, f.count));
-            }
-            if !force {
-                bail!("写していません。写した先で見られる人を確かめ、それでも写すなら --force を付けてください(本物の鍵なら作り直してください)");
-            }
-        }
-        // 点検したときの分け方を使い回す(送り先の一覧を 2 度読まない)。点検の後に中身が変わっていれば写さずに止まる
-        let r = upload_group(&gp, name, &root, &|m| log(m), &UploadOptions { expect: Some(c.fingerprint.clone()), check: Some(&c), ..Default::default() })?;
-        if !r.missing.is_empty() {
-            log(&format!("group upload: 前回の集計に無いセッション: {}", r.missing.join(", ")));
-        }
-        if let Some(at) = &r.snapshot_at {
-            log(&format!("group upload: 写したのは {at} の集計の時点のログです(新しくするには先に atlas all)"));
-        }
-        Ok(())
-    })();
-    lock.release();
-    r
 }
 
 #[cfg(test)]

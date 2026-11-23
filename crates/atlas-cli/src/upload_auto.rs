@@ -5,7 +5,7 @@
 //! 新しい版で動かし直す。動かし直した側が結果を残さずに終わったら(新しい版がこの PC で動かない)、その版を覚えて前の版に戻し
 //! (コミットと、bin/ の実行ファイルを置き換える前のものに。ビルドはしない)、このプロセス(前の版)がそのまま送る(run_update_flow)。
 
-use crate::group_upload::GroupUploadPaths;
+use crate::upload_copy::UploadPaths;
 use crate::upload_auto_files::{
     AutoStatusFile, AutoUpdateResult, AUTO_AGGREGATE_LOG_FILE, AUTO_LOG_FILE, AUTO_STATUS_FILE, AUTO_UPDATE_STATE_FILE, JOB_LOCK_NAME, NO_UPDATE_FLAG, PARENT_ENV, SERVE_STATE_NAME, UPDATED_ENV,
 };
@@ -396,7 +396,7 @@ pub fn main(argv: &[String]) -> u8 {
     let upload = |summary: &Mutex<UploadSummary>| {
         crate::upload_project::run_upload_project(
             &io,
-            &crate::upload_project::UploadProjectOptions { paths: GroupUploadPaths::of(&paths), config_path: crate::config::default_config_path(), auto: true, summary: Some(summary) },
+            &crate::upload_project::UploadProjectOptions { paths: UploadPaths::of(&paths), config_path: crate::config::default_config_path(), auto: true, summary: Some(summary) },
         )
     };
     let job_busy = || crate::jobs::running_job_in(&out_dir);

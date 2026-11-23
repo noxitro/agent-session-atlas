@@ -32,55 +32,55 @@ export interface FilterState {
   empty: '' | '1';
   /** そのツールを呼んだセッションだけ(ツール名、MCP サーバーは mcp:<サーバー>)。要点欄のリンクから設定する */
   tool: string;
-  /** セッションの選択(id をカンマ区切り。'' は制限なし)。一覧のチェックからの「集計」か、グループの選択で入る */
+  /** セッションの選択(id をカンマ区切り。'' は制限なし)。一覧のチェックからの「集計」で入る */
   ids: string;
-  /** 選んだグループの名前('' は無し)。名前が今のグループにあればその ids で集計し、無ければ ids に落ちる(共有した相手に無い名前でも壊れない) */
-  group: string;
   /** '1' ならメモのあるセッションだけ */
   memo: '' | '1';
   /** '1' なら llm-wiki を参照したセッションだけ(wikiReferenced。書き込みだけは入れない) */
   wiki: '' | '1';
+  /** 管理ツールのタスクの ID(そのタスクに紐づいたセッションだけ)。NO_TASK はどのタスクにも紐づいていないセッション */
+  task: string;
 }
 
 export const NO_JUDGMENT = '(none)';
+/** タスクの絞り込みで「タスクなし」(どのタスクにも紐づいていない。「どのタスクでもない」と決めたものも入る) */
+export const NO_TASK = '(none)';
+
+/** セッション id → 紐づいたタスクの ID の並び(ReportData.tasks.links のうち taskIds が空でないもの)。タスクの記録が無ければ空 */
+export type TaskOf = ReadonlyMap<string, readonly string[]>;
+const NO_TASKS: TaskOf = new Map();
+
+/**
+ * ReportData.tasks.links から TaskOf を作る(taskIds が空の「どのタスクでもない」は入れない)。
+ * 版 20 の埋め込み(taskId が 1 つか null)も 0 か 1 件の並びとして読む
+ */
+export function taskOf(links: Record<string, { taskIds?: readonly string[] | null; taskId?: string | null }> | null | undefined): TaskOf {
+  const m = new Map<string, readonly string[]>();
+  for (const [sid, l] of Object.entries(links ?? {})) {
+    const ids = l.taskIds ?? (l.taskId != null ? [l.taskId] : []);
+    if (ids.length) m.set(sid, ids);
+  }
+  return m;
+}
+
+/**
+ * セッションがタスクの絞り込み(task)に合うか。空なら制限なし。いくつかのタスクに紐づいたセッションは、そのどれで絞っても合う。
+ * NO_TASK はどのタスクにも紐づいていないセッション
+ */
+export function matchesTask(id: string, task: string, tasks: TaskOf): boolean {
+  if (!task) return true;
+  const t = tasks.get(id);
+  const none = t == null || t.length === 0;
+  return task === NO_TASK ? none : !none && t.includes(task);
+}
 
 export function emptyFilter(): FilterState {
-  return { from: '', to: '', project: ALL, person: ALL, client: ALL, model: ALL, branch: ALL, coverage: '', taskCategory: ALL, empty: '', tool: ALL, ids: '', group: '', memo: '', wiki: '' };
+  return { from: '', to: '', project: ALL, person: ALL, client: ALL, model: ALL, branch: ALL, coverage: '', taskCategory: ALL, empty: '', tool: ALL, ids: '', memo: '', wiki: '', task: '' };
 }
 
-/**
- * 集計に使う id の集合を決める: group の名前が groups にあればその今の ids(記録にあるもの。1 件も無ければ元の ids = 0 件)、無ければ ids。
- * 戻りの group は見つかったグループ(無ければ null)
- */
-export function effectiveIds<G extends { name: string; ids: string[] }>(f: Pick<FilterState, 'ids' | 'group'>, groups: G[], known: Set<string>): { group: G | null; ids: string } {
-  const g = f.group ? (groups.find((x) => x.name === f.group) ?? null) : null;
-  if (!g) return { group: null, ids: f.ids };
-  return { group: g, ids: groupIds(g, known) };
-}
-
-/**
- * 現在のグループ名。名前で決まればそれ。決まらないとき(相手に無い名前)は ids の一致で探すが、
- * NO_SESSION(0 件のグループは全て同じ ids になる)や、同じ集合のグループが 2 つ以上あるときは決めない(null)
- */
-export function currentGroupName<G extends { name: string; ids: string[] }>(f: Pick<FilterState, 'ids' | 'group'>, groups: G[], known: Set<string>): string | null {
-  const e = effectiveIds(f, groups, known);
-  if (e.group) return e.group.name;
-  if (!f.ids || f.ids === NO_SESSION) return null;
-  const hits = groups.filter((g) => sameIds(f.ids, groupIds(g, known)));
-  return hits.length === 1 ? hits[0].name : null;
-}
-
-/** 一覧のチェックに写す選択: ids のうち記録にあるものだけ(共有された URL の未知の id や NO_SESSION は入れない) */
+/** 一覧のチェックに写す選択: ids のうち記録にあるものだけ(共有された URL の未知の id は入れない) */
 export function knownSelection(ids: string, known: Set<string>): Set<string> {
   return new Set(splitIds(ids).filter((id) => known.has(id)));
-}
-
-/** どのセッションにも当たらない id(0 件のグループを「制限なし」('')と区別する) */
-export const NO_SESSION = '(none)';
-/** グループの絞り込みに使う ids: 記録にある id、無ければ元の ids、それも無ければ NO_SESSION(= 0 件) */
-export function groupIds(g: { ids: string[] }, known: Set<string>): string {
-  const present = g.ids.filter((id) => known.has(id));
-  return joinIds(present.length ? present : g.ids.length ? g.ids : [NO_SESSION]);
 }
 
 /** ids(カンマ区切り)を配列に(空要素と重複は除く) */
@@ -158,9 +158,10 @@ export function usedTool(s: Pick<SessionSummary, 'tools'>, tool: string): boolea
   return (s.tools.byName[tool] ?? 0) > 0;
 }
 
-export function matches(s: SessionSummary, f: FilterState, ids: Set<string> | null = f.ids ? new Set(splitIds(f.ids)) : null): boolean {
+export function matches(s: SessionSummary, f: FilterState, ids: Set<string> | null = f.ids ? new Set(splitIds(f.ids)) : null, tasks: TaskOf = NO_TASKS): boolean {
   if (!inScope(s, f)) return false;
   if (ids && !ids.has(s.id)) return false;
+  if (!matchesTask(s.id, f.task, tasks)) return false;
   if (!matchesBase(s, f)) return false;
   if (f.person && !eqOrUnknown(s.person ?? null, f.person)) return false;
   if (f.tool && !usedTool(s, f.tool)) return false;
@@ -174,9 +175,10 @@ export function matches(s: SessionSummary, f: FilterState, ids: Set<string> | nu
   return true;
 }
 
-export function applyFilter(sessions: SessionSummary[], f: FilterState): SessionSummary[] {
+/** tasks はタスクの絞り込み(f.task)に使う紐づけ(無ければどのセッションもタスクなし) */
+export function applyFilter(sessions: SessionSummary[], f: FilterState, tasks: TaskOf = NO_TASKS): SessionSummary[] {
   const ids = f.ids ? new Set(splitIds(f.ids)) : null;
-  return sessions.filter((s) => matches(s, f, ids));
+  return sessions.filter((s) => matches(s, f, ids, tasks));
 }
 
 export interface Option {
@@ -219,6 +221,21 @@ export function filterOptions(sessions: SessionSummary[]): {
     branch: countOptions(sessions.map((s) => s.branch ?? UNKNOWN)),
     taskCategory: countOptions(sessions.map((s) => s.judgment?.taskCategory ?? NO_JUDGMENT)),
   };
+}
+
+/**
+ * タスクの絞り込みの選択肢(sessions に対する件数付き。紐づいたセッションの多い順、同じなら ID の順)と、どのタスクにも紐づいていないセッションの数。
+ * label はタスクの名前(names に無ければ ID)。件数はそのタスクに紐づいたセッションの数(いくつかのタスクに紐づいたセッションは、それぞれのタスクに数える)
+ */
+export function taskOptions(sessions: Pick<SessionSummary, 'id'>[], tasks: TaskOf, names: ReadonlyMap<string, string>): { tasks: Option[]; none: number } {
+  const ids: string[] = [];
+  let none = 0;
+  for (const s of sessions) {
+    const t = tasks.get(s.id);
+    if (t == null || t.length === 0) none++;
+    else ids.push(...new Set(t));
+  }
+  return { tasks: countOptions(ids, (v) => names.get(v) ?? v), none };
 }
 
 /** 入力トークン記録の 3 区分 */
@@ -309,7 +326,6 @@ export function decodeFilter(s: string): FilterState {
     if (k === 'coverage' && !['', 'input', 'output-only', 'none'].includes(v)) continue;
     if ((k === 'empty' || k === 'memo' || k === 'wiki') && !['', '1'].includes(v)) continue;
     if (k === 'ids') v = joinIds(splitIds(v));
-    if (k === 'group') v = v.trim();
     (f as unknown as Record<string, string>)[k] = v;
   }
   return f;

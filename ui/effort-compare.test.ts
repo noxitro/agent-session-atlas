@@ -35,7 +35,7 @@ describe('比べる: 推論強度どうし', () => {
     await rm(WORK, { recursive: true, force: true });
     await writeEffortStudy(logs);
     atlas(['all', '--home', logs, '--out', out, '--notes-dir', notes]);
-    server = await startServer({ outDir: out, notesDir: notes, groupsPath: join(notes, 'groups.json'), port: 0, open: false, idleMs: 600_000, firstHeartbeatMs: 600_000, configPath: join(WORK, 'atlas.config.json'), copilotHome: logs });
+    server = await startServer({ outDir: out, notesDir: notes, port: 0, open: false, idleMs: 600_000, firstHeartbeatMs: 600_000, configPath: join(WORK, 'atlas.config.json'), copilotHome: logs });
     browser = await chromium.launch();
     page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
     page.on('pageerror', (e) => problems.push(`pageerror: ${e.message}`));

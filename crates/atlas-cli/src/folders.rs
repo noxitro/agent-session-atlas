@@ -5,7 +5,7 @@
 //!   <キー>/open.log    … 画面から開いたときの、集計の出力(進み具合と失敗の理由)
 //!   <キー>/out/        … 集計の出力先(atlas.html など)
 //!   <キー>/built.json  … 前に集計したときの入力の印(open-reuse)
-//! メモとタスクタグは <notes-dir>/folders/<キー>/ に分ける。設定ファイル(atlas.config.json)には書かない。
+//! メモは <notes-dir>/folders/<キー>/ に分ける。設定ファイル(atlas.config.json)には書かない。
 
 use crate::jobs::{alive, JOB_ENV, JOB_LOCK_FILE};
 use atlas_core::js;
@@ -84,7 +84,7 @@ pub fn is_opened_folder_out(out_dir: &str) -> bool {
     platform::basename(&dir) == "out" && Path::new(&platform::join(&[&platform::dirname(&dir), FOLDER_STATE_FILE])).exists()
 }
 
-/// 読むだけの画面にするか。build(埋め込むタスクタグとメモ)とサーバ(書き換えを断るか)で同じ判定を使う。
+/// 読むだけの画面にするか。build(埋め込むメモ)とサーバ(書き換えを断るか)で同じ判定を使う。
 /// 送り先から集計した(layout が flat / merged)か、別のフォルダを開いた出力先なら読むだけ
 pub fn is_read_only_view(out_dir: &str, layout: Option<&str>) -> bool {
     matches!(layout, Some("flat") | Some("merged")) || is_opened_folder_out(out_dir)
@@ -351,7 +351,7 @@ pub struct FolderList {
 pub struct FolderContext<'a> {
     /// フォルダごとの出力先の置き場
     pub root: String,
-    /// いつものメモとタスクタグの置き場(フォルダごとの分は、この下の folders/<キー>/)
+    /// いつものメモの置き場(フォルダごとの分は、この下の folders/<キー>/)
     pub notes_base: String,
     /// いつもの出力先
     pub local_out: String,

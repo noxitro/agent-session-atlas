@@ -20,7 +20,7 @@ crates/atlas-core/         TS 版の packages/core の移植(types・events・sn
                            instructions・wiki・metrics・turns・tables・ai-changes・vcs・vcs-retention・vcs-step・tool-failure・
                            atlas-build・atlas-version・fs-retry)と、共通の json.rs・jsdate.rs・collate.rs
 crates/atlas-report/       TS 版の packages/report の Node 側(build・detail・transcript・full・coverage・library・insights-page・
-                           glossary-page・memo-*・viewer・groups-io・session-tools・memo-editor)と、build が使う lib/*。
+                           glossary-page・memo-*・viewer・session-tools・memo-editor)と、build が使う lib/*。
                            ページに埋め込む JS と CSS は assets/ が元(TS の定数から書き出したもの。今はここを直す)
 crates/atlas-judge/        TS 版の packages/judge
 crates/atlas-cli/          TS 版の packages/cli(実行ファイル atlas)。commands/ はコマンドごとに 1 ファイル。

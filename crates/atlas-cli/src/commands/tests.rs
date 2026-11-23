@@ -1,9 +1,9 @@
-//! コマンドの入口のテスト(packages/cli/test/jobs.test.ts の CLI の印の部分・open-pick.test.ts・group-export.test.ts の CLI の部分)
+//! コマンドの入口のテスト(packages/cli/test/jobs.test.ts の CLI の印の部分・open-pick.test.ts)
 
 use super::*;
 use crate::args::parse_cli;
 use crate::folders::{folder_paths, folders_root_of, write_folder_state, FolderError, FolderState};
-use crate::jobs::{acquire_out_lock, job_args, running_job_in, JobArgsInput, JobRequest, JudgeScope, OutBusyError, JOB_LOCK_FILE};
+use crate::jobs::{acquire_out_lock, job_args, running_job_in, JobArgsInput, JobRequest, OutBusyError, JOB_LOCK_FILE};
 use serde_json::json;
 use std::fs;
 use std::sync::Mutex;
@@ -71,12 +71,15 @@ fn refresh_args_follow_the_opened_folder() {
     assert_eq!(job_args(&JobRequest::Refresh, &h), Some(v(&["all", "--home", "/srv/logs/person-a", "--out", "o", "--notes-dir", "n"])));
     // 集計し直す以外は、出力先にあるものだけを使う
     assert_eq!(job_args(&JobRequest::Export, &h), Some(v(&["export", "--out", "o", "--notes-dir", "n"])));
-    assert_eq!(job_args(&JobRequest::TurnJudge { limit: 7, scope: JudgeScope::All }, &h), Some(v(&["judge-flow", "--turns", "--limit", "7", "--out", "o", "--notes-dir", "n"])));
     assert_eq!(job_args(&JobRequest::TurnBundle, &h), Some(v(&["turns", "bundle", "--unjudged", "--out", "o", "--notes-dir", "n"])));
-    // ZIP は束と同じ回に作る(--zip を付けた bundle。依頼ごとの判定には無い)
+    // ZIP は束と同じ回に作る(--zip を付けた bundle・turns bundle・tasks bundle)
     assert_eq!(job_args(&JobRequest::BundleZip, &h), Some(v(&["bundle", "--unjudged", "--zip", "--out", "o", "--notes-dir", "n"])));
+    assert_eq!(job_args(&JobRequest::TurnBundleZip, &h), Some(v(&["turns", "bundle", "--unjudged", "--zip", "--out", "o", "--notes-dir", "n"])));
+    assert_eq!(job_args(&JobRequest::TaskBundle, &h), Some(v(&["tasks", "bundle", "--out", "o", "--notes-dir", "n"])));
+    assert_eq!(job_args(&JobRequest::TaskBundleZip, &h), Some(v(&["tasks", "bundle", "--zip", "--out", "o", "--notes-dir", "n"])));
     assert_eq!(job_args(&JobRequest::M365, &h), Some(v(&["judge", "m365", "--out", "o", "--notes-dir", "n"])));
     assert_eq!(job_args(&JobRequest::TurnM365, &h), Some(v(&["turns", "m365", "--out", "o", "--notes-dir", "n"])));
+    assert_eq!(job_args(&JobRequest::TaskM365, &h), Some(v(&["tasks", "m365", "--out", "o", "--notes-dir", "n"])));
     assert_eq!(job_args(&JobRequest::Full { id: "s1".into() }, &h), None);
 }
 
@@ -125,7 +128,7 @@ fn open_pick_unusable_folder_stops_with_reason() {
 }
 
 #[test]
-fn group_and_memo_commands() {
+fn memo_commands() {
     let d = tempfile::tempdir().unwrap();
     let out = d.path().join("out");
     let notes = d.path().join("notes");
@@ -134,21 +137,11 @@ fn group_and_memo_commands() {
     let logs: Mutex<Vec<String>> = Mutex::new(vec![]);
     let log = |m: &str| logs.lock().unwrap().push(m.to_string());
     let take = || std::mem::take(&mut *logs.lock().unwrap()).join("\n");
-    run(&cli(&["group", "list", "--out", &o, "--notes-dir", &n]), &log).unwrap();
-    assert!(take().contains("はまだありません(atlas group add <名前> <id...> で作れます)"));
-    run(&cli(&["group", "add", "調査", "abc", "abd", "--out", &o, "--notes-dir", &n]), &log).unwrap();
-    let l = take();
-    assert!(l.contains("が無いため id を先頭一致で解決せず、そのまま書きます") && l.contains("「調査」を作りました(2 件)"), "{l}");
+    // タスクタグのコマンド(group)と --group は、もう無い
+    assert_eq!(parse_cli(&["group".to_string(), "list".into()]).unwrap_err().0, "不明なコマンドです: group");
+    assert!(parse_cli(&["build".to_string(), "--group".into(), "g".into()]).unwrap_err().0.starts_with("Unknown option '--group'"));
     // sessions.json があれば先頭一致で解決する
     fs::write(out.join("sessions.json"), json!({ "sessions": [{ "id": "abc-1" }, { "id": "xyz-2" }] }).to_string()).unwrap();
-    run(&cli(&["group", "add", "調査", "xyz", "--note", "メモ", "--out", &o, "--notes-dir", &n]), &log).unwrap();
-    assert!(take().contains("「調査」に 1 件を追記しました(重複 0 件を除く、計 3 件)"));
-    run(&cli(&["group", "list", "--out", &o, "--notes-dir", &n]), &log).unwrap();
-    assert!(take().contains("  調査: 3 件(うち記録にあるのは 1 件) — メモ"));
-    assert!(run(&cli(&["group", "remove", "無い", "--out", &o, "--notes-dir", &n]), &log).unwrap_err().to_string().contains("(あるのは: 調査)"));
-    run(&cli(&["group", "remove", "調査", "--out", &o, "--notes-dir", &n]), &log).unwrap();
-    assert!(take().contains("「調査」を削除しました"));
-    // memo
     run(&cli(&["memo", "set", "abc", "本文です", "--out", &o, "--notes-dir", &n]), &log).unwrap();
     assert!(take().contains("memo: abc-1 のメモを保存しました(4 文字)"));
     run(&cli(&["memo", "list", "--out", &o, "--notes-dir", &n]), &log).unwrap();
@@ -160,7 +153,7 @@ fn group_and_memo_commands() {
     assert!(run(&cli(&["memo", "show", "abc-1", "--out", &o, "--notes-dir", &n]), &log).unwrap_err().to_string().contains("のメモはありません"));
 }
 
-// 従量課金の anthropic は機能 anthropic-backend を付けたビルドだけに入る。名前は受け付け、入っていなければ入れ方を書いて止める
+// 従量課金の anthropic(skill-draft の --backend)は機能 anthropic-backend を付けたビルドだけに入る。名前は受け付け、入っていなければ入れ方を書いて止める
 #[test]
 fn anthropic_backend_needs_the_feature() {
     let d = tempfile::tempdir().unwrap();
@@ -170,16 +163,12 @@ fn anthropic_backend_needs_the_feature() {
     let (o, n) = (out.to_string_lossy().into_owned(), notes.to_string_lossy().into_owned());
     let logs: Mutex<Vec<String>> = Mutex::new(vec![]);
     let log = |m: &str| logs.lock().unwrap().push(m.to_string());
-    for args in [vec!["judge", "run", "--backend", "anthropic"], vec!["skill-draft", "1", "--backend", "anthropic"]] {
-        let mut args = args;
-        args.extend(["--out", &o, "--notes-dir", &n]);
-        let e = run(&cli(&args), &log).unwrap_err().to_string();
-        if cfg!(feature = "anthropic-backend") {
-            // 入っていれば先へ進む(キーかバンドル・候補が無くて止まる。HTTP は送らない)
-            assert!(!e.contains("この atlas には入っていません"), "{e}");
-        } else {
-            assert!(e.contains("この atlas には入っていません") && e.contains("cargo build --release -p atlas-cli --features anthropic-backend"), "{e}");
-        }
+    let e = run(&cli(&["skill-draft", "1", "--backend", "anthropic", "--out", &o, "--notes-dir", &n]), &log).unwrap_err().to_string();
+    if cfg!(feature = "anthropic-backend") {
+        // 入っていれば先へ進む(キーか候補が無くて止まる。HTTP は送らない)
+        assert!(!e.contains("この atlas には入っていません"), "{e}");
+    } else {
+        assert!(e.contains("この atlas には入っていません") && e.contains("cargo build --release -p atlas-cli --features anthropic-backend"), "{e}");
     }
     if !cfg!(feature = "anthropic-backend") {
         // 従量課金の注意も出さない(使えないので)
@@ -218,19 +207,19 @@ fn turn_chat_parts_mark_last_only_files() {
     let d = tempfile::tempdir().unwrap();
     // 先頭の 2 ファイルが判定できる依頼。part-02 は消えている
     write_turn_parts(d.path(), json!({ "decidable": { "turns": 3, "chunks": 2, "parts": 2 } }), &[1, 3, 4]);
-    let r = list_chat_parts(d.path(), ChatTarget::Turns).unwrap();
-    assert_eq!((r.exists, r.unjudged_only, r.count, r.decidable), (true, Some(true), Some(5), Some(ChatDecidable { turns: 3, parts: 2 })));
+    let r = list_chat_parts(d.path(), d.path(), ChatTarget::Turns).unwrap();
+    assert_eq!((r.exists, r.unjudged_only, r.count, r.decidable), (true, Some(true), Some(5), Some(ChatDecidable { turns: 3, parts: 2, chunks: 2 })));
     let marks: Vec<(String, Option<bool>)> = r.parts.as_ref().unwrap().iter().map(|p| (p.name.clone(), p.last_only)).collect();
     assert_eq!(marks, [("part-01.md".to_string(), Some(false)), ("part-03.md".to_string(), Some(true)), ("part-04.md".to_string(), Some(true))]);
     // 画面に渡す形(lastOnly と decidable)
     let v = serde_json::to_value(&r).unwrap();
-    assert_eq!(v["decidable"], json!({ "turns": 3, "parts": 2 }));
+    assert_eq!(v["decidable"], json!({ "turns": 3, "parts": 2, "chunks": 2 }));
     assert_eq!(v["parts"][1]["lastOnly"], json!(true));
 
     // 古い添付(decidable が無い)では、数も印も返さない
     let d = tempfile::tempdir().unwrap();
     write_turn_parts(d.path(), json!({}), &[1, 2, 3, 4]);
-    let r = list_chat_parts(d.path(), ChatTarget::Turns).unwrap();
+    let r = list_chat_parts(d.path(), d.path(), ChatTarget::Turns).unwrap();
     assert_eq!(r.decidable, None);
     assert_eq!(r.parts.as_ref().unwrap().len(), 4);
     let v = serde_json::to_value(&r).unwrap();
@@ -238,19 +227,16 @@ fn turn_chat_parts_mark_last_only_files() {
     assert!(v["parts"].as_array().unwrap().iter().all(|p| p.get("lastOnly").is_none()));
 }
 
-/// judge に judge では効かない絞り込みを付けると、黙って添付の全体を判定せずに止め、judge-flow か bundle を案内する
+/// judge に judge では効かない絞り込みを付けると、黙って添付の全体を扱わずに止め、bundle で絞って作るよう案内する
 #[test]
 fn judge_rejects_filters_it_ignores() {
     let d = tempfile::tempdir().unwrap();
     let (o, n) = (d.path().join("out").to_string_lossy().into_owned(), d.path().join("notes").to_string_lossy().into_owned());
-    let e = run(&cli(&["judge", "run", "--project", "p", "--out", &o, "--notes-dir", &n]), &quiet).unwrap_err().to_string();
-    assert!(e.starts_with("--project は judge run では効きません。"), "{e}");
-    assert!(e.contains("judge-flow --project") && e.contains("--session か --only"), "{e}");
     let e = run(&cli(&["judge", "import", "r.md", "--session", "ab", "--out", &o, "--notes-dir", &n]), &quiet).unwrap_err().to_string();
     assert!(e.starts_with("--session は judge import では使えません"), "{e}");
-    let e = run(&cli(&["judge", "m365", "--group", "g", "--out", &o, "--notes-dir", &n]), &quiet).unwrap_err().to_string();
-    assert!(e.starts_with("--group は judge m365 では効きません。"), "{e}");
-    assert!(!e.contains("--session か --only"), "{e}");
+    let e = run(&cli(&["judge", "m365", "--branch", "g", "--out", &o, "--notes-dir", &n]), &quiet).unwrap_err().to_string();
+    assert!(e.starts_with("--branch は judge m365 では効きません。"), "{e}");
+    assert!(e.contains("bundle --branch --unjudged"), "{e}");
 }
 
 /// 依頼が 1 つずつあるセッションの記録(~/.copilot の session-state の形)
@@ -279,55 +265,38 @@ fn write_home_session_without_request(home: &std::path::Path, id: &str) {
 ")).collect::<String>()).unwrap();
 }
 
-/// 絞った判定に、依頼の無いセッション(束に入らない)が混ざっても止まらない。記録に無い ID は今までどおり止まる
+/// turns bundle --zip: 束と同じ回に ZIP(INSTRUCTIONS.md・manifest.json・schema.json・chunks/)を作る。--zip なしで作り直すと、前の ZIP は消す。
+/// 前の版のこのツールが判定に使った作業用の場所(out/judge-work)は、束を作るときに消す(前の版も、判定を始めるたびに消していた)
 #[test]
-fn scoped_judge_flow_skips_sessions_without_request() {
-    let d = tempfile::tempdir().unwrap();
-    let (home, out, notes) = (d.path().join("home"), d.path().join("out"), d.path().join("notes"));
-    write_home_sessions(&home, &["aaaa1111"]);
-    write_home_session_without_request(&home, "cccc3333");
-    let (h, o, n) = (home.to_string_lossy().into_owned(), out.to_string_lossy().into_owned(), notes.to_string_lossy().into_owned());
-    run(&cli(&["all", "--home", &h, "--out", &o, "--notes-dir", &n]), &quiet).unwrap();
-    let args = |v: &[&str]| v.iter().map(|s| s.to_string()).chain(["--out".to_string(), o.clone(), "--notes-dir".into(), n.clone()]).collect::<Vec<_>>();
-    assert_eq!(judge_flow::main(&args(&["--limit", "0", "--session=aaaa,cccc"])), 0);
-    // 依頼の無いセッションだけでも、判定するものが無いだけで止まらない
-    assert_eq!(judge_flow::main(&args(&["--limit", "0", "--session=cccc"])), 0);
-    assert_ne!(judge_flow::main(&args(&["--limit", "0", "--session=aaaa,zzzz"])), 0);
-    assert!(!out.join(judge_flow::JUDGE_WORK_DIR).exists());
-}
-
-#[test]
-fn scoped_judge_flow_keeps_shared_bundles() {
+fn turns_bundle_zip_and_stale_zip() {
     let d = tempfile::tempdir().unwrap();
     let (home, out, notes) = (d.path().join("home"), d.path().join("out"), d.path().join("notes"));
     write_home_sessions(&home, &["aaaa1111", "bbbb2222"]);
+    write_home_session_without_request(&home, "cccc3333");
     let (h, o, n) = (home.to_string_lossy().into_owned(), out.to_string_lossy().into_owned(), notes.to_string_lossy().into_owned());
     run(&cli(&["all", "--home", &h, "--out", &o, "--notes-dir", &n]), &quiet).unwrap();
-    // チャットに貼る判定・M365 の判定が使う、未判定全件の束
-    run(&cli(&["bundle", "--unjudged", "--out", &o, "--notes-dir", &n]), &quiet).unwrap();
-    run(&cli(&["turns", "bundle", "--unjudged", "--out", &o, "--notes-dir", &n]), &quiet).unwrap();
-    let read = |p: &str| fs::read(out.join(p)).unwrap();
-    let (bundle, turn_bundle) = (read("bundle/manifest.json"), read("turn-bundle/manifest.json"));
-    let args = |v: &[&str]| v.iter().map(|s| s.to_string()).chain(["--out".to_string(), o.clone(), "--notes-dir".into(), n.clone()]).collect::<Vec<_>>();
-    // 絞った判定(--limit 0 なので LLM は呼ばない)。束は作業用の場所に作り、終わったら消す
-    fs::create_dir_all(out.join(judge_flow::JUDGE_WORK_DIR).join("残り")).unwrap();
-    assert_eq!(judge_flow::main(&args(&["--limit", "0", "--session=aaaa"])), 0);
-    assert_eq!(judge_flow::main(&args(&["--turns", "--limit", "0", "--session=aaaa"])), 0);
-    assert_eq!((read("bundle/manifest.json"), read("turn-bundle/manifest.json")), (bundle.clone(), turn_bundle.clone()));
-    assert!(!out.join(judge_flow::JUDGE_WORK_DIR).exists());
-    // 絞った束で判定に失敗しても(知らない id)、作業用の場所は残さない
-    assert_ne!(judge_flow::main(&args(&["--limit", "0", "--session=zzzz"])), 0);
-    assert!(!out.join(judge_flow::JUDGE_WORK_DIR).exists());
-    assert_eq!(read("bundle/manifest.json"), bundle);
-    // 絞らない判定は今までどおり共有の束を作り直す(前の回が止められて残った作業用の場所も消す)
-    fs::create_dir_all(out.join(judge_flow::JUDGE_WORK_DIR).join("残り")).unwrap();
-    assert_eq!(judge_flow::main(&args(&["--limit", "0"])), 0);
-    assert!(!out.join(judge_flow::JUDGE_WORK_DIR).exists());
-    let m: serde_json::Value = serde_json::from_slice(&read("bundle/manifest.json")).unwrap();
-    assert_eq!(m["sessions"].as_array().map(Vec::len), Some(2));
+    fs::create_dir_all(out.join(super::bundle::OLD_JUDGE_WORK_DIR).join("bundle")).unwrap();
+    let logs: Mutex<Vec<String>> = Mutex::new(vec![]);
+    let log = |m: &str| logs.lock().unwrap().push(m.to_string());
+    run(&cli(&["turns", "bundle", "--unjudged", "--zip", "--out", &o, "--notes-dir", &n]), &log).unwrap();
+    assert!(!out.join(super::bundle::OLD_JUDGE_WORK_DIR).exists());
+    let zip = out.join("turn-bundle.zip");
+    let bytes = fs::read(&zip).unwrap();
+    let text = String::from_utf8_lossy(&bytes);
+    for name in ["turn-bundle/INSTRUCTIONS.md", "turn-bundle/manifest.json", "turn-bundle/schema.json", "turn-bundle/chunks/0001.md", "turn-bundle/chunks/0002.md"] {
+        assert!(text.contains(name), "{name}");
+    }
+    assert!(!text.contains("turn-bundle/parts/"));
+    assert!(logs.lock().unwrap().iter().any(|l| l.starts_with("turns bundle: ZIP にまとめました(5 ファイル")), "{:?}", logs.lock().unwrap());
+    // 画面の一覧にも、今の束の ZIP として出る
+    let parts = crate::chat_parts::list_chat_parts(&out, &notes, crate::chat_parts::ChatTarget::Turns).unwrap();
+    assert_eq!(parts.zip.as_ref().map(|z| z.path.as_str()), Some("turn-bundle.zip"));
+    run(&cli(&["turns", "bundle", "--unjudged", "--out", &o, "--notes-dir", &n]), &log).unwrap();
+    assert!(!zip.exists());
+    assert!(logs.lock().unwrap().iter().any(|l| l.starts_with("turns bundle: 前に作った ZIP は中身が古くなったので消しました")));
 }
 
-/// 作業用の場所を消すとき(jsfs::rm_rf = std の remove_dir_all)に、中の junction を辿らない(リンクの先の中身は消えない)
+/// 前の版の作業用の場所を消すとき(fs_retry::remove_tree = std の remove_dir_all)に、中の junction を辿らない(リンクの先の中身は消えない)
 #[cfg(windows)]
 #[test]
 fn work_dir_removal_does_not_follow_junctions() {

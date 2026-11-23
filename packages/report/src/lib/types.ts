@@ -25,7 +25,10 @@ import type { VerdictTuple } from './verdicts.ts';
 // 16: failures(失敗の台帳の集計のページ failures.html を書いたか)
 // 17: tests(テストの結果の要約。テストの実行があるセッションだけ)・groups[].tag(送り先の元のタグ)・wikiVaults(参照を数えた vault の数)・wiki.otherCalls(vault の検索・一覧など)
 // 18: wikiPageNames(読んだ llm-wiki のページの名前の辞書)・wiki.pages(読んだページの番号。重複を除く)・judgment.wikiPages(ページごとの LLM の見立て)
-export const REPORT_DATA_VERSION = 18;
+// 19: groups(タスクタグ)をやめた
+// 20: tasks(管理ツールのタスク。紐づけ・タスクごとの工数。値は Rust が決め、画面は出すだけ)
+// 21: tasks.links の taskId(1 つ)を taskIds(いくつかのタスク)に。tasks.links[].countedTaskIds(工数を等分するタスク)・tasks.items[].sharedSessions・tasks.summary.sharedSessions(いくつかのタスクに数えたセッション)
+export const REPORT_DATA_VERSION = 21;
 
 /** wiki.pages を埋め込んだ最初の版(これより前の埋め込みでは、llm-wiki のページごとの表を出さない) */
 export const WIKI_PAGES_DATA_VERSION = 18;
@@ -279,7 +282,7 @@ export interface ReportData {
   wikiVaults?: number;
   /** 読んだ llm-wiki のページの名前の辞書(セッションの wiki.pages と judgment.wikiPages はこの番号)。版 17 以前の埋め込みには無い */
   wikiPageNames?: string[];
-  /** 読むだけの画面として作った(送り先から集計した・別のフォルダを開いた)。タスクタグとメモは送った人のもの。古い埋め込みには無い */
+  /** 読むだけの画面として作った(送り先から集計した・別のフォルダを開いた)。メモは送った人のもの。古い埋め込みには無い */
   readOnly?: boolean;
   /**
    * 送り先から集計したときの、送った atlas の版(crates/atlas-core/src/atlas_version.rs の describe_atlas_builds)。送った人ごとにまとめる。ok = 対応が要る人がいない。
@@ -298,8 +301,6 @@ export interface ReportData {
   installed: { skills: string[]; disabled: string[] } | null;
   /** 人のフォルダの名前ごとのインストール済みの skill(送り先の全体を集計したとき。古い埋め込みには無い) */
   installedByPerson?: Record<string, { skills: string[]; disabled: string[] }>;
-  /** 名前付きグループ(atlas-notes/groups.json)。無ければ空 */
-  groups: ReportGroup[];
   /** Phase 11: 指示文と skill の閲覧ページ(instructions.html)を作ったか(export のとき) */
   library: boolean;
   /** 失敗の台帳の集計のページ(failures.html)を作ったか(古い版で作った atlas.html には無い) */
@@ -313,8 +314,92 @@ export interface ReportData {
     candidateTotal?: number;
     computedOver: number;
   };
-  /** notes: atlas-notes/ の読み取りで無視した箇所(groups.json が壊れている等。無ければ空) */
+  /** notes: 集計のときの注意(無ければ空) */
   warnings: { unknownEventTypes: number; badLines: number; notes: string[] };
+  /** 管理ツールのタスク(crates/atlas-report/src/tasks/view.rs の TasksView)。設定もタスクの記録も無ければ無い。版 19 以前の埋め込みにも無い */
+  tasks?: TasksReport | null;
+}
+
+/** 紐づけの出所(機械・LLM・手動) */
+export type TaskLinkSource = 'machine' | 'llm' | 'manual';
+
+/** 比べられるタスクから外した理由 */
+export type TaskExcluded = 'notDone' | 'doneUnobserved' | 'afterDone' | 'noStart' | 'unjudged' | 'lowConfidence';
+
+/** タスク 1 件の値(Rust の tasks::metrics::TaskRow。画面は出すだけ) */
+export interface TaskRow {
+  id: string;
+  name: string;
+  status: string;
+  done: boolean;
+  /** 完了を確認した時刻(完了を最初に見た XML の更新時刻) */
+  doneAt: string | null;
+  /** 未完了から完了に変わるのを見た(初めて見たときに完了していたら false。工数を数えない) */
+  doneObserved: boolean;
+  /** 最後に読んだ XML に無かった */
+  missing: boolean;
+  /** 紐づいたセッションのうち最も早い開始(完了を確認した時刻より後に始まったセッションは使わない) */
+  start: string | null;
+  /** AI を使った場合の工数(稼働時間帯のミリ秒)。完了に変わるのを見ていなければ null */
+  workMs: number | null;
+  /** AI の実働(ミリ秒。いくつかのタスクに紐づいたセッションは、タスクの数で等分した分) */
+  aiActiveMs: number;
+  /** AI を使わなかった場合の工数(推定人手工数の時間。確信度の低い推定は入れない。いくつかのタスクに紐づいたセッションは等分した分) */
+  humanHours: number;
+  sessions: number;
+  /** 紐づいたセッションのうち、ほかのタスクにも紐づいているもの(実働と推定人手工数はタスクの数で等分した) */
+  sharedSessions: number;
+  judgedSessions: number;
+  lowConfidenceSessions: number;
+  unjudgedSessions: number;
+  /** 完了を確認した時刻より後に始まったセッションの数(手動か LLM の紐づけ) */
+  afterDoneSessions: number;
+  links: { machine: number; llm: number; manual: number };
+  comparable: boolean;
+  excluded: TaskExcluded | null;
+}
+
+/** タスクの合計(比べられるタスクだけ) */
+export interface TaskSummary {
+  tasks: number;
+  doneTasks: number;
+  included: number;
+  excluded: { notDone: number; doneUnobserved: number; afterDone: number; noStart: number; unjudged: number; lowConfidence: number };
+  workMs: number;
+  humanHours: number;
+  aiActiveMs: number;
+  aiActiveMsAll: number;
+  /** いくつかのタスクに紐づいたセッションの数(重ねて数えない) */
+  sharedSessions: number;
+  /** AI を使わなかった場合 ÷ AI を使った場合。比べられるタスクが ratioMin に届かなければ null */
+  ratio: number | null;
+  ratioMin: number;
+}
+
+export interface TaskLinkView {
+  /** 紐づいたタスク(並びは決めた順)。空は「どのタスクでもない」 */
+  taskIds: string[];
+  /** 実働と推定人手工数を数えるタスク(Rust の tasks::metrics::counted_tasks。一覧にあり、完了を確認した後に始めたのではないもの)。それぞれに 1/(この数) ずつ */
+  countedTaskIds?: string[];
+  source: TaskLinkSource;
+  reason: string;
+  confidence?: number;
+}
+
+export interface TasksReport {
+  configured: boolean;
+  /** local: この PC の記録から。sender: 送った人がセッションごとに添えた記録から(読むだけの画面) */
+  origin: 'local' | 'sender';
+  file: string | null;
+  observedAt: string | null;
+  workHours: { days: number[]; start: string; end: string };
+  warnings: string[];
+  items: TaskRow[];
+  /** セッション id → 紐づけ */
+  links: Record<string, TaskLinkView>;
+  summary: TaskSummary;
+  /** 絞り込んだセッション(--task など)だけで作った。serve の画面は、絞り込まない GET /api/tasks の値で置き換えない */
+  scoped?: boolean;
 }
 
 /** Phase 12: スキル化の候補(埋め込み用。lib/insights.ts の Candidate と同じ形) */
@@ -328,16 +413,4 @@ export interface InsightCandidate {
   representative: string | null;
   examples: string[];
   tools: string[] | null;
-}
-
-export interface ReportGroup {
-  name: string;
-  note: string;
-  /** 記録に無い id も含む(そのまま) */
-  ids: string[];
-  /**
-   * 送り先から集計したグループの、元のタグ(送った人が付けた名前そのまま。name は「<人> / <タグ>」で、重なると番号が付く)。
-   * 手元のタスクタグ(name がそのままタグ)と伏せ字版には無い
-   */
-  tag?: string;
 }

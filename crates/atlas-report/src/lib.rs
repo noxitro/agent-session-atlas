@@ -10,7 +10,6 @@
 
 pub mod aggregate;
 pub mod build;
-pub mod conditions;
 pub mod coverage;
 pub mod detail;
 pub mod embed;
@@ -23,10 +22,9 @@ pub mod format;
 pub mod full;
 pub mod glossary;
 pub mod glossary_page;
-pub mod groups;
-pub mod groups_io;
 pub mod highlights;
 pub mod html;
+pub mod ids;
 pub mod insights;
 pub mod insights_page;
 pub mod jssort;
@@ -44,6 +42,8 @@ pub mod raw_events;
 pub mod retention;
 pub mod session_tools;
 pub mod summarize;
+pub mod tasks;
+pub mod test_tables;
 pub mod transcript;
 pub mod turns;
 pub mod types;
