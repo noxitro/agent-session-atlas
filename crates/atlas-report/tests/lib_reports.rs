@@ -371,9 +371,23 @@ fn low_confidence_effort_kept_apart() {
     // 書き出す JSON のキーと形は画面の TS(aggregate.ts)と同じ
     let v = serde_json::to_value(&o).unwrap();
     let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).skip_while(|k| *k != "judgedSessions").collect();
-    assert_eq!(keys, ["judgedSessions", "humanSessions", "humanUncertain", "humanHours", "humanLow", "humanHigh", "humanMedian", "humanSkew", "judgedConfidence", "judgedAi"]);
+    assert_eq!(keys, ["judgedSessions", "humanSessions", "humanUncertain", "humanHours", "humanLow", "humanHigh", "humanMedian", "humanSkew", "judgedConfidence", "judgedAi", "turnVerdicts"]);
     assert_eq!(v["humanUncertain"], json!({ "sessions": 1, "hours": 2500.0, "low": 1000.0, "high": 6000.0 }));
     assert_eq!(v["humanSkew"], Value::Null);
+    assert_eq!(v["turnVerdicts"], json!({ "judged": 0, "workDecided": 0, "asIs": 0, "fix": 0, "byMismatch": { "requirement": 0, "defect": 0, "quality": 0, "scope": 0, "environment": 0, "other": 0 } }));
+}
+
+/// 人別・プロジェクト別の集計の、依頼ごとの判定の数(aggregate.ts と同じ。扱いの番号の合わないものは数えない)
+#[test]
+fn bucket_counts_turn_verdicts() {
+    let rs = fixture();
+    let mut s: Vec<SessionSummary> = summaries(&rs);
+    // [依頼番号, 種類, 扱い, 合わなかった点, 工程, 確信度]。扱い 1 = fix_content・0 = as_is・6 = off_target・99 は形の合わないもの
+    s[0].turn_verdicts = Some(vec![(1.0, 0, 1, Some(1), 0, 80.0), (2.0, 0, 0, None, 0, 90.0), (3.0, 1, 6, Some(0), 0, 70.0), (4.0, 0, 99, None, 0, 0.0)]);
+    s[1].turn_verdicts = Some(vec![(1.0, 0, 2, Some(1), 0, 80.0)]);
+    let o = aggregate(&refs(&s), None).overall;
+    let v = serde_json::to_value(&o.turn_verdicts).unwrap();
+    assert_eq!(v, json!({ "judged": 4, "workDecided": 3, "asIs": 1, "fix": 2, "byMismatch": { "requirement": 1, "defect": 2, "quality": 0, "scope": 0, "environment": 0, "other": 0 } }));
 }
 
 #[test]

@@ -139,3 +139,37 @@ export function verdictAggregate(sessions: { turnRows?: TurnTuple[]; turnVerdict
 /** 作業の依頼のうち判定できたもの(判定不能・質問の扱いを除く)と、そのまま採用の割合の分母 */
 export const workDecided = (c: OutcomeCounts): number => c.byOutcome.as_is + c.byOutcome.fix_content + c.byOutcome.fix_style + c.byOutcome.rejected;
 export const questionDecided = (c: OutcomeCounts): number => c.byOutcome.helpful + c.byOutcome.follow_up + c.byOutcome.off_target;
+
+/** 人別の表に出す、依頼ごとの判定の値。割合は分母(判定できた作業の依頼)が min 件に届かなければ null、合わなかった点のいちばん多いものは判定した依頼が min 件に届かなければ null */
+export interface BucketVerdictView {
+  judged: number;
+  /** そのまま採用 ÷ 判定できた作業の依頼 */
+  adoptRate: number | null;
+  /** 直し(中身・体裁)÷ 判定できた作業の依頼 */
+  fixRate: number | null;
+  /** 合わなかった点のいちばん多いもの(同じ数なら MISMATCHES の順)と、その数。合わなかった点が 1 件も無ければ null */
+  topMismatch: { key: Mismatch; count: number } | null;
+}
+
+export function bucketVerdictView(v: { judged: number; workDecided: number; asIs: number; fix: number; byMismatch: Record<Mismatch, number> }, min: number): BucketVerdictView {
+  const enough = v.workDecided >= min && v.workDecided > 0;
+  let top: BucketVerdictView['topMismatch'] = null;
+  for (const m of MISMATCHES) if (v.byMismatch[m] > 0 && (!top || v.byMismatch[m] > top.count)) top = { key: m, count: v.byMismatch[m] };
+  return { judged: v.judged, adoptRate: enough ? v.asIs / v.workDecided : null, fixRate: enough ? v.fix / v.workDecided : null, topMismatch: v.judged >= min ? top : null };
+}
+
+/** 1 セッションの依頼の上限(core の normalize の ANALYSIS_TURNS・判定の束の MAX_TURNS と同じ)。これより後の依頼は依頼ごとの記録が無く、判定の束にも入らない */
+export const TURN_LIMIT = 200;
+
+/** 上限を超えて、依頼ごとの記録と判定の束に入らなかった依頼の数(依頼の数 − 上限の和)と、そのセッションの数 */
+export function turnsOverLimit(sessions: readonly { turns: number }[]): { turns: number; sessions: number } {
+  let turns = 0;
+  let n = 0;
+  for (const s of sessions) {
+    if (s.turns > TURN_LIMIT) {
+      turns += s.turns - TURN_LIMIT;
+      n++;
+    }
+  }
+  return { turns, sessions: n };
+}

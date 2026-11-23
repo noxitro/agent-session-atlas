@@ -65,6 +65,8 @@ pub struct TasksCliOptions {
     pub model: Option<String>,
     pub limit: Option<u64>,
     pub timeout_sec: u64,
+    /// import・m365 では効かない絞り込みの指定(judge・turns と同じく、実行のときに断る)
+    pub ignored_filters: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -341,6 +343,7 @@ fn split_list<'a>(items: impl IntoIterator<Item = &'a String>) -> Vec<String> {
 }
 
 /// 判定の取り込み(import)と M365 Copilot での判定(m365)では効かない絞り込みの指定(「--session」「--project」など)。
+/// judge・turns・tasks の import と m365 で使う。
 /// import では --model も絞り込み(モデルで絞る)なので効かない。m365 の --model は M365 Copilot のモデルの選択
 fn ignored_filters_of(values: &Values, action: &str) -> Vec<String> {
     let mut out: Vec<String> = ["project", "since", "client", "branch", "task"].iter().filter(|k| values.has(k)).map(|k| format!("--{k}")).collect();
@@ -498,7 +501,10 @@ pub fn parse_cli(argv: &[String]) -> Result<CliOptions, UsageError> {
         if positionals.len() > max_pos {
             return err(format!("余分な引数があります: {}", extra(max_pos)));
         }
-        if action != "bundle" && values.multi.contains_key("session") {
+        // import・m365 は、judge・turns と同じく絞り込みを集めて断る(実行のときに、何が起きるかと代わりの手順を知らせる)
+        let collects_filters = action == "import" || action == "m365";
+        let ignored_filters = if collects_filters { ignored_filters_of(&values, &action) } else { vec![] };
+        if action != "bundle" && !collects_filters && values.multi.contains_key("session") {
             return err("--session は tasks bundle でだけ使えます");
         }
         for k in ["unjudged", "zip"] {
@@ -508,25 +514,30 @@ pub fn parse_cli(argv: &[String]) -> Result<CliOptions, UsageError> {
         }
         if action != "m365" {
             for k in ["limit", "timeout", "model"] {
-                if values.has(k) {
+                // import の --model は絞り込み(モデルで絞る)として断る(ignored_filters)
+                if values.has(k) && !(k == "model" && action == "import") {
                     return err(format!("--{k} は tasks m365 でだけ使えます"));
                 }
             }
         }
-        for k in ["since", "project", "client", "branch"] {
-            if values.has(k) {
-                return err(format!("--{k} は tasks では使えません"));
+        if !collects_filters {
+            for k in ["since", "project", "client", "branch"] {
+                if values.has(k) {
+                    return err(format!("--{k} は tasks では使えません"));
+                }
             }
         }
         tasks_cmd = Some(TasksCliOptions {
             file,
-            model: values.s("model").cloned(),
+            model: values.s("model").cloned().filter(|_| action == "m365"),
             limit: pos_int(values.s("limit"), "--limit", 0)?,
             timeout_sec: pos_int(values.s("timeout"), "--timeout", 1)?.unwrap_or(900),
+            ignored_filters,
             action,
         });
     }
-    if values.has("task") && !TASK_FILTER_COMMANDS.contains(&cmd.as_str()) {
+    let tasks_collects_task = tasks_cmd.as_ref().is_some_and(|t| t.action == "import" || t.action == "m365");
+    if values.has("task") && !TASK_FILTER_COMMANDS.contains(&cmd.as_str()) && !tasks_collects_task {
         return err(format!("--task は {} でだけ使えます", TASK_FILTER_COMMANDS.join("・")));
     }
     if values.s("task").is_some_and(|t| t.trim().is_empty()) {
@@ -762,7 +773,7 @@ mod tests {
     #[test]
     fn tasks_command_and_task_filter() {
         let t = p(&["tasks", "bundle", "--session", "ab", "--zip", "--per-part", "3", "--unjudged"]).unwrap();
-        assert_eq!(t.tasks_cmd, Some(TasksCliOptions { action: "bundle".into(), file: None, model: None, limit: None, timeout_sec: 900 }));
+        assert_eq!(t.tasks_cmd, Some(TasksCliOptions { action: "bundle".into(), file: None, model: None, limit: None, timeout_sec: 900, ignored_filters: vec![] }));
         assert_eq!((t.sessions, t.zip, t.per_part, t.unjudged), (Some(vec!["ab".into()]), true, Some(3), true));
         assert_eq!(p(&["tasks", "import", "reply.md"]).unwrap().tasks_cmd.unwrap().file.as_deref(), Some("reply.md"));
         assert_eq!(p(&["tasks", "import"]).unwrap_err().0, "tasks import には取り込むファイルを指定してください");
@@ -790,6 +801,15 @@ mod tests {
         assert!(p(&["serve", "--task", "T"]).unwrap_err().0.starts_with("--task は metrics・build"));
         // judge では効かない絞り込み(judge を直に実行したときは止める)
         assert_eq!(p(&["judge", "m365", "--task", "T"]).unwrap().judge.unwrap().ignored_filters, vec!["--task"]);
+        // tasks の import・m365 も、効かない絞り込みを集めて断る(import の --model も絞り込み。m365 の --model はモデルの選択)
+        let ti = p(&["tasks", "import", "r.md", "--session", "ab", "--project", "p", "--task", "T", "--model", "m"]).unwrap().tasks_cmd.unwrap();
+        assert_eq!((ti.ignored_filters, ti.model), (vec!["--session".to_string(), "--project".into(), "--task".into(), "--model".into()], None));
+        let tm = p(&["tasks", "m365", "--since", "2026-11-01", "--branch", "b", "--model", "Auto"]).unwrap().tasks_cmd.unwrap();
+        assert_eq!((tm.ignored_filters, tm.model.as_deref()), (vec!["--since".to_string(), "--branch".into()], Some("Auto")));
+        // ほかの操作はこれまでどおり、その場で断る
+        assert!(p(&["tasks", "bundle", "--session", "ab"]).unwrap().tasks_cmd.unwrap().ignored_filters.is_empty());
+        assert_eq!(p(&["tasks", "sync", "--project", "p"]).unwrap_err().0, "--project は tasks では使えません");
+        assert!(p(&["tasks", "link", "--task", "T"]).unwrap_err().0.starts_with("--task は metrics・build"));
     }
 
     #[test]

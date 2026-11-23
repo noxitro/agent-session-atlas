@@ -5,6 +5,7 @@ import { hasPeople, UNKNOWN } from './filter.ts';
 import { addCauses, FAILURE_CAUSE_LABELS, type FailureCause, type FailureCauses } from '../shared/tool-failure.ts';
 import type { SessionSummary } from './types.ts';
 import { wikiReferenced } from './wiki.ts';
+import { MISMATCHES, OUTCOMES, type Mismatch } from '../shared/turns.ts';
 
 export interface TokenTotals {
   input: number;
@@ -91,6 +92,17 @@ export interface Bucket {
   judgedAi: { activeMs: number; activeKnown: number; output: number; input: number; inputKnown: number; premiumRequests: number };
   /** 確信度の低い推定(isLowConfidence)。合計に入れず、別枠で出す */
   humanUncertain: { sessions: number; hours: number; low: number; high: number };
+  /** 依頼ごとの LLM の判定(turnVerdicts。LLM の推定で、推定人手工数や AI の変更の残存とは混ぜない) */
+  turnVerdicts: BucketVerdicts;
+}
+
+/** 依頼ごとの判定の数(判定した依頼・判定できた作業の依頼・そのまま採用・直し(中身・体裁)・合わなかった点ごと) */
+export interface BucketVerdicts {
+  judged: number;
+  workDecided: number;
+  asIs: number;
+  fix: number;
+  byMismatch: Record<Mismatch, number>;
 }
 
 /** モデルの推論強度別の行(key は推論強度。記録の無いものは (unknown)) */
@@ -304,6 +316,7 @@ export function bucket(key: string, label: string, sessions: SessionSummary[]): 
     humanSkew: null,
     judgedConfidence: null,
     judgedAi: { activeMs: 0, activeKnown: 0, output: 0, input: 0, inputKnown: 0, premiumRequests: 0 },
+    turnVerdicts: { judged: 0, workDecided: 0, asIs: 0, fix: 0, byMismatch: Object.fromEntries(MISMATCHES.map((m) => [m, 0])) as Record<Mismatch, number> },
   };
   let confSum = 0;
   let confN = 0;
@@ -381,6 +394,18 @@ export function bucket(key: string, label: string, sessions: SessionSummary[]): 
         ai.inputKnown++;
       }
       ai.premiumRequests += t.premiumRequests ?? 0;
+    }
+    // 依頼ごとの判定(verdictAggregate と同じく、扱いの番号の合わないものは数えない)
+    const tv = b.turnVerdicts;
+    for (const v of s.turnVerdicts ?? []) {
+      const outcome = OUTCOMES[v[2]];
+      if (!outcome) continue;
+      tv.judged++;
+      if (outcome === 'as_is' || outcome === 'fix_content' || outcome === 'fix_style' || outcome === 'rejected') tv.workDecided++;
+      if (outcome === 'as_is') tv.asIs++;
+      if (outcome === 'fix_content' || outcome === 'fix_style') tv.fix++;
+      const m = v[3] == null ? undefined : MISMATCHES[v[3]];
+      if (m) tv.byMismatch[m]++;
     }
   }
   b.activeMedianMs = median(actives);

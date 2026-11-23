@@ -2,9 +2,9 @@
   // 概況の「管理ツールのタスク」の節。値はすべて集計のとき(Rust の tasks::view)に決めたもので、画面は出すだけ(数え直さない)。
   // 上の絞り込みは掛からない(タスクの行を押すと、そのタスクのセッションに絞り込む)。
   // 2 つの工数(AI を使わなかった場合・使った場合)と AI の実働は、別の欄に並べるだけで 1 つの点数にしない
-  import { dateTime, dec, int } from '../../lib/format.ts';
+  import { dateTime, dec, int, modelLabel, percent } from '../../lib/format.ts';
   import { NO_TASK, filterHref, emptyFilter } from '../../lib/filter.ts';
-  import { DONE_AT_SOURCE_LABEL, doneAtSourceText, doneAtText, hours, linkCounts, msHours, TASK_EXCLUDED_LABEL, taskIncludedNote, workHoursText } from '../../lib/tasks.ts';
+  import { DONE_AT_SOURCE_LABEL, doneAtSourceText, doneAtText, frictionText, frictionTotal, hours, linkCounts, msHours, rateText, TASK_EXCLUDED_LABEL, taskIncludedNote, verdictBreakdown, workHoursText } from '../../lib/tasks.ts';
   import type { TaskRow, TasksReport } from '../../lib/types.ts';
   import SortMark from './SortMark.svelte';
 
@@ -31,7 +31,7 @@
   const doneSrc = $derived(doneAtSourceText(s.doneSources));
   const ratioText = (r: number): string => `${dec(Math.round(r * 100) / 100)} 倍`;
 
-  type Key = 'name' | 'status' | 'start' | 'doneAt' | 'human' | 'work' | 'active' | 'sessions';
+  type Key = 'name' | 'status' | 'start' | 'doneAt' | 'human' | 'work' | 'active' | 'sessions' | 'people' | 'model' | 'friction' | 'judged' | 'fixRate';
   const timeOf = (iso: string | null): number => {
     const t = iso ? Date.parse(iso) : NaN;
     return Number.isNaN(t) ? -Infinity : t;
@@ -45,7 +45,20 @@
     work: (t) => t.workMs ?? -1,
     active: (t) => t.aiActiveMs,
     sessions: (t) => t.sessions,
+    // 値の無いもの(記録なし・下限に届かない割合)は、多い順で最後に来るように -1。モデルの無いものは名前の順で最後
+    people: (t) => t.people ?? -1,
+    model: (t) => (t.mainModel ? modelLabel(t.mainModel) : '￿'),
+    friction: (t) => (t.sessions ? (frictionTotal(t) ?? -1) : -1),
+    judged: (t) => t.verdicts?.judged ?? -1,
+    fixRate: (t) => t.verdicts?.fixRate ?? -1,
   };
+  /** 人の記録のあるタスクが 1 つでもあれば人数の列を出す(送り先から集計したとき) */
+  const withPeople = $derived(tasks.items.some((t) => t.people != null));
+  /** 古い埋め込み(詰まりの列が無い)では、その列を出さない */
+  const withFriction = $derived(tasks.items.some((t) => t.friction != null));
+  /** 依頼ごとの判定のあるタスクが 1 つでもあれば、判定の列を出す */
+  const withVerdicts = $derived(tasks.items.some((t) => t.verdicts != null));
+  const verdictMin = $derived(s.verdictMin ?? 5);
   /** null は XML の順(並べ替えていない) */
   let sortKey = $state<Key | null>(null);
   let asc = $state(false);
@@ -72,7 +85,7 @@
     if (sortKey === k) asc = !asc;
     else {
       sortKey = k;
-      asc = k === 'name' || k === 'status';
+      asc = k === 'name' || k === 'status' || k === 'model';
     }
   }
   const st = (k: Key): 'asc' | 'desc' | 'none' => (sortKey === k ? (asc ? 'asc' : 'desc') : 'none');
@@ -154,6 +167,11 @@
       <li data-testid="tasks-split">
         複数のタスクに紐づくセッションの実働時間と推定人手工数は、タスクの数で等分して数えます(2 つなら半分ずつ。タスクの値を足すと、セッションの値を重ねずに全体の値になります)。タスクの一覧に無いタスクと、完了を確認した後に始めたセッションのタスクには数えず、残りのタスクで分けます。セッションの数は等分せず、紐づいたタスクごとに 1 つずつ数えます。{#if s.sharedSessions > 0}今は {int(s.sharedSessions)} セッションを複数のタスクに分けて数えています。{/if}<a href="glossary.html#task-split">等分とは</a>
       </li>
+      {#if withFriction}
+        <li data-testid="tasks-friction-defs">
+          <strong>詰まりの列</strong>(人数・主なモデル・摩擦{withVerdicts ? '・依頼の判定' : ''}): 紐づいたセッションすべてを 1 つずつ数えます(工数と違い、複数のタスクに紐づくセッションも等分しません)。{#if withPeople}人数は、人の記録(送り先の人のフォルダ)のあるセッションの人の数です。{/if}主なモデルは、本体のリクエストがいちばん多いモデルと、本体のリクエストに占める割合です。摩擦は、ツールの失敗・拒否、中断、文脈圧縮の数です。{#if withVerdicts}依頼の判定は LLM の推定で、直し(中身・体裁の直し)と不採用の割合は判定できた作業の依頼に対する割合、的外れの割合は判定できた質問に対する割合です。分母が {int(verdictMin)} 件に届かない割合は「—」です。工数とも AI の変更の残存とも別のもので、1 つの点数にしません。{/if}
+        </li>
+      {/if}
       <li>数え方は<a href="glossary.html#task-comparable">用語の説明</a>にあります。</li>
     </ul>
 
@@ -180,6 +198,15 @@
               {@render head('sessions', 'セッション')}
               <th scope="col">紐づけの出所</th>
               <th scope="col">比べない理由</th>
+              {#if withPeople}{@render head('people', '人数')}{/if}
+              {#if withFriction}
+                {@render head('model', '主なモデル', false)}
+                {@render head('friction', '摩擦')}
+              {/if}
+              {#if withVerdicts}
+                {@render head('judged', '判定した依頼')}
+                {@render head('fixRate', '直しの割合')}
+              {/if}
             </tr>
           </thead>
           <tbody>
@@ -207,6 +234,15 @@
                 <td class="num">{int(t.sessions)}{#if t.sharedSessions > 0}<span class="part" title="ほかのタスクにも紐づいているセッション。実働と推定人手工数はタスクの数で等分しています" data-testid="task-shared">共有 {int(t.sharedSessions)}</span>{/if}</td>
                 <td class="src">{linkCounts(t.links) || '—'}</td>
                 <td class="why">{t.excluded ? TASK_EXCLUDED_LABEL[t.excluded] : t.comparable ? '比べる' : '—'}</td>
+                {#if withPeople}<td class="num" data-testid="task-people">{t.people != null ? int(t.people) : '—'}</td>{/if}
+                {#if withFriction}
+                  <td class="model" data-testid="task-model">{#if t.mainModel}<span translate="no">{modelLabel(t.mainModel)}</span>{#if t.mainModelShare != null}<span class="part">本体のリクエストの {percent(t.mainModelShare, 1)}</span>{/if}{:else}—{/if}</td>
+                  <td class="num" data-testid="task-friction">{#if t.sessions && t.friction}{int(frictionTotal(t) ?? 0)}<span class="part">{frictionText(t.friction)}</span>{:else}—{/if}</td>
+                {/if}
+                {#if withVerdicts}
+                  <td class="num" data-testid="task-judged">{#if t.verdicts}{int(t.verdicts.judged)}<span class="part">{verdictBreakdown(t.verdicts)}</span>{:else}—{/if}</td>
+                  <td class="num" data-testid="task-fix-rate" title={t.verdicts && t.verdicts.fixRate == null ? `判定できた作業の依頼が ${verdictMin} 件に届かないので出しません` : undefined}>{rateText(t.verdicts?.fixRate)}{#if t.verdicts}<span class="part">{int(t.verdicts.fix)} / {int(t.verdicts.workDecided)}</span>{/if}</td>
+                {/if}
               </tr>
             {/each}
           </tbody>
@@ -327,6 +363,14 @@
   .why {
     white-space: nowrap;
     font-size: 0.75rem;
+  }
+  /* モデルの名前は折らない(表は .table-scroll で横に流す)。割合の注記は折り返してよい */
+  .model {
+    min-width: 8em;
+    max-width: 16em;
+  }
+  .model > span[translate] {
+    white-space: nowrap;
   }
   .more {
     display: flex;

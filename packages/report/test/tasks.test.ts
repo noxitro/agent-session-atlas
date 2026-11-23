@@ -1,7 +1,7 @@
 // 管理ツールのタスクの絞り込み(filter.ts の task)と、表示の言葉・一覧の「タスク」の欄(lib/tasks.ts)
 import { describe, expect, it } from 'vitest';
 import { applyFilter, decodeFilter, emptyFilter, encodeFilter, matchesTask, NO_TASK, taskOf, taskOptions } from '../src/lib/filter.ts';
-import { doneAtText, hours, linkCounts, linkTaskIds, msHours, sortByTask, TASK_CELL_SHOWN, taskCell, taskExcludedText, taskIncludedNote, workHoursText } from '../src/lib/tasks.ts';
+import { doneAtText, frictionText, frictionTotal, hours, linkCounts, linkTaskIds, msHours, rateText, sortByTask, TASK_CELL_SHOWN, TASK_EXCLUDED, taskCell, taskExcludedText, taskIncludedNote, verdictBreakdown, workHoursText } from '../src/lib/tasks.ts';
 import type { SessionSummary, TaskLinkView } from '../src/lib/types.ts';
 
 describe('タスクの絞り込み', () => {
@@ -138,5 +138,16 @@ describe('タスクの表示の言葉', () => {
     expect(taskIncludedNote({ tasks: 3, excluded: { ...none, lowConfidence: 1, notDone: 2 } })).toBe('セッションが紐づいたタスク 3 件のうち。比べないもの: 未完了 2・確度が低い 1');
     expect(taskIncludedNote({ tasks: 0, excluded: none })).toBe('セッションが紐づいたタスク 0 件のうち。比べないものはありません');
     expect(taskExcludedText({ ...none, unjudged: 1200 })).toBe('判定なし 1,200');
+    // 稼働時間帯に重ならない(工数が 0 時間)は、開始が分からないの後・判定なしの前。古い埋め込み(数が無い)は 0 として読む
+    expect(taskExcludedText({ ...none, noWorkHours: 2, unjudged: 1, noStart: 1 })).toBe('開始が分からない 1・稼働時間帯に重ならない 2・判定なし 1');
+    expect(TASK_EXCLUDED.indexOf('noWorkHours')).toBe(TASK_EXCLUDED.indexOf('noStart') + 1);
+  });
+  it('詰まりの列の言葉: 摩擦の内訳と合計、依頼の判定の数と割合(下限に届かない割合は —)', () => {
+    expect(frictionText({ toolFailures: 3, aborts: 1, compactions: 0 })).toBe('失敗・拒否 3・中断 1・圧縮 0');
+    expect(frictionTotal({ friction: { toolFailures: 3, aborts: 1, compactions: 2 } })).toBe(6);
+    expect(frictionTotal({})).toBeNull();
+    expect(rateText(null)).toBe('—');
+    expect(rateText(1 / 3)).toBe('33%');
+    expect(verdictBreakdown({ judged: 9, workDecided: 6, questionDecided: 2, fix: 2, rejected: 1, offTarget: 1, fixRate: 2 / 6, rejectedRate: 1 / 6, offTargetRate: null })).toBe('直し 2(33%)・不採用 1(17%)・的外れ 1(—)');
   });
 });

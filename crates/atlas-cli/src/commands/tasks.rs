@@ -177,6 +177,14 @@ pub fn judgment_hours(path: &Path) -> HashMap<String, (f64, Option<f64>)> {
     human_of(atlas_report::judgments::parse_judgments(&v).ok().as_ref())
 }
 
+/// セッション id → 依頼ごとの判定の扱いごとの数(turn-judgments.json をレポートと同じ読み方で読む。無い・読めなければ空)。
+/// タスクの表の依頼ごとの判定の列に使う
+pub fn turn_verdict_counts(path: &Path) -> HashMap<String, [i64; 8]> {
+    let Ok(bytes) = std::fs::read(path) else { return HashMap::new() };
+    let Ok(v) = atlas_core::js::parse_json(&String::from_utf8_lossy(&bytes)) else { return HashMap::new() };
+    atlas_report::tasks::extras::verdict_counts_by_session(atlas_report::verdicts::parse_verdicts(&v).as_ref())
+}
+
 /// タスクの節を作る(レポートの埋め込みと GET /api/tasks が同じものを使う)
 pub struct ViewInputs<'a> {
     /// tasks.json と task-links.json の場所(Paths::tasks_dir)と、スナップショット(送った人の記録)
@@ -223,7 +231,7 @@ pub fn tasks_view(i: ViewInputs<'_>) -> Option<TasksView> {
 pub fn build_view(p: &Paths, cfg: &TaskConfig, read_only: bool, all: &[SessionRecord], shown: &[&SessionRecord], refreshed: Option<&Refreshed>, human: &HashMap<String, (f64, Option<f64>)>) -> Option<TasksView> {
     let ids: Vec<&str> = shown.iter().map(|s| s.id.as_str()).collect();
     let all_ids: Vec<&str> = all.iter().map(|s| s.id.as_str()).collect();
-    let facts: HashMap<String, SessionFacts> = session_facts(shown, human);
+    let facts: HashMap<String, SessionFacts> = session_facts(shown, human, &turn_verdict_counts(&p.turn_judgments));
     tasks_view(ViewInputs { notes: &p.tasks_dir, snapshot: &p.snapshot, cfg, read_only, all: &all_ids, shown: &ids, facts: &facts, refreshed, scoped: shown.len() < all.len() })
 }
 
@@ -547,6 +555,10 @@ pub fn llm_query(state: &TasksFile, matcher: &Matcher<'_>, s: &SessionText, prom
 /// atlas tasks の後に、紐づけが変わっていればレポートを作り直す(export で)。m365 は取り込めたら作り直す
 pub fn run_tasks_command(o: &CliOptions, p: &Paths, log: Log<'_>) -> Result<super::RunResult> {
     let t = o.tasks_cmd.as_ref().ok_or_else(|| anyhow::anyhow!("tasks の操作がありません"))?;
+    // import・m365 では効かない絞り込みは断る(judge・turns と同じ)
+    if !t.ignored_filters.is_empty() {
+        bail!("{}", super::ignored_filters_message("tasks", &t.action, &t.ignored_filters));
+    }
     if t.action == "m365" {
         return super::run_m365_command(o, p, crate::chat_parts::ChatTarget::Tasks, t.model.as_deref(), t.limit, t.timeout_sec, log);
     }
@@ -643,6 +655,20 @@ mod tests {
         // s3 は DEMO-103 と DEMO-105 の共有のセッション
         let row: Vec<&str> = lines.iter().find(|l| l.starts_with("DEMO-105,")).unwrap().split(',').collect();
         assert_eq!((row[11], row[12]), ("1", "1"));
+        // 詰まりを見る列は後ろに足す。人の記録・依頼ごとの判定が無ければ空、摩擦は 0
+        let head: Vec<&str> = lines[0].trim_start_matches('\u{feff}').split(',').collect();
+        let col = |name: &str| head.iter().position(|h| *h == name).unwrap_or_else(|| panic!("{name}"));
+        assert_eq!(&head[col("比べない理由") + 1..], ["人数", "主なモデル", "主なモデルの割合", "ツールの失敗・拒否", "中断", "文脈圧縮", "判定した依頼", "判定できた作業の依頼", "直し", "不採用", "判定できた質問", "的外れ", "直しの割合", "不採用の割合", "的外れの割合"]);
+        let row: Vec<&str> = lines.iter().find(|l| l.starts_with("DEMO-101,")).unwrap().split(',').collect();
+        assert_eq!((row[col("人数")], row[col("ツールの失敗・拒否")], row[col("判定した依頼")], row[col("直しの割合")]), ("", "0", "", ""));
+        // 依頼ごとの判定(turn-judgments.json)があれば、紐づいたセッションの判定を数える(割合は分母が下限に届いたときだけ)
+        let items: Vec<serde_json::Value> = (1..=6).map(|t| serde_json::json!({ "sessionId": "s1", "turn": t, "kind": "task", "outcome": if t <= 2 { "fix_content" } else { "as_is" }, "mismatch": if t <= 2 { serde_json::json!("defect") } else { serde_json::Value::Null }, "phase": "実装", "confidence": 0.8 })).collect();
+        std::fs::write(&p.turn_judgments, serde_json::json!({ "schemaVersion": 1, "phases": ["実装"], "judge": { "backend": "chat", "ranAt": "t" }, "items": items, "failures": [] }).to_string()).unwrap();
+        let view_v = build_view(&p, &cfg, false, &sessions, &refs, Some(&r), &human).unwrap();
+        let v = view_v.items.iter().find(|t| t.id == "DEMO-101").unwrap().verdicts.clone().unwrap();
+        assert_eq!((v.judged, v.work_decided, v.fix, v.fix_rate), (6, 6, 2, Some(2.0 / 6.0)));
+        assert_eq!(view_v.summary.verdict_min, atlas_report::tasks::extras::VERDICT_RATE_MIN_TURNS);
+        std::fs::remove_file(&p.turn_judgments).unwrap();
         let sess = std::fs::read_to_string(tables.join("sessions.csv")).unwrap();
         let header: Vec<&str> = sess.lines().next().unwrap().trim_start_matches('\u{feff}').split(',').collect();
         let at = header.iter().position(|h| *h == "推定人手工数(時間)").unwrap();

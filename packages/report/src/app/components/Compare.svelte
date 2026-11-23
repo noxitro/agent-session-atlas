@@ -27,7 +27,7 @@
   import { effortLabel } from '../../lib/exec-labels.ts';
   import { wikiStateNote, type WikiState } from '../../lib/wiki.ts';
   import { MAIN_EFFORT_SHARE } from '../../lib/main-effort.ts';
-  import { RETENTION_MIN_SESSIONS } from '../../lib/retention.ts';
+  import { aggregateRetention, modeMix, RETENTION_MIN_SESSIONS } from '../../lib/retention.ts';
   import { PHASE_LABEL, PHASES, type Phase } from '../../shared/turns.ts';
   import { dec, int, modelLabel, percent } from '../../lib/format.ts';
   import type { Option } from '../../lib/filter.ts';
@@ -160,6 +160,10 @@
   const persons = $derived(byPerson ? (kind === 'phase' ? personPhasePaired(sessions, phaseA, phaseB) : personSessionPaired(listA, listB)) : null);
   const personRows = $derived(persons ? persons.rows.filter((r) => shown(r.key)) : []);
   const personRetention = $derived(persons && retention && persons.retention ? persons.retention : null);
+  // 比べた版(worktree・committed・fixed)が側の中で混ざっているときの内訳(工程どうしは両側が同じセッションなので母集団で見る)
+  const mixA = $derived(retention && kind !== 'phase' ? modeMix(a.retention) : null);
+  const mixB = $derived(retention && kind !== 'phase' ? modeMix(b.retention) : null);
+  const mixPool = $derived(retention && kind === 'phase' ? modeMix(aggregateRetention(sessions)) : null);
   const countWord = $derived(kind === 'phase' ? '依頼' : 'セッション');
   const minCount = $derived(kind === 'phase' ? COMPARE_MIN_TURNS : COMPARE_MIN_SESSIONS);
   const sideLabel = (side: 'a' | 'b'): string => {
@@ -210,6 +214,8 @@
   /** 差(B − A)。割合はポイント、件数は件数 */
   function diff(r: CompareRow): string {
     if (r.a == null || r.b == null || r.key === 'sessions' || r.key === 'scored' || r.key === 'tests-scored' || r.key === 'turns' && kind === 'phase' || r.key === 'retention-measured' || r.key === 'retention-hunks') return '';
+    // 残存の内訳(基準・比べた版・照合不可の理由)は件数を並べるだけ
+    if (r.key.startsWith('retention-baseline') || r.key.startsWith('retention-mode') || r.key.startsWith('retention-unattributable')) return '';
     return `${signed(r, r.b - r.a)}${unitWord(r)}`;
   }
   /** 差の幅(95%)。0 をまたぐかは文字でも書く(色や印だけにしない) */
@@ -389,6 +395,11 @@
       </tbody>
     </table>
   </div>
+  {#if mixA || mixB || mixPool}
+    <p class="note" role="note" data-testid="compare-retention-mixed">
+      {#if mixPool}比べる版が混ざっています({mixPool})。{:else}{#if mixA}A: 比べる版が混ざっています({mixA})。{/if}{#if mixB}B: 比べる版が混ざっています({mixB})。{/if}{/if}AI の変更の残存の割合と、比べた時点までの日数は、違う時点の版との比べを足すことになるので出しません(比べた版の行で内訳を見られます。同じ比べ方で照合し直すと出ます)。
+    </p>
+  {/if}
   {#if kind === 'effort' && effModel}
     <p class="note" data-testid="compare-effort-excluded">
       {modelLabel(effModel)} の本体の推論強度が混在のセッション {int(split.mixed)} 件・記録なし {int(split.none)} 件は、A と B のどちらにも入れていません(本体のリクエストの {Math.round(MAIN_EFFORT_SHARE * 100)}% 以上が同じ強度のセッションだけを数えます。期間の中の件数)。

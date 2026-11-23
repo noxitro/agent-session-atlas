@@ -274,6 +274,24 @@ fn turns_rejects_filters_on_import_and_m365() {
     assert!(cli(&["turns", "bundle", "--project", "p", "--session", "ab"]).turns.unwrap().ignored_filters.is_empty());
 }
 
+/// tasks の import・m365 も、judge・turns と同じく効かない絞り込みを断る(何も取り込まず、送らない)
+#[test]
+fn tasks_rejects_filters_on_import_and_m365() {
+    let d = tempfile::tempdir().unwrap();
+    let (o, n) = (d.path().join("out").to_string_lossy().into_owned(), d.path().join("notes").to_string_lossy().into_owned());
+    let e = run(&cli(&["tasks", "import", "r.md", "--project", "p", "--out", &o, "--notes-dir", &n]), &quiet).unwrap_err().to_string();
+    assert_eq!(e, "--project は tasks import では使えません(返答に入っているセッションの紐づけをすべて取り込みます)");
+    let e = run(&cli(&["tasks", "import", "r.md", "--session", "ab", "--task", "T", "--model", "m", "--out", &o, "--notes-dir", &n]), &quiet).unwrap_err().to_string();
+    assert!(e.starts_with("--session --task --model は tasks import では使えません"), "{e}");
+    let e = run(&cli(&["tasks", "m365", "--since", "2026-11-01", "--out", &o, "--notes-dir", &n]), &quiet).unwrap_err().to_string();
+    assert!(e.starts_with("--since は tasks m365 では効きません。送るのは、作ってある添付(out/task-bundle)のファイルです。"), "{e}");
+    assert!(e.contains("bin\\atlas.exe tasks bundle --session <セッション id> で添付を作ってから tasks m365"), "{e}");
+    // m365 の --model は M365 Copilot のモデルの選択なので断らない
+    assert!(cli(&["tasks", "m365", "--model", "Auto"]).tasks_cmd.unwrap().ignored_filters.is_empty());
+    // 断ったので、取り込みのファイルも紐づけも作っていない
+    assert!(!d.path().join("notes").join("task-links.json").exists());
+}
+
 /// 取り込みの後の作り直しは、取り込みのコマンドの絞り込みと記録の出し方(--full など)を引き継がず、既定の出し方で作る。
 /// 出力先・設定のフォルダは引き継ぐ
 #[test]

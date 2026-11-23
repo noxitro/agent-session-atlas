@@ -736,7 +736,7 @@ mod tests {
     /// 形の誤りの文が返ってきたら直して書き直すことを、同じ言い方で書く
     #[test]
     fn folder_instructions_share_the_reading_rules() {
-        let tm = crate::turn_bundle::TurnBundleManifest { version: 1, generated_at: "t".into(), phases: vec!["実装".into()], count: 1, decidable: None, unjudged_only: false, chunks: vec![], parts: vec![], skipped: vec![] };
+        let tm = crate::turn_bundle::TurnBundleManifest { version: 1, generated_at: "t".into(), phases: vec!["実装".into()], count: 1, decidable: None, unjudged_only: false, chunks: vec![], parts: vec![], skipped: vec![], over_limit: None };
         let all = [crate::rubric::render_instructions(1, "t"), crate::turn_bundle::render_turn_instructions(&tm), render_task_instructions(1, "t")];
         for (i, ins) in all.iter().enumerate() {
             for s in ["件数とファイルの一覧を確かめるためのもので、全部を読まなくてかまいません", "は件数とファイルの一覧の確認用で、全部を読まなくてかまいません", "だけを根拠に", "並べて読んでもかまいませんが", "何も取り込まれず、「何件目(どのセッション)の、どの項目が、どう違うか」", "を書き直します(直した項目だけでなく、全体を書き直します)"] {

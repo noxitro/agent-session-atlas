@@ -5,7 +5,7 @@ import { EFFORT_ORDER, orderBy } from './exec.ts';
 import { localDayStart, sessionTime } from './filter.ts';
 import { mainEffortOf, mainModelsOf } from './main-effort.ts';
 import { PHASES, REQUEST_KINDS, type Phase, type TurnBucket } from '../shared/turns.ts';
-import { aggregateRetention, enoughMeasured, measuredOf, median, RETENTION_MIN_SESSIONS, retentionByPhase, shareOf, type RetentionAgg, type StatusTuple } from './retention.ts';
+import { aggregateRetention, enoughMeasured, measuredOf, median, MODE_LABEL, modeMix, REASON_LABEL, RETENTION_MIN_SESSIONS, RETENTION_MODES, retentionByPhase, shareOf, unattributableByCount, type RetentionAgg, type StatusTuple } from './retention.ts';
 import { turnAggregate, type TurnTuple } from './turns.ts';
 import type { SessionSummary } from './types.ts';
 import { wikiReferenced } from './wiki.ts';
@@ -242,10 +242,13 @@ export function compareRows(a: CompareSide, b: CompareSide, o: { byTurnCount?: b
     const m = (x: number[]): number | null => (x.length < COMPARE_MIN_SESSIONS ? null : mean(x));
     return { key, label, unit, a: m(va), b: m(vb), note, ci: enough(va.length, vb.length) ? welchDiff(va, vb) : null };
   };
-  // 残存の割合を出すかは、残存の節と同じ決まり(照合できたセッションが RETENTION_MIN_SESSIONS 以上)
-  const keptShare = (s: CompareSide): number | null => keptOf(s.retention.hunks, s.retention.measured);
-  const missingShare = (s: CompareSide): number | null => shareOf(s.retention.hunks, 2, s.retention.measured);
-  return [
+  // 残存の割合を出すかは、残存の節と同じ決まり(照合できたセッションが RETENTION_MIN_SESSIONS 以上)。
+  // 側の中で比べた版(worktree・committed・fixed)が混ざっていれば、違う時点との比べを足すことになるので出さない(modeMix)
+  const mixed = (s: CompareSide): boolean => modeMix(s.retention) != null;
+  const keptShare = (s: CompareSide): number | null => (mixed(s) ? null : keptOf(s.retention.hunks, s.retention.measured));
+  const missingShare = (s: CompareSide): number | null => (mixed(s) ? null : shareOf(s.retention.hunks, 2, s.retention.measured));
+  const lagMedian = (s: CompareSide): number | null => (mixed(s) || !enoughMeasured(s.retention.measured) ? null : median(s.retention.lags));
+  const base: CompareRow[] = [
     row('sessions', 'セッション', 'count', (s) => s.sessions, ''),
     share('no-rework', '手戻りのないセッションの割合', (s) => s.noRework, '採点できたセッションのうち、2 件目以降の依頼に直し・差し戻しが無く、どの依頼にも中断が無かったもの'),
     ...(o.byTurnCount
@@ -269,10 +272,40 @@ export function compareRows(a: CompareSide, b: CompareSide, o: { byTurnCount?: b
     share('tests-first-pass', '最初のテストの実行で全部通ったセッションの割合', (s) => s.testsFirstPass, 'テストを実行したセッション(テストの結果の記録が 1 回以上あるもの)のうち、最初の実行で全部通ったもの。最初の実行は、そのとき走らせたテストだけの結果。テストを走らせるか・いつ走らせるかは条件で変わりうるので、テストを実行したセッションの数も見比べる'),
     share('tests-last-failing', '最後に通っていないテストが残ったセッションの割合', (s) => s.testsLastFailing, 'テストを実行したセッションのうち、最後の実行の後に通っていないテストがあるもの(未達と、通った後に不合格)。小さいほど良い'),
     row('retention-measured', '照合できたセッション(AI の変更の残存の分母)', 'count', (s) => s.retention.measured, 'AI の変更があったセッションのうち'),
-    row('retention-kept', '残っている(そのまま + 直されて)割合', 'rate', keptShare, `照合できたまとまりに対する割合。照合できたセッションが ${RETENTION_MIN_SESSIONS} 件未満なら —`),
-    row('retention-missing', '見つからない割合', 'rate', missingShare, '照合できたまとまりに対する割合'),
-    row('retention-lag', 'セッションの終わりから比べた時点まで(中央値)', 'days', (s) => (enoughMeasured(s.retention.measured) ? median(s.retention.lags) : null), '照合できたセッション。両側で大きく違うと、後から人が手を入れた時間が違うので残存の割合を比べにくい'),
+    row('retention-kept', '残っている(そのまま + 直されて)割合', 'rate', keptShare, `単位はまとまり。照合できたまとまり(照合不可を除く)に対する、そのまま残る + 直されて残るの割合。照合できたセッションが ${RETENTION_MIN_SESSIONS} 件未満か、比べた版が混ざっていれば —`),
+    row('retention-missing', '見つからない割合', 'rate', missingShare, '単位はまとまり。照合できたまとまりに対する、見つからないの割合(比べた版が混ざっていれば —)'),
+    row('retention-lag', 'セッションの終わりから比べた時点まで(中央値)', 'days', lagMedian, '照合できたセッション。両側で大きく違うと、後から人が手を入れた時間が違うので残存の割合を比べにくい'),
   ];
+  return [...base, ...retentionDetailRows(a, b)];
+}
+
+/** 照合不可の理由を、両側を合わせて多い順にこの数だけ行にする(残りは「その他の理由」の 1 行) */
+export const RETENTION_REASON_ROWS = 3;
+
+/**
+ * AI の変更の残存の、割合のほかに並べる行(AGENTS.md の決まり): 開始時の基準の記録・推定の件数、比べた版の内訳、
+ * 照合不可の理由別の件数(両側を合わせて多い順に RETENTION_REASON_ROWS 件と、その他)。どれも件数の行で、差は出さない
+ */
+export function retentionDetailRows(a: CompareSide, b: CompareSide): CompareRow[] {
+  const count = (key: string, label: string, f: (r: RetentionAgg) => number, note: string): CompareRow => ({ key, label, unit: 'count', a: f(a.retention), b: f(b.retention), note });
+  const rows: CompareRow[] = [
+    count('retention-baseline-observed', '開始時の基準: 記録', (r) => r.baseline.observed, '照合できたセッションのうち、開始時の基準がログに残った開始時のコミット(記録)のもの'),
+    count('retention-baseline-estimated', '開始時の基準: 推定', (r) => r.baseline.estimated, '照合できたセッションのうち、開始時の基準を開始時刻から探した版(推定)のもの。記録と推定は分けて読む'),
+  ];
+  for (const m of RETENTION_MODES) {
+    if ((a.retention.modes?.[m] ?? 0) + (b.retention.modes?.[m] ?? 0) === 0) continue;
+    rows.push(count(`retention-mode-${m}`, `比べた版: ${MODE_LABEL[m]}`, (r) => r.modes?.[m] ?? 0, `照合できたセッションのうち、${m} で比べたもの。側の中で混ざっていれば残存の割合は出さない`));
+  }
+  rows.push(count('retention-unattributable', '照合不可のセッション', (r) => r.unattributableTotal, 'AI の変更はあるが、どのまとまりも照合できなかったセッション(残存の割合の分母に入れない)'));
+  // 理由は両側を合わせて多い順(同じ数なら REASONS の順)
+  const both: RetentionAgg['unattributable'] = {};
+  for (const r of [a.retention, b.retention]) for (const [k, n] of unattributableByCount(r)) both[k] = (both[k] ?? 0) + n;
+  const order = unattributableByCount({ unattributable: both }).map(([k]) => k);
+  const top = order.slice(0, RETENTION_REASON_ROWS);
+  for (const k of top) rows.push(count(`retention-unattributable-${k}`, `照合不可: ${REASON_LABEL[k]}`, (r) => r.unattributable[k] ?? 0, '照合不可のセッションの理由別の件数'));
+  const rest = order.slice(RETENTION_REASON_ROWS);
+  if (rest.length) rows.push(count('retention-unattributable-other', '照合不可: その他の理由', (r) => rest.reduce((n, k) => n + (r.unattributable[k] ?? 0), 0), `上の ${RETENTION_REASON_ROWS} つのほかの理由(${rest.map((k) => REASON_LABEL[k]).join('・')})`));
+  return rows;
 }
 
 /**
@@ -523,7 +556,9 @@ export function comparePhaseRows(sessions: readonly CompareSession[], a: Phase, 
   const perTurn = (v: number, n: number): number | null => (n < COMPARE_MIN_TURNS ? null : v / n);
   const share = (part: number, whole: number, n: number): number | null => (n < COMPARE_MIN_TURNS || whole <= 0 ? null : part / whole);
   const row = (key: string, label: string, unit: CompareRow['unit'], f: (p: Phase) => number | null, note: string): CompareRow => ({ key, label, unit, a: f(a), b: f(b), note });
-  const retShare = (p: Phase, i: 'kept' | 'missing'): number | null => (i === 'kept' ? keptOf(hunks(p), retSessions(p)) : shareOf(hunks(p), 2, retSessions(p)));
+  // 工程どうしは同じセッションから両側を作るので、比べた版が混ざっているかは母集団の照合できたセッションで見る(混ざっていれば割合を出さない)
+  const mixed = modeMix(aggregateRetention(sessions)) != null;
+  const retShare = (p: Phase, i: 'kept' | 'missing'): number | null => (mixed ? null : i === 'kept' ? keptOf(hunks(p), retSessions(p)) : shareOf(hunks(p), 2, retSessions(p)));
   return [
     row('turns', '依頼', 'count', (p) => bucket(p).turns, '依頼(ターン)の数'),
     row('active', '実働 / 依頼', 'minutes', (p) => perTurn(bucket(p).activeMs, bucket(p).turns), '平均(記録の無い依頼は 0 として足す。5 件未満なら —)'),
@@ -533,7 +568,7 @@ export function comparePhaseRows(sessions: readonly CompareSession[], a: Phase, 
     row('aiu', 'AIU / 依頼', 'aiu', (p) => perTurn(bucket(p).nanoAiu / 1e9, bucket(p).turns), '平均(5 件未満なら —)'),
     row('retention-measured', '照合できたセッション(その工程にまとまりがあるもの)', 'count', retSessions, `AI の変更の残存の割合を出すかを決める数(${RETENTION_MIN_SESSIONS} 件未満なら割合は —)`),
     row('retention-hunks', '照合できたまとまり', 'count', (p) => measuredOf(hunks(p)), '照合できたセッションの、その工程の依頼で AI が足したまとまり'),
-    row('retention-kept', '残っている(そのまま + 直されて)割合', 'rate', (p) => retShare(p, 'kept'), `照合できたまとまりに対する割合(照合できたセッションが ${RETENTION_MIN_SESSIONS} 件未満なら —)`),
-    row('retention-missing', '見つからない割合', 'rate', (p) => retShare(p, 'missing'), '照合できたまとまりに対する割合'),
+    row('retention-kept', '残っている(そのまま + 直されて)割合', 'rate', (p) => retShare(p, 'kept'), `単位はまとまり。照合できたまとまり(照合不可を除く)に対する、そのまま残る + 直されて残るの割合(照合できたセッションが ${RETENTION_MIN_SESSIONS} 件未満か、比べた版が混ざっていれば —)`),
+    row('retention-missing', '見つからない割合', 'rate', (p) => retShare(p, 'missing'), '単位はまとまり。照合できたまとまりに対する、見つからないの割合(比べた版が混ざっていれば —)'),
   ];
 }

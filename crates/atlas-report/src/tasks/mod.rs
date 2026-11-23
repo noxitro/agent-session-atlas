@@ -3,6 +3,7 @@
 //! 送り先から集計したときは、送った人がセッションごとに添えたタスクの記録(atlas-session.json の task。sender.rs)から同じものを作る。
 //! 画面に埋め込む形は view.rs。LLM に紐づけを頼む束と返答の検証は atlas-judge の task_link.rs。
 
+pub mod extras;
 pub mod hours;
 pub mod links;
 pub mod metrics;

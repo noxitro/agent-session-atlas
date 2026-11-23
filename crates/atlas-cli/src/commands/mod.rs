@@ -67,12 +67,18 @@ pub fn run(o: &CliOptions, log: Log<'_>) -> Result<RunResult> {
     r
 }
 
-/// judge・turns の import・m365 に、そこでは効かない絞り込みを付けたときの知らせ(黙って返答や添付の全体を扱わないように止める)
-fn ignored_filters_message(cmd: &str, action: &str, flags: &[String]) -> String {
+/// judge・turns・tasks の import・m365 に、そこでは効かない絞り込みを付けたときの知らせ(黙って返答や添付の全体を扱わないように止める)
+pub(crate) fn ignored_filters_message(cmd: &str, action: &str, flags: &[String]) -> String {
     let list = flags.join(" ");
-    let (what, bundle, make) = if cmd == "turns" { ("依頼", "out/turn-bundle", "turns bundle") } else { ("セッション", "out/bundle", "bundle") };
+    let (what, bundle, make) = match cmd {
+        "turns" => ("依頼", "out/turn-bundle", "turns bundle"),
+        "tasks" => ("セッションの紐づけ", "out/task-bundle", "tasks bundle"),
+        _ => ("セッション", "out/bundle", "bundle"),
+    };
     match action {
         "import" => format!("{list} は {cmd} import では使えません(返答に入っている{what}をすべて取り込みます)"),
+        // tasks bundle は --session だけで絞る(期間やプロジェクトでは絞らない)
+        _ if cmd == "tasks" => format!("{list} は {cmd} {action} では効きません。送るのは、作ってある添付({bundle})のファイルです。\nセッションを絞るときは、先に bin\\atlas.exe {make} --session <セッション id> で添付を作ってから {cmd} {action} を実行してください"),
         _ => format!("{list} は {cmd} {action} では効きません。送るのは、作ってある添付({bundle})のファイルです。\n絞り込むときは、先に bin\\atlas.exe {make} {list} --unjudged で添付を作ってから {cmd} {action} を実行してください"),
     }
 }

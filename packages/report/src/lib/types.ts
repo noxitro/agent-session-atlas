@@ -331,7 +331,7 @@ export interface TaskDoneAtCounts {
 }
 
 /** 比べられるタスクから外した理由 */
-export type TaskExcluded = 'notDone' | 'doneUnobserved' | 'afterDone' | 'noStart' | 'unjudged' | 'lowConfidence';
+export type TaskExcluded = 'notDone' | 'doneUnobserved' | 'afterDone' | 'noStart' | 'noWorkHours' | 'unjudged' | 'lowConfidence';
 
 /** タスク 1 件の値(Rust の tasks::metrics::TaskRow。画面は出すだけ) */
 export interface TaskRow {
@@ -368,6 +368,37 @@ export interface TaskRow {
   links: { machine: number; llm: number; manual: number };
   comparable: boolean;
   excluded: TaskExcluded | null;
+  /**
+   * 詰まりを見る列(Rust の tasks::extras。紐づいたセッションすべてを 1 つずつ数え、等分しない)。古い埋め込みには無い。
+   * people: 人の記録のあるセッションの人の数(どのセッションにも人の記録が無ければ null)
+   */
+  people?: number | null;
+  /** 主なモデル(紐づいたセッションの本体のリクエストがいちばん多いモデル)と、その割合(0〜1)。記録が無ければ null */
+  mainModel?: string | null;
+  mainModelShare?: number | null;
+  /** ツールの失敗・拒否・中断・文脈圧縮の数 */
+  friction?: TaskFriction;
+  /** 依頼ごとの判定(LLM の推定)。判定した依頼が無ければ null */
+  verdicts?: TaskVerdicts | null;
+}
+
+export interface TaskFriction {
+  toolFailures: number;
+  aborts: number;
+  compactions: number;
+}
+
+/** タスクの依頼ごとの判定。割合(0〜1)は分母(直しと不採用は判定できた作業の依頼、的外れは判定できた質問)が TaskSummary.verdictMin に届かなければ null */
+export interface TaskVerdicts {
+  judged: number;
+  workDecided: number;
+  questionDecided: number;
+  fix: number;
+  rejected: number;
+  offTarget: number;
+  fixRate: number | null;
+  rejectedRate: number | null;
+  offTargetRate: number | null;
 }
 
 /** タスクの合計(比べられるタスクだけ) */
@@ -379,7 +410,8 @@ export interface TaskSummary {
   included: number;
   /** 比べられるタスク(included)の、完了の時刻の出所ごとの数。古い埋め込みには無い */
   includedSources?: TaskDoneAtCounts;
-  excluded: { notDone: number; doneUnobserved: number; afterDone: number; noStart: number; unjudged: number; lowConfidence: number };
+  /** noWorkHours は古い埋め込みには無い(0 として読む) */
+  excluded: { notDone: number; doneUnobserved: number; afterDone: number; noStart: number; noWorkHours?: number; unjudged: number; lowConfidence: number };
   workMs: number;
   humanHours: number;
   aiActiveMs: number;
@@ -389,6 +421,8 @@ export interface TaskSummary {
   /** AI を使わなかった場合 ÷ AI を使った場合。比べられるタスクが ratioMin に届かなければ null */
   ratio: number | null;
   ratioMin: number;
+  /** タスクごとの依頼ごとの判定の割合を出す、分母の依頼の数の下限(lib/compare.ts の COMPARE_MIN_TURNS と同じ数)。古い埋め込みには無い */
+  verdictMin?: number;
 }
 
 export interface TaskLinkView {

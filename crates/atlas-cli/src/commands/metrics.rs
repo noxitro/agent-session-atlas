@@ -284,11 +284,29 @@ pub fn tasks_table(v: &atlas_report::tasks::view::TasksView) -> atlas_core::tabl
         "紐づけ(手動)",
         "比べられる",
         "比べない理由",
+        // 詰まりを見る列(紐づいたセッションすべての値。等分しない。atlas_report::tasks::extras)
+        "人数",
+        "主なモデル",
+        "主なモデルの割合",
+        "ツールの失敗・拒否",
+        "中断",
+        "文脈圧縮",
+        "判定した依頼",
+        "判定できた作業の依頼",
+        "直し",
+        "不採用",
+        "判定できた質問",
+        "的外れ",
+        "直しの割合",
+        "不採用の割合",
+        "的外れの割合",
     ]
     .iter()
     .map(|s| s.to_string())
     .collect();
     let hours = |ms: f64| Cell::Num(atlas_core::js::round(ms / 36_000.0) / 100.0);
+    // 割合は 0〜1 の小数 3 桁(分母が下限に届かなければ空)
+    let rate = |x: Option<f64>| x.map_or(Cell::Null, |x| Cell::Num(atlas_core::js::round(x * 1000.0) / 1000.0));
     let rows = v
         .items
         .iter()
@@ -316,6 +334,21 @@ pub fn tasks_table(v: &atlas_report::tasks::view::TasksView) -> atlas_core::tabl
                 t.links.manual.into(),
                 if t.sessions == 0 { Cell::Null } else { Cell::Bool(t.comparable) },
                 t.excluded.map_or(Cell::Null, |e| e.label().into()),
+                t.people.map_or(Cell::Null, Cell::from),
+                t.main_model.as_deref().into(),
+                t.main_model_share.map_or(Cell::Null, |x| Cell::Num(atlas_core::js::round(x * 1000.0) / 1000.0)),
+                if t.sessions == 0 { Cell::Null } else { t.friction.tool_failures.into() },
+                if t.sessions == 0 { Cell::Null } else { t.friction.aborts.into() },
+                if t.sessions == 0 { Cell::Null } else { t.friction.compactions.into() },
+                t.verdicts.as_ref().map_or(Cell::Null, |v| v.judged.into()),
+                t.verdicts.as_ref().map_or(Cell::Null, |v| v.work_decided.into()),
+                t.verdicts.as_ref().map_or(Cell::Null, |v| v.fix.into()),
+                t.verdicts.as_ref().map_or(Cell::Null, |v| v.rejected.into()),
+                t.verdicts.as_ref().map_or(Cell::Null, |v| v.question_decided.into()),
+                t.verdicts.as_ref().map_or(Cell::Null, |v| v.off_target.into()),
+                rate(t.verdicts.as_ref().and_then(|v| v.fix_rate)),
+                rate(t.verdicts.as_ref().and_then(|v| v.rejected_rate)),
+                rate(t.verdicts.as_ref().and_then(|v| v.off_target_rate)),
             ]
         })
         .collect();

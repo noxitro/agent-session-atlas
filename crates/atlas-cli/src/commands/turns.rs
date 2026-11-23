@@ -8,7 +8,7 @@ use crate::args::TurnsCliOptions;
 use crate::config::phase_names_in;
 use crate::paths::{resolve, Paths};
 use anyhow::Result;
-use atlas_judge::turn_bundle::{build_turn_bundle, decidable_note, turn_import_phases, turn_zip_names, TurnBundleOptions};
+use atlas_judge::turn_bundle::{build_turn_bundle, decidable_note, over_limit_note, turn_import_phases, turn_zip_names, TurnBundleOptions};
 use atlas_judge::turn_schema::{import_turn_judgments_text, read_turn_judgments, TurnImportOptions};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -53,6 +53,9 @@ pub fn run_turns(p: &Paths, f: &SessionFilter, t: &TurnsCliOptions, zip: bool, l
         ));
         if let Some(note) = decidable_note(m.count, m.decidable.as_ref()) {
             log(&format!("turns bundle: {note}"));
+        }
+        if let Some(o) = &m.over_limit {
+            log(&format!("turns bundle: 注意 {}", over_limit_note(o)));
         }
         log(&format!("turns bundle: 工程名 {}(atlas.config.json の phases で変えられます)", phases.join(" / ")));
         if let Some((path, z)) = super::bundle::zip_or_drop(&p.turn_bundle, &p.out.join("turn-bundle"), zip, &turn_zip_names(&m), "turns bundle", atlas_judge::zip::BUNDLE_NARROW, log)? {

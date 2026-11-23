@@ -14,12 +14,15 @@
     verdicts = null,
     verdictModel = null,
     verdictRanAt = null,
+    overLimit = { turns: 0, sessions: 0 },
     editable = false,
   }: {
     agg: TurnAggregate;
     verdicts?: VerdictAggregate | null;
     verdictModel?: string | null;
     verdictRanAt?: string | null;
+    /** 1 セッションの依頼の上限を超えて、依頼ごとの記録と判定の束に入らなかった依頼(lib/verdicts.ts の turnsOverLimit) */
+    overLimit?: { turns: number; sessions: number };
     /** serve から開き、操作のボタンがある(案内の文を分ける) */
     editable?: boolean;
   } = $props();
@@ -144,7 +147,7 @@
         </tbody>
       </table>
     </div>
-    <TurnVerdicts agg={verdicts} model={verdictModel} ranAt={verdictRanAt} {editable} />
+    <TurnVerdicts agg={verdicts} model={verdictModel} ranAt={verdictRanAt} {overLimit} {editable} />
   {/if}
 </section>
 

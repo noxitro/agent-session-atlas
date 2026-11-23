@@ -19,6 +19,7 @@
 //! 工数(稼働時間帯の終わりまで)と、候補と「完了の後に始まった」の判定(その日の終わり 24:00。TaskState::done_cutoff_ms)は、
 //! 日付の文字と集計する PC の時間帯から決める(見る PC の時間帯で日付がずれないように)。
 //! 前の版の tasks.json(doneDateOnly だけ)は、前の版と同じ計算で日付を決める(hours::done_date_text)。
+//! そのようなタスクがあれば、次の読み込みでは同じ更新時刻の XML でも読み直して doneDate を埋める(読めなければ前の版と同じ計算の日付で埋める)。
 //! 「同じ読み方」かは、稼働時間帯を除いた目印(TaskSource::reading_key)で見る(稼働時間帯を変えた回に完了したタスクも、完了に変わるのを見たとする)。
 //! 読み直すかは、稼働時間帯も入れた目印(settings_key)で決める(日付だけの完了日の時刻が変わるため)。
 //! 書き込みは壊れたファイルを上書きしない(直してもらう)。読んで書く間はファイルのロック(with_file_lock)を持つ。
@@ -235,6 +236,18 @@ pub struct SyncSummary {
     pub done_at_unreadable: usize,
     /// 完了日時の値を読めなかったが、前に記録の時刻を決めてあったので、前の記録を残した数(done_at_unreadable とは別に数える)
     pub done_at_unreadable_kept: usize,
+    /// 前の版が書いた日付だけの完了日(doneDateOnly だけで doneDate が無いもの)に、暦の日付の文字を埋めた数
+    pub dates_filled: usize,
+}
+
+/// 前の版が書いた日付だけの完了日(doneDateOnly だけで doneDate が無いもの)か。あれば、同じ XML でも読み直して日付の文字を埋める
+fn lacks_done_date(t: &TaskState) -> bool {
+    t.done_date_only && t.done_date.is_none() && t.done_source() == Some(DoneAtSource::Recorded)
+}
+
+/// 日付の文字の無い日付だけの完了日があるか(前の版の tasks.json。次の読み込みで XML を読み直す)
+pub fn needs_date_refill(f: &TasksFile) -> bool {
+    f.tasks.values().any(lacks_done_date)
 }
 
 /// 2000-01-01T00:00:00Z(これより前の完了日時は読めない値とする。送った人の記録の日時と同じ範囲)
@@ -248,10 +261,14 @@ pub fn apply_read(f: &mut TasksFile, read: &XmlRead, stamp: TasksStamp, is_done:
 
 /// apply_read に、XML の完了日時の読み方(読めなければ None)を足したもの。
 /// 読めても、2000 年より前・XML の更新時刻(観測の時刻)の 1 日後より後のものは、読めない値とする(書き間違い・予定日の取り違えなど)
+/// 前の版が書いた日付だけの完了日(doneDate の無いもの)があれば、同じ XML でも読み直して日付の文字を埋める
+/// (XML から読めなかったものは、前の版と同じ計算の日付で埋め、次からは読み直さない)
 pub fn apply_read_with(f: &mut TasksFile, read: &XmlRead, stamp: TasksStamp, is_done: impl Fn(&str) -> bool, done_at_of: impl Fn(&str) -> Option<super::hours::DoneAt>) -> SyncSummary {
-    if f.source.as_ref() == Some(&stamp) {
+    let refill = needs_date_refill(f);
+    if f.source.as_ref() == Some(&stamp) && !refill {
         return SyncSummary { unchanged: true, total: read.tasks.len(), ..Default::default() };
     }
+    let lacking = f.tasks.values().filter(|t| lacks_done_date(t)).count();
     if is_older(f, &stamp, atlas_core::jsdate::now_ms()) {
         return SyncSummary { unchanged: true, older: true, total: read.tasks.len(), ..Default::default() };
     }
@@ -346,7 +363,12 @@ pub fn apply_read_with(f: &mut TasksFile, read: &XmlRead, stamp: TasksStamp, is_
             cur.missing = true;
             s.went_missing += 1;
         }
+        // XML から日付の文字を読めなかった前の版の日付だけの完了日は、前の版と同じ計算の日付で埋める(毎回読み直さないように)
+        if lacks_done_date(cur) {
+            cur.done_date = super::hours::done_date_text(None, cur.done_at.as_deref());
+        }
     }
+    s.dates_filled = lacking - f.tasks.values().filter(|t| lacks_done_date(t)).count();
     f.source = Some(stamp);
     s
 }
@@ -402,8 +424,9 @@ pub fn sync_tasks(source: &TaskSource, state_path: &Path) -> std::result::Result
 
 fn sync_locked(source: &TaskSource, state_path: &Path) -> std::result::Result<SyncReport, String> {
     let mut state = load_tasks_for_write(state_path).map_err(|e| e.to_string())?;
-    // 前に読んだときと同じ更新時刻なら、XML を読み直さない
+    // 前に読んだときと同じ更新時刻なら、XML を読み直さない(前の版が書いた日付だけの完了日に、日付の文字が無いときは読み直す)
     if let (Ok(meta), Some(prev)) = (std::fs::metadata(&source.file), state.source.as_ref())
+        && !needs_date_refill(&state)
         && meta.is_file()
         && meta.len() <= XML_SIZE_LIMIT
     {
@@ -434,6 +457,9 @@ fn sync_locked(source: &TaskSource, state_path: &Path) -> std::result::Result<Sy
     const READABLE: &str = "読める書き方: 2026-11-20T15:30:00+09:00 などの ISO 8601、2026-11-20・2026/11/20(後ろに 15:30 などの時刻を付けられます)。2000 年より前と、XML の書き出しの 1 日後より後の日時は読みません";
     if summary.done_at_unreadable > 0 {
         notes.push(format!("完了日時(設定の tasks.doneAt)を読めない完了のタスク {} 件は、完了を見た書き出しの時刻(観測)で数えます。{READABLE}", summary.done_at_unreadable));
+    }
+    if summary.dates_filled > 0 {
+        notes.push(format!("前の版の atlas が書いた日付だけの完了日 {} 件に、暦の日付の文字(doneDate)を埋めました(XML を読み直しました)", summary.dates_filled));
     }
     if summary.done_at_unreadable_kept > 0 {
         notes.push(format!("完了日時(設定の tasks.doneAt)を今回は読めなかった完了のタスク {} 件は、前に読んだ完了日時(記録)を残します。{READABLE}", summary.done_at_unreadable_kept));
@@ -590,6 +616,43 @@ mod tests {
             // 完了日時の項目を指さなければ、目印は 1 つ(reading は書かない)
             let plain = TasksStamp::of(&TaskSource::with_file(&xml), "f".into(), "p".into(), "t".into());
             assert_eq!((plain.reading.as_deref(), plain.reading_key()), (None, TaskSource::with_file(&xml).settings_key().as_str()));
+        });
+    }
+
+    /// 前の版が書いた日付だけの完了日(doneDateOnly だけで doneDate が無い)は、同じ更新時刻の XML でも次の読み込みで読み直して doneDate を埋める。
+    /// 埋めた後は読み直さない。XML から読めなくなったものは、前の版と同じ計算の日付で埋める
+    #[test]
+    fn old_date_only_records_are_reread_to_fill_the_date() {
+        atlas_core::jsdate::with_zone(&atlas_core::jsdate::TimeZone::fixed(atlas_core::jsdate::Offset::constant(9)), || {
+            let d = tempfile::tempdir().unwrap();
+            let xml = d.path().join("export.xml");
+            let state = d.path().join(crate::tasks::TASKS_FILE_NAME);
+            let src = TaskSource { done_at: Some("ClosedDate".into()), ..TaskSource::with_file(&xml) };
+            std::fs::write(&xml, r#"<Tasks><Task Id="A" Status="Done" ClosedDate="2026/11/20"/><Task Id="C" Status="Done" ClosedDate="2026/11/18"/></Tasks>"#).unwrap();
+            let now = atlas_core::jsdate::now_ms();
+            atlas_core::jsfs::utimes(&xml, now - 3_600_000, now - 3_600_000).unwrap();
+            let r = sync_tasks(&src, &state).unwrap();
+            assert_eq!(r.state.tasks["A"].done_date.as_deref(), Some("2026-11-20"));
+            // 前の版の tasks.json にする(doneDate を消す)
+            let mut v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&state).unwrap()).unwrap();
+            for id in ["A", "C"] {
+                v["tasks"][id].as_object_mut().unwrap().remove("doneDate");
+            }
+            std::fs::write(&state, serde_json::to_string(&v).unwrap()).unwrap();
+            assert!(needs_date_refill(&load_tasks(&state).file));
+            // 同じ更新時刻の XML でも読み直して埋める(C は XML から日付を読めなくなったので、前の版と同じ計算で埋める)
+            std::fs::write(&xml, r#"<Tasks><Task Id="A" Status="Done" ClosedDate="2026/11/20"/><Task Id="C" Status="Done" ClosedDate="先週"/></Tasks>"#).unwrap();
+            atlas_core::jsfs::utimes(&xml, now - 3_600_000, now - 3_600_000).unwrap();
+            let r = sync_tasks(&src, &state).unwrap();
+            assert!(!r.summary.unchanged);
+            assert_eq!(r.summary.dates_filled, 2);
+            assert!(r.notes.iter().any(|n| n.contains("日付だけの完了日 2 件に、暦の日付の文字(doneDate)を埋めました")), "{:?}", r.notes);
+            let saved = load_tasks(&state).file;
+            assert_eq!((saved.tasks["A"].done_date.as_deref(), saved.tasks["C"].done_date.as_deref()), (Some("2026-11-20"), Some("2026-11-18")));
+            assert!(!needs_date_refill(&saved));
+            // 埋めた後は、同じ更新時刻なら読み直さない
+            let r = sync_tasks(&src, &state).unwrap();
+            assert!(r.summary.unchanged);
         });
     }
 

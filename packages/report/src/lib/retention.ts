@@ -20,8 +20,8 @@ export interface RetentionLike {
   computedOn?: 'local' | 'sender';
   /** まとまりごとの状態と、作った編集の時刻(工程ごとの集計に使う)・照合に使ったリポジトリ(VCS 別の数えに使う) */
   hunks?: readonly { status: RetentionStatus; at?: string; vcs?: VcsKind; root?: string }[];
-  /** 比べた時点(evaluated.at)と、セッションの終わり。間の日数を出す */
-  evaluated?: { at: string } | null;
+  /** 比べた時点(evaluated.at)と、セッションの終わり。間の日数を出す。mode は比べた版の決め方 */
+  evaluated?: { at: string; mode?: RetentionMode } | null;
   sessionEnd?: string | null;
   /** ログから変更を取り出せなかった編集の数 */
   unreadEdits?: number;
@@ -150,7 +150,12 @@ export interface RetentionItem {
   lag?: number;
   /** ログから変更を取り出せなかった編集の数(0 は省略) */
   unread?: number;
+  /** 比べた版の決め方(evaluated.mode)。比べた時点の記録が無い結果・古い埋め込みには無い */
+  mode?: RetentionMode;
 }
+
+/** 比べた版の決め方(worktree = 今の作業ツリー、committed = 最後に取り込んだ版、fixed = セッションの終わりから決まった日数後の版) */
+export type RetentionMode = 'worktree' | 'committed' | 'fixed';
 
 /** 照合の全体の条件(ReportData.retention) */
 export interface RetentionMeta {
@@ -213,6 +218,7 @@ export function retentionItem(r: RetentionLike, turns: readonly TurnStart[] = []
     mapped: !!r.pathMapped,
     hunks: tuple(r.counts),
     lines: tuple(r.lines),
+    ...(r.evaluated?.mode ? { mode: r.evaluated.mode } : {}),
   };
 }
 
@@ -265,11 +271,13 @@ export interface RetentionAgg {
   /** ログから変更を取り出せなかった編集(照合していないものも含む、渡したセッションの全部) */
   unread: number;
   unreadSessions: number;
+  /** 照合できたセッションの、比べた版の決め方(mode)ごとの数(記録の無いものは入れない)。2 つ以上あれば、比べる版が混ざっている */
+  modes: Partial<Record<RetentionMode, number>>;
 }
 
 /** 照合の結果を集計する(照合できたセッションだけを分母にし、照合の範囲を一緒に数える) */
 export function aggregateRetention(sessions: readonly { retention?: RetentionItem | null }[]): RetentionAgg {
-  const a: RetentionAgg = { sessions: sessions.length, notChecked: 0, none: 0, withAi: 0, measured: 0, unattributable: {}, unattributableTotal: 0, baseline: { observed: 0, estimated: 0 }, byVcs: {}, multiVcs: 0, sender: 0, mapped: 0, hunks: zero(), lines: zero(), lags: [], unread: 0, unreadSessions: 0 };
+  const a: RetentionAgg = { sessions: sessions.length, notChecked: 0, none: 0, withAi: 0, measured: 0, unattributable: {}, unattributableTotal: 0, baseline: { observed: 0, estimated: 0 }, byVcs: {}, multiVcs: 0, sender: 0, mapped: 0, hunks: zero(), lines: zero(), lags: [], unread: 0, unreadSessions: 0, modes: {} };
   for (const s of sessions) {
     const r = s.retention;
     if (r?.unread) ((a.unread += r.unread), a.unreadSessions++);
@@ -297,10 +305,30 @@ export function aggregateRetention(sessions: readonly { retention?: RetentionIte
     if (r.on === 'sender') a.sender++;
     if (r.mapped) a.mapped++;
     if (r.lag != null) a.lags.push(r.lag);
+    if (r.mode) a.modes[r.mode] = (a.modes[r.mode] ?? 0) + 1;
     add(a.hunks, r.hunks);
     add(a.lines, r.lines);
   }
   return a;
+}
+
+/** 比べた版の決め方の並び(core の EVAL_MODES と同じ) */
+export const RETENTION_MODES = ['worktree', 'committed', 'fixed'] as const satisfies readonly RetentionMode[];
+
+/**
+ * 照合できたセッションの比べた版が混ざっているときの内訳(例: worktree 3・fixed 2)。1 つだけ・記録が無いときは null。
+ * 混ざっていると、残存の割合は違う時点の版との比べを足したものになるので、割合を出さない(「比べる」)
+ */
+export function modeMix(a: Pick<RetentionAgg, 'modes'>): string | null {
+  const ms = RETENTION_MODES.filter((m) => (a.modes?.[m] ?? 0) > 0);
+  return ms.length > 1 ? ms.map((m) => `${m} ${a.modes[m]}`).join('・') : null;
+}
+
+/** 照合不可の理由を多い順に(同じ数なら REASONS の順) */
+export function unattributableByCount(a: Pick<RetentionAgg, 'unattributable'>): [UnattributableReason, number][] {
+  return REASONS.filter((r) => (a.unattributable[r] ?? 0) > 0)
+    .map((r): [UnattributableReason, number] => [r, a.unattributable[r] ?? 0])
+    .sort((x, y) => y[1] - x[1] || REASONS.indexOf(x[0]) - REASONS.indexOf(y[0]));
 }
 
 /** 照合できたまとまり(未変更・変更後・未確認。照合不可は除く)の数 */

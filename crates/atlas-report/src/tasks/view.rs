@@ -1,5 +1,6 @@
 //! 画面に埋め込むタスクの節(ReportData.tasks)と、serve の GET /api/tasks が返すもの。値はすべて Rust で決め、画面は出すだけ。
 
+use super::extras::SessionExtra;
 use super::hours::{format_hhmm, WorkHours};
 use super::links::{LinkSource, LinksFile};
 use super::metrics::{compute_task_metrics, counted_tasks, SessionFacts, TaskInfo, TaskRow, TaskSummary};
@@ -68,14 +69,20 @@ pub struct TasksView {
     pub scoped: bool,
 }
 
-/// セッションの工数に使う値。human はセッション id → (推定人手工数, 確信度)
-pub fn session_facts(sessions: &[&SessionRecord], human: &HashMap<String, (f64, Option<f64>)>) -> HashMap<String, SessionFacts> {
+/// セッションの工数に使う値。human はセッション id → (推定人手工数, 確信度)、verdicts はセッション id → 依頼ごとの判定の扱いごとの数
+/// (extras::verdict_counts_by_session)
+pub fn session_facts(sessions: &[&SessionRecord], human: &HashMap<String, (f64, Option<f64>)>, verdicts: &HashMap<String, [i64; 8]>) -> HashMap<String, SessionFacts> {
     sessions
         .iter()
         .map(|s| {
             (
                 s.id.clone(),
-                SessionFacts { start_ms: s.created_at.as_deref().filter(|x| !x.is_empty()).and_then(atlas_core::jsdate::parse_ms), active_ms: s.active_ms, human: human.get(&s.id).copied() },
+                SessionFacts {
+                    start_ms: s.created_at.as_deref().filter(|x| !x.is_empty()).and_then(atlas_core::jsdate::parse_ms),
+                    active_ms: s.active_ms,
+                    human: human.get(&s.id).copied(),
+                    extra: SessionExtra { verdicts: verdicts.get(&s.id).copied(), ..SessionExtra::of(s) },
+                },
             )
         })
         .collect()
@@ -196,7 +203,7 @@ mod tests {
         links.links.insert("s1".into(), TaskLink { task_ids: vec!["GONE2".into(), "T-1".into()], source: LinkSource::Machine, reason: "ID が題名にある".into(), confidence: None, at: "t".into() });
         links.links.insert("s2".into(), TaskLink { task_ids: vec![], source: LinkSource::Manual, reason: String::new(), confidence: None, at: "t".into() });
         links.links.insert("other".into(), TaskLink { task_ids: vec!["T-1".into()], source: LinkSource::Manual, reason: String::new(), confidence: None, at: "t".into() });
-        let facts = session_facts(&sessions, &HashMap::new());
+        let facts = session_facts(&sessions, &HashMap::new(), &HashMap::new());
         let shown = ["s1", "s2"];
         let v = local_view(LocalInputs { configured: true, state: &state, links: &links, shown: &shown, facts: &facts, work_hours: &WorkHours::default(), warnings: vec![] }).unwrap();
         assert_eq!(v.items.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["T-1", "GONE2"]);
@@ -240,7 +247,7 @@ mod tests {
         links.links.insert("s2".into(), l(&["T", "U"]));
         links.links.insert("s3".into(), l(&["U"]));
         let human: HashMap<String, (f64, Option<f64>)> = [("s1", 4.0), ("s2", 2.0), ("s3", 1.0)].into_iter().map(|(k, h)| (k.to_string(), (h, Some(0.9)))).collect();
-        let facts = session_facts(&sessions, &human);
+        let facts = session_facts(&sessions, &human, &HashMap::new());
         let shown = ["s1", "s2", "s3"];
         let local = local_view(LocalInputs { configured: true, state: &state, links: &links, shown: &shown, facts: &facts, work_hours: &WorkHours::default(), warnings: vec![] }).unwrap();
         let starts: HashMap<String, String> = sessions.iter().map(|s| (s.id.clone(), s.created_at.clone().unwrap())).collect();
@@ -274,7 +281,7 @@ mod tests {
         let a = rec("s1", "2026-11-23T01:00:00Z");
         let t = SenderTask { id: "T".into(), name: "n".into(), status: "Open".into(), done: false, done_at: None, done_observed: false, done_at_recorded: false, done_date_only: false, done_date: None, last_seen_at: None, start: None, source: LinkSource::Llm, reason: "r".into() };
         let per = vec![("s1".to_string(), vec![t.clone(), SenderTask { id: "V".into(), ..t.clone() }]), ("hidden".to_string(), vec![SenderTask { id: "U".into(), ..t }])];
-        let facts = session_facts(&[&a], &HashMap::new());
+        let facts = session_facts(&[&a], &HashMap::new(), &HashMap::new());
         let v = sender_view(&per, &["s1"], &facts, &WorkHours::default(), false).unwrap();
         assert_eq!(v.origin, "sender");
         assert_eq!(v.items.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["T", "V"]);

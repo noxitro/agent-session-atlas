@@ -240,17 +240,45 @@ const RUBRIC_TPL: &str = "### 判定すること(依頼 1 件ごと)
 - **中断と再開が続くとき**: この依頼の間に中断があり、次の依頼が「再開」「続けて」だけのときは、この依頼の outcome は unknown にします(成果が出る前に止まっていて、扱いが読み取れないため)
 - **phase(設定・運用と要件定義)**: ツールや環境の設定・運用(エージェントやエディタの設定、ビルドや実行の環境、権限、認証など)の依頼は ⟦opsPhase⟧ にします。⟦reqRule⟧";
 
-/// ツールや環境の設定・運用の依頼を入れる工程名。工程名の一覧に「運用」があれば「運用」(既定の工程名にある)、
-/// 無ければ「その他」、どちらも無ければ一覧の中で最も近いもの
-fn ops_phase_rule(phases: &[String]) -> (&'static str, &'static str) {
-    let has = |p: &str| phases.iter().any(|x| x == p);
-    let phase = if has("運用") {
-        "`運用`(`その他` にはしません)"
-    } else if has("その他") {
-        "`その他`(工程名に「運用」が無いため)"
-    } else {
-        "上の工程名のうち最も近いもの(工程名に「運用」も「その他」も無いため)"
+/// 「運用」が無いときに、設定・運用に近い工程名とみなす語(前のものほど近い)。英字は大文字・小文字を区別しない
+const OPS_NEAR_WORDS: [&str; 14] = ["保守", "運営", "環境", "設定", "構築", "インフラ", "基盤", "管理", "準備", "ops", "infra", "setup", "config", "maint"];
+
+/// 設定・運用の依頼を入れる工程名の決め方
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpsPhase {
+    /// 工程名に「運用」がある
+    Ops,
+    /// 「運用」が無く、設定・運用に近い工程名(OPS_NEAR_WORDS を含むもの)がある
+    Near(String),
+    /// どちらも無く、「その他」がある
+    Other,
+    /// どれも無い(工程名を 1 つに決められない)
+    Undecided,
+}
+
+/// 設定・運用の依頼を入れる工程名を決める: 「運用」があれば「運用」、無ければ工程名の中で最も近いもの
+/// (OPS_NEAR_WORDS の前の語を含むもの。同じ語なら一覧の前のもの)、それも無ければ「その他」
+pub fn ops_phase_of(phases: &[String]) -> OpsPhase {
+    if phases.iter().any(|x| x == "運用") {
+        return OpsPhase::Ops;
+    }
+    for w in OPS_NEAR_WORDS {
+        if let Some(p) = phases.iter().find(|p| p.to_lowercase().contains(w)) {
+            return OpsPhase::Near(p.clone());
+        }
+    }
+    if phases.iter().any(|x| x == "その他") { OpsPhase::Other } else { OpsPhase::Undecided }
+}
+
+/// ツールや環境の設定・運用の依頼を入れる工程名の文(ops_phase_of で決めた工程名を入れる)と、要件定義の文
+fn ops_phase_rule(phases: &[String]) -> (String, &'static str) {
+    let phase = match ops_phase_of(phases) {
+        OpsPhase::Ops => "`運用`(`その他` にはしません)".to_string(),
+        OpsPhase::Near(p) => format!("`{p}`(工程名に「運用」が無いため、いちばん近い工程名にします。`その他` にはしません)"),
+        OpsPhase::Other => "`その他`(工程名に「運用」も、それに近い工程名も無いため)".to_string(),
+        OpsPhase::Undecided => "上の工程名のうち最も近いもの(工程名に「運用」も「その他」も、それに近い工程名も無いため)".to_string(),
     };
+    let has = |p: &str| phases.iter().any(|x| x == p);
     let req = if has("要件定義") { "`要件定義` は、作るものの要件・仕様を決める依頼だけにします(設定・運用の話は入れません)" } else { "要件・仕様を決める工程には、設定・運用の話を入れません" };
     (phase, req)
 }
@@ -268,7 +296,7 @@ pub fn turn_rubric(phases: &[String]) -> String {
             ("question", &ol(&QUESTION_OUTCOMES, outcome_label)),
             ("mismatch", &ol(&MISMATCHES, mismatch_label)),
             ("phases", &ph),
-            ("opsPhase", ops_phase),
+            ("opsPhase", &ops_phase),
             ("reqRule", req_rule),
         ],
     )
@@ -410,6 +438,30 @@ pub struct TurnBundleManifest {
     pub parts: Vec<TurnPart>,
     /// 本文が読めず外したセッション
     pub skipped: Vec<Skipped>,
+    /// 1 セッションの依頼の上限(MAX_TURNS)を超えて、束に入れなかった依頼の数と、そのセッションの数(束に選んだセッションのうち)。
+    /// 超えたセッションが無ければ無い。古い manifest にも無い
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub over_limit: Option<OverLimit>,
+}
+
+/// 1 セッションの依頼の上限を超えて、判定の束に入れなかった依頼
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OverLimit {
+    /// 上限(MAX_TURNS)
+    pub limit: i64,
+    pub turns: i64,
+    pub sessions: i64,
+}
+
+/// 1 セッションの依頼の上限(MAX_TURNS)を超えた依頼の数(依頼の数 − 上限の和)と、超えたセッションの数。超えたセッションが無ければ None
+pub fn turns_over_limit(sessions: &[&SessionRecord]) -> Option<OverLimit> {
+    let over: Vec<i64> = sessions.iter().map(|s| s.turns - MAX_TURNS as i64).filter(|n| *n > 0).collect();
+    (!over.is_empty()).then(|| OverLimit { limit: MAX_TURNS as i64, turns: over.iter().sum(), sessions: over.len() as i64 })
+}
+
+/// 上限を超えて束に入れなかった依頼を知らせる文(束を作るときのログ)
+pub fn over_limit_note(o: &OverLimit) -> String {
+    format!("1 セッションの先頭 {} 依頼までを束に入れます。上限を超えて入れなかった依頼が {} 件({} セッション)あります(判定せず、レポートの依頼ごとの集計にも入りません)", o.limit, o.turns, o.sessions)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -554,6 +606,7 @@ fn write_turn_bundle(sessions: &[&SessionRecord], o: &TurnBundleOptions<'_>, dir
         chunks: chunks.iter().enumerate().map(|(i, c)| ChunkEntry { session_id: c.session_id.clone(), turns: c.turns.clone(), chars: js::utf16_len(&c.markdown) as i64, path: Some(chunk_file(i + 1)) }).collect(),
         parts,
         skipped,
+        over_limit: turns_over_limit(sessions),
     };
     // フォルダ(ZIP)ごと渡すときは塊を 1 ファイルずつ読ませるので、塊の本文も残す
     std::fs::create_dir_all(dir.join("chunks"))?;

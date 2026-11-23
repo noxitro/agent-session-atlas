@@ -1,6 +1,6 @@
 // 管理ツールのタスクの表示(値は Rust の tasks::view が決めたもの。ここは言葉と単位にするだけで、数え直さない)
-import { dateTime, dec, int } from './format.ts';
-import type { TaskDoneAtCounts, TaskDoneAtSource, TaskExcluded, TaskLinkSource, TaskLinkView, TaskRow, TaskSummary, TasksReport } from './types.ts';
+import { dateTime, dec, int, percent } from './format.ts';
+import type { TaskDoneAtCounts, TaskDoneAtSource, TaskExcluded, TaskFriction, TaskLinkSource, TaskLinkView, TaskRow, TaskSummary, TasksReport, TaskVerdicts } from './types.ts';
 
 /** 紐づけのタスクの ID の並び(版 20 の埋め込みの taskId(1 つか null)も 0 か 1 件の並びとして読む) */
 export function linkTaskIds(l: Pick<TaskLinkView, 'taskIds'> | { taskId?: string | null; taskIds?: readonly string[] | null }): readonly string[] {
@@ -64,20 +64,21 @@ export function sortByTask<T extends { id: string }>(
 export const LINK_SOURCE_LABEL: Record<TaskLinkSource, string> = { machine: '機械', llm: 'LLM', manual: '手動' };
 
 /** 比べられるタスクから外した理由(Rust の Excluded::label と同じ言葉。並びは理由を決める順) */
-export const TASK_EXCLUDED: TaskExcluded[] = ['notDone', 'doneUnobserved', 'afterDone', 'noStart', 'unjudged', 'lowConfidence'];
+export const TASK_EXCLUDED: TaskExcluded[] = ['notDone', 'doneUnobserved', 'afterDone', 'noStart', 'noWorkHours', 'unjudged', 'lowConfidence'];
 export const TASK_EXCLUDED_LABEL: Record<TaskExcluded, string> = {
   notDone: '未完了',
   doneUnobserved: '完了の時刻が分からない',
   afterDone: '完了の後に始まったセッション',
   noStart: '開始が分からない',
+  noWorkHours: '稼働時間帯に重ならない',
   unjudged: '判定なし',
   lowConfidence: '確度が低い',
 };
 
 /** 比べないタスクの理由ごとの数(0 のものは出さない)。例: 未完了 3・判定なし 1。どれも 0 なら空 */
-export function taskExcludedText(excluded: Record<TaskExcluded, number>): string {
-  return TASK_EXCLUDED.filter((k) => excluded[k] > 0)
-    .map((k) => `${TASK_EXCLUDED_LABEL[k]} ${int(excluded[k])}`)
+export function taskExcludedText(excluded: Partial<Record<TaskExcluded, number>>): string {
+  return TASK_EXCLUDED.filter((k) => (excluded[k] ?? 0) > 0)
+    .map((k) => `${TASK_EXCLUDED_LABEL[k]} ${int(excluded[k] ?? 0)}`)
     .join('・');
 }
 
@@ -125,6 +126,27 @@ export function msHours(ms: number): string {
 /** 時間(小数 2 桁まで) */
 export function hours(h: number): string {
   return `${dec(Math.round(h * 100) / 100)} 時間`;
+}
+
+/** 摩擦の合計(ツールの失敗・拒否 + 中断 + 文脈圧縮)。記録の無い古い埋め込みは null */
+export function frictionTotal(t: Pick<TaskRow, 'friction'>): number | null {
+  const f = t.friction;
+  return f ? f.toolFailures + f.aborts + f.compactions : null;
+}
+
+/** 摩擦の内訳。例: 失敗・拒否 3・中断 1・圧縮 0 */
+export function frictionText(f: TaskFriction): string {
+  return `失敗・拒否 ${int(f.toolFailures)}・中断 ${int(f.aborts)}・圧縮 ${int(f.compactions)}`;
+}
+
+/** 割合(0〜1)を 1 桁の % に。null(分母が下限に届かない)は — */
+export function rateText(x: number | null | undefined): string {
+  return x == null ? '—' : percent(x, 1);
+}
+
+/** 依頼ごとの判定の内訳(数と割合)。例: 直し 2(33.3%)・不採用 1(16.7%)・的外れ 0(—) */
+export function verdictBreakdown(v: TaskVerdicts): string {
+  return `直し ${int(v.fix)}(${rateText(v.fixRate)})・不採用 ${int(v.rejected)}(${rateText(v.rejectedRate)})・的外れ ${int(v.offTarget)}(${rateText(v.offTargetRate)})`;
 }
 
 /** 紐づけの出所ごとの数(0 のものは出さない)。例: 機械 2・手動 1 */

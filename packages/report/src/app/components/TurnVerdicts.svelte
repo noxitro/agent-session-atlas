@@ -3,15 +3,16 @@
   // 絞り込み後のセッションで集計し直す(lib/verdicts.ts)。判定は推定(次の依頼の文から LLM が決めたもの)。
   import { MISMATCH_LABEL, MISMATCHES } from '../../shared/turns.ts';
   import { dateTime, int, percent } from '../../lib/format.ts';
-  import { questionDecided, workDecided, type OutcomeCounts, type VerdictAggregate } from '../../lib/verdicts.ts';
+  import { questionDecided, TURN_LIMIT, workDecided, type OutcomeCounts, type VerdictAggregate } from '../../lib/verdicts.ts';
   import { judgeHint } from '../../lib/hints.ts';
 
   let {
     agg,
     model,
     ranAt,
+    overLimit = { turns: 0, sessions: 0 },
     editable = false,
-  }: { agg: VerdictAggregate | null; model: string | null; ranAt: string | null; editable?: boolean } = $props();
+  }: { agg: VerdictAggregate | null; model: string | null; ranAt: string | null; overLimit?: { turns: number; sessions: number }; editable?: boolean } = $props();
 
   const rows = $derived(agg ? agg.phases.map((name, i) => ({ name, c: agg.byPhase[i] })).filter((r) => r.c.judged > 0) : []);
   const pct = (part: number, whole: number): string => (whole > 0 ? percent(part, whole) : '—');
@@ -35,6 +36,9 @@
 {/snippet}
 
 <h3 class="sub" id="verdicts-h">採用(LLM の判定)<a class="term" href="glossary.html#turn-verdict">用語の説明</a></h3>
+{#if overLimit.turns > 0}
+  <p class="note" data-testid="verdicts-over-limit">1 セッションの先頭 {int(TURN_LIMIT)} 依頼までを判定の束に入れます。この条件では、上限を超えて束に入らなかった依頼が {int(overLimit.turns)} 件({int(overLimit.sessions)} セッション)あり、判定しません。</p>
+{/if}
 {#if !agg || agg.judged === 0}
   <p class="note" data-testid="verdicts-none">
     {#if agg}この条件の依頼はまだ判定していません。{:else}依頼ごとの採用はまだ判定していません(任意の判定です。工数の判定だけでもかまいません)。{/if}{judgeHint('依頼ごとの採用', { editable })}{#if editable}M365 Copilot に貼る方法と GitHub Copilot CLI で判定する方法があります。{/if}

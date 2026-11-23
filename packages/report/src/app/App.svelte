@@ -1,7 +1,7 @@
 <script lang="ts">
   import { aggregate } from '../lib/aggregate.ts';
   import { turnAggregate } from '../lib/turns.ts';
-  import { verdictAggregate } from '../lib/verdicts.ts';
+  import { turnsOverLimit, verdictAggregate } from '../lib/verdicts.ts';
   import { wikiReferenced, wikiState } from '../lib/wiki.ts';
   import { flushSync, tick, untrack } from 'svelte';
   import { applyFilter, decodeFilter, decodeTab, decodeView, DEFAULT_TAB, emptyFilter, encodeFilter, encodeState, filterHref, filterOptions, inScope, isEmptyFilter, isStateHash, isTabId, joinIds, knownSelection, taskOf, taskOptions, type FilterState, type TabId } from '../lib/filter.ts';
@@ -775,7 +775,7 @@
           <Overview part="cover" {agg} {judged} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} {emptyInFilter} {editable} {tasks} />
           <Highlights groups={points} />
           <Insights sessions={filtered} allSessions={data.sessions} installed={installed?.skills ?? null} disabled={installed?.disabled ?? []} meta={data.insights?.meta ?? {}} candidates={data.insights?.candidates ?? []} candidateTotal={data.insights?.candidateTotal ?? data.insights?.candidates.length ?? 0} computedOver={data.insights?.computedOver ?? sessions.length} hasPage={true} libraryHref={data.library ? 'instructions.html' : null} {wiki} wikiPagesRecorded={(data.version ?? 0) >= WIKI_PAGES_DATA_VERSION} wikiPageNames={data.wikiPageNames ?? []} />
-          <TurnPhases agg={turnAgg} verdicts={verdictAgg} verdictModel={data.turnJudgments?.model ?? null} verdictRanAt={data.turnJudgments?.ranAt ?? null} {editable} />
+          <TurnPhases agg={turnAgg} verdicts={verdictAgg} verdictModel={data.turnJudgments?.model ?? null} verdictRanAt={data.turnJudgments?.ranAt ?? null} overLimit={turnsOverLimit(filtered)} {editable} />
           <Overview part="detail" {agg} {judged} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} {emptyInFilter} {wiki} />
           {#if judged}<JudgmentPanel {agg} meta={data.judgments} />{/if}
           {#if tasks}<TaskPanel {tasks} current={filter.task} noneCount={taskOpts?.none ?? 0} onpick={(t) => setFilter({ task: t })} />{/if}
@@ -786,7 +786,7 @@
           <UsageRanking usage={agg.usage} {installed} failuresPage={data.failures === true} bind:tab={usageTab} />
           <ExecProfile exec={agg.exec} sessions={filtered.length} />
           <!-- 人別は、送り先(<人>/<プロジェクト>)をまとめて集計したレポートだけ -->
-          {#if options.person.length > 0}<ProjectTable kind="person" rows={agg.byPerson} {judged} {wiki} current={filter.person} onpick={(p) => setFilter({ person: p })} />{/if}
+          {#if options.person.length > 0}<ProjectTable kind="person" rows={agg.byPerson} {judged} {wiki} verdicts={!!data?.turnJudgments?.available} current={filter.person} onpick={(p) => setFilter({ person: p })} />{/if}
           <ProjectTable rows={agg.byProject} {judged} {wiki} current={filter.project} onpick={(p) => setFilter({ project: p })} send={canEdit && !serverDown ? projectSend : undefined} />
           <MonthlyChart months={agg.byMonth} lastAt={all.overall.lastAt} />
           <ModelChart rows={agg.byModel} />

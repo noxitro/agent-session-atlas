@@ -425,7 +425,7 @@ fn turn_bundle_parts_and_import_phases() {
 }
 
 /// 依頼ごとの判定の指示は、迷う場面の決め方を、フォルダで渡す指示とチャットに貼る指示の両方に書く。
-/// 設定・運用の依頼の工程は、工程名に「運用」があれば「運用」、無ければ「その他」、どちらも無ければ最も近いもの
+/// 設定・運用の依頼の工程は、工程名に「運用」があれば「運用」、無ければ工程名の中で最も近いもの、それも無ければ「その他」
 #[test]
 fn turn_rubric_tells_how_to_decide_unclear_turns() {
     use atlas_judge::turn_bundle::turn_rubric;
@@ -458,13 +458,25 @@ fn turn_rubric_tells_how_to_decide_unclear_turns() {
     // 結果のファイルは手で書いてよい(フォルダで渡すときだけ。チャットに貼る指示はファイルを書かない)
     assert!(ins.contains("`turn-judgments.json` は、判定しながら手で書いてかまいません"));
     assert!(!part.contains("手で書いてかまいません"));
-    // 工程名を変えたとき
-    let other: Vec<String> = ["設計", "実装", "その他"].iter().map(|s| s.to_string()).collect();
+    // 工程名を変えたとき: 「運用」が無ければ、いちばん近い工程名(その名前を文に入れる)。それも無ければ「その他」
+    use atlas_judge::turn_bundle::{ops_phase_of, OpsPhase};
+    let names = |xs: &[&str]| -> Vec<String> { xs.iter().map(|s| s.to_string()).collect() };
+    let near = names(&["設計", "実装", "環境構築", "その他"]);
+    assert_eq!(ops_phase_of(&near), OpsPhase::Near("環境構築".into()));
+    let r = turn_rubric(&near);
+    assert!(r.contains("の依頼は `環境構築`(工程名に「運用」が無いため、いちばん近い工程名にします。`その他` にはしません)"), "{r}");
+    // 近さは語の順(保守が環境より近い)。英字は大文字・小文字を区別しない
+    assert_eq!(ops_phase_of(&names(&["環境", "保守・改善"])), OpsPhase::Near("保守・改善".into()));
+    assert_eq!(ops_phase_of(&names(&["Design", "DevOps"])), OpsPhase::Near("DevOps".into()));
+    assert_eq!(ops_phase_of(&names(&["運用", "保守"])), OpsPhase::Ops);
+    let other = names(&["設計", "実装", "その他"]);
+    assert_eq!(ops_phase_of(&other), OpsPhase::Other);
     let r = turn_rubric(&other);
-    assert!(r.contains("の依頼は `その他`(工程名に「運用」が無いため)"));
+    assert!(r.contains("の依頼は `その他`(工程名に「運用」も、それに近い工程名も無いため)"), "{r}");
     assert!(r.contains("要件・仕様を決める工程には、設定・運用の話を入れません"));
+    assert_eq!(ops_phase_of(&phases()), OpsPhase::Undecided);
     let r = turn_rubric(&phases());
-    assert!(r.contains("の依頼は 上の工程名のうち最も近いもの(工程名に「運用」も「その他」も無いため)"));
+    assert!(r.contains("の依頼は 上の工程名のうち最も近いもの(工程名に「運用」も「その他」も、それに近い工程名も無いため)"), "{r}");
 }
 
 /// ZIP の中の名前と中身(末尾のレコードから中央ディレクトリをたどる)

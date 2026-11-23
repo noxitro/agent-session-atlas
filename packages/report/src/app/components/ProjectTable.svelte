@@ -1,7 +1,10 @@
 <script lang="ts">
   import type { Bucket } from '../../lib/aggregate.ts';
-  import { dateTime, dec, duration, int, pathParts } from '../../lib/format.ts';
+  import { dateTime, dec, duration, int, pathParts, percent } from '../../lib/format.ts';
   import { confidenceLabel } from '../../lib/judgment-labels.ts';
+  import { COMPARE_MIN_TURNS } from '../../lib/compare.ts';
+  import { bucketVerdictView } from '../../lib/verdicts.ts';
+  import { MISMATCH_LABEL } from '../../shared/turns.ts';
   import { wikiStateShortNote, type WikiState } from '../../lib/wiki.ts';
   import SortMark from './SortMark.svelte';
 
@@ -13,6 +16,7 @@
     send,
     kind = 'project',
     wiki = 'counted',
+    verdicts = false,
   }: {
     rows: Bucket[];
     judged: boolean;
@@ -22,11 +26,16 @@
     onpick: (project: string) => void;
     /** 何ごとの表か。person は、送り先をまとめて集計したときの人ごと(見出し・説明・絞り込みの先が変わる。まとめて送る印は出さない) */
     kind?: 'project' | 'person';
+    /** 依頼ごとの判定(turn-judgments.json)があるか。人ごとの表にだけ、判定の列を出す(プロジェクトごとの表は列が多いので出さない) */
+    verdicts?: boolean;
     /** upload-project.bat がまとめて送るプロジェクトの印(atlas serve から開いたときだけ)。projects は設定の一覧、error は設定ファイルを読めない理由、toggle は足す・外す */
     send?: { projects: string[]; error: string | null; toggle: (project: string, on: boolean) => Promise<void> };
   } = $props();
 
-  type Key = 'label' | 'updated' | 'sessions' | 'input' | 'output' | 'tools' | 'lines' | 'skills' | 'agents' | 'hooks' | 'instructions' | 'wiki' | 'friction' | 'active' | 'human';
+  type Key = 'label' | 'updated' | 'sessions' | 'input' | 'output' | 'tools' | 'lines' | 'skills' | 'agents' | 'hooks' | 'instructions' | 'wiki' | 'friction' | 'active' | 'human' | 'vjudged' | 'vadopt' | 'vfix' | 'vmismatch';
+  /** 人ごとの表の、依頼ごとの判定の列(割合は判定できた作業の依頼が COMPARE_MIN_TURNS 件に届かなければ —) */
+  const showVerdicts = $derived(kind === 'person' && verdicts);
+  const vv = (b: Bucket) => bucketVerdictView(b.turnVerdicts, COMPARE_MIN_TURNS);
   /** 最終更新の時刻(日時の無いものは、新しい順で最後に来るように -Infinity) */
   const updatedMs = (b: Bucket): number => {
     const t = b.updatedAt ? Date.parse(b.updatedAt) : NaN;
@@ -48,6 +57,13 @@
     friction: (b) => b.friction,
     active: (b) => b.activeMedianMs ?? -1,
     human: (b) => b.humanHours,
+    vjudged: (b) => b.turnVerdicts.judged,
+    vadopt: (b) => vv(b).adoptRate ?? -1,
+    vfix: (b) => vv(b).fixRate ?? -1,
+    vmismatch: (b) => {
+      const m = vv(b).topMismatch;
+      return m ? MISMATCH_LABEL[m.key] : '￿';
+    },
   };
   let sortKey = $state<Key>('output');
   let asc = $state(false);
@@ -96,7 +112,7 @@
     if (sortKey === k) asc = !asc;
     else {
       sortKey = k;
-      asc = k === 'label';
+      asc = k === 'label' || k === 'vmismatch';
     }
   }
   /** wiki の参照を数えていない集計の短い断り(このときは wiki の列を出さず、並べ替えの対象にもしない。理由の全文は集計明細) */
@@ -115,6 +131,14 @@
     ...(wikiNote ? [] : [{ key: 'wiki' as const, label: 'wiki', title: 'llm-wiki を参照したセッション数(書き込みだけのセッションは入れない)' }]),
     { key: 'friction', label: '摩擦' },
     { key: 'active', label: '実働(中央値)' },
+    ...(showVerdicts
+      ? [
+          { key: 'vjudged' as const, label: '判定した依頼', title: '依頼ごとの判定(LLM の推定)をした依頼の数(判定不能を含む)' },
+          { key: 'vadopt' as const, label: '採用率', title: `判定できた作業の依頼のうち「そのまま採用」の割合。判定できた作業の依頼が ${COMPARE_MIN_TURNS} 件未満なら —` },
+          { key: 'vfix' as const, label: '直しの割合', title: `判定できた作業の依頼のうち、中身か体裁を直させた割合。判定できた作業の依頼が ${COMPARE_MIN_TURNS} 件未満なら —` },
+          { key: 'vmismatch' as const, label: '合わなかった点(最多)', title: `直し・不採用・的外れの理由のいちばん多いもの。判定した依頼が ${COMPARE_MIN_TURNS} 件未満なら —` },
+        ]
+      : []),
   ]);
   const ariaSort = (k: Key): 'ascending' | 'descending' | 'none' => (sortKey === k ? (asc ? 'ascending' : 'descending') : 'none');
 
@@ -157,7 +181,7 @@
     <h2 id="{t.id}-h">{t.heading}</h2>
     {#if kind === 'person'}
       <p>
-        {int(rows.length)} 人。送り先のフォルダ(<code>&lt;人&gt;/&lt;プロジェクト&gt;</code>)の、人のフォルダの名前ごとの内訳です。名前を押すとその人に絞り込みます(列見出しで並べ替え)。列の読み方は下の「プロジェクト別」と同じです。人のフォルダの下に無いセッションは「不明」にまとめています。
+        {int(rows.length)} 人。送り先のフォルダ(<code>&lt;人&gt;/&lt;プロジェクト&gt;</code>)の、人のフォルダの名前ごとの内訳です。名前を押すとその人に絞り込みます(列見出しで並べ替え)。列の読み方は下の「プロジェクト別」と同じです。人のフォルダの下に無いセッションは「不明」にまとめています。{#if showVerdicts}<span data-testid="people-verdict-note">判定した依頼・採用率・直しの割合・合わなかった点(最多)は、依頼ごとの判定(LLM の推定)から数えたもので、採用率と直しの割合は判定できた作業の依頼に対する割合です(判定できた作業の依頼が {COMPARE_MIN_TURNS} 件未満なら「—」。合わなかった点は判定した依頼が {COMPARE_MIN_TURNS} 件未満なら「—」)。推定人手工数とは別の列で、1 つの点数にしません。</span>{/if}
       </p>
     {:else}
       <p>
@@ -231,6 +255,13 @@
               {#if !wikiNote}<td class="num">{int(b.sessionsWithWiki)}/{int(b.sessions)}</td>{/if}
               <td class="num">{int(b.friction)}{#if b.friction > 0}<span class="part">{frictionNote(b)}</span>{/if}</td>
               <td class="num">{duration(b.activeMedianMs, '—')}</td>
+              {#if showVerdicts}
+                {@const v = vv(b)}
+                <td class="num" data-testid="person-verdict-judged">{int(v.judged)}</td>
+                <td class="num" data-testid="person-verdict-adopt">{v.adoptRate == null ? '—' : percent(v.adoptRate, 1)}{#if b.turnVerdicts.workDecided}<span class="part">{int(b.turnVerdicts.asIs)} / {int(b.turnVerdicts.workDecided)}</span>{/if}</td>
+                <td class="num" data-testid="person-verdict-fix">{v.fixRate == null ? '—' : percent(v.fixRate, 1)}{#if b.turnVerdicts.workDecided}<span class="part">{int(b.turnVerdicts.fix)} / {int(b.turnVerdicts.workDecided)}</span>{/if}</td>
+                <td class="mismatch" data-testid="person-verdict-mismatch">{#if v.topMismatch}{MISMATCH_LABEL[v.topMismatch.key]}<span class="part">{int(v.topMismatch.count)} 件</span>{:else}—{/if}</td>
+              {/if}
               {#if judged}
                 <td class="num" title={b.judgedSessions ? `LLM による推定。判定済み ${b.judgedSessions} / ${b.sessions} セッション${b.humanSessions ? `、幅 ${dec(b.humanLow)}〜${dec(b.humanHigh)} 時間` : ''}${b.humanUncertain.sessions ? `。確信度の低い推定 ${b.humanUncertain.sessions} セッション(計 ${dec(b.humanUncertain.hours)} 時間)は入れていません` : ''}` : ''}>
                   {#if b.humanSessions}{dec(b.humanHours)} 時間<span class="part">{b.judgedSessions}/{b.sessions}・{confidenceLabel(b.judgedConfidence)}</span>{:else if b.judgedSessions}—<span class="part">{b.judgedSessions}/{b.sessions}・確信度の低い推定のみ</span>{:else}<span class="missing-value">未判定</span>{/if}
@@ -268,6 +299,9 @@
     text-decoration: underline;
   }
   .when {
+    white-space: nowrap;
+  }
+  .mismatch {
     white-space: nowrap;
   }
   .proj {

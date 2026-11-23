@@ -304,6 +304,8 @@ struct SessionEntry {
     /// 開いただけのセッション(sessions.json の empty)と、題名か依頼の文があるか。LLM に紐づけを頼むセッションを数えるのに使う(links::llm_eligible)
     empty: bool,
     has_text: bool,
+    /// タスクの表の、工数のほかの列(人数・主なモデル・摩擦)に使う値(依頼ごとの判定は、GET /api/tasks のときに足す)
+    extra: atlas_report::tasks::extras::SessionExtra,
 }
 
 /// sessions.json の id → 表題と判定の対象か(本文は持たない)。集計元の形(読むだけの画面かを決める)も持つ
@@ -1056,7 +1058,8 @@ impl Server {
             // 題名か依頼の文(最初の依頼と、記録した各依頼の先頭)があるか。tasks bundle(links::llm_eligible)の SessionText と同じ項目を見る
             let prompt_text = r.get("firstUserMessage").and_then(Value::as_str).into_iter().chain(r.get("analysis").and_then(|a| a.get("requests")).and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str));
             let has_text = atlas_report::tasks::links::has_text(r.get("name").and_then(Value::as_str).unwrap_or(""), &prompt_text.collect::<Vec<_>>().join("\n"));
-            ids.insert(id, SessionEntry { title: if name.is_empty() { "(名前なし)".into() } else { name.to_string() }, eligible, turns, start_ms, active_ms, empty, has_text });
+            let extra = atlas_report::tasks::extras::SessionExtra::from_value(r);
+            ids.insert(id, SessionEntry { title: if name.is_empty() { "(名前なし)".into() } else { name.to_string() }, eligible, turns, start_ms, active_ms, empty, has_text, extra });
         }
         let layout = file.get("source").and_then(|s| s.get("layout")).and_then(Value::as_str).map(str::to_string);
         let ix = Arc::new(SessionIndex { ids, layout });
@@ -1518,10 +1521,20 @@ impl Server {
         let ix = self.session_index()?;
         // 推定人手工数はレポート(build)と同じ読み方で、セッションの値は sessions.json の同じ項目(createdAt・activeMs)から。数えるのも同じ関数
         let human = crate::commands::tasks::judgment_hours(&self.judgments);
+        // 依頼ごとの判定もレポート(build)と同じ読み方で、人数・主なモデル・摩擦は sessions.json の同じ項目から(extras::SessionExtra)
+        let verdicts = crate::commands::tasks::turn_verdict_counts(&self.turn_judgments);
         let ids: Vec<&str> = ix.as_ref().map(|ix| ix.ids.keys().map(String::as_str).collect()).unwrap_or_default();
         let facts: HashMap<String, atlas_report::tasks::metrics::SessionFacts> = ix
             .as_ref()
-            .map(|ix| ix.ids.iter().map(|(id, e)| (id.clone(), atlas_report::tasks::metrics::SessionFacts { start_ms: e.start_ms, active_ms: e.active_ms, human: human.get(id).copied() })).collect())
+            .map(|ix| {
+                ix.ids
+                    .iter()
+                    .map(|(id, e)| {
+                        let extra = atlas_report::tasks::extras::SessionExtra { verdicts: verdicts.get(id).copied(), ..e.extra.clone() };
+                        (id.clone(), atlas_report::tasks::metrics::SessionFacts { start_ms: e.start_ms, active_ms: e.active_ms, human: human.get(id).copied(), extra })
+                    })
+                    .collect()
+            })
             .unwrap_or_default();
         let snapshot = self.out_dir.join("snapshot");
         let view = crate::commands::tasks::tasks_view(crate::commands::tasks::ViewInputs {
