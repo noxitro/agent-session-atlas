@@ -88,7 +88,7 @@ serve・open のオプション:
 
 judge run のオプション:
   --backend <name>   copilot-cli(既定、copilot -p)/ anthropic(従量課金、ANTHROPIC_API_KEY が必要。
-                     --features anthropic-backend を付けてビルドした atlas だけ。リリースの atlas.exe には無い)
+                     --features anthropic-backend を付けてビルドした atlas だけ。既定のビルドには無い)
   --limit <n>        未判定のものから最大 n 件だけ判定する
   --only <id,...>    指定したセッションだけ判定する(id は先頭一致。今の添付(out/bundle)に入っているものだけ。
                      --session も同じ)。ほかの絞り込み(--project・--since・--group など)は judge では効かないので

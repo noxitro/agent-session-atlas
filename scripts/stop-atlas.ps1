@@ -2,7 +2,7 @@
 # どこかのブラウザのタブが開いたままで画面のサーバが動き続けていると、atlas.bat は更新を飛ばし、前のサーバを開き直すだけになる。
 # 画面から別のフォルダを開いたときのサーバは、窓の無いまま動く(crates/atlas-cli/src/folders.rs の launch_detached)。そういうものも止める。
 #
-# 止めるもの: 実行ファイルが、このフォルダの bin\atlas.exe(置き換えで移した bin\atlas.old-*.exe を含む)のプロセスと、その子孫
+# 止めるもの: 実行ファイルが、このフォルダの bin\atlas.exe(置き換えで移した bin\atlas.prev.exe・bin\atlas.old-*.exe を含む)のプロセスと、その子孫
 #   (集計・判定の子プロセスや、判定が動かした copilot など)。別のフォルダの atlas や、関係の無いプロセスは止めない。
 #   印(out\.serve.json・out\.job.json)の pid は使わない(pid は使い回されるので、別のプロセスを止めかねない)。
 # 画面のサーバ(atlas serve・atlas open)だけなら、尋ねずに止める。集計・判定・送る操作などが動いていれば、止めてよいか尋ねる
@@ -51,14 +51,14 @@ $Labels = @{
   'self-update'     = '更新'
 }
 
-# このフォルダの bin の atlas か(置き換えで移した atlas.old-*.exe も)
+# このフォルダの bin の atlas か(置き換えで移した atlas.prev.exe・atlas.old-*.exe も)
 function Test-OurExe($p) {
   $path = $p.ExecutablePath
   if (-not $path) { return $false }
   try { $full = [IO.Path]::GetFullPath($path) } catch { return $false }
   $dir = Split-Path -Parent $full
   $name = Split-Path -Leaf $full
-  return ($dir -ieq $Bin) -and ($name -imatch '^atlas(\.old-[0-9a-f]+)?\.exe$')
+  return ($dir -ieq $Bin) -and ($name -imatch '^atlas(\.old-[0-9a-f]+|\.prev)?\.exe$')
 }
 
 # コマンドラインのサブコマンド(実行ファイルの次の語)

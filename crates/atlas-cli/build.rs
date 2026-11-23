@@ -1,7 +1,8 @@
 //! 実行ファイルに入れる版の情報を、ビルドのときに決める。
-//!  - ATLAS_VERSION: 配る版(semver)。atlas --version が出す。環境変数 ATLAS_VERSION があればそれを使い(リリースのワークフローが、
-//!    付けるタグ v<版> の版を渡す)、無ければワークスペースの Cargo.toml の version。semver の形でなければビルドを止める
-//!  - ATLAS_BUILD_COMMIT: 作ったときの git のコミット(全桁。git で取得したフォルダでなければ空)。atlas --version が出す。
+//!  - ATLAS_VERSION: atlas の版(semver)。atlas --version が出す。ワークスペースの Cargo.toml の version(環境変数 ATLAS_VERSION があれば
+//!    それを使う。ふだんは渡さない)。semver の形でなければビルドを止める
+//!  - ATLAS_BUILD_COMMIT: 作ったときの git のコミット(全桁。git が管理しているファイルを変えたままなら、後ろに -dirty。
+//!    git で取得したフォルダでなければ空)。atlas --version が出す。
 //!    環境変数 ATLAS_BUILD_COMMIT があればそれを使う(git の無いところで作るとき用)
 //!  - ATLAS_CODE_STAMP: 版の目印(16 桁)。画面とサーバの版のずれを見つけるのに使う(ページの <meta name="atlas-code"> と応答の x-atlas-code)。
 //!    材料は、実行ファイルの動きを決めるものの中身: 各クレートの Cargo.toml・build.rs・src/・assets/、ワークスペースの Cargo.toml・Cargo.lock、
@@ -130,12 +131,16 @@ fn main() {
                 }
                 rerun_if_exists(&Path::new(&common).join("packed-refs"));
             }
-            git(&root, &["rev-parse", "HEAD"]).filter(|s| s.len() >= 40 && s.bytes().all(|b| b.is_ascii_hexdigit())).unwrap_or_default()
+            let head = git(&root, &["rev-parse", "HEAD"]).filter(|s| s.len() >= 40 && s.bytes().all(|b| b.is_ascii_hexdigit())).unwrap_or_default();
+            // git が管理しているファイルを変えたまま作ったら、-dirty を付ける(scripts/ensure-atlas.ps1 が、HEAD から作ったものとして扱わないように。
+            // 開発の手元だけで起きる。作り直すのは HEAD・このクレートのソースが変わったときだけなので、ほかのファイルだけを変えたときは付かないことがある)
+            let dirty = !head.is_empty() && git(&root, &["status", "--porcelain", "--untracked-files=no"]).is_some_and(|s| !s.is_empty());
+            if dirty { format!("{head}-dirty") } else { head }
         }
     };
     println!("cargo::rustc-env=ATLAS_BUILD_COMMIT={commit}");
 
-    // 配る版
+    // 版
     println!("cargo::rerun-if-env-changed=ATLAS_VERSION");
     let version = match std::env::var("ATLAS_VERSION") {
         Ok(v) if !v.trim().is_empty() => v.trim().to_string(),

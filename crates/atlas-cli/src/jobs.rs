@@ -555,14 +555,14 @@ impl ChildLike for RealChild {
 
 /// 子プロセスと、その子孫(judge-flow が起動した copilot など)。止めるときはまとめて止める。
 /// Windows ではジョブオブジェクトに入れておき、すぐに子孫ごと止める(TS 版は taskkill /T /F。Rust 版の集計は速く、taskkill が動き出す前に終わることがある)
-struct ProcessTree {
+pub(crate) struct ProcessTree {
     pid: u32,
     #[cfg(windows)]
     job: usize,
 }
 
 impl ProcessTree {
-    fn of(child: &std::process::Child) -> ProcessTree {
+    pub(crate) fn of(child: &std::process::Child) -> ProcessTree {
         #[cfg(windows)]
         {
             use std::os::windows::io::AsRawHandle;
@@ -584,7 +584,7 @@ impl ProcessTree {
         ProcessTree { pid: child.id() }
     }
 
-    fn kill(&self) {
+    pub(crate) fn kill(&self) {
         #[cfg(windows)]
         {
             use windows_sys::Win32::System::JobObjects::TerminateJobObject;

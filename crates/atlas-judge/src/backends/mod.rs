@@ -15,7 +15,7 @@ use serde_json::Value;
 pub const ANTHROPIC_BACKEND_BUILT: bool = cfg!(feature = "anthropic-backend");
 
 /// anthropic を選んだのに、このビルドに入っていないときの文言(入れ方まで書く)
-pub const ANTHROPIC_NOT_BUILT: &str = "anthropic バックエンド(Anthropic API を直接呼ぶ。従量課金)は、この atlas には入っていません(既定のビルドとリリースの atlas.exe には入れていません)。使うときは、このリポジトリで npm run build:report の後に cargo build --release -p atlas-cli --features anthropic-backend を実行し、できた target/release/atlas(.exe)を使ってください(docs/judge.md)。GitHub Copilot CLI で判定するなら --backend を付けません(既定の copilot-cli)";
+pub const ANTHROPIC_NOT_BUILT: &str = "anthropic バックエンド(Anthropic API を直接呼ぶ。従量課金)は、この atlas には入っていません(既定のビルドと、起動用の .bat がこの PC でする atlas.exe のビルドには入れていません)。使うときは、このリポジトリで npm run build:report の後に cargo build --release -p atlas-cli --features anthropic-backend を実行し、できた target/release/atlas(.exe)を使ってください(docs/judge.md)。GitHub Copilot CLI で判定するなら --backend を付けません(既定の copilot-cli)";
 
 /// 選んだバックエンドがこのビルドで使えるか確かめる(使えなければ、入れ方を書いたエラー)。
 /// 引数の解釈では anthropic の名前を受け付け、実行するときにここで止める(不明な名前とは別の、分かる文言にするため)

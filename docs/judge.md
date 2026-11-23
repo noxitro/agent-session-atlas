@@ -160,9 +160,9 @@ bin\atlas.exe judge-flow --session <id>                     # 1 セッション�
 | バックエンド | 中身 | 費用 |
 |---|---|---|
 | `copilot-cli`(既定) | `copilot -p` を空の作業フォルダで起動し、パケットをプロンプトに埋め込んで渡す | GitHub Copilot のサブスクリプション内で AI クレジット(旧課金では premium request)を消費します(1 セッション 1 回以上) |
-| `anthropic` | Anthropic Messages API を直接呼ぶ(既定モデル `claude-sonnet-5-5`、環境変数 `ANTHROPIC_API_KEY` が必要)。**既定のビルドとリリースの `atlas.exe` には入っていません**(下記) | **従量課金**です。明示的に `--backend anthropic` を指定したときだけ使います |
+| `anthropic` | Anthropic Messages API を直接呼ぶ(既定モデル `claude-sonnet-5-5`、環境変数 `ANTHROPIC_API_KEY` が必要)。**既定のビルド(起動用の `.bat` がこの PC でする `atlas.exe` のビルド)には入っていません**(下記) | **従量課金**です。明示的に `--backend anthropic` を指定したときだけ使います |
 
-- `anthropic` は、cargo の機能 `anthropic-backend` を付けてビルドした atlas にだけ入っています。HTTP と TLS の依存(ureq・rustls・ring・webpki-roots など 20 ほどのクレート)がこれだけのために要るので、既定のビルド・リリースの `atlas.exe`・起動用の `.bat` がこの PC でするビルドには入れていません。入っていない atlas で `--backend anthropic` を付けると、`judge run` と `skill-draft` は何もせずに、入っていないことと次のビルドの仕方を出して止まります。使うときは、このリポジトリで次を実行し、できた `target\release\atlas.exe` を使います(ビルドに要るものは [development.md](development.md))。
+- `anthropic` は、cargo の機能 `anthropic-backend` を付けてビルドした atlas にだけ入っています。HTTP と TLS の依存(ureq・rustls・ring・webpki-roots など 20 ほどのクレート)がこれだけのために要るので、既定のビルド・起動用の `.bat` がこの PC でするビルドには入れていません。入っていない atlas で `--backend anthropic` を付けると、`judge run` と `skill-draft` は何もせずに、入っていないことと次のビルドの仕方を出して止まります。使うときは、このリポジトリで次を実行し、できた `target\release\atlas.exe` を使います(ビルドに要るものは [development.md](development.md))。
 
   ```
   npm run build:report
