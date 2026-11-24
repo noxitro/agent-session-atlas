@@ -181,17 +181,63 @@ impl Drop for LockGuard {
     }
 }
 
+/// <file>.lock の中身の印(どちらも 7 バイト)。最後にロックの中で書き終えたとき(f が Ok を返したとき)に、<file> があったかを書く。
+/// 前の版が作った空の .lock や、ほかの中身のものは「分からない」として扱い、待たない(前の版と同じ)
+const MARK_EXISTS: &[u8] = b"exists\n";
+const MARK_ABSENT: &[u8] = b"absent\n";
+
+/// 印が「ある」なのに <file> が見つからないときに、現れるのを待つ長さ(ms)。
+/// Windows の SMB のクライアントは「ファイルが無い」を数秒覚えている(FileNotFoundCacheLifetime の既定は 5 秒。ファイルの情報やフォルダの中身は 10 秒ほど)ので、
+/// 別の PC が作った直後のファイルを無いと見て、空から書き直してしまわないように、それより長く待つ。
+/// 待っても無ければ、消されたものとして続ける(止まらない・エラーにしない)
+const MISSING_WAIT_MS: u64 = 12_000;
+/// 見つからないときに見直す間(ms)
+const MISSING_POLL_MS: u64 = 250;
+
 /// <file>.lock を開いて OS のファイルのロック(Windows は LockFileEx、ほかは flock)を排他で取り、f の間だけ持つ
 /// (serve の画面・返答を取り込むジョブの子プロセス・集計が、同じファイルを同時に読んで書かないように)。
 /// 書き手は、このロックの中で読み直してから自分の変更だけを足して書く。
 /// ロックは開いているハンドルに付くので、落ちたプロセスのロックは OS が外す(古いロックを消して取り直す仕組みは要らず、取り合いも起きない)。
 /// <file>.lock のファイルそのものは消さずに残す(消すと、開いたままの別の書き手と別のファイルを取り合うことになるため)。
-/// 待つのは、別の書き手が持っているときだけ。ほかの失敗(開けない・ロックできない)はそのまま返す
+/// 待つのは、別の書き手が持っているときだけ。ほかの失敗(開けない・ロックできない)はそのまま返す。
+///
+/// <file>.lock の中身には、最後に書き終えたときに <file> があったか(MARK_EXISTS / MARK_ABSENT)を置く。
+/// 読み書きは、ロックを取ったハンドルのまま行う(名前で開き直さない。Windows のロックは範囲の全体にかかり、取ったハンドルからは読み書きできる)。
+/// 印が「ある」なのに <file> が見つからなければ、共有のフォルダで別の PC が作った直後のファイルが、まだ見えていないだけかもしれないので、
+/// MISSING_WAIT_MS まで待ってから f を呼ぶ。f が Ok を返したら、そのときに <file> があるかを印に書く(Err なら印は変えない)
 pub fn with_file_lock<T>(path: &Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
-    lock_waiting(path, LOCK_WAIT_MS, f)
+    lock_waiting(path, LOCK_WAIT_MS, MISSING_WAIT_MS, f)
 }
 
-fn lock_waiting<T>(path: &Path, wait_ms: u128, f: impl FnOnce() -> Result<T>) -> Result<T> {
+/// 名前で見て、ファイルがあるか(見つからないときだけ false。ほかの理由で見られないときは、ある側に倒して待たない。理由は f が読むときに出る)
+fn data_file_seen(path: &Path) -> bool {
+    !matches!(std::fs::metadata(path), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+}
+
+/// ロックを取ったハンドルから印を読む(頭の数バイトだけ)
+fn read_mark(file: &mut std::fs::File) -> std::io::Result<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    file.seek(SeekFrom::Start(0))?;
+    let mut buf = Vec::with_capacity(16);
+    file.by_ref().take(16).read_to_end(&mut buf)?;
+    Ok(buf)
+}
+
+/// ロックを取ったハンドルに印を書く(同じ中身なら書かない)。長さは印どうしで同じなので、前の印より長いもの(前の版の中身など)だけを切り詰める
+fn write_mark(file: &mut std::fs::File, before: &[u8], mark: &[u8]) -> std::io::Result<()> {
+    use std::io::{Seek, SeekFrom, Write};
+    if before == mark {
+        return Ok(());
+    }
+    file.seek(SeekFrom::Start(0))?;
+    file.write_all(mark)?;
+    if file.metadata()?.len() != mark.len() as u64 {
+        file.set_len(mark.len() as u64)?;
+    }
+    file.flush()
+}
+
+fn lock_waiting<T>(path: &Path, wait_ms: u128, missing_wait_ms: u64, f: impl FnOnce() -> Result<T>) -> Result<T> {
     let lock = lock_path(path);
     if let Some(dir) = lock.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir).with_context(|| format!("{} を作れません", dir.display()))?;
@@ -209,8 +255,34 @@ fn lock_waiting<T>(path: &Path, wait_ms: u128, f: impl FnOnce() -> Result<T>) ->
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    let _guard = LockGuard(file);
-    f()
+    let mut guard = LockGuard(file);
+    let before = read_mark(&mut guard.0).with_context(|| format!("ロックのファイル {} を読めません", lock.display()))?;
+    if before == MARK_EXISTS && !data_file_seen(path) {
+        // 前に書き終えたときにはあったのに、見つからない。共有のフォルダで、別の PC が作った直後のファイルが見えていないだけかもしれない
+        let waited = std::time::Instant::now();
+        let bound = std::time::Duration::from_millis(missing_wait_ms);
+        let mut seen = false;
+        while waited.elapsed() < bound {
+            std::thread::sleep(std::time::Duration::from_millis(MISSING_POLL_MS).min(bound.saturating_sub(waited.elapsed())));
+            if data_file_seen(path) {
+                seen = true;
+                break;
+            }
+        }
+        let secs = waited.elapsed().as_secs_f64();
+        if seen {
+            eprintln!("{} が見えるまで {secs:.1} 秒待ちました(前に書いたときにはあったファイル)", path.display());
+        } else {
+            eprintln!("{} が {secs:.1} 秒待っても見つからないので、消されたものとして続けます", path.display());
+        }
+    }
+    let out = f()?;
+    let mark = if data_file_seen(path) { MARK_EXISTS } else { MARK_ABSENT };
+    if let Err(e) = write_mark(&mut guard.0, &before, mark) {
+        // 書き込みそのものは済んでいるので、失敗にはしない(次に書くときに、前の版と同じく待たないか、1 回だけ余分に待つだけ)
+        eprintln!("ロックのファイル {} に、{} があるかの印を書けませんでした({e})", lock.display(), path.display());
+    }
+    Ok(out)
 }
 
 /// JSON のファイルを読む(無ければ None。BOM は取り除く)。読めなければ理由
@@ -304,7 +376,7 @@ mod tests {
         assert!(rx.recv().unwrap() >= std::time::Duration::from_millis(100));
         // 待ちきれなければ LockBusy
         holder.lock().unwrap();
-        let e = lock_waiting(&p, 100, || Ok(())).unwrap_err();
+        let e = lock_waiting(&p, 100, MISSING_WAIT_MS, || Ok(())).unwrap_err();
         assert!(e.downcast_ref::<LockBusy>().is_some(), "{e}");
         holder.unlock().unwrap();
         // ロックのファイルの代わりにフォルダがあるなど、ロックそのものを作れないときは、待たずに本当の理由を返す
@@ -315,6 +387,105 @@ mod tests {
         assert!(t.elapsed() < std::time::Duration::from_secs(5));
         assert!(e.to_string().contains("ロックのファイル"), "{e}");
         assert!(e.downcast_ref::<LockBusy>().is_none());
+    }
+
+    /// ロックの中で、ファイルがあれば中身を、無ければ「空」を返す(書き手が読み直すのと同じ)
+    fn read_or_empty(p: &Path) -> Result<String> {
+        match std::fs::read_to_string(p) {
+            Ok(s) => Ok(s),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// 印が「ある」のに見つからないときは、現れるまで待ってから f を呼ぶ(空から書き直して、別の PC の分を消さない)
+    #[test]
+    fn waits_for_a_file_the_mark_says_exists() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("j.json");
+        std::fs::write(lock_path(&p), MARK_EXISTS).unwrap();
+        let t = std::time::Instant::now();
+        let seen = std::thread::scope(|s| {
+            s.spawn(|| {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                write_atomic(&p, "別の PC の分").unwrap();
+            });
+            lock_waiting(&p, LOCK_WAIT_MS, 5_000, || {
+                let cur = read_or_empty(&p)?;
+                std::fs::write(&p, format!("{cur}+自分の分"))?;
+                Ok(cur)
+            })
+            .unwrap()
+        });
+        assert_eq!(seen, "別の PC の分");
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "別の PC の分+自分の分");
+        assert!(t.elapsed() >= std::time::Duration::from_millis(200));
+        assert!(t.elapsed() < std::time::Duration::from_millis(4_000), "{:?}", t.elapsed());
+        assert_eq!(std::fs::read(lock_path(&p)).unwrap(), MARK_EXISTS);
+    }
+
+    /// 待っても現れなければ、消されたものとして続ける(止まらない・エラーにしない)。書かなければ印は「無い」になり、次は待たない
+    #[test]
+    fn gives_up_waiting_after_the_bound() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("j.json");
+        std::fs::write(lock_path(&p), MARK_EXISTS).unwrap();
+        let t = std::time::Instant::now();
+        let seen = lock_waiting(&p, LOCK_WAIT_MS, 600, || read_or_empty(&p)).unwrap();
+        assert_eq!(seen, "");
+        assert!(t.elapsed() >= std::time::Duration::from_millis(600), "{:?}", t.elapsed());
+        assert!(t.elapsed() < std::time::Duration::from_millis(5_000), "{:?}", t.elapsed());
+        assert_eq!(std::fs::read(lock_path(&p)).unwrap(), MARK_ABSENT);
+        let t = std::time::Instant::now();
+        lock_waiting(&p, LOCK_WAIT_MS, 5_000, || Ok(())).unwrap();
+        assert!(t.elapsed() < std::time::Duration::from_millis(500), "{:?}", t.elapsed());
+    }
+
+    /// 前の版が作った .lock(空・ほかの中身)と「無い」の印では待たない
+    #[test]
+    fn legacy_or_absent_mark_does_not_wait() {
+        let d = tempfile::tempdir().unwrap();
+        for (i, before) in [&b""[..], "前の処理".as_bytes(), MARK_ABSENT].into_iter().enumerate() {
+            let p = d.path().join(format!("j{i}.json"));
+            std::fs::write(lock_path(&p), before).unwrap();
+            let t = std::time::Instant::now();
+            lock_waiting(&p, LOCK_WAIT_MS, 5_000, || Ok(())).unwrap();
+            assert!(t.elapsed() < std::time::Duration::from_millis(500), "{i}: {:?}", t.elapsed());
+            assert_eq!(std::fs::read(lock_path(&p)).unwrap(), MARK_ABSENT, "{i}");
+        }
+    }
+
+    /// 書き終えたら、そのときにファイルがあるかを印に書く(前の中身が長くても切り詰める)。f が失敗したら印は変えない
+    #[test]
+    fn mark_follows_successful_writes_only() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("j.json");
+        // 前の版が残した、印より長い中身
+        std::fs::write(lock_path(&p), "前の処理が残した中身").unwrap();
+        with_file_lock(&p, || Ok(std::fs::write(&p, "1")?)).unwrap();
+        assert_eq!(std::fs::read(lock_path(&p)).unwrap(), MARK_EXISTS);
+        // f が失敗したら(消してから失敗しても)、印は変えない
+        assert!(with_file_lock(&p, || -> Result<()> {
+            std::fs::remove_file(&p)?;
+            anyhow::bail!("途中で失敗した")
+        })
+        .is_err());
+        assert_eq!(std::fs::read(lock_path(&p)).unwrap(), MARK_EXISTS);
+        std::fs::write(&p, "1").unwrap();
+        // 書き手が消せば「無い」、また作れば「ある」
+        with_file_lock(&p, || Ok(std::fs::remove_file(&p)?)).unwrap();
+        assert_eq!(std::fs::read(lock_path(&p)).unwrap(), MARK_ABSENT);
+        with_file_lock(&p, || write_atomic(&p, "2")).unwrap();
+        assert_eq!(std::fs::read(lock_path(&p)).unwrap(), MARK_EXISTS);
+        // 印を書いている間も、ほかの書き手はロックを取れない(印はロックを取ったハンドルで書く)
+        let other = std::fs::OpenOptions::new().read(true).write(true).open(lock_path(&p)).unwrap();
+        with_file_lock(&p, || {
+            assert!(matches!(other.try_lock(), Err(std::fs::TryLockError::WouldBlock)));
+            Ok(())
+        })
+        .unwrap();
+        other.lock().unwrap();
+        other.unlock().unwrap();
     }
 
     #[test]
