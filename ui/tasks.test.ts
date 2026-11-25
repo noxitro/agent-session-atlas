@@ -1,5 +1,6 @@
 // 管理ツールのタスクの画面(Playwright の Chromium)。テスト用の XML(e2e/fixtures/tasks/)と架空の fixture で atlas all → atlas serve を立て、実際に押して確かめる。
 //  a. 概況の「管理ツールのタスク」: タスクの数・比べられる完了タスク・2 つの工数と AI の実働を別の欄に出し、比べられるタスクが下限に届かなければ比を出さない
+//  a1. 比を出すときは、比の欄の下にタスクごとの比のばらつきと推定の幅で見た比を出す(埋め込みの値を書き換えた写しで、出し方を確かめる)
 //  a2. 全体サマリの表紙: 比べられる完了タスクと同じ範囲の 3 つの時間(比は出さない)。絞り込みでは変わらず、狭い幅でも欄に収まる
 //  b. タスクの行を押すとそのタスクのセッションに絞り込み、一覧の行にタスクの名前が出る。絞り込みの行の「タスク」でも選べる(タスクなしも)
 //  c. 詳細ページの「タスク」の行: 手で選ぶ・どのタスクでもない・自動に戻すが task-links.json に残り、行が書き変わる
@@ -10,8 +11,10 @@ import { spawnSync } from 'node:child_process';
 import { copyFileSync, utimesSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { serializeForScript } from '../packages/report/src/lib/embed.ts';
 import { shotOnFailure } from './failure-shot.ts';
 import { buildFixtureHome, FIXTURE_WIKIS, FIXTURES, ROOT, cliCommand, startServer, uploadDirName, type ServeHandle } from '../e2e/fixture-home.ts';
 
@@ -138,6 +141,12 @@ describe('管理ツールのタスクの画面', () => {
     expect(r101).toContain('2026-10-23 12:00');
     expect(r101).toContain('57 時間');
     expect(r101).toContain('機械 1');
+    // そのタスクの比(推定 40 時間 ÷ 稼働時間帯の工数 57 時間)と推定の幅(比べるタスクだけ)。比を出さないうちは、ばらつきも出さない
+    expect(await rows.nth(0).getByTestId('task-ratio').innerText()).toBe('比 0.7 倍');
+    expect(await rows.nth(0).getByTestId('task-human-range').innerText()).toBe('幅 20〜80');
+    expect(await rows.nth(1).getByTestId('task-ratio').count()).toBe(0);
+    expect(await page.getByTestId('tasks-ratio-spread').count()).toBe(0);
+    expect(await page.getByTestId('tasks-ratio-range').count()).toBe(0);
     expect(await rows.nth(1).innerText()).toContain('確度が低い');
     await page.getByTestId('tasks-show-all').click();
     expect(await rows.count()).toBe(6);
@@ -146,6 +155,30 @@ describe('管理ツールのタスクの画面', () => {
     expect(await rows.first().getAttribute('data-task')).toBe('DEMO-101');
     expect(await page.getByTestId('tasks-table').locator('th[aria-sort="descending"]').innerText()).toContain('AI を使った場合');
     await shots('tasks-panel', panel, server.url + '#tasks');
+  });
+
+  it('a1. 比を出すときは、比の欄の下にタスクごとの比のばらつきと推定の幅で見た比を出し、推定の偏りが分からないことを書く(埋め込みの値をそのまま出す)', async () => {
+    // fixture の比べられる完了タスクは 1 件で下限に届かないので、埋め込みの合計の値だけを書き換えた写しを file:// で開いて、出し方を確かめる
+    // (値は Rust が決めるもので、数え方は crates/atlas-report/src/tasks/metrics.rs の単体テストで確かめる)
+    const html = await readFile(join(out, 'atlas.html'), 'utf8');
+    const re = /(<script type="application\/json" id="atlas-data">)([\s\S]*?)(<\/script>)/;
+    const m = re.exec(html)!;
+    const data = JSON.parse(m[2]) as { tasks: { summary: Record<string, unknown> } };
+    Object.assign(data.tasks.summary, { ratio: 1.5, ratioSpread: { tasks: 6, median: 1.25, p25: 0.8, p75: 2.345, belowOne: 2 }, ratioLow: 0.6, ratioHigh: 3 });
+    const copy = join(out, 'atlas-spread.html');
+    await writeFile(copy, html.replace(m[0], `${m[1]}${serializeForScript(data)}${m[3]}`));
+    await page.goto(pathToFileURL(copy).href);
+    await panel().waitFor({ state: 'visible' });
+    expect(await page.getByTestId('tasks-ratio').innerText()).toBe('1.5 倍');
+    expect(await page.getByTestId('tasks-ratio-spread').innerText()).toBe('タスクごとの比: 中央値 1.25 倍(25〜75 パーセンタイル 0.8〜2.35 倍、6 件)。1 倍より小さい(AI を使った場合の方が長い)タスク 2 件');
+    expect(await page.getByTestId('tasks-ratio-range').innerText()).toBe('推定の幅で見た比: 0.6〜3 倍');
+    const defs = await page.getByTestId('tasks-ratio-spread-defs').innerText();
+    expect(defs).toContain('人が AI を使わずに作業した時間の実測が無い');
+    expect(defs).toContain('LLM の推定そのものが大きめか小さめかは、ここからは分かりません');
+    // 狭い幅でもページがはみ出さない
+    await page.setViewportSize({ width: 390, height: 900 });
+    expect(await page.evaluate<boolean>('document.documentElement.scrollWidth <= window.innerWidth')).toBe(true);
+    await page.setViewportSize({ width: 1440, height: 900 });
   });
 
   it('a2. 全体サマリの表紙に、比べられる完了タスクと同じ範囲の 3 つの時間が並び(比は出さない)、絞り込みでは変わらない。狭い幅でも崩れない', async () => {

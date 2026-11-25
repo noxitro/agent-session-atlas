@@ -415,3 +415,124 @@ fn work_dir_removal_does_not_follow_junctions() {
     assert!(!work.exists());
     assert!(target.join("keep.txt").exists());
 }
+
+/// 工数の判定の項目(取り込める形。marker は前の判定の目印にする文字)
+fn effort_item(id: &str, hours: f64, marker: &str) -> serde_json::Value {
+    json!({
+        "sessionId": id,
+        "taskCategory": "bugfix",
+        "taskSummary": format!("要約 {marker}"),
+        "humanEffort": { "hours": hours, "low": hours / 2.0, "high": hours * 2.0, "confidence": 0.8, "rationale": format!("根拠 {marker}") },
+        "aiOutcome": { "completed": true, "quality": 4, "rework": 1, "rationale": format!("成果 {marker}") },
+        "instructionsEffect": { "score": 0, "evidence": "なし" },
+        "wikiEffect": { "score": 0, "evidence": "参照なし" },
+        "skillsAgentsEffect": { "score": 0, "evidence": "参照なし" },
+    })
+}
+
+/// 束のフォルダの中のファイルをすべて読む
+fn read_tree(dir: &std::path::Path) -> String {
+    let mut out = String::new();
+    for e in fs::read_dir(dir).unwrap() {
+        let p = e.unwrap().path();
+        if p.is_dir() {
+            out.push_str(&read_tree(&p));
+        } else {
+            out.push_str(&String::from_utf8_lossy(&fs::read(&p).unwrap()));
+        }
+    }
+    out
+}
+
+/// bundle --rejudge n: 判定より前に終わっていた判定済みのセッションだけで束を作る。パケットには前の判定を入れない(目隠し)。
+/// manifest に判定し直す束であることと、そのときの判定の日時を書き、判定し直したものを画面の一覧で「済み」と数える。
+/// 選べるものが無ければ止まる(前の束は残る)
+#[test]
+fn rejudge_bundle_picks_unchanged_sessions_without_the_previous_judgment() {
+    let d = tempfile::tempdir().unwrap();
+    let (home, out, notes) = (d.path().join("home"), d.path().join("out"), d.path().join("notes"));
+    write_home_sessions(&home, &["aaaa1111", "bbbb2222", "dddd4444"]);
+    let (h, o, n) = (home.to_string_lossy().into_owned(), out.to_string_lossy().into_owned(), notes.to_string_lossy().into_owned());
+    run(&cli(&["all", "--home", &h, "--out", &o, "--notes-dir", &n]), &quiet).unwrap();
+    // 判定のないときは選べない
+    let e = run(&cli(&["bundle", "--rejudge", "3", "--out", &o, "--notes-dir", &n]), &quiet).unwrap_err().to_string();
+    assert!(e.contains("判定し直せるセッションがありません"), "{e}");
+    // aaaa は終わり(7/1 09:02)の後に判定、bbbb は終わる前に判定(後から記録が続いたので選ばない)。dddd は未判定
+    let reply = d.path().join("reply.json");
+    let rs = reply.to_string_lossy().into_owned();
+    fs::write(&reply, json!({ "judge": { "model": "m-a", "ranAt": "2026-07-02T00:00:00.000Z" }, "items": [effort_item("aaaa1111", 2.0, "前の判定の目印")] }).to_string()).unwrap();
+    run(&cli(&["judge", "import", &rs, "--out", &o, "--notes-dir", &n]), &quiet).unwrap();
+    fs::write(&reply, json!({ "judge": { "model": "m-a", "ranAt": "2026-07-01T09:01:30.000Z" }, "items": [effort_item("bbbb2222", 2.0, "前の判定の目印")] }).to_string()).unwrap();
+    run(&cli(&["judge", "import", &rs, "--out", &o, "--notes-dir", &n]), &quiet).unwrap();
+    let logs: Mutex<Vec<String>> = Mutex::new(vec![]);
+    let log = |m: &str| logs.lock().unwrap().push(m.to_string());
+    let paths = crate::paths::resolve_paths(crate::paths::PathInputs { home: Some(&h), out: Some(&o), judgments: None, bundle: None, notes_dir: Some(&n) });
+    let opts = |n: u64, zip: bool| super::bundle::BundleCliOptions { include_empty: false, per_part: None, unjudged: false, rejudge: Some(n), zip, config: None };
+    let m = super::bundle::run_bundle(&paths, &super::metrics::SessionFilter::default(), &opts(5, true), &log).unwrap();
+    assert_eq!(m.sessions.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["aaaa1111"]);
+    assert_eq!(m.scope.get("rejudge").cloned().flatten().as_deref(), Some("5"));
+    assert_eq!(m.scope.get("unjudged").cloned().flatten(), None);
+    assert_eq!(m.rejudge_from.as_ref().unwrap().get("aaaa1111").map(String::as_str), Some("2026-07-02T00:00:00.000Z"));
+    assert!(logs.lock().unwrap().iter().any(|l| l.starts_with("bundle: 判定し直すセッション 1 件を選びました(--rejudge 5。判定済み 2 件のうち、判定より前に終わっていたもの 1 件")), "{:?}", logs.lock().unwrap());
+    // 目隠し: 束のどのファイル(パケット・分割ファイル・指示・manifest)にも、前の判定の中身は無い。ZIP にも無い
+    let all = read_tree(&out.join("bundle"));
+    assert!(all.contains("直して"), "パケットにセッションの記録が入っている");
+    assert!(!all.contains("前の判定の目印"));
+    assert!(!String::from_utf8_lossy(&fs::read(out.join("bundle.zip")).unwrap()).contains("前の判定の目印"));
+    // 画面の一覧: 判定し直す束で、まだ判定し直していない
+    let files = crate::chat_parts::JudgedFiles { judgments: &out.join("judgments.json"), turn_judgments: &out.join("turn-judgments.json"), tasks_dir: &notes };
+    let parts = crate::chat_parts::list_chat_parts(&out, &files, crate::chat_parts::ChatTarget::Effort).unwrap();
+    assert_eq!((parts.rejudge, parts.unjudged_only, parts.judged, parts.parts.as_ref().unwrap()[0].judged), (Some(5), Some(false), Some(0), 0));
+    // 判定し直した返答を取り込むと「済み」になり、前の判定は履歴に移る
+    fs::write(&reply, json!({ "judge": { "model": "m-b", "ranAt": "2026-07-03T00:00:00.000Z" }, "items": [effort_item("aaaa1111", 3.0, "後")] }).to_string()).unwrap();
+    run(&cli(&["judge", "import", &rs, "--out", &o, "--notes-dir", &n]), &quiet).unwrap();
+    let parts = crate::chat_parts::list_chat_parts(&out, &files, crate::chat_parts::ChatTarget::Effort).unwrap();
+    assert_eq!(parts.judged, Some(1));
+    let hist = atlas_judge::judgments_io::read_history(&out.join("judgments-history.json")).unwrap().unwrap();
+    assert_eq!(hist.items.len(), 1);
+    assert_eq!(hist.items[0].item.judge.as_ref().map(|j| j.ran_at.as_str()), Some("2026-07-02T00:00:00.000Z"));
+    // 表(judgment-repeats.csv と SQLite)に 1 組。作り直したレポートにも判定のぶれが入る
+    let csv = fs::read_to_string(out.join("tables").join("judgment-repeats.csv")).unwrap();
+    let lines: Vec<&str> = csv.trim_end().split("\r\n").collect();
+    assert_eq!(lines.len(), 2, "{csv}");
+    assert!(lines[1].starts_with("aaaa1111,"), "{}", lines[1]);
+    assert!(lines[1].contains("2026-07-02T00:00:00.000Z,2026-07-03T00:00:00.000Z,m-a,m-b"), "{}", lines[1]);
+    let db = rusqlite::Connection::open(out.join("tables").join(crate::tables::SQLITE_FILE)).unwrap();
+    let k: i64 = db.query_row("SELECT count(*) FROM judgment_repeats", [], |r| r.get(0)).unwrap();
+    assert_eq!(k, 1);
+    drop(db);
+    let html = fs::read_to_string(out.join("atlas.html")).unwrap();
+    assert!(html.contains("\"judgmentRepeats\":{\"pairs\":1,"), "判定のぶれが埋め込まれていない");
+    // 判定し直したものは後ろに回る(選べるのが判定し直したものだけなら、それを選ぶ)
+    let m2 = super::bundle::run_bundle(&paths, &super::metrics::SessionFilter::default(), &opts(1, false), &log).unwrap();
+    assert_eq!(m2.sessions.len(), 1);
+    // 引数: --unjudged と一緒には使えない。bundle のほかでは使えない。数の範囲
+    let p = |a: &[&str]| crate::args::parse_cli(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+    assert!(p(&["bundle", "--rejudge", "3", "--unjudged"]).unwrap_err().0.contains("--rejudge と --unjudged は一緒に使えません"));
+    assert!(p(&["turns", "bundle", "--rejudge", "3"]).unwrap_err().0.starts_with("--rejudge は bundle でだけ使えます"));
+    assert!(p(&["bundle", "--rejudge", "0"]).unwrap_err().0.contains("1 以上の整数"));
+    assert!(p(&["bundle", "--rejudge", "1001"]).unwrap_err().0.contains("1000 以下"));
+    assert_eq!(p(&["bundle", "--rejudge", "7", "--zip"]).unwrap().rejudge, Some(7));
+}
+
+/// 画面のジョブ: bundle・bundle-zip に rejudge を付けると、判定し直す束(--rejudge n。--unjudged は付けない)。種類は同じ
+#[test]
+fn rejudge_jobs() {
+    let known = |_: &str| true;
+    let parse = |v: serde_json::Value| crate::jobs::parse_job_request(v.as_object().unwrap(), &known);
+    let r = parse(json!({ "kind": "bundle-zip", "rejudge": 12 })).unwrap();
+    assert_eq!(r, JobRequest::Rejudge { n: 12, zip: true });
+    assert_eq!(r.kind(), "bundle-zip");
+    assert_eq!(parse(json!({ "kind": "bundle", "rejudge": 3 })).unwrap().kind(), "bundle");
+    for bad in [json!(0), json!(1.5), json!("3"), json!(1001)] {
+        assert_eq!(parse(json!({ "kind": "bundle", "rejudge": bad })).unwrap_err().status, 400);
+    }
+    // 工数の束のほかでは使えない
+    assert_eq!(parse(json!({ "kind": "turn-bundle", "rejudge": 3 })).unwrap_err().status, 400);
+    let p = JobArgsInput { out_dir: "o", notes_dir: "n", home: None, settings: Some("S"), judgments: Some("J") };
+    let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let a = job_args(&JobRequest::Rejudge { n: 12, zip: true }, &p).unwrap();
+    assert_eq!(a, v(&["bundle", "--rejudge", "12", "--zip", "--out", "o", "--notes-dir", "n", "--settings", "S", "--judgments", "J"]));
+    assert_eq!(crate::args::parse_cli(&a).unwrap().rejudge, Some(12));
+    assert_eq!(job_args(&JobRequest::Rejudge { n: 2, zip: false }, &p).unwrap()[..3], v(&["bundle", "--rejudge", "2"])[..]);
+}

@@ -148,6 +148,11 @@ pub fn run_build(p: &Paths, o: &BuildOptions, log: Log<'_>) -> Result<BuildResul
 
     let task_view = super::tasks::build_view(p, &task_cfg, tasks_read_only, &s.sessions, &sessions, refreshed.as_ref(), &super::tasks::human_of(judgments.as_ref()));
     write_tables(p, &sessions, task_view.as_ref(), cmd, log)?;
+    // 判定のぶれ(判定の履歴があるときだけ。読めないときの注意は表を書くときに出したので、ここでは出さない)
+    let repeats = super::metrics::judgment_repeats_of(p, &sessions, cmd, &|_| {}).map(|(_, r)| r);
+    if let Some(r) = &repeats {
+        log(&format!("build: 判定のぶれ {} 組を合成({})", r.pairs, atlas_judge::judgments_io::history_path(&p.judgments).display()));
+    }
 
     let unknown: i64 = s.warnings.unknown_event_types.values().sum();
     let (memos, member_memos) = if read_only { (None, Some(p.snapshot.join("session-state"))) } else { (Some(memos_dir(&p.notes)), None) };
@@ -199,6 +204,7 @@ pub fn run_build(p: &Paths, o: &BuildOptions, log: Log<'_>) -> Result<BuildResul
         library: None,
         desktop_meta: s.desktop.as_ref().and_then(|d| d.as_ref()),
         tasks: task_view.as_ref().map(serde_json::to_value).transpose()?,
+        judgment_repeats: repeats,
     })?;
     if let Some(at) = &r.stale.full {
         log(&format!("build: 前回の --full の出力(out/full/ と out/coverage.json、生成 {at})が残っています。消したいときは、out/full/ フォルダと out/coverage.json を手で消してください"));

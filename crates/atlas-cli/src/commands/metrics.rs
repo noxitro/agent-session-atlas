@@ -300,11 +300,16 @@ pub fn tasks_table(v: &atlas_report::tasks::view::TasksView) -> atlas_core::tabl
         "直しの割合",
         "不採用の割合",
         "的外れの割合",
+        // 推定の幅(推定人手工数と同じ数え方。幅の無い推定があれば空)と、このタスクの比(比べられるタスクだけ)。前の版の列の並びを変えないよう後ろに足す
+        "推定の幅の下(時間)",
+        "推定の幅の上(時間)",
+        "比(推定人手工数 ÷ 稼働時間帯の工数)",
     ]
     .iter()
     .map(|s| s.to_string())
     .collect();
     let hours = |ms: f64| Cell::Num(atlas_core::js::round(ms / 36_000.0) / 100.0);
+    let h2 = |h: Option<f64>| h.map_or(Cell::Null, |h| Cell::Num(atlas_core::js::round(h * 100.0) / 100.0));
     // 割合は 0〜1 の小数 3 桁(分母が下限に届かなければ空)
     let rate = |x: Option<f64>| x.map_or(Cell::Null, |x| Cell::Num(atlas_core::js::round(x * 1000.0) / 1000.0));
     let rows = v
@@ -349,6 +354,105 @@ pub fn tasks_table(v: &atlas_report::tasks::view::TasksView) -> atlas_core::tabl
                 rate(t.verdicts.as_ref().and_then(|v| v.fix_rate)),
                 rate(t.verdicts.as_ref().and_then(|v| v.rejected_rate)),
                 rate(t.verdicts.as_ref().and_then(|v| v.off_target_rate)),
+                if t.sessions == 0 { Cell::Null } else { h2(t.human_low) },
+                if t.sessions == 0 { Cell::Null } else { h2(t.human_high) },
+                h2(t.ratio),
+            ]
+        })
+        .collect();
+    atlas_core::tables::Table { header, rows }
+}
+
+/// 判定のぶれ(atlas_report::judgment_repeats)。セッションは表とレポートに載せるもの。
+/// 判定の履歴(judgments-history.json。工数の判定のファイルの隣)が無ければ None。履歴か今の判定が読めなければ、注意を出して None
+pub fn judgment_repeats_of(p: &Paths, sessions: &[&SessionRecord], cmd: &str, log: Log<'_>) -> Option<(Vec<atlas_report::judgment_repeats::RepeatPair>, atlas_report::judgment_repeats::JudgmentRepeats)> {
+    let hp = atlas_judge::judgments_io::history_path(&p.judgments);
+    if !hp.exists() {
+        return None;
+    }
+    let read = |path: &std::path::Path| -> std::result::Result<serde_json::Value, String> {
+        let b = std::fs::read(path).map_err(|e| e.to_string())?;
+        atlas_core::js::parse_json(&String::from_utf8_lossy(&b)).map_err(|e| e.to_string())
+    };
+    let hist = match read(&hp).and_then(|v| atlas_report::judgments::parse_history(&v).map_err(|e| e.to_string())) {
+        Ok(h) => h,
+        Err(e) => {
+            log(&format!("{cmd}: 注意 {} を読めないため、判定のぶれは出しません({e})", hp.display()));
+            return None;
+        }
+    };
+    let cur = if p.judgments.exists() {
+        match read(&p.judgments).and_then(|v| atlas_report::judgments::parse_judgments(&v).map_err(|e| e.to_string())) {
+            Ok(j) => j.by_session,
+            Err(e) => {
+                log(&format!("{cmd}: 注意 {} を読めないため、判定のぶれは出しません({e})", p.judgments.display()));
+                return None;
+            }
+        }
+    } else {
+        indexmap::IndexMap::new()
+    };
+    let ss: Vec<atlas_report::judgment_repeats::RepeatSession<'_>> =
+        sessions.iter().map(|s| atlas_report::judgment_repeats::RepeatSession { id: s.id.as_str(), end_ms: s.updated_at.as_deref().filter(|x| !x.is_empty()).and_then(atlas_core::jsdate::parse_ms) }).collect();
+    Some(atlas_report::judgment_repeats::compute_repeats(&ss, &cur, &hist))
+}
+
+/// 判定のぶれの組ごとの表(judgment-repeats.csv と SQLite の judgment_repeats)。1 行が 1 組(古い判定と新しい判定)
+pub fn judgment_repeats_table(pairs: &[atlas_report::judgment_repeats::RepeatPair], sessions: &[&SessionRecord]) -> atlas_core::tables::Table {
+    let header: Vec<String> = [
+        "sessionId",
+        "project",
+        "セッションの終わり",
+        "古い判定の日時",
+        "新しい判定の日時",
+        "古い判定のモデル",
+        "新しい判定のモデル",
+        "達成(古い)",
+        "達成(新しい)",
+        "推定人手工数(古い)",
+        "推定の幅の下(古い)",
+        "推定の幅の上(古い)",
+        "確信度(古い)",
+        "推定人手工数(新しい)",
+        "推定の幅の下(新しい)",
+        "推定の幅の上(新しい)",
+        "確信度(新しい)",
+        "成果の質(古い)",
+        "成果の質(新しい)",
+        "手戻り(古い)",
+        "手戻り(新しい)",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    let by: std::collections::HashMap<&str, &SessionRecord> = sessions.iter().map(|s| (s.id.as_str(), *s)).collect();
+    let num = |x: Option<f64>| x.map_or(Cell::Null, Cell::Num);
+    let rows = pairs
+        .iter()
+        .map(|p| {
+            let s = by.get(p.session_id.as_str());
+            vec![
+                p.session_id.as_str().into(),
+                s.map(|s| s.project.as_str()).into(),
+                s.and_then(|s| s.updated_at.as_deref()).into(),
+                p.older.ran_at.as_str().into(),
+                p.newer.ran_at.as_str().into(),
+                p.older.model.as_deref().into(),
+                p.newer.model.as_deref().into(),
+                p.older.completed.map_or(Cell::Null, Cell::Bool),
+                p.newer.completed.map_or(Cell::Null, Cell::Bool),
+                num(p.older.hours),
+                num(p.older.low),
+                num(p.older.high),
+                num(p.older.confidence),
+                num(p.newer.hours),
+                num(p.newer.low),
+                num(p.newer.high),
+                num(p.newer.confidence),
+                num(p.older.quality),
+                num(p.newer.quality),
+                num(p.older.rework),
+                num(p.newer.rework),
             ]
         })
         .collect();
@@ -439,6 +543,15 @@ pub fn write_tables(p: &Paths, sessions: &[&SessionRecord], tasks: Option<&atlas
     }
     // テストの列を足してから書く
     std::fs::write(dir.join("sessions.csv"), &t.sessions)?;
+    // 判定のぶれの組ごとの表。判定の履歴が無ければ書かず、前のものも残さない(履歴があって組が 0 なら見出しだけを書く。組が無いことは本当なので)
+    match judgment_repeats_of(p, sessions, cmd, log) {
+        Some((pairs, _)) => {
+            let rt = judgment_repeats_table(&pairs, sessions);
+            std::fs::write(dir.join("judgment-repeats.csv"), to_csv(&rt.header, &rt.rows))?;
+            t.data.push(("judgment_repeats".to_string(), rt));
+        }
+        None => atlas_core::jsfs::rm_force(&dir.join("judgment-repeats.csv"))?,
+    }
     // 前の版が書いた課題 × 条件の表(conditions.csv)は、もう作らないので残さない
     atlas_core::jsfs::rm_force(&dir.join("conditions.csv"))?;
     // テストの実行が 1 回も無ければ書かず、前のものも残さない(見出しだけの表は「0 件」と読めてしまう)

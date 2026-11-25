@@ -209,6 +209,9 @@ pub enum JobRequest {
     Full { id: String },
     Bundle,
     BundleZip,
+    /// 工数の判定で、判定済みのセッションを n 件まで判定し直す束(判定のぶれを測る。`bundle --rejudge n [--zip]`)。
+    /// 種類(kind)は Bundle・BundleZip と同じ(画面は同じ束を作るジョブとして見る)
+    Rejudge { n: u64, zip: bool },
     Export,
     TurnBundle,
     TurnBundleZip,
@@ -226,7 +229,8 @@ impl JobRequest {
             JobRequest::Refresh => "refresh",
             JobRequest::Full { .. } => "full",
             JobRequest::Bundle => "bundle",
-            JobRequest::BundleZip => "bundle-zip",
+            JobRequest::BundleZip | JobRequest::Rejudge { zip: true, .. } => "bundle-zip",
+            JobRequest::Rejudge { zip: false, .. } => "bundle",
             JobRequest::Export => "export",
             JobRequest::TurnBundle => "turn-bundle",
             JobRequest::TurnBundleZip => "turn-bundle-zip",
@@ -290,6 +294,8 @@ impl std::error::Error for JobError {}
 fn job_keys(kind: &str) -> &'static [&'static str] {
     match kind {
         "full" => &["kind", "id"],
+        // rejudge: 判定し直す数(工数の判定の束だけ)
+        "bundle" | "bundle-zip" => &["kind", "rejudge"],
         _ => &["kind"],
     }
 }
@@ -320,6 +326,11 @@ pub fn parse_job_request(body: &Map<String, Value>, known_id: &dyn Fn(&str) -> b
     let extra: Vec<&str> = body.keys().map(String::as_str).filter(|k| !allowed.contains(k)).collect();
     if !extra.is_empty() {
         return Err(JobError::new(400, format!("{kind} では使えない項目です: {}", extra.join(", "))));
+    }
+    if let Some(v) = body.get("rejudge") {
+        let max = atlas_judge::rejudge::REJUDGE_MAX;
+        let n = v.as_f64().filter(|n| n.fract() == 0.0 && *n >= 1.0 && *n <= max as f64).ok_or_else(|| JobError::new(400, format!("rejudge は 1 以上 {max} 以下の整数です")))?;
+        return Ok(JobRequest::Rejudge { n: n as u64, zip: kind == "bundle-zip" });
     }
     Ok(match kind {
         "refresh" => JobRequest::Refresh,
@@ -363,6 +374,14 @@ pub fn job_args(req: &JobRequest, p: &JobArgsInput<'_>) -> Option<Vec<String>> {
         JobRequest::Bundle => vec!["bundle".into(), "--unjudged".into()],
         // 束と ZIP を同じ回に作る(前の束から作った ZIP を渡させない)
         JobRequest::BundleZip => vec!["bundle".into(), "--unjudged".into(), "--zip".into()],
+        // 判定し直す束(--unjudged は付けない。一緒には使えない)
+        JobRequest::Rejudge { n, zip } => {
+            let mut v = vec!["bundle".to_string(), "--rejudge".to_string(), n.to_string()];
+            if *zip {
+                v.push("--zip".into());
+            }
+            v
+        }
         JobRequest::Export => vec!["export".into()],
         JobRequest::TurnBundle => vec!["turns".into(), "bundle".into(), "--unjudged".into()],
         JobRequest::TurnBundleZip => vec!["turns".into(), "bundle".into(), "--unjudged".into(), "--zip".into()],

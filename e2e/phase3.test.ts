@@ -293,7 +293,7 @@ describe('Phase 3 E2E: fixtures', () => {
     for (const [p, h] of byProject) expect(agg.byProject.find((b) => b.key === p)!.humanHours).toBeCloseTo(h);
     // llm-wiki のページ: 埋め込みの版 18 から、ページの名前を辞書(wikiPageNames)に 1 回だけ置き、要約は番号を持つ。
     // 判定は読んだページの分だけ(パケットに無いページの判定は捨てる)。理由は埋め込まない
-    expect(data.version).toBe(21);
+    expect(data.version).toBe(22);
     expect(data.wikiPageNames).toEqual([...SAMPLE_WIKI_PAGES]);
     const id4 = '00000000-0000-4000-8000-000000000004';
     const s4 = data.sessions.find((x) => x.id === id4)!;
@@ -328,6 +328,61 @@ describe('Phase 3 E2E: fixtures', () => {
     const bad = atlas(['judge', 'import', join(FIXTURES, 'manifest.json'), '--out', out]);
     expect(bad.status).toBe(1);
     expect(validateJudgments(await readJson(jpath)).items.length).toBe(sample.items.length);
+  });
+
+  it('b2. 判定し直す束(bundle --rejudge)は前の判定を入れず、判定し直した返答を取り込むと前の判定が履歴に移り、判定のぶれに出る', async () => {
+    const sample = await readJson<JudgmentsFile>(SAMPLE);
+    // 判定し直す束: 判定済みで、判定より前に終わっていたセッションだけ。前の判定の文(根拠)はどのファイルにも入れない
+    const rb = atlas(['bundle', '--rejudge', '3', '--zip', '--out', out]);
+    expect(rb.status, rb.stderr).toBe(0);
+    expect(rb.stdout).toMatch(/bundle: 判定し直すセッション 3 件を選びました/);
+    const m = await readJson<BundleManifest & { rejudgeFrom?: Record<string, string> }>(join(bundle, 'manifest.json'));
+    expect(m.scope.rejudge).toBe('3');
+    expect(m.scope.unjudged ?? null).toBeNull();
+    expect(Object.keys(m.rejudgeFrom ?? {}).sort()).toEqual(m.sessions.map((s) => s.id).sort());
+    const judged = new Set(sample.items.map((i) => i.sessionId));
+    expect(m.sessions.every((s) => judged.has(s.id))).toBe(true);
+    const texts: string[] = [];
+    const walk = async (d: string): Promise<void> => {
+      for (const e of await readdir(d, { withFileTypes: true })) {
+        if (e.isDirectory()) await walk(join(d, e.name));
+        else texts.push(await readFile(join(d, e.name), 'utf8'));
+      }
+    };
+    await walk(bundle);
+    texts.push((await readFile(join(out, 'bundle.zip'))).toString('utf8'));
+    for (const it of sample.items) for (const t of texts) expect(t).not.toContain(it.humanEffort.rationale);
+    // --unjudged とは一緒に使えない
+    const both = atlas(['bundle', '--rejudge', '3', '--unjudged', '--out', out]);
+    expect(both.status).toBe(2);
+    expect(both.stderr + both.stdout).toContain('--rejudge と --unjudged は一緒に使えません');
+
+    // 別の判定で置き換える(時間を 2 倍、達成は 1 件だけ変える)。前の判定は judgments-history.json に移る
+    const again = { ...sample, judge: { backend: 'external', model: 'hand-written-sample-2', ranAt: new Date().toISOString() }, items: sample.items.map((i, k) => ({ ...i, humanEffort: { ...i.humanEffort, hours: i.humanEffort.hours * 2, low: i.humanEffort.low * 2, high: i.humanEffort.high * 2 }, aiOutcome: { ...(i.aiOutcome as { completed: boolean }), completed: k === 0 ? !(i.aiOutcome as { completed: boolean }).completed : (i.aiOutcome as { completed: boolean }).completed } })) };
+    const file = join(WORK, 'judgments-again.json');
+    await writeFile(file, JSON.stringify(again));
+    const imp = atlas(['judge', 'import', file, '--out', out]);
+    expect(imp.status, imp.stderr).toBe(0);
+    const hist = await readJson<{ schemaVersion: number; items: { item: { sessionId: string; humanEffort: { hours: number } } }[] }>(join(out, 'judgments-history.json'));
+    expect(hist.schemaVersion).toBe(1);
+    expect(hist.items.map((h) => [h.item.sessionId, h.item.humanEffort.hours]).sort()).toEqual(sample.items.map((i) => [i.sessionId, i.humanEffort.hours]).sort());
+    // 同じ返答を取り込み直しても、履歴は増えない
+    expect(atlas(['judge', 'import', file, '--out', out]).status).toBe(0);
+    expect((await readJson<{ items: unknown[] }>(join(out, 'judgments-history.json'))).items.length).toBe(sample.items.length);
+    // 判定のぶれ(取り込みの後の作り直しで埋め込む): 5 組。どれも時間は 2 倍
+    const data = extractEmbedded<ReportData>(await readFile(join(out, 'atlas.html'), 'utf8'));
+    const r = data.judgmentRepeats!;
+    expect(r.pairs).toBe(sample.items.length);
+    expect([r.sameModel, r.differentModel]).toEqual([0, sample.items.length]);
+    expect(r.completed).toEqual({ n: 5, agree: 4, rate: 0.8 });
+    // 確信度 0.3 の 1 件は時間の比から外す(推定人手工数の合計と同じ決まり)
+    expect(r.hours.lowConfidence).toBe(1);
+    expect(r.hours.n).toBe(4);
+    expect(r.hours.ratioMedian).toBeNull();
+    expect(r.min).toBe(THRESHOLDS.MIN_SESSIONS);
+    const csv = (await readFile(join(out, 'tables', 'judgment-repeats.csv'), 'utf8')).replace(/^﻿/, '').split('\r\n').filter(Boolean);
+    expect(csv.length).toBe(1 + sample.items.length);
+    expect(csv[0].split(',').slice(0, 7)).toEqual(['sessionId', 'project', 'セッションの終わり', '古い判定の日時', '新しい判定の日時', '古い判定のモデル', '新しい判定のモデル']);
   });
 
   it('c. このツールの中で判定する操作(judge run・judge-flow・turns run・--backend)は無く、外部の LLM に頼む手順を案内する', () => {

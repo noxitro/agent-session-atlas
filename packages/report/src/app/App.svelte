@@ -24,6 +24,7 @@
   import ModelValue from './components/ModelValue.svelte';
   import SessionTable from './components/SessionTable.svelte';
   import TaskPanel from './components/TaskPanel.svelte';
+  import JudgmentRepeatsPanel from './components/JudgmentRepeats.svelte';
   import { applyTheme, loadTheme, type ThemeChoice } from './theme.ts';
   import { watchScrollFocus } from './scroll-focus.ts';
   import { STALE_MESSAGE } from '../lib/code-check.ts';
@@ -537,6 +538,7 @@
         { id: 'phases', label: '工程と詰まり' },
         { id: 'detail', label: '集計明細' },
         ...(judged ? [{ id: 'judgments', label: 'AI 投入量 vs 推定人手工数' }] : []),
+        ...(data?.judgmentRepeats ? [{ id: 'judgment-repeats', label: '判定のぶれ' }] : []),
         ...(tasks ? [{ id: 'tasks', label: '管理ツールのタスク' }] : []),
         ...(data?.retention ? [{ id: 'retention', label: 'AI の変更の残存' }] : []),
         { id: 'compare', label: '比べる' },
@@ -778,6 +780,7 @@
           <TurnPhases agg={turnAgg} verdicts={verdictAgg} verdictModel={data.turnJudgments?.model ?? null} verdictRanAt={data.turnJudgments?.ranAt ?? null} overLimit={turnsOverLimit(filtered)} {editable} />
           <Overview part="detail" {agg} {judged} warnings={data.warnings} filtered={!isEmptyFilter(filter)} includeEmpty={filter.empty === '1'} {emptyCount} {emptyInFilter} {wiki} />
           {#if judged}<JudgmentPanel {agg} meta={data.judgments} />{/if}
+          {#if data.judgmentRepeats}<JudgmentRepeatsPanel r={data.judgmentRepeats} />{/if}
           {#if tasks}<TaskPanel {tasks} current={filter.task} noneCount={taskOpts?.none ?? 0} onpick={(t) => setFilter({ task: t })} />{/if}
           {#if data.retention}<Retention sessions={filtered} meta={data.retention} />{/if}
           <Compare sessions={scoped} projects={options.project} lastAt={all.overall.lastAt} retention={!!data.retention} {wiki} />

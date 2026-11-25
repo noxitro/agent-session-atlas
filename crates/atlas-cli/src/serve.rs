@@ -16,7 +16,7 @@ mod http;
 #[cfg(test)]
 mod tests;
 
-use crate::chat_parts::{judged_session_ids, judged_turn_keys, list_chat_parts, ChatParts, ChatTarget};
+use crate::chat_parts::{judged_turn_keys, list_chat_parts, ChatParts, ChatTarget};
 use crate::config::{default_config_path, load_config, modify_config, parse_config, parse_upload_root, update_config, ConfigEdit};
 use crate::folders::{check_folder, folders_root_of, forget_folder, is_read_only_view, list_folder_states, list_folders, open_folder_report, FolderContext, FolderError};
 use crate::jobs::{parse_job_request, running_job_in, FullCtx, JobRunner, JobRunnerOptions, RunFullFn, SpawnFn};
@@ -301,6 +301,8 @@ struct SessionEntry {
     /// 始めた時刻(ミリ秒)と実働(ミリ秒)。タスクの工数に使う
     start_ms: Option<i64>,
     active_ms: Option<f64>,
+    /// 終わり(updatedAt。ミリ秒)。判定し直せるセッション(判定より前に終わっていた。atlas_judge::rejudge)を数えるのに使う
+    end_ms: Option<i64>,
     /// 開いただけのセッション(sessions.json の empty)と、題名か依頼の文があるか。LLM に紐づけを頼むセッションを数えるのに使う(links::llm_eligible)
     empty: bool,
     has_text: bool,
@@ -1054,12 +1056,13 @@ impl Server {
             let turns = r.get("analysis").and_then(|a| a.get("turnStats")).and_then(Value::as_array).map_or(0, Vec::len);
             let start_ms = r.get("createdAt").and_then(Value::as_str).filter(|s| !s.is_empty()).and_then(atlas_core::jsdate::parse_ms);
             let active_ms = r.get("activeMs").and_then(Value::as_f64);
+            let end_ms = r.get("updatedAt").and_then(Value::as_str).filter(|s| !s.is_empty()).and_then(atlas_core::jsdate::parse_ms);
             let empty = r.get("empty").and_then(Value::as_bool).unwrap_or(false);
             // 題名か依頼の文(最初の依頼と、記録した各依頼の先頭)があるか。tasks bundle(links::llm_eligible)の SessionText と同じ項目を見る
             let prompt_text = r.get("firstUserMessage").and_then(Value::as_str).into_iter().chain(r.get("analysis").and_then(|a| a.get("requests")).and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str));
             let has_text = atlas_report::tasks::links::has_text(r.get("name").and_then(Value::as_str).unwrap_or(""), &prompt_text.collect::<Vec<_>>().join("\n"));
             let extra = atlas_report::tasks::extras::SessionExtra::from_value(r);
-            ids.insert(id, SessionEntry { title: if name.is_empty() { "(名前なし)".into() } else { name.to_string() }, eligible, turns, start_ms, active_ms, empty, has_text, extra });
+            ids.insert(id, SessionEntry { title: if name.is_empty() { "(名前なし)".into() } else { name.to_string() }, eligible, turns, start_ms, active_ms, end_ms, empty, has_text, extra });
         }
         let layout = file.get("source").and_then(|s| s.get("layout")).and_then(Value::as_str).map(str::to_string);
         let ix = Arc::new(SessionIndex { ids, layout });
@@ -1669,21 +1672,28 @@ impl Server {
         }))
     }
 
-    /// 工数の判定の件数: 依頼の記録があるセッションのうち judgments.json に無いもの
+    /// 工数の判定の件数: 依頼の記録があるセッションのうち judgments.json に無いもの。
+    /// rejudgeable は、判定し直せる(判定より前に終わっていた)判定済みのセッション、rejudgeFresh はそのうちまだ判定し直していないもの
+    /// (bundle --rejudge と同じ atlas_judge::rejudge の決まり)
     fn judge_preview(&self) -> R<Map<String, Value>> {
-        let Some(ix) = self.session_index()? else { return Ok(obj(json!({ "eligible": 0, "judged": 0, "pending": 0 }))) };
-        let judged = judged_session_ids(&self.judgments).map_err(|e| HttpError::new(409, format!("{e:#}")))?;
+        let Some(ix) = self.session_index()? else { return Ok(obj(json!({ "eligible": 0, "judged": 0, "pending": 0, "rejudgeable": 0, "rejudgeFresh": 0 }))) };
+        let judged = crate::chat_parts::judged_ran_at(&self.judgments).map_err(|e| HttpError::new(409, format!("{e:#}")))?;
+        let history = atlas_judge::judgments_io::read_history(&atlas_judge::judgments_io::history_path(&self.judgments)).map_err(|e| HttpError::new(409, format!("判定の履歴を読めません: {e:#}")))?;
+        let repeated = atlas_judge::rejudge::repeated_sessions(history.as_ref());
         let (mut eligible, mut done) = (0, 0);
+        let mut cands: Vec<atlas_judge::rejudge::RejudgeCandidate<'_>> = Vec::new();
         for (id, x) in &ix.ids {
             if !x.eligible {
                 continue;
             }
             eligible += 1;
-            if judged.contains(id) {
+            if let Some(at) = judged.get(id) {
                 done += 1;
+                cands.push(atlas_judge::rejudge::RejudgeCandidate { id, end_ms: x.end_ms, ran_at: at.as_deref(), repeated: repeated.contains(id) });
             }
         }
-        Ok(obj(json!({ "eligible": eligible, "judged": done, "pending": eligible - done })))
+        let sel = atlas_judge::rejudge::select_rejudge(&cands, 0);
+        Ok(obj(json!({ "eligible": eligible, "judged": done, "pending": eligible - done, "rejudgeable": sel.eligible, "rejudgeFresh": sel.fresh })))
     }
 
     /// 依頼ごとの判定の件数(依頼ごとの記録がある依頼のうち、turn-judgments.json に無いもの)

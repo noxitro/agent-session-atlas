@@ -113,6 +113,8 @@ pub struct CliOptions {
     pub include_empty: bool,
     pub per_part: Option<u64>,
     pub unjudged: bool,
+    /// bundle: 判定済みのセッションを n 件まで判定し直す束を作る(判定のぶれを測る。rejudge.rs)
+    pub rejudge: Option<u64>,
     pub zip: bool,
     pub temp_dirs: Option<Vec<String>>,
     pub config: Option<String>,
@@ -179,6 +181,7 @@ const OPTIONS: &[(&str, Kind)] = &[
     ("include-empty", Kind::Bool),
     ("per-part", Kind::Str),
     ("unjudged", Kind::Bool),
+    ("rejudge", Kind::Str),
     ("zip", Kind::Bool),
     ("temp-dir", Kind::StrMulti),
     ("config", Kind::Str),
@@ -598,6 +601,16 @@ pub fn parse_cli(argv: &[String]) -> Result<CliOptions, UsageError> {
     if values.b("unjudged", false) && !matches!(cmd.as_str(), "bundle" | "turns" | "tasks") {
         return err("--unjudged は bundle・turns bundle・tasks bundle でだけ使えます");
     }
+    if values.has("rejudge") && cmd != "bundle" {
+        return err("--rejudge は bundle でだけ使えます(依頼ごとの判定とタスクの紐づけには、判定し直す束はありません)");
+    }
+    if values.has("rejudge") && values.b("unjudged", false) {
+        return err("--rejudge と --unjudged は一緒に使えません(--rejudge は判定済みのセッションだけで、--unjudged は未判定のセッションだけで束を作ります)");
+    }
+    let rejudge = pos_int(values.s("rejudge"), "--rejudge", 1)?;
+    if let Some(n) = rejudge.filter(|n| *n > atlas_judge::rejudge::REJUDGE_MAX) {
+        return err(format!("--rejudge は {} 以下です: {n}", atlas_judge::rejudge::REJUDGE_MAX));
+    }
     if values.b("zip", false) && !matches!(cmd.as_str(), "bundle" | "turns" | "tasks") {
         return err("--zip は bundle・turns bundle・tasks bundle でだけ使えます");
     }
@@ -671,6 +684,7 @@ pub fn parse_cli(argv: &[String]) -> Result<CliOptions, UsageError> {
         include_empty: values.b("include-empty", false),
         per_part: pos_int(values.s("per-part"), "--per-part", 1)?,
         unjudged: values.b("unjudged", false),
+        rejudge,
         zip: values.b("zip", false),
         temp_dirs,
         config: values.s("config").cloned(),

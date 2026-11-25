@@ -268,7 +268,7 @@ describe('Phase 14 E2E: 画面からの操作(jobs)', () => {
     // 始めていない(前のジョブのまま)
     expect((await api('/api/jobs/current')).body.kind).toBe('full');
     const preview = (await api('/api/jobs/judge-preview')).body;
-    expect(preview).toEqual({ eligible: preview.pending, judged: 0, pending: preview.pending });
+    expect(preview).toEqual({ eligible: preview.pending, judged: 0, pending: preview.pending, rejudgeable: 0, rejudgeFresh: 0 });
     expect(preview.pending).toBeGreaterThanOrEqual(2);
   });
 

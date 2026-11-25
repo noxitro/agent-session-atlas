@@ -113,12 +113,30 @@ pub struct ChatParts {
     /// ZIP の中の、判定済みの数(工数とタスクはセッション、依頼ごとは依頼。count のうち)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub judged: Option<i64>,
+    /// 工数の判定で、判定済みのセッションを判定し直す束(atlas bundle --rejudge)のとき、頼んだ数。
+    /// このときの judged は、束を作った後に判定し直した(判定の日時が変わった)セッションの数
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rejudge: Option<i64>,
 }
 
 impl ChatParts {
     fn none() -> Self {
-        ChatParts { exists: false, generated_at: None, unjudged_only: None, count: None, parts: None, decidable: None, zip: None, judged: None }
+        ChatParts { exists: false, generated_at: None, unjudged_only: None, count: None, parts: None, decidable: None, zip: None, judged: None, rejudge: None }
     }
+}
+
+/// judgments.json のセッション id → その判定の日時(項目の judge.ranAt。無ければ None)。無ければ空。読めなければ例外
+pub fn judged_ran_at(jp: &Path) -> Result<std::collections::HashMap<String, Option<String>>> {
+    let mut out = std::collections::HashMap::new();
+    if jp.exists() {
+        let v = atlas_judge::read_text(jp).and_then(|t| atlas_core::js::parse_json(&t).map_err(anyhow::Error::from)).map_err(|e| anyhow!("{} を読めません: {e}", jp.display()))?;
+        for it in v.get("items").and_then(Value::as_array).into_iter().flatten() {
+            if let Some(id) = it.get("sessionId").and_then(Value::as_str) {
+                out.insert(id.to_string(), it.get("judge").and_then(|j| j.get("ranAt")).and_then(Value::as_str).map(str::to_string));
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// 判定済みの数を数えるファイル(工数の判定・依頼ごとの判定・タスクの紐づけの場所)。
@@ -197,6 +215,7 @@ pub fn list_chat_parts(out_dir: &Path, files: &JudgedFiles<'_>, target: ChatTarg
                 decidable: d.map(|d| ChatDecidable { turns: d.turns, parts: d.parts, chunks: d.chunks }),
                 zip: bundle_zip(out_dir, &dir, target),
                 judged: Some(done),
+                rejudge: None,
             })
         }
         ChatTarget::Tasks => {
@@ -210,11 +229,19 @@ pub fn list_chat_parts(out_dir: &Path, files: &JudgedFiles<'_>, target: ChatTarg
                 .collect();
             let done = m.sessions.iter().filter(|e| linked.contains(&e.id)).count() as i64;
             // 束はいつも紐づけの無いセッションだけで作る
-            Ok(ChatParts { exists: true, generated_at: Some(m.generated_at), unjudged_only: Some(true), count: Some(m.count), parts: Some(parts), decidable: None, zip: bundle_zip(out_dir, &dir, target), judged: Some(done) })
+            Ok(ChatParts { exists: true, generated_at: Some(m.generated_at), unjudged_only: Some(true), count: Some(m.count), parts: Some(parts), decidable: None, zip: bundle_zip(out_dir, &dir, target), judged: Some(done), rejudge: None })
         }
         ChatTarget::Effort => {
             let m = read_bundle_manifest(&dir)?;
-            let judged = judged_session_ids(files.judgments)?;
+            // 判定し直す束では、束を作ったときから判定の日時が変わったセッションを「済み」と数える(どれも前から判定済みなので)
+            let judged: HashSet<String> = match &m.rejudge_from {
+                Some(from) => {
+                    let now = judged_ran_at(files.judgments)?;
+                    from.iter().filter(|(id, at)| now.get(*id).is_some_and(|cur| cur.as_deref() != Some(at.as_str()))).map(|(id, _)| id.clone()).collect()
+                }
+                None => judged_session_ids(files.judgments)?,
+            };
+            let rejudge = m.rejudge_from.as_ref().map(|_| m.scope.get("rejudge").and_then(|v| v.as_deref()).and_then(|v| v.parse::<i64>().ok()).unwrap_or(m.count));
             let parts = m
                 .parts
                 .iter()
@@ -224,7 +251,7 @@ pub fn list_chat_parts(out_dir: &Path, files: &JudgedFiles<'_>, target: ChatTarg
                 .collect();
             let unjudged = m.scope.get("unjudged").and_then(|v| v.as_deref()) == Some("yes");
             let done = m.sessions.iter().filter(|e| judged.contains(&e.id)).count() as i64;
-            Ok(ChatParts { exists: true, generated_at: Some(m.generated_at), unjudged_only: Some(unjudged), count: Some(m.count), parts: Some(parts), decidable: None, zip: bundle_zip(out_dir, &dir, target), judged: Some(done) })
+            Ok(ChatParts { exists: true, generated_at: Some(m.generated_at), unjudged_only: Some(unjudged), count: Some(m.count), parts: Some(parts), decidable: None, zip: bundle_zip(out_dir, &dir, target), judged: Some(done), rejudge })
         }
     }
 }

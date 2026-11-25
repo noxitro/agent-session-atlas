@@ -16,7 +16,7 @@ use atlas_core::types::{SessionRecord, SessionsFile};
 use atlas_judge::task_link::{build_task_bundle, parse_task_reply, read_task_bundle_manifest, task_zip_names, LinkQuery, TaskBundleManifest, TaskBundleOptions, PROMPTS_MAX};
 use atlas_report::judgments::JudgmentsIndex;
 use atlas_report::tasks::links::{apply_machine, has_text, llm_candidates, llm_eligible, CandidateQuery, load_links, update_links, LinkSource, LinksFile, MachineMatch, MachineSummary, Matcher, SessionText, TaskLink};
-use atlas_report::tasks::metrics::SessionFacts;
+use atlas_report::tasks::metrics::{HumanEstimate, SessionFacts};
 use atlas_report::tasks::sender::{read_sender_tasks, SenderTask};
 use atlas_report::tasks::state::{load_tasks, sync_tasks, TasksFile};
 use atlas_report::tasks::view::{local_view, sender_view, session_facts, LocalInputs, TasksView};
@@ -164,14 +164,14 @@ pub fn sender_tasks_of(p: &Paths, sessions: &[SessionRecord]) -> Vec<(String, Ve
     sessions.iter().map(|s| (s.id.clone(), read_sender_tasks(&dir.join(&s.id).join(atlas_core::snapshot::UPLOAD_SESSION_META), &s.id))).filter(|(_, ts)| !ts.is_empty()).collect()
 }
 
-/// セッション id → (推定人手工数, 確信度)。レポート(build)と GET /api/tasks と表が同じ読み方をする(judgments::parse_judgments。
+/// セッション id → 推定人手工数(時間・確信度・幅)。レポート(build)と GET /api/tasks と表が同じ読み方をする(judgments::parse_judgments。
 /// 形の崩れた項目を飛ばし、確信度の無い推定は低いとみなさない)
-pub fn human_of(j: Option<&JudgmentsIndex>) -> HashMap<String, (f64, Option<f64>)> {
-    j.map(|j| j.by_session.iter().filter_map(|(id, s)| s.hours.map(|h| (id.clone(), (h, s.confidence)))).collect()).unwrap_or_default()
+pub fn human_of(j: Option<&JudgmentsIndex>) -> HashMap<String, HumanEstimate> {
+    j.map(|j| j.by_session.iter().filter_map(|(id, s)| s.hours.map(|h| (id.clone(), HumanEstimate { hours: h, confidence: s.confidence, low: s.low, high: s.high }))).collect()).unwrap_or_default()
 }
 
 /// judgments.json を human_of と同じ読み方で読む(無い・読めなければ空)
-pub fn judgment_hours(path: &Path) -> HashMap<String, (f64, Option<f64>)> {
+pub fn judgment_hours(path: &Path) -> HashMap<String, HumanEstimate> {
     let Ok(bytes) = std::fs::read(path) else { return HashMap::new() };
     let Ok(v) = atlas_core::js::parse_json(&String::from_utf8_lossy(&bytes)) else { return HashMap::new() };
     human_of(atlas_report::judgments::parse_judgments(&v).ok().as_ref())
@@ -228,7 +228,7 @@ pub fn tasks_view(i: ViewInputs<'_>) -> Option<TasksView> {
 }
 
 /// レポートの節。read_only(tasks_read_only)なら送った人の記録から、それ以外はこの PC か設定のフォルダの記録から。shown が all より少なければ scoped
-pub fn build_view(p: &Paths, cfg: &TaskConfig, read_only: bool, all: &[SessionRecord], shown: &[&SessionRecord], refreshed: Option<&Refreshed>, human: &HashMap<String, (f64, Option<f64>)>) -> Option<TasksView> {
+pub fn build_view(p: &Paths, cfg: &TaskConfig, read_only: bool, all: &[SessionRecord], shown: &[&SessionRecord], refreshed: Option<&Refreshed>, human: &HashMap<String, HumanEstimate>) -> Option<TasksView> {
     let ids: Vec<&str> = shown.iter().map(|s| s.id.as_str()).collect();
     let all_ids: Vec<&str> = all.iter().map(|s| s.id.as_str()).collect();
     let facts: HashMap<String, SessionFacts> = session_facts(shown, human, &turn_verdict_counts(&p.turn_judgments));
@@ -636,7 +636,7 @@ mod tests {
         assert_eq!(r.links.links["s3"].task_ids, ["DEMO-103", "DEMO-105"], "{:?}", r.links);
 
         let refs: Vec<&SessionRecord> = sessions.iter().collect();
-        let human: HashMap<String, (f64, Option<f64>)> = HashMap::from([("s1".to_string(), (6.0, Some(0.8)))]);
+        let human: HashMap<String, HumanEstimate> = HashMap::from([("s1".to_string(), (6.0, Some(0.8)).into())]);
         let view = build_view(&p, &cfg, false, &sessions, &refs, Some(&r), &human).unwrap();
         let t101 = view.items.iter().find(|t| t.id == "DEMO-101").unwrap();
         assert_eq!((t101.sessions, t101.human_hours, t101.comparable), (1, 6.0, true));
@@ -658,9 +658,19 @@ mod tests {
         // 詰まりを見る列は後ろに足す。人の記録・依頼ごとの判定が無ければ空、摩擦は 0
         let head: Vec<&str> = lines[0].trim_start_matches('\u{feff}').split(',').collect();
         let col = |name: &str| head.iter().position(|h| *h == name).unwrap_or_else(|| panic!("{name}"));
-        assert_eq!(&head[col("比べない理由") + 1..], ["人数", "主なモデル", "主なモデルの割合", "ツールの失敗・拒否", "中断", "文脈圧縮", "判定した依頼", "判定できた作業の依頼", "直し", "不採用", "判定できた質問", "的外れ", "直しの割合", "不採用の割合", "的外れの割合"]);
+        assert_eq!(
+            &head[col("比べない理由") + 1..],
+            ["人数", "主なモデル", "主なモデルの割合", "ツールの失敗・拒否", "中断", "文脈圧縮", "判定した依頼", "判定できた作業の依頼", "直し", "不採用", "判定できた質問", "的外れ", "直しの割合", "不採用の割合", "的外れの割合", "推定の幅の下(時間)", "推定の幅の上(時間)", "比(推定人手工数 ÷ 稼働時間帯の工数)"]
+        );
         let row: Vec<&str> = lines.iter().find(|l| l.starts_with("DEMO-101,")).unwrap().split(',').collect();
         assert_eq!((row[col("人数")], row[col("ツールの失敗・拒否")], row[col("判定した依頼")], row[col("直しの割合")]), ("", "0", "", ""));
+        // 推定の幅: この判定には幅が無いので空。比は比べられるタスクだけ(推定 6 時間 ÷ 稼働時間帯の工数)
+        assert_eq!((row[col("推定の幅の下(時間)")], row[col("推定の幅の上(時間)")]), ("", ""));
+        let t101 = view.items.iter().find(|t| t.id == "DEMO-101").unwrap();
+        let expect = atlas_core::js::round(6.0 / (t101.work_ms.unwrap() / 3_600_000.0) * 100.0) / 100.0;
+        assert_eq!(row[col("比(推定人手工数 ÷ 稼働時間帯の工数)")], atlas_core::js::to_js_string(&serde_json::json!(expect)));
+        let other: Vec<&str> = lines.iter().find(|l| l.starts_with("DEMO-105,")).unwrap().split(',').collect();
+        assert_eq!(other[col("比(推定人手工数 ÷ 稼働時間帯の工数)")], "");
         // 依頼ごとの判定(turn-judgments.json)があれば、紐づいたセッションの判定を数える(割合は分母が下限に届いたときだけ)
         let items: Vec<serde_json::Value> = (1..=6).map(|t| serde_json::json!({ "sessionId": "s1", "turn": t, "kind": "task", "outcome": if t <= 2 { "fix_content" } else { "as_is" }, "mismatch": if t <= 2 { serde_json::json!("defect") } else { serde_json::Value::Null }, "phase": "実装", "confidence": 0.8 })).collect();
         std::fs::write(&p.turn_judgments, serde_json::json!({ "schemaVersion": 1, "phases": ["実装"], "judge": { "backend": "chat", "ranAt": "t" }, "items": items, "failures": [] }).to_string()).unwrap();
@@ -967,10 +977,11 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("judgments.json");
         assert!(judgment_hours(&p).is_empty());
-        std::fs::write(&p, serde_json::json!({ "schemaVersion": 1, "items": [{ "sessionId": "s1", "humanEffort": { "hours": 3 } }, { "sessionId": "s2", "humanEffort": { "hours": 2, "confidence": 0.2 } }] }).to_string()).unwrap();
+        std::fs::write(&p, serde_json::json!({ "schemaVersion": 1, "items": [{ "sessionId": "s1", "humanEffort": { "hours": 3 } }, { "sessionId": "s2", "humanEffort": { "hours": 2, "low": 1, "high": 4, "confidence": 0.2 } }] }).to_string()).unwrap();
         let h = judgment_hours(&p);
-        assert_eq!(h["s1"], (3.0, None));
-        assert_eq!(h["s2"], (2.0, Some(0.2)));
+        assert_eq!(h["s1"], (3.0, None).into());
+        // 推定の幅も読む(タスクの「推定の幅で見た比」に使う)
+        assert_eq!(h["s2"], HumanEstimate { hours: 2.0, confidence: Some(0.2), low: Some(1.0), high: Some(4.0) });
         std::fs::write(&p, "{").unwrap();
         assert!(judgment_hours(&p).is_empty());
     }

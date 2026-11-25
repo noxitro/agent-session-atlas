@@ -28,7 +28,8 @@ import type { VerdictTuple } from './verdicts.ts';
 // 19: groups(タスクタグ)をやめた
 // 20: tasks(管理ツールのタスク。紐づけ・タスクごとの工数。値は Rust が決め、画面は出すだけ)
 // 21: tasks.links の taskId(1 つ)を taskIds(いくつかのタスク)に。tasks.links[].countedTaskIds(工数を等分するタスク)・tasks.items[].sharedSessions・tasks.summary.sharedSessions(いくつかのタスクに数えたセッション)
-export const REPORT_DATA_VERSION = 21;
+// 22: judgmentRepeats(判定のぶれ。判定の履歴があるときだけ)・tasks.items[].humanLow/humanHigh/ratio・tasks.summary.ratioSpread/ratioLow/ratioHigh(タスクごとの比のばらつきと、推定の幅で見た比)
+export const REPORT_DATA_VERSION = 22;
 
 /** wiki.pages を埋め込んだ最初の版(これより前の埋め込みでは、llm-wiki のページごとの表を出さない) */
 export const WIKI_PAGES_DATA_VERSION = 18;
@@ -325,6 +326,8 @@ export interface ReportData {
   warnings: { unknownEventTypes: number; badLines: number; notes: string[] };
   /** 管理ツールのタスク(crates/atlas-report/src/tasks/view.rs の TasksView)。設定もタスクの記録も無ければ無い。版 19 以前の埋め込みにも無い */
   tasks?: TasksReport | null;
+  /** 判定のぶれ(crates/atlas-report/src/judgment_repeats.rs)。判定の履歴(judgments-history.json)が無ければ無い。版 21 以前の埋め込みにも無い */
+  judgmentRepeats?: JudgmentRepeats | null;
 }
 
 /** 紐づけの出所(機械・LLM・手動) */
@@ -364,6 +367,11 @@ export interface TaskRow {
   aiActiveMs: number;
   /** AI を使わなかった場合の工数(推定人手工数の時間。確信度の低い推定は入れない。いくつかのタスクに紐づいたセッションは等分した分) */
   humanHours: number;
+  /** 推定の幅(humanEffort.low・high)の合計。humanHours と同じ数え方。幅の無い推定があれば null。古い埋め込みには無い */
+  humanLow?: number | null;
+  humanHigh?: number | null;
+  /** このタスクの比(humanHours ÷ AI を使った場合の工数の時間)。比べられるタスクだけ。古い埋め込みには無い */
+  ratio?: number | null;
   sessions: number;
   /** 紐づいたセッションのうち、ほかのタスクにも紐づいているもの(実働と推定人手工数はタスクの数で等分した) */
   sharedSessions: number;
@@ -427,9 +435,47 @@ export interface TaskSummary {
   sharedSessions: number;
   /** AI を使わなかった場合 ÷ AI を使った場合。比べられるタスクが ratioMin に届かなければ null */
   ratio: number | null;
+  /** 比べられるタスクごとの比のばらつき(ratio と同じ条件のときだけ)。古い埋め込みには無い */
+  ratioSpread?: TaskRatioSpread | null;
+  /** 推定の幅で見た比(幅の合計 ÷ 工数の合計。ratio と同じ条件で、比べられるタスクのどれにも幅があるときだけ)。古い埋め込みには無い */
+  ratioLow?: number | null;
+  ratioHigh?: number | null;
   ratioMin: number;
   /** タスクごとの依頼ごとの判定の割合を出す、分母の依頼の数の下限(lib/compare.ts の COMPARE_MIN_TURNS と同じ数)。古い埋め込みには無い */
   verdictMin?: number;
+}
+
+/** 比べられるタスクごとの比のばらつき(Rust の tasks::metrics::RatioSpread。分位は昇順に並べた ceil(p·n) 番目) */
+export interface TaskRatioSpread {
+  tasks: number;
+  median: number;
+  p25: number;
+  p75: number;
+  /** 比が 1 より小さい(AI を使った場合の工数の方が長い)タスクの数 */
+  belowOne: number;
+}
+
+/** 一致の割合(Rust の judgment_repeats::AgreeRate)。rate は n が下限に届かなければ null */
+export interface RepeatAgree {
+  n: number;
+  agree: number;
+  rate: number | null;
+}
+
+/** 判定のぶれ(Rust の judgment_repeats::JudgmentRepeats。値は Rust が決め、画面は出すだけ) */
+export interface JudgmentRepeats {
+  pairs: number;
+  sameModel: number;
+  differentModel: number;
+  unknownModel: number;
+  min: number;
+  historyItems: number;
+  historySessions: number;
+  excluded: { noEnd: number; noRanAt: number; beforeEnd: number; noCurrent: number };
+  completed: RepeatAgree;
+  hours: { n: number; lowConfidence: number; ratioN: number; ratioMedian: number | null; ratioP75: number | null; oneZero: number; inside: RepeatAgree };
+  quality: { n: number; medianAbsDiff: number | null };
+  rework: { n: number; medianAbsDiff: number | null };
 }
 
 export interface TaskLinkView {
