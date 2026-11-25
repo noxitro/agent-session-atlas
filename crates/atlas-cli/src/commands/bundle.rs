@@ -6,7 +6,7 @@ use crate::paths::Paths;
 use anyhow::Result;
 use atlas_core::jsnum::to_fixed;
 use atlas_judge::bundle::{build_bundle, BundleManifest, BundleOptions};
-use atlas_judge::judgments_io::read_judgments;
+use atlas_judge::judgments_io::{history_path, read_history, read_judgments};
 use atlas_judge::zip::{write_zip, DosTime, ZipSummary};
 use indexmap::IndexMap;
 use std::collections::HashSet;
@@ -67,6 +67,8 @@ pub struct BundleCliOptions {
     pub include_empty: bool,
     pub per_part: Option<u64>,
     pub unjudged: bool,
+    /// 判定済みのセッションを n 件まで判定し直す束にする(判定のぶれを測る。--unjudged とは一緒に使えない。atlas_judge::rejudge)
+    pub rejudge: Option<u64>,
     /// バンドルを 1 つの ZIP にもまとめる(<bundle>.zip)
     pub zip: bool,
     /// 設定ファイル(--config。無ければ環境変数 ATLAS_CONFIG かリポジトリ直下の atlas.config.json)
@@ -90,6 +92,40 @@ fn wiki_specs(config: Option<&str>, log: Log<'_>) -> Vec<atlas_core::wiki::WikiS
     }
 }
 
+/// 判定し直すセッションを選ぶ(atlas_judge::rejudge::select_rejudge。入力が変わっていようがない判定済みのセッションから、
+/// まだ判定し直していないものを先に)。選んだ id と、それぞれの今の判定の日時を返す。選べるものが無ければエラー(前の束はそのまま残る)
+/// include_empty が false なら、依頼の記録が無いセッション(束を作るときに対象外にするもの)は選ばない(画面の数と同じ atlas_judge::rejudge::has_request_hint)
+fn pick_rejudge(p: &Paths, sessions: &[&atlas_core::types::SessionRecord], n: usize, include_empty: bool, log: Log<'_>) -> Result<(HashSet<String>, IndexMap<String, String>)> {
+    let judged = read_judgments(&p.judgments)?.map(|j| j.items).unwrap_or_default();
+    let history = read_history(&history_path(&p.judgments)).map_err(|e| anyhow::anyhow!("判定の履歴を読めません: {e:#}"))?;
+    let ran_at: std::collections::HashMap<&str, &str> = judged.iter().filter_map(|i| i.judge.as_ref().map(|j| (i.session_id.as_str(), j.ran_at.as_str()))).collect();
+    let end_of = |s: &atlas_core::types::SessionRecord| s.updated_at.as_deref().filter(|x| !x.is_empty()).and_then(atlas_core::jsdate::parse_ms);
+    let judged_sessions: Vec<&&atlas_core::types::SessionRecord> =
+        sessions.iter().filter(|s| ran_at.contains_key(s.id.as_str())).filter(|s| include_empty || atlas_judge::rejudge::has_request_hint(s.turns, s.first_user_message.as_deref())).collect();
+    let facts: std::collections::HashMap<&str, (Option<i64>, Option<&str>)> = judged_sessions.iter().map(|s| (s.id.as_str(), (end_of(s), ran_at.get(s.id.as_str()).copied()))).collect();
+    let repeated = atlas_judge::rejudge::repeated_sessions(history.as_ref(), &facts);
+    let cands: Vec<atlas_judge::rejudge::RejudgeCandidate<'_>> = judged_sessions
+        .iter()
+        .map(|s| atlas_judge::rejudge::RejudgeCandidate { id: s.id.as_str(), end_ms: end_of(s), ran_at: ran_at.get(s.id.as_str()).copied(), repeated: repeated.contains(&s.id) })
+        .collect();
+    let sel = atlas_judge::rejudge::select_rejudge(&cands, n);
+    if sel.ids.is_empty() {
+        anyhow::bail!(
+            "判定し直せるセッションがありません(判定済み {} 件のうち、判定より前に終わっていたもの 0 件)。判定し直すのは、終わってから判定したセッションだけです(入力が変わったセッションを比べないため)",
+            cands.len()
+        );
+    }
+    log(&format!(
+        "bundle: 判定し直すセッション {} 件を選びました(--rejudge {n}。判定済み {} 件のうち、判定より前に終わっていたもの {} 件から、まだ判定し直していないもの {} 件を先に)",
+        sel.ids.len(),
+        cands.len(),
+        sel.eligible,
+        sel.fresh
+    ));
+    let from: IndexMap<String, String> = sel.ids.iter().map(|id| (id.clone(), ran_at[id.as_str()].to_string())).collect();
+    Ok((sel.ids.into_iter().collect(), from))
+}
+
 pub fn run_bundle(p: &Paths, f: &SessionFilter, o: &BundleCliOptions, log: Log<'_>) -> Result<BundleManifest> {
     let sel = select_sessions(p, f, "bundle", "先に atlas extract(または atlas all)を実行してください。", log)?;
     drop_old_judge_work(&p.out, "bundle", log);
@@ -99,6 +135,15 @@ pub fn run_bundle(p: &Paths, f: &SessionFilter, o: &BundleCliOptions, log: Log<'
         let before = sessions.len();
         sessions.retain(|s| !judged.contains(&s.id));
         log(&format!("bundle: 判定済みの {} 件を除きました(--unjudged)", before - sessions.len()));
+    }
+    let mut rejudge_from: Option<IndexMap<String, String>> = None;
+    if let Some(n) = o.rejudge {
+        if o.unjudged {
+            anyhow::bail!("--rejudge と --unjudged は一緒に使えません");
+        }
+        let (ids, from) = pick_rejudge(p, &sessions, n as usize, o.include_empty, log)?;
+        sessions.retain(|s| ids.contains(&s.id));
+        rejudge_from = Some(from);
     }
     let t = Instant::now();
     let nz = |v: &Option<String>| v.clone();
@@ -110,6 +155,10 @@ pub fn run_bundle(p: &Paths, f: &SessionFilter, o: &BundleCliOptions, log: Log<'
     scope.insert("branch".into(), nz(&f.branch));
     scope.insert("session".into(), f.sessions.as_ref().filter(|s| !s.is_empty()).map(|s| s.join(",")));
     scope.insert("unjudged".into(), if o.unjudged { Some("yes".into()) } else { None });
+    // 判定し直す束(画面は「判定し直し」と出す。値は頼んだ数)
+    if let Some(n) = o.rejudge {
+        scope.insert("rejudge".into(), Some(n.to_string()));
+    }
     let m = build_bundle(
         &sessions,
         &BundleOptions {
@@ -125,6 +174,7 @@ pub fn run_bundle(p: &Paths, f: &SessionFilter, o: &BundleCliOptions, log: Log<'
             // 選んだセッションだけでなく集計の全セッションで決める(書き込みだけのセッションが選ばれていなくても、vault を指定していたと分かる)
             wiki_state: atlas_core::wiki::wiki_state(sel.file.sessions.iter().map(|r| &r.wiki), sel.file.source.wikis),
             wiki_specs: wiki_specs(o.config.as_deref(), log),
+            rejudge_from,
         },
     )?;
     let excerpt = m.sessions.iter().filter(|e| e.text_source == atlas_judge::packet::TextSource::Excerpt).count();
@@ -141,6 +191,9 @@ pub fn run_bundle(p: &Paths, f: &SessionFilter, o: &BundleCliOptions, log: Log<'
     ));
     let mut names: Vec<String> = vec![m.files.instructions.clone(), "manifest.json".into(), m.files.schema.clone()];
     names.extend(m.sessions.iter().map(|e| e.path.clone()));
+    if o.rejudge.is_some() {
+        log("bundle: 判定し直す束です。パケットには前の判定を入れていません。返答を取り込むと、前の判定は判定の履歴(judgments-history.json)に移り、概況の「判定のぶれ」に出ます");
+    }
     match zip_or_drop(&p.bundle, &p.out.join("bundle"), o.zip, &names, "bundle", atlas_judge::zip::BUNDLE_NARROW, log)? {
         Some((zip, z)) => {
             log(&format!("bundle: ZIP にまとめました({} ファイル、{}、無圧縮。parts/ は入れていません)→ {}", z.files, mb(z.bytes), zip.display()));

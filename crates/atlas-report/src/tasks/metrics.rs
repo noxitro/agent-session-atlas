@@ -65,13 +65,32 @@ impl TaskInfo {
     }
 }
 
+/// セッション 1 件の推定人手工数(LLM の判定)
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct HumanEstimate {
+    /// 時間
+    pub hours: f64,
+    /// 確信度(0〜1)
+    pub confidence: Option<f64>,
+    /// 推定の幅(humanEffort.low・high。時間)。無い判定もある
+    pub low: Option<f64>,
+    pub high: Option<f64>,
+}
+
+impl From<(f64, Option<f64>)> for HumanEstimate {
+    /// 時間と確信度だけ(幅なし)
+    fn from((hours, confidence): (f64, Option<f64>)) -> Self {
+        HumanEstimate { hours, confidence, low: None, high: None }
+    }
+}
+
 /// セッション 1 件の、工数に使う値
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SessionFacts {
     pub start_ms: Option<i64>,
     pub active_ms: Option<f64>,
-    /// 推定人手工数(時間)と確信度。判定が無ければ None
-    pub human: Option<(f64, Option<f64>)>,
+    /// 推定人手工数。判定が無ければ None
+    pub human: Option<HumanEstimate>,
     /// タスクの表の、工数のほかの列(人数・主なモデル・摩擦・依頼ごとの判定)に使う値
     pub extra: SessionExtra,
 }
@@ -152,6 +171,12 @@ pub struct TaskRow {
     pub ai_active_ms: f64,
     /// AI を使わなかった場合の工数(推定人手工数の時間。確信度の低い推定は入れない。いくつかのタスクに紐づいたセッションは等分した分)
     pub human_hours: f64,
+    /// 推定の幅(humanEffort.low・high)の合計。human_hours と同じ数え方(同じ確信度の決まり・同じ等分)。
+    /// 数えたセッションのどれかに幅が無ければ null(幅の一部だけを足した値を出さない)
+    pub human_low: Option<f64>,
+    pub human_high: Option<f64>,
+    /// このタスクの比(human_hours ÷ AI を使った場合の工数の時間)。比べられるタスクだけ。ほかは null
+    pub ratio: Option<f64>,
     pub sessions: usize,
     /// このタスクに数えたセッションのうち、ほかのタスクにも数えたもの(共有のセッション。値を等分した。counted_tasks)
     pub shared_sessions: usize,
@@ -230,9 +255,28 @@ pub struct TaskSummary {
     pub shared_sessions: usize,
     /// AI を使わなかった場合 ÷ AI を使った場合(比べられるタスクが ratio_min に届いたときだけ)
     pub ratio: Option<f64>,
+    /// 比べられるタスクごとの比のばらつき(ratio と同じ条件のときだけ)
+    pub ratio_spread: Option<RatioSpread>,
+    /// 推定の幅で見た比: 比べられるタスクの human_low の合計 ÷ 工数の合計、human_high の合計 ÷ 工数の合計
+    /// (ratio と同じ条件で、比べられるタスクのどれにも幅があるときだけ)
+    pub ratio_low: Option<f64>,
+    pub ratio_high: Option<f64>,
     pub ratio_min: usize,
     /// タスクごとの依頼ごとの判定の割合を出す、分母の依頼の数の下限(extras::VERDICT_RATE_MIN_TURNS)
     pub verdict_min: usize,
+}
+
+/// 比べられるタスクごとの比(推定人手工数 ÷ AI を使った場合の工数)のばらつき。分位は昇順に並べた ceil(p·n) 番目(exec::quantile_sorted)
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RatioSpread {
+    /// 数えたタスク(比べられるタスクのうち、工数が 0 より大きいもの)
+    pub tasks: usize,
+    pub median: f64,
+    pub p25: f64,
+    pub p75: f64,
+    /// 比が 1 より小さい(AI を使った場合の工数の方が長い)タスクの数
+    pub below_one: usize,
 }
 
 /// セッションの値をタスクに分ける割合(数えるタスクの数 k なら 1/k)
@@ -299,6 +343,9 @@ pub fn compute_task_metrics(tasks: &[TaskInfo], links: &[(String, String, LinkSo
             work_ms: None,
             ai_active_ms: 0.0,
             human_hours: 0.0,
+            human_low: Some(0.0),
+            human_high: Some(0.0),
+            ratio: None,
             sessions: linked.len(),
             shared_sessions: 0,
             judged_sessions: 0,
@@ -351,13 +398,18 @@ pub fn compute_task_metrics(tasks: &[TaskInfo], links: &[(String, String, LinkSo
             row.ai_active_ms += split(f.active_ms.unwrap_or(0.0));
             match f.human {
                 None => row.unjudged_sessions += 1,
-                Some((_, conf)) if is_low_confidence(conf) => {
+                Some(h) if is_low_confidence(h.confidence) => {
                     row.judged_sessions += 1;
                     row.low_confidence_sessions += 1;
                 }
-                Some((h, _)) => {
+                Some(h) => {
                     row.judged_sessions += 1;
-                    row.human_hours += split(h);
+                    row.human_hours += split(h.hours);
+                    // 幅も時間と同じく等分して足す。数えるセッションに幅が無ければ、このタスクの幅は出さない
+                    if counts_here {
+                        row.human_low = row.human_low.zip(h.low).map(|(a, b)| a + split(b));
+                        row.human_high = row.human_high.zip(h.high).map(|(a, b)| a + split(b));
+                    }
                 }
             }
         }
@@ -400,6 +452,7 @@ pub fn compute_task_metrics(tasks: &[TaskInfo], links: &[(String, String, LinkSo
             match row.excluded {
                 None => {
                     row.comparable = true;
+                    row.ratio = row.work_ms.filter(|w| *w > 0.0).map(|w| row.human_hours / (w / 3_600_000.0));
                     sum.included += 1;
                     sum.included_sources.add(row.done_at_source);
                     sum.work_ms += row.work_ms.unwrap_or(0.0);
@@ -419,7 +472,20 @@ pub fn compute_task_metrics(tasks: &[TaskInfo], links: &[(String, String, LinkSo
     }
     sum.shared_sessions = counted.values().filter(|c| c.len() > 1).count();
     if sum.included >= RATIO_MIN_TASKS && sum.work_ms > 0.0 {
-        sum.ratio = Some(sum.human_hours / (sum.work_ms / 3_600_000.0));
+        let work_h = sum.work_ms / 3_600_000.0;
+        sum.ratio = Some(sum.human_hours / work_h);
+        // タスクごとの比のばらつき(合計どうしの比と同じ条件のときだけ)
+        let ratios: Vec<f64> = rows.iter().filter(|r| r.comparable).filter_map(|r| r.ratio).collect();
+        let sorted = crate::exec::sort_nums(&ratios);
+        if let (Some(median), Some(p25), Some(p75)) = (crate::exec::quantile_sorted(&sorted, 0.5), crate::exec::quantile_sorted(&sorted, 0.25), crate::exec::quantile_sorted(&sorted, 0.75)) {
+            sum.ratio_spread = Some(RatioSpread { tasks: sorted.len(), median, p25, p75, below_one: sorted.iter().filter(|x| **x < 1.0).count() });
+        }
+        // 推定の幅で見た比(比べられるタスクのどれにも幅があるときだけ)
+        let comparable: Vec<&TaskRow> = rows.iter().filter(|r| r.comparable).collect();
+        let lows: Option<f64> = comparable.iter().map(|r| r.human_low).sum();
+        let highs: Option<f64> = comparable.iter().map(|r| r.human_high).sum();
+        sum.ratio_low = lows.map(|l| l / work_h);
+        sum.ratio_high = highs.map(|h| h / work_h);
     }
     (rows, sum)
 }
@@ -555,7 +621,7 @@ mod tests {
     }
 
     fn facts(start: &str, active_h: f64, human: Option<(f64, Option<f64>)>) -> SessionFacts {
-        SessionFacts { start_ms: parse_ms(start), active_ms: Some(active_h * 3_600_000.0), human, extra: Default::default() }
+        SessionFacts { start_ms: parse_ms(start), active_ms: Some(active_h * 3_600_000.0), human: human.map(HumanEstimate::from), extra: Default::default() }
     }
 
     fn link(s: &str, t: &str, src: LinkSource) -> (String, String, LinkSource) {
@@ -697,6 +763,56 @@ mod tests {
         });
     }
 
+    /// 比のばらつき: 比べられるタスクごとの比の中央値・25 と 75 パーセンタイル・1 より小さいタスクの数と、推定の幅で見た比。
+    /// 合計どうしの比と同じく、比べられるタスクが下限に届いたときだけ。幅は時間と同じく等分し、幅の無い推定があれば幅の比を出さない
+    #[test]
+    fn ratio_spread_and_range_ratio() {
+        with_zone(&TimeZone::fixed(Offset::constant(9)), || {
+            let n = RATIO_MIN_TASKS;
+            assert_eq!(n, 5, "下の値は 5 件で組んである");
+            let hours = [1.0, 2.0, 4.0, 6.0, 10.0];
+            let tasks: Vec<TaskInfo> = (0..n).map(|i| info(&format!("T{i}"), Some("2026-11-23T12:00:00+09:00"))).collect();
+            let mut f = HashMap::new();
+            let mut links = Vec::new();
+            for (i, h) in hours.iter().enumerate() {
+                let mut x = facts("2026-11-23T10:00:00+09:00", 1.0, None);
+                x.human = Some(HumanEstimate { hours: *h, confidence: Some(0.9), low: Some(h / 2.0), high: Some(h * 2.0) });
+                f.insert(format!("s{i}"), x);
+                links.push(link(&format!("s{i}"), &format!("T{i}"), LinkSource::Machine));
+            }
+            let (rows, sum) = compute_task_metrics(&tasks, &links, &f, &WorkHours::default());
+            // どのタスクも工数 2 時間。比は [0.5, 1, 2, 3, 5]
+            assert_eq!(rows.iter().map(|r| r.ratio).collect::<Vec<_>>(), [Some(0.5), Some(1.0), Some(2.0), Some(3.0), Some(5.0)]);
+            assert_eq!((rows[0].human_low, rows[0].human_high), (Some(0.5), Some(2.0)));
+            assert_eq!(sum.ratio, Some(2.3));
+            // 中央値は ceil(0.5·5)=3 番目、25 パーセンタイルは 2 番目、75 パーセンタイルは 4 番目
+            assert_eq!(sum.ratio_spread, Some(RatioSpread { tasks: 5, median: 2.0, p25: 1.0, p75: 3.0, below_one: 1 }));
+            // 幅の合計 11.5〜46 時間 ÷ 工数 10 時間
+            assert_eq!((sum.ratio_low, sum.ratio_high), (Some(1.15), Some(4.6)));
+            // 下限に届かなければ、どれも出さない(タスクごとの比は出す)
+            let (rows4, fewer) = compute_task_metrics(&tasks[..n - 1], &links, &f, &WorkHours::default());
+            assert_eq!((fewer.ratio, fewer.ratio_spread.clone(), fewer.ratio_low, fewer.ratio_high), (None, None, None, None));
+            assert_eq!(rows4[0].ratio, Some(0.5));
+            // 幅の無い推定が 1 つあれば、幅の比は出さない(ばらつきは出す)
+            f.get_mut("s4").unwrap().human = Some((10.0, Some(0.9)).into());
+            let (rows, sum) = compute_task_metrics(&tasks, &links, &f, &WorkHours::default());
+            assert_eq!((rows[4].human_low, rows[4].human_high), (None, None));
+            assert_eq!((sum.ratio_low, sum.ratio_high), (None, None));
+            assert!(sum.ratio_spread.is_some());
+            // 2 つのタスクに紐づいたセッションの幅は、時間と同じく等分する
+            let mut g = HashMap::new();
+            let mut y = facts("2026-11-23T10:00:00+09:00", 1.0, None);
+            y.human = Some(HumanEstimate { hours: 4.0, confidence: Some(0.9), low: Some(2.0), high: Some(8.0) });
+            g.insert("s".to_string(), y);
+            let (rows, _) = compute_task_metrics(&tasks[..2], &[link("s", "T0", LinkSource::Manual), link("s", "T1", LinkSource::Manual)], &g, &WorkHours::default());
+            assert_eq!((rows[0].human_hours, rows[0].human_low, rows[0].human_high), (2.0, Some(1.0), Some(4.0)));
+            // 比べないタスクには、タスクごとの比を出さない
+            let undone = vec![info("U", None)];
+            let (rows, _) = compute_task_metrics(&undone, &[link("s", "U", LinkSource::Manual)], &g, &WorkHours::default());
+            assert_eq!(rows[0].ratio, None);
+        });
+    }
+
     #[test]
     fn ratio_only_with_enough_tasks_and_start_hint() {
         with_zone(&TimeZone::fixed(Offset::constant(9)), || {
@@ -718,7 +834,7 @@ mod tests {
             let mut hinted = info("H", Some("2026-11-23T12:00:00+09:00"));
             hinted.start_hint = Some("2026-11-23T09:00:00+09:00".into());
             f.insert("h".into(), facts("2026-11-23T11:00:00+09:00", 0.1, Some((1.0, Some(0.9)))));
-            f.insert("x".into(), SessionFacts { start_ms: None, active_ms: None, human: Some((1.0, Some(0.9))), extra: Default::default() });
+            f.insert("x".into(), SessionFacts { start_ms: None, active_ms: None, human: Some((1.0, Some(0.9)).into()), extra: Default::default() });
             let (rows, sum) = compute_task_metrics(&[hinted, info("X", Some("2026-11-23T12:00:00+09:00"))], &[link("h", "H", LinkSource::Llm), link("x", "X", LinkSource::Manual)], &f, &WorkHours::default());
             assert_eq!(rows[0].work_ms, Some(3.0 * 3_600_000.0));
             assert_eq!(rows[1].excluded, Some(Excluded::NoStart));

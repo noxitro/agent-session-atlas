@@ -87,43 +87,65 @@ pub fn parse_judgments(raw: &Value) -> Result<JudgmentsIndex> {
     let judge = obj(o.get("judge"));
     let mut by_session = IndexMap::new();
     for (i, it) in items.iter().enumerate() {
-        let x = obj(Some(it));
-        let Some(id) = str_of(x.get("sessionId")) else {
-            bail!("judgments.json の items[{i}] に sessionId がありません");
-        };
-        let h = obj(x.get("humanEffort"));
-        let hours = num(h.get("hours")).filter(|x| *x >= 0.0);
-        let Some(hours) = hours else {
-            bail!("judgments.json の items[{i}]({id})の humanEffort.hours が数値ではありません");
-        };
-        let a = obj(x.get("aiOutcome"));
-        let score = |k: &str| num(obj(x.get(k)).get("score"));
-        // 項目ごとの判定の出所(取り込みと、前の版の judge run が付けた)。無い古い判定は、モデルだけファイル全体のものを使う
-        let item_judge = x.get("judge").and_then(Value::as_object);
-        let j = JudgmentSummary {
-            task_category: str_of(x.get("taskCategory")),
-            hours: Some(hours),
-            low: num(h.get("low")),
-            high: num(h.get("high")),
-            confidence: num(h.get("confidence")),
-            task_summary: str_of(x.get("taskSummary")),
-            completed: a.get("completed").and_then(Value::as_bool),
-            quality: num(a.get("quality")),
-            rework: num(a.get("rework")),
-            effects: JudgmentEffects { instructions: score("instructionsEffect"), wiki: score("wikiEffect"), skills_agents: score("skillsAgentsEffect") },
-            rationale: str_of(h.get("rationale")),
-            backend: str_of(obj(x.get("judge")).get("backend")).or_else(|| str_of(judge.get("backend"))),
-            model: match item_judge {
-                Some(ij) => str_of(ij.get("model")),
-                None => str_of(judge.get("model")),
-            },
-            ran_at: item_judge.and_then(|ij| str_of(ij.get("ranAt"))),
-            wiki_page_verdicts: parse_wiki_pages(x.get("wikiPages")),
-            wiki_pages: None,
-        };
+        let (id, j) = parse_item(it, judge, &format!("judgments.json の items[{i}]"))?;
         by_session.insert(id, j);
     }
     Ok(JudgmentsIndex { backend: str_of(judge.get("backend")), model: str_of(judge.get("model")), ran_at: str_of(judge.get("ranAt")), by_session })
+}
+
+/// 判定の項目 1 つを読む(judgments.json の items と、判定の履歴の items[].item で同じ読み方)。judge はファイル全体の judge(履歴は空)。
+/// at はエラーで項目を指す名前
+fn parse_item(it: &Value, judge: &Map<String, Value>, at: &str) -> Result<(String, JudgmentSummary)> {
+    let x = obj(Some(it));
+    let Some(id) = str_of(x.get("sessionId")) else {
+        bail!("{at} に sessionId がありません");
+    };
+    let h = obj(x.get("humanEffort"));
+    let hours = num(h.get("hours")).filter(|x| *x >= 0.0);
+    let Some(hours) = hours else {
+        bail!("{at}({id})の humanEffort.hours が数値ではありません");
+    };
+    let a = obj(x.get("aiOutcome"));
+    let score = |k: &str| num(obj(x.get(k)).get("score"));
+    // 項目ごとの判定の出所(取り込みと、前の版の judge run が付けた)。無い古い判定は、モデルだけファイル全体のものを使う
+    let item_judge = x.get("judge").and_then(Value::as_object);
+    let j = JudgmentSummary {
+        task_category: str_of(x.get("taskCategory")),
+        hours: Some(hours),
+        low: num(h.get("low")),
+        high: num(h.get("high")),
+        confidence: num(h.get("confidence")),
+        task_summary: str_of(x.get("taskSummary")),
+        completed: a.get("completed").and_then(Value::as_bool),
+        quality: num(a.get("quality")),
+        rework: num(a.get("rework")),
+        effects: JudgmentEffects { instructions: score("instructionsEffect"), wiki: score("wikiEffect"), skills_agents: score("skillsAgentsEffect") },
+        rationale: str_of(h.get("rationale")),
+        backend: str_of(obj(x.get("judge")).get("backend")).or_else(|| str_of(judge.get("backend"))),
+        model: match item_judge {
+            Some(ij) => str_of(ij.get("model")),
+            None => str_of(judge.get("model")),
+        },
+        ran_at: item_judge.and_then(|ij| str_of(ij.get("ranAt"))),
+        wiki_page_verdicts: parse_wiki_pages(x.get("wikiPages")),
+        wiki_pages: None,
+    };
+    Ok((id, j))
+}
+
+/// 判定の履歴(judgments-history.json。atlas_judge::judgments_io の HistoryFile)の版
+pub const HISTORY_SCHEMA_VERSION: f64 = 1.0;
+
+/// 判定の履歴を読む: 置き換えた判定を、書いた順(古い順)に (セッション id, 判定)。形が違えばエラー
+pub fn parse_history(raw: &Value) -> Result<Vec<(String, JudgmentSummary)>> {
+    let o = obj(Some(raw));
+    if o.get("schemaVersion").and_then(Value::as_f64) != Some(HISTORY_SCHEMA_VERSION) {
+        bail!("judgments-history.json の schemaVersion が 1 ではありません({})", js_string(o.get("schemaVersion")));
+    }
+    let Some(items) = o.get("items").and_then(Value::as_array) else {
+        bail!("judgments-history.json に items 配列がありません");
+    };
+    items.iter().enumerate().map(|(i, e)| parse_item(obj(Some(e)).get("item").unwrap_or(&Value::Null), &EMPTY, &format!("judgments-history.json の items[{i}].item"))).collect()
 }
 
 #[cfg(test)]

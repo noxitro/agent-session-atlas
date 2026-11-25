@@ -29,6 +29,7 @@ pub mod insights;
 pub mod insights_page;
 pub mod jssort;
 pub mod judgment_labels;
+pub mod judgment_repeats;
 pub mod judgments;
 pub mod library;
 pub mod memo;

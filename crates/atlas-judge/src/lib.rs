@@ -5,6 +5,7 @@ pub mod backends;
 pub mod bundle;
 pub mod judgments_io;
 pub mod packet;
+pub mod rejudge;
 pub mod rubric;
 pub mod schema;
 pub mod skill_draft;

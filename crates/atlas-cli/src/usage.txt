@@ -67,6 +67,8 @@
   --include-empty    bundle: 依頼の記録が無いセッションもパケットにする
   --per-part <n>     bundle・tasks bundle: parts/ の 1 ファイルに入れるパケットの数(既定 5、tasks bundle は 10)
   --unjudged         bundle・turns bundle: 判定済みのセッション(依頼)を入れない(tasks bundle はいつも紐づけの無いものだけ)
+  --rejudge <n>      bundle: 判定済みのセッションを n 件まで判定し直す束を作る(判定のぶれを測る。判定より前に終わっていた
+                     セッションだけ。--unjudged とは一緒に使えない)
   --zip              bundle・turns bundle・tasks bundle: 束を 1 つの ZIP(<out>/bundle.zip・turn-bundle.zip・task-bundle.zip。
                      無圧縮)にもまとめる。フォルダを読めるエージェントやローカルの LLM に渡すとき用(parts/ は入れない)
   --temp-dir <dir>   extract: このフォルダ配下を「(一時フォルダ)」にまとめる(複数指定可)。指定すると既定の判定

@@ -183,6 +183,8 @@ pub struct BuildInput<'a> {
     pub desktop_meta: Option<&'a SessionsDesktop>,
     /// 管理ツールのタスクの節(tasks::view::TasksView を値にしたもの)。設定もタスクの記録も無ければ None
     pub tasks: Option<Value>,
+    /// 判定のぶれ(judgment_repeats::compute_repeats の要約)。判定の履歴が無ければ None
+    pub judgment_repeats: Option<crate::judgment_repeats::JudgmentRepeats>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -328,6 +330,9 @@ struct ReportData<'a> {
     /// 管理ツールのタスク(tasks::view::TasksView)。設定もタスクの記録も無ければ省く
     #[serde(skip_serializing_if = "Option::is_none")]
     tasks: Option<&'a Value>,
+    /// 判定のぶれ(judgment_repeats::JudgmentRepeats)。判定の履歴が無ければ省く
+    #[serde(skip_serializing_if = "Option::is_none")]
+    judgment_repeats: Option<&'a crate::judgment_repeats::JudgmentRepeats>,
 }
 
 #[derive(Serialize)]
@@ -484,6 +489,7 @@ pub fn build_report(input: BuildInput<'_>) -> Result<BuildResult> {
         insights: InsightsOut { meta: meta_for_page.clone(), candidates: embedded_candidates(&candidates), candidate_total: candidates.len(), computed_over: input.sessions.len() },
         warnings: WarningsOut { unknown_event_types: input.warnings.unknown_event_types, bad_lines: input.warnings.bad_lines, notes: input.warnings.notes.clone() },
         tasks: input.tasks.as_ref(),
+        judgment_repeats: input.judgment_repeats.as_ref(),
     };
 
     // 版の目印はデータを埋める前に置き換える(記録の本文に同じ文字列があっても触れない)

@@ -81,6 +81,10 @@ pub struct BundleManifest {
     /// 指示とパケットを数件ずつまとめた分割ファイル。並びは sessions と同じ。古い manifest には無い
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parts: Option<Vec<BundlePart>>,
+    /// 判定済みのセッションを判定し直す束(atlas bundle --rejudge)のときだけ: セッション id → 束を作ったときの判定の日時(項目の judge.ranAt)。
+    /// 判定の日時がこれと変われば、判定し直したものとして数える(chat_parts.rs)。前の版の atlas は読み飛ばす
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejudge_from: Option<IndexMap<String, String>>,
 }
 
 impl Default for BundleManifest {
@@ -98,6 +102,7 @@ impl Default for BundleManifest {
             skipped: vec![],
             per_part: None,
             parts: None,
+            rejudge_from: None,
         }
     }
 }
@@ -124,6 +129,8 @@ pub struct BundleOptions<'a> {
     /// 今の設定の llm-wiki の vault の指定(atlas.config.json の wikis)。ページごとの判定の抜粋を、集計と同じ分類器で、そのページを読んだ呼び出しから取る。
     /// 空なら、引数に出るページの名前で探す(vault の直下のページは、プロジェクトの同じ名前のファイルと見分けられない)
     pub wiki_specs: Vec<atlas_core::wiki::WikiSpec>,
+    /// 判定し直す束のときだけ: セッション id → 今の判定の日時(manifest の rejudgeFrom に書く。束に入れたセッションの分だけ)
+    pub rejudge_from: Option<IndexMap<String, String>>,
 }
 
 /// `id.replace(/[^A-Za-z0-9._-]/g, '_') + '.md'`(UTF-16 の単位ごとに置き換える)
@@ -244,10 +251,11 @@ fn write_bundle(sessions: &[&SessionRecord], opts: &BundleOptions<'_>, dir: &Pat
         max_bytes: entries.iter().map(|e| e.bytes).max().unwrap_or(0),
         limits,
         files: BundleFiles { instructions: "INSTRUCTIONS.md".into(), schema: "schema.json".into() },
-        sessions: entries,
         skipped,
         per_part: Some(per_part as i64),
         parts: Some(parts),
+        rejudge_from: opts.rejudge_from.as_ref().map(|r| entries.iter().filter_map(|e| r.get(&e.id).map(|at| (e.id.clone(), at.clone()))).collect()),
+        sessions: entries,
     };
     std::fs::write(dir.join("INSTRUCTIONS.md"), render_instructions(manifest.count as usize, &generated_at))?;
     std::fs::write(dir.join("schema.json"), &schema_json)?;

@@ -121,6 +121,11 @@ pub fn import_judgments_text(input: &str, judgments_path: &Path, o: ImportOption
         }
     }
     let now = o.now.clone().unwrap_or_else(jsdate::now_iso);
+    // 返答の ranAt が取り込んだ時刻より後(LLM が書いた先の日時)なら、取り込んだ時刻にする(判定のぶれの「セッションの終わりより後」を、
+    // 書き間違えた日時で通さないため)。そのときと、ranAt の無い返答は、日時を書いた返答とはみなさない(explicit_ran_at が false)
+    let now_ms = jsdate::parse_ms(&now);
+    let ran_at = ran_at.filter(|r| matches!((jsdate::parse_ms(r), now_ms), (Some(r), Some(n)) if r <= n));
+    let explicit_ran_at = ran_at.is_some();
     let ran_at = ran_at.unwrap_or_else(|| now.clone());
 
     let mut problems: Vec<String> = Vec::new();
@@ -161,11 +166,20 @@ pub fn import_judgments_text(input: &str, judgments_path: &Path, o: ImportOption
     }
     let items: Vec<JudgmentItem> = by.into_values().collect();
     // 読み直してから混ぜて書くまでを、ファイルのロックの中で行う(共有の置き場では、ほかの集計する人も同じファイルに取り込むため。
-    // 同じセッションは後から取り込んだもので置き換え、ほかのセッションの判定は残す)
+    // 同じセッションは後から取り込んだもので置き換え、ほかのセッションの判定は残す)。
+    // 置き換える前の判定は、判定の履歴(judgments-history.json。history_path)に足してから本体を書く(判定のぶれを測るため)。
+    // 履歴は、本体のロックの中で、履歴のロック(<履歴>.lock)も取って書く。2 つのロックはいつも本体 → 履歴の順に取る
+    // (履歴のロックの印で、共有のフォルダで別の PC が作った直後の履歴を「無い」と見て、空から書き直さない。tasks::with_file_lock)。
+    // 履歴を先に書くので、本体を書く前に落ちても前の判定は残る(取り込み直すと、同じものは足さない)
+    let history = history_path(judgments_path);
     let (overwritten, total) = atlas_report::tasks::with_file_lock(judgments_path, || {
         let base = read_judgments(judgments_path).map_err(|e| broken_judgments(judgments_path, e))?.unwrap_or_else(|| empty_judgments("external", model.as_deref(), &now));
         let existing: HashSet<&str> = base.items.iter().map(|i| i.session_id.as_str()).collect();
         let overwritten = items.iter().filter(|i| existing.contains(i.session_id.as_str())).count();
+        // 置き換えるものが無ければ、履歴のロックも取らない(履歴を使わない人の置き場に .lock を増やさない)
+        if items.iter().any(|n| base.items.iter().any(|o| o.session_id == n.session_id && is_new_judgment(o, n, explicit_ran_at))) {
+            atlas_report::tasks::with_file_lock(&history, || append_history(&history, &base.items, &items, &now, explicit_ran_at))?;
+        }
         let merged = merge_judgments(&base, &items, FileJudge { backend: "external".into(), model: model.clone(), ran_at: now.clone(), usage: None });
         write_judgments(judgments_path, &merged)?;
         Ok((overwritten, merged.items.len()))
@@ -180,6 +194,90 @@ pub fn import_judgments_text(input: &str, judgments_path: &Path, o: ImportOption
     })
 }
 
+// ---------- 判定の履歴(判定のぶれ) ----------
+
+/// 判定の履歴の版
+pub const HISTORY_SCHEMA_VERSION: i64 = 1;
+
+/// 置き換えた判定 1 件(置き換える前の項目をそのまま。judge の ranAt・model も入る)
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryEntry {
+    /// 置き換えた時刻(取り込んだ時刻。ISO)
+    pub replaced_at: String,
+    pub item: JudgmentItem,
+}
+
+/// 判定の履歴(judgments-history.json)。取り込みで同じセッションの判定を置き換えたとき、前の判定を足していく。
+/// judgments.json とは別のファイルにする(前の版の atlas.exe が judgments.json を読めるように、そちらには項目を足さない)
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryFile {
+    pub schema_version: i64,
+    pub items: Vec<HistoryEntry>,
+}
+
+/// 判定の履歴の場所: 工数の判定のファイルの隣の `<名前>-history.json`(judgments.json なら judgments-history.json)。
+/// 判定のファイルの場所(Paths::judgments。設定のフォルダ・--judgments)に従う
+pub fn history_path(judgments: &Path) -> std::path::PathBuf {
+    let stem = judgments.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "judgments".into());
+    judgments.with_file_name(format!("{stem}-history.json"))
+}
+
+/// 判定の履歴を読む。無ければ None。読めない・形が違うときはエラー
+pub fn read_history(path: &Path) -> Result<Option<HistoryFile>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let p = path.display();
+    let bytes = std::fs::read(path).map_err(|e| anyhow!("{p} を読めません: {e}"))?;
+    let v = js::parse_json(&String::from_utf8_lossy(&bytes)).map_err(|e| anyhow!("{p} を JSON として読めません: {e}"))?;
+    if v.get("schemaVersion").and_then(Value::as_f64) != Some(HISTORY_SCHEMA_VERSION as f64) {
+        bail!("{p} の schemaVersion が {HISTORY_SCHEMA_VERSION} ではありません");
+    }
+    serde_json::from_value(v).map(Some).map_err(|e| anyhow!("{p} の形が正しくありません: {e}"))
+}
+
+/// 判定の中身が同じか(誰がいつ判定したか judge は見ない)
+fn same_content(a: &JudgmentItem, b: &JudgmentItem) -> bool {
+    JudgmentItem { judge: None, ..a.clone() } == JudgmentItem { judge: None, ..b.clone() }
+}
+
+/// 取り込む判定(new)を、前の判定(old)とは別の新しい判定とみなすか: 中身が違うか、返答に日時(ranAt)が書いてあって前の判定の日時と違う。
+/// 返答に日時が無く(取り込んだ時刻で代えた)中身が同じものは、同じ返答の取り込み直しとみなす(判定し直したのか見分けられないため)。
+/// 中身が同じで日時の違う判定し直しも数える(完全に一致した組を落とすと、一致の割合が低い方に偏るため)
+fn is_new_judgment(old: &JudgmentItem, new: &JudgmentItem, explicit_ran_at: bool) -> bool {
+    if !same_content(old, new) {
+        return true;
+    }
+    explicit_ran_at && old.judge.as_ref().map(|j| j.ran_at.as_str()) != new.judge.as_ref().map(|j| j.ran_at.as_str())
+}
+
+/// 取り込む項目(incoming)が置き換える前の判定(base にある同じセッションのもの)を、判定の履歴に足す。足すものが無ければ書かない。
+/// 足さないもの: 新しい判定とみなさないもの(is_new_judgment。日時の無い返答で中身が同じ = 同じ返答の取り込み直し。
+/// 日時も中身も同じ返答の取り込み直し)と、履歴にもうある同じもの(同じ ranAt・同じ中身。本体を書く前に落ちて、取り込み直したときなど)。
+/// 履歴が読めなければエラー(壊れたファイルは書き換えない。何も取り込まない)。呼ぶのは本体と履歴のロックの中
+fn append_history(path: &Path, base: &[JudgmentItem], incoming: &[JudgmentItem], now: &str, explicit_ran_at: bool) -> Result<()> {
+    let old: std::collections::HashMap<&str, &JudgmentItem> = base.iter().map(|i| (i.session_id.as_str(), i)).collect();
+    let replaced: Vec<&JudgmentItem> = incoming.iter().filter_map(|n| old.get(n.session_id.as_str()).copied().filter(|o| is_new_judgment(o, n, explicit_ran_at))).collect();
+    if replaced.is_empty() {
+        return Ok(());
+    }
+    let mut file = read_history(path)
+        .map_err(|e| anyhow::Error::from(atlas_report::tasks::BrokenFile(format!("判定の履歴が壊れています。{} を確かめてください(直すか、別の名前に変えてから取り込み直します。壊れたファイルは書き換えません。何も取り込んでいません。{e:#})", path.display()))))?
+        .unwrap_or(HistoryFile { schema_version: HISTORY_SCHEMA_VERSION, items: vec![] });
+    let before = file.items.len();
+    for o in replaced {
+        if !file.items.iter().any(|h| h.item == *o) {
+            file.items.push(HistoryEntry { replaced_at: now.to_string(), item: o.clone() });
+        }
+    }
+    if file.items.len() == before {
+        return Ok(());
+    }
+    write_json_atomic(path, &file)
+}
+
 /// 移した後の前の置き場の名前(<file>.moved-<時刻>。もう読まない。中身を確かめたいときのために消さずに残す)。
 /// 前に移したもの(同じ出力先で設定のフォルダを外して作り直し、また移したときなど)を上書きしないよう、時刻を付け、それでも重なれば -2, -3 … を足す
 pub fn moved_path(from: &Path) -> std::path::PathBuf {
@@ -190,6 +288,36 @@ pub fn moved_path(from: &Path) -> std::path::PathBuf {
         std::path::PathBuf::from(s)
     };
     (1..).map(name).find(|p| !p.exists()).expect("空いた名前がある")
+}
+
+/// 前の置き場(from_judgments の隣の履歴)の判定の履歴を、共有の置き場(to_judgments の隣の履歴)に混ぜて移す。
+/// 共有の側にもうある同じもの(同じ項目)は足さず、ほかは後ろに足す(組にする履歴は判定の日時で選ぶので、足す順は問わない)。
+/// 移したら前の履歴は moved_path の名前に変える。前の履歴が無ければ None。前の履歴か共有の履歴が読めなければエラー(何も書かず、前の履歴も残す)。
+/// ロックは本体 → 履歴の順に取る(取り込みと同じ順)
+pub fn move_history_into(from_judgments: &Path, to_judgments: &Path) -> Result<Option<Moved>> {
+    let (from, to) = (history_path(from_judgments), history_path(to_judgments));
+    if !from.exists() {
+        return Ok(None);
+    }
+    atlas_report::tasks::with_file_lock(to_judgments, || {
+        atlas_report::tasks::with_file_lock(&to, || {
+            let Some(old) = read_history(&from)? else { return Ok(None) };
+            let mut cur = read_history(&to)?.unwrap_or(HistoryFile { schema_version: HISTORY_SCHEMA_VERSION, items: vec![] });
+            let before = cur.items.len();
+            for e in old.items {
+                if !cur.items.iter().any(|h| h.item == e.item) {
+                    cur.items.push(e);
+                }
+            }
+            let added = cur.items.len() - before;
+            if added > 0 {
+                write_json_atomic(&to, &cur)?;
+            }
+            let renamed_to = moved_path(&from);
+            atlas_core::fs_retry::rename_replacing(&from, &renamed_to)?;
+            Ok(Some(Moved { added, renamed_to }))
+        })
+    })
 }
 
 /// 前の置き場から移した結果
@@ -295,6 +423,159 @@ mod tests {
         assert!(e.downcast_ref::<JudgmentValidationError>().unwrap().problems[0].starts_with("1 件目が無いか"), "{e}");
     }
 
+    /// 返答 1 つ(ranAt つき)
+    fn reply(ran_at: &str, items: Vec<Value>) -> String {
+        json!({ "judge": { "model": "m-a", "ranAt": ran_at }, "items": items }).to_string()
+    }
+
+    /// 判定の履歴: 同じセッションを置き換えたら、前の判定(judge の ranAt・model つき)を隣の <名前>-history.json に足す。
+    /// 同じ返答の取り込み直し(日時も中身も同じ・日時の無い返答で中身が同じ)と、履歴にもうあるもの(同じ ranAt・同じ中身)は足さない
+    #[test]
+    fn replaced_judgments_go_to_the_history() {
+        let d = tempfile::tempdir().unwrap();
+        let jp = d.path().join("judgments.json");
+        let hp = history_path(&jp);
+        assert_eq!(hp, d.path().join("judgments-history.json"));
+        assert_eq!(history_path(&d.path().join("mine.json")), d.path().join("mine-history.json"));
+        let opts = || ImportOptions { now: Some("2026-11-25T00:00:00.000Z".into()), ..Default::default() };
+        // 初めての判定は置き換えないので、履歴を作らない
+        import_judgments_text(&reply("2026-11-20T00:00:00Z", vec![item("a"), item("b")]), &jp, opts()).unwrap();
+        assert!(!hp.exists());
+        // 同じ返答(日時も中身も同じ)を取り込み直しても、判定し直したのではないので足さない(履歴のロックも取らない)
+        let r = import_judgments_text(&reply("2026-11-20T00:00:00Z", vec![item("a")]), &jp, opts()).unwrap();
+        assert_eq!(r.overwritten, 1);
+        assert!(!hp.exists());
+        assert!(!atlas_report::tasks::lock_path(&hp).exists());
+        // 日時の無い返答で中身が同じものも、取り込み直しとみなして足さない(本体の日時は取り込んだ時刻になる)
+        import_judgments_text(&json!([item("b")]).to_string(), &jp, opts()).unwrap();
+        assert!(!hp.exists());
+        // 中身が同じでも、返答に別の日時が書いてあれば判定し直したものとして足す(完全に一致した組を落とさない)
+        import_judgments_text(&reply("2026-11-21T00:00:00Z", vec![item("a")]), &jp, opts()).unwrap();
+        let h = read_history(&hp).unwrap().unwrap();
+        assert_eq!(h.items.len(), 1);
+        assert_eq!(h.items[0].item.judge.as_ref().map(|j| j.ran_at.as_str()), Some("2026-11-20T00:00:00Z"));
+        // 中身の違う判定で置き換えると、前の判定を足す(前の ranAt とモデルのまま)
+        let mut a2 = item("a");
+        a2["humanEffort"]["hours"] = json!(3);
+        import_judgments_text(&json!({ "judge": { "model": "m-b", "ranAt": "2026-11-22T00:00:00Z" }, "items": [a2] }).to_string(), &jp, opts()).unwrap();
+        let h = read_history(&hp).unwrap().unwrap();
+        assert_eq!(h.schema_version, HISTORY_SCHEMA_VERSION);
+        assert_eq!(h.items.len(), 2);
+        let h = HistoryFile { items: h.items[1..].to_vec(), ..h };
+        assert_eq!(h.items[0].replaced_at, "2026-11-25T00:00:00.000Z");
+        assert_eq!(h.items[0].item.session_id, "a");
+        assert_eq!(h.items[0].item.human_effort.hours, 2.0);
+        // 日時を書いて判定し直したときの判定(ranAt 11/21)が履歴に入る
+        assert_eq!(h.items[0].item.judge, Some(JudgeMeta { backend: "external".into(), model: Some("m-a".into()), ran_at: "2026-11-21T00:00:00Z".into() }));
+        let cur = read_judgments(&jp).unwrap().unwrap();
+        assert_eq!(cur.items.iter().find(|i| i.session_id == "a").unwrap().human_effort.hours, 3.0);
+        // 本体は前の版と同じ形(履歴の項目を足さない)
+        let raw: Value = serde_json::from_str(&std::fs::read_to_string(&jp).unwrap()).unwrap();
+        assert_eq!(raw.as_object().unwrap().keys().cloned().collect::<Vec<_>>(), ["schemaVersion", "judge", "items"]);
+        // もう 1 度判定し直すと、その前の判定も足す(古い順)
+        let mut a3 = item("a");
+        a3["humanEffort"]["hours"] = json!(3.5);
+        import_judgments_text(&reply("2026-11-23T00:00:00Z", vec![a3]), &jp, opts()).unwrap();
+        let h = read_history(&hp).unwrap().unwrap();
+        assert_eq!(h.items.iter().map(|e| e.item.human_effort.hours).collect::<Vec<_>>(), [2.0, 2.0, 3.0]);
+        // 書き込みの一時ファイルは残らない
+        let left: Vec<String> = std::fs::read_dir(d.path()).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).filter(|n| n.ends_with(".tmp")).collect();
+        assert!(left.is_empty(), "{left:?}");
+        // 履歴もロック(<履歴>.lock)の中で書く
+        assert!(atlas_report::tasks::lock_path(&hp).is_file());
+        assert!(atlas_report::tasks::lock_path(&jp).is_file());
+    }
+
+    /// 返答の日時が取り込んだ時刻より後(LLM が先の日時を書いた)なら、取り込んだ時刻にする。そのときは日時を書いた返答とみなさない
+    /// (中身が同じなら取り込み直しとして、履歴に足さない)
+    #[test]
+    fn future_ran_at_is_clamped_to_the_import_time() {
+        let d = tempfile::tempdir().unwrap();
+        let jp = d.path().join("judgments.json");
+        let hp = history_path(&jp);
+        let now = "2026-11-25T00:00:00.000Z";
+        let opts = || ImportOptions { now: Some(now.into()), ..Default::default() };
+        import_judgments_text(&reply("2027-01-01T00:00:00Z", vec![item("a")]), &jp, opts()).unwrap();
+        let j = read_judgments(&jp).unwrap().unwrap();
+        assert_eq!(j.items[0].judge.as_ref().map(|m| m.ran_at.as_str()), Some(now));
+        // 取り込んだ時刻ちょうどは、そのまま使う
+        let mut a2 = item("a");
+        a2["taskSummary"] = json!("後");
+        import_judgments_text(&reply(now, vec![a2.clone()]), &jp, opts()).unwrap();
+        assert_eq!(read_judgments(&jp).unwrap().unwrap().items[0].judge.as_ref().map(|m| m.ran_at.as_str()), Some(now));
+        // 先の日時で中身が同じ返答は、取り込み直しとみなして足さない(履歴は中身の違った 1 件だけ)
+        import_judgments_text(&reply("2027-02-01T00:00:00Z", vec![a2]), &jp, ImportOptions { now: Some("2026-11-26T00:00:00.000Z".into()), ..Default::default() }).unwrap();
+        assert_eq!(read_history(&hp).unwrap().unwrap().items.len(), 1);
+    }
+
+    /// 履歴を先に書いてから本体を書く: 本体を書く前に落ちても前の判定は履歴に残り、取り込み直しても同じものを 2 つにしない
+    #[test]
+    fn history_is_written_before_the_main_file_and_not_duplicated() {
+        let d = tempfile::tempdir().unwrap();
+        let jp = d.path().join("judgments.json");
+        let hp = history_path(&jp);
+        import_judgments_text(&reply("2026-11-20T00:00:00Z", vec![item("a")]), &jp, ImportOptions::default()).unwrap();
+        let mut a2 = item("a");
+        a2["taskSummary"] = json!("判定し直し");
+        let again = reply("2026-11-22T00:00:00Z", vec![a2]);
+        // 本体を書く前に落ちたとき: 履歴は書いたが、本体は前のまま(append_history だけを呼んで再現する)
+        let base = read_judgments(&jp).unwrap().unwrap();
+        let mut incoming = base.items.clone();
+        incoming[0].task_summary = "判定し直し".into();
+        append_history(&hp, &base.items, &incoming, "2026-11-22T00:00:01.000Z", true).unwrap();
+        assert_eq!(read_judgments(&jp).unwrap().unwrap(), base);
+        assert_eq!(read_history(&hp).unwrap().unwrap().items.len(), 1);
+        // 取り込み直すと本体が置き換わり、履歴は 1 件のまま(同じ ranAt・同じ中身は足さない)
+        import_judgments_text(&again, &jp, ImportOptions::default()).unwrap();
+        let h = read_history(&hp).unwrap().unwrap();
+        assert_eq!(h.items.len(), 1);
+        assert_eq!(h.items[0].item, base.items[0]);
+        assert_eq!(read_judgments(&jp).unwrap().unwrap().items[0].task_summary, "判定し直し");
+
+        // 壊れた履歴は書き換えず、本体も変えない(BrokenFile。serve は 409)
+        std::fs::write(&hp, "{").unwrap();
+        let before = std::fs::read(&jp).unwrap();
+        let mut a3 = item("a");
+        a3["taskSummary"] = json!("3 回目");
+        let e = import_judgments_text(&reply("2026-11-24T00:00:00Z", vec![a3]), &jp, ImportOptions::default()).unwrap_err();
+        assert!(e.downcast_ref::<atlas_report::tasks::BrokenFile>().is_some(), "{e:#}");
+        assert!(e.to_string().contains("判定の履歴が壊れています"), "{e}");
+        assert_eq!(std::fs::read(&jp).unwrap(), before);
+        assert_eq!(std::fs::read_to_string(&hp).unwrap(), "{");
+        // 置き換えない取り込み(新しいセッションだけ)は、履歴を読まないので止まらない
+        import_judgments_text(&reply("2026-11-24T00:00:00Z", vec![item("z")]), &jp, ImportOptions::default()).unwrap();
+    }
+
+    /// 本体のロックを別の書き手が持っている間は、履歴も本体も書かない(待ちきれなければ LockBusy)。
+    /// ロックは本体 → 履歴の順に取るので、履歴のロックだけを持つ書き手がいても、本体のロックを取ったまま待つだけで、取り合いにならない
+    #[test]
+    fn history_waits_for_the_main_lock() {
+        let d = tempfile::tempdir().unwrap();
+        let jp = d.path().join("judgments.json");
+        let hp = history_path(&jp);
+        import_judgments_text(&reply("2026-11-20T00:00:00Z", vec![item("a")]), &jp, ImportOptions::default()).unwrap();
+        let mut a2 = item("a");
+        a2["taskSummary"] = json!("後");
+        let text = reply("2026-11-22T00:00:00Z", vec![a2]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::scope(|s| {
+            let holder = std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true).open(atlas_report::tasks::lock_path(&hp)).unwrap();
+            holder.lock().unwrap();
+            let h = s.spawn(|| {
+                let r = import_judgments_text(&text, &jp, ImportOptions::default());
+                tx.send(()).unwrap();
+                r
+            });
+            // 履歴のロックを持っている間は、取り込みは終わらない(本体もまだ前のまま)
+            assert!(rx.recv_timeout(std::time::Duration::from_millis(300)).is_err());
+            assert_eq!(read_judgments(&jp).unwrap().unwrap().items[0].task_summary, "要約");
+            holder.unlock().unwrap();
+            h.join().unwrap().unwrap();
+        });
+        assert_eq!(read_history(&hp).unwrap().unwrap().items.len(), 1);
+        assert_eq!(read_judgments(&jp).unwrap().unwrap().items[0].task_summary, "後");
+    }
+
     /// 共有の置き場へ移す: 共有の側にあるセッションはそのまま、無いものだけ足し、前のファイルは .moved にする。2 回目は何もしない
     #[test]
     fn moves_old_judgments_into_shared() {
@@ -329,6 +610,44 @@ mod tests {
         std::fs::write(&old, "{").unwrap();
         assert!(move_judgments_into(&old, &shared).is_err());
         assert!(old.exists());
+    }
+
+    /// 前の出力先の判定の履歴も、共有の置き場の履歴に混ぜて移す(同じ項目は足さない)。前の履歴は .moved-<日時> にする。読めなければ移さずに残す
+    #[test]
+    fn moves_old_history_into_shared() {
+        let d = tempfile::tempdir().unwrap();
+        let (old, shared) = (d.path().join("out").join("judgments.json"), d.path().join("s").join("judgments.json"));
+        assert_eq!(move_history_into(&old, &shared).unwrap(), None);
+        // 前の出力先で a を 2 回判定した(履歴に 1 件)
+        import_judgments_text(&reply("2026-11-20T00:00:00Z", vec![item("a")]), &old, ImportOptions::default()).unwrap();
+        let mut a2 = item("a");
+        a2["taskSummary"] = json!("2 回目");
+        import_judgments_text(&reply("2026-11-21T00:00:00Z", vec![a2]), &old, ImportOptions::default()).unwrap();
+        // 共有の置き場では b を 2 回判定した(履歴に 1 件)。前の出力先の a の履歴の 1 件目と同じものも、共有の履歴にある
+        import_judgments_text(&reply("2026-11-20T00:00:00Z", vec![item("b")]), &shared, ImportOptions::default()).unwrap();
+        let mut b2 = item("b");
+        b2["taskSummary"] = json!("2 回目");
+        import_judgments_text(&reply("2026-11-21T00:00:00Z", vec![b2]), &shared, ImportOptions::default()).unwrap();
+        let mut h = read_history(&history_path(&shared)).unwrap().unwrap();
+        h.items.push(read_history(&history_path(&old)).unwrap().unwrap().items[0].clone());
+        write_json_atomic(&history_path(&shared), &h).unwrap();
+        let m = move_history_into(&old, &shared).unwrap().unwrap();
+        assert_eq!(m.added, 0, "同じ項目は足さない");
+        let shared_h = read_history(&history_path(&shared)).unwrap().unwrap();
+        assert_eq!(shared_h.items.iter().map(|e| e.item.session_id.as_str()).collect::<Vec<_>>(), ["b", "a"]);
+        assert!(!history_path(&old).exists());
+        assert!(m.renamed_to.file_name().unwrap().to_string_lossy().starts_with("judgments-history.json.moved-"));
+        assert!(atlas_report::tasks::lock_path(&history_path(&shared)).is_file());
+        // 共有に無いものは足す
+        std::fs::copy(&m.renamed_to, history_path(&old)).unwrap();
+        let other = d.path().join("other").join("judgments.json");
+        let m2 = move_history_into(&old, &other).unwrap().unwrap();
+        assert_eq!(m2.added, 1);
+        assert_eq!(read_history(&history_path(&other)).unwrap().unwrap().items.len(), 1);
+        // 読めない前の履歴は移さず、残す
+        std::fs::write(history_path(&old), "{").unwrap();
+        assert!(move_history_into(&old, &shared).is_err());
+        assert!(history_path(&old).exists());
     }
 
     /// 判定に失敗した記録は、移すときにセッションごとに 1 つにする(共有の側を先に。判定のあるセッションの記録は捨てる)

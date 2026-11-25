@@ -216,7 +216,7 @@ describe('Phase 2 E2E: fixtures', () => {
     expect(d.sessions.map((s) => s.id).sort()).toEqual([ids[0], ids[1]]);
     expect('groups' in d).toBe(false);
     expect(d.warnings.notes).toEqual([]);
-    expect(d.version).toBe(21);
+    expect(d.version).toBe(22);
     expect(await readFile(join(notes, 'groups.json'), 'utf8')).toBe(old);
     // 他の条件と AND
     const client = data.sessions.find((s) => s.id === ids[0])!.client!;

@@ -217,7 +217,7 @@ export interface JobInfo {
 }
 /** 中身を指定しないで始めるジョブ(全文記録の作成のほか) */
 export type PlainJobKind = Exclude<JobKind, 'full'>;
-export type JobRequest = { kind: PlainJobKind } | { kind: 'full'; id: string };
+export type JobRequest = { kind: PlainJobKind } | { kind: 'full'; id: string } | { kind: 'bundle' | 'bundle-zip'; rejudge: number };
 
 const q = (target: JudgeTarget): string => (target === 'effort' ? '' : `?target=${target}`);
 
@@ -247,6 +247,9 @@ export interface JudgePreview {
   judged: number;
   pending: number;
   withoutTurns?: number;
+  /** 工数の判定で、判定し直せる(判定より前に終わっていた)判定済みのセッションと、そのうちまだ判定し直していないもの。古いサーバには無い */
+  rejudgeable?: number;
+  rejudgeFresh?: number;
 }
 
 /** チャットでの判定の添付ファイル(bundle/parts/)。path は atlas.html からの相対パス */
@@ -272,8 +275,10 @@ export interface ChatParts {
   canAutomate?: boolean;
   /** 今の束をまとめた ZIP(あるときだけ)。path は atlas.html からの相対パス */
   zip?: { path: string; bytes: number; modifiedAt: string };
-  /** 束の中の判定済みの数(count のうち。タスクは紐づけのあるセッション) */
+  /** 束の中の判定済みの数(count のうち。タスクは紐づけのあるセッション。判定し直す束では、束を作った後に判定し直したもの) */
   judged?: number;
+  /** 工数の判定で、判定済みのセッションを判定し直す束(bundle --rejudge)のときの、頼んだ数 */
+  rejudge?: number;
 }
 export interface ChatImportResult {
   imported: number;

@@ -30,6 +30,7 @@
   /** 完了したタスクの、完了の時刻の出所ごとの数(古い埋め込みには無い) */
   const doneSrc = $derived(doneAtSourceText(s.doneSources));
   const ratioText = (r: number): string => `${dec(Math.round(r * 100) / 100)} 倍`;
+  const ratioRange = (a: number, b: number): string => `${dec(Math.round(a * 100) / 100)}〜${dec(Math.round(b * 100) / 100)} 倍`;
 
   type Key = 'name' | 'status' | 'start' | 'doneAt' | 'human' | 'work' | 'active' | 'sessions' | 'people' | 'model' | 'friction' | 'judged' | 'fixRate';
   const timeOf = (iso: string | null): number => {
@@ -135,6 +136,12 @@
         {#if s.ratio != null}
           <span class="v" data-testid="tasks-ratio">{ratioText(s.ratio)}</span>
           <span class="n">比べられる完了タスク {int(s.included)} 件の合計どうしの比(推定)</span>
+          {#if s.ratioSpread}
+            <span class="n" data-testid="tasks-ratio-spread">タスクごとの比: 中央値 {ratioText(s.ratioSpread.median)}(25〜75 パーセンタイル {ratioRange(s.ratioSpread.p25, s.ratioSpread.p75)}、{int(s.ratioSpread.tasks)} 件)。1 倍より小さい(AI を使った場合の方が長い)タスク {int(s.ratioSpread.belowOne)} 件</span>
+          {/if}
+          {#if s.ratioLow != null && s.ratioHigh != null}
+            <span class="n" data-testid="tasks-ratio-range">推定の幅で見た比: {ratioRange(s.ratioLow, s.ratioHigh)}</span>
+          {/if}
         {:else}
           <span class="v" data-testid="tasks-ratio">—</span>
           <span class="n" data-testid="tasks-ratio-why">比べられる完了タスクが {int(s.ratioMin)} 件から出します(今 {int(s.included)} 件)</span>
@@ -170,6 +177,11 @@
       {#if withFriction}
         <li data-testid="tasks-friction-defs">
           <strong>詰まりの列</strong>(人数・主なモデル・摩擦{withVerdicts ? '・依頼の判定' : ''}): 紐づいたセッションすべてを 1 つずつ数えます(工数と違い、複数のタスクに紐づくセッションも等分しません)。{#if withPeople}人数は、人の記録(送り先の人のフォルダ)のあるセッションの人の数です。{/if}主なモデルは、本体のリクエストがいちばん多いモデルと、本体のリクエストに占める割合です。摩擦は、ツールの失敗・拒否、中断、文脈圧縮の数です。<span data-testid="tasks-friction-caution">タスクの中身(難しさや工程の構成)はタスクごとに違うので、{withPeople ? '人数や' : ''}主なモデルで並べた摩擦{withVerdicts ? 'や依頼の判定' : ''}の違いを、{withPeople ? '人数の多い少ないや' : ''}モデルの良し悪しの比較には使えません(モデルどうしは「比べる」の節で、同じ期間・同じ推論強度にそろえて比べます)。</span>{#if withVerdicts}依頼の判定は LLM の推定で、直し(中身・体裁の直し)と不採用の割合は判定できた作業の依頼に対する割合、的外れの割合は判定できた質問に対する割合です。分母が {int(verdictMin)} 件に届かない割合は「—」です。工数とも AI の変更の残存とも別のもので、1 つの点数にしません。{/if}
+        </li>
+      {/if}
+      {#if s.ratioSpread || (s.ratioLow != null && s.ratioHigh != null)}
+        <li data-testid="tasks-ratio-spread-defs">
+          <strong>タスクごとの比と推定の幅で見た比</strong>: 比べられる完了タスクごとの「AI を使わなかった場合 ÷ AI を使った場合」の中央値と 25〜75 パーセンタイル、1 倍より小さいタスクの数と、推定人手工数の幅(LLM が出した low〜high。合計と同じ数え方)の合計どうしの比です。LLM の推定と、記録から出した所要の時間との比のばらつきで、ログには人が AI を使わずに作業した時間の実測が無いので、LLM の推定そのものが大きめか小さめかは、ここからは分かりません。
         </li>
       {/if}
       <li>数え方は<a href="glossary.html#task-comparable">用語の説明</a>にあります。</li>
@@ -228,8 +240,9 @@
                   <!-- 確信度の低い推定だけなら、合計に入れる推定が無い(0 時間とは書かない) -->
                   {#if t.sessions === 0}—{:else if t.judgedSessions === 0}<span class="missing-value">未判定</span>{:else if t.judgedSessions === t.lowConfidenceSessions}—{:else}{hours(t.humanHours)}{/if}
                   {#if t.sessions > 0}<span class="part">判定 {int(t.judgedSessions)} / {int(t.sessions)}{t.lowConfidenceSessions ? `・確度が低い ${int(t.lowConfidenceSessions)}` : ''}</span>{/if}
+                  {#if t.judgedSessions > t.lowConfidenceSessions && t.humanLow != null && t.humanHigh != null}<span class="part" data-testid="task-human-range">幅 {dec(Math.round(t.humanLow * 100) / 100)}〜{dec(Math.round(t.humanHigh * 100) / 100)}</span>{/if}
                 </td>
-                <td class="num">{#if t.workMs != null}{msHours(t.workMs)}{:else if t.sessions === 0}—{:else}—<span class="part">{t.excluded ? TASK_EXCLUDED_LABEL[t.excluded] : '未完了'}</span>{/if}</td>
+                <td class="num">{#if t.workMs != null}{msHours(t.workMs)}{#if t.ratio != null}<span class="part" data-testid="task-ratio">比 {ratioText(t.ratio)}</span>{/if}{:else if t.sessions === 0}—{:else}—<span class="part">{t.excluded ? TASK_EXCLUDED_LABEL[t.excluded] : '未完了'}</span>{/if}</td>
                 <td class="num">{t.sessions ? msHours(t.aiActiveMs) : '—'}</td>
                 <td class="num">{int(t.sessions)}{#if t.sharedSessions > 0}<span class="part" title="ほかのタスクにも紐づいているセッション。実働と推定人手工数はタスクの数で等分しています" data-testid="task-shared">共有 {int(t.sharedSessions)}</span>{/if}</td>
                 <td class="src">{linkCounts(t.links) || '—'}</td>

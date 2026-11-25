@@ -1081,6 +1081,17 @@ fn job_request_validation() {
     }
 }
 
+/// 判定の履歴に入る工数の判定(judgments.json の項目と同じ形)
+fn effort_history_item(id: &str) -> Value {
+    json!({
+        "sessionId": id, "taskCategory": "feature", "taskSummary": "s",
+        "humanEffort": { "hours": 2, "low": 1, "high": 4, "confidence": 0.5, "rationale": "r" },
+        "aiOutcome": { "completed": true, "quality": 4, "rework": 1, "rationale": "r" },
+        "instructionsEffect": { "score": 0, "evidence": "e" }, "wikiEffect": { "score": 0, "evidence": "e" }, "skillsAgentsEffect": { "score": 0, "evidence": "e" },
+        "judge": { "backend": "external", "ranAt": "2026-07-01T12:00:00.000Z" },
+    })
+}
+
 /// 添付ファイルを作る前に出す、未判定の数(工数・依頼ごと)
 #[test]
 fn judge_preview_counts_effort_and_turns() {
@@ -1089,7 +1100,8 @@ fn judge_preview_counts_effort_and_turns() {
     fs::write(j.e.out.join("judgments.json"), json!({ "schemaVersion": 1, "items": [{ "sessionId": "s1" }] }).to_string()).unwrap();
     let pv = |q: &str| j.e.json("GET", &format!("/api/jobs/judge-preview{q}"), None);
     let counts = |v: &Value| (v["eligible"].clone(), v["judged"].clone(), v["pending"].clone());
-    assert_eq!(pv("").1, json!({ "eligible": 2, "judged": 1, "pending": 1 }));
+    // 判定の日時もセッションの終わりも無いので、判定し直せるものは 0
+    assert_eq!(pv("").1, json!({ "eligible": 2, "judged": 1, "pending": 1, "rejudgeable": 0, "rejudgeFresh": 0 }));
     // 依頼ごと: s1 は 2 依頼、s2 は依頼ごとの記録が無い
     fs::write(
         j.e.out.join("sessions.json"),
@@ -1102,6 +1114,22 @@ fn judge_preview_counts_effort_and_turns() {
     .unwrap();
     let t = pv("?target=turns").1;
     assert_eq!((counts(&t), t["withoutTurns"].clone()), ((json!(2), json!(0), json!(2)), json!(1)));
+    // 判定し直せる工数の判定: 判定より前に終わっていたセッション(bundle --rejudge と同じ決まり)。判定の履歴にあるものは「まだ判定し直していない」に数えない
+    fs::write(
+        j.e.out.join("sessions.json"),
+        json!({ "sessions": [
+            { "id": "s1", "name": "a", "turns": 1, "firstUserMessage": "x", "updatedAt": "2026-07-01T00:00:00.000Z" },
+            { "id": "s2", "name": "b", "turns": 1, "firstUserMessage": "y", "updatedAt": "2026-07-01T00:00:00.000Z" },
+            { "id": "s3", "name": "c", "turns": 1, "firstUserMessage": "z", "updatedAt": "2026-07-05T00:00:00.000Z" },
+        ] })
+        .to_string(),
+    )
+    .unwrap();
+    let judged = |id: &str| json!({ "sessionId": id, "humanEffort": { "hours": 1 }, "judge": { "backend": "external", "ranAt": "2026-07-02T00:00:00.000Z" } });
+    fs::write(j.e.out.join("judgments.json"), json!({ "schemaVersion": 1, "items": [judged("s1"), judged("s2"), judged("s3")] }).to_string()).unwrap();
+    fs::write(j.e.out.join("judgments-history.json"), json!({ "schemaVersion": 1, "items": [{ "replacedAt": "2026-07-02T00:00:00.000Z", "item": effort_history_item("s2") }] }).to_string()).unwrap();
+    let e = pv("").1;
+    assert_eq!((e["rejudgeable"].clone(), e["rejudgeFresh"].clone()), (json!(2), json!(1)));
     // 判定のモデルや回数の目安は、もう返さない(このツールは判定しない)
     for k in ["model", "byok", "modelError", "chunk"] {
         assert!(t.get(k).is_none() && pv("").1.get(k).is_none(), "{k}");

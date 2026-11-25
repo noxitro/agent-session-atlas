@@ -3,7 +3,7 @@
 use super::extras::SessionExtra;
 use super::hours::{format_hhmm, WorkHours};
 use super::links::{LinkSource, LinksFile};
-use super::metrics::{compute_task_metrics, counted_tasks, SessionFacts, TaskInfo, TaskRow, TaskSummary};
+use super::metrics::{compute_task_metrics, counted_tasks, HumanEstimate, SessionFacts, TaskInfo, TaskRow, TaskSummary};
 use super::sender::{tasks_from_senders, SenderTask};
 use super::state::TasksFile;
 use atlas_core::types::SessionRecord;
@@ -69,9 +69,9 @@ pub struct TasksView {
     pub scoped: bool,
 }
 
-/// セッションの工数に使う値。human はセッション id → (推定人手工数, 確信度)、verdicts はセッション id → 依頼ごとの判定の扱いごとの数
+/// セッションの工数に使う値。human はセッション id → 推定人手工数(時間・確信度・幅)、verdicts はセッション id → 依頼ごとの判定の扱いごとの数
 /// (extras::verdict_counts_by_session)
-pub fn session_facts(sessions: &[&SessionRecord], human: &HashMap<String, (f64, Option<f64>)>, verdicts: &HashMap<String, [i64; 8]>) -> HashMap<String, SessionFacts> {
+pub fn session_facts(sessions: &[&SessionRecord], human: &HashMap<String, HumanEstimate>, verdicts: &HashMap<String, [i64; 8]>) -> HashMap<String, SessionFacts> {
     sessions
         .iter()
         .map(|s| {
@@ -246,7 +246,7 @@ mod tests {
         links.links.insert("s1".into(), l(&["T", "NOPE", "U"]));
         links.links.insert("s2".into(), l(&["T", "U"]));
         links.links.insert("s3".into(), l(&["U"]));
-        let human: HashMap<String, (f64, Option<f64>)> = [("s1", 4.0), ("s2", 2.0), ("s3", 1.0)].into_iter().map(|(k, h)| (k.to_string(), (h, Some(0.9)))).collect();
+        let human: HashMap<String, HumanEstimate> = [("s1", 4.0), ("s2", 2.0), ("s3", 1.0)].into_iter().map(|(k, h)| (k.to_string(), (h, Some(0.9)).into())).collect();
         let facts = session_facts(&sessions, &human, &HashMap::new());
         let shown = ["s1", "s2", "s3"];
         let local = local_view(LocalInputs { configured: true, state: &state, links: &links, shown: &shown, facts: &facts, work_hours: &WorkHours::default(), warnings: vec![] }).unwrap();

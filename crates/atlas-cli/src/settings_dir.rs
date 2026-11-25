@@ -142,6 +142,24 @@ fn move_judgments(p: &Paths, dir: &Path, log: Log<'_>) {
             Err(e) => log(&format!("settings: 注意 出力先にあった{what} {} を共有の置き場に移せませんでした({e:#})。前のファイルはそのまま残し、共有の置き場の判定を使います", from.display())),
         }
     }
+    // 工数の判定の履歴(判定のぶれ)も移す。判定を移せなかったときも、履歴は履歴だけで移す(前の判定がもう無く、履歴だけが残っていることもあるため)
+    let from = p.out.join(atlas_judge::rubric::RESULT_FILE);
+    if from != p.judgments && p.judgments.starts_with(dir) {
+        let hp = atlas_judge::judgments_io::history_path(&p.judgments);
+        match atlas_judge::judgments_io::move_history_into(&from, &p.judgments) {
+            Ok(None) => {}
+            Ok(Some(m)) => log(&format!(
+                "settings: 出力先にあった工数の判定の履歴を、設定のフォルダの共有の置き場 {} に移しました(足した判定 {} 件。共有の側にあった同じものは足していません。前のファイルは {} に名前を変えました)",
+                hp.display(),
+                m.added,
+                m.renamed_to.display()
+            )),
+            Err(e) => log(&format!(
+                "settings: 注意 出力先にあった工数の判定の履歴 {} を共有の置き場に移せませんでした({e:#})。前のファイルはそのまま残し、共有の置き場の履歴を使います",
+                atlas_judge::judgments_io::history_path(&from).display()
+            )),
+        }
+    }
 }
 
 /// コマンドに設定のフォルダを当てる。--settings か、開いたフォルダの出力先の記録から決め(--config より先に使う)、
@@ -319,5 +337,38 @@ mod tests {
         assert_eq!((p.judgments.clone(), p.turn_judgments.clone()), (mine.clone(), st.join("turn-judgments.json")));
         // 指したファイルには、出力先の判定を移さない
         assert!(!mine.exists() && out.join("judgments.json").exists());
+    }
+
+    /// 前に出力先にあった工数の判定の履歴(判定のぶれ)も、判定と一緒に共有の置き場に移し、1 行知らせる
+    #[test]
+    fn judgment_history_moves_with_the_judgments() {
+        let d = tempfile::tempdir().unwrap();
+        let st = d.path().join(SETTINGS_DIR_NAME);
+        put_config(&st, "{}");
+        let out = d.path().join("out");
+        let s = |p: &Path| p.to_string_lossy().into_owned();
+        let item = |id: &str, summary: &str| serde_json::json!({ "sessionId": id, "taskCategory": "feature", "taskSummary": summary, "humanEffort": { "hours": 2, "low": 1, "high": 4, "confidence": 0.5, "rationale": "r" }, "aiOutcome": { "completed": true, "quality": 4, "rework": 1, "rationale": "r" }, "instructionsEffect": { "score": 0, "evidence": "e" }, "wikiEffect": { "score": 0, "evidence": "e" }, "skillsAgentsEffect": { "score": 0, "evidence": "e" } });
+        let reply = |at: &str, it: serde_json::Value| serde_json::json!({ "judge": { "ranAt": at }, "items": [it] }).to_string();
+        let jp = out.join("judgments.json");
+        atlas_judge::judgments_io::import_judgments_text(&reply("2026-11-20T00:00:00Z", item("a", "1 回目")), &jp, Default::default()).unwrap();
+        atlas_judge::judgments_io::import_judgments_text(&reply("2026-11-21T00:00:00Z", item("a", "2 回目")), &jp, Default::default()).unwrap();
+        assert!(out.join("judgments-history.json").is_file());
+        let logs = std::sync::Mutex::new(Vec::<String>::new());
+        let o = crate::args::parse_cli(&["export", "--settings", &s(&st), "--out", &s(&out)].iter().map(|x| x.to_string()).collect::<Vec<_>>()).unwrap();
+        let mut p = crate::commands::paths_of(&o);
+        apply_settings(&o, &mut p, &|m| logs.lock().unwrap().push(m.to_string())).unwrap();
+        let logs = logs.into_inner().unwrap();
+        assert_eq!(logs.len(), 2, "{logs:?}");
+        assert!(logs[1].contains("工数の判定の履歴を、設定のフォルダの共有の置き場") && logs[1].contains("足した判定 1 件"), "{logs:?}");
+        let h = atlas_judge::judgments_io::read_history(&st.join("judgments-history.json")).unwrap().unwrap();
+        assert_eq!(h.items.len(), 1);
+        assert_eq!(h.items[0].item.task_summary, "1 回目");
+        assert!(!out.join("judgments-history.json").exists());
+        assert!(std::fs::read_dir(&out).unwrap().any(|e| e.unwrap().file_name().to_string_lossy().starts_with("judgments-history.json.moved-")));
+        // 2 回目は移すものが無いので、何も知らせない
+        let logs = std::sync::Mutex::new(Vec::<String>::new());
+        let mut p = crate::commands::paths_of(&o);
+        apply_settings(&o, &mut p, &|m| logs.lock().unwrap().push(m.to_string())).unwrap();
+        assert!(logs.into_inner().unwrap().is_empty());
     }
 }

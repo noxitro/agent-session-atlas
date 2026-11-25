@@ -67,6 +67,13 @@
 
   let info = $state<ChatParts | null>(null);
   let pending = $state<number | null>(null);
+  /** 工数の判定で、判定し直せる判定済みのセッション(判定より前に終わっていた)と、そのうちまだ判定し直していないもの */
+  let rejudgeable = $state(0);
+  let rejudgeFresh = $state(0);
+  /** 判定し直す数(既定は 10 件。判定し直せる数まで) */
+  let rejudgeN = $state(10);
+  /** 束の中身の言い方(判定し直す束・タスクの紐づけ・未判定だけ・全件) */
+  const scopeText = $derived(info?.rejudge != null ? '判定し直し' : tasks ? '紐づけの無いものだけ' : info?.unjudgedOnly ? '未判定だけ' : '全件');
   /** 依頼ごとの記録が無いセッション(依頼の判定のとき。古い集計) */
   let withoutTurns = $state(0);
   let loadError = $state('');
@@ -150,6 +157,9 @@
       info = p;
       pending = pre.pending;
       withoutTurns = pre.withoutTurns ?? 0;
+      rejudgeable = target === 'effort' ? (pre.rejudgeable ?? 0) : 0;
+      rejudgeFresh = target === 'effort' ? (pre.rejudgeFresh ?? 0) : 0;
+      rejudgeN = Math.max(1, Math.min(rejudgeN, rejudgeable || 1));
     } catch (e) {
       loadError = (e as Error).message;
     }
@@ -175,6 +185,14 @@
     result = '';
     importError = null;
     await jobs.run({ kind: bundleKind });
+  }
+
+  /** 判定済みのセッションを判定し直す束を作る(bundle --rejudge。チャットの添付ファイルと ZIP のどちらの流れでも) */
+  async function makeRejudge(): Promise<void> {
+    result = '';
+    importError = null;
+    const n = Math.max(1, Math.min(Math.floor(Number(rejudgeN)) || 1, rejudgeable));
+    await jobs.run({ kind: zipMode ? 'bundle-zip' : 'bundle', rejudge: n });
   }
 
   async function startM365(): Promise<void> {
@@ -294,10 +312,10 @@
         {#if loadError}読み込めませんでした: {loadError}
         {:else if !info}読み込んでいます…
         {:else if zipMode}
-          {#if zip}<strong>作成済み</strong>: {dateTime(zip.modifiedAt)}({tasks ? '紐づけの無いものだけ' : info.unjudgedOnly ? '未判定だけ' : '全件'}、{int(zipTotal)} 件、{size(zip.bytes)})。取り込み済み <strong>{int(zipJudged)}</strong> / {int(zipTotal)} 件。{zipTotal > 0 && zipJudged >= zipTotal ? 'すべて取り込みました。' : '次の手順 2 へ進んでください。'}
+          {#if zip}<strong>作成済み</strong>: {dateTime(zip.modifiedAt)}({scopeText}、{int(zipTotal)} 件、{size(zip.bytes)})。取り込み済み <strong>{int(zipJudged)}</strong> / {int(zipTotal)} 件。{zipTotal > 0 && zipJudged >= zipTotal ? 'すべて取り込みました。' : '次の手順 2 へ進んでください。'}
           {:else}まだ作っていません。{/if}
         {:else if !info.exists || parts.length === 0}まだ作っていません。
-        {:else}<strong>作成済み</strong>: {dateTime(info.generatedAt)}({tasks ? '紐づけの無いものだけ' : info.unjudgedOnly ? '未判定だけ' : '全件'}、{int(parts.length)} ファイル)。取り込み済み <strong>{int(doneParts)}</strong> / {int(parts.length)} ファイル。次の手順 2 へ進んでください。{/if}
+        {:else}<strong>作成済み</strong>: {dateTime(info.generatedAt)}({scopeText}、{int(parts.length)} ファイル)。取り込み済み <strong>{int(doneParts)}</strong> / {int(parts.length)} ファイル。次の手順 2 へ進んでください。{/if}
       </p>
       {#if made && info?.decidable && split}
         <p class="state" data-testid="chat-decidable">
@@ -311,6 +329,17 @@
         </p>
       {/if}
       <button type="button" class="btn" disabled={off || pending === 0} data-testid="chat-bundle" onclick={makeBundle}>{makeLabel}</button>
+      {#if target === 'effort' && rejudgeable > 0}
+        <details class="rejudge" data-testid="chat-rejudge">
+          <summary>判定済みから判定し直して、ぶれを測る</summary>
+          <p class="hint">判定より前に終わっていた(入力が変わっていない)判定済みのセッション {int(rejudgeable)} 件から、まだ判定し直していないもの({int(rejudgeFresh)} 件)を先に選び、同じ手順で判定し直します。前の判定は{thing}に入れません。取り込むと前の判定は判定の履歴に移り、概況の「判定のぶれ」に出ます。作ると、今の{thing}は判定し直す分に置き換わります。</p>
+          <div class="rejudge-row">
+            <label for="chat-rejudge-n">判定し直す数</label>
+            <input id="chat-rejudge-n" name="chat-rejudge-n" type="number" min="1" max={rejudgeable} step="1" inputmode="numeric" bind:value={rejudgeN} data-testid="chat-rejudge-n" />
+            <button type="button" class="btn" disabled={off} data-testid="chat-rejudge-make" onclick={() => void makeRejudge()}>判定済みから {int(Math.max(1, Math.min(Math.floor(Number(rejudgeN)) || 1, rejudgeable)))} 件を選んで{zipMode ? ' ZIP を' : ''}作る</button>
+          </div>
+        </details>
+      {/if}
       {#if zipMode && parts.length > 0}
         <p class="hint" data-testid="chat-zip-side">「チャットに貼って判定する」の添付ファイルも、同じ{pendOf}{unit}で作り直されます(ファイルの番号が振り直されます)。</p>
       {:else if !zipMode && info?.zip}
@@ -613,6 +642,35 @@
   .list {
     margin-top: 6px;
     font-size: 0.8125rem;
+  }
+  /* 判定し直す束(工数の判定だけ。畳んでおき、使う人だけ開く) */
+  .rejudge {
+    margin-top: 8px;
+    font-size: 0.8125rem;
+  }
+  .rejudge summary {
+    color: var(--form);
+    min-height: 24px;
+  }
+  .rejudge-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 8px;
+    margin-top: 6px;
+  }
+  .rejudge-row label {
+    font-size: 0.75rem;
+    color: var(--ink-2);
+  }
+  .rejudge-row input {
+    width: 6em;
+    min-height: 32px;
+    padding: 2px 6px;
+    font: inherit;
+    color: var(--ink);
+    background: var(--surface);
+    border: 1px solid var(--control);
   }
   .list summary {
     color: var(--form);

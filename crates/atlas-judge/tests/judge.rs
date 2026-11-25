@@ -653,6 +653,7 @@ fn rebuild_failure_keeps_previous_bundle() {
         now: None,
         wiki_state: WikiState::Counted,
         wiki_specs: vec![],
+        rejudge_from: None,
     };
     let m = build_bundle(&[&s], &opts(None, None)).unwrap();
     assert!(build_bundle(&[&s], &opts(None, Some(0))).unwrap_err().to_string().contains("perPart"));
