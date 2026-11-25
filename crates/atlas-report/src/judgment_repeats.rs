@@ -134,6 +134,38 @@ fn ms(iso: &str) -> Option<i64> {
     atlas_core::jsdate::parse_ms(iso)
 }
 
+/// 判定がセッションの終わりより後か(入力が変わっていようがない判定か)。終わりか判定の日時が分からなければ false。
+/// 組にする決まり(compute_repeats)と、判定し直すセッションの選び方(atlas_judge::rejudge)が同じこの関数を使う
+pub fn judged_after_end(end_ms: Option<i64>, ran_at: Option<&str>) -> bool {
+    matches!((end_ms, ran_at.and_then(ms)), (Some(end), Some(at)) if end < at)
+}
+
+/// 今の判定と組にする履歴(同じセッションの履歴のうち、判定の日時がいちばん新しいもの。今の判定と同じもの(is_current)は除く。
+/// 日時の同じものは後に書いた方。日時の読めるものが無ければ、後に書いたもの)。
+/// 履歴は書いた順だが、共有の置き場に前の出力先の履歴を移したときなど、書いた順が判定の順と違うことがあるので、日時で選ぶ
+pub fn latest_history<'a, T: 'a>(entries: impl IntoIterator<Item = &'a T>, ran_at: impl Fn(&'a T) -> Option<&'a str>, is_current: impl Fn(&'a T) -> bool) -> Option<&'a T> {
+    let mut best: Option<(&T, Option<i64>)> = None;
+    for e in entries {
+        if is_current(e) {
+            continue;
+        }
+        let t = ran_at(e).and_then(ms);
+        let take = match best {
+            None => true,
+            Some((_, bt)) => match (t, bt) {
+                (Some(a), Some(b)) => a >= b,
+                (Some(_), None) => true,
+                (None, Some(_)) => false,
+                (None, None) => true,
+            },
+        };
+        if take {
+            best = Some((e, t));
+        }
+    }
+    best.map(|(e, _)| e)
+}
+
 fn rate(agree: usize, n: usize) -> AgreeRate {
     AgreeRate { n, agree, rate: (n >= REPEATS_MIN_PAIRS && n > 0).then(|| agree as f64 / n as f64) }
 }
@@ -168,7 +200,7 @@ pub fn compute_repeats(sessions: &[RepeatSession<'_>], current: &indexmap::Index
             continue;
         };
         // 今の判定と同じもの(同じ日時・同じ中身。履歴を書いた後、本体を書く前に止まったときに残る)は比べない
-        let Some(prev) = hist.iter().rev().find(|h| ***h != *cur) else { continue };
+        let Some(prev) = latest_history(hist.iter().copied(), |h| h.ran_at.as_deref(), |h| h == cur) else { continue };
         let (Some(a), Some(b)) = (prev.ran_at.as_deref().filter(|x| ms(x).is_some()), cur.ran_at.as_deref().filter(|x| ms(x).is_some())) else {
             ex.no_ran_at += 1;
             continue;
@@ -177,7 +209,7 @@ pub fn compute_repeats(sessions: &[RepeatSession<'_>], current: &indexmap::Index
             ex.no_end += 1;
             continue;
         };
-        if ms(a).is_none_or(|t| t <= end) || ms(b).is_none_or(|t| t <= end) {
+        if !judged_after_end(Some(end), Some(a)) || !judged_after_end(Some(end), Some(b)) {
             ex.before_end += 1;
             continue;
         }
@@ -347,6 +379,31 @@ mod tests {
         let (p3, _) = compute_repeats(&s, &cur3, &hist);
         let x = p3.iter().find(|p| p.session_id == "s2").unwrap();
         assert_eq!((x.older.hours, x.newer.hours), (Some(6.0), Some(2.0)));
+    }
+
+    /// 組にする履歴は判定の日時で選ぶ(書いた順が判定の順と違っても。前の出力先の履歴を共有の置き場に移したときなど)
+    #[test]
+    fn uses_the_history_entry_with_the_latest_judgment_time() {
+        let ids = vec!["a".to_string()];
+        let s = sessions(&ids);
+        let mut cur = IndexMap::new();
+        cur.insert("a".to_string(), j(Some(NEW), "m", 2.0, 0.8, true, 4.0, 1.0));
+        // 後に書いたのは古い判定(11/11)、先に書いたのが新しい判定(11/11 12:00)
+        let hist = vec![("a".to_string(), j(Some("2026-11-11T12:00:00Z"), "m", 3.0, 0.8, true, 4.0, 1.0)), ("a".to_string(), j(Some(OLD), "m", 9.0, 0.8, true, 4.0, 1.0))];
+        let (p, _) = compute_repeats(&s, &cur, &hist);
+        assert_eq!(p[0].older.hours, Some(3.0));
+        // 日時が同じなら後に書いた方、日時の読めないものは読めるものより後回し
+        let at = |x: &'static (&'static str, Option<&'static str>)| x.1;
+        static XS: [(&str, Option<&str>); 3] = [("first", Some(OLD)), ("second", Some(OLD)), ("none", None)];
+        let xs = &XS;
+        assert_eq!(latest_history(xs.iter(), at, |_| false).map(|x| x.0), Some("second"));
+        assert_eq!(latest_history(xs.iter(), at, |x| x.0 == "second").map(|x| x.0), Some("first"));
+        static ONLY_NONE: [(&str, Option<&str>); 1] = [("none", None)];
+        let only_none = &ONLY_NONE;
+        assert_eq!(latest_history(only_none.iter(), at, |_| false).map(|x| x.0), Some("none"));
+        assert!(judged_after_end(ms(END), Some(OLD)));
+        assert!(!judged_after_end(ms(END), Some(END)));
+        assert!(!judged_after_end(None, Some(OLD)));
     }
 
     /// 最も新しい履歴と比べる(履歴が 2 つあれば、後に書いた方)

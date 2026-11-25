@@ -94,20 +94,19 @@ fn wiki_specs(config: Option<&str>, log: Log<'_>) -> Vec<atlas_core::wiki::WikiS
 
 /// 判定し直すセッションを選ぶ(atlas_judge::rejudge::select_rejudge。入力が変わっていようがない判定済みのセッションから、
 /// まだ判定し直していないものを先に)。選んだ id と、それぞれの今の判定の日時を返す。選べるものが無ければエラー(前の束はそのまま残る)
-fn pick_rejudge(p: &Paths, sessions: &[&atlas_core::types::SessionRecord], n: usize, log: Log<'_>) -> Result<(HashSet<String>, IndexMap<String, String>)> {
+/// include_empty が false なら、依頼の記録が無いセッション(束を作るときに対象外にするもの)は選ばない(画面の数と同じ atlas_judge::rejudge::has_request_hint)
+fn pick_rejudge(p: &Paths, sessions: &[&atlas_core::types::SessionRecord], n: usize, include_empty: bool, log: Log<'_>) -> Result<(HashSet<String>, IndexMap<String, String>)> {
     let judged = read_judgments(&p.judgments)?.map(|j| j.items).unwrap_or_default();
     let history = read_history(&history_path(&p.judgments)).map_err(|e| anyhow::anyhow!("判定の履歴を読めません: {e:#}"))?;
-    let repeated = atlas_judge::rejudge::repeated_sessions(history.as_ref());
     let ran_at: std::collections::HashMap<&str, &str> = judged.iter().filter_map(|i| i.judge.as_ref().map(|j| (i.session_id.as_str(), j.ran_at.as_str()))).collect();
-    let cands: Vec<atlas_judge::rejudge::RejudgeCandidate<'_>> = sessions
+    let end_of = |s: &atlas_core::types::SessionRecord| s.updated_at.as_deref().filter(|x| !x.is_empty()).and_then(atlas_core::jsdate::parse_ms);
+    let judged_sessions: Vec<&&atlas_core::types::SessionRecord> =
+        sessions.iter().filter(|s| ran_at.contains_key(s.id.as_str())).filter(|s| include_empty || atlas_judge::rejudge::has_request_hint(s.turns, s.first_user_message.as_deref())).collect();
+    let facts: std::collections::HashMap<&str, (Option<i64>, Option<&str>)> = judged_sessions.iter().map(|s| (s.id.as_str(), (end_of(s), ran_at.get(s.id.as_str()).copied()))).collect();
+    let repeated = atlas_judge::rejudge::repeated_sessions(history.as_ref(), &facts);
+    let cands: Vec<atlas_judge::rejudge::RejudgeCandidate<'_>> = judged_sessions
         .iter()
-        .filter(|s| ran_at.contains_key(s.id.as_str()))
-        .map(|s| atlas_judge::rejudge::RejudgeCandidate {
-            id: s.id.as_str(),
-            end_ms: s.updated_at.as_deref().filter(|x| !x.is_empty()).and_then(atlas_core::jsdate::parse_ms),
-            ran_at: ran_at.get(s.id.as_str()).copied(),
-            repeated: repeated.contains(&s.id),
-        })
+        .map(|s| atlas_judge::rejudge::RejudgeCandidate { id: s.id.as_str(), end_ms: end_of(s), ran_at: ran_at.get(s.id.as_str()).copied(), repeated: repeated.contains(&s.id) })
         .collect();
     let sel = atlas_judge::rejudge::select_rejudge(&cands, n);
     if sel.ids.is_empty() {
@@ -142,7 +141,7 @@ pub fn run_bundle(p: &Paths, f: &SessionFilter, o: &BundleCliOptions, log: Log<'
         if o.unjudged {
             anyhow::bail!("--rejudge と --unjudged は一緒に使えません");
         }
-        let (ids, from) = pick_rejudge(p, &sessions, n as usize, log)?;
+        let (ids, from) = pick_rejudge(p, &sessions, n as usize, o.include_empty, log)?;
         sessions.retain(|s| ids.contains(&s.id));
         rejudge_from = Some(from);
     }

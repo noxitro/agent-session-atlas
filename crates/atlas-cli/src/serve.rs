@@ -1052,7 +1052,8 @@ impl Server {
         for r in sessions {
             let id = js::key_of(r.get("id").unwrap_or(&Value::Null));
             let name = r.get("name").and_then(Value::as_str).map(js::trim).unwrap_or("");
-            let eligible = r.get("turns").and_then(Value::as_f64).is_some_and(|t| t > 0.0) || js::truthy(r.get("firstUserMessage"));
+            // 判定し直す束(bundle --rejudge)の候補と同じ決め方(atlas_judge::rejudge::has_request_hint)
+            let eligible = atlas_judge::rejudge::has_request_hint(r.get("turns").and_then(Value::as_f64).map_or(0, |t| if t > 0.0 { t.ceil() as i64 } else { 0 }), r.get("firstUserMessage").and_then(Value::as_str));
             let turns = r.get("analysis").and_then(|a| a.get("turnStats")).and_then(Value::as_array).map_or(0, Vec::len);
             let start_ms = r.get("createdAt").and_then(Value::as_str).filter(|s| !s.is_empty()).and_then(atlas_core::jsdate::parse_ms);
             let active_ms = r.get("activeMs").and_then(Value::as_f64);
@@ -1679,9 +1680,9 @@ impl Server {
         let Some(ix) = self.session_index()? else { return Ok(obj(json!({ "eligible": 0, "judged": 0, "pending": 0, "rejudgeable": 0, "rejudgeFresh": 0 }))) };
         let judged = crate::chat_parts::judged_ran_at(&self.judgments).map_err(|e| HttpError::new(409, format!("{e:#}")))?;
         let history = atlas_judge::judgments_io::read_history(&atlas_judge::judgments_io::history_path(&self.judgments)).map_err(|e| HttpError::new(409, format!("判定の履歴を読めません: {e:#}")))?;
-        let repeated = atlas_judge::rejudge::repeated_sessions(history.as_ref());
         let (mut eligible, mut done) = (0, 0);
-        let mut cands: Vec<atlas_judge::rejudge::RejudgeCandidate<'_>> = Vec::new();
+        // 依頼の記録がある判定済みのセッション(束の候補と同じ。atlas_judge::rejudge::has_request_hint)の、終わりと今の判定の日時
+        let mut facts: std::collections::HashMap<&str, (Option<i64>, Option<&str>)> = std::collections::HashMap::new();
         for (id, x) in &ix.ids {
             if !x.eligible {
                 continue;
@@ -1689,9 +1690,11 @@ impl Server {
             eligible += 1;
             if let Some(at) = judged.get(id) {
                 done += 1;
-                cands.push(atlas_judge::rejudge::RejudgeCandidate { id, end_ms: x.end_ms, ran_at: at.as_deref(), repeated: repeated.contains(id) });
+                facts.insert(id.as_str(), (x.end_ms, at.as_deref()));
             }
         }
+        let repeated = atlas_judge::rejudge::repeated_sessions(history.as_ref(), &facts);
+        let cands: Vec<atlas_judge::rejudge::RejudgeCandidate<'_>> = facts.iter().map(|(id, (end, at))| atlas_judge::rejudge::RejudgeCandidate { id, end_ms: *end, ran_at: *at, repeated: repeated.contains(*id) }).collect();
         let sel = atlas_judge::rejudge::select_rejudge(&cands, 0);
         Ok(obj(json!({ "eligible": eligible, "judged": done, "pending": eligible - done, "rejudgeable": sel.eligible, "rejudgeFresh": sel.fresh })))
     }

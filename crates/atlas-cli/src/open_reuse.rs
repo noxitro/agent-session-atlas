@@ -136,6 +136,11 @@ pub fn inputs_key(p: &ReusePaths<'_>, options: &Value, config_path: &Path, code:
     for (label, path) in [("judgments", p.judgments), ("turn-judgments", p.turn_judgments)] {
         add(label, &stat_key(path).unwrap_or_default());
     }
+    // 判定の履歴(判定のぶれ)。あるときだけ足す(無い人の印は前の版と同じにして、版を上げただけで作り直さない)
+    let history = atlas_judge::judgments_io::history_path(p.judgments);
+    if history.exists() {
+        add("judgments-history", &stat_key(&history).unwrap_or_default());
+    }
     Ok(hex::encode(h.finalize()))
 }
 
@@ -203,6 +208,18 @@ mod tests {
         std::fs::create_dir_all(snap.join(SNAPSHOT_REMOVED_DIR).join("1").join("gone")).unwrap();
         std::fs::write(snap.join(SNAPSHOT_REMOVED_DIR).join("1").join("gone").join("events.jsonl"), "{}\n").unwrap();
         assert_eq!(key, inputs_key(&rp, &opts, &none, "code1").unwrap());
+        // 判定の履歴(工数の判定のファイルの隣)は、あるときだけ印に入れる(無ければ前の版と同じ印)
+        let jdir = d.path().join("j");
+        std::fs::create_dir_all(&jdir).unwrap();
+        let jp = jdir.join("judgments.json");
+        let rj = ReusePaths { judgments: &jp, ..rp };
+        let without = inputs_key(&rj, &opts, &none, "code1").unwrap();
+        assert_eq!(without, key, "履歴が無ければ、判定のファイルの場所だけで印は変わらない");
+        std::fs::write(atlas_judge::judgments_io::history_path(&jp), "{}").unwrap();
+        let with = inputs_key(&rj, &opts, &none, "code1").unwrap();
+        assert_ne!(with, without);
+        std::fs::write(atlas_judge::judgments_io::history_path(&jp), "{\"changed\":1}").unwrap();
+        assert_ne!(inputs_key(&rj, &opts, &none, "code1").unwrap(), with);
         let built = d.path().join(crate::folders::BUILT_FILE);
         write_built(&built, &key, &out).unwrap();
         let prev = read_built(&built).unwrap();

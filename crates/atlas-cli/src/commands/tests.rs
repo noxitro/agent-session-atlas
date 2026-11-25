@@ -452,6 +452,8 @@ fn rejudge_bundle_picks_unchanged_sessions_without_the_previous_judgment() {
     let d = tempfile::tempdir().unwrap();
     let (home, out, notes) = (d.path().join("home"), d.path().join("out"), d.path().join("notes"));
     write_home_sessions(&home, &["aaaa1111", "bbbb2222", "dddd4444"]);
+    // 依頼の記録が無いセッション(束の対象外)。判定済みでも、--include-empty でなければ選ばない
+    write_home_session_without_request(&home, "cccc3333");
     let (h, o, n) = (home.to_string_lossy().into_owned(), out.to_string_lossy().into_owned(), notes.to_string_lossy().into_owned());
     run(&cli(&["all", "--home", &h, "--out", &o, "--notes-dir", &n]), &quiet).unwrap();
     // 判定のないときは選べない
@@ -464,10 +466,17 @@ fn rejudge_bundle_picks_unchanged_sessions_without_the_previous_judgment() {
     run(&cli(&["judge", "import", &rs, "--out", &o, "--notes-dir", &n]), &quiet).unwrap();
     fs::write(&reply, json!({ "judge": { "model": "m-a", "ranAt": "2026-07-01T09:01:30.000Z" }, "items": [effort_item("bbbb2222", 2.0, "前の判定の目印")] }).to_string()).unwrap();
     run(&cli(&["judge", "import", &rs, "--out", &o, "--notes-dir", &n]), &quiet).unwrap();
+    fs::write(&reply, json!({ "judge": { "model": "m-a", "ranAt": "2026-07-02T00:00:00.000Z" }, "items": [effort_item("cccc3333", 1.0, "前の判定の目印")] }).to_string()).unwrap();
+    run(&cli(&["judge", "import", &rs, "--out", &o, "--notes-dir", &n]), &quiet).unwrap();
     let logs: Mutex<Vec<String>> = Mutex::new(vec![]);
     let log = |m: &str| logs.lock().unwrap().push(m.to_string());
     let paths = crate::paths::resolve_paths(crate::paths::PathInputs { home: Some(&h), out: Some(&o), judgments: None, bundle: None, notes_dir: Some(&n) });
     let opts = |n: u64, zip: bool| super::bundle::BundleCliOptions { include_empty: false, per_part: None, unjudged: false, rejudge: Some(n), zip, config: None };
+    // --include-empty なら、依頼の記録が無いセッションも選び、束にも入る(数が合う)
+    let with_empty = super::bundle::run_bundle(&paths, &super::metrics::SessionFilter::default(), &super::bundle::BundleCliOptions { include_empty: true, ..opts(5, false) }, &quiet).unwrap();
+    let mut ids: Vec<&str> = with_empty.sessions.iter().map(|s| s.id.as_str()).collect();
+    ids.sort();
+    assert_eq!(ids, ["aaaa1111", "cccc3333"]);
     let m = super::bundle::run_bundle(&paths, &super::metrics::SessionFilter::default(), &opts(5, true), &log).unwrap();
     assert_eq!(m.sessions.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["aaaa1111"]);
     assert_eq!(m.scope.get("rejudge").cloned().flatten().as_deref(), Some("5"));

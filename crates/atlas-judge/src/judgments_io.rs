@@ -290,6 +290,36 @@ pub fn moved_path(from: &Path) -> std::path::PathBuf {
     (1..).map(name).find(|p| !p.exists()).expect("空いた名前がある")
 }
 
+/// 前の置き場(from_judgments の隣の履歴)の判定の履歴を、共有の置き場(to_judgments の隣の履歴)に混ぜて移す。
+/// 共有の側にもうある同じもの(同じ項目)は足さず、ほかは後ろに足す(組にする履歴は判定の日時で選ぶので、足す順は問わない)。
+/// 移したら前の履歴は moved_path の名前に変える。前の履歴が無ければ None。前の履歴か共有の履歴が読めなければエラー(何も書かず、前の履歴も残す)。
+/// ロックは本体 → 履歴の順に取る(取り込みと同じ順)
+pub fn move_history_into(from_judgments: &Path, to_judgments: &Path) -> Result<Option<Moved>> {
+    let (from, to) = (history_path(from_judgments), history_path(to_judgments));
+    if !from.exists() {
+        return Ok(None);
+    }
+    atlas_report::tasks::with_file_lock(to_judgments, || {
+        atlas_report::tasks::with_file_lock(&to, || {
+            let Some(old) = read_history(&from)? else { return Ok(None) };
+            let mut cur = read_history(&to)?.unwrap_or(HistoryFile { schema_version: HISTORY_SCHEMA_VERSION, items: vec![] });
+            let before = cur.items.len();
+            for e in old.items {
+                if !cur.items.iter().any(|h| h.item == e.item) {
+                    cur.items.push(e);
+                }
+            }
+            let added = cur.items.len() - before;
+            if added > 0 {
+                write_json_atomic(&to, &cur)?;
+            }
+            let renamed_to = moved_path(&from);
+            atlas_core::fs_retry::rename_replacing(&from, &renamed_to)?;
+            Ok(Some(Moved { added, renamed_to }))
+        })
+    })
+}
+
 /// 前の置き場から移した結果
 #[derive(Debug, Clone, PartialEq)]
 pub struct Moved {
@@ -580,6 +610,44 @@ mod tests {
         std::fs::write(&old, "{").unwrap();
         assert!(move_judgments_into(&old, &shared).is_err());
         assert!(old.exists());
+    }
+
+    /// 前の出力先の判定の履歴も、共有の置き場の履歴に混ぜて移す(同じ項目は足さない)。前の履歴は .moved-<日時> にする。読めなければ移さずに残す
+    #[test]
+    fn moves_old_history_into_shared() {
+        let d = tempfile::tempdir().unwrap();
+        let (old, shared) = (d.path().join("out").join("judgments.json"), d.path().join("s").join("judgments.json"));
+        assert_eq!(move_history_into(&old, &shared).unwrap(), None);
+        // 前の出力先で a を 2 回判定した(履歴に 1 件)
+        import_judgments_text(&reply("2026-11-20T00:00:00Z", vec![item("a")]), &old, ImportOptions::default()).unwrap();
+        let mut a2 = item("a");
+        a2["taskSummary"] = json!("2 回目");
+        import_judgments_text(&reply("2026-11-21T00:00:00Z", vec![a2]), &old, ImportOptions::default()).unwrap();
+        // 共有の置き場では b を 2 回判定した(履歴に 1 件)。前の出力先の a の履歴の 1 件目と同じものも、共有の履歴にある
+        import_judgments_text(&reply("2026-11-20T00:00:00Z", vec![item("b")]), &shared, ImportOptions::default()).unwrap();
+        let mut b2 = item("b");
+        b2["taskSummary"] = json!("2 回目");
+        import_judgments_text(&reply("2026-11-21T00:00:00Z", vec![b2]), &shared, ImportOptions::default()).unwrap();
+        let mut h = read_history(&history_path(&shared)).unwrap().unwrap();
+        h.items.push(read_history(&history_path(&old)).unwrap().unwrap().items[0].clone());
+        write_json_atomic(&history_path(&shared), &h).unwrap();
+        let m = move_history_into(&old, &shared).unwrap().unwrap();
+        assert_eq!(m.added, 0, "同じ項目は足さない");
+        let shared_h = read_history(&history_path(&shared)).unwrap().unwrap();
+        assert_eq!(shared_h.items.iter().map(|e| e.item.session_id.as_str()).collect::<Vec<_>>(), ["b", "a"]);
+        assert!(!history_path(&old).exists());
+        assert!(m.renamed_to.file_name().unwrap().to_string_lossy().starts_with("judgments-history.json.moved-"));
+        assert!(atlas_report::tasks::lock_path(&history_path(&shared)).is_file());
+        // 共有に無いものは足す
+        std::fs::copy(&m.renamed_to, history_path(&old)).unwrap();
+        let other = d.path().join("other").join("judgments.json");
+        let m2 = move_history_into(&old, &other).unwrap().unwrap();
+        assert_eq!(m2.added, 1);
+        assert_eq!(read_history(&history_path(&other)).unwrap().unwrap().items.len(), 1);
+        // 読めない前の履歴は移さず、残す
+        std::fs::write(history_path(&old), "{").unwrap();
+        assert!(move_history_into(&old, &shared).is_err());
+        assert!(history_path(&old).exists());
     }
 
     /// 判定に失敗した記録は、移すときにセッションごとに 1 つにする(共有の側を先に。判定のあるセッションの記録は捨てる)
